@@ -28,11 +28,17 @@ CFLAGS  := -std=c11 \
            -Wall \
            -Wextra \
            -Werror \
+           -g \
+           -MMD \
+           -MP \
            -Isrc/include \
-           -Isrc/drivers
+           -Isrc/drivers \
+           -Isrc/arch/x86_64 \
+           -Isrc/mm \
+           -Isrc/lib
 
-# Assembler flags for NASM
-ASFLAGS := -f elf64
+# Assembler flags for NASM (with DWARF debugging symbols)
+ASFLAGS := -f elf64 -g -F dwarf
 
 # Linker flags for higher-half 64-bit ELF kernel
 LDFLAGS := -m elf_x86_64 \
@@ -62,6 +68,10 @@ ASM_SRCS := $(shell find $(SRC_DIR) -type f -name '*.asm')
 # Object files
 OBJS := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(C_SRCS)) \
         $(patsubst $(SRC_DIR)/%.asm, $(BUILD_DIR)/%.o, $(ASM_SRCS))
+
+# Header dependency files (.d)
+DEPS := $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.d, $(C_SRCS))
+-include $(DEPS)
 
 # Limine bootloader branch and repository
 LIMINE_BRANCH := v8.x-binary

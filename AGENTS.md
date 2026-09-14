@@ -35,15 +35,27 @@ FortressOS/
 └── src/
     ├── arch/
     │   └── x86_64/
-    │       └── boot.asm     # Early assembly crt0 entry stub, aligns stack, invokes kmain
+    │       ├── boot.asm         # Early assembly crt0 entry stub, aligns stack, invokes kmain
+    │       ├── gdt.h            # GDT, TSS, and segment selector structures
+    │       ├── gdt.c            # GDT setup and TSS IST1 initialization
+    │       ├── gdt_flush.asm    # lgdt, segment reloads (CS/DS/SS/ES), and ltr
+    │       ├── idt.h            # IDT descriptor and interrupt_frame_t definitions
+    │       ├── idt.c            # IDT table setup and exception panic diagnostics
+    │       └── interrupts.asm   # 32 assembly exception stubs and register preservation
     ├── drivers/
     │   ├── serial.c         # UART 16550 COM1 port I/O driver (115200 8N1)
     │   └── serial.h         # Serial driver headers and port I/O inlines (inb, outb, io_wait)
     ├── include/
     │   ├── limine.h         # Official Limine bootloader protocol specification
+    │   ├── string.h         # Freestanding memory and string manipulation prototypes
     │   └── types.h          # Standard freestanding primitive types (uint8_t, size_t, bool)
-    └── kernel/
-        └── main.c           # Kernel entry point (kmain), validates Limine tags, memory & FB
+    ├── kernel/
+    │   └── main.c           # Kernel entry point (kmain), validates Limine tags, memory & FB
+    ├── lib/
+    │   └── string.c         # Freestanding memset, memcpy, memmove, memcmp, strlen
+    └── mm/
+        ├── pmm.c            # Physical Memory Manager bitmap frame allocator
+        └── pmm.h            # PMM public prototypes, page macros, and metrics
 ```
 
 ---
@@ -146,28 +158,63 @@ Future tasks should follow this sequenced implementation order:
 [Phase 1] Serial & Early Logging (COMPLETE)
     │
     ▼
-[Phase 2] GDT & IDT (Global Descriptor Table & Interrupt Descriptor Table)
-    │   ├── 64-bit GDT with Kernel CS (0x08), Kernel DS (0x10), TSS
-    │   ├── IDT with 256 gates and assembly exception stubs (ISRs 0-31)
-    │   └── Page Fault (#PF) and Double Fault (#DF) handler dump
+[Phase 2] GDT & IDT (COMPLETE)
+    │   ├── 64-bit GDT with Kernel CS (0x08), Kernel DS (0x10), TSS (Selector 0x28)
+    │   ├── Dedicated 16 KiB IST1 stack linked to Double Fault (#DF, Vector 8)
+    │   ├── IDT with 256 64-bit Interrupt Gates (0x8E) and uniform assembly ISR stubs
+    │   └── Rich serial panic dumps (Page Fault CR2 decode, register context)
     │
     ▼
-[Phase 3] Physical Memory Manager (PMM)
-    │   ├── Parse Limine memory map (LIMINE_MEMMAP_USABLE entries)
-    │   ├── Frame Allocator (Bitmap or Buddy Allocator)
-    │   └── pmm_alloc_frame(), pmm_free_frame()
+[Phase 3] Physical Memory Manager (PMM) (COMPLETE)
+    │   ├── Parse Limine memory map (usable RAM & bootloader reclaimable)
+    │   ├── Frame Allocator (compact 64 KiB Bitmap placed via HHDM at 0x100000)
+    │   ├── pmm_alloc_page(), pmm_free_page(), pmm_alloc_pages(), pmm_free_pages()
+    │   └── Memory statistics and self-tests (distinct pages, contiguous, reclaim)
     │
     ▼
-[Phase 4] Virtual Memory Manager (VMM) & Paging
-    │   ├── x86_64 4-Level Paging (PML4, PDPT, PD, PT)
-    │   ├── Map, unmap, and query virtual page mappings with caching/NX flags
-    │   └── Kernel heap allocator (kmalloc / kfree)
+[Phase 3.5] Foundation Hardening & Freestanding Lib (COMPLETE)
+    │   ├── Freestanding string.h / string.c (memset, memcpy, memmove, memcmp, strlen)
+    │   ├── Complete 256 IDT gate coverage with distinct vector numbers and unexpected IRQ logging
+    │   ├── PMM audit (64 KiB bitmap storage at 0x100000 reserved, frame 0 guarded, 2 GiB capacity verified)
+    │   ├── Automated Makefile dependency tracking (-MMD -MP) and -g debug symbols
+    │   └── Framebuffer 32bpp format verification & bounds clipping in main.c
     │
     ▼
-[Phase 5] Interrupts, Timers & APIC
-        ├── Disable legacy 8259 PIC (mask IRQs 0xFF)
-        ├── Local APIC (LAPIC) and I/O APIC setup via ACPI MADT table
-        └── APIC Timer or HPET for preemptive scheduling ticks
+[Phase 4A] Virtual Memory Manager (VMM) & 4-Level Paging
+    │   ├── x86_64 4-Level Paging (PML4, PDPT, PD, PT) structure management
+    │   ├── Ownership Rules: VMM strictly owns page-table frames; callers own mapped physical frames
+    │   ├── Mapping Query API: vmm_get_physical_address(), vmm_is_mapped()
+    │   ├── Stack Guard Pages: Unmapped virtual pages directly below stacks to catch overflow via #PF
+    │   ├── Higher-half kernel remapping, HHDM remapping, and boot data preservation during CR3 switch
+    │   └── Switching to independent kernel CR3, TLB invalidation, and NX / RW permission tests
+    │
+    ▼
+[Phase 4B] Kernel Heap Allocator
+    │   ├── Dynamic memory primitives: kmalloc(), kfree(), and krealloc() backed by virtual paging
+    │   └── Heap stress tests: repeated allocation/free cycles, coalescing, and reallocation expansion
+    │
+    ▼
+[Phase 5] ACPI Discovery & APIC Timer
+    │   ├── Limine RSDP query, RSDT/XSDT validation, and MADT parsing
+    │   ├── Mask legacy 8259 PIC and setup dedicated APIC spurious interrupt handler
+    │   ├── Local APIC (LAPIC) and I/O APIC setup and MMIO mapping
+    │   └── Periodic APIC Timer calibration (verifying continuous ticks and EOI)
+    │
+    ▼
+[Phase 6] Kernel Threads & Scheduling
+    │   ├── Thread Control Block (TCB) and assembly context switching
+    │   ├── Checkpoint 1: Cooperative multitasking (two kernel threads yielding via thread_yield())
+    │   └── Checkpoint 2: Preemptive round-robin scheduler driven by timer, spinlocks & idle thread
+    │
+    ▼
+[Phase 7] User Space & Ring 3 Syscalls (The First Milestone)
+        ├── Checkpoint 1: Ring 3 transition via iretq (User CS 0x23, User SS 0x1B, User RSP/RIP)
+        ├── Checkpoint 2: First system call (serial print syscall via int 0x80 or syscall)
+        ├── Checkpoint 3: Initramfs / embedded ELF user executable loading
+        ├── Checkpoint 4: Clean process exit system call
+        ├── Checkpoint 5: Fast syscall hardening (syscall / sysret / IA32_EFER / STAR / LSTAR)
+        └── Acceptance Test: Hello World in Ring 3 + deliberate illegal access to kernel memory
+            (user program faults and terminates cleanly without crashing or panicking the kernel)
 ```
 
 ---
