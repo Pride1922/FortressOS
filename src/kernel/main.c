@@ -5,6 +5,8 @@
 #include "idt.h"
 #include "pmm.h"
 #include "string.h"
+#include "boot_info.h"
+#include "vmm.h"
 
 /* Set Limine Base Revision to 3 (Limine v7/v8 protocol) */
 __attribute__((used, section(".requests_start_marker")))
@@ -30,6 +32,13 @@ static volatile struct limine_hhdm_request hhdm_request = {
 __attribute__((used, section(".requests")))
 static volatile struct limine_memmap_request memmap_request = {
     .id = LIMINE_MEMMAP_REQUEST,
+    .revision = 0,
+    .response = NULL
+};
+
+__attribute__((used, section(".requests")))
+static volatile struct limine_kernel_address_request kernel_address_request = {
+    .id = LIMINE_KERNEL_ADDRESS_REQUEST,
     .revision = 0,
     .response = NULL
 };
@@ -288,7 +297,163 @@ void kmain(void) {
 
     serial_puts("[ OK ] Physical Memory Manager self-tests passed successfully!\n\n");
 
-    /* 9. Framebuffer Initialization & Test Pattern */
+    /* 10. Deep-Copy Boot Metadata into Kernel-Owned Storage */
+    static boot_info_t boot_info;
+    boot_info_init(&boot_info,
+                   memmap_request.response,
+                   hhdm_request.response,
+                   kernel_address_request.response,
+                   framebuffer_request.response);
+
+    /* 11. Virtual Memory Manager (VMM) & 4-Level Paging */
+    /* Step 1 & 2: Build new tables and inspect required mappings */
+    /* Step 3: Switch CR3 to new PML4 and survive */
+    vmm_init(&boot_info);
+
+    uint64_t *kernel_pml4 = vmm_get_kernel_pml4_virt();
+
+    /* Step 4: Verify Exception Handling under New CR3 via Breakpoint Trap (int $3) */
+    serial_puts("[TEST] Verifying exception handling under new CR3 (int $3)...\n");
+    __asm__ volatile("int $3");
+    serial_puts("[ OK ] Breakpoint exception recovered cleanly under new page tables!\n\n");
+
+    /* Step 5: Test Map -> Write/Read -> Unmap -> Expected Page Fault */
+    serial_puts("[TEST] Validating VMM dynamic mapping & unmapping lifecycle...\n");
+    uintptr_t test_phys = pmm_alloc_page();
+    uintptr_t test_virt = 0xFFFFFFFF90000000ULL;
+
+    int map_status = vmm_map_page(kernel_pml4, test_virt, test_phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
+    if (map_status != VMM_OK) {
+        serial_puts("       [FAIL] vmm_map_page returned error: ");
+        serial_print_dec(map_status);
+        serial_puts("\n");
+        hcf();
+    }
+
+    /* Verify mapping queries */
+    if (!vmm_is_mapped(kernel_pml4, test_virt)) {
+        serial_puts("       [FAIL] vmm_is_mapped returned false for mapped page!\n");
+        hcf();
+    }
+    if (vmm_get_physical_address(kernel_pml4, test_virt) != test_phys) {
+        serial_puts("       [FAIL] vmm_get_physical_address mismatch!\n");
+        hcf();
+    }
+
+    /* Write pattern and read back */
+    volatile uint64_t *test_ptr = (volatile uint64_t *)test_virt;
+    *test_ptr = 0xDEADBEEFCAFEBABEULL;
+    if (*test_ptr != 0xDEADBEEFCAFEBABEULL) {
+        serial_puts("       [FAIL] Readback mismatch on mapped virtual page!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Mapped page read/write verified (0xDEADBEEFCAFEBABE)\n");
+
+    /* Unmap page (Ownership Rule: unmapping does NOT free the physical frame) */
+    int unmap_status = vmm_unmap_page(kernel_pml4, test_virt);
+    if (unmap_status != VMM_OK) {
+        serial_puts("       [FAIL] vmm_unmap_page returned error!\n");
+        hcf();
+    }
+    if (vmm_is_mapped(kernel_pml4, test_virt)) {
+        serial_puts("       [FAIL] Page still reported mapped after vmm_unmap_page!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Page unmapped successfully (PTE cleared & TLB invalidated)\n");
+
+    /* Caller explicitly frees physical frame */
+    pmm_free_page(test_phys);
+
+    /* Verify expected #PF on accessing unmapped virtual address */
+    void *pf_unmapped_recovery = &&pf_unmapped_done;
+    __asm__ volatile("" : : "r"(pf_unmapped_recovery));
+    idt_set_expected_page_fault((uintptr_t)pf_unmapped_recovery);
+
+    /* Access unmapped address -> triggers Page Fault (#PF, Vector 14) */
+    *test_ptr = 0x11223344;
+
+pf_unmapped_done:
+    idt_clear_expected_page_fault();
+    uint64_t caught_cr2 = 0, caught_err = 0;
+    if (idt_was_page_fault_caught(&caught_cr2, &caught_err) && caught_cr2 == test_virt) {
+        serial_puts("       [PASS] Expected #PF cleanly caught on unmapped virtual address access\n\n");
+    } else {
+        serial_puts("       [FAIL] Expected #PF was not caught or CR2 mismatch!\n");
+        hcf();
+    }
+
+    /* Step 6A: Permission Test - Write to Read-Only Page */
+    serial_puts("[TEST] Validating page permission enforcement (Read-Only write fault)...\n");
+    uintptr_t ro_phys = pmm_alloc_page();
+    uintptr_t ro_virt = 0xFFFFFFFF90001000ULL;
+
+    /* Map without PTE_WRITABLE (Read-Only) */
+    vmm_map_page(kernel_pml4, ro_virt, ro_phys, PTE_PRESENT | PTE_NX);
+    volatile uint64_t *ro_ptr = (volatile uint64_t *)ro_virt;
+
+    /* Reading from read-only page must succeed */
+    uint64_t dummy_read = *ro_ptr;
+    (void)dummy_read;
+    serial_puts("       [PASS] Read from Read-Only page succeeded\n");
+
+    /* Attempting write must trigger #PF with bit 0 = 1 (protection violation) */
+    void *pf_ro_recovery = &&pf_ro_done;
+    __asm__ volatile("" : : "r"(pf_ro_recovery));
+    idt_set_expected_page_fault((uintptr_t)pf_ro_recovery);
+
+    *ro_ptr = 0xCAFE;
+
+pf_ro_done:
+    idt_clear_expected_page_fault();
+    if (idt_was_page_fault_caught(&caught_cr2, &caught_err) &&
+        caught_cr2 == ro_virt &&
+        (caught_err & (1 << 0)) != 0 && /* Protection violation */
+        (caught_err & (1 << 1)) != 0)   /* Write access */ {
+        serial_puts("       [PASS] Read-only permission violation caught (#PF protection violation)\n\n");
+    } else {
+        serial_puts("       [FAIL] Permission fault verification failed!\n");
+        hcf();
+    }
+    vmm_unmap_page(kernel_pml4, ro_virt);
+    pmm_free_page(ro_phys);
+
+    /* Step 6B: Stack Guard Page Verification */
+    serial_puts("[TEST] Validating stack guard page protection...\n");
+    uintptr_t stack_phys = pmm_alloc_page();
+    uintptr_t guard_virt = 0xFFFFFFFF90002000ULL; /* Guard page: strictly unmapped */
+    uintptr_t stack_virt = 0xFFFFFFFF90003000ULL; /* Stack page: mapped RW, NX */
+
+    vmm_map_page(kernel_pml4, stack_virt, stack_phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
+
+    /* Normal writes to stack page must succeed */
+    volatile uint64_t *valid_stack_slot = (volatile uint64_t *)(stack_virt + 0x800);
+    *valid_stack_slot = 0x55AA55AAULL;
+    if (*valid_stack_slot != 0x55AA55AAULL) {
+        serial_puts("       [FAIL] Stack write/read failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Normal stack page access verified\n");
+
+    /* Simulated stack overflow: touching the unmapped guard page directly below the stack */
+    void *pf_guard_recovery = &&pf_guard_done;
+    __asm__ volatile("" : : "r"(pf_guard_recovery));
+    idt_set_expected_page_fault((uintptr_t)pf_guard_recovery);
+
+    volatile uint64_t *overflow_slot = (volatile uint64_t *)(guard_virt + 0xFF8);
+    *overflow_slot = 0xBAD57AC;
+
+pf_guard_done:
+    idt_clear_expected_page_fault();
+    if (idt_was_page_fault_caught(&caught_cr2, &caught_err) && caught_cr2 == (guard_virt + 0xFF8)) {
+        serial_puts("       [PASS] Stack overflow into guard page caught cleanly via #PF!\n\n");
+    } else {
+        serial_puts("       [FAIL] Stack guard page fault was not caught!\n");
+        hcf();
+    }
+    vmm_unmap_page(kernel_pml4, stack_virt);
+    pmm_free_page(stack_phys);
+
+    /* 12. Framebuffer Initialization & Test Pattern */
     if (framebuffer_request.response == NULL || framebuffer_request.response->framebuffer_count < 1) {
         serial_puts("[WARN] No Limine Framebuffer found (running headless)\n");
     } else {
@@ -309,8 +474,8 @@ void kmain(void) {
         serial_puts("[ OK ] Framebuffer test pattern rendered\n");
     }
 
-    serial_puts("\n[BOOT] FortressOS early initialization complete. CPU halted.\n");
+    serial_puts("\n[BOOT] FortressOS Phase 4A (VMM & 4-Level Paging) complete. CPU halted.\n");
 
-    /* 6. Clean halt state */
+    /* Clean halt state */
     hcf();
 }

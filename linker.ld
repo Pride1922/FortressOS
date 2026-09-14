@@ -19,19 +19,28 @@ SECTIONS
     /* Kernel loaded at standard higher-half virtual address */
     . = 0xffffffff80000000;
 
+    __kernel_start = .;
+
     .text : {
+        __text_start = .;
         *(.text .text.*)
+        . = ALIGN(4096);
+        __text_end = .;
     } :text
 
     . = ALIGN(4096);
 
     .rodata : {
+        __rodata_start = .;
         *(.rodata .rodata.*)
+        . = ALIGN(4096);
+        __rodata_end = .;
     } :rodata
 
     . = ALIGN(4096);
 
     .data : {
+        __data_start = .;
         *(.data .data.*)
 
         /* Limine Bootloader Protocol Requests */
@@ -43,6 +52,8 @@ SECTIONS
     .bss : {
         *(COMMON)
         *(.bss .bss.*)
+        . = ALIGN(4096);
+        __kernel_end = .;
     } :data
 
     /DISCARD/ : {

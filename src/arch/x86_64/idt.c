@@ -82,12 +82,57 @@ void idt_init(void) {
     serial_puts("[ OK ] IDT loaded (all 256 gates populated with vector preservation, #DF bound to IST1)\n");
 }
 
+static volatile bool     g_expect_page_fault = false;
+static volatile bool     g_page_fault_caught = false;
+static volatile uint64_t g_last_fault_cr2    = 0;
+static volatile uint64_t g_last_fault_error  = 0;
+static volatile uintptr_t g_pf_recovery_rip  = 0;
+
+void idt_set_expected_page_fault(uintptr_t recovery_rip) {
+    g_expect_page_fault = true;
+    g_page_fault_caught = false;
+    g_last_fault_cr2    = 0;
+    g_last_fault_error  = 0;
+    g_pf_recovery_rip   = recovery_rip;
+}
+
+void idt_clear_expected_page_fault(void) {
+    g_expect_page_fault = false;
+    g_pf_recovery_rip   = 0;
+}
+
+bool idt_was_page_fault_caught(uint64_t *out_cr2, uint64_t *out_error) {
+    if (out_cr2) *out_cr2 = g_last_fault_cr2;
+    if (out_error) *out_error = g_last_fault_error;
+    return g_page_fault_caught;
+}
+
 void isr_exception_handler(interrupt_frame_t *frame) {
     /* Breakpoint Trap (#BP, vector 3) is a non-fatal debugging trap */
     if (frame->vector == 3) {
         serial_puts("[TRAP] Exception 0x03 (Breakpoint Trap) at RIP: ");
         serial_print_hex(frame->rip);
         serial_puts(" - Resuming execution\n");
+        return;
+    }
+
+    /* Expected Page Fault handler for VMM validation */
+    if (frame->vector == 14 && g_expect_page_fault) {
+        uint64_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        g_page_fault_caught = true;
+        g_last_fault_cr2    = cr2;
+        g_last_fault_error  = frame->error_code;
+
+        serial_puts("       [CAUGHT] Expected #PF caught at CR2: ");
+        serial_print_hex(cr2);
+        serial_puts(" (Error Code: ");
+        serial_print_hex(frame->error_code);
+        serial_puts(")\n");
+
+        if (g_pf_recovery_rip != 0) {
+            frame->rip = g_pf_recovery_rip;
+        }
         return;
     }
 

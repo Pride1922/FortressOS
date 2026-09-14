@@ -46,16 +46,20 @@ FortressOS/
     │   ├── serial.c         # UART 16550 COM1 port I/O driver (115200 8N1)
     │   └── serial.h         # Serial driver headers and port I/O inlines (inb, outb, io_wait)
     ├── include/
+    │   ├── boot_info.h      # Kernel-owned boot information and memory map snapshot
     │   ├── limine.h         # Official Limine bootloader protocol specification
     │   ├── string.h         # Freestanding memory and string manipulation prototypes
     │   └── types.h          # Standard freestanding primitive types (uint8_t, size_t, bool)
     ├── kernel/
+    │   ├── boot_info.c      # Boot metadata deep-copying and verification
     │   └── main.c           # Kernel entry point (kmain), validates Limine tags, memory & FB
     ├── lib/
     │   └── string.c         # Freestanding memset, memcpy, memmove, memcmp, strlen
     └── mm/
         ├── pmm.c            # Physical Memory Manager bitmap frame allocator
-        └── pmm.h            # PMM public prototypes, page macros, and metrics
+        ├── pmm.h            # PMM public prototypes, page macros, and metrics
+        ├── vmm.c            # Virtual Memory Manager 4-level paging and CR3 management
+        └── vmm.h            # VMM public prototypes, PTE flags, and query APIs
 ```
 
 ---
@@ -180,7 +184,7 @@ Future tasks should follow this sequenced implementation order:
     │   └── Framebuffer 32bpp format verification & bounds clipping in main.c
     │
     ▼
-[Phase 4A] Virtual Memory Manager (VMM) & 4-Level Paging
+[Phase 4A] Virtual Memory Manager (VMM) & 4-Level Paging (COMPLETE)
     │   ├── x86_64 4-Level Paging (PML4, PDPT, PD, PT) structure management
     │   ├── Ownership Rules: VMM strictly owns page-table frames; callers own mapped physical frames
     │   ├── Mapping Query API: vmm_get_physical_address(), vmm_is_mapped()
