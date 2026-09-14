@@ -1,0 +1,26 @@
+# FortressOS .gitignore
+
+# Build outputs and intermediate objects
+build/
+bin/
+*.o
+*.d
+*.elf
+*.bin
+*.iso
+*.img
+
+# Bootloader and UEFI firmware dependencies
+limine/
+limine-*.tar.gz
+limine-*.tar.xz
+ovmf/
+OVMF*.fd
+
+# Editor and OS artifacts
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
