@@ -164,7 +164,11 @@ $(BOOTABLE_ISO): $(KERNEL_ELF) limine.conf limine-setup
 # Launch operating system in QEMU under UEFI mode
 run: $(BOOTABLE_ISO) ovmf-setup
 	@echo "--> Launching FortressOS in QEMU (UEFI mode)..."
-	@if [ -f "$(OVMF_FILE)" ]; then \
+	@if [ -f "/usr/share/OVMF/OVMF_CODE_4M.fd" ] && [ -f "/usr/share/OVMF/OVMF_VARS_4M.fd" ]; then \
+		mkdir -p $(BUILD_DIR); \
+		cp -f /usr/share/OVMF/OVMF_VARS_4M.fd $(BUILD_DIR)/OVMF_VARS.fd; \
+		$(QEMU) $(QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,unit=1,file=$(BUILD_DIR)/OVMF_VARS.fd -cdrom $(BOOTABLE_ISO); \
+	elif [ -f "$(OVMF_FILE)" ]; then \
 		$(QEMU) $(QEMU_FLAGS) -bios $(OVMF_FILE) -cdrom $(BOOTABLE_ISO); \
 	else \
 		echo "Warning: OVMF firmware not found, running BIOS mode fallback"; \
@@ -179,7 +183,11 @@ run-bios: $(BOOTABLE_ISO)
 # Launch with GDB debugging stub enabled
 debug: $(BOOTABLE_ISO) ovmf-setup
 	@echo "--> Launching FortressOS with GDB debugging enabled (target remote :1234)..."
-	@if [ -f "$(OVMF_FILE)" ]; then \
+	@if [ -f "/usr/share/OVMF/OVMF_CODE_4M.fd" ] && [ -f "/usr/share/OVMF/OVMF_VARS_4M.fd" ]; then \
+		mkdir -p $(BUILD_DIR); \
+		cp -f /usr/share/OVMF/OVMF_VARS_4M.fd $(BUILD_DIR)/OVMF_VARS.fd; \
+		$(QEMU) $(QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,unit=1,file=$(BUILD_DIR)/OVMF_VARS.fd -cdrom $(BOOTABLE_ISO) -s -S; \
+	elif [ -f "$(OVMF_FILE)" ]; then \
 		$(QEMU) $(QEMU_FLAGS) -bios $(OVMF_FILE) -cdrom $(BOOTABLE_ISO) -s -S; \
 	else \
 		$(QEMU) $(QEMU_FLAGS) -cdrom $(BOOTABLE_ISO) -s -S; \

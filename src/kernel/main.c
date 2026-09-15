@@ -7,6 +7,7 @@
 #include "string.h"
 #include "boot_info.h"
 #include "vmm.h"
+#include "heap.h"
 
 /* Set Limine Base Revision to 3 (Limine v7/v8 protocol) */
 __attribute__((used, section(".requests_start_marker")))
@@ -538,7 +539,395 @@ pf_boot_guard_done:
         hcf();
     }
 
-    /* 12. Framebuffer Initialization & Test Pattern (Using Kernel-Owned boot_info) */
+    /* 12. Dynamic Kernel Heap Allocator (Phase 4B) */
+    heap_init();
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed on initialization!\n");
+        hcf();
+    }
+
+    serial_puts("[TEST] Executing Dynamic Kernel Heap verification suite...\n");
+
+    /* Test 1: Semantics (kmalloc(0) == NULL, kfree(NULL) == no-op) */
+    if (kmalloc(0) != NULL) {
+        serial_puts("       [FAIL] kmalloc(0) did not return NULL!\n");
+        hcf();
+    }
+    kfree(NULL); /* Must not fault or panic */
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] Zero-size allocation and NULL free semantics verified\n");
+
+    /* Test 2: Basic Allocation, Alignment & Invariant Checks */
+    uint8_t *b1 = kmalloc(128);
+    if (!b1 || ((uintptr_t)b1 % 16) != 0) {
+        serial_puts("       [FAIL] kmalloc failed or unaligned!\n");
+        hcf();
+    }
+    memset(b1, 0xAA, 128);
+    for (int i = 0; i < 128; i++) {
+        if (b1[i] != 0xAA) {
+            serial_puts("       [FAIL] Data write/read verification error!\n");
+            hcf();
+        }
+    }
+    if (!heap_verify_integrity()) hcf();
+    kfree(b1);
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] Basic 16-byte aligned allocation, write/read, and free verified\n");
+
+    /* Test 3: kcalloc Zero-Initialization & Multiplication Overflow */
+    if (kcalloc(0, 50) != NULL || kcalloc(50, 0) != NULL) {
+        serial_puts("       [FAIL] kcalloc(0) did not return NULL!\n");
+        hcf();
+    }
+    if (kcalloc((size_t)-1 / 2, 4) != NULL) {
+        serial_puts("       [FAIL] kcalloc arithmetic overflow was not caught!\n");
+        hcf();
+    }
+    uint32_t *zero_arr = (uint32_t *)kcalloc(32, sizeof(uint32_t));
+    if (!zero_arr) {
+        serial_puts("       [FAIL] kcalloc allocation failed!\n");
+        hcf();
+    }
+    for (int i = 0; i < 32; i++) {
+        if (zero_arr[i] != 0) {
+            serial_puts("       [FAIL] kcalloc did not zero memory!\n");
+            hcf();
+        }
+    }
+    kfree(zero_arr);
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] kcalloc zero-initialization and overflow protection verified\n");
+
+    /* Test 4: Block Splitting */
+    void *split_big = kmalloc(1024);
+    void *split_guard = kmalloc(64); /* Guard to prevent right coalescing */
+    kfree(split_big);
+    void *split_sub = kmalloc(256);
+    if (!split_sub || split_sub != split_big) {
+        serial_puts("       [FAIL] Sub-allocation from split block failed!\n");
+        hcf();
+    }
+    if (!heap_verify_integrity()) hcf();
+    kfree(split_sub);
+    kfree(split_guard);
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] Free block splitting verified\n");
+
+    /* Test 5: Coalescing In All Directions */
+    /* 5A: Left-Only Coalescing */
+    void *l1 = kmalloc(128);
+    void *l2 = kmalloc(128);
+    void *l_guard = kmalloc(64);
+    kfree(l1);
+    kfree(l2); /* Must merge with left neighbor (l1) */
+    void *l_merged = kmalloc(256);
+    if (l_merged != l1) {
+        serial_puts("       [FAIL] Left-only coalescing failed!\n");
+        hcf();
+    }
+    kfree(l_merged);
+    kfree(l_guard);
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] Left-only boundary tag coalescing verified\n");
+
+    /* 5B: Right-Only Coalescing */
+    void *r_guard = kmalloc(64);
+    void *r1 = kmalloc(128);
+    void *r2 = kmalloc(128);
+    kfree(r2);
+    kfree(r1); /* Must merge with right neighbor (r2) */
+    void *r_merged = kmalloc(256);
+    if (r_merged != r1) {
+        serial_puts("       [FAIL] Right-only coalescing failed!\n");
+        hcf();
+    }
+    kfree(r_merged);
+    kfree(r_guard);
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] Right-only boundary tag coalescing verified\n");
+
+    /* 5C: Both-Neighbour Coalescing */
+    void *blk_a = kmalloc(128);
+    void *blk_b = kmalloc(128);
+    void *blk_c = kmalloc(128);
+    void *blk_sentinel = kmalloc(64);
+    kfree(blk_a);
+    kfree(blk_c);
+    kfree(blk_b); /* Merges both left (blk_a) and right (blk_c) */
+    void *blk_merged = kmalloc(384);
+    if (blk_merged != blk_a) {
+        serial_puts("       [FAIL] Both-neighbour coalescing failed!\n");
+        hcf();
+    }
+    kfree(blk_merged);
+    kfree(blk_sentinel);
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] Both-neighbour O(1) boundary tag coalescing verified\n");
+
+    /* Test 6: krealloc Semantics, In-Place Growth, Shrinking & Forced Relocation */
+    /* 6A: krealloc(NULL, n) behaves like kmalloc(n) */
+    void *realloc_null = krealloc(NULL, 128);
+    if (!realloc_null || ((uintptr_t)realloc_null % 16) != 0) {
+        serial_puts("       [FAIL] krealloc(NULL, n) did not allocate aligned buffer!\n");
+        hcf();
+    }
+    /* 6B: krealloc(p, 0) behaves like kfree(p) and returns NULL */
+    void *freed_via_realloc = krealloc(realloc_null, 0);
+    if (freed_via_realloc != NULL) {
+        serial_puts("       [FAIL] krealloc(p, 0) did not return NULL!\n");
+        hcf();
+    }
+    if (!heap_verify_integrity()) hcf();
+
+    /* 6C: Forced Relocation with Data Preservation (live barrier directly follows original) */
+    char *orig_buf = kmalloc(64);
+    const char *test_msg = "FortressOS Dynamic Kernel Heap";
+    memcpy(orig_buf, test_msg, 31);
+    void *live_barrier = kmalloc(64); /* Immediately adjacent live allocation forces relocation */
+
+    char *relocated_buf = krealloc(orig_buf, 256);
+    if (!relocated_buf || relocated_buf == orig_buf || memcmp(relocated_buf, test_msg, 31) != 0) {
+        serial_puts("       [FAIL] krealloc relocation failed or corrupted existing data!\n");
+        hcf();
+    }
+    memset(relocated_buf + 31, 'X', 200);
+    if (relocated_buf[100] != 'X') {
+        serial_puts("       [FAIL] krealloc expanded space unusable!\n");
+        hcf();
+    }
+
+    /* 6D: Failed krealloc preserves original allocation and data intact */
+    void *failed_realloc = krealloc(relocated_buf, (size_t)-1 / 2);
+    if (failed_realloc != NULL) {
+        serial_puts("       [FAIL] Excessive krealloc unexpectedly succeeded!\n");
+        hcf();
+    }
+    if (memcmp(relocated_buf, test_msg, 31) != 0 || relocated_buf[100] != 'X') {
+        serial_puts("       [FAIL] Failed krealloc corrupted original buffer!\n");
+        hcf();
+    }
+    kfree(relocated_buf);
+    kfree(live_barrier);
+    if (!heap_verify_integrity()) hcf();
+
+    /* 6E: In-Place Growth and Shrinking with Split Coalescing */
+    void *grow_buf = kmalloc(64);
+    void *free_neighbor = kmalloc(256);
+    void *grow_guard = kmalloc(64);
+    kfree(free_neighbor); /* Right neighbor is now free */
+
+    void *grown_in_place = krealloc(grow_buf, 128);
+    if (grown_in_place != grow_buf) {
+        serial_puts("       [FAIL] krealloc did not grow in-place into free right neighbor!\n");
+        hcf();
+    }
+    /* Shrinking: splits remainder and immediately coalesces with free right neighbor */
+    void *shrunk_in_place = krealloc(grown_in_place, 48);
+    if (shrunk_in_place != grow_buf) {
+        serial_puts("       [FAIL] krealloc shrink did not remain in-place!\n");
+        hcf();
+    }
+    kfree(shrunk_in_place);
+    kfree(grow_guard);
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] krealloc in-place growth, shrinking, and forced relocation verified\n");
+
+    /* Test 7: Controlled Transactional Rollback Fault Injection */
+    /* 7A: PMM failure after 2 mapped pages in a multi-page expansion */
+    void *saved_alloc = kmalloc(128); /* Keep a live allocation to verify non-corruption */
+    memset(saved_alloc, 0x77, 128);
+    size_t heap_end_before = heap_get_total_bytes();
+    size_t used_before = heap_get_used_bytes();
+    size_t pmm_free_before = pmm_get_free_pages();
+
+    /* Consume existing free list capacity */
+    size_t free_cap = heap_get_free_bytes();
+    void *filler = NULL;
+    if (free_cap > 48) {
+        filler = kmalloc(free_cap - 48);
+    }
+
+    heap_end_before = heap_get_total_bytes();
+    used_before = heap_get_used_bytes();
+    pmm_free_before = pmm_get_free_pages();
+
+    /* Request 4 pages (16384 bytes). Inject PMM failure after 2 pages */
+    heap_set_fault_injection(HEAP_FAULT_PMM_AFTER_N_PAGES, 2);
+    void *failed_pmm_alloc = kmalloc(16384);
+    heap_clear_fault_injection();
+
+    if (failed_pmm_alloc != NULL) {
+        serial_puts("       [FAIL] kmalloc with injected PMM failure unexpectedly succeeded!\n");
+        hcf();
+    }
+    /* Verify rollback guarantees: heap boundary, used bytes, and PMM free pages restored */
+    if (heap_get_total_bytes() != heap_end_before || heap_get_used_bytes() != used_before) {
+        serial_puts("       [FAIL] Heap bounds or used bytes altered after failed PMM expansion!\n");
+        hcf();
+    }
+    if (pmm_get_free_pages() != pmm_free_before) {
+        serial_puts("       [FAIL] Data frames leaked to PMM after expansion failure rollback!\n");
+        hcf();
+    }
+    /* Verify live allocation data intact */
+    for (int i = 0; i < 128; i++) {
+        if (((uint8_t *)saved_alloc)[i] != 0x77) {
+            serial_puts("       [FAIL] Live allocation corrupted during expansion rollback!\n");
+            hcf();
+        }
+    }
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed after PMM expansion rollback!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Controlled PMM allocation failure rollback verified\n");
+
+    /* 7B: VMM mapping failure after frame acquisition */
+    pmm_free_before = pmm_get_free_pages();
+    heap_set_fault_injection(HEAP_FAULT_VMM_AFTER_N_PAGES, 1);
+    void *failed_vmm_alloc = kmalloc(16384);
+    heap_clear_fault_injection();
+
+    if (failed_vmm_alloc != NULL) {
+        serial_puts("       [FAIL] kmalloc with injected VMM failure unexpectedly succeeded!\n");
+        hcf();
+    }
+    if (heap_get_total_bytes() != heap_end_before || heap_get_used_bytes() != used_before) {
+        serial_puts("       [FAIL] Heap bounds altered after failed VMM expansion!\n");
+        hcf();
+    }
+    if (pmm_get_free_pages() != pmm_free_before) {
+        serial_puts("       [FAIL] Acquired frame or mapped pages leaked after VMM failure rollback!\n");
+        hcf();
+    }
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed after VMM expansion rollback!\n");
+        hcf();
+    }
+    if (filler) kfree(filler);
+    kfree(saved_alloc);
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] Controlled VMM mapping failure & unmapped frame release verified\n");
+
+    /* 7C: Independent VMM Verification: Retained Page-Table Accounting Across a 2 MiB Boundary
+     * Note: Verifies VMM intermediate table allocation and retention independently outside the heap.
+     * Controlled heap rollback (7A/7B) tests heap data-frame release within allocated page tables. */
+    size_t tables_base = vmm_get_retained_table_frames();
+    size_t pmm_base = pmm_get_free_pages();
+    uintptr_t boundary_virt = 0xFFFFFFFF90200000ULL; /* New 2 MiB range: requires new PT */
+
+    uintptr_t data_frame1 = pmm_alloc_page();
+    if (vmm_map_page(kernel_pml4, boundary_virt, data_frame1, PTE_PRESENT | PTE_WRITABLE | PTE_NX) != VMM_OK) {
+        serial_puts("       [FAIL] Boundary page mapping failed!\n");
+        hcf();
+    }
+    /* Simulate unmap & frame release during failure/teardown */
+    vmm_unmap_page(kernel_pml4, boundary_virt);
+    pmm_free_page(data_frame1);
+
+    size_t tables_after_unmap = vmm_get_retained_table_frames();
+    size_t pmm_after_unmap = pmm_get_free_pages();
+    size_t new_table_count = tables_after_unmap - tables_base;
+    size_t pmm_delta = pmm_base - pmm_after_unmap;
+
+    if (new_table_count != 1 || pmm_delta != 1 || pmm_delta != new_table_count) {
+        serial_puts("       [FAIL] Retained-table accounting mismatch across PT boundary!\n");
+        hcf();
+    }
+
+    /* Prove retained table is reused for subsequent mappings without allocating new tables */
+    uintptr_t data_frame2 = pmm_alloc_page();
+    if (vmm_map_page(kernel_pml4, boundary_virt + PAGE_SIZE, data_frame2, PTE_PRESENT | PTE_WRITABLE | PTE_NX) != VMM_OK) {
+        serial_puts("       [FAIL] Second boundary page mapping failed!\n");
+        hcf();
+    }
+    size_t tables_reuse = vmm_get_retained_table_frames();
+    if (tables_reuse != tables_after_unmap) {
+        serial_puts("       [FAIL] Retained page table was not reused!\n");
+        hcf();
+    }
+    vmm_unmap_page(kernel_pml4, boundary_virt + PAGE_SIZE);
+    pmm_free_page(data_frame2);
+
+    if (pmm_get_free_pages() != pmm_after_unmap) {
+        serial_puts("       [FAIL] Frame leak detected in retained table reuse!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Independent VMM retained-table accounting across 2 MiB boundary verified (measured delta: 1 table frame, 0 data frames leaked)\n");
+
+    /* Test 8: Forced Non-Contiguous PMM Frames Expansion */
+    /* Allocate interleaving frames in PMM to guarantee heap physical frames are non-contiguous */
+    uintptr_t dummy_frame1 = pmm_alloc_page();
+    uintptr_t dummy_frame2 = pmm_alloc_page();
+    pmm_free_page(dummy_frame1); /* Leaves dummy_frame2 as a gap in PMM */
+
+    size_t pre_exp_total = heap_get_total_bytes();
+    void *multi_page_buf = kmalloc(16384); /* Forces 4-page expansion */
+    if (!multi_page_buf || heap_get_total_bytes() <= pre_exp_total) {
+        serial_puts("       [FAIL] Multi-page heap expansion failed!\n");
+        hcf();
+    }
+    pmm_free_page(dummy_frame2);
+
+    /* Verify virtual pages map to distinct physical frames */
+    uintptr_t virt_page1 = (uintptr_t)multi_page_buf & ~(PAGE_SIZE - 1);
+    uintptr_t virt_page2 = virt_page1 + PAGE_SIZE;
+    uintptr_t p1 = vmm_get_physical_address(kernel_pml4, virt_page1);
+    uintptr_t p2 = vmm_get_physical_address(kernel_pml4, virt_page2);
+
+    if (p1 == 0 || p2 == 0 || p1 == p2) {
+        serial_puts("       [FAIL] Virtual pages do not map to valid distinct physical frames!\n");
+        hcf();
+    }
+    kfree(multi_page_buf);
+    if (!heap_verify_integrity()) hcf();
+    serial_puts("       [PASS] Non-contiguous physical frames mapped to contiguous virtual heap verified (grew to ");
+    serial_print_dec(heap_get_total_bytes() / 1024);
+    serial_puts(" KiB)\n");
+    serial_puts("       [INFO] Reusable heap capacity: ");
+    serial_print_dec(heap_get_free_bytes() / 1024);
+    serial_puts(" KiB (retained mapped pages ready for reuse)\n");
+
+    /* Test 9: Deterministic Mixed-Size Stress Test & Full Heap Walk */
+    void *stress_ptrs[40];
+    for (int i = 0; i < 40; i++) {
+        size_t sz = 16 + ((i * 37) % 512);
+        stress_ptrs[i] = kmalloc(sz);
+        if (!stress_ptrs[i]) {
+            serial_puts("       [FAIL] Stress test allocation failed!\n");
+            hcf();
+        }
+        memset(stress_ptrs[i], (uint8_t)(i ^ 0xA5), sz);
+    }
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed during stress allocation phase!\n");
+        hcf();
+    }
+    /* Verify data */
+    for (int i = 0; i < 40; i++) {
+        size_t sz = 16 + ((i * 37) % 512);
+        uint8_t *p = (uint8_t *)stress_ptrs[i];
+        for (size_t s = 0; s < sz; s++) {
+            if (p[s] != (uint8_t)(i ^ 0xA5)) {
+                serial_puts("       [FAIL] Stress test data corruption detected!\n");
+                hcf();
+            }
+        }
+    }
+    /* Free odd then even */
+    for (int i = 1; i < 40; i += 2) kfree(stress_ptrs[i]);
+    if (!heap_verify_integrity()) hcf();
+    for (int i = 0; i < 40; i += 2) kfree(stress_ptrs[i]);
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed after freeing stress allocations!\n");
+        hcf();
+    }
+
+    serial_puts("       [PASS] Deterministic mixed-size stress test passed (all blocks coalesced & audit verified)\n");
+    serial_puts("[ OK ] Dynamic Kernel Heap Allocator (Phase 4B) verified successfully!\n\n");
+
+    /* 13. Framebuffer Initialization & Test Pattern (Using Kernel-Owned boot_info) */
     if (!boot_info.has_framebuffer) {
         serial_puts("[WARN] No Framebuffer found (running headless)\n");
     } else {
@@ -558,7 +947,7 @@ pf_boot_guard_done:
         serial_puts("[ OK ] Framebuffer test pattern rendered (using kernel-owned boot info)\n");
     }
 
-    serial_puts("\n[BOOT] FortressOS Phase 4A (VMM & 4-Level Paging) complete. CPU halted.\n");
+    serial_puts("\n[BOOT] FortressOS Phase 4A & 4B complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

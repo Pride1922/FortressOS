@@ -40,5 +40,6 @@ uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr);
 void      vmm_switch_pml4(uintptr_t pml4_phys);
 uintptr_t vmm_get_kernel_pml4(void);
 uint64_t *vmm_get_kernel_pml4_virt(void);
+size_t    vmm_get_retained_table_frames(void);
 
 #endif /* FORTRESS_VMM_H */

@@ -33,6 +33,8 @@ static inline bool is_canonical_address(uintptr_t addr) {
     return (top == 0) || (top == 0x1FFFF);
 }
 
+static size_t g_vmm_retained_tables = 0;
+
 static uint64_t *get_or_create_table(uint64_t *parent_table, size_t index, uint64_t flags) {
     uint64_t entry = parent_table[index];
 
@@ -51,6 +53,7 @@ static uint64_t *get_or_create_table(uint64_t *parent_table, size_t index, uint6
         return NULL; /* Out of physical memory */
     }
 
+    g_vmm_retained_tables++;
     uint64_t *new_table_virt = (uint64_t *)phys_to_virt(new_table_phys);
     memset(new_table_virt, 0, PAGE_SIZE);
 
@@ -65,6 +68,7 @@ uintptr_t vmm_create_pml4(void) {
         return 0;
     }
 
+    g_vmm_retained_tables++;
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
     memset(pml4_virt, 0, PAGE_SIZE);
     return pml4_phys;
@@ -193,6 +197,10 @@ uintptr_t vmm_get_kernel_pml4(void) {
 uint64_t *vmm_get_kernel_pml4_virt(void) {
     if (kernel_pml4_phys == 0) return NULL;
     return (uint64_t *)phys_to_virt(kernel_pml4_phys);
+}
+
+size_t vmm_get_retained_table_frames(void) {
+    return g_vmm_retained_tables;
 }
 
 /* Helper to assert that essential boot mappings succeed without ignoring errors */

@@ -56,6 +56,8 @@ FortressOS/
     ├── lib/
     │   └── string.c         # Freestanding memset, memcpy, memmove, memcmp, strlen
     └── mm/
+        ├── heap.c           # Dynamic kernel heap allocator with boundary tags and free list
+        ├── heap.h           # Heap public prototypes, block structures, and alignment macros
         ├── pmm.c            # Physical Memory Manager bitmap frame allocator
         ├── pmm.h            # PMM public prototypes, page macros, and metrics
         ├── vmm.c            # Virtual Memory Manager 4-level paging and CR3 management
@@ -196,9 +198,14 @@ Future tasks should follow this sequenced implementation order:
     │   └── Switching to independent kernel CR3, TLB invalidation, and NX / RW permission tests
     │
     ▼
-[Phase 4B] Kernel Heap Allocator
-    │   ├── Dynamic memory primitives: kmalloc(), kfree(), and krealloc() backed by virtual paging
-    │   └── Heap stress tests: repeated allocation/free cycles, coalescing, and reallocation expansion
+[Phase 4B] Kernel Heap Allocator (COMPLETE)
+    │   ├── 16-byte aligned boundary tags (header & footer) with O(1) bidirectional coalescing
+    │   ├── Embedded doubly linked free list with first-fit search and block splitting
+    │   ├── Dynamic virtual memory expansion (512 MiB window at 0xFFFFFFFFB0000000)
+    │   ├── Non-contiguous physical frame allocation via PMM with transactional rollback on exhaustion
+    │   ├── Full API semantics: kmalloc, kfree, kcalloc (overflow check), krealloc (data preservation)
+    │   ├── Diagnostic panic traps on invalid metadata or detected double-free
+    │   └── Comprehensive verification suite: alignment, splitting, both-neighbour coalescing, stress test
     │
     ▼
 [Phase 5] ACPI Discovery & APIC Timer
