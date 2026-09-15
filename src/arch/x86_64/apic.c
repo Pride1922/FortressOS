@@ -6,6 +6,7 @@ static volatile uint8_t *g_lapic_mmio = (volatile uint8_t *)LAPIC_VIRT_ADDR;
 static volatile uint64_t g_spurious_count = 0;
 static volatile uint64_t g_timer_ticks = 0;
 static uint32_t g_target_hz;
+static uint32_t g_timer_init_count = 0;
 
 static inline bool check_apic_cpuid(void) {
     uint32_t eax, ebx, ecx, edx;
@@ -51,7 +52,10 @@ static void apic_spurious_handler(interrupt_frame_t *frame) {
 static void apic_timer_handler(interrupt_frame_t *frame) {
     (void)frame;
     g_timer_ticks++;
-    /* No serial I/O or EOI in timer handler; IDT dispatcher owns EOI */
+    extern volatile bool g_timer_eoi_handled;
+    g_timer_eoi_handled = false;
+    extern void sched_on_timer_tick(void);
+    sched_on_timer_tick();
 }
 
 bool lapic_init(uintptr_t lapic_phys_addr) {
@@ -154,6 +158,7 @@ bool apic_timer_init(uint32_t target_hz) {
     uint64_t count = ((uint64_t)elapsed * 1193182) / ((uint64_t)11932 * target_hz);
     if (!count || count > UINT32_MAX) return false;
     g_target_hz = target_hz;
+    g_timer_init_count = (uint32_t)count;
     g_timer_ticks = 0;
     lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED | APIC_TIMER_PERIODIC | APIC_TIMER_VECTOR);
     lapic_write(APIC_REG_TIMER_INITCNT, (uint32_t)count);
@@ -161,7 +166,9 @@ bool apic_timer_init(uint32_t target_hz) {
     return true;
 }
 void apic_timer_start(void) {
+    lapic_write(APIC_REG_TIMER_DIV, APIC_TIMER_DIV_16);
     lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_PERIODIC | APIC_TIMER_VECTOR);
+    lapic_write(APIC_REG_TIMER_INITCNT, g_timer_init_count);
 }
 void apic_timer_stop(void) {
     lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED | APIC_TIMER_VECTOR);

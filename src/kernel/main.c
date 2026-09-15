@@ -205,6 +205,28 @@ static void worker_b(void *arg) {
     thread_exit();
 }
 
+static volatile uint64_t g_preempt_work1 = 0;
+static volatile uint64_t g_preempt_work2 = 0;
+static volatile bool     g_preempt_stop  = false;
+
+static void preempt_worker1(void *arg) {
+    (void)arg;
+    while (!g_preempt_stop) {
+        g_preempt_work1++;
+        __asm__ volatile("pause");
+    }
+    thread_exit();
+}
+
+static void preempt_worker2(void *arg) {
+    (void)arg;
+    while (!g_preempt_stop) {
+        g_preempt_work2++;
+        __asm__ volatile("pause");
+    }
+    thread_exit();
+}
+
 /* Kernel Main Entry Point */
 void kmain(void) {
     /* 1. Initialize COM1 Serial Port (0x3F8) */
@@ -1159,7 +1181,93 @@ pf_boot_guard_done:
     serial_puts("[PASS] Cooperative multitasking verified: 10/10 ping-pong rounds, clean exit & heap audit\n");
     serial_puts("[ OK ] Phase 6 (Checkpoint 1) completed successfully!\n\n");
 
-    serial_puts("\n[BOOT] FortressOS Phase 6 (Checkpoint 1) complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 6 (Checkpoint 2): Preemptive Round-Robin Scheduler Suite
+     * ========================================================================= */
+    serial_puts("========================================================\n");
+    serial_puts("Phase 6 (Checkpoint 2): Preemptive Scheduler Suite\n");
+    serial_puts("========================================================\n");
+
+    g_preempt_work1 = 0;
+    g_preempt_work2 = 0;
+    g_preempt_stop  = false;
+
+    tcb_t *pw1 = thread_create("Preempt1", preempt_worker1, NULL);
+    tcb_t *pw2 = thread_create("Preempt2", preempt_worker2, NULL);
+    if (!pw1 || !pw2) {
+        serial_puts("[FAIL] Failed to spawn preemptive worker threads!\n");
+        hcf();
+    }
+    serial_puts("[ OK ] Created PreemptWorker1 and PreemptWorker2 (CPU-bound loops, zero voluntary yields)\n");
+
+    /* Start APIC timer and enable preemption */
+    sched_enable_preemption();
+    apic_timer_start();
+    __asm__ volatile("sti" ::: "memory");
+
+    /* Observe both counters progressing concurrently across timer ticks */
+    uint64_t initial_ticks = apic_timer_get_ticks();
+    uint64_t prev_work1 = 0;
+    uint64_t prev_work2 = 0;
+    int concurrent_observations = 0;
+
+    for (int obs = 1; obs <= 5; obs++) {
+        uint64_t target_tick = apic_timer_get_ticks() + 2;
+        uint64_t loop_timeout = 20000000;
+        while (apic_timer_get_ticks() < target_tick) {
+            __asm__ volatile("pause");
+            if (--loop_timeout == 0) break;
+        }
+
+        uint64_t cur1 = g_preempt_work1;
+        uint64_t cur2 = g_preempt_work2;
+
+        serial_puts("       [Sample ");
+        serial_print_dec(obs);
+        serial_puts("] Worker1 Count: ");
+        serial_print_dec(cur1);
+        serial_puts(", Worker2 Count: ");
+        serial_print_dec(cur2);
+        serial_puts(" (APIC Ticks: ");
+        serial_print_dec(apic_timer_get_ticks() - initial_ticks);
+        serial_puts(")\n");
+
+        if (cur1 > prev_work1 && cur2 > prev_work2) {
+            concurrent_observations++;
+        }
+        prev_work1 = cur1;
+        prev_work2 = cur2;
+    }
+
+    /* Signal workers to stop */
+    g_preempt_stop = true;
+
+    /* Yield main thread to allow workers to observe stop flag and exit */
+    uint64_t wait_exit_timeout = 20000000;
+    while (sched_ready_count() > 0) {
+        thread_yield();
+        if (--wait_exit_timeout == 0) break;
+    }
+
+    /* Disable interrupts and preemption */
+    __asm__ volatile("cli" ::: "memory");
+    apic_timer_stop();
+    sched_disable_preemption();
+
+    if (concurrent_observations < 3) {
+        serial_puts("[FAIL] Preemption verification failed: threads did not progress concurrently!\n");
+        hcf();
+    }
+
+    if (!heap_verify_integrity()) {
+        serial_puts("[FAIL] Heap integrity walk failed after preemptive scheduler execution!\n");
+        hcf();
+    }
+
+    serial_puts("[PASS] Preemptive round-robin timeslicing verified: Both CPU-bound workers advanced concurrently!\n");
+    serial_puts("[ OK ] Phase 6 (Checkpoint 2) completed successfully!\n\n");
+
+    serial_puts("\n[BOOT] FortressOS Phase 6 complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

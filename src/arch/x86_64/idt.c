@@ -156,8 +156,13 @@ void isr_exception_handler(interrupt_frame_t *frame) {
             g_irq_handlers[frame->vector](frame);
             /* Single-owner EOI: dispatcher acknowledges handled non-spurious interrupts */
             if (g_needs_eoi[frame->vector]) {
-                extern void lapic_eoi(void);
-                lapic_eoi();
+                extern volatile bool g_timer_eoi_handled;
+                if (frame->vector == 0x20 && g_timer_eoi_handled) {
+                    g_timer_eoi_handled = false;
+                } else {
+                    extern void lapic_eoi(void);
+                    lapic_eoi();
+                }
             }
         } else {
             /* Unhandled interrupt: track without blindly acknowledging to prevent cascade */

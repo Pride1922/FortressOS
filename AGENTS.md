@@ -234,11 +234,12 @@ Future tasks should follow this sequenced implementation order:
     │   │   ├── thread_trampoline with register parameter threading (R12=entry, R13=arg)
     │   │   ├── Voluntary yielding (thread_yield), clean exit (thread_exit), and dead thread reaper
     │   │   └── Verification: Two worker threads ping-ponging 10 rounds, clean return to kmain, heap audit
-    │   └── Checkpoint 2: Preemptive Round-Robin Scheduler
-    │       ├── Timer interrupt preemption driven by 100 Hz APIC Timer ticks
-    │       ├── Scheduler spinlocks with interrupt flags save/restore
-    │       ├── Dedicated idle thread (hlt in a loop)
-    │       └── Sleep/wakeup queues and quantum preemption verification
+    │   └── Checkpoint 2: Preemptive Round-Robin Scheduler (COMPLETE)
+    │       ├── Timer interrupt preemption driven by 100 Hz APIC Timer ticks (20 ms quantum)
+    │       ├── Scheduler spinlocks with interrupt flags save/restore (spin_lock_irqsave / spin_unlock_irqrestore)
+    │       ├── Dedicated idle thread (sti; hlt loop) executed when runqueue is empty
+    │       ├── Single-owner preemptive EOI acknowledgement before switching stacks to prevent APIC priority lockout
+    │       └── Verification: Two CPU-bound worker threads with zero manual yields advance concurrently across samples
     │
     ▼
 [Phase 7] User Space & Ring 3 Syscalls (The First Milestone)
