@@ -12,7 +12,7 @@
 #include "acpi.h"
 #include "ioapic.h"
 #include "apic.h"
-#include "ioapic.h"
+#include "thread.h"
 
 /* Set Limine Base Revision to 3 (Limine v7/v8 protocol) */
 __attribute__((used, section(".requests_start_marker")))
@@ -167,6 +167,42 @@ static void timer_heap_work(void) {
     memset(p, 0xA5, 128);
     for (size_t i = 0; i < 128; ++i) if (p[i] != 0xA5) hcf();
     kfree(p);
+}
+
+static volatile int  g_ping_pong_counter = 0;
+static volatile bool g_worker_a_done = false;
+static volatile bool g_worker_b_done = false;
+
+static void worker_a(void *arg) {
+    (void)arg;
+    for (int i = 1; i <= 5; i++) {
+        g_ping_pong_counter++;
+        serial_puts("       [Worker A] Round ");
+        serial_print_dec(i);
+        serial_puts(" (Counter: ");
+        serial_print_dec(g_ping_pong_counter);
+        serial_puts(") -> Yielding to Worker B\n");
+        thread_yield();
+    }
+    g_worker_a_done = true;
+    serial_puts("       [Worker A] Completed 5 rounds -> Calling thread_exit()\n");
+    thread_exit();
+}
+
+static void worker_b(void *arg) {
+    (void)arg;
+    for (int i = 1; i <= 5; i++) {
+        g_ping_pong_counter++;
+        serial_puts("       [Worker B] Round ");
+        serial_print_dec(i);
+        serial_puts(" (Counter: ");
+        serial_print_dec(g_ping_pong_counter);
+        serial_puts(") -> Yielding to Worker A\n");
+        thread_yield();
+    }
+    g_worker_b_done = true;
+    serial_puts("       [Worker B] Completed 5 rounds -> Calling thread_exit()\n");
+    thread_exit();
 }
 
 /* Kernel Main Entry Point */
@@ -1084,7 +1120,46 @@ pf_boot_guard_done:
     serial_puts("[PASS] PIT-referenced timer progress and foreground heap integrity verified\n");
     serial_puts("[ OK ] Phase 5: ACPI Discovery & APIC Timer completed successfully!\n\n");
 
-    serial_puts("\n[BOOT] FortressOS Phase 5 complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 6 (Checkpoint 1): Cooperative Multitasking Suite
+     * ========================================================================= */
+    serial_puts("========================================================\n");
+    serial_puts("Phase 6 (Checkpoint 1): Cooperative Multitasking Suite\n");
+    serial_puts("========================================================\n");
+
+    /* Initialize Thread Scheduler */
+    sched_init();
+
+    /* Spawn Worker A and Worker B */
+    tcb_t *t_a = thread_create("WorkerA", worker_a, NULL);
+    tcb_t *t_b = thread_create("WorkerB", worker_b, NULL);
+    if (!t_a || !t_b) {
+        serial_puts("[FAIL] Failed to spawn cooperative worker threads!\n");
+        hcf();
+    }
+    serial_puts("[ OK ] Created Worker A (TID 1) and Worker B (TID 2)\n");
+
+    /* Yield from main thread to start cooperative ping-pong */
+    while (!g_worker_a_done || !g_worker_b_done) {
+        thread_yield();
+    }
+
+    if (g_ping_pong_counter != 10) {
+        serial_puts("[FAIL] Ping-pong counter mismatch! Expected 10, got: ");
+        serial_print_dec(g_ping_pong_counter);
+        serial_puts("\n");
+        hcf();
+    }
+
+    if (!heap_verify_integrity()) {
+        serial_puts("[FAIL] Heap integrity compromised after thread execution & reaping!\n");
+        hcf();
+    }
+
+    serial_puts("[PASS] Cooperative multitasking verified: 10/10 ping-pong rounds, clean exit & heap audit\n");
+    serial_puts("[ OK ] Phase 6 (Checkpoint 1) completed successfully!\n\n");
+
+    serial_puts("\n[BOOT] FortressOS Phase 6 (Checkpoint 1) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

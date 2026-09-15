@@ -39,6 +39,7 @@ FortressOS/
     │       ├── gdt.h            # GDT, TSS, and segment selector structures
     │       ├── apic.c           # Local APIC and APIC Timer initialization & MMIO access
     │       ├── apic.h           # LAPIC registers, offsets, MSRs, and timer prototypes
+    │       ├── context.asm      # Low-level switch_context and thread_trampoline assembly stubs
     │       ├── gdt.c            # GDT setup and TSS IST1 initialization
     │       ├── gdt_flush.asm    # lgdt, segment reloads (CS/DS/SS/ES), and ltr
     │       ├── idt.h            # IDT descriptor, interrupt_frame_t, and IRQ handler registry
@@ -47,6 +48,8 @@ FortressOS/
     ├── drivers/
     │   ├── acpi.c           # RSDP, RSDT/XSDT validation, and MADT parsing
     │   ├── acpi.h           # ACPI table headers, RSDP, and MADT structure definitions
+    │   ├── ioapic.c         # I/O APIC discovery, MMIO registers, and redirection table masking
+    │   ├── ioapic.h         # I/O APIC controller definitions and routing prototypes
     │   ├── pic.c            # 8259 PIC masking and disable logic
     │   ├── pic.h            # 8259 PIC port definitions and mask queries
     │   ├── serial.c         # UART 16550 COM1 port I/O driver (115200 8N1)
@@ -58,7 +61,9 @@ FortressOS/
     │   └── types.h          # Standard freestanding primitive types (uint8_t, size_t, bool)
     ├── kernel/
     │   ├── boot_info.c      # Boot metadata deep-copying and verification
-    │   └── main.c           # Kernel entry point (kmain), validates Limine tags, memory & FB
+    │   ├── main.c           # Kernel entry point (kmain), validates Limine tags, memory & FB
+    │   ├── thread.c         # Cooperative thread scheduler, runqueue, and thread lifecycle
+    │   └── thread.h         # TCB structure, thread_state_t, and scheduler prototypes
     ├── lib/
     │   └── string.c         # Freestanding memset, memcpy, memmove, memcmp, strlen
     └── mm/
@@ -223,9 +228,17 @@ Future tasks should follow this sequenced implementation order:
     │
     ▼
 [Phase 6] Kernel Threads & Scheduling
-    │   ├── Thread Control Block (TCB) and assembly context switching
-    │   ├── Checkpoint 1: Cooperative multitasking (two kernel threads yielding via thread_yield())
-    │   └── Checkpoint 2: Preemptive round-robin scheduler driven by timer, spinlocks & idle thread
+    │   ├── Checkpoint 1: Cooperative Multitasking (COMPLETE)
+    │   │   ├── Thread Control Block (TCB) with offset-0 rsp, tid, state, and 16 KiB stacks
+    │   │   ├── Low-level switch_context (System V callee-preserved regs & RFLAGS atomicity)
+    │   │   ├── thread_trampoline with register parameter threading (R12=entry, R13=arg)
+    │   │   ├── Voluntary yielding (thread_yield), clean exit (thread_exit), and dead thread reaper
+    │   │   └── Verification: Two worker threads ping-ponging 10 rounds, clean return to kmain, heap audit
+    │   └── Checkpoint 2: Preemptive Round-Robin Scheduler
+    │       ├── Timer interrupt preemption driven by 100 Hz APIC Timer ticks
+    │       ├── Scheduler spinlocks with interrupt flags save/restore
+    │       ├── Dedicated idle thread (hlt in a loop)
+    │       └── Sleep/wakeup queues and quantum preemption verification
     │
     ▼
 [Phase 7] User Space & Ring 3 Syscalls (The First Milestone)
