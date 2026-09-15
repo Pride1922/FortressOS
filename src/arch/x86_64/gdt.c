@@ -6,9 +6,26 @@
 /* Assembly helper defined in gdt_flush.asm */
 extern void gdt_flush(gdt_ptr_t *ptr, uint16_t cs, uint16_t ds, uint16_t tss_sel);
 
-/* 4096-byte dedicated unmapped guard page directly below the 16 KiB IST1 emergency stack */
-uint8_t ist1_guard[4096] __attribute__((aligned(4096)));
-uint8_t ist1_stack[16384] __attribute__((aligned(4096)));
+/* Unified IST1 emergency stack layout: 4096-byte guard page strictly placed directly below 16 KiB stack */
+struct ist1_layout {
+    uint8_t guard[4096];
+    uint8_t stack[16384];
+} __attribute__((aligned(4096)));
+
+static struct ist1_layout ist1_memory;
+
+_Static_assert(sizeof(ist1_memory.guard) == 4096, "ist1 guard size must be 4096 bytes");
+_Static_assert(sizeof(ist1_memory.stack) == 16384, "ist1 stack size must be 16384 bytes");
+_Static_assert(__builtin_offsetof(struct ist1_layout, stack) == 4096, "ist1 stack must immediately follow guard page");
+_Static_assert(_Alignof(struct ist1_layout) == 4096, "ist1 layout must be page aligned");
+
+uintptr_t gdt_get_ist1_guard(void) {
+    return (uintptr_t)ist1_memory.guard;
+}
+
+uintptr_t gdt_get_ist1_stack_top(void) {
+    return (uintptr_t)ist1_memory.stack + sizeof(ist1_memory.stack);
+}
 
 /* Static TSS instance */
 static tss_t tss __attribute__((aligned(16)));
@@ -49,7 +66,7 @@ void gdt_init(void) {
     }
 
     /* 2. Configure IST1 emergency stack for Double Fault (#DF) */
-    tss.ist[0] = (uint64_t)ist1_stack + sizeof(ist1_stack);
+    tss.ist[0] = gdt_get_ist1_stack_top();
     tss.iopb_offset = (uint16_t)sizeof(tss_t); /* Disable I/O bitmap */
 
     /* 3. Populate GDT */

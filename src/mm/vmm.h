@@ -25,7 +25,12 @@
 #define VMM_ERR_NOT_MAPPED      -3
 #define VMM_ERR_INVALID_ADDR    -4
 
-/* VMM Public API */
+/* VMM Public API
+ * Page-table frames are retained for the lifetime of the address space.
+ * A failed map can retain newly allocated intermediate tables; unmap only
+ * clears the leaf and never frees the caller-owned physical frame.
+ * Rollback, empty-table reclamation, and address-space destruction are deferred.
+ */
 void      vmm_init(boot_info_t *boot_info);
 uintptr_t vmm_create_pml4(void);
 int       vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags);

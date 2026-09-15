@@ -65,5 +65,6 @@ void isr_exception_handler(interrupt_frame_t *frame);
 void idt_set_expected_page_fault(uintptr_t recovery_rip);
 void idt_clear_expected_page_fault(void);
 bool idt_was_page_fault_caught(uint64_t *out_cr2, uint64_t *out_error);
+void test_nx_exec_helper(uintptr_t target_addr);
 
 #endif /* FORTRESS_IDT_H */

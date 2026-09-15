@@ -340,6 +340,18 @@ void kmain(void) {
         hcf();
     }
 
+    /* Same page-table indices as test_virt, but invalid sign extension. */
+    uintptr_t invalid_alias = test_virt & 0x0000FFFFFFFFFFFFULL;
+    if (vmm_is_mapped(kernel_pml4, invalid_alias) ||
+        vmm_get_physical_address(kernel_pml4, invalid_alias) != 0 ||
+        vmm_map_page(kernel_pml4, invalid_alias, test_phys, PTE_WRITABLE) != VMM_ERR_INVALID_ADDR ||
+        vmm_unmap_page(kernel_pml4, invalid_alias) != VMM_ERR_INVALID_ADDR ||
+        !vmm_is_mapped(kernel_pml4, test_virt)) {
+        serial_puts("       [FAIL] Noncanonical address validation failed\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Noncanonical aliases rejected by all VMM operations\n");
+
     /* Write pattern and read back */
     volatile uint64_t *test_ptr = (volatile uint64_t *)test_virt;
     *test_ptr = 0xDEADBEEFCAFEBABEULL;
@@ -459,26 +471,24 @@ pf_guard_done:
     uintptr_t nx_virt = 0xFFFFFFFF90004000ULL;
 
     /* Map with PTE_NX (Writable, but Strictly No-Execute) */
-    vmm_map_page(kernel_pml4, nx_virt, nx_phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
+    if (nx_phys == 0 ||
+        vmm_map_page(kernel_pml4, nx_virt, nx_phys, PTE_WRITABLE | PTE_NX) != VMM_OK) {
+        serial_puts("       [FAIL] NX test allocation or mapping failed\n");
+        hcf();
+    }
 
     /* Write 'ret' instruction (0xC3) into the page */
     volatile uint8_t *nx_code = (volatile uint8_t *)nx_virt;
     *nx_code = 0xC3;
 
-    /* Set expected page fault hook */
-    void *pf_nx_recovery = &&pf_nx_done;
-    __asm__ volatile("" : : "r"(pf_nx_recovery));
-    idt_set_expected_page_fault((uintptr_t)pf_nx_recovery);
+    /* Execute the NX target via assembly helper that safely catches fault, drops return address, and restores stack */
+    test_nx_exec_helper(nx_virt);
 
-    /* Attempt to execute the NX page */
-    void (*nx_func)(void) = (void (*)(void))nx_virt;
-    nx_func();
-
-pf_nx_done:
-    idt_clear_expected_page_fault();
+    caught_cr2 = 0;
+    caught_err = 0;
     if (idt_was_page_fault_caught(&caught_cr2, &caught_err) &&
         caught_cr2 == nx_virt &&
-        (caught_err & (1 << 4)) != 0) /* Bit 4 = 1: Instruction fetch fault */ {
+        caught_err == 0x11) /* Supervisor instruction fetch, protection violation */ {
         serial_puts("       [PASS] NX bit enforcement verified (instruction fetch fault with error code ");
         serial_print_hex(caught_err);
         serial_puts(")\n\n");
@@ -486,7 +496,19 @@ pf_nx_done:
         serial_puts("       [FAIL] NX bit violation was not caught!\n");
         hcf();
     }
-    vmm_unmap_page(kernel_pml4, nx_virt);
+    /* Exercise the helper's normal-return path with the same RET instruction. */
+    if (vmm_unmap_page(kernel_pml4, nx_virt) != VMM_OK ||
+        vmm_map_page(kernel_pml4, nx_virt, nx_phys, 0) != VMM_OK) {
+        serial_puts("       [FAIL] Executable control mapping failed\n");
+        hcf();
+    }
+    test_nx_exec_helper(nx_virt);
+    if (idt_was_page_fault_caught(NULL, NULL)) {
+        serial_puts("       [FAIL] Executable control unexpectedly faulted\n");
+        hcf();
+    }
+    if (vmm_unmap_page(kernel_pml4, nx_virt) != VMM_OK) hcf();
+    serial_puts("       [PASS] NX helper normal-return control verified\n");
     pmm_free_page(nx_phys);
 
     /* Step 6D: Active Boot Stack Guard Page Verification */

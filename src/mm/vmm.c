@@ -2,6 +2,7 @@
 #include "pmm.h"
 #include "serial.h"
 #include "string.h"
+#include "gdt.h"
 
 extern uint8_t __kernel_start[];
 extern uint8_t __text_start[];
@@ -140,7 +141,7 @@ int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
 }
 
 bool vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr) {
-    if (!pml4_virt) return false;
+    if (!pml4_virt || !is_canonical_address(virt_addr)) return false;
 
     size_t pml4_i = pml4_index(virt_addr);
     size_t pdpt_i = pdpt_index(virt_addr);
@@ -160,7 +161,7 @@ bool vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr) {
 }
 
 uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr) {
-    if (!pml4_virt) return 0;
+    if (!pml4_virt || !is_canonical_address(virt_addr)) return 0;
 
     size_t pml4_i = pml4_index(virt_addr);
     size_t pdpt_i = pdpt_index(virt_addr);
@@ -224,7 +225,6 @@ static bool should_map_in_hhdm(uint64_t type) {
 }
 
 extern uint8_t kernel_stack_guard[];
-extern uint8_t ist1_guard[];
 
 void vmm_init(boot_info_t *boot_info) {
     if (!boot_info) {
@@ -296,8 +296,11 @@ void vmm_init(boot_info_t *boot_info) {
     serial_puts("[VMM] Kernel .data, .bss, and stacks mapped (RW, NX)\n");
 
     /* Explicitly unmap the dedicated guard pages below the active boot and IST1 stacks */
-    vmm_unmap_page(pml4, (uintptr_t)kernel_stack_guard);
-    vmm_unmap_page(pml4, (uintptr_t)ist1_guard);
+    if (vmm_unmap_page(pml4, (uintptr_t)kernel_stack_guard) != VMM_OK ||
+        vmm_unmap_page(pml4, gdt_get_ist1_guard()) != VMM_OK) {
+        serial_puts("[FATAL] Failed to unmap stack guards\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
     serial_puts("[VMM] Guard pages below boot stack and IST1 unmapped (hardware overflow trap armed)\n");
 
     /* 4. Map Linear Framebuffer explicitly with Cache-Disable (PTE_PCD) */
@@ -323,7 +326,13 @@ void vmm_init(boot_info_t *boot_info) {
     bool data_ok        = vmm_is_mapped(pml4, (uintptr_t)__data_start);
     bool hhdm_ok        = vmm_is_mapped(pml4, (uintptr_t)phys_to_virt(0x100000));
     bool stack_guard_ok = !vmm_is_mapped(pml4, (uintptr_t)kernel_stack_guard);
-    bool ist1_guard_ok  = !vmm_is_mapped(pml4, (uintptr_t)ist1_guard);
+    bool ist1_guard_ok  = !vmm_is_mapped(pml4, gdt_get_ist1_guard());
+    bool ist1_layout_ok = (gdt_get_ist1_guard() % PAGE_SIZE == 0) &&
+                         gdt_get_ist1_stack_top() == gdt_get_ist1_guard() + 5 * PAGE_SIZE;
+    for (uintptr_t v = gdt_get_ist1_guard() + PAGE_SIZE;
+         v < gdt_get_ist1_stack_top(); v += PAGE_SIZE) {
+        if (!vmm_is_mapped(pml4, v)) ist1_layout_ok = false;
+    }
 
     serial_puts("       Kernel .text:        "); serial_puts(text_ok        ? "[MAPPED RX]\n" : "[UNMAPPED]\n");
     serial_puts("       Kernel .rodata:      "); serial_puts(rodata_ok      ? "[MAPPED R, NX]\n" : "[UNMAPPED]\n");
@@ -332,7 +341,7 @@ void vmm_init(boot_info_t *boot_info) {
     serial_puts("       Boot Stack Guard:    "); serial_puts(stack_guard_ok ? "[UNMAPPED OK]\n" : "[MAPPED ERROR!]\n");
     serial_puts("       IST1 Stack Guard:    "); serial_puts(ist1_guard_ok  ? "[UNMAPPED OK]\n" : "[MAPPED ERROR!]\n");
 
-    if (!text_ok || !rodata_ok || !data_ok || !hhdm_ok || !stack_guard_ok || !ist1_guard_ok) {
+    if (!text_ok || !rodata_ok || !data_ok || !hhdm_ok || !stack_guard_ok || !ist1_guard_ok || !ist1_layout_ok) {
         serial_puts("[FAIL] Pre-CR3 verification failed! Aborting switch.\n");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }

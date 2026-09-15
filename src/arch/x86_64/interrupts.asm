@@ -90,3 +90,35 @@ global idtr_load
 idtr_load:
     lidt [rdi]
     ret
+
+; Assembly helper to test execution of NX target
+; Signature: void test_nx_exec_helper(uintptr_t target_addr);
+; RDI = target_addr
+global test_nx_exec_helper
+extern idt_set_expected_page_fault
+extern idt_clear_expected_page_fault
+
+test_nx_exec_helper:
+    ; Entry RSP is 8 mod 16; saving RBX aligns every call below.
+    push rbx
+
+    mov rbx, rdi
+
+    ; Register recovery label with IDT
+    lea rdi, [.nx_recovery]
+    call idt_set_expected_page_fault
+
+    ; Call target: pushes 8-byte return address, then CPU faults on instruction fetch
+    call rbx
+
+    ; In case target returned without faulting:
+    jmp .done
+
+.nx_recovery:
+    ; IRET restored the target-entry RSP. Drop CALL's return address
+    ; before calling C, restoring both the stack and ABI alignment.
+    add rsp, 8
+.done:
+    call idt_clear_expected_page_fault
+    pop rbx
+    ret
