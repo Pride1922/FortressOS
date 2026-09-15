@@ -69,26 +69,26 @@ static const char *memmap_type_to_str(uint64_t type) {
 }
 
 /* Early visual test: draw a test banner/pattern on the framebuffer */
-static void render_test_pattern(struct limine_framebuffer *fb) {
-    if (!fb || !fb->address) return;
+static void render_test_pattern(const boot_info_t *boot_info) {
+    if (!boot_info || !boot_info->has_framebuffer || !boot_info->fb_address) return;
 
     /* Validate format: ensure 32 bpp linear framebuffer */
-    if (fb->bpp != 32) {
+    if (boot_info->fb_bpp != 32) {
         serial_puts("[WARN] Framebuffer is not 32 bpp (detected ");
-        serial_print_dec(fb->bpp);
+        serial_print_dec(boot_info->fb_bpp);
         serial_puts(" bpp); skipping test pattern.\n");
         return;
     }
 
-    if (fb->width == 0 || fb->height == 0 || fb->pitch < fb->width * 4) {
+    if (boot_info->fb_width == 0 || boot_info->fb_height == 0 || boot_info->fb_pitch < boot_info->fb_width * 4) {
         serial_puts("[WARN] Invalid framebuffer dimensions or pitch.\n");
         return;
     }
 
-    volatile uint32_t *fb_ptr = (volatile uint32_t *)fb->address;
-    uint64_t width = fb->width;
-    uint64_t height = fb->height;
-    uint64_t pitch32 = fb->pitch / 4;
+    volatile uint32_t *fb_ptr = (volatile uint32_t *)boot_info->fb_address;
+    uint64_t width = boot_info->fb_width;
+    uint64_t height = boot_info->fb_height;
+    uint64_t pitch32 = boot_info->fb_pitch / 4;
 
     /* Fill background with dark slate blue (0x001A1B26) */
     for (uint64_t y = 0; y < height; y++) {
@@ -417,8 +417,8 @@ pf_ro_done:
     vmm_unmap_page(kernel_pml4, ro_virt);
     pmm_free_page(ro_phys);
 
-    /* Step 6B: Stack Guard Page Verification */
-    serial_puts("[TEST] Validating stack guard page protection...\n");
+    /* Step 6B: Stack Guard Page Verification (Synthesized stack) */
+    serial_puts("[TEST] Validating synthesized stack guard page protection...\n");
     uintptr_t stack_phys = pmm_alloc_page();
     uintptr_t guard_virt = 0xFFFFFFFF90002000ULL; /* Guard page: strictly unmapped */
     uintptr_t stack_virt = 0xFFFFFFFF90003000ULL; /* Stack page: mapped RW, NX */
@@ -453,25 +453,87 @@ pf_guard_done:
     vmm_unmap_page(kernel_pml4, stack_virt);
     pmm_free_page(stack_phys);
 
-    /* 12. Framebuffer Initialization & Test Pattern */
-    if (framebuffer_request.response == NULL || framebuffer_request.response->framebuffer_count < 1) {
-        serial_puts("[WARN] No Limine Framebuffer found (running headless)\n");
+    /* Step 6C: NX (No-Execute) Bit Enforcement Verification */
+    serial_puts("[TEST] Validating NX (No-Execute) enforcement (instruction fetch fault)...\n");
+    uintptr_t nx_phys = pmm_alloc_page();
+    uintptr_t nx_virt = 0xFFFFFFFF90004000ULL;
+
+    /* Map with PTE_NX (Writable, but Strictly No-Execute) */
+    vmm_map_page(kernel_pml4, nx_virt, nx_phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
+
+    /* Write 'ret' instruction (0xC3) into the page */
+    volatile uint8_t *nx_code = (volatile uint8_t *)nx_virt;
+    *nx_code = 0xC3;
+
+    /* Set expected page fault hook */
+    void *pf_nx_recovery = &&pf_nx_done;
+    __asm__ volatile("" : : "r"(pf_nx_recovery));
+    idt_set_expected_page_fault((uintptr_t)pf_nx_recovery);
+
+    /* Attempt to execute the NX page */
+    void (*nx_func)(void) = (void (*)(void))nx_virt;
+    nx_func();
+
+pf_nx_done:
+    idt_clear_expected_page_fault();
+    if (idt_was_page_fault_caught(&caught_cr2, &caught_err) &&
+        caught_cr2 == nx_virt &&
+        (caught_err & (1 << 4)) != 0) /* Bit 4 = 1: Instruction fetch fault */ {
+        serial_puts("       [PASS] NX bit enforcement verified (instruction fetch fault with error code ");
+        serial_print_hex(caught_err);
+        serial_puts(")\n\n");
     } else {
-        struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
+        serial_puts("       [FAIL] NX bit violation was not caught!\n");
+        hcf();
+    }
+    vmm_unmap_page(kernel_pml4, nx_virt);
+    pmm_free_page(nx_phys);
+
+    /* Step 6D: Active Boot Stack Guard Page Verification */
+    serial_puts("[TEST] Validating active boot stack guard page protection...\n");
+    extern uint8_t kernel_stack_guard[];
+    if (vmm_is_mapped(kernel_pml4, (uintptr_t)kernel_stack_guard)) {
+        serial_puts("       [FAIL] kernel_stack_guard is mapped in page tables!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] kernel_stack_guard confirmed unmapped in active PML4\n");
+
+    void *pf_boot_guard_recovery = &&pf_boot_guard_done;
+    __asm__ volatile("" : : "r"(pf_boot_guard_recovery));
+    idt_set_expected_page_fault((uintptr_t)pf_boot_guard_recovery);
+
+    /* Touch the real boot stack guard page directly below the active stack */
+    volatile uint64_t *boot_guard_ptr = (volatile uint64_t *)kernel_stack_guard;
+    *boot_guard_ptr = 0xBADC0DE;
+
+pf_boot_guard_done:
+    idt_clear_expected_page_fault();
+    if (idt_was_page_fault_caught(&caught_cr2, &caught_err) &&
+        caught_cr2 == (uintptr_t)kernel_stack_guard) {
+        serial_puts("       [PASS] Active boot stack guard page caught hardware overflow via #PF!\n\n");
+    } else {
+        serial_puts("       [FAIL] Active boot stack guard page fault was not caught!\n");
+        hcf();
+    }
+
+    /* 12. Framebuffer Initialization & Test Pattern (Using Kernel-Owned boot_info) */
+    if (!boot_info.has_framebuffer) {
+        serial_puts("[WARN] No Framebuffer found (running headless)\n");
+    } else {
         serial_puts("[ OK ] Framebuffer: ");
-        serial_print_dec(fb->width);
+        serial_print_dec(boot_info.fb_width);
         serial_puts("x");
-        serial_print_dec(fb->height);
+        serial_print_dec(boot_info.fb_height);
         serial_puts("@");
-        serial_print_dec(fb->bpp);
+        serial_print_dec(boot_info.fb_bpp);
         serial_puts(" bpp, Pitch: ");
-        serial_print_dec(fb->pitch);
+        serial_print_dec(boot_info.fb_pitch);
         serial_puts(" bytes, Addr: ");
-        serial_print_hex((uint64_t)fb->address);
+        serial_print_hex(boot_info.fb_address);
         serial_puts("\n");
 
-        render_test_pattern(fb);
-        serial_puts("[ OK ] Framebuffer test pattern rendered\n");
+        render_test_pattern(&boot_info);
+        serial_puts("[ OK ] Framebuffer test pattern rendered (using kernel-owned boot info)\n");
     }
 
     serial_puts("\n[BOOT] FortressOS Phase 4A (VMM & 4-Level Paging) complete. CPU halted.\n");

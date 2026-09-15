@@ -27,10 +27,19 @@ static inline size_t pdpt_index(uintptr_t virt) { return (virt >> 30) & 0x1FF; }
 static inline size_t pd_index(uintptr_t virt)   { return (virt >> 21) & 0x1FF; }
 static inline size_t pt_index(uintptr_t virt)   { return (virt >> 12) & 0x1FF; }
 
+static inline bool is_canonical_address(uintptr_t addr) {
+    uintptr_t top = addr >> 47;
+    return (top == 0) || (top == 0x1FFFF);
+}
+
 static uint64_t *get_or_create_table(uint64_t *parent_table, size_t index, uint64_t flags) {
     uint64_t entry = parent_table[index];
 
     if (entry & PTE_PRESENT) {
+        /* If child mapping requires user mode, upgrade intermediate table entry */
+        if (flags & PTE_USER) {
+            parent_table[index] |= PTE_USER;
+        }
         uintptr_t table_phys = entry & PTE_ADDR_MASK;
         return (uint64_t *)phys_to_virt(table_phys);
     }
@@ -65,6 +74,9 @@ int vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, 
     if ((virt_addr % PAGE_SIZE) != 0 || (phys_addr % PAGE_SIZE) != 0) {
         return VMM_ERR_INVALID_ADDR;
     }
+    if (!is_canonical_address(virt_addr)) {
+        return VMM_ERR_INVALID_ADDR;
+    }
 
     size_t pml4_i = pml4_index(virt_addr);
     size_t pdpt_i = pdpt_index(virt_addr);
@@ -97,6 +109,9 @@ int vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, 
 
 int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
     if (!pml4_virt || (virt_addr % PAGE_SIZE) != 0) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+    if (!is_canonical_address(virt_addr)) {
         return VMM_ERR_INVALID_ADDR;
     }
 
@@ -179,6 +194,38 @@ uint64_t *vmm_get_kernel_pml4_virt(void) {
     return (uint64_t *)phys_to_virt(kernel_pml4_phys);
 }
 
+/* Helper to assert that essential boot mappings succeed without ignoring errors */
+static void vmm_must_map(uint64_t *pml4, uintptr_t virt, uintptr_t phys, uint64_t flags, const char *context) {
+    int res = vmm_map_page(pml4, virt, phys, flags);
+    if (res != VMM_OK) {
+        serial_puts("[FATAL] VMM boot mapping failed in ");
+        serial_puts(context);
+        serial_puts(" at virt ");
+        serial_print_hex(virt);
+        serial_puts(" (error: ");
+        serial_print_dec(res);
+        serial_puts(")\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+}
+
+/* Filter memory map regions: only map physical RAM into HHDM; skip massive reserved/MMIO holes */
+static bool should_map_in_hhdm(uint64_t type) {
+    switch (type) {
+        case LIMINE_MEMMAP_USABLE:
+        case LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE:
+        case LIMINE_MEMMAP_KERNEL_AND_MODULES:
+        case LIMINE_MEMMAP_ACPI_RECLAIMABLE:
+        case LIMINE_MEMMAP_ACPI_NVS:
+            return true;
+        default:
+            return false;
+    }
+}
+
+extern uint8_t kernel_stack_guard[];
+extern uint8_t ist1_guard[];
+
 void vmm_init(boot_info_t *boot_info) {
     if (!boot_info) {
         serial_puts("[FAIL] VMM: Missing boot info!\n");
@@ -198,20 +245,24 @@ void vmm_init(boot_info_t *boot_info) {
 
     uint64_t *pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
 
-    /* 2. Map Higher-Half Direct Map (HHDM) for all memory map regions */
+    /* 2. Map Higher-Half Direct Map (HHDM) selectively for physical RAM regions */
     for (size_t i = 0; i < boot_info->memmap_entry_count; i++) {
         struct limine_memmap_entry *entry = &boot_info->memmap_entries[i];
+        if (!should_map_in_hhdm(entry->type)) {
+            continue;
+        }
+
         uintptr_t start_phys = entry->base & ~(PAGE_SIZE - 1);
         uintptr_t end_phys   = (entry->base + entry->length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
         for (uintptr_t phys = start_phys; phys < end_phys; phys += PAGE_SIZE) {
             uintptr_t virt = hhdm_offset + phys;
             if (!vmm_is_mapped(pml4, virt)) {
-                vmm_map_page(pml4, virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
+                vmm_must_map(pml4, virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX, "HHDM RAM");
             }
         }
     }
-    serial_puts("[VMM] Higher-Half Direct Map (HHDM) regions mapped (RW, NX)\n");
+    serial_puts("[VMM] Higher-Half Direct Map (HHDM) physical RAM regions mapped (RW, NX)\n");
 
     /* 3. Map Kernel ELF sections with precise permissions */
     uintptr_t phys_base = boot_info->kernel_phys_base;
@@ -222,7 +273,7 @@ void vmm_init(boot_info_t *boot_info) {
     uintptr_t text_end   = (uintptr_t)__text_end;
     for (uintptr_t v = text_start; v < text_end; v += PAGE_SIZE) {
         uintptr_t p = phys_base + (v - virt_base);
-        vmm_map_page(pml4, v, p, PTE_PRESENT);
+        vmm_must_map(pml4, v, p, PTE_PRESENT, "Kernel .text");
     }
     serial_puts("[VMM] Kernel .text mapped (RX - Read-Only, Executable)\n");
 
@@ -231,7 +282,7 @@ void vmm_init(boot_info_t *boot_info) {
     uintptr_t rodata_end   = (uintptr_t)__rodata_end;
     for (uintptr_t v = rodata_start; v < rodata_end; v += PAGE_SIZE) {
         uintptr_t p = phys_base + (v - virt_base);
-        vmm_map_page(pml4, v, p, PTE_PRESENT | PTE_NX);
+        vmm_must_map(pml4, v, p, PTE_PRESENT | PTE_NX, "Kernel .rodata");
     }
     serial_puts("[VMM] Kernel .rodata mapped (R - Read-Only, NX)\n");
 
@@ -240,11 +291,16 @@ void vmm_init(boot_info_t *boot_info) {
     uintptr_t kernel_end = (uintptr_t)__kernel_end;
     for (uintptr_t v = data_start; v < kernel_end; v += PAGE_SIZE) {
         uintptr_t p = phys_base + (v - virt_base);
-        vmm_map_page(pml4, v, p, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
+        vmm_must_map(pml4, v, p, PTE_PRESENT | PTE_WRITABLE | PTE_NX, "Kernel .data/.bss");
     }
     serial_puts("[VMM] Kernel .data, .bss, and stacks mapped (RW, NX)\n");
 
-    /* 4. Map Linear Framebuffer if present */
+    /* Explicitly unmap the dedicated guard pages below the active boot and IST1 stacks */
+    vmm_unmap_page(pml4, (uintptr_t)kernel_stack_guard);
+    vmm_unmap_page(pml4, (uintptr_t)ist1_guard);
+    serial_puts("[VMM] Guard pages below boot stack and IST1 unmapped (hardware overflow trap armed)\n");
+
+    /* 4. Map Linear Framebuffer explicitly with Cache-Disable (PTE_PCD) */
     if (boot_info->has_framebuffer) {
         uintptr_t fb_virt = boot_info->fb_address;
         uintptr_t fb_phys = fb_virt - hhdm_offset;
@@ -254,25 +310,29 @@ void vmm_init(boot_info_t *boot_info) {
             uintptr_t virt = fb_virt + p;
             uintptr_t phys = fb_phys + p;
             if (!vmm_is_mapped(pml4, virt)) {
-                vmm_map_page(pml4, virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
+                vmm_must_map(pml4, virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX | PTE_PCD, "Framebuffer MMIO");
             }
         }
-        serial_puts("[VMM] Framebuffer video memory mapped (RW, NX)\n");
+        serial_puts("[VMM] Framebuffer video memory mapped (RW, NX, Cache-Disable)\n");
     }
 
     /* 5. Inspect required mappings before loading CR3 (Verification Checkpoint) */
     serial_puts("[VMM] Inspecting required address spaces prior to CR3 load:\n");
-    bool text_ok   = vmm_is_mapped(pml4, (uintptr_t)__text_start);
-    bool rodata_ok = vmm_is_mapped(pml4, (uintptr_t)__rodata_start);
-    bool data_ok   = vmm_is_mapped(pml4, (uintptr_t)__data_start);
-    bool hhdm_ok   = vmm_is_mapped(pml4, (uintptr_t)phys_to_virt(0x100000));
+    bool text_ok        = vmm_is_mapped(pml4, (uintptr_t)__text_start);
+    bool rodata_ok      = vmm_is_mapped(pml4, (uintptr_t)__rodata_start);
+    bool data_ok        = vmm_is_mapped(pml4, (uintptr_t)__data_start);
+    bool hhdm_ok        = vmm_is_mapped(pml4, (uintptr_t)phys_to_virt(0x100000));
+    bool stack_guard_ok = !vmm_is_mapped(pml4, (uintptr_t)kernel_stack_guard);
+    bool ist1_guard_ok  = !vmm_is_mapped(pml4, (uintptr_t)ist1_guard);
 
-    serial_puts("       Kernel .text:   "); serial_puts(text_ok   ? "[MAPPED RX]\n" : "[UNMAPPED]\n");
-    serial_puts("       Kernel .rodata: "); serial_puts(rodata_ok ? "[MAPPED R, NX]\n" : "[UNMAPPED]\n");
-    serial_puts("       Kernel .data:   "); serial_puts(data_ok   ? "[MAPPED RW, NX]\n" : "[UNMAPPED]\n");
-    serial_puts("       PMM / HHDM:     "); serial_puts(hhdm_ok   ? "[MAPPED RW, NX]\n" : "[UNMAPPED]\n");
+    serial_puts("       Kernel .text:        "); serial_puts(text_ok        ? "[MAPPED RX]\n" : "[UNMAPPED]\n");
+    serial_puts("       Kernel .rodata:      "); serial_puts(rodata_ok      ? "[MAPPED R, NX]\n" : "[UNMAPPED]\n");
+    serial_puts("       Kernel .data:        "); serial_puts(data_ok        ? "[MAPPED RW, NX]\n" : "[UNMAPPED]\n");
+    serial_puts("       PMM / HHDM:          "); serial_puts(hhdm_ok        ? "[MAPPED RW, NX]\n" : "[UNMAPPED]\n");
+    serial_puts("       Boot Stack Guard:    "); serial_puts(stack_guard_ok ? "[UNMAPPED OK]\n" : "[MAPPED ERROR!]\n");
+    serial_puts("       IST1 Stack Guard:    "); serial_puts(ist1_guard_ok  ? "[UNMAPPED OK]\n" : "[MAPPED ERROR!]\n");
 
-    if (!text_ok || !rodata_ok || !data_ok || !hhdm_ok) {
+    if (!text_ok || !rodata_ok || !data_ok || !hhdm_ok || !stack_guard_ok || !ist1_guard_ok) {
         serial_puts("[FAIL] Pre-CR3 verification failed! Aborting switch.\n");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }

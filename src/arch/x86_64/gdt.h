@@ -50,4 +50,7 @@ typedef struct {
 
 void gdt_init(void);
 
+extern uint8_t ist1_guard[4096];
+extern uint8_t ist1_stack[16384];
+
 #endif /* FORTRESS_GDT_H */

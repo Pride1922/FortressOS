@@ -4,7 +4,7 @@
 #include "types.h"
 #include "limine.h"
 
-#define MAX_BOOT_MEMMAP_ENTRIES 64
+#define MAX_BOOT_MEMMAP_ENTRIES 256
 
 typedef struct {
     uint64_t hhdm_offset;

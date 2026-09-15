@@ -41,7 +41,12 @@ void boot_info_init(boot_info_t *out_info,
     if (memmap_resp) {
         size_t count = (size_t)memmap_resp->entry_count;
         if (count > MAX_BOOT_MEMMAP_ENTRIES) {
-            count = MAX_BOOT_MEMMAP_ENTRIES;
+            serial_puts("[FATAL] Bootloader memory map entry count (");
+            serial_print_dec(count);
+            serial_puts(") exceeds MAX_BOOT_MEMMAP_ENTRIES (");
+            serial_print_dec(MAX_BOOT_MEMMAP_ENTRIES);
+            serial_puts(")! Cannot preserve complete memory map.\n");
+            for (;;) { __asm__ volatile("cli; hlt"); }
         }
         out_info->memmap_entry_count = count;
 

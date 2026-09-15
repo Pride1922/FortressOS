@@ -5,6 +5,9 @@
 default rel
 
 global _start
+global kernel_stack_guard
+global stack_bottom
+global stack_top
 extern kmain
 
 section .text
@@ -24,7 +27,9 @@ _start:
     jmp .halt
 
 section .bss
-align 16
+align 4096
+kernel_stack_guard:
+    resb 4096 ; 4 KiB dedicated unmapped guard page directly below stack
 stack_bottom:
     resb 16384 ; 16 KiB early kernel stack
 stack_top:

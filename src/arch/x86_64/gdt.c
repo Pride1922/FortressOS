@@ -6,8 +6,9 @@
 /* Assembly helper defined in gdt_flush.asm */
 extern void gdt_flush(gdt_ptr_t *ptr, uint16_t cs, uint16_t ds, uint16_t tss_sel);
 
-/* 16 KiB dedicated emergency stack for Double Fault (#DF) via IST1 */
-static uint8_t ist1_stack[16384] __attribute__((aligned(16)));
+/* 4096-byte dedicated unmapped guard page directly below the 16 KiB IST1 emergency stack */
+uint8_t ist1_guard[4096] __attribute__((aligned(4096)));
+uint8_t ist1_stack[16384] __attribute__((aligned(4096)));
 
 /* Static TSS instance */
 static tss_t tss __attribute__((aligned(16)));
