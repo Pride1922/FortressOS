@@ -108,9 +108,17 @@ bool idt_was_page_fault_caught(uint64_t *out_cr2, uint64_t *out_error) {
 }
 
 static irq_handler_t g_irq_handlers[IDT_ENTRIES];
+static bool g_needs_eoi[IDT_ENTRIES];
+
+void idt_register_hardware_handler(uint8_t vector, irq_handler_t handler) {
+    if (vector < 32 || vector == 255) return;
+    g_irq_handlers[vector] = handler;
+    g_needs_eoi[vector] = true;
+}
 
 void idt_register_handler(uint8_t vector, irq_handler_t handler) {
     g_irq_handlers[vector] = handler;
+    g_needs_eoi[vector] = false;
 }
 
 void isr_exception_handler(interrupt_frame_t *frame) {
@@ -146,14 +154,16 @@ void isr_exception_handler(interrupt_frame_t *frame) {
     if (frame->vector >= 32) {
         if (g_irq_handlers[frame->vector]) {
             g_irq_handlers[frame->vector](frame);
-        } else {
-            serial_puts("[WARN] Unhandled interrupt received (Vector ");
-            serial_print_dec(frame->vector);
-            serial_puts(")\n");
-            extern void lapic_eoi(void);
-            if (frame->vector != 0xFF) {
+            /* Single-owner EOI: dispatcher acknowledges handled non-spurious interrupts */
+            if (g_needs_eoi[frame->vector]) {
+                extern void lapic_eoi(void);
                 lapic_eoi();
             }
+        } else {
+            /* Unhandled interrupt: track without blindly acknowledging to prevent cascade */
+            serial_puts("[FATAL] Unhandled interrupt vector: ");
+            serial_print_dec(frame->vector);
+            for (;;) { __asm__ volatile("cli; hlt"); }
         }
         return;
     }

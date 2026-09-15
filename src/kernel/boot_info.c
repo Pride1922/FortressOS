@@ -6,9 +6,16 @@ void boot_info_init(boot_info_t *out_info,
                     struct limine_memmap_response *memmap_resp,
                     struct limine_hhdm_response *hhdm_resp,
                     struct limine_kernel_address_response *kernel_addr_resp,
-                    struct limine_framebuffer_response *fb_resp) {
+                    struct limine_framebuffer_response *fb_resp,
+                    struct limine_rsdp_response *rsdp_resp) {
     if (!out_info) return;
     memset(out_info, 0, sizeof(boot_info_t));
+
+    /* ACPI RSDP Physical Address (Limine Base Revision 3) */
+    if (rsdp_resp && rsdp_resp->address) {
+        out_info->has_rsdp = true;
+        out_info->rsdp_phys_addr = (uintptr_t)rsdp_resp->address;
+    }
 
     /* 1. HHDM Virtual Offset */
     if (hhdm_resp) {

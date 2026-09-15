@@ -10,7 +10,9 @@
 #include "heap.h"
 #include "pic.h"
 #include "acpi.h"
+#include "ioapic.h"
 #include "apic.h"
+#include "ioapic.h"
 
 /* Set Limine Base Revision to 3 (Limine v7/v8 protocol) */
 __attribute__((used, section(".requests_start_marker")))
@@ -133,6 +135,38 @@ static void render_test_pattern(const boot_info_t *boot_info) {
             }
         }
     }
+}
+
+static void acpi_parser_selftest(void) {
+    struct __attribute__((packed)) {
+        acpi_madt_t table;
+        acpi_madt_entry_t record;
+    } fixture;
+    acpi_madt_info_t result;
+    memset(&fixture, 0, sizeof(fixture));
+    memcpy(fixture.table.header.signature, "APIC", 4);
+    fixture.table.header.length = sizeof(fixture);
+    fixture.record.type = 0; /* Known type needs eight bytes, not two. */
+    for (unsigned test = 0; test < 3; ++test) {
+        fixture.record.length = test == 0 ? 0 : test == 1 ? 2 : 255;
+        fixture.table.header.checksum = 0;
+        uint8_t sum = 0;
+        for (size_t j = 0; j < sizeof(fixture); ++j) sum += ((uint8_t *)&fixture)[j];
+        fixture.table.header.checksum = (uint8_t)(0 - sum);
+        if (acpi_parse_madt_buffer(&fixture, sizeof(fixture), &result)) hcf();
+    }
+    if (acpi_parse_madt_buffer(&fixture, sizeof(acpi_madt_t) - 1, &result) ||
+        acpi_ensure_mapped(UINTPTR_MAX - 8, 32)) hcf();
+    serial_puts("[PASS] Truncated/zero-length/undersized/overrun MADT records and address overflow rejected\n");
+}
+
+/* Runs in foreground with timer interrupts enabled; ISR never touches heap. */
+static void timer_heap_work(void) {
+    uint8_t *p = kmalloc(128);
+    if (!p) hcf();
+    memset(p, 0xA5, 128);
+    for (size_t i = 0; i < 128; ++i) if (p[i] != 0xA5) hcf();
+    kfree(p);
 }
 
 /* Kernel Main Entry Point */
@@ -314,7 +348,8 @@ void kmain(void) {
                    memmap_request.response,
                    hhdm_request.response,
                    kernel_address_request.response,
-                   framebuffer_request.response);
+                   framebuffer_request.response,
+                   rsdp_request.response);
 
     /* 11. Virtual Memory Manager (VMM) & 4-Level Paging */
     /* Step 1 & 2: Build new tables and inspect required mappings */
@@ -966,15 +1001,17 @@ pf_boot_guard_done:
 
     /* Test 1: Limine RSDP Query & ACPI Initialization */
     serial_puts("[TEST 1] Verifying Limine RSDP Query & ACPI Header Checksums...\n");
-    if (!rsdp_request.response || !rsdp_request.response->address) {
+    if (!boot_info.has_rsdp) {
         serial_puts("       [FAIL] Limine RSDP response missing!\n");
         hcf();
     }
-    if (!acpi_init(rsdp_request.response->address, hhdm_request.response->offset)) {
+    if (!acpi_init(boot_info.rsdp_phys_addr, boot_info.hhdm_offset)) {
         serial_puts("       [FAIL] ACPI initialization failed!\n");
         hcf();
     }
     serial_puts("       [PASS] ACPI RSDP and Root SDT verified\n");
+
+    acpi_parser_selftest();
 
     /* Test 2: ACPI MADT Parsing */
     serial_puts("[TEST 2] Parsing Multiple APIC Description Table (MADT)...\n");
@@ -983,14 +1020,14 @@ pf_boot_guard_done:
         serial_puts("       [FAIL] Failed to parse MADT!\n");
         hcf();
     }
-    if (madt_info.lapic_phys_addr == 0 || madt_info.cpu_count == 0) {
+    if (madt_info.lapic_phys_addr == 0 || madt_info.enabled_cpu_count == 0) {
         serial_puts("       [FAIL] Invalid MADT info: no LAPIC address or 0 CPUs!\n");
         hcf();
     }
     serial_puts("       [PASS] MADT parsed: LAPIC Base=");
     serial_print_hex(madt_info.lapic_phys_addr);
     serial_puts(", CPUs=");
-    serial_print_dec(madt_info.cpu_count);
+    serial_print_dec(madt_info.enabled_cpu_count);
     serial_puts(", I/O APICs=");
     serial_print_dec(madt_info.ioapic_count);
     serial_puts(", ISOs=");
@@ -1028,35 +1065,23 @@ pf_boot_guard_done:
 
     /* Test 5: APIC Timer Calibration & Periodic Tick Verification */
     serial_puts("[TEST 5] Calibrating APIC Timer (100 Hz Target) & Verifying Interrupts...\n");
-    apic_timer_init(100);
-
-    /* Enable interrupts (sti) and wait for ticks */
-    serial_puts("       --> Enabling CPU interrupts (sti)...\n");
-    __asm__ volatile("sti");
-
-    /* Wait for at least 5 ticks to accumulate smoothly */
-    uint64_t start_ticks = apic_timer_get_ticks();
-    while (apic_timer_get_ticks() < start_ticks + 5) {
-        __asm__ volatile("pause");
+    __asm__ volatile("cli" ::: "memory");
+    if (!ioapic_init(&madt_info) || !apic_timer_init(100)) hcf();
+    if (apic_timer_init(0) || ioapic_route_gsi(UINT32_MAX, 0x21, 0, false, false) ||
+        ioapic_route_gsi(0, 0x10, 0, false, false)) hcf();
+    /* Negative liveness check: a masked timer must fail the reference test. */
+    if (apic_timer_verify(NULL)) hcf();
+    serial_puts("[PASS] Masked timer and invalid routing/rate requests rejected\n");
+    apic_timer_start();
+    __asm__ volatile("sti" ::: "memory");
+    bool timer_ok = apic_timer_verify(timer_heap_work);
+    __asm__ volatile("cli" ::: "memory");
+    apic_timer_stop();
+    if (!timer_ok || !heap_verify_integrity()) {
+        serial_puts("[FAIL] Timer frequency/progress or heap integrity verification failed\n");
+        hcf();
     }
-    uint64_t ticks_after_5 = apic_timer_get_ticks();
-
-    /* Wait for another 5 ticks */
-    while (apic_timer_get_ticks() < ticks_after_5 + 5) {
-        __asm__ volatile("pause");
-    }
-    uint64_t final_ticks = apic_timer_get_ticks();
-
-    /* Disable interrupts to keep state clean */
-    __asm__ volatile("cli");
-
-    serial_puts("       [PASS] APIC Timer verified running: Ticks progressed from ");
-    serial_print_dec(start_ticks);
-    serial_puts(" to ");
-    serial_print_dec(final_ticks);
-    serial_puts(" (EOI verified, Spurious count: ");
-    serial_print_dec(lapic_get_spurious_count());
-    serial_puts(")\n");
+    serial_puts("[PASS] PIT-referenced timer progress and foreground heap integrity verified\n");
     serial_puts("[ OK ] Phase 5: ACPI Discovery & APIC Timer completed successfully!\n\n");
 
     serial_puts("\n[BOOT] FortressOS Phase 5 complete. CPU halted.\n");

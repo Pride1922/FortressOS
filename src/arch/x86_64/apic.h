@@ -35,15 +35,18 @@
 #define APIC_SPURIOUS_VECTOR    0xFF
 #define APIC_SVR_ENABLE         (1 << 8)
 
+/* LVT Common Configuration */
+#define APIC_LVT_MASKED         (1 << 16)
+
 /* Timer Configuration */
 #define APIC_TIMER_VECTOR       0x20  /* Vector 32 */
-#define APIC_TIMER_MASKED       (1 << 16)
 #define APIC_TIMER_PERIODIC     (1 << 17)
 #define APIC_TIMER_DIV_16       0x03
 
 /* MSR definitions */
-#define IA32_APIC_BASE_MSR      0x1B
+#define IA32_APIC_BASE_MSR        0x1B
 #define IA32_APIC_BASE_MSR_ENABLE (1ULL << 11)
+#define IA32_APIC_BASE_MSR_X2APIC (1ULL << 10)
 
 /* LAPIC Public API */
 bool     lapic_is_supported(void);
@@ -53,7 +56,10 @@ void     lapic_write(uint32_t reg, uint32_t val);
 void     lapic_eoi(void);
 
 /* APIC Timer Public API */
-void     apic_timer_init(uint32_t target_hz);
+bool     apic_timer_init(uint32_t target_hz);
+void apic_timer_start(void);
+void apic_timer_stop(void);
+bool apic_timer_verify(void (*work)(void));
 uint64_t apic_timer_get_ticks(void);
 uint64_t lapic_get_spurious_count(void);
 

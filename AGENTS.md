@@ -218,7 +218,8 @@ Future tasks should follow this sequenced implementation order:
     │   ├── Limine RSDP query, RSDT/XSDT validation, and MADT parsing (LAPIC, CPUs, I/O APICs, ISOs)
     │   ├── Mask legacy 8259 PIC (0x21=0xFF, 0xA1=0xFF) and setup dedicated APIC spurious interrupt handler
     │   ├── Local APIC (LAPIC) MMIO uncacheable page mapping (PTE_PCD|PTE_PWT|PTE_NX), SVR=0x1FF, and TPR=0
-    │   └── Periodic APIC Timer PIT-assisted calibration (100 Hz), dynamic IRQ dispatch, and EOI verification
+    │   ├── Periodic APIC Timer PIT-assisted calibration (100 Hz), dynamic IRQ dispatch, and EOI verification
+    │   └── I/O APIC discovery, GSI validation and initial mask readback; external device delivery remains unverified
     │
     ▼
 [Phase 6] Kernel Threads & Scheduling

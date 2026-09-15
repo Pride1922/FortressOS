@@ -3,6 +3,8 @@
 
 #include "types.h"
 
+#define MAX_ACPI_TABLE_SIZE (2 * 1024 * 1024) /* 2 MiB sanity limit */
+
 /* RSDP Structure */
 typedef struct {
     char     signature[8];       /* "RSD PTR " */
@@ -91,8 +93,10 @@ typedef struct {
 typedef struct {
     uintptr_t lapic_phys_addr;
     bool      pcat_compat;
-    size_t    cpu_count;
-    uint8_t   cpu_apic_ids[MAX_DETECTED_CPUS];
+    size_t    enabled_cpu_count;
+    uint8_t   enabled_cpu_apic_ids[MAX_DETECTED_CPUS];
+    size_t    online_capable_cpu_count;
+    uint8_t   online_capable_cpu_apic_ids[MAX_DETECTED_CPUS];
     size_t    ioapic_count;
     struct {
         uint8_t   id;
@@ -106,12 +110,16 @@ typedef struct {
         uint32_t gsi;
         uint16_t flags;
     } isos[MAX_DETECTED_ISOS];
+    bool      has_irq0_override;
+    uint32_t  irq0_gsi;
 } acpi_madt_info_t;
 
 /* ACPI Public API */
-bool acpi_init(void *rsdp_ptr, uintptr_t hhdm_offset);
+bool acpi_ensure_mapped(uintptr_t phys_addr, size_t length);
+bool acpi_init(uintptr_t rsdp_phys_addr, uintptr_t hhdm_offset);
 bool acpi_validate_checksum(const acpi_sdt_header_t *header);
 acpi_sdt_header_t *acpi_find_table(const char *signature);
 bool acpi_parse_madt(acpi_madt_info_t *out_info);
+bool acpi_parse_madt_buffer(const void *buffer, size_t available, acpi_madt_info_t *out_info);
 
 #endif /* FORTRESS_ACPI_H */

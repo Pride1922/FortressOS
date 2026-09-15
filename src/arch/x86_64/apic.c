@@ -5,6 +5,7 @@
 static volatile uint8_t *g_lapic_mmio = (volatile uint8_t *)LAPIC_VIRT_ADDR;
 static volatile uint64_t g_spurious_count = 0;
 static volatile uint64_t g_timer_ticks = 0;
+static uint32_t g_target_hz;
 
 static inline bool check_apic_cpuid(void) {
     uint32_t eax, ebx, ecx, edx;
@@ -14,14 +15,14 @@ static inline bool check_apic_cpuid(void) {
 
 static inline uint64_t rdmsr(uint32_t msr) {
     uint32_t low, high;
-    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr) : "memory");
     return ((uint64_t)high << 32) | low;
 }
 
 static inline void wrmsr(uint32_t msr, uint64_t val) {
     uint32_t low = (uint32_t)val;
     uint32_t high = (uint32_t)(val >> 32);
-    __asm__ volatile("wrmsr" : : "a"(low), "d"(high), "c"(msr));
+    __asm__ volatile("wrmsr" : : "a"(low), "d"(high), "c"(msr) : "memory");
 }
 
 bool lapic_is_supported(void) {
@@ -40,16 +41,17 @@ void lapic_eoi(void) {
     lapic_write(APIC_REG_EOI, 0);
 }
 
+/* Handler only updates state; single-owner EOI is dispatched by IDT dispatcher */
 static void apic_spurious_handler(interrupt_frame_t *frame) {
     (void)frame;
     g_spurious_count++;
-    /* Note: Intel SDM explicitly forbids sending EOI for spurious interrupts */
+    /* No serial I/O or EOI in spurious handler */
 }
 
 static void apic_timer_handler(interrupt_frame_t *frame) {
     (void)frame;
     g_timer_ticks++;
-    lapic_eoi();
+    /* No serial I/O or EOI in timer handler; IDT dispatcher owns EOI */
 }
 
 bool lapic_init(uintptr_t lapic_phys_addr) {
@@ -58,105 +60,129 @@ bool lapic_init(uintptr_t lapic_phys_addr) {
         return false;
     }
 
-    /* 1. Map LAPIC physical MMIO page to virtual address as uncacheable */
+    /* 1. Check if x2APIC is already active */
+    uint64_t msr_val = rdmsr(IA32_APIC_BASE_MSR);
+    if (msr_val & IA32_APIC_BASE_MSR_X2APIC) {
+        serial_puts("[FAIL] x2APIC mode is active; MMIO access is unsupported. Revert to legacy xAPIC mode.\n");
+        return false;
+    }
+
+    if ((lapic_phys_addr & 4095) ||
+        (msr_val & 0x0000000FFFFFF000ULL) != lapic_phys_addr) {
+        serial_puts("[FAIL] MADT and APIC MSR base mismatch\n");
+        return false;
+    }
+
+    /* 2. Map LAPIC physical MMIO page to virtual address as uncacheable */
     uint64_t *pml4 = vmm_get_kernel_pml4_virt();
     int status = vmm_map_page(pml4, LAPIC_VIRT_ADDR, lapic_phys_addr,
                              PTE_PRESENT | PTE_WRITABLE | PTE_PCD | PTE_PWT | PTE_NX);
-    if (status != VMM_OK && status != VMM_ERR_ALREADY_MAPPED) {
+    if (status != VMM_OK) {
         serial_puts("[FAIL] Failed to map LAPIC MMIO page into VMM\n");
         return false;
     }
 
-    /* 2. Enable APIC via IA32_APIC_BASE MSR */
-    uint64_t msr_val = rdmsr(IA32_APIC_BASE_MSR);
+    /* 3. Enable APIC via IA32_APIC_BASE MSR */
     if (!(msr_val & IA32_APIC_BASE_MSR_ENABLE)) {
         wrmsr(IA32_APIC_BASE_MSR, msr_val | IA32_APIC_BASE_MSR_ENABLE);
     }
 
-    /* 3. Register Spurious Interrupt handler */
+    /* 4. Register Spurious Interrupt handler */
     idt_register_handler(APIC_SPURIOUS_VECTOR, apic_spurious_handler);
 
-    /* 4. Configure Spurious Interrupt Vector Register (SVR) */
+    /* 5. Configure Spurious Interrupt Vector Register (SVR) */
     lapic_write(APIC_REG_SVR, APIC_SVR_ENABLE | APIC_SPURIOUS_VECTOR);
 
-    /* 5. Set Task Priority Register to 0 (accept all interrupt priority classes) */
+    /* 6. Set Task Priority Register to 0 (accept all interrupt priority classes) */
     lapic_write(APIC_REG_TPR, 0);
 
-    /* 6. Clear Error Status Register */
+    /* 7. Deliberately initialize and mask all unused LVT sources before STI */
+    uint32_t max_lvt = (lapic_read(APIC_REG_VERSION) >> 16) & 255;
+    if (max_lvt < 3) return false;
+    lapic_write(APIC_REG_LVT_ERROR, APIC_LVT_MASKED);
+    if (max_lvt >= 4) lapic_write(APIC_REG_LVT_PERF, APIC_LVT_MASKED);
+    if (max_lvt >= 5) lapic_write(APIC_REG_LVT_THERMAL, APIC_LVT_MASKED);
+    if (max_lvt >= 6) lapic_write(0x2F0, APIC_LVT_MASKED);
+    lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED);
+    lapic_write(APIC_REG_TIMER_INITCNT, 0);
+    lapic_write(APIC_REG_LVT_LINT0, APIC_LVT_MASKED);
+    lapic_write(APIC_REG_LVT_LINT1, APIC_LVT_MASKED);
+
+    /* 8. Clear Error Status Register */
     lapic_write(APIC_REG_ESR, 0);
     lapic_write(APIC_REG_ESR, 0);
 
-    /* 7. Initial EOI to clear any pre-existing in-service bit */
-    lapic_eoi();
 
-    serial_puts("[ OK ] Local APIC initialized (MMIO mapped, SVR=0x1FF, TPR=0x00)\n");
+    serial_puts("[ OK ] Local APIC initialized (MMIO mapped, xAPIC mode confirmed, LVT sources silenced, SVR=0x1FF, TPR=0x00)\n");
     return true;
 }
 
-void apic_timer_init(uint32_t target_hz) {
-    if (target_hz == 0) {
-        target_hz = 100;
-    }
-
-    /* 1. Register Timer IRQ Handler */
-    idt_register_handler(APIC_TIMER_VECTOR, apic_timer_handler);
-
-    /* 2. Set Divider to 16 */
-    lapic_write(APIC_REG_TIMER_DIV, APIC_TIMER_DIV_16);
-
-    /* 3. Mask timer during calibration */
-    lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_MASKED);
-
-    /* 4. Calibrate against PIT Channel 2 (10ms window) */
-    uint16_t pit_count = 11932; /* 1193182 Hz / 100 = ~11932 ticks for 10ms */
-
-    uint8_t port61 = inb(0x61);
-    outb(0x61, (port61 & ~0x02) | 0x01); /* Enable gate, disable speaker output */
-
-    /* Channel 2, LSB then MSB, Mode 0 (interrupt on terminal count), binary */
+/* PIT channel 2 is reserved for calibration/verification during early boot.
+ * Preserve gate/speaker control; iteration limits only bound failure waits. */
+static uint8_t pit_begin(uint16_t count) {
+    uint8_t saved = inb(0x61);
+    outb(0x61, saved & ~3u);
     outb(0x43, 0xB0);
-    outb(0x42, (uint8_t)(pit_count & 0xFF));
-    outb(0x42, (uint8_t)((pit_count >> 8) & 0xFF));
-
-    /* Reset gate low then high to trigger countdown */
-    port61 = inb(0x61);
-    outb(0x61, port61 & ~0x01);
-    outb(0x61, port61 | 0x01);
-
-    /* Start LAPIC timer with max initial count */
-    lapic_write(APIC_REG_TIMER_INITCNT, 0xFFFFFFFF);
-
-    /* Poll until PIT Channel 2 OUT pin goes high (bit 5) */
-    while (!(inb(0x61) & 0x20)) {
-        __asm__ volatile("pause");
+    outb(0x42, (uint8_t)count);
+    outb(0x42, (uint8_t)(count >> 8));
+    return saved;
+}
+static bool pit_wait(void (*work)(void)) {
+    for (uint32_t remaining = 10000000; remaining; --remaining) {
+        if (inb(0x61) & 0x20) return true;
+        if (work) work();
+        __asm__ volatile("pause" ::: "memory");
     }
-
-    /* Read elapsed APIC ticks */
-    uint32_t current_cnt = lapic_read(APIC_REG_TIMER_CURRCNT);
-    lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_MASKED); /* Stop timer */
-    uint32_t ticks_in_10ms = 0xFFFFFFFF - current_cnt;
-
-    /* Restore port 0x61 */
-    outb(0x61, port61 & ~0x03);
-
-    serial_puts("[ OK ] APIC timer calibrated: ");
-    serial_print_dec(ticks_in_10ms);
-    serial_puts(" ticks per 10ms\n");
-
-    /* Calculate count per tick for target_hz */
-    uint32_t init_count = (uint32_t)(((uint64_t)ticks_in_10ms * 100) / target_hz);
-    if (init_count == 0) {
-        init_count = 10000;
-    }
-
-    /* 5. Start timer in periodic mode */
+    return false;
+}
+bool apic_timer_init(uint32_t target_hz) {
+    if (!target_hz || target_hz > 1000) return false;
+    idt_register_hardware_handler(APIC_TIMER_VECTOR, apic_timer_handler);
     lapic_write(APIC_REG_TIMER_DIV, APIC_TIMER_DIV_16);
+    lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED | APIC_TIMER_VECTOR);
+    uint8_t saved = pit_begin(11932);
+    lapic_write(APIC_REG_TIMER_INITCNT, UINT32_MAX);
+    outb(0x61, (saved & ~3u) | 1);
+    bool completed = pit_wait(NULL);
+    uint32_t elapsed = UINT32_MAX - lapic_read(APIC_REG_TIMER_CURRCNT);
+    lapic_write(APIC_REG_TIMER_INITCNT, 0);
+    outb(0x61, saved);
+    if (!completed || elapsed < 1000 || elapsed > 100000000) {
+        serial_puts("[FAIL] PIT calibration timeout or invalid count\n");
+        return false;
+    }
+    uint64_t count = ((uint64_t)elapsed * 1193182) / ((uint64_t)11932 * target_hz);
+    if (!count || count > UINT32_MAX) return false;
+    g_target_hz = target_hz;
+    g_timer_ticks = 0;
+    lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED | APIC_TIMER_PERIODIC | APIC_TIMER_VECTOR);
+    lapic_write(APIC_REG_TIMER_INITCNT, (uint32_t)count);
+    serial_puts("[ OK ] LAPIC calibrated against PIT; periodic timer remains masked\n");
+    return true;
+}
+void apic_timer_start(void) {
     lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_PERIODIC | APIC_TIMER_VECTOR);
-    lapic_write(APIC_REG_TIMER_INITCNT, init_count);
-
-    serial_puts("[ OK ] APIC timer running (Periodic, Vector 0x20, Target ");
-    serial_print_dec(target_hz);
-    serial_puts(" Hz)\n");
+}
+void apic_timer_stop(void) {
+    lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED | APIC_TIMER_VECTOR);
+    lapic_write(APIC_REG_TIMER_INITCNT, 0);
+}
+bool apic_timer_verify(void (*work)(void)) {
+    uint64_t before = g_timer_ticks;
+    for (unsigned i = 0; i < 10; ++i) {
+        uint8_t saved = pit_begin(59659); /* 50 ms hardware reference */
+        outb(0x61, (saved & ~3u) | 1);
+        bool ok = pit_wait(work);
+        outb(0x61, saved);
+        if (!ok) return false;
+    }
+    uint64_t delta = g_timer_ticks - before;
+    serial_puts("[INFO] Timer ticks over ten PIT 50ms windows: ");
+    serial_print_dec(delta);
+    serial_puts("\n");
+    /* Allow 30% for VM scheduling; this is a boot smoke test, not precision metrology. */
+    return delta >= (uint64_t)g_target_hz * 35 / 100 &&
+           delta <= (uint64_t)g_target_hz * 65 / 100;
 }
 
 uint64_t apic_timer_get_ticks(void) {
