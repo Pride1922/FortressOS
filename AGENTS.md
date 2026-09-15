@@ -187,9 +187,12 @@ Future tasks should follow this sequenced implementation order:
 [Phase 4A] Virtual Memory Manager (VMM) & 4-Level Paging (COMPLETE)
     │   ├── x86_64 4-Level Paging (PML4, PDPT, PD, PT) structure management
     │   ├── Ownership Rules: VMM strictly owns page-table frames; callers own mapped physical frames
-    │   ├── Mapping Query API: vmm_get_physical_address(), vmm_is_mapped()
-    │   ├── Stack Guard Pages: Unmapped virtual pages directly below stacks to catch overflow via #PF
-    │   ├── Higher-half kernel remapping, HHDM remapping, and boot data preservation during CR3 switch
+    │   ├── Mapping & Query API with canonical address validation (vmm_map, vmm_unmap, vmm_is_mapped, vmm_get_physical_address)
+    │   ├── Stack Guard Pages: Deterministic unmapped 4 KiB guard pages directly below boot stack and IST1 stack (#PF trap)
+    │   ├── Selective HHDM mapping (RAM-only; multi-GiB MMIO holes skipped) & explicit uncacheable Framebuffer MMIO
+    │   ├── Parent-table user permission propagation and stack-safe NX execution enforcement testing
+    │   ├── Intermediate Table Lifecycle: Kernel VMM retains allocated intermediate tables on unmapping to prevent churn;
+    │   │   complete address-space destruction (vmm_destroy_pml4) & refcounted table reclamation are explicitly deferred to Phase 7
     │   └── Switching to independent kernel CR3, TLB invalidation, and NX / RW permission tests
     │
     ▼
@@ -212,6 +215,7 @@ Future tasks should follow this sequenced implementation order:
     │
     ▼
 [Phase 7] User Space & Ring 3 Syscalls (The First Milestone)
+        ├── Checkpoint 0: Process virtual address space lifecycle, vmm_destroy_pml4(), and intermediate table reclamation
         ├── Checkpoint 1: Ring 3 transition via iretq (User CS 0x23, User SS 0x1B, User RSP/RIP)
         ├── Checkpoint 2: First system call (serial print syscall via int 0x80 or syscall)
         ├── Checkpoint 3: Initramfs / embedded ELF user executable loading
