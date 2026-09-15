@@ -61,6 +61,10 @@ void idt_init(void);
 void idt_set_gate(uint8_t vector, void *handler, uint8_t ist, uint8_t type_attributes);
 void isr_exception_handler(interrupt_frame_t *frame);
 
+/* Dynamic IRQ Handler Registration */
+typedef void (*irq_handler_t)(interrupt_frame_t *frame);
+void idt_register_handler(uint8_t vector, irq_handler_t handler);
+
 /* Diagnostic / Test Hooks for Expected Page Faults */
 void idt_set_expected_page_fault(uintptr_t recovery_rip);
 void idt_clear_expected_page_fault(void);

@@ -37,12 +37,18 @@ FortressOS/
     │   └── x86_64/
     │       ├── boot.asm         # Early assembly crt0 entry stub, aligns stack, invokes kmain
     │       ├── gdt.h            # GDT, TSS, and segment selector structures
+    │       ├── apic.c           # Local APIC and APIC Timer initialization & MMIO access
+    │       ├── apic.h           # LAPIC registers, offsets, MSRs, and timer prototypes
     │       ├── gdt.c            # GDT setup and TSS IST1 initialization
     │       ├── gdt_flush.asm    # lgdt, segment reloads (CS/DS/SS/ES), and ltr
-    │       ├── idt.h            # IDT descriptor and interrupt_frame_t definitions
-    │       ├── idt.c            # IDT table setup and exception panic diagnostics
+    │       ├── idt.h            # IDT descriptor, interrupt_frame_t, and IRQ handler registry
+    │       ├── idt.c            # IDT table setup, exception diagnostics, and IRQ dispatch
     │       └── interrupts.asm   # 32 assembly exception stubs and register preservation
     ├── drivers/
+    │   ├── acpi.c           # RSDP, RSDT/XSDT validation, and MADT parsing
+    │   ├── acpi.h           # ACPI table headers, RSDP, and MADT structure definitions
+    │   ├── pic.c            # 8259 PIC masking and disable logic
+    │   ├── pic.h            # 8259 PIC port definitions and mask queries
     │   ├── serial.c         # UART 16550 COM1 port I/O driver (115200 8N1)
     │   └── serial.h         # Serial driver headers and port I/O inlines (inb, outb, io_wait)
     ├── include/
@@ -208,11 +214,11 @@ Future tasks should follow this sequenced implementation order:
     │   └── Comprehensive verification suite: alignment, splitting, both-neighbour coalescing, stress test
     │
     ▼
-[Phase 5] ACPI Discovery & APIC Timer
-    │   ├── Limine RSDP query, RSDT/XSDT validation, and MADT parsing
-    │   ├── Mask legacy 8259 PIC and setup dedicated APIC spurious interrupt handler
-    │   ├── Local APIC (LAPIC) and I/O APIC setup and MMIO mapping
-    │   └── Periodic APIC Timer calibration (verifying continuous ticks and EOI)
+[Phase 5] ACPI Discovery & APIC Timer (COMPLETE)
+    │   ├── Limine RSDP query, RSDT/XSDT validation, and MADT parsing (LAPIC, CPUs, I/O APICs, ISOs)
+    │   ├── Mask legacy 8259 PIC (0x21=0xFF, 0xA1=0xFF) and setup dedicated APIC spurious interrupt handler
+    │   ├── Local APIC (LAPIC) MMIO uncacheable page mapping (PTE_PCD|PTE_PWT|PTE_NX), SVR=0x1FF, and TPR=0
+    │   └── Periodic APIC Timer PIT-assisted calibration (100 Hz), dynamic IRQ dispatch, and EOI verification
     │
     ▼
 [Phase 6] Kernel Threads & Scheduling

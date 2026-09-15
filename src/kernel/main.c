@@ -8,6 +8,9 @@
 #include "boot_info.h"
 #include "vmm.h"
 #include "heap.h"
+#include "pic.h"
+#include "acpi.h"
+#include "apic.h"
 
 /* Set Limine Base Revision to 3 (Limine v7/v8 protocol) */
 __attribute__((used, section(".requests_start_marker")))
@@ -40,6 +43,13 @@ static volatile struct limine_memmap_request memmap_request = {
 __attribute__((used, section(".requests")))
 static volatile struct limine_kernel_address_request kernel_address_request = {
     .id = LIMINE_KERNEL_ADDRESS_REQUEST,
+    .revision = 0,
+    .response = NULL
+};
+
+__attribute__((used, section(".requests")))
+static volatile struct limine_rsdp_request rsdp_request = {
+    .id = LIMINE_RSDP_REQUEST,
     .revision = 0,
     .response = NULL
 };
@@ -947,7 +957,109 @@ pf_boot_guard_done:
         serial_puts("[ OK ] Framebuffer test pattern rendered (using kernel-owned boot info)\n");
     }
 
-    serial_puts("\n[BOOT] FortressOS Phase 4A & 4B complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 5: ACPI Discovery, 8259 PIC Masking, LAPIC Setup & APIC Timer
+     * ========================================================================= */
+    serial_puts("\n========================================================\n");
+    serial_puts("Phase 5: ACPI Discovery & APIC Timer Verification Suite\n");
+    serial_puts("========================================================\n");
+
+    /* Test 1: Limine RSDP Query & ACPI Initialization */
+    serial_puts("[TEST 1] Verifying Limine RSDP Query & ACPI Header Checksums...\n");
+    if (!rsdp_request.response || !rsdp_request.response->address) {
+        serial_puts("       [FAIL] Limine RSDP response missing!\n");
+        hcf();
+    }
+    if (!acpi_init(rsdp_request.response->address, hhdm_request.response->offset)) {
+        serial_puts("       [FAIL] ACPI initialization failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] ACPI RSDP and Root SDT verified\n");
+
+    /* Test 2: ACPI MADT Parsing */
+    serial_puts("[TEST 2] Parsing Multiple APIC Description Table (MADT)...\n");
+    acpi_madt_info_t madt_info;
+    if (!acpi_parse_madt(&madt_info)) {
+        serial_puts("       [FAIL] Failed to parse MADT!\n");
+        hcf();
+    }
+    if (madt_info.lapic_phys_addr == 0 || madt_info.cpu_count == 0) {
+        serial_puts("       [FAIL] Invalid MADT info: no LAPIC address or 0 CPUs!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] MADT parsed: LAPIC Base=");
+    serial_print_hex(madt_info.lapic_phys_addr);
+    serial_puts(", CPUs=");
+    serial_print_dec(madt_info.cpu_count);
+    serial_puts(", I/O APICs=");
+    serial_print_dec(madt_info.ioapic_count);
+    serial_puts(", ISOs=");
+    serial_print_dec(madt_info.iso_count);
+    serial_puts("\n");
+
+    /* Test 3: Disable / Mask Legacy 8259 PIC */
+    serial_puts("[TEST 3] Disabling Legacy 8259 PIC...\n");
+    pic_disable();
+    uint8_t pic1_mask = pic1_get_mask();
+    uint8_t pic2_mask = pic2_get_mask();
+    if (pic1_mask != 0xFF || pic2_mask != 0xFF) {
+        serial_puts("       [FAIL] PIC masks did not verify 0xFF!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] 8259 PIC verified disabled (PIC1=0xFF, PIC2=0xFF)\n");
+
+    /* Test 4: Local APIC (LAPIC) MMIO Mapping & Initialization */
+    serial_puts("[TEST 4] Initializing Local APIC (LAPIC) MMIO & SVR...\n");
+    if (!lapic_init(madt_info.lapic_phys_addr)) {
+        serial_puts("       [FAIL] Failed to initialize Local APIC!\n");
+        hcf();
+    }
+    uint32_t svr = lapic_read(APIC_REG_SVR);
+    if ((svr & (APIC_SVR_ENABLE | APIC_SPURIOUS_VECTOR)) != (APIC_SVR_ENABLE | APIC_SPURIOUS_VECTOR)) {
+        serial_puts("       [FAIL] LAPIC SVR register incorrect!\n");
+        hcf();
+    }
+    uint32_t tpr = lapic_read(APIC_REG_TPR);
+    if (tpr != 0) {
+        serial_puts("       [FAIL] LAPIC TPR is non-zero!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] LAPIC initialized (SVR verified 0x1FF, TPR=0)\n");
+
+    /* Test 5: APIC Timer Calibration & Periodic Tick Verification */
+    serial_puts("[TEST 5] Calibrating APIC Timer (100 Hz Target) & Verifying Interrupts...\n");
+    apic_timer_init(100);
+
+    /* Enable interrupts (sti) and wait for ticks */
+    serial_puts("       --> Enabling CPU interrupts (sti)...\n");
+    __asm__ volatile("sti");
+
+    /* Wait for at least 5 ticks to accumulate smoothly */
+    uint64_t start_ticks = apic_timer_get_ticks();
+    while (apic_timer_get_ticks() < start_ticks + 5) {
+        __asm__ volatile("pause");
+    }
+    uint64_t ticks_after_5 = apic_timer_get_ticks();
+
+    /* Wait for another 5 ticks */
+    while (apic_timer_get_ticks() < ticks_after_5 + 5) {
+        __asm__ volatile("pause");
+    }
+    uint64_t final_ticks = apic_timer_get_ticks();
+
+    /* Disable interrupts to keep state clean */
+    __asm__ volatile("cli");
+
+    serial_puts("       [PASS] APIC Timer verified running: Ticks progressed from ");
+    serial_print_dec(start_ticks);
+    serial_puts(" to ");
+    serial_print_dec(final_ticks);
+    serial_puts(" (EOI verified, Spurious count: ");
+    serial_print_dec(lapic_get_spurious_count());
+    serial_puts(")\n");
+    serial_puts("[ OK ] Phase 5: ACPI Discovery & APIC Timer completed successfully!\n\n");
+
+    serial_puts("\n[BOOT] FortressOS Phase 5 complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

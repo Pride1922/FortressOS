@@ -93,6 +93,7 @@ endif
 
 QEMU_FLAGS := -M q35 -m 2G -serial stdio
 
+.DEFAULT_GOAL := all
 .PHONY: all clean distclean run run-bios debug limine-setup ovmf-setup iso
 
 all: $(BOOTABLE_ISO)

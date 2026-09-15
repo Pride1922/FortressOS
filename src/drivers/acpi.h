@@ -1,0 +1,117 @@
+#ifndef FORTRESS_ACPI_H
+#define FORTRESS_ACPI_H
+
+#include "types.h"
+
+/* RSDP Structure */
+typedef struct {
+    char     signature[8];       /* "RSD PTR " */
+    uint8_t  checksum;           /* First 20 bytes checksum */
+    char     oem_id[6];
+    uint8_t  revision;           /* 0 = ACPI 1.0, 2 = ACPI 2.0+ */
+    uint32_t rsdt_address;       /* 32-bit physical address of RSDT */
+
+    /* Extended fields (ACPI 2.0+) */
+    uint32_t length;             /* Total length of RSDP (36 bytes) */
+    uint64_t xsdt_address;       /* 64-bit physical address of XSDT */
+    uint8_t  extended_checksum;  /* Checksum of entire structure */
+    uint8_t  reserved[3];
+} __attribute__((packed)) acpi_rsdp_t;
+
+/* Common ACPI SDT Header (36 bytes) */
+typedef struct {
+    char     signature[4];
+    uint32_t length;
+    uint8_t  revision;
+    uint8_t  checksum;
+    char     oem_id[6];
+    char     oem_table_id[8];
+    uint32_t oem_revision;
+    uint32_t creator_id;
+    uint32_t creator_revision;
+} __attribute__((packed)) acpi_sdt_header_t;
+
+/* MADT Header (Signature "APIC") */
+typedef struct {
+    acpi_sdt_header_t header;
+    uint32_t          lapic_address;  /* Default 32-bit physical address of LAPIC */
+    uint32_t          flags;          /* Bit 0 = PCAT_COMPAT */
+} __attribute__((packed)) acpi_madt_t;
+
+/* MADT Entry Types */
+#define MADT_TYPE_LOCAL_APIC          0
+#define MADT_TYPE_IO_APIC             1
+#define MADT_TYPE_INTERRUPT_OVERRIDE  2
+#define MADT_TYPE_NMI                 4
+#define MADT_TYPE_LAPIC_ADDR_OVERRIDE 5
+
+typedef struct {
+    uint8_t type;
+    uint8_t length;
+} __attribute__((packed)) acpi_madt_entry_t;
+
+/* Type 0: Processor Local APIC */
+typedef struct {
+    acpi_madt_entry_t header;
+    uint8_t           processor_id;
+    uint8_t           apic_id;
+    uint32_t          flags;          /* Bit 0: Enabled, Bit 1: Online Capable */
+} __attribute__((packed)) acpi_madt_lapic_entry_t;
+
+/* Type 1: I/O APIC */
+typedef struct {
+    acpi_madt_entry_t header;
+    uint8_t           ioapic_id;
+    uint8_t           reserved;
+    uint32_t          ioapic_address; /* Physical address */
+    uint32_t          gsi_base;       /* Global System Interrupt Base */
+} __attribute__((packed)) acpi_madt_ioapic_entry_t;
+
+/* Type 2: Interrupt Source Override */
+typedef struct {
+    acpi_madt_entry_t header;
+    uint8_t           bus;            /* 0 = ISA */
+    uint8_t           source_irq;
+    uint32_t          gsi;
+    uint16_t          flags;          /* Polarity & Trigger */
+} __attribute__((packed)) acpi_madt_iso_entry_t;
+
+/* Type 5: 64-bit Local APIC Address Override */
+typedef struct {
+    acpi_madt_entry_t header;
+    uint16_t          reserved;
+    uint64_t          lapic_address;  /* 64-bit physical address */
+} __attribute__((packed)) acpi_madt_lapic_override_entry_t;
+
+/* Extracted MADT Information Structure */
+#define MAX_DETECTED_CPUS 64
+#define MAX_DETECTED_IOAPICS 8
+#define MAX_DETECTED_ISOS 16
+
+typedef struct {
+    uintptr_t lapic_phys_addr;
+    bool      pcat_compat;
+    size_t    cpu_count;
+    uint8_t   cpu_apic_ids[MAX_DETECTED_CPUS];
+    size_t    ioapic_count;
+    struct {
+        uint8_t   id;
+        uintptr_t phys_addr;
+        uint32_t  gsi_base;
+    } ioapics[MAX_DETECTED_IOAPICS];
+    size_t    iso_count;
+    struct {
+        uint8_t  bus;
+        uint8_t  source_irq;
+        uint32_t gsi;
+        uint16_t flags;
+    } isos[MAX_DETECTED_ISOS];
+} acpi_madt_info_t;
+
+/* ACPI Public API */
+bool acpi_init(void *rsdp_ptr, uintptr_t hhdm_offset);
+bool acpi_validate_checksum(const acpi_sdt_header_t *header);
+acpi_sdt_header_t *acpi_find_table(const char *signature);
+bool acpi_parse_madt(acpi_madt_info_t *out_info);
+
+#endif /* FORTRESS_ACPI_H */

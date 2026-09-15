@@ -107,6 +107,12 @@ bool idt_was_page_fault_caught(uint64_t *out_cr2, uint64_t *out_error) {
     return g_page_fault_caught;
 }
 
+static irq_handler_t g_irq_handlers[IDT_ENTRIES];
+
+void idt_register_handler(uint8_t vector, irq_handler_t handler) {
+    g_irq_handlers[vector] = handler;
+}
+
 void isr_exception_handler(interrupt_frame_t *frame) {
     /* Breakpoint Trap (#BP, vector 3) is a non-fatal debugging trap */
     if (frame->vector == 3) {
@@ -136,11 +142,19 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         return;
     }
 
-    /* Unexpected hardware or software interrupts (vectors >= 32) */
+    /* Hardware or software interrupts (vectors >= 32) */
     if (frame->vector >= 32) {
-        serial_puts("[WARN] Unexpected interrupt received (Vector ");
-        serial_print_dec(frame->vector);
-        serial_puts(")\n");
+        if (g_irq_handlers[frame->vector]) {
+            g_irq_handlers[frame->vector](frame);
+        } else {
+            serial_puts("[WARN] Unhandled interrupt received (Vector ");
+            serial_print_dec(frame->vector);
+            serial_puts(")\n");
+            extern void lapic_eoi(void);
+            if (frame->vector != 0xFF) {
+                lapic_eoi();
+            }
+        }
         return;
     }
 
