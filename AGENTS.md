@@ -44,7 +44,9 @@ FortressOS/
     │       ├── gdt_flush.asm    # lgdt, segment reloads (CS/DS/SS/ES), and ltr
     │       ├── idt.h            # IDT descriptor, interrupt_frame_t, and IRQ handler registry
     │       ├── idt.c            # IDT table setup, exception diagnostics, and IRQ dispatch
-    │       └── interrupts.asm   # 32 assembly exception stubs and register preservation
+    │       ├── interrupts.asm   # 32 assembly exception stubs and register preservation
+    │       ├── msr.h            # MSR read/write inlines, register addresses, and bit flags
+    │       └── syscall_entry.asm# Low-level fast syscall entry stub and sysretq dispatcher
     ├── drivers/
     │   ├── acpi.c           # RSDP, RSDT/XSDT validation, and MADT parsing
     │   ├── acpi.h           # ACPI table headers, RSDP, and MADT structure definitions
@@ -321,7 +323,15 @@ Future tasks should follow this sequenced implementation order:
         │   ├── Reaper Invariants & Safe Reclamation: Zero-delta resource checks in BIOS and UEFI (0 tables, 0 frames, 0 stack slots leaked)
         │   │   with active CR3/stack collision invariant assertions
         │   └── Bounded circular exit records (MAX_EXIT_RECORDS=64) with FIFO replacement policy
-        └── Checkpoint 5: Fast syscall hardening (syscall / sysret / IA32_EFER / STAR / LSTAR)
+        └── Checkpoint 5: Fast Syscall Hardening via syscall / sysret (COMPLETE)
+            ├── Hardware MSR Configuration: IA32_EFER.SCE (bit 0), IA32_STAR (Kernel CS 0x08, User CS 0x23, User SS 0x1B),
+            │   IA32_LSTAR (syscall_entry_stub), and IA32_SFMASK (masks IF, TF, DF, and arithmetic flags)
+            ├── Unified Dispatcher & Stack Frame: syscall_entry_stub builds an interrupt_frame_t layout on active TSS.RSP0 stack,
+            │   unifying validation and dispatch between 'syscall' and legacy 'int 0x80'
+            ├── Dual-Interface Support: int 0x80 preserved as reference; user executables invoke both instructions seamlessly
+            ├── Negative Validation & Error Code Parity: Verified SYSCALL_EFAULT (-2), SYSCALL_EINVAL (-1), SYSCALL_EBADF (-3),
+            │   and SYSCALL_ENOSYS (-4) across syscall instruction
+            └── Verification: Mode 4 test passed with exit code 99 under BIOS and UEFI QEMU with 0 leaked resources
 ```
 
 ---

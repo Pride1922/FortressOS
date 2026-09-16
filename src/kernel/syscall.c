@@ -3,6 +3,9 @@
 #include "serial.h"
 #include "gdt.h"
 #include "thread.h"
+#include "msr.h"
+
+extern void syscall_entry_stub(void);
 
 static volatile bool      g_user_exit_called     = false;
 static volatile uint64_t  g_user_exit_code       = 0;
@@ -14,6 +17,74 @@ void syscall_init(void) {
     g_user_exit_code       = 0;
     g_syscall_recovery_rip = 0;
     g_syscall_recovery_rsp = 0;
+    syscall_init_msrs();
+}
+
+void syscall_init_msrs(void) {
+    /* 1. Enable SCE (System Call Extensions) in IA32_EFER */
+    uint64_t efer = rdmsr(IA32_EFER_MSR);
+    efer |= EFER_SCE;
+    wrmsr(IA32_EFER_MSR, efer);
+
+    /* 2. Configure IA32_STAR:
+     *    Bits [47:32]: Kernel CS / SS for 'syscall'
+     *      CS = 0x08 (GDT_KERNEL_CODE)
+     *      SS = 0x08 + 8 = 0x10 (GDT_KERNEL_DATA)
+     *    Bits [63:48]: User CS / SS for 'sysret'
+     *      Target 64-bit SS = (0x10 + 8)  | 3 = 0x1B (GDT_USER_DATA)
+     *      Target 64-bit CS = (0x10 + 16) | 3 = 0x23 (GDT_USER_CODE)
+     */
+    uint64_t star = ((uint64_t)GDT_KERNEL_DATA << 48) | ((uint64_t)GDT_KERNEL_CODE << 32);
+    wrmsr(IA32_STAR_MSR, star);
+
+    /* 3. Configure IA32_LSTAR with target 64-bit syscall entry stub */
+    wrmsr(IA32_LSTAR_MSR, (uint64_t)syscall_entry_stub);
+
+    /* 4. Configure IA32_SFMASK:
+     *    Masks IF (bit 9), TF (bit 8), DF (bit 10), and arithmetic flags upon 'syscall'
+     */
+    wrmsr(IA32_SFMASK_MSR, SYSCALL_SFMASK_DEFAULT);
+}
+
+bool syscall_verify_msrs(void) {
+    uint64_t efer = rdmsr(IA32_EFER_MSR);
+    if (!(efer & EFER_SCE)) {
+        serial_puts("       [DEBUG] EFER.SCE not set: ");
+        serial_print_hex(efer);
+        serial_puts("\n");
+        return false;
+    }
+
+    uint64_t expected_star = ((uint64_t)GDT_KERNEL_DATA << 48) | ((uint64_t)GDT_KERNEL_CODE << 32);
+    uint64_t star = rdmsr(IA32_STAR_MSR);
+    if (star != expected_star) {
+        serial_puts("       [DEBUG] STAR mismatch! Got: ");
+        serial_print_hex(star);
+        serial_puts(", Expected: ");
+        serial_print_hex(expected_star);
+        serial_puts("\n");
+        return false;
+    }
+
+    uint64_t lstar = rdmsr(IA32_LSTAR_MSR);
+    if (lstar != (uint64_t)syscall_entry_stub) {
+        serial_puts("       [DEBUG] LSTAR mismatch! Got: ");
+        serial_print_hex(lstar);
+        serial_puts(", Expected: ");
+        serial_print_hex((uint64_t)syscall_entry_stub);
+        serial_puts("\n");
+        return false;
+    }
+
+    uint64_t sfmask = rdmsr(IA32_SFMASK_MSR);
+    if (!(sfmask & RFLAGS_IF) || !(sfmask & RFLAGS_DF)) {
+        serial_puts("       [DEBUG] SFMASK mismatch! Got: ");
+        serial_print_hex(sfmask);
+        serial_puts("\n");
+        return false;
+    }
+
+    return true;
 }
 
 void syscall_set_recovery(uintptr_t rip, uintptr_t rsp) {

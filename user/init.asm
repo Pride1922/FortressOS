@@ -11,6 +11,12 @@ msg_worker_1_len equ $ - msg_worker_1
 msg_worker_2: db "Worker 2: Computing in User Space...", 10
 msg_worker_2_len equ $ - msg_worker_2
 
+msg_fast_syscall: db "Fast Syscall (syscall/sysret) operational in Ring 3!", 10
+msg_fast_syscall_len equ $ - msg_fast_syscall
+
+msg_dual_int80: db "Reference int 0x80 operational in Ring 3!", 10
+msg_dual_int80_len equ $ - msg_dual_int80
+
 section .data
 g_magic_val: dq 0xCAFEBABE12345678
 
@@ -26,12 +32,15 @@ _start:
     ; 1 = CPU-Bound Worker 1 (computes across multiple timer ticks, exits 77)
     ; 2 = CPU-Bound Worker 2 (computes across multiple timer ticks, exits 88)
     ; 3 = Deliberate fault: attempts to read supervisor kernel higher-half memory
+    ; 4 = Fast Syscall (syscall/sysret) & Dual-Interface Verification (exits 99)
     cmp rdi, 1
     je .mode_worker_1
     cmp rdi, 2
     je .mode_worker_2
     cmp rdi, 3
     je .mode_fault
+    cmp rdi, 4
+    je .mode_fast_syscall
 
     ; -------------------------------------------------------------
     ; Mode 0: Default Init Executable Verification
@@ -133,6 +142,101 @@ _start:
     mov rbx, 0xFFFFFFFF80000000
     mov rax, [rbx]      ; Triggers #PF (Vector 14) with Protection Violation in Ring 3
     hlt
+
+    ; -------------------------------------------------------------
+    ; Mode 4: Fast Syscall (syscall/sysret) & Dual-Interface Suite
+    ; -------------------------------------------------------------
+.mode_fast_syscall:
+    ; 1. SYS_WRITE via 'syscall' instruction
+    mov rax, 1                     ; SYS_WRITE
+    mov rdi, 1                     ; stdout
+    lea rsi, [msg_fast_syscall]    ; buffer
+    mov rdx, msg_fast_syscall_len  ; count
+    syscall
+    cmp rax, msg_fast_syscall_len
+    jne .fail_fast_write
+
+    ; 2. SYS_WRITE via reference 'int 0x80' instruction
+    mov rax, 1                     ; SYS_WRITE
+    mov rdi, 1                     ; stdout
+    lea rsi, [msg_dual_int80]      ; buffer
+    mov rdx, msg_dual_int80_len    ; count
+    int 0x80
+    cmp rax, msg_dual_int80_len
+    jne .fail_fast_int80
+
+    ; 3. Negative test via 'syscall': unmapped pointer (EFAULT)
+    mov rax, 1                     ; SYS_WRITE
+    mov rdi, 1                     ; stdout
+    mov rsi, 0x600000              ; unmapped virtual address
+    mov rdx, 16
+    syscall
+    cmp rax, -2                    ; SYSCALL_EFAULT
+    jne .fail_fast_efault
+
+    ; 4. Negative test via 'syscall': oversized buffer (EINVAL)
+    mov rax, 1                     ; SYS_WRITE
+    mov rdi, 1                     ; stdout
+    lea rsi, [msg_fast_syscall]
+    mov rdx, 100000                ; exceeds MAX_SYSCALL_WRITE_LEN (16384)
+    syscall
+    cmp rax, -1                    ; SYSCALL_EINVAL
+    jne .fail_fast_einval
+
+    ; 5. Negative test via 'syscall': invalid file descriptor (EBADF)
+    mov rax, 1                     ; SYS_WRITE
+    mov rdi, 99                    ; invalid fd
+    lea rsi, [msg_fast_syscall]
+    mov rdx, 10
+    syscall
+    cmp rax, -3                    ; SYSCALL_EBADF
+    jne .fail_fast_ebadf
+
+    ; 6. Negative test via 'syscall': unknown syscall number (ENOSYS)
+    mov rax, 999                   ; invalid syscall number
+    syscall
+    cmp rax, -4                    ; SYSCALL_ENOSYS
+    jne .fail_fast_enosys
+
+    ; 7. Test user stack push/pop across syscall
+    push qword 0xAA55
+    pop rcx
+    cmp rcx, 0xAA55
+    jne .fail_fast_stack
+
+    ; 8. Clean exit via 'syscall' instruction with exit code 99!
+    mov rax, 0                     ; SYS_EXIT
+    mov rdi, 99                    ; exit code 99
+    syscall
+    hlt
+
+.fail_fast_write:
+    mov rdi, 10
+    jmp .do_exit
+
+.fail_fast_int80:
+    mov rdi, 11
+    jmp .do_exit
+
+.fail_fast_efault:
+    mov rdi, 12
+    jmp .do_exit
+
+.fail_fast_einval:
+    mov rdi, 13
+    jmp .do_exit
+
+.fail_fast_ebadf:
+    mov rdi, 14
+    jmp .do_exit
+
+.fail_fast_enosys:
+    mov rdi, 15
+    jmp .do_exit
+
+.fail_fast_stack:
+    mov rdi, 16
+    jmp .do_exit
 
 .fail_data:
     mov rdi, 1

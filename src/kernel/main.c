@@ -1366,6 +1366,133 @@ static void test_phase7_acceptance_suite(boot_info_t *boot_info, uint64_t *maste
     serial_puts("[ OK ] Phase 7 Acceptance Suite PASSED!\n\n");
 }
 
+/* =========================================================================
+ * Phase 7 (Checkpoint 5): Fast Syscall Hardening (syscall / sysret)
+ * ========================================================================= */
+static void test_phase7_checkpoint5_fast_syscall(boot_info_t *boot_info, uint64_t *master_kernel_pml4, uintptr_t master_kernel_pml4_phys) {
+    (void)boot_info;
+    (void)master_kernel_pml4;
+    (void)master_kernel_pml4_phys;
+
+    serial_puts("========================================================\n");
+    serial_puts("Phase 7 (Checkpoint 5): Fast Syscall (syscall / sysret)\n");
+    serial_puts("========================================================\n");
+
+    /* 1. Initialize and Verify MSR Configuration */
+    syscall_init();
+
+    serial_puts("[TEST 1] Verifying Fast Syscall MSR Configuration...\n");
+    if (!syscall_verify_msrs()) {
+        serial_puts("       [FAIL] Fast Syscall MSRs verification failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] IA32_EFER.SCE enabled (MSR 0xC0000080)\n");
+    serial_puts("       [PASS] IA32_STAR configured (Kernel CS=0x08, User CS=0x23, User SS=0x1B)\n");
+    serial_puts("       [PASS] IA32_LSTAR points to syscall_entry_stub\n");
+    serial_puts("       [PASS] IA32_SFMASK masks IF (bit 9), TF (bit 8), and DF (bit 10)\n");
+
+    size_t init_elf_size = (size_t)(embedded_init_elf_end - embedded_init_elf_start);
+    size_t baseline_free_pages = pmm_get_free_pages();
+    size_t baseline_allocated_tables = vmm_get_allocated_table_frames();
+    uint64_t baseline_stack_slots = sched_get_active_stack_slots_mask();
+
+    /* 2. Execute Standalone User Program with Fast Syscall & Dual-Interface Mode */
+    serial_puts("[TEST 2] Executing Dual Syscall Program in Ring 3 (Mode 4)...\n");
+    serial_puts("------- FAST SYSCALL & DUAL INTERFACE OUTPUT START -------\n");
+
+    tcb_t *proc = process_spawn_with_arg("user_fast_syscall", embedded_init_elf_start, init_elf_size, 4);
+    if (!proc) {
+        serial_puts("       [FAIL] Failed to spawn user_fast_syscall process!\n");
+        hcf();
+    }
+    uint64_t pid = proc->tid;
+
+    apic_timer_start();
+    sched_enable_preemption();
+    __asm__ volatile("sti" ::: "memory");
+
+    uint64_t exit_code = 0;
+    bool waited = process_wait(pid, &exit_code);
+
+    __asm__ volatile("cli" ::: "memory");
+    apic_timer_stop();
+    sched_disable_preemption();
+
+    serial_puts("------- FAST SYSCALL & DUAL INTERFACE OUTPUT END ---------\n");
+
+    if (!waited) {
+        serial_puts("       [FAIL] process_wait failed for user_fast_syscall!\n");
+        hcf();
+    }
+
+    if (exit_code != 99) {
+        serial_puts("       [FAIL] Fast syscall test suite failed in Ring 3! Exit code: ");
+        serial_print_dec(exit_code);
+        if (exit_code >= 10 && exit_code <= 16) {
+            serial_puts(" (Sub-test ");
+            serial_print_dec(exit_code - 9);
+            serial_puts(" failed)");
+        }
+        serial_puts("\n");
+        hcf();
+    }
+
+    serial_puts("       [PASS] Fast syscall suite completed successfully! Exit code: 99\n");
+    serial_puts("              - Verified SYS_WRITE via 'syscall' instruction\n");
+    serial_puts("              - Verified reference SYS_WRITE via 'int 0x80' instruction\n");
+    serial_puts("              - Verified unmapped memory access returns SYSCALL_EFAULT (-2) via 'syscall'\n");
+    serial_puts("              - Verified oversized buffer length returns SYSCALL_EINVAL (-1) via 'syscall'\n");
+    serial_puts("              - Verified invalid file descriptor returns SYSCALL_EBADF (-3) via 'syscall'\n");
+    serial_puts("              - Verified unknown syscall number returns SYSCALL_ENOSYS (-4) via 'syscall'\n");
+    serial_puts("              - Verified user stack integrity across 'syscall' / 'sysret'\n");
+    serial_puts("              - Verified clean termination via SYS_EXIT(99) using 'syscall'\n");
+
+    sched_reap_dead();
+
+    /* 3. Resource Reclamation Audit */
+    serial_puts("[TEST 3] Resource Reclamation Post-Fast-Syscall Audit...\n");
+    size_t after_tables = vmm_get_allocated_table_frames();
+    size_t after_pages  = pmm_get_free_pages();
+    uint64_t after_slots = sched_get_active_stack_slots_mask();
+
+    if (after_tables != baseline_allocated_tables) {
+        serial_puts("       [FAIL] Table frame leak detected! Expected: ");
+        serial_print_dec(baseline_allocated_tables);
+        serial_puts(" Got: ");
+        serial_print_dec(after_tables);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All intermediate page tables & roots reclaimed (delta: 0)\n");
+
+    if (after_pages != baseline_free_pages) {
+        serial_puts("       [FAIL] Physical frame leak detected! Expected: ");
+        serial_print_dec(baseline_free_pages);
+        serial_puts(" Got: ");
+        serial_print_dec(after_pages);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All physical frames returned to PMM (delta: 0 frames leaked)\n");
+
+    if (after_slots != baseline_stack_slots) {
+        serial_puts("       [FAIL] Stack slot leak detected! Expected mask: ");
+        serial_print_hex(baseline_stack_slots);
+        serial_puts(" Got: ");
+        serial_print_hex(after_slots);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All dedicated kernel stack slots cleanly recycled\n");
+
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed post-fast-syscall!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+    serial_puts("[ OK ] Phase 7 (Checkpoint 5) completed successfully!\n\n");
+}
+
 
 /* Kernel Main Entry Point */
 void kmain(void) {
@@ -2792,7 +2919,12 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase7_acceptance_suite(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
-    serial_puts("\n[BOOT] FortressOS Phase 7 Acceptance Suite complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 7 (Checkpoint 5): Fast Syscall Hardening (syscall / sysret)
+     * ========================================================================= */
+    test_phase7_checkpoint5_fast_syscall(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
+
+    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 5) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

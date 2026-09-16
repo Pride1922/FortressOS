@@ -20,6 +20,8 @@
 
 /* Dispatcher & Test Lifecycle Hooks */
 void    syscall_init(void);
+void    syscall_init_msrs(void);
+bool    syscall_verify_msrs(void);
 int64_t syscall_dispatch(interrupt_frame_t *frame);
 
 void    syscall_set_recovery(uintptr_t rip, uintptr_t rsp);
