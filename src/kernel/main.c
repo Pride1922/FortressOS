@@ -18,6 +18,11 @@
 #include "console.h"
 #include "vfs.h"
 #include "tarfs.h"
+#include "pci.h"
+#include "nvme.h"
+#include "block.h"
+#include "crc32.h"
+#include "gpt.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
@@ -1975,6 +1980,878 @@ static void test_phase8b_vfs_initramfs(const boot_info_t *boot_info, uint64_t *m
     serial_puts("[ OK ] Phase 8 (Step 8B): Initramfs & Minimal VFS PASSED!\n\n");
 }
 
+/* =========================================================================
+ * Phase 9 (Step 9A): PCI Discovery & NVMe MMIO BAR Verification
+ * ========================================================================= */
+static void test_phase9a_pci_discovery(const boot_info_t *boot_info) {
+    serial_puts("\n========================================================\n");
+    serial_puts("Phase 9 (Step 9A): PCI Discovery & NVMe MMIO BAR Verification\n");
+    serial_puts("========================================================\n");
+
+    /* 1. Initialize PCI subsystem with HHDM offset */
+    serial_puts("[TEST 1] Initializing PCI Subsystem & Scanning ACPI MCFG...\n");
+    pci_init(boot_info->hhdm_offset);
+
+    /* 2. Sanity Check on Segment 0 Host Bridge (00:00.0) */
+    serial_puts("[TEST 2] Verifying Configuration Space Access (Host Bridge 00:00.0)...\n");
+    uint16_t host_vendor = pci_read_config16(0, 0, 0, 0, PCI_REG_VENDOR_ID);
+    uint16_t host_device = pci_read_config16(0, 0, 0, 0, PCI_REG_DEVICE_ID);
+    uint8_t  host_class  = pci_read_config8(0, 0, 0, 0, PCI_REG_CLASS);
+
+    if (host_vendor == 0xFFFF || host_vendor == 0x0000) {
+        serial_puts("       [FAIL] Host bridge vendor ID invalid (");
+        serial_print_hex(host_vendor);
+        serial_puts(")\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Host Bridge detected: Vendor ");
+    serial_print_hex(host_vendor);
+    serial_puts(", Device ");
+    serial_print_hex(host_device);
+    serial_puts(", Class ");
+    serial_print_hex(host_class);
+    serial_puts("\n");
+
+    /* 3. Enumerate all PCI devices and output inventory */
+    serial_puts("[TEST 3] Scanning PCI Bus Hierarchy & Generating Inventory...\n");
+    static pci_device_t detected_devices[MAX_PCI_DEVICES];
+    size_t dev_count = pci_scan_all(detected_devices, MAX_PCI_DEVICES);
+
+    if (dev_count == 0) {
+        serial_puts("       [FAIL] PCI scan returned 0 devices!\n");
+        hcf();
+    }
+
+    serial_puts("       [INFO] Discovered ");
+    serial_print_dec(dev_count);
+    serial_puts(" PCI device(s) on system:\n");
+    pci_print_inventory(detected_devices, dev_count);
+    serial_puts("       [PASS] PCI device inventory compiled successfully\n");
+
+    /* 4. Locate and Verify Attached NVMe Controller */
+    serial_puts("[TEST 4] Locating and Verifying NVMe Controller...\n");
+    pci_device_t nvme_dev;
+    bool found_nvme = pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME, PCI_PROGIF_STORAGE_NVME, &nvme_dev);
+
+    if (!found_nvme) {
+        serial_puts("       [FAIL] No NVMe controller found! (Ensure -device nvme is attached to QEMU)\n");
+        hcf();
+    }
+
+    /* Verify NVMe Class Code, Subclass, and Prog-IF */
+    if (nvme_dev.class_code != PCI_CLASS_STORAGE ||
+        nvme_dev.subclass != PCI_SUBCLASS_STORAGE_NVME ||
+        nvme_dev.prog_if != PCI_PROGIF_STORAGE_NVME) {
+        serial_puts("       [FAIL] NVMe device class/subclass/progif mismatch!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] NVMe Device verified: Class 0x01 (Storage), Subclass 0x08 (NVMe), ProgIF 0x02\n");
+
+    /* Verify BAR0 is 64-bit Memory space and non-zero */
+    if (nvme_dev.bar[0] == 0) {
+        serial_puts("       [FAIL] NVMe BAR0 is 0 (unassigned or invalid)!\n");
+        hcf();
+    }
+    if (nvme_dev.bar_is_io[0]) {
+        serial_puts("       [FAIL] NVMe BAR0 is I/O space! NVMe requires MMIO space.\n");
+        hcf();
+    }
+    if (!nvme_dev.bar_is_64[0]) {
+        serial_puts("       [FAIL] NVMe BAR0 is 32-bit! NVMe specification mandates 64-bit BAR0/1.\n");
+        hcf();
+    }
+
+    serial_puts("       [PASS] NVMe Controller location: ");
+    pci_print_bdf(nvme_dev.segment, nvme_dev.bus, nvme_dev.device, nvme_dev.function);
+    serial_puts("\n");
+
+    serial_puts("       [PASS] NVMe Vendor ID: ");
+    serial_print_hex(nvme_dev.vendor_id);
+    serial_puts(", Device ID: ");
+    serial_print_hex(nvme_dev.device_id);
+    serial_puts("\n");
+
+    serial_puts("       [PASS] NVMe 64-bit MMIO BAR0 Base: ");
+    serial_print_hex(nvme_dev.bar[0]);
+    serial_puts(" (Prefetchable: ");
+    serial_puts(nvme_dev.bar_prefetch[0] ? "Yes" : "No");
+    serial_puts(")\n");
+
+    /* 5. Verify Heap Integrity */
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Kernel heap walk detected corruption post-PCI scan!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+
+    serial_puts("\n[ OK ] Phase 9 (Step 9A): PCI Discovery & NVMe MMIO BAR Verification PASSED!\n\n");
+}
+
+/* =========================================================================
+ * Phase 9 (Step 9B.1): NVMe Initialization & Reads Verification
+ * ========================================================================= */
+static bool verify_sector_pattern(const uint8_t *sector, const char *pattern, size_t sector_size) {
+    size_t pat_len = strlen(pattern);
+    if (pat_len == 0 || sector_size == 0) return false;
+    for (size_t i = 0; i < sector_size; i++) {
+        if (sector[i] != (uint8_t)pattern[i % pat_len]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+#if defined(ENABLE_NVME_RAW_PATTERN_TESTS) && (ENABLE_NVME_RAW_PATTERN_TESTS == 1)
+static void test_phase9b1_nvme_reads(void) {
+    serial_puts("\n========================================================\n");
+    serial_puts("Phase 9 (Step 9B.1): NVMe Initialization & Reads Verification\n");
+    serial_puts("========================================================\n");
+
+    /* 1. Initialize NVMe Storage Driver */
+    serial_puts("[TEST 1] Initializing NVMe Storage Driver...\n");
+    if (!nvme_init()) {
+        serial_puts("       [FAIL] nvme_init() failed!\n");
+        hcf();
+    }
+    if (!nvme_is_initialized()) {
+        serial_puts("       [FAIL] nvme_is_initialized returned false!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] NVMe Storage Driver initialized\n");
+
+    /* 2. Validate Namespace Geometry */
+    serial_puts("[TEST 2] Validating Namespace Geometry...\n");
+    uint32_t active_nsid = nvme_get_active_nsid();
+    uint64_t sector_count = nvme_get_sector_count();
+    uint32_t sector_size = nvme_get_sector_size();
+
+    if (active_nsid == 0) {
+        serial_puts("       [FAIL] Active Namespace ID is 0!\n");
+        hcf();
+    }
+    if (sector_count == 0) {
+        serial_puts("       [FAIL] Sector count is 0!\n");
+        hcf();
+    }
+    if (sector_size != 512) {
+        serial_puts("       [FAIL] Expected 512-byte sectors, got: ");
+        serial_print_dec(sector_size);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Geometry confirmed: NSID ");
+    serial_print_dec(active_nsid);
+    serial_puts(", Sectors ");
+    serial_print_dec(sector_count);
+    serial_puts(", Sector Size ");
+    serial_print_dec(sector_size);
+    serial_puts(" bytes (Total: ");
+    serial_print_dec((sector_count * sector_size) / (1024 * 1024));
+    serial_puts(" MiB)\n");
+
+    /* 3. Read & Verify Known Deterministic Patterns */
+    serial_puts("[TEST 3] Reading & Comparing Known Patterns across Multiple LBAs...\n");
+    static uint8_t read_buf[512];
+
+    /* LBA 0 */
+    memset(read_buf, 0, sizeof(read_buf));
+    if (!nvme_read_sector(0, read_buf)) {
+        serial_puts("       [FAIL] nvme_read_sector(0) returned false!\n");
+        hcf();
+    }
+    if (verify_sector_pattern(read_buf, "FORTRESS_NVME_LBA0_BOOT_MAGIC_PATTERN_TEST_#0000#_", 512)) {
+        serial_puts("       [PASS] LBA 0 read verified (Valid boot sector magic pattern)\n");
+    } else {
+        serial_puts("       [FAIL] LBA 0 buffer verification failed!\n");
+        hcf();
+    }
+
+    /* LBA 1 */
+    memset(read_buf, 0, sizeof(read_buf));
+    if (!nvme_read_sector(1, read_buf)) {
+        serial_puts("       [FAIL] nvme_read_sector(1) returned false!\n");
+        hcf();
+    }
+    if (verify_sector_pattern(read_buf, "FORTRESS_NVME_LBA1_METADATA_HEADER_PATTERN_#0001#_", 512)) {
+        serial_puts("       [PASS] LBA 1 read verified (Valid test metadata pattern)\n");
+    } else {
+        serial_puts("       [FAIL] LBA 1 buffer verification failed!\n");
+        hcf();
+    }
+
+    /* LBA 100 */
+    memset(read_buf, 0, sizeof(read_buf));
+    if (!nvme_read_sector(100, read_buf)) {
+        serial_puts("       [FAIL] nvme_read_sector(100) returned false!\n");
+        hcf();
+    }
+    if (!verify_sector_pattern(read_buf, "FORTRESS_NVME_LBA100_MIDRANGE_INTEGRITY_DATA_#0100#_", 512)) {
+        serial_puts("       [FAIL] LBA 100 buffer pattern verification failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] LBA 100 read verified (100% data buffer match: #0100#)\n");
+
+    /* LBA 1000 */
+    memset(read_buf, 0, sizeof(read_buf));
+    if (!nvme_read_sector(1000, read_buf)) {
+        serial_puts("       [FAIL] nvme_read_sector(1000) returned false!\n");
+        hcf();
+    }
+    if (!verify_sector_pattern(read_buf, "FORTRESS_NVME_LBA1000_HIGHRANGE_DATA_VERIFY_#1000#_", 512)) {
+        serial_puts("       [FAIL] LBA 1000 buffer pattern verification failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] LBA 1000 read verified (100% data buffer match: #1000#)\n");
+
+    /* 4. Queue Wraparound Stress Test (70 consecutive reads over 32-entry queues on LBAs 100 & 1000) */
+    serial_puts("[TEST 4] Queue Wraparound Stress Test (70 reads across 32-entry queue pair)...\n");
+    for (int i = 0; i < 70; i++) {
+        uint64_t target_lba = (i % 2 == 0) ? 100 : 1000;
+        const char *expected_pat = (i % 2 == 0)
+            ? "FORTRESS_NVME_LBA100_MIDRANGE_INTEGRITY_DATA_#0100#_"
+            : "FORTRESS_NVME_LBA1000_HIGHRANGE_DATA_VERIFY_#1000#_";
+
+        if (!nvme_read_sector(target_lba, read_buf)) {
+            serial_puts("       [FAIL] Queue wraparound read failed at iteration: ");
+            serial_print_dec(i);
+            serial_puts("\n");
+            hcf();
+        }
+
+        if (!verify_sector_pattern(read_buf, expected_pat, 512)) {
+            serial_puts("       [FAIL] Pattern mismatch during wraparound test at iteration: ");
+            serial_print_dec(i);
+            serial_puts("\n");
+            hcf();
+        }
+    }
+    serial_puts("       [PASS] 70 sequential sector reads executed; SQ tail, CQ head, and Phase bit wrapped multiple times\n");
+
+    /* 5. Negative Test: Out-of-Range LBA Request */
+    serial_puts("[TEST 5] Negative Test: Requesting Out-of-Range LBA...\n");
+    uint64_t out_of_range_lba = sector_count + 1000;
+    bool oob_result = nvme_read_sector(out_of_range_lba, read_buf);
+    if (oob_result != false) {
+        serial_puts("       [FAIL] Out-of-range LBA read unexpectedly succeeded!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Out-of-range LBA cleanly rejected with controller error status\n");
+
+    /* 6. Verify Dynamic Kernel Heap Integrity */
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Kernel heap walk detected corruption post-NVMe reads!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+
+    serial_puts("\n[ OK ] Phase 9 (Step 9B.1): NVMe Initialization & Reads Verification PASSED!\n\n");
+}
+
+static void test_phase9b2_nvme_writes(void) {
+    serial_puts("\n========================================================\n");
+    serial_puts("Phase 9 (Step 9B.2): NVMe Writes, Flush & Persistence Test\n");
+    serial_puts("========================================================\n");
+
+    static uint8_t sector_buf[512];
+    static uint8_t write_buf[512];
+    static uint8_t guard_buf[512];
+
+    const char *virgin_lba500_pattern = "FORTRESS_NVME_LBA500_VIRGIN_PRE_WRITE_PATTERN_#0500#_";
+    const char *persisted_lba500_pattern = "FORTRESS_NVME_LBA500_PHASE9B2_PERSISTED_DATA_#9B2#_";
+    const char *guard_lower_pattern = "FORTRESS_NVME_LBA499_NEIGHBOUR_GUARD_LOWER_#0499#_";
+    const char *guard_upper_pattern = "FORTRESS_NVME_LBA501_NEIGHBOUR_GUARD_UPPER_#0501#_";
+    const char *wraparound_pat_a = "FORTRESS_NVME_LBA600_QUEUE_WRAPAROUND_TARGET_#0600#_";
+    const char *wraparound_pat_b = "FORTRESS_NVME_LBA600_WRAPAROUND_CYCLE_UPDATED_#600B#_";
+
+    serial_puts("[TEST 1] Reading designated persistence test sector (LBA 500)...\n");
+    memset(sector_buf, 0, sizeof(sector_buf));
+    if (!nvme_read_sector(500, sector_buf)) {
+        serial_puts("       [FAIL] nvme_read_sector(500) failed!\n");
+        hcf();
+    }
+
+    bool is_virgin = verify_sector_pattern(sector_buf, virgin_lba500_pattern, 512);
+    bool is_persisted = verify_sector_pattern(sector_buf, persisted_lba500_pattern, 512);
+
+    if (!is_virgin && !is_persisted) {
+        serial_puts("       [ABORT] LBA 500 contents match neither virgin pattern nor persisted signature!\n");
+        hcf();
+    }
+
+    if (is_virgin) {
+        serial_puts("       [STAGE 1 DETECTED] Virgin disk image detected at LBA 500.\n");
+        serial_puts("[TEST 2] Verifying neighbouring guard sectors before writes...\n");
+        memset(guard_buf, 0, sizeof(guard_buf));
+        if (!nvme_read_sector(499, guard_buf) || !verify_sector_pattern(guard_buf, guard_lower_pattern, 512)) {
+            serial_puts("       [FAIL] Pre-write lower guard sector (LBA 499) corrupted!\n");
+            hcf();
+        }
+        memset(guard_buf, 0, sizeof(guard_buf));
+        if (!nvme_read_sector(501, guard_buf) || !verify_sector_pattern(guard_buf, guard_upper_pattern, 512)) {
+            serial_puts("       [FAIL] Pre-write upper guard sector (LBA 501) corrupted!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] Lower guard (LBA 499) and Upper guard (LBA 501) pristine\n");
+
+        size_t pat_len = strlen(persisted_lba500_pattern);
+        for (size_t i = 0; i < 512; i++) {
+            write_buf[i] = (uint8_t)persisted_lba500_pattern[i % pat_len];
+        }
+
+        serial_puts("[TEST 3] Writing distinct signature pattern to LBA 500...\n");
+        if (!nvme_write_sector(500, write_buf)) {
+            serial_puts("       [FAIL] nvme_write_sector(500) returned false!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] Synchronous write to LBA 500 completed successfully\n");
+
+        serial_puts("[TEST 4] Issuing NVMe Flush command...\n");
+        if (!nvme_flush()) {
+            serial_puts("       [FAIL] nvme_flush() returned false!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] NVMe Flush command acknowledged by controller\n");
+
+        serial_puts("[TEST 5] Immediate readback verification of LBA 500...\n");
+        memset(sector_buf, 0, sizeof(sector_buf));
+        if (!nvme_read_sector(500, sector_buf)) {
+            serial_puts("       [FAIL] Immediate readback nvme_read_sector(500) failed!\n");
+            hcf();
+        }
+        if (memcmp(sector_buf, write_buf, 512) != 0) {
+            serial_puts("       [FAIL] Immediate readback data does not match written buffer!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] Immediate readback verified (100% 512-byte match)\n");
+
+        serial_puts("[TEST 6] Confirming neighbouring guard sectors remained untouched...\n");
+        memset(guard_buf, 0, sizeof(guard_buf));
+        if (!nvme_read_sector(499, guard_buf) || !verify_sector_pattern(guard_buf, guard_lower_pattern, 512)) {
+            serial_puts("       [FAIL] Post-write lower guard sector (LBA 499) was modified!\n");
+            hcf();
+        }
+        memset(guard_buf, 0, sizeof(guard_buf));
+        if (!nvme_read_sector(501, guard_buf) || !verify_sector_pattern(guard_buf, guard_upper_pattern, 512)) {
+            serial_puts("       [FAIL] Post-write upper guard sector (LBA 501) was modified!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] Lower guard (LBA 499) and Upper guard (LBA 501) verified untouched\n");
+
+        serial_puts("[TEST 7] Queue Wraparound Write Stress Test (70 writes across 32-entry queue)...\n");
+        for (int i = 0; i < 70; i++) {
+            const char *curr_pat = (i % 2 == 0) ? wraparound_pat_a : wraparound_pat_b;
+            size_t curr_len = strlen(curr_pat);
+            for (size_t b = 0; b < 512; b++) {
+                write_buf[b] = (uint8_t)curr_pat[b % curr_len];
+            }
+
+            if (!nvme_write_sector(600, write_buf)) {
+                serial_puts("       [FAIL] Queue wraparound write failed at iteration: ");
+                serial_print_dec(i);
+                serial_puts("\n");
+                hcf();
+            }
+        }
+        if (!nvme_flush()) {
+            serial_puts("       [FAIL] Flush post-wraparound failed!\n");
+            hcf();
+        }
+
+        memset(sector_buf, 0, sizeof(sector_buf));
+        if (!nvme_read_sector(600, sector_buf) || !verify_sector_pattern(sector_buf, wraparound_pat_b, 512)) {
+            serial_puts("       [FAIL] LBA 600 does not match final wraparound pattern!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] 70 sequential sector writes executed across queue wraparound\n");
+
+        if (!heap_verify_integrity()) {
+            serial_puts("       [FAIL] Heap integrity walk failed post-NVMe writes!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+
+        serial_puts("\n[STAGE 1 PASS] Write, Flush, and Wraparound successful! Ready for reboot persistence verification.\n");
+        outw(0x604, 0x2000);
+        outw(0xB004, 0x2000);
+        outw(0x4004, 0x3400);
+        serial_puts("[STAGE 1] Poweroff signal sent; halting.\n");
+        hcf();
+    } else {
+        serial_puts("       [STAGE 2 DETECTED] Post-reboot disk image detected (Signature found at LBA 500)!\n");
+        serial_puts("[TEST 2] Verifying 100% 512-byte sector match for persisted data at LBA 500...\n");
+        size_t pat_len = strlen(persisted_lba500_pattern);
+        for (size_t i = 0; i < 512; i++) {
+            write_buf[i] = (uint8_t)persisted_lba500_pattern[i % pat_len];
+        }
+
+        if (memcmp(sector_buf, write_buf, 512) != 0) {
+            serial_puts("       [FAIL] Persisted sector at LBA 500 does not match expected buffer!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] 100% exact 512-byte data match verified on reboot!\n");
+
+        serial_puts("[TEST 3] Verifying neighbouring sectors remained pristine across reboot...\n");
+        memset(guard_buf, 0, sizeof(guard_buf));
+        if (!nvme_read_sector(499, guard_buf) || !verify_sector_pattern(guard_buf, guard_lower_pattern, 512)) {
+            serial_puts("       [FAIL] Lower guard sector (LBA 499) corrupted post-reboot!\n");
+            hcf();
+        }
+        memset(guard_buf, 0, sizeof(guard_buf));
+        if (!nvme_read_sector(501, guard_buf) || !verify_sector_pattern(guard_buf, guard_upper_pattern, 512)) {
+            serial_puts("       [FAIL] Upper guard sector (LBA 501) corrupted post-reboot!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] Lower guard (LBA 499) and Upper guard (LBA 501) verified pristine post-reboot\n");
+
+        if (!heap_verify_integrity()) {
+            serial_puts("       [FAIL] Heap integrity walk failed post-reboot!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+        serial_puts("\n[ OK ] Phase 9 (Step 9B.2): Two-Stage Persistent NVMe Storage PASSED!\n\n");
+    }
+}
+#endif
+
+/* Mock Block Device for In-Memory Negative Testing */
+typedef struct {
+    block_dev_t dev;
+    uint8_t    *sectors;
+    uint64_t    sector_count;
+    uint32_t    sector_size;
+    size_t      read_calls;
+} mock_disk_t;
+
+static bool mock_disk_read(block_dev_t *dev, uint64_t lba, void *buf) {
+    if (!dev || !buf) return false;
+    mock_disk_t *m = (mock_disk_t *)dev->priv;
+    if (!m) return false;
+    m->read_calls++;
+    if (lba >= m->sector_count) return false;
+    memcpy(buf, m->sectors + lba * m->sector_size, m->sector_size);
+    return true;
+}
+
+static void mock_disk_init(mock_disk_t *m, const char *name, uint8_t *storage, uint64_t sectors, uint32_t sec_sz) {
+    memset(m, 0, sizeof(mock_disk_t));
+    size_t name_len = strlen(name);
+    if (name_len >= sizeof(m->dev.name)) name_len = sizeof(m->dev.name) - 1;
+    memcpy(m->dev.name, name, name_len);
+    m->dev.name[name_len] = '\0';
+    m->dev.sector_size  = sec_sz;
+    m->dev.sector_count = sectors;
+    m->dev.read_sector  = mock_disk_read;
+    m->dev.write_sector = NULL;
+    m->dev.flush        = NULL;
+    m->dev.priv         = m;
+    m->sectors          = storage;
+    m->sector_count     = sectors;
+    m->sector_size      = sec_sz;
+    m->read_calls       = 0;
+}
+
+static void synthesize_mock_gpt(uint8_t *disk, uint64_t total_sectors, uint32_t sector_size,
+                                uint32_t num_entries, uint32_t entry_size,
+                                uint64_t part_start, uint64_t part_end) {
+    memset(disk, 0, total_sectors * sector_size);
+
+    /* 1. MBR at LBA 0 */
+    gpt_protective_mbr_t *mbr = (gpt_protective_mbr_t *)disk;
+    mbr->entries[0].os_type = MBR_PARTITION_TYPE_GPT;
+    mbr->entries[0].starting_lba = 1;
+    mbr->entries[0].size_in_lba = (uint32_t)(total_sectors - 1);
+    mbr->signature = MBR_SIGNATURE_MAGIC;
+
+    /* 2. Partition Array */
+    size_t array_bytes = (size_t)num_entries * entry_size;
+    size_t array_sectors = (array_bytes + sector_size - 1) / sector_size;
+    uint8_t *pri_array = disk + 2 * sector_size;
+    uint64_t bak_array_lba = total_sectors - 1 - array_sectors;
+    uint8_t *bak_array = disk + bak_array_lba * sector_size;
+
+    if (part_start != 0 || part_end != 0) {
+        gpt_entry_t *entry = (gpt_entry_t *)pri_array;
+        entry->type_guid = GPT_GUID_LINUX_FS;
+        entry->unique_partition_guid = GPT_GUID_ESP;
+        entry->starting_lba = part_start;
+        entry->ending_lba = part_end;
+        memcpy(bak_array, pri_array, array_bytes);
+    }
+
+    uint32_t array_crc = crc32(0, pri_array, array_bytes);
+
+    /* 3. Primary Header at LBA 1 */
+    gpt_header_t *pri_hdr = (gpt_header_t *)(disk + 1 * sector_size);
+    pri_hdr->signature = GPT_SIGNATURE_MAGIC;
+    pri_hdr->revision = GPT_REVISION_1_0;
+    pri_hdr->header_size = GPT_MIN_HEADER_SIZE;
+    pri_hdr->current_lba = 1;
+    pri_hdr->backup_lba = total_sectors - 1;
+    pri_hdr->first_usable_lba = 2 + array_sectors;
+    pri_hdr->last_usable_lba = bak_array_lba - 1;
+    pri_hdr->disk_guid = GPT_GUID_LINUX_FS;
+    pri_hdr->partition_entry_lba = 2;
+    pri_hdr->num_partition_entries = num_entries;
+    pri_hdr->sizeof_partition_entry = entry_size;
+    pri_hdr->partition_entry_array_crc32 = array_crc;
+    pri_hdr->header_crc32 = 0;
+    pri_hdr->header_crc32 = crc32(0, pri_hdr, pri_hdr->header_size);
+
+    /* 4. Backup Header at LBA total_sectors - 1 */
+    gpt_header_t *bak_hdr = (gpt_header_t *)(disk + (total_sectors - 1) * sector_size);
+    bak_hdr->signature = GPT_SIGNATURE_MAGIC;
+    bak_hdr->revision = GPT_REVISION_1_0;
+    bak_hdr->header_size = GPT_MIN_HEADER_SIZE;
+    bak_hdr->current_lba = total_sectors - 1;
+    bak_hdr->backup_lba = 1;
+    bak_hdr->first_usable_lba = 2 + array_sectors;
+    bak_hdr->last_usable_lba = bak_array_lba - 1;
+    bak_hdr->disk_guid = GPT_GUID_LINUX_FS;
+    bak_hdr->partition_entry_lba = bak_array_lba;
+    bak_hdr->num_partition_entries = num_entries;
+    bak_hdr->sizeof_partition_entry = entry_size;
+    bak_hdr->partition_entry_array_crc32 = array_crc;
+    bak_hdr->header_crc32 = 0;
+    bak_hdr->header_crc32 = crc32(0, bak_hdr, bak_hdr->header_size);
+}
+
+/* =========================================================================
+ * Phase 9 (Step 9C.1): GPT Partition Parsing & Block Devices
+ * ========================================================================= */
+static void test_phase9c1_gpt(void) {
+    serial_puts("\n========================================================\n");
+    serial_puts("Phase 9 (Step 9C.1): GPT Partition Parsing & Block Devices\n");
+    serial_puts("========================================================\n");
+
+    /* 0. Ensure NVMe Driver is initialized */
+    if (!nvme_is_initialized()) {
+        if (!nvme_init()) {
+            serial_puts("       [FAIL] nvme_init() failed!\n");
+            hcf();
+        }
+    }
+
+    /* 1. IEEE 802.3 CRC32 Engine Self-Test */
+    serial_puts("[TEST 1] Executing IEEE 802.3 CRC32 verification vector...\n");
+    if (!crc32_selftest()) {
+        serial_puts("       [FAIL] CRC32 self-test failed! Reference vector mismatch!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] CRC32 engine verified (vector \"123456789\" -> 0xCBF43926)\n");
+
+    /* 2. Block Device Subsystem Initialization & Base Device Registration */
+    serial_puts("[TEST 2] Initializing Block Device layer & registering NVMe controller...\n");
+    block_init();
+    if (!block_register_nvme()) {
+        serial_puts("       [FAIL] block_register_nvme() failed!\n");
+        hcf();
+    }
+
+    block_dev_t *nvme_dev = block_get_dev_by_name("nvme0n1");
+    if (!nvme_dev) {
+        serial_puts("       [FAIL] Could not locate block device nvme0n1!\n");
+        hcf();
+    }
+    if (block_get_sector_size(nvme_dev) != 512 || block_get_sector_count(nvme_dev) != 65536) {
+        serial_puts("       [FAIL] nvme0n1 reports unexpected geometry via block device API!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Base block device nvme0n1 registered (65536 sectors, 512 B/sector, ");
+    serial_print_dec(block_get_capacity_bytes(nvme_dev) / (1024 * 1024));
+    serial_puts(" MiB)\n");
+
+    /* 3. GPT Header, Protective MBR, and Partition Array Discovery */
+    serial_puts("[TEST 3] Parsing GUID Partition Table (GPT) on nvme0n1...\n");
+    gpt_policy_result_t policy;
+    if (!gpt_parse_ex(nvme_dev, &policy) || policy != GPT_POLICY_PRIMARY_CONSISTENT) {
+        serial_puts("       [FAIL] gpt_parse_ex() failed on nvme0n1 or unexpected policy: ");
+        serial_print_dec((uint32_t)policy);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] GPT discovery passed (Protective MBR, Primary/Backup consistent policy)\n");
+
+    /* 4. Validate Partition Discovery & Metadata */
+    serial_puts("[TEST 4] Validating Partition Discovery & Attributes...\n");
+    size_t part_count = gpt_get_partition_count();
+    if (part_count != 1) {
+        serial_puts("       [FAIL] Expected exactly 1 partition on test disk!\n");
+        hcf();
+    }
+
+    gpt_partition_t *part1 = gpt_find_by_type(&GPT_GUID_LINUX_FS);
+    if (!part1) {
+        serial_puts("       [FAIL] Linux Filesystem Data partition not found!\n");
+        hcf();
+    }
+
+    if (part1->starting_lba != 2048 || part1->ending_lba != 10239 || part1->sector_count != 8192) {
+        serial_puts("       [FAIL] Partition 1 bounds mismatch! Expected 2048..10239 (8192 sectors)\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Discovered Partition 1 (Linux FS): LBA 2048..10239 (8192 sectors, 4 MiB)\n");
+
+    /* 5. Bounded Block Device Adapter Verification (nvme0n1p1) */
+    serial_puts("[TEST 5] Testing Bounded Partition Block Device (nvme0n1p1)...\n");
+    block_dev_t *part_dev = block_get_dev_by_name("nvme0n1p1");
+    if (!part_dev) {
+        serial_puts("       [FAIL] Partition block device nvme0n1p1 not found in registry!\n");
+        hcf();
+    }
+    if (block_get_sector_size(part_dev) != 512 || block_get_sector_count(part_dev) != 8192) {
+        serial_puts("       [FAIL] nvme0n1p1 reports invalid bounds!\n");
+        hcf();
+    }
+
+    /* 5A: Read relative LBA 0 (maps to parent LBA 2048) */
+    static uint8_t part_read_buf[512];
+    memset(part_read_buf, 0, sizeof(part_read_buf));
+    if (!block_read_sector(part_dev, 0, part_read_buf)) {
+        serial_puts("       [FAIL] Reading partition relative LBA 0 failed!\n");
+        hcf();
+    }
+    if (!verify_sector_pattern(part_read_buf, "FORTRESS_EXT2_PARTITION1_START_MAGIC_#0000#_", 512)) {
+        serial_puts("       [FAIL] Partition relative LBA 0 pattern mismatch!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Relative LBA 0 read verified (maps to parent LBA 2048)\n");
+
+    /* 5B: Inspect ext2 Superblock at relative LBA 2 (offset 1024 into partition) */
+    memset(part_read_buf, 0, sizeof(part_read_buf));
+    if (!block_read_sector(part_dev, 2, part_read_buf)) {
+        serial_puts("       [FAIL] Reading partition relative LBA 2 (ext2 superblock) failed!\n");
+        hcf();
+    }
+    uint16_t ext2_magic = *(uint16_t *)(part_read_buf + 0x38);
+    if (ext2_magic != 0xEF53) {
+        serial_puts("       [FAIL] Ext2 superblock magic mismatch! Expected 0xEF53, got: ");
+        serial_print_hex(ext2_magic);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Ext2 filesystem signature verified on nvme0n1p1 (s_magic: 0xEF53)\n");
+
+    /* 5C: Read relative LBA 8191 (last sector in partition, maps to parent LBA 10239) */
+    memset(part_read_buf, 0, sizeof(part_read_buf));
+    if (!block_read_sector(part_dev, 8191, part_read_buf)) {
+        serial_puts("       [FAIL] Reading partition relative LBA 8191 (last sector) failed!\n");
+        hcf();
+    }
+    if (!verify_sector_pattern(part_read_buf, "FORTRESS_EXT2_PARTITION1_LAST_SECTOR_#8191#_", 512)) {
+        serial_puts("       [FAIL] Partition relative LBA 8191 pattern mismatch!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Relative LBA 8191 (last sector) read verified (maps to parent LBA 10239)\n");
+
+    /* 5D: Boundary Enforcement - read at exact boundary (LBA 8192) MUST be rejected */
+    if (block_read_sector(part_dev, 8192, part_read_buf) != false) {
+        serial_puts("       [FAIL] Boundary violation! Read at partition boundary LBA 8192 succeeded!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Read at partition capacity boundary (LBA 8192) strictly rejected\n");
+
+    /* 5E: Read beyond boundary (e.g. LBA 99999) MUST be rejected */
+    if (block_read_sector(part_dev, 99999, part_read_buf) != false) {
+        serial_puts("       [FAIL] Boundary violation! Read at out-of-bounds LBA 99999 succeeded!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Read at out-of-bounds LBA (99999) strictly rejected\n");
+
+    /* 5F: Arithmetic overflow read (UINT64_MAX) MUST be rejected */
+    if (block_read_sector(part_dev, UINT64_MAX, part_read_buf) != false) {
+        serial_puts("       [FAIL] Arithmetic overflow read succeeded!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Arithmetic overflow read (UINT64_MAX) strictly rejected\n");
+
+    /* 5G: Read-only check - write to partition device MUST be rejected */
+    if (block_write_sector(part_dev, 0, part_read_buf) != false) {
+        serial_puts("       [FAIL] Write to read-only partition device succeeded!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Write to read-only partition device nvme0n1p1 strictly rejected\n");
+
+    /* 5H: Read-only check - flush on partition device MUST be rejected */
+    if (block_flush(part_dev) != false) {
+        serial_puts("       [FAIL] Flush on read-only partition device succeeded!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Flush on read-only partition device nvme0n1p1 strictly rejected\n");
+
+    /* =========================================================================
+     * Step 6: Expanded Negative Test Suite (In-Memory Mock Block Devices)
+     * ========================================================================= */
+    serial_puts("[TEST 6] Executing Expanded Negative & Corner-Case GPT Test Suite...\n");
+
+    const size_t mock_sectors = 100;
+    uint8_t *mock_buf = (uint8_t *)kmalloc(mock_sectors * 512);
+    if (!mock_buf) {
+        serial_puts("       [FAIL] Failed to allocate mock disk buffer!\n");
+        hcf();
+    }
+
+    mock_disk_t mock_disk;
+
+    /* N1: Bad primary array CRC with valid backup -> read-only fallback to backup */
+    synthesize_mock_gpt(mock_buf, mock_sectors, 512, 16, 128, 34, 50);
+    mock_buf[2 * 512] ^= 0xAA; /* Corrupt primary array */
+    mock_disk_init(&mock_disk, "mockN1", mock_buf, mock_sectors, 512);
+    gpt_policy_result_t n1_policy;
+    if (!gpt_parse_ex(&mock_disk.dev, &n1_policy) || n1_policy != GPT_POLICY_BACKUP_FALLBACK) {
+        serial_puts("       [FAIL] Negative test N1 failed! Expected BACKUP_FALLBACK\n");
+        hcf();
+    }
+    if (gpt_get_partition_count() != 1) {
+        serial_puts("       [FAIL] Negative test N1 did not discover partition from backup array!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Negative N1: Corrupted primary array cleanly fell back to Backup in memory\n");
+
+    /* N2: Both Primary and Backup copies invalid -> reject disk */
+    synthesize_mock_gpt(mock_buf, mock_sectors, 512, 16, 128, 34, 50);
+    mock_buf[1 * 512] = 'Z';                  /* Corrupt primary header signature */
+    mock_buf[(mock_sectors - 1) * 512] = 'Z'; /* Corrupt backup header signature */
+    mock_disk_init(&mock_disk, "mockN2", mock_buf, mock_sectors, 512);
+    gpt_policy_result_t n2_policy;
+    if (gpt_parse_ex(&mock_disk.dev, &n2_policy) || n2_policy != GPT_POLICY_REJECT_INVALID) {
+        serial_puts("       [FAIL] Negative test N2 failed! Expected REJECT_INVALID\n");
+        hcf();
+    }
+    if (gpt_get_partition_count() != 0) {
+        serial_puts("       [FAIL] Negative test N2 published partitions from invalid disk!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Negative N2: Dual invalid headers cleanly rejected disk (0 partitions published)\n");
+
+    /* N3: Ambiguous valid but inconsistent headers -> reject ambiguity */
+    synthesize_mock_gpt(mock_buf, mock_sectors, 512, 16, 128, 34, 50);
+    gpt_header_t *bak_hdr = (gpt_header_t *)(mock_buf + (mock_sectors - 1) * 512);
+    bak_hdr->disk_guid.bytes[0] ^= 0x55; /* Inconsistent GUID */
+    bak_hdr->header_crc32 = 0;
+    bak_hdr->header_crc32 = crc32(0, bak_hdr, bak_hdr->header_size);
+    mock_disk_init(&mock_disk, "mockN3", mock_buf, mock_sectors, 512);
+    gpt_policy_result_t n3_policy;
+    if (gpt_parse_ex(&mock_disk.dev, &n3_policy) || n3_policy != GPT_POLICY_REJECT_AMBIGUITY) {
+        serial_puts("       [FAIL] Negative test N3 failed! Expected REJECT_AMBIGUITY\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Negative N3: Ambiguous inconsistent headers cleanly rejected\n");
+
+    /* N4: Valid-CRC table containing overlapping partitions -> rejected, zero partial registry entries */
+    synthesize_mock_gpt(mock_buf, mock_sectors, 512, 16, 128, 34, 50);
+    /* Add overlapping second partition entry: 45..60 (overlaps 34..50 at 45..50) */
+    gpt_entry_t *pri_entry2 = (gpt_entry_t *)(mock_buf + 2 * 512 + 128);
+    pri_entry2->type_guid = GPT_GUID_ESP;
+    pri_entry2->unique_partition_guid = GPT_GUID_LINUX_FS;
+    pri_entry2->starting_lba = 45;
+    pri_entry2->ending_lba = 60;
+
+    size_t array_bytes = 16 * 128;
+    size_t array_sectors = (array_bytes + 512 - 1) / 512;
+    uint8_t *bak_array = mock_buf + (mock_sectors - 1 - array_sectors) * 512;
+    memcpy(bak_array, mock_buf + 2 * 512, array_bytes);
+
+    uint32_t new_crc = crc32(0, mock_buf + 2 * 512, array_bytes);
+    gpt_header_t *p_hdr = (gpt_header_t *)(mock_buf + 1 * 512);
+    p_hdr->partition_entry_array_crc32 = new_crc;
+    p_hdr->header_crc32 = 0;
+    p_hdr->header_crc32 = crc32(0, p_hdr, p_hdr->header_size);
+
+    bak_hdr = (gpt_header_t *)(mock_buf + (mock_sectors - 1) * 512);
+    bak_hdr->partition_entry_array_crc32 = new_crc;
+    bak_hdr->header_crc32 = 0;
+    bak_hdr->header_crc32 = crc32(0, bak_hdr, bak_hdr->header_size);
+
+    mock_disk_init(&mock_disk, "mockN4", mock_buf, mock_sectors, 512);
+    if (gpt_parse(&mock_disk.dev) != false) {
+        serial_puts("       [FAIL] Negative test N4 failed! Overlapping partitions accepted!\n");
+        hcf();
+    }
+    if (gpt_get_partition_count() != 0 || block_get_dev_by_name("mockN4p1") != NULL) {
+        serial_puts("       [FAIL] Negative test N4 left partial registry entries!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Negative N4: Valid-CRC overlapping partitions rejected (0 partial devices published)\n");
+
+    /* N5: Valid-CRC table with out-of-range partition -> rejected without partial devices */
+    synthesize_mock_gpt(mock_buf, mock_sectors, 512, 16, 128, 34, 999);
+    mock_disk_init(&mock_disk, "mockN5", mock_buf, mock_sectors, 512);
+    if (gpt_parse(&mock_disk.dev) != false) {
+        serial_puts("       [FAIL] Negative test N5 failed! Out-of-range partition accepted!\n");
+        hcf();
+    }
+    if (gpt_get_partition_count() != 0 || block_get_dev_by_name("mockN5p1") != NULL) {
+        serial_puts("       [FAIL] Negative test N5 left partial registry entries!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Negative N5: Valid-CRC out-of-range partition rejected without publishing\n");
+
+    /* N6: Oversized entry count (> 128) & placement collision -> rejected before allocation */
+    synthesize_mock_gpt(mock_buf, mock_sectors, 512, 16, 128, 34, 50);
+    p_hdr = (gpt_header_t *)(mock_buf + 1 * 512);
+    p_hdr->num_partition_entries = 500; /* Exceeds GPT_MAX_SUPPORTED_ENTRIES (128) */
+    p_hdr->header_crc32 = 0;
+    p_hdr->header_crc32 = crc32(0, p_hdr, p_hdr->header_size);
+    bak_hdr = (gpt_header_t *)(mock_buf + (mock_sectors - 1) * 512);
+    bak_hdr->num_partition_entries = 500;
+    bak_hdr->header_crc32 = 0;
+    bak_hdr->header_crc32 = crc32(0, bak_hdr, bak_hdr->header_size);
+    mock_disk_init(&mock_disk, "mockN6", mock_buf, mock_sectors, 512);
+    if (gpt_parse(&mock_disk.dev) != false) {
+        serial_puts("       [FAIL] Negative test N6 failed! Oversized entry count accepted!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Negative N6: Oversized partition entry count rejected during header validation\n");
+
+    /* N7: Parent Driver Read Dispatch Isolation */
+    synthesize_mock_gpt(mock_buf, mock_sectors, 512, 16, 128, 34, 50);
+    mock_disk_init(&mock_disk, "mockN7", mock_buf, mock_sectors, 512);
+    if (!gpt_parse(&mock_disk.dev)) {
+        serial_puts("       [FAIL] Setup for N7 failed!\n");
+        hcf();
+    }
+    block_dev_t *mock_part = block_get_dev_by_name("mockN7p1");
+    if (!mock_part) {
+        serial_puts("       [FAIL] Mock partition device mockN7p1 not found!\n");
+        hcf();
+    }
+
+    mock_disk.read_calls = 0; /* Reset call counter */
+    static uint8_t n7_dummy[512];
+    bool r_bound = block_read_sector(mock_part, mock_part->sector_count, n7_dummy);
+    bool r_oob   = block_read_sector(mock_part, mock_part->sector_count + 100, n7_dummy);
+    bool r_ovf   = block_read_sector(mock_part, UINT64_MAX, n7_dummy);
+
+    if (r_bound != false || r_oob != false || r_ovf != false) {
+        serial_puts("       [FAIL] Out-of-bounds reads on mock partition unexpectedly succeeded!\n");
+        hcf();
+    }
+    if (mock_disk.read_calls != 0) {
+        serial_puts("       [FAIL] Rejected partition read reached parent driver! Read calls: ");
+        serial_print_dec(mock_disk.read_calls);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Negative N7: Rejected partition reads NEVER reached parent driver (parent calls: 0)\n");
+
+    kfree(mock_buf);
+
+    /* 7. Re-parse live NVMe device so active system has nvme0n1p1 ready */
+    if (!gpt_parse(nvme_dev)) {
+        serial_puts("       [FAIL] Re-parsing live NVMe device failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Live NVMe device restored to active registry (nvme0n1p1 ready)\n");
+
+    /* 8. Dynamic Kernel Heap Integrity Verification */
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed post-GPT parsing!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+
+    serial_puts("\n[ OK ] Phase 9 (Step 9C.1): GPT Partition Parsing & Block Devices PASSED!\n\n");
+}
 
 /* Kernel Main Entry Point */
 void kmain(void) {
@@ -3427,7 +4304,29 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase8b_vfs_initramfs(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
-    serial_puts("\n[BOOT] FortressOS Phase 8 (Step 8B) complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 9 (Step 9A): PCI Discovery & NVMe MMIO BAR Verification
+     * ========================================================================= */
+    test_phase9a_pci_discovery(&boot_info);
+
+#if defined(ENABLE_NVME_RAW_PATTERN_TESTS) && (ENABLE_NVME_RAW_PATTERN_TESTS == 1)
+    /* =========================================================================
+     * Phase 9 (Step 9B.1): NVMe Initialization & Reads Verification
+     * ========================================================================= */
+    test_phase9b1_nvme_reads();
+
+    /* =========================================================================
+     * Phase 9 (Step 9B.2): NVMe Writes, Flush & Persistence Verification
+     * ========================================================================= */
+    test_phase9b2_nvme_writes();
+#endif
+
+    /* =========================================================================
+     * Phase 9 (Step 9C.1): GPT Partition Parsing & Bounded Block Devices
+     * ========================================================================= */
+    test_phase9c1_gpt();
+
+    serial_puts("\n[BOOT] FortressOS Phase 9 (Step 9C.1) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

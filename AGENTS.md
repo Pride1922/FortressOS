@@ -50,12 +50,25 @@ FortressOS/
     ├── drivers/
     │   ├── acpi.c           # RSDP, RSDT/XSDT validation, and MADT parsing
     │   ├── acpi.h           # ACPI table headers, RSDP, and MADT structure definitions
+    │   ├── block.c          # Abstract block device subsystem & device registry
+    │   ├── block.h          # block_dev_t descriptor, sector operations, and registration API
     │   ├── ioapic.c         # I/O APIC discovery, MMIO registers, and redirection table masking
     │   ├── ioapic.h         # I/O APIC controller definitions and routing prototypes
+    │   ├── nvme.c           # PCIe NVMe storage driver, Admin/IO queues, dynamic doorbells
+    │   ├── nvme.h           # NVMe register structures, SQE/CQE, and sector read/write/flush API
+    │   ├── pci.c            # PCI configuration access (ECAM MCFG & legacy 0xCF8/0xCFC)
+    │   ├── pci.h            # PCI device descriptors, class codes, and configuration prototypes
     │   ├── pic.c            # 8259 PIC masking and disable logic
     │   ├── pic.h            # 8259 PIC port definitions and mask queries
     │   ├── serial.c         # UART 16550 COM1 port I/O driver (115200 8N1)
     │   └── serial.h         # Serial driver headers and port I/O inlines (inb, outb, io_wait)
+    ├── fs/
+    │   ├── gpt.c            # GPT partition table parser, Protective MBR, and bounded partition devices
+    │   ├── gpt.h            # GPT header, partition entry structures, and GUID definitions
+    │   ├── tarfs.c          # Read-only USTAR archive parser for initramfs
+    │   ├── tarfs.h          # USTAR tar format headers
+    │   ├── vfs.c            # Virtual File System tree, lookup, file descriptors, and stat/readdir
+    │   └── vfs.h            # VFS node structures, file handle descriptors, and public API
     ├── include/
     │   ├── boot_info.h      # Kernel-owned boot information and memory map snapshot
     │   ├── limine.h         # Official Limine bootloader protocol specification
@@ -357,28 +370,67 @@ Future tasks should follow this sequenced implementation order:
     │   ├── Thread & IRQ-safe synchronization via dedicated spinlock_t g_console_lock (spin_lock_irqsave)
     │   ├── Tokyo Night theme palette (Foreground: 0x00C0CAF5, Background: 0x001A1B26)
     │   └── Comprehensive verification: 160x50 character grid, cursor movements, 55-line scroll test, and banner rendering in BIOS and UEFI
-    ├── Step 8B: Initramfs, Minimal VFS & File Descriptors (COMPLETE)
-    │   ├── Limine module request for initramfs.tar (USTAR format) with memory reserved by bootloader
-    │   ├── Snapshot module metadata (initramfs_vaddr, initramfs_paddr, initramfs_size) and verify magic/checksum
-    │   ├── Strict read-only USTAR parser rejecting non-USTAR, corrupt checksums, octal overflow, and unsupported types
-    │   ├── VFS node abstraction (vfs_node_t) separated from open file object (file_t) ensuring independent seek offsets
-    │   ├── Per-process file descriptor table (fd_table[32]) with O(1) allocation and automated cleanup on exit (fd_close_all)
-    │   ├── Directory enumeration API (vfs_readdir / sys_readdir) supporting future shell ls
-    │   ├── Hardened system calls: sys_open, sys_close, sys_read, sys_stat, sys_readdir
-    │   │   ├── Strict user destination buffer validation (vmm_validate_user_range with write_req = true)
-    │   │   ├── Proper EOF detection, short reads, zero-length reads, and EBADF / ENOENT / EFAULT returns
-    │   ├── NMI & Panic Reentrancy: Dedicated lockless serial_raw_* path prevents console spinlock deadlocks
-    │   ├── Standard archive contents: /bin/init, /bin/hello, /etc/motd, /docs/readme.txt
-    │   └── Comprehensive verification: VFS hierarchy lookup, directory enumeration, dual open independent offsets,
-    │       Ring 3 acceptance suite (Mode 7, exit code 88), and 100% zero-leak resource audit under BIOS and UEFI QEMU
-    ├── Step 8C: Keyboard Input & Blocking Reads (NEXT)
-    │   ├── PS/2 keyboard controller & I/O APIC IRQ1 routing
-    │   ├── Non-busy blocking read wait queue (sleep until key pressed, no race between buffer check and sleep)
-    │   └── Key event queue with scancode-to-ASCII translation
-    └── Step 8D: Ring 3 Shell & Program Launching
-        ├── fortress> prompt
-        ├── Built-in commands: ls, cat, help, clear
-        └── Program spawning from VFS path (/bin/hello) with exit status reporting
+    └── Step 8B: Initramfs, Minimal VFS & File Descriptors (COMPLETE)
+        ├── Limine module request for initramfs.tar (USTAR format) with memory reserved by bootloader
+        ├── Snapshot module metadata (initramfs_vaddr, initramfs_paddr, initramfs_size) and verify magic/checksum
+        ├── Strict read-only USTAR parser rejecting non-USTAR, corrupt checksums, octal overflow, and unsupported types
+        ├── VFS node abstraction (vfs_node_t) separated from open file object (file_t) ensuring independent seek offsets
+        ├── Per-process file descriptor table (fd_table[32]) with O(1) allocation and automated cleanup on exit (fd_close_all)
+        ├── Directory enumeration API (vfs_readdir / sys_readdir) supporting future shell ls
+        ├── Hardened system calls: sys_open, sys_close, sys_read, sys_stat, sys_readdir
+        │   ├── Strict user destination buffer validation (vmm_validate_user_range with write_req = true)
+        │   ├── Proper EOF detection, short reads, zero-length reads, and EBADF / ENOENT / EFAULT returns
+        ├── NMI & Panic Reentrancy: Dedicated lockless serial_raw_* path prevents console spinlock deadlocks
+        ├── Standard archive contents: /bin/init, /bin/hello, /etc/motd, /docs/readme.txt
+        └── Comprehensive verification: VFS hierarchy lookup, directory enumeration, dual open independent offsets,
+            Ring 3 acceptance suite (Mode 7, exit code 88), and 100% zero-leak resource audit under BIOS and UEFI QEMU
+    │
+    ▼
+[Phase 9] Storage Track (NVMe & ext2)
+    ├── Phase 9A: PCI Discovery & MMIO BAR Decoding (COMPLETE)
+    │   ├── PCI configuration access: PCIe ECAM via ACPI MCFG with segment/bus range awareness & legacy 0xCF8/0xCFC fallback
+    │   ├── Non-destructive inspection of firmware-assigned BARs (distinguish 32-bit vs 64-bit Memory & I/O spaces)
+    │   ├── Hardware enumeration: identify Mass Storage (0x01), Non-Volatile Memory (0x08), NVM Express (0x02)
+    │   └── Acceptance Test: Identify QEMU NVMe controller, verify class codes, and decode 64-bit MMIO BAR (PASSED in UEFI & BIOS)
+    ├── Phase 9B.1: NVMe Initialization and Reads (COMPLETE)
+    │   ├── Single-controller, single-namespace, single I/O queue pair with bounded polling
+    │   ├── Contiguous DMA allocation via PMM, PRP entry management, and DMA-buffer lifetime guarantees
+    │   ├── Controller capabilities (CAP), Admin queues (ASQ/ACQ), Identify Controller & Namespace geometry
+    │   ├── Bounded polling command execution with timeout recovery (never free DMA memory while controller active)
+    │   └── Acceptance Test: Identify namespace geometry, read known test sector patterns across LBAs, 70-read wraparound stress test, and out-of-range rejection (PASSED in UEFI & BIOS)
+    ├── Phase 9B.2: Writes and Flush (COMPLETE)
+    │   ├── NVMe Write (`NVME_NVM_OP_WRITE`) and Flush (`NVME_NVM_OP_FLUSH`) synchronous commands on IOSQ 1
+    │   ├── Dynamic doorbell mapping calculation: covers offsets up to `0x1000 + 3 * (4 << CAP.DSTRD) + 4` (Dell Latitude safe)
+    │   ├── Queue limit abstraction: checks `(CAP.MQES + 1) >= 32` as controller capacity limit rather than fixed 2048 requirement
+    │   ├── Timeout & DMA quarantine safety: controller quiesce on error; permanently quarantines DMA memory if quiesce fails
+    │   ├── Raw-sector write isolation: disabled by default on normal boots (`ENABLE_NVME_PERSISTENCE_TEST`) to protect partition tables
+    │   ├── Explicit documentation qualifications:
+    │   │   - Fixed-port poweroff (`outw(0x604, 0x2000)`) is a QEMU test harness mechanism, not general ACPI shutdown for the Latitude 5590.
+    │   │   - A clean QEMU restart demonstrates persistence in that emulator environment, not physical power-loss resilience.
+    │   └── Acceptance Test: Write to disposable disk image, flush, 70-write wraparound test, verify neighbours, restart QEMU, verify 100% 512-byte persistence across reboot (PASSED in UEFI & BIOS)
+    ├── Phase 9C.1: GUID Partition Table (GPT) & Bounded Block Devices (COMPLETE)
+    │   ├── Fixture Separation: isolated raw NVMe persistence disk fixture (`build/nvme_raw.img`) from partitioned GPT fixture (`build/nvme_gpt.img`); gated raw pattern tests via `ENABLE_NVME_RAW_PATTERN_TESTS`
+    │   ├── Bounded Partition-Array Validation: strict entry size (128..512 bytes, 8-byte aligned), max entry count (1..128), overflow-safe byte limit (64 KiB), disk capacity fit, and non-overlap against headers and usable space prior to allocation
+    │   ├── Exact CRC32 Calculation: computed strictly over `num_partition_entries * sizeof_partition_entry` exact bytes, excluding sector padding
+    │   ├── Deterministic Backup Policy: complete 5-case outcome matrix (Valid/Consistent -> Primary; Invalid/Valid -> in-memory read-only fallback; Valid/Invalid -> degraded-mode Primary; Valid/Inconsistent -> reject ambiguity; Both Invalid -> reject disk)
+    │   ├── All-or-Nothing Staging & Publication: whole-table bounds and pairwise overlap validation in memory before registering partition block devices; read-only callbacks (`write_sector = NULL`, `flush = NULL`)
+    │   ├── Block Device Abstraction: geometry and capacity accessors (`block_get_sector_size`, `block_get_sector_count`, `block_get_capacity_bytes`, `block_read_sector`, `block_unregister_dev`)
+    │   ├── Bounded Block Device Adapter: exposes discovered partitions (e.g. `nvme0n1p1`) with sector translation and strict capacity bounds checking
+    │   └── Acceptance Test Suite:
+    │       - Live NVMe ext2 partition discovery (`GPT_GUID_LINUX_FS`) at LBA 2048..10239 (8192 sectors, 4 MiB)
+    │       - Verified relative LBA 0 read, ext2 superblock magic `0xEF53` at LBA 2, and last sector LBA 8191
+    │       - Strict rejection of reads at capacity boundary (LBA 8192), out-of-bounds (LBA 99999), arithmetic overflow (`UINT64_MAX`), and write/flush attempts
+    │       - Expanded 7-Case Negative Test Suite: N1 (bad primary array fallback to backup in memory), N2 (both invalid rejection), N3 (ambiguity rejection on inconsistent headers), N4 (valid-CRC overlapping partition rejection without publishing), N5 (valid-CRC out-of-range partition rejection without publishing), N6 (oversized entry count rejection), and N7 (isolated parent dispatch: verified rejected reads never reach parent driver)
+    │       - Dynamic kernel heap integrity audit verified with 0 memory leaks (PASSED in UEFI & BIOS)
+    ├── Phase 9C.2: Read-Only ext2 Filesystem (NEXT)
+    │   ├── Superblock (0xEF53), block groups, inode table, directory traversal, and direct/indirect block reading
+    │   └── Acceptance Test: Mount at /mnt alongside working root initramfs and read /mnt/hello.txt via VFS
+    ├── Steps 8C–8D: Interactive Console & Shell
+    │   ├── Step 8C: PS/2 keyboard controller & I/O APIC IRQ1 routing with non-busy blocking read wait queue
+    │   └── Step 8D: Ring 3 interactive shell (fortress> prompt, ls, cat, help, and program launching)
+    └── Phase 9D: Writable ext2 Filesystem
+        ├── Block/inode allocation, directory entry insertion, file creation and writes
+        └── Acceptance Test: Create and reopen files after reboot (persistent storage)
 ```
 
 ---

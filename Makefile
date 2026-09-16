@@ -93,10 +93,15 @@ ifeq ($(OVMF_FILE),)
     OVMF_FILE := ovmf/OVMF.fd
 endif
 
-QEMU_FLAGS := -M q35 -m 2G -serial stdio
+NVME_GPT_IMG := $(BUILD_DIR)/nvme_gpt.img
+NVME_RAW_IMG := $(BUILD_DIR)/nvme_raw.img
+NVME_IMG ?= $(NVME_GPT_IMG)
+
+QEMU_NVME_FLAGS := -drive file=$(NVME_IMG),if=none,id=nvm0,format=raw -device nvme,serial=fortress0,drive=nvm0
+QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean distclean run run-bios debug limine-setup ovmf-setup iso
+.PHONY: all clean distclean run run-bios debug limine-setup ovmf-setup iso nvme-disk nvme-gpt-disk nvme-raw-disk
 
 all: $(BOOTABLE_ISO)
 
@@ -203,8 +208,23 @@ $(BOOTABLE_ISO): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf limine-setup
 	@$(LIMINE_DIR)/limine bios-install $(BOOTABLE_ISO) 2>/dev/null || true
 	@echo "[OK] Bootable ISO generated: $(BOOTABLE_ISO)"
 
+# Create 32 MiB test GPT partitioned NVMe disk image
+$(NVME_GPT_IMG): scripts/create_nvme_disk.py
+	@mkdir -p $(BUILD_DIR)
+	@python3 scripts/create_nvme_disk.py $@ --gpt
+
+nvme-gpt-disk: $(NVME_GPT_IMG)
+nvme-disk: $(NVME_GPT_IMG)
+
+# Create 32 MiB test raw NVMe persistence disk image
+$(NVME_RAW_IMG): scripts/create_nvme_disk.py
+	@mkdir -p $(BUILD_DIR)
+	@python3 scripts/create_nvme_disk.py $@ --raw
+
+nvme-raw-disk: $(NVME_RAW_IMG)
+
 # Launch operating system in QEMU under UEFI mode
-run: $(BOOTABLE_ISO) ovmf-setup
+run: $(BOOTABLE_ISO) $(NVME_IMG) ovmf-setup
 	@echo "--> Launching FortressOS in QEMU (UEFI mode)..."
 	@if [ -f "/usr/share/OVMF/OVMF_CODE_4M.fd" ] && [ -f "/usr/share/OVMF/OVMF_VARS_4M.fd" ]; then \
 		mkdir -p $(BUILD_DIR); \
@@ -218,12 +238,12 @@ run: $(BOOTABLE_ISO) ovmf-setup
 	fi
 
 # Launch in QEMU under legacy BIOS mode
-run-bios: $(BOOTABLE_ISO)
+run-bios: $(BOOTABLE_ISO) $(NVME_IMG)
 	@echo "--> Launching FortressOS in QEMU (BIOS mode)..."
-	$(QEMU) $(QEMU_FLAGS) -cdrom $(BOOTABLE_ISO)
+	$(QEMU) $(QEMU_FLAGS) -boot d -cdrom $(BOOTABLE_ISO)
 
 # Launch with GDB debugging stub enabled
-debug: $(BOOTABLE_ISO) ovmf-setup
+debug: $(BOOTABLE_ISO) $(NVME_IMG) ovmf-setup
 	@echo "--> Launching FortressOS with GDB debugging enabled (target remote :1234)..."
 	@if [ -f "/usr/share/OVMF/OVMF_CODE_4M.fd" ] && [ -f "/usr/share/OVMF/OVMF_VARS_4M.fd" ]; then \
 		mkdir -p $(BUILD_DIR); \
