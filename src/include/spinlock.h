@@ -3,7 +3,27 @@
 
 #include "types.h"
 
-/* Freestanding Spinlock with Interrupt Flags (RFLAGS) Preservation */
+/*
+ * Freestanding Spinlock with Interrupt Flags (RFLAGS) Preservation
+ *
+ * NOTE ON RECURSION:
+ * These spinlocks are strictly NON-RECURSIVE. Acquiring the same lock twice
+ * in the same execution context will deadlock. Reentrancy is avoided by design
+ * using internal unlocked helpers (e.g., kmalloc_unlocked) rather than recursive locks.
+ *
+ * SUBSYSTEM LOCK HIERARCHY & ORDERING:
+ * To avoid deadlocks, locks must always be acquired in descending order:
+ *   Level 1: g_sched_lock (Scheduler runqueue & thread state)
+ *   Level 2: g_heap_lock  (Kernel heap & free list)
+ *   Level 3: g_vmm_lock   (Page tables & virtual mapping)
+ *   Level 4: g_pmm_lock   (Physical frame bitmap allocator)
+ *
+ * CRITICAL CONSTRAINTS:
+ * 1. Never acquire a higher-level lock while holding a lower-level lock.
+ * 2. No spinlock may EVER remain held across switch_context().
+ * 3. Dead thread reaping unlinks nodes under g_sched_lock, then drops
+ *    g_sched_lock before calling kstack_free() (VMM/PMM) and kfree() (Heap).
+ */
 typedef struct {
     volatile uint32_t lock;
 } spinlock_t;

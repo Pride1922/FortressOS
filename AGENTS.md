@@ -164,6 +164,15 @@ To debug kernel initialization step-by-step:
      - Function arguments passed in: `RDI`, `RSI`, `RDX`, `RCX`, `R8`, `R9`.
      - Callee-preserved registers: `RBX`, `RSP`, `RBP`, `R12`, `R13`, `R14`, `R15`.
      - Stack alignment: `RSP` must be 16-byte aligned before any `call` instruction.
+6. **Concurrency & Lock Hierarchy Rules:**
+   - **Non-Recursive Spinlocks**: `spinlock_t` uses atomic test-and-set with interrupt flag (`RFLAGS`) preservation (`spin_lock_irqsave` / `spin_unlock_irqrestore`). They are strictly **non-recursive**; acquiring an already-held lock on the same CPU will deadlock. Internal `_unlocked` helpers are used across subsystems to avoid self-recursion.
+   - **Strict Hierarchy Order**: Locks must always be acquired in descending order:
+     `g_sched_lock` (L1) -> `g_heap_lock` (L2) -> `g_vmm_lock` (L3) -> `g_pmm_lock` (L4).
+   - **Context Switch Invariant**: No spinlock may EVER remain held across `switch_context()`.
+   - **Detached Deallocation**: Complex cross-subsystem cleanup (e.g. `sched_reap_dead()`) must decouple nodes under lock and deallocate outside the lock to prevent lock inversions.
+7. **Stack Guard Page Architecture & Fault Escalation:**
+   - **Linear Growth Scope**: Dedicated thread stacks include a 4 KiB unmapped bottom guard page (`0xFFFFFFFFA0000000ULL`). This catches linear contiguous stack growth. It does not catch frame skips exceeding 4096 bytes without compiler stack-clash probes.
+   - **Double Fault (#DF) Escalation**: Because Vector 14 (`#PF`) delivers on the active stack (`IST=0`), pushing the `#PF` exception frame onto an already-exhausted stack causes a nested fault. Hardware escalates this to Vector 8 (`#DF`). Because Vector 8 is bound to `IST1`, execution safely lands on the dedicated 16 KiB emergency IST1 stack, preventing an unrecoverable Triple Fault (CPU reset).
 
 ---
 

@@ -11,6 +11,25 @@
 #define STACK_SLOT_SIZE       (STACK_GUARD_SIZE + STACK_USABLE_SIZE) /* 20 KiB */
 #define DEFAULT_QUANTUM_TICKS 2        /* 20 ms at 100 Hz */
 
+/*
+ * NOTE ON STACK GUARD SEMANTICS & LIMITATIONS:
+ * 1. Linear Growth Protection:
+ *    The 4 KiB unmapped guard page at the base of each slot catches contiguous
+ *    downward stack growth. Any push or call into this page causes a Page Fault (#PF).
+ * 2. Exception Delivery & Double Fault (#DF) Escalation:
+ *    Because Vector 14 (#PF) delivers on the current stack (IST=0), attempting
+ *    to push the #PF exception frame onto an already-exhausted stack causes a
+ *    nested page fault. The CPU automatically escalates this to a Double Fault
+ *    (#DF, Vector 8). Because Vector 8 is wired to IST1, the kernel safely lands
+ *    on the dedicated 16 KiB emergency IST1 stack and dumps diagnostic panic info,
+ *    preventing an unrecoverable Triple Fault (CPU reset).
+ * 3. Frame Skip Limitation:
+ *    A single 4 KiB guard does NOT catch arbitrary out-of-bounds indexing or
+ *    stack frame allocations exceeding 4096 bytes (e.g., large alloca or array)
+ *    that jump over the guard into unmapped space or lower slots. Compilers use
+ *    stack probes (-fstack-clash-protection) to guarantee touches in every 4 KiB page.
+ */
+
 typedef enum {
     THREAD_READY,
     THREAD_RUNNING,
