@@ -1,4 +1,5 @@
 #include "serial.h"
+#include "console.h"
 
 #define COM1_DATA          (COM1_PORT + 0)
 #define COM1_IER           (COM1_PORT + 1) /* Interrupt Enable Register */
@@ -50,8 +51,17 @@ static int serial_is_transmit_empty(void) {
 }
 
 void serial_putc(char c) {
+    /* Mirror output to framebuffer console if active */
+    if (console_is_initialized()) {
+        console_putc(c);
+    }
+
     if (c == '\n') {
-        serial_putc('\r');
+        /* Send carriage return to serial before newline */
+        while (!serial_is_transmit_empty()) {
+            __asm__ volatile("pause");
+        }
+        outb(COM1_DATA, (uint8_t)'\r');
     }
 
     /* Wait until the transmit buffer is empty */

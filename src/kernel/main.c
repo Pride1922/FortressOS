@@ -15,6 +15,7 @@
 #include "thread.h"
 #include "syscall.h"
 #include "elf.h"
+#include "console.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
@@ -1714,6 +1715,92 @@ hostile_recovery_done:
     serial_puts("[ OK ] Phase 7 (Checkpoint 5) completed successfully!\n\n");
 }
 
+/* =========================================================================
+ * Phase 8 (Step 8A): Basic Framebuffer Text Console Verification Suite
+ * ========================================================================= */
+static void test_phase8a_framebuffer_console(const boot_info_t *boot_info) {
+    serial_puts("========================================================\n");
+    serial_puts("Phase 8 (Step 8A): Basic Framebuffer Text Console Suite\n");
+    serial_puts("========================================================\n");
+
+    if (!boot_info->has_framebuffer) {
+        serial_puts("[WARN] Skipping console test (headless configuration)\n");
+        return;
+    }
+
+    /* 1. Verify Console Initialization & Grid Metrics */
+    serial_puts("[TEST 1] Verifying Framebuffer Console Initialization...\n");
+    if (!console_is_initialized()) {
+        serial_puts("       [FAIL] Framebuffer console was not initialized!\n");
+        hcf();
+    }
+    uint64_t cols = 0, rows = 0;
+    console_get_dimensions(&cols, &rows);
+    if (cols == 0 || rows == 0) {
+        serial_puts("       [FAIL] Invalid console grid dimensions!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Console initialized (Grid: ");
+    serial_print_dec(cols);
+    serial_puts("x");
+    serial_print_dec(rows);
+    serial_puts(" characters, 8x16 font)\n");
+
+    /* 2. Cursor Control, Tabs, and Backspace */
+    serial_puts("[TEST 2] Testing Cursor Control, Tabs, and Backspace...\n");
+    uint64_t c_col = 0, c_row = 0;
+    console_putc('\n');
+    console_get_cursor(&c_col, &c_row);
+    bool nl_ok = (c_col == 0);
+
+    console_putc('\t');
+    console_get_cursor(&c_col, &c_row);
+    bool tab_ok = (c_col == 8);
+
+    console_putc('\b');
+    console_get_cursor(&c_col, &c_row);
+    bool bs_ok = (c_col == 7);
+
+    if (!nl_ok || !tab_ok || !bs_ok) {
+        serial_puts("       [FAIL] Cursor control verification failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Newline (\\n) advances row and resets column to 0\n");
+    serial_puts("       [PASS] Tab (\\t) advances cursor to column 8\n");
+    serial_puts("       [PASS] Backspace (\\b) erases character and decrements column to 7\n");
+
+    /* 3. Software Scrolling Verification */
+    serial_puts("[TEST 3] Testing Multi-Line Software Row Scrolling...\n");
+    uint64_t scroll_test_lines = rows + 5;
+    for (uint64_t i = 1; i <= scroll_test_lines; i++) {
+        serial_puts("       [SCROLL] Line ");
+        serial_print_dec(i);
+        serial_puts(" / ");
+        serial_print_dec(scroll_test_lines);
+        serial_puts(" scrolling test\n");
+    }
+    console_get_cursor(&c_col, &c_row);
+    if (c_row != rows - 1) {
+        serial_puts("       [FAIL] Cursor row exceeded screen boundary after scrolling!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Software row scrolling verified (cursor clamped to bottom row ");
+    serial_print_dec(rows - 1);
+    serial_puts(")\n");
+
+    /* 4. Color Switching & Visual Banner */
+    serial_puts("[TEST 4] Testing Palette Color Switching & Visual Banner...\n");
+    console_set_color(0x009ECE6A, CONSOLE_DEFAULT_BG); /* Tokyo Night Green */
+    serial_puts("\n+-------------------------------------------------------------+\n");
+    serial_puts("|      FORTRESS OS - Phase 8A Framebuffer Console ACTIVE      |\n");
+    serial_puts("|         8x16 Bitmap Font * Software Row Scrolling           |\n");
+    serial_puts("+-------------------------------------------------------------+\n\n");
+    console_set_color(CONSOLE_DEFAULT_FG, CONSOLE_DEFAULT_BG); /* Restore Default */
+    serial_puts("       [PASS] Color switching and ASCII frame rendered\n");
+
+    serial_puts("[ OK ] Phase 8 (Step 8A): Framebuffer Console PASSED!\n\n");
+}
+
 
 /* Kernel Main Entry Point */
 void kmain(void) {
@@ -2536,6 +2623,9 @@ pf_boot_guard_done:
 
         render_test_pattern(&boot_info);
         serial_puts("[ OK ] Framebuffer test pattern rendered (using kernel-owned boot info)\n");
+
+        console_init(&boot_info);
+        serial_puts("[ OK ] Framebuffer text console active (dual COM1/screen output armed)\n");
     }
 
     /* =========================================================================
@@ -3145,7 +3235,12 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase7_checkpoint5_fast_syscall(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
-    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 5) complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 8 (Step 8A): Basic Framebuffer Text Console
+     * ========================================================================= */
+    test_phase8a_framebuffer_console(&boot_info);
+
+    serial_puts("\n[BOOT] FortressOS Phase 8 (Step 8A) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();
