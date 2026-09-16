@@ -156,10 +156,10 @@ static bool gpt_validate_header(const gpt_header_t *hdr, uint64_t expected_lba, 
     }
 
     /* 6. Partition Entry Size & Count Bounds with Overflow Safety */
-    if (hdr->sizeof_partition_entry < GPT_MIN_ENTRY_SIZE ||
-        hdr->sizeof_partition_entry > GPT_MAX_ENTRY_SIZE ||
-        (hdr->sizeof_partition_entry % 8) != 0) {
-        serial_puts("[GPT] Invalid sizeof_partition_entry: ");
+    if (hdr->sizeof_partition_entry != 128 &&
+        hdr->sizeof_partition_entry != 256 &&
+        hdr->sizeof_partition_entry != 512) {
+        serial_puts("[GPT] Invalid sizeof_partition_entry (must be 128, 256, or 512): ");
         serial_print_dec(hdr->sizeof_partition_entry);
         serial_puts("\n");
         return false;

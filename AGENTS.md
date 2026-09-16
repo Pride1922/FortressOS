@@ -421,16 +421,26 @@ Future tasks should follow this sequenced implementation order:
     │       - Verified relative LBA 0 read, ext2 superblock magic `0xEF53` at LBA 2, and last sector LBA 8191
     │       - Strict rejection of reads at capacity boundary (LBA 8192), out-of-bounds (LBA 99999), arithmetic overflow (`UINT64_MAX`), and write/flush attempts
     │       - Expanded 7-Case Negative Test Suite: N1 (bad primary array fallback to backup in memory), N2 (both invalid rejection), N3 (ambiguity rejection on inconsistent headers), N4 (valid-CRC overlapping partition rejection without publishing), N5 (valid-CRC out-of-range partition rejection without publishing), N6 (oversized entry count rejection), and N7 (isolated parent dispatch: verified rejected reads never reach parent driver)
-    │       - Dynamic kernel heap integrity audit verified with 0 memory leaks (PASSED in UEFI & BIOS)
+    │       - Dynamic kernel heap integrity audit verified with 0 memory leaks (PASSED in UEFI; BIOS verification outstanding/unverified)
     ├── Phase 9C.2: Read-Only ext2 Filesystem (NEXT)
     │   ├── Superblock (0xEF53), block groups, inode table, directory traversal, and direct/indirect block reading
     │   └── Acceptance Test: Mount at /mnt alongside working root initramfs and read /mnt/hello.txt via VFS
-    ├── Steps 8C–8D: Interactive Console & Shell
-    │   ├── Step 8C: PS/2 keyboard controller & I/O APIC IRQ1 routing with non-busy blocking read wait queue
-    │   └── Step 8D: Ring 3 interactive shell (fortress> prompt, ls, cat, help, and program launching)
-    └── Phase 9D: Writable ext2 Filesystem
-        ├── Block/inode allocation, directory entry insertion, file creation and writes
-        └── Acceptance Test: Create and reopen files after reboot (persistent storage)
+    ├── Phase 9C.3: Minimal PS/2 Keyboard & Blocking Input Queue
+    │   ├── 8042 controller init, scancode set detection, IRQ1 via I/O APIC
+    │   ├── Ring buffer keyqueue with blocking read (wait queue, not busy poll)
+    │   ├── Serial input mirroring (so you can test in QEMU without PS/2)
+    │   └── Acceptance: type "hello" on real laptop, see it echoed in console
+    ├── Phase 9C.4: Minimal Line Editor / REPL Primitive (kernel-side)
+    │   ├── Non-canonical line discipline: backspace, left/right, home/end
+    │   ├── No history, no tab-completion (deliberately minimal)
+    │   └── Acceptance: edit a 10-line buffer in Ring 0, echo back
+    ├── Phase 9D: Writable ext2 Filesystem
+    │   ├── Block/inode allocation, directory entry insertion, file creation and writes
+    │   └── Acceptance Test: Create and reopen files after reboot (persistent storage)
+    └── Phase 9D.5: "flatfs" — Tiny Writable FS for Scratch Storage
+        ├── Single-file, append + truncate only, fixed max size (e.g. 64 KiB)
+        ├── Lives on its own GPT partition, format tool runs on first write
+        └── Acceptance: write "hello\n", reboot laptop, read back "hello\n"
 ```
 
 ---
