@@ -13,12 +13,17 @@ extern uint8_t kernel_stack_guard[];
 typedef struct {
     uint64_t pid;
     uint64_t exit_code;
+    uint64_t preempt_count;
+    uint64_t total_ticks;
     bool     valid;
 } exit_record_t;
 
 #define MAX_EXIT_RECORDS 64
 static exit_record_t g_exit_records[MAX_EXIT_RECORDS];
 static size_t        g_exit_records_head = 0;
+
+static uint64_t      g_sched_timer_preemptions = 0;
+static uint64_t      g_sched_runnable_switches = 0;
 
 static tcb_t         g_main_thread;
 static tcb_t        *g_idle_thread        = NULL;
@@ -148,11 +153,27 @@ void sched_reap_dead(void) {
 
     while (dead) {
         tcb_t *next = dead->next;
-        /* Reclaim user address space if this was a user process */
+
+        /* Invariant 1: The executing thread must never be the dead thread */
+        if (dead == g_current_thread) {
+            serial_puts("[FATAL] sched_reap_dead: attempt to reap currently executing thread!\n");
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
+
+        /* Invariant 2: The executing thread must not share the dead thread's stack slot */
+        if (dead->stack_slot >= 0 && dead->stack_slot == g_current_thread->stack_slot) {
+            serial_puts("[FATAL] sched_reap_dead: dead thread stack slot is currently active!\n");
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
+
+        /* Invariant 3: The active CR3 must never be the dead process's PML4.
+         * The scheduler must have already switched to the next thread's CR3 (or kernel PML4)
+         * during thread_exit()/thread_yield() before the dead process could ever be reaped.
+         * If active CR3 matches dead->cr3, it indicates a critical scheduler lifecycle bug. */
         if (dead->is_user && dead->cr3 != 0) {
-            /* Invariant: active CR3 must NOT be the dying address space */
             if (vmm_get_current_pml4() == dead->cr3) {
-                vmm_switch_pml4(vmm_get_kernel_pml4());
+                serial_puts("[FATAL] sched_reap_dead: active CR3 matches dead process PML4 (lifecycle bug)!\n");
+                for (;;) { __asm__ volatile("cli; hlt"); }
             }
             vmm_destroy_pml4(dead->cr3, true);
             dead->cr3 = 0;
@@ -327,29 +348,46 @@ void thread_yield(void) {
     if (old->state == THREAD_RUNNING && !old->is_idle) {
         old->state = THREAD_READY;
         runqueue_push_locked(old);
+        /* If both old and next are user processes, track switch between runnable user processes */
+        if (old->is_user && next->is_user) {
+            g_sched_runnable_switches++;
+        }
     }
 
     next->state = THREAD_RUNNING;
     next->ticks_remaining = DEFAULT_QUANTUM_TICKS;
     g_current_thread = next;
 
-    /* Update TSS.RSP0 to target thread's kernel stack */
+    /* Update TSS.RSP0 to target thread's kernel stack with interrupts disabled */
     if (next->stack_slot >= 0) {
         gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
     }
 
-    /* Switch CR3 to target thread's address space */
+    /* Switch CR3 to target thread's address space with interrupts disabled */
     uintptr_t target_cr3 = next->cr3 ? next->cr3 : vmm_get_kernel_pml4();
     if (vmm_get_current_pml4() != target_cr3) {
         vmm_switch_pml4(target_cr3);
     }
 
-    /* Release spinlock before context switch, but keep interrupts disabled */
+    /*
+     * SEPARATION OF LOCK AND INTERRUPT RULES:
+     * 1. The scheduler spinlock (g_sched_lock) MUST be released before switch_context()
+     *    to guarantee that NO lock is held across a context switch.
+     * 2. Interrupts must remain DISABLED across the entire TSS.RSP0, CR3, and switch_context
+     *    stack pointer exchange. They remain disabled here because spin_lock_irqsave
+     *    executed 'cli', and switch_context() executes with 'cli' until the incoming thread's
+     *    saved RFLAGS is popped from its stack.
+     */
     __atomic_clear(&g_sched_lock.lock, __ATOMIC_RELEASE);
 
     switch_context(&old->rsp, next->rsp);
 
-    /* Execution resumes here when old is switched back to */
+    /* Execution resumes here when old is switched back to.
+     * Restore original caller interrupt state if interrupts were enabled before yield. */
+    if (rflags & (1ULL << 9)) {
+        __asm__ volatile("sti" ::: "memory");
+    }
+
     sched_reap_dead();
 }
 
@@ -453,9 +491,25 @@ void sched_on_timer_tick(void) {
 
         /* If other threads are ready to run: preempt! */
         if (g_runqueue_head != NULL) {
+            g_current_thread->preempt_count++;
+            g_sched_timer_preemptions++;
             thread_yield();
         }
     }
+}
+
+uint64_t sched_get_timer_preempt_count(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+    uint64_t val = g_sched_timer_preemptions;
+    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    return val;
+}
+
+uint64_t sched_get_runnable_switches_count(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+    uint64_t val = g_sched_runnable_switches;
+    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    return val;
 }
 
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
@@ -573,6 +627,8 @@ void process_exit(uint64_t exit_code) {
         }
         g_exit_records[slot].pid = curr->tid;
         g_exit_records[slot].exit_code = exit_code;
+        g_exit_records[slot].preempt_count = curr->preempt_count;
+        g_exit_records[slot].total_ticks = curr->total_ticks;
         g_exit_records[slot].valid = true;
         spin_unlock_irqrestore(&g_sched_lock, rflags);
     }
@@ -597,7 +653,7 @@ bool process_is_alive(uint64_t pid) {
     return false;
 }
 
-bool process_wait(uint64_t pid, uint64_t *out_exit_code) {
+bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_preempt_count, uint64_t *out_total_ticks) {
     for (;;) {
         uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
 
@@ -605,6 +661,8 @@ bool process_wait(uint64_t pid, uint64_t *out_exit_code) {
         for (int i = 0; i < MAX_EXIT_RECORDS; i++) {
             if (g_exit_records[i].valid && g_exit_records[i].pid == pid) {
                 if (out_exit_code) *out_exit_code = g_exit_records[i].exit_code;
+                if (out_preempt_count) *out_preempt_count = g_exit_records[i].preempt_count;
+                if (out_total_ticks) *out_total_ticks = g_exit_records[i].total_ticks;
                 g_exit_records[i].valid = false;
                 spin_unlock_irqrestore(&g_sched_lock, rflags);
                 return true;
@@ -635,5 +693,9 @@ bool process_wait(uint64_t pid, uint64_t *out_exit_code) {
         /* Yield CPU to allow the process or reaper to make progress */
         thread_yield();
     }
+}
+
+bool process_wait(uint64_t pid, uint64_t *out_exit_code) {
+    return process_wait_extended(pid, out_exit_code, NULL, NULL);
 }
 

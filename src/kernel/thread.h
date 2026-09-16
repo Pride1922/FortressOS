@@ -51,6 +51,7 @@ typedef struct tcb {
     /* Preemption & Timeslice Accounting */
     int            ticks_remaining;  /* Remaining ticks in current quantum */
     uint64_t       total_ticks;      /* Total ticks consumed by this thread */
+    uint64_t       preempt_count;    /* Number of timer-driven preemptions experienced */
     bool           is_idle;          /* True if dedicated idle thread */
 
     /* Process Address Space & Privilege Extensions */
@@ -77,6 +78,7 @@ tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size);
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg);
 void   process_exit(uint64_t exit_code);
 bool   process_wait(uint64_t pid, uint64_t *out_exit_code);
+bool   process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_preempt_count, uint64_t *out_total_ticks);
 bool   process_is_alive(uint64_t pid);
 
 /* Preemption Control & Timer Hook */
@@ -85,6 +87,8 @@ void   sched_disable_preemption(void);
 bool   sched_is_preemption_enabled(void);
 void   sched_on_timer_tick(void);
 uint64_t sched_get_active_stack_slots_mask(void);
+uint64_t sched_get_timer_preempt_count(void);
+uint64_t sched_get_runnable_switches_count(void);
 
 /* Low-level Context Switch Assembly Primitives */
 extern void switch_context(uint64_t *old_rsp, uint64_t new_rsp);

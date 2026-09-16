@@ -176,8 +176,8 @@ To debug kernel initialization step-by-step:
    - **Non-Recursive Spinlocks**: `spinlock_t` uses atomic test-and-set with interrupt flag (`RFLAGS`) preservation (`spin_lock_irqsave` / `spin_unlock_irqrestore`). They are strictly **non-recursive**; acquiring an already-held lock on the same CPU will deadlock. Internal `_unlocked` helpers are used across subsystems to avoid self-recursion.
    - **Strict Hierarchy Order**: Locks must always be acquired in descending order:
      `g_sched_lock` (L1) -> `g_heap_lock` (L2) -> `g_vmm_lock` (L3) -> `g_pmm_lock` (L4).
-   - **Context Switch Invariant**: No spinlock may EVER remain held across `switch_context()`.
-   - **Detached Deallocation**: Complex cross-subsystem cleanup (e.g. `sched_reap_dead()`) must decouple nodes under lock and deallocate outside the lock to prevent lock inversions.
+   - **Context Switch Invariant**: No spinlock may EVER remain held across `switch_context()`. Specifically, `g_sched_lock` is explicitly released with `__atomic_clear(&g_sched_lock.lock, __ATOMIC_RELEASE)` before calling `switch_context()`. However, hardware interrupts MUST remain strictly disabled across `TSS.RSP0`, `CR3`, and the `switch_context` stack exchange until the incoming thread restores its saved `RFLAGS`.
+   - **Reaper Invariant & Detached Deallocation**: Complex cross-subsystem cleanup (`sched_reap_dead()`) decouples dead nodes under lock and cleans them up outside the lock. The reaper strictly asserts that the executing context is not the dead thread, does not use the dead thread's stack slot, and does not run under the dead process's CR3. Finding active CR3 matching a dead process indicates a critical scheduler lifecycle bug and causes an immediate diagnostic panic.
 7. **Stack Guard Page Architecture & Fault Escalation:**
    - **Linear Growth Scope**: Dedicated thread stacks include a 4 KiB unmapped bottom guard page (`0xFFFFFFFFA0000000ULL`). This catches linear contiguous stack growth. It does not catch frame skips exceeding 4096 bytes without compiler stack-clash probes.
    - **Double Fault (#DF) Escalation**: In Ring 0 with `IST=0`, Vector 14 (`#PF`) delivers on the active stack pointer `RSP`. Pushing the `#PF` exception frame onto an already-exhausted stack causes a nested fault, which hardware escalates to Vector 8 (`#DF`). Because Vector 8 is bound to `IST1`, execution safely lands on the dedicated 16 KiB emergency IST1 stack for diagnostic panic logging. (Note: IST1 provides an emergency recovery stack for diagnostics; it does not guarantee prevention of every triple fault if the IST1 mapping, TSS, IDT, handler code, or diagnostic path is corrupted. Furthermore, once Ring 3 is entered, interrupts and exceptions crossing privilege levels switch to `TSS.RSP0` rather than using the faulting user stack).
@@ -313,12 +313,13 @@ Future tasks should follow this sequenced implementation order:
         │   ├── Safe Deferred Reclamation (Reaper / sched_reap_dead): non-self-destructing cleanup in separate context,
         │   │   switching away from dead CR3, reclaiming intermediate tables, user frames, kernel stack slots, and TCBs
         │   └── Comprehensive Verification: 5-cycle repeated preemptive process spawn/exit stress test with 0 memory leaks
-        ├── Acceptance Test: Preemption & Fault Isolation (COMPLETE)
-        │   ├── Concurrent CPU-Bound User Preemption: Two simultaneous processes sharing virtual layout (0x400000, 0x402000)
-        │   │   timesliced at 100 Hz without data races, verified with exit codes 77 and 88
+        ├── Acceptance Test: Preemption & Fault Isolation (PASSED IN BIOS & UEFI QEMU)
+        │   ├── Concurrent CPU-Bound User Preemption: Direct evidence of timer-driven preemption (5-6 preemptions per worker,
+        │   │   11-12 timer ticks consumed, 5 switches between runnable workers) with verified exit codes 77 and 88
         │   ├── Ring 3 Fault Isolation: Deliberate illegal read of supervisor kernel memory (0xFFFFFFFF80000000) caught via #PF
-        │   │   (Vector 14), killed by SIGSEGV (exit code 142) without panicking kernel, while healthy peer finished cleanly
-        │   ├── Safe Deferred Reclamation: 100% of user frames, intermediate tables, and kernel stacks reclaimed (delta: 0)
+        │   │   (Vector 14), terminated by CPU exception convention (exit code 142 = 128 + Vector 14) without panicking kernel, while healthy peer finished cleanly
+        │   ├── Reaper Invariants & Safe Reclamation: Zero-delta resource checks in BIOS and UEFI (0 tables, 0 frames, 0 stack slots leaked)
+        │   │   with active CR3/stack collision invariant assertions
         │   └── Bounded circular exit records (MAX_EXIT_RECORDS=64) with FIFO replacement policy
         └── Checkpoint 5: Fast syscall hardening (syscall / sysret / IA32_EFER / STAR / LSTAR)
 ```

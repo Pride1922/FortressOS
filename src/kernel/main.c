@@ -1208,17 +1208,24 @@ static void test_phase7_acceptance_suite(boot_info_t *boot_info, uint64_t *maste
     serial_puts(") armed\n");
 
     serial_puts("       [RUN] Executing concurrent timesliced processes under 100 Hz timer preemption...\n");
+    uint64_t baseline_runnable_switches = sched_get_runnable_switches_count();
+    uint64_t baseline_timer_preemptions = sched_get_timer_preempt_count();
+
     apic_timer_start();
     sched_enable_preemption();
     __asm__ volatile("sti" ::: "memory");
 
-    uint64_t code1 = 0, code2 = 0;
-    bool w1 = process_wait(pid1, &code1);
-    bool w2 = process_wait(pid2, &code2);
+    uint64_t code1 = 0, pcount1 = 0, ticks1 = 0;
+    uint64_t code2 = 0, pcount2 = 0, ticks2 = 0;
+    bool w1 = process_wait_extended(pid1, &code1, &pcount1, &ticks1);
+    bool w2 = process_wait_extended(pid2, &code2, &pcount2, &ticks2);
 
     __asm__ volatile("cli" ::: "memory");
     apic_timer_stop();
     sched_disable_preemption();
+
+    uint64_t delta_runnable_switches = sched_get_runnable_switches_count() - baseline_runnable_switches;
+    uint64_t delta_timer_preemptions = sched_get_timer_preempt_count() - baseline_timer_preemptions;
 
     if (!w1 || code1 != 77 || !w2 || code2 != 88) {
         serial_puts("       [FAIL] Concurrent execution failed! Codes: P1=");
@@ -1228,9 +1235,43 @@ static void test_phase7_acceptance_suite(boot_info_t *boot_info, uint64_t *maste
         serial_puts("\n");
         hcf();
     }
+
+    if (pcount1 == 0 || pcount2 == 0) {
+        serial_puts("       [FAIL] Insufficient timer preemptions recorded on workers! P1=");
+        serial_print_dec(pcount1);
+        serial_puts(", P2=");
+        serial_print_dec(pcount2);
+        serial_puts("\n");
+        hcf();
+    }
+
+    if (delta_runnable_switches < 2) {
+        serial_puts("       [FAIL] Insufficient switches between runnable workers! Switches: ");
+        serial_print_dec(delta_runnable_switches);
+        serial_puts("\n");
+        hcf();
+    }
+
     serial_puts("       [PASS] Both CPU-bound processes completed concurrently without corruption!\n");
     serial_puts("              - Worker 1 exit code: 77 (verified)\n");
     serial_puts("              - Worker 2 exit code: 88 (verified)\n");
+    serial_puts("       [PASS] Direct evidence of timer-driven preemption recorded:\n");
+    serial_puts("              - Worker 1 timer preemptions: ");
+    serial_print_dec(pcount1);
+    serial_puts(" (consumed ");
+    serial_print_dec(ticks1);
+    serial_puts(" timer ticks)\n");
+    serial_puts("              - Worker 2 timer preemptions: ");
+    serial_print_dec(pcount2);
+    serial_puts(" (consumed ");
+    serial_print_dec(ticks2);
+    serial_puts(" timer ticks)\n");
+    serial_puts("              - Switches between runnable workers: ");
+    serial_print_dec(delta_runnable_switches);
+    serial_puts("\n");
+    serial_puts("              - Total scheduler timer preemptions: ");
+    serial_print_dec(delta_timer_preemptions);
+    serial_puts("\n");
 
     sched_reap_dead();
 
@@ -1273,7 +1314,7 @@ static void test_phase7_acceptance_suite(boot_info_t *boot_info, uint64_t *maste
         hcf();
     }
     serial_puts("       [PASS] Fault isolation verified:\n");
-    serial_puts("              - Faulty process killed by SIGSEGV (#PF) with exit code: 142\n");
+    serial_puts("              - Faulty process terminated by CPU exception (#PF) with exit code: 142 (128 + Vector 14)\n");
     serial_puts("              - Healthy concurrent process completed successfully with exit code: 77\n");
     serial_puts("              - Kernel remained 100% operational without crashing or panicking!\n");
 
