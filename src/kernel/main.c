@@ -256,6 +256,204 @@ static void stress_worker(void *arg) {
     thread_exit();
 }
 
+/* =========================================================================
+ * Phase 7 (Checkpoint 1): Ring 3 Privilege Transition via iretq & Trap Hook
+ * ========================================================================= */
+static uint8_t g_test_user_rsp0_stack[16384] __attribute__((aligned(16)));
+
+static void test_phase7_checkpoint1_ring3(const boot_info_t *boot_info, uint64_t *master_kernel_pml4, uintptr_t master_kernel_pml4_phys) {
+    (void)boot_info;
+    (void)master_kernel_pml4;
+    serial_puts("========================================================\n");
+    serial_puts("Phase 7 (Checkpoint 1): Ring 3 Transition via iretq\n");
+    serial_puts("========================================================\n");
+
+    /* Record baseline resource counters for zero-leak audit */
+    size_t baseline_free_pages = pmm_get_free_pages();
+    size_t baseline_allocated_tables = vmm_get_allocated_table_frames();
+
+    /* 1. Create dedicated user PML4 address space */
+    serial_puts("[TEST 1] Setting up User Address Space with Lower-Half Code & Stack...\n");
+    uintptr_t user_pml4_phys = vmm_create_user_pml4();
+    if (user_pml4_phys == 0) {
+        serial_puts("       [FAIL] Failed to create user PML4!\n");
+        hcf();
+    }
+    uint64_t *user_pml4_virt = (uint64_t *)((uintptr_t)user_pml4_phys + boot_info->hhdm_offset);
+
+    /* Allocate physical frames for user code and user stack */
+    uintptr_t user_code_phys = pmm_alloc_page();
+    uintptr_t user_stack_phys = pmm_alloc_page();
+    if (user_code_phys == 0 || user_stack_phys == 0) {
+        serial_puts("       [FAIL] Failed to allocate physical frames for user mode!\n");
+        hcf();
+    }
+
+    /* Map user code page at 0x400000 (Executable, User, Present) */
+    const uintptr_t USER_CODE_VIRT = 0x0000000000400000ULL;
+    int code_map_res = vmm_map_page(user_pml4_virt, USER_CODE_VIRT, user_code_phys, PTE_PRESENT | PTE_USER);
+    if (code_map_res != VMM_OK) {
+        serial_puts("       [FAIL] Failed to map user code page!\n");
+        hcf();
+    }
+
+    /* Map user stack page at 0x7FFFF0000000 (Writable, NX, User, Present) */
+    const uintptr_t USER_STACK_PAGE_VIRT = 0x00007FFFF0000000ULL;
+    const uintptr_t USER_STACK_TOP_VIRT  = 0x00007FFFF0001000ULL;
+    int stack_map_res = vmm_map_page(user_pml4_virt, USER_STACK_PAGE_VIRT, user_stack_phys, PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
+    if (stack_map_res != VMM_OK) {
+        serial_puts("       [FAIL] Failed to map user stack page!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] User code mapped at 0x400000 (RX) and stack at 0x7FFFF0001000 (RW/NX)\n");
+
+    /* 2. Write User Machine Code Payload into user code frame via HHDM */
+    serial_puts("[TEST 2] Writing Machine Code Payload into User Space Memory...\n");
+    uint8_t *code_hhdm_ptr = (uint8_t *)(user_code_phys + boot_info->hhdm_offset);
+
+    /* Machine Code:
+     *   push 0x42           -> 6A 42
+     *   pop rbx             -> 5B
+     *   movabs rax, 0x1111  -> 48 B8 11 11 00 00 00 00 00 00
+     *   add rax, rbx        -> 48 01 D8
+     *   int 0x80            -> CD 80
+     *   hlt                 -> F4
+     */
+    static const uint8_t payload[] = {
+        0x6A, 0x42,
+        0x5B,
+        0x48, 0xB8, 0x11, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x01, 0xD8,
+        0xCD, 0x80,
+        0xF4
+    };
+    memcpy(code_hhdm_ptr, payload, sizeof(payload));
+    serial_puts("       [PASS] Payload assembled: push/pop stack, 64-bit arithmetic, int 0x80 syscall trap\n");
+
+    /* 3. Configure TSS.RSP0 to safe kernel stack for privilege transitions */
+    serial_puts("[TEST 3] Arming TSS.RSP0 with Dedicated Kernel Stack...\n");
+    uintptr_t test_rsp0_top = (uintptr_t)g_test_user_rsp0_stack + sizeof(g_test_user_rsp0_stack);
+    uint64_t saved_rsp0 = gdt_get_tss_rsp0();
+    gdt_set_tss_rsp0((uint64_t)test_rsp0_top);
+    serial_puts("       [PASS] TSS.RSP0 armed at ");
+    serial_print_hex(test_rsp0_top);
+    serial_puts(" (previous: ");
+    serial_print_hex(saved_rsp0);
+    serial_puts(")\n");
+
+    /* 4. Switch CR3 to user space and transition to Ring 3 */
+    serial_puts("[TEST 4] Executing iretq Privilege Transition into Ring 3...\n");
+
+    /* Ensure interrupts are disabled during manual CR3 switch */
+    __asm__ volatile("cli" ::: "memory");
+
+    uintptr_t old_cr3 = vmm_get_current_pml4();
+    vmm_switch_pml4(user_pml4_phys);
+
+    /* Call assembly helper which registers trap recovery, zeroes regs, and executes iretq */
+    bool helper_res = test_user_mode_helper(USER_CODE_VIRT, USER_STACK_TOP_VIRT);
+
+    /* RESTORE INVARIANTS: Immediately restore master kernel CR3 and TSS.RSP0 */
+    vmm_switch_pml4(master_kernel_pml4_phys);
+    (void)old_cr3;
+    gdt_set_tss_rsp0(saved_rsp0);
+
+    if (!helper_res) {
+        serial_puts("       [FAIL] test_user_mode_helper failed unexpectedly!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Control successfully transitioned to Ring 3 and trapped back via int 0x80!\n");
+
+    /* 5. Verify Captured Trap State */
+    serial_puts("[TEST 5] Verifying Privilege Level & User Execution State...\n");
+    uint64_t caught_cs = 0, caught_ss = 0, caught_rax = 0, caught_rsp = 0;
+    bool caught = idt_was_user_trap_caught(&caught_cs, &caught_ss, &caught_rax, &caught_rsp);
+    if (!caught) {
+        serial_puts("       [FAIL] User trap was not caught by IDT vector 0x80 handler!\n");
+        hcf();
+    }
+
+    /* Check CPL in CS */
+    uint8_t cpl = (uint8_t)(caught_cs & 3);
+    if (cpl != 3 || caught_cs != 0x23) {
+        serial_puts("       [FAIL] User CS verification failed! CS=");
+        serial_print_hex(caught_cs);
+        serial_puts(" (Expected CPL 3, CS 0x23)\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Captured CS: 0x23 (CPL = 3 confirmed: Ring 3 User Mode)\n");
+
+    /* Check RPL in SS */
+    if ((caught_ss & 3) != 3 || caught_ss != 0x1B) {
+        serial_puts("       [FAIL] User SS verification failed! SS=");
+        serial_print_hex(caught_ss);
+        serial_puts(" (Expected RPL 3, SS 0x1B)\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Captured SS: 0x1B (RPL = 3 confirmed: User Data Segment)\n");
+
+    /* Check User Arithmetic Result in RAX */
+    if (caught_rax != 0x1153) {
+        serial_puts("       [FAIL] Payload arithmetic result in RAX mismatch! Expected 0x1153, Got: ");
+        serial_print_hex(caught_rax);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Payload computed RAX: 0x1153 (0x1111 + 0x42 via user stack push/pop)\n");
+
+    /* Check Balanced User RSP */
+    if (caught_rsp != USER_STACK_TOP_VIRT) {
+        serial_puts("       [FAIL] User stack pointer unbalanced! Expected: ");
+        serial_print_hex(USER_STACK_TOP_VIRT);
+        serial_puts(" Got: ");
+        serial_print_hex(caught_rsp);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] User stack balanced after push/pop (RSP: 0x7FFFF0001000)\n");
+
+    /* 6. Destroy User Address Space and Audit for Zero Leaks */
+    serial_puts("[TEST 6] Teardown of User Address Space & Zero-Leak Audit...\n");
+    int destroy_res = vmm_destroy_pml4(user_pml4_phys, true);
+    if (destroy_res != VMM_OK) {
+        serial_puts("       [FAIL] Failed to destroy user PML4! Code: ");
+        serial_print_dec(destroy_res);
+        serial_puts("\n");
+        hcf();
+    }
+
+    size_t post_free_pages = pmm_get_free_pages();
+    size_t post_allocated_tables = vmm_get_allocated_table_frames();
+
+    if (post_allocated_tables != baseline_allocated_tables) {
+        serial_puts("       [FAIL] Table frame leak detected! Expected: ");
+        serial_print_dec(baseline_allocated_tables);
+        serial_puts(" Got: ");
+        serial_print_dec(post_allocated_tables);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All intermediate page tables & root reclaimed (delta: 0)\n");
+
+    if (post_free_pages != baseline_free_pages) {
+        serial_puts("       [FAIL] Physical frames leaked! Expected: ");
+        serial_print_dec(baseline_free_pages);
+        serial_puts(" Got: ");
+        serial_print_dec(post_free_pages);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All user physical frames returned to PMM (delta: 0 frames leaked)\n");
+
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+
+    serial_puts("[ OK ] Phase 7 (Checkpoint 1) completed successfully!\n\n");
+}
+
 /* Kernel Main Entry Point */
 void kmain(void) {
     /* 1. Initialize COM1 Serial Port (0x3F8) */
@@ -1656,7 +1854,12 @@ pf_boot_guard_done:
 
     serial_puts("[ OK ] Phase 7 (Checkpoint 0) completed successfully!\n\n");
 
-    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 0) complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 7 (Checkpoint 1): Ring 3 Privilege Transition via iretq & Trap Hook
+     * ========================================================================= */
+    test_phase7_checkpoint1_ring3(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
+
+    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 1) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

@@ -70,8 +70,14 @@ void idt_init(void) {
             ist = 1;
         }
 
+        uint8_t flags = IDT_GATE_INTERRUPT;
+        /* Vector 0x80 (System Call) and Vector 3 (Breakpoint Trap) are user-accessible (DPL 3) */
+        if (i == 0x80 || i == 3) {
+            flags = IDT_GATE_USER;
+        }
+
         void *handler = (void *)((uintptr_t)isr_stub_table + (i * 16));
-        idt_set_gate((uint8_t)i, handler, ist, IDT_GATE_INTERRUPT);
+        idt_set_gate((uint8_t)i, handler, ist, flags);
     }
 
     /* 3. Load IDTR */
@@ -79,14 +85,14 @@ void idt_init(void) {
     idtr.base  = (uint64_t)&idt;
     idtr_load(&idtr);
 
-    serial_puts("[ OK ] IDT loaded (all 256 gates populated with vector preservation, #DF bound to IST1)\n");
+    serial_puts("[ OK ] IDT loaded (all 256 gates populated, #DF on IST1, int 0x80 configured with DPL 3)\n");
 }
 
-static volatile bool     g_expect_page_fault = false;
-static volatile bool     g_page_fault_caught = false;
-static volatile uint64_t g_last_fault_cr2    = 0;
-static volatile uint64_t g_last_fault_error  = 0;
-static volatile uintptr_t g_pf_recovery_rip  = 0;
+static volatile bool      g_expect_page_fault = false;
+static volatile bool      g_page_fault_caught = false;
+static volatile uint64_t  g_last_fault_cr2    = 0;
+static volatile uint64_t  g_last_fault_error  = 0;
+static volatile uintptr_t g_pf_recovery_rip   = 0;
 
 void idt_set_expected_page_fault(uintptr_t recovery_rip) {
     g_expect_page_fault = true;
@@ -105,6 +111,41 @@ bool idt_was_page_fault_caught(uint64_t *out_cr2, uint64_t *out_error) {
     if (out_cr2) *out_cr2 = g_last_fault_cr2;
     if (out_error) *out_error = g_last_fault_error;
     return g_page_fault_caught;
+}
+
+/* User Mode Software Interrupt (int 0x80) Test Hook State */
+static volatile bool      g_user_trap_active       = false;
+static volatile bool      g_user_trap_caught       = false;
+static volatile uint64_t  g_user_trap_cs           = 0;
+static volatile uint64_t  g_user_trap_ss           = 0;
+static volatile uint64_t  g_user_trap_rax          = 0;
+static volatile uint64_t  g_user_trap_rsp          = 0;
+static volatile uintptr_t g_user_trap_recovery_rip = 0;
+static volatile uintptr_t g_user_trap_recovery_rsp = 0;
+
+void idt_set_user_trap_handler(uintptr_t recovery_rip, uintptr_t recovery_rsp) {
+    g_user_trap_active       = true;
+    g_user_trap_caught       = false;
+    g_user_trap_cs           = 0;
+    g_user_trap_ss           = 0;
+    g_user_trap_rax          = 0;
+    g_user_trap_rsp          = 0;
+    g_user_trap_recovery_rip = recovery_rip;
+    g_user_trap_recovery_rsp = recovery_rsp;
+}
+
+void idt_clear_user_trap_handler(void) {
+    g_user_trap_active       = false;
+    g_user_trap_recovery_rip = 0;
+    g_user_trap_recovery_rsp = 0;
+}
+
+bool idt_was_user_trap_caught(uint64_t *out_cs, uint64_t *out_ss, uint64_t *out_rax, uint64_t *out_rsp) {
+    if (out_cs)  *out_cs  = g_user_trap_cs;
+    if (out_ss)  *out_ss  = g_user_trap_ss;
+    if (out_rax) *out_rax = g_user_trap_rax;
+    if (out_rsp) *out_rsp = g_user_trap_rsp;
+    return g_user_trap_caught;
 }
 
 static irq_handler_t g_irq_handlers[IDT_ENTRIES];
@@ -146,6 +187,25 @@ void isr_exception_handler(interrupt_frame_t *frame) {
 
         if (g_pf_recovery_rip != 0) {
             frame->rip = g_pf_recovery_rip;
+        }
+        return;
+    }
+
+    /* Software Interrupt / System Call (int 0x80) from User Mode */
+    if (frame->vector == 0x80 && g_user_trap_active) {
+        g_user_trap_caught = true;
+        g_user_trap_cs     = frame->cs;
+        g_user_trap_ss     = frame->ss;
+        g_user_trap_rax    = frame->rax;
+        g_user_trap_rsp    = frame->rsp;
+
+        if (g_user_trap_recovery_rip != 0) {
+            /* Redirect execution back to kernel recovery context in Ring 0 */
+            frame->rip    = g_user_trap_recovery_rip;
+            frame->cs     = 0x08; /* GDT_KERNEL_CODE */
+            frame->ss     = 0x10; /* GDT_KERNEL_DATA */
+            frame->rsp    = g_user_trap_recovery_rsp;
+            frame->rflags = 0x202;
         }
         return;
     }
