@@ -4,6 +4,9 @@
 #include "gdt.h"
 #include "thread.h"
 #include "msr.h"
+#include "vfs.h"
+#include "string.h"
+#include "pmm.h"
 
 extern void syscall_entry_stub(void);
 
@@ -215,6 +218,171 @@ bool syscall_validate_return_state(interrupt_frame_t *frame) {
     return true;
 }
 
+static int copy_user_string(uint64_t *pml4, uintptr_t user_ptr, char *dest, size_t max_len) {
+    if (!pml4 || !dest || max_len == 0) return SYSCALL_EINVAL;
+    if (user_ptr < USER_CANONICAL_MIN || user_ptr >= USER_CANONICAL_LIMIT) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (!vmm_validate_user_range(pml4, user_ptr, 1, false)) {
+        return SYSCALL_EFAULT;
+    }
+
+    const char *src = (const char *)user_ptr;
+    for (size_t i = 0; i < max_len; i++) {
+        uintptr_t curr_addr = user_ptr + i;
+        if (curr_addr >= USER_CANONICAL_LIMIT) {
+            return SYSCALL_EFAULT;
+        }
+        if ((curr_addr % PAGE_SIZE) == 0) {
+            if (!vmm_validate_user_range(pml4, curr_addr, 1, false)) {
+                return SYSCALL_EFAULT;
+            }
+        }
+        dest[i] = src[i];
+        if (src[i] == '\0') {
+            return SYSCALL_SUCCESS;
+        }
+    }
+
+    dest[max_len - 1] = '\0';
+    return SYSCALL_EINVAL;
+}
+
+static int64_t sys_open(uintptr_t user_path, int flags) {
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char kpath[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, kpath, sizeof(kpath));
+    if (err != SYSCALL_SUCCESS) {
+        return err;
+    }
+
+    file_t *file = vfs_open(kpath, flags);
+    if (!file) {
+        return SYSCALL_ENOENT;
+    }
+
+    tcb_t *curr = thread_current();
+    if (!curr) {
+        vfs_close(file);
+        return SYSCALL_EBADF;
+    }
+
+    int fd = fd_alloc(curr, file);
+    if (fd < 0) {
+        vfs_close(file);
+        return SYSCALL_EMFILE;
+    }
+
+    return (int64_t)fd;
+}
+
+static int64_t sys_close(int fd) {
+    if (fd < 3 || fd >= 32) {
+        return SYSCALL_EBADF;
+    }
+
+    tcb_t *curr = thread_current();
+    if (!curr) {
+        return SYSCALL_EBADF;
+    }
+
+    int res = fd_free(curr, fd);
+    if (res < 0) {
+        return SYSCALL_EBADF;
+    }
+
+    return SYSCALL_SUCCESS;
+}
+
+static int64_t sys_read(int fd, uintptr_t user_buf, size_t count) {
+    if (count == 0) {
+        return 0;
+    }
+
+    if (count > MAX_SYSCALL_WRITE_LEN) {
+        count = MAX_SYSCALL_WRITE_LEN;
+    }
+
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    /* CRITICAL: Must verify PTE_WRITABLE since kernel writes into user buffer! */
+    if (!vmm_validate_user_range(active_pml4, user_buf, count, true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    tcb_t *curr = thread_current();
+    if (!curr) {
+        return SYSCALL_EBADF;
+    }
+
+    file_t *file = fd_get(curr, fd);
+    if (!file) {
+        return SYSCALL_EBADF;
+    }
+
+    return vfs_read(file, (void *)user_buf, count);
+}
+
+static int64_t sys_stat(uintptr_t user_path, uintptr_t user_statbuf) {
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char kpath[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, kpath, sizeof(kpath));
+    if (err != SYSCALL_SUCCESS) {
+        return err;
+    }
+
+    if (!vmm_validate_user_range(active_pml4, user_statbuf, sizeof(vfs_stat_t), true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    vfs_node_t *node = vfs_lookup(kpath);
+    if (!node) {
+        return SYSCALL_ENOENT;
+    }
+
+    vfs_stat_t st;
+    vfs_stat(node, &st);
+    memcpy((void *)user_statbuf, &st, sizeof(vfs_stat_t));
+    return SYSCALL_SUCCESS;
+}
+
+static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
+    if (fd < 0 || fd >= 32) {
+        return SYSCALL_EBADF;
+    }
+
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(active_pml4, user_dirent, sizeof(vfs_dirent_t), true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    tcb_t *curr = thread_current();
+    if (!curr) {
+        return SYSCALL_EBADF;
+    }
+
+    file_t *file = fd_get(curr, fd);
+    if (!file) {
+        return SYSCALL_EBADF;
+    }
+
+    if (file->node->type != VFS_DIRECTORY) {
+        return SYSCALL_ENOTDIR;
+    }
+
+    vfs_dirent_t dent;
+    int res = vfs_readdir(file->node, file->offset, &dent);
+    if (res == 1) {
+        file->offset++;
+        memcpy((void *)user_dirent, &dent, sizeof(vfs_dirent_t));
+        return 1;
+    }
+    if (res == 0) {
+        return 0; /* EOF */
+    }
+    return SYSCALL_EINVAL;
+}
+
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
     if (!frame) return SYSCALL_EINVAL;
 
@@ -228,6 +396,26 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_WRITE:
             result = sys_write(frame->rdi, frame->rsi, frame->rdx);
+            break;
+
+        case SYS_OPEN:
+            result = sys_open(frame->rdi, (int)frame->rsi);
+            break;
+
+        case SYS_CLOSE:
+            result = sys_close((int)frame->rdi);
+            break;
+
+        case SYS_READ:
+            result = sys_read((int)frame->rdi, frame->rsi, frame->rdx);
+            break;
+
+        case SYS_STAT:
+            result = sys_stat(frame->rdi, frame->rsi);
+            break;
+
+        case SYS_READDIR:
+            result = sys_readdir((int)frame->rdi, frame->rsi);
             break;
 
         default:

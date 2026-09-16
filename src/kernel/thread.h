@@ -61,8 +61,17 @@ typedef struct tcb {
     uint64_t       exit_code;        /* Exit code captured upon termination */
     bool           has_exited;       /* True if process has exited */
 
+    /* Per-Process File Descriptor Table (Step 8B) */
+    struct file   *fd_table[32];
+
     struct tcb    *next;             /* Intrusive run queue link */
 } tcb_t;
+
+struct file;
+int          fd_alloc(tcb_t *proc, struct file *file);
+struct file *fd_get(tcb_t *proc, int fd);
+int          fd_free(tcb_t *proc, int fd);
+void         fd_close_all(tcb_t *proc);
 
 /* Public Scheduler & Thread API */
 void   sched_init(void);

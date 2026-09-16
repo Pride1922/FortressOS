@@ -6,6 +6,7 @@
 #include "serial.h"
 #include "gdt.h"
 #include "elf.h"
+#include "vfs.h"
 
 extern uint8_t kernel_stack_guard[];
 
@@ -182,6 +183,7 @@ void sched_reap_dead(void) {
         if (dead->stack_slot >= 0) {
             kstack_free(dead->stack_slot, dead->kstack_base);
         }
+        fd_close_all(dead);
         kfree(dead);
         dead = next;
     }
@@ -605,9 +607,45 @@ tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size) {
     return process_spawn_with_arg(name, elf_data, elf_size, 0);
 }
 
+int fd_alloc(tcb_t *proc, struct file *file) {
+    if (!proc || !file) return -1;
+    for (int i = 3; i < 32; i++) {
+        if (proc->fd_table[i] == NULL) {
+            proc->fd_table[i] = file;
+            return i;
+        }
+    }
+    return -6; /* EMFILE: Too many open files */
+}
+
+struct file *fd_get(tcb_t *proc, int fd) {
+    if (!proc || fd < 0 || fd >= 32) return NULL;
+    return proc->fd_table[fd];
+}
+
+int fd_free(tcb_t *proc, int fd) {
+    if (!proc || fd < 0 || fd >= 32 || !proc->fd_table[fd]) return -1;
+    vfs_close(proc->fd_table[fd]);
+    proc->fd_table[fd] = NULL;
+    return 0;
+}
+
+void fd_close_all(tcb_t *proc) {
+    if (!proc) return;
+    for (int i = 0; i < 32; i++) {
+        if (proc->fd_table[i]) {
+            vfs_close(proc->fd_table[i]);
+            proc->fd_table[i] = NULL;
+        }
+    }
+}
+
 void process_exit(uint64_t exit_code) {
     tcb_t *curr = thread_current();
     if (curr) {
+        /* Close all open descriptors and release references upon process exit */
+        fd_close_all(curr);
+
         curr->exit_code = exit_code;
         curr->has_exited = true;
 

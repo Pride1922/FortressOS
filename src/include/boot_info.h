@@ -26,6 +26,12 @@ typedef struct {
     /* ACPI RSDP physical address (Limine Base Revision 3) */
     bool     has_rsdp;
     uintptr_t rsdp_phys_addr;
+
+    /* Initramfs module metadata */
+    bool     has_initramfs;
+    uint64_t initramfs_paddr;
+    uint64_t initramfs_vaddr;
+    uint64_t initramfs_size;
 } boot_info_t;
 
 void boot_info_init(boot_info_t *out_info,
@@ -33,6 +39,7 @@ void boot_info_init(boot_info_t *out_info,
                     struct limine_hhdm_response *hhdm_resp,
                     struct limine_kernel_address_response *kernel_addr_resp,
                     struct limine_framebuffer_response *fb_resp,
-                    struct limine_rsdp_response *rsdp_resp);
+                    struct limine_rsdp_response *rsdp_resp,
+                    struct limine_module_response *module_resp);
 
 #endif /* FORTRESS_BOOT_INFO_H */

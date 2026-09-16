@@ -7,7 +7,8 @@ void boot_info_init(boot_info_t *out_info,
                     struct limine_hhdm_response *hhdm_resp,
                     struct limine_kernel_address_response *kernel_addr_resp,
                     struct limine_framebuffer_response *fb_resp,
-                    struct limine_rsdp_response *rsdp_resp) {
+                    struct limine_rsdp_response *rsdp_resp,
+                    struct limine_module_response *module_resp) {
     if (!out_info) return;
     memset(out_info, 0, sizeof(boot_info_t));
 
@@ -15,6 +16,23 @@ void boot_info_init(boot_info_t *out_info,
     if (rsdp_resp && rsdp_resp->address) {
         out_info->has_rsdp = true;
         out_info->rsdp_phys_addr = (uintptr_t)rsdp_resp->address;
+    }
+
+    /* Snapshot Initramfs Module */
+    if (module_resp && module_resp->module_count > 0 && module_resp->modules) {
+        for (uint64_t i = 0; i < module_resp->module_count; i++) {
+            struct limine_file *mod = module_resp->modules[i];
+            if (mod && mod->address && mod->size > 0) {
+                out_info->has_initramfs   = true;
+                out_info->initramfs_vaddr = (uint64_t)mod->address;
+                out_info->initramfs_size  = mod->size;
+                /* If hhdm is available, calculate physical address */
+                if (hhdm_resp) {
+                    out_info->initramfs_paddr = (uint64_t)mod->address - hhdm_resp->offset;
+                }
+                break;
+            }
+        }
     }
 
     /* 1. HHDM Virtual Offset */

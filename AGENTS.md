@@ -357,14 +357,21 @@ Future tasks should follow this sequenced implementation order:
     │   ├── Thread & IRQ-safe synchronization via dedicated spinlock_t g_console_lock (spin_lock_irqsave)
     │   ├── Tokyo Night theme palette (Foreground: 0x00C0CAF5, Background: 0x001A1B26)
     │   └── Comprehensive verification: 160x50 character grid, cursor movements, 55-line scroll test, and banner rendering in BIOS and UEFI
-    ├── Step 8B: Initramfs, Minimal VFS & File Descriptors (NEXT)
-    │   ├── Limine module request for initramfs.tar (USTAR format)
-    │   ├── Snapshot module metadata and preserve backing memory in PMM/VMM
-    │   ├── Read-only USTAR archive parser rejecting non-USTAR extensions
-    │   ├── VFS node abstraction separated from open file object (independent file offsets)
-    │   ├── System calls: sys_open, sys_read (user buffer write-permission check), sys_close, sys_stat
-    │   └── Standard archive contents: /bin/init, /bin/hello, /etc/motd, /docs/readme.txt
-    ├── Step 8C: Keyboard Input & Blocking Reads
+    ├── Step 8B: Initramfs, Minimal VFS & File Descriptors (COMPLETE)
+    │   ├── Limine module request for initramfs.tar (USTAR format) with memory reserved by bootloader
+    │   ├── Snapshot module metadata (initramfs_vaddr, initramfs_paddr, initramfs_size) and verify magic/checksum
+    │   ├── Strict read-only USTAR parser rejecting non-USTAR, corrupt checksums, octal overflow, and unsupported types
+    │   ├── VFS node abstraction (vfs_node_t) separated from open file object (file_t) ensuring independent seek offsets
+    │   ├── Per-process file descriptor table (fd_table[32]) with O(1) allocation and automated cleanup on exit (fd_close_all)
+    │   ├── Directory enumeration API (vfs_readdir / sys_readdir) supporting future shell ls
+    │   ├── Hardened system calls: sys_open, sys_close, sys_read, sys_stat, sys_readdir
+    │   │   ├── Strict user destination buffer validation (vmm_validate_user_range with write_req = true)
+    │   │   ├── Proper EOF detection, short reads, zero-length reads, and EBADF / ENOENT / EFAULT returns
+    │   ├── NMI & Panic Reentrancy: Dedicated lockless serial_raw_* path prevents console spinlock deadlocks
+    │   ├── Standard archive contents: /bin/init, /bin/hello, /etc/motd, /docs/readme.txt
+    │   └── Comprehensive verification: VFS hierarchy lookup, directory enumeration, dual open independent offsets,
+    │       Ring 3 acceptance suite (Mode 7, exit code 88), and 100% zero-leak resource audit under BIOS and UEFI QEMU
+    ├── Step 8C: Keyboard Input & Blocking Reads (NEXT)
     │   ├── PS/2 keyboard controller & I/O APIC IRQ1 routing
     │   ├── Non-busy blocking read wait queue (sleep until key pressed, no race between buffer check and sleep)
     │   └── Key event queue with scancode-to-ASCII translation

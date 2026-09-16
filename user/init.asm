@@ -23,11 +23,18 @@ msg_worker_fast1_len equ $ - msg_worker_fast1
 msg_worker_fast2: db "2"
 msg_worker_fast2_len equ $ - msg_worker_fast2
 
+path_motd: db "/etc/motd", 0
+path_bad: db "/no/such/file", 0
+msg_vfs_start: db "Starting Ring 3 VFS acceptance test...", 10
+msg_vfs_start_len equ $ - msg_vfs_start
+
 section .data
 g_magic_val: dq 0xCAFEBABE12345678
 
 section .bss
 g_bss_val: resq 1
+vfs_buf1: resb 1024
+vfs_buf2: resb 1024
 
 section .text
 global _start
@@ -41,6 +48,7 @@ _start:
     ; 4 = Fast Syscall (syscall/sysret) & Dual-Interface Verification (exits 99)
     ; 5 = Preempted Fast Syscall Worker 1 (repeated fast syscalls, exits 91)
     ; 6 = Preempted Fast Syscall Worker 2 (repeated fast syscalls, exits 92)
+    ; 7 = Ring 3 VFS & Initramfs Acceptance Test (exits 88)
     cmp rdi, 1
     je .mode_worker_1
     cmp rdi, 2
@@ -53,6 +61,8 @@ _start:
     je .mode_fast_worker_1
     cmp rdi, 6
     je .mode_fast_worker_2
+    cmp rdi, 7
+    je .mode_vfs_test
 
     ; -------------------------------------------------------------
     ; Mode 0: Default Init Executable Verification
@@ -338,6 +348,183 @@ _start:
     mov rdi, 4
     jmp .do_exit
 
+    ; -------------------------------------------------------------
+    ; Mode 7: Ring 3 VFS & Initramfs Acceptance Test
+    ; -------------------------------------------------------------
+.mode_vfs_test:
+    ; Announce start of test
+    mov eax, 1          ; SYS_WRITE
+    mov edi, 1          ; stdout
+    lea rsi, [msg_vfs_start]
+    mov edx, msg_vfs_start_len
+    syscall
+
+    ; 1. Open /etc/motd
+    mov eax, 2          ; SYS_OPEN
+    lea rdi, [path_motd]
+    mov esi, 0          ; O_RDONLY
+    syscall
+    test rax, rax
+    js .fail_vfs_open1
+    mov r12, rax        ; r12 = fd1
+
+    ; 2. Read first 32 bytes from fd1
+    mov eax, 4          ; SYS_READ
+    mov rdi, r12
+    lea rsi, [vfs_buf1]
+    mov edx, 32
+    syscall
+    cmp rax, 32
+    jne .fail_vfs_read1
+
+    ; 3. Print the read chunk to stdout
+    mov eax, 1          ; SYS_WRITE
+    mov edi, 1
+    lea rsi, [vfs_buf1]
+    mov edx, 32
+    syscall
+
+    ; 4. Open /etc/motd second time (independent fd)
+    mov eax, 2          ; SYS_OPEN
+    lea rdi, [path_motd]
+    mov esi, 0          ; O_RDONLY
+    syscall
+    test rax, rax
+    js .fail_vfs_open2
+    mov r13, rax        ; r13 = fd2
+    cmp r12, r13
+    je .fail_vfs_fd_same
+
+    ; 5. Read first 32 bytes from fd2 (must read from offset 0, independent of fd1!)
+    mov eax, 4          ; SYS_READ
+    mov rdi, r13
+    lea rsi, [vfs_buf2]
+    mov edx, 32
+    syscall
+    cmp rax, 32
+    jne .fail_vfs_read2
+
+    ; Verify vfs_buf2 matches vfs_buf1 (independent seek offsets!)
+    mov rcx, 32
+    lea rsi, [vfs_buf1]
+    lea rdi, [vfs_buf2]
+    repe cmpsb
+    jne .fail_vfs_offset_mismatch
+
+    ; 6. Read remainder from fd1 (short read test)
+    mov eax, 4          ; SYS_READ
+    mov rdi, r12
+    lea rsi, [vfs_buf1]
+    mov edx, 1024
+    syscall
+    test rax, rax
+    jle .fail_vfs_short_read
+
+    ; 7. Subsequent read from fd1 must return 0 (EOF)
+    mov eax, 4          ; SYS_READ
+    mov rdi, r12
+    lea rsi, [vfs_buf1]
+    mov edx, 1024
+    syscall
+    test rax, rax
+    jnz .fail_vfs_eof
+
+    ; 8. Negative Tests:
+    ; 8a. Open non-existent file -> SYSCALL_ENOENT (-5)
+    mov eax, 2          ; SYS_OPEN
+    lea rdi, [path_bad]
+    mov esi, 0
+    syscall
+    cmp rax, -5
+    jne .fail_vfs_enoent
+
+    ; 8b. Read with count=0 -> returns 0
+    mov eax, 4          ; SYS_READ
+    mov rdi, r12
+    lea rsi, [vfs_buf1]
+    xor edx, edx
+    syscall
+    test rax, rax
+    jnz .fail_vfs_zero_len
+
+    ; 8c. Read into read-only memory (path_motd is in .rodata) -> SYSCALL_EFAULT (-2)
+    mov eax, 4          ; SYS_READ
+    mov rdi, r13
+    lea rsi, [path_motd]
+    mov edx, 16
+    syscall
+    cmp rax, -2
+    jne .fail_vfs_efault
+
+    ; 9. Close both descriptors
+    mov eax, 3          ; SYS_CLOSE
+    mov rdi, r12
+    syscall
+    test rax, rax
+    jnz .fail_vfs_close1
+
+    mov eax, 3          ; SYS_CLOSE
+    mov rdi, r13
+    syscall
+    test rax, rax
+    jnz .fail_vfs_close2
+
+    ; 10. Read from closed fd -> SYSCALL_EBADF (-3)
+    mov eax, 4          ; SYS_READ
+    mov rdi, r12
+    lea rsi, [vfs_buf1]
+    mov edx, 16
+    syscall
+    cmp rax, -3
+    jne .fail_vfs_ebadf_closed
+
+    ; All Ring 3 VFS acceptance assertions passed! Exit code 88
+    mov rdi, 88
+    jmp .do_exit
+
+.fail_vfs_open1:
+    mov rdi, 21
+    jmp .do_exit
+.fail_vfs_read1:
+    mov rdi, 22
+    jmp .do_exit
+.fail_vfs_open2:
+    mov rdi, 23
+    jmp .do_exit
+.fail_vfs_fd_same:
+    mov rdi, 24
+    jmp .do_exit
+.fail_vfs_read2:
+    mov rdi, 25
+    jmp .do_exit
+.fail_vfs_offset_mismatch:
+    mov rdi, 26
+    jmp .do_exit
+.fail_vfs_short_read:
+    mov rdi, 27
+    jmp .do_exit
+.fail_vfs_eof:
+    mov rdi, 28
+    jmp .do_exit
+.fail_vfs_enoent:
+    mov rdi, 29
+    jmp .do_exit
+.fail_vfs_zero_len:
+    mov rdi, 30
+    jmp .do_exit
+.fail_vfs_efault:
+    mov rdi, 31
+    jmp .do_exit
+.fail_vfs_close1:
+    mov rdi, 32
+    jmp .do_exit
+.fail_vfs_close2:
+    mov rdi, 33
+    jmp .do_exit
+.fail_vfs_ebadf_closed:
+    mov rdi, 34
+    jmp .do_exit
+
 .fail_stack:
     mov rdi, 5
     jmp .do_exit
@@ -346,3 +533,4 @@ _start:
     mov rax, 0          ; SYS_EXIT
     int 0x80
     hlt
+

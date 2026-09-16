@@ -5,8 +5,13 @@
 #include "idt.h"
 
 /* System Call Numbers */
-#define SYS_EXIT   0
-#define SYS_WRITE  1
+#define SYS_EXIT      0
+#define SYS_WRITE     1
+#define SYS_OPEN      2
+#define SYS_CLOSE     3
+#define SYS_READ      4
+#define SYS_STAT      5
+#define SYS_READDIR   6
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0
@@ -14,6 +19,10 @@
 #define SYSCALL_EFAULT   -2  /* Bad address / inaccessible user memory */
 #define SYSCALL_EBADF    -3  /* Invalid file descriptor */
 #define SYSCALL_ENOSYS   -4  /* Unknown system call number */
+#define SYSCALL_ENOENT   -5  /* No such file or directory */
+#define SYSCALL_EMFILE   -6  /* Too many open files */
+#define SYSCALL_EISDIR   -7  /* Is a directory */
+#define SYSCALL_ENOTDIR  -8  /* Not a directory */
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

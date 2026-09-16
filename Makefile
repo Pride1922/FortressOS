@@ -36,7 +36,8 @@ CFLAGS  := -std=c11 \
            -Isrc/arch/x86_64 \
            -Isrc/mm \
            -Isrc/kernel \
-           -Isrc/lib
+           -Isrc/lib \
+           -Isrc/fs
 
 # Assembler flags for NASM (with DWARF debugging symbols)
 ASFLAGS := -f elf64 -g -F dwarf
@@ -101,6 +102,8 @@ all: $(BOOTABLE_ISO)
 
 USER_DIR := user
 USER_INIT_ELF := $(BUILD_DIR)/init.elf
+USER_HELLO_ELF := $(BUILD_DIR)/hello.elf
+INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
 
 # Build user standalone init executable
 $(USER_INIT_ELF): $(USER_DIR)/init.asm $(USER_DIR)/linker.ld
@@ -109,6 +112,24 @@ $(USER_INIT_ELF): $(USER_DIR)/init.asm $(USER_DIR)/linker.ld
 	@$(AS) -f elf64 $< -o $(BUILD_DIR)/init.o
 	@echo "  [LD]  $@"
 	@$(LD) -m elf_x86_64 -nostdlib -static -T $(USER_DIR)/linker.ld $(BUILD_DIR)/init.o -o $@
+
+# Build user standalone hello executable
+$(USER_HELLO_ELF): $(USER_DIR)/hello.asm $(USER_DIR)/linker.ld
+	@mkdir -p $(BUILD_DIR)
+	@echo "  [AS]  $<"
+	@$(AS) -f elf64 $< -o $(BUILD_DIR)/hello.o
+	@echo "  [LD]  $@"
+	@$(LD) -m elf_x86_64 -nostdlib -static -T $(USER_DIR)/linker.ld $(BUILD_DIR)/hello.o -o $@
+
+# Build USTAR Initramfs archive
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF)
+	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
+	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
+	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello
+	@printf "========================================\n  Welcome to FortressOS (x86_64 UEFI)\n  Step 8B: Initramfs & VFS Active\n========================================\n" > $(BUILD_DIR)/initramfs/etc/motd
+	@printf "FortressOS Documentation\nInteractive shell coming in Step 8D!\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
+	@echo "  [TAR] Generating USTAR archive $@"
+	@tar --format=ustar -cf $(INITRAMFS_TAR) -C $(BUILD_DIR)/initramfs bin etc docs
 
 # Compile C source files to object files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
@@ -158,11 +179,13 @@ ovmf-setup:
 # Package bootable ISO image
 iso: $(BOOTABLE_ISO)
 
-$(BOOTABLE_ISO): $(KERNEL_ELF) limine.conf limine-setup
+$(BOOTABLE_ISO): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf limine-setup
 	@echo "--> Preparing ISO filesystem hierarchy..."
 	@mkdir -p $(ISO_ROOT)/boot/limine
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
 	@cp -f $(KERNEL_ELF) $(ISO_ROOT)/boot/fortress.elf
+	@cp -f $(INITRAMFS_TAR) $(ISO_ROOT)/boot/initramfs.tar
+	@cp -f $(INITRAMFS_TAR) $(ISO_ROOT)/initramfs.tar
 	@cp -f limine.conf $(ISO_ROOT)/boot/limine/limine.conf
 	@cp -f limine.conf $(ISO_ROOT)/boot/limine.conf
 	@cp -f $(LIMINE_DIR)/limine-bios.sys $(ISO_ROOT)/boot/limine/ 2>/dev/null || true

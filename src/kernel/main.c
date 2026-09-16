@@ -16,6 +16,8 @@
 #include "syscall.h"
 #include "elf.h"
 #include "console.h"
+#include "vfs.h"
+#include "tarfs.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
@@ -54,6 +56,13 @@ static volatile struct limine_memmap_request memmap_request = {
 __attribute__((used, section(".requests")))
 static volatile struct limine_kernel_address_request kernel_address_request = {
     .id = LIMINE_KERNEL_ADDRESS_REQUEST,
+    .revision = 0,
+    .response = NULL
+};
+
+__attribute__((used, section(".requests")))
+static volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST,
     .revision = 0,
     .response = NULL
 };
@@ -1801,6 +1810,171 @@ static void test_phase8a_framebuffer_console(const boot_info_t *boot_info) {
     serial_puts("[ OK ] Phase 8 (Step 8A): Framebuffer Console PASSED!\n\n");
 }
 
+/* =========================================================================
+ * Phase 8 (Step 8B): Initramfs, Minimal VFS & File Descriptors Suite
+ * ========================================================================= */
+static void test_phase8b_vfs_initramfs(const boot_info_t *boot_info, uint64_t *master_kernel_pml4, uintptr_t master_kernel_pml4_phys) {
+    (void)boot_info;
+    (void)master_kernel_pml4;
+    (void)master_kernel_pml4_phys;
+
+    serial_puts("========================================================\n");
+    serial_puts("Phase 8 (Step 8B): Initramfs, Minimal VFS & File Descriptors\n");
+    serial_puts("========================================================\n");
+
+    /* TEST 1: VFS Root and Tree Node Lookup */
+    serial_puts("[TEST 1] Verifying VFS Tree Hierarchy & File Resolution...\n");
+    vfs_node_t *motd_node = vfs_lookup("/etc/motd");
+    if (!motd_node || motd_node->type != VFS_FILE || motd_node->size == 0) {
+        serial_puts("       [FAIL] /etc/motd not found in VFS or invalid type/size!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] /etc/motd resolved (Size: ");
+    serial_print_dec(motd_node->size);
+    serial_puts(" bytes)\n");
+
+    vfs_node_t *bin_node = vfs_lookup("/bin");
+    if (!bin_node || bin_node->type != VFS_DIRECTORY) {
+        serial_puts("       [FAIL] /bin directory not found or not a directory!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] /bin directory verified\n");
+
+    /* TEST 2: Directory Enumeration (ls support) */
+    serial_puts("[TEST 2] Testing Directory Enumeration (vfs_readdir)...\n");
+    vfs_dirent_t dent;
+    int dent_count = 0;
+    while (vfs_readdir(bin_node, dent_count, &dent) == 1) {
+        serial_puts("       [DENT] /bin/");
+        serial_puts(dent.name);
+        serial_puts(" (Type: ");
+        serial_print_dec(dent.type);
+        serial_puts(", Size: ");
+        serial_print_dec(dent.size);
+        serial_puts(" bytes)\n");
+        dent_count++;
+    }
+    if (dent_count == 0) {
+        serial_puts("       [FAIL] No entries enumerated in /bin!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Directory enumeration successful (");
+    serial_print_dec(dent_count);
+    serial_puts(" entries found in /bin)\n");
+
+    /* TEST 3: Independent Open-File Seek Offsets */
+    serial_puts("[TEST 3] Testing Independent Open-File Seek Offsets (Dual Open)...\n");
+    file_t *f1 = vfs_open("/etc/motd", 0);
+    file_t *f2 = vfs_open("/etc/motd", 0);
+    if (!f1 || !f2 || f1 == f2) {
+        serial_puts("       [FAIL] vfs_open failed or returned identical file pointers!\n");
+        hcf();
+    }
+    char buf1[16];
+    char buf2[16];
+    int64_t r1 = vfs_read(f1, buf1, 16);
+    int64_t r2 = vfs_read(f2, buf2, 16);
+    if (r1 != 16 || r2 != 16 || f1->offset != 16 || f2->offset != 16) {
+        serial_puts("       [FAIL] Dual open read or offset tracking failed!\n");
+        hcf();
+    }
+    if (memcmp(buf1, buf2, 16) != 0) {
+        serial_puts("       [FAIL] Independent open file data mismatch!\n");
+        hcf();
+    }
+    /* Read further from f1 */
+    int64_t r1_next = vfs_read(f1, buf1, 16);
+    if (r1_next <= 0 || f1->offset != 32 || f2->offset != 16) {
+        serial_puts("       [FAIL] Advancing f1 mutated f2 offset!\n");
+        hcf();
+    }
+    vfs_close(f1);
+    vfs_close(f2);
+    serial_puts("       [PASS] Two independent open file handles maintain separate seek offsets\n");
+
+    /* TEST 4: Spawning User Process in Ring 3 with Full VFS Acceptance */
+    serial_puts("[TEST 4] Spawning Scheduled User Process in Ring 3 (Mode 7: VFS Acceptance)...\n");
+    size_t pre_pmm_free = pmm_get_free_pages();
+    size_t pre_tables = vmm_get_allocated_table_frames();
+
+    extern const uint8_t embedded_init_elf_start[];
+    extern const uint8_t embedded_init_elf_end[];
+    size_t init_elf_size = (size_t)(embedded_init_elf_end - embedded_init_elf_start);
+    tcb_t *proc = process_spawn_with_arg("vfs_user_proc", embedded_init_elf_start, init_elf_size, 7);
+    if (!proc) {
+        serial_puts("       [FAIL] Failed to spawn VFS user process!\n");
+        hcf();
+    }
+
+    uint64_t user_pid = proc->tid;
+    serial_puts("       [PASS] User process spawned (PID: ");
+    serial_print_dec(user_pid);
+    serial_puts(", CR3: ");
+    serial_print_hex(proc->cr3);
+    serial_puts(")\n");
+
+    serial_puts("------- RING 3 VFS EXECUTION OUTPUT START -------\n");
+    uint64_t exit_code = 0;
+    bool wait_res = process_wait(user_pid, &exit_code);
+    serial_puts("------- RING 3 VFS EXECUTION OUTPUT END ---------\n");
+
+    if (!wait_res) {
+        serial_puts("       [FAIL] process_wait timed out for VFS user process!\n");
+        hcf();
+    }
+    if (exit_code != 88) {
+        serial_puts("       [FAIL] VFS user process failed assertions! Exit code: ");
+        serial_print_dec(exit_code);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Ring 3 VFS suite completed successfully! Exit code: 88\n");
+    serial_puts("              - Verified sys_open on /etc/motd\n");
+    serial_puts("              - Verified sys_read on stdout\n");
+    serial_puts("              - Verified dual sys_open with independent seek offsets in user mode\n");
+    serial_puts("              - Verified short read and EOF detection\n");
+    serial_puts("              - Verified non-existent file returns SYSCALL_ENOENT (-5)\n");
+    serial_puts("              - Verified zero-length read returns 0\n");
+    serial_puts("              - Verified read into read-only memory returns SYSCALL_EFAULT (-2)\n");
+    serial_puts("              - Verified sys_close on active descriptors\n");
+    serial_puts("              - Verified read on closed descriptor returns SYSCALL_EBADF (-3)\n");
+
+    /* TEST 5: Complete Resource Reclamation Post-VFS Audit */
+    serial_puts("[TEST 5] Resource Reclamation Post-VFS Audit...\n");
+    sched_reap_dead();
+
+    size_t post_pmm_free = pmm_get_free_pages();
+    size_t post_tables = vmm_get_allocated_table_frames();
+
+    if (post_tables != pre_tables) {
+        serial_puts("       [FAIL] Page table leak detected! Pre: ");
+        serial_print_dec(pre_tables);
+        serial_puts(", Post: ");
+        serial_print_dec(post_tables);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All intermediate page tables & roots reclaimed (delta: 0)\n");
+
+    if (post_pmm_free != pre_pmm_free) {
+        serial_puts("       [FAIL] Frame leak detected! Pre: ");
+        serial_print_dec(pre_pmm_free);
+        serial_puts(", Post: ");
+        serial_print_dec(post_pmm_free);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All physical frames returned to PMM (delta: 0 frames leaked)\n");
+
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Kernel heap walk detected corruption!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+
+    serial_puts("[ OK ] Phase 8 (Step 8B): Initramfs & Minimal VFS PASSED!\n\n");
+}
+
 
 /* Kernel Main Entry Point */
 void kmain(void) {
@@ -1982,7 +2156,8 @@ void kmain(void) {
                    hhdm_request.response,
                    kernel_address_request.response,
                    framebuffer_request.response,
-                   rsdp_request.response);
+                   rsdp_request.response,
+                   module_request.response);
 
     /* 11. Virtual Memory Manager (VMM) & 4-Level Paging */
     /* Step 1 & 2: Build new tables and inspect required mappings */
@@ -2628,6 +2803,13 @@ pf_boot_guard_done:
         serial_puts("[ OK ] Framebuffer text console active (dual COM1/screen output armed)\n");
     }
 
+    /* 14. Virtual File System & Initramfs Mount (Step 8B) */
+    if (boot_info.has_initramfs && boot_info.initramfs_vaddr) {
+        tarfs_init((const void *)boot_info.initramfs_vaddr, boot_info.initramfs_size);
+    } else {
+        vfs_init();
+    }
+
     /* =========================================================================
      * Phase 5: ACPI Discovery, 8259 PIC Masking, LAPIC Setup & APIC Timer
      * ========================================================================= */
@@ -3240,7 +3422,12 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase8a_framebuffer_console(&boot_info);
 
-    serial_puts("\n[BOOT] FortressOS Phase 8 (Step 8A) complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 8 (Step 8B): Initramfs, Minimal VFS & File Descriptors
+     * ========================================================================= */
+    test_phase8b_vfs_initramfs(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
+
+    serial_puts("\n[BOOT] FortressOS Phase 8 (Step 8B) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();
