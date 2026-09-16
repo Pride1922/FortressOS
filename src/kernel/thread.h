@@ -53,6 +53,13 @@ typedef struct tcb {
     uint64_t       total_ticks;      /* Total ticks consumed by this thread */
     bool           is_idle;          /* True if dedicated idle thread */
 
+    /* Process Address Space & Privilege Extensions */
+    uintptr_t      cr3;              /* Physical CR3 (0 for kernel threads) */
+    uint64_t      *pml4_virt;        /* Virtual address of PML4 (NULL for kernel threads) */
+    bool           is_user;          /* True if user-space process */
+    uint64_t       exit_code;        /* Exit code captured upon termination */
+    bool           has_exited;       /* True if process has exited */
+
     struct tcb    *next;             /* Intrusive run queue link */
 } tcb_t;
 
@@ -61,8 +68,15 @@ void   sched_init(void);
 tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg);
 void   thread_yield(void);
 void   thread_exit(void);
+void   sched_reap_dead(void);
 tcb_t *thread_current(void);
 size_t sched_ready_count(void);
+
+/* Process Lifecycle Management */
+tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size);
+void   process_exit(uint64_t exit_code);
+bool   process_wait(uint64_t pid, uint64_t *out_exit_code);
+bool   process_is_alive(uint64_t pid);
 
 /* Preemption Control & Timer Hook */
 void   sched_enable_preemption(void);
@@ -74,5 +88,6 @@ uint64_t sched_get_active_stack_slots_mask(void);
 /* Low-level Context Switch Assembly Primitives */
 extern void switch_context(uint64_t *old_rsp, uint64_t new_rsp);
 extern void thread_trampoline(void);
+extern void user_process_trampoline(void);
 
 #endif /* FORTRESS_THREAD_H */

@@ -304,7 +304,15 @@ Future tasks should follow this sequenced implementation order:
         │   ├── User process execution in Ring 3: verified .data initialized value, .bss zeroing & writeability,
         │   │   SYS_WRITE serial output, and clean termination via SYS_EXIT(77)
         │   └── Comprehensive negative validation & 5-cycle repeated load/teardown audit with 0 memory leaks
-        ├── Checkpoint 4: Clean process exit system call
+        ├── Checkpoint 4: General Process Exit & Lifecycle Management (COMPLETE)
+        │   ├── Process Spawning (process_spawn): dedicated user PML4 (CR3), page-backed kernel stack, and user stack
+        │   ├── User Trampoline (user_process_trampoline): drops to Ring 3 with RFLAGS.IF=1 and zeroed register state
+        │   ├── Preemptive Multi-Tasking: timer ticks safely preempt user processes, switching CR3 and TSS.RSP0
+        │   ├── General Process Termination (SYS_EXIT / process_exit): records exit status, transitions to TERMINATED,
+        │   │   and context switches to another runnable context without returning to dead user code
+        │   ├── Safe Deferred Reclamation (Reaper / sched_reap_dead): non-self-destructing cleanup in separate context,
+        │   │   switching away from dead CR3, reclaiming intermediate tables, user frames, kernel stack slots, and TCBs
+        │   └── Comprehensive Verification: 5-cycle repeated preemptive process spawn/exit stress test with 0 memory leaks
         ├── Checkpoint 5: Fast syscall hardening (syscall / sysret / IA32_EFER / STAR / LSTAR)
         └── Acceptance Test: Hello World in Ring 3 + deliberate illegal access to kernel memory
             (user program faults and terminates cleanly without crashing or panicking the kernel)

@@ -995,6 +995,178 @@ static void test_phase7_checkpoint3_elf(const boot_info_t *boot_info, uint64_t *
     serial_puts("[ OK ] Phase 7 (Checkpoint 3) completed successfully!\n\n");
 }
 
+/* =========================================================================
+ * Phase 7 (Checkpoint 4): General Process Exit & Lifecycle Management
+ * ========================================================================= */
+static void test_phase7_checkpoint4_lifecycle(boot_info_t *boot_info, uint64_t *master_kernel_pml4, uintptr_t master_kernel_pml4_phys) {
+    (void)boot_info;
+    (void)master_kernel_pml4;
+    (void)master_kernel_pml4_phys;
+
+    serial_puts("========================================================\n");
+    serial_puts("Phase 7 (Checkpoint 4): General Process Exit & Lifecycle\n");
+    serial_puts("========================================================\n");
+
+    /* Ensure legacy test recovery hooks are cleared so SYS_EXIT invokes general process_exit */
+    syscall_clear_recovery();
+
+    size_t init_elf_size = (size_t)(embedded_init_elf_end - embedded_init_elf_start);
+    size_t baseline_free_pages = pmm_get_free_pages();
+    size_t baseline_allocated_tables = vmm_get_allocated_table_frames();
+    uint64_t baseline_stack_slots = sched_get_active_stack_slots_mask();
+
+    /* -------------------------------------------------------------
+     * [TEST 1] Spawn User Process as Scheduled Task
+     * ------------------------------------------------------------- */
+    serial_puts("[TEST 1] Spawning Embedded ELF64 as Scheduled Process...\n");
+    tcb_t *proc = process_spawn("init_proc", embedded_init_elf_start, init_elf_size);
+    if (!proc) {
+        serial_puts("       [FAIL] process_spawn failed to create user process!\n");
+        hcf();
+    }
+    uint64_t pid = proc->tid;
+    serial_puts("       [PASS] Process spawned: PID=");
+    serial_print_dec(pid);
+    serial_puts(", CR3=");
+    serial_print_hex(proc->cr3);
+    serial_puts(", KernelStackSlot=");
+    serial_print_dec(proc->stack_slot);
+    serial_puts("\n");
+
+    /* -------------------------------------------------------------
+     * [TEST 2] Preemptive Multi-Tasking & User Execution
+     * ------------------------------------------------------------- */
+    serial_puts("[TEST 2] Executing Process with Timer Preemption Enabled (RFLAGS.IF=1)...\n");
+    serial_puts("------- SCHEDULED USER PROCESS OUTPUT START -------\n");
+
+    /* Start APIC timer, enable scheduler preemption, and enable interrupts */
+    apic_timer_start();
+    sched_enable_preemption();
+    __asm__ volatile("sti" ::: "memory");
+
+    /* Wait for the process to terminate and yield execution */
+    uint64_t exit_code = 0;
+    bool wait_res = process_wait(pid, &exit_code);
+
+    /* Disable interrupts and preemption for assertion verification */
+    __asm__ volatile("cli" ::: "memory");
+    apic_timer_stop();
+    sched_disable_preemption();
+
+    serial_puts("------- SCHEDULED USER PROCESS OUTPUT END ---------\n");
+
+    if (!wait_res) {
+        serial_puts("       [FAIL] process_wait failed or process vanished!\n");
+        hcf();
+    }
+    if (exit_code != 77) {
+        serial_puts("       [FAIL] Unexpected exit code! Expected: 77, Got: ");
+        serial_print_dec(exit_code);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Process terminated cleanly via SYS_EXIT! Exit code: ");
+    serial_print_dec(exit_code);
+    serial_puts("\n");
+
+    /* -------------------------------------------------------------
+     * [TEST 3] Safe Deferred Reclamation & Zero-Leak Audit
+     * ------------------------------------------------------------- */
+    serial_puts("[TEST 3] Verifying Deferred Resource Reclamation via Reaper...\n");
+    /* Directly invoke reaper to reclaim dead processes from g_dead_threads */
+    sched_reap_dead();
+
+    size_t after_tables = vmm_get_allocated_table_frames();
+    size_t after_pages  = pmm_get_free_pages();
+    uint64_t after_slots = sched_get_active_stack_slots_mask();
+
+    if (after_tables != baseline_allocated_tables) {
+        serial_puts("       [FAIL] Intermediate page tables leaked after process exit! Expected: ");
+        serial_print_dec(baseline_allocated_tables);
+        serial_puts(" Got: ");
+        serial_print_dec(after_tables);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All user intermediate tables & root reclaimed (delta: 0)\n");
+
+    if (after_pages != baseline_free_pages) {
+        serial_puts("       [FAIL] Physical frames leaked after process exit! Expected: ");
+        serial_print_dec(baseline_free_pages);
+        serial_puts(" Got: ");
+        serial_print_dec(after_pages);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All user physical frames & kernel stack returned to PMM (delta: 0 frames leaked)\n");
+
+    if (after_slots != baseline_stack_slots) {
+        serial_puts("       [FAIL] Kernel stack slot leaked! Expected mask: ");
+        serial_print_hex(baseline_stack_slots);
+        serial_puts(" Got: ");
+        serial_print_hex(after_slots);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dedicated kernel stack slot reclaimed in stack bitmap\n");
+
+    /* -------------------------------------------------------------
+     * [TEST 4] Repeated Process Spawn / Preempt / Exit / Reap Cycles
+     * ------------------------------------------------------------- */
+    serial_puts("[TEST 4] Stress Testing 5 Consecutive Process Spawn/Exit Cycles under Preemption...\n");
+    for (int cycle = 1; cycle <= 5; cycle++) {
+        tcb_t *p = process_spawn("stress_proc", embedded_init_elf_start, init_elf_size);
+        if (!p) {
+            serial_puts("       [FAIL] process_spawn failed during cycle ");
+            serial_print_dec(cycle);
+            serial_puts("\n");
+            hcf();
+        }
+        uint64_t cpid = p->tid;
+
+        apic_timer_start();
+        sched_enable_preemption();
+        __asm__ volatile("sti" ::: "memory");
+
+        uint64_t code = 0;
+        bool ok = process_wait(cpid, &code);
+
+        __asm__ volatile("cli" ::: "memory");
+        apic_timer_stop();
+        sched_disable_preemption();
+
+        if (!ok || code != 77) {
+            serial_puts("       [FAIL] Cycle ");
+            serial_print_dec(cycle);
+            serial_puts(" failed process_wait with code ");
+            serial_print_dec(code);
+            serial_puts("\n");
+            hcf();
+        }
+        sched_reap_dead(); /* Run reaper */
+    }
+
+    size_t stress_tables = vmm_get_allocated_table_frames();
+    size_t stress_pages  = pmm_get_free_pages();
+    uint64_t stress_slots = sched_get_active_stack_slots_mask();
+
+    if (stress_tables != baseline_allocated_tables ||
+        stress_pages  != baseline_free_pages ||
+        stress_slots  != baseline_stack_slots) {
+        serial_puts("       [FAIL] Memory or stack slot leak detected across 5 stress cycles!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] 5 consecutive process cycles completed with 0 leaks\n");
+
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed after process cycles!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+    serial_puts("[ OK ] Phase 7 (Checkpoint 4) completed successfully!\n\n");
+}
+
+
 /* Kernel Main Entry Point */
 void kmain(void) {
     /* 1. Initialize COM1 Serial Port (0x3F8) */
@@ -2410,7 +2582,12 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase7_checkpoint3_elf(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
-    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 3) complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 7 (Checkpoint 4): General Process Exit & Lifecycle Management
+     * ========================================================================= */
+    test_phase7_checkpoint4_lifecycle(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
+
+    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 4) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

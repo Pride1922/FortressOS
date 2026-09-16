@@ -47,7 +47,13 @@ _start:
     cmp rcx, 0x55AA
     jne .fail_stack
 
-    ; 5. All tests passed! Call SYS_EXIT with code 77
+    ; 5. Preemption compute loop (executes in Ring 3, allowing timer ticks to preempt)
+    mov rcx, 10000000
+.compute_loop:
+    dec rcx
+    jnz .compute_loop
+
+    ; 6. All tests passed! Call SYS_EXIT with code 77
     mov rax, 0          ; SYS_EXIT
     mov rdi, 77         ; exit code
     int 0x80

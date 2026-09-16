@@ -2,6 +2,7 @@
 #include "vmm.h"
 #include "serial.h"
 #include "gdt.h"
+#include "thread.h"
 
 static volatile bool      g_user_exit_called     = false;
 static volatile uint64_t  g_user_exit_code       = 0;
@@ -69,12 +70,20 @@ static int64_t sys_exit(uint64_t exit_code, interrupt_frame_t *frame) {
     g_user_exit_code   = exit_code;
 
     if (g_syscall_recovery_rip != 0) {
-        /* Redirect execution frame back to kernel recovery context in Ring 0 */
+        /* Legacy test harness redirect back to test function in Ring 0 */
         frame->rip    = g_syscall_recovery_rip;
         frame->cs     = GDT_KERNEL_CODE;
         frame->ss     = GDT_KERNEL_DATA;
         frame->rsp    = g_syscall_recovery_rsp;
         frame->rflags = 0x002; /* Clean kernel RFLAGS with IF=0 */
+        return 0;
+    }
+
+    /* General scheduled process exit: terminate and switch to next runnable context */
+    tcb_t *curr = thread_current();
+    if (curr && curr->is_user) {
+        process_exit(exit_code);
+        /* Never reached */
     }
 
     return 0;
