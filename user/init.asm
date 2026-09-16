@@ -17,6 +17,12 @@ msg_fast_syscall_len equ $ - msg_fast_syscall
 msg_dual_int80: db "Reference int 0x80 operational in Ring 3!", 10
 msg_dual_int80_len equ $ - msg_dual_int80
 
+msg_worker_fast1: db "1"
+msg_worker_fast1_len equ $ - msg_worker_fast1
+
+msg_worker_fast2: db "2"
+msg_worker_fast2_len equ $ - msg_worker_fast2
+
 section .data
 g_magic_val: dq 0xCAFEBABE12345678
 
@@ -33,6 +39,8 @@ _start:
     ; 2 = CPU-Bound Worker 2 (computes across multiple timer ticks, exits 88)
     ; 3 = Deliberate fault: attempts to read supervisor kernel higher-half memory
     ; 4 = Fast Syscall (syscall/sysret) & Dual-Interface Verification (exits 99)
+    ; 5 = Preempted Fast Syscall Worker 1 (repeated fast syscalls, exits 91)
+    ; 6 = Preempted Fast Syscall Worker 2 (repeated fast syscalls, exits 92)
     cmp rdi, 1
     je .mode_worker_1
     cmp rdi, 2
@@ -41,6 +49,10 @@ _start:
     je .mode_fault
     cmp rdi, 4
     je .mode_fast_syscall
+    cmp rdi, 5
+    je .mode_fast_worker_1
+    cmp rdi, 6
+    je .mode_fast_worker_2
 
     ; -------------------------------------------------------------
     ; Mode 0: Default Init Executable Verification
@@ -207,6 +219,78 @@ _start:
     ; 8. Clean exit via 'syscall' instruction with exit code 99!
     mov rax, 0                     ; SYS_EXIT
     mov rdi, 99                    ; exit code 99
+    syscall
+    hlt
+
+    ; -------------------------------------------------------------
+    ; Mode 5: Preempted Concurrent Fast Syscall Worker 1 (exits 91)
+    ; Repeatedly issues 'syscall' interspersed with compute loops
+    ; -------------------------------------------------------------
+.mode_fast_worker_1:
+    mov r12, 60                    ; 60 repeated syscall cycles
+.loop_fast_worker_1:
+    ; 1. CPU-bound compute loop
+    mov rcx, 500000
+.compute_fast_1:
+    inc qword [g_bss_val]
+    dec rcx
+    jnz .compute_fast_1
+
+    ; 2. Test user stack preservation across fast syscall
+    push qword 0x5511
+    mov rax, 1                     ; SYS_WRITE
+    mov rdi, 1                     ; stdout
+    lea rsi, [msg_worker_fast1]    ; "1"
+    mov rdx, msg_worker_fast1_len
+    syscall
+    pop rcx
+    cmp rcx, 0x5511
+    jne .fail_fast_stack
+    cmp rax, msg_worker_fast1_len
+    jne .fail_fast_write
+
+    dec r12
+    jnz .loop_fast_worker_1
+
+    ; Clean exit via fast 'syscall' with exit code 91
+    mov rax, 0                     ; SYS_EXIT
+    mov rdi, 91                    ; exit code 91
+    syscall
+    hlt
+
+    ; -------------------------------------------------------------
+    ; Mode 6: Preempted Concurrent Fast Syscall Worker 2 (exits 92)
+    ; Repeatedly issues 'syscall' interspersed with compute loops
+    ; -------------------------------------------------------------
+.mode_fast_worker_2:
+    mov r12, 60                    ; 60 repeated syscall cycles
+.loop_fast_worker_2:
+    ; 1. CPU-bound compute loop
+    mov rcx, 500000
+.compute_fast_2:
+    inc qword [g_bss_val]
+    dec rcx
+    jnz .compute_fast_2
+
+    ; 2. Test user stack preservation across fast syscall
+    push qword 0x5522
+    mov rax, 1                     ; SYS_WRITE
+    mov rdi, 1                     ; stdout
+    lea rsi, [msg_worker_fast2]    ; "2"
+    mov rdx, msg_worker_fast2_len
+    syscall
+    pop rcx
+    cmp rcx, 0x5522
+    jne .fail_fast_stack
+    cmp rax, msg_worker_fast2_len
+    jne .fail_fast_write
+
+    dec r12
+    jnz .loop_fast_worker_2
+
+    ; Clean exit via fast 'syscall' with exit code 92
+    mov rax, 0                     ; SYS_EXIT
+    mov rdi, 92                    ; exit code 92
     syscall
     hlt
 

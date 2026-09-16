@@ -160,6 +160,61 @@ static int64_t sys_exit(uint64_t exit_code, interrupt_frame_t *frame) {
     return 0;
 }
 
+/*
+ * Canonical lower-half user address limits:
+ * Range [PAGE_SIZE, USER_SPACE_TOP)
+ * User space addresses must be >= 0x1000 (guarding NULL / page 0)
+ * and strictly < 0x0000800000000000ULL (canonical lower-half limit).
+ */
+#define USER_CANONICAL_MIN   0x1000ULL
+#define USER_CANONICAL_LIMIT 0x0000800000000000ULL
+
+/*
+ * Allowed user RFLAGS mask:
+ * User code can manipulate standard arithmetic & status flags:
+ *   CF (0x1), PF (0x4), AF (0x10), ZF (0x40), SF (0x80), DF (0x400), OF (0x800)
+ *   AC (0x40000), ID (0x200000)
+ * Prohibited / strictly sanitized:
+ *   IF: Forced to 1 (0x200) so user mode is always interruptible
+ *   Bit 1: Reserved, must be 1 (0x2)
+ *   IOPL: Stripped to 0 (bits 12-13) - user mode has no port I/O access
+ *   NT: Stripped to 0 (bit 14)
+ *   TF: Stripped to 0 (bit 8)
+ *   VM: Stripped to 0 (bit 17)
+ */
+#define USER_RFLAGS_ALLOWED_MASK (0x0000000000240CD5ULL)
+#define USER_RFLAGS_FORCED       (0x0000000000000202ULL)
+
+bool syscall_validate_return_state(interrupt_frame_t *frame) {
+    if (!frame) return false;
+
+    /* If frame has been redirected to kernel (e.g. test harness recovery), skip user checks */
+    if (frame->cs != GDT_USER_CODE) {
+        return true;
+    }
+
+    /* 1. Validate Return RIP against canonical lower-half user address space */
+    if (frame->rip < USER_CANONICAL_MIN || frame->rip >= USER_CANONICAL_LIMIT) {
+        serial_puts("[SYSCALL] Hardening violation: non-canonical or kernel return RIP: ");
+        serial_print_hex(frame->rip);
+        serial_puts("\n");
+        return false;
+    }
+
+    /* 2. Validate Return RSP against canonical lower-half user address space */
+    if (frame->rsp < USER_CANONICAL_MIN || frame->rsp > USER_CANONICAL_LIMIT) {
+        serial_puts("[SYSCALL] Hardening violation: non-canonical or kernel return RSP: ");
+        serial_print_hex(frame->rsp);
+        serial_puts("\n");
+        return false;
+    }
+
+    /* 3. Sanitize RFLAGS: enforce user mask, force IF=1 and bit 1=1, clear IOPL/NT/TF/VM */
+    frame->rflags = (frame->rflags & USER_RFLAGS_ALLOWED_MASK) | USER_RFLAGS_FORCED;
+
+    return true;
+}
+
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
     if (!frame) return SYSCALL_EINVAL;
 
@@ -181,5 +236,28 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
     }
 
     frame->rax = (uint64_t)result;
+
+    /* Validate and sanitize return state before returning to assembly stub */
+    if (!syscall_validate_return_state(frame)) {
+        if (g_syscall_recovery_rip != 0) {
+            /* Test harness recovery mode: redirect frame to kernel recovery handler */
+            frame->rip    = g_syscall_recovery_rip;
+            frame->cs     = GDT_KERNEL_CODE;
+            frame->ss     = GDT_KERNEL_DATA;
+            frame->rsp    = g_syscall_recovery_rsp;
+            frame->rflags = 0x002;
+            frame->rax    = (uint64_t)SYSCALL_EFAULT;
+            return SYSCALL_EFAULT;
+        }
+
+        /* Rogue user process attempting invalid return state: terminate on kernel stack */
+        tcb_t *curr = thread_current();
+        if (curr && curr->is_user) {
+            serial_puts("[SYSCALL] Terminating rogue process due to invalid return state (exit 141)\n");
+            process_exit(141); /* 128 + 13 (#GP) */
+            /* Never reached */
+        }
+    }
+
     return result;
 }

@@ -1449,8 +1449,179 @@ static void test_phase7_checkpoint5_fast_syscall(boot_info_t *boot_info, uint64_
 
     sched_reap_dead();
 
-    /* 3. Resource Reclamation Audit */
-    serial_puts("[TEST 3] Resource Reclamation Post-Fast-Syscall Audit...\n");
+    /* 3. Hostile Return State Validation & Security Sanitization */
+    serial_puts("[TEST 3] Validating Fast Syscall Return State Hardening & Sanitization...\n");
+
+    /* 3A: Reject Non-Canonical / Kernel Return RIP */
+    interrupt_frame_t bad_rip_frame;
+    memset(&bad_rip_frame, 0, sizeof(bad_rip_frame));
+    bad_rip_frame.cs     = GDT_USER_CODE;
+    bad_rip_frame.rip    = 0xFFFF800000000000ULL; /* Non-canonical / kernel higher-half */
+    bad_rip_frame.rsp    = 0x00007FFFF0000000ULL;
+    bad_rip_frame.rflags = 0x202;
+    if (syscall_validate_return_state(&bad_rip_frame)) {
+        serial_puts("       [FAIL] Non-canonical return RIP was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Non-canonical / kernel return RIP rejected (CVE-2012-0217 mitigation)\n");
+
+    /* 3B: Reject Page-Zero / Sub-Page Return RIP */
+    interrupt_frame_t zero_rip_frame;
+    memset(&zero_rip_frame, 0, sizeof(zero_rip_frame));
+    zero_rip_frame.cs     = GDT_USER_CODE;
+    zero_rip_frame.rip    = 0x500ULL; /* Page-zero NULL area */
+    zero_rip_frame.rsp    = 0x00007FFFF0000000ULL;
+    zero_rip_frame.rflags = 0x202;
+    if (syscall_validate_return_state(&zero_rip_frame)) {
+        serial_puts("       [FAIL] Page-zero return RIP was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Page-zero (< PAGE_SIZE) return RIP rejected\n");
+
+    /* 3C: Reject Non-Canonical / Kernel Return RSP */
+    interrupt_frame_t bad_rsp_frame;
+    memset(&bad_rsp_frame, 0, sizeof(bad_rsp_frame));
+    bad_rsp_frame.cs     = GDT_USER_CODE;
+    bad_rsp_frame.rip    = 0x0000000000401000ULL;
+    bad_rsp_frame.rsp    = 0xFFFFFFFFA0000000ULL; /* Kernel address space */
+    bad_rsp_frame.rflags = 0x202;
+    if (syscall_validate_return_state(&bad_rsp_frame)) {
+        serial_puts("       [FAIL] Kernel return RSP was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Non-canonical / kernel return RSP rejected\n");
+
+    /* 3D: RFLAGS Sanitization (IOPL, NT, TF, VM stripped; IF forced to 1) */
+    interrupt_frame_t sanitize_frame;
+    memset(&sanitize_frame, 0, sizeof(sanitize_frame));
+    sanitize_frame.cs     = GDT_USER_CODE;
+    sanitize_frame.rip    = 0x0000000000401000ULL;
+    sanitize_frame.rsp    = 0x00007FFFF0000000ULL;
+    sanitize_frame.rflags = 0x0000000000037300ULL; /* malicious: IOPL=3, NT=1, TF=1, IF=0 */
+
+    if (!syscall_validate_return_state(&sanitize_frame)) {
+        serial_puts("       [FAIL] Valid canonical RIP/RSP rejected during sanitize test!\n");
+        hcf();
+    }
+    if ((sanitize_frame.rflags & (3ULL << 12)) != 0 ||
+        (sanitize_frame.rflags & (1ULL << 14)) != 0 ||
+        (sanitize_frame.rflags & (1ULL << 8))  != 0 ||
+        (sanitize_frame.rflags & (1ULL << 9))  == 0 ||
+        (sanitize_frame.rflags & (1ULL << 1))  == 0) {
+        serial_puts("       [FAIL] Malicious RFLAGS bits not sanitized!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] RFLAGS sanitized (IOPL=0, NT=0, TF=0 stripped, IF=1 enforced)\n");
+
+    /* 3E: End-to-End Hostile Return Interception via Dispatcher (Kernel Stack Recovery) */
+    void *recovery_target = &&hostile_recovery_done;
+    __asm__ volatile("" : : "r"(recovery_target));
+    uintptr_t saved_rsp;
+    __asm__ volatile("mov %%rsp, %0" : "=r"(saved_rsp));
+    syscall_set_recovery((uintptr_t)recovery_target, saved_rsp);
+
+    interrupt_frame_t hostile_frame;
+    memset(&hostile_frame, 0, sizeof(hostile_frame));
+    hostile_frame.cs     = GDT_USER_CODE;
+    hostile_frame.ss     = GDT_USER_DATA;
+    hostile_frame.rip    = 0xFFFF800000000000ULL; /* Non-canonical / kernel return address */
+    hostile_frame.rsp    = 0x00007FFFF0000000ULL;
+    hostile_frame.rflags = 0x202;
+    hostile_frame.rax    = SYS_WRITE;
+    hostile_frame.rdi    = 1;
+    hostile_frame.rsi    = 0;
+    hostile_frame.rdx    = 0;
+
+    int64_t disp_res = syscall_dispatch(&hostile_frame);
+    if (disp_res != SYSCALL_EFAULT || hostile_frame.cs != GDT_KERNEL_CODE || hostile_frame.rip != (uintptr_t)recovery_target) {
+        serial_puts("       [FAIL] Hostile return state was not intercepted by dispatcher!\n");
+        hcf();
+    }
+
+hostile_recovery_done:
+    syscall_clear_recovery();
+    serial_puts("       [PASS] Hostile return state intercepted on kernel stack without sysretq\n");
+
+    /* 4. Concurrent Repeated Fast Syscalls Under 100 Hz Preemption */
+    serial_puts("[TEST 4] Spawning Two Concurrent Fast Syscall Processes (Modes 5 & 6)...\n");
+    serial_puts("------- PREEMPTED REPEATED FAST SYSCALLS OUTPUT START -------\n");
+
+    tcb_t *p_fast1 = process_spawn_with_arg("user_fast_worker1", embedded_init_elf_start, init_elf_size, 5);
+    tcb_t *p_fast2 = process_spawn_with_arg("user_fast_worker2", embedded_init_elf_start, init_elf_size, 6);
+    if (!p_fast1 || !p_fast2) {
+        serial_puts("       [FAIL] Failed to spawn concurrent fast syscall processes!\n");
+        hcf();
+    }
+    uint64_t pid_fast1 = p_fast1->tid;
+    uint64_t pid_fast2 = p_fast2->tid;
+
+    uint64_t base_runnable_switches = sched_get_runnable_switches_count();
+    uint64_t base_timer_preempts    = sched_get_timer_preempt_count();
+
+    apic_timer_start();
+    sched_enable_preemption();
+    __asm__ volatile("sti" ::: "memory");
+
+    uint64_t code_f1 = 0, pcount_f1 = 0, ticks_f1 = 0;
+    uint64_t code_f2 = 0, pcount_f2 = 0, ticks_f2 = 0;
+    bool wf1 = process_wait_extended(pid_fast1, &code_f1, &pcount_f1, &ticks_f1);
+    bool wf2 = process_wait_extended(pid_fast2, &code_f2, &pcount_f2, &ticks_f2);
+
+    __asm__ volatile("cli" ::: "memory");
+    apic_timer_stop();
+    sched_disable_preemption();
+
+    serial_puts("\n------- PREEMPTED REPEATED FAST SYSCALLS OUTPUT END ---------\n");
+
+    uint64_t d_runnable = sched_get_runnable_switches_count() - base_runnable_switches;
+    uint64_t d_timer    = sched_get_timer_preempt_count() - base_timer_preempts;
+
+    if (!wf1 || code_f1 != 91 || !wf2 || code_f2 != 92) {
+        serial_puts("       [FAIL] Repeated fast syscalls under preemption failed! Codes: P1=");
+        serial_print_dec(code_f1);
+        serial_puts(", P2=");
+        serial_print_dec(code_f2);
+        serial_puts("\n");
+        hcf();
+    }
+
+    if (pcount_f1 == 0 || pcount_f2 == 0) {
+        serial_puts("       [FAIL] Insufficient timer preemptions recorded during fast syscalls! P1=");
+        serial_print_dec(pcount_f1);
+        serial_puts(", P2=");
+        serial_print_dec(pcount_f2);
+        serial_puts("\n");
+        hcf();
+    }
+
+    if (d_runnable < 2) {
+        serial_puts("       [FAIL] Insufficient runnable switches during fast syscalls! Switches: ");
+        serial_print_dec(d_runnable);
+        serial_puts("\n");
+        hcf();
+    }
+
+    serial_puts("       [PASS] Concurrent repeated fast syscalls executed with timer preemption!\n");
+    serial_puts("              - Worker 1 (PID=");
+    serial_print_dec(pid_fast1);
+    serial_puts(") completed 60 fast syscalls (Preemptions=");
+    serial_print_dec(pcount_f1);
+    serial_puts(", Exit=91)\n");
+    serial_puts("              - Worker 2 (PID=");
+    serial_print_dec(pid_fast2);
+    serial_puts(") completed 60 fast syscalls (Preemptions=");
+    serial_print_dec(pcount_f2);
+    serial_puts(", Exit=92)\n");
+    serial_puts("              - Direct preemption evidence: ");
+    serial_print_dec(d_runnable);
+    serial_puts(" runnable context switches across ");
+    serial_print_dec(d_timer);
+    serial_puts(" timer ticks\n");
+
+    sched_reap_dead();
+
+    /* 5. Resource Reclamation Audit */
+    serial_puts("[TEST 5] Resource Reclamation Post-Fast-Syscall Audit...\n");
     size_t after_tables = vmm_get_allocated_table_frames();
     size_t after_pages  = pmm_get_free_pages();
     uint64_t after_slots = sched_get_active_stack_slots_mask();

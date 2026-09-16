@@ -555,13 +555,14 @@ void vmm_init(boot_info_t *boot_info) {
     }
     serial_puts("[VMM] Kernel .data, .bss, and stacks mapped (RW, NX)\n");
 
-    /* Explicitly unmap the dedicated guard pages below the active boot and IST1 stacks */
+    /* Explicitly unmap the dedicated guard pages below the active boot, IST1, and IST2 stacks */
     if (vmm_unmap_page(pml4, (uintptr_t)kernel_stack_guard) != VMM_OK ||
-        vmm_unmap_page(pml4, gdt_get_ist1_guard()) != VMM_OK) {
+        vmm_unmap_page(pml4, gdt_get_ist1_guard()) != VMM_OK ||
+        vmm_unmap_page(pml4, gdt_get_ist2_guard()) != VMM_OK) {
         serial_puts("[FATAL] Failed to unmap stack guards\n");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }
-    serial_puts("[VMM] Guard pages below boot stack and IST1 unmapped (hardware overflow trap armed)\n");
+    serial_puts("[VMM] Guard pages below boot stack, IST1, and IST2 unmapped (hardware overflow trap armed)\n");
 
     /* 4. Map Linear Framebuffer explicitly with Cache-Disable (PTE_PCD) */
     if (boot_info->has_framebuffer) {
@@ -594,14 +595,23 @@ void vmm_init(boot_info_t *boot_info) {
         if (!vmm_is_mapped(pml4, v)) ist1_layout_ok = false;
     }
 
+    bool ist2_guard_ok  = !vmm_is_mapped(pml4, gdt_get_ist2_guard());
+    bool ist2_layout_ok = (gdt_get_ist2_guard() % PAGE_SIZE == 0) &&
+                         gdt_get_ist2_stack_top() == gdt_get_ist2_guard() + 5 * PAGE_SIZE;
+    for (uintptr_t v = gdt_get_ist2_guard() + PAGE_SIZE;
+         v < gdt_get_ist2_stack_top(); v += PAGE_SIZE) {
+        if (!vmm_is_mapped(pml4, v)) ist2_layout_ok = false;
+    }
+
     serial_puts("       Kernel .text:        "); serial_puts(text_ok        ? "[MAPPED RX]\n" : "[UNMAPPED]\n");
     serial_puts("       Kernel .rodata:      "); serial_puts(rodata_ok      ? "[MAPPED R, NX]\n" : "[UNMAPPED]\n");
     serial_puts("       Kernel .data:        "); serial_puts(data_ok        ? "[MAPPED RW, NX]\n" : "[UNMAPPED]\n");
     serial_puts("       PMM / HHDM:          "); serial_puts(hhdm_ok        ? "[MAPPED RW, NX]\n" : "[UNMAPPED]\n");
     serial_puts("       Boot Stack Guard:    "); serial_puts(stack_guard_ok ? "[UNMAPPED OK]\n" : "[MAPPED ERROR!]\n");
     serial_puts("       IST1 Stack Guard:    "); serial_puts(ist1_guard_ok  ? "[UNMAPPED OK]\n" : "[MAPPED ERROR!]\n");
+    serial_puts("       IST2 Stack Guard:    "); serial_puts(ist2_guard_ok  ? "[UNMAPPED OK]\n" : "[MAPPED ERROR!]\n");
 
-    if (!text_ok || !rodata_ok || !data_ok || !hhdm_ok || !stack_guard_ok || !ist1_guard_ok || !ist1_layout_ok) {
+    if (!text_ok || !rodata_ok || !data_ok || !hhdm_ok || !stack_guard_ok || !ist1_guard_ok || !ist1_layout_ok || !ist2_guard_ok || !ist2_layout_ok) {
         serial_puts("[FAIL] Pre-CR3 verification failed! Aborting switch.\n");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }

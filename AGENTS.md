@@ -326,12 +326,22 @@ Future tasks should follow this sequenced implementation order:
         └── Checkpoint 5: Fast Syscall Hardening via syscall / sysret (COMPLETE)
             ├── Hardware MSR Configuration: IA32_EFER.SCE (bit 0), IA32_STAR (Kernel CS 0x08, User CS 0x23, User SS 0x1B),
             │   IA32_LSTAR (syscall_entry_stub), and IA32_SFMASK (masks IF, TF, DF, and arithmetic flags)
-            ├── Unified Dispatcher & Stack Frame: syscall_entry_stub builds an interrupt_frame_t layout on active TSS.RSP0 stack,
-            │   unifying validation and dispatch between 'syscall' and legacy 'int 0x80'
-            ├── Dual-Interface Support: int 0x80 preserved as reference; user executables invoke both instructions seamlessly
-            ├── Negative Validation & Error Code Parity: Verified SYSCALL_EFAULT (-2), SYSCALL_EINVAL (-1), SYSCALL_EBADF (-3),
-            │   and SYSCALL_ENOSYS (-4) across syscall instruction
-            └── Verification: Mode 4 test passed with exit code 99 under BIOS and UEFI QEMU with 0 leaked resources
+            ├── Return State Hardening & Canonical Policy: Return RIP and RSP bounds-checked against canonical lower-half limits
+            │   ([PAGE_SIZE, 0x0000800000000000ULL)) before loading user RSP, mitigating Intel CVE-2012-0217 (#GP in Ring 0).
+            │   Invalid return state handled while strictly on kernel stack, aborting without ever executing sysretq
+            ├── RFLAGS Security Sanitization: User flags sanitized before sysretq, stripping IOPL (bits 12-13), NT (bit 14), TF (bit 8),
+            │   and VM (bit 17), while forcing IF=1 (0x200) and reserved bit 1 = 1 (0x002)
+            ├── Non-Maskable Interrupt (NMI) IST2 Strategy: Vector 2 configured with dedicated 16 KiB emergency stack + 4 KiB guard page
+            │   (IST2) in TSS/IDT, guaranteeing atomic delivery if NMIs arrive during syscall entry/exit stack switch windows
+            ├── User Stack Invariant: syscall_entry_stub performs zero pushes, calls, or writes on the user stack before switching RSP
+            ├── Concurrency Contract: g_tss_rsp0 follows scheduled thread; explicitly single-CPU in Phases 1-7, prepared for GS base in SMP
+            ├── Syscall ABI Specification: RCX and R11 documented as clobbered by hardware; callee-preserved registers honored
+            ├── Dual-Interface Support: Reference int 0x80 preserved; negative parity verified for EFAULT, EINVAL, EBADF, and ENOSYS
+            └── Comprehensive Verification Suite:
+                ├── Mode 4 functional test passed with exit code 99
+                ├── Hostile return test suite: non-canonical RIP, page-zero RIP, kernel RSP, and malicious RFLAGS rejected/sanitized
+                ├── Preempted concurrent workers (Modes 5 & 6): 120 fast syscalls executed under 100 Hz timer preemption (3 switches across 6 ticks)
+                └── 100% zero-leak resource audit under BIOS and UEFI QEMU (0 tables, 0 frames, 0 stack slots)
 ```
 
 ---

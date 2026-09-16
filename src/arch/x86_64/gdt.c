@@ -27,6 +27,28 @@ uintptr_t gdt_get_ist1_stack_top(void) {
     return (uintptr_t)ist1_memory.stack + sizeof(ist1_memory.stack);
 }
 
+/* Unified IST2 emergency stack layout for Non-Maskable Interrupts (NMI):
+ * Guarantees that NMIs firing during syscall entry/exit stack switches land safely on IST2. */
+struct ist2_layout {
+    uint8_t guard[4096];
+    uint8_t stack[16384];
+} __attribute__((aligned(4096)));
+
+static struct ist2_layout ist2_memory;
+
+_Static_assert(sizeof(ist2_memory.guard) == 4096, "ist2 guard size must be 4096 bytes");
+_Static_assert(sizeof(ist2_memory.stack) == 16384, "ist2 stack size must be 16384 bytes");
+_Static_assert(__builtin_offsetof(struct ist2_layout, stack) == 4096, "ist2 stack must immediately follow guard page");
+_Static_assert(_Alignof(struct ist2_layout) == 4096, "ist2 layout must be page aligned");
+
+uintptr_t gdt_get_ist2_guard(void) {
+    return (uintptr_t)ist2_memory.guard;
+}
+
+uintptr_t gdt_get_ist2_stack_top(void) {
+    return (uintptr_t)ist2_memory.stack + sizeof(ist2_memory.stack);
+}
+
 /* Static TSS instance */
 static tss_t tss __attribute__((aligned(16)));
 
@@ -65,8 +87,9 @@ void gdt_init(void) {
         tss_bytes[i] = 0;
     }
 
-    /* 2. Configure IST1 emergency stack for Double Fault (#DF) */
+    /* 2. Configure IST1 emergency stack for Double Fault (#DF) and IST2 for NMI */
     tss.ist[0] = gdt_get_ist1_stack_top();
+    tss.ist[1] = gdt_get_ist2_stack_top();
     tss.iopb_offset = (uint16_t)sizeof(tss_t); /* Disable I/O bitmap */
 
     /* 3. Populate GDT */

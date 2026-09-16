@@ -66,9 +66,11 @@ void idt_init(void) {
     for (int i = 0; i < IDT_ENTRIES; i++) {
         uint8_t ist = 0;
 
-        /* Stack Switching: Double Fault (#DF, Vector 8) MUST use IST1 */
+        /* Stack Switching: Double Fault (#DF, Vector 8) uses IST1; NMI (Vector 2) uses IST2 */
         if (i == 8) {
             ist = 1;
+        } else if (i == 2) {
+            ist = 2;
         }
 
         uint8_t flags = IDT_GATE_INTERRUPT;
@@ -86,7 +88,7 @@ void idt_init(void) {
     idtr.base  = (uint64_t)&idt;
     idtr_load(&idtr);
 
-    serial_puts("[ OK ] IDT loaded (all 256 gates populated, #DF on IST1, int 0x80 configured with DPL 3)\n");
+    serial_puts("[ OK ] IDT loaded (all 256 gates populated, #DF on IST1, NMI on IST2, int 0x80 configured with DPL 3)\n");
 }
 
 static volatile bool      g_expect_page_fault = false;
