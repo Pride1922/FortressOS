@@ -3,6 +3,9 @@
 #include "vmm.h"
 #include "serial.h"
 #include "string.h"
+#include "spinlock.h"
+
+static spinlock_t g_heap_lock = {0};
 
 /* Block Header Structure (16 bytes, 16-byte aligned) */
 typedef struct heap_block_header {
@@ -281,6 +284,7 @@ static bool heap_expand(size_t bytes_needed) {
 
 /* Initialize Kernel Heap with an initial 16 KiB (4 pages) mapped pool */
 void heap_init(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
     serial_puts("[HEAP] Initializing Dynamic Kernel Heap Allocator...\n");
     g_heap_start = KERNEL_HEAP_START;
     g_heap_end = KERNEL_HEAP_START;
@@ -290,11 +294,13 @@ void heap_init(void) {
 
     /* Expand with initial 16 KiB */
     if (!heap_expand(4 * PAGE_SIZE)) {
+        spin_unlock_irqrestore(&g_heap_lock, rflags);
         serial_puts("[FAIL] Heap initial expansion failed!\n");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }
 
     g_heap_ready = true;
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
     serial_puts("[HEAP] Initialized successfully. Start: ");
     serial_print_hex(g_heap_start);
     serial_puts(" | End: ");
@@ -302,8 +308,8 @@ void heap_init(void) {
     serial_puts(" (Capacity: 16 KiB)\n");
 }
 
-/* Allocate dynamic kernel memory */
-void *kmalloc(size_t size) {
+/* Internal unlocked kmalloc */
+static void *kmalloc_unlocked(size_t size) {
     if (size == 0 || !g_heap_ready) {
         return NULL;
     }
@@ -396,8 +402,15 @@ void *kmalloc(size_t size) {
     return (void *)((uint8_t *)matched_hdr + sizeof(heap_block_header_t));
 }
 
-/* Free dynamic kernel memory with O(1) boundary-tag bidirectional coalescing */
-void kfree(void *ptr) {
+void *kmalloc(size_t size) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    void *ptr = kmalloc_unlocked(size);
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return ptr;
+}
+
+/* Internal unlocked kfree */
+static void kfree_unlocked(void *ptr) {
     if (!ptr) return;
 
     uintptr_t addr = (uintptr_t)ptr;
@@ -461,8 +474,14 @@ void kfree(void *ptr) {
     free_list_insert(hdr);
 }
 
-/* Allocate and zero-fill dynamic kernel memory */
-void *kcalloc(size_t num, size_t size) {
+void kfree(void *ptr) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    kfree_unlocked(ptr);
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+}
+
+/* Internal unlocked kcalloc */
+static void *kcalloc_unlocked(size_t num, size_t size) {
     if (num == 0 || size == 0) return NULL;
 
     /* Multiplication overflow check */
@@ -471,20 +490,27 @@ void *kcalloc(size_t num, size_t size) {
     }
 
     size_t total = num * size;
-    void *ptr = kmalloc(total);
+    void *ptr = kmalloc_unlocked(total);
     if (ptr) {
         memset(ptr, 0, total);
     }
     return ptr;
 }
 
-/* Reallocate dynamic kernel memory with data preservation */
-void *krealloc(void *ptr, size_t new_size) {
+void *kcalloc(size_t num, size_t size) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    void *ptr = kcalloc_unlocked(num, size);
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return ptr;
+}
+
+/* Internal unlocked krealloc */
+static void *krealloc_unlocked(void *ptr, size_t new_size) {
     if (!ptr) {
-        return kmalloc(new_size);
+        return kmalloc_unlocked(new_size);
     }
     if (new_size == 0) {
-        kfree(ptr);
+        kfree_unlocked(ptr);
         return NULL;
     }
 
@@ -526,9 +552,8 @@ void *krealloc(void *ptr, size_t new_size) {
             rem_ftr->is_free = 0;
             rem_ftr->size = excess;
 
-            /* Free the excess remainder; kfree subtracts excess from g_allocated_bytes
-             * and immediately coalesces it with any free right neighbor. */
-            kfree((void *)((uint8_t *)rem + sizeof(heap_block_header_t)));
+            /* Free the excess remainder */
+            kfree_unlocked((void *)((uint8_t *)rem + sizeof(heap_block_header_t)));
         }
         return ptr;
     }
@@ -576,7 +601,7 @@ void *krealloc(void *ptr, size_t new_size) {
     }
 
     /* Case 3: Allocate new buffer, copy min(old_payload, new_requested), and free original */
-    void *new_ptr = kmalloc(new_size);
+    void *new_ptr = kmalloc_unlocked(new_size);
     if (!new_ptr) {
         /* Failure strictly preserves original allocation and data intact */
         return NULL;
@@ -584,19 +609,30 @@ void *krealloc(void *ptr, size_t new_size) {
 
     size_t copy_len = old_payload_size < new_size ? old_payload_size : new_size;
     memcpy(new_ptr, ptr, copy_len);
-    kfree(ptr);
+    kfree_unlocked(ptr);
     return new_ptr;
 }
 
-/* Metrics & Invariants:
- * Used/free bytes count whole blocks including metadata.
- * Invariant: used_bytes + free_bytes == total_bytes.
- */
-size_t heap_get_used_bytes(void) {
+void *krealloc(void *ptr, size_t new_size) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    void *res = krealloc_unlocked(ptr, new_size);
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return res;
+}
+
+/* Metrics & Invariants (Internal Unlocked) */
+static size_t heap_get_used_bytes_unlocked(void) {
     return g_allocated_bytes;
 }
 
-size_t heap_get_free_bytes(void) {
+size_t heap_get_used_bytes(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    size_t res = heap_get_used_bytes_unlocked();
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return res;
+}
+
+static size_t heap_get_free_bytes_unlocked(void) {
     size_t free_bytes = 0;
     heap_free_node_t *curr = g_free_list_head;
     while (curr) {
@@ -609,15 +645,36 @@ size_t heap_get_free_bytes(void) {
     return free_bytes;
 }
 
-size_t heap_get_total_bytes(void) {
+size_t heap_get_free_bytes(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    size_t res = heap_get_free_bytes_unlocked();
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return res;
+}
+
+static size_t heap_get_total_bytes_unlocked(void) {
     return g_heap_end - g_heap_start;
 }
 
-size_t heap_get_allocated_blocks(void) {
+size_t heap_get_total_bytes(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    size_t res = heap_get_total_bytes_unlocked();
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return res;
+}
+
+static size_t heap_get_allocated_blocks_unlocked(void) {
     return g_allocated_blocks;
 }
 
-size_t heap_get_free_blocks(void) {
+size_t heap_get_allocated_blocks(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    size_t res = heap_get_allocated_blocks_unlocked();
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return res;
+}
+
+static size_t heap_get_free_blocks_unlocked(void) {
     size_t count = 0;
     heap_free_node_t *curr = g_free_list_head;
     while (curr) {
@@ -627,11 +684,15 @@ size_t heap_get_free_blocks(void) {
     return count;
 }
 
-/* Linear Debug Heap Walk:
- * Verifies complete block coverage, tag consistency, no adjacent free blocks,
- * free-list count equality, and used + free == total invariant.
- */
-bool heap_verify_integrity(void) {
+size_t heap_get_free_blocks(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    size_t res = heap_get_free_blocks_unlocked();
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return res;
+}
+
+/* Linear Debug Heap Walk (Internal Unlocked) */
+static bool heap_verify_integrity_unlocked(void) {
     if (!g_heap_ready) return false;
 
     uintptr_t curr_addr = g_heap_start;
@@ -673,7 +734,7 @@ bool heap_verify_integrity(void) {
     }
 
     /* Verify free list count matches free blocks found */
-    size_t list_count = heap_get_free_blocks();
+    size_t list_count = heap_get_free_blocks_unlocked();
     if (list_count != free_block_count) {
         serial_puts("[HEAP-AUDIT FAIL] Free list count mismatch (list: ");
         serial_print_dec(list_count);
@@ -684,7 +745,7 @@ bool heap_verify_integrity(void) {
     }
 
     /* Verify invariant: calculated_used + calculated_free == total */
-    size_t total = heap_get_total_bytes();
+    size_t total = heap_get_total_bytes_unlocked();
     if (calculated_used + calculated_free != total || calculated_used != g_allocated_bytes) {
         serial_puts("[HEAP-AUDIT FAIL] Heap metric invariant violated! used=");
         serial_print_dec(calculated_used);
@@ -701,6 +762,13 @@ bool heap_verify_integrity(void) {
     }
 
     return true;
+}
+
+bool heap_verify_integrity(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    bool res = heap_verify_integrity_unlocked();
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return res;
 }
 
 /* Fault injection hooks for testing */

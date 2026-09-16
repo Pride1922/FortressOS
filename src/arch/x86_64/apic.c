@@ -52,8 +52,7 @@ static void apic_spurious_handler(interrupt_frame_t *frame) {
 static void apic_timer_handler(interrupt_frame_t *frame) {
     (void)frame;
     g_timer_ticks++;
-    extern volatile bool g_timer_eoi_handled;
-    g_timer_eoi_handled = false;
+    lapic_eoi(); /* Single-owner EOI: acknowledged immediately on timer entry */
     extern void sched_on_timer_tick(void);
     sched_on_timer_tick();
 }
@@ -141,7 +140,7 @@ static bool pit_wait(void (*work)(void)) {
 }
 bool apic_timer_init(uint32_t target_hz) {
     if (!target_hz || target_hz > 1000) return false;
-    idt_register_hardware_handler(APIC_TIMER_VECTOR, apic_timer_handler);
+    idt_register_handler(APIC_TIMER_VECTOR, apic_timer_handler);
     lapic_write(APIC_REG_TIMER_DIV, APIC_TIMER_DIV_16);
     lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED | APIC_TIMER_VECTOR);
     uint8_t saved = pit_begin(11932);

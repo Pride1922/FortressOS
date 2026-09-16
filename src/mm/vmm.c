@@ -3,6 +3,7 @@
 #include "serial.h"
 #include "string.h"
 #include "gdt.h"
+#include "spinlock.h"
 
 extern uint8_t __kernel_start[];
 extern uint8_t __text_start[];
@@ -33,7 +34,8 @@ static inline bool is_canonical_address(uintptr_t addr) {
     return (top == 0) || (top == 0x1FFFF);
 }
 
-static size_t g_vmm_retained_tables = 0;
+static size_t     g_vmm_retained_tables = 0;
+static spinlock_t g_vmm_lock = {0};
 
 static uint64_t *get_or_create_table(uint64_t *parent_table, size_t index, uint64_t flags) {
     uint64_t entry = parent_table[index];
@@ -63,18 +65,21 @@ static uint64_t *get_or_create_table(uint64_t *parent_table, size_t index, uint6
 }
 
 uintptr_t vmm_create_pml4(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     uintptr_t pml4_phys = pmm_alloc_page();
     if (pml4_phys == 0) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
         return 0;
     }
 
     g_vmm_retained_tables++;
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
     memset(pml4_virt, 0, PAGE_SIZE);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return pml4_phys;
 }
 
-int vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
+static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
     if (!pml4_virt) return VMM_ERR_INVALID_ADDR;
     if ((virt_addr % PAGE_SIZE) != 0 || (phys_addr % PAGE_SIZE) != 0) {
         return VMM_ERR_INVALID_ADDR;
@@ -112,7 +117,14 @@ int vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, 
     return VMM_OK;
 }
 
-int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
+int vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    int res = vmm_map_page_unlocked(pml4_virt, virt_addr, phys_addr, flags);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return res;
+}
+
+static int vmm_unmap_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
     if (!pml4_virt || (virt_addr % PAGE_SIZE) != 0) {
         return VMM_ERR_INVALID_ADDR;
     }
@@ -144,7 +156,14 @@ int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
     return VMM_OK;
 }
 
-bool vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr) {
+int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    int res = vmm_unmap_page_unlocked(pml4_virt, virt_addr);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return res;
+}
+
+static bool vmm_is_mapped_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
     if (!pml4_virt || !is_canonical_address(virt_addr)) return false;
 
     size_t pml4_i = pml4_index(virt_addr);
@@ -164,7 +183,14 @@ bool vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr) {
     return (pt[pt_i] & PTE_PRESENT) != 0;
 }
 
-uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr) {
+bool vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    bool res = vmm_is_mapped_unlocked(pml4_virt, virt_addr);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return res;
+}
+
+static uintptr_t vmm_get_physical_address_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
     if (!pml4_virt || !is_canonical_address(virt_addr)) return 0;
 
     size_t pml4_i = pml4_index(virt_addr);
@@ -186,6 +212,13 @@ uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr) {
     return (pt[pt_i] & PTE_ADDR_MASK) | (virt_addr & 0xFFF);
 }
 
+uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    uintptr_t res = vmm_get_physical_address_unlocked(pml4_virt, virt_addr);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return res;
+}
+
 void vmm_switch_pml4(uintptr_t pml4_phys) {
     __asm__ volatile("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
@@ -200,7 +233,10 @@ uint64_t *vmm_get_kernel_pml4_virt(void) {
 }
 
 size_t vmm_get_retained_table_frames(void) {
-    return g_vmm_retained_tables;
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    size_t res = g_vmm_retained_tables;
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return res;
 }
 
 /* Helper to assert that essential boot mappings succeed without ignoring errors */

@@ -1,21 +1,108 @@
 #include "thread.h"
 #include "heap.h"
+#include "pmm.h"
+#include "vmm.h"
 #include "string.h"
 #include "serial.h"
 
-static tcb_t       g_main_thread;
-static tcb_t      *g_idle_thread        = NULL;
-static tcb_t      *g_current_thread     = NULL;
-static tcb_t      *g_runqueue_head      = NULL;
-static tcb_t      *g_runqueue_tail      = NULL;
-static tcb_t      *g_dead_threads       = NULL;
-static uint64_t    g_next_tid           = 1;
-static spinlock_t  g_sched_lock         = {0};
+extern uint8_t kernel_stack_guard[];
+
+static tcb_t         g_main_thread;
+static tcb_t        *g_idle_thread        = NULL;
+static tcb_t        *g_current_thread     = NULL;
+static tcb_t        *g_runqueue_head      = NULL;
+static tcb_t        *g_runqueue_tail      = NULL;
+static tcb_t        *g_dead_threads       = NULL;
+static uint64_t      g_next_tid           = 1;
+static spinlock_t    g_sched_lock         = {0};
 static volatile bool g_preemption_enabled = false;
 
-/* External LAPIC EOI and flag to avoid duplicate EOI */
-extern void lapic_eoi(void);
-volatile bool g_timer_eoi_handled = false;
+/* 64-slot Page-Backed Thread Stack Allocator */
+static uint64_t      g_stack_slots_bitmap = 0;
+
+static int kstack_alloc(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_size) {
+    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+    int slot = -1;
+    for (int i = 0; i < MAX_KERNEL_THREADS; i++) {
+        if (!(g_stack_slots_bitmap & (1ULL << i))) {
+            g_stack_slots_bitmap |= (1ULL << i);
+            slot = i;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_sched_lock, rflags);
+
+    if (slot == -1) {
+        serial_puts("[WARN] Thread stack slots exhausted (max 64 concurrent threads)!\n");
+        return -1;
+    }
+
+    uintptr_t slot_addr  = KERNEL_STACKS_BASE + (uintptr_t)slot * STACK_SLOT_SIZE;
+    uintptr_t guard_addr = slot_addr;
+    uintptr_t base_addr  = slot_addr + STACK_GUARD_SIZE;
+
+    uint64_t *pml4 = vmm_get_kernel_pml4_virt();
+
+    /* Map 4 pages for usable stack region; guard page at slot_addr remains unmapped */
+    for (size_t p = 0; p < (STACK_USABLE_SIZE / PAGE_SIZE); p++) {
+        uintptr_t phys = pmm_alloc_page();
+        if (phys == 0) {
+            for (size_t r = 0; r < p; r++) {
+                uintptr_t mapped_virt = base_addr + r * PAGE_SIZE;
+                uintptr_t mapped_phys = vmm_get_physical_address(pml4, mapped_virt);
+                vmm_unmap_page(pml4, mapped_virt);
+                if (mapped_phys) pmm_free_page(mapped_phys);
+            }
+            rflags = spin_lock_irqsave(&g_sched_lock);
+            g_stack_slots_bitmap &= ~(1ULL << slot);
+            spin_unlock_irqrestore(&g_sched_lock, rflags);
+            return -1;
+        }
+
+        int status = vmm_map_page(pml4, base_addr + p * PAGE_SIZE, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
+        if (status != VMM_OK) {
+            serial_puts("[WARN] vmm_map_page failed in kstack_alloc with error: ");
+            serial_print_dec(status);
+            serial_puts(" at virt: ");
+            serial_print_hex(base_addr + p * PAGE_SIZE);
+            serial_puts("\n");
+            pmm_free_page(phys);
+            for (size_t r = 0; r < p; r++) {
+                uintptr_t mapped_virt = base_addr + r * PAGE_SIZE;
+                uintptr_t mapped_phys = vmm_get_physical_address(pml4, mapped_virt);
+                vmm_unmap_page(pml4, mapped_virt);
+                if (mapped_phys) pmm_free_page(mapped_phys);
+            }
+            rflags = spin_lock_irqsave(&g_sched_lock);
+            g_stack_slots_bitmap &= ~(1ULL << slot);
+            spin_unlock_irqrestore(&g_sched_lock, rflags);
+            return -1;
+        }
+    }
+
+    *out_guard = guard_addr;
+    *out_base  = base_addr;
+    *out_size  = STACK_USABLE_SIZE;
+    return slot;
+}
+
+static void kstack_free(int slot, uintptr_t base_addr) {
+    if (slot < 0 || slot >= MAX_KERNEL_THREADS) return;
+    uint64_t *pml4 = vmm_get_kernel_pml4_virt();
+
+    for (size_t p = 0; p < (STACK_USABLE_SIZE / PAGE_SIZE); p++) {
+        uintptr_t virt = base_addr + p * PAGE_SIZE;
+        uintptr_t phys = vmm_get_physical_address(pml4, virt);
+        vmm_unmap_page(pml4, virt);
+        if (phys) {
+            pmm_free_page(phys);
+        }
+    }
+
+    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+    g_stack_slots_bitmap &= ~(1ULL << slot);
+    spin_unlock_irqrestore(&g_sched_lock, rflags);
+}
 
 static void runqueue_push_locked(tcb_t *t) {
     if (!t || t->is_idle) return;
@@ -40,14 +127,16 @@ static tcb_t *runqueue_pop_next_locked(void) {
     return t;
 }
 
-static void sched_reap_dead_locked(void) {
+static void sched_reap_dead(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
     tcb_t *dead = g_dead_threads;
     g_dead_threads = NULL;
+    spin_unlock_irqrestore(&g_sched_lock, rflags);
 
     while (dead) {
         tcb_t *next = dead->next;
-        if (dead->kstack_base) {
-            kfree(dead->kstack_base);
+        if (dead->stack_slot >= 0) {
+            kstack_free(dead->stack_slot, dead->kstack_base);
         }
         kfree(dead);
         dead = next;
@@ -57,6 +146,7 @@ static void sched_reap_dead_locked(void) {
 static void idle_thread_entry(void *arg) {
     (void)arg;
     for (;;) {
+        sched_reap_dead();
         __asm__ volatile("sti; hlt");
     }
 }
@@ -69,8 +159,10 @@ void sched_init(void) {
     g_main_thread.tid = 0;
     memcpy(g_main_thread.name, "main", 5);
     g_main_thread.state = THREAD_RUNNING;
-    g_main_thread.kstack_base = NULL;
-    g_main_thread.kstack_size = 0;
+    g_main_thread.stack_slot = -1; /* Adopted crt0 boot stack */
+    g_main_thread.kstack_guard = (uintptr_t)kernel_stack_guard;
+    g_main_thread.kstack_base = (uintptr_t)kernel_stack_guard + 4096;
+    g_main_thread.kstack_size = 16384;
     g_main_thread.ticks_remaining = DEFAULT_QUANTUM_TICKS;
     g_main_thread.total_ticks = 0;
     g_main_thread.is_idle = false;
@@ -82,7 +174,7 @@ void sched_init(void) {
     g_dead_threads = NULL;
     g_next_tid = 1;
     g_preemption_enabled = false;
-    g_timer_eoi_handled = false;
+    g_stack_slots_bitmap = 0;
 
     spin_unlock_irqrestore(&g_sched_lock, rflags);
 
@@ -100,18 +192,27 @@ void sched_init(void) {
         spin_unlock_irqrestore(&g_sched_lock, rflags);
     }
 
-    serial_puts("[ OK ] Preemptive thread scheduler initialized (main thread adopted, idle thread armed)\n");
+    serial_puts("[ OK ] Preemptive thread scheduler initialized (page-backed stack guard armed, main adopted, idle thread ready)\n");
 }
 
 tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
     if (!entry) return NULL;
 
+    sched_reap_dead();
+
     tcb_t *t = (tcb_t *)kmalloc(sizeof(tcb_t));
-    if (!t) return NULL;
+    if (!t) {
+        serial_puts("[FAIL] thread_create: kmalloc(tcb) failed\n");
+        return NULL;
+    }
     memset(t, 0, sizeof(tcb_t));
 
-    void *stack = kmalloc(KSTACK_SIZE);
-    if (!stack) {
+    uintptr_t guard_virt = 0;
+    uintptr_t stack_base = 0;
+    size_t    stack_size = 0;
+    int slot = kstack_alloc(&guard_virt, &stack_base, &stack_size);
+    if (slot < 0) {
+        serial_puts("[FAIL] thread_create: kstack_alloc failed\n");
         kfree(t);
         return NULL;
     }
@@ -130,8 +231,10 @@ tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
     }
 
     t->state = THREAD_READY;
-    t->kstack_base = stack;
-    t->kstack_size = KSTACK_SIZE;
+    t->stack_slot = slot;
+    t->kstack_guard = guard_virt;
+    t->kstack_base = stack_base;
+    t->kstack_size = stack_size;
     t->ticks_remaining = DEFAULT_QUANTUM_TICKS;
     t->total_ticks = 0;
     t->is_idle = false;
@@ -140,7 +243,7 @@ tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
      * switch_context pops: r15, r14, r13, r12, rbp, rbx, rflags, ret (rip)
      * Total: 8 qwords = 64 bytes.
      */
-    uint8_t *stack_top = (uint8_t *)stack + KSTACK_SIZE;
+    uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);
     stack_top = (uint8_t *)((uintptr_t)stack_top & ~0xFULL); /* 16-byte alignment */
 
     stack_top -= sizeof(uint64_t) * 8;
@@ -164,8 +267,9 @@ tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
 }
 
 void thread_yield(void) {
+    sched_reap_dead();
+
     uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
-    sched_reap_dead_locked();
 
     tcb_t *old = g_current_thread;
     tcb_t *next = runqueue_pop_next_locked();
@@ -196,9 +300,7 @@ void thread_yield(void) {
     switch_context(&old->rsp, next->rsp);
 
     /* Execution resumes here when old is switched back to */
-    rflags = spin_lock_irqsave(&g_sched_lock);
-    sched_reap_dead_locked();
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    sched_reap_dead();
 }
 
 void thread_exit(void) {
@@ -250,6 +352,13 @@ size_t sched_ready_count(void) {
     return count;
 }
 
+uint64_t sched_get_active_stack_slots_mask(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+    uint64_t mask = g_stack_slots_bitmap;
+    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    return mask;
+}
+
 void sched_enable_preemption(void) {
     g_preemption_enabled = true;
 }
@@ -272,8 +381,6 @@ void sched_on_timer_tick(void) {
     /* If currently in idle thread and work arrived in runqueue: preempt idle */
     if (g_current_thread->is_idle) {
         if (g_runqueue_head != NULL) {
-            lapic_eoi();
-            g_timer_eoi_handled = true;
             thread_yield();
         }
         return;
@@ -285,10 +392,6 @@ void sched_on_timer_tick(void) {
 
         /* If other threads are ready to run: preempt! */
         if (g_runqueue_head != NULL) {
-            /* CRITICAL: Send EOI before switching context so APIC timer
-             * priority threshold is cleared and new thread receives timer ticks! */
-            lapic_eoi();
-            g_timer_eoi_handled = true;
             thread_yield();
         }
     }

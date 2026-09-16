@@ -234,12 +234,18 @@ Future tasks should follow this sequenced implementation order:
     │   │   ├── thread_trampoline with register parameter threading (R12=entry, R13=arg)
     │   │   ├── Voluntary yielding (thread_yield), clean exit (thread_exit), and dead thread reaper
     │   │   └── Verification: Two worker threads ping-ponging 10 rounds, clean return to kmain, heap audit
-    │   └── Checkpoint 2: Preemptive Round-Robin Scheduler (COMPLETE)
-    │       ├── Timer interrupt preemption driven by 100 Hz APIC Timer ticks (20 ms quantum)
-    │       ├── Scheduler spinlocks with interrupt flags save/restore (spin_lock_irqsave / spin_unlock_irqrestore)
-    │       ├── Dedicated idle thread (sti; hlt loop) executed when runqueue is empty
-    │       ├── Single-owner preemptive EOI acknowledgement before switching stacks to prevent APIC priority lockout
-    │       └── Verification: Two CPU-bound worker threads with zero manual yields advance concurrently across samples
+    │   ├── Checkpoint 2: Preemptive Round-Robin Scheduler (COMPLETE)
+    │   │   ├── Timer interrupt preemption driven by 100 Hz APIC Timer ticks (20 ms quantum)
+    │   │   ├── Scheduler spinlocks with interrupt flags save/restore (spin_lock_irqsave / spin_unlock_irqrestore)
+    │   │   ├── Dedicated idle thread (sti; hlt loop) executed when runqueue is empty
+    │   │   ├── Single-owner preemptive EOI acknowledgement before switching stacks to prevent APIC priority lockout
+    │   │   └── Verification: Two CPU-bound worker threads with zero manual yields advance concurrently across samples
+    │   └── Checkpoint 3 / Hardening Review: Safety, Synchronization & Dedicated Stacks (COMPLETE)
+    │       ├── EOI Lifecycle: Eliminated global flags; LAPIC EOI acknowledged directly on timer entry
+    │       ├── Subsystem Synchronization: spinlock_t with IRQ save/restore guarding Heap, PMM, and VMM
+    │       ├── Page-Backed Thread Stacks: Dedicated virtual window (0xFFFFFFFFA0000000) with unmapped 4 KiB guard pages
+    │       ├── Lock Hierarchy: Lockless detached reaping avoiding nested scheduler-heap/VMM inversions
+    │       └── Lifecycle Stress Test: 36 concurrent threads with dynamic heap alloc/free, stack recycling, and heap audit
     │
     ▼
 [Phase 7] User Space & Ring 3 Syscalls (The First Milestone)

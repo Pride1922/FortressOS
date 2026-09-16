@@ -2,28 +2,14 @@
 #define FORTRESS_THREAD_H
 
 #include "types.h"
+#include "spinlock.h"
 
-#define KSTACK_SIZE           16384 /* 16 KiB */
-#define DEFAULT_QUANTUM_TICKS 2     /* 20 ms at 100 Hz */
-
-/* Freestanding Spinlock with Interrupt Flags Preservation */
-typedef struct {
-    volatile uint32_t lock;
-} spinlock_t;
-
-static inline uint64_t spin_lock_irqsave(spinlock_t *lock) {
-    uint64_t rflags;
-    __asm__ volatile("pushfq; pop %0; cli" : "=r"(rflags) : : "memory");
-    while (__atomic_test_and_set(&lock->lock, __ATOMIC_ACQUIRE)) {
-        __asm__ volatile("pause");
-    }
-    return rflags;
-}
-
-static inline void spin_unlock_irqrestore(spinlock_t *lock, uint64_t rflags) {
-    __atomic_clear(&lock->lock, __ATOMIC_RELEASE);
-    __asm__ volatile("push %0; popfq" : : "r"(rflags) : "memory");
-}
+#define KERNEL_STACKS_BASE    0xFFFFFFFFA0000000ULL
+#define MAX_KERNEL_THREADS    64
+#define STACK_GUARD_SIZE      4096ULL  /* 4 KiB unmapped guard page */
+#define STACK_USABLE_SIZE     16384ULL /* 16 KiB usable mapped stack (4 pages) */
+#define STACK_SLOT_SIZE       (STACK_GUARD_SIZE + STACK_USABLE_SIZE) /* 20 KiB */
+#define DEFAULT_QUANTUM_TICKS 2        /* 20 ms at 100 Hz */
 
 typedef enum {
     THREAD_READY,
@@ -38,8 +24,10 @@ typedef struct tcb {
     char           name[32];
     thread_state_t state;
 
-    void          *kstack_base;      /* Base of allocated stack buffer */
-    size_t         kstack_size;
+    int            stack_slot;       /* Slot index in kernel stack area (-1 for adopted main thread) */
+    uintptr_t      kstack_guard;     /* Virtual address of unmapped guard page */
+    uintptr_t      kstack_base;      /* Virtual base of usable mapped stack region */
+    size_t         kstack_size;      /* Size of usable mapped stack region (16 KiB) */
 
     /* Preemption & Timeslice Accounting */
     int            ticks_remaining;  /* Remaining ticks in current quantum */
@@ -62,6 +50,7 @@ void   sched_enable_preemption(void);
 void   sched_disable_preemption(void);
 bool   sched_is_preemption_enabled(void);
 void   sched_on_timer_tick(void);
+uint64_t sched_get_active_stack_slots_mask(void);
 
 /* Low-level Context Switch Assembly Primitives */
 extern void switch_context(uint64_t *old_rsp, uint64_t new_rsp);

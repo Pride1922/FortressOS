@@ -227,6 +227,31 @@ static void preempt_worker2(void *arg) {
     thread_exit();
 }
 
+static volatile size_t g_stress_completed_threads = 0;
+
+static void stress_worker(void *arg) {
+    uint64_t id = (uint64_t)arg;
+
+    /* Perform dynamic memory allocation & freeing under thread execution */
+    void *ptr1 = kmalloc(64);
+    void *ptr2 = kmalloc(128);
+    if (ptr1 && ptr2) {
+        memset(ptr1, 0xAA, 64);
+        memset(ptr2, 0xBB, 128);
+    }
+    kfree(ptr1);
+    kfree(ptr2);
+
+    volatile uint64_t sum = 0;
+    for (uint64_t i = 0; i < 2000; i++) {
+        sum += (i ^ id);
+    }
+    (void)sum;
+
+    __atomic_fetch_add(&g_stress_completed_threads, 1, __ATOMIC_SEQ_CST);
+    thread_exit();
+}
+
 /* Kernel Main Entry Point */
 void kmain(void) {
     /* 1. Initialize COM1 Serial Port (0x3F8) */
@@ -1161,6 +1186,15 @@ pf_boot_guard_done:
     }
     serial_puts("[ OK ] Created Worker A (TID 1) and Worker B (TID 2)\n");
 
+    /* Verify dedicated thread stack guard page is unmapped in kernel PML4 and isolated from heap */
+    if (vmm_is_mapped(kernel_pml4, t_a->kstack_guard) ||
+        !vmm_is_mapped(kernel_pml4, t_a->kstack_base) ||
+        t_a->kstack_base != t_a->kstack_guard + STACK_GUARD_SIZE) {
+        serial_puts("[FAIL] Worker A stack guard page mapping invariant violated!\n");
+        hcf();
+    }
+    serial_puts("[PASS] Dedicated thread stack guard page unmapped and isolated from heap\n");
+
     /* Yield from main thread to start cooperative ping-pong */
     while (!g_worker_a_done || !g_worker_b_done) {
         thread_yield();
@@ -1266,6 +1300,52 @@ pf_boot_guard_done:
 
     serial_puts("[PASS] Preemptive round-robin timeslicing verified: Both CPU-bound workers advanced concurrently!\n");
     serial_puts("[ OK ] Phase 6 (Checkpoint 2) completed successfully!\n\n");
+
+    /* =========================================================================
+     * Phase 6 Hardening: Rapid Thread Lifecycle & Heap Synchronization Stress
+     * ========================================================================= */
+    serial_puts("========================================================\n");
+    serial_puts("Phase 6 Hardening: Lifecycle Stress & Heap Sync Suite\n");
+    serial_puts("========================================================\n");
+
+    g_stress_completed_threads = 0;
+    const int BATCH_SIZE = 6;
+    const int NUM_BATCHES = 6; /* 36 threads total */
+
+    for (int b = 0; b < NUM_BATCHES; b++) {
+        for (int i = 0; i < BATCH_SIZE; i++) {
+            tcb_t *st = thread_create("stress", stress_worker, (void *)(uintptr_t)(b * BATCH_SIZE + i));
+            if (!st) {
+                serial_puts("[FAIL] Failed to allocate thread during stress test!\n");
+                hcf();
+            }
+        }
+        while (sched_ready_count() > 0) {
+            thread_yield();
+        }
+    }
+
+    if (g_stress_completed_threads != (size_t)(NUM_BATCHES * BATCH_SIZE)) {
+        serial_puts("[FAIL] Stress test thread completion count mismatch!\n");
+        hcf();
+    }
+
+    /* Verify thread stack slots were cleanly reclaimed */
+    uint64_t active_slots = sched_get_active_stack_slots_mask();
+    if (active_slots != 1ULL) {
+        serial_puts("[FAIL] Stack slot leak detected! Active mask: ");
+        serial_print_hex(active_slots);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("[PASS] All 36 thread stacks cleanly reclaimed and recycled (slot mask: 0x1)\n");
+
+    if (!heap_verify_integrity()) {
+        serial_puts("[FAIL] Heap integrity walk failed after rapid thread stress test!\n");
+        hcf();
+    }
+    serial_puts("[PASS] Heap integrity walk passed after 36-thread concurrent lifecycle stress test\n");
+    serial_puts("[ OK ] Phase 6 Hardening verified successfully!\n\n");
 
     serial_puts("\n[BOOT] FortressOS Phase 6 complete. CPU halted.\n");
 

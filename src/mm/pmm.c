@@ -1,13 +1,15 @@
 #include "pmm.h"
 #include "serial.h"
+#include "spinlock.h"
 
-static uint8_t  *bitmap = NULL;
-static uintptr_t bitmap_phys_addr = 0;
-static size_t    bitmap_total_pages = 0;
-static size_t    total_pages = 0;
-static size_t    used_pages = 0;
-static size_t    free_pages = 0;
-static size_t    last_allocated_index = 0;
+static uint8_t   *bitmap = NULL;
+static uintptr_t  bitmap_phys_addr = 0;
+static size_t     bitmap_total_pages = 0;
+static size_t     total_pages = 0;
+static size_t     used_pages = 0;
+static size_t     free_pages = 0;
+static size_t     last_allocated_index = 0;
+static spinlock_t g_pmm_lock = {0};
 
 static inline void bitmap_set(size_t frame_idx) {
     bitmap[frame_idx / 8] |= (uint8_t)(1 << (frame_idx % 8));
@@ -154,7 +156,7 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     serial_puts(" KiB)\n\n");
 }
 
-uintptr_t pmm_alloc_page(void) {
+static uintptr_t pmm_alloc_page_unlocked(void) {
     for (size_t i = 0; i < total_pages; i++) {
         size_t idx = (last_allocated_index + i) % total_pages;
 
@@ -177,7 +179,14 @@ uintptr_t pmm_alloc_page(void) {
     return 0;
 }
 
-void pmm_free_page(uintptr_t phys_addr) {
+uintptr_t pmm_alloc_page(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
+    uintptr_t p = pmm_alloc_page_unlocked();
+    spin_unlock_irqrestore(&g_pmm_lock, rflags);
+    return p;
+}
+
+static void pmm_free_page_unlocked(uintptr_t phys_addr) {
     if (phys_addr == 0 || (phys_addr % PAGE_SIZE) != 0) {
         return;
     }
@@ -197,9 +206,15 @@ void pmm_free_page(uintptr_t phys_addr) {
     }
 }
 
-uintptr_t pmm_alloc_pages(size_t count) {
+void pmm_free_page(uintptr_t phys_addr) {
+    uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
+    pmm_free_page_unlocked(phys_addr);
+    spin_unlock_irqrestore(&g_pmm_lock, rflags);
+}
+
+static uintptr_t pmm_alloc_pages_unlocked(size_t count) {
     if (count == 0) return 0;
-    if (count == 1) return pmm_alloc_page();
+    if (count == 1) return pmm_alloc_page_unlocked();
 
     size_t consecutive = 0;
     size_t start_idx = 0;
@@ -227,26 +242,48 @@ uintptr_t pmm_alloc_pages(size_t count) {
     return 0;
 }
 
-void pmm_free_pages(uintptr_t phys_addr, size_t count) {
+uintptr_t pmm_alloc_pages(size_t count) {
+    uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
+    uintptr_t p = pmm_alloc_pages_unlocked(count);
+    spin_unlock_irqrestore(&g_pmm_lock, rflags);
+    return p;
+}
+
+static void pmm_free_pages_unlocked(uintptr_t phys_addr, size_t count) {
     if (phys_addr == 0 || (phys_addr % PAGE_SIZE) != 0 || count == 0) {
         return;
     }
 
     for (size_t i = 0; i < count; i++) {
-        pmm_free_page(phys_addr + (i * PAGE_SIZE));
+        pmm_free_page_unlocked(phys_addr + (i * PAGE_SIZE));
     }
 }
 
+void pmm_free_pages(uintptr_t phys_addr, size_t count) {
+    uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
+    pmm_free_pages_unlocked(phys_addr, count);
+    spin_unlock_irqrestore(&g_pmm_lock, rflags);
+}
+
 size_t pmm_get_total_pages(void) {
-    return total_pages;
+    uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
+    size_t res = total_pages;
+    spin_unlock_irqrestore(&g_pmm_lock, rflags);
+    return res;
 }
 
 size_t pmm_get_used_pages(void) {
-    return used_pages;
+    uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
+    size_t res = used_pages;
+    spin_unlock_irqrestore(&g_pmm_lock, rflags);
+    return res;
 }
 
 size_t pmm_get_free_pages(void) {
-    return free_pages;
+    uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
+    size_t res = free_pages;
+    spin_unlock_irqrestore(&g_pmm_lock, rflags);
+    return res;
 }
 
 uint64_t pmm_get_total_memory(void) {
