@@ -99,11 +99,28 @@ QEMU_FLAGS := -M q35 -m 2G -serial stdio
 
 all: $(BOOTABLE_ISO)
 
+USER_DIR := user
+USER_INIT_ELF := $(BUILD_DIR)/init.elf
+
+# Build user standalone init executable
+$(USER_INIT_ELF): $(USER_DIR)/init.asm $(USER_DIR)/linker.ld
+	@mkdir -p $(BUILD_DIR)
+	@echo "  [AS]  $<"
+	@$(AS) -f elf64 $< -o $(BUILD_DIR)/init.o
+	@echo "  [LD]  $@"
+	@$(LD) -m elf_x86_64 -nostdlib -static -T $(USER_DIR)/linker.ld $(BUILD_DIR)/init.o -o $@
+
 # Compile C source files to object files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	@echo "  [CC]  $<"
 	@$(CC) $(CFLAGS) -c $< -o $@
+
+# Embedded init assembly depends explicitly on built user binary
+$(BUILD_DIR)/kernel/embedded_init.o: $(SRC_DIR)/kernel/embedded_init.asm $(USER_INIT_ELF)
+	@mkdir -p $(dir $@)
+	@echo "  [AS]  $< (embedding $(USER_INIT_ELF))"
+	@$(AS) $(ASFLAGS) $< -o $@
 
 # Assemble NASM assembly files to object files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.asm

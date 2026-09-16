@@ -393,6 +393,14 @@ uint64_t *vmm_get_active_pml4_virt(void) {
     return (uint64_t *)phys_to_virt(cr3);
 }
 
+uint64_t vmm_get_hhdm_offset(void) {
+    return hhdm_offset;
+}
+
+void *vmm_phys_to_virt(uintptr_t phys) {
+    return phys_to_virt(phys);
+}
+
 static bool vmm_validate_user_range_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, size_t length, bool write_req) {
     if (!pml4_virt) return false;
     if (length == 0) return true;

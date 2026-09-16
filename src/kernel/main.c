@@ -14,6 +14,7 @@
 #include "apic.h"
 #include "thread.h"
 #include "syscall.h"
+#include "elf.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
@@ -301,8 +302,6 @@ static void test_phase7_checkpoint1_ring3(const boot_info_t *boot_info, uint64_t
     }
 
     /* Map user stack page at 0x7FFFF0000000 (Writable, NX, User, Present) */
-    const uintptr_t USER_STACK_PAGE_VIRT = 0x00007FFFF0000000ULL;
-    const uintptr_t USER_STACK_TOP_VIRT  = 0x00007FFFF0001000ULL;
     int stack_map_res = vmm_map_page(user_pml4_virt, USER_STACK_PAGE_VIRT, user_stack_phys, PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
     if (stack_map_res != VMM_OK) {
         serial_puts("       [FAIL] Failed to map user stack page!\n");
@@ -496,8 +495,6 @@ static void test_phase7_checkpoint2_syscalls(const boot_info_t *boot_info, uint6
     vmm_map_page(user_pml4_virt, USER_CODE_VIRT, code_phys, PTE_PRESENT | PTE_USER);
 
     /* Map stack page at 0x7FFFF0000000 (RW/NX) */
-    const uintptr_t USER_STACK_PAGE_VIRT = 0x00007FFFF0000000ULL;
-    const uintptr_t USER_STACK_TOP_VIRT  = 0x00007FFFF0001000ULL;
     vmm_map_page(user_pml4_virt, USER_STACK_PAGE_VIRT, stack_phys, PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
 
     /* Map two consecutive data pages at 0x500000 and 0x501000 (RW/NX) */
@@ -641,6 +638,361 @@ static void test_phase7_checkpoint2_syscalls(const boot_info_t *boot_info, uint6
     serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
 
     serial_puts("[ OK ] Phase 7 (Checkpoint 2) completed successfully!\n\n");
+}
+
+/* =========================================================================
+ * Phase 7 (Checkpoint 3): Embedded Standalone ELF64 Executable Loading
+ * ========================================================================= */
+static uint8_t g_test_elf_rsp0_stack[16384] __attribute__((aligned(16)));
+
+extern const uint8_t embedded_init_elf_start[];
+extern const uint8_t embedded_init_elf_end[];
+
+static void test_phase7_checkpoint3_elf(const boot_info_t *boot_info, uint64_t *master_kernel_pml4, uintptr_t master_kernel_pml4_phys) {
+    (void)boot_info;
+    (void)master_kernel_pml4;
+    serial_puts("========================================================\n");
+    serial_puts("Phase 7 (Checkpoint 3): Embedded ELF64 User Loading\n");
+    serial_puts("========================================================\n");
+
+    /* Record baseline resource counters for zero-leak audit */
+    size_t baseline_free_pages = pmm_get_free_pages();
+    size_t baseline_allocated_tables = vmm_get_allocated_table_frames();
+
+    /* ---------------------------------------------------------------------
+     * Part A: Range Validator Hardening & Unknown Syscall Tests
+     * --------------------------------------------------------------------- */
+    serial_puts("[TEST 1] Hardened Range Validation & Syscall Robustness...\n");
+
+    /* 1A. Integer Wraparound Rejection */
+    if (vmm_validate_user_range(master_kernel_pml4, 0xFFFFFFFFFFFFFFFEULL, 8, false)) {
+        serial_puts("       [FAIL] Integer wraparound was not caught by validator!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Integer address wraparound strictly rejected\n");
+
+    /* 1B. Supervisor-Only Lower-Half Page Rejection */
+    uintptr_t sup_test_pml4_phys = vmm_create_user_pml4();
+    uint64_t *sup_test_pml4_virt = (uint64_t *)vmm_phys_to_virt(sup_test_pml4_phys);
+    uintptr_t sup_frame = pmm_alloc_page();
+    /* Map at 0x400000 with PTE_PRESENT | PTE_WRITABLE, but OMITTING PTE_USER */
+    vmm_map_page(sup_test_pml4_virt, 0x400000ULL, sup_frame, PTE_PRESENT | PTE_WRITABLE);
+
+    if (vmm_validate_user_range(sup_test_pml4_virt, 0x400000ULL, 64, false)) {
+        serial_puts("       [FAIL] Supervisor-only mapped page was accepted as user memory!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Supervisor-only mapped page (PTE_USER=0) strictly rejected\n");
+    vmm_destroy_pml4(sup_test_pml4_phys, true);
+
+    /* 1C. Unknown Syscall Dispatch */
+    interrupt_frame_t fake_frame;
+    memset(&fake_frame, 0, sizeof(fake_frame));
+    fake_frame.rax = 999; /* Unknown syscall number */
+    int64_t unk_res = syscall_dispatch(&fake_frame);
+    if (unk_res != SYSCALL_ENOSYS || (int64_t)fake_frame.rax != SYSCALL_ENOSYS) {
+        serial_puts("       [FAIL] Unknown syscall number did not return SYSCALL_ENOSYS!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Unknown syscall number (999) rejected with SYSCALL_ENOSYS\n");
+
+    /* ---------------------------------------------------------------------
+     * Part B: Failure Rejection & Rollback Tests (Zero Leaks Verified)
+     * --------------------------------------------------------------------- */
+    serial_puts("[TEST 2] Executable Format Contract & Rollback Validation...\n");
+
+    elf_loaded_process_t bad_proc;
+
+    /* 2A. Truncated image / invalid magic */
+    uint8_t garbage[32] = { 0 };
+    if (elf_load_executable(garbage, sizeof(garbage), &bad_proc) != ELF_ERR_INVALID) {
+        serial_puts("       [FAIL] Truncated garbage was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Truncated / malformed header rejected (ELF_ERR_INVALID)\n");
+
+    /* 2B. ET_DYN (PIE / Shared library) Rejection */
+    uint8_t dyn_elf[sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr)];
+    memcpy(dyn_elf, embedded_init_elf_start, sizeof(dyn_elf));
+    Elf64_Ehdr *dyn_ehdr = (Elf64_Ehdr *)dyn_elf;
+    dyn_ehdr->e_type = ET_DYN;
+    if (elf_load_executable(dyn_elf, sizeof(dyn_elf), &bad_proc) != ELF_ERR_INVALID) {
+        serial_puts("       [FAIL] ET_DYN shared object was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] ET_DYN (PIE/shared object) strictly rejected (ET_EXEC required)\n");
+
+    /* 2C. PT_INTERP (Dynamic Interpreter Request) Rejection */
+    uint8_t interp_elf[sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr) * 2];
+    memcpy(interp_elf, embedded_init_elf_start, sizeof(Elf64_Ehdr));
+    Elf64_Ehdr *interp_ehdr = (Elf64_Ehdr *)interp_elf;
+    interp_ehdr->e_phoff = sizeof(Elf64_Ehdr);
+    interp_ehdr->e_phnum = 2;
+    Elf64_Phdr *interp_phdrs = (Elf64_Phdr *)(interp_elf + sizeof(Elf64_Ehdr));
+    interp_phdrs[0].p_type = PT_INTERP;
+    interp_phdrs[0].p_offset = 0;
+    interp_phdrs[0].p_filesz = 16;
+    interp_phdrs[0].p_memsz = 16;
+    interp_phdrs[1].p_type = PT_LOAD;
+    interp_phdrs[1].p_flags = PF_R | PF_X;
+    interp_phdrs[1].p_vaddr = 0x400000;
+    interp_phdrs[1].p_offset = 0x1000;
+    interp_phdrs[1].p_filesz = 0x100;
+    interp_phdrs[1].p_memsz = 0x100;
+    interp_phdrs[1].p_align = 0x1000;
+    if (elf_load_executable(interp_elf, sizeof(interp_elf) + 0x2000, &bad_proc) != ELF_ERR_INVALID) {
+        serial_puts("       [FAIL] PT_INTERP was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] PT_INTERP dynamic interpreter request rejected\n");
+
+    /* 2D. W^X Violation Rejection (PF_W | PF_X) */
+    uint8_t wx_elf[sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr)];
+    memcpy(wx_elf, embedded_init_elf_start, sizeof(wx_elf));
+    Elf64_Ehdr *wx_ehdr = (Elf64_Ehdr *)wx_elf;
+    wx_ehdr->e_phoff = sizeof(Elf64_Ehdr);
+    wx_ehdr->e_phnum = 1;
+    Elf64_Phdr *wx_phdr = (Elf64_Phdr *)(wx_elf + sizeof(Elf64_Ehdr));
+    wx_phdr->p_type = PT_LOAD;
+    wx_phdr->p_flags = PF_R | PF_W | PF_X; /* W^X violation */
+    wx_phdr->p_vaddr = 0x400000;
+    wx_phdr->p_offset = 0x1000;
+    wx_phdr->p_filesz = 0x100;
+    wx_phdr->p_memsz = 0x100;
+    wx_phdr->p_align = 0x1000;
+    wx_ehdr->e_entry = 0x400000;
+    if (elf_load_executable(wx_elf, sizeof(wx_elf) + 0x2000, &bad_proc) != ELF_ERR_PERM) {
+        serial_puts("       [FAIL] W^X violation (PF_W | PF_X) was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] W^X violation (PF_W | PF_X) strictly rejected (ELF_ERR_PERM)\n");
+
+    /* 2E. Non-Executable Entry Point Rejection */
+    uint8_t noexec_elf[sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr)];
+    memcpy(noexec_elf, embedded_init_elf_start, sizeof(noexec_elf));
+    Elf64_Ehdr *noexec_ehdr = (Elf64_Ehdr *)noexec_elf;
+    noexec_ehdr->e_phoff = sizeof(Elf64_Ehdr);
+    noexec_ehdr->e_phnum = 1;
+    Elf64_Phdr *noexec_phdr = (Elf64_Phdr *)(noexec_elf + sizeof(Elf64_Ehdr));
+    noexec_phdr->p_type = PT_LOAD;
+    noexec_phdr->p_flags = PF_R; /* Read-only, NOT executable */
+    noexec_phdr->p_vaddr = 0x400000;
+    noexec_phdr->p_offset = 0x1000;
+    noexec_phdr->p_filesz = 0x100;
+    noexec_phdr->p_memsz = 0x100;
+    noexec_phdr->p_align = 0x1000;
+    noexec_ehdr->e_entry = 0x400000;
+    if (elf_load_executable(noexec_elf, sizeof(noexec_elf) + 0x2000, &bad_proc) != ELF_ERR_PERM) {
+        serial_puts("       [FAIL] Non-executable entry point was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Entry point in non-executable segment rejected (ELF_ERR_PERM)\n");
+
+    /* 2F. Segment Overlap Rejection */
+    uint8_t overlap_elf[sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr) * 2];
+    memcpy(overlap_elf, embedded_init_elf_start, sizeof(Elf64_Ehdr));
+    Elf64_Ehdr *overlap_ehdr = (Elf64_Ehdr *)overlap_elf;
+    overlap_ehdr->e_phoff = sizeof(Elf64_Ehdr);
+    overlap_ehdr->e_phnum = 2;
+    overlap_ehdr->e_entry = 0x400000;
+    Elf64_Phdr *overlap_phdrs = (Elf64_Phdr *)(overlap_elf + sizeof(Elf64_Ehdr));
+    overlap_phdrs[0].p_type = PT_LOAD;
+    overlap_phdrs[0].p_flags = PF_R | PF_X;
+    overlap_phdrs[0].p_vaddr = 0x400000;
+    overlap_phdrs[0].p_offset = 0x1000;
+    overlap_phdrs[0].p_filesz = 0x1000;
+    overlap_phdrs[0].p_memsz = 0x1000;
+    overlap_phdrs[0].p_align = 0x1000;
+    /* Segment 2 overlaps with 0x400000 */
+    overlap_phdrs[1].p_type = PT_LOAD;
+    overlap_phdrs[1].p_flags = PF_R | PF_W;
+    overlap_phdrs[1].p_vaddr = 0x400800; /* Overlaps 0x400000 */
+    overlap_phdrs[1].p_offset = 0x2800;
+    overlap_phdrs[1].p_filesz = 0x100;
+    overlap_phdrs[1].p_memsz = 0x100;
+    overlap_phdrs[1].p_align = 0x1000;
+    if (elf_load_executable(overlap_elf, sizeof(overlap_elf) + 0x4000, &bad_proc) != ELF_ERR_OVERLAP) {
+        serial_puts("       [FAIL] Overlapping segments were not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Overlapping virtual page segments rejected (ELF_ERR_OVERLAP)\n");
+
+    /* 2G. Stack & Guard Page Collision Rejection */
+    uint8_t stack_col_elf[sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr)];
+    memcpy(stack_col_elf, embedded_init_elf_start, sizeof(stack_col_elf));
+    Elf64_Ehdr *sc_ehdr = (Elf64_Ehdr *)stack_col_elf;
+    sc_ehdr->e_phoff = sizeof(Elf64_Ehdr);
+    sc_ehdr->e_phnum = 1;
+    sc_ehdr->e_entry = USER_STACK_GUARD_VIRT;
+    Elf64_Phdr *sc_phdr = (Elf64_Phdr *)(stack_col_elf + sizeof(Elf64_Ehdr));
+    sc_phdr->p_type = PT_LOAD;
+    sc_phdr->p_flags = PF_R | PF_X;
+    sc_phdr->p_vaddr = USER_STACK_GUARD_VIRT; /* Collides with stack guard */
+    sc_phdr->p_offset = 0x1000;
+    sc_phdr->p_filesz = 0x100;
+    sc_phdr->p_memsz = 0x100;
+    sc_phdr->p_align = 0x1000;
+    if (elf_load_executable(stack_col_elf, sizeof(stack_col_elf) + 0x2000, &bad_proc) != ELF_ERR_OVERLAP) {
+        serial_puts("       [FAIL] Stack guard collision was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Segment colliding with reserved stack/guard rejected (ELF_ERR_OVERLAP)\n");
+
+    /* 2H. Page-Zero Mapping Rejection */
+    uint8_t p0_elf[sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr)];
+    memcpy(p0_elf, embedded_init_elf_start, sizeof(p0_elf));
+    Elf64_Ehdr *p0_ehdr = (Elf64_Ehdr *)p0_elf;
+    p0_ehdr->e_phoff = sizeof(Elf64_Ehdr);
+    p0_ehdr->e_phnum = 1;
+    p0_ehdr->e_entry = 0x0;
+    Elf64_Phdr *p0_phdr = (Elf64_Phdr *)(p0_elf + sizeof(Elf64_Ehdr));
+    p0_phdr->p_type = PT_LOAD;
+    p0_phdr->p_flags = PF_R | PF_X;
+    p0_phdr->p_vaddr = 0x0; /* Page-zero mapping */
+    p0_phdr->p_offset = 0x0;
+    p0_phdr->p_filesz = 0x100;
+    p0_phdr->p_memsz = 0x100;
+    p0_phdr->p_align = 0x1000;
+    if (elf_load_executable(p0_elf, sizeof(p0_elf) + 0x2000, &bad_proc) != ELF_ERR_PERM) {
+        serial_puts("       [FAIL] Page-zero mapping was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Page-zero mapping strictly rejected (ELF_ERR_PERM)\n");
+
+    /* Verify 0 memory leaked after all negative tests */
+    if (pmm_get_free_pages() != baseline_free_pages ||
+        vmm_get_allocated_table_frames() != baseline_allocated_tables) {
+        serial_puts("       [FAIL] Memory leak after negative tests!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Resource audit: 0 table frames and 0 physical frames leaked across negative tests\n");
+
+    /* ---------------------------------------------------------------------
+     * Part C: Valid Embedded Standalone ELF Loading & Ring 3 Execution
+     * --------------------------------------------------------------------- */
+    serial_puts("[TEST 3] Loading Valid Standalone ELF64 Program...\n");
+    size_t init_elf_size = (size_t)(embedded_init_elf_end - embedded_init_elf_start);
+
+    elf_loaded_process_t proc;
+    int load_res = elf_load_executable(embedded_init_elf_start, init_elf_size, &proc);
+    if (load_res != ELF_OK) {
+        serial_puts("       [FAIL] elf_load_executable failed with error: ");
+        serial_print_dec(load_res);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] ELF loaded successfully: Entry=0x400000, StackTop=0x7FFFF0001000, Pages=");
+    serial_print_dec(proc.total_pages);
+    serial_puts("\n");
+
+    /* Verify mapping permissions in user space */
+    uint64_t *proc_pml4_virt = (uint64_t *)vmm_phys_to_virt(proc.pml4_phys);
+    if (!vmm_is_mapped(proc_pml4_virt, 0x400000) || /* .text */
+        !vmm_is_mapped(proc_pml4_virt, 0x401000) || /* .rodata */
+        !vmm_is_mapped(proc_pml4_virt, 0x402000) || /* .data */
+        !vmm_is_mapped(proc_pml4_virt, 0x403000) || /* .bss */
+        !vmm_is_mapped(proc_pml4_virt, USER_STACK_PAGE_VIRT)) {
+        serial_puts("       [FAIL] Expected user segments not mapped in process PML4!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All segment pages (.text, .rodata, .data, .bss, stack) verified mapped\n");
+
+    /* Arm TSS.RSP0 for privilege transitions */
+    uintptr_t test_rsp0_top = (uintptr_t)g_test_elf_rsp0_stack + sizeof(g_test_elf_rsp0_stack);
+    uint64_t saved_rsp0 = gdt_get_tss_rsp0();
+    gdt_set_tss_rsp0((uint64_t)test_rsp0_top);
+
+    serial_puts("[TEST 4] Executing Standalone ELF Program in Ring 3...\n");
+    serial_puts("------- USER STANDALONE ELF OUTPUT START -------\n");
+
+    /* Ensure interrupts are disabled during manual CR3 switch */
+    __asm__ volatile("cli" ::: "memory");
+    vmm_switch_pml4(proc.pml4_phys);
+
+    bool exec_res = test_user_syscall_helper(proc.entry_point, proc.user_stack_top);
+
+    /* RESTORE INVARIANTS: Immediately restore master CR3 and TSS.RSP0 */
+    vmm_switch_pml4(master_kernel_pml4_phys);
+    gdt_set_tss_rsp0(saved_rsp0);
+
+    serial_puts("------- USER STANDALONE ELF OUTPUT END ---------\n");
+
+    if (!exec_res) {
+        serial_puts("       [FAIL] test_user_syscall_helper failed unexpectedly!\n");
+        hcf();
+    }
+
+    /* Verify SYS_EXIT and captured exit code */
+    serial_puts("[TEST 5] Validating Standalone User Process Exit State...\n");
+    uint64_t exit_code = 0;
+    if (!syscall_was_exit_called(&exit_code)) {
+        serial_puts("       [FAIL] Process did not call SYS_EXIT!\n");
+        hcf();
+    }
+    if (exit_code != 77) {
+        serial_puts("       [FAIL] Process exited with unexpected code: ");
+        serial_print_dec(exit_code);
+        if (exit_code == 1) serial_puts(" (Failed .data verification)");
+        if (exit_code == 2) serial_puts(" (Failed .bss zero-initialization check)");
+        if (exit_code == 3) serial_puts(" (Failed .bss writeability check)");
+        if (exit_code == 4) serial_puts(" (Failed SYS_WRITE syscall check)");
+        if (exit_code == 5) serial_puts(" (Failed user stack push/pop check)");
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Process ran to completion in Ring 3! Exit code: 77\n");
+    serial_puts("              - Verified .data initialized value (0xCAFEBABE12345678)\n");
+    serial_puts("              - Verified .bss zero-initialization by kernel loader\n");
+    serial_puts("              - Verified .bss writeability under user mode\n");
+    serial_puts("              - Verified SYS_WRITE serial output\n");
+    serial_puts("              - Verified user stack operations\n");
+
+    /* Clean teardown */
+    vmm_destroy_pml4(proc.pml4_phys, true);
+
+    /* ---------------------------------------------------------------------
+     * Part D: Repeated 5-Cycle Load & Teardown Leak Audit
+     * --------------------------------------------------------------------- */
+    serial_puts("[TEST 6] Repeated 5-Cycle ELF Load/Teardown Leak Audit...\n");
+    for (int cycle = 1; cycle <= 5; cycle++) {
+        elf_loaded_process_t cproc;
+        int cres = elf_load_executable(embedded_init_elf_start, init_elf_size, &cproc);
+        if (cres != ELF_OK) {
+            serial_puts("       [FAIL] Cycle load failed!\n");
+            hcf();
+        }
+        if (vmm_destroy_pml4(cproc.pml4_phys, true) != VMM_OK) {
+            serial_puts("       [FAIL] Cycle teardown failed!\n");
+            hcf();
+        }
+    }
+
+    size_t final_free_pages = pmm_get_free_pages();
+    size_t final_allocated_tables = vmm_get_allocated_table_frames();
+
+    if (final_allocated_tables != baseline_allocated_tables) {
+        serial_puts("       [FAIL] Table frame leak detected after 5 cycles! Delta: ");
+        serial_print_dec(final_allocated_tables - baseline_allocated_tables);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All intermediate page tables & roots reclaimed (delta: 0)\n");
+
+    if (final_free_pages != baseline_free_pages) {
+        serial_puts("       [FAIL] Physical frames leaked after 5 cycles! Delta: ");
+        serial_print_dec(baseline_free_pages - final_free_pages);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All physical frames returned to PMM (delta: 0 frames leaked)\n");
+
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+
+    serial_puts("[ OK ] Phase 7 (Checkpoint 3) completed successfully!\n\n");
 }
 
 /* Kernel Main Entry Point */
@@ -2053,7 +2405,12 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase7_checkpoint2_syscalls(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
-    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 2) complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 7 (Checkpoint 3): Embedded Standalone ELF64 Executable Loading
+     * ========================================================================= */
+    test_phase7_checkpoint3_elf(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
+
+    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 3) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

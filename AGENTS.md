@@ -61,18 +61,26 @@ FortressOS/
     │   └── types.h          # Standard freestanding primitive types (uint8_t, size_t, bool)
     ├── kernel/
     │   ├── boot_info.c      # Boot metadata deep-copying and verification
+    │   ├── elf.c            # Strict ELF64 executable validation, mapping, and loading
+    │   ├── elf.h            # ELF64 header, program header, limits, and loader API
+    │   ├── embedded_init.asm# Embedded user init ELF binary blob via incbin
     │   ├── main.c           # Kernel entry point (kmain), validates Limine tags, memory & FB
+    │   ├── syscall.c        # System call dispatcher, range validation, and handlers
+    │   ├── syscall.h        # System call numbers, ABI register mappings, and error codes
     │   ├── thread.c         # Cooperative thread scheduler, runqueue, and thread lifecycle
     │   └── thread.h         # TCB structure, thread_state_t, and scheduler prototypes
     ├── lib/
     │   └── string.c         # Freestanding memset, memcpy, memmove, memcmp, strlen
-    └── mm/
-        ├── heap.c           # Dynamic kernel heap allocator with boundary tags and free list
-        ├── heap.h           # Heap public prototypes, block structures, and alignment macros
-        ├── pmm.c            # Physical Memory Manager bitmap frame allocator
-        ├── pmm.h            # PMM public prototypes, page macros, and metrics
-        ├── vmm.c            # Virtual Memory Manager 4-level paging and CR3 management
-        └── vmm.h            # VMM public prototypes, PTE flags, and query APIs
+    ├── mm/
+    │   ├── heap.c           # Dynamic kernel heap allocator with boundary tags and free list
+    │   ├── heap.h           # Heap public prototypes, block structures, and alignment macros
+    │   ├── pmm.c            # Physical Memory Manager bitmap frame allocator
+    │   ├── pmm.h            # PMM public prototypes, page macros, and metrics
+    │   ├── vmm.c            # Virtual Memory Manager 4-level paging and CR3 management
+    │   └── vmm.h            # VMM public prototypes, PTE flags, and query APIs
+    └── user/
+        ├── init.asm         # Standalone ELF64 user init program (Ring 3 execution test)
+        └── linker.ld        # User-space linker script with 4 KiB page-separated segments
 ```
 
 ---
@@ -285,7 +293,17 @@ Future tasks should follow this sequenced implementation order:
         │   ├── TSS.RSP0 stack restoration invariant: preserved across transitions and restored before teardown
         │   └── Verification suite: 8 distinct Ring 3 test assertions (valid write, cross-page mapped buffer,
         │       cross-page unmapped fault, kernel pointer rejection, oversized buffer, zero-length, invalid fd, clean exit)
-        ├── Checkpoint 3: Initramfs / embedded ELF user executable loading
+        ├── Checkpoint 3: Embedded ELF64 User Executable Loading (COMPLETE)
+        │   ├── Strict executable format contract: ET_EXEC only (rejects ET_DYN, PIE, and PT_INTERP)
+        │   ├── Strict W^X memory security enforcement: segments with both PF_W and PF_X rejected (ELF_ERR_PERM)
+        │   ├── Overflow-safe arithmetic bounds checking on all offsets, file sizes, memory sizes, and virtual ranges
+        │   ├── Segment overlap, page-zero (vaddr < PAGE_SIZE), and stack/guard collision prevention
+        │   ├── Total mapped pages cap (MAX_ELF_PAGES = 1024) preventing memory exhaustion attacks
+        │   ├── Transactional loading & failure rollback: unmapped frames freed before recursive vmm_destroy_pml4()
+        │   ├── Standalone user ELF compilation pipeline (user/init.asm, user/linker.ld -> build/init.elf -> embedded_init.o)
+        │   ├── User process execution in Ring 3: verified .data initialized value, .bss zeroing & writeability,
+        │   │   SYS_WRITE serial output, and clean termination via SYS_EXIT(77)
+        │   └── Comprehensive negative validation & 5-cycle repeated load/teardown audit with 0 memory leaks
         ├── Checkpoint 4: Clean process exit system call
         ├── Checkpoint 5: Fast syscall hardening (syscall / sysret / IA32_EFER / STAR / LSTAR)
         └── Acceptance Test: Hello World in Ring 3 + deliberate illegal access to kernel memory
