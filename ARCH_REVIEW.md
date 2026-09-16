@@ -113,7 +113,7 @@ GPT and ext2 boot acceptance now run in both BIOS and UEFI.
 1. Keyboard/serial input, blocking wait queues and Ring 3 shell are implemented;
    IRQ delivery and interaction pass BIOS/UEFI QEMU, including COM1-absent boot.
 2. Next: small user-space editor using input/output syscalls. Physical Latitude
-   keyboard delivery remains to be tested; current keyboard layout is US ASCII.
+   keyboard input and shell commands are confirmed; layout remains US ASCII.
 3. Controlled ext2 writes, creation and allocation, then reboot persistence tests.
 4. User/account permissions and installation once writable storage is reliable.
 
@@ -155,9 +155,10 @@ waiting after a bounded poll or failed loopback test.
 
 A QEMU UEFI regression with 8 GiB and COM1 absent reaches PCI discovery after
 all memory, process and initramfs tests; its framebuffer screenshot is saved.
-Laptop root cause still requires a new boot/photo; emulator evidence alone does
-not identify the exact failure on the Latitude. Physical disks are excluded from
-QEMU-specific storage fixture tests using the controller vendor/device identity.
+Subsequent user photos confirm successful diagnostics and interactive shell boot
+on the Latitude. They do not isolate the original black-screen root cause.
+Physical disks are excluded from QEMU-specific storage fixture tests using the
+controller vendor/device identity.
 
 ## Boot-console performance
 
@@ -167,7 +168,8 @@ blank cells ignore irrelevant foreground-colour differences. Scrolling advances
 up to eight rows per batch, reducing screen movement frequency during logs.
 The fixed 1.5 MiB cache requires no early allocator and supports a 512 x 256 text
 viewport. Framebuffer writes remain uncached; this is not GPU acceleration or
-write-combining support. Actual Latitude performance awaits the rebuilt ISO test.
+write-combining support. After testing the rebuilt ISO on the Latitude, the user
+reported that it feels like Linux booting; no timing benchmark was collected.
 
 Host ASan/UBSan tests verify rendered pixels, padding bounds, preserved colours,
 batched scroll frequency, no blank-cell redraw, and exact-width newline handling.
@@ -181,3 +183,13 @@ reclamation. Commands: `help`, `ls`, `cat`, `echo`, `exit` (restart). Raw stdin
 uses a bounded queue and scheduler sleep/wakeup; editing and echo live in Ring 3.
 The existing read-only VFS is used throughout. Physical NVMe mounting and writes
 are not introduced here. See AGENTS.md for ABI, limits and reproducible tests.
+
+## Dell manual shell acceptance (2026-09-16)
+
+The user photo confirms PS/2 keyboard interaction on the Latitude 5590 with
+COM1 absent: `help`, root directory listing, a missing-file error, and successful
+`cat etc/motd` output followed by the prompt. This closes the basic physical
+keyboard/shell acceptance gap. The file comes from initramfs, not the internal
+NVMe filesystem. Physical storage I/O, persistence, NMI injection and exhaustive
+keyboard coverage remain outside this observation. See AGENTS.md for hardware
+configuration and the distinction between manual and automated evidence.

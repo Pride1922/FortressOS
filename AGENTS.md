@@ -428,12 +428,12 @@ Future tasks should follow this sequenced implementation order:
     │   ├── Unsupported feature/geometry rejection, bounded directory records, transactional mount allocation
     │   ├── ASan/UBSan host tests: 1/2/4 KiB blocks, 512/4096-byte sectors, 128/256-byte inodes, corruption and OOM/I/O errors
     │   └── BIOS/UEFI: Ring 3 exact file read/print/close, 10 cycles with exact PMM bitmap, mapping fingerprint and heap audits
-    ├── Phase 9C.3: Minimal PS/2 Keyboard & Blocking Input Queue (COMPLETE in QEMU)
+    ├── Phase 9C.3: Minimal PS/2 Keyboard & Blocking Input Queue (COMPLETE; Dell input confirmed)
     │   ├── Bounded 8042 initialization, set 2 selection/query, translated set 1, IRQ1 via I/O APIC
     │   ├── Ring buffer keyqueue with blocking read (wait queue, not busy poll)
     │   ├── COM1 RX IRQ4 feeds the same 256-byte FIFO; bounded ISR drains, drop-new overflow
-    │   └── Acceptance: real QEMU IRQ1/IRQ4 delivery in BIOS/UEFI; physical keyboard test pending
-    ├── Phase 9C.4: Ring 3 Shell (COMPLETE in QEMU); Minimal Editor (PENDING)
+    │   └── Acceptance: QEMU IRQ1/IRQ4 in BIOS/UEFI; Dell PS/2 typing, help, ls and cat confirmed
+    ├── Phase 9C.4: Ring 3 Shell (COMPLETE; Dell interaction confirmed); Minimal Editor (PENDING)
     │   ├── /bin/shell from initramfs: help, ls, cat, echo, exit/restart; blocking stdin and user-space line editing
     │   ├── No history, no tab-completion (deliberately minimal)
     │   └── Acceptance: read a file into a Ring 3 editor and modify its in-memory buffer
@@ -540,11 +540,27 @@ Verification:
   stable physical free-page and stack-slot counts. Logs: `build/shell-*.log`.
 - The same target tests UEFI 8 GiB with COM1 absent and non-fixture NVMe identity,
   confirming framebuffer `echo hello` and sleeping input on the hardware boot
-  path. Screenshot: `build/shell-keyboard-only.png`. This is emulator evidence;
-  the Latitude's PS/2/EC behavior still needs a physical boot test.
+  path. Screenshot: `build/shell-keyboard-only.png`. Physical Dell interaction
+  was subsequently confirmed by the user photo described below.
 - Existing BIOS/UEFI storage acceptance and 40 exact-boundary NMI tests pass.
 
 References for the driver/test protocol: Intel EC firmware 8042 documentation
 (https://intel.github.io/ecfw-zephyr/reference/kbchost/index.html), QEMU PS/2
 implementation (https://github.com/qemu/qemu/blob/master/hw/input/ps2.c), and
 QMP input-send-event (https://www.qemu.org/docs/master/interop/qemu-qmp-ref.html).
+
+### Dell Latitude 5590 physical acceptance (2026-09-16)
+
+User-supplied boot photos confirm the shell on a Latitude 5590 (Core i5-8350U,
+32 GiB installed RAM, 256 GB NVMe, Intel UHD 620), booted from a Rufus-written
+USB. The latest photo shows PS/2 set 2 -> set 1 / IRQ1 ready, COM1 RX unavailable,
+and the Ring 3 shell responding to keyboard input. `help` prints the command
+list, `ls` lists `docs/`, `etc/`, `bin/`, and `cat etc/motd` prints the welcome
+file and returns to the prompt. `cat motd` correctly reports a missing file.
+These are manual observations, supplementing the automated QEMU tests.
+
+The welcome file is from the boot initramfs. The photo explicitly reports that
+QEMU storage fixture tests were skipped: physical NVMe filesystem mounting,
+reads/writes and persistence remain unverified. This photo does not verify
+physical NMI injection, every key/modifier, or blocked-reader resource counters.
+The PMM still manages only the low 2 GiB despite 32 GiB being installed.
