@@ -172,7 +172,7 @@ To debug kernel initialization step-by-step:
    - **Detached Deallocation**: Complex cross-subsystem cleanup (e.g. `sched_reap_dead()`) must decouple nodes under lock and deallocate outside the lock to prevent lock inversions.
 7. **Stack Guard Page Architecture & Fault Escalation:**
    - **Linear Growth Scope**: Dedicated thread stacks include a 4 KiB unmapped bottom guard page (`0xFFFFFFFFA0000000ULL`). This catches linear contiguous stack growth. It does not catch frame skips exceeding 4096 bytes without compiler stack-clash probes.
-   - **Double Fault (#DF) Escalation**: Because Vector 14 (`#PF`) delivers on the active stack (`IST=0`), pushing the `#PF` exception frame onto an already-exhausted stack causes a nested fault. Hardware escalates this to Vector 8 (`#DF`). Because Vector 8 is bound to `IST1`, execution safely lands on the dedicated 16 KiB emergency IST1 stack, preventing an unrecoverable Triple Fault (CPU reset).
+   - **Double Fault (#DF) Escalation**: In Ring 0 with `IST=0`, Vector 14 (`#PF`) delivers on the active stack pointer `RSP`. Pushing the `#PF` exception frame onto an already-exhausted stack causes a nested fault, which hardware escalates to Vector 8 (`#DF`). Because Vector 8 is bound to `IST1`, execution safely lands on the dedicated 16 KiB emergency IST1 stack for diagnostic panic logging. (Note: IST1 provides an emergency recovery stack for diagnostics; it does not guarantee prevention of every triple fault if the IST1 mapping, TSS, IDT, handler code, or diagnostic path is corrupted. Furthermore, once Ring 3 is entered, interrupts and exceptions crossing privilege levels switch to `TSS.RSP0` rather than using the faulting user stack).
 
 ---
 
@@ -258,7 +258,13 @@ Future tasks should follow this sequenced implementation order:
     │
     ▼
 [Phase 7] User Space & Ring 3 Syscalls (The First Milestone)
-        ├── Checkpoint 0: Process virtual address space lifecycle, vmm_destroy_pml4(), and intermediate table reclamation
+        ├── Checkpoint 0: Process Virtual Address Space Lifecycle & Teardown (COMPLETE)
+        │   ├── User PML4 creation with lower-half zeroing (0..255) and higher-half kernel mirroring (256..511)
+        │   ├── Process isolation: user mappings strictly private and invisible across address spaces & kernel PML4
+        │   ├── TSS RSP0 privilege transition hook (gdt_set_tss_rsp0 / gdt_get_tss_rsp0)
+        │   ├── Recursive multi-level teardown (vmm_destroy_pml4) with intermediate table & user frame reclamation
+        │   ├── Invariant guards: destruction of master kernel PML4 or active CR3 rejected
+        │   └── Zero-leak audit: 100% intermediate table & physical frame recovery verified under UEFI & BIOS
         ├── Checkpoint 1: Ring 3 transition via iretq (User CS 0x23, User SS 0x1B, User RSP/RIP)
         ├── Checkpoint 2: First system call (serial print syscall via int 0x80 or syscall)
         ├── Checkpoint 3: Initramfs / embedded ELF user executable loading

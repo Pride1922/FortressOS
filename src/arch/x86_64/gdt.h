@@ -53,4 +53,7 @@ void gdt_init(void);
 uintptr_t gdt_get_ist1_guard(void);
 uintptr_t gdt_get_ist1_stack_top(void);
 
+void     gdt_set_tss_rsp0(uint64_t rsp0);
+uint64_t gdt_get_tss_rsp0(void);
+
 #endif /* FORTRESS_GDT_H */

@@ -100,3 +100,12 @@ void gdt_init(void) {
     serial_print_hex(tss.ist[0]);
     serial_puts(")\n");
 }
+
+void gdt_set_tss_rsp0(uint64_t rsp0) {
+    tss.rsp[0] = rsp0;
+}
+
+uint64_t gdt_get_tss_rsp0(void) {
+    return tss.rsp[0];
+}
+

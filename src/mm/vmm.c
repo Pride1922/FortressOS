@@ -79,6 +79,136 @@ uintptr_t vmm_create_pml4(void) {
     return pml4_phys;
 }
 
+uintptr_t vmm_create_user_pml4(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    uintptr_t pml4_phys = pmm_alloc_page();
+    if (pml4_phys == 0) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        return 0;
+    }
+
+    g_vmm_retained_tables++;
+    uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
+
+    /* 1. Clear lower half (user space, PML4 entries 0..255) */
+    memset(pml4_virt, 0, 256 * sizeof(uint64_t));
+
+    /* 2. Mirror higher half (kernel space, PML4 entries 256..511) from master kernel PML4 */
+    if (kernel_pml4_phys != 0) {
+        uint64_t *k_pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
+        memcpy(&pml4_virt[256], &k_pml4[256], 256 * sizeof(uint64_t));
+    } else {
+        memset(&pml4_virt[256], 0, 256 * sizeof(uint64_t));
+    }
+
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return pml4_phys;
+}
+
+uintptr_t vmm_get_current_pml4(void) {
+    uintptr_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    return cr3 & PTE_ADDR_MASK;
+}
+
+int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
+    if (pml4_phys == 0 || (pml4_phys % PAGE_SIZE) != 0) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+
+    /* Safety Guard: Never destroy master kernel PML4 or currently active CR3 */
+    if (pml4_phys == kernel_pml4_phys) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+    if (pml4_phys == vmm_get_current_pml4()) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
+
+    /*
+     * Traverse ONLY lower half (user space, PML4 entries 0..255).
+     * Entries 256..511 are shared kernel mappings and must NEVER be freed!
+     */
+    for (size_t i = 0; i < 256; i++) {
+        if (!(pml4_virt[i] & PTE_PRESENT)) {
+            continue;
+        }
+
+        uintptr_t pdpt_phys = pml4_virt[i] & PTE_ADDR_MASK;
+        uint64_t *pdpt_virt = (uint64_t *)phys_to_virt(pdpt_phys);
+
+        for (size_t j = 0; j < 512; j++) {
+            if (!(pdpt_virt[j] & PTE_PRESENT)) {
+                continue;
+            }
+
+            /* Handle 1 GiB huge page if present */
+            if (pdpt_virt[j] & PTE_HUGE) {
+                if (free_user_frames) {
+                    pmm_free_page(pdpt_virt[j] & PTE_ADDR_MASK);
+                }
+                pdpt_virt[j] = 0;
+                continue;
+            }
+
+            uintptr_t pd_phys = pdpt_virt[j] & PTE_ADDR_MASK;
+            uint64_t *pd_virt = (uint64_t *)phys_to_virt(pd_phys);
+
+            for (size_t k = 0; k < 512; k++) {
+                if (!(pd_virt[k] & PTE_PRESENT)) {
+                    continue;
+                }
+
+                /* Handle 2 MiB huge page if present */
+                if (pd_virt[k] & PTE_HUGE) {
+                    if (free_user_frames) {
+                        pmm_free_page(pd_virt[k] & PTE_ADDR_MASK);
+                    }
+                    pd_virt[k] = 0;
+                    continue;
+                }
+
+                uintptr_t pt_phys = pd_virt[k] & PTE_ADDR_MASK;
+                uint64_t *pt_virt = (uint64_t *)phys_to_virt(pt_phys);
+
+                for (size_t l = 0; l < 512; l++) {
+                    if (pt_virt[l] & PTE_PRESENT) {
+                        if (free_user_frames) {
+                            pmm_free_page(pt_virt[l] & PTE_ADDR_MASK);
+                        }
+                        pt_virt[l] = 0;
+                    }
+                }
+
+                /* Free Level 1 PT frame */
+                pmm_free_page(pt_phys);
+                g_vmm_retained_tables--;
+                pd_virt[k] = 0;
+            }
+
+            /* Free Level 2 PD frame */
+            pmm_free_page(pd_phys);
+            g_vmm_retained_tables--;
+            pdpt_virt[j] = 0;
+        }
+
+        /* Free Level 3 PDPT frame */
+        pmm_free_page(pdpt_phys);
+        g_vmm_retained_tables--;
+        pml4_virt[i] = 0;
+    }
+
+    /* Free root Level 4 PML4 frame */
+    pmm_free_page(pml4_phys);
+    g_vmm_retained_tables--;
+
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return VMM_OK;
+}
+
+
 static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
     if (!pml4_virt) return VMM_ERR_INVALID_ADDR;
     if ((virt_addr % PAGE_SIZE) != 0 || (phys_addr % PAGE_SIZE) != 0) {
