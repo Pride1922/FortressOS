@@ -106,7 +106,13 @@ QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS)
 
 all: $(BOOTABLE_ISO)
 
-.PHONY: test-ext2 test-storage test-nmi test-boot-diagnostics test-console
+.PHONY: test-ext2 test-storage test-nmi test-boot-diagnostics test-console test-input test-shell
+test-input:
+	@python3 scripts/test_input.py
+
+test-shell: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
+	@python3 scripts/test_shell.py
+	@python3 scripts/test_shell_no_uart.py
 test-console:
 	@python3 scripts/test_console.py
 
@@ -125,6 +131,7 @@ test-storage: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 USER_DIR := user
 USER_INIT_ELF := $(BUILD_DIR)/init.elf
 USER_HELLO_ELF := $(BUILD_DIR)/hello.elf
+USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
 
 # Build user standalone init executable
@@ -143,13 +150,21 @@ $(USER_HELLO_ELF): $(USER_DIR)/hello.asm $(USER_DIR)/linker.ld
 	@echo "  [LD]  $@"
 	@$(LD) -m elf_x86_64 -nostdlib -static -T $(USER_DIR)/linker.ld $(BUILD_DIR)/hello.o -o $@
 
+# Freestanding user shell, separate address-space ELF (no host runtime).
+$(USER_SHELL_ELF): $(USER_DIR)/shell.c $(USER_DIR)/shell_start.asm $(USER_DIR)/shell.ld src/fs/vfs.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $(USER_DIR)/shell.c -o $(BUILD_DIR)/shell.o
+	@$(AS) -f elf64 $(USER_DIR)/shell_start.asm -o $(BUILD_DIR)/shell_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/shell_start.o $(BUILD_DIR)/shell.o -o $@
+
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF)
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_SHELL_ELF) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
+	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
 	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello
 	@printf "========================================\n  Welcome to FortressOS (x86_64 UEFI)\n  Step 8B: Initramfs & VFS Active\n========================================\n" > $(BUILD_DIR)/initramfs/etc/motd
-	@printf "FortressOS Documentation\nInteractive shell coming in Step 8D!\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
+	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, cat and echo.\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
 	@echo "  [TAR] Generating USTAR archive $@"
 	@tar --format=ustar -cf $(INITRAMFS_TAR) -C $(BUILD_DIR)/initramfs bin etc docs
 

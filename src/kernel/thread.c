@@ -31,6 +31,7 @@ static tcb_t        *g_idle_thread        = NULL;
 static tcb_t        *g_current_thread     = NULL;
 static tcb_t        *g_runqueue_head      = NULL;
 static tcb_t        *g_runqueue_tail      = NULL;
+static tcb_t        *g_blocked_threads    = NULL;
 static tcb_t        *g_dead_threads       = NULL;
 static uint64_t      g_next_tid           = 1;
 static spinlock_t    g_sched_lock         = SPINLOCK_RANKED(1, "sched");
@@ -229,6 +230,7 @@ void sched_init(void) {
     g_runqueue_head = NULL;
     g_runqueue_tail = NULL;
     g_dead_threads = NULL;
+    g_blocked_threads = NULL;
     g_next_tid = 1;
     g_preemption_enabled = false;
     g_stack_slots_bitmap = 0;
@@ -361,9 +363,7 @@ void thread_yield(void) {
     g_current_thread = next;
 
     /* Update TSS.RSP0 to target thread's kernel stack with interrupts disabled */
-    if (next->stack_slot >= 0) {
-        gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
-    }
+    gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
 
     /* Switch CR3 to target thread's address space with interrupts disabled */
     uintptr_t target_cr3 = next->cr3 ? next->cr3 : vmm_get_kernel_pml4();
@@ -394,6 +394,59 @@ void thread_yield(void) {
     sched_reap_dead();
 }
 
+/* Checking the event and publishing BLOCKED are one IRQ-disabled scheduler
+ * transaction. Producers cannot slip a wakeup between these operations. */
+void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
+    for (;;) {
+        uint64_t flags = spin_lock_irqsave(&g_sched_lock);
+        if (ready(arg)) {
+            spin_unlock_irqrestore(&g_sched_lock, flags);
+            return;
+        }
+        tcb_t *old = g_current_thread;
+        tcb_t *next = runqueue_pop_next_locked();
+        if (!next) next = g_idle_thread;
+        if (!old || old->is_idle || !next) {
+            serial_raw_puts("[FATAL] Invalid scheduler sleep context\n");
+            for (;;) __asm__ volatile("cli; hlt");
+        }
+        old->state = THREAD_BLOCKED;
+        old->wait_channel = channel;
+        old->next = g_blocked_threads;
+        g_blocked_threads = old;
+        next->state = THREAD_RUNNING;
+        next->ticks_remaining = DEFAULT_QUANTUM_TICKS;
+        g_current_thread = next;
+        gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
+        uintptr_t cr3 = next->cr3 ? next->cr3 : vmm_get_kernel_pml4();
+        if (vmm_get_current_pml4() != cr3) vmm_switch_pml4(cr3);
+        spin_unlock_noirq(&g_sched_lock);
+        spin_debug_assert_unheld();
+        switch_context(&old->rsp, next->rsp);
+        if (flags & (1ULL << 9)) __asm__ volatile("sti" ::: "memory");
+        /* Another reader may have consumed the event before we resumed. */
+    }
+}
+
+/* IRQ-safe: enqueue only; the timer/idle path performs the actual switch, so
+ * the hardware handler can finish and its dispatcher can acknowledge EOI. */
+void sched_wake_all(const void *channel) {
+    uint64_t flags = spin_lock_irqsave(&g_sched_lock);
+    tcb_t **link = &g_blocked_threads;
+    while (*link) {
+        tcb_t *t = *link;
+        if (t->wait_channel != channel) {
+            link = &t->next;
+            continue;
+        }
+        *link = t->next;
+        t->wait_channel = NULL;
+        t->state = THREAD_READY;
+        runqueue_push_locked(t);
+    }
+    spin_unlock_irqrestore(&g_sched_lock, flags);
+}
+
 void thread_exit(void) {
     uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
     (void)rflags;
@@ -419,9 +472,7 @@ void thread_exit(void) {
     g_current_thread = next;
 
     /* Update TSS.RSP0 to target thread's kernel stack */
-    if (next->stack_slot >= 0) {
-        gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
-    }
+    gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
 
     /* Switch CR3 to target thread's address space */
     uintptr_t target_cr3 = next->cr3 ? next->cr3 : vmm_get_kernel_pml4();
@@ -689,6 +740,12 @@ bool process_is_alive(uint64_t pid) {
         }
         c = c->next;
     }
+    for (c = g_blocked_threads; c; c = c->next) {
+        if (c->tid == pid) {
+            spin_unlock_irqrestore(&g_sched_lock, rflags);
+            return true;
+        }
+    }
     spin_unlock_irqrestore(&g_sched_lock, rflags);
     return false;
 }
@@ -723,6 +780,9 @@ bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_
                 c = c->next;
             }
         }
+        for (tcb_t *c = g_blocked_threads; c; c = c->next) {
+            if (c->tid == pid) alive = true;
+        }
         spin_unlock_irqrestore(&g_sched_lock, rflags);
 
         if (!alive) {
@@ -738,4 +798,3 @@ bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_
 bool process_wait(uint64_t pid, uint64_t *out_exit_code) {
     return process_wait_extended(pid, out_exit_code, NULL, NULL);
 }
-

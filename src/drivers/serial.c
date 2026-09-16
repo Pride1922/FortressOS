@@ -50,6 +50,8 @@ int serial_init(void) {
     return 0;
 }
 
+bool serial_is_available(void) { return serial_available; }
+
 static bool serial_wait_transmit(void) {
     if (!serial_available) return false;
     for (unsigned i = 0; i < 100000; i++) {

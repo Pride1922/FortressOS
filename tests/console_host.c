@@ -72,6 +72,10 @@ int main(void) {
     check_cell(0, 1, 'X', CONSOLE_DEFAULT_FG, CONSOLE_DEFAULT_BG);
     console_putc('\b');
     check_cell(0, 1, ' ', 0, CONSOLE_DEFAULT_BG);
+    console_putc('\b');
+    assert(g_console.cursor_row == 0 && g_console.cursor_col == 15);
+    check_cell(15, 0, ' ', 0, CONSOLE_DEFAULT_BG);
+    console_putc('\n');
     console_putc('\t');
     assert(g_console.cursor_col == 8);
     console_putc('\r');

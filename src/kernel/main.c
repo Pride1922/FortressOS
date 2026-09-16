@@ -1,3 +1,4 @@
+#include "input.h"
 #include "types.h"
 #include "limine.h"
 #include "serial.h"
@@ -4456,31 +4457,59 @@ pf_boot_guard_done:
                          PCI_PROGIF_STORAGE_NVME, &storage_fixture) ||
         storage_fixture.vendor_id != 0x1b36 || storage_fixture.device_id != 0x0010) {
         serial_puts("[BOOT] Hardware diagnostics complete. QEMU storage fixture tests skipped.\n");
-        serial_puts("[BOOT] No interactive shell yet. CPU halted; photograph any earlier failure.\n");
-        hcf();
-    }
+    } else {
 
 #if defined(ENABLE_NVME_RAW_PATTERN_TESTS) && (ENABLE_NVME_RAW_PATTERN_TESTS == 1)
-    /* =========================================================================
-     * Phase 9 (Step 9B.1): NVMe Initialization & Reads Verification
-     * ========================================================================= */
-    test_phase9b1_nvme_reads();
+        /* =========================================================================
+         * Phase 9 (Step 9B.1): NVMe Initialization & Reads Verification
+         * ========================================================================= */
+        test_phase9b1_nvme_reads();
 
-    /* =========================================================================
-     * Phase 9 (Step 9B.2): NVMe Writes, Flush & Persistence Verification
-     * ========================================================================= */
-    test_phase9b2_nvme_writes();
+        /* =========================================================================
+         * Phase 9 (Step 9B.2): NVMe Writes, Flush & Persistence Verification
+         * ========================================================================= */
+        test_phase9b2_nvme_writes();
 #endif
 
-    /* =========================================================================
-     * Phase 9 (Step 9C.1): GPT Partition Parsing & Bounded Block Devices
-     * ========================================================================= */
-    test_phase9c1_gpt();
+        /* =========================================================================
+         * Phase 9 (Step 9C.1): GPT Partition Parsing & Bounded Block Devices
+         * ========================================================================= */
+        test_phase9c1_gpt();
 
-    test_ext2_and_audits();
+        test_ext2_and_audits();
 
-    serial_puts("\n[BOOT] FortressOS Phase 9 (Step 9C.2) complete. CPU halted.\n");
+        serial_puts("\n[BOOT] FortressOS Phase 9 (Step 9C.2) complete.\n");
+    }
 
-    /* Clean halt state */
-    hcf();
+    /* Inputs and shell are started after destructive/negative acceptance cases. */
+    __asm__ volatile("cli" ::: "memory");
+    sched_disable_preemption();
+    if (!input_init(&madt_info)) {
+        serial_puts("[FAIL] No keyboard or serial input available.\n");
+        hcf();
+    }
+    vfs_node_t *shell = vfs_lookup("/bin/shell");
+    if (!shell || shell->type != VFS_FILE || !shell->data) {
+        serial_puts("[FAIL] /bin/shell missing from initramfs.\n");
+        hcf();
+    }
+    for (;;) {
+        /* Spawn with preemption disabled until the PID is safely copied. */
+        tcb_t *process = process_spawn("shell", shell->data, shell->size);
+        if (!process) { serial_puts("[FAIL] Cannot start shell.\n"); hcf(); }
+        uint64_t pid = process->tid;
+        sched_enable_preemption();
+        apic_timer_start();
+        serial_puts("[BOOT] Interactive shell ready.\n");
+        while (process_is_alive(pid)) {
+            sched_reap_dead();
+            __asm__ volatile("sti; hlt" ::: "memory");
+        }
+        __asm__ volatile("cli" ::: "memory");
+        sched_disable_preemption();
+        uint64_t status;
+        (void)process_wait(pid, &status);
+        sched_reap_dead();
+        serial_puts("[SHELL] Process exited; restarting.\n");
+    }
 }

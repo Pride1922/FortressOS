@@ -65,6 +65,7 @@ typedef struct tcb {
     struct file   *fd_table[32];
 
     struct tcb    *next;             /* Intrusive run queue link */
+    const void *wait_channel; /* Only on blocked list while sleeping. */
 } tcb_t;
 
 struct file;
@@ -77,6 +78,10 @@ void         fd_close_all(tcb_t *proc);
 void   sched_init(void);
 tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg);
 void   thread_yield(void);
+/* Bootstrap CPU only. Predicate runs under sched lock with IRQs disabled;
+ * it must neither block nor acquire locks. Publish events before waking. */
+void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg);
+void sched_wake_all(const void *channel);
 void   thread_exit(void);
 void   sched_reap_dead(void);
 tcb_t *thread_current(void);

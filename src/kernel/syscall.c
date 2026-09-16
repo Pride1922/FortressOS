@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "input.h"
 #include "vmm.h"
 #include "serial.h"
 #include "gdt.h"
@@ -314,6 +315,8 @@ static int64_t sys_read(int fd, uintptr_t user_buf, size_t count) {
     if (!curr) {
         return SYSCALL_EBADF;
     }
+
+    if (fd == 0) return input_read((void *)user_buf, count);
 
     file_t *file = fd_get(curr, fd);
     if (!file) {

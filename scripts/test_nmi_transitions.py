@@ -218,7 +218,7 @@ def run(mode, sym):
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 output = log.read_text(errors="replace")
-                if "[BOOT] FortressOS Phase 9 (Step 9C.2) complete. CPU halted." in output:
+                if "[BOOT] FortressOS Phase 9 (Step 9C.2) complete." in output:
                     break
                 if child.poll() is not None:
                     raise RuntimeError("QEMU exited before acceptance suite completed")

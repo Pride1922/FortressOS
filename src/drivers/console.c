@@ -110,6 +110,11 @@ static void console_putc_unlocked(char c) {
     }
 
     if (c == '\b') {
+        /* Let user-space line editing erase a character across soft wrapping. */
+        if (g_console.cursor_col == 0 && g_console.cursor_row > 0) {
+            g_console.cursor_row--;
+            g_console.cursor_col = g_console.cols;
+        }
         if (g_console.cursor_col > 0) {
             g_console.cursor_col--;
             draw_char_unlocked(g_console.cursor_col, g_console.cursor_row, ' ', g_console.fg_color, g_console.bg_color);

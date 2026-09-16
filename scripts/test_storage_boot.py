@@ -11,7 +11,7 @@ markers = [
     "Phase 9 (Step 9C.1): GPT Partition Parsing & Block Devices PASSED!",
     "[PASS] Exact bitmap detects changed allocation set despite equal allocation counters",
     "[PASS] Ring 3 ext2: 10 audited cycles, exact PMM bitmap restored, stable kernel mappings and heap",
-    "[BOOT] FortressOS Phase 9 (Step 9C.2) complete. CPU halted.",
+    "[BOOT] FortressOS Phase 9 (Step 9C.2) complete.",
 ]
 for mode in ("bios", "uefi"):
     log = repo / "build" / f"storage-{mode}.log"

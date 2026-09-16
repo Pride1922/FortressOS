@@ -110,9 +110,10 @@ GPT and ext2 boot acceptance now run in both BIOS and UEFI.
 
 ## Next milestones
 
-1. Keyboard/serial input and a blocking wait queue, with I/O APIC delivery tests.
-2. Ring 3 shell and small editor using input/output syscalls. Editing and command
-   parsing belong in user space; the kernel supplies input and terminal services.
+1. Keyboard/serial input, blocking wait queues and Ring 3 shell are implemented;
+   IRQ delivery and interaction pass BIOS/UEFI QEMU, including COM1-absent boot.
+2. Next: small user-space editor using input/output syscalls. Physical Latitude
+   keyboard delivery remains to be tested; current keyboard layout is US ASCII.
 3. Controlled ext2 writes, creation and allocation, then reboot persistence tests.
 4. User/account permissions and installation once writable storage is reliable.
 
@@ -171,3 +172,12 @@ write-combining support. Actual Latitude performance awaits the rebuilt ISO test
 Host ASan/UBSan tests verify rendered pixels, padding bounds, preserved colours,
 batched scroll frequency, no blank-cell redraw, and exact-width newline handling.
 BIOS and UEFI acceptance suites pass with the updated cursor semantics.
+
+## Interactive shell checkpoint
+
+Boot continues to `fortress>` after diagnostics. `/bin/shell` is a separate ELF
+loaded from initramfs with normal process isolation, syscalls and deferred exit
+reclamation. Commands: `help`, `ls`, `cat`, `echo`, `exit` (restart). Raw stdin
+uses a bounded queue and scheduler sleep/wakeup; editing and echo live in Ring 3.
+The existing read-only VFS is used throughout. Physical NVMe mounting and writes
+are not introduced here. See AGENTS.md for ABI, limits and reproducible tests.

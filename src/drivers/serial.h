@@ -22,6 +22,7 @@ static inline void io_wait(void) {
 
 /* Serial Driver Public API */
 int serial_init(void);
+bool serial_is_available(void);
 void serial_putc(char c);
 void serial_puts(const char *str);
 void serial_print_hex(uint64_t val);

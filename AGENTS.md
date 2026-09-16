@@ -428,13 +428,13 @@ Future tasks should follow this sequenced implementation order:
     │   ├── Unsupported feature/geometry rejection, bounded directory records, transactional mount allocation
     │   ├── ASan/UBSan host tests: 1/2/4 KiB blocks, 512/4096-byte sectors, 128/256-byte inodes, corruption and OOM/I/O errors
     │   └── BIOS/UEFI: Ring 3 exact file read/print/close, 10 cycles with exact PMM bitmap, mapping fingerprint and heap audits
-    ├── Phase 9C.3: Minimal PS/2 Keyboard & Blocking Input Queue
-    │   ├── 8042 controller init, scancode set detection, IRQ1 via I/O APIC
+    ├── Phase 9C.3: Minimal PS/2 Keyboard & Blocking Input Queue (COMPLETE in QEMU)
+    │   ├── Bounded 8042 initialization, set 2 selection/query, translated set 1, IRQ1 via I/O APIC
     │   ├── Ring buffer keyqueue with blocking read (wait queue, not busy poll)
-    │   ├── Serial input mirroring (so you can test in QEMU without PS/2)
-    │   └── Acceptance: type "hello" on real laptop, see it echoed in console
-    ├── Phase 9C.4: Ring 3 Shell and Minimal Editor
-    │   ├── Kernel provides blocking input/output; editing and command parsing live in user space
+    │   ├── COM1 RX IRQ4 feeds the same 256-byte FIFO; bounded ISR drains, drop-new overflow
+    │   └── Acceptance: real QEMU IRQ1/IRQ4 delivery in BIOS/UEFI; physical keyboard test pending
+    ├── Phase 9C.4: Ring 3 Shell (COMPLETE in QEMU); Minimal Editor (PENDING)
+    │   ├── /bin/shell from initramfs: help, ls, cat, echo, exit/restart; blocking stdin and user-space line editing
     │   ├── No history, no tab-completion (deliberately minimal)
     │   └── Acceptance: read a file into a Ring 3 editor and modify its in-memory buffer
     └── Phase 9D: Writable ext2 Filesystem
@@ -482,7 +482,8 @@ RFLAGS belongs to each caller. Diagnostics use raw UART. This is not SMP-ready.
 - `make test-boot-diagnostics`: UEFI, 8 GiB, no COM1, no NVMe fixture; verifies
   progress to PCI discovery and captures `build/boot-8g-no-uart.png`.
 - Storage fixture assertions run only against QEMU NVMe vendor/device IDs.
-  Physical hardware currently runs diagnostics and halts; there is no shell yet.
+  Both hardware and fixture paths launch /bin/shell after diagnostics. The physical
+  NVMe is still not mounted; /mnt is only available on the QEMU ext2 fixture.
 
 ### Boot-console scrolling
 
@@ -497,3 +498,53 @@ following a full-width line advances exactly once.
 `make test-console` checks pixel output, colour preservation, scroll batching,
 zero redraws for blank lines, control characters, one-cell screens and padded
 framebuffer bounds under ASan/UBSan. BIOS/UEFI full boot suites also pass.
+
+### Interactive input and shell
+
+`make` includes a separate freestanding C ELF `/bin/shell` in initramfs. Boot
+launches it as a normal Ring 3 process after the acceptance suite. Try:
+
+```
+help
+ls /
+ls /bin
+cat /etc/motd
+cat /docs/readme.txt
+echo hello
+```
+
+`exit` terminates/reaps the process and launches a fresh shell. Files are read-only;
+no editor, command execution/exec, disk installation, accounts or USB HID driver
+is provided by this step. Keyboard layout is US ASCII (Shift/Caps Lock,
+Backspace, Enter; arrows and function keys ignored, Caps LED not synchronized).
+Line length is bounded to 191 bytes; overflow discards the entire command.
+The console supports erasing across wrapped rows. Serial CR/LF and DEL are
+normalized; echo and line editing occur in user space, not interrupt handlers.
+
+`SYS_READ(0, buffer, count)` checks all user pages for write permission before
+waiting. It returns available bytes as a short read, without waiting for newline.
+A scheduler predicate and BLOCKED-list insertion occur under the scheduler lock
+with IRQs disabled. Producers publish input before waking readers; a resumed
+reader rechecks availability. IRQ exclusion also spans predicate-to-dequeue.
+No lock crosses a context switch, no ISR allocates/logs/switches, and the IDT
+dispatcher owns each keyboard/UART EOI. Blocked tasks remain visible to process
+liveness/wait APIs. This input/scheduler contract is bootstrap-CPU-only; SMP and
+concurrent address-space mutation need further synchronization.
+
+Verification:
+- `make test-input`: actual decoder/FIFO under ASan/UBSan; modifiers, Pause,
+  PrintScreen, extended keys, wraparound and overflow.
+- `make test-shell`: BIOS/UEFI PS/2 events and serial RX through real emulated
+  devices, stdin pointer checks, Backspace/Shift, file commands and error paths,
+  sleeping task/timer progress, descriptors closed, three process restarts with
+  stable physical free-page and stack-slot counts. Logs: `build/shell-*.log`.
+- The same target tests UEFI 8 GiB with COM1 absent and non-fixture NVMe identity,
+  confirming framebuffer `echo hello` and sleeping input on the hardware boot
+  path. Screenshot: `build/shell-keyboard-only.png`. This is emulator evidence;
+  the Latitude's PS/2/EC behavior still needs a physical boot test.
+- Existing BIOS/UEFI storage acceptance and 40 exact-boundary NMI tests pass.
+
+References for the driver/test protocol: Intel EC firmware 8042 documentation
+(https://intel.github.io/ecfw-zephyr/reference/kbchost/index.html), QEMU PS/2
+implementation (https://github.com/qemu/qemu/blob/master/hw/input/ps2.c), and
+QMP input-send-event (https://www.qemu.org/docs/master/interop/qemu-qmp-ref.html).
