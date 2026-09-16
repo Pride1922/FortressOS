@@ -1166,6 +1166,165 @@ static void test_phase7_checkpoint4_lifecycle(boot_info_t *boot_info, uint64_t *
     serial_puts("[ OK ] Phase 7 (Checkpoint 4) completed successfully!\n\n");
 }
 
+/* =========================================================================
+ * Phase 7 Acceptance Suite: Concurrent User Preemption & Fault Isolation
+ * ========================================================================= */
+static void test_phase7_acceptance_suite(boot_info_t *boot_info, uint64_t *master_kernel_pml4, uintptr_t master_kernel_pml4_phys) {
+    (void)boot_info;
+    (void)master_kernel_pml4;
+    (void)master_kernel_pml4_phys;
+
+    serial_puts("========================================================\n");
+    serial_puts("Phase 7 Acceptance Suite: Preemption & Fault Isolation\n");
+    serial_puts("========================================================\n");
+
+    syscall_clear_recovery();
+    size_t init_elf_size = (size_t)(embedded_init_elf_end - embedded_init_elf_start);
+
+    size_t baseline_free_pages = pmm_get_free_pages();
+    size_t baseline_allocated_tables = vmm_get_allocated_table_frames();
+    uint64_t baseline_stack_slots = sched_get_active_stack_slots_mask();
+
+    /* -------------------------------------------------------------
+     * [TEST 1] Simultaneous CPU-Bound Preemption at Same Virtual Addresses
+     * ------------------------------------------------------------- */
+    serial_puts("[TEST 1] Spawning Two CPU-Bound User Processes (Same Virtual Layout)...\n");
+    tcb_t *p1 = process_spawn_with_arg("user_worker1", embedded_init_elf_start, init_elf_size, 1);
+    tcb_t *p2 = process_spawn_with_arg("user_worker2", embedded_init_elf_start, init_elf_size, 2);
+    if (!p1 || !p2) {
+        serial_puts("       [FAIL] Failed to spawn concurrent user processes!\n");
+        hcf();
+    }
+    uint64_t pid1 = p1->tid;
+    uint64_t pid2 = p2->tid;
+    serial_puts("       [PASS] Worker 1 (PID=");
+    serial_print_dec(pid1);
+    serial_puts(", CR3=");
+    serial_print_hex(p1->cr3);
+    serial_puts(") and Worker 2 (PID=");
+    serial_print_dec(pid2);
+    serial_puts(", CR3=");
+    serial_print_hex(p2->cr3);
+    serial_puts(") armed\n");
+
+    serial_puts("       [RUN] Executing concurrent timesliced processes under 100 Hz timer preemption...\n");
+    apic_timer_start();
+    sched_enable_preemption();
+    __asm__ volatile("sti" ::: "memory");
+
+    uint64_t code1 = 0, code2 = 0;
+    bool w1 = process_wait(pid1, &code1);
+    bool w2 = process_wait(pid2, &code2);
+
+    __asm__ volatile("cli" ::: "memory");
+    apic_timer_stop();
+    sched_disable_preemption();
+
+    if (!w1 || code1 != 77 || !w2 || code2 != 88) {
+        serial_puts("       [FAIL] Concurrent execution failed! Codes: P1=");
+        serial_print_dec(code1);
+        serial_puts(", P2=");
+        serial_print_dec(code2);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Both CPU-bound processes completed concurrently without corruption!\n");
+    serial_puts("              - Worker 1 exit code: 77 (verified)\n");
+    serial_puts("              - Worker 2 exit code: 88 (verified)\n");
+
+    sched_reap_dead();
+
+    /* -------------------------------------------------------------
+     * [TEST 2] Fault Isolation: Deliberate Kernel Memory Access in Ring 3
+     * ------------------------------------------------------------- */
+    serial_puts("[TEST 2] Testing Fault Isolation: Deliberate Kernel Memory Access...\n");
+    tcb_t *p_healthy = process_spawn_with_arg("healthy_user", embedded_init_elf_start, init_elf_size, 1);
+    tcb_t *p_faulty  = process_spawn_with_arg("faulty_user", embedded_init_elf_start, init_elf_size, 3);
+    if (!p_healthy || !p_faulty) {
+        serial_puts("       [FAIL] Failed to spawn processes for fault isolation test!\n");
+        hcf();
+    }
+    uint64_t pid_healthy = p_healthy->tid;
+    uint64_t pid_faulty  = p_faulty->tid;
+
+    serial_puts("       [RUN] Running healthy process alongside faulty process...\n");
+    apic_timer_start();
+    sched_enable_preemption();
+    __asm__ volatile("sti" ::: "memory");
+
+    uint64_t code_fault = 0, code_healthy = 0;
+    bool wf = process_wait(pid_faulty, &code_fault);
+    bool wh = process_wait(pid_healthy, &code_healthy);
+
+    __asm__ volatile("cli" ::: "memory");
+    apic_timer_stop();
+    sched_disable_preemption();
+
+    if (!wf || code_fault != 142) {
+        serial_puts("       [FAIL] Faulty process exit code mismatch! Expected: 142 (128 + #PF), Got: ");
+        serial_print_dec(code_fault);
+        serial_puts("\n");
+        hcf();
+    }
+    if (!wh || code_healthy != 77) {
+        serial_puts("       [FAIL] Healthy process failed to survive! Expected: 77, Got: ");
+        serial_print_dec(code_healthy);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Fault isolation verified:\n");
+    serial_puts("              - Faulty process killed by SIGSEGV (#PF) with exit code: 142\n");
+    serial_puts("              - Healthy concurrent process completed successfully with exit code: 77\n");
+    serial_puts("              - Kernel remained 100% operational without crashing or panicking!\n");
+
+    sched_reap_dead();
+
+    /* -------------------------------------------------------------
+     * [TEST 3] Resource Reclamation & Integrity Audit
+     * ------------------------------------------------------------- */
+    serial_puts("[TEST 3] Verifying Complete Resource Reclamation Post-Acceptance...\n");
+    size_t after_tables = vmm_get_allocated_table_frames();
+    size_t after_pages  = pmm_get_free_pages();
+    uint64_t after_slots = sched_get_active_stack_slots_mask();
+
+    if (after_tables != baseline_allocated_tables) {
+        serial_puts("       [FAIL] Table frame leak detected! Expected: ");
+        serial_print_dec(baseline_allocated_tables);
+        serial_puts(" Got: ");
+        serial_print_dec(after_tables);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All intermediate page tables & roots reclaimed (delta: 0)\n");
+
+    if (after_pages != baseline_free_pages) {
+        serial_puts("       [FAIL] Physical frame leak detected! Expected: ");
+        serial_print_dec(baseline_free_pages);
+        serial_puts(" Got: ");
+        serial_print_dec(after_pages);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All physical frames returned to PMM (delta: 0 frames leaked)\n");
+
+    if (after_slots != baseline_stack_slots) {
+        serial_puts("       [FAIL] Stack slot leak detected! Expected mask: ");
+        serial_print_hex(baseline_stack_slots);
+        serial_puts(" Got: ");
+        serial_print_hex(after_slots);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All dedicated kernel stack slots cleanly recycled\n");
+
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed post-acceptance!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+    serial_puts("[ OK ] Phase 7 Acceptance Suite PASSED!\n\n");
+}
+
 
 /* Kernel Main Entry Point */
 void kmain(void) {
@@ -2587,7 +2746,12 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase7_checkpoint4_lifecycle(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
-    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 4) complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 7 Acceptance Suite: Preemption & Fault Isolation
+     * ========================================================================= */
+    test_phase7_acceptance_suite(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
+
+    serial_puts("\n[BOOT] FortressOS Phase 7 Acceptance Suite complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

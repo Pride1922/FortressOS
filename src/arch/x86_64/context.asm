@@ -84,13 +84,15 @@ user_process_trampoline:
     push 0x23       ; CS: User Code Segment (0x20 | 3)
     push r12        ; RIP: User Entry Point
 
+    ; Pass initial argument to user entry point via RDI (passed in R14)
+    mov rdi, r14
+
     ; Clear general-purpose registers to prevent leaking kernel state into user space
     xor rax, rax
     xor rbx, rbx
     xor rcx, rcx
     xor rdx, rdx
     xor rsi, rsi
-    xor rdi, rdi
     xor rbp, rbp
     xor r8,  r8
     xor r9,  r9

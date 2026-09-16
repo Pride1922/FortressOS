@@ -1,5 +1,6 @@
 #include "idt.h"
 #include "serial.h"
+#include "thread.h"
 
 extern void idtr_load(idt_ptr_t *ptr);
 extern uint8_t isr_stub_table[];
@@ -233,6 +234,44 @@ void isr_exception_handler(interrupt_frame_t *frame) {
             for (;;) { __asm__ volatile("cli; hlt"); }
         }
         return;
+    }
+
+    /* User-Space Exception Handling (CPL 3): fault isolation without kernel panic */
+    if ((frame->cs & 3) == 3) {
+        tcb_t *curr = thread_current();
+
+        serial_puts("\n[PROCESS FAULT] User Process Exception in Ring 3!\n");
+        serial_puts("       PID:         ");
+        serial_print_dec(curr ? curr->tid : 0);
+        serial_puts(" (");
+        if (curr) serial_puts(curr->name);
+        serial_puts(")\n       Exception:   ");
+        if (frame->vector < 32) {
+            serial_puts(exception_messages[frame->vector]);
+        } else {
+            serial_puts("Unknown");
+        }
+        serial_puts(" (Vector ");
+        serial_print_dec(frame->vector);
+        serial_puts(")\n       RIP:         ");
+        serial_print_hex(frame->rip);
+        serial_puts("\n       Error Code:  ");
+        serial_print_hex(frame->error_code);
+        serial_puts("\n");
+
+        if (frame->vector == 14) {
+            uint64_t cr2;
+            __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+            serial_puts("       Linear (CR2):");
+            serial_print_hex(cr2);
+            serial_puts("\n");
+        }
+
+        serial_puts("       Action: Terminating faulting user process; kernel remains operational.\n");
+
+        /* Clean termination: 128 + vector (e.g. 142 for #PF) */
+        process_exit(128 + frame->vector);
+        for (;;) { __asm__ volatile("cli; hlt"); }
     }
 
     /* Fatal Exception Panic */

@@ -313,9 +313,14 @@ Future tasks should follow this sequenced implementation order:
         │   ├── Safe Deferred Reclamation (Reaper / sched_reap_dead): non-self-destructing cleanup in separate context,
         │   │   switching away from dead CR3, reclaiming intermediate tables, user frames, kernel stack slots, and TCBs
         │   └── Comprehensive Verification: 5-cycle repeated preemptive process spawn/exit stress test with 0 memory leaks
-        ├── Checkpoint 5: Fast syscall hardening (syscall / sysret / IA32_EFER / STAR / LSTAR)
-        └── Acceptance Test: Hello World in Ring 3 + deliberate illegal access to kernel memory
-            (user program faults and terminates cleanly without crashing or panicking the kernel)
+        ├── Acceptance Test: Preemption & Fault Isolation (COMPLETE)
+        │   ├── Concurrent CPU-Bound User Preemption: Two simultaneous processes sharing virtual layout (0x400000, 0x402000)
+        │   │   timesliced at 100 Hz without data races, verified with exit codes 77 and 88
+        │   ├── Ring 3 Fault Isolation: Deliberate illegal read of supervisor kernel memory (0xFFFFFFFF80000000) caught via #PF
+        │   │   (Vector 14), killed by SIGSEGV (exit code 142) without panicking kernel, while healthy peer finished cleanly
+        │   ├── Safe Deferred Reclamation: 100% of user frames, intermediate tables, and kernel stacks reclaimed (delta: 0)
+        │   └── Bounded circular exit records (MAX_EXIT_RECORDS=64) with FIFO replacement policy
+        └── Checkpoint 5: Fast syscall hardening (syscall / sysret / IA32_EFER / STAR / LSTAR)
 ```
 
 ---

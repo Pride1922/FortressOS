@@ -74,6 +74,7 @@ size_t sched_ready_count(void);
 
 /* Process Lifecycle Management */
 tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size);
+tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg);
 void   process_exit(uint64_t exit_code);
 bool   process_wait(uint64_t pid, uint64_t *out_exit_code);
 bool   process_is_alive(uint64_t pid);

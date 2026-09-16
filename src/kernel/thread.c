@@ -16,8 +16,9 @@ typedef struct {
     bool     valid;
 } exit_record_t;
 
-#define MAX_EXIT_RECORDS 32
+#define MAX_EXIT_RECORDS 64
 static exit_record_t g_exit_records[MAX_EXIT_RECORDS];
+static size_t        g_exit_records_head = 0;
 
 static tcb_t         g_main_thread;
 static tcb_t        *g_idle_thread        = NULL;
@@ -457,7 +458,7 @@ void sched_on_timer_tick(void) {
     }
 }
 
-tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size) {
+tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
     if (!elf_data || elf_size == 0) return NULL;
 
     sched_reap_dead();
@@ -529,7 +530,7 @@ tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size) {
     uint64_t *frame = (uint64_t *)stack_top;
 
     frame[0] = 0;                                  /* r15 */
-    frame[1] = 0;                                  /* r14 */
+    frame[1] = arg;                                /* r14 -> passed to user RDI */
     frame[2] = (uint64_t)proc_info.user_stack_top; /* r13 -> user RSP */
     frame[3] = (uint64_t)proc_info.entry_point;    /* r12 -> user RIP */
     frame[4] = 0;                                  /* rbp */
@@ -546,22 +547,33 @@ tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size) {
     return p;
 }
 
+tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size) {
+    return process_spawn_with_arg(name, elf_data, elf_size, 0);
+}
+
 void process_exit(uint64_t exit_code) {
     tcb_t *curr = thread_current();
     if (curr) {
         curr->exit_code = exit_code;
         curr->has_exited = true;
 
-        /* Record in exit records under lock */
+        /* Record in bounded circular exit records under lock */
         uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+        int slot = -1;
         for (int i = 0; i < MAX_EXIT_RECORDS; i++) {
             if (!g_exit_records[i].valid) {
-                g_exit_records[i].pid = curr->tid;
-                g_exit_records[i].exit_code = exit_code;
-                g_exit_records[i].valid = true;
+                slot = i;
                 break;
             }
         }
+        if (slot == -1) {
+            /* All slots full: replace oldest record in circular FIFO order */
+            slot = (int)(g_exit_records_head % MAX_EXIT_RECORDS);
+            g_exit_records_head++;
+        }
+        g_exit_records[slot].pid = curr->tid;
+        g_exit_records[slot].exit_code = exit_code;
+        g_exit_records[slot].valid = true;
         spin_unlock_irqrestore(&g_sched_lock, rflags);
     }
     thread_exit();
