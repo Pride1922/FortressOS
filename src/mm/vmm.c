@@ -387,6 +387,66 @@ size_t vmm_get_retained_table_frames(void) {
     return vmm_get_allocated_table_frames();
 }
 
+uint64_t *vmm_get_active_pml4_virt(void) {
+    uintptr_t cr3 = vmm_get_current_pml4();
+    if (cr3 == 0) return NULL;
+    return (uint64_t *)phys_to_virt(cr3);
+}
+
+static bool vmm_validate_user_range_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, size_t length, bool write_req) {
+    if (!pml4_virt) return false;
+    if (length == 0) return true;
+
+    /* Check integer overflow */
+    if (virt_addr + length < virt_addr) return false;
+
+    /* Must reside strictly in lower-half user space (< 0x0000800000000000) */
+    if ((virt_addr + length) > 0x0000800000000000ULL) return false;
+    if (!is_canonical_address(virt_addr) || !is_canonical_address(virt_addr + length - 1)) return false;
+
+    uintptr_t start_page = virt_addr & ~(PAGE_SIZE - 1);
+    uintptr_t end_page   = (virt_addr + length - 1) & ~(PAGE_SIZE - 1);
+
+    for (uintptr_t page = start_page; ; page += PAGE_SIZE) {
+        size_t pml4_i = pml4_index(page);
+        size_t pdpt_i = pdpt_index(page);
+        size_t pd_i   = pd_index(page);
+        size_t pt_i   = pt_index(page);
+
+        /* Level 4 entry */
+        if (!(pml4_virt[pml4_i] & PTE_PRESENT) || !(pml4_virt[pml4_i] & PTE_USER)) return false;
+        if (write_req && !(pml4_virt[pml4_i] & PTE_WRITABLE)) return false;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4_virt[pml4_i] & PTE_ADDR_MASK);
+
+        /* Level 3 entry */
+        if (!(pdpt[pdpt_i] & PTE_PRESENT) || !(pdpt[pdpt_i] & PTE_USER)) return false;
+        if (write_req && !(pdpt[pdpt_i] & PTE_WRITABLE)) return false;
+        if (pdpt[pdpt_i] & PTE_HUGE) return false; /* User space restricted to 4 KiB */
+        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpt_i] & PTE_ADDR_MASK);
+
+        /* Level 2 entry */
+        if (!(pd[pd_i] & PTE_PRESENT) || !(pd[pd_i] & PTE_USER)) return false;
+        if (write_req && !(pd[pd_i] & PTE_WRITABLE)) return false;
+        if (pd[pd_i] & PTE_HUGE) return false; /* User space restricted to 4 KiB */
+        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pd_i] & PTE_ADDR_MASK);
+
+        /* Level 1 entry */
+        if (!(pt[pt_i] & PTE_PRESENT) || !(pt[pt_i] & PTE_USER)) return false;
+        if (write_req && !(pt[pt_i] & PTE_WRITABLE)) return false;
+
+        if (page == end_page) break;
+    }
+
+    return true;
+}
+
+bool vmm_validate_user_range(uint64_t *pml4_virt, uintptr_t virt_addr, size_t length, bool write_req) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    bool res = vmm_validate_user_range_unlocked(pml4_virt, virt_addr, length, write_req);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return res;
+}
+
 /* Helper to assert that essential boot mappings succeed without ignoring errors */
 static void vmm_must_map(uint64_t *pml4, uintptr_t virt, uintptr_t phys, uint64_t flags, const char *context) {
     int res = vmm_map_page(pml4, virt, phys, flags);

@@ -35,6 +35,7 @@ CFLAGS  := -std=c11 \
            -Isrc/drivers \
            -Isrc/arch/x86_64 \
            -Isrc/mm \
+           -Isrc/kernel \
            -Isrc/lib
 
 # Assembler flags for NASM (with DWARF debugging symbols)

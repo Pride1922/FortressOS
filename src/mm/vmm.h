@@ -63,6 +63,8 @@ void      vmm_switch_pml4(uintptr_t pml4_phys);
 uintptr_t vmm_get_kernel_pml4(void);
 uint64_t *vmm_get_kernel_pml4_virt(void);
 uintptr_t vmm_get_current_pml4(void);
+uint64_t *vmm_get_active_pml4_virt(void);
+bool      vmm_validate_user_range(uint64_t *pml4_virt, uintptr_t virt_addr, size_t length, bool write_req);
 size_t    vmm_get_allocated_table_frames(void);
 size_t    vmm_get_retained_table_frames(void); /* Backward-compatible alias */
 

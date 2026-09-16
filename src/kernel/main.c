@@ -13,10 +13,13 @@
 #include "ioapic.h"
 #include "apic.h"
 #include "thread.h"
+#include "syscall.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
 extern uint8_t __data_start[];
+extern const uint8_t user_syscall_test_start[];
+extern const uint8_t user_syscall_test_end[];
 
 /* Set Limine Base Revision to 3 (Limine v7/v8 protocol) */
 __attribute__((used, section(".requests_start_marker")))
@@ -452,6 +455,192 @@ static void test_phase7_checkpoint1_ring3(const boot_info_t *boot_info, uint64_t
     serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
 
     serial_puts("[ OK ] Phase 7 (Checkpoint 1) completed successfully!\n\n");
+}
+
+/* =========================================================================
+ * Phase 7 (Checkpoint 2): First System Call (Serial Print via int 0x80)
+ * ========================================================================= */
+static uint8_t g_test_user_syscall_rsp0_stack[16384] __attribute__((aligned(16)));
+
+static void test_phase7_checkpoint2_syscalls(const boot_info_t *boot_info, uint64_t *master_kernel_pml4, uintptr_t master_kernel_pml4_phys) {
+    (void)master_kernel_pml4;
+    serial_puts("========================================================\n");
+    serial_puts("Phase 7 (Checkpoint 2): First System Call (int 0x80)\n");
+    serial_puts("========================================================\n");
+
+    /* Record baseline resource counters for zero-leak audit */
+    size_t baseline_free_pages = pmm_get_free_pages();
+    size_t baseline_allocated_tables = vmm_get_allocated_table_frames();
+
+    /* 1. Create dedicated user PML4 address space */
+    serial_puts("[TEST 1] Setting up User Address Space (Code, Stack & Data Pages)...\n");
+    uintptr_t user_pml4_phys = vmm_create_user_pml4();
+    if (user_pml4_phys == 0) {
+        serial_puts("       [FAIL] Failed to create user PML4!\n");
+        hcf();
+    }
+    uint64_t *user_pml4_virt = (uint64_t *)((uintptr_t)user_pml4_phys + boot_info->hhdm_offset);
+
+    /* Allocate physical frames */
+    uintptr_t code_phys  = pmm_alloc_page();
+    uintptr_t stack_phys = pmm_alloc_page();
+    uintptr_t data1_phys = pmm_alloc_page();
+    uintptr_t data2_phys = pmm_alloc_page();
+    if (!code_phys || !stack_phys || !data1_phys || !data2_phys) {
+        serial_puts("       [FAIL] Failed to allocate physical frames for syscall test!\n");
+        hcf();
+    }
+
+    /* Map code page at 0x400000 (RX) */
+    const uintptr_t USER_CODE_VIRT = 0x0000000000400000ULL;
+    vmm_map_page(user_pml4_virt, USER_CODE_VIRT, code_phys, PTE_PRESENT | PTE_USER);
+
+    /* Map stack page at 0x7FFFF0000000 (RW/NX) */
+    const uintptr_t USER_STACK_PAGE_VIRT = 0x00007FFFF0000000ULL;
+    const uintptr_t USER_STACK_TOP_VIRT  = 0x00007FFFF0001000ULL;
+    vmm_map_page(user_pml4_virt, USER_STACK_PAGE_VIRT, stack_phys, PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
+
+    /* Map two consecutive data pages at 0x500000 and 0x501000 (RW/NX) */
+    const uintptr_t USER_DATA1_VIRT = 0x0000000000500000ULL;
+    const uintptr_t USER_DATA2_VIRT = 0x0000000000501000ULL;
+    vmm_map_page(user_pml4_virt, USER_DATA1_VIRT, data1_phys, PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
+    vmm_map_page(user_pml4_virt, USER_DATA2_VIRT, data2_phys, PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
+    /* 0x502000 is intentionally NOT mapped to test buffer boundary faults */
+
+    serial_puts("       [PASS] User address space mapped (Code at 0x400000, Data at 0x500000/0x501000, Stack at 0x7FFFF0001000)\n");
+
+    /* 2. Populate user data frames via HHDM */
+    serial_puts("[TEST 2] Populating Test Buffers & Boundary Crossings in User Data Frames...\n");
+    uint8_t *data1_ptr = (uint8_t *)(data1_phys + boot_info->hhdm_offset);
+    uint8_t *data2_ptr = (uint8_t *)(data2_phys + boot_info->hhdm_offset);
+    memset(data1_ptr, 0, PAGE_SIZE);
+    memset(data2_ptr, 0, PAGE_SIZE);
+
+    /* String 1: "Hello from Ring 3 Syscall!\n" at 0x500000 (27 bytes) */
+    const char str1[] = "Hello from Ring 3 Syscall!\n";
+    memcpy(data1_ptr, str1, 27);
+
+    /* String 2: Spans boundary between 0x500000 and 0x501000.
+     * Placed at 0x500FF8 (last 8 bytes of page 1) and continues into page 2 (first 10 bytes).
+     * Total length = 18 bytes: "Crossing Boundary\n" */
+    const char str2_p1[] = "Crossing";
+    const char str2_p2[] = " Boundary\n";
+    memcpy(data1_ptr + 4088, str2_p1, 8);
+    memcpy(data2_ptr, str2_p2, 10);
+
+    /* String 3: Placed at 0x501FF8 (last 8 bytes of page 2).
+     * Asking for 16 bytes will cross into unmapped page 0x502000. */
+    memcpy(data2_ptr + 4088, "Faulting", 8);
+
+    serial_puts("       [PASS] Test data buffers initialized (including mapped and unmapped page boundary patterns)\n");
+
+    /* 3. Copy user assembly test payload into user code frame */
+    serial_puts("[TEST 3] Loading Position-Independent Syscall Test Program...\n");
+    uint8_t *code_ptr = (uint8_t *)(code_phys + boot_info->hhdm_offset);
+    size_t payload_len = (size_t)(user_syscall_test_end - user_syscall_test_start);
+    if (payload_len > PAGE_SIZE) {
+        serial_puts("       [FAIL] User test payload exceeds one page!\n");
+        hcf();
+    }
+    memcpy(code_ptr, user_syscall_test_start, payload_len);
+    serial_puts("       [PASS] Syscall suite (8 test cases + SYS_EXIT) loaded into user code page\n");
+
+    /* 4. Arm TSS.RSP0 with dedicated kernel stack */
+    serial_puts("[TEST 4] Arming TSS.RSP0 with Dedicated Kernel Stack...\n");
+    uintptr_t test_rsp0_top = (uintptr_t)g_test_user_syscall_rsp0_stack + sizeof(g_test_user_syscall_rsp0_stack);
+    uint64_t saved_rsp0 = gdt_get_tss_rsp0();
+    gdt_set_tss_rsp0((uint64_t)test_rsp0_top);
+
+    /* 5. Initialize syscall subsystem and execute user program */
+    serial_puts("[TEST 5] Executing User Program in Ring 3 with Bidirectional Syscalls...\n");
+    serial_puts("------- USER SYSCALL OUTPUT START -------\n");
+
+    /* Ensure interrupts are disabled for manual CR3 isolation */
+    __asm__ volatile("cli" ::: "memory");
+    vmm_switch_pml4(user_pml4_phys);
+
+    bool helper_res = test_user_syscall_helper(USER_CODE_VIRT, USER_STACK_TOP_VIRT);
+
+    /* INVARIANT RESTORATION: Restore master kernel CR3 and TSS.RSP0 immediately */
+    vmm_switch_pml4(master_kernel_pml4_phys);
+    gdt_set_tss_rsp0(saved_rsp0);
+
+    serial_puts("------- USER SYSCALL OUTPUT END ---------\n");
+
+    if (!helper_res) {
+        serial_puts("       [FAIL] test_user_syscall_helper failed unexpectedly!\n");
+        hcf();
+    }
+
+    /* 6. Verify SYS_EXIT and User Program Results */
+    serial_puts("[TEST 6] Validating User Program Completion & Return Codes...\n");
+    uint64_t exit_code = 0;
+    if (!syscall_was_exit_called(&exit_code)) {
+        serial_puts("       [FAIL] User program did not terminate via SYS_EXIT!\n");
+        hcf();
+    }
+
+    if (exit_code != 42) {
+        serial_puts("       [FAIL] User test suite failed in Ring 3! Exit code: ");
+        serial_print_dec(exit_code);
+        if (exit_code >= 101 && exit_code <= 108) {
+            serial_puts(" (Sub-test ");
+            serial_print_dec(exit_code - 100);
+            serial_puts(" failed)");
+        }
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All 8 Ring 3 syscall assertions passed! Exit code: 42\n");
+    serial_puts("              - Sub-test 1: Valid serial write (stdout, count=27) -> RAX=27\n");
+    serial_puts("              - Sub-test 2: Cross-page buffer (0x500FF8..0x501009, count=18) -> RAX=18\n");
+    serial_puts("              - Sub-test 3: Invalid pointer (unmapped 0x600000) -> RAX=-2 (EFAULT)\n");
+    serial_puts("              - Sub-test 4: Cross-page to unmapped (0x501FF8, count=16) -> RAX=-2 (EFAULT)\n");
+    serial_puts("              - Sub-test 5: Kernel pointer (0xFFFFFFFF80000000) -> RAX=-2 (EFAULT)\n");
+    serial_puts("              - Sub-test 6: Oversized buffer length (100000 bytes) -> RAX=-1 (EINVAL)\n");
+    serial_puts("              - Sub-test 7: Zero-length write (count=0) -> RAX=0\n");
+    serial_puts("              - Sub-test 8: Invalid file descriptor (fd=99) -> RAX=-3 (EBADF)\n");
+
+    /* 7. Teardown User Address Space & Zero-Leak Audit */
+    serial_puts("[TEST 7] User Address Space Teardown & Zero-Leak Audit...\n");
+    int destroy_res = vmm_destroy_pml4(user_pml4_phys, true);
+    if (destroy_res != VMM_OK) {
+        serial_puts("       [FAIL] Failed to destroy user PML4! Code: ");
+        serial_print_dec(destroy_res);
+        serial_puts("\n");
+        hcf();
+    }
+
+    size_t post_free_pages = pmm_get_free_pages();
+    size_t post_allocated_tables = vmm_get_allocated_table_frames();
+
+    if (post_allocated_tables != baseline_allocated_tables) {
+        serial_puts("       [FAIL] Table frame leak detected! Expected: ");
+        serial_print_dec(baseline_allocated_tables);
+        serial_puts(" Got: ");
+        serial_print_dec(post_allocated_tables);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All intermediate page tables & root reclaimed (delta: 0)\n");
+
+    if (post_free_pages != baseline_free_pages) {
+        serial_puts("       [FAIL] Physical frames leaked! Expected: ");
+        serial_print_dec(baseline_free_pages);
+        serial_puts(" Got: ");
+        serial_print_dec(post_free_pages);
+        serial_puts("\n");
+        hcf();
+    }
+    serial_puts("       [PASS] All 4 user physical frames returned to PMM (delta: 0 frames leaked)\n");
+
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
+
+    serial_puts("[ OK ] Phase 7 (Checkpoint 2) completed successfully!\n\n");
 }
 
 /* Kernel Main Entry Point */
@@ -1859,7 +2048,12 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase7_checkpoint1_ring3(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
-    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 1) complete. CPU halted.\n");
+    /* =========================================================================
+     * Phase 7 (Checkpoint 2): First System Call (Serial Print via int 0x80)
+     * ========================================================================= */
+    test_phase7_checkpoint2_syscalls(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
+
+    serial_puts("\n[BOOT] FortressOS Phase 7 (Checkpoint 2) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

@@ -243,3 +243,85 @@ test_user_mode_helper:
     xor rax, rax
     ret
 
+; Assembly helper to run user program with syscall support until SYS_EXIT
+; Signature: bool test_user_syscall_helper(uintptr_t entry_point, uintptr_t user_stack_top);
+; RDI = entry_point
+; RSI = user_stack_top
+global test_user_syscall_helper
+extern syscall_set_recovery
+extern syscall_clear_recovery
+
+test_user_syscall_helper:
+    ; 1. Preserve callee-saved registers per System V ABI
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+
+    ; 2. Preserve arguments
+    mov r12, rdi   ; entry_point
+    mov r13, rsi   ; user_stack_top
+
+    ; 3. Stack alignment (8 mod 16 after 6 pushes -> sub 8 to make 0 mod 16)
+    sub rsp, 8
+
+    ; 4. Register recovery label with syscall subsystem
+    lea rdi, [.syscall_exit_recovery]
+    mov rsi, rsp
+    call syscall_set_recovery
+
+    ; 5. Load User Data selector (0x1B) into DS and ES
+    mov ax, 0x1B
+    mov ds, ax
+    mov es, ax
+
+    ; 6. Build iretq frame with IF=0 (RFLAGS=0x002) for manual test isolation
+    push qword 0x1B    ; SS
+    push r13           ; RSP
+    push qword 0x002   ; RFLAGS (IF=0 keeps interrupts disabled during test)
+    push qword 0x23    ; CS
+    push r12           ; RIP
+
+    ; Clear general purpose registers to prevent leaking kernel state
+    xor rax, rax
+    xor rbx, rbx
+    xor rcx, rcx
+    xor rdx, rdx
+    xor rbp, rbp
+    xor r8,  r8
+    xor r9,  r9
+    xor r10, r10
+    xor r11, r11
+    xor r12, r12
+    xor r13, r13
+    xor r14, r14
+    xor r15, r15
+    xor rsi, rsi
+    xor rdi, rdi
+
+    iretq
+
+.syscall_exit_recovery:
+    ; SYS_EXIT iretq landed here in Ring 0!
+    ; Restore Kernel Data Segment into DS and ES
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+
+    ; Disarm recovery
+    call syscall_clear_recovery
+
+    ; Restore stack alignment and callee-saved registers
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+
+    mov rax, 1
+    ret
+

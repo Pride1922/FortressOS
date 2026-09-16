@@ -75,6 +75,7 @@ void test_nx_exec_helper(uintptr_t target_addr);
 /* Ring 3 Transition & Trap Test Hooks */
 void enter_user_mode(uintptr_t entry_point, uintptr_t user_stack_top);
 bool test_user_mode_helper(uintptr_t entry_point, uintptr_t user_stack_top);
+bool test_user_syscall_helper(uintptr_t entry_point, uintptr_t user_stack_top);
 void idt_set_user_trap_handler(uintptr_t recovery_rip, uintptr_t recovery_rsp);
 void idt_clear_user_trap_handler(void);
 bool idt_was_user_trap_caught(uint64_t *out_cs, uint64_t *out_ss, uint64_t *out_rax, uint64_t *out_rsp);

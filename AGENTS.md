@@ -273,7 +273,18 @@ Future tasks should follow this sequenced implementation order:
         │   ├── Test user payload: stack push/pop, 64-bit arithmetic, int 0x80 syscall trap
         │   ├── ABI-compliant trap recovery via test_user_mode_helper and isr_exception_handler redirect
         │   └── Verification: Captured CPL=3 (CS 0x23), RPL=3 (SS 0x1B), verified arithmetic RAX, 100% zero-leak teardown
-        ├── Checkpoint 2: First system call (serial print syscall via int 0x80 or syscall)
+        ├── Checkpoint 2: First System Call & Bidirectional Execution (COMPLETE)
+        │   ├── System call ABI (int 0x80): RAX=nr, RDI=fd/arg1, RSI=buf/arg2, RDX=count/arg3, return in RAX
+        │   ├── SYS_WRITE (nr 1) with UART serial driver integration and SYS_EXIT (nr 0)
+        │   ├── Strict user buffer validation (vmm_validate_user_range):
+        │   │   ├── Pointer wrap-around and canonical lower-half (< 0x0000800000000000) bounds checking
+        │   │   ├── 4-level page table walk across all spanned 4 KiB pages verifying PTE_PRESENT and PTE_USER
+        │   │   └── Rejection of non-canonical, kernel addresses, unmapped pages, and oversized buffers (> 16 KiB)
+        │   ├── True bidirectional execution: syscall handler sets frame->rax and iretq resumes user mode in Ring 3
+        │   ├── Preemption isolation: RFLAGS=0x002 (IF=0) during manual address-space test execution
+        │   ├── TSS.RSP0 stack restoration invariant: preserved across transitions and restored before teardown
+        │   └── Verification suite: 8 distinct Ring 3 test assertions (valid write, cross-page mapped buffer,
+        │       cross-page unmapped fault, kernel pointer rejection, oversized buffer, zero-length, invalid fd, clean exit)
         ├── Checkpoint 3: Initramfs / embedded ELF user executable loading
         ├── Checkpoint 4: Clean process exit system call
         ├── Checkpoint 5: Fast syscall hardening (syscall / sysret / IA32_EFER / STAR / LSTAR)
