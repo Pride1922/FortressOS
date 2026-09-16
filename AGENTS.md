@@ -326,20 +326,24 @@ Future tasks should follow this sequenced implementation order:
         └── Checkpoint 5: Fast Syscall Hardening via syscall / sysret (COMPLETE)
             ├── Hardware MSR Configuration: IA32_EFER.SCE (bit 0), IA32_STAR (Kernel CS 0x08, User CS 0x23, User SS 0x1B),
             │   IA32_LSTAR (syscall_entry_stub), and IA32_SFMASK (masks IF, TF, DF, and arithmetic flags)
-            ├── Return State Hardening & Canonical Policy: Return RIP and RSP bounds-checked against canonical lower-half limits
-            │   ([PAGE_SIZE, 0x0000800000000000ULL)) before loading user RSP, mitigating Intel CVE-2012-0217 (#GP in Ring 0).
-            │   Invalid return state handled while strictly on kernel stack, aborting without ever executing sysretq
+            ├── Return State Hardening & Canonical Policy: Return RIP and RSP bounds-checked strictly against canonical lower-half limits
+            │   (PAGE_SIZE <= rip, rsp < 0x0000800000000000ULL) before loading user RSP, mitigating Intel CVE-2012-0217 (#GP in Ring 0).
+            │   0x0000800000000000ULL is non-canonical and explicitly rejected. Invalid return state is handled on the kernel stack,
+            │   aborting without ever executing sysretq
             ├── RFLAGS Security Sanitization: User flags sanitized before sysretq, stripping IOPL (bits 12-13), NT (bit 14), TF (bit 8),
             │   and VM (bit 17), while forcing IF=1 (0x200) and reserved bit 1 = 1 (0x002)
             ├── Non-Maskable Interrupt (NMI) IST2 Strategy: Vector 2 configured with dedicated 16 KiB emergency stack + 4 KiB guard page
-            │   (IST2) in TSS/IDT, guaranteeing atomic delivery if NMIs arrive during syscall entry/exit stack switch windows
+            │   (IST2) in TSS/IDT. Handler is strictly reentrant and lockless, avoiding scheduler and subsystem spinlocks.
+            │   (Note: Delivery during the 2-instruction entry/exit race window is architecturally configured via IST2 but remains unverified by active NMI injection)
             ├── User Stack Invariant: syscall_entry_stub performs zero pushes, calls, or writes on the user stack before switching RSP
             ├── Concurrency Contract: g_tss_rsp0 follows scheduled thread; explicitly single-CPU in Phases 1-7, prepared for GS base in SMP
             ├── Syscall ABI Specification: RCX and R11 documented as clobbered by hardware; callee-preserved registers honored
             ├── Dual-Interface Support: Reference int 0x80 preserved; negative parity verified for EFAULT, EINVAL, EBADF, and ENOSYS
             └── Comprehensive Verification Suite:
                 ├── Mode 4 functional test passed with exit code 99
-                ├── Hostile return test suite: non-canonical RIP, page-zero RIP, kernel RSP, and malicious RFLAGS rejected/sanitized
+                ├── Hostile return test suite: exact non-canonical boundary (0x0000800000000000), mid non-canonical (0x8000000000000000),
+                │   canonical kernel space (0xFFFF800000000000 / 0xFFFFFFFF80000000), page-zero (< 0x1000), and RFLAGS sanitization verified
+                ├── Exact canonical upper boundary (0x00007FFFFFFFFFF8) acceptance verified
                 ├── Preempted concurrent workers (Modes 5 & 6): 120 fast syscalls executed under 100 Hz timer preemption (3 switches across 6 ticks)
                 └── 100% zero-leak resource audit under BIOS and UEFI QEMU (0 tables, 0 frames, 0 stack slots)
 ```

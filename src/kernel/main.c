@@ -1452,46 +1452,96 @@ static void test_phase7_checkpoint5_fast_syscall(boot_info_t *boot_info, uint64_
     /* 3. Hostile Return State Validation & Security Sanitization */
     serial_puts("[TEST 3] Validating Fast Syscall Return State Hardening & Sanitization...\n");
 
-    /* 3A: Reject Non-Canonical / Kernel Return RIP */
-    interrupt_frame_t bad_rip_frame;
-    memset(&bad_rip_frame, 0, sizeof(bad_rip_frame));
-    bad_rip_frame.cs     = GDT_USER_CODE;
-    bad_rip_frame.rip    = 0xFFFF800000000000ULL; /* Non-canonical / kernel higher-half */
-    bad_rip_frame.rsp    = 0x00007FFFF0000000ULL;
-    bad_rip_frame.rflags = 0x202;
-    if (syscall_validate_return_state(&bad_rip_frame)) {
-        serial_puts("       [FAIL] Non-canonical return RIP was not rejected!\n");
+    /* 3A: Exact Non-Canonical Boundary Rejection (0x0000800000000000ULL) */
+    interrupt_frame_t noncanon_boundary_frame;
+    memset(&noncanon_boundary_frame, 0, sizeof(noncanon_boundary_frame));
+    noncanon_boundary_frame.cs     = GDT_USER_CODE;
+    noncanon_boundary_frame.rip    = 0x0000000000401000ULL;
+    noncanon_boundary_frame.rsp    = 0x0000800000000000ULL; /* First non-canonical address (bit 47=1, 48..63=0) */
+    noncanon_boundary_frame.rflags = 0x202;
+    if (syscall_validate_return_state(&noncanon_boundary_frame)) {
+        serial_puts("       [FAIL] Exact non-canonical upper boundary RSP (0x0000800000000000) was not rejected!\n");
         hcf();
     }
-    serial_puts("       [PASS] Non-canonical / kernel return RIP rejected (CVE-2012-0217 mitigation)\n");
-
-    /* 3B: Reject Page-Zero / Sub-Page Return RIP */
-    interrupt_frame_t zero_rip_frame;
-    memset(&zero_rip_frame, 0, sizeof(zero_rip_frame));
-    zero_rip_frame.cs     = GDT_USER_CODE;
-    zero_rip_frame.rip    = 0x500ULL; /* Page-zero NULL area */
-    zero_rip_frame.rsp    = 0x00007FFFF0000000ULL;
-    zero_rip_frame.rflags = 0x202;
-    if (syscall_validate_return_state(&zero_rip_frame)) {
-        serial_puts("       [FAIL] Page-zero return RIP was not rejected!\n");
+    noncanon_boundary_frame.rsp = 0x00007FFFF0000000ULL;
+    noncanon_boundary_frame.rip = 0x0000800000000000ULL; /* First non-canonical address for RIP */
+    if (syscall_validate_return_state(&noncanon_boundary_frame)) {
+        serial_puts("       [FAIL] Exact non-canonical upper boundary RIP (0x0000800000000000) was not rejected!\n");
         hcf();
     }
-    serial_puts("       [PASS] Page-zero (< PAGE_SIZE) return RIP rejected\n");
+    serial_puts("       [PASS] Exact non-canonical upper boundary (0x0000800000000000) rejected (RSP & RIP)\n");
 
-    /* 3C: Reject Non-Canonical / Kernel Return RSP */
-    interrupt_frame_t bad_rsp_frame;
-    memset(&bad_rsp_frame, 0, sizeof(bad_rsp_frame));
-    bad_rsp_frame.cs     = GDT_USER_CODE;
-    bad_rsp_frame.rip    = 0x0000000000401000ULL;
-    bad_rsp_frame.rsp    = 0xFFFFFFFFA0000000ULL; /* Kernel address space */
-    bad_rsp_frame.rflags = 0x202;
-    if (syscall_validate_return_state(&bad_rsp_frame)) {
-        serial_puts("       [FAIL] Kernel return RSP was not rejected!\n");
+    /* 3B: Non-Canonical Address Space Rejection (0x8000000000000000ULL) */
+    interrupt_frame_t noncanon_mid_frame;
+    memset(&noncanon_mid_frame, 0, sizeof(noncanon_mid_frame));
+    noncanon_mid_frame.cs     = GDT_USER_CODE;
+    noncanon_mid_frame.rip    = 0x8000000000000000ULL; /* Non-canonical address (bit 63=1, bits 47..62=0) */
+    noncanon_mid_frame.rsp    = 0x00007FFFF0000000ULL;
+    noncanon_mid_frame.rflags = 0x202;
+    if (syscall_validate_return_state(&noncanon_mid_frame)) {
+        serial_puts("       [FAIL] Non-canonical mid address RIP was not rejected!\n");
         hcf();
     }
-    serial_puts("       [PASS] Non-canonical / kernel return RSP rejected\n");
+    noncanon_mid_frame.rip = 0x0000000000401000ULL;
+    noncanon_mid_frame.rsp = 0x8000000000000000ULL;
+    if (syscall_validate_return_state(&noncanon_mid_frame)) {
+        serial_puts("       [FAIL] Non-canonical mid address RSP was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Non-canonical address (0x8000000000000000) rejected (CVE-2012-0217 mitigation)\n");
 
-    /* 3D: RFLAGS Sanitization (IOPL, NT, TF, VM stripped; IF forced to 1) */
+    /* 3C: Canonical Higher-Half Kernel Space Rejection (0xFFFF800000000000 & 0xFFFFFFFF80000000) */
+    interrupt_frame_t kernel_space_frame;
+    memset(&kernel_space_frame, 0, sizeof(kernel_space_frame));
+    kernel_space_frame.cs     = GDT_USER_CODE;
+    kernel_space_frame.rip    = 0xFFFF800000000000ULL; /* Canonical kernel higher-half base */
+    kernel_space_frame.rsp    = 0x00007FFFF0000000ULL;
+    kernel_space_frame.rflags = 0x202;
+    if (syscall_validate_return_state(&kernel_space_frame)) {
+        serial_puts("       [FAIL] Canonical kernel base RIP (0xFFFF800000000000) was not rejected!\n");
+        hcf();
+    }
+    kernel_space_frame.rip = 0x0000000000401000ULL;
+    kernel_space_frame.rsp = 0xFFFFFFFF80000000ULL; /* Kernel image virtual address */
+    if (syscall_validate_return_state(&kernel_space_frame)) {
+        serial_puts("       [FAIL] Canonical kernel image RSP (0xFFFFFFFF80000000) was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Canonical higher-half kernel space rejected (0xFFFF800000000000 / 0xFFFFFFFF80000000)\n");
+
+    /* 3D: Sub-Page / Page-Zero Rejection (< PAGE_SIZE) */
+    interrupt_frame_t subpage_frame;
+    memset(&subpage_frame, 0, sizeof(subpage_frame));
+    subpage_frame.cs     = GDT_USER_CODE;
+    subpage_frame.rip    = 0x500ULL; /* Sub-page NULL region */
+    subpage_frame.rsp    = 0x00007FFFF0000000ULL;
+    subpage_frame.rflags = 0x202;
+    if (syscall_validate_return_state(&subpage_frame)) {
+        serial_puts("       [FAIL] Sub-page return RIP was not rejected!\n");
+        hcf();
+    }
+    subpage_frame.rip = 0x0000000000401000ULL;
+    subpage_frame.rsp = 0x500ULL;
+    if (syscall_validate_return_state(&subpage_frame)) {
+        serial_puts("       [FAIL] Sub-page return RSP was not rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Page-zero (< 0x1000) return RIP and RSP rejected\n");
+
+    /* 3E: Exact Valid Upper Boundary Acceptance (0x00007FFFFFFFFFF8ULL) */
+    interrupt_frame_t valid_boundary_frame;
+    memset(&valid_boundary_frame, 0, sizeof(valid_boundary_frame));
+    valid_boundary_frame.cs     = GDT_USER_CODE;
+    valid_boundary_frame.rip    = 0x00007FFFFFFFFFF8ULL; /* Highest canonical user 8-byte aligned slot */
+    valid_boundary_frame.rsp    = 0x00007FFFFFFFFFF8ULL;
+    valid_boundary_frame.rflags = 0x202;
+    if (!syscall_validate_return_state(&valid_boundary_frame)) {
+        serial_puts("       [FAIL] Valid canonical upper boundary was unexpectedly rejected!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Valid canonical upper boundary (0x00007FFFFFFFFFF8) accepted\n");
+
+    /* 3F: RFLAGS Sanitization (IOPL, NT, TF, VM stripped; IF forced to 1) */
     interrupt_frame_t sanitize_frame;
     memset(&sanitize_frame, 0, sizeof(sanitize_frame));
     sanitize_frame.cs     = GDT_USER_CODE;
@@ -1513,7 +1563,7 @@ static void test_phase7_checkpoint5_fast_syscall(boot_info_t *boot_info, uint64_
     }
     serial_puts("       [PASS] RFLAGS sanitized (IOPL=0, NT=0, TF=0 stripped, IF=1 enforced)\n");
 
-    /* 3E: End-to-End Hostile Return Interception via Dispatcher (Kernel Stack Recovery) */
+    /* 3G: End-to-End Hostile Return Interception via Dispatcher (Kernel Stack Recovery) */
     void *recovery_target = &&hostile_recovery_done;
     __asm__ volatile("" : : "r"(recovery_target));
     uintptr_t saved_rsp;
@@ -1524,7 +1574,7 @@ static void test_phase7_checkpoint5_fast_syscall(boot_info_t *boot_info, uint64_
     memset(&hostile_frame, 0, sizeof(hostile_frame));
     hostile_frame.cs     = GDT_USER_CODE;
     hostile_frame.ss     = GDT_USER_DATA;
-    hostile_frame.rip    = 0xFFFF800000000000ULL; /* Non-canonical / kernel return address */
+    hostile_frame.rip    = 0x0000800000000000ULL; /* Exact non-canonical address */
     hostile_frame.rsp    = 0x00007FFFF0000000ULL;
     hostile_frame.rflags = 0x202;
     hostile_frame.rax    = SYS_WRITE;

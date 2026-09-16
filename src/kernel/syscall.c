@@ -201,8 +201,8 @@ bool syscall_validate_return_state(interrupt_frame_t *frame) {
         return false;
     }
 
-    /* 2. Validate Return RSP against canonical lower-half user address space */
-    if (frame->rsp < USER_CANONICAL_MIN || frame->rsp > USER_CANONICAL_LIMIT) {
+    /* 2. Validate Return RSP against canonical lower-half user address space [PAGE_SIZE, 0x0000800000000000ULL) */
+    if (frame->rsp < USER_CANONICAL_MIN || frame->rsp >= USER_CANONICAL_LIMIT) {
         serial_puts("[SYSCALL] Hardening violation: non-canonical or kernel return RSP: ");
         serial_print_hex(frame->rsp);
         serial_puts("\n");

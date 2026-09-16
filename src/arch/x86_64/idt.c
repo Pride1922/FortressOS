@@ -166,6 +166,22 @@ void idt_register_handler(uint8_t vector, irq_handler_t handler) {
 }
 
 void isr_exception_handler(interrupt_frame_t *frame) {
+    /* Non-Maskable Interrupt (NMI, Vector 2):
+     * Hardware delivers Vector 2 on the dedicated 16 KiB IST2 emergency stack.
+     * Architectural Contract:
+     * 1. Strictly reentrant and lockless.
+     * 2. Must NEVER acquire subsystem spinlocks (g_sched_lock, g_heap_lock, g_vmm_lock, g_pmm_lock).
+     * 3. Must NEVER invoke scheduler / context switch functions (thread_yield, process_exit).
+     */
+    if (frame->vector == 2) {
+        serial_puts("[NMI] Non-Maskable Interrupt received on IST2! RIP: ");
+        serial_print_hex(frame->rip);
+        serial_puts(", RSP: ");
+        serial_print_hex(frame->rsp);
+        serial_puts("\n");
+        return;
+    }
+
     /* Breakpoint Trap (#BP, vector 3) is a non-fatal debugging trap */
     if (frame->vector == 3) {
         serial_puts("[TRAP] Exception 0x03 (Breakpoint Trap) at RIP: ");
