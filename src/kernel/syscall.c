@@ -8,6 +8,8 @@
 #include "vfs.h"
 #include "string.h"
 #include "pmm.h"
+#include "power.h"
+#include "keyboard.h"
 
 extern void syscall_entry_stub(void);
 
@@ -386,6 +388,28 @@ static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
     return SYSCALL_EINVAL;
 }
 
+static int64_t sys_reboot(uint64_t cmd) {
+    if (cmd == REBOOT_CMD_RESTART) {
+        power_reboot();
+    } else if (cmd == REBOOT_CMD_POWEROFF) {
+        power_shutdown();
+    }
+    return SYSCALL_EINVAL;
+}
+
+static int64_t sys_kbd_layout(int64_t layout) {
+    if (layout == KBD_LAYOUT_US) {
+        keyboard_set_layout(KBD_LAYOUT_US);
+        return 0;
+    } else if (layout == KBD_LAYOUT_AZERTY) {
+        keyboard_set_layout(KBD_LAYOUT_AZERTY);
+        return 1;
+    } else if (layout < 0) {
+        return (int64_t)keyboard_get_layout();
+    }
+    return SYSCALL_EINVAL;
+}
+
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
     if (!frame) return SYSCALL_EINVAL;
 
@@ -419,6 +443,14 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_READDIR:
             result = sys_readdir((int)frame->rdi, frame->rsi);
+            break;
+
+        case SYS_REBOOT:
+            result = sys_reboot(frame->rdi);
+            break;
+
+        case SYS_KBD_LAYOUT:
+            result = sys_kbd_layout((int64_t)frame->rdi);
             break;
 
         default:

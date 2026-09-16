@@ -101,11 +101,33 @@ void shell_main(void) {
         if (equal(cmd, "help")) {
             puts("help           Show commands\nls [path]      List files (default /)\n"
                  "cat /path      Read a text file\necho text      Print text\n"
-                 "exit           Restart the shell\nBackspace edits the current line. US keyboard layout.\n");
+                 "layout [layout]Switch layout (us | azerty)\n"
+                 "reboot         Restart the system\nshutdown       Power off the system\n"
+                 "exit           Restart the shell\nBackspace edits the current line.\n");
         } else if (equal(cmd, "echo")) { puts(arg); puts("\n"); }
         else if (equal(cmd, "ls")) list(*arg ? arg : "/");
         else if (equal(cmd, "cat")) {
             if (*arg) cat(arg); else puts("Usage: cat /path\n");
+        } else if (equal(cmd, "layout")) {
+            if (equal(arg, "azerty")) {
+                (void)call(8, 1, 0, 0);
+                puts("Keyboard layout set to Belgian AZERTY.\n");
+            } else if (equal(arg, "us")) {
+                (void)call(8, 0, 0, 0);
+                puts("Keyboard layout set to US QWERTY.\n");
+            } else if (!*arg) {
+                long curr = call(8, (uintptr_t)-1, 0, 0);
+                if (curr == 1) puts("Active keyboard layout: Belgian AZERTY\n");
+                else puts("Active keyboard layout: US QWERTY\n");
+            } else {
+                puts("Usage: layout [us | azerty]\n");
+            }
+        } else if (equal(cmd, "reboot")) {
+            puts("Restarting system...\n");
+            (void)call(7, 1, 0, 0);
+        } else if (equal(cmd, "shutdown") || equal(cmd, "poweroff")) {
+            puts("Shutting down system...\n");
+            (void)call(7, 2, 0, 0);
         } else if (equal(cmd, "exit")) return;
         else puts("Unknown command. Type help.\n");
     }

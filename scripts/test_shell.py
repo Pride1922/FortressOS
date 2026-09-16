@@ -144,6 +144,10 @@ def run(mode):
             assert "Ring 3 shell supports" in uart_command("cat /docs/readme.txt\n")
             assert "hello.txt" in uart_command("ls /mnt\n")
             assert "Hello from FortressOS ext2" in uart_command("cat /mnt/hello.txt\n")
+            assert "Active keyboard layout: US QWERTY" in uart_command("layout\n")
+            assert "Keyboard layout set to Belgian AZERTY" in uart_command("layout azerty\n")
+            assert "Active keyboard layout: Belgian AZERTY" in uart_command("layout\n")
+            assert "Keyboard layout set to US QWERTY" in uart_command("layout us\n")
             for _ in range(3):
                 assert "FortressOS shell (Ring 3)" in uart_command("exit\n")
                 current = snapshot()

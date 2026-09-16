@@ -121,9 +121,72 @@ typedef struct {
     uint32_t  irq0_gsi;
 } acpi_madt_info_t;
 
+/* ACPI 2.0+ Generic Address Structure */
+typedef struct {
+    uint8_t address_space; /* 0 = System Memory (MMIO), 1 = System I/O */
+    uint8_t bit_width;
+    uint8_t bit_offset;
+    uint8_t access_size;
+    uint64_t address;
+} __attribute__((packed)) acpi_gas_t;
+
+/* FADT Table (Signature "FACP") */
+typedef struct {
+    acpi_sdt_header_t header;       /* 0: "FACP" */
+    uint32_t firmware_ctrl;        /* 36 */
+    uint32_t dsdt;                 /* 40: 32-bit physical address of DSDT */
+    uint8_t  reserved1;            /* 44 */
+    uint8_t  preferred_pm_profile; /* 45 */
+    uint16_t sci_int;              /* 46 */
+    uint32_t smi_cmd;              /* 48: Port for SMI command */
+    uint8_t  acpi_enable;          /* 52: Value to write to smi_cmd to enable ACPI */
+    uint8_t  acpi_disable;         /* 53 */
+    uint8_t  s4bios_req;           /* 54 */
+    uint8_t  pstate_cnt;           /* 55 */
+    uint32_t pm1a_evt_blk;         /* 56 */
+    uint32_t pm1b_evt_blk;         /* 60 */
+    uint32_t pm1a_cnt_blk;         /* 64: Port for PM1a Control Register */
+    uint32_t pm1b_cnt_blk;         /* 68: Port for PM1b Control Register */
+    uint32_t pm2_cnt_blk;          /* 72 */
+    uint32_t pm_tmr_blk;           /* 76 */
+    uint32_t gpe0_blk;             /* 80 */
+    uint32_t gpe1_blk;             /* 84 */
+    uint8_t  pm1_evt_len;          /* 88 */
+    uint8_t  pm1_cnt_len;          /* 89 */
+    uint8_t  pm2_cnt_len;          /* 90 */
+    uint8_t  pm_tmr_len;           /* 91 */
+    uint8_t  gpe0_blk_len;         /* 92 */
+    uint8_t  gpe1_blk_len;         /* 93 */
+    uint8_t  gpe1_base;            /* 94 */
+    uint8_t  cst_cnt;              /* 95 */
+    uint16_t p_lvl2_lat;           /* 96 */
+    uint16_t p_lvl3_lat;           /* 98 */
+    uint16_t flush_size;           /* 100 */
+    uint16_t flush_stride;         /* 102 */
+    uint8_t  duty_offset;          /* 104 */
+    uint8_t  duty_width;           /* 105 */
+    uint8_t  day_alrm;             /* 106 */
+    uint8_t  mon_alrm;             /* 107 */
+    uint8_t  century;              /* 108 */
+    uint16_t iapc_boot_arch;       /* 109 */
+    uint8_t  reserved2;            /* 111 */
+    uint32_t flags;                /* 112 */
+    acpi_gas_t reset_reg;          /* 116: Reset register (ACPI 2.0+) */
+    uint8_t  reset_value;          /* 128: Value to write to reset_reg */
+    uint16_t arm_boot_arch;        /* 129 */
+    uint8_t  minor_version;        /* 131 */
+    uint64_t x_firmware_ctrl;      /* 132 */
+    uint64_t x_dsdt;               /* 140: 64-bit physical address of DSDT */
+    acpi_gas_t x_pm1a_evt_blk;     /* 148 */
+    acpi_gas_t x_pm1b_evt_blk;     /* 160 */
+    acpi_gas_t x_pm1a_cnt_blk;     /* 172 */
+    acpi_gas_t x_pm1b_cnt_blk;     /* 184 */
+} __attribute__((packed)) acpi_fadt_t;
+
 /* ACPI Public API */
 bool acpi_ensure_mapped(uintptr_t phys_addr, size_t length);
 bool acpi_init(uintptr_t rsdp_phys_addr, uintptr_t hhdm_offset);
+uintptr_t acpi_get_hhdm_offset(void);
 bool acpi_validate_checksum(const acpi_sdt_header_t *header);
 acpi_sdt_header_t *acpi_find_table(const char *signature);
 bool acpi_parse_madt(acpi_madt_info_t *out_info);

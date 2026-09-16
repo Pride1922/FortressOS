@@ -76,6 +76,10 @@ static bool validate_rsdp_checksum(const acpi_rsdp_t *rsdp) {
     return true;
 }
 
+uintptr_t acpi_get_hhdm_offset(void) {
+    return g_hhdm_offset;
+}
+
 bool acpi_init(uintptr_t rsdp_phys_addr, uintptr_t hhdm_offset) {
     g_root_sdt = NULL;
     g_is_xsdt = false;

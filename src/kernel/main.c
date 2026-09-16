@@ -25,6 +25,7 @@
 #include "crc32.h"
 #include "gpt.h"
 #include "ext2.h"
+#include "power.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
@@ -3845,6 +3846,7 @@ pf_boot_guard_done:
         hcf();
     }
     serial_puts("       [PASS] ACPI RSDP and Root SDT verified\n");
+    power_init();
 
     acpi_parser_selftest();
 

@@ -12,6 +12,8 @@
 #define SYS_READ      4
 #define SYS_STAT      5
 #define SYS_READDIR   6
+#define SYS_REBOOT    7
+#define SYS_KBD_LAYOUT 8
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0

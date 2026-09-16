@@ -437,6 +437,11 @@ Future tasks should follow this sequenced implementation order:
     │   ├── /bin/shell from initramfs: help, ls, cat, echo, exit/restart; blocking stdin and user-space line editing
     │   ├── No history, no tab-completion (deliberately minimal)
     │   └── Acceptance: read a file into a Ring 3 editor and modify its in-memory buffer
+    ├── Phase 9C.5: Power Management & Keyboard Layout Switching (COMPLETE)
+    │   ├── ACPI S5 shutdown (FADT PM1a/PM1b_CNT and DSDT _S5 package parsing) & emulator ports
+    │   ├── Multi-tier reboot: ACPI reset, 8042 reset pulse, chipset PCI reset (0xCF9), and triple fault
+    │   ├── SYS_REBOOT (reboot/shutdown) and SYS_KBD_LAYOUT syscalls
+    │   └── Ring 3 shell commands: reboot, shutdown, poweroff, and layout (us/azerty)
     └── Phase 9D: Writable ext2 Filesystem
         ├── Block/inode allocation, directory entry insertion, file creation and writes
         └── Acceptance Test: Create and reopen files after reboot (persistent storage)
@@ -515,7 +520,7 @@ echo hello
 
 `exit` terminates/reaps the process and launches a fresh shell. Files are read-only;
 no editor, command execution/exec, disk installation, accounts or USB HID driver
-is provided by this step. Keyboard layout is US ASCII (Shift/Caps Lock,
+is provided by this step. Keyboard layout is Belgian AZERTY (Shift/Caps Lock,
 Backspace, Enter; arrows and function keys ignored, Caps LED not synchronized).
 Line length is bounded to 191 bytes; overflow discards the entire command.
 The console supports erasing across wrapped rows. Serial CR/LF and DEL are
