@@ -14,6 +14,10 @@
 #include "apic.h"
 #include "thread.h"
 
+extern uint8_t __text_start[];
+extern uint8_t __rodata_start[];
+extern uint8_t __data_start[];
+
 /* Set Limine Base Revision to 3 (Limine v7/v8 protocol) */
 __attribute__((used, section(".requests_start_marker")))
 static volatile LIMINE_REQUESTS_START_MARKER;
@@ -1394,8 +1398,8 @@ pf_boot_guard_done:
     }
     serial_puts("       [PASS] Higher-half (entries 256..511) correctly mirrored from kernel PML4\n");
 
-    /* 2. Process Isolation Test */
-    serial_puts("[TEST 2] Verifying User Address Space Isolation...\n");
+    /* 2. Process Isolation & Dual-Space Virtual Address Collision Test */
+    serial_puts("[TEST 2] Verifying Address Space Isolation & Virtual Address Collisions...\n");
     uintptr_t user2_pml4_phys = vmm_create_user_pml4();
     if (user2_pml4_phys == 0) {
         serial_puts("       [FAIL] Failed to allocate second user PML4!\n");
@@ -1403,67 +1407,100 @@ pf_boot_guard_done:
     }
     uint64_t *user2_pml4_virt = (uint64_t *)((uintptr_t)user2_pml4_phys + boot_info.hhdm_offset);
 
-    /* Map a page at user virtual address 0x0000000000400000 (4 MiB) in Space 1 */
-    uintptr_t user_test_phys = pmm_alloc_page();
-    uintptr_t user_virt_addr = 0x0000000000400000ULL;
-    if (user_test_phys == 0 ||
-        vmm_map_page(user_pml4_virt, user_virt_addr, user_test_phys, PTE_PRESENT | PTE_WRITABLE | PTE_USER) != VMM_OK) {
-        serial_puts("       [FAIL] Failed to map user test page in Space 1!\n");
+    /*
+     * Map the SAME user virtual address 0x0000000000400000 (4 MiB) in Space 1 and Space 2
+     * to DIFFERENT physical frames with DIFFERENT initial contents.
+     */
+    uintptr_t frame_a = pmm_alloc_page();
+    uintptr_t frame_b = pmm_alloc_page();
+    uintptr_t shared_user_virt = 0x0000000000400000ULL;
+    if (frame_a == 0 || frame_b == 0) {
+        serial_puts("       [FAIL] Failed to allocate frames for dual-space collision test!\n");
         hcf();
     }
 
-    /* Assert Space 1 has it mapped */
-    if (!vmm_is_mapped(user_pml4_virt, user_virt_addr)) {
-        serial_puts("       [FAIL] Space 1 does not report user page mapped!\n");
+    if (vmm_map_page(user_pml4_virt, shared_user_virt, frame_a, PTE_PRESENT | PTE_WRITABLE | PTE_USER) != VMM_OK ||
+        vmm_map_page(user2_pml4_virt, shared_user_virt, frame_b, PTE_PRESENT | PTE_WRITABLE | PTE_USER) != VMM_OK) {
+        serial_puts("       [FAIL] Failed to map shared virtual address in Space 1 and Space 2!\n");
         hcf();
     }
-    serial_puts("       [PASS] User page mapped in Space 1 (0x400000)\n");
 
-    /* Assert Space 2 does NOT have it mapped */
-    if (vmm_is_mapped(user2_pml4_virt, user_virt_addr)) {
-        serial_puts("       [FAIL] Space 2 leaked mapping from Space 1!\n");
+    /* Initialize distinct patterns via HHDM before switching */
+    *(volatile uint64_t *)((uintptr_t)frame_a + boot_info.hhdm_offset) = 0xAAAAAAAAAAAAAAAAULL;
+    *(volatile uint64_t *)((uintptr_t)frame_b + boot_info.hhdm_offset) = 0xBBBBBBBBBBBBBBBBULL;
+
+    /* Master Kernel PML4 must NOT have this address mapped */
+    if (vmm_is_mapped(master_kernel_pml4, shared_user_virt)) {
+        serial_puts("       [FAIL] Kernel PML4 leaked user mapping!\n");
         hcf();
     }
-    serial_puts("       [PASS] Space 2 is isolated from Space 1 (0x400000 unmapped in Space 2)\n");
+    serial_puts("       [PASS] Virtual address 0x400000 absent in Master Kernel PML4\n");
 
-    /* Assert Master Kernel PML4 does NOT have it mapped */
-    if (vmm_is_mapped(master_kernel_pml4, user_virt_addr)) {
-        serial_puts("       [FAIL] Kernel PML4 leaked user mapping from Space 1!\n");
-        hcf();
-    }
-    serial_puts("       [PASS] Master Kernel PML4 is isolated from Space 1 (0x400000 unmapped in Kernel)\n");
+    /*
+     * Manual CR3 switching sequence executed with preemption/interrupts disabled (cli).
+     * Tests that each space resolves 0x400000 to its own private frame and contents.
+     */
+    __asm__ volatile("cli" ::: "memory");
 
-    /* 3. Execution & CR3 Context Switch Test */
-    serial_puts("[TEST 3] Switching CR3 to User Address Space (Space 1)...\n");
     vmm_switch_pml4(user_pml4_phys);
-
-    /* Verify kernel code, stack, heap, and serial work without issue */
-    uint64_t current_cr3 = vmm_get_current_pml4();
-    if (current_cr3 != user_pml4_phys) {
-        serial_puts("       [FAIL] CR3 mismatch after switch! Expected: ");
-        serial_print_hex(user_pml4_phys);
-        serial_puts(" Got: ");
-        serial_print_hex(current_cr3);
-        serial_puts("\n");
+    volatile uint64_t *user_alias_ptr = (volatile uint64_t *)shared_user_virt;
+    if (*user_alias_ptr != 0xAAAAAAAAAAAAAAAAULL) {
+        vmm_switch_pml4(master_kernel_pml4_phys);
+        serial_puts("       [FAIL] Space 1 did not read pattern A!\n");
         hcf();
     }
 
-    /* Write to user virtual address and read back while Space 1 CR3 is loaded */
-    volatile uint64_t *user_ptr = (volatile uint64_t *)user_virt_addr;
-    *user_ptr = 0xCAFE12345678BABEULL;
-    if (*user_ptr != 0xCAFE12345678BABEULL) {
-        serial_puts("       [FAIL] Data readback mismatch in user space!\n");
+    vmm_switch_pml4(user2_pml4_phys);
+    if (*user_alias_ptr != 0xBBBBBBBBBBBBBBBBULL) {
+        vmm_switch_pml4(master_kernel_pml4_phys);
+        serial_puts("       [FAIL] Space 2 did not read pattern B!\n");
         hcf();
     }
-    serial_puts("       [PASS] User address space write/readback verified under Space 1 CR3\n");
 
-    /* Switch back to Master Kernel CR3 */
+    /* Switch back to Space 1 and verify pattern A survived unmodified */
+    vmm_switch_pml4(user_pml4_phys);
+    if (*user_alias_ptr != 0xAAAAAAAAAAAAAAAAULL) {
+        vmm_switch_pml4(master_kernel_pml4_phys);
+        serial_puts("       [FAIL] Pattern A was corrupted after Space 2 switch!\n");
+        hcf();
+    }
+
+    /* Restore Master Kernel CR3 */
     vmm_switch_pml4(master_kernel_pml4_phys);
-    if (vmm_get_current_pml4() != master_kernel_pml4_phys) {
-        serial_puts("       [FAIL] Failed to restore Kernel CR3!\n");
+    serial_puts("       [PASS] Same virtual address in Space 1 & Space 2 maps to separate frames and survives switching\n");
+
+    /* 3. Invariant & Self-Destruction Guards */
+    serial_puts("[TEST 3] Validating Address Space Destruction Guards & Higher-Half Protection...\n");
+    if (vmm_destroy_pml4(master_kernel_pml4_phys, true) == VMM_OK) {
+        serial_puts("       [FAIL] Kernel PML4 destruction unexpectedly succeeded!\n");
         hcf();
     }
-    serial_puts("       [PASS] Master Kernel CR3 restored cleanly\n");
+    serial_puts("       [PASS] Master Kernel PML4 destruction blocked\n");
+
+    /* Active root destruction rejection */
+    vmm_switch_pml4(user_pml4_phys);
+    if (vmm_destroy_pml4(user_pml4_phys, true) == VMM_OK) {
+        vmm_switch_pml4(master_kernel_pml4_phys);
+        serial_puts("       [FAIL] Active user root destruction unexpectedly succeeded!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Active user root destruction blocked\n");
+    vmm_switch_pml4(master_kernel_pml4_phys);
+
+    /* Invariant: Higher-half address cannot be mapped with PTE_USER */
+    if (vmm_map_page(user_pml4_virt, 0xFFFFFFFF80000000ULL, frame_a, PTE_PRESENT | PTE_USER) == VMM_OK) {
+        serial_puts("       [FAIL] Mapping higher-half kernel address with PTE_USER unexpectedly succeeded!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Higher-half mapping with PTE_USER rejected\n");
+
+    /* Teardown Space 1 & Space 2 with free_user_frames = true */
+    if (vmm_destroy_pml4(user_pml4_phys, true) != VMM_OK ||
+        vmm_destroy_pml4(user2_pml4_phys, true) != VMM_OK) {
+        serial_puts("       [FAIL] Destruction of Space 1 or Space 2 failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Space 1 & Space 2 destroyed cleanly with user data frames freed\n");
 
     /* 4. TSS RSP0 Privilege Stack Transition Hook */
     serial_puts("[TEST 4] Validating TSS RSP0 Privilege Stack Transition Hook...\n");
@@ -1475,91 +1512,147 @@ pf_boot_guard_done:
     }
     serial_puts("       [PASS] TSS RSP0 configured and verified (Ring 3 -> Ring 0 stack hook ready)\n");
 
-    /* 5. Invariant & Self-Destruction Guards */
-    serial_puts("[TEST 5] Validating Address Space Destruction Guards...\n");
-    if (vmm_destroy_pml4(master_kernel_pml4_phys, true) == VMM_OK) {
-        serial_puts("       [FAIL] Kernel PML4 destruction unexpectedly succeeded!\n");
+    /* 5. free_user_frames = false Contract Test */
+    serial_puts("[TEST 5] Testing Teardown with Caller-Owned Frames (free_user_frames = false)...\n");
+    size_t tables_before_retain = vmm_get_allocated_table_frames();
+    size_t pages_before_retain  = pmm_get_free_pages();
+
+    uintptr_t space_retain = vmm_create_user_pml4();
+    uint64_t *space_retain_virt = (uint64_t *)((uintptr_t)space_retain + boot_info.hhdm_offset);
+    uintptr_t caller_frame = pmm_alloc_page();
+    if (caller_frame == 0 || space_retain == 0) {
+        serial_puts("       [FAIL] Allocation failed in retain test!\n");
         hcf();
     }
-    serial_puts("       [PASS] Kernel PML4 destruction blocked\n");
 
-    vmm_switch_pml4(user2_pml4_phys);
-    if (vmm_destroy_pml4(user2_pml4_phys, true) == VMM_OK) {
-        serial_puts("       [FAIL] Active CR3 destruction unexpectedly succeeded!\n");
+    /* Write marker into caller frame */
+    *(volatile uint64_t *)((uintptr_t)caller_frame + boot_info.hhdm_offset) = 0xFEEDC0FFEE001122ULL;
+    vmm_map_page(space_retain_virt, 0x0000000000400000ULL, caller_frame, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+
+    /* Destroy with free_user_frames = false: intermediate tables and root are freed, but caller frame is NOT */
+    if (vmm_destroy_pml4(space_retain, false) != VMM_OK) {
+        serial_puts("       [FAIL] vmm_destroy_pml4(..., false) failed!\n");
         hcf();
     }
-    serial_puts("       [PASS] Active CR3 destruction blocked\n");
-    vmm_switch_pml4(master_kernel_pml4_phys);
 
-    /* Teardown Space 1 & Space 2 */
-    if (vmm_destroy_pml4(user_pml4_phys, true) != VMM_OK ||
-        vmm_destroy_pml4(user2_pml4_phys, true) != VMM_OK) {
-        serial_puts("       [FAIL] Destruction of test spaces failed!\n");
+    if (vmm_get_allocated_table_frames() != tables_before_retain) {
+        serial_puts("       [FAIL] Allocated table count mismatch in retain test!\n");
         hcf();
     }
-    serial_puts("       [PASS] Test spaces destroyed cleanly\n");
+    serial_puts("       [PASS] Page-table frames reclaimed while caller retains data frame\n");
 
-    /* 6. Multi-Level Recursive Teardown & Zero Memory Leak Audit */
-    serial_puts("[TEST 6] Multi-Level Sparse Teardown & Zero Memory Leak Audit...\n");
+    /* Verify caller frame memory still contains the intact marker */
+    if (*(volatile uint64_t *)((uintptr_t)caller_frame + boot_info.hhdm_offset) != 0xFEEDC0FFEE001122ULL) {
+        serial_puts("       [FAIL] Caller-owned data frame corrupted!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Caller-owned data frame remained intact after teardown\n");
+
+    /* Caller now manually frees the retained frame */
+    pmm_free_page(caller_frame);
+    if (pmm_get_free_pages() != pages_before_retain) {
+        serial_puts("       [FAIL] Frame balance mismatch after manual caller free!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Caller manual frame release restored exact physical page count\n");
+
+    /* 6. Structural Pre-Validation & Huge-Page Rejection Test */
+    serial_puts("[TEST 6] Testing Structural Pre-Validation (Reject Unsupported Huge Pages)...\n");
+    uintptr_t space_huge = vmm_create_user_pml4();
+    uint64_t *space_huge_virt = (uint64_t *)((uintptr_t)space_huge + boot_info.hhdm_offset);
+
+    /* Synthesize an intermediate PDPT entry with PTE_HUGE */
+    uintptr_t fake_pdpt = pmm_alloc_page();
+    uint64_t *fake_pdpt_virt = (uint64_t *)((uintptr_t)fake_pdpt + boot_info.hhdm_offset);
+    memset(fake_pdpt_virt, 0, PAGE_SIZE);
+    fake_pdpt_virt[0] = 0x10000000ULL | PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_HUGE; /* 1 GiB huge page */
+    space_huge_virt[0] = fake_pdpt | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+
+    /* Pre-validation must detect PTE_HUGE and abort BEFORE freeing */
+    int huge_destroy_res = vmm_destroy_pml4(space_huge, true);
+    if (huge_destroy_res != VMM_ERR_INVALID_ADDR) {
+        serial_puts("       [FAIL] Pre-validation failed to reject unsupported huge page!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Unsupported huge-page structure cleanly rejected during pre-validation\n");
+
+    /* Clean up synthesized test tables */
+    space_huge_virt[0] = 0;
+    pmm_free_page(fake_pdpt);
+    pmm_free_page(space_huge);
+
+    /* 7. Multi-Level Sparse Teardown & Repeated Cycles Leak Audit */
+    serial_puts("[TEST 7] Multi-Boundary Sparse Mappings & 10-Cycle Teardown Audit...\n");
     size_t baseline_free_pages = pmm_get_free_pages();
-    size_t baseline_retained_tables = vmm_get_retained_table_frames();
+    size_t baseline_allocated_tables = vmm_get_allocated_table_frames();
 
-    uintptr_t space_c = vmm_create_user_pml4();
-    if (space_c == 0) {
-        serial_puts("       [FAIL] Failed to allocate user space C!\n");
-        hcf();
-    }
-    uint64_t *space_c_virt = (uint64_t *)((uintptr_t)space_c + boot_info.hhdm_offset);
+    for (int cycle = 1; cycle <= 10; cycle++) {
+        uintptr_t cycle_pml4 = vmm_create_user_pml4();
+        if (cycle_pml4 == 0) {
+            serial_puts("       [FAIL] Failed to allocate PML4 during cycle test!\n");
+            hcf();
+        }
+        uint64_t *cycle_pml4_virt = (uint64_t *)((uintptr_t)cycle_pml4 + boot_info.hhdm_offset);
 
-    /* Map pages across 3 completely distinct PML4 entries:
-     * - PML4 entry 0:   0x0000000000400000ULL (4 MiB)
-     * - PML4 entry 1:   0x0000008000000000ULL (512 GiB)
-     * - PML4 entry 255: 0x00007FFFF0000000ULL (Near user ceiling)
-     */
-    uintptr_t frame1 = pmm_alloc_page();
-    uintptr_t frame2 = pmm_alloc_page();
-    uintptr_t frame3 = pmm_alloc_page();
-    if (frame1 == 0 || frame2 == 0 || frame3 == 0) {
-        serial_puts("       [FAIL] Failed to allocate frames for space C!\n");
-        hcf();
-    }
+        /* Map 3 sparse pages across 2 MiB, 1 GiB, and PML4 boundaries */
+        uintptr_t f1 = pmm_alloc_page();
+        uintptr_t f2 = pmm_alloc_page();
+        uintptr_t f3 = pmm_alloc_page();
+        if (f1 == 0 || f2 == 0 || f3 == 0) {
+            serial_puts("       [FAIL] Frame allocation failed during cycle test!\n");
+            hcf();
+        }
 
-    if (vmm_map_page(space_c_virt, 0x0000000000400000ULL, frame1, PTE_PRESENT | PTE_WRITABLE | PTE_USER) != VMM_OK ||
-        vmm_map_page(space_c_virt, 0x0000008000000000ULL, frame2, PTE_PRESENT | PTE_WRITABLE | PTE_USER) != VMM_OK ||
-        vmm_map_page(space_c_virt, 0x00007FFFF0000000ULL, frame3, PTE_PRESENT | PTE_WRITABLE | PTE_USER) != VMM_OK) {
-        serial_puts("       [FAIL] Failed to map sparse pages in space C!\n");
-        hcf();
-    }
+        vmm_map_page(cycle_pml4_virt, 0x0000000000400000ULL, f1, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+        vmm_map_page(cycle_pml4_virt, 0x0000008000000000ULL, f2, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+        vmm_map_page(cycle_pml4_virt, 0x00007FFFF0000000ULL, f3, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
 
-    /* Teardown Space C with user frame reclamation */
-    int destroy_res = vmm_destroy_pml4(space_c, true);
-    if (destroy_res != VMM_OK) {
-        serial_puts("       [FAIL] Failed to destroy multi-level user space C!\n");
-        hcf();
+        if (vmm_destroy_pml4(cycle_pml4, true) != VMM_OK) {
+            serial_puts("       [FAIL] Cycle teardown failed!\n");
+            hcf();
+        }
     }
 
     size_t final_free_pages = pmm_get_free_pages();
-    size_t final_retained_tables = vmm_get_retained_table_frames();
+    size_t final_allocated_tables = vmm_get_allocated_table_frames();
 
-    if (final_retained_tables != baseline_retained_tables) {
-        serial_puts("       [FAIL] Retained tables leaked! Expected: ");
-        serial_print_dec(baseline_retained_tables);
+    if (final_allocated_tables != baseline_allocated_tables) {
+        serial_puts("       [FAIL] Allocated tables leaked across 10 cycles! Expected: ");
+        serial_print_dec(baseline_allocated_tables);
         serial_puts(" Got: ");
-        serial_print_dec(final_retained_tables);
+        serial_print_dec(final_allocated_tables);
         serial_puts("\n");
         hcf();
     }
-    serial_puts("       [PASS] All intermediate page tables (PT, PD, PDPT) & root PML4 reclaimed (delta: 0)\n");
+    serial_puts("       [PASS] All intermediate page tables & roots reclaimed across 10 cycles (delta: 0)\n");
 
     if (final_free_pages != baseline_free_pages) {
-        serial_puts("       [FAIL] Physical frames leaked! Expected: ");
+        serial_puts("       [FAIL] Physical frames leaked across 10 cycles! Expected: ");
         serial_print_dec(baseline_free_pages);
         serial_puts(" Got: ");
         serial_print_dec(final_free_pages);
         serial_puts("\n");
         hcf();
     }
-    serial_puts("       [PASS] All user physical frames returned to PMM (delta: 0 frames leaked)\n");
+    serial_puts("       [PASS] All user physical frames returned to PMM across 10 cycles (delta: 0 frames leaked)\n");
+
+    /* 8. Kernel Mapping Integrity Verification */
+    serial_puts("[TEST 8] Verifying Master Kernel Mappings Integrity Post-Teardown...\n");
+    if (!vmm_is_mapped(master_kernel_pml4, (uintptr_t)__text_start) ||
+        !vmm_is_mapped(master_kernel_pml4, (uintptr_t)__rodata_start) ||
+        !vmm_is_mapped(master_kernel_pml4, (uintptr_t)__data_start) ||
+        !vmm_is_mapped(master_kernel_pml4, 0xFFFFFFFFB0000000ULL) /* Heap */ ||
+        !vmm_is_mapped(master_kernel_pml4, boot_info.hhdm_offset + 0x100000) /* HHDM */) {
+        serial_puts("       [FAIL] Kernel mappings corrupted by user address space teardowns!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Kernel .text, .rodata, .data, heap, and HHDM intact after teardowns\n");
+
+    if (!heap_verify_integrity()) {
+        serial_puts("       [FAIL] Heap integrity walk failed after address space operations!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Dynamic kernel heap integrity walk passed\n");
 
     serial_puts("[ OK ] Phase 7 (Checkpoint 0) completed successfully!\n\n");
 

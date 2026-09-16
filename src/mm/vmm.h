@@ -27,15 +27,29 @@
 
 /* VMM Public API
  *
- * ADDRESS SPACE OWNERSHIP & LIFECYCLE:
- * - Higher-Half (PML4 entries 256..511): Kernel space. Globally owned and shared.
- *   Process address spaces mirror these entries directly to share kernel mappings.
- *   These entries are NEVER modified, traversed, or freed during address-space destruction.
- * - Lower-Half (PML4 entries 0..255): User space. Privately owned by each process.
- *   vmm_destroy_pml4() traverses only entries 0..255, reclaiming all intermediate
- *   tables (PT, PD, PDPT) and, if free_user_frames is true, all leaf user frames.
- * - Self-Destruction Invariant: Attempting to destroy kernel_pml4_phys or the
- *   currently loaded CR3 returns VMM_ERR_INVALID_ADDR.
+ * ADDRESS SPACE OWNERSHIP & LIFECYCLE CONTRACTS:
+ * 1. Higher-Half (PML4 entries 256..511):
+ *    - Kernel space (>= 0xFFFF800000000000). Globally owned and shared.
+ *    - Process address spaces mirror these entries directly to share kernel mappings.
+ *    - Higher-half entries are NEVER modified, traversed, or freed during address-space destruction.
+ *    - Attempting to map any higher-half address with PTE_USER is rejected (VMM_ERR_INVALID_ADDR).
+ *    - All required kernel PML4 entries are established statically during vmm_init().
+ * 2. Lower-Half (PML4 entries 0..255):
+ *    - User space (< 0x0000800000000000). Privately owned by each process.
+ *    - Private page-table frames must NEVER be shared between user spaces.
+ *    - Restricted to standard 4 KiB user page mappings (PTE_HUGE is unsupported in user space).
+ * 3. Data Frame Ownership (free_user_frames):
+ *    - When free_user_frames == true: Every mapped lower-half data frame must be exclusively
+ *      owned by this address space and mapped exactly once. Teardown frees each frame to PMM.
+ *    - When free_user_frames == false: Callers retain responsibility for data frames.
+ *      Teardown reclaims only intermediate tables (PT, PD, PDPT) and the root PML4 frame.
+ *    - PTE_USER describes access permissions, not memory ownership.
+ * 4. Structural Pre-Validation:
+ *    - Before freeing any tables, vmm_destroy_pml4() verifies the structure is supported.
+ *      If unsupported huge pages (PTE_HUGE) or malformed entries are found, destruction is rejected.
+ * 5. Self-Destruction Guard:
+ *    - Attempting to destroy kernel_pml4_phys or the currently active CR3 (normalized)
+ *      returns VMM_ERR_INVALID_ADDR.
  */
 void      vmm_init(boot_info_t *boot_info);
 uintptr_t vmm_create_pml4(void);
@@ -49,6 +63,7 @@ void      vmm_switch_pml4(uintptr_t pml4_phys);
 uintptr_t vmm_get_kernel_pml4(void);
 uint64_t *vmm_get_kernel_pml4_virt(void);
 uintptr_t vmm_get_current_pml4(void);
-size_t    vmm_get_retained_table_frames(void);
+size_t    vmm_get_allocated_table_frames(void);
+size_t    vmm_get_retained_table_frames(void); /* Backward-compatible alias */
 
 #endif /* FORTRESS_VMM_H */

@@ -34,7 +34,7 @@ static inline bool is_canonical_address(uintptr_t addr) {
     return (top == 0) || (top == 0x1FFFF);
 }
 
-static size_t     g_vmm_retained_tables = 0;
+static size_t     g_vmm_allocated_table_frames = 0;
 static spinlock_t g_vmm_lock = {0};
 
 static uint64_t *get_or_create_table(uint64_t *parent_table, size_t index, uint64_t flags) {
@@ -55,7 +55,7 @@ static uint64_t *get_or_create_table(uint64_t *parent_table, size_t index, uint6
         return NULL; /* Out of physical memory */
     }
 
-    g_vmm_retained_tables++;
+    g_vmm_allocated_table_frames++;
     uint64_t *new_table_virt = (uint64_t *)phys_to_virt(new_table_phys);
     memset(new_table_virt, 0, PAGE_SIZE);
 
@@ -72,7 +72,7 @@ uintptr_t vmm_create_pml4(void) {
         return 0;
     }
 
-    g_vmm_retained_tables++;
+    g_vmm_allocated_table_frames++;
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
     memset(pml4_virt, 0, PAGE_SIZE);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
@@ -87,7 +87,7 @@ uintptr_t vmm_create_user_pml4(void) {
         return 0;
     }
 
-    g_vmm_retained_tables++;
+    g_vmm_allocated_table_frames++;
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
 
     /* 1. Clear lower half (user space, PML4 entries 0..255) */
@@ -116,11 +116,11 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
         return VMM_ERR_INVALID_ADDR;
     }
 
-    /* Safety Guard: Never destroy master kernel PML4 or currently active CR3 */
+    /* Safety Guard: Never destroy master kernel PML4 or currently active normalized CR3 */
     if (pml4_phys == kernel_pml4_phys) {
         return VMM_ERR_INVALID_ADDR;
     }
-    if (pml4_phys == vmm_get_current_pml4()) {
+    if (pml4_phys == (vmm_get_current_pml4() & PTE_ADDR_MASK)) {
         return VMM_ERR_INVALID_ADDR;
     }
 
@@ -128,47 +128,56 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
 
     /*
-     * Traverse ONLY lower half (user space, PML4 entries 0..255).
-     * Entries 256..511 are shared kernel mappings and must NEVER be freed!
+     * PASS 1: Pre-Validation.
+     * Ensure the lower half contains only supported 4 KiB structures.
+     * Reject unsupported huge-page entries (PTE_HUGE) BEFORE freeing any frames
+     * to prevent leaving a partially destroyed or corrupt address space.
      */
     for (size_t i = 0; i < 256; i++) {
-        if (!(pml4_virt[i] & PTE_PRESENT)) {
-            continue;
-        }
+        if (!(pml4_virt[i] & PTE_PRESENT)) continue;
 
         uintptr_t pdpt_phys = pml4_virt[i] & PTE_ADDR_MASK;
         uint64_t *pdpt_virt = (uint64_t *)phys_to_virt(pdpt_phys);
 
         for (size_t j = 0; j < 512; j++) {
-            if (!(pdpt_virt[j] & PTE_PRESENT)) {
-                continue;
-            }
-
-            /* Handle 1 GiB huge page if present */
+            if (!(pdpt_virt[j] & PTE_PRESENT)) continue;
             if (pdpt_virt[j] & PTE_HUGE) {
-                if (free_user_frames) {
-                    pmm_free_page(pdpt_virt[j] & PTE_ADDR_MASK);
-                }
-                pdpt_virt[j] = 0;
-                continue;
+                spin_unlock_irqrestore(&g_vmm_lock, rflags);
+                return VMM_ERR_INVALID_ADDR; /* 1 GiB huge page unsupported in user space */
             }
 
             uintptr_t pd_phys = pdpt_virt[j] & PTE_ADDR_MASK;
             uint64_t *pd_virt = (uint64_t *)phys_to_virt(pd_phys);
 
             for (size_t k = 0; k < 512; k++) {
-                if (!(pd_virt[k] & PTE_PRESENT)) {
-                    continue;
-                }
-
-                /* Handle 2 MiB huge page if present */
+                if (!(pd_virt[k] & PTE_PRESENT)) continue;
                 if (pd_virt[k] & PTE_HUGE) {
-                    if (free_user_frames) {
-                        pmm_free_page(pd_virt[k] & PTE_ADDR_MASK);
-                    }
-                    pd_virt[k] = 0;
-                    continue;
+                    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+                    return VMM_ERR_INVALID_ADDR; /* 2 MiB huge page unsupported in user space */
                 }
+            }
+        }
+    }
+
+    /*
+     * PASS 2: Safe Destruction Pass.
+     * Traverse ONLY lower half (user space, PML4 entries 0..255).
+     * Entries 256..511 are shared kernel mappings and must NEVER be freed!
+     */
+    for (size_t i = 0; i < 256; i++) {
+        if (!(pml4_virt[i] & PTE_PRESENT)) continue;
+
+        uintptr_t pdpt_phys = pml4_virt[i] & PTE_ADDR_MASK;
+        uint64_t *pdpt_virt = (uint64_t *)phys_to_virt(pdpt_phys);
+
+        for (size_t j = 0; j < 512; j++) {
+            if (!(pdpt_virt[j] & PTE_PRESENT)) continue;
+
+            uintptr_t pd_phys = pdpt_virt[j] & PTE_ADDR_MASK;
+            uint64_t *pd_virt = (uint64_t *)phys_to_virt(pd_phys);
+
+            for (size_t k = 0; k < 512; k++) {
+                if (!(pd_virt[k] & PTE_PRESENT)) continue;
 
                 uintptr_t pt_phys = pd_virt[k] & PTE_ADDR_MASK;
                 uint64_t *pt_virt = (uint64_t *)phys_to_virt(pt_phys);
@@ -176,6 +185,7 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
                 for (size_t l = 0; l < 512; l++) {
                     if (pt_virt[l] & PTE_PRESENT) {
                         if (free_user_frames) {
+                            /* Exclusive ownership contract: free singly-owned user data frame */
                             pmm_free_page(pt_virt[l] & PTE_ADDR_MASK);
                         }
                         pt_virt[l] = 0;
@@ -184,30 +194,29 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
 
                 /* Free Level 1 PT frame */
                 pmm_free_page(pt_phys);
-                g_vmm_retained_tables--;
+                g_vmm_allocated_table_frames--;
                 pd_virt[k] = 0;
             }
 
             /* Free Level 2 PD frame */
             pmm_free_page(pd_phys);
-            g_vmm_retained_tables--;
+            g_vmm_allocated_table_frames--;
             pdpt_virt[j] = 0;
         }
 
         /* Free Level 3 PDPT frame */
         pmm_free_page(pdpt_phys);
-        g_vmm_retained_tables--;
+        g_vmm_allocated_table_frames--;
         pml4_virt[i] = 0;
     }
 
     /* Free root Level 4 PML4 frame */
     pmm_free_page(pml4_phys);
-    g_vmm_retained_tables--;
+    g_vmm_allocated_table_frames--;
 
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return VMM_OK;
 }
-
 
 static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
     if (!pml4_virt) return VMM_ERR_INVALID_ADDR;
@@ -215,6 +224,11 @@ static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintp
         return VMM_ERR_INVALID_ADDR;
     }
     if (!is_canonical_address(virt_addr)) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+
+    /* Invariant: Reject user privilege in higher-half kernel space */
+    if ((flags & PTE_USER) && virt_addr >= 0xFFFF800000000000ULL) {
         return VMM_ERR_INVALID_ADDR;
     }
 
@@ -362,11 +376,15 @@ uint64_t *vmm_get_kernel_pml4_virt(void) {
     return (uint64_t *)phys_to_virt(kernel_pml4_phys);
 }
 
-size_t vmm_get_retained_table_frames(void) {
+size_t vmm_get_allocated_table_frames(void) {
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    size_t res = g_vmm_retained_tables;
+    size_t res = g_vmm_allocated_table_frames;
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return res;
+}
+
+size_t vmm_get_retained_table_frames(void) {
+    return vmm_get_allocated_table_frames();
 }
 
 /* Helper to assert that essential boot mappings succeed without ignoring errors */
