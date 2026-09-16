@@ -1,558 +1,324 @@
 # FortressOS - AI Agent & Developer Architecture Guide
 
-Welcome to **FortressOS**, a modern, bare-metal, 64-bit operating system kernel targeting `x86_64` UEFI hardware utilizing the modern **Limine Boot Protocol** (v7/v8 specification).
+## 1. Read This First
 
-This document serves as the single source of truth for AI agents (and human systems programmers) interacting with, extending, and maintaining this codebase.
+Before editing, read [§4 invariants](#4-coding-standards-and-invariants), the
+subsystem's public header, and the matching [§7 recipe](#7-how-to-add).
+Read [§9 protected contracts](#9-do-not-touch-without-discussion) before changing
+boot, synchronization, address-space ownership or test isolation.
 
----
+| Change touches | Read next |
+| --- | --- |
+| Locking, scheduling, blocking | L1–L4, S3; [spinlock.h](src/include/spinlock.h), [thread.h](src/kernel/thread.h) |
+| Syscalls or user pointers | S1–S4; [syscall.h](src/kernel/syscall.h), [vmm.h](src/mm/vmm.h); §7.1 |
+| Interrupts or input | I1–I3; [idt.h](src/arch/x86_64/idt.h), [ioapic.h](src/drivers/ioapic.h); §7.2 |
+| Storage or VFS | M1–M4; [block.h](src/drivers/block.h), [vfs.h](src/fs/vfs.h), [ext2.h](src/fs/ext2.h); §7.3–7.4 |
+| Tests or user programs | [Makefile](Makefile), §3 and §7.5–7.6 |
+| Hardware assumptions or workarounds | [§8 evidence](#8-hardware-facts-and-verification-boundaries), then the driver |
 
-## 1. Project Vision & Architecture
+Use `rg` / `rg --files` to locate implementations and callers. Trace indirect
+calls too; a textual search alone does not establish locking or IRQ safety.
+This guide states contracts; headers/code define implemented APIs. If they
+conflict, identify the discrepancy before changing behavior or claiming support.
 
-### High-Level Architecture
-- **Target Architecture:** `x86_64` (AMD64 / Intel 64).
-- **Target Platform:** Modern UEFI firmware via Limine bootloader (with fallback support for BIOS).
-- **Boot Protocol:** Limine protocol (Base Revision 3 / v8.x).
-- **Memory Model:** Higher-half kernel mapped at `0xffffffff80000000`. Limine provides a Higher Half Direct Map (HHDM) allowing direct access to all physical memory offset by `hhdm_request.response->offset`.
-- **Toolchain Paradigm:** Strictly freestanding C11 and NASM x86_64 assembly. No C standard runtime (`-nostdlib`, `-ffreestanding`).
+## 2. Project Overview and Current Work
 
-### Core Design Principles
-1. **Zero Undefined Behavior & Predictable Execution:** Memory structures, page tables, and hardware registers must be explicitly typed, aligned, and bounded.
-2. **Strict Freestanding Environment:** Never include hosted libc headers (`<stdio.h>`, `<stdlib.h>`, `<string.h>`). Freestanding types are declared in `types.h` and compiler built-ins.
-3. **Headless & Diagnostic First:** Early diagnostics are emitted to 16550 UART COM1 (`0x3F8`) serial output before and during framebuffer setup.
-4. **Modularity & Layered Isolation:** Hardware abstractions (UART, GDT, IDT, PMM, VMM, APIC) must reside in isolated drivers/subsystems with explicit public APIs.
+FortressOS is a freestanding C11/NASM x86_64 kernel using Limine v8, base revision 3,
+with UEFI and BIOS boot. Kernel virtual base: `0xffffffff80000000`; HHDM offset
+comes from boot metadata. Hardware subsystems have explicit, separate APIs.
+Early COM1 and framebuffer diagnostics must work before the heap is available.
 
----
+History lives in [ROADMAP.md](ROADMAP.md); qualifications and technical debt in
+[ARCH_REVIEW.md](ARCH_REVIEW.md). Keep new implementation instructions here,
+checkpoint history there, and verification claims tied to actual evidence.
 
-## 2. Directory Structure
+| Checkpoint | Status / acceptance |
+| --- | --- |
+| Latest recorded completion: 9C.5 | Power/reset and US/AZERTY switching implemented (`9a3c4b4`); `make test-power` exercises QEMU power commands. Dell 5590 manual verification confirmed working ACPI S5 shutdown, reboot, and US/AZERTY layout switching. |
+| 9C.3 / 9C.4 shell | Blocking keyboard/serial input and Ring 3 shell; BIOS/UEFI tests and Dell 5590 manual interaction recorded. Minimal editor remains pending. |
+| Next: finish 9C.4 editor | Read a file and modify an in-memory buffer in Ring 3; no disk-write claim. |
+| Next: 9D writable ext2 | Explicitly selected disposable image: create/write/reopen files and verify contents after reboot. |
+| Later: accounts and installation | Define identity/permission enforcement and installer target selection; accept with persistent account setup and a launched application. Not implemented yet. |
+
+## 3. Build, Run, Debug and Verify
+
+Run Linux tools in WSL `Ubuntu-24.04` at `/mnt/c/Sources/FortressOS` (or a Linux checkout).
+Prerequisites: GCC/binutils, NASM, make, xorriso, git, QEMU x86, OVMF,
+Python 3, e2fsprogs; GDB for interactive debugging. No hosted runtime in the OS.
+
+```bash
+sudo apt-get install -y build-essential nasm xorriso qemu-system-x86 ovmf git curl e2fsprogs python3 gdb
+make                         # bin/fortress.elf, bin/initramfs.tar, bin/fortress.iso
+make run                     # QEMU q35, 2 GiB, COM1, paired OVMF when available
+make run-bios                # Legacy BIOS
+make debug                  # Frozen QEMU, GDB port 1234
+gdb bin/fortress.elf -ex "target remote :1234" -ex "break _start" -ex "continue"
+```
+
+From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directory).
+`make clean` removes build/ISO outputs; `make distclean` also removes downloaded
+Limine/OVMF. Use only when needed. `make` fetches missing Limine dependencies.
+
+| Target | Scope / evidence |
+| --- | --- |
+| `make test-input` | Host ASan/UBSan: decoder, modifiers and bounded FIFO |
+| `make test-console` | Host ASan/UBSan: pixel output, wrapping, scrolling and bounds |
+| `make test-ext2` | Host ASan/UBSan: actual ext2/VFS, malformed images, I/O/OOM paths |
+| `make test-storage` | BIOS/UEFI GPT/ext2, Ring 3 reads, allocation-set audits; `build/storage-*.log` |
+| `make test-shell` | BIOS/UEFI IRQ1/IRQ4 interaction, sleeping readers, restart counts; also UEFI 8 GiB without COM1 |
+| `make test-nmi` | 5 exact syscall boundaries × 4 rounds × 2 firmware modes; `build/nmi-*.json` and `.log` |
+| `make test-boot-diagnostics` | UEFI 8 GiB, no COM1; progress to PCI discovery and framebuffer capture |
+| `make test-power` | QEMU shutdown/reboot command tests; inspect script for firmware coverage |
+
+Choose tests relevant to the change, then required integration coverage. Report
+commands actually run and their limits; an existing test target is not a new pass.
+QEMU storage tests use disposable fixtures/snapshots; never point raw-write tests
+at a real disk. `build/nvme_raw.img` and `build/nvme_gpt.img` serve different tests.
+
+## 4. Coding Standards and Invariants
+
+### Freestanding and ABI rules
+
+- Kernel/user code: project headers or compiler freestanding headers only;
+  no hosted `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<unistd.h>` or `<sys/...>`.
+  Host tools/tests are separate and may use their host runtime.
+- Keep Makefile strict warnings (`-Wall -Wextra -Werror`), freestanding flags,
+  `-mno-red-zone`, and disabled x87/MMX/SSE. SIMD state management is not implemented.
+  Kernel uses `-fPIE`; the standalone C shell overrides with `-fno-pie`.
+- NASM: `[bits 64]`, `default rel`. SysV C arguments: RDI, RSI, RDX, RCX, R8, R9;
+  preserve RBX/RBP/R12–R15/RSP; align RSP to 16 bytes **before** every call.
+- Inline assembly needs correct operands/clobbers and `volatile` for hardware
+  effects; include `"memory"` when required. Use explicit fixed-width types,
+  alignment and overflow-safe bounds before dereferencing or computing offsets.
+
+### Locking and lifecycle
+
+| ID | Binding invariant | How to check |
+| --- | --- | --- |
+| L1 | Acquire increasing ranks: sched **or** ext2 (1) → heap (2) → VMM (3) → PMM (4) → console (5). Sched/ext2 cannot nest. Release LIFO. | Trace nested calls from `spin_lock_irqsave`; verify `SPINLOCK_RANKED` values and `spin_debug_selftest`. Violations panic/deadlock, not warnings. |
+| L2 | No spinlock across `switch_context`. Keep IRQs disabled through target TSS.RSP0, CR3 and stack exchange until saved incoming flags restore. | Check every switch site for `spin_unlock_noirq` and `spin_debug_assert_unheld`; exercise preemption and sleeping reads. |
+| L3 | Locks are non-recursive; `_unlocked` helpers avoid reacquisition. Saved 64-bit RFLAGS belongs to the caller. Tracking is bootstrap-CPU-only. | Inspect public-to-public calls, error exits and saved flags; never share an IRQ-save token. |
+| L4 | Detach dead tasks under sched lock; free outside it, on another stack and CR3. | Inspect `sched_reap_dead` assertions and all unwind paths; run lifecycle/reclamation tests. |
+
+### Syscalls and user memory
+
+| ID | Binding invariant | How to check |
+| --- | --- | --- |
+| S1 | ABI: RAX number/result; RDI/RSI/RDX/R10/R8/R9 arguments. Fast entry clobbers RCX/R11. Normal dispatch writes `frame->rax`; return uses the existing stub. | Compare `syscall.h`, dispatch and Ring 3 callers; preserve assembly frame layout. |
+| S2 | Validate every user range via `vmm_validate_user_range` before access; kernel-written buffers require `write_req=true`. Bound sizes and strings. | Trace every pointer, page crossing and arithmetic operation; test unmapped, read-only, kernel, zero-length and overflow cases. |
+| S3 | Fast entry masks IF and switches from user RSP before any stack access. Blocking stdin **does not enable IF before sleeping**: predicate, BLOCKED insertion and dequeue are IRQ-excluded; sleep releases all locks before switching; wake rechecks predicate. | Follow `input_read` → `sched_wait_until` / `sched_wake_all`; verify IRQ state on resume and a blocked reader with advancing timer. Do not invent a `wait_queue_sleep` API. |
+| S4 | Validate canonical lower-half RIP/RSP (strictly below `0x0000800000000000`, at least one page); sanitize return RFLAGS before SYSRET. | Keep IOPL/NT/TF/VM stripped and IF/bit 1 forced; run hostile-state cases and `make test-nmi` for entry/exit changes. Canonical does not mean mapped. |
+
+### Interrupts and deferred work
+
+| ID | Binding invariant | How to check |
+| --- | --- | --- |
+| I1 | Ordinary device IRQ handlers do bounded draining/queue publication/wakeup only: no allocation, blocking, context switch or normal logging. Timer preemption is a deliberate exception. | Trace handler callees; `sched_wake_all` queues work but does not switch. Compare keyboard/UART handlers with `apic_timer_handler`. |
+| I2 | Exactly one EOI owner. `idt_register_hardware_handler` makes the dispatcher own EOI. Timer uses `idt_register_handler` and issues EOI **before** scheduling. Spurious APIC IRQ gets no EOI. | Check registration **and** handler together; search `lapic_eoi` and dispatcher `g_needs_eoi`. Never convert timer registration blindly. |
+| I3 | ISR publication precedes wakeup; processing occurs in a runnable thread. Timer/idle schedules it; no universal deferred-work-at-next-tick API exists. NMI remains lockless/non-scheduling and uses raw UART. | Trace producer/consumer and wake races; inspect NMI transitive calls for subsystem locks or console output. |
+
+### Memory, ownership and storage boundaries
+
+| ID | Binding invariant | How to check |
+| --- | --- | --- |
+| M1 | Never dereference raw physical addresses. Use runtime HHDM translation for mapped RAM; map MMIO explicitly with the driver's required cache/NX flags. | Trace physical/virtual conversion and mapping extent; selective HHDM skips reserved MMIO holes. |
+| M2 | HHDM offset is boot-provided, never a constant. Use kernel-owned boot metadata after handoff. | Inspect `boot_info` and `vmm_phys_to_virt`; reject missing Limine responses before reading fields. |
+| M3 | VMM owns tables; caller owns data frames. Destroy refuses kernel/active CR3, never frees shared higher half; `free_user_frames=true` requires exclusively owned, singly mapped leaf frames. | Read `vmm.h` ownership/prevalidation contract; check rollback and exact allocation-set/table audits, not just equal counts. |
+| M4 | Bound all block/partition/parser arithmetic and hardware waits; publish only fully validated state. Never free DMA memory while a controller may still use it. | Inspect lower-layer dispatch on rejected requests, NVMe quiesce/quarantine, GPT staging, ext2 malformed-input tests and rollback. |
+
+Thread stacks have a 4 KiB lower guard and 16 KiB usable space. A guard catches
+contiguous downward exhaustion, not every large frame skip. Ring 0 #PF (IST=0)
+uses active RSP; Ring 3 privilege transitions use TSS.RSP0. #DF uses IST1 and NMI
+uses IST2. These diagnostic stacks do not guarantee survival if their mappings,
+TSS, IDT, handler or diagnostic path is damaged. Keep that qualification.
+
+## 5. File Map
 
 ```
 FortressOS/
 ├── .gitignore               # Ignores build outputs, ISOs, and external bootloader binaries
-├── AGENTS.md                # System context, coding conventions, and architectural roadmap
+├── AGENTS.md                # Task routing, binding invariants, recipes and evidence
+├── ROADMAP.md               # Detailed checkpoint history and archived verification notes
+├── ARCH_REVIEW.md           # Architecture audit, limits and technical debt
+├── scripts/                 # Host/QEMU verification and disposable disk fixtures
+├── tests/                   # Host tests and mocks
 ├── Makefile                 # Automated compilation, bootloader fetch, ISO packaging, and QEMU run
 ├── limine.conf              # Limine bootloader configuration menu and kernel path
 ├── linker.ld                # x86_64 higher-half linker script (4KiB section alignment, Limine markers)
-└── src/
-    ├── arch/
-    │   └── x86_64/
-    │       ├── boot.asm         # Early assembly crt0 entry stub, aligns stack, invokes kmain
-    │       ├── gdt.h            # GDT, TSS, and segment selector structures
-    │       ├── apic.c           # Local APIC and APIC Timer initialization & MMIO access
-    │       ├── apic.h           # LAPIC registers, offsets, MSRs, and timer prototypes
-    │       ├── context.asm      # Low-level switch_context and thread_trampoline assembly stubs
-    │       ├── gdt.c            # GDT setup and TSS IST1 initialization
-    │       ├── gdt_flush.asm    # lgdt, segment reloads (CS/DS/SS/ES), and ltr
-    │       ├── idt.h            # IDT descriptor, interrupt_frame_t, and IRQ handler registry
-    │       ├── idt.c            # IDT table setup, exception diagnostics, and IRQ dispatch
-    │       ├── interrupts.asm   # 32 assembly exception stubs and register preservation
-    │       ├── msr.h            # MSR read/write inlines, register addresses, and bit flags
-    │       └── syscall_entry.asm# Low-level fast syscall entry stub and sysretq dispatcher
-    ├── drivers/
-    │   ├── acpi.c           # RSDP, RSDT/XSDT validation, and MADT parsing
-    │   ├── acpi.h           # ACPI table headers, RSDP, and MADT structure definitions
-    │   ├── block.c          # Abstract block device subsystem & device registry
-    │   ├── block.h          # block_dev_t descriptor, sector operations, and registration API
-    │   ├── ioapic.c         # I/O APIC discovery, MMIO registers, and redirection table masking
-    │   ├── ioapic.h         # I/O APIC controller definitions and routing prototypes
-    │   ├── nvme.c           # PCIe NVMe storage driver, Admin/IO queues, dynamic doorbells
-    │   ├── nvme.h           # NVMe register structures, SQE/CQE, and sector read/write/flush API
-    │   ├── pci.c            # PCI configuration access (ECAM MCFG & legacy 0xCF8/0xCFC)
-    │   ├── pci.h            # PCI device descriptors, class codes, and configuration prototypes
-    │   ├── pic.c            # 8259 PIC masking and disable logic
-    │   ├── pic.h            # 8259 PIC port definitions and mask queries
-    │   ├── serial.c         # UART 16550 COM1 port I/O driver (115200 8N1)
-    │   └── serial.h         # Serial driver headers and port I/O inlines (inb, outb, io_wait)
-    ├── fs/
-    │   ├── gpt.c            # GPT partition table parser, Protective MBR, and bounded partition devices
-    │   ├── gpt.h            # GPT header, partition entry structures, and GUID definitions
-    │   ├── tarfs.c          # Read-only USTAR archive parser for initramfs
-    │   ├── tarfs.h          # USTAR tar format headers
-    │   ├── vfs.c            # Virtual File System tree, lookup, file descriptors, and stat/readdir
-    │   └── vfs.h            # VFS node structures, file handle descriptors, and public API
-    ├── include/
-    │   ├── boot_info.h      # Kernel-owned boot information and memory map snapshot
-    │   ├── limine.h         # Official Limine bootloader protocol specification
-    │   ├── string.h         # Freestanding memory and string manipulation prototypes
-    │   └── types.h          # Standard freestanding primitive types (uint8_t, size_t, bool)
-    ├── kernel/
-    │   ├── boot_info.c      # Boot metadata deep-copying and verification
-    │   ├── elf.c            # Strict ELF64 executable validation, mapping, and loading
-    │   ├── elf.h            # ELF64 header, program header, limits, and loader API
-    │   ├── embedded_init.asm# Embedded user init ELF binary blob via incbin
-    │   ├── main.c           # Kernel entry point (kmain), validates Limine tags, memory & FB
-    │   ├── syscall.c        # System call dispatcher, range validation, and handlers
-    │   ├── syscall.h        # System call numbers, ABI register mappings, and error codes
-    │   ├── thread.c         # Cooperative thread scheduler, runqueue, and thread lifecycle
-    │   └── thread.h         # TCB structure, thread_state_t, and scheduler prototypes
-    ├── lib/
-    │   └── string.c         # Freestanding memset, memcpy, memmove, memcmp, strlen
-    ├── mm/
-    │   ├── heap.c           # Dynamic kernel heap allocator with boundary tags and free list
-    │   ├── heap.h           # Heap public prototypes, block structures, and alignment macros
-    │   ├── pmm.c            # Physical Memory Manager bitmap frame allocator
-    │   ├── pmm.h            # PMM public prototypes, page macros, and metrics
-    │   ├── vmm.c            # Virtual Memory Manager 4-level paging and CR3 management
-    │   └── vmm.h            # VMM public prototypes, PTE flags, and query APIs
-    └── user/
-        ├── init.asm         # Standalone ELF64 user init program (Ring 3 execution test)
-        └── linker.ld        # User-space linker script with 4 KiB page-separated segments
+├── src/
+│   ├── arch/
+│   │   └── x86_64/
+│   │       ├── boot.asm         # Early assembly crt0 entry stub, aligns stack, invokes kmain
+│   │       ├── gdt.h            # GDT, TSS, and segment selector structures
+│   │       ├── apic.c           # Local APIC and APIC Timer initialization & MMIO access
+│   │       ├── apic.h           # LAPIC registers, offsets, MSRs, and timer prototypes
+│   │       ├── context.asm      # Low-level switch_context and thread_trampoline assembly stubs
+│   │       ├── gdt.c            # GDT, TSS RSP0, IST1 (#DF) and IST2 (NMI)
+│   │       ├── gdt_flush.asm    # lgdt, segment reloads (CS/DS/SS/ES), and ltr
+│   │       ├── idt.h            # IDT descriptor, interrupt_frame_t, and IRQ handler registry
+│   │       ├── idt.c            # IDT table setup, exception diagnostics, and IRQ dispatch
+│   │       ├── interrupts.asm   # Exception/IRQ stubs and register preservation
+│   │       ├── msr.h            # MSR read/write inlines, register addresses, and bit flags
+│   │       └── syscall_entry.asm# Low-level fast syscall entry stub and sysretq dispatcher
+│   ├── drivers/
+│   │   ├── acpi.c           # RSDP, RSDT/XSDT validation, and MADT parsing
+│   │   ├── acpi.h           # ACPI table headers, RSDP, and MADT structure definitions
+│   │   ├── block.c          # Abstract block device subsystem & device registry
+│   │   ├── block.h          # block_dev_t descriptor, sector operations, and registration API
+│   │   ├── console.c/.h     # Cached framebuffer text console
+│   │   ├── font.h           # Embedded 8x16 font
+│   │   ├── input.c/.h       # IRQ input and blocking stdin
+│   │   ├── input_buffer.h   # Bounded FIFO
+│   │   ├── keyboard.c/.h    # Translated scancodes and layout tables
+│   │   ├── power.c/.h       # ACPI shutdown and reset fallbacks
+│   │   ├── ioapic.c         # I/O APIC discovery, MMIO registers, and redirection table masking
+│   │   ├── ioapic.h         # I/O APIC controller definitions and routing prototypes
+│   │   ├── nvme.c           # PCIe NVMe storage driver, Admin/IO queues, dynamic doorbells
+│   │   ├── nvme.h           # NVMe register structures, SQE/CQE, and sector read/write/flush API
+│   │   ├── pci.c            # PCI configuration access (ECAM MCFG & legacy 0xCF8/0xCFC)
+│   │   ├── pci.h            # PCI device descriptors, class codes, and configuration prototypes
+│   │   ├── pic.c            # 8259 PIC masking and disable logic
+│   │   ├── pic.h            # 8259 PIC port definitions and mask queries
+│   │   ├── serial.c         # UART 16550 COM1 port I/O driver (115200 8N1)
+│   │   └── serial.h         # Serial driver headers and port I/O inlines (inb, outb, io_wait)
+│   ├── fs/
+│   │   ├── ext2.c/.h        # Read-only ext2 mount and file operations
+│   │   ├── gpt.c            # GPT partition table parser, Protective MBR, and bounded partition devices
+│   │   ├── gpt.h            # GPT header, partition entry structures, and GUID definitions
+│   │   ├── tarfs.c          # Read-only USTAR archive parser for initramfs
+│   │   ├── tarfs.h          # USTAR tar format headers
+│   │   ├── vfs.c            # Virtual File System tree, lookup, file descriptors, and stat/readdir
+│   │   └── vfs.h            # VFS node structures, file handle descriptors, and public API
+│   ├── include/
+│   │   ├── boot_info.h      # Kernel-owned boot information and memory map snapshot
+│   │   ├── limine.h         # Official Limine bootloader protocol specification
+│   │   ├── spinlock.h       # IRQ-save locks and rank contract
+│   │   ├── string.h         # Freestanding memory and string manipulation prototypes
+│   │   └── types.h          # Standard freestanding primitive types (uint8_t, size_t, bool)
+│   ├── kernel/
+│   │   ├── boot_info.c      # Boot metadata deep-copying and verification
+│   │   ├── elf.c            # Strict ELF64 executable validation, mapping, and loading
+│   │   ├── elf.h            # ELF64 header, program header, limits, and loader API
+│   │   ├── embedded_init.asm# Embedded user init ELF binary blob via incbin
+│   │   ├── main.c           # Kernel entry point (kmain), validates Limine tags, memory & FB
+│   │   ├── spinlock.c       # Bootstrap-CPU lock discipline checks
+│   │   ├── syscall.c        # System call dispatcher, range validation, and handlers
+│   │   ├── syscall.h        # System call numbers, ABI register mappings, and error codes
+│   │   ├── thread.c         # Preemptive scheduler, run/wait queues and process lifecycle
+│   │   └── thread.h         # TCB structure, thread_state_t, and scheduler prototypes
+│   ├── lib/
+│   │   ├── crc32.c/.h       # GPT CRC32
+│   │   └── string.c         # Freestanding memset, memcpy, memmove, memcmp, strlen
+│   └── mm/
+│       ├── heap.c           # Dynamic kernel heap allocator with boundary tags and free list
+│       ├── heap.h           # Heap public prototypes, block structures, and alignment macros
+│       ├── pmm.c            # Physical Memory Manager bitmap frame allocator
+│       ├── pmm.h            # PMM public prototypes, page macros, and metrics
+│       ├── vmm.c            # Virtual Memory Manager 4-level paging and CR3 management
+│       └── vmm.h            # VMM public prototypes, PTE flags, and query APIs
+└── user/                    # Standalone programs, outside src/
+    ├── init.asm             # Standalone ELF64 user init program (Ring 3 execution test)
+    ├── hello.asm            # Standalone hello program
+    ├── shell.c              # Interactive Ring 3 shell
+    ├── shell_start.asm      # Shell entry and ABI alignment
+    ├── shell.ld             # Shell ELF segment layout
+    └── linker.ld            # Assembly test programs, page-separated segments
 ```
 
----
+## 6. Limine Notes
 
-## 3. Build, Run, and Debug Instructions
+- Base revision 3; verify `LIMINE_BASE_REVISION_SUPPORTED` and non-NULL responses.
+- Keep requests between `.requests_start_marker` / `.requests_end_marker` and
+  linker `KEEP` directives. Read [boot_info.h](src/include/boot_info.h) for snapshots.
+- Initramfs module backing memory stays reserved (`KERNEL_AND_MODULES`); tarfs
+  nodes reference it directly. Copying metadata does not copy module contents.
 
-### Prerequisites
-- **Toolchain:** `gcc`, `ld` (GNU Binutils), `nasm`, `make`. ext2 fixtures require `e2fsprogs` and `python3`.
-- **Packaging:** `xorriso` (for ISO creation), `git` (for fetching Limine bootloader).
-- **Virtualization:** `qemu-system-x86_64`, `ovmf` (UEFI firmware).
+## 7. How to Add
 
-*On Ubuntu / Debian / WSL2:*
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential nasm xorriso qemu-system-x86 ovmf git curl e2fsprogs python3
-```
+### 7.1 A syscall
 
-### Build Commands
-- **Build Kernel & Bootable ISO:**
-  ```bash
-  make
-  ```
-  Produces `bin/fortress.elf` and `bin/fortress.iso`. Automatically clones Limine binary dependencies if missing.
+Canonical examples: `SYS_STAT` in [syscall.c](src/kernel/syscall.c); blocking `SYS_READ` in [input.c](src/drivers/input.c).
 
-- **Clean Build Artifacts:**
-  ```bash
-  make clean
-  ```
+1. Read `syscall.h`, caller code and S1–S4; choose an unused number and update ABI docs.
+2. Add the handler and dispatch case; define argument bounds and negative errors.
+3. Validate every user buffer/string before access; request writable pages for outputs.
+4. For blocking, follow `input_read`/`sched_wait_until` exactly; preserve IF=0 through atomic sleep preparation. Do not add `sti` to the entry/exit window.
+5. Return through dispatch/`frame->rax`; terminal process/power operations use their existing non-returning lifecycle.
+6. Add Ring 3 success/error/boundary coverage in a suitable test program; extend the appropriate BIOS/UEFI runner (often `test-shell`).
+7. Audit acquired resources on failure/exit; use PMM bitmap/table/mapping and heap checks where ownership changes. Run NMI tests if entry/exit changes.
 
-- **Full Clean (including downloaded Limine/OVMF):**
-  ```bash
-  make distclean
-  ```
+### 7.2 An IRQ handler
 
-### Run Commands
-- **Run in QEMU (UEFI Mode - Default):**
-  ```bash
-  make run
-  ```
-  Launches QEMU configured with `-M q35 -m 2G -serial stdio` and OVMF firmware. Early serial output appears directly in the host terminal.
+Canonical example: `keyboard_irq` / `serial_irq` in [input.c](src/drivers/input.c); timer is the explicit I1/I2 exception.
 
-- **Run in QEMU (Legacy BIOS Mode):**
-  ```bash
-  make run-bios
-  ```
+1. Read `idt.h`, `ioapic.h`, device source and I1–I3; choose a nonconflicting vector.
+2. Initialize bounded device buffers and register the handler before enabling delivery.
+3. Use `idt_register_hardware_handler` for ordinary device IRQs; omit EOI in its body.
+4. Route ISA through `ioapic_route_isa` to respect MADT overrides; serialize IOAPIC access with IRQs disabled as its header requires.
+5. Drain a bounded batch, publish queue/flag state, wake waiters; defer substantial work to a thread. No printing/allocating/switching in the device handler.
+6. Test real device delivery, repeated events, overflow and sleep/wake races; verify timer progress and firmware coverage. Direct calls alone do not prove routing.
 
-### Debugging with GDB
-To debug kernel initialization step-by-step:
-1. Launch QEMU frozen at startup waiting for a GDB connection:
-   ```bash
-   make debug
-   ```
-2. In a separate terminal, launch GDB and connect to QEMU's GDB stub:
-   ```bash
-   gdb bin/fortress.elf -ex "target remote :1234" -ex "break _start" -ex "continue"
-   ```
+### 7.3 A block device
 
----
+Canonical examples: [block.c](src/drivers/block.c), [nvme.c](src/drivers/nvme.c), bounded partition adapter in [gpt.c](src/fs/gpt.c).
 
-## 4. Coding Standards for AI Agents & Contributors
+1. Read `block.h`, M1/M4 and the driver lifecycle before allocating MMIO/DMA resources.
+2. Provide actual `sector_size`/`sector_count`; check multiplication/addition overflow before capacity/range use.
+3. Implement bounded sector callbacks and applicable flush; read-only devices leave write/flush NULL.
+4. Validate partition-relative bounds before parent dispatch; validate all entries before registry publication.
+5. Register only fully initialized devices; unregister and unwind on failure, respecting references and DMA quiescence/quarantine.
+6. Test first/last/out-of-range I/O, failure cleanup and registry state using mocks/disposable images; never enable raw patterns on hardware or GPT fixtures.
 
-### Freestanding C Rules
-1. **Never `#include` Hosted Headers:**
-   - Permitted: Compiler built-in freestanding headers (`<stdint.h>`, `<stddef.h>`, `<stdbool.h>`, `<stdarg.h>`) or project-local headers (`"types.h"`).
-   - Prohibited: `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<unistd.h>`, `<sys/...>`.
-2. **Compiler Flags Enforcement:**
-   Every source file is compiled with strict flags:
-   `-ffreestanding -fno-stack-protector -fno-stack-check -fno-lto -fPIE -m64 -march=x86-64 -mno-80387 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -Wall -Wextra -Werror`
-   - `-mno-red-zone`: Mandatory for x86_64 kernels so interrupts do not clobber the 128-byte red zone below `RSP`.
-   - `-mno-sse -mno-sse2`: Disables SIMD instructions until the kernel explicitly enables FXSAVE/SSE in CR0/CR4.
-3. **Explicit Pointer Arithmetic & Physical/Virtual Conversions:**
-   - Physical memory addresses must NEVER be dereferenced directly.
-   - When accessing physical memory, translate using Limine's HHDM offset:
-     ```c
-     void *virt_addr = (void *)((uintptr_t)phys_addr + hhdm_offset);
-     ```
-   - Always cast pointer arithmetic to `uintptr_t` or `uint8_t *`.
-4. **Inline Assembly Conventions:**
-   - Use GNU inline assembly with explicit volatile attributes, output/input operands, and `"memory"` clobbers where register state or memory side effects occur.
-   - Example:
-     ```c
-     static inline void outb(uint16_t port, uint8_t val) {
-         __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port) : "memory");
-     }
-     ```
-5. **Assembly Stubs (`src/arch/x86_64/`):**
-   - Written in NASM syntax (`[bits 64]`, `default rel`).
-   - Must adhere to the System V AMD64 ABI:
-     - Function arguments passed in: `RDI`, `RSI`, `RDX`, `RCX`, `R8`, `R9`.
-     - Callee-preserved registers: `RBX`, `RSP`, `RBP`, `R12`, `R13`, `R14`, `R15`.
-     - Stack alignment: `RSP` must be 16-byte aligned before any `call` instruction.
-6. **Concurrency & Lock Hierarchy Rules:**
-   - **Non-Recursive Spinlocks**: `spinlock_t` uses atomic test-and-set with interrupt flag (`RFLAGS`) preservation (`spin_lock_irqsave` / `spin_unlock_irqrestore`). They are strictly **non-recursive**; the debug checker rejects recursive acquisition before spinning. Internal `_unlocked` helpers are used across subsystems to avoid self-recursion.
-   - **Strict Hierarchy Order**: Locks must always be acquired in descending order:
-     `g_sched_lock` (L1) -> `g_heap_lock` (L2) -> `g_vmm_lock` (L3) -> `g_pmm_lock` (L4).
-   - **Context Switch Invariant**: No spinlock may EVER remain held across `switch_context()`. Specifically, `g_sched_lock` is explicitly released with `spin_unlock_noirq(&g_sched_lock)` followed by `spin_debug_assert_unheld()` before calling `switch_context()`. However, hardware interrupts MUST remain strictly disabled across `TSS.RSP0`, `CR3`, and the `switch_context` stack exchange until the incoming thread restores its saved `RFLAGS`.
-   - **Reaper Invariant & Detached Deallocation**: Complex cross-subsystem cleanup (`sched_reap_dead()`) decouples dead nodes under lock and cleans them up outside the lock. The reaper strictly asserts that the executing context is not the dead thread, does not use the dead thread's stack slot, and does not run under the dead process's CR3. Finding active CR3 matching a dead process indicates a critical scheduler lifecycle bug and causes an immediate diagnostic panic.
-7. **Stack Guard Page Architecture & Fault Escalation:**
-   - **Linear Growth Scope**: Dedicated thread stacks include a 4 KiB unmapped bottom guard page (`0xFFFFFFFFA0000000ULL`). This catches linear contiguous stack growth. It does not catch frame skips exceeding 4096 bytes without compiler stack-clash probes.
-   - **Double Fault (#DF) Escalation**: In Ring 0 with `IST=0`, Vector 14 (`#PF`) delivers on the active stack pointer `RSP`. Pushing the `#PF` exception frame onto an already-exhausted stack causes a nested fault, which hardware escalates to Vector 8 (`#DF`). Because Vector 8 is bound to `IST1`, execution safely lands on the dedicated 16 KiB emergency IST1 stack for diagnostic panic logging. (Note: IST1 provides an emergency recovery stack for diagnostics; it does not guarantee prevention of every triple fault if the IST1 mapping, TSS, IDT, handler code, or diagnostic path is corrupted. Furthermore, once Ring 3 is entered, interrupts and exceptions crossing privilege levels switch to `TSS.RSP0` rather than using the faulting user stack).
+### 7.4 A VFS node or file operation
 
----
+Canonical examples: [vfs.c](src/fs/vfs.c), [tarfs.c](src/fs/tarfs.c), [ext2.c](src/fs/ext2.c).
 
-## 5. Architectural Roadmap for Future Modules
+1. Read `vfs.h`/filesystem headers: shared `vfs_node_t` differs from `file_t` with its own open offset/reference count.
+2. Define backing-store lifetime, node ownership and supported operations; respect ext2's boot-lifetime read-only mount contract.
+3. Bound paths, names, directory records and read sizes; return the existing errors/EOF semantics.
+4. Wire callbacks and per-process descriptors without sharing offsets between independent opens.
+5. Close/unwind references on failure and exit; keep `fd_close_all`/reaper cleanup valid.
+6. Test dual opens, short reads/EOF, directory iteration, malformed backing data and Ring 3 writable-output validation. Use host tests plus relevant boot tests.
 
-Future tasks should follow this sequenced implementation order:
+### 7.5 A test / make target
 
-```
-[Phase 1] Serial & Early Logging (COMPLETE)
-    │
-    ▼
-[Phase 2] GDT & IDT (COMPLETE)
-    │   ├── 64-bit GDT with Kernel CS (0x08), Kernel DS (0x10), TSS (Selector 0x28)
-    │   ├── Dedicated 16 KiB IST1 stack linked to Double Fault (#DF, Vector 8)
-    │   ├── IDT with 256 64-bit Interrupt Gates (0x8E) and uniform assembly ISR stubs
-    │   └── Rich serial panic dumps (Page Fault CR2 decode, register context)
-    │
-    ▼
-[Phase 3] Physical Memory Manager (PMM) (COMPLETE)
-    │   ├── Parse Limine memory map (usable RAM & bootloader reclaimable)
-    │   ├── Frame Allocator (compact 64 KiB Bitmap placed via HHDM at 0x100000)
-    │   ├── pmm_alloc_page(), pmm_free_page(), pmm_alloc_pages(), pmm_free_pages()
-    │   └── Memory statistics and self-tests (distinct pages, contiguous, reclaim)
-    │
-    ▼
-[Phase 3.5] Foundation Hardening & Freestanding Lib (COMPLETE)
-    │   ├── Freestanding string.h / string.c (memset, memcpy, memmove, memcmp, strlen)
-    │   ├── Complete 256 IDT gate coverage with distinct vector numbers and unexpected IRQ logging
-    │   ├── PMM audit (64 KiB bitmap storage at 0x100000 reserved, frame 0 guarded, 2 GiB capacity verified)
-    │   ├── Automated Makefile dependency tracking (-MMD -MP) and -g debug symbols
-    │   └── Framebuffer 32bpp format verification & bounds clipping in main.c
-    │
-    ▼
-[Phase 4A] Virtual Memory Manager (VMM) & 4-Level Paging (COMPLETE)
-    │   ├── x86_64 4-Level Paging (PML4, PDPT, PD, PT) structure management
-    │   ├── Ownership Rules: VMM strictly owns page-table frames; callers own mapped physical frames
-    │   ├── Mapping & Query API with canonical address validation (vmm_map, vmm_unmap, vmm_is_mapped, vmm_get_physical_address)
-    │   ├── Stack Guard Pages: Deterministic unmapped 4 KiB guard pages directly below boot stack and IST1 stack (#PF trap)
-    │   ├── Selective HHDM mapping (RAM-only; multi-GiB MMIO holes skipped) & explicit uncacheable Framebuffer MMIO
-    │   ├── Parent-table user permission propagation and stack-safe NX execution enforcement testing
-    │   ├── Intermediate Table Lifecycle: Kernel VMM retains allocated intermediate tables on unmapping to prevent churn;
-    │   │   complete address-space destruction (vmm_destroy_pml4) & refcounted table reclamation are explicitly deferred to Phase 7
-    │   └── Switching to independent kernel CR3, TLB invalidation, and NX / RW permission tests
-    │
-    ▼
-[Phase 4B] Kernel Heap Allocator (COMPLETE)
-    │   ├── 16-byte aligned boundary tags (header & footer) with O(1) bidirectional coalescing
-    │   ├── Embedded doubly linked free list with first-fit search and block splitting
-    │   ├── Dynamic virtual memory expansion (512 MiB window at 0xFFFFFFFFB0000000)
-    │   ├── Non-contiguous physical frame allocation via PMM with transactional rollback on exhaustion
-    │   ├── Full API semantics: kmalloc, kfree, kcalloc (overflow check), krealloc (data preservation)
-    │   ├── Diagnostic panic traps on invalid metadata or detected double-free
-    │   └── Comprehensive verification suite: alignment, splitting, both-neighbour coalescing, stress test
-    │
-    ▼
-[Phase 5] ACPI Discovery & APIC Timer (COMPLETE)
-    │   ├── Limine RSDP query, RSDT/XSDT validation, and MADT parsing (LAPIC, CPUs, I/O APICs, ISOs)
-    │   ├── Mask legacy 8259 PIC (0x21=0xFF, 0xA1=0xFF) and setup dedicated APIC spurious interrupt handler
-    │   ├── Local APIC (LAPIC) MMIO uncacheable page mapping (PTE_PCD|PTE_PWT|PTE_NX), SVR=0x1FF, and TPR=0
-    │   ├── Periodic APIC Timer PIT-assisted calibration (100 Hz), dynamic IRQ dispatch, and EOI verification
-    │   └── I/O APIC discovery, GSI validation and initial mask readback; external device delivery remains unverified
-    │
-    ▼
-[Phase 6] Kernel Threads & Scheduling
-    │   ├── Checkpoint 1: Cooperative Multitasking (COMPLETE)
-    │   │   ├── Thread Control Block (TCB) with offset-0 rsp, tid, state, and 16 KiB stacks
-    │   │   ├── Low-level switch_context (System V callee-preserved regs & RFLAGS atomicity)
-    │   │   ├── thread_trampoline with register parameter threading (R12=entry, R13=arg)
-    │   │   ├── Voluntary yielding (thread_yield), clean exit (thread_exit), and dead thread reaper
-    │   │   └── Verification: Two worker threads ping-ponging 10 rounds, clean return to kmain, heap audit
-    │   ├── Checkpoint 2: Preemptive Round-Robin Scheduler (COMPLETE)
-    │   │   ├── Timer interrupt preemption driven by 100 Hz APIC Timer ticks (20 ms quantum)
-    │   │   ├── Scheduler spinlocks with interrupt flags save/restore (spin_lock_irqsave / spin_unlock_irqrestore)
-    │   │   ├── Dedicated idle thread (sti; hlt loop) executed when runqueue is empty
-    │   │   ├── Single-owner preemptive EOI acknowledgement before switching stacks to prevent APIC priority lockout
-    │   │   └── Verification: Two CPU-bound worker threads with zero manual yields advance concurrently across samples
-    │   └── Checkpoint 3 / Hardening Review: Safety, Synchronization & Dedicated Stacks (COMPLETE)
-    │       ├── EOI Lifecycle: Eliminated global flags; LAPIC EOI acknowledged directly on timer entry
-    │       ├── Subsystem Synchronization: spinlock_t with IRQ save/restore guarding Heap, PMM, and VMM
-    │       ├── Page-Backed Thread Stacks: Dedicated virtual window (0xFFFFFFFFA0000000) with unmapped 4 KiB guard pages
-    │       ├── Lock Hierarchy: Lockless detached reaping avoiding nested scheduler-heap/VMM inversions
-    │       └── Lifecycle Stress Test: 36 concurrent threads with dynamic heap alloc/free, stack recycling, and heap audit
-    │
-    ▼
-[Phase 7] User Space & Ring 3 Syscalls (The First Milestone)
-        ├── Checkpoint 0: Process Virtual Address Space Lifecycle & Teardown (COMPLETE)
-        │   ├── User PML4 creation with lower-half zeroing (0..255) and higher-half kernel mirroring (256..511)
-        │   ├── Process isolation: user mappings strictly private and invisible across address spaces & kernel PML4
-        │   ├── TSS RSP0 privilege transition hook (gdt_set_tss_rsp0 / gdt_get_tss_rsp0)
-        │   ├── Recursive multi-level teardown (vmm_destroy_pml4) with intermediate table & user frame reclamation
-        │   ├── Invariant guards: destruction of master kernel PML4 or active CR3 rejected
-        │   └── Zero-leak audit: 100% intermediate table & physical frame recovery verified under UEFI & BIOS
-        ├── Checkpoint 1: Ring 3 Transition via iretq & Trap Hook (COMPLETE)
-        │   ├── User GDT segment validation (Kernel CS 0x08, Kernel DS 0x10, User DS 0x1B, User CS 0x23)
-        │   ├── Dedicated 16 KiB kernel TSS.RSP0 stack arming for privilege transitions (Ring 3 -> Ring 0)
-        │   ├── IDT Vector 0x80 configured as User Interrupt Gate (0xEE, DPL=3)
-        │   ├── Atomic privilege switch via enter_user_mode assembly stub (SS:0x1B, RSP:user_stack, RFLAGS:0x202, CS:0x23, RIP:user_entry)
-        │   ├── Test user payload: stack push/pop, 64-bit arithmetic, int 0x80 syscall trap
-        │   ├── ABI-compliant trap recovery via test_user_mode_helper and isr_exception_handler redirect
-        │   └── Verification: Captured CPL=3 (CS 0x23), RPL=3 (SS 0x1B), verified arithmetic RAX, 100% zero-leak teardown
-        ├── Checkpoint 2: First System Call & Bidirectional Execution (COMPLETE)
-        │   ├── System call ABI (int 0x80): RAX=nr, RDI=fd/arg1, RSI=buf/arg2, RDX=count/arg3, return in RAX
-        │   ├── SYS_WRITE (nr 1) with UART serial driver integration and SYS_EXIT (nr 0)
-        │   ├── Strict user buffer validation (vmm_validate_user_range):
-        │   │   ├── Pointer wrap-around and canonical lower-half (< 0x0000800000000000) bounds checking
-        │   │   ├── 4-level page table walk across all spanned 4 KiB pages verifying PTE_PRESENT and PTE_USER
-        │   │   └── Rejection of non-canonical, kernel addresses, unmapped pages, and oversized buffers (> 16 KiB)
-        │   ├── True bidirectional execution: syscall handler sets frame->rax and iretq resumes user mode in Ring 3
-        │   ├── Preemption isolation: RFLAGS=0x002 (IF=0) during manual address-space test execution
-        │   ├── TSS.RSP0 stack restoration invariant: preserved across transitions and restored before teardown
-        │   └── Verification suite: 8 distinct Ring 3 test assertions (valid write, cross-page mapped buffer,
-        │       cross-page unmapped fault, kernel pointer rejection, oversized buffer, zero-length, invalid fd, clean exit)
-        ├── Checkpoint 3: Embedded ELF64 User Executable Loading (COMPLETE)
-        │   ├── Strict executable format contract: ET_EXEC only (rejects ET_DYN, PIE, and PT_INTERP)
-        │   ├── Strict W^X memory security enforcement: segments with both PF_W and PF_X rejected (ELF_ERR_PERM)
-        │   ├── Overflow-safe arithmetic bounds checking on all offsets, file sizes, memory sizes, and virtual ranges
-        │   ├── Segment overlap, page-zero (vaddr < PAGE_SIZE), and stack/guard collision prevention
-        │   ├── Total mapped pages cap (MAX_ELF_PAGES = 1024) preventing memory exhaustion attacks
-        │   ├── Transactional loading & failure rollback: unmapped frames freed before recursive vmm_destroy_pml4()
-        │   ├── Standalone user ELF compilation pipeline (user/init.asm, user/linker.ld -> build/init.elf -> embedded_init.o)
-        │   ├── User process execution in Ring 3: verified .data initialized value, .bss zeroing & writeability,
-        │   │   SYS_WRITE serial output, and clean termination via SYS_EXIT(77)
-        │   └── Comprehensive negative validation & 5-cycle repeated load/teardown audit with 0 memory leaks
-        ├── Checkpoint 4: General Process Exit & Lifecycle Management (COMPLETE)
-        │   ├── Process Spawning (process_spawn): dedicated user PML4 (CR3), page-backed kernel stack, and user stack
-        │   ├── User Trampoline (user_process_trampoline): drops to Ring 3 with RFLAGS.IF=1 and zeroed register state
-        │   ├── Preemptive Multi-Tasking: timer ticks safely preempt user processes, switching CR3 and TSS.RSP0
-        │   ├── General Process Termination (SYS_EXIT / process_exit): records exit status, transitions to TERMINATED,
-        │   │   and context switches to another runnable context without returning to dead user code
-        │   ├── Safe Deferred Reclamation (Reaper / sched_reap_dead): non-self-destructing cleanup in separate context,
-        │   │   switching away from dead CR3, reclaiming intermediate tables, user frames, kernel stack slots, and TCBs
-        │   └── Comprehensive Verification: 5-cycle repeated preemptive process spawn/exit stress test with 0 memory leaks
-        ├── Acceptance Test: Preemption & Fault Isolation (PASSED IN BIOS & UEFI QEMU)
-        │   ├── Concurrent CPU-Bound User Preemption: Direct evidence of timer-driven preemption (5-6 preemptions per worker,
-        │   │   11-12 timer ticks consumed, 5 switches between runnable workers) with verified exit codes 77 and 88
-        │   ├── Ring 3 Fault Isolation: Deliberate illegal read of supervisor kernel memory (0xFFFFFFFF80000000) caught via #PF
-        │   │   (Vector 14), terminated by CPU exception convention (exit code 142 = 128 + Vector 14) without panicking kernel, while healthy peer finished cleanly
-        │   ├── Reaper Invariants & Safe Reclamation: Zero-delta resource checks in BIOS and UEFI (0 tables, 0 frames, 0 stack slots leaked)
-        │   │   with active CR3/stack collision invariant assertions
-        │   └── Bounded circular exit records (MAX_EXIT_RECORDS=64) with FIFO replacement policy
-        ├── Checkpoint 5: Fast Syscall Hardening via syscall / sysret (COMPLETE)
-        │   ├── Hardware MSR Configuration: IA32_EFER.SCE (bit 0), IA32_STAR (Kernel CS 0x08, User CS 0x23, User SS 0x1B),
-        │   │   IA32_LSTAR (syscall_entry_stub), and IA32_SFMASK (masks IF, TF, DF, and arithmetic flags)
-        │   ├── Return State Hardening & Canonical Policy: Return RIP and RSP bounds-checked strictly against canonical lower-half limits
-        │   │   (PAGE_SIZE <= rip, rsp < 0x0000800000000000ULL) before loading user RSP, mitigating Intel CVE-2012-0217 (#GP in Ring 0).
-        │   │   0x0000800000000000ULL is non-canonical and explicitly rejected. Invalid return state is handled on the kernel stack,
-        │   │   aborting without ever executing sysretq
-        │   ├── RFLAGS Security Sanitization: User flags sanitized before sysretq, stripping IOPL (bits 12-13), NT (bit 14), TF (bit 8),
-        │   │   and VM (bit 17), while forcing IF=1 (0x200) and reserved bit 1 = 1 (0x002)
-        │   ├── Non-Maskable Interrupt (NMI) IST2 Strategy: Vector 2 configured with dedicated 16 KiB emergency stack + 4 KiB guard page
-        │   │   (IST2) in TSS/IDT. Handler is strictly reentrant and lockless, avoiding scheduler and subsystem spinlocks.
-        │   │   (Verified: make test-nmi injects 20 external NMIs per BIOS/UEFI boot at five exact syscall instruction boundaries; checks IST2, saved RIP/RSP, GPRs, unchanged user stack, IRET and SYSRET.)
-        │   ├── User Stack Invariant: syscall_entry_stub performs zero pushes, calls, or writes on the user stack before switching RSP
-        │   ├── Concurrency Contract: g_tss_rsp0 follows scheduled thread; explicitly single-CPU in Phases 1-7, prepared for GS base in SMP
-        │   ├── Syscall ABI Specification: RCX and R11 documented as clobbered by hardware; callee-preserved registers honored
-        │   ├── Dual-Interface Support: Reference int 0x80 preserved; negative parity verified for EFAULT, EINVAL, EBADF, and ENOSYS
-        │   └── Comprehensive Verification Suite:
-        │       ├── Mode 4 functional test passed with exit code 99
-        │       ├── Hostile return test suite: exact non-canonical boundary (0x0000800000000000), mid non-canonical (0x8000000000000000),
-        │       │   canonical kernel space (0xFFFF800000000000 / 0xFFFFFFFF80000000), page-zero (< 0x1000), and RFLAGS sanitization verified
-        │       ├── Exact canonical upper boundary (0x00007FFFFFFFFFF8) acceptance verified
-        │       ├── Preempted concurrent workers (Modes 5 & 6): 120 fast syscalls executed under 100 Hz timer preemption (3 switches across 6 ticks)
-        │       └── 100% zero-leak resource audit under BIOS and UEFI QEMU (0 tables, 0 frames, 0 stack slots)
-        │
-        ▼
-[Phase 8] Virtual File System & Interactive Shell
-    ├── Step 8A: Basic Framebuffer Text Console (COMPLETE)
-    │   ├── Linear 32bpp framebuffer rendering with 8x16 monochrome bitmap font
-    │   ├── Text console primitives: newline (\n), carriage return (\r), backspace (\b), tab (\t), printable ASCII
-    │   ├── RAM-cached character/colour cells, changed-cell redraw and batched scrolling (up to 8 rows)
-    │   ├── Dual output mirroring: serial_putc mirrors to console_putc if console is initialized
-    │   ├── Thread & IRQ-safe synchronization via dedicated spinlock_t g_console_lock (spin_lock_irqsave)
-    │   ├── Tokyo Night theme palette (Foreground: 0x00C0CAF5, Background: 0x001A1B26)
-    │   └── Comprehensive verification: 160x50 character grid, cursor movements, 55-line scroll test, and banner rendering in BIOS and UEFI
-    └── Step 8B: Initramfs, Minimal VFS & File Descriptors (COMPLETE)
-        ├── Limine module request for initramfs.tar (USTAR format) with memory reserved by bootloader
-        ├── Snapshot module metadata (initramfs_vaddr, initramfs_paddr, initramfs_size) and verify magic/checksum
-        ├── Strict read-only USTAR parser rejecting non-USTAR, corrupt checksums, octal overflow, and unsupported types
-        ├── VFS node abstraction (vfs_node_t) separated from open file object (file_t) ensuring independent seek offsets
-        ├── Per-process file descriptor table (fd_table[32]) with O(1) allocation and automated cleanup on exit (fd_close_all)
-        ├── Directory enumeration API (vfs_readdir / sys_readdir) supporting future shell ls
-        ├── Hardened system calls: sys_open, sys_close, sys_read, sys_stat, sys_readdir
-        │   ├── Strict user destination buffer validation (vmm_validate_user_range with write_req = true)
-        │   ├── Proper EOF detection, short reads, zero-length reads, and EBADF / ENOENT / EFAULT returns
-        ├── NMI & Panic Reentrancy: Dedicated lockless serial_raw_* path prevents console spinlock deadlocks
-        ├── Standard archive contents: /bin/init, /bin/hello, /etc/motd, /docs/readme.txt
-        └── Comprehensive verification: VFS hierarchy lookup, directory enumeration, dual open independent offsets,
-            Ring 3 acceptance suite (Mode 7, exit code 88), and 100% zero-leak resource audit under BIOS and UEFI QEMU
-    │
-    ▼
-[Phase 9] Storage Track (NVMe & ext2)
-    ├── Phase 9A: PCI Discovery & MMIO BAR Decoding (COMPLETE)
-    │   ├── PCI configuration access: PCIe ECAM via ACPI MCFG with segment/bus range awareness & legacy 0xCF8/0xCFC fallback
-    │   ├── Non-destructive inspection of firmware-assigned BARs (distinguish 32-bit vs 64-bit Memory & I/O spaces)
-    │   ├── Hardware enumeration: identify Mass Storage (0x01), Non-Volatile Memory (0x08), NVM Express (0x02)
-    │   └── Acceptance Test: Identify QEMU NVMe controller, verify class codes, and decode 64-bit MMIO BAR (PASSED in UEFI & BIOS)
-    ├── Phase 9B.1: NVMe Initialization and Reads (COMPLETE)
-    │   ├── Single-controller, single-namespace, single I/O queue pair with bounded polling
-    │   ├── Contiguous DMA allocation via PMM, PRP entry management, and DMA-buffer lifetime guarantees
-    │   ├── Controller capabilities (CAP), Admin queues (ASQ/ACQ), Identify Controller & Namespace geometry
-    │   ├── Bounded polling command execution with timeout recovery (never free DMA memory while controller active)
-    │   └── Acceptance Test: Identify namespace geometry, read known test sector patterns across LBAs, 70-read wraparound stress test, and out-of-range rejection (PASSED in UEFI & BIOS)
-    ├── Phase 9B.2: Writes and Flush (COMPLETE)
-    │   ├── NVMe Write (`NVME_NVM_OP_WRITE`) and Flush (`NVME_NVM_OP_FLUSH`) synchronous commands on IOSQ 1
-    │   ├── Dynamic doorbell mapping calculation: covers offsets up to `0x1000 + 3 * (4 << CAP.DSTRD) + 4` (Dell Latitude safe)
-    │   ├── Queue limit abstraction: checks `(CAP.MQES + 1) >= 32` as controller capacity limit rather than fixed 2048 requirement
-    │   ├── Timeout & DMA quarantine safety: controller quiesce on error; permanently quarantines DMA memory if quiesce fails
-    │   ├── Raw-sector write isolation: disabled by default on normal boots (`ENABLE_NVME_PERSISTENCE_TEST`) to protect partition tables
-    │   ├── Explicit documentation qualifications:
-    │   │   - Fixed-port poweroff (`outw(0x604, 0x2000)`) is a QEMU test harness mechanism, not general ACPI shutdown for the Latitude 5590.
-    │   │   - A clean QEMU restart demonstrates persistence in that emulator environment, not physical power-loss resilience.
-    │   └── Acceptance Test: Write to disposable disk image, flush, 70-write wraparound test, verify neighbours, restart QEMU, verify 100% 512-byte persistence across reboot (PASSED in UEFI & BIOS)
-    ├── Phase 9C.1: GUID Partition Table (GPT) & Bounded Block Devices (COMPLETE)
-    │   ├── Fixture Separation: isolated raw NVMe persistence disk fixture (`build/nvme_raw.img`) from partitioned GPT fixture (`build/nvme_gpt.img`); gated raw pattern tests via `ENABLE_NVME_RAW_PATTERN_TESTS`
-    │   ├── Bounded Partition-Array Validation: supported entry sizes (128, 256, or 512 bytes), max entry count (1..128), overflow-safe byte limit (64 KiB), disk capacity fit, and non-overlap against headers and usable space prior to allocation
-    │   ├── Exact CRC32 Calculation: computed strictly over `num_partition_entries * sizeof_partition_entry` exact bytes, excluding sector padding
-    │   ├── Deterministic Backup Policy: complete 5-case outcome matrix (Valid/Consistent -> Primary; Invalid/Valid -> in-memory read-only fallback; Valid/Invalid -> degraded-mode Primary; Valid/Inconsistent -> reject ambiguity; Both Invalid -> reject disk)
-    │   ├── All-or-Nothing Staging & Publication: whole-table bounds and pairwise overlap validation in memory before registering partition block devices; read-only callbacks (`write_sector = NULL`, `flush = NULL`)
-    │   ├── Block Device Abstraction: geometry and capacity accessors (`block_get_sector_size`, `block_get_sector_count`, `block_get_capacity_bytes`, `block_read_sector`, `block_unregister_dev`)
-    │   ├── Bounded Block Device Adapter: exposes discovered partitions (e.g. `nvme0n1p1`) with sector translation and strict capacity bounds checking
-    │   └── Acceptance Test Suite:
-    │       - Live NVMe ext2 partition discovery (`GPT_GUID_LINUX_FS`) at LBA 2048..10239 (8192 sectors, 4 MiB)
-    │       - Verified relative LBA 0 read, ext2 superblock magic `0xEF53` at LBA 2, and last sector LBA 8191
-    │       - Strict rejection of reads at capacity boundary (LBA 8192), out-of-bounds (LBA 99999), arithmetic overflow (`UINT64_MAX`), and write/flush attempts
-    │       - Expanded 7-Case Negative Test Suite: N1 (bad primary array fallback to backup in memory), N2 (both invalid rejection), N3 (ambiguity rejection on inconsistent headers), N4 (valid-CRC overlapping partition rejection without publishing), N5 (valid-CRC out-of-range partition rejection without publishing), N6 (oversized entry count rejection), and N7 (isolated parent dispatch: verified rejected reads never reach parent driver)
-    │       - Dynamic kernel heap integrity audit verified with 0 memory leaks (PASSED in UEFI and BIOS via `make test-storage`)
-    ├── Phase 9C.2: Read-Only ext2 Filesystem (COMPLETE)
-    │   ├── Superblock (0xEF53), block groups, inode table, directory traversal, and direct/indirect block reading
-    │   ├── Boot-time /mnt mount, lazy bounded node cache, direct through triple-indirect lookup, sparse reads
-    │   ├── Unsupported feature/geometry rejection, bounded directory records, transactional mount allocation
-    │   ├── ASan/UBSan host tests: 1/2/4 KiB blocks, 512/4096-byte sectors, 128/256-byte inodes, corruption and OOM/I/O errors
-    │   └── BIOS/UEFI: Ring 3 exact file read/print/close, 10 cycles with exact PMM bitmap, mapping fingerprint and heap audits
-    ├── Phase 9C.3: Minimal PS/2 Keyboard & Blocking Input Queue (COMPLETE; Dell input confirmed)
-    │   ├── Bounded 8042 initialization, set 2 selection/query, translated set 1, IRQ1 via I/O APIC
-    │   ├── Ring buffer keyqueue with blocking read (wait queue, not busy poll)
-    │   ├── COM1 RX IRQ4 feeds the same 256-byte FIFO; bounded ISR drains, drop-new overflow
-    │   └── Acceptance: QEMU IRQ1/IRQ4 in BIOS/UEFI; Dell PS/2 typing, help, ls and cat confirmed
-    ├── Phase 9C.4: Ring 3 Shell (COMPLETE; Dell interaction confirmed); Minimal Editor (PENDING)
-    │   ├── /bin/shell from initramfs: help, ls, cat, echo, exit/restart; blocking stdin and user-space line editing
-    │   ├── No history, no tab-completion (deliberately minimal)
-    │   └── Acceptance: read a file into a Ring 3 editor and modify its in-memory buffer
-    ├── Phase 9C.5: Power Management & Keyboard Layout Switching (COMPLETE)
-    │   ├── ACPI S5 shutdown (FADT PM1a/PM1b_CNT and DSDT _S5 package parsing) & emulator ports
-    │   ├── Multi-tier reboot: ACPI reset, 8042 reset pulse, chipset PCI reset (0xCF9), and triple fault
-    │   ├── SYS_REBOOT (reboot/shutdown) and SYS_KBD_LAYOUT syscalls
-    │   └── Ring 3 shell commands: reboot, shutdown, poweroff, and layout (us/azerty)
-    └── Phase 9D: Writable ext2 Filesystem
-        ├── Block/inode allocation, directory entry insertion, file creation and writes
-        └── Acceptance Test: Create and reopen files after reboot (persistent storage)
-```
+Canonical examples: [test_ext2.py](scripts/test_ext2.py), [test_shell.py](scripts/test_shell.py), [test_nmi_transitions.py](scripts/test_nmi_transitions.py).
 
----
+1. Choose host sanitizer coverage for parsers/pure logic, QEMU for CPU/device delivery, manual hardware evidence for physical claims.
+2. Test behavior and failure boundaries using actual subsystem code; label mocks explicitly.
+3. Add a `test-X` Makefile target with real build/fixture dependencies; keep destructive tests explicitly gated.
+4. Bound waits, use disposable/snapshot disks, pair OVMF code/vars, capture logs and always terminate test QEMU.
+5. Assert specific results (not just a boot banner); include resource ownership checks when allocating/reclaiming.
+6. Record exact invocation, result and evidence boundary in the task report/roadmap; update this routing table only if needed.
 
-## 6. Limine Protocol Reference Notes
+### 7.6 A user program in initramfs
 
-- Modern Limine requests are placed in the `.requests` section between `.requests_start_marker` and `.requests_end_marker`.
-- The `linker.ld` must protect these markers with `KEEP(*(.requests_start_marker))` and `KEEP(*(.requests_end_marker))`.
-- Base Revision is set to 3 (`LIMINE_BASE_REVISION(3)`). The kernel verifies support at runtime via `LIMINE_BASE_REVISION_SUPPORTED`.
-- Always check `request.response != NULL` before accessing fields.
+Canonical examples: [shell.c](user/shell.c), [shell_start.asm](user/shell_start.asm), [shell.ld](user/shell.ld), Makefile `USER_SHELL_ELF`.
 
-## Architectural audit and ext2 implementation scope
+1. Place sources under root `user/`, read the syscall ABI, and use freestanding flags with no red zone/SIMD/host runtime.
+2. Provide a correctly aligned entry stub and loader-supported static ELF64 with page-separated permission segments.
+3. Add explicit ELF source/header/linker dependencies and an initramfs archive dependency.
+4. Copy the ELF to staging `/bin/<name>` and regenerate USTAR; preserve strict tar format constraints.
+5. Launch through the existing `process_spawn` lifecycle/test harness. Merely adding `/bin/foo` does not add a shell exec command; no exec syscall exists yet.
+6. Verify Ring 3 execution, syscall results, faults/exit and deferred resource reclamation in BIOS/UEFI.
 
-See `ARCH_REVIEW.md` for implemented checks, supported ext2 format and deferred work.
-`make test-ext2` runs the actual ext2/VFS sources under host ASan/UBSan;
-`make test-storage` verifies the complete boot suite in BIOS and UEFI, saving logs
-in `build/storage-bios.log` and `build/storage-uefi.log`. QEMU uses snapshot disk
-writes; raw-sector pattern tests remain disabled by default.
+## 8. Hardware Facts and Verification Boundaries
 
-Lock ranks increase on acquisition: scheduler/ext2 (1, mutually exclusive),
-heap (2), VMM (3), PMM (4), console (5). Tracking uses bootstrap-CPU storage,
-with IRQs disabled before inspecting it. Release must be LIFO. Saved 64-bit
-RFLAGS belongs to each caller. Diagnostics use raw UART. This is not SMP-ready.
+Preserve measured workarounds and their evidence. Do not remove one merely to
+match a datasheet; investigate discrepancies and record device/firmware/repro.
+Observation, implemented behavior and unverified claims are distinct. Do not
+turn an example or a source-code comment into physical acceptance evidence.
 
-### NMI transition and physical-boot diagnostics
-
-- MADT type 4 NMI records are validated and applied to the bootstrap CPU's
-  LAPIC LINT pins, with processor-ID matching and conflict detection. Undeclared
-  pins stay masked. x2APIC/type-10 NMI routing is not implemented.
-- `make test-nmi` uses QEMU TCG QMP injection plus hardware GDB breakpoints at
-  zero-byte assembly labels. It never patches code, synthesizes INT 2, or widens
-  the transition windows. It verifies 5 boundaries x 4 rounds x 2 firmware modes,
-  then requires the complete boot suite to finish. Evidence: `build/nmi-*.json`
-  and `build/nmi-*.log`. This covers QEMU delivery, not physical NMI injection,
-  nested fault/NMI scenarios or SMP.
-- Framebuffer logging begins before PMM/GDT tests. COM1 loopback failure disables
-  UART output; transmitter waits are bounded so absent hardware cannot hang boot.
-- The current PMM explicitly manages RAM below 2 GiB, reserving higher RAM until
-  allocator/audit capacity is expanded. Its bitmap is selected within managed RAM.
-- `make test-boot-diagnostics`: UEFI, 8 GiB, no COM1, no NVMe fixture; verifies
-  progress to PCI discovery and captures `build/boot-8g-no-uart.png`.
-- Storage fixture assertions run only against QEMU NVMe vendor/device IDs.
-  Both hardware and fixture paths launch /bin/shell after diagnostics. The physical
-  NVMe is still not mounted; /mnt is only available on the QEMU ext2 fixture.
-
-### Boot-console scrolling
-
-The console caches character/colour cells in static RAM (512 x 256 cells,
-1.5 MiB; viewport capped to this grid). Scrolling never reads framebuffer MMIO.
-Only changed cells are rendered, and each scroll advances min(8, max(1, rows/4))
-rows so several subsequent log lines need no screen movement. Output remains
-synchronous and immediately visible, including before PMM/heap initialization.
-Wrapping is deferred until the next printable character; an explicit newline
-following a full-width line advances exactly once.
-
-`make test-console` checks pixel output, colour preservation, scroll batching,
-zero redraws for blank lines, control characters, one-cell screens and padded
-framebuffer bounds under ASan/UBSan. BIOS/UEFI full boot suites also pass.
-
-### Interactive input and shell
-
-`make` includes a separate freestanding C ELF `/bin/shell` in initramfs. Boot
-launches it as a normal Ring 3 process after the acceptance suite. Try:
-
-```
-help
-ls /
-ls /bin
-cat /etc/motd
-cat /docs/readme.txt
-echo hello
-```
-
-`exit` terminates/reaps the process and launches a fresh shell. Files are read-only;
-no editor, command execution/exec, disk installation, accounts or USB HID driver
-is provided by this step. Keyboard layout is Belgian AZERTY (Shift/Caps Lock,
-Backspace, Enter; arrows and function keys ignored, Caps LED not synchronized).
-Line length is bounded to 191 bytes; overflow discards the entire command.
-The console supports erasing across wrapped rows. Serial CR/LF and DEL are
-normalized; echo and line editing occur in user space, not interrupt handlers.
-
-`SYS_READ(0, buffer, count)` checks all user pages for write permission before
-waiting. It returns available bytes as a short read, without waiting for newline.
-A scheduler predicate and BLOCKED-list insertion occur under the scheduler lock
-with IRQs disabled. Producers publish input before waking readers; a resumed
-reader rechecks availability. IRQ exclusion also spans predicate-to-dequeue.
-No lock crosses a context switch, no ISR allocates/logs/switches, and the IDT
-dispatcher owns each keyboard/UART EOI. Blocked tasks remain visible to process
-liveness/wait APIs. This input/scheduler contract is bootstrap-CPU-only; SMP and
-concurrent address-space mutation need further synchronization.
-
-Verification:
-- `make test-input`: actual decoder/FIFO under ASan/UBSan; modifiers, Pause,
-  PrintScreen, extended keys, wraparound and overflow.
-- `make test-shell`: BIOS/UEFI PS/2 events and serial RX through real emulated
-  devices, stdin pointer checks, Backspace/Shift, file commands and error paths,
-  sleeping task/timer progress, descriptors closed, three process restarts with
-  stable physical free-page and stack-slot counts. Logs: `build/shell-*.log`.
-- The same target tests UEFI 8 GiB with COM1 absent and non-fixture NVMe identity,
-  confirming framebuffer `echo hello` and sleeping input on the hardware boot
-  path. Screenshot: `build/shell-keyboard-only.png`. Physical Dell interaction
-  was subsequently confirmed by the user photo described below.
-- Existing BIOS/UEFI storage acceptance and 40 exact-boundary NMI tests pass.
-
-References for the driver/test protocol: Intel EC firmware 8042 documentation
-(https://intel.github.io/ecfw-zephyr/reference/kbchost/index.html), QEMU PS/2
-implementation (https://github.com/qemu/qemu/blob/master/hw/input/ps2.c), and
-QMP input-send-event (https://www.qemu.org/docs/master/interop/qemu-qmp-ref.html).
+| ID | Evidence / constraint |
+| --- | --- |
+| H1 | **Dell 5590 photo:** keyboard input and IRQ1 initialization reported working. **Code:** `keyboard_init` clears translation while selecting/querying set 2, then sets bit 6 to deliver translated set 1. Preserve the sequence; it is not proof of the firmware's initial bit value. |
+| H2 | **Code:** NVMe doorbells use CAP.DSTRD-derived stride (`4 << DSTRD`) and dynamic mapping extent. No physical DSTRD measurement is established here; never hardcode QEMU's value. |
+| H3 | **5590 photo:** ECAM segment 0 buses 0..127, base `0xF0000000`. Parse MCFG, never assume this address/range or apply it to another Dell. No 5530 acceptance record is established here. |
+| H4 | **Code:** default US; `layout azerty` selects an ASCII approximation of Belgian AZERTY. Digits require Shift there; Caps affects letters via Shift XOR Caps, **not** full Shift-Lock. AltGr absent; arrows/function keys ignored; Caps LED unsynchronized. Full physical layout coverage is unverified. |
+| H5 | **Known software limit:** PMM manages low 2 GiB despite 32 GiB installed on the 5590. Higher RAM is unavailable to allocation. |
+| H6 | **Boot policy/photo:** physical NVMe filesystem is not mounted; `/mnt` is the QEMU ext2 fixture. Initramfs file reads prove neither physical disk I/O nor persistence. |
+| H7 | **Code:** ACPI FADT/DSDT S5 and reset fallbacks now exist (`power.c`); this is limited parsing, not a general AML interpreter. Port `0x604` is a QEMU mechanism. Physical ACPI S5 shutdown and multi-tier reset confirmed functional on Dell 5590 |
+| H8 | **Recorded QEMU evidence:** 40 exact-boundary NMIs on IST2; no proof of physical NMI injection, nested-fault completeness, SWAPGS or SMP safety. |
 
 ### Dell Latitude 5590 physical acceptance (2026-09-16)
 
@@ -564,8 +330,21 @@ list, `ls` lists `docs/`, `etc/`, `bin/`, and `cat etc/motd` prints the welcome
 file and returns to the prompt. `cat motd` correctly reports a missing file.
 These are manual observations, supplementing the automated QEMU tests.
 
-The welcome file is from the boot initramfs. The photo explicitly reports that
-QEMU storage fixture tests were skipped: physical NVMe filesystem mounting,
-reads/writes and persistence remain unverified. This photo does not verify
-physical NMI injection, every key/modifier, or blocked-reader resource counters.
-The PMM still manages only the low 2 GiB despite 32 GiB being installed.
+Note that subsequent manual hardware testing verified the layout, reboot, and shutdown commands on the Dell 5590.
+The user reported improved boot-console responsiveness; no timing benchmark was
+collected. Cached text scrolling avoids framebuffer reads; keep early/no-UART
+output working. Detailed console, NMI and input test notes are in [ROADMAP.md](ROADMAP.md).
+
+## 9. Do Not Touch Without Discussion
+Discuss intentional changes to these contracts before implementation unless the
+current task already explicitly authorizes them. Routine edits preserving them
+need no extra approval. Preserve the behavior, not arbitrary lines of code.
+
+- Limine request markers and linker `KEEP` placement.
+- Boot/entry stack alignment, interrupt-frame layout and syscall transition windows.
+- Dependency ordering of subsystem initialization in `kmain`.
+- Lock ranks, no-lock-across-switch rule, IRQ-excluded sleep/wakeup and CR3/stack ownership.
+- Evidence-backed hardware workarounds (including any `empirical: Dell` comments): read their evidence first.
+- The 2 GiB PMM cap without a coordinated allocator/audit/mapping plan.
+- `ENABLE_*` raw-write gates, disposable fixture separation, hardware storage exclusions and DMA quarantine.
+- Shared kernel PML4 ownership, boot-module backing lifetime, and current single-CPU assumptions.

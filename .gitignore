@@ -27,3 +27,6 @@ Thumbs.db
 # Python test-runner caches
 __pycache__/
 *.pyc
+
+# IDE attachments
+.codex-remote-attachments/
