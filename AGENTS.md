@@ -34,7 +34,7 @@ checkpoint history there, and verification claims tied to actual evidence.
 
 | Checkpoint | Status / acceptance |
 | --- | --- |
-| Latest recorded completion: 9C.5 | Power/reset and US/AZERTY switching implemented (`9a3c4b4`); `make test-power` exercises QEMU power commands. Dell 5590 manual verification confirmed working ACPI S5 shutdown, reboot, and US/AZERTY layout switching. |
+| Latest recorded completion: 9C.5 | Power/reset and US/AZERTY switching implemented (`9a3c4b4`); `make test-power` exercises QEMU power commands. Dell 5590 manual verification confirmed working ACPI S5 shutdown, reboot, and partial Belgian AZERTY layout switching (accented keys é/è/ç/à open bug; see H4). |
 | 9C.3 / 9C.4 shell | Blocking keyboard/serial input and Ring 3 shell; BIOS/UEFI tests and Dell 5590 manual interaction recorded. Minimal editor remains pending. |
 | Next: finish 9C.4 editor | Read a file and modify an in-memory buffer in Ring 3; no disk-write claim. |
 | Next: 9D writable ext2 | Explicitly selected disposable image: create/write/reopen files and verify contents after reboot. |
@@ -68,7 +68,7 @@ Limine/OVMF. Use only when needed. `make` fetches missing Limine dependencies.
 | `make test-shell` | BIOS/UEFI IRQ1/IRQ4 interaction, sleeping readers, restart counts; also UEFI 8 GiB without COM1 |
 | `make test-nmi` | 5 exact syscall boundaries × 4 rounds × 2 firmware modes; `build/nmi-*.json` and `.log` |
 | `make test-boot-diagnostics` | UEFI 8 GiB, no COM1; progress to PCI discovery and framebuffer capture |
-| `make test-power` | QEMU shutdown/reboot command tests; inspect script for firmware coverage |
+| `make test-power` | QEMU shutdown/reboot command tests; physical ACPI S5 confirmed separately on Dell 5590 (see §8 H7), not by this target |
 
 Choose tests relevant to the change, then required integration coverage. Report
 commands actually run and their limits; an existing test target is not a new pass.
@@ -105,23 +105,26 @@ at a real disk. `build/nvme_raw.img` and `build/nvme_gpt.img` serve different te
 | ID | Binding invariant | How to check |
 | --- | --- | --- |
 | S1 | ABI: RAX number/result; RDI/RSI/RDX/R10/R8/R9 arguments. Fast entry clobbers RCX/R11. Normal dispatch writes `frame->rax`; return uses the existing stub. | Compare `syscall.h`, dispatch and Ring 3 callers; preserve assembly frame layout. |
-| S2 | Validate every user range via `vmm_validate_user_range` before access; kernel-written buffers require `write_req=true`. Bound sizes and strings. | Trace every pointer, page crossing and arithmetic operation; test unmapped, read-only, kernel, zero-length and overflow cases. |
-| S3 | Fast entry masks IF and switches from user RSP before any stack access. Blocking stdin **does not enable IF before sleeping**: predicate, BLOCKED insertion and dequeue are IRQ-excluded; sleep releases all locks before switching; wake rechecks predicate. | Follow `input_read` → `sched_wait_until` / `sched_wake_all`; verify IRQ state on resume and a blocked reader with advancing timer. Do not invent a `wait_queue_sleep` API. |
+| S2 | Validate every user range via `vmm_validate_user_range` before access; kernel-written buffers require `write_req=true`. Bound sizes and strings. | Every syscall case that dereferences a user pointer calls `vmm_validate_user_range` first. Grep for `frame->rdi`/`rsi`/`rdx` and confirm each is preceded by a validate call. Trace every pointer, page crossing and arithmetic operation; test unmapped, read-only, kernel, zero-length and overflow cases. |
+| S3 | Fast entry masks IF and switches from user RSP before any stack access. | Preserved in `syscall_entry.asm` (SWAPGS, RSP switch, IF masked by SFMASK). |
+| S3a | Blocking stdin does NOT enable IF before sleeping. Predicate check, BLOCKED insertion and dequeue are IRQ-excluded. | Follow `input_read` → `sched_wait_until`; verify IRQ state on resume and a blocked reader with advancing timer. |
+| S3b | Sleep releases all locks before switching. Wake rechecks predicate. | Check every switch site for `spin_unlock_noirq` and verify wait predicate is checked in loop. |
+| S3c | Do not invent a `wait_queue_sleep` API — see `input_read` / `sched_wait_until`. | Use existing `sched_wait_until` / `sched_wake_all` primitives; do not add generic ad-hoc blocking helpers. |
 | S4 | Validate canonical lower-half RIP/RSP (strictly below `0x0000800000000000`, at least one page); sanitize return RFLAGS before SYSRET. | Keep IOPL/NT/TF/VM stripped and IF/bit 1 forced; run hostile-state cases and `make test-nmi` for entry/exit changes. Canonical does not mean mapped. |
 
 ### Interrupts and deferred work
 
 | ID | Binding invariant | How to check |
 | --- | --- | --- |
-| I1 | Ordinary device IRQ handlers do bounded draining/queue publication/wakeup only: no allocation, blocking, context switch or normal logging. Timer preemption is a deliberate exception. | Trace handler callees; `sched_wake_all` queues work but does not switch. Compare keyboard/UART handlers with `apic_timer_handler`. |
-| I2 | Exactly one EOI owner. `idt_register_hardware_handler` makes the dispatcher own EOI. Timer uses `idt_register_handler` and issues EOI **before** scheduling. Spurious APIC IRQ gets no EOI. | Check registration **and** handler together; search `lapic_eoi` and dispatcher `g_needs_eoi`. Never convert timer registration blindly. |
+| I1 | Ordinary device IRQ handlers do bounded draining/queue publication/wakeup only: no allocation, blocking, context switch or normal logging. Timer preemption is a deliberate exception. | Every `idt_register_hardware_handler` callback must not call `kmalloc`, `vmm_map`, `sched_wake_all` (except the timer path), or `console_*`/`serial_*`. Grep the handler body. |
+| I2 | Exactly one EOI owner. `idt_register_hardware_handler` makes the dispatcher own EOI. Timer uses `idt_register_handler` and issues EOI **before** scheduling. Spurious APIC IRQ gets no EOI. | Every `lapic_eoi()` call site is either inside the IDT dispatcher (via `g_needs_eoi`) or in `apic_timer_handler` before scheduling. No other caller. Check registration and handler together; never convert timer registration blindly. |
 | I3 | ISR publication precedes wakeup; processing occurs in a runnable thread. Timer/idle schedules it; no universal deferred-work-at-next-tick API exists. NMI remains lockless/non-scheduling and uses raw UART. | Trace producer/consumer and wake races; inspect NMI transitive calls for subsystem locks or console output. |
 
 ### Memory, ownership and storage boundaries
 
 | ID | Binding invariant | How to check |
 | --- | --- | --- |
-| M1 | Never dereference raw physical addresses. Use runtime HHDM translation for mapped RAM; map MMIO explicitly with the driver's required cache/NX flags. | Trace physical/virtual conversion and mapping extent; selective HHDM skips reserved MMIO holes. |
+| M1 | Never dereference raw physical addresses. Use runtime HHDM translation for mapped RAM; map MMIO explicitly with the driver's required cache/NX flags. | No `(void *)phys_addr` or `*(phys_addr)` cast appears outside the HHDM translate helper. Grep for casts to `void *` and confirm each is either an HHDM translation (`vmm_phys_to_virt`) or an explicit MMIO map. |
 | M2 | HHDM offset is boot-provided, never a constant. Use kernel-owned boot metadata after handoff. | Inspect `boot_info` and `vmm_phys_to_virt`; reject missing Limine responses before reading fields. |
 | M3 | VMM owns tables; caller owns data frames. Destroy refuses kernel/active CR3, never frees shared higher half; `free_user_frames=true` requires exclusively owned, singly mapped leaf frames. | Read `vmm.h` ownership/prevalidation contract; check rollback and exact allocation-set/table audits, not just equal counts. |
 | M4 | Bound all block/partition/parser arithmetic and hardware waits; publish only fully validated state. Never free DMA memory while a controller may still use it. | Inspect lower-layer dispatch on rejected requests, NVMe quiesce/quarantine, GPT staging, ext2 malformed-input tests and rollback. |
@@ -242,7 +245,7 @@ Canonical examples: `SYS_STAT` in [syscall.c](src/kernel/syscall.c); blocking `S
 1. Read `syscall.h`, caller code and S1–S4; choose an unused number and update ABI docs.
 2. Add the handler and dispatch case; define argument bounds and negative errors.
 3. Validate every user buffer/string before access; request writable pages for outputs.
-4. For blocking, follow `input_read`/`sched_wait_until` exactly; preserve IF=0 through atomic sleep preparation. Do not add `sti` to the entry/exit window.
+4. For blocking: follow `input_read`/`sched_wait_until` exactly (see S3/S3a/S3b). Do not paraphrase the contract — read the invariant.
 5. Return through dispatch/`frame->rax`; terminal process/power operations use their existing non-returning lifecycle.
 6. Add Ring 3 success/error/boundary coverage in a suitable test program; extend the appropriate BIOS/UEFI runner (often `test-shell`).
 7. Audit acquired resources on failure/exit; use PMM bitmap/table/mapping and heap checks where ownership changes. Run NMI tests if entry/exit changes.
@@ -253,7 +256,7 @@ Canonical example: `keyboard_irq` / `serial_irq` in [input.c](src/drivers/input.
 
 1. Read `idt.h`, `ioapic.h`, device source and I1–I3; choose a nonconflicting vector.
 2. Initialize bounded device buffers and register the handler before enabling delivery.
-3. Use `idt_register_hardware_handler` for ordinary device IRQs; omit EOI in its body.
+3. Use `idt_register_hardware_handler` for ordinary device IRQs; omit EOI in its body. Exception: spurious APIC vector is registered via a path that suppresses EOI (`idt_register_handler` without EOI). If your handler must not acknowledge, use that path and document why.
 4. Route ISA through `ioapic_route_isa` to respect MADT overrides; serialize IOAPIC access with IRQs disabled as its header requires.
 5. Drain a bounded batch, publish queue/flag state, wake waiters; defer substantial work to a thread. No printing/allocating/switching in the device handler.
 6. Test real device delivery, repeated events, overflow and sleep/wake races; verify timer progress and firmware coverage. Direct calls alone do not prove routing.
@@ -304,20 +307,20 @@ Canonical examples: [shell.c](user/shell.c), [shell_start.asm](user/shell_start.
 
 ## 8. Hardware Facts and Verification Boundaries
 
-Preserve measured workarounds and their evidence. Do not remove one merely to
-match a datasheet; investigate discrepancies and record device/firmware/repro.
-Observation, implemented behavior and unverified claims are distinct. Do not
-turn an example or a source-code comment into physical acceptance evidence.
+Preserve empirically-derived and spec-derived workarounds with their evidence labels.
+Do not remove one merely to match a datasheet; investigate discrepancies and record
+device/firmware/repro. Observation, implemented behavior and unverified claims
+are distinct. Do not turn an example or a source-code comment into physical acceptance evidence.
 
 | ID | Evidence / constraint |
 | --- | --- |
 | H1 | **Dell 5590 photo:** keyboard input and IRQ1 initialization reported working. **Code:** `keyboard_init` clears translation while selecting/querying set 2, then sets bit 6 to deliver translated set 1. Preserve the sequence; it is not proof of the firmware's initial bit value. |
 | H2 | **Code:** NVMe doorbells use CAP.DSTRD-derived stride (`4 << DSTRD`) and dynamic mapping extent. No physical DSTRD measurement is established here; never hardcode QEMU's value. |
 | H3 | **5590 photo:** ECAM segment 0 buses 0..127, base `0xF0000000`. Parse MCFG, never assume this address/range or apply it to another Dell. No 5530 acceptance record is established here. |
-| H4 | **Code:** default US; `layout azerty` selects an ASCII approximation of Belgian AZERTY. Digits require Shift there; Caps affects letters via Shift XOR Caps, **not** full Shift-Lock. AltGr absent; arrows/function keys ignored; Caps LED unsynchronized. Full physical layout coverage is unverified. |
+| H4 | **Code + user report (2026-09-16):** `layout azerty` selects Belgian AZERTY (Punt). Digits require Shift. Accented unshifted keys (é è ç à on scancodes 0x03, 0x08, 0x0A, 0x0B) are reported wrong on hardware; suspected signed-char pipeline issue in decoder/ring/console. Caps is Shift-XOR, not full Shift-Lock. AltGr absent; arrows/function keys ignored; Caps LED unsynchronized. Full coverage unverified. |
 | H5 | **Known software limit:** PMM manages low 2 GiB despite 32 GiB installed on the 5590. Higher RAM is unavailable to allocation. |
 | H6 | **Boot policy/photo:** physical NVMe filesystem is not mounted; `/mnt` is the QEMU ext2 fixture. Initramfs file reads prove neither physical disk I/O nor persistence. |
-| H7 | **Code:** ACPI FADT/DSDT S5 and reset fallbacks now exist (`power.c`); this is limited parsing, not a general AML interpreter. Port `0x604` is a QEMU mechanism. Physical ACPI S5 shutdown and multi-tier reset confirmed functional on Dell 5590 |
+| H7 | **Code:** ACPI FADT/DSDT S5 and reset fallbacks now exist (`power.c`); this is limited parsing, not a general AML interpreter. Port `0x604` is a QEMU mechanism. Physical ACPI S5 shutdown and multi-tier reset confirmed functional on Dell 5590. |
 | H8 | **Recorded QEMU evidence:** 40 exact-boundary NMIs on IST2; no proof of physical NMI injection, nested-fault completeness, SWAPGS or SMP safety. |
 
 ### Dell Latitude 5590 physical acceptance (2026-09-16)
@@ -329,19 +332,20 @@ and the Ring 3 shell responding to keyboard input. `help` prints the command
 list, `ls` lists `docs/`, `etc/`, `bin/`, and `cat etc/motd` prints the welcome
 file and returns to the prompt. `cat motd` correctly reports a missing file.
 These are manual observations, supplementing the automated QEMU tests.
-
-Note that subsequent manual hardware testing verified the layout, reboot, and shutdown commands on the Dell 5590.
 The user reported improved boot-console responsiveness; no timing benchmark was
 collected. Cached text scrolling avoids framebuffer reads; keep early/no-UART
 output working. Detailed console, NMI and input test notes are in [ROADMAP.md](ROADMAP.md).
 
 ## 9. Do Not Touch Without Discussion
+
 Discuss intentional changes to these contracts before implementation unless the
 current task already explicitly authorizes them. Routine edits preserving them
 need no extra approval. Preserve the behavior, not arbitrary lines of code.
 
 - Limine request markers and linker `KEEP` placement.
-- Boot/entry stack alignment, interrupt-frame layout and syscall transition windows.
+- Boot/entry stack alignment (System V ABI, 16-byte before call).
+- Interrupt-frame layout (register preservation order in `interrupts.asm` and `syscall_entry.asm`).
+- Syscall transition windows (no stack writes before RSP switch, canonical RIP/RSP validation before SYSRET).
 - Dependency ordering of subsystem initialization in `kmain`.
 - Lock ranks, no-lock-across-switch rule, IRQ-excluded sleep/wakeup and CR3/stack ownership.
 - Evidence-backed hardware workarounds (including any `empirical: Dell` comments): read their evidence first.
