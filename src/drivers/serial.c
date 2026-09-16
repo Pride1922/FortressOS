@@ -12,8 +12,10 @@
 
 #define LSR_THRE           0x20            /* Transmitter Holding Register Empty */
 #define LSR_DATA_READY     0x01            /* Data Ready */
+static bool serial_available;
 
 int serial_init(void) {
+    serial_available = false;
     /* Disable all UART interrupts */
     outb(COM1_IER, 0x00);
 
@@ -38,29 +40,33 @@ int serial_init(void) {
     outb(COM1_DATA, 0xAE);      /* Send test byte */
 
     if (inb(COM1_DATA) != 0xAE) {
+        outb(COM1_MCR, 0x0F);
         return -1; /* Faulty serial port */
     }
 
     /* Set normal operation mode (disable loopback, enable RTS/DSR and OUT2) */
     outb(COM1_MCR, 0x0F);
+    serial_available = true;
     return 0;
 }
 
-static int serial_is_transmit_empty(void) {
-    return (inb(COM1_LSR) & LSR_THRE);
+static bool serial_wait_transmit(void) {
+    if (!serial_available) return false;
+    for (unsigned i = 0; i < 100000; i++) {
+        if (inb(COM1_LSR) & LSR_THRE) return true;
+        __asm__ volatile("pause");
+    }
+    serial_available = false;
+    return false;
 }
 
 void serial_raw_putc(char c) {
     if (c == '\n') {
-        while (!serial_is_transmit_empty()) {
-            __asm__ volatile("pause");
-        }
+        if (!serial_wait_transmit()) return;
         outb(COM1_DATA, (uint8_t)'\r');
     }
 
-    while (!serial_is_transmit_empty()) {
-        __asm__ volatile("pause");
-    }
+    if (!serial_wait_transmit()) return;
 
     outb(COM1_DATA, (uint8_t)c);
 }
@@ -164,4 +170,3 @@ void serial_print_dec(uint64_t val) {
         serial_putc(buf[i]);
     }
 }
-

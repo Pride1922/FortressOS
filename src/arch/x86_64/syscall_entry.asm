@@ -7,6 +7,11 @@ g_syscall_scratch_rsp: resq 1
 
 section .text
 global syscall_entry_stub
+; Zero-byte probe symbols for deterministic external NMI injection tests.
+global syscall_entry_rsp_saved
+global syscall_entry_kernel_rsp
+global syscall_exit_restore_rsp
+global syscall_exit_user_rsp
 extern g_tss_rsp0
 extern syscall_dispatch
 
@@ -30,7 +35,9 @@ syscall_entry_stub:
     ; 1. Save user RSP atomically and switch to active thread kernel stack (TSS.RSP0)
     ; Interrupts are guaranteed disabled by hardware (SFMASK masks IF)
     mov [rel g_syscall_scratch_rsp], rsp
+syscall_entry_rsp_saved:
     mov rsp, [rel g_tss_rsp0]
+syscall_entry_kernel_rsp:
 
     ; 2. Build interrupt_frame_t layout on kernel stack:
     ; struct interrupt_frame_t:
@@ -100,16 +107,18 @@ syscall_entry_stub:
     ;   [RSP + 24]: rsp
     ;   [RSP + 32]: ss
     cmp qword [rsp + 8], GDT_USER_CODE
-    jne .return_iretq
+    jne syscall_return_iretq
 
     ; Fast return to user space via sysretq (o64 sysret):
     pop rcx     ; user RIP into RCX for sysret
     add rsp, 8  ; skip CS (sysret sets CS from STAR[63:48])
     pop r11     ; user RFLAGS into R11 for sysret
+syscall_exit_restore_rsp:
     pop rsp     ; restore user RSP directly
+syscall_exit_user_rsp:
     ; sysretq atomically restores Ring 3, CS, SS, RIP from RCX, and RFLAGS from R11 (re-enabling IF)
     o64 sysret
 
-.return_iretq:
+syscall_return_iretq:
     ; Test harness recovery redirected CS to GDT_KERNEL_CODE; return via iretq
     iretq

@@ -61,6 +61,8 @@ _start:
     je .mode_fast_worker_1
     cmp rdi, 6
     je .mode_fast_worker_2
+    cmp rdi, 8
+    je .mode_ext2_test
     cmp rdi, 7
     je .mode_vfs_test
 
@@ -351,6 +353,51 @@ _start:
     ; -------------------------------------------------------------
     ; Mode 7: Ring 3 VFS & Initramfs Acceptance Test
     ; -------------------------------------------------------------
+.mode_ext2_test:
+    mov eax, 2
+    lea rdi, [ext2_path]
+    xor esi, esi
+    syscall
+    test rax, rax
+    js .ext2_fail
+    mov r12, rax
+    mov eax, 4
+    mov rdi, r12
+    lea rsi, [vfs_buf1]
+    mov edx, 128
+    syscall
+    cmp rax, ext2_expected_len
+    jne .ext2_fail
+    lea rsi, [vfs_buf1]
+    lea rdi, [ext2_expected]
+    mov ecx, ext2_expected_len
+    repe cmpsb
+    jne .ext2_fail
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [vfs_buf1]
+    mov edx, ext2_expected_len
+    syscall
+    cmp rax, ext2_expected_len
+    jne .ext2_fail
+    mov eax, 4
+    mov rdi, r12
+    lea rsi, [vfs_buf1]
+    mov edx, 128
+    syscall
+    test rax, rax
+    jnz .ext2_fail
+    mov eax, 3
+    mov rdi, r12
+    syscall
+    test rax, rax
+    jnz .ext2_fail
+    mov edi, 89
+    jmp .do_exit
+.ext2_fail:
+    mov edi, 198
+    jmp .do_exit
+
 .mode_vfs_test:
     ; Announce start of test
     mov eax, 1          ; SYS_WRITE
@@ -534,3 +581,8 @@ _start:
     int 0x80
     hlt
 
+
+section .rodata
+ext2_path: db "/mnt/hello.txt", 0
+ext2_expected: db "Hello from FortressOS ext2 NVMe partition!", 10
+ext2_expected_len equ $ - ext2_expected

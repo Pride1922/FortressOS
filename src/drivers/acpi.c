@@ -254,6 +254,7 @@ bool acpi_parse_madt_buffer(const void *buffer, size_t available, acpi_madt_info
                         /* Enabled CPU */
                         if (out_info->enabled_cpu_count == MAX_DETECTED_CPUS) return false;
                         if (out_info->enabled_cpu_count < MAX_DETECTED_CPUS) {
+                            out_info->enabled_cpu_processor_ids[out_info->enabled_cpu_count] = lapic->processor_id;
                             out_info->enabled_cpu_apic_ids[out_info->enabled_cpu_count++] = lapic->apic_id;
                         }
                     } else if (lapic->flags & 2) {
@@ -291,6 +292,19 @@ bool acpi_parse_madt_buffer(const void *buffer, size_t available, acpi_madt_info
                     }
                     out_info->iso_count++;
                 }
+                break;
+            }
+            case MADT_TYPE_NMI: {
+                /* Type 4: processor ID, unaligned flags, LINT number. */
+                uint16_t flags;
+                memcpy(&flags, ptr + 3, sizeof(flags));
+                if (ptr[5] > 1 || (flags & ~15U) ||
+                    (flags & 3) == 2 || ((flags >> 2) & 3) == 2 ||
+                    out_info->nmi_count == MAX_DETECTED_CPUS * 2) return false;
+                size_t n = out_info->nmi_count++;
+                out_info->nmis[n].processor_id = ptr[2];
+                out_info->nmis[n].flags = flags;
+                out_info->nmis[n].lint = ptr[5];
                 break;
             }
             case MADT_TYPE_LAPIC_ADDR_OVERRIDE: {

@@ -2,6 +2,8 @@
 #define FORTRESS_APIC_H
 
 #include "types.h"
+#include "acpi.h"
+bool lapic_configure_nmi(const acpi_madt_info_t *info);
 #include "idt.h"
 
 /* Fixed Virtual Address for LAPIC MMIO Mapping */

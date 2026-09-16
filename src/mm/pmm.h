@@ -35,6 +35,9 @@ uint64_t pmm_get_free_memory(void);
 
 /* PMM Audit & Integrity Validation */
 bool pmm_audit(void);
+/* Exact allocation-set snapshot. Caller owns storage; compare only at a
+ * quiescent baseline with expected retained allocations already established. */
+bool pmm_snapshot(void *buffer, size_t capacity);
 
 /* Deferrable bootloader memory reclamation */
 size_t pmm_reclaim_bootloader_memory(struct limine_memmap_response *memmap);

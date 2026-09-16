@@ -180,71 +180,32 @@ def generate_gpt_image(img_path: str, total_sectors: int, sector_size: int):
 
         # Populate Partition 1 (LBAs 2048..10239, 4 MiB)
         part1_bytes = (part1_end - part1_start + 1) * sector_size
-        ext2_success = False
-        try:
-            import subprocess
-            import tempfile
-            import os
-
-            with tempfile.NamedTemporaryFile(delete=False) as tmp_part:
-                tmp_part_name = tmp_part.name
-                tmp_part.truncate(part1_bytes)
-
-            res = subprocess.run(
-                ["mke2fs", "-t", "ext2", "-b", "1024", "-F", tmp_part_name],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            if res.returncode == 0:
-                with tempfile.NamedTemporaryFile("w", delete=False) as hello_tmp:
-                    hello_tmp.write("Hello from FortressOS ext2 NVMe partition!\n")
-                    hello_tmp_name = hello_tmp.name
-
-                subprocess.run(
-                    ["debugfs", "-w", "-R", f"write {hello_tmp_name} hello.txt", tmp_part_name],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                try:
-                    os.unlink(hello_tmp_name)
-                except OSError:
-                    pass
-
-                with open(tmp_part_name, "rb") as pf:
-                    ext2_data = bytearray(pf.read())
-
-                lba0_pat = ("FORTRESS_EXT2_PARTITION1_START_MAGIC_#0000#_" * 16).encode("ascii")[:sector_size]
-                ext2_data[0:sector_size] = lba0_pat
-
-                last_sec_pat = ("FORTRESS_EXT2_PARTITION1_LAST_SECTOR_#8191#_" * 16).encode("ascii")[:sector_size]
-                ext2_data[-sector_size:] = last_sec_pat
-
-                f.seek(part1_start * sector_size)
-                f.write(ext2_data)
-                ext2_success = True
-                print("      - Formatted Partition 1 as ext2 filesystem (Magic: 0xEF53)")
-            try:
-                os.unlink(tmp_part_name)
-            except OSError:
-                pass
-        except Exception:
-            ext2_success = False
-
-        if not ext2_success:
-            part_patterns = [
-                (part1_start, "FORTRESS_EXT2_PARTITION1_START_MAGIC_#0000#_"),
-                (part1_start + 1, "FORTRESS_EXT2_PARTITION1_SUPERBLOCK_ZONE_#0001#_"),
-                (part1_end, "FORTRESS_EXT2_PARTITION1_LAST_SECTOR_#8191#_"),
-            ]
-            for lba, text in part_patterns:
-                f.seek(lba * sector_size)
-                block = (text * (sector_size // len(text) + 1)).encode("ascii")[:sector_size]
-                f.write(block)
-            f.seek((part1_start + 2) * sector_size)
-            sb_block = bytearray(sector_size)
-            sb_block[0x38:0x3A] = struct.pack("<H", 0xEF53)
-            f.write(sb_block)
-            print("      - Populated Partition 1 with fallback ext2 superblock structure")
+        # Fail explicitly if e2fsprogs is unavailable: never fake an ext2 volume.
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "root"
+            root.mkdir()
+            (root / "hello.txt").write_text("Hello from FortressOS ext2 NVMe partition!\n")
+            (root / "nested").mkdir()
+            (root / "nested" / "note.txt").write_text("Nested ext2 directory works.\n")
+            # Cross direct, single-indirect and double-indirect boundaries.
+            (root / "large.bin").write_bytes(bytes((i * 17 + 3) & 255 for i in range(400000)))
+            with (root / "sparse.bin").open("wb") as sparse:
+                sparse.seek(20000)
+                sparse.write(b"END")
+            part = Path(temp) / "partition.img"
+            with part.open("wb") as pf:
+                pf.truncate(part1_bytes)
+            subprocess.run(["mke2fs", "-q", "-t", "ext2", "-b", "1024",
+                            "-I", "128", "-O", "none,filetype,sparse_super,large_file",
+                            "-d", str(root), "-F", str(part)], check=True)
+            subprocess.run(["e2fsck", "-fn", str(part)], check=True,
+                           stdout=subprocess.DEVNULL)
+            f.seek(part1_start * sector_size)
+            f.write(part.read_bytes())
+        print("      - Created and checked real ext2 with nested, indirect and sparse fixtures")
 
         # Backup Partition Array & Backup GPT Header
         f.seek(backup_part_array_lba * sector_size)

@@ -59,6 +59,7 @@ static void normalize_path(const char *in_path, char *out_path, size_t out_max) 
 
 vfs_node_t *vfs_lookup(const char *path) {
     if (!g_vfs_root || !path) return NULL;
+    if (strlen(path) >= VFS_MAX_PATH) return NULL;
 
     char norm[VFS_MAX_PATH];
     normalize_path(path, norm, sizeof(norm));
@@ -78,7 +79,15 @@ vfs_node_t *vfs_lookup(const char *path) {
             comp[c_idx++] = *p++;
         }
         comp[c_idx] = '\0';
+        if (*p && *p != '/') return NULL;
         if (*p == '/') p++;
+
+        if (curr->type != VFS_DIRECTORY) return NULL;
+        if (curr->lookup) {
+            curr = curr->lookup(curr, comp);
+            if (!curr) return NULL;
+            continue;
+        }
 
         /* Find child in curr->children */
         vfs_node_t *child = curr->children;
@@ -190,6 +199,7 @@ vfs_node_t *vfs_create_node(const char *path, vfs_node_type_t type, uint64_t siz
 }
 
 file_t *vfs_open(const char *path, int flags) {
+    if (flags != 0) return NULL; /* All current filesystems are read-only. */
     vfs_node_t *node = vfs_lookup(path);
     if (!node) {
         return NULL;
@@ -231,6 +241,11 @@ int64_t vfs_read(file_t *file, void *buf, size_t count) {
         to_read = (size_t)available;
     }
 
+    if (file->node->read) {
+        int64_t result = file->node->read(file->node, file->offset, buf, to_read);
+        if (result > 0) file->offset += (uint64_t)result;
+        return result;
+    }
     if (file->node->data) {
         const uint8_t *src = (const uint8_t *)file->node->data + file->offset;
         memcpy(buf, src, to_read);
@@ -270,6 +285,7 @@ int vfs_readdir(vfs_node_t *dir_node, uint64_t index, vfs_dirent_t *out_dent) {
     if (!dir_node || dir_node->type != VFS_DIRECTORY || !out_dent) {
         return -1;
     }
+    if (dir_node->readdir) return dir_node->readdir(dir_node, index, out_dent);
 
     vfs_node_t *child = dir_node->children;
     uint64_t curr_idx = 0;

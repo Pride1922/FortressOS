@@ -83,6 +83,8 @@ isr_common_stub:
     add rsp, 16
 
     ; 6. Return from interrupt (pops RIP, CS, RFLAGS, RSP, SS)
+global isr_return_iretq
+isr_return_iretq:
     iretq
 
 ; Assembly helper to load IDTR
@@ -324,4 +326,3 @@ test_user_syscall_helper:
 
     mov rax, 1
     ret
-

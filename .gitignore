@@ -24,3 +24,6 @@ OVMF*.fd
 *~
 .DS_Store
 Thumbs.db
+# Python test-runner caches
+__pycache__/
+*.pyc

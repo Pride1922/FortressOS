@@ -5,7 +5,7 @@
 #include "string.h"
 #include "spinlock.h"
 
-static spinlock_t g_heap_lock = {0};
+static spinlock_t g_heap_lock = SPINLOCK_RANKED(2, "heap");
 
 /* Block Header Structure (16 bytes, 16-byte aligned) */
 typedef struct heap_block_header {

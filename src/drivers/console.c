@@ -19,7 +19,7 @@ typedef struct {
 } fb_console_t;
 
 static fb_console_t g_console = {0};
-static spinlock_t   g_console_lock = SPINLOCK_INIT;
+static spinlock_t   g_console_lock = SPINLOCK_RANKED(5, "console");
 
 bool console_is_initialized(void) {
     return g_console.initialized;
@@ -134,6 +134,11 @@ void console_init(const boot_info_t *boot_info) {
         serial_puts("[WARN] Framebuffer console requires 32 bpp linear framebuffer\n");
         return;
     }
+    if (boot_info->fb_width < FONT_WIDTH || boot_info->fb_height < FONT_HEIGHT ||
+        boot_info->fb_width > 8192 || boot_info->fb_height > 8192 ||
+        boot_info->fb_pitch % 4 || boot_info->fb_pitch < boot_info->fb_width * 4 ||
+        boot_info->fb_pitch > (64ULL * 1024 * 1024) / boot_info->fb_height ||
+        boot_info->fb_address > UINT64_MAX - boot_info->fb_pitch * boot_info->fb_height) return;
 
     uint64_t rflags = spin_lock_irqsave(&g_console_lock);
 

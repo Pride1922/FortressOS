@@ -103,14 +103,14 @@ FortressOS/
 ## 3. Build, Run, and Debug Instructions
 
 ### Prerequisites
-- **Toolchain:** `gcc`, `ld` (GNU Binutils), `nasm`, `make`.
+- **Toolchain:** `gcc`, `ld` (GNU Binutils), `nasm`, `make`. ext2 fixtures require `e2fsprogs` and `python3`.
 - **Packaging:** `xorriso` (for ISO creation), `git` (for fetching Limine bootloader).
 - **Virtualization:** `qemu-system-x86_64`, `ovmf` (UEFI firmware).
 
 *On Ubuntu / Debian / WSL2:*
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential nasm xorriso qemu-system-x86 ovmf git curl
+sudo apt-get install -y build-essential nasm xorriso qemu-system-x86 ovmf git curl e2fsprogs python3
 ```
 
 ### Build Commands
@@ -188,10 +188,10 @@ To debug kernel initialization step-by-step:
      - Callee-preserved registers: `RBX`, `RSP`, `RBP`, `R12`, `R13`, `R14`, `R15`.
      - Stack alignment: `RSP` must be 16-byte aligned before any `call` instruction.
 6. **Concurrency & Lock Hierarchy Rules:**
-   - **Non-Recursive Spinlocks**: `spinlock_t` uses atomic test-and-set with interrupt flag (`RFLAGS`) preservation (`spin_lock_irqsave` / `spin_unlock_irqrestore`). They are strictly **non-recursive**; acquiring an already-held lock on the same CPU will deadlock. Internal `_unlocked` helpers are used across subsystems to avoid self-recursion.
+   - **Non-Recursive Spinlocks**: `spinlock_t` uses atomic test-and-set with interrupt flag (`RFLAGS`) preservation (`spin_lock_irqsave` / `spin_unlock_irqrestore`). They are strictly **non-recursive**; the debug checker rejects recursive acquisition before spinning. Internal `_unlocked` helpers are used across subsystems to avoid self-recursion.
    - **Strict Hierarchy Order**: Locks must always be acquired in descending order:
      `g_sched_lock` (L1) -> `g_heap_lock` (L2) -> `g_vmm_lock` (L3) -> `g_pmm_lock` (L4).
-   - **Context Switch Invariant**: No spinlock may EVER remain held across `switch_context()`. Specifically, `g_sched_lock` is explicitly released with `__atomic_clear(&g_sched_lock.lock, __ATOMIC_RELEASE)` before calling `switch_context()`. However, hardware interrupts MUST remain strictly disabled across `TSS.RSP0`, `CR3`, and the `switch_context` stack exchange until the incoming thread restores its saved `RFLAGS`.
+   - **Context Switch Invariant**: No spinlock may EVER remain held across `switch_context()`. Specifically, `g_sched_lock` is explicitly released with `spin_unlock_noirq(&g_sched_lock)` followed by `spin_debug_assert_unheld()` before calling `switch_context()`. However, hardware interrupts MUST remain strictly disabled across `TSS.RSP0`, `CR3`, and the `switch_context` stack exchange until the incoming thread restores its saved `RFLAGS`.
    - **Reaper Invariant & Detached Deallocation**: Complex cross-subsystem cleanup (`sched_reap_dead()`) decouples dead nodes under lock and cleans them up outside the lock. The reaper strictly asserts that the executing context is not the dead thread, does not use the dead thread's stack slot, and does not run under the dead process's CR3. Finding active CR3 matching a dead process indicates a critical scheduler lifecycle bug and causes an immediate diagnostic panic.
 7. **Stack Guard Page Architecture & Fault Escalation:**
    - **Linear Growth Scope**: Dedicated thread stacks include a 4 KiB unmapped bottom guard page (`0xFFFFFFFFA0000000ULL`). This catches linear contiguous stack growth. It does not catch frame skips exceeding 4096 bytes without compiler stack-clash probes.
@@ -347,7 +347,7 @@ Future tasks should follow this sequenced implementation order:
         │   │   and VM (bit 17), while forcing IF=1 (0x200) and reserved bit 1 = 1 (0x002)
         │   ├── Non-Maskable Interrupt (NMI) IST2 Strategy: Vector 2 configured with dedicated 16 KiB emergency stack + 4 KiB guard page
         │   │   (IST2) in TSS/IDT. Handler is strictly reentrant and lockless, avoiding scheduler and subsystem spinlocks.
-        │   │   (Note: Delivery during the 2-instruction entry/exit race window is architecturally configured via IST2 but remains unverified by active NMI injection)
+        │   │   (Verified: make test-nmi injects 20 external NMIs per BIOS/UEFI boot at five exact syscall instruction boundaries; checks IST2, saved RIP/RSP, GPRs, unchanged user stack, IRET and SYSRET.)
         │   ├── User Stack Invariant: syscall_entry_stub performs zero pushes, calls, or writes on the user stack before switching RSP
         │   ├── Concurrency Contract: g_tss_rsp0 follows scheduled thread; explicitly single-CPU in Phases 1-7, prepared for GS base in SMP
         │   ├── Syscall ABI Specification: RCX and R11 documented as clobbered by hardware; callee-preserved registers honored
@@ -410,7 +410,7 @@ Future tasks should follow this sequenced implementation order:
     │   └── Acceptance Test: Write to disposable disk image, flush, 70-write wraparound test, verify neighbours, restart QEMU, verify 100% 512-byte persistence across reboot (PASSED in UEFI & BIOS)
     ├── Phase 9C.1: GUID Partition Table (GPT) & Bounded Block Devices (COMPLETE)
     │   ├── Fixture Separation: isolated raw NVMe persistence disk fixture (`build/nvme_raw.img`) from partitioned GPT fixture (`build/nvme_gpt.img`); gated raw pattern tests via `ENABLE_NVME_RAW_PATTERN_TESTS`
-    │   ├── Bounded Partition-Array Validation: strict entry size (128..512 bytes, 8-byte aligned), max entry count (1..128), overflow-safe byte limit (64 KiB), disk capacity fit, and non-overlap against headers and usable space prior to allocation
+    │   ├── Bounded Partition-Array Validation: supported entry sizes (128, 256, or 512 bytes), max entry count (1..128), overflow-safe byte limit (64 KiB), disk capacity fit, and non-overlap against headers and usable space prior to allocation
     │   ├── Exact CRC32 Calculation: computed strictly over `num_partition_entries * sizeof_partition_entry` exact bytes, excluding sector padding
     │   ├── Deterministic Backup Policy: complete 5-case outcome matrix (Valid/Consistent -> Primary; Invalid/Valid -> in-memory read-only fallback; Valid/Invalid -> degraded-mode Primary; Valid/Inconsistent -> reject ambiguity; Both Invalid -> reject disk)
     │   ├── All-or-Nothing Staging & Publication: whole-table bounds and pairwise overlap validation in memory before registering partition block devices; read-only callbacks (`write_sector = NULL`, `flush = NULL`)
@@ -421,26 +421,25 @@ Future tasks should follow this sequenced implementation order:
     │       - Verified relative LBA 0 read, ext2 superblock magic `0xEF53` at LBA 2, and last sector LBA 8191
     │       - Strict rejection of reads at capacity boundary (LBA 8192), out-of-bounds (LBA 99999), arithmetic overflow (`UINT64_MAX`), and write/flush attempts
     │       - Expanded 7-Case Negative Test Suite: N1 (bad primary array fallback to backup in memory), N2 (both invalid rejection), N3 (ambiguity rejection on inconsistent headers), N4 (valid-CRC overlapping partition rejection without publishing), N5 (valid-CRC out-of-range partition rejection without publishing), N6 (oversized entry count rejection), and N7 (isolated parent dispatch: verified rejected reads never reach parent driver)
-    │       - Dynamic kernel heap integrity audit verified with 0 memory leaks (PASSED in UEFI; BIOS verification outstanding/unverified)
-    ├── Phase 9C.2: Read-Only ext2 Filesystem (NEXT)
+    │       - Dynamic kernel heap integrity audit verified with 0 memory leaks (PASSED in UEFI and BIOS via `make test-storage`)
+    ├── Phase 9C.2: Read-Only ext2 Filesystem (COMPLETE)
     │   ├── Superblock (0xEF53), block groups, inode table, directory traversal, and direct/indirect block reading
-    │   └── Acceptance Test: Mount at /mnt alongside working root initramfs and read /mnt/hello.txt via VFS
+    │   ├── Boot-time /mnt mount, lazy bounded node cache, direct through triple-indirect lookup, sparse reads
+    │   ├── Unsupported feature/geometry rejection, bounded directory records, transactional mount allocation
+    │   ├── ASan/UBSan host tests: 1/2/4 KiB blocks, 512/4096-byte sectors, 128/256-byte inodes, corruption and OOM/I/O errors
+    │   └── BIOS/UEFI: Ring 3 exact file read/print/close, 10 cycles with exact PMM bitmap, mapping fingerprint and heap audits
     ├── Phase 9C.3: Minimal PS/2 Keyboard & Blocking Input Queue
     │   ├── 8042 controller init, scancode set detection, IRQ1 via I/O APIC
     │   ├── Ring buffer keyqueue with blocking read (wait queue, not busy poll)
     │   ├── Serial input mirroring (so you can test in QEMU without PS/2)
     │   └── Acceptance: type "hello" on real laptop, see it echoed in console
-    ├── Phase 9C.4: Minimal Line Editor / REPL Primitive (kernel-side)
-    │   ├── Non-canonical line discipline: backspace, left/right, home/end
+    ├── Phase 9C.4: Ring 3 Shell and Minimal Editor
+    │   ├── Kernel provides blocking input/output; editing and command parsing live in user space
     │   ├── No history, no tab-completion (deliberately minimal)
-    │   └── Acceptance: edit a 10-line buffer in Ring 0, echo back
-    ├── Phase 9D: Writable ext2 Filesystem
-    │   ├── Block/inode allocation, directory entry insertion, file creation and writes
-    │   └── Acceptance Test: Create and reopen files after reboot (persistent storage)
-    └── Phase 9D.5: "flatfs" — Tiny Writable FS for Scratch Storage
-        ├── Single-file, append + truncate only, fixed max size (e.g. 64 KiB)
-        ├── Lives on its own GPT partition, format tool runs on first write
-        └── Acceptance: write "hello\n", reboot laptop, read back "hello\n"
+    │   └── Acceptance: read a file into a Ring 3 editor and modify its in-memory buffer
+    └── Phase 9D: Writable ext2 Filesystem
+        ├── Block/inode allocation, directory entry insertion, file creation and writes
+        └── Acceptance Test: Create and reopen files after reboot (persistent storage)
 ```
 
 ---
@@ -451,3 +450,36 @@ Future tasks should follow this sequenced implementation order:
 - The `linker.ld` must protect these markers with `KEEP(*(.requests_start_marker))` and `KEEP(*(.requests_end_marker))`.
 - Base Revision is set to 3 (`LIMINE_BASE_REVISION(3)`). The kernel verifies support at runtime via `LIMINE_BASE_REVISION_SUPPORTED`.
 - Always check `request.response != NULL` before accessing fields.
+
+## Architectural audit and ext2 implementation scope
+
+See `ARCH_REVIEW.md` for implemented checks, supported ext2 format and deferred work.
+`make test-ext2` runs the actual ext2/VFS sources under host ASan/UBSan;
+`make test-storage` verifies the complete boot suite in BIOS and UEFI, saving logs
+in `build/storage-bios.log` and `build/storage-uefi.log`. QEMU uses snapshot disk
+writes; raw-sector pattern tests remain disabled by default.
+
+Lock ranks increase on acquisition: scheduler/ext2 (1, mutually exclusive),
+heap (2), VMM (3), PMM (4), console (5). Tracking uses bootstrap-CPU storage,
+with IRQs disabled before inspecting it. Release must be LIFO. Saved 64-bit
+RFLAGS belongs to each caller. Diagnostics use raw UART. This is not SMP-ready.
+
+### NMI transition and physical-boot diagnostics
+
+- MADT type 4 NMI records are validated and applied to the bootstrap CPU's
+  LAPIC LINT pins, with processor-ID matching and conflict detection. Undeclared
+  pins stay masked. x2APIC/type-10 NMI routing is not implemented.
+- `make test-nmi` uses QEMU TCG QMP injection plus hardware GDB breakpoints at
+  zero-byte assembly labels. It never patches code, synthesizes INT 2, or widens
+  the transition windows. It verifies 5 boundaries x 4 rounds x 2 firmware modes,
+  then requires the complete boot suite to finish. Evidence: `build/nmi-*.json`
+  and `build/nmi-*.log`. This covers QEMU delivery, not physical NMI injection,
+  nested fault/NMI scenarios or SMP.
+- Framebuffer logging begins before PMM/GDT tests. COM1 loopback failure disables
+  UART output; transmitter waits are bounded so absent hardware cannot hang boot.
+- The current PMM explicitly manages RAM below 2 GiB, reserving higher RAM until
+  allocator/audit capacity is expanded. Its bitmap is selected within managed RAM.
+- `make test-boot-diagnostics`: UEFI, 8 GiB, no COM1, no NVMe fixture; verifies
+  progress to PCI discovery and captures `build/boot-8g-no-uart.png`.
+- Storage fixture assertions run only against QEMU NVMe vendor/device IDs.
+  Physical hardware currently runs diagnostics and halts; there is no shell yet.

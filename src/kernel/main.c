@@ -23,6 +23,7 @@
 #include "block.h"
 #include "crc32.h"
 #include "gpt.h"
+#include "ext2.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
@@ -181,6 +182,26 @@ static void acpi_parser_selftest(void) {
     if (acpi_parse_madt_buffer(&fixture, sizeof(acpi_madt_t) - 1, &result) ||
         acpi_ensure_mapped(UINTPTR_MAX - 8, 32)) hcf();
     serial_puts("[PASS] Truncated/zero-length/undersized/overrun MADT records and address overflow rejected\n");
+    struct __attribute__((packed)) {
+        acpi_madt_t table;
+        uint8_t nmi[6];
+    } nmi_fixture;
+    for (unsigned test = 0; test < 5; test++) {
+        memset(&nmi_fixture, 0, sizeof(nmi_fixture));
+        memcpy(nmi_fixture.table.header.signature, "APIC", 4);
+        nmi_fixture.table.header.length = sizeof(nmi_fixture);
+        nmi_fixture.nmi[0] = MADT_TYPE_NMI;
+        nmi_fixture.nmi[1] = 6;
+        nmi_fixture.nmi[2] = 255;
+        nmi_fixture.nmi[5] = test == 1 ? 2 : 1;
+        nmi_fixture.nmi[3] = test == 2 ? 2 : test == 3 ? 8 : test == 4 ? 16 : 0;
+        uint8_t sum = 0;
+        for (size_t i = 0; i < sizeof(nmi_fixture); i++) sum += ((uint8_t *)&nmi_fixture)[i];
+        nmi_fixture.table.header.checksum = (uint8_t)(0 - sum);
+        bool parsed = acpi_parse_madt_buffer(&nmi_fixture, sizeof(nmi_fixture), &result);
+        if (parsed != (test == 0) || (parsed && (result.nmi_count != 1 || result.nmis[0].lint != 1))) hcf();
+    }
+    serial_puts("[PASS] MADT NMI route parsed; invalid LINT and reserved flag encodings rejected\n");
 }
 
 /* Runs in foreground with timer interrupts enabled; ISR never touches heap. */
@@ -2090,6 +2111,7 @@ static void test_phase9a_pci_discovery(const boot_info_t *boot_info) {
 /* =========================================================================
  * Phase 9 (Step 9B.1): NVMe Initialization & Reads Verification
  * ========================================================================= */
+#if defined(ENABLE_NVME_RAW_PATTERN_TESTS) && (ENABLE_NVME_RAW_PATTERN_TESTS == 1)
 static bool verify_sector_pattern(const uint8_t *sector, const char *pattern, size_t sector_size) {
     size_t pat_len = strlen(pattern);
     if (pat_len == 0 || sector_size == 0) return false;
@@ -2101,7 +2123,6 @@ static bool verify_sector_pattern(const uint8_t *sector, const char *pattern, si
     return true;
 }
 
-#if defined(ENABLE_NVME_RAW_PATTERN_TESTS) && (ENABLE_NVME_RAW_PATTERN_TESTS == 1)
 static void test_phase9b1_nvme_reads(void) {
     serial_puts("\n========================================================\n");
     serial_puts("Phase 9 (Step 9B.1): NVMe Initialization & Reads Verification\n");
@@ -2610,8 +2631,10 @@ static void test_phase9c1_gpt(void) {
         serial_puts("       [FAIL] Reading partition relative LBA 0 failed!\n");
         hcf();
     }
-    if (!verify_sector_pattern(part_read_buf, "FORTRESS_EXT2_PARTITION1_START_MAGIC_#0000#_", 512)) {
-        serial_puts("       [FAIL] Partition relative LBA 0 pattern mismatch!\n");
+    uint8_t parent_sector_2048[512];
+    if (!block_read_sector(nvme_dev, 2048, parent_sector_2048) ||
+        memcmp(part_read_buf, parent_sector_2048, 512)) {
+        serial_puts("[FAIL] Partition translation mismatch\n");
         hcf();
     }
     serial_puts("       [PASS] Relative LBA 0 read verified (maps to parent LBA 2048)\n");
@@ -2637,8 +2660,10 @@ static void test_phase9c1_gpt(void) {
         serial_puts("       [FAIL] Reading partition relative LBA 8191 (last sector) failed!\n");
         hcf();
     }
-    if (!verify_sector_pattern(part_read_buf, "FORTRESS_EXT2_PARTITION1_LAST_SECTOR_#8191#_", 512)) {
-        serial_puts("       [FAIL] Partition relative LBA 8191 pattern mismatch!\n");
+    uint8_t parent_sector_10239[512];
+    if (!block_read_sector(nvme_dev, 10239, parent_sector_10239) ||
+        memcmp(part_read_buf, parent_sector_10239, 512)) {
+        serial_puts("[FAIL] Partition translation mismatch\n");
         hcf();
     }
     serial_puts("       [PASS] Relative LBA 8191 (last sector) read verified (maps to parent LBA 10239)\n");
@@ -2854,9 +2879,123 @@ static void test_phase9c1_gpt(void) {
 }
 
 /* Kernel Main Entry Point */
+static void require_ext2(bool ok, const char *message) {
+    if (!ok) {
+        serial_puts("[FAIL] ext2/audit: "); serial_puts(message); serial_puts("\n");
+        hcf();
+    }
+}
+
+static void test_ext2_and_audits(void) {
+    serial_puts("\n[TEST] Read-only ext2 and architectural audits\n");
+    require_ext2(spin_debug_selftest(), "lock ranks and caller IRQ restoration");
+    serial_puts("[PASS] Lock recursion/inversion predicates and nested IRQ restoration\n");
+    require_ext2(ext2_mount(block_get_dev_by_name("nvme0n1p1"), "/mnt"), "mount");
+    require_ext2(vfs_lookup("/etc/motd") != NULL, "initramfs preserved");
+    require_ext2(vfs_lookup("/mnt/nested/note.txt") != NULL, "nested path");
+    require_ext2(vfs_lookup("/mnt/missing") == NULL, "missing path");
+    require_ext2(vfs_open("/mnt/hello.txt", 1) == NULL, "write open rejected");
+    vfs_node_t *dir = vfs_lookup("/mnt");
+    vfs_dirent_t dent;
+    bool saw_hello = false;
+    int result;
+    uint64_t index = 0;
+    while ((result = vfs_readdir(dir, index++, &dent)) == 1) {
+        if (!strcmp(dent.name, "hello.txt")) saw_hello = true;
+        require_ext2(index < 32, "bounded enumeration");
+    }
+    require_ext2(result == 0 && saw_hello, "directory enumeration");
+    file_t *a = vfs_open("/mnt/hello.txt", 0), *b = vfs_open("/mnt/hello.txt", 0);
+    require_ext2(a && b, "independent open");
+    uint8_t buf[1024], other[16];
+    require_ext2(vfs_read(a, buf, 16) == 16 && vfs_read(b, other, 16) == 16 &&
+                 !memcmp(buf, other, 16), "independent offsets");
+    require_ext2(vfs_read(a, buf, 0) == 0 && a->offset == 16, "zero read");
+    vfs_close(a); vfs_close(b);
+    a = vfs_open("/mnt/large.bin", 0);
+    require_ext2(a != NULL, "large open");
+    size_t off = 0;
+    while ((result = (int)vfs_read(a, buf, sizeof(buf))) > 0) {
+        for (int i = 0; i < result; i++)
+            require_ext2(buf[i] == (uint8_t)((off + i) * 17 + 3), "indirect data");
+        off += result;
+    }
+    require_ext2(result == 0 && off == 400000, "large EOF");
+    vfs_close(a);
+    a = vfs_open("/mnt/sparse.bin", 0);
+    require_ext2(a != NULL, "sparse open");
+    off = 0;
+    while ((result = (int)vfs_read(a, buf, sizeof(buf))) > 0) {
+        for (int i = 0; i < result; i++) {
+            uint8_t expected = off + i < 20000 ? 0 : (uint8_t)"END"[off + i - 20000];
+            require_ext2(buf[i] == expected, "sparse zero fill");
+        }
+        off += result;
+    }
+    require_ext2(result == 0 && off == 20003, "sparse EOF");
+    vfs_close(a);
+    serial_puts("[PASS] ext2 lookup, readdir, offsets, direct/single/double-indirect and sparse reads\n");
+
+    /* Static buffers exist before baseline, and mount/cache allocations are
+     * intentionally retained. Warm a complete process lifecycle first. */
+    static uint8_t before[PMM_BITMAP_CAPACITY_BYTES], after[PMM_BITMAP_CAPACITY_BYTES];
+    uintptr_t first_frame = pmm_alloc_page();
+    require_ext2(first_frame != 0 && pmm_snapshot(before, sizeof(before)), "audit setup");
+    size_t same_count = pmm_get_free_pages();
+    uintptr_t second_frame = pmm_alloc_page();
+    require_ext2(second_frame != 0 && second_frame != first_frame, "distinct audit frames");
+    pmm_free_page(first_frame);
+    require_ext2(pmm_get_free_pages() == same_count && pmm_snapshot(after, sizeof(after)) &&
+                 memcmp(before, after, sizeof(before)) != 0, "equal counts must not hide changed frame set");
+    pmm_free_page(second_frame);
+    serial_puts("[PASS] Exact bitmap detects changed allocation set despite equal allocation counters\n");
+    extern const uint8_t embedded_init_elf_start[], embedded_init_elf_end[];
+    uint64_t hash = 0;
+    size_t heap_used = 0, tables = 0;
+    for (unsigned cycle = 0; cycle < 11; cycle++) {
+        tcb_t *p = process_spawn_with_arg("ext2-user", embedded_init_elf_start,
+                    embedded_init_elf_end - embedded_init_elf_start, 8);
+        require_ext2(p != NULL, "spawn");
+        uint64_t pid = p->tid, code = 0;
+        require_ext2(process_wait(pid, &code) && code == 89, "Ring 3 exact read/print/close");
+        sched_reap_dead();
+        if (!cycle) {
+            require_ext2(pmm_snapshot(before, sizeof(before)), "snapshot baseline");
+            hash = vmm_kernel_mapping_fingerprint();
+            heap_used = heap_get_used_bytes();
+            tables = vmm_get_allocated_table_frames();
+        } else {
+            require_ext2(pmm_snapshot(after, sizeof(after)) && !memcmp(before, after, sizeof(before)),
+                         "exact allocation-set mismatch");
+            require_ext2(hash == vmm_kernel_mapping_fingerprint(), "kernel mapping fingerprint");
+            require_ext2(heap_used == heap_get_used_bytes() && tables == vmm_get_allocated_table_frames(),
+                         "heap/table lifecycle mismatch");
+        }
+    }
+    require_ext2(heap_verify_integrity(), "heap integrity");
+    serial_puts("[PASS] Ring 3 ext2: 10 audited cycles, exact PMM bitmap restored, stable kernel mappings and heap\n");
+    serial_puts("[ OK ] Phase 9 (Step 9C.2): Read-only ext2 PASSED!\n");
+}
+
 void kmain(void) {
     /* 1. Initialize COM1 Serial Port (0x3F8) */
     int serial_status = serial_init();
+
+    /* Bring screen diagnostics up before PMM/VMM audits can halt. Limine's
+     * initial mappings remain active here; no allocation is required. */
+    static boot_info_t early_console;
+    if (LIMINE_BASE_REVISION_SUPPORTED && framebuffer_request.response &&
+        framebuffer_request.response->framebuffer_count && framebuffer_request.response->framebuffers &&
+        framebuffer_request.response->framebuffers[0]) {
+        struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
+        early_console.has_framebuffer = true;
+        early_console.fb_address = (uintptr_t)fb->address;
+        early_console.fb_width = fb->width;
+        early_console.fb_height = fb->height;
+        early_console.fb_pitch = fb->pitch;
+        early_console.fb_bpp = fb->bpp;
+        console_init(&early_console);
+    }
 
     serial_puts("\n========================================================\n");
     serial_puts("             FORTRESS OS - x86_64 UEFI KERNEL           \n");
@@ -3742,7 +3881,7 @@ pf_boot_guard_done:
 
     /* Test 4: Local APIC (LAPIC) MMIO Mapping & Initialization */
     serial_puts("[TEST 4] Initializing Local APIC (LAPIC) MMIO & SVR...\n");
-    if (!lapic_init(madt_info.lapic_phys_addr)) {
+    if (!lapic_init(madt_info.lapic_phys_addr) || !lapic_configure_nmi(&madt_info)) {
         serial_puts("       [FAIL] Failed to initialize Local APIC!\n");
         hcf();
     }
@@ -4309,6 +4448,18 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase9a_pci_discovery(&boot_info);
 
+    /* The following storage acceptance suite assumes a disposable QEMU image,
+     * including its exact geometry and fixture files. Do not apply it to a
+     * laptop's existing NVMe namespaces. PCI discovery above is read-only. */
+    pci_device_t storage_fixture;
+    if (!pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME,
+                         PCI_PROGIF_STORAGE_NVME, &storage_fixture) ||
+        storage_fixture.vendor_id != 0x1b36 || storage_fixture.device_id != 0x0010) {
+        serial_puts("[BOOT] Hardware diagnostics complete. QEMU storage fixture tests skipped.\n");
+        serial_puts("[BOOT] No interactive shell yet. CPU halted; photograph any earlier failure.\n");
+        hcf();
+    }
+
 #if defined(ENABLE_NVME_RAW_PATTERN_TESTS) && (ENABLE_NVME_RAW_PATTERN_TESTS == 1)
     /* =========================================================================
      * Phase 9 (Step 9B.1): NVMe Initialization & Reads Verification
@@ -4326,7 +4477,9 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase9c1_gpt();
 
-    serial_puts("\n[BOOT] FortressOS Phase 9 (Step 9C.1) complete. CPU halted.\n");
+    test_ext2_and_audits();
+
+    serial_puts("\n[BOOT] FortressOS Phase 9 (Step 9C.2) complete. CPU halted.\n");
 
     /* Clean halt state */
     hcf();

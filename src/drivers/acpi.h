@@ -95,6 +95,7 @@ typedef struct {
     bool      pcat_compat;
     size_t    enabled_cpu_count;
     uint8_t   enabled_cpu_apic_ids[MAX_DETECTED_CPUS];
+    uint8_t   enabled_cpu_processor_ids[MAX_DETECTED_CPUS];
     size_t    online_capable_cpu_count;
     uint8_t   online_capable_cpu_apic_ids[MAX_DETECTED_CPUS];
     size_t    ioapic_count;
@@ -111,6 +112,12 @@ typedef struct {
         uint16_t flags;
     } isos[MAX_DETECTED_ISOS];
     bool      has_irq0_override;
+    size_t    nmi_count;
+    struct {
+        uint8_t processor_id;
+        uint8_t lint;
+        uint16_t flags;
+    } nmis[MAX_DETECTED_CPUS * 2];
     uint32_t  irq0_gsi;
 } acpi_madt_info_t;
 

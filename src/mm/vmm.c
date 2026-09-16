@@ -35,7 +35,28 @@ static inline bool is_canonical_address(uintptr_t addr) {
 }
 
 static size_t     g_vmm_allocated_table_frames = 0;
-static spinlock_t g_vmm_lock = {0};
+static spinlock_t g_vmm_lock = SPINLOCK_RANKED(3, "vmm");
+
+static uint64_t fingerprint_table(uint64_t *table, unsigned level,
+                                  unsigned first, uint64_t hash) {
+    for (unsigned i = first; i < 512; i++) {
+        uint64_t entry = table[i];
+        uint64_t stable = entry & ~(PTE_ACCESSED | PTE_DIRTY);
+        hash = (hash ^ stable) * 1099511628211ULL;
+        if (level > 1 && (entry & PTE_PRESENT) && !(entry & PTE_HUGE))
+            hash = fingerprint_table(phys_to_virt(entry & PTE_ADDR_MASK),
+                                     level - 1, 0, hash);
+    }
+    return hash;
+}
+
+uint64_t vmm_kernel_mapping_fingerprint(void) {
+    uint64_t flags = spin_lock_irqsave(&g_vmm_lock);
+    uint64_t result = fingerprint_table(phys_to_virt(kernel_pml4_phys), 4, 256,
+                                        14695981039346656037ULL);
+    spin_unlock_irqrestore(&g_vmm_lock, flags);
+    return result;
+}
 
 static uint64_t *get_or_create_table(uint64_t *parent_table, size_t index, uint64_t flags) {
     uint64_t entry = parent_table[index];

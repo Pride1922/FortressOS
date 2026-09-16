@@ -2,6 +2,7 @@
 # Target: x86_64 UEFI Bare-Metal OS
 
 SHELL := /bin/bash
+.DELETE_ON_ERROR:
 
 # Toolchain configuration
 CC      ?= gcc
@@ -104,6 +105,19 @@ QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS)
 .PHONY: all clean distclean run run-bios debug limine-setup ovmf-setup iso nvme-disk nvme-gpt-disk nvme-raw-disk
 
 all: $(BOOTABLE_ISO)
+
+.PHONY: test-ext2 test-storage test-nmi test-boot-diagnostics
+test-boot-diagnostics: $(BOOTABLE_ISO)
+	@python3 scripts/test_boot_diagnostics.py
+
+test-nmi: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
+	@python3 scripts/test_nmi_transitions.py
+
+test-ext2:
+	@python3 scripts/test_ext2.py
+
+test-storage: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
+	@python3 scripts/test_storage_boot.py
 
 USER_DIR := user
 USER_INIT_ELF := $(BUILD_DIR)/init.elf

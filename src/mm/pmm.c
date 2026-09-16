@@ -1,6 +1,8 @@
 #include "pmm.h"
 #include "serial.h"
 #include "spinlock.h"
+#include "string.h"
+
 
 static uint8_t   *bitmap = NULL;
 static uintptr_t  bitmap_phys_addr = 0;
@@ -9,7 +11,19 @@ static size_t     total_pages = 0;
 static size_t     used_pages = 0;
 static size_t     free_pages = 0;
 static size_t     last_allocated_index = 0;
-static spinlock_t g_pmm_lock = {0};
+static spinlock_t g_pmm_lock = SPINLOCK_RANKED(4, "pmm");
+
+bool pmm_snapshot(void *buffer, size_t capacity) {
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
+    size_t bytes = (total_pages + 7) / 8;
+    bool ok = buffer && bitmap && capacity >= bytes;
+    if (ok) {
+        memset(buffer, 0, capacity);
+        memcpy(buffer, bitmap, bytes);
+    }
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
+    return ok;
+}
 
 static inline void bitmap_set(size_t frame_idx) {
     bitmap[frame_idx / 8] |= (uint8_t)(1 << (frame_idx % 8));
@@ -35,6 +49,7 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
         struct limine_memmap_entry *entry = memmap->entries[i];
         if (entry->type == LIMINE_MEMMAP_USABLE ||
             entry->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE) {
+            if (entry->length > UINT64_MAX - entry->base) continue;
             uint64_t top = entry->base + entry->length;
             if (top > highest_addr) {
                 highest_addr = top;
@@ -42,6 +57,10 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
         }
     }
 
+    if (highest_addr > PMM_BITMAP_MAX_RAM_BYTES) {
+        serial_puts("[WARN] PMM currently manages physical RAM below 2 GiB; higher RAM is reserved\n");
+        highest_addr = PMM_BITMAP_MAX_RAM_BYTES;
+    }
     total_pages = (size_t)(highest_addr / PAGE_SIZE);
     used_pages  = total_pages;
     free_pages  = 0;
@@ -51,28 +70,19 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     bitmap_size = (bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     size_t bitmap_pages = bitmap_size / PAGE_SIZE;
 
-    /* 3. Locate a usable RAM region with sufficient space for the bitmap */
+    /* Keep the bitmap itself in managed, page-aligned RAM above 1 MiB. */
     uintptr_t bitmap_phys = 0;
     for (uint64_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
-        if (entry->type == LIMINE_MEMMAP_USABLE && entry->length >= bitmap_size) {
-            /* Prefer memory above 1 MiB to leave low memory intact */
-            if (entry->base >= 0x100000) {
-                bitmap_phys = entry->base;
-                break;
-            }
-        }
-    }
-
-    /* Fallback if no block above 1 MiB exists */
-    if (bitmap_phys == 0) {
-        for (uint64_t i = 0; i < memmap->entry_count; i++) {
-            struct limine_memmap_entry *entry = memmap->entries[i];
-            if (entry->type == LIMINE_MEMMAP_USABLE && entry->length >= bitmap_size + PAGE_SIZE) {
-                /* Offset past page 0 */
-                bitmap_phys = entry->base + PAGE_SIZE;
-                break;
-            }
+        if (entry->type != LIMINE_MEMMAP_USABLE || entry->base >= highest_addr ||
+            entry->length > UINT64_MAX - entry->base) continue;
+        uint64_t end = entry->base + entry->length;
+        if (end > highest_addr) end = highest_addr;
+        uint64_t start = entry->base < 0x100000 ? 0x100000 : entry->base;
+        start = ALIGN_UP(start, PAGE_SIZE);
+        if (start <= end && bitmap_size <= end - start) {
+            bitmap_phys = start;
+            break;
         }
     }
 

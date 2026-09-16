@@ -62,6 +62,9 @@ uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr);
 void      vmm_switch_pml4(uintptr_t pml4_phys);
 uintptr_t vmm_get_kernel_pml4(void);
 uint64_t *vmm_get_kernel_pml4_virt(void);
+/* Diagnostic non-cryptographic fingerprint, ignoring hardware A/D changes.
+ * Not an ownership proof; compare only with kernel mappings quiescent. */
+uint64_t vmm_kernel_mapping_fingerprint(void);
 uintptr_t vmm_get_current_pml4(void);
 uint64_t *vmm_get_active_pml4_virt(void);
 uint64_t  vmm_get_hhdm_offset(void);

@@ -33,7 +33,7 @@ static tcb_t        *g_runqueue_head      = NULL;
 static tcb_t        *g_runqueue_tail      = NULL;
 static tcb_t        *g_dead_threads       = NULL;
 static uint64_t      g_next_tid           = 1;
-static spinlock_t    g_sched_lock         = {0};
+static spinlock_t    g_sched_lock         = SPINLOCK_RANKED(1, "sched");
 static volatile bool g_preemption_enabled = false;
 
 /* 64-slot Page-Backed Thread Stack Allocator */
@@ -380,7 +380,8 @@ void thread_yield(void) {
      *    executed 'cli', and switch_context() executes with 'cli' until the incoming thread's
      *    saved RFLAGS is popped from its stack.
      */
-    __atomic_clear(&g_sched_lock.lock, __ATOMIC_RELEASE);
+    spin_unlock_noirq(&g_sched_lock);
+    spin_debug_assert_unheld();
 
     switch_context(&old->rsp, next->rsp);
 
@@ -428,7 +429,8 @@ void thread_exit(void) {
         vmm_switch_pml4(target_cr3);
     }
 
-    __atomic_clear(&g_sched_lock.lock, __ATOMIC_RELEASE);
+    spin_unlock_noirq(&g_sched_lock);
+    spin_debug_assert_unheld();
 
     uint64_t dummy_old_rsp = 0;
     switch_context(&dummy_old_rsp, next->rsp);

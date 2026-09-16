@@ -21,6 +21,10 @@ typedef struct vfs_node {
     struct vfs_node *parent;
     struct vfs_node *next;      /* Sibling in parent directory */
     struct vfs_node *children;  /* Child list for directory */
+    void *fs_private;
+    struct vfs_node *(*lookup)(struct vfs_node *, const char *);
+    int64_t (*read)(struct vfs_node *, uint64_t, void *, size_t);
+    int (*readdir)(struct vfs_node *, uint64_t, void *);
 } vfs_node_t;
 
 typedef struct file {

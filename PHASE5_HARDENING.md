@@ -37,7 +37,8 @@ halts deliberately, so the host timeout is expected.
 - External I/O APIC interrupt delivery is not yet tested. Discovery and masked
   redirection readback do not establish successful device interrupt routing.
 - Drivers and handler registration are boot-CPU-only with interrupts disabled;
-  SMP, runtime route changes, NMI routing and x2APIC are not supported here.
+  SMP, runtime route changes and x2APIC are not supported here.
+  Later NMI hardening adds MADT type-4 bootstrap-CPU routing and QEMU injection tests; see ARCH_REVIEW.md.
 - No physical Latitude test, forced PIT hardware timeout, or arbitrary-register
   preservation stress harness was run. Existing exception tests and timer/heap
   coexistence pass, but are not substitutes for those tests.

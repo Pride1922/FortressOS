@@ -120,6 +120,34 @@ bool lapic_init(uintptr_t lapic_phys_addr) {
     return true;
 }
 
+bool lapic_configure_nmi(const acpi_madt_info_t *info) {
+    uint8_t id = lapic_read(APIC_REG_ID) >> 24;
+    int processor = -1;
+    for (size_t i = 0; i < info->enabled_cpu_count; i++)
+        if (info->enabled_cpu_apic_ids[i] == id) processor = info->enabled_cpu_processor_ids[i];
+    uint32_t values[2] = {0, 0};
+    bool seen[2] = {false, false};
+    for (size_t i = 0; i < info->nmi_count; i++) {
+        if (info->nmis[i].processor_id != 255 && info->nmis[i].processor_id != processor) continue;
+        unsigned lint = info->nmis[i].lint;
+        uint16_t flags = info->nmis[i].flags;
+        uint32_t value = 4U << 8; /* NMI delivery; conforming means high/edge. */
+        if ((flags & 3) == 3) value |= 1U << 13;
+        if (((flags >> 2) & 3) == 3) value |= 1U << 15;
+        if (lint > 1 || (seen[lint] && values[lint] != value)) return false;
+        seen[lint] = true; values[lint] = value;
+    }
+    for (unsigned lint = 0; lint < 2; lint++) {
+        if (!seen[lint]) continue;
+        uint32_t reg = lint ? APIC_REG_LVT_LINT1 : APIC_REG_LVT_LINT0;
+        lapic_write(reg, values[lint]);
+        if ((lapic_read(reg) & 0x1a700U) != values[lint]) return false;
+        serial_puts("[ OK ] Firmware NMI route enabled on LAPIC LINT");
+        serial_print_dec(lint); serial_puts("\n");
+    }
+    return true;
+}
+
 /* PIT channel 2 is reserved for calibration/verification during early boot.
  * Preserve gate/speaker control; iteration limits only bound failure waits. */
 static uint8_t pit_begin(uint16_t count) {
