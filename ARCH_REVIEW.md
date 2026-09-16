@@ -157,3 +157,17 @@ all memory, process and initramfs tests; its framebuffer screenshot is saved.
 Laptop root cause still requires a new boot/photo; emulator evidence alone does
 not identify the exact failure on the Latitude. Physical disks are excluded from
 QEMU-specific storage fixture tests using the controller vendor/device identity.
+
+## Boot-console performance
+
+Replaced uncached framebuffer-to-framebuffer scrolling with a static RAM text
+cache. Rendering compares character and colours and skips unchanged cells;
+blank cells ignore irrelevant foreground-colour differences. Scrolling advances
+up to eight rows per batch, reducing screen movement frequency during logs.
+The fixed 1.5 MiB cache requires no early allocator and supports a 512 x 256 text
+viewport. Framebuffer writes remain uncached; this is not GPU acceleration or
+write-combining support. Actual Latitude performance awaits the rebuilt ISO test.
+
+Host ASan/UBSan tests verify rendered pixels, padding bounds, preserved colours,
+batched scroll frequency, no blank-cell redraw, and exact-width newline handling.
+BIOS and UEFI acceptance suites pass with the updated cursor semantics.

@@ -4,6 +4,20 @@
 #include "string.h"
 #include "serial.h"
 
+/* Static text cache works before PMM/heap initialization. Covers a 4K text
+ * viewport without reading uncached framebuffer memory while scrolling. */
+#define CONSOLE_MAX_COLS 512
+#define CONSOLE_MAX_ROWS 256
+
+typedef struct {
+    uint32_t fg, bg;
+    char character;
+} console_cell_t;
+static console_cell_t cells[CONSOLE_MAX_ROWS][CONSOLE_MAX_COLS];
+#ifdef CONSOLE_TEST
+static size_t test_glyph_draws, test_scrolls;
+#endif
+
 typedef struct {
     volatile uint32_t *fb;
     uint64_t width;
@@ -28,6 +42,15 @@ bool console_is_initialized(void) {
 static void draw_char_unlocked(uint64_t col, uint64_t row, char c, uint32_t fg, uint32_t bg) {
     if (col >= g_console.cols || row >= g_console.rows) return;
 
+    console_cell_t *cell = &cells[row][col];
+    if (cell->character == c && cell->bg == bg && (c == ' ' || cell->fg == fg)) {
+        cell->fg = fg;
+        return;
+    }
+    *cell = (console_cell_t){.fg = fg, .bg = bg, .character = c};
+#ifdef CONSOLE_TEST
+    test_glyph_draws++;
+#endif
     uint64_t px = col * FONT_WIDTH;
     uint64_t py = row * FONT_HEIGHT;
     const uint8_t *glyph = font_get_glyph(c);
@@ -42,24 +65,33 @@ static void draw_char_unlocked(uint64_t col, uint64_t row, char c, uint32_t fg, 
 }
 
 static void scroll_unlocked(void) {
-    uint64_t scroll_rows = (g_console.rows - 1) * FONT_HEIGHT;
-
-    /* Move pixel rows up by FONT_HEIGHT */
-    for (uint64_t y = 0; y < scroll_rows; y++) {
-        volatile uint32_t *dst = g_console.fb + y * g_console.pitch32;
-        volatile uint32_t *src = g_console.fb + (y + FONT_HEIGHT) * g_console.pitch32;
-        memcpy((void *)dst, (const void *)src, g_console.width * sizeof(uint32_t));
-    }
-
-    /* Clear bottom text line to background color */
-    for (uint64_t y = scroll_rows; y < g_console.rows * FONT_HEIGHT; y++) {
-        volatile uint32_t *line = g_console.fb + y * g_console.pitch32;
-        for (uint64_t x = 0; x < g_console.width; x++) {
-            line[x] = g_console.bg_color;
+    /* Amortize boot-log scrolling over several new lines. New output remains
+     * immediately visible; this does not need a timer or deferred flush. */
+    uint64_t count = g_console.rows / 4;
+    if (!count) count = 1;
+    if (count > 8) count = 8;
+#ifdef CONSOLE_TEST
+    test_scrolls++;
+#endif
+    for (uint64_t row = 0; row < g_console.rows - count; row++) {
+        for (uint64_t col = 0; col < g_console.cols; col++) {
+            console_cell_t source = cells[row + count][col];
+            draw_char_unlocked(col, row, source.character, source.fg, source.bg);
         }
     }
+    for (uint64_t row = g_console.rows - count; row < g_console.rows; row++) {
+        for (uint64_t col = 0; col < g_console.cols; col++)
+            draw_char_unlocked(col, row, ' ', g_console.fg_color, g_console.bg_color);
+    }
+    g_console.cursor_row = g_console.rows - count;
+}
 
-    g_console.cursor_row = g_console.rows - 1;
+static void reset_cells_unlocked(void) {
+    for (uint64_t row = 0; row < g_console.rows; row++)
+        for (uint64_t col = 0; col < g_console.cols; col++)
+            cells[row][col] = (console_cell_t){
+                .fg = g_console.fg_color, .bg = g_console.bg_color, .character = ' '
+            };
 }
 
 static void console_putc_unlocked(char c) {
@@ -114,14 +146,9 @@ static void console_putc_unlocked(char c) {
     draw_char_unlocked(g_console.cursor_col, g_console.cursor_row, c, g_console.fg_color, g_console.bg_color);
     g_console.cursor_col++;
 
-    /* Wrap if character reached edge */
-    if (g_console.cursor_col >= g_console.cols) {
-        g_console.cursor_col = 0;
-        g_console.cursor_row++;
-        if (g_console.cursor_row >= g_console.rows) {
-            scroll_unlocked();
-        }
-    }
+    /* Defer wrapping until the next printable character. A newline following
+     * an exactly full line must advance once, not create an extra blank row. */
+
 }
 
 void console_init(const boot_info_t *boot_info) {
@@ -148,11 +175,15 @@ void console_init(const boot_info_t *boot_info) {
     g_console.pitch32     = boot_info->fb_pitch / 4;
     g_console.cols        = boot_info->fb_width / FONT_WIDTH;
     g_console.rows        = boot_info->fb_height / FONT_HEIGHT;
+    if (g_console.cols > CONSOLE_MAX_COLS) g_console.cols = CONSOLE_MAX_COLS;
+    if (g_console.rows > CONSOLE_MAX_ROWS) g_console.rows = CONSOLE_MAX_ROWS;
     g_console.cursor_col  = 0;
     g_console.cursor_row  = 0;
     g_console.fg_color    = CONSOLE_DEFAULT_FG;
     g_console.bg_color    = CONSOLE_DEFAULT_BG;
     g_console.initialized = true;
+
+    reset_cells_unlocked();
 
     /* Fill background */
     for (uint64_t y = 0; y < g_console.height; y++) {
@@ -182,6 +213,7 @@ void console_clear(void) {
             line[x] = g_console.bg_color;
         }
     }
+    reset_cells_unlocked();
     g_console.cursor_col = 0;
     g_console.cursor_row = 0;
 

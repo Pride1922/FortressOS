@@ -1815,12 +1815,12 @@ static void test_phase8a_framebuffer_console(const boot_info_t *boot_info) {
         serial_puts(" scrolling test\n");
     }
     console_get_cursor(&c_col, &c_row);
-    if (c_row != rows - 1) {
+    if (c_row >= rows || c_col >= cols) {
         serial_puts("       [FAIL] Cursor row exceeded screen boundary after scrolling!\n");
         hcf();
     }
-    serial_puts("       [PASS] Software row scrolling verified (cursor clamped to bottom row ");
-    serial_print_dec(rows - 1);
+    serial_puts("       [PASS] Cached batch scrolling verified (cursor within screen at row ");
+    serial_print_dec(c_row);
     serial_puts(")\n");
 
     /* 4. Color Switching & Visual Banner */

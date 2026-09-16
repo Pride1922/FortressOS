@@ -365,7 +365,7 @@ Future tasks should follow this sequenced implementation order:
     ├── Step 8A: Basic Framebuffer Text Console (COMPLETE)
     │   ├── Linear 32bpp framebuffer rendering with 8x16 monochrome bitmap font
     │   ├── Text console primitives: newline (\n), carriage return (\r), backspace (\b), tab (\t), printable ASCII
-    │   ├── Software row scrolling with bottom line blanking and cursor boundary clamping
+    │   ├── RAM-cached character/colour cells, changed-cell redraw and batched scrolling (up to 8 rows)
     │   ├── Dual output mirroring: serial_putc mirrors to console_putc if console is initialized
     │   ├── Thread & IRQ-safe synchronization via dedicated spinlock_t g_console_lock (spin_lock_irqsave)
     │   ├── Tokyo Night theme palette (Foreground: 0x00C0CAF5, Background: 0x001A1B26)
@@ -483,3 +483,17 @@ RFLAGS belongs to each caller. Diagnostics use raw UART. This is not SMP-ready.
   progress to PCI discovery and captures `build/boot-8g-no-uart.png`.
 - Storage fixture assertions run only against QEMU NVMe vendor/device IDs.
   Physical hardware currently runs diagnostics and halts; there is no shell yet.
+
+### Boot-console scrolling
+
+The console caches character/colour cells in static RAM (512 x 256 cells,
+1.5 MiB; viewport capped to this grid). Scrolling never reads framebuffer MMIO.
+Only changed cells are rendered, and each scroll advances min(8, max(1, rows/4))
+rows so several subsequent log lines need no screen movement. Output remains
+synchronous and immediately visible, including before PMM/heap initialization.
+Wrapping is deferred until the next printable character; an explicit newline
+following a full-width line advances exactly once.
+
+`make test-console` checks pixel output, colour preservation, scroll batching,
+zero redraws for blank lines, control characters, one-cell screens and padded
+framebuffer bounds under ASan/UBSan. BIOS/UEFI full boot suites also pass.

@@ -106,7 +106,10 @@ QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS)
 
 all: $(BOOTABLE_ISO)
 
-.PHONY: test-ext2 test-storage test-nmi test-boot-diagnostics
+.PHONY: test-ext2 test-storage test-nmi test-boot-diagnostics test-console
+test-console:
+	@python3 scripts/test_console.py
+
 test-boot-diagnostics: $(BOOTABLE_ISO)
 	@python3 scripts/test_boot_diagnostics.py
 
