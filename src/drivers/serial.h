@@ -27,4 +27,10 @@ void serial_puts(const char *str);
 void serial_print_hex(uint64_t val);
 void serial_print_dec(uint64_t val);
 
+/* Raw Lockless UART API (for NMI, Double Fault, and emergency panics) */
+void serial_raw_putc(char c);
+void serial_raw_puts(const char *str);
+void serial_raw_print_hex(uint64_t val);
+void serial_raw_print_dec(uint64_t val);
+
 #endif /* FORTRESS_SERIAL_H */

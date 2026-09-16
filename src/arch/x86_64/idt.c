@@ -174,11 +174,11 @@ void isr_exception_handler(interrupt_frame_t *frame) {
      * 3. Must NEVER invoke scheduler / context switch functions (thread_yield, process_exit).
      */
     if (frame->vector == 2) {
-        serial_puts("[NMI] Non-Maskable Interrupt received on IST2! RIP: ");
-        serial_print_hex(frame->rip);
-        serial_puts(", RSP: ");
-        serial_print_hex(frame->rsp);
-        serial_puts("\n");
+        serial_raw_puts("[NMI] Non-Maskable Interrupt received on IST2! RIP: ");
+        serial_raw_print_hex(frame->rip);
+        serial_raw_puts(", RSP: ");
+        serial_raw_print_hex(frame->rsp);
+        serial_raw_puts("\n");
         return;
     }
 
@@ -292,98 +292,98 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         for (;;) { __asm__ volatile("cli; hlt"); }
     }
 
-    /* Fatal Exception Panic */
-    serial_puts("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-    serial_puts("               CPU EXCEPTION KERNEL PANIC               \n");
-    serial_puts("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n");
+    /* Fatal Exception Panic - raw UART output to avoid lockups under g_console_lock */
+    serial_raw_puts("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+    serial_raw_puts("               CPU EXCEPTION KERNEL PANIC               \n");
+    serial_raw_puts("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n");
 
-    serial_puts("Exception:   ");
+    serial_raw_puts("Exception:   ");
     if (frame->vector < 32) {
-        serial_puts(exception_messages[frame->vector]);
+        serial_raw_puts(exception_messages[frame->vector]);
     } else {
-        serial_puts("User / Unknown Vector");
+        serial_raw_puts("User / Unknown Vector");
     }
-    serial_puts(" (Vector ");
-    serial_print_dec(frame->vector);
-    serial_puts(")\n");
+    serial_raw_puts(" (Vector ");
+    serial_raw_print_dec(frame->vector);
+    serial_raw_puts(")\n");
 
-    serial_puts("Error Code:  ");
-    serial_print_hex(frame->error_code);
-    serial_puts("\n");
+    serial_raw_puts("Error Code:  ");
+    serial_raw_print_hex(frame->error_code);
+    serial_raw_puts("\n");
 
-    serial_puts("Instruction: RIP = ");
-    serial_print_hex(frame->rip);
-    serial_puts("  CS = ");
-    serial_print_hex(frame->cs);
-    serial_puts("  RFLAGS = ");
-    serial_print_hex(frame->rflags);
-    serial_puts("\n");
+    serial_raw_puts("Instruction: RIP = ");
+    serial_raw_print_hex(frame->rip);
+    serial_raw_puts("  CS = ");
+    serial_raw_print_hex(frame->cs);
+    serial_raw_puts("  RFLAGS = ");
+    serial_raw_print_hex(frame->rflags);
+    serial_raw_puts("\n");
 
-    serial_puts("Stack:       RSP = ");
-    serial_print_hex(frame->rsp);
-    serial_puts("  SS = ");
-    serial_print_hex(frame->ss);
-    serial_puts("\n");
+    serial_raw_puts("Stack:       RSP = ");
+    serial_raw_print_hex(frame->rsp);
+    serial_raw_puts("  SS = ");
+    serial_raw_print_hex(frame->ss);
+    serial_raw_puts("\n");
 
     /* Special diagnostic decoding for Page Fault (#PF, vector 14) */
     if (frame->vector == 14) {
         uint64_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
 
-        serial_puts("\n[#PF DIAGNOSTICS]\n");
-        serial_puts("Faulting Linear Address (CR2): ");
-        serial_print_hex(cr2);
-        serial_puts("\nCause: ");
+        serial_raw_puts("\n[#PF DIAGNOSTICS]\n");
+        serial_raw_puts("Faulting Linear Address (CR2): ");
+        serial_raw_print_hex(cr2);
+        serial_raw_puts("\nCause: ");
 
         if (!(frame->error_code & (1 << 0))) {
-            serial_puts("[Page Not Present] ");
+            serial_raw_puts("[Page Not Present] ");
         } else {
-            serial_puts("[Protection Violation] ");
+            serial_raw_puts("[Protection Violation] ");
         }
 
         if (frame->error_code & (1 << 1)) {
-            serial_puts("[Write Access] ");
+            serial_raw_puts("[Write Access] ");
         } else {
-            serial_puts("[Read Access] ");
+            serial_raw_puts("[Read Access] ");
         }
 
         if (frame->error_code & (1 << 2)) {
-            serial_puts("[User Mode] ");
+            serial_raw_puts("[User Mode] ");
         } else {
-            serial_puts("[Kernel Mode] ");
+            serial_raw_puts("[Kernel Mode] ");
         }
 
         if (frame->error_code & (1 << 3)) {
-            serial_puts("[Reserved Bit Violation] ");
+            serial_raw_puts("[Reserved Bit Violation] ");
         }
 
         if (frame->error_code & (1 << 4)) {
-            serial_puts("[Instruction Fetch] ");
+            serial_raw_puts("[Instruction Fetch] ");
         }
 
-        serial_puts("\n");
+        serial_raw_puts("\n");
     }
 
-    serial_puts("\nRegisters:\n");
-    serial_puts("  RAX: "); serial_print_hex(frame->rax);
-    serial_puts("  RBX: "); serial_print_hex(frame->rbx);
-    serial_puts("  RCX: "); serial_print_hex(frame->rcx);
-    serial_puts("  RDX: "); serial_print_hex(frame->rdx);
-    serial_puts("\n");
-    serial_puts("  RSI: "); serial_print_hex(frame->rsi);
-    serial_puts("  RDI: "); serial_print_hex(frame->rdi);
-    serial_puts("  RBP: "); serial_print_hex(frame->rbp);
-    serial_puts("\n");
-    serial_puts("  R8:  "); serial_print_hex(frame->r8);
-    serial_puts("  R9:  "); serial_print_hex(frame->r9);
-    serial_puts("  R10: "); serial_print_hex(frame->r10);
-    serial_puts("  R11: "); serial_print_hex(frame->r11);
-    serial_puts("\n");
-    serial_puts("  R12: "); serial_print_hex(frame->r12);
-    serial_puts("  R13: "); serial_print_hex(frame->r13);
-    serial_puts("  R14: "); serial_print_hex(frame->r14);
-    serial_puts("  R15: "); serial_print_hex(frame->r15);
-    serial_puts("\n\nSystem halted.\n");
+    serial_raw_puts("\nRegisters:\n");
+    serial_raw_puts("  RAX: "); serial_raw_print_hex(frame->rax);
+    serial_raw_puts("  RBX: "); serial_raw_print_hex(frame->rbx);
+    serial_raw_puts("  RCX: "); serial_raw_print_hex(frame->rcx);
+    serial_raw_puts("  RDX: "); serial_raw_print_hex(frame->rdx);
+    serial_raw_puts("\n");
+    serial_raw_puts("  RSI: "); serial_raw_print_hex(frame->rsi);
+    serial_raw_puts("  RDI: "); serial_raw_print_hex(frame->rdi);
+    serial_raw_puts("  RBP: "); serial_raw_print_hex(frame->rbp);
+    serial_raw_puts("\n");
+    serial_raw_puts("  R8:  "); serial_raw_print_hex(frame->r8);
+    serial_raw_puts("  R9:  "); serial_raw_print_hex(frame->r9);
+    serial_raw_puts("  R10: "); serial_raw_print_hex(frame->r10);
+    serial_raw_puts("  R11: "); serial_raw_print_hex(frame->r11);
+    serial_raw_puts("\n");
+    serial_raw_puts("  R12: "); serial_raw_print_hex(frame->r12);
+    serial_raw_puts("  R13: "); serial_raw_print_hex(frame->r13);
+    serial_raw_puts("  R14: "); serial_raw_print_hex(frame->r14);
+    serial_raw_puts("  R15: "); serial_raw_print_hex(frame->r15);
+    serial_raw_puts("\n\nSystem halted.\n");
 
     for (;;) {
         __asm__ volatile("cli; hlt");

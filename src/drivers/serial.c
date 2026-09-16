@@ -50,21 +50,14 @@ static int serial_is_transmit_empty(void) {
     return (inb(COM1_LSR) & LSR_THRE);
 }
 
-void serial_putc(char c) {
-    /* Mirror output to framebuffer console if active */
-    if (console_is_initialized()) {
-        console_putc(c);
-    }
-
+void serial_raw_putc(char c) {
     if (c == '\n') {
-        /* Send carriage return to serial before newline */
         while (!serial_is_transmit_empty()) {
             __asm__ volatile("pause");
         }
         outb(COM1_DATA, (uint8_t)'\r');
     }
 
-    /* Wait until the transmit buffer is empty */
     while (!serial_is_transmit_empty()) {
         __asm__ volatile("pause");
     }
@@ -72,10 +65,68 @@ void serial_putc(char c) {
     outb(COM1_DATA, (uint8_t)c);
 }
 
-void serial_puts(const char *str) {
+void serial_raw_puts(const char *str) {
     if (!str) return;
     while (*str) {
-        serial_putc(*str++);
+        serial_raw_putc(*str++);
+    }
+}
+
+void serial_raw_print_hex(uint64_t val) {
+    serial_raw_puts("0x");
+    const char hex_digits[] = "0123456789ABCDEF";
+    bool leading_zero = true;
+
+    for (int i = 60; i >= 0; i -= 4) {
+        uint8_t nibble = (val >> i) & 0xF;
+        if (nibble != 0 || i == 0) {
+            leading_zero = false;
+        }
+        if (!leading_zero) {
+            serial_raw_putc(hex_digits[nibble]);
+        }
+    }
+}
+
+void serial_raw_print_dec(uint64_t val) {
+    if (val == 0) {
+        serial_raw_putc('0');
+        return;
+    }
+
+    char buf[32];
+    int idx = 0;
+
+    while (val > 0) {
+        buf[idx++] = '0' + (val % 10);
+        val /= 10;
+    }
+
+    for (int i = idx - 1; i >= 0; i--) {
+        serial_raw_putc(buf[i]);
+    }
+}
+
+void serial_putc(char c) {
+    /* Mirror output to framebuffer console if active */
+    if (console_is_initialized()) {
+        console_putc(c);
+    }
+
+    serial_raw_putc(c);
+}
+
+void serial_puts(const char *str) {
+    if (!str) return;
+
+    /* Mirror whole string atomically to console to prevent character interleaving */
+    if (console_is_initialized()) {
+        console_puts(str);
+    }
+
+    /* Emit to COM1 */
+    while (*str) {
+        serial_raw_putc(*str++);
     }
 }
 
@@ -113,3 +164,4 @@ void serial_print_dec(uint64_t val) {
         serial_putc(buf[i]);
     }
 }
+
