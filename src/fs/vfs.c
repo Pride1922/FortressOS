@@ -198,29 +198,127 @@ vfs_node_t *vfs_create_node(const char *path, vfs_node_type_t type, uint64_t siz
     return curr;
 }
 
-file_t *vfs_open(const char *path, int flags) {
-    if (flags != 0) return NULL; /* All current filesystems are read-only. */
-    vfs_node_t *node = vfs_lookup(path);
-    if (!node) {
+vfs_node_t *vfs_create(const char *path, vfs_node_type_t type) {
+    if (!path || strlen(path) >= VFS_MAX_PATH) return NULL;
+    char norm[VFS_MAX_PATH];
+    normalize_path(path, norm, sizeof(norm));
+    if (!strcmp(norm, "/")) return NULL;
+
+    const char *last_slash = NULL;
+    for (const char *p = norm; *p; p++) {
+        if (*p == '/') last_slash = p;
+    }
+    if (!last_slash) return NULL;
+
+    char dir_path[VFS_MAX_PATH];
+    size_t dir_len = (size_t)(last_slash - norm);
+    if (dir_len == 0) {
+        dir_path[0] = '/';
+        dir_path[1] = '\0';
+    } else {
+        memcpy(dir_path, norm, dir_len);
+        dir_path[dir_len] = '\0';
+    }
+    const char *name = last_slash + 1;
+    if (!*name || strlen(name) >= VFS_MAX_NAME) return NULL;
+
+    vfs_node_t *dir = vfs_lookup(dir_path);
+    if (!dir || dir->type != VFS_DIRECTORY) return NULL;
+    if (dir->create) {
+        return dir->create(dir, name, type);
+    }
+    return NULL;
+}
+
+int vfs_truncate(vfs_node_t *node, uint64_t new_size) {
+    if (!node) return -1;
+    if (node->type == VFS_DIRECTORY) return -7; /* EISDIR */
+    if (node->truncate) {
+        return node->truncate(node, new_size);
+    }
+    return -30; /* -EROFS */
+}
+
+file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
+    if (err_out) *err_out = -VFS_EINVAL;
+    if (!path) return NULL;
+
+    int access_mode = flags & VFS_O_ACCMODE;
+    if (access_mode > 2) {
+        return NULL;
+    }
+    if (flags & ~(VFS_O_RDONLY | VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND)) {
         return NULL;
     }
 
+    /* Pre-reserve the file_t descriptor structure before any fallible creation or truncation */
     file_t *file = (file_t *)kmalloc(sizeof(file_t));
     if (!file) {
+        if (err_out) *err_out = -VFS_ENOMEM;
         return NULL;
+    }
+
+    vfs_node_t *node = vfs_lookup(path);
+    if (!node) {
+        if (flags & VFS_O_CREAT) {
+            node = vfs_create(path, VFS_FILE);
+            if (!node) {
+                kfree(file);
+                if (err_out) *err_out = -VFS_EIO;
+                return NULL;
+            }
+        } else {
+            kfree(file);
+            if (err_out) *err_out = -VFS_ENOENT;
+            return NULL;
+        }
+    }
+
+    if (node->type == VFS_DIRECTORY && access_mode != VFS_O_RDONLY) {
+        kfree(file);
+        if (err_out) *err_out = -7; /* EISDIR */
+        return NULL;
+    }
+
+    /* If writing or truncating is requested, ensure node is writable */
+    if (access_mode != VFS_O_RDONLY || (flags & VFS_O_TRUNC)) {
+        if (!node->write || !node->truncate) {
+            kfree(file);
+            if (err_out) *err_out = -VFS_EROFS;
+            return NULL;
+        }
+    }
+
+    if ((flags & VFS_O_TRUNC) && access_mode != VFS_O_RDONLY) {
+        int trunc_res = vfs_truncate(node, 0);
+        if (trunc_res < 0) {
+            kfree(file);
+            if (err_out) *err_out = trunc_res;
+            return NULL;
+        }
     }
 
     file->node      = node;
-    file->offset    = 0;
+    file->offset    = (flags & VFS_O_APPEND) ? node->size : 0;
     file->flags     = flags;
     file->ref_count = 1;
 
+    if (err_out) *err_out = VFS_SUCCESS;
     return file;
 }
 
+file_t *vfs_open(const char *path, int flags) {
+    return vfs_open_ext(path, flags, NULL);
+}
+
 int64_t vfs_read(file_t *file, void *buf, size_t count) {
-    if (!file || !file->node || !buf) {
+    if (!file || !file->node || (!buf && count > 0)) {
         return -1;
+    }
+
+    int acc = file->flags & VFS_O_ACCMODE;
+    if (acc != VFS_O_RDONLY && acc != VFS_O_RDWR) {
+        return -9; /* EBADF - not open for reading */
     }
 
     if (file->node->type == VFS_DIRECTORY) {
@@ -255,6 +353,38 @@ int64_t vfs_read(file_t *file, void *buf, size_t count) {
 
     file->offset += to_read;
     return (int64_t)to_read;
+}
+
+int64_t vfs_write(file_t *file, const void *buf, size_t count) {
+    if (!file || !file->node || (!buf && count > 0)) {
+        return -1;
+    }
+
+    int acc = file->flags & VFS_O_ACCMODE;
+    if (acc != VFS_O_WRONLY && acc != VFS_O_RDWR) {
+        return -9; /* EBADF - not open for writing */
+    }
+
+    if (file->node->type == VFS_DIRECTORY) {
+        return -7; /* EISDIR */
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    if (file->node->write) {
+        int64_t result = file->node->write(file->node, file->offset, buf, count);
+        if (result > 0) {
+            file->offset += (uint64_t)result;
+            if (file->offset > file->node->size) {
+                file->node->size = file->offset;
+            }
+        }
+        return result;
+    }
+
+    return -30; /* -EROFS */
 }
 
 int vfs_close(file_t *file) {

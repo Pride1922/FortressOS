@@ -10,6 +10,7 @@
 #include "pmm.h"
 #include "power.h"
 #include "keyboard.h"
+#include "ext2.h"
 
 extern void syscall_entry_stub(void);
 
@@ -111,9 +112,27 @@ bool syscall_was_exit_called(uint64_t *out_exit_code) {
     return true;
 }
 
+static int64_t syscall_from_vfs_error(int64_t vfs_err) {
+    switch (vfs_err) {
+        case 0:                return SYSCALL_SUCCESS;
+        case -VFS_ENOENT:      return SYSCALL_ENOENT;      /* -5 */
+        case -VFS_EIO:         return SYSCALL_EIO;         /* -9 */
+        case -VFS_EBADF:       return SYSCALL_EBADF;       /* -3 */
+        case -VFS_ENOMEM:      return SYSCALL_ENOMEM;      /* -10 */
+        case -VFS_EEXIST:      return SYSCALL_EEXIST;      /* -15 */
+        case -VFS_EINVAL:      return SYSCALL_EINVAL;      /* -1 */
+        case -VFS_EFBIG:       return SYSCALL_EFBIG;       /* -12 */
+        case -VFS_ENOSPC:      return SYSCALL_ENOSPC;      /* -13 */
+        case -VFS_EROFS:       return SYSCALL_EROFS;       /* -11 */
+        case -VFS_EOPNOTSUPP:  return SYSCALL_EOPNOTSUPP;  /* -14 */
+        case -7:               return SYSCALL_EISDIR;      /* -7 */
+        case -8:               return SYSCALL_ENOTDIR;     /* -8 */
+        default:               return SYSCALL_EINVAL;      /* -1 */
+    }
+}
+
 static int64_t sys_write(uint64_t fd, uintptr_t user_buf, size_t count) {
-    /* 1. Validate file descriptor: standard output (1) or standard error (2) */
-    if (fd != 1 && fd != 2) {
+    if (fd == 0 || fd >= 32) {
         return SYSCALL_EBADF;
     }
 
@@ -133,13 +152,31 @@ static int64_t sys_write(uint64_t fd, uintptr_t user_buf, size_t count) {
         return SYSCALL_EFAULT;
     }
 
-    /* 5. Memory is verified present and user-readable. Emit to serial */
-    const char *ptr = (const char *)user_buf;
-    for (size_t i = 0; i < count; i++) {
-        serial_putc(ptr[i]);
+    /* 5. Standard output (1) or standard error (2) -> serial / console */
+    if (fd == 1 || fd == 2) {
+        const char *ptr = (const char *)user_buf;
+        for (size_t i = 0; i < count; i++) {
+            serial_putc(ptr[i]);
+        }
+        return (int64_t)count;
     }
 
-    return (int64_t)count;
+    /* 6. Regular file descriptor (fd >= 3) */
+    tcb_t *curr = thread_current();
+    if (!curr) {
+        return SYSCALL_EBADF;
+    }
+
+    file_t *file = fd_get(curr, (int)fd);
+    if (!file) {
+        return SYSCALL_EBADF;
+    }
+
+    int64_t res = vfs_write(file, (const void *)user_buf, count);
+    if (res < 0) {
+        return syscall_from_vfs_error(res);
+    }
+    return res;
 }
 
 static int64_t sys_exit(uint64_t exit_code, interrupt_frame_t *frame) {
@@ -260,15 +297,27 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
         return err;
     }
 
-    file_t *file = vfs_open(kpath, flags);
-    if (!file) {
-        return SYSCALL_ENOENT;
-    }
-
     tcb_t *curr = thread_current();
     if (!curr) {
-        vfs_close(file);
         return SYSCALL_EBADF;
+    }
+
+    /* Check whether an fd is available before any destructive open/truncation */
+    bool fd_avail = false;
+    for (int i = 3; i < 32; i++) {
+        if (!curr->fd_table[i]) {
+            fd_avail = true;
+            break;
+        }
+    }
+    if (!fd_avail) {
+        return SYSCALL_EMFILE;
+    }
+
+    int vfs_err = 0;
+    file_t *file = vfs_open_ext(kpath, flags, &vfs_err);
+    if (!file) {
+        return syscall_from_vfs_error(vfs_err);
     }
 
     int fd = fd_alloc(curr, file);
@@ -390,8 +439,10 @@ static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
 
 static int64_t sys_reboot(uint64_t cmd) {
     if (cmd == REBOOT_CMD_RESTART) {
+        ext2_sync_all();
         power_reboot();
     } else if (cmd == REBOOT_CMD_POWEROFF) {
+        ext2_sync_all();
         power_shutdown();
     }
     return SYSCALL_EINVAL;

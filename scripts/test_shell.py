@@ -91,6 +91,21 @@ def run(mode):
                     output()
                 return wait_prompt(start)
 
+            def edit_command(text, expect="edit> "):
+                start = len(output())
+                for byte in text.encode():
+                    uart.send(bytes([byte]))
+                    time.sleep(0.005)
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    text_out = output()
+                    if expect in text_out[start:]:
+                        time.sleep(0.05)
+                        return text_out[start:]
+                    assert child.poll() is None, child.stderr.read().decode()
+                    time.sleep(0.05)
+                raise AssertionError(f"Expected {expect!r} timed out: {log}\n{output()[-1000:]}")
+
             def key(code, shift=False):
                 events = []
                 if shift:
@@ -148,6 +163,17 @@ def run(mode):
             assert "Keyboard layout set to Belgian AZERTY" in uart_command("layout azerty\n")
             assert "Active keyboard layout: Belgian AZERTY" in uart_command("layout\n")
             assert "Keyboard layout set to US QWERTY" in uart_command("layout us\n")
+            assert "Usage: edit /path" in uart_command("edit\n")
+            assert "Not a regular file" in uart_command("edit /bin\n")
+            assert "[EDIT] Loaded" in edit_command("edit /docs/readme.txt\n")
+            assert "FortressOS Documentation" in edit_command("p\n")
+            edit_command("a\nNew in-memory line\n.\n")
+            assert "New in-memory line" in edit_command("p\n")
+            assert "Modified: yes" in edit_command("stats\n")
+            assert "Deleted line 1" in edit_command("d 1\n")
+            assert "In-memory changes discarded" in edit_command("q\n", expect="fortress> ")
+            assert "[EDIT] New buffer" in edit_command("edit /missing.txt\n")
+            assert "fortress> " in edit_command("q\n", expect="fortress> ")
             for _ in range(3):
                 assert "FortressOS shell (Ring 3)" in uart_command("exit\n")
                 current = snapshot()

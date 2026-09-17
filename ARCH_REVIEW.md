@@ -108,18 +108,40 @@ Supported partition-entry sizes are 128, 256 and 512 bytes. This is a deliberate
 bounded subset of the specification's power-of-two multiples of 128 bytes.
 GPT and ext2 boot acceptance now run in both BIOS and UEFI.
 
+## Implemented: Phase 9D bounded writable ext2
+
+- Explicit opt-in writable mount (`ext2_mount_rw`), keeping read-only defaults (`ext2_mount`).
+- Write ordering: 3-stage ordered allocation with intermediate NVMe flushes:
+  1. Allocation reservation: mark bits in block/inode bitmap, decrement free counters in group descriptors and superblock, write to disk, and issue `block_flush`.
+  2. Data initialization: zero-fill newly allocated block on disk and issue `block_flush`.
+  3. Reference publication: write block pointer to inode or single-indirect table, or publish directory entry, write inode/directory block to disk, and issue `block_flush`.
+  An interrupted allocation can leave unreferenced allocated blocks (orphans), but never a live file pointing to free blocks.
+- Truncation ordering: 3-stage ordered truncation with pre-validation:
+  1. Pre-validation: traverse and collect all direct and single-indirect block pointers into an allocated array, verifying partition bounds, metadata exclusion (superblock, group descriptors, bitmaps, inode tables, including sparse-super backup blocks), and absence of duplicate pointers. Files with double/triple indirection return `-EFBIG` (`-27`); files with external extended attribute blocks (`file_acl != 0`) return `-EOPNOTSUPP` (`-95`). Even files with recorded size 0 are pre-validated if pointers exist.
+  2. Inode detachment: zero block pointers, size, and `i_blocks` in memory and on disk, write inode to disk, and issue `block_flush`.
+  3. Block reclamation: clear bits in block bitmap, update free block counters in group descriptors and superblock, write to disk, and issue `block_flush`.
+  An interrupted truncation can leak blocks, but will never allow block reuse while a file still references them.
+- Prefix durability & error reporting:
+  `vfs_write` returns a positive byte count only for a prefix whose data blocks, inode metadata (size/i_blocks), and flushes have fully succeeded. If a subsequent block allocation fails (e.g. `ENOSPC`), the flushed prefix count is returned. If a metadata write or flush fails, the mount is marked tainted (`fs->tainted = true`) and `-VFS_EIO` (`-5`) is returned, translated to `SYSCALL_EIO` (`-9`) at the syscall boundary to avoid colliding with `SYSCALL_ENOENT` (`-5`).
+- State separation:
+  Read-only mount policy returns `-VFS_EROFS` (`-30`, translated to `SYSCALL_EROFS` `-11`) on write/truncate attempts (`fs->read_only == true`). Mounts halted by I/O or flush errors return `-VFS_EIO` (`-5`, translated to `SYSCALL_EIO` `-9`) (`fs->tainted == true`). Refusing further writes limits disk corruption.
+- Superblock clean/dirty lifecycle:
+  On writable mount, `s_state` clears `EXT2_VALID_FS` (`s_state = 0`, actively mounted) and flushes. On clean shutdown or reboot via `sys_reboot`, `ext2_sync_all()` writes `s_state = 1` (`EXT2_VALID_FS`, clean) and flushes only if the mount is untainted; if tainted, it sets `s_state = 2` (`EXT2_ERROR_FS`). Unclean filesystems (`s_state != 1`) reject writable mount.
+- Resource pre-reservation in VFS & Syscalls:
+  `vfs_open_ext` allocates the `file_t` descriptor before executing destructive `vfs_truncate(node, 0)` on `O_TRUNC` or node creation, ensuring allocation failure leaves file data untouched. `sys_open` verifies descriptor table availability before invoking `vfs_open_ext`.
+- Ring 3 Editor (`edit`):
+  Safe saving (`w` command) with path length limits, pre-open validation, and unmodified status preservation on save failures.
+- Verification:
+  - `make test-ext2`: Host ASan/UBSan across 8 geometry combinations (1/2/4 KiB blocks, 512/4096-byte sectors), testing duplicate pointers, metadata pointers, xattr rejection, zero-size invalid pointers, clean shutdown sync, and flush/I/O failure injection.
+  - `make test-ext2-write`: QEMU BIOS and UEFI 3-boot persistence on disposable NVMe GPT fixtures, verifying file creation, multi-line editor writes, truncation, block reclamation, clean ACPI S5 shutdown, and offline `e2fsck -fn` (0 errors across all boots).
+
 ## Next milestones
 
-1. Keyboard/serial input, blocking wait queues and Ring 3 shell are implemented;
-   IRQ delivery and interaction pass BIOS/UEFI QEMU, including COM1-absent boot.
-2. Next: small user-space editor using input/output syscalls. Physical Latitude
-   keyboard input and shell commands are confirmed; layout remains US ASCII.
-3. Controlled ext2 writes, creation and allocation, then reboot persistence tests.
-4. User/account permissions and installation once writable storage is reliable.
-
-Do not add flatfs or automatic formatting on first write. Keep formatting an
-explicit operation on a selected disposable image or user-selected partition.
-SMP and SWAPGS work remain separate milestones.
+1. Keyboard/serial input, blocking wait queues, Ring 3 shell, and in-memory editor are implemented and verified in BIOS/UEFI QEMU and physical Latitude 5590.
+2. Phase 9D bounded writable ext2 filesystem is complete and verified with multi-boot persistence and `e2fsck` integrity.
+3. Next: User accounts, identity/permission enforcement, and installation target selection on storage partitions.
+4. Do not add flatfs or automatic formatting on first write. Keep formatting an explicit operation on a selected disposable image or user-selected partition.
+5. SMP and SWAPGS work remain separate milestones.
 
 ## Implemented: exact-boundary NMI delivery verification
 

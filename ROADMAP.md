@@ -245,24 +245,31 @@ Recorded implementation sequence and planned work:
     │   ├── Ring buffer keyqueue with blocking read (wait queue, not busy poll)
     │   ├── COM1 RX IRQ4 feeds the same 256-byte FIFO; bounded ISR drains, drop-new overflow
     │   └── Acceptance: QEMU IRQ1/IRQ4 in BIOS/UEFI; Dell PS/2 typing, help, ls and cat confirmed
-    ├── Phase 9C.4: Ring 3 Shell (COMPLETE; Dell interaction confirmed); Minimal Editor (PENDING)
-    │   ├── /bin/shell from initramfs: help, ls, cat, echo, exit/restart; blocking stdin and user-space line editing
+    ├── Phase 9C.4: Ring 3 Shell and Minimal Editor (COMPLETE; Dell interaction confirmed)
+    │   ├── /bin/shell from initramfs: help, ls, cat, echo, edit, exit/restart; blocking stdin and user-space line editing
+    │   ├── In-memory editor (`edit /path`): static BSS line buffer (64 lines x 128 chars), p/a/i/d/c/stats/help commands
     │   ├── No history, no tab-completion (deliberately minimal)
-    │   └── Acceptance: read a file into a Ring 3 editor and modify its in-memory buffer
+    │   └── Acceptance: read a file into a Ring 3 editor and modify its in-memory buffer (PASSED in BIOS and UEFI QEMU)
     ├── Phase 9C.5: Power Management & Keyboard Layout Switching (COMPLETE)
     │   ├── ACPI S5 shutdown (FADT PM1a/PM1b_CNT and DSDT _S5 package parsing) & emulator ports
     │   ├── Multi-tier reboot: ACPI reset, 8042 reset pulse, chipset PCI reset (0xCF9), and triple fault
     │   ├── SYS_REBOOT (reboot/shutdown) and SYS_KBD_LAYOUT syscalls
     │   └── Ring 3 shell commands: reboot, shutdown, poweroff, and layout (us/azerty)
-    └── Phase 9D: Writable ext2 Filesystem
-        ├── Block/inode allocation, directory entry insertion, file creation and writes
-        └── Acceptance Test: Create and reopen files after reboot (persistent storage)
+    └── Phase 9D: Bounded Writable ext2 Filesystem (COMPLETE)
+        ├── Explicit opt-in writable mount (`ext2_mount_rw`), preserving read-only defaults on hardware
+        ├── Ordered 3-stage allocation with NVMe flush barriers (bitmap reservation + flush -> zero init + flush -> reference link + flush)
+        ├── Ordered 3-stage truncation with pre-validation (bounds/metadata/duplicate check -> inode detachment + flush -> block reclamation + flush)
+        ├── Prefix durability on writes: positive byte counts returned only for fully flushed prefixes; flush/I/O failure taints mount (`-EIO`)
+        ├── Strict separation of read-only policy (`-EROFS` / `-11`) from tainted failure state (`-EIO` / `-9`), avoiding collision with `SYSCALL_ENOENT` (`-5`)
+        ├── Superblock clean/dirty tracking: `s_state = 0` (EXT2_VALID_FS cleared) on RW mount, restored to clean `1` on `ext2_sync_all()` during clean shutdown
+        ├── Feature audit: sparse-super group protection (powers of 3, 5, 7), external xattr pre-rejection (`i_file_acl != 0` -> `-EOPNOTSUPP`), `BTREE_DIR` and double/triple indirection rejection
+        ├── Directory entry insertion (`vfs_create`), record splitting, and directory block growth
+        ├── Resource pre-reservation in VFS: `file_t` descriptor and cached nodes allocated before destructive truncation or disk mutations (`vfs_open_ext`)
+        ├── Ring 3 text editor safe saving (`w`), path length bounds (256), and unmodified status on error
+        └── Acceptance: `make test-ext2` (host ASan/UBSan across 8 configurations with failure injection) and `make test-ext2-write` (BIOS & UEFI 3-boot persistence, editor create/truncate, and host `e2fsck -fn` with 0 errors)
 ```
 
 ---
-
-
-## Archived implementation and verification notes
 
 ## Architectural audit and ext2 implementation scope
 

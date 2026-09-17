@@ -110,6 +110,45 @@ static bool gpt_partition_read_sector(block_dev_t *dev, uint64_t lba, void *buf)
     return part->parent->read_sector(part->parent, parent_lba, buf);
 }
 
+/* Bounded Partition Device Write Handler */
+static bool gpt_partition_write_sector(block_dev_t *dev, uint64_t lba, const void *buf) {
+    if (!dev || !buf) return false;
+    gpt_partition_t *part = (gpt_partition_t *)dev->priv;
+    if (!part || !part->parent || !part->parent->write_sector) return false;
+
+    /* Strict boundary enforcement: reject any write at or beyond partition capacity */
+    if (lba >= part->sector_count) {
+        serial_puts("[WARN] Partition write out of bounds rejected! LBA: ");
+        serial_print_dec(lba);
+        serial_puts(", Capacity: ");
+        serial_print_dec(part->sector_count);
+        serial_puts("\n");
+        return false;
+    }
+
+    /* Overflow-safe arithmetic for parent LBA translation */
+    if (part->starting_lba + lba < part->starting_lba) {
+        serial_puts("[FAIL] Partition LBA calculation arithmetic overflow!\n");
+        return false;
+    }
+
+    uint64_t parent_lba = part->starting_lba + lba;
+    if (parent_lba > part->ending_lba) {
+        serial_puts("[FAIL] Partition LBA exceeds ending LBA!\n");
+        return false;
+    }
+
+    return part->parent->write_sector(part->parent, parent_lba, buf);
+}
+
+/* Bounded Partition Device Flush Handler */
+static bool gpt_partition_flush(block_dev_t *dev) {
+    if (!dev) return false;
+    gpt_partition_t *part = (gpt_partition_t *)dev->priv;
+    if (!part || !part->parent || !part->parent->flush) return false;
+    return part->parent->flush(part->parent);
+}
+
 /* Header Structural and Placement Validation */
 static bool gpt_validate_header(const gpt_header_t *hdr, uint64_t expected_lba, uint64_t disk_sectors, uint32_t sector_size, bool is_primary) {
     if (!hdr) return false;
@@ -533,8 +572,9 @@ policy_done:
         part->block_dev.sector_size  = dev->sector_size;
         part->block_dev.sector_count = part->sector_count;
         part->block_dev.read_sector  = gpt_partition_read_sector;
-        part->block_dev.write_sector = NULL; /* Read-only partition device for Phase 9C.1 */
-        part->block_dev.flush        = NULL;
+        bool can_write = (dev->write_sector != NULL) && (resolved_policy == GPT_POLICY_PRIMARY_CONSISTENT);
+        part->block_dev.write_sector = can_write ? gpt_partition_write_sector : NULL;
+        part->block_dev.flush        = can_write ? gpt_partition_flush : NULL;
         part->block_dev.priv         = part;
 
         block_register_dev(&part->block_dev);

@@ -106,7 +106,7 @@ QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS)
 
 all: $(BOOTABLE_ISO)
 
-.PHONY: test-ext2 test-storage test-nmi test-boot-diagnostics test-console test-input test-shell test-power
+.PHONY: test-ext2 test-ext2-write test-storage test-nmi test-boot-diagnostics test-console test-input test-shell test-power
 test-input:
 	@python3 scripts/test_input.py
 
@@ -127,6 +127,9 @@ test-nmi: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 
 test-ext2:
 	@python3 scripts/test_ext2.py
+
+test-ext2-write: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
+	@python3 scripts/test_ext2_write.py
 
 test-storage: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 	@python3 scripts/test_storage_boot.py

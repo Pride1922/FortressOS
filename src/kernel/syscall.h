@@ -25,6 +25,13 @@
 #define SYSCALL_EMFILE   -6  /* Too many open files */
 #define SYSCALL_EISDIR   -7  /* Is a directory */
 #define SYSCALL_ENOTDIR  -8  /* Not a directory */
+#define SYSCALL_EIO      -9  /* I/O error / tainted filesystem */
+#define SYSCALL_ENOMEM   -10 /* Out of memory */
+#define SYSCALL_EROFS    -11 /* Read-only filesystem */
+#define SYSCALL_EFBIG    -12 /* File too large / unsupported indirection */
+#define SYSCALL_ENOSPC   -13 /* No space left on device */
+#define SYSCALL_EOPNOTSUPP -14 /* Operation not supported */
+#define SYSCALL_EEXIST   -15 /* File already exists */
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

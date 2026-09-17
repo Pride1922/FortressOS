@@ -2691,19 +2691,26 @@ static void test_phase9c1_gpt(void) {
     }
     serial_puts("       [PASS] Arithmetic overflow read (UINT64_MAX) strictly rejected\n");
 
-    /* 5G: Read-only check - write to partition device MUST be rejected */
-    if (block_write_sector(part_dev, 0, part_read_buf) != false) {
-        serial_puts("       [FAIL] Write to read-only partition device succeeded!\n");
+    /* 5G: Boundary Enforcement on Write - write at exact boundary (LBA 8192) MUST be rejected */
+    if (block_write_sector(part_dev, 8192, part_read_buf) != false) {
+        serial_puts("       [FAIL] Boundary violation! Write at partition boundary LBA 8192 succeeded!\n");
         hcf();
     }
-    serial_puts("       [PASS] Write to read-only partition device nvme0n1p1 strictly rejected\n");
+    serial_puts("       [PASS] Write at partition capacity boundary (LBA 8192) strictly rejected\n");
 
-    /* 5H: Read-only check - flush on partition device MUST be rejected */
-    if (block_flush(part_dev) != false) {
-        serial_puts("       [FAIL] Flush on read-only partition device succeeded!\n");
+    /* 5H: Arithmetic overflow write (UINT64_MAX) MUST be rejected */
+    if (block_write_sector(part_dev, UINT64_MAX, part_read_buf) != false) {
+        serial_puts("       [FAIL] Arithmetic overflow write succeeded!\n");
         hcf();
     }
-    serial_puts("       [PASS] Flush on read-only partition device nvme0n1p1 strictly rejected\n");
+    serial_puts("       [PASS] Arithmetic overflow write (UINT64_MAX) strictly rejected\n");
+
+    /* 5I: Flush on partition device passes through to parent */
+    if (block_flush(part_dev) != true) {
+        serial_puts("       [FAIL] Flush on partition device failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] Flush on partition device nvme0n1p1 verified\n");
 
     /* =========================================================================
      * Step 6: Expanded Negative Test Suite (In-Memory Mock Block Devices)
@@ -2892,11 +2899,25 @@ static void test_ext2_and_audits(void) {
     serial_puts("\n[TEST] Read-only ext2 and architectural audits\n");
     require_ext2(spin_debug_selftest(), "lock ranks and caller IRQ restoration");
     serial_puts("[PASS] Lock recursion/inversion predicates and nested IRQ restoration\n");
-    require_ext2(ext2_mount(block_get_dev_by_name("nvme0n1p1"), "/mnt"), "mount");
+    block_dev_t *mnt_dev = block_get_dev_by_name("nvme0n1p1");
+    bool mnt_ok = false;
+    if (mnt_dev && mnt_dev->write_sector) {
+        mnt_ok = ext2_mount_rw(mnt_dev, "/mnt");
+    }
+    if (!mnt_ok && mnt_dev) {
+        mnt_ok = ext2_mount(mnt_dev, "/mnt");
+    }
+    require_ext2(mnt_ok, "mount");
     require_ext2(vfs_lookup("/etc/motd") != NULL, "initramfs preserved");
     require_ext2(vfs_lookup("/mnt/nested/note.txt") != NULL, "nested path");
     require_ext2(vfs_lookup("/mnt/missing") == NULL, "missing path");
-    require_ext2(vfs_open("/mnt/hello.txt", 1) == NULL, "write open rejected");
+    file_t *wopen = vfs_open("/mnt/hello.txt", 1);
+    if (mnt_dev && mnt_dev->write_sector) {
+        require_ext2(wopen != NULL, "write open supported");
+        vfs_close(wopen);
+    } else {
+        require_ext2(wopen == NULL, "write open rejected on read-only mount");
+    }
     vfs_node_t *dir = vfs_lookup("/mnt");
     vfs_dirent_t dent;
     bool saw_hello = false;

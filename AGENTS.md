@@ -34,11 +34,10 @@ checkpoint history there, and verification claims tied to actual evidence.
 
 | Checkpoint | Status / acceptance |
 | --- | --- |
-| Latest recorded completion: 9C.5 | Power/reset and US/AZERTY switching implemented (`9a3c4b4`); `make test-power` exercises QEMU power commands. Dell 5590 manual verification confirmed working ACPI S5 shutdown, reboot, and partial Belgian AZERTY layout switching (accented keys é/è/ç/à open bug; see H4). |
-| 9C.3 / 9C.4 shell | Blocking keyboard/serial input and Ring 3 shell; BIOS/UEFI tests and Dell 5590 manual interaction recorded. Minimal editor remains pending. |
-| Next: finish 9C.4 editor | Read a file and modify an in-memory buffer in Ring 3; no disk-write claim. |
-| Next: 9D writable ext2 | Explicitly selected disposable image: create/write/reopen files and verify contents after reboot. |
-| Later: accounts and installation | Define identity/permission enforcement and installer target selection; accept with persistent account setup and a launched application. Not implemented yet. |
+| Latest recorded completion: 9D bounded writable ext2 | Explicit opt-in writable mount (`ext2_mount_rw`), direct block and single-indirect allocation and writes, directory entry insertion (`vfs_create`), truncation (`vfs_truncate`) with block reclamation, emergency read-only remount on metadata/flush failure, double/triple indirect pre-rejection, host ASan/UBSan matrix suite with injected failure coverage, offline `e2fsck -fn` verification (0 errors), and BIOS/UEFI 3-boot persistence in QEMU. |
+| 9C.5 power & layout | Power/reset and US/AZERTY switching implemented (`9a3c4b4`); `make test-power` exercises QEMU power commands. Dell 5590 manual verification confirmed working ACPI S5 shutdown, reboot, and partial Belgian AZERTY layout switching (accented keys é/è/ç/à open bug; see H4). |
+| 9C.3 / 9C.4 shell & editor | Blocking keyboard/serial input, Ring 3 shell, and in-memory editor complete. |
+| Next: accounts and installation | Define identity/permission enforcement and installer target selection; accept with persistent account setup and a launched application. Not implemented yet. |
 
 ## 3. Build, Run, Debug and Verify
 
@@ -64,6 +63,7 @@ Limine/OVMF. Use only when needed. `make` fetches missing Limine dependencies.
 | `make test-input` | Host ASan/UBSan: decoder, modifiers and bounded FIFO |
 | `make test-console` | Host ASan/UBSan: pixel output, wrapping, scrolling and bounds |
 | `make test-ext2` | Host ASan/UBSan: actual ext2/VFS, malformed images, I/O/OOM paths |
+| `make test-ext2-write` | QEMU ext2 file creation, editor save, host `e2fsck -fn` integrity, and cross-boot persistence on disposable NVMe GPT fixture |
 | `make test-storage` | BIOS/UEFI GPT/ext2, Ring 3 reads, allocation-set audits; `build/storage-*.log` |
 | `make test-shell` | BIOS/UEFI IRQ1/IRQ4 interaction, sleeping readers, restart counts; also UEFI 8 GiB without COM1 |
 | `make test-nmi` | 5 exact syscall boundaries × 4 rounds × 2 firmware modes; `build/nmi-*.json` and `.log` |
