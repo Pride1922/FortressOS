@@ -2895,13 +2895,39 @@ static void require_ext2(bool ok, const char *message) {
     }
 }
 
+static bool qemu_fw_cfg_has_key(const char *key) {
+    outw(0x510, 0x0000);
+    char sig[4];
+    for (int i = 0; i < 4; i++) sig[i] = (char)inb(0x511);
+    if (memcmp(sig, "QEMU", 4) != 0) return false;
+
+    outw(0x510, 0x0019);
+    uint32_t count = 0;
+    for (int i = 0; i < 4; i++) {
+        count = (count << 8) | inb(0x511);
+    }
+    if (count > 256) count = 256;
+
+    for (uint32_t i = 0; i < count; i++) {
+        for (int k = 0; k < 8; k++) (void)inb(0x511);
+        char name[56];
+        for (int k = 0; k < 56; k++) name[k] = (char)inb(0x511);
+        name[55] = '\0';
+        if (!strcmp(name, key)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void test_ext2_and_audits(void) {
     serial_puts("\n[TEST] Read-only ext2 and architectural audits\n");
     require_ext2(spin_debug_selftest(), "lock ranks and caller IRQ restoration");
     serial_puts("[PASS] Lock recursion/inversion predicates and nested IRQ restoration\n");
     block_dev_t *mnt_dev = block_get_dev_by_name("nvme0n1p1");
     bool mnt_ok = false;
-    if (mnt_dev && mnt_dev->write_sector) {
+    bool write_opt_in = qemu_fw_cfg_has_key("opt/fortress/write_test");
+    if (mnt_dev && mnt_dev->write_sector && write_opt_in) {
         mnt_ok = ext2_mount_rw(mnt_dev, "/mnt");
     }
     if (!mnt_ok && mnt_dev) {
@@ -2912,7 +2938,7 @@ static void test_ext2_and_audits(void) {
     require_ext2(vfs_lookup("/mnt/nested/note.txt") != NULL, "nested path");
     require_ext2(vfs_lookup("/mnt/missing") == NULL, "missing path");
     file_t *wopen = vfs_open("/mnt/hello.txt", 1);
-    if (mnt_dev && mnt_dev->write_sector) {
+    if (mnt_dev && mnt_dev->write_sector && write_opt_in) {
         require_ext2(wopen != NULL, "write open supported");
         vfs_close(wopen);
     } else {

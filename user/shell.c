@@ -85,9 +85,10 @@ static bool read_line(void) {
 static char editor_lines[MAX_EDITOR_LINES][MAX_LINE_LEN];
 static size_t editor_line_count = 0;
 static bool editor_modified = false;
+static bool editor_save_disabled = false;
 static char editor_path[256];
 static char edit_line[192];
-static char file_buf[4096];
+static char file_buf[8192];
 
 static void put_dec(size_t val) {
     char buf[24];
@@ -261,6 +262,10 @@ static void editor_save(void) {
         puts("No file path specified.\n");
         return;
     }
+    if (editor_save_disabled) {
+        puts("[EDIT] Save refused: file was incompletely loaded or exceeds editor limits.\n");
+        return;
+    }
     /* VFS_O_WRONLY (1) | VFS_O_CREAT (0x40) | VFS_O_TRUNC (0x200) */
     long fd = call(2, (uintptr_t)editor_path, 1 | 0x40 | 0x200, 0);
     if (fd < 0) {
@@ -310,7 +315,11 @@ static void editor_show_stats(void) {
     puts(" | Modified: ");
     puts(editor_modified ? "yes" : "no");
     puts(" | Storage: ");
-    puts(editor_modified ? "unwritten changes in buffer (type 'w' to save)\n" : "synced to disk\n");
+    if (editor_save_disabled) {
+        puts("save disabled (incomplete load/exceeds limits)\n");
+    } else {
+        puts(editor_modified ? "unwritten changes in buffer (type 'w' to save)\n" : "synced to disk\n");
+    }
 }
 
 static void editor_show_help(void) {
@@ -335,6 +344,7 @@ static void editor_load(const char *path) {
     }
     editor_line_count = 0;
     editor_modified = false;
+    editor_save_disabled = false;
     editor_copy_str(editor_path, path, sizeof(editor_path));
 
     vfs_stat_t st;
@@ -352,6 +362,13 @@ static void editor_load(const char *path) {
         return;
     }
 
+    if (st.size > sizeof(file_buf)) {
+        puts("[EDIT] Warning: file size (");
+        put_dec(st.size);
+        puts(" bytes) exceeds buffer capacity. Save disabled.\n");
+        editor_save_disabled = true;
+    }
+
     long fd = call(2, (uintptr_t)path, 0, 0);
     if (fd < 0) {
         file_error(fd);
@@ -367,21 +384,53 @@ static void editor_load(const char *path) {
     }
     (void)call(3, fd, 0, 0);
 
+    if (n < 0 || (st.size <= sizeof(file_buf) && total_read < (size_t)st.size)) {
+        puts("[EDIT] Warning: incomplete file read. Save disabled.\n");
+        editor_save_disabled = true;
+    }
+
     size_t line_pos = 0;
-    for (size_t i = 0; i < total_read && editor_line_count < MAX_EDITOR_LINES; i++) {
+    bool line_truncated = false;
+    bool lines_exceeded = false;
+    for (size_t i = 0; i < total_read; i++) {
         char c = file_buf[i];
         if (c == '\r') continue;
         if (c == '\n') {
-            editor_lines[editor_line_count][line_pos] = 0;
-            editor_line_count++;
-            line_pos = 0;
-        } else if (line_pos + 1 < MAX_LINE_LEN) {
-            editor_lines[editor_line_count][line_pos++] = c;
+            if (editor_line_count < MAX_EDITOR_LINES) {
+                editor_lines[editor_line_count][line_pos] = 0;
+                editor_line_count++;
+                line_pos = 0;
+            } else {
+                lines_exceeded = true;
+            }
+        } else {
+            if (editor_line_count < MAX_EDITOR_LINES) {
+                if (line_pos + 1 < MAX_LINE_LEN) {
+                    editor_lines[editor_line_count][line_pos++] = c;
+                } else {
+                    line_truncated = true;
+                }
+            } else {
+                lines_exceeded = true;
+            }
         }
     }
-    if (line_pos > 0 && editor_line_count < MAX_EDITOR_LINES) {
-        editor_lines[editor_line_count][line_pos] = 0;
-        editor_line_count++;
+    if (line_pos > 0) {
+        if (editor_line_count < MAX_EDITOR_LINES) {
+            editor_lines[editor_line_count][line_pos] = 0;
+            editor_line_count++;
+        } else {
+            lines_exceeded = true;
+        }
+    }
+
+    if (line_truncated) {
+        puts("[EDIT] Warning: line exceeded 127 characters. Save disabled.\n");
+        editor_save_disabled = true;
+    }
+    if (lines_exceeded) {
+        puts("[EDIT] Warning: file exceeded 64 lines. Save disabled.\n");
+        editor_save_disabled = true;
     }
 
     puts("[EDIT] Loaded ");

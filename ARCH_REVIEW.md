@@ -115,18 +115,19 @@ GPT and ext2 boot acceptance now run in both BIOS and UEFI.
   1. Allocation reservation: mark bits in block/inode bitmap, decrement free counters in group descriptors and superblock, write to disk, and issue `block_flush`.
   2. Data initialization: zero-fill newly allocated block on disk and issue `block_flush`.
   3. Reference publication: write block pointer to inode or single-indirect table, or publish directory entry, write inode/directory block to disk, and issue `block_flush`.
-  An interrupted allocation can leave unreferenced allocated blocks (orphans), but never a live file pointing to free blocks.
+  Allocation reservation precedes pointer publication. Interrupted operations can leave unreferenced allocations; this ordering is not a guarantee against torn writes or pre-existing cross-file corruption.
 - Truncation ordering: 3-stage ordered truncation with pre-validation:
-  1. Pre-validation: traverse and collect all direct and single-indirect block pointers into an allocated array, verifying partition bounds, metadata exclusion (superblock, group descriptors, bitmaps, inode tables, including sparse-super backup blocks), and absence of duplicate pointers. Files with double/triple indirection return `-EFBIG` (`-27`); files with external extended attribute blocks (`file_acl != 0`) return `-EOPNOTSUPP` (`-95`). Even files with recorded size 0 are pre-validated if pointers exist.
+  1. Pre-validation: traverse and collect all direct and single-indirect block pointers into an allocated array, verifying partition bounds, metadata exclusion (superblock, group descriptors, reserved GDT expansion blocks, bitmaps, inode tables, including sparse-super backup blocks), and absence of duplicate pointers. Files with double/triple indirection return `-EFBIG` (`-27`); files with external extended attribute blocks (`file_acl != 0`) return `-EOPNOTSUPP` (`-95`). Even files with recorded size 0 are pre-validated if pointers exist.
+  Scratch space for bitmap reclamation is reserved together with the block list, before detachment.
   2. Inode detachment: zero block pointers, size, and `i_blocks` in memory and on disk, write inode to disk, and issue `block_flush`.
   3. Block reclamation: clear bits in block bitmap, update free block counters in group descriptors and superblock, write to disk, and issue `block_flush`.
-  An interrupted truncation can leak blocks, but will never allow block reuse while a file still references them.
+  Reclamation follows a successful detachment flush. Interrupted operations can leak blocks; crash-atomic updates and torn-write recovery are not provided.
 - Prefix durability & error reporting:
   `vfs_write` returns a positive byte count only for a prefix whose data blocks, inode metadata (size/i_blocks), and flushes have fully succeeded. If a subsequent block allocation fails (e.g. `ENOSPC`), the flushed prefix count is returned. If a metadata write or flush fails, the mount is marked tainted (`fs->tainted = true`) and `-VFS_EIO` (`-5`) is returned, translated to `SYSCALL_EIO` (`-9`) at the syscall boundary to avoid colliding with `SYSCALL_ENOENT` (`-5`).
 - State separation:
   Read-only mount policy returns `-VFS_EROFS` (`-30`, translated to `SYSCALL_EROFS` `-11`) on write/truncate attempts (`fs->read_only == true`). Mounts halted by I/O or flush errors return `-VFS_EIO` (`-5`, translated to `SYSCALL_EIO` `-9`) (`fs->tainted == true`). Refusing further writes limits disk corruption.
 - Superblock clean/dirty lifecycle:
-  On writable mount, `s_state` clears `EXT2_VALID_FS` (`s_state = 0`, actively mounted) and flushes. On clean shutdown or reboot via `sys_reboot`, `ext2_sync_all()` writes `s_state = 1` (`EXT2_VALID_FS`, clean) and flushes only if the mount is untainted; if tainted, it sets `s_state = 2` (`EXT2_ERROR_FS`). Unclean filesystems (`s_state != 1`) reject writable mount.
+  On writable mount, `s_state` clears `EXT2_VALID_FS` (`s_state = 0`, actively mounted) and flushes. On clean shutdown or reboot via `sys_reboot`, `ext2_sync_all()` writes `s_state = 1` (`EXT2_VALID_FS`, clean) and flushes only if the mount is untainted; if tainted, it issues no writes or flushes and reports failure. Shutdown synchronization freezes further mutations; the reboot syscall returns `SYSCALL_EIO` if synchronization fails. Unclean filesystems (`s_state != 1`) reject writable mount.
 - Resource pre-reservation in VFS & Syscalls:
   `vfs_open_ext` allocates the `file_t` descriptor before executing destructive `vfs_truncate(node, 0)` on `O_TRUNC` or node creation, ensuring allocation failure leaves file data untouched. `sys_open` verifies descriptor table availability before invoking `vfs_open_ext`.
 - Ring 3 Editor (`edit`):

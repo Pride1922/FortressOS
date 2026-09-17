@@ -374,7 +374,11 @@ static int64_t sys_read(int fd, uintptr_t user_buf, size_t count) {
         return SYSCALL_EBADF;
     }
 
-    return vfs_read(file, (void *)user_buf, count);
+    int64_t res = vfs_read(file, (void *)user_buf, count);
+    if (res < 0) {
+        return syscall_from_vfs_error(res);
+    }
+    return res;
 }
 
 static int64_t sys_stat(uintptr_t user_path, uintptr_t user_statbuf) {
@@ -439,10 +443,10 @@ static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
 
 static int64_t sys_reboot(uint64_t cmd) {
     if (cmd == REBOOT_CMD_RESTART) {
-        ext2_sync_all();
+        if (!ext2_sync_all()) return SYSCALL_EIO;
         power_reboot();
     } else if (cmd == REBOOT_CMD_POWEROFF) {
-        ext2_sync_all();
+        if (!ext2_sync_all()) return SYSCALL_EIO;
         power_shutdown();
     }
     return SYSCALL_EINVAL;

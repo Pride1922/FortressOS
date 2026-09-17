@@ -24,6 +24,7 @@ typedef struct {
     uint32_t blocks, inodes, first, block_size, bpg, ipg, groups, inode_size;
     uint32_t incompat;
     uint32_t ro_compat;
+    uint16_t reserved_gdt_blocks;
     uint32_t first_ino;
     uint32_t free_blocks;
     uint32_t free_inodes;
@@ -43,7 +44,7 @@ typedef struct {
     uint32_t blocks[15];
 } ext2_inode_t;
 
-static ext2_fs_t *g_mounted_ext2 = NULL;
+static ext2_fs_t *g_mounted_ext2;
 
 /* Serializes reads, writes, allocations and cache publication on the bootstrap CPU.
  * Replace with sleepable I/O locking before asynchronous storage or SMP. */
@@ -161,7 +162,7 @@ static bool ext2_is_metadata_block(ext2_fs_t *fs, uint32_t block) {
         return true;
     }
     uint32_t gdt_blocks = (fs->groups * 32 + fs->block_size - 1) / fs->block_size;
-    uint32_t meta_reserved = 1 + gdt_blocks;
+    uint32_t meta_reserved = 1 + gdt_blocks + fs->reserved_gdt_blocks;
     uint32_t start = fs->first + g * fs->bpg;
     if (ext2_bg_has_super(fs, g) && block < start + meta_reserved) {
         return true;
@@ -235,13 +236,22 @@ static bool write_inode_to_disk(ext2_inode_t *in) {
 
 static uint32_t ext2_alloc_block(ext2_fs_t *fs) {
     if (fs->read_only || fs->tainted || !fs->free_blocks) return 0;
+
+    /* Preallocate zero buffer BEFORE any disk reservation/mutation to prevent leaks on OOM */
+    uint8_t *zero = kcalloc(1, fs->block_size);
+    if (!zero) return 0;
+
     for (uint32_t g = 0; g < fs->groups; g++) {
         if (!fs->group_descs[g].free_blocks) continue;
         uint32_t bmp = fs->group_descs[g].block_bitmap;
         uint8_t *b = kmalloc(fs->block_size);
-        if (!b) return 0;
+        if (!b) {
+            kfree(zero);
+            return 0;
+        }
         if (!bytes(fs, (uint64_t)bmp * fs->block_size, b, fs->block_size)) {
             kfree(b);
+            kfree(zero);
             fs->tainted = true;
             return 0;
         }
@@ -264,31 +274,31 @@ static uint32_t ext2_alloc_block(ext2_fs_t *fs) {
             /* Stage 1: Persist allocation reservation */
             if (!write_bytes(fs, (uint64_t)bmp * fs->block_size, b, fs->block_size)) {
                 kfree(b);
+                kfree(zero);
                 fs->tainted = true;
                 return 0;
             }
             kfree(b);
             fs->group_descs[g].free_blocks--;
             if (!ext2_sync_group_desc(fs, g)) {
+                kfree(zero);
                 fs->tainted = true;
                 return 0;
             }
             fs->free_blocks--;
             if (!ext2_sync_super(fs)) {
+                kfree(zero);
                 fs->tainted = true;
                 return 0;
             }
             /* Flush barrier 1: Reservation is durable */
             if (fs->dev->flush && !block_flush(fs->dev)) {
+                kfree(zero);
                 fs->tainted = true;
                 return 0;
             }
 
             /* Stage 2: Initialize allocated block with zeroes */
-            uint8_t *zero = kcalloc(1, fs->block_size);
-            if (!zero) {
-                return 0;
-            }
             if (!write_bytes(fs, (uint64_t)allocated * fs->block_size, zero, fs->block_size)) {
                 kfree(zero);
                 fs->tainted = true;
@@ -305,40 +315,39 @@ static uint32_t ext2_alloc_block(ext2_fs_t *fs) {
         }
         kfree(b);
     }
+    kfree(zero);
     return 0;
 }
 
-static bool ext2_free_block(ext2_fs_t *fs, uint32_t block) {
+static bool ext2_free_block(ext2_fs_t *fs, uint32_t block, uint8_t *b) {
     if (fs->read_only || fs->tainted || !block || block < fs->first || block >= fs->blocks) return false;
     if (ext2_is_metadata_block(fs, block)) {
         fs->tainted = true;
         return false;
     }
     uint32_t g = (block - fs->first) / fs->bpg;
-    if (g >= fs->groups) return false;
+    if (g >= fs->groups) {
+        fs->tainted = true;
+        return false;
+    }
 
     uint32_t bmp = fs->group_descs[g].block_bitmap;
-    uint8_t *b = kmalloc(fs->block_size);
-    if (!b) return false;
     if (!bytes(fs, (uint64_t)bmp * fs->block_size, b, fs->block_size)) {
-        kfree(b);
         fs->tainted = true;
         return false;
     }
 
     uint32_t bit = (block - fs->first) % fs->bpg;
     if (!(b[bit / 8] & (1 << (bit % 8)))) {
-        kfree(b);
-        return false; /* Block was already free */
+        fs->tainted = true;
+        return false; /* Block was already free or bitmap corruption */
     }
 
     b[bit / 8] &= ~(1 << (bit % 8));
     if (!write_bytes(fs, (uint64_t)bmp * fs->block_size, b, fs->block_size)) {
-        kfree(b);
         fs->tainted = true;
         return false;
     }
-    kfree(b);
 
     fs->group_descs[g].free_blocks++;
     if (!ext2_sync_group_desc(fs, g)) {
@@ -491,6 +500,34 @@ static bool file_block(ext2_inode_t *in, uint64_t index, uint32_t *out) {
     return true;
 }
 
+static bool ext2_validate_block_mapping(ext2_fs_t *fs, uint32_t block) {
+    if (!block || block < fs->first || block >= fs->blocks) {
+        fs->tainted = true;
+        return false;
+    }
+    if (ext2_is_metadata_block(fs, block)) {
+        fs->tainted = true;
+        return false;
+    }
+    uint32_t g = (block - fs->first) / fs->bpg;
+    if (g >= fs->groups) {
+        fs->tainted = true;
+        return false;
+    }
+    uint32_t bmp = fs->group_descs[g].block_bitmap;
+    uint32_t bit = (block - fs->first) % fs->bpg;
+    uint8_t byte_val;
+    if (!bytes(fs, (uint64_t)bmp * fs->block_size + (bit / 8), &byte_val, 1)) {
+        fs->tainted = true;
+        return false;
+    }
+    if (!(byte_val & (1 << (bit % 8)))) {
+        fs->tainted = true;
+        return false;
+    }
+    return true;
+}
+
 static bool file_block_alloc(ext2_inode_t *in, uint64_t index, uint32_t *out) {
     ext2_fs_t *fs = in->fs;
     if (fs->read_only || fs->tainted) return false;
@@ -504,6 +541,10 @@ static bool file_block_alloc(ext2_inode_t *in, uint64_t index, uint32_t *out) {
             if (!blk) return false;
             in->blocks[index] = blk;
             in->i_blocks += (fs->block_size / 512);
+        } else {
+            if (!ext2_validate_block_mapping(fs, in->blocks[index])) {
+                return false;
+            }
         }
         *out = in->blocks[index];
         return true;
@@ -518,6 +559,10 @@ static bool file_block_alloc(ext2_inode_t *in, uint64_t index, uint32_t *out) {
             /* Flush barrier for newly linked indirect table */
             if (!write_inode_to_disk(in)) { fs->tainted = true; return false; }
             if (fs->dev->flush && !block_flush(fs->dev)) { fs->tainted = true; return false; }
+        } else {
+            if (!ext2_validate_block_mapping(fs, in->blocks[12])) {
+                return false;
+            }
         }
         uint32_t ind_blk = in->blocks[12];
         uint64_t entry_off = (uint64_t)ind_blk * fs->block_size + index * 4;
@@ -537,6 +582,10 @@ static bool file_block_alloc(ext2_inode_t *in, uint64_t index, uint32_t *out) {
                 return false;
             }
             in->i_blocks += (fs->block_size / 512);
+        } else {
+            if (!ext2_validate_block_mapping(fs, blk)) {
+                return false;
+            }
         }
         *out = blk;
         return true;
@@ -590,7 +639,7 @@ static int64_t write_inode(ext2_inode_t *in, uint64_t off, const void *buf, size
                 if (fs->dev->flush && !block_flush(fs->dev)) { fs->tainted = true; return -5; }
                 return (int64_t)done;
             }
-            return -28; /* -ENOSPC */
+            return fs->tainted ? -VFS_EIO : -VFS_ENOSPC;
         }
         if (!write_bytes(fs, (uint64_t)block * bs + skip, (const uint8_t *)buf + done, n)) {
             fs->tainted = true;
@@ -616,26 +665,40 @@ static int dir_entry(ext2_inode_t *dir, const char *name, uint64_t index,
     uint64_t off = 0, curr_idx = 0;
     while (off < dir->size) {
         uint8_t h[8];
-        if (!read_inode(dir, off, h, 8)) return -1;
+        if (read_inode(dir, off, h, 8) != 8) return -1;
         uint32_t ino = u32(h);
         uint16_t rec = u16(h + 4);
         uint16_t len = dir->fs->incompat & 2 ? h[6] : u16(h + 6);
-        if (rec < 8 || rec % 4 || off + rec > dir->size || len > rec - 8) return -1;
-        if (ino && len && len < VFS_MAX_NAME) {
-            char found[VFS_MAX_NAME];
-            if (!read_inode(dir, off + 8, found, len)) return -1;
+        if (rec < 8 || rec % 4 ||
+            rec > dir->fs->block_size - (off % dir->fs->block_size) ||
+            rec > dir->size - off || len > rec - 8 || len > 255) return -1;
+        if (ino) {
+            char found[256];
+            if (!len || ino > dir->fs->inodes ||
+                read_inode(dir, off + 8, found, len) != (int64_t)len) return -1;
+            for (unsigned i = 0; i < len; i++) {
+                if (!found[i] || found[i] == '/') return -1;
+            }
             found[len] = '\0';
             if (name) {
                 if (!strcmp(found, name)) {
-                    if (out_name) memcpy(out_name, found, len + 1);
+                    if (out_name) {
+                        if (len >= VFS_MAX_NAME) return -1;
+                        memcpy(out_name, found, len + 1);
+                    }
                     return inode(dir->fs, ino, out_inode) ? 1 : -1;
                 }
             } else {
-                if (curr_idx == index) {
-                    if (out_name) memcpy(out_name, found, len + 1);
-                    return inode(dir->fs, ino, out_inode) ? 1 : -1;
+                if (strcmp(found, ".") && strcmp(found, "..")) {
+                    if (curr_idx == index) {
+                        if (out_name) {
+                            if (len >= VFS_MAX_NAME) return -1;
+                            memcpy(out_name, found, len + 1);
+                        }
+                        return inode(dir->fs, ino, out_inode) ? 1 : -1;
+                    }
+                    curr_idx++;
                 }
-                curr_idx++;
             }
         }
         off += rec;
@@ -698,16 +761,23 @@ static bool ext2_add_dir_entry(ext2_inode_t *dir, const char *name, uint32_t new
         off += rec;
     }
 
-    /* Allocate new directory block */
-    uint32_t new_blk = ext2_alloc_block(fs);
-    if (!new_blk) return false;
+    /* Check directory capacity limit before allocating block */
     uint32_t dir_block_idx = dir->size / fs->block_size;
     if (dir_block_idx >= 12) return false;
+
+    /* Preallocate block buffer before allocating block to prevent leaks on OOM */
+    uint8_t *block_buf = kcalloc(1, fs->block_size);
+    if (!block_buf) return false;
+
+    /* Allocate new directory block */
+    uint32_t new_blk = ext2_alloc_block(fs);
+    if (!new_blk) {
+        kfree(block_buf);
+        return false;
+    }
     dir->blocks[dir_block_idx] = new_blk;
     dir->i_blocks += (fs->block_size / 512);
 
-    uint8_t *block_buf = kcalloc(1, fs->block_size);
-    if (!block_buf) return false;
     put32(block_buf, new_ino);
     put16(block_buf + 4, (uint16_t)fs->block_size);
     if (dir->fs->incompat & 2) {
@@ -725,7 +795,7 @@ static bool ext2_add_dir_entry(ext2_inode_t *dir, const char *name, uint32_t new
     dir->size += fs->block_size;
     if (!write_inode_to_disk(dir)) return false;
     if (fs->dev->flush && !block_flush(fs->dev)) {
-        fs->read_only = true;
+        fs->tainted = true;
         return false;
     }
     return true;
@@ -779,11 +849,12 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
      * metadata exclusion, and absence of duplicate pointers.
      * ========================================================================= */
     size_t max_blocks = 12 + 1 + fs->block_size / 4;
-    uint32_t *to_free = kmalloc(max_blocks * sizeof(uint32_t));
+    uint32_t *to_free = kmalloc(max_blocks * sizeof(uint32_t) + fs->block_size);
     if (!to_free) {
         spin_unlock_irqrestore(&ext2_lock, flags);
         return -12; /* -ENOMEM */
     }
+    uint8_t *free_bitmap = (uint8_t *)(to_free + max_blocks);
     size_t count = 0;
 
     /* (a) Direct blocks */
@@ -861,8 +932,39 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
         kfree(indir_buf);
     }
 
+    /* Validate that all to_free blocks are valid, non-metadata, and marked allocated in bitmap */
+    for (size_t i = 0; i < count; i++) {
+        uint32_t blk = to_free[i];
+        if (blk < fs->first || blk >= fs->blocks || ext2_is_metadata_block(fs, blk)) {
+            kfree(to_free);
+            spin_unlock_irqrestore(&ext2_lock, flags);
+            return -22;
+        }
+        uint32_t g = (blk - fs->first) / fs->bpg;
+        if (g >= fs->groups) {
+            kfree(to_free);
+            spin_unlock_irqrestore(&ext2_lock, flags);
+            return -22;
+        }
+        uint32_t bmp = fs->group_descs[g].block_bitmap;
+        uint32_t bit = (blk - fs->first) % fs->bpg;
+        uint8_t byte_val;
+        if (!bytes(fs, (uint64_t)bmp * fs->block_size + (bit / 8), &byte_val, 1)) {
+            kfree(to_free);
+            fs->tainted = true;
+            spin_unlock_irqrestore(&ext2_lock, flags);
+            return -5;
+        }
+        if (!(byte_val & (1 << (bit % 8)))) {
+            kfree(to_free);
+            fs->tainted = true;
+            spin_unlock_irqrestore(&ext2_lock, flags);
+            return -22;
+        }
+    }
+
     /* =========================================================================
-     * Stage 2: Detachment (Atomic Unlinking on Inode)
+     * Stage 2: Persist detachment before reclamation
      * ========================================================================= */
     for (int i = 0; i < 15; i++) in->blocks[i] = 0;
     in->size = 0;
@@ -885,10 +987,20 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
     /* =========================================================================
      * Stage 3: Reclamation
      * ========================================================================= */
+    bool reclamation_failed = false;
     for (size_t i = 0; i < count; i++) {
-        ext2_free_block(fs, to_free[i]);
+        if (!ext2_free_block(fs, to_free[i], free_bitmap)) {
+            reclamation_failed = true;
+            fs->tainted = true;
+            break;
+        }
     }
     kfree(to_free);
+
+    if (reclamation_failed) {
+        spin_unlock_irqrestore(&ext2_lock, flags);
+        return -5;
+    }
 
     if (fs->dev->flush && !block_flush(fs->dev)) {
         fs->tainted = true;
@@ -937,9 +1049,23 @@ static void setup(vfs_node_t *node, ext2_inode_t *in) {
 }
 
 static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_type_t type) {
-    if (!dir_node || !name || dir_node->type != VFS_DIRECTORY) return NULL;
+    if (!dir_node || !name || dir_node->type != VFS_DIRECTORY) {
+        vfs_set_last_create_error(-VFS_EINVAL);
+        return NULL;
+    }
     ext2_inode_t *dir = dir_node->fs_private;
-    if (!dir || !dir->fs || dir->fs->read_only || dir->fs->tainted) return NULL;
+    if (!dir || !dir->fs) {
+        vfs_set_last_create_error(-VFS_EIO);
+        return NULL;
+    }
+    if (dir->fs->read_only) {
+        vfs_set_last_create_error(-VFS_EROFS);
+        return NULL;
+    }
+    if (dir->fs->tainted) {
+        vfs_set_last_create_error(-VFS_EIO);
+        return NULL;
+    }
     ext2_fs_t *fs = dir->fs;
 
     uint64_t flags = spin_lock_irqsave(&ext2_lock);
@@ -947,20 +1073,32 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
 
     ext2_inode_t existing;
     char found_name[VFS_MAX_NAME];
-    if (dir_entry(dir, name, 0, found_name, &existing) == 1) {
+    int dres = dir_entry(dir, name, 0, found_name, &existing);
+    if (dres == 1) {
+        vfs_set_last_create_error(-VFS_EEXIST);
+        goto done;
+    } else if (dres != 0) {
+        vfs_set_last_create_error(-VFS_EIO);
         goto done;
     }
 
     size_t plen = strlen(dir_node->path), nlen = strlen(name);
-    if (plen + 1 + nlen >= VFS_MAX_PATH) goto done;
+    if (plen + 1 + nlen >= VFS_MAX_PATH) {
+        vfs_set_last_create_error(-VFS_EINVAL);
+        goto done;
+    }
 
     /* Pre-reserve memory for the VFS node and cached inode BEFORE any disk mutations */
     result = kcalloc(1, sizeof(*result) + sizeof(ext2_inode_t));
-    if (!result) goto done;
+    if (!result) {
+        vfs_set_last_create_error(-VFS_ENOMEM);
+        goto done;
+    }
 
     bool is_dir = (type == VFS_DIRECTORY);
     uint32_t ino = ext2_alloc_inode(fs, is_dir);
     if (!ino) {
+        vfs_set_last_create_error(-VFS_ENOSPC);
         kfree(result);
         result = NULL;
         goto done;
@@ -992,15 +1130,17 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
     put32(raw + 32, 0);
 
     if (!write_bytes(fs, inode_off, raw, fs->inode_size)) {
+        vfs_set_last_create_error(-VFS_EIO);
+        fs->tainted = true;
         kfree(result);
         result = NULL;
-        fs->tainted = true;
         goto done;
     }
     if (fs->dev->flush && !block_flush(fs->dev)) {
+        vfs_set_last_create_error(-VFS_EIO);
+        fs->tainted = true;
         kfree(result);
         result = NULL;
-        fs->tainted = true;
         goto done;
     }
 
@@ -1015,6 +1155,13 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
 
     uint8_t file_type = is_dir ? 2 : 1;
     if (!ext2_add_dir_entry(dir, name, ino, file_type)) {
+        /* Roll back only a definitely unpublished inode on a healthy mount.
+         * Every uncertain directory write/flush must already have tainted it. */
+        if (!fs->tainted && !fs->read_only) {
+            if (!ext2_free_inode(fs, ino, is_dir) || !block_flush(fs->dev))
+                fs->tainted = true;
+        }
+        vfs_set_last_create_error(fs->tainted ? -VFS_EIO : -VFS_ENOSPC);
         kfree(result);
         result = NULL;
         goto done;
@@ -1023,6 +1170,7 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
     result->next = dir_node->children;
     dir_node->children = result;
     fs->nodes++;
+    vfs_set_last_create_error(VFS_SUCCESS);
 
 done:
     spin_unlock_irqrestore(&ext2_lock, flags);
@@ -1084,6 +1232,7 @@ static bool ext2_mount_internal(block_dev_t *dev, const char *path, bool writabl
     fs.inode_size = u32(sb + 76) ? u16(sb + 88) : 128;
     fs.incompat = u32(sb + 76) ? u32(sb + 96) : 0;
     fs.ro_compat = u32(sb + 76) ? u32(sb + 100) : 0;
+    fs.reserved_gdt_blocks = (u32(sb + 76) && (u32(sb + 92) & 0x10)) ? u16(sb + 206) : 0;
 
     /* Feature compatibility audit */
     if (u32(sb + 76)) {
@@ -1139,19 +1288,28 @@ static bool ext2_mount_internal(block_dev_t *dev, const char *path, bool writabl
     *mounted = fs;
     ext2_inode_t *ri = (ext2_inode_t *)(mounted + 1);
     *ri = root; ri->fs = mounted;
-    vfs_node_t *node = vfs_create_node(path, VFS_DIRECTORY, root.size, NULL);
-    if (!node) { kfree(mounted); goto fail; }
+    /* /mnt is the only supported mountpoint. Reserve its detached node first. */
+    vfs_node_t *parent = vfs_lookup("/");
+    vfs_node_t *node = kcalloc(1, sizeof(*node));
+    if (!node || !parent) { kfree(node); kfree(mounted); goto fail; }
+    memcpy(node->name, "mnt", 4);
+    memcpy(node->path, "/mnt", 5);
+    node->parent = parent;
     setup(node, ri);
-    mounted->nodes = 1;
-
     if (writable) {
-        g_mounted_ext2 = mounted;
-        /* Clear EXT2_VALID_FS (1) on writable mount to mark actively mounted (s_state = 0) */
         uint8_t state[2];
         put16(state, 0);
-        write_bytes(mounted, 1024 + 58, state, 2);
-        if (mounted->dev->flush) block_flush(mounted->dev);
+        if (!write_bytes(mounted, 1024 + 58, state, 2) || !block_flush(dev)) {
+            kfree(node);
+            kfree(mounted);
+            goto fail;
+        }
     }
+    /* No fallible operation remains after the durable dirty marker. */
+    node->next = parent->children;
+    parent->children = node;
+    mounted->nodes = 1;
+    if (writable) g_mounted_ext2 = mounted;
 
     return true;
 fail:
@@ -1159,19 +1317,23 @@ fail:
     return false;
 }
 
-void ext2_sync_all(void) {
+bool ext2_sync_all(void) {
     uint64_t flags = spin_lock_irqsave(&ext2_lock);
-    if (g_mounted_ext2 && !g_mounted_ext2->read_only) {
+    ext2_fs_t *fs = g_mounted_ext2;
+    bool ok = true;
+    if (fs && fs->tainted) {
+        ok = false; /* Never write or flush uncertain pending metadata. */
+    } else if (fs && !fs->read_only) {
         uint8_t state[2];
-        if (!g_mounted_ext2->tainted) {
-            put16(state, 1); /* EXT2_VALID_FS: cleanly synced/unmounted */
-        } else {
-            put16(state, 2); /* EXT2_ERROR_FS: errors detected / tainted */
-        }
-        write_bytes(g_mounted_ext2, 1024 + 58, state, 2);
-        if (g_mounted_ext2->dev->flush) block_flush(g_mounted_ext2->dev);
+        put16(state, 1);
+        ok = block_flush(fs->dev) &&
+             write_bytes(fs, 1024 + 58, state, 2) && block_flush(fs->dev);
+        if (!ok) fs->tainted = true;
+        /* Shutdown-only operation: no mutations may follow the clean marker. */
+        fs->read_only = true;
     }
     spin_unlock_irqrestore(&ext2_lock, flags);
+    return ok;
 }
 
 bool ext2_mount(block_dev_t *dev, const char *path) {

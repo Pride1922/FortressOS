@@ -34,7 +34,8 @@ def run_session(img_path, commands, log_path, mode="bios"):
             "-chardev", f"socket,id=uart,path={uart_path},server=on,wait=off,logfile={log_path}",
             "-serial", "chardev:uart",
             "-drive", f"file={img_path},if=none,id=nvm0,format=raw,snapshot=off",
-            "-device", "nvme,serial=fortress0,drive=nvm0"
+            "-device", "nvme,serial=fortress0,drive=nvm0",
+            "-fw_cfg", "name=opt/fortress/write_test,string=1"
         ]
         if mode == "uefi":
             code = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")

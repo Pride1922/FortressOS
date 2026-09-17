@@ -198,7 +198,16 @@ vfs_node_t *vfs_create_node(const char *path, vfs_node_type_t type, uint64_t siz
     return curr;
 }
 
-vfs_node_t *vfs_create(const char *path, vfs_node_type_t type) {
+static int g_last_create_error = -VFS_EIO;
+void vfs_set_last_create_error(int err) {
+    g_last_create_error = err;
+}
+int vfs_get_last_create_error(void) {
+    return g_last_create_error;
+}
+
+vfs_node_t *vfs_create_ext(const char *path, vfs_node_type_t type, int *err_out) {
+    if (err_out) *err_out = -VFS_EINVAL;
     if (!path || strlen(path) >= VFS_MAX_PATH) return NULL;
     char norm[VFS_MAX_PATH];
     normalize_path(path, norm, sizeof(norm));
@@ -223,11 +232,29 @@ vfs_node_t *vfs_create(const char *path, vfs_node_type_t type) {
     if (!*name || strlen(name) >= VFS_MAX_NAME) return NULL;
 
     vfs_node_t *dir = vfs_lookup(dir_path);
-    if (!dir || dir->type != VFS_DIRECTORY) return NULL;
-    if (dir->create) {
-        return dir->create(dir, name, type);
+    if (!dir) {
+        if (err_out) *err_out = -VFS_ENOENT;
+        return NULL;
     }
-    return NULL;
+    if (dir->type != VFS_DIRECTORY) {
+        if (err_out) *err_out = -8; /* ENOTDIR */
+        return NULL;
+    }
+    if (!dir->create) {
+        if (err_out) *err_out = -VFS_EROFS;
+        return NULL;
+    }
+    vfs_node_t *res = dir->create(dir, name, type);
+    if (!res) {
+        if (err_out) *err_out = vfs_get_last_create_error();
+        return NULL;
+    }
+    if (err_out) *err_out = VFS_SUCCESS;
+    return res;
+}
+
+vfs_node_t *vfs_create(const char *path, vfs_node_type_t type) {
+    return vfs_create_ext(path, type, NULL);
 }
 
 int vfs_truncate(vfs_node_t *node, uint64_t new_size) {
@@ -250,6 +277,11 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
     if (flags & ~(VFS_O_RDONLY | VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND)) {
         return NULL;
     }
+    if (flags & VFS_O_APPEND) {
+        /* O_APPEND is unsupported in Phase 9D bounded phase to prevent seek/write races */
+        if (err_out) *err_out = -VFS_EINVAL;
+        return NULL;
+    }
 
     /* Pre-reserve the file_t descriptor structure before any fallible creation or truncation */
     file_t *file = (file_t *)kmalloc(sizeof(file_t));
@@ -261,10 +293,11 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
     vfs_node_t *node = vfs_lookup(path);
     if (!node) {
         if (flags & VFS_O_CREAT) {
-            node = vfs_create(path, VFS_FILE);
+            int create_err = 0;
+            node = vfs_create_ext(path, VFS_FILE, &create_err);
             if (!node) {
                 kfree(file);
-                if (err_out) *err_out = -VFS_EIO;
+                if (err_out) *err_out = create_err ? create_err : -VFS_EIO;
                 return NULL;
             }
         } else {

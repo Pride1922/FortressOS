@@ -43,6 +43,7 @@ static bool flush_failure;
 static size_t reads;
 static size_t writes;
 static size_t flushes;
+static size_t fail_write_at, fail_flush_at, writes_at_failure;
 
 static bool read_sector(block_dev_t *dev, uint64_t lba, void *out) {
     assert(lba < dev->sector_count);
@@ -57,7 +58,9 @@ bool block_read_sector(block_dev_t *dev, uint64_t lba, void *out) {
 static bool write_sector(block_dev_t *dev, uint64_t lba, const void *in) {
     assert(lba < dev->sector_count);
     writes++;
-    if (io_failure || write_failure) return false;
+    if (io_failure || write_failure || writes == fail_write_at) {
+        writes_at_failure = writes; return false;
+    }
     memcpy(pending_disk + lba * dev->sector_size, in, dev->sector_size);
     return true;
 }
@@ -67,7 +70,9 @@ bool block_write_sector(block_dev_t *dev, uint64_t lba, const void *in) {
 static bool flush_sector(block_dev_t *dev) {
     (void)dev;
     flushes++;
-    if (io_failure || flush_failure) return false;
+    if (io_failure || flush_failure || flushes == fail_flush_at) {
+        writes_at_failure = writes; return false;
+    }
     /* Durability barrier: successful flush advances durable state */
     memcpy(durable_disk, pending_disk, disk_size);
     return true;
@@ -86,10 +91,12 @@ static void simulate_crash(void) {
 static void reset(void) {
     while (live) free(allocations[--live]);
     g_vfs_root = NULL;
+    g_mounted_ext2 = NULL;
     fail_after = -1;
     io_failure = false;
     write_failure = false;
     flush_failure = false;
+    fail_write_at = fail_flush_at = 0;
     vfs_init();
 }
 
@@ -104,6 +111,127 @@ static void rejected_field(block_dev_t *dev, size_t offset, uint32_t value) {
     memcpy(disk + offset, saved, 4);
     memcpy(durable_disk, pending_disk, disk_size);
 }
+/* Each case starts from the exact original disk and fresh mount/cache state. */
+static void review_regressions(block_dev_t *dev) {
+    uint8_t *original = malloc(disk_size);
+    assert(original);
+    memcpy(original, disk, disk_size);
+    for (int test = 0; test < 14; test++) {
+        reset();
+        memcpy(disk, original, disk_size);
+        memcpy(durable_disk, original, disk_size);
+        size_t w = writes, f = flushes;
+        if (test == 0) {
+            assert(ext2_sync_all());
+            assert(ext2_mount(dev, "/mnt"));
+            assert(ext2_sync_all());
+            assert(writes == w && flushes == f);
+            continue;
+        }
+        if (test >= 1 && test <= 3) {
+            fail_after = test - 1;
+            assert(!ext2_mount_rw(dev, "/mnt"));
+            assert(!g_mounted_ext2 && !vfs_lookup("/mnt"));
+            assert(writes == w && flushes == f && live == 1);
+            assert(!memcmp(disk, original, disk_size));
+            continue;
+        }
+        if (test == 4 || test == 12) {
+            if (test == 4) fail_flush_at = flushes + 1;
+            else fail_write_at = writes + 1;
+            assert(!ext2_mount_rw(dev, "/mnt"));
+            assert(!g_mounted_ext2 && !vfs_lookup("/mnt") && live == 1);
+            w = writes; f = flushes;
+            assert(ext2_sync_all());
+            assert(writes == w && flushes == f);
+            continue;
+        }
+        assert(ext2_mount_rw(dev, "/mnt"));
+        ext2_fs_t *fs = g_mounted_ext2;
+        if (test == 11) {
+            fail_flush_at = flushes + 2; /* final clean-marker flush */
+            assert(!ext2_sync_all() && fs->tainted);
+            w = writes; f = flushes;
+            assert(!ext2_sync_all() && writes == w && flushes == f);
+            assert(u16(durable_disk + 1082) == 0);
+            continue;
+        }
+        if (test == 13) {
+            file_t *frozen = vfs_open("/mnt/frozen", VFS_O_CREAT | VFS_O_RDWR);
+            assert(frozen && ext2_sync_all());
+            w = writes; f = flushes;
+            assert(vfs_write(frozen, "x", 1) == -VFS_EROFS);
+            assert(vfs_truncate(frozen->node, 0) == -VFS_EROFS);
+            assert(ext2_sync_all() && writes == w && flushes == f);
+            vfs_close(frozen);
+            continue;
+        }
+        if (test == 5) {
+            /* Inode reservation succeeds; initialization flush fails. */
+            fail_flush_at = flushes + 2;
+            assert(!vfs_open("/mnt/review.txt", VFS_O_CREAT | VFS_O_RDWR));
+            assert(fs->tainted && writes == writes_at_failure);
+        } else {
+            file_t *file = vfs_open("/mnt/review.txt", VFS_O_CREAT | VFS_O_RDWR);
+            assert(file);
+            ext2_inode_t *in = file->node->fs_private;
+            if (test == 6) {
+                uint32_t free_before = fs->free_blocks;
+                w = writes;
+                fail_after = 1; /* zero buffer succeeds, bitmap buffer fails */
+                assert(vfs_write(file, "x", 1) < 0);
+                fail_after = -1;
+                assert(fs->free_blocks == free_before && writes == w && !fs->tainted);
+                assert(in->blocks[0] == 0);
+            } else if (test == 7) {
+                in->blocks[0] = fs->group_descs[0].block_bitmap;
+                w = writes;
+                assert(vfs_write(file, "x", 1) == -VFS_EIO);
+                assert(writes == w && fs->tainted);
+            } else {
+                assert(vfs_write(file, "x", 1) == 1);
+                uint32_t block = in->blocks[0], free_before = fs->free_blocks;
+                w = writes;
+                if (test == 8) {
+                    fail_after = 0;
+                    assert(vfs_truncate(file->node, 0) == -VFS_ENOMEM);
+                    fail_after = -1;
+                    assert(in->size == 1 && in->blocks[0] == block && writes == w);
+                    assert(fs->free_blocks == free_before && !fs->tainted);
+                    /* Only one allocation is needed for direct reclamation. */
+                    fail_after = 1;
+                    assert(vfs_truncate(file->node, 0) == 0);
+                    fail_after = -1;
+                    assert(fs->free_blocks == free_before + 1);
+                } else if (test == 9) {
+                    fail_write_at = writes + 2; /* inode detaches, bitmap write fails */
+                    assert(vfs_truncate(file->node, 0) == -VFS_EIO);
+                    assert(fs->tainted && writes == writes_at_failure);
+                } else {
+                    /* Reserved GDT blocks must not be accepted as file data. */
+                    uint16_t saved = fs->reserved_gdt_blocks;
+                    fs->reserved_gdt_blocks = 1;
+                    uint32_t reserved = fs->first + 1 +
+                        (fs->groups * 32 + fs->block_size - 1) / fs->block_size;
+                    assert(ext2_is_metadata_block(fs, reserved));
+                    fs->reserved_gdt_blocks = saved;
+                }
+            }
+            vfs_close(file);
+        }
+        w = writes; f = flushes;
+        if (fs->tainted) {
+            assert(!ext2_sync_all());
+            assert(writes == w && flushes == f);
+            assert(u16(durable_disk + 1082) == 0);
+        }
+    }
+    reset();
+    memcpy(disk, original, disk_size);
+    memcpy(durable_disk, original, disk_size);
+    free(original);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 3);
     FILE *fp = fopen(argv[1], "rb");
@@ -120,6 +248,7 @@ int main(int argc, char **argv) {
     block_dev_t dev = {.sector_size = ss, .sector_count = disk_size / ss,
                        .read_sector = read_sector, .write_sector = write_sector,
                        .flush = flush_sector};
+    review_regressions(&dev);
     reset();
     rejected_field(&dev, 1024 + 56, 0);          /* magic */
     rejected_field(&dev, 1024 + 24, 32);         /* shift overflow */
@@ -502,5 +631,5 @@ int main(int argc, char **argv) {
     while (live) free(allocations[--live]);
     free(pending_disk);
     free(durable_disk);
-    printf("PASS ext2: block=%u sector=%u, malformed metadata, I/O/OOM rollback, indirect bounds\n", bs, ss);
+    printf("PASS ext2: block=%u sector=%u, malformed metadata, shutdown/mount barriers, I/O/OOM ownership, indirect bounds\n", bs, ss);
 }

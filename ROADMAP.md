@@ -11,6 +11,24 @@ technical debt, read [ARCH_REVIEW.md](ARCH_REVIEW.md). Code and public headers
 remain the implementation reference. Some old notes (including the default
 keyboard layout) are corrected in AGENTS.md; the record below is preserved.
 
+## Phase 9D review follow-up (2026-09-17)
+
+Fixed shutdown synchronization without a writable mount, removed failed-mount
+placeholder pointers, and reserved detached mount nodes before dirtying disk.
+Truncation now reserves its bitmap scratch space before detachment and checks
+all reclamation errors. Inode-initialization flush failure taints immediately,
+without rollback writes. Metadata mapping rejection returns EIO; reserved GDT
+expansion blocks are excluded from file data. Shutdown synchronization returns
+failure on taint or I/O failure and freezes writes after a clean marker.
+
+`wsl -d Ubuntu-24.04 -- make test-ext2` passed all eight sanitizer geometries,
+including 14 fresh-image regression scenarios covering mount OOM/write/flush
+failure, read-only/no-mount shutdown, allocation ownership, truncation OOM and
+reclamation failure, tainted no-I/O behavior, and shutdown freeze/flush failure.
+`make test-ext2-write` passed BIOS/UEFI three-boot persistence and both offline
+`e2fsck -fn` audits per firmware on disposable clones. These tests do not claim
+crash atomicity, torn-sector recovery, or physical writable-disk acceptance.
+
 ## Detailed checkpoint roadmap
 
 Recorded implementation sequence and planned work:
@@ -384,3 +402,8 @@ QEMU storage fixture tests were skipped: physical NVMe filesystem mounting,
 reads/writes and persistence remain unverified. This photo does not verify
 physical NMI injection, every key/modifier, or blocked-reader resource counters.
 The PMM still manages only the low 2 GiB despite 32 GiB being installed.
+
+Follow-up integration: `wsl -d Ubuntu-24.04 -- make test-storage test-shell
+test-power` passed BIOS/UEFI storage and shell checks, keyboard-only UEFI 8 GiB,
+and ordinary read-only-boot shutdown/reboot (QEMU exit code 0). The kernel and
+ISO also built with the existing strict compiler flags.
