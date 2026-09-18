@@ -26,6 +26,7 @@
 #include "gpt.h"
 #include "ext2.h"
 #include "power.h"
+#include "logo.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
@@ -107,15 +108,15 @@ static const char *memmap_type_to_str(uint64_t type) {
     }
 }
 
-/* Early visual test: draw a test banner/pattern on the framebuffer */
-static void render_test_pattern(const boot_info_t *boot_info) {
+/* Early visual display: render branded FortressOS boot logo on framebuffer */
+static void render_boot_logo(const boot_info_t *boot_info) {
     if (!boot_info || !boot_info->has_framebuffer || !boot_info->fb_address) return;
 
     /* Validate format: ensure 32 bpp linear framebuffer */
     if (boot_info->fb_bpp != 32) {
         serial_puts("[WARN] Framebuffer is not 32 bpp (detected ");
         serial_print_dec(boot_info->fb_bpp);
-        serial_puts(" bpp); skipping test pattern.\n");
+        serial_puts(" bpp); skipping boot logo.\n");
         return;
     }
 
@@ -124,43 +125,7 @@ static void render_test_pattern(const boot_info_t *boot_info) {
         return;
     }
 
-    volatile uint32_t *fb_ptr = (volatile uint32_t *)boot_info->fb_address;
-    uint64_t width = boot_info->fb_width;
-    uint64_t height = boot_info->fb_height;
-    uint64_t pitch32 = boot_info->fb_pitch / 4;
-
-    /* Fill background with dark slate blue (0x001A1B26) */
-    for (uint64_t y = 0; y < height; y++) {
-        for (uint64_t x = 0; x < width; x++) {
-            fb_ptr[y * pitch32 + x] = 0x001A1B26;
-        }
-    }
-
-    /* Draw test color bars at the top, bounded by screen height */
-    uint32_t colors[6] = {
-        0x00F7768E, /* Red */
-        0x009ECE6A, /* Green */
-        0x007AA2F7, /* Blue */
-        0x00E0AF68, /* Yellow */
-        0x00BB9AF7, /* Purple */
-        0x007DCFFF  /* Cyan */
-    };
-
-    uint64_t bar_height = (height > 48) ? 24 : (height / 2);
-    if (bar_height == 0) bar_height = 1;
-    uint64_t bar_width = width / 6;
-
-    for (int c = 0; c < 6; c++) {
-        uint64_t start_x = c * bar_width;
-        uint64_t end_x = (c == 5) ? width : (start_x + bar_width);
-        if (end_x > width) end_x = width;
-
-        for (uint64_t y = 0; y < bar_height; y++) {
-            for (uint64_t x = start_x; x < end_x; x++) {
-                fb_ptr[y * pitch32 + x] = colors[c];
-            }
-        }
-    }
+    logo_render_boot(boot_info);
 }
 
 static void acpi_parser_selftest(void) {
@@ -3861,8 +3826,8 @@ pf_boot_guard_done:
         serial_print_hex(boot_info.fb_address);
         serial_puts("\n");
 
-        render_test_pattern(&boot_info);
-        serial_puts("[ OK ] Framebuffer test pattern rendered (using kernel-owned boot info)\n");
+        render_boot_logo(&boot_info);
+        serial_puts("[ OK ] Framebuffer boot logo rendered (using kernel-owned boot info)\n");
 
         console_init(&boot_info);
         serial_puts("[ OK ] Framebuffer text console active (dual COM1/screen output armed)\n");

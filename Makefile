@@ -235,6 +235,10 @@ $(BOOTABLE_ISO): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf limine-setup
 	@cp -f $(INITRAMFS_TAR) $(ISO_ROOT)/initramfs.tar
 	@cp -f limine.conf $(ISO_ROOT)/boot/limine/limine.conf
 	@cp -f limine.conf $(ISO_ROOT)/boot/limine.conf
+	@if [ -f "assets/splash.png" ]; then \
+		cp -f assets/splash.png $(ISO_ROOT)/boot/splash.png; \
+		cp -f assets/splash.png $(ISO_ROOT)/boot/limine/splash.png; \
+	fi
 	@cp -f $(LIMINE_DIR)/limine-bios.sys $(ISO_ROOT)/boot/limine/ 2>/dev/null || true
 	@cp -f $(LIMINE_DIR)/limine-bios-cd.bin $(ISO_ROOT)/boot/limine/ 2>/dev/null || true
 	@cp -f $(LIMINE_DIR)/limine-uefi-cd.bin $(ISO_ROOT)/boot/limine/ 2>/dev/null || true
