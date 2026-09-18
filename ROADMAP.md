@@ -329,21 +329,99 @@ Recorded implementation sequence and planned work:
     └── Automated acceptance: make test-shell passing BIOS, UEFI, and UEFI 8 GiB keyboard-only mode with zero-leak resource audit
     │
     ▼
-[Phase 9F] Dual-Boot Raw Disk Image & Persistent Media (COMPLETE)
+[Phase 9F] Dual-Boot Raw Disk Image Packaging (COMPLETE; USB persistence pending 9G)
     ├── Dual-partition GPT disk image layout (130 MiB total, Protective MBR + Primary & Backup GPT)
     ├── Partition 1: EFI System Partition (FAT32, 64 MiB, LBAs 2048..133119) formatted via mformat/mcopy
     │   ├── Populated with Limine UEFI loaders (BOOTX64.EFI, BOOTIA32.EFI), BIOS code (limine-bios.sys),
     │   └── Kernel binary (fortress.elf), initramfs (initramfs.tar), config (limine.conf), and splash (splash.png)
     ├── Partition 2: Persistent Storage (ext2, 64 MiB, LBAs 133120..264191) formatted via mke2fs (-b 1024)
-    │   └── Pre-populated with README.txt and welcome notes for mounting at /mnt on physical USB flash drives
+    │   └── Pre-populated with README.txt and welcome notes; intended USB /mnt mount requires Phase 9G
     ├── Limine BIOS Stage 1 & Stage 2 deployment via limine bios-install (embedded into MBR LBA 0 and GPT partition gap)
     ├── Tooling & Automation: scripts/create_boot_img.py with automatic verification (--verify)
     ├── Makefile Integration: make img, make run-img (UEFI), make run-img-usb (USB storage), make run-img-bios (BIOS)
-    └── Automated & Manual Verification:
+    └── Recorded image/boot verification (does not establish kernel USB storage access):
         ├── Automated GPT CRC, FAT32 directory structure, and offline e2fsck -fn partition verification (0 errors)
         ├── QEMU UEFI and BIOS boot to interactive shell prompt with 100% test pass
-        └── Physical hardware ready for direct dd imaging onto USB flash drives for the Dell Latitude 5590
+        └── Image can be flashed to USB; physical USB filesystem access and persistence remain unimplemented
+    │
+    ▼
+[Phase 9G] USB Storage & Real /mnt Persistence (NEXT; NOT IMPLEMENTED)
+    ├── 9G.1: xHCI controller initialization, bounded transfers and USB device enumeration
+    ├── 9G.2: USB Mass Storage Bulk-Only Transport, SCSI reads and read-only block_dev_t registration
+    ├── 9G.3: Production USB partition selection and read-only /mnt mount, independent of QEMU fixture tests
+    ├── 9G.4: USB writes/flush, explicit writable mount policy and clean-shutdown persistence
+    └── Acceptance: isolated QEMU USB persistence + offline e2fsck, then manual Dell USB persistence
+    │
+    ▼
+[Following] Accounts/permissions, then installer
 ```
+
+### Phase 9G handoff and evidence boundary (2026-09-18)
+
+After flashing `fortress.img` with Rufus, the user reported no `/mnt`. Review
+identified the missing runtime path: the kernel has no USB controller or
+mass-storage driver, and `/mnt` is mounted from `nvme0n1p1` only by the QEMU
+storage acceptance suite. The boot image's ext2 filesystem is partition 2.
+The `run-img*` targets attach a separate NVMe fixture, so their shell boot and
+any fixture `/mnt` do not prove access to the image's USB data partition.
+Phase 9F completion covers image packaging, not physical USB persistence.
+The README embedded in that partition describes intended behavior, not proof
+of implemented USB access.
+
+Antigravity's next implementation is Phase 9G, beginning with enumeration
+and read-only USB access. The staged implementation scope, protected contracts
+and acceptance checklist are in [AGENTS.md §2](AGENTS.md#phase-9g-implementation-handoff).
+Each stage should record its actual results here; none is marked passed by
+this planning update.
+
+**Scope discipline:** Planning estimate: 9G.1 is expected to be the largest single driver effort since NVMe. Commit 9G.1a through 9G.1e as separate changes, each verified in QEMU before merging. If any checkpoint exceeds two focused sessions without a working artifact meeting its required evidence, stop implementation, document the specific blocker and evidence, and reassess scope before proceeding. Do not begin 9G.2 until 9G.1e produces a valid device descriptor and a validated directly attached BOT mass-storage interface on both QEMU and the Dell; awaiting hardware verification is a recorded blocker, not a pass.
+
+**9G stop condition:** Use two weeks of active implementation effort after 9G.1e acceptance as a provisional review budget for 9G.2 and the read-only mount in 9G.3, not a delivery promise. If no read-only `/mnt` mount works on the Dell by that review point, stop and identify whether the bottleneck is xHCI complexity, hardware divergence or the existing storage stack. Record completed artifacts, failed checks and a revised scope/estimate before resuming. Exclude and record time awaiting hardware access separately. USB mounting/persistence may be explicitly deferred to a follow-up phase; the existing boot-image path remains available, and deferred acceptance must remain marked incomplete.
+
+The handoff now defines inter-stage guarantees in AGENTS.md's fourth table
+column, a USB 2.0/direct-attachment/boot-time-only scope, exact read-only SCSI
+commands, and bounded event-ring polling compatible with ext2's lock contract.
+9G.1 is split into PCI-only discovery (9G.1a), MMIO/reset (9G.1b), No-Op command
+completion (9G.1c), port inspection (9G.1d), and descriptor enumeration (9G.1e).
+Antigravity should start with 9G.1a and add bounded state-dump diagnostics before
+the first transfer. Known hardware unknowns and their measurement stages are
+listed in AGENTS.md. These are planned deliverables, not new driver code.
+
+Each 9G.1 checkpoint also names likely failure symptoms and bounded responses.
+Diagnostic printing is thread-context only after locks are released; timeout
+paths publish a preallocated snapshot and pending flag. Writable selection is
+planned as an explicit boot-menu opt-in using `usb_data=PARTUUID=<guid>` plus
+`usb_data_mode=rw`, with a read-only default and duplicate-target rejection.
+Labels or marker files alone do not authorize writes. Boot-argument support
+and the menu entry are implementation work, not existing functionality.
+
+The consolidated "What 9G does NOT do" list in AGENTS.md excludes SuperSpeed,
+external hubs, hot-plug/reconnection, UAS, other USB classes, suspend/resume,
+multiple LUNs and runtime host-controller reset recovery. Direct-attached
+SuperSpeed should be a separate follow-up after 9G; external hubs remain later
+work. Initial reset, root-port management and safe failure remain required.
+
+9G.2 owns logical-sector compatibility; 9G.3 owns larger-device GPT policy and
+read-only mount selection; 9G.4 owns the writable path and real device flush.
+New `test-usb-*` runners must assert that no extra data disk is attached,
+allowing only the USB fixture plus firmware code/vars. `test-img-*` boot evidence
+must remain separate from storage acceptance.
+
+Completion requires all of the following:
+
+- Read the intended USB partition at `/mnt` with no NVMe fixture attached;
+  preserve shell startup when the stick is absent, unsupported or unreadable.
+- Test exact-size images and images copied to larger disposable devices,
+  including the backup-GPT location mismatch. Preserve physical disk exclusions
+  and require explicit selection/opt-in for writable USB mounting.
+- On disposable USB images under BIOS and UEFI: create/save and cleanly shut
+  down, reboot/read/overwrite and cleanly shut down, then reboot/read again.
+  Check the ext2 partition offline with `e2fsck -fn` after clean shutdowns.
+- Exercise transfer failures, timeouts, invalid descriptors and bounds, and
+  safe handling of device disappearance without releasing DMA still in use.
+- Record separate Dell acceptance: selected USB device, `/mnt` file read,
+  save, clean shutdown and persisted contents after reboot. Keep the internal
+  NVMe outside this test. QEMU results alone cannot close physical acceptance.
 
 ---
 

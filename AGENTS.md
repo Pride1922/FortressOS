@@ -34,10 +34,180 @@ checkpoint history there, and verification claims tied to actual evidence.
 
 | Checkpoint | Status / acceptance |
 | --- | --- |
-| Latest recorded completion: Phase 9E Saved File Management & H4 AZERTY Fix | Directory operations (`mkdir`), file rename (`rename`), and deletion (`unlink`) on writable ext2 filesystem. Directory creation with `.` and `..` initialization, empty directory unlink enforcement, non-empty directory rejection (`-VFS_ENOTEMPTY`), cross-directory rename with `..` reparenting, on-disk inode/block reclamation with `i_dtime` set and block pointers cleared, interactive shell commands (`mkdir`, `rm`, `mv`), host unit test matrix (`make test-ext2`), and full 3-boot BIOS/UEFI persistence suite with offline `e2fsck -fn` reporting 0 errors (`make test-ext2-write`). Belgian AZERTY Shift-Lock and scancodes 0x03/0x08/0x0A/0x0B/0x28/0x56 decoding fixed (Bug H4) and verified (`make test-input`, `make test-shell`). |
+| Latest recorded completion: Phase 9F boot image packaging | `scripts/create_boot_img.py` and Makefile generate a 130 MiB BIOS/UEFI GPT image with a 64 MiB FAT32 ESP and 64 MiB ext2 data partition. Image structure and QEMU boot verification are recorded in ROADMAP.md. Kernel USB storage access and physical USB persistence are NOT implemented. |
+| Phase 9E Saved File Management & H4 AZERTY Fix | Directory operations (`mkdir`), file rename (`rename`), and deletion (`unlink`) on writable ext2 filesystem. Directory creation with `.` and `..` initialization, empty directory unlink enforcement, non-empty directory rejection (`-VFS_ENOTEMPTY`), cross-directory rename with `..` reparenting, on-disk inode/block reclamation with `i_dtime` set and block pointers cleared, interactive shell commands (`mkdir`, `rm`, `mv`), host unit test matrix (`make test-ext2`), and full 3-boot BIOS/UEFI persistence suite with offline `e2fsck -fn` reporting 0 errors (`make test-ext2-write`). Belgian AZERTY Shift-Lock and scancodes 0x03/0x08/0x0A/0x0B/0x28/0x56 decoding fixed (Bug H4) and verified (`make test-input`, `make test-shell`). |
 | 9D bounded writable ext2 | Explicit opt-in writable mount (`ext2_mount_rw`), direct block and single-indirect allocation and writes, directory entry insertion (`vfs_create`), truncation (`vfs_truncate`) with block reclamation, emergency read-only remount on metadata/flush failure, double/triple indirect pre-rejection, host ASan/UBSan matrix suite with injected failure coverage, offline `e2fsck -fn` verification (0 errors), and BIOS/UEFI 3-boot persistence in QEMU. |
 | 9C.5 power & layout | Power/reset and US/AZERTY switching implemented (`9a3c4b4`); `make test-power` exercises QEMU power commands. Dell 5590 manual verification confirmed working ACPI S5 shutdown, reboot, and Belgian AZERTY layout switching (accented keys é/è/ç/à fixed in H4). |
-| Following milestones | Accounts/permissions, installer, physical verification on Dell Latitude 5590. |
+| Next: Phase 9G USB storage and real `/mnt` persistence | Implement and verify the staged plan below. First coding checkpoint: xHCI enumeration and read-only access to the USB stick. |
+| Following milestones | Accounts/permissions and installer, after USB persistence acceptance. Physical Dell verification is part of each applicable 9G stage. |
+
+### Phase 9G implementation handoff
+
+The user flashed `fortress.img` with Rufus and reported no `/mnt`. The image
+contains ext2, but the kernel currently has no USB controller/mass-storage
+driver. Limine loading the kernel from USB does not establish kernel USB I/O.
+The existing mount path uses `nvme0n1p1` inside QEMU fixture tests; the image's
+ext2 partition is partition 2. Do not reuse fixture assertions as production
+storage initialization. This is the next implementation task for Antigravity.
+
+| Stage | Implementation scope | Acceptance before advancing | What the next stage assumes from this one |
+| --- | --- | --- | --- |
+| 9G.1 Controller and enumeration | Discover xHCI through PCI; implement bounded controller initialization, firmware ownership handoff where applicable, DMA rings, ports, control transfers and descriptor parsing. Start with directly attached mass-storage devices; document supported speeds/topology and reject unsupported devices cleanly. | QEMU enumeration with `qemu-xhci` and `usb-storage`; Dell controller/device discovery recorded separately. Missing devices, malformed descriptors and timeouts must leave the shell usable. | A validated USB mass-storage interface (class 0x08, SCSI transparent subclass 0x06, BOT protocol 0x50) with control and bulk endpoints; enumeration owns class filtering. This is not yet a block device. |
+| 9G.2 Read-only USB block device | Implement USB Mass Storage Bulk-Only Transport and the required SCSI identification, capacity, sense and read operations. Validate transfer lengths, tags/status and device geometry; expose reads through `block_dev_t`. UAS and external hubs are deferred unless explicitly added to scope. | Actual USB sector reads, first/last/out-of-range coverage, failure paths, GPT parsing and ext2 reads on disposable images. Confirm read-only access to the intended stick on Dell. | A registered block_dev_t using the same API as NVMe, verified 512/4096-byte logical-sector reads and bounded synchronous completion; write/flush callbacks remain NULL. |
+| 9G.3 Production `/mnt` mount | Add storage initialization independent of QEMU acceptance tests. Identify the intended USB data partition using device provenance and explicit partition identity/configuration; reject ambiguous candidates. Mount read-only first and report the selected device, partition and mount status visibly. | `ls /mnt` and `cat /mnt/README.txt` read the boot image's ext2 partition with no NVMe fixture attached. Missing/unsupported media must permit shell startup with a useful diagnostic. | A read-only mount plus reusable device/partition selection and mount-policy code. 9G.4 explicitly supplies write/flush capabilities and opts into ext2_mount_rw during boot; no live RO-to-RW remount is assumed. |
+| 9G.4 Writable persistence | Add USB write and flush semantics with bounded error recovery, explicit writable-mount opt-in independent of QEMU `fw_cfg`, and existing ext2 clean-shutdown synchronization. Never report a successful flush when durability cannot be established. | Disposable USB-image three-boot create/read/overwrite persistence suite under BIOS and UEFI, offline `e2fsck -fn`, then manual Dell save/shutdown/reboot/read acceptance on the user-selected test USB. | Later accounts/installer work may rely only on the recorded supported devices, proven flush path and persistence acceptance; unsupported or ambiguous media remain non-writable. |
+
+#### What 9G does NOT do
+
+- No USB 3.x SuperSpeed support; direct-attached SuperSpeed is follow-up work
+  after 9G acceptance. Do not assume automatic USB 2.0 fallback.
+- No external USB hubs; xHCI root-port management remains required.
+- No hot-plug enumeration, reconnection or removal recovery beyond safe failure.
+- No UAS, USB keyboards, mice, audio or other non-mass-storage classes.
+- No USB power management, suspend or resume.
+- No multiple-LUN support: access LUN 0 only.
+- No recovery/re-enumeration after a runtime host-controller reset. Initial
+  reset and bounded BOT transport recovery are still required; controller
+  failure leaves storage unavailable until reboot, with DMA safely contained.
+
+#### Explicit USB selection and writable opt-in
+
+Planned boot arguments are `usb_data=PARTUUID=<unique-partition-guid>` and
+`usb_data_mode=ro|rw` (default `ro`). These are new 9G configuration, not
+existing kernel options. 9G.3 must implement bounded parsing and a kernel-owned
+copy of the boot command line under the existing boot-metadata contract.
+9G.4 adds the `rw` path. The image builder must report the generated data
+partition GUID; an explicit writable boot-menu entry must display that target
+and pass both arguments. Keep the default entry read-only.
+
+"User-selected test USB" means the user deliberately chooses that configured
+target and writable entry. Require exactly one matching partition on a supported
+USB BOT device. A matching filesystem label (`FORTRESS_DATA`), GPT name
+(`Fortress Persistent Data`) or marker file alone is never write authorization.
+No first-disk or first-matching-label fallback. Duplicate GUIDs (including two
+clones of the same image), missing/malformed selection, unsupported media or
+failed eligibility checks must never produce a writable mount. Without a valid
+unique target, leave `/mnt` unmounted and explain why; with a selected target
+but failed RW eligibility, allow only the documented read-only fallback.
+
+The explicit opt-in does not override GPT ambiguity/degraded-mode policy,
+ext2 validation, write/flush capability checks or the internal NVMe exclusion.
+Log the selected USB identity, partition GUID and actual mount mode. Test no
+selection, RO default, explicit RW, wrong GUID, duplicate clones and failed
+flush capability. Do not auto-enable RW merely because an image was flashed.
+
+#### Bounded first implementation
+
+- USB 2.0 Full-Speed/High-Speed devices on xHCI USB 2.0 ports only. Identify
+  port protocol capabilities rather than assuming port numbers. SuperSpeed
+  slots, streams, USB 3.x port state machines and low-speed storage are out of
+  scope. Test media must actually negotiate a supported speed.
+- Devices must be attached at initialization. No hot-plug discovery or
+  reconnection support; reject hubs (class 0x09) with `hub not supported`.
+  Still consume/acknowledge port-status events while polling so they cannot
+  clog the event ring. Unexpected removal must fail safely, not hang or
+  release DMA memory still owned by the controller.
+- Bootstrap endpoint zero according to negotiated speed, read the first
+  **8 bytes** of the device descriptor (bMaxPacketSize0 is at byte offset 7),
+  validate/update endpoint-zero packet size and fetch full descriptors.
+  A one-byte read cannot supply bMaxPacketSize0. Validate device and interface
+  descriptors; class may be declared on the interface. Reference:
+  [USB-IF USB 2.0 specification](https://www.usb.org/document-library/usb-20-specification).
+- 9G.2 commands: INQUIRY (0x12), TEST UNIT READY (0x00), READ CAPACITY(10)
+  (0x25), READ(10) (0x28), REQUEST SENSE (0x03). Bound retries and implement
+  BOT stall/reset recovery. Initially support LUN 0 only; document GET MAX LUN
+  handling and reject unsupported configurations. Reject UAS explicitly.
+  Defer READ(12/16), MODE SENSE(6/10), REPORT LUNS and larger-capacity command
+  sets; reject READ CAPACITY(10)'s overflow sentinel and unrepresentable LBAs.
+  WRITE(10) (0x2a) and SYNCHRONIZE CACHE(10) (0x35) belong to 9G.4.
+- In 9G.2, bulk completion **polls the event ring with a bounded timeout**:
+  no USB completion IRQ dependency, sleeps, re-enabling IF or waiting on
+  another thread. This follows ext2's IRQ-save lock contract (L1 and §9).
+  A timeout propagates an I/O error and initiates bounded quiescence or DMA
+  quarantine; it does not permit immediate reuse/free of active buffers.
+- 9G.2 owns 512/4096-byte sector integration tests against GPT and ext2;
+  reject other sizes explicitly. The current boot image is laid out in
+  512-byte LBAs: do not reinterpret it as a 4096-byte-sector image. Use
+  separately generated matching-geometry fixtures for 4096-byte tests.
+
+#### 9G.1 checkpoints and debugging
+
+| Checkpoint | Required evidence | Known failure modes and response |
+| --- | --- | --- |
+| 9G.1a PCI discovery only | Locate xHCI, log BDF and validated BAR metadata, then return. No controller initialization or enumeration. This is Antigravity's first coding task. | No controller or invalid/unsupported BAR: report unavailable and return without probing an unvalidated MMIO address. |
+| 9G.1b MMIO and reset | Validate/map the BAR extent, log capability registers, perform required ownership handoff and bounded halt/reset, and verify register state. | No legacy handoff capability means no semaphore to wait for; stuck ownership, halt, HCRST or not-ready state must time out, record the failing register and disable this controller path. |
+| 9G.1c Rings | Set up command/event rings and prove a No-Op Command produces the matching Command Completion Event. | No completion before deadline or unexpected completion code/command pointer: record TRB and ring positions, fail the checkpoint, and quiesce/quarantine DMA rather than proceeding. |
+| 9G.1d Ports | Log protocol mapping and PORTSC for each supported port; bounded reset of attached supported devices. | Connected but unpowered: check power-switching capability and perform bounded supported power/reset sequencing; unresolved state fails that port. SuperSpeed attachment is logged as unsupported and skipped. |
+| 9G.1e Descriptors | Address/configure devices, validate descriptors and hand only supported BOT mass-storage interfaces to 9G.2. | Short/all-0xFF response, invalid bLength (including zero), descriptor type other than DEVICE (1), or invalid packet size: reject before further parsing, record the reason, and do not publish a device. |
+
+Before the first transfer, add a bounded `usb_dump_state()` diagnostic callable
+**only from thread context, with no subsystem or console lock held**, using
+the normal console/serial path. Timeout/error paths never call it: they copy
+bounded already-available state into a preallocated diagnostic record and
+publish a pending flag without allocation, logging or acquiring another lock.
+A thread consumes that record after transfer/FS locks have been released;
+use the existing IRQ-excluded publication discipline and preserve the record
+until consumed. Do not dereference stale controller/DMA pointers when printing.
+The record covers controller run/halt state, port state,
+software command enqueue/event dequeue positions and cycle bits, and last
+submitted/completed TRBs. Distinguish software bookkeeping from controller-owned
+positions that cannot be read directly; do not invent a hardware producer index.
+Capture QEMU serial logs and comparable Dell framebuffer diagnostics. Never
+print inside an ordinary IRQ handler or recursively acquire console locks.
+Use gated snapshots on failure/on demand rather than unconditional per-transfer
+logging. Existing QEMU launch recipes provide xHCI/USB attachment, but no event
+ring debugger or USB acceptance runner is implemented yet.
+
+#### Known unknowns to record during bring-up
+
+- Does the Dell expose a BIOS/OS ownership semaphore, and what handoff is needed?
+- What controller state does firmware leave, and does bounded reset succeed?
+- Does the selected stick negotiate Full-Speed, High-Speed or unsupported
+  SuperSpeed, and is its actual topology directly attached?
+- Does it expose BOT or UAS, which LUNs, and 512- or 4096-byte logical sectors?
+- Does the stick support the required cache synchronization semantics?
+
+These are measurements for 9G.1/9G.2 (flush capability for 9G.4), not assumed
+hardware facts. Record observed values with the device and test environment.
+
+Implementation constraints and verification:
+
+- Read §4, §7.2–7.5 and §9, plus `pci.h`, `block.h`, `gpt.h`, `ext2.h`,
+  `vfs.h`, VMM and synchronization headers before changing the related code.
+  Preserve lock ranks, bounded IRQ work, DMA ownership/quiescence and the
+  internal physical NVMe exclusion. No automatic formatting or raw-pattern
+  tests on hardware; only the deliberately selected USB data partition may
+  become writable under the explicit mount policy.
+- Trace ext2-to-block calls before choosing USB completion handling: ext2
+  holds its ranked IRQ-save lock around I/O. Do not introduce sleeping or
+  interrupt-dependent waits beneath that lock. Any synchronization redesign
+  must follow §9 discussion requirements.
+- Test the 130 MiB image on a larger disposable device as well as at exact
+  image size. The GPT backup remains at the image boundary after a raw copy,
+  while the current parser probes the device's last sector. 9G.3 owns this
+  policy: accept a fully validated primary header AND partition array in
+  degraded read-only mode when the end-of-device backup is absent/invalid;
+  log the declared backup LBA and actual last LBA as a possible raw-copy
+  size mismatch. Do not label an unverified mismatch definitively a raw copy.
+  Preserve rejection of two valid but conflicting GPTs and the existing
+  validated read-only backup fallback. Reject when neither copy validates.
+  Never silently repair/resize disks. 9G.4 must explicitly resolve writable
+  eligibility for the as-flashed layout and test it; RO acceptance alone
+  does not authorize writes or partition-table repair.
+- New USB persistence runners must use disposable copies and omit the NVMe
+  fixture so `/mnt` cannot accidentally come from it. The existing
+  `run-img*` targets attach a separate NVMe fixture and prove boot only.
+  Name new USB tests `test-usb-*`; existing storage tests retain their NVMe
+  fixture scope, and future `test-img-*` tests prove image boot only. Add a
+  Makefile/runner preflight assertion over the final QEMU arguments: only
+  the disposable USB data disk is allowed, with paired read-only OVMF code
+  and disposable OVMF vars as firmware exceptions. Reject extra data disks,
+  including NVMe and injected `-drive`/`-blockdev` backends or extra arguments.
+  Add appropriate host failure tests and bounded QEMU targets following §7.5;
+  run relevant existing ext2, storage, shell and power regressions.
+- Preserve historical results and label new evidence by command, firmware,
+  image/device and result. QEMU USB success does not establish Dell USB
+  acceptance. Update this status and ROADMAP.md after each completed stage.
 
 ## 3. Build, Run, Debug and Verify
 
@@ -326,6 +496,7 @@ are distinct. Do not turn an example or a source-code comment into physical acce
 | H4 | **Code + user report (2026-09-16, fixed 2026-09-18):** `layout azerty` selects Belgian AZERTY (Punt). Top number row uses `shift ^ s->caps` as Shift-Lock for digits `1234567890`. Shifted table takes priority over `a..z` matching, resolving bug where scancodes 0x03, 0x08, 0x0A, 0x0B (`é è ç à`) and 0x28 (`ù/%`) emitted uppercase `'E'`, `'C'`, `'A'`, `'U'` instead of digits and `%`. Scancode 86 (0x56) added for ISO `<` / `>`. AltGr absent; arrows/function keys ignored; Caps LED unsynchronized. |
 | H5 | **Known software limit:** PMM manages low 2 GiB despite 32 GiB installed on the 5590. Higher RAM is unavailable to allocation. |
 | H6 | **Boot policy/photo:** physical NVMe filesystem is not mounted; `/mnt` is the QEMU ext2 fixture. Initramfs file reads prove neither physical disk I/O nor persistence. |
+| H6a | **Phase 9F code + user report (2026-09-18):** the raw image includes an ext2 data partition; the user flashed it with Rufus and reported no `/mnt`. Kernel USB storage support is absent. USB boot and image verification do not establish USB partition mounting or persistence; Phase 9G supplies that missing path. |
 | H7 | **Code:** ACPI FADT/DSDT S5 and reset fallbacks now exist (`power.c`); this is limited parsing, not a general AML interpreter. Port `0x604` is a QEMU mechanism. Physical ACPI S5 shutdown and multi-tier reset confirmed functional on Dell 5590. |
 | H8 | **Recorded QEMU evidence:** 40 exact-boundary NMIs on IST2; no proof of physical NMI injection, nested-fault completeness, SWAPGS or SMP safety. |
 
