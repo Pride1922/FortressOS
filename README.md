@@ -130,6 +130,8 @@ through a new USB storage path:
 
 1. **xHCI bring-up:** PCI discovery, MMIO/reset, command completion, port
    inspection, and validated device enumeration in separate checkpoints.
+   PCI-only discovery (9G.1a) is implemented and verified in BIOS/UEFI QEMU;
+   Dell verification and controller initialization remain pending.
 2. **Read-only USB storage:** Bulk-Only Transport and a bounded set of SCSI
    commands, exposed through the existing block-device interface.
 3. **A real USB `/mnt`:** explicit partition selection and a read-only mount,
@@ -153,6 +155,7 @@ filesystem checks, and manual hardware observations.
 | Command | Coverage |
 | --- | --- |
 | `make test-input` | Keyboard decoding, modifiers, and bounded input FIFO |
+| `make test-usb-discovery` | PCI-only xHCI detection/absence and shell startup in BIOS/UEFI, without an NVMe fixture |
 | `make test-console` | Framebuffer rendering, wrapping, scrolling, and bounds |
 | `make test-ext2` | Actual ext2/VFS code under ASan/UBSan, malformed data and injected failures |
 | `make test-ext2-write` | BIOS/UEFI multi-boot persistence on disposable NVMe images, with offline `e2fsck -fn` |

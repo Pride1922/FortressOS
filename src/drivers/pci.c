@@ -237,6 +237,46 @@ size_t pci_get_segment_count(void) {
     return g_mcfg_record_count;
 }
 
+/* Phase 9G.1a intentionally stops at firmware-assigned PCI metadata. */
+void pci_report_xhci(void) {
+    pci_device_t dev;
+    serial_puts("[USB 9G.1a] PCI discovery only\n");
+    if (!pci_find_device(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB,
+                         PCI_PROGIF_USB_XHCI, &dev)) {
+        serial_puts("[USB 9G.1a] No xHCI controller found; continuing without USB storage\n");
+        return;
+    }
+
+    serial_puts("[USB 9G.1a] First xHCI controller: ");
+    pci_print_bdf(dev.segment, dev.bus, dev.device, dev.function);
+    serial_puts(" vendor=");
+    serial_print_hex(dev.vendor_id);
+    serial_puts(" device=");
+    serial_print_hex(dev.device_id);
+    serial_puts("\n");
+
+    if ((dev.header_type & 0x7f) != PCI_HEADER_TYPE_NORMAL) {
+        serial_puts("[USB 9G.1a] Unsupported PCI header; BAR inspection skipped\n");
+        return;
+    }
+    uint32_t raw = pci_read_config32(dev.segment, dev.bus, dev.device,
+                                     dev.function, PCI_REG_BAR0);
+    uint32_t type = raw & PCI_BAR_MEM_TYPE_MASK;
+    if (raw == 0xffffffff || dev.bar[0] == 0 || (raw & PCI_BAR_IO_SPACE) ||
+        (type != PCI_BAR_MEM_TYPE_32 && type != PCI_BAR_MEM_TYPE_64)) {
+        serial_puts("[USB 9G.1a] BAR0 unavailable or unsupported; raw=");
+        serial_print_hex(raw);
+        serial_puts("; controller left untouched\n");
+        return;
+    }
+
+    serial_puts("[USB 9G.1a] BAR0=");
+    serial_print_hex(dev.bar[0]);
+    serial_puts(dev.bar_is_64[0] ? " memory64" : " memory32");
+    serial_puts(dev.bar_prefetch[0] ? " prefetch=yes" : " prefetch=no");
+    serial_puts("\n[USB 9G.1a] Discovery complete; BAR extent/MMIO unverified; USB storage not initialized\n");
+}
+
 /* Non-destructive inspection of a device's Base Address Registers (BARs) */
 static void pci_inspect_bars(pci_device_t *dev) {
     for (int b = 0; b < 6; ) {

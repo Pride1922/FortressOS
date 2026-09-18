@@ -38,7 +38,7 @@ checkpoint history there, and verification claims tied to actual evidence.
 | Phase 9E Saved File Management & H4 AZERTY Fix | Directory operations (`mkdir`), file rename (`rename`), and deletion (`unlink`) on writable ext2 filesystem. Directory creation with `.` and `..` initialization, empty directory unlink enforcement, non-empty directory rejection (`-VFS_ENOTEMPTY`), cross-directory rename with `..` reparenting, on-disk inode/block reclamation with `i_dtime` set and block pointers cleared, interactive shell commands (`mkdir`, `rm`, `mv`), host unit test matrix (`make test-ext2`), and full 3-boot BIOS/UEFI persistence suite with offline `e2fsck -fn` reporting 0 errors (`make test-ext2-write`). Belgian AZERTY Shift-Lock and scancodes 0x03/0x08/0x0A/0x0B/0x28/0x56 decoding fixed (Bug H4) and verified (`make test-input`, `make test-shell`). |
 | 9D bounded writable ext2 | Explicit opt-in writable mount (`ext2_mount_rw`), direct block and single-indirect allocation and writes, directory entry insertion (`vfs_create`), truncation (`vfs_truncate`) with block reclamation, emergency read-only remount on metadata/flush failure, double/triple indirect pre-rejection, host ASan/UBSan matrix suite with injected failure coverage, offline `e2fsck -fn` verification (0 errors), and BIOS/UEFI 3-boot persistence in QEMU. |
 | 9C.5 power & layout | Power/reset and US/AZERTY switching implemented (`9a3c4b4`); `make test-power` exercises QEMU power commands. Dell 5590 manual verification confirmed working ACPI S5 shutdown, reboot, and Belgian AZERTY layout switching (accented keys é/è/ç/à fixed in H4). |
-| Next: Phase 9G USB storage and real `/mnt` persistence | Implement and verify the staged plan below. First coding checkpoint: xHCI enumeration and read-only access to the USB stick. |
+| In progress: Phase 9G USB storage and real `/mnt` persistence | 9G.1a PCI-only discovery implemented and QEMU verified; Dell verification pending. Next implementation checkpoint: 9G.1b MMIO/reset. USB enumeration, storage and mounting remain unimplemented. |
 | Following milestones | Accounts/permissions and installer, after USB persistence acceptance. Physical Dell verification is part of each applicable 9G stage. |
 
 ### Phase 9G implementation handoff
@@ -48,7 +48,8 @@ contains ext2, but the kernel currently has no USB controller/mass-storage
 driver. Limine loading the kernel from USB does not establish kernel USB I/O.
 The existing mount path uses `nvme0n1p1` inside QEMU fixture tests; the image's
 ext2 partition is partition 2. Do not reuse fixture assertions as production
-storage initialization. This is the next implementation task for Antigravity.
+storage initialization. The remaining stages are the implementation handoff
+for Antigravity; 9G.1a is now implemented, with Dell verification pending.
 
 | Stage | Implementation scope | Acceptance before advancing | What the next stage assumes from this one |
 | --- | --- | --- | --- |
@@ -134,7 +135,7 @@ flush capability. Do not auto-enable RW merely because an image was flashed.
 
 | Checkpoint | Required evidence | Known failure modes and response |
 | --- | --- | --- |
-| 9G.1a PCI discovery only | Locate xHCI, log BDF and validated BAR metadata, then return. No controller initialization or enumeration. This is Antigravity's first coding task. | No controller or invalid/unsupported BAR: report unavailable and return without probing an unvalidated MMIO address. |
+| 9G.1a PCI discovery only | Implemented: report the first matching xHCI BDF, vendor/device and assigned BAR metadata near shell startup. BIOS/UEFI present/absent QEMU checks pass; Dell pending. BAR extent and controller MMIO remain unverified. | No controller or invalid/unsupported BAR: report unavailable and return without probing an unvalidated MMIO address. |
 | 9G.1b MMIO and reset | Validate/map the BAR extent, log capability registers, perform required ownership handoff and bounded halt/reset, and verify register state. | No legacy handoff capability means no semaphore to wait for; stuck ownership, halt, HCRST or not-ready state must time out, record the failing register and disable this controller path. |
 | 9G.1c Rings | Set up command/event rings and prove a No-Op Command produces the matching Command Completion Event. | No completion before deadline or unexpected completion code/command pointer: record TRB and ring positions, fail the checkpoint, and quiesce/quarantine DMA rather than proceeding. |
 | 9G.1d Ports | Log protocol mapping and PORTSC for each supported port; bounded reset of attached supported devices. | Connected but unpowered: check power-switching capability and perform bounded supported power/reset sequencing; unresolved state fails that port. SuperSpeed attachment is logged as unsupported and skipped. |
@@ -237,6 +238,7 @@ Limine/OVMF. Use only when needed. `make` fetches missing Limine dependencies.
 | Target | Scope / evidence |
 | --- | --- |
 | `make test-input` | Host ASan/UBSan: decoder, modifiers and bounded FIFO |
+| `make test-usb-discovery` | 9G.1a BIOS/UEFI PCI discovery with/without xHCI, shell startup without NVMe; ISO boot only, no data disk. No USB transfers or persistence claimed. |
 | `make test-console` | Host ASan/UBSan: pixel output, wrapping, scrolling and bounds |
 | `make test-ext2` | Host ASan/UBSan: actual ext2/VFS, malformed images, I/O/OOM paths |
 | `make test-ext2-write` | QEMU ext2 file creation, editor save, host `e2fsck -fn` integrity, and cross-boot persistence on disposable NVMe GPT fixture |

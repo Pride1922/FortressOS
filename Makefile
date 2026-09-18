@@ -139,6 +139,10 @@ test-ext2-write: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 test-storage: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 	@python3 scripts/test_storage_boot.py
 
+.PHONY: test-usb-discovery
+test-usb-discovery: $(BOOTABLE_ISO)
+	@python3 scripts/test_usb_discovery.py
+
 USER_DIR := user
 USER_INIT_ELF := $(BUILD_DIR)/init.elf
 USER_HELLO_ELF := $(BUILD_DIR)/hello.elf

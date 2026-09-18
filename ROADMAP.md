@@ -345,8 +345,8 @@ Recorded implementation sequence and planned work:
         └── Image can be flashed to USB; physical USB filesystem access and persistence remain unimplemented
     │
     ▼
-[Phase 9G] USB Storage & Real /mnt Persistence (NEXT; NOT IMPLEMENTED)
-    ├── 9G.1: xHCI controller initialization, bounded transfers and USB device enumeration
+[Phase 9G] USB Storage & Real /mnt Persistence (IN PROGRESS; persistence not implemented)
+    ├── 9G.1: PCI discovery implemented/QEMU verified (9G.1a); Dell pending; initialization/enumeration still planned
     ├── 9G.2: USB Mass Storage Bulk-Only Transport, SCSI reads and read-only block_dev_t registration
     ├── 9G.3: Production USB partition selection and read-only /mnt mount, independent of QEMU fixture tests
     ├── 9G.4: USB writes/flush, explicit writable mount policy and clean-shutdown persistence
@@ -371,8 +371,8 @@ of implemented USB access.
 Antigravity's next implementation is Phase 9G, beginning with enumeration
 and read-only USB access. The staged implementation scope, protected contracts
 and acceptance checklist are in [AGENTS.md §2](AGENTS.md#phase-9g-implementation-handoff).
-Each stage should record its actual results here; none is marked passed by
-this planning update.
+Each stage records its actual results here. The original planning update did
+not establish implementation or test acceptance; subsequent evidence follows.
 
 **Scope discipline:** Planning estimate: 9G.1 is expected to be the largest single driver effort since NVMe. Commit 9G.1a through 9G.1e as separate changes, each verified in QEMU before merging. If any checkpoint exceeds two focused sessions without a working artifact meeting its required evidence, stop implementation, document the specific blocker and evidence, and reassess scope before proceeding. Do not begin 9G.2 until 9G.1e produces a valid device descriptor and a validated directly attached BOT mass-storage interface on both QEMU and the Dell; awaiting hardware verification is a recorded blocker, not a pass.
 
@@ -383,7 +383,7 @@ column, a USB 2.0/direct-attachment/boot-time-only scope, exact read-only SCSI
 commands, and bounded event-ring polling compatible with ext2's lock contract.
 9G.1 is split into PCI-only discovery (9G.1a), MMIO/reset (9G.1b), No-Op command
 completion (9G.1c), port inspection (9G.1d), and descriptor enumeration (9G.1e).
-Antigravity should start with 9G.1a and add bounded state-dump diagnostics before
+The original handoff starts with 9G.1a and requires bounded state-dump diagnostics before
 the first transfer. Known hardware unknowns and their measurement stages are
 listed in AGENTS.md. These are planned deliverables, not new driver code.
 
@@ -422,6 +422,41 @@ Completion requires all of the following:
 - Record separate Dell acceptance: selected USB device, `/mnt` file read,
   save, clean shutdown and persisted contents after reboot. Keep the internal
   NVMe outside this test. QEMU results alone cannot close physical acceptance.
+
+### Phase 9G.1a — PCI-only xHCI discovery (2026-09-18)
+
+Implemented `pci_report_xhci()` using the existing read-only PCI lookup. It
+reports the first class/subclass/interface 0x0c/0x03/0x30 match, segment/BDF,
+vendor/device ID and firmware-assigned BAR0 base, width and prefetch flag.
+Unsupported headers, absent/unassigned BARs, I/O BARs and unsupported memory
+BAR types return with a diagnostic. No controller BAR mapping/sizing, command
+register writes, firmware handoff, reset, DMA or USB transfers are performed.
+BAR aperture and controller accessibility remain unverified for 9G.1b.
+
+The report appears immediately before shell startup through the serial output
+path that also mirrors to the framebuffer. Missing NVMe now skips the NVMe
+checks instead of halting, allowing PCI-only tests without a storage fixture.
+The existing QEMU identity gate and physical NVMe storage exclusion remain.
+
+`wsl -d Ubuntu-24.04 -- make test-usb-discovery` passed all four cases:
+BIOS/UEFI, each with xHCI present and absent. All reached the interactive shell
+without NVMe or other data disks. The runner validates its final QEMU arguments,
+uses ISO boot and disposable paired OVMF vars, bounds waits and terminates QEMU.
+Evidence: `build/usb-discovery-{bios,uefi}-{present,absent}.log` and `.stderr`.
+This verifies PCI metadata and continuation, not malformed-BAR injection,
+USB-device enumeration, USB I/O or physical hardware behavior.
+
+Regression: `wsl -d Ubuntu-24.04 -- make test-shell test-storage` passed
+BIOS/UEFI shell and storage checks plus keyboard-only UEFI 8 GiB without COM1.
+The kernel compiled with the existing strict warning/freestanding flags.
+Final `wsl -d Ubuntu-24.04 -- make test-usb-discovery img` repeated all four
+discovery cases successfully and rebuilt `bin/fortress.img`; the image
+builder's MBR/GPT/FAT checks and offline ext2 `e2fsck` verification passed.
+
+**Dell acceptance pending:** flash the rebuilt `bin/fortress.img`, boot and
+record the `[USB 9G.1a]` lines above the shell, including BDF, vendor/device,
+BAR0 and whether the shell remains interactive. No `/mnt` is expected from
+this checkpoint. Do not record physical acceptance until the user reports it.
 
 ---
 
