@@ -207,15 +207,16 @@ uses a bounded queue and scheduler sleep/wakeup; editing and echo live in Ring 3
 The existing read-only VFS is used throughout. Physical NVMe mounting and writes
 are not introduced here. See AGENTS.md for ABI, limits and reproducible tests.
 
-## Dell manual shell acceptance (2026-09-16)
+## Dell manual hardware acceptance (2026-09-16 & 2026-09-18)
 
-The user photo confirms PS/2 keyboard interaction on the Latitude 5590 with
-COM1 absent: `help`, root directory listing, a missing-file error, and successful
-`cat etc/motd` output followed by the prompt. This closes the basic physical
-keyboard/shell acceptance gap. The file comes from initramfs, not the internal
-NVMe filesystem. Physical storage I/O, persistence, NMI injection and exhaustive
-keyboard coverage remain outside this observation. See AGENTS.md for hardware
-configuration and the distinction between manual and automated evidence.
+Hardware verification on the Latitude 5590 (Core i5-8350U, 32 GiB RAM, 256 GB NVMe, Intel UHD 620):
+- **2026-09-16:** PS/2 keyboard interaction, shell commands (`help`, `ls`, `cat etc/motd`), and missing-file handling verified.
+- **2026-09-18:**
+  - **Belgian AZERTY (Bug H4):** Shift-Lock on number row with Caps Lock ON verified functional, typing `1234567890`. Accented unshifted keys confirmed emitting base ASCII approximations without uppercase distortion. European ISO `<` / `>` key (scancode 0x56) verified.
+  - **System V AMD64 ABI:** Argument passing verified from Ring 3 shell (`run /bin/hello testing ...`) with 16-byte aligned stack.
+  - **Visuals:** Limine graphical wallpaper and kernel boot logo / emblem verified.
+  - **Power:** ACPI S5 shutdown and reset confirmed functional.
+These observations supplement automated QEMU and host tests. Internal NVMe write/mount remains separated from physical testing.
 
 ## System V AMD64 ELF User Stack & Argument Passing ABI
 

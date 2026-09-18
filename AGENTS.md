@@ -323,17 +323,22 @@ are distinct. Do not turn an example or a source-code comment into physical acce
 | H7 | **Code:** ACPI FADT/DSDT S5 and reset fallbacks now exist (`power.c`); this is limited parsing, not a general AML interpreter. Port `0x604` is a QEMU mechanism. Physical ACPI S5 shutdown and multi-tier reset confirmed functional on Dell 5590. |
 | H8 | **Recorded QEMU evidence:** 40 exact-boundary NMIs on IST2; no proof of physical NMI injection, nested-fault completeness, SWAPGS or SMP safety. |
 
-### Dell Latitude 5590 physical acceptance (2026-09-16)
+### Dell Latitude 5590 physical acceptance (2026-09-16 & 2026-09-18)
 
-User-supplied boot photos confirm the shell on a Latitude 5590 (Core i5-8350U,
-32 GiB installed RAM, 256 GB NVMe, Intel UHD 620), booted from a Rufus-written
-USB. The latest photo shows PS/2 set 2 -> set 1 / IRQ1 ready, COM1 RX unavailable,
-and the Ring 3 shell responding to keyboard input. `help` prints the command
-list, `ls` lists `docs/`, `etc/`, `bin/`, and `cat etc/motd` prints the welcome
-file and returns to the prompt. `cat motd` correctly reports a missing file.
-These are manual observations, supplementing the automated QEMU tests.
-The user reported improved boot-console responsiveness; no timing benchmark was
-collected. Cached text scrolling avoids framebuffer reads; keep early/no-UART
+User-supplied testing confirms hardware operation on a Latitude 5590 (Core i5-8350U,
+32 GiB installed RAM, 256 GB NVMe, Intel UHD 620), booted from USB:
+- **2026-09-16:** PS/2 set 2 -> set 1 / IRQ1, COM1 RX absent, interactive shell `help`,
+  `ls`, `cat etc/motd`, and missing-file error handling verified.
+- **2026-09-18:**
+  - **Belgian AZERTY (Bug H4):** Shift-Lock on top number row with Caps Lock ON verified
+    producing digits `1234567890`. Accented keys unshifted produce base characters without
+    falsely emitting uppercase letters. European ISO `<` / `>` key (scancode 0x56) verified.
+  - **System V AMD64 ELF ABI:** `run /bin/hello testing ...` verified passing command-line
+    arguments across the user/kernel boundary with proper 16-byte stack alignment.
+  - **Visuals:** Limine splash wallpaper and kernel boot logo / emblem verified.
+  - **Power:** ACPI S5 shutdown and multi-tier reset confirmed functional.
+These are manual hardware observations, supplementing the automated QEMU and host test suites.
+Cached text scrolling avoids framebuffer reads; keep early/no-UART
 output working. Detailed console, NMI and input test notes are in [ROADMAP.md](ROADMAP.md).
 
 ## 9. Do Not Touch Without Discussion
