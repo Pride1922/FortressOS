@@ -29,6 +29,31 @@ reclamation failure, tainted no-I/O behavior, and shutdown freeze/flush failure.
 `e2fsck -fn` audits per firmware on disposable clones. These tests do not claim
 crash atomicity, torn-sector recovery, or physical writable-disk acceptance.
 
+## Phase 9E Saved File Management & Bug H4 Resolution (2026-09-18)
+
+Implemented directory operations (`mkdir`), file rename/move (`rename`), and deletion
+(`unlink`) across VFS and writable ext2, along with user syscalls (`SYS_MKDIR` = 11,
+`SYS_UNLINK` = 12, `SYS_RENAME` = 13) and interactive Ring 3 shell commands (`mkdir`, `rm`, `mv`).
+
+- **Directory lifecycle:** Ext2 directory creation allocates dedicated data block and
+  initializes standard `.` (self) and `..` (parent) records. Parent `links` count is
+  incremented on creation and decremented on removal.
+- **Safety checks:** Directory unlinking enforces that directories are empty (only `.` and `..`
+  permitted; returns `-VFS_ENOTEMPTY` / `SYSCALL_ENOTEMPTY` otherwise).
+- **Directory reparenting:** Cross-directory renames update `..` directory entry in the moved
+  directory to point to the new parent, with corresponding link count adjustments.
+- **On-disk reclamation:** Unlinked inodes have their data blocks returned to the block bitmap,
+  inode marked free in the inode bitmap, block pointers and size cleared, `i_links_count` set
+  to 0, and `i_dtime` deletion timestamp recorded.
+- **Bug H4 fix:** Corrected Belgian AZERTY layout scancode decoding. Number row scancodes 2..13
+  now use `shift ^ s->caps` as Shift-Lock for digits `1234567890`. Shifted lookup takes precedence
+  over alphabet table, preventing accented keys (`0x03`, `0x08`, `0x0A`, `0x0B`, `0x28`) from
+  falsely generating uppercase letters. Added ISO scancode 86 (`<` / `>`).
+- **Verification:** `make test-input` and `make test-console` passed under ASan/UBSan. `make test-ext2`
+  passed all 8 geometries. `make test-ext2-write` verified 3-boot persistence across BIOS and
+  UEFI with zero `e2fsck -fn` errors. `make test-storage`, `make test-shell`, and `make test-power`
+  passed completely.
+
 ## Detailed checkpoint roadmap
 
 Recorded implementation sequence and planned work:

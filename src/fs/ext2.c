@@ -38,6 +38,7 @@ typedef struct {
     ext2_fs_t *fs;
     uint32_t ino;
     uint16_t mode;
+    uint16_t links;
     uint32_t size;
     uint32_t i_blocks;
     uint32_t file_acl;
@@ -181,6 +182,7 @@ static bool inode(ext2_fs_t *fs, uint32_t number, ext2_inode_t *out) {
     if (!bytes(fs, off, raw, fs->inode_size)) return false;
     memset(out, 0, sizeof(*out));
     out->fs = fs; out->ino = number; out->mode = u16(raw);
+    out->links = u16(raw + 26);
     out->size = u32(raw + 4);
     out->i_blocks = u32(raw + 28);
     out->file_acl = (fs->inode_size >= 128) ? u32(raw + 104) : 0;
@@ -215,11 +217,12 @@ static bool write_inode_to_disk(ext2_inode_t *in) {
         fs->tainted = true;
         return false;
     }
-    /* Preserve untouched fields (uid, gid, mode, link count, flags, etc.) */
+    /* Preserve untouched fields (uid, gid, flags, etc.) */
     put16(raw, in->mode);
     put32(raw + 4, in->size);
     /* Update modification timestamp */
     put32(raw + 16, 1726500000);
+    put16(raw + 26, in->links);
     uint32_t sectors = in->i_blocks;
     if (!sectors && in->size) {
         uint64_t blks = ((uint64_t)in->size + fs->block_size - 1) / fs->block_size;
@@ -228,6 +231,14 @@ static bool write_inode_to_disk(ext2_inode_t *in) {
     put32(raw + 28, sectors);
     for (unsigned i = 0; i < 15; i++) {
         put32(raw + 40 + i * 4, in->blocks[i]);
+    }
+    if (in->links == 0) {
+        put32(raw + 20, 1726500000); /* Deletion time (i_dtime) */
+        put32(raw + 4, 0);           /* i_size = 0 */
+        put32(raw + 28, 0);          /* i_blocks = 0 */
+        for (unsigned i = 0; i < 15; i++) {
+            put32(raw + 40 + i * 4, 0);
+        }
     }
     bool ok = write_bytes(fs, off, raw, fs->inode_size);
     if (!ok) fs->tainted = true;
@@ -1028,6 +1039,9 @@ static int ext_readdir(vfs_node_t *dir, uint64_t index, void *out) {
 
 static vfs_node_t *ext_lookup(vfs_node_t *parent, const char *name);
 static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_type_t type);
+static int ext_unlink(vfs_node_t *dir_node, const char *name);
+static int ext_rename(vfs_node_t *old_dir_node, const char *old_name,
+                      vfs_node_t *new_dir_node, const char *new_name);
 
 static void setup(vfs_node_t *node, ext2_inode_t *in) {
     node->fs_private = in;
@@ -1045,7 +1059,276 @@ static void setup(vfs_node_t *node, ext2_inode_t *in) {
         node->lookup = ext_lookup;
         node->readdir = ext_readdir;
         node->create = in->fs->read_only ? NULL : ext_create;
+        node->unlink = in->fs->read_only ? NULL : ext_unlink;
+        node->rename = in->fs->read_only ? NULL : ext_rename;
     }
+}
+
+static bool ext2_remove_dir_entry(ext2_inode_t *dir, const char *name, uint32_t *out_ino) {
+    uint64_t off = 0;
+    uint64_t prev_off = 0;
+    uint16_t prev_rec = 0;
+
+    while (off < dir->size) {
+        uint8_t h[8];
+        if (read_inode(dir, off, h, 8) != 8) return false;
+        uint32_t ino = u32(h);
+        uint16_t rec = u16(h + 4);
+        uint16_t len = dir->fs->incompat & 2 ? h[6] : u16(h + 6);
+        if (rec < 8 || rec % 4 || rec > dir->size - off) return false;
+
+        if (ino) {
+            char found_name[256];
+            if (read_inode(dir, off + 8, found_name, len) != (int64_t)len) return false;
+            found_name[len] = '\0';
+            if (!strcmp(found_name, name)) {
+                if (out_ino) *out_ino = ino;
+                if ((off % dir->fs->block_size) != 0 && prev_rec > 0) {
+                    uint16_t new_prev_rec = prev_rec + rec;
+                    uint8_t raw[2];
+                    put16(raw, new_prev_rec);
+                    if (write_inode(dir, prev_off + 4, raw, 2) != 2) return false;
+                } else {
+                    uint8_t zero[4] = {0, 0, 0, 0};
+                    if (write_inode(dir, off, zero, 4) != 4) return false;
+                }
+                return true;
+            }
+        }
+
+        if (((off + rec) % dir->fs->block_size) == 0) {
+            prev_off = 0;
+            prev_rec = 0;
+        } else {
+            prev_off = off;
+            prev_rec = rec;
+        }
+        off += rec;
+    }
+    return false;
+}
+
+static int ext_unlink(vfs_node_t *dir_node, const char *name) {
+    if (!dir_node || !name || dir_node->type != VFS_DIRECTORY) return -VFS_EINVAL;
+    ext2_inode_t *dir = dir_node->fs_private;
+    if (!dir || !dir->fs) return -VFS_EIO;
+    if (dir->fs->read_only) return -VFS_EROFS;
+    if (dir->fs->tainted) return -VFS_EIO;
+
+    ext2_fs_t *fs = dir->fs;
+    uint64_t flags = spin_lock_irqsave(&ext2_lock);
+    int res = VFS_SUCCESS;
+
+    ext2_inode_t target_in;
+    int dres = dir_entry(dir, name, 0, NULL, &target_in);
+    if (dres != 1) {
+        res = -VFS_ENOENT;
+        goto done;
+    }
+
+    bool is_dir = (target_in.mode & 0xf000) == 0x4000;
+    if (is_dir) {
+        /* Verify empty directory */
+        uint64_t off = 0;
+        while (off < target_in.size) {
+            uint8_t h[8];
+            if (read_inode(&target_in, off, h, 8) != 8) {
+                res = -VFS_EIO;
+                goto done;
+            }
+            uint32_t ino = u32(h);
+            uint16_t rec = u16(h + 4);
+            uint16_t len = fs->incompat & 2 ? h[6] : u16(h + 6);
+            if (rec < 8 || rec % 4 || rec > target_in.size - off) {
+                res = -VFS_EIO;
+                goto done;
+            }
+            if (ino) {
+                char ent_name[256];
+                if (read_inode(&target_in, off + 8, ent_name, len) != (int64_t)len) {
+                    res = -VFS_EIO;
+                    goto done;
+                }
+                ent_name[len] = '\0';
+                if (strcmp(ent_name, ".") != 0 && strcmp(ent_name, "..") != 0) {
+                    res = -VFS_ENOTEMPTY;
+                    goto done;
+                }
+            }
+            off += rec;
+        }
+    }
+
+    uint32_t removed_ino = 0;
+    if (!ext2_remove_dir_entry(dir, name, &removed_ino)) {
+        res = -VFS_EIO;
+        goto done;
+    }
+
+    uint8_t *fb = kmalloc(fs->block_size);
+    if (is_dir) {
+        if (dir->links > 0) dir->links--;
+        if (!write_inode_to_disk(dir)) {
+            kfree(fb);
+            fs->tainted = true;
+            res = -VFS_EIO;
+            goto done;
+        }
+        if (target_in.blocks[0] && fb) {
+            ext2_free_block(fs, target_in.blocks[0], fb);
+        }
+        if (!ext2_free_inode(fs, target_in.ino, true)) {
+            kfree(fb);
+            fs->tainted = true;
+            res = -VFS_EIO;
+            goto done;
+        }
+        target_in.links = 0;
+        target_in.size = 0;
+        target_in.i_blocks = 0;
+        memset(target_in.blocks, 0, sizeof(target_in.blocks));
+        if (!write_inode_to_disk(&target_in)) {
+            kfree(fb);
+            fs->tainted = true;
+            res = -VFS_EIO;
+            goto done;
+        }
+    } else {
+        if (target_in.links > 0) target_in.links--;
+        if (target_in.links == 0) {
+            if (fb) {
+                for (int i = 0; i < 12; i++) {
+                    if (target_in.blocks[i]) {
+                        ext2_free_block(fs, target_in.blocks[i], fb);
+                    }
+                }
+                if (target_in.blocks[12]) {
+                    uint32_t ind_blk = target_in.blocks[12];
+                    uint8_t *ind_buf = kmalloc(fs->block_size);
+                    if (ind_buf) {
+                        if (bytes(fs, (uint64_t)ind_blk * fs->block_size, ind_buf, fs->block_size)) {
+                            for (uint32_t j = 0; j < fs->block_size / 4; j++) {
+                                uint32_t blk = u32(ind_buf + j * 4);
+                                if (blk) ext2_free_block(fs, blk, fb);
+                            }
+                        }
+                        kfree(ind_buf);
+                    }
+                    ext2_free_block(fs, ind_blk, fb);
+                }
+            }
+            if (!ext2_free_inode(fs, target_in.ino, false)) {
+                kfree(fb);
+                fs->tainted = true;
+                res = -VFS_EIO;
+                goto done;
+            }
+            target_in.size = 0;
+            target_in.i_blocks = 0;
+            memset(target_in.blocks, 0, sizeof(target_in.blocks));
+            if (!write_inode_to_disk(&target_in)) {
+                kfree(fb);
+                fs->tainted = true;
+                res = -VFS_EIO;
+                goto done;
+            }
+        } else {
+            if (!write_inode_to_disk(&target_in)) {
+                kfree(fb);
+                fs->tainted = true;
+                res = -VFS_EIO;
+                goto done;
+            }
+        }
+    }
+    kfree(fb);
+
+    if (fs->dev->flush && !block_flush(fs->dev)) {
+        fs->tainted = true;
+        res = -VFS_EIO;
+        goto done;
+    }
+    if (fs->nodes > 0) fs->nodes--;
+
+done:
+    spin_unlock_irqrestore(&ext2_lock, flags);
+    return res;
+}
+
+static int ext_rename(vfs_node_t *old_dir_node, const char *old_name,
+                      vfs_node_t *new_dir_node, const char *new_name) {
+    if (!old_dir_node || !new_dir_node || !old_name || !new_name) return -VFS_EINVAL;
+    if (old_dir_node->type != VFS_DIRECTORY || new_dir_node->type != VFS_DIRECTORY) return -8;
+    ext2_inode_t *old_dir = old_dir_node->fs_private;
+    ext2_inode_t *new_dir = new_dir_node->fs_private;
+    if (!old_dir || !new_dir || !old_dir->fs || !new_dir->fs) return -VFS_EIO;
+    if (old_dir->fs != new_dir->fs) return -VFS_EROFS;
+    ext2_fs_t *fs = old_dir->fs;
+    if (fs->read_only) return -VFS_EROFS;
+    if (fs->tainted) return -VFS_EIO;
+
+    uint64_t flags = spin_lock_irqsave(&ext2_lock);
+    int res = VFS_SUCCESS;
+
+    ext2_inode_t old_in;
+    int dres = dir_entry(old_dir, old_name, 0, NULL, &old_in);
+    if (dres != 1) {
+        res = -VFS_ENOENT;
+        goto done;
+    }
+    bool is_dir = (old_in.mode & 0xf000) == 0x4000;
+
+    /* Add entry to new_dir */
+    uint8_t file_type = is_dir ? 2 : 1;
+    if (!ext2_add_dir_entry(new_dir, new_name, old_in.ino, file_type)) {
+        res = -VFS_ENOSPC;
+        goto done;
+    }
+
+    /* If moving directory across parents, update ".." entry */
+    if (is_dir && old_dir->ino != new_dir->ino) {
+        uint8_t *dir_buf = kmalloc(fs->block_size);
+        if (!dir_buf || !bytes(fs, (uint64_t)old_in.blocks[0] * fs->block_size, dir_buf, fs->block_size)) {
+            kfree(dir_buf);
+            fs->tainted = true;
+            res = -VFS_EIO;
+            goto done;
+        }
+        put32(dir_buf + 12, new_dir->ino);
+        if (!write_bytes(fs, (uint64_t)old_in.blocks[0] * fs->block_size, dir_buf, fs->block_size)) {
+            kfree(dir_buf);
+            fs->tainted = true;
+            res = -VFS_EIO;
+            goto done;
+        }
+        kfree(dir_buf);
+
+        if (old_dir->links > 0) old_dir->links--;
+        new_dir->links++;
+        if (!write_inode_to_disk(old_dir) || !write_inode_to_disk(new_dir)) {
+            fs->tainted = true;
+            res = -VFS_EIO;
+            goto done;
+        }
+    }
+
+    /* Remove old entry from old_dir */
+    uint32_t dummy = 0;
+    if (!ext2_remove_dir_entry(old_dir, old_name, &dummy)) {
+        fs->tainted = true;
+        res = -VFS_EIO;
+        goto done;
+    }
+
+    if (fs->dev->flush && !block_flush(fs->dev)) {
+        fs->tainted = true;
+        res = -VFS_EIO;
+        goto done;
+    }
+
+done:
+    spin_unlock_irqrestore(&ext2_lock, flags);
+    return res;
 }
 
 static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_type_t type) {
@@ -1104,14 +1387,74 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
         goto done;
     }
 
+    uint32_t dir_blk = 0;
+    if (is_dir) {
+        dir_blk = ext2_alloc_block(fs);
+        if (!dir_blk) {
+            ext2_free_inode(fs, ino, is_dir);
+            vfs_set_last_create_error(-VFS_ENOSPC);
+            kfree(result);
+            result = NULL;
+            goto done;
+        }
+        uint8_t *dir_buf = kcalloc(1, fs->block_size);
+        if (!dir_buf) {
+            uint8_t *fb = kmalloc(fs->block_size);
+            if (fb) { ext2_free_block(fs, dir_blk, fb); kfree(fb); }
+            ext2_free_inode(fs, ino, is_dir);
+            vfs_set_last_create_error(-VFS_ENOMEM);
+            kfree(result);
+            result = NULL;
+            goto done;
+        }
+        /* Entry 1: "." */
+        put32(dir_buf, ino);
+        put16(dir_buf + 4, 12);
+        if (fs->incompat & 2) {
+            dir_buf[6] = 1;
+            dir_buf[7] = 2; /* EXT2_FT_DIR */
+        } else {
+            put16(dir_buf + 6, 1);
+        }
+        dir_buf[8] = '.';
+
+        /* Entry 2: ".." */
+        put32(dir_buf + 12, dir->ino);
+        put16(dir_buf + 16, (uint16_t)(fs->block_size - 12));
+        if (fs->incompat & 2) {
+            dir_buf[18] = 2;
+            dir_buf[19] = 2; /* EXT2_FT_DIR */
+        } else {
+            put16(dir_buf + 18, 2);
+        }
+        dir_buf[20] = '.';
+        dir_buf[21] = '.';
+
+        uint64_t dir_blk_off = (uint64_t)dir_blk * fs->block_size;
+        if (!write_bytes(fs, dir_blk_off, dir_buf, fs->block_size)) {
+            kfree(dir_buf);
+            uint8_t *fb = kmalloc(fs->block_size);
+            if (fb) { ext2_free_block(fs, dir_blk, fb); kfree(fb); }
+            ext2_free_inode(fs, ino, is_dir);
+            fs->tainted = true;
+            vfs_set_last_create_error(-VFS_EIO);
+            kfree(result);
+            result = NULL;
+            goto done;
+        }
+        kfree(dir_buf);
+    }
+
     ext2_inode_t new_in;
     memset(&new_in, 0, sizeof(new_in));
     new_in.fs = fs;
     new_in.ino = ino;
     new_in.mode = is_dir ? (0x4000 | 0755) : (0x8000 | 0644);
-    new_in.size = 0;
-    new_in.i_blocks = 0;
+    new_in.links = is_dir ? 2 : 1;
+    new_in.size = is_dir ? fs->block_size : 0;
+    new_in.i_blocks = is_dir ? (fs->block_size / 512) : 0;
     new_in.file_acl = 0;
+    if (is_dir) new_in.blocks[0] = dir_blk;
 
     uint32_t group = (ino - 1) / fs->ipg;
     uint64_t inode_off = (uint64_t)fs->group_descs[group].inode_table * fs->block_size +
@@ -1119,15 +1462,16 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
     uint8_t raw[256];
     memset(raw, 0, sizeof(raw));
     put16(raw, new_in.mode);
-    put32(raw + 4, 0);
+    put32(raw + 4, new_in.size);
     put32(raw + 8, 1726500000);
     put32(raw + 12, 1726500000);
     put32(raw + 16, 1726500000);
     put32(raw + 20, 0);
     put16(raw + 24, 0);
-    put16(raw + 26, is_dir ? 2 : 1);
-    put32(raw + 28, 0);
+    put16(raw + 26, new_in.links);
+    put32(raw + 28, new_in.i_blocks);
     put32(raw + 32, 0);
+    if (is_dir) put32(raw + 40, dir_blk);
 
     if (!write_bytes(fs, inode_off, raw, fs->inode_size)) {
         vfs_set_last_create_error(-VFS_EIO);
@@ -1158,6 +1502,10 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
         /* Roll back only a definitely unpublished inode on a healthy mount.
          * Every uncertain directory write/flush must already have tainted it. */
         if (!fs->tainted && !fs->read_only) {
+            if (is_dir && dir_blk) {
+                uint8_t *fb = kmalloc(fs->block_size);
+                if (fb) { ext2_free_block(fs, dir_blk, fb); kfree(fb); }
+            }
             if (!ext2_free_inode(fs, ino, is_dir) || !block_flush(fs->dev))
                 fs->tainted = true;
         }
@@ -1165,6 +1513,13 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
         kfree(result);
         result = NULL;
         goto done;
+    }
+
+    if (is_dir) {
+        dir->links++;
+        if (!write_inode_to_disk(dir)) {
+            fs->tainted = true;
+        }
     }
 
     result->next = dir_node->children;

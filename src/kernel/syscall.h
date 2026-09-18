@@ -16,6 +16,9 @@
 #define SYS_KBD_LAYOUT 8
 #define SYS_SPAWN      9  /* (const char *path, const char *const argv[]) -> child PID */
 #define SYS_WAIT       10 /* (uint64_t pid, int64_t *status or NULL) -> 0 */
+#define SYS_MKDIR      11 /* (const char *path, uint64_t mode) -> 0 */
+#define SYS_UNLINK     12 /* (const char *path) -> 0 */
+#define SYS_RENAME     13 /* (const char *oldpath, const char *newpath) -> 0 */
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0
@@ -37,6 +40,7 @@
 #define SYSCALL_ECHILD   -16 /* Not an uncollected child of this process */
 #define SYSCALL_ENOEXEC  -17 /* Invalid or unsupported executable */
 #define SYSCALL_E2BIG    -18 /* Argument list or string too long */
+#define SYSCALL_ENOTEMPTY -19 /* Directory not empty */
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

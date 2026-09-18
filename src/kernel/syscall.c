@@ -126,6 +126,7 @@ static int64_t syscall_from_vfs_error(int64_t vfs_err) {
         case -VFS_EFBIG:       return SYSCALL_EFBIG;       /* -12 */
         case -VFS_ENOSPC:      return SYSCALL_ENOSPC;      /* -13 */
         case -VFS_EROFS:       return SYSCALL_EROFS;       /* -11 */
+        case -VFS_ENOTEMPTY:   return SYSCALL_ENOTEMPTY;   /* -19 */
         case -VFS_EOPNOTSUPP:  return SYSCALL_EOPNOTSUPP;  /* -14 */
         case -7:               return SYSCALL_EISDIR;      /* -7 */
         case -8:               return SYSCALL_ENOTDIR;     /* -8 */
@@ -556,6 +557,43 @@ static int64_t sys_kbd_layout(int64_t layout) {
     return SYSCALL_EINVAL;
 }
 
+static int64_t sys_mkdir(uintptr_t user_path, uint64_t mode) {
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char kpath[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, kpath, sizeof(kpath));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    int res = vfs_mkdir(kpath, (uint32_t)mode);
+    if (res < 0) return syscall_from_vfs_error(res);
+    return SYSCALL_SUCCESS;
+}
+
+static int64_t sys_unlink(uintptr_t user_path) {
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char kpath[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, kpath, sizeof(kpath));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    int res = vfs_unlink(kpath);
+    if (res < 0) return syscall_from_vfs_error(res);
+    return SYSCALL_SUCCESS;
+}
+
+static int64_t sys_rename(uintptr_t user_oldpath, uintptr_t user_newpath) {
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char koldpath[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_oldpath, koldpath, sizeof(koldpath));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    char knewpath[VFS_MAX_PATH];
+    err = copy_user_string(active_pml4, user_newpath, knewpath, sizeof(knewpath));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    int res = vfs_rename(koldpath, knewpath);
+    if (res < 0) return syscall_from_vfs_error(res);
+    return SYSCALL_SUCCESS;
+}
+
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
     if (!frame) return SYSCALL_EINVAL;
 
@@ -603,6 +641,18 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_KBD_LAYOUT:
             result = sys_kbd_layout((int64_t)frame->rdi);
+            break;
+
+        case SYS_MKDIR:
+            result = sys_mkdir(frame->rdi, frame->rsi);
+            break;
+
+        case SYS_UNLINK:
+            result = sys_unlink(frame->rdi);
+            break;
+
+        case SYS_RENAME:
+            result = sys_rename(frame->rdi, frame->rsi);
             break;
 
         default:

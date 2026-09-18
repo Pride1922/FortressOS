@@ -26,6 +26,7 @@
 #define VFS_EFBIG        27
 #define VFS_ENOSPC       28
 #define VFS_EROFS        30
+#define VFS_ENOTEMPTY    39
 #define VFS_EOPNOTSUPP   95
 
 typedef enum {
@@ -47,6 +48,8 @@ typedef struct vfs_node {
     int64_t (*read)(struct vfs_node *, uint64_t, void *, size_t);
     int64_t (*write)(struct vfs_node *, uint64_t, const void *, size_t);
     struct vfs_node *(*create)(struct vfs_node *dir, const char *name, vfs_node_type_t type);
+    int (*unlink)(struct vfs_node *dir, const char *name);
+    int (*rename)(struct vfs_node *old_dir, const char *old_name, struct vfs_node *new_dir, const char *new_name);
     int (*truncate)(struct vfs_node *node, uint64_t new_size);
     int (*readdir)(struct vfs_node *, uint64_t, void *);
 } vfs_node_t;
@@ -77,6 +80,9 @@ vfs_node_t *vfs_create(const char *path, vfs_node_type_t type);
 vfs_node_t *vfs_create_ext(const char *path, vfs_node_type_t type, int *err_out);
 void        vfs_set_last_create_error(int err);
 int         vfs_get_last_create_error(void);
+int         vfs_mkdir(const char *path, uint32_t mode);
+int         vfs_unlink(const char *path);
+int         vfs_rename(const char *oldpath, const char *newpath);
 int         vfs_truncate(vfs_node_t *node, uint64_t new_size);
 file_t     *vfs_open(const char *path, int flags);
 file_t     *vfs_open_ext(const char *path, int flags, int *err_out);

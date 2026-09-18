@@ -257,6 +257,151 @@ vfs_node_t *vfs_create(const char *path, vfs_node_type_t type) {
     return vfs_create_ext(path, type, NULL);
 }
 
+int vfs_mkdir(const char *path, uint32_t mode) {
+    (void)mode;
+    int err = 0;
+    vfs_node_t *node = vfs_create_ext(path, VFS_DIRECTORY, &err);
+    if (!node) return err ? err : -VFS_EIO;
+    return VFS_SUCCESS;
+}
+
+int vfs_unlink(const char *path) {
+    if (!path || strlen(path) >= VFS_MAX_PATH) return -VFS_EINVAL;
+    char norm[VFS_MAX_PATH];
+    normalize_path(path, norm, sizeof(norm));
+    if (!strcmp(norm, "/")) return -VFS_EPERM;
+
+    const char *last_slash = NULL;
+    for (const char *p = norm; *p; p++) {
+        if (*p == '/') last_slash = p;
+    }
+    if (!last_slash) return -VFS_EINVAL;
+
+    char dir_path[VFS_MAX_PATH];
+    size_t dir_len = (size_t)(last_slash - norm);
+    if (dir_len == 0) {
+        dir_path[0] = '/';
+        dir_path[1] = '\0';
+    } else {
+        memcpy(dir_path, norm, dir_len);
+        dir_path[dir_len] = '\0';
+    }
+    const char *name = last_slash + 1;
+    if (!*name || !strcmp(name, ".") || !strcmp(name, "..")) return -VFS_EINVAL;
+
+    vfs_node_t *dir = vfs_lookup(dir_path);
+    if (!dir) return -VFS_ENOENT;
+    if (dir->type != VFS_DIRECTORY) return -8; /* ENOTDIR */
+
+    vfs_node_t *target = vfs_lookup(norm);
+    if (!target) return -VFS_ENOENT;
+
+    if (!dir->unlink) return -VFS_EROFS;
+
+    int res = dir->unlink(dir, name);
+    if (res != 0) return res;
+
+    /* Unlink succeeded in filesystem; detach target from VFS child tree */
+    vfs_node_t **curr = &dir->children;
+    while (*curr) {
+        if (*curr == target) {
+            *curr = target->next;
+            break;
+        }
+        curr = &(*curr)->next;
+    }
+    kfree(target);
+    return VFS_SUCCESS;
+}
+
+int vfs_rename(const char *oldpath, const char *newpath) {
+    if (!oldpath || !newpath) return -VFS_EINVAL;
+    if (strlen(oldpath) >= VFS_MAX_PATH || strlen(newpath) >= VFS_MAX_PATH) return -VFS_EINVAL;
+
+    char norm_old[VFS_MAX_PATH], norm_new[VFS_MAX_PATH];
+    normalize_path(oldpath, norm_old, sizeof(norm_old));
+    normalize_path(newpath, norm_new, sizeof(norm_new));
+
+    if (!strcmp(norm_old, "/") || !strcmp(norm_new, "/")) return -VFS_EPERM;
+    if (!strcmp(norm_old, norm_new)) return VFS_SUCCESS;
+
+    /* Check prefix: cannot move a directory inside itself */
+    size_t old_len = strlen(norm_old);
+    if (!strncmp(norm_new, norm_old, old_len) && (norm_new[old_len] == '/' || norm_new[old_len] == '\0')) {
+        return -VFS_EINVAL;
+    }
+
+    const char *old_slash = NULL;
+    for (const char *p = norm_old; *p; p++) if (*p == '/') old_slash = p;
+    char old_dir_path[VFS_MAX_PATH];
+    size_t old_dir_len = (size_t)(old_slash - norm_old);
+    if (old_dir_len == 0) { old_dir_path[0] = '/'; old_dir_path[1] = '\0'; }
+    else { memcpy(old_dir_path, norm_old, old_dir_len); old_dir_path[old_dir_len] = '\0'; }
+    const char *old_name = old_slash + 1;
+
+    const char *new_slash = NULL;
+    for (const char *p = norm_new; *p; p++) if (*p == '/') new_slash = p;
+    char new_dir_path[VFS_MAX_PATH];
+    size_t new_dir_len = (size_t)(new_slash - norm_new);
+    if (new_dir_len == 0) { new_dir_path[0] = '/'; new_dir_path[1] = '\0'; }
+    else { memcpy(new_dir_path, norm_new, new_dir_len); new_dir_path[new_dir_len] = '\0'; }
+    const char *new_name = new_slash + 1;
+
+    if (!*old_name || !*new_name) return -VFS_EINVAL;
+    if (strlen(new_name) >= VFS_MAX_NAME) return -VFS_EINVAL;
+
+    vfs_node_t *old_dir = vfs_lookup(old_dir_path);
+    vfs_node_t *new_dir = vfs_lookup(new_dir_path);
+    if (!old_dir || !new_dir) return -VFS_ENOENT;
+    if (old_dir->type != VFS_DIRECTORY || new_dir->type != VFS_DIRECTORY) return -8; /* ENOTDIR */
+
+    size_t oldpath_len = strlen(oldpath);
+    size_t newpath_len = strlen(newpath);
+    bool old_has_slash = (oldpath_len > 1 && oldpath[oldpath_len - 1] == '/');
+    bool new_has_slash = (newpath_len > 1 && newpath[newpath_len - 1] == '/');
+
+    vfs_node_t *target = vfs_lookup(norm_old);
+    if (!target) return -VFS_ENOENT;
+    if (target->type != VFS_DIRECTORY && (old_has_slash || new_has_slash)) {
+        return -8; /* ENOTDIR */
+    }
+
+    if (!old_dir->rename || old_dir->rename != new_dir->rename) return -VFS_EROFS;
+
+    /* If destination already exists in VFS, verify types and unlink/replace */
+    vfs_node_t *dest = vfs_lookup(norm_new);
+    if (dest) {
+        if (dest == target) return VFS_SUCCESS;
+        if (dest->type == VFS_DIRECTORY && target->type != VFS_DIRECTORY) return -7; /* EISDIR */
+        if (dest->type != VFS_DIRECTORY && target->type == VFS_DIRECTORY) return -8; /* ENOTDIR */
+        int ures = vfs_unlink(norm_new);
+        if (ures != 0) return ures;
+    }
+
+    int res = old_dir->rename(old_dir, old_name, new_dir, new_name);
+    if (res != 0) return res;
+
+    /* Move target in VFS hierarchy */
+    if (old_dir != new_dir) {
+        vfs_node_t **curr = &old_dir->children;
+        while (*curr) {
+            if (*curr == target) {
+                *curr = target->next;
+                break;
+            }
+            curr = &(*curr)->next;
+        }
+        target->next = new_dir->children;
+        new_dir->children = target;
+        target->parent = new_dir;
+    }
+
+    memcpy(target->name, new_name, strlen(new_name) + 1);
+    memcpy(target->path, norm_new, strlen(norm_new) + 1);
+
+    return VFS_SUCCESS;
+}
+
 int vfs_truncate(vfs_node_t *node, uint64_t new_size) {
     if (!node) return -1;
     if (node->type == VFS_DIRECTORY) return -7; /* EISDIR */

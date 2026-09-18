@@ -599,6 +599,8 @@ static void execute_simple_command(char *cmd_line) {
     if (equal(cmd, "help")) {
         puts("help           Show commands\nls [path]      List files (default /)\n"
              "cat /path      Read a text file\nedit /path     Text editor\n"
+             "mkdir /path    Create a directory\nrm /path       Remove a file or empty directory\n"
+             "mv /old /new   Rename or move a file/directory\n"
              "echo [text]    Print text (supports $?)\n"
              "run /path [args]Run a program with optional arguments\n"
              "layout [layout]Switch layout (us | azerty)\n"
@@ -622,6 +624,51 @@ static void execute_simple_command(char *cmd_line) {
             last_status = 0;
         } else {
             puts("Usage: edit /path\n");
+            last_status = 1;
+        }
+    } else if (equal(cmd, "mkdir")) {
+        if (*arg) {
+            long r = call(11, (uintptr_t)arg, 0755, 0);
+            if (r < 0) {
+                puts("mkdir: cannot create directory\n");
+                last_status = 1;
+            } else {
+                last_status = 0;
+            }
+        } else {
+            puts("Usage: mkdir /path\n");
+            last_status = 1;
+        }
+    } else if (equal(cmd, "rm")) {
+        if (*arg) {
+            long r = call(12, (uintptr_t)arg, 0, 0);
+            if (r < 0) {
+                if (r == -19) puts("rm: directory not empty\n");
+                else puts("rm: cannot remove\n");
+                last_status = 1;
+            } else {
+                last_status = 0;
+            }
+        } else {
+            puts("Usage: rm /path\n");
+            last_status = 1;
+        }
+    } else if (equal(cmd, "mv")) {
+        char *src = arg;
+        char *dst = src;
+        while (*dst && *dst != ' ') dst++;
+        if (*dst) *dst++ = 0;
+        while (*dst == ' ') dst++;
+        if (*src && *dst) {
+            long r = call(13, (uintptr_t)src, (uintptr_t)dst, 0);
+            if (r < 0) {
+                puts("mv: cannot rename\n");
+                last_status = 1;
+            } else {
+                last_status = 0;
+            }
+        } else {
+            puts("Usage: mv /old /new\n");
             last_status = 1;
         }
     } else if (equal(cmd, "layout")) {

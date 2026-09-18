@@ -541,6 +541,73 @@ int main(int argc, char **argv) {
     in_dup->size = saved_sz;
     vfs_close(fdup);
 
+    /* 11b. Phase 9E: Directory creation, nesting, non-empty rejection, rename, and unlink */
+    assert(vfs_mkdir("/mnt/testdir", 0755) == VFS_SUCCESS);
+    vfs_node_t *tdir = vfs_lookup("/mnt/testdir");
+    assert(tdir && tdir->type == VFS_DIRECTORY);
+    /* Duplicate directory creation must fail */
+    assert(vfs_mkdir("/mnt/testdir", 0755) != VFS_SUCCESS);
+
+    /* Create file inside newly created directory */
+    file_t *fsub = vfs_open("/mnt/testdir/hello.txt", VFS_O_WRONLY | VFS_O_CREAT);
+    assert(fsub);
+    assert(vfs_write(fsub, "inside_dir", 10) == 10);
+    vfs_close(fsub);
+
+    /* Directory unlink MUST be rejected with -ENOTEMPTY while child exists */
+    assert(vfs_unlink("/mnt/testdir") == -VFS_ENOTEMPTY);
+
+    /* Rename file within same directory */
+    assert(vfs_rename("/mnt/testdir/hello.txt", "/mnt/testdir/renamed.txt") == VFS_SUCCESS);
+    assert(vfs_lookup("/mnt/testdir/hello.txt") == NULL);
+    file_t *fren = vfs_open("/mnt/testdir/renamed.txt", VFS_O_RDONLY);
+    assert(fren);
+    char r_buf[16];
+    assert(vfs_read(fren, r_buf, 10) == 10);
+    assert(!memcmp(r_buf, "inside_dir", 10));
+    vfs_close(fren);
+
+    /* Unlink file inside directory */
+    assert(vfs_unlink("/mnt/testdir/renamed.txt") == VFS_SUCCESS);
+    assert(vfs_lookup("/mnt/testdir/renamed.txt") == NULL);
+
+    /* Unlink empty directory now succeeds */
+    assert(vfs_unlink("/mnt/testdir") == VFS_SUCCESS);
+    assert(vfs_lookup("/mnt/testdir") == NULL);
+
+    /* Cross-directory rename */
+    assert(vfs_mkdir("/mnt/dir1", 0755) == VFS_SUCCESS);
+    assert(vfs_mkdir("/mnt/dir2", 0755) == VFS_SUCCESS);
+    file_t *fmove = vfs_open("/mnt/dir1/item.txt", VFS_O_WRONLY | VFS_O_CREAT);
+    assert(fmove);
+    assert(vfs_write(fmove, "moveme", 6) == 6);
+    vfs_close(fmove);
+
+    /* Edge case: trailing slash on file must fail with -ENOTDIR (-8) */
+    assert(vfs_rename("/mnt/dir1/item.txt/", "/mnt/dir2/item.txt") == -8);
+    assert(vfs_rename("/mnt/dir1/item.txt", "/mnt/dir2/item.txt/") == -8);
+
+    /* Edge case: rename onto self succeeds immediately as a no-op */
+    assert(vfs_rename("/mnt/dir1/item.txt", "/mnt/dir1/item.txt") == VFS_SUCCESS);
+
+    /* Edge case: moving directory into subdirectory of itself must fail with -EINVAL */
+    assert(vfs_rename("/mnt/dir1", "/mnt/dir1/sub") == -VFS_EINVAL);
+
+    assert(vfs_rename("/mnt/dir1/item.txt", "/mnt/dir2/item.txt") == VFS_SUCCESS);
+    assert(vfs_lookup("/mnt/dir1/item.txt") == NULL);
+    file_t *fmoved = vfs_open("/mnt/dir2/item.txt", VFS_O_RDONLY);
+    assert(fmoved);
+    assert(vfs_read(fmoved, r_buf, 6) == 6);
+    assert(!memcmp(r_buf, "moveme", 6));
+    vfs_close(fmoved);
+
+    /* Edge case: rename directory onto existing non-empty directory must fail with -ENOTEMPTY */
+    assert(vfs_rename("/mnt/dir1", "/mnt/dir2") == -VFS_ENOTEMPTY);
+
+    assert(vfs_unlink("/mnt/dir2/item.txt") == VFS_SUCCESS);
+    assert(vfs_unlink("/mnt/dir1") == VFS_SUCCESS);
+    assert(vfs_unlink("/mnt/dir2") == VFS_SUCCESS);
+
     /* 12. Clean shutdown synchronization (s_state: 0 active -> 1 clean) */
     assert(u16(disk + 1024 + 58) == 0); /* EXT2_VALID_FS cleared on RW mount */
     ext2_sync_all();

@@ -227,3 +227,13 @@ Process spawning (`SYS_SPAWN`, nr 9) conforms to the System V AMD64 ELF ABI (Sec
 - Bounded limits: `MAX_SPAWN_ARGS = 32`, `MAX_ARG_STRLEN = 256`, `MAX_TOTAL_ARGS_LEN = 2048`. Single-pass bounded copy `copy_user_string()` enforces bounds without unbounded `strlen()` scans. Exceeding any limit returns `SYSCALL_E2BIG`.
 - Backward compatibility: internal kernel boot test modes (`user/init.asm` modes 0..7) maintain scalar `RDI` mode selection via `process_spawn_with_arg()`.
 - Verified dynamically under BIOS/UEFI QEMU (`make test-shell`) including runtime `RSP % 16 == 0` hardware assertions, empty argument handling (`""`), argument limits (32 pass, 33 rejected), and zero-leak resource reclamation.
+
+## Saved File Management (Phase 9E) & Bug H4 Resolution
+
+- Directory operations: `vfs_mkdir`, `vfs_unlink`, and `vfs_rename` implemented and wired to syscalls `SYS_MKDIR` (11), `SYS_UNLINK` (12), and `SYS_RENAME` (13).
+- Ext2 directory structures: Directory creation formats block 0 with `.` and `..` directory records with 12-byte and `block_size - 12` record lengths. Parent directory `links` count incremented on directory creation and decremented on removal.
+- Deletion safety: Unlink on directories validates that only `.` and `..` entries exist; non-empty directories reject with `-VFS_ENOTEMPTY`.
+- Rename and reparenting: Renaming across directory boundaries adjusts `..` entry to point to the new parent and updates parent links.
+- On-disk reclamation: Unlinked inodes clear block allocations and release bitmap bits, clear `i_size` and block pointers, set `i_links_count = 0`, and set `i_dtime` to deletion timestamp.
+- Verified: All 8 host test configurations (`make test-ext2`) pass under ASan/UBSan. Three-boot persistence (`make test-ext2-write`) passes under both BIOS and UEFI with offline `e2fsck -fn` reporting 0 errors.
+- Bug H4: Belgian AZERTY layout top-row scancodes (0x02..0x0D) now use `shift ^ s->caps` as Shift-Lock for numeric digits (`1234567890`). Shift table precedence prevents accented letters `é`, `è`, `ç`, `à`, `ù` on scancodes `0x03`, `0x08`, `0x0A`, `0x0B`, `0x28` from emitting uppercase letters. ISO scancode `0x56` (`<` / `>`) added. Verified by `make test-input` and `make test-shell`.

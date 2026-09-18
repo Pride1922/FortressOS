@@ -192,20 +192,35 @@ def run_firmware_test(orig_img, build_dir, mode):
     print(f"      - [{mode.upper()}] Post-truncation e2fsck verified clean filesystem with zero errors.")
 
     # -------------------------------------------------------------
-    # Boot 3: Verify persisted truncated content across reboot
+    # Boot 3: Verify persisted truncated content, then test mkdir, mv, rm
     # -------------------------------------------------------------
     log3 = build_dir / f"ext2_write_{mode}_boot3.log"
     if log3.exists(): log3.unlink()
-    print(f"[TEST 9D] [{mode.upper()}] Boot 3: Verifying cross-boot persistence of truncated state...", flush=True)
+    print(f"[TEST 9D] [{mode.upper()}] Boot 3: Verifying cross-boot persistence & testing mkdir, mv, rm...", flush=True)
     boot3_commands = [
         ("cat /mnt/written.txt\n", "Phase 9D shorter truncated single line"),
+        ("mkdir /mnt/saved_dir\n", "fortress> "),
+        ("ls /mnt\n", "saved_dir"),
+        ("mv /mnt/written.txt /mnt/saved_dir/nested.txt\n", "fortress> "),
+        ("cat /mnt/saved_dir/nested.txt\n", "Phase 9D shorter truncated single line"),
+        ("rm /mnt/saved_dir\n", "directory not empty"),
+        ("rm /mnt/saved_dir/nested.txt\n", "fortress> "),
+        ("rm /mnt/saved_dir\n", "fortress> "),
+        ("ls /mnt\n", "fortress> "),
         ("shutdown\n", None)
     ]
 
     out3 = run_session(test_img, boot3_commands, log3, mode=mode)
     assert "Phase 9D shorter truncated single line" in out3, f"Truncated text missing in boot 3:\n{out3[-1000:]}"
     assert "Second line written by Ring 3 editor" not in out3, f"Stale old line persisted despite truncation:\n{out3[-1000:]}"
-    print(f"      - [{mode.upper()}] Boot 3 successful: verified truncated content persisted with no stale lines.")
+    assert "saved_dir" in out3, f"Directory creation not observed:\n{out3[-1000:]}"
+    assert "directory not empty" in out3, f"Non-empty directory deletion rejection not observed:\n{out3[-1000:]}"
+    print(f"      - [{mode.upper()}] Boot 3 successful: verified persistence, directory operations, rename, and cleanup.")
+
+    # Audit 3: Host e2fsck after directory creation, move, and cleanup
+    print(f"[TEST 9D] [{mode.upper()}] Checking post-boot-3 integrity with host e2fsck -fn...", flush=True)
+    check_e2fsck(test_img)
+    print(f"      - [{mode.upper()}] Post-boot-3 e2fsck verified clean filesystem with zero errors.")
 
 
 def main():
