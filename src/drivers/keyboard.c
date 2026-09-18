@@ -31,7 +31,13 @@ static const char us_shifted[128] = {
     [51]='<',[52]='>',[53]='?'
 };
 
-/* Belgian AZERTY layout mapped to standard 7-bit ASCII */
+/* Belgian AZERTY layout (Dell Latitude 5590 keyboard), mapped to 7-bit ASCII.
+ * In Belgian AZERTY (unlike French AZERTY), the top number row (scancodes 0x02..0x0D)
+ * has digits on the shifted layer. Caps Lock acts as a true Shift-Lock for the numeric
+ * row (shift ^ s->caps) so digits 1..0 can be typed continuously with Caps Lock active.
+ * Accented keys (é, è, ç, à, ù on scancodes 0x03, 0x08, 0x0A, 0x0B, 0x28) are on the
+ * unshifted layer. Scancode 86 (0x56) is the physical European ISO key next to Left Shift (< / >).
+ */
 static const char azerty_plain[128] = {
     [2]='&',[3]='e',[4]='"',[5]='\'',[6]='(',[7]='-',[8]='e',[9]='!',[10]='c',[11]='a',
     [12]=')',[13]='-',[14]='\b',[15]='\t',
@@ -40,13 +46,15 @@ static const char azerty_plain[128] = {
     [30]='q',[31]='s',[32]='d',[33]='f',[34]='g',[35]='h',[36]='j',[37]='k',[38]='l',
     [39]='m',[40]='u',[41]='`',[43]='<',
     [44]='w',[45]='x',[46]='c',[47]='v',[48]='b',[49]='n',[50]=',',
-    [51]=';',[52]=':',[53]='=',[55]='*',[57]=' '
+    [51]=';',[52]=':',[53]='=',[55]='*',[57]=' ',
+    [86]='<'
 };
 
 static const char azerty_shifted[128] = {
     [2]='1',[3]='2',[4]='3',[5]='4',[6]='5',[7]='6',[8]='7',[9]='8',[10]='9',[11]='0',
-    [12]='o',[13]='_',[26]='^',[27]='*',[39]='M',[40]='%',[41]='~',[43]='>',
-    [50]='?',[51]='.',[52]='/',[53]='+'
+    [12]='o',[13]='_',[26]='^',[27]='*',[40]='%',[41]='~',[43]='>',
+    [50]='?',[51]='.',[52]='/',[53]='+',
+    [86]='>'
 };
 
 char keyboard_decode(keyboard_decoder_t *s, uint8_t code) {
@@ -76,6 +84,14 @@ char keyboard_decode(keyboard_decoder_t *s, uint8_t code) {
 
     char c = plain_table[code];
     bool shift = s->left_shift || s->right_shift;
+
+    if (g_keyboard_layout == KBD_LAYOUT_AZERTY && code >= 2 && code <= 13) {
+        bool num_shifted = shift ^ s->caps;
+        if (num_shifted && shifted_table[code]) return shifted_table[code];
+        return c;
+    }
+
+    if (shift && shifted_table[code]) return shifted_table[code];
     if (c >= 'a' && c <= 'z') return (shift != s->caps) ? c - 'a' + 'A' : c;
-    return shift && shifted_table[code] ? shifted_table[code] : c;
+    return c;
 }
