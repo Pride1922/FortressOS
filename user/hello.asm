@@ -35,6 +35,12 @@ _start:
     cmp r12, 1
     jle .exit_zero
 
+    ; Loop over all argv[1 .. argc-1]
+    mov rbx, 1          ; rbx = argument index
+.arg_loop:
+    cmp rbx, r12
+    jge .args_done
+
     ; Print argument prefix: "Received argument: "
     mov eax, 1          ; SYS_WRITE
     mov edi, 1          ; stdout
@@ -42,12 +48,12 @@ _start:
     mov edx, arg_prefix_len
     syscall
 
-    ; Load pointer to argv[1]
-    mov r14, [r13 + 8]  ; argv[1]
+    ; Load pointer to argv[rbx]
+    mov r14, [r13 + rbx * 8]
     test r14, r14
-    jz .exit_zero
+    jz .next_arg
 
-    ; Compute string length of argv[1]
+    ; Compute string length of argv[rbx]
     xor ecx, ecx
 .strlen:
     cmp byte [r14 + rcx], 0
@@ -56,13 +62,14 @@ _start:
     jmp .strlen
 
 .strlen_done:
-    ; Print argv[1]
+    ; Print argv[rbx]
     mov eax, 1          ; SYS_WRITE
     mov edi, 1          ; stdout
     mov rsi, r14
     mov edx, ecx
     syscall
 
+.next_arg:
     ; Print newline
     mov eax, 1          ; SYS_WRITE
     mov edi, 1          ; stdout
@@ -70,7 +77,14 @@ _start:
     mov edx, 1
     syscall
 
+    inc rbx
+    jmp .arg_loop
+
+.args_done:
     ; Parse argv[1] as decimal integer: if fully numeric, return value as exit code; else return 0
+    mov r14, [r13 + 8]  ; argv[1]
+    test r14, r14
+    jz .exit_zero
     mov rsi, r14
     xor eax, eax        ; Accumulator
     xor ecx, ecx
