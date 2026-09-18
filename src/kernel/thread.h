@@ -88,6 +88,15 @@ tcb_t *thread_current(void);
 size_t sched_ready_count(void);
 
 /* Process Lifecycle Management */
+#define MAX_ELF_FILE_SIZE (4ULL * 1024 * 1024)
+/* Kernel path, syscall error codes. Reserves one of 64 child records until
+ * wait or parent exit; never overwrites an uncollected child status.
+ * System V AMD64 ABI: RSP points to argc, RDI = argc, RSI = argv.
+ * Bootstrap CPU only; IRQ-excluded publication, no inherited file descriptors. */
+int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const argv[],
+                             uintptr_t *out_user_rsp, uintptr_t *out_user_argv);
+int64_t process_spawn_from_vfs(const char *path, int argc, const char *const argv[], int64_t *out_pid);
+bool process_wait_child(uint64_t pid, uint64_t *out_exit_code);
 tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size);
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg);
 void   process_exit(uint64_t exit_code);

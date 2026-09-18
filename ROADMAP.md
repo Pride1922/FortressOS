@@ -285,6 +285,23 @@ Recorded implementation sequence and planned work:
         ├── Resource pre-reservation in VFS: `file_t` descriptor and cached nodes allocated before destructive truncation or disk mutations (`vfs_open_ext`)
         ├── Ring 3 text editor safe saving (`w`), path length bounds (256), and unmodified status on error
         └── Acceptance: `make test-ext2` (host ASan/UBSan across 8 configurations with failure injection) and `make test-ext2-write` (BIOS & UEFI 3-boot persistence, editor create/truncate, and host `e2fsck -fn` with 0 errors)
+    │
+    ▼
+[Phase 9E] Program Execution from Shell, Exit Status & System V AMD64 ABI (COMPLETE)
+    ├── Bounded spawn/wait interface (SYS_SPAWN nr 9, SYS_WAIT nr 10)
+    ├── Standard System V AMD64 ELF process stack layout (16-byte aligned RSP, argc, argv[0..argc-1], NULL, envp NULL, AT_NULL auxv)
+    ├── Argument string storage packed at top of user stack page via kernel HHDM mapping
+    ├── Initial user register state: RDI = argc, RSI = argv, RDX = 0
+    ├── Kernel boot tests backwards-compatibility: process_spawn_with_arg retains scalar RDI mode selector
+    ├── VFS ELF execution: process_spawn_from_vfs loads binaries from TarFS or ext2
+    ├── Single-threaded parent wait on g_child_records (up to 64 tracked children)
+    ├── Safe deferred reaper reclamation upon wait or parent termination
+    ├── Ring 3 shell integration: run /path [args...] tokenizes arbitrary string arguments
+    ├── Shell exit status tracking ($? via echo $? and last_status variable)
+    ├── Shell command chaining: logical AND (&&) and logical OR (||) execution
+    ├── Fault trap isolation: CPU exceptions (128 + vector) caught and reported without crashing shell/kernel
+    ├── Serial driver hardening: bounded RX FIFO drain during loopback self-test eliminates UEFI OVMF boot noise
+    └── Automated acceptance: make test-shell passing BIOS, UEFI, and UEFI 8 GiB keyboard-only mode with zero-leak resource audit
 ```
 
 ---
@@ -407,3 +424,80 @@ Follow-up integration: `wsl -d Ubuntu-24.04 -- make test-storage test-shell
 test-power` passed BIOS/UEFI storage and shell checks, keyboard-only UEFI 8 GiB,
 and ordinary read-only-boot shutdown/reboot (QEMU exit code 0). The kernel and
 ISO also built with the existing strict compiler flags.
+
+### Phase 9D — Bounded Writable ext2 Filesystem Verification (2026-09-17)
+
+Phase 9D delivers bounded write support on the ext2 block layer, enabling file creation,
+truncation, block reclamation, and persistence to NVMe storage.
+
+- **Implementation Details**:
+  - Direct block and single-indirect block allocation and writes (`vfs_write`).
+  - Directory entry insertion (`vfs_create`).
+  - File truncation (`vfs_truncate`) with a 3-stage contract: scratch pre-allocation,
+    Stage 2 detachment (inode size/pointers zeroed and flushed first), and Stage 3
+    block reclamation with per-block error validation and taint marking.
+  - Unsupported structures (double/triple indirect blocks, non-regular files) are
+    explicitly pre-rejected with `-EFBIG` / `-EOPNOTSUPP`.
+  - Atomic mount staging: `/mnt` VFS node is linked to the hierarchy only after the
+    dirty marker is persisted and flushed to disk; mount failure unwinds cleanly.
+  - Clean shutdown lifecycle: `ext2_sync_all()` returns `bool`. If the filesystem is
+    tainted, it refuses to mark the filesystem clean; on success, it sets `s_state = EXT2_VALID_FS`
+    and freezes further writes (`fs->read_only = true`).
+  - Line editor in `user/shell.c` expanded to 8 KiB with save-protection guards
+    (`editor_save_disabled`) against truncated reads.
+  - Explicit write opt-in: writes are disabled by default; enabled only when
+    `-fw_cfg name=opt/fortress/write_test,string=1` is provided (or `WRITE_TEST=1`).
+
+- **Verification Environment & Evidence**:
+  - **Environment**: WSL2 `Ubuntu-24.04` on Windows 11 host (x86_64, Linux 6.6 kernel).
+    QEMU `q35`, 2 GiB RAM, PCIe NVMe controller (`serial=fortress0`), GPT with
+    a 1024-byte-block ext2 partition. These prior results were supplied by the user;
+    they are not new test runs by the implementation agent.
+  - **Automated 3-Boot Persistence Suite (`make test-ext2-write`)**:
+    - Ran disposable GPT NVMe fixtures across both legacy BIOS and UEFI
+      (paired with OVMF 4M firmware).
+    - Boot 1: created `/mnt/written.txt` via Ring 3 shell, saved, verified NVMe flush,
+      and clean ACPI S5 shutdown (QEMU exit code 0). Offline `e2fsck -fn` passed with 0 errors.
+    - Boot 2: verified persisted multi-line content, truncated and overwrote with
+      shorter content, clean shutdown. Offline `e2fsck -fn` passed with 0 errors.
+    - Boot 3: verified cross-boot persistence of truncated state with zero stale lines.
+  - **Interactive Manual Verification**:
+    - Booted via `make run-bios WRITE_TEST=1` in WSL Ubuntu-24.04 (from PowerShell).
+    - Verified kernel log: `[ext2] Writable mount complete at /mnt`.
+    - Created `/mnt/test.txt` via `edit /mnt/test.txt`, entered multi-line text in append mode,
+      saved via `w` (`[EDIT] Saved 58 bytes (2 lines) to /mnt/test.txt`), quit with `q`,
+      and verified contents via `cat /mnt/test.txt`.
+    - Executed clean shutdown via `poweroff`.
+    - User reports persistence on reload. The clean-marker/freeze behavior is
+      established by code and automated offline checks, not solely by shutdown output.
+  - **Host Fault-Injection Matrix (`make test-ext2`)**:
+    - 14 deterministic regression scenarios in `tests/ext2_host.c` under ASan/UBSan,
+      covering exact write failure counts, OOM allocations, and shutdown freeze invariants.
+
+### Phase 9E — Program Execution from Shell, Exit Status & System V AMD64 ABI (2026-09-18)
+
+Phase 9E adds the ability for the interactive Ring 3 shell to load, execute, pass arbitrary string arguments to, and wait on standalone user ELF binaries from VFS (`/bin/hello`), while isolating CPU faults, tracking exit status, and adhering strictly to the standard System V AMD64 ELF ABI.
+
+- **Implementation Details**:
+  - **System Calls**: `SYS_SPAWN` (nr 9: path, argv pointer -> child PID) and `SYS_WAIT` (nr 10: child PID, status pointer -> 0 on success).
+  - **Standard System V AMD64 Process Stack**: In `process_setup_user_stack()`, string arguments are packed at the high end of the initial 4 KiB user stack page (`USER_STACK_TOP_VIRT = 0x00007FFFF0001000ULL`) via HHDM virtual translation (`vmm_phys_to_virt(stack_phys)`). Below the strings, the initial pointer table is written: `[RSP] = argc`, `[RSP+8] = argv[0]`, ..., `argv[argc] = NULL`, `envp[0] = NULL`, `AT_NULL` auxiliary vector pair (`0, 0`). `RSP` is strictly 16-byte aligned (`RSP % 16 == 0`).
+  - **Register Initialization & ABI**: At process entry (`user_process_trampoline`), `RDI = argc`, `RSI = argv`, `RDX = 0` (standard `rtld` termination handler), with all other GPRs sanitized to zero. Kernel boot tests using `process_spawn_with_arg()` maintain scalar `RDI` mode selection compatibility for `init.asm` test modes 0..7.
+  - **Process Waiting & Reclamation**: `process_wait_child()` uses single-threaded parent predicate `child_done` with `sched_wait_until()`, waking via `sched_wake_all()`. Parent reaps dead resources via `sched_reap_dead()`. Up to 64 active child records are tracked in `g_child_records` under the scheduler spinlock.
+  - **Fault Isolation**: Processes faulting on CPU exceptions (e.g. #PF vector 14, #GP vector 13) are recorded with status `128 + vector` by the exception handler, reported to the user as `[PROCESS] Faulted (exception vector <N>)` without bringing down the parent shell or kernel.
+  - **Shell Argument Parsing & Status Tracking (`$?`)**: User-space shell command parser tokenizes whitespace-delimited arguments (`run /path [args...]`), passing `argv[]` array to `SYS_SPAWN`. Shell tracks `last_status` updated on every command and child termination. `echo $?` expands to decimal exit code.
+  - **Command Chaining**: Shell command parser supports conditional chaining: `&&` executes subsequent command only if previous succeeded (`last_status == 0`), while `||` executes only if previous failed (`last_status != 0`).
+  - **Driver Hardening**: In `serial_init()`, receiver FIFO is drained inside loopback mode, followed by a bounded poll for data ready. This eliminates false loopback failures and serial silencing caused by UEFI/OVMF firmware debug noise during boot.
+
+- **Verification Environment & Evidence**:
+  - **Automated Shell Integration Suite (`make test-shell`)**:
+    - `PASS bios`: Tested `/bin/hello` execution with no arguments (`run /bin/hello`), numeric argument (`run /bin/hello 42`), string argument (`run /bin/hello world`), status query (`echo $?` -> `42` / `0`), command chaining (`&&` executed on success, skipped on failure; `||` executed on failure, skipped on success), negative error paths (`/missing`, `/bin`), and zero-leak resource audit (`free_pages` and `g_stack_slots_bitmap` unchanged across child lifecycles). Log: `build/shell-bios.log`.
+    - `PASS uefi`: Validated identical command sequences and resource assertions under UEFI with paired OVMF firmware. Log: `build/shell-uefi.log`.
+    - `PASS keyboard-only UEFI 8 GiB`: Validated hardware boot path without COM1 UART.
+  - **Subsystem Regression Coverage**:
+    - `make test-input`: Passed FIFO and scancode decoding.
+    - `make test-console`: Passed cached redraw and scrolling checks.
+    - `make test-storage`: Passed BIOS and UEFI GPT and ext2 Ring 3 read/audit tests.
+    - `make test-nmi`: Passed 40 exact-boundary NMI delivery cycles across all 5 syscall transitions in BIOS and UEFI.
+    - `make test-ext2`: Passed host ASan/UBSan matrix with injected failures across 8 configurations.
+
+

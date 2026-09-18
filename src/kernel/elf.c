@@ -232,6 +232,7 @@ int elf_load_executable(const void *image, size_t image_size, elf_loaded_process
     out_proc->pml4_phys      = pml4_phys;
     out_proc->entry_point    = ehdr->e_entry;
     out_proc->user_stack_top = USER_STACK_TOP_VIRT;
+    out_proc->stack_phys     = stack_phys;
     out_proc->total_pages    = total_pages;
 
     return ELF_OK;

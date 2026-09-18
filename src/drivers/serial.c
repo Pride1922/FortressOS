@@ -36,8 +36,19 @@ int serial_init(void) {
     outb(COM1_MCR, 0x0B);
 
     /* Perform loopback self-test */
-    outb(COM1_MCR, 0x1E);       /* Enable loopback mode */
+    outb(COM1_MCR, 0x1E);       /* Enable loopback mode (disconnects external RX) */
+
+    /* Drain any leftover bytes now that external RX is disconnected */
+    for (int i = 0; i < 256 && (inb(COM1_LSR) & LSR_DATA_READY); i++) {
+        (void)inb(COM1_DATA);
+    }
+
     outb(COM1_DATA, 0xAE);      /* Send test byte */
+
+    /* Bounded wait for loopback byte to arrive in receiver */
+    for (int i = 0; i < 10000 && !(inb(COM1_LSR) & LSR_DATA_READY); i++) {
+        __asm__ volatile("pause");
+    }
 
     if (inb(COM1_DATA) != 0xAE) {
         outb(COM1_MCR, 0x0F);

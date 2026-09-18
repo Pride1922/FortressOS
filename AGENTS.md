@@ -34,10 +34,11 @@ checkpoint history there, and verification claims tied to actual evidence.
 
 | Checkpoint | Status / acceptance |
 | --- | --- |
-| Latest recorded completion: 9D bounded writable ext2 | Explicit opt-in writable mount (`ext2_mount_rw`), direct block and single-indirect allocation and writes, directory entry insertion (`vfs_create`), truncation (`vfs_truncate`) with block reclamation, emergency read-only remount on metadata/flush failure, double/triple indirect pre-rejection, host ASan/UBSan matrix suite with injected failure coverage, offline `e2fsck -fn` verification (0 errors), and BIOS/UEFI 3-boot persistence in QEMU. |
+| Latest recorded completion: System V AMD64 ELF User Stack & Argument Passing ABI | Standard System V user stack layout (16-byte aligned RSP, argc, argv[0..argc-1], NULL, envp NULL, AT_NULL auxv), argument string storage via HHDM, RDI=argc, RSI=argv, arbitrary string tokenization in Ring 3 shell (`run /path [args...]`), hello.asm string echo and decimal exit code, zero-leak reclamation, and full verification under BIOS/UEFI QEMU (`make test-shell`). |
+| 9D bounded writable ext2 | Explicit opt-in writable mount (`ext2_mount_rw`), direct block and single-indirect allocation and writes, directory entry insertion (`vfs_create`), truncation (`vfs_truncate`) with block reclamation, emergency read-only remount on metadata/flush failure, double/triple indirect pre-rejection, host ASan/UBSan matrix suite with injected failure coverage, offline `e2fsck -fn` verification (0 errors), and BIOS/UEFI 3-boot persistence in QEMU. |
 | 9C.5 power & layout | Power/reset and US/AZERTY switching implemented (`9a3c4b4`); `make test-power` exercises QEMU power commands. Dell 5590 manual verification confirmed working ACPI S5 shutdown, reboot, and partial Belgian AZERTY layout switching (accented keys é/è/ç/à open bug; see H4). |
-| 9C.3 / 9C.4 shell & editor | Blocking keyboard/serial input, Ring 3 shell, and in-memory editor complete. |
-| Next: accounts and installation | Define identity/permission enforcement and installer target selection; accept with persistent account setup and a launched application. Not implemented yet. |
+| Current milestone: Saved file management | Directory operations (`mkdir`), file rename (`rename`), and deletion (`unlink`) on writable ext2 filesystem. |
+| Following milestones | Accounts/permissions, installer. |
 
 ## 3. Build, Run, Debug and Verify
 

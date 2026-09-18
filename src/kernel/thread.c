@@ -7,6 +7,7 @@
 #include "gdt.h"
 #include "elf.h"
 #include "vfs.h"
+#include "syscall.h"
 
 extern uint8_t kernel_stack_guard[];
 
@@ -22,6 +23,14 @@ typedef struct {
 #define MAX_EXIT_RECORDS 64
 static exit_record_t g_exit_records[MAX_EXIT_RECORDS];
 static size_t        g_exit_records_head = 0;
+
+/* Reserved before a user spawn, retained until wait or parent exit. Separate
+ * from the legacy kernel-test history, which is allowed to overwrite records. */
+typedef struct {
+    uint64_t parent, pid, status;
+    bool used, done;
+} child_record_t;
+static child_record_t g_child_records[MAX_EXIT_RECORDS];
 
 static uint64_t      g_sched_timer_preemptions = 0;
 static uint64_t      g_sched_runnable_switches = 0;
@@ -567,7 +576,92 @@ uint64_t sched_get_runnable_switches_count(void) {
     return val;
 }
 
-tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
+/* System V AMD64 ABI, Section 3.4.1 "Initial Stack and Register State":
+ *   - RSP must be 16-byte aligned at _start entry (RSP % 16 == 0), matching glibc/musl expectations.
+ *   - Layout: argc, argv[], NULL, envp[], NULL, auxv[], AT_NULL.
+ *   - Strings live at higher addresses than the pointer table.
+ *   Do not "simplify" this without reading the spec. */
+int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const argv[],
+                             uintptr_t *out_user_rsp, uintptr_t *out_user_argv) {
+    if (!stack_phys || !out_user_rsp || !out_user_argv) return -1;
+    if (argc < 0 || argc > MAX_SPAWN_ARGS) return -1;
+
+    uint8_t *stack_mem = (uint8_t *)vmm_phys_to_virt(stack_phys);
+
+    if (argc == 0 || !argv) {
+        /* Minimal empty stack frame with argc=0 */
+        size_t table_bytes = 5 * sizeof(uint64_t);
+        uintptr_t rsp = (USER_STACK_TOP_VIRT - table_bytes) & ~0xFULL;
+        size_t page_offset = (size_t)(rsp - USER_STACK_PAGE_VIRT);
+        uint64_t *table = (uint64_t *)(stack_mem + page_offset);
+        table[0] = 0; /* argc = 0 */
+        table[1] = 0; /* argv[0] = NULL */
+        table[2] = 0; /* envp[0] = NULL */
+        table[3] = 0; /* AT_NULL a_type = 0 */
+        table[4] = 0; /* AT_NULL a_val = 0 */
+        *out_user_rsp = rsp;
+        *out_user_argv = rsp + sizeof(uint64_t);
+        return 0;
+    }
+
+    /* 1. Calculate total string length including NUL terminators */
+    size_t total_str_len = 0;
+    for (int i = 0; i < argc; i++) {
+        if (!argv[i]) return -1;
+        size_t len = strlen(argv[i]) + 1;
+        if (len > MAX_ARG_STRLEN) return -1;
+        total_str_len += len;
+    }
+    if (total_str_len > MAX_TOTAL_ARGS_LEN) return -1;
+
+    /* 2. Copy strings to high end of user stack page:
+     * stack_top = USER_STACK_TOP_VIRT (one past end of page).
+     * The last written byte is stack_mem[PAGE_SIZE - 1] (USER_STACK_TOP_VIRT - 1),
+     * completely inside the allocated physical frame. */
+    uintptr_t user_str_ptrs[MAX_SPAWN_ARGS];
+    size_t cur_offset = PAGE_SIZE - total_str_len;
+    for (int i = 0; i < argc; i++) {
+        size_t len = strlen(argv[i]) + 1;
+        if (cur_offset + len > PAGE_SIZE) return -1;
+        memcpy(stack_mem + cur_offset, argv[i], len);
+        user_str_ptrs[i] = USER_STACK_PAGE_VIRT + cur_offset;
+        cur_offset += len;
+    }
+    if (cur_offset != PAGE_SIZE) return -1;
+
+    /* 3. Compute 16-byte aligned RSP below strings for:
+     *    argc (1) + argv[0..argc-1] (argc) + NULL (1) + envp NULL (1) + AT_NULL (2) = argc + 5
+     */
+    size_t table_entries = (size_t)(argc + 5);
+    size_t table_bytes = table_entries * sizeof(uint64_t);
+    uintptr_t str_virt_start = USER_STACK_TOP_VIRT - total_str_len;
+    uintptr_t rsp = (str_virt_start - table_bytes) & ~0xFULL;
+
+    /* Check bounds: RSP must be >= USER_STACK_PAGE_VIRT */
+    if (rsp < USER_STACK_PAGE_VIRT) return -1;
+
+    size_t table_page_offset = (size_t)(rsp - USER_STACK_PAGE_VIRT);
+    uint64_t *table = (uint64_t *)(stack_mem + table_page_offset);
+
+    size_t idx = 0;
+    table[idx++] = (uint64_t)argc;
+    for (int i = 0; i < argc; i++) {
+        table[idx++] = (uint64_t)user_str_ptrs[i];
+    }
+    table[idx++] = 0; /* argv[argc] = NULL */
+    table[idx++] = 0; /* envp[0] = NULL */
+    table[idx++] = 0; /* AT_NULL a_type */
+    table[idx++] = 0; /* AT_NULL a_val */
+
+    *out_user_rsp = rsp;
+    *out_user_argv = rsp + sizeof(uint64_t);
+    return 0;
+}
+
+static tcb_t *process_spawn_internal(const char *name, const void *elf_data, size_t elf_size,
+                                     int argc, const char *const argv[],
+                                     uint64_t scalar_arg, int64_t *error) {
+    *error = SYSCALL_ENOMEM;
     if (!elf_data || elf_size == 0) return NULL;
 
     sched_reap_dead();
@@ -576,13 +670,37 @@ tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf
     elf_loaded_process_t proc_info;
     int elf_status = elf_load_executable(elf_data, elf_size, &proc_info);
     if (elf_status != ELF_OK) {
-        serial_puts("[FAIL] process_spawn: elf_load_executable failed with code ");
+        *error = elf_status == ELF_ERR_NOMEM ? SYSCALL_ENOMEM : SYSCALL_ENOEXEC;
+        serial_puts("[EXEC] ELF loader rejected image with code ");
         serial_print_dec(elf_status);
         serial_puts("\n");
         return NULL;
     }
 
-    /* 2. Allocate dedicated page-backed kernel stack */
+    /* 2. Setup user stack */
+    uintptr_t user_rsp = 0;
+    uintptr_t user_argv = 0;
+    uint64_t rdi_val = 0;
+    uint64_t rsi_val = 0;
+
+    if (argv != NULL) {
+        int setup_res = process_setup_user_stack(proc_info.stack_phys, argc, argv,
+                                                &user_rsp, &user_argv);
+        if (setup_res != 0) {
+            *error = SYSCALL_E2BIG;
+            vmm_destroy_pml4(proc_info.pml4_phys, true);
+            return NULL;
+        }
+        rdi_val = (uint64_t)argc;
+        rsi_val = (uint64_t)user_argv;
+    } else {
+        /* Compatibility fallback for kernel-internal scalar spawns (e.g. init.asm tests) */
+        user_rsp = proc_info.user_stack_top & ~0xFULL;
+        rdi_val = scalar_arg;
+        rsi_val = 0;
+    }
+
+    /* 3. Allocate dedicated page-backed kernel stack */
     uintptr_t guard_virt = 0, stack_base = 0;
     size_t stack_size = 0;
     int slot = kstack_alloc(&guard_virt, &stack_base, &stack_size);
@@ -592,7 +710,7 @@ tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf
         return NULL;
     }
 
-    /* 3. Allocate Process / Thread Control Block */
+    /* 4. Allocate Process / Thread Control Block */
     tcb_t *p = (tcb_t *)kmalloc(sizeof(tcb_t));
     if (!p) {
         serial_puts("[FAIL] process_spawn: kmalloc(tcb) failed\n");
@@ -631,16 +749,16 @@ tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf
     p->exit_code = 0;
     p->has_exited = false;
 
-    /* 4. Set up initial kernel stack frame for first context switch to user_process_trampoline */
+    /* 5. Set up initial kernel stack frame for first context switch to user_process_trampoline */
     uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);
     stack_top = (uint8_t *)((uintptr_t)stack_top & ~0xFULL);
 
     stack_top -= sizeof(uint64_t) * 8;
     uint64_t *frame = (uint64_t *)stack_top;
 
-    frame[0] = 0;                                  /* r15 */
-    frame[1] = arg;                                /* r14 -> passed to user RDI */
-    frame[2] = (uint64_t)proc_info.user_stack_top; /* r13 -> user RSP */
+    frame[0] = rsi_val;                            /* r15 -> passed to user RSI (argv) */
+    frame[1] = rdi_val;                            /* r14 -> passed to user RDI (argc or scalar arg) */
+    frame[2] = (uint64_t)user_rsp;                 /* r13 -> user RSP */
     frame[3] = (uint64_t)proc_info.entry_point;    /* r12 -> user RIP */
     frame[4] = 0;                                  /* rbp */
     frame[5] = 0;                                  /* rbx */
@@ -654,6 +772,95 @@ tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf
     spin_unlock_irqrestore(&g_sched_lock, rflags);
 
     return p;
+}
+
+tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
+    int64_t error;
+    return process_spawn_internal(name, elf_data, elf_size, 0, NULL, arg, &error);
+}
+
+int64_t process_spawn_from_vfs(const char *path, int argc, const char *const argv[], int64_t *out_pid) {
+    if (!path || !*path || !out_pid) return SYSCALL_EINVAL;
+    /* Keep publication and PID capture atomic on this bootstrap-only CPU.
+     * No scheduler lock is held across filesystem or loader operations. */
+    uint64_t flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
+    int64_t result = SYSCALL_ENOMEM;
+    child_record_t *record = NULL;
+    file_t *file = NULL;
+    void *buffer = NULL;
+    if (!g_current_thread || !g_current_thread->is_user) {
+        result = SYSCALL_EINVAL;
+        goto out;
+    }
+    for (unsigned i = 0; i < MAX_EXIT_RECORDS; i++) {
+        if (!g_child_records[i].used) { record = &g_child_records[i]; break; }
+    }
+    if (!record) goto out;
+    int err = 0;
+    file = vfs_open_ext(path, VFS_O_RDONLY, &err);
+    if (!file) {
+        result = err == -VFS_ENOENT ? SYSCALL_ENOENT :
+                 err == -VFS_ENOMEM ? SYSCALL_ENOMEM : SYSCALL_EIO;
+        goto out;
+    }
+    if (file->node->type != VFS_FILE) { result = SYSCALL_EISDIR; goto out; }
+    size_t size = file->node->size;
+    if (!size) { result = SYSCALL_ENOEXEC; goto out; }
+    if (size > MAX_ELF_FILE_SIZE) { result = SYSCALL_EFBIG; goto out; }
+    const void *image = file->node->data;
+    if (!image) {
+        buffer = kmalloc(size);
+        if (!buffer) goto out;
+        size_t read = 0;
+        while (read < size) {
+            int64_t n = vfs_read(file, (uint8_t *)buffer + read, size - read);
+            if (n <= 0 || (uint64_t)n > size - read) {
+                result = n == -VFS_ENOMEM ? SYSCALL_ENOMEM : SYSCALL_EIO;
+                goto out;
+            }
+            read += (size_t)n;
+        }
+        image = buffer;
+    }
+    tcb_t *child = process_spawn_internal(path, image, size, argc, argv, 0, &result);
+    if (!child) goto out;
+    *record = (child_record_t){ .parent = g_current_thread->tid,
+                              .pid = child->tid, .used = true };
+    *out_pid = (int64_t)child->tid;
+    result = SYSCALL_SUCCESS;
+out:
+    if (buffer) kfree(buffer);
+    if (file) vfs_close(file);
+    __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
+    return result;
+}
+
+/* Called only under sched lock: no nested public scheduler calls. */
+static bool child_done(void *arg) {
+    return ((child_record_t *)arg)->done;
+}
+
+bool process_wait_child(uint64_t pid, uint64_t *out_exit_code) {
+    uint64_t flags = spin_lock_irqsave(&g_sched_lock);
+    child_record_t *record = NULL;
+    for (unsigned i = 0; i < MAX_EXIT_RECORDS; i++) {
+        if (g_child_records[i].used && g_child_records[i].pid == pid &&
+            g_child_records[i].parent == g_current_thread->tid) {
+            record = &g_child_records[i];
+            break;
+        }
+    }
+    spin_unlock_noirq(&g_sched_lock);
+    if (record) {
+        sched_wait_until(g_child_records, child_done, record);
+        /* Parent is single-threaded and records cannot be evicted. */
+        if (out_exit_code) *out_exit_code = record->status;
+        record->used = false;
+        sched_reap_dead();
+    }
+    __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
+    return record != NULL;
 }
 
 tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size) {
@@ -694,6 +901,8 @@ void fd_close_all(tcb_t *proc) {
 }
 
 void process_exit(uint64_t exit_code) {
+    /* Do not allow a woken parent to run/reap before thread_exit detaches us. */
+    __asm__ volatile("cli" ::: "memory");
     tcb_t *curr = thread_current();
     if (curr) {
         /* Close all open descriptors and release references upon process exit */
@@ -704,6 +913,19 @@ void process_exit(uint64_t exit_code) {
 
         /* Record in bounded circular exit records under lock */
         uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+        bool child_recorded = false;
+        for (unsigned i = 0; i < MAX_EXIT_RECORDS; i++) {
+            child_record_t *record = &g_child_records[i];
+            if (!record->used) continue;
+            if (record->pid == curr->tid) {
+                record->status = exit_code;
+                record->done = true;
+                child_recorded = true;
+            }
+            /* Orphans continue running, but their parent can no longer wait. */
+            if (record->parent == curr->tid) record->used = false;
+        }
+        if (!child_recorded) {
         int slot = -1;
         for (int i = 0; i < MAX_EXIT_RECORDS; i++) {
             if (!g_exit_records[i].valid) {
@@ -721,7 +943,9 @@ void process_exit(uint64_t exit_code) {
         g_exit_records[slot].preempt_count = curr->preempt_count;
         g_exit_records[slot].total_ticks = curr->total_ticks;
         g_exit_records[slot].valid = true;
+        }
         spin_unlock_irqrestore(&g_sched_lock, rflags);
+        sched_wake_all(g_child_records);
     }
     thread_exit();
 }

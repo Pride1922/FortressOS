@@ -14,6 +14,8 @@
 #define SYS_READDIR   6
 #define SYS_REBOOT    7
 #define SYS_KBD_LAYOUT 8
+#define SYS_SPAWN      9  /* (const char *path, const char *const argv[]) -> child PID */
+#define SYS_WAIT       10 /* (uint64_t pid, int64_t *status or NULL) -> 0 */
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0
@@ -32,6 +34,9 @@
 #define SYSCALL_ENOSPC   -13 /* No space left on device */
 #define SYSCALL_EOPNOTSUPP -14 /* Operation not supported */
 #define SYSCALL_EEXIST   -15 /* File already exists */
+#define SYSCALL_ECHILD   -16 /* Not an uncollected child of this process */
+#define SYSCALL_ENOEXEC  -17 /* Invalid or unsupported executable */
+#define SYSCALL_E2BIG    -18 /* Argument list or string too long */
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

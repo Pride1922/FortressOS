@@ -174,6 +174,66 @@ def run(mode):
             assert "In-memory changes discarded" in edit_command("q\n", expect="fortress> ")
             assert "[EDIT] New buffer" in edit_command("edit /missing.txt\n")
             assert "fortress> " in edit_command("q\n", expect="fortress> ")
+
+            # VFS Program Execution & Argument Passing
+            before_run = snapshot()
+            hello_out = keyboard_command("run /bin/hello\n")
+            assert "Hello from /bin/hello! VFS file execution verified." in hello_out
+            assert "[PROCESS] Exit status" not in hello_out
+            assert "fortress> " in hello_out
+
+            hello_arg_out = uart_command("run /bin/hello 42\n")
+            assert "Hello from /bin/hello! VFS file execution verified." in hello_arg_out
+            assert "Received argument: 42" in hello_arg_out
+            assert "[PROCESS] Exit status 42" in hello_arg_out
+            assert "fortress> " in hello_arg_out
+
+            # Shell status query ($?) and command chaining (&&, ||)
+            assert "42\nfortress> " in uart_command("echo $?\n")
+            assert "0\nfortress> " in uart_command("echo $?\n")
+            assert "Chained AND\nfortress> " in uart_command("run /bin/hello && echo Chained AND\n")
+            and_skip = uart_command("run /bin/hello 42 && echo ShouldNotPrint\n")
+            assert "ShouldNotPrint" not in and_skip[and_skip.find("\n") + 1:]
+            assert "Chained OR\nfortress> " in uart_command("run /bin/hello 42 || echo Chained OR\n")
+            or_skip = uart_command("run /bin/hello || echo ShouldNotPrint\n")
+            assert "ShouldNotPrint" not in or_skip[or_skip.find("\n") + 1:]
+
+            assert "Usage: run /path" in uart_command("run\n")
+            assert "No such file or directory" in uart_command("run /missing\n")
+            assert "Not a regular file" in uart_command("run /bin\n")
+            hello_str_out = uart_command("run /bin/hello world\n")
+            assert "Hello from /bin/hello! VFS file execution verified." in hello_str_out
+            assert "Received argument: world" in hello_str_out
+            assert "[PROCESS] Exit status" not in hello_str_out
+            assert "fortress> " in hello_str_out
+            assert "0\nfortress> " in uart_command("echo $?\n")
+
+            # Null/empty string argument test
+            hello_empty_out = uart_command('run /bin/hello ""\n')
+            assert "Hello from /bin/hello! VFS file execution verified." in hello_empty_out
+            assert "Received argument: \n" in hello_empty_out
+            assert "[PROCESS] Exit status" not in hello_empty_out
+            assert "fortress> " in hello_empty_out
+
+            # MAX_SPAWN_ARGS (32) boundary tests: exactly 32 args succeeds
+            args_31 = " ".join(f"a{i}" for i in range(31))
+            run_32 = uart_command(f"run /bin/hello {args_31}\n")
+            assert "Hello from /bin/hello! VFS file execution verified." in run_32
+            assert "Received argument: a0" in run_32
+            assert "[PROCESS] Exit status" not in run_32
+            assert "fortress> " in run_32
+
+            # 33 arguments exceeds MAX_SPAWN_ARGS: rejected by shell/kernel
+            args_32 = " ".join(f"a{i}" for i in range(32))
+            run_33 = uart_command(f"run /bin/hello {args_32}\n")
+            assert "Too many arguments (max 32)" in run_33
+            assert "fortress> " in run_33
+
+            # Zero-leak audit across process spawn/wait
+            after_run = snapshot()
+            assert after_run["free"] == before_run["free"], f"Page frame leak after run: {before_run['free']} -> {after_run['free']}"
+            assert after_run["slots"] == before_run["slots"], f"Stack slot leak after run: {before_run['slots']:#x} -> {after_run['slots']:#x}"
+
             for _ in range(3):
                 assert "FortressOS shell (Ring 3)" in uart_command("exit\n")
                 current = snapshot()

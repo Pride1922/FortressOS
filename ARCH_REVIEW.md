@@ -216,3 +216,14 @@ keyboard/shell acceptance gap. The file comes from initramfs, not the internal
 NVMe filesystem. Physical storage I/O, persistence, NMI injection and exhaustive
 keyboard coverage remain outside this observation. See AGENTS.md for hardware
 configuration and the distinction between manual and automated evidence.
+
+## System V AMD64 ELF User Stack & Argument Passing ABI
+
+Process spawning (`SYS_SPAWN`, nr 9) conforms to the System V AMD64 ELF ABI (Section 3.4.1):
+- Initial user stack pointer `RSP` is 16-byte aligned (`RSP % 16 == 0`) at `_start` entry.
+- Initial register state: `RDI = argc`, `RSI = argv`, `RDX = 0` (`rtld` cleanup function hook), with all other GPRs cleared to zero.
+- Stack layout from `RSP` upward: `argc` (qword), `argv[0..argc-1]` (pointers), `NULL`, `envp NULL`, `AT_NULL` pair (`0, 0`).
+- Argument strings are packed in high memory of the allocated 4 KiB user stack frame below `USER_STACK_TOP_VIRT` (`0x00007FFFF0001000ULL`), ending at `USER_STACK_TOP_VIRT - 1`. The kernel HHDM mapping `vmm_phys_to_virt(stack_phys)` is used to construct the frame without touching CR3.
+- Bounded limits: `MAX_SPAWN_ARGS = 32`, `MAX_ARG_STRLEN = 256`, `MAX_TOTAL_ARGS_LEN = 2048`. Single-pass bounded copy `copy_user_string()` enforces bounds without unbounded `strlen()` scans. Exceeding any limit returns `SYSCALL_E2BIG`.
+- Backward compatibility: internal kernel boot test modes (`user/init.asm` modes 0..7) maintain scalar `RDI` mode selection via `process_spawn_with_arg()`.
+- Verified dynamically under BIOS/UEFI QEMU (`make test-shell`) including runtime `RSP % 16 == 0` hardware assertions, empty argument handling (`""`), argument limits (32 pass, 33 rejected), and zero-leak resource reclamation.

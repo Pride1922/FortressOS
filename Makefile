@@ -99,7 +99,11 @@ NVME_RAW_IMG := $(BUILD_DIR)/nvme_raw.img
 NVME_IMG ?= $(NVME_GPT_IMG)
 
 QEMU_NVME_FLAGS := -drive file=$(NVME_IMG),if=none,id=nvm0,format=raw -device nvme,serial=fortress0,drive=nvm0
-QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS)
+QEMU_EXTRA ?=
+ifeq ($(WRITE_TEST),1)
+QEMU_EXTRA += -fw_cfg name=opt/fortress/write_test,string=1
+endif
+QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS) $(QEMU_EXTRA)
 
 .DEFAULT_GOAL := all
 .PHONY: all clean distclean run run-bios debug limine-setup ovmf-setup iso nvme-disk nvme-gpt-disk nvme-raw-disk
@@ -157,7 +161,7 @@ $(USER_HELLO_ELF): $(USER_DIR)/hello.asm $(USER_DIR)/linker.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -T $(USER_DIR)/linker.ld $(BUILD_DIR)/hello.o -o $@
 
 # Freestanding user shell, separate address-space ELF (no host runtime).
-$(USER_SHELL_ELF): $(USER_DIR)/shell.c $(USER_DIR)/shell_start.asm $(USER_DIR)/shell.ld src/fs/vfs.h src/include/types.h
+$(USER_SHELL_ELF): $(USER_DIR)/shell.c $(USER_DIR)/shell_start.asm $(USER_DIR)/shell.ld src/fs/vfs.h src/include/types.h src/kernel/syscall.h src/arch/x86_64/idt.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $(USER_DIR)/shell.c -o $(BUILD_DIR)/shell.o
 	@$(AS) -f elf64 $(USER_DIR)/shell_start.asm -o $(BUILD_DIR)/shell_start.o

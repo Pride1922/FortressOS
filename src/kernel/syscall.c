@@ -11,6 +11,8 @@
 #include "power.h"
 #include "keyboard.h"
 #include "ext2.h"
+#include "heap.h"
+#include "elf.h"
 
 extern void syscall_entry_stub(void);
 
@@ -289,6 +291,95 @@ static int copy_user_string(uint64_t *pml4, uintptr_t user_ptr, char *dest, size
     return SYSCALL_EINVAL;
 }
 
+static int64_t sys_spawn(uintptr_t user_path, uintptr_t user_argv) {
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char path[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, path, sizeof(path));
+    if (err) return err;
+
+    if (!user_argv) {
+        const char *kargv[2] = { path, NULL };
+        int64_t pid;
+        int64_t result = process_spawn_from_vfs(path, 1, kargv, &pid);
+        return result ? result : pid;
+    }
+
+    char *args_buf = (char *)kmalloc(MAX_TOTAL_ARGS_LEN);
+    if (!args_buf) return SYSCALL_ENOMEM;
+
+    const char *kargv[MAX_SPAWN_ARGS + 1];
+    int argc = 0;
+    size_t buf_offset = 0;
+
+    for (int i = 0; i < MAX_SPAWN_ARGS; i++) {
+        uintptr_t ptr_addr = user_argv + (uintptr_t)i * sizeof(uintptr_t);
+        if (!vmm_validate_user_range(active_pml4, ptr_addr, sizeof(uintptr_t), false)) {
+            kfree(args_buf);
+            return SYSCALL_EFAULT;
+        }
+
+        uintptr_t str_ptr = *(const uintptr_t *)ptr_addr;
+        if (str_ptr == 0) {
+            /* Found argv NULL terminator */
+            break;
+        }
+
+        if (buf_offset >= MAX_TOTAL_ARGS_LEN) {
+            kfree(args_buf);
+            return SYSCALL_E2BIG;
+        }
+
+        size_t max_copy = MAX_TOTAL_ARGS_LEN - buf_offset;
+        if (max_copy > MAX_ARG_STRLEN) max_copy = MAX_ARG_STRLEN;
+
+        err = copy_user_string(active_pml4, str_ptr, &args_buf[buf_offset], max_copy);
+        if (err != SYSCALL_SUCCESS) {
+            kfree(args_buf);
+            return err == SYSCALL_EINVAL ? SYSCALL_E2BIG : err;
+        }
+
+        kargv[argc++] = &args_buf[buf_offset];
+        buf_offset += strlen(&args_buf[buf_offset]) + 1;
+    }
+
+    /* Verify that argv was properly NULL-terminated if MAX_SPAWN_ARGS reached */
+    if (argc == MAX_SPAWN_ARGS) {
+        uintptr_t term_addr = user_argv + (uintptr_t)MAX_SPAWN_ARGS * sizeof(uintptr_t);
+        if (!vmm_validate_user_range(active_pml4, term_addr, sizeof(uintptr_t), false)) {
+            kfree(args_buf);
+            return SYSCALL_EFAULT;
+        }
+        if (*(const uintptr_t *)term_addr != 0) {
+            kfree(args_buf);
+            return SYSCALL_E2BIG;
+        }
+    }
+
+    if (argc == 0) {
+        kargv[0] = path;
+        kargv[1] = NULL;
+        argc = 1;
+    } else {
+        kargv[argc] = NULL;
+    }
+
+    int64_t pid;
+    int64_t result = process_spawn_from_vfs(path, argc, kargv, &pid);
+    kfree(args_buf);
+    return result ? result : pid;
+}
+
+static int64_t sys_wait(uint64_t pid, uintptr_t user_status) {
+    if (user_status && !vmm_validate_user_range(vmm_get_active_pml4_virt(),
+                                              user_status, sizeof(int64_t), true))
+        return SYSCALL_EFAULT;
+    uint64_t status;
+    if (!process_wait_child(pid, &status)) return SYSCALL_ECHILD;
+    /* No shared address spaces or user unmap API: validation survives sleep. */
+    if (user_status) memcpy((void *)user_status, &status, sizeof(status));
+    return SYSCALL_SUCCESS;
+}
+
 static int64_t sys_open(uintptr_t user_path, int flags) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
     char kpath[VFS_MAX_PATH];
@@ -472,6 +563,12 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
     int64_t result = SYSCALL_ENOSYS;
 
     switch (syscall_nr) {
+        case SYS_SPAWN:
+            result = sys_spawn(frame->rdi, frame->rsi);
+            break;
+        case SYS_WAIT:
+            result = sys_wait(frame->rdi, frame->rsi);
+            break;
         case SYS_EXIT:
             result = sys_exit(frame->rdi, frame);
             break;

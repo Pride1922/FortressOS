@@ -1,8 +1,10 @@
 /* A standalone Ring 3 program. Only the public syscall ABI crosses into kernel. */
 #include "types.h"
 #include "vfs.h"
+#include "syscall.h"
 
 static char line[192];
+static int64_t last_status = 0;
 static long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     __asm__ volatile("syscall" : "+a"(nr) : "D"(a), "S"(b), "d"(c) : "rcx", "r11", "memory", "cc");
     return nr;
@@ -20,25 +22,26 @@ static void file_error(long error) {
 static void list(const char *path) {
     vfs_stat_t st;
     long result = call(5, (uintptr_t)path, (uintptr_t)&st, 0);
-    if (result < 0) { file_error(result); return; }
-    if (st.type != VFS_DIRECTORY) { puts(path); puts("\n"); return; }
+    if (result < 0) { file_error(result); last_status = 1; return; }
+    if (st.type != VFS_DIRECTORY) { puts(path); puts("\n"); last_status = 0; return; }
     long fd = call(2, (uintptr_t)path, 0, 0);
-    if (fd < 0) { file_error(fd); return; }
+    if (fd < 0) { file_error(fd); last_status = 1; return; }
     vfs_dirent_t entry;
     while ((result = call(6, fd, (uintptr_t)&entry, 0)) == 1) {
         puts(entry.name);
         puts(entry.type == VFS_DIRECTORY ? "/\n" : "\n");
     }
-    if (result < 0) file_error(result);
+    if (result < 0) { file_error(result); last_status = 1; }
+    else { last_status = 0; }
     (void)call(3, fd, 0, 0);
 }
 static void cat(const char *path) {
     vfs_stat_t st;
     long result = call(5, (uintptr_t)path, (uintptr_t)&st, 0);
-    if (result < 0) { file_error(result); return; }
-    if (st.type != VFS_FILE) { puts("Not a regular file.\n"); return; }
+    if (result < 0) { file_error(result); last_status = 1; return; }
+    if (st.type != VFS_FILE) { puts("Not a regular file.\n"); last_status = 1; return; }
     long fd = call(2, (uintptr_t)path, 0, 0);
-    if (fd < 0) { file_error(fd); return; }
+    if (fd < 0) { file_error(fd); last_status = 1; return; }
     char buf[512];
     bool newline = true;
     while ((result = call(4, fd, (uintptr_t)buf, sizeof(buf))) > 0) {
@@ -51,7 +54,8 @@ static void cat(const char *path) {
         write_bytes(buf, result);
     }
     if (!newline) puts("\n");
-    if (result < 0) file_error(result);
+    if (result < 0) { file_error(result); last_status = 1; }
+    else { last_status = 0; }
     (void)call(3, fd, 0, 0);
 }
 static bool read_line(void) {
@@ -498,6 +502,212 @@ static void editor_loop(void) {
     }
 }
 
+static void run_program(char *args) {
+    if (!*args) { puts("Usage: run /path [arg...]\n"); last_status = 1; return; }
+    const char *argv[33];
+    int argc = 0;
+    char *p = args;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        if (argc >= 32) {
+            puts("Too many arguments (max 32).\n");
+            last_status = 1;
+            return;
+        }
+        if (*p == '"') {
+            p++;
+            argv[argc++] = p;
+            while (*p && *p != '"') p++;
+            if (*p) {
+                *p++ = '\0';
+            }
+        } else {
+            argv[argc++] = p;
+            while (*p && *p != ' ') p++;
+            if (*p) {
+                *p++ = '\0';
+            }
+        }
+    }
+    if (argc == 0) {
+        puts("Usage: run /path [arg...]\n");
+        last_status = 1;
+        return;
+    }
+    argv[argc] = NULL;
+
+    long pid = call(SYS_SPAWN, (uintptr_t)argv[0], (uintptr_t)argv, 0);
+    if (pid < 0) {
+        switch (pid) {
+            case SYSCALL_ENOENT: puts("No such file or directory.\n"); last_status = 127; break;
+            case SYSCALL_ENOEXEC: puts("Invalid executable.\n"); last_status = 126; break;
+            case SYSCALL_ENOMEM: puts("Out of memory or process capacity.\n"); last_status = 1; break;
+            case SYSCALL_EISDIR: puts("Not a regular file.\n"); last_status = 126; break;
+            case SYSCALL_EFBIG: puts("Executable exceeds 4 MiB limit.\n"); last_status = 126; break;
+            case SYSCALL_E2BIG: puts("Argument list too long.\n"); last_status = 1; break;
+            default: puts("Unable to load executable.\n"); last_status = 1; break;
+        }
+        return;
+    }
+    int64_t status;
+    if (call(SYS_WAIT, pid, (uintptr_t)&status, 0) < 0) {
+        puts("Unable to wait for child process.\n");
+        last_status = 1;
+    } else {
+        last_status = status;
+        if (status >= 128 && status < 160) {
+            puts("[PROCESS] Faulted (exception vector ");
+            put_dec((uint64_t)status - 128);
+            puts(")\n");
+        } else if (status) {
+            puts("[PROCESS] Exit status ");
+            if (status < 0) { puts("-"); put_dec(0 - (uint64_t)status); }
+            else put_dec((uint64_t)status);
+            puts("\n");
+        }
+    }
+}
+
+static void echo_cmd(const char *arg) {
+    if (!arg) { puts("\n"); last_status = 0; return; }
+    while (*arg) {
+        if (arg[0] == '$' && arg[1] == '?') {
+            if (last_status < 0) { puts("-"); put_dec(0 - (uint64_t)last_status); }
+            else put_dec((uint64_t)last_status);
+            arg += 2;
+        } else {
+            char ch[2] = { *arg++, 0 };
+            puts(ch);
+        }
+    }
+    puts("\n");
+    last_status = 0;
+}
+
+static void execute_simple_command(char *cmd_line) {
+    while (*cmd_line == ' ') cmd_line++;
+    char *cmd = cmd_line;
+    char *arg = cmd;
+    while (*arg && *arg != ' ') arg++;
+    if (*arg) *arg++ = 0;
+    while (*arg == ' ') arg++;
+    size_t n = length(arg);
+    while (n && arg[n - 1] == ' ') arg[--n] = 0;
+    if (!*cmd) return;
+
+    if (equal(cmd, "help")) {
+        puts("help           Show commands\nls [path]      List files (default /)\n"
+             "cat /path      Read a text file\nedit /path     Text editor\n"
+             "echo [text]    Print text (supports $?)\n"
+             "run /path [args]Run a program with optional arguments\n"
+             "layout [layout]Switch layout (us | azerty)\n"
+             "reboot         Restart the system\nshutdown       Power off the system\n"
+             "exit           Restart the shell\nBackspace edits the current line.\n"
+             "Supports command chaining with && and ||.\n");
+        last_status = 0;
+    } else if (equal(cmd, "echo")) {
+        echo_cmd(arg);
+    } else if (equal(cmd, "ls")) {
+        list(*arg ? arg : "/");
+    } else if (equal(cmd, "run")) {
+        run_program(arg);
+    } else if (equal(cmd, "cat")) {
+        if (*arg) cat(arg);
+        else { puts("Usage: cat /path\n"); last_status = 1; }
+    } else if (equal(cmd, "edit")) {
+        if (*arg) {
+            editor_load(arg);
+            if (editor_path[0]) editor_loop();
+            last_status = 0;
+        } else {
+            puts("Usage: edit /path\n");
+            last_status = 1;
+        }
+    } else if (equal(cmd, "layout")) {
+        if (equal(arg, "azerty")) {
+            (void)call(8, 1, 0, 0);
+            puts("Keyboard layout set to Belgian AZERTY.\n");
+            last_status = 0;
+        } else if (equal(arg, "us")) {
+            (void)call(8, 0, 0, 0);
+            puts("Keyboard layout set to US QWERTY.\n");
+            last_status = 0;
+        } else if (!*arg) {
+            long curr = call(8, (uintptr_t)-1, 0, 0);
+            if (curr == 1) puts("Active keyboard layout: Belgian AZERTY\n");
+            else puts("Active keyboard layout: US QWERTY\n");
+            last_status = 0;
+        } else {
+            puts("Usage: layout [us | azerty]\n");
+            last_status = 1;
+        }
+    } else if (equal(cmd, "reboot")) {
+        puts("Restarting system...\n");
+        (void)call(7, 1, 0, 0);
+        last_status = 0;
+    } else if (equal(cmd, "shutdown") || equal(cmd, "poweroff")) {
+        puts("Shutting down system...\n");
+        (void)call(7, 2, 0, 0);
+        last_status = 0;
+    } else if (equal(cmd, "exit")) {
+        call(0, (uintptr_t)last_status, 0, 0);
+    } else {
+        puts("Unknown command. Type help.\n");
+        last_status = 127;
+    }
+}
+
+static void execute_line(char *p) {
+    while (*p) {
+        /* Find next delimiter: "&&" or "||" */
+        char *delim = p;
+        int next_op = 0; /* 0 = none, 1 = &&, 2 = || */
+        while (*delim) {
+            if (delim[0] == '&' && delim[1] == '&') {
+                next_op = 1;
+                break;
+            }
+            if (delim[0] == '|' && delim[1] == '|') {
+                next_op = 2;
+                break;
+            }
+            delim++;
+        }
+        if (next_op != 0) {
+            *delim = '\0';
+        }
+        execute_simple_command(p);
+        if (next_op == 0) break;
+        p = delim + 2;
+        /* If next_op == 1 (&&) and last_status != 0, skip until next || or end */
+        /* If next_op == 2 (||) and last_status == 0, skip until next && or end */
+        while (next_op != 0 &&
+               ((next_op == 1 && last_status != 0) ||
+                (next_op == 2 && last_status == 0))) {
+            char *skip = p;
+            next_op = 0;
+            while (*skip) {
+                if (skip[0] == '&' && skip[1] == '&') {
+                    next_op = 1;
+                    p = skip + 2;
+                    break;
+                }
+                if (skip[0] == '|' && skip[1] == '|') {
+                    next_op = 2;
+                    p = skip + 2;
+                    break;
+                }
+                skip++;
+            }
+            if (next_op == 0) {
+                p = skip;
+                break;
+            }
+        }
+    }
+}
+
 void shell_main(void) {
     /* Verify stdin validates user buffers before it ever sleeps or consumes a key. */
     if (call(4, 0, 0, 1) != -2 || call(4, 0, (uintptr_t)"readonly", 1) != -2 ||
@@ -509,54 +719,6 @@ void shell_main(void) {
     for (;;) {
         puts("fortress> ");
         if (!read_line()) return;
-        char *cmd = line;
-        while (*cmd == ' ') cmd++;
-        char *arg = cmd;
-        while (*arg && *arg != ' ') arg++;
-        if (*arg) *arg++ = 0;
-        while (*arg == ' ') arg++;
-        size_t n = length(arg);
-        while (n && arg[n - 1] == ' ') arg[--n] = 0;
-        if (!*cmd) continue;
-        if (equal(cmd, "help")) {
-            puts("help           Show commands\nls [path]      List files (default /)\n"
-                 "cat /path      Read a text file\nedit /path     Text editor\n"
-                 "echo text      Print text\n"
-                 "layout [layout]Switch layout (us | azerty)\n"
-                 "reboot         Restart the system\nshutdown       Power off the system\n"
-                 "exit           Restart the shell\nBackspace edits the current line.\n");
-        } else if (equal(cmd, "echo")) { puts(arg); puts("\n"); }
-        else if (equal(cmd, "ls")) list(*arg ? arg : "/");
-        else if (equal(cmd, "cat")) {
-            if (*arg) cat(arg); else puts("Usage: cat /path\n");
-        } else if (equal(cmd, "edit")) {
-            if (*arg) {
-                editor_load(arg);
-                if (editor_path[0]) editor_loop();
-            } else {
-                puts("Usage: edit /path\n");
-            }
-        } else if (equal(cmd, "layout")) {
-            if (equal(arg, "azerty")) {
-                (void)call(8, 1, 0, 0);
-                puts("Keyboard layout set to Belgian AZERTY.\n");
-            } else if (equal(arg, "us")) {
-                (void)call(8, 0, 0, 0);
-                puts("Keyboard layout set to US QWERTY.\n");
-            } else if (!*arg) {
-                long curr = call(8, (uintptr_t)-1, 0, 0);
-                if (curr == 1) puts("Active keyboard layout: Belgian AZERTY\n");
-                else puts("Active keyboard layout: US QWERTY\n");
-            } else {
-                puts("Usage: layout [us | azerty]\n");
-            }
-        } else if (equal(cmd, "reboot")) {
-            puts("Restarting system...\n");
-            (void)call(7, 1, 0, 0);
-        } else if (equal(cmd, "shutdown") || equal(cmd, "poweroff")) {
-            puts("Shutting down system...\n");
-            (void)call(7, 2, 0, 0);
-        } else if (equal(cmd, "exit")) return;
-        else puts("Unknown command. Type help.\n");
+        execute_line(line);
     }
 }

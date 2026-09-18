@@ -101,6 +101,11 @@ typedef struct {
 #define USER_STACK_TOP_VIRT    0x00007FFFF0001000ULL
 #define USER_STACK_GUARD_VIRT  0x00007FFFEFFFF000ULL
 
+/* Spawn Argument Limits */
+#define MAX_SPAWN_ARGS         32
+#define MAX_ARG_STRLEN         256
+#define MAX_TOTAL_ARGS_LEN     2048
+
 /* Loader Error Codes */
 #define ELF_OK                 0
 #define ELF_ERR_INVALID       -1  /* Malformed header, bad magic, unsupported class/machine/type */
@@ -114,6 +119,7 @@ typedef struct {
     uintptr_t pml4_phys;       /* Physical base of process PML4 */
     uintptr_t entry_point;     /* Virtual entry point (e_entry) */
     uintptr_t user_stack_top;  /* Virtual top of user stack */
+    uintptr_t stack_phys;      /* Physical base of user stack frame */
     size_t    total_pages;     /* Total physical pages allocated for image */
 } elf_loaded_process_t;
 
