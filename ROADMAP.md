@@ -346,7 +346,7 @@ Recorded implementation sequence and planned work:
     │
     ▼
 [Phase 9G] USB Storage & Real /mnt Persistence (IN PROGRESS; persistence not implemented)
-    ├── 9G.1: PCI discovery implemented/QEMU verified (9G.1a); Dell pending; initialization/enumeration still planned
+    ├── 9G.1: PCI discovery QEMU verified and Dell photo confirmed (9G.1a); initialization/enumeration still planned
     ├── 9G.2: USB Mass Storage Bulk-Only Transport, SCSI reads and read-only block_dev_t registration
     ├── 9G.3: Production USB partition selection and read-only /mnt mount, independent of QEMU fixture tests
     ├── 9G.4: USB writes/flush, explicit writable mount policy and clean-shutdown persistence
@@ -453,10 +453,18 @@ Final `wsl -d Ubuntu-24.04 -- make test-usb-discovery img` repeated all four
 discovery cases successfully and rebuilt `bin/fortress.img`; the image
 builder's MBR/GPT/FAT checks and offline ext2 `e2fsck` verification passed.
 
-**Dell acceptance pending:** flash the rebuilt `bin/fortress.img`, boot and
-record the `[USB 9G.1a]` lines above the shell, including BDF, vendor/device,
-BAR0 and whether the shell remains interactive. No `/mnt` is expected from
-this checkpoint. Do not record physical acceptance until the user reports it.
+**Dell photo evidence (2026-09-18):** user-supplied `Photo 1.jpg` shows
+`[USB 9G.1a] First xHCI controller: 0000:00:14.0 vendor=0x8086 device=0x9D2F`
+and `BAR0=0xEF330000 memory64 prefetch=no`, followed by the discovery-complete
+message, `[BOOT] Interactive shell ready.` and the `fortress>` prompt. COM1 RX
+is unavailable, so this also establishes visible framebuffer reporting on
+the Dell. QEMU storage fixture tests are shown as skipped.
+
+This confirms physical PCI discovery and boot progression to the shell prompt.
+The photo does not show a typed command, so post-change keyboard interaction
+is not newly verified. BAR extent, controller MMIO, ownership handoff/reset,
+USB enumeration and persistence remain unverified. These addresses/IDs are
+observations of this Dell, not constants for the driver. Next: 9G.1b MMIO/reset.
 
 ---
 

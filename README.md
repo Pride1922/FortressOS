@@ -130,8 +130,8 @@ through a new USB storage path:
 
 1. **xHCI bring-up:** PCI discovery, MMIO/reset, command completion, port
    inspection, and validated device enumeration in separate checkpoints.
-   PCI-only discovery (9G.1a) is implemented and verified in BIOS/UEFI QEMU;
-   Dell verification and controller initialization remain pending.
+   PCI-only discovery (9G.1a) is verified in BIOS/UEFI QEMU and confirmed in a
+   Dell boot photo; controller initialization remains pending.
 2. **Read-only USB storage:** Bulk-Only Transport and a bounded set of SCSI
    commands, exposed through the existing block-device interface.
 3. **A real USB `/mnt`:** explicit partition selection and a read-only mount,
