@@ -63,6 +63,7 @@ ISO_ROOT  := $(BUILD_DIR)/iso_root
 # Target binary artifacts
 KERNEL_ELF := $(BIN_DIR)/fortress.elf
 BOOTABLE_ISO := $(BIN_DIR)/fortress.iso
+BOOTABLE_IMG := $(BIN_DIR)/fortress.img
 
 # Source files
 C_SRCS   := $(shell find $(SRC_DIR) -type f -name '*.c')
@@ -106,9 +107,9 @@ endif
 QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS) $(QEMU_EXTRA)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean distclean run run-bios debug limine-setup ovmf-setup iso nvme-disk nvme-gpt-disk nvme-raw-disk
+.PHONY: all clean distclean run run-bios run-img run-img-bios run-img-usb debug limine-setup ovmf-setup iso img nvme-disk nvme-gpt-disk nvme-raw-disk
 
-all: $(BOOTABLE_ISO)
+all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 
 .PHONY: test-ext2 test-ext2-write test-storage test-nmi test-boot-diagnostics test-console test-input test-shell test-power
 test-input:
@@ -254,6 +255,14 @@ $(BOOTABLE_ISO): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf limine-setup
 	@$(LIMINE_DIR)/limine bios-install $(BOOTABLE_ISO) 2>/dev/null || true
 	@echo "[OK] Bootable ISO generated: $(BOOTABLE_ISO)"
 
+# Package bootable raw disk image (dual-boot GPT/ESP + persistent ext2)
+img: $(BOOTABLE_IMG)
+
+$(BOOTABLE_IMG): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf limine-setup $(BOOTABLE_ISO)
+	@mkdir -p $(BIN_DIR)
+	@echo "--> Creating bootable raw disk image with scripts/create_boot_img.py..."
+	@python3 scripts/create_boot_img.py $@ --iso-root $(ISO_ROOT) --limine-dir $(LIMINE_DIR)
+
 # Create 32 MiB test GPT partitioned NVMe disk image
 $(NVME_GPT_IMG): scripts/create_nvme_disk.py
 	@mkdir -p $(BUILD_DIR)
@@ -287,6 +296,39 @@ run: $(BOOTABLE_ISO) $(NVME_IMG) ovmf-setup
 run-bios: $(BOOTABLE_ISO) $(NVME_IMG)
 	@echo "--> Launching FortressOS in QEMU (BIOS mode)..."
 	$(QEMU) $(QEMU_FLAGS) -boot d -cdrom $(BOOTABLE_ISO)
+
+# Launch bootable raw disk image in QEMU under UEFI mode
+run-img: $(BOOTABLE_IMG) $(NVME_IMG) ovmf-setup
+	@echo "--> Launching FortressOS raw disk image in QEMU (UEFI mode)..."
+	@if [ -f "/usr/share/OVMF/OVMF_CODE_4M.fd" ] && [ -f "/usr/share/OVMF/OVMF_VARS_4M.fd" ]; then \
+		mkdir -p $(BUILD_DIR); \
+		cp -f /usr/share/OVMF/OVMF_VARS_4M.fd $(BUILD_DIR)/OVMF_VARS.fd; \
+		$(QEMU) $(QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,unit=1,file=$(BUILD_DIR)/OVMF_VARS.fd -drive file=$(BOOTABLE_IMG),if=none,id=bootdisk,format=raw -device ide-hd,drive=bootdisk,bootindex=1; \
+	elif [ -f "$(OVMF_FILE)" ]; then \
+		$(QEMU) $(QEMU_FLAGS) -bios $(OVMF_FILE) -drive file=$(BOOTABLE_IMG),if=none,id=bootdisk,format=raw -device ide-hd,drive=bootdisk,bootindex=1; \
+	else \
+		echo "Warning: OVMF firmware not found, running BIOS mode fallback"; \
+		$(QEMU) $(QEMU_FLAGS) -drive file=$(BOOTABLE_IMG),format=raw; \
+	fi
+
+# Launch bootable raw disk image in QEMU as an emulated USB flash drive (UEFI mode)
+run-img-usb: $(BOOTABLE_IMG) $(NVME_IMG) ovmf-setup
+	@echo "--> Launching FortressOS raw disk image in QEMU (USB flash drive / UEFI mode)..."
+	@if [ -f "/usr/share/OVMF/OVMF_CODE_4M.fd" ] && [ -f "/usr/share/OVMF/OVMF_VARS_4M.fd" ]; then \
+		mkdir -p $(BUILD_DIR); \
+		cp -f /usr/share/OVMF/OVMF_VARS_4M.fd $(BUILD_DIR)/OVMF_VARS.fd; \
+		$(QEMU) $(QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,unit=1,file=$(BUILD_DIR)/OVMF_VARS.fd -device qemu-xhci -device usb-storage,drive=usbstick,bootindex=1 -drive file=$(BOOTABLE_IMG),if=none,id=usbstick,format=raw; \
+	elif [ -f "$(OVMF_FILE)" ]; then \
+		$(QEMU) $(QEMU_FLAGS) -bios $(OVMF_FILE) -device qemu-xhci -device usb-storage,drive=usbstick,bootindex=1 -drive file=$(BOOTABLE_IMG),if=none,id=usbstick,format=raw; \
+	else \
+		echo "Warning: OVMF firmware not found, running BIOS mode fallback"; \
+		$(QEMU) $(QEMU_FLAGS) -drive file=$(BOOTABLE_IMG),format=raw; \
+	fi
+
+# Launch bootable raw disk image in QEMU under legacy BIOS mode
+run-img-bios: $(BOOTABLE_IMG) $(NVME_IMG)
+	@echo "--> Launching FortressOS raw disk image in QEMU (BIOS mode)..."
+	$(QEMU) $(QEMU_FLAGS) -drive file=$(BOOTABLE_IMG),format=raw
 
 # Launch with GDB debugging stub enabled
 debug: $(BOOTABLE_ISO) $(NVME_IMG) ovmf-setup

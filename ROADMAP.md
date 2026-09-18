@@ -327,6 +327,22 @@ Recorded implementation sequence and planned work:
     ├── Fault trap isolation: CPU exceptions (128 + vector) caught and reported without crashing shell/kernel
     ├── Serial driver hardening: bounded RX FIFO drain during loopback self-test eliminates UEFI OVMF boot noise
     └── Automated acceptance: make test-shell passing BIOS, UEFI, and UEFI 8 GiB keyboard-only mode with zero-leak resource audit
+    │
+    ▼
+[Phase 9F] Dual-Boot Raw Disk Image & Persistent Media (COMPLETE)
+    ├── Dual-partition GPT disk image layout (130 MiB total, Protective MBR + Primary & Backup GPT)
+    ├── Partition 1: EFI System Partition (FAT32, 64 MiB, LBAs 2048..133119) formatted via mformat/mcopy
+    │   ├── Populated with Limine UEFI loaders (BOOTX64.EFI, BOOTIA32.EFI), BIOS code (limine-bios.sys),
+    │   └── Kernel binary (fortress.elf), initramfs (initramfs.tar), config (limine.conf), and splash (splash.png)
+    ├── Partition 2: Persistent Storage (ext2, 64 MiB, LBAs 133120..264191) formatted via mke2fs (-b 1024)
+    │   └── Pre-populated with README.txt and welcome notes for mounting at /mnt on physical USB flash drives
+    ├── Limine BIOS Stage 1 & Stage 2 deployment via limine bios-install (embedded into MBR LBA 0 and GPT partition gap)
+    ├── Tooling & Automation: scripts/create_boot_img.py with automatic verification (--verify)
+    ├── Makefile Integration: make img, make run-img (UEFI), make run-img-usb (USB storage), make run-img-bios (BIOS)
+    └── Automated & Manual Verification:
+        ├── Automated GPT CRC, FAT32 directory structure, and offline e2fsck -fn partition verification (0 errors)
+        ├── QEMU UEFI and BIOS boot to interactive shell prompt with 100% test pass
+        └── Physical hardware ready for direct dd imaging onto USB flash drives for the Dell Latitude 5590
 ```
 
 ---

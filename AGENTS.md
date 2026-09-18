@@ -46,12 +46,18 @@ Prerequisites: GCC/binutils, NASM, make, xorriso, git, QEMU x86, OVMF,
 Python 3, e2fsprogs; GDB for interactive debugging. No hosted runtime in the OS.
 
 ```bash
-sudo apt-get install -y build-essential nasm xorriso qemu-system-x86 ovmf git curl e2fsprogs python3 gdb
-make                         # bin/fortress.elf, bin/initramfs.tar, bin/fortress.iso
-make run                     # QEMU q35, 2 GiB, COM1, paired OVMF when available
-make run-bios                # Legacy BIOS
-make debug                  # Frozen QEMU, GDB port 1234
+sudo apt-get install -y build-essential nasm xorriso qemu-system-x86 ovmf git curl e2fsprogs python3 gdb mtools dosfstools
+make                         # bin/fortress.elf, bin/initramfs.tar, bin/fortress.iso, bin/fortress.img
+make run                     # QEMU q35, 2 GiB, COM1, paired OVMF when available (ISO)
+make run-bios                # Legacy BIOS (ISO)
+make run-img                 # Boot raw disk image (bin/fortress.img) under UEFI
+make run-img-bios            # Boot raw disk image (bin/fortress.img) under legacy BIOS
+make run-img-usb             # Boot raw disk image emulated as a USB flash drive (UEFI)
+make debug                   # Frozen QEMU, GDB port 1234
 gdb bin/fortress.elf -ex "target remote :1234" -ex "break _start" -ex "continue"
+
+# Flash raw disk image to physical USB drive for bare-metal testing (e.g. Dell Latitude 5590):
+# sudo dd if=bin/fortress.img of=/dev/sdX bs=4M status=progress conv=fdatasync
 ```
 
 From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directory).
