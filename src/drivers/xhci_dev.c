@@ -274,12 +274,22 @@ bool xhci_enumerate_device(const xhci_rings_io_t *io,
     slot_ctx[0] = ((uint32_t)port_speed << 20) | (1u << 27);
     slot_ctx[1] = (uint32_t)port_num << 16;
 
-    /* EP0 Context: Control Endpoint, CErr = 3, MaxPacketSize based on speed */
-    uint16_t initial_max = (port_speed == XHCI_SPEED_HIGH) ? 64 : 8;
-    ep0_ctx[1] = (3u << 1) /* CErr */ | (4u << 3) /* Control */ | ((uint32_t)initial_max << 16);
-    ep0_ctx[2] = ((uint32_t)dev_dma->ep0_ring_phys & ~0x3fu) | 1u; /* DCS = 1 */
-    ep0_ctx[3] = (uint32_t)(dev_dma->ep0_ring_phys >> 32);
-    ep0_ctx[4] = 8; /* Average TRB length */
+    /* EP0 Context: Control Endpoint, CErr = 3, MaxPacketSize based on speed.
+    * SuperSpeed always uses 512; USB 2.0 High-Speed uses 64; Full/Low-Speed
+    * use 8 (the initial packet size, later raised via Evaluate Context if
+    * the device reports a larger bMaxPacketSize0). */
+    uint16_t initial_max;
+    if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
+        initial_max = 512;
+    } else if (port_speed == XHCI_SPEED_HIGH) {
+        initial_max = 64;
+    } else {
+        initial_max = 8;
+    }
+ep0_ctx[1] = (3u << 1) /* CErr */ | (4u << 3) /* Control */ | ((uint32_t)initial_max << 16);
+ep0_ctx[2] = ((uint32_t)dev_dma->ep0_ring_phys & ~0x3fu) | 1u; /* DCS = 1 */
+ep0_ctx[3] = (uint32_t)(dev_dma->ep0_ring_phys >> 32);
+ep0_ctx[4] = 8; /* Average TRB length */
 
     /* Issue Address Device Command */
     xhci_trb_t addr_cmd = {0};
@@ -301,7 +311,8 @@ bool xhci_enumerate_device(const xhci_rings_io_t *io,
 
     /* 3. Read Device Descriptor (18 bytes for High-Speed, or first 8 bytes if Full-Speed) */
     device->step = 3;
-    uint16_t req_len = (port_speed == XHCI_SPEED_HIGH) ? 18 : 8;
+    uint16_t req_len = (port_speed == XHCI_SPEED_FULL ||
+                    port_speed == XHCI_SPEED_LOW) ? 8 : 18;
     usb_setup_pkt_t get_dev_desc = {
         .bmRequestType = 0x80, /* IN, Standard, Device */
         .bRequest = USB_REQ_GET_DESCRIPTOR,
@@ -322,12 +333,24 @@ bool xhci_enumerate_device(const xhci_rings_io_t *io,
         return false;
     }
 
-    device->ep0_max_packet = dev_desc.bMaxPacketSize0;
-    if (device->ep0_max_packet != 8 && device->ep0_max_packet != 16 &&
-        device->ep0_max_packet != 32 && device->ep0_max_packet != 64) {
+    /* SuperSpeed devices report bMaxPacketSize0 as an exponent (spec
+ * requires 9, meaning 2^9 = 512 bytes). USB 2.0 devices report the
+ * literal value (8, 16, 32, or 64). Normalize to the actual byte
+ * count so downstream code has one interpretation. */
+uint8_t raw_max0 = dev_desc.bMaxPacketSize0;
+if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
+    if (raw_max0 != 9) {
+        device->error_msg = "Invalid bMaxPacketSize0 (SuperSpeed expects 9)";
+        return false;
+    }
+    device->ep0_max_packet = 512;
+} else {
+    if (raw_max0 != 8 && raw_max0 != 16 && raw_max0 != 32 && raw_max0 != 64) {
         device->error_msg = "Invalid bMaxPacketSize0 in descriptor";
         return false;
     }
+    device->ep0_max_packet = raw_max0;   /* 8, 16, 32, or 64 */
+}
 
     /* 4. Evaluate Context if initial packet size was 8 but descriptor declares 64 */
     device->step = 4;

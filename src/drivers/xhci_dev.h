@@ -61,7 +61,7 @@ typedef struct {
     uint8_t  speed;
     uint16_t vendor_id;
     uint16_t product_id;
-    uint8_t  ep0_max_packet;
+    uint16_t ep0_max_packet;   /* EP0 max packet size in bytes; 512 for SuperSpeed */
     uint8_t  bulk_in_ep;
     uint16_t bulk_in_max_packet;
     uint8_t  bulk_out_ep;

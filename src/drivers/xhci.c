@@ -406,7 +406,14 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                     const xhci_port_info_t *pi = &port_report.ports[p - 1];
                     if (!pi->connected || !pi->enabled) continue;
                     if (pi->speed != XHCI_SPEED_HIGH && pi->speed != XHCI_SPEED_FULL &&
-        pi->speed != XHCI_SPEED_SUPER) continue;
+                        pi->speed != XHCI_SPEED_SUPER) continue;
+                    serial_puts("[USB 9G.1e] DEBUG port=");
+                    serial_print_hex(p);
+                    serial_puts(" pi_speed=");
+                    serial_print_hex(pi->speed);
+                    serial_puts(" pi_proto=");
+                    serial_print_hex(pi->protocol_major);
+                    serial_puts("\n");
 
                     serial_puts("[USB 9G.1e] Probing Port ");
                     serial_print_hex(p);
