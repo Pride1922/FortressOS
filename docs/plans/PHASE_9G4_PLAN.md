@@ -1,3 +1,14 @@
+Status: COMPLETED 2026-09-19.
+Result: see ROADMAP.md §"Phase 9G.4 — USB Writable Persistence &
+Durability Classification (2026-09-19)" and AGENTS.md §2.
+
+This file is preserved as the planning artifact for Phase 9G.4. It
+describes the intended implementation and acceptance criteria as
+written before the work began. It does not describe current behavior
+or outstanding work. The implemented result and its verification
+evidence are recorded in ROADMAP.md.
+
+
 Phase 9G.4: USB durability and writable-mount completion plan
 Status: proposed implementation plan, 2026-09-19. This document does not mark
 9G.4 complete or authorize writes to an unidentified physical disk.

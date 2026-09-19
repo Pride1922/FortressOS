@@ -2,10 +2,7 @@
 
 ## 1. Read This First
 
-Before editing, read [§4 invariants](#4-coding-standards-and-invariants), the
-subsystem's public header, and the matching [§7 recipe](#7-how-to-add).
-Read [§9 protected contracts](#9-do-not-touch-without-discussion) before changing
-boot, synchronization, address-space ownership or test isolation.
+Before editing, read [§4 invariants](#4-coding-standards-and-invariants), the subsystem's public header, and the matching [§7 recipe](#7-how-to-add). Read [§9 protected contracts](#9-do-not-touch-without-discussion) before changing boot, synchronization, address-space ownership or test isolation.
 
 | Change touches | Read next |
 | --- | --- |
@@ -16,21 +13,13 @@ boot, synchronization, address-space ownership or test isolation.
 | Tests or user programs | [Makefile](Makefile), §3 and §7.5–7.6 |
 | Hardware assumptions or workarounds | [§8 evidence](#8-hardware-facts-and-verification-boundaries), then the driver |
 
-Use `rg` / `rg --files` to locate implementations and callers. Trace indirect
-calls too; a textual search alone does not establish locking or IRQ safety.
-This guide states contracts; headers/code define implemented APIs. If they
-conflict, identify the discrepancy before changing behavior or claiming support.
+Use `rg` / `rg --files` to locate implementations and callers. Trace indirect calls too; a textual search alone does not establish locking or IRQ safety. This guide states contracts; headers/code define implemented APIs. If they conflict, identify the discrepancy before changing behavior or claiming support.
 
 ## 2. Project Overview and Current Work
 
-FortressOS is a freestanding C11/NASM x86_64 kernel using Limine v8, base revision 3,
-with UEFI and BIOS boot. Kernel virtual base: `0xffffffff80000000`; HHDM offset
-comes from boot metadata. Hardware subsystems have explicit, separate APIs.
-Early COM1 and framebuffer diagnostics must work before the heap is available.
+FortressOS is a freestanding C11/NASM x86_64 kernel using Limine v8, base revision 3, with UEFI and BIOS boot. Kernel virtual base: `0xffffffff80000000`; HHDM offset comes from boot metadata. Hardware subsystems have explicit, separate APIs. Early COM1 and framebuffer diagnostics must work before the heap is available.
 
-History lives in [ROADMAP.md](ROADMAP.md); qualifications and technical debt in
-[ARCH_REVIEW.md](ARCH_REVIEW.md). Keep new implementation instructions here,
-checkpoint history there, and verification claims tied to actual evidence.
+History lives in [ROADMAP.md](ROADMAP.md); qualifications and technical debt in [ARCH_REVIEW.md](ARCH_REVIEW.md). Keep new implementation instructions here, checkpoint history there, and verification claims tied to actual evidence.
 
 | Checkpoint | Status / acceptance |
 | --- | --- |
@@ -45,14 +34,7 @@ checkpoint history there, and verification claims tied to actual evidence.
 
 ### Phase 9G implementation handoff
 
-The user flashed `fortress.img` with Rufus and reported no `/mnt`. The image
-contains ext2, but the kernel currently has no USB controller/mass-storage
-driver. Limine loading the kernel from USB does not establish kernel USB I/O.
-The existing mount path uses `nvme0n1p1` inside QEMU fixture tests; the image's
-ext2 partition is partition 2 (`sdap2`). Do not reuse fixture assertions as production
-storage initialization. The remaining stages are the implementation handoff
-for Antigravity; Phase 9G.1, 9G.2, and 9G.3 are verified in automated suites and on Dell Latitude 5590 hardware.
-Active checkpoint is 9G.4 Writable persistence. Dell hardware acceptance is recorded in ROADMAP.md.
+The user flashed `fortress.img` with Rufus and reported no `/mnt`. The image contains ext2, but the kernel currently has no USB controller/mass-storage driver. Limine loading the kernel from USB does not establish kernel USB I/O. The existing mount path uses `nvme0n1p1` inside QEMU fixture tests; the image's ext2 partition is partition 2 (`sdap2`). Do not reuse fixture assertions as production storage initialization. The remaining stages are the implementation handoff for Antigravity; Phase 9G.1, 9G.2, and 9G.3 are verified in automated suites and on Dell Latitude 5590 hardware. Active checkpoint is 9G.4 Writable persistence. Dell hardware acceptance is recorded in ROADMAP.md.
 
 | Stage | Implementation scope | Acceptance before advancing | What the next stage assumes from this one |
 | --- | --- | --- | --- |
@@ -63,76 +45,30 @@ Active checkpoint is 9G.4 Writable persistence. Dell hardware acceptance is reco
 
 #### What 9G does NOT do
 
-- No USB 3.x SuperSpeed support; direct-attached SuperSpeed is follow-up work
-  after 9G acceptance. Do not assume automatic USB 2.0 fallback.
+- No USB 3.x SuperSpeed support; direct-attached SuperSpeed is follow-up work after 9G acceptance. Do not assume automatic USB 2.0 fallback.
 - No external USB hubs; xHCI root-port management remains required.
 - No hot-plug enumeration, reconnection or removal recovery beyond safe failure.
 - No UAS, USB keyboards, mice, audio or other non-mass-storage classes.
 - No USB power management, suspend or resume.
 - No multiple-LUN support: access LUN 0 only.
-- No recovery/re-enumeration after a runtime host-controller reset. Initial
-  reset and bounded BOT transport recovery are still required; controller
-  failure leaves storage unavailable until reboot, with DMA safely contained.
+- No recovery/re-enumeration after a runtime host-controller reset. Initial reset and bounded BOT transport recovery are still required; controller failure leaves storage unavailable until reboot, with DMA safely contained.
 
 #### Explicit USB selection and writable opt-in
 
-Planned boot arguments are `usb_data=PARTUUID=<unique-partition-guid>` and
-`usb_data_mode=ro|rw` (default `ro`). These are new 9G configuration, not
-existing kernel options. 9G.3 must implement bounded parsing and a kernel-owned
-copy of the boot command line under the existing boot-metadata contract.
-9G.4 adds the `rw` path. The image builder must report the generated data
-partition GUID; an explicit writable boot-menu entry must display that target
-and pass both arguments. Keep the default entry read-only.
+Planned boot arguments are `usb_data=PARTUUID=<unique-partition-guid>` and `usb_data_mode=ro|rw` (default `ro`). These are new 9G configuration, not existing kernel options. 9G.3 must implement bounded parsing and a kernel-owned copy of the boot command line under the existing boot-metadata contract. 9G.4 adds the `rw` path. The image builder must report the generated data partition GUID; an explicit writable boot-menu entry must display that target and pass both arguments. Keep the default entry read-only.
 
-"User-selected test USB" means the user deliberately chooses that configured
-target and writable entry. Require exactly one matching partition on a supported
-USB BOT device. A matching filesystem label (`FORTRESS_DATA`), GPT name
-(`Fortress Persistent Data`) or marker file alone is never write authorization.
-No first-disk or first-matching-label fallback. Duplicate GUIDs (including two
-clones of the same image), missing/malformed selection, unsupported media or
-failed eligibility checks must never produce a writable mount. Without a valid
-unique target, leave `/mnt` unmounted and explain why; with a selected target
-but failed RW eligibility, allow only the documented read-only fallback.
+"User-selected test USB" means the user deliberately chooses that configured target and writable entry. Require exactly one matching partition on a supported USB BOT device. A matching filesystem label (`FORTRESS_DATA`), GPT name (`Fortress Persistent Data`) or marker file alone is never write authorization. No first-disk or first-matching-label fallback. Duplicate GUIDs (including two clones of the same image), missing/malformed selection, unsupported media or failed eligibility checks must never produce a writable mount. Without a valid unique target, leave `/mnt` unmounted and explain why; with a selected target but failed RW eligibility, allow only the documented read-only fallback.
 
-The explicit opt-in does not override GPT ambiguity/degraded-mode policy,
-ext2 validation, write/flush capability checks or the internal NVMe exclusion.
-Log the selected USB identity, partition GUID and actual mount mode. Test no
-selection, RO default, explicit RW, wrong GUID, duplicate clones and failed
-flush capability. Do not auto-enable RW merely because an image was flashed.
+The explicit opt-in does not override GPT ambiguity/degraded-mode policy, ext2 validation, write/flush capability checks or the internal NVMe exclusion. Log the selected USB identity, partition GUID and actual mount mode. Test no selection, RO default, explicit RW, wrong GUID, duplicate clones and failed flush capability. Do not auto-enable RW merely because an image was flashed.
 
 #### Bounded first implementation
 
-- USB 2.0 Full-Speed/High-Speed devices on xHCI USB 2.0 ports only. Identify
-  port protocol capabilities rather than assuming port numbers. SuperSpeed
-  slots, streams, USB 3.x port state machines and low-speed storage are out of
-  scope. Test media must actually negotiate a supported speed.
-- Devices must be attached at initialization. No hot-plug discovery or
-  reconnection support; reject hubs (class 0x09) with `hub not supported`.
-  Still consume/acknowledge port-status events while polling so they cannot
-  clog the event ring. Unexpected removal must fail safely, not hang or
-  release DMA memory still owned by the controller.
-- Bootstrap endpoint zero according to negotiated speed, read the first
-  **8 bytes** of the device descriptor (bMaxPacketSize0 is at byte offset 7),
-  validate/update endpoint-zero packet size and fetch full descriptors.
-  A one-byte read cannot supply bMaxPacketSize0. Validate device and interface
-  descriptors; class may be declared on the interface. Reference:
-  [USB-IF USB 2.0 specification](https://www.usb.org/document-library/usb-20-specification).
-- 9G.2 commands: INQUIRY (0x12), TEST UNIT READY (0x00), READ CAPACITY(10)
-  (0x25), READ(10) (0x28), REQUEST SENSE (0x03). Bound retries and implement
-  BOT stall/reset recovery. Initially support LUN 0 only; document GET MAX LUN
-  handling and reject unsupported configurations. Reject UAS explicitly.
-  Defer READ(12/16), MODE SENSE(6/10), REPORT LUNS and larger-capacity command
-  sets; reject READ CAPACITY(10)'s overflow sentinel and unrepresentable LBAs.
-  WRITE(10) (0x2a) and SYNCHRONIZE CACHE(10) (0x35) belong to 9G.4.
-- In 9G.2, bulk completion **polls the event ring with a bounded timeout**:
-  no USB completion IRQ dependency, sleeps, re-enabling IF or waiting on
-  another thread. This follows ext2's IRQ-save lock contract (L1 and §9).
-  A timeout propagates an I/O error and initiates bounded quiescence or DMA
-  quarantine; it does not permit immediate reuse/free of active buffers.
-- 9G.2 owns 512/4096-byte sector integration tests against GPT and ext2;
-  reject other sizes explicitly. The current boot image is laid out in
-  512-byte LBAs: do not reinterpret it as a 4096-byte-sector image. Use
-  separately generated matching-geometry fixtures for 4096-byte tests.
+- USB 2.0 Full-Speed/High-Speed devices on xHCI USB 2.0 ports only. Identify port protocol capabilities rather than assuming port numbers. SuperSpeed slots, streams, USB 3.x port state machines and low-speed storage are out of scope. Test media must actually negotiate a supported speed.
+- Devices must be attached at initialization. No hot-plug discovery or reconnection support; reject hubs (class 0x09) with `hub not supported`. Still consume/acknowledge port-status events while polling so they cannot clog the event ring. Unexpected removal must fail safely, not hang or release DMA memory still owned by the controller.
+- Bootstrap endpoint zero according to negotiated speed, read the first **8 bytes** of the device descriptor (bMaxPacketSize0 is at byte offset 7), validate/update endpoint-zero packet size and fetch full descriptors. A one-byte read cannot supply bMaxPacketSize0. Validate device and interface descriptors; class may be declared on the interface. Reference: [USB-IF USB 2.0 specification](https://www.usb.org/document-library/usb-20-specification).
+- 9G.2 commands: INQUIRY (0x12), TEST UNIT READY (0x00), READ CAPACITY(10) (0x25), READ(10) (0x28), REQUEST SENSE (0x03). Bound retries and implement BOT stall/reset recovery. Initially support LUN 0 only; document GET MAX LUN handling and reject unsupported configurations. Reject UAS explicitly. Defer READ(12/16), MODE SENSE(6/10), REPORT LUNS and larger-capacity command sets; reject READ CAPACITY(10)'s overflow sentinel and unrepresentable LBAs. WRITE(10) (0x2a) and SYNCHRONIZE CACHE(10) (0x35) belong to 9G.4.
+- In 9G.2, bulk completion **polls the event ring with a bounded timeout**: no USB completion IRQ dependency, sleeps, re-enabling IF or waiting on another thread. This follows ext2's IRQ-save lock contract (L1 and §9). A timeout propagates an I/O error and initiates bounded quiescence or DMA quarantine; it does not permit immediate reuse/free of active buffers.
+- 9G.2 owns 512/4096-byte sector integration tests against GPT and ext2; reject other sizes explicitly. The current boot image is laid out in 512-byte LBAs: do not reinterpret it as a 4096-byte-sector image. Use separately generated matching-geometry fixtures for 4096-byte tests.
 
 #### 9G.1 checkpoints and debugging
 
@@ -144,80 +80,29 @@ flush capability. Do not auto-enable RW merely because an image was flashed.
 | 9G.1d Ports | Verified in QEMU and Dell hardware: protocol mapping, root port inspection, USB 2.0 port reset, and speed negotiation verified. SuperSpeed attachments isolated. | Connected but unpowered: check power-switching capability and perform bounded supported power/reset sequencing; unresolved state fails that port. SuperSpeed attachment is logged as unsupported and skipped. |
 | 9G.1e Descriptors | Verified in QEMU (both BIOS & UEFI), host ASan/UBSan, and Dell Latitude 5590 hardware (2026-09-19): DCBAA/scratchpad initialization, Enable Slot, Address Device, EP0 Control Transfers, Device Descriptor, Configuration Descriptor parsing, non-storage port filtering (Port 5 webcam 0x0E, Port 7 rejected), BOT validation, Bulk-In EP 0x81 (max 512), Bulk-Out EP 0x02 (max 512) on Slot 0x3 Port 0x9 (VID 0x13FE, PID 0x4200), and SET_CONFIGURATION(1) verified. Interactive shell prompt reached. | Short/all-0xFF response, invalid bLength (including zero), descriptor type other than DEVICE (1), or invalid packet size: reject before further parsing, record the reason, and do not publish a device. |
 
-Before the first transfer, add a bounded `usb_dump_state()` diagnostic callable
-**only from thread context, with no subsystem or console lock held**, using
-the normal console/serial path. Timeout/error paths never call it: they copy
-bounded already-available state into a preallocated diagnostic record and
-publish a pending flag without allocation, logging or acquiring another lock.
-A thread consumes that record after transfer/FS locks have been released;
-use the existing IRQ-excluded publication discipline and preserve the record
-until consumed. Do not dereference stale controller/DMA pointers when printing.
-The record covers controller run/halt state, port state,
-software command enqueue/event dequeue positions and cycle bits, and last
-submitted/completed TRBs. Distinguish software bookkeeping from controller-owned
-positions that cannot be read directly; do not invent a hardware producer index.
-Capture QEMU serial logs and comparable Dell framebuffer diagnostics. Never
-print inside an ordinary IRQ handler or recursively acquire console locks.
-Use gated snapshots on failure/on demand rather than unconditional per-transfer
-logging. Existing QEMU launch recipes provide xHCI/USB attachment, but no event
-ring debugger or USB acceptance runner is implemented yet.
+Before the first transfer, add a bounded `usb_dump_state()` diagnostic callable **only from thread context, with no subsystem or console lock held**, using the normal console/serial path. Timeout/error paths never call it: they copy bounded already-available state into a preallocated diagnostic record and publish a pending flag without allocation, logging or acquiring another lock. A thread consumes that record after transfer/FS locks have been released; use the existing IRQ-excluded publication discipline and preserve the record until consumed. Do not dereference stale controller/DMA pointers when printing. The record covers controller run/halt state, port state, software command enqueue/event dequeue positions and cycle bits, and last submitted/completed TRBs. Distinguish software bookkeeping from controller-owned positions that cannot be read directly; do not invent a hardware producer index. Capture QEMU serial logs and comparable Dell framebuffer diagnostics. Never print inside an ordinary IRQ handler or recursively acquire console locks. Use gated snapshots on failure/on demand rather than unconditional per-transfer logging. Existing QEMU launch recipes provide xHCI/USB attachment, but no event ring debugger or USB acceptance runner is implemented yet.
 
 #### Known unknowns to record during bring-up
 
 - Does the Dell expose a BIOS/OS ownership semaphore, and what handoff is needed?
 - What controller state does firmware leave, and does bounded reset succeed?
-- Does the selected stick negotiate Full-Speed, High-Speed or unsupported
-  SuperSpeed, and is its actual topology directly attached?
+- Does the selected stick negotiate Full-Speed, High-Speed or unsupported SuperSpeed, and is its actual topology directly attached?
 - Does it expose BOT or UAS, which LUNs, and 512- or 4096-byte logical sectors?
 - Does the stick support the required cache synchronization semantics?
 
-These are measurements for 9G.1/9G.2 (flush capability for 9G.4), not assumed
-hardware facts. Record observed values with the device and test environment.
+These are measurements for 9G.1/9G.2 (flush capability for 9G.4), not assumed hardware facts. Record observed values with the device and test environment.
 
 Implementation constraints and verification:
 
-- Read §4, §7.2–7.5 and §9, plus `pci.h`, `block.h`, `gpt.h`, `ext2.h`,
-  `vfs.h`, VMM and synchronization headers before changing the related code.
-  Preserve lock ranks, bounded IRQ work, DMA ownership/quiescence and the
-  internal physical NVMe exclusion. No automatic formatting or raw-pattern
-  tests on hardware; only the deliberately selected USB data partition may
-  become writable under the explicit mount policy.
-- Trace ext2-to-block calls before choosing USB completion handling: ext2
-  holds its ranked IRQ-save lock around I/O. Do not introduce sleeping or
-  interrupt-dependent waits beneath that lock. Any synchronization redesign
-  must follow §9 discussion requirements.
-- Test the 130 MiB image on a larger disposable device as well as at exact
-  image size. The GPT backup remains at the image boundary after a raw copy,
-  while the current parser probes the device's last sector. 9G.3 owns this
-  policy: accept a fully validated primary header AND partition array in
-  degraded read-only mode when the end-of-device backup is absent/invalid;
-  log the declared backup LBA and actual last LBA as a possible raw-copy
-  size mismatch. Do not label an unverified mismatch definitively a raw copy.
-  Preserve rejection of two valid but conflicting GPTs and the existing
-  validated read-only backup fallback. Reject when neither copy validates.
-  Never silently repair/resize disks. 9G.4 must explicitly resolve writable
-  eligibility for the as-flashed layout and test it; RO acceptance alone
-  does not authorize writes or partition-table repair.
-- New USB persistence runners must use disposable copies and omit the NVMe
-  fixture so `/mnt` cannot accidentally come from it. The existing
-  `run-img*` targets attach a separate NVMe fixture and prove boot only.
-  Name new USB tests `test-usb-*`; existing storage tests retain their NVMe
-  fixture scope, and future `test-img-*` tests prove image boot only. Add a
-  Makefile/runner preflight assertion over the final QEMU arguments: only
-  the disposable USB data disk is allowed, with paired read-only OVMF code
-  and disposable OVMF vars as firmware exceptions. Reject extra data disks,
-  including NVMe and injected `-drive`/`-blockdev` backends or extra arguments.
-  Add appropriate host failure tests and bounded QEMU targets following §7.5;
-  run relevant existing ext2, storage, shell and power regressions.
-- Preserve historical results and label new evidence by command, firmware,
-  image/device and result. QEMU USB success does not establish Dell USB
-  acceptance. Update this status and ROADMAP.md after each completed stage.
+- Read §4, §7.2–7.5 and §9, plus `pci.h`, `block.h`, `gpt.h`, `ext2.h`, `vfs.h`, VMM and synchronization headers before changing the related code. Preserve lock ranks, bounded IRQ work, DMA ownership/quiescence and the internal physical NVMe exclusion. No automatic formatting or raw-pattern tests on hardware; only the deliberately selected USB data partition may become writable under the explicit mount policy.
+- Trace ext2-to-block calls before choosing USB completion handling: ext2 holds its ranked IRQ-save lock around I/O. Do not introduce sleeping or interrupt-dependent waits beneath that lock. Any synchronization redesign must follow §9 discussion requirements.
+- Test the 130 MiB image on a larger disposable device as well as at exact image size. The GPT backup remains at the image boundary after a raw copy, while the current parser probes the device's last sector. 9G.3 owns this policy: accept a fully validated primary header AND partition array in degraded read-only mode when the end-of-device backup is absent/invalid; log the declared backup LBA and actual last LBA as a possible raw-copy size mismatch. Do not label an unverified mismatch definitively a raw copy. Preserve rejection of two valid but conflicting GPTs and the existing validated read-only backup fallback. Reject when neither copy validates. Never silently repair/resize disks. 9G.4 must explicitly resolve writable eligibility for the as-flashed layout and test it; RO acceptance alone does not authorize writes or partition-table repair.
+- New USB persistence runners must use disposable copies and omit the NVMe fixture so `/mnt` cannot accidentally come from it. The existing `run-img*` targets attach a separate NVMe fixture and prove boot only. Name new USB tests `test-usb-*`; existing storage tests retain their NVMe fixture scope, and future `test-img-*` tests prove image boot only. Add a Makefile/runner preflight assertion over the final QEMU arguments: only the disposable USB data disk is allowed, with paired read-only OVMF code and disposable OVMF vars as firmware exceptions. Reject extra data disks, including NVMe and injected `-drive`/`-blockdev` backends or extra arguments. Add appropriate host failure tests and bounded QEMU targets following §7.5; run relevant existing ext2, storage, shell and power regressions.
+- Preserve historical results and label new evidence by command, firmware, image/device and result. QEMU USB success does not establish Dell USB acceptance. Update this status and ROADMAP.md after each completed stage.
 
 ## 3. Build, Run, Debug and Verify
 
-Run Linux tools in WSL `Ubuntu-24.04` at `/mnt/c/Sources/FortressOS` (or a Linux checkout).
-Prerequisites: GCC/binutils, NASM, make, xorriso, git, QEMU x86, OVMF,
-Python 3, e2fsprogs; GDB for interactive debugging. No hosted runtime in the OS.
+Run Linux tools in WSL `Ubuntu-24.04` at `/mnt/c/Sources/FortressOS` (or a Linux checkout). Prerequisites: GCC/binutils, NASM, make, xorriso, git, QEMU x86, OVMF, Python 3, e2fsprogs; GDB for interactive debugging. No hosted runtime in the OS.
 
 ```bash
 sudo apt-get install -y build-essential nasm xorriso qemu-system-x86 ovmf git curl e2fsprogs python3 gdb mtools dosfstools
@@ -234,9 +119,7 @@ gdb bin/fortress.elf -ex "target remote :1234" -ex "break _start" -ex "continue"
 # sudo dd if=bin/fortress.img of=/dev/sdX bs=4M status=progress conv=fdatasync
 ```
 
-From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directory).
-`make clean` removes build/ISO outputs; `make distclean` also removes downloaded
-Limine/OVMF. Use only when needed. `make` fetches missing Limine dependencies.
+From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directory). `make clean` removes build/ISO outputs; `make distclean` also removes downloaded Limine/OVMF. Use only when needed. `make` fetches missing Limine dependencies.
 
 | Target | Scope / evidence |
 | --- | --- |
@@ -250,27 +133,23 @@ Limine/OVMF. Use only when needed. `make` fetches missing Limine dependencies.
 | `make test-nmi` | 5 exact syscall boundaries × 4 rounds × 2 firmware modes; `build/nmi-*.json` and `.log` |
 | `make test-boot-diagnostics` | UEFI 8 GiB, no COM1; progress to PCI discovery and framebuffer capture |
 | `make test-power` | QEMU shutdown/reboot command tests; physical ACPI S5 confirmed separately on Dell 5590 (see §8 H7), not by this target |
+| `make test-usb-descriptors` | 9G.1e host ASan/UBSan + QEMU BIOS/UEFI descriptor parsing, BOT class validation, device configuration |
+| `make test-usb-block` | 9G.2 BOT host tests + QEMU sector read/GPT registration, no NVMe fixture |
+| `make test-usb-mount` | 9G.3 mount policy host tests + QEMU BIOS/UEFI PARTUUID selection and read-only mount |
+| `make test-usb-persistence` | 9G.4 QEMU BIOS/UEFI three-boot create/read/overwrite/delete with offline `e2fsck -fn` on disposable 130 MiB images |
+| `make test-xhci-bot-host` | Host ASan/UBSan: BOT stall recovery, MODE SENSE parsing, durability policy table |
+| `make test-usb-mount-host` | Host ASan/UBSan: mount eligibility, durability modes, sync path |
 
-Choose tests relevant to the change, then required integration coverage. Report
-commands actually run and their limits; an existing test target is not a new pass.
-QEMU storage tests use disposable fixtures/snapshots; never point raw-write tests
-at a real disk. `build/nvme_raw.img` and `build/nvme_gpt.img` serve different tests.
+Choose tests relevant to the change, then required integration coverage. Report commands actually run and their limits; an existing test target is not a new pass. QEMU storage tests use disposable fixtures/snapshots; never point raw-write tests at a real disk. `build/nvme_raw.img` and `build/nvme_gpt.img` serve different tests.
 
 ## 4. Coding Standards and Invariants
 
 ### Freestanding and ABI rules
 
-- Kernel/user code: project headers or compiler freestanding headers only;
-  no hosted `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<unistd.h>` or `<sys/...>`.
-  Host tools/tests are separate and may use their host runtime.
-- Keep Makefile strict warnings (`-Wall -Wextra -Werror`), freestanding flags,
-  `-mno-red-zone`, and disabled x87/MMX/SSE. SIMD state management is not implemented.
-  Kernel uses `-fPIE`; the standalone C shell overrides with `-fno-pie`.
-- NASM: `[bits 64]`, `default rel`. SysV C arguments: RDI, RSI, RDX, RCX, R8, R9;
-  preserve RBX/RBP/R12–R15/RSP; align RSP to 16 bytes **before** every call.
-- Inline assembly needs correct operands/clobbers and `volatile` for hardware
-  effects; include `"memory"` when required. Use explicit fixed-width types,
-  alignment and overflow-safe bounds before dereferencing or computing offsets.
+- Kernel/user code: project headers or compiler freestanding headers only; no hosted `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<unistd.h>` or `<sys/...>`. Host tools/tests are separate and may use their host runtime.
+- Keep Makefile strict warnings (`-Wall -Wextra -Werror`), freestanding flags, `-mno-red-zone`, and disabled x87/MMX/SSE. SIMD state management is not implemented. Kernel uses `-fPIE`; the standalone C shell overrides with `-fno-pie`.
+- NASM: `[bits 64]`, `default rel`. SysV C arguments: RDI, RSI, RDX, RCX, R8, R9; preserve RBX/RBP/R12–R15/RSP; align RSP to 16 bytes **before** every call.
+- Inline assembly needs correct operands/clobbers and `volatile` for hardware effects; include `"memory"` when required. Use explicit fixed-width types, alignment and overflow-safe bounds before dereferencing or computing offsets.
 
 ### Locking and lifecycle
 
@@ -310,11 +189,7 @@ at a real disk. `build/nvme_raw.img` and `build/nvme_gpt.img` serve different te
 | M3 | VMM owns tables; caller owns data frames. Destroy refuses kernel/active CR3, never frees shared higher half; `free_user_frames=true` requires exclusively owned, singly mapped leaf frames. | Read `vmm.h` ownership/prevalidation contract; check rollback and exact allocation-set/table audits, not just equal counts. |
 | M4 | Bound all block/partition/parser arithmetic and hardware waits; publish only fully validated state. Never free DMA memory while a controller may still use it. | Inspect lower-layer dispatch on rejected requests, NVMe quiesce/quarantine, GPT staging, ext2 malformed-input tests and rollback. |
 
-Thread stacks have a 4 KiB lower guard and 16 KiB usable space. A guard catches
-contiguous downward exhaustion, not every large frame skip. Ring 0 #PF (IST=0)
-uses active RSP; Ring 3 privilege transitions use TSS.RSP0. #DF uses IST1 and NMI
-uses IST2. These diagnostic stacks do not guarantee survival if their mappings,
-TSS, IDT, handler or diagnostic path is damaged. Keep that qualification.
+Thread stacks have a 4 KiB lower guard and 16 KiB usable space. A guard catches contiguous downward exhaustion, not every large frame skip. Ring 0 #PF (IST=0) uses active RSP; Ring 3 privilege transitions use TSS.RSP0. #DF uses IST1 and NMI uses IST2. These diagnostic stacks do not guarantee survival if their mappings, TSS, IDT, handler or diagnostic path is damaged. Keep that qualification.
 
 ## 5. File Map
 
@@ -364,14 +239,22 @@ FortressOS/
 │   │   ├── pic.c            # 8259 PIC masking and disable logic
 │   │   ├── pic.h            # 8259 PIC port definitions and mask queries
 │   │   ├── serial.c         # UART 16550 COM1 port I/O driver (115200 8N1)
-│   │   └── serial.h         # Serial driver headers and port I/O inlines (inb, outb, io_wait)
+│   │   ├── serial.h         # Serial driver headers and port I/O inlines (inb, outb, io_wait)
+│   │   ├── xhci.c           # xHCI controller: PCI, MMIO, reset, command/event rings, root ports
+│   │   ├── xhci.h           # Controller/ring/port structures and public probe API
+│   │   ├── xhci_trb.h       # Transfer Request Block layout, TRB types, completion codes, ERST
+│   │   ├── xhci_dev.c       # Device addressing: DCBAA, scratchpads, slot/EP contexts, descriptors
+│   │   ├── xhci_dev.h       # Context structures, USB descriptor layout, BOT device report
+│   │   ├── xhci_bot.c       # USB Mass Storage BOT transport, SCSI engine, block device adapter
+│   │   └── xhci_bot.h       # CBW/CSW, SCSI opcodes, durability classification state machine
 │   ├── fs/
-│   │   ├── ext2.c/.h        # Read-only ext2 mount and file operations
+│   │   ├── ext2.c/.h        # ext2 mount, file/directory operations (read-only and bounded-writable)
 │   │   ├── gpt.c            # GPT partition table parser, Protective MBR, and bounded partition devices
 │   │   ├── gpt.h            # GPT header, partition entry structures, and GUID definitions
+│   │   ├── usb_mount.c/.h   # Production /mnt selection: PARTUUID match, provenance, mount policy
 │   │   ├── tarfs.c          # Read-only USTAR archive parser for initramfs
 │   │   ├── tarfs.h          # USTAR tar format headers
-│   │   ├── vfs.c            # Virtual File System tree, lookup, file descriptors, and stat/readdir
+│   │   ├── vfs.c            # Virtual File System tree, lookup, file descriptors, stat/readdir, mkdir/unlink/rename
 │   │   └── vfs.h            # VFS node structures, file handle descriptors, and public API
 │   ├── include/
 │   │   ├── boot_info.h      # Kernel-owned boot information and memory map snapshot
@@ -412,10 +295,8 @@ FortressOS/
 ## 6. Limine Notes
 
 - Base revision 3; verify `LIMINE_BASE_REVISION_SUPPORTED` and non-NULL responses.
-- Keep requests between `.requests_start_marker` / `.requests_end_marker` and
-  linker `KEEP` directives. Read [boot_info.h](src/include/boot_info.h) for snapshots.
-- Initramfs module backing memory stays reserved (`KERNEL_AND_MODULES`); tarfs
-  nodes reference it directly. Copying metadata does not copy module contents.
+- Keep requests between `.requests_start_marker` / `.requests_end_marker` and linker `KEEP` directives. Read [boot_info.h](src/include/boot_info.h) for snapshots.
+- Initramfs module backing memory stays reserved (`KERNEL_AND_MODULES`); tarfs nodes reference it directly. Copying metadata does not copy module contents.
 
 ## 7. How to Add
 
@@ -444,36 +325,36 @@ Canonical example: `keyboard_irq` / `serial_irq` in [input.c](src/drivers/input.
 
 ### 7.3 A block device
 
-Canonical examples: [block.c](src/drivers/block.c), [nvme.c](src/drivers/nvme.c), bounded partition adapter in [gpt.c](src/fs/gpt.c).
+Canonical examples: [block.c](src/drivers/block.c), [nvme.c](src/drivers/nvme.c), bounded partition adapter in [gpt.c](src/fs/gpt.c), USB BOT adapter and registration in [xhci_bot.c](src/drivers/xhci_bot.c).
 
 1. Read `block.h`, M1/M4 and the driver lifecycle before allocating MMIO/DMA resources.
 2. Provide actual `sector_size`/`sector_count`; check multiplication/addition overflow before capacity/range use.
-3. Implement bounded sector callbacks and applicable flush; read-only devices leave write/flush NULL.
+3. Implement bounded sector callbacks and applicable flush; read-only devices leave write/flush NULL. A device whose write path may not be usable yet (e.g. USB durability not classified) must still expose read callbacks and leave write/flush NULL until eligibility is established.
 4. Validate partition-relative bounds before parent dispatch; validate all entries before registry publication.
-5. Register only fully initialized devices; unregister and unwind on failure, respecting references and DMA quiescence/quarantine.
-6. Test first/last/out-of-range I/O, failure cleanup and registry state using mocks/disposable images; never enable raw patterns on hardware or GPT fixtures.
+5. Register only fully initialized devices; unregister and unwind on failure, respecting references and DMA quiescence/quarantine. A device that has latched into an unrecoverable error state must not be re-registered without a documented recovery path.
+6. Test first/last/out-of-range I/O, failure cleanup and registry state using mocks/disposable images; never enable raw patterns on hardware or GPT fixtures. USB-specific tests use disposable 130 MiB images under `test-usb-*` runners that must assert no other data disk is attached.
 
 ### 7.4 A VFS node or file operation
 
-Canonical examples: [vfs.c](src/fs/vfs.c), [tarfs.c](src/fs/tarfs.c), [ext2.c](src/fs/ext2.c).
+Canonical examples: [vfs.c](src/fs/vfs.c), [tarfs.c](src/fs/tarfs.c), [ext2.c](src/fs/ext2.c), mount policy in [usb_mount.c](src/fs/usb_mount.c).
 
 1. Read `vfs.h`/filesystem headers: shared `vfs_node_t` differs from `file_t` with its own open offset/reference count.
-2. Define backing-store lifetime, node ownership and supported operations; respect ext2's boot-lifetime read-only mount contract.
-3. Bound paths, names, directory records and read sizes; return the existing errors/EOF semantics.
-4. Wire callbacks and per-process descriptors without sharing offsets between independent opens.
-5. Close/unwind references on failure and exit; keep `fd_close_all`/reaper cleanup valid.
-6. Test dual opens, short reads/EOF, directory iteration, malformed backing data and Ring 3 writable-output validation. Use host tests plus relevant boot tests.
+2. Define backing-store lifetime, node ownership and supported operations. ext2 read-only mounts persist for boot lifetime; writable mounts must be explicitly opted in, tainted on unrecoverable I/O or flush failure, and frozen by clean shutdown before the backing device is released.
+3. Bound paths, names, directory records and read sizes; return the existing errors/EOF semantics. Distinguish read-only policy (`-EROFS`) from tainted failure state (`-EIO`); do not collapse them into a single error.
+4. Wire callbacks and per-process descriptors without sharing offsets between independent opens. If a mount is conditional on external state (durability classification, PARTUUID match, provenance), reject or fall back to read-only before the first filesystem write — never dirty the superblock and then discover the mount was ineligible.
+5. Close/unwind references on failure and exit; keep `fd_close_all`/reaper cleanup valid. A tainted or read-only mount must still allow reads through the same paths.
+6. Test dual opens, short reads/EOF, directory iteration, malformed backing data and Ring 3 writable-output validation. For conditional writable mounts, test each eligibility outcome (eligible, degraded, ineligible, unknown) and assert zero filesystem writes occur on any rejected path. Use host tests plus relevant boot tests.
 
 ### 7.5 A test / make target
 
-Canonical examples: [test_ext2.py](scripts/test_ext2.py), [test_shell.py](scripts/test_shell.py), [test_nmi_transitions.py](scripts/test_nmi_transitions.py).
+Canonical examples: [test_ext2.py](scripts/test_ext2.py), [test_shell.py](scripts/test_shell.py), [test_nmi_transitions.py](scripts/test_nmi_transitions.py), [test_usb_persistence.py](scripts/test_usb_persistence.py).
 
-1. Choose host sanitizer coverage for parsers/pure logic, QEMU for CPU/device delivery, manual hardware evidence for physical claims.
-2. Test behavior and failure boundaries using actual subsystem code; label mocks explicitly.
-3. Add a `test-X` Makefile target with real build/fixture dependencies; keep destructive tests explicitly gated.
-4. Bound waits, use disposable/snapshot disks, pair OVMF code/vars, capture logs and always terminate test QEMU.
-5. Assert specific results (not just a boot banner); include resource ownership checks when allocating/reclaiming.
-6. Record exact invocation, result and evidence boundary in the task report/roadmap; update this routing table only if needed.
+1. Choose host sanitizer coverage for parsers/pure logic, QEMU for CPU/device delivery, manual hardware evidence for physical claims. Do not let a QEMU pass stand in for a physical acceptance criterion.
+2. Test behavior and failure boundaries using actual subsystem code; label mocks explicitly. USB tests must distinguish "enumerated" from "usable" from "persisted" — each is a separate acceptance claim.
+3. Add a `test-X` Makefile target with real build/fixture dependencies; keep destructive tests explicitly gated. USB persistence tests use disposable image copies, never physical disks or the shared build fixtures.
+4. Bound waits, use disposable/snapshot disks, pair OVMF code/vars, capture logs and always terminate test QEMU. For multi-boot runners, validate the final QEMU argv on every boot — assert that only the intended data disk is attached, so `/mnt` cannot accidentally come from an unexpected device.
+5. Assert specific results (not just a boot banner); include resource ownership checks when allocating/reclaiming, and offline verification (e.g. `e2fsck -fn` on a disposable copy) where an independent implementation can validate the outcome. Substring checks are not byte-for-byte comparisons; state which one a given test performs.
+6. Record exact invocation, result and evidence boundary in the task report/roadmap; update this routing table only if needed. When a new QEMU target is added, note the firmware modes it covers and whether it attaches any fixture data disk.
 
 ### 7.6 A user program in initramfs
 
@@ -486,12 +367,29 @@ Canonical examples: [shell.c](user/shell.c), [shell_start.asm](user/shell_start.
 5. Launch through the existing `process_spawn` lifecycle/test harness. Merely adding `/bin/foo` does not add a shell exec command; no exec syscall exists yet.
 6. Verify Ring 3 execution, syscall results, faults/exit and deferred resource reclamation in BIOS/UEFI.
 
+### 7.7 A USB mass-storage driver addition
+
+Canonical examples: [xhci.c](src/drivers/xhci.c) (controller), [xhci_dev.c](src/drivers/xhci_dev.c) (device and descriptors), [xhci_bot.c](src/drivers/xhci_bot.c) (BOT transport and SCSI), [xhci_trb.h](src/drivers/xhci_trb.h) (TRB layout).
+
+The USB stack is split across three source files, each with a distinct responsibility. Keep additions inside the correct file.
+
+- **`xhci.c` / `xhci.h`** — controller-level only. PCI discovery, BAR mapping, BIOS-to-OS ownership handoff, halt/reset, command ring, event ring, ERST, root-port protocol mapping and reset. It knows nothing about USB classes or SCSI. It exposes the controller state and the DMA ring structures that the next layer uses.
+- **`xhci_dev.c` / `xhci_dev.h`** — device-level. DCBAA and scratchpad setup, `Enable Slot`, slot and endpoint context construction, `Address Device`, EP0 control transfers, standard descriptor parsing (device, configuration, interface, endpoint), and **class filtering**. This file decides whether an enumerated device is a BOT mass-storage device (class `0x08`, subclass `0x06`, protocol `0x50`) or something to reject and disable. It does not transfer sector data.
+- **`xhci_bot.c` / `xhci_bot.h`** — transport and SCSI. CBW/CSW exchange over the bulk endpoints, the SCSI command set (`INQUIRY`, `TEST UNIT READY`, `REQUEST SENSE`, `READ CAPACITY`, `READ`, `WRITE`, `SYNCHRONIZE CACHE`, `MODE SENSE`), durability classification, and the block-device callbacks registered with `block.c`. It assumes the endpoints and slot ID that `xhci_dev.c` produced; it does not re-validate the device class.
+
+Additions follow the boundaries: a new SCSI opcode goes in `xhci_bot.c`; a new descriptor type goes in `xhci_dev.c`; a new controller register or port capability goes in `xhci.c`. If you find yourself needing to violate the split, that is a sign the interface between two layers is wrong and should be discussed before changing it.
+
+1. **Read [L1](AGENTS.md#locking-and-lifecycle), [M1](AGENTS.md#memory-ownership-and-storage-boundaries), and [M4](AGENTS.md#memory-ownership-and-storage-boundaries) first.** USB transfers are block I/O; the same rules that apply to NVMe apply here.
+2. **Bulk completion polls the event ring with a bounded timeout — no IRQ dependency, no sleeps, no enabling of IF.** This is required because `ext2` holds its ranked IRQ-save lock across block I/O (L1). A USB transfer that slept, enabled interrupts, or waited on another thread while that lock was held would deadlock or violate the scheduler contract. Completion is observed by polling the event ring's producer position until the expected completion event arrives or a bounded deadline elapses. Bounded per-transfer timeout and a bounded total recovery sequence; both must have limits. A timeout propagates an I/O error upward and initiates DMA quiescence — it does not permit immediate reuse or freeing of buffers the controller might still be reading.
+3. **Never free, reuse, or reissue into DMA memory whose completion state is uncertain (M4).** If a bulk transfer times out, if the CSW is malformed or the tag does not match, if the completion event indicates a stall you could not recover, or if the controller state is ambiguous for any reason: latch the device offline, stop issuing further commands on it, and retain the DMA allocations until reboot. Runtime recovery of an unrecoverable USB device is not supported. The alternative — freeing a buffer the controller is still reading — produces silent memory corruption that will manifest in an unrelated subsystem. The `latched_offline` flag on the transport state is distinct from `transport_failed`; both prevent further BOT submissions and both retain DMA. Document which failure classes set which flag.
+4. **Class filtering is in `xhci_dev.c`, not `xhci_bot.c`.** The decision "this is not a BOT mass-storage device, disable its slot and move on" belongs to the descriptor-parsing layer. By the time `xhci_bot.c` sees a device, the class and protocol have already been validated, the bulk-in and bulk-out endpoints have already been identified, and `SET_CONFIGURATION` has already been issued. Adding class checks to `xhci_bot.c` would duplicate the filter, and the two copies would drift. If a new device class needs to be rejected earlier (e.g. hubs, UAS), the check goes in `xhci_dev.c` alongside the existing filter.
+5. **Register only fully initialized block devices; unwind on failure (7.3).** A USB stick that fails descriptor validation, endpoint configuration, or durability probe does not get registered with `block.c`. If registration succeeds but a later operation latches the device, the block device may remain registered but must return errors for all subsequent I/O rather than silently accepting commands whose results are unknown.
+6. **Test with mocks and disposable images; never enable raw-write tests on hardware or GPT fixtures (7.5).** Host-side BOT tests use mocked transfer completions to exercise result classification, stall recovery, and the durability policy table. QEMU tests use disposable 130 MiB images under `test-usb-*` runners, which validate the final QEMU argv to assert no other data disk is attached. Physical USB testing uses only the deliberately selected stick and the `usb_data_mode=rw` boot entry; the default boot entry remains read-only.
+7. **Do not whitelist by VID:PID and do not assume removable flash has no volatile cache.** Durability is established by what the device reports (caching page, `SYNCHRONIZE CACHE` acceptance) or by explicit fallback classification, not by vendor identity. A new device that behaves differently is a fact to record, not a case to special-case.
+
 ## 8. Hardware Facts and Verification Boundaries
 
-Preserve empirically-derived and spec-derived workarounds with their evidence labels.
-Do not remove one merely to match a datasheet; investigate discrepancies and record
-device/firmware/repro. Observation, implemented behavior and unverified claims
-are distinct. Do not turn an example or a source-code comment into physical acceptance evidence.
+Preserve empirically-derived and spec-derived workarounds with their evidence labels. Do not remove one merely to match a datasheet; investigate discrepancies and record device/firmware/repro. Observation, implemented behavior and unverified claims are distinct. Do not turn an example or a source-code comment into physical acceptance evidence.
 
 | ID | Evidence / constraint |
 | --- | --- |
@@ -500,34 +398,30 @@ are distinct. Do not turn an example or a source-code comment into physical acce
 | H3 | **5590 photo:** ECAM segment 0 buses 0..127, base `0xF0000000`. Parse MCFG, never assume this address/range or apply it to another Dell. No 5530 acceptance record is established here. |
 | H4 | **Code + user report (2026-09-16, fixed 2026-09-18):** `layout azerty` selects Belgian AZERTY (Punt). Top number row uses `shift ^ s->caps` as Shift-Lock for digits `1234567890`. Shifted table takes priority over `a..z` matching, resolving bug where scancodes 0x03, 0x08, 0x0A, 0x0B (`é è ç à`) and 0x28 (`ù/%`) emitted uppercase `'E'`, `'C'`, `'A'`, `'U'` instead of digits and `%`. Scancode 86 (0x56) added for ISO `<` / `>`. AltGr absent; arrows/function keys ignored; Caps LED unsynchronized. |
 | H5 | **Known software limit:** PMM manages low 2 GiB despite 32 GiB installed on the 5590. Higher RAM is unavailable to allocation. |
-| H6 | **Boot policy/photo:** physical NVMe filesystem is not mounted; `/mnt` is the QEMU ext2 fixture. Initramfs file reads prove neither physical disk I/O nor persistence. |
+| H6 | The internal physical NVMe filesystem is not mounted by the kernel. `/mnt` is provided by the USB data partition when a supported stick is attached and selected; see H9. Initramfs file reads prove neither physical disk I/O nor persistence. |
 | H6a | **Phase 9F code + user report (2026-09-18):** the raw image includes an ext2 data partition; the user flashed it with Rufus and reported no `/mnt`. Kernel USB storage support is absent. USB boot and image verification do not establish USB partition mounting or persistence; Phase 9G supplies that missing path. |
 | H7 | **Code:** ACPI FADT/DSDT S5 and reset fallbacks now exist (`power.c`); this is limited parsing, not a general AML interpreter. Port `0x604` is a QEMU mechanism. Physical ACPI S5 shutdown and multi-tier reset confirmed functional on Dell 5590. |
 | H8 | **Recorded QEMU evidence:** 40 exact-boundary NMIs on IST2; no proof of physical NMI injection, nested-fault completeness, SWAPGS or SMP safety. |
+| H9 | Kingston USB DISK 2.0 (VID 0x13FE, PID 0x4200) on Dell 5590. Reports no SCSI caching page on MODE SENSE(6) or MODE SENSE(10); rejects SYNCHRONIZE CACHE(10). Classified ASSUMED_WRITE_THROUGH. Files persist across power cycle with clean shutdown. e2fsck -fn clean. Not a claim of power-loss tolerance. |
+| H10 | SanDisk USB 3.x stick on Dell 5590. Enumerates as a SuperSpeed device on Port 0x12. Skipped by 9G scope. SuperSpeed support (9G.5b) is required to reach the BOT layer with this device. |
+| H11 | Dell 5590 xHCI controller at 0000:00:14.0 (Intel Sunrise Point-LP, 8086:9D2F), 64 KiB BAR at 0xEF330000, 12 USB 2.0 ports and 6 USB 3.0 ports. Legacy handoff extended capability at offset 0x846C. These are observations of one machine, not constants. |
 
 ### Dell Latitude 5590 physical acceptance (2026-09-16 & 2026-09-18)
 
-User-supplied testing confirms hardware operation on a Latitude 5590 (Core i5-8350U,
-32 GiB installed RAM, 256 GB NVMe, Intel UHD 620), booted from USB:
-- **2026-09-16:** PS/2 set 2 -> set 1 / IRQ1, COM1 RX absent, interactive shell `help`,
-  `ls`, `cat etc/motd`, and missing-file error handling verified.
+User-supplied testing confirms hardware operation on a Latitude 5590 (Core i5-8350U, 32 GiB installed RAM, 256 GB NVMe, Intel UHD 620), booted from USB:
+
+- **2026-09-16:** PS/2 set 2 -> set 1 / IRQ1, COM1 RX absent, interactive shell `help`, `ls`, `cat etc/motd`, and missing-file error handling verified.
 - **2026-09-18:**
-  - **Belgian AZERTY (Bug H4):** Shift-Lock on top number row with Caps Lock ON verified
-    producing digits `1234567890`. Accented keys unshifted produce base characters without
-    falsely emitting uppercase letters. European ISO `<` / `>` key (scancode 0x56) verified.
-  - **System V AMD64 ELF ABI:** `run /bin/hello testing ...` verified passing command-line
-    arguments across the user/kernel boundary with proper 16-byte stack alignment.
+  - **Belgian AZERTY (Bug H4):** Shift-Lock on top number row with Caps Lock ON verified producing digits `1234567890`. Accented keys unshifted produce base characters without falsely emitting uppercase letters. European ISO `<` / `>` key (scancode 0x56) verified.
+  - **System V AMD64 ELF ABI:** `run /bin/hello testing ...` verified passing command-line arguments across the user/kernel boundary with proper 16-byte stack alignment.
   - **Visuals:** Limine splash wallpaper and kernel boot logo / emblem verified.
   - **Power:** ACPI S5 shutdown and multi-tier reset confirmed functional.
-These are manual hardware observations, supplementing the automated QEMU and host test suites.
-Cached text scrolling avoids framebuffer reads; keep early/no-UART
-output working. Detailed console, NMI and input test notes are in [ROADMAP.md](ROADMAP.md).
+
+These are manual hardware observations, supplementing the automated QEMU and host test suites. Cached text scrolling avoids framebuffer reads; keep early/no-UART output working. Detailed console, NMI and input test notes are in [ROADMAP.md](ROADMAP.md).
 
 ## 9. Do Not Touch Without Discussion
 
-Discuss intentional changes to these contracts before implementation unless the
-current task already explicitly authorizes them. Routine edits preserving them
-need no extra approval. Preserve the behavior, not arbitrary lines of code.
+Discuss intentional changes to these contracts before implementation unless the current task already explicitly authorizes them. Routine edits preserving them need no extra approval. Preserve the behavior, not arbitrary lines of code.
 
 - Limine request markers and linker `KEEP` placement.
 - Boot/entry stack alignment (System V ABI, 16-byte before call).
@@ -539,3 +433,4 @@ need no extra approval. Preserve the behavior, not arbitrary lines of code.
 - The 2 GiB PMM cap without a coordinated allocator/audit/mapping plan.
 - `ENABLE_*` raw-write gates, disposable fixture separation, hardware storage exclusions and DMA quarantine.
 - Shared kernel PML4 ownership, boot-module backing lifetime, and current single-CPU assumptions.
+- xHCI DMA ring state, BOT completion polling discipline (no sleeps/IRQ-enables under ext2 lock), DMA quarantine on failure, and USB class filtering (only 0x08/0x06/0x50 accepted as BOT mass storage).

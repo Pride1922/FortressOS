@@ -1,3 +1,15 @@
+Status: COMPLETED (Phase 5, superseded by later phases).
+Current state: see ROADMAP.md §"[Phase 5] ACPI Discovery & APIC Timer
+(COMPLETE)" and AGENTS.md §2 for current hardware evidence.
+
+This file is preserved as the planning and verification artifact for
+Phase 5. It describes the state and boundaries as of completion. Some
+items marked "deferred" here have since been implemented in later phases
+(NMI hardening, physical Dell verification of I/O APIC delivery via
+IRQ1/IRQ4); see ROADMAP.md for the current state. The remaining
+"not supported" boundaries (SMP, x2APIC, runtime route changes) are
+still accurate.
+
 # Phase 5 hardening and validation
 
 ## Completed implementation
