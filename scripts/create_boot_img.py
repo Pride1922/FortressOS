@@ -327,16 +327,40 @@ def build_bootable_img(output_img: Path, iso_root: Path, limine_dir: Path,
         part_array_crc
     ).ljust(SECTOR_SIZE, b"\x00")
 
+    part2_uuid = uuid.UUID(bytes_le=part2_guid)
+    part2_guid_str = str(part2_uuid).upper()
+
     output_img.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp = Path(temp_dir)
         part1_img = temp / "part1_esp.img"
         part2_img = temp / "part2_ext2.img"
+        custom_limine_conf = temp / "limine.conf"
 
+        conf_content = (
+            "# Limine Bootloader Configuration for FortressOS\n"
+            "timeout: 3\n"
+            "wallpaper: boot():/boot/splash.png\n"
+            "wallpaper_style: centered\n"
+            "backdrop: 1A1B26\n\n"
+            "/FortressOS (UEFI x86_64)\n"
+            "    protocol: limine\n"
+            "    kernel_path: boot():/boot/fortress.elf\n"
+            "    module_path: boot():/boot/initramfs.tar\n"
+            f"    kernel_cmdline: usb_data=PARTUUID={part2_guid_str} usb_data_mode=ro\n\n"
+            f"/FortressOS (Persistent Storage - Writable: PARTUUID={part2_guid_str})\n"
+            "    protocol: limine\n"
+            "    kernel_path: boot():/boot/fortress.elf\n"
+            "    module_path: boot():/boot/initramfs.tar\n"
+            f"    kernel_cmdline: usb_data=PARTUUID={part2_guid_str} usb_data_mode=rw\n"
+        )
+        custom_limine_conf.write_text(conf_content)
+
+        print(f"  [IMG] Data partition PARTUUID: {part2_guid_str}")
         print("  [IMG] Formatting FAT32 EFI System Partition (64 MiB)...")
-        create_esp_partition(part1_img, iso_root, limine_dir, kernel_elf,
-                             initramfs_tar, limine_conf, splash_file)
+        create_esp_partition(part1_img, None, limine_dir, kernel_elf,
+                             initramfs_tar, custom_limine_conf, splash_file)
 
         print("  [IMG] Formatting ext2 Persistent Data Partition (64 MiB)...")
         create_ext2_partition(part2_img)

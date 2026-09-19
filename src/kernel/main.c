@@ -26,6 +26,7 @@
 #include "crc32.h"
 #include "gpt.h"
 #include "ext2.h"
+#include "usb_mount.h"
 #include "power.h"
 #include "logo.h"
 
@@ -80,6 +81,13 @@ static volatile struct limine_module_request module_request = {
 __attribute__((used, section(".requests")))
 static volatile struct limine_rsdp_request rsdp_request = {
     .id = LIMINE_RSDP_REQUEST,
+    .revision = 0,
+    .response = NULL
+};
+
+__attribute__((used, section(".requests")))
+static volatile struct limine_kernel_file_request kernel_file_request = {
+    .id = LIMINE_KERNEL_FILE_REQUEST,
     .revision = 0,
     .response = NULL
 };
@@ -3188,7 +3196,8 @@ void kmain(void) {
                    kernel_address_request.response,
                    framebuffer_request.response,
                    rsdp_request.response,
-                   module_request.response);
+                   module_request.response,
+                   kernel_file_request.response);
 
     /* 11. Virtual Memory Manager (VMM) & 4-Level Paging */
     /* Step 1 & 2: Build new tables and inspect required mappings */
@@ -4506,6 +4515,7 @@ pf_boot_guard_done:
     /* Keep discovery visible near the shell on hardware without COM1. */
     pci_report_xhci();
     xhci_boot_probe(&boot_info);
+    usb_mount_production_storage(&boot_info);
     vfs_node_t *shell = vfs_lookup("/bin/shell");
     if (!shell || shell->type != VFS_FILE || !shell->data) {
         serial_puts("[FAIL] /bin/shell missing from initramfs.\n");

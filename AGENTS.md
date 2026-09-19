@@ -40,8 +40,8 @@ checkpoint history there, and verification claims tied to actual evidence.
 | 9C.5 power & layout | Power/reset and US/AZERTY switching implemented (`9a3c4b4`); `make test-power` exercises QEMU power commands. Dell 5590 manual verification confirmed working ACPI S5 shutdown, reboot, and Belgian AZERTY layout switching (accented keys é/è/ç/à fixed in H4). |
 | Phase 9G.1 xHCI Controller & Enumeration | COMPLETE (2026-09-19): PCI discovery (9G.1a), MMIO/reset (9G.1b), Command/Event rings (9G.1c), Root ports (9G.1d), and Device Addressing & Configuration (9G.1e) verified on QEMU (BIOS & UEFI) and bare-metal Dell Latitude 5590. Dell Kingston/Phison flash drive (VID 0x13FE, PID 0x4200) identified on Slot 3, Port 9 with Bulk-In EP 0x81 and Bulk-Out EP 0x02. Non-storage devices (Port 5 webcam 0x0E) safely filtered and slot released. |
 | Phase 9G.2 Read-only USB block device | COMPLETE (2026-09-19): Bulk endpoint transfer rings (DCI 3 & 4), Bulk-Only Transport (BOT), SCSI engine (INQUIRY, TEST UNIT READY, READ CAPACITY 10, READ 10), block device registration (`sda`), Sector 0 MBR signature verification (`0xAA55`), and GPT partition table parsing (`sdap1` ESP FAT32 64 MiB, `sdap2` ext2 data 64 MiB) verified on QEMU (BIOS & UEFI) and bare-metal Dell Latitude 5590 (Kingston 16 GB flash drive, 30,320,640 sectors). |
-| In progress: Phase 9G.3 Production `/mnt` mount | Active implementation checkpoint: Mount `sdap2` read-only at `/mnt`, display device provenance, verify `ls /mnt` and `cat /mnt/README.txt` without NVMe fixtures. Physical Dell verification. |
-| Following milestones | 9G.4 Writable persistence, Accounts/permissions and installer. Physical Dell verification is part of each applicable 9G stage. |
+| Phase 9G.3 Production `/mnt` mount | COMPLETE (2026-09-19): Boot command line captured from Limine (`kernel_file_request`), bounded cmdline parser for `usb_data=PARTUUID=<guid>` and `usb_data_mode=ro|rw` with bidirectional `gpt_str_to_guid()`, storage initialization independent of QEMU NVMe fixtures, partition candidate selection by USB device provenance (`sda`) and unique GPT GUID, ambiguity rejection (duplicate clones, missing targets, malformed parameters, invalid GPT policy), read-only ext2 mount at `/mnt`, visible provenance reporting, `create_boot_img.py` customized `limine.conf` generation and PARTUUID reporting, host ASan/UBSan unit test suite (`scripts/test_usb_mount_host.py`), and full automated BIOS/UEFI QEMU suite (`make test-usb-mount`) with `ls /mnt` and `cat /mnt/README.txt` verified. Verified on Dell Latitude 5590 hardware (photographic confirmation). |
+| In progress / Following milestones | Phase 9G.4 Writable persistence. |
 
 ### Phase 9G implementation handoff
 
@@ -51,8 +51,8 @@ driver. Limine loading the kernel from USB does not establish kernel USB I/O.
 The existing mount path uses `nvme0n1p1` inside QEMU fixture tests; the image's
 ext2 partition is partition 2 (`sdap2`). Do not reuse fixture assertions as production
 storage initialization. The remaining stages are the implementation handoff
-for Antigravity; Phase 9G.1 and Phase 9G.2 are completely verified on Dell hardware (2026-09-19).
-Active checkpoint is 9G.3 Production `/mnt` mount. Dell hardware acceptance is recorded in ROADMAP.md (2026-09-19).
+for Antigravity; Phase 9G.1, 9G.2, and 9G.3 are verified in automated suites and on Dell Latitude 5590 hardware.
+Active checkpoint is 9G.4 Writable persistence. Dell hardware acceptance is recorded in ROADMAP.md.
 
 | Stage | Implementation scope | Acceptance before advancing | What the next stage assumes from this one |
 | --- | --- | --- | --- |

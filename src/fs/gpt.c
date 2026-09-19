@@ -79,6 +79,57 @@ void gpt_guid_to_str(const gpt_guid_t *guid, char *out_str) {
     out_str[idx] = '\0';
 }
 
+static int hex_char_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int parse_hex_byte(const char *s) {
+    int hi = hex_char_val(s[0]);
+    int lo = hex_char_val(s[1]);
+    if (hi < 0 || lo < 0) return -1;
+    return (hi << 4) | lo;
+}
+
+bool gpt_str_to_guid(const char *str, gpt_guid_t *out_guid) {
+    if (!str || !out_guid) return false;
+    if (strlen(str) < 36) return false;
+    if (str[8] != '-' || str[13] != '-' || str[18] != '-' || str[23] != '-') return false;
+
+    int b[16];
+    /* Data1 (4 bytes, little-endian in guid->bytes[0..3]) */
+    b[3] = parse_hex_byte(str + 0);
+    b[2] = parse_hex_byte(str + 2);
+    b[1] = parse_hex_byte(str + 4);
+    b[0] = parse_hex_byte(str + 6);
+
+    /* Data2 (2 bytes, little-endian in guid->bytes[4..5]) */
+    b[5] = parse_hex_byte(str + 9);
+    b[4] = parse_hex_byte(str + 11);
+
+    /* Data3 (2 bytes, little-endian in guid->bytes[6..7]) */
+    b[7] = parse_hex_byte(str + 14);
+    b[6] = parse_hex_byte(str + 16);
+
+    /* Data4 (8 bytes, big-endian in guid->bytes[8..15]) */
+    b[8]  = parse_hex_byte(str + 19);
+    b[9]  = parse_hex_byte(str + 21);
+    b[10] = parse_hex_byte(str + 24);
+    b[11] = parse_hex_byte(str + 26);
+    b[12] = parse_hex_byte(str + 28);
+    b[13] = parse_hex_byte(str + 30);
+    b[14] = parse_hex_byte(str + 32);
+    b[15] = parse_hex_byte(str + 34);
+
+    for (int i = 0; i < 16; i++) {
+        if (b[i] < 0) return false;
+        out_guid->bytes[i] = (uint8_t)b[i];
+    }
+    return true;
+}
+
 /* Bounded Partition Device Read Handler */
 static bool gpt_partition_read_sector(block_dev_t *dev, uint64_t lba, void *buf) {
     if (!dev || !buf) return false;

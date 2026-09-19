@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""9G.1a PCI-only discovery: BIOS/UEFI, present/absent xHCI, no data disk.
+"""USB controller, enumeration, block device, and production /mnt mount acceptance suite.
 
-Boot media is the ISO; no USB transfers or persistence are claimed. Firmware
-code and a disposable vars copy are the only permitted -drive backends.
+Covers:
+- 9G.1a PCI discovery (BIOS/UEFI, present/absent xHCI, no data disk)
+- 9G.1b Reset & MMIO
+- 9G.1c Rings & No-Op
+- 9G.1d Root Ports & Reset
+- 9G.1e Device Addressing & Descriptors
+- 9G.2  Bulk-Only Transport & Read-Only Block Device
+- 9G.3  Production /mnt Mount of persistent ext2 data partition (sdap2)
 """
 from pathlib import Path
 import re
@@ -18,6 +24,22 @@ CODE = Path('/usr/share/OVMF/OVMF_CODE_4M.fd')
 VARS = Path('/usr/share/OVMF/OVMF_VARS_4M.fd')
 
 
+def qmp_type_string(qmp, text):
+    for char in text:
+        is_upper = char.isupper()
+        base = char.lower()
+        code = {' ': 'spc', '\n': 'ret', '/': 'slash', '.': 'dot', '_': 'minus'}.get(base, base)
+        events = []
+        if is_upper:
+            events.append({'type': 'key', 'data': {'down': True, 'key': {'type': 'qcode', 'data': 'shift'}}})
+        events.append({'type': 'key', 'data': {'down': True, 'key': {'type': 'qcode', 'data': code}}})
+        events.append({'type': 'key', 'data': {'down': False, 'key': {'type': 'qcode', 'data': code}}})
+        if is_upper:
+            events.append({'type': 'key', 'data': {'down': False, 'key': {'type': 'qcode', 'data': 'shift'}}})
+        qmp.execute('input-send-event', {'events': events})
+        time.sleep(0.03)
+
+
 def run(firmware, present, mode='discovery'):
     name = f'usb-{mode}-{firmware}-{"present" if present else "absent"}'
     log = REPO / 'build' / f'{name}.log'
@@ -26,7 +48,7 @@ def run(firmware, present, mode='discovery'):
     with tempfile.TemporaryDirectory(prefix='fortress-usb-discovery-') as tmp:
         cmd = ['qemu-system-x86_64', '-M', 'q35', '-m', '2G', '-accel', 'tcg',
                '-smp', '1', '-display', 'none', '-monitor', 'none', '-no-reboot',
-               '-serial', f'file:{log}', '-boot', 'd', '-cdrom', 'bin/fortress.iso']
+               '-serial', f'file:{log}']
         firmware_drives = []
         if firmware == 'uefi':
             assert CODE.is_file() and VARS.is_file(), 'Paired OVMF 4M firmware required'
@@ -38,44 +60,67 @@ def run(firmware, present, mode='discovery'):
             ]
             for drive in firmware_drives:
                 cmd += ['-drive', drive]
-        if present:
-            if mode in ('descriptors', 'block'):
+
+        usb_disk = None
+        if mode == 'mount':
+            if present:
                 cmd += ['-device', 'qemu-xhci,id=xhci,p2=4,p3=0']
                 usb_disk = Path(tmp) / 'usb_storage.img'
-                if mode == 'block' and (REPO / 'bin' / 'fortress.img').exists():
-                    usb_disk.write_bytes((REPO / 'bin' / 'fortress.img').read_bytes())
-                else:
-                    content = bytearray(1024 * 1024)
-                    content[510] = 0x55
-                    content[511] = 0xAA
-                    usb_disk.write_bytes(content)
-                cmd += ['-drive', f'if=none,id=usbdrive,format=raw,file={usb_disk}',
-                        '-device', 'usb-storage,drive=usbdrive']
+                assert (REPO / 'bin' / 'fortress.img').exists(), "bin/fortress.img required for mount test"
+                usb_disk.write_bytes((REPO / 'bin' / 'fortress.img').read_bytes())
+                cmd += ['-device', 'usb-storage,drive=usbdrive,bootindex=1',
+                        '-drive', f'if=none,id=usbdrive,format=raw,file={usb_disk}']
             else:
-                cmd += ['-device', 'qemu-xhci,id=xhci']
-        if mode in ('reset', 'rings', 'ports', 'descriptors', 'block'):
+                cmd += ['-boot', 'd', '-cdrom', 'bin/fortress.iso']
             cmd += ['-qmp', f'unix:{tmp}/qmp,server=on,wait=off']
+        else:
+            cmd += ['-boot', 'd', '-cdrom', 'bin/fortress.iso']
+            if present:
+                if mode in ('descriptors', 'block'):
+                    cmd += ['-device', 'qemu-xhci,id=xhci,p2=4,p3=0']
+                    usb_disk = Path(tmp) / 'usb_storage.img'
+                    if mode == 'block' and (REPO / 'bin' / 'fortress.img').exists():
+                        usb_disk.write_bytes((REPO / 'bin' / 'fortress.img').read_bytes())
+                    else:
+                        content = bytearray(1024 * 1024)
+                        content[510] = 0x55
+                        content[511] = 0xAA
+                        usb_disk.write_bytes(content)
+                    cmd += ['-drive', f'if=none,id=usbdrive,format=raw,file={usb_disk}',
+                            '-device', 'usb-storage,drive=usbdrive']
+                else:
+                    cmd += ['-device', 'qemu-xhci,id=xhci']
+            if mode in ('reset', 'rings', 'ports', 'descriptors', 'block'):
+                cmd += ['-qmp', f'unix:{tmp}/qmp,server=on,wait=off']
 
-        # Assert final argv, not just inputs: no NVMe/USB data fixture is needed
-        # for PCI discovery. ISO boot is the sole non-firmware storage backend.
+        # Assert final argv, not just inputs: only firmware drives and the disposable USB disk are permitted.
         permitted_drives = list(firmware_drives)
-        if mode in ('descriptors', 'block') and present:
+        if mode == 'mount':
+            if present:
+                permitted_drives.append(f'if=none,id=usbdrive,format=raw,file={usb_disk}')
+        elif mode in ('descriptors', 'block') and present:
             permitted_drives.append(f'if=none,id=usbdrive,format=raw,file={usb_disk}')
         assert [cmd[i + 1] for i, arg in enumerate(cmd) if arg == '-drive'] == permitted_drives
         assert '-blockdev' not in cmd and '-hda' not in cmd and '-hdb' not in cmd
+
         expected_devices = []
-        if present:
+        if mode == 'mount':
+            if present:
+                expected_devices.append('qemu-xhci,id=xhci,p2=4,p3=0')
+                expected_devices.append('usb-storage,drive=usbdrive,bootindex=1')
+        elif present:
             if mode in ('descriptors', 'block'):
                 expected_devices.append('qemu-xhci,id=xhci,p2=4,p3=0')
                 expected_devices.append('usb-storage,drive=usbdrive')
             else:
                 expected_devices.append('qemu-xhci,id=xhci')
         assert [cmd[i + 1] for i, arg in enumerate(cmd) if arg == '-device'] == expected_devices
+
         with (REPO / 'build' / f'{name}.stderr').open('w') as err:
             child = subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.DEVNULL, stderr=err)
             qmp = None
             try:
-                if mode in ('reset', 'rings', 'ports', 'descriptors', 'block'):
+                if mode in ('reset', 'rings', 'ports', 'descriptors', 'block', 'mount'):
                     qmp = QMP(Path(tmp) / 'qmp')
                 deadline = time.monotonic() + 90
                 while time.monotonic() < deadline:
@@ -95,6 +140,7 @@ def run(firmware, present, mode='discovery'):
                 else:
                     assert 'No xHCI controller found; continuing without USB storage' in output
                     assert 'First xHCI controller:' not in output
+
                 if mode in ('reset', 'rings', 'ports', 'descriptors', 'block'):
                     if present:
                         assert '[USB 9G.1b] PASS: reset complete; halted, CNR=0' in output
@@ -118,6 +164,7 @@ def run(firmware, present, mode='discovery'):
                             assert '[USB 9G.2] PASS: Sector 0 read verified' in output
                     else:
                         assert '[USB 9G.1b] No xHCI controller; skipped' in output
+
                     # Real PS/2 delivery after controller reset/rings/ports/descriptors; not just a banner.
                     start = len(log.read_text(errors='replace'))
                     for char in 'echo resetok\n':
@@ -138,6 +185,55 @@ def run(firmware, present, mode='discovery'):
                         raise AssertionError(f'{name}: post-reset PS/2 echo failed')
                     qmp.execute('screendump', {'filename': str(REPO / 'build' / f'{name}.png'),
                                               'format': 'png'})
+
+                elif mode == 'mount':
+                    if present:
+                        assert '[USB 9G.3] Selected USB device: sda, partition: sdap2' in output
+                        assert '[USB 9G.3] Mount mode: read-only' in output
+                        assert '[USB 9G.3] PASS: Mounted sdap2 read-only at /mnt' in output
+
+                        # Test 1: ls /mnt
+                        start = len(log.read_text(errors='replace'))
+                        qmp_type_string(qmp, 'ls /mnt\n')
+                        deadline = time.monotonic() + 15
+                        while time.monotonic() < deadline:
+                            reply = log.read_text(errors='replace')[start:].replace('\r', '')
+                            if 'README.txt' in reply and 'fortress> ' in reply:
+                                break
+                            assert child.poll() is None
+                            time.sleep(0.05)
+                        else:
+                            raise AssertionError(f'{name}: ls /mnt failed to list README.txt')
+
+                        # Test 2: cat /mnt/README.txt
+                        start = len(log.read_text(errors='replace'))
+                        qmp_type_string(qmp, 'cat /mnt/README.txt\n')
+                        deadline = time.monotonic() + 15
+                        while time.monotonic() < deadline:
+                            reply = log.read_text(errors='replace')[start:].replace('\r', '')
+                            if 'FortressOS Persistent Storage' in reply and 'fortress> ' in reply:
+                                break
+                            assert child.poll() is None
+                            time.sleep(0.05)
+                        else:
+                            raise AssertionError(f'{name}: cat /mnt/README.txt failed')
+                    else:
+                        assert '[USB 9G.3] No USB mass-storage controller or device available' in output
+                        start = len(log.read_text(errors='replace'))
+                        qmp_type_string(qmp, 'echo absentok\n')
+                        deadline = time.monotonic() + 10
+                        while time.monotonic() < deadline:
+                            reply = log.read_text(errors='replace')[start:].replace('\r', '')
+                            if '\nabsentok\n' in reply and 'fortress> ' in reply:
+                                break
+                            assert child.poll() is None
+                            time.sleep(0.05)
+                        else:
+                            raise AssertionError(f'{name}: absent echo failed')
+
+                    qmp.execute('screendump', {'filename': str(REPO / 'build' / f'{name}.png'),
+                                              'format': 'png'})
+
                 print(f'PASS {name}: PCI result and interactive shell; {log}', flush=True)
             finally:
                 if qmp:
@@ -158,8 +254,9 @@ if __name__ == '__main__':
     parser.add_argument('--ports', action='store_true')
     parser.add_argument('--descriptors', action='store_true')
     parser.add_argument('--block', action='store_true')
+    parser.add_argument('--mount', action='store_true')
     args = parser.parse_args()
-    mode = 'block' if args.block else ('descriptors' if args.descriptors else ('ports' if args.ports else ('rings' if args.rings else ('reset' if args.reset else 'discovery'))))
+    mode = 'mount' if args.mount else ('block' if args.block else ('descriptors' if args.descriptors else ('ports' if args.ports else ('rings' if args.rings else ('reset' if args.reset else 'discovery')))))
     for firmware in ('bios', 'uefi'):
         for present in (False, True):
             run(firmware, present, mode)

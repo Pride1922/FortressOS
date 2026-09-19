@@ -106,5 +106,6 @@ gpt_policy_result_t  gpt_get_last_policy(void);
 
 bool                 gpt_guid_equal(const gpt_guid_t *a, const gpt_guid_t *b);
 void                 gpt_guid_to_str(const gpt_guid_t *guid, char *out_str);
+bool                 gpt_str_to_guid(const char *str, gpt_guid_t *out_guid);
 
 #endif /* FORTRESS_GPT_H */

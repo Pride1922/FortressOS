@@ -8,7 +8,8 @@ void boot_info_init(boot_info_t *out_info,
                     struct limine_kernel_address_response *kernel_addr_resp,
                     struct limine_framebuffer_response *fb_resp,
                     struct limine_rsdp_response *rsdp_resp,
-                    struct limine_module_response *module_resp) {
+                    struct limine_module_response *module_resp,
+                    struct limine_kernel_file_response *kernel_file_resp) {
     if (!out_info) return;
     memset(out_info, 0, sizeof(boot_info_t));
 
@@ -83,6 +84,27 @@ void boot_info_init(boot_info_t *out_info,
                 out_info->memmap_entries[i].type   = entry->type;
             }
         }
+    }
+
+    /* 5. Snapshot Kernel Command Line */
+    if (kernel_file_resp && kernel_file_resp->kernel_file && kernel_file_resp->kernel_file->cmdline) {
+        const char *cmd = kernel_file_resp->kernel_file->cmdline;
+        size_t len = strlen(cmd);
+        if (len >= sizeof(out_info->cmdline)) {
+            len = sizeof(out_info->cmdline) - 1;
+        }
+        memcpy(out_info->cmdline, cmd, len);
+        out_info->cmdline[len] = '\0';
+    } else {
+        out_info->cmdline[0] = '\0';
+    }
+
+    if (out_info->cmdline[0] != '\0') {
+        serial_puts("[BOOT] Kernel cmdline: \"");
+        serial_puts(out_info->cmdline);
+        serial_puts("\"\n");
+    } else {
+        serial_puts("[BOOT] Kernel cmdline: (none)\n");
     }
 
     serial_puts("[ OK ] Boot metadata captured into kernel memory (deep copy complete)\n");

@@ -168,6 +168,12 @@ test-usb-block: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 	@python3 scripts/test_xhci_bot_host.py
 	@python3 scripts/test_usb_discovery.py --block
 
+.PHONY: test-usb-mount
+test-usb-mount: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
+	@python3 scripts/test_usb_mount_host.py
+	@python3 scripts/test_usb_discovery.py --mount
+
+
 
 
 USER_DIR := user

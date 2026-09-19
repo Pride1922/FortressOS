@@ -32,6 +32,9 @@ typedef struct {
     uint64_t initramfs_paddr;
     uint64_t initramfs_vaddr;
     uint64_t initramfs_size;
+
+    /* Deep-copied kernel command line (kernel-owned) */
+    char     cmdline[512];
 } boot_info_t;
 
 void boot_info_init(boot_info_t *out_info,
@@ -40,6 +43,7 @@ void boot_info_init(boot_info_t *out_info,
                     struct limine_kernel_address_response *kernel_addr_resp,
                     struct limine_framebuffer_response *fb_resp,
                     struct limine_rsdp_response *rsdp_resp,
-                    struct limine_module_response *module_resp);
+                    struct limine_module_response *module_resp,
+                    struct limine_kernel_file_response *kernel_file_resp);
 
 #endif /* FORTRESS_BOOT_INFO_H */
