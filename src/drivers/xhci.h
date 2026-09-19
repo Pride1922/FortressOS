@@ -4,6 +4,17 @@
 #include "block.h"
 #include "xhci_bot.h"
 
+#define XHCI_MAX_CONTROLLERS 4
+
+typedef struct {
+    xhci_rings_io_t    rings_io;
+    xhci_dma_buffers_t dma;
+    xhci_dev_dma_t     dev_dma;
+    xhci_bot_rings_t   bot_rings;
+    xhci_bot_error_t   flush_error;
+    xhci_dump_record_t dump_record;
+} xhci_controller_t;
+
 /* One-shot 9G.1b boot probe, after PCI/input initialization, with IRQs and
  * preemption disabled and no locks held. Uses PIT channel 2 for bounded waits.
  * Sizes/restores BAR0 with decode disabled, maps UC/NX MMIO, requests firmware

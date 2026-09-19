@@ -12,12 +12,8 @@
 #include "spinlock.h"
 #include <string.h>
 
-static xhci_rings_io_t s_rings_io;
-static xhci_dma_buffers_t s_dma;
-static xhci_dev_dma_t s_dev_dma;
-static xhci_bot_rings_t s_bot_rings;
+static xhci_controller_t s_controllers[XHCI_MAX_CONTROLLERS];
 static bool s_usb_storage_ready = false;
-static xhci_bot_error_t s_flush_error;
 static bool s_flush_error_pending;
 
 /* Dedicated boot-only UC/NX window, separate from LAPIC/IOAPIC and heap. */
@@ -95,50 +91,51 @@ static void print_snapshot(const xhci_reset_result_t *r) {
     }
 }
 
-static xhci_dump_record_t g_dump_record;
 static bool g_dump_pending = false;
 
 void usb_dump_state(void) {
+    xhci_controller_t *ctl = &s_controllers[0];
     spin_debug_assert_unheld();
-    if (!g_dump_pending && !g_dump_record.valid) return;
+    if (!g_dump_pending && !ctl->dump_record.valid) return;
     g_dump_pending = false;
     serial_puts("[USB DUMP] Controller USBCMD=");
-    serial_print_hex(g_dump_record.usbcmd);
+    serial_print_hex(ctl->dump_record.usbcmd);
     serial_puts(" USBSTS=");
-    serial_print_hex(g_dump_record.usbsts);
+    serial_print_hex(ctl->dump_record.usbsts);
     serial_puts(" PAGESIZE=");
-    serial_print_hex(g_dump_record.pagesize);
+    serial_print_hex(ctl->dump_record.pagesize);
     serial_puts("\n[USB DUMP] CmdRing EnqueueIdx=");
-    serial_print_hex(g_dump_record.cmd_enqueue_idx);
+    serial_print_hex(ctl->dump_record.cmd_enqueue_idx);
     serial_puts(" CycleState=");
-    serial_print_hex(g_dump_record.cmd_cycle_state);
+    serial_print_hex(ctl->dump_record.cmd_cycle_state);
     serial_puts("\n[USB DUMP] Last Submitted TRB: param=");
-    serial_print_hex(g_dump_record.last_submitted_trb.parameter_low);
+    serial_print_hex(ctl->dump_record.last_submitted_trb.parameter_low);
     serial_puts(" status=");
-    serial_print_hex(g_dump_record.last_submitted_trb.status);
+    serial_print_hex(ctl->dump_record.last_submitted_trb.status);
     serial_puts(" ctrl=");
-    serial_print_hex(g_dump_record.last_submitted_trb.control);
+    serial_print_hex(ctl->dump_record.last_submitted_trb.control);
     serial_puts("\n[USB DUMP] EventRing DequeueIdx=");
-    serial_print_hex(g_dump_record.event_dequeue_idx);
+    serial_print_hex(ctl->dump_record.event_dequeue_idx);
     serial_puts(" CycleState=");
-    serial_print_hex(g_dump_record.event_cycle_state);
+    serial_print_hex(ctl->dump_record.event_cycle_state);
     serial_puts(" CompCode=");
-    serial_print_hex(g_dump_record.completion_code);
+    serial_print_hex(ctl->dump_record.completion_code);
     serial_puts("\n[USB DUMP] Last Completed TRB: param=");
-    serial_print_hex(g_dump_record.last_completed_trb.parameter_low);
+    serial_print_hex(ctl->dump_record.last_completed_trb.parameter_low);
     serial_puts(" status=");
-    serial_print_hex(g_dump_record.last_completed_trb.status);
+    serial_print_hex(ctl->dump_record.last_completed_trb.status);
     serial_puts(" ctrl=");
-    serial_print_hex(g_dump_record.last_completed_trb.control);
+    serial_print_hex(ctl->dump_record.last_completed_trb.control);
     serial_puts("\n");
-    if (g_dump_record.error_msg) {
+    if (ctl->dump_record.error_msg) {
         serial_puts("[USB DUMP] Diagnostic note: ");
-        serial_puts(g_dump_record.error_msg);
+        serial_puts(ctl->dump_record.error_msg);
         serial_puts("\n");
     }
 }
 
 void xhci_boot_probe(const boot_info_t *boot_info) {
+    xhci_controller_t *ctl = &s_controllers[0];
     static bool attempted;
     if (attempted) return;
     attempted = true;
@@ -344,7 +341,7 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
     }
 
     /* Verify rings (starts controller and verifies No-Op command) */
-    bool rings_ok = xhci_verify_rings(&rings_io, &dma, &g_dump_record);
+    bool rings_ok = xhci_verify_rings(&rings_io, &dma, &ctl->dump_record);
 
     if (rings_ok) {
         serial_puts("[USB 9G.1c] PASS: No-Op command completed; Command Completion Event received\n");
@@ -432,32 +429,32 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
                         /* Phase 9G.2: Bulk-Only Transport & Read-Only Block Device ("sda") */
                         uintptr_t bulk_in_phys = pmm_alloc_page();
                         uintptr_t bulk_out_phys = pmm_alloc_page();
-                        s_bot_rings.bulk_in_ring_phys = bulk_in_phys;
-                        s_bot_rings.bulk_in_ring_virt = (xhci_trb_t *)vmm_phys_to_virt(bulk_in_phys);
-                        s_bot_rings.bulk_out_ring_phys = bulk_out_phys;
-                        s_bot_rings.bulk_out_ring_virt = (xhci_trb_t *)vmm_phys_to_virt(bulk_out_phys);
+                        ctl->bot_rings.bulk_in_ring_phys = bulk_in_phys;
+                        ctl->bot_rings.bulk_in_ring_virt = (xhci_trb_t *)vmm_phys_to_virt(bulk_in_phys);
+                        ctl->bot_rings.bulk_out_ring_phys = bulk_out_phys;
+                        ctl->bot_rings.bulk_out_ring_virt = (xhci_trb_t *)vmm_phys_to_virt(bulk_out_phys);
 
-                        if (xhci_configure_bulk_endpoints(&rings_io, &dma, &dev_dma, &bot_dev, &s_bot_rings)) {
+                        if (xhci_configure_bulk_endpoints(&rings_io, &dma, &dev_dma, &bot_dev, &ctl->bot_rings)) {
                             serial_puts("[USB 9G.2] Bulk endpoints configured (In=0x");
-                            serial_print_hex(s_bot_rings.in_dci);
+                            serial_print_hex(ctl->bot_rings.in_dci);
                             serial_puts(" Out=0x");
-                            serial_print_hex(s_bot_rings.out_dci);
+                            serial_print_hex(ctl->bot_rings.out_dci);
                             serial_puts(")\n");
 
                             scsi_inquiry_data_t inq = {0};
-                            if (xhci_scsi_inquiry(&rings_io, &dma, &dev_dma, &s_bot_rings, &inq)) {
+                            if (xhci_scsi_inquiry(&rings_io, &dma, &dev_dma, &ctl->bot_rings, &inq)) {
                                 serial_puts("[USB 9G.2] SCSI INQUIRY: Vendor=\"");
-                                serial_puts(s_bot_rings.vendor);
+                                serial_puts(ctl->bot_rings.vendor);
                                 serial_puts("\" Product=\"");
-                                serial_puts(s_bot_rings.product);
+                                serial_puts(ctl->bot_rings.product);
                                 serial_puts("\"\n");
                             }
 
-                            xhci_scsi_test_unit_ready(&rings_io, &dma, &dev_dma, &s_bot_rings);
+                            xhci_scsi_test_unit_ready(&rings_io, &dma, &dev_dma, &ctl->bot_rings);
 
                             uint64_t sectors = 0;
                             uint32_t sector_size = 0;
-                            if (xhci_scsi_read_capacity(&rings_io, &dma, &dev_dma, &s_bot_rings, &sectors, &sector_size)) {
+                            if (xhci_scsi_read_capacity(&rings_io, &dma, &dev_dma, &ctl->bot_rings, &sectors, &sector_size)) {
                                 serial_puts("[USB 9G.2] SCSI Capacity: LBA count=");
                                 serial_print_hex((uint32_t)(sectors >> 32));
                                 serial_print_hex((uint32_t)sectors);
@@ -465,9 +462,9 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
                                 serial_print_dec(sector_size);
                                 serial_puts(" bytes\n");
 
-                                s_rings_io = rings_io;
-                                s_dma = dma;
-                                s_dev_dma = dev_dma;
+                                ctl->rings_io = rings_io;
+                                ctl->dma = dma;
+                                ctl->dev_dma = dev_dma;
                                 s_usb_storage_ready = true;
 
                                  if (block_register_usb()) {
@@ -494,7 +491,7 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
                                      * Must be called in thread context with no subsystem lock.
                                      * bot_rings is stable: only set once during boot, never freed. */
                                     serial_puts("[USB 9G.4] Probing USB cache durability policy...\n");
-                                    xhci_bot_probe_durability(&s_rings_io, &s_dma, &s_dev_dma, &s_bot_rings);
+                                    xhci_bot_probe_durability(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings);
                                 }
                             }
                         }
@@ -604,34 +601,39 @@ bool usb_is_initialized(void) {
 }
 
 uint32_t usb_get_sector_size(void) {
-    return s_bot_rings.sector_size;
+    xhci_controller_t *ctl = &s_controllers[0];
+    return ctl->bot_rings.sector_size;
 }
 
 uint64_t usb_get_sector_count(void) {
-    return s_bot_rings.sector_count;
+    xhci_controller_t *ctl = &s_controllers[0];
+    return ctl->bot_rings.sector_count;
 }
 
 bool usb_block_read(block_dev_t *dev, uint64_t lba, void *buf) {
+    xhci_controller_t *ctl = &s_controllers[0];
     (void)dev;
     if (!s_usb_storage_ready) return false;
-    return xhci_scsi_read_sector(&s_rings_io, &s_dma, &s_dev_dma, &s_bot_rings, lba, buf);
+    return xhci_scsi_read_sector(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings, lba, buf);
 }
 
 bool usb_block_write(block_dev_t *dev, uint64_t lba, const void *buf) {
+    xhci_controller_t *ctl = &s_controllers[0];
     (void)dev;
     if (!s_usb_storage_ready) return false;
-    return xhci_scsi_write_sector(&s_rings_io, &s_dma, &s_dev_dma, &s_bot_rings, lba, buf);
+    return xhci_scsi_write_sector(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings, lba, buf);
 }
 
 bool usb_block_flush(block_dev_t *dev) {
+    xhci_controller_t *ctl = &s_controllers[0];
     (void)dev;
     if (!s_usb_storage_ready) return false;
     uint64_t flags;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
     /* Use the durability-mode-aware barrier; this also latches READ_ONLY on failure */
-    bool ok = xhci_bot_flush_barrier(&s_rings_io, &s_dma, &s_dev_dma, &s_bot_rings);
+    bool ok = xhci_bot_flush_barrier(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings);
     if (!ok && !s_flush_error_pending) {
-        s_flush_error = s_bot_rings.last_error;
+        ctl->flush_error = ctl->bot_rings.last_error;
         s_flush_error_pending = true;
     }
     __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
@@ -639,11 +641,12 @@ bool usb_block_flush(block_dev_t *dev) {
 }
 
 void usb_report_flush_failure(void) {
+    xhci_controller_t *ctl = &s_controllers[0];
     spin_debug_assert_unheld();
     uint64_t flags;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
     bool pending = s_flush_error_pending;
-    xhci_bot_error_t error = s_flush_error;
+    xhci_bot_error_t error = ctl->flush_error;
     s_flush_error_pending = false;
     __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
     if (!pending) return;
@@ -668,6 +671,7 @@ void usb_report_flush_failure(void) {
 }
 
 usb_durability_mode_t usb_get_durability_mode(void) {
+    xhci_controller_t *ctl = &s_controllers[0];
     if (!s_usb_storage_ready) return USB_DURABILITY_UNKNOWN;
-    return xhci_bot_get_durability_mode(&s_bot_rings);
+    return xhci_bot_get_durability_mode(&ctl->bot_rings);
 }

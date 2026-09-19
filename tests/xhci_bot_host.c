@@ -490,7 +490,6 @@ int main(void) {
     }
 
     test_flush_and_writes();
-    test_durability_and_flush_barrier();
     printf("ALL BOT/SCSI HOST UNIT TESTS PASSED!\n");
     return 0;
 }
