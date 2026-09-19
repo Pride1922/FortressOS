@@ -797,36 +797,6 @@ if (bot_rings->transport_failed || bot_rings->latched_offline) {
 }
 
 return info->probed || info->ms10_attempted;
-    /* ---- Probe SYNCHRONIZE CACHE separately (even on write-through devices) ---- */
-    if (!bot_rings->transport_failed && !bot_rings->latched_offline) {
-        bool sync_ok = xhci_scsi_sync_cache(io, ring_dma, dev_dma, bot_rings);
-        info->sync_ok = sync_ok;
-        /* transport_failed after sync probe means cache probe result stands, but
-         * sync is unavailable. Do not propagate as fatal here. */
-    }
-
-    /* Classify policy */
-    if (info->write_protect) {
-        info->policy = USB_DURABILITY_READ_ONLY;
-    } else if (info->ms6_ok || info->ms10_ok) {
-        if (!info->wce) {
-            /* WCE=0: device reports write-through */
-            info->policy = USB_DURABILITY_WRITE_THROUGH;
-        } else if (info->sync_ok) {
-            /* WCE=1 but sync succeeded: sync-backed */
-            info->policy = USB_DURABILITY_SYNC_BACKED;
-        } else {
-            /* WCE=1 and sync unavailable: read-only */
-            info->policy = USB_DURABILITY_READ_ONLY;
-        }
-    } else if (info->sync_ok) {
-        /* Could not read cache page, but sync works: conservative sync-backed */
-        info->policy = USB_DURABILITY_SYNC_BACKED;
-    } else {
-        info->policy = USB_DURABILITY_ASSUMED_WRITE_THROUGH;
-    }
-
-    return info->probed;
 }
 
 /* =============================================================================
