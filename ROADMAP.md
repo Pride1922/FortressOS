@@ -901,13 +901,37 @@ The SanDisk USB 3.x stick was also tested and correctly identified as a SuperSpe
 
 The SanDisk was tested specifically to exercise `WRITE_THROUGH` or `SYNC_BACKED`. It did not enumerate as a USB 2.0 mass-storage device because it is USB 3.x, and 9G's scope explicitly excludes SuperSpeed. This makes SuperSpeed support a prerequisite for physical verification of the strong durability paths — not a convenience, a dependency. That observation motivates Phase 9G.5.
 
-### Phase 9G.5 — USB Topology Expansion (NEXT)
+### Phase 9G.5 — USB Topology Expansion (IN PROGRESS)
 
 SuperSpeed support, multiple-controller enumeration, and hub support. Sequenced as three sub-projects, each with its own acceptance criteria and its own hardware target.
 
-**9G.5a — Multiple xHCI controllers.** Iterate all controllers matching class `0x0C` subclass `0x03` progif `0x30` in PCI enumeration. Each controller gets independent ring, port, and device state; no cross-controller shared state. Test target: QEMU with two `qemu-xhci` instances attached, verifying enumeration on both and correct isolation between them.
+### Phase 9G.5a — Multiple xHCI Controllers (COMPLETE, 2026-09-19)
 
-**9G.5b — SuperSpeed enumeration.** USB 3.x port link state, SuperSpeed slot and endpoint context layout (`MaxBurstSize`, `MaxPacketSize` 1024 for bulk, no `Evaluate Context` for EP0), and SuperSpeed descriptor handling. Test target: SanDisk enumerates on Port 0x12 as a USB 3.0 BOT device with `speed=SuperSpeed`. Success criterion is the `[USB 9G.1e] PASS: BOT Mass Storage device found on Slot N (Port 0x12)` line on the Dell.
+FortressOS now enumerates and initializes every xHCI controller the platform exposes, instead of stopping at the first match. On machines with a single controller the behaviour is unchanged; on machines with two, a mass-storage device on either controller is reachable and mountable.
+
+Delivered in three commits:
+
+- **Commit 1 — `xhci_controller_t` struct and array.** The six controller-scoped statics in `xhci.c` (`s_rings_io`, `s_dma`, `s_dev_dma`, `s_bot_rings`, `s_flush_error`, `g_dump_record`) moved into a single `xhci_controller_t` type, held in `s_controllers[XHCI_MAX_CONTROLLERS]`. Only index 0 was used; no PCI
+  collection, no loop, no per-controller initialization. External signatures, call graph, and log strings unchanged.
+
+- **Commit 2 — bounded enumeration in PCI discovery.**
+  `pci_find_all_devices()` added to `pci.c`, iterating the same topology as the existing `pci_find_device()` but collecting all matches up to a caller-supplied maximum. `pci_report_xhci()` now reports every controller as `xHCI controller N/M: BDF=..., vendor=..., device=...`. Only controller 1 is still initialized. Test runners updated to assert the new log format.
+
+- **Commit 3 — per-controller init loop and active-device selection.**
+  `xhci_boot_probe()` now enumerates all controllers and runs the existing init sequence for each via a new private helper `xhci_init_one_controller()`. A new file-scope pointer `s_active_usb_controller` tracks the controller whose mass-storage device is currently registered as `sda`. Per-controller MMIO windows replace the single shared `XHCI_PROBE_VIRT` mapping. A private `xhci_dump_controller_state()` enables per-controller diagnostics without routing through the active pointer. Only the first successfully registered device becomes active; subsequent mass-storage devices are logged as `Mass-storage device found on controller N, but only one active device is supported` and left unregistered.
+
+**Verification:**
+
+- **QEMU:** dual-controller boot with a single stick on the second controller; all five USB suites pass under BIOS and UEFI; three-boot persistence passes with zero filesystem errors.
+- **Dell Latitude 5590 (one xHCI controller at `0000:00:14.0`):**
+  behaviour identical to commit 2; single `1/1` line; the rest of the boot log unchanged; Kingston mounts RW with `ASSUMED_WRITE_THROUGH`.
+- **Dell Latitude 5530 (two xHCI controllers at `0000:00:14.0` and `0000:00:14.2`):** both controllers enumerated and initialized. With the Kingston plugged into a controller-2 port, the device is found on controller 2, registered as `sda`, and mounted read-write at `/mnt`. SuperSpeed device on Port 0x10 correctly skipped as unsupported. USB hub on Port 0x1 correctly rejected as class 0x09. Prior to commit 3, controller 2 was invisible and `/mnt` was never mounted.
+
+**Not established:** the guard path for a second simultaneously attached mass-storage device. The guard logic (`s_active_usb_controller` check before registration) is in the code and structurally verified, but a two-stick boot was not photographed with the guard message visible in the log.
+
+**Deferred:** the "no scrollback on boot" limitation of the framebuffer console means the head of the boot log (the `1/2` and `2/2` lines) is not photographable from hardware without a kernel-log buffer. This is independent of 9G.5a and tracked as a future work item (`dmesg`-style log capture).
+
+**9G.5b — SuperSpeed enumeration. (NEXT)** USB 3.x port link state, SuperSpeed slot and endpoint context layout (`MaxBurstSize`, `MaxPacketSize` 1024 for bulk, no `Evaluate Context` for EP0), and SuperSpeed descriptor handling. Test target: SanDisk enumerates on Port 0x12 as a USB 3.0 BOT device with `speed=SuperSpeed`. Success criterion is the `[USB 9G.1e] PASS: BOT Mass Storage device found on Slot N (Port 0x12)` line on the Dell.
 
 **9G.5c — Strong durability on the SanDisk.** Once the SanDisk enumerates, its MODE SENSE and SYNCHRONIZE CACHE behavior can be read. Success criterion is a classification other than `ASSUMED_WRITE_THROUGH` — either `WRITE_THROUGH` (explicit `WCE=0`) or  SYNC_BACKED` (working flush). If the SanDisk also reports no cache policy, the strong path remains QEMU-only and that is documented as a device-class finding, not a driver defect.
 
