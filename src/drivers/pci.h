@@ -149,10 +149,12 @@ void     pci_write_config16(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn, 
 
 size_t   pci_scan_all(pci_device_t *out_devices, size_t max_devices);
 bool     pci_find_device(uint8_t class_code, uint8_t subclass, uint8_t prog_if, pci_device_t *out_device);
+size_t   pci_find_all_devices(uint8_t class_code, uint8_t subclass, uint8_t prog_if,
+                              pci_device_t *out_array, size_t max_count);
 void     pci_print_inventory(const pci_device_t *devices, size_t count);
 void     pci_print_bdf(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn);
 
-/* Phase 9G.1a: report first xHCI controller after pci_init, in unlocked boot
+/* Phase 9G.1a: report up to four xHCI controllers after pci_init, in unlocked boot
  * context. Configuration reads only: no BAR sizing, MMIO, command writes,
  * firmware handoff, reset or USB enumeration. Absence is nonfatal. */
 void     pci_report_xhci(void);

@@ -13,6 +13,10 @@
 #include <string.h>
 
 static xhci_controller_t s_controllers[XHCI_MAX_CONTROLLERS];
+/* Published before block registration callbacks; retained only on success. */
+static xhci_controller_t *s_active_usb_controller;
+/* Borrowed only for the synchronous boot probe and cleared before it returns. */
+static const boot_info_t *s_probe_boot_info;
 static bool s_usb_storage_ready = false;
 static bool s_flush_error_pending;
 
@@ -91,13 +95,8 @@ static void print_snapshot(const xhci_reset_result_t *r) {
     }
 }
 
-static bool g_dump_pending = false;
-
-void usb_dump_state(void) {
-    xhci_controller_t *ctl = &s_controllers[0];
+static void xhci_dump_controller_state(xhci_controller_t *ctl) {
     spin_debug_assert_unheld();
-    if (!g_dump_pending && !ctl->dump_record.valid) return;
-    g_dump_pending = false;
     serial_puts("[USB DUMP] Controller USBCMD=");
     serial_print_hex(ctl->dump_record.usbcmd);
     serial_puts(" USBSTS=");
@@ -134,17 +133,25 @@ void usb_dump_state(void) {
     }
 }
 
-void xhci_boot_probe(const boot_info_t *boot_info) {
-    xhci_controller_t *ctl = &s_controllers[0];
-    static bool attempted;
-    if (attempted) return;
-    attempted = true;
+void usb_dump_state(void) {
+    xhci_controller_t *ctl = s_active_usb_controller;
+    if (!ctl) return;
     spin_debug_assert_unheld();
-    pci_device_t d;
-    if (!pci_find_device(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB, PCI_PROGIF_USB_XHCI, &d)) {
-        serial_puts("[USB 9G.1b] No xHCI controller; skipped\n");
-        return;
-    }
+    if (!ctl->dump_record.valid) return;
+    xhci_dump_controller_state(ctl);
+}
+
+static void xhci_init_one_controller(xhci_controller_t *ctl,
+                                     const pci_device_t *pci_dev,
+                                     bool *out_registered_storage) {
+    *out_registered_storage = false;
+    const boot_info_t *boot_info = s_probe_boot_info;
+    pci_device_t d = *pci_dev;
+    size_t controller_index = (size_t)(ctl - s_controllers);
+    /* VMM maps explicit pages: reserve one maximum BAR aperture per controller.
+     * Index zero retains the original UC/NX window; windows never overlap. */
+    uintptr_t probe_virt = XHCI_PROBE_VIRT + controller_index * XHCI_MAX_APERTURE;
+    bool dump_pending = false;
     const char *error = "unsupported BAR0";
     uint32_t low = config_read(&d, PCI_REG_BAR0);
     uint32_t type = low & PCI_BAR_MEM_TYPE_MASK;
@@ -206,7 +213,7 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
     uint64_t *pml4 = vmm_get_kernel_pml4_virt();
     uint32_t mapped = 0;
     for (; mapped < size; mapped += 4096) {
-        uintptr_t va = XHCI_PROBE_VIRT + mapped;
+        uintptr_t va = probe_virt + mapped;
         if (vmm_is_mapped(pml4, va) ||
             vmm_map_page(pml4, va, base + mapped,
                          PTE_PRESENT | PTE_WRITABLE | PTE_PCD | PTE_PWT | PTE_NX) != VMM_OK) {
@@ -219,7 +226,7 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
         error = "PCI memory decode enable failed";
         goto unmap;
     }
-    xhci_reset_io_t io = {(void *)XHCI_PROBE_VIRT, (uint32_t)size,
+    xhci_reset_io_t io = {(void *)probe_virt, (uint32_t)size,
                           mmio_read, mmio_write, delay_ms};
     xhci_reset_result_t result;
     bool ok = xhci_reset_controller(&io, &result);
@@ -231,9 +238,9 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
     serial_puts("[USB 9G.1b] PASS: reset complete; halted, CNR=0\n");
 
     /* Phase 9G.1c/d/e: Hardware Parameters & Structure Allocation */
-    uint32_t op_off = mmio_read((void *)XHCI_PROBE_VIRT, 0) & 0xff;
-    uint32_t hcs1 = mmio_read((void *)XHCI_PROBE_VIRT, 0x04);
-    uint32_t hcs2 = mmio_read((void *)XHCI_PROBE_VIRT, 0x08);
+    uint32_t op_off = mmio_read((void *)probe_virt, 0) & 0xff;
+    uint32_t hcs1 = mmio_read((void *)probe_virt, 0x04);
+    uint32_t hcs2 = mmio_read((void *)probe_virt, 0x08);
     uint32_t max_slots = hcs1 & 0xff;
     uint32_t sp_count = (((hcs2 >> 16) & 0x3e0) | ((hcs2 >> 27) & 0x1f));
     if (sp_count > 128) sp_count = 128;
@@ -276,7 +283,7 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
     }
 
     /* Program CONFIG and DCBAAP while controller is halted */
-    mmio_write((void *)XHCI_PROBE_VIRT, op_off + 0x38, max_slots);
+    mmio_write((void *)probe_virt, op_off + 0x38, max_slots);
 
     uint64_t *dcbaa_virt = (uint64_t *)vmm_phys_to_virt(dcbaa_phys);
     memset(dcbaa_virt, 0, 4096);
@@ -288,8 +295,8 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
         dcbaa_virt[0] = sp_arr_phys;
     }
 
-    mmio_write((void *)XHCI_PROBE_VIRT, op_off + 0x30, (uint32_t)dcbaa_phys);
-    mmio_write((void *)XHCI_PROBE_VIRT, op_off + 0x34, (uint32_t)(dcbaa_phys >> 32));
+    mmio_write((void *)probe_virt, op_off + 0x30, (uint32_t)dcbaa_phys);
+    mmio_write((void *)probe_virt, op_off + 0x34, (uint32_t)(dcbaa_phys >> 32));
 
     xhci_dma_buffers_t dma = {
         .cmd_ring_virt = (xhci_trb_t *)vmm_phys_to_virt(cmd_phys),
@@ -324,7 +331,7 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
     }
 
     xhci_rings_io_t rings_io = {
-        .mmio_ctx = (void *)XHCI_PROBE_VIRT,
+        .mmio_ctx = (void *)probe_virt,
         .mmio_size = (uint32_t)size,
         .read32 = mmio_read,
         .write32 = mmio_write,
@@ -426,6 +433,13 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
                         serial_print_hex(bot_dev.bulk_out_max_packet);
                         serial_puts(")\n[USB 9G.1e] PASS: BOT Mass Storage device configured and ready for 9G.2 block I/O\n");
 
+                        if (s_active_usb_controller) {
+                            serial_puts("[USB 9G.2] Mass-storage device found on controller ");
+                            serial_print_dec(controller_index + 1);
+                            serial_puts(", but only one active device is supported\n");
+                            break;
+                        }
+
                         /* Phase 9G.2: Bulk-Only Transport & Read-Only Block Device ("sda") */
                         uintptr_t bulk_in_phys = pmm_alloc_page();
                         uintptr_t bulk_out_phys = pmm_alloc_page();
@@ -465,9 +479,11 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
                                 ctl->rings_io = rings_io;
                                 ctl->dma = dma;
                                 ctl->dev_dma = dev_dma;
+                                s_active_usb_controller = ctl;
                                 s_usb_storage_ready = true;
 
-                                 if (block_register_usb()) {
+                                if (block_register_usb()) {
+                                    *out_registered_storage = true;
                                     serial_puts("[USB 9G.2] PASS: Registered block device \"sda\"\n");
 
                                     block_dev_t *sda = block_get_dev_by_name("sda");
@@ -492,6 +508,9 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
                                      * bot_rings is stable: only set once during boot, never freed. */
                                     serial_puts("[USB 9G.4] Probing USB cache durability policy...\n");
                                     xhci_bot_probe_durability(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings);
+                                } else {
+                                    s_active_usb_controller = NULL;
+                                    s_usb_storage_ready = false;
                                 }
                             }
                         }
@@ -550,19 +569,28 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
             serial_puts("[USB 9G.1d] Port discovery failed\n");
         }
 
-        if (s_usb_storage_ready) {
+        if (*out_registered_storage) {
             /* Keep xHCI controller and DMA active for runtime block device I/O */
             return;
         }
 
         /* Halt controller & disable bus mastering upon probe completion */
-        uint32_t cmd_reg = mmio_read((void *)XHCI_PROBE_VIRT, op_off + 0);
-        mmio_write((void *)XHCI_PROBE_VIRT, op_off + 0, cmd_reg & ~1u);
+        uint32_t cmd_reg = mmio_read((void *)probe_virt, op_off + 0);
+        mmio_write((void *)probe_virt, op_off + 0, cmd_reg & ~1u);
+        bool halted = false;
         for (unsigned i = 0; i <= 100; ++i) {
-            if (mmio_read((void *)XHCI_PROBE_VIRT, op_off + 4) & 1u) break;
+            if (mmio_read((void *)probe_virt, op_off + 4) & 1u) {
+                halted = true;
+                break;
+            }
             delay_ms(NULL);
         }
         command_write(&d, disabled | PCI_COMMAND_MEMORY_SPACE);
+
+        if (!halted) {
+            error = "controller halt timed out; DMA frames quarantined";
+            goto unmap;
+        }
 
         /* Reclaim allocated frames on clean success */
         pmm_free_page(cmd_phys);
@@ -574,9 +602,12 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
         pmm_free_page(input_ctx_phys);
         pmm_free_page(output_ctx_phys);
         pmm_free_page(ep0_ring_phys);
+        pmm_free_page(bounce_buf_phys);
+        if (ctl->bot_rings.bulk_in_ring_phys) pmm_free_page(ctl->bot_rings.bulk_in_ring_phys);
+        if (ctl->bot_rings.bulk_out_ring_phys) pmm_free_page(ctl->bot_rings.bulk_out_ring_phys);
     } else {
         serial_puts("[USB 9G.1c] FAIL: ring verification failed; DMA frames quarantined\n");
-        g_dump_pending = true;
+        dump_pending = true;
     }
 
     error = NULL;
@@ -586,9 +617,9 @@ unmap:
     command_write(&d, disabled);
     while (mapped) {
         mapped -= 4096;
-        vmm_unmap_page(pml4, XHCI_PROBE_VIRT + mapped);
+        vmm_unmap_page(pml4, probe_virt + mapped);
     }
-    if (g_dump_pending) usb_dump_state();
+    if (dump_pending) xhci_dump_controller_state(ctl);
     if (!error) return;
 rejected:
     serial_puts("[USB 9G.1b] Unavailable: ");
@@ -596,36 +627,61 @@ rejected:
     serial_puts("; returning to shell\n");
 }
 
+void xhci_boot_probe(const boot_info_t *boot_info) {
+    static bool attempted;
+    if (attempted) return;
+    attempted = true;
+    spin_debug_assert_unheld();
+    pci_device_t devices[XHCI_MAX_CONTROLLERS];
+    size_t count = pci_find_all_devices(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB,
+                                        PCI_PROGIF_USB_XHCI, devices, XHCI_MAX_CONTROLLERS);
+    if (count == 0) {
+        serial_puts("[USB 9G.1b] No xHCI controller; skipped\n");
+        return;
+    }
+    s_probe_boot_info = boot_info;
+    for (size_t i = 0; i < count; ++i) {
+        bool registered_storage;
+        xhci_init_one_controller(&s_controllers[i], &devices[i], &registered_storage);
+    }
+    s_probe_boot_info = NULL;
+}
+
 bool usb_is_initialized(void) {
     return s_usb_storage_ready;
 }
 
 uint32_t usb_get_sector_size(void) {
-    xhci_controller_t *ctl = &s_controllers[0];
+    xhci_controller_t *ctl = s_active_usb_controller;
+    if (!ctl) return 0;
     return ctl->bot_rings.sector_size;
 }
 
 uint64_t usb_get_sector_count(void) {
-    xhci_controller_t *ctl = &s_controllers[0];
+    xhci_controller_t *ctl = s_active_usb_controller;
+    if (!ctl) return 0;
     return ctl->bot_rings.sector_count;
 }
 
 bool usb_block_read(block_dev_t *dev, uint64_t lba, void *buf) {
-    xhci_controller_t *ctl = &s_controllers[0];
+    xhci_controller_t *ctl = s_active_usb_controller;
+    if (!ctl) return false;
     (void)dev;
     if (!s_usb_storage_ready) return false;
     return xhci_scsi_read_sector(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings, lba, buf);
 }
 
 bool usb_block_write(block_dev_t *dev, uint64_t lba, const void *buf) {
-    xhci_controller_t *ctl = &s_controllers[0];
+    xhci_controller_t *ctl = s_active_usb_controller;
+    if (!ctl) return false;
     (void)dev;
     if (!s_usb_storage_ready) return false;
     return xhci_scsi_write_sector(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings, lba, buf);
 }
 
 bool usb_block_flush(block_dev_t *dev) {
-    xhci_controller_t *ctl = &s_controllers[0];
+    xhci_controller_t *ctl = s_active_usb_controller;
+    if (!ctl) return false;
     (void)dev;
     if (!s_usb_storage_ready) return false;
     uint64_t flags;
@@ -641,7 +697,8 @@ bool usb_block_flush(block_dev_t *dev) {
 }
 
 void usb_report_flush_failure(void) {
-    xhci_controller_t *ctl = &s_controllers[0];
+    xhci_controller_t *ctl = s_active_usb_controller;
+    if (!ctl) return;
     spin_debug_assert_unheld();
     uint64_t flags;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
@@ -671,7 +728,8 @@ void usb_report_flush_failure(void) {
 }
 
 usb_durability_mode_t usb_get_durability_mode(void) {
-    xhci_controller_t *ctl = &s_controllers[0];
+    xhci_controller_t *ctl = s_active_usb_controller;
+    if (!ctl) return USB_DURABILITY_UNKNOWN;
     if (!s_usb_storage_ready) return USB_DURABILITY_UNKNOWN;
     return xhci_bot_get_durability_mode(&ctl->bot_rings);
 }

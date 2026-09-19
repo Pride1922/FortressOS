@@ -134,12 +134,12 @@ def run(firmware, present, mode='discovery'):
                     raise AssertionError(f'{name}: shell prompt not reached within timeout')
                 output = log.read_text(errors='replace')
                 if present:
-                    assert 'First xHCI controller:' in output
+                    assert '[USB 9G.1a] xHCI controller 1/1: BDF=' in output
                     assert 'Discovery complete; BAR extent/MMIO unverified' in output
                     assert 'No xHCI controller found' not in output
                 else:
                     assert 'No xHCI controller found; continuing without USB storage' in output
-                    assert 'First xHCI controller:' not in output
+                    assert '[USB 9G.1a] xHCI controller ' not in output
 
                 if mode in ('reset', 'rings', 'ports', 'descriptors', 'block'):
                     if present:

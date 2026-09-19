@@ -249,22 +249,33 @@ size_t pci_get_segment_count(void) {
 
 /* Phase 9G.1a intentionally stops at firmware-assigned PCI metadata. */
 void pci_report_xhci(void) {
-    pci_device_t dev;
+    /* Keep this reporting limit in sync with XHCI_MAX_CONTROLLERS in xhci.h. */
+    enum { max_controllers = 4 };
+    pci_device_t controllers[max_controllers];
     serial_puts("[USB 9G.1a] PCI discovery only\n");
-    if (!pci_find_device(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB,
-                         PCI_PROGIF_USB_XHCI, &dev)) {
+    size_t count = pci_find_all_devices(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB,
+                                        PCI_PROGIF_USB_XHCI, controllers, max_controllers);
+    if (count == 0) {
         serial_puts("[USB 9G.1a] No xHCI controller found; continuing without USB storage\n");
         return;
     }
 
-    serial_puts("[USB 9G.1a] First xHCI controller: ");
-    pci_print_bdf(dev.segment, dev.bus, dev.device, dev.function);
-    serial_puts(" vendor=");
-    serial_print_hex(dev.vendor_id);
-    serial_puts(" device=");
-    serial_print_hex(dev.device_id);
-    serial_puts("\n");
+    for (size_t i = 0; i < count; i++) {
+        const pci_device_t *d = &controllers[i];
+        serial_puts("[USB 9G.1a] xHCI controller ");
+        serial_print_dec(i + 1);
+        serial_puts("/");
+        serial_print_dec(count);
+        serial_puts(": BDF=");
+        pci_print_bdf(d->segment, d->bus, d->device, d->function);
+        serial_puts(" vendor=");
+        serial_print_hex(d->vendor_id);
+        serial_puts(" device=");
+        serial_print_hex(d->device_id);
+        serial_puts("\n");
+    }
 
+    pci_device_t dev = controllers[0];
     if ((dev.header_type & 0x7f) != PCI_HEADER_TYPE_NORMAL) {
         serial_puts("[USB 9G.1a] Unsupported PCI header; BAR inspection skipped\n");
         return;
@@ -456,6 +467,56 @@ bool pci_find_device(uint8_t class_code, uint8_t subclass, uint8_t prog_if, pci_
     }
 
     return false;
+}
+
+/* Collect matching devices in the same order as pci_find_device. */
+size_t pci_find_all_devices(uint8_t class_code, uint8_t subclass, uint8_t prog_if,
+                            pci_device_t *out_array, size_t max_count) {
+    if (!out_array || max_count == 0) {
+        return 0;
+    }
+
+    size_t found = 0;
+    size_t seg_iterations = g_mcfg_available ? g_mcfg_record_count : 1;
+
+    for (size_t s = 0; s < seg_iterations; s++) {
+        uint16_t seg       = g_mcfg_available ? g_mcfg_records[s].segment : 0;
+        uint16_t start_bus = g_mcfg_available ? g_mcfg_records[s].start_bus : 0;
+        uint16_t end_bus   = g_mcfg_available ? g_mcfg_records[s].end_bus : 255;
+
+        for (uint16_t bus = start_bus; bus <= end_bus; bus++) {
+            for (uint8_t dev = 0; dev < 32; dev++) {
+                pci_device_t probe_fn0;
+                if (!pci_probe_function(seg, (uint8_t)bus, dev, 0, &probe_fn0)) {
+                    continue;
+                }
+
+                if (probe_fn0.class_code == class_code &&
+                    probe_fn0.subclass == subclass &&
+                    probe_fn0.prog_if == prog_if) {
+                    out_array[found++] = probe_fn0;
+                    if (found == max_count) return found;
+                }
+
+                bool is_multifn = (probe_fn0.header_type & PCI_HEADER_TYPE_MULTIFN) != 0;
+                if (is_multifn) {
+                    for (uint8_t fn = 1; fn < 8; fn++) {
+                        pci_device_t probe_sub;
+                        if (pci_probe_function(seg, (uint8_t)bus, dev, fn, &probe_sub)) {
+                            if (probe_sub.class_code == class_code &&
+                                probe_sub.subclass == subclass &&
+                                probe_sub.prog_if == prog_if) {
+                                out_array[found++] = probe_sub;
+                                if (found == max_count) return found;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return found;
 }
 
 /* Helper to get class description string */

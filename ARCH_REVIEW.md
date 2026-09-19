@@ -174,3 +174,6 @@ The classification is per-device and is not re-derived on hot events (which are 
 6. Following: user accounts, identity/permission enforcement, and installation target selection on storage partitions.
 7. Do not add flatfs or automatic formatting on first write. Keep formatting an explicit operation on a selected disposable image or user-selected partition.
 8. SMP and SWAPGS work remain separate milestones.
+
+
+Known behavior: unclean shutdown leaves the USB stick unmountable. If the stick is removed or the system is powered off without a clean shutdown, the ext2 dirty marker is set. On the next boot, both ext2_mount_rw and ext2_mount fail, leaving /mnt unmounted with a generic error. Recovery requires e2fsck from a Linux host or reflashing. The failure diagnostic does not surface the dirty-marker reason. A read-only fallback for dirty-but-valid filesystems is deferred.
