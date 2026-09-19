@@ -372,7 +372,15 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                 serial_puts("[USB 9G.1d] Port ");
                 serial_print_hex(p);
                 if (pi->protocol_major == 3) {
-                    serial_puts(": SuperSpeed device attached; unsupported in Phase 9G, skipped\n");
+                    serial_puts(": USB 3.0 device attached; ");
+                    if (pi->enabled) {
+                        serial_puts("reset complete, enabled, speed=");
+                        if (pi->speed == XHCI_SPEED_SUPER) serial_puts("SuperSpeed (5 Gbps)\n");
+                        else if (pi->speed == XHCI_SPEED_SUPER_PLUS) serial_puts("SuperSpeedPlus (10 Gbps)\n");
+                        else serial_puts("unknown SuperSpeed variant\n");
+                    } else {
+                        serial_puts("reset failed to enable port\n");
+                    }
                 } else if (pi->protocol_major == 2) {
                     serial_puts(": USB 2.0 device attached; ");
                     if (pi->enabled) {
@@ -396,8 +404,9 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
 
                 for (uint32_t p = 1; p <= port_report.total_ports; ++p) {
                     const xhci_port_info_t *pi = &port_report.ports[p - 1];
-                    if (!pi->connected || !pi->enabled || pi->protocol_major != 2) continue;
-                    if (pi->speed != XHCI_SPEED_HIGH && pi->speed != XHCI_SPEED_FULL) continue;
+                    if (!pi->connected || !pi->enabled) continue;
+                    if (pi->speed != XHCI_SPEED_HIGH && pi->speed != XHCI_SPEED_FULL &&
+        pi->speed != XHCI_SPEED_SUPER) continue;
 
                     serial_puts("[USB 9G.1e] Probing Port ");
                     serial_print_hex(p);

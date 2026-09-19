@@ -94,10 +94,48 @@ bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
         if (!info->connected) continue;
         report->connected_count++;
 
-        if (info->protocol_major == 3) {
-            /* SuperSpeed attachment: logged and skipped */
-            continue;
+if (info->protocol_major == 3) {
+    /* USB 3.0 attachment: ensure power, issue port reset, then wait
+     * for the link to reach U0 (operational). SuperSpeed ports report
+     * operational state via PLS rather than PED alone. */
+    if (!(raw & XHCI_PORTSC_PP)) {
+        io->write32(io->mmio_ctx, portsc_off,
+                    (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PP);
+        for (int i = 0; i < 20; ++i) io->delay_ms(io->mmio_ctx);
+        raw = io->read32(io->mmio_ctx, portsc_off);
+    }
+
+    io->write32(io->mmio_ctx, portsc_off,
+                (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PR);
+
+    bool reset_done = false;
+    for (unsigned ms = 0; ms <= 100; ++ms) {
+        raw = io->read32(io->mmio_ctx, portsc_off);
+        if (raw != UINT32_MAX && !(raw & XHCI_PORTSC_PR)) {
+            reset_done = true;
+            break;
         }
+        io->delay_ms(io->mmio_ctx);
+    }
+
+    if (reset_done) {
+        /* Wait for PLS to reach U0. PLS = bits [8:5], U0 = 0. */
+        for (unsigned ms = 0; ms <= 100; ++ms) {
+            raw = io->read32(io->mmio_ctx, portsc_off);
+            if (raw != UINT32_MAX && ((raw >> 5) & 0x7) == 0) break;
+            io->delay_ms(io->mmio_ctx);
+        }
+
+        raw = io->read32(io->mmio_ctx, portsc_off);
+        info->raw_portsc = raw;
+        info->enabled = (raw & XHCI_PORTSC_PED) != 0;
+        info->speed = (uint8_t)((raw & XHCI_PORTSC_SPEED_MASK) >> XHCI_PORTSC_SPEED_SHIFT);
+
+        io->write32(io->mmio_ctx, portsc_off,
+                    (raw & XHCI_PORTSC_WRITE_MASK) | XHCI_PORTSC_PRC | XHCI_PORTSC_CSC);
+    }
+    continue;
+}
 
         if (info->protocol_major == 2) {
             /* USB 2.0 attachment: ensure power and issue bounded port reset */
@@ -134,14 +172,6 @@ bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
                 info->raw_portsc = raw;
                 info->enabled = (raw & XHCI_PORTSC_PED) != 0;
                 info->speed = (uint8_t)((raw & XHCI_PORTSC_SPEED_MASK) >> XHCI_PORTSC_SPEED_SHIFT);
-
-                if (info->enabled &&
-                    (info->speed == XHCI_SPEED_HIGH || info->speed == XHCI_SPEED_FULL)) {
-                    if (!report->selected_usb2_port) {
-                        report->selected_usb2_port = (uint8_t)p;
-                        report->selected_speed = info->speed;
-                    }
-                }
             }
         }
     }

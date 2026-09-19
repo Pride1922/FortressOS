@@ -1606,7 +1606,6 @@ static bool ext2_mount_internal(block_dev_t *dev, const char *path, bool writabl
      * means the filesystem was not cleanly unmounted. Linux's ext2
      * driver warns but still mounts RW; match that behavior. A stronger
      * recovery path (fsck, journal) is deferred. */
-    serial_puts("[ext2] DEBUG: reached writable branch\n");
     if (u16(sb + 58) != 1) {
         serial_puts("[ext2] WARNING: filesystem was not cleanly unmounted.\n");
         serial_puts("[ext2] Mounting read-write anyway. Run a consistency check if you notice problems.\n");

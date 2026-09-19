@@ -32,6 +32,7 @@
 #define XHCI_SPEED_LOW           2u  /* 1.5 Mb/s Low-Speed */
 #define XHCI_SPEED_HIGH          3u  /* 480 Mb/s High-Speed */
 #define XHCI_SPEED_SUPER         4u  /* 5 Gb/s SuperSpeed */
+#define XHCI_SPEED_SUPER_PLUS    5u  /* 10 Gb/s SuperSpeedPlus (USB 3.1) */
 
 typedef struct {
     uint8_t port_num;       /* 1-based port index */
@@ -47,8 +48,6 @@ typedef struct {
     uint32_t usb2_port_count;
     uint32_t usb3_port_count;
     uint32_t connected_count;
-    uint8_t selected_usb2_port; /* 1-based index of primary attached USB 2.0 port, 0 if none */
-    uint8_t selected_speed;     /* Speed of selected port */
     xhci_port_info_t ports[XHCI_MAX_ROOT_PORTS];
 } xhci_port_report_t;
 
