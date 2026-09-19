@@ -157,11 +157,21 @@ void pci_write_config32(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn, uint
 }
 
 void pci_write_config16(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn, uint16_t offset, uint16_t val) {
-    uint16_t aligned_offset = (uint16_t)(offset & ~0x03);
-    uint32_t dword = pci_read_config32(seg, bus, dev, fn, aligned_offset);
-    uint32_t shift = (offset & 0x02) * 8;
-    dword = (dword & ~(0xFFFFU << shift)) | ((uint32_t)val << shift);
-    pci_write_config32(seg, bus, dev, fn, aligned_offset, dword);
+    /* Do not RMW a dword: adjacent PCI status bits are write-one-to-clear. */
+    if ((offset & 1) || offset > 4094) return;
+    const pci_mcfg_record_t *rec = pci_find_mcfg_record(seg, bus);
+    if (rec) {
+        uintptr_t phys = rec->base_address + ((uintptr_t)(bus - rec->start_bus) << 20)
+                       + ((uintptr_t)(dev & 31) << 15) + ((uintptr_t)(fn & 7) << 12) + offset;
+        if (!pci_ensure_mapped(phys, 2)) return;
+        *(volatile uint16_t *)(phys + g_hhdm_offset) = val;
+    } else if (seg == 0 && offset < 256) {
+        uint32_t address = 0x80000000U | ((uint32_t)bus << 16)
+                         | ((uint32_t)(dev & 31) << 11) | ((uint32_t)(fn & 7) << 8)
+                         | (offset & 0xfc);
+        outl(PCI_CONFIG_ADDRESS_PORT, address);
+        outw((uint16_t)(PCI_CONFIG_DATA_PORT + (offset & 2)), val);
+    }
 }
 
 /* Parse ACPI MCFG Table */

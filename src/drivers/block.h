@@ -44,4 +44,7 @@ bool         block_flush(block_dev_t *dev);
 /* Register NVMe active namespace as block device "nvme0n1" */
 bool         block_register_nvme(void);
 
+/* Register USB Mass Storage as block device "sda" */
+bool         block_register_usb(void);
+
 #endif /* FORTRESS_BLOCK_H */

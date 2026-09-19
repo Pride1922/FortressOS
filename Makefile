@@ -143,6 +143,33 @@ test-storage: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 test-usb-discovery: $(BOOTABLE_ISO)
 	@python3 scripts/test_usb_discovery.py
 
+.PHONY: test-usb-reset
+test-usb-reset: $(BOOTABLE_ISO)
+	@python3 scripts/test_xhci_reset_host.py
+	@python3 scripts/test_usb_discovery.py --reset
+
+.PHONY: test-usb-rings
+test-usb-rings: $(BOOTABLE_ISO)
+	@python3 scripts/test_xhci_rings_host.py
+	@python3 scripts/test_usb_discovery.py --rings
+
+.PHONY: test-usb-ports
+test-usb-ports: $(BOOTABLE_ISO)
+	@python3 scripts/test_xhci_ports_host.py
+	@python3 scripts/test_usb_discovery.py --ports
+
+.PHONY: test-usb-descriptors
+test-usb-descriptors: $(BOOTABLE_ISO)
+	@python3 scripts/test_xhci_dev_host.py
+	@python3 scripts/test_usb_discovery.py --descriptors
+
+.PHONY: test-usb-block
+test-usb-block: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
+	@python3 scripts/test_xhci_bot_host.py
+	@python3 scripts/test_usb_discovery.py --block
+
+
+
 USER_DIR := user
 USER_INIT_ELF := $(BUILD_DIR)/init.elf
 USER_HELLO_ELF := $(BUILD_DIR)/hello.elf

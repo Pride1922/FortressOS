@@ -130,8 +130,10 @@ through a new USB storage path:
 
 1. **xHCI bring-up:** PCI discovery, MMIO/reset, command completion, port
    inspection, and validated device enumeration in separate checkpoints.
-   PCI-only discovery (9G.1a) is verified in BIOS/UEFI QEMU and confirmed in a
-   Dell boot photo; controller initialization remains pending.
+   PCI discovery (9G.1a), MMIO/reset (9G.1b), command/event rings (9G.1c), and root port
+   inspection & reset (9G.1d) are verified in BIOS/UEFI QEMU and confirmed on physical
+   Dell Latitude 5590 hardware. Device addressing & descriptors (9G.1e) are in progress;
+   USB storage and mounting remain unimplemented.
 2. **Read-only USB storage:** Bulk-Only Transport and a bounded set of SCSI
    commands, exposed through the existing block-device interface.
 3. **A real USB `/mnt`:** explicit partition selection and a read-only mount,
@@ -156,6 +158,9 @@ filesystem checks, and manual hardware observations.
 | --- | --- |
 | `make test-input` | Keyboard decoding, modifiers, and bounded input FIFO |
 | `make test-usb-discovery` | PCI-only xHCI detection/absence and shell startup in BIOS/UEFI, without an NVMe fixture |
+| `make test-usb-reset` | Mocked reset failure paths under sanitizers, plus QEMU reset/readback and PS/2 input in BIOS/UEFI |
+| `make test-usb-rings` | Ring mechanics and No-Op execution under sanitizers, plus QEMU command completion event verification in BIOS/UEFI |
+| `make test-usb-ports` | Protocol capability mapping (USB2/USB3), root port inspection and USB2 port reset in BIOS/UEFI |
 | `make test-console` | Framebuffer rendering, wrapping, scrolling, and bounds |
 | `make test-ext2` | Actual ext2/VFS code under ASan/UBSan, malformed data and injected failures |
 | `make test-ext2-write` | BIOS/UEFI multi-boot persistence on disposable NVMe images, with offline `e2fsck -fn` |

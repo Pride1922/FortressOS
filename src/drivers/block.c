@@ -1,5 +1,6 @@
 #include "block.h"
 #include "nvme.h"
+#include "xhci.h"
 #include "string.h"
 #include "serial.h"
 
@@ -139,4 +140,30 @@ bool block_register_nvme(void) {
     g_nvme_base_dev.priv         = NULL;
 
     return block_register_dev(&g_nvme_base_dev);
+}
+
+static block_dev_t g_usb_base_dev;
+
+bool block_register_usb(void) {
+    if (!usb_is_initialized()) {
+        return false;
+    }
+
+    memset(&g_usb_base_dev, 0, sizeof(g_usb_base_dev));
+    const char *dev_name = "sda";
+    size_t name_len = strlen(dev_name);
+    if (name_len >= sizeof(g_usb_base_dev.name)) {
+        name_len = sizeof(g_usb_base_dev.name) - 1;
+    }
+    memcpy(g_usb_base_dev.name, dev_name, name_len);
+    g_usb_base_dev.name[name_len] = '\0';
+
+    g_usb_base_dev.sector_size  = usb_get_sector_size();
+    g_usb_base_dev.sector_count = usb_get_sector_count();
+    g_usb_base_dev.read_sector  = usb_block_read;
+    g_usb_base_dev.write_sector = NULL; /* Read-only in Phase 9G.2 */
+    g_usb_base_dev.flush        = NULL; /* Read-only in Phase 9G.2 */
+    g_usb_base_dev.priv         = NULL;
+
+    return block_register_dev(&g_usb_base_dev);
 }

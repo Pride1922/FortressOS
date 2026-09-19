@@ -52,7 +52,48 @@ Implemented directory operations (`mkdir`), file rename/move (`rename`), and del
 - **Verification:** `make test-input` and `make test-console` passed under ASan/UBSan. `make test-ext2`
   passed all 8 geometries. `make test-ext2-write` verified 3-boot persistence across BIOS and
   UEFI with zero `e2fsck -fn` errors. `make test-storage`, `make test-shell`, and `make test-power`
-  passed completely.
+## Phase 9G.1 xHCI Controller & USB Device Enumeration (2026-09-19)
+
+Completed Milestone 9G.1 (xHCI controller initialization, DMA rings, root port discovery/reset, device addressing, descriptor validation, and device configuration) across both QEMU (BIOS and UEFI) and physical bare-metal Dell Latitude 5590 hardware:
+
+- **9G.1a Discovery**: PCI discovery of xHCI controller (`0000:00:14.0`, Intel Sunrise Point-LP `8086:9D2F`, 64-bit non-prefetchable BAR0 at `0xEF330000`).
+- **9G.1b Reset & MMIO**: Sized aperture (64 KiB), validated operational registers, verified BIOS-to-OS ownership handoff (extended capability at offset `0x846C`), halted and reset controller (`CNR=0`).
+- **9G.1c Rings**: Command Ring and Event Ring with ERST, Link TRB toggle cycle, and synchronous No-Op command verification via Command Completion Events.
+- **9G.1d Ports**: Protocol capability mapping (12 USB 2.0 ports, 6 USB 3.0 ports). Root port scan detected 4 connected devices: Port 0x5 (High-Speed), Port 0x7 (Full-Speed), Port 0x9 (High-Speed), Port 0xA (Full-Speed). Bounded port reset and speed negotiation.
+- **9G.1e Device Addressing & Configuration**:
+  - DCBAA and scratchpad buffers initialized.
+  - Multi-port scan loop probes attached USB 2.0 ports and filters non-mass-storage devices.
+  - Port 0x5: Internal laptop webcam (`if_cls=0x0E`, USB Video Class) detected, cleanly rejected, and Slot 1 disabled.
+  - Port 0x7: Full-speed device cleanly rejected.
+  - Port 0x9: Physical Kingston/Phison USB flash drive (`VID=0x13FE`, `PID=0x4200`) detected on Slot 3:
+    - Control Transfers on EP0 verified (TRT 16-bit shift fixed).
+    - Device Descriptor read: `bMaxPacketSize0=64`, `bcdUSB=0x0200`.
+    - Configuration Descriptor parsed (expanded buffer up to 2048 bytes).
+    - Interface validated: Class `0x08` (Mass Storage), SubClass `0x06` (SCSI transparent command set), Protocol `0x50` (Bulk-Only Transport).
+    - Bulk endpoints identified: Bulk-In EP `0x81` (max packet 512), Bulk-Out EP `0x02` (max packet 512).
+    - `SET_CONFIGURATION(1)` command issued and completed successfully.
+- **Verification**: `make test-usb-descriptors` passed 100% (8 host ASan/UBSan unit tests + BIOS/UEFI QEMU absent/present matrix). Bare-metal Dell Latitude 5590 boot confirmed working with interactive Ring 3 shell reached.
+
+## Phase 9G.2 Read-Only USB Mass Storage Block Device (2026-09-19)
+
+Completed Milestone 9G.2 (Bulk-Only Transport, SCSI engine, uniform block device registration, and GPT partition discovery) across QEMU (BIOS and UEFI) and physical bare-metal Dell Latitude 5590 hardware:
+
+- **Bulk Transfer Rings**: Configured xHCI transfer rings for Bulk-In (Endpoint ID / DCI 3) and Bulk-Out (DCI 4) via `Configure Endpoint` command (Type 12) with Input Context slot indexing `(dci + 1) * ctx_dwords`.
+- **Bulk-Only Transport (BOT)**:
+  - 31-byte CBW (`0x43425355` "USBC") submission on Bulk-Out.
+  - Data transfer stage on Bulk-In/Bulk-Out with cacheline flushing.
+  - 13-byte CSW (`0x53425355` "USBS") reading on Bulk-In with signature, tag matching, and status validation.
+- **SCSI Engine**:
+  - `INQUIRY` (0x12): Reported Product "USB DISK 2.0".
+  - `TEST UNIT READY` (0x00): Automatic `REQUEST SENSE` (0x03) recovery for initial Unit Attention.
+  - `READ CAPACITY (10)` (0x25): Dell Kingston USB drive reported 30,320,640 sectors (16 GB / 14.46 GiB), 512 bytes/sector.
+  - `READ (10)` (0x28): Verified logical sector reads.
+- **Uniform Block Device & GPT Discovery**:
+  - Registered block device `sda` via `block_register_usb()`.
+  - Sector 0 read verified with Protective MBR signature `0xAA55`.
+  - GPT partition table parsed: published `sdap1` (ESP FAT32, 64 MiB) and `sdap2` (Linux FS ext2, 64 MiB).
+  - xHCI controller and DMA rings remain active at runtime for block I/O.
+- **Verification**: `make test-usb-block` passed 100% (8 host ASan/UBSan unit tests + BIOS/UEFI QEMU absent/present matrix). Bare-metal Dell Latitude 5590 photo confirmed `sda`, `sdap1`, and `sdap2` registration and interactive Ring 3 shell reached.
 
 ## Detailed checkpoint roadmap
 
@@ -346,7 +387,7 @@ Recorded implementation sequence and planned work:
     │
     ▼
 [Phase 9G] USB Storage & Real /mnt Persistence (IN PROGRESS; persistence not implemented)
-    ├── 9G.1: PCI discovery QEMU verified and Dell photo confirmed (9G.1a); initialization/enumeration still planned
+    ├── 9G.1: PCI discovery (9G.1a), MMIO/reset (9G.1b), rings (9G.1c), and ports (9G.1d) verified on Dell; descriptors (9G.1e) active
     ├── 9G.2: USB Mass Storage Bulk-Only Transport, SCSI reads and read-only block_dev_t registration
     ├── 9G.3: Production USB partition selection and read-only /mnt mount, independent of QEMU fixture tests
     ├── 9G.4: USB writes/flush, explicit writable mount policy and clean-shutdown persistence
@@ -465,6 +506,41 @@ The photo does not show a typed command, so post-change keyboard interaction
 is not newly verified. BAR extent, controller MMIO, ownership handoff/reset,
 USB enumeration and persistence remain unverified. These addresses/IDs are
 observations of this Dell, not constants for the driver. Next: 9G.1b MMIO/reset.
+
+**Dell 9G.1b hardware verification (2026-09-18):** user confirmed that Phase 9G.1b
+passed on physical Dell Latitude 5590 hardware:
+- Controller BAR0 sized and mapped in dedicated UC/NX virtual window.
+- Capability offsets validated against the aperture.
+- BIOS-to-OS ownership handoff semaphore successfully negotiated; SMIs disabled.
+- Host controller halted and reset via HCRST; CNR cleared to 0.
+- Reset readback values (USBCMD, USBSTS, PAGESIZE) validated.
+- Virtual window safely unmapped, bus mastering left disabled, no firmware DMA leaked.
+- Interactive PS/2 keyboard confirmed functional at the `fortress>` shell prompt.
+
+Next checkpoint: 9G.1c command and event rings.
+
+**Dell 9G.1c hardware verification (2026-09-18):** user confirmed that Phase 9G.1c
+passed on physical Dell Latitude 5590 hardware:
+- Command Ring and Event Ring DMA pages allocated and bound to `CRCR`, `ERSTSZ`, `ERSTBA`, and `ERDP`.
+- PCI Bus Mastering enabled dynamically during transfer execution.
+- Controller started (`USBCMD.RS = 1`); hardware posted a Port Status Change Event for attached Port 5 (`ctrl=0x8801`).
+- Port status change event consumed and acknowledged via `ERDP`.
+- No-Op Command TRB (type 23) executed via Doorbell 0; matching Command Completion Event (`XHCI_COMP_SUCCESS`, type 33) received.
+- Controller cleanly halted, bus mastering disabled, DMA frames reclaimed safely without leaks.
+- Interactive PS/2 shell confirmed functional.
+
+Next checkpoint: 9G.1d root port inspection and reset.
+
+**Dell 9G.1d hardware verification (2026-09-18):** user confirmed that Phase 9G.1d
+passed on physical Dell Latitude 5590 hardware:
+- Traversed Supported Protocol capabilities; mapped USB 2.0 and USB 3.x ports.
+- Scanned 18 root ports (`PORTSC`), detected connected device on Port 5.
+- Verified port power and executed bounded port reset on Port 5.
+- Verified port enablement (`PED = 1`) and successfully decoded High-Speed (480 Mbps) speed.
+- Selected Port 5 for subsequent device addressing; isolated non-target ports.
+- Interactive PS/2 shell confirmed functional.
+
+Next checkpoint: 9G.1e device addressing and descriptor parsing.
 
 ---
 
@@ -661,5 +737,43 @@ Phase 9E adds the ability for the interactive Ring 3 shell to load, execute, pas
     - `make test-storage`: Passed BIOS and UEFI GPT and ext2 Ring 3 read/audit tests.
     - `make test-nmi`: Passed 40 exact-boundary NMI delivery cycles across all 5 syscall transitions in BIOS and UEFI.
     - `make test-ext2`: Passed host ASan/UBSan matrix with injected failures across 8 configurations.
+
+### Phase 9G.1e — xHCI Device Addressing & Descriptors (2026-09-18)
+
+Phase 9G.1e implements device slot assignment, device addressing, Default Control Pipe (EP0) transfer ring management, USB descriptor querying and parsing, Mass Storage BOT class validation, and device configuration (`SET_CONFIGURATION(1)`).
+
+- **Implementation Details**:
+  - `src/drivers/xhci_dev.h`, `src/drivers/xhci_dev.c`:
+    - Clean separation of memory: DCBAA table, scratchpad buffer array (up to 128 pages based on `HCSPARAMS2`), Input Context (32-byte or 64-byte based on `HCCPARAMS1.CSZ`), Output Context, EP0 Transfer Ring (256 TRBs with Link TRB), and bounce buffer.
+    - Pre-initialization: `CONFIG.MaxSlotsEn` and `DCBAAP` programmed while the controller is halted, following the xHCI specification Section 4.2.
+    - Single running pipeline: controller starts once in `xhci_verify_rings()`, executes No-Op at index 0, verifies root ports in `xhci_discover_and_reset_ports()`, and proceeds directly to device enumeration without halting, preserving controller internal cycle states and dequeue indices.
+    - Command execution via Doorbell 0: issues `ENABLE_SLOT` (acquires Slot ID), registers Output Context in DCBAA, sets up Input Context (Slot Context + EP0 Context with speed and port routing), and issues `ADDRESS_DEVICE`.
+    - EP0 Control Transfers: Setup Stage TRB (IDT=1), Data Stage TRB (pointing to DMA bounce buffer), and Status Stage TRB (IOC=1). Rings Doorbell for Slot ID (Target=1).
+    - Descriptor Parsing:
+      - Reads initial 8 bytes of Device Descriptor: extracts and validates `bMaxPacketSize0` (8, 16, 32, 64).
+      - Issues `EVALUATE_CONTEXT` if the negotiated packet size differs from the initial speed default.
+      - Reads full 18-byte Device Descriptor: captures `idVendor`, `idProduct`, `bNumConfigurations`.
+      - Reads 9-byte Configuration Descriptor header, validates `wTotalLength` (9..512), and reads full configuration descriptor.
+      - Validates Interface: requires class `0x08` (Mass Storage), subclass `0x06` (SCSI transparent command set), protocol `0x50` (Bulk-Only Transport). Rejects other device classes cleanly.
+      - Locates Bulk-In and Bulk-Out endpoints, verifies max packet size (e.g. 512 bytes for High-Speed).
+      - Issues standard USB request `SET_CONFIGURATION(1)`.
+    - Clean teardown and DMA quarantine: all allocated PMM pages are freed upon successful clean shutdown; if any command or transfer fails/times out, frames are quarantined to prevent DMA memory corruption.
+
+- **Verification Evidence**:
+  - **Host ASan/UBSan Unit Test Suite (`python3 scripts/test_xhci_dev_host.py`)**:
+    - `PASS`: normal enumeration, descriptor reads, BOT class validation, and SET_CONFIGURATION(1).
+    - `PASS`: Enable Slot failure handled cleanly.
+    - `PASS`: Address Device failure handled cleanly.
+    - `PASS`: Bad descriptor header rejected cleanly.
+    - `PASS`: Malformed device descriptor rejected cleanly.
+    - `PASS`: Non-mass-storage class device rejected cleanly.
+    - `PASS`: Device without bulk endpoints rejected cleanly.
+    - `PASS`: SET_CONFIGURATION failure handled cleanly.
+  - **QEMU Full Matrix Suite (`make test-usb-descriptors`)**:
+    - `PASS usb-descriptors-bios-absent`: boots cleanly without xHCI, shell prompt reached, PS/2 echo responsive.
+    - `PASS usb-descriptors-bios-present`: QEMU `qemu-xhci` with `usb-storage` attached to USB 2.0 port. Discovers Port 1, High-Speed (480 Mbps), issues Enable Slot (Slot ID 1), Address Device, reads descriptors (`VID=0x46F4 PID=0x0001 EP0_MAX=64 Bulk-In=0x81 Bulk-Out=0x02`), issues `SET_CONFIGURATION(1)`, and boots to interactive shell with PS/2 echo.
+    - `PASS usb-descriptors-uefi-absent`: paired OVMF 4M UEFI firmware boots cleanly without xHCI.
+    - `PASS usb-descriptors-uefi-present`: full UEFI boot with `qemu-xhci` and `usb-storage` enumeration verified.
+
 
 

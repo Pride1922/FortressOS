@@ -21,6 +21,7 @@
 #include "tarfs.h"
 #include "pci.h"
 #include "nvme.h"
+#include "xhci.h"
 #include "block.h"
 #include "crc32.h"
 #include "gpt.h"
@@ -4504,6 +4505,7 @@ pf_boot_guard_done:
     }
     /* Keep discovery visible near the shell on hardware without COM1. */
     pci_report_xhci();
+    xhci_boot_probe(&boot_info);
     vfs_node_t *shell = vfs_lookup("/bin/shell");
     if (!shell || shell->type != VFS_FILE || !shell->data) {
         serial_puts("[FAIL] /bin/shell missing from initramfs.\n");
