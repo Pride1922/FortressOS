@@ -13,6 +13,8 @@
 #include "ext2.h"
 #include "heap.h"
 #include "elf.h"
+#include "usb_mount.h"
+#include "xhci.h"
 
 extern void syscall_entry_stub(void);
 
@@ -594,6 +596,17 @@ static int64_t sys_rename(uintptr_t user_oldpath, uintptr_t user_newpath) {
     return SYSCALL_SUCCESS;
 }
 
+static int64_t sys_sync(void) {
+    /* Flush the writable /mnt device via the durability barrier.
+     * Returns SYSCALL_SUCCESS (0) on success; SYSCALL_EIO on failure or no RW mount. */
+    bool ok = usb_mount_sync();
+    if (!ok) {
+        usb_report_flush_failure();
+        return SYSCALL_EIO;
+    }
+    return SYSCALL_SUCCESS;
+}
+
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
     if (!frame) return SYSCALL_EINVAL;
 
@@ -653,6 +666,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_RENAME:
             result = sys_rename(frame->rdi, frame->rsi);
+            break;
+
+        case SYS_SYNC:
+            result = sys_sync();
             break;
 
         default:

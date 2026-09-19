@@ -23,10 +23,14 @@ typedef struct {
 #define XHCI_TRB_TYPE_CONFIG_EP_CMD        12u
 #define XHCI_TRB_TYPE_EVAL_CONTEXT_CMD     13u
 #define XHCI_TRB_TYPE_RESET_EP_CMD         14u
+#define XHCI_TRB_TYPE_STOP_EP_CMD          15u
+#define XHCI_TRB_TYPE_SET_TR_DEQUEUE_CMD   16u /* Set TR Dequeue Pointer: Parameter[63:4] = pointer, bit 0 = DCS (cycle state). */
 #define XHCI_TRB_TYPE_NOOP_CMD             23u
+#define XHCI_TRB_TYPE_EVENT_DATA           31u
 #define XHCI_TRB_TYPE_TRANSFER_EVENT       32u
 #define XHCI_TRB_TYPE_CMD_COMPLETION_EVENT 33u
 #define XHCI_TRB_TYPE_PORT_STATUS_EVENT    34u
+#define XHCI_TRB_TYPE_HOST_CONTROLLER_EVENT 37u /* not yet handled, but must be consumed */
 
 /* TRB Control bit flags */
 #define XHCI_TRB_C                        (1u << 0)  /* Cycle bit */
@@ -39,7 +43,7 @@ typedef struct {
 #define XHCI_TRB_TYPE_SHIFT               10u
 #define XHCI_TRB_TYPE_MASK                (0x3fu << XHCI_TRB_TYPE_SHIFT)
 
-/* Completion Codes (bits 31:24 of status) */
+/* Completion code 0 is invalid; 1 is success. Do not treat 0 as success. */
 #define XHCI_COMP_INVALID                 0u
 #define XHCI_COMP_SUCCESS                 1u
 #define XHCI_COMP_DATA_BUFFER_ERROR       2u

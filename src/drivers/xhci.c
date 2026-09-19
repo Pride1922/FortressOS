@@ -17,6 +17,8 @@ static xhci_dma_buffers_t s_dma;
 static xhci_dev_dma_t s_dev_dma;
 static xhci_bot_rings_t s_bot_rings;
 static bool s_usb_storage_ready = false;
+static xhci_bot_error_t s_flush_error;
+static bool s_flush_error_pending;
 
 /* Dedicated boot-only UC/NX window, separate from LAPIC/IOAPIC and heap. */
 #define XHCI_PROBE_VIRT 0xffffffffe1000000ULL
@@ -468,7 +470,7 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
                                 s_dev_dma = dev_dma;
                                 s_usb_storage_ready = true;
 
-                                if (block_register_usb()) {
+                                 if (block_register_usb()) {
                                     serial_puts("[USB 9G.2] PASS: Registered block device \"sda\"\n");
 
                                     block_dev_t *sda = block_get_dev_by_name("sda");
@@ -487,6 +489,12 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
                                             serial_puts(")\n");
                                         }
                                     }
+
+                                    /* Phase 9G.4: Probe cache policy and set durability mode.
+                                     * Must be called in thread context with no subsystem lock.
+                                     * bot_rings is stable: only set once during boot, never freed. */
+                                    serial_puts("[USB 9G.4] Probing USB cache durability policy...\n");
+                                    xhci_bot_probe_durability(&s_rings_io, &s_dma, &s_dev_dma, &s_bot_rings);
                                 }
                             }
                         }
@@ -609,3 +617,57 @@ bool usb_block_read(block_dev_t *dev, uint64_t lba, void *buf) {
     return xhci_scsi_read_sector(&s_rings_io, &s_dma, &s_dev_dma, &s_bot_rings, lba, buf);
 }
 
+bool usb_block_write(block_dev_t *dev, uint64_t lba, const void *buf) {
+    (void)dev;
+    if (!s_usb_storage_ready) return false;
+    return xhci_scsi_write_sector(&s_rings_io, &s_dma, &s_dev_dma, &s_bot_rings, lba, buf);
+}
+
+bool usb_block_flush(block_dev_t *dev) {
+    (void)dev;
+    if (!s_usb_storage_ready) return false;
+    uint64_t flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
+    /* Use the durability-mode-aware barrier; this also latches READ_ONLY on failure */
+    bool ok = xhci_bot_flush_barrier(&s_rings_io, &s_dma, &s_dev_dma, &s_bot_rings);
+    if (!ok && !s_flush_error_pending) {
+        s_flush_error = s_bot_rings.last_error;
+        s_flush_error_pending = true;
+    }
+    __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
+    return ok;
+}
+
+void usb_report_flush_failure(void) {
+    spin_debug_assert_unheld();
+    uint64_t flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
+    bool pending = s_flush_error_pending;
+    xhci_bot_error_t error = s_flush_error;
+    s_flush_error_pending = false;
+    __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
+    if (!pending) return;
+    serial_puts("[USB FLUSH] SYNCHRONIZE CACHE failed; ");
+    print_value("CSW status=", error.csw_status);
+    if (error.sense_valid) {
+        print_value(" sense=", error.sense_key);
+        print_value(" ASC=", error.asc);
+        print_value(" ASCQ=", error.ascq);
+        if (error.sense_key == 5 && error.asc == 0x20 && error.ascq == 0)
+            serial_puts(" (unsupported command)");
+        else if (error.sense_key == 5 && error.asc == 0x24 && error.ascq == 0)
+            serial_puts(" (invalid command field)");
+        else if (error.sense_key == 7)
+            serial_puts(" (data protect)");
+    } else {
+        serial_puts("; no valid sense data");
+    }
+    if (error.transport_failed)
+        serial_puts("; transport unavailable until reboot; DMA buffers retained");
+    serial_puts("\n");
+}
+
+usb_durability_mode_t usb_get_durability_mode(void) {
+    if (!s_usb_storage_ready) return USB_DURABILITY_UNKNOWN;
+    return xhci_bot_get_durability_mode(&s_bot_rings);
+}

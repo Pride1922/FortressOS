@@ -20,4 +20,11 @@ typedef struct {
 void usb_mount_parse_cmdline(const char *cmdline, usb_mount_config_t *out_cfg);
 bool usb_mount_production_storage(const boot_info_t *boot_info);
 
+/* Mid-session durability barrier flush.
+ * Flushes the block device backing a writable /mnt mount via the durability
+ * barrier (SYNCHRONIZE CACHE for sync-backed, barrier check for write-through).
+ * Does NOT mark the filesystem clean; does NOT freeze writes.
+ * Returns true on success; false if no writable mount is active or barrier fails. */
+bool usb_mount_sync(void);
+
 #endif /* FORTRESS_USB_MOUNT_H */

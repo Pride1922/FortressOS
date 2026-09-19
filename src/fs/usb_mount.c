@@ -5,6 +5,10 @@
 #include "ext2.h"
 #include "vfs.h"
 
+/* Cached mounted block device for normal mid-session sync. Set only when a
+ * writable mount succeeds; cleared on failure. Never freed or reallocated. */
+static block_dev_t *s_mounted_rw_dev = NULL;
+
 void usb_mount_parse_cmdline(const char *cmdline, usb_mount_config_t *out_cfg) {
     if (!out_cfg) return;
     memset(out_cfg, 0, sizeof(*out_cfg));
@@ -126,9 +130,66 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
     serial_puts(target_str);
     serial_puts(")\n");
 
+    /* Determine RW eligibility using the durability state machine (9G.4).
+     * The durability mode was probed during boot by xhci_bot_probe_durability(). */
+    bool rw_eligible = false;
     if (cfg.mode == USB_MOUNT_MODE_RW) {
-        serial_puts("[USB 9G.3] Mode 'rw' requested, but writable USB persistence deferred to 9G.4; mounting read-only\n");
+        usb_durability_mode_t dur = usb_get_durability_mode();
+
+        /* GPT must be strictly consistent for RW (degraded = backup GPT invalid) */
+        if (pol != GPT_POLICY_PRIMARY_CONSISTENT) {
+            serial_puts("[USB 9G.4] GPT policy not strictly consistent; RW not eligible\n");
+        } else if (!matched_part->block_dev.write_sector || !matched_part->block_dev.flush) {
+            serial_puts("[USB 9G.4] Device missing write or flush capability; RW not eligible\n");
+        } else if (dur == USB_DURABILITY_UNKNOWN) {
+            serial_puts("[USB 9G.4] Cache durability unknown; RW not eligible (fallback to RO)\n");
+        } else if (dur == USB_DURABILITY_READ_ONLY) {
+            serial_puts("[USB 9G.4] Device classified read-only by durability probe; RW not eligible\n");
+        } else {
+            /* SYNC_BACKED, WRITE_THROUGH, or ASSUMED_WRITE_THROUGH: run flush preflight
+             * to verify the barrier path works before any filesystem writes are permitted. */
+            if (!block_flush(&matched_part->block_dev)) {
+                serial_puts("[USB 9G.4] Flush preflight failed before filesystem writes; RW not eligible\n");
+                usb_report_flush_failure();
+            } else {
+                serial_puts("[USB 9G.4] Flush preflight passed\n");
+                rw_eligible = true;
+            }
+        }
+
+        /* Log selected identity and durability mode */
+        serial_puts("[USB 9G.4] USB device: ");
+        serial_puts(matched_part->parent->name);
+        serial_puts(", PARTUUID=");
+        serial_puts(target_str);
+        serial_puts(", durability=");
+        switch (dur) {
+            case USB_DURABILITY_SYNC_BACKED:           serial_puts("sync-backed"); break;
+            case USB_DURABILITY_WRITE_THROUGH:         serial_puts("write-through"); break;
+            case USB_DURABILITY_ASSUMED_WRITE_THROUGH: serial_puts("assumed-write-through"); break;
+            case USB_DURABILITY_READ_ONLY:             serial_puts("read-only"); break;
+            default:                                   serial_puts("unknown"); break;
+        }
+        serial_puts("\n");
     }
+
+    if (rw_eligible) {
+        bool mounted = ext2_mount_rw(&matched_part->block_dev, "/mnt");
+        if (mounted) {
+            s_mounted_rw_dev = &matched_part->block_dev;
+            serial_puts("[USB 9G.4] Mount mode: read-write\n");
+            serial_puts("[USB 9G.4] PASS: Mounted ");
+            serial_puts(matched_part->block_dev.name);
+            serial_puts(" read-write at /mnt\n");
+            return true;
+        } else {
+            usb_report_flush_failure();
+            serial_puts("[USB 9G.4] FAIL: ext2 writable mount failed on ");
+            serial_puts(matched_part->block_dev.name);
+            serial_puts("; attempting read-only fallback\n");
+        }
+    }
+
     serial_puts("[USB 9G.3] Mount mode: read-only\n");
 
     bool mounted = ext2_mount(&matched_part->block_dev, "/mnt");
@@ -144,3 +205,13 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
         return false;
     }
 }
+
+bool usb_mount_sync(void) {
+    /* Normal mid-session sync: flush the mounted block device via the durability
+     * barrier WITHOUT marking the filesystem clean or freezing writes.
+     * This is explicitly distinct from ext2_sync_all() (shutdown-only clean close).
+     * Returns true if the barrier succeeded; false on any error. */
+    if (!s_mounted_rw_dev) return false;
+    return block_flush(s_mounted_rw_dev);
+}
+

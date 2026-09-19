@@ -161,8 +161,8 @@ bool block_register_usb(void) {
     g_usb_base_dev.sector_size  = usb_get_sector_size();
     g_usb_base_dev.sector_count = usb_get_sector_count();
     g_usb_base_dev.read_sector  = usb_block_read;
-    g_usb_base_dev.write_sector = NULL; /* Read-only in Phase 9G.2 */
-    g_usb_base_dev.flush        = NULL; /* Read-only in Phase 9G.2 */
+    g_usb_base_dev.write_sector = usb_block_write;
+    g_usb_base_dev.flush        = usb_block_flush;
     g_usb_base_dev.priv         = NULL;
 
     return block_register_dev(&g_usb_base_dev);

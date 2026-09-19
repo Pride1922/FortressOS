@@ -386,12 +386,20 @@ Recorded implementation sequence and planned work:
         └── Image can be flashed to USB; physical USB filesystem access and persistence remain unimplemented
     │
     ▼
-[Phase 9G] USB Storage & Real /mnt Persistence (IN PROGRESS; persistence not implemented)
-    ├── 9G.1: PCI discovery (9G.1a), MMIO/reset (9G.1b), rings (9G.1c), and ports (9G.1d) verified on Dell; descriptors (9G.1e) active
-    ├── 9G.2: USB Mass Storage Bulk-Only Transport, SCSI reads and read-only block_dev_t registration
-    ├── 9G.3: Production USB partition selection and read-only /mnt mount, independent of QEMU fixture tests
-    ├── 9G.4: USB writes/flush, explicit writable mount policy and clean-shutdown persistence
-    └── Acceptance: isolated QEMU USB persistence + offline e2fsck, then manual Dell USB persistence
+[Phase 9G] USB Storage & Real /mnt Persistence (COMPLETE)
+    ├── 9G.1: xHCI controller init, DMA rings, root port scan, device addressing and descriptors (Dell verified)
+    ├── 9G.2: Bulk-Only Transport, SCSI engine, block_dev_t registration, GPT discovery (Dell verified)
+    ├── 9G.3: Production /mnt mount via PARTUUID + USB provenance, read-only (Dell verified)
+    ├── 9G.4: Writable mount, durability classification, BOT stall recovery, persistence across power cycle (Dell verified on Kingston; strong paths QEMU-verified)
+    └── Acceptance: QEMU three-boot persistence + offline e2fsck on disposable images; Dell persistence confirmed on Kingston 13FE:4200
+    │
+    ▼
+[Phase 9G.5] USB Topology Expansion (NEXT)
+    ├── 9G.5a: Multiple xHCI controller enumeration (independent per-controller state)
+    ├── 9G.5b: SuperSpeed enumeration (USB 3.x port link state, slot/endpoint context layout)
+    ├── 9G.5c: Strong durability verification on a USB 3.x device
+    ├── 9G.5d: Persistence verification on a second device class
+    └── 9G.5e: Hubs (deferred until a hub-attached device requires it)
     │
     ▼
 [Following] Accounts/permissions, then installer
@@ -463,6 +471,14 @@ Completion requires all of the following:
 - Record separate Dell acceptance: selected USB device, `/mnt` file read,
   save, clean shutdown and persisted contents after reboot. Keep the internal
   NVMe outside this test. QEMU results alone cannot close physical acceptance.
+
+**Post-completion note (2026-09-19):** The scope discipline and stop
+conditions above were the plan as issued. Phase 9G completed without
+triggering either the per-checkpoint review or the two-week stop condition;
+each stage landed with its acceptance evidence recorded. Physical writable
+persistence was achieved on the Kingston USB 2.0 stick; the strong durability
+path remains QEMU-only pending SuperSpeed support (Phase 9G.5). The handoff
+language above is preserved as the historical record.
 
 ### Phase 9G.1a — PCI-only xHCI discovery (2026-09-18)
 
@@ -825,3 +841,168 @@ Phase 9G.3 delivers production storage initialization independent of QEMU accept
     - Successfully mounted `sdap2` read-only at `/mnt` (`[USB 9G.3] PASS: Mounted sdap2 read-only at /mnt`).
     - Interactive Ring 3 shell prompt reached and responsive. Photographic evidence confirmed.
 
+
+### Phase 9G.4 — USB Writable Persistence & Durability Classification (2026-09-19)
+
+Phase 9G.4 completes the USB storage stack: `/mnt` mounts read-write on real
+hardware, files written from the shell persist across a full power cycle, and
+durability is classified per-device with an explicit disclosure when the device
+cannot be classified strongly. The work spans three sub-problems — BOT stall
+recovery, SCSI cache-policy discovery, and mount eligibility — each verified
+independently before the whole path was exercised end-to-end.
+
+**What was built**
+
+*BOT stall recovery (Commit 1b).*
+- `xhci_bot_endpoint_reset()` issues Stop Endpoint, Reset Endpoint, Set TR
+  Dequeue Pointer (with DCS bit set), and CLEAR_FEATURE(ENDPOINT_HALT) in
+  sequence.
+- `xhci_bot_transfer()` attempts a single bounded endpoint reset on a stall
+  before latching the device offline.
+- `latched_offline` is distinct from `transport_failed`; both prevent further
+  BOT submissions and retain DMA allocations until reboot.
+
+*SCSI cache-policy discovery (Commit 2).*
+- `MODE SENSE(6)` and `MODE SENSE(10)` caching page `0x08` support, requesting
+  current values only. `MODE SELECT` is not implemented and device cache
+  settings are not modified.
+- Fallback sequence: `MODE SENSE(6)` first, then `MODE SENSE(10)` if the page
+  is not found or the command is rejected. Transport failures stop the probe;
+  command rejections do not.
+- `xhci_scsi_probe_cache_policy()` parses the mode header, block descriptor
+  length, page code, and page length independently, validates each against
+  transferred byte count, and reads `WCE` / `RCD` / write-protect. Malformed,
+  truncated, missing, or conflicting reports mean unknown.
+- A separate `SYNCHRONIZE CACHE(10)` probe with `IMMED=0` records whether the
+  device supports durable flushing. Command rejection is captured as
+  `command_failed`, not `transport_failed`.
+
+*Durability classification (Commit 3).*
+- `xhci_bot_probe_durability()` runs after block registration and before mount.
+  It stores one of: `SYNC_BACKED`, `WRITE_THROUGH`, `ASSUMED_WRITE_THROUGH`,
+  `READ_ONLY`, or `UNKNOWN` (probe not completed).
+- Classification rules: explicit `WCE=0` → `WRITE_THROUGH`; working sync →
+  `SYNC_BACKED`; `WCE=1` with failed sync → `READ_ONLY`; no page and no sync
+  with healthy transport → `ASSUMED_WRITE_THROUGH`.
+- `xhci_bot_flush_barrier()` is mode-aware: `SYNC_BACKED` requires the command
+  to succeed; `WRITE_THROUGH` succeeds immediately; `ASSUMED_WRITE_THROUGH`
+  attempts sync and succeeds even if the device rejects, failing only on
+  transport loss. Modes latch to `READ_ONLY` on transport failure and are not
+  silently changed.
+- The `[USB DURABILITY]` boot dump prints the raw MODE SENSE attempts,
+  WCE/RCD, sync result, classification, and mount eligibility. When
+  classification is `ASSUMED_WRITE_THROUGH`, a three-line disclosure states
+  that the device does not report cache policy, that write-through is assumed
+  matching Linux and Windows, and that power-loss during writes may lose data.
+
+*Mount eligibility & normal sync (Commit 4).*
+- `usb_mount_production_storage()` permits RW for `SYNC_BACKED`,
+  `WRITE_THROUGH`, and `ASSUMED_WRITE_THROUGH`; RO otherwise. It still requires
+  explicit `usb_data_mode=rw`, a matching PARTUUID, USB parent provenance, a
+  strictly consistent or degraded-primary GPT policy, and a successful flush
+  preflight.
+- `usb_mount_sync()` flushes the mounted block device without marking the ext2
+  filesystem clean. It is deliberately separate from `ext2_sync_all()` (which
+  sets `EXT2_VALID_FS` and freezes writes for shutdown).
+
+**Verification Evidence**
+
+*Host ASan/UBSan unit suites:*
+- `python3 scripts/test_xhci_bot_host.py`: stall recovery paths, MODE
+  SENSE(6/10) parsing matrices (legal short replies, WCE on/off, write-protect,
+  wrong page/subpage, bad lengths, zero sense, conflicting responses), and the
+  full durability policy table.
+- `python3 scripts/test_usb_mount_host.py`: mount eligibility across all
+  durability modes, degraded GPT, missing write/flush callbacks, ext2 RW
+  failure fallback, and `usb_mount_sync()` success/failure.
+
+*QEMU three-boot persistence:*
+- `make test-usb-persistence` passed BIOS and paired-OVMF UEFI three-boot
+  create/read/overwrite/delete cycles on disposable 130 MiB USB images, with
+  offline `e2fsck -fn` returning zero after every clean shutdown. The runner
+  validates final QEMU argv (only the disposable USB data device, with
+  read-only firmware and disposable vars permitted). These are clean-shutdown
+  tests with substring content assertions; they do not establish physical
+  power-loss resilience.
+
+**Dell 9G.4 hardware verification (2026-09-19):** user confirmed that Phase 9G.4
+passed on physical Dell Latitude 5590 hardware with the Kingston USB DISK 2.0
+(VID `0x13FE` PID `0x4200`, 30,320,640 sectors, 512 bytes/sector):
+- `MODE SENSE(6) page 0x08: not found` and `MODE SENSE(10) page 0x08: not found`.
+- `SYNCHRONIZE CACHE test: failed/unsupported`; command-failed CSW, sense `0/0/0`.
+- `Classification: ASSUMED_WRITE_THROUGH`, disclosure printed at boot.
+- `Mount mode: read-write`; `[USB 9G.4] PASS: Mounted sdap2 read-write at /mnt`.
+- A file written via the editor on the Dell survived a full power cycle (power
+  off, stick physically removed, reinserted, rebooted). Photographic evidence
+  recorded.
+- `e2fsck -fn /dev/sda2` on the stick from Linux reported 0 errors on two
+  consecutive runs: one with the device mounted (kernel-cached view, warning
+  noted), one after `umount` (raw on-disk view). File and block counts stable
+  (14 files, 2091/65536 blocks).
+
+The SanDisk USB 3.x stick was also tested and correctly identified as a
+SuperSpeed device on Port 0x12, then skipped by 9G's scope. This is a correct
+scope exclusion, not a failure. Strong durability paths (`WRITE_THROUGH`,
+`SYNC_BACKED`) remain QEMU-verified only.
+
+**What 9G.4 does NOT establish**
+
+- **Strong durability on physical hardware.** No tested stick reports a
+  caching page or accepts `SYNCHRONIZE CACHE`. The `WRITE_THROUGH` and
+  `SYNC_BACKED` paths are QEMU-verified only.
+- **Physical power-loss tolerance.** The `ASSUMED_WRITE_THROUGH` disclosure
+  states the boundary explicitly: clean shutdown is assumed durable; power-loss
+  during writes may lose data. Abrupt-stop tests are simulated (mock volatile
+  cache, injected flush failures), not physical.
+- **USB 3.x devices.** A SanDisk USB 3.x stick was tested on the Dell and
+  correctly identified as a SuperSpeed device on Port 0x12, then skipped by
+  9G's scope. SuperSpeed support is required to reach the BOT layer with this
+  device.
+
+**Why the strong path is unverified on hardware**
+
+The SanDisk was tested specifically to exercise `WRITE_THROUGH` or
+`SYNC_BACKED`. It did not enumerate as a USB 2.0 mass-storage device because it
+is USB 3.x, and 9G's scope explicitly excludes SuperSpeed. This makes SuperSpeed
+support a prerequisite for physical verification of the strong durability
+paths — not a convenience, a dependency. That observation motivates Phase 9G.5.
+
+### Phase 9G.5 — USB Topology Expansion (NEXT)
+
+SuperSpeed support, multiple-controller enumeration, and hub support. Sequenced
+as three sub-projects, each with its own acceptance criteria and its own
+hardware target.
+
+**9G.5a — Multiple xHCI controllers.** Iterate all controllers matching
+class `0x0C` subclass `0x03` progif `0x30` in PCI enumeration. Each controller
+gets independent ring, port, and device state; no cross-controller shared
+state. Test target: QEMU with two `qemu-xhci` instances attached, verifying
+enumeration on both and correct isolation between them.
+
+**9G.5b — SuperSpeed enumeration.** USB 3.x port link state, SuperSpeed slot
+and endpoint context layout (`MaxBurstSize`, `MaxPacketSize` 1024 for bulk, no
+`Evaluate Context` for EP0), and SuperSpeed descriptor handling. Test target:
+SanDisk enumerates on Port 0x12 as a USB 3.0 BOT device with `speed=SuperSpeed`.
+Success criterion is the `[USB 9G.1e] PASS: BOT Mass Storage device found on
+Slot N (Port 0x12)` line on the Dell.
+
+**9G.5c — Strong durability on the SanDisk.** Once the SanDisk enumerates, its
+MODE SENSE and SYNCHRONIZE CACHE behavior can be read. Success criterion is a
+classification other than `ASSUMED_WRITE_THROUGH` — either `WRITE_THROUGH`
+(explicit `WCE=0`) or `SYNC_BACKED` (working flush). If the SanDisk also reports
+no cache policy, the strong path remains QEMU-only and that is documented as a
+device-class finding, not a driver defect.
+
+**9G.5d — Persistence on the SanDisk.** Same three-boot test as the Kingston,
+with `e2fsck` clean after each clean shutdown. This closes the "verified on two
+independent devices" claim for the persistence path.
+
+**9G.5e — Hubs (deferred).** USB 2.0 and USB 3.x hub support, recursive
+enumeration, downstream port power sequencing. No hot-plug. Deferred until
+there is a specific device reachable only through a hub. A USB-C docking hub is
+available for testing when the sub-project begins.
+
+The consolidated "What 9G.5 does NOT do" list remains as stated in the 9G
+handoff: SuperSpeed Plus (USB 3.1+ 10 Gbps), UAS, other USB classes,
+suspend/resume, multiple LUNs, and runtime host-controller reset recovery
+remain out of scope.

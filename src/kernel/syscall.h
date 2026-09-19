@@ -19,6 +19,7 @@
 #define SYS_MKDIR      11 /* (const char *path, uint64_t mode) -> 0 */
 #define SYS_UNLINK     12 /* (const char *path) -> 0 */
 #define SYS_RENAME     13 /* (const char *oldpath, const char *newpath) -> 0 */
+#define SYS_SYNC       14 /* () -> 0; flush the writable /mnt device */
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0

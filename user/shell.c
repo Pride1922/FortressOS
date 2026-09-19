@@ -17,7 +17,8 @@ static bool equal(const char *a, const char *b) {
 static void write_bytes(const char *s, size_t n) { (void)call(1, 1, (uintptr_t)s, n); }
 static void puts(const char *s) { write_bytes(s, length(s)); }
 static void file_error(long error) {
-    puts(error == -5 ? "No such file or directory.\n" : "File operation failed.\n");
+    if (error == SYSCALL_EROFS) puts("Read-only filesystem.\n");
+    else puts(error == SYSCALL_ENOENT ? "No such file or directory.\n" : "File operation failed.\n");
 }
 static void list(const char *path) {
     vfs_stat_t st;
@@ -275,6 +276,13 @@ static void editor_save(void) {
     if (fd < 0) {
         puts("[EDIT] Failed to open file for writing: ");
         file_error(fd);
+        if (fd == SYSCALL_EROFS && editor_path[0] == '/' &&
+            editor_path[1] == 'm' && editor_path[2] == 'n' &&
+            editor_path[3] == 't' && editor_path[4] == '/') {
+            puts("[EDIT] To save under /mnt, boot the Writable USB entry for your test USB.\n");
+            puts("[EDIT] Check that boot reports /mnt mounted read-write; a fallback remains read-only.\n");
+            puts("[EDIT] Buffer preserved in memory only; copy your text before rebooting.\n");
+        }
         return;
     }
 
@@ -601,6 +609,7 @@ static void execute_simple_command(char *cmd_line) {
              "cat /path      Read a text file\nedit /path     Text editor\n"
              "mkdir /path    Create a directory\nrm /path       Remove a file or empty directory\n"
              "mv /old /new   Rename or move a file/directory\n"
+             "sync           Flush writable /mnt storage to device\n"
              "echo [text]    Print text (supports $?)\n"
              "run /path [args]Run a program with optional arguments\n"
              "layout [layout]Switch layout (us | azerty)\n"
@@ -697,6 +706,15 @@ static void execute_simple_command(char *cmd_line) {
         puts("Shutting down system...\n");
         (void)call(7, 2, 0, 0);
         last_status = 0;
+    } else if (equal(cmd, "sync")) {
+        long r = call(14, 0, 0, 0);
+        if (r == 0) {
+            puts("Filesystem synced.\n");
+            last_status = 0;
+        } else {
+            puts("Sync failed (check USB connection or mount mode).\n");
+            last_status = 1;
+        }
     } else if (equal(cmd, "exit")) {
         call(0, (uintptr_t)last_status, 0, 0);
     } else {

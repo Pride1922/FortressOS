@@ -7,6 +7,7 @@
 #include "types.h"
 #include "block.h"
 #include "vfs.h"
+#include "xhci_bot.h"  /* for usb_durability_mode_t */
 
 /* Stubs for linking with gpt.c */
 uint32_t crc32(uint32_t crc, const void *buf, size_t len) { (void)crc; (void)buf; (void)len; return 0; }
@@ -45,10 +46,15 @@ static void copy_str(char *dst, const char *src, size_t dst_max) {
     dst[len] = '\0';
 }
 
-/* Mocks for host unit test */
 static bool s_usb_init = true;
 static bool s_ext2_mount_called = false;
 static bool s_ext2_mount_result = true;
+static bool s_ext2_mount_rw_called = false;
+static bool s_ext2_mount_rw_result = true;
+static bool s_flush_result = true;
+static unsigned s_flush_calls;
+static unsigned s_write_calls;
+static unsigned s_report_calls;
 static char s_last_serial_log[1024];
 
 void serial_puts(const char *s) {
@@ -71,6 +77,29 @@ bool ext2_mount(block_dev_t *dev, const char *path) {
     s_ext2_mount_called = true;
     return s_ext2_mount_result;
 }
+
+bool ext2_mount_rw(block_dev_t *dev, const char *path) {
+    (void)dev;
+    (void)path;
+    s_ext2_mount_rw_called = true;
+    assert(s_flush_calls > 0 && s_flush_result);
+    return s_ext2_mount_rw_result;
+}
+
+static bool mock_write_sector(block_dev_t *dev, uint64_t lba, const void *buf) {
+    (void)dev; (void)lba; (void)buf; s_write_calls++; return true;
+}
+
+static bool mock_flush(block_dev_t *dev) {
+    (void)dev; s_flush_calls++; return s_flush_result;
+}
+
+bool block_flush(block_dev_t *dev) { return dev && dev->flush && dev->flush(dev); }
+void usb_report_flush_failure(void) { s_report_calls++; }
+
+/* Controllable durability mode stub for 9G.4 eligibility tests */
+static usb_durability_mode_t s_durability_mode = USB_DURABILITY_SYNC_BACKED;
+usb_durability_mode_t usb_get_durability_mode(void) { return s_durability_mode; }
 
 #include "../src/fs/gpt.c"
 #include "../src/fs/usb_mount.c"
@@ -211,22 +240,179 @@ static void test_production_mount_selection(void) {
     assert(s_ext2_mount_called);
     assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-only at /mnt"));
 
-    /* Case G: Explicit RW requested but degraded to read-only in 9G.3 */
+    /* Case G: Explicit RW requested with consistent GPT and valid write/flush capabilities (Phase 9G.4) */
     copy_str(bi.cmdline, "usb_data=PARTUUID=CB667616-2FC7-4820-9B24-C5D9DE4227AD usb_data_mode=rw", sizeof(bi.cmdline));
+    g_last_policy = GPT_POLICY_PRIMARY_CONSISTENT;
+    g_partitions[0].block_dev.write_sector = mock_write_sector;
+    g_partitions[0].block_dev.flush = mock_flush;
     s_ext2_mount_called = false;
+    s_ext2_mount_rw_called = false;
+    s_ext2_mount_rw_result = true;
     s_last_serial_log[0] = '\0';
     assert(usb_mount_production_storage(&bi));
+    assert(s_ext2_mount_rw_called);
+    assert(!s_ext2_mount_called);
+    assert(str_contains(s_last_serial_log, "Mount mode: read-write"));
+    assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-write at /mnt"));
+
+    /* Case H: Explicit RW requested, but GPT policy is degraded (fallback to RO) */
+    g_last_policy = GPT_POLICY_DEGRADED_PRIMARY;
+    s_ext2_mount_called = false;
+    s_ext2_mount_rw_called = false;
+    s_last_serial_log[0] = '\0';
+    assert(usb_mount_production_storage(&bi));
+    assert(!s_ext2_mount_rw_called);
     assert(s_ext2_mount_called);
-    assert(str_contains(s_last_serial_log, "writable USB persistence deferred to 9G.4"));
+    assert(str_contains(s_last_serial_log, "GPT policy not strictly consistent; RW not eligible"));
     assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-only at /mnt"));
 
-    printf("  [PASS] Production mount selection logic verified\n");
+    /* Case I: Explicit RW requested, but device lacks write or flush (fallback to RO) */
+    g_last_policy = GPT_POLICY_PRIMARY_CONSISTENT;
+    g_partitions[0].block_dev.write_sector = NULL;
+    s_ext2_mount_called = false;
+    s_ext2_mount_rw_called = false;
+    s_last_serial_log[0] = '\0';
+    assert(usb_mount_production_storage(&bi));
+    assert(!s_ext2_mount_rw_called);
+    assert(s_ext2_mount_called);
+    assert(str_contains(s_last_serial_log, "Device missing write or flush capability; RW not eligible"));
+    assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-only at /mnt"));
+    g_partitions[0].block_dev.write_sector = mock_write_sector;
+
+    /* Case J: Explicit RW requested, but ext2_mount_rw fails (attempting RO fallback) */
+    s_ext2_mount_called = false;
+    s_ext2_mount_rw_called = false;
+    s_ext2_mount_rw_result = false;
+    s_ext2_mount_result = true;
+    s_last_serial_log[0] = '\0';
+    assert(usb_mount_production_storage(&bi));
+    assert(s_ext2_mount_rw_called);
+    assert(s_ext2_mount_called);
+    assert(str_contains(s_last_serial_log, "ext2 writable mount failed on sdap2; attempting read-only fallback"));
+    assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-only at /mnt"));
+
+    /* A device rejecting SYNCHRONIZE CACHE must never enter the RW mount,
+     * which would dirty the superblock before discovering the flush failure. */
+    s_ext2_mount_called = s_ext2_mount_rw_called = false;
+    s_ext2_mount_rw_result = true;
+    s_flush_result = false;
+    s_flush_calls = s_write_calls = s_report_calls = 0;
+    s_last_serial_log[0] = '\0';
+    assert(usb_mount_production_storage(&bi));
+    assert(s_flush_calls == 1 && s_write_calls == 0 && s_report_calls == 1);
+    assert(!s_ext2_mount_rw_called && s_ext2_mount_called);
+    assert(str_contains(s_last_serial_log, "Flush preflight failed before filesystem writes"));
+    assert(!str_contains(s_last_serial_log, "Mount mode: read-write"));
+    assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-only at /mnt"));
+    /* Case K: Explicit RW requested, durability = READ_ONLY (device reported WCE=1, sync failed) */
+    s_durability_mode = USB_DURABILITY_READ_ONLY;
+    g_last_policy = GPT_POLICY_PRIMARY_CONSISTENT;
+    g_partitions[0].block_dev.write_sector = mock_write_sector;
+    g_partitions[0].block_dev.flush = mock_flush;
+    s_ext2_mount_called = s_ext2_mount_rw_called = false;
+    s_flush_result = true;
+    s_flush_calls = s_write_calls = s_report_calls = 0;
+    s_last_serial_log[0] = '\0';
+    assert(usb_mount_production_storage(&bi));
+    assert(!s_ext2_mount_rw_called && s_ext2_mount_called);
+    assert(s_flush_calls == 0 && s_write_calls == 0);
+    assert(str_contains(s_last_serial_log, "Device classified read-only by durability probe; RW not eligible"));
+    assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-only at /mnt"));
+    s_durability_mode = USB_DURABILITY_SYNC_BACKED;
+    printf("  [PASS] Durability READ_ONLY correctly blocks RW mount\n");
+
+    /* Case L: Explicit RW requested, durability = ASSUMED_WRITE_THROUGH (device uncooperative, sync failed) */
+    s_durability_mode = USB_DURABILITY_ASSUMED_WRITE_THROUGH;
+    g_last_policy = GPT_POLICY_PRIMARY_CONSISTENT;
+    g_partitions[0].block_dev.write_sector = mock_write_sector;
+    g_partitions[0].block_dev.flush = mock_flush;
+    s_ext2_mount_called = s_ext2_mount_rw_called = false;
+    s_flush_result = true;
+    s_flush_calls = s_write_calls = s_report_calls = 0;
+    s_last_serial_log[0] = '\0';
+    assert(usb_mount_production_storage(&bi));
+    assert(s_ext2_mount_rw_called && !s_ext2_mount_called);
+    assert(s_flush_calls == 1 && s_write_calls == 0);
+    assert(str_contains(s_last_serial_log, "durability=assumed-write-through"));
+    assert(str_contains(s_last_serial_log, "Mount mode: read-write"));
+    assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-write at /mnt"));
+    printf("  [PASS] Durability ASSUMED_WRITE_THROUGH mounts RW with disclosure log\n");
+
+    /* Case M: Explicit RW requested, durability = UNKNOWN */
+    s_durability_mode = USB_DURABILITY_UNKNOWN;
+    s_ext2_mount_called = s_ext2_mount_rw_called = false;
+    s_flush_result = true;
+    s_flush_calls = s_write_calls = s_report_calls = 0;
+    s_last_serial_log[0] = '\0';
+    assert(usb_mount_production_storage(&bi));
+    assert(!s_ext2_mount_rw_called && s_ext2_mount_called);
+    assert(s_flush_calls == 0 && s_write_calls == 0);
+    assert(str_contains(s_last_serial_log, "Cache durability unknown; RW not eligible (fallback to RO)"));
+    assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-only at /mnt"));
+    printf("  [PASS] Durability UNKNOWN correctly blocks RW mount\n");
+
+    /* Reset flush state for remaining tests */
+    s_durability_mode = USB_DURABILITY_SYNC_BACKED;
+    s_flush_result = true;
+}
+
+static void test_usb_mount_sync(void) {
+    printf("[HOST TEST] Testing usb_mount_sync()...\n");
+
+    /* usb_mount_sync() before any RW mount returns false */
+    /* Note: s_mounted_rw_dev is a static in usb_mount.c; we trigger its population
+     * by running a successful RW mount in a fresh state. First test the no-mount case. */
+    /* (s_mounted_rw_dev is already set from the last Case G run, so flush is expected) */
+
+    /* Re-test with a controlled flush failure */
+    s_flush_result = false;
+    bool sync_result = usb_mount_sync();
+    /* Either it was set (and fails due to flush) or not set (and fails due to NULL). Either is false. */
+    assert(!sync_result);
+    s_flush_result = true;
+
+    /* Now do a fresh RW mount to set s_mounted_rw_dev and verify sync passes */
+    block_dev_t usb_sda_s = {.name = "sda"};
+    gpt_guid_t tg;
+    assert(gpt_str_to_guid("AB001234-2FC7-4820-9B24-C5D9DE4227AD", &tg));
+    g_partition_count = 1;
+    g_partitions[0].parent = &usb_sda_s;
+    g_partitions[0].unique_guid = tg;
+    g_partitions[0].block_dev.write_sector = mock_write_sector;
+    g_partitions[0].block_dev.flush = mock_flush;
+    copy_str(g_partitions[0].block_dev.name, "sdap2", sizeof(g_partitions[0].block_dev.name));
+    g_last_policy = GPT_POLICY_PRIMARY_CONSISTENT;
+    s_durability_mode = USB_DURABILITY_SYNC_BACKED;
+    s_flush_result = true;
+    s_flush_calls = 0;
+    s_ext2_mount_rw_result = true;
+    s_ext2_mount_rw_called = false;
+
+    boot_info_t bi_s = {0};
+    copy_str(bi_s.cmdline,
+             "usb_data=PARTUUID=AB001234-2FC7-4820-9B24-C5D9DE4227AD usb_data_mode=rw",
+             sizeof(bi_s.cmdline));
+    assert(usb_mount_production_storage(&bi_s));
+    assert(s_ext2_mount_rw_called);
+
+    /* sync() with active RW mount: should flush once more and return true */
+    unsigned pre = s_flush_calls;
+    assert(usb_mount_sync());
+    assert(s_flush_calls == pre + 1);
+
+    /* sync() with flush failure: should return false */
+    s_flush_result = false;
+    assert(!usb_mount_sync());
+    s_flush_result = true;
+
+    printf("  [PASS] usb_mount_sync verified\n");
 }
 
 int main(void) {
     test_guid_conversions();
     test_cmdline_parsing();
     test_production_mount_selection();
-    printf("[ALL PASS] Phase 9G.3 host unit tests passed successfully!\n");
+    test_usb_mount_sync();
+    printf("[ALL PASS] Phase 9G.4 host unit tests passed successfully!\n");
     return 0;
 }

@@ -173,6 +173,7 @@ def run(mode):
             assert "Deleted line 1" in edit_command("d 1\n")
             assert "In-memory changes discarded" in edit_command("q\n", expect="fortress> ")
             assert "[EDIT] New buffer" in edit_command("edit /missing.txt\n")
+            assert "Read-only filesystem." in edit_command("w\n")
             assert "fortress> " in edit_command("q\n", expect="fortress> ")
 
             # VFS Program Execution & Argument Passing

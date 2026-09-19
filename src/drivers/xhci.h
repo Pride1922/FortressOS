@@ -2,6 +2,7 @@
 #define FORTRESS_XHCI_H
 #include "boot_info.h"
 #include "block.h"
+#include "xhci_bot.h"
 
 /* One-shot 9G.1b boot probe, after PCI/input initialization, with IRQs and
  * preemption disabled and no locks held. Uses PIT channel 2 for bounded waits.
@@ -20,5 +21,14 @@ bool usb_is_initialized(void);
 uint32_t usb_get_sector_size(void);
 uint64_t usb_get_sector_count(void);
 bool usb_block_read(block_dev_t *dev, uint64_t lba, void *buf);
+bool usb_block_write(block_dev_t *dev, uint64_t lba, const void *buf);
+bool usb_block_flush(block_dev_t *dev);
+/* Boot/thread context only, with no subsystem/console lock held.
+ * Consumes a copied flush failure; never reads controller or DMA memory. */
+void usb_report_flush_failure(void);
+
+/* Returns current USB durability mode (USB_DURABILITY_UNKNOWN if not initialized).
+ * Thread context only; no lock held. */
+usb_durability_mode_t usb_get_durability_mode(void);
 
 #endif

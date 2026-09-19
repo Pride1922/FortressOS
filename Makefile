@@ -173,6 +173,12 @@ test-usb-mount: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 	@python3 scripts/test_usb_mount_host.py
 	@python3 scripts/test_usb_discovery.py --mount
 
+.PHONY: test-usb-persistence
+test-usb-persistence: $(BOOTABLE_IMG)
+	@python3 scripts/test_xhci_bot_host.py
+	@python3 scripts/test_usb_mount_host.py
+	@python3 scripts/test_usb_persistence.py
+
 
 
 

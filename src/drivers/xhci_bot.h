@@ -40,8 +40,17 @@ typedef struct {
 #define SCSI_CMD_TEST_UNIT_READY       0x00u
 #define SCSI_CMD_REQUEST_SENSE         0x03u
 #define SCSI_CMD_INQUIRY               0x12u
+#define SCSI_CMD_MODE_SENSE_6          0x1Au
 #define SCSI_CMD_READ_CAPACITY_10      0x25u
 #define SCSI_CMD_READ_10               0x28u
+#define SCSI_CMD_WRITE_10              0x2Au
+#define SCSI_CMD_SYNCHRONIZE_CACHE_10  0x35u
+#define SCSI_CMD_MODE_SENSE_10         0x5Au
+
+/* USB Feature Selectors (for CLEAR_FEATURE) */
+#define USB_FEATURE_ENDPOINT_HALT      0x00u
+/* bmRequestType: endpoint, host-to-device */
+#define USB_RT_ENDPOINT_OUT            0x02u
 
 /* Standard SCSI INQUIRY Response (36 bytes) */
 typedef struct {
@@ -78,7 +87,46 @@ typedef struct {
     uint8_t  sense_key_specific[3];
 } __attribute__((packed)) scsi_sense_data_t;
 
+/* USB Durability Mode — device write durability classification */
+typedef enum {
+    USB_DURABILITY_UNKNOWN = 0,           /* Not yet probed */
+    USB_DURABILITY_ASSUMED_WRITE_THROUGH, /* No caching page and sync failed; assumed write-through */
+    USB_DURABILITY_WRITE_THROUGH,         /* WCE=0 in MODE SENSE caching page; barrier without cache command */
+    USB_DURABILITY_SYNC_BACKED,           /* SYNCHRONIZE CACHE succeeded; every flush must complete */
+    USB_DURABILITY_READ_ONLY              /* WCE=1+sync unavailable, transport error, or write-protect */
+} usb_durability_mode_t;
+
+/* Cache policy discovered via MODE SENSE caching page 0x08 */
+typedef struct {
+    bool     probed;              /* true if at least one MODE SENSE command completed */
+    bool     wce;                 /* Write Cache Enable bit (WCE) */
+    bool     rcd;                 /* Read Cache Disable bit */
+    bool     write_protect;       /* Write Protect bit from mode parameter header */
+    bool     sync_ok;             /* SYNCHRONIZE CACHE succeeded during probe */
+    bool     ms6_attempted;       /* MODE SENSE(6) was attempted */
+    bool     ms6_ok;              /* MODE SENSE(6) returned a valid caching page */
+    bool     ms10_attempted;      /* MODE SENSE(10) was attempted */
+    bool     ms10_ok;             /* MODE SENSE(10) returned a valid caching page */
+    uint8_t  raw_ms6[28];         /* Raw MODE SENSE(6) response (up to 28 bytes) */
+    uint8_t  raw_ms10[32];        /* Raw MODE SENSE(10) response (up to 32 bytes) */
+    uint8_t  ms6_len;             /* Actual bytes captured for MODE SENSE(6) */
+    uint8_t  ms10_len;            /* Actual bytes captured for MODE SENSE(10) */
+    usb_durability_mode_t policy; /* Resulting classification */
+} scsi_durability_info_t;
+
 /* Bulk Endpoint Transfer Ring & State */
+typedef struct {
+    uint8_t opcode;
+    uint8_t csw_status;
+    bool command_failed; /* Valid CSW, status FAILED; REQUEST SENSE is safe. */
+    bool transport_failed;
+    bool sense_valid;
+    uint8_t sense_response;
+    uint8_t sense_key;
+    uint8_t asc;
+    uint8_t ascq;
+} xhci_bot_error_t;
+
 typedef struct {
     uintptr_t  bulk_in_ring_phys;
     xhci_trb_t *bulk_in_ring_virt;
@@ -100,6 +148,16 @@ typedef struct {
     uint64_t   sector_count;
     char       vendor[9];
     char       product[17];
+    /* No reuse of these rings/bounce page after uncertain DMA completion.
+     * Buffers remain allocated until reboot; runtime recovery is not supplied. */
+    bool       transport_failed;
+    bool       latched_offline;   /* Endpoint latched offline after unrecoverable stall */
+    xhci_bot_error_t last_error;
+    uint32_t   data_transferred;
+    /* Durability state — set once by xhci_bot_probe_durability(), never changed except
+     * on transport_failed/latched_offline latch. */
+    usb_durability_mode_t durability_mode;
+    scsi_durability_info_t durability_info;
 } xhci_bot_rings_t;
 
 /* Configures Bulk-In and Bulk-Out transfer rings on the controller via Configure Endpoint */
@@ -145,5 +203,63 @@ bool xhci_scsi_read_sector(const xhci_rings_io_t *io,
                            xhci_bot_rings_t *bot_rings,
                            uint64_t lba,
                            void *buf);
+
+bool xhci_scsi_write_sector(const xhci_rings_io_t *io,
+                            xhci_dma_buffers_t *ring_dma,
+                            const xhci_dev_dma_t *dev_dma,
+                            xhci_bot_rings_t *bot_rings,
+                            uint64_t lba,
+                            const void *buf);
+
+bool xhci_scsi_sync_cache(const xhci_rings_io_t *io,
+                          xhci_dma_buffers_t *ring_dma,
+                          const xhci_dev_dma_t *dev_dma,
+                          xhci_bot_rings_t *bot_rings);
+
+/* MODE SENSE caching page discovery (Commit 2).
+ * Attempts MODE SENSE(6) then MODE SENSE(10) for page 0x08 (current values).
+ * Separately probes SYNCHRONIZE CACHE(10) with IMMED=0.
+ * Populates *info and returns true if at least one form succeeded.
+ * Never changes device settings; never uses MODE SELECT. */
+bool xhci_scsi_probe_cache_policy(const xhci_rings_io_t *io,
+                                  xhci_dma_buffers_t *ring_dma,
+                                  const xhci_dev_dma_t *dev_dma,
+                                  xhci_bot_rings_t *bot_rings,
+                                  scsi_durability_info_t *info);
+
+/* Durability state machine (Commit 3).
+ * Calls probe_cache_policy(), classifies the device into one of the
+ * USB_DURABILITY_* modes, and stores the result in bot_rings->durability_mode.
+ * Must be called once after block device registration, before any write.
+ * Prints the [USB DURABILITY] diagnostic. */
+void xhci_bot_probe_durability(const xhci_rings_io_t *io,
+                               xhci_dma_buffers_t *ring_dma,
+                               const xhci_dev_dma_t *dev_dma,
+                               xhci_bot_rings_t *bot_rings);
+
+/* Durability-mode-aware flush barrier.
+ * SYNC_BACKED: executes and verifies SYNCHRONIZE CACHE.
+ * WRITE_THROUGH: succeeds immediately if transport is healthy (no cache command).
+ * ASSUMED_WRITE_THROUGH: attempts SYNCHRONIZE CACHE; succeeds even if command is
+ *                         rejected by the device, fails only on transport failure.
+ * All other modes: fails immediately.
+ * Latches the mode to READ_ONLY on failure; never silently ignores errors. */
+bool xhci_bot_flush_barrier(const xhci_rings_io_t *io,
+                            xhci_dma_buffers_t *ring_dma,
+                            const xhci_dev_dma_t *dev_dma,
+                            xhci_bot_rings_t *bot_rings);
+
+/* Returns current durability mode without probing. */
+usb_durability_mode_t xhci_bot_get_durability_mode(const xhci_bot_rings_t *bot_rings);
+
+/* Bounded BOT endpoint stall recovery (Commit 1b).
+ * Issues Stop Endpoint, Reset Endpoint, Set Dequeue Pointer, and USB CLEAR_FEATURE(HALT).
+ * Sets latched_offline and returns false if any step times out or fails.
+ * Must NOT be called after transport_failed is set. */
+bool xhci_bot_endpoint_reset(const xhci_rings_io_t *io,
+                             xhci_dma_buffers_t *ring_dma,
+                             const xhci_dev_dma_t *dev_dma,
+                             xhci_bot_rings_t *bot_rings,
+                             uint8_t dci);
 
 #endif /* FORTRESS_XHCI_BOT_H */
