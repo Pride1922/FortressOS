@@ -3,6 +3,8 @@
 #include "heap.h"
 #include "string.h"
 #include "spinlock.h"
+#include "serial.h"
+
 
 #define EXT2_MAX_GROUPS 4096U
 #define EXT2_MAX_NODES 1024U
@@ -1578,7 +1580,7 @@ static bool ext2_mount_internal(block_dev_t *dev, const char *path, bool writabl
     ext2_fs_t fs = {.dev = dev, .read_only = !writable, .tainted = false};
     uint8_t sb[1024];
     if (!bytes(&fs, 1024, sb, sizeof(sb)) || u16(sb + 56) != 0xef53 ||
-        u32(sb + 24) > 2 || u32(sb + 76) > 1 || u16(sb + 58) != 1) return false;
+        u32(sb + 24) > 2 || u32(sb + 76) > 1) return false;
     fs.blocks = u32(sb + 4); fs.inodes = u32(sb);
     fs.free_blocks = u32(sb + 12); fs.free_inodes = u32(sb + 16);
     fs.first = u32(sb + 20); fs.block_size = 1024U << u32(sb + 24);
@@ -1596,13 +1598,20 @@ static bool ext2_mount_internal(block_dev_t *dev, const char *path, bool writabl
         }
     }
     if (writable) {
-        /* Writable mount strictly requires: only FILETYPE (2) in incompat */
-        if (fs.incompat & ~2U) return false;
-        /* Ro-compat allowed for write: strictly SPARSE_SUPER (1) and LARGE_FILE (2) */
-        if (fs.ro_compat & ~3U) return false;
-        /* Superblock state must be clean (1 = EXT2_VALID_FS) */
-        if (u16(sb + 58) != 1) return false;
+    /* Writable mount strictly requires: only FILETYPE (2) in incompat */
+    if (fs.incompat & ~2U) return false;
+    /* Ro-compat allowed for write: strictly SPARSE_SUPER (1) and LARGE_FILE (2) */
+    if (fs.ro_compat & ~3U) return false;
+    /* s_state == EXT2_VALID_FS (1) means clean shutdown. Anything else
+     * means the filesystem was not cleanly unmounted. Linux's ext2
+     * driver warns but still mounts RW; match that behavior. A stronger
+     * recovery path (fsck, journal) is deferred. */
+    serial_puts("[ext2] DEBUG: reached writable branch\n");
+    if (u16(sb + 58) != 1) {
+        serial_puts("[ext2] WARNING: filesystem was not cleanly unmounted.\n");
+        serial_puts("[ext2] Mounting read-write anyway. Run a consistency check if you notice problems.\n");
     }
+}
 
     if (u32(sb + 28) != u32(sb + 24) || u32(sb + 36) != fs.bpg ||
         fs.first != (fs.block_size == 1024 ? 1U : 0U) ||
