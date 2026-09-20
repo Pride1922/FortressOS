@@ -1,5 +1,6 @@
 #include "xhci_dev.h"
 #include <string.h>
+#include "serial.h"
 
 #define XHCI_TRB_TYPE_SETUP_STAGE          2u
 #define XHCI_TRB_TYPE_DATA_STAGE           3u
@@ -435,25 +436,25 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
         if (!len || off + len > total_len) break;
 
         if (type == USB_DESC_INTERFACE && len >= 9) {
-            uint8_t if_class = full_cfg[off + 5];
+            uint8_t if_class    = full_cfg[off + 5];
             uint8_t if_subclass = full_cfg[off + 6];
-            uint8_t if_proto = full_cfg[off + 7];
-            device->if_class = if_class;
+            uint8_t if_proto    = full_cfg[off + 7];
+            device->if_class    = if_class;
             device->if_subclass = if_subclass;
-            device->if_proto = if_proto;
+            device->if_proto    = if_proto;
             if (if_class == USB_CLASS_MASS_STORAGE &&
                 if_subclass == USB_SUBCLASS_SCSI &&
                 if_proto == USB_PROTOCOL_BOT) {
                 found_bot_if = true;
-            } else if (!device->bulk_in_ep || !device->bulk_out_ep) {
+            } else {
                 found_bot_if = false;
             }
         } else if (found_bot_if && type == USB_DESC_ENDPOINT && len >= 7) {
-            uint8_t ep_addr = full_cfg[off + 2];
-            uint8_t ep_attr = full_cfg[off + 3] & 0x03;
+            uint8_t ep_addr   = full_cfg[off + 2];
+            uint8_t ep_attr   = full_cfg[off + 3] & 0x03;
             uint16_t max_packet = full_cfg[off + 4] | ((uint16_t)full_cfg[off + 5] << 8);
 
-            if (ep_attr == 2) { /* Bulk endpoint */
+            if (ep_attr == 2) {
                 if (ep_addr & 0x80) {
                     device->bulk_in_ep = ep_addr;
                     device->bulk_in_max_packet = max_packet;
@@ -462,6 +463,56 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
                     device->bulk_out_max_packet = max_packet;
                 }
             }
+
+            if ((device->speed == XHCI_SPEED_SUPER ||
+                 device->speed == XHCI_SPEED_SUPER_PLUS) &&
+                off + len + 6 <= total_len &&
+                full_cfg[off + len] == 6 && full_cfg[off + len + 1] == 0x30) {
+                uint8_t max_burst = full_cfg[off + len + 2] & 0x1F;
+                if (ep_addr & 0x80) {
+                    device->bulk_in_max_burst = max_burst;
+                } else {
+                    device->bulk_out_max_burst = max_burst;
+                }
+            }
+        }
+        /* Every descriptor advances the walk, including configuration,
+         * non-storage interfaces and descriptors we do not recognize. */
+        off += len;
+    }
+
+    /* Provenance dump: re-walk the config and show what each endpoint did. */
+    serial_puts("[USB 9G.1e] Descriptor provenance:\n");
+    off = 0;
+    while (off + 2 <= total_len) {
+        uint8_t len  = full_cfg[off];
+        uint8_t type = full_cfg[off + 1];
+        if (!len || off + len > total_len) break;
+
+        if (type == USB_DESC_INTERFACE && len >= 9) {
+            serial_puts("  iface num=");
+            serial_print_hex(full_cfg[off + 2]);
+            serial_puts(" alt=");
+            serial_print_hex(full_cfg[off + 3]);
+            serial_puts(" cls=");
+            serial_print_hex(full_cfg[off + 5]);
+            serial_puts(" sub=");
+            serial_print_hex(full_cfg[off + 6]);
+            serial_puts(" proto=");
+            serial_print_hex(full_cfg[off + 7]);
+            serial_puts("\n");
+        } else if (type == USB_DESC_ENDPOINT && len >= 7) {
+            serial_puts("    ep addr=");
+            serial_print_hex(full_cfg[off + 2]);
+            serial_puts(" attr=");
+            serial_print_hex(full_cfg[off + 3] & 0x03);
+            serial_puts(" maxpacket=");
+            serial_print_hex(full_cfg[off + 4] | ((uint16_t)full_cfg[off + 5] << 8));
+            serial_puts(" => ");
+            serial_puts(full_cfg[off + 2] == device->bulk_in_ep  ? "OVERWROTE IN"  :
+                        full_cfg[off + 2] == device->bulk_out_ep ? "OVERWROTE OUT" :
+                        "not selected");
+            serial_puts("\n");
         }
         off += len;
     }
@@ -493,5 +544,7 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
     }
 
     device->is_valid_bot_storage = true;
+    device->ep0_enqueue_idx = s_ep0_idx;
+    device->ep0_cycle = (uint8_t)s_ep0_cycle;
     return true;
 }

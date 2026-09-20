@@ -371,6 +371,17 @@ Canonical examples: [xhci.c](src/drivers/xhci.c) (controller), [xhci_dev.c](src/
 
 The USB stack is split across three source files, each with a distinct responsibility. Keep additions inside the correct file.
 
+BOT stall recovery now handles a matching data/CSW STALL with bounded Reset
+Endpoint, EP0 CLEAR_FEATURE(ENDPOINT_HALT), and Set TR Dequeue Pointer. Retry
+CSW once; never replay a stalled data OUT payload. Enumeration hands the EP0
+producer index/cycle to the selected BOT device; runtime recovery must continue
+that ring, never reuse index zero or borrow the event-ring cycle. A CBW stall,
+timeout, malformed CSW, mismatched completion or second CSW stall sets
+`transport_failed`; a failed recovery step also sets `latched_offline`. Both
+block further BOT submissions. A recovered STALL alone is not command failure:
+only a valid failed CSW sets `command_failed`. This implementation does not add
+full BOT class-reset recovery or change writable mount authorization.
+
 - **`xhci.c` / `xhci.h`** — controller-level only. PCI discovery, BAR mapping, BIOS-to-OS ownership handoff, halt/reset, command ring, event ring, ERST, root-port protocol mapping and reset. It knows nothing about USB classes or SCSI. It exposes the controller state and the DMA ring structures that the next layer uses.
 - **`xhci_dev.c` / `xhci_dev.h`** — device-level. DCBAA and scratchpad setup, `Enable Slot`, slot and endpoint context construction, `Address Device`, EP0 control transfers, standard descriptor parsing (device, configuration, interface, endpoint), and **class filtering**. This file decides whether an enumerated device is a BOT mass-storage device (class `0x08`, subclass `0x06`, protocol `0x50`) or something to reject and disable. It does not transfer sector data.
 - **`xhci_bot.c` / `xhci_bot.h`** — transport and SCSI. CBW/CSW exchange over the bulk endpoints, the SCSI command set (`INQUIRY`, `TEST UNIT READY`, `REQUEST SENSE`, `READ CAPACITY`, `READ`, `WRITE`, `SYNCHRONIZE CACHE`, `MODE SENSE`), durability classification, and the block-device callbacks registered with `block.c`. It assumes the endpoints and slot ID that `xhci_dev.c` produced; it does not re-validate the device class.

@@ -2,6 +2,11 @@
 #include <stdio.h>
 #include <string.h>
 #include "xhci_dev.h"
+#include "serial.h"
+
+/* Host diagnostics: no UART hardware. */
+void serial_puts(const char *s) { (void)s; }
+void serial_print_hex(uint64_t value) { (void)value; }
 
 enum mock_dev_fault {
     DEV_FAULT_NONE,
@@ -10,6 +15,7 @@ enum mock_dev_fault {
     DEV_FAULT_BAD_DESC_HEADER,
     DEV_FAULT_BAD_DEV_DESC,
     DEV_FAULT_NOT_MASS_STORAGE,
+    DEV_FAULT_WEBCAM,
     DEV_FAULT_NO_BULK_ENDPOINTS,
     DEV_FAULT_SET_CONFIG
 };
@@ -21,6 +27,7 @@ typedef struct {
     xhci_dev_dma_t dev_dma;
     unsigned db0_count;
     unsigned db1_count;
+    unsigned disable_count;
 } mock_dev_hw_t;
 
 static uint32_t mock_read32(void *ctx, uint32_t off) {
@@ -94,6 +101,10 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                 event->status = 1u << 24; /* Success */
                 event->control = (33u << 10) | (1u << 24) | 1u;
             }
+        } else if (trb_type == 10) { /* Disable Slot */
+            ++m->disable_count;
+            event->status = 1u << 24;
+            event->control = (33u << 10) | (1u << 24) | 1u;
         } else if (trb_type == 13) { /* Evaluate Context */
             event->status = 1u << 24;
             event->control = (33u << 10) | (1u << 24) | 1u;
@@ -117,10 +128,11 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                 }
             } else if (desc_type == USB_DESC_CONFIGURATION) {
                 uint16_t clen = setup.wLength < 32 ? setup.wLength : 32;
-                if (m->fault == DEV_FAULT_NOT_MASS_STORAGE) {
+                if (m->fault == DEV_FAULT_NOT_MASS_STORAGE ||
+                    m->fault == DEV_FAULT_WEBCAM) {
                     uint8_t bad_cfg[32];
                     memcpy(bad_cfg, s_config_desc, 32);
-                    bad_cfg[14] = 0x03; /* Change Class to HID */
+                    bad_cfg[14] = m->fault == DEV_FAULT_WEBCAM ? 0x0e : 0x03;
                     memcpy(m->dev_dma.bounce_buf_virt, bad_cfg, clen);
                 } else if (m->fault == DEV_FAULT_NO_BULK_ENDPOINTS) {
                     uint8_t bad_cfg[32];
@@ -243,6 +255,9 @@ int main(void) {
     assert(dev.bulk_in_max_packet == 512);
     assert(dev.bulk_out_ep == 0x02);
     assert(dev.bulk_out_max_packet == 512);
+    /* Three descriptor requests (3 TRBs each), then SET_CONFIGURATION (2).
+     * Runtime halt clearing must start at this producer, not EP0 index zero. */
+    assert(dev.ep0_enqueue_idx == 11 && dev.ep0_cycle == 1);
     printf("PASS: xHCI 9G.1e host enumeration and descriptor validation\n");
 
     /* 2. Enable slot fault */
@@ -279,6 +294,16 @@ int main(void) {
     assert(!ok);
     assert(!dev.is_valid_bot_storage);
     printf("PASS: xHCI 9G.1e Non-mass-storage device rejected cleanly\n");
+
+    /* Video-class interface on the reported webcam port must finish parsing,
+     * disable its slot and return without configuring storage endpoints. */
+    setup_mock(&m, DEV_FAULT_WEBCAM);
+    ok = xhci_enumerate_device(&io, &m.ring_dma, &m.dev_dma, 5, XHCI_SPEED_HIGH, &dev);
+    assert(!ok && !dev.is_valid_bot_storage);
+    assert(dev.step == 7 && dev.if_class == 0x0e);
+    assert(!dev.bulk_in_ep && !dev.bulk_out_ep);
+    assert(m.disable_count == 1 && m.db1_count == 3);
+    printf("PASS: webcam rejected and slot disabled without SET_CONFIGURATION\n");
 
     /* 7. Missing bulk endpoints */
     setup_mock(&m, DEV_FAULT_NO_BULK_ENDPOINTS);

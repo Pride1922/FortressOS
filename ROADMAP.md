@@ -931,11 +931,37 @@ Delivered in three commits:
 
 **Deferred:** the "no scrollback on boot" limitation of the framebuffer console means the head of the boot log (the `1/2` and `2/2` lines) is not photographable from hardware without a kernel-log buffer. This is independent of 9G.5a and tracked as a future work item (`dmesg`-style log capture).
 
-**9G.5b — SuperSpeed enumeration. (NEXT)** USB 3.x port link state, SuperSpeed slot and endpoint context layout (`MaxBurstSize`, `MaxPacketSize` 1024 for bulk, no `Evaluate Context` for EP0), and SuperSpeed descriptor handling. Test target: SanDisk enumerates on Port 0x12 as a USB 3.0 BOT device with `speed=SuperSpeed`. Success criterion is the `[USB 9G.1e] PASS: BOT Mass Storage device found on Slot N (Port 0x12)` line on the Dell.
+### Phase 9G.5b — SuperSpeed enumeration and data transfer (COMPLETE, 2026-09-20)
+
+SuperSpeed (USB 3.x) devices on USB 3.0 ports now enumerate fully, complete BOT transactions, register as block devices, and mount their ext2 partitions read-write on real hardware.
+
+Root cause of the previous SuperSpeed transfer failure: the configuration descriptor walk in xhci_dev.c advanced `off` only inside the endpoint branch, so the loop hung on the first non-endpoint descriptor after the BOT interface. When the hang was fixed, the walk continued into the same interface's UAS alternate setting (protocol 0x62) and its endpoints overwrote the BOT endpoints (0x81 IN, 0x02 OUT) recorded earlier. The driver then sent BOT CBWs to UAS endpoints; the device stalled on the wire; the first transfer returned completion code 0x4 (USB Transaction Error).
+
+Two fixes:
+- `off += len` moved out of the endpoint branch so it advances on every descriptor, not just endpoints.
+- `found_bot_if` now clears on every non-BOT interface, so a later alternate setting cannot overwrite the endpoints recorded for the BOT interface.
+
+Verified on Dell Latitude 5590 with SanDisk USB 3.2 Gen 1 (VID 0x0781, PID
+0x5588) on Port 0x12:
+- Device enumerates as SuperSpeed (5 Gbps).
+- Configuration descriptor walk shows Interface 0 Alternate 0 (proto 0x50, BOT) with endpoints 0x81 IN and 0x02 OUT, followed by Interface 0 Alternate 1 (proto 0x62, UAS) with the same endpoint addresses plus two others. Only the BOT endpoints are retained.
+- SCSI INQUIRY: "SanDisk" / "3.2 Gen 1".
+- READ CAPACITY: 241,385,472 sectors × 512 bytes = 117.86 GiB.
+- GPT parsed, ext2 partition mounted read-write at /mnt.
+- MODE SENSE(6) page 0x08: WCE=1.
+- SYNCHRONIZE CACHE test: passed.
+- Classification: SYNC_BACKED.
+- Mount mode: read-write.
+
+**Not verified:**
+- The BOT stall recovery path in xhci_bot.c. The endpoint reset helper exists but is not yet invoked from the transfer path. On the SanDisk this path was not exercised.
+- Other SuperSpeed devices. SuperSpeedPlus (10 Gbps). Other host controllers.
 
 **9G.5c — Strong durability on the SanDisk.** Once the SanDisk enumerates, its MODE SENSE and SYNCHRONIZE CACHE behavior can be read. Success criterion is a classification other than `ASSUMED_WRITE_THROUGH` — either `WRITE_THROUGH` (explicit `WCE=0`) or  SYNC_BACKED` (working flush). If the SanDisk also reports no cache policy, the strong path remains QEMU-only and that is documented as a device-class finding, not a driver defect.
 
 **9G.5d — Persistence on the SanDisk.** Same three-boot test as the Kingston, with `e2fsck` clean after each clean shutdown. This closes the "verified on two independent devices" claim for the persistence path.
+
+**9G.5b debugging update (2026-09-20):** Fixed a descriptor-walk regression in the working SuperSpeed changes: `off += len` was nested inside the bulk-endpoint branch, so parsing never advanced past the configuration descriptor. The host enumeration runner reproduced a 15-second timeout before the fix. After moving advancement outside the branch, `wsl -d Ubuntu-24.04 -- make test-usb-descriptors` passed the ASan/UBSan host suite (including a video-class webcam rejection with successful mocked Disable Slot and no SET_CONFIGURATION) and QEMU BIOS/UEFI present/absent checks with interactive shell startup. `wsl -d Ubuntu-24.04 -- make` rebuilt and verified `bin/fortress.img`. These checks do not establish Dell webcam recovery or SanDisk SuperSpeed bulk acceptance; physical retesting remains required.
 
 **9G.5e — Hubs (deferred).** USB 2.0 and USB 3.x hub support, recursive enumeration, downstream port power sequencing. No hot-plug. Deferred until there is a specific device reachable only through a hub. A USB-C docking hub is available for testing when the sub-project begins.
 

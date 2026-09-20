@@ -42,6 +42,14 @@ typedef struct {
     bool sense_fails, invalid_sense, descriptor_sense, deferred_sense;
     bool sense_pending;
     usb_bot_cbw_t last_cbw;
+    unsigned stall_csw_left, stall_data_left, resets, clears, setdqs;
+    unsigned recovery_fault; /* 1 reset, 2 EP0 timeout, 3 setdq, 4 wrong command pointer */
+    uint32_t ep0_consumer;
+    uint8_t ep0_consumer_cycle;
+    bool mode_short, stall_out_data;
+    unsigned out_data_attempts;
+    uint8_t recovery_dci;
+
 } mock_bot_hw_t;
 
 static uint32_t mock_read32(void *ctx, uint32_t off) {
@@ -70,8 +78,29 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
         uint32_t type = (cmd.control >> 10) & 0x3f;
 
         xhci_trb_t ev = {0};
-        ev.parameter_low = (uint32_t)(uintptr_t)&m->ring_dma.cmd_ring_virt[enq];
-        ev.control = (XHCI_TRB_TYPE_CMD_COMPLETION_EVENT << 10) | (m->ring_dma.event_cycle ? 1u : 0);
+        uintptr_t cmd_phys = m->ring_dma.cmd_ring_phys + enq * sizeof(xhci_trb_t);
+        ev.parameter_low = (uint32_t)cmd_phys;
+        ev.parameter_high = (uint32_t)(cmd_phys >> 32);
+        ev.control = (XHCI_TRB_TYPE_CMD_COMPLETION_EVENT << 10) |
+                     (cmd.control & 0xff000000u) | (m->ring_dma.event_cycle ? 1u : 0);
+        ev.status = XHCI_COMP_SUCCESS << 24;
+        if (type == XHCI_TRB_TYPE_STOP_EP_CMD) assert(!"Stop Endpoint on halted endpoint");
+        if (type == XHCI_TRB_TYPE_RESET_EP_CMD) {
+            ++m->resets;
+            m->recovery_dci = (cmd.control >> 16) & 31;
+            if (m->recovery_fault == 1) ev.status = 19u << 24;
+            if (m->recovery_fault == 4) ev.parameter_low ^= 16;
+        }
+        if (type == XHCI_TRB_TYPE_SET_TR_DEQUEUE_CMD) {
+            ++m->setdqs;
+            assert(m->clears == m->setdqs);
+            bool is_in = m->recovery_dci == m->bot_rings.in_dci;
+            uintptr_t expected = is_in ? m->bot_rings.bulk_in_ring_phys + m->bot_rings.in_idx * 16 :
+                                        m->bot_rings.bulk_out_ring_phys + m->bot_rings.out_idx * 16;
+            uint64_t actual = ((uint64_t)cmd.parameter_high << 32) | cmd.parameter_low;
+            assert(actual == (expected | (is_in ? m->bot_rings.in_cycle : m->bot_rings.out_cycle)));
+            if (m->recovery_fault == 3) ev.status = 19u << 24;
+        }
 
         if (type == XHCI_TRB_TYPE_CONFIG_EP_CMD) {
             if (m->fault == BOT_FAULT_CONFIG_EP) {
@@ -80,6 +109,38 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                 ev.status = (XHCI_COMP_SUCCESS << 24);
             }
         }
+        m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx] = ev;
+    }
+
+    /* EP0 uses an independent hardware cursor, not the software event cycle. */
+    if (off == dboff + m->bot_rings.slot_id * 4 && val == 1) {
+        if (m->recovery_fault == 2) return;
+        uintptr_t status_phys = 0;
+        for (unsigned stage = 0; stage < 2; ++stage) {
+            xhci_trb_t trb = m->dev_dma.ep0_ring_virt[m->ep0_consumer];
+            assert((trb.control & 1) == m->ep0_consumer_cycle);
+            assert(((trb.control >> 10) & 0x3f) == (stage ? 4u : 2u));
+            if (!stage) {
+                uint8_t addr = (m->recovery_dci >> 1) | ((m->recovery_dci & 1) ? 0x80 : 0);
+                assert(trb.parameter_low == 0x102 && trb.parameter_high == addr);
+                assert(trb.status == 8 && (trb.control & (1u << 6)));
+            } else assert((trb.control & ((1u << 16) | XHCI_TRB_IOC)) == ((1u << 16) | XHCI_TRB_IOC));
+            status_phys = m->dev_dma.ep0_ring_phys + m->ep0_consumer * 16;
+            if (++m->ep0_consumer == 255) {
+                xhci_trb_t link = m->dev_dma.ep0_ring_virt[255];
+                assert((link.control & 1) == m->ep0_consumer_cycle);
+                assert(link.control & XHCI_TRB_TC);
+                assert((((uint64_t)link.parameter_high << 32) | link.parameter_low) == m->dev_dma.ep0_ring_phys);
+                m->ep0_consumer = 0;
+                m->ep0_consumer_cycle ^= 1;
+            }
+        }
+        ++m->clears;
+        xhci_trb_t ev = {0};
+        ev.parameter_low = (uint32_t)status_phys;
+        ev.parameter_high = (uint32_t)(status_phys >> 32);
+        ev.status = XHCI_COMP_SUCCESS << 24;
+        ev.control = (32u << 10) | (m->bot_rings.slot_id << 24) | (1u << 16) | m->ring_dma.event_cycle;
         m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx] = ev;
     }
 
@@ -100,7 +161,10 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
         ev.parameter_low = (uint32_t)completed;
         ev.parameter_high = (uint32_t)(completed >> 32);
 
-        if (m->fault == BOT_FAULT_CBW_FAIL) {
+        if (len != sizeof(usb_bot_cbw_t)) ++m->out_data_attempts;
+        if (m->stall_out_data && len != sizeof(usb_bot_cbw_t)) {
+            ev.status = (XHCI_COMP_STALL_ERROR << 24) | len;
+        } else if (m->fault == BOT_FAULT_CBW_FAIL) {
             ev.status = (XHCI_COMP_STALL_ERROR << 24);
         } else {
             ev.status = (XHCI_COMP_SUCCESS << 24);
@@ -145,8 +209,16 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
         ev.parameter_low = (uint32_t)completed;
         ev.parameter_high = (uint32_t)(completed >> 32);
 
-        if (m->fault == BOT_FAULT_DATA_FAIL || m->fault == BOT_FAULT_CSW_FAIL) {
-            ev.status = (XHCI_COMP_STALL_ERROR << 24);
+        bool injected_stall = false;
+        if (in_len == sizeof(usb_bot_csw_t) && m->stall_csw_left) {
+            --m->stall_csw_left;
+            injected_stall = true;
+        } else if (in_len != sizeof(usb_bot_csw_t) && m->stall_data_left) {
+            --m->stall_data_left;
+            injected_stall = true;
+        }
+        if (injected_stall || m->fault == BOT_FAULT_DATA_FAIL || m->fault == BOT_FAULT_CSW_FAIL) {
+            ev.status = (XHCI_COMP_STALL_ERROR << 24) | in_len;
         } else {
             ev.status = (XHCI_COMP_SUCCESS << 24);
             if (in_len == sizeof(usb_bot_csw_t)) {
@@ -165,6 +237,8 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                     csw.bCSWStatus = USB_BOT_CSW_STATUS_FAILED;
                     m->sense_pending = true;
                 }
+                if (m->mode_short && (opcode == SCSI_CMD_MODE_SENSE_6 || opcode == SCSI_CMD_MODE_SENSE_10))
+                    csw.dCSWDataResidue = m->last_cbw.dCBWDataTransferLength - (opcode == SCSI_CMD_MODE_SENSE_6 ? 4 : 8);
                 if (opcode == SCSI_CMD_REQUEST_SENSE) {
                     if (m->sense_fails) csw.bCSWStatus = USB_BOT_CSW_STATUS_FAILED;
                     else m->sense_pending = false;
@@ -215,6 +289,12 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                         memcpy(m->dev_dma.bounce_buf_virt, &m->disk_data[lba * m->disk_sector_size], m->disk_sector_size);
                     }
                 }
+                if (m->mode_short && (opcode == SCSI_CMD_MODE_SENSE_6 || opcode == SCSI_CMD_MODE_SENSE_10)) {
+                    unsigned n = opcode == SCSI_CMD_MODE_SENSE_6 ? 4 : 8;
+                    memset(m->bounce, 0, n);
+                    m->bounce[opcode == SCSI_CMD_MODE_SENSE_6 ? 0 : 1] = n - (opcode == SCSI_CMD_MODE_SENSE_6 ? 1 : 2);
+                    ev.status = (XHCI_COMP_SHORT_PACKET << 24) | (in_len - n);
+                }
                 if (m->fault == BOT_FAULT_SHORT_DATA) ev.status = (XHCI_COMP_SHORT_PACKET << 24) | 1;
             }
         }
@@ -238,11 +318,16 @@ static void init_mock_hw(mock_bot_hw_t *m, enum mock_bot_fault fault) {
     static xhci_trb_t cmd_ring[256];
     static xhci_trb_t event_ring[256];
     static uint32_t input_ctx[1024];
+    static xhci_trb_t ep0_ring[256];
+    memset(ep0_ring, 0, sizeof(ep0_ring));
 
     memset(cmd_ring, 0, sizeof(cmd_ring));
     memset(event_ring, 0, sizeof(event_ring));
     memset(input_ctx, 0, sizeof(input_ctx));
 
+    m->dev_dma.ep0_ring_virt = ep0_ring;
+    m->dev_dma.ep0_ring_phys = (uintptr_t)ep0_ring;
+    m->ring_dma.cmd_ring_phys = (uintptr_t)cmd_ring;
     m->ring_dma.cmd_ring_virt = cmd_ring;
     m->ring_dma.cmd_cycle = 1;
     m->ring_dma.event_ring_virt = event_ring;
@@ -342,8 +427,109 @@ static void test_flush_and_writes(void) {
     printf("PASS: short transfers/residue rejected and uncertain transport never reused\n");
 }
 
+static void test_stall_recovery(void) {
+    for (unsigned scenario = 0; scenario < 9; ++scenario) {
+        mock_bot_hw_t m;
+        init_mock_hw(&m, BOT_FAULT_NONE);
+        xhci_rings_io_t io = {.mmio_ctx = &m, .read32 = mock_read32,
+            .write32 = mock_write32, .delay_ms = mock_delay};
+        xhci_bot_device_t dev = {.slot_id = 3, .bulk_in_ep = 0x81, .bulk_out_ep = 0x02,
+            .ep0_enqueue_idx = scenario == 8 ? 254 : 11, .ep0_cycle = 1};
+        assert(xhci_configure_bulk_endpoints(&io, &m.ring_dma, &m.dev_dma, &dev, &m.bot_rings));
+        m.ep0_consumer = dev.ep0_enqueue_idx;
+        m.ep0_consumer_cycle = 1;
+        m.stall_csw_left = scenario == 2 ? 2 : 1;
+        m.reject_flush = scenario == 1;
+        m.recovery_fault = scenario >= 3 && scenario <= 6 ? scenario - 2 : 0;
+        if (scenario == 7 || scenario == 8) {
+            /* Bulk TD at index 254; command producer and event consumer wrap
+             * independently, EP0 must not inherit either cycle. */
+            m.bot_rings.in_idx = 254;
+            m.ring_dma.cmd_enqueue_idx = 254;
+            m.ring_dma.event_dequeue_idx = 254;
+        }
+        bool ok = xhci_scsi_sync_cache(&io, &m.ring_dma, &m.dev_dma, &m.bot_rings);
+        bool recovered = scenario == 0 || scenario == 1 || scenario >= 7;
+        assert(ok == (recovered && scenario != 1));
+        assert(m.resets == 1); /* Never reset repeatedly on a second CSW stall. */
+        if (recovered) {
+            assert(m.clears == 1 && m.setdqs == 1);
+            assert(!m.bot_rings.transport_failed && !m.bot_rings.latched_offline);
+            if (scenario == 1) {
+                assert(m.bot_rings.last_error.command_failed);
+                assert(m.bot_rings.last_error.sense_valid && m.bot_rings.last_error.sense_key == 5);
+                assert(m.sense_count == 1);
+            }
+            m.bot_rings.sector_count = 16;
+            m.bot_rings.sector_size = 512;
+            uint8_t buf[512];
+            assert(xhci_scsi_read_sector(&io, &m.ring_dma, &m.dev_dma, &m.bot_rings, 0, buf));
+        } else {
+            assert(m.bot_rings.transport_failed && !m.bot_rings.last_error.command_failed);
+            if (scenario >= 3 && scenario <= 6) assert(m.bot_rings.latched_offline);
+            uint32_t tag = m.bot_rings.tag;
+            m.recovery_fault = 0;
+            m.stall_csw_left = 0;
+            assert(!xhci_scsi_sync_cache(&io, &m.ring_dma, &m.dev_dma, &m.bot_rings));
+            assert(m.bot_rings.tag == tag && m.sense_count == 0);
+        }
+    }
+    printf("PASS: CSW stall retry, failed CSW/sense, repeated stall, reset/EP0/setdq failure, wrong command pointer, independent ring wraps\n");
+
+    /* Data STALL terminates data, then recover and receive CSW without replay. */
+    mock_bot_hw_t m;
+    init_mock_hw(&m, BOT_FAULT_NONE);
+    xhci_rings_io_t io = {.mmio_ctx = &m, .read32 = mock_read32,
+        .write32 = mock_write32, .delay_ms = mock_delay};
+    xhci_bot_device_t dev = {.slot_id = 3, .bulk_in_ep = 0x81, .bulk_out_ep = 0x02,
+        .ep0_enqueue_idx = 11, .ep0_cycle = 1};
+    assert(xhci_configure_bulk_endpoints(&io, &m.ring_dma, &m.dev_dma, &dev, &m.bot_rings));
+    m.ep0_consumer = 11;
+    m.ep0_consumer_cycle = 1;
+    m.stall_data_left = 1;
+    m.fault = BOT_FAULT_CSW_STATUS_FAIL;
+    uint8_t cdb[6] = {SCSI_CMD_MODE_SENSE_6, 0, 8, 0, 28, 0}, buf[28];
+    assert(!xhci_bot_transfer(&io, &m.ring_dma, &m.dev_dma, &m.bot_rings, cdb, 6, buf, 28, true));
+    assert(m.bot_rings.last_error.command_failed && !m.bot_rings.transport_failed);
+    assert(m.resets == 1 && m.setdqs == 1);
+    printf("PASS: data stall cleared before failed CSW; no data replay\n");
+
+    init_mock_hw(&m, BOT_FAULT_NONE);
+    assert(xhci_configure_bulk_endpoints(&io, &m.ring_dma, &m.dev_dma, &dev, &m.bot_rings));
+    m.ep0_consumer = 11;
+    m.ep0_consumer_cycle = 1;
+    m.stall_out_data = true;
+    m.fault = BOT_FAULT_CSW_STATUS_FAIL;
+    m.bot_rings.sector_count = 16;
+    m.bot_rings.sector_size = 512;
+    uint8_t written[512] = {0};
+    assert(!xhci_scsi_write_sector(&io, &m.ring_dma, &m.dev_dma, &m.bot_rings, 0, written));
+    assert(m.out_data_attempts == 1 && m.write_count == 0);
+    assert(m.bot_rings.last_error.command_failed && !m.bot_rings.transport_failed);
+    assert(m.recovery_dci == 4 && m.resets == 1 && m.clears == 1 && m.setdqs == 1);
+    printf("PASS: stalled OUT payload never replayed, correct OUT endpoint cleared\n");
+
+    for (unsigned failed = 0; failed < 2; ++failed) {
+        init_mock_hw(&m, BOT_FAULT_NONE);
+        assert(xhci_configure_bulk_endpoints(&io, &m.ring_dma, &m.dev_dma, &dev, &m.bot_rings));
+        m.ep0_consumer = 11;
+        m.ep0_consumer_cycle = 1;
+        m.mode_short = true;
+        m.reject_flush = true;
+        m.stall_csw_left = 1; /* MODE SENSE short reply followed by CSW STALL. */
+        m.recovery_fault = failed ? 1 : 0;
+        xhci_bot_probe_durability(&io, &m.ring_dma, &m.dev_dma, &m.bot_rings);
+        assert(m.bot_rings.durability_mode == (failed ? USB_DURABILITY_READ_ONLY : USB_DURABILITY_ASSUMED_WRITE_THROUGH));
+        assert(m.bot_rings.durability_info.sync_attempted == !failed);
+        assert(m.flush_count == (failed ? 0u : 1u));
+        if (!failed) assert(m.bot_rings.durability_info.ms6_len == 4 && m.bot_rings.durability_info.ms10_len == 8);
+    }
+    printf("PASS: recovered MODE SENSE short reply/CSW stall reaches assumed policy; failed recovery skips sync and stays read-only\n");
+}
+
 int main(void) {
     printf("Running Phase 9G.2 host unit tests...\n");
+    test_stall_recovery();
 
     /* Test 1: Configure Bulk Endpoints */
     {

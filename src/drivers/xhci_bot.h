@@ -103,6 +103,7 @@ typedef struct {
     bool     rcd;                 /* Read Cache Disable bit */
     bool     write_protect;       /* Write Protect bit from mode parameter header */
     bool     sync_ok;             /* SYNCHRONIZE CACHE succeeded during probe */
+    bool     sync_attempted;      /* Distinguish unsupported/failed from skipped */
     bool     ms6_attempted;       /* MODE SENSE(6) was attempted */
     bool     ms6_ok;              /* MODE SENSE(6) returned a valid caching page */
     bool     ms10_attempted;      /* MODE SENSE(10) was attempted */
@@ -117,6 +118,8 @@ typedef struct {
 /* Bulk Endpoint Transfer Ring & State */
 typedef struct {
     uint8_t opcode;
+    uint8_t phase; /* 1 CBW, 2 data, 3 CSW */
+    uint8_t completion_code; /* Last failing matching transfer; 0 on timeout. */
     uint8_t csw_status;
     bool command_failed; /* Valid CSW, status FAILED; REQUEST SENSE is safe. */
     bool transport_failed;
@@ -154,6 +157,8 @@ typedef struct {
     bool       latched_offline;   /* Endpoint latched offline after unrecoverable stall */
     xhci_bot_error_t last_error;
     uint32_t   data_transferred;
+    uint32_t   ep0_enqueue_idx;
+    uint8_t    ep0_cycle;
     /* Durability state — set once by xhci_bot_probe_durability(), never changed except
      * on transport_failed/latched_offline latch. */
     usb_durability_mode_t durability_mode;
@@ -253,7 +258,7 @@ bool xhci_bot_flush_barrier(const xhci_rings_io_t *io,
 usb_durability_mode_t xhci_bot_get_durability_mode(const xhci_bot_rings_t *bot_rings);
 
 /* Bounded BOT endpoint stall recovery (Commit 1b).
- * Issues Stop Endpoint, Reset Endpoint, Set Dequeue Pointer, and USB CLEAR_FEATURE(HALT).
+ * After a matching STALL: Reset Endpoint, USB CLEAR_FEATURE(HALT), Set Dequeue Pointer.
  * Sets latched_offline and returns false if any step times out or fails.
  * Must NOT be called after transport_failed is set. */
 bool xhci_bot_endpoint_reset(const xhci_rings_io_t *io,

@@ -66,6 +66,11 @@ typedef struct {
     uint16_t bulk_in_max_packet;
     uint8_t  bulk_out_ep;
     uint16_t bulk_out_max_packet;
+    uint8_t bulk_in_max_burst;
+    uint8_t bulk_out_max_burst;
+    /* EP0 producer handed to BOT after the final enumeration control transfer. */
+    uint32_t ep0_enqueue_idx;
+    uint8_t ep0_cycle;
     bool     is_valid_bot_storage;
     const char *error_msg;
 

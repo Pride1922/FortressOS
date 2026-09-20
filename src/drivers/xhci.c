@@ -478,6 +478,16 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                                 serial_puts("\" Product=\"");
                                 serial_puts(ctl->bot_rings.product);
                                 serial_puts("\"\n");
+                            } else {
+                                serial_puts("[USB 9G.2] FAIL: SCSI INQUIRY; ");
+                                serial_puts(ctl->bot_rings.last_error.transport_failed ? "transport_failed" : "command_failed");
+                                serial_puts(" csw_status=0x");
+                                serial_print_hex(ctl->bot_rings.last_error.csw_status);
+                                serial_puts(" sense_key=0x");
+                                serial_print_hex(ctl->bot_rings.last_error.sense_key);
+                                serial_puts(" asc=0x");
+                                serial_print_hex(ctl->bot_rings.last_error.asc);
+                                serial_puts("\n");
                             }
 
                             xhci_scsi_test_unit_ready(&rings_io, &dma, &dev_dma, &ctl->bot_rings);

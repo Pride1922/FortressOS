@@ -4,6 +4,7 @@
 /* Host unit-test build: provide a silent stub for serial output. */
 #  include <stdio.h>
 static inline void serial_puts(const char *s) { (void)s; }
+static inline void serial_print_hex(uint64_t value) { (void)value; }
 #else
 /* Freestanding kernel build: use real serial driver. */
 #  include "serial.h"
@@ -47,16 +48,18 @@ static bool send_command(const xhci_rings_io_t *io,
 
     ring_dma->cmd_enqueue_idx++;
     if (ring_dma->cmd_enqueue_idx == XHCI_RING_TRB_COUNT - 1) {
-        ring_dma->cmd_ring_virt[XHCI_RING_TRB_COUNT - 1].control ^= XHCI_TRB_C;
+        ring_dma->cmd_ring_virt[XHCI_RING_TRB_COUNT - 1].control =
+            (XHCI_TRB_TYPE_LINK << 10) | XHCI_TRB_TC | (ring_dma->cmd_cycle ? XHCI_TRB_C : 0);
         xhci_clflush_range(&ring_dma->cmd_ring_virt[XHCI_RING_TRB_COUNT - 1], sizeof(xhci_trb_t));
         ring_dma->cmd_enqueue_idx = 0;
         ring_dma->cmd_cycle ^= 1;
     }
 
+    __asm__ volatile("mfence" ::: "memory");
     io->write32(io->mmio_ctx, dboff + 0, 0);
 
     for (unsigned ms = 0; ms <= 500; ++ms) {
-        while (1) {
+        for (unsigned drained = 0; drained < XHCI_RING_TRB_COUNT; ++drained) {
             volatile const xhci_trb_t *event = &ring_dma->event_ring_virt[ring_dma->event_dequeue_idx];
             __asm__ volatile("" ::: "memory");
             uint32_t c_bit = event->control & XHCI_TRB_C;
@@ -64,6 +67,7 @@ static bool send_command(const xhci_rings_io_t *io,
 
             uint32_t trb_type = (event->control & XHCI_TRB_TYPE_MASK) >> XHCI_TRB_TYPE_SHIFT;
             uint32_t comp_code = (event->status >> 24) & 0xff;
+            xhci_trb_t snapshot = *event;
 
             ring_dma->event_dequeue_idx = (ring_dma->event_dequeue_idx + 1) % XHCI_RING_TRB_COUNT;
             if (ring_dma->event_dequeue_idx == 0) ring_dma->event_cycle ^= 1;
@@ -72,11 +76,14 @@ static bool send_command(const xhci_rings_io_t *io,
             io->write32(io->mmio_ctx, intr0 + 0x1c, (uint32_t)(new_erdp >> 32));
 
             if (trb_type == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-                if (out_comp_event) *out_comp_event = *event;
-                return (comp_code == XHCI_COMP_SUCCESS);
+                uint64_t ptr = ((uint64_t)snapshot.parameter_high << 32) | snapshot.parameter_low;
+                if (out_comp_event) *out_comp_event = snapshot;
+                return ptr == ring_dma->cmd_ring_phys + enq_idx * sizeof(xhci_trb_t) &&
+                       (snapshot.control >> 24) == (cmd_trb.control >> 24) &&
+                       comp_code == XHCI_COMP_SUCCESS;
             }
         }
-        io->delay_ms(io->mmio_ctx);
+        if (!io->delay_ms(io->mmio_ctx)) return false;
     }
     return false;
 }
@@ -87,7 +94,8 @@ static bool wait_transfer_event(const xhci_rings_io_t *io,
                                 uint8_t slot_id,
                                 uint8_t dci,
                                 uintptr_t submitted_phys,
-                                uint32_t *out_residual) {
+                                uint32_t *out_residual, uint8_t *out_code) {
+    if (out_code) *out_code = 0;
     uint32_t rtsoff = io->read32(io->mmio_ctx, 0x18);
     uint32_t intr0 = rtsoff + 0x20;
 
@@ -114,6 +122,7 @@ static bool wait_transfer_event(const xhci_rings_io_t *io,
 
             if (trb_type == XHCI_TRB_TYPE_TRANSFER_EVENT && ev_slot == slot_id && ev_dci == dci) {
                 if (event_data || completed_phys != submitted_phys) return false;
+                if (out_code) *out_code = (uint8_t)comp_code;
                 if (out_residual) *out_residual = residual;
                 return comp_code == XHCI_COMP_SUCCESS || comp_code == XHCI_COMP_SHORT_PACKET;
             }
@@ -134,7 +143,7 @@ static bool submit_normal_trb(const xhci_rings_io_t *io,
                               uint8_t *ring_cycle,
                               uintptr_t buf_phys,
                               uint32_t length,
-                              uint32_t *out_residual) {
+                              uint32_t *out_residual, uint8_t *out_code) {
     uint32_t dboff = io->read32(io->mmio_ctx, 0x14);
     uint32_t idx = *ring_idx;
     uintptr_t submitted_phys = ring_phys + idx * sizeof(xhci_trb_t);
@@ -163,7 +172,7 @@ static bool submit_normal_trb(const xhci_rings_io_t *io,
     /* Ring Doorbell for this endpoint: Target = DCI */
     io->write32(io->mmio_ctx, dboff + slot_id * 4, dci);
 
-    return wait_transfer_event(io, ring_dma, slot_id, dci, submitted_phys, out_residual);
+    return wait_transfer_event(io, ring_dma, slot_id, dci, submitted_phys, out_residual, out_code);
 }
 
 bool xhci_configure_bulk_endpoints(const xhci_rings_io_t *io,
@@ -194,6 +203,8 @@ bool xhci_configure_bulk_endpoints(const xhci_rings_io_t *io,
     bot_rings->in_idx = 0;
     bot_rings->out_idx = 0;
     bot_rings->tag = 0x1000;
+    bot_rings->ep0_enqueue_idx = device->ep0_enqueue_idx;
+    bot_rings->ep0_cycle = device->ep0_cycle;
 
     /* Initialize Link TRBs at the end of both bulk rings */
     memset(bot_rings->bulk_in_ring_virt, 0, 4096);
@@ -223,17 +234,22 @@ bool xhci_configure_bulk_endpoints(const xhci_rings_io_t *io,
     slot_ctx[0] = ((uint32_t)device->speed << 20) | ((uint32_t)max_dci << 27);
     slot_ctx[1] = (uint32_t)device->port_num << 16;
 
-    /* Endpoint Context: Bulk IN (Type 6) */
-    in_ep_ctx[1] = (3u << 1) /* CErr=3 */ | (6u << 3) /* Bulk IN */ | ((uint32_t)bot_rings->in_max_packet << 16);
-    in_ep_ctx[2] = ((uint32_t)bot_rings->bulk_in_ring_phys & ~0x3fu) | 1u; /* DCS=1 */
-    in_ep_ctx[3] = (uint32_t)(bot_rings->bulk_in_ring_phys >> 32);
-    in_ep_ctx[4] = 512; /* Average TRB length */
+    /* Endpoint Context: Bulk IN. Type 6 for both USB 2.0 and SuperSpeed. */
+    uint32_t burst_in = (device->speed == XHCI_SPEED_SUPER ||
+                         device->speed == XHCI_SPEED_SUPER_PLUS)
+                        ? (uint32_t)device->bulk_in_max_burst : 0u;
+    uint32_t burst_out = (device->speed == XHCI_SPEED_SUPER ||
+                          device->speed == XHCI_SPEED_SUPER_PLUS)
+                         ? (uint32_t)device->bulk_out_max_burst : 0u;
 
-    /* Endpoint Context: Bulk OUT (Type 2) */
-    out_ep_ctx[1] = (3u << 1) /* CErr=3 */ | (2u << 3) /* Bulk OUT */ | ((uint32_t)bot_rings->out_max_packet << 16);
-    out_ep_ctx[2] = ((uint32_t)bot_rings->bulk_out_ring_phys & ~0x3fu) | 1u; /* DCS=1 */
+    in_ep_ctx[1]  = (3u << 1) | (6u << 3) | (burst_in << 8)  | ((uint32_t)bot_rings->in_max_packet << 16);
+    out_ep_ctx[1] = (3u << 1) | (2u << 3) | (burst_out << 8) | ((uint32_t)bot_rings->out_max_packet << 16);
+    in_ep_ctx[2] = ((uint32_t)bot_rings->bulk_in_ring_phys & ~0x3fu) | 1u;
+    in_ep_ctx[3] = (uint32_t)(bot_rings->bulk_in_ring_phys >> 32);
+    in_ep_ctx[4] = 512;
+    out_ep_ctx[2] = ((uint32_t)bot_rings->bulk_out_ring_phys & ~0x3fu) | 1u;
     out_ep_ctx[3] = (uint32_t)(bot_rings->bulk_out_ring_phys >> 32);
-    out_ep_ctx[4] = 512; /* Average TRB length */
+    out_ep_ctx[4] = 512;
 
     xhci_clflush_range(dev_dma->input_ctx_virt, 4096);
     __asm__ volatile("mfence" ::: "memory");
@@ -258,7 +274,7 @@ bool xhci_bot_transfer(const xhci_rings_io_t *io,
     if (!io || !ring_dma || !dev_dma || !bot_rings || !cdb ||
         cdb_len == 0 || cdb_len > 16 || data_len > 4096 ||
         (data_len && !data)) return false;
-    if (bot_rings->transport_failed) return false;
+    if (bot_rings->transport_failed || bot_rings->latched_offline) return false;
     bot_rings->last_error = (xhci_bot_error_t){.opcode = ((const uint8_t *)cdb)[0]};
     bot_rings->data_transferred = 0;
 
@@ -274,10 +290,12 @@ bool xhci_bot_transfer(const xhci_rings_io_t *io,
     xhci_clflush_range(dev_dma->bounce_buf_virt, sizeof(cbw));
 
     uint32_t resid = 0, data_resid = 0;
+    uint8_t code = 0;
+    bot_rings->last_error.phase = 1;
     if (!submit_normal_trb(io, ring_dma, bot_rings->slot_id, bot_rings->out_dci,
                           bot_rings->bulk_out_ring_phys,
                           bot_rings->bulk_out_ring_virt, &bot_rings->out_idx, &bot_rings->out_cycle,
-                          dev_dma->bounce_buf_phys, sizeof(cbw), &resid) || resid)
+                          dev_dma->bounce_buf_phys, sizeof(cbw), &resid, &code) || resid)
         goto transport_error;
 
     /* CBW DMA has completed. Reuse the page at offset zero so a full 4096-byte
@@ -291,23 +309,42 @@ bool xhci_bot_transfer(const xhci_rings_io_t *io,
         xhci_trb_t *ring = dir_in ? bot_rings->bulk_in_ring_virt : bot_rings->bulk_out_ring_virt;
         uint32_t *idx = dir_in ? &bot_rings->in_idx : &bot_rings->out_idx;
         uint8_t *cycle = dir_in ? &bot_rings->in_cycle : &bot_rings->out_cycle;
-        if (!submit_normal_trb(io, ring_dma, bot_rings->slot_id, dci,
+        bot_rings->last_error.phase = 2;
+        bool data_ok = submit_normal_trb(io, ring_dma, bot_rings->slot_id, dci,
                               dir_in ? bot_rings->bulk_in_ring_phys : bot_rings->bulk_out_ring_phys,
-                              ring, idx, cycle, dev_dma->bounce_buf_phys, data_len, &data_resid) ||
-            data_resid > data_len)
-            goto transport_error;
+                              ring, idx, cycle, dev_dma->bounce_buf_phys, data_len, &data_resid, &code);
+        if (data_resid > data_len) goto transport_error;
+        if (!data_ok) {
+            if (code != XHCI_COMP_STALL_ERROR) goto transport_error;
+            bot_rings->last_error.completion_code = code;
+            /* This matching STALL ended the sole outstanding data TD. Copy
+             * completed IN bytes before using EP0; never replay OUT payload. */
+            if (dir_in) memcpy(data, data_virt, data_len - data_resid);
+            if (!xhci_bot_endpoint_reset(io, ring_dma, dev_dma, bot_rings, dci))
+                goto transport_error;
+        }
         if (dir_in) memcpy(data, data_virt, data_len - data_resid);
         bot_rings->data_transferred = data_len - data_resid;
     }
 
     uint8_t *csw_virt = dev_dma->bounce_buf_virt + 64;
-    memset(csw_virt, 0, sizeof(usb_bot_csw_t));
-    xhci_clflush_range(csw_virt, sizeof(usb_bot_csw_t));
-    if (!submit_normal_trb(io, ring_dma, bot_rings->slot_id, bot_rings->in_dci,
+    bot_rings->last_error.phase = 3;
+    for (unsigned attempt = 0; attempt < 2; ++attempt) {
+        memset(csw_virt, 0, sizeof(usb_bot_csw_t));
+        xhci_clflush_range(csw_virt, sizeof(usb_bot_csw_t));
+        bool csw_ok = submit_normal_trb(io, ring_dma, bot_rings->slot_id, bot_rings->in_dci,
                           bot_rings->bulk_in_ring_phys,
                           bot_rings->bulk_in_ring_virt, &bot_rings->in_idx, &bot_rings->in_cycle,
-                          dev_dma->bounce_buf_phys + 64, sizeof(usb_bot_csw_t), &resid) || resid)
-        goto transport_error;
+                          dev_dma->bounce_buf_phys + 64, sizeof(usb_bot_csw_t), &resid, &code);
+        if (csw_ok) {
+            if (resid) goto transport_error;
+            break;
+        }
+        if (code != XHCI_COMP_STALL_ERROR || attempt != 0) goto transport_error;
+        bot_rings->last_error.completion_code = code;
+        if (!xhci_bot_endpoint_reset(io, ring_dma, dev_dma, bot_rings, bot_rings->in_dci))
+            goto transport_error;
+    }
     usb_bot_csw_t csw;
     memcpy(&csw, csw_virt, sizeof(csw));
     if (csw.dCSWSignature != USB_BOT_CSW_SIGNATURE || csw.dCSWTag != cur_tag ||
@@ -319,12 +356,14 @@ bool xhci_bot_transfer(const xhci_rings_io_t *io,
         return false;
     }
     /* A complete valid CSW ends DMA ownership, but incomplete data is not success. */
-    if (cbw.CBWCB[0] == SCSI_CMD_REQUEST_SENSE && dir_in &&
-        bot_rings->data_transferred >= 8 && data_resid == csw.dCSWDataResidue)
-        return true; /* Descriptor-format sense may be only eight bytes. */
+    if (dir_in && data_resid == csw.dCSWDataResidue &&
+        ((cbw.CBWCB[0] == SCSI_CMD_REQUEST_SENSE && bot_rings->data_transferred >= 8) ||
+         cbw.CBWCB[0] == SCSI_CMD_MODE_SENSE_6 || cbw.CBWCB[0] == SCSI_CMD_MODE_SENSE_10))
+        return true; /* Variable-length replies; callers validate their headers. */
     return data_resid == 0 && csw.dCSWDataResidue == 0;
 
 transport_error:
+    bot_rings->last_error.completion_code = code;
     bot_rings->transport_failed = true;
     bot_rings->last_error.transport_failed = true;
     return false;
@@ -517,117 +556,78 @@ bool xhci_scsi_sync_cache(const xhci_rings_io_t *io,
     return false;
 }
 
-/* =============================================================================
- * Commit 1b: BOT Endpoint Stall Recovery
- *
- * Issues the bounded sequence:
- *   Stop Endpoint command → Reset Endpoint command →
- *   Set Dequeue Pointer command → control CLEAR_FEATURE(ENDPOINT_HALT)
- *
- * Must NOT be called after transport_failed is set (DMA already quarantined).
- * On any timeout or failure: sets latched_offline = true and returns false.
- * DMA buffers are never freed; their ownership remains with the controller.
- * ============================================================================= */
+/* Only for a matching STALL event on the sole outstanding bulk TD. No
+ * recovery after timeouts, pointer mismatches or a latched transport failure.
+ * Reset Endpoint transitions Halted -> Stopped; Stop Endpoint is invalid here.
+ * No allocations, logging, IRQ enables or buffer reclamation in this path. */
 bool xhci_bot_endpoint_reset(const xhci_rings_io_t *io,
                              xhci_dma_buffers_t *ring_dma,
                              const xhci_dev_dma_t *dev_dma,
                              xhci_bot_rings_t *bot_rings,
                              uint8_t dci) {
     if (!io || !ring_dma || !dev_dma || !bot_rings) return false;
-    if (bot_rings->transport_failed) return false; /* Already quarantined */
+    if (bot_rings->transport_failed || bot_rings->latched_offline) return false;
+    if ((dci != bot_rings->in_dci && dci != bot_rings->out_dci) ||
+        !dev_dma->ep0_ring_virt || bot_rings->ep0_enqueue_idx >= XHCI_RING_TRB_COUNT - 1)
+        goto latch;
 
-    /* Derive endpoint address from DCI: ep_addr = (dci >> 1) | (dci & 1 ? 0x80 : 0) */
+    xhci_trb_t reset = {0};
+    reset.control = (XHCI_TRB_TYPE_RESET_EP_CMD << 10) |
+                    ((uint32_t)bot_rings->slot_id << 24) | ((uint32_t)dci << 16);
+    if (!send_command(io, ring_dma, reset, NULL)) goto latch;
+
+    /* CLEAR_FEATURE(ENDPOINT_HALT): two TRBs on the existing EP0 ring.
+     * Continue its own producer cycle, even if either TRB crosses the Link. */
     uint8_t ep_addr = (uint8_t)((dci >> 1) | ((dci & 1u) ? 0x80u : 0u));
-
-    /* 1. Stop Endpoint (bounded 500 ms) */
-    xhci_trb_t stop_cmd = {0};
-    stop_cmd.control = (XHCI_TRB_TYPE_STOP_EP_CMD << 10) | ((uint32_t)bot_rings->slot_id << 24)
-                     | ((uint32_t)dci << 16);
-    xhci_trb_t comp = {0};
-    bool ok = send_command(io, ring_dma, stop_cmd, &comp);
-    if (!ok) goto latch;
-
-    /* 2. Reset Endpoint (bounded 500 ms) */
-    xhci_trb_t reset_cmd = {0};
-    reset_cmd.control = (XHCI_TRB_TYPE_RESET_EP_CMD << 10) | ((uint32_t)bot_rings->slot_id << 24)
-                      | ((uint32_t)dci << 16);
-    ok = send_command(io, ring_dma, reset_cmd, &comp);
-    if (!ok) goto latch;
-
-    /* 3. Set Dequeue Pointer to current enqueue position (ring start after wrap) */
-    bool is_in = (dci == bot_rings->in_dci);
-    uintptr_t ring_phys = is_in ? bot_rings->bulk_in_ring_phys : bot_rings->bulk_out_ring_phys;
-    uint32_t  cur_idx   = is_in ? bot_rings->in_idx  : bot_rings->out_idx;
-    uint8_t   cur_cycle = is_in ? bot_rings->in_cycle : bot_rings->out_cycle;
-    uintptr_t deq_ptr   = ring_phys + cur_idx * sizeof(xhci_trb_t);
-
-    xhci_trb_t setdq_cmd = {0};
-    setdq_cmd.parameter_low  = (uint32_t)deq_ptr | (cur_cycle ? 1u : 0u);
-    setdq_cmd.parameter_high = (uint32_t)(deq_ptr >> 32);
-    setdq_cmd.control = (XHCI_TRB_TYPE_SET_TR_DEQUEUE_CMD << 10)
-                      | ((uint32_t)bot_rings->slot_id << 24)
-                      | ((uint32_t)dci << 16);
-    ok = send_command(io, ring_dma, setdq_cmd, &comp);
-    if (!ok) goto latch;
-
-    /* 4. USB CLEAR_FEATURE(ENDPOINT_HALT) via control transfer on EP0 */
-    {
-        usb_setup_pkt_t setup = {0};
-        setup.bmRequestType = USB_RT_ENDPOINT_OUT; /* 0x02: host→device, standard, endpoint */
-        setup.bRequest      = USB_REQ_CLEAR_FEATURE;
-        setup.wValue        = USB_FEATURE_ENDPOINT_HALT; /* 0 */
-        setup.wIndex        = ep_addr;
-        setup.wLength       = 0;
-
-        /* Place setup in bounce buffer (first 8 bytes) and submit via EP0 ring */
-        memcpy(dev_dma->bounce_buf_virt, &setup, sizeof(setup));
-        xhci_clflush_range(dev_dma->bounce_buf_virt, sizeof(setup));
-        __asm__ volatile("mfence" ::: "memory");
-
-        /* We submit a Setup TRB + Status TRB on EP0 (DCI 1).
-         * This is a no-data control transfer, so status is IN direction. */
-        uint32_t ep0_dci = 1;
-        uint32_t dboff = io->read32(io->mmio_ctx, 0x14);
-
-        /* Setup TRB */
-        xhci_trb_t setup_trb = {0};
-        setup_trb.parameter_low  = ((uint32_t)setup.wValue << 16) | ((uint32_t)setup.bRequest << 8)
-                                 | setup.bmRequestType;
-        setup_trb.parameter_high = ((uint32_t)setup.wLength << 16) | (uint32_t)setup.wIndex;
-        setup_trb.status  = 8; /* TRB Transfer Length = 8 bytes */
-        /* TRT=0 (no data), IDT=1 (immediate data in TRB), IOC=0 */
-        setup_trb.control = (XHCI_TRB_TYPE_SETUP_STAGE << 10) | (1u << 6) /* IDT */
-                          | (ring_dma->event_cycle ? XHCI_TRB_C : 0);
-
-        /* Status TRB (IN direction status for no-data OUT control) */
-        xhci_trb_t status_trb = {0};
-        status_trb.control = (XHCI_TRB_TYPE_STATUS_STAGE << 10) | XHCI_TRB_IOC
-                           | (1u << 16) /* DIR=1 IN */
-                           | (ring_dma->event_cycle ? XHCI_TRB_C : 0);
-
-        /* Place on EP0 ring using ring_dma (shared with command ring region) */
-        uint32_t ep0_idx = 0; /* EP0 ring is a single-slot ring for control; reuse index 0 */
-        uintptr_t setup_phys = dev_dma->ep0_ring_phys;
-        xhci_trb_t *ep0_ring = dev_dma->ep0_ring_virt;
-
-        ep0_ring[0] = setup_trb;
-        ep0_ring[1] = status_trb;
-        xhci_clflush_range(ep0_ring, 2 * sizeof(xhci_trb_t));
-        __asm__ volatile("mfence" ::: "memory");
-        (void)ep0_idx;
-
-        io->write32(io->mmio_ctx, dboff + bot_rings->slot_id * 4, ep0_dci);
-
-        /* Wait for status TRB completion event */
-        uint32_t residual = 0;
-        ok = wait_transfer_event(io, ring_dma, bot_rings->slot_id, (uint8_t)ep0_dci,
-                                 setup_phys + sizeof(xhci_trb_t), &residual);
-        /* A CLEAR_FEATURE that returns short data is still acceptable */
-        if (!ok) goto latch;
+    xhci_trb_t stages[2] = {0};
+    stages[0].parameter_low = (USB_REQ_CLEAR_FEATURE << 8) | USB_RT_ENDPOINT_OUT;
+    stages[0].parameter_high = ep_addr;
+    stages[0].status = 8;
+    stages[0].control = (XHCI_TRB_TYPE_SETUP_STAGE << 10) | (1u << 6);
+    stages[1].control = (XHCI_TRB_TYPE_STATUS_STAGE << 10) | XHCI_TRB_IOC | (1u << 16);
+    uintptr_t status_phys = 0;
+    for (unsigned stage = 0; stage < 2; ++stage) {
+        uint32_t idx = bot_rings->ep0_enqueue_idx;
+        stages[stage].control |= bot_rings->ep0_cycle ? XHCI_TRB_C : 0;
+        dev_dma->ep0_ring_virt[idx] = stages[stage];
+        xhci_clflush_range(&dev_dma->ep0_ring_virt[idx], sizeof(xhci_trb_t));
+        status_phys = dev_dma->ep0_ring_phys + idx * sizeof(xhci_trb_t);
+        if (++idx == XHCI_RING_TRB_COUNT - 1) {
+            xhci_trb_t *link = &dev_dma->ep0_ring_virt[idx];
+            link->parameter_low = (uint32_t)dev_dma->ep0_ring_phys;
+            link->parameter_high = (uint32_t)(dev_dma->ep0_ring_phys >> 32);
+            link->status = 0;
+            link->control = (XHCI_TRB_TYPE_LINK << 10) | XHCI_TRB_TC |
+                            (bot_rings->ep0_cycle ? XHCI_TRB_C : 0);
+            xhci_clflush_range(link, sizeof(*link));
+            idx = 0;
+            bot_rings->ep0_cycle ^= 1;
+        }
+        bot_rings->ep0_enqueue_idx = idx;
     }
+    __asm__ volatile("mfence" ::: "memory");
+    uint32_t dboff = io->read32(io->mmio_ctx, 0x14);
+    io->write32(io->mmio_ctx, dboff + bot_rings->slot_id * 4, 1);
+    uint32_t residual = 0;
+    uint8_t code = 0;
+    if (!wait_transfer_event(io, ring_dma, bot_rings->slot_id, 1,
+                             status_phys, &residual, &code) ||
+        code != XHCI_COMP_SUCCESS || residual) goto latch;
 
+    /* Skip the completed stalled TD, preserving the bulk producer cycle.
+     * No bulk doorbell until both sides have cleared their halt. */
+    bool is_in = dci == bot_rings->in_dci;
+    uintptr_t ring_phys = is_in ? bot_rings->bulk_in_ring_phys : bot_rings->bulk_out_ring_phys;
+    uint32_t idx = is_in ? bot_rings->in_idx : bot_rings->out_idx;
+    uint8_t cycle = is_in ? bot_rings->in_cycle : bot_rings->out_cycle;
+    uintptr_t ptr = ring_phys + idx * sizeof(xhci_trb_t);
+    xhci_trb_t setdq = {0};
+    setdq.parameter_low = (uint32_t)ptr | (cycle ? 1u : 0u);
+    setdq.parameter_high = (uint32_t)(ptr >> 32);
+    setdq.control = (XHCI_TRB_TYPE_SET_TR_DEQUEUE_CMD << 10) |
+                    ((uint32_t)bot_rings->slot_id << 24) | ((uint32_t)dci << 16);
+    if (!send_command(io, ring_dma, setdq, NULL)) goto latch;
     return true;
-
 latch:
     bot_rings->latched_offline = true;
     return false;
@@ -716,7 +716,7 @@ bool xhci_scsi_probe_cache_policy(const xhci_rings_io_t *io,
             }
         }
         /* If transport_failed during MODE SENSE(6) we cannot proceed */
-        if (bot_rings->transport_failed) return false;
+        if (bot_rings->transport_failed || bot_rings->latched_offline) return false;
     }
 
 /* ---- MODE SENSE(10) fallback if (6) was not attempted or page not found ---- */
@@ -771,6 +771,7 @@ if (!bot_rings->transport_failed && !bot_rings->latched_offline) {
     /* Issue SYNCHRONIZE CACHE(10) with IMMED=0 to test whether the device
      * supports durable flushing. Command rejection is a valid outcome and
      * must not be conflated with transport failure. */
+    info->sync_attempted = true;
     info->sync_ok = xhci_scsi_sync_cache(io, ring_dma, dev_dma, bot_rings);
     /* xhci_scsi_sync_cache returns false either on CSW status FAILED
      * (command rejected — device just doesn't support it) or on transport
@@ -854,7 +855,18 @@ void xhci_bot_probe_durability(const xhci_rings_io_t *io,
     }
 
     serial_puts("[USB DURABILITY] SYNCHRONIZE CACHE test: ");
-    serial_puts(info.sync_ok ? "OK\n" : "failed/unsupported\n");
+    serial_puts(!info.sync_attempted ? "not attempted (transport unavailable)\n" :
+                info.sync_ok ? "OK\n" : "failed/unsupported\n");
+    if (bot_rings->transport_failed || bot_rings->latched_offline) {
+        /* Probe runs in unlocked thread context, after all polling has returned. */
+        serial_puts("[USB DURABILITY] Transport failure opcode=");
+        serial_print_hex(bot_rings->last_error.opcode);
+        serial_puts(" phase(1=CBW,2=data,3=CSW)=");
+        serial_print_hex(bot_rings->last_error.phase);
+        serial_puts(" completion=");
+        serial_print_hex(bot_rings->last_error.completion_code);
+        serial_puts(bot_rings->latched_offline ? " recovery failed; offline\n" : " offline\n");
+    }
 
     const char *mode_str;
     const char *eligible_str;
