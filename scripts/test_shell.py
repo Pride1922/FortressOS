@@ -148,6 +148,7 @@ def run(mode):
             time.sleep(0.3)
             second = snapshot()
             assert first["ticks"] == second["ticks"] and second["timer"] > first["timer"]
+            uart_command("layout us\n")   # keyboard-driven tests below use US-layout QMP keycodes
             assert "Show commands" in keyboard_command("helx\bp\n")
             assert "Hello\nfortress> " in keyboard_command("echo Hello\n")
             assert "shell\n" in keyboard_command("ls /bin\n")
