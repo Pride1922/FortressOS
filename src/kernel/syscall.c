@@ -15,6 +15,7 @@
 #include "elf.h"
 #include "usb_mount.h"
 #include "xhci.h"
+#include "dmesg.h"
 
 extern void syscall_entry_stub(void);
 
@@ -498,6 +499,18 @@ static int64_t sys_stat(uintptr_t user_path, uintptr_t user_statbuf) {
     return SYSCALL_SUCCESS;
 }
 
+static int64_t sys_dmesg(uintptr_t user_buf, uint64_t cap) {
+    if (cap == 0) return 0;
+    if (cap > DMESG_SIZE) cap = DMESG_SIZE;
+
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(active_pml4, user_buf, cap, true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    return (int64_t)dmesg_read((char *)user_buf, (size_t)cap);
+}
+
 static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
     if (fd < 0 || fd >= 32) {
         return SYSCALL_EBADF;
@@ -638,6 +651,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_READ:
             result = sys_read((int)frame->rdi, frame->rsi, frame->rdx);
+            break;
+
+        case SYS_DMESG:
+            result = sys_dmesg(frame->rdi, frame->rsi);
             break;
 
         case SYS_STAT:

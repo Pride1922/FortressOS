@@ -20,6 +20,8 @@
 #define SYS_UNLINK     12 /* (const char *path) -> 0 */
 #define SYS_RENAME     13 /* (const char *oldpath, const char *newpath) -> 0 */
 #define SYS_SYNC       14 /* () -> 0; flush the writable /mnt device */
+#define SYS_DMESG      15 /* (char *buf, uint64_t cap) -> bytes written */
+#define DMESG_SIZE     (64 * 1024)
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0

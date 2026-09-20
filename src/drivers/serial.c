@@ -1,5 +1,7 @@
 #include "serial.h"
 #include "console.h"
+#include "dmesg.h"
+#include "string.h"
 
 #define COM1_DATA          (COM1_PORT + 0)
 #define COM1_IER           (COM1_PORT + 1) /* Interrupt Enable Register */
@@ -127,18 +129,18 @@ void serial_raw_print_dec(uint64_t val) {
 }
 
 void serial_putc(char c) {
-    /* Mirror output to framebuffer console if active */
+    dmesg_append(c);
     if (console_is_initialized()) {
         console_putc(c);
     }
-
     serial_raw_putc(c);
 }
 
 void serial_puts(const char *str) {
     if (!str) return;
 
-    /* Mirror whole string atomically to console to prevent character interleaving */
+    dmesg_append_str(str, strlen(str));
+
     if (console_is_initialized()) {
         console_puts(str);
     }

@@ -14,12 +14,33 @@ static bool equal(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
     return *a == *b;
 }
-static void write_bytes(const char *s, size_t n) { (void)call(1, 1, (uintptr_t)s, n); }
+#define WRITE_CHUNK 4096
+
+static void puts(const char *s);      /* defined below */
+static void put_dec(size_t val);      /* defined below */
+
+static void write_bytes(const char *s, size_t n) {
+    size_t off = 0;
+    while (off < n) {
+        size_t chunk = n - off;
+        if (chunk > WRITE_CHUNK) chunk = WRITE_CHUNK;
+        long r = call(SYS_WRITE, 1, (uintptr_t)(s + off), chunk);
+        if (r < 0) {
+            puts("write error "); put_dec(-r); puts("\n");
+            return;
+        }
+        off += (size_t)r;
+        if (r == 0) break;  /* avoid infinite loop on buggy drivers */
+    }
+}
 static void puts(const char *s) { write_bytes(s, length(s)); }
 static void file_error(long error) {
     if (error == SYSCALL_EROFS) puts("Read-only filesystem.\n");
     else puts(error == SYSCALL_ENOENT ? "No such file or directory.\n" : "File operation failed.\n");
 }
+
+static char dmesg_buf[DMESG_SIZE];
+
 static void list(const char *path) {
     vfs_stat_t st;
     long result = call(5, (uintptr_t)path, (uintptr_t)&st, 0);
@@ -593,6 +614,55 @@ static void echo_cmd(const char *arg) {
     last_status = 0;
 }
 
+static void dmesg_cmd(const char *arg) {
+    long n = call(SYS_DMESG, (uintptr_t)dmesg_buf, DMESG_SIZE, 0);
+    if (n < 0) {
+        puts("dmesg: kernel log unavailable (");
+        put_dec(-n);
+        puts(")\n");
+        last_status = 1;
+        return;
+    }
+
+    /* dmesg /path — save the log to a file instead of printing it */
+    if (*arg) {
+        /* VFS_O_WRONLY (1) | VFS_O_CREAT (0x40) | VFS_O_TRUNC (0x200) */
+        long fd = call(2, (uintptr_t)arg, 1 | 0x40 | 0x200, 0);
+        if (fd < 0) { file_error(fd); last_status = 1; return; }
+
+        size_t total = (size_t)n, off = 0;
+        bool err = false;
+        while (off < total) {
+            size_t chunk = total - off;
+            if (chunk > WRITE_CHUNK) chunk = WRITE_CHUNK;
+            long w = call(1, fd, (uintptr_t)(dmesg_buf + off), chunk);
+            if (w <= 0) { err = true; break; }
+            off += (size_t)w;
+        }
+        (void)call(3, fd, 0, 0);
+
+        if (err) {
+            puts("dmesg: write failed, file may be incomplete\n");
+            last_status = 1;
+        } else {
+            puts("Saved ");
+            put_dec(total);
+            puts(" bytes to ");
+            puts(arg);
+            puts("\n");
+            last_status = 0;
+        }
+        return;
+    }
+
+    /* plain dmesg — print to console */
+    put_dec((uint64_t)n);
+    puts(" bytes\n");
+    write_bytes(dmesg_buf, (size_t)n);
+    if (dmesg_buf[n - 1] != '\n') puts("\n");
+    last_status = 0;
+}
+
 static void execute_simple_command(char *cmd_line) {
     while (*cmd_line == ' ') cmd_line++;
     char *cmd = cmd_line;
@@ -606,6 +676,7 @@ static void execute_simple_command(char *cmd_line) {
 
     if (equal(cmd, "help")) {
         puts("help           Show commands\nls [path]      List files (default /)\n"
+             "dmesg [path]   Print or save the boot log\n"
              "cat /path      Read a text file\nedit /path     Text editor\n"
              "mkdir /path    Create a directory\nrm /path       Remove a file or empty directory\n"
              "mv /old /new   Rename or move a file/directory\n"
@@ -717,6 +788,8 @@ static void execute_simple_command(char *cmd_line) {
         }
     } else if (equal(cmd, "exit")) {
         call(0, (uintptr_t)last_status, 0, 0);
+    } else if (equal(cmd, "dmesg")) {
+    dmesg_cmd(arg);
     } else {
         puts("Unknown command. Type help.\n");
         last_status = 127;
