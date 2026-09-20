@@ -3841,6 +3841,15 @@ pf_boot_guard_done:
 
         console_init(&boot_info);
         serial_puts("[ OK ] Framebuffer text console active (dual COM1/screen output armed)\n");
+
+        /* Hold the logo for a moment before the acceptance suite
+         * starts painting over it. Bounded busy-wait; APIC timer is
+         * not yet calibrated at this point in kmain. */
+        for (volatile uint64_t i = 0; i < 150000000ULL; i++) { }
+
+        /* Clear the framebuffer so the console starts on a fresh grid
+         * rather than writing over a partially-covered logo. */
+        console_clear();
     }
 
     /* 14. Virtual File System & Initramfs Mount (Step 8B) */

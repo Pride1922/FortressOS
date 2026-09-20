@@ -549,10 +549,10 @@ static int64_t sys_reboot(uint64_t cmd) {
 static int64_t sys_kbd_layout(int64_t layout) {
     if (layout == KBD_LAYOUT_US) {
         keyboard_set_layout(KBD_LAYOUT_US);
-        return 0;
+        return SYSCALL_SUCCESS;
     } else if (layout == KBD_LAYOUT_AZERTY) {
         keyboard_set_layout(KBD_LAYOUT_AZERTY);
-        return 1;
+        return SYSCALL_SUCCESS;
     } else if (layout < 0) {
         return (int64_t)keyboard_get_layout();
     }

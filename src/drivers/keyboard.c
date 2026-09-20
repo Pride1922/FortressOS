@@ -1,6 +1,6 @@
 #include "keyboard.h"
 
-static int g_keyboard_layout = KBD_LAYOUT_US;
+static int g_keyboard_layout = KBD_LAYOUT_AZERTY;
 
 void keyboard_set_layout(int layout) {
     if (layout == KBD_LAYOUT_AZERTY) {
