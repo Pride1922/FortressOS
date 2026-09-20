@@ -3158,7 +3158,9 @@ void kmain(void) {
         serial_puts("[FAIL] PMM storage audit failed!\n");
         hcf();
     }
-    serial_puts("[ OK ] PMM audit passed (64 KiB bitmap reserved, frame 0 guarded, 2 GiB capacity verified)\n\n");
+    serial_puts("[ OK ] PMM audit passed (bitmap reserved, frame 0 guarded, ");
+    serial_print_dec(PMM_BITMAP_MAX_RAM_BYTES / (1024ULL * 1024 * 1024));
+    serial_puts(" GiB capacity verified)\n\n");
     /* pmm_high_memory_probe(); */
     /* 9. PMM Self-Test */
     serial_puts("[TEST] Executing Physical Memory Manager self-test...\n");

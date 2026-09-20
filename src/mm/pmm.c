@@ -58,9 +58,11 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     }
 
     if (highest_addr > PMM_BITMAP_MAX_RAM_BYTES) {
-        serial_puts("[WARN] PMM currently manages physical RAM below 2 GiB; higher RAM is reserved\n");
-        highest_addr = PMM_BITMAP_MAX_RAM_BYTES;
-    }
+    serial_puts("[WARN] PMM: memory map reports RAM above bitmap capacity; clamping to ");
+    serial_print_dec(PMM_BITMAP_MAX_RAM_BYTES / (1024ULL * 1024 * 1024));
+    serial_puts(" GiB\n");
+    highest_addr = PMM_BITMAP_MAX_RAM_BYTES;
+}
     total_pages = (size_t)(highest_addr / PAGE_SIZE);
     used_pages  = total_pages;
     free_pages  = 0;
