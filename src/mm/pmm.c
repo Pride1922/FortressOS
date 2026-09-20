@@ -166,6 +166,27 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     serial_puts(" KiB)\n\n");
 }
 
+/* Temporary probe helper: allocate one free page whose physical address is
+ * >= min_phys. Returns 0 if none exists above min_phys. */
+uintptr_t pmm_alloc_page_above(uintptr_t min_phys) {
+    size_t start = min_phys / PAGE_SIZE;
+    if (start >= total_pages) return 0;
+
+    uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
+    uintptr_t result = 0;
+    for (size_t i = start; i < total_pages; i++) {
+        if (!bitmap_test(i)) {
+            bitmap_set(i);
+            used_pages++;
+            free_pages--;
+            result = (uintptr_t)(i * PAGE_SIZE);
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_pmm_lock, rflags);
+    return result;
+}
+
 static uintptr_t pmm_alloc_page_unlocked(void) {
     for (size_t i = 0; i < total_pages; i++) {
         size_t idx = (last_allocated_index + i) % total_pages;

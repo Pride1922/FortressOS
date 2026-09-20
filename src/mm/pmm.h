@@ -18,6 +18,8 @@ void pmm_free_page(uintptr_t phys_addr);
 /* Allocate contiguous 4 KiB physical page frames (returns physical address or 0 on OOM) */
 uintptr_t pmm_alloc_pages(size_t count);
 
+uintptr_t pmm_alloc_page_above(uintptr_t min_phys);
+
 /* Free contiguous 4 KiB physical page frames */
 void pmm_free_pages(uintptr_t phys_addr, size_t count);
 
@@ -29,9 +31,8 @@ uint64_t pmm_get_total_memory(void);
 uint64_t pmm_get_used_memory(void);
 uint64_t pmm_get_free_memory(void);
 
-/* 64 KiB bitmap tracks 524,288 frames = exactly 2 GiB of physical RAM */
-#define PMM_BITMAP_CAPACITY_BYTES (64 * 1024ULL)
-#define PMM_BITMAP_MAX_RAM_BYTES  (PMM_BITMAP_CAPACITY_BYTES * 8ULL * PAGE_SIZE) /* 2 GiB */
+#define PMM_BITMAP_CAPACITY_BYTES (1024 * 1024ULL)
+#define PMM_BITMAP_MAX_RAM_BYTES  (PMM_BITMAP_CAPACITY_BYTES * 8ULL * PAGE_SIZE) /* 32 GiB */
 
 /* PMM Audit & Integrity Validation */
 bool pmm_audit(void);

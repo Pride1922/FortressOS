@@ -117,6 +117,37 @@ static const char *memmap_type_to_str(uint64_t type) {
     }
 }
 
+static void __attribute__((unused)) pmm_high_memory_probe(void) {
+    serial_puts("[PROBE] PMM total: ");
+    serial_print_dec(pmm_get_total_memory() / (1024ULL * 1024 * 1024));
+    serial_puts(" GiB, free: ");
+    serial_print_dec(pmm_get_free_pages() * 4096ULL / (1024ULL * 1024 * 1024));
+    serial_puts(" GiB\n");
+
+    uintptr_t probes[] = {
+        0x80000000ULL,    /*  2 GiB */
+        0x100000000ULL,   /*  4 GiB */
+        0x400000000ULL,   /* 16 GiB */
+        0x780000000ULL,   /* 30 GiB */
+    };
+    for (size_t i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+        uintptr_t p = pmm_alloc_page_above(probes[i]);
+        if (p == 0) {
+            serial_print_hex(probes[i]);
+            serial_puts(" — no frame available\n");
+            continue;
+        }
+        volatile uint64_t *v = (volatile uint64_t *)vmm_phys_to_virt(p);
+        v[0] = 0xDEADBEEFCAFEBABEULL;
+        v[1] = 0x0123456789ABCDEFULL;
+        bool ok = (v[0] == 0xDEADBEEFCAFEBABEULL && v[1] == 0x0123456789ABCDEFULL);
+        serial_puts("Allocated phys ");
+        serial_print_hex(p);
+        serial_puts(ok ? " — HHDM readback PASS\n" : " — HHDM readback FAIL\n");
+        pmm_free_page(p);
+    }
+}
+
 /* Early visual display: render branded FortressOS boot logo on framebuffer */
 static void render_boot_logo(const boot_info_t *boot_info) {
     if (!boot_info || !boot_info->has_framebuffer || !boot_info->fb_address) return;
@@ -3120,6 +3151,7 @@ void kmain(void) {
         hcf();
     }
     pmm_init(memmap_request.response, hhdm_request.response->offset);
+    
 
     /* 8. PMM Storage & Invariant Audit */
     if (!pmm_audit()) {
@@ -3127,7 +3159,7 @@ void kmain(void) {
         hcf();
     }
     serial_puts("[ OK ] PMM audit passed (64 KiB bitmap reserved, frame 0 guarded, 2 GiB capacity verified)\n\n");
-
+    /* pmm_high_memory_probe(); */
     /* 9. PMM Self-Test */
     serial_puts("[TEST] Executing Physical Memory Manager self-test...\n");
 
