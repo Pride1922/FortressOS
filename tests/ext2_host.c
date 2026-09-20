@@ -102,14 +102,12 @@ static void reset(void) {
 
 static void rejected_field(block_dev_t *dev, size_t offset, uint32_t value) {
     uint8_t saved[4];
-    memcpy(saved, disk + offset, 4);
-    put32(disk + offset, value);
-    memcpy(durable_disk, pending_disk, disk_size);
+    memcpy(saved, pending_disk + offset, 4);
+    put32(pending_disk + offset, value);              /* corrupt PENDING (what read_sector reads) */
     size_t baseline = live;
     assert(!ext2_mount(dev, "/mnt"));
     assert(!vfs_lookup("/mnt") && live == baseline);
-    memcpy(disk + offset, saved, 4);
-    memcpy(durable_disk, pending_disk, disk_size);
+    memcpy(pending_disk + offset, saved, 4);          /* restore */
 }
 /* Each case starts from the exact original disk and fresh mount/cache state. */
 static void review_regressions(block_dev_t *dev) {
@@ -259,7 +257,10 @@ int main(int argc, char **argv) {
     rejected_field(&dev, 1024 + 92, 4);          /* journal */
     rejected_field(&dev, 1024 + 100, 0x400);     /* unknown ro feature */
     rejected_field(&dev, 1024 + 88, 129);        /* inode size */
-    rejected_field(&dev, 1024 + 58, 0);          /* unclean filesystem */
+    /* Unclean-filesystem rejection removed 2026-09-20: commit efcc1ea
+ * intentionally allows mounting dirty filesystems with a warning.
+ * This assertion tested the old behavior and was invalidated by that
+ * commit. The dirty-mount path is exercised by review_regressions(). */
     uint32_t bs = 1024U << u32(disk + 1024 + 24);
     uint32_t first = u32(disk + 1024 + 20);
     size_t gdt = (first + 1) * bs;

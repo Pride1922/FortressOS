@@ -1577,10 +1577,14 @@ static bool ext2_mount_internal(block_dev_t *dev, const char *path, bool writabl
         if (!dev->write_sector || !dev->flush) return false;
     }
 
-    ext2_fs_t fs = {.dev = dev, .read_only = !writable, .tainted = false};
-    uint8_t sb[1024];
-    if (!bytes(&fs, 1024, sb, sizeof(sb)) || u16(sb + 56) != 0xef53 ||
-        u32(sb + 24) > 2 || u32(sb + 76) > 1) return false;
+   ext2_fs_t fs = {.dev = dev, .read_only = !writable, .tainted = false};
+uint8_t sb[1024];
+if (!bytes(&fs, 1024, sb, sizeof(sb)) || u16(sb + 56) != 0xef53 ||
+    u32(sb + 24) > 2 || u32(sb + 76) > 1) return false;
+/* Dirty filesystems may be mounted read-only (with a warning),
+ * but a writable mount must refuse them: the on-disk state is
+ * unknown and a write could compound the corruption. */
+if (writable && u16(sb + 58) != 1) return false;
     fs.blocks = u32(sb + 4); fs.inodes = u32(sb);
     fs.free_blocks = u32(sb + 12); fs.free_inodes = u32(sb + 16);
     fs.first = u32(sb + 20); fs.block_size = 1024U << u32(sb + 24);
