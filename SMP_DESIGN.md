@@ -9,6 +9,23 @@ prerequisite for the next. `SM` IDs are binding invariants for their piece,
 in the same style as AGENTS.md §4 (L1–L4, S1–S4, I1–I3, M1–M4) — read them
 before implementing or reviewing that piece.
 
+## Workflow
+
+Per piece, in order:
+
+1. Implementation is written against that piece's `SM` invariants, with the
+   relevant `make test-*` target added or pointed to.
+2. Verification (QEMU SMP, and Dell hardware where the piece needs real
+   timing/hardware — e.g. the AP trampoline or APIC behavior) is run
+   separately, not by the same pass that wrote the code.
+3. Results are reported back — pass, or what failed — before the next
+   piece starts. A piece isn't "done" because it compiles; it's done when
+   its verification evidence exists, per the existing evidence-tied-to-claims
+   rule (AGENTS.md §2).
+
+No piece is implemented without an explicit go-ahead for that specific
+piece.
+
 ## 1. AP discovery
 
 Enumerate and identify application processors before anything else in this
