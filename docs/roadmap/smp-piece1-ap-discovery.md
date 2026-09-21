@@ -130,4 +130,6 @@ alone.)*
 
 | Date | Environment | `-smp` / core count | Result | Notes |
 | --- | --- | --- | --- | --- |
-| | | | | |
+| 2026-09-21 | QEMU q35 | 1 | PASS | Single-CPU path unchanged; shell reached. No regression. |
+| 2026-09-21 | QEMU q35 | 4 | PASS | 3 APs matched ACPI MADT and reported in; shell reached. |
+| 2026-09-21 | Dell Latitude 5590 | 8 | PASS | 8 CPUs cross-checked; 7 APs online; shell reached; log preserved at `/mnt/boot.log`. |

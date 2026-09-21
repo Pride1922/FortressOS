@@ -1,7 +1,7 @@
 # FortressOS — SMP (Multi-Core) Design
 
-Status: Piece 1 (AP discovery) implemented, verification pending; Pieces
-2-6 not started. The kernel is still single-CPU *in effect* (no per-CPU
+Status: Piece 1 (AP discovery) implemented and verified (QEMU and Dell
+5590, 2026-09-21); Pieces 2-6 not started. The kernel is still single-CPU *in effect* (no per-CPU
 storage, locking, or scheduler change has landed) — see `PROTECTED.md`
 and AGENTS.md §9. Every invariant below is binding once its piece lands
 *and is verified*; an unverified piece is not binding evidence of
