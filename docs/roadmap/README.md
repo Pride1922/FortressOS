@@ -19,6 +19,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [phase-9c2-readonly-ext2.md](phase-9c2-readonly-ext2.md) | Read-only ext2 mount at `/mnt` (superseded/extended by Phase 9D for writable support) |
 | [phase-9d-writable-ext2.md](phase-9d-writable-ext2.md) | Bounded writable ext2: allocation/truncation ordering, superblock clean/dirty lifecycle, 3-boot persistence |
 | [phase-9e-exec-and-files.md](phase-9e-exec-and-files.md) | Program execution (spawn/wait, ABI, exit status, chaining), directory ops (mkdir/rename/unlink), Bug H4 AZERTY fix |
 | [phase-9g1-xhci-enumeration.md](phase-9g1-xhci-enumeration.md) | xHCI controller discovery, MMIO/reset, rings, ports, device addressing & descriptors (9G.1a–9G.1e) |
