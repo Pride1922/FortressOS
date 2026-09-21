@@ -1,8 +1,11 @@
 # FortressOS — SMP (Multi-Core) Design
 
-Status: planned, not started. The kernel is currently single-CPU by design
-(see `PROTECTED.md` and AGENTS.md §9); every invariant below is binding
-*once its piece lands*, not yet enforced in the current codebase.
+Status: Piece 1 (AP discovery) implemented, verification pending; Pieces
+2-6 not started. The kernel is still single-CPU *in effect* (no per-CPU
+storage, locking, or scheduler change has landed) — see `PROTECTED.md`
+and AGENTS.md §9. Every invariant below is binding once its piece lands
+*and is verified*; an unverified piece is not binding evidence of
+anything yet.
 
 This document sequences multi-core support as six pieces, each a stated
 prerequisite for the next. `SM` IDs are binding invariants for their piece,
@@ -28,13 +31,19 @@ piece.
 
 ## 1. AP discovery
 
+Status: **implemented, verification pending.** See
+[docs/roadmap/smp-piece1-ap-discovery.md](docs/roadmap/smp-piece1-ap-discovery.md)
+for what was built, why `SM2` reads differently than the original draft
+below, and the QEMU/Dell steps to actually verify it. Do not treat this
+piece as done until that file's evidence table has entries.
+
 Enumerate and identify application processors before anything else in this
 plan can start.
 
 | ID | Binding invariant | How to check |
 | --- | --- | --- |
 | SM1 | ACPI MADT is the sole source of truth for core count and APIC IDs. Never assume a fixed or detected-at-build core count. | Trace `madt_parse` → AP list; reject a missing/malformed MADT rather than falling back to a guessed count. |
-| SM2 | INIT-SIPI-SIPI sequencing follows Intel/AMD-documented timing (10ms INIT deassert delay, 200µs between SIPIs). Trampoline code lives in identity-mapped, sub-1MiB memory reclaimed once all APs report in. | Verify trampoline placement against Limine's memory map before use; confirm the reclaim happens only after every expected AP has signaled ready, not on a timeout alone. |
+| SM2 | AP bring-up uses Limine's SMP boot protocol (`goto_address` handoff), not a hand-rolled INIT-SIPI-SIPI trampoline — Limine already performs that sequence, with documented timing, before `kmain()` runs, and reimplementing it would duplicate logic the bootloader has to get right anyway. Every Limine-reported LAPIC ID is cross-checked against MADT's enabled set (SM1) before being started. | Confirm `smp_init()` refuses to start any CPU Limine reports that MADT didn't enumerate as enabled; confirm every enumerated AP reports online before the boot checkpoint passes, not on a timeout alone. |
 
 ## 2. Per-CPU storage
 

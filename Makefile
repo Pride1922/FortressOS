@@ -130,6 +130,10 @@ test-boot-diagnostics: $(BOOTABLE_ISO)
 test-nmi: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 	@python3 scripts/test_nmi_transitions.py
 
+.PHONY: test-smp-discovery
+test-smp-discovery: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
+	@python3 scripts/test_smp_discovery.py
+
 test-ext2:
 	@python3 scripts/test_ext2.py
 

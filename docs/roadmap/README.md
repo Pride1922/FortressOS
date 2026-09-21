@@ -28,6 +28,7 @@ and are not proof that every current revision has passed every test — check
 | [phase-9g4-usb-durability.md](phase-9g4-usb-durability.md) | Writable persistence, BOT stall recovery, durability classification |
 | [phase-9g5-superspeed.md](phase-9g5-superspeed.md) | Multi-controller enumeration (9G.5a), SuperSpeed/USB 3.x (9G.5b) |
 | [phase-9h-ram.md](phase-9h-ram.md) | 32 GiB RAM support, two-stage PMM/VMM init, HHDM coverage limit |
+| [smp-piece1-ap-discovery.md](smp-piece1-ap-discovery.md) | SMP Piece 1: AP discovery via Limine's SMP protocol, cross-checked against ACPI MADT; implemented, verification pending |
 | [subsystems.md](subsystems.md) | Cross-cutting notes not tied to one phase: NMI delivery, boot console, interactive shell/input, general Dell acceptance |
 
 ## Checkpoint sequence (for orientation only — not authoritative status)
@@ -40,6 +41,6 @@ and are not proof that every current revision has passed every test — check
 [Phase 9G]   USB storage, through 9G.5b                     (COMPLETE)
 [Phase 9G.5] USB topology expansion                         (9G.5a, 9G.5b complete; 9G.5c/d/e open)
 [Phase 9H]   32 GiB RAM support                              (COMPLETE)
-[SMP]        Multi-core support                              (planned — see SMP_DESIGN.md)
+[SMP]        Multi-core support                              (Piece 1/6 implemented, unverified — see SMP_DESIGN.md)
 [Following]  Accounts/permissions, then installer
 ```

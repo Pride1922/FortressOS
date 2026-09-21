@@ -13,6 +13,7 @@
 #include "acpi.h"
 #include "ioapic.h"
 #include "apic.h"
+#include "smp.h"
 #include "thread.h"
 #include "syscall.h"
 #include "elf.h"
@@ -3031,6 +3032,43 @@ static void test_ext2_and_audits(void) {
     serial_puts("[ OK ] Phase 9 (Step 9C.2): Read-only ext2 PASSED!\n");
 }
 
+/* =========================================================================
+ * SMP Piece 1: AP Discovery (SMP_DESIGN.md, SM1-SM2)
+ * Scope: find every CPU ACPI MADT says is enabled, start it via Limine's
+ * SMP protocol, cross-check the two sources, and confirm every AP reports
+ * in. APs do nothing beyond that (halted, interrupts disabled) -- no
+ * per-CPU storage, locking, or scheduler change lands until later pieces.
+ * See docs/roadmap/smp-piece1-ap-discovery.md for how to verify this.
+ * ========================================================================= */
+static void test_smp_piece1_ap_discovery(const acpi_madt_info_t *madt_info) {
+    serial_puts("========================================================\n");
+    serial_puts("SMP Piece 1: AP Discovery\n");
+    serial_puts("========================================================\n");
+
+    size_t online_aps = smp_init(madt_info);
+    size_t total_cpus = smp_get_cpu_count();
+
+    /* madt_info->enabled_cpu_count == 0 already halted kmain at MADT parse
+     * time (before this runs), so it is not re-checked here. */
+    if (total_cpus != madt_info->enabled_cpu_count) {
+        serial_puts("       [WARN] Total CPUs online (");
+        serial_print_dec(total_cpus);
+        serial_puts(") does not match MADT enabled count (");
+        serial_print_dec(madt_info->enabled_cpu_count);
+        serial_puts("); continuing single/partial-CPU. See the Piece 1 test doc before treating this as a pass.\n");
+    } else if (online_aps == 0) {
+        serial_puts("       [ OK ] Single-CPU system confirmed by both MADT and Limine\n");
+    } else {
+        serial_puts("       [ OK ] All ");
+        serial_print_dec(total_cpus);
+        serial_puts(" CPU(s) accounted for (1 BSP + ");
+        serial_print_dec(online_aps);
+        serial_puts(" AP(s)), matching MADT\n");
+    }
+
+    serial_puts("[ OK ] SMP Piece 1 (AP discovery) complete.\n\n");
+}
+
 void kmain(void) {
     /* 1. Initialize COM1 Serial Port (0x3F8) */
     int serial_status = serial_init();
@@ -4547,6 +4585,11 @@ pf_boot_guard_done:
 
         serial_puts("\n[BOOT] FortressOS Phase 9 (Step 9C.2) complete.\n");
     }
+
+    /* =========================================================================
+     * SMP Piece 1: AP Discovery
+     * ========================================================================= */
+    test_smp_piece1_ap_discovery(&madt_info);
 
     /* Inputs and shell are started after destructive/negative acceptance cases. */
     __asm__ volatile("cli" ::: "memory");
