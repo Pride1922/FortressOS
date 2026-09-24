@@ -14,6 +14,7 @@
 #include "ioapic.h"
 #include "apic.h"
 #include "smp.h"
+#include "percpu.h"
 #include "thread.h"
 #include "syscall.h"
 #include "elf.h"
@@ -3094,6 +3095,281 @@ static void test_smp_piece3_lock_discipline(void) {
     serial_puts("[ OK ] SMP Piece 3 (Lock discipline) complete.\n\n");
 }
 
+/* =========================================================================
+ * SMP Piece 4: The SMP Scheduler (Per-CPU Runqueues & Work-Stealing)
+ * ========================================================================= */
+static volatile uint64_t g_smp4_worker_counter = 0;
+static volatile uint32_t g_smp4_workers_active = 0;
+static spinlock_t g_smp4_worker_lock = SPINLOCK_RANKED(1, "smp4-worker-lock");
+
+static void smp4_pinned_worker(void *arg) {
+    size_t expected_cpu = (size_t)(uintptr_t)arg;
+    size_t actual_cpu = cpu_current()->id;
+    if (actual_cpu == expected_cpu) {
+        uint64_t rflags = spin_lock_irqsave(&g_smp4_worker_lock);
+        g_smp4_worker_counter++;
+        spin_unlock_irqrestore(&g_smp4_worker_lock, rflags);
+    }
+    __atomic_fetch_sub(&g_smp4_workers_active, 1, __ATOMIC_RELEASE);
+    thread_exit();
+}
+
+static void smp4_steal_worker(void *arg) {
+    (void)arg;
+    for (volatile uint64_t i = 0; i < 50000; i++) {
+        __asm__ volatile("pause");
+    }
+    uint64_t rflags = spin_lock_irqsave(&g_smp4_worker_lock);
+    g_smp4_worker_counter++;
+    spin_unlock_irqrestore(&g_smp4_worker_lock, rflags);
+    __atomic_fetch_sub(&g_smp4_workers_active, 1, __ATOMIC_RELEASE);
+    thread_exit();
+}
+
+static void test_smp_piece4_scheduler(void) {
+    serial_puts("========================================================\n");
+    serial_puts("SMP Piece 4: The SMP Scheduler & Work-Stealing\n");
+    serial_puts("========================================================\n");
+
+    size_t total_cpus = smp_get_cpu_count();
+
+    /* Test T3.b: Dual-Lock Ordering & Inversion Test */
+    serial_puts("[TEST] SMP Piece 4: Testing sched_lock_pair dual-lock ordering (T3.b)...\n");
+    spinlock_t lock_a = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "test-sched-a");
+    spinlock_t lock_b = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "test-sched-b");
+
+    uint64_t f1;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(f1) : : "memory");
+    sched_lock_pair(&lock_a, &lock_b);
+    sched_unlock_pair(&lock_a, &lock_b);
+    __asm__ volatile("push %0; popfq" : : "r"(f1) : "memory");
+
+    uint64_t f2;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(f2) : : "memory");
+    sched_lock_pair(&lock_b, &lock_a);
+    sched_unlock_pair(&lock_b, &lock_a);
+    __asm__ volatile("push %0; popfq" : : "r"(f2) : "memory");
+
+    serial_puts("       [PASS] sched_lock_pair acquired and released safely in forward and inverted order\n");
+
+    if (g_smp_lock_test.test_mode == SMP_TEST_MODE_INVERSION ||
+        g_smp_lock_test.test_mode == SMP_TEST_MODE_ASSERT_HELD) {
+        serial_puts("       [SKIP] SMP Piece 4 multi-core test skipped in negative lock-test mode.\n");
+        serial_puts("[ OK ] SMP Piece 4 (Scheduler & Work-Stealing) complete.\n\n");
+        return;
+    }
+
+    /* Start timer and enable preemption on BSP, then start AP schedulers */
+    apic_timer_start();
+    sched_enable_preemption();
+    __asm__ volatile("sti" ::: "memory");
+    smp_start_schedulers();
+
+    if (total_cpus > 1) {
+        serial_puts("[TEST] SMP Piece 4: Spawning concurrent pinned workers across cores (T3.a)...\n");
+        g_smp4_worker_counter = 0;
+        g_smp4_workers_active = total_cpus;
+
+        for (size_t c = 0; c < total_cpus; c++) {
+            tcb_t *w = thread_create_on_cpu(c, "pinned_w", smp4_pinned_worker, (void *)(uintptr_t)c);
+            if (!w) {
+                serial_puts("       [FAIL] Failed to create pinned worker!\n");
+                hcf();
+            }
+        }
+
+        uint64_t timeout = 50000000;
+        while (__atomic_load_n(&g_smp4_workers_active, __ATOMIC_ACQUIRE) > 0) {
+            __asm__ volatile("pause");
+            thread_yield();
+            if (--timeout == 0) {
+                serial_puts("       [FAIL] Timed out waiting for pinned workers to execute!\n");
+                hcf();
+            }
+        }
+
+        if (g_smp4_worker_counter != total_cpus) {
+            serial_puts("       [FAIL] Pinned worker execution count mismatch!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] All pinned workers executed on their assigned CPU cores (verified ");
+        serial_print_dec(total_cpus);
+        serial_puts(" cores)\n");
+
+        /* Test T3.c: Forced Work-Stealing Test (16 unbound threads queued on CPU 0) */
+        serial_puts("[TEST] SMP Piece 4: Forced work-stealing test (16 workers queued on CPU 0) (T3.c)...\n");
+        const size_t NUM_STEAL_WORKERS = 16;
+        g_smp4_worker_counter = 0;
+        g_smp4_workers_active = NUM_STEAL_WORKERS;
+
+        for (size_t i = 0; i < NUM_STEAL_WORKERS; i++) {
+            tcb_t *w = thread_create_unbound_on_cpu(0, "steal_w", smp4_steal_worker, (void *)(uintptr_t)i);
+            if (!w) {
+                serial_puts("       [FAIL] Failed to create unbound worker on CPU 0!\n");
+                hcf();
+            }
+        }
+
+        timeout = 50000000;
+        while (__atomic_load_n(&g_smp4_workers_active, __ATOMIC_ACQUIRE) > 0) {
+            __asm__ volatile("pause");
+            thread_yield();
+            if (--timeout == 0) {
+                serial_puts("       [FAIL] Timed out waiting for stolen workers to execute!\n");
+                hcf();
+            }
+        }
+
+        if (g_smp4_worker_counter != NUM_STEAL_WORKERS) {
+            serial_puts("       [FAIL] Stolen worker execution count mismatch!\n");
+            hcf();
+        }
+
+        uint64_t total_stolen = 0;
+        for (size_t c = 1; c < total_cpus; c++) {
+            uint64_t stolen = sched_get_stolen_count(c);
+            total_stolen += stolen;
+            serial_puts("       [INFO] CPU ");
+            serial_print_dec(c);
+            serial_puts(" stole: ");
+            serial_print_dec(stolen);
+            serial_puts(" tasks\n");
+        }
+
+        if (total_stolen == 0) {
+            serial_puts("       [FAIL] No tasks were stolen by APs during forced work-stealing test!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] AP work-stealing verified (total tasks stolen across APs: ");
+        serial_print_dec(total_stolen);
+        serial_puts(")\n");
+    } else {
+        serial_puts("       [ OK ] Single-CPU system: multi-core scheduler tests skipped.\n");
+    }
+
+    serial_puts("[ OK ] SMP Piece 4 (Scheduler & Work-Stealing) complete.\n\n");
+}
+
+/* =========================================================================
+ * SMP Piece 5: Cross-Core Coordination & IPIs (SMP_DESIGN.md, SM14-SM15)
+ * ========================================================================= */
+static volatile uint32_t g_remote_wake_done = 0;
+
+static void smp5_remote_wake_worker(void *arg) {
+    (void)arg;
+    __atomic_store_n(&g_remote_wake_done, 1, __ATOMIC_RELEASE);
+    thread_exit();
+}
+
+static void test_smp_piece5_ipi(uint64_t *kernel_pml4) {
+    if (g_smp_lock_test.test_mode == SMP_TEST_MODE_INVERSION ||
+        g_smp_lock_test.test_mode == SMP_TEST_MODE_ASSERT_HELD) {
+        return;
+    }
+
+    serial_puts("========================================================\n");
+    serial_puts("SMP Piece 5: Cross-Core Coordination & IPIs\n");
+    serial_puts("========================================================\n");
+
+    size_t total_cpus = smp_get_cpu_count();
+    if (total_cpus > 1) {
+        /* Test T5.a: Unicast & Broadcast IPI Ping */
+        serial_puts("[TEST] SMP Piece 5: Testing unicast IPI delivery (BSP -> AP 1) (T5.a)...\n");
+        g_ipi_resched_count[1] = 0;
+        smp_send_resched(1);
+
+        uint64_t timeout = 50000000;
+        while (__atomic_load_n(&g_ipi_resched_count[1], __ATOMIC_ACQUIRE) == 0) {
+            __asm__ volatile("pause");
+            if (--timeout == 0) {
+                serial_puts("       [FAIL] Unicast IPI delivery to AP 1 timed out!\n");
+                hcf();
+            }
+        }
+        serial_puts("       [PASS] Unicast IPI delivery verified (BSP -> AP 1)\n");
+
+        /* Broadcast synchronous TLB shootdown */
+        serial_puts("[TEST] SMP Piece 5: Testing broadcast synchronous TLB shootdown (T5.a)...\n");
+        for (size_t c = 1; c < total_cpus; c++) {
+            g_ipi_tlb_count[c] = 0;
+        }
+
+        smp_tlb_shootdown(0xDEADBEEF000ULL, 0);
+
+        bool all_acked = true;
+        for (size_t c = 1; c < total_cpus; c++) {
+            if (__atomic_load_n(&g_ipi_tlb_count[c], __ATOMIC_ACQUIRE) == 0) {
+                all_acked = false;
+                break;
+            }
+        }
+        if (!all_acked) {
+            serial_puts("       [FAIL] One or more APs did not receive/acknowledge TLB shootdown IPI!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] Synchronous broadcast TLB shootdown acknowledged by all online APs (");
+        serial_print_dec(total_cpus - 1);
+        serial_puts(" APs)\n");
+
+        /* Test T5.b: Remote Core Wakeup via Reschedule IPI */
+        serial_puts("[TEST] SMP Piece 5: Remote core wakeup via reschedule IPI (T5.b)...\n");
+        __atomic_store_n(&g_remote_wake_done, 0, __ATOMIC_RELEASE);
+        tcb_t *w = thread_create_on_cpu(1, "wake_w", smp5_remote_wake_worker, NULL);
+        if (!w) {
+            serial_puts("       [FAIL] Failed to create remote worker thread!\n");
+            hcf();
+        }
+
+        timeout = 50000000;
+        while (__atomic_load_n(&g_remote_wake_done, __ATOMIC_ACQUIRE) == 0) {
+            __asm__ volatile("pause");
+            thread_yield();
+            if (--timeout == 0) {
+                serial_puts("       [FAIL] Remote core wakeup test timed out waiting for worker!\n");
+                hcf();
+            }
+        }
+        serial_puts("       [PASS] Remote core wakeup verified (AP 1 awakened from idle)\n");
+
+        /* Test T5.c: Real VMM Page Unmap and Synchronous Shootdown (SM14, SM15) */
+        serial_puts("[TEST] SMP Piece 5: Real VMM page unmap and shootdown barrier (T5.c)...\n");
+        for (size_t c = 1; c < total_cpus; c++) {
+            g_ipi_tlb_count[c] = 0;
+        }
+
+        uintptr_t test_phys = pmm_alloc_page();
+        uintptr_t test_virt = 0xFFFFFFFF90006000ULL;
+        if (!test_phys || vmm_map_page(kernel_pml4, test_virt, test_phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX) != VMM_OK) {
+            serial_puts("       [FAIL] Failed to map test page for TLB shootdown test!\n");
+            hcf();
+        }
+
+        int unmap_res = vmm_unmap_page(kernel_pml4, test_virt);
+        if (unmap_res != VMM_OK) {
+            serial_puts("       [FAIL] vmm_unmap_page failed!\n");
+            hcf();
+        }
+        pmm_free_page(test_phys);
+
+        all_acked = true;
+        for (size_t c = 1; c < total_cpus; c++) {
+            if (__atomic_load_n(&g_ipi_tlb_count[c], __ATOMIC_ACQUIRE) == 0) {
+                all_acked = false;
+                break;
+            }
+        }
+        if (!all_acked) {
+            serial_puts("       [FAIL] VMM unmap did not trigger/complete shootdown across all APs!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] VMM synchronous TLB shootdown and frame unmap verified (SM14, SM15)\n");
+    } else {
+        serial_puts("       [ OK ] Single-CPU system: multi-core IPI tests skipped.\n");
+    }
+
+    serial_puts("[ OK ] SMP Piece 5 (Cross-Core Coordination & IPIs) complete.\n\n");
+}
+
 void kmain(void) {
     /* 1. Initialize COM1 Serial Port (0x3F8) */
     int serial_status = serial_init();
@@ -4627,6 +4903,8 @@ pf_boot_guard_done:
     }
     test_smp_piece1_ap_discovery(&madt_info);
     test_smp_piece3_lock_discipline();
+    test_smp_piece4_scheduler();
+    test_smp_piece5_ipi(master_kernel_pml4);
 
     /* Inputs and shell are started after destructive/negative acceptance cases. */
     __asm__ volatile("cli" ::: "memory");

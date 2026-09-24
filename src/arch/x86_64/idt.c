@@ -202,8 +202,25 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         return;
     }
 
-    /* APs have no runnable tasks or subsystem-lock permission yet. Keep
-     * unexpected faults out of BSP test hooks and normal panic logging. */
+    /* Hardware or software interrupts (vectors >= 32, excluding syscall 0x80) */
+    if (frame->vector >= 32 && frame->vector != 0x80) {
+        if (g_irq_handlers[frame->vector]) {
+            g_irq_handlers[frame->vector](frame);
+            /* Single-owner EOI: dispatcher acknowledges handled non-spurious interrupts */
+            if (g_needs_eoi[frame->vector]) {
+                extern void lapic_eoi(void);
+                lapic_eoi();
+            }
+        } else {
+            /* Unhandled interrupt: track without blindly acknowledging to prevent cascade */
+            serial_puts("[FATAL] Unhandled interrupt vector: ");
+            serial_print_dec(frame->vector);
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
+        return;
+    }
+
+    /* APs unexpected exception isolation: keep unexpected faults out of BSP test hooks. */
     if (cpu->id != 0) {
         cpu->fault_vector = frame->vector;
         cpu->fault_error = frame->error_code;
@@ -262,24 +279,6 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         /* General System Call Dispatch */
         extern int64_t syscall_dispatch(interrupt_frame_t *frame);
         syscall_dispatch(frame);
-        return;
-    }
-
-    /* Hardware or software interrupts (vectors >= 32) */
-    if (frame->vector >= 32) {
-        if (g_irq_handlers[frame->vector]) {
-            g_irq_handlers[frame->vector](frame);
-            /* Single-owner EOI: dispatcher acknowledges handled non-spurious interrupts */
-            if (g_needs_eoi[frame->vector]) {
-                extern void lapic_eoi(void);
-                lapic_eoi();
-            }
-        } else {
-            /* Unhandled interrupt: track without blindly acknowledging to prevent cascade */
-            serial_puts("[FATAL] Unhandled interrupt vector: ");
-            serial_print_dec(frame->vector);
-            for (;;) { __asm__ volatile("cli; hlt"); }
-        }
         return;
     }
 

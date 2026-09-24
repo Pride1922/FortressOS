@@ -9,6 +9,8 @@
 #include "elf.h"
 #include "vfs.h"
 #include "syscall.h"
+#include "apic.h"
+#include "smp.h"
 
 extern uint8_t kernel_stack_guard[];
 
@@ -30,50 +32,89 @@ typedef struct {
     bool used, done;
 } child_record_t;
 
-/* Storage only: AP scheduler execution remains prohibited until Pieces 3-4. */
+/* SMP Piece 4: Per-CPU scheduler state */
+/* SMP Piece 4: Per-CPU scheduler state */
 static struct scheduler_cpu {
-    exit_record_t g_exit_records[MAX_EXIT_RECORDS];
-    size_t        g_exit_records_head;
-    child_record_t g_child_records[MAX_EXIT_RECORDS];
-    uint64_t      g_sched_runnable_switches;
-    tcb_t         g_main_thread;
-    tcb_t        *g_idle_thread;
-    tcb_t        *g_runqueue_head;
-    tcb_t        *g_runqueue_tail;
-    tcb_t        *g_blocked_threads;
-    tcb_t        *g_dead_threads;
-    uint64_t      g_next_tid;
-    spinlock_t    g_sched_lock;
-    volatile bool g_preemption_enabled;
-    uint64_t      g_stack_slots_bitmap;
-} scheduler_cpus[MAX_DETECTED_CPUS] = { [0] = { .g_next_tid = 1, .g_sched_lock = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "sched") } };
+    exit_record_t exit_records[MAX_EXIT_RECORDS];
+    size_t        exit_records_head;
+    child_record_t child_records[MAX_EXIT_RECORDS];
+    uint64_t      sched_runnable_switches;
+    tcb_t         main_thread;
+    tcb_t        *idle_thread;
+    tcb_t        *runqueue_head;
+    tcb_t        *runqueue_tail;
+    tcb_t        *blocked_threads;
+    tcb_t        *dead_threads;
+    tcb_t        *zombie_thread;
+    uint64_t      next_tid;
+    spinlock_t    sched_lock;
+    volatile bool preemption_enabled;
+    uint64_t      stack_slots_bitmap;
+    uint64_t      stolen_tasks_count;
+} scheduler_cpus[MAX_DETECTED_CPUS] = { [0] = { .next_tid = 1, .sched_lock = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "sched-0") } };
+
+static const char *g_sched_lock_names[MAX_DETECTED_CPUS] = {
+    "sched-0", "sched-1", "sched-2", "sched-3", "sched-4", "sched-5", "sched-6", "sched-7",
+    "sched-8", "sched-9", "sched-10", "sched-11", "sched-12", "sched-13", "sched-14", "sched-15",
+    "sched-16", "sched-17", "sched-18", "sched-19", "sched-20", "sched-21", "sched-22", "sched-23",
+    "sched-24", "sched-25", "sched-26", "sched-27", "sched-28", "sched-29", "sched-30", "sched-31",
+    "sched-32", "sched-33", "sched-34", "sched-35", "sched-36", "sched-37", "sched-38", "sched-39",
+    "sched-40", "sched-41", "sched-42", "sched-43", "sched-44", "sched-45", "sched-46", "sched-47",
+    "sched-48", "sched-49", "sched-50", "sched-51", "sched-52", "sched-53", "sched-54", "sched-55",
+    "sched-56", "sched-57", "sched-58", "sched-59", "sched-60", "sched-61", "sched-62", "sched-63"
+};
+
+static uint64_t g_global_next_tid = 1;
+static size_t g_total_sched_cpus = 1;
+static spinlock_t g_kstack_lock = SPINLOCK_RANKED(1, "kstack");
+
 /* Read-only debug metadata for host tests; these are addresses, not mirrors. */
 const uintptr_t scheduler_debug_bsp[] = {
-    (uintptr_t)&scheduler_cpus[0].g_blocked_threads,
+    (uintptr_t)&scheduler_cpus[0].blocked_threads,
     (uintptr_t)&cpu_locals[0].current_thread,
-    (uintptr_t)&scheduler_cpus[0].g_stack_slots_bitmap
+    (uintptr_t)&scheduler_cpus[0].stack_slots_bitmap
 };
-#define g_exit_records (scheduler_cpus[cpu_current()->id].g_exit_records)
-#define g_exit_records_head (scheduler_cpus[cpu_current()->id].g_exit_records_head)
-#define g_child_records (scheduler_cpus[cpu_current()->id].g_child_records)
+#define g_exit_records (scheduler_cpus[cpu_current()->id].exit_records)
+#define g_exit_records_head (scheduler_cpus[cpu_current()->id].exit_records_head)
+#define g_child_records (scheduler_cpus[cpu_current()->id].child_records)
 #define g_sched_timer_preemptions (cpu_current()->preempt_count)
-#define g_sched_runnable_switches (scheduler_cpus[cpu_current()->id].g_sched_runnable_switches)
-#define g_main_thread (scheduler_cpus[cpu_current()->id].g_main_thread)
-#define g_idle_thread (scheduler_cpus[cpu_current()->id].g_idle_thread)
-#define g_runqueue_head (scheduler_cpus[cpu_current()->id].g_runqueue_head)
-#define g_runqueue_tail (scheduler_cpus[cpu_current()->id].g_runqueue_tail)
-#define g_blocked_threads (scheduler_cpus[cpu_current()->id].g_blocked_threads)
-#define g_dead_threads (scheduler_cpus[cpu_current()->id].g_dead_threads)
-#define g_next_tid (scheduler_cpus[cpu_current()->id].g_next_tid)
-#define g_sched_lock (scheduler_cpus[cpu_current()->id].g_sched_lock)
-#define g_preemption_enabled (scheduler_cpus[cpu_current()->id].g_preemption_enabled)
-#define g_stack_slots_bitmap (scheduler_cpus[cpu_current()->id].g_stack_slots_bitmap)
+#define g_sched_runnable_switches (scheduler_cpus[cpu_current()->id].sched_runnable_switches)
+#define g_main_thread (scheduler_cpus[cpu_current()->id].main_thread)
+#define g_idle_thread (scheduler_cpus[cpu_current()->id].idle_thread)
+#define g_runqueue_head (scheduler_cpus[cpu_current()->id].runqueue_head)
+#define g_runqueue_tail (scheduler_cpus[cpu_current()->id].runqueue_tail)
+#define g_blocked_threads (scheduler_cpus[cpu_current()->id].blocked_threads)
+#define g_dead_threads (scheduler_cpus[cpu_current()->id].dead_threads)
+#define g_next_tid (scheduler_cpus[cpu_current()->id].next_tid)
+#define g_sched_lock (scheduler_cpus[cpu_current()->id].sched_lock)
+#define g_preemption_enabled (scheduler_cpus[cpu_current()->id].preemption_enabled)
+#define g_stack_slots_bitmap (scheduler_cpus[0].stack_slots_bitmap)
 #define g_current_thread (cpu_current()->current_thread)
 
+void sched_lock_pair(spinlock_t *a, spinlock_t *b) {
+    if (a == b) {
+        spin_lock_noirq(a);
+        return;
+    }
+    spinlock_t *first = ((uintptr_t)a < (uintptr_t)b) ? a : b;
+    spinlock_t *second = ((uintptr_t)a < (uintptr_t)b) ? b : a;
+    spin_lock_noirq(first);
+    spin_lock_noirq(second);
+}
 
+void sched_unlock_pair(spinlock_t *a, spinlock_t *b) {
+    if (a == b) {
+        spin_unlock_noirq(a);
+        return;
+    }
+    spinlock_t *first = ((uintptr_t)a < (uintptr_t)b) ? a : b;
+    spinlock_t *second = ((uintptr_t)a < (uintptr_t)b) ? b : a;
+    spin_unlock_noirq(second);
+    spin_unlock_noirq(first);
+}
 
 static int kstack_alloc(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_size) {
-    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+    uint64_t rflags = spin_lock_irqsave(&g_kstack_lock);
     int slot = -1;
     for (int i = 0; i < MAX_KERNEL_THREADS; i++) {
         if (!(g_stack_slots_bitmap & (1ULL << i))) {
@@ -82,7 +123,7 @@ static int kstack_alloc(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_s
             break;
         }
     }
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    spin_unlock_irqrestore(&g_kstack_lock, rflags);
 
     if (slot == -1) {
         serial_puts("[WARN] Thread stack slots exhausted (max 64 concurrent threads)!\n");
@@ -105,9 +146,9 @@ static int kstack_alloc(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_s
                 vmm_unmap_page(pml4, mapped_virt);
                 if (mapped_phys) pmm_free_page(mapped_phys);
             }
-            rflags = spin_lock_irqsave(&g_sched_lock);
+            rflags = spin_lock_irqsave(&g_kstack_lock);
             g_stack_slots_bitmap &= ~(1ULL << slot);
-            spin_unlock_irqrestore(&g_sched_lock, rflags);
+            spin_unlock_irqrestore(&g_kstack_lock, rflags);
             return -1;
         }
 
@@ -125,9 +166,9 @@ static int kstack_alloc(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_s
                 vmm_unmap_page(pml4, mapped_virt);
                 if (mapped_phys) pmm_free_page(mapped_phys);
             }
-            rflags = spin_lock_irqsave(&g_sched_lock);
+            rflags = spin_lock_irqsave(&g_kstack_lock);
             g_stack_slots_bitmap &= ~(1ULL << slot);
-            spin_unlock_irqrestore(&g_sched_lock, rflags);
+            spin_unlock_irqrestore(&g_kstack_lock, rflags);
             return -1;
         }
     }
@@ -151,9 +192,9 @@ static void kstack_free(int slot, uintptr_t base_addr) {
         }
     }
 
-    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+    uint64_t rflags = spin_lock_irqsave(&g_kstack_lock);
     g_stack_slots_bitmap &= ~(1ULL << slot);
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    spin_unlock_irqrestore(&g_kstack_lock, rflags);
 }
 
 static void runqueue_push_locked(tcb_t *t) {
@@ -180,45 +221,62 @@ static tcb_t *runqueue_pop_next_locked(void) {
 }
 
 void sched_reap_dead(void) {
-    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
-    tcb_t *dead = g_dead_threads;
-    g_dead_threads = NULL;
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    if (cpu_current()->id != 0) return;
 
-    while (dead) {
-        tcb_t *next = dead->next;
+    size_t limit = g_total_sched_cpus ? g_total_sched_cpus : 1;
+    for (size_t c = 0; c < limit; c++) {
+        uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+        tcb_t *dead = scheduler_cpus[c].dead_threads;
+        scheduler_cpus[c].dead_threads = NULL;
+        spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
 
-        /* Invariant 1: The executing thread must never be the dead thread */
-        if (dead == g_current_thread) {
-            serial_puts("[FATAL] sched_reap_dead: attempt to reap currently executing thread!\n");
-            for (;;) { __asm__ volatile("cli; hlt"); }
-        }
+        while (dead) {
+            tcb_t *next = dead->next;
 
-        /* Invariant 2: The executing thread must not share the dead thread's stack slot */
-        if (dead->stack_slot >= 0 && dead->stack_slot == g_current_thread->stack_slot) {
-            serial_puts("[FATAL] sched_reap_dead: dead thread stack slot is currently active!\n");
-            for (;;) { __asm__ volatile("cli; hlt"); }
-        }
-
-        /* Invariant 3: The active CR3 must never be the dead process's PML4.
-         * The scheduler must have already switched to the next thread's CR3 (or kernel PML4)
-         * during thread_exit()/thread_yield() before the dead process could ever be reaped.
-         * If active CR3 matches dead->cr3, it indicates a critical scheduler lifecycle bug. */
-        if (dead->is_user && dead->cr3 != 0) {
-            if (vmm_get_current_pml4() == dead->cr3) {
-                serial_puts("[FATAL] sched_reap_dead: active CR3 matches dead process PML4 (lifecycle bug)!\n");
+            /* Invariant 1: The executing thread must never be the dead thread */
+            if (dead == g_current_thread) {
+                serial_puts("[FATAL] sched_reap_dead: attempt to reap currently executing thread!\n");
                 for (;;) { __asm__ volatile("cli; hlt"); }
             }
-            vmm_destroy_pml4(dead->cr3, true);
-            dead->cr3 = 0;
-            dead->pml4_virt = NULL;
+
+            /* Invariant 2: The executing thread must not share the dead thread's stack slot */
+            if (dead->stack_slot >= 0 && dead->stack_slot == g_current_thread->stack_slot) {
+                serial_puts("[FATAL] sched_reap_dead: dead thread stack slot is currently active!\n");
+                for (;;) { __asm__ volatile("cli; hlt"); }
+            }
+
+            /* Invariant 3: The active CR3 must never be the dead process's PML4.
+             * The scheduler must have already switched to the next thread's CR3 (or kernel PML4)
+             * during thread_exit()/thread_yield() before the dead process could ever be reaped.
+             * If active CR3 matches dead->cr3, it indicates a critical scheduler lifecycle bug. */
+            if (dead->is_user && dead->cr3 != 0) {
+                if (vmm_get_current_pml4() == dead->cr3) {
+                    serial_puts("[FATAL] sched_reap_dead: active CR3 matches dead process PML4 (lifecycle bug)!\n");
+                    for (;;) { __asm__ volatile("cli; hlt"); }
+                }
+                vmm_destroy_pml4(dead->cr3, true);
+                dead->cr3 = 0;
+                dead->pml4_virt = NULL;
+            }
+            if (dead->stack_slot >= 0) {
+                kstack_free(dead->stack_slot, dead->kstack_base);
+            }
+            fd_close_all(dead);
+            kfree(dead);
+            dead = next;
         }
-        if (dead->stack_slot >= 0) {
-            kstack_free(dead->stack_slot, dead->kstack_base);
-        }
-        fd_close_all(dead);
-        kfree(dead);
-        dead = next;
+    }
+}
+
+void sched_post_switch(void) {
+    size_t cid = cpu_current()->id;
+    if (cid < MAX_DETECTED_CPUS && scheduler_cpus[cid].zombie_thread) {
+        tcb_t *z = scheduler_cpus[cid].zombie_thread;
+        scheduler_cpus[cid].zombie_thread = NULL;
+        uint64_t zflags = spin_lock_irqsave(&scheduler_cpus[cid].sched_lock);
+        z->next = scheduler_cpus[cid].dead_threads;
+        scheduler_cpus[cid].dead_threads = z;
+        spin_unlock_irqrestore(&scheduler_cpus[cid].sched_lock, zflags);
     }
 }
 
@@ -226,16 +284,84 @@ static void idle_thread_entry(void *arg) {
     (void)arg;
     for (;;) {
         sched_reap_dead();
-        if (sched_ready_count() > 0) {
-            thread_yield();
-        } else {
-            __asm__ volatile("sti; hlt");
-        }
+        thread_yield();
+        __asm__ volatile("sti; hlt" ::: "memory");
     }
 }
 
+static bool sched_steal_work(size_t thief_cpu) {
+    if (g_total_sched_cpus <= 1) return false;
+
+    for (size_t i = 0; i < g_total_sched_cpus; i++) {
+        size_t victim_cpu = (thief_cpu + 1 + i) % g_total_sched_cpus;
+        if (victim_cpu == thief_cpu) continue;
+
+        if (!__atomic_load_n(&scheduler_cpus[victim_cpu].runqueue_head, __ATOMIC_RELAXED)) {
+            continue;
+        }
+
+        uint64_t rflags;
+        __asm__ volatile("pushfq; pop %0; cli" : "=r"(rflags) : : "memory");
+
+        sched_lock_pair(&scheduler_cpus[thief_cpu].sched_lock,
+                        &scheduler_cpus[victim_cpu].sched_lock);
+
+        tcb_t *prev = NULL;
+        tcb_t *curr = scheduler_cpus[victim_cpu].runqueue_head;
+        tcb_t *candidate = NULL;
+        tcb_t *cand_prev = NULL;
+
+        while (curr) {
+            if (!curr->is_idle &&
+                (curr->cpu_affinity == -1 || curr->cpu_affinity == (int)thief_cpu)) {
+                candidate = curr;
+                cand_prev = prev;
+            }
+            prev = curr;
+            curr = curr->next;
+        }
+
+        if (candidate) {
+            if (cand_prev) {
+                cand_prev->next = candidate->next;
+            } else {
+                scheduler_cpus[victim_cpu].runqueue_head = candidate->next;
+            }
+            if (scheduler_cpus[victim_cpu].runqueue_tail == candidate) {
+                scheduler_cpus[victim_cpu].runqueue_tail = cand_prev;
+            }
+            candidate->next = NULL;
+            candidate->current_cpu = thief_cpu;
+
+            if (!scheduler_cpus[thief_cpu].runqueue_head) {
+                scheduler_cpus[thief_cpu].runqueue_head = candidate;
+                scheduler_cpus[thief_cpu].runqueue_tail = candidate;
+            } else {
+                scheduler_cpus[thief_cpu].runqueue_tail->next = candidate;
+                scheduler_cpus[thief_cpu].runqueue_tail = candidate;
+            }
+            scheduler_cpus[thief_cpu].stolen_tasks_count++;
+
+            sched_unlock_pair(&scheduler_cpus[thief_cpu].sched_lock,
+                              &scheduler_cpus[victim_cpu].sched_lock);
+            __asm__ volatile("push %0; popfq" : : "r"(rflags) : "memory");
+            return true;
+        }
+
+        sched_unlock_pair(&scheduler_cpus[thief_cpu].sched_lock,
+                          &scheduler_cpus[victim_cpu].sched_lock);
+        __asm__ volatile("push %0; popfq" : : "r"(rflags) : "memory");
+    }
+
+    return false;
+}
+
 void sched_init(void) {
-    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+    for (size_t i = 0; i < MAX_DETECTED_CPUS; i++) {
+        scheduler_cpus[i].sched_lock = (spinlock_t)SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, g_sched_lock_names[i]);
+    }
+
+    uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[0].sched_lock);
 
     memset(&g_main_thread, 0, sizeof(tcb_t));
     g_main_thread.rsp = 0; /* Captured dynamically on first switch_context */
@@ -255,6 +381,8 @@ void sched_init(void) {
     g_main_thread.exit_code = 0;
     g_main_thread.has_exited = false;
     g_main_thread.next = NULL;
+    g_main_thread.cpu_affinity = 0;
+    g_main_thread.current_cpu = 0;
 
     memset(g_exit_records, 0, sizeof(g_exit_records));
 
@@ -267,27 +395,30 @@ void sched_init(void) {
     g_preemption_enabled = false;
     g_stack_slots_bitmap = 0;
 
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    spin_unlock_irqrestore(&scheduler_cpus[0].sched_lock, rflags);
 
     /* Create dedicated low-power idle thread */
     g_idle_thread = thread_create("idle", idle_thread_entry, NULL);
     if (g_idle_thread) {
-        rflags = spin_lock_irqsave(&g_sched_lock);
+        rflags = spin_lock_irqsave(&scheduler_cpus[0].sched_lock);
         g_idle_thread->is_idle = true;
+        g_idle_thread->cpu_affinity = 0;
+        g_idle_thread->current_cpu = 0;
         /* Remove idle thread from normal runqueue so it only runs when queue is empty */
         if (g_runqueue_head == g_idle_thread) {
             g_runqueue_head = g_idle_thread->next;
             if (!g_runqueue_head) g_runqueue_tail = NULL;
             g_idle_thread->next = NULL;
         }
-        spin_unlock_irqrestore(&g_sched_lock, rflags);
+        spin_unlock_irqrestore(&scheduler_cpus[0].sched_lock, rflags);
     }
 
     serial_puts("[ OK ] Preemptive thread scheduler initialized (page-backed stack guard armed, main adopted, idle thread ready)\n");
 }
 
-tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
+static tcb_t *thread_create_internal(size_t target_cpu, int affinity, const char *name, void (*entry)(void *), void *arg) {
     if (!entry) return NULL;
+    if (target_cpu >= MAX_DETECTED_CPUS) target_cpu = 0;
 
     sched_reap_dead();
 
@@ -308,9 +439,9 @@ tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
         return NULL;
     }
 
-    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
-    t->tid = g_next_tid++;
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    t->tid = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
+    t->cpu_affinity = affinity;
+    t->current_cpu = target_cpu;
 
     if (name) {
         size_t len = strlen(name);
@@ -335,13 +466,8 @@ tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
     t->exit_code = 0;
     t->has_exited = false;
 
-    /* Setup initial stack frame to match switch_context restore sequence:
-     * switch_context pops: r15, r14, r13, r12, rbp, rbx, rflags, ret (rip)
-     * Total: 8 qwords = 64 bytes.
-     */
     uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);
-    stack_top = (uint8_t *)((uintptr_t)stack_top & ~0xFULL); /* 16-byte alignment */
-
+    stack_top = (uint8_t *)((uintptr_t)stack_top & ~0xFULL);
     stack_top -= sizeof(uint64_t) * 8;
     uint64_t *frame = (uint64_t *)stack_top;
 
@@ -356,10 +482,32 @@ tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
 
     t->rsp = (uint64_t)stack_top;
 
-    rflags = spin_lock_irqsave(&g_sched_lock);
-    runqueue_push_locked(t);
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[target_cpu].sched_lock);
+    if (!scheduler_cpus[target_cpu].runqueue_head) {
+        scheduler_cpus[target_cpu].runqueue_head = t;
+        scheduler_cpus[target_cpu].runqueue_tail = t;
+    } else {
+        scheduler_cpus[target_cpu].runqueue_tail->next = t;
+        scheduler_cpus[target_cpu].runqueue_tail = t;
+    }
+    spin_unlock_irqrestore(&scheduler_cpus[target_cpu].sched_lock, rflags);
+
+    if (target_cpu != cpu_current()->id) {
+        smp_send_resched(target_cpu);
+    }
     return t;
+}
+
+tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg) {
+    return thread_create_internal(cpu_current()->id, -1, name, entry, arg);
+}
+
+tcb_t *thread_create_on_cpu(size_t target_cpu, const char *name, void (*entry)(void *), void *arg) {
+    return thread_create_internal(target_cpu, (int)target_cpu, name, entry, arg);
+}
+
+tcb_t *thread_create_unbound_on_cpu(size_t target_cpu, const char *name, void (*entry)(void *), void *arg) {
+    return thread_create_internal(target_cpu, -1, name, entry, arg);
 }
 
 void thread_yield(void) {
@@ -370,15 +518,20 @@ void thread_yield(void) {
     tcb_t *old = g_current_thread;
     tcb_t *next = runqueue_pop_next_locked();
 
-    if (!next) {
-        /* If no ready threads, pick idle thread (unless current is already idle) */
-        if (!old->is_idle && g_idle_thread) {
-            next = g_idle_thread;
+    if (!next && g_total_sched_cpus > 1) {
+        spin_unlock_irqrestore(&g_sched_lock, rflags);
+        if (sched_steal_work(cpu_current()->id)) {
+            rflags = spin_lock_irqsave(&g_sched_lock);
+            next = runqueue_pop_next_locked();
         } else {
-            /* Keep running current thread */
-            spin_unlock_irqrestore(&g_sched_lock, rflags);
-            return;
+            rflags = spin_lock_irqsave(&g_sched_lock);
         }
+    }
+
+    if (!next) {
+        /* No other runnable threads: keep running current thread without context switch */
+        spin_unlock_irqrestore(&g_sched_lock, rflags);
+        return;
     }
 
     if (old->state == THREAD_RUNNING && !old->is_idle) {
@@ -419,6 +572,8 @@ void thread_yield(void) {
     cpu_current()->irq_depth = 0;
     switch_context(&old->rsp, next->rsp);
     cpu_current()->irq_depth = suspended_irq_depth;
+
+    sched_post_switch();
 
     /* Execution resumes here when old is switched back to.
      * Restore original caller interrupt state if interrupts were enabled before yield. */
@@ -461,6 +616,8 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
         cpu_current()->irq_depth = 0;
         switch_context(&old->rsp, next->rsp);
         cpu_current()->irq_depth = suspended_irq_depth;
+
+        sched_post_switch();
         if (flags & (1ULL << 9)) __asm__ volatile("sti" ::: "memory");
         /* Another reader may have consumed the event before we resumed. */
     }
@@ -491,16 +648,19 @@ void thread_exit(void) {
     tcb_t *curr = g_current_thread;
     curr->state = THREAD_TERMINATED;
 
-    /* Enqueue into dead list for reclamation */
-    curr->next = g_dead_threads;
-    g_dead_threads = curr;
+    /* Stash as zombie_thread on this CPU. It will be moved to dead_threads
+     * only AFTER the context switch to the next thread has completed. */
+    size_t cid = cpu_current()->id;
+    if (cid < MAX_DETECTED_CPUS) {
+        scheduler_cpus[cid].zombie_thread = curr;
+    }
 
     tcb_t *next = runqueue_pop_next_locked();
     if (!next) {
         if (g_idle_thread && curr != g_idle_thread) {
             next = g_idle_thread;
         } else {
-            serial_puts("[FATAL] All threads terminated; no runnable threads remaining!\n");
+            serial_raw_puts("[FATAL] All threads terminated; no runnable threads remaining!\n");
             for (;;) { __asm__ volatile("cli; hlt"); }
         }
     }
@@ -546,10 +706,130 @@ size_t sched_ready_count(void) {
 }
 
 uint64_t sched_get_active_stack_slots_mask(void) {
-    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
+    uint64_t rflags = spin_lock_irqsave(&g_kstack_lock);
     uint64_t mask = g_stack_slots_bitmap;
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    spin_unlock_irqrestore(&g_kstack_lock, rflags);
     return mask;
+}
+
+size_t sched_cpu_ready_count(size_t cpu_id) {
+    if (cpu_id >= MAX_DETECTED_CPUS) return 0;
+    uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[cpu_id].sched_lock);
+    size_t count = 0;
+    tcb_t *curr = scheduler_cpus[cpu_id].runqueue_head;
+    while (curr) {
+        count++;
+        curr = curr->next;
+    }
+    spin_unlock_irqrestore(&scheduler_cpus[cpu_id].sched_lock, rflags);
+    return count;
+}
+
+uint64_t sched_get_stolen_count(size_t cpu_id) {
+    if (cpu_id >= MAX_DETECTED_CPUS) return 0;
+    return __atomic_load_n(&scheduler_cpus[cpu_id].stolen_tasks_count, __ATOMIC_RELAXED);
+}
+
+void sched_init_aps(size_t total_cpus) {
+    if (total_cpus > MAX_DETECTED_CPUS) total_cpus = MAX_DETECTED_CPUS;
+    g_total_sched_cpus = total_cpus;
+
+    for (size_t i = 1; i < total_cpus; i++) {
+        scheduler_cpus[i].sched_lock = (spinlock_t)SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, g_sched_lock_names[i]);
+        scheduler_cpus[i].preemption_enabled = false;
+        scheduler_cpus[i].runqueue_head = NULL;
+        scheduler_cpus[i].runqueue_tail = NULL;
+        scheduler_cpus[i].blocked_threads = NULL;
+        scheduler_cpus[i].dead_threads = NULL;
+        scheduler_cpus[i].stolen_tasks_count = 0;
+
+        /* Pre-allocate idle thread for AP on CPU 0 */
+        tcb_t *idle = (tcb_t *)kmalloc(sizeof(tcb_t));
+        if (!idle) {
+            serial_puts("[FATAL] sched_init_aps: failed to kmalloc idle tcb\n");
+            for (;;) __asm__ volatile("cli; hlt");
+        }
+        memset(idle, 0, sizeof(tcb_t));
+
+        uintptr_t guard_virt = 0, stack_base = 0;
+        size_t stack_size = 0;
+        int slot = kstack_alloc(&guard_virt, &stack_base, &stack_size);
+        if (slot < 0) {
+            serial_puts("[FATAL] sched_init_aps: failed to allocate AP idle stack\n");
+            for (;;) __asm__ volatile("cli; hlt");
+        }
+
+        idle->tid = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
+        memcpy(idle->name, "idle", 5);
+        idle->state = THREAD_RUNNING;
+        idle->stack_slot = slot;
+        idle->kstack_guard = guard_virt;
+        idle->kstack_base = stack_base;
+        idle->kstack_size = stack_size;
+        idle->ticks_remaining = DEFAULT_QUANTUM_TICKS;
+        idle->is_idle = true;
+        idle->cr3 = vmm_get_kernel_pml4();
+        idle->pml4_virt = vmm_get_kernel_pml4_virt();
+        idle->cpu_affinity = (int)i;
+        idle->current_cpu = i;
+
+        /* Setup stack frame for idle entry */
+        uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);
+        stack_top = (uint8_t *)((uintptr_t)stack_top & ~0xFULL);
+        stack_top -= sizeof(uint64_t) * 8;
+        uint64_t *frame = (uint64_t *)stack_top;
+        frame[0] = 0;                           /* r15 */
+        frame[1] = 0;                           /* r14 */
+        frame[2] = 0;                           /* r13 -> arg */
+        frame[3] = (uint64_t)idle_thread_entry; /* r12 -> entry */
+        frame[4] = 0;                           /* rbp */
+        frame[5] = 0;                           /* rbx */
+        frame[6] = 0x202;                       /* RFLAGS with IF=1 */
+        frame[7] = (uint64_t)thread_trampoline; /* rip */
+        idle->rsp = (uint64_t)stack_top;
+
+        scheduler_cpus[i].idle_thread = idle;
+    }
+}
+
+_Noreturn void sched_ap_start(size_t cpu_id) {
+    if (cpu_id >= MAX_DETECTED_CPUS || !scheduler_cpus[cpu_id].idle_thread) {
+        serial_puts("[FATAL] sched_ap_start: invalid AP CPU ID or uninitialized idle thread\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+
+    tcb_t *idle = scheduler_cpus[cpu_id].idle_thread;
+    cpu_locals[cpu_id].current_thread = idle;
+
+    /* Set up AP TSS.RSP0 */
+    gdt_set_tss_rsp0(idle->kstack_base + idle->kstack_size);
+
+    /* Switch to kernel PML4 */
+    vmm_switch_pml4(vmm_get_kernel_pml4());
+
+    /* Start local LAPIC timer using calibrated count */
+    lapic_timer_start_ap();
+
+    /* Enable preemption on this AP */
+    scheduler_cpus[cpu_id].preemption_enabled = true;
+
+    /* Switch to the idle thread stack and start executing idle_thread_entry with interrupts enabled */
+    __asm__ volatile(
+        "mov %0, %%rsp\n\t"
+        "pop %%r15\n\t"
+        "pop %%r14\n\t"
+        "pop %%r13\n\t"
+        "pop %%r12\n\t"
+        "pop %%rbp\n\t"
+        "pop %%rbx\n\t"
+        "popfq\n\t"
+        "ret\n\t"
+        :
+        : "r"(idle->rsp)
+        : "memory"
+    );
+
+    __builtin_unreachable();
 }
 
 void sched_enable_preemption(void) {
@@ -571,11 +851,9 @@ void sched_on_timer_tick(void) {
 
     g_current_thread->total_ticks++;
 
-    /* If currently in idle thread and work arrived in runqueue: preempt idle */
+    /* If currently in idle thread, yield to see if work arrived or can be stolen */
     if (g_current_thread->is_idle) {
-        if (g_runqueue_head != NULL) {
-            thread_yield();
-        }
+        thread_yield();
         return;
     }
 
@@ -583,12 +861,10 @@ void sched_on_timer_tick(void) {
     if (--g_current_thread->ticks_remaining <= 0) {
         g_current_thread->ticks_remaining = DEFAULT_QUANTUM_TICKS;
 
-        /* If other threads are ready to run: preempt! */
-        if (g_runqueue_head != NULL) {
-            g_current_thread->preempt_count++;
-            g_sched_timer_preemptions++;
-            thread_yield();
-        }
+        /* Preempt! */
+        g_current_thread->preempt_count++;
+        g_sched_timer_preemptions++;
+        thread_yield();
     }
 }
 
@@ -778,6 +1054,8 @@ static tcb_t *process_spawn_internal(const char *name, const void *elf_data, siz
     p->is_user = true;
     p->exit_code = 0;
     p->has_exited = false;
+    p->current_cpu = cpu_current()->id;
+    p->cpu_affinity = (int)cpu_current()->id; /* Pin child process to parent CPU in Piece 4 */
 
     /* 5. Set up initial kernel stack frame for first context switch to user_process_trampoline */
     uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);

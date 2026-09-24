@@ -142,6 +142,14 @@ test-smp-discovery: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 test-smp-locks: $(BOOTABLE_ISO)
 	@python3 scripts/test_smp_locks.py
 
+.PHONY: test-smp-sched
+test-smp-sched: $(BOOTABLE_ISO)
+	@python3 scripts/test_smp_sched.py
+
+.PHONY: test-smp-ipi
+test-smp-ipi: $(BOOTABLE_ISO)
+	@python3 scripts/test_smp_ipi.py
+
 test-ext2:
 	@python3 scripts/test_ext2.py
 

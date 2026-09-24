@@ -6,6 +6,7 @@ section .text
 global switch_context
 global thread_trampoline
 extern thread_exit
+extern sched_post_switch
 
 ; =============================================================================
 ; void switch_context(uint64_t *old_rsp, uint64_t new_rsp);
@@ -49,6 +50,8 @@ switch_context:
 ;   RSP is 16-byte aligned (post 'ret' from switch_context)
 ; =============================================================================
 thread_trampoline:
+    ; Reclaim any zombie thread from previous context now that we are on the new stack
+    call sched_post_switch
     ; RDI = first argument in System V ABI
     mov rdi, r13
     ; Call thread entry point: pushes 8-byte return address, so entry() sees RSP % 16 == 8
@@ -70,6 +73,7 @@ thread_trampoline:
 ; =============================================================================
 global user_process_trampoline
 user_process_trampoline:
+    call sched_post_switch
     ; Set user data segment selectors (DS, ES, FS, GS)
     mov ax, 0x1B    ; GDT_USER_DATA | 3 (RPL=3)
     mov ds, ax

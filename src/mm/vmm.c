@@ -4,6 +4,9 @@
 #include "string.h"
 #include "gdt.h"
 #include "spinlock.h"
+#include "smp.h"
+#include "percpu.h"
+#include "thread.h"
 
 extern uint8_t __kernel_start[];
 extern uint8_t __text_start[];
@@ -144,6 +147,17 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
     if (pml4_phys == (vmm_get_current_pml4() & PTE_ADDR_MASK)) {
         return VMM_ERR_INVALID_ADDR;
     }
+
+    /* SMP Invariant: Ensure no other online core is running in this address space */
+    for (size_t i = 0; i < smp_get_cpu_count(); i++) {
+        if (cpu_locals[i].current_thread &&
+            (cpu_locals[i].current_thread->cr3 & PTE_ADDR_MASK) == pml4_phys) {
+            return VMM_ERR_INVALID_ADDR;
+        }
+    }
+
+    /* Synchronously invalidate TLB entries on any cores that cached this PML4 */
+    smp_tlb_shootdown(0, pml4_phys);
 
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
@@ -325,6 +339,13 @@ int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     int res = vmm_unmap_page_unlocked(pml4_virt, virt_addr);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    if (res == VMM_OK) {
+        uintptr_t cr3 = 0;
+        if (pml4_virt && pml4_virt != vmm_get_kernel_pml4_virt()) {
+            cr3 = (uintptr_t)pml4_virt - hhdm_offset;
+        }
+        smp_tlb_shootdown(virt_addr, cr3);
+    }
     return res;
 }
 

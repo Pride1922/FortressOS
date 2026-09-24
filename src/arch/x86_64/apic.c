@@ -42,6 +42,29 @@ void lapic_eoi(void) {
     lapic_write(APIC_REG_EOI, 0);
 }
 
+bool lapic_wait_icr_idle(void) {
+    for (uint32_t spins = 0; spins < 1000000; spins++) {
+        if (!(lapic_read(APIC_REG_ICR_LOW) & APIC_ICR_BUSY)) {
+            return true;
+        }
+        __asm__ volatile("pause" ::: "memory");
+    }
+    return false;
+}
+
+bool lapic_send_ipi(uint8_t dest_lapic_id, uint8_t vector) {
+    if (!lapic_wait_icr_idle()) return false;
+    lapic_write(APIC_REG_ICR_HIGH, ((uint32_t)dest_lapic_id) << 24);
+    lapic_write(APIC_REG_ICR_LOW, (uint32_t)vector | APIC_ICR_ASSERT);
+    return lapic_wait_icr_idle();
+}
+
+bool lapic_send_ipi_all_excluding_self(uint8_t vector) {
+    if (!lapic_wait_icr_idle()) return false;
+    lapic_write(APIC_REG_ICR_LOW, (uint32_t)vector | APIC_ICR_ASSERT | APIC_ICR_SHORTHAND_EXC);
+    return lapic_wait_icr_idle();
+}
+
 /* Handler only updates state; single-owner EOI is dispatched by IDT dispatcher */
 static void apic_spurious_handler(interrupt_frame_t *frame) {
     (void)frame;
@@ -221,6 +244,11 @@ bool apic_timer_init(uint32_t target_hz) {
     return true;
 }
 void apic_timer_start(void) {
+    lapic_write(APIC_REG_TIMER_DIV, APIC_TIMER_DIV_16);
+    lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_PERIODIC | APIC_TIMER_VECTOR);
+    lapic_write(APIC_REG_TIMER_INITCNT, g_timer_init_count);
+}
+void lapic_timer_start_ap(void) {
     lapic_write(APIC_REG_TIMER_DIV, APIC_TIMER_DIV_16);
     lapic_write(APIC_REG_LVT_TIMER, APIC_TIMER_PERIODIC | APIC_TIMER_VECTOR);
     lapic_write(APIC_REG_TIMER_INITCNT, g_timer_init_count);

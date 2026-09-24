@@ -8,6 +8,7 @@
 #include "msr.h"
 #include "apic.h"
 #include "spinlock.h"
+#include "thread.h"
 
 /* SMP_DESIGN.md SM2 note: the original draft assumed a hand-rolled
  * INIT-SIPI-SIPI trampoline in identity-mapped sub-1MiB memory. Limine
@@ -36,6 +37,8 @@ static acpi_madt_info_t ap_madt; /* BSP snapshot, immutable before release. */
 static bool g_initialized;
 static size_t          g_total_cpu_count = 1;
 static uint32_t        g_bsp_lapic_id = 0;
+
+volatile uint32_t g_smp_sched_active = 0;
 
 /* Static lifetime, no AP allocator calls. All guards are removed by BSP
  * before release; APs never edit mappings or acquire subsystem locks. */
@@ -119,8 +122,20 @@ void smp_ap_local_entry(size_t id) {
         }
     }
 
+    while (__atomic_load_n(&g_smp_sched_active, __ATOMIC_ACQUIRE) == 0) {
+        __asm__ volatile("pause");
+    }
+    if (__atomic_load_n(&g_smp_sched_active, __ATOMIC_ACQUIRE) == 1) {
+        sched_ap_start(id);
+    }
+
 park:
     for (;;) __asm__ volatile("cli; hlt");
+}
+
+void smp_start_schedulers(void) {
+    sched_init_aps(g_total_cpu_count);
+    __atomic_store_n(&g_smp_sched_active, 1, __ATOMIC_RELEASE);
 }
 
 /* Read-only debugger checkpoint after all AP-local probes. */
@@ -254,6 +269,154 @@ bool smp_run_lock_tests(void) {
     return true;
 }
 
+/* =========================================================================
+ * SMP Piece 5: Cross-Core Coordination & IPIs (SMP_DESIGN.md, SM14-SM15)
+ * ========================================================================= */
+
+volatile uint64_t g_ipi_tlb_count[MAX_DETECTED_CPUS] = {0};
+volatile uint64_t g_ipi_resched_count[MAX_DETECTED_CPUS] = {0};
+
+typedef struct {
+    spinlock_t lock;
+    volatile uintptr_t virt_addr;
+    volatile uintptr_t cr3;
+    volatile uint32_t ack_mask;
+} smp_tlb_shootdown_t;
+
+static smp_tlb_shootdown_t g_smp_tlb_shootdown = {
+    .lock = SPINLOCK_RANKED(3, "smp-tlb"),
+    .virt_addr = 0,
+    .cr3 = 0,
+    .ack_mask = 0
+};
+
+static void smp_ipi_tlb_handler(interrupt_frame_t *frame) {
+    (void)frame;
+    cpu_local_t *cpu = cpu_current();
+    size_t cid = cpu ? cpu->id : 0;
+    if (cid < MAX_DETECTED_CPUS) {
+        g_ipi_tlb_count[cid]++;
+    }
+    uintptr_t target_cr3 = g_smp_tlb_shootdown.cr3;
+    uintptr_t target_va  = g_smp_tlb_shootdown.virt_addr;
+    if (target_cr3 == 0 || target_cr3 == (vmm_get_current_pml4() & PTE_ADDR_MASK)) {
+        if (target_va != 0) {
+            __asm__ volatile("invlpg (%0)" : : "r"(target_va) : "memory");
+        } else {
+            __asm__ volatile("mov %0, %%cr3" : : "r"(vmm_get_current_pml4()) : "memory");
+        }
+    }
+    __atomic_fetch_and(&g_smp_tlb_shootdown.ack_mask, ~(1U << cid), __ATOMIC_RELEASE);
+}
+
+static void smp_ipi_resched_handler(interrupt_frame_t *frame) {
+    (void)frame;
+    cpu_local_t *cpu = cpu_current();
+    size_t cid = cpu ? cpu->id : 0;
+    if (cid < MAX_DETECTED_CPUS) {
+        g_ipi_resched_count[cid]++;
+    }
+}
+
+static void smp_ipi_panic_handler(interrupt_frame_t *frame) {
+    (void)frame;
+    for (;;) {
+        __asm__ volatile("cli; hlt" ::: "memory");
+    }
+}
+
+void smp_ipi_init(void) {
+    idt_register_hardware_handler(IPI_VECTOR_TLB, smp_ipi_tlb_handler);
+    idt_register_hardware_handler(IPI_VECTOR_RESCHED, smp_ipi_resched_handler);
+    idt_register_hardware_handler(IPI_VECTOR_PANIC, smp_ipi_panic_handler);
+}
+
+void smp_tlb_shootdown(uintptr_t virt_addr, uintptr_t cr3) {
+    if (g_total_cpu_count <= 1) {
+        if (virt_addr != 0) {
+            __asm__ volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
+        } else {
+            __asm__ volatile("mov %0, %%cr3" : : "r"(vmm_get_current_pml4()) : "memory");
+        }
+        return;
+    }
+
+    uint64_t rflags;
+    __asm__ volatile("pushfq; pop %0" : "=r"(rflags) : : "memory");
+    bool irq_was_enabled = (rflags & (1ULL << 9)) != 0;
+
+    for (;;) {
+        __asm__ volatile("cli" ::: "memory");
+        if (!__atomic_test_and_set(&g_smp_tlb_shootdown.lock.lock, __ATOMIC_ACQUIRE)) {
+            spin_debug_acquire(&g_smp_tlb_shootdown.lock);
+            g_smp_tlb_shootdown.lock.acquire_count++;
+            break;
+        }
+        if (irq_was_enabled) {
+            __asm__ volatile("sti; pause; cli" ::: "memory");
+        } else {
+            __asm__ volatile("pause" ::: "memory");
+        }
+    }
+
+    uint32_t my_id = (uint32_t)cpu_current()->id;
+    uint32_t target_mask = 0;
+    for (size_t i = 0; i < g_total_cpu_count; i++) {
+        if (i != my_id && __atomic_load_n(&cpu_locals[i].online, __ATOMIC_ACQUIRE)) {
+            target_mask |= (1U << i);
+        }
+    }
+
+    if (target_mask != 0) {
+        g_smp_tlb_shootdown.virt_addr = virt_addr;
+        g_smp_tlb_shootdown.cr3 = cr3;
+        __atomic_store_n(&g_smp_tlb_shootdown.ack_mask, target_mask, __ATOMIC_RELEASE);
+
+        lapic_send_ipi_all_excluding_self(IPI_VECTOR_TLB);
+
+        if (virt_addr != 0) {
+            __asm__ volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
+        } else {
+            __asm__ volatile("mov %0, %%cr3" : : "r"(vmm_get_current_pml4()) : "memory");
+        }
+
+        uint64_t iters = 0;
+        while (__atomic_load_n(&g_smp_tlb_shootdown.ack_mask, __ATOMIC_ACQUIRE) != 0) {
+            __asm__ volatile("pause" ::: "memory");
+            iters++;
+            if (iters > 50000000ULL) {
+                serial_raw_puts("[WARN] smp_tlb_shootdown: ACK timeout\n");
+                break;
+            }
+        }
+    } else {
+        if (virt_addr != 0) {
+            __asm__ volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
+        } else {
+            __asm__ volatile("mov %0, %%cr3" : : "r"(vmm_get_current_pml4()) : "memory");
+        }
+    }
+
+    spin_debug_release(&g_smp_tlb_shootdown.lock);
+    __atomic_clear(&g_smp_tlb_shootdown.lock.lock, __ATOMIC_RELEASE);
+
+    if (irq_was_enabled) {
+        __asm__ volatile("sti" ::: "memory");
+    }
+}
+
+void smp_send_resched(size_t cpu_id) {
+    if (cpu_id >= MAX_DETECTED_CPUS || cpu_id == cpu_current()->id) return;
+    if (!__atomic_load_n(&cpu_locals[cpu_id].online, __ATOMIC_ACQUIRE)) return;
+    uint8_t lapic_id = (uint8_t)cpu_locals[cpu_id].lapic_id;
+    lapic_send_ipi(lapic_id, IPI_VECTOR_RESCHED);
+}
+
+void smp_send_panic(void) {
+    if (g_smp_lock_test.test_mode == SMP_TEST_MODE_INVERSION) return;
+    lapic_send_ipi_all_excluding_self(IPI_VECTOR_PANIC);
+}
+
 size_t smp_init(const acpi_madt_info_t *madt_info) {
     if (g_initialized) return g_total_cpu_count - 1;
     g_initialized = true;
@@ -345,6 +508,7 @@ size_t smp_init(const acpi_madt_info_t *madt_info) {
         aps[id - 1] = cpu;
     }
     ap_madt = *madt_info;
+    smp_ipi_init();
     for (size_t id = 1; id <= ap_count; id++) {
         struct limine_smp_info *cpu = aps[id - 1];
         __atomic_store_n(&cpu->goto_address, smp_ap_entry, __ATOMIC_RELEASE);

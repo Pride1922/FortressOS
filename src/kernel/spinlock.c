@@ -81,6 +81,8 @@ static void spin_fatal(const char *reason, spinlock_t *attempted) {
     serial_raw_puts("\n");
     print_held_chain(cpu);
     __atomic_store_n(&cpu->lock_panic, 1, __ATOMIC_RELEASE);
+    extern void smp_send_panic(void);
+    smp_send_panic();
     for (;;) __asm__ volatile("cli; hlt" ::: "memory");
 }
 

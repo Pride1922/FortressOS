@@ -76,6 +76,25 @@ static inline uint64_t spin_lock_irqsave(spinlock_t *lock) {
     return rflags;
 }
 
+static inline void spin_lock_noirq(spinlock_t *lock) {
+    spin_debug_acquire(lock);
+    lock->acquire_count++;
+    if (__atomic_test_and_set(&lock->lock, __ATOMIC_ACQUIRE)) {
+        lock->contention_count++;
+        uint64_t iters = 1;
+        while (__atomic_test_and_set(&lock->lock, __ATOMIC_ACQUIRE)) {
+            __asm__ volatile("pause");
+            iters++;
+            if (iters == SPINLOCK_WARN_THRESHOLD) {
+                spin_debug_warn_high_contention(lock, iters);
+            }
+        }
+        if (iters > lock->max_spin_iters) {
+            lock->max_spin_iters = iters;
+        }
+    }
+}
+
 static inline void spin_unlock_noirq(spinlock_t *lock) {
     spin_debug_release(lock);
     __atomic_clear(&lock->lock, __ATOMIC_RELEASE);

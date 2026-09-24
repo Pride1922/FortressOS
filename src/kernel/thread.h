@@ -66,6 +66,8 @@ typedef struct tcb {
 
     struct tcb    *next;             /* Intrusive run queue link */
     const void *wait_channel; /* Only on blocked list while sleeping. */
+    int            cpu_affinity;     /* Target CPU affinity: -1 for any, or 0..MAX-1 */
+    size_t         current_cpu;      /* CPU ID where thread is currently queued/running */
 } tcb_t;
 
 struct file;
@@ -76,7 +78,11 @@ void         fd_close_all(tcb_t *proc);
 
 /* Public Scheduler & Thread API */
 void   sched_init(void);
+void   sched_init_aps(size_t total_cpus);
+_Noreturn void sched_ap_start(size_t cpu_id);
 tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg);
+tcb_t *thread_create_on_cpu(size_t target_cpu, const char *name, void (*entry)(void *), void *arg);
+tcb_t *thread_create_unbound_on_cpu(size_t target_cpu, const char *name, void (*entry)(void *), void *arg);
 void   thread_yield(void);
 /* Bootstrap CPU only. Predicate runs under sched lock with IRQs disabled;
  * it must neither block nor acquire locks. Publish events before waking. */
@@ -86,6 +92,10 @@ void   thread_exit(void);
 void   sched_reap_dead(void);
 tcb_t *thread_current(void);
 size_t sched_ready_count(void);
+size_t sched_cpu_ready_count(size_t cpu_id);
+uint64_t sched_get_stolen_count(size_t cpu_id);
+void sched_lock_pair(spinlock_t *a, spinlock_t *b);
+void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
 
 /* Process Lifecycle Management */
 #define MAX_ELF_FILE_SIZE (4ULL * 1024 * 1024)

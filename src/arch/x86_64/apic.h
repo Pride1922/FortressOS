@@ -53,6 +53,18 @@ bool lapic_init_ap(const acpi_madt_info_t *info);
 #define IA32_APIC_BASE_MSR_ENABLE (1ULL << 11)
 #define IA32_APIC_BASE_MSR_X2APIC (1ULL << 10)
 
+/* IPI Vectors */
+#define IPI_VECTOR_TLB          0xFC  /* Vector 252: Synchronous TLB shootdown */
+#define IPI_VECTOR_RESCHED      0xFD  /* Vector 253: Remote CPU wake/reschedule */
+#define IPI_VECTOR_PANIC        0xFE  /* Vector 254: Multi-core emergency freeze */
+
+/* ICR Configuration Flags */
+#define APIC_ICR_BUSY           (1U << 12)
+#define APIC_ICR_ASSERT         (1U << 14)
+#define APIC_ICR_SHORTHAND_SELF (1U << 18)
+#define APIC_ICR_SHORTHAND_ALL  (2U << 18)
+#define APIC_ICR_SHORTHAND_EXC  (3U << 18)
+
 /* LAPIC Public API */
 bool     lapic_is_supported(void);
 bool     lapic_init(uintptr_t lapic_phys_addr);
@@ -60,9 +72,15 @@ uint32_t lapic_read(uint32_t reg);
 void     lapic_write(uint32_t reg, uint32_t val);
 void     lapic_eoi(void);
 
+/* IPI Public API */
+bool     lapic_wait_icr_idle(void);
+bool     lapic_send_ipi(uint8_t dest_lapic_id, uint8_t vector);
+bool     lapic_send_ipi_all_excluding_self(uint8_t vector);
+
 /* APIC Timer Public API */
 bool     apic_timer_init(uint32_t target_hz);
 void apic_timer_start(void);
+void lapic_timer_start_ap(void);
 void apic_timer_stop(void);
 bool apic_timer_verify(void (*work)(void));
 uint64_t apic_timer_get_ticks(void);

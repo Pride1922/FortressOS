@@ -44,4 +44,16 @@ extern smp_lock_test_mailbox_t g_smp_lock_test;
 void smp_set_test_mode(uint32_t mode);
 bool smp_run_lock_tests(void);
 
+/* SMP Piece 4: Scheduler Bringup */
+void smp_start_schedulers(void);
+
+/* SMP Piece 5: Cross-Core Coordination & IPIs */
+void smp_ipi_init(void);
+void smp_tlb_shootdown(uintptr_t virt_addr, uintptr_t cr3);
+void smp_send_resched(size_t cpu_id);
+void smp_send_panic(void);
+
+extern volatile uint64_t g_ipi_tlb_count[MAX_DETECTED_CPUS];
+extern volatile uint64_t g_ipi_resched_count[MAX_DETECTED_CPUS];
+
 #endif /* FORTRESS_SMP_H */
