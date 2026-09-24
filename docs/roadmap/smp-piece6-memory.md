@@ -2,7 +2,8 @@
 
 Status (2026-09-24): **6A implemented; user reports host ASan/UBSan and
 2 GiB QEMU matrix and BIOS/UEFI 8 GiB/8 CPU cases PASS.
-Other RAM configurations, remaining regressions and Dell 6A acceptance pending.**
+Dell photo confirms both 6A cleanup checks and all five high-memory probes.
+Other RAM configurations and remaining integration checks are not yet reported.**
 6B–6D remain planned. This is not acceptance of Piece 6.
 Approved design: [implementation plan](smp-piece6-plan.md).
 
@@ -79,7 +80,8 @@ explicit USB policy. These checks do not claim later concurrent memory stress.
 | BIOS/UEFI 2 GiB, 1/4/8 CPUs | PASS, user-supplied runner output (see below) |
 | BIOS/UEFI 8 GiB, 8 CPUs | PASS, user-supplied runner output; command below |
 | Other RAM configurations and regressions | Pending user execution |
-| Dell 5590 | User reports Piece 5 IPI checks PASS with 7 AP acknowledgments; excerpt lacks 6A memory markers, so 6A hardware acceptance remains pending |
+| Dell 5590 memory checks | PASS: supplied photo shows early ceiling/unlock rejection, kernel CR3 activation, all five full-page readbacks and post-unlock exact cleanup |
+| Dell later integration | Earlier Piece 5 excerpt reports all IPI checks PASS with 7 AP acknowledgments; same-boot shell/storage and AP-readiness output not shown in memory photo |
 
 User-reported `make test-smp-memory-boot` results for the 6A implementation:
 
@@ -102,8 +104,33 @@ this configuration; it does not cover 16 or 30 GiB.
 Dell excerpt supplied alongside those results: unicast delivery, broadcast
 shootdown (7 AP acknowledgments), remote wake and VMM unmap/barrier all PASS,
 ending with Piece 5 completion. This is additional physical Piece 5 regression
-evidence. It does not show `smp_memory_test=boot` activation, early ceiling
-checks, full-page high probes or exact cleanup, which appear earlier in boot.
+evidence. A subsequent photo supplies the earlier memory checks below.
+
+### Dell 6A photo evidence
+
+User-supplied photo `codex-clipboard-67399e46-184a-4d99-b6b0-5590241bbca6.png`
+(reported Dell bare-metal run) visibly records:
+
+- PASS: boot ceiling, early unlock rejection, exact cleanup.
+- Kernel CR3 switch to physical root `0x2000` survived; high-memory allocation
+  unlocked afterward in the log.
+- PASS: full-page HHDM readbacks at the following minimum/actual addresses:
+
+| Threshold | Minimum physical address | Allocated physical address |
+| --- | --- | --- |
+| 1 GiB | `0x40000000` | `0x40000000` |
+| 2 GiB | `0x80000000` | `0x80000000` |
+| 4 GiB | `0x100000000` | `0x100000000` |
+| 16 GiB | `0x400000000` | `0x400000000` |
+| 30 GiB | `0x780000000` | `0x780000000` |
+
+- PASS: kernel CR3, high-memory unlock, exact cleanup.
+- Execution continued through the breakpoint recovery check into VMM tests.
+
+This confirms the photographed 6A boot-memory assertions. The command line
+is cropped; test execution itself establishes that the mode was enabled.
+The photo does not show later AP readiness, shell/storage operation or the
+unreported regression suites, and does not establish completion of Piece 6.
 
 Host evidence: user ran `wsl -d Ubuntu-24.04 -- make test-pmm-boot-host`
 and supplied this successful result:
@@ -116,9 +143,10 @@ The initial compilation failed because `-Isrc/include` shadowed the hosted
 `<string.h>` with the kernel header. The runner now uses `-iquote` for project
 and shim headers; the successful rerun supersedes that compilation failure.
 
-Source: user-pasted terminal summary; raw serial logs were not independently
-reviewed for this update. This establishes the reported 2 GiB matrix and
-8 GiB cases, not 16/30 GiB probes or Dell 6A acceptance. No agent-run tests.
+Sources: user-pasted terminal summaries and the reviewed Dell photo above;
+complete raw serial logs were not independently reviewed. QEMU evidence is
+limited to the reported 2/8 GiB cases; the Dell photo separately establishes
+the 16/30 GiB readbacks. No agent-run tests.
 
 The agent writes code and tooling; the user runs them. Both review supplied
 evidence before recording acceptance. Historical Phase 9H hardware evidence
