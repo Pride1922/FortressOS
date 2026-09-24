@@ -68,11 +68,91 @@ changes (Pieces 3–4) can be CPU-aware.
 
 The current lock ranks and single-CPU assumptions (L1–L4, AGENTS.md §4;
 PROTECTED.md) must be re-derived for concurrent CPUs, not silently dropped.
+Single-CPU global lock tracking (`held[16]` and `depth` in `spinlock.c`) is
+migrated into `cpu_local_t`, making rank enforcement and recursion detection
+independent per CPU.
 
 | ID | Binding invariant | How to check |
 | --- | --- | --- |
-| SM10 | Lock ranks L1–L4 gain an explicit cross-CPU exception list; the current single-CPU assumption embedded in L2/L3 (`spin_debug_assert_unheld`, bootstrap-CPU-only tracking) must be re-derived for N CPUs, not deleted. | Every current "bootstrap-CPU-only" comment or check in spinlock code must have a stated replacement before this piece is considered done. |
-| SM11 | Spinlocks use true cross-core atomic test-and-set/exchange, not IRQ-disable alone; rank-ordering enforcement (`SPINLOCK_RANKED`) becomes cross-CPU aware. | Confirm the lock implementation uses `lock`-prefixed atomics; run a two-CPU contention test and verify rank-violation detection still panics correctly when two different CPUs violate ordering against each other. |
+| SM10 | Lock tracking is per-CPU: each CPU tracks its own held stack in `cpu_local_t` (`held[16]`, `lock_depth`). The legacy single-CPU global tracker is completely removed. | Inspect `spinlock.c` and `percpu.h`; verify all tracking accesses resolve via `cpu_current()`. Ensure no global tracker state remains. |
+| SM11 | Spinlocks use true cross-core atomic acquire/release (`__atomic_test_and_set` / `lock bts` with `pause` backoff), not IRQ-disable alone. Rank-ordering enforcement strictly prohibits acquiring equal or lower ranks on the same CPU, with an explicit exception for classified scheduler locks (SM11a). | Confirm atomics use bus-locked instructions; verify that two CPUs concurrently acquiring the same lock achieve mutual exclusion without missed updates. |
+| SM11a | Classified lock types: `spinlock_t` gains a `kind` field (`LOCK_KIND_ORDINARY = 0`, `LOCK_KIND_SCHED = 1`). A CPU holding a scheduler lock may only acquire a second scheduler lock if addresses/CPUs are strictly ordered (ascending order), preventing work-stealing deadlocks. All other equal-rank or descending-rank acquisitions panic. | Confirm `SPINLOCK_RANKED` initializes `kind` and `can_acquire()` checks `kind` before permitting same-rank acquisition. |
+| SM11b | Dedicated AP panic path: rank violations on an AP call `spin_panic_ap()`, which writes diagnostic state (AP id, attempted lock name/rank, and the local held stack) exclusively to raw UART (`serial_raw_puts`). It never touches console locks, dmesg buffers, or other CPUs' states, and halts only the offending AP (`cli; hlt`). | Induce a deliberate rank inversion on AP 1; confirm serial outputs the fatal diagnostic, AP 1 halts, and the BSP continues running without hanging or deadlocking. |
+| SM11c | AP 1 test dispatch scoping: Piece 3 verification is restricted to BSP + AP 1. APs 2..N remain parked with `cli; hlt` and interrupts disabled, preserving Piece 2's verified state. AP 1 executes synchronous test routines during bring-up before parking. | Audit AP release logic; confirm APs 2..N do not spin or execute test routines and go straight to `cli; hlt`. |
+
+### Implementation and Contracts
+
+1. **Per-CPU Lock State:**
+   - `cpu_local_t` in `percpu.h` embeds:
+     - `spinlock_t *held_locks[16];`
+     - `uint32_t lock_depth;`
+     - `uint32_t lock_panic;`
+   - Maximum nesting depth is bounded to 16. `record_acquire` contains a defensive guard: if `lock_depth >= 16`, it fails immediately rather than overflowing.
+
+2. **Lock Classification (`kind`) & Multi-Scheduler Nesting:**
+   - `spinlock_t` definition:
+     ```c
+     typedef struct {
+         volatile uint32_t lock;
+         uint8_t rank;
+         uint8_t kind; /* LOCK_KIND_ORDINARY (0) or LOCK_KIND_SCHED (1) */
+         const char *name;
+         uint64_t acquire_count;
+         uint64_t contention_count;
+         uint64_t max_spin_iters;
+     } spinlock_t;
+     ```
+   - Same-rank acquisition is rejected unless:
+     `held[i]->kind == LOCK_KIND_SCHED && lock->kind == LOCK_KIND_SCHED && (uintptr_t)held[i] < (uintptr_t)lock`.
+
+3. **Debugging Assertions & Diagnostics:**
+   - `spin_debug_assert_unheld(void)`: Asserts `cpu_current()->lock_depth == 0` (used at context-switch sites).
+   - `spin_debug_assert_held(spinlock_t *lock)`: Asserts `lock` is currently in `cpu_current()->held_locks[0 .. lock_depth-1]`.
+   - On rank or reentrancy violation, the diagnostic prints:
+     - CPU id
+     - Attempted lock name and rank
+     - Full chain of currently held locks (`held[0] -> held[1] -> ...`)
+     - Reason for failure
+
+4. **AP Test Execution Protocol:**
+   - During boot when test mode is active, AP 1 completes its local setup and checks a test mailbox before final parking.
+   - Synchronous coordination with BSP verifies:
+     - High contention under true concurrent execution (concurrent increments to a shared counter under a test spinlock, asserting exact expected total).
+     - Per-CPU lock tracker isolation (AP 1 holding rank 2 while BSP holds rank 1).
+     - AP rank-inversion trap triggering `spin_panic_ap` without affecting BSP.
+   - After testing completes, AP 1 enters `park: for (;;) __asm__ volatile("cli; hlt");`.
+   - APs 2..N always jump directly to `park`.
+
+5. **Compilation Policy:**
+   - Lock discipline checks and assertions are **always-on** in all kernel builds. The overhead (~30 cycles on uncontended paths) is negligible compared to cache-line synchronization, and invariant validation remains essential for kernel stability.
+
+6. **Contention Telemetry:**
+   - `acquire_count`, `contention_count`, and `max_spin_iters` in `spinlock_t` provide empirical data on lock pressure.
+   - A spin iteration high-water mark logs a warning if spinning exceeds a calibrated threshold (e.g. 1,000,000 iterations), aiding in early livelock detection.
+
+### Explicitly Out of Scope for Piece 3
+
+- **No IPIs or TLB shootdown** (Piece 5).
+- **No multi-CPU scheduling or work-stealing execution** (Piece 4).
+- **No concurrent PMM or VMM frame/page allocation** (Piece 6).
+- **No unmasking of external interrupts on APs** (APs maintain IF=0).
+- **No NUMA optimizations.**
+
+### Verification and Acceptance Criteria
+
+- **QEMU (BIOS & UEFI, 1, 4, 8 CPUs):**
+  - Contention test: BSP and AP 1 concurrently perform 100,000 increments each on a shared counter under a test spinlock; verify counter strictly equals 200,000 with zero missed updates.
+  - Tracker isolation: AP 1 holding rank 2 does not prevent BSP from acquiring rank 1 or rank 2.
+  - Inverted rank test: AP 1 deliberately attempts rank 2 $\to$ rank 1 acquisition; verify `spin_panic_ap` emits fatal diagnostic to raw UART and halts AP 1, while BSP continues to shell.
+  - Full regression pass over 6 test suites:
+    1. `make test-smp-discovery` (Piece 1 MADT/Limine agreement)
+    2. `make test-smp-percpu` (Piece 2 GS/TSS/stack isolation & AP parking)
+    3. `make test-nmi` (exact syscall-boundary NMI delivery)
+    4. `make test-usb-mount` (read-only mount policy and ext2 rank 1 locking)
+    5. `make test-usb-persistence` (writable ext2 transactions and sync paths)
+    6. `make test-shell` (interactive shell stability)
+- **Bare-Metal Dell Latitude 5590 (UEFI, 8 CPUs):**
+  - Boots to interactive shell with USB storage mounted, confirming lock discipline changes cause no regression on physical hardware.
 
 ## 4. Scheduler
 

@@ -30,6 +30,7 @@ and are not proof that every current revision has passed every test — check
 | [phase-9h-ram.md](phase-9h-ram.md) | 32 GiB RAM support, two-stage PMM/VMM init, HHDM coverage limit |
 | [smp-piece1-ap-discovery.md](smp-piece1-ap-discovery.md) | SMP Piece 1: AP discovery via Limine's SMP protocol, cross-checked against ACPI MADT; QEMU/Dell verified |
 | [smp-piece2-percpu.md](smp-piece2-percpu.md) | SMP Piece 2: GS state, CPU-local GDT/TSS/stacks, SWAPGS/NMI handling; QEMU and Dell 5590 verified |
+| [smp-piece3-lock-discipline.md](smp-piece3-lock-discipline.md) | SMP Piece 3: Lock discipline, per-CPU tracker, atomic contention, AP panic isolation |
 | [subsystems.md](subsystems.md) | Cross-cutting notes not tied to one phase: NMI delivery, boot console, interactive shell/input, general Dell acceptance |
 
 ## Checkpoint sequence (for orientation only — not authoritative status)
