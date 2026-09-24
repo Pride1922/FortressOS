@@ -4,6 +4,9 @@
 #include "types.h"
 #include "acpi.h"
 bool lapic_configure_nmi(const acpi_madt_info_t *info);
+/* AP-local register setup only: BSP must already map LAPIC MMIO. IF stays
+ * clear; timer/ordinary sources remain masked. No allocation or logging. */
+bool lapic_init_ap(const acpi_madt_info_t *info);
 #include "idt.h"
 
 /* Fixed Virtual Address for LAPIC MMIO Mapping */
@@ -46,7 +49,7 @@ bool lapic_configure_nmi(const acpi_madt_info_t *info);
 #define APIC_TIMER_DIV_16       0x03
 
 /* MSR definitions */
-#define IA32_APIC_BASE_MSR        0x1B
+#define IA32_APIC_BASE_MSR        0x0000001B
 #define IA32_APIC_BASE_MSR_ENABLE (1ULL << 11)
 #define IA32_APIC_BASE_MSR_X2APIC (1ULL << 10)
 

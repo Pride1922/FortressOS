@@ -1,9 +1,8 @@
 # SMP Piece 1 — AP Discovery
 
-Status: implemented, **not yet verified**. Nothing in this file is evidence
-until someone actually runs the steps below and records what happened.
-Per [`SMP_DESIGN.md`](../../SMP_DESIGN.md)'s workflow, Piece 2 does not
-start until this piece's verification is reported back as passing.
+Status: **verified**, QEMU and Dell 5590 on 2026-09-21; see Evidence below.
+The implementation description below records Piece 1. Piece 2 extends AP
+startup with CPU-local state; see [smp-piece2-percpu.md](smp-piece2-percpu.md).
 
 ## What this piece does
 
@@ -88,7 +87,7 @@ silicon — QEMU/TCG does not.
    acceptance", for the general boot procedure).
 2. Watch the serial/COM1 log (or the framebuffer console if COM1 is
    absent) for the same three markers as the QEMU case above. Expect
-   `4 CPU(s) agree` and `All 3 application processor(s) online` on this
+   `8 CPU(s) agree` and `All 7 application processor(s) online` on this
    machine specifically (a different physical machine will have a
    different core count — check its own MADT-reported count instead).
 3. Confirm the rest of boot is unaffected: shell still comes up, `ls`,
@@ -106,7 +105,7 @@ silicon — QEMU/TCG does not.
 
 - Both QEMU runs (`-smp 1`, `-smp 4`) pass `make test-smp-discovery`.
 - Dell hardware shows the same three markers with counts matching its own
-  MADT (4 CPUs on the 5590), and normal boot/shell/storage behavior is
+  MADT (8 logical CPUs on the recorded 5590), and normal boot/shell/storage behavior is
   unchanged.
 - No `[FAIL]` or `[WARN]` lines from the SMP Piece 1 checkpoint on either
   QEMU or hardware. A `[WARN]` (online AP count disagreeing with MADT
@@ -124,9 +123,6 @@ whether it's a `smp.c` bug or just the spin-timeout constant needing
 tuning for real hardware.
 
 ## Evidence
-
-*(Empty until an actual run happens — do not fill this in from the design
-alone.)*
 
 | Date | Environment | `-smp` / core count | Result | Notes |
 | --- | --- | --- | --- | --- |

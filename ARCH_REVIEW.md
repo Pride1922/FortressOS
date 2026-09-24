@@ -47,12 +47,11 @@ remain held. The boot self-test checks the recursion/inversion predicates
 and nested IF restoration. Real lock use is exercised throughout the
 BIOS/UEFI suites.
 
-NMI/fatal diagnostics must remain lockless. Before AP startup, migrate
-tracking and current-thread/stack state to per-CPU storage. This checker
-does not claim to detect every possible deadlock, and its global state is
-single-CPU only. **This migration is planned as `SMP_DESIGN.md` Piece 2**;
-the re-verification of rank checking under genuine cross-CPU contention
-(and the documented limits of what it can and cannot detect) is Piece 3.
+NMI/fatal diagnostics remain lockless. Piece 2 gives CPUs private current
+thread/stack state but keeps APs out of subsystem locks. Lock-debug tracking
+remains BSP-only; its storage migration and cross-CPU re-verification belong
+to Piece 3 (SM10/SM11). No cross-CPU lock/deadlock-detection claim follows
+from Piece 2's per-CPU scheduler storage.
 
 The USB storage driver (Phase 9G) adds no new locks to this hierarchy. Its
 synchronous BOT transfers execute under the ext2 lock when called from the
@@ -61,13 +60,14 @@ that path. USB transfer completion is bounded polling, not IRQ-driven,
 precisely to preserve this contract. See
 `docs/roadmap/phase-9g2-usb-block.md`.
 
-## Deferred: per-CPU syscall entry and SMP address-space lifetime
+## Per-CPU syscall entry; deferred SMP address-space lifetime
 
-Keep the existing single-CPU syscall stack design until SMP is introduced.
-Per-CPU TSS, current thread, syscall scratch and GS state require a
-complete entry/exit design, including NMI arrival around both SWAPGS
-transitions. An illustrative SWAPGS sequence alone is not a safe
-implementation.
+Piece 2 implements GS-local syscall scratch/RSP0, current thread, TSS and
+IST stacks. Entry uses SWAPGS; interrupt entry checks actual GS base because
+saved CS alone cannot distinguish the NMI windows around SWAPGS. Seven
+exact syscall boundaries are exercised by the BSP-only NMI runner. See
+[Piece 2 evidence](docs/roadmap/smp-piece2-percpu.md) for AP fault/NMI tests
+and the remaining physical-acceptance boundary.
 
 Address-space teardown must prevent new scheduling into the dying space and
 wait until every CPU has stopped using it. Permission/unmap changes need
@@ -119,7 +119,9 @@ verification evidence.
 See `docs/roadmap/subsystems.md` ("NMI transition and physical-boot
 diagnostics") for the full `make test-nmi` methodology, the masked-LINT1
 finding, and evidence locations. Note for SMP work: this verification is
-currently BSP-only; extending it per-CPU is `SMP_DESIGN.md` Piece 2 (SM9).
+BSP-only for syscall transitions. Piece 2 adds actual hardware-NMI delivery
+on parked APs and checks CPU-local IST2 records; this does not establish
+syscall-boundary coverage on APs, which do not execute user tasks yet.
 
 ## Physical boot: visible early diagnostics
 

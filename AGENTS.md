@@ -34,7 +34,7 @@ History lives in [docs/roadmap/README.md](docs/roadmap/README.md); qualification
 | Phase 9G.3 Production `/mnt` mount | COMPLETE (2026-09-19). Bounded cmdline parsing, PARTUUID-based partition selection, read-only production mount; verified on QEMU and Dell 5590 hardware. Full detail: [docs/roadmap/phase-9g3-usb-mount.md](docs/roadmap/phase-9g3-usb-mount.md). |
 | Phase 9G.4 USB writable persistence & durability classification | COMPLETE (2026-09-19). BOT stall recovery, four-tier durability classification, explicit writable opt-in; `/mnt` read-write persistence confirmed on physical USB. Full detail: [docs/roadmap/phase-9g4-usb-durability.md](docs/roadmap/phase-9g4-usb-durability.md). |
 | Phase 9H RAM capacity | COMPLETE (2026-09-20). PMM extended to cover 32 GiB, two-stage PMM/VMM init to stay within Limine's HHDM coverage until the kernel PML4 is active. Verified on Dell 5590 (32 GiB) with a write-readback probe. Full detail: [docs/roadmap/phase-9h-ram.md](docs/roadmap/phase-9h-ram.md). |
-| Next: multi-core (SMP) support | With USB topology and RAM capacity now handled, the current focus is making the kernel multi-core. Full design, sequencing, and binding invariants (SM IDs) in [`SMP_DESIGN.md`](SMP_DESIGN.md). Smaller open items not blocking SMP: 9G.5c/d (strong durability on a second device class, persistence on the SanDisk), introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython. |
+| Current: multi-core (SMP) support | Pieces 1–2 implemented and verified in QEMU and on Dell 5590 (UEFI, 8 CPUs); post-boot shell and storage verified ([details](docs/roadmap/smp-piece2-percpu.md)). APs remain parked; only BSP schedules or uses subsystem locks. Full design, sequencing, and binding invariants (SM IDs) in [`SMP_DESIGN.md`](SMP_DESIGN.md). Piece 3 (Lock discipline) is next. Smaller open items not blocking SMP: 9G.5c/d (strong durability on a second device class, persistence on the SanDisk), introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython. |
 
 ### Phase 9G implementation handoff
 
@@ -128,7 +128,8 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 | `make test-ext2-write` | QEMU ext2 file creation, editor save, host `e2fsck -fn` integrity, and cross-boot persistence on disposable NVMe GPT fixture |
 | `make test-storage` | BIOS/UEFI GPT/ext2, Ring 3 reads, allocation-set audits; `build/storage-*.log` |
 | `make test-shell` | BIOS/UEFI IRQ1/IRQ4 interaction, sleeping readers, restart counts; also UEFI 8 GiB without COM1 |
-| `make test-nmi` | 5 exact syscall boundaries × 4 rounds × 2 firmware modes; `build/nmi-*.json` and `.log` |
+| `make test-nmi` | 7 exact syscall/SWAPGS boundaries × 4 rounds × 2 firmware modes (BSP); `build/nmi-*.json` and `.log` |
+| `make test-smp-percpu` | BIOS/UEFI with 1/4/8 CPUs: CPU-local GS/GDT/TSS/stacks, AP #DF, real NMI delivery on every CPU, unchanged BSP IST/TSS/GDT and shell startup; snapshot NVMe fixture |
 | `make test-boot-diagnostics` | UEFI 8 GiB, no COM1; progress to PCI discovery and framebuffer capture |
 | `make test-power` | QEMU shutdown/reboot command tests; physical ACPI S5 confirmed separately on Dell 5590 (see §8 H7), not by this target |
 | `make test-usb-descriptors` | 9G.1e host ASan/UBSan + QEMU BIOS/UEFI descriptor parsing, BOT class validation, device configuration |

@@ -58,10 +58,33 @@ isr_common_stub:
     ; 2. Ensure direction flag is forward per ABI
     cld
 
+    ; Read actual GS base, not saved CS: NMI can interrupt either side
+    ; of SWAPGS with CPL0. User bases are lower-half (FSGSBASE disabled).
+    xor r12d, r12d
+    mov ecx, 0xC0000101
+    rdmsr
+    test edx, edx
+    js .kernel_gs
+    swapgs
+    mov r12d, 1
+.kernel_gs:
+    mov r13, [rsp + 144] ; original CS (test recovery may rewrite it)
     ; 3. Pass pointer to interrupt_frame_t as first parameter (RDI)
+    inc qword [gs:48]
     mov rdi, rsp
     call isr_exception_handler
+    dec qword [gs:48]
 
+    ; Undo entry swap, except an intentional user-to-kernel test recovery.
+    test r12d, r12d
+    jz .gs_restored
+    test r13b, 3
+    jz .undo_swap
+    test byte [rsp + 144], 3
+    jz .gs_restored
+.undo_swap:
+    swapgs
+.gs_restored:
     ; 4. Restore general purpose registers
     pop rax
     pop rbx
@@ -166,6 +189,7 @@ enter_user_mode:
     xor rdi, rdi
 
     ; 4. Atomic privilege switch into Ring 3
+    swapgs
     iretq
 
 ; Assembly helper to test user mode execution and recovery
@@ -303,6 +327,7 @@ test_user_syscall_helper:
     xor rsi, rsi
     xor rdi, rdi
 
+    swapgs
     iretq
 
 .syscall_exit_recovery:

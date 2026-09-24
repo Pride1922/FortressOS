@@ -18,9 +18,11 @@ import time
 REPO = Path(__file__).resolve().parent.parent
 PROBES = (
     "syscall_entry_stub",             # Ring 0, user RSP, before saving it
+    "syscall_entry_kernel_gs",        # after SWAPGS, before saving user RSP
     "syscall_entry_rsp_saved",        # Ring 0, saved user RSP, before stack switch
     "syscall_entry_kernel_rsp",       # immediately after kernel stack switch
     "syscall_exit_restore_rsp",       # immediately before restoring user RSP
+    "syscall_exit_kernel_gs",         # user RSP, before exit SWAPGS
     "syscall_exit_user_rsp",          # Ring 0, user RSP, immediately before SYSRET
 )
 ROUNDS = 4
@@ -32,8 +34,10 @@ def symbols():
         fields = line.split()
         if len(fields) == 3:
             result[fields[2]] = int(fields[0], 16)
-    for name in (*PROBES, "isr2", "isr_return_iretq", "ist2_memory", "g_tss_rsp0", "g_syscall_scratch_rsp"):
+    for name in (*PROBES, "isr2", "isr_return_iretq", "ist2_memory", "cpu_locals"):
         assert name in result, f"Missing probe/debug symbol: {name}"
+    result["g_syscall_scratch_rsp"] = result["cpu_locals"] + 8
+    result["g_tss_rsp0"] = result["cpu_locals"] + 16
     return result
 
 
@@ -146,7 +150,8 @@ def probe(remote, qmp, sym, name):
     user_rsp = before[7] if before[7] < 0x800000000000 else int.from_bytes(scratch, "little")
     assert 0x1000 <= user_rsp < 0x800000000000
     user_stack = remote.memory(user_rsp - 128, 128)
-    if name in ("syscall_entry_stub", "syscall_entry_rsp_saved", "syscall_exit_user_rsp"):
+    if name in ("syscall_entry_stub", "syscall_entry_kernel_gs", "syscall_entry_rsp_saved",
+                "syscall_exit_kernel_gs", "syscall_exit_user_rsp"):
         assert before[7] == user_rsp, "Expected vulnerable user-RSP window"
     else:
         assert before[7] >= 0xffff800000000000, "Expected kernel RSP"

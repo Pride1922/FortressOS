@@ -1,18 +1,15 @@
 [bits 64]
 default rel
 
-section .bss
-global g_syscall_scratch_rsp
-g_syscall_scratch_rsp: resq 1
-
 section .text
 global syscall_entry_stub
 ; Zero-byte probe symbols for deterministic external NMI injection tests.
+global syscall_entry_kernel_gs
+global syscall_exit_kernel_gs
 global syscall_entry_rsp_saved
 global syscall_entry_kernel_rsp
 global syscall_exit_restore_rsp
 global syscall_exit_user_rsp
-extern g_tss_rsp0
 extern syscall_dispatch
 
 ; GDT Selectors matching FortressOS layout
@@ -34,9 +31,11 @@ GDT_USER_CODE   equ 0x23
 syscall_entry_stub:
     ; 1. Save user RSP atomically and switch to active thread kernel stack (TSS.RSP0)
     ; Interrupts are guaranteed disabled by hardware (SFMASK masks IF)
-    mov [rel g_syscall_scratch_rsp], rsp
+    swapgs
+syscall_entry_kernel_gs:
+    mov [gs:8], rsp
 syscall_entry_rsp_saved:
-    mov rsp, [rel g_tss_rsp0]
+    mov rsp, [gs:16]
 syscall_entry_kernel_rsp:
 
     ; 2. Build interrupt_frame_t layout on kernel stack:
@@ -50,7 +49,7 @@ syscall_entry_kernel_rsp:
     ;   [offset 120]: vector
     ;   [offset 0..112]: rax, rbx, rcx, rdx, rsi, rdi, rbp, r8, r9, r10, r11, r12, r13, r14, r15
     push qword GDT_USER_DATA               ; ss
-    push qword [rel g_syscall_scratch_rsp] ; rsp (user RSP)
+    push qword [gs:8] ; rsp (user RSP)
     push r11                               ; rflags (user RFLAGS)
     push qword GDT_USER_CODE               ; cs
     push rcx                               ; rip (user RIP)
@@ -115,6 +114,8 @@ syscall_entry_kernel_rsp:
     pop r11     ; user RFLAGS into R11 for sysret
 syscall_exit_restore_rsp:
     pop rsp     ; restore user RSP directly
+syscall_exit_kernel_gs:
+    swapgs
 syscall_exit_user_rsp:
     ; sysretq atomically restores Ring 3, CS, SS, RIP from RCX, and RFLAGS from R11 (re-enabling IF)
     o64 sysret

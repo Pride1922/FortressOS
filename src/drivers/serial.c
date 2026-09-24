@@ -1,3 +1,4 @@
+#include "percpu.h"
 #include "serial.h"
 #include "console.h"
 #include "dmesg.h"
@@ -184,4 +185,33 @@ void serial_print_dec(uint64_t val) {
     for (int i = idx - 1; i >= 0; i--) {
         serial_putc(buf[i]);
     }
+}
+
+/* No console/dmesg, locks, allocation, or writes to serial_available here. */
+static void nmi_putc(cpu_local_t *cpu, char c) {
+    if (!cpu->nmi_uart_available) return;
+    for (unsigned i = 0; i < 100000; i++) {
+        if (inb(COM1_LSR) & LSR_THRE) {
+            outb(COM1_DATA, (uint8_t)c);
+            return;
+        }
+        __asm__ volatile("pause");
+    }
+    cpu->nmi_uart_available = false;
+}
+static void nmi_puts(cpu_local_t *cpu, const char *s) {
+    while (*s) nmi_putc(cpu, *s++);
+}
+static void nmi_hex(cpu_local_t *cpu, uint64_t value) {
+    const char *hex = "0123456789ABCDEF";
+    nmi_puts(cpu, "0x");
+    for (int shift = 60; shift >= 0; shift -= 4)
+        nmi_putc(cpu, hex[(value >> shift) & 15]);
+}
+void serial_nmi_report(cpu_local_t *cpu, uint64_t rip, uint64_t rsp) {
+    nmi_puts(cpu, "[NMI] Non-Maskable Interrupt received on IST2! RIP: ");
+    nmi_hex(cpu, rip);
+    nmi_puts(cpu, ", RSP: "); nmi_hex(cpu, rsp);
+    nmi_puts(cpu, ", CPU: "); nmi_hex(cpu, cpu->id);
+    nmi_puts(cpu, "\r\n");
 }

@@ -58,12 +58,8 @@ uintptr_t gdt_get_ist2_stack_top(void);
 void     gdt_set_tss_rsp0(uint64_t rsp0);
 uint64_t gdt_get_tss_rsp0(void);
 
-/*
- * Note on g_tss_rsp0:
- * Tracks the current thread's kernel stack top (TSS.RSP0) for fast syscall entry.
- * In this uniprocessor architecture (Phases 1-7), a global variable is used.
- * Explicitly single-CPU; will be transitioned to per-CPU GS storage in Phase 8 (SMP).
- */
-extern uint64_t g_tss_rsp0;
-
-#endif /* FORTRESS_GDT_H */
+/* Same selector value in distinct CPU-local GDTs, distinct TSS bases. */
+void gdt_init_cpu(size_t id);
+bool gdt_cpu_is_local(void);
+uintptr_t gdt_cpu_ist_guard(size_t id, unsigned ist);
+#endif

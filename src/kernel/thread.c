@@ -1,4 +1,5 @@
 #include "thread.h"
+#include "percpu.h"
 #include "heap.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -21,8 +22,6 @@ typedef struct {
 } exit_record_t;
 
 #define MAX_EXIT_RECORDS 64
-static exit_record_t g_exit_records[MAX_EXIT_RECORDS];
-static size_t        g_exit_records_head = 0;
 
 /* Reserved before a user spawn, retained until wait or parent exit. Separate
  * from the legacy kernel-test history, which is allowed to overwrite records. */
@@ -30,24 +29,48 @@ typedef struct {
     uint64_t parent, pid, status;
     bool used, done;
 } child_record_t;
-static child_record_t g_child_records[MAX_EXIT_RECORDS];
 
-static uint64_t      g_sched_timer_preemptions = 0;
-static uint64_t      g_sched_runnable_switches = 0;
+/* Storage only: AP scheduler execution remains prohibited until Pieces 3-4. */
+static struct scheduler_cpu {
+    exit_record_t g_exit_records[MAX_EXIT_RECORDS];
+    size_t        g_exit_records_head;
+    child_record_t g_child_records[MAX_EXIT_RECORDS];
+    uint64_t      g_sched_runnable_switches;
+    tcb_t         g_main_thread;
+    tcb_t        *g_idle_thread;
+    tcb_t        *g_runqueue_head;
+    tcb_t        *g_runqueue_tail;
+    tcb_t        *g_blocked_threads;
+    tcb_t        *g_dead_threads;
+    uint64_t      g_next_tid;
+    spinlock_t    g_sched_lock;
+    volatile bool g_preemption_enabled;
+    uint64_t      g_stack_slots_bitmap;
+} scheduler_cpus[MAX_DETECTED_CPUS] = { [0] = { .g_next_tid = 1, .g_sched_lock = SPINLOCK_RANKED(1, "sched") } };
+/* Read-only debug metadata for host tests; these are addresses, not mirrors. */
+const uintptr_t scheduler_debug_bsp[] = {
+    (uintptr_t)&scheduler_cpus[0].g_blocked_threads,
+    (uintptr_t)&cpu_locals[0].current_thread,
+    (uintptr_t)&scheduler_cpus[0].g_stack_slots_bitmap
+};
+#define g_exit_records (scheduler_cpus[cpu_current()->id].g_exit_records)
+#define g_exit_records_head (scheduler_cpus[cpu_current()->id].g_exit_records_head)
+#define g_child_records (scheduler_cpus[cpu_current()->id].g_child_records)
+#define g_sched_timer_preemptions (cpu_current()->preempt_count)
+#define g_sched_runnable_switches (scheduler_cpus[cpu_current()->id].g_sched_runnable_switches)
+#define g_main_thread (scheduler_cpus[cpu_current()->id].g_main_thread)
+#define g_idle_thread (scheduler_cpus[cpu_current()->id].g_idle_thread)
+#define g_runqueue_head (scheduler_cpus[cpu_current()->id].g_runqueue_head)
+#define g_runqueue_tail (scheduler_cpus[cpu_current()->id].g_runqueue_tail)
+#define g_blocked_threads (scheduler_cpus[cpu_current()->id].g_blocked_threads)
+#define g_dead_threads (scheduler_cpus[cpu_current()->id].g_dead_threads)
+#define g_next_tid (scheduler_cpus[cpu_current()->id].g_next_tid)
+#define g_sched_lock (scheduler_cpus[cpu_current()->id].g_sched_lock)
+#define g_preemption_enabled (scheduler_cpus[cpu_current()->id].g_preemption_enabled)
+#define g_stack_slots_bitmap (scheduler_cpus[cpu_current()->id].g_stack_slots_bitmap)
+#define g_current_thread (cpu_current()->current_thread)
 
-static tcb_t         g_main_thread;
-static tcb_t        *g_idle_thread        = NULL;
-static tcb_t        *g_current_thread     = NULL;
-static tcb_t        *g_runqueue_head      = NULL;
-static tcb_t        *g_runqueue_tail      = NULL;
-static tcb_t        *g_blocked_threads    = NULL;
-static tcb_t        *g_dead_threads       = NULL;
-static uint64_t      g_next_tid           = 1;
-static spinlock_t    g_sched_lock         = SPINLOCK_RANKED(1, "sched");
-static volatile bool g_preemption_enabled = false;
 
-/* 64-slot Page-Backed Thread Stack Allocator */
-static uint64_t      g_stack_slots_bitmap = 0;
 
 static int kstack_alloc(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_size) {
     uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
@@ -392,7 +415,10 @@ void thread_yield(void) {
     spin_unlock_noirq(&g_sched_lock);
     spin_debug_assert_unheld();
 
+    uint64_t suspended_irq_depth = cpu_current()->irq_depth;
+    cpu_current()->irq_depth = 0;
     switch_context(&old->rsp, next->rsp);
+    cpu_current()->irq_depth = suspended_irq_depth;
 
     /* Execution resumes here when old is switched back to.
      * Restore original caller interrupt state if interrupts were enabled before yield. */
@@ -431,7 +457,10 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
         if (vmm_get_current_pml4() != cr3) vmm_switch_pml4(cr3);
         spin_unlock_noirq(&g_sched_lock);
         spin_debug_assert_unheld();
+        uint64_t suspended_irq_depth = cpu_current()->irq_depth;
+        cpu_current()->irq_depth = 0;
         switch_context(&old->rsp, next->rsp);
+        cpu_current()->irq_depth = suspended_irq_depth;
         if (flags & (1ULL << 9)) __asm__ volatile("sti" ::: "memory");
         /* Another reader may have consumed the event before we resumed. */
     }
@@ -493,6 +522,7 @@ void thread_exit(void) {
     spin_debug_assert_unheld();
 
     uint64_t dummy_old_rsp = 0;
+    cpu_current()->irq_depth = 0; /* Exiting context never resumes. */
     switch_context(&dummy_old_rsp, next->rsp);
 
     /* Never reached */

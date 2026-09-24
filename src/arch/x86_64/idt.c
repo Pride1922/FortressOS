@@ -1,12 +1,16 @@
 #include "idt.h"
 #include "serial.h"
 #include "thread.h"
+#include "percpu.h"
+#include "gdt.h"
 
 extern void idtr_load(idt_ptr_t *ptr);
 extern uint8_t isr_stub_table[];
 
 static idt_entry_t idt[IDT_ENTRIES];
 static idt_ptr_t   idtr;
+
+void idt_load_cpu(void) { idtr_load(&idtr); }
 
 static const char *exception_messages[32] = {
     "Divide-by-zero (#DE)",
@@ -166,6 +170,24 @@ void idt_register_handler(uint8_t vector, irq_handler_t handler) {
 }
 
 void isr_exception_handler(interrupt_frame_t *frame) {
+    cpu_local_t *cpu = cpu_current();
+    /* AP bring-up probes have no logging/locks/global recovery state. */
+    if (cpu->id != 0 && cpu->probe == frame->vector &&
+        (frame->vector == 2 || frame->vector == 8)) {
+        uintptr_t guard = gdt_cpu_ist_guard(cpu->id, frame->vector == 8 ? 1 : 2);
+        cpu->probe_rsp = (uintptr_t)frame;
+        if ((uintptr_t)frame >= guard + 4096 &&
+            (uintptr_t)frame + sizeof(*frame) <= guard + 20480) {
+            if (frame->vector == 8) {
+                frame->rip = cpu->recovery_rip;
+                frame->rsp = cpu->recovery_rsp;
+            }
+            cpu->probe = 0;
+            return;
+        }
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+
     /* Non-Maskable Interrupt (NMI, Vector 2):
      * Hardware delivers Vector 2 on the dedicated 16 KiB IST2 emergency stack.
      * Architectural Contract:
@@ -174,12 +196,19 @@ void isr_exception_handler(interrupt_frame_t *frame) {
      * 3. Must NEVER invoke scheduler / context switch functions (thread_yield, process_exit).
      */
     if (frame->vector == 2) {
-        serial_raw_puts("[NMI] Non-Maskable Interrupt received on IST2! RIP: ");
-        serial_raw_print_hex(frame->rip);
-        serial_raw_puts(", RSP: ");
-        serial_raw_print_hex(frame->rsp);
-        serial_raw_puts("\n");
+        cpu->nmi_rsp = (uintptr_t)frame;
+        cpu->nmi_count++;
+        serial_nmi_report(cpu, frame->rip, frame->rsp);
         return;
+    }
+
+    /* APs have no runnable tasks or subsystem-lock permission yet. Keep
+     * unexpected faults out of BSP test hooks and normal panic logging. */
+    if (cpu->id != 0) {
+        cpu->fault_vector = frame->vector;
+        cpu->fault_error = frame->error_code;
+        cpu->fault_rip = frame->rip;
+        for (;;) __asm__ volatile("cli; hlt");
     }
 
     /* Breakpoint Trap (#BP, vector 3) is a non-fatal debugging trap */

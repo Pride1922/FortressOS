@@ -75,7 +75,7 @@ user_process_trampoline:
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax
+    ; GS base remains CPU-local until SWAPGS below.
 
     ; Push iretq frame: SS, RSP, RFLAGS, CS, RIP
     push 0x1B       ; SS: User Data Segment
@@ -106,5 +106,6 @@ user_process_trampoline:
     xor r14, r14
     xor r15, r15
 
+    swapgs
     iretq
 

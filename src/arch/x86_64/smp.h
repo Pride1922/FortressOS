@@ -4,17 +4,15 @@
 #include "types.h"
 #include "acpi.h"
 
-/* SMP_DESIGN.md, Piece 1 (AP discovery) only: find every CPU ACPI's MADT
- * says is enabled, start it via Limine's SMP boot protocol, cross-check
- * the two sources against each other (SM1), and wait for every AP to
- * report in (SM2). An AP that comes up here does nothing but report in
- * and park itself, halted with interrupts disabled -- it does not touch
- * scheduler, heap, or any other shared kernel state, because none of
- * that is CPU-safe yet (that starts at Piece 2, per-CPU storage).
- *
- * Returns the number of APs (not counting the BSP) that came online.
- * A single-CPU machine, or a MADT/Limine mismatch, returns 0 and the
- * kernel proceeds single-CPU exactly as before this piece existed.
+/* SMP_DESIGN.md Pieces 1-2: cross-check MADT and Limine before release.
+ * BSP calls once, with IF clear, after PMM/VMM/high-memory unlock and all
+ * boot metadata parsing. Copies immutable MADT metadata, prepares all guards,
+ * then starts APs serially. APs install private GS/GDT/TSS/stacks and the
+ * shared kernel CR3/IDT, configure firmware NMI routes, test ISTs, and park.
+ * No AP scheduler, allocation, ordinary IRQ, or subsystem-lock use yet.
+ * Timeout stops further releases; static resources are retained even if a
+ * CPU reports late. Returns confirmed AP count (BSP excluded); topology
+ * rejection returns zero. Repeated calls return the first result.
  */
 size_t smp_init(const acpi_madt_info_t *madt_info);
 

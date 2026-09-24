@@ -120,7 +120,7 @@ bool lapic_init(uintptr_t lapic_phys_addr) {
     return true;
 }
 
-bool lapic_configure_nmi(const acpi_madt_info_t *info) {
+static bool configure_nmi(const acpi_madt_info_t *info, bool log) {
     uint8_t id = lapic_read(APIC_REG_ID) >> 24;
     int processor = -1;
     for (size_t i = 0; i < info->enabled_cpu_count; i++)
@@ -142,10 +142,38 @@ bool lapic_configure_nmi(const acpi_madt_info_t *info) {
         uint32_t reg = lint ? APIC_REG_LVT_LINT1 : APIC_REG_LVT_LINT0;
         lapic_write(reg, values[lint]);
         if ((lapic_read(reg) & 0x1a700U) != values[lint]) return false;
-        serial_puts("[ OK ] Firmware NMI route enabled on LAPIC LINT");
-        serial_print_dec(lint); serial_puts("\n");
+        if (log) {
+            serial_puts("[ OK ] Firmware NMI route enabled on LAPIC LINT");
+            serial_print_dec(lint); serial_puts("\n");
+        }
     }
     return true;
+}
+
+bool lapic_configure_nmi(const acpi_madt_info_t *info) {
+    return configure_nmi(info, true);
+}
+
+bool lapic_init_ap(const acpi_madt_info_t *info) {
+    uint64_t base = rdmsr(IA32_APIC_BASE_MSR);
+    if (!check_apic_cpuid() || (base & IA32_APIC_BASE_MSR_X2APIC) ||
+        (base & 0x0000000FFFFFF000ULL) != info->lapic_phys_addr) return false;
+    wrmsr(IA32_APIC_BASE_MSR, base | IA32_APIC_BASE_MSR_ENABLE);
+    uint32_t max_lvt = (lapic_read(APIC_REG_VERSION) >> 16) & 255;
+    if (max_lvt < 3) return false;
+    lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED);
+    lapic_write(APIC_REG_TIMER_INITCNT, 0);
+    lapic_write(APIC_REG_LVT_LINT0, APIC_LVT_MASKED);
+    lapic_write(APIC_REG_LVT_LINT1, APIC_LVT_MASKED);
+    lapic_write(APIC_REG_LVT_ERROR, APIC_LVT_MASKED);
+    if (max_lvt >= 4) lapic_write(APIC_REG_LVT_PERF, APIC_LVT_MASKED);
+    if (max_lvt >= 5) lapic_write(APIC_REG_LVT_THERMAL, APIC_LVT_MASKED);
+    if (max_lvt >= 6) lapic_write(0x2F0, APIC_LVT_MASKED);
+    lapic_write(APIC_REG_ESR, 0);
+    lapic_write(APIC_REG_ESR, 0);
+    lapic_write(APIC_REG_TPR, 0);
+    lapic_write(APIC_REG_SVR, APIC_SVR_ENABLE | APIC_SPURIOUS_VECTOR);
+    return configure_nmi(info, false);
 }
 
 /* PIT channel 2 is reserved for calibration/verification during early boot.

@@ -15,6 +15,12 @@ import threading
 from test_nmi_transitions import REPO, Remote, QMP, symbols, connect
 
 
+def scheduler_symbols(remote, sym):
+    import struct
+    values = struct.unpack("<3Q", remote.memory(sym["scheduler_debug_bsp"], 24))
+    sym.update(zip(("g_blocked_threads", "g_current_thread", "g_stack_slots_bitmap"), values))
+
+
 def offsets(tmp):
     source = Path(tmp) / "offsets.c"
     source.write_text('''#include <stdio.h>
@@ -127,6 +133,7 @@ def run(mode):
                 qmp.execute("stop")
                 try:
                     def u64(address): return int.from_bytes(remote.memory(address, 8), "little")
+                    scheduler_symbols(remote, sym)
                     blocked = u64(sym["g_blocked_threads"])
                     assert blocked, "stdin reader must sleep, not yield/poll"
                     assert remote.memory(blocked + 16, 6) == b"shell\0"

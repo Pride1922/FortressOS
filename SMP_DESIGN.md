@@ -1,11 +1,12 @@
 # FortressOS — SMP (Multi-Core) Design
 
-Status: Piece 1 (AP discovery) implemented and verified (QEMU and Dell
-5590, 2026-09-21); Pieces 2-6 not started. The kernel is still single-CPU *in effect* (no per-CPU
-storage, locking, or scheduler change has landed) — see `PROTECTED.md`
-and AGENTS.md §9. Every invariant below is binding once its piece lands
-*and is verified*; an unverified piece is not binding evidence of
-anything yet.
+Status: Piece 1 (AP discovery) verified in QEMU and on Dell 5590
+(2026-09-21). Piece 2 (per-CPU storage) implemented and verified in QEMU and
+on Dell 5590 (UEFI, 8 CPUs, 2026-09-23); post-boot shell and storage verified.
+Evidence is tracked in [the Piece 2 evidence](docs/roadmap/smp-piece2-percpu.md).
+Pieces 3-6 have not started. Only the BSP schedules work and uses subsystem locks; APs
+install local state and park with IF clear. Per-CPU storage does not make
+shared allocators, drivers, lock tracking or address-space lifetime SMP-safe.
 
 This document sequences multi-core support as six pieces, each a stated
 prerequisite for the next. `SM` IDs are binding invariants for their piece,
@@ -31,11 +32,8 @@ piece.
 
 ## 1. AP discovery
 
-Status: **implemented, verification pending.** See
-[docs/roadmap/smp-piece1-ap-discovery.md](docs/roadmap/smp-piece1-ap-discovery.md)
-for what was built, why `SM2` reads differently than the original draft
-below, and the QEMU/Dell steps to actually verify it. Do not treat this
-piece as done until that file's evidence table has entries.
+Status: **verified (QEMU and Dell 5590, 2026-09-21).** See the recorded
+[evidence table](docs/roadmap/smp-piece1-ap-discovery.md#evidence).
 
 Enumerate and identify application processors before anything else in this
 plan can start.
@@ -46,6 +44,11 @@ plan can start.
 | SM2 | AP bring-up uses Limine's SMP boot protocol (`goto_address` handoff), not a hand-rolled INIT-SIPI-SIPI trampoline — Limine already performs that sequence, with documented timing, before `kmain()` runs, and reimplementing it would duplicate logic the bootloader has to get right anyway. Every Limine-reported LAPIC ID is cross-checked against MADT's enabled set (SM1) before being started. | Confirm `smp_init()` refuses to start any CPU Limine reports that MADT didn't enumerate as enabled; confirm every enumerated AP reports online before the boot checkpoint passes, not on a timeout alone. |
 
 ## 2. Per-CPU storage
+
+Status: **verified in QEMU and on Dell 5590 (UEFI, 8 CPUs, 2026-09-23).** See
+[implementation, verification and limits](docs/roadmap/smp-piece2-percpu.md).
+The same TSS selector value (0x28) resolves through a distinct GDT on each
+CPU; descriptor bases and active TSS objects are distinct (SM6).
 
 Every CPU needs its own kernel state before it can run any code that reads
 "current CPU" — this piece must land before scheduler or lock-discipline

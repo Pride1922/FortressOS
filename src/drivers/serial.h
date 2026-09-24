@@ -34,4 +34,9 @@ void serial_raw_puts(const char *str);
 void serial_raw_print_hex(uint64_t val);
 void serial_raw_print_dec(uint64_t val);
 
+struct cpu_local;
+/* Lockless NMI path: bounded UART polling, CPU-local timeout latch only.
+ * Concurrent reports can interleave on the physical UART. */
+void serial_nmi_report(struct cpu_local *cpu, uint64_t rip, uint64_t rsp);
+
 #endif /* FORTRESS_SERIAL_H */

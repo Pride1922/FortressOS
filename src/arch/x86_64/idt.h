@@ -58,6 +58,7 @@ typedef struct {
 } __attribute__((packed)) interrupt_frame_t;
 
 void idt_init(void);
+void idt_load_cpu(void);
 void idt_set_gate(uint8_t vector, void *handler, uint8_t ist, uint8_t type_attributes);
 void isr_exception_handler(interrupt_frame_t *frame);
 

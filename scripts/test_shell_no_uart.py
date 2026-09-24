@@ -54,6 +54,8 @@ with tempfile.TemporaryDirectory(prefix="fortress-keyboard-") as tmp:
         text = "\n".join(lines)
         assert "QEMU storage fixture tests skipped" in text
         assert "fortress> echo hello\nhello\nfortress>" in text, text
+        from test_shell import scheduler_symbols
+        scheduler_symbols(remote, sym)
         assert int.from_bytes(remote.memory(sym["g_blocked_threads"], 8), "little") != 0
         screenshot = REPO / "build" / "shell-keyboard-only.png"
         qmp.execute("screendump", {"filename": str(screenshot), "format": "png"})

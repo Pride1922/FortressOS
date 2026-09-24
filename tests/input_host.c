@@ -4,6 +4,7 @@
 #include "input_buffer.h"
 
 int main(void) {
+    keyboard_set_layout(KBD_LAYOUT_US);
     keyboard_decoder_t k = {0};
     assert(keyboard_decode(&k, 0x1e) == 'a');
     assert(keyboard_decode(&k, 0x9e) == 0);
