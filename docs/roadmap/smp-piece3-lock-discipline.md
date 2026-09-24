@@ -1,6 +1,6 @@
 # SMP Piece 3 — Lock Discipline & Per-CPU Lock Tracking
 
-Status: **COMPLETE (QEMU verified; Dell Latitude 5590 physical verification ready)**.
+Status: **COMPLETE (Verified in QEMU and on Dell Latitude 5590 physical hardware, 8 CPUs, 2026-09-24)**.
 Prerequisites: Piece 1 (AP discovery) and Piece 2 (per-CPU storage) verified on QEMU and Dell Latitude 5590.
 
 ## Overview and Goals
@@ -111,8 +111,44 @@ All existing test suites must pass without regression:
 5. `make test-usb-persistence` (writable ext2 transactions and sync paths)
 6. `make test-shell` (interactive shell stability)
 
-### Hardware Verification (Dell Latitude 5590)
-- Boot with 8 CPUs under UEFI, confirming serial output, shell interaction, and USB persistence with lock discipline active.
+### Hardware Acceptance (Dell Latitude 5590 Physical Hardware)
+- **Date & Hardware:** 2026-09-24, Dell Latitude 5590, Intel Core i7-8650U (4 cores / 8 threads), 32 GiB RAM, UEFI boot from USB flash drive.
+- **MADT & Limine Enumeration:** 8 CPUs enumerated and agreed upon (BSP LAPIC ID 0, APs 1..7).
+- **Per-CPU Bring-up:** APs 1..7 passed GS/TSS/IST1 fault/IST2 probes and parked with interrupts disabled (`IF=0`).
+- **Piece 3 Lock Discipline & Contention Test:**
+  - BSP spinlock selftest passed (ranks, classification, asserts).
+  - Two-core lock contention test executed between BSP and AP 1 concurrently (100,000 increments each).
+  - **Observed Hardware Contention:** **84,730 contentions** recorded on physical memory bus with `pause` backoff.
+  - **Final Counter:** Exactly **200,000** (expected 200,000; zero lost updates under hardware SMP contention).
+  - Mutual exclusion strictly maintained; APs 2..7 remained parked.
+- **Captured Diagnostic Output:**
+```text
+========================================================
+SMP Piece 1: AP Discovery
+========================================================
+[ OK ] Limine SMP response cross-checked against ACPI MADT: 8 CPU(s) agree (BSP LAPIC ID 0)
+[ OK ] Per-CPU AP 1: GS/TSS/IST1 fault/IST2 probe passed
+[ OK ] Per-CPU AP 2: GS/TSS/IST1 fault/IST2 probe passed
+[ OK ] Per-CPU AP 3: GS/TSS/IST1 fault/IST2 probe passed
+[ OK ] Per-CPU AP 4: GS/TSS/IST1 fault/IST2 probe passed
+[ OK ] Per-CPU AP 5: GS/TSS/IST1 fault/IST2 probe passed
+[ OK ] Per-CPU AP 6: GS/TSS/IST1 fault/IST2 probe passed
+[ OK ] Per-CPU AP 7: GS/TSS/IST1 fault/IST2 probe passed
+[ OK ] SMP Piece 2 per-CPU storage ready (APs parked)
+[ OK ] All 7 application processor(s) online (parked, interrupts disabled)
+       [ OK ] All 8 CPU(s) accounted for (1 BSP + 7 AP(s)), matching MADT
+[ OK ] SMP Piece 1 (AP discovery) complete.
+
+========================================================
+SMP Piece 3: Lock Discipline & Contention
+========================================================
+       [PASS] BSP spinlock selftest passed (ranks, classification, asserts)
+[TEST] SMP Piece 3: Starting two-core lock contention test (BSP + AP 1)...
+       Counter value: 200000 (expected: 200000)
+       Test lock contention count: 84730
+       [PASS] Two-core lock contention test passed (exact 200,000 updates, mutual exclusion verified)
+[ OK ] SMP Piece 3 (Lock discipline) complete.
+```
 
 ## Verified Test Matrix (2026-09-24)
 
