@@ -1,7 +1,7 @@
 # SMP Piece 6 — Memory safety implementation and evidence
 
-Status (2026-09-24): **6A implemented; user reports 2 GiB QEMU matrix PASS.
-Host rerun, other RAM configurations, regressions and hardware pending.**
+Status (2026-09-24): **6A implemented; user reports host ASan/UBSan and
+2 GiB QEMU matrix PASS. Other RAM configurations, regressions and hardware pending.**
 6B–6D remain planned. This is not acceptance of Piece 6.
 Approved design: [implementation plan](smp-piece6-plan.md).
 
@@ -74,7 +74,7 @@ explicit USB policy. These checks do not claim later concurrent memory stress.
 | Check | Result |
 | --- | --- |
 | Kernel build | Bootable image exercised by user; standalone build output not supplied |
-| Host ASan/UBSan | User run failed at compilation: project string.h shadowed libc; runner corrected to use -iquote, rerun pending |
+| Host ASan/UBSan | PASS, user rerun after header-search fix in 72ea691; capped exhaustion, contiguous boundary, unlock gates, rounding, exact allocation set and cmdline |
 | BIOS/UEFI 2 GiB, 1/4/8 CPUs | PASS, user-supplied runner output (see below) |
 | Other RAM configurations and regressions | Pending user execution |
 | Dell 5590 | Not run; user executes |
@@ -89,6 +89,17 @@ User-reported `make test-smp-memory-boot` results for the 6A implementation:
 | UEFI | 1 | 2 GiB | 20.1 s | PASS |
 | UEFI | 4 | 2 GiB | 8.8 s | PASS |
 | UEFI | 8 | 2 GiB | 15.2 s | PASS |
+
+Host evidence: user ran `wsl -d Ubuntu-24.04 -- make test-pmm-boot-host`
+and supplied this successful result:
+
+```text
+PASS PMM boot: capped exhaustion, contiguous boundary, unlock gates, rounding, exact allocation set, cmdline
+```
+
+The initial compilation failed because `-Isrc/include` shadowed the hosted
+`<string.h>` with the kernel header. The runner now uses `-iquote` for project
+and shim headers; the successful rerun supersedes that compilation failure.
 
 Source: user-pasted terminal summary; raw serial logs were not independently
 reviewed for this update. This establishes the reported 2 GiB matrix only,
