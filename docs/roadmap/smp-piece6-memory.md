@@ -1,6 +1,7 @@
 # SMP Piece 6 — Memory safety implementation and evidence
 
-Status (2026-09-24): **6A implemented, verification pending.**
+Status (2026-09-24): **6A implemented; user reports 2 GiB QEMU matrix PASS.
+Host rerun, other RAM configurations, regressions and hardware pending.**
 6B–6D remain planned. This is not acceptance of Piece 6.
 Approved design: [implementation plan](smp-piece6-plan.md).
 
@@ -72,10 +73,26 @@ explicit USB policy. These checks do not claim later concurrent memory stress.
 
 | Check | Result |
 | --- | --- |
-| Kernel build | Not run; user executes |
-| Host ASan/UBSan | Not run; user executes |
-| BIOS/UEFI matrix and regressions | Not run; user executes |
+| Kernel build | Bootable image exercised by user; standalone build output not supplied |
+| Host ASan/UBSan | User run failed at compilation: project string.h shadowed libc; runner corrected to use -iquote, rerun pending |
+| BIOS/UEFI 2 GiB, 1/4/8 CPUs | PASS, user-supplied runner output (see below) |
+| Other RAM configurations and regressions | Pending user execution |
 | Dell 5590 | Not run; user executes |
+
+User-reported `make test-smp-memory-boot` results for the 6A implementation:
+
+| Firmware | CPUs | RAM | Elapsed | Result |
+| --- | --- | --- | --- | --- |
+| BIOS | 1 | 2 GiB | 9.4 s | PASS |
+| BIOS | 4 | 2 GiB | 13.8 s | PASS |
+| BIOS | 8 | 2 GiB | 7.2 s | PASS |
+| UEFI | 1 | 2 GiB | 20.1 s | PASS |
+| UEFI | 4 | 2 GiB | 8.8 s | PASS |
+| UEFI | 8 | 2 GiB | 15.2 s | PASS |
+
+Source: user-pasted terminal summary; raw serial logs were not independently
+reviewed for this update. This establishes the reported 2 GiB matrix only,
+not 4/16/30 GiB probes or Dell acceptance. No agent-run tests.
 
 The agent writes code and tooling; the user runs them. Both review supplied
 evidence before recording acceptance. Historical Phase 9H hardware evidence

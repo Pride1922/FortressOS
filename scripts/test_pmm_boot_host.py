@@ -13,7 +13,10 @@ def main():
         subprocess.run([
             "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
             "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
-            "-Itests/host", "-Isrc/include", "-Isrc/drivers", "-Isrc/mm",
+            # Project/shim headers use quotes; hosted <string.h> must resolve
+            # to libc rather than src/include/string.h (which has no strcpy).
+            "-iquote", "tests/host", "-iquote", "src/include",
+            "-iquote", "src/drivers", "-iquote", "src/mm",
             "tests/pmm_boot_host.c", "src/mm/pmm.c", "src/mm/memory_boot_test.c",
             "-o", exe,
         ], cwd=REPO, check=True, timeout=60)
