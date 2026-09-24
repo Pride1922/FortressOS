@@ -62,6 +62,13 @@ precisely to preserve this contract. See
 
 ## Per-CPU syscall entry; deferred SMP address-space lifetime
 
+Piece 6A (2026-09-24) supplies the missing documented boot allocation ceiling
+and CR3-gated high-memory unlock, plus AP readiness checks. Implementation is
+written; build/host/QEMU/Dell verification is pending user execution. See
+[the 6A handoff](docs/roadmap/smp-piece6-memory.md). Concurrent allocator,
+shootdown-progress and address-space lifetime work remains in 6B–6D; this
+boot-order fix does not resolve the teardown issue described below.
+
 Piece 2 implements GS-local syscall scratch/RSP0, current thread, TSS and
 IST stacks. Entry uses SWAPGS; interrupt entry checks actual GS base because
 saved CS alone cannot distinguish the NMI windows around SWAPGS. Seven

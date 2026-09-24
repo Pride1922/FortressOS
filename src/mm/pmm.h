@@ -6,8 +6,14 @@
 
 #define PAGE_SIZE   4096ULL
 #define PAGE_SHIFT  12ULL
+#define PMM_BOOT_ALLOC_LIMIT 0x40000000ULL /* Exclusive physical end: 1 GiB */
 
 void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset);
+
+/* BSP boot only, after VMM has built all RAM mappings and activated the kernel
+ * root. Refuses premature calls. Release-publishes readiness for AP bring-up. */
+bool pmm_unlock_high_memory(void);
+bool pmm_high_memory_enabled(void);
 
 /* Allocate a single 4 KiB physical page frame (returns physical address or 0 on OOM) */
 uintptr_t pmm_alloc_page(void);
@@ -18,12 +24,16 @@ void pmm_free_page(uintptr_t phys_addr);
 /* Allocate contiguous 4 KiB physical page frames (returns physical address or 0 on OOM) */
 uintptr_t pmm_alloc_pages(size_t count);
 
+/* First eligible free page at or above min_phys (rounded up), or 0.
+ * All allocation APIs respect PMM_BOOT_ALLOC_LIMIT until the unlock. */
 uintptr_t pmm_alloc_page_above(uintptr_t min_phys);
 
 /* Free contiguous 4 KiB physical page frames */
 void pmm_free_pages(uintptr_t phys_addr, size_t count);
 
-/* Memory metrics */
+/* Memory metrics cover all managed RAM, including temporarily ineligible
+ * high pages. Allocatable pages is the free subset below the current ceiling. */
+size_t pmm_get_allocatable_pages(void);
 size_t pmm_get_total_pages(void);
 size_t pmm_get_used_pages(void);
 size_t pmm_get_free_pages(void);
@@ -40,7 +50,7 @@ bool pmm_audit(void);
  * quiescent baseline with expected retained allocations already established. */
 bool pmm_snapshot(void *buffer, size_t capacity);
 
-/* Deferrable bootloader memory reclamation */
+/* Disabled pending a complete boot-response/module lifetime audit; returns 0. */
 size_t pmm_reclaim_bootloader_memory(struct limine_memmap_response *memmap);
 
 #endif /* FORTRESS_PMM_H */

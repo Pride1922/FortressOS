@@ -14,6 +14,7 @@
 #include "ioapic.h"
 #include "apic.h"
 #include "smp.h"
+#include "memory_boot_test.h"
 #include "percpu.h"
 #include "thread.h"
 #include "syscall.h"
@@ -3572,10 +3573,14 @@ void kmain(void) {
                    module_request.response,
                    kernel_file_request.response);
 
+    bool memory_boot_test = memory_boot_test_enabled(&boot_info);
+    if (memory_boot_test) memory_boot_test_before_vmm();
+
     /* 11. Virtual Memory Manager (VMM) & 4-Level Paging */
     /* Step 1 & 2: Build new tables and inspect required mappings */
     /* Step 3: Switch CR3 to new PML4 and survive */
     vmm_init(&boot_info);
+    if (memory_boot_test) memory_boot_test_after_vmm();
 
     uint64_t *kernel_pml4 = vmm_get_kernel_pml4_virt();
 

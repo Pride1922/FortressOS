@@ -52,6 +52,9 @@
  *      returns VMM_ERR_INVALID_ADDR.
  */
 void      vmm_init(boot_info_t *boot_info);
+/* Release-published only after all boot RAM mappings succeed and BSP CR3
+ * reads back as the kernel root. Immutable thereafter; APs acquire-read it. */
+bool      vmm_boot_memory_ready(void);
 uintptr_t vmm_create_pml4(void);
 uintptr_t vmm_create_user_pml4(void);
 int       vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames);

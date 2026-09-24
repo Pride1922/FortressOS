@@ -4,9 +4,12 @@ Status: Piece 1 (AP discovery) verified in QEMU and on Dell 5590
 (2026-09-21). Piece 2 (per-CPU storage) implemented and verified in QEMU and
 on Dell 5590 (UEFI, 8 CPUs, 2026-09-23); post-boot shell and storage verified.
 Evidence is tracked in [the Piece 2 evidence](docs/roadmap/smp-piece2-percpu.md).
-Pieces 3-6 have not started. Only the BSP schedules work and uses subsystem locks; APs
-install local state and park with IF clear. Per-CPU storage does not make
-shared allocators, drivers, lock tracking or address-space lifetime SMP-safe.
+Pieces 3–5 are complete with recorded QEMU and Dell evidence; see
+[Piece 5](docs/roadmap/smp-piece5-ipi.md). APs now schedule kernel work.
+Piece 6A boot memory readiness is implemented, pending user-run verification;
+6B–6D allocator/translation/lifetime work remains. See
+[Piece 6 handoff](docs/roadmap/smp-piece6-memory.md) and its approved plan.
+Earlier piece descriptions below retain their stage-specific scope.
 
 This document sequences multi-core support as six pieces, each a stated
 prerequisite for the next. `SM` IDs are binding invariants for their piece,

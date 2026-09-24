@@ -10,7 +10,8 @@
  * boot metadata parsing. Copies immutable MADT metadata, prepares all guards,
  * then starts APs serially. APs install private GS/GDT/TSS/stacks and the
  * shared kernel CR3/IDT, configure firmware NMI routes, test ISTs, and park.
- * No AP scheduler, allocation, ordinary IRQ, or subsystem-lock use yet.
+ * Piece 6A checks boot readiness before release and again on each AP after
+ * installing kernel CR3. AP scheduling starts separately (Piece 4).
  * Timeout stops further releases; static resources are retained even if a
  * CPU reports late. Returns confirmed AP count (BSP excluded); topology
  * rejection returns zero. Repeated calls return the first result.

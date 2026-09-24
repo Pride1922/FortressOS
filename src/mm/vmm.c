@@ -18,6 +18,11 @@ extern uint8_t __kernel_end[];
 
 static uint64_t  hhdm_offset = 0;
 static uintptr_t kernel_pml4_phys = 0;
+static bool boot_memory_ready = false;
+
+bool vmm_boot_memory_ready(void) {
+    return __atomic_load_n(&boot_memory_ready, __ATOMIC_ACQUIRE);
+}
 
 static inline void *phys_to_virt(uintptr_t phys) {
     return (void *)(phys + hhdm_offset);
@@ -554,8 +559,22 @@ void vmm_init(boot_info_t *boot_info) {
             continue;
         }
 
+        if (entry->length == 0) continue;
+        if (entry->length > UINT64_MAX - entry->base ||
+            entry->base + entry->length > UINT64_MAX - (PAGE_SIZE - 1)) {
+            serial_puts("[FAIL] VMM: RAM map range overflow\n");
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
+
         uintptr_t start_phys = entry->base & ~(PAGE_SIZE - 1);
         uintptr_t end_phys   = (entry->base + entry->length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        if (end_phys > PTE_ADDR_MASK + PAGE_SIZE ||
+            end_phys - 1 > UINT64_MAX - hhdm_offset ||
+            !is_canonical_address(hhdm_offset + start_phys) ||
+            !is_canonical_address(hhdm_offset + end_phys - 1)) {
+            serial_puts("[FAIL] VMM: RAM range outside representable HHDM\n");
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
 
         for (uintptr_t phys = start_phys; phys < end_phys; phys += PAGE_SIZE) {
             uintptr_t virt = hhdm_offset + phys;
@@ -665,5 +684,16 @@ void vmm_init(boot_info_t *boot_info) {
 
     vmm_switch_pml4(kernel_pml4_phys);
 
+    if (vmm_get_current_pml4() != kernel_pml4_phys) {
+        serial_puts("[FAIL] VMM: Kernel CR3 readback mismatch\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+    __atomic_store_n(&boot_memory_ready, true, __ATOMIC_RELEASE);
+    if (!pmm_unlock_high_memory()) {
+        serial_puts("[FAIL] PMM: High-memory unlock rejected\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+
     serial_puts("[ OK ] CR3 switch survived! Kernel running on independent 4-level page tables.\n\n");
+    serial_puts("[PMM] High-memory allocation unlocked\n");
 }

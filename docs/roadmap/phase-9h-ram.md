@@ -6,6 +6,12 @@ See `PROTECTED.md` — the two-stage PMM/VMM ordering this phase established
 is a do-not-touch-without-discussion contract, and is the direct dependency
 Piece 6 of `SMP_DESIGN.md` re-audits for multi-core bring-up.
 
+2026-09-24 re-audit note: the Phase 5 checkout contained the 32 GiB bitmap
+but not the ceiling/unlock implementation described below. The available Git
+history did not establish the cause. Historical evidence remains unchanged;
+[Piece 6A](smp-piece6-memory.md) adds the missing invariant and has separate,
+currently pending verification.
+
 FortressOS now uses the Dell 5590's full 32 GiB of installed RAM. Previously
 the PMM bitmap was capped at 2 GiB (64 KiB bitmap); the kernel could not
 allocate frames above that ceiling.

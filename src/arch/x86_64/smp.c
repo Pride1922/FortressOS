@@ -9,6 +9,7 @@
 #include "apic.h"
 #include "spinlock.h"
 #include "thread.h"
+#include "pmm.h"
 
 /* SMP_DESIGN.md SM2 note: the original draft assumed a hand-rolled
  * INIT-SIPI-SIPI trampoline in identity-mapped sub-1MiB memory. Limine
@@ -69,6 +70,7 @@ void smp_ap_local_entry(size_t id) {
     __asm__ volatile("mov %%rsp, %0" : "=r"(rsp));
     if (cpu != &cpu_locals[id] || rdmsr(0xC0000101) != (uintptr_t)cpu ||
         !gdt_cpu_is_local() || vmm_get_current_pml4() != vmm_get_kernel_pml4() ||
+        !vmm_boot_memory_ready() || !pmm_high_memory_enabled() ||
         rsp < (uintptr_t)ap_stacks[id].stack || rsp >= cpu->rsp0 ||
         cpu->current_thread || cpu->preempt_count || cpu->irq_depth) goto park;
     cpu->probe = 2;
@@ -419,6 +421,12 @@ void smp_send_panic(void) {
 
 size_t smp_init(const acpi_madt_info_t *madt_info) {
     if (g_initialized) return g_total_cpu_count - 1;
+    if (!vmm_boot_memory_ready() || !pmm_high_memory_enabled() ||
+        vmm_get_current_pml4() != vmm_get_kernel_pml4()) {
+        serial_puts("[FAIL] SMP: AP release requires kernel CR3 and PMM readiness\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+    serial_puts("[SMP] Boot memory readiness verified before AP release\n");
     g_initialized = true;
     if (!smp_request.response || smp_request.response->cpu_count == 0) {
         serial_puts("[ OK ] No Limine SMP response; staying single-CPU\n");

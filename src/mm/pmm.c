@@ -2,6 +2,7 @@
 #include "serial.h"
 #include "spinlock.h"
 #include "string.h"
+#include "vmm.h"
 
 
 static uint8_t   *bitmap = NULL;
@@ -11,6 +12,8 @@ static size_t     total_pages = 0;
 static size_t     used_pages = 0;
 static size_t     free_pages = 0;
 static size_t     last_allocated_index = 0;
+static size_t     alloc_limit_pages = 0;
+static bool       high_memory_enabled = false;
 static spinlock_t g_pmm_lock = SPINLOCK_RANKED(4, "pmm");
 
 bool pmm_snapshot(void *buffer, size_t capacity) {
@@ -38,7 +41,7 @@ static inline int bitmap_test(size_t frame_idx) {
 }
 
 void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
-    if (!memmap || memmap->entry_count == 0) {
+    if (!memmap || !memmap->entries || memmap->entry_count == 0) {
         serial_puts("[FAIL] PMM: Invalid or missing Limine memory map\n");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }
@@ -47,6 +50,7 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     uint64_t highest_addr = 0;
     for (uint64_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
+        if (!entry) continue;
         if (entry->type == LIMINE_MEMMAP_USABLE ||
             entry->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE) {
             if (entry->length > UINT64_MAX - entry->base) continue;
@@ -58,12 +62,20 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     }
 
     if (highest_addr > PMM_BITMAP_MAX_RAM_BYTES) {
-    serial_puts("[WARN] PMM: memory map reports RAM above bitmap capacity; clamping to ");
-    serial_print_dec(PMM_BITMAP_MAX_RAM_BYTES / (1024ULL * 1024 * 1024));
-    serial_puts(" GiB\n");
-    highest_addr = PMM_BITMAP_MAX_RAM_BYTES;
-}
+        serial_puts("[WARN] PMM: memory map reports RAM above bitmap capacity; clamping to ");
+        serial_print_dec(PMM_BITMAP_MAX_RAM_BYTES / (1024ULL * 1024 * 1024));
+        serial_puts(" GiB\n");
+        highest_addr = PMM_BITMAP_MAX_RAM_BYTES;
+    }
     total_pages = (size_t)(highest_addr / PAGE_SIZE);
+    if (total_pages == 0) {
+        serial_puts("[FAIL] PMM: No managed physical pages\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+    alloc_limit_pages = total_pages;
+    if (alloc_limit_pages > PMM_BOOT_ALLOC_LIMIT / PAGE_SIZE)
+        alloc_limit_pages = PMM_BOOT_ALLOC_LIMIT / PAGE_SIZE;
+    __atomic_store_n(&high_memory_enabled, false, __ATOMIC_RELEASE);
     used_pages  = total_pages;
     free_pages  = 0;
 
@@ -72,14 +84,16 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     bitmap_size = (bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     size_t bitmap_pages = bitmap_size / PAGE_SIZE;
 
-    /* Keep the bitmap itself in managed, page-aligned RAM above 1 MiB. */
+    /* Empirical Dell H5: early HHDM coverage is limited. The ENTIRE bitmap
+     * must fit below the conservative 1 GiB ceiling, not just its first byte. */
     uintptr_t bitmap_phys = 0;
     for (uint64_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
-        if (entry->type != LIMINE_MEMMAP_USABLE || entry->base >= highest_addr ||
+        if (!entry || entry->type != LIMINE_MEMMAP_USABLE ||
+            entry->base >= alloc_limit_pages * PAGE_SIZE ||
             entry->length > UINT64_MAX - entry->base) continue;
         uint64_t end = entry->base + entry->length;
-        if (end > highest_addr) end = highest_addr;
+        if (end > alloc_limit_pages * PAGE_SIZE) end = alloc_limit_pages * PAGE_SIZE;
         uint64_t start = entry->base < 0x100000 ? 0x100000 : entry->base;
         start = ALIGN_UP(start, PAGE_SIZE);
         if (start <= end && bitmap_size <= end - start) {
@@ -106,13 +120,16 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     /* 6. Free all frames within LIMINE_MEMMAP_USABLE regions */
     for (uint64_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
-        if (entry->type == LIMINE_MEMMAP_USABLE) {
-            size_t start_frame = (size_t)(entry->base / PAGE_SIZE);
-            size_t frame_count = (size_t)(entry->length / PAGE_SIZE);
+        if (entry && entry->type == LIMINE_MEMMAP_USABLE &&
+            entry->base < total_pages * PAGE_SIZE &&
+            entry->length <= UINT64_MAX - entry->base) {
+            uint64_t end = entry->base + entry->length;
+            if (end > total_pages * PAGE_SIZE) end = total_pages * PAGE_SIZE;
+            size_t start_frame = (size_t)(ALIGN_UP(entry->base, PAGE_SIZE) / PAGE_SIZE);
+            size_t end_frame = (size_t)(end / PAGE_SIZE);
 
-            for (size_t f = 0; f < frame_count; f++) {
-                size_t frame = start_frame + f;
-                if (frame < total_pages && bitmap_test(frame)) {
+            for (size_t frame = start_frame; frame < end_frame; frame++) {
+                if (bitmap_test(frame)) {
                     bitmap_clear(frame);
                     used_pages--;
                     free_pages++;
@@ -166,17 +183,36 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     serial_puts(" (");
     serial_print_dec(bitmap_size / 1024);
     serial_puts(" KiB)\n\n");
+    serial_puts("[PMM] Boot allocation ceiling: 1 GiB (all allocation APIs)\n");
 }
 
-/* Temporary probe helper: allocate one free page whose physical address is
- * >= min_phys. Returns 0 if none exists above min_phys. */
+bool pmm_high_memory_enabled(void) {
+    return __atomic_load_n(&high_memory_enabled, __ATOMIC_ACQUIRE);
+}
+
+bool pmm_unlock_high_memory(void) {
+    /* No VMM lock acquisition under the PMM lock. Readiness is immutable
+     * after release publication; CR3 is checked on the calling CPU. */
+    if (!vmm_boot_memory_ready() || !vmm_get_kernel_pml4() ||
+        vmm_get_current_pml4() != vmm_get_kernel_pml4()) return false;
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
+    if (!bitmap) {
+        spin_unlock_irqrestore(&g_pmm_lock, flags);
+        return false;
+    }
+    alloc_limit_pages = total_pages;
+    __atomic_store_n(&high_memory_enabled, true, __ATOMIC_RELEASE);
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
+    return true;
+}
+
 uintptr_t pmm_alloc_page_above(uintptr_t min_phys) {
-    size_t start = min_phys / PAGE_SIZE;
-    if (start >= total_pages) return 0;
+    if (min_phys > UINT64_MAX - (PAGE_SIZE - 1)) return 0;
+    size_t start = ALIGN_UP(min_phys, PAGE_SIZE) / PAGE_SIZE;
 
     uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
     uintptr_t result = 0;
-    for (size_t i = start; i < total_pages; i++) {
+    for (size_t i = start; i < alloc_limit_pages; i++) {
         if (!bitmap_test(i)) {
             bitmap_set(i);
             used_pages++;
@@ -190,11 +226,12 @@ uintptr_t pmm_alloc_page_above(uintptr_t min_phys) {
 }
 
 static uintptr_t pmm_alloc_page_unlocked(void) {
-    for (size_t i = 0; i < total_pages; i++) {
-        size_t idx = (last_allocated_index + i) % total_pages;
+    for (size_t i = 0; i < alloc_limit_pages; i++) {
+        size_t idx = (last_allocated_index + i) % alloc_limit_pages;
 
         /* Skip byte quickly if all 8 frames are occupied */
-        if ((idx % 8 == 0) && (bitmap[idx / 8] == 0xFF)) {
+        if ((idx % 8 == 0) && alloc_limit_pages - idx >= 8 &&
+            alloc_limit_pages - i >= 8 && bitmap[idx / 8] == 0xFF) {
             i += 7;
             continue;
         }
@@ -203,7 +240,7 @@ static uintptr_t pmm_alloc_page_unlocked(void) {
             bitmap_set(idx);
             used_pages++;
             free_pages--;
-            last_allocated_index = (idx + 1) % total_pages;
+            last_allocated_index = (idx + 1) % alloc_limit_pages;
             return (uintptr_t)(idx * PAGE_SIZE);
         }
     }
@@ -246,13 +283,13 @@ void pmm_free_page(uintptr_t phys_addr) {
 }
 
 static uintptr_t pmm_alloc_pages_unlocked(size_t count) {
-    if (count == 0) return 0;
+    if (count == 0 || count > alloc_limit_pages) return 0;
     if (count == 1) return pmm_alloc_page_unlocked();
 
     size_t consecutive = 0;
     size_t start_idx = 0;
 
-    for (size_t i = 0; i < total_pages; i++) {
+    for (size_t i = 0; i < alloc_limit_pages; i++) {
         if (!bitmap_test(i)) {
             if (consecutive == 0) {
                 start_idx = i;
@@ -298,6 +335,16 @@ void pmm_free_pages(uintptr_t phys_addr, size_t count) {
     spin_unlock_irqrestore(&g_pmm_lock, rflags);
 }
 
+size_t pmm_get_allocatable_pages(void) {
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
+    size_t result = 0;
+    if (alloc_limit_pages == total_pages) result = free_pages;
+    else for (size_t i = 0; i < alloc_limit_pages; i++)
+        if (!bitmap_test(i)) result++;
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
+    return result;
+}
+
 size_t pmm_get_total_pages(void) {
     uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
     size_t res = total_pages;
@@ -337,6 +384,11 @@ bool pmm_audit(void) {
         serial_puts("[FAIL] PMM Audit: Bitmap physical address invalid or unaligned!\n");
         return false;
     }
+    if (bitmap_phys_addr >= PMM_BOOT_ALLOC_LIMIT ||
+        bitmap_total_pages > (PMM_BOOT_ALLOC_LIMIT - bitmap_phys_addr) / PAGE_SIZE) {
+        serial_puts("[FAIL] PMM Audit: Bitmap outside early mapped RAM!\n");
+        return false;
+    }
 
     /* 2. Verify all bitmap frames are marked as reserved/used in the bitmap itself */
     size_t bm_start = bitmap_phys_addr / PAGE_SIZE;
@@ -355,7 +407,7 @@ bool pmm_audit(void) {
 
     /* 4. Verify total managed memory does not exceed bitmap capacity */
     if (pmm_get_total_memory() > PMM_BITMAP_MAX_RAM_BYTES) {
-        serial_puts("[FAIL] PMM Audit: Total memory exceeds 2 GiB bitmap capacity!\n");
+        serial_puts("[FAIL] PMM Audit: Total memory exceeds bitmap capacity!\n");
         return false;
     }
 
@@ -363,26 +415,8 @@ bool pmm_audit(void) {
 }
 
 size_t pmm_reclaim_bootloader_memory(struct limine_memmap_response *memmap) {
-    if (!memmap) return 0;
-    size_t reclaimed_frames = 0;
-
-    for (uint64_t i = 0; i < memmap->entry_count; i++) {
-        struct limine_memmap_entry *entry = memmap->entries[i];
-        if (entry->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE) {
-            size_t start_frame = (size_t)(entry->base / PAGE_SIZE);
-            size_t frame_count = (size_t)(entry->length / PAGE_SIZE);
-
-            for (size_t f = 0; f < frame_count; f++) {
-                size_t frame = start_frame + f;
-                if (frame < total_pages && bitmap_test(frame)) {
-                    bitmap_clear(frame);
-                    used_pages--;
-                    free_pages++;
-                    reclaimed_frames++;
-                }
-            }
-        }
-    }
-
-    return reclaimed_frames;
+    /* Limine SMP handoff pointers and boot/module backing remain pinned.
+     * No caller currently reclaims them; a lock cannot establish lifetime. */
+    (void)memmap;
+    return 0;
 }

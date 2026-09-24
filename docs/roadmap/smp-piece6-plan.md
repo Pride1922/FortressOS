@@ -1,6 +1,8 @@
 # SMP Piece 6 — PMM/VMM implementation plan
 
-Status: **DRAFT FOR USER REVIEW — no implementation authorized yet.**
+Status: **APPROVED for implementation, starting with 6A (2026-09-24).**
+6A code/tooling is written; build and verification remain pending user execution.
+See [the implementation handoff](smp-piece6-memory.md).
 Prepared 2026-09-24 against Phase 5 commit `ce6d4e1`.
 The user will run builds/tests and report results; the implementation pass
 will write code and verification tooling without claiming unrun checks pass.
@@ -177,7 +179,7 @@ synchronization and address-space lifetime changes described above.
 ## Review revision — concrete decisions (2026-09-24)
 
 These details refine the steps above and take precedence over their shorthand.
-The plan remains pending approval; no implementation or test execution yet.
+The following review decisions were approved before implementation.
 
 ### Verified cap discrepancy
 
@@ -320,3 +322,40 @@ Dell criteria (8 logical CPUs, 32 GiB), in an explicit memory-test mode:
 Record actual elapsed times and each assertion. A shell prompt or aggregate
 allocation count alone is insufficient. QEMU results do not establish Dell
 acceptance.
+
+## Required approval clarifications
+
+1. **Kernel/BSP root record:** in 6D, use a static `vmm_space_t` in `vmm.c`,
+   permanently owned and initialized during `vmm_init`. No heap allocation or
+   later boot fixup. It describes the shared kernel root used by BSP and APs,
+   not a separate address space per CPU. Private roots use allocated records.
+   The temporary Limine root is bootloader-owned and never enters this registry.
+2. **Memory test mode:** explicit boot cmdline token `smp_memory_test=boot`
+   enables 6A diagnostics, parsed from the bounded kernel-owned command line.
+   Normal boot runs no optional memory probes. `make test-smp-memory-boot`
+   creates a disposable test ISO with that argument; no production boot config
+   changes and no compile-time feature flag. Later stress modes get separately
+   named values; the boot-only value never implies 6B–6D coverage.
+3. **Spinlock progress:** spinlock acquisition WAIT LOOPS MUST poll the
+   shootdown mailbox through the bounded lockless local service routine.
+   Include both `spin_lock_irqsave` and `spin_lock_noirq`, plus custom atomic
+   lock loops found by the 6C audit. This is required even if a waiter holds
+   no other lock: IF is already clear and the owner may await its ACK. Polling
+   performs no allocation, logging, lock acquisition, scheduling or IRQ enable.
+   Before mailbox initialization it is a harmless no-op. Long held-lock
+   sections and non-lock IF-clear loops also need bounded-progress analysis.
+   If the required set of polling sites is broader than the proven set, revise
+   the design and call-site matrix before implementing that expansion.
+4. **Stuck DYING space:** retain its record, owner reference, frames and page
+   tables. Include pending-retirement count, CR3, reference counts and CPU mask
+   in audit-visible diagnostics; distinguish these retained allocations from
+   successful reclamation and unexplained leaks. Debugging the stuck owner is
+   deferred; no timeout or memory pressure forces a free. Bounded acceptance
+   tests fail if retirement remains pending instead of declaring cleanup passed.
+
+For an unserviceable caller discovered by 6C's audit, do not patch around it
+with IRQ enabling, an unbounded wait or a weaker acknowledgment. Either move
+the operation to supported thread context while preserving ownership, or
+submit a revised progress/locking design. Document the caller and keep that
+implementation step pending until the replacement is reviewed. This does not
+block independent, already-approved 6A work.
