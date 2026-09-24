@@ -42,7 +42,7 @@ lifetime fix requires a narrow change.
 
 ## Implementation sequence
 
-### 6A. Restore and enforce boot memory readiness (SM16)
+### 6A. Add the missing documented boot memory invariant (SM16)
 
 Files: `pmm.c/.h`, `vmm.c`, `main.c`, `smp.c/.h`.
 
@@ -173,3 +173,150 @@ ordering, no reuse before complete shootdown, no re-entry into destroyed
 spaces, exact ownership checks, and the user's reported regression/hardware
 results. Approval of this plan includes the narrow boot readiness,
 synchronization and address-space lifetime changes described above.
+
+## Review revision — concrete decisions (2026-09-24)
+
+These details refine the steps above and take precedence over their shorthand.
+The plan remains pending approval; no implementation or test execution yet.
+
+### Verified cap discrepancy
+
+The requested command was run:
+
+```text
+rg -n "pmm_unlock_high_memory|PMM_BITMAP_CAPACITY_BYTES|g_alloc_ceiling|1 GiB|0x40000000" src/mm/pmm.c src/mm/pmm.h src/mm/vmm.c src/kernel/main.c
+```
+
+It finds the 32 GiB bitmap definitions and unrelated huge-page/probe/test
+references, but no allocation ceiling or unlock function. A local-history
+search, `git log --all -S pmm_unlock_high_memory -- src/mm/pmm.c src/mm/pmm.h src/kernel/main.c`,
+finds no matching commits. Phase 9H records an unlock message and successful
+high-memory probes; retain that evidence but mark the implementation mismatch.
+The cause is unproven: this does not establish a revert or that the feature
+was never implemented outside the available history. Step 6A adds the missing
+documented invariant. The concrete hazard is allocation before kernel CR3
+activation; this alone does not prove high-memory access after activation is
+broken. The approximately 2.5 GiB boundary is a historical Dell observation,
+not a guaranteed threshold on other boots or machines.
+
+### PMM lock and latency decision
+
+Hold the rank-4 IRQ-save lock across the ENTIRE bitmap scan and mutation.
+There is no speculative or lock-free scan. Allocation is O(N) worst case,
+with up to 8,388,608 frames at 32 GiB. The occupied-byte shortcut does not
+eliminate the fragmented worst case. Contending CPUs also wait for earlier
+holders; the existing spinlock provides neither fairness nor a hard latency
+bound. Do not promise a microsecond bound without measurement. Add fragmented
+bitmap cases and report maximum observed scan/lock duration separately from
+correctness. The TLB polling integration must cover this IRQ-disabled wait
+and any long critical section identified by the progress audit.
+
+### Address-space record, synchronization and waiting
+
+- Use a kernel-owned `vmm_space_t` per private root containing normalized CR3,
+  LIVE/DYING state, owner/scheduler/operation reference counts, and an active
+  or switching CPU mask. Allocate metadata before taking the VMM lock; publish
+  in a registry under it. Remove before final reclamation and free metadata
+  after unlocking. No rank-3-to-heap acquisition.
+- Serialize EVERY state/count/mask access under the existing rank-3 VMM lock.
+  LIVE check and reference increment are one critical section. Counts are
+  lock-protected rather than lock-free atomics; an unlocked decrement or
+  observation is forbidden. This provides atomic check/decrement semantics
+  without a second equal-rank lock.
+- A TCB takes a scheduler reference before publication and retains it while
+  queued, blocked, running or switching. Switching away updates CPU residency
+  after loading the new CR3, but does not drop a runnable TCB's reference.
+  Terminated TCB references are released only after a switch-away handoff
+  establishes that both the old CR3 and old stack are no longer in use.
+  Never release that reference in `thread_exit` before the handoff. Cover
+  first-entry and resumed-thread switch tails; enumerate all switch sites
+  before implementation. References bridge the unlocked context switch.
+- Retirement marks DYING under the VMM lock and prevents new references.
+  Existing operation users may finish; queued references must be explicitly
+  drained/cancelled, never forcibly decremented. Provide a separate retirement
+  and try-reclaim path. Ordinary `vmm_destroy_pml4` continues to reject an
+  active space without silently retiring it. The final owner remains until
+  reclamation finishes.
+- Try-reclaim checks DYING, zero non-owner references and an empty CPU mask
+  under the same lock. If not ready, return BUSY immediately: no spinning or
+  sleeping for reference release. The reaper retains ownership on a pending
+  list and retries in later passes outside scheduler locks. There is no
+  timeout that permits freeing. Test runners bound retirement time and fail
+  with diagnostics; production retains a stuck space safely.
+- The last `put` never frees tables inline. The reclaimer retains the DYING
+  registry record exclusively across the final barrier and reclamation.
+  No new lookup/reference can appear between eligibility and freeing. A raw
+  root/table pointer alone is not a lifetime reference. API callers must hold
+  an owner or operation reference for the entire access.
+
+### Shootdown call-site proof required before 6C implementation
+
+Write a call-site matrix covering every direct and transitive entry path:
+boot/thread/ISR/exception context, IF state, held locks, target progress,
+ownership through completion and failure behavior. Current direct inventory
+includes VMM boot guards/destruction, heap rollback, thread stack rollback/free,
+main diagnostics, AP guard setup and xHCI probe cleanup. There is no public
+`vmm_protect` API today; include intermediate permission mutations and any new
+protection API. This search inventory is not a completed transitive proof.
+
+Ordinary IRQ/NMI handlers cannot initiate synchronous shootdowns; reject an
+unsupported context before changing a PTE. Exception paths need their own
+explicit proof. An unexpected lock-held caller must either move mutation and
+barrier work outside the lock while retaining ownership, or demonstrate a
+lockless TLB polling path on every dependent target. If neither is possible,
+revise the design before implementation; never enable IF as an improvised fix.
+The design permits proven lock-held polling, not a blanket claim that callers
+hold no locks while waiting.
+
+Polling reads a published shared request, invalidates ONLY this CPU's TLB,
+then publishes its ACK. It does not drain an APIC queue, execute arbitrary
+handlers, or send an EOI. The eventual hardware interrupt still gets its
+dispatcher-owned EOI. Request fields remain immutable until all target ACKs
+arrive. Acquire-load publication before fields; release-publish ACK after
+invalidation. Each CPU tracks its completed generation. Polling excludes
+local maskable-interrupt re-entry; NMI never calls it. A delayed old IPI may
+service the current request, but only after actually invalidating that
+generation. Both the initiator's wait and every dependent target path need
+this progress proof. Failure to acquire/publish/complete within the bounded
+protocol is fatal and never allows reuse or successful return.
+
+### Concrete verification ownership and Dell acceptance
+
+The implementation pass writes kernel checks, host harnesses, scripts and
+Makefile targets. The user runs builds, host tests, QEMU and hardware checks.
+Both review the supplied evidence: the user reports observed results; the
+agent checks logs against each criterion and records gaps without inferring
+passes. Piece 6 acceptance requires implementation AND verification evidence.
+TSan and ASan/UBSan apply only to hosted builds. The freestanding kernel/QEMU
+tests use explicit invariants and diagnostics, not those sanitizers.
+
+Dell criteria (8 logical CPUs, 32 GiB), in an explicit memory-test mode:
+
+1. Before readiness, exercise every allocator entry point and require all
+   returned runs to end at or below `0x40000000`; high-only requests fail.
+   After readiness, request a free usable frame at or above each of 2, 4, 16
+   and 30 GiB using the above-address helper. Log actual addresses; firmware
+   may reserve an exact threshold address. Verify every 64-bit word of each
+   4 KiB page through HHDM with address-derived and complementary patterns,
+   then free it. Ordinary allocation need not prefer high memory.
+2. Run 32 workers pinned four per CPU, each completing 10,000 single-frame
+   allocate/write/verify/free iterations: exactly 320,000 successes, zero OOM.
+   Release from a start barrier and bound completion at 120 seconds. Use a
+   preallocated atomic live-frame ownership table to detect duplicate live
+   allocation; claim after allocating, verify patterns before free, and clear
+   the test claim immediately before freeing the caller-owned frame. After
+   worker exit and reaping, require exact allocation-bitmap and table-count
+   equality with a baseline that accounts for permanent test infrastructure.
+3. Complete 100 BSP process spawn/wait/exit cycles alongside AP memory workers.
+   Require expected exit status every time and exact post-quiescence ownership
+   baselines. Concurrent multi-CPU spawning remains out of scope: the current
+   API explicitly requires BSP execution.
+4. On an explicitly PARTUUID-selected RW-eligible USB, save the run's boot log
+   to `/mnt/boot.log`, sync, shut down cleanly, power-cycle, and verify the
+   complete saved prior-run log before overwriting it. Record device, GUID,
+   durability class and actual mount mode. This establishes clean persistence,
+   not sudden-power-loss durability; never force writable eligibility.
+
+Record actual elapsed times and each assertion. A shell prompt or aggregate
+allocation count alone is insufficient. QEMU results do not establish Dell
+acceptance.
