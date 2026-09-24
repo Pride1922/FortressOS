@@ -1,6 +1,6 @@
 # SMP Piece 5 — Cross-Core Coordination & IPIs
 
-Status: **COMPLETE (Verified in QEMU across BIOS & UEFI for 1, 4, 8 CPUs, 2026-09-24)**.  
+Status: **COMPLETE (Verified on QEMU across BIOS & UEFI for 1, 4, 8 CPUs and bare-metal Dell Latitude 5590 with 8 CPUs, 2026-09-24)**.  
 Prerequisites: Piece 1 (AP discovery), Piece 2 (per-CPU storage), Piece 3 (lock discipline), and Piece 4 (SMP scheduler) verified on QEMU and Dell Latitude 5590.
 
 ## Overview and Goals
@@ -64,3 +64,21 @@ Validates across **BIOS & UEFI** for **1, 4, and 8 CPUs**:
 - **BIOS -smp 8**: PASS (unicast, broadcast TLB shootdown, remote wake, VMM unmap, shell reached)
 - **UEFI -smp 8**: PASS (unicast, broadcast TLB shootdown, remote wake, VMM unmap, shell reached)
 - Regression suites: `test-smp-sched` (100% PASS), `test-smp-locks` (100% PASS).
+
+### Bare-Metal Acceptance (Dell Latitude 5590, UEFI, 8 CPUs)
+Verified on physical hardware (Intel Core i7-8650U, 8 logical cores, UEFI boot via USB) on 2026-09-24:
+```
+========================================================
+SMP Piece 5: Cross-Core Coordination & IPIs
+========================================================
+[TEST] SMP Piece 5: Testing unicast IPI delivery (BSP -> AP 1) (T5.a)...
+       [PASS] Unicast IPI delivery verified (BSP -> AP 1)
+[TEST] SMP Piece 5: Testing broadcast synchronous TLB shootdown (T5.a)...
+       [PASS] Synchronous broadcast TLB shootdown acknowledged by all online APs (7 APs)
+[TEST] SMP Piece 5: Remote core wakeup via reschedule IPI (T5.b)...
+       [PASS] Remote core wakeup verified (AP 1 awakened from idle)
+[TEST] SMP Piece 5: Real VMM page unmap and shootdown barrier (T5.c)...
+       [PASS] VMM synchronous TLB shootdown and frame unmap verified (SM14, SM15)
+[ OK ] SMP Piece 5 (Cross-Core Coordination & IPIs) complete.
+```
+
