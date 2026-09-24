@@ -1,6 +1,6 @@
 # SMP Piece 5 — Cross-Core Coordination & IPIs
 
-Status: **IMPLEMENTATION COMPLETE (Awaiting Verification, 2026-09-24)**.  
+Status: **COMPLETE (Verified in QEMU across BIOS & UEFI for 1, 4, 8 CPUs, 2026-09-24)**.  
 Prerequisites: Piece 1 (AP discovery), Piece 2 (per-CPU storage), Piece 3 (lock discipline), and Piece 4 (SMP scheduler) verified on QEMU and Dell Latitude 5590.
 
 ## Overview and Goals
@@ -39,7 +39,7 @@ Piece 5 implements cross-core coordination via Local APIC Inter-Processor Interr
 
 ---
 
-## Verification Plan
+## Verification Evidence
 
 ### Automated QEMU Test Suite (`make test-smp-ipi`)
 Validates across **BIOS & UEFI** for **1, 4, and 8 CPUs**:
@@ -55,3 +55,12 @@ Validates across **BIOS & UEFI** for **1, 4, and 8 CPUs**:
    - Confirms `smp_tlb_shootdown` triggers and completes across all APs before `vmm_unmap_page` returns.
 4. **Shell Prompt**:
    - Normal boot reaches interactive `fortress> ` shell prompt.
+
+#### Results:
+- **BIOS -smp 1**: PASS (unicast, broadcast TLB shootdown, remote wake, VMM unmap, shell reached)
+- **UEFI -smp 1**: PASS (unicast, broadcast TLB shootdown, remote wake, VMM unmap, shell reached)
+- **BIOS -smp 4**: PASS (unicast, broadcast TLB shootdown, remote wake, VMM unmap, shell reached)
+- **UEFI -smp 4**: PASS (unicast, broadcast TLB shootdown, remote wake, VMM unmap, shell reached)
+- **BIOS -smp 8**: PASS (unicast, broadcast TLB shootdown, remote wake, VMM unmap, shell reached)
+- **UEFI -smp 8**: PASS (unicast, broadcast TLB shootdown, remote wake, VMM unmap, shell reached)
+- Regression suites: `test-smp-sched` (100% PASS), `test-smp-locks` (100% PASS).
