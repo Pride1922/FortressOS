@@ -1,7 +1,8 @@
 # SMP Piece 6 — Memory safety implementation and evidence
 
 Status (2026-09-24): **6A implemented; user reports host ASan/UBSan and
-2 GiB QEMU matrix PASS. Other RAM configurations, regressions and hardware pending.**
+2 GiB QEMU matrix and BIOS/UEFI 8 GiB/8 CPU cases PASS.
+Other RAM configurations, remaining regressions and Dell 6A acceptance pending.**
 6B–6D remain planned. This is not acceptance of Piece 6.
 Approved design: [implementation plan](smp-piece6-plan.md).
 
@@ -76,8 +77,9 @@ explicit USB policy. These checks do not claim later concurrent memory stress.
 | Kernel build | Bootable image exercised by user; standalone build output not supplied |
 | Host ASan/UBSan | PASS, user rerun after header-search fix in 72ea691; capped exhaustion, contiguous boundary, unlock gates, rounding, exact allocation set and cmdline |
 | BIOS/UEFI 2 GiB, 1/4/8 CPUs | PASS, user-supplied runner output (see below) |
+| BIOS/UEFI 8 GiB, 8 CPUs | PASS, user-supplied runner output; command below |
 | Other RAM configurations and regressions | Pending user execution |
-| Dell 5590 | Not run; user executes |
+| Dell 5590 | User reports Piece 5 IPI checks PASS with 7 AP acknowledgments; excerpt lacks 6A memory markers, so 6A hardware acceptance remains pending |
 
 User-reported `make test-smp-memory-boot` results for the 6A implementation:
 
@@ -89,6 +91,19 @@ User-reported `make test-smp-memory-boot` results for the 6A implementation:
 | UEFI | 1 | 2 GiB | 20.1 s | PASS |
 | UEFI | 4 | 2 GiB | 8.8 s | PASS |
 | UEFI | 8 | 2 GiB | 15.2 s | PASS |
+| BIOS | 8 | 8 GiB | 14.4 s | PASS |
+| UEFI | 8 | 8 GiB | 10.6 s | PASS |
+
+The 8 GiB cases were reported after
+`wsl -d Ubuntu-24.04 -- python3 scripts/test_smp_memory_boot.py --ram 8G --cpus 8`.
+The runner requires high-memory readback thresholds at 1, 2 and 4 GiB for
+this configuration; it does not cover 16 or 30 GiB.
+
+Dell excerpt supplied alongside those results: unicast delivery, broadcast
+shootdown (7 AP acknowledgments), remote wake and VMM unmap/barrier all PASS,
+ending with Piece 5 completion. This is additional physical Piece 5 regression
+evidence. It does not show `smp_memory_test=boot` activation, early ceiling
+checks, full-page high probes or exact cleanup, which appear earlier in boot.
 
 Host evidence: user ran `wsl -d Ubuntu-24.04 -- make test-pmm-boot-host`
 and supplied this successful result:
@@ -102,8 +117,8 @@ The initial compilation failed because `-Isrc/include` shadowed the hosted
 and shim headers; the successful rerun supersedes that compilation failure.
 
 Source: user-pasted terminal summary; raw serial logs were not independently
-reviewed for this update. This establishes the reported 2 GiB matrix only,
-not 4/16/30 GiB probes or Dell acceptance. No agent-run tests.
+reviewed for this update. This establishes the reported 2 GiB matrix and
+8 GiB cases, not 16/30 GiB probes or Dell 6A acceptance. No agent-run tests.
 
 The agent writes code and tooling; the user runs them. Both review supplied
 evidence before recording acceptance. Historical Phase 9H hardware evidence
