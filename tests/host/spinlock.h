@@ -2,8 +2,16 @@
 #ifndef HOST_SPINLOCK_H
 #define HOST_SPINLOCK_H
 #include "types.h"
-typedef struct { unsigned rank; } spinlock_t;
-#define SPINLOCK_RANKED(r, n) {r}
+enum lock_kind {
+    LOCK_KIND_ORDINARY = 0,
+    LOCK_KIND_SCHED    = 1,
+};
+typedef struct { unsigned rank; uint8_t kind; const char *name; } spinlock_t;
+#define SPINLOCK_RANKED(r, n) {(r), LOCK_KIND_ORDINARY, (n)}
+#define SPINLOCK_RANKED_KIND(r, k, n) {(r), (k), (n)}
 static inline uint64_t spin_lock_irqsave(spinlock_t *lock) { (void)lock; return 0; }
+static inline void spin_unlock_noirq(spinlock_t *lock) { (void)lock; }
 static inline void spin_unlock_irqrestore(spinlock_t *lock, uint64_t f) { (void)lock; (void)f; }
+static inline void spin_debug_assert_held(spinlock_t *lock) { (void)lock; }
+static inline void spin_debug_assert_unheld(void) {}
 #endif

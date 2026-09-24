@@ -78,6 +78,47 @@ void smp_ap_local_entry(size_t id) {
     if (!lapic_init_ap(&ap_madt)) goto park;
     __atomic_store_n(&cpu->online, 1, __ATOMIC_RELEASE);
 
+    /* Piece 3: AP 1 test dispatch protocol (SM11c). APs >= 2 always park. */
+    if (id == 1) {
+        uint32_t mode = __atomic_load_n(&g_smp_lock_test.test_mode, __ATOMIC_ACQUIRE);
+        if (mode != SMP_TEST_MODE_NONE) {
+            __atomic_store_n(&g_smp_lock_test.ap_ready, 1, __ATOMIC_RELEASE);
+
+            /* Wait for BSP signal to start test */
+            bool started = false;
+            for (uint64_t s = 0; s < SMP_AP_REPORT_TIMEOUT_SPINS; s++) {
+                if (__atomic_load_n(&g_smp_lock_test.bsp_start, __ATOMIC_ACQUIRE)) {
+                    started = true;
+                    break;
+                }
+                __asm__ volatile("pause");
+            }
+
+            if (!started) {
+                __atomic_store_n(&g_smp_lock_test.ap_ready, 2, __ATOMIC_RELEASE);
+                goto park;
+            }
+
+            if (mode == SMP_TEST_MODE_CONTENTION) {
+                /* Contention test: 100,000 increments on AP 1 */
+                for (uint64_t i = 0; i < 100000; i++) {
+                    uint64_t rflags = spin_lock_irqsave(&g_smp_lock_test.lock);
+                    g_smp_lock_test.counter++;
+                    spin_unlock_irqrestore(&g_smp_lock_test.lock, rflags);
+                }
+                __atomic_store_n(&g_smp_lock_test.ap_done, 1, __ATOMIC_RELEASE);
+            } else if (mode == SMP_TEST_MODE_INVERSION) {
+                /* Deliberate rank inversion on AP 1: acquire rank 2 then rank 1 */
+                spinlock_t rank2 = SPINLOCK_RANKED(2, "ap1-rank2");
+                spinlock_t rank1 = SPINLOCK_RANKED(1, "ap1-rank1");
+                uint64_t f2 = spin_lock_irqsave(&rank2);
+                uint64_t f1 = spin_lock_irqsave(&rank1); /* Will panic via spin_fatal() */
+                spin_unlock_irqrestore(&rank1, f1);
+                spin_unlock_irqrestore(&rank2, f2);
+            }
+        }
+    }
+
 park:
     for (;;) __asm__ volatile("cli; hlt");
 }
@@ -89,6 +130,129 @@ __attribute__((noinline)) void smp_percpu_ready(void) {
 
 size_t smp_get_cpu_count(void) { return g_total_cpu_count; }
 uint32_t smp_get_bsp_lapic_id(void) { return g_bsp_lapic_id; }
+
+smp_lock_test_mailbox_t g_smp_lock_test = {
+    .test_mode = SMP_TEST_MODE_CONTENTION,
+    .ap_ready = 0,
+    .bsp_start = 0,
+    .ap_done = 0,
+    .counter = 0,
+    .lock = SPINLOCK_RANKED(1, "smp-test-lock")
+};
+
+void smp_set_test_mode(uint32_t mode) {
+    g_smp_lock_test.test_mode = mode;
+}
+
+bool smp_run_lock_tests(void) {
+    uint32_t mode = g_smp_lock_test.test_mode;
+    if (mode == SMP_TEST_MODE_ASSERT_HELD) {
+        serial_puts("[TEST] SMP Piece 3: Running spin_debug_assert_held negative test on BSP...\n");
+        spinlock_t unheld = SPINLOCK_RANKED(1, "unheld-lock");
+        /* This must trigger fail() -> spin_fatal() and halt BSP! */
+        spin_debug_assert_held(&unheld);
+        serial_puts("       [FAIL] spin_debug_assert_held did not trap unheld lock!\n");
+        return false;
+    }
+
+    if (g_total_cpu_count < 2) {
+        serial_puts("       [ OK ] Single-CPU system: SMP lock contention test skipped.\n");
+        return true;
+    }
+
+    if (mode == SMP_TEST_MODE_NONE) {
+        serial_puts("       [ OK ] SMP lock test mode is NONE; AP 1 parked.\n");
+        return true;
+    }
+
+    if (mode == SMP_TEST_MODE_CONTENTION) {
+        serial_puts("[TEST] SMP Piece 3: Starting two-core lock contention test (BSP + AP 1)...\n");
+
+        /* Wait for AP 1 to report ready */
+        uint32_t ready = 0;
+        for (uint64_t s = 0; s < SMP_AP_REPORT_TIMEOUT_SPINS; s++) {
+            ready = __atomic_load_n(&g_smp_lock_test.ap_ready, __ATOMIC_ACQUIRE);
+            if (ready != 0) break;
+            __asm__ volatile("pause");
+        }
+        if (ready == 2) {
+            serial_puts("       [FAIL] AP 1 handshake timed out waiting for BSP\n");
+            return false;
+        } else if (ready != 1) {
+            serial_puts("       [FAIL] AP 1 not ready for lock contention test\n");
+            return false;
+        }
+
+        /* Signal AP 1 and execute 100,000 increments on BSP concurrently */
+        __atomic_store_n(&g_smp_lock_test.bsp_start, 1, __ATOMIC_RELEASE);
+        for (uint64_t i = 0; i < 100000; i++) {
+            uint64_t rflags = spin_lock_irqsave(&g_smp_lock_test.lock);
+            g_smp_lock_test.counter++;
+            spin_unlock_irqrestore(&g_smp_lock_test.lock, rflags);
+        }
+
+        /* Wait for AP 1 to complete its 100,000 increments */
+        for (uint64_t s = 0; s < SMP_AP_REPORT_TIMEOUT_SPINS; s++) {
+            if (__atomic_load_n(&g_smp_lock_test.ap_done, __ATOMIC_ACQUIRE)) break;
+            __asm__ volatile("pause");
+        }
+        if (!__atomic_load_n(&g_smp_lock_test.ap_done, __ATOMIC_ACQUIRE)) {
+            serial_puts("       [FAIL] AP 1 timed out during lock contention test\n");
+            return false;
+        }
+
+        uint64_t total = g_smp_lock_test.counter;
+        serial_puts("       Counter value: ");
+        serial_print_dec(total);
+        serial_puts(" (expected: 200000)\n");
+        serial_puts("       Test lock contention count: ");
+        serial_print_dec(g_smp_lock_test.lock.contention_count);
+        serial_puts("\n");
+
+        if (total != 200000) {
+            serial_puts("       [FAIL] Lock contention count mismatch (missed updates)!\n");
+            return false;
+        }
+        serial_puts("       [PASS] Two-core lock contention test passed (exact 200,000 updates, mutual exclusion verified)\n");
+        return true;
+    } else if (mode == SMP_TEST_MODE_INVERSION) {
+        serial_puts("[TEST] SMP Piece 3: Triggering AP 1 rank inversion test...\n");
+
+        uint32_t ready = 0;
+        for (uint64_t s = 0; s < SMP_AP_REPORT_TIMEOUT_SPINS; s++) {
+            ready = __atomic_load_n(&g_smp_lock_test.ap_ready, __ATOMIC_ACQUIRE);
+            if (ready != 0) break;
+            __asm__ volatile("pause");
+        }
+        if (ready == 2) {
+            serial_puts("       [FAIL] AP 1 handshake timed out waiting for BSP\n");
+            return false;
+        } else if (ready != 1) {
+            serial_puts("       [FAIL] AP 1 not ready for rank inversion test\n");
+            return false;
+        }
+
+        /* Tell AP 1 to run the inverted acquisition */
+        __atomic_store_n(&g_smp_lock_test.bsp_start, 1, __ATOMIC_RELEASE);
+
+        /* Wait for AP 1 to panic and set cpu_locals[1].lock_panic */
+        for (uint64_t s = 0; s < SMP_AP_REPORT_TIMEOUT_SPINS; s++) {
+            if (__atomic_load_n(&cpu_locals[1].lock_panic, __ATOMIC_ACQUIRE)) break;
+            __asm__ volatile("pause");
+        }
+
+        if (__atomic_load_n(&cpu_locals[1].lock_panic, __ATOMIC_ACQUIRE)) {
+            for (volatile int d = 0; d < 50000; d++) __asm__ volatile("pause");
+            serial_puts("       [PASS] AP 1 rank inversion caught and isolated via spin_panic_ap; BSP unharmed\n");
+            return true;
+        } else {
+            serial_puts("       [FAIL] AP 1 did not record lock panic\n");
+            return false;
+        }
+    }
+
+    return true;
+}
 
 size_t smp_init(const acpi_madt_info_t *madt_info) {
     if (g_initialized) return g_total_cpu_count - 1;

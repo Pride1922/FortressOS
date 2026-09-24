@@ -43,6 +43,6 @@ and are not proof that every current revision has passed every test — check
 [Phase 9G]   USB storage, through 9G.5b                     (COMPLETE)
 [Phase 9G.5] USB topology expansion                         (9G.5a, 9G.5b complete; 9G.5c/d/e open)
 [Phase 9H]   32 GiB RAM support                              (COMPLETE)
-[SMP]        Multi-core support                              (Pieces 1-2 implemented and verified in QEMU and Dell 5590; Pieces 3-6 open)
+[SMP]        Multi-core support                              (Pieces 1-3 implemented and verified in QEMU; Pieces 1-2 verified on Dell 5590; Piece 3 Dell verification ready; Pieces 4-6 open)
 [Following]  Accounts/permissions, then installer
 ```

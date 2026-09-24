@@ -3,7 +3,6 @@
 #include "spinlock.h"
 #include "string.h"
 #include "serial.h"
-#include "dmesg.h"
 
 /* Static text cache works before PMM/heap initialization. Covers a 4K text
  * viewport without reading uncached framebuffer memory while scrolling. */

@@ -3069,6 +3069,31 @@ static void test_smp_piece1_ap_discovery(const acpi_madt_info_t *madt_info) {
     serial_puts("[ OK ] SMP Piece 1 (AP discovery) complete.\n\n");
 }
 
+/* =========================================================================
+ * SMP Piece 3: Lock Discipline & Two-Core Contention (SMP_DESIGN.md, SM10-SM11c)
+ * Scope: verify per-CPU tracker isolation, bus-locked atomic contention
+ * (BSP + AP 1), lock classification, debug assertions, and AP panic isolation.
+ * ========================================================================= */
+static void test_smp_piece3_lock_discipline(void) {
+    serial_puts("========================================================\n");
+    serial_puts("SMP Piece 3: Lock Discipline & Contention\n");
+    serial_puts("========================================================\n");
+
+    /* Single-CPU invariant checks on BSP */
+    if (!spin_debug_selftest()) {
+        serial_puts("       [FAIL] BSP spinlock selftest failed!\n");
+        hcf();
+    }
+    serial_puts("       [PASS] BSP spinlock selftest passed (ranks, classification, asserts)\n");
+
+    if (!smp_run_lock_tests()) {
+        serial_puts("       [FAIL] SMP lock discipline test failed!\n");
+        hcf();
+    }
+
+    serial_puts("[ OK ] SMP Piece 3 (Lock discipline) complete.\n\n");
+}
+
 void kmain(void) {
     /* 1. Initialize COM1 Serial Port (0x3F8) */
     int serial_status = serial_init();
@@ -4587,9 +4612,21 @@ pf_boot_guard_done:
     }
 
     /* =========================================================================
-     * SMP Piece 1: AP Discovery
+     * SMP Piece 1: AP Discovery & Piece 3: Lock Discipline
      * ========================================================================= */
+    if (boot_info.cmdline[0] != '\0') {
+        if (strstr(boot_info.cmdline, "smp_test=inversion")) {
+            smp_set_test_mode(SMP_TEST_MODE_INVERSION);
+        } else if (strstr(boot_info.cmdline, "smp_test=assert_held")) {
+            smp_set_test_mode(SMP_TEST_MODE_ASSERT_HELD);
+        } else if (strstr(boot_info.cmdline, "smp_test=none")) {
+            smp_set_test_mode(SMP_TEST_MODE_NONE);
+        } else if (strstr(boot_info.cmdline, "smp_test=contention")) {
+            smp_set_test_mode(SMP_TEST_MODE_CONTENTION);
+        }
+    }
     test_smp_piece1_ap_discovery(&madt_info);
+    test_smp_piece3_lock_discipline();
 
     /* Inputs and shell are started after destructive/negative acceptance cases. */
     __asm__ volatile("cli" ::: "memory");

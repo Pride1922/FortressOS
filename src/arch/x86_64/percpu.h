@@ -22,7 +22,11 @@ typedef struct cpu_local {
     bool nmi_uart_available;
     uint64_t fault_vector, fault_error;
     uintptr_t fault_rip;
+    struct spinlock *held_locks[16];
+    uint32_t lock_depth;
+    uint32_t lock_panic;
 } cpu_local_t;
+#define MAX_HELD_LOCKS 16
 _Static_assert(__builtin_offsetof(cpu_local_t, syscall_rsp) == 8, "GS scratch ABI");
 _Static_assert(__builtin_offsetof(cpu_local_t, irq_depth) == 48, "GS IRQ depth ABI");
 _Static_assert(__builtin_offsetof(cpu_local_t, rsp0) == 16, "GS RSP0 ABI");

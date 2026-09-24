@@ -10,5 +10,6 @@ int   memcmp(const void *lhs, const void *rhs, size_t count);
 size_t strlen(const char *str);
 int   strcmp(const char *s1, const char *s2);
 int   strncmp(const char *s1, const char *s2, size_t n);
+char *strstr(const char *haystack, const char *needle);
 
 #endif /* FORTRESS_STRING_H */

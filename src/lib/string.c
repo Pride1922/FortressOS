@@ -82,3 +82,16 @@ int strncmp(const char *s1, const char *s2, size_t n) {
     }
     return 0;
 }
+
+char *strstr(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return NULL;
+    if (!*needle) return (char *)haystack;
+    size_t needle_len = strlen(needle);
+    while (*haystack) {
+        if (*haystack == *needle && strncmp(haystack, needle, needle_len) == 0) {
+            return (char *)haystack;
+        }
+        haystack++;
+    }
+    return NULL;
+}

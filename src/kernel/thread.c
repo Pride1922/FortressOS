@@ -46,7 +46,7 @@ static struct scheduler_cpu {
     spinlock_t    g_sched_lock;
     volatile bool g_preemption_enabled;
     uint64_t      g_stack_slots_bitmap;
-} scheduler_cpus[MAX_DETECTED_CPUS] = { [0] = { .g_next_tid = 1, .g_sched_lock = SPINLOCK_RANKED(1, "sched") } };
+} scheduler_cpus[MAX_DETECTED_CPUS] = { [0] = { .g_next_tid = 1, .g_sched_lock = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "sched") } };
 /* Read-only debug metadata for host tests; these are addresses, not mirrors. */
 const uintptr_t scheduler_debug_bsp[] = {
     (uintptr_t)&scheduler_cpus[0].g_blocked_threads,

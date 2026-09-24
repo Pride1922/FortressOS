@@ -138,6 +138,10 @@ test-smp-percpu: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 test-smp-discovery: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 	@python3 scripts/test_smp_discovery.py
 
+.PHONY: test-smp-locks
+test-smp-locks: $(BOOTABLE_ISO)
+	@python3 scripts/test_smp_locks.py
+
 test-ext2:
 	@python3 scripts/test_ext2.py
 

@@ -1,6 +1,6 @@
 # SMP Piece 3 — Lock Discipline & Per-CPU Lock Tracking
 
-Status: **Specification approved; implementation pending**.
+Status: **COMPLETE (QEMU verified; Dell Latitude 5590 physical verification ready)**.
 Prerequisites: Piece 1 (AP discovery) and Piece 2 (per-CPU storage) verified on QEMU and Dell Latitude 5590.
 
 ## Overview and Goals
@@ -113,3 +113,29 @@ All existing test suites must pass without regression:
 
 ### Hardware Verification (Dell Latitude 5590)
 - Boot with 8 CPUs under UEFI, confirming serial output, shell interaction, and USB persistence with lock discipline active.
+
+## Verified Test Matrix (2026-09-24)
+
+### QEMU Test Results (`make test-smp-locks`)
+| Test Case | Firmware | CPUs | Result | Details |
+| :--- | :--- | :--- | :--- | :--- |
+| Single-CPU Baseline | BIOS | 1 | **PASS** | Selftests passed, contention skipped on 1 CPU, shell reached |
+| Single-CPU Baseline | UEFI | 1 | **PASS** | Selftests passed, contention skipped on 1 CPU, shell reached |
+| Two-Core Contention | BIOS | 4 | **PASS** | Counter: exact 200,000; contention count > 0; mutual exclusion verified |
+| Two-Core Contention | BIOS | 8 | **PASS** | Counter: exact 200,000; contention count > 0; mutual exclusion verified |
+| Two-Core Contention | UEFI | 4 | **PASS** | Counter: exact 200,000; contention count > 0; mutual exclusion verified |
+| Two-Core Contention | UEFI | 8 | **PASS** | Counter: exact 200,000; contention count > 0; mutual exclusion verified |
+| AP 1 Inversion Isolation | BIOS | 4 | **PASS** | AP 1 trapped & halted via `spin_fatal`; held chain printed to raw UART; BSP survived to shell |
+| AP 1 Inversion Isolation | UEFI | 4 | **PASS** | AP 1 trapped & halted via `spin_fatal`; held chain printed to raw UART; BSP survived to shell |
+| Assert-Held Negative Trap | BIOS | 1 | **PASS** | BSP trapped on unheld lock via `spin_fatal`; CPU cleanly halted |
+| Assert-Held Negative Trap | UEFI | 1 | **PASS** | BSP trapped on unheld lock via `spin_fatal`; CPU cleanly halted |
+
+### Regression Suite Results
+| Suite | Command | Result |
+| :--- | :--- | :--- |
+| SMP Piece 1 AP Discovery | `make test-smp-discovery` | **PASS** (-smp 1 and -smp 4) |
+| SMP Piece 2 Per-CPU Storage | `make test-smp-percpu` | **PASS** (6 runs: BIOS & UEFI, 1/4/8 CPUs) |
+| Input Subsystem | `make test-input` | **PASS** |
+| Framebuffer Console | `make test-console` | **PASS** |
+| Ext2 Filesystem | `make test-ext2` | **PASS** |
+| Syscall/NMI Transitions | `make test-nmi` | **PASS** (56 exact-boundary NMI tests) |
