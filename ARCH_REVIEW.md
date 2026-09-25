@@ -219,10 +219,12 @@ is established by what the device reports, not by vendor identity.
    complete — see `docs/roadmap/README.md` for current status per phase.
 2. Open USB sub-projects: 9G.5d (persistence on the SanDisk), 9G.5e (hubs,
    deferred). See `docs/roadmap/phase-9g5-superspeed.md`.
-3. **SMP (multi-core) support is the current focus.** Full design and
-   sequencing: `SMP_DESIGN.md`. Do not start scheduler, lock-discipline, or
-   PMM/VMM-init changes outside that plan's sequence — each piece is a
-   stated prerequisite for the next.
+3. **SMP (multi-core) support is COMPLETE and hardware-verified** (Pieces 1–5,
+   6A, 6B, 6C, 6D on Dell Latitude 5590). Full architectural specification:
+   `docs/plans/SMP_DESIGN.md`; evidence and implementation logs:
+   `docs/roadmap/smp-piece*.md`.
+   Current open items following SMP: system introspection syscalls/tools
+   (`sysinfo`/`top`/`ps`), persistent rootfs (`/paradise`), and MicroPython.
 4. Following SMP: user accounts, identity/permission enforcement, and
    installation target selection on storage partitions.
 5. Do not add flatfs or automatic formatting on first write. Keep

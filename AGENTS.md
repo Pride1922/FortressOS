@@ -202,9 +202,9 @@ FortressOS/
 ├── PROTECTED.md             # Short "do not touch without discussion" boundary list
 ├── ROADMAP.md               # Stub redirecting to docs/roadmap/README.md
 ├── ARCH_REVIEW.md           # Architecture audit, limits and technical debt
-├── SMP_DESIGN.md            # Multi-core design: six pieces, binding invariants (SM IDs)
 ├── docs/
-│   └── roadmap/             # Per-phase implementation notes and verification evidence
+│   ├── plans/               # Architecture specifications and implementation plans (SMP_DESIGN.md, etc.)
+│   └── roadmap/             # Per-phase implementation notes and hardware verification evidence
 ├── scripts/                 # Host/QEMU verification and disposable disk fixtures
 ├── tests/                   # Host tests and mocks
 ├── Makefile                 # Automated compilation, bootloader fetch, ISO packaging, and QEMU run

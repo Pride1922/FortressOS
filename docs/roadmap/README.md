@@ -8,6 +8,7 @@ directory — that's the entire point of the split.
 For binding implementation rules, task routing, and current hardware
 evidence, read `AGENTS.md`. For the always-load guardrail list, read
 `PROTECTED.md`. For audit limits and technical debt, read `ARCH_REVIEW.md`.
+For design proposals and staged implementation plans, see [`docs/plans/`](../plans/README.md).
 Code and public headers remain the implementation reference.
 
 Historical statements in each phase file describe *that* checkpoint; later

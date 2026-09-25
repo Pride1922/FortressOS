@@ -12,15 +12,16 @@ It is an independent kernel, not a Linux distribution. The project is still unde
 > [`PROTECTED.md`](PROTECTED.md) — those are kept in sync with the code, this
 > file is kept in sync with those.
 
-**Current milestone:** USB storage is complete through SuperSpeed (USB 3.x) direct-attached devices (Phase 9G.5b), multiple xHCI controllers are enumerated and usable (Phase 9G.5a), and the kernel now addresses the full 32 GiB of RAM on supported hardware (Phase 9H). `/mnt` mounts read-write on both USB 2.0 and USB 3.x sticks, with durability classified per device — including the strong `SYNC_BACKED` guarantee, now verified on physical hardware, not just QEMU. **Next:** multi-core (SMP) support — see [`SMP_DESIGN.md`](SMP_DESIGN.md) for the full six-piece plan.
+**Current milestone:** Multi-core (SMP) support is **complete and verified on physical hardware** across all six pieces (Pieces 1–5, 6A, 6B, 6C, 6D) on the Dell Latitude 5590 (8 CPUs, 32 GiB RAM). Application processors (APs) schedule work concurrently from per-CPU runqueues with dual-lock work-stealing, cross-core IPIs, synchronous TLB shootdowns with polled deadlock-breaking servicing, atomic process wait/exit lifecycle coordination, and non-blocking deferred address-space destruction. USB storage is complete through SuperSpeed (USB 3.x) direct-attached devices (Phase 9G.5b), multiple xHCI controllers are supported (Phase 9G.5a), and physical RAM covers the full 32 GiB (Phase 9H).
 
 ## What works today
 
 | Area | Implemented capabilities |
 | --- | --- |
-| Memory | Physical page allocator, four-level paging, per-process address spaces, guarded thread stacks, and a kernel heap. Physical allocation covers the full 32 GiB of RAM on hardware that has it (verified on the Dell 5590); a two-stage init keeps early allocation within the bootloader's mapped window until the kernel's own full mapping is active. |
-| CPU and scheduling | GDT/IDT, exception diagnostics, dedicated double-fault/NMI stacks, ACPI discovery, APIC timer, and preemptive scheduling. Current synchronization still assumes a single CPU — multi-core support is the current development focus (see `SMP_DESIGN.md`). |
-| User programs | Ring 3 execution, ELF loading, System V AMD64 argument passing, validated syscalls, child waiting, exit status, and deferred process reclamation. |
+| Multi-Core (SMP) | 8-core concurrent execution verified on bare metal. AP discovery via Limine/ACPI MADT (Piece 1); per-CPU GS base, GDT, TSS, and IST stacks (Piece 2); strict rank-checked lock discipline with contention telemetry and panic isolation (Piece 3); distributed multi-core preemptive scheduler with per-CPU runqueues and dual-lock work-stealing (Piece 4); APIC ICR cross-core IPIs and broadcast synchronous TLB shootdowns (Piece 5); and full multi-core memory architecture with contention deadlock breaking, `op_refs`, `sched_refs`, and deferred address-space reaping (Piece 6). |
+| Memory | Physical page allocator covering 32 GiB RAM with two-stage boot initialization (Phase 9H / Piece 6A); concurrent PMM allocation safety verified across 320,000 cycles under 622k+ contention events (Piece 6B); contention-safe TLB shootdown and CR3 reload (Piece 6C); per-process address spaces with transient operation references (`op_refs`), scheduler references (`sched_refs`), hardware active CPU masks, and guaranteed zero-leak deferred destruction (Piece 6D). |
+| CPU and scheduling | GDT/IDT per CPU, exception diagnostics, dedicated double-fault/NMI stacks, ACPI discovery, APIC timer preemption (100 Hz), per-CPU runqueues, and work-stealing across online cores. |
+| User programs | Ring 3 execution, ELF loading, fast `syscall` MSRs configured across all cores, System V AMD64 argument passing, validated syscalls, cross-core child waiting, exit status propagation, and deferred process reclamation. |
 | Storage | PCI discovery, NVMe reads/writes/flush, xHCI + USB Mass Storage BOT (USB 2.0 and USB 3.x SuperSpeed), validated GPT partitions, and bounded read/write ext2 support. Write persistence is verified on QEMU NVMe fixtures and on two independent physical USB devices; physical NVMe write persistence has not yet been tested on hardware. |
 | USB | Multiple xHCI controllers enumerated and initialized; device enumeration and descriptor parsing; BOT/SCSI reads and writes; durability classification with per-device policy; explicit writable opt-in. Both USB 2.0 and directly-attached USB 3.x (SuperSpeed) devices are supported; external hubs and hot-plug are not. |
 | Files | Read, create, write, truncate, make directories, rename/move, and delete. Initramfs provides boot-time programs; ext2 provides persistent storage. |
@@ -125,7 +126,6 @@ The internal physical NVMe is deliberately excluded from the USB storage mount p
 **What is not yet verified on hardware:**
 - **Physical power-loss tolerance.** Even a `SYNC_BACKED` device's guarantee is about a completed flush, not about surviving power loss mid-write. Only clean-shutdown persistence is verified on any device.
 - **NVMe write persistence on physical hardware.** NVMe read/write/flush and ext2 writable-mount persistence are verified against QEMU fixtures; the equivalent three-boot `e2fsck`-clean test has not yet been run against the Dell's internal NVMe.
-- **Multi-core execution.** The kernel is currently single-CPU-only by design; SMP is the next milestone (`SMP_DESIGN.md`).
 
 ## USB storage and durability
 
@@ -153,20 +153,28 @@ The USB path is a self-contained driver set under `src/drivers/xhci*` and `src/f
 
 The classification is what gates writable mount: only devices that can either prove their durability or accept the fallback disclosure get RW. A device that reports `WCE=1` and rejects `SYNCHRONIZE CACHE` is refused.
 
-## Next: multi-core (SMP) support
+## Multi-Core (SMP) Architecture
 
-With USB topology and RAM capacity now handled, the current focus is making the kernel multi-core. This touches nearly every subsystem, so it's sequenced as six pieces, each a stated prerequisite for the next — full detail in [`SMP_DESIGN.md`](SMP_DESIGN.md):
+Multi-core execution is complete and verified on bare metal (Dell Latitude 5590, 8 CPUs, 32 GiB RAM). It was designed and sequenced in six pieces — architectural specification in [`docs/plans/SMP_DESIGN.md`](docs/plans/SMP_DESIGN.md):
 
-1. **AP discovery and boot** — bring every CPU to a safe, parked state.
-2. **Per-CPU storage** — current-thread pointer, lock tracking, and syscall scratch stop being global.
-3. **Lock discipline under real concurrency** — verify rank checking holds with genuine cross-CPU contention, not just single-CPU interleaving.
-4. **Scheduler** — a shared runqueue first; per-CPU runqueues are a later optimization, not this milestone.
-5. **IPIs and TLB shootdown** — closes a known gap where address-space teardown currently relies on a CR3-inequality heuristic that isn't sufficient across CPUs.
-6. **Re-audit the two-stage PMM/VMM init** — confirm the ordering Phase 9H established still holds once APs exist.
+1. [**AP discovery and boot**](docs/roadmap/smp-piece1-ap-discovery.md) — Limine SMP protocol cross-checked with ACPI MADT; boots every core to a parked state.
+2. [**Per-CPU storage**](docs/roadmap/smp-piece2-percpu.md) — GS-base CPU locals, per-CPU GDTs, TSS selectors, and IST1/IST2 stacks with SWAPGS and NMI isolation.
+3. [**Lock discipline under real concurrency**](docs/roadmap/smp-piece3-lock-discipline.md) — Hierarchical rank checks (L1), contention telemetry, atomic spinlocks, and panic isolation.
+4. [**SMP Scheduler & Work-Stealing**](docs/roadmap/smp-piece4-scheduler.md) — Per-CPU runqueues, 100 Hz APIC timer preemption, task migration, and dual-lock work-stealing across online cores.
+5. [**IPIs and TLB shootdown**](docs/roadmap/smp-piece5-ipi.md) — APIC ICR messaging, synchronous broadcast TLB invalidation barriers, remote core wakeups, and real VMM unmap synchronization.
+6. [**Multi-core memory architecture**](docs/roadmap/smp-piece6-memory.md) —
+   - **6A**: 1 GiB boot ceiling and two-stage PMM/VMM initialization.
+   - **6B**: PMM multi-core safety (320,000 cycles across 8 CPUs under 622k+ contention events, 0 duplicate claims, exact post-quiescence state equality).
+   - **6C**: Contention-safe TLB shootdown with polled local servicing breaking circular deadlocks under interrupts-disabled contention, plus full TLB CR3 reload across all APs.
+   - **6D**: Address-space lifetime discipline (`op_refs`, `sched_refs`, active CPU masks, deferred destruction queue, and atomic wait/exit coordination verified across 100 process cycles with zero leaks).
 
-Smaller open items not blocking SMP: strong-durability confirmation on a second USB 3.x device class (9G.5d persistence test), and hubs (9G.5e, deferred). Accounts, permissions, and an installer remain later milestones after SMP.
+**Next milestones:**
+- Introspection syscalls and utilities (`sysinfo`, `top`, `ps`).
+- Persistent rootfs integration (`/paradise`).
+- MicroPython port and shell enhancements.
+- Accounts, permissions, and installer.
 
-See [`docs/roadmap/`](docs/roadmap/README.md) for checkpoint history and evidence, one file per phase, and [`AGENTS.md`](AGENTS.md) for implementation contracts and acceptance criteria.
+See [`docs/roadmap/`](docs/roadmap/README.md) for checkpoint history and hardware evidence, [`docs/plans/`](docs/plans/README.md) for architectural plans, and [`AGENTS.md`](AGENTS.md) for implementation contracts and invariants.
 
 ## Testing
 
@@ -174,6 +182,11 @@ The project combines host sanitizer tests, QEMU integration tests, offline files
 
 | Command | Coverage |
 | --- | --- |
+| `make test-smp-percpu` | BIOS/UEFI 1/4/8 CPUs: GS base, GDT/TSS, stack guards, NMI delivery on all CPUs |
+| `make test-vmm-host` | ASan/UBSan: VMM space registry, lifecycle states, transient `op_refs`, context switch tracking, deferred destruction queue with 0 leaks |
+| `make test-pmm-boot-host` | ASan/UBSan: PMM boot ceiling, capped OOM, contiguous boundary, and unlock gates |
+| `make test-smp-memory-boot` | BIOS/UEFI 1/4/8 CPUs: boot memory ceiling, readiness/CR3, and high-memory unlock |
+| `make test-smp-vmm` | BIOS/UEFI 1/4/8 CPUs: 100 user process spawn/exit cycles across cores, deferred destruction, table frame and page leak checks |
 | `make test-input` | Keyboard decoding, modifiers, and bounded input FIFO |
 | `make test-usb-discovery` | PCI-only xHCI detection/absence and shell startup in BIOS/UEFI, without an NVMe fixture |
 | `make test-usb-descriptors` | Device addressing, descriptor parsing, BOT class validation, and `SET_CONFIGURATION` in QEMU BIOS/UEFI |
@@ -196,14 +209,16 @@ Recorded test results and their limits live in [`docs/roadmap/`](docs/roadmap/RE
 ## Finding your way around
 
 ```text
-src/arch/x86_64/   CPU setup, interrupts, context switching, syscall entry
-src/kernel/       Boot, scheduler, processes, ELF loader, syscalls
-src/mm/           Physical memory, paging, heap
+src/arch/x86_64/   CPU setup, SMP bring-up, APIC/IPI, interrupts, context switching, syscall entry
+src/kernel/       Boot, scheduler, processes, ELF loader, syscalls, lock discipline
+src/mm/           Physical memory (PMM), paging (VMM), heap
 src/drivers/      Console, input, PCI, NVMe, xHCI, USB BOT, power
 src/fs/           VFS, tar initramfs, GPT, ext2, USB mount policy
 user/             Freestanding user programs and shell
 tests/            Host tests and mocks
 scripts/          Image creation and QEMU verification
+docs/plans/       Architecture specifications and staged implementation plans
+docs/roadmap/     Checkpoint implementation history and hardware verification evidence
 ```
 
-Before changing kernel code, read [`PROTECTED.md`](PROTECTED.md) first, then [`AGENTS.md`](AGENTS.md). For supported formats, architectural limits, and technical debt, see [`ARCH_REVIEW.md`](ARCH_REVIEW.md). For the current multi-core design, see [`SMP_DESIGN.md`](SMP_DESIGN.md). Contributions should state what changed, which tests were run, and whether the evidence comes from host tests, QEMU, or physical hardware.
+Before changing kernel code, read [`PROTECTED.md`](PROTECTED.md) first, then [`AGENTS.md`](AGENTS.md). For supported formats, architectural limits, and technical debt, see [`ARCH_REVIEW.md`](ARCH_REVIEW.md). For design plans, see [`docs/plans/`](docs/plans/README.md). Contributions should state what changed, which tests were run, and whether the evidence comes from host tests, QEMU, or physical hardware.
