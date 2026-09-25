@@ -417,6 +417,11 @@ pointer arrays, alignment and remaining stack space together.
    **1024 bytes** (max 32 env entries, 256 bytes per string), capping combined string payload at
    2048 bytes. Combined with pointer vectors (argv + envp + auxv = 568 bytes max), this guarantees
    at least 1480 bytes of free stack space for user execution without growing the user stack.
+3. **Alias Expansion Rules:** Follows POSIX.1-2017 §2.3.1:
+   - Line-level alias substitution before tokenization, bounded to 16 recursion levels with cycle prevention.
+   - **Trailing Blank Continuation:** If an alias value ends with a `<blank>` (`' '` or `'\t'`, e.g., `alias sudo='sudo '`), the next word is eligible for alias expansion, enabling wrapper aliases to chain.
+   - **Backslash & Quote Suppression:** Prefixing a command word with a backslash (e.g. `\cmd`) or quotes suppresses alias substitution. The backslash escape is preserved for the lexer, which strips the escape syntax and marks the token as `QUOTE_ESCAPED`, passing the unescaped command name to direct execution.
+   - **Command Separators:** Command delimiters (`;`, `&&`, `||`, `|`, `&`) reset alias eligibility so the first word of subsequent commands is expanded.
 
 Defaults: `PATH=/bin`, `HOME=/`, explicit terminal mode and PS1/PS2. Do not implicitly
 search `.`. Add tilde expansion, `alias`/`unalias` with recursion/cycle bounds, and

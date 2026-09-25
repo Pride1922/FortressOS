@@ -35,7 +35,9 @@ Implementation date: 2026-09-25. Design reference: [SHELL_DESIGN.md](../plans/SH
   - Table supporting up to 32 aliases.
   - Line-level alias expansion before tokenization.
   - Cycle detection and recursion depth bound (16 levels max).
-  - Quoting / backslash suppression (`\ll` or `'ll'` disables alias expansion).
+  - **POSIX.1-2017 §2.3.1 Trailing Blank Continuation:** If an alias value ends with a `<blank>` (`' '` or `'\t'`, e.g., `alias sudo='sudo '`), the following word is eligible for alias expansion, enabling command wrapper aliases to chain.
+  - **Backslash & Quote Suppression:** Prefixing a command word with a backslash (e.g. `\cmd`) or quotes suppresses alias substitution. The backslash is preserved for the lexer, which strips escape syntax and marks the token as `QUOTE_ESCAPED`, passing the unescaped command name to execution.
+  - **Command Delimiters:** Operators (`;`, `&&`, `||`, `|`, `&`) reset alias eligibility for the first word of subsequent commands.
   - Builtins:
     - `alias`: prints current aliases formatted as `alias name='value'`.
     - `alias name='value'`: defines or updates an alias.
