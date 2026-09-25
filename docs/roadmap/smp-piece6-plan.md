@@ -1,7 +1,6 @@
 # SMP Piece 6 — PMM/VMM implementation plan
 
-Status: **APPROVED for implementation, starting with 6A (2026-09-24).**
-6A code/tooling is written; build and verification remain pending user execution.
+Status: **Piece 6A & 6B COMPLETE and verified in QEMU (1/4/8 CPUs) and on physical Dell Latitude 5590 hardware (32 GiB, 8 CPUs) (2026-09-25). Planning 6C.**
 See [the implementation handoff](smp-piece6-memory.md).
 Prepared 2026-09-24 against Phase 5 commit `ce6d4e1`.
 The user will run builds/tests and report results; the implementation pass
