@@ -160,6 +160,10 @@ test-vmm-host:
 test-smp-memory-boot: $(BOOTABLE_ISO)
 	@python3 scripts/test_smp_memory_boot.py
 
+.PHONY: test-smp-vmm
+test-smp-vmm: $(BOOTABLE_ISO)
+	@python3 scripts/test_smp_vmm.py
+
 test-ext2:
 	@python3 scripts/test_ext2.py
 

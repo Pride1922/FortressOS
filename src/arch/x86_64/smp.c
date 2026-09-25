@@ -10,6 +10,7 @@
 #include "spinlock.h"
 #include "thread.h"
 #include "pmm.h"
+#include "syscall.h"
 
 /* SMP_DESIGN.md SM2 note: the original draft assumed a hand-rolled
  * INIT-SIPI-SIPI trampoline in identity-mapped sub-1MiB memory. Limine
@@ -65,6 +66,7 @@ void smp_ap_local_entry(size_t id) {
     gdt_init_cpu(id);
     gdt_set_tss_rsp0((uintptr_t)ap_stacks[id].stack + 16384);
     idt_load_cpu();
+    syscall_init_msrs();
     cpu_local_t *cpu = cpu_current();
     uintptr_t rsp;
     __asm__ volatile("mov %%rsp, %0" : "=r"(rsp));

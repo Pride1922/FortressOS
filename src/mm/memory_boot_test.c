@@ -381,3 +381,180 @@ void memory_stress_test_run(size_t total_cpus) {
     serial_puts("[ OK ] SMP Piece 6B (PMM Concurrent Multi-Core Safety) complete.\n\n");
 }
 
+/* =========================================================================
+ * SMP Piece 6D: Address Space Lifetime & Deferred Reaping Hardware Test
+ * ========================================================================= */
+
+bool memory_vmm_lifecycle_test_enabled(const boot_info_t *boot_info) {
+    static const char token[] = "smp_memory_test=vmm_lifecycle";
+    if (!boot_info) return false;
+    const char *cmd = boot_info->cmdline;
+    size_t capacity = sizeof(boot_info->cmdline);
+    for (size_t i = 0; i < capacity && cmd[i];) {
+        if (space(cmd[i])) { i++; continue; }
+        size_t start = i;
+        while (i < capacity && cmd[i] && !space(cmd[i])) i++;
+        if (i < capacity && i - start == sizeof(token) - 1 &&
+            memcmp(cmd + start, token, sizeof(token) - 1) == 0) return true;
+    }
+    return false;
+}
+
+static void require_6d(bool condition, const char *reason) {
+    if (condition) return;
+    serial_puts("[FAIL] SMP memory 6D: ");
+    serial_puts(reason);
+    serial_puts("\n");
+    for (;;) { __asm__ volatile("cli; hlt"); }
+}
+
+void memory_vmm_lifecycle_test_run(size_t total_cpus) {
+    if (total_cpus == 0) total_cpus = 1;
+
+    serial_puts("\n========================================================\n");
+    serial_puts("SMP Piece 6D: Address-Space Lifetime & Deferred Reaping\n");
+    serial_puts("========================================================\n");
+
+    /* Ensure initial quiescence: reap any dead threads and drain deferred queue */
+    for (int d = 0; d < 5; d++) {
+        sched_reap_dead();
+        vmm_drain_deferred_destructions();
+        thread_yield();
+    }
+
+    size_t baseline_allocated_tables = vmm_get_allocated_table_frames();
+    size_t baseline_free_pages = pmm_get_free_pages();
+    uint64_t baseline_stack_slots = sched_get_active_stack_slots_mask();
+    size_t initial_deferred = vmm_get_deferred_count();
+
+    require_6d(initial_deferred == 0, "initial deferred destruction queue not empty");
+
+    serial_puts("       [INFO] Baseline snapshot: allocated_tables=");
+    serial_print_dec(baseline_allocated_tables);
+    serial_puts(" free_pages=");
+    serial_print_dec(baseline_free_pages);
+    serial_puts("\n");
+
+    /* Part 1: Explicit VMM_ERR_BUSY deferral, queueing, and drainage verification */
+    serial_puts("[TEST 1] SMP memory 6D: Testing VMM_ERR_BUSY deferral and deferred list drainage...\n");
+    uintptr_t u1 = vmm_create_user_pml4();
+    require_6d(u1 != 0, "vmm_create_user_pml4 failed");
+    vmm_space_t *s1 = vmm_space_lookup(u1);
+    require_6d(s1 != NULL && s1->state == VMM_SPACE_LIVE, "user space not registered as LIVE");
+
+    uintptr_t tf1 = pmm_alloc_page();
+    uintptr_t tf2 = pmm_alloc_page();
+    require_6d(tf1 != 0 && tf2 != 0, "failed to allocate test data pages");
+    require_6d(vmm_map_page(s1->pml4_virt, 0x400000, tf1, PTE_PRESENT | PTE_WRITABLE | PTE_USER) == VMM_OK, "map tf1");
+    require_6d(vmm_map_page(s1->pml4_virt, 0x800000, tf2, PTE_PRESENT | PTE_WRITABLE | PTE_USER) == VMM_OK, "map tf2");
+
+    require_6d(vmm_space_get_op(s1->pml4_virt) == VMM_OK, "vmm_space_get_op failed");
+    require_6d(s1->op_refs == 1, "op_refs mismatch");
+
+    /* While op_ref held: destruction must return VMM_ERR_BUSY, transition to DYING, and enqueue */
+    int busy_res = vmm_destroy_pml4(u1, true);
+    require_6d(busy_res == VMM_ERR_BUSY, "vmm_destroy_pml4 did not return VMM_ERR_BUSY");
+    require_6d(s1->state == VMM_SPACE_DYING, "busy space state not DYING");
+    require_6d(s1->deferred_queued, "busy space not marked deferred_queued");
+    require_6d(vmm_get_deferred_count() == 1, "deferred count not 1");
+
+    /* Verify DYING space rejects new ops and sched refs */
+    require_6d(vmm_space_get_op(s1->pml4_virt) == VMM_ERR_INVALID_ADDR, "DYING accepted op_ref");
+    require_6d(vmm_space_add_sched_ref(u1) == VMM_ERR_INVALID_ADDR, "DYING accepted sched_ref");
+
+    /* Release op_ref and drain deferred destruction queue */
+    vmm_space_put_op(s1->pml4_virt);
+    size_t drained = vmm_drain_deferred_destructions();
+    require_6d(drained == 1, "deferred drainage count mismatch");
+    require_6d(vmm_get_deferred_count() == 0, "deferred list not empty after drain");
+    require_6d(vmm_space_lookup(u1) == NULL, "space still in registry after drain");
+    require_6d(vmm_get_allocated_table_frames() == baseline_allocated_tables, "table frames leaked in Part 1");
+    require_6d(pmm_get_free_pages() == baseline_free_pages, "data pages leaked in Part 1");
+
+    serial_puts("       [PASS] SMP memory 6D: VMM_ERR_BUSY deferral, queueing, and drainage verified\n");
+
+    /* Part 2: 100 spawn/exit cycles across cores */
+    extern const uint8_t embedded_init_elf_start[];
+    extern const uint8_t embedded_init_elf_end[];
+    size_t init_elf_size = (size_t)(embedded_init_elf_end - embedded_init_elf_start);
+
+    serial_puts("[TEST 2] SMP memory 6D: Running 100 spawn/exit cycles across ");
+    serial_print_dec(total_cpus);
+    serial_puts(" CPU(s)...\n");
+
+    for (int cycle = 1; cycle <= 100; cycle++) {
+        size_t target_cpu = (cycle - 1) % total_cpus;
+        tcb_t *proc = process_spawn_on_cpu(target_cpu, "vmm_worker",
+                                           embedded_init_elf_start, init_elf_size, 9);
+        if (!proc) {
+            serial_puts("[FAIL] SMP memory 6D: process_spawn_on_cpu failed at cycle ");
+            serial_print_dec(cycle);
+            serial_puts("\n");
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
+        uint64_t pid = proc->tid;
+
+        uint64_t exit_code = 0;
+        bool wait_ok = process_wait(pid, &exit_code);
+        if (!wait_ok) {
+            serial_puts("[FAIL] SMP memory 6D: process_wait failed for PID ");
+            serial_print_dec(pid);
+            serial_puts("\n");
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
+        if (exit_code != 42) {
+            serial_puts("[FAIL] SMP memory 6D: Unexpected exit code ");
+            serial_print_dec(exit_code);
+            serial_puts(" (expected 42)\n");
+            for (;;) { __asm__ volatile("cli; hlt"); }
+        }
+
+        sched_reap_dead();
+        vmm_drain_deferred_destructions();
+
+        if (cycle % 25 == 0) {
+            serial_puts("       [INFO] Completed ");
+            serial_print_dec(cycle);
+            serial_puts("/100 cycles...\n");
+        }
+    }
+
+    /* Final reap and drain */
+    for (int d = 0; d < 10; d++) {
+        sched_reap_dead();
+        vmm_drain_deferred_destructions();
+        thread_yield();
+    }
+
+    size_t final_deferred = vmm_get_deferred_count();
+    require_6d(final_deferred == 0, "deferred destructions remaining");
+    serial_puts("       [PASS] SMP memory 6D: zero deferred destructions remaining (all drained)\n");
+
+    size_t final_allocated_tables = vmm_get_allocated_table_frames();
+    if (final_allocated_tables != baseline_allocated_tables) {
+        serial_puts("[FAIL] SMP memory 6D: Table frame mismatch! Baseline: ");
+        serial_print_dec(baseline_allocated_tables);
+        serial_puts(" Final: ");
+        serial_print_dec(final_allocated_tables);
+        serial_puts("\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+    serial_puts("       [PASS] SMP memory 6D: exact table-frame counter equality (matches baseline)\n");
+
+    size_t final_free_pages = pmm_get_free_pages();
+    if (final_free_pages != baseline_free_pages) {
+        serial_puts("[FAIL] SMP memory 6D: Free pages mismatch! Baseline: ");
+        serial_print_dec(baseline_free_pages);
+        serial_puts(" Final: ");
+        serial_print_dec(final_free_pages);
+        serial_puts("\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+    serial_puts("       [PASS] SMP memory 6D: exact physical frame equality (zero frame leaks)\n");
+
+    uint64_t final_stack_slots = sched_get_active_stack_slots_mask();
+    require_6d(final_stack_slots == baseline_stack_slots, "kernel stack slots leaked");
+    serial_puts("       [PASS] SMP memory 6D: all worker stacks reaped cleanly\n");
+    serial_puts("[ OK ] SMP Piece 6D (Address-Space Lifetime & Deferred Reaping) complete.\n\n");
+}
+

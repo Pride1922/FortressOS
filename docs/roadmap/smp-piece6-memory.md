@@ -281,5 +281,33 @@ SMP Piece 6B: PMM Concurrent Multi-Core Stress Test
    - Guaranteed non-blocking deferred destruction queue (`vmm_drain_deferred_destructions()`) integrated with `sched_reap_dead()` and idle threads, preserving L1 lock hierarchy and freeing structures outside `g_vmm_lock`.
    - Verified clean under host ASan/UBSan (`make test-vmm-host`) and full QEMU BIOS/UEFI shell regressions with zero leaks.
 
+---
+
+### Step 5: Bare-Metal and QEMU Integration Test for Piece 6D (`smp_memory_test=vmm_lifecycle`)
+
+To verify address-space lifetime and deferred reaping end-to-end on both QEMU and bare-metal multi-core hardware, a dedicated integration suite is executed via the boot parameter `smp_memory_test=vmm_lifecycle`:
+
+1. **Part 1: Explicit Busy State and Deferred Queue Reclamation**:
+   - Creates a user PML4 space (`vmm_create_pml4()`).
+   - Acquires a transient operation reference (`vmm_space_acquire_op()`) simulating an in-flight page table traversal.
+   - Attempts immediate destruction (`vmm_destroy_pml4()`) and asserts it returns `VMM_ERR_BUSY`.
+   - Queues the space onto the deferred destruction queue (`vmm_space_queue_deferred_destruction()`).
+   - Releases the op reference (`vmm_space_release_op()`) and triggers `vmm_drain_deferred_destructions()`.
+   - Asserts queue count drops to 0 and all allocated table frames return to baseline.
+
+2. **Part 2: 100 User Process Spawn/Exit Cycles Across Cores**:
+   - Takes baseline snapshots of allocated table frames (`vmm_get_allocated_table_frames()`) and free physical pages (`pmm_get_free_pages()`).
+   - Spawns 100 user processes (`/bin/init` running silent Mode 9 exit via fast `syscall`) round-robin across all available CPUs (`process_spawn_on_cpu`).
+   - Verifies AP `syscall` MSR initialization (`syscall_init_msrs()`) and cross-core process wait/exit recording (`process_wait_extended`).
+   - Waits for each process exit, verifies exit code 42, reaps dead threads, and drains deferred destructions.
+   - Asserts exact post-test table-frame equality (`vmm_get_allocated_table_frames() == baseline`).
+   - Asserts exact physical frame equality (`pmm_get_free_pages() == baseline`) with 0 frame leaks.
+   - Asserts stack slot reclamation (`thread_get_stack_slot_count() == 1`).
+
+**QEMU Multi-Core Verification (`scripts/test_smp_vmm.py`)**:
+- Verified across 1, 4, and 8 CPUs on both Legacy BIOS and UEFI OVMF (6/6 configurations PASSED).
+- Reached interactive shell prompt `fortress> ` with zero crashes or leaks.
+
+
 
 

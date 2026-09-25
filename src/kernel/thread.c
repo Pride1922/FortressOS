@@ -1020,11 +1020,13 @@ int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const a
     return 0;
 }
 
-static tcb_t *process_spawn_internal(const char *name, const void *elf_data, size_t elf_size,
+static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
+                                     const char *name, const void *elf_data, size_t elf_size,
                                      int argc, const char *const argv[],
                                      uint64_t scalar_arg, int64_t *error) {
     *error = SYSCALL_ENOMEM;
     if (!elf_data || elf_size == 0) return NULL;
+    if (target_cpu >= MAX_DETECTED_CPUS) target_cpu = cpu_current()->id;
 
     sched_reap_dead();
 
@@ -1110,8 +1112,8 @@ static tcb_t *process_spawn_internal(const char *name, const void *elf_data, siz
     p->is_user = true;
     p->exit_code = 0;
     p->has_exited = false;
-    p->current_cpu = cpu_current()->id;
-    p->cpu_affinity = (int)cpu_current()->id; /* Pin child process to parent CPU in Piece 4 */
+    p->current_cpu = target_cpu;
+    p->cpu_affinity = affinity;
 
     /* 5. Set up initial kernel stack frame for first context switch to user_process_trampoline */
     uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);
@@ -1140,16 +1142,31 @@ static tcb_t *process_spawn_internal(const char *name, const void *elf_data, siz
         return NULL;
     }
 
-    rflags = spin_lock_irqsave(&g_sched_lock);
-    runqueue_push_locked(p);
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    rflags = spin_lock_irqsave(&scheduler_cpus[target_cpu].sched_lock);
+    if (!scheduler_cpus[target_cpu].runqueue_head) {
+        scheduler_cpus[target_cpu].runqueue_head = p;
+        scheduler_cpus[target_cpu].runqueue_tail = p;
+    } else {
+        scheduler_cpus[target_cpu].runqueue_tail->next = p;
+        scheduler_cpus[target_cpu].runqueue_tail = p;
+    }
+    spin_unlock_irqrestore(&scheduler_cpus[target_cpu].sched_lock, rflags);
+
+    if (target_cpu != cpu_current()->id) {
+        smp_send_resched(target_cpu);
+    }
 
     return p;
 }
 
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
     int64_t error;
-    return process_spawn_internal(name, elf_data, elf_size, 0, NULL, arg, &error);
+    return process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, name, elf_data, elf_size, 0, NULL, arg, &error);
+}
+
+tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
+    int64_t error;
+    return process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size, 0, NULL, arg, &error);
 }
 
 int64_t process_spawn_from_vfs(const char *path, int argc, const char *const argv[], int64_t *out_pid) {
@@ -1196,7 +1213,7 @@ int64_t process_spawn_from_vfs(const char *path, int argc, const char *const arg
         }
         image = buffer;
     }
-    tcb_t *child = process_spawn_internal(path, image, size, argc, argv, 0, &result);
+    tcb_t *child = process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, path, image, size, argc, argv, 0, &result);
     if (!child) goto out;
     *record = (child_record_t){ .parent = g_current_thread->tid,
                               .pid = child->tid, .used = true };
@@ -1324,63 +1341,89 @@ void process_exit(uint64_t exit_code) {
 }
 
 bool process_is_alive(uint64_t pid) {
-    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
-    if (g_current_thread && g_current_thread->tid == pid && g_current_thread->state != THREAD_TERMINATED) {
-        spin_unlock_irqrestore(&g_sched_lock, rflags);
-        return true;
-    }
-    tcb_t *c = g_runqueue_head;
-    while (c) {
-        if (c->tid == pid && c->state != THREAD_TERMINATED) {
-            spin_unlock_irqrestore(&g_sched_lock, rflags);
+    size_t limit = g_total_sched_cpus ? g_total_sched_cpus : 1;
+    for (size_t c = 0; c < limit; c++) {
+        uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+        if (cpu_locals[c].current_thread &&
+            cpu_locals[c].current_thread->tid == pid &&
+            cpu_locals[c].current_thread->state != THREAD_TERMINATED) {
+            spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
             return true;
         }
-        c = c->next;
-    }
-    for (c = g_blocked_threads; c; c = c->next) {
-        if (c->tid == pid) {
-            spin_unlock_irqrestore(&g_sched_lock, rflags);
-            return true;
+        for (tcb_t *t = scheduler_cpus[c].runqueue_head; t; t = t->next) {
+            if (t->tid == pid && t->state != THREAD_TERMINATED) {
+                spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
+                return true;
+            }
         }
+        for (tcb_t *t = scheduler_cpus[c].blocked_threads; t; t = t->next) {
+            if (t->tid == pid) {
+                spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
+                return true;
+            }
+        }
+        spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
     }
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
     return false;
 }
 
 bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_preempt_count, uint64_t *out_total_ticks) {
+    size_t limit = g_total_sched_cpus ? g_total_sched_cpus : 1;
     for (;;) {
-        uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
-
-        /* 1. Check if captured in exit records */
-        for (int i = 0; i < MAX_EXIT_RECORDS; i++) {
-            if (g_exit_records[i].valid && g_exit_records[i].pid == pid) {
-                if (out_exit_code) *out_exit_code = g_exit_records[i].exit_code;
-                if (out_preempt_count) *out_preempt_count = g_exit_records[i].preempt_count;
-                if (out_total_ticks) *out_total_ticks = g_exit_records[i].total_ticks;
-                g_exit_records[i].valid = false;
-                spin_unlock_irqrestore(&g_sched_lock, rflags);
-                return true;
-            }
-        }
-
-        /* 2. Check if process is still alive */
-        bool alive = false;
-        if (g_current_thread && g_current_thread->tid == pid && g_current_thread->state != THREAD_TERMINATED) {
-            alive = true;
-        } else {
-            tcb_t *c = g_runqueue_head;
-            while (c) {
-                if (c->tid == pid && c->state != THREAD_TERMINATED) {
-                    alive = true;
-                    break;
+        /* 1. Check if captured in exit records across all CPUs */
+        for (size_t c = 0; c < limit; c++) {
+            uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+            for (int i = 0; i < MAX_EXIT_RECORDS; i++) {
+                if (scheduler_cpus[c].exit_records[i].valid && scheduler_cpus[c].exit_records[i].pid == pid) {
+                    if (out_exit_code) *out_exit_code = scheduler_cpus[c].exit_records[i].exit_code;
+                    if (out_preempt_count) *out_preempt_count = scheduler_cpus[c].exit_records[i].preempt_count;
+                    if (out_total_ticks) *out_total_ticks = scheduler_cpus[c].exit_records[i].total_ticks;
+                    scheduler_cpus[c].exit_records[i].valid = false;
+                    spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
+                    return true;
                 }
-                c = c->next;
             }
+            spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
         }
-        for (tcb_t *c = g_blocked_threads; c; c = c->next) {
-            if (c->tid == pid) alive = true;
+
+        /* 2. Check if process is still alive across all CPUs */
+        bool alive = false;
+        for (size_t c = 0; c < limit; c++) {
+            uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+            if (cpu_locals[c].current_thread &&
+                cpu_locals[c].current_thread->tid == pid &&
+                cpu_locals[c].current_thread->state != THREAD_TERMINATED) {
+                alive = true;
+            } else if (scheduler_cpus[c].zombie_thread &&
+                       scheduler_cpus[c].zombie_thread->tid == pid) {
+                alive = true;
+            } else {
+                for (tcb_t *t = scheduler_cpus[c].runqueue_head; t; t = t->next) {
+                    if (t->tid == pid && t->state != THREAD_TERMINATED) {
+                        alive = true;
+                        break;
+                    }
+                }
+                if (!alive) {
+                    for (tcb_t *t = scheduler_cpus[c].blocked_threads; t; t = t->next) {
+                        if (t->tid == pid) {
+                            alive = true;
+                            break;
+                        }
+                    }
+                }
+                if (!alive) {
+                    for (tcb_t *t = scheduler_cpus[c].dead_threads; t; t = t->next) {
+                        if (t->tid == pid) {
+                            alive = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
+            if (alive) break;
         }
-        spin_unlock_irqrestore(&g_sched_lock, rflags);
 
         if (!alive) {
             /* Process not found in alive queues or exit records */
@@ -1388,6 +1431,7 @@ bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_
         }
 
         /* Yield CPU to allow the process or reaper to make progress */
+        sched_reap_dead();
         thread_yield();
     }
 }

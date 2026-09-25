@@ -65,6 +65,8 @@ _start:
     je .mode_ext2_test
     cmp rdi, 7
     je .mode_vfs_test
+    cmp rdi, 9
+    je .mode_quick_exit
 
     ; -------------------------------------------------------------
     ; Mode 0: Default Init Executable Verification
@@ -575,6 +577,12 @@ _start:
 .fail_stack:
     mov rdi, 5
     jmp .do_exit
+
+.mode_quick_exit:
+    mov rax, 0          ; SYS_EXIT
+    mov rdi, 42         ; exit code 42
+    syscall
+    hlt
 
 .do_exit:
     mov rax, 0          ; SYS_EXIT

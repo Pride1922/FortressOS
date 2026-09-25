@@ -109,6 +109,7 @@ int64_t process_spawn_from_vfs(const char *path, int argc, const char *const arg
 bool process_wait_child(uint64_t pid, uint64_t *out_exit_code);
 tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size);
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg);
+tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf_data, size_t elf_size, uint64_t arg);
 void   process_exit(uint64_t exit_code);
 bool   process_wait(uint64_t pid, uint64_t *out_exit_code);
 bool   process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_preempt_count, uint64_t *out_total_ticks);

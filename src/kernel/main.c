@@ -5021,6 +5021,10 @@ pf_boot_guard_done:
         memory_stress_test_run(smp_get_cpu_count());
     }
 
+    if (memory_vmm_lifecycle_test_enabled(&boot_info)) {
+        memory_vmm_lifecycle_test_run(smp_get_cpu_count());
+    }
+
     /* Inputs and shell are started after destructive/negative acceptance cases. */
     __asm__ volatile("cli" ::: "memory");
     sched_disable_preemption();
