@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix="fortress-keyboard-") as tmp:
         qmp, remote = QMP(tmp / "qmp"), Remote(tmp / "gdb")
         remote.request("qSupported")
         remote.request("qXfer:features:read:target.xml:0,fff")
-        remote.resume_to(sym["input_read"])
+        remote.resume_to(sym["input_read_timeout"])
         assert remote.memory(sym["serial_available"], 1) == b"\0"
         qmp.execute("cont")
         time.sleep(0.2)

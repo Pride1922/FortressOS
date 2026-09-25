@@ -16,6 +16,8 @@
 #include "usb_mount.h"
 #include "xhci.h"
 #include "dmesg.h"
+#include "terminal.h"
+#include "console.h"
 
 extern void syscall_entry_stub(void);
 
@@ -161,9 +163,11 @@ static int64_t sys_write(uint64_t fd, uintptr_t user_buf, size_t count) {
     /* 5. Standard output (1) or standard error (2) -> serial / console */
     if (fd == 1 || fd == 2) {
         const char *ptr = (const char *)user_buf;
-        for (size_t i = 0; i < count; i++) {
-            serial_putc(ptr[i]);
-        }
+        tcb_t *owner = thread_current();
+        unsigned mode = owner ? owner->terminal_mode : TERM_MIRROR;
+        if (mode != TERM_SERIAL) console_terminal_write(ptr, count);
+        if (mode != TERM_LOCAL)
+            for (size_t i = 0; i < count; i++) serial_raw_putc(ptr[i]);
         return (int64_t)count;
     }
 
@@ -183,6 +187,37 @@ static int64_t sys_write(uint64_t fd, uintptr_t user_buf, size_t count) {
         return syscall_from_vfs_error(res);
     }
     return res;
+}
+
+static int64_t sys_termctl(uint64_t op, uintptr_t ptr, size_t size) {
+    tcb_t *t = thread_current();
+    if (!t || size != sizeof(terminal_info_t) || op > TERM_SET) return SYSCALL_EINVAL;
+    if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, size, true)) return SYSCALL_EFAULT;
+    terminal_info_t *info = (terminal_info_t *)ptr;
+    if (op == TERM_SET) {
+        if (info->version != 1 || info->mode > TERM_PLAIN ||
+            (info->cols && (info->cols < 20 || info->cols > 512))) return SYSCALL_EINVAL;
+        if (info->mode == TERM_LOCAL && !console_is_initialized()) return SYSCALL_EOPNOTSUPP;
+        if (info->mode == TERM_SERIAL && !serial_is_available()) return SYSCALL_EOPNOTSUPP;
+        t->terminal_mode = info->mode;
+        t->terminal_cols = info->cols;
+    }
+    uint64_t cols = 80, rows = 25;
+    if (console_is_initialized()) console_get_dimensions(&cols, &rows);
+    if (t->terminal_mode != TERM_LOCAL && serial_is_available()) {
+        uint64_t serial_cols = t->terminal_cols ? t->terminal_cols : 80;
+        if (t->terminal_mode == TERM_SERIAL || serial_cols < cols) cols = serial_cols;
+    }
+    *info = (terminal_info_t){1, t->terminal_mode, (uint32_t)cols, (uint32_t)rows,
+                             input_dropped(), console_generation()};
+    return 0;
+}
+
+static int64_t sys_input_read(uintptr_t ptr, size_t count, int64_t timeout) {
+    if (count > MAX_SYSCALL_WRITE_LEN || timeout < -1 || timeout > 1000) return SYSCALL_EINVAL;
+    if (!count) return 0;
+    if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, count, true)) return SYSCALL_EFAULT;
+    return input_read_timeout((void *)ptr, count, timeout);
 }
 
 static int64_t sys_exit(uint64_t exit_code, interrupt_frame_t *frame) {
@@ -295,10 +330,88 @@ static int copy_user_string(uint64_t *pml4, uintptr_t user_ptr, char *dest, size
     return SYSCALL_EINVAL;
 }
 
+static int resolve_path(tcb_t *proc, const char *in_path, char *out_path, size_t out_cap) {
+    if (!in_path || !out_path || out_cap < 2) return SYSCALL_EINVAL;
+
+    char combined[VFS_MAX_PATH * 2];
+    size_t in_len = strlen(in_path);
+
+    if (in_path[0] == '/') {
+        if (in_len >= sizeof(combined)) return SYSCALL_EINVAL;
+        memcpy(combined, in_path, in_len + 1);
+    } else {
+        const char *cwd = (proc && proc->cwd[0]) ? proc->cwd : "/";
+        size_t cwd_len = strlen(cwd);
+        if (cwd_len + 1 + in_len >= sizeof(combined)) return SYSCALL_EINVAL;
+        memcpy(combined, cwd, cwd_len);
+        if (cwd_len > 0 && combined[cwd_len - 1] != '/') {
+            combined[cwd_len] = '/';
+            cwd_len++;
+        }
+        memcpy(combined + cwd_len, in_path, in_len + 1);
+    }
+
+    char *out = out_path;
+    *out++ = '/';
+    *out = '\0';
+
+    const char *p = combined;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+
+        const char *seg_start = p;
+        while (*p && *p != '/') p++;
+        size_t seg_len = (size_t)(p - seg_start);
+
+        if (seg_len == 1 && seg_start[0] == '.') {
+            continue;
+        }
+
+        if (seg_len == 2 && seg_start[0] == '.' && seg_start[1] == '.') {
+            if (out > out_path + 1) {
+                out--;
+                while (out > out_path && *out != '/') out--;
+                if (out == out_path) {
+                    out = out_path + 1;
+                    *out = '\0';
+                } else {
+                    *out = '\0';
+                }
+            }
+            continue;
+        }
+
+        size_t current_len = (size_t)(out - out_path);
+        size_t needed = (current_len > 1 ? 1 : 0) + seg_len + 1;
+        if (current_len + needed > out_cap) {
+            return SYSCALL_EINVAL;
+        }
+
+        if (current_len > 1) {
+            *out++ = '/';
+        }
+        memcpy(out, seg_start, seg_len);
+        out += seg_len;
+        *out = '\0';
+    }
+
+    if (out == out_path) {
+        out_path[0] = '/';
+        out_path[1] = '\0';
+    }
+    return SYSCALL_SUCCESS;
+}
+
 static int64_t sys_spawn(uintptr_t user_path, uintptr_t user_argv) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char raw_path[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, raw_path, sizeof(raw_path));
+    if (err) return err;
+
+    tcb_t *curr = thread_current();
     char path[VFS_MAX_PATH];
-    int err = copy_user_string(active_pml4, user_path, path, sizeof(path));
+    err = resolve_path(curr, raw_path, path, sizeof(path));
     if (err) return err;
 
     if (!user_argv) {
@@ -386,8 +499,8 @@ static int64_t sys_wait(uint64_t pid, uintptr_t user_status) {
 
 static int64_t sys_open(uintptr_t user_path, int flags) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
-    char kpath[VFS_MAX_PATH];
-    int err = copy_user_string(active_pml4, user_path, kpath, sizeof(kpath));
+    char raw_path[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, raw_path, sizeof(raw_path));
     if (err != SYSCALL_SUCCESS) {
         return err;
     }
@@ -395,6 +508,12 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
     tcb_t *curr = thread_current();
     if (!curr) {
         return SYSCALL_EBADF;
+    }
+
+    char kpath[VFS_MAX_PATH];
+    err = resolve_path(curr, raw_path, kpath, sizeof(kpath));
+    if (err != SYSCALL_SUCCESS) {
+        return err;
     }
 
     /* Check whether an fd is available before any destructive open/truncation */
@@ -478,8 +597,15 @@ static int64_t sys_read(int fd, uintptr_t user_buf, size_t count) {
 
 static int64_t sys_stat(uintptr_t user_path, uintptr_t user_statbuf) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char raw_path[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, raw_path, sizeof(raw_path));
+    if (err != SYSCALL_SUCCESS) {
+        return err;
+    }
+
+    tcb_t *curr = thread_current();
     char kpath[VFS_MAX_PATH];
-    int err = copy_user_string(active_pml4, user_path, kpath, sizeof(kpath));
+    err = resolve_path(curr, raw_path, kpath, sizeof(kpath));
     if (err != SYSCALL_SUCCESS) {
         return err;
     }
@@ -574,8 +700,13 @@ static int64_t sys_kbd_layout(int64_t layout) {
 
 static int64_t sys_mkdir(uintptr_t user_path, uint64_t mode) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char raw_path[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, raw_path, sizeof(raw_path));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    tcb_t *curr = thread_current();
     char kpath[VFS_MAX_PATH];
-    int err = copy_user_string(active_pml4, user_path, kpath, sizeof(kpath));
+    err = resolve_path(curr, raw_path, kpath, sizeof(kpath));
     if (err != SYSCALL_SUCCESS) return err;
 
     int res = vfs_mkdir(kpath, (uint32_t)mode);
@@ -585,8 +716,13 @@ static int64_t sys_mkdir(uintptr_t user_path, uint64_t mode) {
 
 static int64_t sys_unlink(uintptr_t user_path) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char raw_path[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, raw_path, sizeof(raw_path));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    tcb_t *curr = thread_current();
     char kpath[VFS_MAX_PATH];
-    int err = copy_user_string(active_pml4, user_path, kpath, sizeof(kpath));
+    err = resolve_path(curr, raw_path, kpath, sizeof(kpath));
     if (err != SYSCALL_SUCCESS) return err;
 
     int res = vfs_unlink(kpath);
@@ -596,17 +732,67 @@ static int64_t sys_unlink(uintptr_t user_path) {
 
 static int64_t sys_rename(uintptr_t user_oldpath, uintptr_t user_newpath) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char raw_old[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_oldpath, raw_old, sizeof(raw_old));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    char raw_new[VFS_MAX_PATH];
+    err = copy_user_string(active_pml4, user_newpath, raw_new, sizeof(raw_new));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    tcb_t *curr = thread_current();
     char koldpath[VFS_MAX_PATH];
-    int err = copy_user_string(active_pml4, user_oldpath, koldpath, sizeof(koldpath));
+    err = resolve_path(curr, raw_old, koldpath, sizeof(koldpath));
     if (err != SYSCALL_SUCCESS) return err;
 
     char knewpath[VFS_MAX_PATH];
-    err = copy_user_string(active_pml4, user_newpath, knewpath, sizeof(knewpath));
+    err = resolve_path(curr, raw_new, knewpath, sizeof(knewpath));
     if (err != SYSCALL_SUCCESS) return err;
 
     int res = vfs_rename(koldpath, knewpath);
     if (res < 0) return syscall_from_vfs_error(res);
     return SYSCALL_SUCCESS;
+}
+
+static int64_t sys_chdir(uintptr_t user_path) {
+    tcb_t *curr = thread_current();
+    if (!curr) return SYSCALL_EBADF;
+
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char raw_path[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, raw_path, sizeof(raw_path));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    char resolved[VFS_MAX_PATH];
+    err = resolve_path(curr, raw_path, resolved, sizeof(resolved));
+    if (err != SYSCALL_SUCCESS) return err;
+
+    vfs_node_t *node = vfs_lookup(resolved);
+    if (!node) return SYSCALL_ENOENT;
+    if (node->type != VFS_DIRECTORY) return SYSCALL_ENOTDIR;
+
+    size_t rlen = strlen(resolved);
+    if (rlen >= sizeof(curr->cwd)) return SYSCALL_EINVAL;
+    memcpy(curr->cwd, resolved, rlen + 1);
+    return SYSCALL_SUCCESS;
+}
+
+static int64_t sys_getcwd(uintptr_t user_buf, uint64_t size) {
+    if (size == 0) return SYSCALL_EINVAL;
+    tcb_t *curr = thread_current();
+    if (!curr) return SYSCALL_EBADF;
+
+    const char *cwd = curr->cwd[0] ? curr->cwd : "/";
+    size_t cwd_len = strlen(cwd) + 1;
+    if (size < cwd_len) return SYSCALL_EINVAL;
+
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(active_pml4, user_buf, cwd_len, true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    memcpy((void *)user_buf, cwd, cwd_len);
+    return (int64_t)cwd_len;
 }
 
 static int64_t sys_sync(void) {
@@ -629,6 +815,12 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
     switch (syscall_nr) {
         case SYS_SPAWN:
             result = sys_spawn(frame->rdi, frame->rsi);
+            break;
+        case SYS_TERMCTL:
+            result = sys_termctl(frame->rdi, frame->rsi, frame->rdx);
+            break;
+        case SYS_INPUT_READ:
+            result = sys_input_read(frame->rdi, frame->rsi, (int64_t)frame->rdx);
             break;
         case SYS_WAIT:
             result = sys_wait(frame->rdi, frame->rsi);
@@ -687,6 +879,14 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_SYNC:
             result = sys_sync();
+            break;
+
+        case SYS_GETCWD:
+            result = sys_getcwd(frame->rdi, frame->rsi);
+            break;
+
+        case SYS_CHDIR:
+            result = sys_chdir(frame->rdi);
             break;
 
         default:

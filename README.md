@@ -12,7 +12,7 @@ It is an independent kernel, not a Linux distribution. The project is still unde
 > [`PROTECTED.md`](PROTECTED.md) — those are kept in sync with the code, this
 > file is kept in sync with those.
 
-**Current milestone:** Multi-core (SMP) support is **complete and verified on physical hardware** across all six pieces (Pieces 1–5, 6A, 6B, 6C, 6D) on the Dell Latitude 5590 (8 CPUs, 32 GiB RAM). Application processors (APs) schedule work concurrently from per-CPU runqueues with dual-lock work-stealing, cross-core IPIs, synchronous TLB shootdowns with polled deadlock-breaking servicing, atomic process wait/exit lifecycle coordination, and non-blocking deferred address-space destruction. USB storage is complete through SuperSpeed (USB 3.x) direct-attached devices (Phase 9G.5b), multiple xHCI controllers are supported (Phase 9G.5a), and physical RAM covers the full 32 GiB (Phase 9H).
+**Current milestone:** Multi-core (SMP) support is **complete and verified on physical hardware** across all six pieces (Pieces 1–5, 6A, 6B, 6C, 6D) on the Dell Latitude 5590 (8 CPUs, 32 GiB RAM). Application processors (APs) schedule work concurrently from per-CPU runqueues with dual-lock work-stealing, cross-core IPIs, synchronous TLB shootdowns with polled deadlock-breaking servicing, atomic process wait/exit lifecycle coordination, and non-blocking deferred address-space destruction. USB storage is complete through SuperSpeed (USB 3.x) direct-attached devices (Phase 9G.5b), multiple xHCI controllers are supported (Phase 9G.5a), and physical RAM covers the full 32 GiB (Phase 9H). Shell S0–S2 is implemented with terminal byte I/O, full line editing, RAM history, reverse search, and Belgian AZERTY AltGr support.
 
 ## What works today
 
@@ -25,7 +25,7 @@ It is an independent kernel, not a Linux distribution. The project is still unde
 | Storage | PCI discovery, NVMe reads/writes/flush, xHCI + USB Mass Storage BOT (USB 2.0 and USB 3.x SuperSpeed), validated GPT partitions, and bounded read/write ext2 support. Write persistence is verified on QEMU NVMe fixtures and on two independent physical USB devices; physical NVMe write persistence has not yet been tested on hardware. |
 | USB | Multiple xHCI controllers enumerated and initialized; device enumeration and descriptor parsing; BOT/SCSI reads and writes; durability classification with per-device policy; explicit writable opt-in. Both USB 2.0 and directly-attached USB 3.x (SuperSpeed) devices are supported; external hubs and hot-plug are not. |
 | Files | Read, create, write, truncate, make directories, rename/move, and delete. Initramfs provides boot-time programs; ext2 provides persistent storage. |
-| Interaction | Framebuffer text console, PS/2 keyboard, US and Belgian AZERTY layouts, serial input, a Ring 3 shell, and a small text editor. |
+| Interaction | Modular Ring 3 shell (`user/shell/`) with 4096-byte line editing, horizontal viewport, cursor movement, Ctrl shortcuts, RAM history (1000 entries / 256 KiB), incremental `Ctrl+R` search, bracketed paste review, raw/timed input (`SYS_INPUT_READ`), terminal mode control (`SYS_TERMCTL`), Belgian AZERTY AltGr operator decoding, PS/2 keyboard, US layout, framebuffer text console, serial I/O, and small text editor. |
 | Boot and power | BIOS/UEFI boot images, boot splash, ACPI shutdown, and reset fallbacks. Shutdown and reboot have been manually verified on the Dell. |
 
 User-process fault isolation and resource reclamation have targeted tests; this is not a claim of complete security isolation. ext2 writes support direct and single-indirect blocks, with explicit rejection of unsupported structures. The filesystem does not promise crash-atomic updates or recovery from arbitrary power loss.
@@ -92,13 +92,24 @@ Use `shutdown` or `poweroff` in the shell to flush the filesystem and finish a c
 
 ```text
 help
-ls /
+history               # display in-memory command history
+history clear         # clear history
+terminal local        # select output mode: local (full screen), serial, mirror, or plain
+layout azerty         # Belgian AZERTY with AltGr (| \ {} [] ~)
+layout us             # US QWERTY
 ls /bin
-cat /etc/motd
-layout azerty
 run /bin/hello hello FortressOS
 echo $?
 ```
+
+### Interactive line editing & shortcuts
+
+- **Navigation:** Left / Right arrows move cursor; Home (`Ctrl+A`) / End (`Ctrl+E`) jump to line boundaries.
+- **Editing:** Backspace and Delete remove characters; `Ctrl+D` deletes at cursor (or exits the shell on an empty line).
+- **Kill buffer:** `Ctrl+W` erases previous word; `Ctrl+U` erases to start of line; `Ctrl+K` erases to end of line; `Ctrl+Y` yanks (pastes) the last erased text.
+- **History & Search:** Up / Down arrows recall commands and restore unfinished drafts; `Ctrl+R` begins reverse incremental search (Enter accepts for editing, second Enter executes; Escape or `Ctrl+G` cancels).
+- **Control:** `Ctrl+L` clears screen and repaints; `Ctrl+C` cancels current input.
+- **Safety:** Command lines support up to 4096 bytes with a horizontal scrolling viewport. Input loss or overflow displays `[lost/full: Ctrl+C]` and refuses to execute partial input. Bracketed paste converts newlines to spaces and requires two Enter presses to execute (`[paste: Enter twice]`).
 
 With the USB stick's data partition mounted read-write:
 
@@ -169,9 +180,10 @@ Multi-core execution is complete and verified on bare metal (Dell Latitude 5590,
    - **6D**: Address-space lifetime discipline (`op_refs`, `sched_refs`, active CPU masks, deferred destruction queue, and atomic wait/exit coordination verified across 100 process cycles with zero leaks).
 
 **Next milestones:**
+- Shell progression: S0–S2 implemented (automated verification passing; Dell hardware checklist pending); S3–S4 (working directories `cd`/`pwd`, consistent quoting, completion, persistent history) are planned next in `docs/plans/SHELL_DESIGN.md`.
 - Introspection syscalls and utilities (`sysinfo`, `top`, `ps`).
 - Persistent rootfs integration (`/paradise`).
-- MicroPython port and shell enhancements.
+- MicroPython port.
 - Accounts, permissions, and installer.
 
 Larger follow-ups: a journaling filesystem (ext4 or similar) and networking.
@@ -201,6 +213,8 @@ The project combines host sanitizer tests, QEMU integration tests, offline files
 | `make test-ext2` | Actual ext2/VFS code under ASan/UBSan, malformed data and injected failures |
 | `make test-ext2-write` | BIOS/UEFI multi-boot persistence on disposable NVMe images, with offline `e2fsck -fn` |
 | `make test-storage` | BIOS/UEFI GPT/ext2, user-space reads, and allocation audits |
+| `make test-shell-host` | Consolidated ASan/UBSan: keyboard/queue, framebuffer CSI terminal parser, and line editor/search/history limits |
+| `make test-shell-integration` | BIOS/UEFI shell interaction, cursor/screen-state, history/search/paste, and no-UART coverage |
 | `make test-shell` | Shell interaction, input wakeups, process execution, and reclamation |
 | `make test-nmi` | NMI injection at exact syscall transition boundaries in QEMU |
 | `make test-boot-diagnostics` | UEFI boot with 8 GiB RAM and no COM1 |
@@ -216,7 +230,9 @@ src/kernel/       Boot, scheduler, processes, ELF loader, syscalls, lock discipl
 src/mm/           Physical memory (PMM), paging (VMM), heap
 src/drivers/      Console, input, PCI, NVMe, xHCI, USB BOT, power
 src/fs/           VFS, tar initramfs, GPT, ext2, USB mount policy
-user/             Freestanding user programs and shell
+src/include/      Shared kernel and user ABI definitions (syscalls, terminal)
+user/             Freestanding user programs (init, hello) and shell entry
+user/shell/       Modular shell engine (line editing, builtins, UI, RAM history, file editor)
 tests/            Host tests and mocks
 scripts/          Image creation and QEMU verification
 docs/plans/       Architecture specifications and staged implementation plans

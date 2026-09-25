@@ -8,6 +8,8 @@
 
 typedef struct {
     bool left_shift, right_shift, caps, caps_down, extended;
+    bool left_ctrl, right_ctrl, altgr;
+    bool num_lock_disabled, numlock_down;
     unsigned pause_remaining;
 } keyboard_decoder_t;
 
@@ -17,5 +19,7 @@ int  keyboard_get_layout(void);
 
 /* Translated set 1. Returns an ASCII byte or zero for no character. */
 char keyboard_decode(keyboard_decoder_t *state, uint8_t code);
+/* Whole synthesized sequence (maximum 4 bytes), or zero. */
+size_t keyboard_decode_bytes(keyboard_decoder_t *state, uint8_t code, char out[4]);
 
 #endif /* FORTRESS_KEYBOARD_H */

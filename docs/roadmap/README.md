@@ -20,6 +20,8 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [shell-s0-s2.md](shell-s0-s2.md) | Shell foundation, terminal byte input/output, line editing and RAM history; automated verification and pending Dell checklist |
+| [shell-s3-s4.md](shell-s3-s4.md) | Single parser (quotes, escapes, operators), working directories (cd, pwd, relative path resolution), direct execution, completion, prompt customization, and persistent history |
 | [phase-9c2-readonly-ext2.md](phase-9c2-readonly-ext2.md) | Read-only ext2 mount at `/mnt` (superseded/extended by Phase 9D for writable support) |
 | [phase-9d-writable-ext2.md](phase-9d-writable-ext2.md) | Bounded writable ext2: allocation/truncation ordering, superblock clean/dirty lifecycle, 3-boot persistence |
 | [phase-9e-exec-and-files.md](phase-9e-exec-and-files.md) | Program execution (spawn/wait, ABI, exit status, chaining), directory ops (mkdir/rename/unlink), Bug H4 AZERTY fix |
@@ -48,7 +50,7 @@ and are not proof that every current revision has passed every test — check
 [Phase 9G.5] USB topology expansion                         (9G.5a, 9G.5b complete; 9G.5c/d/e open)
 [Phase 9H]   32 GiB RAM support                              (COMPLETE)
 [SMP]        Multi-core support                              (Pieces 1-5, 6A, 6B, 6C, 6D COMPLETE)
+[Shell S0–S2] Terminal foundation, editing, RAM history      (Implemented, QEMU PASS, Dell pending)
 [Following]  Accounts/permissions, then installer
 
 ```
-

@@ -141,11 +141,14 @@ evidence.
 See `docs/roadmap/subsystems.md` ("Boot-console scrolling") for the static
 RAM text cache implementation and `make test-console` coverage.
 
-## Interactive shell checkpoint
+## Interactive shell checkpoint (S0–S2 delivered)
 
-See `docs/roadmap/subsystems.md` ("Interactive input and shell") for the
-input/scheduler contract, bounded stdin queue, and `make test-shell` /
-`make test-input` evidence.
+See `docs/roadmap/shell-s0-s2.md` for the Shell S0–S2 foundation, raw/timed
+input (`SYS_INPUT_READ`), terminal control (`SYS_TERMCTL`), line editing,
+AltGr support, and RAM history/search. Historical input/scheduler contracts
+and early test coverage live in `docs/roadmap/subsystems.md` ("Interactive
+input and shell"). S3+ (cwd, quoting, redirection, pipes, jobs) remain planned
+in `docs/plans/SHELL_DESIGN.md`.
 
 ## Dell manual hardware acceptance (2026-09-16 & 2026-09-18)
 
@@ -223,8 +226,11 @@ is established by what the device reports, not by vendor identity.
    6A, 6B, 6C, 6D on Dell Latitude 5590). Full architectural specification:
    `docs/plans/SMP_DESIGN.md`; evidence and implementation logs:
    `docs/roadmap/smp-piece*.md`.
-   Current open items following SMP: system introspection syscalls/tools
-   (`sysinfo`/`top`/`ps`), persistent rootfs (`/paradise`), and MicroPython.
+   Current open items following SMP:
+   - Shell progression: S0–S2 implemented (automated checks PASS, Dell verification checklist pending; see `docs/roadmap/shell-s0-s2.md`); S3–S4 (working directories `cd`/`pwd`, consistent quoting, completion, persistent history) are planned next in `docs/plans/SHELL_DESIGN.md`.
+   - System introspection syscalls/tools (`sysinfo`/`top`/`ps`).
+   - Persistent rootfs (`/paradise`).
+   - MicroPython.
 4. Following SMP: user accounts, identity/permission enforcement, and
    installation target selection on storage partitions.
 5. Do not add flatfs or automatic formatting on first write. Keep

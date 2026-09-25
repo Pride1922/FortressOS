@@ -5,6 +5,8 @@ QMP input-send-event drives QEMU's PS/2 device; no guest input-buffer writes.
 GDB reads only inspect scheduler state and resource counters while paused.
 """
 from pathlib import Path
+import re
+import os
 import shutil
 import socket
 import subprocess
@@ -36,13 +38,14 @@ int main(void) {
 
 def run(mode):
     sym = symbols()
-    log = REPO / "build" / f"shell-{mode}.log"
+    cpus = os.environ.get("SHELL_TEST_CPUS", "1")
+    log = REPO / "build" / f"shell-{mode}-{cpus}cpu.log"
     log.write_text("")
     with tempfile.TemporaryDirectory(prefix="fortress-input-") as tmp:
         state_offset, ticks_offset, fds_offset, channel_offset = offsets(tmp)
         uart_path, qmp_path, gdb_path = [Path(tmp) / n for n in ("uart", "qmp", "gdb")]
         cmd = ["qemu-system-x86_64", "-M", "q35", "-m", "2G", "-display", "none",
-               "-no-reboot", "-S", "-monitor", "none", "-boot", "d", "-cdrom", "bin/fortress.iso",
+               "-smp", os.environ.get("SHELL_TEST_CPUS", "1"), "-no-reboot", "-S", "-monitor", "none", "-boot", "d", "-cdrom", "bin/fortress.iso",
                "-chardev", f"socket,id=uart,path={uart_path},server=on,wait=off,logfile={log}",
                "-serial", "chardev:uart", "-qmp", f"unix:{qmp_path},server=on,wait=off",
                "-gdb", f"unix:{gdb_path},server=on,wait=off",
@@ -72,20 +75,23 @@ def run(mode):
             qmp.execute("cont")
 
             def output():
-                return log.read_text(errors="replace").replace("\r", "")
+                return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", log.read_bytes().decode(errors="replace")).replace("\r", "")
 
             def wait_prompt(after=0):
                 deadline = time.monotonic() + 45
                 while time.monotonic() < deadline:
                     text = output()
-                    if "fortress> " in text[after:]:
+                    if "\nfortress> " in text[after:]:
                         time.sleep(0.1)  # Let read enter the blocked list.
                         return text[after:]
                     assert child.poll() is None, child.stderr.read().decode()
                     time.sleep(0.05)
                 qmp.execute("stop")
-                print("debug serial available:", remote.memory(sym["serial_available"], 1).hex(), flush=True)
                 qmp.execute("screendump", {"filename": str(REPO / "build" / "shell-timeout.png"), "format": "png"})
+                try:
+                    print("debug serial available:", remote.memory(sym["serial_available"], 1).hex(), flush=True)
+                except AssertionError as error:
+                    print(f"Kernel not mapped at timeout: {error}", flush=True)
                 raise AssertionError(f"Shell prompt timed out: {log}\n{output()[-2000:]}")
 
             def uart_command(text):
@@ -163,7 +169,7 @@ def run(mode):
             assert "No such file" in uart_command("cat /missing\r\n")
             assert "Not a regular file" in uart_command("cat /bin\n")
             assert "Unknown command" in uart_command("invalid\n")
-            assert "command discarded" in uart_command("x" * 200 + "\n")
+            assert "x" * 200 in uart_command("echo " + "x" * 200 + "\n")
             assert "Ring 3 shell supports" in uart_command("cat /docs/readme.txt\n")
             assert "hello.txt" in uart_command("ls /mnt\n")
             assert "Hello from FortressOS ext2" in uart_command("cat /mnt/hello.txt\n")
@@ -237,6 +243,48 @@ def run(mode):
             run_33 = uart_command(f"run /bin/hello {args_32}\n")
             assert "Too many arguments (max 32)" in run_33
             assert "fortress> " in run_33
+
+            # S0-S2: editing through the actual raw-input syscall and terminal.
+            assert "\nabc\n" in uart_command("echo ac\x1b[Db\n")
+            assert "\nright\n" in uart_command("echo wrong\x17right\n")
+            assert "\nright\n" in uart_command("\x1b[A\n")
+            assert "\nDRAFT\n" in uart_command("echo DRAFT\x1b[A\x1b[B\n")
+            assert "\nalpha\n" in uart_command("echo alpha\n")
+            assert "\nalpha\n" in uart_command("\x12alpha\n\n")
+            assert "\nrescued\n" in uart_command("echo rescued\x12alpha\x07\n")
+            assert "\nabcdef\n" in uart_command("echo abcXdef\x1b[D\x1b[D\x1b[D\x1b[D\x1b[3~\n")
+            # Inspect real framebuffer cells and logical cursor, not just log substrings.
+            for byte in b"echo ac\x1b[Db":
+                uart.send(bytes([byte])); time.sleep(0.02)
+            time.sleep(0.2)
+            qmp.execute("stop")
+            console = remote.memory(sym["g_console"], 64)
+            col = int.from_bytes(console[48:56], "little")
+            row = int.from_bytes(console[56:64], "little")
+            cells = remote.memory(sym["cells"] + row * 512 * 12, 30 * 12)
+            assert bytes(cells[8::12]).startswith(b"fortress> echo abc"), bytes(cells[8::12])
+            assert col == 17, col
+            qmp.execute("cont")
+            assert "\nabc\n" in uart_command("\n")
+            # Standalone ESC expires without polling; next command still runs.
+            uart.send(b"\x1b")
+            time.sleep(0.3)
+            assert "\ntimeout-ok\n" in uart_command("echo timeout-ok\n")
+            # A bracketed paste never executes its embedded newlines.
+            start_paste = len(output())
+            for byte in b"\x1b[200~echo PASTED\n\x1b[201~":
+                uart.send(bytes([byte])); time.sleep(0.02)
+            time.sleep(0.2)
+            assert "\nPASTED\n" not in output()[start_paste:]
+            uart.send(b"\n"); time.sleep(0.2)
+            assert "\nPASTED\n" not in output()[start_paste:]
+            assert "\nPASTED\n" in uart_command("\n")
+            assert "\nABI-editor-sentinel\n" in uart_command("echo ABI-editor-sentinel\n")
+            kernel_log = uart_command("dmesg\n")
+            assert "ABI-editor-sentinel" not in kernel_log, "User output polluted dmesg"
+            assert "echo alpha" in uart_command("history\n")
+            uart_command("history clear\n")
+            assert "echo alpha" not in uart_command("history\n")
 
             # Zero-leak audit across process spawn/wait
             after_run = snapshot()

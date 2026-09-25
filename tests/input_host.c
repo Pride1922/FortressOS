@@ -30,10 +30,63 @@ int main(void) {
     assert(keyboard_decode(&k, 57) == ' ');
     for (unsigned i = 0; i < 256; i++) (void)keyboard_decode(&k, (uint8_t)i);
 
+    char bytes[4];
+    keyboard_decoder_t keys = {0};
+    assert(keyboard_decode_bytes(&keys, 0xe0, bytes) == 0);
+    assert(keyboard_decode_bytes(&keys, 0x48, bytes) == 3);
+    assert(bytes[0] == 27 && bytes[1] == '[' && bytes[2] == 'A');
+    keyboard_decode_bytes(&keys, 0x1d, bytes);
+    assert(keyboard_decode_bytes(&keys, 0x2e, bytes) == 1 && bytes[0] == 3);
+    keyboard_decode_bytes(&keys, 0x9d, bytes);
+    input_buffer_t sequence = {0};
+    for (unsigned i=0;i<INPUT_CAPACITY-2;i++) input_buffer_push(&sequence,'a');
+    assert(!input_buffer_sequence(&sequence,"abc",3));
+    assert(sequence.count==INPUT_CAPACITY-2 && sequence.dropped==3);
     /* Test Belgian AZERTY layout */
     keyboard_decoder_t az = {0};
     keyboard_set_layout(KBD_LAYOUT_AZERTY);
 
+    keyboard_decode(&az, 0xe0); keyboard_decode(&az, 0x38);
+    assert(keyboard_decode(&az, 2) == '|');
+    assert(keyboard_decode(&az, 3) == '@');
+    assert(keyboard_decode(&az, 4) == '#');
+    assert(keyboard_decode(&az, 5) == '{');
+    assert(keyboard_decode(&az, 6) == '[');
+    assert(keyboard_decode(&az, 7) == '^');
+    assert(keyboard_decode(&az, 10) == '{');
+    assert(keyboard_decode(&az, 11) == '}');
+    assert(keyboard_decode(&az, 26) == '[');
+    assert(keyboard_decode(&az, 27) == ']');
+    assert(keyboard_decode(&az, 43) == '`');
+    assert(keyboard_decode(&az, 53) == '~');
+    assert(keyboard_decode(&az, 86) == '\\');
+    keyboard_decode(&az, 0xe0); keyboard_decode(&az, 0xb8);
+
+    /* Test NumPad keys */
+    keyboard_decoder_t np = {0};
+    /* Default NumLock is active: digits 0..9, ., operators */
+    assert(keyboard_decode(&np, 0x52) == '0');
+    assert(keyboard_decode(&np, 0x4f) == '1');
+    assert(keyboard_decode(&np, 0x50) == '2');
+    assert(keyboard_decode(&np, 0x51) == '3');
+    assert(keyboard_decode(&np, 0x4b) == '4');
+    assert(keyboard_decode(&np, 0x4c) == '5');
+    assert(keyboard_decode(&np, 0x4d) == '6');
+    assert(keyboard_decode(&np, 0x47) == '7');
+    assert(keyboard_decode(&np, 0x48) == '8');
+    assert(keyboard_decode(&np, 0x49) == '9');
+    assert(keyboard_decode(&np, 0x53) == '.');
+    assert(keyboard_decode(&np, 0x4a) == '-');
+    assert(keyboard_decode(&np, 0x4e) == '+');
+    assert(keyboard_decode(&np, 0x37) == '*');
+    /* Extended keypad keys */
+    keyboard_decode(&np, 0xe0); assert(keyboard_decode(&np, 0x35) == '/');
+    keyboard_decode(&np, 0xe0); assert(keyboard_decode(&np, 0x1c) == '\n');
+    /* Toggle NumLock off with 0x45 */
+    keyboard_decode(&np, 0x45); keyboard_decode(&np, 0xc5);
+    /* With NumLock off, 0x48 (Up) on keypad emits navigation sequence */
+    assert(keyboard_decode(&np, 0x48) == 0);
+    assert(keyboard_decode_bytes(&np, 0x48, bytes) == 3 && bytes[0] == 27 && bytes[2] == 'A');
     /* Unshifted top row approximations */
     assert(keyboard_decode(&az, 2) == '&');
     assert(keyboard_decode(&az, 3) == 'e');  /* é approx */

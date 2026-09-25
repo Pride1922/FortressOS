@@ -5,6 +5,8 @@
 #include "ioapic.h"
 #include "apic.h"
 #include "thread.h"
+#include "percpu.h"
+#include "terminal.h"
 
 #define KBD_VECTOR 0x31
 #define UART_VECTOR 0x34
@@ -15,6 +17,10 @@ static input_buffer_t g_input;
 static keyboard_decoder_t g_keyboard;
 static bool g_input_ready;
 static bool serial_last_cr;
+static bool pending_wake;
+static uint64_t input_ticks, observed_drops;
+static unsigned timed_readers;
+static uint32_t input_hz = 100;
 
 /* Bootstrap CPU only: IRQ exclusion protects the buffer, including the gap
  * between scheduler predicate and dequeue. No input lock spans a switch. */
@@ -27,17 +33,43 @@ static void irq_restore(uint64_t flags) {
     if (flags & (1ULL << 9)) __asm__ volatile("sti" ::: "memory");
 }
 static void publish(char c) {
-    if (c && input_buffer_push(&g_input, c)) sched_wake_all(&g_input);
+    if (c) { (void)input_buffer_push(&g_input, c); pending_wake = true; }
 }
+void input_timer_tick(uint32_t hz) {
+    if (cpu_current()->id != 0) return;
+    input_ticks++;
+    if (hz) input_hz = hz;
+    if (pending_wake || timed_readers) {
+        pending_wake = false;
+        sched_wake_all(&g_input);
+    }
+}
+/* Metadata may be queried from another CPU; queue ownership remains BSP-only. */
+uint64_t input_dropped(void) { return __atomic_load_n(&g_input.dropped, __ATOMIC_RELAXED); }
+typedef struct { uint64_t deadline; bool timed; } input_wait_t;
 static bool available(void *arg) {
-    (void)arg;
-    return g_input.count != 0;
+    input_wait_t *w = arg;
+    return g_input.count != 0 || g_input.dropped != observed_drops ||
+           (w->timed && input_ticks >= w->deadline);
 }
 int64_t input_read(void *buffer, size_t count) {
+    return input_read_timeout(buffer, count, -1);
+}
+int64_t input_read_timeout(void *buffer, size_t count, int64_t timeout_ms) {
     if (!count) return 0;
+    if (cpu_current()->id != 0 || timeout_ms < -1 || timeout_ms > 1000) return -1;
     if (!g_input_ready) return -3; /* EBADF: stdin has no input source yet. */
     uint64_t flags = irq_save();
-    sched_wait_until(&g_input, available, NULL);
+    input_wait_t w = {input_ticks + ((uint64_t)(timeout_ms > 0 ? timeout_ms : 0) * input_hz + 999) / 1000, timeout_ms >= 0};
+    if (w.timed) timed_readers++;
+    sched_wait_until(&g_input, available, &w);
+    if (w.timed) timed_readers--;
+    if (g_input.dropped != observed_drops) {
+        observed_drops = g_input.dropped;
+        g_input.head = g_input.count = 0;
+        irq_restore(flags);
+        return INPUT_LOST;
+    }
     size_t n = input_buffer_read(&g_input, buffer, count);
     irq_restore(flags);
     return (int64_t)n;
@@ -81,7 +113,13 @@ static void keyboard_irq(interrupt_frame_t *frame) {
         uint8_t status = inb(KBC_STATUS);
         if (status == 0xff || !(status & 1)) break;
         uint8_t byte = inb(KBC_DATA);
-        if (!(status & 0xe0)) publish(keyboard_decode(&g_keyboard, byte));
+        if (!(status & 0xe0)) {
+            char bytes[4];
+            size_t count = keyboard_decode_bytes(&g_keyboard, byte, bytes);
+            if (count) { (void)input_buffer_sequence(&g_input, bytes, count); pending_wake = true; }
+        } else if (status & 0xc0) {
+            __atomic_fetch_add(&g_input.dropped, 1, __ATOMIC_RELAXED); pending_wake = true;
+        }
     }
     /* Dispatcher owns EOI. No allocations, logging or switching in this ISR. */
 }
@@ -109,7 +147,9 @@ static void serial_irq(interrupt_frame_t *frame) {
         uint8_t status = inb(COM1_PORT + 5);
         if (status == 0xff || !(status & 1)) break;
         char c = (char)inb(COM1_PORT);
-        if (status & 0x1e) continue; /* Drop overrun/parity/framing/break bytes. */
+        if (status & 0x1e) { /* A damaged stream must never become a command. */
+            __atomic_fetch_add(&g_input.dropped, 1, __ATOMIC_RELAXED); pending_wake = true; continue;
+        }
         if (c == '\n' && serial_last_cr) { serial_last_cr = false; continue; }
         serial_last_cr = c == '\r';
         if (c == '\r') c = '\n';

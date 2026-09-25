@@ -88,6 +88,22 @@ int main(void) {
     check_cell(0, 0, 'Z', 0xffffff, 0x123456);
     check_bounds();
 
+    console_clear();
+    console_terminal_write("abc",3);
+    console_terminal_write("\033[D",3);
+    assert(g_console.cursor_col==2);
+    check_cell(2,0,'c',0xffffff,0x123456); /* cursor-left is nondestructive */
+    console_terminal_write("X",1);
+    check_cell(2,0,'X',0xffffff,0x123456);
+    const char *erase="\033[1G\033[2K";
+    for(size_t i=0;erase[i];i++) console_terminal_write(erase+i,1);
+    check_cell(0,0,' ',0,0x123456);
+    console_terminal_write("\033[31mR\033[0m",11);
+    check_cell(0,0,'R',0xf7768e,0x123456);
+    console_terminal_write("\033[999999999999999999999999999999999999C",39);
+    assert(g_console.cursor_col<=g_console.cols);
+    check_bounds();
+
     start(8, 16); /* one-cell console must clear safely on newline */
     console_puts("X\n");
     assert(g_console.cursor_row == 0 && g_console.cursor_col == 0);

@@ -91,25 +91,43 @@ booting; no timing benchmark was collected.
 
 `make` includes a separate freestanding C ELF `/bin/shell` in initramfs.
 Boot launches it as a normal Ring 3 process after the acceptance suite.
-Try:
 
-```
-help
-ls /
-ls /bin
-cat /etc/motd
-cat /docs/readme.txt
-echo hello
-```
+Historical baseline: in early Phase 9, files were read-only, no editor or
+command discovery existed, lines were capped at 191 bytes (overflow
+discarding the entire command), and arrows/function keys were ignored.
 
-`exit` terminates/reaps the process and launches a fresh shell. Files are
-read-only; no editor, command execution/exec, disk installation, accounts
-or USB HID driver is provided by this step. Keyboard layout is Belgian
-AZERTY (Shift/Caps Lock, Backspace, Enter; arrows and function keys
-ignored, Caps LED not synchronized). Line length is bounded to 191 bytes;
-overflow discards the entire command. The console supports erasing across
-wrapped rows. Serial CR/LF and DEL are normalized; echo and line editing
-occur in user space, not interrupt handlers.
+Shell S0–S2 (implemented 2026-09-25; see `shell-s0-s2.md`) modernized this
+into a modular, comfortable interactive terminal environment:
+
+- **Modular architecture:** split `user/shell.c` into dedicated components
+  under `user/shell/`: `builtins` (registry and dispatch), `io` (syscall wrappers
+  and formatting), `lineedit` (pure editor state machine and RAM history),
+  `ui` (ANSI rendering, prompt, viewport, paste mode), and `fileedit` (extracted
+  line-based text editor).
+- **Input and timed wait ABI:** `SYS_INPUT_READ` (17) provides raw, non-echoed
+  input with indefinite (-1), nonblocking (0), or bounded wait (1..1000 ms).
+  Input IRQs publish without locking across context switches; the BSP timer
+  performs bounded wakeups. Input remains BSP-affine. Queue/UART drops surface
+  `-20` (`INPUT_LOST`), invalidating the pending command rather than executing
+  partial input.
+- **Terminal control ABI:** `SYS_TERMCTL` (16) reports terminal geometry,
+  drop counter, and display generation. Supports process-level output endpoint
+  selection: mirror (0), local framebuffer (1), serial (2), or plain (3).
+  Interactive writes bypass `dmesg_append`. Framebuffer console interprets a
+  bounded CSI ANSI subset (cursor movement `A`/`B`/`C`/`D`, positioning `H`/`f`,
+  erase `K`/`J`, SGR colors `m`, and cursor show/hide `?25h`/`?25l`).
+- **Full line editing:** 4096-byte input limit, horizontal viewport, cursor
+  insertion/deletion, Backspace/Delete, Home/End, word erase (`Ctrl+W`), line
+  erase (`Ctrl+U`/`Ctrl+K`), single kill buffer yank (`Ctrl+Y`), clear screen
+  (`Ctrl+L`), draft cancellation (`Ctrl+C`), and empty-line exit (`Ctrl+D`).
+- **In-memory history and search:** bounded by 1000 entries and 256 KiB,
+  consecutive duplicate suppression, `history` and `history clear`. Up/Down
+  navigates history with draft restoration. `Ctrl+R` provides reverse incremental
+  search; Enter accepts the match for editing, and a second Enter executes.
+- **Bracketed paste review:** pasted newlines/tabs are converted to spaces;
+  requires explicit review and two Enter presses before execution.
+- **Keyboard decoding & AltGr:** decodes arrows, Home, End, Delete, Left/Right
+  Ctrl, and Belgian AZERTY AltGr operator mappings (`|`, `\`, `{}`, `[]`, `~`).
 
 `SYS_READ(0, buffer, count)` checks all user pages for write permission
 before waiting. It returns available bytes as a short read, without
@@ -127,16 +145,18 @@ Pieces 3 and 4.
 
 - `make test-input`: actual decoder/FIFO under ASan/UBSan; modifiers,
   Pause, PrintScreen, extended keys, wraparound and overflow.
-- `make test-shell`: BIOS/UEFI PS/2 events and serial RX through real
-  emulated devices, stdin pointer checks, Backspace/Shift, file commands
-  and error paths, sleeping task/timer progress, descriptors closed, three
-  process restarts with stable physical free-page and stack-slot counts.
+- `make test-shell-host`: consolidated ASan/UBSan suite testing keyboard/queue,
+  framebuffer console CSI parsing, and actual shell editor logic (bounds,
+  history memory budgets, reverse search, bracketed paste, overflow, and hostile bytes).
+- `make test-shell-integration` / `make test-shell`: BIOS/UEFI PS/2 events and
+  serial RX through real emulated devices, stdin pointer checks, Backspace/Shift,
+  arrows, history/search, paste, terminal modes, sleeping task/timer progress,
+  and process restarts with stable physical free-page and stack-slot counts.
   Logs: `build/shell-*.log`.
-- The same target tests UEFI 8 GiB with COM1 absent and non-fixture NVMe
-  identity, confirming framebuffer `echo hello` and sleeping input on the
+- `scripts/test_shell_no_uart.py`: UEFI 8 GiB with COM1 absent and non-fixture NVMe
+  identity, confirming framebuffer `echo hello`, keyboard events, and sleeping input on the
   hardware boot path. Screenshot: `build/shell-keyboard-only.png`. Physical
-  Dell interaction was subsequently confirmed by the Dell photo evidence
-  below.
+  Dell interaction is verified per `docs/roadmap/shell-s0-s2.md`.
 - Existing BIOS/UEFI storage acceptance and 40 exact-boundary NMI tests
   pass.
 

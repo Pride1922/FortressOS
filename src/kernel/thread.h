@@ -68,6 +68,9 @@ typedef struct tcb {
     const void *wait_channel; /* Only on blocked list while sleeping. */
     int            cpu_affinity;     /* Target CPU affinity: -1 for any, or 0..MAX-1 */
     size_t         current_cpu;      /* CPU ID where thread is currently queued/running */
+    uint32_t       terminal_mode;
+    uint32_t       terminal_cols;
+    char           cwd[256];         /* Current working directory (bounded by VFS_MAX_PATH) */
 } tcb_t;
 
 struct file;

@@ -23,8 +23,8 @@ FortressOS is a freestanding C11/NASM x86_64 kernel using Limine v8, base revisi
 
 History lives in [docs/roadmap/README.md](docs/roadmap/README.md); qualifications and technical debt in [ARCH_REVIEW.md](ARCH_REVIEW.md). Keep new implementation instructions here, checkpoint history there, and verification claims tied to actual evidence.
 
-| Checkpoint | Status / acceptance |
-| --- | --- |
+| Shell S3–S4 | COMPLETE (2026-09-25). Quote-aware parser, comments, `;`/`&&`/`||`/`!`, multi-line continuation, process CWD (`SYS_GETCWD`/`SYS_CHDIR`), relative path normalization, `cd`/`pwd`, direct execution (`/bin/hello`, `./tool`, bare `hello`), Tab completion, configurable prompt with status indicator, length-framed persistent history (`/mnt/.fortress/history`). Verified on BIOS and UEFI. Full detail: [docs/roadmap/shell-s3-s4.md](docs/roadmap/shell-s3-s4.md). |
+| Shell S0–S2 | Implemented: raw/timed terminal input, cursor/erase support, long-line editing, Ctrl/AltGr, RAM history/search. Automated evidence: [docs/roadmap/shell-s0-s2.md](docs/roadmap/shell-s0-s2.md). |
 | Latest: multi-core (SMP) support | COMPLETE (2026-09-25). Pieces 1–6 all verified on QEMU (BIOS & UEFI, 1/4/8 CPUs) and bare-metal Dell 5590 (8 CPUs, 32 GiB). Includes per-CPU state, lock discipline, distributed scheduler with work-stealing, IPIs, contention-safe TLB shootdown, concurrent PMM safety (320k alloc/free under 623k+ contentions, 0 duplicate claims, exact baseline equality), and address-space lifetime tracking with deferred reaping. Full detail: [docs/roadmap/smp-piece6-memory.md](docs/roadmap/smp-piece6-memory.md). |
 | Phase 9G.5b SuperSpeed enumeration & BOT transport | COMPLETE (2026-09-20). SuperSpeed (USB 3.x) mass storage works end-to-end on physical hardware (Dell 5590 + SanDisk USB 3.2 Gen 1, port and multi-controller variants). Full detail and evidence: [docs/roadmap/phase-9g5-superspeed.md](docs/roadmap/phase-9g5-superspeed.md). |
 | Phase 9E Saved File Management & H4 AZERTY Fix | COMPLETE. Directory ops (`mkdir`/`rename`/`unlink`), on-disk inode/block reclamation, Belgian AZERTY scancode fix (Bug H4). Full detail: [docs/roadmap/phase-9e-exec-and-files.md](docs/roadmap/phase-9e-exec-and-files.md). |
@@ -123,6 +123,8 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-shell-host` | Consolidated ASan/UBSan: keyboard/queue, framebuffer terminal and actual shell editor/history logic |
+| `make test-shell-integration` | Existing shell integration extended with cursor/screen-state, history/search/paste, timeout/log separation and no-UART coverage; snapshot NVMe fixture for normal runs |
 | `make test-input` | Host ASan/UBSan: decoder, modifiers and bounded FIFO |
 | `make test-usb-discovery` | 9G.1a BIOS/UEFI PCI discovery with/without xHCI, shell startup without NVMe; ISO boot only, no data disk. No USB transfers or persistence claimed. |
 | `make test-console` | Host ASan/UBSan: pixel output, wrapping, scrolling and bounds |
@@ -374,7 +376,7 @@ Canonical examples: [shell.c](user/shell.c), [shell_start.asm](user/shell_start.
 2. Provide a correctly aligned entry stub and loader-supported static ELF64 with page-separated permission segments.
 3. Add explicit ELF source/header/linker dependencies and an initramfs archive dependency.
 4. Copy the ELF to staging `/bin/<name>` and regenerate USTAR; preserve strict tar format constraints.
-5. Launch through the existing `process_spawn` lifecycle/test harness. Merely adding `/bin/foo` does not add a shell exec command; no exec syscall exists yet.
+5. Launch through the existing `process_spawn` lifecycle/test harness. Use `run /bin/foo` through the implemented `SYS_SPAWN`/`SYS_WAIT` ABI; direct command discovery is planned in shell S3.
 6. Verify Ring 3 execution, syscall results, faults/exit and deferred resource reclamation in BIOS/UEFI.
 
 ### 7.7 A USB mass-storage driver addition
@@ -417,7 +419,7 @@ Preserve empirically-derived and spec-derived workarounds with their evidence la
 | H1 | **Dell 5590 photo:** keyboard input and IRQ1 initialization reported working. **Code:** `keyboard_init` clears translation while selecting/querying set 2, then sets bit 6 to deliver translated set 1. Preserve the sequence; it is not proof of the firmware's initial bit value. |
 | H2 | **Code:** NVMe doorbells use CAP.DSTRD-derived stride (`4 << DSTRD`) and dynamic mapping extent. No physical DSTRD measurement is established here; never hardcode QEMU's value. |
 | H3 | **5590 photo:** ECAM segment 0 buses 0..127, base `0xF0000000`. Parse MCFG, never assume this address/range or apply it to another Dell. See H12 for 5530 controller topology. |
-| H4 | **Code + user report (2026-09-16, fixed 2026-09-18):** `layout azerty` selects Belgian AZERTY (Punt). Top number row uses `shift ^ s->caps` as Shift-Lock for digits `1234567890`. Shifted table takes priority over `a..z` matching, resolving bug where scancodes 0x03, 0x08, 0x0A, 0x0B (`é è ç à`) and 0x28 (`ù/%`) emitted uppercase `'E'`, `'C'`, `'A'`, `'U'` instead of digits and `%`. Scancode 86 (0x56) added for ISO `<` / `>`. AltGr absent; arrows/function keys ignored; Caps LED unsynchronized. |
+| H4 | **Code + user report (2026-09-16, fixed 2026-09-18):** `layout azerty` selects Belgian AZERTY (Punt). Top number row uses `shift ^ s->caps` as Shift-Lock for digits `1234567890`. Shifted table takes priority over `a..z` matching, resolving bug where scancodes 0x03, 0x08, 0x0A, 0x0B (`é è ç à`) and 0x28 (`ù/%`) emitted uppercase `'E'`, `'C'`, `'A'`, `'U'` instead of digits and `%`. Scancode 86 (0x56) added for ISO `<` / `>`. AltGr absent; historically arrows/function keys ignored; shell S1 adds arrows, Ctrl and AltGr (Dell verification pending), while function keys remain ignored and Caps LED unsynchronized. |
 | H5 | **2026-09-20, revised:** Limine's HHDM on the Dell 5590 covers physical `[0, ~2.5 GiB)` only. Measured by direct read at `hhdm_offset + phys`: `0x80000000` succeeds, `0xA0000000` raises #PF at CR2=`0xFFFF8000A0000000`. FortressOS works around this with a two-stage PMM: allocation is capped at 1 GiB until `vmm_init` loads the kernel PML4 with a full 32 GiB HHDM, then `pmm_unlock_high_memory()` clears the cap. PMM bitmap is 1 MiB (32 GiB coverage); the memory map's top range ends at `0x82E7EC000` (~32.72 GiB), which is clamped and warned. Verified on the Dell: `dmesg` reports `Total Physical RAM: 32768 MiB (8388608 frames)`, `Usable Free RAM: 31873 MiB`; write-readback probe passed at 2, 4, 16, and 30 GiB; boot log preserved at `/mnt/boot.log`. |
 | H6 | The internal physical NVMe filesystem is not mounted by the kernel. `/mnt` is provided by the USB data partition when a supported stick is attached and selected; see H9. Initramfs file reads prove neither physical disk I/O nor persistence. |
 | H6a | **Phase 9F code + user report (2026-09-18):** the raw image includes an ext2 data partition; the user flashed it with Rufus and reported no `/mnt`. Kernel USB storage support is absent. USB boot and image verification do not establish USB partition mounting or persistence; Phase 9G supplies that missing path. |

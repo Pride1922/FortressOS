@@ -404,6 +404,8 @@ void sched_init(void) {
     g_main_thread.next = NULL;
     g_main_thread.cpu_affinity = 0;
     g_main_thread.current_cpu = 0;
+    g_main_thread.cwd[0] = '/';
+    g_main_thread.cwd[1] = '\0';
 
     memset(g_exit_records, 0, sizeof(g_exit_records));
 
@@ -486,6 +488,16 @@ static tcb_t *thread_create_internal(size_t target_cpu, int affinity, const char
     t->is_user = false;
     t->exit_code = 0;
     t->has_exited = false;
+    tcb_t *curr_thread = thread_current();
+    if (curr_thread && curr_thread->cwd[0]) {
+        size_t clen = strlen(curr_thread->cwd);
+        if (clen >= sizeof(t->cwd)) clen = sizeof(t->cwd) - 1;
+        memcpy(t->cwd, curr_thread->cwd, clen);
+        t->cwd[clen] = '\0';
+    } else {
+        t->cwd[0] = '/';
+        t->cwd[1] = '\0';
+    }
 
     uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);
     stack_top = (uint8_t *)((uintptr_t)stack_top & ~0xFULL);
@@ -1114,6 +1126,16 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     p->has_exited = false;
     p->current_cpu = target_cpu;
     p->cpu_affinity = affinity;
+    tcb_t *parent_thread = thread_current();
+    if (parent_thread && parent_thread->cwd[0]) {
+        size_t clen = strlen(parent_thread->cwd);
+        if (clen >= sizeof(p->cwd)) clen = sizeof(p->cwd) - 1;
+        memcpy(p->cwd, parent_thread->cwd, clen);
+        p->cwd[clen] = '\0';
+    } else {
+        p->cwd[0] = '/';
+        p->cwd[1] = '\0';
+    }
 
     /* 5. Set up initial kernel stack frame for first context switch to user_process_trampoline */
     uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);

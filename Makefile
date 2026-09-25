@@ -115,12 +115,20 @@ all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 test-input:
 	@python3 scripts/test_input.py
 
+.PHONY: test-shell-host test-shell-integration test-shell-s3-s4
+test-shell-host: test-input test-console
+	@python3 scripts/test_shell_host.py
+test-shell-s3-s4: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
+	@python3 scripts/test_shell_s3_s4.py
+test-shell-integration: test-shell
+
 test-power: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 	@python3 scripts/test_power.py
 
 test-shell: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 	@python3 scripts/test_shell.py
 	@python3 scripts/test_shell_no_uart.py
+	@python3 scripts/test_shell_s3_s4.py
 test-console:
 	@python3 scripts/test_console.py
 
@@ -239,11 +247,19 @@ $(USER_HELLO_ELF): $(USER_DIR)/hello.asm $(USER_DIR)/linker.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -T $(USER_DIR)/linker.ld $(BUILD_DIR)/hello.o -o $@
 
 # Freestanding user shell, separate address-space ELF (no host runtime).
-$(USER_SHELL_ELF): $(USER_DIR)/shell.c $(USER_DIR)/shell_start.asm $(USER_DIR)/shell.ld src/fs/vfs.h src/include/types.h src/kernel/syscall.h src/arch/x86_64/idt.h
+SHELL_MODULES := $(wildcard user/shell/*.c)
+SHELL_HEADERS := $(wildcard user/shell/*.h) src/include/terminal.h src/include/syscall_abi.h
+SHELL_OBJECTS := $(patsubst user/shell/%.c,$(BUILD_DIR)/shell-%.o,$(SHELL_MODULES))
+
+$(BUILD_DIR)/shell-%.o: user/shell/%.c $(SHELL_HEADERS)
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $(USER_DIR)/shell.c -o $(BUILD_DIR)/shell.o
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(USER_SHELL_ELF): $(SHELL_OBJECTS) $(SHELL_HEADERS) $(USER_DIR)/shell.c $(USER_DIR)/shell_start.asm $(USER_DIR)/shell.ld src/fs/vfs.h src/include/types.h src/kernel/syscall.h src/arch/x86_64/idt.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $(USER_DIR)/shell.c -o $(BUILD_DIR)/shell.o
 	@$(AS) -f elf64 $(USER_DIR)/shell_start.asm -o $(BUILD_DIR)/shell_start.o
-	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/shell_start.o $(BUILD_DIR)/shell.o -o $@
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/shell_start.o $(BUILD_DIR)/shell.o $(SHELL_OBJECTS) -o $@
 
 # Build USTAR Initramfs archive
 $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_SHELL_ELF) Makefile
@@ -466,5 +482,4 @@ test-smp-memory-tsan: $(TEST_TSAN_BIN)
 test-smp-memory: bin/fortress.elf bin/initramfs.tar
 	@echo "--- Running freestanding QEMU SMP memory stress test ---"
 	python3 scripts/test_smp_memory.py
-
 
