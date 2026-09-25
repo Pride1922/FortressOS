@@ -26,9 +26,9 @@ from test_nmi_transitions import REPO, Remote, QMP, symbols, connect
 def run(mode):
     sym = symbols()
     cpus = "1"
-    log = REPO / "build" / f"shell-s5-{mode}.log"
-    log.write_text("")
+    build_log = REPO / "build" / f"shell-s5-{mode}.log"
     with tempfile.TemporaryDirectory(prefix="fortress-s5-") as tmp:
+        log = Path(tmp) / f"shell-s5-{mode}.log"
         uart_path, qmp_path, gdb_path = [Path(tmp) / n for n in ("uart", "qmp", "gdb")]
         img_copy = Path(tmp) / "nvme.img"
         shutil.copyfile(REPO / "build" / "nvme_gpt.img", img_copy)
@@ -158,10 +158,22 @@ def run(mode):
             out = uart_cmd("\\ll\n")
             assert "ll: command not found" in out or "Unknown command" in out, out
 
+            # Trailing space continuation: alias with trailing blank makes next word eligible
+            out = uart_cmd("alias sudo='echo sudo_wrap: '\n")
+            out = uart_cmd("alias greet='hello_target'\n")
+            out = uart_cmd("sudo greet\n")
+            assert "sudo_wrap: hello_target" in out, out
+
+            # Suppressed next word: sudo \greet suppresses greet expansion
+            out = uart_cmd("sudo \\greet\n")
+            assert "sudo_wrap: greet" in out, out
+
+            out = uart_cmd("unalias sudo\n")
+            out = uart_cmd("unalias greet\n")
             out = uart_cmd("unalias ll\n")
             out = uart_cmd("alias\n")
             assert "alias ll=" not in out, out
-            print(f"[{mode.upper()}] S5 Aliases (alias, expansion, \\suppression, unalias) verified.", flush=True)
+            print(f"[{mode.upper()}] S5 Aliases (alias, expansion, \\suppression, trailing space, unalias) verified.", flush=True)
 
             # 9. Tilde expansion
             out = uart_cmd("echo ~\n")
@@ -199,6 +211,8 @@ def run(mode):
             child.terminate()
             try: child.wait(timeout=5)
             except subprocess.TimeoutExpired: child.kill(); child.wait()
+            if log.exists():
+                shutil.copyfile(log, build_log)
 
 
 if __name__ == "__main__":

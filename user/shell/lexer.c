@@ -162,6 +162,7 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
         if (s[i] == '\\') {
             /* Backslash escape outside quotes */
             has_content = true;
+            lex->has_quotes = true;
             i++;
             if (!s[i]) {
                 lex->status = LEX_INCOMPLETE_BACKSLASH;

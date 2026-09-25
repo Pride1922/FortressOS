@@ -246,10 +246,40 @@ int main(void) {
     alias_set("b", "a");
     assert(alias_expand_line("a arg", abuf, sizeof(abuf)));
 
+    /* POSIX Trailing space continuation: alias with trailing blank makes next word eligible */
+    alias_set("sudo", "sudo ");
+    alias_set("ll", "ls -l");
+    /* Note: 'ls' is currently aliased to 'ls -F', so 'll' expands to 'ls -F -l' (chained!) */
+    assert(alias_expand_line("sudo ll /bin", abuf, sizeof(abuf)) && !strcmp(abuf, "sudo ls -F -l /bin"));
+
+    /* After unsetting 'ls', expands directly to 'sudo ls -l /bin' */
+    alias_unset("ls");
+    assert(alias_expand_line("sudo ll /bin", abuf, sizeof(abuf)) && !strcmp(abuf, "sudo ls -l /bin"));
+
+    /* Quoting and backslash suppression: \sudo suppresses expansion */
+    assert(!alias_expand_line("\\sudo ll", abuf, sizeof(abuf)));
+
+    /* Suppressed second word: sudo \ll expands sudo, preserves \ll */
+    assert(alias_expand_line("sudo \\ll", abuf, sizeof(abuf)) && !strcmp(abuf, "sudo \\ll"));
+
+    /* Command separators reset eligibility: ll; ll expands both */
+    assert(alias_expand_line("ll; ll", abuf, sizeof(abuf)) && !strcmp(abuf, "ls -l; ls -l"));
+    assert(alias_expand_line("ll && ll", abuf, sizeof(abuf)) && !strcmp(abuf, "ls -l && ls -l"));
+
+    /* Verify parser / lexer distinguishes \cmd: produces unescaped word with QUOTE_ESCAPED flag */
+    lexer_t esc_lex;
+    token_t esc_tok;
+    lexer_init(&esc_lex, "\\ll /bin");
+    assert(lexer_next(&esc_lex, &esc_tok) == TOK_WORD);
+    assert(!strcmp(esc_tok.value, "ll")); /* word value is unescaped command name */
+    assert(esc_tok.quote_flags[0] == QUOTE_ESCAPED); /* distinct from normal unquoted token */
+    assert(esc_tok.has_quotes);
+
     assert(alias_unset("ll") == 0);
+    assert(alias_unset("sudo") == 0);
     assert(alias_get("ll") == NULL);
 
-    puts("PASS shell aliases: definitions, lookup, expansion, quote suppression, self-recursion, cycle bounds");
+    puts("PASS shell aliases: definitions, lookup, expansion, quote suppression, trailing space, self-recursion, cycle bounds");
 
     /* Test S5 Globbing */
     assert(glob_match("*.c", "main.c"));

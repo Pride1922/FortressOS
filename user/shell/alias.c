@@ -101,60 +101,161 @@ static bool is_ws(char c) {
     return c == ' ' || c == '\t' || c == '\n';
 }
 
-static char s_alias_tmp_buf[1024];
+static char s_alias_tmp_buf[4096];
+static char s_seen_aliases[MAX_ALIAS_DEPTH][MAX_ALIAS_NAME];
 
 bool alias_expand_line(const char *line, char *out_buf, size_t out_cap) {
     if (!line || !out_buf || out_cap == 0) return false;
 
     str_copy(out_buf, line, out_cap);
 
-    const char *seen_aliases[MAX_ALIAS_DEPTH];
-    int depth = 0;
     bool expanded_any = false;
+    size_t cursor = 0;
+    bool eligible = true;
+    int depth = 0;
 
-    while (depth < MAX_ALIAS_DEPTH) {
-        /* Skip leading whitespace */
-        size_t start = 0;
-        while (out_buf[start] && is_ws(out_buf[start])) start++;
-        if (!out_buf[start]) break;
+    while (out_buf[cursor]) {
+        /* 1. Skip leading whitespace */
+        while (out_buf[cursor] && is_ws(out_buf[cursor])) {
+            cursor++;
+        }
+        if (!out_buf[cursor]) break;
 
-        /* Do not expand if quoted */
-        if (out_buf[start] == '\'' || out_buf[start] == '"' || out_buf[start] == '\\') {
-            break;
+        /* 2. Check for command separators: ;, &&, ||, |, & */
+        if (out_buf[cursor] == ';') {
+            cursor++;
+            eligible = true;
+            depth = 0;
+            continue;
+        }
+        if (out_buf[cursor] == '&') {
+            cursor++;
+            if (out_buf[cursor] == '&') cursor++;
+            eligible = true;
+            depth = 0;
+            continue;
+        }
+        if (out_buf[cursor] == '|') {
+            cursor++;
+            if (out_buf[cursor] == '|') cursor++;
+            eligible = true;
+            depth = 0;
+            continue;
         }
 
-        /* Extract first token */
+        /* 3. If not in a command position eligible for alias expansion, skip token */
+        if (!eligible) {
+            while (out_buf[cursor] && !is_ws(out_buf[cursor]) &&
+                   out_buf[cursor] != ';' && out_buf[cursor] != '&' && out_buf[cursor] != '|') {
+                if (out_buf[cursor] == '\'') {
+                    cursor++;
+                    while (out_buf[cursor] && out_buf[cursor] != '\'') cursor++;
+                    if (out_buf[cursor] == '\'') cursor++;
+                } else if (out_buf[cursor] == '"') {
+                    cursor++;
+                    while (out_buf[cursor] && out_buf[cursor] != '"') {
+                        if (out_buf[cursor] == '\\' && out_buf[cursor + 1]) cursor++;
+                        cursor++;
+                    }
+                    if (out_buf[cursor] == '"') cursor++;
+                } else if (out_buf[cursor] == '\\') {
+                    cursor++;
+                    if (out_buf[cursor]) cursor++;
+                } else {
+                    cursor++;
+                }
+            }
+            continue;
+        }
+
+        /* 4. Eligible position: check if quoted or escaped */
+        if (out_buf[cursor] == '\'' || out_buf[cursor] == '"' || out_buf[cursor] == '\\') {
+            /* Quoting (e.g. \cmd, 'cmd', "cmd") suppresses alias expansion.
+             * Preserve the backslash/quotes so the lexer strips escape syntax
+             * and recognizes it as a quoted/escaped command name. */
+            eligible = false;
+            depth = 0;
+            if (out_buf[cursor] == '\\') {
+                cursor++;
+                if (out_buf[cursor]) cursor++;
+            } else if (out_buf[cursor] == '\'') {
+                cursor++;
+                while (out_buf[cursor] && out_buf[cursor] != '\'') cursor++;
+                if (out_buf[cursor] == '\'') cursor++;
+            } else if (out_buf[cursor] == '"') {
+                cursor++;
+                while (out_buf[cursor] && out_buf[cursor] != '"') {
+                    if (out_buf[cursor] == '\\' && out_buf[cursor + 1]) cursor++;
+                    cursor++;
+                }
+                if (out_buf[cursor] == '"') cursor++;
+            }
+            continue;
+        }
+
+        /* 5. Extract unquoted command word */
+        size_t start = cursor;
         size_t end = start;
-        while (out_buf[end] && !is_ws(out_buf[end]) && out_buf[end] != ';' &&
-               out_buf[end] != '&' && out_buf[end] != '|' &&
-               out_buf[end] != '\'' && out_buf[end] != '"') {
+        while (out_buf[end] && !is_ws(out_buf[end]) &&
+               out_buf[end] != ';' && out_buf[end] != '&' && out_buf[end] != '|' &&
+               out_buf[end] != '\'' && out_buf[end] != '"' && out_buf[end] != '\\') {
             end++;
         }
 
         size_t token_len = end - start;
-        if (token_len == 0 || token_len >= MAX_ALIAS_NAME) break;
+        if (token_len == 0 || token_len >= MAX_ALIAS_NAME) {
+            eligible = false;
+            depth = 0;
+            cursor = end;
+            continue;
+        }
 
-        char first_word[MAX_ALIAS_NAME];
-        for (size_t i = 0; i < token_len; i++) first_word[i] = out_buf[start + i];
-        first_word[token_len] = '\0';
+        char word[MAX_ALIAS_NAME];
+        for (size_t i = 0; i < token_len; i++) word[i] = out_buf[start + i];
+        word[token_len] = '\0';
 
-        /* Check cycle detection */
-        bool already_seen = false;
+        /* 6. Check cycle detection */
+        bool cycle = false;
         for (int k = 0; k < depth; k++) {
-            if (str_eq(seen_aliases[k], first_word)) {
-                already_seen = true;
+            if (str_eq(s_seen_aliases[k], word)) {
+                cycle = true;
                 break;
             }
         }
-        if (already_seen) break;
+        if (cycle || depth >= MAX_ALIAS_DEPTH) {
+            eligible = false;
+            depth = 0;
+            cursor = end;
+            continue;
+        }
 
-        const char *val = alias_get(first_word);
-        if (!val) break;
+        /* 7. Check if word is an alias */
+        const char *val = alias_get(word);
+        if (!val) {
+            eligible = false;
+            depth = 0;
+            cursor = end;
+            continue;
+        }
 
-        seen_aliases[depth++] = first_word;
+        /* Record word in active expansion chain */
+        str_copy(s_seen_aliases[depth], word, MAX_ALIAS_NAME);
+        depth++;
         expanded_any = true;
 
-        /* Reassemble: prefix (leading whitespace) + val + suffix */
+        /* Check if alias value ends in a blank (<space> or <tab>) */
+        size_t vlen = str_len(val);
+        bool ends_with_blank = (vlen > 0 && (val[vlen - 1] == ' ' || val[vlen - 1] == '\t'));
+
+        /* If alias ends with a blank, consume any whitespace following the alias word
+         * to avoid doubling whitespace between the alias and the next word. */
+        if (ends_with_blank) {
+            while (out_buf[end] && is_ws(out_buf[end])) {
+                end++;
+            }
+        }
+
+        /* Splice replacement: out_buf[0..start-1] + val + out_buf[end..] */
         size_t p = 0;
         for (size_t i = 0; i < start && p + 1 < sizeof(s_alias_tmp_buf); i++) {
             s_alias_tmp_buf[p++] = out_buf[i];
@@ -168,6 +269,21 @@ bool alias_expand_line(const char *line, char *out_buf, size_t out_cap) {
         s_alias_tmp_buf[p] = '\0';
 
         str_copy(out_buf, s_alias_tmp_buf, out_cap);
+
+        if (ends_with_blank) {
+            /* POSIX §2.3.1: If the alias value ends with a blank, the next command word
+             * following the alias is also eligible for alias substitution.
+             * Advance cursor past the inserted alias text, leave eligible = true,
+             * and reset depth = 0 for the next command word. */
+            cursor = start + vlen;
+            eligible = true;
+            depth = 0;
+        } else {
+            /* The replacement does not end in a blank. The first word of the replacement
+             * may itself be an alias, so re-check at 'start' within the same cycle chain. */
+            cursor = start;
+            eligible = true;
+        }
     }
 
     return expanded_any;

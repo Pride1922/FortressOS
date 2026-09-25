@@ -483,10 +483,7 @@ test-smp-memory: bin/fortress.elf bin/initramfs.tar
 	@echo "--- Running freestanding QEMU SMP memory stress test ---"
 	python3 scripts/test_smp_memory.py
 
-.PHONY: test-shell-host test-shell-s5
-
-test-shell-host:
-	@python3 scripts/test_shell_host.py
+.PHONY: test-shell-s5
 
 test-shell-s5: bin/fortress.iso nvme-gpt-disk
 	@python3 scripts/test_shell_s5.py
