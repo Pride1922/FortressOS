@@ -308,6 +308,29 @@ To verify address-space lifetime and deferred reaping end-to-end on both QEMU an
 - Verified across 1, 4, and 8 CPUs on both Legacy BIOS and UEFI OVMF (6/6 configurations PASSED).
 - Reached interactive shell prompt `fortress> ` with zero crashes or leaks.
 
+**Dell Latitude 5590 Bare-Metal Acceptance (8 CPUs, 32 GiB RAM)**:
+```text
+========================================================
+SMP Piece 6D: Address-Space Lifetime & Deferred Reaping
+========================================================
+       [INFO] Baseline snapshot: allocated_tables=16439 free_pages=8140929
+[TEST 1] SMP memory 6D: Testing VMM_ERR_BUSY deferral and deferred list drainage...
+       [PASS] SMP memory 6D: VMM_ERR_BUSY deferral, queueing, and drainage verified
+[TEST 2] SMP memory 6D: Running 100 spawn/exit cycles across 8 CPU(s)...
+       [INFO] Completed 25/100 cycles...
+       [INFO] Completed 50/100 cycles...
+       [INFO] Completed 75/100 cycles...
+       [INFO] Completed 100/100 cycles...
+       [PASS] SMP memory 6D: zero deferred destructions remaining (all drained)
+       [PASS] SMP memory 6D: exact table-frame counter equality (matches baseline)
+       [PASS] SMP memory 6D: exact physical frame equality (zero frame leaks)
+       [PASS] SMP memory 6D: all worker stacks reaped cleanly
+[ OK ] SMP Piece 6D (Address-Space Lifetime & Deferred Reaping) complete.
+```
 
-
-
+**Final Piece 6 Acceptance Status**:
+- **Piece 6A (PMM Boot Allocation Discipline & Capped OOM)**: COMPLETE & VERIFIED on Dell 5590 (32 GiB).
+- **Piece 6B (PMM Concurrent Multi-Core Safety)**: COMPLETE & VERIFIED on Dell 5590 (320,000 cycles across 8 CPUs under 622k+ contention events, 0 duplicate claims, exact post-quiescence state equality).
+- **Piece 6C (Contention-Safe TLB Shootdown & CR3 Reload)**: COMPLETE & VERIFIED on Dell 5590 (deadlock-breaking polled servicing under contention, full TLB CR3 reload across all APs).
+- **Piece 6D (Address-Space Lifetime, op_refs, sched_refs & Deferred Destruction)**: COMPLETE & VERIFIED on Dell 5590 (100 process cycles across 8 CPUs, 0 deferred leaks, exact table frame and free page equality, atomic wait/exit coordination).
+- **ALL SUB-PIECES OF PIECE 6 (6A, 6B, 6C, 6D) ARE FULLY IMPLEMENTED AND HARDWARE-VERIFIED.**
