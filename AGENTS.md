@@ -25,7 +25,8 @@ History lives in [docs/roadmap/README.md](docs/roadmap/README.md); qualification
 
 | Checkpoint | Status / acceptance |
 | --- | --- |
-| Latest: Phase 9G.5b SuperSpeed enumeration & BOT transport | COMPLETE (2026-09-20). SuperSpeed (USB 3.x) mass storage works end-to-end on physical hardware (Dell 5590 + SanDisk USB 3.2 Gen 1, port and multi-controller variants). Full detail and evidence: [docs/roadmap/phase-9g5-superspeed.md](docs/roadmap/phase-9g5-superspeed.md). |
+| Latest: multi-core (SMP) support | COMPLETE (2026-09-25). Pieces 1–6 all verified on QEMU (BIOS & UEFI, 1/4/8 CPUs) and bare-metal Dell 5590 (8 CPUs, 32 GiB). Includes per-CPU state, lock discipline, distributed scheduler with work-stealing, IPIs, contention-safe TLB shootdown, concurrent PMM safety (320k alloc/free under 623k+ contentions, 0 duplicate claims, exact baseline equality), and address-space lifetime tracking with deferred reaping. Full detail: [docs/roadmap/smp-piece6-memory.md](docs/roadmap/smp-piece6-memory.md). |
+| Phase 9G.5b SuperSpeed enumeration & BOT transport | COMPLETE (2026-09-20). SuperSpeed (USB 3.x) mass storage works end-to-end on physical hardware (Dell 5590 + SanDisk USB 3.2 Gen 1, port and multi-controller variants). Full detail and evidence: [docs/roadmap/phase-9g5-superspeed.md](docs/roadmap/phase-9g5-superspeed.md). |
 | Phase 9E Saved File Management & H4 AZERTY Fix | COMPLETE. Directory ops (`mkdir`/`rename`/`unlink`), on-disk inode/block reclamation, Belgian AZERTY scancode fix (Bug H4). Full detail: [docs/roadmap/phase-9e-exec-and-files.md](docs/roadmap/phase-9e-exec-and-files.md). |
 | Phase 9D Bounded writable ext2 | COMPLETE. Explicit opt-in writable mount, allocation/truncation ordering, emergency read-only remount, 3-boot BIOS/UEFI persistence. Full detail: [docs/roadmap/phase-9d-writable-ext2.md](docs/roadmap/phase-9d-writable-ext2.md). |
 | Phase 9C.5 Power & layout | COMPLETE. ACPI S5 shutdown/reset and US/AZERTY switching, verified on Dell 5590. Full detail: [docs/roadmap/subsystems.md](docs/roadmap/subsystems.md) ("Dell Latitude 5590 physical acceptance"). |
@@ -34,7 +35,8 @@ History lives in [docs/roadmap/README.md](docs/roadmap/README.md); qualification
 | Phase 9G.3 Production `/mnt` mount | COMPLETE (2026-09-19). Bounded cmdline parsing, PARTUUID-based partition selection, read-only production mount; verified on QEMU and Dell 5590 hardware. Full detail: [docs/roadmap/phase-9g3-usb-mount.md](docs/roadmap/phase-9g3-usb-mount.md). |
 | Phase 9G.4 USB writable persistence & durability classification | COMPLETE (2026-09-19). BOT stall recovery, four-tier durability classification, explicit writable opt-in; `/mnt` read-write persistence confirmed on physical USB. Full detail: [docs/roadmap/phase-9g4-usb-durability.md](docs/roadmap/phase-9g4-usb-durability.md). |
 | Phase 9H RAM capacity | COMPLETE (2026-09-20). PMM extended to cover 32 GiB, two-stage PMM/VMM init to stay within Limine's HHDM coverage until the kernel PML4 is active. Verified on Dell 5590 (32 GiB) with a write-readback probe. Full detail: [docs/roadmap/phase-9h-ram.md](docs/roadmap/phase-9h-ram.md). |
-| Current: multi-core (SMP) support | Pieces 1–5 COMPLETE (2026-09-24); Piece 6A, 6B, 6C & 6D COMPLETE and verified (2026-09-25) on QEMU (BIOS & UEFI, 1/4/8 CPUs) and Dell Latitude 5590 hardware (8 CPUs, 32 GiB). 320,000 allocate/verify/free cycles under 623k+ contention events, 0 duplicate claims, exact baseline equality, ThreadSanitizer clean; contention-safe TLB shootdown with per-CPU lockless mailboxes, wait-loop polling in spinlocks, deadlock breaking verified under contention ([Piece 6 details](docs/roadmap/smp-piece6-memory.md), [Piece 5 details](docs/roadmap/smp-piece5-ipi.md), [Piece 4 details](docs/roadmap/smp-piece4-scheduler.md), [Piece 3 details](docs/roadmap/smp-piece3-lock-discipline.md)); complete address space and page table lifetime tracking with op_refs, sched_refs, active CPU masks, and deferred destruction queue (SM13, SM16). Smaller open items not blocking SMP: 9G.5c/d (strong durability on a second device class, persistence on the SanDisk), introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython. |
+
+Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
 
 ### Phase 9G implementation handoff
 
@@ -201,6 +203,7 @@ FortressOS/
 ├── AGENTS.md                # Task routing, binding invariants, recipes and evidence
 ├── PROTECTED.md             # Short "do not touch without discussion" boundary list
 ├── ROADMAP.md               # Stub redirecting to docs/roadmap/README.md
+├── SMP_DESIGN.md            # Stub redirecting to docs/plans/SMP_DESIGN.md
 ├── ARCH_REVIEW.md           # Architecture audit, limits and technical debt
 ├── docs/
 │   ├── plans/               # Architecture specifications and implementation plans (SMP_DESIGN.md, etc.)
