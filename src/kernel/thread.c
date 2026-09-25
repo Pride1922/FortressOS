@@ -1369,10 +1369,16 @@ bool process_is_alive(uint64_t pid) {
 
 bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_preempt_count, uint64_t *out_total_ticks) {
     size_t limit = g_total_sched_cpus ? g_total_sched_cpus : 1;
+    uint32_t dead_grace_retries = 0;
+
     for (;;) {
-        /* 1. Check if captured in exit records across all CPUs */
+        bool alive = false;
+
+        /* Check each CPU under its sched_lock: check exit records AND alive status together */
         for (size_t c = 0; c < limit; c++) {
             uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+
+            /* 1. Check exit records */
             for (int i = 0; i < MAX_EXIT_RECORDS; i++) {
                 if (scheduler_cpus[c].exit_records[i].valid && scheduler_cpus[c].exit_records[i].pid == pid) {
                     if (out_exit_code) *out_exit_code = scheduler_cpus[c].exit_records[i].exit_code;
@@ -1383,23 +1389,15 @@ bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_
                     return true;
                 }
             }
-            spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
-        }
 
-        /* 2. Check if process is still alive across all CPUs */
-        bool alive = false;
-        for (size_t c = 0; c < limit; c++) {
-            uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
-            if (cpu_locals[c].current_thread &&
-                cpu_locals[c].current_thread->tid == pid &&
-                cpu_locals[c].current_thread->state != THREAD_TERMINATED) {
+            /* 2. Check alive status on this CPU (including threads in exit transition) */
+            if (cpu_locals[c].current_thread && cpu_locals[c].current_thread->tid == pid) {
                 alive = true;
-            } else if (scheduler_cpus[c].zombie_thread &&
-                       scheduler_cpus[c].zombie_thread->tid == pid) {
+            } else if (scheduler_cpus[c].zombie_thread && scheduler_cpus[c].zombie_thread->tid == pid) {
                 alive = true;
             } else {
                 for (tcb_t *t = scheduler_cpus[c].runqueue_head; t; t = t->next) {
-                    if (t->tid == pid && t->state != THREAD_TERMINATED) {
+                    if (t->tid == pid) {
                         alive = true;
                         break;
                     }
@@ -1421,13 +1419,21 @@ bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_
                     }
                 }
             }
+
             spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
-            if (alive) break;
         }
 
         if (!alive) {
-            /* Process not found in alive queues or exit records */
-            return false;
+            /* If not found alive and not yet in exit records, give in-flight AP
+             * exit path a bounded grace period (up to 50,000 attempts) to publish
+             * its exit record before declaring the PID invalid. */
+            dead_grace_retries++;
+            if (dead_grace_retries > 50000) {
+                return false;
+            }
+            __asm__ volatile("pause");
+        } else {
+            dead_grace_retries = 0;
         }
 
         /* Yield CPU to allow the process or reaper to make progress */
