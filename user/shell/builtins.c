@@ -27,6 +27,12 @@ static const struct { const char *name, *help; enum builtin id; } commands[] = {
     {"history", "History [clear | save | load]", CMD_HISTORY},
     {"prompt", "Configure prompt format [default | cwd | <template>]", CMD_PROMPT},
     {"terminal", "Select local | serial | mirror | plain output", CMD_TERMINAL},
+    {"set", "Print all shell variables", CMD_SET},
+    {"unset", "Unset shell variables [name...]", CMD_UNSET},
+    {"export", "Set/export environment variables [name[=val]...]", CMD_EXPORT},
+    {"env", "Print exported environment variables", CMD_ENV},
+    {"alias", "Define or display aliases [name[='val']...]", CMD_ALIAS},
+    {"unalias", "Remove aliases [name...]", CMD_UNALIAS},
 };
 
 size_t builtin_count(void) {

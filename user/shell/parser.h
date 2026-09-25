@@ -17,6 +17,8 @@ enum cmd_op {
 
 typedef struct {
     char *argv[MAX_ARGS + 1];
+    const uint8_t *quote_flags[MAX_ARGS + 1];
+    bool has_quotes[MAX_ARGS + 1];
     int argc;
     bool negate;          /* ! prefix */
     enum cmd_op next_op;  /* op connecting to next command */
@@ -26,6 +28,7 @@ typedef struct {
     parse_cmd_t cmds[MAX_CMDS];
     int cmd_count;
     char pool[LINE_CAP * 2];
+    uint8_t qpool[LINE_CAP * 2];
     size_t pool_used;
     enum lex_status status;
     const char *error_msg;

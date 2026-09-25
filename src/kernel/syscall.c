@@ -403,6 +403,54 @@ static int resolve_path(tcb_t *proc, const char *in_path, char *out_path, size_t
     return SYSCALL_SUCCESS;
 }
 
+static int copy_user_string_vector(uint64_t *active_pml4, uintptr_t user_vec,
+                                   int max_count, size_t max_strlen, size_t max_total_len,
+                                   char *buf, const char *out_kvec[], int *out_count) {
+    int count = 0;
+    size_t buf_offset = 0;
+
+    for (int i = 0; i < max_count; i++) {
+        uintptr_t ptr_addr = user_vec + (uintptr_t)i * sizeof(uintptr_t);
+        if (!vmm_validate_user_range(active_pml4, ptr_addr, sizeof(uintptr_t), false)) {
+            return SYSCALL_EFAULT;
+        }
+
+        uintptr_t str_ptr = *(const uintptr_t *)ptr_addr;
+        if (str_ptr == 0) {
+            break;
+        }
+
+        if (buf_offset >= max_total_len) {
+            return SYSCALL_E2BIG;
+        }
+
+        size_t max_copy = max_total_len - buf_offset;
+        if (max_copy > max_strlen) max_copy = max_strlen;
+
+        int err = copy_user_string(active_pml4, str_ptr, &buf[buf_offset], max_copy);
+        if (err != SYSCALL_SUCCESS) {
+            return err == SYSCALL_EINVAL ? SYSCALL_E2BIG : err;
+        }
+
+        out_kvec[count++] = &buf[buf_offset];
+        buf_offset += strlen(&buf[buf_offset]) + 1;
+    }
+
+    if (count == max_count) {
+        uintptr_t term_addr = user_vec + (uintptr_t)max_count * sizeof(uintptr_t);
+        if (!vmm_validate_user_range(active_pml4, term_addr, sizeof(uintptr_t), false)) {
+            return SYSCALL_EFAULT;
+        }
+        if (*(const uintptr_t *)term_addr != 0) {
+            return SYSCALL_E2BIG;
+        }
+    }
+
+    out_kvec[count] = NULL;
+    *out_count = count;
+    return SYSCALL_SUCCESS;
+}
+
 static int64_t sys_spawn(uintptr_t user_path, uintptr_t user_argv) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
     char raw_path[VFS_MAX_PATH];
@@ -426,49 +474,68 @@ static int64_t sys_spawn(uintptr_t user_path, uintptr_t user_argv) {
 
     const char *kargv[MAX_SPAWN_ARGS + 1];
     int argc = 0;
-    size_t buf_offset = 0;
 
-    for (int i = 0; i < MAX_SPAWN_ARGS; i++) {
-        uintptr_t ptr_addr = user_argv + (uintptr_t)i * sizeof(uintptr_t);
-        if (!vmm_validate_user_range(active_pml4, ptr_addr, sizeof(uintptr_t), false)) {
-            kfree(args_buf);
-            return SYSCALL_EFAULT;
-        }
-
-        uintptr_t str_ptr = *(const uintptr_t *)ptr_addr;
-        if (str_ptr == 0) {
-            /* Found argv NULL terminator */
-            break;
-        }
-
-        if (buf_offset >= MAX_TOTAL_ARGS_LEN) {
-            kfree(args_buf);
-            return SYSCALL_E2BIG;
-        }
-
-        size_t max_copy = MAX_TOTAL_ARGS_LEN - buf_offset;
-        if (max_copy > MAX_ARG_STRLEN) max_copy = MAX_ARG_STRLEN;
-
-        err = copy_user_string(active_pml4, str_ptr, &args_buf[buf_offset], max_copy);
-        if (err != SYSCALL_SUCCESS) {
-            kfree(args_buf);
-            return err == SYSCALL_EINVAL ? SYSCALL_E2BIG : err;
-        }
-
-        kargv[argc++] = &args_buf[buf_offset];
-        buf_offset += strlen(&args_buf[buf_offset]) + 1;
+    err = copy_user_string_vector(active_pml4, user_argv,
+                                 MAX_SPAWN_ARGS, MAX_ARG_STRLEN, MAX_TOTAL_ARGS_LEN,
+                                 args_buf, kargv, &argc);
+    if (err != SYSCALL_SUCCESS) {
+        kfree(args_buf);
+        return err;
     }
 
-    /* Verify that argv was properly NULL-terminated if MAX_SPAWN_ARGS reached */
-    if (argc == MAX_SPAWN_ARGS) {
-        uintptr_t term_addr = user_argv + (uintptr_t)MAX_SPAWN_ARGS * sizeof(uintptr_t);
-        if (!vmm_validate_user_range(active_pml4, term_addr, sizeof(uintptr_t), false)) {
+    if (argc == 0) {
+        kargv[0] = path;
+        kargv[1] = NULL;
+        argc = 1;
+    }
+
+    int64_t pid;
+    int64_t result = process_spawn_from_vfs(path, argc, kargv, &pid);
+    kfree(args_buf);
+    return result ? result : pid;
+}
+
+static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint64_t user_opts_size) {
+    if (user_opts_size != sizeof(spawn_opts_t)) {
+        return SYSCALL_EINVAL;
+    }
+
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(active_pml4, user_opts_ptr, sizeof(spawn_opts_t), false)) {
+        return SYSCALL_EFAULT;
+    }
+
+    spawn_opts_t opts;
+    memcpy(&opts, (const void *)user_opts_ptr, sizeof(spawn_opts_t));
+
+    if (opts.size != sizeof(spawn_opts_t) || opts.version != 1 || opts.flags != 0 ||
+        opts.reserved0 != 0 || opts.reserved1 != 0 || opts.reserved2 != 0 ||
+        opts.fd_actions != 0 || opts.action_count != 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    char raw_path[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, raw_path, sizeof(raw_path));
+    if (err) return err;
+
+    tcb_t *curr = thread_current();
+    char path[VFS_MAX_PATH];
+    err = resolve_path(curr, raw_path, path, sizeof(path));
+    if (err) return err;
+
+    char *args_buf = (char *)kmalloc(MAX_TOTAL_ARGS_LEN);
+    if (!args_buf) return SYSCALL_ENOMEM;
+
+    const char *kargv[MAX_SPAWN_ARGS + 1];
+    int argc = 0;
+
+    if (opts.argv) {
+        err = copy_user_string_vector(active_pml4, (uintptr_t)opts.argv,
+                                     MAX_SPAWN_ARGS, MAX_ARG_STRLEN, MAX_TOTAL_ARGS_LEN,
+                                     args_buf, kargv, &argc);
+        if (err != SYSCALL_SUCCESS) {
             kfree(args_buf);
-            return SYSCALL_EFAULT;
-        }
-        if (*(const uintptr_t *)term_addr != 0) {
-            kfree(args_buf);
-            return SYSCALL_E2BIG;
+            return err;
         }
     }
 
@@ -476,13 +543,44 @@ static int64_t sys_spawn(uintptr_t user_path, uintptr_t user_argv) {
         kargv[0] = path;
         kargv[1] = NULL;
         argc = 1;
-    } else {
-        kargv[argc] = NULL;
     }
 
-    int64_t pid;
-    int64_t result = process_spawn_from_vfs(path, argc, kargv, &pid);
+    char *env_buf = NULL;
+    const char *kenvp[MAX_SPAWN_ENVP + 1];
+    int envc = 0;
+
+    if (opts.envp) {
+        env_buf = (char *)kmalloc(MAX_TOTAL_ENVP_LEN);
+        if (!env_buf) {
+            kfree(args_buf);
+            return SYSCALL_ENOMEM;
+        }
+        err = copy_user_string_vector(active_pml4, (uintptr_t)opts.envp,
+                                     MAX_SPAWN_ENVP, MAX_ENV_STRLEN, MAX_TOTAL_ENVP_LEN,
+                                     env_buf, kenvp, &envc);
+        if (err != SYSCALL_SUCCESS) {
+            kfree(args_buf);
+            kfree(env_buf);
+            return err;
+        }
+    }
+
+    char cwd_buf[VFS_MAX_PATH];
+    const char *kcwd = NULL;
+    if (opts.cwd) {
+        err = copy_user_string(active_pml4, (uintptr_t)opts.cwd, cwd_buf, sizeof(cwd_buf));
+        if (err) {
+            kfree(args_buf);
+            if (env_buf) kfree(env_buf);
+            return err;
+        }
+        kcwd = cwd_buf;
+    }
+
+    int64_t pid = 0;
+    int64_t result = process_spawn_from_vfs_ext(path, argc, kargv, envc, opts.envp ? kenvp : NULL, kcwd, &pid);
     kfree(args_buf);
+    if (env_buf) kfree(env_buf);
     return result ? result : pid;
 }
 
@@ -887,6 +985,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_CHDIR:
             result = sys_chdir(frame->rdi);
+            break;
+
+        case SYS_SPAWN_EXT:
+            result = sys_spawn_ext(frame->rdi, frame->rsi, frame->rdx);
             break;
 
         default:

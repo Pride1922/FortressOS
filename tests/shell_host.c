@@ -4,6 +4,14 @@
 #include "lineedit.h"
 #include "lexer.h"
 #include "parser.h"
+#include "vars.h"
+#include "alias.h"
+#include "expand.h"
+
+long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
+    (void)nr; (void)a; (void)b; (void)c;
+    return -1;
+}
 
 static line_editor_t e;
 static void feed(const char *s) { while(*s) lineedit_byte(&e,(unsigned char)*s++); }
@@ -169,5 +177,154 @@ int main(void) {
     assert(parser_parse("echo foo &&", &tree) == PARSE_INCOMPLETE);
 
     puts("PASS shell parser: AST building, precedence, operators, negation, syntax errors");
+
+    /* Test S5 Variables */
+    vars_init();
+    assert(!strcmp(vars_get("PATH"), "/bin"));
+    assert(!strcmp(vars_get("HOME"), "/"));
+    assert(!strcmp(vars_get("PS1"), "fortress> "));
+    assert(vars_get("NONEXISTENT") == NULL);
+
+    assert(vars_set("TEST_VAR", "12345", false) == 0);
+    assert(!strcmp(vars_get("TEST_VAR"), "12345"));
+
+    assert(vars_export("EXPORTED_VAR=hello") == 0);
+    assert(!strcmp(vars_get("EXPORTED_VAR"), "hello"));
+
+    assert(vars_unset("TEST_VAR") == 0);
+    assert(vars_get("TEST_VAR") == NULL);
+
+    assert(vars_is_valid_name("valid_name_1"));
+    assert(vars_is_valid_name("_valid"));
+    assert(!vars_is_valid_name("1invalid"));
+    assert(!vars_is_valid_name("invalid-hyphen"));
+
+    char aname[MAX_VAR_NAME];
+    const char *aval = NULL;
+    assert(vars_is_assignment("FOO=bar", aname, sizeof(aname), &aval) && !strcmp(aname, "FOO") && !strcmp(aval, "bar"));
+    assert(!vars_is_assignment("=bar", aname, sizeof(aname), &aval));
+    assert(!vars_is_assignment("123=bar", aname, sizeof(aname), &aval));
+    assert(!vars_is_assignment("no_equals", aname, sizeof(aname), &aval));
+
+    /* Command-local variable scoping */
+    local_var_scope_t scope;
+    vars_set("SCOPED", "parent_val", false);
+    vars_scope_begin(&scope);
+    vars_scope_set(&scope, "SCOPED", "child_val");
+    vars_scope_set(&scope, "TEMP_NEW", "temp_val");
+    assert(!strcmp(vars_get("SCOPED"), "child_val"));
+    assert(!strcmp(vars_get("TEMP_NEW"), "temp_val"));
+    vars_scope_end(&scope);
+    assert(!strcmp(vars_get("SCOPED"), "parent_val"));
+    assert(vars_get("TEMP_NEW") == NULL);
+
+    /* Envp vector construction */
+    static char env_strs[32][MAX_VAR_NAME + MAX_VAR_VAL + 2];
+    static const char *env_ptrs[33];
+    int env_count = vars_build_envp(env_strs, env_ptrs);
+    assert(env_count >= 2); /* PATH and HOME */
+    assert(env_ptrs[env_count] == NULL);
+
+    puts("PASS shell variables: defaults, assignments, export, unset, validation, local scoping, envp vector");
+
+    /* Test S5 Aliases */
+    alias_init();
+    assert(alias_set("ll", "ls -l") == 0);
+    assert(!strcmp(alias_get("ll"), "ls -l"));
+
+    char abuf[512];
+    assert(alias_expand_line("ll /bin", abuf, sizeof(abuf)) && !strcmp(abuf, "ls -l /bin"));
+    assert(!alias_expand_line("'ll' /bin", abuf, sizeof(abuf))); /* Quoted command word is not expanded */
+    assert(!alias_expand_line("\"ll\" /bin", abuf, sizeof(abuf)));
+
+    /* Self-recursion: alias ls='ls -F' expands once */
+    alias_set("ls", "ls -F");
+    assert(alias_expand_line("ls /tmp", abuf, sizeof(abuf)) && !strcmp(abuf, "ls -F /tmp"));
+
+    /* Cycle detection: a -> b -> a terminates without infinite loop */
+    alias_set("a", "b");
+    alias_set("b", "a");
+    assert(alias_expand_line("a arg", abuf, sizeof(abuf)));
+
+    assert(alias_unset("ll") == 0);
+    assert(alias_get("ll") == NULL);
+
+    puts("PASS shell aliases: definitions, lookup, expansion, quote suppression, self-recursion, cycle bounds");
+
+    /* Test S5 Globbing */
+    assert(glob_match("*.c", "main.c"));
+    assert(!glob_match("*.c", "main.h"));
+    assert(glob_match("*.c", ".c"));
+    assert(glob_match("h?llo", "hello"));
+    assert(!glob_match("h?llo", "hllo"));
+    assert(glob_match("[a-z]*", "test.txt"));
+    assert(!glob_match("[a-z]*", "123.txt"));
+    assert(glob_match("[!0-9]*", "test"));
+    assert(!glob_match("[!0-9]*", "9test"));
+    assert(glob_match("*.[ch]", "foo.c"));
+    assert(glob_match("*.[ch]", "foo.h"));
+    assert(!glob_match("*.[ch]", "foo.o"));
+
+    puts("PASS shell globbing: *, ?, ranges, negated ranges");
+
+    /* Test S5 Expansion Pipeline */
+    vars_set("USER", "fortress", false);
+    vars_set("WORDS", "alpha beta gamma", false);
+    vars_set("EMPTY_VAR", "", false);
+
+    parse_tree_t ptree;
+    expanded_cmd_t ecmd;
+
+    /* 1. Parameter expansion and quote suppression */
+    assert(parser_parse("echo $USER \"$USER\" '$USER'", &ptree) == PARSE_OK);
+    assert(expand_command(&ptree.cmds[0], 0, &ecmd) == 0);
+    assert(ecmd.argc == 4);
+    assert(!strcmp(ecmd.argv[0], "echo"));
+    assert(!strcmp(ecmd.argv[1], "fortress"));
+    assert(!strcmp(ecmd.argv[2], "fortress"));
+    assert(!strcmp(ecmd.argv[3], "$USER")); /* Single quotes suppress expansion */
+
+    /* 2. Word splitting on unquoted expansion */
+    assert(parser_parse("cmd $WORDS", &ptree) == PARSE_OK);
+    assert(expand_command(&ptree.cmds[0], 0, &ecmd) == 0);
+    assert(ecmd.argc == 4);
+    assert(!strcmp(ecmd.argv[0], "cmd"));
+    assert(!strcmp(ecmd.argv[1], "alpha"));
+    assert(!strcmp(ecmd.argv[2], "beta"));
+    assert(!strcmp(ecmd.argv[3], "gamma"));
+
+    /* 3. Double quotes prevent word splitting */
+    assert(parser_parse("cmd \"$WORDS\"", &ptree) == PARSE_OK);
+    assert(expand_command(&ptree.cmds[0], 0, &ecmd) == 0);
+    assert(ecmd.argc == 2);
+    assert(!strcmp(ecmd.argv[0], "cmd"));
+    assert(!strcmp(ecmd.argv[1], "alpha beta gamma"));
+
+    /* 4. Empty variable handling: unquoted discarded, quoted preserved */
+    assert(parser_parse("cmd $EMPTY_VAR \"$EMPTY_VAR\" \"\"", &ptree) == PARSE_OK);
+    assert(expand_command(&ptree.cmds[0], 0, &ecmd) == 0);
+    assert(ecmd.argc == 3);
+    assert(!strcmp(ecmd.argv[0], "cmd"));
+    assert(!strcmp(ecmd.argv[1], ""));
+    assert(!strcmp(ecmd.argv[2], ""));
+
+    /* 5. Tilde expansion */
+    vars_set("HOME", "/root", false);
+    assert(parser_parse("ls ~/dir '~'", &ptree) == PARSE_OK);
+    assert(expand_command(&ptree.cmds[0], 0, &ecmd) == 0);
+    assert(ecmd.argc == 3);
+    assert(!strcmp(ecmd.argv[0], "ls"));
+    assert(!strcmp(ecmd.argv[1], "/root/dir"));
+    assert(!strcmp(ecmd.argv[2], "~")); /* Quoted tilde is literal */
+
+    /* 6. Special parameters $? and $$ */
+    assert(parser_parse("echo $? $$", &ptree) == PARSE_OK);
+    assert(expand_command(&ptree.cmds[0], 42, &ecmd) == 0);
+    assert(ecmd.argc == 3);
+    assert(!strcmp(ecmd.argv[0], "echo"));
+    assert(!strcmp(ecmd.argv[1], "42"));
+    assert(!strcmp(ecmd.argv[2], "1"));
+
+    puts("PASS shell expansion: parameter expansion, quoting suppression, word splitting, empty preservation, tilde, $?");
     return 0;
 }

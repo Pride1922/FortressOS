@@ -91,6 +91,7 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
 
     /* Read a TOK_WORD */
     lex->word_len = 0;
+    lex->has_quotes = false;
     bool has_content = false;
 
     while (s[i]) {
@@ -101,9 +102,11 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
         if (s[i] == '\'') {
             /* Single quotes: preserve literal characters */
             has_content = true;
+            lex->has_quotes = true;
             i++;
             while (s[i] && s[i] != '\'') {
                 if (lex->word_len + 1 < sizeof(lex->word_buf)) {
+                    lex->quote_flags[lex->word_len] = QUOTE_SINGLE;
                     lex->word_buf[lex->word_len++] = s[i];
                 }
                 i++;
@@ -120,6 +123,7 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
         if (s[i] == '"') {
             /* Double quotes: preserve characters, allow escapes */
             has_content = true;
+            lex->has_quotes = true;
             i++;
             while (s[i] && s[i] != '"') {
                 if (s[i] == '\\') {
@@ -135,11 +139,13 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
                     else if (esc == 't') out_c = '\t';
                     /* other escapes \", \\, \$, etc. are literal */
                     if (lex->word_len + 1 < sizeof(lex->word_buf)) {
+                        lex->quote_flags[lex->word_len] = QUOTE_DOUBLE;
                         lex->word_buf[lex->word_len++] = out_c;
                     }
                     continue;
                 }
                 if (lex->word_len + 1 < sizeof(lex->word_buf)) {
+                    lex->quote_flags[lex->word_len] = QUOTE_DOUBLE;
                     lex->word_buf[lex->word_len++] = s[i];
                 }
                 i++;
@@ -167,6 +173,7 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
                 continue;
             }
             if (lex->word_len + 1 < sizeof(lex->word_buf)) {
+                lex->quote_flags[lex->word_len] = QUOTE_ESCAPED;
                 lex->word_buf[lex->word_len++] = s[i++];
             } else {
                 i++;
@@ -177,6 +184,7 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
         /* Ordinary character */
         has_content = true;
         if (lex->word_len + 1 < sizeof(lex->word_buf)) {
+            lex->quote_flags[lex->word_len] = QUOTE_NONE;
             lex->word_buf[lex->word_len++] = s[i++];
         } else {
             i++;
@@ -185,10 +193,13 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
 
     if (has_content || lex->word_len == 0) {
         lex->word_buf[lex->word_len] = '\0';
+        lex->quote_flags[lex->word_len] = 0;
         lex->pos = i;
         tok->type = TOK_WORD;
         tok->value = lex->word_buf;
+        tok->quote_flags = lex->quote_flags;
         tok->len = lex->word_len;
+        tok->has_quotes = lex->has_quotes;
         return TOK_WORD;
     }
 

@@ -956,13 +956,15 @@ uint64_t sched_get_runnable_switches_count(void) {
  *   - Strings live at higher addresses than the pointer table.
  *   Do not "simplify" this without reading the spec. */
 int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const argv[],
-                             uintptr_t *out_user_rsp, uintptr_t *out_user_argv) {
+                             int envc, const char *const envp[],
+                             uintptr_t *out_user_rsp, uintptr_t *out_user_argv, uintptr_t *out_user_envp) {
     if (!stack_phys || !out_user_rsp || !out_user_argv) return -1;
     if (argc < 0 || argc > MAX_SPAWN_ARGS) return -1;
+    if (envc < 0 || envc > MAX_SPAWN_ENVP) return -1;
 
     uint8_t *stack_mem = (uint8_t *)vmm_phys_to_virt(stack_phys);
 
-    if (argc == 0 || !argv) {
+    if ((argc == 0 || !argv) && (envc == 0 || !envp)) {
         /* Minimal empty stack frame with argc=0 */
         size_t table_bytes = 5 * sizeof(uint64_t);
         uintptr_t rsp = (USER_STACK_TOP_VIRT - table_bytes) & ~0xFULL;
@@ -975,44 +977,76 @@ int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const a
         table[4] = 0; /* AT_NULL a_val = 0 */
         *out_user_rsp = rsp;
         *out_user_argv = rsp + sizeof(uint64_t);
+        if (out_user_envp) *out_user_envp = rsp + 2 * sizeof(uint64_t);
         return 0;
     }
 
-    /* 1. Calculate total string length including NUL terminators */
-    size_t total_str_len = 0;
-    for (int i = 0; i < argc; i++) {
-        if (!argv[i]) return -1;
-        size_t len = strlen(argv[i]) + 1;
-        if (len > MAX_ARG_STRLEN) return -1;
-        total_str_len += len;
+    /* 1. Calculate total string lengths including NUL terminators */
+    size_t total_argv_len = 0;
+    if (argv) {
+        for (int i = 0; i < argc; i++) {
+            if (!argv[i]) return -1;
+            size_t len = strlen(argv[i]) + 1;
+            if (len > MAX_ARG_STRLEN) return -1;
+            total_argv_len += len;
+        }
+    } else {
+        argc = 0;
     }
-    if (total_str_len > MAX_TOTAL_ARGS_LEN) return -1;
+    if (total_argv_len > MAX_TOTAL_ARGS_LEN) return -1;
+
+    size_t total_envp_len = 0;
+    if (envp) {
+        for (int i = 0; i < envc; i++) {
+            if (!envp[i]) return -1;
+            size_t len = strlen(envp[i]) + 1;
+            if (len > MAX_ENV_STRLEN) return -1;
+            total_envp_len += len;
+        }
+    } else {
+        envc = 0;
+    }
+    if (total_envp_len > MAX_TOTAL_ENVP_LEN) return -1;
+
+    size_t total_str_len = total_argv_len + total_envp_len;
 
     /* 2. Copy strings to high end of user stack page:
      * stack_top = USER_STACK_TOP_VIRT (one past end of page).
      * The last written byte is stack_mem[PAGE_SIZE - 1] (USER_STACK_TOP_VIRT - 1),
      * completely inside the allocated physical frame. */
-    uintptr_t user_str_ptrs[MAX_SPAWN_ARGS];
+    uintptr_t user_argv_ptrs[MAX_SPAWN_ARGS];
+    uintptr_t user_envp_ptrs[MAX_SPAWN_ENVP];
     size_t cur_offset = PAGE_SIZE - total_str_len;
+
     for (int i = 0; i < argc; i++) {
         size_t len = strlen(argv[i]) + 1;
         if (cur_offset + len > PAGE_SIZE) return -1;
         memcpy(stack_mem + cur_offset, argv[i], len);
-        user_str_ptrs[i] = USER_STACK_PAGE_VIRT + cur_offset;
+        user_argv_ptrs[i] = USER_STACK_PAGE_VIRT + cur_offset;
         cur_offset += len;
     }
+
+    for (int i = 0; i < envc; i++) {
+        size_t len = strlen(envp[i]) + 1;
+        if (cur_offset + len > PAGE_SIZE) return -1;
+        memcpy(stack_mem + cur_offset, envp[i], len);
+        user_envp_ptrs[i] = USER_STACK_PAGE_VIRT + cur_offset;
+        cur_offset += len;
+    }
+
     if (cur_offset != PAGE_SIZE) return -1;
 
     /* 3. Compute 16-byte aligned RSP below strings for:
-     *    argc (1) + argv[0..argc-1] (argc) + NULL (1) + envp NULL (1) + AT_NULL (2) = argc + 5
+     *    argc (1) + argv[0..argc-1] (argc) + NULL (1) + envp[0..envc-1] (envc) + NULL (1) + AT_NULL (2)
+     *    = argc + envc + 5 entries
      */
-    size_t table_entries = (size_t)(argc + 5);
+    size_t table_entries = (size_t)(argc + envc + 5);
     size_t table_bytes = table_entries * sizeof(uint64_t);
     uintptr_t str_virt_start = USER_STACK_TOP_VIRT - total_str_len;
     uintptr_t rsp = (str_virt_start - table_bytes) & ~0xFULL;
 
-    /* Check bounds: RSP must be >= USER_STACK_PAGE_VIRT */
-    if (rsp < USER_STACK_PAGE_VIRT) return -1;
+    /* Check bounds: RSP must leave at least MINIMUM_USER_STACK_FLOOR bytes of stack */
+    if (rsp < USER_STACK_PAGE_VIRT + MINIMUM_USER_STACK_FLOOR) return -1;
 
     size_t table_page_offset = (size_t)(rsp - USER_STACK_PAGE_VIRT);
     uint64_t *table = (uint64_t *)(stack_mem + table_page_offset);
@@ -1020,21 +1054,32 @@ int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const a
     size_t idx = 0;
     table[idx++] = (uint64_t)argc;
     for (int i = 0; i < argc; i++) {
-        table[idx++] = (uint64_t)user_str_ptrs[i];
+        table[idx++] = (uint64_t)user_argv_ptrs[i];
     }
     table[idx++] = 0; /* argv[argc] = NULL */
-    table[idx++] = 0; /* envp[0] = NULL */
+
+    uintptr_t envp_table_virt = rsp + idx * sizeof(uint64_t);
+    for (int i = 0; i < envc; i++) {
+        table[idx++] = (uint64_t)user_envp_ptrs[i];
+    }
+    table[idx++] = 0; /* envp[envc] = NULL */
+
     table[idx++] = 0; /* AT_NULL a_type */
     table[idx++] = 0; /* AT_NULL a_val */
 
     *out_user_rsp = rsp;
     *out_user_argv = rsp + sizeof(uint64_t);
+    if (out_user_envp) {
+        *out_user_envp = envp_table_virt;
+    }
     return 0;
 }
 
 static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
                                      const char *name, const void *elf_data, size_t elf_size,
                                      int argc, const char *const argv[],
+                                     int envc, const char *const envp[],
+                                     const char *cwd,
                                      uint64_t scalar_arg, int64_t *error) {
     *error = SYSCALL_ENOMEM;
     if (!elf_data || elf_size == 0) return NULL;
@@ -1056,12 +1101,14 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     /* 2. Setup user stack */
     uintptr_t user_rsp = 0;
     uintptr_t user_argv = 0;
+    uintptr_t user_envp = 0;
     uint64_t rdi_val = 0;
     uint64_t rsi_val = 0;
 
     if (argv != NULL) {
         int setup_res = process_setup_user_stack(proc_info.stack_phys, argc, argv,
-                                                &user_rsp, &user_argv);
+                                                envc, envp,
+                                                &user_rsp, &user_argv, &user_envp);
         if (setup_res != 0) {
             *error = SYSCALL_E2BIG;
             vmm_destroy_pml4(proc_info.pml4_phys, true);
@@ -1126,15 +1173,23 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     p->has_exited = false;
     p->current_cpu = target_cpu;
     p->cpu_affinity = affinity;
-    tcb_t *parent_thread = thread_current();
-    if (parent_thread && parent_thread->cwd[0]) {
-        size_t clen = strlen(parent_thread->cwd);
+
+    if (cwd && cwd[0]) {
+        size_t clen = strlen(cwd);
         if (clen >= sizeof(p->cwd)) clen = sizeof(p->cwd) - 1;
-        memcpy(p->cwd, parent_thread->cwd, clen);
+        memcpy(p->cwd, cwd, clen);
         p->cwd[clen] = '\0';
     } else {
-        p->cwd[0] = '/';
-        p->cwd[1] = '\0';
+        tcb_t *parent_thread = thread_current();
+        if (parent_thread && parent_thread->cwd[0]) {
+            size_t clen = strlen(parent_thread->cwd);
+            if (clen >= sizeof(p->cwd)) clen = sizeof(p->cwd) - 1;
+            memcpy(p->cwd, parent_thread->cwd, clen);
+            p->cwd[clen] = '\0';
+        } else {
+            p->cwd[0] = '/';
+            p->cwd[1] = '\0';
+        }
     }
 
     /* 5. Set up initial kernel stack frame for first context switch to user_process_trampoline */
@@ -1183,15 +1238,22 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
 
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
     int64_t error;
-    return process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, name, elf_data, elf_size, 0, NULL, arg, &error);
+    return process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, name, elf_data, elf_size,
+                                  0, NULL, 0, NULL, NULL, arg, &error);
 }
 
 tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
     int64_t error;
-    return process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size, 0, NULL, arg, &error);
+    return process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
+                                  0, NULL, 0, NULL, NULL, arg, &error);
 }
 
 int64_t process_spawn_from_vfs(const char *path, int argc, const char *const argv[], int64_t *out_pid) {
+    return process_spawn_from_vfs_ext(path, argc, argv, 0, NULL, NULL, out_pid);
+}
+
+int64_t process_spawn_from_vfs_ext(const char *path, int argc, const char *const argv[],
+                                   int envc, const char *const envp[], const char *cwd, int64_t *out_pid) {
     if (!path || !*path || !out_pid) return SYSCALL_EINVAL;
     /* Keep publication and PID capture atomic on this bootstrap-only CPU.
      * No scheduler lock is held across filesystem or loader operations. */
@@ -1235,7 +1297,8 @@ int64_t process_spawn_from_vfs(const char *path, int argc, const char *const arg
         }
         image = buffer;
     }
-    tcb_t *child = process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, path, image, size, argc, argv, 0, &result);
+    tcb_t *child = process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, path, image, size,
+                                          argc, argv, envc, envp, cwd, 0, &result);
     if (!child) goto out;
     *record = (child_record_t){ .parent = g_current_thread->tid,
                               .pid = child->tid, .used = true };

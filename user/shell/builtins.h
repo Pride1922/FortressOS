@@ -29,7 +29,13 @@ enum builtin {
     CMD_DMESG,
     CMD_HISTORY,
     CMD_PROMPT,
-    CMD_TERMINAL
+    CMD_TERMINAL,
+    CMD_SET,
+    CMD_UNSET,
+    CMD_EXPORT,
+    CMD_ENV,
+    CMD_ALIAS,
+    CMD_UNALIAS
 };
 
 enum builtin builtin_find(const char *name);

@@ -22,7 +22,24 @@
 #define SYS_INPUT_READ 17
 #define SYS_GETCWD     18 /* (char *buf, uint64_t size) -> bytes written */
 #define SYS_CHDIR      19 /* (const char *path) -> 0 */
+#define SYS_SPAWN_EXT  20 /* (const char *path, const spawn_opts_t *opts, uint64_t opts_size) -> child PID */
 #define DMESG_SIZE     (64 * 1024)
+
+typedef struct {
+    uint32_t size;          /* sizeof(spawn_opts_t) = 64 */
+    uint32_t version;       /* 1 */
+    uint32_t flags;         /* 0 */
+    uint32_t reserved0;     /* 0 */
+    uint64_t argv;          /* pointer to argv NULL-terminated array of char* */
+    uint64_t envp;          /* pointer to envp NULL-terminated array of char* */
+    uint64_t cwd;           /* pointer to cwd string (optional, 0 for inherit) */
+    uint64_t fd_actions;    /* pointer to fd actions (0 for now) */
+    uint32_t action_count;  /* count of fd actions (0 for now) */
+    uint32_t reserved1;     /* 0 */
+    uint64_t reserved2;     /* 0 */
+} spawn_opts_t;
+
+_Static_assert(sizeof(spawn_opts_t) == 64, "spawn_opts_t must be exactly 64 bytes");
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0

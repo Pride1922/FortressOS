@@ -101,10 +101,21 @@ typedef struct {
 #define USER_STACK_TOP_VIRT    0x00007FFFF0001000ULL
 #define USER_STACK_GUARD_VIRT  0x00007FFFEFFFF000ULL
 
-/* Spawn Argument Limits */
+/* Spawn Argument & Environment Limits */
 #define MAX_SPAWN_ARGS         32
 #define MAX_ARG_STRLEN         256
-#define MAX_TOTAL_ARGS_LEN     2048
+#define MAX_TOTAL_ARGS_LEN     1024
+
+#define MAX_SPAWN_ENVP         32
+#define MAX_ENV_STRLEN         256
+#define MAX_TOTAL_ENVP_LEN     1024
+
+#define MINIMUM_USER_STACK_FLOOR 512
+#define MAX_POINTER_TABLE_BYTES  (((MAX_SPAWN_ARGS + MAX_SPAWN_ENVP + 5) * 8) + 16)
+
+/* Verify that maximum strings, pointer tables, and minimal stack frame strictly fit within 4 KiB */
+_Static_assert(MAX_TOTAL_ARGS_LEN + MAX_TOTAL_ENVP_LEN + MAX_POINTER_TABLE_BYTES + MINIMUM_USER_STACK_FLOOR <= 4096,
+               "User stack budget exceeded: args + envp + tables + floor must fit in 4 KiB");
 
 /* Loader Error Codes */
 #define ELF_OK                 0

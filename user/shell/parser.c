@@ -68,14 +68,22 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
             }
 
             char *dest = &tree->pool[tree->pool_used];
-            for (size_t k = 0; k < wlen; k++) dest[k] = tok.value[k];
+            uint8_t *qdest = &tree->qpool[tree->pool_used];
+            for (size_t k = 0; k < wlen; k++) {
+                dest[k] = tok.value[k];
+                qdest[k] = tok.quote_flags ? tok.quote_flags[k] : 0;
+            }
             dest[wlen] = '\0';
+            qdest[wlen] = 0;
             tree->pool_used += wlen + 1;
 
+            cmd->quote_flags[cmd->argc] = qdest;
+            cmd->has_quotes[cmd->argc] = tok.has_quotes;
             cmd->argv[cmd->argc++] = dest;
             type = lexer_next(&parse_lex, &tok);
         }
         cmd->argv[cmd->argc] = 0;
+        cmd->quote_flags[cmd->argc] = 0;
 
         if (type == TOK_SEMI) {
             cmd->next_op = CMD_OP_SEMI;

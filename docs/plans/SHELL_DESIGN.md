@@ -405,6 +405,19 @@ envp through the versioned spawn API and document the initial stack layout. Keep
 existing argc/argv startup valid and account for argument strings, env strings,
 pointer arrays, alignment and remaining stack space together.
 
+**Binding S5 Architecture Decisions:**
+1. **Variable Scoping:** Variables are **flat for S5, scoped for S9**. The shell maintains
+   a single flat variable table per session with export flags. Command-local assignments
+   (`FOO=bar cmd`) temporarily apply to the flat environment during the invocation of `cmd`
+   and revert immediately upon completion; block/function local scoping is deferred to S9.
+2. **Envp Budget and Stack Layout:** The user stack remains strictly **4 KiB (one single page frame)**,
+   preserving existing kernel guard and memory-accounting invariants. To guarantee safe headroom
+   for user program stack frames, the string budget is partitioned: `MAX_TOTAL_ARGS_LEN` is budgeted
+   at **1024 bytes** (max 32 args, 256 bytes per string) and `MAX_TOTAL_ENVP_LEN` is budgeted at
+   **1024 bytes** (max 32 env entries, 256 bytes per string), capping combined string payload at
+   2048 bytes. Combined with pointer vectors (argv + envp + auxv = 568 bytes max), this guarantees
+   at least 1480 bytes of free stack space for user execution without growing the user stack.
+
 Defaults: `PATH=/bin`, `HOME=/`, explicit terminal mode and PS1/PS2. Do not implicitly
 search `.`. Add tilde expansion, `alias`/`unalias` with recursion/cycle bounds, and
 pathname patterns `*`, `?`, `[abc]`, `[!abc]`. Hidden names require an explicit leading

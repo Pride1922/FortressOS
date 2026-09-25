@@ -22,17 +22,26 @@ enum lex_status {
     LEX_ERROR
 };
 
+#define QUOTE_NONE     0
+#define QUOTE_SINGLE   1
+#define QUOTE_DOUBLE   2
+#define QUOTE_ESCAPED  3
+
 typedef struct {
     enum token_type type;
-    const char *value;  /* points into lexer word buffer */
+    const char *value;          /* points into lexer word buffer */
+    const uint8_t *quote_flags; /* parallel quote flag array */
     size_t len;
+    bool has_quotes;
 } token_t;
 
 typedef struct {
     const char *src;
     size_t pos;
     char word_buf[LINE_CAP];
+    uint8_t quote_flags[LINE_CAP];
     size_t word_len;
+    bool has_quotes;
     enum lex_status status;
 } lexer_t;
 

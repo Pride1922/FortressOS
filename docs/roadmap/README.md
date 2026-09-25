@@ -21,6 +21,7 @@ and are not proof that every current revision has passed every test — check
 | File | Covers |
 | --- | --- |
 | [shell-s0-s2.md](shell-s0-s2.md) | Shell foundation, terminal byte input/output, line editing and RAM history; automated verification and pending Dell checklist |
+| [shell-s5.md](shell-s5.md) | Environment, variables, parameter expansion, aliases, and globbing (flat variables, SYS_SPAWN_EXT ABI, stack budget guard, 5-stage expansion pipeline) |
 | [shell-s3-s4.md](shell-s3-s4.md) | Single parser (quotes, escapes, operators), working directories (cd, pwd, relative path resolution), direct execution, completion, prompt customization, and persistent history |
 | [phase-9c2-readonly-ext2.md](phase-9c2-readonly-ext2.md) | Read-only ext2 mount at `/mnt` (superseded/extended by Phase 9D for writable support) |
 | [phase-9d-writable-ext2.md](phase-9d-writable-ext2.md) | Bounded writable ext2: allocation/truncation ordering, superblock clean/dirty lifecycle, 3-boot persistence |

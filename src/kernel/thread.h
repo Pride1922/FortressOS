@@ -107,8 +107,11 @@ void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
  * System V AMD64 ABI: RSP points to argc, RDI = argc, RSI = argv.
  * Bootstrap CPU only; IRQ-excluded publication, no inherited file descriptors. */
 int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const argv[],
-                             uintptr_t *out_user_rsp, uintptr_t *out_user_argv);
+                             int envc, const char *const envp[],
+                             uintptr_t *out_user_rsp, uintptr_t *out_user_argv, uintptr_t *out_user_envp);
 int64_t process_spawn_from_vfs(const char *path, int argc, const char *const argv[], int64_t *out_pid);
+int64_t process_spawn_from_vfs_ext(const char *path, int argc, const char *const argv[],
+                                   int envc, const char *const envp[], const char *cwd, int64_t *out_pid);
 bool process_wait_child(uint64_t pid, uint64_t *out_exit_code);
 tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size);
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg);

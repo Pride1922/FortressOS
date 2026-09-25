@@ -9,6 +9,9 @@
 #include "shell/parser.h"
 #include "shell/history_persist.h"
 #include "shell/fileedit.h"
+#include "shell/vars.h"
+#include "shell/alias.h"
+#include "shell/expand.h"
 
 static char cmd_buf[LINE_CAP * 2];
 static char line_input[LINE_CAP];
@@ -17,6 +20,14 @@ static int64_t last_status = 0;
 static char dmesg_buf[DMESG_SIZE];
 static char current_cwd[VFS_MAX_PATH] = "/";
 static char oldpwd[VFS_MAX_PATH] = "";
+static local_var_scope_t s_local_scope;
+static expanded_cmd_t s_expanded_cmd;
+static char s_env_strings[32][MAX_VAR_NAME + MAX_VAR_VAL + 2];
+static const char *s_envp_ptrs[33];
+static char s_alias_line[LINE_CAP * 2];
+static parse_cmd_t s_val_cmd;
+static parse_cmd_t s_sub_cmd;
+static expanded_cmd_t s_exp_val;
 
 static void update_cwd(void) {
     long n = call(SYS_GETCWD, (uintptr_t)current_cwd, sizeof(current_cwd), 0);
@@ -80,7 +91,18 @@ static void cat(const char *path) {
 }
 
 static int spawn_program(const char *path, const char **argv) {
-    long pid = call(SYS_SPAWN, (uintptr_t)path, (uintptr_t)argv, 0);
+    (void)vars_build_envp(s_env_strings, s_envp_ptrs);
+
+    spawn_opts_t opts;
+    for (size_t i = 0; i < sizeof(opts); i++) ((char *)&opts)[i] = 0;
+    opts.size = sizeof(spawn_opts_t);
+    opts.version = 1;
+    opts.flags = 0;
+    opts.argv = (uint64_t)argv;
+    opts.envp = (uint64_t)s_envp_ptrs;
+    opts.cwd = 0; /* inherit */
+
+    long pid = call(SYS_SPAWN_EXT, (uintptr_t)path, (uintptr_t)&opts, sizeof(opts));
     if (pid < 0) {
         switch (pid) {
             case SYSCALL_ENOENT: puts("No such file or directory.\n"); return 127;
@@ -113,17 +135,7 @@ static int spawn_program(const char *path, const char **argv) {
 static void echo_cmd(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (i > 1) puts(" ");
-        const char *arg = argv[i];
-        while (*arg) {
-            if (arg[0] == '$' && arg[1] == '?') {
-                if (last_status < 0) { puts("-"); put_dec(0 - (uint64_t)last_status); }
-                else put_dec((uint64_t)last_status);
-                arg += 2;
-            } else {
-                char ch[2] = { *arg++, 0 };
-                puts(ch);
-            }
-        }
+        puts(argv[i]);
     }
     puts("\n");
     last_status = 0;
@@ -229,23 +241,49 @@ static int type_cmd(int argc, char **argv) {
             puts(name); puts(" is a shell builtin\n");
             continue;
         }
-        char bin_path[VFS_MAX_PATH];
-        bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
-        size_t n = 0;
-        while (name[n] && n < sizeof(bin_path) - 6) { bin_path[5 + n] = name[n]; n++; }
-        bin_path[5 + n] = '\0';
 
-        vfs_stat_t st;
-        if (call(SYS_STAT, (uintptr_t)bin_path, (uintptr_t)&st, 0) == 0 && st.type == VFS_FILE) {
-            puts(name); puts(" is "); puts(bin_path); puts("\n");
+        const char *al = alias_get(name);
+        if (al) {
+            puts(name); puts(" is an alias for '"); puts(al); puts("'\n");
             continue;
         }
 
         bool has_slash = false;
         for (size_t k = 0; name[k]; k++) { if (name[k] == '/') { has_slash = true; break; } }
-        if (has_slash && call(SYS_STAT, (uintptr_t)name, (uintptr_t)&st, 0) == 0 && st.type == VFS_FILE) {
-            puts(name); puts(" is "); puts(name); puts("\n");
-            continue;
+
+        vfs_stat_t st;
+        if (has_slash) {
+            if (call(SYS_STAT, (uintptr_t)name, (uintptr_t)&st, 0) == 0 && st.type == VFS_FILE) {
+                puts(name); puts(" is "); puts(name); puts("\n");
+                continue;
+            }
+        } else {
+            const char *path_var = vars_get("PATH");
+            if (!path_var || !*path_var) path_var = "/bin";
+            bool found = false;
+            const char *p = path_var;
+            while (*p) {
+                size_t dlen = 0;
+                while (p[dlen] && p[dlen] != ':') dlen++;
+
+                char candidate[VFS_MAX_PATH];
+                size_t nlen = length(name);
+                if (dlen + 1 + nlen + 1 < sizeof(candidate)) {
+                    for (size_t k = 0; k < dlen; k++) candidate[k] = p[k];
+                    candidate[dlen] = '/';
+                    for (size_t k = 0; k < nlen; k++) candidate[dlen + 1 + k] = name[k];
+                    candidate[dlen + 1 + nlen] = '\0';
+
+                    if (call(SYS_STAT, (uintptr_t)candidate, (uintptr_t)&st, 0) == 0 && st.type == VFS_FILE) {
+                        puts(name); puts(" is "); puts(candidate); puts("\n");
+                        found = true;
+                        break;
+                    }
+                }
+                p += dlen;
+                if (*p == ':') p++;
+            }
+            if (found) continue;
         }
 
         puts(name); puts(": not found\n");
@@ -291,6 +329,60 @@ static int execute_simple_command(int argc, char **argv) {
     }
     if (b == CMD_ECHO) {
         echo_cmd(argc, argv);
+        return 0;
+    }
+    if (b == CMD_SET) {
+        vars_print_set();
+        return 0;
+    }
+    if (b == CMD_UNSET) {
+        for (int i = 1; i < argc; i++) vars_unset(argv[i]);
+        return 0;
+    }
+    if (b == CMD_EXPORT) {
+        if (argc == 1) {
+            vars_print_env();
+            return 0;
+        }
+        for (int i = 1; i < argc; i++) {
+            vars_export(argv[i]);
+        }
+        return 0;
+    }
+    if (b == CMD_ENV) {
+        vars_print_env();
+        return 0;
+    }
+    if (b == CMD_ALIAS) {
+        if (argc == 1) {
+            alias_print_all();
+            return 0;
+        }
+        for (int i = 1; i < argc; i++) {
+            char aname[MAX_ALIAS_NAME];
+            const char *aval = 0;
+            if (vars_is_assignment(argv[i], aname, sizeof(aname), &aval)) {
+                alias_set(aname, aval);
+            } else {
+                const char *v = alias_get(argv[i]);
+                if (v) {
+                    puts("alias "); puts(argv[i]); puts("='"); puts(v); puts("'\n");
+                } else {
+                    puts("alias: "); puts(argv[i]); puts(": not found\n");
+                    return 1;
+                }
+            }
+        }
+        return 0;
+    }
+    if (b == CMD_UNALIAS) {
+        if (argc < 2) {
+            puts("unalias: missing operand\n");
+            return 1;
+        }
+        for (int i = 1; i < argc; i++) {
+            alias_unset(argv[i]);
+        }
         return 0;
     }
     if (b == CMD_LS) {
@@ -427,17 +519,35 @@ static int execute_simple_command(int argc, char **argv) {
         if (cmd[k] == '/') { has_slash = true; break; }
     }
 
-    char bin_path[VFS_MAX_PATH];
+    char target_path[VFS_MAX_PATH];
     if (!has_slash) {
-        bin_path[0] = '/'; bin_path[1] = 'b'; bin_path[2] = 'i'; bin_path[3] = 'n'; bin_path[4] = '/';
-        size_t n = 0;
-        while (cmd[n] && n < sizeof(bin_path) - 6) { bin_path[5 + n] = cmd[n]; n++; }
-        bin_path[5 + n] = '\0';
+        const char *path_var = vars_get("PATH");
+        if (!path_var || !*path_var) path_var = "/bin";
+        bool found = false;
+        const char *p = path_var;
+        while (*p) {
+            size_t dlen = 0;
+            while (p[dlen] && p[dlen] != ':') dlen++;
 
-        vfs_stat_t st;
-        if (call(SYS_STAT, (uintptr_t)bin_path, (uintptr_t)&st, 0) == 0 && st.type == VFS_FILE) {
-            target = bin_path;
-        } else {
+            size_t clen = length(cmd);
+            if (dlen + 1 + clen + 1 < sizeof(target_path)) {
+                for (size_t k = 0; k < dlen; k++) target_path[k] = p[k];
+                target_path[dlen] = '/';
+                for (size_t k = 0; k < clen; k++) target_path[dlen + 1 + k] = cmd[k];
+                target_path[dlen + 1 + clen] = '\0';
+
+                vfs_stat_t st;
+                if (call(SYS_STAT, (uintptr_t)target_path, (uintptr_t)&st, 0) == 0 && st.type == VFS_FILE) {
+                    target = target_path;
+                    found = true;
+                    break;
+                }
+            }
+            p += dlen;
+            if (*p == ':') p++;
+        }
+
+        if (!found) {
             puts("Unknown command. Type help.\n");
             return 127;
         }
@@ -467,7 +577,84 @@ static void execute_parse_tree(parse_tree_t *tree) {
         }
 
         if (should_run) {
-            curr_status = execute_simple_command(cmd->argc, cmd->argv);
+            /* Check for leading assignments: NAME=val */
+            int assign_count = 0;
+            char assign_name[MAX_VAR_NAME];
+            const char *assign_val = NULL;
+            while (assign_count < cmd->argc &&
+                   cmd->quote_flags[assign_count] && cmd->quote_flags[assign_count][0] == QUOTE_NONE &&
+                   vars_is_assignment(cmd->argv[assign_count], assign_name, sizeof(assign_name), &assign_val)) {
+                assign_count++;
+            }
+
+            if (assign_count == cmd->argc && cmd->argc > 0) {
+                /* Pure variable assignments */
+                for (int k = 0; k < cmd->argc; k++) {
+                    (void)vars_is_assignment(cmd->argv[k], assign_name, sizeof(assign_name), &assign_val);
+                    char *v_argv[2] = { (char *)assign_val, NULL };
+                    const uint8_t *v_qflags[2] = { cmd->quote_flags[k] + (assign_val - cmd->argv[k]), NULL };
+                    bool v_has_quotes[2] = { cmd->has_quotes[k], false };
+                    s_val_cmd.argc = 1;
+                    s_val_cmd.argv[0] = v_argv[0];
+                    s_val_cmd.argv[1] = NULL;
+                    s_val_cmd.quote_flags[0] = v_qflags[0];
+                    s_val_cmd.quote_flags[1] = NULL;
+                    s_val_cmd.has_quotes[0] = v_has_quotes[0];
+                    s_val_cmd.negate = false;
+                    s_val_cmd.next_op = CMD_OP_NONE;
+
+                    expand_command(&s_val_cmd, curr_status, &s_exp_val);
+                    const char *final_val = s_exp_val.argc > 0 ? s_exp_val.argv[0] : "";
+                    vars_set(assign_name, final_val, false);
+                }
+                curr_status = 0;
+            } else {
+                if (assign_count > 0) {
+                    vars_scope_begin(&s_local_scope);
+                    for (int k = 0; k < assign_count; k++) {
+                        (void)vars_is_assignment(cmd->argv[k], assign_name, sizeof(assign_name), &assign_val);
+                        char *v_argv[2] = { (char *)assign_val, NULL };
+                        const uint8_t *v_qflags[2] = { cmd->quote_flags[k] + (assign_val - cmd->argv[k]), NULL };
+                        bool v_has_quotes[2] = { cmd->has_quotes[k], false };
+                        s_val_cmd.argc = 1;
+                        s_val_cmd.argv[0] = v_argv[0];
+                        s_val_cmd.argv[1] = NULL;
+                        s_val_cmd.quote_flags[0] = v_qflags[0];
+                        s_val_cmd.quote_flags[1] = NULL;
+                        s_val_cmd.has_quotes[0] = v_has_quotes[0];
+                        s_val_cmd.negate = false;
+                        s_val_cmd.next_op = CMD_OP_NONE;
+
+                        expand_command(&s_val_cmd, curr_status, &s_exp_val);
+                        const char *final_val = s_exp_val.argc > 0 ? s_exp_val.argv[0] : "";
+                        vars_scope_set(&s_local_scope, assign_name, final_val);
+                    }
+                }
+
+                /* Form remaining command after assignments */
+                s_sub_cmd.argc = cmd->argc - assign_count;
+                s_sub_cmd.negate = cmd->negate;
+                s_sub_cmd.next_op = cmd->next_op;
+                for (int k = 0; k < s_sub_cmd.argc; k++) {
+                    s_sub_cmd.argv[k] = cmd->argv[assign_count + k];
+                    s_sub_cmd.quote_flags[k] = cmd->quote_flags[assign_count + k];
+                    s_sub_cmd.has_quotes[k] = cmd->has_quotes[assign_count + k];
+                }
+                s_sub_cmd.argv[s_sub_cmd.argc] = NULL;
+                s_sub_cmd.quote_flags[s_sub_cmd.argc] = NULL;
+
+                expand_command(&s_sub_cmd, curr_status, &s_expanded_cmd);
+                if (s_expanded_cmd.argc > 0) {
+                    curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv);
+                } else {
+                    curr_status = 0;
+                }
+
+                if (assign_count > 0) {
+                    vars_scope_end(&s_local_scope);
+                }
+            }
+
             if (cmd->negate) {
                 curr_status = (curr_status == 0) ? 1 : 0;
             }
@@ -491,6 +678,8 @@ void shell_main(void) {
     }
 
     update_cwd();
+    vars_init();
+    alias_init();
     (void)history_load();
 
     puts("\nFortressOS shell (Ring 3)\nType help for commands.\n");
@@ -509,7 +698,8 @@ void shell_main(void) {
 
         /* Loop for continuation prompt if input is incomplete */
         for (;;) {
-            enum parse_result pr = parser_parse(cmd_buf, &parse_tree);
+            (void)alias_expand_line(cmd_buf, s_alias_line, sizeof(s_alias_line));
+            enum parse_result pr = parser_parse(s_alias_line, &parse_tree);
             if (pr == PARSE_INCOMPLETE) {
                 if (!shell_read_line(line_input, true)) return;
                 if (!line_input[0]) {
@@ -538,7 +728,8 @@ void shell_main(void) {
 
         if (!cmd_buf[0]) continue;
 
-        enum parse_result pr = parser_parse(cmd_buf, &parse_tree);
+        (void)alias_expand_line(cmd_buf, s_alias_line, sizeof(s_alias_line));
+        enum parse_result pr = parser_parse(s_alias_line, &parse_tree);
         if (pr == PARSE_SYNTAX_ERROR) {
             puts(parse_tree.error_msg ? parse_tree.error_msg : "syntax error");
             puts("\n");
