@@ -3,6 +3,22 @@
 
 #include "types.h"
 
+#ifdef TEST_SMP_MEMORY
+#include <pthread.h>
+
+typedef struct spinlock {
+    pthread_mutex_t mutex;
+    unsigned rank;
+    const char *name;
+} spinlock_t;
+
+#define SPINLOCK_RANKED(r, n) {PTHREAD_MUTEX_INITIALIZER, (r), (n)}
+
+uint64_t spin_lock_irqsave(spinlock_t *lock);
+void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags);
+
+#else  /* !TEST_SMP_MEMORY */
+
 /*
  * Freestanding Spinlock with Interrupt Flags (RFLAGS) Preservation
  *
@@ -104,5 +120,7 @@ static inline void spin_unlock_irqrestore(spinlock_t *lock, uint64_t rflags) {
     spin_unlock_noirq(lock);
     __asm__ volatile("push %0; popfq" : : "r"(rflags) : "memory");
 }
+
+#endif  /* TEST_SMP_MEMORY */
 
 #endif /* FORTRESS_SPINLOCK_H */

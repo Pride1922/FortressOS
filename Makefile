@@ -422,3 +422,26 @@ clean:
 distclean: clean
 	@rm -rf $(LIMINE_DIR) ovmf
 	@echo "[OK] Project distclean complete."
+
+# Phase 6B: PMM SMP Memory Test Targets
+# Build and run the PMM SMP host test harness
+BIN_DIR ?= bin
+TEST_HOST_BIN := $(BIN_DIR)/pmm_smp_test
+TEST_HOST_SRCS := tests/pmm_smp_test.c src/mm/pmm.c src/mm/pmm_host_shim.c
+TEST_HOST_CFLAGS := $(CFLAGS) -DTEST_SMP_MEMORY -pthread
+
+$(TEST_HOST_BIN): $(TEST_HOST_SRCS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(TEST_HOST_CFLAGS) -o $@ $^
+
+.PHONY: test-smp-memory-host
+
+test-smp-memory-host: $(TEST_HOST_BIN)
+	@echo "--- Running PMM SMP memory host test ---"
+	@$(TEST_HOST_BIN)
+
+# Placeholder for freestanding QEMU SMP memory test (not yet implemented)
+.PHONY: test-smp-memory
+
+test-smp-memory:
+	@echo "Freestanding SMP memory test not yet implemented"

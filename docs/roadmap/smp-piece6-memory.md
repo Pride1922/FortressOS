@@ -1,10 +1,8 @@
 # SMP Piece 6 — Memory safety implementation and evidence
 
-Status (2026-09-24): **6A implemented; user reports host ASan/UBSan and
-2 GiB QEMU matrix and BIOS/UEFI 8 GiB/8 CPU cases PASS.
-Dell photo confirms both 6A cleanup checks and all five high-memory probes.
-Other RAM configurations and remaining integration checks are not yet reported.**
-6B–6D remain planned. This is not acceptance of Piece 6.
+Status (2026-09-25): **Piece 6A COMPLETE and verified across QEMU matrix and physical Dell Latitude 5590 hardware (32 GiB, 8 CPUs).
+Physical boot log (saved directly to /mnt/boot.log via SuperSpeed USB storage) confirms early boot ceiling, kernel CR3 activation, all five high-memory HHDM readbacks (1, 2, 4, 16, and 30 GiB), exact cleanup, AP readiness verification, all 7 APs online, Pieces 3–5 SMP suites PASS, and interactive shell.**
+Piece 6B host test harness (`test-smp-memory-host`) is implemented and passing with pthread mutex shim. 6B freestanding / 6C–6D remain planned.
 Approved design: [implementation plan](smp-piece6-plan.md).
 
 ## 6A: Boot memory readiness
@@ -75,13 +73,40 @@ explicit USB policy. These checks do not claim later concurrent memory stress.
 
 | Check | Result |
 | --- | --- |
-| Kernel build | Bootable image exercised by user; standalone build output not supplied |
-| Host ASan/UBSan | PASS, user rerun after header-search fix in 72ea691; capped exhaustion, contiguous boundary, unlock gates, rounding, exact allocation set and cmdline |
-| BIOS/UEFI 2 GiB, 1/4/8 CPUs | PASS, user-supplied runner output (see below) |
-| BIOS/UEFI 8 GiB, 8 CPUs | PASS, user-supplied runner output; command below |
-| Other RAM configurations and regressions | Pending user execution |
-| Dell 5590 memory checks | PASS: supplied photo shows early ceiling/unlock rejection, kernel CR3 activation, all five full-page readbacks and post-unlock exact cleanup |
-| Dell later integration | Earlier Piece 5 excerpt reports all IPI checks PASS with 7 AP acknowledgments; same-boot shell/storage and AP-readiness output not shown in memory photo |
+| Kernel build | PASS: `bin/fortress.elf`, `bin/fortress.iso`, and `bin/fortress.img` built cleanly with zero warnings (`-Wall -Wextra -Werror`). |
+| Host ASan/UBSan (`test-pmm-boot-host`) | PASS: capped exhaustion, contiguous boundary, unlock gates, rounding, exact allocation set and cmdline. |
+| Host SMP multi-worker (`test-smp-memory-host`) | PASS: pthread mutex shim, ceiling check, 8 concurrent workers (80,000 iterations), atomic transition, fragmentation latency. |
+| BIOS/UEFI 2 GiB, 1/4/8 CPUs (`test-smp-memory-boot`) | PASS: all 6 matrix cases passed (BIOS 1/4/8 CPUs: 5.7s, 6.3s, 6.5s; UEFI 1/4/8 CPUs: 7.4s, 8.1s, 8.4s). |
+| BIOS/UEFI 8 GiB, 8 CPUs | PASS: both BIOS (8.1s) and UEFI (10.1s) passed; 1, 2, 4 GiB HHDM readbacks verified. |
+| Dell 5590 memory checks (32 GiB, 8 CPUs) | PASS: persistent boot log confirms early ceiling/unlock rejection, kernel CR3 activation (`Phys 0x2000`), all five full-page HHDM readbacks (1, 2, 4, 16, 30 GiB) and post-unlock exact cleanup. |
+| Dell later integration | PASS: same-boot log confirms all 7 APs online, Pieces 3–5 coordination/IPIs (lock contention, work stealing, synchronous TLB shootdowns), SuperSpeed USB read-write mount (`sdap2` at `/mnt`), and interactive shell with `dmesg /mnt/boot.log`. |
+
+### Dell 6A hardware evidence (2026-09-25)
+
+Dell Latitude 5590 bare-metal run with 32 GiB RAM, 8 logical CPUs, SanDisk USB 3.2 Gen 1 (SuperSpeed 5 Gbps), booted with:
+`smp_memory_test=boot usb_data=PARTUUID=01BE969E-D774-4B75-8148-B62EF696DEE8 usb_data_mode=rw`
+Log saved directly to persistent storage (`/mnt/boot.log`):
+
+- PASS: boot ceiling (`[PMM] Boot allocation ceiling: 1 GiB`), early unlock rejection, exact cleanup.
+- Kernel CR3 switch to physical root `0x2000` survived; high-memory allocation unlocked afterward.
+- PASS: full-page HHDM readbacks across all 5 thresholds:
+
+| Threshold | Minimum physical address | Allocated physical address | Pattern verification |
+| --- | --- | --- | --- |
+| 1 GiB | `0x40000000` | `0x40000000` | Address-derived & complement full-page readback OK |
+| 2 GiB | `0x80000000` | `0x80000000` | Address-derived & complement full-page readback OK |
+| 4 GiB | `0x100000000` | `0x100000000` | Address-derived & complement full-page readback OK |
+| 16 GiB | `0x400000000` | `0x400000000` | Address-derived & complement full-page readback OK |
+| 30 GiB | `0x780000000` | `0x780000000` | Address-derived & complement full-page readback OK |
+
+- PASS: kernel CR3, high-memory unlock, exact cleanup.
+- `[SMP] Boot memory readiness verified before AP release`.
+- All 7 APs online (`All 7 application processor(s) online (parked, interrupts disabled)`).
+- Pieces 3, 4, and 5 PASSED on hardware (contention, work-stealing, synchronous TLB shootdown).
+- USB 3.0 mass storage configured on Port 0x12 (SuperSpeed 5 Gbps, SanDisk 3.2 Gen 1).
+- GPT parsed cleanly; durability classified as `SYNC_BACKED`.
+- Mounted `sdap2` read-write at `/mnt`; saved `boot.log` cleanly.
+
 
 User-reported `make test-smp-memory-boot` results for the 6A implementation:
 

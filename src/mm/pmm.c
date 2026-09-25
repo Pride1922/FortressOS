@@ -14,6 +14,10 @@ static size_t     free_pages = 0;
 static size_t     last_allocated_index = 0;
 static size_t     alloc_limit_pages = 0;
 static bool       high_memory_enabled = false;
+/* Boot-only reservation ownership, distinct from transient allocations.
+ * Static kernel BSS (1 MiB at 32 GiB capacity); never reclaimable via PMM. */
+static uint8_t reserved_bitmap[PMM_BITMAP_CAPACITY_BYTES];
+static uint64_t rejected_frees, allocation_failures, max_scan_steps;
 static spinlock_t g_pmm_lock = SPINLOCK_RANKED(4, "pmm");
 
 bool pmm_snapshot(void *buffer, size_t capacity) {
@@ -38,6 +42,14 @@ static inline void bitmap_clear(size_t frame_idx) {
 
 static inline int bitmap_test(size_t frame_idx) {
     return (bitmap[frame_idx / 8] >> (frame_idx % 8)) & 1;
+}
+
+static bool frame_reserved(size_t idx) {
+    return (reserved_bitmap[idx / 8] & (1U << (idx % 8))) != 0;
+}
+
+static void record_scan(size_t steps) {
+    if (steps > max_scan_steps) max_scan_steps = steps;
 }
 
 void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
@@ -157,6 +169,10 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     }
 
     last_allocated_index = 0;
+    /* Snapshot immutable reservations only after frame zero and metadata have
+     * been pinned. No concurrent users may exist during initialization. */
+    memcpy(reserved_bitmap, bitmap, bitmap_size);
+    rejected_frees = allocation_failures = max_scan_steps = 0;
 
     /* 9. Output diagnostics */
     serial_puts("[ OK ] PMM initialized:\n");
@@ -191,10 +207,14 @@ bool pmm_high_memory_enabled(void) {
 }
 
 bool pmm_unlock_high_memory(void) {
+    /* Idempotent: if already unlocked, just return true. */
+    if (__atomic_load_n(&high_memory_enabled, __ATOMIC_ACQUIRE))
+        return true;
     /* No VMM lock acquisition under the PMM lock. Readiness is immutable
      * after release publication; CR3 is checked on the calling CPU. */
     if (!vmm_boot_memory_ready() || !vmm_get_kernel_pml4() ||
-        vmm_get_current_pml4() != vmm_get_kernel_pml4()) return false;
+        vmm_get_current_pml4() != vmm_get_kernel_pml4())
+        return false;
     uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
     if (!bitmap) {
         spin_unlock_irqrestore(&g_pmm_lock, flags);
@@ -207,12 +227,14 @@ bool pmm_unlock_high_memory(void) {
 }
 
 uintptr_t pmm_alloc_page_above(uintptr_t min_phys) {
-    if (min_phys > UINT64_MAX - (PAGE_SIZE - 1)) return 0;
-    size_t start = ALIGN_UP(min_phys, PAGE_SIZE) / PAGE_SIZE;
-
     uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
+    size_t start = alloc_limit_pages;
+    if (min_phys <= UINT64_MAX - (PAGE_SIZE - 1))
+        start = ALIGN_UP(min_phys, PAGE_SIZE) / PAGE_SIZE;
     uintptr_t result = 0;
+    size_t steps = 0;
     for (size_t i = start; i < alloc_limit_pages; i++) {
+        steps++;
         if (!bitmap_test(i)) {
             bitmap_set(i);
             used_pages++;
@@ -221,12 +243,16 @@ uintptr_t pmm_alloc_page_above(uintptr_t min_phys) {
             break;
         }
     }
+    record_scan(steps);
+    if (!result) allocation_failures++;
     spin_unlock_irqrestore(&g_pmm_lock, rflags);
     return result;
 }
 
 static uintptr_t pmm_alloc_page_unlocked(void) {
+    size_t steps = 0;
     for (size_t i = 0; i < alloc_limit_pages; i++) {
+        steps++;
         size_t idx = (last_allocated_index + i) % alloc_limit_pages;
 
         /* Skip byte quickly if all 8 frames are occupied */
@@ -241,45 +267,21 @@ static uintptr_t pmm_alloc_page_unlocked(void) {
             used_pages++;
             free_pages--;
             last_allocated_index = (idx + 1) % alloc_limit_pages;
+            record_scan(steps);
             return (uintptr_t)(idx * PAGE_SIZE);
         }
     }
 
-    serial_puts("[WARN] PMM: Out of physical memory (pmm_alloc_page)!\n");
+    record_scan(steps);
     return 0;
 }
 
 uintptr_t pmm_alloc_page(void) {
     uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
     uintptr_t p = pmm_alloc_page_unlocked();
+    if (!p) allocation_failures++;
     spin_unlock_irqrestore(&g_pmm_lock, rflags);
     return p;
-}
-
-static void pmm_free_page_unlocked(uintptr_t phys_addr) {
-    if (phys_addr == 0 || (phys_addr % PAGE_SIZE) != 0) {
-        return;
-    }
-
-    size_t idx = (size_t)(phys_addr / PAGE_SIZE);
-    if (idx >= total_pages) {
-        return;
-    }
-
-    if (bitmap_test(idx)) {
-        bitmap_clear(idx);
-        used_pages--;
-        free_pages++;
-        if (idx < last_allocated_index) {
-            last_allocated_index = idx;
-        }
-    }
-}
-
-void pmm_free_page(uintptr_t phys_addr) {
-    uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
-    pmm_free_page_unlocked(phys_addr);
-    spin_unlock_irqrestore(&g_pmm_lock, rflags);
 }
 
 static uintptr_t pmm_alloc_pages_unlocked(size_t count) {
@@ -288,8 +290,10 @@ static uintptr_t pmm_alloc_pages_unlocked(size_t count) {
 
     size_t consecutive = 0;
     size_t start_idx = 0;
+    size_t steps = 0;
 
     for (size_t i = 0; i < alloc_limit_pages; i++) {
+        steps++;
         if (!bitmap_test(i)) {
             if (consecutive == 0) {
                 start_idx = i;
@@ -301,6 +305,7 @@ static uintptr_t pmm_alloc_pages_unlocked(size_t count) {
                 }
                 used_pages += count;
                 free_pages -= count;
+                record_scan(steps);
                 return (uintptr_t)(start_idx * PAGE_SIZE);
             }
         } else {
@@ -308,25 +313,40 @@ static uintptr_t pmm_alloc_pages_unlocked(size_t count) {
         }
     }
 
-    serial_puts("[WARN] PMM: Out of contiguous physical memory!\n");
+    record_scan(steps);
     return 0;
 }
 
 uintptr_t pmm_alloc_pages(size_t count) {
     uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
     uintptr_t p = pmm_alloc_pages_unlocked(count);
+    if (!p) allocation_failures++;
     spin_unlock_irqrestore(&g_pmm_lock, rflags);
     return p;
 }
 
 static void pmm_free_pages_unlocked(uintptr_t phys_addr, size_t count) {
-    if (phys_addr == 0 || (phys_addr % PAGE_SIZE) != 0 || count == 0) {
+    size_t start = phys_addr / PAGE_SIZE;
+    if (!bitmap || phys_addr == 0 || phys_addr % PAGE_SIZE != 0 ||
+        count == 0 || start >= total_pages || count > total_pages - start) {
+        rejected_frees++;
         return;
     }
+    /* No multiplication/addition until bounds establish a representable run.
+     * A bad trailing member must not free an otherwise valid prefix. */
+    for (size_t i = 0; i < count; i++)
+        if (frame_reserved(start + i) || !bitmap_test(start + i)) {
+            rejected_frees++;
+            return;
+        }
+    for (size_t i = 0; i < count; i++) bitmap_clear(start + i);
+    used_pages -= count;
+    free_pages += count;
+    if (start < last_allocated_index) last_allocated_index = start;
+}
 
-    for (size_t i = 0; i < count; i++) {
-        pmm_free_page_unlocked(phys_addr + (i * PAGE_SIZE));
-    }
+void pmm_free_page(uintptr_t phys_addr) {
+    pmm_free_pages(phys_addr, 1);
 }
 
 void pmm_free_pages(uintptr_t phys_addr, size_t count) {
@@ -335,14 +355,27 @@ void pmm_free_pages(uintptr_t phys_addr, size_t count) {
     spin_unlock_irqrestore(&g_pmm_lock, rflags);
 }
 
-size_t pmm_get_allocatable_pages(void) {
-    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
+static size_t allocatable_pages_unlocked(void) {
     size_t result = 0;
     if (alloc_limit_pages == total_pages) result = free_pages;
     else for (size_t i = 0; i < alloc_limit_pages; i++)
         if (!bitmap_test(i)) result++;
+    return result;
+}
+
+size_t pmm_get_allocatable_pages(void) {
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
+    size_t result = allocatable_pages_unlocked();
     spin_unlock_irqrestore(&g_pmm_lock, flags);
     return result;
+}
+
+void pmm_get_stats(pmm_stats_t *out) {
+    if (!out) return;
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
+    *out = (pmm_stats_t){total_pages, used_pages, free_pages,
+        allocatable_pages_unlocked(), rejected_frees, allocation_failures, max_scan_steps};
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
 }
 
 size_t pmm_get_total_pages(void) {
@@ -367,15 +400,15 @@ size_t pmm_get_free_pages(void) {
 }
 
 uint64_t pmm_get_total_memory(void) {
-    return (uint64_t)total_pages * PAGE_SIZE;
+    return (uint64_t)pmm_get_total_pages() * PAGE_SIZE;
 }
 
 uint64_t pmm_get_used_memory(void) {
-    return (uint64_t)used_pages * PAGE_SIZE;
+    return (uint64_t)pmm_get_used_pages() * PAGE_SIZE;
 }
 
 uint64_t pmm_get_free_memory(void) {
-    return (uint64_t)free_pages * PAGE_SIZE;
+    return (uint64_t)pmm_get_free_pages() * PAGE_SIZE;
 }
 
 bool pmm_audit(void) {
@@ -420,3 +453,36 @@ size_t pmm_reclaim_bootloader_memory(struct limine_memmap_response *memmap) {
     (void)memmap;
     return 0;
 }
+
+
+#ifdef TEST_SMP_MEMORY
+/* Host-test initializer. Bypasses pmm_init()'s memmap parsing and sets
+ * internal state directly. `bitmap_mem` must point at a caller-owned
+ * buffer of at least (num_pages + 7) / 8 bytes, page-aligned. */
+void pmm_test_init(size_t num_pages, uint8_t *bitmap_mem) {
+    total_pages = num_pages;
+    used_pages = 0;
+    free_pages = num_pages;
+    last_allocated_index = 0;
+
+    /* Ceiling active: 1 GiB worth of pages. */
+    size_t cap_pages = PMM_BOOT_ALLOC_LIMIT / PAGE_SIZE;
+    alloc_limit_pages = (cap_pages < num_pages) ? cap_pages : num_pages;
+    high_memory_enabled = false;
+
+    bitmap = bitmap_mem;
+    bitmap_phys_addr = 0x100000;   /* arbitrary, for audit sanity */
+    bitmap_total_pages = 0;        /* audit not used in host test */
+    memset(bitmap, 0x00, (num_pages + 7) / 8);   /* all free */
+    memset(reserved_bitmap, 0x00, sizeof(reserved_bitmap));
+
+    /* Frame 0 must be marked used to match pmm_init() semantics. */
+    bitmap_set(0);
+    used_pages++;
+    free_pages--;
+
+    rejected_frees = 0;
+    allocation_failures = 0;
+    max_scan_steps = 0;
+}
+#endif
