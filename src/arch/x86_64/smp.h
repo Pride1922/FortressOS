@@ -54,7 +54,18 @@ void smp_tlb_shootdown(uintptr_t virt_addr, uintptr_t cr3);
 void smp_send_resched(size_t cpu_id);
 void smp_send_panic(void);
 
+/* SMP Piece 6C: Contention-Safe TLB Shootdown (SM14, SM15)
+ * Called from three contexts:
+ *   1. IPI handler (smp_ipi_tlb_handler, IF=0, in ISR).
+ *   2. Spinlock wait loop (spin_lock_irqsave/spin_lock_noirq, IF=0, thread context).
+ *   3. Initiator wait loop (smp_tlb_shootdown, IF=0, thread context).
+ * Invariant: No locks, no sleep, no schedule, no enable IF, no heap allocation.
+ */
+void smp_tlb_service_local(void);
+
 extern volatile uint64_t g_ipi_tlb_count[MAX_DETECTED_CPUS];
 extern volatile uint64_t g_ipi_resched_count[MAX_DETECTED_CPUS];
+extern volatile uint64_t g_tlb_poll_serviced_count[MAX_DETECTED_CPUS];
 
 #endif /* FORTRESS_SMP_H */
+

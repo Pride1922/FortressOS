@@ -110,6 +110,9 @@ class Remote:
 
 def run_contention_test(mode, cpus):
     log = REPO / "build" / f"smp-locks-{mode}-{cpus}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    if log.exists():
+        log.unlink()
     with tempfile.TemporaryDirectory(prefix="fortress-locks-") as temp:
         temp = Path(temp)
         cmd = ["qemu-system-x86_64", "-accel", "tcg", "-M", "q35", "-m", "2G",

@@ -16,5 +16,7 @@ static inline void thread_yield(void) {}
 static inline void thread_exit(void) {}
 static inline void sched_reap_dead(void) {}
 static inline uint64_t sched_get_active_stack_slots_mask(void) { return 0; }
+static inline void smp_tlb_service_local(void) {}
 
 #endif
+

@@ -272,25 +272,139 @@ bool smp_run_lock_tests(void) {
 }
 
 /* =========================================================================
- * SMP Piece 5: Cross-Core Coordination & IPIs (SMP_DESIGN.md, SM14-SM15)
+ * SMP Piece 5 & Piece 6C: Cross-Core Coordination & Contention-Safe TLB Shootdown
+ * (SMP_DESIGN.md, SM14-SM15)
  * ========================================================================= */
 
 volatile uint64_t g_ipi_tlb_count[MAX_DETECTED_CPUS] = {0};
 volatile uint64_t g_ipi_resched_count[MAX_DETECTED_CPUS] = {0};
+volatile uint64_t g_tlb_poll_serviced_count[MAX_DETECTED_CPUS] = {0};
 
-typedef struct {
-    spinlock_t lock;
+/* Per-CPU initiator mailboxes eliminate the global mailbox spinlock and
+ * completely prevent initiator-initiator lock inversions.
+ * Each mailbox slot is aligned to a 64-byte cache line to prevent false sharing. */
+typedef struct __attribute__((aligned(64))) {
+    volatile uint64_t generation;
     volatile uintptr_t virt_addr;
     volatile uintptr_t cr3;
-    volatile uint32_t ack_mask;
-} smp_tlb_shootdown_t;
+    volatile uint64_t ack_mask;
+} smp_tlb_mailbox_t;
 
-static smp_tlb_shootdown_t g_smp_tlb_shootdown = {
-    .lock = SPINLOCK_RANKED(3, "smp-tlb"),
-    .virt_addr = 0,
-    .cr3 = 0,
-    .ack_mask = 0
-};
+_Static_assert(MAX_DETECTED_CPUS <= 64, "ack_mask bitfield requires 64 or fewer CPUs");
+
+static smp_tlb_mailbox_t g_smp_tlb_mailboxes[MAX_DETECTED_CPUS];
+static volatile uint64_t g_smp_tlb_active_initiators = 0;
+
+/* Timeout rationale:
+ * In smp_tlb_shootdown(), the initiator spins waiting for all targets to acknowledge the shootdown.
+ * 50,000,000 pause iterations take approximately 150–500 ms on the Dell Latitude 5590 (Intel Core i5-8350U).
+ * A legitimate TLB shootdown across 8 CPUs completes within < 10 microseconds. A timeout of ~150-500 ms
+ * indicates a hard lockup (e.g. an AP stopped responding, was halted, or entered an unrecoverable condition).
+ *
+ * Safety policy:
+ * If the timeout expires, we must NEVER return or allow the caller to free/reuse the physical frame
+ * or modify page tables, as stale TLB entries could cause silent memory corruption. Instead, we
+ * immediately broadcast IPI_VECTOR_PANIC to all other CPUs, output diagnostic registers via raw UART
+ * (without acquiring console locks), and halt the initiator CPU with cli; hlt.
+ */
+#define SMP_TLB_TIMEOUT_ITERS 50000000ULL
+
+static void smp_tlb_panic_ack_timeout(size_t initiator_id, uint64_t target_mask, uint64_t remaining_mask) {
+    serial_raw_puts("\n[FATAL] smp_tlb_shootdown: ACK timeout on CPU ");
+    serial_raw_print_dec(initiator_id);
+    serial_raw_puts(" target_mask=");
+    serial_raw_print_hex(target_mask);
+    serial_raw_puts(" remaining=");
+    serial_raw_print_hex(remaining_mask);
+    serial_raw_puts(" - system halted\n");
+    lapic_send_ipi_all_excluding_self(IPI_VECTOR_PANIC);
+    for (;;) {
+        __asm__ volatile("cli; hlt" ::: "memory");
+    }
+}
+
+/*
+ * smp_tlb_service_local() is called from three contexts:
+ *   1. IPI handler (smp_ipi_tlb_handler, IF=0, in ISR).
+ *   2. Spinlock wait loop (spin_lock_irqsave and spin_lock_noirq, IF=0, thread context).
+ *   3. Initiator wait loop (smp_tlb_shootdown, IF=0, thread context).
+ *
+ * Common constraint for all three contexts:
+ *   No locks, no sleep, no schedule, no enable IF, no dynamic memory allocation.
+ *   State it once, apply it everywhere.
+ *
+ * Fast-path race note:
+ *   If a target CPU executes smp_tlb_service_local() and reads g_smp_tlb_active_initiators
+ *   as 0 right before an initiator sets its active bit, the target will exit smp_tlb_service_local()
+ *   immediately without checking mailboxes.
+ *   This is completely safe:
+ *   1. If the target continues spinning in the spinlock wait loop, the next iteration of the wait
+ *      loop will call smp_tlb_service_local() again and will observe g_smp_tlb_active_initiators != 0.
+ *   2. If the target acquires the lock immediately and exits the wait loop, the initiator's hardware
+ *      IPI (which is delivered after setting the active bit and ack_mask) is the ultimate backstop
+ *      and will interrupt the target once interrupts are restored.
+ */
+static inline void smp_tlb_service_local_internal(bool from_ipi) {
+    uint64_t active = __atomic_load_n(&g_smp_tlb_active_initiators, __ATOMIC_ACQUIRE);
+    if (__builtin_expect(active == 0, 1)) {
+        return;
+    }
+
+    cpu_local_t *cpu = cpu_current();
+    if (!cpu) return;
+    size_t cid = cpu->id;
+    if (cid >= MAX_DETECTED_CPUS) return;
+    uint64_t my_bit = (1ULL << cid);
+
+    for (size_t init_id = 0; init_id < MAX_DETECTED_CPUS; init_id++) {
+        if (!(active & (1ULL << init_id))) {
+            continue;
+        }
+        if (init_id == cid) {
+            continue; /* Skip our own initiator mailbox */
+        }
+
+        smp_tlb_mailbox_t *slot = &g_smp_tlb_mailboxes[init_id];
+
+        /* Check if our ACK bit is requested */
+        uint64_t ack = __atomic_load_n(&slot->ack_mask, __ATOMIC_ACQUIRE);
+        if (!(ack & my_bit)) {
+            continue;
+        }
+
+        /* Read generation before reading target parameters */
+        uint64_t gen_before = __atomic_load_n(&slot->generation, __ATOMIC_ACQUIRE);
+
+        /* Use __atomic_load_n for virt_addr and cr3 reads for C memory model correctness */
+        uintptr_t target_va  = __atomic_load_n(&slot->virt_addr, __ATOMIC_RELAXED);
+        uintptr_t target_cr3 = __atomic_load_n(&slot->cr3, __ATOMIC_RELAXED);
+
+        /* Invalidate if broadcast (cr3 == 0) or matching target CR3 */
+        uintptr_t current_cr3 = vmm_get_current_pml4() & PTE_ADDR_MASK;
+        if (target_cr3 == 0 || target_cr3 == current_cr3) {
+            if (target_va != 0) {
+                __asm__ volatile("invlpg (%0)" : : "r"(target_va) : "memory");
+            } else {
+                __asm__ volatile("mov %0, %%cr3" : : "r"(vmm_get_current_pml4()) : "memory");
+            }
+        }
+
+        /* Check that generation didn't change while reading parameters */
+        uint64_t gen_after = __atomic_load_n(&slot->generation, __ATOMIC_ACQUIRE);
+        if (gen_before == gen_after) {
+            if (!from_ipi) {
+                __atomic_fetch_add(&g_tlb_poll_serviced_count[cid], 1, __ATOMIC_RELEASE);
+            }
+            /* Clear our bit in initiator's ack_mask with RELEASE semantics */
+            __atomic_fetch_and(&slot->ack_mask, ~my_bit, __ATOMIC_RELEASE);
+        }
+    }
+}
+
+
+void smp_tlb_service_local(void) {
+    smp_tlb_service_local_internal(false);
+}
 
 static void smp_ipi_tlb_handler(interrupt_frame_t *frame) {
     (void)frame;
@@ -299,16 +413,7 @@ static void smp_ipi_tlb_handler(interrupt_frame_t *frame) {
     if (cid < MAX_DETECTED_CPUS) {
         g_ipi_tlb_count[cid]++;
     }
-    uintptr_t target_cr3 = g_smp_tlb_shootdown.cr3;
-    uintptr_t target_va  = g_smp_tlb_shootdown.virt_addr;
-    if (target_cr3 == 0 || target_cr3 == (vmm_get_current_pml4() & PTE_ADDR_MASK)) {
-        if (target_va != 0) {
-            __asm__ volatile("invlpg (%0)" : : "r"(target_va) : "memory");
-        } else {
-            __asm__ volatile("mov %0, %%cr3" : : "r"(vmm_get_current_pml4()) : "memory");
-        }
-    }
-    __atomic_fetch_and(&g_smp_tlb_shootdown.ack_mask, ~(1U << cid), __ATOMIC_RELEASE);
+    smp_tlb_service_local_internal(true);
 }
 
 static void smp_ipi_resched_handler(interrupt_frame_t *frame) {
@@ -343,54 +448,67 @@ void smp_tlb_shootdown(uintptr_t virt_addr, uintptr_t cr3) {
         return;
     }
 
+    /* Save incoming RFLAGS and disable interrupts on initiator */
     uint64_t rflags;
-    __asm__ volatile("pushfq; pop %0" : "=r"(rflags) : : "memory");
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(rflags) : : "memory");
     bool irq_was_enabled = (rflags & (1ULL << 9)) != 0;
 
-    for (;;) {
-        __asm__ volatile("cli" ::: "memory");
-        if (!__atomic_test_and_set(&g_smp_tlb_shootdown.lock.lock, __ATOMIC_ACQUIRE)) {
-            spin_debug_acquire(&g_smp_tlb_shootdown.lock);
-            g_smp_tlb_shootdown.lock.acquire_count++;
-            break;
-        }
+    cpu_local_t *me = cpu_current();
+    size_t my_id = me ? me->id : 0;
+    if (my_id >= MAX_DETECTED_CPUS) {
         if (irq_was_enabled) {
-            __asm__ volatile("sti; pause; cli" ::: "memory");
-        } else {
-            __asm__ volatile("pause" ::: "memory");
+            __asm__ volatile("sti" ::: "memory");
         }
+        return;
     }
 
-    uint32_t my_id = (uint32_t)cpu_current()->id;
-    uint32_t target_mask = 0;
+    uint64_t target_mask = 0;
     for (size_t i = 0; i < g_total_cpu_count; i++) {
         if (i != my_id && __atomic_load_n(&cpu_locals[i].online, __ATOMIC_ACQUIRE)) {
-            target_mask |= (1U << i);
+            target_mask |= (1ULL << i);
         }
     }
 
     if (target_mask != 0) {
-        g_smp_tlb_shootdown.virt_addr = virt_addr;
-        g_smp_tlb_shootdown.cr3 = cr3;
-        __atomic_store_n(&g_smp_tlb_shootdown.ack_mask, target_mask, __ATOMIC_RELEASE);
+        smp_tlb_mailbox_t *slot = &g_smp_tlb_mailboxes[my_id];
+
+        /* Explicit write ordering:
+         * 1. Increment generation tag.
+         * 2. Write virt_addr and cr3 parameters.
+         * 3. Set active bit in g_smp_tlb_active_initiators BEFORE publishing ack_mask.
+         * 4. Publish target_mask into ack_mask with RELEASE semantics. */
+        uint64_t gen = slot->generation + 1;
+        __atomic_store_n(&slot->generation, gen, __ATOMIC_RELAXED);
+        __atomic_store_n(&slot->virt_addr, virt_addr, __ATOMIC_RELAXED);
+        __atomic_store_n(&slot->cr3, cr3, __ATOMIC_RELAXED);
+        __atomic_fetch_or(&g_smp_tlb_active_initiators, (1ULL << my_id), __ATOMIC_RELEASE);
+        __atomic_store_n(&slot->ack_mask, target_mask, __ATOMIC_RELEASE);
 
         lapic_send_ipi_all_excluding_self(IPI_VECTOR_TLB);
 
+        /* Invalidate on initiator */
         if (virt_addr != 0) {
             __asm__ volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
         } else {
             __asm__ volatile("mov %0, %%cr3" : : "r"(vmm_get_current_pml4()) : "memory");
         }
 
+        /* Initiator wait loop:
+         * Polls local TLB service while waiting for targets to ACK, preventing
+         * initiator-initiator lockups if multiple cores shootdown concurrently. */
         uint64_t iters = 0;
-        while (__atomic_load_n(&g_smp_tlb_shootdown.ack_mask, __ATOMIC_ACQUIRE) != 0) {
+        while (__atomic_load_n(&slot->ack_mask, __ATOMIC_ACQUIRE) != 0) {
+            smp_tlb_service_local();
             __asm__ volatile("pause" ::: "memory");
             iters++;
-            if (iters > 50000000ULL) {
-                serial_raw_puts("[WARN] smp_tlb_shootdown: ACK timeout\n");
-                break;
+            if (iters > SMP_TLB_TIMEOUT_ITERS) {
+                uint64_t rem = __atomic_load_n(&slot->ack_mask, __ATOMIC_RELAXED);
+                smp_tlb_panic_ack_timeout(my_id, target_mask, rem);
             }
         }
+
+        /* Clear our active initiator bit */
+        __atomic_fetch_and(&g_smp_tlb_active_initiators, ~(1ULL << my_id), __ATOMIC_RELEASE);
     } else {
         if (virt_addr != 0) {
             __asm__ volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
@@ -399,13 +517,11 @@ void smp_tlb_shootdown(uintptr_t virt_addr, uintptr_t cr3) {
         }
     }
 
-    spin_debug_release(&g_smp_tlb_shootdown.lock);
-    __atomic_clear(&g_smp_tlb_shootdown.lock.lock, __ATOMIC_RELEASE);
-
     if (irq_was_enabled) {
         __asm__ volatile("sti" ::: "memory");
     }
 }
+
 
 void smp_send_resched(size_t cpu_id) {
     if (cpu_id >= MAX_DETECTED_CPUS || cpu_id == cpu_current()->id) return;

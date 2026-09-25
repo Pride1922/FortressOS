@@ -24,6 +24,8 @@ REPO = Path(__file__).resolve().parent.parent
 def run_sched_test(mode, cpus):
     log = REPO / "build" / f"smp-sched-{mode}-{cpus}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    if log.exists():
+        log.unlink()
     with tempfile.TemporaryDirectory(prefix="fortress-sched-") as temp:
         temp = Path(temp)
         cmd = ["qemu-system-x86_64", "-accel", "tcg", "-M", "q35", "-m", "2G",

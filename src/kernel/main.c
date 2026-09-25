@@ -3262,6 +3262,31 @@ static void smp5_remote_wake_worker(void *arg) {
     thread_exit();
 }
 
+static spinlock_t g_tlb_deadlock_test_lock = SPINLOCK_RANKED(1, "tlb-deadlock");
+static volatile uint32_t g_tlb_target_thread_phase = 0;
+static volatile uint32_t g_tlb_initiator_holds_lock = 0;
+
+static void smp_tlb_deadlock_worker(void *arg) {
+    (void)arg;
+    /* Wait until initiator acquires the test lock with IF=0 */
+    while (__atomic_load_n(&g_tlb_initiator_holds_lock, __ATOMIC_ACQUIRE) == 0) {
+        __asm__ volatile("pause");
+    }
+
+    /* Signal initiator that target is alive and entering spin_lock_irqsave.
+     * Initiator holds g_tlb_deadlock_test_lock, so spin_lock_irqsave will
+     * disable interrupts on this AP (pushfq; pop; cli), increment contention_count,
+     * and spin in the while loop calling smp_tlb_service_local()! */
+    __atomic_store_n(&g_tlb_target_thread_phase, 1, __ATOMIC_RELEASE);
+    uint64_t flags = spin_lock_irqsave(&g_tlb_deadlock_test_lock);
+
+    /* Acquired after initiator completes shootdown and releases the lock */
+    __atomic_store_n(&g_tlb_target_thread_phase, 2, __ATOMIC_RELEASE);
+    spin_unlock_irqrestore(&g_tlb_deadlock_test_lock, flags);
+
+    thread_exit();
+}
+
 static void test_smp_piece5_ipi(uint64_t *kernel_pml4) {
     if (g_smp_lock_test.test_mode == SMP_TEST_MODE_INVERSION ||
         g_smp_lock_test.test_mode == SMP_TEST_MODE_ASSERT_HELD) {
@@ -3312,6 +3337,65 @@ static void test_smp_piece5_ipi(uint64_t *kernel_pml4) {
         serial_print_dec(total_cpus - 1);
         serial_puts(" APs)\n");
 
+        /* Test T6C.a: Contention-Safe TLB Shootdown Deadlock Breaking (SM14, SM15) */
+        serial_puts("[TEST] SMP Piece 6C: Contention-safe TLB shootdown deadlock breaking (T5.a)...\n");
+        __atomic_store_n(&g_tlb_initiator_holds_lock, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_tlb_target_thread_phase, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_tlb_poll_serviced_count[1], 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_ipi_tlb_count[1], 0, __ATOMIC_RELEASE);
+
+        /* Spawn worker pinned to AP 1 BEFORE acquiring the test lock (to preserve lock ranks) */
+        tcb_t *target_w = thread_create_on_cpu(1, "tlb_deadlock_w", smp_tlb_deadlock_worker, NULL);
+        if (!target_w) {
+            serial_puts("       [FAIL] Failed to create deadlock worker thread on AP 1!\n");
+            hcf();
+        }
+
+        /* Initiator acquires the test lock with IRQs disabled */
+        uint64_t init_flags = spin_lock_irqsave(&g_tlb_deadlock_test_lock);
+
+        /* Signal worker to enter spin_lock_irqsave */
+        __atomic_store_n(&g_tlb_initiator_holds_lock, 1, __ATOMIC_RELEASE);
+
+        /* Wait until target AP 1 has entered spin_lock_irqsave and is spinning with IF=0 */
+        uint64_t spin_deadline = 50000000;
+        while (__atomic_load_n(&g_tlb_deadlock_test_lock.contention_count, __ATOMIC_ACQUIRE) == 0) {
+            __asm__ volatile("pause");
+            if (--spin_deadline == 0) {
+                serial_puts("       [FAIL] Target AP 1 failed to reach lock contention loop!\n");
+                hcf();
+            }
+        }
+
+        /* AP 1 is now spinning in spin_lock_irqsave wait loop with IF=0.
+         * Hardware IPI cannot be delivered directly via vector.
+         * Initiator initiates smp_tlb_shootdown.
+         * Target must service it via smp_tlb_service_local() in the spinlock wait loop! */
+        smp_tlb_shootdown(0xDEADBEEF1000ULL, 0);
+
+        uint64_t poll_count = __atomic_load_n(&g_tlb_poll_serviced_count[1], __ATOMIC_ACQUIRE);
+        if (poll_count == 0) {
+            serial_puts("       [FAIL] Shootdown was not serviced via spinlock wait loop polling!\n");
+            hcf();
+        }
+
+
+
+        /* Initiator drops the lock, allowing target to acquire and exit */
+        spin_unlock_irqrestore(&g_tlb_deadlock_test_lock, init_flags);
+
+        spin_deadline = 50000000;
+        while (__atomic_load_n(&g_tlb_target_thread_phase, __ATOMIC_ACQUIRE) != 2) {
+            __asm__ volatile("pause");
+            if (--spin_deadline == 0) {
+                serial_puts("       [FAIL] Target thread failed to finish after lock release!\n");
+                hcf();
+            }
+        }
+        serial_puts("       [PASS] Contention deadlock broken: target serviced shootdown from spin_lock_irqsave poll loop (poll count: ");
+        serial_print_dec(poll_count);
+        serial_puts(")\n");
+
         /* Test T5.b: Remote Core Wakeup via Reschedule IPI */
         serial_puts("[TEST] SMP Piece 5: Remote core wakeup via reschedule IPI (T5.b)...\n");
         __atomic_store_n(&g_remote_wake_done, 0, __ATOMIC_RELEASE);
@@ -3354,7 +3438,8 @@ static void test_smp_piece5_ipi(uint64_t *kernel_pml4) {
 
         all_acked = true;
         for (size_t c = 1; c < total_cpus; c++) {
-            if (__atomic_load_n(&g_ipi_tlb_count[c], __ATOMIC_ACQUIRE) == 0) {
+            if (__atomic_load_n(&g_ipi_tlb_count[c], __ATOMIC_ACQUIRE) == 0 &&
+                __atomic_load_n(&g_tlb_poll_serviced_count[c], __ATOMIC_ACQUIRE) == 0) {
                 all_acked = false;
                 break;
             }
@@ -3364,6 +3449,26 @@ static void test_smp_piece5_ipi(uint64_t *kernel_pml4) {
             hcf();
         }
         serial_puts("       [PASS] VMM synchronous TLB shootdown and frame unmap verified (SM14, SM15)\n");
+
+        /* Test T6C.c: Full TLB flush via CR3 reload */
+        serial_puts("[TEST] SMP Piece 6C: Full TLB flush via CR3 reload...\n");
+        for (size_t c = 1; c < total_cpus; c++) {
+            g_ipi_tlb_count[c] = 0;
+        }
+        smp_tlb_shootdown(0, vmm_get_current_pml4() & PTE_ADDR_MASK);
+        all_acked = true;
+        for (size_t c = 1; c < total_cpus; c++) {
+            if (__atomic_load_n(&g_ipi_tlb_count[c], __ATOMIC_ACQUIRE) == 0 &&
+                __atomic_load_n(&g_tlb_poll_serviced_count[c], __ATOMIC_ACQUIRE) == 0) {
+                all_acked = false;
+                break;
+            }
+        }
+        if (!all_acked) {
+            serial_puts("       [FAIL] CR3 reload shootdown was not acknowledged by all APs!\n");
+            hcf();
+        }
+        serial_puts("       [PASS] Full TLB flush via CR3 reload acknowledged across all online APs\n");
     } else {
         serial_puts("       [ OK ] Single-CPU system: multi-core IPI tests skipped.\n");
     }
@@ -3372,6 +3477,7 @@ static void test_smp_piece5_ipi(uint64_t *kernel_pml4) {
 }
 
 void kmain(void) {
+
     /* 1. Initialize COM1 Serial Port (0x3F8) */
     int serial_status = serial_init();
 

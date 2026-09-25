@@ -71,6 +71,11 @@ void spin_debug_assert_unheld(void);
 bool spin_debug_selftest(void);
 void spin_debug_warn_high_contention(spinlock_t *lock, uint64_t iters);
 
+/* SMP Piece 6C: Polled TLB shootdown service in spinlock wait loops.
+ * Prevents deadlock when waiter has IF=0 and initiator is waiting for waiter's ACK.
+ * Invariant: Must not acquire locks, sleep, schedule, or re-enable IF. */
+void smp_tlb_service_local(void);
+
 #define SPINLOCK_WARN_THRESHOLD 1000000ULL
 
 static inline uint64_t spin_lock_irqsave(spinlock_t *lock) {
@@ -81,6 +86,7 @@ static inline uint64_t spin_lock_irqsave(spinlock_t *lock) {
         __atomic_fetch_add(&lock->contention_count, 1, __ATOMIC_RELAXED);
         uint64_t iters = 1;
         while (__atomic_test_and_set(&lock->lock, __ATOMIC_ACQUIRE)) {
+            smp_tlb_service_local();
             __asm__ volatile("pause");
             iters++;
             if (iters == SPINLOCK_WARN_THRESHOLD) {
@@ -101,6 +107,7 @@ static inline void spin_lock_noirq(spinlock_t *lock) {
         __atomic_fetch_add(&lock->contention_count, 1, __ATOMIC_RELAXED);
         uint64_t iters = 1;
         while (__atomic_test_and_set(&lock->lock, __ATOMIC_ACQUIRE)) {
+            smp_tlb_service_local();
             __asm__ volatile("pause");
             iters++;
             if (iters == SPINLOCK_WARN_THRESHOLD) {
@@ -113,6 +120,7 @@ static inline void spin_lock_noirq(spinlock_t *lock) {
     }
     lock->acquire_count++;
 }
+
 
 static inline void spin_unlock_noirq(spinlock_t *lock) {
     spin_debug_release(lock);

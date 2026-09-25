@@ -33,7 +33,7 @@ and are not proof that every current revision has passed every test — check
 | [smp-piece3-lock-discipline.md](smp-piece3-lock-discipline.md) | SMP Piece 3: Lock discipline, per-CPU tracker, atomic contention, AP panic isolation |
 | [smp-piece4-scheduler.md](smp-piece4-scheduler.md) | SMP Piece 4: The SMP scheduler, per-CPU runqueues, task migration, and dual-lock work-stealing |
 | [smp-piece5-ipi.md](smp-piece5-ipi.md) | SMP Piece 5: Cross-core coordination, APIC ICR messaging, synchronous TLB shootdown (SM14/SM15), remote wakeup |
-| [smp-piece6-memory.md](smp-piece6-memory.md) | SMP Piece 6: 6A boot memory readiness & 6B PMM synchronization/multi-core stress COMPLETE and verified in QEMU and Dell 5590; 6C–6D planned |
+| [smp-piece6-memory.md](smp-piece6-memory.md) | SMP Piece 6: 6A boot memory readiness, 6B PMM synchronization/multi-core stress, and 6C contention-safe TLB shootdown COMPLETE and verified in QEMU and Dell 5590; 6D planned |
 | [subsystems.md](subsystems.md) | Cross-cutting notes not tied to one phase: NMI delivery, boot console, interactive shell/input, general Dell acceptance |
 
 ## Checkpoint sequence (for orientation only — not authoritative status)
@@ -46,6 +46,8 @@ and are not proof that every current revision has passed every test — check
 [Phase 9G]   USB storage, through 9G.5b                     (COMPLETE)
 [Phase 9G.5] USB topology expansion                         (9G.5a, 9G.5b complete; 9G.5c/d/e open)
 [Phase 9H]   32 GiB RAM support                              (COMPLETE)
-[SMP]        Multi-core support                              (Pieces 1-5, 6A, 6B COMPLETE and verified in QEMU and on Dell 5590; 6C–6D planned)
+[SMP]        Multi-core support                              (Pieces 1-5, 6A, 6B, 6C COMPLETE and verified in QEMU and Dell 5590; 6D planned)
 [Following]  Accounts/permissions, then installer
+
 ```
+

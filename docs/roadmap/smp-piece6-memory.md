@@ -172,3 +172,107 @@ evidence before recording acceptance. Historical Phase 9H hardware evidence
 is preserved, but its documented cap/unlock was missing from the Phase 5
 checkout. This change supplies that invariant; the available history did not
 establish how the discrepancy arose.
+
+---
+
+## Piece 6C: Contention-Safe TLB Shootdown (SM14, SM15)
+
+Completed and verified in QEMU (BIOS & UEFI, 1/4/8 CPUs) on 2026-09-25.
+
+### Design Architecture & Invariants
+
+1. **Per-CPU Mailbox Slots**:
+   Replaced the previous single global `smp_tlb_shootdown_t` spinlock with `g_smp_tlb_mailboxes[MAX_DETECTED_CPUS]`.
+   Each slot is 64-byte aligned (1 cache line on x86_64) to eliminate false sharing between concurrent initiators.
+   Since only CPU `my_id` ever writes to its own slot, there are zero locks in `smp_tlb_shootdown()`, completely eliminating initiator-initiator lock inversions.
+2. **Fast-Path Check**:
+   A single global 64-bit atomic bitmask `g_smp_tlb_active_initiators` is tested with a single acquire load.
+   If 0, `smp_tlb_service_local()` returns immediately (single load + branch cost, zero RMW operations).
+3. **Explicit Write Ordering**:
+   The initiator executes:
+   - Increment `generation` tag.
+   - Write `virt_addr` and `cr3` parameters.
+   - Set initiator's bit in `g_smp_tlb_active_initiators` with RELEASE semantics.
+   - Publish `target_mask` into `slot->ack_mask` with RELEASE semantics.
+   This guarantees that any target observing our bit in `active_initiators` will see the updated generation and parameters.
+4. **Target Read Ordering & Validation**:
+   In `smp_tlb_service_local()`, targets read:
+   - `gen_before = __atomic_load_n(&slot->generation, __ATOMIC_ACQUIRE)`.
+   - `virt_addr` and `cr3` via `__atomic_load_n` (C memory model correctness).
+   - Invalidate translation via `invlpg` or reload CR3 if matching target CR3 or broadcast (0).
+   - `gen_after = __atomic_load_n(&slot->generation, __ATOMIC_ACQUIRE)`.
+   - If `gen_before == gen_after`, clear target's bit in `slot->ack_mask` with RELEASE semantics.
+5. **Telemetry Ordering**:
+   `__atomic_fetch_add(&g_tlb_poll_serviced_count[cid], 1, __ATOMIC_RELEASE)` is performed *strictly before* clearing `slot->ack_mask`. This ensures the initiator unblocking on `ack_mask == 0` is guaranteed to see the updated telemetry.
+6. **Three Calling Contexts**:
+   `smp_tlb_service_local()` is called from:
+   - **IPI handler** (`smp_ipi_tlb_handler`, IF=0, in ISR context).
+   - **Spinlock wait loop** (`spin_lock_irqsave` and `spin_lock_noirq`, IF=0, thread context).
+   - **Initiator wait loop** (`smp_tlb_shootdown`, IF=0, thread context).
+   *Universal Invariant*: No locks, no sleep, no schedule, no enable IF, no dynamic memory allocation. State it once, apply it everywhere.
+7. **Timeout Rationale & Failure Policy**:
+   `SMP_TLB_TIMEOUT_ITERS` is set to 50,000,000 pause iterations (~150–500 ms on Dell Latitude 5590's Intel Core i5-8350U). Legitimate shootdowns across 8 CPUs complete within < 10 µs. A timeout indicates an unrecoverable core lockup. The kernel never returns or frees the unmapped frame; instead, it outputs diagnostics via raw UART (zero lock acquisitions), broadcasts `IPI_VECTOR_PANIC`, and halts (`cli; hlt`).
+8. **Fast-Path Race Safety**:
+   If a target reads `active_initiators == 0` right before an initiator sets its active bit, the target exits early on that iteration. The next spinlock wait loop poll will observe the active bit. Once the lock is released and IF is restored, the hardware IPI serves as the ultimate backstop.
+
+### Verification Evidence (QEMU BIOS & UEFI, 1/4/8 CPUs)
+
+Automated test suites passed:
+- `make test-smp-ipi`:
+  - `T5.a`: Unicast IPI delivery verified (BSP -> AP 1).
+  - `T5.a`: Broadcast synchronous TLB shootdown verified across all APs.
+  - `T6C.a`: Deterministic contention deadlock breaking: target worker spinning in `spin_lock_irqsave` wait loop with IF=0 serviced shootdown via `smp_tlb_service_local()` polling (`poll count: 1`).
+  - `T5.b`: Remote core wakeup via reschedule IPI verified.
+  - `T5.c`: Real VMM page unmap and shootdown barrier verified.
+  - `T6C.c`: Full TLB flush via CR3 reload verified across all APs.
+  - Interactive shell prompt reached across all configurations.
+- `make test-smp-locks`: All 10 tests passed (selftest, contention, rank inversion isolation, assert_held negative).
+- `make test-smp-sched`: All 6 tests passed (dual-lock ordering, pinned execution, work-stealing).
+- `make test-smp-memory`: All 6 tests passed (320,000 cycles across cores, zero duplicates).
+- `make test-smp-memory-host` & `make test-smp-memory-tsan`: ThreadSanitizer clean.
+
+### Dell Latitude 5590 Physical Bare-Metal Acceptance (8 CPUs, 32 GiB)
+
+User verified on bare-metal hardware on 2026-09-25 with both Piece 6C and Piece 6B concurrent stress tests:
+
+```text
+========================================================
+SMP Piece 5: Cross-Core Coordination & IPIs
+========================================================
+[TEST] SMP Piece 5: Testing unicast IPI delivery (BSP -> AP 1) (T5.a)...
+       [PASS] Unicast IPI delivery verified (BSP -> AP 1)
+[TEST] SMP Piece 5: Testing broadcast synchronous TLB shootdown (T5.a)...
+       [PASS] Synchronous broadcast TLB shootdown acknowledged by all online APs (7 APs)
+[TEST] SMP Piece 6C: Contention-safe TLB shootdown deadlock breaking (T5.a)...
+       [PASS] Contention deadlock broken: target serviced shootdown from spin_lock_irqsave poll loop (poll count: 1)
+[TEST] SMP Piece 5: Remote core wakeup via reschedule IPI (T5.b)...
+       [PASS] Remote core wakeup verified (AP 1 awakened from idle)
+[TEST] SMP Piece 5: Real VMM page unmap and shootdown barrier (T5.c)...
+       [PASS] VMM synchronous TLB shootdown and frame unmap verified (SM14, SM15)
+[TEST] SMP Piece 6C: Full TLB flush via CR3 reload...
+       [PASS] Full TLB flush via CR3 reload acknowledged across all online APs
+[ OK ] SMP Piece 5 (Cross-Core Coordination & IPIs) complete.
+
+
+========================================================
+SMP Piece 6B: PMM Concurrent Multi-Core Stress Test
+========================================================
+[TEST] SMP memory 6B: Spawning 32 workers across 8 CPU(s) (10,000 iterations each)...
+       [INFO] Baseline snapshot taken: used=247801 free=8140807
+       [INFO] Workers released to start barrier...
+       [INFO] All 32 workers completed 320,000 alloc/free iterations
+       [PASS] SMP memory 6B: zero duplicate frame claims across 320,000 cycles
+       [PASS] SMP memory 6B: zero verification errors, zero allocation failures
+       [PASS] SMP memory 6B: exact post-quiescence equality (bitmap & stats match baseline)
+       [INFO] PMM lock acquires: 640002 contentions: 622169
+       [PASS] SMP memory 6B: lock telemetry verified (delta acquires: 640000+, contentions verified)
+       [PASS] SMP memory 6B: all worker stacks reaped cleanly
+[ OK ] SMP Piece 6B (PMM Concurrent Multi-Core Safety) complete.
+```
+
+**Acceptance conclusions**:
+1. `Piece 6C`: Contention deadlock breaking proven under real hardware contention with IF=0 (`poll count: 1`), confirming that polled local TLB servicing in `spin_lock_irqsave` breaks the circular dependency between target lock wait and initiator shootdown ACK.
+2. Full TLB invalidation via CR3 reload verified across all 7 hardware APs simultaneously.
+3. `Piece 6B`: Second continuous confirmation of 320,000 allocate/verify/free iterations across 8 CPUs under 622,169 lock contention events with 0 duplicate frames, 0 allocation errors, and exact post-quiescence state equality.
+
+

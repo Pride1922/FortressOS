@@ -24,6 +24,8 @@ REPO = Path(__file__).resolve().parent.parent
 def run_ipi_test(mode, cpus):
     log = REPO / "build" / f"smp-ipi-{mode}-{cpus}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    if log.exists():
+        log.unlink()
     with tempfile.TemporaryDirectory(prefix="fortress-ipi-") as temp:
         temp = Path(temp)
         cmd = ["qemu-system-x86_64", "-accel", "tcg", "-M", "q35", "-m", "2G",
@@ -55,22 +57,27 @@ def run_ipi_test(mode, cpus):
                 f"Unicast IPI delivery missing for {cpus} cores"
             assert f"Synchronous broadcast TLB shootdown acknowledged by all online APs ({cpus - 1} APs)" in output, \
                 f"Broadcast TLB shootdown missing for {cpus} cores"
+            assert "Contention deadlock broken: target serviced shootdown from spin_lock_irqsave poll loop" in output, \
+                f"Contention deadlock breaking missing for {cpus} cores"
             assert "Remote core wakeup verified (AP 1 awakened from idle)" in output, \
                 f"Remote core wakeup missing for {cpus} cores"
             assert "VMM synchronous TLB shootdown and frame unmap verified (SM14, SM15)" in output, \
                 f"VMM synchronous shootdown missing for {cpus} cores"
+            assert "Full TLB flush via CR3 reload acknowledged across all online APs" in output, \
+                f"Full CR3 reload shootdown missing for {cpus} cores"
         assert "[ OK ] SMP Piece 5 (Cross-Core Coordination & IPIs) complete." in output, "Piece 5 completion missing"
-        print(f"PASS {mode} -smp {cpus}: unicast, broadcast TLB shootdown, remote wake, VMM unmap, shell reached")
+        print(f"PASS {mode} -smp {cpus}: unicast, broadcast TLB shootdown, contention deadlock breaking, remote wake, VMM unmap, CR3 flush, shell reached")
 
 
 def main():
-    print("========================================================")
-    print("SMP Piece 5: Cross-Core Coordination & IPIs Test Suite")
-    print("========================================================")
+    print("======================================================================")
+    print("SMP Piece 5 & Piece 6C: Cross-Core Coordination & TLB Shootdown Suite")
+    print("======================================================================")
     for cpus in (1, 4, 8):
         for mode in ("bios", "uefi"):
             run_ipi_test(mode, cpus)
-    print("\n[ALL PASS] SMP Piece 5 verification complete across BIOS & UEFI (1, 4, 8 CPUs).")
+    print("\n[ALL PASS] SMP Piece 5 & Piece 6C verification complete across BIOS & UEFI (1, 4, 8 CPUs).")
+
 
 
 if __name__ == "__main__":
