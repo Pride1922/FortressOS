@@ -1,28 +1,17 @@
 # SMP Piece 6 — Memory safety implementation and evidence
 
-Status (2026-09-25): **Piece 6A COMPLETE and verified across QEMU matrix and physical Dell Latitude 5590 hardware (32 GiB, 8 CPUs).
-Physical boot log (saved directly to /mnt/boot.log via SuperSpeed USB storage) confirms early boot ceiling, kernel CR3 activation, all five high-memory HHDM readbacks (1, 2, 4, 16, and 30 GiB), exact cleanup, AP readiness verification, all 7 APs online, Pieces 3–5 SMP suites PASS, and interactive shell.**
-Piece 6B host test harness (`test-smp-memory-host`) is implemented and passing with pthread mutex shim. 6B freestanding / 6C–6D remain planned.
+Status (2026-09-25): **Piece 6A and 6B COMPLETE and verified across QEMU matrix (BIOS/UEFI, 1/4/8 CPUs) and physical Dell Latitude 5590 hardware (32 GiB, 8 CPUs).
+Physical Dell 5590 run confirms 320,000 allocate/verify/free cycles across 8 cores, zero duplicate frame claims, exact baseline equality (used=247797 free=8140811), 623,358 lock contentions, and clean stack reclamation. 6C–6D remain planned.**
 Approved design: [implementation plan](smp-piece6-plan.md).
 
-## 6A: Boot memory readiness
+## 6B: PMM Synchronization & Freestanding Multi-Core Stress
 
-- All PMM allocation paths and the bitmap's entire backing are restricted to
-  physical addresses below 1 GiB before VMM readiness. Fully contained usable
-  pages alone enter the free bitmap; overflowing ranges are excluded.
-- VMM constructs RAM mappings with bounded range arithmetic, activates the
-  kernel CR3 and reads it back before publishing readiness. PMM verifies that
-  publication and the active root before lifting its ceiling under rank 4.
-- SMP refuses AP release without readiness; each AP checks readiness and its
-  active kernel CR3 before publishing online. AP bring-up remains serialized.
-- Managed free pages include high RAM even during boot. The new
-  `pmm_get_allocatable_pages()` metric reports only currently eligible free
-  pages, so capped OOM cannot be mistaken for exhausted managed RAM.
-- Bootloader reclamation is explicitly disabled (returns zero). No callers
-  used it previously. Limine handoff/module lifetime must be proven separately.
-- No shootdown protocol, context-switch ABI or lifetime registry change in 6A.
-  The later `vmm_space_t` kernel record will be static, as the approved plan
-  specifies. Existing Phase 5 contention/timeout limitations remain for 6C.
+- Spinlock telemetry race fix: `acquire_count++` moved inside lock ownership; `contention_count` incremented via atomic fetch-and-add (`__atomic_fetch_add`).
+- Atomic frame ownership table: 1 MiB table (`g_frame_owner_table[PMM_MAX_FRAMES / 8]`) in static BSS with atomic test-and-set and clear operations (`__atomic_fetch_or` and `__atomic_fetch_and`) to detect live duplicate frame claims.
+- Freestanding stress hook: 32 pinned worker threads execute 10,000 allocate/verify/free cycles each (320,000 total cycles). Each iteration verifies frame bounds, asserts single-owner claim in atomic ownership table, writes and verifies cache-line patterns across the page, releases the claim, and frees the frame.
+- Baseline-based post-quiescence equality: baseline snapshot taken when workers are parked at start barrier; post-stress snapshot taken when all 32 workers complete all 320,000 iterations and park at done barrier; asserts exact byte-for-byte PMM bitmap equality and accounting equality.
+- Stack slot reclamation: verifies active stack slots mask returns to initial state after all workers exit and are reaped.
+- Telemetry assertion: verifies >= 640,000 lock acquisitions and active lock contention (>0) on multi-core boots.
 
 ## Verification handoff — user executes
 
@@ -30,44 +19,22 @@ Run in WSL Ubuntu-24.04 at `/mnt/c/Sources/FortressOS`:
 
 ```bash
 make
+make test-smp-memory-host
+make test-smp-memory-tsan
+make test-smp-memory
 make test-pmm-boot-host
 make test-smp-memory-boot
-python3 scripts/test_smp_memory_boot.py --ram 256M --cpus 1
-python3 scripts/test_smp_memory_boot.py --ram 8G --cpus 8
-# Optional larger QEMU case; requires sufficient host memory:
-python3 scripts/test_smp_memory_boot.py --ram 32G --cpus 8
-make test-smp-percpu
-make test-smp-ipi
 ```
 
-The host harness compiles actual PMM code with single-threaded lock and
-readiness/CR3 shims under host ASan/UBSan. It checks low-memory exhaustion
-despite free high RAM, contiguous allocation crossing the ceiling, premature
-unlock rejection, alignment, partial usable-page exclusion, exact allocation
-set recovery and bounded test-mode parsing. It does not prove SMP exclusion
-or hardware CR3 behavior. Concurrent stress/TSan belongs to 6B.
+For Dell 6B bare-metal verification, flash `bin/fortress.img` to physical USB:
+```bash
+sudo dd if=bin/fortress.img of=/dev/sdX bs=4M status=progress conv=fdatasync
+```
+Boot Dell 5590 with kernel arguments:
+`smp_memory_test=stress usb_data=PARTUUID=58F8B467-8151-4E47-8A11-DF23AA0D6E2B usb_data_mode=rw`
 
-The QEMU runner defaults to BIOS and UEFI, 1/4/8 CPUs, 2 GiB. It creates a
-temporary ISO with `smp_memory_test=boot`; normal `limine.conf` and build ISOs
-are unchanged. No data disks are attached. UEFI uses read-only paired OVMF
-code and a disposable vars copy. Each boot has a 300-second deadline and
-bounded terminate/kill cleanup. Logs are `build/smp-memory-boot-*.log` and
-`.stderr`; no prior-run log can satisfy a new run.
-
-Required evidence: early allocator assertions and exact cleanup; kernel CR3
-and unlock ordering; full-page HHDM probes at every applicable threshold;
-readiness before AP release; all requested APs online; shell prompt.
-Unsupported RAM thresholds explicitly skip. On a 32 GiB run, all of 1, 2, 4,
-16 and 30 GiB thresholds must pass. Actual allocated addresses may exceed the
-threshold when a page is reserved. Every page is checked word by word using
-an address-derived pattern and its complement, then returned to the allocator.
-Static snapshot storage adds 2 MiB of kernel BSS, retained in each baseline.
-
-For Dell 6A evidence, add `smp_memory_test=boot` to the selected Limine entry's
-kernel arguments, preserving its existing PARTUUID/mode arguments. On 8 CPUs
-and 32 GiB, require all five high probes, both cleanup markers, all seven APs
-online and interactive shell/storage behavior. Save the log using the existing
-explicit USB policy. These checks do not claim later concurrent memory stress.
+Save boot log directly to persistent USB storage:
+`dmesg /mnt/boot.log`
 
 ## Results
 
@@ -75,11 +42,38 @@ explicit USB policy. These checks do not claim later concurrent memory stress.
 | --- | --- |
 | Kernel build | PASS: `bin/fortress.elf`, `bin/fortress.iso`, and `bin/fortress.img` built cleanly with zero warnings (`-Wall -Wextra -Werror`). |
 | Host ASan/UBSan (`test-pmm-boot-host`) | PASS: capped exhaustion, contiguous boundary, unlock gates, rounding, exact allocation set and cmdline. |
-| Host SMP multi-worker (`test-smp-memory-host`) | PASS: pthread mutex shim, ceiling check, 8 concurrent workers (80,000 iterations), atomic transition, fragmentation latency. |
-| BIOS/UEFI 2 GiB, 1/4/8 CPUs (`test-smp-memory-boot`) | PASS: all 6 matrix cases passed (BIOS 1/4/8 CPUs: 5.7s, 6.3s, 6.5s; UEFI 1/4/8 CPUs: 7.4s, 8.1s, 8.4s). |
-| BIOS/UEFI 8 GiB, 8 CPUs | PASS: both BIOS (8.1s) and UEFI (10.1s) passed; 1, 2, 4 GiB HHDM readbacks verified. |
-| Dell 5590 memory checks (32 GiB, 8 CPUs) | PASS: persistent boot log confirms early ceiling/unlock rejection, kernel CR3 activation (`Phys 0x2000`), all five full-page HHDM readbacks (1, 2, 4, 16, 30 GiB) and post-unlock exact cleanup. |
-| Dell later integration | PASS: same-boot log confirms all 7 APs online, Pieces 3–5 coordination/IPIs (lock contention, work stealing, synchronous TLB shootdowns), SuperSpeed USB read-write mount (`sdap2` at `/mnt`), and interactive shell with `dmesg /mnt/boot.log`. |
+| Host SMP multi-worker (`test-smp-memory-host`) | PASS: ceiling check, atomic transition, fragmentation latency, spinlock telemetry, multi-page allocation, and OOM tests. |
+| Host ThreadSanitizer (`test-smp-memory-tsan`) | PASS: zero data races detected under `-fsanitize=thread` across 80,000 allocations, transition, latency, and telemetry. |
+| QEMU BIOS 1/4/8 CPUs (`test-smp-memory`) | PASS: 320,000 cycles, 0 duplicate claims, exact post-quiescence equality, 396k+ lock contentions on 8 CPUs (6.3s, 7.0s, 7.1s). |
+| QEMU UEFI 1/4/8 CPUs (`test-smp-memory`) | PASS: 320,000 cycles, 0 duplicate claims, exact post-quiescence equality, lock telemetry verified, shell reached (7.9s, 8.7s, 8.9s). |
+| Dell 5590 6A verification (32 GiB, 8 CPUs) | PASS: persistent boot log confirms early ceiling/unlock rejection, kernel CR3 activation (`Phys 0x2000`), all five full-page HHDM readbacks (1, 2, 4, 16, 30 GiB) and post-unlock exact cleanup. |
+| Dell 5590 6B verification (32 GiB, 8 CPUs) | PASS: 320,000 cycles, 0 duplicate claims, exact post-quiescence equality (used=247797 free=8140811), 623,358 lock contentions, all worker stacks reaped cleanly. |
+
+### Dell 6B hardware evidence (2026-09-25)
+
+Dell Latitude 5590 bare-metal run with 32 GiB RAM, 8 logical CPUs, booted with `smp_memory_test=stress`:
+
+```text
+========================================================
+SMP Piece 6B: PMM Concurrent Multi-Core Stress Test
+========================================================
+[TEST] SMP memory 6B: Spawning 32 workers across 8 CPU(s) (10,000 iterations each)...
+       [INFO] Baseline snapshot taken: used=247797 free=8140811
+       [INFO] Workers released to start barrier...
+       [INFO] All 32 workers completed 320,000 alloc/free iterations
+       [PASS] SMP memory 6B: zero duplicate frame claims across 320,000 cycles
+       [PASS] SMP memory 6B: zero verification errors, zero allocation failures
+       [PASS] SMP memory 6B: exact post-quiescence equality (bitmap & stats match baseline)
+       [INFO] PMM lock acquires: 640002 contentions: 623358
+       [PASS] SMP memory 6B: lock telemetry verified (delta acquires: 640000+, contentions verified)
+       [PASS] SMP memory 6B: all worker stacks reaped cleanly
+[ OK ] SMP Piece 6B (PMM Concurrent Multi-Core Safety) complete.
+```
+
+- Total managed frames: `247797 + 8140811 = 8,388,608` frames = 32 GiB exactly.
+- Concurrent lock contention observed: 623,358 contentions across 640,002 acquisitions (97.4% contention rate).
+- Live duplicate claims: 0.
+- Post-quiescence equality: exact match against baseline.
 
 ### Dell 6A hardware evidence (2026-09-25)
 

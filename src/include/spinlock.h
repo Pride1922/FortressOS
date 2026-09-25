@@ -10,9 +10,12 @@ typedef struct spinlock {
     pthread_mutex_t mutex;
     unsigned rank;
     const char *name;
+    uint64_t acquire_count;
+    uint64_t contention_count;
+    uint64_t max_spin_iters;
 } spinlock_t;
 
-#define SPINLOCK_RANKED(r, n) {PTHREAD_MUTEX_INITIALIZER, (r), (n)}
+#define SPINLOCK_RANKED(r, n) {PTHREAD_MUTEX_INITIALIZER, (r), (n), 0, 0, 0}
 
 uint64_t spin_lock_irqsave(spinlock_t *lock);
 void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags);
@@ -74,9 +77,8 @@ static inline uint64_t spin_lock_irqsave(spinlock_t *lock) {
     uint64_t rflags;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(rflags) : : "memory");
     spin_debug_acquire(lock);
-    lock->acquire_count++;
     if (__atomic_test_and_set(&lock->lock, __ATOMIC_ACQUIRE)) {
-        lock->contention_count++;
+        __atomic_fetch_add(&lock->contention_count, 1, __ATOMIC_RELAXED);
         uint64_t iters = 1;
         while (__atomic_test_and_set(&lock->lock, __ATOMIC_ACQUIRE)) {
             __asm__ volatile("pause");
@@ -89,14 +91,14 @@ static inline uint64_t spin_lock_irqsave(spinlock_t *lock) {
             lock->max_spin_iters = iters;
         }
     }
+    lock->acquire_count++;
     return rflags;
 }
 
 static inline void spin_lock_noirq(spinlock_t *lock) {
     spin_debug_acquire(lock);
-    lock->acquire_count++;
     if (__atomic_test_and_set(&lock->lock, __ATOMIC_ACQUIRE)) {
-        lock->contention_count++;
+        __atomic_fetch_add(&lock->contention_count, 1, __ATOMIC_RELAXED);
         uint64_t iters = 1;
         while (__atomic_test_and_set(&lock->lock, __ATOMIC_ACQUIRE)) {
             __asm__ volatile("pause");
@@ -109,6 +111,7 @@ static inline void spin_lock_noirq(spinlock_t *lock) {
             lock->max_spin_iters = iters;
         }
     }
+    lock->acquire_count++;
 }
 
 static inline void spin_unlock_noirq(spinlock_t *lock) {

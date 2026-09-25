@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "pmm.h"
+#include "spinlock.h"
 /* Minimal VMM stubs required by PMM. */
 bool vmm_boot_memory_ready(void) { return true; }
 void *vmm_get_kernel_pml4(void) { return (void *)0x1; }
@@ -55,7 +56,7 @@ static inline bool dup_test_and_set(size_t idx) {
 }
 
 /* Set by test_transition to gate the ceiling assertion. */
-static volatile bool g_high_memory_enabled = false;
+static bool g_high_memory_enabled = false;
 
 /* -------------------------------------------------------------------------
  * Worker: allocate / verify / free, one frame at a time.
@@ -72,7 +73,7 @@ static void *worker(void *arg) {
         }
 
         /* Ceiling enforcement: before unlock, no frame may sit above the cap. */
-        if (!g_high_memory_enabled) {
+        if (!__atomic_load_n(&g_high_memory_enabled, __ATOMIC_ACQUIRE)) {
             if (p >= PMM_TEST_CEILING) {
                 fprintf(stderr, "worker: got frame above ceiling before unlock: 0x%llx\n",
                         (unsigned long long)p);
@@ -171,7 +172,7 @@ static void test_transition(void) {
 
     /* Flip the flag before unlocking so workers stop asserting the ceiling
      * the moment the unlock takes effect. */
-    g_high_memory_enabled = true;
+    __atomic_store_n(&g_high_memory_enabled, true, __ATOMIC_RELEASE);
     assert(pmm_unlock_high_memory());
 
     for (int i = 0; i < NUM_WORKERS; ++i) {
@@ -232,6 +233,109 @@ static void test_latency(void) {
 }
 
 /* -------------------------------------------------------------------------
+ * Test: Spinlock telemetry race hardening.
+ * 8 threads concurrently acquire/release a test lock 10,000 times each.
+ * Asserts acquire_count is exactly 8 * 10,000 = 80,000.
+ * ------------------------------------------------------------------------- */
+static spinlock_t g_test_telemetry_lock = SPINLOCK_RANKED(1, "test_telemetry");
+
+static void *telemetry_worker(void *arg) {
+    (void)arg;
+    for (int i = 0; i < 10000; ++i) {
+        uint64_t flags = spin_lock_irqsave(&g_test_telemetry_lock);
+        spin_unlock_irqrestore(&g_test_telemetry_lock, flags);
+    }
+    return NULL;
+}
+
+static void test_telemetry(void) {
+    enum { NUM_WORKERS = 8 };
+    pthread_t th[NUM_WORKERS];
+    g_test_telemetry_lock.acquire_count = 0;
+    g_test_telemetry_lock.contention_count = 0;
+
+    for (int i = 0; i < NUM_WORKERS; ++i) {
+        if (pthread_create(&th[i], NULL, telemetry_worker, NULL) != 0) {
+            fprintf(stderr, "pthread_create failed\n");
+            exit(1);
+        }
+    }
+    for (int i = 0; i < NUM_WORKERS; ++i) {
+        pthread_join(th[i], NULL);
+    }
+
+    assert(g_test_telemetry_lock.acquire_count == (uint64_t)(NUM_WORKERS * 10000));
+}
+
+static void *multipage_worker(void *arg) {
+    (void)arg;
+    const size_t runs[] = {1, 2, 4, 8};
+    for (int i = 0; i < 1000; ++i) {
+        size_t count = runs[i % 4];
+        uintptr_t p = pmm_alloc_pages(count);
+        if (!p) {
+            fprintf(stderr, "multipage_worker: alloc failed for %zu pages\n", count);
+            exit(1);
+        }
+        assert(p % PAGE_SIZE == 0);
+        size_t base_frame = p / PAGE_SIZE;
+        for (size_t f = 0; f < count; ++f) {
+            size_t frame = base_frame + f;
+            assert(frame < PMM_MAX_FRAMES);
+            if (dup_test_and_set(frame)) {
+                fprintf(stderr, "multipage_worker: duplicate allocation of frame %zu\n", frame);
+                exit(1);
+            }
+            void *v = pmm_host_phys_to_virt(p + f * PAGE_SIZE);
+            assert(v != NULL);
+            memset(v, 0x5A, PAGE_SIZE);
+        }
+        for (size_t f = 0; f < count; ++f) {
+            dup_clear(base_frame + f);
+        }
+        pmm_free_pages(p, count);
+    }
+    return NULL;
+}
+
+static void test_multipage(void) {
+    enum { NUM_WORKERS = 4 };
+    pthread_t th[NUM_WORKERS];
+    for (int i = 0; i < NUM_WORKERS; ++i) {
+        if (pthread_create(&th[i], NULL, multipage_worker, NULL) != 0) {
+            fprintf(stderr, "pthread_create failed\n");
+            exit(1);
+        }
+    }
+    for (int i = 0; i < NUM_WORKERS; ++i) {
+        pthread_join(th[i], NULL);
+    }
+}
+
+static void test_oom(void) {
+    static uint8_t oom_bitmap[64];
+    pmm_test_init(64, oom_bitmap);
+    assert(pmm_unlock_high_memory());
+
+    uintptr_t pages[63];
+    for (size_t i = 0; i < 63; ++i) {
+        pages[i] = pmm_alloc_page();
+        assert(pages[i] != 0);
+        assert(pages[i] % PAGE_SIZE == 0);
+    }
+
+    assert(pmm_get_free_pages() == 0);
+    assert(pmm_get_allocatable_pages() == 0);
+    assert(pmm_alloc_page() == 0);
+    assert(pmm_alloc_pages(2) == 0);
+
+    for (size_t i = 0; i < 63; ++i) {
+        pmm_free_page(pages[i]);
+    }
+    assert(pmm_get_free_pages() == 63);
+}
+
+/* -------------------------------------------------------------------------
  * main
  * ------------------------------------------------------------------------- */
 
@@ -257,6 +361,15 @@ int main(void) {
 
     test_latency();
     printf("PASS: test_latency\n");
+
+    test_telemetry();
+    printf("PASS: test_telemetry\n");
+
+    test_multipage();
+    printf("PASS: test_multipage\n");
+
+    test_oom();
+    printf("PASS: test_oom\n");
 
     pmm_host_shim_free();
     printf("=== All PMM SMP tests passed ===\n");

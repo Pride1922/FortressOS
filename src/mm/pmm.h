@@ -46,6 +46,7 @@ typedef struct {
 /* One coherent snapshot; separate getter calls may observe different instants.
  * max_scan_steps counts bitmap loop iterations, not time or a latency bound. */
 void pmm_get_stats(pmm_stats_t *out);
+void pmm_get_lock_stats(uint64_t *out_acquires, uint64_t *out_contentions);
 size_t pmm_get_total_pages(void);
 size_t pmm_get_used_pages(void);
 size_t pmm_get_free_pages(void);

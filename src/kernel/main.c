@@ -4911,6 +4911,10 @@ pf_boot_guard_done:
     test_smp_piece4_scheduler();
     test_smp_piece5_ipi(master_kernel_pml4);
 
+    if (memory_stress_test_enabled(&boot_info)) {
+        memory_stress_test_run(smp_get_cpu_count());
+    }
+
     /* Inputs and shell are started after destructive/negative acceptance cases. */
     __asm__ volatile("cli" ::: "memory");
     sched_disable_preemption();

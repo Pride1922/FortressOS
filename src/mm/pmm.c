@@ -378,6 +378,11 @@ void pmm_get_stats(pmm_stats_t *out) {
     spin_unlock_irqrestore(&g_pmm_lock, flags);
 }
 
+void pmm_get_lock_stats(uint64_t *out_acquires, uint64_t *out_contentions) {
+    if (out_acquires) *out_acquires = __atomic_load_n(&g_pmm_lock.acquire_count, __ATOMIC_RELAXED);
+    if (out_contentions) *out_contentions = __atomic_load_n(&g_pmm_lock.contention_count, __ATOMIC_RELAXED);
+}
+
 size_t pmm_get_total_pages(void) {
     uint64_t rflags = spin_lock_irqsave(&g_pmm_lock);
     size_t res = total_pages;

@@ -440,8 +440,24 @@ test-smp-memory-host: $(TEST_HOST_BIN)
 	@echo "--- Running PMM SMP memory host test ---"
 	@$(TEST_HOST_BIN)
 
-# Placeholder for freestanding QEMU SMP memory test (not yet implemented)
+TEST_TSAN_BIN := $(BIN_DIR)/pmm_smp_tsan
+TEST_TSAN_CFLAGS := -std=c11 -Wall -Wextra -Werror -g -no-pie -Isrc/include -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/kernel -Isrc/lib -Isrc/fs -DTEST_SMP_MEMORY -pthread -fsanitize=thread
+
+$(TEST_TSAN_BIN): $(TEST_HOST_SRCS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(TEST_TSAN_CFLAGS) -o $@ $^
+
+.PHONY: test-smp-memory-tsan
+
+test-smp-memory-tsan: $(TEST_TSAN_BIN)
+	@echo "--- Running PMM SMP memory ThreadSanitizer test ---"
+	@setarch x86_64 -R $(TEST_TSAN_BIN)
+
+# Freestanding QEMU SMP memory stress test across BIOS/UEFI and 1/4/8 CPUs
 .PHONY: test-smp-memory
 
-test-smp-memory:
-	@echo "Freestanding SMP memory test not yet implemented"
+test-smp-memory: bin/fortress.elf bin/initramfs.tar
+	@echo "--- Running freestanding QEMU SMP memory stress test ---"
+	python3 scripts/test_smp_memory.py
+
+

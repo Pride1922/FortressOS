@@ -46,6 +46,7 @@ void pmm_host_shim_free(void) {
 
 uint64_t spin_lock_irqsave(spinlock_t *lock) {
     pthread_mutex_lock(&lock->mutex);
+    lock->acquire_count++;
     return 0;
 }
 
