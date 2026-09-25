@@ -119,7 +119,7 @@ bool syscall_was_exit_called(uint64_t *out_exit_code) {
     return true;
 }
 
-static int64_t syscall_from_vfs_error(int64_t vfs_err) {
+int64_t syscall_from_vfs_error(int64_t vfs_err) {
     switch (vfs_err) {
         case 0:                return SYSCALL_SUCCESS;
         case -VFS_ENOENT:      return SYSCALL_ENOENT;      /* -5 */
@@ -140,7 +140,7 @@ static int64_t syscall_from_vfs_error(int64_t vfs_err) {
 }
 
 static int64_t sys_write(uint64_t fd, uintptr_t user_buf, size_t count) {
-    if (fd == 0 || fd >= 32) {
+    if (fd >= MAX_PROCESS_FDS) {
         return SYSCALL_EBADF;
     }
 
@@ -160,18 +160,6 @@ static int64_t sys_write(uint64_t fd, uintptr_t user_buf, size_t count) {
         return SYSCALL_EFAULT;
     }
 
-    /* 5. Standard output (1) or standard error (2) -> serial / console */
-    if (fd == 1 || fd == 2) {
-        const char *ptr = (const char *)user_buf;
-        tcb_t *owner = thread_current();
-        unsigned mode = owner ? owner->terminal_mode : TERM_MIRROR;
-        if (mode != TERM_SERIAL) console_terminal_write(ptr, count);
-        if (mode != TERM_LOCAL)
-            for (size_t i = 0; i < count; i++) serial_raw_putc(ptr[i]);
-        return (int64_t)count;
-    }
-
-    /* 6. Regular file descriptor (fd >= 3) */
     tcb_t *curr = thread_current();
     if (!curr) {
         return SYSCALL_EBADF;
@@ -191,7 +179,15 @@ static int64_t sys_write(uint64_t fd, uintptr_t user_buf, size_t count) {
 
 static int64_t sys_termctl(uint64_t op, uintptr_t ptr, size_t size) {
     tcb_t *t = thread_current();
-    if (!t || size != sizeof(terminal_info_t) || op > TERM_SET) return SYSCALL_EINVAL;
+    if (!t) return SYSCALL_EINVAL;
+    if (op == TERM_ISATTY) {
+        int fd = (int)ptr;
+        if (fd < 0 || fd >= MAX_PROCESS_FDS) return SYSCALL_EBADF;
+        file_t *file = fd_get(t, fd);
+        if (!file) return SYSCALL_EBADF;
+        return (file->node == vfs_get_terminal_node()) ? 1 : 0;
+    }
+    if (size != sizeof(terminal_info_t) || op > TERM_SET) return SYSCALL_EINVAL;
     if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, size, true)) return SYSCALL_EFAULT;
     terminal_info_t *info = (terminal_info_t *)ptr;
     if (op == TERM_SET) {
@@ -509,8 +505,15 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
     memcpy(&opts, (const void *)user_opts_ptr, sizeof(spawn_opts_t));
 
     if (opts.size != sizeof(spawn_opts_t) || opts.version != 1 || opts.flags != 0 ||
-        opts.reserved0 != 0 || opts.reserved1 != 0 || opts.reserved2 != 0 ||
-        opts.fd_actions != 0 || opts.action_count != 0) {
+        opts.reserved0 != 0 || opts.reserved1 != 0 || opts.reserved2 != 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    if (opts.action_count > MAX_SPAWN_ACTIONS) {
+        return SYSCALL_EINVAL;
+    }
+    if ((opts.action_count > 0 && opts.fd_actions == 0) ||
+        (opts.action_count == 0 && opts.fd_actions != 0)) {
         return SYSCALL_EINVAL;
     }
 
@@ -523,8 +526,74 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
     err = resolve_path(curr, raw_path, path, sizeof(path));
     if (err) return err;
 
+    spawn_fd_action_t uactions[MAX_SPAWN_ACTIONS];
+    spawn_kaction_t kactions[MAX_SPAWN_ACTIONS];
+    char (*action_paths)[VFS_MAX_PATH] = NULL;
+
+    if (opts.action_count > 0) {
+        if (!vmm_validate_user_range(active_pml4, (uintptr_t)opts.fd_actions,
+                                    opts.action_count * sizeof(spawn_fd_action_t), false)) {
+            return SYSCALL_EFAULT;
+        }
+        memcpy(uactions, (const void *)opts.fd_actions, opts.action_count * sizeof(spawn_fd_action_t));
+        action_paths = kmalloc(opts.action_count * VFS_MAX_PATH);
+        if (!action_paths) {
+            return SYSCALL_ENOMEM;
+        }
+
+        for (uint32_t i = 0; i < opts.action_count; i++) {
+            kactions[i].type = uactions[i].type;
+            kactions[i].dst_fd = uactions[i].dst_fd;
+            kactions[i].src_fd = uactions[i].src_fd;
+            kactions[i].flags = uactions[i].flags;
+            kactions[i].mode = uactions[i].mode;
+            kactions[i].path = NULL;
+
+            if (uactions[i].reserved != 0) {
+                kfree(action_paths);
+                return SYSCALL_EINVAL;
+            }
+            if (uactions[i].dst_fd < 0 || uactions[i].dst_fd >= MAX_PROCESS_FDS) {
+                kfree(action_paths);
+                return SYSCALL_EBADF;
+            }
+
+            if (uactions[i].type == SPAWN_FD_ACTION_OPEN) {
+                if (uactions[i].path == 0) {
+                    kfree(action_paths);
+                    return SYSCALL_EINVAL;
+                }
+                char raw_act_path[VFS_MAX_PATH];
+                err = copy_user_string(active_pml4, (uintptr_t)uactions[i].path, raw_act_path, sizeof(raw_act_path));
+                if (err) {
+                    kfree(action_paths);
+                    return err;
+                }
+                err = resolve_path(curr, raw_act_path, action_paths[i], VFS_MAX_PATH);
+                if (err) {
+                    kfree(action_paths);
+                    return err;
+                }
+                kactions[i].path = action_paths[i];
+            } else if (uactions[i].type == SPAWN_FD_ACTION_DUP2) {
+                if (uactions[i].src_fd < 0 || uactions[i].src_fd >= MAX_PROCESS_FDS) {
+                    kfree(action_paths);
+                    return SYSCALL_EBADF;
+                }
+            } else if (uactions[i].type == SPAWN_FD_ACTION_CLOSE) {
+                /* dst_fd validated */
+            } else {
+                kfree(action_paths);
+                return SYSCALL_EINVAL;
+            }
+        }
+    }
+
     char *args_buf = (char *)kmalloc(MAX_TOTAL_ARGS_LEN);
-    if (!args_buf) return SYSCALL_ENOMEM;
+    if (!args_buf) {
+        if (action_paths) kfree(action_paths);
+        return SYSCALL_ENOMEM;
+    }
 
     const char *kargv[MAX_SPAWN_ARGS + 1];
     int argc = 0;
@@ -535,6 +604,7 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
                                      args_buf, kargv, &argc);
         if (err != SYSCALL_SUCCESS) {
             kfree(args_buf);
+            if (action_paths) kfree(action_paths);
             return err;
         }
     }
@@ -553,6 +623,7 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
         env_buf = (char *)kmalloc(MAX_TOTAL_ENVP_LEN);
         if (!env_buf) {
             kfree(args_buf);
+            if (action_paths) kfree(action_paths);
             return SYSCALL_ENOMEM;
         }
         err = copy_user_string_vector(active_pml4, (uintptr_t)opts.envp,
@@ -561,6 +632,7 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
         if (err != SYSCALL_SUCCESS) {
             kfree(args_buf);
             kfree(env_buf);
+            if (action_paths) kfree(action_paths);
             return err;
         }
     }
@@ -572,15 +644,18 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
         if (err) {
             kfree(args_buf);
             if (env_buf) kfree(env_buf);
+            if (action_paths) kfree(action_paths);
             return err;
         }
         kcwd = cwd_buf;
     }
 
     int64_t pid = 0;
-    int64_t result = process_spawn_from_vfs_ext(path, argc, kargv, envc, opts.envp ? kenvp : NULL, kcwd, &pid);
+    int64_t result = process_spawn_from_vfs_ext(path, argc, kargv, envc, opts.envp ? kenvp : NULL, kcwd,
+                                               opts.action_count, opts.action_count ? kactions : NULL, &pid);
     kfree(args_buf);
     if (env_buf) kfree(env_buf);
+    if (action_paths) kfree(action_paths);
     return result ? result : pid;
 }
 
@@ -616,7 +691,7 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
 
     /* Check whether an fd is available before any destructive open/truncation */
     bool fd_avail = false;
-    for (int i = 3; i < 32; i++) {
+    for (int i = 0; i < MAX_PROCESS_FDS; i++) {
         if (!curr->fd_table[i]) {
             fd_avail = true;
             break;
@@ -642,7 +717,7 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
 }
 
 static int64_t sys_close(int fd) {
-    if (fd < 3 || fd >= 32) {
+    if (fd < 0 || fd >= MAX_PROCESS_FDS) {
         return SYSCALL_EBADF;
     }
 
@@ -657,6 +732,22 @@ static int64_t sys_close(int fd) {
     }
 
     return SYSCALL_SUCCESS;
+}
+
+static int64_t sys_dup2(int oldfd, int newfd) {
+    tcb_t *curr = thread_current();
+    if (!curr) {
+        return SYSCALL_EBADF;
+    }
+    return (int64_t)fd_dup2(curr, oldfd, newfd);
+}
+
+static int64_t sys_dup(int oldfd) {
+    tcb_t *curr = thread_current();
+    if (!curr) {
+        return SYSCALL_EBADF;
+    }
+    return (int64_t)fd_dup(curr, oldfd);
 }
 
 static int64_t sys_read(int fd, uintptr_t user_buf, size_t count) {
@@ -679,7 +770,9 @@ static int64_t sys_read(int fd, uintptr_t user_buf, size_t count) {
         return SYSCALL_EBADF;
     }
 
-    if (fd == 0) return input_read((void *)user_buf, count);
+    if (fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
 
     file_t *file = fd_get(curr, fd);
     if (!file) {
@@ -989,6 +1082,14 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_SPAWN_EXT:
             result = sys_spawn_ext(frame->rdi, frame->rsi, frame->rdx);
+            break;
+
+        case SYS_DUP2:
+            result = sys_dup2((int)frame->rdi, (int)frame->rsi);
+            break;
+
+        case SYS_DUP:
+            result = sys_dup((int)frame->rdi);
             break;
 
         default:

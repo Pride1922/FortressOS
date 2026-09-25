@@ -507,6 +507,45 @@ static void test_phase7_checkpoint1_ring3(const boot_info_t *boot_info, uint64_t
  * ========================================================================= */
 static uint8_t g_test_user_syscall_rsp0_stack[16384] __attribute__((aligned(16)));
 
+/* Direct Ring 3 tests borrow the current kernel TCB instead of spawning.
+ * Isolate their descriptors and restore the original ownership after recovery.
+ * Call only with interrupts disabled, outside the manual CR3 transition. */
+typedef struct {
+    tcb_t *owner;
+    file_t *files[MAX_PROCESS_FDS];
+    uint32_t flags[MAX_PROCESS_FDS];
+    size_t heap_bytes;
+    size_t heap_blocks;
+} test_fd_scope_t;
+
+static void test_fd_scope_end(test_fd_scope_t *scope) {
+    fd_close_all(scope->owner);
+    memcpy(scope->owner->fd_table, scope->files, sizeof(scope->files));
+    memcpy(scope->owner->fd_flags, scope->flags, sizeof(scope->flags));
+    if (heap_get_used_bytes() != scope->heap_bytes ||
+        heap_get_allocated_blocks() != scope->heap_blocks) {
+        serial_puts("       [FAIL] Direct Ring 3 test descriptor allocation leak!\n");
+        hcf();
+    }
+}
+
+static void test_fd_scope_begin(test_fd_scope_t *scope) {
+    scope->owner = thread_current();
+    if (!scope->owner || scope->owner->is_user) {
+        serial_puts("       [FAIL] Direct Ring 3 test requires a kernel TCB!\n");
+        hcf();
+    }
+    scope->heap_bytes = heap_get_used_bytes();
+    scope->heap_blocks = heap_get_allocated_blocks();
+    memcpy(scope->files, scope->owner->fd_table, sizeof(scope->files));
+    memcpy(scope->flags, scope->owner->fd_flags, sizeof(scope->flags));
+    if (fd_init_std(scope->owner) < 0) {
+        test_fd_scope_end(scope);
+        serial_puts("       [FAIL] Cannot allocate direct Ring 3 test descriptors!\n");
+        hcf();
+    }
+}
+
 static void test_phase7_checkpoint2_syscalls(const boot_info_t *boot_info, uint64_t *master_kernel_pml4, uintptr_t master_kernel_pml4_phys) {
     (void)master_kernel_pml4;
     serial_puts("========================================================\n");
@@ -600,6 +639,8 @@ static void test_phase7_checkpoint2_syscalls(const boot_info_t *boot_info, uint6
 
     /* Ensure interrupts are disabled for manual CR3 isolation */
     __asm__ volatile("cli" ::: "memory");
+    test_fd_scope_t fd_scope;
+    test_fd_scope_begin(&fd_scope);
     vmm_switch_pml4(user_pml4_phys);
 
     bool helper_res = test_user_syscall_helper(USER_CODE_VIRT, USER_STACK_TOP_VIRT);
@@ -607,6 +648,7 @@ static void test_phase7_checkpoint2_syscalls(const boot_info_t *boot_info, uint6
     /* INVARIANT RESTORATION: Restore master kernel CR3 and TSS.RSP0 immediately */
     vmm_switch_pml4(master_kernel_pml4_phys);
     gdt_set_tss_rsp0(saved_rsp0);
+    test_fd_scope_end(&fd_scope);
 
     serial_puts("------- USER SYSCALL OUTPUT END ---------\n");
 
@@ -953,6 +995,8 @@ static void test_phase7_checkpoint3_elf(const boot_info_t *boot_info, uint64_t *
 
     /* Ensure interrupts are disabled during manual CR3 switch */
     __asm__ volatile("cli" ::: "memory");
+    test_fd_scope_t fd_scope;
+    test_fd_scope_begin(&fd_scope);
     vmm_switch_pml4(proc.pml4_phys);
 
     bool exec_res = test_user_syscall_helper(proc.entry_point, proc.user_stack_top);
@@ -960,6 +1004,7 @@ static void test_phase7_checkpoint3_elf(const boot_info_t *boot_info, uint64_t *
     /* RESTORE INVARIANTS: Immediately restore master CR3 and TSS.RSP0 */
     vmm_switch_pml4(master_kernel_pml4_phys);
     gdt_set_tss_rsp0(saved_rsp0);
+    test_fd_scope_end(&fd_scope);
 
     serial_puts("------- USER STANDALONE ELF OUTPUT END ---------\n");
 

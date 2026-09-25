@@ -13,7 +13,83 @@ static inline bool is_whitespace(char c) {
 }
 
 static inline bool is_operator_char(char c) {
-    return c == ';' || c == '&' || c == '|' || c == '\n';
+    return c == ';' || c == '&' || c == '|' || c == '\n' || c == '<' || c == '>';
+}
+
+static bool check_redir(const char *s, size_t i, size_t *out_len, uint8_t *out_op, int8_t *out_fd, int8_t *out_dup_fd) {
+    size_t start = i;
+    int fd = -1;
+    if (s[i] >= '0' && s[i] <= '9') {
+        size_t d = i;
+        while (s[d] >= '0' && s[d] <= '9') d++;
+        if (d - i <= 2 && (s[d] == '<' || s[d] == '>')) {
+            fd = 0;
+            for (size_t k = i; k < d; k++) fd = fd * 10 + (s[k] - '0');
+            i = d;
+        }
+    }
+
+    if (s[i] != '<' && s[i] != '>') {
+        return false;
+    }
+
+    uint8_t op = REDIR_NONE;
+    int8_t dup_fd = -1;
+
+    if (s[i] == '<') {
+        if (fd < 0) fd = 0;
+        if (s[i + 1] == '&') {
+            i += 2;
+            if (s[i] == '-') {
+                op = REDIR_CLOSE;
+                i++;
+            } else if (s[i] >= '0' && s[i] <= '9') {
+                op = REDIR_DUP_IN;
+                dup_fd = 0;
+                while (s[i] >= '0' && s[i] <= '9') {
+                    dup_fd = (int8_t)(dup_fd * 10 + (s[i] - '0'));
+                    i++;
+                }
+            } else {
+                op = REDIR_DUP_IN;
+                dup_fd = -1;
+            }
+        } else {
+            op = REDIR_IN;
+            i++;
+        }
+    } else { /* s[i] == '>' */
+        if (fd < 0) fd = 1;
+        if (s[i + 1] == '>') {
+            op = REDIR_APP;
+            i += 2;
+        } else if (s[i + 1] == '&') {
+            i += 2;
+            if (s[i] == '-') {
+                op = REDIR_CLOSE;
+                i++;
+            } else if (s[i] >= '0' && s[i] <= '9') {
+                op = REDIR_DUP_OUT;
+                dup_fd = 0;
+                while (s[i] >= '0' && s[i] <= '9') {
+                    dup_fd = (int8_t)(dup_fd * 10 + (s[i] - '0'));
+                    i++;
+                }
+            } else {
+                op = REDIR_DUP_OUT;
+                dup_fd = -1;
+            }
+        } else {
+            op = REDIR_OUT;
+            i++;
+        }
+    }
+
+    *out_len = i - start;
+    *out_op = op;
+    *out_fd = (int8_t)fd;
+    *out_dup_fd = dup_fd;
+    return true;
 }
 
 enum token_type lexer_next(lexer_t *lex, token_t *tok) {
@@ -23,6 +99,11 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
     tok->type = TOK_EOF;
     tok->value = "";
     tok->len = 0;
+    tok->quote_flags = NULL;
+    tok->has_quotes = false;
+    tok->redir_op = REDIR_NONE;
+    tok->redir_fd = -1;
+    tok->redir_dup_fd = -1;
 
     /* Skip leading whitespace and comments */
     for (;;) {
@@ -87,6 +168,21 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
         tok->value = "!";
         tok->len = 1;
         return TOK_BANG;
+    }
+
+    /* Check for Redirection operator (<, >, >>, 2>, 2>&1, etc.) */
+    size_t rlen = 0;
+    uint8_t rop = REDIR_NONE;
+    int8_t rfd = -1, rdup = -1;
+    if (check_redir(s, i, &rlen, &rop, &rfd, &rdup)) {
+        lex->pos = i + rlen;
+        tok->type = TOK_REDIR;
+        tok->value = s + i;
+        tok->len = rlen;
+        tok->redir_op = rop;
+        tok->redir_fd = rfd;
+        tok->redir_dup_fd = rdup;
+        return TOK_REDIR;
     }
 
     /* Read a TOK_WORD */
@@ -214,18 +310,30 @@ enum lex_status lexer_check_incomplete(const char *src) {
     if (!src) return LEX_OK;
     token_t tok;
     lexer_init(&inc_lex, src);
-    enum token_type last_type = TOK_EOF;
+    token_t last_tok;
+    last_tok.type = TOK_EOF;
+    last_tok.redir_op = REDIR_NONE;
+    last_tok.redir_dup_fd = -1;
 
     while (lexer_next(&inc_lex, &tok) != TOK_EOF) {
-        last_type = tok.type;
+        last_tok = tok;
     }
 
     if (inc_lex.status != LEX_OK) {
         return inc_lex.status;
     }
 
-    if (last_type == TOK_AND || last_type == TOK_OR) {
+    if (last_tok.type == TOK_AND || last_tok.type == TOK_OR) {
         return LEX_INCOMPLETE_OP;
+    }
+
+    if (last_tok.type == TOK_REDIR) {
+        if (last_tok.redir_op == REDIR_IN || last_tok.redir_op == REDIR_OUT ||
+            last_tok.redir_op == REDIR_APP ||
+            (last_tok.redir_op == REDIR_DUP_OUT && last_tok.redir_dup_fd < 0) ||
+            (last_tok.redir_op == REDIR_DUP_IN && last_tok.redir_dup_fd < 0)) {
+            return LEX_INCOMPLETE_OP;
+        }
     }
 
     /* Check trailing backslash that might not have been caught */

@@ -13,12 +13,12 @@ bool equal(const char *a, const char *b) {
 void puts(const char *s);      /* defined below */
 void put_dec(size_t val);      /* defined below */
 
-void write_bytes(const char *s, size_t n) {
+void write_bytes_fd(int fd, const char *s, size_t n) {
     size_t off = 0;
     while (off < n) {
         size_t chunk = n - off;
         if (chunk > WRITE_CHUNK) chunk = WRITE_CHUNK;
-        long r = call(SYS_WRITE, 1, (uintptr_t)(s + off), chunk);
+        long r = call(SYS_WRITE, fd, (uintptr_t)(s + off), chunk);
         if (r < 0) {
             /* Output failure must not recursively write another error. */
             return;
@@ -27,6 +27,19 @@ void write_bytes(const char *s, size_t n) {
         if (r == 0) break;  /* avoid infinite loop on buggy drivers */
     }
 }
+
+void write_bytes(const char *s, size_t n) {
+    write_bytes_fd(1, s, n);
+}
+
+void puts_fd(int fd, const char *s) {
+    write_bytes_fd(fd, s, length(s));
+}
+
+void puts_err(const char *s) {
+    puts_fd(2, s);
+}
+
 void puts(const char *s) { write_bytes(s, length(s)); }
 void file_error(long error) {
     if (error == SYSCALL_EROFS) puts("Read-only filesystem.\n");

@@ -10,7 +10,18 @@ enum token_type {
     TOK_SEMI,    /* ; or newline */
     TOK_AND,     /* && */
     TOK_OR,      /* || */
-    TOK_BANG     /* ! */
+    TOK_BANG,    /* ! */
+    TOK_REDIR    /* Redirection token */
+};
+
+enum redir_op {
+    REDIR_NONE = 0,
+    REDIR_IN,       /* < */
+    REDIR_OUT,      /* > */
+    REDIR_APP,      /* >> */
+    REDIR_DUP_OUT,  /* >& */
+    REDIR_DUP_IN,   /* <& */
+    REDIR_CLOSE     /* >&- or <&- */
 };
 
 enum lex_status {
@@ -33,6 +44,9 @@ typedef struct {
     const uint8_t *quote_flags; /* parallel quote flag array */
     size_t len;
     bool has_quotes;
+    uint8_t redir_op;
+    int8_t  redir_fd;
+    int8_t  redir_dup_fd;       /* -1 if not dup or dup target is in next token */
 } token_t;
 
 typedef struct {

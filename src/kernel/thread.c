@@ -1080,6 +1080,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
                                      int argc, const char *const argv[],
                                      int envc, const char *const envp[],
                                      const char *cwd,
+                                     int action_count, const spawn_kaction_t *actions,
                                      uint64_t scalar_arg, int64_t *error) {
     *error = SYSCALL_ENOMEM;
     if (!elf_data || elf_size == 0) return NULL;
@@ -1174,13 +1175,77 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     p->current_cpu = target_cpu;
     p->cpu_affinity = affinity;
 
+    /* Initialize file descriptors for process */
+    tcb_t *parent_thread = thread_current();
+    if (parent_thread && parent_thread->is_user) {
+        fd_clone_table(parent_thread, p);
+    } else if (fd_init_std(p) < 0) {
+        *error = SYSCALL_ENOMEM;
+        goto fail_actions;
+    }
+
+    if (action_count > 0 && actions != NULL) {
+        for (int i = 0; i < action_count; i++) {
+            const spawn_kaction_t *act = &actions[i];
+            if (act->type == SPAWN_FD_ACTION_OPEN) {
+                if (act->dst_fd < 0 || act->dst_fd >= MAX_PROCESS_FDS) {
+                    *error = SYSCALL_EBADF;
+                    goto fail_actions;
+                }
+                int vfs_err = 0;
+                file_t *f = vfs_open_ext(act->path, act->flags, &vfs_err);
+                if (!f) {
+                    *error = syscall_from_vfs_error(vfs_err);
+                    goto fail_actions;
+                }
+                if (p->fd_table[act->dst_fd]) {
+                    vfs_close(p->fd_table[act->dst_fd]);
+                    p->fd_table[act->dst_fd] = NULL;
+                }
+                p->fd_table[act->dst_fd] = f;
+                p->fd_flags[act->dst_fd] = 0;
+            } else if (act->type == SPAWN_FD_ACTION_DUP2) {
+                if (act->src_fd < 0 || act->src_fd >= MAX_PROCESS_FDS ||
+                    act->dst_fd < 0 || act->dst_fd >= MAX_PROCESS_FDS) {
+                    *error = SYSCALL_EBADF;
+                    goto fail_actions;
+                }
+                if (!p->fd_table[act->src_fd]) {
+                    *error = SYSCALL_EBADF;
+                    goto fail_actions;
+                }
+                if (act->src_fd != act->dst_fd) {
+                    if (p->fd_table[act->dst_fd]) {
+                        vfs_close(p->fd_table[act->dst_fd]);
+                        p->fd_table[act->dst_fd] = NULL;
+                    }
+                    p->fd_table[act->dst_fd] = p->fd_table[act->src_fd];
+                    p->fd_table[act->dst_fd]->ref_count++;
+                }
+                p->fd_flags[act->dst_fd] = 0;
+            } else if (act->type == SPAWN_FD_ACTION_CLOSE) {
+                if (act->dst_fd < 0 || act->dst_fd >= MAX_PROCESS_FDS) {
+                    *error = SYSCALL_EBADF;
+                    goto fail_actions;
+                }
+                if (p->fd_table[act->dst_fd]) {
+                    vfs_close(p->fd_table[act->dst_fd]);
+                    p->fd_table[act->dst_fd] = NULL;
+                }
+                p->fd_flags[act->dst_fd] = 0;
+            } else {
+                *error = SYSCALL_EINVAL;
+                goto fail_actions;
+            }
+        }
+    }
+
     if (cwd && cwd[0]) {
         size_t clen = strlen(cwd);
         if (clen >= sizeof(p->cwd)) clen = sizeof(p->cwd) - 1;
         memcpy(p->cwd, cwd, clen);
         p->cwd[clen] = '\0';
     } else {
-        tcb_t *parent_thread = thread_current();
         if (parent_thread && parent_thread->cwd[0]) {
             size_t clen = strlen(parent_thread->cwd);
             if (clen >= sizeof(p->cwd)) clen = sizeof(p->cwd) - 1;
@@ -1213,10 +1278,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     int sref_err = vmm_space_add_sched_ref(proc_info.pml4_phys);
     if (sref_err != VMM_OK) {
         *error = SYSCALL_ENOMEM;
-        kfree(p);
-        kstack_free(slot, stack_base);
-        vmm_destroy_pml4(proc_info.pml4_phys, true);
-        return NULL;
+        goto fail_actions;
     }
 
     rflags = spin_lock_irqsave(&scheduler_cpus[target_cpu].sched_lock);
@@ -1234,26 +1296,35 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     }
 
     return p;
+
+fail_actions:
+    fd_close_all(p);
+    kfree(p);
+    kstack_free(slot, stack_base);
+    vmm_destroy_pml4(proc_info.pml4_phys, true);
+    return NULL;
 }
 
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
     int64_t error;
     return process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, name, elf_data, elf_size,
-                                  0, NULL, 0, NULL, NULL, arg, &error);
+                                  0, NULL, 0, NULL, NULL, 0, NULL, arg, &error);
 }
 
 tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
     int64_t error;
     return process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
-                                  0, NULL, 0, NULL, NULL, arg, &error);
+                                  0, NULL, 0, NULL, NULL, 0, NULL, arg, &error);
 }
 
 int64_t process_spawn_from_vfs(const char *path, int argc, const char *const argv[], int64_t *out_pid) {
-    return process_spawn_from_vfs_ext(path, argc, argv, 0, NULL, NULL, out_pid);
+    return process_spawn_from_vfs_ext(path, argc, argv, 0, NULL, NULL, 0, NULL, out_pid);
 }
 
 int64_t process_spawn_from_vfs_ext(const char *path, int argc, const char *const argv[],
-                                   int envc, const char *const envp[], const char *cwd, int64_t *out_pid) {
+                                   int envc, const char *const envp[], const char *cwd,
+                                   int action_count, const spawn_kaction_t *actions,
+                                   int64_t *out_pid) {
     if (!path || !*path || !out_pid) return SYSCALL_EINVAL;
     /* Keep publication and PID capture atomic on this bootstrap-only CPU.
      * No scheduler lock is held across filesystem or loader operations. */
@@ -1298,7 +1369,7 @@ int64_t process_spawn_from_vfs_ext(const char *path, int argc, const char *const
         image = buffer;
     }
     tcb_t *child = process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, path, image, size,
-                                          argc, argv, envc, envp, cwd, 0, &result);
+                                          argc, argv, envc, envp, cwd, action_count, actions, 0, &result);
     if (!child) goto out;
     *record = (child_record_t){ .parent = g_current_thread->tid,
                               .pid = child->tid, .used = true };
@@ -1342,36 +1413,130 @@ tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size) {
     return process_spawn_with_arg(name, elf_data, elf_size, 0);
 }
 
+int fd_init_std(tcb_t *proc) {
+    if (!proc) return -1;
+    for (int i = 0; i < MAX_PROCESS_FDS; i++) {
+        proc->fd_table[i] = NULL;
+        proc->fd_flags[i] = 0;
+    }
+    file_t *f0 = vfs_open_terminal(VFS_O_RDONLY);
+    file_t *f1 = vfs_open_terminal(VFS_O_WRONLY);
+    file_t *f2 = vfs_open_terminal(VFS_O_WRONLY);
+    if (!f0 || !f1 || !f2) {
+        if (f0) vfs_close(f0);
+        if (f1) vfs_close(f1);
+        if (f2) vfs_close(f2);
+        return -1;
+    }
+    proc->fd_table[0] = f0;
+    proc->fd_table[1] = f1;
+    proc->fd_table[2] = f2;
+    return 0;
+}
+
+void fd_clone_table(tcb_t *parent, tcb_t *child) {
+    if (!child) return;
+    for (int i = 0; i < MAX_PROCESS_FDS; i++) {
+        child->fd_table[i] = NULL;
+        child->fd_flags[i] = 0;
+    }
+    if (!parent) {
+        fd_init_std(child);
+        return;
+    }
+    for (int i = 0; i < MAX_PROCESS_FDS; i++) {
+        if (parent->fd_table[i]) {
+            if (parent->fd_flags[i] & FD_FLAG_CLOEXEC) {
+                child->fd_table[i] = NULL;
+                child->fd_flags[i] = 0;
+            } else {
+                child->fd_table[i] = parent->fd_table[i];
+                child->fd_table[i]->ref_count++;
+                child->fd_flags[i] = 0;
+            }
+        }
+    }
+}
+
 int fd_alloc(tcb_t *proc, struct file *file) {
     if (!proc || !file) return -1;
-    for (int i = 3; i < 32; i++) {
+    for (int i = 0; i < MAX_PROCESS_FDS; i++) {
         if (proc->fd_table[i] == NULL) {
             proc->fd_table[i] = file;
+            proc->fd_flags[i] = 0;
             return i;
         }
     }
     return -6; /* EMFILE: Too many open files */
 }
 
+int fd_alloc_exact(tcb_t *proc, int target_fd, struct file *file) {
+    if (!proc || !file || target_fd < 0 || target_fd >= MAX_PROCESS_FDS) return -1;
+    if (proc->fd_table[target_fd]) {
+        vfs_close(proc->fd_table[target_fd]);
+        proc->fd_table[target_fd] = NULL;
+    }
+    proc->fd_table[target_fd] = file;
+    proc->fd_flags[target_fd] = 0;
+    return target_fd;
+}
+
 struct file *fd_get(tcb_t *proc, int fd) {
-    if (!proc || fd < 0 || fd >= 32) return NULL;
+    if (!proc || fd < 0 || fd >= MAX_PROCESS_FDS) return NULL;
     return proc->fd_table[fd];
 }
 
 int fd_free(tcb_t *proc, int fd) {
-    if (!proc || fd < 0 || fd >= 32 || !proc->fd_table[fd]) return -1;
+    if (!proc || fd < 0 || fd >= MAX_PROCESS_FDS || !proc->fd_table[fd]) return -1;
     vfs_close(proc->fd_table[fd]);
     proc->fd_table[fd] = NULL;
+    proc->fd_flags[fd] = 0;
     return 0;
+}
+
+int fd_dup2(tcb_t *proc, int oldfd, int newfd) {
+    if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS || newfd < 0 || newfd >= MAX_PROCESS_FDS) {
+        return -SYSCALL_EBADF;
+    }
+    if (!proc->fd_table[oldfd]) {
+        return -SYSCALL_EBADF;
+    }
+    if (oldfd == newfd) {
+        return newfd;
+    }
+    if (proc->fd_table[newfd]) {
+        vfs_close(proc->fd_table[newfd]);
+        proc->fd_table[newfd] = NULL;
+    }
+    proc->fd_table[newfd] = proc->fd_table[oldfd];
+    proc->fd_table[newfd]->ref_count++;
+    proc->fd_flags[newfd] = 0;
+    return newfd;
+}
+
+int fd_dup(tcb_t *proc, int oldfd) {
+    if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS || !proc->fd_table[oldfd]) {
+        return -SYSCALL_EBADF;
+    }
+    for (int i = 0; i < MAX_PROCESS_FDS; i++) {
+        if (!proc->fd_table[i]) {
+            proc->fd_table[i] = proc->fd_table[oldfd];
+            proc->fd_table[i]->ref_count++;
+            proc->fd_flags[i] = 0;
+            return i;
+        }
+    }
+    return -SYSCALL_EMFILE;
 }
 
 void fd_close_all(tcb_t *proc) {
     if (!proc) return;
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < MAX_PROCESS_FDS; i++) {
         if (proc->fd_table[i]) {
             vfs_close(proc->fd_table[i]);
             proc->fd_table[i] = NULL;
         }
+        proc->fd_flags[i] = 0;
     }
 }
 

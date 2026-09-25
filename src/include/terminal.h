@@ -4,6 +4,7 @@
 /* SYS_TERMCTL(op, info*, sizeof(info)). Per-process output endpoint. */
 #define TERM_GET 0
 #define TERM_SET 1
+#define TERM_ISATTY 2
 #define TERM_MIRROR 0
 #define TERM_LOCAL 1
 #define TERM_SERIAL 2

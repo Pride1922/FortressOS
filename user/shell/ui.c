@@ -28,6 +28,41 @@ const char *shell_get_prompt_template(void) {
     return g_prompt_template;
 }
 
+static int g_term_fd = 1;
+
+void shell_set_terminal_fd(int fd) {
+    g_term_fd = fd;
+}
+
+int shell_get_terminal_fd(void) {
+    return g_term_fd;
+}
+
+static void ui_puts(const char *s) {
+    puts_fd(g_term_fd, s);
+}
+
+static void ui_write_bytes(const char *s, size_t n) {
+    write_bytes_fd(g_term_fd, s, n);
+}
+
+static void ui_put_dec(size_t val) {
+    char buf[24];
+    size_t i = 0;
+    if (val == 0) { ui_puts("0"); return; }
+    while (val > 0) {
+        buf[i++] = (char)('0' + (val % 10));
+        val /= 10;
+    }
+    for (size_t j = 0; j < i / 2; j++) {
+        char tmp = buf[j];
+        buf[j] = buf[i - 1 - j];
+        buf[i - 1 - j] = tmp;
+    }
+    buf[i] = 0;
+    ui_puts(buf);
+}
+
 void shell_set_prompt_state(int64_t status, const char *cwd) {
     g_ui_status = status;
     if (cwd && *cwd) {
@@ -136,25 +171,25 @@ static void paint(void) {
     size_t n = edit.len - edit.view; if (n > room) n = room;
 
     if (term.mode == TERM_PLAIN) {
-        puts("\n"); puts(prompt); write_bytes(edit.text, edit.len); return;
+        ui_puts("\n"); ui_puts(prompt); ui_write_bytes(edit.text, edit.len); return;
     }
-    puts("\r\033[?25l"); puts(prompt);
-    write_bytes(edit.text + edit.view, n);
-    puts("\033[K\r\033["); put_dec(plen + edit.cursor - edit.view); puts("C\033[?25h");
+    ui_puts("\r\033[?25l"); ui_puts(prompt);
+    ui_write_bytes(edit.text + edit.view, n);
+    ui_puts("\033[K\r\033["); ui_put_dec(plen + edit.cursor - edit.view); ui_puts("C\033[?25h");
 }
 
 bool shell_read_line(char out[LINE_CAP], bool continuation) {
     g_ui_continuation = continuation;
     lineedit_init(&edit);
     (void)call(SYS_TERMCTL, TERM_GET, (uintptr_t)&term, sizeof(term));
-    if (term.mode != TERM_PLAIN) puts("\033[?25h\033[?2004h");
+    if (term.mode != TERM_PLAIN) ui_puts("\033[?25h\033[?2004h");
     paint();
 
     for (;;) {
         if (input_pos == input_len) {
             long n = call(SYS_INPUT_READ, (uintptr_t)input, sizeof(input), edit.escape_len ? 100 : (uintptr_t)-1);
             if (n == INPUT_LOST) { lineedit_lost(&edit); paint(); continue; }
-            if (n < 0) { puts("Input unavailable.\n"); return false; }
+            if (n < 0) { ui_puts("Input unavailable.\n"); return false; }
             if (n == 0) { (void)lineedit_timeout(&edit); paint(); continue; }
             input_len = (size_t)n; input_pos = 0;
         }
@@ -162,7 +197,7 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
         uint64_t generation = term.generation, dropped = term.dropped;
         (void)call(SYS_TERMCTL, TERM_GET, (uintptr_t)&term, sizeof(term));
         if (term.dropped != dropped) { lineedit_lost(&edit); paint(); }
-        if (term.generation != generation) { puts("\n"); paint(); }
+        if (term.generation != generation) { ui_puts("\n"); paint(); }
 
         unsigned char c = (unsigned char)input[input_pos++];
         bool append = edit.cursor == edit.len && !edit.search && !edit.escape_len &&
@@ -177,8 +212,8 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
         }
 
         if (result == EDIT_ACCEPT || result == EDIT_CANCEL || result == EDIT_EOF) {
-            if (term.mode != TERM_PLAIN) puts("\033[?25l\033[?2004l");
-            puts("\n");
+            if (term.mode != TERM_PLAIN) ui_puts("\033[?25l\033[?2004l");
+            ui_puts("\n");
             if (result == EDIT_EOF) return false;
             if (result == EDIT_CANCEL) { out[0] = 0; return true; }
             for (size_t i = 0; i <= edit.len; i++) out[i] = edit.text[i];
@@ -188,8 +223,8 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
             return true;
         }
 
-        if (result == EDIT_CLEAR && term.mode != TERM_PLAIN) puts("\033[2J\033[H");
-        if (append && !edit.blocked) write_bytes((const char *)&c, 1);
+        if (result == EDIT_CLEAR && term.mode != TERM_PLAIN) ui_puts("\033[2J\033[H");
+        if (append && !edit.blocked) ui_write_bytes((const char *)&c, 1);
         else if (result != EDIT_NONE) paint();
     }
 }

@@ -14,6 +14,9 @@ void puts(const char *s);
 #endif
 void put_dec(size_t val);
 void write_bytes(const char *s, size_t n);
+void write_bytes_fd(int fd, const char *s, size_t n);
+void puts_fd(int fd, const char *s);
+void puts_err(const char *s);
 void file_error(long error);
 void editor_load(const char *path);
 void editor_loop(void);

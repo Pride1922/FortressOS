@@ -24,4 +24,9 @@ int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_
 /* Glob pattern matching */
 bool glob_match(const char *pattern, const char *str);
 
+/* Expand a single redirection target word to exactly one path.
+ * Returns 0 on success, or -1 on error (ambiguous redirect, empty, etc.) */
+int expand_redir_target(const char *target, const uint8_t *quote_flags, bool has_quotes,
+                        int64_t last_status, char *out_path, size_t out_cap);
+
 #endif /* SHELL_EXPAND_H */

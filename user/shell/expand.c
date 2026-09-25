@@ -425,3 +425,35 @@ int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_
     out_cmd->argv[out_cmd->argc] = 0;
     return 0;
 }
+
+static parse_cmd_t s_single_redir_cmd;
+static expanded_cmd_t s_single_redir_exp;
+
+int expand_redir_target(const char *target, const uint8_t *quote_flags, bool has_quotes,
+                        int64_t last_status, char *out_path, size_t out_cap) {
+    if (!target || !out_path || out_cap == 0) return -1;
+
+    char *w_argv[2] = { (char *)target, NULL };
+    const uint8_t *w_qflags[2] = { quote_flags, NULL };
+    bool w_quotes[2] = { has_quotes, false };
+
+    s_single_redir_cmd.argc = 1;
+    s_single_redir_cmd.argv[0] = w_argv[0];
+    s_single_redir_cmd.argv[1] = NULL;
+    s_single_redir_cmd.quote_flags[0] = w_qflags[0];
+    s_single_redir_cmd.quote_flags[1] = NULL;
+    s_single_redir_cmd.has_quotes[0] = w_quotes[0];
+    s_single_redir_cmd.redir_count = 0;
+    s_single_redir_cmd.negate = false;
+    s_single_redir_cmd.next_op = CMD_OP_NONE;
+
+    if (expand_command(&s_single_redir_cmd, last_status, &s_single_redir_exp) != 0 ||
+        s_single_redir_exp.argc != 1) {
+        return -1; /* ambiguous redirect or empty */
+    }
+
+    size_t len = str_len(s_single_redir_exp.argv[0]);
+    if (len >= out_cap) return -1;
+    str_copy(out_path, s_single_redir_exp.argv[0], out_cap);
+    return 0;
+}

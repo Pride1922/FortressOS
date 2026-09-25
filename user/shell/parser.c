@@ -38,24 +38,102 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
 
         parse_cmd_t *cmd = &tree->cmds[tree->cmd_count];
         cmd->argc = 0;
+        cmd->redir_count = 0;
         cmd->negate = false;
         cmd->next_op = CMD_OP_NONE;
 
         if (type == TOK_BANG) {
             cmd->negate = true;
             type = lexer_next(&parse_lex, &tok);
-            if (type != TOK_WORD) {
+            if (type != TOK_WORD && type != TOK_REDIR) {
                 tree->error_msg = "syntax error: expected command after '!'";
                 return PARSE_SYNTAX_ERROR;
             }
         }
 
-        if (type != TOK_WORD) {
+        if (type != TOK_WORD && type != TOK_REDIR) {
             tree->error_msg = "syntax error near unexpected token";
             return PARSE_SYNTAX_ERROR;
         }
 
-        while (type == TOK_WORD) {
+        while (type == TOK_WORD || type == TOK_REDIR) {
+            if (type == TOK_REDIR) {
+                if (cmd->redir_count >= MAX_REDIRS) {
+                    tree->error_msg = "too many redirections";
+                    return PARSE_SYNTAX_ERROR;
+                }
+                redir_t *r = &cmd->redirs[cmd->redir_count];
+                r->redir_op = tok.redir_op;
+                r->redir_fd = tok.redir_fd;
+                r->redir_dup_fd = tok.redir_dup_fd;
+                r->target = NULL;
+                r->quote_flags = NULL;
+                r->has_quotes = false;
+
+                if (r->redir_op == REDIR_IN || r->redir_op == REDIR_OUT || r->redir_op == REDIR_APP) {
+                    type = lexer_next(&parse_lex, &tok);
+                    if (type == TOK_EOF) {
+                        tree->status = LEX_INCOMPLETE_OP;
+                        return PARSE_INCOMPLETE;
+                    }
+                    if (type != TOK_WORD) {
+                        tree->error_msg = "syntax error near unexpected token";
+                        return PARSE_SYNTAX_ERROR;
+                    }
+                    size_t wlen = tok.len;
+                    if (tree->pool_used + wlen + 1 > sizeof(tree->pool)) {
+                        tree->error_msg = "redirection target buffer exhausted";
+                        return PARSE_SYNTAX_ERROR;
+                    }
+                    char *dest = &tree->pool[tree->pool_used];
+                    uint8_t *qdest = &tree->qpool[tree->pool_used];
+                    for (size_t k = 0; k < wlen; k++) {
+                        dest[k] = tok.value[k];
+                        qdest[k] = tok.quote_flags ? tok.quote_flags[k] : 0;
+                    }
+                    dest[wlen] = '\0';
+                    qdest[wlen] = 0;
+                    tree->pool_used += wlen + 1;
+
+                    r->target = dest;
+                    r->quote_flags = qdest;
+                    r->has_quotes = tok.has_quotes;
+                } else if (r->redir_op == REDIR_DUP_OUT || r->redir_op == REDIR_DUP_IN) {
+                    if (r->redir_dup_fd < 0) {
+                        type = lexer_next(&parse_lex, &tok);
+                        if (type == TOK_EOF) {
+                            tree->status = LEX_INCOMPLETE_OP;
+                            return PARSE_INCOMPLETE;
+                        }
+                        if (type != TOK_WORD) {
+                            tree->error_msg = "syntax error near unexpected token";
+                            return PARSE_SYNTAX_ERROR;
+                        }
+                        if (tok.len == 1 && tok.value[0] == '-') {
+                            r->redir_op = REDIR_CLOSE;
+                            r->redir_dup_fd = -1;
+                        } else {
+                            int dfd = 0;
+                            for (size_t k = 0; k < tok.len; k++) {
+                                if (tok.value[k] < '0' || tok.value[k] > '9') {
+                                    tree->error_msg = "syntax error: expected file descriptor number";
+                                    return PARSE_SYNTAX_ERROR;
+                                }
+                                dfd = dfd * 10 + (tok.value[k] - '0');
+                            }
+                            if (dfd >= 32) {
+                                tree->error_msg = "file descriptor out of range";
+                                return PARSE_SYNTAX_ERROR;
+                            }
+                            r->redir_dup_fd = (int8_t)dfd;
+                        }
+                    }
+                }
+                cmd->redir_count++;
+                type = lexer_next(&parse_lex, &tok);
+                continue;
+            }
+
             if (cmd->argc >= MAX_ARGS) {
                 tree->error_msg = "too many arguments";
                 return PARSE_SYNTAX_ERROR;

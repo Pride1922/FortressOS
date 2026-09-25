@@ -91,5 +91,7 @@ int64_t     vfs_write(file_t *file, const void *buf, size_t count);
 int         vfs_close(file_t *file);
 int         vfs_stat(vfs_node_t *node, vfs_stat_t *out_stat);
 int         vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *out_dirent);
+vfs_node_t *vfs_get_terminal_node(void);
+file_t     *vfs_open_terminal(int flags);
 
 #endif /* FORTRESS_VFS_H */

@@ -62,6 +62,9 @@ def run(mode):
             reader.start()
 
             qmp, remote = QMP(qmp_path), Remote(gdb_path)
+            # Finish GDB attachment before QMP resumes the VM; a late attach
+            # otherwise stops firmware after the resume command.
+            remote.request("qSupported")
             qmp.execute("cont")
 
             def output():

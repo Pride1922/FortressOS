@@ -61,8 +61,12 @@ typedef struct tcb {
     uint64_t       exit_code;        /* Exit code captured upon termination */
     bool           has_exited;       /* True if process has exited */
 
-    /* Per-Process File Descriptor Table (Step 8B) */
-    struct file   *fd_table[32];
+#define MAX_PROCESS_FDS   32
+#define FD_FLAG_CLOEXEC   1
+
+    /* Per-Process File Descriptor Table (Milestone S6) */
+    struct file   *fd_table[MAX_PROCESS_FDS];
+    uint32_t       fd_flags[MAX_PROCESS_FDS];
 
     struct tcb    *next;             /* Intrusive run queue link */
     const void *wait_channel; /* Only on blocked list while sleeping. */
@@ -74,9 +78,14 @@ typedef struct tcb {
 } tcb_t;
 
 struct file;
+int          fd_init_std(tcb_t *proc);
+void         fd_clone_table(tcb_t *parent, tcb_t *child);
 int          fd_alloc(tcb_t *proc, struct file *file);
+int          fd_alloc_exact(tcb_t *proc, int target_fd, struct file *file);
 struct file *fd_get(tcb_t *proc, int fd);
 int          fd_free(tcb_t *proc, int fd);
+int          fd_dup2(tcb_t *proc, int oldfd, int newfd);
+int          fd_dup(tcb_t *proc, int oldfd);
 void         fd_close_all(tcb_t *proc);
 
 /* Public Scheduler & Thread API */
@@ -109,9 +118,20 @@ void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
 int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const argv[],
                              int envc, const char *const envp[],
                              uintptr_t *out_user_rsp, uintptr_t *out_user_argv, uintptr_t *out_user_envp);
+typedef struct spawn_kaction {
+    uint32_t type;
+    int32_t  dst_fd;
+    int32_t  src_fd;
+    uint32_t flags;
+    uint32_t mode;
+    const char *path;
+} spawn_kaction_t;
+
 int64_t process_spawn_from_vfs(const char *path, int argc, const char *const argv[], int64_t *out_pid);
 int64_t process_spawn_from_vfs_ext(const char *path, int argc, const char *const argv[],
-                                   int envc, const char *const envp[], const char *cwd, int64_t *out_pid);
+                                   int envc, const char *const envp[], const char *cwd,
+                                   int action_count, const spawn_kaction_t *actions,
+                                   int64_t *out_pid);
 bool process_wait_child(uint64_t pid, uint64_t *out_exit_code);
 tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size);
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg);

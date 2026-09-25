@@ -2,8 +2,80 @@
 #include "heap.h"
 #include "string.h"
 #include "serial.h"
+#include "console.h"
+#include "input.h"
+#include "terminal.h"
+#include "thread.h"
 
 static vfs_node_t *g_vfs_root = NULL;
+
+static int64_t terminal_read(vfs_node_t *node, uint64_t offset, void *buf, size_t count) {
+    (void)node; (void)offset;
+    if (!buf || count == 0) return 0;
+    return input_read(buf, count);
+}
+
+static int64_t terminal_write(vfs_node_t *node, uint64_t offset, const void *buf, size_t count) {
+    (void)node; (void)offset;
+    if (!buf || count == 0) return 0;
+    const char *ptr = (const char *)buf;
+    tcb_t *owner = thread_current();
+    unsigned mode = owner ? owner->terminal_mode : TERM_MIRROR;
+    if (mode != TERM_SERIAL) console_terminal_write(ptr, count);
+    if (mode != TERM_LOCAL) {
+        for (size_t i = 0; i < count; i++) serial_raw_putc(ptr[i]);
+    }
+    return (int64_t)count;
+}
+
+static int dummy_truncate(vfs_node_t *node, uint64_t size) {
+    (void)node; (void)size;
+    return 0;
+}
+
+static vfs_node_t g_terminal_node = {
+    .name = "tty",
+    .path = "/dev/tty",
+    .type = VFS_FILE,
+    .size = 0,
+    .read = terminal_read,
+    .write = terminal_write,
+    .truncate = dummy_truncate,
+};
+
+static int64_t null_read(vfs_node_t *node, uint64_t offset, void *buf, size_t count) {
+    (void)node; (void)offset; (void)buf; (void)count;
+    return 0; /* EOF */
+}
+
+static int64_t null_write(vfs_node_t *node, uint64_t offset, const void *buf, size_t count) {
+    (void)node; (void)offset; (void)buf;
+    return (int64_t)count; /* Discard bytes */
+}
+
+static vfs_node_t g_null_node = {
+    .name = "null",
+    .path = "/dev/null",
+    .type = VFS_FILE,
+    .size = 0,
+    .read = null_read,
+    .write = null_write,
+    .truncate = dummy_truncate,
+};
+
+vfs_node_t *vfs_get_terminal_node(void) {
+    return &g_terminal_node;
+}
+
+file_t *vfs_open_terminal(int flags) {
+    file_t *file = (file_t *)kmalloc(sizeof(file_t));
+    if (!file) return NULL;
+    file->node = &g_terminal_node;
+    file->offset = 0;
+    file->flags = flags;
+    file->ref_count = 1;
+    return file;
+}
 
 void vfs_init(void) {
     if (g_vfs_root) return;
@@ -66,6 +138,12 @@ vfs_node_t *vfs_lookup(const char *path) {
 
     if (strcmp(norm, "/") == 0) {
         return g_vfs_root;
+    }
+    if (strcmp(norm, "/dev/tty") == 0) {
+        return &g_terminal_node;
+    }
+    if (strcmp(norm, "/dev/null") == 0) {
+        return &g_null_node;
     }
 
     /* Tokenize path by '/' */
@@ -422,11 +500,6 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
     if (flags & ~(VFS_O_RDONLY | VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND)) {
         return NULL;
     }
-    if (flags & VFS_O_APPEND) {
-        /* O_APPEND is unsupported in Phase 9D bounded phase to prevent seek/write races */
-        if (err_out) *err_out = -VFS_EINVAL;
-        return NULL;
-    }
 
     /* Pre-reserve the file_t descriptor structure before any fallible creation or truncation */
     file_t *file = (file_t *)kmalloc(sizeof(file_t));
@@ -552,6 +625,9 @@ int64_t vfs_write(file_t *file, const void *buf, size_t count) {
     }
 
     if (file->node->write) {
+        if (file->flags & VFS_O_APPEND) {
+            file->offset = file->node->size;
+        }
         int64_t result = file->node->write(file->node, file->offset, buf, count);
         if (result > 0) {
             file->offset += (uint64_t)result;

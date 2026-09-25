@@ -27,12 +27,15 @@ def offsets(tmp):
     source = Path(tmp) / "offsets.c"
     source.write_text('''#include <stdio.h>
 #include "thread.h"
+#include "vfs.h"
 int main(void) {
- printf("%zu %zu %zu %zu", offsetof(tcb_t, state), offsetof(tcb_t, total_ticks),
-        offsetof(tcb_t, fd_table), offsetof(tcb_t, wait_channel));
+ printf("%zu %zu %zu %zu %zu %zu %zu %zu", offsetof(tcb_t, state), offsetof(tcb_t, total_ticks),
+        offsetof(tcb_t, fd_table), offsetof(tcb_t, wait_channel),
+        offsetof(file_t, node), offsetof(file_t, flags), offsetof(file_t, ref_count),
+        offsetof(tcb_t, fd_flags));
 }''')
     exe = str(Path(tmp) / "offsets")
-    subprocess.run(["gcc", "-Isrc/kernel", "-Isrc/include", str(source), "-o", exe], cwd=REPO, check=True)
+    subprocess.run(["gcc", "-Isrc/kernel", "-Isrc/include", "-Isrc/fs", str(source), "-o", exe], cwd=REPO, check=True)
     return list(map(int, subprocess.check_output([exe]).split()))
 
 
@@ -42,7 +45,8 @@ def run(mode):
     log = REPO / "build" / f"shell-{mode}-{cpus}cpu.log"
     log.write_text("")
     with tempfile.TemporaryDirectory(prefix="fortress-input-") as tmp:
-        state_offset, ticks_offset, fds_offset, channel_offset = offsets(tmp)
+        (state_offset, ticks_offset, fds_offset, channel_offset,
+         node_offset, flags_offset, refs_offset, fd_flags_offset) = offsets(tmp)
         uart_path, qmp_path, gdb_path = [Path(tmp) / n for n in ("uart", "qmp", "gdb")]
         cmd = ["qemu-system-x86_64", "-M", "q35", "-m", "2G", "-display", "none",
                "-smp", os.environ.get("SHELL_TEST_CPUS", "1"), "-no-reboot", "-S", "-monitor", "none", "-boot", "d", "-cdrom", "bin/fortress.iso",
@@ -72,6 +76,10 @@ def run(mode):
             reader = threading.Thread(target=drain, daemon=True)
             reader.start()
             qmp, remote = QMP(qmp_path), Remote(gdb_path)
+            # A socket connect can return before QEMU handles GDB attachment.
+            # Attachment stops the VM: finish a protocol round trip before
+            # QMP resumes it, or a late attach can leave firmware paused.
+            remote.request("qSupported")
             qmp.execute("cont")
 
             def output():
@@ -146,7 +154,14 @@ def run(mode):
                     assert int.from_bytes(remote.memory(blocked + state_offset, 4), "little") == 2
                     assert u64(blocked + channel_offset) == sym["g_input"]
                     assert u64(sym["g_current_thread"]) != blocked
-                    assert remote.memory(blocked + fds_offset, 32 * 8) == bytes(32 * 8), "Leaked descriptor"
+                    standard = [u64(blocked + fds_offset + fd * 8) for fd in range(3)]
+                    assert all(standard) and len(set(standard)) == 3, "Missing/aliased standard handles"
+                    for handle, mode in zip(standard, (0, 1, 1)):
+                        assert u64(handle + node_offset) == sym["g_terminal_node"], "Non-terminal standard handle"
+                        assert int.from_bytes(remote.memory(handle + flags_offset, 4), "little") == mode
+                        assert int.from_bytes(remote.memory(handle + refs_offset, 4), "little") == 1, "Leaked file reference"
+                    assert remote.memory(blocked + fds_offset + 3 * 8, 29 * 8) == bytes(29 * 8), "Leaked descriptor"
+                    assert remote.memory(blocked + fd_flags_offset, 32 * 4) == bytes(32 * 4), "Unexpected descriptor flags"
                     return {"pid": u64(blocked + 8), "ticks": u64(blocked + ticks_offset),
                             "timer": u64(sym["g_timer_ticks"]), "free": u64(sym["free_pages"]),
                             "slots": u64(sym["g_stack_slots_bitmap"])}
