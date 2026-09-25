@@ -51,6 +51,12 @@ static struct scheduler_cpu {
     volatile bool preemption_enabled;
     uint64_t      stack_slots_bitmap;
     uint64_t      stolen_tasks_count;
+    /* CPU-private transient handoff across switch_context with interrupts disabled.
+     * Written by this CPU before switch_context, consumed by this CPU in sched_post_switch.
+     * Never accessed by remote CPUs. */
+    uintptr_t     prev_cr3;
+    bool          prev_terminated;
+    bool          prev_cr3_changed;
 } scheduler_cpus[MAX_DETECTED_CPUS] = { [0] = { .next_tid = 1, .sched_lock = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "sched-0") } };
 
 static const char *g_sched_lock_names[MAX_DETECTED_CPUS] = {
@@ -266,17 +272,32 @@ void sched_reap_dead(void) {
             dead = next;
         }
     }
+
+    vmm_drain_deferred_destructions();
 }
 
 void sched_post_switch(void) {
     size_t cid = cpu_current()->id;
-    if (cid < MAX_DETECTED_CPUS && scheduler_cpus[cid].zombie_thread) {
-        tcb_t *z = scheduler_cpus[cid].zombie_thread;
-        scheduler_cpus[cid].zombie_thread = NULL;
-        uint64_t zflags = spin_lock_irqsave(&scheduler_cpus[cid].sched_lock);
-        z->next = scheduler_cpus[cid].dead_threads;
-        scheduler_cpus[cid].dead_threads = z;
-        spin_unlock_irqrestore(&scheduler_cpus[cid].sched_lock, zflags);
+    if (cid < MAX_DETECTED_CPUS) {
+        uintptr_t prev_cr3 = scheduler_cpus[cid].prev_cr3;
+        bool prev_term = scheduler_cpus[cid].prev_terminated;
+        bool cr3_changed = scheduler_cpus[cid].prev_cr3_changed;
+        scheduler_cpus[cid].prev_cr3 = 0;
+        scheduler_cpus[cid].prev_terminated = false;
+        scheduler_cpus[cid].prev_cr3_changed = false;
+
+        if (prev_cr3 != 0) {
+            vmm_space_leave(prev_cr3, prev_term, cr3_changed);
+        }
+
+        if (scheduler_cpus[cid].zombie_thread) {
+            tcb_t *z = scheduler_cpus[cid].zombie_thread;
+            scheduler_cpus[cid].zombie_thread = NULL;
+            uint64_t zflags = spin_lock_irqsave(&scheduler_cpus[cid].sched_lock);
+            z->next = scheduler_cpus[cid].dead_threads;
+            scheduler_cpus[cid].dead_threads = z;
+            spin_unlock_irqrestore(&scheduler_cpus[cid].sched_lock, zflags);
+        }
     }
 }
 
@@ -551,9 +572,19 @@ void thread_yield(void) {
     gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
 
     /* Switch CR3 to target thread's address space with interrupts disabled */
+    uintptr_t old_cr3 = (old && old->cr3) ? old->cr3 : vmm_get_kernel_pml4();
     uintptr_t target_cr3 = next->cr3 ? next->cr3 : vmm_get_kernel_pml4();
-    if (vmm_get_current_pml4() != target_cr3) {
+    bool cr3_changed = (vmm_get_current_pml4() != target_cr3);
+    if (cr3_changed) {
+        vmm_space_enter(target_cr3);
         vmm_switch_pml4(target_cr3);
+    }
+
+    size_t cid = cpu_current()->id;
+    if (cid < MAX_DETECTED_CPUS) {
+        scheduler_cpus[cid].prev_cr3 = old_cr3;
+        scheduler_cpus[cid].prev_terminated = false;
+        scheduler_cpus[cid].prev_cr3_changed = cr3_changed;
     }
 
     /*
@@ -608,8 +639,20 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
         next->ticks_remaining = DEFAULT_QUANTUM_TICKS;
         g_current_thread = next;
         gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
+        uintptr_t old_cr3 = (old && old->cr3) ? old->cr3 : vmm_get_kernel_pml4();
         uintptr_t cr3 = next->cr3 ? next->cr3 : vmm_get_kernel_pml4();
-        if (vmm_get_current_pml4() != cr3) vmm_switch_pml4(cr3);
+        bool cr3_changed = (vmm_get_current_pml4() != cr3);
+        if (cr3_changed) {
+            vmm_space_enter(cr3);
+            vmm_switch_pml4(cr3);
+        }
+
+        size_t cid = cpu_current()->id;
+        if (cid < MAX_DETECTED_CPUS) {
+            scheduler_cpus[cid].prev_cr3 = old_cr3;
+            scheduler_cpus[cid].prev_terminated = false;
+            scheduler_cpus[cid].prev_cr3_changed = cr3_changed;
+        }
         spin_unlock_noirq(&g_sched_lock);
         spin_debug_assert_unheld();
         uint64_t suspended_irq_depth = cpu_current()->irq_depth;
@@ -648,6 +691,10 @@ void thread_exit(void) {
     tcb_t *curr = g_current_thread;
     curr->state = THREAD_TERMINATED;
 
+    if (curr->is_user && curr->cr3 != 0) {
+        vmm_space_retire(curr->cr3);
+    }
+
     /* Stash as zombie_thread on this CPU. It will be moved to dead_threads
      * only AFTER the context switch to the next thread has completed. */
     size_t cid = cpu_current()->id;
@@ -673,9 +720,18 @@ void thread_exit(void) {
     gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
 
     /* Switch CR3 to target thread's address space */
+    uintptr_t old_cr3 = (curr && curr->cr3) ? curr->cr3 : vmm_get_kernel_pml4();
     uintptr_t target_cr3 = next->cr3 ? next->cr3 : vmm_get_kernel_pml4();
-    if (vmm_get_current_pml4() != target_cr3) {
+    bool cr3_changed = (vmm_get_current_pml4() != target_cr3);
+    if (cr3_changed) {
+        vmm_space_enter(target_cr3);
         vmm_switch_pml4(target_cr3);
+    }
+
+    if (cid < MAX_DETECTED_CPUS) {
+        scheduler_cpus[cid].prev_cr3 = old_cr3;
+        scheduler_cpus[cid].prev_terminated = true;
+        scheduler_cpus[cid].prev_cr3_changed = cr3_changed;
     }
 
     spin_unlock_noirq(&g_sched_lock);
@@ -1074,6 +1130,15 @@ static tcb_t *process_spawn_internal(const char *name, const void *elf_data, siz
     frame[7] = (uint64_t)user_process_trampoline;  /* rip */
 
     p->rsp = (uint64_t)stack_top;
+
+    int sref_err = vmm_space_add_sched_ref(proc_info.pml4_phys);
+    if (sref_err != VMM_OK) {
+        *error = SYSCALL_ENOMEM;
+        kfree(p);
+        kstack_free(slot, stack_base);
+        vmm_destroy_pml4(proc_info.pml4_phys, true);
+        return NULL;
+    }
 
     rflags = spin_lock_irqsave(&g_sched_lock);
     runqueue_push_locked(p);

@@ -7,6 +7,7 @@
 #include "smp.h"
 #include "percpu.h"
 #include "thread.h"
+#include "heap.h"
 
 extern uint8_t __kernel_start[];
 extern uint8_t __text_start[];
@@ -19,6 +20,207 @@ extern uint8_t __kernel_end[];
 static uint64_t  hhdm_offset = 0;
 static uintptr_t kernel_pml4_phys = 0;
 static bool boot_memory_ready = false;
+
+/* Static master kernel address space (permanent, never destroyed) */
+static vmm_space_t g_vmm_kernel_space;
+static vmm_space_t *g_vmm_spaces_list = NULL;
+static vmm_space_t *g_vmm_deferred_list = NULL;
+static size_t      g_vmm_allocated_table_frames = 0;
+static spinlock_t  g_vmm_lock = SPINLOCK_RANKED(3, "vmm");
+
+vmm_space_t *vmm_space_lookup(uintptr_t cr3) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_t *curr = g_vmm_spaces_list;
+    uintptr_t norm_cr3 = cr3 & PTE_ADDR_MASK;
+    while (curr) {
+        if ((curr->cr3 & PTE_ADDR_MASK) == norm_cr3) {
+            spin_unlock_irqrestore(&g_vmm_lock, rflags);
+            return curr;
+        }
+        curr = curr->next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return NULL;
+}
+
+vmm_space_t *vmm_space_get_kernel(void) {
+    return &g_vmm_kernel_space;
+}
+
+int vmm_space_retire(uintptr_t pml4_phys) {
+    uintptr_t norm_cr3 = pml4_phys & PTE_ADDR_MASK;
+    if (norm_cr3 == (kernel_pml4_phys & PTE_ADDR_MASK) || norm_cr3 == 0) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_t *curr = g_vmm_spaces_list;
+    while (curr) {
+        if ((curr->cr3 & PTE_ADDR_MASK) == norm_cr3) {
+            if (curr->is_kernel) {
+                spin_unlock_irqrestore(&g_vmm_lock, rflags);
+                return VMM_ERR_INVALID_ADDR;
+            }
+            if (curr->state == VMM_SPACE_DEAD) {
+                spin_unlock_irqrestore(&g_vmm_lock, rflags);
+                return VMM_ERR_INVALID_ADDR;
+            }
+            if (curr->state == VMM_SPACE_DYING) {
+                spin_unlock_irqrestore(&g_vmm_lock, rflags);
+                return VMM_OK; /* Idempotent */
+            }
+            curr->state = VMM_SPACE_DYING;
+            spin_unlock_irqrestore(&g_vmm_lock, rflags);
+            return VMM_OK;
+        }
+        curr = curr->next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return VMM_ERR_INVALID_ADDR;
+}
+
+int vmm_space_get_op(uint64_t *pml4_virt) {
+    if (!pml4_virt) return VMM_ERR_INVALID_ADDR;
+
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_t *curr = g_vmm_spaces_list;
+    while (curr) {
+        if (curr->pml4_virt == pml4_virt) {
+            if (curr->is_kernel) {
+                spin_unlock_irqrestore(&g_vmm_lock, rflags);
+                return VMM_OK;
+            }
+            if (curr->state != VMM_SPACE_LIVE) {
+                spin_unlock_irqrestore(&g_vmm_lock, rflags);
+                return VMM_ERR_INVALID_ADDR;
+            }
+            curr->op_refs++;
+            spin_unlock_irqrestore(&g_vmm_lock, rflags);
+            return VMM_OK;
+        }
+        curr = curr->next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return VMM_ERR_INVALID_ADDR;
+}
+
+void vmm_space_put_op(uint64_t *pml4_virt) {
+    if (!pml4_virt) return;
+
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_t *curr = g_vmm_spaces_list;
+    while (curr) {
+        if (curr->pml4_virt == pml4_virt) {
+            if (!curr->is_kernel && curr->op_refs > 0) {
+                curr->op_refs--;
+            }
+            spin_unlock_irqrestore(&g_vmm_lock, rflags);
+            return;
+        }
+        curr = curr->next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+}
+
+int vmm_space_enter(uintptr_t next_cr3) {
+    uintptr_t norm_cr3 = next_cr3 & PTE_ADDR_MASK;
+    if (norm_cr3 == 0 || norm_cr3 == (kernel_pml4_phys & PTE_ADDR_MASK)) {
+        return VMM_OK;
+    }
+
+    uint64_t flags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_t *curr = g_vmm_spaces_list;
+    while (curr) {
+        if (curr->cr3 == norm_cr3) {
+            if (curr->state == VMM_SPACE_DEAD) {
+                spin_unlock_irqrestore(&g_vmm_lock, flags);
+                return VMM_ERR_INVALID_ADDR;
+            }
+            uint32_t cid = cpu_current()->id;
+            if (cid < 64) {
+                curr->active_cpus_mask |= (1ULL << cid);
+            }
+            spin_unlock_irqrestore(&g_vmm_lock, flags);
+            return VMM_OK;
+        }
+        curr = curr->next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, flags);
+    return VMM_ERR_INVALID_ADDR;
+}
+
+void vmm_space_leave(uintptr_t old_cr3, bool thread_terminated, bool cr3_changed) {
+    uintptr_t norm_cr3 = old_cr3 & PTE_ADDR_MASK;
+    if (norm_cr3 == 0 || norm_cr3 == (kernel_pml4_phys & PTE_ADDR_MASK)) {
+        return;
+    }
+
+    uint64_t flags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_t *curr = g_vmm_spaces_list;
+    while (curr) {
+        if (curr->cr3 == norm_cr3) {
+            if (cr3_changed) {
+                uint32_t cid = cpu_current()->id;
+                if (cid < 64) {
+                    curr->active_cpus_mask &= ~(1ULL << cid);
+                }
+            }
+            if (thread_terminated && curr->sched_refs > 0) {
+                curr->sched_refs--;
+            }
+            spin_unlock_irqrestore(&g_vmm_lock, flags);
+            return;
+        }
+        curr = curr->next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, flags);
+}
+
+int vmm_space_add_sched_ref(uintptr_t cr3) {
+    uintptr_t norm_cr3 = cr3 & PTE_ADDR_MASK;
+    if (norm_cr3 == 0 || norm_cr3 == (kernel_pml4_phys & PTE_ADDR_MASK)) {
+        return VMM_OK;
+    }
+
+    uint64_t flags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_t *curr = g_vmm_spaces_list;
+    while (curr) {
+        if (curr->cr3 == norm_cr3) {
+            if (curr->state != VMM_SPACE_LIVE) {
+                spin_unlock_irqrestore(&g_vmm_lock, flags);
+                return VMM_ERR_INVALID_ADDR;
+            }
+            curr->sched_refs++;
+            spin_unlock_irqrestore(&g_vmm_lock, flags);
+            return VMM_OK;
+        }
+        curr = curr->next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, flags);
+    return VMM_ERR_INVALID_ADDR;
+}
+
+void vmm_space_sub_sched_ref(uintptr_t cr3) {
+    uintptr_t norm_cr3 = cr3 & PTE_ADDR_MASK;
+    if (norm_cr3 == 0 || norm_cr3 == (kernel_pml4_phys & PTE_ADDR_MASK)) {
+        return;
+    }
+
+    uint64_t flags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_t *curr = g_vmm_spaces_list;
+    while (curr) {
+        if (curr->cr3 == norm_cr3) {
+            if (curr->sched_refs > 0) {
+                curr->sched_refs--;
+            }
+            spin_unlock_irqrestore(&g_vmm_lock, flags);
+            return;
+        }
+        curr = curr->next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, flags);
+}
+
 
 bool vmm_boot_memory_ready(void) {
     return __atomic_load_n(&boot_memory_ready, __ATOMIC_ACQUIRE);
@@ -41,9 +243,6 @@ static inline bool is_canonical_address(uintptr_t addr) {
     uintptr_t top = addr >> 47;
     return (top == 0) || (top == 0x1FFFF);
 }
-
-static size_t     g_vmm_allocated_table_frames = 0;
-static spinlock_t g_vmm_lock = SPINLOCK_RANKED(3, "vmm");
 
 static uint64_t fingerprint_table(uint64_t *table, unsigned level,
                                   unsigned first, uint64_t hash) {
@@ -109,12 +308,20 @@ uintptr_t vmm_create_pml4(void) {
 }
 
 uintptr_t vmm_create_user_pml4(void) {
-    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    uintptr_t pml4_phys = pmm_alloc_page();
-    if (pml4_phys == 0) {
-        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    /* 1. Pre-allocate metadata before taking g_vmm_lock (Heap Rank 2 -> VMM Rank 3) */
+    vmm_space_t *space = (vmm_space_t *)kmalloc(sizeof(vmm_space_t));
+    if (!space) {
         return 0;
     }
+
+    /* 2. Allocate root PML4 frame from PMM */
+    uintptr_t pml4_phys = pmm_alloc_page();
+    if (pml4_phys == 0) {
+        kfree(space); /* Clean rollback on frame allocation failure */
+        return 0;
+    }
+
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
 
     g_vmm_allocated_table_frames++;
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
@@ -130,41 +337,37 @@ uintptr_t vmm_create_user_pml4(void) {
         memset(&pml4_virt[256], 0, 256 * sizeof(uint64_t));
     }
 
+    /* Initialize space metadata and register under lock */
+    space->cr3 = pml4_phys & PTE_ADDR_MASK;
+    space->pml4_virt = pml4_virt;
+    space->state = VMM_SPACE_LIVE;
+    space->is_kernel = false;
+    space->owner_refs = 1;
+    space->sched_refs = 0;
+    space->op_refs = 0;
+    space->active_cpus_mask = 0;
+    space->free_user_frames = false;
+    space->deferred_queued = false;
+    space->deferred_next = NULL;
+    space->next = g_vmm_spaces_list;
+    g_vmm_spaces_list = space;
+
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return pml4_phys;
 }
 
 uintptr_t vmm_get_current_pml4(void) {
+#ifdef TEST_VMM_HOST
+    extern uintptr_t g_host_mock_cr3;
+    return g_host_mock_cr3 & PTE_ADDR_MASK;
+#else
     uintptr_t cr3;
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
     return cr3 & PTE_ADDR_MASK;
+#endif
 }
 
-int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
-    if (pml4_phys == 0 || (pml4_phys % PAGE_SIZE) != 0) {
-        return VMM_ERR_INVALID_ADDR;
-    }
-
-    /* Safety Guard: Never destroy master kernel PML4 or currently active normalized CR3 */
-    if (pml4_phys == kernel_pml4_phys) {
-        return VMM_ERR_INVALID_ADDR;
-    }
-    if (pml4_phys == (vmm_get_current_pml4() & PTE_ADDR_MASK)) {
-        return VMM_ERR_INVALID_ADDR;
-    }
-
-    /* SMP Invariant: Ensure no other online core is running in this address space */
-    for (size_t i = 0; i < smp_get_cpu_count(); i++) {
-        if (cpu_locals[i].current_thread &&
-            (cpu_locals[i].current_thread->cr3 & PTE_ADDR_MASK) == pml4_phys) {
-            return VMM_ERR_INVALID_ADDR;
-        }
-    }
-
-    /* Synchronously invalidate TLB entries on any cores that cached this PML4 */
-    smp_tlb_shootdown(0, pml4_phys);
-
-    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+static int vmm_teardown_pml4_tables_unlocked(uintptr_t pml4_phys, bool free_user_frames) {
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
 
     /*
@@ -182,7 +385,6 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
         for (size_t j = 0; j < 512; j++) {
             if (!(pdpt_virt[j] & PTE_PRESENT)) continue;
             if (pdpt_virt[j] & PTE_HUGE) {
-                spin_unlock_irqrestore(&g_vmm_lock, rflags);
                 return VMM_ERR_INVALID_ADDR; /* 1 GiB huge page unsupported in user space */
             }
 
@@ -192,7 +394,6 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
             for (size_t k = 0; k < 512; k++) {
                 if (!(pd_virt[k] & PTE_PRESENT)) continue;
                 if (pd_virt[k] & PTE_HUGE) {
-                    spin_unlock_irqrestore(&g_vmm_lock, rflags);
                     return VMM_ERR_INVALID_ADDR; /* 2 MiB huge page unsupported in user space */
                 }
             }
@@ -254,8 +455,169 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
     pmm_free_page(pml4_phys);
     g_vmm_allocated_table_frames--;
 
-    spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return VMM_OK;
+}
+
+int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
+    if (pml4_phys == 0 || (pml4_phys % PAGE_SIZE) != 0) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+
+    /* Safety Guard: Never destroy master kernel PML4 or currently active normalized CR3 */
+    if (pml4_phys == kernel_pml4_phys || (pml4_phys & PTE_ADDR_MASK) == (kernel_pml4_phys & PTE_ADDR_MASK)) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+    if (pml4_phys == (vmm_get_current_pml4() & PTE_ADDR_MASK)) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+
+    vmm_space_t *sp = vmm_space_lookup(pml4_phys);
+    if (sp && sp->is_kernel) {
+        return VMM_ERR_INVALID_ADDR;
+    }
+
+    /* SMP Invariant: Ensure no other online core is running in this address space */
+    for (size_t i = 0; i < smp_get_cpu_count(); i++) {
+        if (cpu_locals[i].current_thread &&
+            (cpu_locals[i].current_thread->cr3 & PTE_ADDR_MASK) == pml4_phys) {
+            return VMM_ERR_INVALID_ADDR;
+        }
+    }
+
+    /* Synchronously invalidate TLB entries on any cores that cached this PML4 */
+    smp_tlb_shootdown(0, pml4_phys);
+
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+
+    /* Locate space in registry and check eligibility under lock */
+    vmm_space_t *space_to_free = NULL;
+    vmm_space_t **link = &g_vmm_spaces_list;
+    while (*link) {
+        if (((*link)->cr3 & PTE_ADDR_MASK) == (pml4_phys & PTE_ADDR_MASK)) {
+            space_to_free = *link;
+            break;
+        }
+        link = &(*link)->next;
+    }
+
+    if (!space_to_free) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        return VMM_ERR_INVALID_ADDR;
+    }
+
+    /* Invariant: Cannot immediately destroy active or referenced space */
+    if (space_to_free->active_cpus_mask != 0 ||
+        space_to_free->sched_refs != 0 ||
+        space_to_free->op_refs != 0) {
+        /* Enqueue for deferred destruction once all references and active masks drain */
+        space_to_free->state = VMM_SPACE_DYING;
+        space_to_free->free_user_frames = free_user_frames;
+        if (!space_to_free->deferred_queued) {
+            space_to_free->deferred_queued = true;
+            space_to_free->deferred_next = g_vmm_deferred_list;
+            g_vmm_deferred_list = space_to_free;
+        }
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        return VMM_ERR_BUSY;
+    }
+
+    /* If on deferred list, unlink from it */
+    if (space_to_free->deferred_queued) {
+        vmm_space_t *dcurr = g_vmm_deferred_list;
+        vmm_space_t *dprev = NULL;
+        while (dcurr) {
+            if (dcurr == space_to_free) {
+                if (dprev) dprev->deferred_next = dcurr->deferred_next;
+                else g_vmm_deferred_list = dcurr->deferred_next;
+                space_to_free->deferred_next = NULL;
+                space_to_free->deferred_queued = false;
+                break;
+            }
+            dprev = dcurr;
+            dcurr = dcurr->deferred_next;
+        }
+    }
+
+    /* Unlink space metadata under lock once pre-validation succeeds */
+    *link = space_to_free->next;
+    space_to_free->state = VMM_SPACE_DEAD;
+
+    int teardown_status = vmm_teardown_pml4_tables_unlocked(pml4_phys, free_user_frames);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+
+    if (space_to_free && !space_to_free->is_kernel) {
+        kfree(space_to_free);
+    }
+
+    return teardown_status;
+}
+
+size_t vmm_drain_deferred_destructions(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_t *curr = g_vmm_deferred_list;
+    vmm_space_t *prev = NULL;
+    vmm_space_t *free_list = NULL;
+    size_t drained_count = 0;
+
+    while (curr) {
+        vmm_space_t *next = curr->deferred_next;
+        if (curr->active_cpus_mask == 0 && curr->sched_refs == 0 && curr->op_refs == 0) {
+            /* Unlink from deferred list */
+            if (prev) {
+                prev->deferred_next = next;
+            } else {
+                g_vmm_deferred_list = next;
+            }
+            curr->deferred_next = NULL;
+            curr->deferred_queued = false;
+
+            /* Unlink from active spaces list */
+            vmm_space_t **link = &g_vmm_spaces_list;
+            while (*link) {
+                if (*link == curr) {
+                    *link = curr->next;
+                    break;
+                }
+                link = &(*link)->next;
+            }
+            curr->state = VMM_SPACE_DEAD;
+
+            /* Teardown page table hierarchy */
+            vmm_teardown_pml4_tables_unlocked(curr->cr3, curr->free_user_frames);
+
+            /* Queue for kfree outside g_vmm_lock */
+            curr->next = free_list;
+            free_list = curr;
+            drained_count++;
+        } else {
+            prev = curr;
+        }
+        curr = next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+
+    /* Free space metadata structures outside g_vmm_lock (Rank 3 -> Rank 2) */
+    while (free_list) {
+        vmm_space_t *next = free_list->next;
+        if (!free_list->is_kernel) {
+            kfree(free_list);
+        }
+        free_list = next;
+    }
+
+    return drained_count;
+}
+
+size_t vmm_get_deferred_count(void) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    size_t count = 0;
+    vmm_space_t *curr = g_vmm_deferred_list;
+    while (curr) {
+        count++;
+        curr = curr->deferred_next;
+    }
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return count;
 }
 
 static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
@@ -297,14 +659,23 @@ static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintp
     pt[pt_i] = (phys_addr & PTE_ADDR_MASK) | flags | PTE_PRESENT;
 
     /* Invalidate TLB for this virtual address */
+#ifndef TEST_VMM_HOST
     __asm__ volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
+#else
+    (void)virt_addr;
+#endif
     return VMM_OK;
 }
 
 int vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
+    int op_status = vmm_space_get_op(pml4_virt);
+    if (op_status != VMM_OK) return op_status;
+
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     int res = vmm_map_page_unlocked(pml4_virt, virt_addr, phys_addr, flags);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
+
+    vmm_space_put_op(pml4_virt);
     return res;
 }
 
@@ -336,11 +707,18 @@ static int vmm_unmap_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
     pt[pt_i] = 0;
 
     /* Invalidate TLB */
+#ifndef TEST_VMM_HOST
     __asm__ volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
+#else
+    (void)virt_addr;
+#endif
     return VMM_OK;
 }
 
 int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
+    int op_status = vmm_space_get_op(pml4_virt);
+    if (op_status != VMM_OK) return op_status;
+
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     int res = vmm_unmap_page_unlocked(pml4_virt, virt_addr);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
@@ -351,6 +729,8 @@ int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
         }
         smp_tlb_shootdown(virt_addr, cr3);
     }
+
+    vmm_space_put_op(pml4_virt);
     return res;
 }
 
@@ -375,9 +755,13 @@ static bool vmm_is_mapped_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
 }
 
 bool vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr) {
+    if (vmm_space_get_op(pml4_virt) != VMM_OK) return false;
+
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     bool res = vmm_is_mapped_unlocked(pml4_virt, virt_addr);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
+
+    vmm_space_put_op(pml4_virt);
     return res;
 }
 
@@ -404,15 +788,46 @@ static uintptr_t vmm_get_physical_address_unlocked(uint64_t *pml4_virt, uintptr_
 }
 
 uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr) {
+    if (vmm_space_get_op(pml4_virt) != VMM_OK) return 0;
+
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     uintptr_t res = vmm_get_physical_address_unlocked(pml4_virt, virt_addr);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
+
+    vmm_space_put_op(pml4_virt);
     return res;
 }
 
 void vmm_switch_pml4(uintptr_t pml4_phys) {
+#ifdef TEST_VMM_HOST
+    extern uintptr_t g_host_mock_cr3;
+    g_host_mock_cr3 = pml4_phys & PTE_ADDR_MASK;
+#else
     __asm__ volatile("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
+#endif
 }
+
+#ifdef TEST_VMM_HOST
+void vmm_test_init_kernel_space(uintptr_t k_cr3, uint64_t *k_virt, uint64_t hhdm) {
+    hhdm_offset = hhdm;
+    kernel_pml4_phys = k_cr3 & PTE_ADDR_MASK;
+    g_vmm_kernel_space.cr3 = kernel_pml4_phys;
+    g_vmm_kernel_space.pml4_virt = k_virt;
+    g_vmm_kernel_space.state = VMM_SPACE_LIVE;
+    g_vmm_kernel_space.is_kernel = true;
+    g_vmm_kernel_space.owner_refs = 1;
+    g_vmm_kernel_space.sched_refs = 0;
+    g_vmm_kernel_space.op_refs = 0;
+    g_vmm_kernel_space.active_cpus_mask = 0;
+    g_vmm_kernel_space.free_user_frames = false;
+    g_vmm_kernel_space.deferred_queued = false;
+    g_vmm_kernel_space.deferred_next = NULL;
+    g_vmm_kernel_space.next = NULL;
+    g_vmm_spaces_list = &g_vmm_kernel_space;
+    g_vmm_deferred_list = NULL;
+    g_vmm_allocated_table_frames = 1;
+}
+#endif
 
 uintptr_t vmm_get_kernel_pml4(void) {
     return kernel_pml4_phys;
@@ -496,9 +911,13 @@ static bool vmm_validate_user_range_unlocked(uint64_t *pml4_virt, uintptr_t virt
 }
 
 bool vmm_validate_user_range(uint64_t *pml4_virt, uintptr_t virt_addr, size_t length, bool write_req) {
+    if (vmm_space_get_op(pml4_virt) != VMM_OK) return false;
+
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     bool res = vmm_validate_user_range_unlocked(pml4_virt, virt_addr, length, write_req);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
+
+    vmm_space_put_op(pml4_virt);
     return res;
 }
 
@@ -549,6 +968,27 @@ void vmm_init(boot_info_t *boot_info) {
         serial_puts("[FAIL] VMM: Failed to allocate root PML4 table!\n");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }
+
+    if ((kernel_pml4_phys & ~PTE_ADDR_MASK) != 0) {
+        serial_puts("[FAIL] VMM: kernel_pml4_phys has unaligned bits\n");
+        for (;;) { __asm__ volatile("cli; hlt"); }
+    }
+
+    /* Initialize static master kernel space metadata so early boot mappings hold op_refs safely */
+    g_vmm_kernel_space.cr3 = kernel_pml4_phys & PTE_ADDR_MASK;
+    g_vmm_kernel_space.pml4_virt = (uint64_t *)phys_to_virt(kernel_pml4_phys);
+    g_vmm_kernel_space.state = VMM_SPACE_LIVE;
+    g_vmm_kernel_space.is_kernel = true;
+    g_vmm_kernel_space.owner_refs = 1;
+    g_vmm_kernel_space.sched_refs = 0;
+    g_vmm_kernel_space.op_refs = 0;
+    g_vmm_kernel_space.active_cpus_mask = 0;
+    g_vmm_kernel_space.free_user_frames = false;
+    g_vmm_kernel_space.deferred_queued = false;
+    g_vmm_kernel_space.deferred_next = NULL;
+    g_vmm_kernel_space.next = NULL;
+    g_vmm_spaces_list = &g_vmm_kernel_space;
+    g_vmm_deferred_list = NULL;
 
     uint64_t *pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
 
@@ -688,6 +1128,7 @@ void vmm_init(boot_info_t *boot_info) {
         serial_puts("[FAIL] VMM: Kernel CR3 readback mismatch\n");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }
+
     __atomic_store_n(&boot_memory_ready, true, __ATOMIC_RELEASE);
     if (!pmm_unlock_high_memory()) {
         serial_puts("[FAIL] PMM: High-memory unlock rejected\n");

@@ -24,6 +24,35 @@
 #define VMM_ERR_ALREADY_MAPPED  -2
 #define VMM_ERR_NOT_MAPPED      -3
 #define VMM_ERR_INVALID_ADDR    -4
+#define VMM_ERR_BUSY            -5
+
+/* Address Space Lifecycle States */
+typedef enum {
+    VMM_SPACE_LIVE = 0,   /* Active, accepts new operations and sched references */
+    VMM_SPACE_DYING = 1,  /* Retiring; rejects new operations and sched references */
+    VMM_SPACE_DEAD = 2    /* Teardown complete, unlinked */
+} vmm_space_state_t;
+
+/* Address Space Record */
+typedef struct vmm_space {
+    uintptr_t           cr3;              /* Normalized physical root address */
+    uint64_t           *pml4_virt;        /* Virtual address of PML4 root */
+    vmm_space_state_t   state;            /* LIVE / DYING / DEAD */
+    bool                is_kernel;        /* True if permanent master kernel space */
+    bool                free_user_frames; /* Saved preference for deferred teardown */
+    bool                deferred_queued;  /* True if queued on deferred destruction list */
+
+    /* Reference counters protected by g_vmm_lock (Rank 3) */
+    uint32_t            owner_refs;       /* Process/fixture ownership */
+    uint32_t            sched_refs;       /* TCBs queued, running, blocked, or switching */
+    uint32_t            op_refs;          /* Transient operations (map, unmap, walk) */
+
+    /* Hardware residency */
+    uint64_t            active_cpus_mask; /* Bitmask of CPUs currently using this CR3 */
+
+    struct vmm_space   *next;             /* Intrusive link in global registry */
+    struct vmm_space   *deferred_next;    /* Intrusive link in deferred destruction queue */
+} vmm_space_t;
 
 /* VMM Public API
  *
@@ -76,4 +105,18 @@ bool      vmm_validate_user_range(uint64_t *pml4_virt, uintptr_t virt_addr, size
 size_t    vmm_get_allocated_table_frames(void);
 size_t    vmm_get_retained_table_frames(void); /* Backward-compatible alias */
 
+/* Address Space Registry & Lifecycle API */
+vmm_space_t *vmm_space_lookup(uintptr_t cr3);
+vmm_space_t *vmm_space_get_kernel(void);
+int          vmm_space_retire(uintptr_t pml4_phys);
+int          vmm_space_get_op(uint64_t *pml4_virt);
+void         vmm_space_put_op(uint64_t *pml4_virt);
+int          vmm_space_enter(uintptr_t next_cr3);
+void         vmm_space_leave(uintptr_t old_cr3, bool thread_terminated, bool cr3_changed);
+int          vmm_space_add_sched_ref(uintptr_t cr3);
+void         vmm_space_sub_sched_ref(uintptr_t cr3);
+size_t       vmm_drain_deferred_destructions(void);
+size_t       vmm_get_deferred_count(void);
+
 #endif /* FORTRESS_VMM_H */
+

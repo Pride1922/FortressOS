@@ -150,9 +150,12 @@ test-smp-sched: $(BOOTABLE_ISO)
 test-smp-ipi: $(BOOTABLE_ISO)
 	@python3 scripts/test_smp_ipi.py
 
-.PHONY: test-pmm-boot-host test-smp-memory-boot
+.PHONY: test-pmm-boot-host test-smp-memory-boot test-vmm-host
 test-pmm-boot-host:
 	@python3 scripts/test_pmm_boot_host.py
+
+test-vmm-host:
+	@python3 scripts/test_vmm_space_host.py
 
 test-smp-memory-boot: $(BOOTABLE_ISO)
 	@python3 scripts/test_smp_memory_boot.py

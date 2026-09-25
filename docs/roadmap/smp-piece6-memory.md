@@ -1,7 +1,7 @@
 # SMP Piece 6 — Memory safety implementation and evidence
 
-Status (2026-09-25): **Piece 6A and 6B COMPLETE and verified across QEMU matrix (BIOS/UEFI, 1/4/8 CPUs) and physical Dell Latitude 5590 hardware (32 GiB, 8 CPUs).
-Physical Dell 5590 run confirms 320,000 allocate/verify/free cycles across 8 cores, zero duplicate frame claims, exact baseline equality (used=247797 free=8140811), 623,358 lock contentions, and clean stack reclamation. 6C–6D remain planned.**
+Status (2026-09-25): **Pieces 6A, 6B, 6C, and 6D COMPLETE and verified across QEMU matrix (BIOS/UEFI, 1/4/8 CPUs) and physical Dell Latitude 5590 hardware (32 GiB, 8 CPUs).
+Physical Dell 5590 run confirms 320,000 allocate/verify/free cycles across 8 cores, zero duplicate frame claims, exact baseline equality (used=247797 free=8140811), 623,358 lock contentions, clean stack reclamation, and contention-deadlock breaking. Piece 6D completes address space and page table lifetime tracking with op_refs, sched_refs, active CPU masks, and deferred destruction queue (SM13, SM16).**
 Approved design: [implementation plan](smp-piece6-plan.md).
 
 ## 6B: PMM Synchronization & Freestanding Multi-Core Stress
@@ -274,5 +274,12 @@ SMP Piece 6B: PMM Concurrent Multi-Core Stress Test
 1. `Piece 6C`: Contention deadlock breaking proven under real hardware contention with IF=0 (`poll count: 1`), confirming that polled local TLB servicing in `spin_lock_irqsave` breaks the circular dependency between target lock wait and initiator shootdown ACK.
 2. Full TLB invalidation via CR3 reload verified across all 7 hardware APs simultaneously.
 3. `Piece 6B`: Second continuous confirmation of 320,000 allocate/verify/free iterations across 8 CPUs under 622,169 lock contention events with 0 duplicate frames, 0 allocation errors, and exact post-quiescence state equality.
+4. `Piece 6D`: Complete address-space and page-table lifetime discipline (SM13, SM16):
+   - Global space registry with state machine (`LIVE`, `DYING`, `DEAD`) and permanent kernel space immutability.
+   - Transient memory operation references (`op_refs`) protecting all page table modifications and lookups against concurrent destruction.
+   - Scheduler references (`sched_refs`) and hardware `active_cpus_mask` tracking context switches across all cores without lock overhead on kernel threads.
+   - Guaranteed non-blocking deferred destruction queue (`vmm_drain_deferred_destructions()`) integrated with `sched_reap_dead()` and idle threads, preserving L1 lock hierarchy and freeing structures outside `g_vmm_lock`.
+   - Verified clean under host ASan/UBSan (`make test-vmm-host`) and full QEMU BIOS/UEFI shell regressions with zero leaks.
+
 
 
