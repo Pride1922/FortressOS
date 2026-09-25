@@ -174,6 +174,8 @@ Multi-core execution is complete and verified on bare metal (Dell Latitude 5590,
 - MicroPython port and shell enhancements.
 - Accounts, permissions, and installer.
 
+Larger follow-ups: a journaling filesystem (ext4 or similar) and networking.
+
 See [`docs/roadmap/`](docs/roadmap/README.md) for checkpoint history and hardware evidence, [`docs/plans/`](docs/plans/README.md) for architectural plans, and [`AGENTS.md`](AGENTS.md) for implementation contracts and invariants.
 
 ## Testing

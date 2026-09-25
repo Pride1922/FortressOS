@@ -133,8 +133,9 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 | `make test-nmi` | 7 exact syscall/SWAPGS boundaries × 4 rounds × 2 firmware modes (BSP); `build/nmi-*.json` and `.log` |
 | `make test-smp-percpu` | BIOS/UEFI with 1/4/8 CPUs: CPU-local GS/GDT/TSS/stacks, AP #DF, real NMI delivery on every CPU, unchanged BSP IST/TSS/GDT and shell startup; snapshot NVMe fixture |
 | `make test-pmm-boot-host` | Piece 6A host ASan/UBSan with single-threaded shims: boot ceiling, capped OOM, contiguous boundary, unlock gates and exact cleanup; no SMP exclusion claim |
-| `make test-smp-memory-boot` | Piece 6A BIOS/UEFI 1/4/8 CPUs, 2 GiB: explicit test ISO, readiness/CR3, high-memory probe and AP startup; no data disks; user-run verification pending |
+| `make test-smp-memory-boot` | Piece 6A BIOS/UEFI 1/4/8 CPUs, 2 GiB: explicit test ISO, readiness/CR3, high-memory probe and AP startup; no data disks |
 | `make test-vmm-host` | Piece 6D host ASan/UBSan: VMM space registry, lifecycle states, transient op_refs, context switch tracking, deferred destruction queue and drainage with zero leaks |
+| `make test-smp-vmm` | Piece 6D BIOS/UEFI 1/4/8 CPUs: 100 user process spawn/exit cycles across cores, deferred destruction, table frame and page leak checks |
 | `make test-boot-diagnostics` | UEFI 8 GiB, no COM1; progress to PCI discovery and framebuffer capture |
 | `make test-power` | QEMU shutdown/reboot command tests; physical ACPI S5 confirmed separately on Dell 5590 (see §8 H7), not by this target |
 | `make test-usb-descriptors` | 9G.1e host ASan/UBSan + QEMU BIOS/UEFI descriptor parsing, BOT class validation, device configuration |
