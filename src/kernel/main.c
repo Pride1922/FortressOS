@@ -171,6 +171,19 @@ static void render_boot_logo(const boot_info_t *boot_info) {
     logo_render_boot(boot_info);
 }
 
+static bool verbose_boot = false;
+
+/* Display boot status update on splash ticker and log to serial */
+static void boot_status(const char *msg) {
+    if (!msg) return;
+    if (console_is_quiet()) {
+        logo_update_status(msg);
+    }
+    serial_puts("[BOOT] ");
+    serial_puts(msg);
+    serial_puts("\n");
+}
+
 static void acpi_parser_selftest(void) {
     struct __attribute__((packed)) {
         acpi_madt_t table;
@@ -1855,6 +1868,12 @@ static void test_phase8a_framebuffer_console(const boot_info_t *boot_info) {
     serial_puts("x");
     serial_print_dec(rows);
     serial_puts(" characters, 8x16 font)\n");
+
+    if (console_is_quiet()) {
+        serial_puts("       [PASS] Quiet boot active; visual cursor, scroll, and banner skipped\n");
+        serial_puts("[ OK ] Phase 8 (Step 8A): Framebuffer Console PASSED!\n\n");
+        return;
+    }
 
     /* 2. Cursor Control, Tabs, and Backspace */
     serial_puts("[TEST 2] Testing Cursor Control, Tabs, and Backspace...\n");
@@ -3859,6 +3878,21 @@ void kmain(void) {
     /* 1. Initialize COM1 Serial Port (0x3F8) */
     int serial_status = serial_init();
 
+    /* Check early bootloader command line for verbose flag */
+    if (kernel_file_request.response && kernel_file_request.response->kernel_file &&
+        kernel_file_request.response->kernel_file->cmdline) {
+        const char *cmd = kernel_file_request.response->kernel_file->cmdline;
+        if (strstr(cmd, "verbose")) {
+            verbose_boot = true;
+        }
+    }
+
+    /* By default, keep boot output quiet on the framebuffer display;
+     * full diagnostics are preserved in dmesg (RAM) and COM1 (UART). */
+    if (!verbose_boot) {
+        console_set_quiet(true);
+    }
+
     /* Bring screen diagnostics up before PMM/VMM audits can halt. Limine's
      * initial mappings remain active here; no allocation is required. */
     static boot_info_t early_console;
@@ -3873,10 +3907,14 @@ void kmain(void) {
         early_console.fb_pitch = fb->pitch;
         early_console.fb_bpp = fb->bpp;
         console_init(&early_console);
+        if (!verbose_boot) {
+            render_boot_logo(&early_console);
+            boot_status("Starting FortressOS kernel...");
+        }
     }
 
     serial_puts("\n========================================================\n");
-    serial_puts("             FORTRESS OS - x86_64 UEFI KERNEL           \n");
+    serial_puts("       FORTRESS OS (x86_64 UEFI) — by Pride1922         \n");
     serial_puts("========================================================\n\n");
 
     if (serial_status == 0) {
@@ -4698,23 +4736,30 @@ pf_boot_guard_done:
         serial_print_hex(boot_info.fb_address);
         serial_puts("\n");
 
-        render_boot_logo(&boot_info);
-        serial_puts("[ OK ] Framebuffer boot logo rendered (using kernel-owned boot info)\n");
+        if (verbose_boot) {
+            render_boot_logo(&boot_info);
+            serial_puts("[ OK ] Framebuffer boot logo rendered (using kernel-owned boot info)\n");
 
-        console_init(&boot_info);
-        serial_puts("[ OK ] Framebuffer text console active (dual COM1/screen output armed)\n");
+            console_init(&boot_info);
+            serial_puts("[ OK ] Framebuffer text console active (dual COM1/screen output armed)\n");
 
-        /* Hold the logo for a moment before the acceptance suite
-         * starts painting over it. Bounded busy-wait; APIC timer is
-         * not yet calibrated at this point in kmain. */
-        for (volatile uint64_t i = 0; i < 150000000ULL; i++) { }
+            /* Hold the logo for a moment before the acceptance suite
+             * starts painting over it. Bounded busy-wait; APIC timer is
+             * not yet calibrated at this point in kmain. */
+            for (volatile uint64_t i = 0; i < 150000000ULL; i++) { }
 
-        /* Clear the framebuffer so the console starts on a fresh grid
-         * rather than writing over a partially-covered logo. */
-        console_clear();
+            /* Clear the framebuffer so the console starts on a fresh grid
+             * rather than writing over a partially-covered logo. */
+            console_clear();
+        } else {
+            console_init(&boot_info);
+            render_boot_logo(&boot_info);
+            boot_status("Initializing kernel subsystems...");
+        }
     }
 
     /* 14. Virtual File System & Initramfs Mount (Step 8B) */
+    boot_status("Mounting virtual file system...");
     if (boot_info.has_initramfs && boot_info.initramfs_vaddr) {
         tarfs_init((const void *)boot_info.initramfs_vaddr, boot_info.initramfs_size);
     } else {
@@ -4724,6 +4769,7 @@ pf_boot_guard_done:
     /* =========================================================================
      * Phase 5: ACPI Discovery, 8259 PIC Masking, LAPIC Setup & APIC Timer
      * ========================================================================= */
+    boot_status("Configuring ACPI and interrupts...");
     serial_puts("\n========================================================\n");
     serial_puts("Phase 5: ACPI Discovery & APIC Timer Verification Suite\n");
     serial_puts("========================================================\n");
@@ -4808,7 +4854,11 @@ pf_boot_guard_done:
     __asm__ volatile("cli" ::: "memory");
     apic_timer_stop();
     if (!timer_ok || !heap_verify_integrity()) {
-        serial_puts("[FAIL] Timer frequency/progress or heap integrity verification failed\n");
+        if (!timer_ok) {
+            serial_puts("[FAIL] APIC timer frequency/progress verification failed\n");
+        } else {
+            serial_puts("[FAIL] Heap integrity verification failed after timer test\n");
+        }
         hcf();
     }
     serial_puts("[PASS] PIT-referenced timer progress and foreground heap integrity verified\n");
@@ -4817,6 +4867,7 @@ pf_boot_guard_done:
     /* =========================================================================
      * Phase 6 (Checkpoint 1): Cooperative Multitasking Suite
      * ========================================================================= */
+    boot_status("Starting kernel scheduler...");
     serial_puts("========================================================\n");
     serial_puts("Phase 6 (Checkpoint 1): Cooperative Multitasking Suite\n");
     serial_puts("========================================================\n");
@@ -5342,6 +5393,7 @@ pf_boot_guard_done:
     /* =========================================================================
      * Phase 9 (Step 9A): PCI Discovery & NVMe MMIO BAR Verification
      * ========================================================================= */
+    boot_status("Probing storage devices...");
     test_phase9a_pci_discovery(&boot_info);
 
     /* The following storage acceptance suite assumes a disposable QEMU image,
@@ -5379,6 +5431,7 @@ pf_boot_guard_done:
     /* =========================================================================
      * SMP Piece 1: AP Discovery & Piece 3: Lock Discipline
      * ========================================================================= */
+    boot_status("Synchronizing CPU cores (SMP)...");
     if (boot_info.cmdline[0] != '\0') {
         if (strstr(boot_info.cmdline, "smp_test=inversion")) {
             smp_set_test_mode(SMP_TEST_MODE_INVERSION);
@@ -5408,6 +5461,7 @@ pf_boot_guard_done:
     }
 
     /* Inputs and shell are started after destructive/negative acceptance cases. */
+    boot_status("Initializing input & USB controllers...");
     __asm__ volatile("cli" ::: "memory");
     sched_disable_preemption();
     if (!input_init(&madt_info)) {
@@ -5417,6 +5471,7 @@ pf_boot_guard_done:
     /* Keep discovery visible near the shell on hardware without COM1. */
     pci_report_xhci();
     xhci_boot_probe(&boot_info);
+    boot_status("Mounting persistent storage (/mnt)...");
     usb_mount_production_storage(&boot_info);
     if (qemu_fw_cfg_has_key("opt/fortress/taint_test")) {
         serial_puts("[TEST] opt/fortress/taint_test active: marking ext2 storage tainted before shell startup\n");
@@ -5426,6 +5481,11 @@ pf_boot_guard_done:
     if (!shell || shell->type != VFS_FILE || !shell->data) {
         serial_puts("[FAIL] /bin/shell missing from initramfs.\n");
         hcf();
+    }
+    boot_status("Interactive shell ready.");
+    if (console_is_quiet()) {
+        console_set_quiet(false);
+        console_clear();
     }
     for (;;) {
         /* Spawn with preemption disabled until the PID is safely copied. */

@@ -40,10 +40,20 @@ static unsigned params[4];
 static bool private_sequence, cursor_visible;
 static void terminal_cursor(bool show);
 
+static bool g_console_quiet = false;
+
 uint64_t console_generation(void) { return __atomic_load_n(&display_generation, __ATOMIC_RELAXED); }
 
 bool console_is_initialized(void) {
     return g_console.initialized;
+}
+
+void console_set_quiet(bool quiet) {
+    __atomic_store_n(&g_console_quiet, quiet, __ATOMIC_RELAXED);
+}
+
+bool console_is_quiet(void) {
+    return __atomic_load_n(&g_console_quiet, __ATOMIC_RELAXED);
 }
 
 static void draw_char_unlocked(uint64_t col, uint64_t row, char c, uint32_t fg, uint32_t bg) {
@@ -233,7 +243,7 @@ void console_clear(void) {
 }
 
 void console_putc(char c) {
-    if (!g_console.initialized) return;
+    if (!g_console.initialized || console_is_quiet()) return;
 
     uint64_t rflags = spin_lock_irqsave(&g_console_lock);
     escape_state = 0;
@@ -244,7 +254,7 @@ void console_putc(char c) {
 }
 
 void console_puts(const char *str) {
-    if (!g_console.initialized || !str) return;
+    if (!g_console.initialized || !str || console_is_quiet()) return;
 
     uint64_t rflags = spin_lock_irqsave(&g_console_lock);
     escape_state = 0;
@@ -315,7 +325,7 @@ static void terminal_csi(char final) {
     }
 }
 void console_terminal_write(const char *data, size_t count) {
-    if (!g_console.initialized) return;
+    if (!g_console.initialized || console_is_quiet()) return;
     while (count) {
         size_t chunk = count > 256 ? 256 : count;
         uint64_t flags = spin_lock_irqsave(&g_console_lock);

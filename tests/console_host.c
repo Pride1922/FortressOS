@@ -109,6 +109,14 @@ int main(void) {
     assert(g_console.cursor_row == 0 && g_console.cursor_col == 0);
     check_cell(0, 0, ' ', 0, CONSOLE_DEFAULT_BG);
     check_bounds();
+
+    /* Quiet mode toggle verification */
+    assert(!console_is_quiet());
+    console_set_quiet(true);
+    assert(console_is_quiet());
+    console_set_quiet(false);
+    assert(!console_is_quiet());
+
     free(frame);
     puts("PASS console: cached scrolling, fewer redraws, colours, wrap, controls, pitch and bounds");
 }

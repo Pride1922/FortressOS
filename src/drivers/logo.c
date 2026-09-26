@@ -168,6 +168,13 @@ static void draw_fortress_emblem(volatile uint32_t *fb, uint64_t pitch32,
     }
 }
 
+static volatile uint32_t *s_fb = NULL;
+static uint64_t s_width = 0;
+static uint64_t s_height = 0;
+static uint64_t s_pitch32 = 0;
+static int64_t s_center_x = 0;
+static int64_t s_status_y = 0;
+
 void logo_render_boot(const boot_info_t *boot_info) {
     if (!boot_info || !boot_info->has_framebuffer || !boot_info->fb_address) return;
     if (boot_info->fb_bpp != 32 || boot_info->fb_width == 0 || boot_info->fb_height == 0) return;
@@ -199,5 +206,52 @@ void logo_render_boot(const boot_info_t *boot_info) {
     /* 5. Render Subtitle: "PREEMPTIVE x86_64 KERNEL" */
     int64_t sub_y = title_y + 42;
     draw_scaled_string(fb, pitch32, width, height, center_x, sub_y,
-                       "PREEMPTIVE x86_64 SECURE MICROKERNEL", COLOR_SUBTEXT, 1, 2);
+                       "PREEMPTIVE x86_64 MICROKERNEL // BY PRIDE1922", COLOR_SUBTEXT, 1, 2);
+
+    /* Cache state for live status line updates */
+    s_fb = fb;
+    s_width = width;
+    s_height = height;
+    s_pitch32 = pitch32;
+    s_center_x = center_x;
+    s_status_y = sub_y + 46;
+}
+
+void logo_update_status(const char *status) {
+    if (!s_fb || s_width == 0 || s_height == 0) return;
+
+    /* Clear the status line region */
+    int64_t clear_y = s_status_y - 4;
+    int64_t clear_h = 24;
+    fill_rect(s_fb, s_pitch32, s_width, s_height, 0, clear_y, s_width, clear_h, COLOR_BG);
+
+    if (!status || !*status) return;
+
+    /* Measure string width */
+    int len = 0;
+    for (const char *p = status; *p; p++) len++;
+    int spacing = 1;
+    int scale = 1;
+    int text_width = len * (FONT_WIDTH * scale + spacing) - spacing;
+
+    /* Dot dimensions */
+    int dot_size = 6;
+    int dot_gap = 10;
+    int total_w = dot_size + dot_gap + text_width;
+
+    int64_t start_x = s_center_x - total_w / 2;
+    if (start_x < 10) start_x = 10;
+
+    /* Draw glowing cyan bullet centered vertically with the text */
+    fill_rect(s_fb, s_pitch32, s_width, s_height,
+              start_x, s_status_y + (FONT_HEIGHT * scale - dot_size) / 2,
+              dot_size, dot_size, COLOR_CYAN_GLOW);
+
+    /* Draw status text */
+    int64_t text_x = start_x + dot_size + dot_gap;
+    for (const char *p = status; *p; p++) {
+        draw_scaled_char(s_fb, s_pitch32, s_width, s_height,
+                         text_x, s_status_y, *p, COLOR_TEXT_ICE, scale);
+        text_x += FONT_WIDTH * scale + spacing;
+    }
 }

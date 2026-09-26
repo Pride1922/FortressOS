@@ -131,7 +131,7 @@ void serial_raw_print_dec(uint64_t val) {
 
 void serial_putc(char c) {
     dmesg_append(c);
-    if (console_is_initialized()) {
+    if (console_is_initialized() && !console_is_quiet()) {
         console_putc(c);
     }
     serial_raw_putc(c);
@@ -143,7 +143,27 @@ void serial_puts(const char *str) {
     dmesg_append_str(str, strlen(str));
 
     if (console_is_initialized()) {
-        console_puts(str);
+        if (!console_is_quiet()) {
+            console_puts(str);
+        } else if (strstr(str, "[FAIL]") || strstr(str, "[PANIC]")) {
+            /* Auto-unmute and display critical boot failure with recent diagnostic context */
+            console_set_quiet(false);
+            console_clear();
+            console_puts("================================================================================\n");
+            console_puts("                           [BOOT FAILURE DETECTED]                              \n");
+            console_puts("================================================================================\n\n");
+            static char s_fail_buf[2048];
+            size_t n = dmesg_read(s_fail_buf, sizeof(s_fail_buf) - 1);
+            if (n > 0) {
+                s_fail_buf[n] = '\0';
+                char *start = s_fail_buf;
+                if (n == sizeof(s_fail_buf) - 1) {
+                    while (*start && *start != '\n') start++;
+                    if (*start == '\n') start++;
+                }
+                console_puts(start);
+            }
+        }
     }
 
     /* Emit to COM1 */

@@ -21,7 +21,7 @@ static int64_t terminal_write(vfs_node_t *node, uint64_t *offset, bool append, c
     const char *ptr = (const char *)buf;
     tcb_t *owner = thread_current();
     unsigned mode = owner ? owner->terminal_mode : TERM_MIRROR;
-    if (mode != TERM_SERIAL) console_terminal_write(ptr, count);
+    if (mode != TERM_SERIAL && !console_is_quiet()) console_terminal_write(ptr, count);
     if (mode != TERM_LOCAL) {
         for (size_t i = 0; i < count; i++) serial_raw_putc(ptr[i]);
     }

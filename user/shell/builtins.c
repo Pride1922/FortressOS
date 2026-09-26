@@ -33,6 +33,7 @@ static const struct { const char *name, *help; enum builtin id; } commands[] = {
     {"env", "Print exported environment variables", CMD_ENV},
     {"alias", "Define or display aliases [name[='val']...]", CMD_ALIAS},
     {"unalias", "Remove aliases [name...]", CMD_UNALIAS},
+    {"version", "Print FortressOS version and build info", CMD_VERSION},
 };
 
 size_t builtin_count(void) {

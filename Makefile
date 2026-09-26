@@ -280,7 +280,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
 	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
-	@printf "========================================\n  Welcome to FortressOS (x86_64 UEFI)\n  Step 8B: Initramfs & VFS Active\n========================================\n" > $(BUILD_DIR)/initramfs/etc/motd
+	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
 	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, cat and echo.\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
 	@echo "  [TAR] Generating USTAR archive $@"
 	@tar --format=ustar -cf $(INITRAMFS_TAR) -C $(BUILD_DIR)/initramfs bin etc docs

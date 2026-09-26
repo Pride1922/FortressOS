@@ -399,6 +399,11 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         }
         return 0;
     }
+    if (b == CMD_VERSION) {
+        puts("FortressOS v0.1.0-smp (x86_64) — Engineered by Pride1922\n");
+        puts("Freestanding C11/NASM Preemptive Microkernel with Limine v8 Bootloader\n");
+        return 0;
+    }
     if (b == CMD_LS) {
         list(argc > 1 ? argv[1] : ".");
         return (int)last_status;
@@ -739,7 +744,7 @@ void shell_main(void) {
     alias_init();
     (void)history_load();
 
-    puts("\nFortressOS shell (Ring 3)\nType help for commands.\n");
+    puts("\nFortressOS shell (Ring 3) — Crafted by Pride1922\nType help for commands.\n");
 
     for (;;) {
         shell_set_prompt_state(last_status, current_cwd);

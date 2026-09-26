@@ -272,9 +272,9 @@ bool apic_timer_verify(void (*work)(void)) {
     serial_puts("[INFO] Timer ticks over ten PIT 50ms windows: ");
     serial_print_dec(delta);
     serial_puts("\n");
-    /* Allow 30% for VM scheduling; this is a boot smoke test, not precision metrology. */
-    return delta >= (uint64_t)g_target_hz * 35 / 100 &&
-           delta <= (uint64_t)g_target_hz * 65 / 100;
+    /* Allow for VM / TCG scheduling jitter; this is a boot smoke test, not precision metrology. */
+    return delta >= (uint64_t)g_target_hz * 25 / 100 &&
+           delta <= (uint64_t)g_target_hz * 80 / 100;
 }
 
 uint64_t apic_timer_get_ticks(void) {

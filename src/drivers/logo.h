@@ -8,5 +8,6 @@
  * Safe for early boot: runs before PMM or heap initialization.
  */
 void logo_render_boot(const boot_info_t *boot_info);
+void logo_update_status(const char *status);
 
 #endif /* FORTRESS_LOGO_H */

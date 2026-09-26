@@ -35,7 +35,8 @@ enum builtin {
     CMD_EXPORT,
     CMD_ENV,
     CMD_ALIAS,
-    CMD_UNALIAS
+    CMD_UNALIAS,
+    CMD_VERSION
 };
 
 enum builtin builtin_find(const char *name);

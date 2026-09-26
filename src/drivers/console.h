@@ -19,5 +19,7 @@ void console_set_color(uint32_t fg, uint32_t bg);
 void console_get_dimensions(uint64_t *out_cols, uint64_t *out_rows);
 void console_get_cursor(uint64_t *out_col, uint64_t *out_row);
 bool console_is_initialized(void);
+void console_set_quiet(bool quiet);
+bool console_is_quiet(void);
 
 #endif /* FORTRESS_CONSOLE_H */
