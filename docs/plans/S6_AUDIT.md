@@ -314,6 +314,28 @@ Logs: `build/shell-s6-{bios,uefi}.log`, `build/shell-{bios,uefi}-1cpu.log`,
 This validates host and QEMU behavior on disposable fixtures; no storage implementation
 changed, and no physical disk was written.
 
+## Phase C formal closure and five-gate validation (2026-09-26)
+
+Phase C (RO/Tainted storage assertions) is formally closed across a fresh five-gate evidence set executed on the current tree:
+- **`ext2_mark_tainted()`:** Declared in `src/fs/ext2.h` and implemented in `src/fs/ext2.c`. Acquires `ext2_lock` via `spin_lock_irqsave` and sets `g_mounted_ext2->tainted = true`. If `g_mounted_ext2` is NULL (storage unmounted), it safely releases the lock and returns without dereferencing NULL.
+- **Boot sequence call site:** In `src/kernel/main.c`, called strictly post-`ext2_mount_rw` and pre-shell spawn (`sys_spawn` for `/bin/shell`), guarded by `qemu_fw_cfg_has_key("opt/fortress/taint_test")`.
+- **Distinct Ring 3 Diagnostics:**
+  - Read-only storage (`SYSCALL_EROFS` / `-11`) reports: `"Read-only filesystem.\n"`
+  - Tainted / failing storage (`SYSCALL_EIO` / `-9`) reports: `"I/O error.\n"`
+  - Neither code collapses into `"Unable to load executable."` or `"File operation failed."`.
+  - Extracted helper `file_error_string()` in `user/shell/io.c` ensures string uniformity across child and parent builtins without stack allocation.
+  - Added explicit `SYSCALL_EROFS` and `SYSCALL_EIO` cases in `user/shell.c:spawn_program`.
+- **VFS Write Eligibility Hook:** Added `node->can_write` callback in `vfs_node_t` (`src/fs/vfs.h`, `src/fs/vfs.c`, `src/fs/ext2.c`) so opening existing files for write (`O_WRONLY | O_APPEND`) on a tainted filesystem fails immediately at `vfs_open_ext` time with `-VFS_EIO` rather than succeeding at open time and failing later at write time.
+- **Pre-taint / Post-taint Preservation:** Verified in `scripts/test_shell_s6.py` Session 3 that `/mnt/hello.txt` content is preserved bit-for-bit before taint and after failed overwrite/append attempts, confirming that tainted status prevents data corruption.
+- **Execution Suppression & Status Propagation:** All setup failures suppress command execution (neither child nor parent executes), propagate status 1, permit recovery via `||`, halt on `&&`, and maintain interactive prompt responsiveness.
+
+The five gates ran in order, each with exit status 0:
+1. `wsl -d Ubuntu-24.04 -- make test-shell-host`: PASS (ASan/UBSan, unit assertions for all shell modules and Phase C error strings).
+2. `wsl -d Ubuntu-24.04 -- make test-shell-s6`: PASS (BIOS and UEFI across Session 1 writable, Session 2 read-only, and Session 3 tainted ext2).
+3. `wsl -d Ubuntu-24.04 -- make test-shell`: PASS (BIOS, UEFI, and UEFI 8 GiB no-UART).
+4. `wsl -d Ubuntu-24.04 -- make test-smp-append`: PASS (BIOS and UEFI under `-smp 4`, transitions 28/58 BIOS, 67/49 UEFI; 200 records intact, 0 loss/corruption, clean S5 poweroff, offline `e2fsck -fn` 0 errors).
+5. `wsl -d Ubuntu-24.04 -- make test-shell-s6-resources`: PASS (BIOS and UEFI with 1 and 4 CPUs, 12 measured cycles each, 0 partial/runnable leaked threads, clean `e2fsck -fn` 0 errors).
+
 ## Execution checklist
 
 1. [x] Fix duplication errors, stream semantics and parser bounds with focused tests (Phase 2 closed).
@@ -337,6 +359,7 @@ changed, and no physical disk was written.
    Run relevant ext2/storage, shell and power regressions after implementation.
    - [x] Phase 4 regression sequence, disposable BIOS/UEFI runs, normalized file content checks, setup-failure execution suppression and prompt recovery.
    - [x] Phase B resource suite (`make test-shell-s6-resources`) verified under BIOS & UEFI across 1 and 4 CPUs: child descriptor limit (32), parent fd table exhaustion (31 fds, `SYSCALL_EMFILE`), process table capacity exhaustion (`SYSCALL_ENOMEM`), GDB scheduler breakpoint audit confirming 0 partial/runnable threads published or leaked upon abort, and prompt recovery.
+   - [x] Phase C RO/tainted storage suite (`make test-shell-s6`) verified under BIOS & UEFI: distinct diagnostics (`Read-only filesystem.` vs `I/O error.`), execution suppression on failed redirection setup, bit-for-bit file preservation, status propagation (`$? == 1`, `||` recovery, `&&` halt), and prompt recovery.
 6. [ ] Dell hardware checklist in a dedicated directory on the explicitly
    selected writable USB. Verify builtin/child output, input, append, stderr,
    ordered duplication, failure recovery and persistence. Record exact commands and observed contents.
@@ -348,6 +371,6 @@ changed, and no physical disk was written.
 | Item | Status | Focus |
 | --- | --- | --- |
 | Finding 8 | ⚠️ Partial | Trace half closed by Phase B GDB scheduler-ref audit; shared-offset rule documentation decision remaining |
-| Phase C | ❌ Next | RO/tainted storage assertions (distinct errors, command not executed after setup failure, stable prompt/status) |
+| Phase C | ✅ COMPLETE | RO/tainted storage assertions verified across both firmwares, distinct errors, execution suppression, pre/post taint preservation, 5 gates PASS (2026-09-26) |
 | Phase D | ❌ Blocking | Dell hardware checklist (item 6) on explicitly selected writable USB |
-| Item 7 | Gated | Mark S6 complete only after Phase C, Phase D, and Finding 8 are resolved |
+| Item 7 | Gated | Mark S6 complete only after Phase D and Finding 8 are resolved |

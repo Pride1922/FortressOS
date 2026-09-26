@@ -17,8 +17,8 @@ _start:
     syscall
     ud2
 
-; Beyond dual_stream's text: its execution cannot hit this virtual breakpoint.
-align 4096
+; Beyond shell.elf and dual_stream's text: execution cannot hit this virtual breakpoint.
+align 65536
 global s6_resource_checkpoint
 s6_resource_checkpoint:
     ret

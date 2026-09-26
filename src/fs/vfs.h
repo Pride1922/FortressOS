@@ -55,6 +55,7 @@ typedef struct vfs_node {
     int (*rename)(struct vfs_node *old_dir, const char *old_name, struct vfs_node *new_dir, const char *new_name);
     int (*truncate)(struct vfs_node *node, uint64_t new_size);
     int (*readdir)(struct vfs_node *, uint64_t, void *);
+    int (*can_write)(struct vfs_node *node);
 } vfs_node_t;
 
 typedef struct file {

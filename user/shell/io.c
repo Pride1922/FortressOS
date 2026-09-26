@@ -44,14 +44,19 @@ long puts_err(const char *s) {
 }
 
 void puts(const char *s) { write_bytes(s, length(s)); }
+static const char *file_error_string(long error) {
+    if (error == SYSCALL_EROFS) return "Read-only filesystem.\n";
+    if (error == SYSCALL_EIO)   return "I/O error.\n";
+    if (error == SYSCALL_ENOENT) return "No such file or directory.\n";
+    return "File operation failed.\n";
+}
+
 void file_error(long error) {
-    if (error == SYSCALL_EROFS) puts("Read-only filesystem.\n");
-    else puts(error == SYSCALL_ENOENT ? "No such file or directory.\n" : "File operation failed.\n");
+    puts(file_error_string(error));
 }
 
 void file_error_err(long error) {
-    if (error == SYSCALL_EROFS) puts_err("Read-only filesystem.\n");
-    else puts_err(error == SYSCALL_ENOENT ? "No such file or directory.\n" : "File operation failed.\n");
+    puts_err(file_error_string(error));
 }
 
 void put_dec(size_t val) {

@@ -123,6 +123,8 @@ static int spawn_program(const char *path, const char **argv, const spawn_fd_act
             case SYSCALL_E2BIG: puts_err("Argument list too long.\n"); return 1;
             case SYSCALL_EBADF: puts_err("Bad file descriptor in redirection.\n"); return 1;
             case SYSCALL_EINVAL: puts_err("Invalid redirection or spawn arguments.\n"); return 1;
+            case SYSCALL_EROFS: puts_err("Read-only filesystem.\n"); return 1;
+            case SYSCALL_EIO: puts_err("I/O error.\n"); return 1;
             default: puts_err("Unable to load executable.\n"); return 1;
         }
     }

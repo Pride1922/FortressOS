@@ -5418,6 +5418,10 @@ pf_boot_guard_done:
     pci_report_xhci();
     xhci_boot_probe(&boot_info);
     usb_mount_production_storage(&boot_info);
+    if (qemu_fw_cfg_has_key("opt/fortress/taint_test")) {
+        serial_puts("[TEST] opt/fortress/taint_test active: marking ext2 storage tainted before shell startup\n");
+        ext2_mark_tainted();
+    }
     vfs_node_t *shell = vfs_lookup("/bin/shell");
     if (!shell || shell->type != VFS_FILE || !shell->data) {
         serial_puts("[FAIL] /bin/shell missing from initramfs.\n");

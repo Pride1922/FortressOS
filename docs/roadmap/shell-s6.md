@@ -51,7 +51,10 @@ NVMe fixtures.
 
 - **Finding 8:** Trace half closed via Phase B scheduler-ref inspection / breakpoints;
   shared-offset rule documentation decision remaining for concurrent non-append `file_t`.
-- **Phase C:** RO/tainted storage assertions (next).
+- **Phase C:** COMPLETE (2026-09-26). RO and tainted ext2 storage assertions verified
+  under BIOS and UEFI; distinct error strings (`Read-only filesystem.` and `I/O error.`),
+  setup failure command suppression, pre/post-taint data preservation, status propagation,
+  and prompt recovery.
 - **Phase D:** Dell hardware checklist (item 6) on explicitly selected writable USB (blocking).
-- **Item 7:** Mark S6 complete (gated on Phase C, Phase D, and Finding 8).
+- **Item 7:** Mark S6 complete (gated on Phase D and Finding 8).
 - Pipelines belong to S7.

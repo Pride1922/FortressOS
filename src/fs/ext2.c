@@ -1054,6 +1054,15 @@ static int ext_unlink(vfs_node_t *dir_node, const char *name);
 static int ext_rename(vfs_node_t *old_dir_node, const char *old_name,
                       vfs_node_t *new_dir_node, const char *new_name);
 
+static int ext_can_write(vfs_node_t *node) {
+    if (!node || !node->fs_private) return -VFS_EINVAL;
+    ext2_inode_t *in = (ext2_inode_t *)node->fs_private;
+    if (!in->fs) return -VFS_EIO;
+    if (in->fs->tainted) return -VFS_EIO;
+    if (in->fs->read_only) return -VFS_EROFS;
+    return 0;
+}
+
 static void setup(vfs_node_t *node, ext2_inode_t *in) {
     node->fs_private = in;
     node->size = in->size;
@@ -1062,9 +1071,11 @@ static void setup(vfs_node_t *node, ext2_inode_t *in) {
     if (in->fs->read_only) {
         node->write = NULL;
         node->truncate = NULL;
+        node->can_write = NULL;
     } else {
         node->write = ext_write;
         node->truncate = ext_truncate;
+        node->can_write = ext_can_write;
     }
     if (node->type == VFS_DIRECTORY) {
         node->lookup = ext_lookup;
@@ -1718,4 +1729,12 @@ bool ext2_mount(block_dev_t *dev, const char *path) {
 
 bool ext2_mount_rw(block_dev_t *dev, const char *path) {
     return ext2_mount_internal(dev, path, true);
+}
+
+void ext2_mark_tainted(void) {
+    uint64_t flags = spin_lock_irqsave(&ext2_lock);
+    if (g_mounted_ext2) {
+        g_mounted_ext2->tainted = true;
+    }
+    spin_unlock_irqrestore(&ext2_lock, flags);
 }

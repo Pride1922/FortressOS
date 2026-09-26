@@ -540,6 +540,14 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
             if (err_out) *err_out = -VFS_EROFS;
             return NULL;
         }
+        if (node->can_write) {
+            int can_err = node->can_write(node);
+            if (can_err < 0) {
+                kfree(file);
+                if (err_out) *err_out = can_err;
+                return NULL;
+            }
+        }
     }
 
     if ((flags & VFS_O_TRUNC) && access_mode != VFS_O_RDONLY) {

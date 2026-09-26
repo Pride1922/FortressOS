@@ -17,4 +17,8 @@ bool ext2_mount_rw(block_dev_t *dev, const char *path);
 /* Shutdown-only: freeze writes and mark healthy mounts clean. False on I/O
  * failure or taint; tainted mounts issue no further writes or flushes. */
 bool ext2_sync_all(void);
+
+/* Test-only: mark mounted ext2 filesystem as tainted (e.g. for Phase C audit).
+ * Safe no-op if no filesystem is mounted. */
+void ext2_mark_tainted(void);
 #endif
