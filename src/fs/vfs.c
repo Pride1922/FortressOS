@@ -35,6 +35,7 @@ static int dummy_truncate(vfs_node_t *node, uint64_t size) {
 
 static vfs_node_t g_terminal_node = {
     .name = "tty",
+    .is_stream = true,
     .path = "/dev/tty",
     .type = VFS_FILE,
     .size = 0,
@@ -55,6 +56,7 @@ static int64_t null_write(vfs_node_t *node, uint64_t offset, const void *buf, si
 
 static vfs_node_t g_null_node = {
     .name = "null",
+    .is_stream = true,
     .path = "/dev/null",
     .type = VFS_FILE,
     .size = 0,
@@ -580,6 +582,10 @@ int64_t vfs_read(file_t *file, void *buf, size_t count) {
         return 0;
     }
 
+    if (file->node->is_stream) {
+        return file->node->read ? file->node->read(file->node, 0, buf, count) : -VFS_EBADF;
+    }
+
     if (file->offset >= file->node->size) {
         return 0; /* EOF */
     }
@@ -625,6 +631,9 @@ int64_t vfs_write(file_t *file, const void *buf, size_t count) {
     }
 
     if (file->node->write) {
+        if (file->node->is_stream) {
+            return file->node->write(file->node, 0, buf, count);
+        }
         if (file->flags & VFS_O_APPEND) {
             file->offset = file->node->size;
         }

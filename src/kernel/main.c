@@ -544,6 +544,26 @@ static void test_fd_scope_begin(test_fd_scope_t *scope) {
         serial_puts("       [FAIL] Cannot allocate direct Ring 3 test descriptors!\n");
         hcf();
     }
+    /* Exercise real descriptor errors and exhaustion in the isolated table. */
+    tcb_t *t = scope->owner;
+    bool valid = fd_dup(t, -1) == SYSCALL_EBADF &&
+                 fd_dup(t, 31) == SYSCALL_EBADF &&
+                 fd_dup2(t, 31, 1) == SYSCALL_EBADF &&
+                 fd_dup2(t, 1, 32) == SYSCALL_EBADF &&
+                 fd_dup2(t, 1, 1) == 1;
+    for (int fd = 3; fd < MAX_PROCESS_FDS; fd++) {
+        if (fd_dup(t, 1) != fd) valid = false;
+    }
+    if (fd_dup(t, 1) != SYSCALL_EMFILE) valid = false;
+    for (int fd = 3; fd < MAX_PROCESS_FDS; fd++) {
+        if (fd_free(t, fd) != 0) valid = false;
+    }
+    if (t->fd_table[1]->ref_count != 1) valid = false;
+    if (!valid) {
+        test_fd_scope_end(scope);
+        serial_puts("       [FAIL] Descriptor duplication/exhaustion regression!\n");
+        hcf();
+    }
 }
 
 static void test_phase7_checkpoint2_syscalls(const boot_info_t *boot_info, uint64_t *master_kernel_pml4, uintptr_t master_kernel_pml4_phys) {

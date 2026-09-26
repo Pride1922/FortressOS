@@ -33,6 +33,15 @@ void kfree(void *p) {
     free(p);
 }
 void serial_puts(const char *s) { (void)s; }
+void serial_raw_putc(char c) { (void)c; }
+void console_terminal_write(const char *s, size_t n) { (void)s; (void)n; }
+static unsigned terminal_reads;
+int64_t input_read(void *buf, size_t count) {
+    assert(count > 0);
+    terminal_reads++;
+    ((char *)buf)[0] = 'T';
+    return 1;
+}
 static uint8_t *pending_disk;
 static uint8_t *durable_disk;
 #define disk pending_disk
@@ -231,6 +240,23 @@ static void review_regressions(block_dev_t *dev) {
 }
 
 int main(int argc, char **argv) {
+    /* Stream I/O must bypass size/offset rules, while retaining access checks. */
+    size_t stream_baseline = live;
+    file_t *tin = vfs_open_terminal(VFS_O_RDONLY);
+    file_t *tout = vfs_open_terminal(VFS_O_WRONLY);
+    assert(tin && tout);
+    char input_byte = 0;
+    assert(vfs_read(tin, &input_byte, 1) == 1 && input_byte == 'T');
+    assert(terminal_reads == 1);
+    assert(vfs_write(tout, "hello", 5) == 5);
+    assert(tin->offset == 0 && tout->offset == 0 && tin->node->size == 0);
+    assert(vfs_read(tin, &input_byte, 1) == 1 && terminal_reads == 2);
+    assert(vfs_read(tin, &input_byte, 0) == 0 && terminal_reads == 2);
+    assert(vfs_read(tout, &input_byte, 1) == -VFS_EBADF);
+    assert(vfs_write(tin, "x", 1) == -VFS_EBADF);
+    vfs_close(tin);
+    vfs_close(tout);
+    assert(live == stream_baseline);
     assert(argc == 3);
     FILE *fp = fopen(argv[1], "rb");
     assert(fp);

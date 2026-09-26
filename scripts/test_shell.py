@@ -62,7 +62,19 @@ def run(mode):
                     "-drive", f"if=pflash,format=raw,unit=1,file={vars_path}"]
         child = subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         try:
-            uart = connect(uart_path)
+            deadline = time.monotonic() + 10.0
+            uart = None
+            last_err = None
+            while time.monotonic() < deadline:
+                assert child.poll() is None, child.stderr.read().decode()
+                try:
+                    uart = connect(uart_path)
+                    break
+                except (FileNotFoundError, ConnectionRefusedError, OSError, RuntimeError) as e:
+                    last_err = e
+                    time.sleep(0.05)
+            if uart is None:
+                raise RuntimeError(f"QEMU socket unavailable after 10s: {uart_path}") from last_err
             # Drain continuously: per-byte socket writes can exhaust host socket
             # packet buffers long before the serial log reaches 64 KiB.
             uart.settimeout(0.2)

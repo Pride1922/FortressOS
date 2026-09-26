@@ -169,6 +169,18 @@ int main(void) {
 
     /* 5. Syntax error handling */
     assert(parser_parse("&& foo", &tree) == PARSE_SYNTAX_ERROR);
+    const char *bad_redirs[] = {
+        "echo ok 2>&257", "echo ok 99>out", "echo ok 999999999999999>out",
+        "echo ok 2>&999999999999999999999999", "echo ok 2>& 999999999999999999999999",
+        "echo ok 32>out", "echo ok 2<&32"
+    };
+    for (size_t k = 0; k < sizeof(bad_redirs) / sizeof(bad_redirs[0]); k++)
+        assert(parser_parse(bad_redirs[k], &tree) == PARSE_SYNTAX_ERROR);
+    assert(parser_parse("echo ok 31>&30 2<& 0 1>&-", &tree) == PARSE_OK);
+    assert(tree.cmds[0].redir_count == 3);
+    assert(tree.cmds[0].redirs[0].redir_fd == 31 && tree.cmds[0].redirs[0].redir_dup_fd == 30);
+    assert(tree.cmds[0].redirs[1].redir_dup_fd == 0);
+    assert(tree.cmds[0].redirs[2].redir_op == REDIR_CLOSE);
     assert(parser_parse("|| foo", &tree) == PARSE_SYNTAX_ERROR);
     assert(parser_parse("!", &tree) == PARSE_SYNTAX_ERROR);
 

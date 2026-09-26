@@ -69,6 +69,10 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
                 r->target = NULL;
                 r->quote_flags = NULL;
                 r->has_quotes = false;
+                if (r->redir_fd < 0 || r->redir_fd >= 32 || r->redir_dup_fd >= 32) {
+                    tree->error_msg = "file descriptor out of range";
+                    return PARSE_SYNTAX_ERROR;
+                }
 
                 if (r->redir_op == REDIR_IN || r->redir_op == REDIR_OUT || r->redir_op == REDIR_APP) {
                     type = lexer_next(&parse_lex, &tok);
@@ -119,7 +123,12 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
                                     tree->error_msg = "syntax error: expected file descriptor number";
                                     return PARSE_SYNTAX_ERROR;
                                 }
-                                dfd = dfd * 10 + (tok.value[k] - '0');
+                                int digit = tok.value[k] - '0';
+                                if (dfd > (31 - digit) / 10) {
+                                    tree->error_msg = "file descriptor out of range";
+                                    return PARSE_SYNTAX_ERROR;
+                                }
+                                dfd = dfd * 10 + digit;
                             }
                             if (dfd >= 32) {
                                 tree->error_msg = "file descriptor out of range";

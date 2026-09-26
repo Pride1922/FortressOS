@@ -7,7 +7,9 @@
 typedef struct tcb {
     uint64_t  tid;
     uintptr_t cr3;
+    uint32_t terminal_mode;
 } tcb_t;
+static inline tcb_t *thread_current(void) { return NULL; }
 
 static inline tcb_t *thread_create_on_cpu(size_t c, const char *n, void (*entry)(void *), void *a) {
     (void)c; (void)n; (void)entry; (void)a;
@@ -19,4 +21,3 @@ static inline void sched_reap_dead(void) {}
 static inline uint64_t sched_get_active_stack_slots_mask(void) { return 0; }
 
 #endif
-

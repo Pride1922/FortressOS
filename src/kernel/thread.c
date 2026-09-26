@@ -1496,10 +1496,10 @@ int fd_free(tcb_t *proc, int fd) {
 
 int fd_dup2(tcb_t *proc, int oldfd, int newfd) {
     if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS || newfd < 0 || newfd >= MAX_PROCESS_FDS) {
-        return -SYSCALL_EBADF;
+        return SYSCALL_EBADF;
     }
     if (!proc->fd_table[oldfd]) {
-        return -SYSCALL_EBADF;
+        return SYSCALL_EBADF;
     }
     if (oldfd == newfd) {
         return newfd;
@@ -1516,7 +1516,7 @@ int fd_dup2(tcb_t *proc, int oldfd, int newfd) {
 
 int fd_dup(tcb_t *proc, int oldfd) {
     if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS || !proc->fd_table[oldfd]) {
-        return -SYSCALL_EBADF;
+        return SYSCALL_EBADF;
     }
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
         if (!proc->fd_table[i]) {
@@ -1526,7 +1526,7 @@ int fd_dup(tcb_t *proc, int oldfd) {
             return i;
         }
     }
-    return -SYSCALL_EMFILE;
+    return SYSCALL_EMFILE;
 }
 
 void fd_close_all(tcb_t *proc) {

@@ -22,9 +22,12 @@ static bool check_redir(const char *s, size_t i, size_t *out_len, uint8_t *out_o
     if (s[i] >= '0' && s[i] <= '9') {
         size_t d = i;
         while (s[d] >= '0' && s[d] <= '9') d++;
-        if (d - i <= 2 && (s[d] == '<' || s[d] == '>')) {
+        if (s[d] == '<' || s[d] == '>') {
             fd = 0;
-            for (size_t k = i; k < d; k++) fd = fd * 10 + (s[k] - '0');
+            for (size_t k = i; k < d; k++) {
+                if (fd < 32) fd = fd * 10 + (s[k] - '0');
+                if (fd > 31) fd = 32; /* bounded invalid sentinel */
+            }
             i = d;
         }
     }
@@ -47,7 +50,8 @@ static bool check_redir(const char *s, size_t i, size_t *out_len, uint8_t *out_o
                 op = REDIR_DUP_IN;
                 dup_fd = 0;
                 while (s[i] >= '0' && s[i] <= '9') {
-                    dup_fd = (int8_t)(dup_fd * 10 + (s[i] - '0'));
+                    int next = dup_fd * 10 + (s[i] - '0');
+                    dup_fd = next > 31 ? 32 : (int8_t)next;
                     i++;
                 }
             } else {
@@ -72,7 +76,8 @@ static bool check_redir(const char *s, size_t i, size_t *out_len, uint8_t *out_o
                 op = REDIR_DUP_OUT;
                 dup_fd = 0;
                 while (s[i] >= '0' && s[i] <= '9') {
-                    dup_fd = (int8_t)(dup_fd * 10 + (s[i] - '0'));
+                    int next = dup_fd * 10 + (s[i] - '0');
+                    dup_fd = next > 31 ? 32 : (int8_t)next;
                     i++;
                 }
             } else {

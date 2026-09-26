@@ -39,6 +39,7 @@ typedef struct vfs_node {
     char             path[VFS_MAX_PATH];
     vfs_node_type_t  type;
     uint64_t         size;
+    bool             is_stream; /* No file offset/size semantics; callback owns EOF. */
     const void      *data;      /* Backing pointer in USTAR initramfs */
     struct vfs_node *parent;
     struct vfs_node *next;      /* Sibling in parent directory */
