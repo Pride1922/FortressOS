@@ -15,8 +15,8 @@ static int64_t terminal_read(vfs_node_t *node, uint64_t offset, void *buf, size_
     return input_read(buf, count);
 }
 
-static int64_t terminal_write(vfs_node_t *node, uint64_t offset, const void *buf, size_t count) {
-    (void)node; (void)offset;
+static int64_t terminal_write(vfs_node_t *node, uint64_t *offset, bool append, const void *buf, size_t count) {
+    (void)node; (void)offset; (void)append;
     if (!buf || count == 0) return 0;
     const char *ptr = (const char *)buf;
     tcb_t *owner = thread_current();
@@ -37,7 +37,7 @@ static vfs_node_t g_terminal_node = {
     .name = "tty",
     .is_stream = true,
     .path = "/dev/tty",
-    .type = VFS_FILE,
+    .type = VFS_STREAM,
     .size = 0,
     .read = terminal_read,
     .write = terminal_write,
@@ -49,8 +49,8 @@ static int64_t null_read(vfs_node_t *node, uint64_t offset, void *buf, size_t co
     return 0; /* EOF */
 }
 
-static int64_t null_write(vfs_node_t *node, uint64_t offset, const void *buf, size_t count) {
-    (void)node; (void)offset; (void)buf;
+static int64_t null_write(vfs_node_t *node, uint64_t *offset, bool append, const void *buf, size_t count) {
+    (void)node; (void)offset; (void)append; (void)buf;
     return (int64_t)count; /* Discard bytes */
 }
 
@@ -58,7 +58,7 @@ static vfs_node_t g_null_node = {
     .name = "null",
     .is_stream = true,
     .path = "/dev/null",
-    .type = VFS_FILE,
+    .type = VFS_STREAM,
     .size = 0,
     .read = null_read,
     .write = null_write,
@@ -632,14 +632,14 @@ int64_t vfs_write(file_t *file, const void *buf, size_t count) {
 
     if (file->node->write) {
         if (file->node->is_stream) {
-            return file->node->write(file->node, 0, buf, count);
+            uint64_t stream_off = 0;
+            return file->node->write(file->node, &stream_off, false, buf, count);
         }
-        if (file->flags & VFS_O_APPEND) {
-            file->offset = file->node->size;
-        }
-        int64_t result = file->node->write(file->node, file->offset, buf, count);
+        bool append = (file->flags & VFS_O_APPEND) != 0;
+        uint64_t write_off = file->offset;
+        int64_t result = file->node->write(file->node, &write_off, append, buf, count);
         if (result > 0) {
-            file->offset += (uint64_t)result;
+            file->offset = write_off;
             if (file->offset > file->node->size) {
                 file->node->size = file->offset;
             }
@@ -655,8 +655,7 @@ int vfs_close(file_t *file) {
         return -1;
     }
 
-    file->ref_count--;
-    if (file->ref_count <= 0) {
+    if (__atomic_sub_fetch(&file->ref_count, 1, __ATOMIC_ACQ_REL) <= 0) {
         kfree(file);
     }
 

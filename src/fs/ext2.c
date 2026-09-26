@@ -822,11 +822,20 @@ static int64_t ext_read(vfs_node_t *node, uint64_t off, void *buf, size_t len) {
     return r;
 }
 
-static int64_t ext_write(vfs_node_t *node, uint64_t off, const void *buf, size_t len) {
+static int64_t ext_write(vfs_node_t *node, uint64_t *off, bool append, const void *buf, size_t len) {
+    if (!node || !node->fs_private || !off) return -VFS_EINVAL;
     uint64_t flags = spin_lock_irqsave(&ext2_lock);
-    int64_t r = write_inode(node->fs_private, off, buf, len);
+    ext2_inode_t *in = (ext2_inode_t *)node->fs_private;
+    if (append) {
+        *off = in->size;
+    } else if (*off > in->size) {
+        /* Bounded ext2 rule: writes past EOF without append are rejected */
+        spin_unlock_irqrestore(&ext2_lock, flags);
+        return -VFS_EINVAL;
+    }
+    int64_t r = write_inode(in, *off, buf, len);
     if (r > 0) {
-        ext2_inode_t *in = node->fs_private;
+        *off += (uint64_t)r;
         node->size = in->size;
     }
     spin_unlock_irqrestore(&ext2_lock, flags);

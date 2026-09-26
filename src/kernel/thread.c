@@ -1220,7 +1220,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
                         p->fd_table[act->dst_fd] = NULL;
                     }
                     p->fd_table[act->dst_fd] = p->fd_table[act->src_fd];
-                    p->fd_table[act->dst_fd]->ref_count++;
+                    __atomic_fetch_add(&p->fd_table[act->dst_fd]->ref_count, 1, __ATOMIC_ACQ_REL);
                 }
                 p->fd_flags[act->dst_fd] = 0;
             } else if (act->type == SPAWN_FD_ACTION_CLOSE) {
@@ -1451,7 +1451,7 @@ void fd_clone_table(tcb_t *parent, tcb_t *child) {
                 child->fd_flags[i] = 0;
             } else {
                 child->fd_table[i] = parent->fd_table[i];
-                child->fd_table[i]->ref_count++;
+                __atomic_fetch_add(&child->fd_table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
                 child->fd_flags[i] = 0;
             }
         }
@@ -1509,7 +1509,7 @@ int fd_dup2(tcb_t *proc, int oldfd, int newfd) {
         proc->fd_table[newfd] = NULL;
     }
     proc->fd_table[newfd] = proc->fd_table[oldfd];
-    proc->fd_table[newfd]->ref_count++;
+    __atomic_fetch_add(&proc->fd_table[newfd]->ref_count, 1, __ATOMIC_ACQ_REL);
     proc->fd_flags[newfd] = 0;
     return newfd;
 }
@@ -1521,7 +1521,7 @@ int fd_dup(tcb_t *proc, int oldfd) {
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
         if (!proc->fd_table[i]) {
             proc->fd_table[i] = proc->fd_table[oldfd];
-            proc->fd_table[i]->ref_count++;
+            __atomic_fetch_add(&proc->fd_table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
             proc->fd_flags[i] = 0;
             return i;
         }

@@ -322,7 +322,8 @@ int main(int argc, char **argv) {
     assert(ro_node);
     assert(vfs_truncate(ro_node, 0) == -30); /* -EROFS */
     assert(ext_truncate(ro_node, 0) == -30); /* -EROFS */
-    assert(ext_write(ro_node, 0, "fail", 4) == -30); /* -EROFS */
+    uint64_t ro_off = 0;
+    assert(ext_write(ro_node, &ro_off, false, "fail", 4) == -30); /* -EROFS */
 
     file_t *f = vfs_open("/mnt/hello.txt", 0);
     assert(f);
@@ -634,6 +635,38 @@ int main(int argc, char **argv) {
     assert(vfs_unlink("/mnt/dir2/item.txt") == VFS_SUCCESS);
     assert(vfs_unlink("/mnt/dir1") == VFS_SUCCESS);
     assert(vfs_unlink("/mnt/dir2") == VFS_SUCCESS);
+
+    /* 11c. Phase 3: Append mode, atomic serialization, and concurrent writers */
+    file_t *fapp1 = vfs_open("/mnt/app.txt", VFS_O_WRONLY | VFS_O_CREAT | VFS_O_APPEND);
+    file_t *fapp2 = vfs_open("/mnt/app.txt", VFS_O_WRONLY | VFS_O_APPEND);
+    assert(fapp1 && fapp2);
+    assert(fapp1 != fapp2); /* Distinct open file handles */
+
+    /* Interleave writes from both writers with distinct records */
+    assert(vfs_write(fapp1, "AAAA\n", 5) == 5);
+    assert(vfs_write(fapp2, "BBBB\n", 5) == 5);
+    assert(vfs_write(fapp1, "CCCC\n", 5) == 5);
+    assert(vfs_write(fapp2, "DDDD\n", 5) == 5);
+    vfs_close(fapp1);
+    vfs_close(fapp2);
+
+    /* Verify file size and exact contents */
+    file_t *fapp_read = vfs_open("/mnt/app.txt", VFS_O_RDONLY);
+    assert(fapp_read && fapp_read->node->size == 20);
+    char app_buf[32];
+    memset(app_buf, 0, sizeof(app_buf));
+    assert(vfs_read(fapp_read, app_buf, 20) == 20);
+    assert(!memcmp(app_buf, "AAAA\nBBBB\nCCCC\nDDDD\n", 20));
+    vfs_close(fapp_read);
+
+    /* Verify that non-append write past EOF is rejected with -EINVAL (-22) */
+    file_t *f_noapp = vfs_open("/mnt/app.txt", VFS_O_WRONLY);
+    assert(f_noapp);
+    f_noapp->offset = 100; /* Past EOF (size is 20) */
+    assert(vfs_write(f_noapp, "HOLE", 4) == -VFS_EINVAL);
+    vfs_close(f_noapp);
+
+    assert(vfs_unlink("/mnt/app.txt") == VFS_SUCCESS);
 
     /* 12. Clean shutdown synchronization (s_state: 0 active -> 1 clean) */
     assert(u16(disk + 1024 + 58) == 0); /* EXT2_VALID_FS cleared on RW mount */

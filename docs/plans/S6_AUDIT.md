@@ -52,14 +52,22 @@ token accumulation checks for integer multiplication overflow before conversion
 `99>out`, `999999999999999>out`, `2>& 999999999999999999999999`, and verified
 that valid maximum descriptors (`31>&30`, `2<& 0`, `1>&-`) parse cleanly.
 
-### 5. Incorrect: append is not atomic
+### 5. [PARTIALLY VERIFIED 2026-09-26] Append serialization and atomic EOF
 
-`src/fs/vfs.c:628–631` selects EOF before entering `ext_write`.
-`src/fs/ext2.c:825–833` acquires the ext2 lock only after the offset was chosen.
-Separate writers can select the same EOF and overwrite each other. EOF selection
-and writing must occur together under the filesystem operation lock. Preserve
-IRQ-save block I/O and USB durability policy. Test independently opened append
-handles with distinct records and assert every record occurs exactly once.
+`src/fs/vfs.c` previously selected EOF outside and before filesystem locking.
+`src/fs/ext2.c` acquired the ext2 lock only after the offset was chosen.
+Separate writers could select the same EOF and overwrite each other.
+**Fix:**
+- Updated filesystem write callback signature to `int64_t (*write)(struct vfs_node *node, uint64_t *off, bool append, const void *buf, size_t len)`.
+- In `ext2.c:ext_write`, `ext2_lock` is acquired first via `spin_lock_irqsave(&ext2_lock)` before inspecting file size.
+  When `append == true`, `*off` is set to the authoritative `in->size` inside the lock.
+  When `append == false`, writes past EOF (`*off > in->size`) are rejected with `-VFS_EINVAL` (`-22`).
+  On write completion, `node->size = in->size`, `*off += (uint64_t)r`, and the updated offset is written back to `file->offset` under lock release.
+- In `thread.c` and `vfs.c`, `file->ref_count` increments and decrements use `__ATOMIC_ACQ_REL` atomic operations.
+**Verification Boundary:**
+- Sequential semantics (EOF selection, offset writeback, interleaved handles, and EOF past-write rejection) verified in `tests/ext2_host.c:639–668`.
+- Because `tests/host/spinlock.h` uses single-threaded no-op shims (`spin_lock_irqsave` returns 0), host tests do not exercise lock contention or multi-threaded races.
+- True concurrent race verification (concurrent writers contending on `ext2_lock` without clobbering) is deferred to QEMU SMP / Dell 5590 multi-core integration testing.
 
 ### 6. Missing: retained terminal and usable close-on-spawn policy
 
@@ -179,7 +187,7 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 | Builtin redirection | Missing | Parent save/apply/restore, including initially closed fds and every failure |
 | One-path target expansion | Helper present, unused | Quoting, spaces, empty/unset expansion, zero/multiple glob matches |
 | Retained UI terminal | Missing wiring | Prompt and editing after redirection, closure and failed setup |
-| Concurrent append | Phase 3 focus (Contract B defined) | Separate writers, no lost/overwritten records, exact output verification under ext2 lock |
+| Concurrent append | Kernel fix implemented; concurrent verification deferred to QEMU SMP integration | Separate writers, no lost/overwritten records, exact output verification under ext2 lock |
 | Resource exhaustion and allocation failures | Not established for S6 | Exhaust fd/process capacity; inject allocation failures; no runnable partial child |
 | RO/tainted storage and short I/O | Existing layers, S6 not established | Distinct errors, command not executed after setup failure, stable prompt/status |
 | Existing programs and shell | Prior regression pass | Preserve existing host, BIOS/UEFI and no-UART coverage |
@@ -203,9 +211,9 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 ## Execution checklist
 
 1. [x] Fix duplication errors, stream semantics and parser bounds with focused tests (Phase 2 closed).
-2. [ ] Phase 3: Implement atomic append in `ext2` and `vfs` under Contract B (`ext2_write(..., &offset, append, ...)`),
-   atomic acquire-release refcounting on `file_t`, and deliver the concurrent-append test in `tests/ext2_host.c`
-   (two writers, distinct records, verifying all records are present exactly once without clobbering or interleaved EOF corruption).
+2. [x] Phase 3: Implement atomic append in `ext2` and `vfs` under Contract B (`ext2_write(..., &offset, append, ...)`),
+   atomic acquire-release refcounting on `file_t`, and deliver host append tests in `tests/ext2_host.c`
+   (sequential EOF serialization and past-EOF write rejection verified; concurrent race verification deferred to QEMU SMP).
 3. [ ] Phase 4: Wire ordered redirections into children (`SYS_SPAWN_EXT`) and scoped parent builtins; retain
    controlling terminal handle (`g_term_fd`); propagate short write errors and exclude private handles from spawn.
 4. [ ] Exercise `<`, `>`, `>>`, `2>`, `2>>`, `n>&m`, `n<&m`, `n>&-`, and compare

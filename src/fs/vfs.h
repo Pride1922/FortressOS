@@ -31,7 +31,8 @@
 
 typedef enum {
     VFS_FILE = 1,
-    VFS_DIRECTORY = 2
+    VFS_DIRECTORY = 2,
+    VFS_STREAM = 3
 } vfs_node_type_t;
 
 typedef struct vfs_node {
@@ -47,7 +48,7 @@ typedef struct vfs_node {
     void *fs_private;
     struct vfs_node *(*lookup)(struct vfs_node *, const char *);
     int64_t (*read)(struct vfs_node *, uint64_t, void *, size_t);
-    int64_t (*write)(struct vfs_node *, uint64_t, const void *, size_t);
+    int64_t (*write)(struct vfs_node *, uint64_t *, bool, const void *, size_t);
     struct vfs_node *(*create)(struct vfs_node *dir, const char *name, vfs_node_type_t type);
     int (*unlink)(struct vfs_node *dir, const char *name);
     int (*rename)(struct vfs_node *old_dir, const char *old_name, struct vfs_node *new_dir, const char *new_name);
