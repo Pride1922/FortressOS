@@ -101,11 +101,12 @@ architectural contracts govern VFS stream typing and file descriptor synchroniza
 
 ### Contract A: Node-Type Contract (Streams vs. Regular Files)
 
-The VFS distinguishes stream nodes (`node->is_stream == true`) from regular files:
+The VFS distinguishes stream nodes (`node->is_stream == true`, with a planned enum cleanup to `VFS_NODE_STREAM` in `vfs_node_type_t` during Phase 3) from regular files:
 
 1. **No Linear File Offset or Size:** A stream node represents a continuous,
    non-seekable byte stream (e.g. `/dev/tty`, `/dev/null`, and S7 anonymous pipes).
-   Stream nodes have no persistent size or linear byte offset.
+   Stream nodes have no persistent size or linear byte offset. Seeking on stream nodes
+   returns `-ESPIPE` (future-proofing `SYS_LSEEK`).
 2. **Callback Ownership of Framing and EOF:**
    - In `vfs_read`, stream nodes bypass the `file->offset >= file->node->size` EOF check.
      Reads pass offset 0 directly to `node->read`; the callback is responsible for
@@ -114,8 +115,9 @@ The VFS distinguishes stream nodes (`node->is_stream == true`) from regular file
    - In `vfs_write`, stream nodes pass offset 0 directly to `node->write`. Writes do not
      advance `file->offset` or increment `node->size`.
 3. **Truncation and Append:** Truncating a stream node is a no-op returning 0 (`dummy_truncate`).
-   The `VFS_O_APPEND` flag is ignored for stream nodes because writes are inherently at the
-   stream head.
+   The `VFS_O_APPEND` flag is accepted for compatibility but is an operational no-op for streams
+   because writes are inherently at the stream head. Write atomicity on streams is bounded and
+   governed per-stream (e.g. pipe buffer limits or line-buffered terminal input/output).
 4. **Regular Files:** All nodes with `is_stream == false` adhere strictly to standard
    filesystem offset/size semantics: `vfs_read` terminates with 0 at `offset >= size`,
    and writes advance `file->offset` and update `node->size`.
@@ -124,28 +126,43 @@ The VFS distinguishes stream nodes (`node->is_stream == true`) from regular file
 
 The lifetime and synchronization of descriptors and shared file descriptions follow these rules:
 
-1. **Process Isolation & Single-Thread Ownership:** A process's descriptor table
+1. **Process Isolation & Single-Thread Ownership Assumption:** A process's descriptor table
    `tcb->fd_table[0..31]` and flags `tcb->fd_flags[0..31]` are strictly per-process.
-   Because FortressOS processes are single-threaded, descriptor table lookup, allocation,
-   and replacement (`fd_alloc`, `fd_free`, `fd_dup`, `fd_dup2`) require no intra-process
-   locking during normal user execution.
-2. **Atomic Spawn Inheritance:** During process spawning (`process_spawn_from_vfs_ext`),
+   FortressOS currently operates under the structural assumption that processes are single-threaded;
+   therefore, descriptor table lookup, allocation, and replacement (`fd_alloc`, `fd_free`, `fd_dup`, `fd_dup2`)
+   require no intra-process locking during normal user execution.
+   *What breaks this assumption:* Introducing multi-threaded user processes (shared address space with
+   multiple TCBs) or kernel worker threads modifying another process's descriptor table would break this,
+   requiring per-process fd-table spinlocks.
+2. **Explicit CLOEXEC Semantics:**
+   `FD_FLAG_CLOEXEC` is tracked per-descriptor in `tcb->fd_flags[fd]`. It is evaluated during process
+   spawning (`process_spawn_from_vfs_ext`), where any descriptor marked with `FD_FLAG_CLOEXEC` is excluded
+   from inheritance and left unmapped in the child. In S6, `SYS_DUP` / `SYS_DUP2` clear `FD_FLAG_CLOEXEC`
+   on the newly created descriptor, while shell-private handles (such as the retained UI terminal)
+   are explicitly marked with `FD_FLAG_CLOEXEC` to prevent accidental leakage into child processes.
+3. **Atomic Spawn Inheritance:** During process spawning (`process_spawn_from_vfs_ext`),
    descriptor cloning occurs under CPU IRQ exclusion on the spawning core. Non-CLOEXEC
    `file_t` references are copied to the child, and `file->ref_count` is incremented.
    If any spawn action or address-space setup fails, the kernel calls `fd_close_all(child)`
    to tear down all cloned and newly opened descriptors before freeing the TCB. The child
    is never enqueued to any scheduler runqueue on failure.
-3. **Cross-Process `file_t` Lifetime:** Multiple processes can share an open file description
-   `file_t` via inheritance or duplication. Reference counting (`file->ref_count`) must use
-   atomic operations (`__atomic_fetch_add` / `__atomic_sub_fetch` with `__ATOMIC_SEQ_CST`).
-   When `ref_count` reaches 0, the `file_t` is safely freed (`kfree(file)`).
-4. **Atomic Append Serialization (Finding 5):**
+4. **Cross-Process `file_t` Lifetime & Atomic Memory Ordering:** Multiple processes can share an open
+   file description `file_t` via inheritance or duplication. Reference counting (`file->ref_count`) must use
+   atomic operations with acquire-release semantics (`__atomic_fetch_add(..., __ATOMIC_ACQ_REL)` /
+   `__atomic_sub_fetch(..., __ATOMIC_ACQ_REL)`).
+   *Reasoning:* Full sequential consistency (`__ATOMIC_SEQ_CST`) enforces a global total order across all
+   processors with expensive bus synchronization penalties. Acquire-release ordering (`ACQ_REL`) is both
+   necessary and sufficient for reference counting: the release ensures all prior modifications to `file_t`
+   are visible before the refcount drops, and the acquire ensures that whichever core decrements the refcount
+   to zero synchronizes-with all prior releases before executing final cleanup and deallocation (`kfree(file)`).
+5. **Atomic Append Serialization & Concrete Fix Shape (Finding 5):**
    - Setting `file->offset = file->node->size` in the VFS layer prior to locking the filesystem
      is prohibited because concurrent appenders can interleave offset selection and writes.
-   - For filesystems supporting append (such as `ext2`), atomic append must be serialized at
-     the filesystem operation lock boundary. When `file->flags & VFS_O_APPEND` is set, `ext2_write`
-     acquires its IRQ-save filesystem lock, selects the file's current EOF (`inode.i_size`), allocates
-     blocks and writes data, and commits the updated `inode.i_size` before releasing the lock.
+   - The concrete fix updates the filesystem write signature to:
+     `ssize_t ext2_write(ext2_fs_t *fs, ext2_inode_t *inode, uint64_t *offset, bool append, const void *buf, size_t count);`
+     When `append == true`, `ext2_write` acquires its IRQ-save filesystem lock (`ext2->lock`), reads the
+     authoritative current EOF (`inode->size`), sets `*offset = inode->size`, allocates required blocks,
+     writes data, updates `inode->size`, and releases the lock atomically.
    - For processes sharing a single `file_t` description, `file->offset` is updated under the
      atomic return of the write operation. For independent `file_t` descriptions pointing to the
      same inode, each append atomically targets the serialized end-of-file.
@@ -186,7 +203,9 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 ## Execution checklist
 
 1. [x] Fix duplication errors, stream semantics and parser bounds with focused tests (Phase 2 closed).
-2. [ ] Phase 3: Implement atomic append in `ext2` and `vfs` under Contract B; add concurrent append test.
+2. [ ] Phase 3: Implement atomic append in `ext2` and `vfs` under Contract B (`ext2_write(..., &offset, append, ...)`),
+   atomic acquire-release refcounting on `file_t`, and deliver the concurrent-append test in `tests/ext2_host.c`
+   (two writers, distinct records, verifying all records are present exactly once without clobbering or interleaved EOF corruption).
 3. [ ] Phase 4: Wire ordered redirections into children (`SYS_SPAWN_EXT`) and scoped parent builtins; retain
    controlling terminal handle (`g_term_fd`); propagate short write errors and exclude private handles from spawn.
 4. [ ] Exercise `<`, `>`, `>>`, `2>`, `2>>`, `n>&m`, `n<&m`, `n>&-`, and compare
