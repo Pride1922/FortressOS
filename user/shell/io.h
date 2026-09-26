@@ -18,6 +18,7 @@ void write_bytes_fd(int fd, const char *s, size_t n);
 void puts_fd(int fd, const char *s);
 void puts_err(const char *s);
 void file_error(long error);
+void file_error_err(long error);
 void editor_load(const char *path);
 void editor_loop(void);
 bool editor_ready(void);

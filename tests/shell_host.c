@@ -9,13 +9,82 @@
 #include "expand.h"
 #include "redir.h"
 
+static int s_mock_fds[32];
+static int s_mock_flags[32];
+static int s_mock_next_inode = 100;
+
+static void mock_reset_fds(void) {
+    for (int i = 0; i < 32; i++) {
+        s_mock_fds[i] = -1;
+        s_mock_flags[i] = 0;
+    }
+    /* Standard fds open by default */
+    s_mock_fds[0] = 1;
+    s_mock_fds[1] = 2;
+    s_mock_fds[2] = 3;
+}
+
 long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
-    (void)nr; (void)a; (void)b; (void)c;
+    if (nr == SYS_OPEN) {
+        const char *p = (const char *)a;
+        if (!strcmp(p, "/nonexistent")) return SYSCALL_ENOENT;
+        for (int i = 0; i < 32; i++) {
+            if (s_mock_fds[i] == -1) {
+                s_mock_fds[i] = ++s_mock_next_inode;
+                s_mock_flags[i] = ((int)b & VFS_O_CLOEXEC) ? FD_CLOEXEC : 0;
+                return i;
+            }
+        }
+        return SYSCALL_EMFILE;
+    }
+    if (nr == SYS_CLOSE) {
+        int fd = (int)a;
+        if (fd < 0 || fd >= 32 || s_mock_fds[fd] == -1) return SYSCALL_EBADF;
+        s_mock_fds[fd] = -1;
+        s_mock_flags[fd] = 0;
+        return 0;
+    }
+    if (nr == SYS_DUP2) {
+        int oldfd = (int)a;
+        int newfd = (int)b;
+        if (oldfd < 0 || oldfd >= 32 || s_mock_fds[oldfd] == -1) return SYSCALL_EBADF;
+        if (newfd < 0 || newfd >= 32) return SYSCALL_EBADF;
+        s_mock_fds[newfd] = s_mock_fds[oldfd];
+        s_mock_flags[newfd] = 0;
+        return newfd;
+    }
+    if (nr == SYS_FCNTL) {
+        int fd = (int)a;
+        int cmd = (int)b;
+        if (fd < 0 || fd >= 32 || s_mock_fds[fd] == -1) return SYSCALL_EBADF;
+        if (cmd == F_GETFD) return s_mock_flags[fd];
+        if (cmd == F_SETFD) {
+            s_mock_flags[fd] = (int)c;
+            return 0;
+        }
+        if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC) {
+            int min_fd = (int)c;
+            if (min_fd < 0 || min_fd >= 32) return SYSCALL_EINVAL;
+            for (int i = min_fd; i < 32; i++) {
+                if (s_mock_fds[i] == -1) {
+                    s_mock_fds[i] = s_mock_fds[fd];
+                    s_mock_flags[i] = (cmd == F_DUPFD_CLOEXEC) ? FD_CLOEXEC : 0;
+                    return i;
+                }
+            }
+            return SYSCALL_EMFILE;
+        }
+        return SYSCALL_EINVAL;
+    }
     return -1;
 }
 
 void puts_err(const char *s) {
     (void)s;
+}
+
+void file_error_err(long error) {
+    (void)error;
 }
 
 static line_editor_t e;
@@ -440,6 +509,59 @@ int main(void) {
     assert(redir_build_spawn_actions(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0,
                                      actions, &act_count, target_paths) != 0);
 
-    puts("PASS shell redirections: spawn actions, open/dup/close, lexical order, target expansion, ambiguous rejection");
+    /* Test S6 Parent Builtin Scoped Redirection (Step 4C & 4D) */
+    redir_scope_t parent_scope;
+
+    /* 1. Basic parent stdout and stderr redirection */
+    mock_reset_fds();
+    assert(s_mock_fds[1] == 2 && s_mock_fds[2] == 3);
+    assert(parser_parse("echo hello > out.txt 2>&1", &ptree) == PARSE_OK);
+    assert(redir_apply_parent(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0, &parent_scope) == 0);
+    assert(parent_scope.count == 2);
+    /* Descriptors 1 and 2 redirected */
+    assert(s_mock_fds[1] != 2);
+    assert(s_mock_fds[2] == s_mock_fds[1]);
+    /* Saved copies exist in high slots >= 20 with CLOEXEC */
+    assert(parent_scope.saved[0].orig_fd == 1);
+    assert(parent_scope.saved[0].saved_fd >= 20);
+    assert(s_mock_flags[parent_scope.saved[0].saved_fd] == FD_CLOEXEC);
+    assert(parent_scope.saved[1].orig_fd == 2);
+    assert(parent_scope.saved[1].saved_fd >= 20);
+    assert(s_mock_flags[parent_scope.saved[1].saved_fd] == FD_CLOEXEC);
+
+    /* Restore and verify original descriptors restored and saved descriptors closed */
+    redir_restore_parent(&parent_scope);
+    assert(s_mock_fds[1] == 2);
+    assert(s_mock_fds[2] == 3);
+    for (int k = 20; k < 32; k++) {
+        assert(s_mock_fds[k] == -1);
+    }
+    assert(parent_scope.count == 0);
+
+    /* 2. Parent redirection of originally unopened descriptor */
+    mock_reset_fds();
+    s_mock_fds[5] = -1;
+    assert(parser_parse("echo foo 5> out.txt", &ptree) == PARSE_OK);
+    assert(redir_apply_parent(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0, &parent_scope) == 0);
+    assert(s_mock_fds[5] != -1);
+    assert(parent_scope.saved[0].orig_fd == 5);
+    assert(parent_scope.saved[0].was_open == false);
+    assert(parent_scope.saved[0].saved_fd == -1);
+    redir_restore_parent(&parent_scope);
+    assert(s_mock_fds[5] == -1); /* Restored to closed! */
+
+    /* 3. Automatic rollback on failure without executing command */
+    mock_reset_fds();
+    assert(s_mock_fds[1] == 2 && s_mock_fds[2] == 3);
+    assert(parser_parse("echo foo > out.txt 2> /nonexistent", &ptree) == PARSE_OK);
+    assert(redir_apply_parent(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0, &parent_scope) != 0);
+    /* Original fds must be completely restored */
+    assert(s_mock_fds[1] == 2);
+    assert(s_mock_fds[2] == 3);
+    for (int k = 20; k < 32; k++) {
+        assert(s_mock_fds[k] == -1);
+    }
+
+    puts("PASS shell redirections: spawn actions, parent save/apply/restore, open/dup/close, lexical order, target expansion, ambiguous rejection");
     return 0;
 }

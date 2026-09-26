@@ -25,6 +25,14 @@
 #define SYS_SPAWN_EXT  20 /* (const char *path, const spawn_opts_t *opts, uint64_t opts_size) -> child PID */
 #define SYS_DUP2       21 /* (int oldfd, int newfd) -> newfd or -errno */
 #define SYS_DUP        22 /* (int oldfd) -> lowest available fd or -errno */
+#define SYS_FCNTL      23 /* (int fd, int cmd, uint64_t arg) -> result or -errno */
+
+#define F_DUPFD         0
+#define F_GETFD         1
+#define F_SETFD         2
+#define F_DUPFD_CLOEXEC 1030
+#define FD_CLOEXEC      1
+
 #define DMESG_SIZE     (64 * 1024)
 
 #define SPAWN_FD_ACTION_OPEN  1  /* open path, dup to dst_fd */

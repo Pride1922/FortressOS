@@ -702,7 +702,7 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
     }
 
     int vfs_err = 0;
-    file_t *file = vfs_open_ext(kpath, flags, &vfs_err);
+    file_t *file = vfs_open_ext(kpath, flags & ~VFS_O_CLOEXEC, &vfs_err);
     if (!file) {
         return syscall_from_vfs_error(vfs_err);
     }
@@ -711,6 +711,10 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
     if (fd < 0) {
         vfs_close(file);
         return SYSCALL_EMFILE;
+    }
+
+    if (flags & VFS_O_CLOEXEC) {
+        curr->fd_flags[fd] |= FD_FLAG_CLOEXEC;
     }
 
     return (int64_t)fd;
@@ -748,6 +752,48 @@ static int64_t sys_dup(int oldfd) {
         return SYSCALL_EBADF;
     }
     return (int64_t)fd_dup(curr, oldfd);
+}
+
+static int64_t sys_fcntl(int fd, int cmd, uint64_t arg) {
+    if (fd < 0 || fd >= MAX_PROCESS_FDS) {
+        return SYSCALL_EBADF;
+    }
+    tcb_t *curr = thread_current();
+    if (!curr || !curr->fd_table[fd]) {
+        return SYSCALL_EBADF;
+    }
+
+    switch (cmd) {
+        case F_GETFD:
+            return (int64_t)curr->fd_flags[fd];
+
+        case F_SETFD:
+            if (arg & ~(uint64_t)FD_FLAG_CLOEXEC) {
+                return SYSCALL_EINVAL;
+            }
+            curr->fd_flags[fd] = (uint8_t)arg;
+            return SYSCALL_SUCCESS;
+
+        case F_DUPFD:
+        case F_DUPFD_CLOEXEC: {
+            int min_fd = (int)arg;
+            if (min_fd < 0 || min_fd >= MAX_PROCESS_FDS) {
+                return SYSCALL_EINVAL;
+            }
+            for (int i = min_fd; i < MAX_PROCESS_FDS; i++) {
+                if (!curr->fd_table[i]) {
+                    curr->fd_table[i] = curr->fd_table[fd];
+                    __atomic_fetch_add(&curr->fd_table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
+                    curr->fd_flags[i] = (cmd == F_DUPFD_CLOEXEC) ? FD_FLAG_CLOEXEC : 0;
+                    return (int64_t)i;
+                }
+            }
+            return SYSCALL_EMFILE;
+        }
+
+        default:
+            return SYSCALL_EINVAL;
+    }
 }
 
 static int64_t sys_read(int fd, uintptr_t user_buf, size_t count) {
@@ -1090,6 +1136,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_DUP:
             result = sys_dup((int)frame->rdi);
+            break;
+
+        case SYS_FCNTL:
+            result = sys_fcntl((int)frame->rdi, (int)frame->rsi, frame->rdx);
             break;
 
         default:

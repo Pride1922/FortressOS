@@ -6,19 +6,75 @@
 
 #define QUOTE_EXPANDED_UNQUOTED 4
 
-static char s_expand_pool[LINE_CAP * 4];
-static size_t s_expand_pool_used;
+typedef struct {
+    char *expand_pool;
+    size_t expand_pool_cap;
+    size_t expand_pool_used;
 
+    char **split_words;
+    uint8_t **split_flags;
+    bool *split_has_quotes;
+    int max_split_words;
+    int split_count;
+
+    char (*glob_names)[VFS_MAX_NAME];
+    int max_glob_names;
+    int glob_count;
+
+    char *exp_chars;
+    uint8_t *exp_flags;
+    size_t exp_cap;
+} expand_ctx_t;
+
+static char s_expand_pool[LINE_CAP * 4];
 static char *s_split_words[MAX_EXPANDED_ARGS];
 static uint8_t *s_split_flags[MAX_EXPANDED_ARGS];
 static bool s_split_has_quotes[MAX_EXPANDED_ARGS];
-static int s_split_count;
-
 static char s_glob_names[64][VFS_MAX_NAME];
-static int s_glob_count;
-
 static char s_exp_chars[LINE_CAP * 2];
 static uint8_t s_exp_flags[LINE_CAP * 2];
+
+static expand_ctx_t s_cmd_ctx = {
+    .expand_pool = s_expand_pool,
+    .expand_pool_cap = sizeof(s_expand_pool),
+    .expand_pool_used = 0,
+    .split_words = s_split_words,
+    .split_flags = s_split_flags,
+    .split_has_quotes = s_split_has_quotes,
+    .max_split_words = MAX_EXPANDED_ARGS,
+    .split_count = 0,
+    .glob_names = s_glob_names,
+    .max_glob_names = 64,
+    .glob_count = 0,
+    .exp_chars = s_exp_chars,
+    .exp_flags = s_exp_flags,
+    .exp_cap = sizeof(s_exp_chars),
+};
+
+static char s_redir_expand_pool[VFS_MAX_PATH * 2];
+static char *s_redir_split_words[4];
+static uint8_t *s_redir_split_flags[4];
+static bool s_redir_split_has_quotes[4];
+static char s_redir_glob_names[4][VFS_MAX_NAME];
+static char s_redir_exp_chars[VFS_MAX_PATH * 2];
+static uint8_t s_redir_exp_flags[VFS_MAX_PATH * 2];
+
+static expand_ctx_t s_redir_ctx = {
+    .expand_pool = s_redir_expand_pool,
+    .expand_pool_cap = sizeof(s_redir_expand_pool),
+    .expand_pool_used = 0,
+    .split_words = s_redir_split_words,
+    .split_flags = s_redir_split_flags,
+    .split_has_quotes = s_redir_split_has_quotes,
+    .max_split_words = 4,
+    .split_count = 0,
+    .glob_names = s_redir_glob_names,
+    .max_glob_names = 4,
+    .glob_count = 0,
+    .exp_chars = s_redir_exp_chars,
+    .exp_flags = s_redir_exp_flags,
+    .exp_cap = sizeof(s_redir_exp_chars),
+};
 
 static size_t str_len(const char *s) {
     size_t n = 0;
@@ -104,20 +160,20 @@ bool glob_match(const char *pattern, const char *str) {
     return *str == '\0';
 }
 
-static void sort_glob_names(int count) {
+static void sort_glob_names(expand_ctx_t *ctx, int count) {
     for (int i = 0; i < count - 1; i++) {
         for (int j = 0; j < count - i - 1; j++) {
-            if (str_cmp(s_glob_names[j], s_glob_names[j + 1]) > 0) {
+            if (str_cmp(ctx->glob_names[j], ctx->glob_names[j + 1]) > 0) {
                 char tmp[VFS_MAX_NAME];
-                str_copy(tmp, s_glob_names[j], sizeof(tmp));
-                str_copy(s_glob_names[j], s_glob_names[j + 1], sizeof(tmp));
-                str_copy(s_glob_names[j + 1], tmp, sizeof(tmp));
+                str_copy(tmp, ctx->glob_names[j], sizeof(tmp));
+                str_copy(ctx->glob_names[j], ctx->glob_names[j + 1], sizeof(tmp));
+                str_copy(ctx->glob_names[j + 1], tmp, sizeof(tmp));
             }
         }
     }
 }
 
-static int expand_glob(const char *word, const uint8_t *qflags, expanded_cmd_t *out_cmd) {
+static int expand_glob(expand_ctx_t *ctx, const char *word, const uint8_t *qflags, expanded_cmd_t *out_cmd) {
     /* 1. Check if word contains any unquoted glob characters */
     bool has_glob = false;
     for (size_t i = 0; word[i]; i++) {
@@ -159,7 +215,7 @@ static int expand_glob(const char *word, const uint8_t *qflags, expanded_cmd_t *
     }
 
     /* 3. Open directory and collect matches */
-    s_glob_count = 0;
+    ctx->glob_count = 0;
     long fd = call(SYS_OPEN, (uintptr_t)dir_part, 0, 0);
     if (fd >= 0) {
         vfs_dirent_t entry;
@@ -169,8 +225,8 @@ static int expand_glob(const char *word, const uint8_t *qflags, expanded_cmd_t *
             if (entry.name[0] == '.' && file_pat[0] != '.') continue;
 
             if (glob_match(file_pat, entry.name)) {
-                if (s_glob_count < 64) {
-                    str_copy(s_glob_names[s_glob_count++], entry.name, VFS_MAX_NAME);
+                if (ctx->glob_count < ctx->max_glob_names) {
+                    str_copy(ctx->glob_names[ctx->glob_count++], entry.name, VFS_MAX_NAME);
                 }
             }
         }
@@ -178,7 +234,7 @@ static int expand_glob(const char *word, const uint8_t *qflags, expanded_cmd_t *
     }
 
     /* 4. If no matches found: leave pattern literal */
-    if (s_glob_count == 0) {
+    if (ctx->glob_count == 0) {
         if (out_cmd->argc < MAX_EXPANDED_ARGS) {
             out_cmd->argv[out_cmd->argc++] = (char *)word;
         }
@@ -186,10 +242,10 @@ static int expand_glob(const char *word, const uint8_t *qflags, expanded_cmd_t *
     }
 
     /* 5. Sort matches alphabetically */
-    sort_glob_names(s_glob_count);
+    sort_glob_names(ctx, ctx->glob_count);
 
     /* 6. Add matching paths to out_cmd */
-    for (int i = 0; i < s_glob_count; i++) {
+    for (int i = 0; i < ctx->glob_count; i++) {
         if (out_cmd->argc >= MAX_EXPANDED_ARGS) break;
 
         char path_buf[VFS_MAX_PATH];
@@ -203,17 +259,17 @@ static int expand_glob(const char *word, const uint8_t *qflags, expanded_cmd_t *
                 path_buf[p++] = '/';
             }
         }
-        size_t nlen = str_len(s_glob_names[i]);
+        size_t nlen = str_len(ctx->glob_names[i]);
         for (size_t k = 0; k < nlen && p + 1 < sizeof(path_buf); k++) {
-            path_buf[p++] = s_glob_names[i][k];
+            path_buf[p++] = ctx->glob_names[i][k];
         }
         path_buf[p] = '\0';
 
         size_t needed = p + 1;
-        if (s_expand_pool_used + needed <= sizeof(s_expand_pool)) {
-            char *dest = &s_expand_pool[s_expand_pool_used];
+        if (ctx->expand_pool_used + needed <= ctx->expand_pool_cap) {
+            char *dest = &ctx->expand_pool[ctx->expand_pool_used];
             str_copy(dest, path_buf, needed);
-            s_expand_pool_used += needed;
+            ctx->expand_pool_used += needed;
             out_cmd->argv[out_cmd->argc++] = dest;
         }
     }
@@ -221,12 +277,12 @@ static int expand_glob(const char *word, const uint8_t *qflags, expanded_cmd_t *
     return 0;
 }
 
-int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_t *out_cmd) {
-    if (!in_cmd || !out_cmd) return -1;
+static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_t *out_cmd) {
+    if (!ctx || !in_cmd || !out_cmd) return -1;
 
     out_cmd->argc = 0;
-    s_expand_pool_used = 0;
-    s_split_count = 0;
+    ctx->expand_pool_used = 0;
+    ctx->split_count = 0;
 
     for (int a = 0; a < in_cmd->argc; a++) {
         const char *word = in_cmd->argv[a];
@@ -244,9 +300,9 @@ int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_
             (word[1] == '/' || word[1] == '\0')) {
             const char *home = vars_get("HOME");
             if (!home || !*home) home = "/";
-            while (*home && exp_len + 1 < sizeof(s_exp_chars)) {
-                s_exp_flags[exp_len] = QUOTE_NONE;
-                s_exp_chars[exp_len++] = *home++;
+            while (*home && exp_len + 1 < ctx->exp_cap) {
+                ctx->exp_flags[exp_len] = QUOTE_NONE;
+                ctx->exp_chars[exp_len++] = *home++;
             }
             i = 1;
         }
@@ -274,18 +330,18 @@ int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_
                         while (t > 0) num_buf[n++] = tmp[--t];
                     }
                     num_buf[n] = '\0';
-                    for (int k = 0; k < n && exp_len + 1 < sizeof(s_exp_chars); k++) {
-                        s_exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
-                        s_exp_chars[exp_len++] = num_buf[k];
+                    for (int k = 0; k < n && exp_len + 1 < ctx->exp_cap; k++) {
+                        ctx->exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
+                        ctx->exp_chars[exp_len++] = num_buf[k];
                     }
                     continue;
                 }
 
                 if (word[i] == '$') {
                     i++;
-                    if (exp_len + 1 < sizeof(s_exp_chars)) {
-                        s_exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
-                        s_exp_chars[exp_len++] = '1';
+                    if (exp_len + 1 < ctx->exp_cap) {
+                        ctx->exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
+                        ctx->exp_chars[exp_len++] = '1';
                     }
                     continue;
                 }
@@ -318,35 +374,35 @@ int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_
 
                 const char *val = vars_get(var_name);
                 if (val) {
-                    while (*val && exp_len + 1 < sizeof(s_exp_chars)) {
-                        s_exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
-                        s_exp_chars[exp_len++] = *val++;
+                    while (*val && exp_len + 1 < ctx->exp_cap) {
+                        ctx->exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
+                        ctx->exp_chars[exp_len++] = *val++;
                     }
                 }
                 continue;
             }
 
             /* Regular character */
-            if (exp_len + 1 < sizeof(s_exp_chars)) {
-                s_exp_flags[exp_len] = qf;
-                s_exp_chars[exp_len++] = word[i];
+            if (exp_len + 1 < ctx->exp_cap) {
+                ctx->exp_flags[exp_len] = qf;
+                ctx->exp_chars[exp_len++] = word[i];
             }
             i++;
         }
-        s_exp_chars[exp_len] = '\0';
+        ctx->exp_chars[exp_len] = '\0';
 
         /* Step 3: Word Splitting on QUOTE_EXPANDED_UNQUOTED whitespace */
         if (exp_len == 0) {
             if (has_quotes) {
                 /* Retain empty argument */
-                if (s_split_count < MAX_EXPANDED_ARGS && s_expand_pool_used + 1 <= sizeof(s_expand_pool)) {
-                    char *dest = &s_expand_pool[s_expand_pool_used];
+                if (ctx->split_count < ctx->max_split_words && ctx->expand_pool_used + 1 <= ctx->expand_pool_cap) {
+                    char *dest = &ctx->expand_pool[ctx->expand_pool_used];
                     *dest = '\0';
-                    s_expand_pool_used++;
-                    s_split_words[s_split_count] = dest;
-                    s_split_flags[s_split_count] = 0;
-                    s_split_has_quotes[s_split_count] = true;
-                    s_split_count++;
+                    ctx->expand_pool_used++;
+                    ctx->split_words[ctx->split_count] = dest;
+                    ctx->split_flags[ctx->split_count] = 0;
+                    ctx->split_has_quotes[ctx->split_count] = true;
+                    ctx->split_count++;
                 }
             }
             continue;
@@ -356,25 +412,25 @@ int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_
         bool in_word = false;
 
         for (size_t k = 0; k < exp_len; k++) {
-            if (s_exp_flags[k] == QUOTE_EXPANDED_UNQUOTED && is_whitespace(s_exp_chars[k])) {
+            if (ctx->exp_flags[k] == QUOTE_EXPANDED_UNQUOTED && is_whitespace(ctx->exp_chars[k])) {
                 if (in_word) {
                     size_t wlen = k - cur_start;
-                    if (s_split_count < MAX_EXPANDED_ARGS &&
-                        s_expand_pool_used + wlen + 1 + wlen + 1 <= sizeof(s_expand_pool)) {
-                        char *dest = &s_expand_pool[s_expand_pool_used];
-                        uint8_t *qdest = (uint8_t *)&s_expand_pool[s_expand_pool_used + wlen + 1];
+                    if (ctx->split_count < ctx->max_split_words &&
+                        ctx->expand_pool_used + wlen + 1 + wlen + 1 <= ctx->expand_pool_cap) {
+                        char *dest = &ctx->expand_pool[ctx->expand_pool_used];
+                        uint8_t *qdest = (uint8_t *)&ctx->expand_pool[ctx->expand_pool_used + wlen + 1];
                         for (size_t j = 0; j < wlen; j++) {
-                            dest[j] = s_exp_chars[cur_start + j];
-                            qdest[j] = s_exp_flags[cur_start + j];
+                            dest[j] = ctx->exp_chars[cur_start + j];
+                            qdest[j] = ctx->exp_flags[cur_start + j];
                         }
                         dest[wlen] = '\0';
                         qdest[wlen] = 0;
-                        s_expand_pool_used += (wlen + 1) * 2;
+                        ctx->expand_pool_used += (wlen + 1) * 2;
 
-                        s_split_words[s_split_count] = dest;
-                        s_split_flags[s_split_count] = qdest;
-                        s_split_has_quotes[s_split_count] = has_quotes;
-                        s_split_count++;
+                        ctx->split_words[ctx->split_count] = dest;
+                        ctx->split_flags[ctx->split_count] = qdest;
+                        ctx->split_has_quotes[ctx->split_count] = has_quotes;
+                        ctx->split_count++;
                     }
                     in_word = false;
                 }
@@ -388,42 +444,46 @@ int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_
 
         if (in_word) {
             size_t wlen = exp_len - cur_start;
-            if (s_split_count < MAX_EXPANDED_ARGS &&
-                s_expand_pool_used + wlen + 1 + wlen + 1 <= sizeof(s_expand_pool)) {
-                char *dest = &s_expand_pool[s_expand_pool_used];
-                uint8_t *qdest = (uint8_t *)&s_expand_pool[s_expand_pool_used + wlen + 1];
+            if (ctx->split_count < ctx->max_split_words &&
+                ctx->expand_pool_used + wlen + 1 + wlen + 1 <= ctx->expand_pool_cap) {
+                char *dest = &ctx->expand_pool[ctx->expand_pool_used];
+                uint8_t *qdest = (uint8_t *)&ctx->expand_pool[ctx->expand_pool_used + wlen + 1];
                 for (size_t j = 0; j < wlen; j++) {
-                    dest[j] = s_exp_chars[cur_start + j];
-                    qdest[j] = s_exp_flags[cur_start + j];
+                    dest[j] = ctx->exp_chars[cur_start + j];
+                    qdest[j] = ctx->exp_flags[cur_start + j];
                 }
                 dest[wlen] = '\0';
                 qdest[wlen] = 0;
-                s_expand_pool_used += (wlen + 1) * 2;
+                ctx->expand_pool_used += (wlen + 1) * 2;
 
-                s_split_words[s_split_count] = dest;
-                s_split_flags[s_split_count] = qdest;
-                s_split_has_quotes[s_split_count] = has_quotes;
-                s_split_count++;
+                ctx->split_words[ctx->split_count] = dest;
+                ctx->split_flags[ctx->split_count] = qdest;
+                ctx->split_has_quotes[ctx->split_count] = has_quotes;
+                ctx->split_count++;
             }
         }
     }
 
     /* Step 4: Pathname Expansion (Globbing) on each split word */
-    for (int w = 0; w < s_split_count; w++) {
-        if (s_split_has_quotes[w]) {
+    for (int w = 0; w < ctx->split_count; w++) {
+        if (ctx->split_has_quotes[w]) {
             /* If the word was an explicitly quoted empty string e.g. "", preserve it without globbing */
-            if (s_split_words[w][0] == '\0') {
+            if (ctx->split_words[w][0] == '\0') {
                 if (out_cmd->argc < MAX_EXPANDED_ARGS) {
-                    out_cmd->argv[out_cmd->argc++] = s_split_words[w];
+                    out_cmd->argv[out_cmd->argc++] = ctx->split_words[w];
                 }
                 continue;
             }
         }
-        expand_glob(s_split_words[w], s_split_flags[w], out_cmd);
+        expand_glob(ctx, ctx->split_words[w], ctx->split_flags[w], out_cmd);
     }
 
     out_cmd->argv[out_cmd->argc] = 0;
     return 0;
+}
+
+int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_t *out_cmd) {
+    return expand_command_ctx(&s_cmd_ctx, in_cmd, last_status, out_cmd);
 }
 
 static parse_cmd_t s_single_redir_cmd;
@@ -447,7 +507,7 @@ int expand_redir_target(const char *target, const uint8_t *quote_flags, bool has
     s_single_redir_cmd.negate = false;
     s_single_redir_cmd.next_op = CMD_OP_NONE;
 
-    if (expand_command(&s_single_redir_cmd, last_status, &s_single_redir_exp) != 0 ||
+    if (expand_command_ctx(&s_redir_ctx, &s_single_redir_cmd, last_status, &s_single_redir_exp) != 0 ||
         s_single_redir_exp.argc != 1) {
         return -1; /* ambiguous redirect or empty */
     }

@@ -499,7 +499,7 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
     if (access_mode > 2) {
         return NULL;
     }
-    if (flags & ~(VFS_O_RDONLY | VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND)) {
+    if (flags & ~(VFS_O_RDONLY | VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND | VFS_O_CLOEXEC)) {
         return NULL;
     }
 

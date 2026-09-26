@@ -46,6 +46,11 @@ void file_error(long error) {
     else puts(error == SYSCALL_ENOENT ? "No such file or directory.\n" : "File operation failed.\n");
 }
 
+void file_error_err(long error) {
+    if (error == SYSCALL_EROFS) puts_err("Read-only filesystem.\n");
+    else puts_err(error == SYSCALL_ENOENT ? "No such file or directory.\n" : "File operation failed.\n");
+}
+
 void put_dec(size_t val) {
     char buf[24];
     size_t i = 0;

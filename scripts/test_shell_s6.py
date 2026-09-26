@@ -23,9 +23,9 @@ from test_nmi_transitions import REPO, Remote, QMP, symbols, connect
 def run(mode):
     sym = symbols()
     cpus = "1"
-    build_log = REPO / "build" / f"shell-s6-{mode}.log"
+    log = REPO / "build" / f"shell-s6-{mode}.log"
+    log.write_text("")
     with tempfile.TemporaryDirectory(prefix="fortress-s6-") as tmp:
-        log = Path(tmp) / f"shell-s6-{mode}.log"
         uart_path, qmp_path, gdb_path = [Path(tmp) / n for n in ("uart", "qmp", "gdb")]
         img_copy = Path(tmp) / "nvme.img"
         shutil.copyfile(REPO / "build" / "nvme_gpt.img", img_copy)
@@ -45,7 +45,20 @@ def run(mode):
 
         child = subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         try:
-            uart = connect(uart_path)
+            deadline = time.monotonic() + 10.0
+            uart = None
+            last_err = None
+            while time.monotonic() < deadline:
+                assert child.poll() is None, child.stderr.read().decode()
+                try:
+                    uart = connect(uart_path)
+                    break
+                except (FileNotFoundError, ConnectionRefusedError, OSError, RuntimeError) as e:
+                    last_err = e
+                    time.sleep(0.05)
+            if uart is None:
+                raise RuntimeError(f"QEMU socket unavailable after 10s: {uart_path}") from last_err
+
             uart.settimeout(0.2)
             stop_reader = threading.Event()
             def drain():
@@ -58,6 +71,7 @@ def run(mode):
             reader.start()
 
             qmp, remote = QMP(qmp_path), Remote(gdb_path)
+            remote.request("qSupported")
             qmp.execute("cont")
 
             def output():
@@ -142,15 +156,51 @@ def run(mode):
             assert "0\n" not in out, f"Expected non-zero status for failed redirection: {out}"
             print(f"[{mode.upper()}] S6 Redirection open failure handling verified.", flush=True)
 
-            print(f"PASS {mode}: All S6 Phase 4A/4B redirection integration checks passed cleanly!", flush=True)
+            # 7. Parent builtin output redirection: echo $MSG1 > /mnt/s6_echo.txt
+            uart_cmd('MSG1="Builtin line 1"\n')
+            out = uart_cmd('echo $MSG1 > /mnt/s6_echo.txt\n')
+            assert "Builtin line 1" not in out, f"Builtin output leaked to terminal: {out}"
+            out = uart_cmd("cat /mnt/s6_echo.txt\n")
+            assert "Builtin line 1" in out, out
+            print(f"[{mode.upper()}] S6 Parent builtin redirection (echo > file) verified.", flush=True)
+
+            # 8. Parent builtin append redirection: echo $MSG2 >> /mnt/s6_echo.txt
+            uart_cmd('MSG2="Builtin line 2"\n')
+            out = uart_cmd('echo $MSG2 >> /mnt/s6_echo.txt\n')
+            assert "Builtin line 2" not in out, out
+            out = uart_cmd("cat /mnt/s6_echo.txt\n")
+            assert "Builtin line 1" in out, out
+            assert "Builtin line 2" in out, out
+            print(f"[{mode.upper()}] S6 Parent builtin append redirection (echo >> file) verified.", flush=True)
+
+            # 9. Parent builtin pwd redirection: pwd > /mnt/s6_pwd.txt
+            out = uart_cmd("pwd > /mnt/s6_pwd.txt\n")
+            out = uart_cmd("cat /mnt/s6_pwd.txt\n")
+            assert "/" in out, out
+            print(f"[{mode.upper()}] S6 Parent builtin pwd redirection verified.", flush=True)
+
+            # 10. Parent redirection-only command: > /mnt/s6_empty.txt
+            out = uart_cmd("> /mnt/s6_empty.txt\n")
+            out = uart_cmd("echo $?\n")
+            assert "0\n" in out, f"Expected 0 status for empty redirection: {out}"
+            out = uart_cmd("ls /mnt\n")
+            assert "s6_empty.txt" in out, out
+            print(f"[{mode.upper()}] S6 Redirection-only command (> /mnt/s6_empty.txt) verified.", flush=True)
+
+            # 11. Retained terminal UI after descriptor close: 1>&-
+            out = uart_cmd("echo closed 1>&-\n")
+            # Prompt must still be responsive
+            out = uart_cmd("echo still-alive\n")
+            assert "still-alive" in out, f"Terminal corrupted after stdout close: {out}"
+            print(f"[{mode.upper()}] S6 Retained terminal UI after stdout close verified.", flush=True)
+
+            print(f"PASS {mode}: All S6 Phase 4 (4A-4D) redirection integration checks passed cleanly!", flush=True)
 
         finally:
             if "stop_reader" in locals(): stop_reader.set()
             child.terminate()
             try: child.wait(timeout=5)
             except subprocess.TimeoutExpired: child.kill(); child.wait()
-            if log.exists():
-                shutil.copyfile(log, build_log)
 
 
 if __name__ == "__main__":

@@ -171,9 +171,15 @@ def run(mode):
                     for handle, mode in zip(standard, (0, 1, 1)):
                         assert u64(handle + node_offset) == sym["g_terminal_node"], "Non-terminal standard handle"
                         assert int.from_bytes(remote.memory(handle + flags_offset, 4), "little") == mode
-                        assert int.from_bytes(remote.memory(handle + refs_offset, 4), "little") == 1, "Leaked file reference"
-                    assert remote.memory(blocked + fds_offset + 3 * 8, 29 * 8) == bytes(29 * 8), "Leaked descriptor"
-                    assert remote.memory(blocked + fd_flags_offset, 32 * 4) == bytes(32 * 4), "Unexpected descriptor flags"
+                    # Descriptors 3..30 must be unused
+                    assert remote.memory(blocked + fds_offset + 3 * 8, 28 * 8) == bytes(28 * 8), "Leaked descriptor"
+                    # Descriptor 31 is the retained UI terminal handle (Phase 4D) with CLOEXEC
+                    term31 = u64(blocked + fds_offset + 31 * 8)
+                    if term31:
+                        assert u64(term31 + node_offset) == sym["g_terminal_node"], "Invalid retained terminal descriptor 31"
+                        flags31 = int.from_bytes(remote.memory(blocked + fd_flags_offset + 31 * 4, 4), "little")
+                        assert flags31 == 1, "Retained terminal must have FD_FLAG_CLOEXEC"
+                    assert remote.memory(blocked + fd_flags_offset, 31 * 4) == bytes(31 * 4), "Unexpected descriptor flags"
                     return {"pid": u64(blocked + 8), "ticks": u64(blocked + ticks_offset),
                             "timer": u64(sym["g_timer_ticks"]), "free": u64(sym["free_pages"]),
                             "slots": u64(sym["g_stack_slots_bitmap"])}

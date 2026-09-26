@@ -38,6 +38,27 @@ int shell_get_terminal_fd(void) {
     return g_term_fd;
 }
 
+void shell_ui_init(void) {
+    /* Retain private controlling terminal handle on high descriptor (31) with CLOEXEC */
+    long term = call(SYS_OPEN, (uintptr_t)"/dev/tty", VFS_O_RDWR | VFS_O_CLOEXEC, 0);
+    if (term >= 0) {
+        if (term != 31) {
+            long new_term = call(SYS_FCNTL, (uintptr_t)term, F_DUPFD_CLOEXEC, 31);
+            if (new_term >= 0) {
+                (void)call(SYS_CLOSE, (uintptr_t)term, 0, 0);
+                term = new_term;
+            }
+        }
+        shell_set_terminal_fd((int)term);
+    } else {
+        /* Fallback: dup existing stdout to 31 with CLOEXEC */
+        long term2 = call(SYS_FCNTL, 1, F_DUPFD_CLOEXEC, 31);
+        if (term2 >= 0) {
+            shell_set_terminal_fd((int)term2);
+        }
+    }
+}
+
 static void ui_puts(const char *s) {
     puts_fd(g_term_fd, s);
 }

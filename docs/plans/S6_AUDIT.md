@@ -195,10 +195,10 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 | --- | --- | --- |
 | Uniform descriptors and access modes | Partial: stream bypass active; stdin works; access modes enforced | Host ext2 suite verified; Ring 3 terminal/null/file reads and writes verified |
 | Dup/shared offsets/independent opens | Partial: negative errors verified; boot self-test covers exhaustion/cleanup | Kernel boot self-test verifies -EBADF, -EMFILE, self-dup, exhaustion, cleanup; Ring 3 integration pending |
-| Spawn fd actions and ordering | Kernel path present; shell disconnected | Child stdout/stderr routing, close/open/dup order, invalid-action unwind |
-| Builtin redirection | Missing | Parent save/apply/restore, including initially closed fds and every failure |
-| One-path target expansion | Helper present, unused | Quoting, spaces, empty/unset expansion, zero/multiple glob matches |
-| Retained UI terminal | Missing wiring | Prompt and editing after redirection, closure and failed setup |
+| Spawn fd actions and ordering | Verified (2026-09-26) | Child stdout/stderr routing, close/open/dup order, invalid-action unwind verified in QEMU BIOS/UEFI |
+| Builtin redirection | Verified (2026-09-26) | Parent save/apply/restore, initially closed fds, failure unwinding, redirection-only (> file) verified in QEMU BIOS/UEFI |
+| One-path target expansion | Verified (2026-09-26) | Quoting, spaces, empty/unset expansion, ambiguous redirection rejection verified in host ASan/UBSan & QEMU |
+| Retained UI terminal | Verified (2026-09-26) | Prompt and editing after redirection, closure and failed setup; private terminal retained on FD 31 with CLOEXEC verified in QEMU |
 | Concurrent append | Verified (2026-09-26) | Two pinned workers on cores 1 and 2, independent and shared handles, 200 records (3200 bytes) 100% delivered, 0 lost/duplicate, strict per-worker ordering, interleaving confirmed, clean S5 shutdown, 0 e2fsck errors on BIOS and UEFI |
 | Resource exhaustion and allocation failures | Not established for S6 | Exhaust fd/process capacity; inject allocation failures; no runnable partial child |
 | RO/tainted storage and short I/O | Existing layers, S6 not established | Distinct errors, command not executed after setup failure, stable prompt/status |
@@ -208,7 +208,8 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 
 - `wsl -d Ubuntu-24.04 -- make test-shell-host`: PASS. Verified ASan/UBSan
   editor, lexer/parser, bounded redirection numbers (e.g. `2>&257`, `99>out`,
-  overflow protection), variables, aliases, globbing, and expansion.
+  overflow protection), variables, aliases, globbing, expansion, and parent
+  redirection save/apply/restore mocks.
 - `wsl -d Ubuntu-24.04 -- make test-ext2`: PASS across all 8 block/sector geometry
   permutations (1k/2k/4k block × 512/4k sector). Verified stream I/O bypass
   (read reaching `input_read`, zero-offset preservation, access mode rejection).
@@ -222,10 +223,21 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 - **Phase 3 Verification Runs (`make test-smp-append`):**
   - QEMU BIOS (-smp 4): PASS. Two dedicated AP workers (cores 1 & 2) slamming concurrent appends; 200 records (3200 bytes) delivered with 0 lost, 0 duplicate, strict ordering, 38 & 31 interleaving transitions, clean ACPI S5 poweroff, offline `e2fsck -fn` 0 errors.
   - QEMU UEFI (-smp 4): PASS. Two dedicated AP workers (cores 1 & 2) slamming concurrent appends; 200 records (3200 bytes) delivered with 0 lost, 0 duplicate, strict ordering, 64 & 75 interleaving transitions, clean ACPI S5 poweroff, offline `e2fsck -fn` 0 errors.
-- **Phase 4A/4B Verification Runs (`make test-shell-host` and `make test-shell-s6`):**
-  - Host ASan/UBSan: PASS (`tests/shell_host.c`). Verified input redirection, output creation and truncation, append, lexical duplication ordering (`>out 2>&1` vs `2>&1 >out`), descriptor close (`>&-`, `<&-`), target variable expansion (`>$TARGET`), and ambiguous redirect rejection (`>$AMBIG`).
-  - QEMU BIOS (`make test-shell-s6`): PASS. Initial shell reached; child stdout redirection (`run /bin/hello 10 > file`) silenced terminal; redirected file content verified; child append redirection (`run /bin/hello 20 >> file`) verified; direct path execution (`/bin/hello 30 >> file`) verified; target variable expansion (`/bin/hello 42 > $TARGET`) verified; ambiguous redirect rejection verified; redirection open failure handling verified.
-  - QEMU UEFI (`make test-shell-s6`): PASS. Identical 7 verification points verified cleanly under OVMF UEFI.
+- **Phase 4 Verification Runs (`make test-shell-host` and `make test-shell-s6`):**
+  - Host ASan/UBSan: PASS (`tests/shell_host.c`). Verified input redirection, output creation and truncation, append, lexical duplication ordering (`>out 2>&1` vs `2>&1 >out`), descriptor close (`>&-`, `<&-`), target variable expansion (`>$TARGET`), ambiguous redirect rejection (`>$AMBIG`), and parent builtin save/apply/restore lifecycle.
+  - QEMU BIOS (`make test-shell-s6`): PASS. 11/11 integration test scenarios verified:
+    1. Child stdout redirection: `run /bin/hello 10 > /mnt/s6_hello.txt` silenced terminal; file content verified on disk.
+    2. Child append redirection: `run /bin/hello 20 >> /mnt/s6_hello.txt` verified.
+    3. Direct execution path with redirection: `/bin/hello 30 >> /mnt/s6_hello.txt` verified.
+    4. Target path variable expansion: `TARGET=...; /bin/hello 42 > $TARGET` verified.
+    5. Ambiguous redirection rejection: `BAD="a b"; /bin/hello > $BAD` diagnosed to stderr and exit code 1.
+    6. Redirection open failure handling: `/bin/hello > /nonexistent/dir/out.txt` diagnosed with non-zero exit code.
+    7. Parent builtin redirection: `echo $MSG1 > /mnt/s6_echo.txt` written to file without terminal leakage.
+    8. Parent builtin append redirection: `echo $MSG2 >> /mnt/s6_echo.txt` appended cleanly.
+    9. Parent builtin pwd redirection: `pwd > /mnt/s6_pwd.txt` verified.
+    10. Redirection-only command: `> /mnt/s6_empty.txt` created 0-byte file without child spawn.
+    11. Retained UI terminal handle on FD 31: `echo closed 1>&-` followed by `echo still-alive` proved interactive shell prompt and editor remain responsive even when stdout is explicitly closed.
+  - QEMU UEFI (`make test-shell-s6`): PASS. Identical 11 verification points verified cleanly under OVMF UEFI.
 
 ## Execution checklist
 
@@ -234,11 +246,11 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
    atomic acquire-release refcounting on `file_t`, deliver host append tests in `tests/ext2_host.c`, and deliver
    true multi-core SMP concurrent append integration test suite in `scripts/test_smp_append.py` / `src/kernel/main.c`
    (verified on BIOS and UEFI under `-smp 4` with full offline `e2fsck -fn` audits).
-3. [ ] Phase 4: Wire ordered redirections into children (`SYS_SPAWN_EXT`) and scoped parent builtins; retain
+3. [x] Phase 4: Wire ordered redirections into children (`SYS_SPAWN_EXT`) and scoped parent builtins; retain
    controlling terminal handle (`g_term_fd`); propagate short write errors and exclude private handles from spawn.
    - [x] Phase 4A & 4B: Parse `cmd->redirs`, expand targets via `expand_redir_target`, build `spawn_fd_action_t[]`, populate `opts.fd_actions` and `opts.action_count`, call `SYS_SPAWN_EXT`, and handle ambiguous redirection failures (verified host ASan/UBSan and QEMU BIOS/UEFI).
-   - [ ] Phase 4C: Scoped parent builtin redirection (save/apply/restore for builtins).
-   - [ ] Phase 4D: Retained UI terminal handle (`g_term_fd`) and CLOEXEC exclusions.
+   - [x] Phase 4C: Scoped parent builtin redirection (save/apply/restore for builtins, empty commands, failure recovery).
+   - [x] Phase 4D: Retained UI terminal handle (`g_term_fd` on FD 31 with `FD_FLAG_CLOEXEC`) and CLOEXEC exclusions.
 4. [ ] Exercise `<`, `>`, `>>`, `2>`, `2>>`, `n>&m`, `n<&m`, `n>&-`, and compare
    `cmd >out 2>&1` with `cmd 2>&1 >out` using a child that writes to both streams.
 5. [ ] Run bounded BIOS/UEFI cases on disposable fixtures and verify file contents,

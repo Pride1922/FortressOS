@@ -11,5 +11,6 @@ void shell_set_prompt_template(const char *tmpl);
 const char *shell_get_prompt_template(void);
 void shell_set_terminal_fd(int fd);
 int  shell_get_terminal_fd(void);
+void shell_ui_init(void);
 
 #endif /* SHELL_UI_H */

@@ -31,6 +31,7 @@ static parse_cmd_t s_sub_cmd;
 static expanded_cmd_t s_exp_val;
 static spawn_fd_action_t s_spawn_actions[MAX_SPAWN_ACTIONS];
 static char s_spawn_target_paths[MAX_SPAWN_ACTIONS][VFS_MAX_PATH];
+static redir_scope_t s_parent_scope;
 
 static void update_cwd(void) {
     long n = call(SYS_GETCWD, (uintptr_t)current_cwd, sizeof(current_cwd), 0);
@@ -567,6 +568,18 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     return spawn_program(target, (const char **)argv, actions, action_count);
 }
 
+static bool is_parent_builtin(int argc, char **argv) {
+    if (argc == 0 || !argv || !argv[0] || !argv[0][0]) return true;
+    int idx = 0;
+    while (idx < argc && equal(argv[idx], "command")) {
+        idx++;
+    }
+    if (idx >= argc) return true;
+    enum builtin b = builtin_find(argv[idx]);
+    if (b == CMD_UNKNOWN || b == CMD_RUN) return false;
+    return true;
+}
+
 static void execute_parse_tree(parse_tree_t *tree) {
     int i = 0;
     int curr_status = (int)last_status;
@@ -650,24 +663,41 @@ static void execute_parse_tree(parse_tree_t *tree) {
                 s_sub_cmd.argv[s_sub_cmd.argc] = NULL;
                 s_sub_cmd.quote_flags[s_sub_cmd.argc] = NULL;
 
-                uint32_t spawn_action_count = 0;
-                bool redir_err = false;
-                if (cmd->redir_count > 0) {
-                    if (redir_build_spawn_actions(cmd->redirs, cmd->redir_count, curr_status,
-                                                  s_spawn_actions, &spawn_action_count,
-                                                  s_spawn_target_paths) != 0) {
-                        curr_status = 1;
-                        redir_err = true;
-                    }
-                }
+                expand_command(&s_sub_cmd, curr_status, &s_expanded_cmd);
 
-                if (!redir_err) {
-                    expand_command(&s_sub_cmd, curr_status, &s_expanded_cmd);
-                    if (s_expanded_cmd.argc > 0) {
-                        curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv,
-                                                             s_spawn_actions, spawn_action_count);
+                if (is_parent_builtin(s_expanded_cmd.argc, s_expanded_cmd.argv)) {
+                    if (cmd->redir_count > 0) {
+                        if (redir_apply_parent(cmd->redirs, cmd->redir_count, curr_status, &s_parent_scope) != 0) {
+                            curr_status = 1;
+                        } else {
+                            if (s_expanded_cmd.argc > 0) {
+                                curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv, NULL, 0);
+                            } else {
+                                curr_status = 0;
+                            }
+                            redir_restore_parent(&s_parent_scope);
+                        }
                     } else {
-                        curr_status = 0;
+                        if (s_expanded_cmd.argc > 0) {
+                            curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv, NULL, 0);
+                        } else {
+                            curr_status = 0;
+                        }
+                    }
+                } else {
+                    uint32_t spawn_action_count = 0;
+                    if (cmd->redir_count > 0) {
+                        if (redir_build_spawn_actions(cmd->redirs, cmd->redir_count, curr_status,
+                                                      s_spawn_actions, &spawn_action_count,
+                                                      s_spawn_target_paths) != 0) {
+                            curr_status = 1;
+                        } else {
+                            curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv,
+                                                                 s_spawn_actions, spawn_action_count);
+                        }
+                    } else {
+                        curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv,
+                                                             NULL, 0);
                     }
                 }
 
@@ -699,6 +729,7 @@ void shell_main(void) {
     }
 
     update_cwd();
+    shell_ui_init();
     vars_init();
     alias_init();
     (void)history_load();

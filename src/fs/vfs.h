@@ -14,6 +14,7 @@
 #define VFS_O_CREAT   0x40
 #define VFS_O_TRUNC   0x200
 #define VFS_O_APPEND  0x400
+#define VFS_O_CLOEXEC 0x80000
 
 #define VFS_SUCCESS      0
 #define VFS_EPERM        1
