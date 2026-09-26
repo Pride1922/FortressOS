@@ -21,6 +21,7 @@
 #include "elf.h"
 #include "console.h"
 #include "vfs.h"
+#include "pipe.h"
 #include "tarfs.h"
 #include "pci.h"
 #include "nvme.h"
@@ -3873,6 +3874,161 @@ static void test_smp_ext2_concurrent_append(void) {
     serial_puts("[ OK ] SMP ext2 concurrent append verification complete.\n\n");
 }
 
+/* S7 Phase 2: opt-in, storage-independent, same-CPU scheduler acceptance.
+ * IF/preemption are excluded while inspecting BSP worker states. All waits
+ * and transfers still use the real scheduler and production pipe callbacks. */
+static struct {
+    file_t *reader, *writer;
+    tcb_t *main;
+    unsigned mode;
+    _Atomic uint32_t done;
+    uint8_t send[8192], receive[8192];
+} pipe_test;
+
+static void pipe_test_require(bool ok, unsigned line) {
+    if (ok) return;
+    serial_puts("PIPE KERNEL FAIL line ");
+    serial_print_dec(line);
+    serial_puts("\n");
+    hcf();
+}
+#define PIPE_REQUIRE(x) pipe_test_require((x), __LINE__)
+
+static bool pipe_test_done(void *arg) {
+    (void)arg;
+    return __atomic_load_n(&pipe_test.done, __ATOMIC_ACQUIRE) != 0;
+}
+
+static void pipe_test_pair(void) {
+    vfs_node_t *r, *w;
+    PIPE_REQUIRE(pipe_create(&r, &w) == 0);
+    pipe_test.reader = kmalloc(sizeof(file_t));
+    pipe_test.writer = kmalloc(sizeof(file_t));
+    PIPE_REQUIRE(pipe_test.reader && pipe_test.writer);
+    *pipe_test.reader = (file_t){.node = r, .flags = VFS_O_RDONLY, .ref_count = 1};
+    *pipe_test.writer = (file_t){.node = w, .flags = VFS_O_WRONLY, .ref_count = 1};
+    pipe_test.done = 0;
+}
+
+static void pipe_test_worker(void *arg) {
+    (void)arg;
+    __asm__ volatile("cli" ::: "memory");
+    if (pipe_test.mode < 2) {
+        PIPE_REQUIRE(pipe_test.main->state == THREAD_BLOCKED);
+        PIPE_REQUIRE(pipe_test.main->wait_channel == pipe_test.writer->node->fs_private);
+        if (pipe_test.mode == 0)
+            PIPE_REQUIRE(vfs_write(pipe_test.writer, "pipe", 4) == 4);
+    } else if (pipe_test.mode == 2) {
+        for (unsigned block = 0; block < 32; block++) {
+            for (size_t i = 0; i < sizeof(pipe_test.send); i++)
+                pipe_test.send[i] = (uint8_t)(block + i * 37);
+            PIPE_REQUIRE(vfs_write(pipe_test.writer, pipe_test.send, sizeof(pipe_test.send)) == 8192);
+        }
+    } else {
+        PIPE_REQUIRE(vfs_write(pipe_test.writer, "X", 1) == -VFS_EPIPE);
+    }
+    vfs_close(pipe_test.writer);
+    __atomic_store_n(&pipe_test.done, 1, __ATOMIC_RELEASE);
+    sched_wake_all(&pipe_test);
+    thread_exit();
+}
+
+static void pipe_test_join(void) {
+    sched_wait_until(&pipe_test, pipe_test_done, NULL);
+    sched_reap_dead();
+}
+
+static void pipe_test_check_block(unsigned index) {
+    PIPE_REQUIRE(vfs_read(pipe_test.reader, pipe_test.receive, 8192) == 8192);
+    for (size_t i = 0; i < sizeof(pipe_test.receive); i++)
+        PIPE_REQUIRE(pipe_test.receive[i] == (index < 8 ? 0 : (uint8_t)(index - 8 + i * 37)));
+}
+
+static void test_pipe_kernel_lifecycle(void) {
+    uint64_t saved_flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(saved_flags) :: "memory");
+    bool preempt = sched_is_preemption_enabled();
+    sched_disable_preemption();
+    sched_reap_dead();
+    size_t heap_before = heap_get_used_bytes();
+    uint64_t slots_before = sched_get_active_stack_slots_mask();
+    pipe_test.main = thread_current();
+    for (unsigned mode = 0; mode < 2; mode++) {
+        pipe_test.mode = mode;
+        pipe_test_pair();
+        PIPE_REQUIRE(thread_create_on_cpu(0, "pipe-read-wake", pipe_test_worker, NULL) != NULL);
+        PIPE_REQUIRE(vfs_read(pipe_test.reader, pipe_test.receive, 4) == (mode ? 0 : 4));
+        if (!mode) PIPE_REQUIRE(memcmp(pipe_test.receive, "pipe", 4) == 0);
+        pipe_test_join();
+        PIPE_REQUIRE(vfs_read(pipe_test.reader, pipe_test.receive, 1) == 0);
+        vfs_close(pipe_test.reader);
+    }
+    serial_puts("PIPE KERNEL PASS blocked read and writer-close EOF\n");
+
+    pipe_test.mode = 2;
+    pipe_test_pair();
+    memset(pipe_test.send, 0, sizeof(pipe_test.send));
+    for (unsigned i = 0; i < 8; i++)
+        PIPE_REQUIRE(vfs_write(pipe_test.writer, pipe_test.send, 8192) == 8192);
+    tcb_t *worker = thread_create_on_cpu(0, "pipe-backpressure", pipe_test_worker, NULL);
+    PIPE_REQUIRE(worker != NULL);
+    for (unsigned i = 0; i < 32; i++) {
+        thread_yield();
+        PIPE_REQUIRE(worker->state == THREAD_BLOCKED);
+        PIPE_REQUIRE(worker->wait_channel == pipe_test.reader->node->fs_private);
+        pipe_test_check_block(i);
+    }
+    pipe_test_join();
+    for (unsigned i = 32; i < 40; i++) pipe_test_check_block(i);
+    PIPE_REQUIRE(vfs_read(pipe_test.reader, pipe_test.receive, 1) == 0);
+    vfs_close(pipe_test.reader);
+    serial_puts("PIPE KERNEL PASS 256 KiB, 32 observed writer block/wake cycles\n");
+
+    pipe_test.mode = 3;
+    pipe_test_pair();
+    for (unsigned i = 0; i < 8; i++)
+        PIPE_REQUIRE(vfs_write(pipe_test.writer, pipe_test.send, 8192) == 8192);
+    worker = thread_create_on_cpu(0, "pipe-broken-wake", pipe_test_worker, NULL);
+    PIPE_REQUIRE(worker != NULL);
+    thread_yield();
+    PIPE_REQUIRE(worker->state == THREAD_BLOCKED);
+    vfs_close(pipe_test.reader);
+    pipe_test_join();
+    pipe_test_pair();
+    vfs_close(pipe_test.reader);
+    PIPE_REQUIRE(vfs_write(pipe_test.writer, "X", 1) == -VFS_EPIPE);
+    vfs_close(pipe_test.writer);
+    serial_puts("PIPE KERNEL PASS reader-close EPIPE, blocked and immediate\n");
+
+    /* Exercise the production clone/dup/sweep helpers, including an empty
+     * flagged slot. Drop parent refs first to expose endpoint counter effects. */
+    static tcb_t parent, child;
+    memset(&parent, 0, sizeof(parent));
+    memset(&child, 0, sizeof(child));
+    pipe_test_pair();
+    pipe_t *p = pipe_test.reader->node->fs_private;
+    parent.fd_table[5] = pipe_test.reader;
+    parent.fd_table[6] = pipe_test.writer;
+    parent.fd_flags[5] = parent.fd_flags[6] = FD_FLAG_CLOEXEC;
+    fd_clone_table(&parent, &child);
+    PIPE_REQUIRE(child.fd_flags[5] == FD_FLAG_CLOEXEC && child.fd_flags[6] == FD_FLAG_CLOEXEC);
+    fd_close_all(&parent);
+    PIPE_REQUIRE(fd_dup2(&child, 5, 0) == 0);
+    child.fd_flags[7] = FD_FLAG_CLOEXEC; /* NULL guard */
+    fd_close_cloexec(&child);
+    PIPE_REQUIRE(child.fd_table[0] && child.fd_flags[0] == 0);
+    PIPE_REQUIRE(!child.fd_table[5] && !child.fd_table[6]);
+    PIPE_REQUIRE(p->writers == 0 && p->readers == 1);
+    fd_close_all(&child);
+    PIPE_REQUIRE(heap_get_used_bytes() == heap_before);
+    PIPE_REQUIRE(sched_get_active_stack_slots_mask() == slots_before);
+    PIPE_REQUIRE(heap_verify_integrity());
+    serial_puts("PIPE KERNEL PASS CLOEXEC sweep and heap/stack reclamation\n");
+    if (preempt) sched_enable_preemption();
+    if (saved_flags & (1ULL << 9)) __asm__ volatile("sti" ::: "memory");
+}
+#undef PIPE_REQUIRE
+
 void kmain(void) {
 
     /* 1. Initialize COM1 Serial Port (0x3F8) */
@@ -5461,6 +5617,9 @@ pf_boot_guard_done:
     }
 
     /* Inputs and shell are started after destructive/negative acceptance cases. */
+    if (qemu_fw_cfg_has_key("opt/fortress/pipe_test")) {
+        test_pipe_kernel_lifecycle();
+    }
     boot_status("Initializing input & USB controllers...");
     __asm__ volatile("cli" ::: "memory");
     sched_disable_preemption();

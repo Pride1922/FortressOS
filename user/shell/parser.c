@@ -26,7 +26,7 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
             continue;
         }
 
-        if (type == TOK_AND || type == TOK_OR) {
+        if (type == TOK_AND || type == TOK_OR || type == TOK_PIPE) {
             tree->error_msg = "syntax error near unexpected token";
             return PARSE_SYNTAX_ERROR;
         }
@@ -172,7 +172,14 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
         cmd->argv[cmd->argc] = 0;
         cmd->quote_flags[cmd->argc] = 0;
 
-        if (type == TOK_SEMI) {
+        if (type == TOK_PIPE) {
+            cmd->next_op = CMD_OP_PIPE;
+            type = lexer_next(&parse_lex, &tok);
+            if (type != TOK_WORD && type != TOK_REDIR && type != TOK_BANG) {
+                tree->error_msg = "syntax error: expected command after '|'";
+                return PARSE_SYNTAX_ERROR;
+            }
+        } else if (type == TOK_SEMI) {
             cmd->next_op = CMD_OP_SEMI;
             type = lexer_next(&parse_lex, &tok);
         } else if (type == TOK_AND) {
@@ -205,5 +212,28 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
     }
 
     if (tree->cmd_count == 0) return PARSE_EMPTY;
+    /* N stages have N-1 consecutive PIPE markers. Chain operators reset the
+     * count; MAX_CMDS independently bounds the entire flat command array. */
+    int pipe_run = 0;
+    for (int i = 0; i < tree->cmd_count; i++) {
+        if (tree->cmds[i].next_op == CMD_OP_PIPE) {
+            if (++pipe_run >= MAX_PIPE_STAGES) {
+                tree->error_msg = "pipeline too long (maximum 8 stages)";
+                return PARSE_SYNTAX_ERROR;
+            }
+        } else {
+            pipe_run = 0;
+        }
+    }
     return PARSE_OK;
+}
+
+int parser_execution_guard(const parse_tree_t *tree, long (*diagnostic)(const char *)) {
+    for (int i = 0; i < tree->cmd_count; i++) {
+        if (tree->cmds[i].next_op == CMD_OP_PIPE) {
+            diagnostic("pipeline: not yet supported\n");
+            return 1;
+        }
+    }
+    return 0;
 }

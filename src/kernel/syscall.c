@@ -6,6 +6,7 @@
 #include "thread.h"
 #include "msr.h"
 #include "vfs.h"
+#include "pipe.h"
 #include "string.h"
 #include "pmm.h"
 #include "power.h"
@@ -125,6 +126,8 @@ int64_t syscall_from_vfs_error(int64_t vfs_err) {
         case -VFS_ENOENT:      return SYSCALL_ENOENT;      /* -5 */
         case -VFS_EIO:         return SYSCALL_EIO;         /* -9 */
         case -VFS_EBADF:       return SYSCALL_EBADF;       /* -3 */
+        case -VFS_EPIPE:       return SYSCALL_EPIPE;
+        case -VFS_EAGAIN:      return SYSCALL_EAGAIN;
         case -VFS_ENOMEM:      return SYSCALL_ENOMEM;      /* -10 */
         case -VFS_EEXIST:      return SYSCALL_EEXIST;      /* -15 */
         case -VFS_EINVAL:      return SYSCALL_EINVAL;      /* -1 */
@@ -720,6 +723,52 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
     return (int64_t)fd;
 }
 
+static int64_t sys_pipe(uintptr_t user_pipefd, uint32_t flags) {
+    const size_t bytes = sizeof(int) * 2;
+    if (user_pipefd < 0x1000 || user_pipefd > 0x0000800000000000ULL - bytes ||
+        !vmm_validate_user_range(vmm_get_active_pml4_virt(), user_pipefd, bytes, true))
+        return SYSCALL_EFAULT;
+    if (flags & ~VFS_O_CLOEXEC) return SYSCALL_EINVAL;
+    tcb_t *curr = thread_current();
+    if (!curr) return SYSCALL_EBADF;
+    unsigned available = 0;
+    for (int i = 0; i < MAX_PROCESS_FDS; i++)
+        if (!curr->fd_table[i]) available++;
+    if (available < 2) return SYSCALL_EMFILE;
+
+    /* Each process has one thread and owns its fd table. Syscalls enter with
+     * IF clear; no publication or sleep occurs between preflight and commit. */
+    vfs_node_t *rn, *wn;
+    int err = pipe_create(&rn, &wn);
+    if (err) return syscall_from_vfs_error(err);
+    file_t *rf = kmalloc(sizeof(*rf));
+    file_t *wf = kmalloc(sizeof(*wf));
+    if (!rf || !wf) {
+        kfree(rf);
+        kfree(wf);
+        pipe_close_endpoint(rn);
+        pipe_close_endpoint(wn);
+        return SYSCALL_ENOMEM;
+    }
+    *rf = (file_t){ .node = rn, .flags = VFS_O_RDONLY | flags, .ref_count = 1 };
+    *wf = (file_t){ .node = wn, .flags = VFS_O_WRONLY | flags, .ref_count = 1 };
+    int rfd = fd_alloc(curr, rf);
+    int wfd = rfd < 0 ? -1 : fd_alloc(curr, wf);
+    if (wfd < 0) {
+        if (rfd >= 0) fd_free(curr, rfd);
+        else vfs_close(rf);
+        vfs_close(wf);
+        return SYSCALL_EMFILE;
+    }
+    if (flags & VFS_O_CLOEXEC) {
+        curr->fd_flags[rfd] = FD_FLAG_CLOEXEC;
+        curr->fd_flags[wfd] = FD_FLAG_CLOEXEC;
+    }
+    int result[2] = {rfd, wfd};
+    memcpy((void *)user_pipefd, result, sizeof(result));
+    return SYSCALL_SUCCESS;
+}
+
 static int64_t sys_close(int fd) {
     if (fd < 0 || fd >= MAX_PROCESS_FDS) {
         return SYSCALL_EBADF;
@@ -1140,6 +1189,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_FCNTL:
             result = sys_fcntl((int)frame->rdi, (int)frame->rsi, frame->rdx);
+            break;
+
+        case SYS_PIPE:
+            result = sys_pipe(frame->rdi, (uint32_t)frame->rsi);
             break;
 
         default:

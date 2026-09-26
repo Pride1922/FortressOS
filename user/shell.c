@@ -591,6 +591,12 @@ static bool is_parent_builtin(int argc, char **argv) {
 }
 
 static void execute_parse_tree(parse_tree_t *tree) {
+    /* Phase 3 interim guard: reject the entire chain before any side effects.
+     * Removed in Phase 4 when the executor gains CMD_OP_PIPE handling. */
+    if (parser_execution_guard(tree, puts_err)) {
+        last_status = 1;
+        return;
+    }
     int i = 0;
     int curr_status = (int)last_status;
 

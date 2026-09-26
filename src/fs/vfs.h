@@ -21,12 +21,14 @@
 #define VFS_ENOENT       2
 #define VFS_EIO          5
 #define VFS_EBADF        9
+#define VFS_EAGAIN       11
 #define VFS_ENOMEM       12
 #define VFS_EEXIST       17
 #define VFS_EINVAL       22
 #define VFS_EFBIG        27
 #define VFS_ENOSPC       28
 #define VFS_EROFS        30
+#define VFS_EPIPE        32
 #define VFS_ENOTEMPTY    39
 #define VFS_EOPNOTSUPP   95
 
@@ -56,6 +58,8 @@ typedef struct vfs_node {
     int (*truncate)(struct vfs_node *node, uint64_t new_size);
     int (*readdir)(struct vfs_node *, uint64_t, void *);
     int (*can_write)(struct vfs_node *node);
+    /* Called once on final file_t release; may destroy anonymous nodes. */
+    void (*close)(struct vfs_node *node);
 } vfs_node_t;
 
 typedef struct file {

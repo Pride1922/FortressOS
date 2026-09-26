@@ -90,6 +90,92 @@ void file_error_err(long error) {
 static line_editor_t e;
 static void feed(const char *s) { while(*s) lineedit_byte(&e,(unsigned char)*s++); }
 
+static unsigned pipeline_diagnostics;
+static long pipeline_diagnostic(const char *message) {
+    assert(!strcmp(message, "pipeline: not yet supported\n"));
+    pipeline_diagnostics++;
+    return (long)strlen(message);
+}
+
+static void test_pipelines(void) {
+    static parse_tree_t tree;
+    static lexer_t lex;
+    token_t tok;
+    lexer_init(&lex, "a|b||c");
+    assert(lexer_next(&lex, &tok) == TOK_WORD && !strcmp(tok.value, "a"));
+    assert(lexer_next(&lex, &tok) == TOK_PIPE && tok.len == 1);
+    assert(lexer_next(&lex, &tok) == TOK_WORD && !strcmp(tok.value, "b"));
+    assert(lexer_next(&lex, &tok) == TOK_OR && tok.len == 2);
+    assert(lexer_next(&lex, &tok) == TOK_WORD && !strcmp(tok.value, "c"));
+    assert(lexer_next(&lex, &tok) == TOK_EOF);
+
+    static const struct {
+        const char *src;
+        int count;
+        enum cmd_op ops[4];
+    } cases[] = {
+        {"a | b", 2, {CMD_OP_PIPE, CMD_OP_NONE}},
+        {"a|b|c", 3, {CMD_OP_PIPE, CMD_OP_PIPE, CMD_OP_NONE}},
+        {"a | b && c", 3, {CMD_OP_PIPE, CMD_OP_AND, CMD_OP_NONE}},
+        {"a && b | c", 3, {CMD_OP_AND, CMD_OP_PIPE, CMD_OP_NONE}},
+        {"a ; b | c", 3, {CMD_OP_SEMI, CMD_OP_PIPE, CMD_OP_NONE}},
+        {"a | b ; c | d", 4, {CMD_OP_PIPE, CMD_OP_SEMI, CMD_OP_PIPE, CMD_OP_NONE}},
+        {"a | b || c | d", 4, {CMD_OP_PIPE, CMD_OP_OR, CMD_OP_PIPE, CMD_OP_NONE}},
+        {"a || b | c", 3, {CMD_OP_OR, CMD_OP_PIPE, CMD_OP_NONE}},
+        {"a | b && c | d", 4, {CMD_OP_PIPE, CMD_OP_AND, CMD_OP_PIPE, CMD_OP_NONE}},
+    };
+    for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
+        assert(parser_parse(cases[k].src, &tree) == PARSE_OK);
+        assert(tree.cmd_count == cases[k].count);
+        for (int i = 0; i < tree.cmd_count; i++) {
+            assert(tree.cmds[i].argc == 1 && tree.cmds[i].argv[0][0] == 'a' + i);
+            assert(tree.cmds[i].argv[0][1] == '\0');
+            assert(tree.cmds[i].next_op == cases[k].ops[i]);
+        }
+    }
+    assert(parser_parse("a|b|c|d|e|f|g|h", &tree) == PARSE_OK && tree.cmd_count == 8);
+    assert(parser_parse("a|b|c|d|e|f|g|h|i", &tree) == PARSE_SYNTAX_ERROR);
+    assert(!strcmp(tree.error_msg, "pipeline too long (maximum 8 stages)"));
+    /* Each chain operator resets the stage limit, without changing MAX_CMDS. */
+    static const char *chains[] = {
+        "a|b|c|d|e|f|g|h;a|b|c|d|e|f|g|h",
+        "a|b|c|d|e|f|g|h&&a|b|c|d|e|f|g|h",
+        "a|b|c|d|e|f|g|h||a|b|c|d|e|f|g|h",
+    };
+    for (size_t k = 0; k < sizeof(chains) / sizeof(chains[0]); k++)
+        assert(parser_parse(chains[k], &tree) == PARSE_OK && tree.cmd_count == 16);
+    static const char *bad[] = {"| a", "a |", "a | | b", "a | ; b", "a | && b",
+                               "a | || b", "a ||| b", "a |\nb", "a | # empty"};
+    for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++)
+        assert(parser_parse(bad[k], &tree) == PARSE_SYNTAX_ERROR);
+    static const char *quoted[] = {"echo \"a|b\"", "echo 'a|b'", "echo a\\|b"};
+    static const uint8_t flags[] = {QUOTE_DOUBLE, QUOTE_SINGLE, QUOTE_ESCAPED};
+    for (size_t k = 0; k < sizeof(quoted) / sizeof(quoted[0]); k++) {
+        assert(parser_parse(quoted[k], &tree) == PARSE_OK && tree.cmd_count == 1);
+        assert(!strcmp(tree.cmds[0].argv[1], "a|b"));
+        assert(tree.cmds[0].quote_flags[1][1] == flags[k]);
+        assert(tree.cmds[0].next_op == CMD_OP_NONE);
+        assert(parser_execution_guard(&tree, pipeline_diagnostic) == 0);
+    }
+    assert(pipeline_diagnostics == 0);
+    assert(parser_parse("a > file | b", &tree) == PARSE_OK);
+    assert(tree.cmds[0].redir_count == 1 && tree.cmds[0].redirs[0].redir_op == REDIR_OUT);
+    assert(!strcmp(tree.cmds[0].redirs[0].target, "file"));
+    assert(tree.cmds[0].next_op == CMD_OP_PIPE && tree.cmds[1].next_op == CMD_OP_NONE);
+    assert(parser_parse("! a | b", &tree) == PARSE_OK && tree.cmds[0].negate);
+    mock_reset_fds();
+    int inode_before = s_mock_next_inode;
+    assert(parser_parse("echo before; > /mnt/canary | /bin/hello", &tree) == PARSE_OK);
+    assert(parser_execution_guard(&tree, pipeline_diagnostic) == 1);
+    assert(pipeline_diagnostics == 1 && s_mock_next_inode == inode_before);
+    for (int i = 3; i < 32; i++) assert(s_mock_fds[i] == -1);
+    /* Reusing the same tree must not retain a pipeline marker or diagnostic. */
+    assert(parser_parse("echo recovered", &tree) == PARSE_OK);
+    assert(parser_execution_guard(&tree, pipeline_diagnostic) == 0);
+    assert(pipeline_diagnostics == 1);
+    puts("PASS shell pipelines: flat operators, stage limits, quotes, redirections and interim guard");
+}
+
 int main(void) {
     lineedit_init(&e);
     feed("echo ac\033[Db\033[F"); assert(!strcmp(e.text,"echo abc"));
@@ -570,5 +656,6 @@ int main(void) {
     }
 
     puts("PASS shell redirections: spawn actions, parent save/apply/restore, open/dup/close, lexical order, target expansion, ambiguous rejection");
+    test_pipelines();
     return 0;
 }

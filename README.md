@@ -12,21 +12,22 @@ It is an independent kernel, not a Linux distribution. The project is still unde
 > [`PROTECTED.md`](PROTECTED.md) — those are kept in sync with the code, this
 > file is kept in sync with those.
 
-**Current milestone:** Multi-core (SMP) support is **complete and verified on physical hardware** across all six pieces (Pieces 1–5, 6A, 6B, 6C, 6D) on the Dell Latitude 5590 (8 CPUs, 32 GiB RAM). Application processors (APs) schedule work concurrently from per-CPU runqueues with dual-lock work-stealing, cross-core IPIs, synchronous TLB shootdowns with polled deadlock-breaking servicing, atomic process wait/exit lifecycle coordination, and non-blocking deferred address-space destruction. USB storage is complete through SuperSpeed (USB 3.x) direct-attached devices (Phase 9G.5b), multiple xHCI controllers are supported (Phase 9G.5a), and physical RAM covers the full 32 GiB (Phase 9H). Shell S0–S2 is implemented with terminal byte I/O, full line editing, RAM history, reverse search, and Belgian AZERTY AltGr support.
+**Current milestone:** Shell Milestone S6 is **complete and verified on physical hardware** (Dell Latitude 5590) with uniform file descriptors (0–31), full redirection (`<`, `>`, `>>`, `2>&1`, `n>&-`), atomic multi-core append serialization, and RO/tainted storage assertions. Multi-core (SMP) execution is complete across all six pieces (Pieces 1–5, 6A–6D) on 8 CPU cores with 32 GiB RAM. A modern quiet boot UX delivers a graphical Tokyo Night splash screen, live centered kernel status ticker, automatic un-mute on panic/failure, clean shell handoff, and Pride1922 branding. Next milestone: **Shell S7 (Pipes and Stream Utilities)**.
 
 ## What works today
 
 | Area | Implemented capabilities |
 | --- | --- |
+| Boot & Visual UX | Quiet graphical boot splash with custom FortressOS logo (Tokyo Night color palette) and live centered status ticker. Raw boot diagnostics suppressed on framebuffer by default (100% preserved in COM1 serial and in-memory `dmesg`). Automatic console un-mute and context dump on `[FAIL]` or `[PANIC]`. Clean screen transition into Ring 3 shell. Limine menu supports standard quiet boot and `FortressOS (Verbose Debug)` fallback. |
 | Multi-Core (SMP) | 8-core concurrent execution verified on bare metal. AP discovery via Limine/ACPI MADT (Piece 1); per-CPU GS base, GDT, TSS, and IST stacks (Piece 2); strict rank-checked lock discipline with contention telemetry and panic isolation (Piece 3); distributed multi-core preemptive scheduler with per-CPU runqueues and dual-lock work-stealing (Piece 4); APIC ICR cross-core IPIs and broadcast synchronous TLB shootdowns (Piece 5); and full multi-core memory architecture with contention deadlock breaking, `op_refs`, `sched_refs`, and deferred address-space reaping (Piece 6). |
 | Memory | Physical page allocator covering 32 GiB RAM with two-stage boot initialization (Phase 9H / Piece 6A); concurrent PMM allocation safety verified across 320,000 cycles under 622k+ contention events (Piece 6B); contention-safe TLB shootdown and CR3 reload (Piece 6C); per-process address spaces with transient operation references (`op_refs`), scheduler references (`sched_refs`), hardware active CPU masks, and guaranteed zero-leak deferred destruction (Piece 6D). |
 | CPU and scheduling | GDT/IDT per CPU, exception diagnostics, dedicated double-fault/NMI stacks, ACPI discovery, APIC timer preemption (100 Hz), per-CPU runqueues, and work-stealing across online cores. |
 | User programs | Ring 3 execution, ELF loading, fast `syscall` MSRs configured across all cores, System V AMD64 argument passing, validated syscalls, cross-core child waiting, exit status propagation, and deferred process reclamation. |
-| Storage | PCI discovery, NVMe reads/writes/flush, xHCI + USB Mass Storage BOT (USB 2.0 and USB 3.x SuperSpeed), validated GPT partitions, and bounded read/write ext2 support. Write persistence is verified on QEMU NVMe fixtures and on two independent physical USB devices; physical NVMe write persistence has not yet been tested on hardware. |
+| Storage | PCI discovery, NVMe reads/writes/flush, xHCI + USB Mass Storage BOT (USB 2.0 and USB 3.x SuperSpeed), validated GPT partitions, and bounded read/write ext2 support. Multi-core concurrent append serialization verified under QEMU `-smp 4` and Dell Latitude 5590 hardware with offline `e2fsck -fn` audits. Write persistence is verified on QEMU NVMe fixtures and on two independent physical USB devices. |
 | USB | Multiple xHCI controllers enumerated and initialized; device enumeration and descriptor parsing; BOT/SCSI reads and writes; durability classification with per-device policy; explicit writable opt-in. Both USB 2.0 and directly-attached USB 3.x (SuperSpeed) devices are supported; external hubs and hot-plug are not. |
 | Files | Read, create, write, truncate, make directories, rename/move, and delete. Initramfs provides boot-time programs; ext2 provides persistent storage. |
-| Interaction | Modular Ring 3 shell (`user/shell/`) with 4096-byte line editing, horizontal viewport, cursor movement, Ctrl shortcuts, RAM history (1000 entries / 256 KiB), incremental `Ctrl+R` search, bracketed paste review, raw/timed input (`SYS_INPUT_READ`), terminal mode control (`SYS_TERMCTL`), Belgian AZERTY AltGr operator decoding, PS/2 keyboard, US layout, framebuffer text console, serial I/O, and small text editor. |
-| Boot and power | BIOS/UEFI boot images, boot splash, ACPI shutdown, and reset fallbacks. Shutdown and reboot have been manually verified on the Dell. |
+| Shell (Milestones S0–S6) | Modular Ring 3 shell (`user/shell/`) featuring 4096-byte line editing, horizontal viewport, cursor movement, Ctrl shortcuts, RAM history, incremental `Ctrl+R` search, bracketed paste review, raw/timed input (`SYS_INPUT_READ`), terminal mode control (`SYS_TERMCTL`), Belgian AZERTY AltGr operator decoding, working directories (`cd`/`pwd`), logic chaining (`;`, `&&`, `||`, `!`), parameter expansion (`$VAR`, `${VAR}`, `$?`), aliases (`alias`/`unalias`), globbing (`*`, `?`, `[...]`), uniform descriptors (0–31), redirections (`<`, `>`, `>>`, `2>&1`, `n>&-`), retained UI terminal handle (fd 31 with CLOEXEC), `version` builtin, and persistent history (`/mnt/.fortress/history`). |
+| Power and platform | BIOS/UEFI boot images, ACPI S5 shutdown, and reset fallbacks. Shutdown and reboot verified on bare-metal Dell Latitude 5590. |
 
 User-process fault isolation and resource reclamation have targeted tests; this is not a claim of complete security isolation. ext2 writes support direct and single-indirect blocks, with explicit rejection of unsupported structures. The filesystem does not promise crash-atomic updates or recovery from arbitrary power loss.
 
@@ -88,18 +89,37 @@ make run-bios WRITE_TEST=1
 
 Use `shutdown` or `poweroff` in the shell to flush the filesystem and finish a clean session.
 
+## Boot Experience & Visual Design
+
+FortressOS features a distraction-free, modern boot experience inspired by the Tokyo Night color palette:
+- **Quiet Graphical Splash:** The framebuffer displays a centered, custom-rendered FortressOS shield logo on a `#1A1B26` backdrop with a live centered status ticker updating kernel boot milestones in real time.
+- **Diagnostic Preservation:** Raw boot logs are suppressed on the screen by default to maintain a clean aesthetic, but 100% of diagnostic output is continuously captured in the 64 KiB in-memory `dmesg` buffer and mirrored to COM1 serial (UART).
+- **Auto-Unmute Crash Protection:** If the kernel encounters any assertion failure (`[FAIL]`) or panic (`[PANIC]`), quiet mode is automatically disabled and the full diagnostic context is dumped to the screen for immediate troubleshooting.
+- **Limine Bootloader Modes:**
+  - `FortressOS` (default): Quiet graphical boot with live status ticker and clean handoff to the Ring 3 shell.
+  - `FortressOS (Verbose Debug)`: Streams full scrolling kernel diagnostics directly to the display.
+- **Clean Shell Handoff:** Once hardware and filesystem initialization completes, the screen clears smoothly and presents the interactive Ring 3 shell with Pride1922 branding.
+
 ## At the shell
 
 ```text
-help
+version               # print kernel version, architecture, and Pride1922 branding
+help                  # view available commands and builtins
+pwd                   # display current working directory
+cd /mnt/notes         # navigate filesystem
+export FOO="bar"      # set environment variable
+echo $FOO             # variable expansion
+alias ll="ls -l"      # define command alias
+echo "data" > out.txt # redirect stdout to file
+echo "more" >> out.txt# append stdout to file
+cat < out.txt         # redirect stdin from file
+ls /missing 2> err.log# redirect stderr
 history               # display in-memory command history
-history clear         # clear history
 terminal local        # select output mode: local (full screen), serial, mirror, or plain
 layout azerty         # Belgian AZERTY with AltGr (| \ {} [] ~)
 layout us             # US QWERTY
-ls /bin
-run /bin/hello hello FortressOS
-echo $?
+run /bin/hello world  # execute user program
+echo $?               # exit status of last command
 ```
 
 ### Interactive line editing & shortcuts
@@ -108,23 +128,25 @@ echo $?
 - **Editing:** Backspace and Delete remove characters; `Ctrl+D` deletes at cursor (or exits the shell on an empty line).
 - **Kill buffer:** `Ctrl+W` erases previous word; `Ctrl+U` erases to start of line; `Ctrl+K` erases to end of line; `Ctrl+Y` yanks (pastes) the last erased text.
 - **History & Search:** Up / Down arrows recall commands and restore unfinished drafts; `Ctrl+R` begins reverse incremental search (Enter accepts for editing, second Enter executes; Escape or `Ctrl+G` cancels).
-- **Control:** `Ctrl+L` clears screen and repaints; `Ctrl+C` cancels current input.
+- **Tab Completion:** Tab completes builtin names, executables in `/bin`, and filesystem paths with smart prefix matching.
+- **Control & Logic:** `Ctrl+L` clears screen and repaints; `Ctrl+C` cancels current input; command chaining with `;`, `&&`, `||`, and `!`.
 - **Safety:** Command lines support up to 4096 bytes with a horizontal scrolling viewport. Input loss or overflow displays `[lost/full: Ctrl+C]` and refuses to execute partial input. Bracketed paste converts newlines to spaces and requires two Enter presses to execute (`[paste: Enter twice]`).
 
 With the USB stick's data partition mounted read-write:
 
 ```text
 mkdir /mnt/notes
-edit /mnt/notes/hello.txt
-cat /mnt/notes/hello.txt
-mv /mnt/notes/hello.txt /mnt/notes/saved.txt
+cd /mnt/notes
+echo "Hello from FortressOS" > hello.txt
+cat hello.txt
+echo "Appended log entry" >> hello.txt
+edit hello.txt
+mv hello.txt saved.txt
 sync
 shutdown
 ```
 
-After reboot, `cat /mnt/notes/saved.txt` returns the same file.
-
-The editor has its own `help` command. Shell commands also include `rm`, `sync`, `reboot`, and conditional chaining with `&&` and `||`.
+After reboot, `cat /mnt/notes/saved.txt` returns the exact preserved file.
 
 ## Real hardware: what has been verified
 
@@ -180,7 +202,9 @@ Multi-core execution is complete and verified on bare metal (Dell Latitude 5590,
    - **6D**: Address-space lifetime discipline (`op_refs`, `sched_refs`, active CPU masks, deferred destruction queue, and atomic wait/exit coordination verified across 100 process cycles with zero leaks).
 
 **Next milestones:**
-- Shell progression: S0–S2 implemented (automated verification passing; Dell hardware checklist pending); S3–S4 (working directories `cd`/`pwd`, consistent quoting, completion, persistent history) are planned next in `docs/plans/SHELL_DESIGN.md`.
+- **Shell Milestone S7 (Pipes & Stream Utilities):** Kernel anonymous pipes (`SYS_PIPE`), multi-stage pipelines (`cmd1 | cmd2 | ... | cmdN`), POSIX auto-CLOEXEC descriptor cleanup, simulated exit 141 on broken pipes, and transparent stream filter tools (`cat`, `head`, `tail`, `wc`). Planned in [`docs/plans/S7_PLAN.md`](docs/plans/S7_PLAN.md).
+- **Shell Milestone S8 (Jobs, Signals & Process Groups):** Background jobs (`&`), job control (`jobs`, `fg`, `bg`), process group terminal ownership, and signal handling (`SIGINT`, `SIGTSTP`, `kill`).
+- **Shell Milestone S9 (Scripting & Control Flow):** Script execution, shell functions, parameter expansion sub-stages, and control structures.
 - Introspection syscalls and utilities (`sysinfo`, `top`, `ps`).
 - Persistent rootfs integration (`/paradise`).
 - MicroPython port.
@@ -197,6 +221,9 @@ The project combines host sanitizer tests, QEMU integration tests, offline files
 | Command | Coverage |
 | --- | --- |
 | `make test-smp-percpu` | BIOS/UEFI 1/4/8 CPUs: GS base, GDT/TSS, stack guards, NMI delivery on all CPUs |
+| `make test-smp-append` | True multi-core SMP concurrent append verification under QEMU `-smp 4` (BIOS & UEFI): atomic serialization under `ext2_lock`, 200 records intact, 0 lost/corrupt, clean S5 shutdown, offline `e2fsck -fn` audit |
+| `make test-shell-s6` | Shell S6 Phase 4A–4D under QEMU (BIOS & UEFI): child/parent redirection, dual-stream lexical ordering, stdin, stderr append/truncation/closure, expansion, failed setup and prompt recovery |
+| `make test-shell-s6-resources` | Shell S6 resource exhaustion under BIOS & UEFI (1 and 4 CPUs): child descriptor limit, process table capacity, 0 uncollected threads, prompt recovery |
 | `make test-vmm-host` | ASan/UBSan: VMM space registry, lifecycle states, transient `op_refs`, context switch tracking, deferred destruction queue with 0 leaks |
 | `make test-pmm-boot-host` | ASan/UBSan: PMM boot ceiling, capped OOM, contiguous boundary, and unlock gates |
 | `make test-smp-memory-boot` | BIOS/UEFI 1/4/8 CPUs: boot memory ceiling, readiness/CR3, and high-memory unlock |
@@ -219,6 +246,7 @@ The project combines host sanitizer tests, QEMU integration tests, offline files
 | `make test-nmi` | NMI injection at exact syscall transition boundaries in QEMU |
 | `make test-boot-diagnostics` | UEFI boot with 8 GiB RAM and no COM1 |
 | `make test-power` | QEMU shutdown and reboot commands |
+
 
 Recorded test results and their limits live in [`docs/roadmap/`](docs/roadmap/README.md). A listed test target is not a claim that every revision has passed it, and QEMU success is not physical-hardware acceptance. Storage tests must use disposable images, never an existing physical disk.
 

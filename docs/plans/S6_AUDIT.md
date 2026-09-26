@@ -170,14 +170,21 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
    multiple TCBs) or kernel worker threads modifying another process's descriptor table would break this,
    requiring per-process fd-table spinlocks.
 2. **Explicit CLOEXEC Semantics:**
-   `FD_FLAG_CLOEXEC` is tracked per-descriptor in `tcb->fd_flags[fd]`. It is evaluated during process
-   spawning (`process_spawn_from_vfs_ext`), where any descriptor marked with `FD_FLAG_CLOEXEC` is excluded
-   from inheritance and left unmapped in the child. In S6, `SYS_DUP` / `SYS_DUP2` clear `FD_FLAG_CLOEXEC`
-   on the newly created descriptor, while shell-private handles (such as the retained UI terminal)
-   are explicitly marked with `FD_FLAG_CLOEXEC` to prevent accidental leakage into child processes.
+   `FD_FLAG_CLOEXEC` is tracked per-descriptor in `tcb->fd_flags[fd]`. S7 Phase 2
+   supersedes S6's early exclusion with three phases: clone every descriptor and
+   retain its flags; apply the ordered spawn actions; then close every remaining
+   non-NULL CLOEXEC descriptor before child runqueue publication. The final sweep
+   holds no locks. A spawn DUP2 action may therefore use a CLOEXEC source and
+   clears CLOEXEC on its destination, including a same-fd action. Ordinary
+   `SYS_DUP2(fd, fd)` remains a no-op. The parent table and flags are unchanged.
+   Shell-private handles, including the retained UI terminal, remain CLOEXEC and
+   disappear from the child unless explicitly selected by an action. A spawn
+   with no actions still performs the sweep.
 3. **Atomic Spawn Inheritance:** During process spawning (`process_spawn_from_vfs_ext`),
-   descriptor cloning occurs under CPU IRQ exclusion on the spawning core. Non-CLOEXEC
-   `file_t` references are copied to the child, and `file->ref_count` is incremented.
+   descriptor cloning occurs under CPU IRQ exclusion on the spawning core. All
+   `file_t` references are copied to the child with their descriptor flags, and
+   `file->ref_count` is incremented; remaining CLOEXEC references are released
+   after successful actions and before publication.
    If any spawn action or address-space setup fails, the kernel calls `fd_close_all(child)`
    to tear down all cloned and newly opened descriptors before freeing the TCB. The child
    is never enqueued to any scheduler runqueue on failure.

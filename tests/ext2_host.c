@@ -35,6 +35,7 @@ void kfree(void *p) {
 void serial_puts(const char *s) { (void)s; }
 void serial_raw_putc(char c) { (void)c; }
 void console_terminal_write(const char *s, size_t n) { (void)s; (void)n; }
+bool console_is_quiet(void) { return false; }
 static unsigned terminal_reads;
 int64_t input_read(void *buf, size_t count) {
     assert(count > 0);

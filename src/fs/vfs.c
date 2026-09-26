@@ -42,6 +42,7 @@ static vfs_node_t g_terminal_node = {
     .read = terminal_read,
     .write = terminal_write,
     .truncate = dummy_truncate,
+    .close = NULL,
 };
 
 static int64_t null_read(vfs_node_t *node, uint64_t offset, void *buf, size_t count) {
@@ -63,6 +64,7 @@ static vfs_node_t g_null_node = {
     .read = null_read,
     .write = null_write,
     .truncate = dummy_truncate,
+    .close = NULL,
 };
 
 vfs_node_t *vfs_get_terminal_node(void) {
@@ -89,6 +91,7 @@ void vfs_init(void) {
     }
 
     memset(g_vfs_root, 0, sizeof(vfs_node_t));
+    g_vfs_root->close = NULL;
     g_vfs_root->name[0] = '/';
     g_vfs_root->name[1] = '\0';
     g_vfs_root->path[0] = '/';
@@ -228,6 +231,7 @@ vfs_node_t *vfs_create_node(const char *path, vfs_node_type_t type, uint64_t siz
             if (!new_node) return NULL;
 
             memset(new_node, 0, sizeof(vfs_node_t));
+            new_node->close = NULL;
             memcpy(new_node->name, comp, strlen(comp) + 1);
             memcpy(new_node->path, norm, strlen(norm) + 1);
             new_node->type   = type;
@@ -258,6 +262,7 @@ vfs_node_t *vfs_create_node(const char *path, vfs_node_type_t type, uint64_t siz
             if (!dir_node) return NULL;
 
             memset(dir_node, 0, sizeof(vfs_node_t));
+            dir_node->close = NULL;
             memcpy(dir_node->name, comp, strlen(comp) + 1);
             /* Build path */
             size_t curr_len = strlen(curr->path);
@@ -664,6 +669,7 @@ int vfs_close(file_t *file) {
     }
 
     if (__atomic_sub_fetch(&file->ref_count, 1, __ATOMIC_ACQ_REL) <= 0) {
+        if (file->node && file->node->close) file->node->close(file->node);
         kfree(file);
     }
 

@@ -167,6 +167,14 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
         return TOK_OR;
     }
 
+    if (s[i] == '|') {
+        lex->pos = i + 1;
+        tok->type = TOK_PIPE;
+        tok->value = "|";
+        tok->len = 1;
+        return TOK_PIPE;
+    }
+
     if (s[i] == '!' && (is_whitespace(s[i + 1]) || is_operator_char(s[i + 1]) || !s[i + 1])) {
         lex->pos = i + 1;
         tok->type = TOK_BANG;

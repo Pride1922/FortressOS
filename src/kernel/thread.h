@@ -80,6 +80,9 @@ typedef struct tcb {
 struct file;
 int          fd_init_std(tcb_t *proc);
 void         fd_clone_table(tcb_t *parent, tcb_t *child);
+/* Spawn transaction: clone all flags, apply actions, then sweep before publish.
+ * Caller exclusively owns proc's table and holds no locks. */
+void         fd_close_cloexec(tcb_t *proc);
 int          fd_alloc(tcb_t *proc, struct file *file);
 int          fd_alloc_exact(tcb_t *proc, int target_fd, struct file *file);
 struct file *fd_get(tcb_t *proc, int fd);
@@ -115,8 +118,9 @@ void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
  * wait or parent exit; never overwrites an uncollected child status.
  * System V AMD64 ABI: RSP points to argc, RDI = argc, RSI = argv.
  * VFS spawn retains the calling CPU's affinity with local IRQ-excluded publication.
- * Inherits non-CLOEXEC descriptors as shared file_t references (ACQ_REL refcounts),
- * then applies ordered spawn fd actions before publishing the child. */
+ * Clones all descriptors/flags as shared file_t references (ACQ_REL refcounts),
+ * applies ordered spawn fd actions, then closes remaining CLOEXEC descriptors
+ * before publishing the child. */
 int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const argv[],
                              int envc, const char *const envp[],
                              uintptr_t *out_user_rsp, uintptr_t *out_user_argv, uintptr_t *out_user_envp);

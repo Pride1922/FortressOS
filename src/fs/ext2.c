@@ -1064,6 +1064,7 @@ static int ext_can_write(vfs_node_t *node) {
 }
 
 static void setup(vfs_node_t *node, ext2_inode_t *in) {
+    node->close = NULL;
     node->fs_private = in;
     node->size = in->size;
     node->type = (in->mode & 0xf000) == 0x4000 ? VFS_DIRECTORY : VFS_FILE;

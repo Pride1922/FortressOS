@@ -11,7 +11,8 @@ enum token_type {
     TOK_AND,     /* && */
     TOK_OR,      /* || */
     TOK_BANG,    /* ! */
-    TOK_REDIR    /* Redirection token */
+    TOK_REDIR,   /* Redirection token */
+    TOK_PIPE     /* | */
 };
 
 enum redir_op {

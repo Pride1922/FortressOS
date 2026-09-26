@@ -125,6 +125,8 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-pipe-host` | S7 Phase 1 ASan/UBSan: actual pipe/VFS/sys_pipe with host adapters; wraparound, atomic write boundaries, endpoint lifetime and allocation/fd rollback. No SMP/IRQ claim. |
+| `make test-pipe` | S7 Phase 1 Ring 3 pipe ABI under BIOS/UEFI (1 CPU), disposable test ISO and no data disks; pointer validation, CLOEXEC, fd exhaustion, EOF/EPIPE. See [phase evidence](docs/roadmap/shell-s7-phase1.md). Blocking remains Phase 2. |
 | `make test-shell-host` | Consolidated ASan/UBSan: keyboard/queue, framebuffer terminal and actual shell editor/history logic |
 | `make test-shell-integration` | Existing shell integration extended with cursor/screen-state, history/search/paste, timeout/log separation and no-UART coverage; snapshot NVMe fixture for normal runs |
 | `make test-input` | Host ASan/UBSan: decoder, modifiers and bounded FIFO |

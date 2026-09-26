@@ -20,6 +20,8 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [shell-s7-phase2.md](shell-s7-phase2.md) | VFS stream lifecycle, blocking scheduler integration, threshold writer predicate, 3-phase CLOEXEC spawn lifecycle, and BIOS/UEFI verification |
+| [shell-s7-phase1.md](shell-s7-phase1.md) | Anonymous pipes, VFS final-close hook, SYS_PIPE ABI, host sanitizer coverage and BIOS/UEFI Ring 3 checks; blocking remains Phase 2 |
 | [shell-s0-s2.md](shell-s0-s2.md) | Shell foundation, terminal byte input/output, line editing and RAM history; automated verification and pending Dell checklist |
 | [shell-s6.md](shell-s6.md) | Phase 4 and Phase B formal validation across five-gate suite, resource limits, and remaining acceptance boundaries |
 | [shell-s5.md](shell-s5.md) | Environment, variables, parameter expansion, aliases, and globbing (flat variables, SYS_SPAWN_EXT ABI, stack budget guard, 5-stage expansion pipeline) |
@@ -53,6 +55,8 @@ and are not proof that every current revision has passed every test — check
 [Phase 9H]   32 GiB RAM support                              (COMPLETE)
 [SMP]        Multi-core support                              (Pieces 1-5, 6A, 6B, 6C, 6D COMPLETE)
 [Shell S0–S2] Terminal foundation, editing, RAM history      (Implemented, QEMU PASS, Dell pending)
+[Shell S3–S5] Quotes, variables, expansion, persistent history (COMPLETE)
+[Shell S6]    Redirection & descriptor architecture           (COMPLETE, Dell 5590 verified)
+[Shell S7]    Pipes and stream utilities                      (Phase 1 & 2 COMPLETE; Phase 3 planned)
 [Following]  Accounts/permissions, then installer
-
 ```

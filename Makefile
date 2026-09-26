@@ -111,6 +111,23 @@ QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS) $(QEMU_EXTRA)
 
 all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 
+# C_SRCS/OBJS above automatically include src/fs/pipe.c.
+.PHONY: test-pipe-host test-host
+test-pipe-host:
+	@python3 scripts/test_pipe_host.py
+
+test-host: test-pipe-host test-shell-host test-ext2
+
+$(BUILD_DIR)/pipe_user.elf: tests/pipe_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/fs/vfs.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/pipe_user.c -o $(BUILD_DIR)/pipe_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/pipe_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/pipe_user_start.o $(BUILD_DIR)/pipe_user.o -o $@
+
+.PHONY: test-pipe
+test-pipe: $(BOOTABLE_ISO) $(BUILD_DIR)/pipe_user.elf
+	@python3 scripts/test_pipe.py
+
 .PHONY: test-ext2 test-ext2-write test-storage test-nmi test-boot-diagnostics test-console test-input test-shell test-power
 test-input:
 	@python3 scripts/test_input.py

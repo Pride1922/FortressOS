@@ -1240,6 +1240,10 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         }
     }
 
+    /* Actions may use inherited CLOEXEC sources. Sweep only after all actions,
+     * with no locks held and before publishing the child to its runqueue. */
+    fd_close_cloexec(p);
+
     if (cwd && cwd[0]) {
         size_t clen = strlen(cwd);
         if (clen >= sizeof(p->cwd)) clen = sizeof(p->cwd) - 1;
@@ -1446,14 +1450,20 @@ void fd_clone_table(tcb_t *parent, tcb_t *child) {
     }
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
         if (parent->fd_table[i]) {
-            if (parent->fd_flags[i] & FD_FLAG_CLOEXEC) {
-                child->fd_table[i] = NULL;
-                child->fd_flags[i] = 0;
-            } else {
-                child->fd_table[i] = parent->fd_table[i];
-                __atomic_fetch_add(&child->fd_table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
-                child->fd_flags[i] = 0;
-            }
+            child->fd_table[i] = parent->fd_table[i];
+            __atomic_fetch_add(&child->fd_table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
+            child->fd_flags[i] = parent->fd_flags[i];
+        }
+    }
+}
+
+void fd_close_cloexec(tcb_t *proc) {
+    spin_debug_assert_unheld();
+    for (int i = 0; i < MAX_PROCESS_FDS; i++) {
+        if (proc->fd_table[i] && (proc->fd_flags[i] & FD_FLAG_CLOEXEC)) {
+            vfs_close(proc->fd_table[i]);
+            proc->fd_table[i] = NULL;
+            proc->fd_flags[i] = 0;
         }
     }
 }

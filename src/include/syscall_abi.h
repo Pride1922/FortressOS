@@ -26,6 +26,7 @@
 #define SYS_DUP2       21 /* (int oldfd, int newfd) -> newfd or -errno */
 #define SYS_DUP        22 /* (int oldfd) -> lowest available fd or -errno */
 #define SYS_FCNTL      23 /* (int fd, int cmd, uint64_t arg) -> result or -errno */
+#define SYS_PIPE       24 /* (int pipefd[2], uint32_t flags) -> 0 or -errno */
 
 #define F_DUPFD         0
 #define F_GETFD         1
@@ -89,6 +90,8 @@ _Static_assert(sizeof(spawn_opts_t) == 64, "spawn_opts_t must be exactly 64 byte
 #define SYSCALL_ENOEXEC  -17 /* Invalid or unsupported executable */
 #define SYSCALL_E2BIG    -18 /* Argument list or string too long */
 #define SYSCALL_ENOTEMPTY -19 /* Directory not empty */
+#define SYSCALL_EPIPE    -20 /* Broken pipe: no readers */
+#define SYSCALL_EAGAIN   -21 /* Reserved would-block error; pipes now block */
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384
