@@ -3541,6 +3541,319 @@ static void test_smp_piece5_ipi(uint64_t *kernel_pml4) {
     serial_puts("[ OK ] SMP Piece 5 (Cross-Core Coordination & IPIs) complete.\n\n");
 }
 
+/* =========================================================================
+ * SMP ext2 Concurrent Append Verification (Phase 3 / Finding 5)
+ * ========================================================================= */
+static volatile uint32_t g_append_ready = 0;
+static volatile uint32_t g_append_start = 0;
+static volatile uint32_t g_append_done = 0;
+static volatile uint32_t g_append_write_errors = 0;
+
+#define SMP_APPEND_RECS_PER_WORKER 100
+#define SMP_APPEND_REC_LEN 16
+#define SMP_APPEND_TOTAL_RECS (2 * SMP_APPEND_RECS_PER_WORKER)
+#define SMP_APPEND_TOTAL_BYTES (SMP_APPEND_TOTAL_RECS * SMP_APPEND_REC_LEN)
+
+typedef struct {
+    size_t worker_id;
+    file_t *file; /* If non-NULL, shared handle; if NULL, opens independently */
+    const char *path;
+} smp_append_worker_arg_t;
+
+static void smp_append_worker(void *raw_arg) {
+    smp_append_worker_arg_t *arg = (smp_append_worker_arg_t *)raw_arg;
+    size_t wid = arg->worker_id;
+    file_t *f = arg->file;
+    if (!f) {
+        f = vfs_open(arg->path, VFS_O_WRONLY | VFS_O_APPEND);
+        if (!f) {
+            __atomic_fetch_add(&g_append_write_errors, 1, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&g_append_done, 1, __ATOMIC_RELEASE);
+            thread_exit();
+            return;
+        }
+    }
+
+    /* Signal ready and wait at start barrier */
+    __atomic_fetch_add(&g_append_ready, 1, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&g_append_start, __ATOMIC_ACQUIRE)) {
+        __asm__ volatile("pause");
+        thread_yield();
+    }
+
+    /* Slam appends concurrently */
+    char rec[SMP_APPEND_REC_LEN + 1];
+    for (unsigned i = 0; i < SMP_APPEND_RECS_PER_WORKER; i++) {
+        /* Format: "W00:0042:APPEND\n" */
+        rec[0] = 'W';
+        rec[1] = '0' + (char)(wid / 10);
+        rec[2] = '0' + (char)(wid % 10);
+        rec[3] = ':';
+        rec[4] = '0' + (char)((i / 1000) % 10);
+        rec[5] = '0' + (char)((i / 100) % 10);
+        rec[6] = '0' + (char)((i / 10) % 10);
+        rec[7] = '0' + (char)(i % 10);
+        rec[8] = ':';
+        rec[9] = 'A'; rec[10] = 'P'; rec[11] = 'P'; rec[12] = 'E'; rec[13] = 'N'; rec[14] = 'D';
+        rec[15] = '\n';
+        rec[16] = '\0';
+
+        int64_t w = vfs_write(f, rec, SMP_APPEND_REC_LEN);
+        if (w != SMP_APPEND_REC_LEN) {
+            __atomic_fetch_add(&g_append_write_errors, 1, __ATOMIC_RELAXED);
+        }
+    }
+
+    vfs_close(f);
+    __atomic_fetch_add(&g_append_done, 1, __ATOMIC_RELEASE);
+    thread_exit();
+}
+
+static bool run_append_scenario(const char *path, bool shared_handle, size_t total_cpus) {
+    serial_puts("       [TEST] Scenario: ");
+    serial_puts(shared_handle ? "shared handle" : "independent handles");
+    serial_puts(" on ");
+    serial_puts(path);
+    serial_puts("...\n");
+
+    /* 1. Truncate / create empty file */
+    file_t *init_f = vfs_open(path, VFS_O_CREAT | VFS_O_TRUNC | VFS_O_WRONLY);
+    if (!init_f) {
+        serial_puts("       [FAIL] Failed to create test file\n");
+        return false;
+    }
+    vfs_close(init_f);
+
+    /* 2. Prepare workers */
+    g_append_ready = 0;
+    g_append_start = 0;
+    g_append_done = 0;
+    g_append_write_errors = 0;
+
+    file_t *shared_f = NULL;
+    if (shared_handle) {
+        shared_f = vfs_open(path, VFS_O_WRONLY | VFS_O_APPEND);
+        if (!shared_f) {
+            serial_puts("       [FAIL] Failed to open shared handle\n");
+            return false;
+        }
+        /* Refcount starts at 1, add 1 for second worker */
+        __atomic_fetch_add(&shared_f->ref_count, 1, __ATOMIC_ACQ_REL);
+    }
+
+    static smp_append_worker_arg_t args[2];
+    args[0].worker_id = 0;
+    args[0].file = shared_f;
+    args[0].path = path;
+
+    args[1].worker_id = 1;
+    args[1].file = shared_f;
+    args[1].path = path;
+
+    size_t target_cpu0 = total_cpus > 2 ? 1 : 0;
+    size_t target_cpu1 = total_cpus > 2 ? 2 : 1;
+
+    tcb_t *w0 = thread_create_on_cpu(target_cpu0, "app_w0", smp_append_worker, &args[0]);
+    tcb_t *w1 = thread_create_on_cpu(target_cpu1, "app_w1", smp_append_worker, &args[1]);
+    if (!w0 || !w1) {
+        serial_puts("       [FAIL] Failed to create worker threads\n");
+        return false;
+    }
+
+    /* Wait for both workers to be ready */
+    uint64_t wait_timeout = 200000000ULL;
+    while (__atomic_load_n(&g_append_ready, __ATOMIC_ACQUIRE) < 2) {
+        __asm__ volatile("pause");
+        thread_yield();
+        if (--wait_timeout == 0) {
+            serial_puts("       [FAIL] Timed out waiting for workers to be ready\n");
+            return false;
+        }
+    }
+
+    /* Release start barrier */
+    __atomic_store_n(&g_append_start, 1, __ATOMIC_RELEASE);
+
+    /* Wait for both workers to complete */
+    wait_timeout = 200000000ULL;
+    while (__atomic_load_n(&g_append_done, __ATOMIC_ACQUIRE) < 2) {
+        __asm__ volatile("pause");
+        thread_yield();
+        if (--wait_timeout == 0) {
+            serial_puts("       [FAIL] Timed out waiting for workers to complete\n");
+            return false;
+        }
+    }
+
+    /* Reap dead worker threads */
+    for (int d = 0; d < 5; d++) {
+        sched_reap_dead();
+        thread_yield();
+    }
+
+    if (g_append_write_errors != 0) {
+        serial_puts("       [FAIL] Workers encountered write errors: ");
+        serial_print_dec(g_append_write_errors);
+        serial_puts("\n");
+        return false;
+    }
+
+    /* 3. Read back and verify every byte and record */
+    file_t *rf = vfs_open(path, VFS_O_RDONLY);
+    if (!rf) {
+        serial_puts("       [FAIL] Failed to open file for read verification\n");
+        return false;
+    }
+
+    uint64_t fsize = rf->node ? rf->node->size : 0;
+    if (fsize != SMP_APPEND_TOTAL_BYTES) {
+        serial_puts("       [FAIL] File size mismatch! Expected ");
+        serial_print_dec(SMP_APPEND_TOTAL_BYTES);
+        serial_puts(" bytes, got ");
+        serial_print_dec(fsize);
+        serial_puts("\n");
+        vfs_close(rf);
+        return false;
+    }
+
+    static uint8_t read_buf[SMP_APPEND_TOTAL_BYTES];
+    size_t total_read = 0;
+    while (total_read < SMP_APPEND_TOTAL_BYTES) {
+        int64_t r = vfs_read(rf, read_buf + total_read, SMP_APPEND_TOTAL_BYTES - total_read);
+        if (r <= 0) break;
+        total_read += (size_t)r;
+    }
+    vfs_close(rf);
+
+    if (total_read != SMP_APPEND_TOTAL_BYTES) {
+        serial_puts("       [FAIL] Read returned fewer bytes than expected size: ");
+        serial_print_dec(total_read);
+        serial_puts("\n");
+        return false;
+    }
+
+    /* Parse all records */
+    bool seen[2][SMP_APPEND_RECS_PER_WORKER];
+    memset(seen, 0, sizeof(seen));
+    int last_seq[2] = { -1, -1 };
+    size_t transitions = 0;
+    int last_worker = -1;
+
+    for (size_t off = 0; off < SMP_APPEND_TOTAL_BYTES; off += SMP_APPEND_REC_LEN) {
+        const char *rec = (const char *)(read_buf + off);
+        if (rec[0] != 'W' || rec[3] != ':' || rec[8] != ':' || rec[15] != '\n' ||
+            memcmp(rec + 9, "APPEND", 6) != 0) {
+            serial_puts("       [FAIL] Corrupted record header or content at offset ");
+            serial_print_dec(off);
+            serial_puts("\n");
+            return false;
+        }
+
+        unsigned wid = (rec[1] - '0') * 10 + (rec[2] - '0');
+        if (wid >= 2) {
+            serial_puts("       [FAIL] Invalid worker id in record at offset ");
+            serial_print_dec(off);
+            serial_puts("\n");
+            return false;
+        }
+
+        unsigned seq = (rec[4] - '0') * 1000 + (rec[5] - '0') * 100 + (rec[6] - '0') * 10 + (rec[7] - '0');
+        if (seq >= SMP_APPEND_RECS_PER_WORKER) {
+            serial_puts("       [FAIL] Sequence number out of range: ");
+            serial_print_dec(seq);
+            serial_puts("\n");
+            return false;
+        }
+
+        if (seen[wid][seq]) {
+            serial_puts("       [FAIL] Duplicate record detected for worker ");
+            serial_print_dec(wid);
+            serial_puts(" seq ");
+            serial_print_dec(seq);
+            serial_puts("\n");
+            return false;
+        }
+        seen[wid][seq] = true;
+
+        /* Sequential ordering check per worker */
+        if ((int)seq <= last_seq[wid]) {
+            serial_puts("       [FAIL] Out of order record for worker ");
+            serial_print_dec(wid);
+            serial_puts(": got seq ");
+            serial_print_dec(seq);
+            serial_puts(" after seq ");
+            serial_print_dec(last_seq[wid]);
+            serial_puts("\n");
+            return false;
+        }
+        last_seq[wid] = (int)seq;
+
+        if (last_worker != -1 && last_worker != (int)wid) {
+            transitions++;
+        }
+        last_worker = (int)wid;
+    }
+
+    /* Verify all records present */
+    for (unsigned w = 0; w < 2; w++) {
+        for (unsigned s = 0; s < SMP_APPEND_RECS_PER_WORKER; s++) {
+            if (!seen[w][s]) {
+                serial_puts("       [FAIL] Missing record for worker ");
+                serial_print_dec(w);
+                serial_puts(" seq ");
+                serial_print_dec(s);
+                serial_puts("\n");
+                return false;
+            }
+        }
+    }
+
+    serial_puts("       [PASS] 200 records intact (3200 bytes), 0 lost, 0 duplicate, strict ordering preserved\n");
+    serial_puts("       [INFO] Interleaving transitions: ");
+    serial_print_dec(transitions);
+    serial_puts("\n");
+    return true;
+}
+
+static bool smp_append_test_enabled(const boot_info_t *boot_info) {
+    if (qemu_fw_cfg_has_key("opt/fortress/smp_append_test")) return true;
+    if (boot_info && strstr(boot_info->cmdline, "smp_test=append")) return true;
+    return false;
+}
+
+static void test_smp_ext2_concurrent_append(void) {
+    serial_puts("========================================================\n");
+    serial_puts("SMP ext2 Concurrent Append Verification (Finding 5)\n");
+    serial_puts("========================================================\n");
+
+    size_t total_cpus = smp_get_cpu_count();
+    if (total_cpus < 2) {
+        serial_puts("       [SKIP] Single-CPU system: multi-core concurrent append test skipped.\n");
+        serial_puts("[ OK ] SMP ext2 concurrent append verification complete.\n\n");
+        return;
+    }
+
+    vfs_node_t *mnt = vfs_lookup("/mnt");
+    if (!mnt) {
+        serial_puts("       [FAIL] /mnt is not mounted; cannot run ext2 append test.\n");
+        hcf();
+    }
+
+    /* Scenario 1: Independent handles (Finding 5 race condition) */
+    if (!run_append_scenario("/mnt/smp_app_indep.txt", false, total_cpus)) {
+        serial_puts("       [FAIL] Independent handles concurrent append test failed!\n");
+        hcf();
+    }
+
+    /* Scenario 2: Shared handle (dup / inherited fd concurrency) */
+    if (!run_append_scenario("/mnt/smp_app_shared.txt", true, total_cpus)) {
+        serial_puts("       [FAIL] Shared handle concurrent append test failed!\n");
+        hcf();
+    }
+
+    serial_puts("[ OK ] SMP ext2 concurrent append verification complete.\n\n");
+}
+
 void kmain(void) {
 
     /* 1. Initialize COM1 Serial Port (0x3F8) */
@@ -5088,6 +5401,10 @@ pf_boot_guard_done:
 
     if (memory_vmm_lifecycle_test_enabled(&boot_info)) {
         memory_vmm_lifecycle_test_run(smp_get_cpu_count());
+    }
+
+    if (smp_append_test_enabled(&boot_info)) {
+        test_smp_ext2_concurrent_append();
     }
 
     /* Inputs and shell are started after destructive/negative acceptance cases. */

@@ -178,6 +178,10 @@ test-ext2:
 test-ext2-write: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 	@python3 scripts/test_ext2_write.py
 
+.PHONY: test-smp-append
+test-smp-append: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
+	@python3 scripts/test_smp_append.py
+
 test-storage: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 	@python3 scripts/test_storage_boot.py
 

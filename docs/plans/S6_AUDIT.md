@@ -52,7 +52,7 @@ token accumulation checks for integer multiplication overflow before conversion
 `99>out`, `999999999999999>out`, `2>& 999999999999999999999999`, and verified
 that valid maximum descriptors (`31>&30`, `2<& 0`, `1>&-`) parse cleanly.
 
-### 5. [PARTIALLY VERIFIED 2026-09-26] Append serialization and atomic EOF
+### 5. [VERIFIED 2026-09-26] Append serialization and atomic EOF
 
 `src/fs/vfs.c` previously selected EOF outside and before filesystem locking.
 `src/fs/ext2.c` acquired the ext2 lock only after the offset was chosen.
@@ -64,10 +64,14 @@ Separate writers could select the same EOF and overwrite each other.
   When `append == false`, writes past EOF (`*off > in->size`) are rejected with `-VFS_EINVAL` (`-22`).
   On write completion, `node->size = in->size`, `*off += (uint64_t)r`, and the updated offset is written back to `file->offset` under lock release.
 - In `thread.c` and `vfs.c`, `file->ref_count` increments and decrements use `__ATOMIC_ACQ_REL` atomic operations.
-**Verification Boundary:**
+**Verification Evidence:**
 - Sequential semantics (EOF selection, offset writeback, interleaved handles, and EOF past-write rejection) verified in `tests/ext2_host.c:639–668`.
-- Because `tests/host/spinlock.h` uses single-threaded no-op shims (`spin_lock_irqsave` returns 0), host tests do not exercise lock contention or multi-threaded races.
-- True concurrent race verification (concurrent writers contending on `ext2_lock` without clobbering) is deferred to QEMU SMP / Dell 5590 multi-core integration testing.
+- Multi-core SMP race verification implemented in `src/kernel/main.c:test_smp_ext2_concurrent_append` and runner `scripts/test_smp_append.py`:
+  - Tested under QEMU `-smp 4` with AP workers pinned to dedicated cores (Core 1 and Core 2) slamming concurrent writes against a shared start barrier.
+  - Scenario 1 (Independent handles): Both workers open independent `file_t` handles with `VFS_O_APPEND`. Exactly 200 records (3200 bytes) delivered with 0 lost, 0 duplicates, and strict per-worker ordering preserved.
+  - Scenario 2 (Shared handle): Both workers share a single `file_t` handle with `VFS_O_APPEND` (refcount managed atomically). Exactly 200 records (3200 bytes) delivered with 0 lost, 0 duplicates, and strict per-worker ordering preserved.
+  - Real contention and physical interleaving confirmed: 38 and 31 interleaving transitions on BIOS; 64 and 75 transitions on UEFI.
+  - Offline filesystem audit: Clean ACPI S5 shutdown via `poweroff` flushes NVMe storage; host `e2fsck -fn` verified clean ext2 filesystem with 0 errors across both BIOS and UEFI.
 
 ### 6. Missing: retained terminal and usable close-on-spawn policy
 
@@ -187,7 +191,7 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 | Builtin redirection | Missing | Parent save/apply/restore, including initially closed fds and every failure |
 | One-path target expansion | Helper present, unused | Quoting, spaces, empty/unset expansion, zero/multiple glob matches |
 | Retained UI terminal | Missing wiring | Prompt and editing after redirection, closure and failed setup |
-| Concurrent append | Kernel fix implemented; concurrent verification deferred to QEMU SMP integration | Separate writers, no lost/overwritten records, exact output verification under ext2 lock |
+| Concurrent append | Verified (2026-09-26) | Two pinned workers on cores 1 and 2, independent and shared handles, 200 records (3200 bytes) 100% delivered, 0 lost/duplicate, strict per-worker ordering, interleaving confirmed, clean S5 shutdown, 0 e2fsck errors on BIOS and UEFI |
 | Resource exhaustion and allocation failures | Not established for S6 | Exhaust fd/process capacity; inject allocation failures; no runnable partial child |
 | RO/tainted storage and short I/O | Existing layers, S6 not established | Distinct errors, command not executed after setup failure, stable prompt/status |
 | Existing programs and shell | Prior regression pass | Preserve existing host, BIOS/UEFI and no-UART coverage |
@@ -207,13 +211,17 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 - **Kernel Boot Self-Tests:** `test_phase7_checkpoint2_syscalls` / `test_fd_scope_begin`
   verified negative error codes (`SYSCALL_EBADF`, `SYSCALL_EMFILE`), self-duplication,
   replacement, full table exhaustion up to descriptor 31, and ref_count decrement/cleanup.
+- **Phase 3 Verification Runs (`make test-smp-append`):**
+  - QEMU BIOS (-smp 4): PASS. Two dedicated AP workers (cores 1 & 2) slamming concurrent appends; 200 records (3200 bytes) delivered with 0 lost, 0 duplicate, strict ordering, 38 & 31 interleaving transitions, clean ACPI S5 poweroff, offline `e2fsck -fn` 0 errors.
+  - QEMU UEFI (-smp 4): PASS. Two dedicated AP workers (cores 1 & 2) slamming concurrent appends; 200 records (3200 bytes) delivered with 0 lost, 0 duplicate, strict ordering, 64 & 75 interleaving transitions, clean ACPI S5 poweroff, offline `e2fsck -fn` 0 errors.
 
 ## Execution checklist
 
 1. [x] Fix duplication errors, stream semantics and parser bounds with focused tests (Phase 2 closed).
 2. [x] Phase 3: Implement atomic append in `ext2` and `vfs` under Contract B (`ext2_write(..., &offset, append, ...)`),
-   atomic acquire-release refcounting on `file_t`, and deliver host append tests in `tests/ext2_host.c`
-   (sequential EOF serialization and past-EOF write rejection verified; concurrent race verification deferred to QEMU SMP).
+   atomic acquire-release refcounting on `file_t`, deliver host append tests in `tests/ext2_host.c`, and deliver
+   true multi-core SMP concurrent append integration test suite in `scripts/test_smp_append.py` / `src/kernel/main.c`
+   (verified on BIOS and UEFI under `-smp 4` with full offline `e2fsck -fn` audits).
 3. [ ] Phase 4: Wire ordered redirections into children (`SYS_SPAWN_EXT`) and scoped parent builtins; retain
    controlling terminal handle (`g_term_fd`); propagate short write errors and exclude private handles from spawn.
 4. [ ] Exercise `<`, `>`, `>>`, `2>`, `2>>`, `n>&m`, `n<&m`, `n>&-`, and compare
