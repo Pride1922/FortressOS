@@ -47,7 +47,7 @@ Evidence: `build/shell-s6-{bios,uefi}.log`, `build/shell-{bios,uefi}-1cpu.log`,
 `build/shell-s6-resources-{bios,uefi}-{1,4}cpu.log`. Storage tests used disposable
 NVMe fixtures.
 
-### Remaining for S6 Milestone
+### Milestone S6 Acceptance: COMPLETE (2026-09-26)
 
 - **Finding 8:** COMPLETE (2026-09-26). Closed as documented single-threaded process rules
   and trace for S6; concurrent shared-`file_t` non-append I/O coordination formally deferred
@@ -56,6 +56,10 @@ NVMe fixtures.
   under BIOS and UEFI; distinct error strings (`Read-only filesystem.` and `I/O error.`),
   setup failure command suppression, pre/post-taint data preservation, status propagation,
   and prompt recovery.
-- **Phase D:** Dell hardware checklist (item 6) on explicitly selected writable USB (blocking).
-- **Item 7:** Mark S6 complete (gated on Phase D Dell hardware verification).
+- **Phase D:** COMPLETE (2026-09-26). Physical Dell Latitude 5590 hardware acceptance verified
+  on SanDisk 3.2 Gen 1 USB drive (`sdap2`, PARTUUID `E2830E54-435A-4918-9017-47E44703CA6F`):
+  Pass 1 (Read-Only mount assertions & command suppression), Pass 2 (Writable mount, child & parent
+  redirections, dual-stream ordering, stderr append/truncation, closed stderr tolerance, prompt liveness),
+  and Pass 3b (Offline host `e2fsck -fn` clean 0 errors, bit-for-bit SHA-256 hash match on all 5 files).
+- **Item 7:** Milestone S6 formally complete.
 - Pipelines belong to S7.

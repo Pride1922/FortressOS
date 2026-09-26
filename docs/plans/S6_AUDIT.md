@@ -347,17 +347,41 @@ The five gates ran in order, each with exit status 0:
    - [x] Phase 4 regression sequence, disposable BIOS/UEFI runs, normalized file content checks, setup-failure execution suppression and prompt recovery.
    - [x] Phase B resource suite (`make test-shell-s6-resources`) verified under BIOS & UEFI across 1 and 4 CPUs: child descriptor limit (32), parent fd table exhaustion (31 fds, `SYSCALL_EMFILE`), process table capacity exhaustion (`SYSCALL_ENOMEM`), GDB scheduler breakpoint audit confirming 0 partial/runnable threads published or leaked upon abort, and prompt recovery.
    - [x] Phase C RO/tainted storage suite (`make test-shell-s6`) verified under BIOS & UEFI: distinct diagnostics (`Read-only filesystem.` vs `I/O error.`), execution suppression on failed redirection setup, bit-for-bit file preservation, status propagation (`$? == 1`, `||` recovery, `&&` halt), and prompt recovery.
-6. [ ] Dell hardware checklist in a dedicated directory on the explicitly
-   selected writable USB. Verify builtin/child output, input, append, stderr,
-   ordered duplication, failure recovery and persistence. Record exact commands and observed contents.
-7. [ ] Mark S6 complete only after every row has evidence; update the roadmap and
-   stale design status separately from historical results.
+6. [x] Dell hardware checklist in a dedicated directory on the explicitly
+   selected writable USB. Verified builtin/child output, input, append, stderr,
+   ordered duplication, failure recovery and persistence. Exact commands and observed contents recorded (Phase D closed 2026-09-26).
+7. [x] Mark S6 complete: all rows have evidence; roadmap and audit updated with physical Dell Latitude 5590 acceptance and 5-gate regression proof (2026-09-26).
 
-## Remaining for S6
+## Phase D formal closure and physical hardware acceptance (2026-09-26)
 
-| Item | Status | Focus |
-| --- | --- | --- |
-| Finding 8 | ✅ CLOSED | Documented single-threaded process rules and trace for S6; concurrent shared-file_t non-append I/O formally deferred to S7 |
-| Phase C | ✅ COMPLETE | RO/tainted storage assertions verified across both firmwares, distinct errors, execution suppression, pre/post taint preservation, 5 gates PASS (2026-09-26) |
-| Phase D | ❌ Blocking | Dell hardware checklist (item 6) on explicitly selected writable USB |
-| Item 7 | Gated | Mark S6 complete only after Phase D Dell hardware verification is recorded |
+Phase D (Dell Latitude 5590 physical acceptance) is formally complete and verified on bare-metal hardware:
+- **Test Machine:** Dell Latitude 5590 (Intel Core i5/i7, UEFI boot, 32 GiB RAM).
+- **Storage Target:** SanDisk 3.2 Gen 1 USB flash drive (`sda`, 241,385,472 sectors, 512 bytes/sector), partition `sdap2`, PARTUUID `E2830E54-435A-4918-9017-47E44703CA6F`.
+- **Pass 1 (Read-Only Mount):** Booted with `usb_data_mode=ro`. Verified banner `[USB 9G.3] PASS: Mounted sdap2 read-only at /mnt`. All four write paths (`run /bin/hello 10 > /mnt/ro_fail.txt`, `echo overwrite > /mnt/README.txt`, `echo append >> /mnt/README.txt`, and `> /mnt/README.txt`) strictly emitted byte-identical error string `Read-only filesystem.` with exit code 1. Command chaining (`||` recovered with status 0, `&&` halted with status 1 and suppressed `should-not-run`). Clean ACPI S5 shutdown via `poweroff`.
+- **Pass 2 (Writable Mount):** Booted with `usb_data_mode=rw`. Verified banner `[USB 9G.4] PASS: Mounted sdap2 read-write at /mnt`. In `/mnt/s6_test`:
+  - Output redirection: `echo "Line 1" > out.txt`, `run /bin/hello 10 > hello.txt` (silenced terminal of child message, exit code 10 reported).
+  - Append redirection & direct execution: `echo "Line 2" >> out.txt`, `/bin/hello 20 >> hello.txt` (appended cleanly).
+  - Input redirection: `cat < out.txt` verified.
+  - Dual-stream lexical ordering: `run /bin/dual_stream > both.txt 2>&1` (silent terminal, captured both streams) vs `run /bin/dual_stream 2>&1 > only_out.txt` (terminal printed `STDERR_DATA`, file captured `STDOUT_DATA`).
+  - Stderr append & truncation: `run /bin/dual_stream 2>> err.txt` (repeated append accumulated 2 lines), `run /bin/dual_stream 2> err.txt` (truncated back to 1 line).
+  - Closed stderr: `run /bin/dual_stream 2>&-` (printed strictly `STDOUT_DATA\n`, tolerating closed stderr, exit code 0).
+  - Path error diagnostic: `echo fail > /nonexistent/dir/out.txt` emitted strictly `No such file or directory.` (status 1).
+  - Prompt liveness: `echo prompt-alive` verified. Clean ACPI S5 shutdown via `poweroff`.
+- **Pass 3b (Offline Host Integrity & Hash Verification):** USB flash drive mounted on Linux Mint workstation:
+  - `e2fsck -fn /dev/sda2`: `22/16384 files (0.0% non-contiguous), 2099/65536 blocks`, clean ext2 filesystem with 0 errors.
+  - Exact file lengths and SHA-256 hashes verified bit-for-bit against preflight baselines:
+    - `both.txt`: 24 bytes, `e98bafe5207639a357443ba0e89287182582f169a319f788bd02c1a8f5606052`
+    - `err.txt`: 12 bytes, `561ca10f2ac82df8abfa356984cfe714c2327481bb488644aa18d5d71eed10c8`
+    - `hello.txt`: 148 bytes, `b6dd868c35dea2b7ae951ad4c53d6907c315751491615131ef904eaf36e363b4`
+    - `only_out.txt`: 12 bytes, `a5adc1c3980948c24637e96f22d05d00210ff3fb5ff8b2a7b3ff1f0bcb8f9d1e`
+    - `out.txt`: 14 bytes, `8661d1b8fb7c356fe741f38428cf7329e727d9e484820ca400d64c5388d55320`
+
+## Milestone S6 Status: COMPLETE
+
+All findings, requirements, and hardware acceptance tests are formally closed and verified:
+- Phase 1–3: Negative dup error codes, stream EOF bypass, numeric parser bounds, atomic acquire-release refcounting, atomic append serialization (`test-smp-append`).
+- Phase 4: Child & parent redirection (`SYS_SPAWN_EXT`, `SYS_FCNTL`), retained UI terminal on FD 31, `/bin/dual_stream` ordering, short-write retry.
+- Phase B: Resource limits (`test-shell-s6-resources`, 12 measured cycles each across BIOS/UEFI 1 & 4 CPUs, 0 leaked threads).
+- Phase C: RO & tainted ext2 storage assertions (`test-shell-s6`), distinct diagnostics (`Read-only filesystem.` vs `I/O error.`), execution suppression, bit-for-bit file preservation.
+- Finding 8: Documented single-threaded process model and trace for S6; concurrent shared-`file_t` non-append I/O deferred to S7 pipelines.
+- Phase D: Physical Dell Latitude 5590 hardware acceptance verified (RO pass, RW pass, offline host `e2fsck` 0 errors, bit-for-bit SHA-256 match).
