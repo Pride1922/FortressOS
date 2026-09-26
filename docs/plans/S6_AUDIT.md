@@ -111,29 +111,16 @@ filename and propagates write errors to command status. Other legacy void output
 wrappers still discard return values; this closure does not claim universal
 builtin output-error status propagation.
 
-### 8. Partial: ownership works sequentially; concurrency needs a contract
+### 8. [CLOSED 2026-09-26] Ownership works sequentially; concurrent shared-file_t non-append deferred to S7
 
-Duplication and inheritance share `file_t`, while independent opens allocate
-separate objects. Access modes are checked by VFS. Failed spawn closes descriptors,
-frees the TCB and stack, and destroys its address space before publication.
-Exit/reaping closes remaining descriptors. These are useful implemented foundations.
+Duplication (`SYS_DUP`, `SYS_DUP2`, `F_DUPFD_CLOEXEC`) and process inheritance (`SYS_SPAWN_EXT`) share `file_t` handles, while independent opens allocate separate objects. Access modes are checked by VFS at open and write time. Failed spawn closes descriptors, frees the allocated TCB and stack, and destroys its address space before publication. Exit/reaping closes remaining descriptors.
 
-Reference increments/decrements already use `__ATOMIC_ACQ_REL` in `thread.c`
-and `vfs.c`; Phase 3 also serialized append EOF selection and writes under the
-ext2 lock. These implemented guarantees do not establish a general shared-offset
-concurrency contract: VFS reads and offset writeback still need a documented
-synchronization/ownership rule for concurrent users of one `file_t`.
-
-Phase B's resource runner and GDB breakpoint verification closed the trace half
-of this finding: aborted spawns (due to descriptor table limits, process table
-capacity, or invalid actions) clean up all descriptors, free the allocated TCB
-and address space, and leave 0 runnable or partial threads on any CPU run queue
-or dead list prior to publication. What remains open is the shared-offset rule
-documentation decision for concurrent non-append `file_t` users.
-Do not hold a spinlock across blocking terminal input.
-The lifecycle comment in `thread.h` now describes non-CLOEXEC descriptor
-inheritance, shared atomic references and ordered actions before publication;
-that documentation correction does not close the remaining concurrency audit.
+**Documented Concurrency Rules for Milestone S6:**
+1. **Single-Threaded Process Model:** FortressOS processes are strictly single-threaded (each TCB represents an isolated execution context). Therefore, descriptor table lookups, allocations, and replacements (`fd_alloc`, `fd_free`, `fd_dup`, `fd_dup2`) within a process require no intra-process locks.
+2. **Atomic Reference Counting:** Reference increments and decrements on shared `file_t` handles use `__ATOMIC_ACQ_REL` in `thread.c` and `vfs.c`, ensuring safe multi-core reclamation when parent and child processes exit concurrently.
+3. **Atomic Append Serialization:** For append writes (`VFS_O_APPEND`), concurrent multi-core writes across shared or independent `file_t` handles are completely serialized under `ext2_lock` via `ext2_write(..., &offset, append, ...)`. EOF selection, block allocation, data write, inode size update, and offset writeback are strictly atomic (verified under QEMU `-smp 4` in `make test-smp-append`).
+4. **Non-Append Shared-Offset Boundary (Deferred to S7):** Under Shell Milestone S6, processes either open files independently or run sequentially (the parent waits for child exit via `SYS_WAIT`). Concurrent, non-append read/write operations racing on the shared linear `file->offset` of an identical `file_t` description without synchronization are out of scope for S6 and are formally deferred to Milestone S7 (where asynchronous pipelines and multi-process stream consumers are introduced). Never hold a spinlock across blocking terminal input.
+5. **Zero Leaked Threads on Failed Spawn:** Verified via GDB scheduler breakpoints (`sched_enqueue`, `thread_create`) in `make test-shell-s6-resources`: failed child setup releases all descriptors, frees memory, and leaves 0 partial or runnable threads on any CPU run queue or dead list.
 
 ---
 
@@ -221,15 +208,15 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 
 | Requirement | Current assessment | Required evidence |
 | --- | --- | --- |
-| Uniform descriptors and access modes | Partial: stream bypass active; stdin works; access modes enforced | Host ext2 suite verified; Ring 3 terminal/null/file reads and writes verified |
-| Dup/shared offsets/independent opens | Partial: negative errors verified; boot self-test covers exhaustion/cleanup | Kernel boot self-test verifies -EBADF, -EMFILE, self-dup, exhaustion, cleanup; Ring 3 integration pending |
+| Uniform descriptors and access modes | Verified (2026-09-26) | Stream bypass active; stdin works; access modes enforced; short-write retries; verified across host, BIOS and UEFI |
+| Dup/shared offsets/independent opens | Verified (2026-09-26) | Kernel boot self-test verifies -EBADF, -EMFILE, self-dup, exhaustion, cleanup; Ring 3 spawn actions and parent save/apply/restore verified; shared-file_t concurrent non-append deferred to S7 |
 | Spawn fd actions and ordering | Verified (2026-09-26) | Child stdout/stderr routing, close/open/dup order, invalid-action unwind verified in QEMU BIOS/UEFI |
 | Builtin redirection | Verified (2026-09-26) | Parent save/apply/restore, initially closed fds, failure unwinding, redirection-only (> file) verified in QEMU BIOS/UEFI |
 | One-path target expansion | Verified (2026-09-26) | Quoting, spaces, empty/unset expansion, ambiguous redirection rejection verified in host ASan/UBSan & QEMU |
 | Retained UI terminal | Verified (2026-09-26) | Prompt and editing after redirection, closure and failed setup; private terminal retained on FD 31 with CLOEXEC verified in QEMU |
 | Concurrent append | Verified (2026-09-26) | Two pinned workers on cores 1 and 2, independent and shared handles, 200 records (3200 bytes) 100% delivered, 0 lost/duplicate, strict per-worker ordering, interleaving confirmed, clean S5 shutdown, 0 e2fsck errors on BIOS and UEFI |
 | Resource exhaustion and allocation failures | Verified (2026-09-26) | Phase B suite (`make test-shell-s6-resources`) verified under BIOS and UEFI (1 & 4 CPUs): child descriptor limit (32 fds), parent fd table exhaustion (31 fds, `SYSCALL_EMFILE`, 0 leak), process capacity exhaustion (`SYSCALL_ENOMEM`, 0 leak), failed-child abort leaves 0 partial/runnable threads in kernel thread list (verified via GDB scheduler breakpoints/inspection), clean parent prompt recovery |
-| RO/tainted storage and short I/O | Existing layers, S6 not established | Distinct errors, command not executed after setup failure, stable prompt/status |
+| RO/tainted storage and short I/O | Verified (2026-09-26) | Distinct diagnostics (Read-only filesystem. vs I/O error.), command not executed after setup failure, bit-for-bit file preservation, status propagation ($? == 1, || recovery, && halt), stable prompt recovery verified under BIOS & UEFI |
 | Existing programs and shell | Verified 2026-09-26 | Fresh host, BIOS/UEFI, S3–S4 and UEFI 8 GiB no-UART regression pass |
 
 ## Evidence from this audit
@@ -370,7 +357,7 @@ The five gates ran in order, each with exit status 0:
 
 | Item | Status | Focus |
 | --- | --- | --- |
-| Finding 8 | ⚠️ Partial | Trace half closed by Phase B GDB scheduler-ref audit; shared-offset rule documentation decision remaining |
+| Finding 8 | ✅ CLOSED | Documented single-threaded process rules and trace for S6; concurrent shared-file_t non-append I/O formally deferred to S7 |
 | Phase C | ✅ COMPLETE | RO/tainted storage assertions verified across both firmwares, distinct errors, execution suppression, pre/post taint preservation, 5 gates PASS (2026-09-26) |
 | Phase D | ❌ Blocking | Dell hardware checklist (item 6) on explicitly selected writable USB |
-| Item 7 | Gated | Mark S6 complete only after Phase D and Finding 8 are resolved |
+| Item 7 | Gated | Mark S6 complete only after Phase D Dell hardware verification is recorded |

@@ -49,12 +49,13 @@ NVMe fixtures.
 
 ### Remaining for S6 Milestone
 
-- **Finding 8:** Trace half closed via Phase B scheduler-ref inspection / breakpoints;
-  shared-offset rule documentation decision remaining for concurrent non-append `file_t`.
+- **Finding 8:** COMPLETE (2026-09-26). Closed as documented single-threaded process rules
+  and trace for S6; concurrent shared-`file_t` non-append I/O coordination formally deferred
+  to S7 (pipelines).
 - **Phase C:** COMPLETE (2026-09-26). RO and tainted ext2 storage assertions verified
   under BIOS and UEFI; distinct error strings (`Read-only filesystem.` and `I/O error.`),
   setup failure command suppression, pre/post-taint data preservation, status propagation,
   and prompt recovery.
 - **Phase D:** Dell hardware checklist (item 6) on explicitly selected writable USB (blocking).
-- **Item 7:** Mark S6 complete (gated on Phase D and Finding 8).
+- **Item 7:** Mark S6 complete (gated on Phase D Dell hardware verification).
 - Pipelines belong to S7.
