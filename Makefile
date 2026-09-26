@@ -492,3 +492,8 @@ test-smp-memory: bin/fortress.elf bin/initramfs.tar
 test-shell-s5: bin/fortress.iso nvme-gpt-disk
 	@python3 scripts/test_shell_s5.py
 
+.PHONY: test-shell-s6
+
+test-shell-s6: bin/fortress.iso nvme-gpt-disk
+	@python3 scripts/test_shell_s6.py
+

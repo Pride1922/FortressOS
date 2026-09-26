@@ -31,14 +31,22 @@ Verified in `tests/ext2_host.c` that terminal reads reach `input_read` with
 size 0, writes leave offsets at 0, and access modes (`VFS_O_RDONLY` /
 `VFS_O_WRONLY`) remain strictly enforced with `-VFS_EBADF`.
 
-### 3. Missing: redirection execution
+### 3. [PARTIAL 2026-09-26] Redirection execution
 
-`user/shell.c:563–665` executes arguments but never consumes `cmd->redirs`.
-`spawn_program` at line 93 zeroes spawn options and never supplies fd actions.
-`expand_redir_target` has no caller. Consequently syntax such as `echo x >out`
-is accepted, but the redirection is ignored. Builtin save/apply/restore is absent.
-Implement ordered expansion/application for parent builtins and child spawn,
-including redirection-only commands and setup failure without command execution.
+- **Phase 4A & 4B (Child Redirections): COMPLETE (2026-09-26).**
+  Implemented `user/shell/redir.c` (`redir_build_spawn_actions`):
+  - Iterates over parsed AST `redir_t` records in lexical sequence.
+  - Expands target paths using `expand_redir_target` (parameter expansion, quote suppression, word splitting, globbing); rejects ambiguous redirections with error code and diagnostics without spawning child.
+  - Maps redirection operators to `spawn_fd_action_t`:
+    `REDIR_IN` -> `SPAWN_FD_ACTION_OPEN` (`VFS_O_RDONLY`),
+    `REDIR_OUT` -> `SPAWN_FD_ACTION_OPEN` (`VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC`),
+    `REDIR_APP` -> `SPAWN_FD_ACTION_OPEN` (`VFS_O_WRONLY | VFS_O_CREAT | VFS_O_APPEND`),
+    `REDIR_DUP_OUT` / `REDIR_DUP_IN` -> `SPAWN_FD_ACTION_DUP2`,
+    `REDIR_CLOSE` -> `SPAWN_FD_ACTION_CLOSE`.
+  - Wired into `user/shell.c`: `execute_parse_tree` builds actions into static file-scope storage (adhering strictly to 512B stack budget), passes `opts.fd_actions` and `opts.action_count` to `SYS_SPAWN_EXT` in `spawn_program` (clearing `opts.fd_actions` when `action_count == 0` per kernel validation contract).
+  - Verified under host ASan/UBSan (`tests/shell_host.c`) and live QEMU integration (`scripts/test_shell_s6.py` / `make test-shell-s6`) on BIOS and UEFI.
+- **Phase 4C (Builtin Redirections) & 4D (Retained UI Terminal): PENDING.**
+  Parent builtin save/apply/restore and shell-private UI terminal handle retention remain to be wired.
 
 ### 4. [CLOSED 2026-09-26] Descriptor-number parsing is unbounded
 
@@ -214,6 +222,10 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 - **Phase 3 Verification Runs (`make test-smp-append`):**
   - QEMU BIOS (-smp 4): PASS. Two dedicated AP workers (cores 1 & 2) slamming concurrent appends; 200 records (3200 bytes) delivered with 0 lost, 0 duplicate, strict ordering, 38 & 31 interleaving transitions, clean ACPI S5 poweroff, offline `e2fsck -fn` 0 errors.
   - QEMU UEFI (-smp 4): PASS. Two dedicated AP workers (cores 1 & 2) slamming concurrent appends; 200 records (3200 bytes) delivered with 0 lost, 0 duplicate, strict ordering, 64 & 75 interleaving transitions, clean ACPI S5 poweroff, offline `e2fsck -fn` 0 errors.
+- **Phase 4A/4B Verification Runs (`make test-shell-host` and `make test-shell-s6`):**
+  - Host ASan/UBSan: PASS (`tests/shell_host.c`). Verified input redirection, output creation and truncation, append, lexical duplication ordering (`>out 2>&1` vs `2>&1 >out`), descriptor close (`>&-`, `<&-`), target variable expansion (`>$TARGET`), and ambiguous redirect rejection (`>$AMBIG`).
+  - QEMU BIOS (`make test-shell-s6`): PASS. Initial shell reached; child stdout redirection (`run /bin/hello 10 > file`) silenced terminal; redirected file content verified; child append redirection (`run /bin/hello 20 >> file`) verified; direct path execution (`/bin/hello 30 >> file`) verified; target variable expansion (`/bin/hello 42 > $TARGET`) verified; ambiguous redirect rejection verified; redirection open failure handling verified.
+  - QEMU UEFI (`make test-shell-s6`): PASS. Identical 7 verification points verified cleanly under OVMF UEFI.
 
 ## Execution checklist
 
@@ -224,6 +236,9 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
    (verified on BIOS and UEFI under `-smp 4` with full offline `e2fsck -fn` audits).
 3. [ ] Phase 4: Wire ordered redirections into children (`SYS_SPAWN_EXT`) and scoped parent builtins; retain
    controlling terminal handle (`g_term_fd`); propagate short write errors and exclude private handles from spawn.
+   - [x] Phase 4A & 4B: Parse `cmd->redirs`, expand targets via `expand_redir_target`, build `spawn_fd_action_t[]`, populate `opts.fd_actions` and `opts.action_count`, call `SYS_SPAWN_EXT`, and handle ambiguous redirection failures (verified host ASan/UBSan and QEMU BIOS/UEFI).
+   - [ ] Phase 4C: Scoped parent builtin redirection (save/apply/restore for builtins).
+   - [ ] Phase 4D: Retained UI terminal handle (`g_term_fd`) and CLOEXEC exclusions.
 4. [ ] Exercise `<`, `>`, `>>`, `2>`, `2>>`, `n>&m`, `n<&m`, `n>&-`, and compare
    `cmd >out 2>&1` with `cmd 2>&1 >out` using a child that writes to both streams.
 5. [ ] Run bounded BIOS/UEFI cases on disposable fixtures and verify file contents,

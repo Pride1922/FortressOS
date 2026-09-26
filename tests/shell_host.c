@@ -7,10 +7,15 @@
 #include "vars.h"
 #include "alias.h"
 #include "expand.h"
+#include "redir.h"
 
 long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     (void)nr; (void)a; (void)b; (void)c;
     return -1;
+}
+
+void puts_err(const char *s) {
+    (void)s;
 }
 
 static line_editor_t e;
@@ -368,5 +373,73 @@ int main(void) {
     assert(!strcmp(ecmd.argv[2], "1"));
 
     puts("PASS shell expansion: parameter expansion, quoting suppression, word splitting, empty preservation, tilde, $?");
+
+    /* Test S6 Redirection Action Builder (Step 4A) */
+    spawn_fd_action_t actions[MAX_SPAWN_ACTIONS];
+    uint32_t act_count = 0;
+    char target_paths[MAX_SPAWN_ACTIONS][VFS_MAX_PATH];
+
+    /* 1. Input redirection */
+    assert(parser_parse("cat < input.txt", &ptree) == PARSE_OK);
+    assert(redir_build_spawn_actions(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0,
+                                     actions, &act_count, target_paths) == 0);
+    assert(act_count == 1);
+    assert(actions[0].type == SPAWN_FD_ACTION_OPEN);
+    assert(actions[0].dst_fd == 0);
+    assert(actions[0].flags == VFS_O_RDONLY);
+    assert(!strcmp((const char *)actions[0].path, "input.txt"));
+
+    /* 2. Output and Append redirection */
+    assert(parser_parse("echo foo > out.txt >> app.txt", &ptree) == PARSE_OK);
+    assert(redir_build_spawn_actions(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0,
+                                     actions, &act_count, target_paths) == 0);
+    assert(act_count == 2);
+    assert(actions[0].type == SPAWN_FD_ACTION_OPEN);
+    assert(actions[0].dst_fd == 1);
+    assert(actions[0].flags == (VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC));
+    assert(!strcmp((const char *)actions[0].path, "out.txt"));
+    assert(actions[1].type == SPAWN_FD_ACTION_OPEN);
+    assert(actions[1].dst_fd == 1);
+    assert(actions[1].flags == (VFS_O_WRONLY | VFS_O_CREAT | VFS_O_APPEND));
+    assert(!strcmp((const char *)actions[1].path, "app.txt"));
+
+    /* 3. Stderr and Duplication ordering: >out 2>&1 */
+    assert(parser_parse("cmd > out.txt 2>&1", &ptree) == PARSE_OK);
+    assert(redir_build_spawn_actions(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0,
+                                     actions, &act_count, target_paths) == 0);
+    assert(act_count == 2);
+    assert(actions[0].type == SPAWN_FD_ACTION_OPEN && actions[0].dst_fd == 1);
+    assert(actions[1].type == SPAWN_FD_ACTION_DUP2 && actions[1].dst_fd == 2 && actions[1].src_fd == 1);
+
+    /* 4. Inverted duplication ordering: 2>&1 >out */
+    assert(parser_parse("cmd 2>&1 > out.txt", &ptree) == PARSE_OK);
+    assert(redir_build_spawn_actions(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0,
+                                     actions, &act_count, target_paths) == 0);
+    assert(act_count == 2);
+    assert(actions[0].type == SPAWN_FD_ACTION_DUP2 && actions[0].dst_fd == 2 && actions[0].src_fd == 1);
+    assert(actions[1].type == SPAWN_FD_ACTION_OPEN && actions[1].dst_fd == 1);
+
+    /* 5. Close descriptor: >&- and 2<&- */
+    assert(parser_parse("cmd >&- 2<&-", &ptree) == PARSE_OK);
+    assert(redir_build_spawn_actions(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0,
+                                     actions, &act_count, target_paths) == 0);
+    assert(act_count == 2);
+    assert(actions[0].type == SPAWN_FD_ACTION_CLOSE && actions[0].dst_fd == 1);
+    assert(actions[1].type == SPAWN_FD_ACTION_CLOSE && actions[1].dst_fd == 2);
+
+    /* 6. Target expansion and ambiguous redirect */
+    vars_set("OUT_FILE", "expanded.txt", false);
+    vars_set("AMBIG_VAR", "word1 word2", false);
+    assert(parser_parse("cmd > $OUT_FILE", &ptree) == PARSE_OK);
+    assert(redir_build_spawn_actions(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0,
+                                     actions, &act_count, target_paths) == 0);
+    assert(act_count == 1);
+    assert(!strcmp((const char *)actions[0].path, "expanded.txt"));
+
+    assert(parser_parse("cmd > $AMBIG_VAR", &ptree) == PARSE_OK);
+    assert(redir_build_spawn_actions(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0,
+                                     actions, &act_count, target_paths) != 0);
+
+    puts("PASS shell redirections: spawn actions, open/dup/close, lexical order, target expansion, ambiguous rejection");
     return 0;
 }

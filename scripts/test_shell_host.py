@@ -10,5 +10,6 @@ with tempfile.TemporaryDirectory(prefix="fortress-shell-host-") as tmp:
                     "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
                     "-Isrc/include", "-Isrc/fs", "-Iuser/shell", "tests/shell_host.c",
                     "user/shell/lineedit.c", "user/shell/lexer.c", "user/shell/parser.c",
-                    "user/shell/vars.c", "user/shell/alias.c", "user/shell/expand.c", "-o", exe], cwd=repo, check=True)
+                    "user/shell/vars.c", "user/shell/alias.c", "user/shell/expand.c",
+                    "user/shell/redir.c", "-o", exe], cwd=repo, check=True)
     subprocess.run([exe], check=True)

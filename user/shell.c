@@ -12,6 +12,7 @@
 #include "shell/vars.h"
 #include "shell/alias.h"
 #include "shell/expand.h"
+#include "shell/redir.h"
 
 static char cmd_buf[LINE_CAP * 2];
 static char line_input[LINE_CAP];
@@ -28,6 +29,8 @@ static char s_alias_line[LINE_CAP * 2];
 static parse_cmd_t s_val_cmd;
 static parse_cmd_t s_sub_cmd;
 static expanded_cmd_t s_exp_val;
+static spawn_fd_action_t s_spawn_actions[MAX_SPAWN_ACTIONS];
+static char s_spawn_target_paths[MAX_SPAWN_ACTIONS][VFS_MAX_PATH];
 
 static void update_cwd(void) {
     long n = call(SYS_GETCWD, (uintptr_t)current_cwd, sizeof(current_cwd), 0);
@@ -90,7 +93,7 @@ static void cat(const char *path) {
     (void)call(SYS_CLOSE, fd, 0, 0);
 }
 
-static int spawn_program(const char *path, const char **argv) {
+static int spawn_program(const char *path, const char **argv, const spawn_fd_action_t *actions, uint32_t action_count) {
     (void)vars_build_envp(s_env_strings, s_envp_ptrs);
 
     spawn_opts_t opts;
@@ -101,6 +104,8 @@ static int spawn_program(const char *path, const char **argv) {
     opts.argv = (uint64_t)argv;
     opts.envp = (uint64_t)s_envp_ptrs;
     opts.cwd = 0; /* inherit */
+    opts.fd_actions = (action_count > 0) ? (uint64_t)actions : 0;
+    opts.action_count = action_count;
 
     long pid = call(SYS_SPAWN_EXT, (uintptr_t)path, (uintptr_t)&opts, sizeof(opts));
     if (pid < 0) {
@@ -111,6 +116,8 @@ static int spawn_program(const char *path, const char **argv) {
             case SYSCALL_EISDIR: puts("Not a regular file.\n"); return 126;
             case SYSCALL_EFBIG: puts("Executable exceeds 4 MiB limit.\n"); return 126;
             case SYSCALL_E2BIG: puts("Argument list too long.\n"); return 1;
+            case SYSCALL_EBADF: puts("Bad file descriptor in redirection.\n"); return 1;
+            case SYSCALL_EINVAL: puts("Invalid redirection or spawn arguments.\n"); return 1;
             default: puts("Unable to load executable.\n"); return 1;
         }
     }
@@ -292,7 +299,7 @@ static int type_cmd(int argc, char **argv) {
     return ret;
 }
 
-static int execute_simple_command(int argc, char **argv) {
+static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t *actions, uint32_t action_count) {
     if (argc == 0 || !argv || !argv[0] || !argv[0][0]) return 0;
 
     const char *cmd = argv[0];
@@ -313,7 +320,7 @@ static int execute_simple_command(int argc, char **argv) {
     }
     if (b == CMD_COMMAND) {
         if (argc < 2) return 0;
-        return execute_simple_command(argc - 1, argv + 1);
+        return execute_simple_command(argc - 1, argv + 1, actions, action_count);
     }
     if (b == CMD_TRUE) {
         return 0;
@@ -509,7 +516,7 @@ static int execute_simple_command(int argc, char **argv) {
             puts("Too many arguments (max 32).\n");
             return 1;
         }
-        return spawn_program(argv[1], (const char **)&argv[1]);
+        return spawn_program(argv[1], (const char **)&argv[1], actions, action_count);
     }
 
     /* Direct program execution */
@@ -557,7 +564,7 @@ static int execute_simple_command(int argc, char **argv) {
         puts("Too many arguments (max 32).\n");
         return 1;
     }
-    return spawn_program(target, (const char **)argv);
+    return spawn_program(target, (const char **)argv, actions, action_count);
 }
 
 static void execute_parse_tree(parse_tree_t *tree) {
@@ -643,11 +650,25 @@ static void execute_parse_tree(parse_tree_t *tree) {
                 s_sub_cmd.argv[s_sub_cmd.argc] = NULL;
                 s_sub_cmd.quote_flags[s_sub_cmd.argc] = NULL;
 
-                expand_command(&s_sub_cmd, curr_status, &s_expanded_cmd);
-                if (s_expanded_cmd.argc > 0) {
-                    curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv);
-                } else {
-                    curr_status = 0;
+                uint32_t spawn_action_count = 0;
+                bool redir_err = false;
+                if (cmd->redir_count > 0) {
+                    if (redir_build_spawn_actions(cmd->redirs, cmd->redir_count, curr_status,
+                                                  s_spawn_actions, &spawn_action_count,
+                                                  s_spawn_target_paths) != 0) {
+                        curr_status = 1;
+                        redir_err = true;
+                    }
+                }
+
+                if (!redir_err) {
+                    expand_command(&s_sub_cmd, curr_status, &s_expanded_cmd);
+                    if (s_expanded_cmd.argc > 0) {
+                        curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv,
+                                                             s_spawn_actions, spawn_action_count);
+                    } else {
+                        curr_status = 0;
+                    }
                 }
 
                 if (assign_count > 0) {
