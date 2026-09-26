@@ -114,7 +114,9 @@ void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
 /* Kernel path, syscall error codes. Reserves one of 64 child records until
  * wait or parent exit; never overwrites an uncollected child status.
  * System V AMD64 ABI: RSP points to argc, RDI = argc, RSI = argv.
- * Bootstrap CPU only; IRQ-excluded publication, no inherited file descriptors. */
+ * VFS spawn retains the calling CPU's affinity with local IRQ-excluded publication.
+ * Inherits non-CLOEXEC descriptors as shared file_t references (ACQ_REL refcounts),
+ * then applies ordered spawn fd actions before publishing the child. */
 int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const argv[],
                              int envc, const char *const envp[],
                              uintptr_t *out_user_rsp, uintptr_t *out_user_argv, uintptr_t *out_user_envp);

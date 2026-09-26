@@ -79,8 +79,8 @@ long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     return -1;
 }
 
-void puts_err(const char *s) {
-    (void)s;
+long puts_err(const char *s) {
+    return (long)strlen(s);
 }
 
 void file_error_err(long error) {
@@ -487,6 +487,13 @@ int main(void) {
     assert(act_count == 2);
     assert(actions[0].type == SPAWN_FD_ACTION_DUP2 && actions[0].dst_fd == 2 && actions[0].src_fd == 1);
     assert(actions[1].type == SPAWN_FD_ACTION_OPEN && actions[1].dst_fd == 1);
+
+    /* Input duplication uses the same ordered DUP2 action as output. */
+    assert(parser_parse("cmd 2<&0", &ptree) == PARSE_OK);
+    assert(redir_build_spawn_actions(ptree.cmds[0].redirs, ptree.cmds[0].redir_count, 0,
+                                     actions, &act_count, target_paths) == 0);
+    assert(act_count == 1);
+    assert(actions[0].type == SPAWN_FD_ACTION_DUP2 && actions[0].dst_fd == 2 && actions[0].src_fd == 0);
 
     /* 5. Close descriptor: >&- and 2<&- */
     assert(parser_parse("cmd >&- 2<&-", &ptree) == PARSE_OK);

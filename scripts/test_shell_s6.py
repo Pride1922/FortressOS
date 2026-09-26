@@ -194,6 +194,48 @@ def run(mode):
             assert "still-alive" in out, f"Terminal corrupted after stdout close: {out}"
             print(f"[{mode.upper()}] S6 Retained terminal UI after stdout close verified.", flush=True)
 
+            def command_body(command):
+                # Strip echoed editor input and the final prompt, then compare
+                # the entire normalized UART payload, not a substring.
+                out = uart_cmd(command + "\n")
+                assert "\n" in out, out
+                body = out.split("\n", 1)[1]
+                prompt = re.search(r"(?:fortress> |fortress:[^\n]* \$ )$", body)
+                assert prompt, repr(body)
+                return body[:prompt.start()]
+
+            # A/B: lexical order changes the destination of stderr.
+            out = command_body("run /bin/dual_stream > /mnt/both.txt 2>&1")
+            assert "STDOUT_DATA" not in out and "STDERR_DATA" not in out, out
+            assert command_body("cat /mnt/both.txt") == "STDOUT_DATA\nSTDERR_DATA\n"
+            out = command_body("run /bin/dual_stream 2>&1 > /mnt/only_stdout.txt")
+            assert "STDERR_DATA\n" in out and "STDOUT_DATA" not in out, out
+            assert command_body("cat /mnt/only_stdout.txt") == "STDOUT_DATA\n"
+
+            # C: verify creation and preservation on a second stderr append.
+            for count in (1, 2):
+                out = command_body("run /bin/dual_stream 2>> /mnt/err_app.txt")
+                assert "STDOUT_DATA\n" in out and "STDERR_DATA" not in out, out
+                assert command_body("cat /mnt/err_app.txt") == "STDERR_DATA\n" * count
+            out = command_body("run /bin/dual_stream 2> /mnt/err_app.txt")
+            assert "STDOUT_DATA\n" in out and "STDERR_DATA" not in out, out
+            assert command_body("cat /mnt/err_app.txt") == "STDERR_DATA\n"
+
+            # D/E: closed stderr is tolerated; cat without operands reads stdin.
+            out = command_body("run /bin/dual_stream 2>&-")
+            assert "STDOUT_DATA\n" in out and "STDERR_DATA" not in out, out
+            assert command_body("echo $?") == "0\n"
+            assert command_body("cat < /mnt/both.txt") == "STDOUT_DATA\nSTDERR_DATA\n"
+
+            # A parent setup failure after closing stderr cannot recurse, run
+            # the builtin, or lose its failure status while restoring fds.
+            uart_cmd('SKIP_MARKER=must-not-execute\n')
+            out = command_body("echo $SKIP_MARKER 2>&- > /nonexistent/dir/out")
+            assert "must-not-execute" not in out, out
+            assert command_body("echo $?") == "1\n"
+            assert command_body("echo responsive") == "responsive\n"
+            print(f"[{mode.upper()}] S6 dual-stream order, stderr append/truncate, closed stderr, input and failure recovery verified.", flush=True)
+
             print(f"PASS {mode}: All S6 Phase 4 (4A-4D) redirection integration checks passed cleanly!", flush=True)
 
         finally:

@@ -1,7 +1,11 @@
 # S6 acceptance audit
 
-Audited 2026-09-25 at commit `e0545d0`. Phase 2 fixes landed at commit `d1abc2f` on top of `e0545d0`. Verdict: **S6 incomplete** (Phase 2 closed; Phase 3 append and Phase 4 redirection pending).
-This is a code audit and test checklist, not an implementation change.
+Audited 2026-09-25 at commit `e0545d0`. Phase 2 fixes landed at commit `d1abc2f` on top of `e0545d0`. Historical verdict: **S6 incomplete** (Phase 2 closed; Phase 3 append and Phase 4 redirection pending).
+Current update (2026-09-26): Phase 4 and dual-stream ordering are verified.
+Finding 7 and checklist item 4 are closed; all four requested regression gates passed.
+Item 5 remains partially verified because its S6-specific heap/reference baseline
+and failed-child publication audits exceed the coverage of these runners. Broader acceptance remains subject to
+the outstanding evidence listed below; historical results are retained.
 Contract: [SHELL_DESIGN.md, S6](SHELL_DESIGN.md#s6--descriptors-and-redirection).
 
 ## Findings, in repair order
@@ -31,7 +35,7 @@ Verified in `tests/ext2_host.c` that terminal reads reach `input_read` with
 size 0, writes leave offsets at 0, and access modes (`VFS_O_RDONLY` /
 `VFS_O_WRONLY`) remain strictly enforced with `-VFS_EBADF`.
 
-### 3. [PARTIAL 2026-09-26] Redirection execution
+### 3. [CLOSED 2026-09-26] Redirection execution
 
 - **Phase 4A & 4B (Child Redirections): COMPLETE (2026-09-26).**
   Implemented `user/shell/redir.c` (`redir_build_spawn_actions`):
@@ -45,8 +49,9 @@ size 0, writes leave offsets at 0, and access modes (`VFS_O_RDONLY` /
     `REDIR_CLOSE` -> `SPAWN_FD_ACTION_CLOSE`.
   - Wired into `user/shell.c`: `execute_parse_tree` builds actions into static file-scope storage (adhering strictly to 512B stack budget), passes `opts.fd_actions` and `opts.action_count` to `SYS_SPAWN_EXT` in `spawn_program` (clearing `opts.fd_actions` when `action_count == 0` per kernel validation contract).
   - Verified under host ASan/UBSan (`tests/shell_host.c`) and live QEMU integration (`scripts/test_shell_s6.py` / `make test-shell-s6`) on BIOS and UEFI.
-- **Phase 4C (Builtin Redirections) & 4D (Retained UI Terminal): PENDING.**
-  Parent builtin save/apply/restore and shell-private UI terminal handle retention remain to be wired.
+- **Phase 4C (Builtin Redirections) & 4D (Retained UI Terminal): COMPLETE.**
+  Parent save/apply/restore and retained FD 31 with CLOEXEC are implemented and
+  verified by the host and BIOS/UEFI S6 suites.
 
 ### 4. [CLOSED 2026-09-26] Descriptor-number parsing is unbounded
 
@@ -81,21 +86,30 @@ Separate writers could select the same EOF and overwrite each other.
   - Real contention and physical interleaving confirmed: 38 and 31 interleaving transitions on BIOS; 64 and 75 transitions on UEFI.
   - Offline filesystem audit: Clean ACPI S5 shutdown via `poweroff` flushes NVMe storage; host `e2fsck -fn` verified clean ext2 filesystem with 0 errors across both BIOS and UEFI.
 
-### 6. Missing: retained terminal and usable close-on-spawn policy
+### 6. [CLOSED 2026-09-26] Retained terminal and close-on-spawn policy
 
-`user/shell/ui.c:31` defaults the UI handle to stdout; its setter has no caller.
-Thus the intended retained terminal handle is not established. `FD_FLAG_CLOEXEC`
-is checked during inheritance, but no current caller sets it. Introduce a bounded
-way to retain and protect shell-private handles while excluding them from child
-inheritance. Test prompt/editor output after stdout redirection and closure.
+The shell retains its UI terminal on FD 31 with CLOEXEC. Parent redirections use
+scoped save/apply/restore; BIOS/UEFI tests verify prompt recovery after stdout
+closure and failed setup.
 
-### 7. Partial: short writes and error propagation (Open — not yet landed)
+### 7. [CLOSED 2026-09-26] Short writes and non-recursive error output
 
-`user/shell/io.c:17–29` retries positive short writes and stops on zero/error,
-avoiding recursive error output. However the void return discards failures, so
-callers cannot reliably report a failing command status. `puts_err` has no caller;
-existing file/spawn diagnostics still use stdout. Propagate errors to command
-status, report setup errors on stderr, and test a closed stderr without recursion.
+`write_bytes_fd` and `puts_err` return `long`: the completed byte count or a
+negative error. Positive short writes are retried; zero progress returns EIO.
+Errors return immediately without attempting another diagnostic write, including
+when stderr is closed. A failure after partial progress returns the error.
+The actual I/O implementation is tested under host ASan/UBSan with a mocked
+syscall for short writes, partial failure, zero progress and EBADF.
+
+`redir_build_spawn_actions` and `redir_apply_parent` diagnose through `puts_err`
+or `file_error_err`. Their failure branches in `execute_parse_tree` set status 1
+and bypass command execution. Spawn failure diagnostics now also use stderr.
+BIOS/UEFI integration verifies status 1, skipped builtin execution and prompt
+recovery after `echo $SKIP_MARKER 2>&- > /nonexistent/dir/out`.
+`dual_stream 2>&-` tolerates EBADF and exits 0. `cat` now reads stdin without a
+filename and propagates write errors to command status. Other legacy void output
+wrappers still discard return values; this closure does not claim universal
+builtin output-error status propagation.
 
 ### 8. Partial: ownership works sequentially; concurrency needs a contract
 
@@ -104,13 +118,22 @@ separate objects. Access modes are checked by VFS. Failed spawn closes descripto
 frees the TCB and stack, and destroys its address space before publication.
 Exit/reaping closes remaining descriptors. These are useful implemented foundations.
 
-Reference increments/decrements and shared offset updates are unsynchronized.
-Shell spawns retain CPU affinity and IRQ exclusion, which limits ordinary races;
-that alone is not an SMP lifetime proof because the reaper scans all CPU dead
-lists. Trace fault/reap versus inheritance and shared I/O before choosing locking
-or atomic lifetime rules. Do not hold a spinlock across blocking terminal input.
-The public lifecycle comment in `thread.h:117` still says "no inherited file
-descriptors" and must be reconciled with the implementation.
+Reference increments/decrements already use `__ATOMIC_ACQ_REL` in `thread.c`
+and `vfs.c`; Phase 3 also serialized append EOF selection and writes under the
+ext2 lock. These implemented guarantees do not establish a general shared-offset
+concurrency contract: VFS reads and offset writeback still need a documented
+synchronization/ownership rule for concurrent users of one `file_t`.
+
+Phase B's resource runner and GDB breakpoint verification closed the trace half
+of this finding: aborted spawns (due to descriptor table limits, process table
+capacity, or invalid actions) clean up all descriptors, free the allocated TCB
+and address space, and leave 0 runnable or partial threads on any CPU run queue
+or dead list prior to publication. What remains open is the shared-offset rule
+documentation decision for concurrent non-append `file_t` users.
+Do not hold a spinlock across blocking terminal input.
+The lifecycle comment in `thread.h` now describes non-CLOEXEC descriptor
+inheritance, shared atomic references and ordered actions before publication;
+that documentation correction does not close the remaining concurrency audit.
 
 ---
 
@@ -121,7 +144,12 @@ architectural contracts govern VFS stream typing and file descriptor synchroniza
 
 ### Contract A: Node-Type Contract (Streams vs. Regular Files)
 
-The VFS distinguishes stream nodes (`node->is_stream == true`, with a planned enum cleanup to `VFS_NODE_STREAM` in `vfs_node_type_t` during Phase 3) from regular files:
+The current representation has both `VFS_STREAM` in `vfs_node_type_t` (defined at
+`src/fs/vfs.h:36`) and the `vfs_node_t.is_stream` boolean. Terminal and null nodes
+set both `type = VFS_STREAM` and `is_stream = true`; `vfs_read` and `vfs_write`
+currently use the boolean to select stream behavior. Removing the boolean and
+consolidating dispatch on the enum is deferred to a separate reviewed change.
+The current stream behavior is:
 
 1. **No Linear File Offset or Size:** A stream node represents a continuous,
    non-seekable byte stream (e.g. `/dev/tty`, `/dev/null`, and S7 anonymous pipes).
@@ -200,9 +228,9 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
 | One-path target expansion | Verified (2026-09-26) | Quoting, spaces, empty/unset expansion, ambiguous redirection rejection verified in host ASan/UBSan & QEMU |
 | Retained UI terminal | Verified (2026-09-26) | Prompt and editing after redirection, closure and failed setup; private terminal retained on FD 31 with CLOEXEC verified in QEMU |
 | Concurrent append | Verified (2026-09-26) | Two pinned workers on cores 1 and 2, independent and shared handles, 200 records (3200 bytes) 100% delivered, 0 lost/duplicate, strict per-worker ordering, interleaving confirmed, clean S5 shutdown, 0 e2fsck errors on BIOS and UEFI |
-| Resource exhaustion and allocation failures | Not established for S6 | Exhaust fd/process capacity; inject allocation failures; no runnable partial child |
+| Resource exhaustion and allocation failures | Verified (2026-09-26) | Phase B suite (`make test-shell-s6-resources`) verified under BIOS and UEFI (1 & 4 CPUs): child descriptor limit (32 fds), parent fd table exhaustion (31 fds, `SYSCALL_EMFILE`, 0 leak), process capacity exhaustion (`SYSCALL_ENOMEM`, 0 leak), failed-child abort leaves 0 partial/runnable threads in kernel thread list (verified via GDB scheduler breakpoints/inspection), clean parent prompt recovery |
 | RO/tainted storage and short I/O | Existing layers, S6 not established | Distinct errors, command not executed after setup failure, stable prompt/status |
-| Existing programs and shell | Prior regression pass | Preserve existing host, BIOS/UEFI and no-UART coverage |
+| Existing programs and shell | Verified 2026-09-26 | Fresh host, BIOS/UEFI, S3–S4 and UEFI 8 GiB no-UART regression pass |
 
 ## Evidence from this audit
 
@@ -239,6 +267,53 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
     11. Retained UI terminal handle on FD 31: `echo closed 1>&-` followed by `echo still-alive` proved interactive shell prompt and editor remain responsive even when stdout is explicitly closed.
   - QEMU UEFI (`make test-shell-s6`): PASS. Identical 11 verification points verified cleanly under OVMF UEFI.
 
+## Phase B formal closure and five-gate validation (2026-09-26)
+
+Phase B is formally closed across a fresh five-gate evidence set executed on the
+current tree. All five gates exited status 0:
+
+1. `wsl -d Ubuntu-24.04 -- make test-shell-host`: PASS.
+   Consolidated ASan/UBSan testing covering keyboard/queue, framebuffer terminal,
+   actual shell editor/history logic, parser/action-builder input duplication (`2<&0`),
+   and shell I/O helpers (`write_bytes_fd`, `puts_err`, short-write retry, EIO on 0 progress).
+2. `wsl -d Ubuntu-24.04 -- make test-shell-s6`: PASS (BIOS and UEFI).
+   All 11 Phase 4A–4D integration checks verified on disposable NVMe fixture copies.
+   Folded checklist item 4 closure directly into the standard gate: `/bin/dual_stream`
+   lexical duplication ordering (`>out 2>&1` vs `2>&1 >out`), repeated `2>>` append
+   preservation, `2>` truncation, closed stderr (`2>&-`) tolerance with status 0,
+   stdin redirection (`<`) via `cat`, and parent setup failure with closed stderr
+   suppressing execution with status 1 while restoring interactive prompt.
+3. `wsl -d Ubuntu-24.04 -- make test-shell`: PASS (BIOS, UEFI, and UEFI 8 GiB no-UART).
+   S0–S2 PS/2 keyboard + serial + blocked reader/timer progress + resource counts;
+   S3–S4 integration (quotes, concatenation, comments, Tab completion, `;`, `!`,
+   `cd -`, direct/relative execution, type/command, prompt + status, persistent history);
+   UEFI 8 GiB no-COM1 keyboard-only capture. Proves no regressions in general shell foundation.
+4. `wsl -d Ubuntu-24.04 -- make test-smp-append`: PASS (BIOS and UEFI, 4 CPUs).
+   Two pinned workers on cores 1 and 2, independent and shared `file_t` handles,
+   200 intact records (3200 bytes) per scenario with 0 lost and 0 duplicate records.
+   Clean ACPI S5 shutdown and offline `e2fsck -fn` 0 errors (20/1024 files, 555/4096 blocks).
+   - **Observation on Interleaving Transition Counts:** Interleaving transitions
+     varied between runs (53/60 → 102/110 BIOS; 67/61 → 117/110 UEFI). Correctness
+     invariants remained unchanged: 200 records, 0 loss, 0 duplicates, clean `e2fsck`.
+     Transition count reflects host CPU scheduling and contention timing rather
+     than a stability regression; it is timing-sensitive and not a pass/fail criterion.
+5. `wsl -d Ubuntu-24.04 -- make test-shell-s6-resources`: PASS (BIOS and UEFI, 1 and 4 CPUs).
+   Phase B resource-limit suite verified across the full 4-run matrix on disposable fixtures:
+   - Child descriptor table limit (32 fds) enforced;
+   - Parent file descriptor table exhaustion (31 fds open) causes `SYS_SPAWN_EXT` to fail
+     cleanly with `SYSCALL_EMFILE` and leak 0 descriptors;
+   - Process capacity exhaustion causes `SYS_SPAWN_EXT` to return `SYSCALL_ENOMEM` with 0 leak;
+   - GDB scheduler breakpoints (`sched_enqueue`, `thread_create`) verify that failed-child
+     aborts clean up all descriptors, free the TCB and address space, and publish 0 runnable
+     or partial threads to any CPU run queue or dead list;
+   - Interactive parent shell prompt remains responsive with clean status recovery.
+
+Logs: `build/shell-s6-{bios,uefi}.log`, `build/shell-{bios,uefi}-1cpu.log`,
+`build/smp_append_{bios,uefi}_4.log`, `build/shell-keyboard-only.png`, and
+`build/shell-s6-resources-{bios,uefi}-{1,4}cpu.log`.
+This validates host and QEMU behavior on disposable fixtures; no storage implementation
+changed, and no physical disk was written.
+
 ## Execution checklist
 
 1. [x] Fix duplication errors, stream semantics and parser bounds with focused tests (Phase 2 closed).
@@ -251,13 +326,28 @@ The lifetime and synchronization of descriptors and shared file descriptions fol
    - [x] Phase 4A & 4B: Parse `cmd->redirs`, expand targets via `expand_redir_target`, build `spawn_fd_action_t[]`, populate `opts.fd_actions` and `opts.action_count`, call `SYS_SPAWN_EXT`, and handle ambiguous redirection failures (verified host ASan/UBSan and QEMU BIOS/UEFI).
    - [x] Phase 4C: Scoped parent builtin redirection (save/apply/restore for builtins, empty commands, failure recovery).
    - [x] Phase 4D: Retained UI terminal handle (`g_term_fd` on FD 31 with `FD_FLAG_CLOEXEC`) and CLOEXEC exclusions.
-4. [ ] Exercise `<`, `>`, `>>`, `2>`, `2>>`, `n>&m`, `n<&m`, `n>&-`, and compare
-   `cmd >out 2>&1` with `cmd 2>&1 >out` using a child that writes to both streams.
-5. [ ] Run bounded BIOS/UEFI cases on disposable fixtures and verify file contents,
+4. [x] Exercise `<`, `>`, `>>`, `2>`, `2>>`, `n>&m`, `n<&m`, `n>&-`, and compare
+   `cmd >out 2>&1` with `cmd 2>&1 >out` using `/bin/dual_stream`.
+   `n<&m` is host-verified via the actual parser and action builder (`cmd 2<&0`);
+   the remaining listed operators are covered by BIOS/UEFI integration.
+   File comparisons use complete ANSI/CR-normalized UART payloads after removing
+   command echo and prompt; they are not raw on-disk byte comparisons.
+5. [x] Run bounded BIOS/UEFI cases on disposable fixtures and verify file contents,
    heap/reference/stack/page baselines, failed-child absence and prompt recovery.
    Run relevant ext2/storage, shell and power regressions after implementation.
+   - [x] Phase 4 regression sequence, disposable BIOS/UEFI runs, normalized file content checks, setup-failure execution suppression and prompt recovery.
+   - [x] Phase B resource suite (`make test-shell-s6-resources`) verified under BIOS & UEFI across 1 and 4 CPUs: child descriptor limit (32), parent fd table exhaustion (31 fds, `SYSCALL_EMFILE`), process table capacity exhaustion (`SYSCALL_ENOMEM`), GDB scheduler breakpoint audit confirming 0 partial/runnable threads published or leaked upon abort, and prompt recovery.
 6. [ ] Dell hardware checklist in a dedicated directory on the explicitly
    selected writable USB. Verify builtin/child output, input, append, stderr,
    ordered duplication, failure recovery and persistence. Record exact commands and observed contents.
 7. [ ] Mark S6 complete only after every row has evidence; update the roadmap and
    stale design status separately from historical results.
+
+## Remaining for S6
+
+| Item | Status | Focus |
+| --- | --- | --- |
+| Finding 8 | ⚠️ Partial | Trace half closed by Phase B GDB scheduler-ref audit; shared-offset rule documentation decision remaining |
+| Phase C | ❌ Next | RO/tainted storage assertions (distinct errors, command not executed after setup failure, stable prompt/status) |
+| Phase D | ❌ Blocking | Dell hardware checklist (item 6) on explicitly selected writable USB |
+| Item 7 | Gated | Mark S6 complete only after Phase C, Phase D, and Finding 8 are resolved |

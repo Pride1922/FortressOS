@@ -72,12 +72,15 @@ static void list(const char *path) {
 }
 
 static void cat(const char *path) {
-    vfs_stat_t st;
-    long result = call(SYS_STAT, (uintptr_t)path, (uintptr_t)&st, 0);
-    if (result < 0) { file_error(result); last_status = 1; return; }
-    if (st.type != VFS_FILE) { puts("Not a regular file.\n"); last_status = 1; return; }
-    long fd = call(SYS_OPEN, (uintptr_t)path, 0, 0);
-    if (fd < 0) { file_error(fd); last_status = 1; return; }
+    long fd = 0, result;
+    if (path) {
+        vfs_stat_t st;
+        result = call(SYS_STAT, (uintptr_t)path, (uintptr_t)&st, 0);
+        if (result < 0) { file_error_err(result); last_status = 1; return; }
+        if (st.type != VFS_FILE) { puts_err("Not a regular file.\n"); last_status = 1; return; }
+        fd = call(SYS_OPEN, (uintptr_t)path, 0, 0);
+        if (fd < 0) { file_error_err(fd); last_status = 1; return; }
+    }
     char buf[512];
     bool newline = true;
     while ((result = call(SYS_READ, fd, (uintptr_t)buf, sizeof(buf))) > 0) {
@@ -86,12 +89,13 @@ static void cat(const char *path) {
             if (c != '\n' && c != '\t' && (c < 32 || c > 126)) buf[i] = '.';
         }
         newline = buf[result - 1] == '\n';
-        write_bytes(buf, result);
+        long written = write_bytes_fd(1, buf, (size_t)result);
+        if (written < 0) { result = written; break; }
     }
-    if (!newline) puts("\n");
-    if (result < 0) { file_error(result); last_status = 1; }
+    if (result >= 0 && !newline) result = write_bytes_fd(1, "\n", 1);
+    if (result < 0) { file_error_err(result); last_status = 1; }
     else { last_status = 0; }
-    (void)call(SYS_CLOSE, fd, 0, 0);
+    if (path) (void)call(SYS_CLOSE, fd, 0, 0);
 }
 
 static int spawn_program(const char *path, const char **argv, const spawn_fd_action_t *actions, uint32_t action_count) {
@@ -111,15 +115,15 @@ static int spawn_program(const char *path, const char **argv, const spawn_fd_act
     long pid = call(SYS_SPAWN_EXT, (uintptr_t)path, (uintptr_t)&opts, sizeof(opts));
     if (pid < 0) {
         switch (pid) {
-            case SYSCALL_ENOENT: puts("No such file or directory.\n"); return 127;
-            case SYSCALL_ENOEXEC: puts("Invalid executable.\n"); return 126;
-            case SYSCALL_ENOMEM: puts("Out of memory or process capacity.\n"); return 1;
-            case SYSCALL_EISDIR: puts("Not a regular file.\n"); return 126;
-            case SYSCALL_EFBIG: puts("Executable exceeds 4 MiB limit.\n"); return 126;
-            case SYSCALL_E2BIG: puts("Argument list too long.\n"); return 1;
-            case SYSCALL_EBADF: puts("Bad file descriptor in redirection.\n"); return 1;
-            case SYSCALL_EINVAL: puts("Invalid redirection or spawn arguments.\n"); return 1;
-            default: puts("Unable to load executable.\n"); return 1;
+            case SYSCALL_ENOENT: puts_err("No such file or directory.\n"); return 127;
+            case SYSCALL_ENOEXEC: puts_err("Invalid executable.\n"); return 126;
+            case SYSCALL_ENOMEM: puts_err("Out of memory or process capacity.\n"); return 1;
+            case SYSCALL_EISDIR: puts_err("Not a regular file.\n"); return 126;
+            case SYSCALL_EFBIG: puts_err("Executable exceeds 4 MiB limit.\n"); return 126;
+            case SYSCALL_E2BIG: puts_err("Argument list too long.\n"); return 1;
+            case SYSCALL_EBADF: puts_err("Bad file descriptor in redirection.\n"); return 1;
+            case SYSCALL_EINVAL: puts_err("Invalid redirection or spawn arguments.\n"); return 1;
+            default: puts_err("Unable to load executable.\n"); return 1;
         }
     }
     int64_t status;
@@ -398,8 +402,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         return (int)last_status;
     }
     if (b == CMD_CAT) {
-        if (argc > 1) cat(argv[1]);
-        else { puts("Usage: cat /path\n"); last_status = 1; }
+        cat(argc > 1 ? argv[1] : NULL);
         return (int)last_status;
     }
     if (b == CMD_EDIT) {

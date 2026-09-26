@@ -14,9 +14,11 @@ void puts(const char *s);
 #endif
 void put_dec(size_t val);
 void write_bytes(const char *s, size_t n);
-void write_bytes_fd(int fd, const char *s, size_t n);
+/* Retries short writes; returns total bytes or a negative error, without logging.
+ * Zero progress is EIO. An error may follow a partially completed write. */
+long write_bytes_fd(int fd, const char *s, size_t n);
 void puts_fd(int fd, const char *s);
-void puts_err(const char *s);
+long puts_err(const char *s);
 void file_error(long error);
 void file_error_err(long error);
 void editor_load(const char *path);

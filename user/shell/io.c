@@ -1,8 +1,10 @@
 #include "io.h"
+#ifndef SHELL_IO_HOST_TEST
 long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     __asm__ volatile("syscall" : "+a"(nr) : "D"(a), "S"(b), "d"(c) : "rcx", "r11", "memory", "cc");
     return nr;
 }
+#endif
 size_t length(const char *s) { size_t n = 0; while (s[n]) n++; return n; }
 bool equal(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
@@ -13,7 +15,7 @@ bool equal(const char *a, const char *b) {
 void puts(const char *s);      /* defined below */
 void put_dec(size_t val);      /* defined below */
 
-void write_bytes_fd(int fd, const char *s, size_t n) {
+long write_bytes_fd(int fd, const char *s, size_t n) {
     size_t off = 0;
     while (off < n) {
         size_t chunk = n - off;
@@ -21,11 +23,12 @@ void write_bytes_fd(int fd, const char *s, size_t n) {
         long r = call(SYS_WRITE, fd, (uintptr_t)(s + off), chunk);
         if (r < 0) {
             /* Output failure must not recursively write another error. */
-            return;
+            return r;
         }
+        if (r == 0 || (size_t)r > chunk) return SYSCALL_EIO;
         off += (size_t)r;
-        if (r == 0) break;  /* avoid infinite loop on buggy drivers */
     }
+    return (long)off;
 }
 
 void write_bytes(const char *s, size_t n) {
@@ -36,8 +39,8 @@ void puts_fd(int fd, const char *s) {
     write_bytes_fd(fd, s, length(s));
 }
 
-void puts_err(const char *s) {
-    puts_fd(2, s);
+long puts_err(const char *s) {
+    return write_bytes_fd(2, s, length(s));
 }
 
 void puts(const char *s) { write_bytes(s, length(s)); }
@@ -67,4 +70,3 @@ void put_dec(size_t val) {
     buf[i] = 0;
     puts(buf);
 }
-

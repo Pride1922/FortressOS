@@ -231,6 +231,7 @@ test-usb-persistence: $(BOOTABLE_IMG)
 USER_DIR := user
 USER_INIT_ELF := $(BUILD_DIR)/init.elf
 USER_HELLO_ELF := $(BUILD_DIR)/hello.elf
+USER_DUAL_STREAM_ELF := $(BUILD_DIR)/dual_stream.elf
 USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
 
@@ -250,6 +251,13 @@ $(USER_HELLO_ELF): $(USER_DIR)/hello.asm $(USER_DIR)/linker.ld
 	@echo "  [LD]  $@"
 	@$(LD) -m elf_x86_64 -nostdlib -static -T $(USER_DIR)/linker.ld $(BUILD_DIR)/hello.o -o $@
 
+$(USER_DUAL_STREAM_ELF): $(USER_DIR)/dual_stream.asm $(USER_DIR)/linker.ld
+	@mkdir -p $(BUILD_DIR)
+	@echo "  [AS]  $<"
+	@$(AS) -f elf64 $< -o $(BUILD_DIR)/dual_stream.o
+	@echo "  [LD]  $@"
+	@$(LD) -m elf_x86_64 -nostdlib -static -T $(USER_DIR)/linker.ld $(BUILD_DIR)/dual_stream.o -o $@
+
 # Freestanding user shell, separate address-space ELF (no host runtime).
 SHELL_MODULES := $(wildcard user/shell/*.c)
 SHELL_HEADERS := $(wildcard user/shell/*.h) src/include/terminal.h src/include/syscall_abi.h
@@ -266,11 +274,12 @@ $(USER_SHELL_ELF): $(SHELL_OBJECTS) $(SHELL_HEADERS) $(USER_DIR)/shell.c $(USER_
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/shell_start.o $(BUILD_DIR)/shell.o $(SHELL_OBJECTS) -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_SHELL_ELF) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
 	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello
+	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
 	@printf "========================================\n  Welcome to FortressOS (x86_64 UEFI)\n  Step 8B: Initramfs & VFS Active\n========================================\n" > $(BUILD_DIR)/initramfs/etc/motd
 	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, cat and echo.\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
 	@echo "  [TAR] Generating USTAR archive $@"
@@ -497,3 +506,14 @@ test-shell-s5: bin/fortress.iso nvme-gpt-disk
 test-shell-s6: bin/fortress.iso nvme-gpt-disk
 	@python3 scripts/test_shell_s6.py
 
+# Test-only Ring 3 exerciser: the runner adds it to a disposable ISO, never the
+# production initramfs. Uses the same freestanding ABI as the shell.
+$(BUILD_DIR)/s6_resources.elf: tests/s6_resources_user.c tests/s6_resources_start.asm user/shell.ld $(SHELL_HEADERS) src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s6_resources_user.c -o $(BUILD_DIR)/s6_resources.o
+	@$(AS) -f elf64 tests/s6_resources_start.asm -o $(BUILD_DIR)/s6_resources_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s6_resources_start.o $(BUILD_DIR)/s6_resources.o -o $@
+
+.PHONY: test-shell-s6-resources
+test-shell-s6-resources: $(BOOTABLE_ISO) $(NVME_GPT_IMG) $(BUILD_DIR)/s6_resources.elf
+	@python3 scripts/test_shell_s6_resources.py
