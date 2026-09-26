@@ -1,10 +1,16 @@
 # Shell Milestone S7: Pipes and Stream Utilities — Implementation Plan & Acceptance Audit
 
-**Status:** APPROVED ARCHITECTURE SPECIFICATION  
+**Status:** Phases 1–3 COMPLETE; Phase 4 implemented, user acceptance pending
 **Date:** 2026-09-26  
 **Author:** AI Agent & Subsystem Architecture Team  
 **Scope:** Milestone S7 as specified in [SHELL_DESIGN.md](SHELL_DESIGN.md#s7--pipes-and-stream-utilities) and [AGENTS.md](../../AGENTS.md).  
 **Dependencies:** Milestone S6 Complete (uniform file descriptors, spawn actions, atomic append serialization, Dell Latitude 5590 acceptance).
+
+Current evidence: [Phase 1](../roadmap/shell-s7-phase1.md),
+[Phase 2](../roadmap/shell-s7-phase2.md), [Phase 3](../roadmap/shell-s7-phase3.md).
+The accepted Phase 3 resolution uses the existing flat command array, not a
+separate pipeline AST. [Phase 4 implementation](../roadmap/shell-s7-phase4.md)
+now awaits user-run tests; [approved design](S7_PHASE4.md).
 
 ---
 
@@ -42,12 +48,12 @@ Milestone S7 elevates FortressOS from single-command execution and file redirect
   - `active_endpoints`: Refcount of the `pipe_t` struct itself (starts at 2: 1 for `read_node`, 1 for `write_node`).
 - **File Refcount Interaction:**
   - In FortressOS, `dup`, `dup2`, and `SYS_SPAWN_EXT` descriptor cloning all share the underlying `file_t` description via atomic acquire-release refcounting (`__atomic_fetch_add(&file->ref_count, 1, __ATOMIC_ACQ_REL)`).
-  - `vfs_close()` is only invoked when `file->ref_count` drops to zero.
+  - `vfs_close()` drops a file reference on each call; `node->close()` runs only on final release.
   - Therefore, `readers` and `writers` are decremented inside `node->close(node)` at the exact moment the file description is closed. This guarantees that `readers` and `writers` accurately reflect open descriptions and eliminates any race with `dup()`.
 - **Teardown Flow:**
   - When `readers` drops to 0: wakes all blocked threads on the pipe channel via `sched_wake_all(pipe)` (writers fail with `SYSCALL_EPIPE`). `read_node->fs_private` is cleared, and `active_endpoints` is decremented.
   - When `writers` drops to 0: wakes all blocked threads on the pipe channel via `sched_wake_all(pipe)` (readers return EOF). `write_node->fs_private` is cleared, and `active_endpoints` is decremented.
-  - When `active_endpoints` reaches 0: unlinks both VFS nodes, returns the 16 physical pages to PMM via `pmm_free_pages()`, and frees `pipe_t` via `kfree()`.
+  - Close wakes waiters after unlocking and before dropping `active_endpoints`. The last release frees both anonymous VFS nodes (never linked into the namespace), returns 16 physical pages and frees `pipe_t`.
 
 ---
 
@@ -75,7 +81,7 @@ Milestone S7 elevates FortressOS from single-command execution and file redirect
   3. **Phase C (Post-Action CLOEXEC Sweep):** Immediately following action processing in the child, the kernel iterates over `p->fd_flags`:
      ```c
      for (int i = 0; i < MAX_PROCESS_FDS; i++) {
-         if (p->fd_flags[i] & FD_FLAG_CLOEXEC) {
+         if (p->fd_table[i] && (p->fd_flags[i] & FD_FLAG_CLOEXEC)) {
              vfs_close(p->fd_table[i]);
              p->fd_table[i] = NULL;
              p->fd_flags[i] = 0;
@@ -91,6 +97,10 @@ Milestone S7 elevates FortressOS from single-command execution and file redirect
 ---
 
 ### 2.5 Pipeline Failure Recovery & Natural Self-Termination
+Closing endpoints releases cooperative pipe readers/writers; it does not cancel
+arbitrary children that ignore I/O or have redirected away from the pipe. No
+SYS_KILL exists. The sequence below does not guarantee bounded recovery for every
+program; Phase 4's handoff records this limitation and uses bounded test fixtures.
 - If stage 0 fails to spawn (e.g. `ENOENT` / `EMFILE`): parent closes all pipes and returns immediately.
 - If stage `k > 0` fails to spawn:
   1. Parent immediately closes all intermediate pipe descriptors in its own table.
@@ -108,7 +118,7 @@ Milestone S7 elevates FortressOS from single-command execution and file redirect
   - 14 fds + 3 standard streams + 1 retained UI terminal = 18 fds, fitting comfortably within the 32-descriptor table limit (`MAX_PROCESS_FDS = 32`).
 - **Stack Budget Invariant:**
   - Ring 3 user stack is strictly **4 KiB** (1 page frame) with a mandatory **512-byte stack frame headroom** constraint.
-  - The pipeline AST struct (`parse_pipeline_t`, >1 KiB) **must live in static/BSS storage** (e.g. file-scope `s_pipeline_tree` in [user/shell.c](../../user/shell.c)), exactly following the static storage discipline established in Milestone S6 for `s_parent_scope` and `s_expanded_cmd`.
+  - Phase 3 keeps the existing static `parse_tree_t` with flat `parse_cmd_t[]` and `CMD_OP_PIPE`. No `parse_pipeline_t` is needed. Phase 4 groups consecutive pipe markers and keeps preparation/action/PID buffers in BSS, following `s_parent_scope` and `s_expanded_cmd`.
 
 ---
 
@@ -134,8 +144,8 @@ Milestone S7 elevates FortressOS from single-command execution and file redirect
 ### 2.8 -EPIPE Semantics & Simulated POSIX Exit Status (141)
 - **Contract Boundary:** FortressOS does not implement POSIX signals (signals, job control, and `SIGPIPE` belong to Milestone S8).
 - **Defined S7 Behavior:**
-  - Writing to a pipe with no open reader returns `-SYSCALL_EPIPE` directly to the writer process.
-  - Core filter tools (`cat`, `head`, `tail`, `wc`) check the return value of writes to stdout. Upon receiving `-SYSCALL_EPIPE`, the tool terminates immediately with exit code **141** (`128 + 13`, simulating POSIX `SIGPIPE` termination).
+  - Writing to a pipe with no open reader returns `SYSCALL_EPIPE` (-20) directly to the writer process.
+  - Phase 5 filter tools check stdout writes and exit **141** on `SYSCALL_EPIPE` (`128 + 13`, simulating POSIX `SIGPIPE` termination).
   - The shell collects the exit status via `SYS_WAIT` and reflects 141 in `$?`.
 
 ---
@@ -158,7 +168,7 @@ Milestone S7 elevates FortressOS from single-command execution and file redirect
 ---
 
 ### 2.10 Kernel Self-Test Execution Window in `kmain`
-- In [src/kernel/main.c](../../src/kernel/main.c), the new kernel self-test `test_pipe_kernel_lifecycle()` is placed in lines 5450–5463, alongside `test_smp_ext2_concurrent_append()`.
+- In [src/kernel/main.c](../../src/kernel/main.c), `test_pipe_kernel_lifecycle()` runs alongside the other optional acceptance tests, gated by `opt/fortress/pipe_test`.
 - At this point in the boot sequence:
   - SMP, PMM, VMM, and the scheduler are fully initialized and online.
   - The test runs *before* `input_init()` and the `/bin/shell` spawn loop.
@@ -216,14 +226,23 @@ static bool pipe_read_ready(void *arg) {
            __atomic_load_n(&p->writers, __ATOMIC_ACQUIRE) == 0;
 }
 
+typedef struct {
+    pipe_t *pipe;
+    size_t needed_space;
+} pipe_wait_write_t;
+
 static bool pipe_write_ready(void *arg) {
-    pipe_t *p = (pipe_t *)arg;
-    return __atomic_load_n(&p->space_bytes, __ATOMIC_ACQUIRE) > 0 ||
-           __atomic_load_n(&p->readers, __ATOMIC_ACQUIRE) == 0;
+    pipe_wait_write_t *w = arg;
+    return __atomic_load_n(&w->pipe->space_bytes, __ATOMIC_ACQUIRE) >= w->needed_space ||
+           __atomic_load_n(&w->pipe->readers, __ATOMIC_ACQUIRE) == 0;
 }
 ```
 
-Wait operations release `pipe->lock`, call `sched_wait_until(pipe, ready_predicate, pipe)`, and re-acquire `pipe->lock` upon return.
+Wait operations release `pipe->lock` before `sched_wait_until`. Readers pass the
+pipe; writers pass a live `pipe_wait_write_t` whose threshold is count for writes
+up to PIPE_BUF, otherwise 1. Both recheck under the pipe lock on return.
+Current wait queues/wakeups are CPU-local: all peers must stay on the same CPU.
+Cross-core channel support remains Phase 6 work.
 
 ---
 
@@ -238,13 +257,13 @@ graph TD
     P5 --> P6[Phase 6: Multi-Core SMP & Acceptance Gates]
 ```
 
-### Phase 1: Kernel Anonymous Pipes & Syscall ABI
+### Phase 1: Kernel Anonymous Pipes & Syscall ABI — COMPLETE
 - Define `SYS_PIPE` (24) and `SYSCALL_EPIPE` (-20) in [src/include/syscall_abi.h](../../src/include/syscall_abi.h).
 - Implement `src/fs/pipe.h` and `src/fs/pipe.c` ring-buffer primitives with 64 KiB PMM backing.
 - Wire `sys_pipe` dispatcher in [src/kernel/syscall.c](../../src/kernel/syscall.c) with canonical user address validation and descriptor allocation rollback.
 - **Verification:** Host unit tests in `tests/pipe_host.c` verifying 64 KiB ring buffer wraparound, partial reads/writes, and `PIPE_BUF` atomic boundary assertions.
 
-### Phase 2: VFS Stream Lifecycle & Scheduler Blocking
+### Phase 2: VFS Stream Lifecycle & Scheduler Blocking — COMPLETE
 - Extend [vfs_node_t](../../src/fs/vfs.h) with `void (*close)(vfs_node_t *node)`.
 - Update `vfs_close()` in [src/fs/vfs.c](../../src/fs/vfs.c) to invoke `node->close` when file reference count drops to 0.
 - Update `process_spawn_internal` in [src/kernel/thread.c](../../src/kernel/thread.c) to implement the 3-phase CLOEXEC lifecycle (clone with flags -> execute actions -> sweep remaining CLOEXEC fds).
@@ -252,19 +271,23 @@ graph TD
 - Verify EOF signaling on writer close and `EPIPE` signaling on reader close.
 - **Verification:** Kernel self-tests in [src/kernel/main.c](../../src/kernel/main.c) testing pipe creation, EOF detection, and reader/writer wakeup.
 
-### Phase 3: Shell Pipeline Parser & Grammar
+### Phase 3: Shell Pipeline Parser & Grammar — COMPLETE
 - Add `TOK_PIPE` to [user/shell/lexer.h](../../user/shell/lexer.h) and `lexer.c`.
-- Implement pipeline AST parsing in [user/shell/parser.c](../../user/shell/parser.c) using static file-scope storage: `parse_pipeline_t`, multi-stage operator precedence (`|` over `&&`, `||`, `;`).
+- Record `CMD_OP_PIPE` in the existing flat command array; reject runs longer than eight stages. Phase 4 groups stages and resolves execution precedence.
+- At the Phase 3 checkpoint, `parser_execution_guard` rejected any tree containing a pipe before execution. Phase 4 has now removed it in favor of group execution and unsupported-stage preflight.
 - Add parser tests in `tests/shell_host.c` exercising `cmd1 | cmd2`, `cmd1 | cmd2 | cmd3`, `cmd1 | cmd2 && cmd3`, and syntax error recovery.
 
 ### Phase 4: Multi-Stage Execution Engine & Descriptor Plumbing
+- Implemented; see [review decisions](S7_PHASE4.md) and [implementation handoff](../roadmap/shell-s7-phase4.md). Runtime acceptance is pending; no new test passes claimed.
 - Implement pipeline execution loop in [user/shell.c](../../user/shell.c) using static BSS arenas (preserving the 512B stack budget).
 - Wire `SYS_PIPE` and `SPAWN_FD_ACTION_DUP2` across stages with `VFS_O_CLOEXEC`.
 - Verify prompt parent pipe closure, preventing reader hangs.
-- Implement partial launch cancellation, natural self-termination, and multi-stage status collection.
+- Keep Phase 4 BSP-only and external-program-only; reject builtin stages before side effects.
+- On partial launch failure, close parent pipe descriptors, blockingly wait for every launched child, and return the original launch error. Cleanup relies on cooperative child completion; arbitrary cancellation is deferred.
 - **Verification:** Live integration runner `scripts/test_shell_s7.py` running basic pipelines under QEMU.
 
 ### Phase 5: Standalone Stream Utilities
+- Add builtin pipeline-stage support; Phase 4 rejects these stages explicitly.
 - Create `user/tools/` directory and implement `cat.c` (byte-preserving), `head.c` (-n/-c), `tail.c` (-n/-c), `wc.c` (-l/-w/-c).
 - Update [Makefile](../../Makefile) to compile each tool into freestanding ELF binaries and package them into `bin/initramfs.tar`.
 - **Verification:** Chained pipeline tests: `cat /large_file | head -n 50 | wc -l`.
@@ -282,7 +305,7 @@ graph TD
 | Checkpoint | Gate / Target | Success Criteria |
 | :--- | :--- | :--- |
 | **G1: Host Pipe Unit Suite** | `tests/pipe_host.c` (ASan/UBSan) | Full 64 KiB ring-buffer wraparound, partial reads/writes, `PIPE_BUF` atomic boundaries, 0 leaks, 0 undefined behavior. |
-| **G2: Host Shell Grammar** | `tests/shell_host.c` (ASan/UBSan) | Pipeline AST parsing, precedence over `&&`/`\|\|`/`;`, empty stage rejection, quote isolation (`echo "a\|b"` not piped). |
+| **G2: Host Shell Grammar** | `tests/shell_host.c` (ASan/UBSan) | Flat operator sequence, eight-stage limit, empty stage rejection, quote isolation and interim execution guard. Execution precedence belongs to Phase 4. |
 | **G3: Streaming Throughput** | QEMU BIOS & UEFI (`make test-shell-s7`) | 256 KiB payload streamed through 3-stage pipeline (`cat \| cat \| cat`), bit-for-bit SHA-256 match. |
 | **G4: EOF & Broken Pipe** | QEMU BIOS & UEFI | Reader terminates immediately with EOF when writer closes; writer receives `EPIPE` when reader exits early and reports exit 141. |
 | **G5: Resource Bounds & Recovery** | QEMU BIOS & UEFI | Pipe descriptor exhaustion (`EMFILE`), process limit exhaustion, failed stage rollback, natural child self-termination, prompt recovery. |

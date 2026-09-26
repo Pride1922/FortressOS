@@ -78,6 +78,7 @@ void builtin_help(const char *topic) {
     puts("Editing: Tab complete, Arrows/Home/End/Del, Up/Down history, Ctrl+R search.\n"
          "Shortcuts: Ctrl+A/E/W/U/K/Y/L, Ctrl+C cancels input, Ctrl+D empty exits.\n"
          "Syntax: Quotes ('...'/\"...\"), escapes (\\), chaining (;, &&, ||), negation (!).\n"
+         "Pipelines: up to 8 external programs with |; builtin stages are not supported yet.\n"
          "Working Dir: cd, cd -, pwd, process-inherited cwd.\n"
          "Discovery: direct execution (/bin/hello, ./tool, hello searches /bin).\n"
          "History: RAM history bounded 1000/256K; persistent at /mnt/.fortress/history.\n");

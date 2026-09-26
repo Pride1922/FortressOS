@@ -23,19 +23,41 @@ import threading
 from test_nmi_transitions import REPO, Remote, QMP, symbols, connect
 
 
+PROMPT_PATTERN = r"(?:fortress> |fortress:[^\n]* \$ )"
+
+
+def ready_prompt(text, pattern=PROMPT_PATTERN, *, submitted=False):
+    """Match the final prompt, excluding ANSI line-editor command redraws.
+
+    The session uses the ANSI editor: horizontal scrolling redraws with CR and
+    cursor escapes, while accepting Enter emits LF. Normalization removes CR
+    and escapes but retains that submission boundary. A prompt before it is
+    still part of input echo, not completion. Plain-mode editing is not used
+    by these sessions (its redraws themselves emit LF).
+    """
+    start = 0
+    if submitted:
+        newline = text.find("\n")
+        if newline < 0:
+            return None
+        start = newline + 1
+    return re.compile(r"(?:" + pattern + r")\Z").search(text, start)
+
+
 @contextmanager
-def qemu_session(mode, fw_cfgs=None, log_suffix=""):
+def qemu_session(mode, fw_cfgs=None, log_suffix="", *, iso_path="bin/fortress.iso",
+                 log_prefix="shell-s6", disk_audit=None):
     if fw_cfgs is None:
         fw_cfgs = ["name=opt/fortress/write_test,string=1"]
     cpus = "1"
-    log = REPO / "build" / f"shell-s6-{mode}{log_suffix}.log"
+    log = REPO / "build" / f"{log_prefix}-{mode}{log_suffix}.log"
     log.write_text("")
     with tempfile.TemporaryDirectory(prefix=f"fortress-s6-{mode}-") as tmp:
         uart_path, qmp_path, gdb_path = [Path(tmp) / n for n in ("uart", "qmp", "gdb")]
         img_copy = Path(tmp) / "nvme.img"
         shutil.copyfile(REPO / "build" / "nvme_gpt.img", img_copy)
         cmd = ["qemu-system-x86_64", "-M", "q35", "-m", "2G", "-display", "none",
-               "-smp", cpus, "-no-reboot", "-S", "-monitor", "none", "-boot", "d", "-cdrom", "bin/fortress.iso",
+               "-smp", cpus, "-no-reboot", "-S", "-monitor", "none", "-boot", "d", "-cdrom", str(iso_path),
                "-chardev", f"socket,id=uart,path={uart_path},server=on,wait=off,logfile={log}",
                "-serial", "chardev:uart", "-qmp", f"unix:{qmp_path},server=on,wait=off",
                "-gdb", f"unix:{gdb_path},server=on,wait=off",
@@ -83,32 +105,31 @@ def qemu_session(mode, fw_cfgs=None, log_suffix=""):
             def output():
                 return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", log.read_bytes().decode(errors="replace")).replace("\r", "")
 
-            def wait_prompt(pattern=r"(fortress> |fortress:.* \$ )", after=0):
+            def wait_prompt(pattern=PROMPT_PATTERN, after=0, *, submitted=False):
                 deadline = time.monotonic() + 45
                 while time.monotonic() < deadline:
                     text = output()
-                    m = re.search(pattern, text[after:])
+                    m = ready_prompt(text[after:], pattern, submitted=submitted)
                     if m:
-                        time.sleep(0.05)
-                        return output()[after:]
+                        # Return the snapshot whose boundary was checked, not
+                        # a later read with a potentially different suffix.
+                        return text[after:]
                     assert child.poll() is None, child.stderr.read().decode()
                     time.sleep(0.05)
                 raise AssertionError(f"Prompt matching {pattern!r} timed out: {log}\n{output()[-2000:]}")
 
-            def uart_cmd(text, prompt_pat=r"(fortress> |fortress:.* \$ )"):
+            def uart_cmd(text, prompt_pat=PROMPT_PATTERN):
                 start = len(output())
                 for byte in text.encode():
                     uart.send(bytes([byte]))
                     time.sleep(0.005)
-                return wait_prompt(pattern=prompt_pat, after=start)
+                return wait_prompt(pattern=prompt_pat, after=start, submitted=True)
 
             def command_body(command):
                 out = uart_cmd(command + "\n")
-                assert "\n" in out, out
-                body = out.split("\n", 1)[1]
-                prompt = re.search(r"(?:fortress> |fortress:[^\n]* \$ )", body)
-                assert prompt, repr(body)
-                return body[:prompt.start()]
+                prompt = ready_prompt(out, submitted=True)
+                assert prompt, repr(out)
+                return out[out.index("\n") + 1:prompt.start()]
 
             # Wait for initial shell prompt
             initial = wait_prompt()
@@ -121,6 +142,9 @@ def qemu_session(mode, fw_cfgs=None, log_suffix=""):
             child.terminate()
             try: child.wait(timeout=5)
             except subprocess.TimeoutExpired: child.kill(); child.wait()
+
+        if disk_audit is not None:
+            disk_audit(img_copy)
 
 
 def run(mode):

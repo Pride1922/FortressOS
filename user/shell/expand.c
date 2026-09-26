@@ -24,6 +24,7 @@ typedef struct {
     char *exp_chars;
     uint8_t *exp_flags;
     size_t exp_cap;
+    bool overflow;
 } expand_ctx_t;
 
 static char s_expand_pool[LINE_CAP * 4];
@@ -186,7 +187,7 @@ static int expand_glob(expand_ctx_t *ctx, const char *word, const uint8_t *qflag
     if (!has_glob) {
         if (out_cmd->argc < MAX_EXPANDED_ARGS) {
             out_cmd->argv[out_cmd->argc++] = (char *)word;
-        }
+        } else ctx->overflow = true;
         return 0;
     }
 
@@ -208,6 +209,7 @@ static int expand_glob(expand_ctx_t *ctx, const char *word, const uint8_t *qflag
         dir_part[1] = '\0';
         file_pat = &word[1];
     } else {
+        if (last_slash >= sizeof(dir_part)) ctx->overflow = true;
         size_t n = last_slash < sizeof(dir_part) - 1 ? last_slash : sizeof(dir_part) - 1;
         for (size_t k = 0; k < n; k++) dir_part[k] = word[k];
         dir_part[n] = '\0';
@@ -227,7 +229,7 @@ static int expand_glob(expand_ctx_t *ctx, const char *word, const uint8_t *qflag
             if (glob_match(file_pat, entry.name)) {
                 if (ctx->glob_count < ctx->max_glob_names) {
                     str_copy(ctx->glob_names[ctx->glob_count++], entry.name, VFS_MAX_NAME);
-                }
+                } else ctx->overflow = true;
             }
         }
         (void)call(SYS_CLOSE, fd, 0, 0);
@@ -237,7 +239,7 @@ static int expand_glob(expand_ctx_t *ctx, const char *word, const uint8_t *qflag
     if (ctx->glob_count == 0) {
         if (out_cmd->argc < MAX_EXPANDED_ARGS) {
             out_cmd->argv[out_cmd->argc++] = (char *)word;
-        }
+        } else ctx->overflow = true;
         return 0;
     }
 
@@ -246,7 +248,7 @@ static int expand_glob(expand_ctx_t *ctx, const char *word, const uint8_t *qflag
 
     /* 6. Add matching paths to out_cmd */
     for (int i = 0; i < ctx->glob_count; i++) {
-        if (out_cmd->argc >= MAX_EXPANDED_ARGS) break;
+        if (out_cmd->argc >= MAX_EXPANDED_ARGS) { ctx->overflow = true; break; }
 
         char path_buf[VFS_MAX_PATH];
         size_t p = 0;
@@ -260,6 +262,7 @@ static int expand_glob(expand_ctx_t *ctx, const char *word, const uint8_t *qflag
             }
         }
         size_t nlen = str_len(ctx->glob_names[i]);
+        if (p + nlen >= sizeof(path_buf)) ctx->overflow = true;
         for (size_t k = 0; k < nlen && p + 1 < sizeof(path_buf); k++) {
             path_buf[p++] = ctx->glob_names[i][k];
         }
@@ -271,7 +274,7 @@ static int expand_glob(expand_ctx_t *ctx, const char *word, const uint8_t *qflag
             str_copy(dest, path_buf, needed);
             ctx->expand_pool_used += needed;
             out_cmd->argv[out_cmd->argc++] = dest;
-        }
+        } else ctx->overflow = true;
     }
 
     return 0;
@@ -283,6 +286,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
     out_cmd->argc = 0;
     ctx->expand_pool_used = 0;
     ctx->split_count = 0;
+    ctx->overflow = false;
 
     for (int a = 0; a < in_cmd->argc; a++) {
         const char *word = in_cmd->argv[a];
@@ -304,6 +308,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                 ctx->exp_flags[exp_len] = QUOTE_NONE;
                 ctx->exp_chars[exp_len++] = *home++;
             }
+            if (*home) ctx->overflow = true;
             i = 1;
         }
 
@@ -330,6 +335,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                         while (t > 0) num_buf[n++] = tmp[--t];
                     }
                     num_buf[n] = '\0';
+                    if (exp_len + (size_t)n >= ctx->exp_cap) ctx->overflow = true;
                     for (int k = 0; k < n && exp_len + 1 < ctx->exp_cap; k++) {
                         ctx->exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
                         ctx->exp_chars[exp_len++] = num_buf[k];
@@ -342,7 +348,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                     if (exp_len + 1 < ctx->exp_cap) {
                         ctx->exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
                         ctx->exp_chars[exp_len++] = '1';
-                    }
+                    } else ctx->overflow = true;
                     continue;
                 }
 
@@ -367,7 +373,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                     }
                     if (vn_len + 1 < sizeof(var_name)) {
                         var_name[vn_len++] = c;
-                    }
+                    } else ctx->overflow = true;
                     i++;
                 }
                 var_name[vn_len] = '\0';
@@ -378,6 +384,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                         ctx->exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
                         ctx->exp_chars[exp_len++] = *val++;
                     }
+                    if (*val) ctx->overflow = true;
                 }
                 continue;
             }
@@ -386,7 +393,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
             if (exp_len + 1 < ctx->exp_cap) {
                 ctx->exp_flags[exp_len] = qf;
                 ctx->exp_chars[exp_len++] = word[i];
-            }
+            } else ctx->overflow = true;
             i++;
         }
         ctx->exp_chars[exp_len] = '\0';
@@ -403,7 +410,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                     ctx->split_flags[ctx->split_count] = 0;
                     ctx->split_has_quotes[ctx->split_count] = true;
                     ctx->split_count++;
-                }
+                } else ctx->overflow = true;
             }
             continue;
         }
@@ -431,7 +438,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                         ctx->split_flags[ctx->split_count] = qdest;
                         ctx->split_has_quotes[ctx->split_count] = has_quotes;
                         ctx->split_count++;
-                    }
+                    } else ctx->overflow = true;
                     in_word = false;
                 }
             } else {
@@ -460,7 +467,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                 ctx->split_flags[ctx->split_count] = qdest;
                 ctx->split_has_quotes[ctx->split_count] = has_quotes;
                 ctx->split_count++;
-            }
+            } else ctx->overflow = true;
         }
     }
 
@@ -471,7 +478,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
             if (ctx->split_words[w][0] == '\0') {
                 if (out_cmd->argc < MAX_EXPANDED_ARGS) {
                     out_cmd->argv[out_cmd->argc++] = ctx->split_words[w];
-                }
+                } else ctx->overflow = true;
                 continue;
             }
         }
@@ -484,6 +491,18 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
 
 int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_t *out_cmd) {
     return expand_command_ctx(&s_cmd_ctx, in_cmd, last_status, out_cmd);
+}
+
+int expand_command_checked(const parse_cmd_t *in_cmd, int64_t last_status,
+                           expanded_cmd_t *out_cmd) {
+    int result = expand_command(in_cmd, last_status, out_cmd);
+    if (result || s_cmd_ctx.overflow) {
+        out_cmd->argc = 0;
+        out_cmd->argv[0] = NULL;
+        puts_err("Expansion exceeds shell limits.\n");
+        return -1;
+    }
+    return 0;
 }
 
 static parse_cmd_t s_single_redir_cmd;
@@ -508,7 +527,7 @@ int expand_redir_target(const char *target, const uint8_t *quote_flags, bool has
     s_single_redir_cmd.next_op = CMD_OP_NONE;
 
     if (expand_command_ctx(&s_redir_ctx, &s_single_redir_cmd, last_status, &s_single_redir_exp) != 0 ||
-        s_single_redir_exp.argc != 1) {
+        s_redir_ctx.overflow || s_single_redir_exp.argc != 1) {
         return -1; /* ambiguous redirect or empty */
     }
 

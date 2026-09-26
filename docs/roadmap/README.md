@@ -20,6 +20,8 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [shell-s7-phase4.md](shell-s7-phase4.md) | External pipeline executor implementation, build checks, test commands and pending user acceptance; BSP-only |
+| [shell-s7-phase3.md](shell-s7-phase3.md) | Completed flat pipeline grammar, eight-stage limit, temporary execution guard, and user-reported regression evidence |
 | [shell-s7-phase2.md](shell-s7-phase2.md) | VFS stream lifecycle, blocking scheduler integration, threshold writer predicate, 3-phase CLOEXEC spawn lifecycle, and BIOS/UEFI verification |
 | [shell-s7-phase1.md](shell-s7-phase1.md) | Anonymous pipes, VFS final-close hook, SYS_PIPE ABI, host sanitizer coverage and BIOS/UEFI Ring 3 checks; blocking remains Phase 2 |
 | [shell-s0-s2.md](shell-s0-s2.md) | Shell foundation, terminal byte input/output, line editing and RAM history; automated verification and pending Dell checklist |

@@ -57,8 +57,4 @@ enum parse_result {
 
 enum parse_result parser_parse(const char *src, parse_tree_t *tree);
 
-/* Phase 3 interim execution gate; Phase 4 removes it. Returns 1 and emits
- * one diagnostic if ANY command has a pipe, otherwise 0. No AST mutation. */
-int parser_execution_guard(const parse_tree_t *tree, long (*diagnostic)(const char *));
-
 #endif /* SHELL_PARSER_H */

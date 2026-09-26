@@ -213,6 +213,14 @@ void vars_scope_end(local_var_scope_t *scope) {
         saved_var_t *s = &scope->saved[i];
         if (s->existed) {
             vars_set(s->name, s->old_value, s->was_exported);
+            /* vars_set deliberately preserves export on ordinary assignments.
+             * A temporary command scope must restore it exactly instead. */
+            for (int j = 0; j < MAX_VARS; j++) {
+                if (g_vars[j].used && str_eq(g_vars[j].name, s->name)) {
+                    g_vars[j].exported = s->was_exported;
+                    break;
+                }
+            }
         } else {
             vars_unset(s->name);
         }

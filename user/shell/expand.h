@@ -21,6 +21,10 @@ typedef struct {
  * Populates out_cmd. Returns 0 on success, or -1 on error. */
 int expand_command(const parse_cmd_t *in_cmd, int64_t last_status, expanded_cmd_t *out_cmd);
 
+/* Pipeline preflight rejects capacity loss instead of executing partial argv. */
+int expand_command_checked(const parse_cmd_t *in_cmd, int64_t last_status,
+                           expanded_cmd_t *out_cmd);
+
 /* Glob pattern matching */
 bool glob_match(const char *pattern, const char *str);
 

@@ -41,6 +41,15 @@
 #define SPAWN_FD_ACTION_CLOSE 3  /* close(dst_fd) */
 #define MAX_SPAWN_ACTIONS    16
 
+/* Existing spawn vector limits, including each string's terminating NUL.
+ * Shared with the loader so shells can reject oversized groups before launch. */
+#define MAX_SPAWN_ARGS       32
+#define MAX_ARG_STRLEN       256
+#define MAX_TOTAL_ARGS_LEN   1024
+#define MAX_SPAWN_ENVP       32
+#define MAX_ENV_STRLEN       256
+#define MAX_TOTAL_ENVP_LEN   1024
+
 typedef struct {
     uint32_t type;       /* SPAWN_FD_ACTION_* */
     int32_t  dst_fd;     /* target fd in child (0..31) */

@@ -13,6 +13,8 @@
 #include "shell/alias.h"
 #include "shell/expand.h"
 #include "shell/redir.h"
+#include "shell/program.h"
+#include "shell/pipeline.h"
 
 static char cmd_buf[LINE_CAP * 2];
 static char line_input[LINE_CAP];
@@ -101,38 +103,10 @@ static void cat(const char *path) {
 static int spawn_program(const char *path, const char **argv, const spawn_fd_action_t *actions, uint32_t action_count) {
     (void)vars_build_envp(s_env_strings, s_envp_ptrs);
 
-    spawn_opts_t opts;
-    for (size_t i = 0; i < sizeof(opts); i++) ((char *)&opts)[i] = 0;
-    opts.size = sizeof(spawn_opts_t);
-    opts.version = 1;
-    opts.flags = 0;
-    opts.argv = (uint64_t)argv;
-    opts.envp = (uint64_t)s_envp_ptrs;
-    opts.cwd = 0; /* inherit */
-    opts.fd_actions = (action_count > 0) ? (uint64_t)actions : 0;
-    opts.action_count = action_count;
-
-    long pid = call(SYS_SPAWN_EXT, (uintptr_t)path, (uintptr_t)&opts, sizeof(opts));
-    if (pid < 0) {
-        switch (pid) {
-            case SYSCALL_ENOENT: puts_err("No such file or directory.\n"); return 127;
-            case SYSCALL_ENOEXEC: puts_err("Invalid executable.\n"); return 126;
-            case SYSCALL_ENOMEM: puts_err("Out of memory or process capacity.\n"); return 1;
-            case SYSCALL_EISDIR: puts_err("Not a regular file.\n"); return 126;
-            case SYSCALL_EFBIG: puts_err("Executable exceeds 4 MiB limit.\n"); return 126;
-            case SYSCALL_E2BIG: puts_err("Argument list too long.\n"); return 1;
-            case SYSCALL_EBADF: puts_err("Bad file descriptor in redirection.\n"); return 1;
-            case SYSCALL_EINVAL: puts_err("Invalid redirection or spawn arguments.\n"); return 1;
-            case SYSCALL_EROFS: puts_err("Read-only filesystem.\n"); return 1;
-            case SYSCALL_EIO: puts_err("I/O error.\n"); return 1;
-            default: puts_err("Unable to load executable.\n"); return 1;
-        }
-    }
+    long pid = program_launch(path, argv, s_envp_ptrs, actions, action_count);
+    if (pid < 0) return program_error(pid);
     int64_t status;
-    if (call(SYS_WAIT, pid, (uintptr_t)&status, 0) < 0) {
-        puts("Unable to wait for child process.\n");
-        return 1;
-    }
+    if (program_wait(pid, &status)) return 1;
     if (status >= 128 && status < 160) {
         puts("[PROCESS] Faulted (exception vector ");
         put_dec((uint64_t)status - 128);
@@ -531,46 +505,17 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     }
 
     /* Direct program execution */
+    char target_path[VFS_MAX_PATH];
     const char *target = cmd;
     bool has_slash = false;
-    for (size_t k = 0; cmd[k]; k++) {
-        if (cmd[k] == '/') { has_slash = true; break; }
-    }
-
-    char target_path[VFS_MAX_PATH];
+    for (size_t i = 0; cmd[i]; i++) if (cmd[i] == '/') has_slash = true;
     if (!has_slash) {
-        const char *path_var = vars_get("PATH");
-        if (!path_var || !*path_var) path_var = "/bin";
-        bool found = false;
-        const char *p = path_var;
-        while (*p) {
-            size_t dlen = 0;
-            while (p[dlen] && p[dlen] != ':') dlen++;
-
-            size_t clen = length(cmd);
-            if (dlen + 1 + clen + 1 < sizeof(target_path)) {
-                for (size_t k = 0; k < dlen; k++) target_path[k] = p[k];
-                target_path[dlen] = '/';
-                for (size_t k = 0; k < clen; k++) target_path[dlen + 1 + k] = cmd[k];
-                target_path[dlen + 1 + clen] = '\0';
-
-                vfs_stat_t st;
-                if (call(SYS_STAT, (uintptr_t)target_path, (uintptr_t)&st, 0) == 0 && st.type == VFS_FILE) {
-                    target = target_path;
-                    found = true;
-                    break;
-                }
-            }
-            p += dlen;
-            if (*p == ':') p++;
-        }
-
-        if (!found) {
+        if (program_resolve(cmd, target_path)) {
             puts("Unknown command. Type help.\n");
             return 127;
         }
+        target = target_path;
     }
-
     if (argc > 32) {
         puts("Too many arguments (max 32).\n");
         return 1;
@@ -590,146 +535,126 @@ static bool is_parent_builtin(int argc, char **argv) {
     return true;
 }
 
-static void execute_parse_tree(parse_tree_t *tree) {
-    /* Phase 3 interim guard: reject the entire chain before any side effects.
-     * Removed in Phase 4 when the executor gains CMD_OP_PIPE handling. */
-    if (parser_execution_guard(tree, puts_err)) {
-        last_status = 1;
-        return;
+static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
+    last_status = curr_status;
+    /* Check for leading assignments: NAME=val */
+    int assign_count = 0;
+    char assign_name[MAX_VAR_NAME];
+    const char *assign_val = NULL;
+    while (assign_count < cmd->argc &&
+           cmd->quote_flags[assign_count] && cmd->quote_flags[assign_count][0] == QUOTE_NONE &&
+           vars_is_assignment(cmd->argv[assign_count], assign_name, sizeof(assign_name), &assign_val)) {
+        assign_count++;
     }
-    int i = 0;
-    int curr_status = (int)last_status;
 
-    while (i < tree->cmd_count) {
-        parse_cmd_t *cmd = &tree->cmds[i];
-        bool should_run = false;
+    if (assign_count == cmd->argc && cmd->argc > 0) {
+        /* Pure variable assignments */
+        for (int k = 0; k < cmd->argc; k++) {
+            (void)vars_is_assignment(cmd->argv[k], assign_name, sizeof(assign_name), &assign_val);
+            char *v_argv[2] = { (char *)assign_val, NULL };
+            const uint8_t *v_qflags[2] = { cmd->quote_flags[k] + (assign_val - cmd->argv[k]), NULL };
+            bool v_has_quotes[2] = { cmd->has_quotes[k], false };
+            s_val_cmd.argc = 1;
+            s_val_cmd.argv[0] = v_argv[0];
+            s_val_cmd.argv[1] = NULL;
+            s_val_cmd.quote_flags[0] = v_qflags[0];
+            s_val_cmd.quote_flags[1] = NULL;
+            s_val_cmd.has_quotes[0] = v_has_quotes[0];
+            s_val_cmd.negate = false;
+            s_val_cmd.next_op = CMD_OP_NONE;
 
-        if (i == 0 || tree->cmds[i - 1].next_op == CMD_OP_SEMI || tree->cmds[i - 1].next_op == CMD_OP_NONE) {
-            should_run = true;
-        } else if (tree->cmds[i - 1].next_op == CMD_OP_AND) {
-            should_run = (curr_status == 0);
-        } else if (tree->cmds[i - 1].next_op == CMD_OP_OR) {
-            should_run = (curr_status != 0);
+            expand_command(&s_val_cmd, curr_status, &s_exp_val);
+            const char *final_val = s_exp_val.argc > 0 ? s_exp_val.argv[0] : "";
+            vars_set(assign_name, final_val, false);
+        }
+        curr_status = 0;
+    } else {
+        if (assign_count > 0) {
+            vars_scope_begin(&s_local_scope);
+            for (int k = 0; k < assign_count; k++) {
+                (void)vars_is_assignment(cmd->argv[k], assign_name, sizeof(assign_name), &assign_val);
+                char *v_argv[2] = { (char *)assign_val, NULL };
+                const uint8_t *v_qflags[2] = { cmd->quote_flags[k] + (assign_val - cmd->argv[k]), NULL };
+                bool v_has_quotes[2] = { cmd->has_quotes[k], false };
+                s_val_cmd.argc = 1;
+                s_val_cmd.argv[0] = v_argv[0];
+                s_val_cmd.argv[1] = NULL;
+                s_val_cmd.quote_flags[0] = v_qflags[0];
+                s_val_cmd.quote_flags[1] = NULL;
+                s_val_cmd.has_quotes[0] = v_has_quotes[0];
+                s_val_cmd.negate = false;
+                s_val_cmd.next_op = CMD_OP_NONE;
+
+                expand_command(&s_val_cmd, curr_status, &s_exp_val);
+                const char *final_val = s_exp_val.argc > 0 ? s_exp_val.argv[0] : "";
+                vars_scope_set(&s_local_scope, assign_name, final_val);
+            }
         }
 
-        if (should_run) {
-            /* Check for leading assignments: NAME=val */
-            int assign_count = 0;
-            char assign_name[MAX_VAR_NAME];
-            const char *assign_val = NULL;
-            while (assign_count < cmd->argc &&
-                   cmd->quote_flags[assign_count] && cmd->quote_flags[assign_count][0] == QUOTE_NONE &&
-                   vars_is_assignment(cmd->argv[assign_count], assign_name, sizeof(assign_name), &assign_val)) {
-                assign_count++;
-            }
+        /* Form remaining command after assignments */
+        s_sub_cmd.argc = cmd->argc - assign_count;
+        s_sub_cmd.negate = cmd->negate;
+        s_sub_cmd.next_op = cmd->next_op;
+        for (int k = 0; k < s_sub_cmd.argc; k++) {
+            s_sub_cmd.argv[k] = cmd->argv[assign_count + k];
+            s_sub_cmd.quote_flags[k] = cmd->quote_flags[assign_count + k];
+            s_sub_cmd.has_quotes[k] = cmd->has_quotes[assign_count + k];
+        }
+        s_sub_cmd.argv[s_sub_cmd.argc] = NULL;
+        s_sub_cmd.quote_flags[s_sub_cmd.argc] = NULL;
 
-            if (assign_count == cmd->argc && cmd->argc > 0) {
-                /* Pure variable assignments */
-                for (int k = 0; k < cmd->argc; k++) {
-                    (void)vars_is_assignment(cmd->argv[k], assign_name, sizeof(assign_name), &assign_val);
-                    char *v_argv[2] = { (char *)assign_val, NULL };
-                    const uint8_t *v_qflags[2] = { cmd->quote_flags[k] + (assign_val - cmd->argv[k]), NULL };
-                    bool v_has_quotes[2] = { cmd->has_quotes[k], false };
-                    s_val_cmd.argc = 1;
-                    s_val_cmd.argv[0] = v_argv[0];
-                    s_val_cmd.argv[1] = NULL;
-                    s_val_cmd.quote_flags[0] = v_qflags[0];
-                    s_val_cmd.quote_flags[1] = NULL;
-                    s_val_cmd.has_quotes[0] = v_has_quotes[0];
-                    s_val_cmd.negate = false;
-                    s_val_cmd.next_op = CMD_OP_NONE;
+        expand_command(&s_sub_cmd, curr_status, &s_expanded_cmd);
 
-                    expand_command(&s_val_cmd, curr_status, &s_exp_val);
-                    const char *final_val = s_exp_val.argc > 0 ? s_exp_val.argv[0] : "";
-                    vars_set(assign_name, final_val, false);
-                }
-                curr_status = 0;
-            } else {
-                if (assign_count > 0) {
-                    vars_scope_begin(&s_local_scope);
-                    for (int k = 0; k < assign_count; k++) {
-                        (void)vars_is_assignment(cmd->argv[k], assign_name, sizeof(assign_name), &assign_val);
-                        char *v_argv[2] = { (char *)assign_val, NULL };
-                        const uint8_t *v_qflags[2] = { cmd->quote_flags[k] + (assign_val - cmd->argv[k]), NULL };
-                        bool v_has_quotes[2] = { cmd->has_quotes[k], false };
-                        s_val_cmd.argc = 1;
-                        s_val_cmd.argv[0] = v_argv[0];
-                        s_val_cmd.argv[1] = NULL;
-                        s_val_cmd.quote_flags[0] = v_qflags[0];
-                        s_val_cmd.quote_flags[1] = NULL;
-                        s_val_cmd.has_quotes[0] = v_has_quotes[0];
-                        s_val_cmd.negate = false;
-                        s_val_cmd.next_op = CMD_OP_NONE;
-
-                        expand_command(&s_val_cmd, curr_status, &s_exp_val);
-                        const char *final_val = s_exp_val.argc > 0 ? s_exp_val.argv[0] : "";
-                        vars_scope_set(&s_local_scope, assign_name, final_val);
-                    }
-                }
-
-                /* Form remaining command after assignments */
-                s_sub_cmd.argc = cmd->argc - assign_count;
-                s_sub_cmd.negate = cmd->negate;
-                s_sub_cmd.next_op = cmd->next_op;
-                for (int k = 0; k < s_sub_cmd.argc; k++) {
-                    s_sub_cmd.argv[k] = cmd->argv[assign_count + k];
-                    s_sub_cmd.quote_flags[k] = cmd->quote_flags[assign_count + k];
-                    s_sub_cmd.has_quotes[k] = cmd->has_quotes[assign_count + k];
-                }
-                s_sub_cmd.argv[s_sub_cmd.argc] = NULL;
-                s_sub_cmd.quote_flags[s_sub_cmd.argc] = NULL;
-
-                expand_command(&s_sub_cmd, curr_status, &s_expanded_cmd);
-
-                if (is_parent_builtin(s_expanded_cmd.argc, s_expanded_cmd.argv)) {
-                    if (cmd->redir_count > 0) {
-                        if (redir_apply_parent(cmd->redirs, cmd->redir_count, curr_status, &s_parent_scope) != 0) {
-                            curr_status = 1;
-                        } else {
-                            if (s_expanded_cmd.argc > 0) {
-                                curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv, NULL, 0);
-                            } else {
-                                curr_status = 0;
-                            }
-                            redir_restore_parent(&s_parent_scope);
-                        }
-                    } else {
-                        if (s_expanded_cmd.argc > 0) {
-                            curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv, NULL, 0);
-                        } else {
-                            curr_status = 0;
-                        }
-                    }
+        if (is_parent_builtin(s_expanded_cmd.argc, s_expanded_cmd.argv)) {
+            if (cmd->redir_count > 0) {
+                if (redir_apply_parent(cmd->redirs, cmd->redir_count, curr_status, &s_parent_scope) != 0) {
+                    curr_status = 1;
                 } else {
-                    uint32_t spawn_action_count = 0;
-                    if (cmd->redir_count > 0) {
-                        if (redir_build_spawn_actions(cmd->redirs, cmd->redir_count, curr_status,
-                                                      s_spawn_actions, &spawn_action_count,
-                                                      s_spawn_target_paths) != 0) {
-                            curr_status = 1;
-                        } else {
-                            curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv,
-                                                                 s_spawn_actions, spawn_action_count);
-                        }
+                    if (s_expanded_cmd.argc > 0) {
+                        curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv, NULL, 0);
                     } else {
-                        curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv,
-                                                             NULL, 0);
+                        curr_status = 0;
                     }
+                    redir_restore_parent(&s_parent_scope);
                 }
-
-                if (assign_count > 0) {
-                    vars_scope_end(&s_local_scope);
+            } else {
+                if (s_expanded_cmd.argc > 0) {
+                    curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv, NULL, 0);
+                } else {
+                    curr_status = 0;
                 }
             }
-
-            if (cmd->negate) {
-                curr_status = (curr_status == 0) ? 1 : 0;
+        } else {
+            uint32_t spawn_action_count = 0;
+            if (cmd->redir_count > 0) {
+                if (redir_build_spawn_actions(cmd->redirs, cmd->redir_count, curr_status,
+                                              s_spawn_actions, &spawn_action_count,
+                                              s_spawn_target_paths) != 0) {
+                    curr_status = 1;
+                } else {
+                    curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv,
+                                                         s_spawn_actions, spawn_action_count);
+                }
+            } else {
+                curr_status = execute_simple_command(s_expanded_cmd.argc, s_expanded_cmd.argv,
+                                                     NULL, 0);
             }
-            last_status = curr_status;
         }
 
-        i++;
+        if (assign_count > 0) {
+            vars_scope_end(&s_local_scope);
+        }
     }
+
+    if (cmd->negate) {
+        curr_status = (curr_status == 0) ? 1 : 0;
+    }
+    last_status = curr_status;
+    return curr_status;
+}
+
+static void execute_parse_tree(parse_tree_t *tree) {
+    last_status = execute_command_list(tree, (int)last_status, execute_single_command);
 }
 
 void shell_main(void) {

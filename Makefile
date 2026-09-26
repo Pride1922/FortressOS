@@ -135,6 +135,12 @@ test-input:
 .PHONY: test-shell-host test-shell-integration test-shell-s3-s4
 test-shell-host: test-input test-console
 	@python3 scripts/test_shell_host.py
+	@python3 scripts/test_pipeline_host.py
+	@python3 scripts/test_shell_prompt_host.py
+
+.PHONY: test-pipeline-host
+test-pipeline-host:
+	@python3 scripts/test_pipeline_host.py
 test-shell-s3-s4: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 	@python3 scripts/test_shell_s3_s4.py
 test-shell-integration: test-shell
@@ -522,6 +528,16 @@ test-shell-s5: bin/fortress.iso nvme-gpt-disk
 
 test-shell-s6: bin/fortress.iso nvme-gpt-disk
 	@python3 scripts/test_shell_s6.py
+
+$(BUILD_DIR)/pipeline_fixture.elf: tests/pipeline_fixture.c tests/pipeline_fixture_start.asm user/shell.ld src/include/syscall_abi.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/pipeline_fixture.c -o $(BUILD_DIR)/pipeline_fixture.o
+	@$(AS) -f elf64 tests/pipeline_fixture_start.asm -o $(BUILD_DIR)/pipeline_fixture_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/pipeline_fixture_start.o $(BUILD_DIR)/pipeline_fixture.o -o $@
+
+.PHONY: test-shell-s7
+test-shell-s7: $(BOOTABLE_ISO) $(NVME_GPT_IMG) $(BUILD_DIR)/pipeline_fixture.elf
+	@python3 scripts/test_shell_s7.py
 
 # Test-only Ring 3 exerciser: the runner adds it to a disposable ISO, never the
 # production initramfs. Uses the same freestanding ABI as the shell.

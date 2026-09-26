@@ -227,13 +227,3 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
     }
     return PARSE_OK;
 }
-
-int parser_execution_guard(const parse_tree_t *tree, long (*diagnostic)(const char *)) {
-    for (int i = 0; i < tree->cmd_count; i++) {
-        if (tree->cmds[i].next_op == CMD_OP_PIPE) {
-            diagnostic("pipeline: not yet supported\n");
-            return 1;
-        }
-    }
-    return 0;
-}

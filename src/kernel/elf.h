@@ -2,6 +2,7 @@
 #define FORTRESS_ELF_H
 
 #include "types.h"
+#include "syscall_abi.h"
 
 /* ELF Identification Indexes */
 #define EI_MAG0        0
@@ -101,15 +102,7 @@ typedef struct {
 #define USER_STACK_TOP_VIRT    0x00007FFFF0001000ULL
 #define USER_STACK_GUARD_VIRT  0x00007FFFEFFFF000ULL
 
-/* Spawn Argument & Environment Limits */
-#define MAX_SPAWN_ARGS         32
-#define MAX_ARG_STRLEN         256
-#define MAX_TOTAL_ARGS_LEN     1024
-
-#define MAX_SPAWN_ENVP         32
-#define MAX_ENV_STRLEN         256
-#define MAX_TOTAL_ENVP_LEN     1024
-
+/* Spawn vector limits come from syscall_abi.h; preserve the stack floor. */
 #define MINIMUM_USER_STACK_FLOOR 512
 #define MAX_POINTER_TABLE_BYTES  (((MAX_SPAWN_ARGS + MAX_SPAWN_ENVP + 5) * 8) + 16)
 

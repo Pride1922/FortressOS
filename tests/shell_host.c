@@ -90,13 +90,6 @@ void file_error_err(long error) {
 static line_editor_t e;
 static void feed(const char *s) { while(*s) lineedit_byte(&e,(unsigned char)*s++); }
 
-static unsigned pipeline_diagnostics;
-static long pipeline_diagnostic(const char *message) {
-    assert(!strcmp(message, "pipeline: not yet supported\n"));
-    pipeline_diagnostics++;
-    return (long)strlen(message);
-}
-
 static void test_pipelines(void) {
     static parse_tree_t tree;
     static lexer_t lex;
@@ -155,25 +148,17 @@ static void test_pipelines(void) {
         assert(!strcmp(tree.cmds[0].argv[1], "a|b"));
         assert(tree.cmds[0].quote_flags[1][1] == flags[k]);
         assert(tree.cmds[0].next_op == CMD_OP_NONE);
-        assert(parser_execution_guard(&tree, pipeline_diagnostic) == 0);
     }
-    assert(pipeline_diagnostics == 0);
     assert(parser_parse("a > file | b", &tree) == PARSE_OK);
     assert(tree.cmds[0].redir_count == 1 && tree.cmds[0].redirs[0].redir_op == REDIR_OUT);
     assert(!strcmp(tree.cmds[0].redirs[0].target, "file"));
     assert(tree.cmds[0].next_op == CMD_OP_PIPE && tree.cmds[1].next_op == CMD_OP_NONE);
     assert(parser_parse("! a | b", &tree) == PARSE_OK && tree.cmds[0].negate);
-    mock_reset_fds();
-    int inode_before = s_mock_next_inode;
     assert(parser_parse("echo before; > /mnt/canary | /bin/hello", &tree) == PARSE_OK);
-    assert(parser_execution_guard(&tree, pipeline_diagnostic) == 1);
-    assert(pipeline_diagnostics == 1 && s_mock_next_inode == inode_before);
-    for (int i = 3; i < 32; i++) assert(s_mock_fds[i] == -1);
-    /* Reusing the same tree must not retain a pipeline marker or diagnostic. */
+    /* Reusing the same tree must not retain a pipeline marker. */
     assert(parser_parse("echo recovered", &tree) == PARSE_OK);
-    assert(parser_execution_guard(&tree, pipeline_diagnostic) == 0);
-    assert(pipeline_diagnostics == 1);
-    puts("PASS shell pipelines: flat operators, stage limits, quotes, redirections and interim guard");
+    assert(tree.cmd_count == 1 && tree.cmds[0].next_op == CMD_OP_NONE);
+    puts("PASS shell pipelines: flat operators, stage limits, quotes and redirections");
 }
 
 int main(void) {
