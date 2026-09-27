@@ -12,6 +12,10 @@ global syscall_exit_restore_rsp
 global syscall_exit_user_rsp
 ; RETURN_SIGRETURN probe symbols (for NMI/test suite)
 global syscall_sigreturn_iretq
+global sigreturn_restore_regs
+global sigreturn_before_swapgs
+global sigreturn_after_swapgs
+global sigreturn_before_iretq
 extern syscall_dispatch
 
 ; GDT Selectors matching FortressOS layout
@@ -85,6 +89,11 @@ syscall_entry_kernel_rsp:
     cld
     call syscall_dispatch
 
+    ; Select the existing kernel-written disposition before touching GPRs.
+    ; This implementation has no separate scratch area to discard.
+    cmp qword [rsp + 120], SIGRETURN_VECTOR_MARKER
+    je sigreturn_restore_regs
+
     ; 4. Restore general purpose registers:
     pop rax
     pop rbx
@@ -133,13 +142,34 @@ syscall_exit_user_rsp:
     ; sysretq atomically restores Ring 3, CS, SS, RIP from RCX, and RFLAGS from R11 (re-enabling IF)
     o64 sysret
 
+; Separate restoration makes the first-pop boundary specific to sigreturn.
+; Labels emit no bytes (in particular, do not insert DB 0 or a wait).
+sigreturn_restore_regs:
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
 syscall_sigreturn_iretq:
     ; RETURN_SIGRETURN path: the full IRET frame is already in the frame fields.
     ; Skip vector+error_code (16 bytes), then IRETQ restores RIP/CS/RFLAGS/RSP/SS.
     ; swapgs required: we entered with swapgs at the top, so we must undo it.
     ; At this point GS is in kernel mode (was swapped at entry).
     add rsp, 16   ; skip vector and error_code
+sigreturn_before_swapgs:
     swapgs
+sigreturn_after_swapgs:
+sigreturn_before_iretq:
     iretq
 
 syscall_return_iretq:

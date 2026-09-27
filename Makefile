@@ -193,7 +193,14 @@ test-console:
 test-boot-diagnostics: $(BOOTABLE_ISO)
 	@python3 scripts/test_boot_diagnostics.py
 
-test-nmi: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
+$(BUILD_DIR)/s8_nmi_user.elf: tests/s8_nmi_user.c tests/s8_nmi_context.asm user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/signal_abi.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_nmi_user.c -o $(BUILD_DIR)/s8_nmi_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/s8_nmi_start.o
+	@$(AS) -f elf64 tests/s8_nmi_context.asm -o $(BUILD_DIR)/s8_nmi_context.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s8_nmi_start.o $(BUILD_DIR)/s8_nmi_context.o $(BUILD_DIR)/s8_nmi_user.o -o $@
+
+test-nmi: $(BOOTABLE_ISO) $(NVME_GPT_IMG) $(BUILD_DIR)/s8_nmi_user.elf
 	@python3 scripts/test_nmi_transitions.py
 
 .PHONY: test-smp-percpu
