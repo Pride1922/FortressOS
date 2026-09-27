@@ -8,9 +8,11 @@ import tempfile
 import time
 import os
 import sys
+assert sys.argv[1:] in ([], ['--signals'], ['--stops'])
 signals = sys.argv[1:] == ['--signals']
-variant = 'signal' if signals else 'process'
-marker = 'S8 SIGNAL' if signals else 'S8 USER'
+stops = sys.argv[1:] == ['--stops']
+variant = 'stop' if stops else ('signal' if signals else 'process')
+marker = 'S8 STOP' if stops else ('S8 SIGNAL' if signals else 'S8 USER')
 smp = os.environ.get("SMP", "1")
 assert smp in ("1", "4", "8")
 

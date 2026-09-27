@@ -36,6 +36,7 @@ typedef enum {
     THREAD_READY,
     THREAD_RUNNING,
     THREAD_BLOCKED,
+    THREAD_STOPPED,
     THREAD_STAGED,
     THREAD_TERMINATED
 } thread_state_t;
@@ -111,6 +112,9 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg);
 void sched_wake_all(const void *channel);
 /* Lock-free current-task readiness; Phase 2B: custom handler delivery. */
 bool process_signal_pending(void);
+/* Lock-free call site required, own process continuation. Handles default stop
+ * and kill before returning whether a caught/terminating signal interrupts I/O. */
+bool process_signal_interrupt(void);
 void process_signal_check(void);
 void process_signal_user_return(interrupt_frame_t *frame);
 /* SYS_SIGRETURN: validates and restores context from v1 signal frame.

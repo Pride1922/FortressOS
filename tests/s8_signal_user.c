@@ -66,8 +66,8 @@ void shell_main(int argc,const char **argv) {
     require(call(SYS_KILL,-1,0,0)==SYSCALL_EINVAL);
     require(call(SYS_KILL,INT64_MIN,SIGTERM,0)==SYSCALL_EINVAL);
     require(call(SYS_KILL,own,32,0)==SYSCALL_EINVAL);
-    require(call(SYS_KILL,own,SIGSTOP,0)==SYSCALL_EINVAL);
-    require(call(SYS_KILL,own,SIGCONT,0)==SYSCALL_EINVAL);
+    require(call(SYS_KILL,own,SIGQUIT,0)==SYSCALL_EINVAL); /* Reserved; STOP/CONT now supported. */
+    require(call(SYS_KILL,own,SIGCONT,0)==0);
     signal_action_t act={.handler=SIG_IGN}, old;
     require(call(SYS_SIGACTION,SIGKILL,(uintptr_t)&act,0)==SYSCALL_EINVAL);
     act.handler=0x400000;

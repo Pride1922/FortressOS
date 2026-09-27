@@ -299,34 +299,28 @@ branch. Keep frame layout, entry stack safety and NMI transition contracts intac
 
 #### Kernel-owned return disposition
 
-Define a private enum shared with entry assembly:
-`RETURN_SYSCALL = 0`, `RETURN_SIGRETURN = 1`, `RETURN_TEST = 2`.
-Change the dispatch interface to accept a pointer to a kernel-stack disposition
-slot in addition to the existing frame pointer. Reserve a 16-byte scratch area
-below the existing interrupt frame after completing the safe kernel-stack
-switch; use one qword for disposition and leave the other as padding so the
-C call remains 16-byte aligned. The existing frame layout/offsets do not change.
-Initialize the slot to RETURN_SYSCALL on every entry, never in a per-CPU global
-that a blocking syscall could leave shared with another task.
+The verified Phase 2B implementation uses a per-entry vector marker in the
+kernel-stack syscall frame rather than the originally proposed separate
+16-byte scratch slot. Entry builds vector `0x80`. Only successful, fully
+validated sigreturn causes the dispatcher to replace it with `0x100`, above
+the real interrupt-vector range, and bypass ordinary `frame->rax` assignment.
+The marker is kernel-owned and kernel-stack-resident; it is not in the user
+signal-frame ABI and is never derived from restored RAX or a user-supplied
+vector. A blocking syscall cannot share it with another task. Failed sigreturn
+uses the ordinary syscall result/return path.
 
-Ordinary dispatch writes its result to frame->rax and retains RETURN_SYSCALL.
-Only successful, fully validated sigreturn sets RETURN_SIGRETURN and bypasses
-the ordinary frame->rax assignment. Failed sigreturn retains RETURN_SYSCALL
-and returns its negative error to the restorer failure path. Only an armed
-kernel test-recovery path may set RETURN_TEST. The disposition lives exclusively
-on the kernel stack: it is neither copied into the user signal frame nor read
-from user state, restored RAX, or saved CS.
-
-On return from C, assembly reads and branches on disposition **before** popping
-GPRs; each branch drops the 16-byte scratch area before using the unchanged
-frame. RETURN_SYSCALL restores the ordinary frame and takes validated SYSRET;
-RETURN_SIGRETURN restores all GPRs, skips vector/error and keeps the five-word
+On return from C, assembly checks the marker **before** popping GPRs. The
+sigreturn branch restores all GPRs, skips vector/error and keeps the five-word
 IRET frame on the kernel stack, then executes SWAPGS exactly once and IRETQ.
-Do not `pop rsp` on this path: IRETQ restores user RSP atomically. RETURN_TEST
-uses the existing kernel recovery IRET path without the user-return SWAPGS.
-Reject invalid dispositions as a kernel invariant failure. Check selectors
-against the selected path as validation; selectors must not select that path.
-Retain current NMI-safe GS handling and make no C call after restoring GPRs.
+It does not `pop rsp`: IRETQ restores user RSP atomically. The ordinary syscall
+branch retains validated SYSRET and the existing armed kernel-test recovery
+branch, which returns without the user-return SWAPGS. There is no scratch area
+to discard and no assembly-frame-layout or dispatch-signature change.
+
+The user confirmed BIOS/UEFI `test-nmi` acceptance of the four named sigreturn
+boundaries (three distinct addresses because after-SWAPGS/before-IRETQ alias),
+covering syscall and timer origins. Phase 2C preserves this return mechanism.
+Retain NMI-safe GS handling and make no C call after restoring GPRs.
 
 Extend interruptible waits for terminal input, pipes and child waits. A caught
 signal returns EINTR if no I/O transferred; preserve positive partial counts and
@@ -579,7 +573,7 @@ seven SYSRET-path probes. Add zero-byte symbols on the real sigreturn path:
 
 | Probe symbol | Exact boundary |
 | --- | --- |
-| sigreturn_restore_regs | Disposition selected, scratch area removed, immediately before the first GPR pop; kernel GS and kernel RSP |
+| sigreturn_restore_regs | Kernel vector-marker disposition selected, immediately before the first GPR pop; kernel GS and kernel RSP (no separate scratch area in this implementation) |
 | sigreturn_before_swapgs | All GPRs restored and vector/error skipped, immediately before SWAPGS; RSP points to the kernel-resident five-word IRET frame |
 | sigreturn_after_swapgs | Immediately after SWAPGS; user GS but CPL0 and the same kernel RSP |
 | sigreturn_before_iretq | Immediately before IRETQ; may alias the preceding symbol when SWAPGS and IRETQ are adjacent |

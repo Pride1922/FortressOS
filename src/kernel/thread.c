@@ -632,6 +632,9 @@ void thread_yield(void) {
  * transaction. Producers cannot slip a wakeup between these operations. */
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
     for (;;) {
+        /* No subsystem lock is held here. A default stop parks this exact
+         * continuation; after CONT it retries the operation's predicate. */
+        if (process_signal_interrupt()) return;
         uint64_t flags = spin_lock_irqsave(&g_sched_lock);
         if (ready(arg) || process_signal_pending()) {
             spin_unlock_irqrestore(&g_sched_lock, flags);
@@ -686,7 +689,7 @@ void sched_wake_all(const void *channel) {
     tcb_t **link = &g_blocked_threads;
     while (*link) {
         tcb_t *t = *link;
-        if (t->wait_channel != channel) {
+        if (t->state != THREAD_BLOCKED || t->wait_channel != channel) {
             link = &t->next;
             continue;
         }
@@ -914,13 +917,41 @@ bool sched_is_preemption_enabled(void) {
 }
 
 void sched_on_timer_tick(void) {
+    /* The owner CPU alone can move STOPPED tasks. Gather stable PIDs with the
+     * scheduler lock, publish lifecycle state under the separate process lock,
+     * then enqueue with only the scheduler lock. Local IRQs stay disabled for
+     * the whole handoff, so no candidate continuation can run between phases.
+     * No remote CPU destroys stopped tasks or retains these TCB pointers. */
+    uint64_t resume_ids[MAX_KERNEL_THREADS];
+    unsigned resume_count=0;
+    uint64_t resume_irq=spin_lock_irqsave(&g_sched_lock);
+    for (tcb_t *t=g_blocked_threads; t; t=t->next) {
+        if (t->state==THREAD_STOPPED && signal_state_resume(&t->signals)) {
+            if (resume_count == MAX_KERNEL_THREADS) __builtin_trap();
+            resume_ids[resume_count++]=t->tid;
+        }
+    }
+    spin_unlock_irqrestore(&g_sched_lock,resume_irq);
+    for (unsigned i=0; i<resume_count; ++i) {
+        if (!process_record_resume(resume_ids[i])) continue;
+        uint64_t flags=spin_lock_irqsave(&g_sched_lock);
+        tcb_t **link=&g_blocked_threads;
+        while (*link && (*link)->tid!=resume_ids[i]) link=&(*link)->next;
+        if (!*link || (*link)->state!=THREAD_STOPPED) __builtin_trap();
+        tcb_t *t=*link;
+        *link=t->next;
+        t->wait_channel=NULL;
+        t->state=THREAD_READY;
+        runqueue_push_locked(t);
+        spin_unlock_irqrestore(&g_sched_lock,flags);
+    }
     /* Owner-CPU servicing of published signal bits. Scheduler lock only;
      * no remote TCB dereference or process-lock nesting. */
     uint64_t signal_irq=spin_lock_irqsave(&g_sched_lock);
     tcb_t **blocked=&g_blocked_threads;
     while (*blocked) {
         tcb_t *t=*blocked;
-        if (!t->is_user || !signal_state_ready(&t->signals)) { blocked=&t->next; continue; }
+        if (t->state!=THREAD_BLOCKED || !t->is_user || !signal_state_ready(&t->signals)) { blocked=&t->next; continue; }
         *blocked=t->next;
         t->wait_channel=NULL;
         t->state=THREAD_READY;
@@ -1443,7 +1474,7 @@ int64_t process_waitpid(int64_t selector, uint64_t *status, uint32_t options, bo
     tcb_t *self = thread_current();
     if (!self || !self->is_user) return SYSCALL_ECHILD;
     for (;;) {
-        if (process_signal_pending()) return SYSCALL_EINTR;
+        if (process_signal_interrupt()) return SYSCALL_EINTR;
         uint64_t seq = process_record_sequence();
         int64_t result = process_record_wait(self->tid, selector, options, status, legacy);
         if (result || (options & WNOHANG)) { sched_reap_dead(); return result; }
@@ -1804,6 +1835,66 @@ bool process_wait(uint64_t pid, uint64_t *out_exit_code) {
     return process_wait_extended(pid, out_exit_code, NULL, NULL);
 }
 
+/* Metadata STOPPED was committed under the process lock by the caller, with
+ * local IRQs disabled. Keep resources/scheduler ownership and save a kernel
+ * continuation, never a second destruction path. STOPPED shares the inactive
+ * list with BLOCKED but cannot satisfy a channel wake. */
+static void sched_stop_current(void) {
+    spin_debug_assert_unheld();
+    uint64_t flags=spin_lock_irqsave(&g_sched_lock);
+    if (flags & (1ULL << 9)) __builtin_trap();
+    tcb_t *old=g_current_thread;
+    tcb_t *next=runqueue_pop_next_locked();
+    if (!next) next=g_idle_thread;
+    if (!old || !old->is_user || old->is_idle || !next) __builtin_trap();
+    old->state=THREAD_STOPPED;
+    old->wait_channel=NULL;
+    old->next=g_blocked_threads;
+    g_blocked_threads=old;
+    next->state=THREAD_RUNNING;
+    next->ticks_remaining=DEFAULT_QUANTUM_TICKS;
+    g_current_thread=next;
+    gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
+    uintptr_t old_cr3=old->cr3 ? old->cr3 : vmm_get_kernel_pml4();
+    uintptr_t cr3=next->cr3 ? next->cr3 : vmm_get_kernel_pml4();
+    bool cr3_changed=vmm_get_current_pml4()!=cr3;
+    if (cr3_changed) {
+        vmm_space_enter(cr3);
+        vmm_switch_pml4(cr3);
+    }
+    size_t cid=cpu_current()->id;
+    scheduler_cpus[cid].prev_cr3=old_cr3;
+    scheduler_cpus[cid].prev_terminated=false;
+    scheduler_cpus[cid].prev_cr3_changed=cr3_changed;
+    spin_unlock_noirq(&g_sched_lock);
+    spin_debug_assert_unheld();
+    uint64_t depth=cpu_current()->irq_depth;
+    cpu_current()->irq_depth=0;
+    switch_context(&old->rsp,next->rsp);
+    cpu_current()->irq_depth=depth;
+    sched_post_switch();
+    /* The caller MUST recheck KILL before it restores IF or reaches user code. */
+}
+
+bool process_signal_interrupt(void) {
+    tcb_t *t=thread_current();
+    if (!t || !t->is_user) return false;
+    spin_debug_assert_unheld();
+    uint64_t flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
+    for (;;) {
+        unsigned sig=process_signal_take_control(t->tid);
+        if (!sig) break;
+        /* Leave KILL pending: unwind the blocking syscall (e.g. timed-reader
+         * accounting) before the user-return boundary invokes normal exit. */
+        if (sig==SIGKILL) break;
+        sched_stop_current();
+    }
+    bool pending=signal_state_ready(&t->signals);
+    __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory", "cc");
+    return pending;
+}
+
 bool process_signal_pending(void) {
     tcb_t *t=thread_current();
     return t && t->is_user && signal_state_ready(&t->signals);
@@ -1944,9 +2035,15 @@ static bool signal_deliver_handler(interrupt_frame_t *frame, unsigned sig,
 
 void process_signal_check(void) {
     tcb_t *t=thread_current();
-    if (!t || !t->is_user || !process_signal_pending()) return;
+retry:
+    if (!t || !t->is_user || !process_signal_interrupt()) return;
     spin_debug_assert_unheld();
-    unsigned sig=process_signal_take(t->tid);
+    signal_action_t action;
+    unsigned sig=process_signal_take_action(t->tid,&action,NULL);
+    if (sig && (SIGNAL_STOPS & SIGNAL_BIT(sig)) && action.handler==SIG_DFL) {
+        sched_stop_current();
+        goto retry;
+    }
     if (sig) { t->exit_signal=sig; process_exit(128+sig); }
 }
 
@@ -1958,13 +2055,21 @@ void process_signal_user_return(interrupt_frame_t *frame) {
 
     spin_debug_assert_unheld();
 
-    if (!signal_state_ready(&t->signals)) return;
+retry:
+    if (!process_signal_interrupt()) return;
 
     /* Take a pending signal with its full action snapshot. */
     signal_action_t action;
     uint64_t old_mask = 0;
     unsigned sig = process_signal_take_action(t->tid, &action, &old_mask);
     if (!sig) return;
+
+    /* A default stop can be published between the control check and action
+     * snapshot. take_action commits its metadata atomically with consumption. */
+    if ((SIGNAL_STOPS & SIGNAL_BIT(sig)) && action.handler==SIG_DFL) {
+        sched_stop_current();
+        goto retry;
+    }
 
     /* SIGKILL / default termination: no handler. */
     if (sig == SIGKILL || action.handler == SIG_DFL) {

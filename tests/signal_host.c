@@ -30,7 +30,7 @@ int main(void) {
     assert(process_signal_send(1,-1,0)==SYSCALL_EINVAL);
     assert(process_signal_send(1,INT64_MIN,0)==SYSCALL_EINVAL);
     assert(process_signal_send(1,1,32)==SYSCALL_EINVAL);
-    assert(process_signal_send(1,1,SIGSTOP)==SYSCALL_EINVAL);
+    assert(process_signal_send(1,1,SIGQUIT)==SYSCALL_EINVAL); /* Reserved; STOP is supported in 2C. */
     assert(!process_signal_send(1,1,0) && !parent.pending_mask);
     uint64_t mask=SIGNAL_BIT(SIGTERM)|SIGNAL_BIT(SIGKILL), old;
     assert(!process_signal_mask(1,SIG_SETMASK,&mask,&old) && old==0);

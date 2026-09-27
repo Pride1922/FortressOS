@@ -33,6 +33,9 @@ typedef struct {
     uint64_t pending_mask;
     uint64_t blocked_mask;
     uint64_t ignored_mask;
+    /* Process-lock publication, acquire-observed by owner scheduler. Separate
+     * from the blockable/ignorable SIGCONT handler notification. */
+    bool continue_requested;
 
     /* Per-signal action data (under process lock). */
     uint64_t action_masks[32];    /* extra mask to block during handler */
@@ -49,5 +52,9 @@ static inline bool signal_state_ready(const signal_state_t *s) {
     return (__atomic_load_n(&s->pending_mask, __ATOMIC_ACQUIRE) &
             ~__atomic_load_n(&s->blocked_mask, __ATOMIC_ACQUIRE) &
             ~__atomic_load_n(&s->ignored_mask, __ATOMIC_ACQUIRE)) != 0;
+}
+static inline bool signal_state_resume(const signal_state_t *s) {
+    return (__atomic_load_n(&s->pending_mask, __ATOMIC_ACQUIRE) & SIGNAL_BIT(SIGKILL)) ||
+           __atomic_load_n(&s->continue_requested, __ATOMIC_ACQUIRE);
 }
 #endif

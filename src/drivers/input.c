@@ -63,9 +63,17 @@ int64_t input_read_timeout(void *buffer, size_t count, int64_t timeout_ms) {
     uint64_t flags = irq_save();
     input_wait_t w = {input_ticks + ((uint64_t)(timeout_ms > 0 ? timeout_ms : 0) * input_hz + 999) / 1000, timeout_ms >= 0};
     if (w.timed) timed_readers++;
-    sched_wait_until(&g_input, available, &w);
+    do {
+        sched_wait_until(&g_input, available, &w);
+        if (process_signal_interrupt()) {
+            if (w.timed) timed_readers--;
+            irq_restore(flags);
+            return SYSCALL_EINTR;
+        }
+        /* A stop can race the ready observation. On CONT another reader may
+         * have consumed the byte; retain the original timeout and retry. */
+    } while (!available(&w));
     if (w.timed) timed_readers--;
-    if (process_signal_pending()) { irq_restore(flags); return SYSCALL_EINTR; }
     if (g_input.dropped != observed_drops) {
         observed_drops = g_input.dropped;
         g_input.head = g_input.count = 0;

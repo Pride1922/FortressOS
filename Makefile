@@ -130,6 +130,19 @@ $(BUILD_DIR)/s8_signal_user.elf: tests/s8_signal_user.c user/shell_start.asm use
 test-s8-signals: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_signal_user.elf
 	@python3 scripts/test_s8_process.py --signals
 
+.PHONY: test-s8-stops-host test-s8-stops
+test-s8-stops-host:
+	@python3 scripts/test_process_table_host.py --stops
+
+$(BUILD_DIR)/s8_stop_user.elf: tests/s8_stop_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/signal_abi.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_stop_user.c -o $(BUILD_DIR)/s8_stop_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/s8_stop_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s8_stop_user_start.o $(BUILD_DIR)/s8_stop_user.o -o $@
+
+test-s8-stops: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_stop_user.elf
+	@python3 scripts/test_s8_process.py --stops
+
 $(BUILD_DIR)/s8_process_user.elf: tests/s8_process_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_process_user.c -o $(BUILD_DIR)/s8_process_user.o

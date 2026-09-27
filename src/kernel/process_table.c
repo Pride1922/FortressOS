@@ -5,13 +5,15 @@
 /* Separate from scheduler placement and the overwriteable kernel-test history. */
 typedef struct {
     uint64_t pid, parent, pgid, sid;
-    bool used, published, exited;
+    bool used, published, exited, stopped;
     signal_state_t *signals;
 } process_record_t;
 typedef struct {
     uint64_t pid, parent, pgid, code;
+    uint64_t identity_generation, event_seq, reported_seq;
     bool used, done;
     unsigned signal;
+    enum { CHILD_NONE, CHILD_STOPPED, CHILD_CONTINUED, CHILD_EXITED, CHILD_SIGNALED } event;
 } child_record_t;
 static process_record_t processes[PROCESS_CAPACITY];
 static child_record_t children[PROCESS_CAPACITY];
@@ -28,7 +30,37 @@ static bool group_exists(uint64_t pgid, uint64_t sid) {
             processes[i].pgid == pgid && processes[i].sid == sid) return true;
     return false;
 }
-static void changed(void) { __atomic_add_fetch(&sequence, 1, __ATOMIC_RELEASE); }
+static void changed(void) {
+    if (sequence == UINT64_MAX) __builtin_trap();
+    __atomic_add_fetch(&sequence, 1, __ATOMIC_RELEASE);
+}
+static uint64_t advance(uint64_t value) {
+    /* Never reset a live sequence to match an outstanding snapshot. */
+    if (value == UINT64_MAX) __builtin_trap();
+    return value + 1;
+}
+/* All callers hold g_process_lock. Durable state and the parent wait sequence
+ * precede signal publication. Default CHLD drops only the notification. */
+static void child_publish(child_record_t *c) {
+    c->event_seq = advance(c->event_seq);
+    changed();
+    process_record_t *parent = find(c->parent);
+    if (parent && !parent->exited && parent->signals &&
+        parent->signals->action_handlers[SIGCHLD] > SIG_IGN)
+        __atomic_fetch_or(&parent->signals->pending_mask, SIGNAL_BIT(SIGCHLD), __ATOMIC_RELEASE);
+}
+static void stopped_locked(process_record_t *p, unsigned sig) {
+    if (p->stopped) return;
+    p->stopped = true;
+    for (unsigned i=0; i<PROCESS_CAPACITY; ++i) {
+        child_record_t *c = &children[i];
+        if (c->used && c->pid == p->pid && !c->done) {
+            c->event = CHILD_STOPPED;
+            c->signal = sig;
+            child_publish(c);
+        }
+    }
+}
 uint64_t process_record_sequence(void) { return __atomic_load_n(&sequence, __ATOMIC_ACQUIRE); }
 int process_record_begin(uint64_t pid, uint64_t parent, bool waitable,
                          uint32_t flags, uint64_t pgid) {
@@ -53,7 +85,8 @@ int process_record_begin(uint64_t pid, uint64_t parent, bool waitable,
         if (group != pid && !group_exists(group, sid)) { error = SYSCALL_EPERM; goto out; }
     }
     *p = (process_record_t){.pid=pid, .parent=parent, .pgid=group, .sid=sid, .used=true};
-    if (waitable) *ch = (child_record_t){.pid=pid, .parent=parent, .pgid=group, .used=true};
+    if (waitable) *ch = (child_record_t){.pid=pid, .parent=parent, .pgid=group, .used=true,
+        .identity_generation=advance(ch->identity_generation)};
     error = 0;
 out:
     spin_unlock_irqrestore(&g_process_lock, irq);
@@ -85,7 +118,14 @@ bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal) {
     for (unsigned i=0; i<PROCESS_CAPACITY; ++i) {
         child_record_t *c = &children[i];
         if (!c->used) continue;
-        if (c->pid == pid) { c->code=signal ? 0 : code; c->signal=signal; c->done=true; recorded=true; }
+        if (c->pid == pid) {
+            recorded=true;
+            if (!c->done) {
+                c->code=signal ? 0 : code; c->signal=signal; c->done=true;
+                c->event=signal ? CHILD_SIGNALED : CHILD_EXITED;
+                child_publish(c);
+            }
+        }
         if (c->parent == pid) c->used=false;
     }
     changed();
@@ -149,11 +189,19 @@ int64_t process_record_wait(uint64_t parent, int64_t selector, uint32_t options,
         if (!selector && (!p || c->pgid != p->pgid)) continue;
         if (selector < -1 && c->pgid != (uint64_t)-selector) continue;
         eligible=true;
-        if (!c->done) continue;
-        if (status) *status=c->signal ? (legacy ? 128+c->signal : c->signal) :
-                                     (legacy ? c->code : ((c->code & 255) << 8));
+        if (c->event_seq == c->reported_seq) continue;
+        if (!c->done && (legacy ||
+            (c->event == CHILD_STOPPED && !(options & WUNTRACED)) ||
+            (c->event == CHILD_CONTINUED && !(options & WCONTINUED)))) continue;
+        if (status) {
+            if (c->event == CHILD_STOPPED) *status=((uint64_t)c->signal << 8) | 0x7f;
+            else if (c->event == CHILD_CONTINUED) *status=0xffff;
+            else *status=c->signal ? (legacy ? 128+c->signal : c->signal) :
+                                    (legacy ? c->code : ((c->code & 255) << 8));
+        }
         result=(int64_t)c->pid;
-        c->used=false;
+        c->reported_seq=c->event_seq;
+        if (c->done) c->used=false;
         goto out;
     }
     if (eligible) result=0;
@@ -171,6 +219,7 @@ void process_record_attach_signals(uint64_t pid, signal_state_t *state) {
         process_record_t *parent=find(p->parent);
         signal_state_t *src=parent && !parent->exited ? parent->signals : NULL;
         *state=(signal_state_t){0};
+        state->ignored_mask=SIGNAL_BIT(SIGCHLD)|SIGNAL_BIT(SIGCONT);
         if (src) {
             /* Inherit mask and ignored disposition; reset caught handlers to SIG_DFL. */
             state->blocked_mask=src->blocked_mask;
@@ -183,6 +232,10 @@ void process_record_attach_signals(uint64_t pid, signal_state_t *state) {
                 state->action_flags[i]=0;
             }
         }
+        /* Caught handlers reset on exec; default CHLD/CONT ignore only their
+         * notifications, regardless of the parent's effective ignore mask. */
+        if (state->action_handlers[SIGCHLD]==SIG_DFL) state->ignored_mask |= SIGNAL_BIT(SIGCHLD);
+        if (state->action_handlers[SIGCONT]==SIG_DFL) state->ignored_mask |= SIGNAL_BIT(SIGCONT);
         p->signals=state;
     }
     spin_unlock_irqrestore(&g_process_lock,irq);
@@ -202,8 +255,22 @@ int64_t process_signal_send(uint64_t caller, int64_t selector, uint64_t sig) {
         if (!match) continue;
         if (p->sid != self->sid) { if (result) result=SYSCALL_EPERM; continue; }
         result=0;
-        if (sig && !(p->signals->ignored_mask & SIGNAL_BIT(sig)))
-            __atomic_fetch_or(&p->signals->pending_mask,SIGNAL_BIT(sig),__ATOMIC_RELEASE);
+        if (sig) {
+            signal_state_t *s=p->signals;
+            /* Cancellation is independent of mask/disposition. The resume
+             * mailbox is consumed only by the owner CPU's stopped scan. */
+            if (sig == SIGCONT) {
+                __atomic_fetch_and(&s->pending_mask, ~SIGNAL_STOPS, __ATOMIC_RELEASE);
+                if (p->stopped) __atomic_store_n(&s->continue_requested, true, __ATOMIC_RELEASE);
+            } else if (SIGNAL_BIT(sig) & SIGNAL_STOPS) {
+                __atomic_fetch_and(&s->pending_mask, ~SIGNAL_BIT(SIGCONT), __ATOMIC_RELEASE);
+                __atomic_store_n(&s->continue_requested, false, __ATOMIC_RELEASE);
+            }
+            /* Retain ignored stop requests as specified, but never deliver
+             * them until the disposition permits it (or CONT cancels them). */
+            if (!(s->ignored_mask & SIGNAL_BIT(sig)) || (SIGNAL_BIT(sig) & SIGNAL_STOPS))
+                __atomic_fetch_or(&s->pending_mask,SIGNAL_BIT(sig),__ATOMIC_RELEASE);
+        }
     }
 out:
     spin_unlock_irqrestore(&g_process_lock,irq);
@@ -214,6 +281,7 @@ int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t 
     if (act && (act->flags || act->reserved || (act->mask & ~SIGNAL_SUPPORTED))) return SYSCALL_EINVAL;
     /* SIGKILL and SIGSTOP cannot be caught or ignored (UNBLOCKABLE). */
     if (act && (sig==SIGKILL || sig==SIGSTOP)) return SYSCALL_EINVAL;
+    if (act && sig==SIGCHLD && act->handler==SIG_IGN) return SYSCALL_EINVAL;
     /* Custom handler: handler >= 2 means user address. Validate canonical range. */
     if (act && act->handler>SIG_IGN) {
         /* User address: must be in lower canonical half, above page zero. */
@@ -228,7 +296,6 @@ int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t 
         /* Report old action. */
         if (old) {
             uint64_t h=s->action_handlers[sig];
-            if (s->ignored_mask & SIGNAL_BIT(sig)) h=SIG_IGN;
             *old=(signal_action_t){.handler=h, .mask=s->action_masks[sig],
                                   .flags=s->action_flags[sig]};
         }
@@ -237,10 +304,11 @@ int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t 
             s->action_handlers[sig]= act->handler;
             s->action_flags[sig]   = act->flags;
             uint64_t ignored=s->ignored_mask;
-            if (act->handler==SIG_IGN) {
+            if (act->handler==SIG_IGN || (act->handler==SIG_DFL && (sig==SIGCHLD || sig==SIGCONT))) {
                 ignored|=SIGNAL_BIT(sig);
                 /* Pending ignored signal is discarded. */
-                __atomic_fetch_and(&s->pending_mask,~SIGNAL_BIT(sig),__ATOMIC_RELEASE);
+                if (!(SIGNAL_BIT(sig) & SIGNAL_STOPS))
+                    __atomic_fetch_and(&s->pending_mask,~SIGNAL_BIT(sig),__ATOMIC_RELEASE);
             } else {
                 ignored&=~SIGNAL_BIT(sig);
             }
@@ -266,8 +334,8 @@ uint64_t process_signal_handler(uint64_t pid, uint64_t sig) {
 /* Take a pending deliverable signal and snapshot its action atomically.
  * Returns the signal number, or 0 if nothing deliverable.
  * On success, clears the pending bit and fills *out_action. */
-unsigned process_signal_take_action(uint64_t pid, signal_action_t *out_action,
-                                    uint64_t *out_old_mask) {
+static unsigned take_action(uint64_t pid, signal_action_t *out_action,
+                            uint64_t *out_old_mask, bool control_only) {
     uint64_t irq=spin_lock_irqsave(&g_process_lock);
     process_record_t *p=find(pid);
     unsigned sig=0;
@@ -275,9 +343,15 @@ unsigned process_signal_take_action(uint64_t pid, signal_action_t *out_action,
         signal_state_t *s=p->signals;
         uint64_t pending=s->pending_mask & ~s->blocked_mask & ~s->ignored_mask;
         if (pending & SIGNAL_BIT(SIGKILL)) sig=SIGKILL;
-        else for (unsigned i=1;i<32;i++) if (pending&SIGNAL_BIT(i)) { sig=i; break; }
-        if (sig) {
+        else for (unsigned i=1;i<32;i++) {
+            if (!(pending&SIGNAL_BIT(i))) continue;
+            if (control_only && (!(SIGNAL_STOPS&SIGNAL_BIT(i)) || s->action_handlers[i]!=SIG_DFL)) continue;
+            sig=i; break;
+        }
+        if (sig && !(control_only && sig==SIGKILL)) {
             __atomic_fetch_and(&s->pending_mask,~SIGNAL_BIT(sig),__ATOMIC_RELEASE);
+            if ((SIGNAL_STOPS & SIGNAL_BIT(sig)) && s->action_handlers[sig]==SIG_DFL)
+                stopped_locked(p, sig);
             if (out_old_mask) *out_old_mask=s->blocked_mask;
             if (out_action) {
                 out_action->handler=s->action_handlers[sig];
@@ -289,6 +363,35 @@ unsigned process_signal_take_action(uint64_t pid, signal_action_t *out_action,
     }
     spin_unlock_irqrestore(&g_process_lock,irq);
     return sig;
+}
+unsigned process_signal_take_action(uint64_t pid, signal_action_t *action, uint64_t *mask) {
+    return take_action(pid, action, mask, false);
+}
+unsigned process_signal_take_control(uint64_t pid) {
+    return take_action(pid, NULL, NULL, true);
+}
+bool process_record_resume(uint64_t pid) {
+    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    process_record_t *p=find(pid);
+    bool resumed=false;
+    if (p && !p->exited && p->stopped && p->signals) {
+        signal_state_t *s=p->signals;
+        bool killed=(s->pending_mask & SIGNAL_BIT(SIGKILL)) != 0;
+        if (killed || s->continue_requested) {
+            p->stopped=false;
+            __atomic_store_n(&s->continue_requested, false, __ATOMIC_RELEASE);
+            resumed=true;
+            if (!killed) for (unsigned i=0; i<PROCESS_CAPACITY; ++i) {
+                child_record_t *c=&children[i];
+                if (c->used && !c->done && c->pid==pid) {
+                    c->event=CHILD_CONTINUED; c->signal=0;
+                    child_publish(c);
+                }
+            }
+        }
+    }
+    spin_unlock_irqrestore(&g_process_lock,irq);
+    return resumed;
 }
 int64_t process_signal_mask(uint64_t pid, uint64_t how, const uint64_t *mask, uint64_t *old) {
     if (mask && (how>SIG_SETMASK || (*mask & ~SIGNAL_SUPPORTED))) return SYSCALL_EINVAL;

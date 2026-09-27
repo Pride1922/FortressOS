@@ -39,4 +39,14 @@ int  process_signal_pop_frame(uint64_t pid, uint64_t expected_generation);
 int  process_signal_set_mask(uint64_t pid, uint64_t new_mask);
 /* Read-only check of top active-frame identity for sys_sigreturn validation. */
 bool process_signal_check_frame_id(uint64_t pid, uintptr_t frame_addr, uint64_t generation);
+/* Safe-boundary default STOP consumption / KILL observation. KILL stays pending
+ * so interrupted syscalls unwind their bookkeeping before normal exit.
+ * A returned stop has committed
+ * durable STOPPED metadata; caller must park its continuation with local IRQs
+ * disabled, then recheck on resume. No scheduler lock held on entry. */
+unsigned process_signal_take_control(uint64_t pid);
+/* Owner CPU only, with local IRQs disabled, outside its scheduler lock.
+ * Claims a stopped task's CONT/KILL wake, publishes continued only for CONT.
+ * Caller then unlinks STOPPED and enqueues READY under its scheduler lock. */
+bool process_record_resume(uint64_t pid);
 #endif

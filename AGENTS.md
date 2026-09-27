@@ -43,7 +43,7 @@ Shell S7 Phases 1–6 are complete. See [Phase 5A utilities](docs/roadmap/shell-
 [Phase 5B builtin stages and envp diagnosis](docs/roadmap/shell-s7-phase5b.md),
 and [Phase 6 QEMU/Dell acceptance](docs/roadmap/shell-s7-phase6.md).
 Pipe peers remain on the BSP even in multi-CPU runs; cross-core wake channels
-remain future work. Shell S8 Phase 1 is complete, with all handoff tests reported passing by the user (2026-09-27). See [Phase 1 evidence](docs/roadmap/shell-s8-phase1.md). Signals and terminal job control remain later S8 phases.
+remain future work. Shell S8 Phase 1 is complete, with all handoff tests reported passing by the user (2026-09-27). See [Phase 1 evidence](docs/roadmap/shell-s8-phase1.md). The user also reports Phase 2A/2B acceptance, including BIOS/UEFI sigreturn NMI coverage. Phase 2C is implemented with runtime acceptance pending; see [stop/continue handoff](docs/roadmap/shell-s8-phase2c.md). Terminal foreground ownership and shell jobs remain later S8 phases.
 
 Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
 
@@ -132,6 +132,8 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-s8-stops-host` | Phase 2C process-table transition/counter/cancellation/CHLD tests with pthread locks; no scheduler/IRQ claim. Implementation only, not yet run. |
+| `make test-s8-stops SMP=N` | Phase 2C BIOS/UEFI Ring 3 STOP/CONT/KILL and caught-CHLD fixture, disposable ISO with no data disks; BSP-pinned children. Implementation only, not yet run. |
 | `make test-pipe-host` | S7 Phases 1–2 ASan/UBSan: real pipe/VFS/sys_pipe with host adapters; wraparound, atomic thresholds, lock-free wait/wake call sites, endpoint lifetime and allocation/fd rollback. No SMP/IRQ claim. |
 | `make test-pipe` | S7 Phases 1–2 BIOS/UEFI (1 CPU), disposable test ISO with no data disks; kernel blocking/backpressure/close tests and Ring 3 pointer validation, CLOEXEC spawn actions, fd exhaustion, EOF/EPIPE. See [Phase 2 evidence](docs/roadmap/shell-s7-phase2.md). Cross-core wakeups remain deferred. |
 | `make test-shell-host` | Consolidated ASan/UBSan: keyboard/queue, framebuffer terminal and actual shell editor/history logic |

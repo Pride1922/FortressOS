@@ -19,6 +19,8 @@ static int fd_fail_after = -1;
 static void (*wait_step)(const void *, bool (*)(void *), void *);
 static unsigned waits, wakes;
 bool process_signal_pending(void) { return signal_state_ready(&current.signals); }
+/* Pipe-only adapter: scheduler STOPPED transitions are covered by S8 tests. */
+bool process_signal_interrupt(void) { return process_signal_pending(); }
 
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
     spin_debug_assert_unheld();
