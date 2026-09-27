@@ -1,6 +1,6 @@
 # S7 Phase 4: pipeline executor implementation preparation
 
-**Status: implemented; user-run acceptance pending.** The approved design below
+**Status: COMPLETE; accepted by the user on 2026-09-27.** The approved design below
 is retained as the contract. See [implementation and verification handoff](../roadmap/shell-s7-phase4.md).
 Baseline: Phases 1–3 complete,
 including commit `fdcf13244a99ce1c0c032a7ee14a9e4db5f3ee24`.
@@ -186,7 +186,7 @@ overwrites that failure. No SIGPIPE or SYS_KILL is introduced; both remain S8 wo
 6. Add host orchestration tests and a BIOS/UEFI integration runner, then update
    evidence and remove obsolete interim-guard tests in favor of execution tests.
 
-## Acceptance to implement (not yet run)
+## Acceptance scope
 
 | Gate | Required checks |
 | --- | --- |
@@ -197,7 +197,7 @@ overwrites that failure. No SIGPIPE or SYS_KILL is introduced; both remain S8 wo
 | Early reader exit | Producer handles SYSCALL_EPIPE (already negative), exits 141; shell still returns the last stage status; do not classify 141 automatically as a hardware fault |
 | Regression | `make test-host`, `make test-pipe`, `make test-shell-s6`, `make test-shell-s6-resources`; retain single-command and spawn CLOEXEC behavior |
 
-Proposed new target: `make test-shell-s7` with disposable fixtures, paired OVMF
+Implemented target: `make test-shell-s7` with disposable fixtures, paired OVMF
 code/vars, bounded waits, unconditional QEMU cleanup and retained logs. A
 multi-CPU VM still running all pipe peers on the BSP is not cross-core acceptance.
-The user will run tests; this document records no new runtime verification passes.
+The user confirmed Phase 4 complete on 2026-09-27. Per-command results are not separately supplied; see the roadmap for attribution. Phase 5 is next.

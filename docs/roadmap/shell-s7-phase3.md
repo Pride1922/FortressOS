@@ -26,7 +26,7 @@ Evidence reported by the user for this commit:
 These results are recorded as user-reported evidence, not tests rerun during the
 documentation update. The canary alone is not a process-count audit.
 
-Follow-up: [Phase 4 implementation, awaiting user acceptance](shell-s7-phase4.md).
+Follow-up: [Phase 4 implementation, accepted by the user](shell-s7-phase4.md).
 Its executor now replaces the temporary guard described at this historical checkpoint.
 
 Phase 4's approved scope is pipeline execution for external programs on the

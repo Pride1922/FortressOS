@@ -1,8 +1,16 @@
 # Shell S7 Phase 4: external pipeline executor
 
-**Implemented 2026-09-26; user acceptance pending.** Phases 1–3 retain their
-previous evidence. This change has build checks only, not new runtime passes.
+**COMPLETE — accepted by the user on 2026-09-27.** Implementation landed in
+`03da998` after the Phase 1–3 baseline. The user confirmed Phase 4 complete
+following the prompt-detection fix described below. This is user-reported
+milestone acceptance; individual test commands, counts and logs were not
+provided with that confirmation. The agent did not rerun the tests.
+Phases 1–3 retain their previous evidence.
 Design contract: [S7_PHASE4.md](../plans/S7_PHASE4.md).
+
+Next: Phase 5 builtin pipeline-stage support and standalone stream utilities.
+The BSP-only and cooperative-cleanup boundaries remain in force; cross-core
+acceptance remains Phase 6 work.
 
 ## Implementation
 
@@ -64,10 +72,10 @@ runner previously accepted any occurrence as completion. Command waits now
 require the submission LF and a final prompt at the end of the checked capture.
 Response extraction uses that same final boundary. Added
 `scripts/test_shell_prompt_host.py` to `test-shell-host` for partial redraws,
-silent commands, embedded prompt text and cwd prompts. Regression and QEMU
-execution remain with the user; this fix does not establish pipeline acceptance.
+silent commands, embedded prompt text and cwd prompts. The fix itself was not
+runtime evidence; the subsequent user acceptance is recorded above.
 
-## User test handoff
+## Regression commands
 
 ```sh
 make test-pipeline-host

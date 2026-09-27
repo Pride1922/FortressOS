@@ -1,6 +1,6 @@
 # Shell Milestone S7: Pipes and Stream Utilities — Implementation Plan & Acceptance Audit
 
-**Status:** Phases 1–3 COMPLETE; Phase 4 implemented, user acceptance pending
+**Status:** Phases 1–4 COMPLETE; Phase 4 accepted by the user on 2026-09-27; Phase 5 next
 **Date:** 2026-09-26  
 **Author:** AI Agent & Subsystem Architecture Team  
 **Scope:** Milestone S7 as specified in [SHELL_DESIGN.md](SHELL_DESIGN.md#s7--pipes-and-stream-utilities) and [AGENTS.md](../../AGENTS.md).  
@@ -10,7 +10,7 @@ Current evidence: [Phase 1](../roadmap/shell-s7-phase1.md),
 [Phase 2](../roadmap/shell-s7-phase2.md), [Phase 3](../roadmap/shell-s7-phase3.md).
 The accepted Phase 3 resolution uses the existing flat command array, not a
 separate pipeline AST. [Phase 4 implementation](../roadmap/shell-s7-phase4.md)
-now awaits user-run tests; [approved design](S7_PHASE4.md).
+is complete by user acceptance (2026-09-27); [approved design](S7_PHASE4.md).
 
 ---
 
@@ -278,7 +278,7 @@ graph TD
 - Add parser tests in `tests/shell_host.c` exercising `cmd1 | cmd2`, `cmd1 | cmd2 | cmd3`, `cmd1 | cmd2 && cmd3`, and syntax error recovery.
 
 ### Phase 4: Multi-Stage Execution Engine & Descriptor Plumbing
-- Implemented; see [review decisions](S7_PHASE4.md) and [implementation handoff](../roadmap/shell-s7-phase4.md). Runtime acceptance is pending; no new test passes claimed.
+- Implemented; see [review decisions](S7_PHASE4.md) and [implementation handoff](../roadmap/shell-s7-phase4.md). Accepted by the user on 2026-09-27; no additional per-command results are inferred.
 - Implement pipeline execution loop in [user/shell.c](../../user/shell.c) using static BSS arenas (preserving the 512B stack budget).
 - Wire `SYS_PIPE` and `SPAWN_FD_ACTION_DUP2` across stages with `VFS_O_CLOEXEC`.
 - Verify prompt parent pipe closure, preventing reader hangs.

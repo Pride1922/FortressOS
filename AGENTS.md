@@ -38,13 +38,13 @@ History lives in [docs/roadmap/README.md](docs/roadmap/README.md); qualification
 | Phase 9G.4 USB writable persistence & durability classification | COMPLETE (2026-09-19). BOT stall recovery, four-tier durability classification, explicit writable opt-in; `/mnt` read-write persistence confirmed on physical USB. Full detail: [docs/roadmap/phase-9g4-usb-durability.md](docs/roadmap/phase-9g4-usb-durability.md). |
 | Phase 9H RAM capacity | COMPLETE (2026-09-20). PMM extended to cover 32 GiB, two-stage PMM/VMM init to stay within Limine's HHDM coverage until the kernel PML4 is active. Verified on Dell 5590 (32 GiB) with a write-readback probe. Full detail: [docs/roadmap/phase-9h-ram.md](docs/roadmap/phase-9h-ram.md). |
 
-Shell S7 Phases 1–3 are complete (2026-09-26): anonymous pipes, blocking/CLOEXEC
+Shell S7 Phases 1–4 are complete (Phase 4 accepted by the user on 2026-09-27): anonymous pipes, blocking/CLOEXEC
 lifecycle, and flat `CMD_OP_PIPE` parsing with an eight-stage limit. Phase 4 is
-implemented, awaiting user acceptance: external pipelines replace the temporary
+complete: external pipelines replace the temporary
 guard, with group preflight, ordered fd actions and complete child waits. BSP-only
 pipe peers remain required. See [Phase 2 evidence](docs/roadmap/shell-s7-phase2.md),
 [Phase 3 evidence](docs/roadmap/shell-s7-phase3.md), and the
-[Phase 4 implementation and pending tests](docs/roadmap/shell-s7-phase4.md).
+[Phase 4 implementation and user acceptance](docs/roadmap/shell-s7-phase4.md).
 
 Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
 
@@ -136,8 +136,8 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 | `make test-pipe-host` | S7 Phases 1–2 ASan/UBSan: real pipe/VFS/sys_pipe with host adapters; wraparound, atomic thresholds, lock-free wait/wake call sites, endpoint lifetime and allocation/fd rollback. No SMP/IRQ claim. |
 | `make test-pipe` | S7 Phases 1–2 BIOS/UEFI (1 CPU), disposable test ISO with no data disks; kernel blocking/backpressure/close tests and Ring 3 pointer validation, CLOEXEC spawn actions, fd exhaustion, EOF/EPIPE. See [Phase 2 evidence](docs/roadmap/shell-s7-phase2.md). Cross-core wakeups remain deferred. |
 | `make test-shell-host` | Consolidated ASan/UBSan: keyboard/queue, framebuffer terminal and actual shell editor/history logic |
-| `make test-pipeline-host` | S7 Phase 4 actual parser/expander/executor with mocked syscalls: grouping, preflight, fd ownership, action order and failure injection. Also included in `test-shell-host`; added, not yet run. |
-| `make test-shell-s7` | S7 Phase 4 BIOS/UEFI, 1 CPU: external fixtures in disposable ISO, disposable NVMe copy, streaming, status, cooperative cleanup and offline byte/e2fsck checks. Added, not yet run. |
+| `make test-pipeline-host` | S7 Phase 4 actual parser/expander/executor with mocked syscalls: grouping, preflight, fd ownership, action order and failure injection. Also included in `test-shell-host`; Phase 4 accepted by the user; per-command results are not separately recorded. |
+| `make test-shell-s7` | S7 Phase 4 BIOS/UEFI, 1 CPU: external fixtures in disposable ISO, disposable NVMe copy, streaming, status, cooperative cleanup and offline byte/e2fsck checks. Phase 4 accepted by the user; per-command results are not separately recorded. |
 | `make test-shell-integration` | Existing shell integration extended with cursor/screen-state, history/search/paste, timeout/log separation and no-UART coverage; snapshot NVMe fixture for normal runs |
 | `make test-input` | Host ASan/UBSan: decoder, modifiers and bounded FIFO |
 | `make test-usb-discovery` | 9G.1a BIOS/UEFI PCI discovery with/without xHCI, shell startup without NVMe; ISO boot only, no data disk. No USB transfers or persistence claimed. |

@@ -20,7 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
-| [shell-s7-phase4.md](shell-s7-phase4.md) | External pipeline executor implementation, build checks, test commands and pending user acceptance; BSP-only |
+| [shell-s7-phase4.md](shell-s7-phase4.md) | External pipeline executor implementation, build checks, test commands and user acceptance (2026-09-27); BSP-only |
 | [shell-s7-phase3.md](shell-s7-phase3.md) | Completed flat pipeline grammar, eight-stage limit, temporary execution guard, and user-reported regression evidence |
 | [shell-s7-phase2.md](shell-s7-phase2.md) | VFS stream lifecycle, blocking scheduler integration, threshold writer predicate, 3-phase CLOEXEC spawn lifecycle, and BIOS/UEFI verification |
 | [shell-s7-phase1.md](shell-s7-phase1.md) | Anonymous pipes, VFS final-close hook, SYS_PIPE ABI, host sanitizer coverage and BIOS/UEFI Ring 3 checks; blocking remains Phase 2 |
@@ -59,6 +59,6 @@ and are not proof that every current revision has passed every test — check
 [Shell S0–S2] Terminal foundation, editing, RAM history      (Implemented, QEMU PASS, Dell pending)
 [Shell S3–S5] Quotes, variables, expansion, persistent history (COMPLETE)
 [Shell S6]    Redirection & descriptor architecture           (COMPLETE, Dell 5590 verified)
-[Shell S7]    Pipes and stream utilities                      (Phase 1 & 2 COMPLETE; Phase 3 planned)
+[Shell S7]    Pipes and stream utilities                      (Phases 1–4 COMPLETE; Phase 5 next)
 [Following]  Accounts/permissions, then installer
 ```
