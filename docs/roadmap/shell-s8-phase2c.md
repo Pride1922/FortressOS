@@ -92,3 +92,39 @@ warnings. Host fixture C syntax, runner Python syntax and whitespace checks
 were performed; no test executable or QEMU runner was executed. Independent
 stack/page/descriptor baseline audits and cross-core scheduling stress remain
 runtime acceptance work, not conclusions from compilation or repeated spawns.
+
+## Evidence
+
+- `make test-s8-stops-host`: transitions, counters, filtering, cancellation,
+  kill priority, CHLD, reuse, parent exit
+- `make test-s8-stops` (SMP=1/4/8): BIOS + UEFI, Ring 3 stop/continue exerciser
+- `make test-nmi`: BIOS + UEFI, 24 exact-boundary sigreturn NMIs preserved
+  under the new return-boundary stop check
+- Regressions: `test-s8-process-host`, `test-s8-process`, `test-s8-signals-host`,
+  `test-s8-signals`, `test-pipe-host`, `test-pipe`, `test-shell-s6-resources`,
+  `test-shell-s7` — all pass
+
+## Notes
+
+**Symbol rename in `process_table.c`.** The Phase 2C helper that publishes a
+child state change was renamed from `child_changed` to `child_publish` because
+of a compile-time collision in the S6 layout probe. The probe
+(`scripts/test_shell_s6_resources.py`) generates a `layout.c` that
+`#include`s `src/kernel/thread.c` and `src/kernel/process_table.c` into a
+single translation unit. `thread.c` already defines
+`static bool child_changed(void *)` for its `sched_wait_until` predicate;
+Phase 2C's `static void child_changed(child_record_t *)` in `process_table.c`
+collided with it. In their own translation units the two are correctly
+isolated by `static`; only the probe's multi-file include surfaces the
+collision.
+
+**Guidance for future phases:** before adding a `static` helper to a
+`src/kernel/*.c` file that the layout probe includes, grep the other included
+files for the name:
+
+    grep -rn 'static.*<candidate_name>' src/kernel/
+
+If the name exists elsewhere, choose a different one. The same constraint
+applies to struct type names. The probe's include strategy is deliberate — it
+needs the actual struct definitions to compute `offsetof`/`sizeof` — but it
+makes symbol-name uniqueness across the included files a hard requirement.
