@@ -10,6 +10,8 @@ global syscall_entry_rsp_saved
 global syscall_entry_kernel_rsp
 global syscall_exit_restore_rsp
 global syscall_exit_user_rsp
+; RETURN_SIGRETURN probe symbols (for NMI/test suite)
+global syscall_sigreturn_iretq
 extern syscall_dispatch
 
 ; GDT Selectors matching FortressOS layout
@@ -17,6 +19,10 @@ GDT_KERNEL_CODE equ 0x08
 GDT_KERNEL_DATA equ 0x10
 GDT_USER_DATA   equ 0x1B
 GDT_USER_CODE   equ 0x23
+
+; frame->vector marker written by syscall_dispatch when RETURN_SIGRETURN is set.
+; Value 0x100 is above any real interrupt vector (0..255) so it cannot collide.
+SIGRETURN_VECTOR_MARKER equ 0x100
 
 ; =============================================================================
 ; Fast System Call Entry Point (Invoked via 'syscall' instruction)
@@ -96,9 +102,16 @@ syscall_entry_kernel_rsp:
     pop r14
     pop r15
 
+    ; 5. Check for RETURN_SIGRETURN disposition:
+    ;    frame->vector is at [rsp] after GPR pops.
+    ;    0x100 = SIGRETURN_VECTOR_MARKER set by syscall_dispatch/sys_sigreturn.
+    ;    If set: skip to IRETQ directly (frame already fully committed).
+    cmp qword [rsp], SIGRETURN_VECTOR_MARKER
+    je  syscall_sigreturn_iretq
+
     add rsp, 16 ; skip vector and error_code
 
-    ; 5. Check if returning to user space or test harness recovery
+    ; 6. Check if returning to user space or test harness recovery
     ; Current stack layout:
     ;   [RSP + 0]:  rip
     ;   [RSP + 8]:  cs
@@ -120,6 +133,16 @@ syscall_exit_user_rsp:
     ; sysretq atomically restores Ring 3, CS, SS, RIP from RCX, and RFLAGS from R11 (re-enabling IF)
     o64 sysret
 
+syscall_sigreturn_iretq:
+    ; RETURN_SIGRETURN path: the full IRET frame is already in the frame fields.
+    ; Skip vector+error_code (16 bytes), then IRETQ restores RIP/CS/RFLAGS/RSP/SS.
+    ; swapgs required: we entered with swapgs at the top, so we must undo it.
+    ; At this point GS is in kernel mode (was swapped at entry).
+    add rsp, 16   ; skip vector and error_code
+    swapgs
+    iretq
+
 syscall_return_iretq:
-    ; Test harness recovery redirected CS to GDT_KERNEL_CODE; return via iretq
+    ; Test harness recovery redirected CS to GDT_KERNEL_CODE; return via iretq.
+    ; GS was swapped at entry; IRETQ returning to kernel mode does NOT need swapgs.
     iretq

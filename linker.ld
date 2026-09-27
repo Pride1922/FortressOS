@@ -24,6 +24,8 @@ SECTIONS
     .text : {
         __text_start = .;
         *(.text .text.*)
+        /* Restorer stub: position-independent, copied per-process to USER_SIGRESTORER_VIRT */
+        *(.sigrestorer_text)
         . = ALIGN(4096);
         __text_end = .;
     } :text

@@ -109,10 +109,13 @@ void   thread_yield(void);
  * it must neither block nor acquire locks. Publish events before waking. */
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg);
 void sched_wake_all(const void *channel);
-/* Lock-free current-task readiness; default termination only in Phase 2A. */
+/* Lock-free current-task readiness; Phase 2B: custom handler delivery. */
 bool process_signal_pending(void);
 void process_signal_check(void);
 void process_signal_user_return(interrupt_frame_t *frame);
+/* SYS_SIGRETURN: validates and restores context from v1 signal frame.
+ * Sets *return_disposition = 1 (RETURN_SIGRETURN) on success. */
+int64_t sys_sigreturn(interrupt_frame_t *frame, int *return_disposition);
 void   thread_exit(void);
 void   sched_reap_dead(void);
 tcb_t *thread_current(void);

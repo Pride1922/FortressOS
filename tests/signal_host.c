@@ -41,7 +41,8 @@ int main(void) {
     assert(!process_signal_action(1,SIGINT,&act,&previous) && previous.handler==SIG_DFL);
     assert(process_signal_action(1,SIGKILL,&act,NULL)==SYSCALL_EINVAL);
     act.handler=0x400000;
-    assert(process_signal_action(1,SIGTERM,&act,NULL)==SYSCALL_EOPNOTSUPP);
+    assert(!process_signal_action(1,SIGTERM,&act,NULL));
+    assert(!process_signal_action(1,SIGTERM,NULL,&previous) && previous.handler==0x400000);
     assert(!process_signal_send(1,1,SIGINT) && !parent.pending_mask);
     assert(!process_signal_send(1,1,SIGTERM) && !signal_state_ready(&parent));
     assert(!process_record_begin(3,1,true,SPAWN_SETPGROUP,0));

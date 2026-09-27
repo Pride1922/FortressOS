@@ -71,10 +71,10 @@ void shell_main(int argc,const char **argv) {
     signal_action_t act={.handler=SIG_IGN}, old;
     require(call(SYS_SIGACTION,SIGKILL,(uintptr_t)&act,0)==SYSCALL_EINVAL);
     act.handler=0x400000;
-    require(call(SYS_SIGACTION,SIGTERM,(uintptr_t)&act,0)==SYSCALL_EOPNOTSUPP);
+    require(call(SYS_SIGACTION,SIGTERM,(uintptr_t)&act,0)==0);
     act.handler=SIG_IGN;
     require(call(SYS_SIGACTION,SIGTERM,(uintptr_t)&act,(uintptr_t)&ro_action)==SYSCALL_EFAULT);
-    require(call(SYS_SIGACTION,SIGTERM,0,(uintptr_t)&old)==0 && old.handler==SIG_DFL);
+    require(call(SYS_SIGACTION,SIGTERM,0,(uintptr_t)&old)==0 && old.handler==0x400000);
     require(call(SYS_SIGACTION,SIGTERM,UINTPTR_MAX-7,0)==SYSCALL_EFAULT);
     uint64_t mask=SIGNAL_BIT(SIGTERM)|SIGNAL_BIT(SIGKILL), previous;
     require(call(SYS_SIGPROCMASK,SIG_SETMASK,(uintptr_t)&mask,(uintptr_t)&ro_mask)==SYSCALL_EFAULT);

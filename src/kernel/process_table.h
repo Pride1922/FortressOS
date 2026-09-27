@@ -28,4 +28,15 @@ int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t 
 int64_t process_signal_mask(uint64_t pid, uint64_t how, const uint64_t *mask, uint64_t *old);
 unsigned process_signal_take(uint64_t pid);
 bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal);
+/* 2B additions: atomic take with full action snapshot, and handler read. */
+unsigned process_signal_take_action(uint64_t pid, signal_action_t *out_action,
+                                    uint64_t *out_old_mask);
+uint64_t process_signal_handler(uint64_t pid, uint64_t sig);
+/* Push/pop active frame entries under the process lock. */
+int  process_signal_push_frame(uint64_t pid, uintptr_t frame_addr, uint64_t *out_generation);
+int  process_signal_pop_frame(uint64_t pid, uint64_t expected_generation);
+/* Install handler mask for delivery (call before returning to user). */
+int  process_signal_set_mask(uint64_t pid, uint64_t new_mask);
+/* Read-only check of top active-frame identity for sys_sigreturn validation. */
+bool process_signal_check_frame_id(uint64_t pid, uintptr_t frame_addr, uint64_t generation);
 #endif

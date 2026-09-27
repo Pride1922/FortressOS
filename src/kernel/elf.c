@@ -4,6 +4,10 @@
 #include "string.h"
 #include "serial.h"
 
+/* Restorer stub symbols from sigrestorer.asm (linked into the kernel image). */
+extern uint8_t sigrestorer_start[];
+extern uint8_t sigrestorer_end[];
+
 int elf_load_executable(const void *image, size_t image_size, elf_loaded_process_t *out_proc) {
     if (out_proc) {
         memset(out_proc, 0, sizeof(elf_loaded_process_t));
@@ -72,6 +76,12 @@ int elf_load_executable(const void *image, size_t image_size, elf_loaded_process
 
     bool entry_in_exec_seg = false;
 
+    /* Reserved regions that ELF segments must not overlap (page-rounded). */
+    const uintptr_t RESTORER_PAGE      = USER_SIGRESTORER_VIRT;
+    const uintptr_t RESTORER_PAGE_END  = USER_SIGRESTORER_VIRT + USER_SIGRESTORER_SIZE - 1;
+    const uintptr_t GUARD_PAGE         = USER_STACK_GUARD_VIRT;
+    const uintptr_t STACK_TOP          = USER_STACK_TOP_VIRT;
+
     for (size_t i = 0; i < ehdr->e_phnum; i++) {
         const Elf64_Phdr *p = &phdrs[i];
 
@@ -120,7 +130,13 @@ int elf_load_executable(const void *image, size_t image_size, elf_loaded_process
         uintptr_t seg_end_page   = (p->p_vaddr + p->p_memsz - 1) & ~(PAGE_SIZE - 1);
 
         /* Stack & guard page collision check */
-        if (seg_end_page >= USER_STACK_GUARD_VIRT && seg_start_page < USER_STACK_TOP_VIRT) {
+        if (seg_end_page >= GUARD_PAGE && seg_start_page < STACK_TOP) {
+            return ELF_ERR_OVERLAP;
+        }
+
+        /* Restorer page collision check. */
+        if (!(seg_end_page < RESTORER_PAGE || seg_start_page > RESTORER_PAGE_END)) {
+            serial_puts("[ELF] Segment overlaps reserved restorer page\n");
             return ELF_ERR_OVERLAP;
         }
 
@@ -210,7 +226,36 @@ int elf_load_executable(const void *image, size_t image_size, elf_loaded_process
         }
     }
 
-    /* 5. User Stack Allocation */
+    /* 5. Restorer Page Allocation & Installation (RX, user, no write).
+     * Stub bytes come from sigrestorer_start/sigrestorer_end linked into kernel. */
+    size_t restorer_stub_size = (size_t)(sigrestorer_end - sigrestorer_start);
+    if (restorer_stub_size == 0 || restorer_stub_size > PAGE_SIZE) {
+        /* Should never happen — NASM %if guard rejects oversized stub. */
+        serial_puts("[ELF] Restorer stub size invalid\n");
+        vmm_destroy_pml4(pml4_phys, true);
+        return ELF_ERR_INVALID;
+    }
+
+    uintptr_t restorer_phys = pmm_alloc_page();
+    if (restorer_phys == 0) {
+        vmm_destroy_pml4(pml4_phys, true);
+        return ELF_ERR_NOMEM;
+    }
+    uint8_t *restorer_kvirt = (uint8_t *)vmm_phys_to_virt(restorer_phys);
+    memset(restorer_kvirt, 0, PAGE_SIZE);
+    memcpy(restorer_kvirt, sigrestorer_start, restorer_stub_size);
+
+    /* PTE: present | user | executable (no PTE_WRITABLE, no PTE_NX). */
+    int restorer_map = vmm_map_page(pml4_virt, USER_SIGRESTORER_VIRT, restorer_phys,
+                                     PTE_PRESENT | PTE_USER);
+    if (restorer_map != VMM_OK) {
+        pmm_free_page(restorer_phys);
+        vmm_destroy_pml4(pml4_phys, true);
+        return ELF_ERR_NOMEM;
+    }
+    total_pages++;
+
+    /* 6. User Stack Allocation */
     uintptr_t stack_phys = pmm_alloc_page();
     if (stack_phys == 0) {
         vmm_destroy_pml4(pml4_phys, true);
@@ -228,7 +273,7 @@ int elf_load_executable(const void *image, size_t image_size, elf_loaded_process
     }
     total_pages++;
 
-    /* 6. Success: Publish output descriptor */
+    /* 7. Success: Publish output descriptor */
     out_proc->pml4_phys      = pml4_phys;
     out_proc->entry_point    = ehdr->e_entry;
     out_proc->user_stack_top = USER_STACK_TOP_VIRT;

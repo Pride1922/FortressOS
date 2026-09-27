@@ -102,6 +102,10 @@ typedef struct {
 #define USER_STACK_TOP_VIRT    0x00007FFFF0001000ULL
 #define USER_STACK_GUARD_VIRT  0x00007FFFEFFFF000ULL
 
+/* Restorer page: loader-owned, present/user/RX, immediately below the guard. */
+#define USER_SIGRESTORER_VIRT  0x00007FFFEFFFE000ULL  /* 4 KiB, read-only/executable */
+#define USER_SIGRESTORER_SIZE  4096ULL
+
 /* Spawn vector limits come from syscall_abi.h; preserve the stack floor. */
 #define MINIMUM_USER_STACK_FLOOR 512
 #define MAX_POINTER_TABLE_BYTES  (((MAX_SPAWN_ARGS + MAX_SPAWN_ENVP + 5) * 8) + 16)

@@ -35,6 +35,7 @@
 #define SYS_SIGACTION  28 /* (signal, const signal_action_t *act, signal_action_t *old) */
 #define SYS_SIGPROCMASK 29 /* (how, const uint64_t *set, uint64_t *old) */
 #define SYS_GETPGRP    26 /* () -> pgid */
+#define SYS_SIGRETURN  32 /* () -> kernel restores full context; no user-visible return */
 #define SYS_WAITPID    33 /* (int64_t selector, uint64_t *status, uint32_t options) -> pid/0/-errno */
 #define SYS_GROUP_RELEASE 35 /* (uint64_t pgid, uint32_t action) -> 0 */
 #define GROUP_RELEASE 0

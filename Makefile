@@ -381,6 +381,16 @@ $(BUILD_DIR)/kernel/embedded_init.o: $(SRC_DIR)/kernel/embedded_init.asm $(USER_
 	@echo "  [AS]  $< (embedding $(USER_INIT_ELF))"
 	@$(AS) $(ASFLAGS) $< -o $@
 
+# Restorer stub: generate the NASM include from signal_frame.h first.
+$(BUILD_DIR)/arch/x86_64/sigrestorer.o: $(SRC_DIR)/arch/x86_64/sigrestorer.asm \
+    $(SRC_DIR)/include/signal_frame.h $(SRC_DIR)/include/syscall_abi.h \
+    scripts/gen_signal_frame_asm.py
+	@mkdir -p $(BUILD_DIR)/arch/x86_64
+	@echo "  [GEN] build/signal_frame_asm.inc"
+	@python3 scripts/gen_signal_frame_asm.py
+	@echo "  [AS]  $<"
+	@$(AS) $(ASFLAGS) $< -o $@
+
 # Assemble NASM assembly files to object files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.asm
 	@mkdir -p $(dir $@)

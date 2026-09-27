@@ -1104,6 +1104,7 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
     uint64_t syscall_nr = frame->rax;
     int64_t result = SYSCALL_ENOSYS;
+    int return_disposition = 0; /* 0=normal, 1=SIGRETURN (iretq, skip rax write) */
 
     switch (syscall_nr) {
         case SYS_SPAWN:
@@ -1251,9 +1252,23 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             result = sys_pipe(frame->rdi, (uint32_t)frame->rsi);
             break;
 
+        case SYS_SIGRETURN:
+            result = sys_sigreturn(frame, &return_disposition);
+            break;
+
         default:
             result = SYSCALL_ENOSYS;
             break;
+    }
+
+    /* RETURN_SIGRETURN: sys_sigreturn committed full context into the frame.
+     * Signal the assembly stub to use IRETQ (not SYSRET) by writing the
+     * SIGRETURN_VECTOR_MARKER (0x100) into frame->vector. After GPR pops,
+     * the assembly checks [rsp] == 0x100 and jumps to syscall_sigreturn_iretq.
+     * frame->rax already holds kf.rax; do NOT overwrite. Skip signal delivery. */
+    if (return_disposition == 1) {
+        frame->vector = 0x100; /* SIGRETURN_VECTOR_MARKER — matches syscall_entry.asm */
+        return 0;
     }
 
     frame->rax = (uint64_t)result;

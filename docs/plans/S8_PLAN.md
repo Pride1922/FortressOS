@@ -348,6 +348,16 @@ not inherit the shell's job-control ignores. Complete these and pgid assignment,
 ordered fd actions, CLOEXEC sweep, argv/envp packing and child record publication
 before execution. Signals must not expose a partially constructed child.
 
+Summary of Findings
+The review found four real gaps, all in the same category: §3 describes mechanisms that must be built but doesn't specify where or how they're constructed.
+
+#	Finding	Severity
+1	The IRET frame's RSP slot write (S → H) isn't described	High — first sigreturn crashes without it
+2	The active-frame stack's storage location isn't named	Medium — implementer has to invent it
+3	sanitize_user_rflags doesn't clear TF	High — handler over TF=1 context #DBs
+4	Where the five-word IRET frame is built for syscall origin isn't specified	High — RETURN_SIGRETURN can't return without it
+5	RETURN_TEST's SWAPGS compatibility is unclear	Low — test-onlya
+
 ### 4. Kernel control-key generation at ingress
 
 The question's option B has two errors: control characters must signal the

@@ -12,6 +12,7 @@
 #include "syscall.h"
 #include "apic.h"
 #include "smp.h"
+#include "signal_frame.h"
 
 extern uint8_t kernel_stack_guard[];
 
@@ -1807,6 +1808,140 @@ bool process_signal_pending(void) {
     tcb_t *t=thread_current();
     return t && t->is_user && signal_state_ready(&t->signals);
 }
+
+/* RFLAGS sanitization constants — must match syscall.c's USER_RFLAGS_ALLOWED_MASK. */
+#define USER_RFLAGS_ALLOWED_MASK 0x0000000000240CD5ULL
+#define USER_RFLAGS_FORCED       0x0000000000000202ULL
+#define GDT_USER_CODE  0x23
+#define GDT_USER_DATA  0x1B
+#define USER_CANONICAL_MIN   0x1000ULL
+#define USER_CANONICAL_LIMIT 0x0000800000000000ULL
+
+static uint64_t sanitize_user_rflags(uint64_t raw) {
+    return (raw & USER_RFLAGS_ALLOWED_MASK) | USER_RFLAGS_FORCED;
+}
+
+/*
+ * Build a v1 signal frame on the user stack and redirect the kernel interrupt
+ * frame to enter the user handler.
+ *
+ * Called at a safe return boundary (no locks, no IRQ disable beyond scheduler).
+ * Returns true if the frame was successfully built and the interrupt frame
+ * has been redirected; false if delivery failed (caller should terminate).
+ */
+static bool signal_deliver_handler(interrupt_frame_t *frame, unsigned sig,
+                                    const signal_action_t *action, uint64_t old_mask) {
+    tcb_t *t = thread_current();
+    if (!t || !t->pml4_virt) return false;
+
+    uint64_t *pml4 = t->pml4_virt;
+
+    /* S = interrupted user RSP. */
+    uint64_t S = frame->rsp;
+
+    /* Underflow check: S - 224 must not wrap. */
+    if (S < 224 + 8 + 16) { /* need room for frame + return slot + alignment */
+        serial_puts("[SIGNAL] User stack too small for signal frame\n");
+        return false;
+    }
+
+    /* F = align_down(S - 224, 16). The subtraction is safe (checked above). */
+    uint64_t F = (S - 224) & ~(uint64_t)15;
+
+    /* H = F - 8 (return-address slot). Underflow check. */
+    if (F < 8) {
+        serial_puts("[SIGNAL] Signal frame F underflows\n");
+        return false;
+    }
+    uint64_t H = F - 8;
+
+    /* Validate the writable interval [H, S) in the user address space. */
+    size_t write_len = (size_t)(S - H);
+    if (!vmm_validate_user_range(pml4, (uintptr_t)H, write_len, true)) {
+        serial_puts("[SIGNAL] Signal frame range not writable\n");
+        return false;
+    }
+
+    /* Zero the entire interval [H, S) before writing any fields. */
+    memset((void *)H, 0, write_len);
+
+    /* Push active-frame entry; get generation for frame_id. */
+    uint64_t frame_id = 0;
+    if (process_signal_push_frame(t->tid, (uintptr_t)F, &frame_id) != 0) {
+        serial_puts("[SIGNAL] Signal frame nesting overflow or process not found\n");
+        return false;
+    }
+
+    /* Write return-address slot at H with USER_SIGRESTORER_VIRT. */
+    *(uint64_t *)H = USER_SIGRESTORER_VIRT;
+
+    /* Build the v1 frame at F. */
+    volatile signal_frame_v1_t *sf = (volatile signal_frame_v1_t *)F;
+    sf->version  = 1;
+    sf->size     = SIGFRAME_V1_SIZE;
+    sf->frame_id = frame_id;
+    sf->reserved0= 0;
+
+    /* Save all GPRs from the interrupted context. */
+    sf->rax = frame->rax;
+    sf->rbx = frame->rbx;
+    sf->rcx = frame->rcx;
+    sf->rdx = frame->rdx;
+    sf->rsi = frame->rsi;
+    sf->rdi = frame->rdi;
+    sf->rbp = frame->rbp;
+    sf->r8  = frame->r8;
+    sf->r9  = frame->r9;
+    sf->r10 = frame->r10;
+    sf->r11 = frame->r11;
+    sf->r12 = frame->r12;
+    sf->r13 = frame->r13;
+    sf->r14 = frame->r14;
+    sf->r15 = frame->r15;
+
+    /* Save interrupted RIP/RSP/RFLAGS/CS/SS (including DF). */
+    sf->rflags  = frame->rflags;  /* saved before sanitization */
+    sf->rip     = frame->rip;
+    sf->rsp     = S;
+    sf->cs      = frame->cs;
+    sf->ss      = frame->ss;
+
+    /* Save old blocked mask and signal number. */
+    sf->old_mask = old_mask;
+    sf->signo    = sig;
+    sf->reserved1[0] = 0;
+    sf->reserved1[1] = 0;
+
+    /* Compute handler RFLAGS: sanitize, then clear DF (bit 10) and TF (bit 8). */
+    uint64_t handler_rflags = sanitize_user_rflags(frame->rflags)
+                              & ~(1ULL << 10)   /* DF */
+                              & ~(1ULL << 8);   /* TF */
+
+    /* Compute handler blocked mask.
+     * handler_mask = (old_mask | action_mask | bit(sig)) & ~UNBLOCKABLE */
+    uint64_t handler_mask = (old_mask | action->mask | SIGNAL_BIT(sig))
+                            & ~SIGNAL_UNBLOCKABLE;
+
+    /* Install the new blocked mask before making the handler runnable. */
+    process_signal_set_mask(t->tid, handler_mask);
+
+    /* Redirect the interrupt frame to the handler.
+     * Entry: RIP = handler, RSP = H (8 mod 16), RDI = signo, RFLAGS cleaned. */
+    frame->rip    = action->handler;
+    frame->cs     = GDT_USER_CODE;
+    frame->ss     = GDT_USER_DATA;
+    frame->rsp    = H;
+    frame->rflags = handler_rflags;
+    frame->rdi    = sig;
+
+    /* Disposition: RETURN_SIGRETURN — the assembly return path writes H into
+     * the IRET frame's user-RSP slot. For syscall-origin frames the five-word
+     * IRET frame is already on the stack (we just modified it above).
+     * The return_disposition pointer will be set in syscall.c/thread.c caller. */
+
+    return true;
+}
+
 void process_signal_check(void) {
     tcb_t *t=thread_current();
     if (!t || !t->is_user || !process_signal_pending()) return;
@@ -1814,7 +1949,158 @@ void process_signal_check(void) {
     unsigned sig=process_signal_take(t->tid);
     if (sig) { t->exit_signal=sig; process_exit(128+sig); }
 }
+
 void process_signal_user_return(interrupt_frame_t *frame) {
     if (!frame || (frame->cs & 3)!=3 || frame->vector<32) return;
-    process_signal_check();
+
+    tcb_t *t = thread_current();
+    if (!t || !t->is_user) return;
+
+    spin_debug_assert_unheld();
+
+    if (!signal_state_ready(&t->signals)) return;
+
+    /* Take a pending signal with its full action snapshot. */
+    signal_action_t action;
+    uint64_t old_mask = 0;
+    unsigned sig = process_signal_take_action(t->tid, &action, &old_mask);
+    if (!sig) return;
+
+    /* SIGKILL / default termination: no handler. */
+    if (sig == SIGKILL || action.handler == SIG_DFL) {
+        t->exit_signal = sig;
+        process_exit(128 + sig);
+        /* Never reached */
+    }
+
+    /* SIG_IGN should have been filtered by process_signal_take_action. */
+    if (action.handler == SIG_IGN) return;
+
+    /* Custom handler: build the signal frame and redirect the interrupt frame. */
+    if (!signal_deliver_handler(frame, sig, &action, old_mask)) {
+        /* Frame construction failed — terminate the process. */
+        serial_puts("[SIGNAL] Frame construction failed; terminating process\n");
+        t->exit_signal = sig;
+        process_exit(128 + sig);
+    }
+    /* On success the interrupt frame has been redirected to the handler. */
+}
+
+/*
+ * SYS_SIGRETURN implementation (syscall 32).
+ * Called from syscall_dispatch with the interrupt frame.
+ * RDI = F (frame address, passed by the restorer's "mov rdi, rsp; syscall").
+ *
+ * On success: fully restores GPRs/RFLAGS/RIP/RSP from the validated frame
+ * and sets RETURN_SIGRETURN so the assembly path takes the IRETQ branch.
+ * On failure: returns a negative error code; RETURN_SYSCALL is retained.
+ */
+int64_t sys_sigreturn(interrupt_frame_t *frame, int *return_disposition) {
+    if (!frame || !return_disposition) return SYSCALL_EINVAL;
+
+    tcb_t *t = thread_current();
+    if (!t || !t->is_user) return SYSCALL_EINVAL;
+
+    uintptr_t F = (uintptr_t)frame->rdi;
+
+    /* Validate canonical user address: F must be 16-byte aligned and in lower half. */
+    if (F < USER_CANONICAL_MIN || F >= USER_CANONICAL_LIMIT || (F & 15) != 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* Validate the frame is readable (224 bytes). */
+    uint64_t *pml4 = t->pml4_virt;
+    if (!pml4 || !vmm_validate_user_range(pml4, F, SIGFRAME_V1_SIZE, false)) {
+        return SYSCALL_EFAULT;
+    }
+
+    /* Copy the frame body to kernel stack before any validation (untrusted data). */
+    signal_frame_v1_t kf;
+    memcpy(&kf, (const void *)F, sizeof(kf));
+
+    /* Validate version and size. */
+    if (kf.version != 1 || kf.size != SIGFRAME_V1_SIZE) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* Validate reserved fields. */
+    if (kf.reserved0 != 0 || kf.reserved1[0] != 0 || kf.reserved1[1] != 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* Validate signal number is in supported set. */
+    if (kf.signo == 0 || kf.signo > 31 ||
+        !(SIGNAL_SUPPORTED & SIGNAL_BIT((unsigned)kf.signo))) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* Validate frame_id against top active-frame entry (under process lock). */
+    if (!process_signal_check_frame_id(t->tid, F, kf.frame_id)) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* Validate user RIP: canonical lower-half. */
+    if (kf.rip < USER_CANONICAL_MIN || kf.rip >= USER_CANONICAL_LIMIT) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* Validate user RSP: canonical lower-half. */
+    if (kf.rsp < USER_CANONICAL_MIN || kf.rsp >= USER_CANONICAL_LIMIT) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* Validate CS and SS selectors. */
+    if (kf.cs != GDT_USER_CODE || kf.ss != GDT_USER_DATA) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* Sanitize restored RFLAGS: preserve DF, enforce permitted bits. */
+    uint64_t restored_rflags = sanitize_user_rflags(kf.rflags);
+
+    /* Validate old_mask: must not have unsupported bits. */
+    if (kf.old_mask & ~SIGNAL_SUPPORTED) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* All validation passed — commit. */
+
+    /* Pop the active-frame entry. */
+    if (process_signal_pop_frame(t->tid, kf.frame_id) != 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* Restore the blocked mask from the frame (UNBLOCKABLE bits cleared). */
+    process_signal_set_mask(t->tid, kf.old_mask & ~SIGNAL_UNBLOCKABLE);
+
+    /* Restore all GPRs into the interrupt frame. */
+    frame->rax    = kf.rax;
+    frame->rbx    = kf.rbx;
+    frame->rcx    = kf.rcx;
+    frame->rdx    = kf.rdx;
+    frame->rsi    = kf.rsi;
+    frame->rdi    = kf.rdi;
+    frame->rbp    = kf.rbp;
+    frame->r8     = kf.r8;
+    frame->r9     = kf.r9;
+    frame->r10    = kf.r10;
+    frame->r11    = kf.r11;
+    frame->r12    = kf.r12;
+    frame->r13    = kf.r13;
+    frame->r14    = kf.r14;
+    frame->r15    = kf.r15;
+
+    /* Restore RIP/RSP/RFLAGS/CS/SS into the IRET frame. */
+    frame->rip    = kf.rip;
+    frame->cs     = kf.cs;
+    frame->rflags = restored_rflags;
+    frame->rsp    = kf.rsp;     /* H → S transition: RSP = original S */
+    frame->ss     = kf.ss;
+
+    /* Signal the assembly return path to use IRETQ (RETURN_SIGRETURN).
+     * The assembly writes frame->rsp (= H) into the IRET RSP slot before iretq.
+     * For syscall-origin frames the IRET frame is already built from the
+     * interrupt_frame_t fields we just updated. */
+    *return_disposition = 1; /* RETURN_SIGRETURN */
+
+    return 0; /* result ignored by the dispatcher for RETURN_SIGRETURN */
 }
