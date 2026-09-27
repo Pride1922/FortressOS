@@ -31,13 +31,21 @@ void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags);
  * using internal unlocked helpers (e.g., kmalloc_unlocked) rather than recursive locks.
  *
  * SUBSYSTEM LOCK HIERARCHY & ORDERING:
- * To avoid deadlocks, locks must always be acquired in descending order:
- *   Level 1: g_sched_lock (Scheduler runqueue & thread state)
+ * To avoid deadlocks, locks must always be acquired in increasing rank order:
+ *   Level 1: per-CPU scheduler locks OR ext2_lock OR g_process_lock
  *   Level 2: g_heap_lock  (Kernel heap & free list)
  *   Level 3: g_vmm_lock   (Page tables & virtual mapping)
  *   Level 4: g_pmm_lock   (Physical frame bitmap allocator)
  *   Level 5: g_console_lock (Leaf output lock)
- * ext2_lock also has rank 1 and cannot nest with g_sched_lock.
+ * ext2_lock and g_process_lock also have rank 1; neither may nest with any
+ * other rank-1 lock. Only distinct scheduler-kind locks may nest in increasing
+ * address order through sched_lock_pair. Process metadata uses ordinary kind.
+ * g_process_lock is private to process_table.c and owns the global process
+ * identity/group/session registry and child reservations/status. It does not
+ * own scheduler queues or TCB lifetime. Drop it before scheduler operations,
+ * filesystem work, user copies, descriptor cleanup or address-space teardown.
+ * Its event sequence is release-published; wait predicates acquire-read the
+ * sequence without taking this lock under a scheduler lock.
  *
  * CRITICAL CONSTRAINTS:
  * 1. Never acquire a higher-level lock while holding a lower-level lock.

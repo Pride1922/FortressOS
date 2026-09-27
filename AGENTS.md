@@ -43,7 +43,7 @@ Shell S7 Phases 1–6 are complete. See [Phase 5A utilities](docs/roadmap/shell-
 [Phase 5B builtin stages and envp diagnosis](docs/roadmap/shell-s7-phase5b.md),
 and [Phase 6 QEMU/Dell acceptance](docs/roadmap/shell-s7-phase6.md).
 Pipe peers remain on the BSP even in multi-CPU runs; cross-core wake channels
-remain future work. Next milestone: Shell S8 (jobs, signals and process groups).
+remain future work. Shell S8 Phase 1 is complete, with all handoff tests reported passing by the user (2026-09-27). See [Phase 1 evidence](docs/roadmap/shell-s8-phase1.md). Signals and terminal job control remain later S8 phases.
 
 Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
 
@@ -179,7 +179,7 @@ Choose tests relevant to the change, then required integration coverage. Report 
 
 | ID | Binding invariant | How to check |
 | --- | --- | --- |
-| L1 | Acquire increasing ranks: sched **or** ext2 (1) → heap (2) → VMM (3) → PMM (4) → console (5). Sched/ext2 cannot nest. Release LIFO. | Trace nested calls from `spin_lock_irqsave`; verify `SPINLOCK_RANKED` values and `spin_debug_selftest`. Violations panic/deadlock, not warnings. |
+| L1 | Acquire increasing ranks: per-CPU scheduler **or** `ext2_lock` **or** `g_process_lock` (1) → heap (2) → VMM (3) → PMM (4) → console (5). `g_process_lock` owns global process identity/group/session metadata and child reservations/status; it uses ordinary lock kind. Process/ext2 never nest with another rank-1 lock in either order. Only scheduler pairs may nest in increasing address order via `sched_lock_pair`. Release LIFO. | Trace nested calls from `spin_lock_irqsave`; verify `SPINLOCK_RANKED` values and `spin_debug_selftest`, including process↔scheduler/ext2 rejection and the ordered scheduler-pair exception. Violations panic/deadlock, not warnings. |
 | L2 | No spinlock across `switch_context`. Keep IRQs disabled through target TSS.RSP0, CR3 and stack exchange until saved incoming flags restore. | Check every switch site for `spin_unlock_noirq` and `spin_debug_assert_unheld`; exercise preemption and sleeping reads. |
 | L3 | Locks are non-recursive; `_unlocked` helpers avoid reacquisition. Saved 64-bit RFLAGS belongs to the caller. Tracking is bootstrap-CPU-only. | Inspect public-to-public calls, error exits and saved flags; never share an IRQ-save token. |
 | L4 | Detach dead tasks under sched lock; free outside it, on another stack and CR3. | Inspect `sched_reap_dead` assertions and all unwind paths; run lifecycle/reclamation tests. |

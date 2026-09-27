@@ -113,6 +113,19 @@ QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS) $(QEMU_EXTRA)
 all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 
 # C_SRCS/OBJS above automatically include src/fs/pipe.c.
+.PHONY: test-s8-process-host test-s8-process
+test-s8-process-host:
+	@python3 scripts/test_process_table_host.py
+
+$(BUILD_DIR)/s8_process_user.elf: tests/s8_process_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_process_user.c -o $(BUILD_DIR)/s8_process_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/s8_process_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s8_process_user_start.o $(BUILD_DIR)/s8_process_user.o -o $@
+
+test-s8-process: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_process_user.elf
+	@python3 scripts/test_s8_process.py
+
 .PHONY: test-pipe-host test-host
 test-pipe-host:
 	@python3 scripts/test_pipe_host.py

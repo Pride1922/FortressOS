@@ -507,8 +507,11 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
     spawn_opts_t opts;
     memcpy(&opts, (const void *)user_opts_ptr, sizeof(spawn_opts_t));
 
-    if (opts.size != sizeof(spawn_opts_t) || opts.version != 1 || opts.flags != 0 ||
-        opts.reserved0 != 0 || opts.reserved1 != 0 || opts.reserved2 != 0) {
+    if (opts.size != sizeof(spawn_opts_t) || (opts.version != 1 && opts.version != 2) ||
+        opts.reserved0 != 0 || opts.reserved1 != 0 ||
+        (opts.version == 1 && (opts.flags || opts.reserved2)) ||
+        (opts.version == 2 && ((opts.flags & ~SPAWN_V2_FLAGS) ||
+         (!(opts.flags & SPAWN_SETPGROUP) && opts.reserved2) || opts.reserved2 > 0x7fffffffffffffffULL))) {
         return SYSCALL_EINVAL;
     }
 
@@ -654,8 +657,8 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
     }
 
     int64_t pid = 0;
-    int64_t result = process_spawn_from_vfs_ext(path, argc, kargv, envc, opts.envp ? kenvp : NULL, kcwd,
-                                               opts.action_count, opts.action_count ? kactions : NULL, &pid);
+    int64_t result = process_spawn_from_vfs_group(path, argc, kargv, envc, opts.envp ? kenvp : NULL, kcwd,
+                                               opts.action_count, opts.action_count ? kactions : NULL, opts.flags, opts.reserved2, &pid);
     kfree(args_buf);
     if (env_buf) kfree(env_buf);
     if (action_paths) kfree(action_paths);
@@ -1190,6 +1193,28 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         case SYS_FCNTL:
             result = sys_fcntl((int)frame->rdi, (int)frame->rsi, frame->rdx);
             break;
+
+        case SYS_SETPGID:
+            result = process_setpgid(frame->rdi, frame->rsi);
+            break;
+        case SYS_GETPGRP:
+            result = process_getpgrp();
+            break;
+        case SYS_GROUP_RELEASE:
+            result = frame->rsi > GROUP_CANCEL ? SYSCALL_EINVAL :
+                     process_group_release(frame->rdi, (uint32_t)frame->rsi);
+            break;
+        case SYS_WAITPID: {
+            uint64_t status;
+            if (frame->rdx > 0xffffffffULL) { result=SYSCALL_EINVAL; break; }
+            if (frame->rsi && !vmm_validate_user_range(vmm_get_active_pml4_virt(),
+                                      frame->rsi, sizeof(status), true)) {
+                result=SYSCALL_EFAULT; break;
+            }
+            result=process_waitpid((int64_t)frame->rdi, &status, (uint32_t)frame->rdx, false);
+            if (result > 0 && frame->rsi) memcpy((void *)frame->rsi, &status, sizeof(status));
+            break;
+        }
 
         case SYS_PIPE:
             result = sys_pipe(frame->rdi, (uint32_t)frame->rsi);

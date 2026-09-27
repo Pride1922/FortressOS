@@ -44,7 +44,7 @@ Acquire in increasing rank order; release LIFO; never hold a spinlock across
 
 | Rank | Lock |
 | --- | --- |
-| 1 | scheduler **or** ext2 (mutually exclusive — cannot nest with each other) |
+| 1 | per-CPU scheduler locks **or** `ext2_lock` **or** `g_process_lock` (global process/child metadata; ordinary lock kind). Process/ext2 cannot nest with any rank-1 lock in either order; only scheduler pairs in increasing address order via `sched_lock_pair` are exempt. |
 | 2 | heap |
 | 3 | VMM |
 | 4 | PMM |

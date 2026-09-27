@@ -28,6 +28,27 @@
 #define SYS_FCNTL      23 /* (int fd, int cmd, uint64_t arg) -> result or -errno */
 #define SYS_PIPE       24 /* (int pipefd[2], uint32_t flags) -> 0 or -errno */
 
+/* S8 Phase 1. Signal/terminal slots 27..32 and 34 remain reserved. */
+#define SYS_SETPGID    25 /* (uint64_t pid, uint64_t pgid) -> 0 */
+#define SYS_GETPGRP    26 /* () -> pgid */
+#define SYS_WAITPID    33 /* (int64_t selector, uint64_t *status, uint32_t options) -> pid/0/-errno */
+#define SYS_GROUP_RELEASE 35 /* (uint64_t pgid, uint32_t action) -> 0 */
+#define GROUP_RELEASE 0
+#define GROUP_CANCEL  1
+#define SPAWN_SETPGROUP 1u /* v2: reserved2=0 creates group, >0 joins group */
+#define SPAWN_STAGED    2u /* v2: fully construct but do not schedule */
+#define SPAWN_V2_FLAGS (SPAWN_SETPGROUP | SPAWN_STAGED)
+#define WNOHANG    1u
+#define WUNTRACED  2u
+#define WCONTINUED 8u
+#define WIFEXITED(s) (((s) & 0x7f) == 0)
+#define WEXITSTATUS(s) (((s) >> 8) & 0xff)
+#define WIFSIGNALED(s) (((s) & 0x7f) != 0 && ((s) & 0x7f) != 0x7f)
+#define WTERMSIG(s) ((s) & 0x7f)
+#define WIFSTOPPED(s) (((s) & 0xff) == 0x7f)
+#define WSTOPSIG(s) (((s) >> 8) & 0xff)
+#define WIFCONTINUED(s) ((s) == 0xffff)
+
 #define F_DUPFD         0
 #define F_GETFD         1
 #define F_SETFD         2
@@ -64,8 +85,8 @@ _Static_assert(sizeof(spawn_fd_action_t) == 32, "spawn_fd_action_t must be exact
 
 typedef struct {
     uint32_t size;          /* sizeof(spawn_opts_t) = 64 */
-    uint32_t version;       /* 1 */
-    uint32_t flags;         /* 0 */
+    uint32_t version;       /* 1 or 2; layout unchanged */
+    uint32_t flags;         /* v1: 0; v2: SPAWN_V2_FLAGS */
     uint32_t reserved0;     /* 0 */
     uint64_t argv;          /* pointer to argv NULL-terminated array of char* */
     uint64_t envp;          /* pointer to envp NULL-terminated array of char* */
@@ -73,7 +94,7 @@ typedef struct {
     uint64_t fd_actions;    /* pointer to spawn_fd_action_t array (or 0) */
     uint32_t action_count;  /* count of fd actions (up to MAX_SPAWN_ACTIONS) */
     uint32_t reserved1;     /* 0 */
-    uint64_t reserved2;     /* 0 */
+    uint64_t reserved2;     /* v1: 0; v2: pgid with SPAWN_SETPGROUP */
 } spawn_opts_t;
 
 _Static_assert(sizeof(spawn_opts_t) == 64, "spawn_opts_t must be exactly 64 bytes");
@@ -101,6 +122,10 @@ _Static_assert(sizeof(spawn_opts_t) == 64, "spawn_opts_t must be exactly 64 byte
 #define SYSCALL_ENOTEMPTY -19 /* Directory not empty */
 #define SYSCALL_EPIPE    -20 /* Broken pipe: no readers */
 #define SYSCALL_EAGAIN   -21 /* Reserved would-block error; pipes now block */
+
+#define SYSCALL_EINTR -22
+#define SYSCALL_ESRCH -23
+#define SYSCALL_EPERM -24
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

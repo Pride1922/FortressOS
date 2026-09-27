@@ -1,4 +1,5 @@
 #include "thread.h"
+#include "process_table.h"
 #include "percpu.h"
 #include "heap.h"
 #include "pmm.h"
@@ -25,19 +26,18 @@ typedef struct {
 
 #define MAX_EXIT_RECORDS 64
 
-/* Reserved before a user spawn, retained until wait or parent exit. Separate
- * from the legacy kernel-test history, which is allowed to overwrite records. */
-typedef struct {
-    uint64_t parent, pid, status;
-    bool used, done;
-} child_record_t;
+/* Staged tasks are exclusively BSP-owned with local IRQ exclusion. They have
+ * never run, hold a scheduler ref, and are not on any scheduler queue. */
+static tcb_t *staged_processes;
+static const char child_wait_channel;
+static uint64_t child_wake_seen;
+static void cancel_staged_children(uint64_t parent);
 
 /* SMP Piece 4: Per-CPU scheduler state */
 /* SMP Piece 4: Per-CPU scheduler state */
 static struct scheduler_cpu {
     exit_record_t exit_records[MAX_EXIT_RECORDS];
     size_t        exit_records_head;
-    child_record_t child_records[MAX_EXIT_RECORDS];
     uint64_t      sched_runnable_switches;
     tcb_t         main_thread;
     tcb_t        *idle_thread;
@@ -82,7 +82,6 @@ const uintptr_t scheduler_debug_bsp[] = {
 };
 #define g_exit_records (scheduler_cpus[cpu_current()->id].exit_records)
 #define g_exit_records_head (scheduler_cpus[cpu_current()->id].exit_records_head)
-#define g_child_records (scheduler_cpus[cpu_current()->id].child_records)
 #define g_sched_timer_preemptions (cpu_current()->preempt_count)
 #define g_sched_runnable_switches (scheduler_cpus[cpu_current()->id].sched_runnable_switches)
 #define g_main_thread (scheduler_cpus[cpu_current()->id].main_thread)
@@ -267,6 +266,7 @@ void sched_reap_dead(void) {
             if (dead->stack_slot >= 0) {
                 kstack_free(dead->stack_slot, dead->kstack_base);
             }
+            if (dead->is_user) process_record_forget(dead->tid);
             fd_close_all(dead);
             kfree(dead);
             dead = next;
@@ -913,6 +913,15 @@ bool sched_is_preemption_enabled(void) {
 }
 
 void sched_on_timer_tick(void) {
+    /* Persistent sequence bridges remote status publication to BSP waits.
+     * Only timer context wakes: no metadata lock nests with scheduler lock. */
+    if (cpu_current()->id == 0) {
+        uint64_t seq = process_record_sequence();
+        if (seq != child_wake_seen) {
+            child_wake_seen = seq;
+            sched_wake_all(&child_wait_channel);
+        }
+    }
     if (!g_preemption_enabled || !g_current_thread) {
         return;
     }
@@ -1081,7 +1090,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
                                      int envc, const char *const envp[],
                                      const char *cwd,
                                      int action_count, const spawn_kaction_t *actions,
-                                     uint64_t scalar_arg, int64_t *error) {
+                                     uint64_t scalar_arg, uint64_t reserved_pid, uint32_t spawn_flags, int64_t *error) {
     *error = SYSCALL_ENOMEM;
     if (!elf_data || elf_size == 0) return NULL;
     if (target_cpu >= MAX_DETECTED_CPUS) target_cpu = cpu_current()->id;
@@ -1147,9 +1156,11 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     }
     memset(p, 0, sizeof(tcb_t));
 
-    uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
-    p->tid = g_next_tid++;
-    spin_unlock_irqrestore(&g_sched_lock, rflags);
+    uint64_t rflags;
+    p->tid = reserved_pid;
+    p->parent_pid = thread_current() && thread_current()->is_user ? thread_current()->tid : 0;
+    p->pgid = (uint64_t)process_record_group(p->tid);
+    p->sid = process_record_session(p->tid);
 
     if (name) {
         size_t len = strlen(name);
@@ -1288,6 +1299,13 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         goto fail_actions;
     }
 
+    if (spawn_flags & SPAWN_STAGED) {
+        p->state = THREAD_STAGED;
+        p->next = staged_processes;
+        staged_processes = p;
+        return p;
+    }
+    process_record_commit(p->tid);
     rflags = spin_lock_irqsave(&scheduler_cpus[target_cpu].sched_lock);
     if (!scheduler_cpus[target_cpu].runqueue_head) {
         scheduler_cpus[target_cpu].runqueue_head = p;
@@ -1312,16 +1330,20 @@ fail_actions:
     return NULL;
 }
 
-tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
-    int64_t error;
-    return process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, name, elf_data, elf_size,
-                                  0, NULL, 0, NULL, NULL, 0, NULL, arg, &error);
-}
-
 tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
+    sched_reap_dead();
+    uint64_t pid = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
+    tcb_t *parent = thread_current();
+    uint64_t ppid = parent && parent->is_user ? parent->tid : 0;
+    if (process_record_begin(pid, ppid, false, 0, 0)) return NULL;
     int64_t error;
-    return process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
-                                  0, NULL, 0, NULL, NULL, 0, NULL, arg, &error);
+    tcb_t *p = process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
+                                  0, NULL, 0, NULL, NULL, 0, NULL, arg, pid, 0, &error);
+    if (!p) process_record_abort(pid);
+    return p;
+}
+tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
+    return process_spawn_on_cpu(cpu_current()->id, name, elf_data, elf_size, arg);
 }
 
 int64_t process_spawn_from_vfs(const char *path, int argc, const char *const argv[], int64_t *out_pid) {
@@ -1332,23 +1354,33 @@ int64_t process_spawn_from_vfs_ext(const char *path, int argc, const char *const
                                    int envc, const char *const envp[], const char *cwd,
                                    int action_count, const spawn_kaction_t *actions,
                                    int64_t *out_pid) {
+    return process_spawn_from_vfs_group(path, argc, argv, envc, envp, cwd,
+                                       action_count, actions, 0, 0, out_pid);
+}
+
+int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *const argv[],
+                                   int envc, const char *const envp[], const char *cwd,
+                                   int action_count, const spawn_kaction_t *actions,
+                                   uint32_t spawn_flags, uint64_t pgid, int64_t *out_pid) {
+    if (cpu_current()->id != 0) return SYSCALL_EOPNOTSUPP;
     if (!path || !*path || !out_pid) return SYSCALL_EINVAL;
     /* Keep publication and PID capture atomic on this bootstrap-only CPU.
      * No scheduler lock is held across filesystem or loader operations. */
     uint64_t flags;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
     int64_t result = SYSCALL_ENOMEM;
-    child_record_t *record = NULL;
+    uint64_t pid = 0;
     file_t *file = NULL;
     void *buffer = NULL;
     if (!g_current_thread || !g_current_thread->is_user) {
         result = SYSCALL_EINVAL;
         goto out;
     }
-    for (unsigned i = 0; i < MAX_EXIT_RECORDS; i++) {
-        if (!g_child_records[i].used) { record = &g_child_records[i]; break; }
-    }
-    if (!record) goto out;
+    sched_reap_dead();
+    pid = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
+    result = process_record_begin(pid, g_current_thread->tid, true, spawn_flags, pgid);
+    if (result) { pid = 0; goto out; }
+    result = SYSCALL_ENOMEM;
     int err = 0;
     file = vfs_open_ext(path, VFS_O_RDONLY, &err);
     if (!file) {
@@ -1376,44 +1408,102 @@ int64_t process_spawn_from_vfs_ext(const char *path, int argc, const char *const
         image = buffer;
     }
     tcb_t *child = process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, path, image, size,
-                                          argc, argv, envc, envp, cwd, action_count, actions, 0, &result);
+                                          argc, argv, envc, envp, cwd, action_count, actions, 0, pid, spawn_flags, &result);
     if (!child) goto out;
-    *record = (child_record_t){ .parent = g_current_thread->tid,
-                              .pid = child->tid, .used = true };
     *out_pid = (int64_t)child->tid;
     result = SYSCALL_SUCCESS;
 out:
+    if (result && pid) process_record_abort(pid);
     if (buffer) kfree(buffer);
     if (file) vfs_close(file);
     __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
     return result;
 }
 
-/* Called only under sched lock: no nested public scheduler calls. */
-static bool child_done(void *arg) {
-    return ((child_record_t *)arg)->done;
+static bool child_changed(void *arg) {
+    return process_record_sequence() != *(uint64_t *)arg;
 }
-
+int64_t process_waitpid(int64_t selector, uint64_t *status, uint32_t options, bool legacy) {
+    if (cpu_current()->id != 0 && !(options & WNOHANG)) return SYSCALL_EOPNOTSUPP;
+    tcb_t *self = thread_current();
+    if (!self || !self->is_user) return SYSCALL_ECHILD;
+    for (;;) {
+        uint64_t seq = process_record_sequence();
+        int64_t result = process_record_wait(self->tid, selector, options, status, legacy);
+        if (result || (options & WNOHANG)) { sched_reap_dead(); return result; }
+        sched_wait_until(&child_wait_channel, child_changed, &seq);
+    }
+}
 bool process_wait_child(uint64_t pid, uint64_t *out_exit_code) {
-    uint64_t flags = spin_lock_irqsave(&g_sched_lock);
-    child_record_t *record = NULL;
-    for (unsigned i = 0; i < MAX_EXIT_RECORDS; i++) {
-        if (g_child_records[i].used && g_child_records[i].pid == pid &&
-            g_child_records[i].parent == g_current_thread->tid) {
-            record = &g_child_records[i];
-            break;
+    if (!pid || pid > 0x7fffffffffffffffULL) return false;
+    return process_waitpid((int64_t)pid, out_exit_code, 0, true) > 0;
+}
+int64_t process_getpgrp(void) {
+    return process_record_group(thread_current()->tid);
+}
+int64_t process_setpgid(uint64_t pid, uint64_t pgid) {
+    if (cpu_current()->id != 0) return SYSCALL_EOPNOTSUPP;
+    uint64_t irq;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(irq) :: "memory");
+    tcb_t *self = thread_current();
+    int64_t result = process_record_setpgid(self->tid, pid, pgid);
+    if (!result) {
+        uint64_t target = pid ? pid : self->tid;
+        if (target == self->tid) self->pgid = (uint64_t)process_record_group(target);
+        for (tcb_t *p=staged_processes; p; p=p->next)
+            if (p->tid == target) p->pgid = (uint64_t)process_record_group(target);
+    }
+    __asm__ volatile("push %0; popfq" :: "r"(irq) : "memory");
+    return result;
+}
+static void destroy_staged(tcb_t *p) {
+    process_record_abort(p->tid);
+    fd_close_all(p);
+    vmm_space_sub_sched_ref(p->cr3);
+    vmm_destroy_pml4(p->cr3, true);
+    kstack_free(p->stack_slot, p->kstack_base);
+    kfree(p);
+}
+static void cancel_staged_children(uint64_t parent) {
+    tcb_t **link = &staged_processes;
+    while (*link) {
+        tcb_t *p = *link;
+        if (p->parent_pid != parent) { link=&p->next; continue; }
+        *link=p->next;
+        destroy_staged(p);
+    }
+}
+int64_t process_group_release(uint64_t pgid, uint32_t action) {
+    if (cpu_current()->id != 0) return SYSCALL_EOPNOTSUPP;
+    if (!pgid || pgid > 0x7fffffffffffffffULL || action > GROUP_CANCEL) return SYSCALL_EINVAL;
+    uint64_t irq;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(irq) :: "memory");
+    uint64_t parent=thread_current()->tid;
+    bool found=false;
+    /* Validate whole group before mutation: no partial release on ownership error. */
+    for (tcb_t *p=staged_processes; p; p=p->next) {
+        if (p->pgid != pgid) continue;
+        if (p->parent_pid != parent) {
+            __asm__ volatile("push %0; popfq" :: "r"(irq) : "memory");
+            return SYSCALL_EPERM;
         }
+        found=true;
     }
-    spin_unlock_noirq(&g_sched_lock);
-    if (record) {
-        sched_wait_until(g_child_records, child_done, record);
-        /* Parent is single-threaded and records cannot be evicted. */
-        if (out_exit_code) *out_exit_code = record->status;
-        record->used = false;
-        sched_reap_dead();
+    tcb_t **link=&staged_processes;
+    while (*link) {
+        tcb_t *p=*link;
+        if (p->pgid != pgid) { link=&p->next; continue; }
+        *link=p->next;
+        p->next=NULL;
+        if (action == GROUP_CANCEL) { destroy_staged(p); continue; }
+        process_record_commit(p->tid);
+        p->state=THREAD_READY;
+        uint64_t flags=spin_lock_irqsave(&g_sched_lock);
+        runqueue_push_locked(p);
+        spin_unlock_irqrestore(&g_sched_lock, flags);
     }
-    __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
-    return record != NULL;
+    __asm__ volatile("push %0; popfq" :: "r"(irq) : "memory");
+    return found ? 0 : SYSCALL_ESRCH;
 }
 
 tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size) {
@@ -1564,20 +1654,9 @@ void process_exit(uint64_t exit_code) {
         curr->exit_code = exit_code;
         curr->has_exited = true;
 
-        /* Record in bounded circular exit records under lock */
+        if (cpu_current()->id == 0) cancel_staged_children(curr->tid);
+        bool child_recorded = process_record_exit(curr->tid, exit_code);
         uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
-        bool child_recorded = false;
-        for (unsigned i = 0; i < MAX_EXIT_RECORDS; i++) {
-            child_record_t *record = &g_child_records[i];
-            if (!record->used) continue;
-            if (record->pid == curr->tid) {
-                record->status = exit_code;
-                record->done = true;
-                child_recorded = true;
-            }
-            /* Orphans continue running, but their parent can no longer wait. */
-            if (record->parent == curr->tid) record->used = false;
-        }
         if (!child_recorded) {
         int slot = -1;
         for (int i = 0; i < MAX_EXIT_RECORDS; i++) {
@@ -1598,7 +1677,7 @@ void process_exit(uint64_t exit_code) {
         g_exit_records[slot].valid = true;
         }
         spin_unlock_irqrestore(&g_sched_lock, rflags);
-        sched_wake_all(g_child_records);
+        if (cpu_current()->id == 0) sched_wake_all(&child_wait_channel);
     }
     thread_exit();
 }

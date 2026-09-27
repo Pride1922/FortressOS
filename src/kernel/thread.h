@@ -34,12 +34,14 @@ typedef enum {
     THREAD_READY,
     THREAD_RUNNING,
     THREAD_BLOCKED,
+    THREAD_STAGED,
     THREAD_TERMINATED
 } thread_state_t;
 
 typedef struct tcb {
     uint64_t       rsp;              /* Saved stack pointer (MUST be first field at offset 0) */
     uint64_t       tid;
+    uint64_t       parent_pid, pgid, sid;
     char           name[32];
     thread_state_t state;
 
@@ -117,7 +119,9 @@ void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
 /* Kernel path, syscall error codes. Reserves one of 64 child records until
  * wait or parent exit; never overwrites an uncollected child status.
  * Process entry ABI: RSP points to argc, RDI = argc, RSI = argv, RDX = envp.
- * VFS spawn retains the calling CPU's affinity with local IRQ-excluded publication.
+ * VFS spawn is BSP-only with local IRQ-excluded publication. Global metadata
+ * uses an ordinary rank-1 process lock, never nested with scheduler/ext2.
+ * v2 staged children remain exclusively BSP-owned until release/cancellation.
  * Clones all descriptors/flags as shared file_t references (ACQ_REL refcounts),
  * applies ordered spawn fd actions, then closes remaining CLOEXEC descriptors
  * before publishing the child. */
@@ -138,6 +142,14 @@ int64_t process_spawn_from_vfs_ext(const char *path, int argc, const char *const
                                    int envc, const char *const envp[], const char *cwd,
                                    int action_count, const spawn_kaction_t *actions,
                                    int64_t *out_pid);
+int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *const argv[],
+                                   int envc, const char *const envp[], const char *cwd,
+                                   int action_count, const spawn_kaction_t *actions,
+                                   uint32_t flags, uint64_t pgid, int64_t *out_pid);
+int64_t process_waitpid(int64_t selector, uint64_t *status, uint32_t options, bool legacy);
+int64_t process_setpgid(uint64_t pid, uint64_t pgid);
+int64_t process_getpgrp(void);
+int64_t process_group_release(uint64_t pgid, uint32_t action);
 bool process_wait_child(uint64_t pid, uint64_t *out_exit_code);
 tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size);
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg);

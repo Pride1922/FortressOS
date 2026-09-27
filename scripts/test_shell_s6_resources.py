@@ -27,9 +27,10 @@ VARS = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
 
 
 def layouts(temp):
-    # Compile only a host layout printer. Including thread.c exposes its private
-    # scheduler type; --gc-sections discards ALL kernel functions/data. No copied
-    # struct layouts, guest calls, or guest memory writes are needed.
+    # Compile only a host layout printer. Including thread.c and process_table.c
+    # exposes their private scheduler/child types; --gc-sections discards ALL
+    # kernel functions/data. No copied struct layouts, guest calls, or guest
+    # memory writes are needed.
     fields = {
         "tcb": ("tcb_t", ["tid", "next", "cr3", "stack_slot", "fd_table", "fd_flags"]),
         "file": ("file_t", ["ref_count", "node"]),
@@ -37,16 +38,17 @@ def layouts(temp):
                                    "active_cpus_mask", "next"]),
         "cpu": ("cpu_local_t", ["current_thread"]),
         "sched": ("struct scheduler_cpu", ["runqueue_head", "blocked_threads", "dead_threads",
-                                           "zombie_thread", "stack_slots_bitmap", "child_records"]),
+                                           "zombie_thread", "stack_slots_bitmap"]),
         "record": ("child_record_t", ["parent", "pid", "used", "done"]),
     }
-    expressions = {}
+    expressions = {"record_capacity": "sizeof(children) / sizeof(children[0])"}
     for prefix, (ctype, members) in fields.items():
         expressions[prefix + "_size"] = f"sizeof({ctype})"
         for member in members:
             expressions[prefix + "_" + member] = f"offsetof({ctype}, {member})"
     source = temp / "layout.c"
-    lines = ['#include "thread.c"', 'extern int printf(const char *, ...);', 'int main(void) {']
+    lines = ['#include "thread.c"', '#include "process_table.c"',
+             'extern int printf(const char *, ...);', 'int main(void) {']
     for key, expr in expressions.items():
         lines.append(f'printf("{key} %zu\\n", (size_t)({expr}));')
     source.write_text("\n".join(lines + ["return 0; }"]))
@@ -172,11 +174,13 @@ class Audit:
                     seen.add(p)
                     reachable.add(p)
                     p = self.field(p, "tcb_next") if field != "zombie_thread" else 0
-            for i in range(64):
-                rec = base + self.l["sched_child_records"] + i * self.l["record_size"]
-                if self.field(rec, "record_used", 1):
-                    records.append((cpu, i, self.field(rec, "record_parent"),
-                                    self.field(rec, "record_pid"), self.field(rec, "record_done", 1)))
+        # nm -an includes local static symbols: no public kernel storage API is
+        # needed. Child reservations are global, independent of CPU placement.
+        for i in range(self.l["record_capacity"]):
+            rec = self.s["children"] + i * self.l["record_size"]
+            if self.field(rec, "record_used", 1):
+                records.append((i, self.field(rec, "record_parent"),
+                                self.field(rec, "record_pid"), self.field(rec, "record_done", 1)))
         return sorted(reachable), records
 
     def snapshot(self, parent):
@@ -201,7 +205,7 @@ class Audit:
 
     def trace_spawn(self, failure):
         r, s = self.r, self.s
-        r.resume_to(s["process_spawn_from_vfs_ext"])
+        r.resume_to(s["process_spawn_from_vfs_group"])
         return_pc = self.number(r.registers()[0][7])
         parent = self.current()
         parent_handles = self.descriptors(parent)
@@ -390,7 +394,13 @@ def run(iso, temp, layout, firmware, cpus):
                                    before=summary(before), after=summary(after)))
                 print(f"PASS {name} cycle={cycle} case={cycle % 4} slot={trace['slot']}"
                       f" {'baseline equality' if cycle >= 4 else 'warm-up'}", flush=True)
-                assert remote.request("s").startswith(("T05", "S05"))
+                # Leave the checkpoint via its actual return address. A single
+                # debugger step can stop in an interrupt before RET executes,
+                # making the next resume hit this same end checkpoint again.
+                assert remote.memory(checkpoint, 1) == b"\xc3", "Checkpoint must be a bare RET"
+                checkpoint_rsp = remote.registers()[0][7]
+                remote.resume_to(audit.number(checkpoint_rsp))
+                assert remote.registers()[0][7] == checkpoint_rsp + 8, "Checkpoint did not return"
                 if cycle != 15:
                     remote.resume_to(checkpoint)
             assert len(set(slots)) == 1, f"Expected actual stack index reuse: {slots}"

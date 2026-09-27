@@ -171,6 +171,18 @@ bool spin_debug_selftest(void) {
     spin_unlock_irqrestore(s_high, fs_high);
     spin_unlock_irqrestore(s_low, fs_low);
 
+    /* Ordinary process metadata lock must never join rank-1 scheduler/ext2 pairs. */
+    spinlock_t process = SPINLOCK_RANKED(1, "process-test");
+    spinlock_t ext2 = SPINLOCK_RANKED(1, "ext2-test");
+    uint64_t fp = spin_lock_irqsave(&process);
+    ok = ok && !can_acquire(cpu, s_low) && !can_acquire(cpu, &ext2);
+    spin_unlock_irqrestore(&process, fp);
+    fs_low = spin_lock_irqsave(s_low);
+    ok = ok && !can_acquire(cpu, &process);
+    spin_unlock_irqrestore(s_low, fs_low);
+    uint64_t fe = spin_lock_irqsave(&ext2);
+    ok = ok && !can_acquire(cpu, &process);
+    spin_unlock_irqrestore(&ext2, fe);
     ok = ok && cpu->lock_depth == 0;
     return ok;
 }
