@@ -1,6 +1,6 @@
 # Shell Milestone S7: Pipes and Stream Utilities — Implementation Plan & Acceptance Audit
 
-**Status:** Phases 1–4 COMPLETE; Phase 4 accepted by the user on 2026-09-27; Phase 5 next
+**Status:** Phases 1–4 and 5A COMPLETE; Phase 5A accepted by the user on 2026-09-27; Phase 5B next
 **Date:** 2026-09-26  
 **Author:** AI Agent & Subsystem Architecture Team  
 **Scope:** Milestone S7 as specified in [SHELL_DESIGN.md](SHELL_DESIGN.md#s7--pipes-and-stream-utilities) and [AGENTS.md](../../AGENTS.md).  
@@ -159,7 +159,7 @@ program; Phase 4's handoff records this limitation and uses bounded test fixture
   - Line mode (`-n [lines]`, default 10) and byte mode (`-c [bytes]`).
 - **`tail` ([user/tools/tail.c](../../user/tools/tail.c)):**
   - Line mode (`-n [lines]`, default 10) and byte mode (`-c [bytes]`).
-  - **Bounded Buffer Contract:** On non-seekable streams (pipes), line mode uses a bounded circular line buffer of `N` lines, capped at `MAX_TAIL_LINE_LEN = 4096` bytes per line (40 KiB static BSS buffer). Lines exceeding 4096 bytes are truncated within the tail buffer. Byte mode uses a 64 KiB ring buffer.
+  - **Bounded Buffer Contract (reviewed Phase 5A resolution):** Fixed slots retain at most 10 lines with 4096 content bytes each (40 KiB content plus LF/metadata). Reject an overlong retained line explicitly before emitting that operand; do not silently truncate. Byte mode retains at most 64 KiB. Both modes drain through EOF even for count zero. See [Phase 5 plan](S7_PHASE5.md).
 - **`wc` ([user/tools/wc.c](../../user/tools/wc.c)):**
   - Counts lines (`-l`), words (`-w`), and bytes (`-c`).
 - **Deferred to Milestone S7.5:**
@@ -287,7 +287,8 @@ graph TD
 - **Verification:** Live integration runner `scripts/test_shell_s7.py` running basic pipelines under QEMU.
 
 ### Phase 5: Standalone Stream Utilities
-- Add builtin pipeline-stage support; Phase 4 rejects these stages explicitly.
+- [Phase 5A stream utilities](S7_PHASE5.md) complete, accepted 2026-09-27: cat/view migration and explicit tail overflow failure.
+- [Phase 5B builtin-stage support](S7_PHASE5B.md) is the next planned checkpoint; current code still rejects builtin stages explicitly.
 - Create `user/tools/` directory and implement `cat.c` (byte-preserving), `head.c` (-n/-c), `tail.c` (-n/-c), `wc.c` (-l/-w/-c).
 - Update [Makefile](../../Makefile) to compile each tool into freestanding ELF binaries and package them into `bin/initramfs.tar`.
 - **Verification:** Chained pipeline tests: `cat /large_file | head -n 50 | wc -l`.

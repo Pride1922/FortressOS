@@ -13,7 +13,7 @@ enum builtin {
     CMD_TRUE,
     CMD_FALSE,
     CMD_LS,
-    CMD_CAT,
+    CMD_VIEW,
     CMD_EDIT,
     CMD_MKDIR,
     CMD_RM,

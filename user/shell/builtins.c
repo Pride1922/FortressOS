@@ -10,7 +10,7 @@ static const struct { const char *name, *help; enum builtin id; } commands[] = {
     {"true", "Return successful exit status 0", CMD_TRUE},
     {"false", "Return failure exit status 1", CMD_FALSE},
     {"ls", "List files [path]", CMD_LS},
-    {"cat", "Read a text file", CMD_CAT},
+    {"view", "View text: replace non-printable bytes with dots and finish the line", CMD_VIEW},
     {"edit", "Open line-oriented file editor", CMD_EDIT},
     {"mkdir", "Create directory", CMD_MKDIR},
     {"rm", "Remove file or empty directory", CMD_RM},
@@ -79,6 +79,7 @@ void builtin_help(const char *topic) {
          "Shortcuts: Ctrl+A/E/W/U/K/Y/L, Ctrl+C cancels input, Ctrl+D empty exits.\n"
          "Syntax: Quotes ('...'/\"...\"), escapes (\\), chaining (;, &&, ||), negation (!).\n"
          "Pipelines: up to 8 external programs with |; builtin stages are not supported yet.\n"
+         "Stream tools: cat, head, tail, wc (external; use TOOL --help). cat preserves bytes; view sanitizes text.\n"
          "Working Dir: cd, cd -, pwd, process-inherited cwd.\n"
          "Discovery: direct execution (/bin/hello, ./tool, hello searches /bin).\n"
          "History: RAM history bounded 1000/256K; persistent at /mnt/.fortress/history.\n");

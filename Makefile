@@ -116,7 +116,7 @@ all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 test-pipe-host:
 	@python3 scripts/test_pipe_host.py
 
-test-host: test-pipe-host test-shell-host test-ext2
+test-host: test-pipe-host test-shell-host test-ext2 test-stream-tools-host
 
 $(BUILD_DIR)/pipe_user.elf: tests/pipe_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/fs/vfs.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
@@ -256,7 +256,22 @@ USER_INIT_ELF := $(BUILD_DIR)/init.elf
 USER_HELLO_ELF := $(BUILD_DIR)/hello.elf
 USER_DUAL_STREAM_ELF := $(BUILD_DIR)/dual_stream.elf
 USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
+STREAM_TOOLS := cat head tail wc
+STREAM_TOOL_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(STREAM_TOOLS)))
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
+
+$(BUILD_DIR)/tool-common.o: user/tools/common.c user/tools/common.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(STREAM_TOOL_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/common.h user/tools/start.asm user/shell.ld $(BUILD_DIR)/tool-common.o src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-$*.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-common.o -o $@
+
+.PHONY: test-stream-tools-host
+test-stream-tools-host:
+	@python3 scripts/test_stream_tools_host.py
 
 # Build user standalone init executable
 $(USER_INIT_ELF): $(USER_DIR)/init.asm $(USER_DIR)/linker.ld
@@ -297,14 +312,15 @@ $(USER_SHELL_ELF): $(SHELL_OBJECTS) $(SHELL_HEADERS) $(USER_DIR)/shell.c $(USER_
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/shell_start.o $(BUILD_DIR)/shell.o $(SHELL_OBJECTS) -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
 	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
+	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
-	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, cat and echo.\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
+	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, view and echo.\nExternal cat preserves bytes; head, tail and wc process streams. Use TOOL --help.\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
 	@echo "  [TAR] Generating USTAR archive $@"
 	@tar --format=ustar -cf $(INITRAMFS_TAR) -C $(BUILD_DIR)/initramfs bin etc docs
 
@@ -529,7 +545,7 @@ test-shell-s5: bin/fortress.iso nvme-gpt-disk
 test-shell-s6: bin/fortress.iso nvme-gpt-disk
 	@python3 scripts/test_shell_s6.py
 
-$(BUILD_DIR)/pipeline_fixture.elf: tests/pipeline_fixture.c tests/pipeline_fixture_start.asm user/shell.ld src/include/syscall_abi.h src/include/types.h
+$(BUILD_DIR)/pipeline_fixture.elf: tests/pipeline_fixture.c tests/pipeline_fixture_start.asm user/shell.ld src/include/syscall_abi.h src/include/types.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/pipeline_fixture.c -o $(BUILD_DIR)/pipeline_fixture.o
 	@$(AS) -f elf64 tests/pipeline_fixture_start.asm -o $(BUILD_DIR)/pipeline_fixture_start.o

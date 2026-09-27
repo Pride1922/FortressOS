@@ -57,7 +57,17 @@ def audit_disk(disk, mode):
         subprocess.run(["debugfs", "-R", f"dump /s7payload {payload}", str(partition)],
                        check=True, capture_output=True, timeout=30)
         # >256 KiB, but below this 1 KiB ext2 fixture's single-indirect limit.
-        assert payload.read_bytes() == bytes(i % 251 for i in range(262267))
+        expected = bytes(i % 251 for i in range(262267))
+        assert payload.read_bytes() == expected
+        for filename, contents in {
+            "s7copy": expected,
+            "s7samplecopy": b"A\x00\xff\t\rB",
+            "s7headbyte": expected[:1],
+        }.items():
+            extracted = tmp / filename
+            subprocess.run(["debugfs", "-R", f"dump /{filename} {extracted}", str(partition)],
+                           check=True, capture_output=True, timeout=30)
+            assert extracted.read_bytes() == contents, filename
 
 
 def run(mode, iso):
@@ -114,6 +124,36 @@ def run(mode, iso):
         for _ in range(32):
             check("/bin/pipetest produce | /bin/pipetest early")
         assert "PIPELINE BYTES OK" in check("/bin/pipetest produce | /bin/pipetest verify")
+        # Phase 5A: production tools, raw file comparison and exact child statuses.
+        for stages in (2, 3, 8):
+            chain = ["cat /mnt/s7payload"] + ["cat"] * (stages - 2)
+            chain += ["/bin/pipetest verify 262267"]
+            assert "PIPELINE BYTES OK" in check(" | ".join(chain))
+        check("cat /mnt/s7payload | cat > /mnt/s7copy")
+        check("/bin/pipetest sample > /mnt/s7sample")
+        check("cat /mnt/s7sample > /mnt/s7samplecopy")
+        assert check("view /mnt/s7sample") == "A..\t.B\n"
+        assert "cat is /bin/cat" in check("type cat")
+        assert "view is a shell builtin" in check("type view")
+        check("view /mnt/s7sample | wc", 1)
+        assert "PIPELINE BYTES OK" in check("command cat /mnt/s7payload > /mnt/s7copy ; cat /mnt/s7copy | /bin/pipetest verify 262267")
+        assert check("PATH=/missing cat /mnt/s7sample", 127)
+        assert check("PATH=/missing /bin/cat /mnt/s7sample | wc -c").strip() == "6"
+        check("/bin/pipetest text > /mnt/s7text")
+        assert check("cat /mnt/s7text | wc").strip() == "3 4 19"
+        assert check("cat /mnt/s7text | head -n 2 | wc -l").strip() == "2"
+        assert check("cat /mnt/s7text | tail -n 2 | wc -l").strip() == "1"
+        assert check("cat /mnt/s7text | tail -c 4") == "last"
+        assert check("cat /mnt/s7text | head -n 50 | wc -l").strip() == "3"
+        assert check("cat /mnt/s7text | tail -n 10 | wc -l").strip() == "3"
+        for mode in (0, 1, 2):
+            assert "STREAM STATUS OK" in check(f"/bin/pipetest observe {mode}")
+        # Shell must report an explicit 141 as a plain status, not a fault vector.
+        assert "[PROCESS] Exit status 141" in check("/bin/pipetest status 141", 141)
+        check("head -n 0 /missing", 1)
+        check("tail -n 11 /mnt/s7text", 2)
+        check("tail -c 65537 /mnt/s7text", 2)
+        assert "always reads to EOF" in check("tail --help")
         #check("sync")
     print(f"PASS S7 executor: {mode}, BSP, disposable NVMe, byte comparison + e2fsck", flush=True)
 

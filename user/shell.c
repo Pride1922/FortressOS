@@ -73,7 +73,8 @@ static void list(const char *path) {
     (void)call(SYS_CLOSE, fd, 0, 0);
 }
 
-static void cat(const char *path) {
+/* Safe text viewer: printable ASCII/tab/LF, replacement dots, final newline. */
+static void view(const char *path) {
     long fd = 0, result;
     if (path) {
         vfs_stat_t st;
@@ -107,7 +108,9 @@ static int spawn_program(const char *path, const char **argv, const spawn_fd_act
     if (pid < 0) return program_error(pid);
     int64_t status;
     if (program_wait(pid, &status)) return 1;
-    if (status >= 128 && status < 160) {
+    /* Kernel exceptions encode 128 + vector (0..31). Stream tools use 141
+     * for EPIPE; without termination metadata that value is ambiguous. */
+    if (status >= 128 && status < 160 && status != 141) {
         puts("[PROCESS] Faulted (exception vector ");
         put_dec((uint64_t)status - 128);
         puts(")\n");
@@ -382,8 +385,8 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         list(argc > 1 ? argv[1] : ".");
         return (int)last_status;
     }
-    if (b == CMD_CAT) {
-        cat(argc > 1 ? argv[1] : NULL);
+    if (b == CMD_VIEW) {
+        view(argc > 1 ? argv[1] : NULL);
         return (int)last_status;
     }
     if (b == CMD_EDIT) {

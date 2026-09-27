@@ -144,6 +144,8 @@ static void reset(void) {
 }
 
 int main(void) {
+    reset(); assert(run("cat | /b") == 0 && launches == 2 && waits == 2);
+    reset(); assert(run("/a > /canary | view") == 1 && !launches && !opens);
     reset(); statuses[0] = 141; statuses[1] = 7;
     assert(run("/a | /b") == 7 && launches == 2 && waits == 2);
     assert(child_out[0] == child_in[1] + 1 && !diagnostic[0]);

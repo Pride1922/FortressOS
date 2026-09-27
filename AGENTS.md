@@ -46,6 +46,13 @@ pipe peers remain required. See [Phase 2 evidence](docs/roadmap/shell-s7-phase2.
 [Phase 3 evidence](docs/roadmap/shell-s7-phase3.md), and the
 [Phase 4 implementation and user acceptance](docs/roadmap/shell-s7-phase4.md).
 
+S7 Phase 5A stream utilities are complete (user accepted successful tests 2026-09-27):
+external byte-preserving `cat`, `head`, bounded `tail`, ASCII `wc`, and sanitized
+`view` replacing the former cat builtin. Tail count zero drains through EOF.
+Phase 5B builtin pipeline stages remain open; BSP-only restrictions still apply.
+See [Phase 5A acceptance](docs/roadmap/shell-s7-phase5a.md) and
+[Phase 5B implementation plan](docs/plans/S7_PHASE5B.md).
+
 Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
 
 ### Phase 9G implementation handoff
@@ -137,6 +144,7 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 | `make test-pipe` | S7 Phases 1–2 BIOS/UEFI (1 CPU), disposable test ISO with no data disks; kernel blocking/backpressure/close tests and Ring 3 pointer validation, CLOEXEC spawn actions, fd exhaustion, EOF/EPIPE. See [Phase 2 evidence](docs/roadmap/shell-s7-phase2.md). Cross-core wakeups remain deferred. |
 | `make test-shell-host` | Consolidated ASan/UBSan: keyboard/queue, framebuffer terminal and actual shell editor/history logic |
 | `make test-pipeline-host` | S7 Phase 4 actual parser/expander/executor with mocked syscalls: grouping, preflight, fd ownership, action order and failure injection. Also included in `test-shell-host`; Phase 4 accepted by the user; per-command results are not separately recorded. |
+| `make test-stream-tools-host` | Phase 5A actual tools with ASan/UBSan and mocked syscalls: binary copying, short I/O, tail bounds/draining, CLI, descriptor cleanup and injected wc overflow. Included in `test-host`; user-reported pass 2026-09-27, not rerun by the agent. |
 | `make test-shell-s7` | S7 Phase 4 BIOS/UEFI, 1 CPU: external fixtures in disposable ISO, disposable NVMe copy, streaming, status, cooperative cleanup and offline byte/e2fsck checks. Phase 4 accepted by the user; per-command results are not separately recorded. |
 | `make test-shell-integration` | Existing shell integration extended with cursor/screen-state, history/search/paste, timeout/log separation and no-UART coverage; snapshot NVMe fixture for normal runs |
 | `make test-input` | Host ASan/UBSan: decoder, modifiers and bounded FIFO |
