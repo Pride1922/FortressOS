@@ -1,6 +1,7 @@
 #ifndef FORTRESS_SYSCALL_ABI_H
 #define FORTRESS_SYSCALL_ABI_H
 #include "types.h"
+#include "signal_abi.h"
 /* System Call Numbers */
 #define SYS_EXIT      0
 #define SYS_WRITE     1
@@ -30,6 +31,9 @@
 
 /* S8 Phase 1. Signal/terminal slots 27..32 and 34 remain reserved. */
 #define SYS_SETPGID    25 /* (uint64_t pid, uint64_t pgid) -> 0 */
+#define SYS_KILL       27 /* (int64_t selector, uint64_t signal) */
+#define SYS_SIGACTION  28 /* (signal, const signal_action_t *act, signal_action_t *old) */
+#define SYS_SIGPROCMASK 29 /* (how, const uint64_t *set, uint64_t *old) */
 #define SYS_GETPGRP    26 /* () -> pgid */
 #define SYS_WAITPID    33 /* (int64_t selector, uint64_t *status, uint32_t options) -> pid/0/-errno */
 #define SYS_GROUP_RELEASE 35 /* (uint64_t pgid, uint32_t action) -> 0 */

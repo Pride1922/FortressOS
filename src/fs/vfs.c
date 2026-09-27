@@ -6,13 +6,18 @@
 #include "input.h"
 #include "terminal.h"
 #include "thread.h"
+#include "syscall_abi.h"
 
 static vfs_node_t *g_vfs_root = NULL;
 
 static int64_t terminal_read(vfs_node_t *node, uint64_t offset, void *buf, size_t count) {
     (void)node; (void)offset;
     if (!buf || count == 0) return 0;
-    return input_read(buf, count);
+    int64_t result = input_read(buf, count);
+    /* input_read uses syscall errors; VFS callbacks use VFS errors. */
+    if (result == SYSCALL_EINTR) return -VFS_EINTR;
+    if (result == SYSCALL_EBADF) return -VFS_EBADF;
+    return result;
 }
 
 static int64_t terminal_write(vfs_node_t *node, uint64_t *offset, bool append, const void *buf, size_t count) {

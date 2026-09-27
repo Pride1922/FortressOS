@@ -632,7 +632,7 @@ void thread_yield(void) {
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
     for (;;) {
         uint64_t flags = spin_lock_irqsave(&g_sched_lock);
-        if (ready(arg)) {
+        if (ready(arg) || process_signal_pending()) {
             spin_unlock_irqrestore(&g_sched_lock, flags);
             return;
         }
@@ -913,6 +913,19 @@ bool sched_is_preemption_enabled(void) {
 }
 
 void sched_on_timer_tick(void) {
+    /* Owner-CPU servicing of published signal bits. Scheduler lock only;
+     * no remote TCB dereference or process-lock nesting. */
+    uint64_t signal_irq=spin_lock_irqsave(&g_sched_lock);
+    tcb_t **blocked=&g_blocked_threads;
+    while (*blocked) {
+        tcb_t *t=*blocked;
+        if (!t->is_user || !signal_state_ready(&t->signals)) { blocked=&t->next; continue; }
+        *blocked=t->next;
+        t->wait_channel=NULL;
+        t->state=THREAD_READY;
+        runqueue_push_locked(t);
+    }
+    spin_unlock_irqrestore(&g_sched_lock,signal_irq);
     /* Persistent sequence bridges remote status publication to BSP waits.
      * Only timer context wakes: no metadata lock nests with scheduler lock. */
     if (cpu_current()->id == 0) {
@@ -1299,6 +1312,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         goto fail_actions;
     }
 
+    process_record_attach_signals(p->tid, &p->signals);
     if (spawn_flags & SPAWN_STAGED) {
         p->state = THREAD_STAGED;
         p->next = staged_processes;
@@ -1428,6 +1442,7 @@ int64_t process_waitpid(int64_t selector, uint64_t *status, uint32_t options, bo
     tcb_t *self = thread_current();
     if (!self || !self->is_user) return SYSCALL_ECHILD;
     for (;;) {
+        if (process_signal_pending()) return SYSCALL_EINTR;
         uint64_t seq = process_record_sequence();
         int64_t result = process_record_wait(self->tid, selector, options, status, legacy);
         if (result || (options & WNOHANG)) { sched_reap_dead(); return result; }
@@ -1655,7 +1670,7 @@ void process_exit(uint64_t exit_code) {
         curr->has_exited = true;
 
         if (cpu_current()->id == 0) cancel_staged_children(curr->tid);
-        bool child_recorded = process_record_exit(curr->tid, exit_code);
+        bool child_recorded = process_record_exit_signal(curr->tid, exit_code, curr->exit_signal);
         uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
         if (!child_recorded) {
         int slot = -1;
@@ -1786,4 +1801,20 @@ bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_
 
 bool process_wait(uint64_t pid, uint64_t *out_exit_code) {
     return process_wait_extended(pid, out_exit_code, NULL, NULL);
+}
+
+bool process_signal_pending(void) {
+    tcb_t *t=thread_current();
+    return t && t->is_user && signal_state_ready(&t->signals);
+}
+void process_signal_check(void) {
+    tcb_t *t=thread_current();
+    if (!t || !t->is_user || !process_signal_pending()) return;
+    spin_debug_assert_unheld();
+    unsigned sig=process_signal_take(t->tid);
+    if (sig) { t->exit_signal=sig; process_exit(128+sig); }
+}
+void process_signal_user_return(interrupt_frame_t *frame) {
+    if (!frame || (frame->cs & 3)!=3 || frame->vector<32) return;
+    process_signal_check();
 }

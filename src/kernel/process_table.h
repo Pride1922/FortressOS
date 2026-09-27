@@ -1,6 +1,7 @@
 #ifndef FORTRESS_PROCESS_TABLE_H
 #define FORTRESS_PROCESS_TABLE_H
 #include "types.h"
+#include "signal_state.h"
 /* Global bounded identity/group/session and child reservation/status store.
  * Metadata APIs acquire the private ordinary rank-1 g_process_lock internally;
  * callers hold no locks. It never nests with scheduler/ext2/other rank-1 locks.
@@ -21,4 +22,10 @@ int64_t process_record_setpgid(uint64_t caller, uint64_t pid, uint64_t pgid);
 int64_t process_record_wait(uint64_t parent, int64_t selector, uint32_t options,
                             uint64_t *status, bool legacy);
 uint64_t process_record_sequence(void);
+void process_record_attach_signals(uint64_t pid, signal_state_t *state);
+int64_t process_signal_send(uint64_t caller, int64_t selector, uint64_t sig);
+int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t *act, signal_action_t *old);
+int64_t process_signal_mask(uint64_t pid, uint64_t how, const uint64_t *mask, uint64_t *old);
+unsigned process_signal_take(uint64_t pid);
+bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal);
 #endif

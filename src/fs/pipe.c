@@ -35,6 +35,7 @@ static int64_t pipe_read(vfs_node_t *node, uint64_t offset, void *buf, size_t co
     if (!count) return 0;
     pipe_t *p = node->fs_private;
     for (;;) {
+        if (process_signal_pending()) return -VFS_EINTR;
         uint64_t flags = spin_lock_irqsave(&p->lock);
         if (p->count) {
             size_t n = count < p->count ? count : p->count;
@@ -64,6 +65,7 @@ static int64_t pipe_write(vfs_node_t *node, uint64_t *offset, bool append,
     if (!count) return 0;
     pipe_t *p = node->fs_private;
     for (;;) {
+        if (process_signal_pending()) return -VFS_EINTR;
         uint64_t flags = spin_lock_irqsave(&p->lock);
         if (!__atomic_load_n(&p->readers, __ATOMIC_ACQUIRE)) {
             spin_unlock_irqrestore(&p->lock, flags);

@@ -7,6 +7,10 @@ import tarfile
 import tempfile
 import time
 import os
+import sys
+signals = sys.argv[1:] == ['--signals']
+variant = 'signal' if signals else 'process'
+marker = 'S8 SIGNAL' if signals else 'S8 USER'
 smp = os.environ.get("SMP", "1")
 assert smp in ("1", "4", "8")
 
@@ -21,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix="fortress-s8-process-") as name:
         for member in src.getmembers():
             if member.name.lstrip("./") != "bin/shell":
                 dst.addfile(member, src.extractfile(member) if member.isfile() else None)
-        dst.add(REPO / "build/s8_process_user.elf", arcname="bin/shell")
+        dst.add(REPO / f"build/s8_{variant}_user.elf", arcname="bin/shell")
     for path in (root / "boot/initramfs.tar", root / "initramfs.tar"):
         shutil.copyfile(archive, path)
     config = ("timeout: 0\n/FortressOS S8 process Test\n    protocol: limine\n"
@@ -38,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="fortress-s8-process-") as name:
     subprocess.run([str(REPO / "limine/limine"), "bios-install", str(iso)],
                    check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for mode in ("bios", "uefi"):
-        log = REPO / "build" / f"s8-process-{mode}-{smp}.log"
+        log = REPO / "build" / f"s8-{variant}-{mode}-{smp}.log"
         log.unlink(missing_ok=True)
         cmd = ["qemu-system-x86_64", "-accel", "tcg", "-M", "q35", "-m", "2G",
                "-smp", smp, "-display", "none", "-monitor", "none", "-no-reboot",
@@ -54,9 +58,9 @@ with tempfile.TemporaryDirectory(prefix="fortress-s8-process-") as name:
                 deadline = time.monotonic() + 90
                 while time.monotonic() < deadline:
                     text = log.read_text(errors="replace") if log.exists() else ""
-                    assert "S8 USER FAIL" not in text and "PIPE KERNEL FAIL" not in text, text[-2000:]
-                    if "S8 USER PASS" in text:
-                        print(f"PASS S8 process ABI: {mode}, {smp} CPUs, no data disks", flush=True)
+                    assert f"{marker} FAIL" not in text and "PIPE KERNEL FAIL" not in text, text[-2000:]
+                    if f"{marker} PASS" in text:
+                        print(f"PASS S8 {variant} ABI: {mode}, {smp} CPUs, no data disks", flush=True)
                         break
                     assert child.poll() is None, text[-2000:]
                     time.sleep(0.1)

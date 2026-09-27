@@ -5,6 +5,7 @@
 default rel
 
 extern isr_exception_handler
+extern process_signal_user_return
 
 section .text
 
@@ -74,6 +75,15 @@ isr_common_stub:
     mov rdi, rsp
     call isr_exception_handler
     dec qword [gs:48]
+    ; Post-dispatch, after EOI and irq_depth unwind, before restoring user GS.
+    ; Never call the signal path for NMI, exceptions, or nested kernel returns.
+    cmp qword [rsp + 120], 32
+    jb .signal_done
+    test byte [rsp + 144], 3
+    jz .signal_done
+    mov rdi, rsp
+    call process_signal_user_return
+.signal_done:
 
     ; Undo entry swap, except an intentional user-to-kernel test recovery.
     test r12d, r12d

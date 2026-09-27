@@ -117,6 +117,19 @@ all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 test-s8-process-host:
 	@python3 scripts/test_process_table_host.py
 
+.PHONY: test-s8-signals-host test-s8-signals
+test-s8-signals-host:
+	@python3 scripts/test_process_table_host.py --signals
+
+$(BUILD_DIR)/s8_signal_user.elf: tests/s8_signal_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/signal_abi.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_signal_user.c -o $(BUILD_DIR)/s8_signal_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/s8_signal_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s8_signal_user_start.o $(BUILD_DIR)/s8_signal_user.o -o $@
+
+test-s8-signals: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_signal_user.elf
+	@python3 scripts/test_s8_process.py --signals
+
 $(BUILD_DIR)/s8_process_user.elf: tests/s8_process_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_process_user.c -o $(BUILD_DIR)/s8_process_user.o

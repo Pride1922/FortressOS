@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "process_table.h"
 #include "input.h"
 #include "vmm.h"
 #include "serial.h"
@@ -126,6 +127,7 @@ int64_t syscall_from_vfs_error(int64_t vfs_err) {
         case -VFS_ENOENT:      return SYSCALL_ENOENT;      /* -5 */
         case -VFS_EIO:         return SYSCALL_EIO;         /* -9 */
         case -VFS_EBADF:       return SYSCALL_EBADF;       /* -3 */
+        case -VFS_EINTR:       return SYSCALL_EINTR;
         case -VFS_EPIPE:       return SYSCALL_EPIPE;
         case -VFS_EAGAIN:      return SYSCALL_EAGAIN;
         case -VFS_ENOMEM:      return SYSCALL_ENOMEM;      /* -10 */
@@ -670,7 +672,9 @@ static int64_t sys_wait(uint64_t pid, uintptr_t user_status) {
                                               user_status, sizeof(int64_t), true))
         return SYSCALL_EFAULT;
     uint64_t status;
-    if (!process_wait_child(pid, &status)) return SYSCALL_ECHILD;
+    if (!pid || pid>0x7fffffffffffffffULL) return SYSCALL_ECHILD;
+    int64_t waited=process_waitpid((int64_t)pid, &status, 0, true);
+    if (waited<0) return waited;
     /* No shared address spaces or user unmap API: validation survives sleep. */
     if (user_status) memcpy((void *)user_status, &status, sizeof(status));
     return SYSCALL_SUCCESS;
@@ -1194,6 +1198,33 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             result = sys_fcntl((int)frame->rdi, (int)frame->rsi, frame->rdx);
             break;
 
+        case SYS_KILL:
+            result=process_signal_send(thread_current()->tid,(int64_t)frame->rdi,frame->rsi);
+            break;
+        case SYS_SIGACTION: {
+            signal_action_t act, old;
+            uint64_t *pml4=vmm_get_active_pml4_virt();
+            if ((frame->rsi && !vmm_validate_user_range(pml4,frame->rsi,sizeof(act),false)) ||
+                (frame->rdx && !vmm_validate_user_range(pml4,frame->rdx,sizeof(old),true))) {
+                result=SYSCALL_EFAULT; break;
+            }
+            if (frame->rsi) memcpy(&act,(void *)frame->rsi,sizeof(act));
+            result=process_signal_action(thread_current()->tid,frame->rdi,frame->rsi ? &act:NULL,&old);
+            if (!result && frame->rdx) memcpy((void *)frame->rdx,&old,sizeof(old));
+            break;
+        }
+        case SYS_SIGPROCMASK: {
+            uint64_t mask, old;
+            uint64_t *pml4=vmm_get_active_pml4_virt();
+            if ((frame->rsi && !vmm_validate_user_range(pml4,frame->rsi,sizeof(mask),false)) ||
+                (frame->rdx && !vmm_validate_user_range(pml4,frame->rdx,sizeof(old),true))) {
+                result=SYSCALL_EFAULT; break;
+            }
+            if (frame->rsi) memcpy(&mask,(void *)frame->rsi,sizeof(mask));
+            result=process_signal_mask(thread_current()->tid,frame->rdi,frame->rsi ? &mask:NULL,&old);
+            if (!result && frame->rdx) memcpy((void *)frame->rdx,&old,sizeof(old));
+            break;
+        }
         case SYS_SETPGID:
             result = process_setpgid(frame->rdi, frame->rsi);
             break;
@@ -1226,6 +1257,7 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
     }
 
     frame->rax = (uint64_t)result;
+    process_signal_user_return(frame);
 
     /* Validate and sanitize return state before returning to assembly stub */
     if (!syscall_validate_return_state(frame)) {

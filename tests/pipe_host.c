@@ -18,13 +18,14 @@ static tcb_t current;
 static int fd_fail_after = -1;
 static void (*wait_step)(const void *, bool (*)(void *), void *);
 static unsigned waits, wakes;
+bool process_signal_pending(void) { return signal_state_ready(&current.signals); }
 
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
     spin_debug_assert_unheld();
     assert(!ready(arg) && wait_step);
     waits++;
     wait_step(channel, ready, arg);
-    assert(ready(arg));
+    assert(ready(arg) || process_signal_pending());
     wait_step = NULL;
 }
 void sched_wake_all(const void *channel) {
@@ -236,10 +237,36 @@ static void syscall_tests(void) {
     }
     assert(syscall_from_vfs_error(-VFS_EPIPE) == SYSCALL_EPIPE);
     assert(syscall_from_vfs_error(-VFS_EAGAIN) == SYSCALL_EAGAIN);
+    assert(syscall_from_vfs_error(-VFS_EINTR) == SYSCALL_EINTR);
+}
+
+static void interrupt_wait(const void *channel, bool (*ready)(void *), void *arg) {
+    (void)channel;
+    assert(!ready(arg));
+    current.signals.pending_mask = SIGNAL_BIT(SIGTERM);
+}
+static void interrupted_tests(void) {
+    static char data[PIPE_CAPACITY];
+    file_t *r, *w;
+    pair(&r, &w);
+    wait_step = interrupt_wait;
+    assert(vfs_read(r, data, 1) == -VFS_EINTR);
+    current.signals.pending_mask = 0;
+    assert(vfs_write(w, data, sizeof(data)) == sizeof(data));
+    wait_step = interrupt_wait;
+    assert(vfs_write(w, data, 1) == -VFS_EINTR);
+    assert(((pipe_t *)r->node->fs_private)->count == PIPE_CAPACITY);
+    current.signals.blocked_mask = SIGNAL_BIT(SIGTERM);
+    assert(vfs_read(r, data, 1) == 1); /* Blocked signals do not interrupt. */
+    current.signals.blocked_mask = 0;
+    current.signals.ignored_mask = SIGNAL_BIT(SIGTERM);
+    assert(vfs_read(r, data, 1) == 1);
+    current.signals = (signal_state_t){0};
+    vfs_close(r); vfs_close(w); clean();
 }
 
 int main(void) {
-    ring_tests(); blocking_tests(); syscall_tests(); clean();
+    ring_tests(); blocking_tests(); syscall_tests(); interrupted_tests(); clean();
     puts("pipe host: ring, atomic boundaries, lifetime, syscall validation and rollback PASS");
     return 0;
 }

@@ -74,9 +74,11 @@ thread_trampoline:
 ;   RSP is 16-byte aligned after switch_context's ret.
 ; =============================================================================
 global user_process_trampoline
+extern process_signal_check
 user_process_trampoline:
     ; The entry arguments are callee-preserved. Keep RSP aligned for C.
     call sched_post_switch
+    call process_signal_check
     ; Set user data segment selectors (DS, ES, FS, GS)
     mov ax, 0x1B    ; GDT_USER_DATA | 3 (RPL=3)
     mov ds, ax

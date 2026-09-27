@@ -7,6 +7,7 @@
 #include "thread.h"
 #include "percpu.h"
 #include "terminal.h"
+#include "syscall_abi.h"
 
 #define KBD_VECTOR 0x31
 #define UART_VECTOR 0x34
@@ -64,6 +65,7 @@ int64_t input_read_timeout(void *buffer, size_t count, int64_t timeout_ms) {
     if (w.timed) timed_readers++;
     sched_wait_until(&g_input, available, &w);
     if (w.timed) timed_readers--;
+    if (process_signal_pending()) { irq_restore(flags); return SYSCALL_EINTR; }
     if (g_input.dropped != observed_drops) {
         observed_drops = g_input.dropped;
         g_input.head = g_input.count = 0;

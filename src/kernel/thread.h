@@ -3,6 +3,8 @@
 
 #include "types.h"
 #include "spinlock.h"
+#include "signal_state.h"
+#include "idt.h"
 
 #define KERNEL_STACKS_BASE    0xFFFFFFFFA0000000ULL
 #define MAX_KERNEL_THREADS    64
@@ -42,6 +44,8 @@ typedef struct tcb {
     uint64_t       rsp;              /* Saved stack pointer (MUST be first field at offset 0) */
     uint64_t       tid;
     uint64_t       parent_pid, pgid, sid;
+    signal_state_t signals;
+    unsigned exit_signal;
     char           name[32];
     thread_state_t state;
 
@@ -105,6 +109,10 @@ void   thread_yield(void);
  * it must neither block nor acquire locks. Publish events before waking. */
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg);
 void sched_wake_all(const void *channel);
+/* Lock-free current-task readiness; default termination only in Phase 2A. */
+bool process_signal_pending(void);
+void process_signal_check(void);
+void process_signal_user_return(interrupt_frame_t *frame);
 void   thread_exit(void);
 void   sched_reap_dead(void);
 tcb_t *thread_current(void);

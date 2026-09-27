@@ -19,6 +19,7 @@
 #define VFS_SUCCESS      0
 #define VFS_EPERM        1
 #define VFS_ENOENT       2
+#define VFS_EINTR        4
 #define VFS_EIO          5
 #define VFS_EBADF        9
 #define VFS_EAGAIN       11
