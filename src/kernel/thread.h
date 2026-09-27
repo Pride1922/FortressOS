@@ -116,7 +116,7 @@ void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
 #define MAX_ELF_FILE_SIZE (4ULL * 1024 * 1024)
 /* Kernel path, syscall error codes. Reserves one of 64 child records until
  * wait or parent exit; never overwrites an uncollected child status.
- * System V AMD64 ABI: RSP points to argc, RDI = argc, RSI = argv.
+ * Process entry ABI: RSP points to argc, RDI = argc, RSI = argv, RDX = envp.
  * VFS spawn retains the calling CPU's affinity with local IRQ-excluded publication.
  * Clones all descriptors/flags as shared file_t references (ACQ_REL refcounts),
  * applies ordered spawn fd actions, then closes remaining CLOEXEC descriptors

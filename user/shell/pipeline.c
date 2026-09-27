@@ -5,6 +5,8 @@
 #include "redir.h"
 #include "builtins.h"
 
+#define RUNNER_PATH "/bin/sh-builtin"
+
 typedef struct {
     char args[MAX_TOTAL_ARGS_LEN];
     const char *argv[MAX_SPAWN_ARGS + 1];
@@ -15,6 +17,7 @@ typedef struct {
     spawn_fd_action_t actions[MAX_SPAWN_ACTIONS];
     uint32_t action_count;
     int resolve_status;
+    bool is_runner; /* True when dispatched via /bin/sh-builtin */
     long pid;
 } pipeline_stage_t;
 
@@ -52,11 +55,21 @@ static int prepare_stage(parse_cmd_t *cmd, int index, int count, int status) {
     }
     subcmd.argv[subcmd.argc] = NULL;
     if (expand_command_checked(&subcmd, status, &expanded) != 0) return 1;
-    if (!expanded.argc || !expanded.argv[0][0] ||
-        builtin_find(expanded.argv[0]) != CMD_UNKNOWN) {
+
+    /* Classify stage: empty, forbidden builtin, child-safe builtin, or external. */
+    if (!expanded.argc || !expanded.argv[0][0]) {
         puts_err("pipeline: unsupported stage\n");
         return 1;
     }
+    bool is_builtin = builtin_find(expanded.argv[0]) != CMD_UNKNOWN;
+    bool is_safe    = builtin_is_child_safe(expanded.argv[0]);
+    if (is_builtin && !is_safe) {
+        puts_err("pipeline: builtin '");
+        puts_err(expanded.argv[0]);
+        puts_err("' cannot run as a pipeline stage\n");
+        return 1;
+    }
+
     if (expanded.argc > MAX_SPAWN_ARGS) return program_error(SYSCALL_E2BIG);
 
     /* Expansion results alias one shared arena. Copy before expanding another stage. */
@@ -69,7 +82,13 @@ static int prepare_stage(parse_cmd_t *cmd, int index, int count, int status) {
         for (size_t j = 0; j < n; j++) stage->args[used++] = expanded.argv[i][j];
     }
     stage->argv[expanded.argc] = NULL;
-    int envc = vars_build_envp(stage->env, stage->envp);
+
+    /* Checked envp snapshot: fail preflight on overflow rather than truncating. */
+    int envc = vars_build_envp_checked(stage->env, stage->envp);
+    if (envc < 0) {
+        puts_err("pipeline: exported environment exceeds 32-entry limit\n");
+        return 1;
+    }
     size_t env_used = 0;
     for (int i = 0; i < envc; i++) {
         size_t n = length(stage->envp[i]) + 1;
@@ -77,9 +96,18 @@ static int prepare_stage(parse_cmd_t *cmd, int index, int count, int status) {
             return program_error(SYSCALL_E2BIG);
         env_used += n;
     }
-    /* Missing PATH commands fail at their launch position, just like missing
-     * explicit paths. All expansions/preflight still finish before any spawn. */
-    stage->resolve_status = program_resolve(stage->argv[0], stage->path);
+
+    stage->is_runner = is_safe;
+    if (is_safe) {
+        /* Child-safe builtins run via the fixed runner path; skip PATH resolution. */
+        const char *rpath = RUNNER_PATH;
+        size_t rlen = length(rpath);
+        for (size_t i = 0; i <= rlen; i++) stage->path[i] = rpath[i];
+        stage->resolve_status = 0;
+    } else {
+        /* External program: resolve via PATH, fail at launch position. */
+        stage->resolve_status = program_resolve(stage->argv[0], stage->path);
+    }
 
     uint32_t wiring = (index > 0) + (index + 1 < count);
     if ((uint32_t)cmd->redir_count + wiring > MAX_SPAWN_ACTIONS) {
@@ -184,7 +212,13 @@ static int execute_pipeline(parse_tree_t *tree, int first, int count, int status
         stage->pid = program_launch(stage->path, stage->argv, stage->envp,
                                      stage->actions, stage->action_count);
         if (stage->pid < 0) {
-            result = program_error(stage->pid);
+            /* Emit a specific diagnostic when the builtin runner binary is missing. */
+            if (stage->is_runner && stage->pid == SYSCALL_ENOENT) {
+                puts_err("pipeline: builtin dispatcher missing (" RUNNER_PATH ")\n");
+                result = 127;
+            } else {
+                result = program_error(stage->pid);
+            }
             break;
         }
         launched++;

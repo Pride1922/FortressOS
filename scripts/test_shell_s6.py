@@ -46,10 +46,10 @@ def ready_prompt(text, pattern=PROMPT_PATTERN, *, submitted=False):
 
 @contextmanager
 def qemu_session(mode, fw_cfgs=None, log_suffix="", *, iso_path="bin/fortress.iso",
-                 log_prefix="shell-s6", disk_audit=None):
+                 log_prefix="shell-s6", disk_audit=None, smp="1"):
     if fw_cfgs is None:
         fw_cfgs = ["name=opt/fortress/write_test,string=1"]
-    cpus = "1"
+    cpus = str(smp)
     log = REPO / "build" / f"{log_prefix}-{mode}{log_suffix}.log"
     log.write_text("")
     with tempfile.TemporaryDirectory(prefix=f"fortress-s6-{mode}-") as tmp:

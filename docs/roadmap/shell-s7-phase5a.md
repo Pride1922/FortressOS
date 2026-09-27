@@ -14,7 +14,8 @@ logs or separate regression-target results were supplied in this acceptance
 message. The broader handoff commands below remain regression recommendations,
 not additional claimed passes. No cross-core or physical-hardware result is inferred.
 
-Next: [Phase 5B builtin pipeline stages](../plans/S7_PHASE5B.md).
+Follow-up: [Phase 5B runner-path acceptance](shell-s7-phase5b.md) supersedes
+the open-status statements at this historical checkpoint.
 
 ## Behavior and scope
 

@@ -5,6 +5,7 @@
 #include "shell/io.h"
 #include "shell/ui.h"
 #include "shell/builtins.h"
+#include "shell/builtin_exec.h"
 #include "shell/lexer.h"
 #include "shell/parser.h"
 #include "shell/history_persist.h"
@@ -55,51 +56,6 @@ static int parse_int(const char *s) {
     return sign * val;
 }
 
-static void list(const char *path) {
-    if (!path || !*path) path = ".";
-    vfs_stat_t st;
-    long result = call(SYS_STAT, (uintptr_t)path, (uintptr_t)&st, 0);
-    if (result < 0) { file_error(result); last_status = 1; return; }
-    if (st.type != VFS_DIRECTORY) { puts(path); puts("\n"); last_status = 0; return; }
-    long fd = call(SYS_OPEN, (uintptr_t)path, 0, 0);
-    if (fd < 0) { file_error(fd); last_status = 1; return; }
-    vfs_dirent_t entry;
-    while ((result = call(SYS_READDIR, fd, (uintptr_t)&entry, 0)) == 1) {
-        puts(entry.name);
-        puts(entry.type == VFS_DIRECTORY ? "/\n" : "\n");
-    }
-    if (result < 0) { file_error(result); last_status = 1; }
-    else { last_status = 0; }
-    (void)call(SYS_CLOSE, fd, 0, 0);
-}
-
-/* Safe text viewer: printable ASCII/tab/LF, replacement dots, final newline. */
-static void view(const char *path) {
-    long fd = 0, result;
-    if (path) {
-        vfs_stat_t st;
-        result = call(SYS_STAT, (uintptr_t)path, (uintptr_t)&st, 0);
-        if (result < 0) { file_error_err(result); last_status = 1; return; }
-        if (st.type != VFS_FILE) { puts_err("Not a regular file.\n"); last_status = 1; return; }
-        fd = call(SYS_OPEN, (uintptr_t)path, 0, 0);
-        if (fd < 0) { file_error_err(fd); last_status = 1; return; }
-    }
-    char buf[512];
-    bool newline = true;
-    while ((result = call(SYS_READ, fd, (uintptr_t)buf, sizeof(buf))) > 0) {
-        for (long i = 0; i < result; i++) {
-            unsigned char c = buf[i];
-            if (c != '\n' && c != '\t' && (c < 32 || c > 126)) buf[i] = '.';
-        }
-        newline = buf[result - 1] == '\n';
-        long written = write_bytes_fd(1, buf, (size_t)result);
-        if (written < 0) { result = written; break; }
-    }
-    if (result >= 0 && !newline) result = write_bytes_fd(1, "\n", 1);
-    if (result < 0) { file_error_err(result); last_status = 1; }
-    else { last_status = 0; }
-    if (path) (void)call(SYS_CLOSE, fd, 0, 0);
-}
 
 static int spawn_program(const char *path, const char **argv, const spawn_fd_action_t *actions, uint32_t action_count) {
     (void)vars_build_envp(s_env_strings, s_envp_ptrs);
@@ -123,14 +79,7 @@ static int spawn_program(const char *path, const char **argv, const spawn_fd_act
     return (int)status;
 }
 
-static void echo_cmd(int argc, char **argv) {
-    for (int i = 1; i < argc; i++) {
-        if (i > 1) puts(" ");
-        puts(argv[i]);
-    }
-    puts("\n");
-    last_status = 0;
-}
+
 
 static void dmesg_cmd(const char *arg) {
     long n = call(SYS_DMESG, (uintptr_t)dmesg_buf, DMESG_SIZE, 0);
@@ -213,12 +162,7 @@ static int cd_cmd(int argc, char **argv) {
     return 0;
 }
 
-static int pwd_cmd(void) {
-    update_cwd();
-    puts(current_cwd);
-    puts("\n");
-    return 0;
-}
+
 
 static int type_cmd(int argc, char **argv) {
     if (argc < 2) {
@@ -290,14 +234,19 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     enum builtin b = builtin_find(cmd);
 
     if (b == CMD_HELP) {
-        builtin_help(argc > 1 ? argv[1] : 0);
-        return 0;
+        /* Route through shared handler: byte-identical with pipeline output. */
+        builtin_ctx_t ctx = {0};
+        const char *help_argv[2] = {"help", argc > 1 ? argv[1] : NULL};
+        int hargc = argc > 1 ? 2 : 1;
+        return builtin_exec(hargc, help_argv, &ctx);
     }
     if (b == CMD_CD) {
         return cd_cmd(argc, argv);
     }
     if (b == CMD_PWD) {
-        return pwd_cmd();
+        builtin_ctx_t ctx = {0};
+        const char *pwd_argv[1] = {"pwd"};
+        return builtin_exec(1, pwd_argv, &ctx);
     }
     if (b == CMD_TYPE) {
         return type_cmd(argc, argv);
@@ -306,21 +255,18 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         if (argc < 2) return 0;
         return execute_simple_command(argc - 1, argv + 1, actions, action_count);
     }
-    if (b == CMD_TRUE) {
-        return 0;
-    }
-    if (b == CMD_FALSE) {
-        return 1;
+    if (b == CMD_TRUE || b == CMD_FALSE || b == CMD_ECHO || b == CMD_ENV ||
+        b == CMD_VERSION || b == CMD_LS || b == CMD_VIEW) {
+        /* Shared handlers: route through builtin_exec for byte-identical output. */
+        (void)vars_build_envp(s_env_strings, s_envp_ptrs);
+        builtin_ctx_t ctx = builtin_ctx_from_envp(s_envp_ptrs);
+        return builtin_exec(argc, (const char *const *)argv, &ctx);
     }
     if (b == CMD_EXIT) {
         int code = (argc > 1) ? parse_int(argv[1]) : (int)last_status;
         (void)history_save();
         call(SYS_EXIT, (uintptr_t)code, 0, 0);
         return code;
-    }
-    if (b == CMD_ECHO) {
-        echo_cmd(argc, argv);
-        return 0;
     }
     if (b == CMD_SET) {
         vars_print_set();
@@ -338,10 +284,6 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         for (int i = 1; i < argc; i++) {
             vars_export(argv[i]);
         }
-        return 0;
-    }
-    if (b == CMD_ENV) {
-        vars_print_env();
         return 0;
     }
     if (b == CMD_ALIAS) {
@@ -376,19 +318,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         }
         return 0;
     }
-    if (b == CMD_VERSION) {
-        puts("FortressOS v0.1.0-smp (x86_64) — Engineered by Pride1922\n");
-        puts("Freestanding C11/NASM Preemptive Microkernel with Limine v8 Bootloader\n");
-        return 0;
-    }
-    if (b == CMD_LS) {
-        list(argc > 1 ? argv[1] : ".");
-        return (int)last_status;
-    }
-    if (b == CMD_VIEW) {
-        view(argc > 1 ? argv[1] : NULL);
-        return (int)last_status;
-    }
+
     if (b == CMD_EDIT) {
         if (argc > 1) {
             editor_load(argv[1]);

@@ -70,9 +70,12 @@ thread_trampoline:
 ; On entry (restored by switch_context):
 ;   R12 = user entry point (RIP)
 ;   R13 = user stack top (RSP)
+;   R14 = argc, R15 = argv, RBP = envp
+;   RSP is 16-byte aligned after switch_context's ret.
 ; =============================================================================
 global user_process_trampoline
 user_process_trampoline:
+    ; The entry arguments are callee-preserved. Keep RSP aligned for C.
     call sched_post_switch
     ; Set user data segment selectors (DS, ES, FS, GS)
     mov ax, 0x1B    ; GDT_USER_DATA | 3 (RPL=3)
@@ -91,15 +94,15 @@ user_process_trampoline:
     ; Pass System V ABI initial arguments:
     ;   RDI = argc (passed in R14)
     ;   RSI = argv pointer (passed in R15)
-    ;   RDX = 0 (rtld shared object termination function, set by xor rdx, rdx)
+    ;   RDX = envp pointer (passed in RBP; zero for scalar spawns)
     mov rdi, r14
     mov rsi, r15
+    mov rdx, rbp
 
     ; Clear general-purpose registers to prevent leaking kernel state into user space
     xor rax, rax
     xor rbx, rbx
     xor rcx, rcx
-    xor rdx, rdx
     xor rbp, rbp
     xor r8,  r8
     xor r9,  r9
@@ -112,4 +115,3 @@ user_process_trampoline:
 
     swapgs
     iretq
-

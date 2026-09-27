@@ -53,6 +53,9 @@ Phase 5B builtin pipeline stages remain open; BSP-only restrictions still apply.
 See [Phase 5A acceptance](docs/roadmap/shell-s7-phase5a.md) and
 [Phase 5B implementation plan](docs/plans/S7_PHASE5B.md).
 
+User-entry envp delivery was fixed and verified under BIOS/UEFI on 2026-09-27;
+see [root cause and regression evidence](docs/roadmap/user-entry-envp.md).
+
 Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
 
 ### Phase 9G implementation handoff

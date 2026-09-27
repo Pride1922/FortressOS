@@ -20,6 +20,8 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [shell-s7-phase6.md](shell-s7-phase6.md) | Verification-only handoff, not started: BSP-pinned pipelines with 4/8 CPUs and Dell acceptance; original cross-core G6 deferred |
+| [shell-s7-phase5b.md](shell-s7-phase5b.md) | Builtin runner path complete (2026-09-27), envp entry fix, QEMU regression evidence and verification boundaries |
 | [shell-s7-phase5a.md](shell-s7-phase5a.md) | Stream utilities and cat/view migration; user accepted successful tests 2026-09-27, builtin stages remain 5B |
 | [shell-s7-phase4.md](shell-s7-phase4.md) | External pipeline executor implementation, build checks, test commands and user acceptance (2026-09-27); BSP-only |
 | [shell-s7-phase3.md](shell-s7-phase3.md) | Completed flat pipeline grammar, eight-stage limit, temporary execution guard, and user-reported regression evidence |
@@ -60,6 +62,6 @@ and are not proof that every current revision has passed every test — check
 [Shell S0–S2] Terminal foundation, editing, RAM history      (Implemented, QEMU PASS, Dell pending)
 [Shell S3–S5] Quotes, variables, expansion, persistent history (COMPLETE)
 [Shell S6]    Redirection & descriptor architecture           (COMPLETE, Dell 5590 verified)
-[Shell S7]    Pipes and stream utilities                      (Phases 1–4 and 5A COMPLETE; Phase 5B next)
+[Shell S7]    Pipes and stream utilities                      (Phases 1–5B runner path COMPLETE; Phase 6 NOT STARTED)
 [Following]  Accounts/permissions, then installer
 ```

@@ -1,6 +1,6 @@
 # S7 Phase 5B: builtin pipeline stages
 
-**Status: implementation plan, not implemented.** Prepared 2026-09-27 after
+**Status: reviewed and approved with the refinements below; not implemented.** Prepared 2026-09-27 after
 [Phase 5A acceptance](../roadmap/shell-s7-phase5a.md). User owns test execution.
 This checkpoint proposes a bounded allowlist of child-safe builtins, not full
 POSIX subshell semantics. Phase 6 still owns cross-core and hardware acceptance.
@@ -72,17 +72,45 @@ of echo/view/ls algorithms. The shared interface takes an explicit bounded
 context for environment/PATH and returns an exit status. Do not link editor,
 history or terminal UI objects into the runner merely to satisfy dependencies.
 
+Runner link boundary: its entry/dispatcher, `builtin_exec.c`, `builtins.c`
+(the full static command table, descriptions and help text), and the syscall/
+status-bearing I/O helpers from `io.c`. Extract any required PATH lookup into
+a context-driven shared helper rather than pulling in parent globals through
+`program.c`. Environment lookup/iteration reads the supplied envp directly;
+`vars.c` remains parent-side for checked snapshot construction, not a dependency
+of the runner. Headers such as `syscall_abi.h` define the ABI, not link objects.
+Do not link `shell.c`, alias storage, editor, history, prompt or terminal UI.
+Verify the final object list and unresolved symbols during the build.
+
 - Echo preserves the current operand spacing and final LF, including empty
   operands. `$?` and all other expansion happen in the parent exactly once.
-- Pwd queries inherited process CWD. Type uses the same builtin classification
-  and PATH resolution as the parent; it does not depend on inherited shell globals.
+- Pwd queries inherited process CWD. Type in the runner classifies only the
+  runner allowlist as builtins, then resolves external names using its envp PATH
+  and the existing lookup rules (including the `/bin` fallback). It has no parent
+  aliases. Thus `type cd | cat` emits `cd: not found` when no external cd exists;
+  the type child returns 1, while the pipeline still returns cat's status.
+  If an external cd exists on PATH it reports that file. Standalone type keeps
+  the full parent builtin table and alias lookup. Pass classification and optional
+  alias lookup through the shared context; do not fork the formatting algorithm.
 - Env prints the stage's exported environment, including temporary assignments,
   in the existing order. It does not synthesize defaults via `vars_init()`.
   Unexported variables are available to parent expansion but not runner env.
 - View retains printable ASCII/tab/LF, dot substitution and the nonempty final-LF
   rule. It remains a text viewer; external cat remains byte preserving.
-- Help/version/ls retain existing text and argument behavior. Review path errors
-  and return codes during extraction; stdout/stderr failures must propagate.
+  The same shared implementation is linked into both binaries; there is no new
+  `/bin/view`. A pipeline launches `/bin/sh-builtin` with argv[0] `view`.
+- Help prints the full parent shell help, including topics outside the runner
+  allowlist. `help cd | cat` documents cd without making it executable as a stage.
+  `builtins.c` generates this text from static command metadata; descriptions of
+  editor/history commands require no editor/history code. Add the same capability
+  note to parent and child help: only the listed allowlist can execute in pipelines,
+  and pipeline type reports that narrower execution context without parent aliases.
+- Version/ls retain existing text and argument behavior. Ls uses inherited CWD
+  and kernel path resolution, retaining current directory iteration order and
+  formatting; do not add sorting or columns. Require byte-identical standalone
+  and pipeline ls output for the same unchanged directory and CWD, including
+  relative paths. Review path errors and return codes during extraction;
+  stdout/stderr failures must propagate.
 - True/false return 0/1 without reading stdin or emitting output.
 
 Environment snapshots must be complete or fail preflight: `vars_build_envp()`
@@ -120,6 +148,12 @@ private fd is required. All peers remain BSP-only.
    redir/vars/io headers, loader argument code, and Makefile. Enumerate each
    supported handler's global/UI dependencies before extraction.
 2. Introduce the shared capability table and status-returning handlers/context.
+   This is extraction plus output-error conversion, not a mechanical move:
+   convert `echo`, `pwd`, `type`, `env`, `help`, `version`, `ls` and `view` from
+   void/unchecked output to checked writes, including spaces, numeric formatting,
+   per-entry output and final newlines. View must stop reading after a failed
+   write, close its owned input and preserve 141 on EPIPE. True/false need no
+   output conversion. Test each emitting handler's first and later write failure.
    Route standalone supported builtins through them without changing parent
    redirection ownership. Preserve existing parent-only dispatch.
 3. Add runner source/entry/build/package dependencies. Verify ELF permissions,
@@ -146,6 +180,16 @@ bounded waits, BIOS/UEFI BSP configuration, disposable storage and offline audit
 
 - `echo hello | wc -l` => 1; pwd/env/type/help/version through cat or wc; compare
   view output against standalone view and retain binary cat checks.
+- Capture standalone `ls DIR > A` and `ls DIR | cat > B` outside the listed
+  directory; compare extracted bytes exactly. Cover default, absolute and relative
+  paths under inherited CWD, files/subdirectories and empty directories without
+  changing directory contents between captures. Compare error output/status for
+  missing paths too; do not mistake the last consumer's status for ls's status.
+- Compare complete help and topic output between parent and runner, including
+  `help cd`. Verify the full help table cannot bypass runner dispatch restrictions.
+  Test pipeline type for allowed echo, forbidden cd, external cat, an alias-only
+  name and scoped PATH; verify parent type retains full builtin/alias discovery.
+  Observe the type child directly or put type last when asserting its exit status.
 - `false | true` => 0; `true | false` => 1; negation and conditional chains;
   supported builtins in first, middle and last positions and an eight-stage group.
 - Redirect-over-pipe precedence and lexical `2>&1` ordering, closed stdout,

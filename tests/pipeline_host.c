@@ -145,7 +145,7 @@ static void reset(void) {
 
 int main(void) {
     reset(); assert(run("cat | /b") == 0 && launches == 2 && waits == 2);
-    reset(); assert(run("/a > /canary | view") == 1 && !launches && !opens);
+    reset(); assert(run("/a > /canary | cd /") == 1 && !launches && !opens);
     reset(); statuses[0] = 141; statuses[1] = 7;
     assert(run("/a | /b") == 7 && launches == 2 && waits == 2);
     assert(child_out[0] == child_in[1] + 1 && !diagnostic[0]);
@@ -157,7 +157,7 @@ int main(void) {
     assert(!launches && singles == 2);
     reset(); statuses[1] = 9;
     assert(run("! /a | /b && true") == 0 && singles == 1);
-    const char *rejected[] = {"/a > /canary | 'echo' bad", "/a | > /canary",
+    const char *rejected[] = {"/a | > /canary",
         "X=local /a | X=value", "/a | $UNDEFINED", "/a | ! /b", "/a | \"\"",
         "/a > $UNDEFINED | /b", "/a | run /b", "/a | command /b"};
     for (unsigned i = 0; i < sizeof(rejected)/sizeof(rejected[0]); i++) {
@@ -228,12 +228,68 @@ int main(void) {
     assert(run("a first | b second") == 0);
     assert(!strcmp(arguments[0], "a:first:") && !strcmp(arguments[1], "b:second:"));
     reset(); assert(run("/a | missing") == 127 && launches == 1 && waits == 1);
-    reset(); vars_set("CMD", "echo", false);
+    reset(); vars_set("CMD", "cd", false);
     assert(run("/a > /canary | \"$CMD\" nope") == 1 && !launches && !opens);
     reset(); fail_spawn = 2; spawn_error = SYSCALL_EROFS;
     assert(run("/a | /b") == 1 && waits == 1 && strstr(diagnostic, "Read-only filesystem"));
     reset(); fail_pipe = 1; pipe_error = SYSCALL_EINVAL;
     assert(run("/a | /b") == 1 && strstr(diagnostic, "Unable to create pipeline"));
-    puts("PASS pipeline orchestration: grouping, preflight, lifetime, ordering, scopes and failures");
+
+    /* Phase 5B: child-safe builtin stages dispatched via runner. */
+    /* Allowed builtins accepted: echo, pwd, true, false, env, help, version, ls, view, type */
+    const char *allowed[] = {"echo x", "pwd", "true", "false", "env", "help", "version", "ls", "view"};
+    for (unsigned i = 0; i < sizeof(allowed)/sizeof(allowed[0]); i++) {
+        reset();
+        char line[128] = {0};
+        memcpy(line, "/a | ", 5);
+        memcpy(line + 5, allowed[i], strlen(allowed[i]));
+        /* Expect: preflight passes, 2 launches, 2 waits, no diagnostic. */
+        assert(run(line) == 0 && launches == 2 && !diagnostic[0]);
+    }
+
+    /* Forbidden builtins rejected at preflight (no pipe/spawn/open). */
+    const char *forbidden[] = {
+        "/a | cd /",         /* cd */
+        "/a | exit 0",       /* exit */
+        "/a | set",          /* set */
+        "/a | export X=y",   /* export */
+        "/a | alias ll=ls",  /* alias */
+        "/a | history",      /* history */
+        "/a | reboot",       /* reboot */
+        "/a | shutdown",     /* shutdown */
+        "/a | edit /f",      /* edit */
+        "/a | mkdir /d",     /* mkdir */
+        "/a | sync",         /* sync */
+        "/a | command echo", /* command wrapper: not child-safe */
+    };
+    for (unsigned i = 0; i < sizeof(forbidden)/sizeof(forbidden[0]); i++) {
+        reset();
+        assert(run(forbidden[i]) == 1 && !launches && !pipes_created && diagnostic[0]);
+        assert(strstr(diagnostic, "cannot run as a pipeline stage") ||
+               strstr(diagnostic, "unsupported stage"));
+    }
+
+    /* Late forbidden stage with earlier canary redirection: no side effects. */
+    reset(); assert(run("echo x > /canary | cd /") == 1 && !launches && !opens);
+
+    /* Missing runner: ENOENT on launch emits runner-specific diagnostic. */
+    /* Simulate: first stage is external (/a), second is builtin (echo) dispatched via runner.
+     * When the runner binary is missing, the second spawn returns ENOENT. */
+    reset(); spawn_error = SYSCALL_ENOENT; fail_spawn = 2;
+    assert(run("/a | echo hello") == 127 && waits == 1);
+    /* Diagnostic should mention the runner specifically or file-not-found */
+    assert(strstr(diagnostic, "builtin dispatcher missing") || strstr(diagnostic, "No such file"));
+
+    /* Env limit: >32 exported variables fail preflight. */
+    reset();
+    for (int i = 0; i < 33; i++) {
+        char nm[8]; nm[0] = 'E'; nm[1] = '0' + i/10; nm[2] = '0' + i%10; nm[3] = 0;
+        vars_set(nm, "v", true);
+    }
+    assert(run("/a | echo hi") == 1 && !launches && !pipes_created);
+    assert(strstr(diagnostic, "32-entry limit"));
+
+    puts("PASS pipeline orchestration: grouping, preflight, lifetime, ordering, scopes, failures and Phase 5B builtin stages");
     return 0;
 }
+

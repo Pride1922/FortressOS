@@ -46,4 +46,9 @@ void vars_scope_end(local_var_scope_t *scope);
 int vars_build_envp(char env_strings[32][MAX_VAR_NAME + MAX_VAR_VAL + 2],
                     const char *envp_ptrs[33]);
 
+/* Like vars_build_envp() but returns -1 if more than 32 exported variables
+ * exist (would silently truncate otherwise).  Use for pipeline preflight. */
+int vars_build_envp_checked(char env_strings[32][MAX_VAR_NAME + MAX_VAR_VAL + 2],
+                            const char *envp_ptrs[33]);
+
 #endif /* SHELL_VARS_H */

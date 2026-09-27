@@ -43,5 +43,8 @@ enum builtin builtin_find(const char *name);
 void builtin_help(const char *topic);
 size_t builtin_count(void);
 const char *builtin_name(size_t index);
+/* True iff name is safe to run as a pipeline stage via /bin/sh-builtin.
+ * Default-deny: any new builtin must explicitly set child_safe = true. */
+bool builtin_is_child_safe(const char *name);
 
 #endif /* SHELL_BUILTINS_H */

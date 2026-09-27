@@ -252,3 +252,16 @@ int vars_build_envp(char env_strings[32][MAX_VAR_NAME + MAX_VAR_VAL + 2],
     envp_ptrs[count] = 0;
     return count;
 }
+
+/* Returns -1 if any exported variable would be silently dropped (count > 32). */
+int vars_build_envp_checked(char env_strings[32][MAX_VAR_NAME + MAX_VAR_VAL + 2],
+                            const char *envp_ptrs[33]) {
+    /* Count all exported variables first. */
+    int total = 0;
+    for (int i = 0; i < MAX_VARS; i++) {
+        if (g_vars[i].used && g_vars[i].exported) total++;
+    }
+    if (total > 32) return -1;
+    return vars_build_envp(env_strings, envp_ptrs);
+}
+

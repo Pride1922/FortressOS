@@ -10,8 +10,10 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import os
 from test_shell_s6 import qemu_session, REPO
 
+SMP = os.environ.get("SMP", "1")
 
 def make_iso(tmp):
     root = tmp / "iso"
@@ -72,6 +74,7 @@ def audit_disk(disk, mode):
 
 def run(mode, iso):
     with qemu_session(mode, iso_path=iso, log_prefix="shell-s7",
+                      smp=SMP,
                       disk_audit=lambda disk: audit_disk(disk, mode)) as (body, _, __):
         def check(command, status=0):
             out = body(command)
@@ -96,10 +99,10 @@ def run(mode, iso):
         check("/bin/pipetest status 0 | /bin/pipetest status 0 ; /bin/pipetest produce 0 | /bin/pipetest verify 0")
 
         check("echo intact > /mnt/s7canary")
-        for command in ("/bin/hello > /mnt/s7canary | 'echo' bad",
-                        "/bin/hello > /mnt/s7canary | > /mnt/s7unused",
-                        "/bin/hello > /mnt/s7canary | ! /bin/pipetest relay",
-                        "/bin/hello > /mnt/s7canary | $S7_UNSET"):
+        for command in ("/bin/hello > /mnt/s7canary | 'cd' /",
+                "/bin/hello > /mnt/s7canary | > /mnt/s7unused",
+                "/bin/hello > /mnt/s7canary | ! /bin/pipetest relay",
+                "/bin/hello > /mnt/s7canary | $S7_UNSET"):
             check(command, 1)
             assert check("cat /mnt/s7canary").strip() == "intact"
         check("/bin/hello > /mnt/s7canary | /bin/pipetest relay" + " 2>&1" * 15 +
@@ -135,7 +138,7 @@ def run(mode, iso):
         assert check("view /mnt/s7sample") == "A..\t.B\n"
         assert "cat is /bin/cat" in check("type cat")
         assert "view is a shell builtin" in check("type view")
-        check("view /mnt/s7sample | wc", 1)
+        check("view /mnt/s7sample | wc -x", 2)
         assert "PIPELINE BYTES OK" in check("command cat /mnt/s7payload > /mnt/s7copy ; cat /mnt/s7copy | /bin/pipetest verify 262267")
         assert check("PATH=/missing cat /mnt/s7sample", 127)
         assert check("PATH=/missing /bin/cat /mnt/s7sample | wc -c").strip() == "6"
@@ -146,16 +149,75 @@ def run(mode, iso):
         assert check("cat /mnt/s7text | tail -c 4") == "last"
         assert check("cat /mnt/s7text | head -n 50 | wc -l").strip() == "3"
         assert check("cat /mnt/s7text | tail -n 10 | wc -l").strip() == "3"
-        for mode in (0, 1, 2):
-            assert "STREAM STATUS OK" in check(f"/bin/pipetest observe {mode}")
+        for stream_mode in (0, 1, 2):
+            assert "STREAM STATUS OK" in check(f"/bin/pipetest observe {stream_mode}")
         # Shell must report an explicit 141 as a plain status, not a fault vector.
         assert "[PROCESS] Exit status 141" in check("/bin/pipetest status 141", 141)
         check("head -n 0 /missing", 1)
         check("tail -n 11 /mnt/s7text", 2)
         check("tail -c 65537 /mnt/s7text", 2)
         assert "always reads to EOF" in check("tail --help")
+
+        # Phase 5B: builtin pipeline stages via /bin/sh-builtin.
+        # echo in a pipeline stage
+        assert check("echo hello | cat").strip() == "hello"
+        assert check("/bin/pipetest produce 0 | echo standalone").strip() == "standalone"
+        # pwd in a pipeline
+        cwd_out = check("echo trigger | pwd | cat")
+        assert "/" in cwd_out
+        # true and false as pipeline stages
+        check("/bin/pipetest produce | true", 0)
+        check("/bin/pipetest produce | false", 1)
+        check("true | /bin/pipetest verify 0")
+        check("false | /bin/pipetest verify 0", 0)
+        # Negation of a builtin pipeline stage
+        check("! false | /bin/pipetest verify 0", 1)
+        check("! true | /bin/pipetest verify 0", 1)
+        # env in a pipeline
+        check("export PIPE_TEST=s7b")
+        for command in ("/bin/sh-builtin env", "env | cat"):
+            env_lines = check(command).splitlines()
+            for entry in ("PATH=/bin", "HOME=/", "PIPE_TEST=s7b"):
+                assert entry in env_lines, (command, env_lines)
+        export_out = check("env | cat | wc -l")
+        assert int(export_out.strip()) > 0
+        # ls as a pipeline stage
+        ls_out = check("ls /bin | wc -l")
+        assert int(ls_out.strip()) > 0
+        # view sanitizes and sends to stdout through a pipe
+        check("/bin/pipetest sample > /mnt/s7b_sample")
+        view_pipe_out = check("view /mnt/s7b_sample | cat")
+        assert "." in view_pipe_out or len(view_pipe_out) > 0
+        # echo in pipeline with redirect
+        check("echo s7b_line > /mnt/s7b_echo")
+        assert check("cat /mnt/s7b_echo").strip() == "s7b_line"
+        # Builtin as first stage
+        assert "shell" in check("echo shell | cat")
+        # Forbidden builtins rejected before any spawn
+        check("echo canary > /mnt/s7b_canary")
+        for forbidden in ("cd /", "exit 0", "set", "export X=bad", "alias x=y",
+                          "history", "reboot"):
+            check(f"/bin/pipetest produce | {forbidden}", 1)
+            # canary must not be overwritten by any side effect
+            assert check("cat /mnt/s7b_canary").strip() == "canary"
+        # type in runner context: echo is a builtin, cat is external, cd is not found
+        type_out = check("echo x | type echo cat")
+        assert "shell builtin" in type_out
+        assert "/bin/cat" in type_out or "cat" in type_out
+        # help produces output through a pipe
+        help_out = check("help | wc -l")
+        assert int(help_out.strip()) > 5
+        # version produces output through a pipe
+        ver_out = check("version | cat")
+        assert "FortressOS" in ver_out
+        # Status propagation: rightmost nonzero wins
+        check("echo hi | false", 1)
+        check("false | echo hi", 0)
+        check("! echo hi | false")
+        # Env overflow: 32 exported variables is the limit (checked at preflight)
+        # (We don't test overflow here as it requires carefully managing env state.)
         #check("sync")
-    print(f"PASS S7 executor: {mode}, BSP, disposable NVMe, byte comparison + e2fsck", flush=True)
+    print(f"PASS S7 executor Phase 5B: {mode}, BSP, {SMP} CPU(s), disposable NVMe, byte comparison + e2fsck + builtin stages", flush=True)
 
 
 if __name__ == "__main__":

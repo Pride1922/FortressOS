@@ -11,6 +11,7 @@ AS      := nasm
 QEMU    ?= qemu-system-x86_64
 XORRISO ?= xorriso
 GIT     ?= git
+SMP     ?= 1
 
 # Strict freestanding compilation flags
 CFLAGS  := -std=c11 \
@@ -137,6 +138,14 @@ test-shell-host: test-input test-console
 	@python3 scripts/test_shell_host.py
 	@python3 scripts/test_pipeline_host.py
 	@python3 scripts/test_shell_prompt_host.py
+	@python3 scripts/test_runner_host.py
+
+.PHONY: test-runner-host
+test-runner-host:
+	@python3 scripts/test_runner_host.py
+
+.PHONY: test-builtin-host
+test-builtin-host: test-pipeline-host test-runner-host
 
 .PHONY: test-pipeline-host
 test-pipeline-host:
@@ -256,6 +265,7 @@ USER_INIT_ELF := $(BUILD_DIR)/init.elf
 USER_HELLO_ELF := $(BUILD_DIR)/hello.elf
 USER_DUAL_STREAM_ELF := $(BUILD_DIR)/dual_stream.elf
 USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
+USER_SH_BUILTIN_ELF := $(BUILD_DIR)/sh-builtin.elf
 STREAM_TOOLS := cat head tail wc
 STREAM_TOOL_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(STREAM_TOOLS)))
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
@@ -311,11 +321,20 @@ $(USER_SHELL_ELF): $(SHELL_OBJECTS) $(SHELL_HEADERS) $(USER_DIR)/shell.c $(USER_
 	@$(AS) -f elf64 $(USER_DIR)/shell_start.asm -o $(BUILD_DIR)/shell_start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/shell_start.o $(BUILD_DIR)/shell.o $(SHELL_OBJECTS) -o $@
 
+# Runner ELF for /bin/sh-builtin: links builtin_exec, builtins, io (no UI/history/alias/editor).
+SH_BUILTIN_OBJECTS := $(BUILD_DIR)/shell-builtin_exec.o $(BUILD_DIR)/shell-builtins.o $(BUILD_DIR)/shell-io.o
+$(USER_SH_BUILTIN_ELF): $(SH_BUILTIN_OBJECTS) $(SHELL_HEADERS) $(USER_DIR)/sh_builtin_main.c $(USER_DIR)/sh_builtin_start.asm $(USER_DIR)/shell.ld src/fs/vfs.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $(USER_DIR)/sh_builtin_main.c -o $(BUILD_DIR)/sh_builtin_main.o
+	@$(AS) -f elf64 $(USER_DIR)/sh_builtin_start.asm -o $(BUILD_DIR)/sh_builtin_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/sh_builtin_start.o $(BUILD_DIR)/sh_builtin_main.o $(SH_BUILTIN_OBJECTS) -o $@
+
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
+	@cp -f $(USER_SH_BUILTIN_ELF) $(BUILD_DIR)/initramfs/bin/sh-builtin
 	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)

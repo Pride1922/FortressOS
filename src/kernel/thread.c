@@ -1105,6 +1105,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     uintptr_t user_envp = 0;
     uint64_t rdi_val = 0;
     uint64_t rsi_val = 0;
+    uint64_t rdx_val = 0;
 
     if (argv != NULL) {
         int setup_res = process_setup_user_stack(proc_info.stack_phys, argc, argv,
@@ -1117,11 +1118,13 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         }
         rdi_val = (uint64_t)argc;
         rsi_val = (uint64_t)user_argv;
+        rdx_val = (uint64_t)user_envp;
     } else {
         /* Compatibility fallback for kernel-internal scalar spawns (e.g. init.asm tests) */
         user_rsp = proc_info.user_stack_top & ~0xFULL;
         rdi_val = scalar_arg;
         rsi_val = 0;
+        rdx_val = 0;
     }
 
     /* 3. Allocate dedicated page-backed kernel stack */
@@ -1268,14 +1271,14 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     stack_top -= sizeof(uint64_t) * 8;
     uint64_t *frame = (uint64_t *)stack_top;
 
-    frame[0] = rsi_val;                            /* r15 -> passed to user RSI (argv) */
-    frame[1] = rdi_val;                            /* r14 -> passed to user RDI (argc or scalar arg) */
-    frame[2] = (uint64_t)user_rsp;                 /* r13 -> user RSP */
-    frame[3] = (uint64_t)proc_info.entry_point;    /* r12 -> user RIP */
-    frame[4] = 0;                                  /* rbp */
-    frame[5] = 0;                                  /* rbx */
-    frame[6] = 0x202;                              /* rflags: IF=1 */
-    frame[7] = (uint64_t)user_process_trampoline;  /* rip */
+    frame[0] = rsi_val;                             /* r15 -> user RSI (argv)  */
+    frame[1] = rdi_val;                             /* r14 -> user RDI (argc)  */
+    frame[2] = (uint64_t)user_rsp;                  /* r13 -> user RSP         */
+    frame[3] = (uint64_t)proc_info.entry_point;     /* r12 -> user RIP         */
+    frame[4] = rdx_val;                            /* rbp -> user RDX (envp) */
+    frame[5] = 0;                                   /* rbx  */
+    frame[6] = 0x202;                               /* rflags: IF=1  */
+    frame[7] = (uint64_t)user_process_trampoline;   /* rip  */
 
     p->rsp = (uint64_t)stack_top;
 
