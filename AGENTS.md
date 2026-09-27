@@ -23,6 +23,7 @@ FortressOS is a freestanding C11/NASM x86_64 kernel using Limine v8, base revisi
 
 History lives in [docs/roadmap/README.md](docs/roadmap/README.md); qualifications and technical debt in [ARCH_REVIEW.md](ARCH_REVIEW.md). Keep new implementation instructions here, checkpoint history there, and verification claims tied to actual evidence.
 
+| Shell S7 | COMPLETE (2026-09-27), user-confirmed: Phases 1–6 verified. Blocking 64 KiB pipes, CLOEXEC cleanup, grouped pipelines, redirections, negation, cooperative teardown, stream utilities and builtin stages via `/bin/sh-builtin`. Fixed envp delivery with `mov rdx, rbp` in the trampoline, preserving argv and scheduler cleanup. QEMU BIOS/UEFI verified with `SMP=1/4/8`, AP counts confirmed in boot logs; Dell Latitude 5590 accepted in both RO and RW mount modes. Working pipelines: `echo hello \| wc -l`, `cat file \| head -n 5 \| wc -l`. Peers remain BSP-pinned; cross-core execution deferred. Details: [Phase 5B](docs/roadmap/shell-s7-phase5b.md), [Phase 6](docs/roadmap/shell-s7-phase6.md). |
 | Shell S6 | COMPLETE (2026-09-26). Redirections, uniform descriptor architecture, resource bounds, RO/tainted storage assertions, documented single-threaded process rules (concurrent non-append shared-file_t I/O deferred to S7 pipelines), and physical Dell Latitude 5590 hardware acceptance. Phase 1–3 complete: negative error codes for dup/dup2, stream node EOF bypass (`VFS_STREAM`), numeric parser bounds, atomic acquire-release refcounting on `file_t`, atomic EOF append serialization under `ext2_lock` (`ext2_write(..., &offset, append, ...)`), host sequential verification, and true multi-core SMP concurrent append integration suite (`make test-smp-append`) verified under QEMU `-smp 4` (BIOS & UEFI) with offline `e2fsck -fn` integrity audits. Phase 4A–4D complete: child process file redirection via `SYS_SPAWN_EXT`, target expansion, ambiguous redirect rejection, scoped parent builtin redirection (`save/apply/restore`), redirection-only empty commands (`> file`), `SYS_FCNTL` (`F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`), retained UI terminal handle (`g_term_fd` on FD 31 with `FD_FLAG_CLOEXEC`), `/bin/dual_stream` lexical duplication ordering, stderr append/truncation/closure, stdin `cat`, and non-recursive short-write error returns. Phase B complete: resource exhaustion suite (`make test-shell-s6-resources`) verified under BIOS & UEFI (1 and 4 CPUs) for child descriptor limit, parent fd table exhaustion, process table capacity, GDB scheduler inspection confirming 0 partial/runnable threads published on failed spawn, and prompt recovery. Phase C complete: RO and tainted ext2 storage assertions verified under BIOS and UEFI; distinct error strings (`Read-only filesystem.` and `I/O error.`), execution suppression on failed redirection setup, bit-for-bit file preservation, status propagation (`$? == 1`, `||` recovery, `&&` halt), and prompt recovery. Phase D complete: physical Dell Latitude 5590 acceptance verified on SanDisk USB 3.2 Gen 1 (RO Pass 1, RW Pass 2, offline host `e2fsck -fn` 0 errors, bit-for-bit SHA-256 match on all created files). Pipelines belong to S7. Full detail: [docs/plans/S6_AUDIT.md](docs/plans/S6_AUDIT.md). |
 | Shell S5 | COMPLETE (2026-09-25). Environment, variables, parameter expansion, aliases, and globbing. Flat variables (scoped for S9), SYS_SPAWN_EXT ABI, stack budget assertion with 512B floor, top-down string packing, builtins (set, unset, export, env, alias, unalias), 5-stage expansion pipeline (tilde, parameter, word splitting, globbing, quote removal). Verified on BIOS and UEFI. Full detail: [docs/roadmap/shell-s5.md](docs/roadmap/shell-s5.md). |
 | Shell S3–S4 | COMPLETE (2026-09-25). Quote-aware parser, comments, `;`/`&&`/`||`/`!`, multi-line continuation, process CWD (`SYS_GETCWD`/`SYS_CHDIR`), relative path normalization, `cd`/`pwd`, direct execution (`/bin/hello`, `./tool`, bare `hello`), Tab completion, configurable prompt with status indicator, length-framed persistent history (`/mnt/.fortress/history`). Verified on BIOS and UEFI. Full detail: [docs/roadmap/shell-s3-s4.md](docs/roadmap/shell-s3-s4.md). |
@@ -38,23 +39,11 @@ History lives in [docs/roadmap/README.md](docs/roadmap/README.md); qualification
 | Phase 9G.4 USB writable persistence & durability classification | COMPLETE (2026-09-19). BOT stall recovery, four-tier durability classification, explicit writable opt-in; `/mnt` read-write persistence confirmed on physical USB. Full detail: [docs/roadmap/phase-9g4-usb-durability.md](docs/roadmap/phase-9g4-usb-durability.md). |
 | Phase 9H RAM capacity | COMPLETE (2026-09-20). PMM extended to cover 32 GiB, two-stage PMM/VMM init to stay within Limine's HHDM coverage until the kernel PML4 is active. Verified on Dell 5590 (32 GiB) with a write-readback probe. Full detail: [docs/roadmap/phase-9h-ram.md](docs/roadmap/phase-9h-ram.md). |
 
-Shell S7 Phases 1–4 are complete (Phase 4 accepted by the user on 2026-09-27): anonymous pipes, blocking/CLOEXEC
-lifecycle, and flat `CMD_OP_PIPE` parsing with an eight-stage limit. Phase 4 is
-complete: external pipelines replace the temporary
-guard, with group preflight, ordered fd actions and complete child waits. BSP-only
-pipe peers remain required. See [Phase 2 evidence](docs/roadmap/shell-s7-phase2.md),
-[Phase 3 evidence](docs/roadmap/shell-s7-phase3.md), and the
-[Phase 4 implementation and user acceptance](docs/roadmap/shell-s7-phase4.md).
-
-S7 Phase 5A stream utilities are complete (user accepted successful tests 2026-09-27):
-external byte-preserving `cat`, `head`, bounded `tail`, ASCII `wc`, and sanitized
-`view` replacing the former cat builtin. Tail count zero drains through EOF.
-Phase 5B builtin pipeline stages remain open; BSP-only restrictions still apply.
-See [Phase 5A acceptance](docs/roadmap/shell-s7-phase5a.md) and
-[Phase 5B implementation plan](docs/plans/S7_PHASE5B.md).
-
-User-entry envp delivery was fixed and verified under BIOS/UEFI on 2026-09-27;
-see [root cause and regression evidence](docs/roadmap/user-entry-envp.md).
+Shell S7 Phases 1–6 are complete. See [Phase 5A utilities](docs/roadmap/shell-s7-phase5a.md),
+[Phase 5B builtin stages and envp diagnosis](docs/roadmap/shell-s7-phase5b.md),
+and [Phase 6 QEMU/Dell acceptance](docs/roadmap/shell-s7-phase6.md).
+Pipe peers remain on the BSP even in multi-CPU runs; cross-core wake channels
+remain future work. Next milestone: Shell S8 (jobs, signals and process groups).
 
 Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
 
@@ -148,7 +137,7 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 | `make test-shell-host` | Consolidated ASan/UBSan: keyboard/queue, framebuffer terminal and actual shell editor/history logic |
 | `make test-pipeline-host` | S7 Phase 4 actual parser/expander/executor with mocked syscalls: grouping, preflight, fd ownership, action order and failure injection. Also included in `test-shell-host`; Phase 4 accepted by the user; per-command results are not separately recorded. |
 | `make test-stream-tools-host` | Phase 5A actual tools with ASan/UBSan and mocked syscalls: binary copying, short I/O, tail bounds/draining, CLI, descriptor cleanup and injected wc overflow. Included in `test-host`; user-reported pass 2026-09-27, not rerun by the agent. |
-| `make test-shell-s7` | S7 Phase 4 BIOS/UEFI, 1 CPU: external fixtures in disposable ISO, disposable NVMe copy, streaming, status, cooperative cleanup and offline byte/e2fsck checks. Phase 4 accepted by the user; per-command results are not separately recorded. |
+| `make test-shell-s7 SMP=N` | User-confirmed BIOS/UEFI passes with `SMP=1`, `4`, `8`, AP counts checked in boot logs. Disposable ISO/NVMe copy, streaming/status/cleanup and offline byte/e2fsck checks; pipe peers remain BSP-pinned. See [Phase 6](docs/roadmap/shell-s7-phase6.md). |
 | `make test-shell-integration` | Existing shell integration extended with cursor/screen-state, history/search/paste, timeout/log separation and no-UART coverage; snapshot NVMe fixture for normal runs |
 | `make test-input` | Host ASan/UBSan: decoder, modifiers and bounded FIFO |
 | `make test-usb-discovery` | 9G.1a BIOS/UEFI PCI discovery with/without xHCI, shell startup without NVMe; ISO boot only, no data disk. No USB transfers or persistence claimed. |

@@ -12,7 +12,7 @@ It is an independent kernel, not a Linux distribution. The project is still unde
 > [`PROTECTED.md`](PROTECTED.md) — those are kept in sync with the code, this
 > file is kept in sync with those.
 
-**Current milestone:** Shell Milestone S6 is **complete and verified on physical hardware** (Dell Latitude 5590) with uniform file descriptors (0–31), full redirection (`<`, `>`, `>>`, `2>&1`, `n>&-`), atomic multi-core append serialization, and RO/tainted storage assertions. Multi-core (SMP) execution is complete across all six pieces (Pieces 1–5, 6A–6D) on 8 CPU cores with 32 GiB RAM. A modern quiet boot UX delivers a graphical Tokyo Night splash screen, live centered kernel status ticker, automatic un-mute on panic/failure, clean shell handoff, and Pride1922 branding. Next milestone: **Shell S7 (Pipes and Stream Utilities)**.
+**Current milestone:** Shell S7 is **complete**: blocking kernel pipes, grouped pipelines with redirections and negation, byte-preserving stream utilities (`cat`, `head`, `tail`, `wc`), and builtin pipeline stages via `/bin/sh-builtin`. Verified on QEMU BIOS and UEFI with `SMP=1/4/8` and physical Dell Latitude 5590 in both read-only and writable mount modes. Pipelines such as `echo hello | wc -l` and `cat file | head -n 5 | wc -l` work on hardware. Pipe peers remain BSP-pinned. See [S7 acceptance](docs/roadmap/shell-s7-phase6.md). Next: **Shell S8 (jobs, signals, process groups)**.
 
 ## What works today
 
@@ -202,7 +202,6 @@ Multi-core execution is complete and verified on bare metal (Dell Latitude 5590,
    - **6D**: Address-space lifetime discipline (`op_refs`, `sched_refs`, active CPU masks, deferred destruction queue, and atomic wait/exit coordination verified across 100 process cycles with zero leaks).
 
 **Next milestones:**
-- **Shell Milestone S7 (Pipes & Stream Utilities):** Kernel anonymous pipes (`SYS_PIPE`), multi-stage pipelines (`cmd1 | cmd2 | ... | cmdN`), POSIX auto-CLOEXEC descriptor cleanup, simulated exit 141 on broken pipes, and transparent stream filter tools (`cat`, `head`, `tail`, `wc`). Planned in [`docs/plans/S7_PLAN.md`](docs/plans/S7_PLAN.md).
 - **Shell Milestone S8 (Jobs, Signals & Process Groups):** Background jobs (`&`), job control (`jobs`, `fg`, `bg`), process group terminal ownership, and signal handling (`SIGINT`, `SIGTSTP`, `kill`).
 - **Shell Milestone S9 (Scripting & Control Flow):** Script execution, shell functions, parameter expansion sub-stages, and control structures.
 - Introspection syscalls and utilities (`sysinfo`, `top`, `ps`).

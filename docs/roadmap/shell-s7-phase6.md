@@ -1,37 +1,71 @@
-# Shell S7 Phase 6: verification handoff
+# Shell S7 Phase 6: QEMU and physical acceptance
 
-**NOT STARTED (2026-09-27).** Phase 5B's runner path is complete; S7 as a whole
-is not. This checkpoint is verification-only, with no new implementation code.
-Prior evidence: [Phase 5A](shell-s7-phase5a.md) and
-[Phase 5B](shell-s7-phase5b.md). Acceptance references:
-[S7 plan, Phase 6](../plans/S7_PLAN.md#phase-6-multi-core-smp--formal-acceptance)
-and [G6/G7 matrix](../plans/S7_PLAN.md#5-acceptance-audit-checklist--verification-matrix).
+**COMPLETE — user-confirmed 2026-09-27.** Shell S7 Phases 1–6 are complete.
+Next: Shell S8 (jobs, signals and process groups). Prior implementation evidence:
+[Phase 5A](shell-s7-phase5a.md) and [Phase 5B](shell-s7-phase5b.md).
+Design references: [S7 plan](../plans/S7_PLAN.md) and its
+[G6/G7 matrix](../plans/S7_PLAN.md#5-acceptance-audit-checklist--verification-matrix).
 
-## Verification boundary
+## QEMU acceptance
 
-Pipe peers remain pinned to the BSP. A VM with four or eight CPUs still executes
-all pipeline stages on CPU 0. Phase 6 must establish that pipeline correctness
-holds when other CPUs exist; it cannot establish that pipelines use multiple
-cores. Moving wake channels off the BSP and executing cross-core pipe peers
-belong to a future milestone.
+The user reported successful S7 verification under BIOS and UEFI with one,
+four and eight CPUs, with AP counts confirmed in boot logs. These are
+user-reported acceptance results; no QEMU tests were rerun for this documentation
+update. Earlier agent-executed one-CPU results remain recorded in Phase 5B.
 
-The existing plan's G6 specifies a producer on CPU 1 and consumer on CPU 2.
-Neither that arrangement nor CPU 1 producer / CPU 0 consumer is achievable
-within this BSP-pinned, verification-only phase. The literal cross-core G6
-criterion remains deferred and must not be marked passed by an SMP boot.
-This records the user's current scope clarification; it does not rewrite the
-plan or claim its original G6 has been satisfied.
+| Invocation | BIOS | UEFI | Boot evidence |
+| --- | --- | --- | --- |
+| `make test-shell-s7 SMP=1` | PASS | PASS | One CPU; no APs |
+| `make test-shell-s7 SMP=4` | PASS | PASS | Four CPUs; three APs confirmed |
+| `make test-shell-s7 SMP=8` | PASS | PASS | Eight CPUs; seven APs confirmed |
 
-## Pending acceptance gates
+`SMP=N` plumbing is present in `scripts/test_shell_s7.py`: the runner reads the
+`SMP` environment variable (default `1`) and passes it to the shared
+`qemu_session(..., smp=SMP)` harness in `scripts/test_shell_s6.py`, which builds
+QEMU's `-smp` argument. The completion message includes the CPU count.
+Command-line make assignments propagate to the recipe environment.
 
-| Gate | Required evidence | Status |
-| --- | --- | --- |
-| QEMU with other CPUs present | S7 suite under `-smp 4` and `-smp 8`, each with BIOS and UEFI; record exact invocation, actual QEMU arguments, firmware and logs. The existing one-CPU `make test-shell-s7` pass is not this evidence. | NOT STARTED |
-| Streaming and throughput | Byte-exact payloads exceeding 256 KiB through 2-, 3- and 8-stage pipelines using the new utilities, across the four firmware/CPU cells; record payload size, comparison method and measured throughput. | NOT STARTED |
-| Lock discipline under SMP | Lock hierarchy assertions and contention metrics from the same SMP runs, while pipe peers remain on the BSP; record observations without inferring cross-core wakeup safety. | NOT STARTED |
-| Cross-core portion of original G6 | Producer/consumer on different CPUs requires future wake-channel support and removal of the BSP restriction. | DEFERRED beyond Phase 6 |
-| G7, Dell Latitude 5590 | Physical pipeline execution, stream utilities, clean serial/framebuffer output and clean shutdown; identify build, device and observed results. QEMU passes do not satisfy this gate. | NOT STARTED |
+The suite uses a disposable ISO and NVMe copy, covering streaming through
+2-, 3- and 8-stage pipelines, payloads exceeding 256 KiB, stream utilities,
+builtin stages, statuses and cooperative cleanup. Existing extracted-file byte
+comparisons and offline `e2fsck -fn` checks remain part of the suite. Logs are
+`build/shell-s7-{bios,uefi}.log` and matching `-e2fsck.log` files; filenames do
+not include CPU count and subsequent runs overwrite them. The six-cell result
+and AP-count confirmation above are the user's report, not a claim that six
+separate log sets were inspected or archived in this documentation update.
+No numerical throughput or contention measurements were supplied here.
 
-Keep QEMU storage disposable and distinguish host checks, QEMU runs and physical
-observations in the eventual evidence. No Phase 6 test or hardware result is
-claimed at this handoff. `AGENTS.md` status changes remain a separate user task.
+## Dell Latitude 5590 acceptance
+
+The user confirmed physical pipeline and stream-utility acceptance in both
+read-only and writable mount modes. Reported working hardware pipelines include:
+
+```sh
+cat file | head -n 5 | wc -l
+echo hello | wc -l
+env | cat
+pwd | cat
+ls /bin | head -n 5
+```
+
+Both RO and RW passes are recorded as user-reported hardware evidence, separate
+from QEMU and host checks. No new host sanitizer result, raw hardware capture,
+throughput figure or per-command transcript is inferred from this acceptance.
+The envp entry fix enabling the runner is documented in
+[Phase 5B](shell-s7-phase5b.md): the omitted `mov rdx, rbp` left the exact kernel
+address `0xffffffff80062bb8 = scheduler_cpus + 0x1578` in RDX.
+
+## Accepted scope and remaining boundary
+
+Phase 6 completes verification of pipelines when other CPUs exist and on the
+Dell. It adds test CPU-count plumbing, not a new pipe or scheduler architecture.
+Pipe peers remain pinned to the BSP, so all pipeline stages run on CPU 0 even
+in a four- or eight-CPU VM.
+
+The original plan's G6 requests a producer on CPU 1 and consumer on CPU 2.
+That arrangement, and CPU 1 producer / CPU 0 consumer, remain outside this
+accepted BSP-pinned scope. The literal cross-core G6 criterion is deferred to
+a future milestone; the reported SMP passes do not establish distributed pipe
+execution or cross-core wakeup safety. Earlier roadmap handoffs assigning that
+work to Phase 6 are superseded by this accepted scope. G7's Dell acceptance is
+user-confirmed in both mount modes. S7 is complete within these boundaries.

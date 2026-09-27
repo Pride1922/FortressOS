@@ -1,10 +1,10 @@
 # Shell S7 Phase 5B: builtin pipeline stages
 
-**COMPLETE for the runner path — user-confirmed 2026-09-27.** The broader S7
-milestone remains open. [Phase 6](shell-s7-phase6.md) is not started; pipe peers
-remain pinned to the BSP. No Phase 5B hardware or cross-core pipe acceptance is
-claimed. Design references: [S7 plan](../plans/S7_PLAN.md) and
-[Phase 5B plan](../plans/S7_PHASE5B.md).
+**COMPLETE — user-confirmed 2026-09-27.** S7 Phases 1–6 are now complete.
+The subsequent [Phase 6 acceptance](shell-s7-phase6.md) covers QEMU BIOS/UEFI
+with 1/4/8 CPUs and Dell Latitude 5590 in RO and RW mount modes. Pipe peers
+remain BSP-pinned; cross-core execution is deferred. Design references:
+[S7 plan](../plans/S7_PLAN.md) and [Phase 5B plan](../plans/S7_PHASE5B.md).
 
 ## Delivered scope
 
@@ -59,7 +59,8 @@ the shell command.
 
 The utility loop shadowed the firmware variable `mode`, causing both completion
 messages to print `2`. Renaming that loop variable to `stream_mode` was a
-reporting-only correction, syntax-checked but not rerun through QEMU. During the
+reporting-only correction, initially syntax-checked without a QEMU rerun. Later
+user-reported suite passes are recorded in Phase 6. During the
 passing run, each audit was copied immediately after its firmware run to
 `build/shell-s7-{bios,uefi}-e2fsck.log`, preserving both before overwrite.
 
@@ -77,11 +78,9 @@ with this acceptance record. No tests were rerun for this documentation update.
 | `make test-shell-s6` | User-reported PASS, QEMU BIOS and UEFI, Phase 4 and Phase C integration checks. |
 | `make test-shell-s6-resources` | User-reported PASS, QEMU BIOS and UEFI, 1 and 4 CPUs: 12 measured cycles per cell, exact cleanup, refcount balance, slot reuse and clean `e2fsck`. This is resource regression evidence, not cross-core pipe execution. |
 
-No new host sanitizer execution is claimed for this checkpoint. The reporting
-correction has Python syntax-check evidence only. All pipeline runtime evidence
-here is QEMU BSP evidence; physical Dell acceptance and correctness with other
-CPUs present remain unverified Phase 6 gates.
-
-The `AGENTS.md` S7 status update is pending a separate user update. Plan status
-and the older cross-core G6 wording also remain unchanged by this roadmap-only
-record; the current Phase 6 scope is explicit in the linked handoff.
+No new host sanitizer execution is claimed for this checkpoint. Its original
+runtime evidence was QEMU BSP evidence. Subsequent QEMU 1/4/8-CPU and physical
+Dell RO/RW acceptance is recorded separately in [Phase 6](shell-s7-phase6.md),
+so the hardware result is not attributed to the earlier envp-fix session.
+`AGENTS.md` now records S7 completion; the plan's original cross-core G6 wording
+is qualified by the accepted BSP-pinned scope in Phase 6.
