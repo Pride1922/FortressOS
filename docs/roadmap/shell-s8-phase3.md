@@ -139,6 +139,28 @@ FIFO is now embedded in the terminal object.
 Physical keyboard/UART acceptance remains separate; QEMU results do not imply
 Dell acceptance. No physical storage test is required by this Phase 3 fixture.
 
+## Evidence
+
+User-reported, 2026-09-28. The agent executed no host fixture and no QEMU boot;
+only compilation/link, AST and Python syntax checks were performed locally.
+
+- `make test-s8-terminal-host` — pass.
+- `make test-s8-terminal SMP=1` — pass under BIOS and UEFI, with real UART and
+  PS/2 input and the boot-log AP count verified.
+- `make test-nmi` — pass on three consecutive runs, after the `step` →
+  `resume_to` runner change recorded below.
+- Regressions — all pass: `test-s8-groups-host`, `test-s8-process-host`,
+  `test-s8-signals-host`, `test-s8-stops-host`, `test-s8-process`,
+  `test-s8-signals`, `test-s8-stops`, `test-shell-host`, `test-pipeline-host`,
+  `test-pipe-host`, `test-shell`, `test-pipe` and `test-shell-s7`.
+
+Not claimed by this evidence: physical keyboard/UART acceptance (QEMU PS/2 and
+UART results do not imply Dell acceptance), `SMP=4` and `SMP=8` terminal runs,
+storage acceptance (the fixture attaches no data disk), and worker-starvation or
+IRQ-handoff-race determinism — overflow and rapid handoff are covered by the host
+fixture only, and the QEMU runner does not force worker starvation or claim
+deterministic IRQ handoff-race coverage.
+
 ## NMI regression follow-up
 
 The user reported a repeatable BIOS sigreturn regression-test failure at the
@@ -154,3 +176,52 @@ NMI injection and kernel-frame preservation checks are unchanged. Failed return
 checks now print expected/actual context and QEMU CPU registers. No kernel or
 return assembly changes were made for this follow-up. Python syntax and diff
 checks pass; `make test-nmi` rerun remains with the user.
+
+## Files changed
+
+Commit `2aa9e75` — 22 files, +963/−38. Five files are new; the rest are modified.
+
+Kernel terminal, syscall surface and VFS:
+
+- `src/drivers/input.c` — terminal object, fd/session validation, foreground
+  read/control enforcement, ingress queue and the `terminal-signals` worker
+- `src/drivers/input.h` — terminal API prototypes (`input_terminal_bootstrap`,
+  `input_tcgetpgrp`, `input_tcsetpgrp`, `input_termattr`, `input_control_check`)
+- `src/include/terminal.h` — `terminal_attrs_t`, `TERM_ISIG` and the
+  `SYS_TERMATTR` contract
+- `src/include/syscall_abi.h` — `SYS_TCSETPGRP` 30, `SYS_TCGETPGRP` 31,
+  `SYS_TERMATTR` 34 and `SYSCALL_ENOTTY`
+- `src/kernel/syscall.c` — dispatch for the new terminal calls
+- `src/kernel/main.c` — shell terminal bootstrap before preemption is enabled
+- `src/fs/vfs.c` — legacy terminal reads translate input errors into VFS errors
+
+User shell:
+
+- `user/shell/ui.c` — flag-only prompt SIGINT handler, ignored prompt
+  SIGTSTP/SIGTTOU and the bounded 100 ms input wait with EINTR cancellation
+- `user/shell/program.c` — `SYS_WAIT` retries EINTR so a prompt signal does not
+  abandon child collection
+
+Test fixtures and runners:
+
+- `tests/s8_terminal_user.c` — Ring 3 terminal/foreground fixture (new)
+- `tests/s8_terminal_host.c` — host fixture with IRQ/device/scheduler adapters
+  (new)
+- `tests/s8_signal_user.c`, `tests/s8_stop_user.c` — blocked-input cases kept in
+  the foreground group
+- `scripts/test_s8_terminal.py` — BIOS/UEFI UART + PS/2 runner (new)
+- `scripts/test_s8_terminal_host.py` — host runner (new)
+- `scripts/test_nmi_transitions.py` — `step` → `resume_to` user-boundary
+  observation
+- `scripts/test_shell.py` — walk the blocked list to the shell thread and use
+  `input_wait_channel_debug`
+- `Makefile` — `test-s8-terminal-host`, `test-s8-terminal` and the fixture build
+  rule
+
+Documentation:
+
+- `docs/roadmap/shell-s8-phase3.md` — this handoff (new)
+- `docs/roadmap/README.md` — S8 roadmap index entries
+- `docs/roadmap/shell-s8-group-lifetime.md` — prerequisite status updated to
+  user-reported passing
+- `AGENTS.md` — S8 Phase 3 status and test-target routing

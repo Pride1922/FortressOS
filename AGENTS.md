@@ -23,6 +23,7 @@ FortressOS is a freestanding C11/NASM x86_64 kernel using Limine v8, base revisi
 
 History lives in [docs/roadmap/README.md](docs/roadmap/README.md); qualifications and technical debt in [ARCH_REVIEW.md](ARCH_REVIEW.md). Keep new implementation instructions here, checkpoint history there, and verification claims tied to actual evidence.
 
+| Shell S8 | IN PROGRESS (2026-09-28). Phase 1 (process identity, child records, wait ABI), Phase 2A (signal infrastructure, default delivery), Phase 2B (custom handlers, `sigreturn`, NMI gate), Phase 2C (stop/continue, `SIGCHLD`), group-lifetime prerequisite, and Phase 3 (terminal foreground ownership, fd-based `SYS_TCSETPGRP`/`SYS_TCGETPGRP`, TTIN/TTOU, deferred ingress worker) are complete and verified. Phases 4–6 (shell jobs, job control builtins, `SIGPIPE`) remain. Full detail: [Phase 1](docs/roadmap/shell-s8-phase1.md), [Phase 2C](docs/roadmap/shell-s8-phase2c.md), [group lifetime](docs/roadmap/shell-s8-group-lifetime.md), [Phase 3](docs/roadmap/shell-s8-phase3.md). |
 | Shell S7 | COMPLETE (2026-09-27), user-confirmed: Phases 1–6 verified. Blocking 64 KiB pipes, CLOEXEC cleanup, grouped pipelines, redirections, negation, cooperative teardown, stream utilities and builtin stages via `/bin/sh-builtin`. Fixed envp delivery with `mov rdx, rbp` in the trampoline, preserving argv and scheduler cleanup. QEMU BIOS/UEFI verified with `SMP=1/4/8`, AP counts confirmed in boot logs; Dell Latitude 5590 accepted in both RO and RW mount modes. Working pipelines: `echo hello \| wc -l`, `cat file \| head -n 5 \| wc -l`. Peers remain BSP-pinned; cross-core execution deferred. Details: [Phase 5B](docs/roadmap/shell-s7-phase5b.md), [Phase 6](docs/roadmap/shell-s7-phase6.md). |
 | Shell S6 | COMPLETE (2026-09-26). Redirections, uniform descriptor architecture, resource bounds, RO/tainted storage assertions, documented single-threaded process rules (concurrent non-append shared-file_t I/O deferred to S7 pipelines), and physical Dell Latitude 5590 hardware acceptance. Phase 1–3 complete: negative error codes for dup/dup2, stream node EOF bypass (`VFS_STREAM`), numeric parser bounds, atomic acquire-release refcounting on `file_t`, atomic EOF append serialization under `ext2_lock` (`ext2_write(..., &offset, append, ...)`), host sequential verification, and true multi-core SMP concurrent append integration suite (`make test-smp-append`) verified under QEMU `-smp 4` (BIOS & UEFI) with offline `e2fsck -fn` integrity audits. Phase 4A–4D complete: child process file redirection via `SYS_SPAWN_EXT`, target expansion, ambiguous redirect rejection, scoped parent builtin redirection (`save/apply/restore`), redirection-only empty commands (`> file`), `SYS_FCNTL` (`F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`), retained UI terminal handle (`g_term_fd` on FD 31 with `FD_FLAG_CLOEXEC`), `/bin/dual_stream` lexical duplication ordering, stderr append/truncation/closure, stdin `cat`, and non-recursive short-write error returns. Phase B complete: resource exhaustion suite (`make test-shell-s6-resources`) verified under BIOS & UEFI (1 and 4 CPUs) for child descriptor limit, parent fd table exhaustion, process table capacity, GDB scheduler inspection confirming 0 partial/runnable threads published on failed spawn, and prompt recovery. Phase C complete: RO and tainted ext2 storage assertions verified under BIOS and UEFI; distinct error strings (`Read-only filesystem.` and `I/O error.`), execution suppression on failed redirection setup, bit-for-bit file preservation, status propagation (`$? == 1`, `||` recovery, `&&` halt), and prompt recovery. Phase D complete: physical Dell Latitude 5590 acceptance verified on SanDisk USB 3.2 Gen 1 (RO Pass 1, RW Pass 2, offline host `e2fsck -fn` 0 errors, bit-for-bit SHA-256 match on all created files). Pipelines belong to S7. Full detail: [docs/plans/S6_AUDIT.md](docs/plans/S6_AUDIT.md). |
 | Shell S5 | COMPLETE (2026-09-25). Environment, variables, parameter expansion, aliases, and globbing. Flat variables (scoped for S9), SYS_SPAWN_EXT ABI, stack budget assertion with 512B floor, top-down string packing, builtins (set, unset, export, env, alias, unalias), 5-stage expansion pipeline (tilde, parameter, word splitting, globbing, quote removal). Verified on BIOS and UEFI. Full detail: [docs/roadmap/shell-s5.md](docs/roadmap/shell-s5.md). |
@@ -43,20 +44,20 @@ Shell S7 Phases 1–6 are complete. See [Phase 5A utilities](docs/roadmap/shell-
 [Phase 5B builtin stages and envp diagnosis](docs/roadmap/shell-s7-phase5b.md),
 and [Phase 6 QEMU/Dell acceptance](docs/roadmap/shell-s7-phase6.md).
 Pipe peers remain on the BSP even in multi-CPU runs; cross-core wake channels
-remain future work. Shell S8 Phase 1 is complete, with all handoff tests reported passing by the user (2026-09-27). See [Phase 1 evidence](docs/roadmap/shell-s8-phase1.md). The user also reports Phase 2A/2B acceptance, including BIOS/UEFI sigreturn NMI coverage. Phase 2C is implemented with runtime acceptance pending; see [stop/continue handoff](docs/roadmap/shell-s8-phase2c.md). Phase 3 terminal ownership is implemented with runtime acceptance pending (see below); shell jobs remain later S8 phases.
+remain future work. Shell S8 Phase 1 is complete and verified (2026-09-27);
+Phases 2A/2B are complete and user-verified, including BIOS/UEFI sigreturn NMI
+coverage; Phase 2C (stop/continue and durable child notification) is complete and
+verified, as is the separate group-lifetime prerequisite (retained PGID
+identities, generations and bounded references); Phase 3 (single-terminal
+foreground ownership, fd-based `SYS_TCSETPGRP`/`SYS_TCGETPGRP`, versioned input
+attributes, TTIN/TTOU enforcement and the BSP deferred ingress signal worker) is
+complete and verified. Evidence: [Phase 1](docs/roadmap/shell-s8-phase1.md),
+[Phase 2C](docs/roadmap/shell-s8-phase2c.md),
+[group lifetime](docs/roadmap/shell-s8-group-lifetime.md) and
+[Phase 3](docs/roadmap/shell-s8-phase3.md). Shell job launch/handoff and
+job-table management remain Phases 4–5; current pipe/input peers stay BSP-pinned.
 
 Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
-
-S8 group-lifetime prerequisite (Shape A) was reported passing by the user on
-2026-09-28; individual commands/results were not supplied. Monotonic PIDs do not prevent namesake PGID
-recreation by a living process. Retained group records now reserve PGIDs and
-carry generations; see [handoff](docs/roadmap/shell-s8-group-lifetime.md).
-
-S8 Phase 3 is implemented with runtime acceptance pending: single-terminal
-foreground ownership, fd-based APIs, versioned input attributes, TTIN/TTOU
-enforcement and a BSP deferred ingress signal worker. See the
-[Phase 3 handoff](docs/roadmap/shell-s8-phase3.md). Shell job launch/handoff and
-job-table management remain Phases 4–5; current pipe/input peers stay BSP-pinned.
 
 ### Phase 9G implementation handoff
 
@@ -143,11 +144,11 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
-| `make test-s8-terminal-host` | Phase 3 actual input/group logic with IRQ/scheduler adapters: ownership, attributes, retained ingress events, coalescing/overflow and cleanup. Implemented, not executed. |
-| `make test-s8-terminal SMP=N` | Phase 3 BIOS/UEFI with SMP=1/4/8, AP-count checks, real UART/PS2, no-reader group signals, TTIN/TTOU, ISIG off and FD 31 reclaim; disposable ISO, no data disks. Implemented, not executed. |
-| `make test-s8-groups-host` | Separate S8 prerequisite: actual process-group lifetime/reference and signal-publication tests with pthread lock adapters and ASan/UBSan. User reported prerequisite acceptance 2026-09-28 without per-command details; no IRQ/scheduler claim. |
-| `make test-s8-stops-host` | Phase 2C process-table transition/counter/cancellation/CHLD tests with pthread locks; no scheduler/IRQ claim. Implementation only, not yet run. |
-| `make test-s8-stops SMP=N` | Phase 2C BIOS/UEFI Ring 3 STOP/CONT/KILL and caught-CHLD fixture, disposable ISO with no data disks; BSP-pinned children. Implementation only, not yet run. |
+| `make test-s8-terminal-host` | Phase 3 actual input/group logic with IRQ/scheduler adapters: ownership, attributes, retained ingress events, coalescing/overflow and cleanup. User-reported pass 2026-09-28; no IRQ/scheduler claim. |
+| `make test-s8-terminal SMP=N` | Phase 3 BIOS/UEFI with SMP=1/4/8, AP-count checks, real UART/PS2, no-reader group signals, TTIN/TTOU, ISIG off and FD 31 reclaim; disposable ISO, no data disks. User-reported pass with `SMP=1` under BIOS and UEFI (AP counts verified) 2026-09-28; `SMP=4`/`SMP=8` terminal runs were not reported. |
+| `make test-s8-groups-host` | Separate S8 prerequisite: actual process-group lifetime/reference and signal-publication tests with pthread lock adapters and ASan/UBSan. User-reported pass 2026-09-28 (no per-command details); no IRQ/scheduler claim. |
+| `make test-s8-stops-host` | Phase 2C process-table transition/counter/cancellation/CHLD tests with pthread locks; no scheduler/IRQ claim. User-reported pass 2026-09-28. |
+| `make test-s8-stops SMP=N` | Phase 2C BIOS/UEFI Ring 3 STOP/CONT/KILL and caught-CHLD fixture, disposable ISO with no data disks. User-reported pass 2026-09-28; children stay BSP-pinned, so this is not cross-core stopped-task acceptance. |
 | `make test-pipe-host` | S7 Phases 1–2 ASan/UBSan: real pipe/VFS/sys_pipe with host adapters; wraparound, atomic thresholds, lock-free wait/wake call sites, endpoint lifetime and allocation/fd rollback. No SMP/IRQ claim. |
 | `make test-pipe` | S7 Phases 1–2 BIOS/UEFI (1 CPU), disposable test ISO with no data disks; kernel blocking/backpressure/close tests and Ring 3 pointer validation, CLOEXEC spawn actions, fd exhaustion, EOF/EPIPE. See [Phase 2 evidence](docs/roadmap/shell-s7-phase2.md). Cross-core wakeups remain deferred. |
 | `make test-shell-host` | Consolidated ASan/UBSan: keyboard/queue, framebuffer terminal and actual shell editor/history logic |
@@ -165,7 +166,7 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 | `make test-shell-s6-resources` | Shell S6 Phase B resource limits under QEMU (BIOS & UEFI, 1 & 4 CPUs): child descriptor limit (32), parent fd table exhaustion, process table capacity, GDB scheduler inspection confirming 0 partial/runnable threads published on abort, prompt recovery. |
 | `make test-storage` | BIOS/UEFI GPT/ext2, Ring 3 reads, allocation-set audits; `build/storage-*.log` |
 | `make test-shell` | BIOS/UEFI IRQ1/IRQ4 interaction, sleeping readers, restart counts; also UEFI 8 GiB without COM1 |
-| `make test-nmi` | 7 exact syscall/SWAPGS boundaries × 4 rounds × 2 firmware modes (BSP); `build/nmi-*.json` and `.log` |
+| `make test-nmi` | BIOS/UEFI, BSP: seven SYSRET boundaries × 4 rounds + kernel test-recovery + four sigreturn boundaries × 2 origins × 4 rounds; `build/nmi-*.json` and `.log`. Runner observes the post-IRET user boundary with a hardware breakpoint (`resume_to`) instead of single-stepping — see the [Phase 3 handoff](docs/roadmap/shell-s8-phase3.md). User-reported pass on three consecutive runs 2026-09-28. |
 | `make test-smp-percpu` | BIOS/UEFI with 1/4/8 CPUs: CPU-local GS/GDT/TSS/stacks, AP #DF, real NMI delivery on every CPU, unchanged BSP IST/TSS/GDT and shell startup; snapshot NVMe fixture |
 | `make test-pmm-boot-host` | Piece 6A host ASan/UBSan with single-threaded shims: boot ceiling, capped OOM, contiguous boundary, unlock gates and exact cleanup; no SMP exclusion claim |
 | `make test-smp-memory-boot` | Piece 6A BIOS/UEFI 1/4/8 CPUs, 2 GiB: explicit test ISO, readiness/CR3, high-memory probe and AP startup; no data disks |
