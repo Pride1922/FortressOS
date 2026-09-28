@@ -159,6 +159,14 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
         return TOK_AND;
     }
 
+    if (s[i] == '&') {
+        lex->pos = i + 1;
+        tok->type = TOK_BG;
+        tok->value = "&";
+        tok->len = 1;
+        return TOK_BG;
+    }
+
     if (s[i] == '|' && s[i + 1] == '|') {
         lex->pos = i + 2;
         tok->type = TOK_OR;

@@ -35,7 +35,8 @@ int main(void) {
         offsetof(tcb_t, fd_flags), offsetof(tcb_t, name), offsetof(tcb_t, next));
 }''')
     exe = str(Path(tmp) / "offsets")
-    subprocess.run(["gcc", "-Isrc/kernel", "-Isrc/include", "-Isrc/fs", str(source), "-o", exe], cwd=REPO, check=True)
+    subprocess.run(["gcc", "-Isrc/kernel", "-Isrc/include", "-Isrc/fs", "-Isrc/arch/x86_64",
+                    str(source), "-o", exe], cwd=REPO, check=True)
     return list(map(int, subprocess.check_output([exe]).split()))
 
 
@@ -155,18 +156,44 @@ def run(mode):
                     key(code, c.isupper())
                 return wait_prompt(start)
 
+            # The prompt is emitted before the shell re-enters the blocking input
+            # read; Phase 4's pre-prompt reap/GC widened that window, so observe
+            # the blocked list until the shell appears rather than sampling once.
+            def u64(address):
+                return int.from_bytes(remote.memory(address, 8), "little")
+
+            def shell_blocked_node():
+                # Phase 3 adds a sleeping terminal worker to the same list, so
+                # find the actual shell instead of assuming it is the head.
+                node = u64(sym["g_blocked_threads"])
+                for _ in range(64):
+                    if not node: return 0
+                    if remote.memory(node + name_offset, 6) == b"shell\0": return node
+                    node = u64(node + next_offset)
+                return 0
+
+            def find_shell_blocked(deadline=2.0):
+                end = time.time() + deadline
+                while True:
+                    qmp.execute("stop")
+                    try:
+                        scheduler_symbols(remote, sym)
+                        node = shell_blocked_node()
+                    finally:
+                        qmp.execute("cont")
+                    if node: return node
+                    if time.time() > end:
+                        raise AssertionError("stdin reader must sleep, not yield/poll")
+                    time.sleep(0.02)
+
             def snapshot():
+                find_shell_blocked()
                 qmp.execute("stop")
                 try:
-                    def u64(address): return int.from_bytes(remote.memory(address, 8), "little")
                     scheduler_symbols(remote, sym)
-                    blocked = u64(sym["g_blocked_threads"])
-                    # Phase 3 adds a sleeping terminal worker on the same list.
-                    # Find the actual shell rather than assuming it is the head.
-                    for _ in range(64):
-                        if not blocked or remote.memory(blocked + name_offset, 6) == b"shell\0":
-                            break
-                        blocked = u64(blocked + next_offset)
+                    # Re-walk under the held stop so the assertions below describe
+                    # one consistent observation; nothing is relaxed.
+                    blocked = shell_blocked_node()
                     assert blocked, "stdin reader must sleep, not yield/poll"
                     assert remote.memory(blocked + name_offset, 6) == b"shell\0"
                     assert int.from_bytes(remote.memory(blocked + state_offset, 4), "little") == 2

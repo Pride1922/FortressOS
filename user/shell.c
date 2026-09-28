@@ -16,6 +16,7 @@
 #include "shell/redir.h"
 #include "shell/program.h"
 #include "shell/pipeline.h"
+#include "shell/jobs.h"
 
 static char cmd_buf[LINE_CAP * 2];
 static char line_input[LINE_CAP];
@@ -35,6 +36,11 @@ static expanded_cmd_t s_exp_val;
 static spawn_fd_action_t s_spawn_actions[MAX_SPAWN_ACTIONS];
 static char s_spawn_target_paths[MAX_SPAWN_ACTIONS][VFS_MAX_PATH];
 static redir_scope_t s_parent_scope;
+
+/* Flag-only SIGCHLD handler — sets a scalar flag; the main loop drains
+ * the record table via jobs_reap_children(). Never prints or reaps here. */
+static volatile unsigned g_sigchld_flag;
+static void prompt_sigchld(unsigned sig) { (void)sig; g_sigchld_flag = 1; }
 
 static void update_cwd(void) {
     long n = call(SYS_GETCWD, (uintptr_t)current_cwd, sizeof(current_cwd), 0);
@@ -586,8 +592,9 @@ static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
     return curr_status;
 }
 
-static void execute_parse_tree(parse_tree_t *tree) {
-    last_status = execute_command_list(tree, (int)last_status, execute_single_command);
+static void execute_parse_tree(parse_tree_t *tree, const char *cmd_text) {
+    last_status = execute_command_list_job(tree, (int)last_status,
+                                           execute_single_command, cmd_text);
 }
 
 void shell_main(void) {
@@ -610,7 +617,17 @@ void shell_main(void) {
 
     puts("\nFortressOS shell (Ring 3) — Crafted by Pride1922\nType help for commands.\n");
 
+    /* Install flag-only SIGCHLD handler for job notification. */
+    signal_action_t chld_action = { .handler = (uintptr_t)prompt_sigchld };
+    (void)call(SYS_SIGACTION, SIGCHLD, (uintptr_t)&chld_action, 0);
+
+    jobs_init();
+
     for (;;) {
+        /* Reap background children and GC notified slots before prompt. */
+        jobs_reap_children();
+        jobs_gc();
+
         shell_set_prompt_state(last_status, current_cwd);
         if (!shell_read_line(line_input, false)) return;
         if (!line_input[0]) continue;
@@ -663,7 +680,10 @@ void shell_main(void) {
             continue;
         }
         if (pr == PARSE_OK) {
-            execute_parse_tree(&parse_tree);
+            execute_parse_tree(&parse_tree, cmd_buf);
         }
+
+        /* Drain any reports generated during execution. */
+        jobs_reap_children();
     }
 }

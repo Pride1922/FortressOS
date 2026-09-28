@@ -151,6 +151,10 @@ test-s8-signals: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_signal_user.elf
 test-s8-stops-host:
 	@python3 scripts/test_process_table_host.py --stops
 
+.PHONY: test-s8-jobs-host
+test-s8-jobs-host:
+	@python3 scripts/test_s8_jobs_host.py
+
 $(BUILD_DIR)/s8_stop_user.elf: tests/s8_stop_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/signal_abi.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_stop_user.c -o $(BUILD_DIR)/s8_stop_user.o
@@ -159,6 +163,26 @@ $(BUILD_DIR)/s8_stop_user.elf: tests/s8_stop_user.c user/shell_start.asm user/sh
 
 test-s8-stops: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_stop_user.elf
 	@python3 scripts/test_s8_process.py --stops
+
+$(BUILD_DIR)/s8_jobs_user.elf: tests/s8_jobs_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/signal_abi.h src/include/terminal.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_jobs_user.c -o $(BUILD_DIR)/s8_jobs_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/s8_jobs_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s8_jobs_user_start.o $(BUILD_DIR)/s8_jobs_user.o -o $@
+
+.PHONY: test-s8-jobs
+test-s8-jobs: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_jobs_user.elf
+	@SMP=$(SMP) python3 scripts/test_s8_jobs.py
+
+$(BUILD_DIR)/s8_jobs_delay_user.elf: tests/s8_jobs_delay_user.c user/shell_start.asm user/shell.ld src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_jobs_delay_user.c -o $(BUILD_DIR)/s8_jobs_delay_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/s8_jobs_delay_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s8_jobs_delay_user_start.o $(BUILD_DIR)/s8_jobs_delay_user.o -o $@
+
+.PHONY: test-s8-jobs-idle
+test-s8-jobs-idle: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_jobs_delay_user.elf
+	@SMP=$(SMP) python3 scripts/test_s8_jobs_idle.py
 
 $(BUILD_DIR)/s8_process_user.elf: tests/s8_process_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)

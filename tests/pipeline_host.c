@@ -6,6 +6,7 @@
 #include "pipeline.h"
 #include "program.h"
 #include "vars.h"
+#include "io.h"
 
 static int fds[32], flags[32], baseline[32];
 static int pipes_created, launches, waits, opens, singles, fail_pipe, fail_spawn, fail_wait;
@@ -17,6 +18,22 @@ static parse_tree_t tree;
 
 static void append(char *dst, const char *src) {
     memcpy(dst + strlen(dst), src, strlen(src) + 1);
+}
+
+/* ---- Job-table link stubs (S8 Phase 4) ----
+ * pipeline.c routes background/foreground launches through the real job table
+ * and the terminal-handoff path, so jobs.c and ui.c symbols must resolve here.
+ * These are link-level stand-ins, not evidence of job-control behavior. */
+int shell_get_terminal_fd(void) { return 31; } /* Fixture's reserved UI handle. */
+
+/* jobs_print_launch/jobs_reap_children format job and PGID numbers here; the
+ * digits are captured so notification assertions can inspect them. Surrounding
+ * puts() text still goes to the host stdout. */
+void put_dec(size_t val) {
+    char buf[24]; int i = 0;
+    if (val == 0) { append(diagnostic, "0"); return; }
+    while (val) { buf[i++] = '0' + (val % 10); val /= 10; }
+    while (i) { char c[2] = { buf[--i], 0 }; append(diagnostic, c); }
 }
 
 size_t length(const char *s) { return strlen(s); }
@@ -112,6 +129,13 @@ long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
         assert(!memcmp(fds, baseline, sizeof(fds))); /* All parent copies closed. */
         *(int64_t *)b = statuses[waits++];
         return waits == fail_wait ? SYSCALL_ECHILD : 0;
+    }
+    if (nr == SYS_WAITPID) {
+        /* jobs_reap_children drains with WNOHANG|WUNTRACED|WCONTINUED.
+         * For host coverage: return 0 (no report) so jobs_reap_children exits. */
+        assert((long)(int64_t)a == -1);
+        assert(c == (WNOHANG | WUNTRACED | WCONTINUED));
+        return 0;
     }
     assert(!"unexpected syscall");
     return SYSCALL_ENOSYS;

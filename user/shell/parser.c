@@ -9,6 +9,7 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
     tree->pool_used = 0;
     tree->status = LEX_OK;
     tree->error_msg = 0;
+    tree->background = false;
 
     enum lex_status inc = lexer_check_incomplete(src);
     if (inc != LEX_OK) {
@@ -26,7 +27,7 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
             continue;
         }
 
-        if (type == TOK_AND || type == TOK_OR || type == TOK_PIPE) {
+        if (type == TOK_AND || type == TOK_OR || type == TOK_PIPE || type == TOK_BG) {
             tree->error_msg = "syntax error near unexpected token";
             return PARSE_SYNTAX_ERROR;
         }
@@ -198,6 +199,20 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
             }
         } else if (type == TOK_EOF) {
             cmd->next_op = CMD_OP_NONE;
+        } else if (type == TOK_BG) {
+            cmd->next_op = CMD_OP_BG;
+            type = lexer_next(&parse_lex, &tok);
+            /* & must be at end of input. Reject "cmd1 & cmd2". */
+            if (type != TOK_EOF && type != TOK_SEMI) {
+                /* Allow trailing ; or newline after & but reject more commands. */
+                if (type == TOK_WORD || type == TOK_REDIR || type == TOK_BANG) {
+                    tree->error_msg = "asynchronous compound lists unsupported";
+                    return PARSE_SYNTAX_ERROR;
+                }
+            }
+            /* Consume any trailing semicolons/newlines after & */
+            while (type == TOK_SEMI) type = lexer_next(&parse_lex, &tok);
+            tree->background = true;
         } else {
             tree->error_msg = "syntax error near unexpected token";
             return PARSE_SYNTAX_ERROR;

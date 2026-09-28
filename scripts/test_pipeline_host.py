@@ -12,6 +12,7 @@ with tempfile.TemporaryDirectory(prefix="fortress-pipeline-host-") as tmp:
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
         "-Isrc/include", "-Isrc/fs", "-Iuser/shell", "tests/pipeline_host.c",
         *[f"user/shell/{module}.c" for module in
-          ("lexer", "parser", "vars", "expand", "redir", "builtins", "program", "pipeline")],
+          ("lexer", "parser", "vars", "expand", "redir", "builtins", "program", "pipeline",
+           "jobs")],
         "-o", exe], cwd=repo, check=True)
     subprocess.run([exe], check=True, timeout=30)

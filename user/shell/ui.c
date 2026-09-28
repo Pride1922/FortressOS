@@ -3,6 +3,7 @@
 #include "terminal.h"
 #include "complete.h"
 #include "history_persist.h"
+#include "jobs.h"
 
 static line_editor_t edit;
 static terminal_info_t term;
@@ -223,13 +224,20 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
         if (input_pos == input_len) {
             /* Bounded wait also covers a signal handled just before read entry. */
             long n = call(SYS_INPUT_READ, (uintptr_t)input, sizeof(input), 100);
-            if (n==SYSCALL_EINTR || prompt_interrupt) continue;
-            if (n == INPUT_LOST) { lineedit_lost(&edit); paint(); continue; }
-            if (n < 0) { ui_puts("Input unavailable.\n"); return false; }
-            if (n == 0) {
-                if (edit.escape_len) { (void)lineedit_timeout(&edit); paint(); }
+            if (n==SYSCALL_EINTR || n==0) {
+                /* Scan even without a CHLD flag: delivery can precede sleep.
+                 * Keep the BSS editor (including cursor/history/paste) intact. */
+                bool repaint = jobs_reap_prompt();
+                if (n==0 && edit.escape_len) {
+                    (void)lineedit_timeout(&edit);
+                    repaint = true;
+                }
+                if (repaint && !prompt_interrupt) paint();
                 continue;
             }
+            if (prompt_interrupt) continue;
+            if (n == INPUT_LOST) { lineedit_lost(&edit); paint(); continue; }
+            if (n < 0) { ui_puts("Input unavailable.\n"); return false; }
             input_len = (size_t)n; input_pos = 0;
         }
 

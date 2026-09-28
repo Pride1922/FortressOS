@@ -15,7 +15,8 @@ enum cmd_op {
     CMD_OP_SEMI,    /* ; or \n */
     CMD_OP_AND,     /* && */
     CMD_OP_OR,      /* || */
-    CMD_OP_PIPE     /* stdout pipes to next command; grouping belongs to Phase 4 */
+    CMD_OP_PIPE,    /* stdout pipes to next command; grouping belongs to Phase 4 */
+    CMD_OP_BG       /* & — background the preceding pipeline (Phase 4) */
 };
 
 typedef struct {
@@ -46,6 +47,7 @@ typedef struct {
     size_t pool_used;
     enum lex_status status;
     const char *error_msg;
+    bool background;          /* True if the command list ends with & */
 } parse_tree_t;
 
 enum parse_result {

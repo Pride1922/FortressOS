@@ -41,6 +41,30 @@ int program_wait(long pid, int64_t *status) {
     return 0;
 }
 
+long program_launch_job(const char *path, const char *const *argv,
+                        const char *const *envp, const spawn_fd_action_t *actions,
+                        uint32_t action_count, long pgid) {
+    spawn_opts_t opts = {0};
+    opts.size = sizeof(opts);
+    opts.version = 2;
+    opts.flags = SPAWN_SETPGROUP | SPAWN_STAGED;
+    opts.argv = (uintptr_t)argv;
+    opts.envp = (uintptr_t)envp;
+    opts.fd_actions = action_count ? (uintptr_t)actions : 0;
+    opts.action_count = action_count;
+    opts.reserved2 = (uint64_t)pgid;
+    return call(SYS_SPAWN_EXT, (uintptr_t)path, (uintptr_t)&opts, sizeof(opts));
+}
+
+int program_waitpid(long pid, uint64_t *status, uint32_t options) {
+    long result;
+    do {
+        result = call(SYS_WAITPID, (uintptr_t)(int64_t)pid,
+                      (uintptr_t)status, (uintptr_t)options);
+    } while (result == SYSCALL_EINTR);
+    return (int)result;
+}
+
 int program_resolve(const char *name, char path[VFS_MAX_PATH]) {
     size_t len = length(name);
     if (len >= VFS_MAX_PATH) return 126;

@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [shell-s8-phase4.md](shell-s8-phase4.md) | COMPLETE, user-confirmed 2026-09-28: job table, background launch, terminal handoff and idle reaping; 15 host cases plus BIOS/UEFI SMP=1 Ring 3 and real-shell acceptance |
 | [shell-s8-phase3.md](shell-s8-phase3.md) | Implemented, acceptance pending: terminal ownership, shared input attributes, foreground read/control enforcement, deferred ingress signals and test handoff |
 | [shell-s8-group-lifetime.md](shell-s8-group-lifetime.md) | Separate Phase 3 prerequisite: retained group identities, generations and bounded references; user reported prerequisite tests passing 2026-09-28 |
 | [shell-s8-phase2c.md](shell-s8-phase2c.md) | Implemented, runtime acceptance pending: STOPPED scheduling, CONT/KILL resume, durable child transitions, SIGCHLD and test handoff |
