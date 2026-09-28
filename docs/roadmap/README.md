@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [shell-s8-group-lifetime.md](shell-s8-group-lifetime.md) | Separate Phase 3 prerequisite: retained group identities, generations, bounded references and host-test handoff; runtime acceptance pending |
 | [shell-s8-phase2c.md](shell-s8-phase2c.md) | Implemented, runtime acceptance pending: STOPPED scheduling, CONT/KILL resume, durable child transitions, SIGCHLD and test handoff |
 | [shell-s7-phase6.md](shell-s7-phase6.md) | COMPLETE: QEMU BIOS/UEFI with 1/4/8 CPUs and Dell RO/RW acceptance; BSP-pinned peers, cross-core G6 deferred |
 | [shell-s7-phase5b.md](shell-s7-phase5b.md) | Builtin runner path complete (2026-09-27), envp entry fix, QEMU regression evidence and verification boundaries |

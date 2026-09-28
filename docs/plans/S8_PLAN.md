@@ -70,6 +70,14 @@ and cross-session joins, and creates a new group only with PGID equal to the
 target PID. Keep group identity alive while members or staged launches refer
 to it, even if its leader exits. Do not recycle a referenced PGID.
 
+Implementation prerequisite (2026-09-28): monotonic PIDs do not prevent a living
+process from leaving and recreating its namesake PGID. Shape A therefore adds
+explicit generation-bearing group records and owned kernel references as a
+separate checkpoint before Phase 3. Empty retained groups reserve their numeric
+PGID until release. Phase 3's ingress events and Phase 4/5's eventual job-handle
+integration use this lifetime primitive; numeric foreground comparison at event
+drainage is not a substitute. See [implementation and test handoff](../roadmap/shell-s8-group-lifetime.md).
+
 ### 2. A real terminal with distinct input and output settings
 
 Introduce one kernel terminal object containing controlling SID, foreground

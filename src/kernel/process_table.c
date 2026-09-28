@@ -2,11 +2,21 @@
 #include "spinlock.h"
 #include "syscall_abi.h"
 
-/* Separate from scheduler placement and the overwriteable kernel-test history. */
+/* Separate from scheduler placement and the overwriteable kernel-test history.
+ * Members include unpublished spawn reservations. External references retain an
+ * empty identity, but do not keep any TCB or child status alive. */
+typedef struct {
+    uint64_t pgid, sid, generation;
+    uint32_t members;
+    uint32_t refs; /* atomic; an owned ref can be cloned without taking a lock */
+} process_group_t;
+static process_group_t groups[PROCESS_GROUP_CAPACITY];
+_Static_assert(__atomic_always_lock_free(sizeof(uint32_t), 0), "group refs must be IRQ-safe atomics");
 typedef struct {
     uint64_t pid, parent, pgid, sid;
     bool used, published, exited, stopped;
     signal_state_t *signals;
+    process_group_t *group;
 } process_record_t;
 typedef struct {
     uint64_t pid, parent, pgid, code;
@@ -25,10 +35,89 @@ static process_record_t *find(uint64_t pid) {
     return NULL;
 }
 static bool group_exists(uint64_t pgid, uint64_t sid) {
-    for (unsigned i = 0; i < PROCESS_CAPACITY; ++i)
-        if (processes[i].used && !processes[i].exited &&
-            processes[i].pgid == pgid && processes[i].sid == sid) return true;
+    for (unsigned i = 0; i < PROCESS_GROUP_CAPACITY; ++i)
+        if (groups[i].members && groups[i].pgid == pgid && groups[i].sid == sid) return true;
     return false;
+}
+/* Process lock held. Reuse is allowed only with no members and no external
+ * owners; generation persists across reuse. A retained empty numeric identity
+ * reserves its PGID and cannot be resurrected into a different membership. */
+static process_group_t *group_join(uint64_t pgid, uint64_t sid, bool create, int *error) {
+    process_group_t *free_group = NULL;
+    for (unsigned i=0; i<PROCESS_GROUP_CAPACITY; ++i) {
+        process_group_t *g=&groups[i];
+        uint32_t refs=__atomic_load_n(&g->refs, __ATOMIC_ACQUIRE);
+        if (!g->members && !refs) {
+            if (!free_group && g->generation != UINT64_MAX) free_group=g;
+            continue;
+        }
+        if (g->pgid != pgid) continue;
+        if (g->sid != sid || !g->members) { *error=SYSCALL_EPERM; return NULL; }
+        ++g->members;
+        return g;
+    }
+    if (!create) { *error=SYSCALL_EPERM; return NULL; }
+    if (!free_group) { *error=SYSCALL_ENOMEM; return NULL; }
+    free_group->pgid=pgid;
+    free_group->sid=sid;
+    ++free_group->generation; /* exhausted slots are never recycled */
+    free_group->members=1;
+    return free_group;
+}
+static void group_leave(process_record_t *p) {
+    if (!p->group) return;
+    if (!p->group->members) __builtin_trap();
+    --p->group->members;
+    p->group=NULL;
+}
+static process_group_t *group_ref_locked(const process_group_ref_t *ref) {
+    if (!ref || !ref->generation || ref->slot >= PROCESS_GROUP_CAPACITY) return NULL;
+    process_group_t *g=&groups[ref->slot];
+    return g->generation == ref->generation &&
+           __atomic_load_n(&g->refs, __ATOMIC_ACQUIRE) ? g : NULL;
+}
+int process_group_acquire(uint64_t sid, uint64_t pgid, process_group_ref_t *out) {
+    if (!out || !sid || !pgid) return SYSCALL_EINVAL;
+    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    int result=SYSCALL_ESRCH;
+    for (unsigned i=0; i<PROCESS_GROUP_CAPACITY; ++i) {
+        process_group_t *g=&groups[i];
+        if (!g->members || g->pgid != pgid) continue;
+        if (g->sid != sid) { result=SYSCALL_EPERM; break; }
+        uint32_t refs=__atomic_load_n(&g->refs, __ATOMIC_RELAXED);
+        result=SYSCALL_ENOMEM;
+        if (refs != UINT32_MAX && __atomic_compare_exchange_n(&g->refs, &refs,
+                refs+1, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            *out=(process_group_ref_t){.generation=g->generation, .slot=i};
+            result=0;
+        }
+        break;
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    return result;
+}
+bool process_group_try_retain(const process_group_ref_t *owned, process_group_ref_t *out) {
+    if (!owned || !out || owned == out || !owned->generation || owned->slot >= PROCESS_GROUP_CAPACITY)
+        return false;
+    /* Source ownership prevents concurrent slot reuse. This is not a way to
+     * reacquire stale copies; only acquire() may create a first external ref. */
+    process_group_t *g=&groups[owned->slot];
+    uint32_t refs=__atomic_load_n(&g->refs, __ATOMIC_ACQUIRE);
+    if (g->generation != owned->generation || !refs || refs == UINT32_MAX) return false;
+    if (!__atomic_compare_exchange_n(&g->refs, &refs, refs+1, false,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return false;
+    *out=*owned;
+    return true;
+}
+bool process_group_release_ref(process_group_ref_t *ref) {
+    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    process_group_t *g=group_ref_locked(ref);
+    if (g) {
+        __atomic_fetch_sub(&g->refs, 1, __ATOMIC_ACQ_REL);
+        *ref=(process_group_ref_t){0};
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    return g != NULL;
 }
 static void changed(void) {
     if (sequence == UINT64_MAX) __builtin_trap();
@@ -84,7 +173,10 @@ int process_record_begin(uint64_t pid, uint64_t parent, bool waitable,
         group = pgid ? pgid : pid;
         if (group != pid && !group_exists(group, sid)) { error = SYSCALL_EPERM; goto out; }
     }
-    *p = (process_record_t){.pid=pid, .parent=parent, .pgid=group, .sid=sid, .used=true};
+    process_group_t *identity=group_join(group, sid, group==pid, &error);
+    if (!identity) goto out;
+    *p = (process_record_t){.pid=pid, .parent=parent, .pgid=group, .sid=sid,
+                           .used=true, .group=identity};
     if (waitable) *ch = (child_record_t){.pid=pid, .parent=parent, .pgid=group, .used=true,
         .identity_generation=advance(ch->identity_generation)};
     error = 0;
@@ -95,7 +187,7 @@ out:
 void process_record_abort(uint64_t pid) {
     uint64_t irq = spin_lock_irqsave(&g_process_lock);
     process_record_t *p = find(pid);
-    if (p) p->used = false;
+    if (p) { group_leave(p); p->used = false; }
     for (unsigned i=0; i<PROCESS_CAPACITY; ++i)
         if (children[i].used && children[i].pid == pid) children[i].used = false;
     changed();
@@ -113,7 +205,7 @@ bool process_record_exit(uint64_t pid, uint64_t code) {
 bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal) {
     uint64_t irq = spin_lock_irqsave(&g_process_lock);
     process_record_t *p = find(pid);
-    if (p) { p->exited = true; p->signals = NULL; }
+    if (p) { group_leave(p); p->exited = true; p->signals = NULL; }
     bool recorded = false;
     for (unsigned i=0; i<PROCESS_CAPACITY; ++i) {
         child_record_t *c = &children[i];
@@ -135,7 +227,7 @@ bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal) {
 void process_record_forget(uint64_t pid) {
     uint64_t irq = spin_lock_irqsave(&g_process_lock);
     process_record_t *p = find(pid);
-    if (p) p->used=false;
+    if (p) { group_leave(p); p->used=false; }
     spin_unlock_irqrestore(&g_process_lock, irq);
 }
 int64_t process_record_group(uint64_t pid) {
@@ -165,6 +257,12 @@ int64_t process_record_setpgid(uint64_t caller, uint64_t pid, uint64_t pgid) {
     /* Spawn is exec-like. Parent may regroup a staged child, not an executing image. */
     if (pid != caller && p->published) goto out;
     if (pgid != pid && !group_exists(pgid, p->sid)) goto out;
+    if (pgid != p->pgid) {
+        process_group_t *identity=group_join(pgid, p->sid, pgid==pid, &result);
+        if (!identity) goto out;
+        group_leave(p);
+        p->group=identity;
+    }
     p->pgid=pgid;
     for (unsigned i=0; i<PROCESS_CAPACITY; ++i)
         if (children[i].used && children[i].pid == pid) children[i].pgid=pgid;
@@ -240,6 +338,35 @@ void process_record_attach_signals(uint64_t pid, signal_state_t *state) {
     }
     spin_unlock_irqrestore(&g_process_lock,irq);
 }
+/* Shared by numeric kill and retained-target publication. Process lock held;
+ * owner-CPU timer servicing observes the same persistent signal mailbox. */
+static void signal_publish(process_record_t *p, uint64_t sig) {
+    signal_state_t *s=p->signals;
+    if (!sig) return;
+    if (sig == SIGCONT) {
+        __atomic_fetch_and(&s->pending_mask, ~SIGNAL_STOPS, __ATOMIC_RELEASE);
+        if (p->stopped) __atomic_store_n(&s->continue_requested, true, __ATOMIC_RELEASE);
+    } else if (SIGNAL_BIT(sig) & SIGNAL_STOPS) {
+        __atomic_fetch_and(&s->pending_mask, ~SIGNAL_BIT(SIGCONT), __ATOMIC_RELEASE);
+        __atomic_store_n(&s->continue_requested, false, __ATOMIC_RELEASE);
+    }
+    if (!(s->ignored_mask & SIGNAL_BIT(sig)) || (SIGNAL_BIT(sig) & SIGNAL_STOPS))
+        __atomic_fetch_or(&s->pending_mask, SIGNAL_BIT(sig), __ATOMIC_RELEASE);
+}
+int64_t process_group_signal(const process_group_ref_t *owned, uint64_t sig) {
+    if (sig>31 || (sig && !(SIGNAL_SUPPORTED & SIGNAL_BIT(sig)))) return SYSCALL_EINVAL;
+    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    process_group_t *g=group_ref_locked(owned);
+    int result=SYSCALL_ESRCH;
+    if (g) for (unsigned i=0; i<PROCESS_CAPACITY; ++i) {
+        process_record_t *p=&processes[i];
+        if (!p->used || p->exited || !p->signals || p->group != g) continue;
+        signal_publish(p, sig);
+        result=0;
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    return result;
+}
 int64_t process_signal_send(uint64_t caller, int64_t selector, uint64_t sig) {
     if (sig>31 || (sig && !(SIGNAL_SUPPORTED & SIGNAL_BIT(sig))) ||
         selector == -1 || selector == (-0x7fffffffffffffffLL-1)) return SYSCALL_EINVAL;
@@ -255,22 +382,7 @@ int64_t process_signal_send(uint64_t caller, int64_t selector, uint64_t sig) {
         if (!match) continue;
         if (p->sid != self->sid) { if (result) result=SYSCALL_EPERM; continue; }
         result=0;
-        if (sig) {
-            signal_state_t *s=p->signals;
-            /* Cancellation is independent of mask/disposition. The resume
-             * mailbox is consumed only by the owner CPU's stopped scan. */
-            if (sig == SIGCONT) {
-                __atomic_fetch_and(&s->pending_mask, ~SIGNAL_STOPS, __ATOMIC_RELEASE);
-                if (p->stopped) __atomic_store_n(&s->continue_requested, true, __ATOMIC_RELEASE);
-            } else if (SIGNAL_BIT(sig) & SIGNAL_STOPS) {
-                __atomic_fetch_and(&s->pending_mask, ~SIGNAL_BIT(SIGCONT), __ATOMIC_RELEASE);
-                __atomic_store_n(&s->continue_requested, false, __ATOMIC_RELEASE);
-            }
-            /* Retain ignored stop requests as specified, but never deliver
-             * them until the disposition permits it (or CONT cancels them). */
-            if (!(s->ignored_mask & SIGNAL_BIT(sig)) || (SIGNAL_BIT(sig) & SIGNAL_STOPS))
-                __atomic_fetch_or(&s->pending_mask,SIGNAL_BIT(sig),__ATOMIC_RELEASE);
-        }
+        signal_publish(p, sig);
     }
 out:
     spin_unlock_irqrestore(&g_process_lock,irq);

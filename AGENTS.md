@@ -47,6 +47,11 @@ remain future work. Shell S8 Phase 1 is complete, with all handoff tests reporte
 
 Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
 
+S8 group-lifetime prerequisite (Shape A) is implemented separately from Phase 3,
+with test execution pending. Monotonic PIDs do not prevent namesake PGID
+recreation by a living process. Retained group records now reserve PGIDs and
+carry generations; see [handoff](docs/roadmap/shell-s8-group-lifetime.md).
+
 ### Phase 9G implementation handoff
 
 Phase 9G is complete through 9G.5b. The staged plan, per-stage acceptance evidence, and hardware observations are recorded in [docs/roadmap/README.md](docs/roadmap/README.md) (see the 9G phase files). The driver handles USB 2.0 and USB 3.x direct-attached mass storage on any enumerated xHCI controller; USB 3.x devices enumerate as SuperSpeed and complete BOT transport. Hubs, hot-plug, UAS, and non-mass-storage classes remain out of scope. See the "What 9G does NOT do" list below.
@@ -132,6 +137,7 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-s8-groups-host` | Separate S8 prerequisite: actual process-group lifetime/reference and signal-publication tests with pthread lock adapters and ASan/UBSan. Implemented, not executed; no IRQ/scheduler claim. |
 | `make test-s8-stops-host` | Phase 2C process-table transition/counter/cancellation/CHLD tests with pthread locks; no scheduler/IRQ claim. Implementation only, not yet run. |
 | `make test-s8-stops SMP=N` | Phase 2C BIOS/UEFI Ring 3 STOP/CONT/KILL and caught-CHLD fixture, disposable ISO with no data disks; BSP-pinned children. Implementation only, not yet run. |
 | `make test-pipe-host` | S7 Phases 1–2 ASan/UBSan: real pipe/VFS/sys_pipe with host adapters; wraparound, atomic thresholds, lock-free wait/wake call sites, endpoint lifetime and allocation/fd rollback. No SMP/IRQ claim. |

@@ -117,6 +117,10 @@ all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 test-s8-process-host:
 	@python3 scripts/test_process_table_host.py
 
+.PHONY: test-s8-groups-host
+test-s8-groups-host:
+	@python3 scripts/test_process_table_host.py --groups
+
 .PHONY: test-s8-signals-host test-s8-signals
 test-s8-signals-host:
 	@python3 scripts/test_process_table_host.py --signals

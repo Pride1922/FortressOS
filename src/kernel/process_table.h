@@ -5,11 +5,39 @@
 /* Global bounded identity/group/session and child reservation/status store.
  * Metadata APIs acquire the private ordinary rank-1 g_process_lock internally;
  * callers hold no locks. It never nests with scheduler/ext2/other rank-1 locks.
- * process_record_sequence() is the exception: an atomic acquire read usable
+ * process_record_sequence() is an exception: an atomic acquire read usable
  * by scheduler wait predicates, paired with release publication under the
  * process lock. No TCB pointers escape this module; scheduler placement and
- * TCB lifetime remain scheduler-owned. PID is monotonic, never recycled. */
+ * TCB lifetime remain scheduler-owned. process_group_try_retain() is the other
+ * exception, documented below. PID allocation is monotonic; a living process
+ * may recreate its namesake PGID after leaving it, so group generations differ. */
 #define PROCESS_CAPACITY 64
+/* Separate bounded group store: live/staged membership plus externally retained
+ * empty groups. All implementation remains in process_table.c. No user ABI. */
+#define PROCESS_GROUP_CAPACITY (PROCESS_CAPACITY * 2)
+typedef struct {
+    uint64_t generation; /* zero is an invalid/empty handle */
+    uint32_t slot;
+} process_group_ref_t;
+/* Acquire by session and numeric PGID in thread context, with no locks held.
+ * Only groups with members can be acquired. A successful call owns one ref;
+ * out must not already own a ref. Release consumes it and clears the handle.
+ * Empty retained groups cannot be joined/recreated; release the last reference
+ * before the same numeric PGID may describe a new generation. */
+int process_group_acquire(uint64_t sid, uint64_t pgid, process_group_ref_t *out);
+bool process_group_release_ref(process_group_ref_t *ref);
+/* Bounded, lock-free clone of an ALREADY OWNED reference. Source ownership must
+ * remain valid for the whole call (e.g. BSP IRQ-excluded foreground handle).
+ * No lookup, allocation, scheduling or logging; suitable for ingress publication.
+ * out must be unowned and distinct from owned. One CAS attempt: false on
+ * contention/overflow, out unchanged. Caller accounts
+ * for a dropped event. Ordinary IRQs must not acquire/release/signal groups. */
+bool process_group_try_retain(const process_group_ref_t *owned, process_group_ref_t *out);
+/* Trusted kernel thread-context publication to the captured group, independent
+ * of the current foreground group and of the original caller's lifetime.
+ * Requires an owned reference; ESRCH for stale/empty targets. Signal 0 probes.
+ * Future user-facing consumers must separately enforce session permissions. */
+int64_t process_group_signal(const process_group_ref_t *owned, uint64_t sig);
 int process_record_begin(uint64_t pid, uint64_t parent, bool waitable,
                          uint32_t flags, uint64_t pgid);
 void process_record_abort(uint64_t pid);
