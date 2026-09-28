@@ -1,8 +1,35 @@
-# Shell S8 Phase 5 — implementation and test handoff
+# Shell S8 Phase 5 — complete
 
-Implemented 2026-09-28; runtime acceptance is pending the user's test runs.
-Phase 4's earlier passes remain historical evidence, not validation of this
-revision. Phase 6 pipe-generated SIGPIPE is still deferred.
+Complete and user-confirmed 2026-09-28. The BIOS/UEFI real-shell Phase 5 gate,
+host suites and listed regressions pass. Only Phase 6 (`SIGPIPE` and integrated
+acceptance) remains in S8. The earlier pending notes below describe debugging
+checkpoints and are superseded by this final acceptance record.
+
+## User-confirmed final acceptance (2026-09-28)
+
+The user reported the following results. These are user-run results, not new
+agent test executions.
+
+| Target | Reported result |
+| --- | --- |
+| `test-s8-jobctl` | PASS BIOS + UEFI, SMP=1; Phase 5 real-shell gate |
+| `test-s8-jobctl-host` | PASS; aggregate jobs and orphan metadata suites |
+| `test-s8-jobs` | PASS |
+| `test-s8-jobs-idle` | PASS |
+| `test-s8-jobs-host` | PASS |
+| `test-s8-stops` | PASS |
+| `test-s8-stops-host` | PASS |
+| `test-s8-groups-host` | PASS |
+| `test-s8-signals` | PASS |
+| `test-s8-terminal` | PASS |
+| `test-shell` | PASS |
+| `test-shell-s7` | PASS |
+| `test-nmi` | PASS |
+| `make` | PASS clean build; image verified |
+
+No additional firmware/CPU matrix is inferred for the regression targets from
+this report. Optional SMP=4/8 runner support is not execution evidence. No new
+physical-hardware or cross-core pipe-wakeup acceptance is claimed.
 
 ## Shell behavior
 
@@ -75,14 +102,15 @@ terminates QEMU. Optional SMP=4/8 checks AP counts; current pipe/input peers
 remain BSP-pinned. Logs: `build/s8-jobctl-{bios,uefi}-N.log` and `.stderr`.
 The pipe fixture reports 64 KiB written before the runner stops its group.
 
-## Compilation evidence and remaining gate
+## Earlier compilation evidence and test handoff
 
 Agent checks in WSL Ubuntu-24.04 passed: shell/kernel/helper compilation and
 linking (`make build/shell.elf bin/fortress.elf build/s8_jobctl_user.elf
 build/s8_jobs_delay_user.elf`), and separate GCC compilation/linking of both
 new/extended host fixtures with strict warnings and ASan/UBSan instrumentation.
 The host binaries were **not executed**. Python runner syntax and whitespace
-checks were also performed. No Phase 5 host or QEMU pass is claimed.
+checks were also performed. At that checkpoint no Phase 5 host or QEMU pass
+was claimed; final user-run acceptance is recorded above.
 
 GCC stack-usage measurements: `pipeline_foreground` 112 bytes,
 `pipeline_run_program` 80 bytes, and the test helper's `shell_main` 40 bytes.
@@ -99,8 +127,8 @@ make test-shell-s7 test-s8-terminal test-s8-stops test-s8-groups-host
 make test-shell test-nmi
 ```
 
-The Phase 5 gate stays open until these runtime results are reported. No new
-physical-hardware or cross-core wakeup acceptance is claimed.
+This was the requested runtime handoff. The user's final results above close
+the Phase 5 gate; the debugging history below records how failures were resolved.
 
 ## First real-shell runner failure
 
