@@ -138,6 +138,29 @@ static void child_publish(child_record_t *c) {
         parent->signals->action_handlers[SIGCHLD] > SIG_IGN)
         __atomic_fetch_or(&parent->signals->pending_mask, SIGNAL_BIT(SIGCHLD), __ATOMIC_RELEASE);
 }
+/* Simplified S8 orphan policy, process lock only. A live same-session parent
+ * outside the group anchors it. Bootstrap/session-root processes are exempt.
+ * Publish KILL to the whole unanchored stopped group; owner schedulers perform
+ * normal wake/unwind/reaping later. Never remove a live registry entry here. */
+static void terminate_orphan_group_locked(process_group_t *group) {
+    if (!group) return;
+    bool stopped = false;
+    for (unsigned i=0; i<PROCESS_CAPACITY; ++i) {
+        process_record_t *m=&processes[i];
+        if (!m->used || m->exited || m->group!=group) continue;
+        if (!m->parent) return;
+        process_record_t *parent=find(m->parent);
+        if (parent && !parent->exited && parent->sid==m->sid &&
+            parent->group!=group) return;
+        stopped |= m->stopped;
+    }
+    if (!stopped) return;
+    for (unsigned i=0; i<PROCESS_CAPACITY; ++i) {
+        process_record_t *m=&processes[i];
+        if (m->used && !m->exited && m->group==group && m->signals)
+            __atomic_fetch_or(&m->signals->pending_mask, SIGNAL_BIT(SIGKILL), __ATOMIC_RELEASE);
+    }
+}
 static void stopped_locked(process_record_t *p, unsigned sig) {
     if (p->stopped) return;
     p->stopped = true;
@@ -149,6 +172,8 @@ static void stopped_locked(process_record_t *p, unsigned sig) {
             child_publish(c);
         }
     }
+    /* Also cover parent-exit-before-STOP, not just STOP-before-parent-exit. */
+    terminate_orphan_group_locked(p->group);
 }
 uint64_t process_record_sequence(void) { return __atomic_load_n(&sequence, __ATOMIC_ACQUIRE); }
 int process_record_begin(uint64_t pid, uint64_t parent, bool waitable,
@@ -206,6 +231,9 @@ bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal) {
     uint64_t irq = spin_lock_irqsave(&g_process_lock);
     process_record_t *p = find(pid);
     if (p) { group_leave(p); p->exited = true; p->signals = NULL; }
+    for (unsigned i=0; i<PROCESS_CAPACITY; ++i)
+        if (processes[i].used && !processes[i].exited && processes[i].parent==pid)
+            terminate_orphan_group_locked(processes[i].group);
     bool recorded = false;
     for (unsigned i=0; i<PROCESS_CAPACITY; ++i) {
         child_record_t *c = &children[i];

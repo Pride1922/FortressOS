@@ -15,6 +15,8 @@
 #include "pipeline.h"
 #include "program.h"
 #include "jobs.h"
+#include "jobctl.h"
+#include "builtins.h"
 #include "signal_abi.h"
 #include "syscall_abi.h"
 #include "terminal.h"
@@ -33,6 +35,7 @@ enum ev {
     EV_TERMATTR_SET,
     EV_WAITPID,
     EV_PRINT_LAUNCH,
+    EV_KILL,
     EV_CLOSE_PIPES
 };
 
@@ -104,6 +107,9 @@ static void push_report(long pid, uint64_t status) {
 }
 
 static int pipes_open = 0;
+static bool wait_requires_resume;
+static long kill_selector, kill_signal;
+static terminal_attrs_t mock_attrs;
 
 long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     switch (nr) {
@@ -140,7 +146,12 @@ long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
         return 0;
     case SYS_GETPGRP:
         return SHELL_PGID;
+    case SYS_KILL:
+        kill_selector=(long)a; kill_signal=(long)b; ev(EV_KILL,(long)b);
+        if (b==SIGCONT) wait_requires_resume=false;
+        return 0;
     case SYS_WAITPID: {
+        if (wait_requires_resume) return 0;
         if (rep_head == rep_tail) return SYSCALL_ECHILD;
         report_t r = reports[rep_head];
         rep_head = (rep_head + 1) % 32;
@@ -172,7 +183,9 @@ long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
  * (see the call4 seam in pipeline.c). Terminal attribute save/restore is not
  * part of Phase 4's launch contract, so it is recorded as a no-op. */
 long shell_termattr_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
-    (void)nr; (void)a; (void)b; (void)c; (void)d;
+    assert(nr==SYS_TERMATTR && a==31 && d==sizeof(terminal_attrs_t));
+    if (b==TERM_GET) { *(terminal_attrs_t *)c=mock_attrs; ev(EV_TERMATTR_GET,0); }
+    else { mock_attrs=*(terminal_attrs_t *)c; ev(EV_TERMATTR_SET,mock_attrs.input_flags); }
     return 0;
 }
 
@@ -181,6 +194,8 @@ static void reset(void) {
     memset(diagnostic, 0, sizeof(diagnostic));
     evn = 0; cur_mask = 0; spawn_fail_at = -1; spawn_count = 0;
     handoff_fails = 0; rep_head = rep_tail = 0; pipes_open = 0;
+    wait_requires_resume=false; kill_selector=kill_signal=0;
+    mock_attrs=(terminal_attrs_t){.version=1,.input_flags=TERM_ISIG,.vintr=3,.vsusp=26};
     jobs_init();
 }
 
@@ -426,6 +441,78 @@ static void test_prompt_reap(void) {
     puts("PASS jobs: prompt drain retries EINTR, separates output, GC, quiet rescan\n");
 }
 
+static int make_job(long pid) {
+    int slot=jobs_alloc(); assert(slot>=0);
+    jobs_set_pgid(slot,pid); jobs_add_member(slot,pid);
+    jobs_set_cmd(slot,"worker"); jobs_set_foreground(slot,false);
+    return slot;
+}
+static void test_jobctl(void) {
+    reset();
+    int a=make_job(40), b=make_job(41);
+    assert(jobs_resolve("%1")==a && jobs_resolve("%2")==b);
+    assert(jobs_resolve("%+")==b && jobs_resolve("%-")==a && jobs_resolve("%%")==b);
+    const char *invalid[]={"%","%0","%10000","%999999999999999999999","%x","1","%+x"};
+    for (unsigned i=0;i<sizeof(invalid)/sizeof(invalid[0]);++i) assert(jobs_resolve(invalid[i])==-2);
+    assert(jobs_resolve("%99")==-1);
+    jobs_update_member(40,(SIGTSTP<<8)|0x7f);
+    assert(jobs_resolve(NULL)==a && jobs_resolve("%-")==b); /* stopped priority */
+    const char *list[]={"jobs"}; assert(!jobctl_exec(1,list));
+    assert(strstr(diagnostic,"[1]+ Stopped") && strstr(diagnostic,"[2]- Running"));
+    const char *bg[]={"bg"}; assert(!jobctl_exec(1,bg));
+    assert(kill_selector==-40 && kill_signal==SIGCONT && ev_count(EV_TCSETPGRP_JOB)==0);
+    assert(jobs_get(a)->state==JOB_STATE_RUNNING && jobs_resolve(NULL)==a);
+    const char *kill[]={"kill","%-","KILL"}; assert(!jobctl_exec(3,kill));
+    assert(kill_selector==-41 && kill_signal==SIGKILL);
+    const char *bad[]={"fg","%99"}; assert(jobctl_exec(2,bad)==1);
+    kill[2]="999999"; assert(jobctl_exec(3,kill)==1);
+    kill[2]="SIGTERM"; assert(!jobctl_exec(3,kill) && kill_signal==SIGTERM);
+    assert(!jobctl_exec(2,kill) && kill_signal==SIGTERM);
+    assert(!builtin_is_child_safe("jobs") && !builtin_is_child_safe("fg") &&
+           !builtin_is_child_safe("bg") && !builtin_is_child_safe("kill"));
+    jobs_free(a); assert(jobs_resolve(NULL)==b && jobs_resolve("%1")==-1);
+    /* Reusing a middle slot in a full table must not evict the oldest job
+     * from current/previous selection when the newer entries are removed. */
+    reset();
+    int slots[MAX_JOBS];
+    for (int i=0;i<MAX_JOBS;++i) slots[i]=make_job(100+i);
+    jobs_free(slots[3]);
+    int reused=make_job(200);
+    jobs_free(reused);
+    for (int i=1;i<MAX_JOBS;++i) if (i!=3) jobs_free(slots[i]);
+    assert(jobs_resolve(NULL)==slots[0]);
+    puts("PASS jobctl: specs, current/previous, listing, bg/group kill, rejection\n");
+}
+static void test_fg_shared_controller(void) {
+    reset();
+    int slot=make_job(40); jobs_add_member(slot,41);
+    jobs_update_member(40,(SIGTSTP<<8)|0x7f);
+    assert(jobs_get(slot)->state==JOB_STATE_RUNNING); /* all-member rule */
+    jobs_update_member(41,(SIGTSTP<<8)|0x7f);
+    terminal_attrs_t attrs=mock_attrs; attrs.input_flags=0;
+    jobs_save_attrs(slot,&attrs);
+    wait_requires_resume=true;
+    push_report(40,0); push_report(41,7<<8);
+    const char *fg[]={"fg"};
+    assert(jobctl_exec(1,fg)==7);
+    assert(!jobs_get(slot)->in_use && mock_attrs.input_flags==TERM_ISIG);
+    assert(ev_index(EV_TCSETPGRP_JOB)<ev_index(EV_TERMATTR_SET));
+    assert(ev_index(EV_TERMATTR_SET)<ev_index(EV_KILL));
+    assert(ev_index(EV_KILL)<ev_index(EV_WAITPID));
+    assert(ev_index(EV_WAITPID)<ev_index(EV_TCSETPGRP_SHELL));
+    assert(ev_count(EV_GROUP_RELEASE)==0 && ev_count(EV_SIGPROCMASK_BLOCK)==0);
+    reset(); slot=make_job(40); handoff_fails=1;
+    assert(pipeline_foreground(slot,false,0)==1 && jobs_get(slot)->in_use);
+    assert(ev_count(EV_KILL)==0 && ev_count(EV_GROUP_CANCEL)==0);
+    reset(); slot=make_job(40);
+    jobs_update_member(40,137<<8); jobs_print_state(slot,false);
+    assert(strstr(diagnostic,"Done(137)") && !strstr(diagnostic,"Terminated"));
+    reset(); slot=make_job(40);
+    jobs_update_member(40,SIGKILL); jobs_print_state(slot,false);
+    assert(strstr(diagnostic,"Terminated(signal 9)"));
+    puts("PASS fg: shared handoff/attrs/CONT/wait/reclaim, error and signal status\n");
+}
+
 int main(void) {
     test_parser_amp();
     test_job_table();
@@ -442,6 +529,8 @@ int main(void) {
     test_foreground_no_launch_print();
     test_cmd_text_bounds();
     test_prompt_reap();
+    test_jobctl();
+    test_fg_shared_controller();
     puts("PASS s8-jobs-host: parser, job table, state machine, launch order, mask, unwinding\n");
     return 0;
 }

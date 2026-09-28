@@ -17,6 +17,7 @@
 #include "shell/program.h"
 #include "shell/pipeline.h"
 #include "shell/jobs.h"
+#include "shell/jobctl.h"
 
 static char cmd_buf[LINE_CAP * 2];
 static char line_input[LINE_CAP];
@@ -66,23 +67,7 @@ static int parse_int(const char *s) {
 static int spawn_program(const char *path, const char **argv, const spawn_fd_action_t *actions, uint32_t action_count) {
     (void)vars_build_envp(s_env_strings, s_envp_ptrs);
 
-    long pid = program_launch(path, argv, s_envp_ptrs, actions, action_count);
-    if (pid < 0) return program_error(pid);
-    int64_t status;
-    if (program_wait(pid, &status)) return 1;
-    /* Kernel exceptions encode 128 + vector (0..31). Stream tools use 141
-     * for EPIPE; without termination metadata that value is ambiguous. */
-    if (status >= 128 && status < 160 && status != 141) {
-        puts("[PROCESS] Faulted (exception vector ");
-        put_dec((uint64_t)status - 128);
-        puts(")\n");
-    } else if (status) {
-        puts("[PROCESS] Exit status ");
-        if (status < 0) { puts("-"); put_dec(0 - (uint64_t)status); }
-        else put_dec((uint64_t)status);
-        puts("\n");
-    }
-    return (int)status;
+    return pipeline_run_program(path,argv,s_envp_ptrs,actions,action_count);
 }
 
 
@@ -239,6 +224,9 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     const char *cmd = argv[0];
     enum builtin b = builtin_find(cmd);
 
+    if (b == CMD_JOBS || b == CMD_FG || b == CMD_BG || b == CMD_KILL)
+        return jobctl_exec(argc,(const char *const *)argv);
+
     if (b == CMD_HELP) {
         /* Route through shared handler: byte-identical with pipeline output. */
         builtin_ctx_t ctx = {0};
@@ -271,6 +259,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     if (b == CMD_EXIT) {
         int code = (argc > 1) ? parse_int(argv[1]) : (int)last_status;
         (void)history_save();
+        jobs_shutdown();
         call(SYS_EXIT, (uintptr_t)code, 0, 0);
         return code;
     }
@@ -629,7 +618,7 @@ void shell_main(void) {
         jobs_gc();
 
         shell_set_prompt_state(last_status, current_cwd);
-        if (!shell_read_line(line_input, false)) return;
+        if (!shell_read_line(line_input, false)) { jobs_shutdown(); return; }
         if (!line_input[0]) continue;
 
         size_t cmd_len = 0;
@@ -644,7 +633,7 @@ void shell_main(void) {
             (void)alias_expand_line(cmd_buf, s_alias_line, sizeof(s_alias_line));
             enum parse_result pr = parser_parse(s_alias_line, &parse_tree);
             if (pr == PARSE_INCOMPLETE) {
-                if (!shell_read_line(line_input, true)) return;
+                if (!shell_read_line(line_input, true)) { jobs_shutdown(); return; }
                 if (!line_input[0]) {
                     /* Ctrl+C during continuation cancels input */
                     cmd_buf[0] = '\0';

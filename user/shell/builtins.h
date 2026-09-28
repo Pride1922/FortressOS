@@ -36,6 +36,7 @@ enum builtin {
     CMD_ENV,
     CMD_ALIAS,
     CMD_UNALIAS,
+    CMD_JOBS, CMD_FG, CMD_BG, CMD_KILL,
     CMD_VERSION
 };
 

@@ -682,3 +682,19 @@ $(BUILD_DIR)/s6_resources.elf: tests/s6_resources_user.c tests/s6_resources_star
 .PHONY: test-shell-s6-resources
 test-shell-s6-resources: $(BOOTABLE_ISO) $(NVME_GPT_IMG) $(BUILD_DIR)/s6_resources.elf
 	@python3 scripts/test_shell_s6_resources.py
+
+.PHONY: test-s8-jobctl-host test-s8-orphans-host
+test-s8-jobctl-host: test-s8-jobs-host test-s8-orphans-host
+
+test-s8-orphans-host:
+	@python3 scripts/test_process_table_host.py --orphans
+
+$(BUILD_DIR)/s8_jobctl_user.elf: tests/s8_jobctl_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/signal_abi.h src/include/terminal.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c tests/s8_jobctl_user.c -o $(BUILD_DIR)/s8_jobctl_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/s8_jobctl_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s8_jobctl_user_start.o $(BUILD_DIR)/s8_jobctl_user.o -o $@
+
+.PHONY: test-s8-jobctl
+test-s8-jobctl: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_jobctl_user.elf $(BUILD_DIR)/s8_jobs_delay_user.elf
+	@SMP=$(SMP) python3 scripts/test_s8_jobctl.py

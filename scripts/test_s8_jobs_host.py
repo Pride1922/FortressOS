@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""S8 Phase 4 host fixture: real parser/executor/jobs with mocked syscalls."""
+"""S8 Phases 4/5: real parser/executor/jobs/builtins with mocked syscalls."""
 from pathlib import Path
 import os
 import subprocess
@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix="fortress-jobs-host-") as tmp:
         "-Isrc/include", "-Isrc/fs", "-Iuser/shell", "tests/s8_jobs_host.c",
         *[f"user/shell/{m}.c" for m in
           ("lexer", "parser", "vars", "expand", "redir", "builtins",
-           "program", "pipeline", "jobs")],
+           "program", "pipeline", "jobs", "jobctl")],
         "-o", exe], cwd=repo, check=True, timeout=60)
     subprocess.run([exe], check=True, timeout=60,
                    env={**os.environ, "ASAN_OPTIONS": "detect_leaks=1",

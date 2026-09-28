@@ -55,6 +55,9 @@ int64_t process_signal_send(uint64_t caller, int64_t selector, uint64_t sig);
 int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t *act, signal_action_t *old);
 int64_t process_signal_mask(uint64_t pid, uint64_t how, const uint64_t *mask, uint64_t *old);
 unsigned process_signal_take(uint64_t pid);
+/* Exit releases child reservations and publishes KILL for unanchored stopped
+ * groups. Live orphan identities remain until their own exit/reaper teardown.
+ * Uses the process lock only; owner schedulers observe the published signals. */
 bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal);
 /* 2B additions: atomic take with full action snapshot, and handler read. */
 unsigned process_signal_take_action(uint64_t pid, signal_action_t *out_action,

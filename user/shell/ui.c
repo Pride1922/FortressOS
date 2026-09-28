@@ -11,6 +11,9 @@ static char input[1];
 static size_t input_pos, input_len;
 static volatile unsigned prompt_interrupt;
 static void prompt_sigint(unsigned sig) { (void)sig; prompt_interrupt=1; }
+/* Caught handlers reset to default on spawn; SIG_IGN would be inherited and
+ * make every launched job immune to Ctrl+Z. The prompt itself must not stop. */
+static void prompt_sigtstp(unsigned sig) { (void)sig; }
 
 static int64_t g_ui_status = 0;
 static char g_ui_cwd[256] = "/";
@@ -44,8 +47,9 @@ int shell_get_terminal_fd(void) {
 void shell_ui_init(void) {
     signal_action_t action={.handler=(uintptr_t)prompt_sigint};
     (void)call(SYS_SIGACTION,SIGINT,(uintptr_t)&action,0);
-    action.handler=SIG_IGN;
+    action.handler=(uintptr_t)prompt_sigtstp;
     (void)call(SYS_SIGACTION,SIGTSTP,(uintptr_t)&action,0);
+    action.handler=SIG_IGN;
     (void)call(SYS_SIGACTION,SIGTTOU,(uintptr_t)&action,0);
     /* Retain private controlling terminal handle on high descriptor (31) with CLOEXEC */
     long term = call(SYS_OPEN, (uintptr_t)"/dev/tty", VFS_O_RDWR | VFS_O_CLOEXEC, 0);

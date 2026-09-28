@@ -282,8 +282,112 @@ static long call4(long nr, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
 }
 #endif
 
-/* BSS-static terminal attribute save area for foreground job handoff. */
-static terminal_attrs_t s_saved_attrs;
+/* One foreground controller for new groups and fg. Shell is non-reentrant;
+ * both snapshots stay in BSS, outside the 512-byte minimum user-stack floor. */
+static terminal_attrs_t s_saved_attrs, s_job_attrs;
+static bool s_fg_signaled;
+
+int pipeline_foreground(int slot, bool staged, uint64_t old_mask) {
+    const job_t *job=jobs_get(slot);
+    if (!job || !job->in_use) return 1;
+    long pgid=job->pgid;
+    int fd=shell_get_terminal_fd();
+    bool saved=false, handed=false;
+    int result=1;
+    s_fg_signaled=false;
+    jobs_set_foreground(slot,true);
+    long err=call4(SYS_TERMATTR,fd,TERM_GET,(uintptr_t)&s_saved_attrs,sizeof(s_saved_attrs));
+    if (err<0) goto failed;
+    saved=true;
+    err=call(SYS_TCSETPGRP,fd,(uintptr_t)pgid,0);
+    if (err<0) goto failed;
+    handed=true;
+    if (!staged && job->attrs_valid) {
+        err=call4(SYS_TERMATTR,fd,TERM_SET,(uintptr_t)&job->attrs,sizeof(job->attrs));
+        if (err<0) goto failed;
+    }
+    if (staged) err=call(SYS_GROUP_RELEASE,(uintptr_t)pgid,GROUP_RELEASE,0);
+    else {
+        bool stopped=false;
+        for (int i=0;i<job->member_count;++i)
+            stopped |= job->members[i].state==JOB_MEM_STOPPED;
+        err=stopped ? call(SYS_KILL,(uintptr_t)-pgid,SIGCONT,0) : 0;
+        if (!err && stopped) jobs_mark_running(slot);
+    }
+    if (err<0) goto failed;
+    if (staged) (void)call(SYS_SIGPROCMASK,SIG_SETMASK,(uintptr_t)&old_mask,0);
+    for (;;) {
+        /* CHLD for another job can interrupt the group wait. Drain all durable
+         * reports in main context, including foreground reports, before sleeping. */
+        jobs_reap_children();
+        jobs_gc();
+        if (job->state==JOB_STATE_DONE) { result=job->last_status; break; }
+        if (job->state==JOB_STATE_STOPPED) { result=128+(int)jobs_stop_signal(slot); break; }
+        uint64_t ws=0;
+        long pid=call(SYS_WAITPID,(uintptr_t)-pgid,(uintptr_t)&ws,WUNTRACED|WCONTINUED);
+        if (pid==SYSCALL_EINTR) continue;
+        if (pid<0) { puts_err("fortress: foreground wait failed\n"); result=1; break; }
+        if (pid>0) jobs_update_member(pid,ws);
+    }
+    if (job->state==JOB_STATE_STOPPED &&
+        call4(SYS_TERMATTR,fd,TERM_GET,(uintptr_t)&s_job_attrs,sizeof(s_job_attrs))==0)
+        jobs_save_attrs(slot,&s_job_attrs);
+    goto reclaim;
+failed:
+    puts_err("fortress: terminal handoff failed\n");
+    if (staged) {
+        (void)call(SYS_GROUP_RELEASE,(uintptr_t)pgid,GROUP_CANCEL,0);
+        (void)call(SYS_SIGPROCMASK,SIG_SETMASK,(uintptr_t)&old_mask,0);
+    }
+reclaim:
+    if (handed && call(SYS_TCSETPGRP,fd,call(SYS_GETPGRP,0,0,0),0)<0) {
+        puts_err("fortress: terminal reclaim failed\n"); result=1;
+    }
+    if (saved && call4(SYS_TERMATTR,fd,TERM_SET,(uintptr_t)&s_saved_attrs,sizeof(s_saved_attrs))<0) {
+        puts_err("fortress: terminal restore failed\n"); result=1;
+    }
+    if (err<0 && staged) jobs_free(slot);
+    else if (job->state==JOB_STATE_DONE) {
+        s_fg_signaled=jobs_term_signal(slot)!=0;
+        if (s_fg_signaled) jobs_print_state(slot,false);
+        jobs_free(slot);
+    } else {
+        jobs_set_foreground(slot,false);
+        if (job->state==JOB_STATE_STOPPED) jobs_print_state(slot,false);
+    }
+    jobs_reap_children(); jobs_gc();
+    return result;
+}
+
+int pipeline_run_program(const char *path, const char *const *argv,
+                         const char *const *envp, const spawn_fd_action_t *actions,
+                         uint32_t count) {
+    jobs_reap_children(); jobs_gc();
+    int slot=jobs_alloc();
+    if (slot<0) { puts_err("fortress: job table full\n"); return 1; }
+    static char command[MAX_JOB_CMD_LEN];
+    size_t n=0;
+    for (size_t i=0; argv[i] && n+1<sizeof(command); ++i) {
+        if (i) command[n++]=' ';
+        for (size_t k=0; argv[i][k] && n+1<sizeof(command); ++k) command[n++]=argv[i][k];
+    }
+    command[n]=0; jobs_set_cmd(slot,command); jobs_set_foreground(slot,true);
+    uint64_t mask=SIGNAL_BIT(SIGCHLD), old=0;
+    if (call(SYS_SIGPROCMASK,SIG_BLOCK,(uintptr_t)&mask,(uintptr_t)&old)<0) {
+        jobs_free(slot); return 1;
+    }
+    long pid=program_launch_job(path,argv,envp,actions,count,0);
+    if (pid<0) {
+        (void)call(SYS_SIGPROCMASK,SIG_SETMASK,(uintptr_t)&old,0);
+        jobs_free(slot); return program_error(pid);
+    }
+    jobs_set_pgid(slot,pid); jobs_add_member(slot,pid);
+    int result=pipeline_foreground(slot,true,old);
+    if (result && !s_fg_signaled && !jobs_get(slot)->in_use) {
+        puts("[PROCESS] Exit status "); put_dec((size_t)result); puts("\n");
+    }
+    return result;
+}
 
 static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
                                 int status, bool background, const char *cmd_text) {
@@ -334,7 +438,6 @@ static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
     }
 
     /* 5. Spawn all stages as STAGED with SETPGROUP. */
-    int launched = 0;
     long pgid = 0;
     result = 0;
 
@@ -362,7 +465,6 @@ static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
         }
         if (i == 0) pgid = stage->pid;  /* First child's PID = new group's PGID */
         jobs_add_member(slot, stage->pid);
-        launched++;
     }
 
     /* Close parent pipe copies immediately (before wait or return). */
@@ -372,11 +474,7 @@ static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
     if (result) {
         if (pgid > 0) {
             (void)call(SYS_GROUP_RELEASE, (uintptr_t)pgid, GROUP_CANCEL, 0);
-            /* Reap cancelled members. */
-            for (int i = 0; i < launched; i++) {
-                uint64_t ws = 0;
-                (void)program_waitpid(stages[i].pid, &ws, 0);
-            }
+
         }
         (void)call(SYS_SIGPROCMASK, SIG_SETMASK, (uintptr_t)&old_mask, 0);
         jobs_free(slot);
@@ -393,80 +491,7 @@ static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
         return 0;
     }
 
-    /* 7b. Foreground: save terminal attrs, hand terminal to job, release, wait. */
-    int term_fd = shell_get_terminal_fd();
-    (void)call4(SYS_TERMATTR, (uintptr_t)term_fd, TERM_GET,
-                (uintptr_t)&s_saved_attrs, sizeof(s_saved_attrs));
-
-    long handoff = call(SYS_TCSETPGRP, (uintptr_t)term_fd, (uintptr_t)pgid, 0);
-    if (handoff < 0) {
-        /* Terminal handoff failed: cancel everything. */
-        (void)call(SYS_GROUP_RELEASE, (uintptr_t)pgid, GROUP_CANCEL, 0);
-        for (int i = 0; i < launched; i++) {
-            uint64_t ws = 0;
-            (void)program_waitpid(stages[i].pid, &ws, 0);
-        }
-        (void)call(SYS_SIGPROCMASK, SIG_SETMASK, (uintptr_t)&old_mask, 0);
-        jobs_free(slot);
-        puts_err("fortress: terminal handoff failed\n");
-        return 1;
-    }
-
-    /* Release the staged gate. */
-    (void)call(SYS_GROUP_RELEASE, (uintptr_t)pgid, GROUP_RELEASE, 0);
-
-    /* Unblock SIGCHLD now that registration is complete. */
-    (void)call(SYS_SIGPROCMASK, SIG_SETMASK, (uintptr_t)&old_mask, 0);
-
-    /* 8. Wait for the job (foreground wait loop). */
-    int fg_status = 0;
-    bool job_stopped = false;
-
-    for (;;) {
-        uint64_t ws = 0;
-        int pid = program_waitpid(-(int)pgid, &ws, WUNTRACED | WCONTINUED);
-        if (pid <= 0) {
-            if (pid == (int)SYSCALL_ECHILD) break;  /* All children collected */
-            continue;
-        }
-
-        (void)jobs_update_member(pid, ws);
-
-        const job_t *job = jobs_get(slot);
-        if (!job) break;
-
-        if (job->state == JOB_STATE_DONE) {
-            fg_status = job->last_status;
-            break;
-        }
-        if (job->state == JOB_STATE_STOPPED) {
-            /* Job suspended. Shell reclaims terminal and returns. */
-            job_stopped = true;
-            break;
-        }
-        /* Otherwise keep waiting (some members still running). */
-    }
-
-    /* 9. Reclaim terminal and restore attributes. */
-    long shell_pgid = call(SYS_GETPGRP, 0, 0, 0);
-    (void)call(SYS_TCSETPGRP, (uintptr_t)term_fd, (uintptr_t)shell_pgid, 0);
-    (void)call4(SYS_TERMATTR, (uintptr_t)term_fd, TERM_SET,
-                (uintptr_t)&s_saved_attrs, sizeof(s_saved_attrs));
-
-    if (job_stopped) {
-        /* Move to background as stopped — Phase 5 will handle fg/bg. */
-        jobs_set_foreground(slot, false);
-        puts("[");
-        put_dec((size_t)jobs_get(slot)->job_id);
-        puts("]  Stopped                 ");
-        puts(cmd_text ? cmd_text : "");
-        puts("\n");
-        return 128 + SIGTSTP;  /* Shell status convention for suspended job */
-    }
-
-    /* Done: mark notified and free after displaying if needed. */
-    jobs_free(slot);
-    return fg_status;
+    return pipeline_foreground(slot, true, old_mask);
 }
 
 int execute_command_list_job(parse_tree_t *tree, int status,

@@ -638,6 +638,10 @@ first stage at launch, retained S7 statuses and descriptor ownership.
 
 ### Phase 5 — jobs/fg/bg/kill, prompt policy and terminal restore
 
+Selection rule approved by the user (2026-09-28): current is the most recently
+stopped job, otherwise the most recently backgrounded job; previous is the next
+job in that ordering (stopped class first). `%%` aliases `%+`.
+
 Add jobs, fg, bg and kill job specifiers `%n`, `%+`, `%-`; preserve stable job IDs
 until notification/removal. `fg`: transfer terminal, restore saved job input
 attributes, then SIGCONT and wait. `bg`: SIGCONT without foreground transfer.

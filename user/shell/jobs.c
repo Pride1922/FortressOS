@@ -4,9 +4,11 @@
 /* ---- BSS-static job table ---- */
 static job_t table[MAX_JOBS];
 static int next_job_id = 1;
+static int selection[MAX_JOBS];
 
 void jobs_init(void) {
     for (int i = 0; i < MAX_JOBS; i++) {
+        selection[i] = -1;
         table[i].in_use = false;
         table[i].state = JOB_STATE_FREE;
     }
@@ -14,16 +16,22 @@ void jobs_init(void) {
 }
 
 int jobs_next_id(void) {
-    int id = next_job_id++;
-    if (next_job_id > 9999) next_job_id = 1;
-    return id;
+    for (;;) {
+        int id = next_job_id++;
+        if (next_job_id > 9999) next_job_id = 1;
+        bool used = false;
+        for (int i=0; i<MAX_JOBS; ++i)
+            if (table[i].in_use && table[i].job_id==id) used=true;
+        if (!used) return id;
+    }
 }
 
 int jobs_alloc(void) {
     for (int i = 0; i < MAX_JOBS; i++) {
         if (!table[i].in_use) {
-            table[i].in_use = true;
             table[i].job_id = jobs_next_id();
+            table[i].in_use = true;
+            table[i].attrs_valid = false;
             table[i].pgid = 0;
             table[i].member_count = 0;
             table[i].state = JOB_STATE_RUNNING;
@@ -32,6 +40,8 @@ int jobs_alloc(void) {
             table[i].foreground = false;
             table[i].cmd_text[0] = '\0';
             for (int j = 0; j < MAX_JOB_MEMBERS; j++) {
+                table[i].members[j].signal = 0;
+                table[i].members[j].stop_signal = 0;
                 table[i].members[j].pid = 0;
                 table[i].members[j].state = JOB_MEM_NONE;
                 table[i].members[j].exit_status = 0;
@@ -71,6 +81,7 @@ void jobs_add_member(int slot, long pid) {
 void jobs_set_foreground(int slot, bool fg) {
     if (slot < 0 || slot >= MAX_JOBS) return;
     table[slot].foreground = fg;
+    if (!fg) jobs_select(slot);
 }
 
 int jobs_find_by_pgid(long pgid) {
@@ -104,7 +115,7 @@ void jobs_recompute_state(int slot) {
         }
     }
 
-    if (done == job->member_count) {
+    if (job->member_count && done == job->member_count) {
         job->state = JOB_STATE_DONE;
         /* Last stage's exit status determines the job's status. */
         job->last_status = job->members[job->member_count - 1].exit_status;
@@ -131,14 +142,17 @@ bool jobs_update_member(long pid, uint64_t status) {
             m->exit_status = (int)WEXITSTATUS(status);
         } else if (WIFSIGNALED(status)) {
             m->state = JOB_MEM_DONE;
+            m->signal = (unsigned)WTERMSIG(status);
             m->exit_status = 128 + (int)WTERMSIG(status);
         } else if (WIFSTOPPED(status)) {
             m->state = JOB_MEM_STOPPED;
+            m->stop_signal = (unsigned)WSTOPSIG(status);
         } else if (WIFCONTINUED(status)) {
             m->state = JOB_MEM_RUNNING;
         }
 
         jobs_recompute_state(slot);
+        if (job->state == JOB_STATE_STOPPED && old_state != JOB_STATE_STOPPED) jobs_select(slot);
         return job->state != old_state;
     }
     return false;
@@ -146,6 +160,11 @@ bool jobs_update_member(long pid, uint64_t status) {
 
 void jobs_free(int slot) {
     if (slot < 0 || slot >= MAX_JOBS) return;
+    for (int i=0; i<MAX_JOBS; ++i) if (selection[i]==slot) {
+        for (int k=i; k+1<MAX_JOBS; ++k) selection[k]=selection[k+1];
+        selection[MAX_JOBS-1]=-1;
+        break;
+    }
     table[slot].in_use = false;
     table[slot].state = JOB_STATE_FREE;
 }
@@ -186,26 +205,8 @@ static bool reap_children(bool at_prompt) {
         if (at_prompt && !printed) puts("\n");
         printed = true;
 
-        if (job->state == JOB_STATE_DONE) {
-            puts("[");
-            put_dec((size_t)job->job_id);
-            puts("]  Done");
-            if (job->last_status) {
-                puts("(");
-                put_dec((size_t)job->last_status);
-                puts(")");
-            }
-            puts("                    ");
-            puts(job->cmd_text);
-            puts("\n");
-            table[slot].notified = true;
-        } else if (job->state == JOB_STATE_STOPPED) {
-            puts("[");
-            put_dec((size_t)job->job_id);
-            puts("]  Stopped                 ");
-            puts(job->cmd_text);
-            puts("\n");
-        }
+        jobs_print_state(slot, false);
+        if (job->state == JOB_STATE_DONE) table[slot].notified = true;
     }
     return printed;
 }
@@ -235,5 +236,109 @@ void jobs_gc(void) {
         if (table[i].in_use && table[i].state == JOB_STATE_DONE && table[i].notified) {
             jobs_free(i);
         }
+    }
+}
+
+void jobs_select(int slot) {
+    int pos=MAX_JOBS-1;
+    for (int i=0; i<MAX_JOBS; ++i) if (selection[i]==slot) { pos=i; break; }
+    for (int i=pos; i>0; --i) selection[i]=selection[i-1];
+    selection[0]=slot;
+}
+static int selected(unsigned nth) {
+    for (unsigned pass=0; pass<2; ++pass) for (int i=0; i<MAX_JOBS; ++i) {
+        int slot=selection[i];
+        const job_t *j=jobs_get(slot);
+        if (!j || !j->in_use || j->foreground || j->state==JOB_STATE_DONE) continue;
+        if ((j->state==JOB_STATE_STOPPED) != (pass==0)) continue;
+        if (!nth--) return slot;
+    }
+    return -1;
+}
+int jobs_resolve(const char *spec) {
+    if (!spec || equal(spec,"%+") || equal(spec,"%%")) return selected(0);
+    if (equal(spec,"%-")) return selected(1);
+    if (*spec++!='%' || !*spec) return -2;
+    unsigned id=0;
+    for (; *spec; ++spec) {
+        if (*spec<'0' || *spec>'9' || id>(9999u-(unsigned)(*spec-'0'))/10) return -2;
+        id=id*10+(unsigned)(*spec-'0');
+    }
+    if (!id) return -2;
+    for (int i=0; i<jobs_max(); ++i) {
+        const job_t *j=jobs_get(i);
+        if (j->in_use && j->job_id==(int)id && j->state!=JOB_STATE_DONE) return i;
+    }
+    return -1;
+}
+char jobs_marker(int slot) { return slot==selected(0) ? '+' : slot==selected(1) ? '-' : ' '; }
+void jobs_mark_running(int slot) {
+    if (slot<0 || slot>=MAX_JOBS) return;
+    for (int i=0; i<table[slot].member_count; ++i)
+        if (table[slot].members[i].state==JOB_MEM_STOPPED) table[slot].members[i].state=JOB_MEM_RUNNING;
+    jobs_recompute_state(slot);
+}
+void jobs_save_attrs(int slot, const terminal_attrs_t *attrs) {
+    if (slot<0 || slot>=MAX_JOBS) return;
+    table[slot].attrs=*attrs; table[slot].attrs_valid=true;
+}
+unsigned jobs_term_signal(int slot) {
+    const job_t *j=jobs_get(slot);
+    if (j) for (int i=0; i<j->member_count; ++i) if (j->members[i].signal) return j->members[i].signal;
+    return 0;
+}
+unsigned jobs_stop_signal(int slot) {
+    const job_t *j=jobs_get(slot);
+    if (j) for (int i=0; i<j->member_count; ++i)
+        if (j->members[i].state==JOB_MEM_STOPPED) return j->members[i].stop_signal;
+    return SIGTSTP;
+}
+void jobs_print_state(int slot, bool markers) {
+    const job_t *j=jobs_get(slot);
+    if (!j || !j->in_use) return;
+    puts("["); put_dec((size_t)j->job_id); puts("]");
+    if (markers) { char mark[2]={jobs_marker(slot),0}; puts(mark); puts(" "); }
+    else puts("  ");
+    if (j->state==JOB_STATE_DONE) {
+        unsigned sig=jobs_term_signal(slot);
+        if (sig) { puts("Terminated(signal "); put_dec(sig); puts(")"); }
+        else { puts("Done"); if (j->last_status) { puts("("); put_dec((size_t)j->last_status); puts(")"); } }
+    } else puts(j->state==JOB_STATE_STOPPED ? "Stopped" : "Running");
+    puts("                    "); puts(j->cmd_text); puts("\n");
+}
+static bool live_jobs(void) {
+    for (int i=0; i<jobs_max(); ++i) if (table[i].in_use && table[i].state!=JOB_STATE_DONE) return true;
+    return false;
+}
+void jobs_shutdown(void) {
+    for (int i=0; i<jobs_max(); ++i) {
+        const job_t *j=jobs_get(i);
+        if (!j->in_use || j->state==JOB_STATE_DONE) continue;
+        (void)call(SYS_KILL,(uintptr_t)-j->pgid,SIGHUP,0);
+        (void)call(SYS_KILL,(uintptr_t)-j->pgid,SIGCONT,0);
+    }
+    /* At exit the shell owns the terminal. Bounded timed reads yield while
+     * HUP handlers run; input is discarded because this shell is exiting. */
+    static char byte;
+    for (unsigned round=0; round<10 && live_jobs(); ++round) {
+        jobs_reap_children();
+        if (live_jobs()) (void)call(SYS_INPUT_READ,(uintptr_t)&byte,1,100);
+    }
+    for (int i=0; i<jobs_max(); ++i) {
+        const job_t *j=jobs_get(i);
+        if (j->in_use && j->state!=JOB_STATE_DONE) (void)call(SYS_KILL,(uintptr_t)-j->pgid,SIGKILL,0);
+    }
+    /* KILL wakes stopped and blocked peers; collect each owned group. */
+    for (int i=0; i<jobs_max(); ++i) {
+        const job_t *j=jobs_get(i);
+        if (!j->in_use) continue;
+        for (;;) {
+            uint64_t status;
+            long pid=call(SYS_WAITPID,(uintptr_t)-j->pgid,(uintptr_t)&status,0);
+            if (pid==SYSCALL_EINTR) continue;
+            if (pid<=0) break;
+            jobs_update_member(pid,status);
+        }
+        jobs_free(i);
     }
 }

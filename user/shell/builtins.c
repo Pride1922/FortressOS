@@ -37,6 +37,10 @@ static const struct {
     {"env",      "Print exported environment variables",                   CMD_ENV,      true},
     {"alias",    "Define or display aliases [name[='val']...]",            CMD_ALIAS,    false},
     {"unalias",  "Remove aliases [name...]",                               CMD_UNALIAS,  false},
+    {"jobs", "List owned jobs", CMD_JOBS, false},
+    {"fg", "Foreground job [%n | %+ | %-] (default %+)", CMD_FG, false},
+    {"bg", "Resume job in background [%n | %+ | %-]", CMD_BG, false},
+    {"kill", "Signal job: kill %n [signal name or number] (default TERM)", CMD_KILL, false},
     {"version",  "Print FortressOS version and build info",                CMD_VERSION,  true},
 };
 

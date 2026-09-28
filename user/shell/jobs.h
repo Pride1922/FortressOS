@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "syscall_abi.h"
+#include "terminal.h"
 
 /* Bounded BSS job table for S8 Phase 4.
  * All storage is file-scope static; nothing on the stack. */
@@ -31,6 +32,7 @@ typedef enum {
 typedef struct {
     long pid;
     job_member_state_t state;
+    unsigned signal, stop_signal;
     int exit_status;        /* Only valid when state == DONE */
 } job_member_t;
 
@@ -42,6 +44,8 @@ typedef struct {
     job_member_t members[MAX_JOB_MEMBERS];
     job_state_t state;
     int last_status;        /* Exit status of the final pipeline stage */
+    terminal_attrs_t attrs;
+    bool attrs_valid;
     bool notified;          /* User saw the Done/Stopped notification */
     bool foreground;        /* True if this is the foreground job */
     char cmd_text[MAX_JOB_CMD_LEN];  /* Bounded command text for display */
@@ -97,4 +101,14 @@ void jobs_print_launch(int slot);
 /* Reclaim notified-done slots (housekeeping after prompt). */
 void jobs_gc(void);
 
+/* Selection: stopped jobs first, then background jobs, newest in each class. */
+void jobs_select(int slot);
+int jobs_resolve(const char *spec); /* NULL means %+; -1 missing, -2 malformed */
+char jobs_marker(int slot);
+void jobs_mark_running(int slot);
+void jobs_save_attrs(int slot, const terminal_attrs_t *attrs);
+unsigned jobs_term_signal(int slot);
+unsigned jobs_stop_signal(int slot);
+void jobs_print_state(int slot, bool markers);
+void jobs_shutdown(void);
 #endif /* SHELL_JOBS_H */
