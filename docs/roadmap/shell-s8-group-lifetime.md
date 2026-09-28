@@ -1,8 +1,9 @@
 # S8 prerequisite: process-group lifetime
 
-Implemented 2026-09-28 as a distinct prerequisite to Phase 3. Test execution
-is left to the user; no runtime acceptance is claimed. Phase 3 terminal
-ownership and ingress work are not part of this checkpoint.
+Implemented 2026-09-28 as a distinct prerequisite to Phase 3. User reported
+the prerequisite tests passing on 2026-09-28 ("its a pass"). The user did not
+enumerate individual commands or firmware results; no additional result is
+inferred. Phase 3 terminal ownership and ingress work are a separate checkpoint.
 
 ## Reading-pass decision: Shape A
 
@@ -88,4 +89,6 @@ publication, staged membership and abort, leader exit, STOP/CONT publication,
 capacity/transaction rollback, concurrent clones/releases and publication racing
 exit, reference saturation, and exact empty-store cleanup. It does not establish
 IRQ, scheduling, terminal ingress, or hardware correctness. Existing integration
-targets provide the process/signal regression coverage; results remain pending.
+targets provide the process/signal regression coverage. The user-reported
+prerequisite acceptance above supersedes the initial pending handoff; detailed
+per-command evidence was not supplied.

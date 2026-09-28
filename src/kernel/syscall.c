@@ -200,6 +200,8 @@ static int64_t sys_termctl(uint64_t op, uintptr_t ptr, size_t size) {
             (info->cols && (info->cols < 20 || info->cols > 512))) return SYSCALL_EINVAL;
         if (info->mode == TERM_LOCAL && !console_is_initialized()) return SYSCALL_EOPNOTSUPP;
         if (info->mode == TERM_SERIAL && !serial_is_available()) return SYSCALL_EOPNOTSUPP;
+        int error=input_control_check();
+        if (error) return error;
         t->terminal_mode = info->mode;
         t->terminal_cols = info->cols;
     }
@@ -219,6 +221,17 @@ static int64_t sys_input_read(uintptr_t ptr, size_t count, int64_t timeout) {
     if (!count) return 0;
     if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, count, true)) return SYSCALL_EFAULT;
     return input_read_timeout((void *)ptr, count, timeout);
+}
+
+static int64_t sys_termattr(uint64_t fd, uint64_t op, uintptr_t ptr, size_t size) {
+    if (size!=sizeof(terminal_attrs_t) || op>TERM_SET) return SYSCALL_EINVAL;
+    if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),ptr,size,op==TERM_GET))
+        return SYSCALL_EFAULT;
+    terminal_attrs_t attrs={0};
+    if (op==TERM_SET) memcpy(&attrs,(const void *)ptr,sizeof(attrs));
+    int result=input_termattr(fd,op,&attrs);
+    if (!result && op==TERM_GET) memcpy((void *)ptr,&attrs,sizeof(attrs));
+    return result;
 }
 
 static int64_t sys_exit(uint64_t exit_code, interrupt_frame_t *frame) {
@@ -1112,6 +1125,15 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
         case SYS_TERMCTL:
             result = sys_termctl(frame->rdi, frame->rsi, frame->rdx);
+            break;
+        case SYS_TCSETPGRP:
+            result=input_tcsetpgrp(frame->rdi,frame->rsi);
+            break;
+        case SYS_TCGETPGRP:
+            result=input_tcgetpgrp(frame->rdi);
+            break;
+        case SYS_TERMATTR:
+            result=sys_termattr(frame->rdi,frame->rsi,frame->rdx,frame->r10);
             break;
         case SYS_INPUT_READ:
             result = sys_input_read(frame->rdi, frame->rsi, (int64_t)frame->rdx);

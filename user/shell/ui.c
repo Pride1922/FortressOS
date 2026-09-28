@@ -8,6 +8,8 @@ static line_editor_t edit;
 static terminal_info_t term;
 static char input[1];
 static size_t input_pos, input_len;
+static volatile unsigned prompt_interrupt;
+static void prompt_sigint(unsigned sig) { (void)sig; prompt_interrupt=1; }
 
 static int64_t g_ui_status = 0;
 static char g_ui_cwd[256] = "/";
@@ -39,6 +41,11 @@ int shell_get_terminal_fd(void) {
 }
 
 void shell_ui_init(void) {
+    signal_action_t action={.handler=(uintptr_t)prompt_sigint};
+    (void)call(SYS_SIGACTION,SIGINT,(uintptr_t)&action,0);
+    action.handler=SIG_IGN;
+    (void)call(SYS_SIGACTION,SIGTSTP,(uintptr_t)&action,0);
+    (void)call(SYS_SIGACTION,SIGTTOU,(uintptr_t)&action,0);
     /* Retain private controlling terminal handle on high descriptor (31) with CLOEXEC */
     long term = call(SYS_OPEN, (uintptr_t)"/dev/tty", VFS_O_RDWR | VFS_O_CLOEXEC, 0);
     if (term >= 0) {
@@ -200,6 +207,7 @@ static void paint(void) {
 }
 
 bool shell_read_line(char out[LINE_CAP], bool continuation) {
+    prompt_interrupt=0;
     g_ui_continuation = continuation;
     lineedit_init(&edit);
     (void)call(SYS_TERMCTL, TERM_GET, (uintptr_t)&term, sizeof(term));
@@ -207,11 +215,21 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
     paint();
 
     for (;;) {
+        if (prompt_interrupt) {
+            prompt_interrupt=0; input_pos=input_len=0; out[0]=0;
+            if (term.mode!=TERM_PLAIN) ui_puts("\033[?25l\033[?2004l");
+            ui_puts("\n"); return true;
+        }
         if (input_pos == input_len) {
-            long n = call(SYS_INPUT_READ, (uintptr_t)input, sizeof(input), edit.escape_len ? 100 : (uintptr_t)-1);
+            /* Bounded wait also covers a signal handled just before read entry. */
+            long n = call(SYS_INPUT_READ, (uintptr_t)input, sizeof(input), 100);
+            if (n==SYSCALL_EINTR || prompt_interrupt) continue;
             if (n == INPUT_LOST) { lineedit_lost(&edit); paint(); continue; }
             if (n < 0) { ui_puts("Input unavailable.\n"); return false; }
-            if (n == 0) { (void)lineedit_timeout(&edit); paint(); continue; }
+            if (n == 0) {
+                if (edit.escape_len) { (void)lineedit_timeout(&edit); paint(); }
+                continue;
+            }
             input_len = (size_t)n; input_pos = 0;
         }
 

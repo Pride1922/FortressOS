@@ -17,6 +17,8 @@ static int64_t terminal_read(vfs_node_t *node, uint64_t offset, void *buf, size_
     /* input_read uses syscall errors; VFS callbacks use VFS errors. */
     if (result == SYSCALL_EINTR) return -VFS_EINTR;
     if (result == SYSCALL_EBADF) return -VFS_EBADF;
+    if (result == SYSCALL_EIO || result == SYSCALL_ENOTTY) return -VFS_EIO;
+    if (result == SYSCALL_EOPNOTSUPP) return -VFS_EOPNOTSUPP;
     return result;
 }
 

@@ -121,6 +121,19 @@ test-s8-process-host:
 test-s8-groups-host:
 	@python3 scripts/test_process_table_host.py --groups
 
+.PHONY: test-s8-terminal-host test-s8-terminal
+test-s8-terminal-host:
+	@python3 scripts/test_s8_terminal_host.py
+
+$(BUILD_DIR)/s8_terminal_user.elf: tests/s8_terminal_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/signal_abi.h src/include/terminal.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_terminal_user.c -o $(BUILD_DIR)/s8_terminal_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/s8_terminal_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s8_terminal_user_start.o $(BUILD_DIR)/s8_terminal_user.o -o $@
+
+test-s8-terminal: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_terminal_user.elf
+	@SMP=$(SMP) python3 scripts/test_s8_terminal.py
+
 .PHONY: test-s8-signals-host test-s8-signals
 test-s8-signals-host:
 	@python3 scripts/test_process_table_host.py --signals

@@ -302,12 +302,35 @@ def signal_probe(remote, qmp, sym, user, name, origin, inject, expected_frame_id
     assert cs == 8 and regs[7] == frame_base + 136 and gs_base(qmp) == user_gs
     assert struct.unpack("<5Q", remote.memory(regs[7], 40)) == expected_iret
     assert tuple(regs[i] for i in FRAME_REGS) == original[:15]
-    step(remote)
-    regs, user_flags, cs, ss = remote.registers()
-    assert (cs, ss) == (0x23, 0x1b)
-    assert (regs[16], regs[7], user_flags) == (original[17], original[20], expected_iret[2])
-    assert tuple(regs[i] for i in FRAME_REGS) == original[:15], "IRETQ lost GPRs (including RAX/RCX/R11)"
-    assert gs_base(qmp) == user_gs
+    # Observe the architectural destination before its first instruction, using
+    # the same hardware-breakpoint mechanism as handler/restorer entry above.
+    # A debugger single-step stop after IRETQ need not be the user boundary
+    # (e.g. an interrupt can intervene as IF is restored). Do not step through
+    # an arbitrary kernel stop or relax the full-context assertions instead.
+    try:
+        remote.resume_to(original[17])
+        regs, user_flags, cs, ss = remote.registers()
+        actual_gs = gs_base(qmp)
+        context = (f"{origin} {name}: RIP={regs[16]:#x} RSP={regs[7]:#x} "
+                   f"CS={cs:#x} SS={ss:#x} RFLAGS={user_flags:#x} GS={actual_gs:#x}; "
+                   f"expected IRET={tuple(hex(x) for x in expected_iret)}")
+        assert (cs, ss) == (0x23, 0x1b), context
+        assert (regs[16], regs[7], user_flags) == (original[17], original[20], expected_iret[2]), context
+        assert tuple(regs[i] for i in FRAME_REGS) == original[:15], (
+            f"IRETQ lost GPRs (including RAX/RCX/R11): {context}; "
+            f"actual={tuple(hex(regs[i]) for i in FRAME_REGS)} "
+            f"expected={tuple(hex(x) for x in original[:15])}")
+        assert actual_gs == user_gs, context
+    except Exception:
+        # Persist diagnostic CPU state before run() tears QEMU down. This does
+        # not turn a failed user return or a timeout into a successful probe.
+        try:
+            print(f"FAIL {origin} {name}: expected IRET {expected_iret!r}\n" +
+                  qmp.execute("human-monitor-command", {"command-line": "info registers"}),
+                  flush=True)
+        except Exception:
+            pass
+        raise
     return {"probe": name, "origin": origin, "rip": hex(address), "injected": inject,
             "frame_id": expected_frame_id,
             "nmi_rsp": hex(entered[7]) if entered else None,

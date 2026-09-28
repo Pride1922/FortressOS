@@ -93,7 +93,9 @@ void shell_main(int argc,const char **argv) {
     require(call(SYS_SIGACTION,SIGINT,(uintptr_t)&act,0)==0);
     const char *modes[]={"l","t","f","r","w","v"};
     for(unsigned i=0;i<6;i++) {
-        pid=spawn(modes[i],SPAWN_SETPGROUP,0); require(pid>0);
+        /* Terminal-blocking cases share the foreground group in Phase 3;
+         * these cases test signal interruption, not background SIGTTIN. */
+        pid=spawn(modes[i],(i==1 || i==2) ? 0 : SPAWN_SETPGROUP,0); require(pid>0);
         wait_ready(); pause_for_child();
         require(call(SYS_KILL,pid,SIGKILL,0)==0); reap(pid,SIGKILL);
         if(i==4) for(unsigned j=0;j<4;j++) require(call(SYS_READ,5,(uintptr_t)data,sizeof(data))==sizeof(data));

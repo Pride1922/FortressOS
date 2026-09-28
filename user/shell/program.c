@@ -32,7 +32,9 @@ int program_error(long error) {
 }
 
 int program_wait(long pid, int64_t *status) {
-    if (call(SYS_WAIT, pid, (uintptr_t)status, 0) < 0) {
+    long result;
+    do { result=call(SYS_WAIT, pid, (uintptr_t)status, 0); } while (result==SYSCALL_EINTR);
+    if (result < 0) {
         puts_err("Unable to wait for child process.\n");
         return 1;
     }

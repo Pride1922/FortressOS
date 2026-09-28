@@ -29,10 +29,10 @@ def offsets(tmp):
 #include "thread.h"
 #include "vfs.h"
 int main(void) {
- printf("%zu %zu %zu %zu %zu %zu %zu %zu", offsetof(tcb_t, state), offsetof(tcb_t, total_ticks),
+ printf("%zu %zu %zu %zu %zu %zu %zu %zu %zu %zu", offsetof(tcb_t, state), offsetof(tcb_t, total_ticks),
         offsetof(tcb_t, fd_table), offsetof(tcb_t, wait_channel),
         offsetof(file_t, node), offsetof(file_t, flags), offsetof(file_t, ref_count),
-        offsetof(tcb_t, fd_flags));
+        offsetof(tcb_t, fd_flags), offsetof(tcb_t, name), offsetof(tcb_t, next));
 }''')
     exe = str(Path(tmp) / "offsets")
     subprocess.run(["gcc", "-Isrc/kernel", "-Isrc/include", "-Isrc/fs", str(source), "-o", exe], cwd=REPO, check=True)
@@ -46,7 +46,7 @@ def run(mode):
     log.write_text("")
     with tempfile.TemporaryDirectory(prefix="fortress-input-") as tmp:
         (state_offset, ticks_offset, fds_offset, channel_offset,
-         node_offset, flags_offset, refs_offset, fd_flags_offset) = offsets(tmp)
+         node_offset, flags_offset, refs_offset, fd_flags_offset, name_offset, next_offset) = offsets(tmp)
         uart_path, qmp_path, gdb_path = [Path(tmp) / n for n in ("uart", "qmp", "gdb")]
         cmd = ["qemu-system-x86_64", "-M", "q35", "-m", "2G", "-display", "none",
                "-smp", os.environ.get("SHELL_TEST_CPUS", "1"), "-no-reboot", "-S", "-monitor", "none", "-boot", "d", "-cdrom", "bin/fortress.iso",
@@ -161,10 +161,16 @@ def run(mode):
                     def u64(address): return int.from_bytes(remote.memory(address, 8), "little")
                     scheduler_symbols(remote, sym)
                     blocked = u64(sym["g_blocked_threads"])
+                    # Phase 3 adds a sleeping terminal worker on the same list.
+                    # Find the actual shell rather than assuming it is the head.
+                    for _ in range(64):
+                        if not blocked or remote.memory(blocked + name_offset, 6) == b"shell\0":
+                            break
+                        blocked = u64(blocked + next_offset)
                     assert blocked, "stdin reader must sleep, not yield/poll"
-                    assert remote.memory(blocked + 16, 6) == b"shell\0"
+                    assert remote.memory(blocked + name_offset, 6) == b"shell\0"
                     assert int.from_bytes(remote.memory(blocked + state_offset, 4), "little") == 2
-                    assert u64(blocked + channel_offset) == sym["g_input"]
+                    assert u64(blocked + channel_offset) == u64(sym["input_wait_channel_debug"])
                     assert u64(sym["g_current_thread"]) != blocked
                     standard = [u64(blocked + fds_offset + fd * 8) for fd in range(3)]
                     assert all(standard) and len(set(standard)) == 3, "Missing/aliased standard handles"

@@ -5651,6 +5651,9 @@ pf_boot_guard_done:
         tcb_t *process = process_spawn("shell", shell->data, shell->size);
         if (!process) { serial_puts("[FAIL] Cannot start shell.\n"); hcf(); }
         uint64_t pid = process->tid;
+        if (input_terminal_bootstrap(pid)) {
+            serial_puts("[FAIL] Cannot assign shell terminal ownership.\n"); hcf();
+        }
         sched_enable_preemption();
         apic_timer_start();
         serial_puts("[BOOT] Interactive shell ready.\n");

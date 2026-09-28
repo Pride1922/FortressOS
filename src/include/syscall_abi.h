@@ -29,11 +29,14 @@
 #define SYS_FCNTL      23 /* (int fd, int cmd, uint64_t arg) -> result or -errno */
 #define SYS_PIPE       24 /* (int pipefd[2], uint32_t flags) -> 0 or -errno */
 
-/* S8 Phase 1. Signal/terminal slots 27..32 and 34 remain reserved. */
+/* S8 process, signal and terminal APIs (Phases 1–3). */
 #define SYS_SETPGID    25 /* (uint64_t pid, uint64_t pgid) -> 0 */
 #define SYS_KILL       27 /* (int64_t selector, uint64_t signal) */
 #define SYS_SIGACTION  28 /* (signal, const signal_action_t *act, signal_action_t *old) */
 #define SYS_SIGPROCMASK 29 /* (how, const uint64_t *set, uint64_t *old) */
+#define SYS_TCSETPGRP  30 /* (fd, pgid) -> 0 */
+#define SYS_TCGETPGRP  31 /* (fd) -> foreground pgid */
+#define SYS_TERMATTR   34 /* (fd, TERM_GET/SET, terminal_attrs_t *, sizeof) */
 #define SYS_GETPGRP    26 /* () -> pgid */
 #define SYS_SIGRETURN  32 /* () -> kernel restores full context; no user-visible return */
 #define SYS_WAITPID    33 /* (int64_t selector, uint64_t *status, uint32_t options) -> pid/0/-errno */
@@ -131,6 +134,7 @@ _Static_assert(sizeof(spawn_opts_t) == 64, "spawn_opts_t must be exactly 64 byte
 #define SYSCALL_EINTR -22
 #define SYSCALL_ESRCH -23
 #define SYSCALL_EPERM -24
+#define SYSCALL_ENOTTY -25
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

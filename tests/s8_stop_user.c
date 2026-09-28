@@ -63,7 +63,9 @@ void shell_main(int argc, const char **argv) {
         child_notice=0;
         require(call(SYS_PIPE,(uintptr_t)fds,0,0)==0 && fds[0]==7 && fds[1]==8);
         const char *args[]={"/bin/shell",mode,0};
-        spawn_opts_t opts={.size=64,.version=2,.flags=SPAWN_SETPGROUP,.argv=(uintptr_t)args};
+        /* Keep the terminal-blocked case foreground with its parent. Phase 3
+         * tests SIGTTIN separately; this fixture must still reach blocked input. */
+        spawn_opts_t opts={.size=64,.version=2,.flags=*mode=='t' ? 0 : SPAWN_SETPGROUP,.argv=(uintptr_t)args};
         long pid=call(SYS_SPAWN_EXT,(uintptr_t)args[0],(uintptr_t)&opts,64);
         require(pid>0);
         require(call(SYS_CLOSE,8,0,0)==0);
