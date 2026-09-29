@@ -40,7 +40,9 @@ int tool_write(const char *tool, const void *data, size_t n) {
     long r = write_all(1, data, n);
     if (r >= 0) return 0;
     tool_output_failed = true;
-    if (r == SYSCALL_EPIPE) return 141;
+    /* Default SIGPIPE terminates in the kernel. A surviving caller chooses an
+     * ordinary error exit, without pretending it was killed by a signal. */
+    if (r == SYSCALL_EPIPE) return 1;
     return tool_error(tool, "write error", NULL);
 }
 static bool decimal(const char *s, uint64_t *out) {

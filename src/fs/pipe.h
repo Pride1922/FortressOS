@@ -22,7 +22,11 @@ typedef struct pipe {
 /* Transfers ownership of two anonymous nodes to the caller. Attach each to
  * exactly one file_t; dup/spawn share that file_t. Close both on rollback.
  * Transfers block through CPU-local scheduler wait channels. All peers must
- * remain on the same CPU until cross-CPU channel wakeup support is added. */
+ * remain on the same CPU until cross-CPU channel wakeup support is added.
+ * Writes larger than PIPE_BUF return the available positive prefix immediately;
+ * they do not wait again after copying. No readers returns -VFS_EPIPE with all
+ * locks released. SYS_WRITE publishes SIGPIPE to its user writer on that error;
+ * direct kernel VFS callers retain the error-only contract. */
 int pipe_create(vfs_node_t **out_read_node, vfs_node_t **out_write_node);
 void pipe_close_endpoint(vfs_node_t *node);
 

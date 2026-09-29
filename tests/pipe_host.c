@@ -1,5 +1,6 @@
-/* Actual pipe/VFS/sys_pipe code with single-threaded host allocator, fd and
- * user-page-validation adapters. Does not establish IRQ or SMP behavior. */
+/* Actual pipe/VFS/sys_pipe/sys_write and process signal metadata, with
+ * single-threaded allocator, fd, lock, scheduler and user-page adapters.
+ * Does not establish IRQ, signal-frame delivery or SMP behavior. */
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,7 @@
 #include "../src/fs/pipe.c"
 #include "../src/fs/vfs.c"
 #include "../src/kernel/syscall.c"
+#include "../src/kernel/process_table.c"
 
 static size_t heap_live, pages_live, alloc_calls;
 static int fail_after = -1;
@@ -68,10 +70,12 @@ void pmm_free_pages(uintptr_t phys, size_t n) {
 }
 uint64_t *vmm_get_active_pml4_virt(void) { return (uint64_t *)&current; }
 bool vmm_validate_user_range(uint64_t *pml4, uintptr_t addr, size_t n, bool write) {
-    assert(pml4 == (uint64_t *)&current && addr >= 0x1000 && n == 8 && write);
+    assert(pml4 == (uint64_t *)&current && addr >= 0x1000);
+    if (write) assert(n == 8); /* sys_pipe output; sys_write validates input. */
     return valid_range;
 }
 tcb_t *thread_current(void) { return &current; }
+file_t *fd_get(tcb_t *p, int fd) { return p->fd_table[fd]; }
 int fd_alloc(tcb_t *p, struct file *f) {
     if (fd_fail_after == 0) return -1;
     if (fd_fail_after > 0) fd_fail_after--;
@@ -267,8 +271,64 @@ static void interrupted_tests(void) {
     vfs_close(r); vfs_close(w); clean();
 }
 
+/* Actual SYS_WRITE -> pipe -> process metadata publication. Host adapters do
+ * not execute the return trampoline or terminate a process; QEMU covers that. */
+static void sigpipe_tests(void) {
+    static char data[MAX_SYSCALL_WRITE_LEN];
+    static signal_state_t peer;
+    current.tid = 41;
+    current.is_user = true;
+    assert(!process_record_begin(41, 0, false, 0, 0));
+    process_record_attach_signals(41, &current.signals);
+    assert(!process_record_begin(42, 41, true, 0, 0));
+    process_record_attach_signals(42, &peer); /* Same group; must not be signaled. */
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        signal_action_t action = {.handler = mode == 1 ? SIG_IGN : mode == 2 ? 0x400000 : SIG_DFL};
+        signal_action_t taken;
+        uint64_t mask = mode == 3 ? SIGNAL_BIT(SIGPIPE) : 0;
+        assert(!process_signal_action(41, SIGPIPE, &action, NULL));
+        assert(!process_signal_mask(41, SIG_SETMASK, &mask, NULL));
+        file_t *r, *w; pair(&r, &w);
+        current.fd_table[4] = w;
+        /* Fill to 17 bytes free. A large write returns that prefix with no signal. */
+        for (unsigned i = 0; i < 3; ++i)
+            assert(sys_write(4, (uintptr_t)data, sizeof(data)) == sizeof(data));
+        assert(sys_write(4, (uintptr_t)data, sizeof(data)-17) == sizeof(data)-17);
+        assert(sys_write(4, (uintptr_t)data, sizeof(data)) == 17);
+        assert(!current.signals.pending_mask);
+        wait_reader = r;
+        wait_kind = 4;
+        wait_step = release_wait; /* Close reader while a full-pipe writer waits. */
+        assert(sys_write(4, (uintptr_t)data, 1) == SYSCALL_EPIPE);
+        assert(!peer.pending_mask);
+        assert(current.signals.pending_mask == (mode == 1 ? 0 : SIGNAL_BIT(SIGPIPE)));
+        if (mode == 3) {
+            assert(!process_signal_take_action(41, &taken, NULL));
+            assert(!process_signal_mask(41, SIG_UNBLOCK, &mask, NULL));
+        }
+        if (mode != 1) {
+            assert(process_signal_take_action(41, &taken, NULL) == SIGPIPE);
+            assert(taken.handler == action.handler);
+        }
+        assert(sys_write(4, 0, 0) == 0 && !current.signals.pending_mask);
+        valid_range = false;
+        assert(sys_write(4, (uintptr_t)data, 1) == SYSCALL_EFAULT);
+        valid_range = true;
+        assert(!current.signals.pending_mask);
+        assert(sys_write(4, (uintptr_t)data, 1) == SYSCALL_EPIPE); /* Immediate closure. */
+        assert(!peer.pending_mask);
+        if (mode != 1) assert(process_signal_take(41) == SIGPIPE);
+        current.fd_table[4] = NULL;
+        vfs_close(w); clean();
+    }
+    process_record_abort(42); process_record_abort(41);
+    current.signals = (signal_state_t){0};
+}
+
 int main(void) {
     ring_tests(); blocking_tests(); syscall_tests(); interrupted_tests(); clean();
+    sigpipe_tests();
     puts("pipe host: ring, atomic boundaries, lifetime, syscall validation and rollback PASS");
+    puts("SIGPIPE host: actual writer-only publication, dispositions, blocked pending, partial writes PASS (no IRQ/trampoline claim)");
     return 0;
 }

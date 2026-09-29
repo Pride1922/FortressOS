@@ -147,6 +147,18 @@ $(BUILD_DIR)/s8_signal_user.elf: tests/s8_signal_user.c user/shell_start.asm use
 test-s8-signals: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_signal_user.elf
 	@python3 scripts/test_s8_process.py --signals
 
+.PHONY: test-s8-sigpipe-host test-s8-sigpipe
+test-s8-sigpipe-host: test-pipe-host test-s8-signals-host test-stream-tools-host test-runner-host
+
+$(BUILD_DIR)/s8_sigpipe_user.elf: tests/s8_sigpipe_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/include/signal_abi.h src/fs/vfs.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/s8_sigpipe_user.c -o $(BUILD_DIR)/s8_sigpipe_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/s8_sigpipe_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/s8_sigpipe_user_start.o $(BUILD_DIR)/s8_sigpipe_user.o -o $@
+
+test-s8-sigpipe: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_sigpipe_user.elf
+	@SMP=$(SMP) python3 scripts/test_s8_sigpipe.py
+
 .PHONY: test-s8-stops-host test-s8-stops
 test-s8-stops-host:
 	@python3 scripts/test_process_table_host.py --stops

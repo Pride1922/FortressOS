@@ -79,6 +79,10 @@ void shell_main(int argc, const char **argv) {
         return;
     }
     int *fds = (int *)(pages + 4092); /* Writable range spans two mapped pages. */
+    /* This legacy fixture asserts raw EPIPE. Default termination and the other
+     * dispositions are covered separately by test-s8-sigpipe. */
+    static const signal_action_t ignore_pipe = {.handler = SIG_IGN};
+    require(call(SYS_SIGACTION, SIGPIPE, (uintptr_t)&ignore_pipe, 0) == 0);
     require(call(SYS_PIPE, 0xfff, 0, 0) == SYSCALL_EFAULT);
     require(call(SYS_PIPE, 0x800000000000ULL - 4, 0, 0) == SYSCALL_EFAULT);
     require(call(SYS_PIPE, 0xffffffff80000000ULL, 0, 0) == SYSCALL_EFAULT);

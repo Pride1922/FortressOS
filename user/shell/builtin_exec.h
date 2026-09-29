@@ -22,7 +22,7 @@ typedef struct {
  * Returns:
  *   0   on success
  *   1   on error
- *   141 on stdout EPIPE (quietly, no diagnostic written)
+ *   1 on stdout EPIPE if SIGPIPE is survived (quietly, no diagnostic written)
  *   2   if name is unknown or forbidden (not in child-safe allowlist)
  *
  * All output goes to fd 1 (stdout) or fd 2 (stderr) via write_bytes_fd().

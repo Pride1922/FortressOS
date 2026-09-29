@@ -8,7 +8,7 @@
  * Output discipline (every emitting handler):
  *   - Use write_str() / write_bytes_fd().
  *   - Stop at the first stdout failure; propagate the error code.
- *   - Return 141 quietly on EPIPE; return 1 + best-effort stderr on other I/O
+ *   - Return 1 quietly on EPIPE; return 1 + best-effort stderr on other I/O
  *     errors; never recurse if the diagnostic write also fails.
  *   - A read or close failure cannot overwrite an earlier output failure.
  */
@@ -21,7 +21,7 @@
 /* ---------- internal I/O helpers ----------------------------------------- */
 
 static int io_err(long r) {
-    if (r == SYSCALL_EPIPE) return 141;
+    (void)r; /* Default SIGPIPE already terminates at the syscall boundary. */
     return 1;
 }
 
@@ -148,7 +148,7 @@ static int exec_ls(int argc, const char *const *argv) {
 /*
  * Safe text viewer: read from fd 0 (stdin) if no path argument, otherwise open
  * the named file.  Replace non-printable bytes with dots; guarantee final LF.
- * Stop at first write failure; return 141 on EPIPE, 1 on other errors.
+ * Stop at first write failure; return 1 if the process survives SIGPIPE.
  */
 static int exec_view(int argc, const char *const *argv) {
     const char *path = argc > 1 ? argv[1] : NULL;

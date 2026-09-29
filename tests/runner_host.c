@@ -139,7 +139,7 @@ static void test_echo(void) {
     reset();
     stdout_fail_after = 1; stdout_fail_error = SYSCALL_EPIPE;
     r = builtin_exec(3, argv, NULL);
-    assert(r == 141);
+    assert(r == 1);
 
     /* Other write error */
     reset();
@@ -247,7 +247,7 @@ static void test_view_epipe(void) {
     stdout_calls = 1; stdout_fail_after = 1; stdout_fail_error = SYSCALL_EPIPE;
     const char *argv[] = {"view", "/test.txt", NULL};
     int r = builtin_exec(2, argv, NULL);
-    assert(r == 141);
+    assert(r == 1);
 }
 
 static void test_view_no_final_lf(void) {

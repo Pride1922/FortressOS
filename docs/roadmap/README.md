@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [shell-s8-phase6.md](shell-s8-phase6.md) | Implemented 2026-09-29, user testing pending: writer-only SIGPIPE, disposition-aware tool errors, host and BIOS/UEFI real-shell fixtures |
 | [shell-s8-phase5.md](shell-s8-phase5.md) | COMPLETE, user-confirmed 2026-09-28: jobs/fg/bg/kill, terminal restore and exit/orphan cleanup; BIOS/UEFI real-shell gate, host suites and regressions pass |
 | [shell-s8-phase4.md](shell-s8-phase4.md) | COMPLETE, user-confirmed 2026-09-28: job table, background launch, terminal handoff and idle reaping; 15 host cases plus BIOS/UEFI SMP=1 Ring 3 and real-shell acceptance |
 | [shell-s8-phase3.md](shell-s8-phase3.md) | Implemented, acceptance pending: terminal ownership, shared input attributes, foreground read/control enforcement, deferred ingress signals and test handoff |

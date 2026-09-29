@@ -23,7 +23,7 @@ static int number(const char *s) {
 static int write_all(const unsigned char *p, size_t n) {
     while (n) {
         long w = call(SYS_WRITE, 1, (uintptr_t)p, n);
-        if (w <= 0) return w == SYSCALL_EPIPE ? 141 : 1;
+        if (w <= 0) return 1; /* Default SIGPIPE terminates before returning. */
         p += w; n -= (size_t)w;
     }
     return 0;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real pipe/VFS/sys_pipe with host adapters; no SMP/IRQ acceptance claim."""
+"""Real pipe/VFS/write/pipe syscalls and signal metadata; no SMP/IRQ claim."""
 import os
 from pathlib import Path
 import subprocess

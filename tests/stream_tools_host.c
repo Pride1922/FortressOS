@@ -125,7 +125,7 @@ int main(void) {
         reset("abcdef", 6); fail_write = 2; write_chunk = 2;
         write_error = kind == 0 ? SYSCALL_EPIPE : kind == 1 ? 0 : SYSCALL_EIO;
         stderr_closed = true;
-        assert(invoke(cat_main, "f1", "f2", NULL) == (kind == 0 ? 141 : 1));
+        assert(invoke(cat_main, "f1", "f2", NULL) == 1);
         assert(opens == 1 && closes == 1); bytes_equal("ab", 2);
     }
     reset("abc", 3); assert(invoke(cat_main, "--", "-file", NULL) == 0); bytes_equal("abc", 3);

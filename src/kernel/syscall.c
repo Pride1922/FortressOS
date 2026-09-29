@@ -176,6 +176,14 @@ static int64_t sys_write(uint64_t fd, uintptr_t user_buf, size_t count) {
     }
 
     int64_t res = vfs_write(file, (const void *)user_buf, count);
+    if (res == -VFS_EPIPE) {
+        /* The pipe callback has released its rank-2 lock. Publish only to the
+         * writer (selector 0 would signal its entire group). Delivery belongs
+         * to the existing user-return boundary, after frame->rax holds EPIPE.
+         * Positive short writes remain positive; their next write may fail. */
+        spin_debug_assert_unheld();
+        (void)process_signal_send(curr->tid, (int64_t)curr->tid, SIGPIPE);
+    }
     if (res < 0) {
         return syscall_from_vfs_error(res);
     }

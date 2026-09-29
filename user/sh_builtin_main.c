@@ -17,9 +17,8 @@
  *
  * Exit codes:
  *   0   success
- *   1   error
+ *   1   error (including surviving stdout EPIPE, silently)
  *   2   unknown or forbidden command (reject code; not re-used for EPIPE)
- *   141 stdout EPIPE (silent; no diagnostic)
  */
 #include "types.h"
 #include "vfs.h"
