@@ -81,10 +81,30 @@ _start:
     jmp .arg_loop
 
 .args_done:
-    ; Parse argv[1] as decimal integer: if fully numeric, return value as exit code; else return 0
+    ; Check if argv[1] is "--spin"
     mov r14, [r13 + 8]  ; argv[1]
     test r14, r14
     jz .exit_zero
+    cmp byte [r14], '-'
+    jne .not_spin
+    cmp byte [r14 + 1], '-'
+    jne .not_spin
+    cmp byte [r14 + 2], 's'
+    jne .not_spin
+    cmp byte [r14 + 3], 'p'
+    jne .not_spin
+    cmp byte [r14 + 4], 'i'
+    jne .not_spin
+    cmp byte [r14 + 5], 'n'
+    jne .not_spin
+    cmp byte [r14 + 6], 0
+    jne .not_spin
+.spin_loop:
+    pause
+    jmp .spin_loop
+
+.not_spin:
+    ; Parse argv[1] as decimal integer: if fully numeric, return value as exit code; else return 0
     mov rsi, r14
     xor eax, eax        ; Accumulator
     xor ecx, ecx

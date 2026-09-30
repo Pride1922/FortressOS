@@ -135,6 +135,16 @@ test-s9-sysinfo-host:
 test-s9-sysinfo: $(BOOTABLE_ISO)
 	@python3 scripts/test_s9_sysinfo.py
 
+.PHONY: test-s9-top-host
+test-s9-top-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O2 -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include tests/top_host.c -o $(BUILD_DIR)/top_host
+	@$(BUILD_DIR)/top_host
+
+.PHONY: test-s9-top
+test-s9-top: $(BOOTABLE_ISO)
+	@python3 scripts/test_s9_top.py
+
 .PHONY: test-s8-groups-host
 	@python3 scripts/test_process_table_host.py --groups
 
@@ -384,6 +394,7 @@ USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
 USER_SH_BUILTIN_ELF := $(BUILD_DIR)/sh-builtin.elf
 USER_PS_ELF := $(BUILD_DIR)/ps.elf
 USER_SYSINFO_ELF := $(BUILD_DIR)/sysinfo.elf
+USER_TOP_ELF := $(BUILD_DIR)/top.elf
 STREAM_TOOLS := cat head tail wc
 STREAM_TOOL_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(STREAM_TOOLS)))
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
@@ -469,8 +480,19 @@ $(BUILD_DIR)/sysinfo_start.o: $(USER_DIR)/tools/start.asm
 $(USER_SYSINFO_ELF): $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o -o $@
 
+$(BUILD_DIR)/top.o: $(USER_DIR)/top.c src/include/types.h src/include/syscall_abi.h src/include/terminal.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(BUILD_DIR)/top_start.o: $(USER_DIR)/tools/start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 -DTOOL_ENTRY=top_main $< -o $@
+
+$(USER_TOP_ELF): $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o -o $@
+
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -479,6 +501,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
 	@cp -f $(USER_PS_ELF) $(BUILD_DIR)/initramfs/bin/ps
 	@cp -f $(USER_SYSINFO_ELF) $(BUILD_DIR)/initramfs/bin/sysinfo
+	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
 	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, view and echo.\nExternal cat preserves bytes; head, tail and wc process streams. Use TOOL --help.\n" > $(BUILD_DIR)/initramfs/docs/readme.txt

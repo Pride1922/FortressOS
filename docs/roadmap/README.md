@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [shell-s9-phase3.md](shell-s9-phase3.md) | COMPLETE (2026-09-30): /bin/top live view, CPU% delta calculation, stable PID sorting, interactive terminal redraw, and acceptance suites across BIOS/UEFI on SMP=1 and SMP=4 — closes Shell S9 milestone |
 | [shell-s9-phase2.md](shell-s9-phase2.md) | COMPLETE (2026-09-30): SYS_SYSINFO and /bin/sysinfo, managed-RAM total (prereq 1), BSP monotonic timebase (prereq 2) with multi-writer APIC scaling bug eliminated; verified across BIOS/UEFI on SMP=1 and SMP=4, and Dell Latitude 5500 physical acceptance |
 | [shell-s8-phase6.md](shell-s8-phase6.md) | COMPLETE, user-accepted 2026-09-29: writer-only SIGPIPE publication on a write to a closed pipe, default/caught/ignored/blocked disposition handling, tool-side 141 synthesis removed; BIOS/UEFI `SMP=1` host and real-shell gates plus a manual Dell default-termination observation — closes the S8 milestone |
 | [shell-s8-phase5.md](shell-s8-phase5.md) | COMPLETE, user-confirmed 2026-09-28: jobs/fg/bg/kill, terminal restore and exit/orphan cleanup; BIOS/UEFI real-shell gate, host suites and regressions pass |
