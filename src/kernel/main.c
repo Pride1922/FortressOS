@@ -5636,6 +5636,7 @@ pf_boot_guard_done:
     pci_report_xhci();
     xhci_boot_probe(&boot_info);
     net_boot_probe();
+    e1000_raw_selftest(boot_info.cmdline);
     boot_status("Mounting persistent storage (/mnt)...");
     usb_mount_production_storage(&boot_info);
     if (qemu_fw_cfg_has_key("opt/fortress/taint_test")) {

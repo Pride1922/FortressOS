@@ -791,3 +791,14 @@ test-net-pci: $(BOOTABLE_ISO)
 	@python3 scripts/test_net_pci.py
 
 
+
+# NET Phase 2a: polled descriptor DMA, raw TX/RX and pcap byte audit.
+.PHONY: test-net-rings
+test-net-rings: $(BOOTABLE_ISO) test-net-rings-host
+	@python3 scripts/test_net_rings.py
+
+.PHONY: test-net-rings-host
+test-net-rings-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O2 -g -fsanitize=address,undefined -Wall -Wextra -Werror -ffunction-sections -fdata-sections -pthread -Isrc/include -Isrc/drivers -Isrc/mm -Isrc/arch/x86_64 -Isrc/lib tests/net_rings_host.c -Wl,--gc-sections -o $(BUILD_DIR)/net_rings_host
+	@$(BUILD_DIR)/net_rings_host

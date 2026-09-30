@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [net-phase2a.md](net-phase2a.md) | COMPLETE (2026-09-30): 64-entry legacy TX/RX rings, PMM DMA pages, eth0 raw callbacks and bounded RX recycling, fatal quarantine; exact TX pcap and injected RX byte checks PASS BIOS/UEFI × e1000/e1000e SMP=1, plus host sanitizer ownership/failure coverage. QEMU only; Dell DMA/raw frame is Phase 2b |
 | [net-phase1b.md](net-phase1b.md) | COMPLETE (2026-09-30): Networking Phase 1b Dell Latitude 5590 hardware discovery — Intel I219-LM `8086:15D7` at `0000:00:1F.6`, BAR0 `0xEF300000` mapped to `0xFFFFFFFFE2000000`, MAC `C8:F7:50:0E:35:80`, `STATUS` link-down/link-up (`0x40080000` / `0x00080083`), link negotiates so the `NET_PLAN.md` §7.2 PHY/CSME risk is not blocking; device-ID additions (`0x15D7`/`0x15BD`/`0x15BB`). Manual hardware observation, boot-log photos — QEMU `test-net-pci` remains the primary logic evidence |
 | [net-phase1a.md](net-phase1a.md) | COMPLETE (2026-09-30): Networking Phase 1a Intel e1000/e1000e PCI discovery (8086:100E/10D3), uncached MMIO mapping (`0xFFFFFFFFE2000000ULL`), MAC address read, link STATUS register, and absent NIC clean fallback; verified across BIOS/UEFI in QEMU |
 | [net-phase0.md](net-phase0.md) | COMPLETE (2026-09-30): Networking Phase 0 core abstractions (`net_dev_t`, `pbuf_t`), RFC 1071 ones' complement checksum, Ethernet II, ARP (with 16-entry cache stub), IPv4 codecs and fragment rejection; 103/103 host ASan/UBSan tests pass |

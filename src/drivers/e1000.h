@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "pci.h"
+#include "net.h"
 
 /* e1000 / e1000e Supported PCI IDs */
 #define E1000_VENDOR_INTEL          0x8086
@@ -64,5 +65,13 @@ typedef struct {
 bool e1000_boot_probe(void);
 bool net_boot_probe(void);
 const e1000_device_t *e1000_get_active_device(void);
+net_dev_t *e1000_get_net_device(void);
+int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len);
+pbuf_t *e1000_poll_rx(net_dev_t *dev);
+void e1000_recycle_rx(net_dev_t *dev, pbuf_t *packet);
+/* Explicit test hook, never invoked on a normal boot. */
+void e1000_raw_selftest(const char *cmdline);
+/* Fatal stop: permanently retains all DMA allocations, even after reset. */
+bool e1000_quiesce(void);
 
 #endif /* FORTRESS_E1000_H */

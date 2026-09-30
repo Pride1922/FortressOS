@@ -75,7 +75,10 @@ typedef struct net_dev {
     uint32_t    mtu;                     /* Maximum Transmission Unit (default 1500) */
     uint32_t    flags;                   /* NET_UP, NET_RUNNING */
     int       (*send_packet)(struct net_dev *dev, const void *buf, size_t len);
-    int       (*poll_rx)(struct net_dev *dev);
+    /* Returned packet is caller-owned until recycle_rx; NULL means no packet.
+     * Callbacks require unlocked thread context. */
+    pbuf_t   *(*poll_rx)(struct net_dev *dev);
+    void      (*recycle_rx)(struct net_dev *dev, pbuf_t *packet);
     void       *priv;                    /* Controller-specific private state */
 } net_dev_t;
 
