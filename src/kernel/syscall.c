@@ -20,6 +20,8 @@
 #include "dmesg.h"
 #include "terminal.h"
 #include "console.h"
+#include "smp.h"
+#include "apic.h"
 
 extern void syscall_entry_stub(void);
 
@@ -1275,6 +1277,54 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             }
             result=process_waitpid((int64_t)frame->rdi, &status, (uint32_t)frame->rdx, false);
             if (result > 0 && frame->rsi) memcpy((void *)frame->rsi, &status, sizeof(status));
+            break;
+        }
+
+        case SYS_PROCINFO: {
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rsi,
+                                         sizeof(proc_info_t), true)) {
+                result = SYSCALL_EFAULT;
+                break;
+            }
+            process_refresh_cpu_ticks();
+            process_snapshot_t snap;
+            if (frame->rdi < PROC_INFO_MAX && process_record_snapshot(frame->rdi, &snap)) {
+                proc_info_t info;
+                memset(&info, 0, sizeof(info));
+                info.pid = (int64_t)snap.pid;
+                info.ppid = (int64_t)snap.parent;
+                info.pgid = (int64_t)snap.pgid;
+                info.sid = (int64_t)snap.sid;
+                info.state = (uint32_t)snap.state;
+                info.reserved = 0;
+                info.cpu_ticks = snap.cpu_ticks;
+                memcpy(info.name, snap.name, sizeof(info.name));
+                info.name[sizeof(info.name) - 1] = '\0';
+                memcpy((void *)frame->rsi, &info, sizeof(info));
+                result = 1;
+            } else {
+                result = 0;
+            }
+            break;
+        }
+
+        case SYS_SYSINFO: {
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rdi,
+                                         sizeof(sysinfo_t), true)) {
+                result = SYSCALL_EFAULT;
+                break;
+            }
+            sysinfo_t info;
+            memset(&info, 0, sizeof(info));
+            info.total_ram_bytes = pmm_get_managed_ram_bytes();
+            info.free_ram_bytes  = (uint64_t)pmm_get_free_pages() * PAGE_SIZE;
+            info.uptime_ticks    = apic_timer_get_bsp_ticks();
+            info.tick_hz         = apic_timer_get_frequency();
+            info.cpu_count       = (uint32_t)smp_get_cpu_count();
+            info.task_count      = process_record_count_enumerable();
+            info.reserved        = 0;
+            memcpy((void *)frame->rdi, &info, sizeof(info));
+            result = 0;
             break;
         }
 

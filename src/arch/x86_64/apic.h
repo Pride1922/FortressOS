@@ -84,6 +84,9 @@ void lapic_timer_start_ap(void);
 void apic_timer_stop(void);
 bool apic_timer_verify(void (*work)(void));
 uint64_t apic_timer_get_ticks(void);
+uint64_t apic_timer_get_bsp_ticks(void);
+uint64_t apic_timer_get_frequency(void);
+void     apic_timer_reset_bsp_ticks(void);
 uint64_t lapic_get_spurious_count(void);
 
 #endif /* FORTRESS_APIC_H */

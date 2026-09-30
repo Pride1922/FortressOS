@@ -53,6 +53,7 @@ size_t pmm_get_free_pages(void);
 uint64_t pmm_get_total_memory(void);
 uint64_t pmm_get_used_memory(void);
 uint64_t pmm_get_free_memory(void);
+uint64_t pmm_get_managed_ram_bytes(void);
 
 #define PMM_BITMAP_CAPACITY_BYTES (1024 * 1024ULL)
 #define PMM_BITMAP_MAX_RAM_BYTES  (PMM_BITMAP_CAPACITY_BYTES * 8ULL * PAGE_SIZE) /* 32 GiB */

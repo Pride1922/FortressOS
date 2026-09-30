@@ -18,6 +18,7 @@ static bool       high_memory_enabled = false;
  * Static kernel BSS (1 MiB at 32 GiB capacity); never reclaimable via PMM. */
 static uint8_t reserved_bitmap[PMM_BITMAP_CAPACITY_BYTES];
 static uint64_t rejected_frees, allocation_failures, max_scan_steps;
+static uint64_t g_managed_ram_bytes = 0;
 static spinlock_t g_pmm_lock = SPINLOCK_RANKED(4, "pmm");
 
 bool pmm_snapshot(void *buffer, size_t capacity) {
@@ -69,6 +70,25 @@ void pmm_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
             uint64_t top = entry->base + entry->length;
             if (top > highest_addr) {
                 highest_addr = top;
+            }
+        }
+    }
+
+    /* Calculate managed RAM total (USABLE, BOOTLOADER_RECLAIMABLE, KERNEL_AND_MODULES, ACPI_RECLAIMABLE) */
+    g_managed_ram_bytes = 0;
+    for (uint64_t i = 0; i < memmap->entry_count; i++) {
+        struct limine_memmap_entry *entry = memmap->entries[i];
+        if (!entry) continue;
+        if (entry->type == LIMINE_MEMMAP_USABLE ||
+            entry->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE ||
+            entry->type == LIMINE_MEMMAP_KERNEL_AND_MODULES ||
+            entry->type == LIMINE_MEMMAP_ACPI_RECLAIMABLE) {
+            if (entry->length > UINT64_MAX - entry->base) continue;
+            if (entry->base >= PMM_BITMAP_MAX_RAM_BYTES) continue;
+            uint64_t top = entry->base + entry->length;
+            if (top > PMM_BITMAP_MAX_RAM_BYTES) top = PMM_BITMAP_MAX_RAM_BYTES;
+            if (top > entry->base) {
+                g_managed_ram_bytes += (top - entry->base);
             }
         }
     }
@@ -414,6 +434,10 @@ uint64_t pmm_get_used_memory(void) {
 
 uint64_t pmm_get_free_memory(void) {
     return (uint64_t)pmm_get_free_pages() * PAGE_SIZE;
+}
+
+uint64_t pmm_get_managed_ram_bytes(void) {
+    return g_managed_ram_bytes;
 }
 
 bool pmm_audit(void) {

@@ -41,6 +41,9 @@
 #define SYS_SIGRETURN  32 /* () -> kernel restores full context; no user-visible return */
 #define SYS_WAITPID    33 /* (int64_t selector, uint64_t *status, uint32_t options) -> pid/0/-errno */
 #define SYS_GROUP_RELEASE 35 /* (uint64_t pgid, uint32_t action) -> 0 */
+#define SYS_PROCINFO      36 /* (uint64_t index, proc_info_t *buf) -> 1/0/-errno */
+#define SYS_SYSINFO       37 /* (sysinfo_t *buf) -> 0/-errno */
+#define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1
 #define SPAWN_SETPGROUP 1u /* v2: reserved2=0 creates group, >0 joins group */
@@ -106,6 +109,49 @@ typedef struct {
 } spawn_opts_t;
 
 _Static_assert(sizeof(spawn_opts_t) == 64, "spawn_opts_t must be exactly 64 bytes");
+
+#define PROC_STATE_FREE    0
+#define PROC_STATE_RUNNING 1
+#define PROC_STATE_STOPPED 2
+#define PROC_STATE_ZOMBIE  3
+#define PROC_STATE_DONE    4
+
+typedef struct {
+    int64_t  pid, ppid, pgid, sid;
+    uint32_t state;       /* 0=free, 1=running, 2=stopped, 3=zombie, 4=done(reserved) */
+    uint32_t reserved;    /* zero */
+    uint64_t cpu_ticks;   /* cumulative scheduler ticks */
+    char     name[16];    /* NUL-terminated, unused bytes zero */
+} proc_info_t;
+
+_Static_assert(sizeof(proc_info_t) == 64, "proc_info_t ABI size");
+_Static_assert(__builtin_offsetof(proc_info_t, pid) == 0, "proc_info_t.pid offset");
+_Static_assert(__builtin_offsetof(proc_info_t, ppid) == 8, "proc_info_t.ppid offset");
+_Static_assert(__builtin_offsetof(proc_info_t, pgid) == 16, "proc_info_t.pgid offset");
+_Static_assert(__builtin_offsetof(proc_info_t, sid) == 24, "proc_info_t.sid offset");
+_Static_assert(__builtin_offsetof(proc_info_t, state) == 32, "proc_info_t.state offset");
+_Static_assert(__builtin_offsetof(proc_info_t, reserved) == 36, "proc_info_t.reserved offset");
+_Static_assert(__builtin_offsetof(proc_info_t, cpu_ticks) == 40, "proc_info_t.cpu_ticks offset");
+_Static_assert(__builtin_offsetof(proc_info_t, name) == 48, "proc_info_t.name offset");
+
+typedef struct {
+    uint64_t total_ram_bytes; /* managed RAM (prereq 1 definition) */
+    uint64_t free_ram_bytes;  /* free PMM frames × PAGE_SIZE */
+    uint64_t uptime_ticks;    /* BSP elapsed timer ticks (prereq 2) */
+    uint64_t tick_hz;         /* calibrated frequency; also cpu_ticks' unit */
+    uint32_t cpu_count;       /* initialized scheduler CPUs, BSP included */
+    uint32_t task_count;      /* enumerable user processes, zombies included */
+    uint64_t reserved;        /* zero */
+} sysinfo_t;
+
+_Static_assert(sizeof(sysinfo_t) == 48, "sysinfo_t ABI size");
+_Static_assert(__builtin_offsetof(sysinfo_t, total_ram_bytes) == 0, "sysinfo_t.total_ram_bytes offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, free_ram_bytes) == 8, "sysinfo_t.free_ram_bytes offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, uptime_ticks) == 16, "sysinfo_t.uptime_ticks offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, tick_hz) == 24, "sysinfo_t.tick_hz offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, cpu_count) == 32, "sysinfo_t.cpu_count offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, task_count) == 36, "sysinfo_t.task_count offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, reserved) == 40, "sysinfo_t.reserved offset");
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0

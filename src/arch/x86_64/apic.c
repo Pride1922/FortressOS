@@ -2,10 +2,12 @@
 #include "vmm.h"
 #include "serial.h"
 #include "input.h"
+#include "percpu.h"
 
 static volatile uint8_t *g_lapic_mmio = (volatile uint8_t *)LAPIC_VIRT_ADDR;
 static volatile uint64_t g_spurious_count = 0;
 static volatile uint64_t g_timer_ticks = 0;
+static volatile uint64_t g_bsp_timer_ticks = 0;
 static uint32_t g_target_hz;
 static uint32_t g_timer_init_count = 0;
 
@@ -76,6 +78,9 @@ static void apic_spurious_handler(interrupt_frame_t *frame) {
 static void apic_timer_handler(interrupt_frame_t *frame) {
     (void)frame;
     g_timer_ticks++;
+    if (cpu_current()->id == 0) {
+        __atomic_fetch_add(&g_bsp_timer_ticks, 1, __ATOMIC_RELAXED);
+    }
     lapic_eoi(); /* Single-owner EOI: acknowledged immediately on timer entry */
     input_timer_tick(g_target_hz);
     extern void sched_on_timer_tick(void);
@@ -240,6 +245,7 @@ bool apic_timer_init(uint32_t target_hz) {
     g_target_hz = target_hz;
     g_timer_init_count = (uint32_t)count;
     g_timer_ticks = 0;
+    __atomic_store_n(&g_bsp_timer_ticks, 0, __ATOMIC_RELEASE);
     lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED | APIC_TIMER_PERIODIC | APIC_TIMER_VECTOR);
     lapic_write(APIC_REG_TIMER_INITCNT, (uint32_t)count);
     serial_puts("[ OK ] LAPIC calibrated against PIT; periodic timer remains masked\n");
@@ -279,6 +285,18 @@ bool apic_timer_verify(void (*work)(void)) {
 
 uint64_t apic_timer_get_ticks(void) {
     return g_timer_ticks;
+}
+
+uint64_t apic_timer_get_bsp_ticks(void) {
+    return __atomic_load_n(&g_bsp_timer_ticks, __ATOMIC_ACQUIRE);
+}
+
+uint64_t apic_timer_get_frequency(void) {
+    return (uint64_t)g_target_hz;
+}
+
+void apic_timer_reset_bsp_ticks(void) {
+    __atomic_store_n(&g_bsp_timer_ticks, 0, __ATOMIC_RELEASE);
 }
 
 uint64_t lapic_get_spurious_count(void) {

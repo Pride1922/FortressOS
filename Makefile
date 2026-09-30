@@ -121,12 +121,21 @@ test-s8-process-host:
 test-s9-metadata-host:
 	@python3 scripts/test_process_table_host.py --metadata
 
-.PHONY: test-s9-metadata-host
+.PHONY: test-s9-metadata
 test-s9-metadata: $(BOOTABLE_ISO)
 	@python3 scripts/test_s9_metadata.py
 
-.PHONY: test-s9-metadata
-test-s8-groups-host:
+.PHONY: test-s9-sysinfo-host
+test-s9-sysinfo-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O2 -Wall -Wextra -Werror -Isrc/include tests/sysinfo_host.c -o $(BUILD_DIR)/sysinfo_host
+	@$(BUILD_DIR)/sysinfo_host
+
+.PHONY: test-s9-sysinfo
+test-s9-sysinfo: $(BOOTABLE_ISO)
+	@python3 scripts/test_s9_sysinfo.py
+
+.PHONY: test-s8-groups-host
 	@python3 scripts/test_process_table_host.py --groups
 
 .PHONY: test-s8-terminal-host test-s8-terminal
@@ -373,6 +382,8 @@ USER_HELLO_ELF := $(BUILD_DIR)/hello.elf
 USER_DUAL_STREAM_ELF := $(BUILD_DIR)/dual_stream.elf
 USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
 USER_SH_BUILTIN_ELF := $(BUILD_DIR)/sh-builtin.elf
+USER_PS_ELF := $(BUILD_DIR)/ps.elf
+USER_SYSINFO_ELF := $(BUILD_DIR)/sysinfo.elf
 STREAM_TOOLS := cat head tail wc
 STREAM_TOOL_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(STREAM_TOOLS)))
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
@@ -436,14 +447,38 @@ $(USER_SH_BUILTIN_ELF): $(SH_BUILTIN_OBJECTS) $(SHELL_HEADERS) $(USER_DIR)/sh_bu
 	@$(AS) -f elf64 $(USER_DIR)/sh_builtin_start.asm -o $(BUILD_DIR)/sh_builtin_start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/sh_builtin_start.o $(BUILD_DIR)/sh_builtin_main.o $(SH_BUILTIN_OBJECTS) -o $@
 
+$(BUILD_DIR)/ps.o: $(USER_DIR)/ps.c src/include/types.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(BUILD_DIR)/ps_start.o: $(USER_DIR)/ps_start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 $< -o $@
+
+$(USER_PS_ELF): $(BUILD_DIR)/ps_start.o $(BUILD_DIR)/ps.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/ps_start.o $(BUILD_DIR)/ps.o -o $@
+
+$(BUILD_DIR)/sysinfo.o: $(USER_DIR)/sysinfo.c src/include/types.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(BUILD_DIR)/sysinfo_start.o: $(USER_DIR)/tools/start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 -DTOOL_ENTRY=sysinfo_main $< -o $@
+
+$(USER_SYSINFO_ELF): $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o -o $@
+
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
 	@cp -f $(USER_SH_BUILTIN_ELF) $(BUILD_DIR)/initramfs/bin/sh-builtin
 	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
+	@cp -f $(USER_PS_ELF) $(BUILD_DIR)/initramfs/bin/ps
+	@cp -f $(USER_SYSINFO_ELF) $(BUILD_DIR)/initramfs/bin/sysinfo
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
 	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, view and echo.\nExternal cat preserves bytes; head, tail and wc process streams. Use TOOL --help.\n" > $(BUILD_DIR)/initramfs/docs/readme.txt

@@ -31,6 +31,7 @@ typedef struct {
 static process_record_t processes[PROCESS_CAPACITY];
 static child_record_t children[PROCESS_CAPACITY];
 static spinlock_t g_process_lock = SPINLOCK_RANKED(1, "process");
+_Static_assert(PROC_INFO_MAX == PROCESS_CAPACITY, "PROC_INFO_MAX must equal PROCESS_CAPACITY");
 static uint64_t sequence;
 static process_record_t *find(uint64_t pid) {
     for (unsigned i = 0; i < PROCESS_CAPACITY; ++i)
@@ -78,6 +79,18 @@ bool process_record_snapshot(uint64_t index, process_snapshot_t *out) {
     }
     spin_unlock_irqrestore(&g_process_lock, irq);
     return found;
+}
+uint32_t process_record_count_enumerable(void) {
+    uint32_t count = 0;
+    uint64_t irq = spin_lock_irqsave(&g_process_lock);
+    for (unsigned i = 0; i < PROCESS_CAPACITY; ++i) {
+        process_record_t *p = &processes[i];
+        if (p->used && p->published && (!p->exited || p->uncollected)) {
+            count++;
+        }
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    return count;
 }
 /* Same transaction as child status consumption/discard. */
 static void collected_locked(uint64_t pid) {

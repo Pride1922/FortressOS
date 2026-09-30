@@ -5659,6 +5659,7 @@ pf_boot_guard_done:
             serial_puts("[FAIL] Cannot assign shell terminal ownership.\n"); hcf();
         }
         sched_enable_preemption();
+        apic_timer_reset_bsp_ticks();
         apic_timer_start();
         serial_puts("[BOOT] Interactive shell ready.\n");
         while (process_is_alive(pid)) {
