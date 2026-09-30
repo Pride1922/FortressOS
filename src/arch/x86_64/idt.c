@@ -220,6 +220,32 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         return;
     }
 
+    /* Software Interrupt / System Call (int 0x80) from User Mode */
+    if (frame->vector == 0x80) {
+        if (g_user_trap_active) {
+            g_user_trap_caught = true;
+            g_user_trap_cs     = frame->cs;
+            g_user_trap_ss     = frame->ss;
+            g_user_trap_rax    = frame->rax;
+            g_user_trap_rsp    = frame->rsp;
+
+            if (g_user_trap_recovery_rip != 0) {
+                /* Redirect execution back to kernel recovery context in Ring 0 */
+                frame->rip    = g_user_trap_recovery_rip;
+                frame->cs     = 0x08; /* GDT_KERNEL_CODE */
+                frame->ss     = 0x10; /* GDT_KERNEL_DATA */
+                frame->rsp    = g_user_trap_recovery_rsp;
+                frame->rflags = 0x002; /* Kernel RFLAGS with IF=0 */
+            }
+            return;
+        }
+
+        /* General System Call Dispatch */
+        extern int64_t syscall_dispatch(interrupt_frame_t *frame);
+        syscall_dispatch(frame);
+        return;
+    }
+
     /* APs unexpected exception isolation: keep unexpected faults out of BSP test hooks. */
     if (cpu->id != 0) {
         cpu->fault_vector = frame->vector;
@@ -253,32 +279,6 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         if (g_pf_recovery_rip != 0) {
             frame->rip = g_pf_recovery_rip;
         }
-        return;
-    }
-
-    /* Software Interrupt / System Call (int 0x80) from User Mode */
-    if (frame->vector == 0x80) {
-        if (g_user_trap_active) {
-            g_user_trap_caught = true;
-            g_user_trap_cs     = frame->cs;
-            g_user_trap_ss     = frame->ss;
-            g_user_trap_rax    = frame->rax;
-            g_user_trap_rsp    = frame->rsp;
-
-            if (g_user_trap_recovery_rip != 0) {
-                /* Redirect execution back to kernel recovery context in Ring 0 */
-                frame->rip    = g_user_trap_recovery_rip;
-                frame->cs     = 0x08; /* GDT_KERNEL_CODE */
-                frame->ss     = 0x10; /* GDT_KERNEL_DATA */
-                frame->rsp    = g_user_trap_recovery_rsp;
-                frame->rflags = 0x002; /* Kernel RFLAGS with IF=0 */
-            }
-            return;
-        }
-
-        /* General System Call Dispatch */
-        extern int64_t syscall_dispatch(interrupt_frame_t *frame);
-        syscall_dispatch(frame);
         return;
     }
 

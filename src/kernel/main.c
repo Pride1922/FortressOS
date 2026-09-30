@@ -5604,6 +5604,10 @@ pf_boot_guard_done:
     test_smp_piece4_scheduler();
     test_smp_piece5_ipi(master_kernel_pml4);
 
+    if (qemu_fw_cfg_has_key("opt/fortress/s9_metadata_test")) {
+        process_metadata_test_run();
+    }
+
     if (memory_stress_test_enabled(&boot_info)) {
         memory_stress_test_run(smp_get_cpu_count());
     }

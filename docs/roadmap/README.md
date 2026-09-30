@@ -52,6 +52,7 @@ and are not proof that every current revision has passed every test — check
 | [smp-piece4-scheduler.md](smp-piece4-scheduler.md) | SMP Piece 4: The SMP scheduler, per-CPU runqueues, task migration, and dual-lock work-stealing |
 | [smp-piece5-ipi.md](smp-piece5-ipi.md) | SMP Piece 5: Cross-core coordination, APIC ICR messaging, synchronous TLB shootdown (SM14/SM15), remote wakeup |
 | [smp-piece6-memory.md](smp-piece6-memory.md) | SMP Piece 6: 6A boot memory readiness, 6B PMM synchronization/multi-core stress, 6C contention-safe TLB shootdown, and 6D address-space lifetime discipline COMPLETE |
+| [smp-cross-cpu-spawn.md](smp-cross-cpu-spawn.md) | Cross-CPU user spawn fix (int 0x80 gate ordering, BIOS/UEFI SMP 1/4/8 verified); OPEN: AP user-mode exception routing |
 | [subsystems.md](subsystems.md) | Cross-cutting notes not tied to one phase: NMI delivery, boot console, interactive shell/input, general Dell acceptance |
 
 ## Checkpoint sequence (for orientation only — not authoritative status)

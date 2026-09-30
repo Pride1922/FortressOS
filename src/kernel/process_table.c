@@ -15,6 +15,9 @@ _Static_assert(__atomic_always_lock_free(sizeof(uint32_t), 0), "group refs must 
 typedef struct {
     uint64_t pid, parent, pgid, sid;
     bool used, published, exited, stopped;
+    bool uncollected, teardown_complete;
+    uint64_t cpu_ticks;
+    char name[16];
     signal_state_t *signals;
     process_group_t *group;
 } process_record_t;
@@ -33,6 +36,55 @@ static process_record_t *find(uint64_t pid) {
     for (unsigned i = 0; i < PROCESS_CAPACITY; ++i)
         if (processes[i].used && processes[i].pid == pid) return &processes[i];
     return NULL;
+}
+void process_record_set_name(uint64_t pid, const char *name) {
+    uint64_t irq = spin_lock_irqsave(&g_process_lock);
+    process_record_t *p = find(pid);
+    if (p && !p->published && !p->exited) {
+        unsigned n = 0;
+        if (name) while (n < sizeof(p->name)-1 && name[n]) {
+            p->name[n] = name[n];
+            ++n;
+        }
+        while (n < sizeof(p->name)) p->name[n++] = 0;
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+}
+void process_record_merge_ticks(const process_tick_sample_t *samples, size_t count) {
+    if (!samples || count > PROCESS_CAPACITY) return;
+    uint64_t irq = spin_lock_irqsave(&g_process_lock);
+    for (size_t i = 0; i < count; ++i) {
+        process_record_t *p = find(samples[i].pid);
+        if (p && p->published && !p->exited && samples[i].cpu_ticks > p->cpu_ticks)
+            p->cpu_ticks = samples[i].cpu_ticks;
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+}
+bool process_record_snapshot(uint64_t index, process_snapshot_t *out) {
+    if (!out || index >= PROCESS_CAPACITY) return false;
+    bool found = false;
+    uint64_t irq = spin_lock_irqsave(&g_process_lock);
+    for (unsigned i = 0; i < PROCESS_CAPACITY; ++i) {
+        process_record_t *p = &processes[i];
+        if (!p->used || !p->published || (p->exited && !p->uncollected)) continue;
+        if (index) { --index; continue; }
+        *out = (process_snapshot_t){.pid=p->pid, .parent=p->parent,
+            .pgid=p->pgid, .sid=p->sid, .cpu_ticks=p->cpu_ticks,
+            .state=p->exited ? PROCESS_ZOMBIE :
+                   p->stopped ? PROCESS_STOPPED : PROCESS_RUNNING};
+        for (unsigned n=0; n<sizeof(out->name); ++n) out->name[n]=p->name[n];
+        found = true;
+        break;
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    return found;
+}
+/* Same transaction as child status consumption/discard. */
+static void collected_locked(uint64_t pid) {
+    process_record_t *p = find(pid);
+    if (!p) return;
+    p->uncollected = false;
+    if (p->teardown_complete) p->used = false;
 }
 static bool group_exists(uint64_t pgid, uint64_t sid) {
     for (unsigned i = 0; i < PROCESS_GROUP_CAPACITY; ++i)
@@ -228,9 +280,16 @@ bool process_record_exit(uint64_t pid, uint64_t code) {
     return process_record_exit_signal(pid, code, 0);
 }
 bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal) {
+    return process_record_exit_accounted(pid, code, signal, 0);
+}
+bool process_record_exit_accounted(uint64_t pid, uint64_t code, unsigned signal,
+                                   uint64_t final_ticks) {
     uint64_t irq = spin_lock_irqsave(&g_process_lock);
     process_record_t *p = find(pid);
-    if (p) { group_leave(p); p->exited = true; p->signals = NULL; }
+    if (p) {
+        if (!p->exited && final_ticks > p->cpu_ticks) p->cpu_ticks = final_ticks;
+        group_leave(p); p->exited = true; p->signals = NULL;
+    }
     for (unsigned i=0; i<PROCESS_CAPACITY; ++i)
         if (processes[i].used && !processes[i].exited && processes[i].parent==pid)
             terminate_orphan_group_locked(processes[i].group);
@@ -240,13 +299,17 @@ bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal) {
         if (!c->used) continue;
         if (c->pid == pid) {
             recorded=true;
+            if (p) p->uncollected=true;
             if (!c->done) {
                 c->code=signal ? 0 : code; c->signal=signal; c->done=true;
                 c->event=signal ? CHILD_SIGNALED : CHILD_EXITED;
                 child_publish(c);
             }
         }
-        if (c->parent == pid) c->used=false;
+        if (c->parent == pid) {
+            collected_locked(c->pid);
+            c->used=false;
+        }
     }
     changed();
     spin_unlock_irqrestore(&g_process_lock, irq);
@@ -255,7 +318,12 @@ bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal) {
 void process_record_forget(uint64_t pid) {
     uint64_t irq = spin_lock_irqsave(&g_process_lock);
     process_record_t *p = find(pid);
-    if (p) { group_leave(p); p->used=false; }
+    if (p) {
+        group_leave(p);
+        p->signals=NULL;
+        p->teardown_complete=true;
+        if (!p->uncollected) p->used=false;
+    }
     spin_unlock_irqrestore(&g_process_lock, irq);
 }
 int64_t process_record_group(uint64_t pid) {
@@ -327,7 +395,7 @@ int64_t process_record_wait(uint64_t parent, int64_t selector, uint32_t options,
         }
         result=(int64_t)c->pid;
         c->reported_seq=c->event_seq;
-        if (c->done) c->used=false;
+        if (c->done) { collected_locked(c->pid); c->used=false; }
         goto out;
     }
     if (eligible) result=0;

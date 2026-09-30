@@ -765,6 +765,40 @@ tcb_t *thread_current(void) {
     return g_current_thread;
 }
 
+static void sample_ticks_locked(tcb_t *t, process_tick_sample_t *samples, size_t *count) {
+    if (!t || !t->is_user || t->state == THREAD_TERMINATED) return;
+    if (*count == PROCESS_CAPACITY) __builtin_trap();
+    samples[(*count)++] = (process_tick_sample_t){t->tid, t->total_ticks};
+}
+
+void process_refresh_cpu_ticks(void) {
+    spin_debug_assert_unheld();
+    /* 1024 bytes, invocation-owned on the 16 KiB kernel stack. Reused per CPU;
+     * simultaneous readers share no scratch storage. A migrating task may be
+     * missed/repeated, but merge by monotonic PID can only advance live ticks.
+     * Staged tasks have zero ticks. Terminated/detached tasks were finalized
+     * by process_exit before scheduler teardown; never inspect zombie_thread. */
+    process_tick_sample_t samples[PROCESS_CAPACITY];
+    size_t limit = g_total_sched_cpus ? g_total_sched_cpus : 1;
+    for (size_t c = 0; c < limit; ++c) {
+        size_t count = 0;
+        uint64_t irq = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+        sample_ticks_locked(cpu_locals[c].current_thread, samples, &count);
+        unsigned visited = 0;
+        for (tcb_t *t = scheduler_cpus[c].runqueue_head; t; t = t->next) {
+            if (++visited > MAX_KERNEL_THREADS) __builtin_trap();
+            sample_ticks_locked(t, samples, &count);
+        }
+        visited = 0;
+        for (tcb_t *t = scheduler_cpus[c].blocked_threads; t; t = t->next) {
+            if (++visited > MAX_KERNEL_THREADS) __builtin_trap();
+            sample_ticks_locked(t, samples, &count);
+        }
+        spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, irq);
+        process_record_merge_ticks(samples, count);
+    }
+}
+
 size_t sched_ready_count(void) {
     uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
     size_t count = 0;
@@ -971,7 +1005,9 @@ void sched_on_timer_tick(void) {
         return;
     }
 
+    uint64_t tick_irq = spin_lock_irqsave(&g_sched_lock);
     g_current_thread->total_ticks++;
+    spin_unlock_irqrestore(&g_sched_lock, tick_irq);
 
     /* If currently in idle thread, yield to see if work arrived or can be stolen */
     if (g_current_thread->is_idle) {
@@ -1344,6 +1380,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         goto fail_actions;
     }
 
+    process_record_set_name(p->tid, p->name);
     process_record_attach_signals(p->tid, &p->signals);
     if (spawn_flags & SPAWN_STAGED) {
         p->state = THREAD_STAGED;
@@ -1390,6 +1427,133 @@ tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf
 }
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {
     return process_spawn_on_cpu(cpu_current()->id, name, elf_data, elf_size, arg);
+}
+
+static uint32_t metadata_reader_stop, metadata_reader_done, metadata_reader_count;
+static void metadata_test_reader(void *unused) {
+    (void)unused;
+    while (!__atomic_load_n(&metadata_reader_stop, __ATOMIC_ACQUIRE)) {
+        process_refresh_cpu_ticks();
+        process_snapshot_t snapshot;
+        (void)process_record_snapshot(0, &snapshot);
+        __atomic_fetch_add(&metadata_reader_count, 1, __ATOMIC_RELAXED);
+        thread_yield();
+    }
+    __atomic_store_n(&metadata_reader_done, 1, __ATOMIC_RELEASE);
+    thread_exit();
+}
+static void metadata_test_require_line(bool condition, unsigned line) {
+    if (condition) return;
+    serial_puts("S9 METADATA FAIL line=");
+    serial_print_dec(line);
+    serial_puts("\n");
+    for (;;) __asm__ volatile("cli; hlt");
+}
+#define metadata_test_require(x) metadata_test_require_line((x), __LINE__)
+void process_metadata_test_run(void) {
+    extern const uint8_t embedded_init_elf_start[], embedded_init_elf_end[];
+    uint64_t parent = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
+    metadata_test_require(!process_record_begin(parent, 0, false, 0, 0));
+    process_record_set_name(parent, "metadata-parent");
+    process_record_commit(parent);
+    metadata_reader_stop=metadata_reader_done=metadata_reader_count=0;
+    metadata_test_require(thread_create_on_cpu(g_total_sched_cpus-1, "metadata-reader",
+                                               metadata_test_reader, NULL) != NULL);
+    for (size_t cpu=0; cpu<g_total_sched_cpus; ++cpu) {
+        uint64_t pid=__atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
+        metadata_test_require(!process_record_begin(pid,parent,true,0,0));
+        int64_t error;
+        metadata_test_require(process_spawn_internal(cpu,(int)cpu,"metadata-worker-long",
+            embedded_init_elf_start, embedded_init_elf_end-embedded_init_elf_start,
+            0,NULL,0,NULL,NULL,0,NULL,1,pid,0,&error) != NULL);
+        {
+            process_snapshot_t s = {0};
+            bool found = false;
+            for (unsigned i = 0; process_record_snapshot(i, &s); ++i)
+                if (s.pid == pid) { found = true; break; }
+            serial_puts("S9 SPAWN cpu="); serial_print_dec(cpu);
+            serial_puts(" pid="); serial_print_dec(pid);
+            serial_puts(" found="); serial_print_dec(found);
+            serial_puts(" state="); serial_print_dec(s.state); serial_puts("\n");
+        }
+        uint64_t deadline=apic_timer_get_ticks()+10000, previous=0;
+        bool zombie=false;
+        process_snapshot_t snapshot={0};
+                bool probed=false;
+        while (apic_timer_get_ticks()<deadline) {
+            if (!probed) {
+                probed=true;
+                process_snapshot_t ps={0};
+                bool pf=false;
+                for (unsigned i=0; process_record_snapshot(i,&ps); ++i)
+                    if (ps.pid==pid) { pf=true; break; }
+                serial_puts("S9 POLL cpu="); serial_print_dec(cpu);
+                serial_puts(" first_found="); serial_print_dec(pf);
+                serial_puts(" state="); serial_print_dec(ps.state); serial_puts("\n");
+            }
+            process_refresh_cpu_ticks();
+            for (unsigned i=0;i<PROCESS_CAPACITY;++i) {
+                if (!process_record_snapshot(i,&snapshot)) break;
+                if (snapshot.pid!=pid) continue;
+                metadata_test_require(snapshot.cpu_ticks>=previous);
+                previous=snapshot.cpu_ticks;
+                metadata_test_require(!memcmp(snapshot.name,"metadata-worker",16));
+                metadata_test_require(snapshot.parent==parent && snapshot.sid==parent);
+                zombie=snapshot.state==PROCESS_ZOMBIE;
+                break;
+            }
+            if (zombie) break;
+            thread_yield();
+        }
+            if (!(zombie && previous > 0)) {
+                serial_puts("S9 METADATA CPU "); serial_print_dec(cpu);
+                serial_puts(" zombie="); serial_print_dec(zombie);
+                serial_puts(" previous="); serial_print_dec(previous);
+                serial_puts("\n");
+                process_snapshot_t ps={0};
+                bool still=false;
+                for (unsigned i=0; process_record_snapshot(i,&ps); ++i)
+                    if (ps.pid==pid) { still=true; break; }
+                serial_puts("S9 GONE cpu="); serial_print_dec(cpu);
+                serial_puts(" still_visible="); serial_print_dec(still);
+                serial_puts(" state="); serial_print_dec(ps.state);
+                serial_puts(" ticks="); serial_print_dec(ps.cpu_ticks);
+                serial_puts("\n");
+            }
+            metadata_test_require(zombie && previous > 0);
+        /* Reap before wait: value-only zombie and final accounting survive. */
+        for (unsigned i=0;i<32;++i) { thread_yield(); sched_reap_dead(); }
+        process_tick_sample_t stale={pid,UINT64_MAX};
+        process_record_merge_ticks(&stale,1);
+        bool retained=false;
+        for (unsigned i=0;process_record_snapshot(i,&snapshot);++i)
+            if (snapshot.pid==pid) {
+                if (snapshot.cpu_ticks != previous || snapshot.state != PROCESS_ZOMBIE) {
+                    serial_puts("S9 METADATA ZOMBIE cpu_ticks="); serial_print_dec(snapshot.cpu_ticks);
+                    serial_puts(" previous="); serial_print_dec(previous);
+                    serial_puts(" state="); serial_print_dec(snapshot.state);
+                    serial_puts("\n");
+                }
+                metadata_test_require(snapshot.cpu_ticks>=previous && snapshot.state==PROCESS_ZOMBIE);
+                retained=true;
+            }
+        metadata_test_require(retained);
+        uint64_t status;
+        metadata_test_require(process_record_wait(parent,pid,0,&status,false)==(int64_t)pid);
+        metadata_test_require(WIFEXITED(status) && WEXITSTATUS(status)==77);
+        for (unsigned i=0;process_record_snapshot(i,&snapshot);++i)
+            metadata_test_require(snapshot.pid!=pid);
+        serial_puts("S9 METADATA CPU "); serial_print_dec(cpu);
+        serial_puts(" ticks="); serial_print_dec(previous); serial_puts(" PASS\n");
+    }
+    __atomic_store_n(&metadata_reader_stop,1,__ATOMIC_RELEASE);
+    uint64_t deadline=apic_timer_get_ticks()+10000;
+    while (!__atomic_load_n(&metadata_reader_done,__ATOMIC_ACQUIRE) && apic_timer_get_ticks()<deadline)
+        thread_yield();
+    metadata_test_require(__atomic_load_n(&metadata_reader_done,__ATOMIC_ACQUIRE) &&
+                          __atomic_load_n(&metadata_reader_count,__ATOMIC_RELAXED)>0);
+    process_record_exit(parent,0); process_record_forget(parent);
+    serial_puts("S9 METADATA PASS\n");
 }
 
 int64_t process_spawn_from_vfs(const char *path, int argc, const char *const argv[], int64_t *out_pid) {
@@ -1702,7 +1866,11 @@ void process_exit(uint64_t exit_code) {
         curr->has_exited = true;
 
         if (cpu_current()->id == 0) cancel_staged_children(curr->tid);
-        bool child_recorded = process_record_exit_signal(curr->tid, exit_code, curr->exit_signal);
+        uint64_t tick_irq = spin_lock_irqsave(&g_sched_lock);
+        uint64_t final_ticks = curr->total_ticks;
+        spin_unlock_irqrestore(&g_sched_lock, tick_irq);
+        bool child_recorded = process_record_exit_accounted(curr->tid, exit_code,
+                                                            curr->exit_signal, final_ticks);
         uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
         if (!child_recorded) {
         int slot = -1;

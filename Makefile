@@ -118,6 +118,14 @@ test-s8-process-host:
 	@python3 scripts/test_process_table_host.py
 
 .PHONY: test-s8-groups-host
+test-s9-metadata-host:
+	@python3 scripts/test_process_table_host.py --metadata
+
+.PHONY: test-s9-metadata-host
+test-s9-metadata: $(BOOTABLE_ISO)
+	@python3 scripts/test_s9_metadata.py
+
+.PHONY: test-s9-metadata
 test-s8-groups-host:
 	@python3 scripts/test_process_table_host.py --groups
 

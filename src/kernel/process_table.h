@@ -12,6 +12,24 @@
  * exception, documented below. PID allocation is monotonic; a living process
  * may recreate its namesake PGID after leaving it, so group generations differ. */
 #define PROCESS_CAPACITY 64
+/* Kernel-only value snapshots, not a user ABI. No pointers or ownership escape.
+ * Enumeration excludes unpublished and collected records. Across calls it is
+ * best-effort: churn can skip/repeat PIDs. Caller owns output/samples and holds
+ * no locks. Tick merge never resurrects a PID or changes finalized accounting. */
+enum process_snapshot_state { PROCESS_RUNNING = 1, PROCESS_STOPPED, PROCESS_ZOMBIE };
+typedef struct {
+    uint64_t pid, parent, pgid, sid, cpu_ticks;
+    enum process_snapshot_state state;
+    char name[16];
+} process_snapshot_t;
+typedef struct { uint64_t pid, cpu_ticks; } process_tick_sample_t;
+void process_record_set_name(uint64_t pid, const char *name);
+void process_record_merge_ticks(const process_tick_sample_t *samples, size_t count);
+bool process_record_snapshot(uint64_t index, process_snapshot_t *out);
+/* Final accounting supplied by the exiting owner with local IRQs excluded.
+ * No scheduler lock held. Legacy metadata-only exit helpers retain cached ticks. */
+bool process_record_exit_accounted(uint64_t pid, uint64_t code, unsigned signal,
+                                   uint64_t final_ticks);
 /* Separate bounded group store: live/staged membership plus externally retained
  * empty groups. All implementation remains in process_table.c. No user ABI. */
 #define PROCESS_GROUP_CAPACITY (PROCESS_CAPACITY * 2)
@@ -43,6 +61,7 @@ int process_record_begin(uint64_t pid, uint64_t parent, bool waitable,
 void process_record_abort(uint64_t pid);
 void process_record_commit(uint64_t pid);
 bool process_record_exit(uint64_t pid, uint64_t code);
+/* Teardown complete: retain value-only zombie until wait/parent discard. */
 void process_record_forget(uint64_t pid);
 int64_t process_record_group(uint64_t pid);
 uint64_t process_record_session(uint64_t pid);

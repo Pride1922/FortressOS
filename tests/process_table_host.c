@@ -45,13 +45,13 @@ int main(void) {
     assert(process_record_wait(1,INT64_MIN,0,&status,false)==SYSCALL_EINVAL);
     assert(process_record_wait(1,-1,16,&status,false)==SYSCALL_EINVAL);
     process_record_abort(4);
-    /* Independently fill all 64 durable child records, reclaiming live slots. */
-    for (unsigned i=0;i<64;i++) {
+    /* S9: zombies retain metadata slots; two parent records also occupy slots. */
+    for (unsigned i=0;i<PROCESS_CAPACITY-2;i++) {
         assert(!process_record_begin(100+i,1,true,0,0));
         assert(process_record_exit(100+i,i)); process_record_forget(100+i);
     }
     assert(process_record_begin(200,1,true,0,0)==SYSCALL_ENOMEM);
-    for (unsigned i=0;i<64;i++) assert(process_record_wait(1,100+i,0,&status,false)==100+i);
+    for (unsigned i=0;i<PROCESS_CAPACITY-2;i++) assert(process_record_wait(1,100+i,0,&status,false)==100+i);
     assert(!process_record_begin(201,1,true,0,0));
     process_record_exit(1,0); process_record_forget(1);
     assert(process_record_wait(1,201,0,&status,false)==SYSCALL_ECHILD);

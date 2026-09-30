@@ -122,6 +122,11 @@ void process_signal_user_return(interrupt_frame_t *frame);
 int64_t sys_sigreturn(interrupt_frame_t *frame, int *return_disposition);
 void   thread_exit(void);
 void   sched_reap_dead(void);
+/* Thread context, no locks held. Bounded value-only all-CPU tick refresh;
+ * scheduler locks and process lock never overlap. No TCB pointers escape. */
+void process_refresh_cpu_ticks(void);
+/* Explicit fw_cfg-gated Phase 0 integration fixture; never called normally. */
+void process_metadata_test_run(void);
 tcb_t *thread_current(void);
 size_t sched_ready_count(void);
 size_t sched_cpu_ready_count(size_t cpu_id);
