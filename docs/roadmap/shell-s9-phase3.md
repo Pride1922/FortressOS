@@ -1,6 +1,6 @@
 # Shell S9 Phase 3 — /bin/top (The Finale)
 
-Status: COMPLETE (2026-09-30). Implemented and verified on host and QEMU (BIOS & UEFI, SMP=1 and SMP=4).
+Status: COMPLETE (2026-09-30). Implemented and verified on host, QEMU (BIOS & UEFI, SMP=1 and SMP=4), and bare-metal Dell hardware.
 
 ## 1. Summary of Changes
 
@@ -88,3 +88,19 @@ Phase 3 implements the `/bin/top` standalone Ring 3 user program, completing the
 - Target: `make test-nmi`
 - Coverage: 28 exact-boundary NMIs + 24 exact-boundary sigreturn NMIs across 4 rounds on both BIOS and UEFI.
 - Result: **PASS**.
+
+## 3. Physical Hardware Acceptance: Dell Bare-Metal
+
+User-supplied testing confirms bare-metal hardware operation on Dell hardware booted via UEFI from USB:
+
+- **Introspection Suite Verified**: All three Shell S9 user utilities (`/bin/ps`, `/bin/sysinfo`, `/bin/top`) confirmed fully functional in Ring 3 on physical hardware.
+- **Live Terminal Redraw**: `/bin/top` executes live in the interactive framebuffer console:
+  - Header uptime advances monotonically at 100 Hz in real time without core scaling.
+  - Process list updates dynamically with accurate task counts.
+  - CPU% deltas calculate smoothly across sample intervals.
+  - Clean ANSI frame clearing and cursor repositioning without visual artifacts or screen corruption.
+  - Interactive keystroke handling (`q` exit) returns cleanly to the shell prompt on physical PS/2 keyboard.
+
+### Evidence Boundary
+These observations represent physical hardware validation on bare-metal Dell hardware confirming `ps`, `sysinfo`, and `top` operational in Ring 3. User-confirmed live hardware execution completes the final acceptance criteria for the Shell S9 milestone across both automated test harnesses and physical hardware.
+
