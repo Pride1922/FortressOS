@@ -39,7 +39,8 @@ CFLAGS  := -std=c11 \
            -Isrc/mm \
            -Isrc/kernel \
            -Isrc/lib \
-           -Isrc/fs
+           -Isrc/fs \
+           -Isrc/net
 
 # Assembler flags for NASM (with DWARF debugging symbols)
 ASFLAGS := -f elf64 -g -F dwarf
@@ -776,3 +777,17 @@ $(BUILD_DIR)/s8_jobctl_user.elf: tests/s8_jobctl_user.c user/shell_start.asm use
 .PHONY: test-s8-jobctl
 test-s8-jobctl: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_jobctl_user.elf $(BUILD_DIR)/s8_jobs_delay_user.elf
 	@SMP=$(SMP) python3 scripts/test_s8_jobctl.py
+
+# Networking Phase 0: Pure host tests for checksum, Ethernet, ARP, IPv4, and pbuf
+.PHONY: test-net-host
+test-net-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O2 -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net tests/net_host.c src/net/checksum.c src/net/eth.c src/net/arp.c src/net/ipv4.c -o $(BUILD_DIR)/net_host
+	@$(BUILD_DIR)/net_host
+
+# Networking Phase 1a: QEMU PCI discovery, MMIO mapping, MAC and STATUS registers
+.PHONY: test-net-pci
+test-net-pci: $(BOOTABLE_ISO)
+	@python3 scripts/test_net_pci.py
+
+

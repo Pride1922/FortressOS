@@ -33,6 +33,7 @@
 #include "usb_mount.h"
 #include "power.h"
 #include "logo.h"
+#include "e1000.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
@@ -5634,6 +5635,7 @@ pf_boot_guard_done:
     /* Keep discovery visible near the shell on hardware without COM1. */
     pci_report_xhci();
     xhci_boot_probe(&boot_info);
+    net_boot_probe();
     boot_status("Mounting persistent storage (/mnt)...");
     usb_mount_production_storage(&boot_info);
     if (qemu_fw_cfg_has_key("opt/fortress/taint_test")) {
