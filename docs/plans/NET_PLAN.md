@@ -374,3 +374,51 @@ To prevent scope creep and maintain architectural boundaries, the following feat
 - **No Hardware Offloads**: No TSO, LRO, or hardware checksum offload.
 - **No Multiple Active NICs or Bridging/Bonding**: Single primary interface (`eth0`).
 - **No Hot-Plug NIC Enumeration**: Controller must be present at boot.
+
+### 9.1 I219 PHY/CSME and reset risk (Phase 2b)
+
+The original §9.1 citation was missing; the risk was documented in §7.2.
+I219 is a PHY attached to the integrated PCH MAC. Shared legacy descriptors
+do not establish shared initialization/reset behavior. Intel's
+[I219 datasheet](https://cdrdv2-public.intel.com/612523/ethernet-connection-i219-datasheet.pdf)
+and [e1000e PCH reference](https://github.com/torvalds/linux/blob/v6.12/drivers/net/ethernet/intel/e1000e/ich8lan.c)
+document firmware ownership, PHY state and PCH-specific setup. The
+[I219 descriptor-flush reference](https://github.com/torvalds/linux/blob/v6.12/drivers/net/ethernet/intel/e1000e/netdev.c)
+also warns of a unit hang if reset occurs with descriptors requiring flush.
+
+The bounded first Phase 2b implementation takes over an already negotiated
+PHY with a MAC-only reset; it does not force PHY reset, power-cycle the PHY or
+override CSME/SMBus configuration. A failed 500 ms link check, ownership wait,
+transaction drain or reset stops networking with immutable diagnostics and
+retained DMA. A descriptor-flush requirement stops without reset. This is a
+deliberate narrower implementation than §7.2's optional MDIC reset attempts;
+full PHY recovery requires a separately documented post-PHY configuration path.
+
+The physical Phase 2b gate is a matching `0x88B5` raw frame captured on a wired
+second machine on the same broadcast domain, together with Dell TX DD and link
+evidence. DD plus link-up is software evidence only: without a capture, record
+"TX completed, wire not observed" and leave physical acceptance pending.
+Implementation and evidence boundaries: [Phase 2b](../roadmap/net-phase2b.md).
+
+Remaining reference-init differences reviewed for the RX-first experiment:
+
+| Area | FortressOS vs Linux v6.12 e1000e | Next action |
+| --- | --- | --- |
+| PHY/D0/ULP | Inherit negotiated PHY; Linux performs PHY ownership, D0/ULP and copper-link setup | RX result first; a PHY recovery path needs bounded MDIC/page/ownership handling, not a guessed FWSM write |
+| PBA | Dell inherited RX18/TX14 KiB; SPT reference requests RX26 KiB | Difference recorded; insufficient capacity for the 60-byte test is not established |
+| GCR | Managed no-snoop bits clear; Linux helper also ORs upper bits | Full-register difference remains unqualified; no speculative upper-bit write |
+| IOSFPC/TARC/ECC | SPT workaround setup already implemented | Preserve for the isolated RX experiment |
+| FWSM | FW_VALID=1, WLOCK_MAC=4, raw MODE=6 | Firmware status; no DMA clock-enable bit to program here; respect firmware ownership |
+
+The next boot uses `net_test=rings net_rx_first=1`, then decodes FWSM.
+It adds no init writes, so the experiment can separate receive progress from
+the TX failure without changing the suspected datapath. A missing peer frame
+alone is not proof of unreachable DMA backing. Physical acceptance stays open.
+
+Following physical RX descriptor completion evidence, the 15D7 path now
+implements the reference PLL/K1/FIFO-gap link-up subset, MAC beacon duration
+and SPT K1-off propagation. Bounded MDIC and page/firmware ownership cleanup
+are described in the Phase 2b roadmap. This does not implement a full PHY
+reset, D0/ULP recovery, EEE or platform LTR setup. The next build switches to
+`net_test=rings net_tx_trial=1` for an isolated TX attempt; physical TX remains
+unverified. Containment, descriptors, TXDCTL and FEXTNVM11 are unchanged.

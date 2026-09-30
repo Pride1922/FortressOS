@@ -802,3 +802,10 @@ test-net-rings-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O2 -g -fsanitize=address,undefined -Wall -Wextra -Werror -ffunction-sections -fdata-sections -pthread -Isrc/include -Isrc/drivers -Isrc/mm -Isrc/arch/x86_64 -Isrc/lib tests/net_rings_host.c -Wl,--gc-sections -o $(BUILD_DIR)/net_rings_host
 	@$(BUILD_DIR)/net_rings_host
+
+# NET Phase 2b: PCH init/reset/stop discipline with deterministic hardware mocks.
+.PHONY: test-net-i219-host
+test-net-i219-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O2 -g -fsanitize=address,undefined -Wall -Wextra -Werror -ffunction-sections -fdata-sections -pthread -Isrc/include -Isrc/drivers -Isrc/mm -Isrc/arch/x86_64 -Isrc/lib tests/net_i219_host.c -Wl,--gc-sections -o $(BUILD_DIR)/net_i219_host
+	@$(BUILD_DIR)/net_i219_host

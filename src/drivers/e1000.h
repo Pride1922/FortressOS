@@ -69,9 +69,14 @@ net_dev_t *e1000_get_net_device(void);
 int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len);
 pbuf_t *e1000_poll_rx(net_dev_t *dev);
 void e1000_recycle_rx(net_dev_t *dev, pbuf_t *packet);
-/* Explicit test hook, never invoked on a normal boot. */
+/* Exact net_test=rings opt-in only. net_rx_first=1 selects RX-only on PCH;
+ * net_tx_trial=1 skips previous descriptor/MMIO/PCI/VT-d diagnostics.
+ * Otherwise PCH emits one 2B frame and reports DD;
+ * physical acceptance additionally requires an external cable-side capture. */
 void e1000_raw_selftest(const char *cmdline);
-/* Fatal stop: permanently retains all DMA allocations, even after reset. */
+/* Fatal stop: permanently retains all DMA allocations, even after reset.
+ * PCH reset can be skipped when unsafe; false does not permit DMA reclamation.
+ * Thread/boot context only, no subsystem/console lock held. */
 bool e1000_quiesce(void);
 
 #endif /* FORTRESS_E1000_H */

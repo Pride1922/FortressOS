@@ -14,6 +14,20 @@ static uint32_t registers[0x6000 / 4];
 static unsigned allocations, fail_at;
 static uint16_t command_value;
 static bool high_enabled = true;
+static uint64_t *diagnostic_page_root;
+uint64_t *vmm_get_kernel_pml4_virt(void) { return diagnostic_page_root; }
+static uint32_t diagnostic_config[1024];
+static bool diagnostic_ecam;
+static acpi_sdt_header_t *diagnostic_dmar;
+static unsigned diagnostic_dmar_reads;
+acpi_sdt_header_t *acpi_find_table(const char *name) {
+    assert(!strcmp(name, "DMAR")); ++diagnostic_dmar_reads; return diagnostic_dmar;
+}
+bool pci_is_mcfg_available(void) { return diagnostic_ecam; }
+uint32_t pci_read_config32(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg) {
+    (void)seg; (void)bus; (void)dev; (void)fn;
+    assert(reg < sizeof(diagnostic_config)); return diagnostic_config[reg / 4];
+}
 
 uintptr_t pmm_alloc_page(void) {
     if (allocations == fail_at) return 0;
@@ -26,24 +40,49 @@ void *vmm_phys_to_virt(uintptr_t phys) {
     return memory[phys / 4096 - 1] + phys % 4096;
 }
 uint16_t pci_read_config16(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg) {
-    (void)seg; (void)bus; (void)dev; (void)fn; (void)reg;
-    return command_value;
+    (void)seg; (void)bus; (void)dev; (void)fn;
+    if (reg == PCI_REG_COMMAND || reg == PCH_DESC_STATUS) return command_value;
+    assert(reg < sizeof(diagnostic_config));
+    return diagnostic_config[reg / 4] >> ((reg & 2) * 8);
 }
 void pci_write_config16(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg, uint16_t value) {
     (void)seg; (void)bus; (void)dev; (void)fn; (void)reg;
+#ifdef E1000_PCH_HOST_TEST
+    if (test_refuse_master_disable && (command_value & PCI_COMMAND_BUS_MASTER) &&
+        !(value & PCI_COMMAND_BUS_MASTER)) return;
+#endif
     command_value = value;
 }
-void serial_puts(const char *s) { (void)s; }
+void serial_puts(const char *s) {
+#ifdef E1000_PCH_HOST_TEST
+    e1000_mock_log(s);
+#else
+    (void)s;
+#endif
+}
+void console_puts(const char *s) { (void)s; }
+void console_set_quiet(bool quiet) { (void)quiet; }
 uint64_t spin_lock_irqsave(spinlock_t *lock) {
     assert(!pthread_mutex_lock(&lock->mutex));
+#ifdef E1000_PCH_HOST_TEST
+    ++test_lock_depth;
+#endif
     return 0;
 }
 void spin_unlock_irqrestore(spinlock_t *lock, uint64_t irq) {
     (void)irq;
+#ifdef E1000_PCH_HOST_TEST
+    --test_lock_depth;
+#endif
     assert(!pthread_mutex_unlock(&lock->mutex));
 }
 
 static void fixture(void) {
+    diagnostic_page_root = NULL;
+    memset(diagnostic_config, 0, sizeof(diagnostic_config));
+    diagnostic_ecam = false; diagnostic_dmar = NULL;
+    diagnostic_dmar_reads = 0;
+    s_vtd_count = 0;
     allocations = 0; fail_at = 160; command_value = PCI_COMMAND_MEMORY_SPACE;
     high_enabled = true;
     memset(registers, 0, sizeof(registers));
