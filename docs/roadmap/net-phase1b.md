@@ -52,7 +52,7 @@ Notes on the raw values, stated as observations rather than decoded facts:
 - `0x00080083` sets the driver's existing `E1000_STATUS_FD`, `E1000_STATUS_LU` and
   `E1000_STATUS_SPEED_1000` bits, and `LU` is what Phase 2a/2b would sample.
 - These are observations of **one machine**. Never hardcode the BDF, the BAR0 base
-  address, the aperture size or the MAC address; see H13 in `AGENTS.md` §8.
+  address, the aperture size or the MAC address; see H13 in [`docs/subsystems/net.md`](../subsystems/net.md#2-hardware-facts-and-verification-boundaries) and `AGENTS.md` §8.
 
 ---
 

@@ -1,7 +1,7 @@
 # Phase 9G.5 — USB Topology Expansion
 
-Status: 9G.5a and 9G.5b COMPLETE; 9G.5c/d/e open. See `AGENTS.md` status
-table for current summary; this file holds the detailed implementation notes
+Status: 9G.5a and 9G.5b COMPLETE; 9G.5c/d/e open. See [`docs/subsystems/usb.md`](../subsystems/usb.md)
+for current summary; this file holds the detailed implementation notes
 and evidence.
 
 SuperSpeed support, multiple-controller enumeration, and hub support.

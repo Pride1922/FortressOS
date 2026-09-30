@@ -1,6 +1,6 @@
 # FortressOS — Plans & Design Documents
 
-This directory archives architecture designs and staged implementation plans. For historical verification logs and hardware acceptance evidence, see [`docs/roadmap/`](../roadmap/README.md). For current binding invariants and implementation status, see [`AGENTS.md`](../../AGENTS.md).
+This directory archives architecture designs and staged implementation plans. For historical verification logs and hardware acceptance evidence, see [`docs/roadmap/`](../roadmap/README.md). For current binding invariants and implementation status, see [`AGENTS.md`](../../AGENTS.md) and [`docs/subsystems/`](../subsystems/README.md).
 
 ## Plans & Designs
 

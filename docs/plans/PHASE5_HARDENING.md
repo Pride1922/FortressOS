@@ -1,6 +1,6 @@
 Status: COMPLETED (Phase 5, superseded by later phases).
 Current state: see ROADMAP.md §"[Phase 5] ACPI Discovery & APIC Timer
-(COMPLETE)" and AGENTS.md §2 for current hardware evidence.
+(COMPLETE)" and [`docs/subsystems/platform.md`](../subsystems/platform.md) for current hardware evidence.
 
 This file is preserved as the planning and verification artifact for
 Phase 5. It describes the state and boundaries as of completion. Some

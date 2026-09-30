@@ -1,6 +1,6 @@
 # Phase 9G.2 — Read-Only USB Mass Storage Block Device
 
-Status: COMPLETE (2026-09-19). See `AGENTS.md` status table for current
+Status: COMPLETE (2026-09-19). See [`docs/subsystems/usb.md`](../subsystems/usb.md) for current
 summary; this file holds the detailed implementation notes and evidence.
 
 Completed Milestone 9G.2 (Bulk-Only Transport, SCSI engine, uniform block

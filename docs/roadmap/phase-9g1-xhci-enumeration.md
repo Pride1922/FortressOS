@@ -1,11 +1,10 @@
 # Phase 9G.1 — xHCI Controller & USB Device Enumeration
 
-Status: COMPLETE (2026-09-19). See `AGENTS.md` status table for current
+Status: COMPLETE (2026-09-19). See [`docs/subsystems/usb.md`](../subsystems/usb.md) for current
 summary; this file holds the detailed implementation notes and evidence.
 
 For the staged scope, protected contracts, and the 9G.1 checkpoint table
-(required evidence + known failure modes per sub-stage), see `AGENTS.md`
-§"Phase 9G implementation handoff". This file is the evidence record only.
+(required evidence + known failure modes per sub-stage), see [`docs/subsystems/usb.md`](../subsystems/usb.md#2-phase-9g-implementation-handoff). This file is the evidence record only.
 
 ## Handoff and evidence boundary (2026-09-18)
 
@@ -195,7 +194,7 @@ parsing, Mass Storage BOT class validation, and device configuration
   - `PASS usb-descriptors-uefi-present`: full UEFI boot with `qemu-xhci`
     and `usb-storage` enumeration verified.
 
-## Full 9G.1 completion summary (from AGENTS.md status table)
+## Full 9G.1 completion summary (from docs/subsystems/usb.md)
 
 COMPLETE (2026-09-19): PCI discovery (9G.1a), MMIO/reset (9G.1b),
 Command/Event rings (9G.1c), Root ports (9G.1d), and Device Addressing &

@@ -1,6 +1,6 @@
 # Phase 9D — Bounded Writable ext2 Filesystem
 
-Status: COMPLETE. See `AGENTS.md` status table for current summary; this file
+Status: COMPLETE. See [`docs/subsystems/storage.md`](../subsystems/storage.md) for current summary; this file
 holds the detailed implementation notes and evidence.
 
 ## Phase 9D review follow-up (2026-09-17)
@@ -168,4 +168,4 @@ Physical NVMe write/mount was not established by this phase — Phase 9D's
 persistence claim is QEMU-only against disposable NVMe GPT fixtures. Physical
 storage persistence on real hardware was subsequently achieved via the USB
 path in Phase 9G.4, not the NVMe path this phase covers. Real NVMe RW
-persistence on hardware remains untested — see current status in `AGENTS.md`.
+persistence on hardware remains untested — see current status in [`docs/subsystems/storage.md`](../subsystems/storage.md).

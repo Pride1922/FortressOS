@@ -1,6 +1,6 @@
 # Phase 9G.3 — Production `/mnt` Mount & Command Line Partition Selection
 
-Status: COMPLETE (2026-09-19). See `AGENTS.md` status table for current
+Status: COMPLETE (2026-09-19). See [`docs/subsystems/usb.md`](../subsystems/usb.md) for current
 summary; this file holds the detailed implementation notes and evidence.
 
 Phase 9G.3 delivers production storage initialization independent of QEMU
@@ -100,7 +100,7 @@ and USB device provenance verification.
   - Interactive Ring 3 shell prompt reached and responsive. Photographic
     evidence confirmed.
 
-## Policy notes (from AGENTS.md, kept with the implementation they gate)
+## Policy notes (from docs/subsystems/usb.md, kept with the implementation they gate)
 
 "User-selected test USB" means the user deliberately chooses that
 configured target and writable entry. Require exactly one matching

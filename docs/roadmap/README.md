@@ -14,7 +14,7 @@ Code and public headers remain the implementation reference.
 Historical statements in each phase file describe *that* checkpoint; later
 phases supersede earlier deferred-work notes. They are not new instructions
 and are not proof that every current revision has passed every test — check
-`AGENTS.md`'s status table for current, up-to-date status per phase.
+`AGENTS.md`'s status table and [`docs/subsystems/`](../subsystems/README.md) for current, up-to-date status per phase.
 
 ## Phase files
 

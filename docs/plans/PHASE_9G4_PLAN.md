@@ -1,6 +1,6 @@
 Status: COMPLETED 2026-09-19.
 Result: see ROADMAP.md §"Phase 9G.4 — USB Writable Persistence &
-Durability Classification (2026-09-19)" and AGENTS.md §2.
+Durability Classification (2026-09-19)" and [`docs/subsystems/usb.md`](../subsystems/usb.md).
 
 This file is preserved as the planning artifact for Phase 9G.4. It
 describes the intended implementation and acceptance criteria as

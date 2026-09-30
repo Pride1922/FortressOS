@@ -54,8 +54,8 @@ Full rationale and violation consequences: AGENTS.md §4 (L1–L4).
 
 ## Where the detail lives
 
-- **Why** a contract exists, evidence labels (H1–H12), and full invariant
-  tables: `AGENTS.md` §4, §8, §9.
+- **Why** a contract exists, evidence labels (H1–H13), and full invariant
+  tables: `AGENTS.md` §4, §8, §9 and [`docs/subsystems/`](docs/subsystems/README.md) annexes.
 - **Deferred work and known limits** on top of these contracts:
   `ARCH_REVIEW.md`.
 - **Historical evidence** for a specific hardware workaround: the relevant

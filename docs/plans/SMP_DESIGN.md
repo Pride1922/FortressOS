@@ -27,7 +27,7 @@ Per piece, in order:
 3. Results are reported back — pass, or what failed — before the next
    piece starts. A piece isn't "done" because it compiles; it's done when
    its verification evidence exists, per the existing evidence-tied-to-claims
-   rule (AGENTS.md §2).
+   rule (AGENTS.md §2 and [`docs/subsystems/smp.md`](../subsystems/smp.md)).
 
 No piece is implemented without an explicit go-ahead for that specific
 piece.

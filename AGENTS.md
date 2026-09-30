@@ -14,6 +14,11 @@ Before editing, read [§4 invariants](#4-coding-standards-and-invariants), the s
 | Storage or VFS | M1–M4; [block.h](src/drivers/block.h), [vfs.h](src/fs/vfs.h), [ext2.h](src/fs/ext2.h); §7.3–7.4 |
 | Tests or user programs | [Makefile](Makefile), §3 and §7.5–7.6 |
 | Hardware assumptions or workarounds | [§8 evidence](#8-hardware-facts-and-verification-boundaries), then the driver |
+| Networking | [docs/subsystems/net.md](docs/subsystems/net.md), then the NET plan and driver |
+| USB / storage | [docs/subsystems/usb.md](docs/subsystems/usb.md) / [docs/subsystems/storage.md](docs/subsystems/storage.md) |
+| Shell / jobs / signals | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
+| Multi-core / SMP | [docs/subsystems/smp.md](docs/subsystems/smp.md) |
+| Platform / power / ACPI | [docs/subsystems/platform.md](docs/subsystems/platform.md) |
 
 Use `rg` / `rg --files` to locate implementations and callers. Trace indirect calls too; a textual search alone does not establish locking or IRQ safety. This guide states contracts; headers/code define implemented APIs. If they conflict, identify the discrepancy before changing behavior or claiming support.
 
@@ -21,117 +26,20 @@ Use `rg` / `rg --files` to locate implementations and callers. Trace indirect ca
 
 FortressOS is a freestanding C11/NASM x86_64 kernel using Limine v8, base revision 3, with UEFI and BIOS boot. Kernel virtual base: `0xffffffff80000000`; HHDM offset comes from boot metadata. Hardware subsystems have explicit, separate APIs. Early COM1 and framebuffer diagnostics must work before the heap is available.
 
-History lives in [docs/roadmap/README.md](docs/roadmap/README.md); qualifications and technical debt in [ARCH_REVIEW.md](ARCH_REVIEW.md). Keep new implementation instructions here, checkpoint history there, and verification claims tied to actual evidence.
+Detailed subsystem status logs, hardware observations, and scope boundaries live in [`docs/subsystems/`](docs/subsystems/README.md). Historical logs live in [docs/roadmap/README.md](docs/roadmap/README.md); qualifications and technical debt in [ARCH_REVIEW.md](ARCH_REVIEW.md). Keep new implementation instructions here, checkpoint history there, and verification claims tied to actual evidence.
 
-| NET | COMPLETE through Phase 2b (2026-09-30) — Phases 0, 1a, 1b, 2a and 2b are complete; Phase 3 (Ethernet framing and ARP) is next. Phase 2b I219 SPT/CNP MAC takeover/DMA and the bounded fatal stop-report are implemented and **physically accepted on the Dell Latitude 5590** (2026-09-30, manual observation + cable-side capture): RX works (`DD`/`EOP` set, `errors=0`, `length=60`, `RDH` 0→3) and TX completes (`[NET 2b] TX PASS: 60-byte 88B5 frame, DD observed`), with that frame independently captured on the wire by a second host running Wireshark (frame #437: source `Dell_0e:35:80` / `C8:F7:50:0E:35:80`, broadcast, EtherType `0x88b5`, length 60). Root cause of the earlier TX stall: the upper `TCTL` bits were not preserved post-reset (FortressOS `0x0103F0FA` vs. the working Linux e1000e `0x3103F0FA`); preserving the post-reset bits fixed it (`TCTL post-reset/final=3003F0F8/3103F0FA`), alongside `FEXTNVM11` bit 13 (reset-hang erratum) before enabling the rings, `CTRL_EXT`/`TARC`/`IOSFPC` SPT workarounds, and PHY link-up configuration (PLL/K1/FIFO gap) with `TARC1` kept consistent with `TCTL.MULR`. `make test-net-rings` passes 4/4 BIOS/UEFI × e1000/e1000e at SMP=1 with exact 60-byte TX pcap and injected RX checks; `make test-net-rings-host` covers ownership/failure paths with ASan/UBSan hardware mocks. I219 `15D7`/`15BD`/`15BB` take a separate PCH init/reset path; older `15B7`/`156F` stay discovery-only. `make test-net-i219-host` passes mocked sanitizer coverage; it makes no physical DMA claim. Details: [Phase 2a](docs/roadmap/net-phase2a.md), [Phase 2b](docs/roadmap/net-phase2b.md). Pure host-testable foundation (net_dev_t, pbuf_t, RFC 1071 checksum, eth/arp/ipv4 codecs; 103/103 tests pass with ASan/UBSan via `make test-net-host`), plus Intel e1000/e1000e PCI discovery, uncached MMIO mapping (PCD/PWT/NX), MAC address and link STATUS read verified in QEMU across BIOS and UEFI present/absent cases (`make test-net-pci`). The **Dell Latitude 5590 is the NET acceptance machine**: manual observation (2026-09-30) confirmed I219-LM `8086:15D7` at `0000:00:1F.6`, BAR0 `0xEF300000` mapped to `0xFFFFFFFFE2000000`, MAC `C8:F7:50:0E:35:80`, and PHY link-up (`STATUS 0x00080083`), so the `NET_PLAN.md` §7.2 PHY/CSME risk is not blocking there; Phase 1b has no automated target and its evidence is the manual boot-log photos, not a test pass, and 2b's acceptance is likewise a manual observation plus a cable-side capture, not a test pass. The 2b boundary is deliberately narrow: **one raw frame and one cable-side capture per boot — no cross-core execution, sustained traffic, worker cadence or eth/ARP/IPv4 protocol delivery is claimed.** Details: [Phase 0](docs/roadmap/net-phase0.md), [Phase 1a](docs/roadmap/net-phase1a.md), [Phase 1b](docs/roadmap/net-phase1b.md). |
-| Shell S9 | COMPLETE (2026-09-30), all phases verified. Phase 0 metadata prerequisites and cross-CPU spawn int 0x80 fix; Phase 1 `SYS_PROCINFO` and `/bin/ps` verified on QEMU and Dell 5590; Phase 2 `SYS_SYSINFO` and `/bin/sysinfo` verified on QEMU (BIOS/UEFI, SMP=1/4) with managed-RAM total and BSP monotonic timebase (multi-writer APIC scaling bug eliminated), plus Dell 5590 and Dell 5500 hardware acceptance; Phase 3 `/bin/top` live view verified on QEMU (BIOS/UEFI, SMP=1/4) and bare-metal Dell hardware (live console redraw, monotonic 100 Hz uptime, CPU% deltas, PS/2 'q' exit; all three tools ps/sysinfo/top verified live on physical hardware). Details: [Phase 3](docs/roadmap/shell-s9-phase3.md). |
-| Shell S8 | COMPLETE (2026-09-29), user-accepted: Phases 1–6 verified. Phase 1 process identity, child records and the wait ABI; Phases 2A/2B signal infrastructure, default delivery, custom handlers, `sigreturn` and an NMI gate; Phase 2C stop/continue and `SIGCHLD`; the group-lifetime prerequisite; Phase 3 single-terminal foreground ownership (fd-based `SYS_TCSETPGRP`/`SYS_TCGETPGRP`, TTIN/TTOU, deferred ingress worker); Phase 4 job table, `&`, foreground/background launch, terminal handoff and idle-prompt reaping; Phase 5 `jobs`/`fg`/`bg`/`kill %n`, terminal restore and exit/orphan cleanup; Phase 6 SIGPIPE published on a write to a closed pipe, the default/caught/ignored/blocked disposition matrix and removal of tool-side 141 synthesis. QEMU verified under BIOS and UEFI at `SMP=1`, plus a manual Dell Latitude 5590 observation of default SIGPIPE termination ([Phase 6](docs/roadmap/shell-s8-phase6.md)); pipe/input peers remain BSP-pinned, so no cross-core execution is claimed. Full detail: [Phase 1](docs/roadmap/shell-s8-phase1.md), [Phase 2C](docs/roadmap/shell-s8-phase2c.md), [group lifetime](docs/roadmap/shell-s8-group-lifetime.md), [Phase 3](docs/roadmap/shell-s8-phase3.md), [Phase 4](docs/roadmap/shell-s8-phase4.md), [Phase 5](docs/roadmap/shell-s8-phase5.md). |
-| Shell S7 | COMPLETE (2026-09-27), user-confirmed: Phases 1–6 verified. Blocking 64 KiB pipes, CLOEXEC cleanup, grouped pipelines, redirections, negation, cooperative teardown, stream utilities and builtin stages via `/bin/sh-builtin`. Fixed envp delivery with `mov rdx, rbp` in the trampoline, preserving argv and scheduler cleanup. QEMU BIOS/UEFI verified with `SMP=1/4/8`, AP counts confirmed in boot logs; Dell Latitude 5590 accepted in both RO and RW mount modes. Working pipelines: `echo hello \| wc -l`, `cat file \| head -n 5 \| wc -l`. Peers remain BSP-pinned; cross-core execution deferred. Details: [Phase 5B](docs/roadmap/shell-s7-phase5b.md), [Phase 6](docs/roadmap/shell-s7-phase6.md). |
-| Shell S6 | COMPLETE (2026-09-26). Redirections, uniform descriptor architecture, resource bounds, RO/tainted storage assertions, documented single-threaded process rules (concurrent non-append shared-file_t I/O deferred to S7 pipelines), and physical Dell Latitude 5590 hardware acceptance. Phase 1–3 complete: negative error codes for dup/dup2, stream node EOF bypass (`VFS_STREAM`), numeric parser bounds, atomic acquire-release refcounting on `file_t`, atomic EOF append serialization under `ext2_lock` (`ext2_write(..., &offset, append, ...)`), host sequential verification, and true multi-core SMP concurrent append integration suite (`make test-smp-append`) verified under QEMU `-smp 4` (BIOS & UEFI) with offline `e2fsck -fn` integrity audits. Phase 4A–4D complete: child process file redirection via `SYS_SPAWN_EXT`, target expansion, ambiguous redirect rejection, scoped parent builtin redirection (`save/apply/restore`), redirection-only empty commands (`> file`), `SYS_FCNTL` (`F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`), retained UI terminal handle (`g_term_fd` on FD 31 with `FD_FLAG_CLOEXEC`), `/bin/dual_stream` lexical duplication ordering, stderr append/truncation/closure, stdin `cat`, and non-recursive short-write error returns. Phase B complete: resource exhaustion suite (`make test-shell-s6-resources`) verified under BIOS & UEFI (1 and 4 CPUs) for child descriptor limit, parent fd table exhaustion, process table capacity, GDB scheduler inspection confirming 0 partial/runnable threads published on failed spawn, and prompt recovery. Phase C complete: RO and tainted ext2 storage assertions verified under BIOS and UEFI; distinct error strings (`Read-only filesystem.` and `I/O error.`), execution suppression on failed redirection setup, bit-for-bit file preservation, status propagation (`$? == 1`, `||` recovery, `&&` halt), and prompt recovery. Phase D complete: physical Dell Latitude 5590 acceptance verified on SanDisk USB 3.2 Gen 1 (RO Pass 1, RW Pass 2, offline host `e2fsck -fn` 0 errors, bit-for-bit SHA-256 match on all created files). Pipelines belong to S7. Full detail: [docs/plans/S6_AUDIT.md](docs/plans/S6_AUDIT.md). |
-| Shell S5 | COMPLETE (2026-09-25). Environment, variables, parameter expansion, aliases, and globbing. Flat variables (scoped for S9), SYS_SPAWN_EXT ABI, stack budget assertion with 512B floor, top-down string packing, builtins (set, unset, export, env, alias, unalias), 5-stage expansion pipeline (tilde, parameter, word splitting, globbing, quote removal). Verified on BIOS and UEFI. Full detail: [docs/roadmap/shell-s5.md](docs/roadmap/shell-s5.md). |
-| Shell S3–S4 | COMPLETE (2026-09-25). Quote-aware parser, comments, `;`/`&&`/`||`/`!`, multi-line continuation, process CWD (`SYS_GETCWD`/`SYS_CHDIR`), relative path normalization, `cd`/`pwd`, direct execution (`/bin/hello`, `./tool`, bare `hello`), Tab completion, configurable prompt with status indicator, length-framed persistent history (`/mnt/.fortress/history`). Verified on BIOS and UEFI. Full detail: [docs/roadmap/shell-s3-s4.md](docs/roadmap/shell-s3-s4.md). |
-| Shell S0–S2 | Implemented: raw/timed terminal input, cursor/erase support, long-line editing, Ctrl/AltGr, RAM history/search. Automated evidence: [docs/roadmap/shell-s0-s2.md](docs/roadmap/shell-s0-s2.md). |
-| Latest: multi-core (SMP) support | COMPLETE (2026-09-25). Pieces 1–6 all verified on QEMU (BIOS & UEFI, 1/4/8 CPUs) and bare-metal Dell 5590 (8 CPUs, 32 GiB). Includes per-CPU state, lock discipline, distributed scheduler with work-stealing, IPIs, contention-safe TLB shootdown, concurrent PMM safety (320k alloc/free under 623k+ contentions, 0 duplicate claims, exact baseline equality), and address-space lifetime tracking with deferred reaping. Full detail: [docs/roadmap/smp-piece6-memory.md](docs/roadmap/smp-piece6-memory.md). |
-| Phase 9G.5b SuperSpeed enumeration & BOT transport | COMPLETE (2026-09-20). SuperSpeed (USB 3.x) mass storage works end-to-end on physical hardware (Dell 5590 + SanDisk USB 3.2 Gen 1, port and multi-controller variants). Full detail and evidence: [docs/roadmap/phase-9g5-superspeed.md](docs/roadmap/phase-9g5-superspeed.md). |
-| Phase 9E Saved File Management & H4 AZERTY Fix | COMPLETE. Directory ops (`mkdir`/`rename`/`unlink`), on-disk inode/block reclamation, Belgian AZERTY scancode fix (Bug H4). Full detail: [docs/roadmap/phase-9e-exec-and-files.md](docs/roadmap/phase-9e-exec-and-files.md). |
-| Phase 9D Bounded writable ext2 | COMPLETE. Explicit opt-in writable mount, allocation/truncation ordering, emergency read-only remount, 3-boot BIOS/UEFI persistence. Full detail: [docs/roadmap/phase-9d-writable-ext2.md](docs/roadmap/phase-9d-writable-ext2.md). |
-| Phase 9C.5 Power & layout | COMPLETE. ACPI S5 shutdown/reset and US/AZERTY switching, verified on Dell 5590. Full detail: [docs/roadmap/subsystems.md](docs/roadmap/subsystems.md) ("Dell Latitude 5590 physical acceptance"). |
-| Phase 9G.1 xHCI Controller & Enumeration | COMPLETE (2026-09-19). PCI discovery, MMIO/reset, Command/Event rings, root ports, device addressing & configuration; verified on QEMU and bare-metal Dell 5590. Full detail: [docs/roadmap/phase-9g1-xhci-enumeration.md](docs/roadmap/phase-9g1-xhci-enumeration.md). |
-| Phase 9G.2 Read-only USB block device | COMPLETE (2026-09-19). Bulk-Only Transport, SCSI engine, block device registration, GPT partition parsing; verified on QEMU and bare-metal Dell 5590. Full detail: [docs/roadmap/phase-9g2-usb-block.md](docs/roadmap/phase-9g2-usb-block.md). |
-| Phase 9G.3 Production `/mnt` mount | COMPLETE (2026-09-19). Bounded cmdline parsing, PARTUUID-based partition selection, read-only production mount; verified on QEMU and Dell 5590 hardware. Full detail: [docs/roadmap/phase-9g3-usb-mount.md](docs/roadmap/phase-9g3-usb-mount.md). |
-| Phase 9G.4 USB writable persistence & durability classification | COMPLETE (2026-09-19). BOT stall recovery, four-tier durability classification, explicit writable opt-in; `/mnt` read-write persistence confirmed on physical USB. Full detail: [docs/roadmap/phase-9g4-usb-durability.md](docs/roadmap/phase-9g4-usb-durability.md). |
-| Phase 9H RAM capacity | COMPLETE (2026-09-20). PMM extended to cover 32 GiB, two-stage PMM/VMM init to stay within Limine's HHDM coverage until the kernel PML4 is active. Verified on Dell 5590 (32 GiB) with a write-readback probe. Full detail: [docs/roadmap/phase-9h-ram.md](docs/roadmap/phase-9h-ram.md). |
-
-Shell S7 Phases 1–6 are complete. See [Phase 5A utilities](docs/roadmap/shell-s7-phase5a.md),
-[Phase 5B builtin stages and envp diagnosis](docs/roadmap/shell-s7-phase5b.md),
-and [Phase 6 QEMU/Dell acceptance](docs/roadmap/shell-s7-phase6.md).
-Pipe peers remain on the BSP even in multi-CPU runs; cross-core wake channels
-remain future work. Shell S8 Phases 1–6 are complete and user-accepted; Phase 6 closed the milestone
-on 2026-09-29. Phase 1 covers process identity, child records and the wait ABI,
-and Phases 2A/2B add signal infrastructure, default delivery, custom handlers,
-`sigreturn` and the NMI gate, including BIOS/UEFI sigreturn NMI coverage. Phase 2C
-adds stop/continue and durable child notification, and the separate group-lifetime
-prerequisite retains PGID identities, generations and bounded references. Phase 3
-adds single-terminal foreground ownership, fd-based `SYS_TCSETPGRP`/`SYS_TCGETPGRP`,
-versioned input attributes, TTIN/TTOU enforcement and the BSP deferred ingress
-signal worker; Phase 4 the job table, `&`, foreground/background launch, terminal
-handoff and idle-prompt reaping; Phase 5 `jobs`/`fg`/`bg`/`kill %n`, terminal
-restore and exit/orphan cleanup; Phase 6 SIGPIPE published on a write to a closed
-pipe, the default/caught/ignored/blocked disposition matrix, and removal of the
-tool-side 141 synthesis. Evidence: [Phase 1](docs/roadmap/shell-s8-phase1.md),
-[Phase 2C](docs/roadmap/shell-s8-phase2c.md),
-[group lifetime](docs/roadmap/shell-s8-group-lifetime.md),
-[Phase 3](docs/roadmap/shell-s8-phase3.md),
-[Phase 4](docs/roadmap/shell-s8-phase4.md),
-[Phase 5](docs/roadmap/shell-s8-phase5.md) and
-[Phase 6](docs/roadmap/shell-s8-phase6.md). QEMU acceptance for the final phase
-was at `SMP=1` under BIOS and UEFI, with one manual Dell default-termination
-observation; pipe/input peers stay BSP-pinned, so no cross-core execution is
-claimed.
+| Subsystem | Status | Detail |
+| --- | --- | --- |
+| NET | IN PROGRESS — Phase 2b complete, hardware-accepted; Phase 3 next | [docs/subsystems/net.md](docs/subsystems/net.md) |
+| Shell S9 | COMPLETE (2026-09-30) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
+| Shell S8 | COMPLETE (2026-09-29) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
+| Shell S7 / S6 / S5 / S3–S4 / S0–S2 | COMPLETE | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
+| SMP | COMPLETE (2026-09-25) | [docs/subsystems/smp.md](docs/subsystems/smp.md) |
+| USB (9G) | COMPLETE through 9G.5b | [docs/subsystems/usb.md](docs/subsystems/usb.md) |
+| Storage (9D/9E/9H) | COMPLETE | [docs/subsystems/storage.md](docs/subsystems/storage.md) |
+| Power & layout (9C.5) | COMPLETE | [docs/subsystems/platform.md](docs/subsystems/platform.md) |
 
 Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem), networking.
-
-### Phase 9G implementation handoff
-
-Phase 9G is complete through 9G.5b. The staged plan, per-stage acceptance evidence, and hardware observations are recorded in [docs/roadmap/README.md](docs/roadmap/README.md) (see the 9G phase files). The driver handles USB 2.0 and USB 3.x direct-attached mass storage on any enumerated xHCI controller; USB 3.x devices enumerate as SuperSpeed and complete BOT transport. Hubs, hot-plug, UAS, and non-mass-storage classes remain out of scope. See the "What 9G does NOT do" list below.
-
-#### What 9G does NOT do
-
-- No USB 3.x hub support (SuperSpeed devices on root ports work; devices behind a SuperSpeed hub do not). No SuperSpeedPlus (10 Gbps) verification. No streams.
-- No external USB hubs; xHCI root-port management remains required.
-- No hot-plug enumeration, reconnection or removal recovery beyond safe failure.
-- No UAS, USB keyboards, mice, audio or other non-mass-storage classes.
-- No USB power management, suspend or resume.
-- No multiple-LUN support: access LUN 0 only.
-- No recovery/re-enumeration after a runtime host-controller reset. Initial reset and bounded BOT transport recovery are still required; controller failure leaves storage unavailable until reboot, with DMA safely contained.
-
-#### Explicit USB selection and writable opt-in
-
-Boot arguments are `usb_data=PARTUUID=<unique-partition-guid>` and `usb_data_mode=ro|rw` (default `ro`). Parsing is bounded, and the kernel keeps its own copy of the boot command line under the existing boot-metadata contract. The image builder reports the generated data partition GUID; an explicit writable boot-menu entry displays that target and passes both arguments. The default entry is read-only.
-
-"User-selected test USB" means the user deliberately chooses that configured target and writable entry. Require exactly one matching partition on a supported USB BOT device. A matching filesystem label (`FORTRESS_DATA`), GPT name (`Fortress Persistent Data`) or marker file alone is never write authorization. No first-disk or first-matching-label fallback. Duplicate GUIDs (including two clones of the same image), missing/malformed selection, unsupported media or failed eligibility checks must never produce a writable mount. Without a valid unique target, leave `/mnt` unmounted and explain why; with a selected target but failed RW eligibility, allow only the documented read-only fallback.
-
-The explicit opt-in does not override GPT ambiguity/degraded-mode policy, ext2 validation, write/flush capability checks or the internal NVMe exclusion. Log the selected USB identity, partition GUID and actual mount mode. Tests cover no selection, RO default, explicit RW, wrong GUID, duplicate clones and failed flush capability. Do not auto-enable RW merely because an image was flashed.
-
-#### Bounded first implementation
-
-- USB 2.0 Full-Speed/High-Speed devices on xHCI USB 2.0 ports only. Identify port protocol capabilities rather than assuming port numbers. SuperSpeed slots, streams, USB 3.x port state machines and low-speed storage are out of scope. Test media must actually negotiate a supported speed.
-- Devices must be attached at initialization. No hot-plug discovery or reconnection support; reject hubs (class 0x09) with `hub not supported`. Still consume/acknowledge port-status events while polling so they cannot clog the event ring. Unexpected removal must fail safely, not hang or release DMA memory still owned by the controller.
-- Bootstrap endpoint zero according to negotiated speed, read the first **8 bytes** of the device descriptor (bMaxPacketSize0 is at byte offset 7), validate/update endpoint-zero packet size and fetch full descriptors. A one-byte read cannot supply bMaxPacketSize0. Validate device and interface descriptors; class may be declared on the interface. Reference: [USB-IF USB 2.0 specification](https://www.usb.org/document-library/usb-20-specification).
-- 9G.2 commands: INQUIRY (0x12), TEST UNIT READY (0x00), READ CAPACITY(10) (0x25), READ(10) (0x28), REQUEST SENSE (0x03). Bound retries and implement BOT stall/reset recovery. Initially support LUN 0 only; document GET MAX LUN handling and reject unsupported configurations. Reject UAS explicitly. Defer READ(12/16), MODE SENSE(6/10), REPORT LUNS and larger-capacity command sets; reject READ CAPACITY(10)'s overflow sentinel and unrepresentable LBAs. WRITE(10) (0x2a) and SYNCHRONIZE CACHE(10) (0x35) belong to 9G.4.
-- In 9G.2, bulk completion **polls the event ring with a bounded timeout**: no USB completion IRQ dependency, sleeps, re-enabling IF or waiting on another thread. This follows ext2's IRQ-save lock contract (L1 and §9). A timeout propagates an I/O error and initiates bounded quiescence or DMA quarantine; it does not permit immediate reuse/free of active buffers.
-- 9G.2 owns 512/4096-byte sector integration tests against GPT and ext2; reject other sizes explicitly. The current boot image is laid out in 512-byte LBAs: do not reinterpret it as a 4096-byte-sector image. Use separately generated matching-geometry fixtures for 4096-byte tests.
-
-#### 9G.1 checkpoints and debugging
-
-| Checkpoint | Required evidence | Known failure modes and response |
-| --- | --- | --- |
-| 9G.1a PCI discovery only | Implemented: report the first matching xHCI BDF, vendor/device and assigned BAR metadata near shell startup. BIOS/UEFI present/absent QEMU checks pass. Dell photo: 0000:00:14.0, 8086:9D2F, BAR0 0xEF330000, memory64, non-prefetchable; shell prompt reached. BAR extent and controller MMIO remain unverified; never hardcode these observed values. | No controller or invalid/unsupported BAR: report unavailable and return without probing an unvalidated MMIO address. |
-| 9G.1b MMIO and reset | Verified in QEMU and Dell hardware: sized UC/NX aperture, capability/offset validation, bounded handoff/halt/reset, captured register diagnostics. Controller remains stopped with PCI mastering/decode disabled; no DMA buffers or rings. PS/2 input responsive. | No legacy handoff capability means no semaphore to wait for; stuck ownership, halt, HCRST or not-ready state must time out, record the failing register and disable this controller path. |
-| 9G.1c Rings | Verified in QEMU and Dell hardware: command/event rings, Link TRB toggle cycle, port status event consumption, and No-Op Command Completion Event verified. Bounded event polling with interrupts disabled. | No completion before deadline or unexpected completion code/command pointer: record TRB and ring positions, fail the checkpoint, and quiesce/quarantine DMA rather than proceeding. |
-| 9G.1d Ports | Verified in QEMU and Dell hardware: protocol mapping, root port inspection, USB 2.0 port reset, and speed negotiation verified. SuperSpeed attachments isolated. | Connected but unpowered: check power-switching capability and perform bounded supported power/reset sequencing; unresolved state fails that port. SuperSpeed attachment is logged as unsupported and skipped. |
-| 9G.1e Descriptors | Verified in QEMU (both BIOS & UEFI), host ASan/UBSan, and Dell Latitude 5590 hardware (2026-09-19): DCBAA/scratchpad initialization, Enable Slot, Address Device, EP0 Control Transfers, Device Descriptor, Configuration Descriptor parsing, non-storage port filtering (Port 5 webcam 0x0E, Port 7 rejected), BOT validation, Bulk-In EP 0x81 (max 512), Bulk-Out EP 0x02 (max 512) on Slot 0x3 Port 0x9 (VID 0x13FE, PID 0x4200), and SET_CONFIGURATION(1) verified. Interactive shell prompt reached. | Short/all-0xFF response, invalid bLength (including zero), descriptor type other than DEVICE (1), or invalid packet size: reject before further parsing, record the reason, and do not publish a device. |
-
-Before the first transfer, add a bounded `usb_dump_state()` diagnostic callable **only from thread context, with no subsystem or console lock held**, using the normal console/serial path. Timeout/error paths never call it: they copy bounded already-available state into a preallocated diagnostic record and publish a pending flag without allocation, logging or acquiring another lock. A thread consumes that record after transfer/FS locks have been released; use the existing IRQ-excluded publication discipline and preserve the record until consumed. Do not dereference stale controller/DMA pointers when printing. The record covers controller run/halt state, port state, software command enqueue/event dequeue positions and cycle bits, and last submitted/completed TRBs. Distinguish software bookkeeping from controller-owned positions that cannot be read directly; do not invent a hardware producer index. Capture QEMU serial logs and comparable Dell framebuffer diagnostics. Never print inside an ordinary IRQ handler or recursively acquire console locks. Use gated snapshots on failure/on demand rather than unconditional per-transfer logging. Existing QEMU launch recipes provide xHCI/USB attachment, but no event ring debugger or USB acceptance runner is implemented yet.
-
-
-#### Known unknowns to record during bring-up
-
-- Does the Dell expose a BIOS/OS ownership semaphore, and what handoff is needed?
-- What controller state does firmware leave, and does bounded reset succeed?
-- Does the selected stick negotiate Full-Speed, High-Speed or unsupported SuperSpeed, and is its actual topology directly attached?
-- Does it expose BOT or UAS, which LUNs, and 512- or 4096-byte logical sectors?
-- Does the stick support the required cache synchronization semantics?
-
-These are measurements for 9G.1/9G.2 (flush capability for 9G.4), not assumed hardware facts. Record observed values with the device and test environment.
-
-Implementation constraints and verification:
-
-- Read §4, §7.2–7.5 and §9, plus `pci.h`, `block.h`, `gpt.h`, `ext2.h`, `vfs.h`, VMM and synchronization headers before changing the related code. Preserve lock ranks, bounded IRQ work, DMA ownership/quiescence and the internal physical NVMe exclusion. No automatic formatting or raw-pattern tests on hardware; only the deliberately selected USB data partition may become writable under the explicit mount policy.
-- Trace ext2-to-block calls before choosing USB completion handling: ext2 holds its ranked IRQ-save lock around I/O. Do not introduce sleeping or interrupt-dependent waits beneath that lock. Any synchronization redesign must follow §9 discussion requirements.
-- Test the 130 MiB image on a larger disposable device as well as at exact image size. The GPT backup remains at the image boundary after a raw copy, while the current parser probes the device's last sector. 9G.3 owns this policy: accept a fully validated primary header AND partition array in degraded read-only mode when the end-of-device backup is absent/invalid; log the declared backup LBA and actual last LBA as a possible raw-copy size mismatch. Do not label an unverified mismatch definitively a raw copy. Preserve rejection of two valid but conflicting GPTs and the existing validated read-only backup fallback. Reject when neither copy validates. Never silently repair/resize disks. 9G.4 must explicitly resolve writable eligibility for the as-flashed layout and test it; RO acceptance alone does not authorize writes or partition-table repair.
-- New USB persistence runners must use disposable copies and omit the NVMe fixture so `/mnt` cannot accidentally come from it. The existing `run-img*` targets attach a separate NVMe fixture and prove boot only. Name new USB tests `test-usb-*`; existing storage tests retain their NVMe fixture scope, and future `test-img-*` tests prove image boot only. Add a Makefile/runner preflight assertion over the final QEMU arguments: only the disposable USB data disk is allowed, with paired read-only OVMF code and disposable OVMF vars as firmware exceptions. Reject extra data disks, including NVMe and injected `-drive`/`-blockdev` backends or extra arguments. Add appropriate host failure tests and bounded QEMU targets following §7.5; run relevant existing ext2, storage, shell and power regressions.
-- Preserve historical results and label new evidence by command, firmware, image/device and result. QEMU USB success does not establish Dell USB acceptance. Update this status and the matching file under `docs/roadmap/` after each completed stage.
 
 ## 3. Build, Run, Debug and Verify
 
@@ -276,7 +184,8 @@ FortressOS/
 ├── ARCH_REVIEW.md           # Architecture audit, limits and technical debt
 ├── docs/
 │   ├── plans/               # Architecture specifications and implementation plans (SMP_DESIGN.md, etc.)
-│   └── roadmap/             # Per-phase implementation notes and hardware verification evidence
+│   ├── roadmap/             # Per-phase implementation notes and hardware verification evidence
+│   └── subsystems/          # Per-subsystem architecture annexes, status logs, and hardware facts
 ├── scripts/                 # Host/QEMU verification and disposable disk fixtures
 ├── tests/                   # Host tests and mocks
 ├── Makefile                 # Automated compilation, bootloader fetch, ISO packaging, and QEMU run
@@ -480,55 +389,31 @@ Additions follow the boundaries: a new SCSI opcode goes in `xhci_bot.c`; a new d
 
 Preserve empirically-derived and spec-derived workarounds with their evidence labels. Do not remove one merely to match a datasheet; investigate discrepancies and record device/firmware/repro. Observation, implemented behavior and unverified claims are distinct. Do not turn an example or a source-code comment into physical acceptance evidence.
 
-| ID | Evidence / constraint |
-| --- | --- |
-| H1 | **Dell 5590 photo:** keyboard input and IRQ1 initialization reported working. **Code:** `keyboard_init` clears translation while selecting/querying set 2, then sets bit 6 to deliver translated set 1. Preserve the sequence; it is not proof of the firmware's initial bit value. |
-| H2 | **Code:** NVMe doorbells use CAP.DSTRD-derived stride (`4 << DSTRD`) and dynamic mapping extent. No physical DSTRD measurement is established here; never hardcode QEMU's value. |
-| H3 | **5590 photo:** ECAM segment 0 buses 0..127, base `0xF0000000`. Parse MCFG, never assume this address/range or apply it to another Dell. See H12 for 5530 controller topology. |
-| H4 | **Code + user report (2026-09-16, fixed 2026-09-18):** `layout azerty` selects Belgian AZERTY (Punt). Top number row uses `shift ^ s->caps` as Shift-Lock for digits `1234567890`. Shifted table takes priority over `a..z` matching, resolving bug where scancodes 0x03, 0x08, 0x0A, 0x0B (`é è ç à`) and 0x28 (`ù/%`) emitted uppercase `'E'`, `'C'`, `'A'`, `'U'` instead of digits and `%`. Scancode 86 (0x56) added for ISO `<` / `>`. AltGr absent; historically arrows/function keys ignored; shell S1 adds arrows, Ctrl and AltGr (Dell verification pending), while function keys remain ignored and Caps LED unsynchronized. |
-| H5 | **2026-09-20, revised:** Limine's HHDM on the Dell 5590 covers physical `[0, ~2.5 GiB)` only. Measured by direct read at `hhdm_offset + phys`: `0x80000000` succeeds, `0xA0000000` raises #PF at CR2=`0xFFFF8000A0000000`. FortressOS works around this with a two-stage PMM: allocation is capped at 1 GiB until `vmm_init` loads the kernel PML4 with a full 32 GiB HHDM, then `pmm_unlock_high_memory()` clears the cap. PMM bitmap is 1 MiB (32 GiB coverage); the memory map's top range ends at `0x82E7EC000` (~32.72 GiB), which is clamped and warned. Verified on the Dell: `dmesg` reports `Total Physical RAM: 32768 MiB (8388608 frames)`, `Usable Free RAM: 31873 MiB`; write-readback probe passed at 2, 4, 16, and 30 GiB; boot log preserved at `/mnt/boot.log`. |
-| H6 | The internal physical NVMe filesystem is not mounted by the kernel. `/mnt` is provided by the USB data partition when a supported stick is attached and selected; see H9. Initramfs file reads prove neither physical disk I/O nor persistence. |
-| H6a | **Phase 9F code + user report (2026-09-18):** the raw image includes an ext2 data partition; the user flashed it with Rufus and reported no `/mnt`. Kernel USB storage support is absent. USB boot and image verification do not establish USB partition mounting or persistence; Phase 9G supplies that missing path. |
-| H7 | **Code:** ACPI FADT/DSDT S5 and reset fallbacks now exist (`power.c`); this is limited parsing, not a general AML interpreter. Port `0x604` is a QEMU mechanism. Physical ACPI S5 shutdown and multi-tier reset confirmed functional on Dell 5590. |
-| H8 | **Recorded QEMU evidence:** 40 exact-boundary NMIs on IST2; no proof of physical NMI injection, nested-fault completeness, SWAPGS or SMP safety. |
-| H9 | Kingston USB DISK 2.0 (VID 0x13FE, PID 0x4200) on Dell 5590. Reports no SCSI caching page on MODE SENSE(6) or MODE SENSE(10); rejects SYNCHRONIZE CACHE(10). Classified ASSUMED_WRITE_THROUGH. Files persist across power cycle with clean shutdown. e2fsck -fn clean. Not a claim of power-loss tolerance. |
-| H10 | SanDisk USB 3.2 Gen 1 (VID 0x0781, PID 0x5588). Enumerates as a SuperSpeed device on Port 0x12 (Dell 5590). Reports two alternates on Interface 0: Alternate 0 with protocol 0x50 (BOT) and endpoints 0x81 IN / 0x02 OUT; Alternate 1 with protocol 0x62 (UAS) and endpoints 0x81 / 0x02 / 0x83 / 0x04. Only the BOT alternate's endpoints are used. `MODE SENSE(6)` page 0x08 reports `WCE=1`; `SYNCHRONIZE CACHE` succeeds. Classified `SYNC_BACKED`. Mounts read-write at `/mnt`. |
-| H11 | Dell 5590 xHCI controller at 0000:00:14.0 (Intel Sunrise Point-LP, 8086:9D2F), 64 KiB BAR at 0xEF330000, 12 USB 2.0 ports and 6 USB 3.0 ports. Legacy handoff extended capability at offset 0x846C. These are observations of one machine, not constants. |
-| H12 | Dell Latitude 5530 presents **two** xHCI controllers: `0000:00:14.0` and `0000:00:14.2`, both matching class 0x0C subclass 0x03 progif 0x30. Verified via 9G.5a: both controllers initialized; a Kingston USB 2.0 stick is reachable on either controller depending on physical port; the first controller has no attached devices in the default configuration. Do not assume controller index maps to physical port group. |
-| H13 | **Dell 5590 boot-log photos + user report (2026-09-30, NET Phase 1b):** integrated NIC is Intel I219-LM at `0000:00:1F.6`, PCI `8086:15D7`, class `02:00:00`, BAR0 `0xEF300000` (32-bit MMIO) mapped to `0xFFFFFFFFE2000000`, MAC `C8:F7:50:0E:35:80`. `STATUS` read `0x40080000` with no cable (LU clear) and `0x00080083` with a cable attached (FD + LU + 1000 Mb/s per `e1000.h` bits), i.e. **PHY/CSME link negotiation completes on this machine**, so the `NET_PLAN.md` §7.2 Phase 2b stop-condition did not trigger here — keep that stop-condition anyway; it is untested on other units/firmware. `0x15D7` is the ID actually observed for this 5590, not the `0x15B7` entry the pre-1b header labelled "Dell Latitude 5590 physical". Observations of one machine: never hardcode the BDF, BAR0 base/aperture, or MAC. **Phase 2b code (2026-09-30):** SPT/CNP MAC-only takeover, DMA settings and bounded fatal diagnostic/quarantine path are implemented and host-mock tested; the user reports a Dell polling-DMA-ready boot followed by TX timeout (TDH=0/TDT=1), with fatal containment; HTHRESH=0 was corrected to 1, but the next user-supplied Dell log confirms the correct physical 60-byte descriptor and TXDCTL=0x0141011F with TDH still zero. A later checkpoint shows TX FIFO tail movement and 14 KiB TX allocation. Post-reset restoration/readback of FEXTNVM11 bit 13 was added following iPXE startup policy; Read-only PCI/VT-d snapshots and a 100ms PIT TX wait budget are implemented and host tested. **Physical acceptance (2026-09-30, manual observation + cable-side capture):** RX works (`DD`/`EOP` set, `errors=0`, `length=60`, `RDH` advanced 0→3) and TX completes (`[NET 2b] TX PASS: 60-byte 88B5 frame, DD observed`); the 60-byte `0x88b5` broadcast frame was independently captured on the wire by a second host running Wireshark (frame #437: source `Dell_0e:35:80`, i.e. `C8:F7:50:0E:35:80`). Root cause of the TX stall was the loss of the upper `TCTL` bits: FortressOS programmed `TCTL = 0x0103F0FA` while the working Linux e1000e baseline leaves `TCTL = 0x3103F0FA`; preserving the post-reset bits resolved the stall (`TCTL post-reset/final=3003F0F8/3103F0FA`). Also applied per the I219/SPT reference: `FEXTNVM11` bit 13 (reset-hang erratum) before enabling the rings, the `CTRL_EXT`/`TARC`/`IOSFPC` SPT workarounds, PHY link-up configuration (PLL/K1/FIFO gap), and `TARC1` kept consistent with `TCTL.MULR`. Method: direct MMIO dumps were blocked (`/dev/mem` locked — `devmem2` and an mmap helper both returned "Operation not permitted"), so the working register baseline came from this machine's own Linux Mint install via `ethtool -d enp0s31f6`, which dumps the I219 registers through the e1000e driver; the `TCTL` difference was visible there. The bounded fatal-stop containment path is unchanged and was available but not triggered on the final run. Boundary: one raw frame and one cable-side capture per boot — no sustained traffic, cross-core execution, worker cadence or protocol (eth/ARP/IPv4) delivery is claimed. Full PHY/CSME recovery is not implemented; failed link/ownership/reset stops networking. See [Phase 2b](docs/roadmap/net-phase2b.md). |
+Hardware facts and empirical constraints are maintained in the respective subsystem annexes:
 
-### Dell Latitude 5590 physical acceptance (2026-09-16 & 2026-09-18)
+| Subsystem | Hardware facts & empirical constraints | Annex |
+| --- | --- | --- |
+| Networking | H13 (Intel I219-LM, Dell 5590 BDF/BAR0/MAC, link STATUS, TCTL post-reset, FEXTNVM11, SPT workarounds) | [docs/subsystems/net.md](docs/subsystems/net.md#2-hardware-facts-and-verification-boundaries) |
+| Storage & RAM | H2 (NVMe doorbells), H5 (32 GiB RAM / two-stage PMM), H6 (internal NVMe exclusion), H6a (raw image ext2 partition) | [docs/subsystems/storage.md](docs/subsystems/storage.md#3-hardware-facts-and-verification-boundaries) |
+| USB | H9 (Kingston USB 2.0 / ASSUMED_WRITE_THROUGH), H10 (SanDisk USB 3.2 Gen 1 SuperSpeed / SYNC_BACKED), H11 (Dell 5590 xHCI controller), H12 (Dell 5530 dual xHCI controllers) | [docs/subsystems/usb.md](docs/subsystems/usb.md#3-hardware-facts-and-verification-boundaries) |
+| Shell & Input | H1 (PS/2 keyboard set 2 -> set 1, IRQ1), H4 (Belgian AZERTY layout and scancodes) | [docs/subsystems/shell.md](docs/subsystems/shell.md#3-hardware-facts-and-verification-boundaries) |
+| Multi-Core (SMP) | H8 (IST2 exact-boundary NMI delivery; BSP-only vs multi-core) | [docs/subsystems/smp.md](docs/subsystems/smp.md#2-hardware-facts-and-verification-boundaries) |
+| Platform & Power | H3 (PCI ECAM segment 0), H7 (ACPI S5 shutdown and multi-tier reset) | [docs/subsystems/platform.md](docs/subsystems/platform.md#2-hardware-facts-and-verification-boundaries) |
 
-User-supplied testing confirms hardware operation on a Latitude 5590 (Core i5-8350U, 32 GiB installed RAM, 256 GB NVMe, Intel UHD 620), booted from USB:
+### Physical Acceptance Index
 
-- **2026-09-16:** PS/2 set 2 -> set 1 / IRQ1, COM1 RX absent, interactive shell `help`, `ls`, `cat etc/motd`, and missing-file error handling verified.
-- **2026-09-18:**
-  - **Belgian AZERTY (Bug H4):** Shift-Lock on top number row with Caps Lock ON verified producing digits `1234567890`. Accented keys unshifted produce base characters without falsely emitting uppercase letters. European ISO `<` / `>` key (scancode 0x56) verified.
-  - **System V AMD64 ELF ABI:** `run /bin/hello testing ...` verified passing command-line arguments across the user/kernel boundary with proper 16-byte stack alignment.
-  - **Visuals:** Limine splash wallpaper and kernel boot logo / emblem verified.
-  - **Power:** ACPI S5 shutdown and multi-tier reset confirmed functional.
+Physical bare-metal acceptance observations are detailed in their respective annexes:
 
-### Dell Latitude 5500 physical acceptance (2026-09-30)
-
-User-supplied testing confirms hardware operation on a second physical machine, a Latitude 5500 (8 GiB installed RAM, 8 logical CPUs), booted via UEFI from USB: all 8 CPUs brought online, interactive Ring 3 shell reached, and `/bin/ps` and `/bin/sysinfo` operational with accurate ~8 GiB DRAM and monotonic 100 Hz uptime.
-
-### Dell bare-metal acceptance: Shell S9 introspection suite (2026-09-30)
-
-User-supplied testing confirms physical bare-metal hardware operation on Dell hardware booted via UEFI from USB:
-- `/bin/ps`, `/bin/sysinfo`, and `/bin/top` all operational in Ring 3.
-- `/bin/top` live interactive framebuffer redraw confirmed with 100 Hz monotonic uptime advance, CPU% deltas, and clean PS/2 'q' exit returning to the shell prompt.
-
-### Dell bare-metal acceptance: NET Phase 2b (2026-09-30)
-
-User-supplied testing confirms physical bare-metal networking on the NET acceptance machine, a Dell Latitude 5590 booted via UEFI from USB, with the integrated I219-LM (`8086:15D7` at `0000:00:1F.6`, MAC `C8:F7:50:0E:35:80`) cabled to the same LAN as a second host:
-
-- **RX (manual observation):** a received descriptor completed with `DD` and `EOP` set, `errors=0`, `length=60`, and `RDH` advanced 0→3.
-- **TX (manual observation):** `[NET 2b] TX PASS: 60-byte 88B5 frame, DD observed` — the transmit descriptor completed (DD) with no fatal stop; the bounded containment path was available but not triggered.
-- **Wire capture (independent, cable-side):** Wireshark on the second host captured the frame as #437 — source `Dell_0e:35:80` (`C8:F7:50:0E:35:80`), broadcast destination, EtherType `0x88b5`, length 60, payload `FORTRESS-NET-2B-TX` followed by 28 `0xA5` bytes.
-- **Root cause and fixes:** see H13 — the upper `TCTL` bits were not preserved across reset (`0x0103F0FA` vs. the working Linux e1000e `0x3103F0FA`), plus the `FEXTNVM11` bit 13, SPT and PHY link-up work.
-- **Method note:** direct MMIO reads of the live controller were blocked (`/dev/mem` locked, `Operation not permitted` for both `devmem2` and an mmap helper), so the working register baseline was taken from the machine's own Linux Mint install via `ethtool -d enp0s31f6` through the e1000e driver.
-
-Evidence boundary: this is a **manual observation plus a cable-side capture**, not an automated test pass. It establishes one raw 60-byte frame received and transmitted on one boot; it does not claim sustained traffic, cross-core execution, worker cadence, or eth/ARP/IPv4 protocol delivery. `make test-net-rings` (4/4 BIOS/UEFI × e1000/e1000e) remains the automated logic evidence. Recorded in [docs/roadmap/net-phase2b.md](docs/roadmap/net-phase2b.md).
+- **Dell Latitude 5590:**
+  - Networking Phase 2b (I219-LM RX/TX and wire capture): [docs/subsystems/net.md](docs/subsystems/net.md#3-physical-hardware-acceptance)
+  - Shell S9 Introspection Suite (`ps`, `sysinfo`, `top` live redraw): [docs/subsystems/shell.md](docs/subsystems/shell.md#4-physical-hardware-acceptance)
+  - Interactive Shell, Input & Belgian AZERTY (2026-09-16 & 2026-09-18): [docs/subsystems/shell.md](docs/subsystems/shell.md#dell-latitude-5590-physical-acceptance-2026-09-16--2026-09-18)
+  - USB 3.2 SuperSpeed Storage & Durability: [docs/subsystems/usb.md](docs/subsystems/usb.md#3-hardware-facts-and-verification-boundaries)
+  - 32 GiB RAM / High-Memory Probe: [docs/subsystems/storage.md](docs/subsystems/storage.md#3-hardware-facts-and-verification-boundaries)
+  - SMP 8-core bring-up: [docs/subsystems/smp.md](docs/subsystems/smp.md#3-physical-hardware-acceptance)
+  - ACPI S5 Power & Reset: [docs/subsystems/platform.md](docs/subsystems/platform.md#3-physical-hardware-acceptance)
+- **Dell Latitude 5500:**
+  - 8-CPU bring-up, 8 GiB DRAM, `ps`, `sysinfo`: [docs/subsystems/shell.md](docs/subsystems/shell.md#dell-latitude-5500-physical-acceptance-2026-09-30) and [docs/subsystems/smp.md](docs/subsystems/smp.md#3-physical-hardware-acceptance)
 
 These are manual hardware observations, supplementing the automated QEMU and host test suites. Cached text scrolling avoids framebuffer reads; keep early/no-UART output working. Detailed console, NMI and input test notes are in [docs/roadmap/subsystems.md](docs/roadmap/subsystems.md).
 

@@ -1,6 +1,6 @@
 # Phase 9G.4 — USB Writable Persistence & Durability Classification
 
-Status: COMPLETE (2026-09-19). See `AGENTS.md` status table for current
+Status: COMPLETE (2026-09-19). See [`docs/subsystems/usb.md`](../subsystems/usb.md) for current
 summary; this file holds the detailed implementation notes and evidence.
 
 Phase 9G.4 completes the USB storage stack: `/mnt` mounts read-write on real

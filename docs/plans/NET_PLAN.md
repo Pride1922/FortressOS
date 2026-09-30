@@ -275,7 +275,7 @@ net_boot_probe(&boot_info);     /* Initialize e1000/I219, rings, worker thread, 
 ```
 
 ### 5.2 IP Configuration via Boot Command Line
-To enable static configuration on bare-metal hardware without hardcoding IP addresses, networking reuses the bounded boot command-line parsing discipline established by USB storage (`AGENTS.md:89`, `src/fs/usb_mount.c:30-70`).
+To enable static configuration on bare-metal hardware without hardcoding IP addresses, networking reuses the bounded boot command-line parsing discipline established by USB storage ([`docs/subsystems/usb.md`](../subsystems/usb.md#explicit-usb-selection-and-writable-opt-in), `src/fs/usb_mount.c:30-70`).
 
 **Parameter Format**:
 ```
@@ -335,7 +335,7 @@ The network status register `E1000_REG_STATUS` bit `LU` (Link Up) is periodicall
 
 ### 7.2 Phase 2b Stop-Condition (Dell Hardware Bring-Up)
 Intel I219-LM on Sunrise Point / Cannon Point platforms can experience PHY clock gating or CSME power holds.
-Following the strict **Phase 9G.1 stop-condition discipline** (`AGENTS.md:108-112`):
+Following the strict **Phase 9G.1 stop-condition discipline** ([`docs/subsystems/usb.md`](../subsystems/usb.md#9g1-checkpoints-and-debugging)):
 - If `STATUS.LU == 0` after bounded MDIC PHY reset attempts (capped at 500 ms):
   1. Capture an immutable diagnostic record of controller registers (`STATUS`, `CTRL`, `MDIC`, `EXTCNF_CTRL`).
   2. Log the snapshot to COM1 and framebuffer screen.

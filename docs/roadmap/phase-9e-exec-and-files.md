@@ -1,6 +1,6 @@
 # Phase 9E — Program Execution, ABI, Directory Ops & Bug H4
 
-Status: COMPLETE. See `AGENTS.md` status table for current summary; this file
+Status: COMPLETE. See [`docs/subsystems/storage.md`](../subsystems/storage.md) and [`docs/subsystems/shell.md`](../subsystems/shell.md) for current summary; this file
 holds the detailed implementation notes and evidence.
 
 ## Phase 9E Saved File Management & Bug H4 Resolution (2026-09-18)

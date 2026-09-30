@@ -1,6 +1,6 @@
 # Phase 9H — 32 GiB RAM Support
 
-Status: COMPLETE (2026-09-20). See `AGENTS.md` status table for current
+Status: COMPLETE (2026-09-20). See [`docs/subsystems/storage.md`](../subsystems/storage.md) for current
 summary; this file holds the detailed implementation notes and evidence.
 See `PROTECTED.md` — the two-stage PMM/VMM ordering this phase established
 is a do-not-touch-without-discussion contract, and is the direct dependency
