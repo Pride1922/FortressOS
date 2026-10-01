@@ -7,7 +7,7 @@ This directory archives architecture designs and staged implementation plans. Fo
 | Document | Scope | Status |
 | --- | --- | --- |
 | [NETCTL_PING_ABI.md](NETCTL_PING_ABI.md) | Concrete 48-byte layout, field offsets, errors and finite owner-exit fallback. | **IMPLEMENTED** in Phase 4a; BSP-only |
-| [NET_PHASE4_PLAN.md](NET_PHASE4_PLAN.md) | IPv4/ICMP codecs and worker delivery, proposed narrow Ring 3 ping ABI, QEMU gates and separate physical Dell acceptance. | **4a IMPLEMENTED** (2026-10-01); physical 4b pending |
+| [NET_PHASE4_PLAN.md](NET_PHASE4_PLAN.md) | IPv4/ICMP codecs and worker delivery, narrow Ring 3 ping ABI, QEMU gates and separate physical Dell acceptance. | **4a IMPLEMENTED + 4b physically accepted** (2026-10-01, manual) |
 | [SHELL_DESIGN.md](SHELL_DESIGN.md) | Shell architecture and staged delivery: editing/history, terminal support, cwd/completion, environment, redirection/pipes, jobs and scripting. | **S0–S2 IMPLEMENTED** (QEMU verified, Dell pending); S3–S10 planned |
 | [SMP_DESIGN.md](SMP_DESIGN.md) | Architectural specification for multi-core (SMP) support: 6 sequenced pieces and binding invariants `SM1`–`SM16`. | **COMPLETE** & verified on Dell 5590 hardware |
 | [smp-piece6-plan.md](smp-piece6-plan.md) | Detailed implementation plan for Piece 6 (PMM/VMM multi-core memory architecture: 6A, 6B, 6C, 6D). | **COMPLETE** & verified on Dell 5590 hardware |

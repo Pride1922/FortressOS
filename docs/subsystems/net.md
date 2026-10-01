@@ -6,13 +6,16 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
-Phase 4a IPv4/ICMP and Ring 3 `/bin/ping` are implemented; physical Phase 4b is
-pending. [Phase 4a](../roadmap/net-phase4a.md) records the gates and limitations;
-[NETCTL_PING ABI](../plans/NETCTL_PING_ABI.md) specifies the 48-byte layout and
-errors. Ring 3 callers use a bounded mailbox; the BSP worker remains the sole
-protocol owner. No scheduler/signal/driver changes or new timer hook were needed.
-Hard-exit/STOP cleanup is bounded by a finite lease, with stale-token protection.
-Earlier Phase 3/2b checkpoint descriptions below are historical evidence.
+Phase 4a IPv4/ICMP and Ring 3 `/bin/ping` are implemented and automated-tested;
+the physical Phase 4b LAN-peer gate is **physically accepted** (2026-10-01,
+manual/user-supplied evidence). [Phase 4a](../roadmap/net-phase4a.md) records the
+automated gates and limitations; [Phase 4b](../roadmap/net-phase4b.md) records the
+physical acceptance and its evidence boundaries; [NETCTL_PING ABI](../plans/NETCTL_PING_ABI.md)
+specifies the 48-byte layout and errors. Ring 3 callers use a bounded mailbox; the
+BSP worker remains the sole protocol owner. No scheduler/signal/driver changes or
+new timer hook were needed. Hard-exit/STOP cleanup is bounded by a finite lease,
+with stale-token protection. Phase 5 (UDP/sockets) is next. Earlier Phase 3/2b
+checkpoint descriptions below are historical evidence.
 
 Phase 3 is implemented (2026-10-01): Ethernet/ARP dispatch, bounded `net=`
 configuration and a BSP-pinned, tick-sleeping ingress worker. The user authorized
@@ -48,7 +51,7 @@ callers and their synchronization remain Phase 5 work; Phase 4a uses the BSP mai
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
-| **NET** | **IN PROGRESS** — Phase 4a complete (2026-10-01); physical Phase 4b pending. | Phases 0–3 are complete; see [Phase 3](../roadmap/net-phase3.md) for Ethernet/ARP and tick-sleeping worker verification. Phase 2b I219 SPT/CNP MAC takeover/DMA and the bounded fatal stop-report are implemented and **physically accepted on the Dell Latitude 5590** (2026-09-30, manual observation + cable-side capture): RX works (`DD`/`EOP` set, `errors=0`, `length=60`, `RDH` 0→3) and TX completes (`[NET 2b] TX PASS: 60-byte 88B5 frame, DD observed`), with that frame independently captured on the wire by a second host running Wireshark (frame #437: source `Dell_0e:35:80` / `C8:F7:50:0E:35:80`, broadcast, EtherType `0x88b5`, length 60). Root cause of the earlier TX stall: the upper `TCTL` bits were not preserved post-reset (FortressOS `0x0103F0FA` vs. the working Linux e1000e `0x3103F0FA`); preserving the post-reset bits fixed it (`TCTL post-reset/final=3003F0F8/3103F0FA`), alongside `FEXTNVM11` bit 13 (reset-hang erratum) before enabling the rings, `CTRL_EXT`/`TARC`/`IOSFPC` SPT workarounds, and PHY link-up configuration (PLL/K1/FIFO gap) with `TARC1` kept consistent with `TCTL.MULR`. `make test-net-rings` passes 4/4 BIOS/UEFI × e1000/e1000e at SMP=1 with exact 60-byte TX pcap and injected RX checks; `make test-net-rings-host` covers ownership/failure paths with ASan/UBSan hardware mocks. I219 `15D7`/`15BD`/`15BB` take a separate PCH init/reset path; older `15B7`/`156F` stay discovery-only. `make test-net-i219-host` passes mocked sanitizer coverage; it makes no physical DMA claim. Details: [Phase 2a](../roadmap/net-phase2a.md), [Phase 2b](../roadmap/net-phase2b.md). Pure host-testable foundation (net_dev_t, pbuf_t, RFC 1071 checksum, eth/arp/ipv4 codecs; 103/103 tests pass with ASan/UBSan via `make test-net-host`), plus Intel e1000/e1000e PCI discovery, uncached MMIO mapping (PCD/PWT/NX), MAC address and link STATUS read verified in QEMU across BIOS and UEFI present/absent cases (`make test-net-pci`). The **Dell Latitude 5590 is the NET acceptance machine**: manual observation (2026-09-30) confirmed I219-LM `8086:15D7` at `0000:00:1F.6`, BAR0 `0xEF300000` mapped to `0xFFFFFFFFE2000000`, MAC `C8:F7:50:0E:35:80`, and PHY link-up (`STATUS 0x00080083`), so the `NET_PLAN.md` §7.2 PHY/CSME risk is not blocking there; Phase 1b has no automated target and its evidence is the manual boot-log photos, not a test pass, and 2b's acceptance is likewise a manual observation plus a cable-side capture, not a test pass. The 2b boundary is deliberately narrow: **one raw frame and one cable-side capture per boot — no cross-core execution, sustained traffic, worker cadence or eth/ARP/IPv4 protocol delivery is claimed.** Details: [Phase 0](../roadmap/net-phase0.md), [Phase 1a](../roadmap/net-phase1a.md), [Phase 1b](../roadmap/net-phase1b.md). |
+| **NET** | **IN PROGRESS** — Phase 4a complete (QEMU); physical Phase 4b accepted (2026-10-01, manual). | Phases 0–4 are complete; Phase 5 (UDP/sockets) is next; see [Phase 3](../roadmap/net-phase3.md) for Ethernet/ARP and tick-sleeping worker verification. Phase 2b I219 SPT/CNP MAC takeover/DMA and the bounded fatal stop-report are implemented and **physically accepted on the Dell Latitude 5590** (2026-09-30, manual observation + cable-side capture): RX works (`DD`/`EOP` set, `errors=0`, `length=60`, `RDH` 0→3) and TX completes (`[NET 2b] TX PASS: 60-byte 88B5 frame, DD observed`), with that frame independently captured on the wire by a second host running Wireshark (frame #437: source `Dell_0e:35:80` / `C8:F7:50:0E:35:80`, broadcast, EtherType `0x88b5`, length 60). Root cause of the earlier TX stall: the upper `TCTL` bits were not preserved post-reset (FortressOS `0x0103F0FA` vs. the working Linux e1000e `0x3103F0FA`); preserving the post-reset bits fixed it (`TCTL post-reset/final=3003F0F8/3103F0FA`), alongside `FEXTNVM11` bit 13 (reset-hang erratum) before enabling the rings, `CTRL_EXT`/`TARC`/`IOSFPC` SPT workarounds, and PHY link-up configuration (PLL/K1/FIFO gap) with `TARC1` kept consistent with `TCTL.MULR`. `make test-net-rings` passes 4/4 BIOS/UEFI × e1000/e1000e at SMP=1 with exact 60-byte TX pcap and injected RX checks; `make test-net-rings-host` covers ownership/failure paths with ASan/UBSan hardware mocks. I219 `15D7`/`15BD`/`15BB` take a separate PCH init/reset path; older `15B7`/`156F` stay discovery-only. `make test-net-i219-host` passes mocked sanitizer coverage; it makes no physical DMA claim. Details: [Phase 2a](../roadmap/net-phase2a.md), [Phase 2b](../roadmap/net-phase2b.md). Pure host-testable foundation (net_dev_t, pbuf_t, RFC 1071 checksum, eth/arp/ipv4 codecs; 103/103 tests pass with ASan/UBSan via `make test-net-host`), plus Intel e1000/e1000e PCI discovery, uncached MMIO mapping (PCD/PWT/NX), MAC address and link STATUS read verified in QEMU across BIOS and UEFI present/absent cases (`make test-net-pci`). The **Dell Latitude 5590 is the NET acceptance machine**: manual observation (2026-09-30) confirmed I219-LM `8086:15D7` at `0000:00:1F.6`, BAR0 `0xEF300000` mapped to `0xFFFFFFFFE2000000`, MAC `C8:F7:50:0E:35:80`, and PHY link-up (`STATUS 0x00080083`), so the `NET_PLAN.md` §7.2 PHY/CSME risk is not blocking there; Phase 1b has no automated target and its evidence is the manual boot-log photos, not a test pass, and 2b's acceptance is likewise a manual observation plus a cable-side capture, not a test pass. The 2b boundary is deliberately narrow: **one raw frame and one cable-side capture per boot — no cross-core execution, sustained traffic, worker cadence or eth/ARP/IPv4 protocol delivery is claimed.** Details: [Phase 0](../roadmap/net-phase0.md), [Phase 1a](../roadmap/net-phase1a.md), [Phase 1b](../roadmap/net-phase1b.md). |
 
 ---
 
@@ -74,6 +77,35 @@ User-supplied testing confirms physical bare-metal networking on the NET accepta
 
 Evidence boundary: this is a **manual observation plus a cable-side capture**, not an automated test pass. It establishes one raw 60-byte frame received and transmitted on one boot; it does not claim sustained traffic, cross-core execution, worker cadence, or eth/ARP/IPv4 protocol delivery. `make test-net-rings` (4/4 BIOS/UEFI × e1000/e1000e) remains the automated logic evidence. Recorded in [docs/roadmap/net-phase2b.md](../roadmap/net-phase2b.md).
 
+### Dell bare-metal acceptance: NET Phase 4b (2026-10-01)
+
+User-supplied testing on the same NET acceptance machine (Dell Latitude 5590,
+I219-LM, booted from USB) with the guest configured as
+`net=192.168.0.168/24,192.168.0.1`, on a wired LAN shared with a Windows 11 host
+at `192.168.0.222`:
+
+- **Guest → gateway (`192.168.0.1`):** `/bin/ping -c 4 192.168.0.1` returned
+  **4/4 replies, 0% loss**, a reported **20 ms** RTT, and a usable shell
+  afterward.
+- **Guest → LAN peer (`192.168.0.222`):** ping to the Windows 11 host
+  **succeeded** after inbound ICMP was allowed through its firewall.
+- **Second-host Wireshark (screenshot):** four matched ICMP Echo Request/Reply
+  pairs, sequences **1–4**, all frames **74 bytes** — frames **923/924, 931/932,
+  942/943, 947/948**.
+- **Reverse (Windows 11 → FortressOS):** `ping 192.168.0.168` returned **4/4
+  replies, 0% loss, TTL 64**; RTT **min 3 ms, max 17 ms, average 9 ms**.
+
+Evidence boundary: this is **manual, user-supplied hardware evidence, not an
+automated test pass**. The Wireshark screenshot confirms four matched outbound
+request/reply pairs; the reverse-direction result is evidenced by the Windows
+terminal output, not a capture. **No raw pcap was supplied**, so no independent
+payload/checksum verification or saved capture artifact is claimed. Guest RTT
+includes polling/scheduling effects (polling-only BSP-worker ingress), so it is
+not a wire-latency measurement. No sustained-load acceptance, measured idle-CPU
+percentage, or cross-core protocol delivery is claimed. Recorded in
+[docs/roadmap/net-phase4b.md](../roadmap/net-phase4b.md). Phase 4a's host/QEMU
+evidence remains the automated logic gate — [Phase 4a](../roadmap/net-phase4a.md).
+
 ---
 
 ## 4. Test Targets and Verification Notes
@@ -85,7 +117,9 @@ pointer fixture, independent pcap audit, pending/timeout recovery, concurrent
 busy, killed-owner lease recovery and one STOP/CONT expiry case are covered.
 All QEMU fixtures are disposable with no data disks. Physical ICMP and idle CPU
 measurements are not claimed. Full commands and boundaries:
-[Phase 4a evidence](../roadmap/net-phase4a.md).
+[Phase 4a evidence](../roadmap/net-phase4a.md). The physical Phase 4b LAN-peer
+gate is separate manual/user-supplied evidence — see
+[Phase 4b evidence](../roadmap/net-phase4b.md).
 
 | Target | Scope / evidence |
 | --- | --- |
@@ -113,3 +147,5 @@ measurements are not claimed. Full commands and boundaries:
 - Phase 2a QEMU Ring & Descriptor Verification: [`docs/roadmap/net-phase2a.md`](../roadmap/net-phase2a.md)
 - Phase 2b Physical Dell I219-LM DMA & Capture: [`docs/roadmap/net-phase2b.md`](../roadmap/net-phase2b.md)
 - Phase 3 Ethernet/ARP and BSP ingress worker: [`docs/roadmap/net-phase3.md`](../roadmap/net-phase3.md)
+- Phase 4a IPv4/ICMP and Ring 3 ping (automated): [`docs/roadmap/net-phase4a.md`](../roadmap/net-phase4a.md)
+- Phase 4b Physical Dell IPv4/ICMP LAN-peer acceptance (manual): [`docs/roadmap/net-phase4b.md`](../roadmap/net-phase4b.md)

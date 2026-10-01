@@ -1,13 +1,13 @@
 # Networking Phase 4 — IPv4 and ICMP Echo
 
-Status: Phase 4a implemented, 2026-10-01; physical 4b acceptance pending.
+Status: Phase 4a implemented (2026-10-01); physical 4b LAN-peer gate accepted (2026-10-01, manual/user-supplied evidence).
 Approved implementation plan; verification lives in the roadmap. Companion to
 [NET_PLAN.md](NET_PLAN.md), with implemented headers taking precedence.
 
 Implementation update: Phase 4a implementation and verification are recorded in
 [net-phase4a.md](../roadmap/net-phase4a.md). The concrete ABI and narrower
 owner-exit fallback were specified before Checkpoint C in
-[NETCTL_PING_ABI.md](NETCTL_PING_ABI.md). Physical 4b remains pending. The
+[NETCTL_PING_ABI.md](NETCTL_PING_ABI.md). Physical 4b is accepted (2026-10-01, manual/user-supplied evidence — see [net-phase4b.md](../roadmap/net-phase4b.md)). The
 checkpoint descriptions below preserve the approved planning baseline.
 
 ## 1. Goal and phase boundaries
@@ -212,6 +212,22 @@ boot, and relevant syscall pointer/signal tests. Run NMI transition coverage
 only if entry/return contracts unexpectedly change; such changes require review.
 
 ## 7. Phase 4b — physical Dell acceptance
+
+**Result (2026-10-01): the physical LAN-peer gate is accepted.** On the Dell
+Latitude 5590 with `net=192.168.0.168/24,192.168.0.1`, the guest `ping` to the
+gateway returned 4/4 replies at 0% loss (reported 20 ms RTT) with a usable shell
+afterward; a guest ping to a Windows 11 peer at `192.168.0.222` succeeded after
+inbound ICMP was allowed; a second-host Wireshark screenshot shows four matched
+request/reply pairs (sequences 1–4, all 74 bytes: frames 923/924, 931/932,
+942/943, 947/948); and the reverse `ping` from Windows 11 to the guest returned
+4/4 replies at 0% loss (TTL 64; RTT min 3 / max 17 / avg 9 ms). This is
+**manual, user-supplied evidence, not an automated pass**: the screenshot
+confirms outbound matching request/reply pairs and the reverse-direction result
+is evidenced by Windows terminal output, with **no raw pcap** supplied, so no
+independent payload/checksum verification or saved capture artifact is claimed.
+Guest RTT includes polling/scheduling effects; no sustained-load, measured
+idle-CPU, or cross-core acceptance is claimed. Full record:
+[net-phase4b.md](../roadmap/net-phase4b.md).
 
 Use the already working I219-LM path and the observed LAN configuration
 `net=192.168.0.168/24,192.168.0.1` only after confirming the address remains

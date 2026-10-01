@@ -1,6 +1,6 @@
 # FortressOS Networking Milestone Plan — Architecture, Driver & Protocol Stack
 
-Status: Plan of record for Milestone NET-1 (originally PLANNING ONLY, 2026-09-30, Revision 2). Phases 0–4a have since landed and are documented in the roadmap files; the remaining sections guide physical Phase 4b and Phase 5 (UDP/sockets). Where this plan and the implemented code/headers diverge, the code and headers are authoritative.
+Status: Plan of record for Milestone NET-1 (originally PLANNING ONLY, 2026-09-30, Revision 2). Phases 0–4 have since landed and are documented in the roadmap files; Phase 4b is physically accepted (2026-10-01, manual evidence), and the remaining sections guide Phase 5 (UDP/sockets). Where this plan and the implemented code/headers diverge, the code and headers are authoritative.
 Planning baseline: ground every claim in existing codebase contracts and file:line references.
 Implementation update (2026-10-01): [Phase 3](../roadmap/net-phase3.md) supplies
 the previously missing network-channel tick wakeup through an explicitly
@@ -377,9 +377,9 @@ Following the strict **Phase 9G.1 stop-condition discipline** ([`docs/subsystems
 | **Phase 2a** | Rings & Raw Frame I/O (QEMU) | Allocate TX/RX rings, send raw frame, poll RX frame | QEMU `-netdev dump` pcap audit of transmitted frame |
 | **Phase 2b** | Dell Physical Link & Raw Frame | Link-up check (`STATUS.LU == 1`) and raw frame send on Dell | Physical link-up confirmed; Phase 2b stop-condition enforced |
 | **Phase 3** | Ethernet & ARP — **COMPLETE (2026-10-01)** | 14-byte Ethernet dispatch, reply-only ARP cache learning, Request/Reply, bounded `net=` config, BSP-pinned tick-sleeping worker with the authorized `net_timer_tick()` wake; exact-once RX recycling | Host ASan/UBSan (`make test-net-eth-host`) plus 8 QEMU cases (`make test-net-eth`, BIOS/UEFI × e1000/e1000e × {user, socket}) and 4 raw-ring regressions; no physical Phase 3 acceptance claimed |
-| **Phase 4a** | IPv4 & ICMP Ping (QEMU) | IPv4 parser/checksum, ICMP Echo Reply, `/bin/ping` | Host pings QEMU guest; `/bin/ping 10.0.2.2` succeeds |
-| **Phase 4b** | Dell Physical Ping Acceptance | Physical cable ping from Dell to local network gateway | Physical ping exchange verified on Dell Latitude hardware |
-| **Phase 5** | UDP & Socket Syscalls | UDP protocol, socket table, `SYS_SOCKET`/`SENDTO`/`RECVFROM` | `/bin/udptest` verified in QEMU and Dell — **Closes Milestone NET-1** |
+| **Phase 4a** | IPv4 & ICMP Ping (QEMU) — **COMPLETE (2026-10-01)** | IPv4 parser/checksum, ICMP Echo Reply, `/bin/ping` | Host pings QEMU guest; `/bin/ping 10.0.2.2` succeeds; host/QEMU targets PASS |
+| **Phase 4b** | Dell Physical Ping Acceptance — **COMPLETE (2026-10-01, manual)** | Physical cable ping from Dell to local gateway/LAN peer | Physical ICMP exchange verified on Dell Latitude hardware (gateway 4/4, LAN peer, reverse 4/4); manual/user-supplied screenshot + terminal output, no pcap |
+| **Phase 5** | UDP & Socket Syscalls (**NEXT**) | UDP protocol, socket table, `SYS_SOCKET`/`SENDTO`/`RECVFROM` | `/bin/udptest` verified in QEMU and Dell — **Closes Milestone NET-1** |
 
 ---
 

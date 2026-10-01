@@ -30,7 +30,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
-| NET | IN PROGRESS — Phase 4a complete (QEMU); physical 4b next; Phase 2b/3 physical evidence recorded | [docs/subsystems/net.md](docs/subsystems/net.md) |
+| NET | IN PROGRESS — Phase 4a complete (QEMU); physical 4b accepted (2026-10-01, manual); Phase 5 next | [docs/subsystems/net.md](docs/subsystems/net.md) |
 | Shell S9 | COMPLETE (2026-09-30) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | Shell S8 | COMPLETE (2026-09-29) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | Shell S7 / S6 / S5 / S3–S4 / S0–S2 | COMPLETE | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
@@ -67,7 +67,7 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 | `make test-net-icmp-host` | Phase 4a pure ICMP ASan/UBSan: independent checksum vector, all 1473 data lengths, bounds/corruption and IPv4 encoder overflow. PASS 2026-10-01. |
 | `make test-net-ipv4-host` | Phase 4a actual IPv4/ICMP stack with NIC/ARP/tick mocks, ASan/UBSan: reply bytes/padding, filters/routes, three-attempt ARP, pending slot, exact token matching, pacing/timeouts/TX failure. PASS 2026-10-01; no hardware claim. |
 | `make test-net-ping-host` | Phase 4a actual finite mailbox with pthread/protocol/scheduler adapters, ASan/UBSan: busy/publication/collection, stale tokens/cancellation and abandoned-owner/result expiry. PASS 2026-10-01; no real scheduler claim. |
-| `make test-net-icmp` | Phase 4a BIOS/UEFI × e1000/e1000e × user/socket, SMP=1, disposable ISO/OVMF vars, exact argv/no data disks: boot echo probe, real Ring 3 ping 4/4, ABI pointer fixture, independent pcap audit, socket echo/timeout/busy/KILL lease recovery; BIOS/e1000/socket also STOP/CONT expiry. 8/8 PASS 2026-10-01; physical 4b pending. |
+| `make test-net-icmp` | Phase 4a BIOS/UEFI × e1000/e1000e × user/socket, SMP=1, disposable ISO/OVMF vars, exact argv/no data disks: boot echo probe, real Ring 3 ping 4/4, ABI pointer fixture, independent pcap audit, socket echo/timeout/busy/KILL lease recovery; BIOS/e1000/socket also STOP/CONT expiry. 8/8 PASS 2026-10-01; no physical claim (physical 4b is separate manual evidence). |
 | `make test-net-host` | NET Phase 0 host ASan/UBSan: RFC 1071 ones' complement checksum vectors (odd/even lengths, bounds, multi-buffer accumulation), Ethernet II (encode/decode, bounds 60-1514B, runt/oversize rejection, broadcast/MAC filter), ARP (encode/decode request/reply, truncation rejection, 16-entry bounded cache stub), IPv4 (encode/decode, checksum verify/corrupt, fragment rejection, bounds, malformed IHL/len), pbuf_t lifecycle and fuzz/bounds resilience. 103/103 PASS 2026-09-30. |
 | `make test-net-rings` | NET Phase 2a: BIOS/UEFI × e1000/e1000e SMP=1, disposable ISO/OVMF vars, no data disks, exact argv preflight; raw TX DD + 60-byte pcap audit, injected raw RX byte check + recycle, shell ready. Includes host ownership/failure sanitizer target. 4/4 PASS 2026-09-30; no physical DMA or worker claim. |
 | `make test-net-rings-host` | Actual e1000 driver with mocked PMM/MMIO/PCI/pthread locks under ASan/UBSan: allocation failures, RX pool/recycle/wrap/malformed frames, TX copy/reservation/wrap, completion/reset timeout quarantine. PASS 2026-09-30; no hardware timing/IRQ claim. |
@@ -412,6 +412,7 @@ Physical bare-metal acceptance observations are detailed in their respective ann
 
 - **Dell Latitude 5590:**
   - Networking Phase 2b (I219-LM RX/TX and wire capture): [docs/subsystems/net.md](docs/subsystems/net.md#3-physical-hardware-acceptance)
+  - Networking Phase 4b (I219-LM LAN IPv4/ICMP echo, gateway + Windows 11 peer; manual/user-supplied): [docs/subsystems/net.md](docs/subsystems/net.md#dell-bare-metal-acceptance-net-phase-4b-2026-10-01)
   - Shell S9 Introspection Suite (`ps`, `sysinfo`, `top` live redraw): [docs/subsystems/shell.md](docs/subsystems/shell.md#4-physical-hardware-acceptance)
   - Interactive Shell, Input & Belgian AZERTY (2026-09-16 & 2026-09-18): [docs/subsystems/shell.md](docs/subsystems/shell.md#dell-latitude-5590-physical-acceptance-2026-09-16--2026-09-18)
   - USB 3.2 SuperSpeed Storage & Durability: [docs/subsystems/usb.md](docs/subsystems/usb.md#3-hardware-facts-and-verification-boundaries)
