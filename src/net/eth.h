@@ -37,6 +37,7 @@ int eth_encode(void *buf, size_t buf_len, const uint8_t dest_mac[ETH_ALEN],
 
 /*
  * Decode and bounds-check an Ethernet II frame.
+ * out_hdr->ethertype is host-order (the encoded wire header is network-order).
  * Validates length >= ETH_HDR_LEN and <= ETH_MAX_FRAME_LEN.
  * Returns 0 on success, negative error code on failure.
  */

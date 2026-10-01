@@ -35,7 +35,7 @@ int arp_encode_reply(void *buf, size_t buf_len, const uint8_t sender_mac[ETH_ALE
                      uint32_t sender_ip, const uint8_t target_mac[ETH_ALEN],
                      uint32_t target_ip, size_t *out_len);
 
-/* Decode and validate an ARP packet from raw buffer */
+/* Decode and validate: htype/ptype/opcode become host-order; IPs stay network-order. */
 int arp_decode(const void *buf, size_t len, arp_packet_t *out_arp);
 
 /* ARP Cache Data Structures & Pure Helpers (Phase 0 foundation) */

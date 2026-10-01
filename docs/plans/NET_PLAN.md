@@ -1,7 +1,10 @@
 # FortressOS Networking Milestone Plan — Architecture, Driver & Protocol Stack
 
-Status: PLANNING ONLY (2026-09-30, Revision 2). No source changes, no tests. This document authorizes no kernel modifications.
+Status: Plan of record for Milestone NET-1 (originally PLANNING ONLY, 2026-09-30, Revision 2). Phases 0–4a have since landed and are documented in the roadmap files; the remaining sections guide physical Phase 4b and Phase 5 (UDP/sockets). Where this plan and the implemented code/headers diverge, the code and headers are authoritative.
 Planning baseline: ground every claim in existing codebase contracts and file:line references.
+Implementation update (2026-10-01): [Phase 3](../roadmap/net-phase3.md) supplies
+the previously missing network-channel tick wakeup through an explicitly
+authorized minimal BSP timer hook. The existing scheduler APIs are unchanged.
 Review criteria: critique by architecture reviewers prior to any implementation phase.
 
 ---
@@ -128,6 +131,25 @@ In Milestone NET-1, all packet ingress is **polling-only** (zero interrupt handl
 - **Priority**: Standard kernel thread priority.
 - **Cadence & Sleep Mechanism**: Runs an iterative polling loop. Under `g_net_dev_lock`, it claims completed packets from the RX ring into a local batch list. If packets were processed, it yields to allow consumers to run (`thread_yield()`). If the ring is idle (no packets received), the worker executes a deadline-bounded `sched_wait_until(&g_net_poll_channel, net_poll_deadline_reached, &deadline)` where `deadline = apic_timer_get_bsp_ticks() + 1`. This is woken periodically by the timer tick (`apic_timer`), precisely matching the tick-wake mechanism the terminal ingress worker relies on (`src/drivers/input.c:239`), ensuring it never spins at 100% CPU nor sleeps on an unserviced channel without a producer.
 - **Lock Discipline**: Completely separates device polling from socket queueing (see Section 4.3).
+
+### 3.3 Implemented Phase 3 Codec Byte Order and Stack Ownership
+
+These are the contracts Phase 3 actually shipped; Phase 4 builds on them.
+
+- **Byte order**: `eth_decode()` and `arp_decode()` return EtherType and ARP
+  header words (`htype`/`ptype`/`opcode`) in **host order**, so callers compare
+  raw constants such as `ETHERTYPE_ARP` / `ARP_OP_REPLY`. IPv4 addresses
+  (`net_config_t.local_ip`/`.gateway` and ARP `sender_ip`/`target_ip`) remain in
+  **network order** throughout. Encoders take host-order EtherType/opcode and
+  emit the network (wire) byte order.
+- **Single-owner, non-reentrant stack API (Phase 4 limitation)**: the Phase 3
+  stack exposes single-BSP-owner, unlocked thread-context entry points
+  (`net_input`, `arp_input`, `arp_resolve`, `net_timer_tick`) backed by
+  BSS-static state, ARP cache and TX scratch. There is no socket table, and no
+  cross-core or reentrant entry point. Phase 4 must add its own synchronization
+  before any socket caller (Rank-1 `g_socket_table_lock`, §4.3) can reach these
+  paths from another core; do not call the Phase 3 stack from an AP without that
+  work.
 
 ---
 
@@ -297,7 +319,7 @@ net=<ip>/<prefix>,<gateway>
 
 ### 6.1 Syscall Numbers & ABI
 
-Existing syscall numbers end at `SYS_SYSINFO = 37` (`src/include/syscall_abi.h:45`). Networking syscalls begin at 38:
+Phase 4a adds `SYS_NETCTL = 42` with the concrete [NETCTL_PING ABI](NETCTL_PING_ABI.md); 38–41 remain reserved. The earlier syscall baseline ended at `SYS_SYSINFO = 37` (`src/include/syscall_abi.h:45`). Networking syscalls begin at 38:
 
 | Number | Macro | Signature | Description |
 | --- | --- | --- | --- |
@@ -354,7 +376,7 @@ Following the strict **Phase 9G.1 stop-condition discipline** ([`docs/subsystems
 | **Phase 1b** | Dell Hardware Discovery | Probing Dell Latitude 5590 / 5500 on physical hardware | Physical boot log confirms I219-LM BAR0 mapping & MAC |
 | **Phase 2a** | Rings & Raw Frame I/O (QEMU) | Allocate TX/RX rings, send raw frame, poll RX frame | QEMU `-netdev dump` pcap audit of transmitted frame |
 | **Phase 2b** | Dell Physical Link & Raw Frame | Link-up check (`STATUS.LU == 1`) and raw frame send on Dell | Physical link-up confirmed; Phase 2b stop-condition enforced |
-| **Phase 3** | Ethernet & ARP | 14-byte Ethernet framing, ARP cache, Request/Reply | QEMU gateway ARP resolution verified |
+| **Phase 3** | Ethernet & ARP — **COMPLETE (2026-10-01)** | 14-byte Ethernet dispatch, reply-only ARP cache learning, Request/Reply, bounded `net=` config, BSP-pinned tick-sleeping worker with the authorized `net_timer_tick()` wake; exact-once RX recycling | Host ASan/UBSan (`make test-net-eth-host`) plus 8 QEMU cases (`make test-net-eth`, BIOS/UEFI × e1000/e1000e × {user, socket}) and 4 raw-ring regressions; no physical Phase 3 acceptance claimed |
 | **Phase 4a** | IPv4 & ICMP Ping (QEMU) | IPv4 parser/checksum, ICMP Echo Reply, `/bin/ping` | Host pings QEMU guest; `/bin/ping 10.0.2.2` succeeds |
 | **Phase 4b** | Dell Physical Ping Acceptance | Physical cable ping from Dell to local network gateway | Physical ping exchange verified on Dell Latitude hardware |
 | **Phase 5** | UDP & Socket Syscalls | UDP protocol, socket table, `SYS_SOCKET`/`SENDTO`/`RECVFROM` | `/bin/udptest` verified in QEMU and Dell — **Closes Milestone NET-1** |

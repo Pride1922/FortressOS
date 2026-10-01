@@ -395,6 +395,8 @@ USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
 USER_SH_BUILTIN_ELF := $(BUILD_DIR)/sh-builtin.elf
 USER_PS_ELF := $(BUILD_DIR)/ps.elf
 USER_SYSINFO_ELF := $(BUILD_DIR)/sysinfo.elf
+USER_PING_ELF := $(BUILD_DIR)/ping.elf
+USER_PING_PROBE_ELF := $(BUILD_DIR)/net_ping_probe.elf
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 STREAM_TOOLS := cat head tail wc
 STREAM_TOOL_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(STREAM_TOOLS)))
@@ -474,6 +476,28 @@ $(BUILD_DIR)/sysinfo.o: $(USER_DIR)/sysinfo.c src/include/types.h src/include/sy
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
 
+$(BUILD_DIR)/ping.o: $(USER_DIR)/ping.c src/include/types.h src/include/syscall_abi.h src/include/ping_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -Wframe-larger-than=512 -fstack-usage -c $< -o $@
+
+$(BUILD_DIR)/ping_start.o: $(USER_DIR)/tools/start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 -DTOOL_ENTRY=ping_main $< -o $@
+
+$(USER_PING_ELF): $(BUILD_DIR)/ping_start.o $(BUILD_DIR)/ping.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/ping_start.o $(BUILD_DIR)/ping.o -o $@
+
+$(BUILD_DIR)/net_ping_probe.o: $(USER_DIR)/net_ping_probe.c src/include/syscall_abi.h src/include/ping_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -Wframe-larger-than=512 -fstack-usage -c $< -o $@
+
+$(BUILD_DIR)/net_ping_probe_start.o: $(USER_DIR)/tools/start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 -DTOOL_ENTRY=net_ping_probe_main $< -o $@
+
+$(USER_PING_PROBE_ELF): $(BUILD_DIR)/net_ping_probe_start.o $(BUILD_DIR)/net_ping_probe.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/net_ping_probe_start.o $(BUILD_DIR)/net_ping_probe.o -o $@
+
 $(BUILD_DIR)/sysinfo_start.o: $(USER_DIR)/tools/start.asm
 	@mkdir -p $(BUILD_DIR)
 	@$(AS) -f elf64 -DTOOL_ENTRY=sysinfo_main $< -o $@
@@ -493,7 +517,7 @@ $(USER_TOP_ELF): $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o $(USER_DIR)/shell.l
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -502,6 +526,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
 	@cp -f $(USER_PS_ELF) $(BUILD_DIR)/initramfs/bin/ps
 	@cp -f $(USER_SYSINFO_ELF) $(BUILD_DIR)/initramfs/bin/sysinfo
+	@cp -f $(USER_PING_ELF) $(BUILD_DIR)/initramfs/bin/ping
+	@cp -f $(USER_PING_PROBE_ELF) $(BUILD_DIR)/initramfs/bin/net-ping-probe
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
@@ -780,6 +806,34 @@ test-s8-jobctl: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_jobctl_user.elf $(BUILD_DIR)/s8_
 
 # Networking Phase 0: Pure host tests for checksum, Ethernet, ARP, IPv4, and pbuf
 .PHONY: test-net-host
+test-net-icmp-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net tests/net_icmp_host.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c -o $(BUILD_DIR)/net_icmp_host
+	@$(BUILD_DIR)/net_icmp_host
+
+.PHONY: test-net-icmp-host
+test-net-ipv4-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/arch/x86_64 -Isrc/drivers tests/net_ipv4_host.c src/net/net_ipv4.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c -o $(BUILD_DIR)/net_ipv4_host
+	@$(BUILD_DIR)/net_ipv4_host
+.PHONY: test-net-ipv4-host
+test-net-ping-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_ping_host.c tests/net_lock_host.c src/net/net_ping.c -o $(BUILD_DIR)/net_ping_host
+	@$(BUILD_DIR)/net_ping_host
+.PHONY: test-net-ping-host
+test-net-icmp: $(BOOTABLE_ISO) test-net-icmp-host test-net-ipv4-host test-net-ping-host
+	@python3 scripts/test_net_icmp.py
+.PHONY: test-net-icmp
+test-net-eth-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_eth_host.c tests/net_lock_host.c src/net/net.c src/net/net_ping.c src/net/net_ipv4.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c src/net/arp.c -o $(BUILD_DIR)/net_eth_host
+	@$(BUILD_DIR)/net_eth_host
+
+.PHONY: test-net-eth-host test-net-eth
+test-net-eth: $(BOOTABLE_ISO) test-net-eth-host
+	@python3 scripts/test_net_eth.py
+
 test-net-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O2 -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net tests/net_host.c src/net/checksum.c src/net/eth.c src/net/arp.c src/net/ipv4.c -o $(BUILD_DIR)/net_host

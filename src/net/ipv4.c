@@ -31,7 +31,7 @@ bool ipv4_is_fragment(const ipv4_header_t *hdr) {
 
 int ipv4_encode(void *buf, size_t buf_len, uint32_t src_ip, uint32_t dst_ip,
                 uint8_t protocol, uint16_t payload_len, uint8_t ttl, size_t *out_hdr_len) {
-    if (!buf || buf_len < IPV4_MIN_HLEN) {
+    if (!buf || buf_len < IPV4_MIN_HLEN || payload_len > 65535u - IPV4_MIN_HLEN) {
         return -1;
     }
 

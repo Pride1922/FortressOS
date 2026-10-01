@@ -3,6 +3,7 @@
 #include "serial.h"
 #include "input.h"
 #include "percpu.h"
+#include "../../net/net.h"
 
 static volatile uint8_t *g_lapic_mmio = (volatile uint8_t *)LAPIC_VIRT_ADDR;
 static volatile uint64_t g_spurious_count = 0;
@@ -83,6 +84,7 @@ static void apic_timer_handler(interrupt_frame_t *frame) {
     }
     lapic_eoi(); /* Single-owner EOI: acknowledged immediately on timer entry */
     input_timer_tick(g_target_hz);
+    if (cpu_current()->id == 0) net_timer_tick();
     extern void sched_on_timer_tick(void);
     sched_on_timer_tick();
 }

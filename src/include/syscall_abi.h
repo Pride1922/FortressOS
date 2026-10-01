@@ -2,6 +2,7 @@
 #define FORTRESS_SYSCALL_ABI_H
 #include "types.h"
 #include "signal_abi.h"
+#include "ping_abi.h"
 /* System Call Numbers */
 #define SYS_EXIT      0
 #define SYS_WRITE     1
@@ -43,6 +44,7 @@
 #define SYS_GROUP_RELEASE 35 /* (uint64_t pgid, uint32_t action) -> 0 */
 #define SYS_PROCINFO      36 /* (uint64_t index, proc_info_t *buf) -> 1/0/-errno */
 #define SYS_SYSINFO       37 /* (sysinfo_t *buf) -> 0/-errno */
+#define SYS_NETCTL        42 /* (NETCTL_PING, net_ping_v1_t *, 48); 38–41 reserved */
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1

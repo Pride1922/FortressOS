@@ -34,6 +34,7 @@
 #include "power.h"
 #include "logo.h"
 #include "e1000.h"
+#include "../net/net.h"
 
 extern uint8_t __text_start[];
 extern uint8_t __rodata_start[];
@@ -5637,6 +5638,7 @@ pf_boot_guard_done:
     xhci_boot_probe(&boot_info);
     net_boot_probe();
     e1000_raw_selftest(boot_info.cmdline);
+    net_start(boot_info.cmdline, sizeof(boot_info.cmdline));
     boot_status("Mounting persistent storage (/mnt)...");
     usb_mount_production_storage(&boot_info);
     if (qemu_fw_cfg_has_key("opt/fortress/taint_test")) {

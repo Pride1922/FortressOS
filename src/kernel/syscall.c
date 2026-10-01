@@ -1,4 +1,6 @@
 #include "syscall.h"
+#include "../net/net_ping.h"
+#include "percpu.h"
 #include "process_table.h"
 #include "input.h"
 #include "vmm.h"
@@ -1305,6 +1307,35 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             } else {
                 result = 0;
             }
+            break;
+        }
+
+        case SYS_NETCTL: {
+            if (frame->rdi!=NETCTL_PING || frame->rdx!=sizeof(net_ping_v1_t)) {
+                result=SYSCALL_EINVAL; break;
+            }
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),frame->rsi,sizeof(net_ping_v1_t),true)) {
+                result=SYSCALL_EFAULT; break;
+            }
+            tcb_t *caller=thread_current();
+            if (cpu_current()->id!=0 || !caller || caller->cpu_affinity!=0) {
+                result=SYSCALL_EOPNOTSUPP; break;
+            }
+            net_ping_v1_t ping;
+            memcpy(&ping,(const void *)frame->rsi,sizeof(ping));
+            uint64_t token;
+            result=net_ping_submit(&ping,&token);
+            if (result) break;
+            sched_wait_until(&g_net_ping_channel,net_ping_ready,&token);
+            if (process_signal_pending()) {
+                net_ping_cancel(token); result=SYSCALL_EINTR; break;
+            }
+            result=net_ping_collect(token,&ping);
+            if (result) { net_ping_cancel(token); break; }
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),frame->rsi,sizeof(ping),true)) {
+                result=SYSCALL_EFAULT; break;
+            }
+            memcpy((void *)frame->rsi,&ping,sizeof(ping));
             break;
         }
 
