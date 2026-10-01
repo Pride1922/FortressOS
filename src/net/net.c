@@ -7,6 +7,10 @@
 #include "serial.h"
 #include "net_ipv4.h"
 #include "net_ping.h"
+#include "net_socket.h"
+#include "net_socket_syscall.h"
+#include "syscall_abi.h"
+#include "smp.h"
 
 const char g_net_poll_channel = 0;
 static net_dev_t *s_if;
@@ -21,6 +25,8 @@ static uint8_t s_gateway_mac[ETH_ALEN];
 static net_ping_v1_t s_probe;
 static uint64_t s_probe_token;
 static bool s_probe_pending;
+static uint64_t s_idle_start, s_idle_ticks;
+static bool s_idle_reported;
 static const uint8_t broadcast[ETH_ALEN] = {255,255,255,255,255,255};
 
 static bool space(char c) { return c==' ' || c=='\t' || c=='\r' || c=='\n'; }
@@ -61,6 +67,7 @@ void net_parse_config(const char *cmdline, size_t len, net_config_t *out) {
         if (n==12 && !memcmp(start,"net_test=arp",12)) out->test_arp=true;
         if (n==14 && !memcmp(start,"net_test=rings",14)) out->test_rings=true;
         if (n==13 && !memcmp(start,"net_test=icmp",13)) out->test_icmp=true;
+        if (n==12 && !memcmp(start,"net_test=udp",12)) out->test_udp=true;
         if (n<4 || memcmp(start,"net=",4)) continue;
         const char *v=start+4;
         uint32_t local=0, gateway=0;
@@ -82,9 +89,11 @@ void net_init(net_dev_t *dev, const net_config_t *config) {
     arp_cache_init(&s_arp_cache);
     net_ipv4_init(dev,config);
     net_ping_init(false);
+    net_socket_init(dev,config);
     s_worker_started=false;
     s_test_pending=false;
     s_probe_pending=false;
+    s_idle_reported=false; s_idle_start=0;
 }
 static int send_arp(net_dev_t *dev, const uint8_t *dest, uint32_t ip, bool reply) {
     memset(s_tx,0,sizeof(s_tx));
@@ -161,7 +170,9 @@ void net_worker_main(void *arg) {
             }
         }
         net_ping_worker_tick(apic_timer_get_bsp_ticks());
+        net_socket_worker_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
         net_ipv4_tick(apic_timer_get_bsp_ticks());
+        net_socket_worker_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
         net_ping_worker_tick(apic_timer_get_bsp_ticks());
         if (s_probe_pending && net_ping_ready(&s_probe_token)) {
             int64_t ret=net_ping_collect(s_probe_token,&s_probe);
@@ -169,12 +180,36 @@ void net_worker_main(void *arg) {
                 "[NET 4] Echo probe reply matched\n" : "[NET 4] Echo probe failed\n");
             s_probe_pending=false;
         }
+        /* Explicit test-only observation; own immortal worker TCB, no new
+         * introspection ABI or scheduler operation. Idle means no RX packets
+         * or active IPv4 TX/echo transaction throughout the measured window. */
+        if (s_config.test_udp && !s_idle_reported) {
+            uint64_t now=apic_timer_get_bsp_ticks();
+            if (count || !net_ipv4_idle() || !s_idle_start) {
+                s_idle_start=now; s_idle_ticks=thread_current()->total_ticks;
+            } else if (now-s_idle_start>=5*apic_timer_get_frequency()) {
+                serial_puts("[NET 5] Idle worker CPU ticks/elapsed ticks/hz (hex): ");
+                serial_print_hex(thread_current()->total_ticks-s_idle_ticks); serial_puts("/");
+                serial_print_hex(now-s_idle_start); serial_puts("/");
+                serial_print_hex(apic_timer_get_frequency()); serial_puts("\n");
+                s_idle_reported=true;
+            }
+        }
         if (count==64) thread_yield();
         else {
             s_deadline=apic_timer_get_bsp_ticks()+1;
             sched_wait_until(&g_net_poll_channel,deadline_reached,&s_deadline);
         }
     }
+}
+static void socket_ap_probe(void *arg) {
+    (void)arg;
+    interrupt_frame_t frame={0}; bool pass=true;
+    for (unsigned nr=SYS_SOCKET; nr<=SYS_RECVFROM; ++nr) {
+        frame.rax=nr;
+        if (net_socket_syscall(&frame)!=SYSCALL_EOPNOTSUPP) pass=false;
+    }
+    serial_puts(pass ? "[NET 5] AP socket dispatch rejection PASS\n" : "[NET 5] AP socket dispatch rejection FAIL\n");
 }
 void net_start(const char *cmdline, size_t len) {
     net_parse_config(cmdline,len,&s_config);
@@ -188,5 +223,10 @@ void net_start(const char *cmdline, size_t len) {
     }
     s_worker_started=true;
     net_ping_init(true);
+    net_socket_enable();
+    /* Explicit disposable-test opt-in. Direct dispatch from an AP kernel
+     * thread tests context rejection, not a Ring 3 AP entry transition. */
+    if (s_config.test_udp && smp_get_cpu_count()>1)
+        (void)thread_create_on_cpu(1,"net_ap_probe",socket_ap_probe,NULL);
     serial_puts("[NET 3] BSP ingress worker started; tick-bounded polling\n");
 }

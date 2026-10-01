@@ -44,7 +44,11 @@
 #define SYS_GROUP_RELEASE 35 /* (uint64_t pgid, uint32_t action) -> 0 */
 #define SYS_PROCINFO      36 /* (uint64_t index, proc_info_t *buf) -> 1/0/-errno */
 #define SYS_SYSINFO       37 /* (sysinfo_t *buf) -> 0/-errno */
-#define SYS_NETCTL        42 /* (NETCTL_PING, net_ping_v1_t *, 48); 38–41 reserved */
+#define SYS_SOCKET        38
+#define SYS_BIND          39
+#define SYS_SENDTO        40
+#define SYS_RECVFROM      41
+#define SYS_NETCTL        42 /* Unchanged: (NETCTL_PING, net_ping_v1_t *, 48). */
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1

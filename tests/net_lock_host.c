@@ -1,6 +1,7 @@
 #include <assert.h>
 #include "spinlock.h"
 static _Thread_local unsigned held;
+void net_test_assert_unheld(void) { assert(!held); }
 uint64_t spin_lock_irqsave(spinlock_t *lock) {
     assert(!held); assert(!pthread_mutex_lock(&lock->mutex)); held=1; return 0;
 }

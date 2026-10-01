@@ -16,7 +16,9 @@ static e1000_device_t s_e1000_dev;
 static bool is_i219(void) {
     uint16_t id = s_e1000_dev.pci.device_id;
     return id == E1000_DEV_I219_LM_15D7 ||
-           id == E1000_DEV_I219_LM_15BD || id == E1000_DEV_I219_LM_15BB;
+           id == E1000_DEV_I219_LM_15BD ||
+           id == E1000_DEV_I219_LM_15BB ||
+           id == E1000_DEV_I219_LM_1A1E;
 }
 
 static bool s_e1000_found = false;
@@ -89,6 +91,7 @@ static bool is_supported_e1000(const pci_device_t *d) {
         case E1000_DEV_I219_LM_15D7:   /* Dell 5590 */
         case E1000_DEV_I219_LM_15BD:   /* Dell 5500 */
         case E1000_DEV_I219_LM_15BB:
+        case E1000_DEV_I219_LM_1A1E:   /* Dell 5530 */
             return true;
         default:
             return false;
@@ -941,6 +944,15 @@ net_dev_t *e1000_get_net_device(void) {
     net_dev_t *dev = s_net_dev.flags ? &s_net_dev : NULL;
     spin_unlock_irqrestore(&g_net_dev_lock, irq);
     return dev;
+}
+
+bool e1000_network_online(net_dev_t *dev) {
+    spin_debug_assert_unheld();
+    uint64_t irq=spin_lock_irqsave(&g_net_dev_lock);
+    bool online=dev==&s_net_dev && !g_net_fatal && (s_net_dev.flags&NET_UP) &&
+        (e1000_read32(s_e1000_dev.mmio_virt,E1000_REG_STATUS)&E1000_STATUS_LU);
+    spin_unlock_irqrestore(&g_net_dev_lock,irq);
+    return online;
 }
 
 int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len) {

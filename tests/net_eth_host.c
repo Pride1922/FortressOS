@@ -7,6 +7,16 @@
 #include "thread.h"
 
 static net_dev_t dev;
+/* Phase 3 isolation: sockets are tested separately with actual implementation. */
+void net_socket_init(net_dev_t *d, const net_config_t *cfg) { (void)d; (void)cfg; }
+void net_socket_enable(void) {}
+void net_socket_worker_tick(uint64_t now, bool online) { (void)now; (void)online; }
+void net_socket_input(uint32_t ip, uint16_t sp, uint16_t dp, const uint8_t *data, size_t len) {
+    (void)ip; (void)sp; (void)dp; (void)data; (void)len;
+}
+bool e1000_network_online(net_dev_t *d) { return d==&dev; }
+size_t smp_get_cpu_count(void) { return 1; }
+int64_t net_socket_syscall(interrupt_frame_t *frame) { (void)frame; return -14; }
 static pbuf_t packet;
 static uint8_t sent[60];
 static unsigned sends, recycles, wakes, waits, yields;
@@ -16,6 +26,8 @@ static jmp_buf done;
 uint64_t apic_timer_get_bsp_ticks(void) { return ticks; }
 uint64_t apic_timer_get_frequency(void) { return 100; }
 void serial_puts(const char *s) { (void)s; }
+void serial_print_hex(uint64_t n) { (void)n; }
+tcb_t *thread_current(void) { static tcb_t worker; return &worker; }
 net_dev_t *e1000_get_net_device(void) { return absent ? NULL : &dev; }
 tcb_t *thread_create_on_cpu(size_t cpu, const char *name, void (*entry)(void *), void *arg) {
     assert(cpu==0 && !strcmp(name,"net_worker") && entry==net_worker_main && !arg);

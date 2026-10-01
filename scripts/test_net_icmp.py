@@ -66,7 +66,8 @@ def preflight(cmd, args):
 
 def run(mode, model, backend, iso, tmp):
     label = f'{mode}-{model}-{backend}'
-    log = REPO / 'build' / f'test-net-icmp-{label}.log'
+    saved_log = REPO / 'build' / f'test-net-icmp-{label}.log'
+    log = tmp / f'test-net-icmp-{label}.log'
     log.write_text('')
     pcap = log.with_suffix('.pcap')
     uart_path = tmp / f'u-{label}'
@@ -143,8 +144,8 @@ def run(mode, model, backend, iso, tmp):
                         if predicate(t): return t
                         assert proc.poll() is None, log.with_suffix('.stderr').read_text()
                     raise AssertionError(text()[-5000:])
-                wait(lambda t: 'fortress> ' in t and '[NET 3] Gateway ARP resolved' in t and
-                     '[NET 4] Echo probe reply matched' in t)
+                wait(lambda t: 'fortress> ' in t and 'Gateway ARP resolved' in t and
+                     'Echo probe reply matched' in t, 120)
                 def execute(line, timeout=45):
                     start = len(text())
                     for byte in line.encode() + b'\n':
@@ -204,6 +205,8 @@ def run(mode, model, backend, iso, tmp):
                     try: proc.wait(timeout=3)
                     except subprocess.TimeoutExpired: proc.kill(); proc.wait()
                 if thread.is_alive(): thread.join(timeout=2)
+                for path in (log, pcap, log.with_suffix('.stderr')):
+                    if path.exists(): shutil.copyfile(path, saved_log.with_suffix(path.suffix))
         capture = packets(pcap)
         probes = [f for f in capture if f[6:12] == MAC and f[12:14] == b'\x08\0' and f[34] == 8]
         assert len(probes) >= 4

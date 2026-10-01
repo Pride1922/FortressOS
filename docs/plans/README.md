@@ -6,6 +6,8 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
+| [UDP_SOCKET_ABI.md](UDP_SOCKET_ABI.md) | Phase 5 socket/address layout, register arguments, datagram semantics and deterministic error precedence; SYS_NETCTL unchanged. | **IMPLEMENTED**; BSP-only |
+| [NET_PHASE5_PLAN.md](NET_PHASE5_PLAN.md) | Bounded UDP sockets, concrete ABI, worker ownership, fd lifecycle, QEMU and physical LAN gates. | **5a IMPLEMENTED + VERIFIED**; 5590 UDP user-reported PASS; capture audit pending |
 | [NETCTL_PING_ABI.md](NETCTL_PING_ABI.md) | Concrete 48-byte layout, field offsets, errors and finite owner-exit fallback. | **IMPLEMENTED** in Phase 4a; BSP-only |
 | [NET_PHASE4_PLAN.md](NET_PHASE4_PLAN.md) | IPv4/ICMP codecs and worker delivery, narrow Ring 3 ping ABI, QEMU gates and separate physical Dell acceptance. | **4a IMPLEMENTED + 4b physically accepted** (2026-10-01, manual) |
 | [SHELL_DESIGN.md](SHELL_DESIGN.md) | Shell architecture and staged delivery: editing/history, terminal support, cwd/completion, environment, redirection/pipes, jobs and scripting. | **S0–S2 IMPLEMENTED** (QEMU verified, Dell pending); S3–S10 planned |

@@ -206,11 +206,14 @@ int main(void) {
     assert(e1000_send_raw(&s_net_dev, frame, sizeof(frame)) == -1);
     s_tx_pending = 0;
     registers[E1000_REG_STATUS / 4] = 0;
+    assert(!e1000_network_online(&s_net_dev));
     assert(e1000_send_raw(&s_net_dev, frame, sizeof(frame)) == -1);
     registers[E1000_REG_STATUS / 4] = E1000_STATUS_LU;
+    assert(e1000_network_online(&s_net_dev) && !e1000_network_online(NULL));
     puts("[PASS] TX driver-owned copy, command bits, completion reservation, wraparound, bounds/busy/link checks (mock completion)");
     assert(e1000_send_raw(&s_net_dev, frame, sizeof(frame)) == -1); /* no completion */
     assert(g_net_fatal && !e1000_get_net_device() && allocations == 146);
+    assert(!e1000_network_online(&s_net_dev));
     assert(!(command_value & PCI_COMMAND_BUS_MASTER));
     assert(!e1000_quiesce()); /* mock keeps CTRL.RST set: bounded timeout */
     assert(allocations == 146);

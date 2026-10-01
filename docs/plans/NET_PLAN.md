@@ -1,11 +1,20 @@
 # FortressOS Networking Milestone Plan — Architecture, Driver & Protocol Stack
 
-Status: Plan of record for Milestone NET-1 (originally PLANNING ONLY, 2026-09-30, Revision 2). Phases 0–4 have since landed and are documented in the roadmap files; Phase 4b is physically accepted (2026-10-01, manual evidence), and the remaining sections guide Phase 5 (UDP/sockets). Where this plan and the implemented code/headers diverge, the code and headers are authoritative.
+Status: Plan of record for Milestone NET-1 (originally PLANNING ONLY, 2026-09-30, Revision 2). Phases 0–5a have since landed and are documented in the roadmap files; Phase 4b is physically accepted (2026-10-01, manual evidence), and physical UDP passed on 5590 (user report); capture audit remains pending. Where this plan and the implemented code/headers diverge, the code and headers are authoritative.
 Planning baseline: ground every claim in existing codebase contracts and file:line references.
 Implementation update (2026-10-01): [Phase 3](../roadmap/net-phase3.md) supplies
 the previously missing network-channel tick wakeup through an explicitly
 authorized minimal BSP timer hook. The existing scheduler APIs are unchanged.
 Review criteria: critique by architecture reviewers prior to any implementation phase.
+
+Phase 5a implementation update (2026-10-01): UDP sockets and tools are
+host/QEMU verified; [Phase 5 plan](NET_PHASE5_PLAN.md),
+[UDP ABI](UDP_SOCKET_ABI.md) and [evidence](../roadmap/net-phase5a.md) supersede
+the earlier socket sketches below. Socket syscalls remain BSP-only, submit
+copied operations to the sole protocol worker, and use atomic wait predicates
+and existing final-reference fd cleanup. The direct syscall-to-driver sketch
+and raw queue-pointer predicate below are historical proposals, not the
+implemented call graph. 5590 UDP is user-reported PASS; the raw-capture audit and formal NET-1 closure remain pending.
 
 ---
 
@@ -319,7 +328,7 @@ net=<ip>/<prefix>,<gateway>
 
 ### 6.1 Syscall Numbers & ABI
 
-Phase 4a adds `SYS_NETCTL = 42` with the concrete [NETCTL_PING ABI](NETCTL_PING_ABI.md); 38–41 remain reserved. The earlier syscall baseline ended at `SYS_SYSINFO = 37` (`src/include/syscall_abi.h:45`). Networking syscalls begin at 38:
+Phase 4a adds `SYS_NETCTL = 42` with the concrete [NETCTL_PING ABI](NETCTL_PING_ABI.md); Phase 5a implements reserved socket syscalls 38–41. The earlier syscall baseline ended at `SYS_SYSINFO = 37` (`src/include/syscall_abi.h:45`). Networking syscalls begin at 38:
 
 | Number | Macro | Signature | Description |
 | --- | --- | --- | --- |
@@ -379,7 +388,8 @@ Following the strict **Phase 9G.1 stop-condition discipline** ([`docs/subsystems
 | **Phase 3** | Ethernet & ARP — **COMPLETE (2026-10-01)** | 14-byte Ethernet dispatch, reply-only ARP cache learning, Request/Reply, bounded `net=` config, BSP-pinned tick-sleeping worker with the authorized `net_timer_tick()` wake; exact-once RX recycling | Host ASan/UBSan (`make test-net-eth-host`) plus 8 QEMU cases (`make test-net-eth`, BIOS/UEFI × e1000/e1000e × {user, socket}) and 4 raw-ring regressions; no physical Phase 3 acceptance claimed |
 | **Phase 4a** | IPv4 & ICMP Ping (QEMU) — **COMPLETE (2026-10-01)** | IPv4 parser/checksum, ICMP Echo Reply, `/bin/ping` | Host pings QEMU guest; `/bin/ping 10.0.2.2` succeeds; host/QEMU targets PASS |
 | **Phase 4b** | Dell Physical Ping Acceptance — **COMPLETE (2026-10-01, manual)** | Physical cable ping from Dell to local gateway/LAN peer | Physical ICMP exchange verified on Dell Latitude hardware (gateway 4/4, LAN peer, reverse 4/4); manual/user-supplied screenshot + terminal output, no pcap |
-| **Phase 5** | UDP & Socket Syscalls (**NEXT**) | UDP protocol, socket table, `SYS_SOCKET`/`SENDTO`/`RECVFROM` | `/bin/udptest` verified in QEMU and Dell — **Closes Milestone NET-1** |
+| **Phase 5a** | UDP & Socket Syscalls — **COMPLETE (2026-10-01), host/QEMU** | UDP protocol, 16 sockets, `SYS_SOCKET`/`BIND`/`SENDTO`/`RECVFROM`, `/bin/udptest` | Host sanitizer gates and 10/10 QEMU cases PASS |
+| **Phase 5b** | Physical UDP — **USER-REPORTED PASS; capture audit pending** | Two-way application traffic with independent raw capture on Dell | Manual gate required to close Milestone NET-1 |
 
 ---
 

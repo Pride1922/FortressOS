@@ -7,7 +7,7 @@
 typedef struct {
     uint32_t local_ip, gateway; /* Network order. */
     uint8_t prefix;
-    bool malformed, test_arp, test_rings, test_icmp;
+    bool malformed, test_arp, test_rings, test_icmp, test_udp;
 } net_config_t;
 
 /* Bounded cmdline: at most len bytes; duplicate net= tokens are malformed. */

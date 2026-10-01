@@ -14,6 +14,7 @@
 #define E1000_DEV_I219_LM_15D7      0x15D7  /* Dell Latitude 5590 I219-LM (observed) */
 #define E1000_DEV_I219_LM_15BD      0x15BD  /* Dell Latitude 5500 I219-LM */
 #define E1000_DEV_I219_LM_15BB      0x15BB  /* I219-LM variant */
+#define E1000_DEV_I219_LM_1A1E      0x1A1E  /* Dell Latitude 5530 I219-LM */
 
 /* Dedicated higher-half kernel MMIO virtual address window */
 #define E1000_MMIO_VIRT             0xFFFFFFFFE2000000ULL
@@ -66,6 +67,8 @@ bool e1000_boot_probe(void);
 bool net_boot_probe(void);
 const e1000_device_t *e1000_get_active_device(void);
 net_dev_t *e1000_get_net_device(void);
+/* Unlocked thread context; read-only link/fatal snapshot, no recovery writes. */
+bool e1000_network_online(net_dev_t *dev);
 int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len);
 pbuf_t *e1000_poll_rx(net_dev_t *dev);
 void e1000_recycle_rx(net_dev_t *dev, pbuf_t *packet);

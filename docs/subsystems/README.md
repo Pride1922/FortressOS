@@ -6,7 +6,7 @@ This directory holds the per-subsystem architecture annexes, status logs, hardwa
 
 | Subsystem | Scope | Document |
 | --- | --- | --- |
-| **Networking** | Intel e1000/e1000e/I219-LM, DMA rings, wire capture, Phase 0–4 status (4b physically accepted, manual), Phase 5 UDP/sockets next | [`net.md`](net.md) |
+| **Networking** | Intel e1000/e1000e/I219-LM, DMA rings, Ethernet/ARP/IPv4/ICMP, Phase 5a BSP-only UDP sockets verified; 5590 UDP user-reported PASS; capture audit pending, ICMP 4b accepted | [`net.md`](net.md) |
 | **USB** | xHCI controller, BOT mass storage, durability classification, explicit mount opt-in, Phase 9G handoff | [`usb.md`](usb.md) |
 | **Storage & RAM** | ext2 writable/read-only mounts, GPT partitioning, NVMe exclusions, 32 GiB RAM / two-stage PMM | [`storage.md`](storage.md) |
 | **Shell & Userland** | Shell S0–S9 (pipes, signals, jobs, variables, builtins, `/bin/top`, `/bin/ps`, `/bin/sysinfo`), input/layout | [`shell.md`](shell.md) |

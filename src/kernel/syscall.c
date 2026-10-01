@@ -1,5 +1,6 @@
 #include "syscall.h"
 #include "../net/net_ping.h"
+#include "../net/net_socket_syscall.h"
 #include "percpu.h"
 #include "process_table.h"
 #include "input.h"
@@ -1309,6 +1310,13 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             }
             break;
         }
+
+        case SYS_SOCKET:
+        case SYS_BIND:
+        case SYS_SENDTO:
+        case SYS_RECVFROM:
+            result=net_socket_syscall(frame);
+            break;
 
         case SYS_NETCTL: {
             if (frame->rdi!=NETCTL_PING || frame->rdx!=sizeof(net_ping_v1_t)) {
