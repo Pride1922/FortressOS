@@ -30,7 +30,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
-| NET | IN PROGRESS — Phase 5a UDP sockets complete (host/QEMU); 5590 UDP user-reported PASS; capture audit pending; physical ICMP 4b accepted; 5530 8086:1A1E driver user-reported PASS | [docs/subsystems/net.md](docs/subsystems/net.md) |
+| NET | IN PROGRESS — NET-2 steps 1–2 pure TCP codec/transport verified; live TCP integration pending. Phase 5a UDP sockets complete (host/QEMU); 5590 UDP user-reported PASS; capture audit pending; physical ICMP 4b accepted; 5530 8086:1A1E driver user-reported PASS | [docs/subsystems/net.md](docs/subsystems/net.md) |
 | Shell S9 | COMPLETE (2026-09-30) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | Shell S8 | COMPLETE (2026-09-29) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | Shell S7 / S6 / S5 / S3–S4 / S0–S2 | COMPLETE | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
@@ -64,6 +64,8 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-net-tcp-host` | NET-2 step 1 pure TCP codec ASan/UBSan: independent SYN/checksum, zero/odd/max lengths, mandatory zero checksum, bounded offsets/options, unaligned/overlap, failure publication and deterministic malformed-input fuzz. PASS 2026-10-01; no transport/socket/TCP wire acceptance claim. |
+| `make test-net-tcp-tcb-host` | NET-2 step 2 pure transport/fake-time ASan/UBSan: handshake/close, partial ACK/wrap, bounded OOO/RX/TX, RTO/Karn/Reno, zero-window persist, stale/local submission, orphan/TIME_WAIT pool; 20000 hostile events; 2 MiB each-way clean and three 256 KiB each-way loss/duplicate/reorder profiles with exactly-once ordered bytes. PASS 2026-10-01; no live syscall/worker/mainstream-peer/hardware claim. |
 | `make test-net-udp-host` | Phase 5 actual UDP codec, independent pseudo-header/checksum vectors, zero/odd/max data, computed-zero/omitted/corrupt checksums and bounds under ASan/UBSan. PASS 2026-10-01. |
 | `make test-net-socket-host` | Phase 5 actual socket/syscall/IPv4/UDP code with memory/fd/NIC/tick/scheduler adapters: pointer/error precedence, binds/auto-bind, data/truncation, queue/pool saturation, timeout/lease, stale reuse, shared lifetime, allocation/failure paths and 16 coalesced sends. PASS 2026-10-01; no hardware/IRQ claim. |
 | `make test-net-udp` | Phase 5a real Ring 3 client/listener and binary/ABI/fd fixtures; independent pcap audit; eight BIOS/UEFI × e1000/e1000e × user/socket SMP=1 cases plus BIOS/UEFI e1000/user SMP=4 BSP-tool smoke and AP direct-dispatch rejection. 10/10 PASS 2026-10-01; disposable ISO/OVMF, no data disks. Additional focused runs cover caught SIGINT and unaligned cross-page addresses. AP fixture is kernel direct dispatch, not Ring 3 AP entry. 5590 UDP user-reported PASS; physical capture audit pending. |

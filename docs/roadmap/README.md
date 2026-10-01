@@ -20,6 +20,8 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [net2-step2.md](net2-step2.md) | Pure bounded TCP transport, lifecycle pool and deterministic fake-network sanitizer gate; live integration pending. |
+| [net2-step1.md](net2-step1.md) | NET-2 started: reviewed design baseline, pure TCP codec and host sanitizer gate; live TCP transport not enabled. |
 | [net-i219-5530.md](net-i219-5530.md) | 8086:1A1E discovery/general PCH registration; user-reported physical driver PASS on 5530; unchanged 5590 gates and passing regressions. |
 | [net-phase5b.md](net-phase5b.md) | User-reported physical UDP PASS on 5590; independent capture/application artifact audit pending. |
 | [net-phase5a.md](net-phase5a.md) | COMPLETE host/QEMU: bounded BSP-only UDP sockets, syscalls 38–41, Ring 3 tools, binary/ABI/fd fixtures and 10 QEMU cases. 5590 UDP is user-reported PASS; capture audit pending; includes Windows peer/capture procedure. |

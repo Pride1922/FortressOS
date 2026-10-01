@@ -6,6 +6,13 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+NET-2 steps 1–2 are implemented: [step 1](../roadmap/net2-step1.md) supplies
+the codec; [step 2](../roadmap/net2-step2.md) supplies the bounded transport
+engine and loss/reordering simulator, host-sanitizer verified. The seven-step
+[plan](../plans/NET2_PLAN.md) preserves UDP capacity; live worker/socket TCP
+integration, streams and DNS remain unimplemented. The [TCP contract](../plans/TCP_SOCKET_ABI.md) is a design
+baseline requiring lifecycle proof and ABI freeze before integration.
+
 2026-10-01 user reports: **5530 I219-LM 8086:1A1E driver PASS** and
 **5590 UDP PASS**. These are manual observations without new capture/log
 attachments. See [5530 driver](../roadmap/net-i219-5530.md) and

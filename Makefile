@@ -826,6 +826,23 @@ test-net-udp-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net tests/net_udp_host.c src/net/udp.c src/net/checksum.c -o $(BUILD_DIR)/net_udp_host
 	@$(BUILD_DIR)/net_udp_host
+
+# NET-2 checkpoint A: pure codec only; no live TCP delivery is enabled.
+.PHONY: test-net-tcp-host
+test-net-tcp-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net tests/net_tcp_host.c src/net/tcp.c src/net/checksum.c -o $(BUILD_DIR)/net_tcp_host
+	@$(BUILD_DIR)/net_tcp_host
+
+$(BUILD_DIR)/net/tcp.o: CFLAGS += -Os -Wframe-larger-than=512 -fstack-usage
+
+.PHONY: test-net-tcp-tcb-host
+test-net-tcp-tcb-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net tests/net_tcp_tcb_host.c src/net/tcp_tcb.c src/net/tcp.c src/net/checksum.c -o $(BUILD_DIR)/net_tcp_tcb_host
+	@$(BUILD_DIR)/net_tcp_tcb_host
+
+$(BUILD_DIR)/net/tcp_tcb.o: CFLAGS += -Os -Wframe-larger-than=512 -fstack-usage
 test-net-socket-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(NET_SOCKET_HOST_SRCS) -o $(BUILD_DIR)/net_socket_host

@@ -6,6 +6,9 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
+| [NET2_PLAN.md](NET2_PLAN.md) | Seven steps: TCP design/codec, simulator, client, server, finite nc, physical gate and userspace DNS. | **STEPS 1–2 IMPLEMENTED**, host verified; live integration pending |
+| [TCP_TRANSPORT_DESIGN.md](TCP_TRANSPORT_DESIGN.md) | Measured layout, bounded transport/OOO/retransmission/TIME_WAIT ownership and simulator contract. | **IMPLEMENTED**, pure engine |
+| [TCP_SOCKET_ABI.md](TCP_SOCKET_ABI.md) | Intended stream ABI/lifetime semantics; existing UDP and SYS_NETCTL preserved. | **DESIGN BASELINE**, freeze before integration |
 | [UDP_SOCKET_ABI.md](UDP_SOCKET_ABI.md) | Phase 5 socket/address layout, register arguments, datagram semantics and deterministic error precedence; SYS_NETCTL unchanged. | **IMPLEMENTED**; BSP-only |
 | [NET_PHASE5_PLAN.md](NET_PHASE5_PLAN.md) | Bounded UDP sockets, concrete ABI, worker ownership, fd lifecycle, QEMU and physical LAN gates. | **5a IMPLEMENTED + VERIFIED**; 5590 UDP user-reported PASS; capture audit pending |
 | [NETCTL_PING_ABI.md](NETCTL_PING_ABI.md) | Concrete 48-byte layout, field offsets, errors and finite owner-exit fallback. | **IMPLEMENTED** in Phase 4a; BSP-only |
