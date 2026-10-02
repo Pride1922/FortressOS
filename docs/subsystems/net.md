@@ -6,12 +6,15 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
-NET-2 steps 1–2 are implemented: [step 1](../roadmap/net2-step1.md) supplies
+NET-2 steps 1–3 client are implemented: [step 1](../roadmap/net2-step1.md) supplies
 the codec; [step 2](../roadmap/net2-step2.md) supplies the bounded transport
 engine and loss/reordering simulator, host-sanitizer verified. The seven-step
-[plan](../plans/NET2_PLAN.md) preserves UDP capacity; live worker/socket TCP
-integration, streams and DNS remain unimplemented. The [TCP contract](../plans/TCP_SOCKET_ABI.md) is a design
-baseline requiring lifecycle proof and ABI freeze before integration.
+[plan](../plans/NET2_PLAN.md) preserves UDP capacity;
+[step 3](../roadmap/net2-step3.md) adds numeric-IP TCP clients, worker integration,
+reservation-free indefinite waits, stream read/write and half-close with a frozen
+[client ABI](../plans/TCP_SOCKET_ABI.md). TCP CONNECT returns EAGAIN during the
+first 120 seconds of BSP uptime for reboot quiet time. Listener/accept, nc,
+physical TCP and DNS remain later gates; no full NET-2 closure claim.
 
 2026-10-01 user reports: **5530 I219-LM 8086:1A1E driver PASS** and
 **5590 UDP PASS**. These are manual observations without new capture/log

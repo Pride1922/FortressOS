@@ -7,6 +7,11 @@
 #include "thread.h"
 
 static net_dev_t dev;
+bool net_tcp_idle(void) { return true; }
+void net_tcp_input(uint32_t source, const uint8_t *data, size_t len) {
+    (void)source; (void)data; (void)len;
+}
+void net_tcp_tick(uint64_t ticks, bool online) { (void)ticks; (void)online; }
 /* Phase 3 isolation: sockets are tested separately with actual implementation. */
 void net_socket_init(net_dev_t *d, const net_config_t *cfg) { (void)d; (void)cfg; }
 void net_socket_enable(void) {}

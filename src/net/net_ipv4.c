@@ -6,6 +6,7 @@
 #include "udp.h"
 #include "net_socket.h"
 #include "syscall_abi.h"
+#include "net_tcp.h"
 
 typedef struct {
     uint8_t frame[ETH_MAX_FRAME_LEN];
@@ -50,6 +51,7 @@ bool net_ipv4_route(uint32_t dest, uint32_t *hop) {
 uint32_t net_ipv4_local(void) { return s_cfg.local_ip; }
 bool net_ipv4_idle(void) {
     if (s_ping_waiting) return false;
+    if (!net_tcp_idle()) return false;
     for (unsigned i=0; i<2+NET_SOCKET_MAX; ++i) if (s_pending[i].active) return false;
     return true;
 }
@@ -122,6 +124,7 @@ void net_ipv4_input(const uint8_t *packet, size_t len) {
         !s_ip.ttl || s_ip.dst_ip!=s_cfg.local_ip || !net_ipv4_unicast(s_ip.src_ip)) return;
     size_t n=ntohs(s_ip.total_len)-20;
     const uint8_t *data; size_t data_len;
+    if (s_ip.protocol==6) { net_tcp_input(s_ip.src_ip,packet+20,n); return; }
     if (s_ip.protocol==17) {
         udp_header_t header;
         if (!udp_decode(packet+20,n,s_ip.src_ip,s_ip.dst_ip,&header,&data,&data_len))

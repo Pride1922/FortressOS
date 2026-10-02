@@ -5,11 +5,15 @@ host-simulator verified. Public layout is
 src/net/tcp_tcb.h. Caller-owned serialized pure engine; no live allocation,
 worker, socket, scheduler, syscall or driver changes in this step.
 
+2026-10-02 step 3 adds live worker/socket ownership and the static pool separately;
+see [step 3](../roadmap/net2-step3.md). The pure type/API was renamed tcp_conn_t /
+tcp_conn_* without a layout change. The budget below remains the step 2 layout.
+
 ## Actual x86_64 sizeof budget
 
 | Object | Size | Bound | Total |
 | --- | ---: | ---: | ---: |
-| tcp_cb_t | 18200 | 8 | 145600 |
+| tcp_conn_t | 18200 | 8 | 145600 |
 | tcp_retx_t (included in CB) | 16 | 32 per CB | 4096 included |
 | TX/RX bytes (included) | 8192 each | 8 CBs | 131072 included |
 | RX occupancy bitmap (included) | 1024 | 8 | 8192 included |

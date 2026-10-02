@@ -6,6 +6,10 @@
 #include "icmp.h"
 #include "checksum.h"
 static net_dev_t dev;
+bool net_tcp_idle(void) { return true; }
+void net_tcp_input(uint32_t source, const uint8_t *data, size_t len) {
+    (void)source; (void)data; (void)len;
+}
 void net_socket_input(uint32_t ip, uint16_t sp, uint16_t dp, const uint8_t *data, size_t len) {
     (void)ip; (void)sp; (void)dp; (void)data; (void)len;
 }

@@ -398,6 +398,13 @@ USER_SYSINFO_ELF := $(BUILD_DIR)/sysinfo.elf
 USER_PING_ELF := $(BUILD_DIR)/ping.elf
 USER_PING_PROBE_ELF := $(BUILD_DIR)/net_ping_probe.elf
 USER_UDP_ELFS := $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/net_udp_probe.elf
+USER_TCP_ELF := $(BUILD_DIR)/tcptest.elf
+$(BUILD_DIR)/tcptest.o: user/tcptest.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
+$(USER_TCP_ELF): $(BUILD_DIR)/tcptest.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=tcptest_main user/tools/start.asm -o $(BUILD_DIR)/tcptest_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/tcptest_start.o $< -o $@
 
 $(BUILD_DIR)/udptest.o $(BUILD_DIR)/net_udp_probe.o: $(BUILD_DIR)/%.o: user/%.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
@@ -527,7 +534,7 @@ $(USER_TOP_ELF): $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o $(USER_DIR)/shell.l
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -540,6 +547,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_PING_PROBE_ELF) $(BUILD_DIR)/initramfs/bin/net-ping-probe
 	@cp -f $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/initramfs/bin/udptest
 	@cp -f $(BUILD_DIR)/net_udp_probe.elf $(BUILD_DIR)/initramfs/bin/net-udp-probe
+	@cp -f $(USER_TCP_ELF) $(BUILD_DIR)/initramfs/bin/tcptest
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
@@ -817,7 +825,16 @@ test-s8-jobctl: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_jobctl_user.elf $(BUILD_DIR)/s8_
 	@SMP=$(SMP) python3 scripts/test_s8_jobctl.py
 
 # Networking Phase 5: codecs plus actual stack/syscalls with host adapters.
-NET_SOCKET_HOST_SRCS := tests/net_socket_host.c tests/net_lock_host.c src/net/net_socket.c src/net/net_socket_syscall.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c
+NET_TCP_STACK_SRCS := src/net/net_tcp.c src/net/net_tcp_syscall.c src/net/tcp_tcb.c src/net/tcp.c
+NET_SOCKET_HOST_SRCS := tests/net_socket_host.c tests/net_lock_host.c src/net/net_socket.c src/net/net_socket_syscall.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c $(NET_TCP_STACK_SRCS)
+.PHONY: test-net-tcp-socket-host
+.PHONY: test-net-tcp-client
+test-net-tcp-client: $(BOOTABLE_ISO) test-net-tcp-host test-net-tcp-tcb-host test-net-tcp-socket-host
+	@python3 scripts/test_net_tcp_client.py
+test-net-tcp-socket-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(subst tests/net_socket_host.c,tests/net_tcp_socket_host.c,$(NET_SOCKET_HOST_SRCS)) -Wl,--wrap=net_tcp_send -o $(BUILD_DIR)/net_tcp_socket_host
+	@$(BUILD_DIR)/net_tcp_socket_host
 .PHONY: test-net-udp-host test-net-socket-host
 test-net-udp: $(BOOTABLE_ISO) test-net-udp-host test-net-socket-host
 	@python3 scripts/test_net_udp.py
@@ -843,6 +860,7 @@ test-net-tcp-tcb-host:
 	@$(BUILD_DIR)/net_tcp_tcb_host
 
 $(BUILD_DIR)/net/tcp_tcb.o: CFLAGS += -Os -Wframe-larger-than=512 -fstack-usage
+$(BUILD_DIR)/net/net_tcp.o $(BUILD_DIR)/net/net_tcp_syscall.o: CFLAGS += -Os -Wframe-larger-than=512 -fstack-usage
 test-net-socket-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(NET_SOCKET_HOST_SRCS) -o $(BUILD_DIR)/net_socket_host

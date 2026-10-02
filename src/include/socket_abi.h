@@ -3,6 +3,8 @@
 #include "types.h"
 #define NET_AF_INET 2u
 #define NET_SOCK_DGRAM 2u
+#define NET_SOCK_STREAM 1u
+#define NET_SHUT_WR 1u
 #define NET_SOCK_CLOEXEC 0x80000u
 #define NET_MSG_DONTWAIT 0x40u
 #define NET_SOCKET_MAX 16u

@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [net2-step3.md](net2-step3.md) | Numeric TCP client/worker/socket integration, reservation-free wait argument, frozen client ABI, quiet time and independent live-peer evidence. |
 | [net2-step2.md](net2-step2.md) | Pure bounded TCP transport, lifecycle pool and deterministic fake-network sanitizer gate; live integration pending. |
 | [net2-step1.md](net2-step1.md) | NET-2 started: reviewed design baseline, pure TCP codec and host sanitizer gate; live TCP transport not enabled. |
 | [net-i219-5530.md](net-i219-5530.md) | 8086:1A1E discovery/general PCH registration; user-reported physical driver PASS on 5530; unchanged 5590 gates and passing regressions. |

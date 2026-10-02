@@ -1,9 +1,13 @@
 # NET-2 — TCP streams and userspace DNS
 
 2026-10-01. User authorized starting after engineering review and then step 2.
-Steps 1–2 are implemented and host verified; live integration remains planned.
+Steps 1–3 client code is implemented; step 3 verification is recorded separately.
 This replaces the pasted draft's contradictory lease semantics and pool split.
-It does not claim TCP sockets, a live TCP transport, or completed NET-2.
+This does not claim listeners, nc, physical TCP acceptance or completed NET-2.
+
+2026-10-02 review revision: concrete decisions and prerequisites below replace
+the remaining open-ended close/ISN/tool choices. They are planned behavior,
+not new implementation or a claim that the step 3 proof has passed.
 
 Baseline: UDP retains 16 socket handles, four datagrams each and its existing
 five-second receive contract. SYS_NETCTL=42 remains unchanged. Physical UDP
@@ -28,8 +32,13 @@ Executed gates and limits: [step 2 report](../roadmap/net2-step2.md).
 ## Storage and ownership decisions
 
 Keep 16 common socket handles; add at most eight independently allocated static
-TCP blocks (`tcp_cb_t`, not the scheduler's `tcb_t`). A stream socket consumes
+TCP connections (`tcp_conn_t`, not the scheduler's `tcb_t`). A stream socket consumes
 both resources; UDP can still consume all 16 handles when TCP is unused.
+Step 3 renamed the pure type/API to `tcp_conn_t` / `tcp_conn_*`, including tests
+and layout docs; no compatibility alias or layout change. Source filenames and
+historical step 2 test target remain tcp_tcb. Socket creation reserves a block
+and TIME_WAIT record with a never-transmitted placeholder tuple; CONNECT
+initializes the real tuple. This preserves all 16 UDP handles when TCP is idle.
 Initial TCP byte buffers: 8192 TX + 8192 RX per block (131072 bytes total).
 This limits outstanding bytes, not total connection transfer size. Tests must
 transfer substantially more data than fits in either buffer.
@@ -52,7 +61,15 @@ Final fd close detaches the application; it does not immediately recycle an
 active transport block. FIN follows accepted TX bytes. Worker owns teardown;
 all queued actions carry a connection generation. Listener destruction aborts
 unaccepted children; accepted children have independent ownership. Graceful
-close with unread data versus abort policy must be frozen before integration.
+close is the chosen policy even with unread data: discard local unread bytes,
+retain accepted TX, and send FIN after those bytes. The orphan worker must drain
+and discard subsequently received ordered bytes so an abandoned RX window
+cannot stall teardown. Preserve sequence validation, OOO bounds and FIN order;
+do not discard gaps by advancing rcv_nxt. Existing orphan deadlines may still
+abort a stalled connection. This is not a promise of peer delivery. Explicit
+SHUT_WR keeps receive available; applications use it when they need the response.
+Step 3 implements/tests this in the worker after pure detach; it consumes only
+contiguous ordered RX, leaving gaps bounded until data arrives or teardown ends.
 
 TIME_WAIT uses a separate bounded lightweight tuple/sequence/expiry pool, freeing
 large buffers after transition. Its allocation must be reserved before active
@@ -62,6 +79,28 @@ sequence validation and initial-sequence policy protect delayed old segments.
 Initial-sequence generation and reboot tuple safety need an explicit design,
 not a guess based on the coarse timer or a claimed cryptographic entropy source.
 
+Step 3 ISN policy: `ISN = M + mix(tuple, boot_salt)` modulo 2^32, where
+M advances at 250000 sequence units per second using the existing BSP timebase.
+For coarse ticks, allocate successive opens distinct M values with a bounded
+counter. The uint32 clock wraps modulo 2^32; modular comparison selects at least
+the previous clock plus one for equal/backward samples. Mix host-order address
+words and packed host-order local/remote ports, independent of struct padding.
+The salt mixes `apic_timer_get_bsp_ticks()` at net_tcp_init with the local IP;
+it is predictable and may repeat across boots. Never
+call that timestamp random entropy or assume microsecond resolution. No new timer,
+RTC driver or scheduler primitive is authorized by this proposal.
+
+This non-cryptographic mixer is a limited LAN profile, not RFC 9293's secret-key
+PRF or a guarantee against sequence prediction or cross-boot collisions.
+TIME_WAIT records do not survive reboot. Implemented conservative reboot policy:
+hold TCP output/opens until 120 seconds of BSP uptime (one chosen MSL), keeping
+the shell, UDP and ICMP usable; report the condition explicitly rather than
+silently hanging CONNECT: EAGAIN without starting a handshake, accompanied by a
+boot diagnostic. Removing quiet time requires an explicitly reviewed risk decision or
+a stronger persistent/entropy-backed design. Source/formula and coverage limits
+are in the step 3 report; injected simulator ISNs do
+not establish production ISN correctness.
+
 ## Transport profile
 
 IPv4 LAN first, no fragments/reassembly or PMTU discovery. Unscaled receive
@@ -69,6 +108,9 @@ window reflects actual free storage. No window-scale offer, SACK, timestamps,
 ECN negotiation, urgent-data application API or TCP offload in the first pass.
 Parse safely and ignore well-formed unsupported options. MSS is negotiated:
 peer MSS/default plus local MTU/header limits determine transmit payload.
+An omitted IPv4 MSS option means 536 bytes; send payload is limited by
+min(peer MSS or 536, local MTU minus actual IP/TCP headers, implementation cap).
+The 536 default and fixed-header MTU clamp already exist in the step 2 engine.
 The default Ethernet ceiling does not authorize always sending 1460 bytes.
 
 Reno includes slow start, congestion avoidance, fast retransmit/recovery and
@@ -83,34 +125,76 @@ the simulator gate, not only in a successful echo test.
 ## Worker and syscall boundary
 
 Keep sole BSP protocol ownership, 64 RX packets per pass and existing tick wake.
+The 64-packet RX cap is per worker pass, not per timer tick.
+Each net_tcp_input restores incoming IRQ state, so its IRQ-off scope is per
+segment, not continuous across the RX batch; this is not a measured latency bound.
 Before integration specify TX/control/timer budgets and prove UDP/ICMP progress
 and shell responsiveness under continuous TCP RX. Sweep eight blocks per pass;
 deadline processing occurs even after a full RX batch. Idle still sleeps.
 No scheduler/signal/lock-rank/wait signature, new timer hook, DMA or driver change.
 
-Copy immutable action snapshots under the socket lock; drop it before protocol,
-ARP or NIC work; validate generation before completion publication. Distinguish
+Step 3 uses one BSP IF-clear prepare/submission/commit transaction, with no
+socket lock across ARP/NIC work. AP final-close only publishes detach requests;
+it cannot mutate the protocol connection/action.
+Every tcp_conn_tick invokes changed(), advancing the revision and invalidating
+prepared actions. No tick, RX input, consume, sleep or reentrant protocol work
+may occur for that connection between prepare and commit, including a failed
+local submission committed with submitted=false. Each block transaction must
+finish before the later tcp_pool_tick maintenance sweep; the worker traps if
+commit rejects its prepared action. Step 4 listener/accept refactors must
+preserve this ordering and BSP IRQ exclusion.
+Syscalls queue TX/consume RX in
+their own IF-clear continuation; worker owns RX/timers/wire activity. Distinguish
 accepted bytes, submitted sequence space and ACKed bytes. Local ARP delay/NIC
 backpressure is not a successfully transmitted segment or network-loss sample.
 Wait predicates use atomics only under scheduler lock; no rank-1 nesting.
 
-See [TCP_SOCKET_ABI.md](TCP_SOCKET_ABI.md) for intended stream behavior. Its
-indefinite blocking contract requires a proof before step 3: reservation expiry
-wakes a continuation to re-register safely, without exposing a spurious timeout,
-retaining user pointers, consuming RX or cancelling accepted TX. A resumed stale
-continuation cannot commit into a replacement generation. If this cannot be
-proved with existing primitives, stop and report an explicit timed-feature
-fallback; do not silently substitute EAGAIN every five seconds.
+See [TCP_SOCKET_ABI.md](TCP_SOCKET_ABI.md) for the frozen client ABI. The review's
+renewing-reservation sketch was replaced before integration by reservation-free
+sleeping continuations: snapshot endpoint identity/event, check availability,
+sleep with atomics, then retry/revalidate. No RX/TX ownership is held over sleep
+and no user pointer enters protocol storage. Accepted TX belongs to the connection.
+A stale continuation cannot commit into a replacement generation. No periodic
+user EAGAIN or timed receive fallback was introduced.
+The required named artifact is [TCP_WAIT_LIFECYCLE_PROOF.md](TCP_WAIT_LIFECYCLE_PROOF.md).
+It records the reviewed client lifetime/lock argument and runtime evidence;
+ACCEPT remains a step 4 proof gate. Do not treat
+the UDP one-shot continuation as evidence for indefinite stream waits. A failed
+proof triggers discussion of an explicit receive timeout returning ETIMEDOUT;
+that narrower feature and its timeout interface are not pre-approved here.
 
 ## DNS and tools
 
-First nc is finite request/response; interactive full-duplex needs a separate
-readiness design. TCP sockets should support existing read/write with explicit
+First nc has this concrete serial request/response interface:
+
+- `nc <IPv4> <port>` connects; copies stdin to the socket with short-write
+  handling; stdin EOF triggers SHUT_WR; then copies receive bytes to stdout
+  until peer EOF, drains buffered bytes before reset/error and exits nonzero
+  on I/O failure. Empty stdin is a valid zero-byte request.
+- `nc -l <port>` accepts one connection, closes the listener, then uses the same
+  stdin -> SHUT_WR -> receive-until-EOF sequence. It does not automatically echo
+  inbound data or accept another client.
+- No simultaneous stdin/socket forwarding, early exit merely on stdin EOF,
+  `-k`, UDP, scanning, `-e` or `-c`. Numeric IPv4 only until step 7; no automatic
+  HTTP request. `echo hello | nc <IPv4> <port>` sends those bytes and waits for
+  the response after half-close.
+
+Both peers must consume the request while it is sent; a peer streaming a large
+response before consuming the whole request can deadlock this serial tool.
+Document this limitation and use small finite requests or a cooperating peer
+in its gates. Interactive/full-duplex and arbitrary bidirectional bulk transfer
+need a separate readiness design; the transport can still be tested with a
+dedicated fixture. TCP sockets should support existing read/write with explicit
 pointer/error/SIGPIPE integration plus send/recv flags; prove this in step 3.
 DNS stays a userspace library used by tools, not shell command parsing. Numeric
 addresses bypass DNS. Specify a userspace-readable resolver configuration (an
 explicit tool/server argument first is sufficient); boot dns= alone is not an
 implemented userspace interface. Gateway is not presumed to be a DNS server.
+Step 7 starts with `nslookup -s <server-IPv4> <name>`; no implicit server default.
+Shared tool resolution takes an explicit server argument; hostname-enabled nc
+uses `nc -s <server-IPv4> <host> <port>`. Numeric targets bypass the resolver.
+File-based resolver configuration and environment defaults are deferred, with
+no shell or filesystem prerequisite for deterministic DNS tests.
 Bound names, compression traversal, CNAME chains and response size; match peer,
 transaction ID and question. Truncation triggers TCP fallback with bounded
 length-prefixed framing. No DNS integration is needed for step 6 numeric-IP tests.
@@ -129,3 +213,4 @@ or lock exclusion cannot be proved, or independent capture disagrees unexplained
 Sources: [TCP](https://www.rfc-editor.org/rfc/rfc9293.html),
 [RTO](https://www.rfc-editor.org/rfc/rfc6298.html),
 [congestion control](https://www.rfc-editor.org/rfc/rfc5681.html).
+ISN/reboot discussion: RFC 9293 sections 3.4.1–3.4.3; MSS default: section 3.7.1.

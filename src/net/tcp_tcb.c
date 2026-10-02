@@ -10,17 +10,17 @@ static int64_t offset(uint32_t a, uint32_t b) {
     uint32_t d=a-b;
     return d<=0x7fffffffU ? (int64_t)d : -(int64_t)(uint32_t)(b-a);
 }
-static void changed(tcp_cb_t *c) {
+static void changed(tcp_conn_t *c) {
     ++c->revision; c->action_pending=false;
 }
-static uint16_t window(const tcp_cb_t *c) {
+static uint16_t window(const tcp_conn_t *c) {
     return c->eof ? 0 : (uint16_t)(TCP_BUFFER_SIZE-c->rx_count);
 }
-static tcp_header_t header(const tcp_cb_t *c) {
+static tcp_header_t header(const tcp_conn_t *c) {
     return (tcp_header_t){.source=c->tuple.local_port,.destination=c->tuple.remote_port,
         .sequence=c->snd_nxt,.acknowledgment=c->rcv_nxt,.flags=TCP_ACK,.window=window(c)};
 }
-static void reset_reply(tcp_cb_t *c, const tcp_header_t *h, size_t len) {
+static void reset_reply(tcp_conn_t *c, const tcp_header_t *h, size_t len) {
     c->reset_header=header(c); c->reset_header.window=0;
     c->reset_header.flags=(h->flags&TCP_ACK) ? TCP_RST : TCP_RST|TCP_ACK;
     c->reset_header.sequence=(h->flags&TCP_ACK) ? h->acknowledgment : 0;
@@ -29,7 +29,7 @@ static void reset_reply(tcp_cb_t *c, const tcp_header_t *h, size_t len) {
     c->reset_pending=true;
     if (c->state==TCP_CLOSED && !c->user_deadline) c->user_deadline=deadline(c->now_ms,1000);
 }
-static void fail(tcp_cb_t *c, int error, bool reset) {
+static void fail(tcp_conn_t *c, int error, bool reset) {
     if (reset) { c->reset_header=header(c); c->reset_header.flags=TCP_RST|TCP_ACK; }
     c->reset_pending=reset; c->state=TCP_CLOSED; c->error=error;
     c->retx_count=0; c->tx_count=0; c->ack_pending=false;
@@ -38,11 +38,11 @@ static void fail(tcp_cb_t *c, int error, bool reset) {
     /* A best-effort reset must not pin an orphan forever on local NIC failure. */
     if (reset) c->user_deadline=deadline(c->now_ms,1000);
 }
-static void timewait(tcp_cb_t *c) {
+static void timewait(tcp_conn_t *c) {
     c->state=TCP_TIME_WAIT; c->timewait_deadline=deadline(c->now_ms,TCP_TIMEWAIT_MS);
     c->rto_deadline=c->persist_deadline=c->finwait2_deadline=c->user_deadline=0;
 }
-int tcp_cb_init(tcp_cb_t *c, tcp_tuple_t tuple, uint64_t generation,
+int tcp_conn_init(tcp_conn_t *c, tcp_tuple_t tuple, uint64_t generation,
                 uint32_t isn, uint16_t mtu, bool active, uint64_t now) {
     if (!c || !generation || !tuple.local_port || !tuple.remote_port || mtu<44) return TCP_INVALID;
     memset(c,0,sizeof(*c)); c->tuple=tuple; c->generation=generation; c->revision=1;
@@ -54,13 +54,13 @@ int tcp_cb_init(tcp_cb_t *c, tcp_tuple_t tuple, uint64_t generation,
     if (active) c->handshake_deadline=deadline(now,TCP_HANDSHAKE_MS);
     return TCP_OK;
 }
-static void receive_syn(tcp_cb_t *c, const tcp_header_t *h) {
+static void receive_syn(tcp_conn_t *c, const tcp_header_t *h) {
     c->irs=h->sequence; c->rcv_nxt=c->rx_sequence=h->sequence+1;
     c->snd_wnd=h->window; c->snd_wl1=h->sequence; c->snd_wl2=h->acknowledgment;
     c->peer_mss=h->has_mss ? h->mss : 536;
     c->mss=(uint16_t)min32(c->local_mss,c->peer_mss); c->cwnd=c->mss;
 }
-static void rtt(tcp_cb_t *c, uint64_t elapsed) {
+static void rtt(tcp_conn_t *c, uint64_t elapsed) {
     uint32_t sample=(uint32_t)(elapsed>60000 ? 60000 : elapsed);
     if (!sample) sample=1;
     if (!c->have_rtt) {
@@ -74,7 +74,7 @@ static void rtt(tcp_cb_t *c, uint64_t elapsed) {
     c->rto_ms=min32(60000,c->srtt_ms+(variance ? variance : 1));
     if (c->rto_ms<1000) c->rto_ms=1000;
 }
-static void ack_new(tcp_cb_t *c, uint32_t ack) {
+static void ack_new(tcp_conn_t *c, uint32_t ack) {
     bool ambiguous=false, sample=false, syn_retry=false;
     uint64_t elapsed=0;
     for (unsigned i=0; i<c->retx_count; ++i) {
@@ -126,7 +126,7 @@ static void ack_new(tcp_cb_t *c, uint32_t ack) {
         else if (c->state==TCP_LAST_ACK) c->state=TCP_CLOSED;
     }
 }
-static void process_ack(tcp_cb_t *c, const tcp_header_t *h, size_t len) {
+static void process_ack(tcp_conn_t *c, const tcp_header_t *h, size_t len) {
     uint32_t old_window=c->snd_wnd;
     if (tcp_seq_before(c->snd_wl1,h->sequence) ||
         (c->snd_wl1==h->sequence && !tcp_seq_before(h->acknowledgment,c->snd_wl2))) {
@@ -149,19 +149,19 @@ static void process_ack(tcp_cb_t *c, const tcp_header_t *h, size_t len) {
         } else if (c->dupacks>3 && c->fast_recovery) c->cwnd=min32(c->cwnd+c->mss,TCP_BUFFER_SIZE);
     }
 }
-static bool bit(const tcp_cb_t *c, unsigned i) { return (c->rx_valid[i/8]&(1U<<(i%8)))!=0; }
-static void setbit(tcp_cb_t *c, unsigned i, bool value) {
+static bool bit(const tcp_conn_t *c, unsigned i) { return (c->rx_valid[i/8]&(1U<<(i%8)))!=0; }
+static void setbit(tcp_conn_t *c, unsigned i, bool value) {
     uint8_t mask=(uint8_t)(1U<<(i%8));
     if (value) c->rx_valid[i/8]|=mask; else c->rx_valid[i/8]&=(uint8_t)~mask;
 }
-static void received_fin(tcp_cb_t *c) {
+static void received_fin(tcp_conn_t *c) {
     if (!c->remote_fin_pending || c->eof || c->rcv_nxt!=c->remote_fin_sequence) return;
     c->eof=true; ++c->rcv_nxt; c->ack_pending=true;
     if (c->state==TCP_ESTABLISHED) c->state=TCP_CLOSE_WAIT;
     else if (c->state==TCP_FIN_WAIT_1) c->state=TCP_CLOSING;
     else if (c->state==TCP_FIN_WAIT_2) timewait(c);
 }
-static void receive_data(tcp_cb_t *c, const tcp_header_t *h, const uint8_t *data, size_t len) {
+static void receive_data(tcp_conn_t *c, const tcp_header_t *h, const uint8_t *data, size_t len) {
     if (c->eof) return;
     int64_t start=offset(h->sequence,c->rx_sequence);
     size_t skip=start<0 ? (size_t)(-start) : 0;
@@ -190,7 +190,7 @@ static void receive_data(tcp_cb_t *c, const tcp_header_t *h, const uint8_t *data
     received_fin(c);
     if (len || (h->flags&TCP_FIN)) c->ack_pending=true;
 }
-void tcp_cb_tick(tcp_cb_t *c, uint64_t now) {
+void tcp_conn_tick(tcp_conn_t *c, uint64_t now) {
     if (!c || now<c->now_ms) return;
     changed(c); c->now_ms=now;
     if (c->state==TCP_CLOSED) {
@@ -213,12 +213,12 @@ void tcp_cb_tick(tcp_cb_t *c, uint64_t now) {
         c->retransmit_pending=true; c->retransmit_timeout=true;
     }
 }
-void tcp_cb_input(tcp_cb_t *c, const tcp_header_t *h, const uint8_t *data,
+void tcp_conn_input(tcp_conn_t *c, const tcp_header_t *h, const uint8_t *data,
                    size_t len, uint64_t now) {
     if (!c || !h || (!data && len) || len>TCP_IPV4_SEGMENT_MAX ||
         h->source!=c->tuple.remote_port || h->destination!=c->tuple.local_port ||
         (h->has_mss && !h->mss) || now<c->now_ms) return;
-    tcp_cb_tick(c,now);
+    tcp_conn_tick(c,now);
     if (c->state==TCP_CLOSED) {
         if (!(h->flags&TCP_RST)) reset_reply(c,h,len);
         return;
@@ -299,7 +299,7 @@ void tcp_cb_input(tcp_cb_t *c, const tcp_header_t *h, const uint8_t *data,
     } else if (!tcp_seq_before(h->acknowledgment,c->snd_una)) process_ack(c,h,len);
     if (c->state!=TCP_CLOSED) receive_data(c,h,data,len);
 }
-int tcp_cb_queue(tcp_cb_t *c, const void *data, size_t len) {
+int tcp_conn_queue(tcp_conn_t *c, const void *data, size_t len) {
     if (!c || (!data && len)) return TCP_INVALID;
     if (c->error) return c->error;
     if (c->want_fin) return TCP_WRITE_CLOSED;
@@ -311,7 +311,7 @@ int tcp_cb_queue(tcp_cb_t *c, const void *data, size_t len) {
     for (size_t i=0; i<n; ++i) c->tx[(c->tx_head+c->tx_count+i)%TCP_BUFFER_SIZE]=((const uint8_t *)data)[i];
     c->tx_count=(uint16_t)(c->tx_count+n); return (int)n;
 }
-int tcp_cb_peek(const tcp_cb_t *c, void *data, size_t capacity) {
+int tcp_conn_peek(const tcp_conn_t *c, void *data, size_t capacity) {
     if (!c || (!data && capacity)) return TCP_INVALID;
     if (!capacity) return 0;
     size_t n=c->rx_count; if (n>capacity) n=capacity;
@@ -319,7 +319,7 @@ int tcp_cb_peek(const tcp_cb_t *c, void *data, size_t capacity) {
     for (size_t i=0; i<n; ++i) ((uint8_t *)data)[i]=c->rx[(c->rx_head+i)%TCP_BUFFER_SIZE];
     return (int)n;
 }
-int tcp_cb_consume(tcp_cb_t *c, size_t len) {
+int tcp_conn_consume(tcp_conn_t *c, size_t len) {
     if (!c || len>c->rx_count) return TCP_INVALID;
     if (!len) return 0;
     changed(c);
@@ -329,26 +329,26 @@ int tcp_cb_consume(tcp_cb_t *c, size_t len) {
     if (!c->eof && c->state!=TCP_CLOSED) c->ack_pending=true;
     return 0;
 }
-int tcp_cb_shutdown(tcp_cb_t *c) {
+int tcp_conn_shutdown(tcp_conn_t *c) {
     if (!c) return TCP_INVALID;
     if (c->want_fin) return 0;
     if (c->state!=TCP_ESTABLISHED && c->state!=TCP_CLOSE_WAIT) return TCP_NOT_CONNECTED;
     changed(c); c->want_fin=true; return 0;
 }
-void tcp_cb_detach(tcp_cb_t *c, uint64_t now) {
+void tcp_conn_detach(tcp_conn_t *c, uint64_t now) {
     if (!c || now<c->now_ms) return;
-    tcp_cb_tick(c,now); c->orphan=true;
+    tcp_conn_tick(c,now); c->orphan=true;
     if (c->state==TCP_LISTEN) { c->state=TCP_CLOSED; return; }
     if (c->state==TCP_SYN_SENT || c->state==TCP_SYN_RCVD) { fail(c,TCP_RESET,c->syn_sent); return; }
     if (c->state==TCP_ESTABLISHED || c->state==TCP_CLOSE_WAIT) c->want_fin=true;
     if (c->state!=TCP_TIME_WAIT && c->state!=TCP_CLOSED) c->user_deadline=deadline(now,TCP_ORPHAN_MS);
     if (c->state==TCP_FIN_WAIT_2) c->finwait2_deadline=deadline(now,TCP_FINWAIT2_MS);
 }
-static void copy_tx(const tcp_cb_t *c, uint32_t seq, uint8_t *data, size_t n) {
+static void copy_tx(const tcp_conn_t *c, uint32_t seq, uint8_t *data, size_t n) {
     unsigned off=(unsigned)(seq-c->tx_sequence);
     for (size_t i=0; i<n; ++i) data[i]=c->tx[(c->tx_head+off+i)%TCP_BUFFER_SIZE];
 }
-int tcp_cb_prepare(tcp_cb_t *c, tcp_action_t *out, void *data, size_t capacity) {
+int tcp_conn_prepare(tcp_conn_t *c, tcp_action_t *out, void *data, size_t capacity) {
     if (!c || !out || c->action_pending) return TCP_INVALID;
     tcp_action_t a={.generation=c->generation,.revision=c->revision,.header=header(c),.kind=TCP_ACTION_ACK};
     if (c->reset_pending) { a.kind=TCP_ACTION_RESET; a.header=c->reset_header; }
@@ -396,7 +396,7 @@ static bool same_action(const tcp_action_t *a, const tcp_action_t *b) {
         x->flags==y->flags && x->header_length==y->header_length && x->has_mss==y->has_mss &&
         x->has_wscale==y->has_wscale && x->mss==y->mss && x->wscale==y->wscale;
 }
-bool tcp_cb_commit(tcp_cb_t *c, const tcp_action_t *a, bool submitted) {
+bool tcp_conn_commit(tcp_conn_t *c, const tcp_action_t *a, bool submitted) {
     if (!c || !a || !c->action_pending || a->generation!=c->generation ||
         a->revision!=c->revision || !same_action(a,&c->action)) return false;
     c->action_pending=false;
@@ -459,7 +459,7 @@ int tcp_pool_open(tcp_pool_t *p, tcp_tuple_t tuple, uint32_t isn,
     }
     for (unsigned i=0; i<TCP_CB_MAX; ++i) if (!p->used[i]) { slot=i; break; }
     if (slot==TCP_CB_MAX || tw==TCP_TIMEWAIT_MAX || p->generation==UINT64_MAX) return TCP_NO_SPACE;
-    int result=tcp_cb_init(&p->blocks[slot],tuple,p->generation+1,isn,mtu,active,now);
+    int result=tcp_conn_init(&p->blocks[slot],tuple,p->generation+1,isn,mtu,active,now);
     if (result) return result;
     ++p->generation; p->used[slot]=true; p->tw_slot[slot]=(uint8_t)tw;
     p->timewait[tw]=(tcp_timewait_t){.tuple=tuple,.generation=p->generation,.used=true};
@@ -470,7 +470,7 @@ void tcp_pool_tick(tcp_pool_t *p, uint64_t now) {
     for (unsigned i=0; i<TCP_TIMEWAIT_MAX; ++i)
         if (p->timewait[i].active && now>=p->timewait[i].expires_ms) memset(&p->timewait[i],0,sizeof(p->timewait[i]));
     for (unsigned i=0; i<TCP_CB_MAX; ++i) if (p->used[i]) {
-        tcp_cb_t *c=&p->blocks[i]; tcp_cb_tick(c,now);
+        tcp_conn_t *c=&p->blocks[i]; tcp_conn_tick(c,now);
         if (!c->orphan || c->action_pending || c->reset_pending || c->ack_pending) continue;
         tcp_timewait_t *tw=&p->timewait[p->tw_slot[i]];
         if (c->state==TCP_TIME_WAIT) {

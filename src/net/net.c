@@ -11,6 +11,7 @@
 #include "net_socket_syscall.h"
 #include "syscall_abi.h"
 #include "smp.h"
+#include "net_tcp.h"
 
 const char g_net_poll_channel = 0;
 static net_dev_t *s_if;
@@ -27,6 +28,7 @@ static uint64_t s_probe_token;
 static bool s_probe_pending;
 static uint64_t s_idle_start, s_idle_ticks;
 static bool s_idle_reported;
+static unsigned s_ap_probe_result;
 static const uint8_t broadcast[ETH_ALEN] = {255,255,255,255,255,255};
 
 static bool space(char c) { return c==' ' || c=='\t' || c=='\r' || c=='\n'; }
@@ -68,6 +70,7 @@ void net_parse_config(const char *cmdline, size_t len, net_config_t *out) {
         if (n==14 && !memcmp(start,"net_test=rings",14)) out->test_rings=true;
         if (n==13 && !memcmp(start,"net_test=icmp",13)) out->test_icmp=true;
         if (n==12 && !memcmp(start,"net_test=udp",12)) out->test_udp=true;
+        if (n==12 && !memcmp(start,"net_test=tcp",12)) out->test_tcp=true;
         if (n<4 || memcmp(start,"net=",4)) continue;
         const char *v=start+4;
         uint32_t local=0, gateway=0;
@@ -94,6 +97,7 @@ void net_init(net_dev_t *dev, const net_config_t *config) {
     s_test_pending=false;
     s_probe_pending=false;
     s_idle_reported=false; s_idle_start=0;
+    __atomic_store_n(&s_ap_probe_result,0,__ATOMIC_RELEASE);
 }
 static int send_arp(net_dev_t *dev, const uint8_t *dest, uint32_t ip, bool reply) {
     memset(s_tx,0,sizeof(s_tx));
@@ -154,6 +158,9 @@ void net_worker_main(void *arg) {
         serial_puts(result==1 ? "[NET 3] Gateway ARP request submitted\n" : "[NET 3] Gateway ARP request failed\n");
     }
     for (;;) {
+        unsigned probe=__atomic_exchange_n(&s_ap_probe_result,0,__ATOMIC_ACQ_REL);
+        if (probe) serial_puts(probe==1 ? "[NET 5] AP socket dispatch rejection PASS\n" :
+            "[NET 5] AP socket dispatch rejection FAIL\n");
         unsigned count=0;
         for (; count<64; ++count) {
             pbuf_t *p=s_if->poll_rx(s_if);
@@ -171,6 +178,7 @@ void net_worker_main(void *arg) {
         }
         net_ping_worker_tick(apic_timer_get_bsp_ticks());
         net_socket_worker_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
+        net_tcp_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
         net_ipv4_tick(apic_timer_get_bsp_ticks());
         net_socket_worker_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
         net_ping_worker_tick(apic_timer_get_bsp_ticks());
@@ -183,7 +191,7 @@ void net_worker_main(void *arg) {
         /* Explicit test-only observation; own immortal worker TCB, no new
          * introspection ABI or scheduler operation. Idle means no RX packets
          * or active IPv4 TX/echo transaction throughout the measured window. */
-        if (s_config.test_udp && !s_idle_reported) {
+        if ((s_config.test_udp || s_config.test_tcp) && !s_idle_reported) {
             uint64_t now=apic_timer_get_bsp_ticks();
             if (count || !net_ipv4_idle() || !s_idle_start) {
                 s_idle_start=now; s_idle_ticks=thread_current()->total_ticks;
@@ -209,7 +217,13 @@ static void socket_ap_probe(void *arg) {
         frame.rax=nr;
         if (net_socket_syscall(&frame)!=SYSCALL_EOPNOTSUPP) pass=false;
     }
-    serial_puts(pass ? "[NET 5] AP socket dispatch rejection PASS\n" : "[NET 5] AP socket dispatch rejection FAIL\n");
+    for (unsigned nr=SYS_CONNECT; nr<=SYS_SHUTDOWN; ++nr) {
+        frame.rax=nr;
+        if (net_socket_syscall(&frame)!=SYSCALL_EOPNOTSUPP) pass=false;
+    }
+    /* Publish test evidence to BSP worker; raw UART from an AP can interleave
+     * bytewise with boot diagnostics and corrupt the result marker. */
+    __atomic_store_n(&s_ap_probe_result,pass ? 1u : 2u,__ATOMIC_RELEASE);
 }
 void net_start(const char *cmdline, size_t len) {
     net_parse_config(cmdline,len,&s_config);
@@ -226,7 +240,8 @@ void net_start(const char *cmdline, size_t len) {
     net_socket_enable();
     /* Explicit disposable-test opt-in. Direct dispatch from an AP kernel
      * thread tests context rejection, not a Ring 3 AP entry transition. */
-    if (s_config.test_udp && smp_get_cpu_count()>1)
+    if ((s_config.test_udp || s_config.test_tcp) && smp_get_cpu_count()>1)
         (void)thread_create_on_cpu(1,"net_ap_probe",socket_ap_probe,NULL);
     serial_puts("[NET 3] BSP ingress worker started; tick-bounded polling\n");
+    serial_puts("[NET-2] TCP reboot quiet time: CONNECT returns EAGAIN until BSP uptime 120 seconds\n");
 }

@@ -6,6 +6,7 @@
 #include "apic.h"
 #include "heap.h"
 #include "string.h"
+#include "net_tcp.h"
 
 typedef struct {
     net_sockaddr_in_t source;
@@ -18,7 +19,7 @@ typedef struct {
     bool published;
 } operation_t;
 typedef struct {
-    bool used, bound, wake;
+    bool used, bound, wake, stream;
     uint16_t port; /* Host order; wildcard/local binds share a port namespace. */
     unsigned head, count;
     datagram_t rx[NET_SOCKET_RX_MAX], staged;
@@ -56,18 +57,23 @@ static int64_t unsupported_write(vfs_node_t *n, uint64_t *o, bool a, const void 
 static void socket_close(vfs_node_t *node) {
     socket_t *s=node->fs_private;
     uint64_t irq=spin_lock_irqsave(&s_lock);
+    bool stream=s->stream;
     s->used=false; s->bound=false; s->count=0;
     s->wake=true;
     invalidate(&s->tx); invalidate(&s->receive);
     spin_unlock_irqrestore(&s_lock,irq);
+    if (stream) net_tcp_close((unsigned)(s-s_slots));
     /* Static channel/backing outlives every waiter. BSP worker wakes on next
      * pass; callback is also safe from an AP reaper, without scheduler calls. */
     kfree(node);
 }
 bool net_socket_file(file_t *f) { return f && f->node && f->node->close==socket_close; }
 static socket_t *slot(file_t *f) { return net_socket_file(f) ? f->node->fs_private : NULL; }
+bool net_socket_stream(file_t *f) { socket_t *s=slot(f); return s && s->stream; }
+unsigned net_socket_index(file_t *f) { return (unsigned)(slot(f)-s_slots); }
 void net_socket_init(net_dev_t *dev, const net_config_t *cfg) {
     memset(s_slots,0,sizeof(s_slots)); s_generation=0; s_ephemeral=49152;
+    net_tcp_init(dev,cfg);
     s_local=cfg->local_ip; s_mtu=dev ? dev->mtu : 0; s_cursor=0;
     s_unbound_dropped=0;
     __atomic_store_n(&s_enabled,false,__ATOMIC_RELEASE);
@@ -81,7 +87,7 @@ bool net_socket_available(void) {
     return __atomic_load_n(&s_enabled,__ATOMIC_ACQUIRE) &&
         __atomic_load_n(&s_online,__ATOMIC_ACQUIRE) && apic_timer_get_frequency()!=0;
 }
-int64_t net_socket_create(file_t **out) {
+static int64_t create(file_t **out, bool stream) {
     *out=NULL;
     if (!net_socket_available()) return SYSCALL_EIO;
     uint64_t irq=spin_lock_irqsave(&s_lock);
@@ -89,11 +95,20 @@ int64_t net_socket_create(file_t **out) {
     for (unsigned i=0; i<NET_SOCKET_MAX; ++i) if (!s_slots[i].used) { s=&s_slots[i]; break; }
     if (!s) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_ENOSPC; }
     s->used=true; s->bound=false; s->head=s->count=0; s->dropped=0;
+    s->stream=stream;
     invalidate(&s->tx); invalidate(&s->receive);
     spin_unlock_irqrestore(&s_lock,irq);
+    if (stream) {
+        int64_t result=net_tcp_create((unsigned)(s-s_slots));
+        if (result) {
+            irq=spin_lock_irqsave(&s_lock); s->used=false; spin_unlock_irqrestore(&s_lock,irq);
+            return result;
+        }
+    }
     vfs_node_t *node=kmalloc(sizeof(*node)); file_t *file=kmalloc(sizeof(*file));
     if (!node || !file) {
         kfree(node); kfree(file);
+        if (stream) net_tcp_close((unsigned)(s-s_slots));
         irq=spin_lock_irqsave(&s_lock); s->used=false; spin_unlock_irqrestore(&s_lock,irq);
         return SYSCALL_ENOMEM;
     }
@@ -102,9 +117,11 @@ int64_t net_socket_create(file_t **out) {
     *file=(file_t){.node=node,.flags=VFS_O_RDWR,.ref_count=1};
     *out=file; return 0;
 }
+int64_t net_socket_create(file_t **out) { return create(out,false); }
+int64_t net_socket_create_stream(file_t **out) { return create(out,true); }
 static bool occupied(uint16_t port) {
     for (unsigned i=0; i<NET_SOCKET_MAX; ++i)
-        if (s_slots[i].used && s_slots[i].bound && s_slots[i].port==port) return true;
+        if (s_slots[i].used && !s_slots[i].stream && s_slots[i].bound && s_slots[i].port==port) return true;
     return false;
 }
 static int64_t bind_unlocked(socket_t *s, uint16_t port) {
@@ -125,6 +142,7 @@ int64_t net_socket_bind(file_t *file, const net_sockaddr_in_t *a) {
     if (!s) return SYSCALL_EBADF;
     if (a->address && a->address!=s_local) return SYSCALL_EINVAL;
     if (!net_socket_available()) return SYSCALL_EIO;
+    if (s->stream) return net_tcp_bind((unsigned)(s-s_slots),ntohs(a->port));
     uint64_t irq=spin_lock_irqsave(&s_lock);
     int64_t ret=bind_unlocked(s,ntohs(a->port));
     spin_unlock_irqrestore(&s_lock,irq); return ret;
@@ -214,7 +232,7 @@ void net_socket_input(uint32_t source, uint16_t sport, uint16_t dport,
     bool matched=false;
     for (unsigned i=0; i<NET_SOCKET_MAX; ++i) {
         socket_t *s=&s_slots[i];
-        if (!s->used || !s->bound || s->port!=dport) continue;
+        if (!s->used || s->stream || !s->bound || s->port!=dport) continue;
         matched=true;
         if (s->count==NET_SOCKET_RX_MAX) { ++s->dropped; break; }
         datagram_t *d=&s->rx[(s->head+s->count)%NET_SOCKET_RX_MAX];

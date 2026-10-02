@@ -49,6 +49,12 @@
 #define SYS_SENDTO        40
 #define SYS_RECVFROM      41
 #define SYS_NETCTL        42 /* Unchanged: (NETCTL_PING, net_ping_v1_t *, 48). */
+#define SYS_CONNECT       43
+#define SYS_LISTEN        44 /* Reserved; unsupported until NET-2 step 4. */
+#define SYS_ACCEPT        45 /* Reserved; unsupported until NET-2 step 4. */
+#define SYS_SEND          46
+#define SYS_RECV          47
+#define SYS_SHUTDOWN      48
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1
@@ -187,6 +193,12 @@ _Static_assert(__builtin_offsetof(sysinfo_t, reserved) == 40, "sysinfo_t.reserve
 #define SYSCALL_ESRCH -23
 #define SYSCALL_EPERM -24
 #define SYSCALL_ENOTTY -25
+#define SYSCALL_ECONNREFUSED -26
+#define SYSCALL_ECONNRESET -27
+#define SYSCALL_ENOTCONN -28
+#define SYSCALL_EADDRINUSE -29
+#define SYSCALL_ETIMEDOUT -30
+#define SYSCALL_EISCONN -31
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

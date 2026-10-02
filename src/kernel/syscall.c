@@ -1,6 +1,8 @@
 #include "syscall.h"
 #include "../net/net_ping.h"
 #include "../net/net_socket_syscall.h"
+#include "../net/net_socket.h"
+#include "../net/net_tcp_syscall.h"
 #include "percpu.h"
 #include "process_table.h"
 #include "input.h"
@@ -1159,7 +1161,9 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
 
         case SYS_WRITE:
-            result = sys_write(frame->rdi, frame->rsi, frame->rdx);
+            if (frame->rdi<MAX_PROCESS_FDS && net_socket_stream(fd_get(thread_current(),(int)frame->rdi)))
+                result=net_tcp_syscall(frame);
+            else result = sys_write(frame->rdi, frame->rsi, frame->rdx);
             break;
 
         case SYS_OPEN:
@@ -1171,7 +1175,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
 
         case SYS_READ:
-            result = sys_read((int)frame->rdi, frame->rsi, frame->rdx);
+            if (frame->rdi>=MAX_PROCESS_FDS) result=SYSCALL_EBADF;
+            else if (net_socket_stream(fd_get(thread_current(),(int)frame->rdi)))
+                result=net_tcp_syscall(frame);
+            else result = sys_read((int)frame->rdi, frame->rsi, frame->rdx);
             break;
 
         case SYS_DMESG:
@@ -1315,6 +1322,12 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         case SYS_BIND:
         case SYS_SENDTO:
         case SYS_RECVFROM:
+        case SYS_CONNECT:
+        case SYS_LISTEN:
+        case SYS_ACCEPT:
+        case SYS_SEND:
+        case SYS_RECV:
+        case SYS_SHUTDOWN:
             result=net_socket_syscall(frame);
             break;
 

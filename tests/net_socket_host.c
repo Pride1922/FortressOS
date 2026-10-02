@@ -42,6 +42,9 @@ void *kmalloc(size_t n) {
 void kfree(void *p) { if (p) { assert(allocations); --allocations; free(p); } }
 tcb_t *thread_current(void) { return &process; }
 bool process_signal_interrupt(void) { return signal_pending; }
+int64_t process_signal_send(uint64_t sender, int64_t selector, unsigned signal) {
+    (void)sender; (void)selector; (void)signal; return 0;
+}
 uint64_t *vmm_get_active_pml4_virt(void) { return NULL; }
 bool vmm_validate_user_range(uint64_t *root, uintptr_t p, size_t n, bool write) {
     net_test_assert_unheld();
@@ -80,7 +83,9 @@ static int transmit(net_dev_t *d, const void *bytes, size_t n) {
 static void tick(void) {
     net_socket_worker_tick(now,online); net_ipv4_tick(now); net_socket_worker_tick(now,online); ++now;
 }
+void (*net_host_wait_override)(const void *, bool (*)(void *), void *);
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
+    if (net_host_wait_override) { net_host_wait_override(channel,ready,arg); return; }
     assert(channel);
     static spinlock_t scheduler=SPINLOCK_RANKED(1,"host_sched");
     for (unsigned i=0; i<1000; ++i) {
@@ -189,4 +194,5 @@ int main(void) {
     for (unsigned i=0; i<16; ++i) closefd(fds[i]);
     assert(!allocations && sends && wakes);
     puts("UDP socket/syscall ASan/UBSan PASS: actual codecs/stack/pool/syscalls; mocked memory/fd/tick/scheduler adapters; bounds, payloads, timeout, lease, bind/queue/pool saturation, shared lifetime, failures");
+    return 0;
 }

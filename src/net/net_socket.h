@@ -8,6 +8,9 @@ void net_socket_init(net_dev_t *dev, const net_config_t *cfg);
 void net_socket_enable(void);
 bool net_socket_available(void);
 int64_t net_socket_create(file_t **out);
+int64_t net_socket_create_stream(file_t **out);
+bool net_socket_stream(file_t *file);
+unsigned net_socket_index(file_t *file);
 bool net_socket_file(file_t *file);
 int64_t net_socket_bind(file_t *file, const net_sockaddr_in_t *address);
 int64_t net_socket_send(file_t *file, const net_sockaddr_in_t *dest,

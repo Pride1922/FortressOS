@@ -62,7 +62,7 @@ typedef struct {
     uint8_t tx[TCP_BUFFER_SIZE], rx[TCP_BUFFER_SIZE];
     /* Byte-indexed OOO occupancy shares the RX buffer, no extra payload pool. */
     uint8_t rx_valid[TCP_BUFFER_SIZE/8];
-} tcp_cb_t;
+} tcp_conn_t;
 typedef struct {
     tcp_tuple_t tuple;
     uint64_t generation, expires_ms;
@@ -70,7 +70,7 @@ typedef struct {
     bool used, active;
 } tcp_timewait_t;
 typedef struct {
-    tcp_cb_t blocks[TCP_CB_MAX];
+    tcp_conn_t blocks[TCP_CB_MAX];
     tcp_timewait_t timewait[TCP_TIMEWAIT_MAX];
     uint64_t generation;
     bool used[TCP_CB_MAX];
@@ -84,23 +84,23 @@ typedef struct {
  * Header/data input already passed codec validation; no pointers retained.
  * Non-aliasing caller buffers for queue/peek/prepare (not inside the CB). */
 bool tcp_seq_before(uint32_t a, uint32_t b); /* Half-space ambiguous => false. */
-int tcp_cb_init(tcp_cb_t *cb, tcp_tuple_t tuple, uint64_t generation,
+int tcp_conn_init(tcp_conn_t *cb, tcp_tuple_t tuple, uint64_t generation,
                 uint32_t isn, uint16_t mtu, bool active, uint64_t now_ms);
-void tcp_cb_input(tcp_cb_t *cb, const tcp_header_t *h, const uint8_t *data,
+void tcp_conn_input(tcp_conn_t *cb, const tcp_header_t *h, const uint8_t *data,
                    size_t len, uint64_t now_ms);
-void tcp_cb_tick(tcp_cb_t *cb, uint64_t now_ms);
-int tcp_cb_queue(tcp_cb_t *cb, const void *data, size_t len);
-int tcp_cb_peek(const tcp_cb_t *cb, void *data, size_t capacity);
-int tcp_cb_consume(tcp_cb_t *cb, size_t len);
-int tcp_cb_shutdown(tcp_cb_t *cb);
-void tcp_cb_detach(tcp_cb_t *cb, uint64_t now_ms);
+void tcp_conn_tick(tcp_conn_t *cb, uint64_t now_ms);
+int tcp_conn_queue(tcp_conn_t *cb, const void *data, size_t len);
+int tcp_conn_peek(const tcp_conn_t *cb, void *data, size_t capacity);
+int tcp_conn_consume(tcp_conn_t *cb, size_t len);
+int tcp_conn_shutdown(tcp_conn_t *cb);
+void tcp_conn_detach(tcp_conn_t *cb, uint64_t now_ms);
 /* Prepare copies bytes into caller scratch, never commits sequence/timers.
  * One outstanding action. Commit(true) only after successful local submission.
  * Commit(false) abandons it without a network-loss/congestion charge.
  * Any intervening mutation makes its revision stale. Owner must resolve an
  * action before protocol RX/next NIC submission; stale actions must not be sent. */
-int tcp_cb_prepare(tcp_cb_t *cb, tcp_action_t *action, void *data, size_t capacity);
-bool tcp_cb_commit(tcp_cb_t *cb, const tcp_action_t *action, bool submitted);
+int tcp_conn_prepare(tcp_conn_t *cb, tcp_action_t *action, void *data, size_t capacity);
+bool tcp_conn_commit(tcp_conn_t *cb, const tcp_action_t *action, bool submitted);
 
 /* Optional bounded lifecycle manager. Reserves a TIME_WAIT record at open,
  * keeps detached transports until CLOSED/TIME_WAIT, then releases big buffers.

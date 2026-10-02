@@ -6,6 +6,7 @@
 #include "percpu.h"
 #include "vmm.h"
 #include "string.h"
+#include "net_tcp_syscall.h"
 
 static bool range(uintptr_t p, size_t n, bool write) {
     return !n || vmm_validate_user_range(vmm_get_active_pml4_virt(),p,n,write);
@@ -35,13 +36,14 @@ int64_t net_socket_syscall(interrupt_frame_t *f) {
     tcb_t *caller=thread_current();
     if (cpu_current()->id || !caller || caller->cpu_affinity!=0) return SYSCALL_EOPNOTSUPP;
     if (f->rax==SYS_SOCKET) {
-        if (f->rdi!=NET_AF_INET || (f->rsi!=NET_SOCK_DGRAM &&
-            f->rsi!=(NET_SOCK_DGRAM|NET_SOCK_CLOEXEC)) || (f->rdx && f->rdx!=17)) return SYSCALL_EOPNOTSUPP;
+        bool stream=f->rsi==NET_SOCK_STREAM || f->rsi==(NET_SOCK_STREAM|NET_SOCK_CLOEXEC);
+        if (f->rdi!=NET_AF_INET || (!stream && f->rsi!=NET_SOCK_DGRAM &&
+            f->rsi!=(NET_SOCK_DGRAM|NET_SOCK_CLOEXEC)) || (f->rdx && f->rdx!=(stream ? 6u : 17u))) return SYSCALL_EOPNOTSUPP;
         if (!net_socket_available()) return SYSCALL_EIO;
         unsigned i=0;
         for (; i<MAX_PROCESS_FDS; ++i) if (!caller->fd_table[i]) break;
         if (i==MAX_PROCESS_FDS) return SYSCALL_EMFILE;
-        file_t *file; int64_t ret=net_socket_create(&file);
+        file_t *file; int64_t ret=stream ? net_socket_create_stream(&file) : net_socket_create(&file);
         if (ret) return ret;
         int fd=fd_alloc(caller,file);
         if (fd<0) { vfs_close(file); return SYSCALL_EMFILE; }
@@ -51,6 +53,8 @@ int64_t net_socket_syscall(interrupt_frame_t *f) {
     if (f->rdi>=MAX_PROCESS_FDS) return SYSCALL_EBADF;
     file_t *file=fd_get(caller,(int)f->rdi);
     if (!net_socket_file(file)) return SYSCALL_EBADF;
+    if (f->rax>=SYS_CONNECT) return net_tcp_syscall(f);
+    if (f->rax!=SYS_BIND && net_socket_stream(file)) return SYSCALL_EOPNOTSUPP;
     if (f->rax==SYS_BIND) {
         if (f->rdx!=sizeof(net_sockaddr_in_t)) return SYSCALL_EINVAL;
         if (!range(f->rsi,sizeof(net_sockaddr_in_t),false)) return SYSCALL_EFAULT;
