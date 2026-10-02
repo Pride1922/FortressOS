@@ -6,7 +6,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
-NET-2 steps 1–5 are implemented: [step 1](../roadmap/net2-step1.md) supplies
+NET-2 is 6/7 complete: [step 1](../roadmap/net2-step1.md) supplies
 the codec; [step 2](../roadmap/net2-step2.md) supplies the bounded transport
 engine and loss/reordering simulator, host-sanitizer verified. The seven-step
 [plan](../plans/NET2_PLAN.md) preserves UDP capacity;
@@ -23,8 +23,12 @@ e1000/e1000e × user/socket matrix plus two BSP SMP=4/AP-rejection smoke cases
 passes 10/10 (2026-10-02). Both 64KiB transport directions and nc client/listener/
 empty-input half-close are verified. Persistent failure artifacts and a dedicated
 bounded host UART drain are part of the runner; earlier serial-observation
-timeouts are retained and explained in the checkpoint. Physical TCP and DNS
-remain later gates; no full NET-2 closure or general TCP-conformance claim.
+timeouts are retained and explained in the checkpoint. [Step 6](../roadmap/net2-step6.md)
+physical TCP is accepted on Dell 5590: user-confirmed client echo, HTTP,
+listener data/FIN and reset recovery with peer Wireshark observations. Listener
+nc skips terminal stdin using existing TERM_ISATTY; pipes/files and client mode
+retain their input behavior. DNS + nslookup remain Step 7; no full NET-2 closure
+or general TCP-conformance claim.
 
 2026-10-01 user reports: **5530 I219-LM 8086:1A1E driver PASS** and
 **5590 UDP PASS**. These are manual observations without new capture/log

@@ -1,4 +1,5 @@
 #include "udp_common.h"
+#include "terminal.h"
 /* Finite serial request/response: consume stdin, half-close, drain response.
  * A peer must consume the request before sending a large response. */
 #ifndef NC_CALL
@@ -37,20 +38,27 @@ int nc_main(int argc, char **argv) {
     if (argc!=3 || (!listen && !udp_ip(argv[1],&ip)) ||
         !udp_number(&number,65535,&port) || *number || !port) {
         message("usage: nc IPv4 port | nc -l port (finite serial request/response)\n"
+                "nc -l skips terminal stdin; piped or redirected stdin is sent before receiving.\n"
                 "A peer that sends a large response before consuming the whole request can deadlock the serial nc; use small finite requests or a cooperating peer.\n"); return 1;
     }
     long fd=NC_CALL(SYS_SOCKET,NET_AF_INET,NET_SOCK_STREAM|NET_SOCK_CLOEXEC,6,0,0,0), listener=-1;
+    bool skip_stdin=false;
     if (fd<0) goto failure;
     net_sockaddr_in_t address={.family=NET_AF_INET,.port=__builtin_bswap16((uint16_t)port),.address=ip};
     if (listen) {
         listener=fd; fd=-1;
+        long tty=NC_CALL(SYS_TERMCTL,TERM_ISATTY,0,0,0,0,0);
+        if (tty<0) goto failure;
+        skip_stdin=tty==1;
         if (NC_CALL(SYS_BIND,listener,(uintptr_t)&address,sizeof(address),0,0,0) ||
             NC_CALL(SYS_LISTEN,listener,1,0,0,0,0)) goto failure;
         fd=NC_CALL(SYS_ACCEPT,listener,0,0,NET_SOCK_CLOEXEC,0,0);
         NC_CALL(SYS_CLOSE,listener,0,0,0,0,0); listener=-1;
         if (fd<0) goto failure;
     } else if (NC_CALL(SYS_CONNECT,fd,(uintptr_t)&address,sizeof(address),0,0,0)) goto failure;
-    if (!copy(0,fd) || NC_CALL(SYS_SHUTDOWN,fd,NET_SHUT_WR,0,0,0,0) || !copy(fd,1)) goto failure;
+    /* Terminal-backed listeners are receive-only; other stdin keeps the
+     * serial request/response contract. Client mode always consumes stdin. */
+    if ((!skip_stdin && !copy(0,fd)) || NC_CALL(SYS_SHUTDOWN,fd,NET_SHUT_WR,0,0,0,0) || !copy(fd,1)) goto failure;
     NC_CALL(SYS_CLOSE,fd,0,0,0,0,0); return 0;
 failure:
     if (fd>=0) NC_CALL(SYS_CLOSE,fd,0,0,0,0,0);

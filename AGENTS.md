@@ -30,7 +30,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
-| NET | IN PROGRESS — NET-2 steps 1–5 client/listener/accept/finite nc implemented and host/QEMU verified; independent TCP matrix 10/10 PASS. Physical TCP and DNS pending. CONNECT has 120-second reboot quiet time. Phase 5a UDP sockets complete (host/QEMU); 5590 UDP user-reported PASS; capture audit pending; physical ICMP 4b accepted; 5530 8086:1A1E driver user-reported PASS | [docs/subsystems/net.md](docs/subsystems/net.md) |
+| NET | IN PROGRESS — NET-2 6/7 complete; independent TCP matrix 10/10 PASS; Dell 5590 physical TCP A–D accepted by user with peer Wireshark observations. nc listener skips tty stdin; BIOS/UEFI tty/null/file/pipe 8/8 PASS. DNS + nslookup pending. CONNECT has 120-second reboot quiet time. Phase 5a UDP sockets complete (host/QEMU); 5590 UDP user-reported PASS; capture audit pending; physical ICMP 4b accepted; 5530 8086:1A1E driver user-reported PASS | [docs/subsystems/net.md](docs/subsystems/net.md) |
 | Shell S9 | COMPLETE (2026-09-30) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | Shell S8 | COMPLETE (2026-09-29) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | Shell S7 / S6 / S5 / S3–S4 / S0–S2 | COMPLETE | [docs/subsystems/shell.md](docs/subsystems/shell.md) |

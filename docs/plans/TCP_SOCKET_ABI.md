@@ -86,12 +86,18 @@ or client bind still conflicts; identical retained tuples remain excluded.
 
 ## Observable stream behavior
 
-The userspace serial nc tool sends all stdin before receiving. A peer that sends
+The userspace serial nc client, and listeners with nonterminal stdin, send stdin
+before receiving. A peer that sends
 a large response before consuming the whole request can deadlock the serial nc;
 use small finite requests or a cooperating peer. nc has no application deadline;
 this socket ABI does not promise a timeout for a stalled bidirectional exchange.
 The bounded early-response regression uses a peer deadline followed by RST,
 then requires an nc error and shell recovery. It is not an automatic nc timeout.
+In listener mode nc checks fd 0 using existing TERM_ISATTY: terminal stdin is
+skipped, followed by SHUT_WR and receive-until-EOF. Plain `nc -l port` is therefore
+receive-only on a terminal. Pipes, files and /dev/null retain the serial stdin
+copy/EOF/SHUT_WR flow. Client mode always consumes stdin. Terminal-query failure
+is an ordinary tool error. Socket ABI and single-accept semantics are unchanged.
 
 Send accepts bytes into connection-owned TX storage, not into a descriptor owned
 by the NIC. A positive result never promises peer delivery. Accepted bytes stay

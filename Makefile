@@ -401,7 +401,7 @@ USER_UDP_ELFS := $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/net_udp_probe.elf
 USER_TCP_ELF := $(BUILD_DIR)/tcptest.elf
 USER_TCP_SERVER_ELF := $(BUILD_DIR)/tcpserve.elf
 USER_NC_ELF := $(BUILD_DIR)/nc.elf
-$(BUILD_DIR)/nc.o: user/nc.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
+$(BUILD_DIR)/nc.o: user/nc.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h src/include/terminal.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
 $(USER_NC_ELF): $(BUILD_DIR)/nc.o user/tools/start.asm user/shell.ld
@@ -851,6 +851,11 @@ test-net-tcp-fixture:
 	@python3 tests/test_net_tcp_fixture.py
 test-net-nc-boundaries: $(BOOTABLE_ISO) test-net-nc-host
 	@python3 scripts/test_net_nc_boundaries.py
+
+test-net-nc-data-fin: $(BOOTABLE_ISO) test-net-tcp-socket-host test-net-nc-host
+	@python3 scripts/test_net_nc_data_fin.py
+
+.PHONY: test-net-nc-data-fin
 
 .PHONY: test-net-nc-boundaries
 

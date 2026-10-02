@@ -130,12 +130,15 @@ static void tcp_wait(const void *channel, bool (*ready)(void *), void *arg) {
 }
 static int stream(void) { return (int)call(SYS_SOCKET,2,1,6,0,0,0); }
 static long connectfd(int fd) { return call(SYS_CONNECT,fd,(uintptr_t)&destination,16,0,0,0); }
-static void incoming(unsigned index, unsigned flags, uint32_t ack, const void *bytes, size_t length) {
+static void incoming_at(unsigned index, uint32_t sequence, unsigned flags, uint32_t ack, const void *bytes, size_t length) {
     tcp_header_t h={.source=(uint16_t)(50000+index),.destination=9000,
-        .sequence=100+index+((flags&TCP_SYN) ? 0 : 1),.acknowledgment=ack,.flags=(uint8_t)flags,.window=8192};
+        .sequence=sequence,.acknowledgment=ack,.flags=(uint8_t)flags,.window=8192};
     assert(!tcp_encode(peer_packet+20,1480,destination.address,htonl(0x0a00020f),&h,bytes,length));
     assert(!ipv4_encode(peer_packet,1500,destination.address,htonl(0x0a00020f),6,(uint16_t)(20+length),64,NULL));
     net_ipv4_input(peer_packet,40+length);
+}
+static void incoming(unsigned index, unsigned flags, uint32_t ack, const void *bytes, size_t length) {
+    incoming_at(index,100+index+((flags&TCP_SYN) ? 0 : 1),flags,ack,bytes,length);
 }
 static void passive_open(unsigned index, bool complete) {
     incoming(index,TCP_SYN,0,NULL,0); net_tcp_tick(now,true);
@@ -156,6 +159,46 @@ static int listenfd(void) {
     assert(!call(SYS_LISTEN,fd,4,0,0,0,0));
     assert(call(SYS_LISTEN,fd,4,0,0,0,0)==SYSCALL_EINVAL);
     return fd;
+}
+static int64_t stream_receive_call(unsigned nr, int fd, void *data, size_t capacity) {
+    interrupt_frame_t frame={.rax=nr,.rdi=(uint64_t)fd,.rsi=(uintptr_t)data,.rdx=capacity};
+    /* SYS_READ reaches TCP from kernel SYS_READ dispatch, not the socket-only
+     * numbered-syscall dispatcher used by call() above. */
+    return nr==SYS_READ ? net_tcp_syscall(&frame) : net_socket_syscall(&frame);
+}
+static void listener_data_fin_tests(net_config_t *cfg) {
+    static const uint8_t payload[]="fortress-tcp-inbound\n";
+    uint8_t received[64];
+    /* Combined segment and adjacent segments, before/after ACCEPT, through
+     * both real READ and RECV dispatch. No worker tick/read separates data/FIN. */
+    for (unsigned mode=0; mode<16; ++mode) {
+        assert(!allocations); peer_active=false; listener_fixture=true;
+        net_socket_init(&dev,cfg); net_ipv4_init(&dev,cfg); net_socket_enable();
+        int listener=listenfd(); memset(synacks,0,sizeof(synacks)); passive_open(0,true);
+        int child=-1;
+        if (mode&2) { child=(int)acceptfd(listener,NULL,NULL); assert(child>=0); }
+        if (mode&1) {
+            incoming(0,TCP_ACK|TCP_PSH,synacks[0].sequence+1,payload,sizeof(payload)-1);
+            incoming_at(0,101+sizeof(payload)-1,TCP_ACK|TCP_FIN,synacks[0].sequence+1,NULL,0);
+        } else incoming(0,TCP_ACK|TCP_PSH|TCP_FIN,synacks[0].sequence+1,payload,sizeof(payload)-1);
+        net_tcp_tick(now,true);
+        if (child<0) { child=(int)acceptfd(listener,NULL,NULL); assert(child>=0); }
+        closefd(listener); net_tcp_tick(now,true); /* Child must retain buffered RX. */
+        long nr=(mode&4) ? SYS_RECV : SYS_READ;
+        memset(received,0,sizeof(received));
+        size_t first=(mode&8) ? sizeof(payload)-1 : 5;
+        assert(stream_receive_call(nr,child,received,first)==(long)first);
+        assert(!memcmp(received,payload,first));
+        if (first<sizeof(payload)-1) {
+            assert(stream_receive_call(nr,child,received,sizeof(received))==(long)(sizeof(payload)-1-first));
+            assert(!memcmp(received,payload+first,sizeof(payload)-1-first));
+        }
+        assert(stream_receive_call(nr,child,received,sizeof(received))==0);
+        assert(stream_receive_call(nr,child,received,sizeof(received))==0);
+        closefd(child); net_tcp_tick(now,true); listener_fixture=false;
+        assert(!allocations);
+    }
+    puts("[PASS] listener data+FIN combined/adjacent, pre/post ACCEPT, READ/RECV: bytes before EOF after listener close");
 }
 static void listener_tests(net_config_t *cfg) {
     assert(!allocations); peer_active=false; listener_fixture=true;
@@ -353,6 +396,7 @@ int main(void) {
     puts("[PASS] CONNECT cancel/SYN-ACK same-timestamp race uses FIN; exact SEND space count, pending signal zero acceptance, post-accept signal preserves count/exact bytes");
     assert(!allocations && tcp_packets>50);
     listener_tests(&cfg);
+    listener_data_fin_tests(&cfg);
     puts("TCP socket host PASS: actual manager/syscalls/codec; 64KiB both directions, half-close, EOF, short sends, shared refs, stale identity, interruption/refusal/timeout; mocked scheduler and peer engine");
     return 0;
 }

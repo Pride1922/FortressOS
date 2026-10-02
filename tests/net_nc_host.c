@@ -9,9 +9,9 @@ static long mock_call(long,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uin
 #include "../user/nc.c"
 static uint8_t input[8193], reply[10007], sent[8193], output[10007];
 static size_t in_size,in_at,reply_at,sent_at,out_at;
-static unsigned closed[32], sockets,shutdowns,accepts,short_sends;
+static unsigned closed[32], sockets,shutdowns,accepts,short_sends,tty_queries;
 static long failed_call, error_value;
-static bool reset_after_data, zero_write, listening,warning_seen;
+static bool reset_after_data, zero_write, listening,warning_seen,tty_stdin;
 static long mock_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,uintptr_t e,uintptr_t f) {
     (void)e; (void)f;
     if (nr==SYS_WRITE && a==2) {
@@ -19,6 +19,10 @@ static long mock_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,ui
         return (long)c;
     }
     if (nr==failed_call) return error_value;
+    if (nr==SYS_TERMCTL) {
+        assert(a==TERM_ISATTY && b==0 && c==0 && d==0); ++tty_queries;
+        return tty_stdin ? 1 : 0;
+    }
     if (nr==SYS_SOCKET) {
         ++sockets; assert(a==NET_AF_INET && b==(NET_SOCK_STREAM|NET_SOCK_CLOEXEC) && c==6); return 10;
     }
@@ -32,10 +36,11 @@ static long mock_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,ui
     if (nr==SYS_LISTEN) { assert(a==10 && b==1); return 0; }
     if (nr==SYS_ACCEPT) { assert(a==10 && !b && !c && d==NET_SOCK_CLOEXEC); ++accepts; return 11; }
     if (nr==SYS_CLOSE) { assert(a<32); ++closed[a]; assert(closed[a]==1); return 0; }
-    if (nr==SYS_SHUTDOWN) { assert(a==(listening ? 11u : 10u) && b==NET_SHUT_WR && sent_at==in_size); ++shutdowns; return 0; }
+    if (nr==SYS_SHUTDOWN) { assert(a==(listening ? 11u : 10u) && b==NET_SHUT_WR && sent_at==(listening && tty_stdin ? 0 : in_size)); ++shutdowns; return 0; }
     if (nr==SYS_READ) {
         uint8_t *destination=(void *)b;
         if (!a) {
+            assert(!listening || !tty_stdin);
             size_t n=in_size-in_at; if(n>257)n=257; if(n>c)n=c;
             memcpy(destination,input+in_at,n); in_at+=n; return (long)n;
         }
@@ -58,7 +63,7 @@ static void setup(bool listen) {
     for(size_t i=0;i<sizeof(input);++i)input[i]=(uint8_t)(i*31);
     for(size_t i=0;i<sizeof(reply);++i)reply[i]=(uint8_t)(i*17);
     memset(closed,0,sizeof(closed)); in_size=sizeof(input); in_at=reply_at=sent_at=out_at=0;
-    sockets=shutdowns=accepts=short_sends=0; warning_seen=false; failed_call=-1; error_value=SYSCALL_EINTR;
+    sockets=shutdowns=accepts=short_sends=tty_queries=0; tty_stdin=false; warning_seen=false; failed_call=-1; error_value=SYSCALL_EINTR;
     reset_after_data=zero_write=false; listening=listen;
 }
 int main(void) {
@@ -73,18 +78,29 @@ int main(void) {
         setup(mode); reset_after_data=true; assert(nc_main(3,mode ? server : client)==1);
         assert(out_at==sizeof(reply) && !memcmp(reply,output,out_at) && closed[10]==1);
     }
+    setup(true); tty_stdin=true;
+    assert(!nc_main(3,server) && tty_queries==1 && accepts==1 && shutdowns==1);
+    assert(!in_at && !sent_at && out_at==sizeof(reply) && !memcmp(output,reply,out_at));
+    assert(closed[10]==1 && closed[11]==1);
+    setup(false); tty_stdin=true; /* Client mode must still consume terminal input. */
+    assert(!nc_main(3,client) && !tty_queries && sent_at==sizeof(input));
     const long errors[]={SYS_SOCKET,SYS_CONNECT,SYS_SHUTDOWN,SYS_READ,SYS_WRITE};
     for(unsigned i=0;i<sizeof(errors)/sizeof(errors[0]);++i) {
         setup(false); failed_call=errors[i]; assert(nc_main(3,client)==1);
         assert(closed[10]==(errors[i]!=SYS_SOCKET));
     }
-    const long server_errors[]={SYS_BIND,SYS_LISTEN,SYS_ACCEPT};
+    const long server_errors[]={SYS_TERMCTL,SYS_BIND,SYS_LISTEN,SYS_ACCEPT};
     for(unsigned i=0;i<sizeof(server_errors)/sizeof(server_errors[0]);++i) {
         setup(true); failed_call=server_errors[i]; assert(nc_main(3,server)==1); assert(closed[10]==1 && !closed[11]);
     }
     setup(false); zero_write=true; assert(nc_main(3,client)==1 && closed[10]==1);
+    /* Nonterminal stdin is still copied before receive. Interruption of its
+     * read must not silently skip pipe/file input or enter the RX copy. */
+    setup(true); failed_call=SYS_READ;
+    assert(nc_main(3,server)==1 && accepts==1 && !shutdowns && !reply_at && !out_at);
+    assert(closed[10]==1 && closed[11]==1);
     char *bad[][3]={{"nc","hostname","7777"},{"nc","10.0.2.256","7777"},{"nc","-l","0"},{"nc","10.0.2.2","65536"},{"nc","-k","7777"}};
     for(unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);++i) { setup(false); assert(nc_main(3,bad[i])==1 && !sockets && warning_seen); }
-    puts("nc actual serial copy / binary short I/O / empty stdin / buffered reset / errors / cleanup PASS");
+    puts("nc tty listener skip / nonterminal and client stdin / binary short I/O / EOF / buffered reset / errors / cleanup PASS");
     return 0;
 }

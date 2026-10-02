@@ -1,11 +1,12 @@
 # NET-2 — TCP streams and userspace DNS
 
 2026-10-01. User authorized starting after engineering review and then step 2.
-Steps 1–5 are implemented and verified; Step 5 is closed. NET-2 is 5/7 done.
+Steps 1–6 are complete; NET-2 is 6/7 done. Step 7 (DNS + nslookup) remains.
 Step 5 adds finite nc and the independent TCP socket fixture/matrix; executed
 acceptance evidence is recorded in [Step 5](../roadmap/net2-step5.md).
 This replaces the pasted draft's contradictory lease semantics and pool split.
-This does not claim physical TCP acceptance or completed NET-2.
+Step 6 physical TCP acceptance on Dell 5590 is user-confirmed in the
+[physical checkpoint](../roadmap/net2-step6.md). This does not close NET-2.
 
 2026-10-02 review revision: concrete decisions and prerequisites below replace
 the remaining open-ended close/ISN/tool choices. They are planned behavior,
@@ -184,7 +185,9 @@ First nc has this concrete serial request/response interface:
   until peer EOF, drains buffered bytes before reset/error and exits nonzero
   on I/O failure. Empty stdin is a valid zero-byte request.
 - `nc -l <port>` accepts one connection, closes the listener, then uses the same
-  stdin -> SHUT_WR -> receive-until-EOF sequence. It does not automatically echo
+  stdin -> SHUT_WR -> receive-until-EOF sequence for nonterminal stdin. Terminal
+  stdin is skipped using existing TERM_ISATTY, so plain nc -l is receive-only.
+  It does not automatically echo
   inbound data or accept another client.
 - No simultaneous stdin/socket forwarding, early exit merely on stdin EOF,
   `-k`, UDP, scanning, `-e` or `-c`. Numeric IPv4 only until step 7; no automatic

@@ -16,6 +16,12 @@ stdin work. Buffered data is printed before a following reset/error; I/O failure
 returns nonzero. Descriptors use CLOEXEC and ordinary cleanup. Existing socket
 read/write pointer, signal and SIGPIPE behavior is preserved.
 
+Subsequent Step 6 Case C update: listener mode now skips terminal stdin using
+the existing TERM_ISATTY operation, then half-closes and receives. Plain
+`nc -l port` therefore works as a receive-only terminal command. Pipes/files
+retain the serial flow above; client mode is unchanged. See the
+[Case C investigation and update](net2-step6-caseC.md).
+
 Examples after the existing 120-second CONNECT reboot quiet period:
 
 ```

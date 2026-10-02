@@ -6,7 +6,7 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
-| [NET2_PLAN.md](NET2_PLAN.md) | Seven steps: TCP design/codec, simulator, client, server, finite nc, physical gate and userspace DNS. | **STEPS 1–5 IMPLEMENTED + VERIFIED**; physical TCP/DNS pending |
+| [NET2_PLAN.md](NET2_PLAN.md) | Seven steps: TCP design/codec, simulator, client, server, finite nc, physical gate and userspace DNS. | **6/7 COMPLETE**; Dell 5590 physical TCP accepted, DNS + nslookup pending |
 | [TCP_TRANSPORT_DESIGN.md](TCP_TRANSPORT_DESIGN.md) | Measured layout, bounded transport/OOO/retransmission/TIME_WAIT ownership and simulator contract. | **IMPLEMENTED**, pure engine |
 | [TCP_SOCKET_ABI.md](TCP_SOCKET_ABI.md) | Client/listener stream ABI/lifetime semantics; existing UDP and SYS_NETCTL preserved. | **STEPS 3–4 ABI IMPLEMENTED** |
 | [TCP_WAIT_LIFECYCLE_PROOF.md](TCP_WAIT_LIFECYCLE_PROOF.md) | Reservation-free waits, seven-property ACCEPT argument and runtime evidence. | **CLIENT/ACCEPT DESIGN REVIEWED + VERIFIED** |
