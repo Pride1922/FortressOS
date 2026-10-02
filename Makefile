@@ -400,6 +400,13 @@ USER_PING_PROBE_ELF := $(BUILD_DIR)/net_ping_probe.elf
 USER_UDP_ELFS := $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/net_udp_probe.elf
 USER_TCP_ELF := $(BUILD_DIR)/tcptest.elf
 USER_TCP_SERVER_ELF := $(BUILD_DIR)/tcpserve.elf
+USER_NC_ELF := $(BUILD_DIR)/nc.elf
+$(BUILD_DIR)/nc.o: user/nc.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
+$(USER_NC_ELF): $(BUILD_DIR)/nc.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=nc_main user/tools/start.asm -o $(BUILD_DIR)/nc_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/nc_start.o $< -o $@
 $(BUILD_DIR)/tcpserve.o: user/tcpserve.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
@@ -541,7 +548,7 @@ $(USER_TOP_ELF): $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o $(USER_DIR)/shell.l
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -556,6 +563,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(BUILD_DIR)/net_udp_probe.elf $(BUILD_DIR)/initramfs/bin/net-udp-probe
 	@cp -f $(USER_TCP_ELF) $(BUILD_DIR)/initramfs/bin/tcptest
 	@cp -f $(USER_TCP_SERVER_ELF) $(BUILD_DIR)/initramfs/bin/tcpserve
+	@cp -f $(USER_NC_ELF) $(BUILD_DIR)/initramfs/bin/nc
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
@@ -838,6 +846,25 @@ NET_SOCKET_HOST_SRCS := tests/net_socket_host.c tests/net_lock_host.c src/net/ne
 .PHONY: test-net-tcp-socket-host
 .PHONY: test-net-tcp-client
 .PHONY: test-net-tcp-server
+.PHONY: test-net-tcp-fixture test-net-nc-host test-net-tcp-matrix test-net-tcp-retention test-net-tcp-synthetic
+test-net-tcp-fixture:
+	@python3 tests/test_net_tcp_fixture.py
+test-net-nc-boundaries: $(BOOTABLE_ISO) test-net-nc-host
+	@python3 scripts/test_net_nc_boundaries.py
+
+.PHONY: test-net-nc-boundaries
+
+test-net-nc-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include tests/net_nc_host.c -o $(BUILD_DIR)/net_nc_host
+	@$(BUILD_DIR)/net_nc_host
+test-net-tcp-matrix: $(BOOTABLE_ISO) test-net-tcp-fixture test-net-nc-host test-net-tcp-socket-host
+	@python3 scripts/test_net_tcp_matrix.py --all
+test-net-tcp-retention: $(BOOTABLE_ISO)
+	@python3 scripts/test_net_tcp_matrix.py --retention
+test-net-tcp-synthetic: $(BOOTABLE_ISO) test-net-tcp-fixture
+	@python3 scripts/test_net_tcp_matrix.py --core
+	@python3 scripts/test_net_tcp_matrix.py --backlog
 test-net-tcp-server: $(BOOTABLE_ISO) test-net-tcp-host test-net-tcp-tcb-host test-net-tcp-socket-host
 	@$(PYTHON) scripts/test_net_tcp_server.py
 test-net-tcp-client: $(BOOTABLE_ISO) test-net-tcp-host test-net-tcp-tcb-host test-net-tcp-socket-host

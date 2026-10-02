@@ -1,9 +1,11 @@
 # NET-2 — TCP streams and userspace DNS
 
 2026-10-01. User authorized starting after engineering review and then step 2.
-Steps 1–4 are implemented; client/server verification is recorded separately.
+Steps 1–5 are implemented and verified; Step 5 is closed. NET-2 is 5/7 done.
+Step 5 adds finite nc and the independent TCP socket fixture/matrix; executed
+acceptance evidence is recorded in [Step 5](../roadmap/net2-step5.md).
 This replaces the pasted draft's contradictory lease semantics and pool split.
-This does not claim nc, physical TCP acceptance or completed NET-2.
+This does not claim physical TCP acceptance or completed NET-2.
 
 2026-10-02 review revision: concrete decisions and prerequisites below replace
 the remaining open-ended close/ISN/tool choices. They are planned behavior,
@@ -168,6 +170,12 @@ proof triggers discussion of an explicit receive timeout returning ETIMEDOUT;
 that narrower feature and its timeout interface are not pre-approved here.
 
 ## DNS and tools
+
+Step 5 begins with [the TCP socket-backend fixture plan](NET2_STEP5_SOCKET_FIXTURE.md)
+before nc or matrix implementation. Step 5 implements the synthetic bidirectional
+TCP peer and socket matrix alongside independent SLIRP user networking.
+The prerequisite defines wire roles, sequence/ACK/FIN accounting, bounded
+loss profiles and independent capture gates against Step 4 boundary f925aa1.
 
 First nc has this concrete serial request/response interface:
 

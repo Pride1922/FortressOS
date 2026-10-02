@@ -6,7 +6,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
-NET-2 steps 1–4 are implemented: [step 1](../roadmap/net2-step1.md) supplies
+NET-2 steps 1–5 are implemented: [step 1](../roadmap/net2-step1.md) supplies
 the codec; [step 2](../roadmap/net2-step2.md) supplies the bounded transport
 engine and loss/reordering simulator, host-sanitizer verified. The seven-step
 [plan](../plans/NET2_PLAN.md) preserves UDP capacity;
@@ -16,8 +16,15 @@ reservation-free indefinite waits, stream read/write and half-close with a froze
 first 120 seconds of BSP uptime for reboot quiet time. [Step 4](../roadmap/net2-step4.md)
 adds bounded listener/half-open queues, reservation-free ACCEPT with ownership
 rollback and an independent finite server. Host tests and five QEMU server
-cases verify real Ring 3 references/competing acceptors/signals and captures. nc,
-physical TCP and DNS remain later gates; no full NET-2 closure claim.
+cases verify real Ring 3 references/competing acceptors/signals and captures.
+[Step 5](../roadmap/net2-step5.md) adds finite numeric nc, immutable wire vectors,
+a bounded synthetic TCP peer and separate independent audit. The full BIOS/UEFI ×
+e1000/e1000e × user/socket matrix plus two BSP SMP=4/AP-rejection smoke cases
+passes 10/10 (2026-10-02). Both 64KiB transport directions and nc client/listener/
+empty-input half-close are verified. Persistent failure artifacts and a dedicated
+bounded host UART drain are part of the runner; earlier serial-observation
+timeouts are retained and explained in the checkpoint. Physical TCP and DNS
+remain later gates; no full NET-2 closure or general TCP-conformance claim.
 
 2026-10-01 user reports: **5530 I219-LM 8086:1A1E driver PASS** and
 **5590 UDP PASS**. These are manual observations without new capture/log
