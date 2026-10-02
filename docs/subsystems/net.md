@@ -182,6 +182,8 @@ gate is separate manual/user-supplied evidence — see
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-wget-host` | Wget host ASan/UBSan: URL parser (ports, paths, query, filenames, HTTPS/unsupported rejection, bounds), bounded 8192B header scanner, HTTP status/header parser (200/301/302/404, Content-Length, Location), and redirect resolver. PASS 2026-10-02. |
+| `make test-wget` | `/bin/wget` HTTP client under BIOS/UEFI × e1000 SMP=1: 10/10 PASS 2026-10-02. Verified `--help`, HTTPS rejection diagnostic, plain HTTP file download with exact byte verification (`cat`), custom output `-O /mnt/data.bin` (2048B), quiet stdout stream (`-q -O - \| wc -c`), HTTP 302 redirect following, 404 error handling, and Content-Length framing mismatch detection. |
 | `make test-net-dns-host` | Actual freestanding DNS codec/resolver under ASan/UBSan, literal golden vectors, malformed bounds/fuzz, syscall adapters at 100/1000 Hz, cleanup, diagnostics and deadline framing. PASS 2026-10-02; no IRQ/scheduler/hardware claim. |
 | `make test-net-dns` | Step 7 real Ring 3 DNS/nslookup/hostname nc, independent UDP/TCP capture audit, timeout/trickle/EOF and ping recovery. Eight firmware/NIC/backend cases plus two SMP=4 BSP/AP direct-dispatch smoke cases: 10/10 PASS 2026-10-02 via runner --all --jobs 4. User backend needs loopback port-53 permission; no data disks or physical claim. See [evidence](../roadmap/net2-step7.md). |
 | `make test-net-dns-lifecycle` / `make test-net-tcp-deadlines` | Persistent BIOS/UEFI Ring 3 timed receive/signal/STOP-CONT/KILL and zero-window send/shared-fd/unanswered-connect gates, each 2/2 PASS 2026-10-02 with shell/ping recovery. Exact runs and captures in [Step 7](../roadmap/net2-step7.md). |

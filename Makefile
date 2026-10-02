@@ -406,6 +406,7 @@ USER_NC_ELF := $(BUILD_DIR)/nc.elf
 USER_NSLOOKUP_ELF := $(BUILD_DIR)/nslookup.elf
 USER_DNSPROBE_ELF := $(BUILD_DIR)/dnsprobe.elf
 USER_TCPDEADLINE_ELF := $(BUILD_DIR)/tcpdeadline.elf
+USER_WGET_ELF := $(BUILD_DIR)/wget.elf
 DNS_OBJECTS := $(BUILD_DIR)/dns.o $(BUILD_DIR)/dns_codec.o
 $(DNS_OBJECTS): $(BUILD_DIR)/%.o: user/%.c user/dns.h user/dns_codec.h src/include/syscall_abi.h src/include/socket_abi.h
 	@mkdir -p $(BUILD_DIR)
@@ -437,6 +438,15 @@ $(BUILD_DIR)/nc.o: user/nc.c user/dns.h user/udp_common.h user/netconf.h src/inc
 $(USER_NC_ELF): $(BUILD_DIR)/nc.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=nc_main user/tools/start.asm -o $(BUILD_DIR)/nc_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/nc_start.o $(BUILD_DIR)/nc.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
+$(BUILD_DIR)/wget_codec.o: user/wget_codec.c user/wget_codec.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(BUILD_DIR)/wget.o: user/wget.c user/wget_codec.h user/dns.h user/dns_codec.h user/udp_common.h user/netconf.h src/include/socket_abi.h src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(USER_WGET_ELF): $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=wget_main user/tools/start.asm -o $(BUILD_DIR)/wget_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/wget_start.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
 $(BUILD_DIR)/tcpserve.o: user/tcpserve.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
@@ -600,7 +610,7 @@ $(USER_TOP_ELF): $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o $(USER_DIR)/shell.l
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -621,6 +631,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_NSLOOKUP_ELF) $(BUILD_DIR)/initramfs/bin/nslookup
 	@cp -f $(USER_DNSPROBE_ELF) $(BUILD_DIR)/initramfs/bin/dnsprobe
 	@cp -f $(USER_TCPDEADLINE_ELF) $(BUILD_DIR)/initramfs/bin/tcpdeadline
+	@cp -f $(USER_WGET_ELF) $(BUILD_DIR)/initramfs/bin/wget
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
@@ -937,7 +948,15 @@ test-net-tcp-socket-host:
 	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(subst tests/net_socket_host.c,tests/net_tcp_socket_host.c,$(NET_SOCKET_HOST_SRCS)) -Wl,--wrap=net_tcp_send -o $(BUILD_DIR)/net_tcp_socket_host
 	@$(BUILD_DIR)/net_tcp_socket_host
 	@python3 tests/test_tcp_deadline_guard.py
-.PHONY: test-net-udp-host test-net-socket-host
+.PHONY: test-wget-host test-wget
+test-wget-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include user/wget_codec.c tests/wget_host.c -o $(BUILD_DIR)/wget_host
+	@$(BUILD_DIR)/wget_host
+
+test-wget: $(BOOTABLE_ISO) $(NVME_GPT_IMG) test-wget-host
+	@python3 scripts/test_wget.py
+
 .PHONY: test-net-dns-host
 test-net-dns-host:
 	@mkdir -p $(BUILD_DIR)

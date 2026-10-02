@@ -64,6 +64,8 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-wget-host` | Wget host ASan/UBSan: URL parser (ports, paths, query, filenames, HTTPS/unsupported rejection, bounds), bounded 8192B header scanner, HTTP status/header parser (200/301/302/404, Content-Length, Location), and redirect resolver. PASS 2026-10-02. |
+| `make test-wget` | `/bin/wget` HTTP client under BIOS/UEFI × e1000 SMP=1: 10/10 PASS 2026-10-02. Verified `--help`, HTTPS rejection diagnostic, plain HTTP file download with exact byte verification (`cat`), custom output `-O /mnt/data.bin` (2048B), quiet stdout stream (`-q -O - \| wc -c`), HTTP 302 redirect following, 404 error handling, and Content-Length framing mismatch detection. |
 | `make test-net-ifconfig-host` | NET-3 host ASan/UBSan: ABI struct layout/offsets, absent device EIO, link state mapping, monotonic 64-bit counters, IFSET validation suite, multi-layer atomic sync, config parser (CRLF, comments, duplicate/unknown keys, bounds, malformed), and `/bin/ifup` CLI/dry-run/file execution. PASS 2026-10-02. |
 | `make test-net-ifconfig` | NET-3 `/bin/ifconfig` query under BIOS/UEFI × e1000 SMP=1: exact MAC, IP/netmask, gateway, MTU, link status, and packet counter audit. PASS 2026-10-02. |
 | `make test-net-ifup` | NET-3 `/bin/ifup` runtime configuration under BIOS/UEFI × e1000 SMP=1: 10/10 PASS 2026-10-02. Initial query, `--help`, `--dry-run`, CIDR CLI, dotted-decimal CLI, malformed rejection, file apply (`/etc/network.conf`), ICMP gateway ping after reconfiguration, missing file diagnostic, and missing DNS diagnostic. |
