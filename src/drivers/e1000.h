@@ -72,6 +72,9 @@ net_dev_t *e1000_get_net_device(void);
 bool e1000_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz);
 /* Unlocked thread context; read-only link/fatal snapshot, no recovery writes. */
 bool e1000_network_online(net_dev_t *dev);
+/* Unlocked thread context; mapped stable ABI link state value (NET_IF_LINK_*). */
+uint32_t e1000_link_state_abi(const net_dev_t *dev);
+void e1000_get_stats(const net_dev_t *dev, uint64_t *rx_packets, uint64_t *tx_packets);
 int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len);
 pbuf_t *e1000_poll_rx(net_dev_t *dev);
 void e1000_recycle_rx(net_dev_t *dev, pbuf_t *packet);

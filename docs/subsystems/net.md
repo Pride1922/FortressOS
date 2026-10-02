@@ -6,6 +6,8 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+NET-3 (runtime network configuration) is implemented and physically accepted on the Dell Latitude 5590: `/bin/ifconfig` (read-only query), `/bin/ifup` (CLI and file reconfiguration), `/mnt/.fortress/network.conf` parser, and DNS server integration for `nslookup` and `nc` when `-s` is omitted. Kernel ABI `SYS_NETCTL = 42` extended with `NETCTL_IFGET` (2u) and `NETCTL_IFSET` (3u) updating all protocol layers atomically under Rank-1 `g_net_stack_lock`. Full ASan/UBSan host test suite, BIOS/UEFI QEMU 10/10 PASS, and Dell 5590 physical acceptance confirmed (2026-10-02). Details: [runtime network configuration](../roadmap/net-config.md).
+
 Cold cable insertion and runtime link recovery are implemented and physically
 accepted on the Dell Latitude 5590 (all six cases PASS, autonomous PHY
 renegotiation confirmed). Cold waiting allocates no DMA, first link activates once,

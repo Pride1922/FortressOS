@@ -22,6 +22,7 @@ void net_socket_input(uint32_t ip, uint16_t sp, uint16_t dp, const uint8_t *data
     (void)ip; (void)sp; (void)dp; (void)data; (void)len;
 }
 bool e1000_network_online(net_dev_t *d) { return d==&dev && carrier; }
+uint32_t e1000_link_state_abi(const net_dev_t *d) { return (d==&dev && carrier) ? NET_IF_LINK_ONLINE : NET_IF_LINK_DOWN; }
 bool e1000_service_link(net_dev_t *d, uint64_t now, uint64_t hz) {
     (void)now; assert(hz==100); ++link_checks; return e1000_network_online(d);
 }
@@ -31,6 +32,7 @@ static pbuf_t packet;
 static uint8_t sent[60];
 static unsigned sends, recycles, wakes, waits, yields;
 static bool fail_send, absent, fail_create;
+void e1000_get_stats(const net_dev_t *d, uint64_t *rx, uint64_t *tx) { (void)d; if (rx) *rx = 0; if (tx) *tx = sends; }
 static uint64_t ticks;
 static jmp_buf done;
 uint64_t apic_timer_get_bsp_ticks(void) { return ticks; }

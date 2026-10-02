@@ -140,6 +140,9 @@ void net_tcp_init(net_dev_t *dev, const net_config_t *cfg) {
         for (unsigned j=0; j<NET_TCP_BACKLOG_MAX; ++j) endpoints[i].pending[j].block=-1;
     }
 }
+void net_tcp_set_local_ip(uint32_t new_ip) {
+    local_ip = new_ip;
+}
 int64_t net_tcp_create(unsigned slot) {
     if (slot>=NET_SOCKET_MAX || !device) return SYSCALL_EIO;
     uint64_t flags=spin_lock_irqsave(&lock);

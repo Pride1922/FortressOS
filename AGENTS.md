@@ -30,7 +30,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
-| NET | COMPLETE through runtime link recovery — NET-2 7/7 complete; independent TCP matrix 10/10 PASS; Dell 5590 physical TCP A–D accepted. Step 7 DNS/nslookup/hostname nc and approved opt-in TCP deadlines PASS; Dell 5590 physical DNS user-confirmed PASS. Driver link recovery (cold cable waiting, autonomous PHY renegotiation, retained-ring link flaps) 8/8 QEMU PASS and 6/6 Dell 5590 physical PASS. nc listener skips tty stdin. CONNECT has 120-second reboot quiet time. UDP user-reported PASS on 5590; capture audit pending; physical ICMP accepted; 5530 8086:1A1E driver user-reported PASS | [docs/subsystems/net.md](docs/subsystems/net.md) |
+| NET | COMPLETE through runtime network configuration (NET-3) — NET-2 7/7 complete; driver link recovery (cold cable waiting, autonomous PHY renegotiation, retained-ring link flaps) 8/8 QEMU PASS and 6/6 Dell 5590 physical PASS; NET-3 runtime network configuration (/bin/ifconfig, /bin/ifup, /mnt/.fortress/network.conf, DNS resolver fallback) host ASan/UBSan PASS, BIOS/UEFI QEMU 10/10 PASS, and Dell 5590 physical acceptance user-confirmed PASS; TCP matrix 10/10 PASS; Dell 5590 physical TCP A–D accepted. Step 7 DNS/nslookup/hostname nc and approved opt-in TCP deadlines PASS; Dell 5590 physical DNS user-confirmed PASS. nc listener skips tty stdin. CONNECT has 120-second reboot quiet time. UDP user-reported PASS on 5590; capture audit pending; physical ICMP accepted; 5530 8086:1A1E driver user-reported PASS | [docs/subsystems/net.md](docs/subsystems/net.md) |
 | Shell S9 | COMPLETE (2026-09-30) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | Shell S8 | COMPLETE (2026-09-29) | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | Shell S7 / S6 / S5 / S3–S4 / S0–S2 | COMPLETE | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
@@ -39,7 +39,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 | Storage (9D/9E/9H) | COMPLETE | [docs/subsystems/storage.md](docs/subsystems/storage.md) |
 | Power & layout (9C.5) | COMPLETE | [docs/subsystems/platform.md](docs/subsystems/platform.md) |
 
-Next open items not blocking any current milestone: network configuration (`ifconfig`/`ifup`/config file), system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem).
+Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, persistent rootfs with `/paradise`, shell improvements, MicroPython, ext4 (or another journaling filesystem).
 
 ## 3. Build, Run, Debug and Verify
 
@@ -64,6 +64,9 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-net-ifconfig-host` | NET-3 host ASan/UBSan: ABI struct layout/offsets, absent device EIO, link state mapping, monotonic 64-bit counters, IFSET validation suite, multi-layer atomic sync, config parser (CRLF, comments, duplicate/unknown keys, bounds, malformed), and `/bin/ifup` CLI/dry-run/file execution. PASS 2026-10-02. |
+| `make test-net-ifconfig` | NET-3 `/bin/ifconfig` query under BIOS/UEFI × e1000 SMP=1: exact MAC, IP/netmask, gateway, MTU, link status, and packet counter audit. PASS 2026-10-02. |
+| `make test-net-ifup` | NET-3 `/bin/ifup` runtime configuration under BIOS/UEFI × e1000 SMP=1: 10/10 PASS 2026-10-02. Initial query, `--help`, `--dry-run`, CIDR CLI, dotted-decimal CLI, malformed rejection, file apply (`/etc/network.conf`), ICMP gateway ping after reconfiguration, missing file diagnostic, and missing DNS diagnostic. |
 | `make test-net-link` | Cold cable waiting, insertion and retained-ring link recovery: BIOS/UEFI × e1000/e1000e × cold/warm, 8/8 PASS in QEMU (disposable ISO/OVMF, exact carrier down via GDB hardware breakpoint). Dell 5590 physical acceptance 6/6 PASS (autonomous PHY renegotiation confirmed). |
 | `make test-net-dns-host` | Step 7 actual DNS codec/resolver ASan/UBSan: literal vectors, bounded hostile parser, syscall adapters at 100/1000 Hz, fixed deadlines, cleanup/status/numeric bypass. PASS 2026-10-02; no IRQ/scheduler/hardware claim. |
 | `make test-net-dns` | Step 7 nslookup/hostname nc over BIOS/UEFI × e1000/e1000e × user/socket SMP=1 plus two SMP=4 BSP/AP direct-dispatch smoke cases: 10/10 PASS 2026-10-02 via runner --all --jobs 4. Independent UDP/TCP audit, stalled/trickled/EOF/quiet-time gates, shell/ping recovery, persistent disposable fixtures/no data disks. User backend requires loopback UDP/TCP 53 bind permission. Physical DNS user-confirmed separately; no Ring 3 AP socket claim. |

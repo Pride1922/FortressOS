@@ -16,18 +16,20 @@ paths, and tests that distinguish emulator results from hardware observations.
 > what's safe to change, read [`AGENTS.md`](AGENTS.md) and [`PROTECTED.md`](PROTECTED.md) — those are kept in sync
 > with the code, this file is kept in sync with those.
 
-Current milestone: Networking NET-1, NET-2, and runtime link recovery are
+Current milestone: Networking NET-1, NET-2, runtime link recovery, and NET-3 (runtime network configuration) are
 complete. The stack covers the Intel e1000/e1000e/I219-LM driver, Ethernet II
 framing, ARP, IPv4 unicast, ICMP Echo (/bin/ping), UDP sockets (/bin/udptest),
 TCP streams (echoc/echos/tcpserve/nc), a userspace DNS resolver (nslookup,
-hostname nc), and cold cable insertion with retained-ring link recovery.
+hostname nc), cold cable insertion with retained-ring link recovery, and runtime
+network configuration (/bin/ifconfig, /bin/ifup, /mnt/.fortress/network.conf).
 Physical acceptance is recorded on the Dell Latitude 5590 for ICMP, UDP, TCP,
-DNS, and link recovery (all six cold-wait, insertion, unplug/replug, and listener
-error cases). Shell milestones S0–S9 are complete: editing, history, expansion,
+DNS, link recovery (all six cold-wait, insertion, unplug/replug, and listener
+error cases), and runtime network configuration (/bin/ifconfig, /bin/ifup,
+on-the-fly CLI reconfig, /mnt/.fortress/network.conf, and DNS fallback).
+Shell milestones S0–S9 are complete: editing, history, expansion,
 redirection, pipes, jobs, signals, process groups, terminal foreground ownership,
 and introspection (ps, top, sysinfo) verified on QEMU BIOS/UEFI and physical
-Dell hardware. Next networking milestone: network configuration (ifconfig, ifup,
-config file; DHCP deferred).
+Dell hardware.
 
 ## What works today
 
@@ -43,9 +45,9 @@ config file; DHCP deferred).
 | Files | Read, create, write, truncate, make directories, rename/move, and delete. Initramfs provides boot-time programs; ext2 provides persistent storage. |
 | Networking — driver | Intel e1000 (82540EM), e1000e (82574L), and integrated I219-LM driver with polling-only ingress on a BSP-pinned worker. The same descriptor layout serves QEMU and bare metal. I219 physical acceptance on the Dell Latitude 5590 (8086:15D7) and 5530 (8086:1A1E). DMA quarantine on controller fault. No NIC interrupt handlers or MSI vectors in this milestone. |
 | Networking — protocols | Ethernet II framing; ARP request/reply with reply-only cache learning; IPv4 unicast with header validation; ICMP Echo Request/Reply; UDP with a bounded 16-socket table; TCP with Reno slow start, congestion avoidance, fast retransmit, SRTT/RTTVAR RTO and Karn's rule; a userspace DNS stub resolver. All bounded, static, and BSP-owned. |
-| Networking — ABI | SYS_NETCTL=42 (ping, 48-byte versioned ABI); SYS_SOCKET/BIND/SENDTO/RECVFROM = 38–41 (UDP); SYS_CONNECT/LISTEN/ACCEPT/SEND/RECV/SHUTDOWN = 43–48 (TCP); SYS_SEND_UNTIL/RECV_UNTIL/CONNECT_UNTIL = 49–51 (opt-in absolute BSP-tick deadlines, max 60 s horizon). All BSP-only, explicitly rejecting AP callers. |
-| Networking — tools | /bin/ping, /bin/udptest, /bin/echoc, /bin/echos, /bin/tcpserve, /bin/nc (serial request/response with hostname resolution), /bin/nslookup. |
-| Networking — physical acceptance | Dell Latitude 5590: ICMP (4/4, matched request/reply pairs, second-host Wireshark screenshot), UDP (user-reported PASS, capture audit pending), TCP (10/10 QEMU matrix; physical acceptance for client, real HTTP server, guest listener, and RST recovery), DNS (10/10 QEMU matrix; physical acceptance for A, CNAME, NXDOMAIN, TC→TCP fallback, stall timeout, and hostname nc), and link recovery (cold waiting, autonomous PHY renegotiation, retained-ring replug, 6/6 PASS). Dell Latitude 5530: driver bring-up and ICMP. |
+| Networking — ABI | SYS_NETCTL=42 (ping, NETCTL_IFGET, NETCTL_IFSET); SYS_SOCKET/BIND/SENDTO/RECVFROM = 38–41 (UDP); SYS_CONNECT/LISTEN/ACCEPT/SEND/RECV/SHUTDOWN = 43–48 (TCP); SYS_SEND_UNTIL/RECV_UNTIL/CONNECT_UNTIL = 49–51 (opt-in absolute BSP-tick deadlines, max 60 s horizon). All BSP-only, explicitly rejecting AP callers. |
+| Networking — tools | /bin/ifconfig, /bin/ifup, /bin/ping, /bin/udptest, /bin/echoc, /bin/echos, /bin/tcpserve, /bin/nc (serial request/response with hostname resolution), /bin/nslookup. |
+| Networking — physical acceptance | Dell Latitude 5590: ICMP (4/4, matched request/reply pairs, second-host Wireshark screenshot), UDP (user-reported PASS, capture audit pending), TCP (10/10 QEMU matrix; physical acceptance for client, real HTTP server, guest listener, and RST recovery), DNS (10/10 QEMU matrix; physical acceptance for A, CNAME, NXDOMAIN, TC→TCP fallback, stall timeout, and hostname nc), link recovery (cold waiting, autonomous PHY renegotiation, retained-ring replug, 6/6 PASS), and runtime network configuration (ifconfig query, on-the-fly ifup, persistent config apply, ping gateway, and DNS fallback PASS). Dell Latitude 5530: driver bring-up and ICMP. |
 | Shell (Milestones S0–S9) | Modular Ring 3 shell (user/shell/) featuring 4096-byte line editing, horizontal viewport, cursor movement, Ctrl shortcuts, RAM history, incremental Ctrl+R search, bracketed paste review, raw/timed input (SYS_INPUT_READ), terminal mode control (SYS_TERMCTL), Belgian AZERTY AltGr operator decoding, working directories (cd/pwd), logic chaining (;, &&, ||, !), parameter expansion ($VAR, ${VAR}, $?), aliases, globbing, uniform descriptors (0–31), redirections (<, >, >>, 2>&1, n>&-), retained UI terminal handle (fd 31 with CLOEXEC), version builtin, persistent history (/mnt/.fortress/history), pipes and stream utilities, job control (jobs, fg, bg, kill), signals (SIGINT, SIGPIPE, SIGTSTP, SIGCONT, SIGCHLD), process groups, terminal foreground ownership, and introspection utilities (ps, top, sysinfo). |
 | Power and platform | BIOS/UEFI boot images, ACPI S5 shutdown, and reset fallbacks. Shutdown and reboot verified on bare-metal Dell Latitude 5590. |
 

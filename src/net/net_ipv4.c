@@ -49,6 +49,11 @@ bool net_ipv4_route(uint32_t dest, uint32_t *hop) {
     return true;
 }
 uint32_t net_ipv4_local(void) { return s_cfg.local_ip; }
+void net_ipv4_set_config(uint32_t local_ip, uint8_t prefix, uint32_t gateway) {
+    s_cfg.local_ip = local_ip;
+    s_cfg.prefix = prefix;
+    s_cfg.gateway = gateway;
+}
 bool net_ipv4_idle(void) {
     if (s_ping_waiting) return false;
     if (!net_tcp_idle()) return false;

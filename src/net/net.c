@@ -12,6 +12,7 @@
 #include "syscall_abi.h"
 #include "smp.h"
 #include "net_tcp.h"
+#include "spinlock.h"
 
 const char g_net_poll_channel = 0;
 static net_dev_t *s_if;
@@ -254,4 +255,100 @@ void net_start(const char *cmdline, size_t len) {
         (void)thread_create_on_cpu(1,"net_ap_probe",socket_ap_probe,NULL);
     serial_puts("[NET 3] BSP ingress worker started; tick-bounded polling\n");
     serial_puts("[NET-2] TCP reboot quiet time: CONNECT returns EAGAIN until BSP uptime 120 seconds\n");
+}
+
+static spinlock_t g_net_stack_lock = SPINLOCK_RANKED(1, "net_stack");
+
+int net_get_ifconfig(netctl_ifget_t *out) {
+    if (!out) return SYSCALL_EINVAL;
+    if (!s_if) return SYSCALL_EIO;
+    memset(out, 0, sizeof(*out));
+    out->struct_version = 1;
+    memcpy(out->mac, s_if->mac_addr, 6);
+    out->mtu = s_if->mtu;
+    out->link_state = e1000_link_state_abi(s_if);
+    e1000_get_stats(s_if, &out->rx_packets, &out->tx_packets);
+
+    uint64_t irq = spin_lock_irqsave(&g_net_stack_lock);
+    out->local_ipv4 = s_config.local_ip;
+    out->netmask_ipv4 = htonl(s_config.prefix ? (0xffffffffu << (32 - s_config.prefix)) : 0);
+    out->gateway_ipv4 = s_config.gateway;
+    spin_unlock_irqrestore(&g_net_stack_lock, irq);
+    return 0;
+}
+
+int net_validate_ifset(const netctl_ifset_t *set, net_config_t *out_cfg) {
+    if (!set || !out_cfg) return SYSCALL_EINVAL;
+
+    /* 1. Header validation */
+    if (set->struct_version != 1 || set->reserved != 0 || set->flags != 0 ||
+        set->reserved2[0] != 0 || set->reserved2[1] != 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* 2. local_ipv4 validation */
+    uint32_t h = ntohl(set->local_ipv4);
+    if (!h || (h >> 24) == 127 || !(h >> 24) || (h >> 24) >= 224 || h == 0xffffffffu) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* 3. netmask_ipv4 validation */
+    uint32_t m = ntohl(set->netmask_ipv4);
+    unsigned prefix = 0;
+    uint32_t cur = m;
+    while (cur & 0x80000000u) {
+        prefix++;
+        cur <<= 1;
+    }
+    if (cur != 0 || prefix < 1 || prefix > 30) {
+        return SYSCALL_EINVAL;
+    }
+    uint32_t inv = ~m;
+    /* Subnet host bits check on local_ipv4: cannot be subnet ID or broadcast */
+    uint32_t host_bits = h & inv;
+    if (host_bits == 0 || host_bits == inv) {
+        return SYSCALL_EINVAL;
+    }
+
+    /* 4. gateway_ipv4 validation */
+    if (set->gateway_ipv4 != 0) {
+        uint32_t gw = ntohl(set->gateway_ipv4);
+        if (!gw || (gw >> 24) == 127 || !(gw >> 24) || (gw >> 24) >= 224 || gw == 0xffffffffu) {
+            return SYSCALL_EINVAL;
+        }
+        if (set->gateway_ipv4 == set->local_ipv4) {
+            return SYSCALL_EINVAL;
+        }
+        if ((gw & m) != (h & m)) {
+            return SYSCALL_EINVAL;
+        }
+        uint32_t gw_host = gw & inv;
+        if (gw_host == 0 || gw_host == inv) {
+            return SYSCALL_EINVAL;
+        }
+    }
+
+    /* 5. Device and link state check: any state other than ONLINE returns EIO */
+    if (!s_if || e1000_link_state_abi(s_if) != NET_IF_LINK_ONLINE) {
+        return SYSCALL_EIO;
+    }
+
+    memset(out_cfg, 0, sizeof(*out_cfg));
+    out_cfg->local_ip = set->local_ipv4;
+    out_cfg->gateway = set->gateway_ipv4;
+    out_cfg->prefix = (uint8_t)prefix;
+    return 0;
+}
+
+void net_set_config(const net_config_t *new_cfg) {
+    if (!new_cfg) return;
+    uint64_t irq = spin_lock_irqsave(&g_net_stack_lock);
+    s_config.local_ip = new_cfg->local_ip;
+    s_config.gateway = new_cfg->gateway;
+    s_config.prefix = new_cfg->prefix;
+    arp_cache_init(&s_arp_cache);
+    net_ipv4_set_config(new_cfg->local_ip, new_cfg->prefix, new_cfg->gateway);
+    net_socket_set_local(new_cfg->local_ip);
+    net_tcp_set_local_ip(new_cfg->local_ip);
+    spin_unlock_irqrestore(&g_net_stack_lock, irq);
 }

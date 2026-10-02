@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "../net/net.h"
 #include "../net/net_ping.h"
 #include "../net/net_socket_syscall.h"
 #include "../net/net_socket.h"
@@ -1335,32 +1336,72 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
 
         case SYS_NETCTL: {
-            if (frame->rdi!=NETCTL_PING || frame->rdx!=sizeof(net_ping_v1_t)) {
-                result=SYSCALL_EINVAL; break;
+            tcb_t *caller = thread_current();
+            if (cpu_current()->id != 0 || !caller || caller->cpu_affinity != 0) {
+                result = SYSCALL_EOPNOTSUPP;
+                break;
             }
-            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),frame->rsi,sizeof(net_ping_v1_t),true)) {
-                result=SYSCALL_EFAULT; break;
+            if (frame->rdi == NETCTL_PING) {
+                if (frame->rdx != sizeof(net_ping_v1_t)) {
+                    result = SYSCALL_EINVAL; break;
+                }
+                if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rsi, sizeof(net_ping_v1_t), true)) {
+                    result = SYSCALL_EFAULT; break;
+                }
+                net_ping_v1_t ping;
+                memcpy(&ping, (const void *)frame->rsi, sizeof(ping));
+                uint64_t token;
+                result = net_ping_submit(&ping, &token);
+                if (result) break;
+                sched_wait_until(&g_net_ping_channel, net_ping_ready, &token);
+                if (process_signal_pending()) {
+                    net_ping_cancel(token); result = SYSCALL_EINTR; break;
+                }
+                result = net_ping_collect(token, &ping);
+                if (result) { net_ping_cancel(token); break; }
+                if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rsi, sizeof(ping), true)) {
+                    result = SYSCALL_EFAULT; break;
+                }
+                memcpy((void *)frame->rsi, &ping, sizeof(ping));
+                break;
+            } else if (frame->rdi == NETCTL_IFGET) {
+                if (frame->rdx != sizeof(netctl_ifget_t)) {
+                    result = SYSCALL_EINVAL; break;
+                }
+                if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rsi, sizeof(netctl_ifget_t), true)) {
+                    result = SYSCALL_EFAULT; break;
+                }
+                netctl_ifget_t ifget;
+                memcpy(&ifget, (const void *)frame->rsi, sizeof(ifget));
+                if (ifget.struct_version != 1 || ifget.reserved != 0) {
+                    result = SYSCALL_EINVAL; break;
+                }
+                result = net_get_ifconfig(&ifget);
+                if (result) break;
+                if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rsi, sizeof(ifget), true)) {
+                    result = SYSCALL_EFAULT; break;
+                }
+                memcpy((void *)frame->rsi, &ifget, sizeof(ifget));
+                break;
+            } else if (frame->rdi == NETCTL_IFSET) {
+                if (frame->rdx != sizeof(netctl_ifset_t)) {
+                    result = SYSCALL_EINVAL; break;
+                }
+                if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rsi, sizeof(netctl_ifset_t), false)) {
+                    result = SYSCALL_EFAULT; break;
+                }
+                netctl_ifset_t ifset;
+                memcpy(&ifset, (const void *)frame->rsi, sizeof(ifset));
+                net_config_t new_cfg;
+                result = net_validate_ifset(&ifset, &new_cfg);
+                if (result) break;
+                net_set_config(&new_cfg);
+                result = 0;
+                break;
+            } else {
+                result = SYSCALL_EINVAL;
+                break;
             }
-            tcb_t *caller=thread_current();
-            if (cpu_current()->id!=0 || !caller || caller->cpu_affinity!=0) {
-                result=SYSCALL_EOPNOTSUPP; break;
-            }
-            net_ping_v1_t ping;
-            memcpy(&ping,(const void *)frame->rsi,sizeof(ping));
-            uint64_t token;
-            result=net_ping_submit(&ping,&token);
-            if (result) break;
-            sched_wait_until(&g_net_ping_channel,net_ping_ready,&token);
-            if (process_signal_pending()) {
-                net_ping_cancel(token); result=SYSCALL_EINTR; break;
-            }
-            result=net_ping_collect(token,&ping);
-            if (result) { net_ping_cancel(token); break; }
-            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),frame->rsi,sizeof(ping),true)) {
-                result=SYSCALL_EFAULT; break;
-            }
-            memcpy((void *)frame->rsi,&ping,sizeof(ping));
-            break;
         }
 
         case SYS_SYSINFO: {

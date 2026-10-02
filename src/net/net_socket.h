@@ -6,6 +6,7 @@
 typedef struct { unsigned slot; uint64_t token; bool receive; } net_socket_wait_t;
 void net_socket_init(net_dev_t *dev, const net_config_t *cfg);
 void net_socket_enable(void);
+void net_socket_set_local(uint32_t local_ip);
 bool net_socket_available(void);
 int64_t net_socket_create(file_t **out);
 int64_t net_socket_create_stream(file_t **out);

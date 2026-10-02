@@ -395,6 +395,8 @@ USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
 USER_SH_BUILTIN_ELF := $(BUILD_DIR)/sh-builtin.elf
 USER_PS_ELF := $(BUILD_DIR)/ps.elf
 USER_SYSINFO_ELF := $(BUILD_DIR)/sysinfo.elf
+USER_IFCONFIG_ELF := $(BUILD_DIR)/ifconfig.elf
+USER_IFUP_ELF := $(BUILD_DIR)/ifup.elf
 USER_PING_ELF := $(BUILD_DIR)/ping.elf
 USER_PING_PROBE_ELF := $(BUILD_DIR)/net_ping_probe.elf
 USER_UDP_ELFS := $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/net_udp_probe.elf
@@ -408,12 +410,15 @@ DNS_OBJECTS := $(BUILD_DIR)/dns.o $(BUILD_DIR)/dns_codec.o
 $(DNS_OBJECTS): $(BUILD_DIR)/%.o: user/%.c user/dns.h user/dns_codec.h src/include/syscall_abi.h src/include/socket_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
-$(BUILD_DIR)/nslookup.o: user/nslookup.c user/dns.h user/dns_codec.h user/udp_common.h
+$(BUILD_DIR)/netconf.o: user/netconf.c user/netconf.h src/include/types.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(BUILD_DIR)/nslookup.o: user/nslookup.c user/dns.h user/dns_codec.h user/udp_common.h user/netconf.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -c $< -o $@
-$(USER_NSLOOKUP_ELF): $(BUILD_DIR)/nslookup.o $(DNS_OBJECTS) user/tools/start.asm user/shell.ld
+$(USER_NSLOOKUP_ELF): $(BUILD_DIR)/nslookup.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=nslookup_main user/tools/start.asm -o $(BUILD_DIR)/nslookup_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/nslookup_start.o $(BUILD_DIR)/nslookup.o $(DNS_OBJECTS) -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/nslookup_start.o $(BUILD_DIR)/nslookup.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
 $(BUILD_DIR)/dnsprobe.o: user/dnsprobe.c user/dns.h user/udp_common.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -c $< -o $@
@@ -426,12 +431,12 @@ $(BUILD_DIR)/tcpdeadline.o: user/tcpdeadline.c user/udp_common.h src/include/sys
 $(USER_TCPDEADLINE_ELF): $(BUILD_DIR)/tcpdeadline.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=tcpdeadline_main user/tools/start.asm -o $(BUILD_DIR)/tcpdeadline_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/tcpdeadline_start.o $(BUILD_DIR)/tcpdeadline.o -o $@
-$(BUILD_DIR)/nc.o: user/nc.c user/dns.h user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h src/include/terminal.h
+$(BUILD_DIR)/nc.o: user/nc.c user/dns.h user/udp_common.h user/netconf.h src/include/socket_abi.h src/include/syscall_abi.h src/include/terminal.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
-$(USER_NC_ELF): $(BUILD_DIR)/nc.o $(DNS_OBJECTS) user/tools/start.asm user/shell.ld
+$(USER_NC_ELF): $(BUILD_DIR)/nc.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=nc_main user/tools/start.asm -o $(BUILD_DIR)/nc_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/nc_start.o $(BUILD_DIR)/nc.o $(DNS_OBJECTS) -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/nc_start.o $(BUILD_DIR)/nc.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
 $(BUILD_DIR)/tcpserve.o: user/tcpserve.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
@@ -561,6 +566,28 @@ $(BUILD_DIR)/sysinfo_start.o: $(USER_DIR)/tools/start.asm
 $(USER_SYSINFO_ELF): $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o -o $@
 
+$(BUILD_DIR)/ifconfig.o: $(USER_DIR)/ifconfig.c src/include/types.h src/include/syscall_abi.h src/include/netctl_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(BUILD_DIR)/ifconfig_start.o: $(USER_DIR)/tools/start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 -DTOOL_ENTRY=ifconfig_main $< -o $@
+
+$(USER_IFCONFIG_ELF): $(BUILD_DIR)/ifconfig_start.o $(BUILD_DIR)/ifconfig.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/ifconfig_start.o $(BUILD_DIR)/ifconfig.o -o $@
+
+$(BUILD_DIR)/ifup.o: $(USER_DIR)/ifup.c $(USER_DIR)/netconf.h src/include/types.h src/include/syscall_abi.h src/include/netctl_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(BUILD_DIR)/ifup_start.o: $(USER_DIR)/tools/start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 -DTOOL_ENTRY=ifup_main $< -o $@
+
+$(USER_IFUP_ELF): $(BUILD_DIR)/ifup_start.o $(BUILD_DIR)/ifup.o $(BUILD_DIR)/netconf.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/ifup_start.o $(BUILD_DIR)/ifup.o $(BUILD_DIR)/netconf.o -o $@
+
 $(BUILD_DIR)/top.o: $(USER_DIR)/top.c src/include/types.h src/include/syscall_abi.h src/include/terminal.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
@@ -573,7 +600,7 @@ $(USER_TOP_ELF): $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o $(USER_DIR)/shell.l
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -582,6 +609,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
 	@cp -f $(USER_PS_ELF) $(BUILD_DIR)/initramfs/bin/ps
 	@cp -f $(USER_SYSINFO_ELF) $(BUILD_DIR)/initramfs/bin/sysinfo
+	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/bin/ifconfig
+	@cp -f $(USER_IFUP_ELF) $(BUILD_DIR)/initramfs/bin/ifup
 	@cp -f $(USER_PING_ELF) $(BUILD_DIR)/initramfs/bin/ping
 	@cp -f $(USER_PING_PROBE_ELF) $(BUILD_DIR)/initramfs/bin/net-ping-probe
 	@cp -f $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/initramfs/bin/udptest
@@ -596,6 +625,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
 	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, view and echo.\nExternal cat preserves bytes; head, tail and wc process streams. Use TOOL --help.\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
+	@printf "# Fortress Network Configuration\naddress 10.0.2.15/24\ngateway 10.0.2.2\ndns 10.0.2.3\n" > $(BUILD_DIR)/initramfs/etc/network.conf
 	@echo "  [TAR] Generating USTAR archive $@"
 	@tar --format=ustar -cf $(INITRAMFS_TAR) -C $(BUILD_DIR)/initramfs bin etc docs
 
@@ -889,7 +919,7 @@ test-net-nc-data-fin: $(BOOTABLE_ISO) test-net-tcp-socket-host test-net-nc-host
 
 test-net-nc-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include tests/net_nc_host.c user/dns.c user/dns_codec.c -o $(BUILD_DIR)/net_nc_host
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include tests/net_nc_host.c user/dns.c user/dns_codec.c user/netconf.c -o $(BUILD_DIR)/net_nc_host
 	@$(BUILD_DIR)/net_nc_host
 test-net-tcp-matrix: $(BOOTABLE_ISO) test-net-tcp-fixture test-net-nc-host test-net-tcp-socket-host
 	@python3 scripts/test_net_tcp_matrix.py --all
@@ -991,6 +1021,18 @@ test-net-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O2 -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net tests/net_host.c src/net/checksum.c src/net/eth.c src/net/arp.c src/net/ipv4.c -o $(BUILD_DIR)/net_host
 	@$(BUILD_DIR)/net_host
+
+test-net-ifconfig-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_ifconfig_host.c tests/net_lock_host.c src/net/net.c src/net/net_ping.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c src/net/arp.c -o $(BUILD_DIR)/net_ifconfig_host
+	@$(BUILD_DIR)/net_ifconfig_host
+
+.PHONY: test-net-ifconfig-host test-net-ifconfig test-net-ifup
+test-net-ifconfig: $(BOOTABLE_ISO) test-net-ifconfig-host
+	@python3 scripts/test_net_ifconfig.py
+
+test-net-ifup: $(BOOTABLE_ISO) test-net-ifconfig-host
+	@python3 scripts/test_net_ifup.py
 
 # Networking Phase 1a: QEMU PCI discovery, MMIO mapping, MAC and STATUS registers
 .PHONY: test-net-pci

@@ -11,6 +11,7 @@ void net_ipv4_link_down(void);
 bool net_ipv4_unicast(uint32_t ip);
 bool net_ipv4_route(uint32_t destination, uint32_t *hop); /* Immutable config only. */
 uint32_t net_ipv4_local(void);
+void net_ipv4_set_config(uint32_t local_ip, uint8_t prefix, uint32_t gateway);
 bool net_ipv4_idle(void); /* Worker-only, opt-in idle accounting. */
 /* Sole worker, bounded independent UDP slots; token prevents stale completion. */
 bool net_ipv4_udp_start(unsigned slot, uint64_t token, uint32_t destination,

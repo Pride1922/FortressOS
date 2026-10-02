@@ -45,7 +45,7 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
   connections or perform NIC work.
 - Polling-only ingress: no NIC interrupt handlers or MSI vectors. Adding one
   is a contract change, not an optimization.
-- Rank-1 network locks (g_net_dev_lock, g_socket_table_lock,
+- Rank-1 network locks (g_net_dev_lock, g_net_stack_lock, g_socket_table_lock,
   g_tcp_endpoints_lock, the ping mailbox lock, the socket manager lock):
   never nest with each other or with any other Rank-1 lock.
 - Bounded static state: 16 socket handles, 8 TCP connections,
@@ -64,7 +64,7 @@ Acquire in increasing rank order; release LIFO; never hold a spinlock across
 
 | Rank | Lock |
 | --- | --- |
-| 1 | per-CPU scheduler locks **or** `ext2_lock` **or** `g_process_lock` **or** `g_net_dev_lock` **or** `g_socket_table_lock` **or** `g_tcp_endpoints_lock` **or** the ping/socket-manager mailbox locks (all ordinary lock kind). Process/ext2 cannot nest with any rank-1 lock in either order; only scheduler pairs in increasing address order via `sched_lock_pair` are exempt. Network Rank-1 locks follow the same rule: they never nest with each other or with any other Rank-1 lock. |
+| 1 | per-CPU scheduler locks **or** `ext2_lock` **or** `g_process_lock` **or** `g_net_dev_lock` **or** `g_net_stack_lock` **or** `g_socket_table_lock` **or** `g_tcp_endpoints_lock` **or** the ping/socket-manager mailbox locks (all ordinary lock kind). Process/ext2 cannot nest with any rank-1 lock in either order; only scheduler pairs in increasing address order via `sched_lock_pair` are exempt. Network Rank-1 locks follow the same rule: they never nest with each other or with any other Rank-1 lock. |
 | 2 | heap |
 | 3 | VMM |
 | 4 | PMM |

@@ -5,6 +5,7 @@
 #include "pmm.h"
 #include "spinlock.h"
 #include "console.h"
+#include "netctl_abi.h"
 #include <stddef.h>
 
 static bool e1000_init_rings(void);
@@ -306,6 +307,8 @@ static net_dev_t s_net_dev;
 static enum { LINK_UNINITIALIZED, LINK_WAITING, LINK_ONLINE, LINK_DOWN,
               LINK_FAILED } s_link_state;
 static uint64_t s_link_check;
+static uint64_t s_rx_packet_count;
+static uint64_t s_tx_packet_count;
 
 static void e1000_publish_interface(void) {
     memcpy(s_net_dev.name, "eth0", 5);
@@ -985,6 +988,39 @@ bool e1000_network_online(net_dev_t *dev) {
     return online;
 }
 
+uint32_t e1000_link_state_abi(const net_dev_t *dev) {
+    if (dev != &s_net_dev) return NET_IF_LINK_UNINITIALIZED;
+    spin_debug_assert_unheld();
+    uint64_t irq = spin_lock_irqsave(&g_net_dev_lock);
+    if (g_net_fatal || s_link_state == LINK_FAILED) {
+        spin_unlock_irqrestore(&g_net_dev_lock, irq);
+        return NET_IF_LINK_FAILED;
+    }
+    uint32_t state = NET_IF_LINK_UNINITIALIZED;
+    switch (s_link_state) {
+        case LINK_UNINITIALIZED: state = NET_IF_LINK_UNINITIALIZED; break;
+        case LINK_WAITING:       state = NET_IF_LINK_WAITING; break;
+        case LINK_ONLINE:        state = NET_IF_LINK_ONLINE; break;
+        case LINK_DOWN:          state = NET_IF_LINK_DOWN; break;
+        case LINK_FAILED:        state = NET_IF_LINK_FAILED; break;
+    }
+    spin_unlock_irqrestore(&g_net_dev_lock, irq);
+    return state;
+}
+
+void e1000_get_stats(const net_dev_t *dev, uint64_t *rx_packets, uint64_t *tx_packets) {
+    if (dev != &s_net_dev) {
+        if (rx_packets) *rx_packets = 0;
+        if (tx_packets) *tx_packets = 0;
+        return;
+    }
+    spin_debug_assert_unheld();
+    uint64_t irq = spin_lock_irqsave(&g_net_dev_lock);
+    if (rx_packets) *rx_packets = s_rx_packet_count;
+    if (tx_packets) *tx_packets = s_tx_packet_count;
+    spin_unlock_irqrestore(&g_net_dev_lock, irq);
+}
+
 bool e1000_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
     spin_debug_assert_unheld();
     if (dev != &s_net_dev || g_net_fatal || s_link_state == LINK_FAILED ||
@@ -1148,6 +1184,7 @@ int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len) {
         if (done && !fatal) {
             s_tx_busy[slot] = false;
             --s_tx_pending;
+            ++s_tx_packet_count;
         }
         spin_unlock_irqrestore(&g_net_dev_lock, irq);
         if (fatal) return -1;
@@ -1214,6 +1251,7 @@ pbuf_t *e1000_poll_rx(net_dev_t *dev) {
         s_rx_state[spare] = 1;
         s_rx_slot[slot] = spare;
         s_rx[slot].buffer_addr = s_rx_pages[spare] + offsetof(pbuf_t, data);
+        ++s_rx_packet_count;
     }
     /* Invalid frames or spare exhaustion drop/rearm the original buffer. */
     s_rx[slot].length = 0;

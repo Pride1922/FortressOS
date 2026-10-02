@@ -88,6 +88,9 @@ void net_socket_enable(void) {
     __atomic_store_n(&s_online,true,__ATOMIC_RELEASE);
     __atomic_store_n(&s_enabled,true,__ATOMIC_RELEASE);
 }
+void net_socket_set_local(uint32_t local_ip) {
+    s_local = local_ip;
+}
 bool net_socket_available(void) {
     return __atomic_load_n(&s_enabled,__ATOMIC_ACQUIRE) &&
         __atomic_load_n(&s_online,__ATOMIC_ACQUIRE) && apic_timer_get_frequency()!=0;

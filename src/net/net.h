@@ -2,6 +2,7 @@
 #define FORTRESS_NET_STACK_H
 
 #include "../include/net.h"
+#include "../include/netctl_abi.h"
 #include "eth.h"
 
 typedef struct {
@@ -26,5 +27,11 @@ void net_worker_main(void *arg);
 /* Called only on BSP from the existing APIC timer path, after EOI. */
 void net_timer_tick(void);
 extern const char g_net_poll_channel;
+
+/* Snapshot current interface and protocol configuration for SYS_NETCTL. */
+int net_get_ifconfig(netctl_ifget_t *out);
+/* Validate and atomically apply runtime IPv4 configuration for SYS_NETCTL. */
+int net_validate_ifset(const netctl_ifset_t *set, net_config_t *out_cfg);
+void net_set_config(const net_config_t *new_cfg);
 
 #endif

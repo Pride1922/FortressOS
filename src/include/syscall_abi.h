@@ -2,7 +2,7 @@
 #define FORTRESS_SYSCALL_ABI_H
 #include "types.h"
 #include "signal_abi.h"
-#include "ping_abi.h"
+#include "netctl_abi.h"
 /* System Call Numbers */
 #define SYS_EXIT      0
 #define SYS_WRITE     1
