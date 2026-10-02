@@ -1,7 +1,8 @@
 # NET-2 — TCP streams and userspace DNS
 
 2026-10-01. User authorized starting after engineering review and then step 2.
-Steps 1–6 are complete; NET-2 is 6/7 done. Step 7 (DNS + nslookup) remains.
+Steps 1–7 are complete; NET-2 is 7/7 done (2026-10-02). Step 7 DNS + nslookup
+has host/QEMU evidence and user-confirmed Dell 5590 physical acceptance.
 Step 5 adds finite nc and the independent TCP socket fixture/matrix; executed
 acceptance evidence is recorded in [Step 5](../roadmap/net2-step5.md).
 This replaces the pasted draft's contradictory lease semantics and pool split.
@@ -206,6 +207,10 @@ addresses bypass DNS. Specify a userspace-readable resolver configuration (an
 explicit tool/server argument first is sufficient); boot dns= alone is not an
 implemented userspace interface. Gateway is not presumed to be a DNS server.
 Step 7 starts with `nslookup -s <server-IPv4> <name>`; no implicit server default.
+The [Step 7 plan](NET2_STEP7_DNS.md) and approved [DNS API](DNS_USER_API.md)
+specify the implementation. The approved [TCP deadlines](TCP_IO_DEADLINE.md)
+are implemented; [Step 7 evidence](../roadmap/net2-step7.md) separates host/live
+results from the user-confirmed physical DNS gate.
 Shared tool resolution takes an explicit server argument; hostname-enabled nc
 uses `nc -s <server-IPv4> <host> <port>`. Numeric targets bypass the resolver.
 File-based resolver configuration and environment defaults are deferred, with

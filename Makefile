@@ -401,12 +401,37 @@ USER_UDP_ELFS := $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/net_udp_probe.elf
 USER_TCP_ELF := $(BUILD_DIR)/tcptest.elf
 USER_TCP_SERVER_ELF := $(BUILD_DIR)/tcpserve.elf
 USER_NC_ELF := $(BUILD_DIR)/nc.elf
-$(BUILD_DIR)/nc.o: user/nc.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h src/include/terminal.h
+USER_NSLOOKUP_ELF := $(BUILD_DIR)/nslookup.elf
+USER_DNSPROBE_ELF := $(BUILD_DIR)/dnsprobe.elf
+USER_TCPDEADLINE_ELF := $(BUILD_DIR)/tcpdeadline.elf
+DNS_OBJECTS := $(BUILD_DIR)/dns.o $(BUILD_DIR)/dns_codec.o
+$(DNS_OBJECTS): $(BUILD_DIR)/%.o: user/%.c user/dns.h user/dns_codec.h src/include/syscall_abi.h src/include/socket_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(BUILD_DIR)/nslookup.o: user/nslookup.c user/dns.h user/dns_codec.h user/udp_common.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -c $< -o $@
+$(USER_NSLOOKUP_ELF): $(BUILD_DIR)/nslookup.o $(DNS_OBJECTS) user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=nslookup_main user/tools/start.asm -o $(BUILD_DIR)/nslookup_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/nslookup_start.o $(BUILD_DIR)/nslookup.o $(DNS_OBJECTS) -o $@
+$(BUILD_DIR)/dnsprobe.o: user/dnsprobe.c user/dns.h user/udp_common.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -c $< -o $@
+$(USER_DNSPROBE_ELF): $(BUILD_DIR)/dnsprobe.o $(DNS_OBJECTS) user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=dnsprobe_main user/tools/start.asm -o $(BUILD_DIR)/dnsprobe_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dnsprobe_start.o $(BUILD_DIR)/dnsprobe.o $(DNS_OBJECTS) -o $@
+$(BUILD_DIR)/tcpdeadline.o: user/tcpdeadline.c user/udp_common.h src/include/syscall_abi.h src/include/socket_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -c $< -o $@
+$(USER_TCPDEADLINE_ELF): $(BUILD_DIR)/tcpdeadline.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=tcpdeadline_main user/tools/start.asm -o $(BUILD_DIR)/tcpdeadline_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/tcpdeadline_start.o $(BUILD_DIR)/tcpdeadline.o -o $@
+$(BUILD_DIR)/nc.o: user/nc.c user/dns.h user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h src/include/terminal.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
-$(USER_NC_ELF): $(BUILD_DIR)/nc.o user/tools/start.asm user/shell.ld
+$(USER_NC_ELF): $(BUILD_DIR)/nc.o $(DNS_OBJECTS) user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=nc_main user/tools/start.asm -o $(BUILD_DIR)/nc_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/nc_start.o $< -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/nc_start.o $(BUILD_DIR)/nc.o $(DNS_OBJECTS) -o $@
 $(BUILD_DIR)/tcpserve.o: user/tcpserve.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
@@ -548,7 +573,7 @@ $(USER_TOP_ELF): $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o $(USER_DIR)/shell.l
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(STREAM_TOOL_ELFS) Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -564,6 +589,9 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_TCP_ELF) $(BUILD_DIR)/initramfs/bin/tcptest
 	@cp -f $(USER_TCP_SERVER_ELF) $(BUILD_DIR)/initramfs/bin/tcpserve
 	@cp -f $(USER_NC_ELF) $(BUILD_DIR)/initramfs/bin/nc
+	@cp -f $(USER_NSLOOKUP_ELF) $(BUILD_DIR)/initramfs/bin/nslookup
+	@cp -f $(USER_DNSPROBE_ELF) $(BUILD_DIR)/initramfs/bin/dnsprobe
+	@cp -f $(USER_TCPDEADLINE_ELF) $(BUILD_DIR)/initramfs/bin/tcpdeadline
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
@@ -861,7 +889,7 @@ test-net-nc-data-fin: $(BOOTABLE_ISO) test-net-tcp-socket-host test-net-nc-host
 
 test-net-nc-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include tests/net_nc_host.c -o $(BUILD_DIR)/net_nc_host
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include tests/net_nc_host.c user/dns.c user/dns_codec.c -o $(BUILD_DIR)/net_nc_host
 	@$(BUILD_DIR)/net_nc_host
 test-net-tcp-matrix: $(BOOTABLE_ISO) test-net-tcp-fixture test-net-nc-host test-net-tcp-socket-host
 	@python3 scripts/test_net_tcp_matrix.py --all
@@ -878,7 +906,24 @@ test-net-tcp-socket-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(subst tests/net_socket_host.c,tests/net_tcp_socket_host.c,$(NET_SOCKET_HOST_SRCS)) -Wl,--wrap=net_tcp_send -o $(BUILD_DIR)/net_tcp_socket_host
 	@$(BUILD_DIR)/net_tcp_socket_host
+	@python3 tests/test_tcp_deadline_guard.py
 .PHONY: test-net-udp-host test-net-socket-host
+.PHONY: test-net-dns-host
+test-net-dns-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include tests/net_dns_host.c user/dns_codec.c -o $(BUILD_DIR)/net_dns_host
+	@$(BUILD_DIR)/net_dns_host
+	@python3 tests/test_dns_fixture.py
+	@python3 tests/test_dns_lan_peer.py
+.PHONY: test-net-dns test-net-dns-lifecycle
+.PHONY: test-net-tcp-deadlines
+test-net-tcp-deadlines: $(BOOTABLE_ISO) test-net-tcp-socket-host
+	@python3 scripts/test_net_tcp_deadlines.py
+test-net-dns: $(BOOTABLE_ISO) test-net-dns-host test-net-tcp-socket-host
+# User-backend DNS fixture needs loopback UDP/TCP port 53 bind permission.
+	@python3 scripts/test_net_dns.py --all
+test-net-dns-lifecycle: $(BOOTABLE_ISO) test-net-dns-host test-net-tcp-socket-host
+	@python3 scripts/test_net_dns_lifecycle.py
 test-net-udp: $(BOOTABLE_ISO) test-net-udp-host test-net-socket-host
 	@python3 scripts/test_net_udp.py
 .PHONY: test-net-udp

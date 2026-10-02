@@ -190,3 +190,14 @@ Stream read/write dispatches into this same implementation, preserving syscall
 return/error values. UDP read/write remains unsupported. No TCP socket owns a
 NIC descriptor or retained DMA pointer. Listener/backlog and ACCEPT output/fd
 rollback and child ownership remain step 4 freeze obligations.
+
+## Approved opt-in deadline extension (Step 7)
+
+The existing calls remain untimed. SYS_SEND_UNTIL=49 and SYS_RECV_UNTIL=50
+use (fd, buffer, length, flags=0, absolute BSP ticks); SYS_CONNECT_UNTIL=51
+uses (fd, sockaddr, size, absolute BSP ticks). The full register layout,
+60-second policy horizon, validation/expiry precedence and cancellation contract
+are implemented as specified in [TCP_IO_DEADLINE.md](TCP_IO_DEADLINE.md).
+Host and Ring 3 evidence is recorded in [Step 7](../roadmap/net2-step7.md).
+An invalid/backwards timebase produces EIO for timed calls. The existing
+untimed socket ABI and data-before-EOF behavior are preserved.

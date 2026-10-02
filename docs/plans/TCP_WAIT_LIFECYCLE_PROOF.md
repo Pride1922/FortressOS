@@ -295,3 +295,38 @@ the failed obligation. Proposed fallback for discussion: an explicitly specified
 application receive timeout with ETIMEDOUT, documented units/default/configuration
 and precedence; no silent five-second EAGAIN. Neither this fallback nor a
 scheduler/signal change is authorized by this document.
+
+## Approved deadline proof extension (Step 7)
+
+Timed waits retain the existing reservation-free ownership model. One static
+endpoint hint stores the earliest requested wake tick, owning no bytes, pointer
+or continuation. Snapshot generation/event before testing readiness; register
+under the manager lock, then release it before sched_wait_until. The atomic
+predicate also checks absolute BSP ticks. Worker expiry clears the hint,
+release-publishes an event, then wakes outside the manager lock. Later shared
+waiters return on that event and rearm their original deadlines; stale hints
+from interrupted/completed callers produce at most one incidental wake.
+Creation/adoption/invalidation clear hints, so stale registration cannot target
+replacement generations. STOP owns no reservation; CONT revalidates before
+expiry/I/O. KILL needs no new timer-registration cleanup hook. Runtime worker
+assertions must exclude expiry publication between prepare and commit.
+The detailed race table and implementation gates are in
+[TCP_IO_DEADLINE.md](TCP_IO_DEADLINE.md). This is the approved design argument;
+host and real-scheduler evidence is recorded in
+[Step 7](../roadmap/net2-step7.md). The implementation uses net_tcp_ready with
+an explicitly initialized timed marker, absolute deadline and entry clock floor.
+Clock failure wakes hinted endpoints and fails timed calls with EIO.
+
+net_tcp_tick expires hints before its prepare/commit loop. action_inflight
+guards that interval; expiry and recursive worker entry trap while it is set.
+Pool maintenance follows all commits. The host fault-injection test verifies
+the trap, rather than relying only on source ordering.
+
+Readiness publication also has an observation-cache obligation: after queueing
+TX or consuming RX, invalidate endpoint.observed before publishing the event.
+Otherwise a later equal-sized batch can recreate the cached count before the
+worker samples the intervening drain, and a newly sleeping continuation misses
+the next event. repeated_receive_event_test forces that interleaving with two
+two-byte batches and no intervening zero-count worker sample. It fails before
+the invalidation fix and passes afterwards. This changes manager bookkeeping;
+the transport's sequence, ACK, window and EOF ordering are unchanged.

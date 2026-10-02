@@ -31,7 +31,8 @@ static unsigned allocations, sends, arps, wakes;
 static uint8_t frame[1514], reply[1500];
 static const uint8_t readonly[16]={0};
 static net_dev_t dev;
-uint64_t apic_timer_get_frequency(void) { return 100; }
+static uint64_t timer_hz=100;
+uint64_t apic_timer_get_frequency(void) { return timer_hz; }
 uint64_t apic_timer_get_bsp_ticks(void) { return now; }
 void *kmalloc(size_t n) {
     net_test_assert_unheld();

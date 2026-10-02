@@ -1328,6 +1328,9 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         case SYS_SEND:
         case SYS_RECV:
         case SYS_SHUTDOWN:
+        case SYS_SEND_UNTIL:
+        case SYS_RECV_UNTIL:
+        case SYS_CONNECT_UNTIL:
             result=net_socket_syscall(frame);
             break;
 

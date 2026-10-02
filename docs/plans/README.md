@@ -6,7 +6,10 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
-| [NET2_PLAN.md](NET2_PLAN.md) | Seven steps: TCP design/codec, simulator, client, server, finite nc, physical gate and userspace DNS. | **6/7 COMPLETE**; Dell 5590 physical TCP accepted, DNS + nslookup pending |
+| [NET2_PLAN.md](NET2_PLAN.md) | Seven steps: TCP design/codec, simulator, client, server, finite nc, physical gate and userspace DNS. | **7/7 COMPLETE**; Dell 5590 physical DNS user-confirmed PASS |
+| [NET2_STEP7_DNS.md](NET2_STEP7_DNS.md) | Userspace DNS, nslookup, hostname nc, bounded fallback and acceptance gates. | **COMPLETE**; host/QEMU evidence and user-confirmed physical acceptance |
+| [TCP_IO_DEADLINE.md](TCP_IO_DEADLINE.md) | Opt-in absolute TCP connect/send/receive deadlines, concrete syscall ABI and non-owning wake-hint proof. | **APPROVED + IMPLEMENTED**; host/live evidence in Step 7 |
+| [DNS_USER_API.md](DNS_USER_API.md) | Shared resolver layout, ownership, limits, statuses and transaction contract. | **APPROVED + IMPLEMENTED** |
 | [TCP_TRANSPORT_DESIGN.md](TCP_TRANSPORT_DESIGN.md) | Measured layout, bounded transport/OOO/retransmission/TIME_WAIT ownership and simulator contract. | **IMPLEMENTED**, pure engine |
 | [TCP_SOCKET_ABI.md](TCP_SOCKET_ABI.md) | Client/listener stream ABI/lifetime semantics; existing UDP and SYS_NETCTL preserved. | **STEPS 3–4 ABI IMPLEMENTED** |
 | [TCP_WAIT_LIFECYCLE_PROOF.md](TCP_WAIT_LIFECYCLE_PROOF.md) | Reservation-free waits, seven-property ACCEPT argument and runtime evidence. | **CLIENT/ACCEPT DESIGN REVIEWED + VERIFIED** |

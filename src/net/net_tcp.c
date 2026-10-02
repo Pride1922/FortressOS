@@ -10,6 +10,8 @@
 
 typedef struct {
     uint64_t generation, event, observed;
+    uint64_t wake_deadline_ticks;
+    bool wake_deadline_set;
     int block;
     int64_t error;
     uint16_t port;
@@ -34,6 +36,9 @@ static tcp_action_t action;
 static tcp_tuple_t tw_tuple;
 static tcp_header_t tw_ack;
 static bool tw_pending;
+static bool action_inflight;
+static uint64_t deadline_clock_last;
+static bool deadline_clock_failed;
 
 static uint64_t milliseconds(uint64_t ticks) {
     uint64_t hz=apic_timer_get_frequency();
@@ -58,11 +63,30 @@ static void irq_restore(uint64_t f) {
 }
 static void publish(endpoint_t *e) {
     if (__atomic_load_n(&e->event,__ATOMIC_RELAXED)==UINT64_MAX) {
+        e->wake_deadline_set=false;
         e->error=SYSCALL_EIO;
         __atomic_store_n(&e->generation,0,__ATOMIC_RELEASE); e->wake=true; return;
     }
     __atomic_add_fetch(&e->event,1,__ATOMIC_RELEASE); e->wake=true;
 }
+static void deadline_expire(endpoint_t *e) {
+    /* Runtime fence: expiry/event publication must stay outside TX transactions. */
+    if (action_inflight) __builtin_trap();
+    if (e->wake_deadline_set && (deadline_clock_failed || apic_timer_get_bsp_ticks()>=e->wake_deadline_ticks)) {
+        e->wake_deadline_set=false; publish(e);
+    }
+}
+#ifdef TEST_SMP_MEMORY
+void net_tcp_test_expiry_guard(void) {
+    action_inflight=true; deadline_expire(&endpoints[0]);
+}
+void net_tcp_test_event_exhaustion(unsigned slot) {
+    uint64_t flags=spin_lock_irqsave(&lock);
+    __atomic_store_n(&endpoints[slot].event,UINT64_MAX,__ATOMIC_RELEASE);
+    publish(&endpoints[slot]);
+    spin_unlock_irqrestore(&lock,flags);
+}
+#endif
 static tcp_conn_t *connection(endpoint_t *e) {
     return e->block>=0 && pool.used[e->block] ? &pool.blocks[e->block] : NULL;
 }
@@ -101,6 +125,9 @@ static uint32_t initial_sequence(tcp_tuple_t tuple, uint64_t now) {
     return m+h; /* Predictable experimental LAN mixer, not entropy/PRF. */
 }
 void net_tcp_init(net_dev_t *dev, const net_config_t *cfg) {
+    action_inflight=false;
+    deadline_clock_last=apic_timer_get_bsp_ticks();
+    __atomic_store_n(&deadline_clock_failed,false,__ATOMIC_RELEASE);
     device=dev; local_ip=cfg->local_ip; ephemeral=49152; cursor=0;
     clock_ms=milliseconds(apic_timer_get_bsp_ticks()); isn_clock=(uint32_t)clock_ms*250U;
     tw_pending=false;
@@ -127,6 +154,7 @@ int64_t net_tcp_create(unsigned slot) {
     passive_tw[pool.tw_slot[block]]=false;
     e->block=block; e->used=true; e->started=e->cancel=e->detach=false;
     e->port=0; e->error=0; e->observed=UINT64_MAX;
+    e->wake_deadline_set=false; e->wake_deadline_ticks=0;
     e->listening=e->passive=false; e->backlog=0;
     __atomic_store_n(&e->event,0,__ATOMIC_RELEASE);
     __atomic_store_n(&e->generation,pool.blocks[block].generation,__ATOMIC_RELEASE);
@@ -139,6 +167,7 @@ int64_t net_tcp_stage(unsigned slot) {
     else {
         e->used=true; e->block=-1; e->started=e->listening=e->wake=e->passive=false;
         e->port=0; e->error=0; e->backlog=0;
+        e->wake_deadline_set=false; e->wake_deadline_ticks=0;
     }
     spin_unlock_irqrestore(&lock,flags); return result;
 }
@@ -190,6 +219,7 @@ void net_tcp_accept_commit(unsigned listener, unsigned target, net_tcp_child_t c
     accepted->block=child.block; accepted->port=c->tuple.local_port;
     accepted->passive=true;
     accepted->started=true; accepted->observed=UINT64_MAX;
+    accepted->wake_deadline_set=false; accepted->wake_deadline_ticks=0;
     __atomic_store_n(&accepted->event,0,__ATOMIC_RELEASE);
     __atomic_store_n(&accepted->generation,child.generation,__ATOMIC_RELEASE);
     e->pending[i].block=-1; publish(e); publish(accepted);
@@ -199,6 +229,7 @@ void net_tcp_close(unsigned slot) {
     if (slot>=NET_SOCKET_MAX) return;
     uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
     e->used=false; e->detach=true;
+    e->wake_deadline_set=false; e->wake_deadline_ticks=0;
     __atomic_store_n(&e->generation,0,__ATOMIC_RELEASE); publish(e);
     spin_unlock_irqrestore(&lock,flags);
 }
@@ -218,7 +249,7 @@ int64_t net_tcp_bind(unsigned slot, uint16_t port) {
     }
     spin_unlock_irqrestore(&lock,flags); return result;
 }
-int64_t net_tcp_connect(unsigned slot, uint32_t ip, uint16_t port) {
+static int64_t connect_start(unsigned slot, uint32_t ip, uint16_t port, bool timed, uint64_t deadline) {
     uint32_t hop;
     if (!net_ipv4_route(ip,&hop)) return SYSCALL_EINVAL;
     /* One chosen MSL after reboot; timestamps are not an entropy guarantee. */
@@ -229,6 +260,7 @@ int64_t net_tcp_connect(unsigned slot, uint32_t ip, uint16_t port) {
     else if (e->started) result=SYSCALL_EISCONN;
     spin_unlock_irqrestore(&lock,flags);
     if (result) return result;
+    if (timed && apic_timer_get_bsp_ticks()>=deadline) return SYSCALL_ETIMEDOUT;
     if (!e->port && (result=net_tcp_bind(slot,0))) return result;
     flags=spin_lock_irqsave(&lock);
     tcp_tuple_t tuple={local_ip,ip,e->port,port};
@@ -242,6 +274,12 @@ int64_t net_tcp_connect(unsigned slot, uint32_t ip, uint16_t port) {
         if (!result) { pool.timewait[tw].tuple=tuple; e->started=true; publish(e); }
     }
     spin_unlock_irqrestore(&lock,flags); return result;
+}
+int64_t net_tcp_connect(unsigned slot, uint32_t ip, uint16_t port) {
+    return connect_start(slot,ip,port,false,0);
+}
+int64_t net_tcp_connect_until(unsigned slot, uint32_t ip, uint16_t port, uint64_t deadline) {
+    return connect_start(slot,ip,port,true,deadline);
 }
 int64_t net_tcp_connected(unsigned slot) {
     uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
@@ -268,7 +306,10 @@ int64_t net_tcp_send(unsigned slot, const void *data, size_t len) {
     int result=tcp_conn_queue(c,data,len);
     if (result==TCP_WOULD_BLOCK) return SYSCALL_EAGAIN;
     if (result<0) return SYSCALL_ENOTCONN;
-    uint64_t flags=spin_lock_irqsave(&lock); publish(e); spin_unlock_irqrestore(&lock,flags);
+    uint64_t flags=spin_lock_irqsave(&lock);
+    /* A later worker batch may restore the same count sampled before this
+     * user operation. Invalidate the sample so its readiness event is fresh. */
+    e->observed=UINT64_MAX; publish(e); spin_unlock_irqrestore(&lock,flags);
     return result;
 }
 int64_t net_tcp_peek(unsigned slot, void *data, size_t capacity) {
@@ -283,7 +324,10 @@ int64_t net_tcp_peek(unsigned slot, void *data, size_t capacity) {
 int64_t net_tcp_consume(unsigned slot, size_t len) {
     tcp_conn_t *c=connection(&endpoints[slot]);
     int result=tcp_conn_consume(c,len);
-    uint64_t flags=spin_lock_irqsave(&lock); publish(&endpoints[slot]); spin_unlock_irqrestore(&lock,flags);
+    uint64_t flags=spin_lock_irqsave(&lock);
+    /* Do not miss equal-sized RX batches arriving after this consume but before
+     * the worker has sampled the intervening empty queue. */
+    endpoints[slot].observed=UINT64_MAX; publish(&endpoints[slot]); spin_unlock_irqrestore(&lock,flags);
     return result;
 }
 int64_t net_tcp_shutdown(unsigned slot) {
@@ -293,13 +337,25 @@ int64_t net_tcp_shutdown(unsigned slot) {
 }
 bool net_tcp_snapshot(unsigned slot, net_tcp_wait_t *w) {
     endpoint_t *e=&endpoints[slot];
+    w->timed=false; w->deadline_ticks=0; w->clock_floor=0;
     w->slot=slot; w->generation=__atomic_load_n(&e->generation,__ATOMIC_ACQUIRE);
     w->event=__atomic_load_n(&e->event,__ATOMIC_ACQUIRE); return w->generation!=0;
 }
 bool net_tcp_ready(void *arg) {
     const net_tcp_wait_t *w=arg; endpoint_t *e=&endpoints[w->slot];
     return __atomic_load_n(&e->generation,__ATOMIC_ACQUIRE)!=w->generation ||
-        __atomic_load_n(&e->event,__ATOMIC_ACQUIRE)!=w->event;
+        __atomic_load_n(&e->event,__ATOMIC_ACQUIRE)!=w->event ||
+        (w->timed && (!net_tcp_deadline_clock_ok() || apic_timer_get_bsp_ticks()<w->clock_floor ||
+            apic_timer_get_bsp_ticks()>=w->deadline_ticks));
+}
+bool net_tcp_deadline_clock_ok(void) { return !__atomic_load_n(&deadline_clock_failed,__ATOMIC_ACQUIRE); }
+bool net_tcp_deadline_register(const net_tcp_wait_t *w) {
+    uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[w->slot];
+    bool valid=e->used && e->generation==w->generation && w->timed;
+    if(valid && (!e->wake_deadline_set || w->deadline_ticks<e->wake_deadline_ticks)) {
+        e->wake_deadline_ticks=w->deadline_ticks; e->wake_deadline_set=true;
+    }
+    spin_unlock_irqrestore(&lock,flags); return valid;
 }
 const void *net_tcp_channel(const net_tcp_wait_t *w) { return &endpoints[w->slot].channel; }
 static bool submit(tcp_tuple_t tuple, const tcp_header_t *h, const void *data, size_t len) {
@@ -353,10 +409,20 @@ void net_tcp_input(uint32_t source, const uint8_t *data, size_t len) {
     irq_restore(outer);
 }
 void net_tcp_tick(uint64_t ticks, bool online) {
+    if (action_inflight) __builtin_trap();
+    uint64_t fresh=apic_timer_get_bsp_ticks();
+    bool clock_backwards=fresh<deadline_clock_last;
+    deadline_clock_last=fresh;
     uint64_t now=milliseconds(ticks); if (now>clock_ms) clock_ms=now;
     for (unsigned n=0; n<NET_SOCKET_MAX; ++n) {
         unsigned slot=(cursor+n)%NET_SOCKET_MAX; endpoint_t *e=&endpoints[slot];
         uint64_t outer=irq_off(), flags=spin_lock_irqsave(&lock);
+        /* Boot resets uptime before shell start. Only an outstanding timed
+         * hint depends on the previous epoch. Read the hint under its manager
+         * lock (AP final close may clear it); each continuation also checks
+         * its own entry clock floor on retry. */
+        if (clock_backwards && e->wake_deadline_set)
+            __atomic_store_n(&deadline_clock_failed,true,__ATOMIC_RELEASE);
         tcp_conn_t *c=connection(e);
         if (e->detach || e->cancel) {
             for (unsigned j=0; j<e->backlog; ++j) {
@@ -387,6 +453,7 @@ void net_tcp_tick(uint64_t ticks, bool online) {
                 ((uint64_t)(uint8_t)(-e->error)<<50) | ((uint64_t)ready<<58);
             if (observed!=e->observed) { e->observed=observed; publish(e); }
         }
+        deadline_expire(e);
         bool wake=e->wake; e->wake=false;
         spin_unlock_irqrestore(&lock,flags); irq_restore(outer);
         if (wake) sched_wake_all(&e->channel);
@@ -406,6 +473,7 @@ void net_tcp_tick(uint64_t ticks, bool online) {
          * AP close only publishes deferred detach. Pool maintenance below
          * must run after every transaction has committed. */
         if (!tcp_conn_prepare(c,&action,scratch,sizeof(scratch))) {
+            action_inflight=true;
             bool sent=false; uint32_t hop;
             if (net_ipv4_route(c->tuple.remote_ip,&hop)) {
                 if (net_arp_lookup(hop,mac)) {
@@ -418,6 +486,7 @@ void net_tcp_tick(uint64_t ticks, bool online) {
              * commit means this transaction was invalidated/reordered, not
              * ordinary ARP/NIC backpressure: never silently lose the action. */
             if (!tcp_conn_commit(c,&action,sent)) __builtin_trap();
+            action_inflight=false;
         }
         irq_restore(outer);
     }

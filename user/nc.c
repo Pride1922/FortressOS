@@ -1,11 +1,14 @@
 #include "udp_common.h"
 #include "terminal.h"
+#include "dns.h"
 /* Finite serial request/response: consume stdin, half-close, drain response.
  * A peer must consume the request before sending a large response. */
 #ifndef NC_CALL
 #define NC_CALL udp_call
 #endif
 static uint8_t buffer[4096];
+static dns_context_t dns_context;
+static dns_result_t dns_result;
 
 static bool copy(long source, long destination) {
     for (;;) {
@@ -34,12 +37,23 @@ int nc_main(int argc, char **argv) {
     bool listen=argc==3 && udp_equal(argv[1],"-l");
     unsigned port;
     uint32_t ip=0;
-    const char *number=argc==3 ? argv[2] : "";
-    if (argc!=3 || (!listen && !udp_ip(argv[1],&ip)) ||
+    bool named=argc==5 && udp_equal(argv[1],"-s");
+    uint32_t server=0;
+    const char *host=named ? argv[3] : argc==3 ? argv[1] : "";
+    const char *number=named ? argv[4] : argc==3 ? argv[2] : "";
+    if ((!named && argc!=3) || (named && !udp_ip(argv[2],&server)) ||
+        (!listen && !named && !udp_ip(host,&ip)) ||
         !udp_number(&number,65535,&port) || *number || !port) {
-        message("usage: nc IPv4 port | nc -l port (finite serial request/response)\n"
+        message("usage: nc IPv4 port | nc -s server-IPv4 host port | nc -l port (finite serial request/response)\n"
                 "nc -l skips terminal stdin; piped or redirected stdin is sent before receiving.\n"
                 "A peer that sends a large response before consuming the whole request can deadlock the serial nc; use small finite requests or a cooperating peer.\n"); return 1;
+    }
+    if(named && !udp_ip(host,&ip)) {
+        size_t length=0; while(length<=254 && host[length]) ++length;
+        dns_options_t options={.server_ipv4=server}; dns_context_init(&dns_context);
+        int status=dns_resolve_ipv4(&dns_context,&options,host,length,&dns_result);
+        if(status) { message("nc: "); message(dns_status_name(status)); message("\n"); return 1; }
+        ip=dns_result.addresses[0];
     }
     long fd=NC_CALL(SYS_SOCKET,NET_AF_INET,NET_SOCK_STREAM|NET_SOCK_CLOEXEC,6,0,0,0), listener=-1;
     bool skip_stdin=false;

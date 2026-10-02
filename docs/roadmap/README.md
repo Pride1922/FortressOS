@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [net2-step7.md](net2-step7.md) | COMPLETE: DNS/nslookup/hostname nc, approved TCP deadlines, host/QEMU evidence and Dell 5590 physical DNS user-confirmed PASS; NET-2 7/7 complete. |
 | [net2-step6.md](net2-step6.md) | Dell 5590 physical TCP A–D user-confirmed PASS; Step 6 closed, NET-2 6/7 complete. |
 | [net2-step6-caseC.md](net2-step6-caseC.md) | Confirmed stdin invocation issue; terminal-aware nc listener and BIOS/UEFI tty/null/file/pipe data+FIN tests. Physical retry accepted. |
 | [net2-step5.md](net2-step5.md) | Finite serial nc, independent golden-vector TCP socket peer/audit, persistent failure artifacts and complete backend matrix. |

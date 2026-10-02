@@ -55,6 +55,9 @@
 #define SYS_SEND          46
 #define SYS_RECV          47
 #define SYS_SHUTDOWN      48
+#define SYS_SEND_UNTIL    49 /* (fd, data, len, flags=0, absolute BSP ticks) */
+#define SYS_RECV_UNTIL    50 /* (fd, data, cap, flags=0, absolute BSP ticks) */
+#define SYS_CONNECT_UNTIL 51 /* (fd, sockaddr, size, absolute BSP ticks) */
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1

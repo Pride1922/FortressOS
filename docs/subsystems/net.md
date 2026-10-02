@@ -6,7 +6,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
-NET-2 is 6/7 complete: [step 1](../roadmap/net2-step1.md) supplies
+NET-2 is 7/7 complete: [step 1](../roadmap/net2-step1.md) supplies
 the codec; [step 2](../roadmap/net2-step2.md) supplies the bounded transport
 engine and loss/reordering simulator, host-sanitizer verified. The seven-step
 [plan](../plans/NET2_PLAN.md) preserves UDP capacity;
@@ -27,8 +27,11 @@ timeouts are retained and explained in the checkpoint. [Step 6](../roadmap/net2-
 physical TCP is accepted on Dell 5590: user-confirmed client echo, HTTP,
 listener data/FIN and reset recovery with peer Wireshark observations. Listener
 nc skips terminal stdin using existing TERM_ISATTY; pipes/files and client mode
-retain their input behavior. DNS + nslookup remain Step 7; no full NET-2 closure
-or general TCP-conformance claim.
+retain their input behavior. [Step 7](../roadmap/net2-step7.md) implements bounded
+userspace DNS, nslookup, hostname nc and opt-in TCP deadlines with host/QEMU
+evidence. Dell 5590 physical DNS acceptance is user-confirmed: UDP A, CNAME,
+NXDOMAIN, TCP fallback, bounded timeout and hostname nc, with shell/ping recovery.
+NET-2 is closed; this is not a general TCP/DNS-conformance claim.
 
 2026-10-01 user reports: **5530 I219-LM 8086:1A1E driver PASS** and
 **5590 UDP PASS**. These are manual observations without new capture/log
@@ -170,6 +173,9 @@ gate is separate manual/user-supplied evidence — see
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-net-dns-host` | Actual freestanding DNS codec/resolver under ASan/UBSan, literal golden vectors, malformed bounds/fuzz, syscall adapters at 100/1000 Hz, cleanup, diagnostics and deadline framing. PASS 2026-10-02; no IRQ/scheduler/hardware claim. |
+| `make test-net-dns` | Step 7 real Ring 3 DNS/nslookup/hostname nc, independent UDP/TCP capture audit, timeout/trickle/EOF and ping recovery. Eight firmware/NIC/backend cases plus two SMP=4 BSP/AP direct-dispatch smoke cases: 10/10 PASS 2026-10-02 via runner --all --jobs 4. User backend needs loopback port-53 permission; no data disks or physical claim. See [evidence](../roadmap/net2-step7.md). |
+| `make test-net-dns-lifecycle` / `make test-net-tcp-deadlines` | Persistent BIOS/UEFI Ring 3 timed receive/signal/STOP-CONT/KILL and zero-window send/shared-fd/unanswered-connect gates, each 2/2 PASS 2026-10-02 with shell/ping recovery. Exact runs and captures in [Step 7](../roadmap/net2-step7.md). |
 | `make test-net-host` | NET Phase 0 host ASan/UBSan: RFC 1071 ones' complement checksum vectors (odd/even lengths, bounds, multi-buffer accumulation), Ethernet II (encode/decode, bounds 60-1514B, runt/oversize rejection, broadcast/MAC filter), ARP (encode/decode request/reply, truncation rejection, 16-entry bounded cache stub), IPv4 (encode/decode, checksum verify/corrupt, fragment rejection, bounds, malformed IHL/len), pbuf_t lifecycle and fuzz/bounds resilience. 103/103 PASS 2026-09-30. |
 | `make test-net-eth-host` | NET Phase 3 host ASan/UBSan: actual `net.c` stack with `eth`/`arp` codecs and a mocked NIC, scheduler and BSP ticks. Every input recycled exactly once; ARP request replies and reply-only cache learning; malformed/truncated/oversize/non-matching frames dropped; send-failure and `arp_resolve` outcomes; bounded `net=` config (defaults, prefix 1–30, duplicate/malformed fallback); absent device, failed worker creation and `net_test=rings` raw-test exclusion; three mock idle waits proving the tick-deadline predicate and channel wake with no idle yield. PASS 2026-10-01; no hardware/IRQ/real-scheduler/idle-CPU claim. |
 | `make test-net-eth` | NET Phase 3 QEMU, SMP=1, BIOS/UEFI × e1000/e1000e × {user, socket} = 8 cases; disposable ISO/OVMF vars, no data disks, exact argv preflight. User backend resolves the real SLIRP gateway; socket backend emulates the gateway reply and, after idle ticks, injects a peer ARP request over loopback UDP to prove the sleeping worker resumes to poll RX. Guest request/reply audited as exact 60-byte outbound pcap records; RX injection is loopback UDP, never `filter-dump`; real Ring 3 shell prompt confirmed while the worker runs. 8/8 PASS 2026-10-01; no physical acceptance, sustained load, measured idle CPU or cross-core delivery claim. |

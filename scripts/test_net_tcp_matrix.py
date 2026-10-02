@@ -341,7 +341,10 @@ class Case:
                         claimed = {s['port'] for s in scenarios if s['active'] and s['port'] is not None}
                         if packet['dest'] not in claimed:
                             spec['port'] = packet['dest']; break
-                    elif not spec['active'] and packet['dest'] == spec['port']: spec['guest_port'] = packet['source']
+                    elif not spec['active'] and packet['dest'] == spec['port'] and spec['guest_port'] is None:
+                        claimed = {(s['guest_port'],s['port']) for s in scenarios if not s['active'] and s['guest_port'] is not None}
+                        if (packet['source'],packet['dest']) not in claimed:
+                            spec['guest_port'] = packet['source']; break
         save(self.root / 'streams.json', scenarios)
         try:
             if scenarios: self.audit_result = audit(self.pcap, self.root / 'injection.jsonl' if self.peer else None, scenarios)

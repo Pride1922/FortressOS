@@ -217,7 +217,7 @@ static void socket_ap_probe(void *arg) {
         frame.rax=nr;
         if (net_socket_syscall(&frame)!=SYSCALL_EOPNOTSUPP) pass=false;
     }
-    for (unsigned nr=SYS_CONNECT; nr<=SYS_SHUTDOWN; ++nr) {
+    for (unsigned nr=SYS_CONNECT; nr<=SYS_CONNECT_UNTIL; ++nr) {
         frame.rax=nr;
         if (net_socket_syscall(&frame)!=SYSCALL_EOPNOTSUPP) pass=false;
     }

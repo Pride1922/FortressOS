@@ -10,7 +10,7 @@ static size_t peer_count, peer_queued;
 static bool peer_active, peer_return, refuse, blackhole;
 static unsigned tcp_packets;
 static unsigned fin_packets, reset_packets;
-static bool interrupt_after_send, interrupt_wait_before_reply;
+static bool interrupt_after_send, interrupt_wait_before_reply, expire_wait_with_reply;
 static bool listener_fixture, invalidate_listener_wait;
 static unsigned listener_wait_slot;
 static tcp_header_t synacks[16];
@@ -122,6 +122,15 @@ static void tcp_wait(const void *channel, bool (*ready)(void *), void *arg) {
         assert(peer_active && peer_connection.state==TCP_SYN_RCVD);
         signal_pending=true; return;
     }
+    if (expire_wait_with_reply) {
+        expire_wait_with_reply=false;
+        net_tcp_wait_t *wait=arg;
+        net_tcp_tick(now,true); /* SYN submitted before the peer's SYN/ACK. */
+        assert(peer_active && peer_connection.state==TCP_SYN_RCVD);
+        now=wait->deadline_ticks; peer_service();
+        assert(!net_tcp_connected(wait->slot)); /* handshake raced to completion */
+        return; /* syscall must cancel, despite the now-established transport */
+    }
     for (unsigned i=0; i<4000; ++i) {
         if (ready(arg) || signal_pending) return;
         tcp_service();
@@ -186,6 +195,8 @@ static void listener_data_fin_tests(net_config_t *cfg) {
         closefd(listener); net_tcp_tick(now,true); /* Child must retain buffered RX. */
         long nr=(mode&4) ? SYS_RECV : SYS_READ;
         memset(received,0,sizeof(received));
+        assert(call(SYS_RECV_UNTIL,child,(uintptr_t)received,sizeof(received),0,now,0)==SYSCALL_ETIMEDOUT);
+        for(unsigned i=0;i<sizeof(received);++i) assert(!received[i]);
         size_t first=(mode&8) ? sizeof(payload)-1 : 5;
         assert(stream_receive_call(nr,child,received,first)==(long)first);
         assert(!memcmp(received,payload,first));
@@ -199,6 +210,23 @@ static void listener_data_fin_tests(net_config_t *cfg) {
         assert(!allocations);
     }
     puts("[PASS] listener data+FIN combined/adjacent, pre/post ACCEPT, READ/RECV: bytes before EOF after listener close");
+}
+static void repeated_receive_event_test(net_config_t *cfg) {
+    assert(!allocations); peer_active=false; listener_fixture=true;
+    net_socket_init(&dev,cfg); net_ipv4_init(&dev,cfg); net_socket_enable();
+    int listener=listenfd(); memset(synacks,0,sizeof(synacks)); passive_open(0,true);
+    int child=(int)acceptfd(listener,NULL,NULL); assert(child>=0);
+    incoming(0,TCP_ACK|TCP_PSH,synacks[0].sequence+1,"ab",2); net_tcp_tick(now,true);
+    uint8_t bytes[2]; assert(stream_receive_call(SYS_RECV,child,bytes,2)==2 && !memcmp(bytes,"ab",2));
+    net_tcp_wait_t wait; assert(net_tcp_snapshot(net_socket_index(process.fd_table[child]),&wait));
+    /* No zero-count worker sample between consume and equal-sized next batch. */
+    incoming_at(0,103,TCP_ACK|TCP_PSH,synacks[0].sequence+1,"cd",2);
+    assert(!net_tcp_ready(&wait)); net_tcp_tick(now,true);
+    assert(net_tcp_ready(&wait));
+    assert(stream_receive_call(SYS_RECV,child,bytes,2)==2 && !memcmp(bytes,"cd",2));
+    closefd(listener); closefd(child); net_tcp_tick(now,true); listener_fixture=false;
+    assert(!allocations);
+    puts("[PASS] equal-sized RX batches separated by userspace consume publish a fresh wake event without a zero-count worker sample");
 }
 static void listener_tests(net_config_t *cfg) {
     assert(!allocations); peer_active=false; listener_fixture=true;
@@ -283,15 +311,84 @@ static void listener_tests(net_config_t *cfg) {
     puts("[PASS] listener backlog/duplicate SYN/half-open expiry; output/signal/heap/fd/handle rollback; full-pool adoption; child independence; single delivery; defensive invalidation");
 }
 int main(void) {
+    if (getenv("NET_TCP_EXPIRY_GUARD")) {
+        extern void net_tcp_test_expiry_guard(void);
+        net_tcp_test_expiry_guard(); return 99;
+    }
     assert(!udp_baseline_main());
     memset(&process,0,sizeof(process)); process.cpu_affinity=0;
     now=13000; signal_pending=false; online=true; cached=true;
     dev.send_packet=tcp_transmit;
     net_config_t cfg={.local_ip=htonl(0x0a00020f),.gateway=htonl(0x0a000202),.prefix=24};
     net_ipv4_init(&dev,&cfg); net_socket_init(&dev,&cfg); net_socket_enable();
+    /* Existing shell startup resets BSP uptime with no deadline hint. */
+    now=0; net_tcp_tick(now,true); assert(net_tcp_deadline_clock_ok());
+    now=13000;
     destination=(net_sockaddr_in_t){.family=2,.port=htons(7777),.address=cfg.gateway};
     extern void (*net_host_wait_override)(const void *, bool (*)(void *), void *);
     net_host_wait_override=tcp_wait;
+    /* Approved per-call deadlines: real manager/syscall, fake BSP clock. */
+    int timedfd=stream(); assert(timedfd>=0);
+    assert(call(SYS_CONNECT_UNTIL,timedfd,(uintptr_t)&destination,16,now+6001,0,0)==SYSCALL_EINVAL);
+    unsigned before=tcp_packets;
+    assert(call(SYS_CONNECT_UNTIL,timedfd,(uintptr_t)&destination,16,now,0,0)==SYSCALL_ETIMEDOUT);
+    assert(tcp_packets==before);
+    assert(!call(SYS_CONNECT_UNTIL,timedfd,(uintptr_t)&destination,16,now+100,0,0));
+    assert(call(SYS_RECV_UNTIL,timedfd,(uintptr_t)readonly,1,0,now,0)==SYSCALL_EFAULT);
+    assert(call(SYS_RECV_UNTIL,timedfd,(uintptr_t)output,1,NET_MSG_DONTWAIT,now+10,0)==SYSCALL_EINVAL);
+    assert(call(SYS_RECV_UNTIL,timedfd,0,0,0,0,0)==0);
+    signal_pending=true;
+    assert(call(SYS_RECV_UNTIL,timedfd,(uintptr_t)output,1,0,now,0)==SYSCALL_EINTR);
+    signal_pending=false;
+    uint64_t expiry=now+3;
+    assert(call(SYS_RECV_UNTIL,timedfd,(uintptr_t)output,1,0,expiry,0)==SYSCALL_ETIMEDOUT && now>=expiry);
+    unsigned slot=net_socket_index(process.fd_table[timedfd]);
+    net_tcp_wait_t early,later; assert(net_tcp_snapshot(slot,&early)); later=early;
+    early.timed=later.timed=true; early.deadline_ticks=now+2; later.deadline_ticks=now+5;
+    assert(net_tcp_deadline_register(&later) && net_tcp_deadline_register(&early));
+    net_tcp_tick(now,true); /* Flush any unrelated pending event first. */
+    assert(net_tcp_snapshot(slot,&early)); later=early;
+    early.timed=later.timed=true; early.deadline_ticks=now+2; later.deadline_ticks=now+5;
+    assert(net_tcp_deadline_register(&early) && net_tcp_deadline_register(&later));
+    now+=2; unsigned wake_before=wakes; net_tcp_tick(now,true);
+    assert(wakes>wake_before && net_tcp_ready(&early) && net_tcp_ready(&later));
+    assert(net_tcp_snapshot(slot,&later)); later.timed=true; later.deadline_ticks=now+3;
+    assert(net_tcp_deadline_register(&later)); now+=3; net_tcp_tick(now,true); assert(net_tcp_ready(&later));
+    blackhole=true;
+    assert(call(SYS_SEND_UNTIL,timedfd,(uintptr_t)stream_output,8192,0,now+10,0)==8192);
+    expiry=now+3;
+    assert(call(SYS_SEND_UNTIL,timedfd,(uintptr_t)stream_output,1,0,expiry,0)==SYSCALL_ETIMEDOUT);
+    net_tcp_wait_t deadline_stale=early; deadline_stale.timed=true; deadline_stale.deadline_ticks=now+20;
+    closefd(timedfd); tcp_service(); peer_active=false;
+    assert(!net_tcp_deadline_register(&deadline_stale) && net_tcp_ready(&deadline_stale));
+    timedfd=stream(); assert(timedfd>=0); expiry=now+3;
+    assert(call(SYS_CONNECT_UNTIL,timedfd,(uintptr_t)&destination,16,expiry,0,0)==SYSCALL_ETIMEDOUT);
+    tcp_service(); assert(net_tcp_connected(net_socket_index(process.fd_table[timedfd]))==SYSCALL_ENOTCONN);
+    closefd(timedfd); tcp_service(); blackhole=false; peer_active=false;
+    timedfd=stream(); expire_wait_with_reply=true; expiry=now+3;
+    assert(call(SYS_CONNECT_UNTIL,timedfd,(uintptr_t)&destination,16,expiry,0,0)==SYSCALL_ETIMEDOUT);
+    before=fin_packets; unsigned timed_resets=reset_packets;
+    for (unsigned i=0; i<10 && fin_packets==before; ++i) tcp_service();
+    assert(fin_packets==before+1 && reset_packets==timed_resets && peer_connection.eof);
+    assert(net_tcp_connected(net_socket_index(process.fd_table[timedfd]))==SYSCALL_ENOTCONN);
+    closefd(timedfd); tcp_service(); peer_active=false;
+    assert(!allocations); timer_hz=1000; now=130000;
+    net_ipv4_init(&dev,&cfg); net_socket_init(&dev,&cfg); net_socket_enable();
+    timedfd=stream(); assert(timedfd>=0);
+    assert(!call(SYS_CONNECT_UNTIL,timedfd,(uintptr_t)&destination,16,now+100,0,0));
+    assert(call(SYS_RECV_UNTIL,timedfd,(uintptr_t)output,1,0,now+60001,0)==SYSCALL_EINVAL);
+    expiry=now+3;
+    assert(call(SYS_RECV_UNTIL,timedfd,(uintptr_t)output,1,0,expiry,0)==SYSCALL_ETIMEDOUT && now>=expiry);
+    /* A decreasing clock must wake hints and fail closed, not wait for wrap. */
+    net_tcp_wait_t reset_wait; assert(net_tcp_snapshot(net_socket_index(process.fd_table[timedfd]),&reset_wait));
+    reset_wait.timed=true; reset_wait.deadline_ticks=now+100; reset_wait.clock_floor=now;
+    assert(net_tcp_deadline_register(&reset_wait)); now-=2; net_tcp_tick(now,true);
+    assert(net_tcp_ready(&reset_wait) && !net_tcp_deadline_clock_ok());
+    assert(call(SYS_RECV_UNTIL,timedfd,(uintptr_t)output,1,0,now+100,0)==SYSCALL_EIO);
+    closefd(timedfd); tcp_service(); peer_active=false; timer_hz=100;
+    puts("[PASS] timed connect/send/receive expiry, no-start expired CONNECT, scalar/pointer/signal precedence, zero length, shared earliest hint/rearm and generation-checked cancellation");
+    assert(!allocations); now=13000; tcp_packets=fin_packets=reset_packets=0;
+    net_ipv4_init(&dev,&cfg); net_socket_init(&dev,&cfg); net_socket_enable();
     int fd=stream(); assert(fd>=0);
     cpu_locals[0].id=1;
     assert(call(SYS_CONNECT,fd,0,16,0,0,0)==SYSCALL_EOPNOTSUPP);
@@ -397,6 +494,25 @@ int main(void) {
     assert(!allocations && tcp_packets>50);
     listener_tests(&cfg);
     listener_data_fin_tests(&cfg);
+    repeated_receive_event_test(&cfg);
+    /* Event-counter exhaustion invalidates identity and clears timed hints;
+     * neither the old hint nor an old continuation may attach to slot reuse. */
+    peer_active=false; now=13000;
+    net_ipv4_init(&dev,&cfg); net_socket_init(&dev,&cfg); net_socket_enable();
+    fd=stream(); assert(!connectfd(fd));
+    unsigned exhausted_slot=net_socket_index(process.fd_table[fd]);
+    net_tcp_wait_t exhausted; assert(net_tcp_snapshot(exhausted_slot,&exhausted));
+    exhausted.timed=true; exhausted.deadline_ticks=now+100; exhausted.clock_floor=now;
+    assert(net_tcp_deadline_register(&exhausted));
+    extern void net_tcp_test_event_exhaustion(unsigned);
+    net_tcp_test_event_exhaustion(exhausted_slot);
+    assert(net_tcp_ready(&exhausted) && !net_tcp_deadline_register(&exhausted));
+    assert(call(SYS_RECV_UNTIL,fd,(uintptr_t)output,1,0,now+100,0)==SYSCALL_ENOTCONN);
+    closefd(fd); tcp_service();
+    fd=stream(); assert(net_socket_index(process.fd_table[fd])==exhausted_slot);
+    assert(!net_tcp_deadline_register(&exhausted));
+    closefd(fd); tcp_service(); assert(!allocations);
+    puts("[PASS] TCP event exhaustion invalidates timed waits and rejects hints across slot reuse");
     puts("TCP socket host PASS: actual manager/syscalls/codec; 64KiB both directions, half-close, EOF, short sends, shared refs, stale identity, interruption/refusal/timeout; mocked scheduler and peer engine");
     return 0;
 }
