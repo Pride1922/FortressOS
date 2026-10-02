@@ -1,9 +1,8 @@
-# TCP socket contract — NET-2 step 3 client ABI
+# TCP socket contract — NET-2 steps 3–4 stream ABI
 
 2026-10-02. Client ABI frozen for step 3: CONNECT/SEND/RECV/SHUTDOWN and
-read/write on streams. LISTEN/ACCEPT numbers are reserved and return
-EOPNOTSUPP on stream handles until step 4; their remaining semantics below are
-design requirements, not implemented acceptance. UDP 38–41 and SYS_NETCTL=42
+read/write on streams. Step 4 now implements LISTEN/ACCEPT and bounded passive
+children; host/Ring 3 evidence is recorded in net2-step4.md. UDP 38–41 and SYS_NETCTL=42
 retain their semantics. No pointer-bearing structure or scheduler ABI change.
 
 ## Address and calls
@@ -20,7 +19,7 @@ Register map (RAX signed result; RDI/RSI/RDX/R10/R8/R9 arguments):
 | --- | --- | --- | --- |
 | 43 | CONNECT | fd, destination, 16 | 0 after handshake |
 | 44 | LISTEN | fd, backlog | 0 |
-| 45 | ACCEPT | fd, source-or-null, source-size-or-null | new fd |
+| 45 | ACCEPT | fd, source-or-null, source-size-or-null, flags | new fd |
 | 46 | SEND | fd, data, length, flags | bytes accepted |
 | 47 | RECV | fd, data, capacity, flags | copied bytes or EOF=0 |
 | 48 | SHUTDOWN | fd, SHUT_WR=1 | 0 |
@@ -31,6 +30,59 @@ variants would require separately specified flags/readiness, not magic EAGAIN
 success. SHUT_RD/SHUT_RDWR unsupported initially. Bound each copy to 16384
 bytes (existing write bound), allow positive short transfers. read/write on
 stream sockets must use the same implementation and semantics with flags zero.
+
+## Step 4 listener ABI (implemented)
+
+LISTEN requires an explicitly bound, unused TCP endpoint. Unbound endpoint,
+already-started endpoint, repeated LISTEN or backlog outside 1..4 gives EINVAL.
+Wrong fd/type gives EBADF; unavailable network gives EIO. Check BSP eligibility,
+fd/type, full-width backlog, online state, then bound/endpoint state. No implicit
+bind or backlog clamping. SYS_LISTEN/SYS_ACCEPT now dispatch to real handlers.
+
+ACCEPT flags in R10 are 0 or NET_SOCK_CLOEXEC only; no nonblocking flag.
+Optional peer output and uint32_t capacity pointers must appear as a pair;
+mismatch or overlapping outputs gives EINVAL. Validate both writable ranges,
+copy capacity (must be >=16, else EINVAL), then validate output overlap. Null
+pair skips output. Success writes the existing zero-reserved sockaddr and
+capacity=16. Revalidate ranges and capacity after each sleep. Use aligned local
+copies for unaligned outputs. No output copy or fd insertion on failed accept.
+
+ACCEPT error order: BSP eligibility; fd/stream (EBADF) and listener state
+(EINVAL); flags/pointer pair (EINVAL); writable ranges (EFAULT), capacity and
+overlap (EINVAL); network (EIO); caught interruption (EINTR); saved listener
+identity invalidation (EBADF); completed-child and resource checks. Allocation
+failure is ENOMEM, common-handle exhaustion ENOSPC, fd exhaustion EMFILE; each
+leaves a completed child queued exactly once. Blocking absence of a completed
+child sleeps rather than returning EAGAIN. A successful transfer returns its
+fd even if a signal is subsequently published.
+Because the interruption check may park for STOP and resume after CONT, repeat
+output range/capacity, online and identity validation after that check, before
+staging resources. No interruption check or sleep occurs during staged transfer.
+
+Use sched_wake_all on listener events, after publishing and releasing locks.
+All acceptors recheck; BSP IF-clear transfer lets only one acquire each child.
+Other acceptors retry/sleep with a new event snapshot; no FIFO/fairness promise.
+Closing another inherited/duplicated fd leaves the blocked acceptor's reference
+live, so does not close the listener or produce an error. If saved listener
+identity is invalidated, return EBADF (caught interruption wins if both occur).
+KILL follows existing teardown and does not promise a syscall return.
+
+Fd insertion precedes queue removal within one non-sleeping BSP IF-clear
+transaction, after resource/output preparation. The new file/node are fully
+initialized before fd_alloc; no other continuation can observe the provisional
+endpoint. Finish child adoption/queue removal, set CLOEXEC and copy output
+before IRQ state may be restored or user execution resumes. The detailed
+ownership argument is in TCP_WAIT_LIFECYCLE_PROOF.md; runtime evidence and its
+limits are in [net2-step4.md](../roadmap/net2-step4.md).
+
+Backlog 1..4 shares one static queue for half-open and completed children.
+New SYN overflow or global connection/TIME_WAIT shortage silently drops the SYN;
+duplicates use their existing full tuple. Half-open deadline is 30 seconds.
+ACCEPT skips half-opens, can adopt ESTABLISHED/CLOSE_WAIT, and returns a child
+with independent file/endpoint/channel ownership. Accepted passive connections
+and their TIME_WAIT records reserve full tuples rather than exclusive port
+binds: a new listener can rebind while old children remain live. A live listener
+or client bind still conflicts; identical retained tuples remain excluded.
 
 ## Observable stream behavior
 
@@ -53,7 +105,8 @@ waits with the existing atomic-only predicate, then revalidates/retries. Only
 immediate RX copy/consume or TX acceptance owns bytes. STOP cannot retain an
 expired reservation; accepted TX is independent of syscall/continuation life.
 No user/TCB pointer enters protocol storage. ACCEPT's indefinite contract still
-requires step 4 proof. Existing wait primitives and IF-clear copy/commit remain.
+uses the reviewed step 4 extension and its host/Ring 3 gates. Existing wait
+primitives and IF-clear copy/commit remain.
 
 Shutdown write stops future acceptance, schedules FIN after accepted bytes, and
 leaves receive available. Writes after shutdown return EPIPE with existing signal

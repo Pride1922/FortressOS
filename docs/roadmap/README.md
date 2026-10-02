@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [net2-step4.md](net2-step4.md) | Bounded listener/half-open queues, ACCEPT adoption/rollback proof, finite Ring 3 server and five-case capture/lifecycle evidence. |
 | [net2-step3.md](net2-step3.md) | Numeric TCP client/worker/socket integration, reservation-free wait argument, frozen client ABI, quiet time and independent live-peer evidence. |
 | [net2-step2.md](net2-step2.md) | Pure bounded TCP transport, lifecycle pool and deterministic fake-network sanitizer gate; live integration pending. |
 | [net2-step1.md](net2-step1.md) | NET-2 started: reviewed design baseline, pure TCP codec and host sanitizer gate; live TCP transport not enabled. |

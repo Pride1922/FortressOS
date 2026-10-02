@@ -1,4 +1,4 @@
-# NET-2 step 3 client wait/lifecycle argument
+# NET-2 client and Step 4 ACCEPT wait/lifecycle argument
 
 ## Reviewed design: reservation-free sleeping continuations
 
@@ -75,6 +75,149 @@ scope is per segment, not one continuous RX-batch scope. All storage is bounded.
 The driver has existing bounded synchronous DD/PIT polling and diagnostics;
 IF-clear submission inherits that latency. This is not a measured physical
 IRQ-latency or throughput guarantee. Device/scheduler rank-1 locks do not nest.
+
+## Step 4 ACCEPT extension: pre-implementation ownership argument
+
+2026-10-02. This extends the client argument for the planned implementation;
+ACCEPT code and runtime acceptance remain pending. The implementation must
+match these steps before its proof gate is considered satisfied.
+
+### Existing exclusion and fd-table evidence
+
+thread.c:fd_alloc inserts a fully initialized file pointer and clears flags;
+fd_get reads that caller's table. Neither acquires a table lock. thread.h:tcb_t
+owns fd_table/fd_flags per continuation. fd_clone_table copies the entries and
+atomically increments file reference counts: children share files, not a mutable
+fd table. fd_dup/dup2 likewise share files. There is no shared-table user-thread
+API in this phase. A blocked caller retains its own listener fd; another process
+closing its copy cannot destroy that reference. Signal handlers run only after
+the syscall returns. Reaping targets terminated continuations, not the running
+acceptor. BSP-only syscall eligibility and IF-clear entry exclude a competing
+acceptor, spawn/dup/close or signal-handler operation during the transfer.
+This is not a general SMP fd-table synchronization proof.
+
+### Wait and wake policy
+
+Capture listener generation/event before testing for an eligible child. With
+no child ready, call existing sched_wait_until using the static listener channel
+and atomic-only predicate, owning no queue entry, staged fd/file, user output
+or reservation across sleep. Worker release-publishes readiness/identity changes
+then calls sched_wake_all without endpoint/socket locks. This follows existing
+thread.c:sched_wait_until and sched_wake_all, not a new wake_one primitive.
+After wake, recheck interruption, outputs, generation and readiness. One child
+can wake multiple acceptors; the first BSP continuation to complete transfer
+takes it, and others recheck and sleep. No FIFO or starvation bound is claimed.
+
+### Transfer order and rollback
+
+1. Revalidate flags/output ranges/capacity, online state, caught interruption
+   and saved listener identity with BSP IF clear. Find an eligible completed
+   child without removing it. Save only local peer/identity values.
+   process_signal_interrupt may itself switch context for STOP, even when it
+   eventually returns false after CONT. Therefore repeat output range/capacity,
+   online and generation validation after the last interruption check and
+   before selecting/staging the child. No interruption check is permitted once
+   staging begins; otherwise STOP could retain unpublished allocations.
+2. Prepare a common socket handle and fully initialized heap file/node for
+   adoption, without allocating another transport block. Perform allocations
+   outside rank-1 locks and never sleep or enable IF. The provisional endpoint
+   must not own the queued child's block or expose it to worker maintenance.
+3. Call fd_alloc while the child remains queued. If it fails, destroy only
+   staged file/node/handle resources and return EMFILE; heap/common-handle
+   failures return ENOMEM/ENOSPC respectively without child removal. Staged
+   cleanup must not invoke ordinary TCP close on the queued child.
+4. After successful fd insertion, transfer the existing transport block from
+   the listener queue to the new endpoint and remove its queue entry in one
+   manager-lock section. This removal/adoption is the ownership linearization
+   point. The selected identity must still match; mismatch here is an invariant
+   violation, not an ordinary recoverable failure. No fallible allocation,
+   validation, wait, tick, RX processing or signal check remains after insertion.
+5. Release the manager lock, set fd flags, then copy the staged peer sockaddr
+   and size to previously validated user ranges without subsystem locks. Return
+   the fd. BSP IF exclusion and the caller's address-space ownership prevent
+   mapping changes between validation and copy. A future fault-recovering copy
+   API or shared address-space API would require revisiting this proof.
+
+The briefly provisional inserted fd is unobservable: it exists only in the
+running caller's private table, with IF clear and no callback/reentry that can
+inspect or operate on it. AP file close may publish listener detach, but cannot
+be final close while this acceptor still owns its reference; APs cannot mutate
+the pending queue or accepted transport. Complete insertion/adoption/output
+before any sleep, IRQ restoration or user execution. Do not present fd_alloc
+itself as atomically publishing a ready child across arbitrary CPUs.
+
+### Exit, interruption and error contract
+
+Closing another shared descriptor leaves the listener live and does not wake
+or fail ACCEPT merely due to that close. Invalid initial fd gives EBADF; a
+non-listener stream gives EINVAL. Saved listener generation invalidation returns
+EBADF; caught interruption wins with EINTR if both are present. Normal final
+listener close while a live blocked acceptor owns its fd is unreachable under
+the current per-continuation table model. Test invalidation defensively via a
+manager fixture, without claiming a nonexistent shared-table close API.
+STOP retains no reserved child and CONT retries/revalidates. Caught signal
+before transfer returns EINTR without consuming a child. KILL follows existing
+termination/descriptor teardown, with no promised syscall result and no staged
+allocation across a wait to leak. A successful transfer wins over later signal
+publication. Listener final close cleans only unaccepted children; an adopted
+child has independent endpoint/file/channel lifetime and remains usable.
+
+### Required implementation evidence
+
+Fault-inject each allocation/fd failure and prove the same child is subsequently
+accepted once. Test invalid outputs/caught interruption without dequeue, two
+acceptors racing one child, shared descriptor close preserving a blocked accept,
+defensive generation invalidation, STOP/CONT/KILL, listener exit and independent
+accepted-child traffic. Verify no placeholder leaks and no ninth-block adoption
+dependency. Host fixtures do not establish real IRQ/signal execution; run Ring 3
+fixtures separately. Preserve the worker prepare/commit ordering and trap.
+
+### Seven-property pre-coding audit (2026-10-02)
+
+The seven properties here are the extension's requested linearization, fd
+publication, shared lifetime, competing acceptors, AP exclusion, rollback and
+STOP/CONT/KILL properties. This verifies the design against existing APIs;
+it does not mark future listener code or its runtime tests as already passed.
+
+| Property | Existing source evidence / argument | Step 4 obligation |
+| --- | --- | --- |
+| 1. Transfer linearization | Sole BSP protocol ownership and IF-clear syscall execution exclude queue mutation by another continuation; net_tcp_close only publishes deferred detach. | Move queue ownership and adopt the same block in one manager-lock section after fd insertion; selected identity mismatch must trap. No fallible step follows insertion. |
+| 2. Fd publication order | thread.h:75-76 embeds each fd table in its TCB; thread.c:1775 fd_alloc stores a file pointer, and :1745 fd_clone_table copies tables while sharing references. There is no shared-table thread API. | Fully initialize staged file/node before fd_alloc; queued child is untouched on allocation failure. Finish adoption/flags/output without enabling IF, sleeping, or callbacks inspecting the provisional fd. |
+| 3. Shared listener lifetime | fd_clone_table/dup/dup2 increment file references; net_socket.c:socket_close runs only through final VFS close. Each blocked acceptor retains its own descriptor. | Closing another process's reference must preserve the listener. Adopted children must have no listener ownership link; final listener teardown touches unaccepted children only. |
+| 4. Competing acceptors and wake | thread.c:633 sched_wait_until checks predicate and inserts BLOCKED under scheduler IRQ exclusion; :687 sched_wake_all queues every matching waiter. net_tcp_snapshot/net_tcp_ready use atomic identity/event reads. | Publish event before unlocked wake_all, snapshot before availability check, and recheck after wake. One continuation removes one child; losers resnapshot and sleep, without FIFO claims. |
+| 5. AP and lock exclusion | net_tcp_close is deferred publication under manager lock; existing BSP eligibility rejects AP socket syscalls. spinlock.h:138 restores saved flags, preserving an IF-clear caller. thread.c:229 reaps only on BSP and refuses the current thread. | No AP queue/block mutation. No socket/manager/process/scheduler rank-1 nesting. Allocate/copy/wake outside manager lock, preserve worker prepare/commit ordering. |
+| 6. Failure rollback | fd_alloc failure does not insert a descriptor; holding the child queued until resource preparation removes the need for an abandoned-child reservation. Current stream constructor would allocate another block and is unsuitable for adoption. | Add a dedicated staged-handle constructor/cleanup that never owns or closes the queued block. Heap/handle/fd/validation/interruption failures before transfer leave queue membership unchanged. Prove with fault injection. |
+| 7. STOP/CONT/KILL and stale identity | thread.c:2047 process_signal_interrupt may park via sched_stop_current; KILL stays pending to unwind; syscall.c:1407 invokes signal handling at user return. Generation/event snapshots detect reuse. | Hold nothing staged over either wait or interruption check. Revalidate again after the final interruption check. EINTR precedes invalidation EBADF; STOP resumes/retries, KILL unwinds then tears down with no user-result promise. |
+
+Verdict: pre-coding design gate satisfied with the explicit post-interruption
+revalidation requirement above. All seven have existing mechanism support and
+finite implementation obligations; no scheduler, fd-table, signal, wait-signature
+or lock-rank change is required. Listener code must still demonstrate the stated
+adoption/rollback/runtime gates before Step 4 acceptance.
+
+### Step 4 implementation correspondence and evidence
+
+The pre-coding argument/audit above is retained as the design record. Step 4
+implements it in net_tcp_syscall.c:accept_socket/accept_outputs,
+net_socket.c:create/net_socket_stage_stream/socket_close/net_socket_finish_adopt
+and net_tcp.c:net_tcp_stage/net_tcp_unstage/net_tcp_accept_commit.
+No accepted file or child reservation exists over sched_wait_until or
+process_signal_interrupt. Validation repeats after the last interruption check;
+staging then remains entirely IF-clear and nonblocking. Ordinary staged-file
+close calls unstage, not protocol detach. Child ownership moves under the manager
+lock after fd_alloc; invariant mismatches trap. Output copies occur after unlocking.
+socket_close captures stream/staged kind before releasing its common slot; a
+failed staged constructor racing reuse cannot change which manager cleanup the
+original close performs. A host unlock interleaving fixture covers that boundary.
+
+Host fixtures assert the child remains queued at fd insertion, unchanged child
+identity across heap/fd/common-handle/invalid-output/signal failures, adoption
+with all eight blocks occupied, child independence and defensive invalidation.
+The five BIOS/UEFI/NIC/BSP-SMP QEMU server cases exercise real Ring 3 competing
+acceptors and inherited fd references, caught SIGINT, STOP >9s/CONT and KILL
+recovery. Thus all seven implementation obligations have corresponding evidence;
+this remains an engineering argument, not a formal proof or physical IRQ claim.
+Full command/capture qualifications: [net2-step4.md](../roadmap/net2-step4.md).
 
 2026-10-02. The original renewal sketch below is retained as review context and
 is superseded for the client by the reservation-free design above. ACCEPT must

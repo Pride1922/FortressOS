@@ -19,7 +19,7 @@ typedef struct {
     bool published;
 } operation_t;
 typedef struct {
-    bool used, bound, wake, stream;
+    bool used, bound, wake, stream, staged_stream;
     uint16_t port; /* Host order; wildcard/local binds share a port namespace. */
     unsigned head, count;
     datagram_t rx[NET_SOCKET_RX_MAX], staged;
@@ -57,12 +57,17 @@ static int64_t unsupported_write(vfs_node_t *n, uint64_t *o, bool a, const void 
 static void socket_close(vfs_node_t *node) {
     socket_t *s=node->fs_private;
     uint64_t irq=spin_lock_irqsave(&s_lock);
-    bool stream=s->stream;
+    /* Capture kind before freeing the common slot: an AP final-close may
+     * overlap a BSP constructor attempting to reuse it after unlock. */
+    bool stream=s->stream, staged=s->staged_stream;
     s->used=false; s->bound=false; s->count=0;
     s->wake=true;
     invalidate(&s->tx); invalidate(&s->receive);
     spin_unlock_irqrestore(&s_lock,irq);
-    if (stream) net_tcp_close((unsigned)(s-s_slots));
+    if (stream) {
+        if (staged) net_tcp_unstage((unsigned)(s-s_slots));
+        else net_tcp_close((unsigned)(s-s_slots));
+    }
     /* Static channel/backing outlives every waiter. BSP worker wakes on next
      * pass; callback is also safe from an AP reaper, without scheduler calls. */
     kfree(node);
@@ -87,7 +92,7 @@ bool net_socket_available(void) {
     return __atomic_load_n(&s_enabled,__ATOMIC_ACQUIRE) &&
         __atomic_load_n(&s_online,__ATOMIC_ACQUIRE) && apic_timer_get_frequency()!=0;
 }
-static int64_t create(file_t **out, bool stream) {
+static int64_t create(file_t **out, bool stream, bool staged) {
     *out=NULL;
     if (!net_socket_available()) return SYSCALL_EIO;
     uint64_t irq=spin_lock_irqsave(&s_lock);
@@ -96,10 +101,11 @@ static int64_t create(file_t **out, bool stream) {
     if (!s) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_ENOSPC; }
     s->used=true; s->bound=false; s->head=s->count=0; s->dropped=0;
     s->stream=stream;
+    s->staged_stream=staged;
     invalidate(&s->tx); invalidate(&s->receive);
     spin_unlock_irqrestore(&s_lock,irq);
     if (stream) {
-        int64_t result=net_tcp_create((unsigned)(s-s_slots));
+        int64_t result=staged ? net_tcp_stage((unsigned)(s-s_slots)) : net_tcp_create((unsigned)(s-s_slots));
         if (result) {
             irq=spin_lock_irqsave(&s_lock); s->used=false; spin_unlock_irqrestore(&s_lock,irq);
             return result;
@@ -108,7 +114,10 @@ static int64_t create(file_t **out, bool stream) {
     vfs_node_t *node=kmalloc(sizeof(*node)); file_t *file=kmalloc(sizeof(*file));
     if (!node || !file) {
         kfree(node); kfree(file);
-        if (stream) net_tcp_close((unsigned)(s-s_slots));
+        if (stream) {
+            if (staged) net_tcp_unstage((unsigned)(s-s_slots));
+            else net_tcp_close((unsigned)(s-s_slots));
+        }
         irq=spin_lock_irqsave(&s_lock); s->used=false; spin_unlock_irqrestore(&s_lock,irq);
         return SYSCALL_ENOMEM;
     }
@@ -117,8 +126,15 @@ static int64_t create(file_t **out, bool stream) {
     *file=(file_t){.node=node,.flags=VFS_O_RDWR,.ref_count=1};
     *out=file; return 0;
 }
-int64_t net_socket_create(file_t **out) { return create(out,false); }
-int64_t net_socket_create_stream(file_t **out) { return create(out,true); }
+int64_t net_socket_create(file_t **out) { return create(out,false,false); }
+int64_t net_socket_create_stream(file_t **out) { return create(out,true,false); }
+int64_t net_socket_stage_stream(file_t **out) { return create(out,true,true); }
+void net_socket_finish_adopt(file_t *file) {
+    uint64_t irq=spin_lock_irqsave(&s_lock);
+    socket_t *s=slot(file);
+    if (!s || !s->staged_stream) __builtin_trap();
+    s->staged_stream=false; spin_unlock_irqrestore(&s_lock,irq);
+}
 static bool occupied(uint16_t port) {
     for (unsigned i=0; i<NET_SOCKET_MAX; ++i)
         if (s_slots[i].used && !s_slots[i].stream && s_slots[i].bound && s_slots[i].port==port) return true;

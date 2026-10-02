@@ -9,6 +9,8 @@ void net_socket_enable(void);
 bool net_socket_available(void);
 int64_t net_socket_create(file_t **out);
 int64_t net_socket_create_stream(file_t **out);
+int64_t net_socket_stage_stream(file_t **out); /* ACCEPT: no transport allocation. */
+void net_socket_finish_adopt(file_t *file);
 bool net_socket_stream(file_t *file);
 unsigned net_socket_index(file_t *file);
 bool net_socket_file(file_t *file);

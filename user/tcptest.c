@@ -26,7 +26,7 @@ int tcptest_main(int argc, char **argv) {
     CHECK(udp_call(SYS_CONNECT,fd,0x7ffffffffff8ull,16,0,0,0)==SYSCALL_EFAULT);
     CHECK(udp_call(SYS_SEND,fd,0,0x100000000ull,0,0,0)==SYSCALL_EINVAL);
     CHECK(udp_call(SYS_RECV,fd,(uintptr_t)readonly,1,0,0,0)==SYSCALL_EFAULT);
-    CHECK(udp_call(SYS_LISTEN,fd,1,0,0,0,0)==SYSCALL_EOPNOTSUPP);
+    CHECK(udp_call(SYS_LISTEN,fd,1,0,0,0,0)==SYSCALL_EINVAL);
     for (unsigned i=0; i<16; ++i) cross[4089+i]=((const uint8_t *)&address)[i];
     bool connect_caught=argc==4 && udp_equal(argv[3],"--connect-caught");
     if (connect_caught) {

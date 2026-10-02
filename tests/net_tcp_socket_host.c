@@ -11,6 +11,31 @@ static bool peer_active, peer_return, refuse, blackhole;
 static unsigned tcp_packets;
 static unsigned fin_packets, reset_packets;
 static bool interrupt_after_send, interrupt_wait_before_reply;
+static bool listener_fixture, invalidate_listener_wait;
+static unsigned listener_wait_slot;
+static tcp_header_t synacks[16];
+static unsigned adoption_listener, adoption_checks;
+static net_tcp_child_t expected_child;
+extern void (*net_host_unlock_hook)(const char *);
+static unsigned close_reuse_checks;
+static void reuse_after_common_close(const char *name) {
+    if (strcmp(name,"socket_table")) return;
+    net_host_unlock_hook=NULL;
+    file_t *staged=NULL;
+    /* All other common slots occupied: constructor overwrites the just-freed
+     * common slot's kind, then fails because old TCP close is not published
+     * yet. The original close must use its captured adopted kind. */
+    assert(net_socket_stage_stream(&staged)==SYSCALL_ENOSPC && !staged);
+    ++close_reuse_checks;
+}
+static void inserted_before_removal(tcb_t *caller, unsigned fd) {
+    net_tcp_child_t child; net_sockaddr_in_t peer; net_tcp_wait_t wait;
+    assert(caller==&process && net_socket_stream(caller->fd_table[fd]));
+    assert(!net_tcp_accept_peek(adoption_listener,&child,&peer));
+    assert(child.block==expected_child.block && child.generation==expected_child.generation);
+    assert(!net_tcp_snapshot(net_socket_index(caller->fd_table[fd]),&wait));
+    ++adoption_checks;
+}
 /* Linker wrapper injects publication after actual queue acceptance and before
  * syscall return; production code and the scheduler adapter are unchanged. */
 int64_t __real_net_tcp_send(unsigned slot, const void *data, size_t len);
@@ -30,6 +55,11 @@ static int tcp_transmit(net_dev_t *d, const void *bytes, size_t n) {
     ++tcp_packets;
     if (h.flags&TCP_FIN) ++fin_packets;
     if (h.flags&TCP_RST) ++reset_packets;
+    if (listener_fixture) {
+        if ((h.flags&(TCP_SYN|TCP_ACK))==(TCP_SYN|TCP_ACK) && h.destination>=50000 && h.destination<50016)
+            synacks[h.destination-50000]=h;
+        return 0;
+    }
     if (tx_fail) return -1;
     if (blackhole) return 0;
     if (h.flags&TCP_SYN) {
@@ -82,6 +112,10 @@ static void tcp_service(void) {
 /* This fixture substitutes its own finite scheduler driver via a macro below. */
 static void tcp_wait(const void *channel, bool (*ready)(void *), void *arg) {
     assert(channel);
+    if (invalidate_listener_wait) {
+        invalidate_listener_wait=false;
+        net_tcp_close(listener_wait_slot); net_tcp_tick(now,true); return;
+    }
     if (interrupt_wait_before_reply) {
         interrupt_wait_before_reply=false;
         net_tcp_tick(now,true); /* Submit SYN, retain peer SYN/ACK until later. */
@@ -96,6 +130,115 @@ static void tcp_wait(const void *channel, bool (*ready)(void *), void *arg) {
 }
 static int stream(void) { return (int)call(SYS_SOCKET,2,1,6,0,0,0); }
 static long connectfd(int fd) { return call(SYS_CONNECT,fd,(uintptr_t)&destination,16,0,0,0); }
+static void incoming(unsigned index, unsigned flags, uint32_t ack, const void *bytes, size_t length) {
+    tcp_header_t h={.source=(uint16_t)(50000+index),.destination=9000,
+        .sequence=100+index+((flags&TCP_SYN) ? 0 : 1),.acknowledgment=ack,.flags=(uint8_t)flags,.window=8192};
+    assert(!tcp_encode(peer_packet+20,1480,destination.address,htonl(0x0a00020f),&h,bytes,length));
+    assert(!ipv4_encode(peer_packet,1500,destination.address,htonl(0x0a00020f),6,(uint16_t)(20+length),64,NULL));
+    net_ipv4_input(peer_packet,40+length);
+}
+static void passive_open(unsigned index, bool complete) {
+    incoming(index,TCP_SYN,0,NULL,0); net_tcp_tick(now,true);
+    assert(synacks[index].flags==(TCP_SYN|TCP_ACK));
+    if (complete) {
+        incoming(index,TCP_ACK,synacks[index].sequence+1,NULL,0); net_tcp_tick(now,true);
+    }
+}
+static long acceptfd(int fd, net_sockaddr_in_t *peer, uint32_t *size) {
+    return call(SYS_ACCEPT,fd,(uintptr_t)peer,(uintptr_t)size,NET_SOCK_CLOEXEC,0,0);
+}
+static int listenfd(void) {
+    int fd=stream(); assert(fd>=0);
+    net_sockaddr_in_t local={.family=2,.port=htons(9000)};
+    assert(!call(SYS_BIND,fd,(uintptr_t)&local,16,0,0,0));
+    assert(call(SYS_LISTEN,fd,0,0,0,0,0)==SYSCALL_EINVAL);
+    assert(call(SYS_LISTEN,fd,0x100000001ull,0,0,0,0)==SYSCALL_EINVAL);
+    assert(!call(SYS_LISTEN,fd,4,0,0,0,0));
+    assert(call(SYS_LISTEN,fd,4,0,0,0,0)==SYSCALL_EINVAL);
+    return fd;
+}
+static void listener_tests(net_config_t *cfg) {
+    assert(!allocations); peer_active=false; listener_fixture=true;
+    net_socket_init(&dev,cfg); net_ipv4_init(&dev,cfg); net_socket_enable();
+    int listener=listenfd(); unsigned slot=net_socket_index(process.fd_table[listener]);
+    incoming(0,TCP_SYN|TCP_ECE|TCP_CWR,0,NULL,0); net_tcp_tick(now,true);
+    assert(synacks[0].flags==(TCP_SYN|TCP_ACK)); /* Decline ECN, do not drop SYN. */
+    passive_open(0,false); passive_open(1,true);
+    passive_open(2,false); passive_open(3,false);
+    incoming(4,TCP_SYN,0,NULL,0); net_tcp_tick(now,true);
+    assert(!synacks[4].flags); /* One combined backlog bounds half-open+ready. */
+    incoming(0,TCP_SYN,0,NULL,0); net_tcp_tick(now,true); /* Duplicate consumes no entry. */
+    net_tcp_child_t before, after; net_sockaddr_in_t peer;
+    assert(!net_tcp_accept_peek(slot,&before,&peer) && peer.port==htons(50001));
+    /* Completed child behind a half-open head stays eligible. */
+    uint32_t size=16;
+    assert(acceptfd(listener,(net_sockaddr_in_t *)readonly,&size)==SYSCALL_EFAULT);
+    assert(call(SYS_ACCEPT,listener,(uintptr_t)&peer,0,0,0,0)==SYSCALL_EINVAL);
+    assert(call(SYS_ACCEPT,listener,(uintptr_t)&peer,(uintptr_t)&peer,0,0,0)==SYSCALL_EINVAL);
+    size=15; assert(acceptfd(listener,&peer,&size)==SYSCALL_EINVAL); size=16;
+    signal_pending=true; assert(acceptfd(listener,&peer,&size)==SYSCALL_EINTR); signal_pending=false;
+    unsigned baseline=allocations;
+    for (int failure=0; failure<2; ++failure) {
+        fail_alloc=failure; assert(acceptfd(listener,&peer,&size)==SYSCALL_ENOMEM);
+        fail_alloc=-1; assert(allocations==baseline);
+    }
+    for (unsigned i=0; i<32; ++i) if (!process.fd_table[i]) {
+        process.fd_table[i]=process.fd_table[listener]; ++process.fd_table[listener]->ref_count;
+    }
+    assert(acceptfd(listener,&peer,&size)==SYSCALL_EMFILE && allocations==baseline);
+    for (unsigned i=0; i<32; ++i) if ((int)i!=listener) closefd((int)i);
+    int udp_fds[15];
+    for (unsigned i=0; i<15; ++i) { udp_fds[i]=create(); assert(udp_fds[i]>=0); }
+    assert(acceptfd(listener,&peer,&size)==SYSCALL_ENOSPC);
+    for (unsigned i=0; i<15; ++i) closefd(udp_fds[i]);
+    assert(!net_tcp_accept_peek(slot,&after,&peer));
+    assert(before.block==after.block && before.generation==after.generation);
+    int fillers[3];
+    for (unsigned i=0; i<3; ++i) { fillers[i]=stream(); assert(fillers[i]>=0); }
+    assert(stream()==SYSCALL_ENOSPC); /* All eight blocks occupied. */
+    adoption_listener=slot; expected_child=before;
+    net_host_fd_inserted=inserted_before_removal;
+    int child=(int)acceptfd(listener,&peer,&size); assert(child>=0 && size==16 && peer.port==htons(50001));
+    net_host_fd_inserted=NULL; assert(adoption_checks==1);
+    assert(process.fd_flags[child]==FD_FLAG_CLOEXEC);
+    /* A second acceptor cannot acquire the transferred child. */
+    assert(net_tcp_accept_peek(slot,&after,&peer)==SYSCALL_EAGAIN);
+    for (unsigned i=0; i<3; ++i) closefd(fillers[i]);
+    closefd(listener); net_tcp_tick(now,true);
+    /* Accepted child retains tuple ownership but does not monopolize its
+     * server's port. A replacement listener can bind while child is live. */
+    int replacement=listenfd(); closefd(replacement); net_tcp_tick(now,true);
+    incoming(1,TCP_ACK,synacks[1].sequence+1,"child survives",14);
+    assert(call(SYS_RECV,child,(uintptr_t)output,14,NET_MSG_DONTWAIT,0,0)==14);
+    assert(!memcmp(output,"child survives",14));
+    int occupied[15];
+    for (unsigned i=0; i<15; ++i) { occupied[i]=create(); assert(occupied[i]>=0); }
+    net_host_unlock_hook=reuse_after_common_close;
+    closefd(child); assert(close_reuse_checks==1 && !net_host_unlock_hook);
+    for (unsigned i=0; i<15; ++i) closefd(occupied[i]);
+    net_tcp_tick(now,true);
+    now+=12100; net_tcp_tick(now,true); now+=101; net_tcp_tick(now,true);
+    /* Half-open expiry frees backlog entries and real pool/TIME_WAIT slots. */
+    listener=listenfd(); slot=net_socket_index(process.fd_table[listener]);
+    memset(synacks,0,sizeof(synacks)); passive_open(0,false);
+    int full_pool[6];
+    for (unsigned i=0; i<6; ++i) { full_pool[i]=stream(); assert(full_pool[i]>=0); }
+    incoming(2,TCP_SYN,0,NULL,0); net_tcp_tick(now,true);
+    assert(!synacks[2].flags); /* Global block shortage below backlog capacity. */
+    for (unsigned i=0; i<6; ++i) closefd(full_pool[i]);
+    net_tcp_tick(now,true);
+    now+=3001; net_tcp_tick(now,true); now+=101; net_tcp_tick(now,true);
+    passive_open(1,true);
+    child=(int)acceptfd(listener,NULL,NULL); assert(child>=0);
+    closefd(child); net_tcp_tick(now,true);
+    /* Empty wait has no staged allocations; forced identity invalidation
+     * models the defensive EBADF path, not shared fd-table close. */
+    listener_wait_slot=slot; invalidate_listener_wait=true; baseline=allocations;
+    assert(acceptfd(listener,NULL,NULL)==SYSCALL_EBADF && allocations==baseline);
+    closefd(listener); net_tcp_tick(now,true);
+    assert(!allocations); listener_fixture=false;
+    puts("[PASS] listener backlog/duplicate SYN/half-open expiry; output/signal/heap/fd/handle rollback; full-pool adoption; child independence; single delivery; defensive invalidation");
+}
 int main(void) {
     assert(!udp_baseline_main());
     memset(&process,0,sizeof(process)); process.cpu_affinity=0;
@@ -115,7 +258,7 @@ int main(void) {
     now=saved_now;
     assert(call(SYS_CONNECT,fd,0,16,0,0,0)==SYSCALL_EFAULT);
     assert(call(SYS_CONNECT,fd,0,15,0,0,0)==SYSCALL_EINVAL);
-    assert(call(SYS_LISTEN,fd,1,0,0,0,0)==SYSCALL_EOPNOTSUPP);
+    assert(call(SYS_LISTEN,fd,1,0,0,0,0)==SYSCALL_EINVAL);
     assert(!connectfd(fd)); assert(connectfd(fd)==SYSCALL_EISCONN);
     /* Exact space-limited count; no service/ACK may free space between calls. */
     memset(stream_output,0x5a,sizeof(stream_output));
@@ -209,6 +352,7 @@ int main(void) {
     closefd(fd); tcp_service();
     puts("[PASS] CONNECT cancel/SYN-ACK same-timestamp race uses FIN; exact SEND space count, pending signal zero acceptance, post-accept signal preserves count/exact bytes");
     assert(!allocations && tcp_packets>50);
+    listener_tests(&cfg);
     puts("TCP socket host PASS: actual manager/syscalls/codec; 64KiB both directions, half-close, EOF, short sends, shared refs, stale identity, interruption/refusal/timeout; mocked scheduler and peer engine");
     return 0;
 }

@@ -2,6 +2,7 @@
 #define FORTRESS_NET_TCP_H
 #include "net.h"
 #include "tcp_tcb.h"
+#include "socket_abi.h"
 typedef struct { unsigned slot; uint64_t generation, event; } net_tcp_wait_t;
 /* Slots come only from a live common socket handle (0..NET_SOCKET_MAX-1).
  * Client queue/peek/consume/shutdown/snapshot require own BSP fd continuation
@@ -10,6 +11,14 @@ typedef struct { unsigned slot; uint64_t generation, event; } net_tcp_wait_t;
 void net_tcp_init(net_dev_t *dev, const net_config_t *cfg);
 int64_t net_tcp_create(unsigned slot);
 void net_tcp_close(unsigned slot); /* AP-safe publication, no protocol work. */
+#define NET_TCP_BACKLOG_MAX 4U
+typedef struct { int block; uint64_t generation; } net_tcp_child_t;
+int64_t net_tcp_stage(unsigned slot); /* No transport block; BSP IF-clear. */
+void net_tcp_unstage(unsigned slot);
+int64_t net_tcp_listen(unsigned slot, unsigned backlog);
+bool net_tcp_listener(unsigned slot);
+int64_t net_tcp_accept_peek(unsigned slot, net_tcp_child_t *child, net_sockaddr_in_t *peer);
+void net_tcp_accept_commit(unsigned listener, unsigned target, net_tcp_child_t child);
 int64_t net_tcp_bind(unsigned slot, uint16_t port);
 int64_t net_tcp_connect(unsigned slot, uint32_t ip, uint16_t port);
 int64_t net_tcp_connected(unsigned slot);

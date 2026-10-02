@@ -1,9 +1,9 @@
 # NET-2 — TCP streams and userspace DNS
 
 2026-10-01. User authorized starting after engineering review and then step 2.
-Steps 1–3 client code is implemented; step 3 verification is recorded separately.
+Steps 1–4 are implemented; client/server verification is recorded separately.
 This replaces the pasted draft's contradictory lease semantics and pool split.
-This does not claim listeners, nc, physical TCP acceptance or completed NET-2.
+This does not claim nc, physical TCP acceptance or completed NET-2.
 
 2026-10-02 review revision: concrete decisions and prerequisites below replace
 the remaining open-ended close/ISN/tool choices. They are planned behavior,
@@ -158,7 +158,11 @@ A stale continuation cannot commit into a replacement generation. No periodic
 user EAGAIN or timed receive fallback was introduced.
 The required named artifact is [TCP_WAIT_LIFECYCLE_PROOF.md](TCP_WAIT_LIFECYCLE_PROOF.md).
 It records the reviewed client lifetime/lock argument and runtime evidence;
-ACCEPT remains a step 4 proof gate. Do not treat
+ACCEPT has the reviewed proof extension and matching implementation with host
+rollback and real Ring 3 lifetime evidence in [step 4](../roadmap/net2-step4.md).
+Step 4 starts with [NET2_STEP4_ADDENDUM.md](NET2_STEP4_ADDENDUM.md): rerun the
+already implemented client fence before listener code, then freeze ACCEPT
+ownership/ABI and bounded backlog policy before integration. Do not treat
 the UDP one-shot continuation as evidence for indefinite stream waits. A failed
 proof triggers discussion of an explicit receive timeout returning ETIMEDOUT;
 that narrower feature and its timeout interface are not pre-approved here.

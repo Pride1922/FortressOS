@@ -53,8 +53,13 @@ bool vmm_validate_user_range(uint64_t *root, uintptr_t p, size_t n, bool write) 
     if (write && p<(uintptr_t)readonly+16 && (uintptr_t)readonly<p+n) return false;
     return true;
 }
+void (*net_host_fd_inserted)(tcb_t *, unsigned);
 int fd_alloc(tcb_t *t, file_t *f) {
-    for (unsigned i=0; i<32; ++i) if (!t->fd_table[i]) { t->fd_table[i]=f; return i; }
+    for (unsigned i=0; i<32; ++i) if (!t->fd_table[i]) {
+        t->fd_table[i]=f; t->fd_flags[i]=0;
+        if (net_host_fd_inserted) net_host_fd_inserted(t,i);
+        return i;
+    }
     return -1;
 }
 file_t *fd_get(tcb_t *t, int fd) { return fd>=0 && fd<32 ? t->fd_table[fd] : NULL; }

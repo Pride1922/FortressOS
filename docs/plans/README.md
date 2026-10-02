@@ -6,10 +6,11 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
-| [NET2_PLAN.md](NET2_PLAN.md) | Seven steps: TCP design/codec, simulator, client, server, finite nc, physical gate and userspace DNS. | **STEPS 1–3 CLIENT IMPLEMENTED**; listener and later gates pending |
+| [NET2_PLAN.md](NET2_PLAN.md) | Seven steps: TCP design/codec, simulator, client, server, finite nc, physical gate and userspace DNS. | **STEPS 1–4 IMPLEMENTED**; nc and later gates pending |
 | [TCP_TRANSPORT_DESIGN.md](TCP_TRANSPORT_DESIGN.md) | Measured layout, bounded transport/OOO/retransmission/TIME_WAIT ownership and simulator contract. | **IMPLEMENTED**, pure engine |
-| [TCP_SOCKET_ABI.md](TCP_SOCKET_ABI.md) | Client stream ABI/lifetime semantics; existing UDP and SYS_NETCTL preserved. | **CLIENT ABI FROZEN**; ACCEPT remains step 4 design |
-| [TCP_WAIT_LIFECYCLE_PROOF.md](TCP_WAIT_LIFECYCLE_PROOF.md) | Step 3 reservation-free blocking/lifetime argument and runtime obligations. | **CLIENT DESIGN REVIEWED**; ACCEPT pending |
+| [TCP_SOCKET_ABI.md](TCP_SOCKET_ABI.md) | Client/listener stream ABI/lifetime semantics; existing UDP and SYS_NETCTL preserved. | **STEPS 3–4 ABI IMPLEMENTED** |
+| [TCP_WAIT_LIFECYCLE_PROOF.md](TCP_WAIT_LIFECYCLE_PROOF.md) | Reservation-free waits, seven-property ACCEPT argument and runtime evidence. | **CLIENT/ACCEPT DESIGN REVIEWED + VERIFIED** |
+| [NET2_STEP4_ADDENDUM.md](NET2_STEP4_ADDENDUM.md) | Client fence, bounded listener and adoption/rollback pre-coding contract. | **IMPLEMENTED**; historical gate record |
 | [UDP_SOCKET_ABI.md](UDP_SOCKET_ABI.md) | Phase 5 socket/address layout, register arguments, datagram semantics and deterministic error precedence; SYS_NETCTL unchanged. | **IMPLEMENTED**; BSP-only |
 | [NET_PHASE5_PLAN.md](NET_PHASE5_PLAN.md) | Bounded UDP sockets, concrete ABI, worker ownership, fd lifecycle, QEMU and physical LAN gates. | **5a IMPLEMENTED + VERIFIED**; 5590 UDP user-reported PASS; capture audit pending |
 | [NETCTL_PING_ABI.md](NETCTL_PING_ABI.md) | Concrete 48-byte layout, field offsets, errors and finite owner-exit fallback. | **IMPLEMENTED** in Phase 4a; BSP-only |

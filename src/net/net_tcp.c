@@ -14,10 +14,15 @@ typedef struct {
     int64_t error;
     uint16_t port;
     bool used, started, detach, cancel, wake;
+    bool listening, passive;
+    unsigned backlog;
+    net_tcp_child_t pending[NET_TCP_BACKLOG_MAX];
     char channel;
 } endpoint_t;
 static endpoint_t endpoints[NET_SOCKET_MAX];
 static tcp_pool_t pool;
+/* Passive children retain full tuples, not exclusive listener port binds. */
+static bool passive_tw[TCP_TIMEWAIT_MAX];
 static spinlock_t lock=SPINLOCK_RANKED(1,"tcp_endpoints");
 static net_dev_t *device;
 static uint32_t local_ip, salt, isn_clock;
@@ -73,10 +78,10 @@ static bool tuple_equal(tcp_tuple_t a, tcp_tuple_t b) {
 }
 static bool port_used(uint16_t port, endpoint_t *self) {
     for (unsigned i=0; i<NET_SOCKET_MAX; ++i)
-        if (&endpoints[i]!=self && endpoints[i].used && endpoints[i].port==port) return true;
+        if (&endpoints[i]!=self && endpoints[i].used && !endpoints[i].passive && endpoints[i].port==port) return true;
     /* Orphans and TIME_WAIT also retain local ports: conservative no sharing. */
     for (unsigned i=0; i<TCP_TIMEWAIT_MAX; ++i)
-        if (pool.timewait[i].used && pool.timewait[i].tuple.remote_ip &&
+        if (pool.timewait[i].used && !passive_tw[i] && pool.timewait[i].tuple.remote_ip &&
             pool.timewait[i].tuple.local_port==port &&
             (!self || !connection(self) || pool.timewait[i].generation!=self->generation)) return true;
     return false;
@@ -102,7 +107,11 @@ void net_tcp_init(net_dev_t *dev, const net_config_t *cfg) {
     /* Only available BSP uptime is sampled; no wall-clock/entropy assumption. */
     salt=mix((uint32_t)apic_timer_get_bsp_ticks()^ntohl(local_ip));
     memset(endpoints,0,sizeof(endpoints)); memset(arp_next,0,sizeof(arp_next)); tcp_pool_init(&pool);
-    for (unsigned i=0; i<NET_SOCKET_MAX; ++i) endpoints[i].block=-1;
+    memset(passive_tw,0,sizeof(passive_tw));
+    for (unsigned i=0; i<NET_SOCKET_MAX; ++i) {
+        endpoints[i].block=-1;
+        for (unsigned j=0; j<NET_TCP_BACKLOG_MAX; ++j) endpoints[i].pending[j].block=-1;
+    }
 }
 int64_t net_tcp_create(unsigned slot) {
     if (slot>=NET_SOCKET_MAX || !device) return SYSCALL_EIO;
@@ -115,11 +124,76 @@ int64_t net_tcp_create(unsigned slot) {
     int block=tcp_pool_open(&pool,tuple,0,(uint16_t)device->mtu,false,clock_ms);
     if (block<0) { spin_unlock_irqrestore(&lock,flags); return SYSCALL_ENOSPC; }
     pool.blocks[block].state=TCP_CLOSED;
+    passive_tw[pool.tw_slot[block]]=false;
     e->block=block; e->used=true; e->started=e->cancel=e->detach=false;
     e->port=0; e->error=0; e->observed=UINT64_MAX;
+    e->listening=e->passive=false; e->backlog=0;
     __atomic_store_n(&e->event,0,__ATOMIC_RELEASE);
     __atomic_store_n(&e->generation,pool.blocks[block].generation,__ATOMIC_RELEASE);
     publish(e); spin_unlock_irqrestore(&lock,flags); return 0;
+}
+int64_t net_tcp_stage(unsigned slot) {
+    uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
+    int64_t result=0;
+    if (e->used || e->detach) result=SYSCALL_ENOSPC;
+    else {
+        e->used=true; e->block=-1; e->started=e->listening=e->wake=e->passive=false;
+        e->port=0; e->error=0; e->backlog=0;
+    }
+    spin_unlock_irqrestore(&lock,flags); return result;
+}
+void net_tcp_unstage(unsigned slot) {
+    uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
+    if (!e->used || e->block!=-1 || e->started || e->generation) __builtin_trap();
+    e->used=false; spin_unlock_irqrestore(&lock,flags);
+}
+bool net_tcp_listener(unsigned slot) { return endpoints[slot].used && endpoints[slot].listening; }
+int64_t net_tcp_listen(unsigned slot, unsigned backlog) {
+    uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
+    tcp_conn_t *c=connection(e); int64_t result=0;
+    if (!backlog || backlog>NET_TCP_BACKLOG_MAX || !e->port || e->started || !c) result=SYSCALL_EINVAL;
+    else {
+        e->started=e->listening=true; e->backlog=backlog;
+        c->tuple.local_port=e->port; c->state=TCP_LISTEN;
+        publish(e);
+    }
+    spin_unlock_irqrestore(&lock,flags); return result;
+}
+static tcp_conn_t *pending_connection(net_tcp_child_t child) {
+    return child.block>=0 && child.block<(int)TCP_CB_MAX && pool.used[child.block] &&
+        pool.blocks[child.block].generation==child.generation ? &pool.blocks[child.block] : NULL;
+}
+int64_t net_tcp_accept_peek(unsigned slot, net_tcp_child_t *child, net_sockaddr_in_t *peer) {
+    uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
+    int64_t result=e->error ? e->error : SYSCALL_EAGAIN;
+    if (!net_tcp_listener(slot)) result=SYSCALL_EINVAL;
+    else if (!e->error) for (unsigned i=0; i<e->backlog; ++i) {
+        tcp_conn_t *c=pending_connection(e->pending[i]);
+        if (c && (c->state==TCP_ESTABLISHED || c->state==TCP_CLOSE_WAIT)) {
+            *child=e->pending[i];
+            *peer=(net_sockaddr_in_t){.family=NET_AF_INET,.port=htons(c->tuple.remote_port),.address=c->tuple.remote_ip};
+            result=0; break;
+        }
+    }
+    spin_unlock_irqrestore(&lock,flags); return result;
+}
+void net_tcp_accept_commit(unsigned listener, unsigned target, net_tcp_child_t child) {
+    uint64_t flags=spin_lock_irqsave(&lock);
+    endpoint_t *e=&endpoints[listener], *accepted=&endpoints[target];
+    tcp_conn_t *c=pending_connection(child); unsigned i=0;
+    for (; i<e->backlog; ++i) if (e->pending[i].block==child.block && e->pending[i].generation==child.generation) break;
+    if (!net_tcp_listener(listener) || i==e->backlog || !c ||
+        !accepted->used || accepted->block!=-1 || accepted->generation ||
+        (c->state!=TCP_ESTABLISHED && c->state!=TCP_CLOSE_WAIT)) __builtin_trap();
+    /* Ownership linearization: fd is inserted already, but BSP IF stays clear.
+     * No allocation/copy/signal check/sleep/tick can interrupt this transfer. */
+    accepted->block=child.block; accepted->port=c->tuple.local_port;
+    accepted->passive=true;
+    accepted->started=true; accepted->observed=UINT64_MAX;
+    __atomic_store_n(&accepted->event,0,__ATOMIC_RELEASE);
+    __atomic_store_n(&accepted->generation,child.generation,__ATOMIC_RELEASE);
+    e->pending[i].block=-1; publish(e); publish(accepted);
+    spin_unlock_irqrestore(&lock,flags);
 }
 void net_tcp_close(unsigned slot) {
     if (slot>=NET_SOCKET_MAX) return;
@@ -252,9 +326,31 @@ void net_tcp_input(uint32_t source, const uint8_t *data, size_t len) {
     tcp_header_t ack;
     if (!tw_pending && tcp_pool_timewait_input(&pool,tuple,&h,n,milliseconds(apic_timer_get_bsp_ticks()),&ack)) {
         tw_tuple=tuple; tw_ack=ack; tw_pending=true;
+        irq_restore(outer); return;
+    }
+    /* A peer may offer ECN on SYN; ordinary SYN/ACK declines negotiation. */
+    if ((h.flags&~(TCP_ECE|TCP_CWR))==TCP_SYN && !n && net_ipv4_unicast(source) && h.source && h.destination) {
+        uint64_t flags=spin_lock_irqsave(&lock);
+        for (unsigned i=0; i<NET_SOCKET_MAX; ++i) {
+            endpoint_t *e=&endpoints[i];
+            if (!e->used || !e->listening || e->error || e->port!=h.destination) continue;
+            unsigned j=0;
+            for (; j<e->backlog; ++j) if (e->pending[j].block<0) break;
+            if (j<e->backlog) {
+                uint64_t now=milliseconds(apic_timer_get_bsp_ticks());
+                int block=tcp_pool_open(&pool,tuple,initial_sequence(tuple,now),(uint16_t)device->mtu,false,now);
+                if (block>=0) {
+                    passive_tw[pool.tw_slot[block]]=true;
+                    arp_next[block]=0;
+                    e->pending[j]=(net_tcp_child_t){block,pool.blocks[block].generation};
+                    tcp_conn_input(&pool.blocks[block],&h,payload,n,now); publish(e);
+                }
+            }
+            break; /* Queue/pool overflow silently drops the new SYN. */
+        }
+        spin_unlock_irqrestore(&lock,flags);
     }
     irq_restore(outer);
-    /* Unmatched SYN is deliberately unsupported until step 4 listener work. */
 }
 void net_tcp_tick(uint64_t ticks, bool online) {
     uint64_t now=milliseconds(ticks); if (now>clock_ms) clock_ms=now;
@@ -263,17 +359,32 @@ void net_tcp_tick(uint64_t ticks, bool online) {
         uint64_t outer=irq_off(), flags=spin_lock_irqsave(&lock);
         tcp_conn_t *c=connection(e);
         if (e->detach || e->cancel) {
+            for (unsigned j=0; j<e->backlog; ++j) {
+                tcp_conn_t *pending=pending_connection(e->pending[j]);
+                if (pending) tcp_conn_detach(pending,clock_ms);
+                e->pending[j].block=-1;
+            }
             if (c) tcp_conn_detach(c,clock_ms);
+            e->listening=false; e->backlog=0;
             e->block=-1;
             e->detach=e->cancel=false; publish(e); c=NULL;
         }
         if (c && e->started) {
+            unsigned ready=0;
+            for (unsigned j=0; j<e->backlog; ++j) {
+                tcp_conn_t *pending=pending_connection(e->pending[j]);
+                if (!pending) { e->pending[j].block=-1; continue; }
+                tcp_conn_tick(pending,clock_ms);
+                if (pending->state==TCP_CLOSED) {
+                    pending->orphan=true; e->pending[j].block=-1; publish(e);
+                } else if (pending->state==TCP_ESTABLISHED || pending->state==TCP_CLOSE_WAIT) ready|=1U<<j;
+            }
             tcp_conn_tick(c,clock_ms);
             if (!online && !e->error) e->error=SYSCALL_EIO;
             uint64_t observed=c->rx_count | ((uint64_t)c->tx_count<<16) |
                 ((uint64_t)c->state<<32) | ((uint64_t)(uint8_t)(-c->error)<<40) |
                 ((uint64_t)c->eof<<48) | ((uint64_t)c->want_fin<<49) |
-                ((uint64_t)(uint8_t)(-e->error)<<50);
+                ((uint64_t)(uint8_t)(-e->error)<<50) | ((uint64_t)ready<<58);
             if (observed!=e->observed) { e->observed=observed; publish(e); }
         }
         bool wake=e->wake; e->wake=false;

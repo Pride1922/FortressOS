@@ -18,6 +18,51 @@ static bool interrupted(unsigned slot, const net_tcp_wait_t *wait, bool connect)
     if (connect) net_tcp_cancel_connect(slot,wait->generation);
     return true;
 }
+static int64_t accept_outputs(const interrupt_frame_t *f) {
+    if (!!f->rsi!=!!f->rdx || (f->r10 && f->r10!=NET_SOCK_CLOEXEC)) return SYSCALL_EINVAL;
+    if (!f->rsi) return 0;
+    if (!range(f->rsi,16,true) || !range(f->rdx,4,true)) return SYSCALL_EFAULT;
+    uint32_t size; memcpy(&size,(const void *)f->rdx,4);
+    if (size<16 || (f->rsi<f->rdx+4 && f->rdx<f->rsi+16)) return SYSCALL_EINVAL;
+    return 0;
+}
+static int64_t accept_socket(tcb_t *caller, unsigned slot, interrupt_frame_t *f) {
+    if (!net_tcp_listener(slot)) return SYSCALL_EINVAL;
+    net_tcp_wait_t wait;
+    if (!net_tcp_snapshot(slot,&wait)) return SYSCALL_EBADF;
+    uint64_t identity=wait.generation;
+    for (;;) {
+        int64_t result=accept_outputs(f); if (result) return result;
+        if (!net_socket_available()) return SYSCALL_EIO;
+        if (process_signal_interrupt()) return SYSCALL_EINTR;
+        /* STOP may switch inside the signal check. Repeat validation AFTER it
+         * and stage nothing until all potentially blocking checks finish. */
+        result=accept_outputs(f); if (result) return result;
+        if (!net_socket_available()) return SYSCALL_EIO;
+        if (!net_tcp_snapshot(slot,&wait) || wait.generation!=identity) return SYSCALL_EBADF;
+        net_tcp_child_t child; net_sockaddr_in_t peer;
+        result=net_tcp_accept_peek(slot,&child,&peer);
+        if (result==SYSCALL_EAGAIN) {
+            sched_wait_until(net_tcp_channel(&wait),net_tcp_ready,&wait); continue;
+        }
+        if (result) return result;
+        /* BSP IF remains clear: queued child and outputs cannot change. The
+         * staged constructor owns no transport block; failure leaves queue
+         * membership untouched. No signal check/sleep after this point. */
+        file_t *accepted; result=net_socket_stage_stream(&accepted);
+        if (result) return result;
+        int fd=fd_alloc(caller,accepted);
+        if (fd<0) { vfs_close(accepted); return SYSCALL_EMFILE; }
+        net_tcp_accept_commit(slot,net_socket_index(accepted),child);
+        net_socket_finish_adopt(accepted);
+        if (f->r10==NET_SOCK_CLOEXEC) caller->fd_flags[fd]=FD_FLAG_CLOEXEC;
+        if (f->rsi) {
+            uint32_t size=16;
+            memcpy((void *)f->rsi,&peer,16); memcpy((void *)f->rdx,&size,4);
+        }
+        return fd;
+    }
+}
 int64_t net_tcp_syscall(interrupt_frame_t *f) {
     tcb_t *caller=thread_current();
     if (cpu_current()->id || !caller || caller->cpu_affinity!=0) return SYSCALL_EOPNOTSUPP;
@@ -25,7 +70,12 @@ int64_t net_tcp_syscall(interrupt_frame_t *f) {
     file_t *file=fd_get(caller,(int)f->rdi);
     if (!net_socket_stream(file)) return SYSCALL_EBADF;
     unsigned slot=net_socket_index(file);
-    if (f->rax==SYS_LISTEN || f->rax==SYS_ACCEPT) return SYSCALL_EOPNOTSUPP;
+    if (f->rax==SYS_LISTEN) {
+        if (!f->rsi || f->rsi>NET_TCP_BACKLOG_MAX) return SYSCALL_EINVAL;
+        if (!net_socket_available()) return SYSCALL_EIO;
+        return net_tcp_listen(slot,(unsigned)f->rsi);
+    }
+    if (f->rax==SYS_ACCEPT) return accept_socket(caller,slot,f);
     if (f->rax==SYS_SHUTDOWN) {
         if (f->rsi!=NET_SHUT_WR) return SYSCALL_EINVAL;
         return net_tcp_shutdown(slot);
