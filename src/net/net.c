@@ -146,6 +146,7 @@ void net_timer_tick(void) {
 }
 void net_worker_main(void *arg) {
     (void)arg;
+    bool was_online=e1000_network_online(s_if);
     if (s_config.test_icmp) {
         s_probe=(net_ping_v1_t){.version=1,.destination=s_config.gateway,.timeout_seconds=1,.sequence=1};
         s_probe_pending=net_ping_submit(&s_probe,&s_probe_token)==0;
@@ -161,8 +162,11 @@ void net_worker_main(void *arg) {
         unsigned probe=__atomic_exchange_n(&s_ap_probe_result,0,__ATOMIC_ACQ_REL);
         if (probe) serial_puts(probe==1 ? "[NET 5] AP socket dispatch rejection PASS\n" :
             "[NET 5] AP socket dispatch rejection FAIL\n");
+        bool online=e1000_service_link(s_if,apic_timer_get_bsp_ticks(),apic_timer_get_frequency());
+        if (!online && was_online) arp_cache_init(&s_arp_cache);
+        was_online=online;
         unsigned count=0;
-        for (; count<64; ++count) {
+        for (; online && count<64; ++count) {
             pbuf_t *p=s_if->poll_rx(s_if);
             if (!p) break;
             net_input(s_if,p);
@@ -177,6 +181,9 @@ void net_worker_main(void *arg) {
             }
         }
         net_ping_worker_tick(apic_timer_get_bsp_ticks());
+        /* Includes requests published while cold-waiting, not only a falling
+         * edge. Never restart protocol tables or erase endpoint generations. */
+        if (!e1000_network_online(s_if)) net_ipv4_link_down();
         net_socket_worker_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
         net_tcp_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
         net_ipv4_tick(apic_timer_get_bsp_ticks());
@@ -238,6 +245,9 @@ void net_start(const char *cmdline, size_t len) {
     s_worker_started=true;
     net_ping_init(true);
     net_socket_enable();
+    /* Publish cold-offline before userspace can create a socket. */
+    if (!e1000_network_online(dev))
+        net_socket_worker_tick(apic_timer_get_bsp_ticks(),false);
     /* Explicit disposable-test opt-in. Direct dispatch from an AP kernel
      * thread tests context rejection, not a Ring 3 AP entry transition. */
     if ((s_config.test_udp || s_config.test_tcp) && smp_get_cpu_count()>1)

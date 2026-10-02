@@ -7,6 +7,8 @@
 #include "thread.h"
 
 static net_dev_t dev;
+static bool carrier=true;
+static unsigned link_checks, rx_polls;
 bool net_tcp_idle(void) { return true; }
 void net_tcp_input(uint32_t source, const uint8_t *data, size_t len) {
     (void)source; (void)data; (void)len;
@@ -19,7 +21,10 @@ void net_socket_worker_tick(uint64_t now, bool online) { (void)now; (void)online
 void net_socket_input(uint32_t ip, uint16_t sp, uint16_t dp, const uint8_t *data, size_t len) {
     (void)ip; (void)sp; (void)dp; (void)data; (void)len;
 }
-bool e1000_network_online(net_dev_t *d) { return d==&dev; }
+bool e1000_network_online(net_dev_t *d) { return d==&dev && carrier; }
+bool e1000_service_link(net_dev_t *d, uint64_t now, uint64_t hz) {
+    (void)now; assert(hz==100); ++link_checks; return e1000_network_online(d);
+}
 size_t smp_get_cpu_count(void) { return 1; }
 int64_t net_socket_syscall(interrupt_frame_t *frame) { (void)frame; return -14; }
 static pbuf_t packet;
@@ -54,7 +59,7 @@ static int send_packet(net_dev_t *d, const void *buf, size_t len) {
     memcpy(sent,buf,len); ++sends;
     return fail_send ? -1 : 0;
 }
-static pbuf_t *poll_rx(net_dev_t *d) { assert(d==&dev); return NULL; }
+static pbuf_t *poll_rx(net_dev_t *d) { assert(d==&dev); ++rx_polls; return NULL; }
 static void recycle(net_dev_t *d, pbuf_t *p) { assert(d==&dev && p==&packet); ++recycles; }
 static void input(void) { unsigned before=recycles; net_input(&dev,&packet); assert(recycles==before+1); }
 static void make_arp(const uint8_t *dest, bool reply, uint32_t target) {
@@ -120,6 +125,13 @@ int main(void) {
     net_start(NULL,0);
     if (!setjmp(done)) net_worker_main(NULL);
     assert(waits==3 && wakes==3 && yields==0);
+    unsigned before_polls=rx_polls;
+    waits=wakes=0; carrier=false;
+    if (!setjmp(done)) net_worker_main(NULL);
+    assert(waits==3 && wakes==3 && yields==0 && rx_polls==before_polls);
+    waits=wakes=0; carrier=true;
+    if (!setjmp(done)) net_worker_main(NULL);
+    assert(waits==3 && wakes==3 && yields==0 && rx_polls==before_polls+3 && link_checks==9);
     printf("NET 3 host PASS: dispatch/recycle, cache/resolve, bounded config, timer deadline (mock scheduler); %u inputs recycled\n",recycles);
     return 0;
 }

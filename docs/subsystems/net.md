@@ -6,6 +6,13 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+Cold cable insertion and runtime link recovery are implemented and physically
+accepted on the Dell Latitude 5590 (all six cases PASS, autonomous PHY
+renegotiation confirmed). Cold waiting allocates no DMA, first link activates once,
+and subsequent flaps retain rings. Old TCP connections/listeners fail with EIO;
+start new commands after recovery. No PHY autoneg restart or DMA replacement is
+attempted. Details and the physical evidence: [link recovery](../roadmap/net-link-recovery.md).
+
 NET-2 is 7/7 complete: [step 1](../roadmap/net2-step1.md) supplies
 the codec; [step 2](../roadmap/net2-step2.md) supplies the bounded transport
 engine and loss/reordering simulator, host-sanitizer verified. The seven-step

@@ -82,5 +82,13 @@ int main(void) {
     request.start_delay_ms=1000; unsigned before=sends;
     assert(net_ipv4_ping_start(&request,58,800)); net_ipv4_tick(899); assert(sends==before);
     net_ipv4_tick(900); assert(sends==before+1); net_ipv4_ping_cancel(58);
-    puts("IPv4 stack ASan/UBSan PASS: echo bytes/padding, filters, routes, bounded ARP, saturation, matching, pacing/timeouts/TX failure");
+    assert(net_ipv4_ping_start(&request,59,1000));
+    net_ipv4_link_down();
+    assert(net_ipv4_ping_take(&result) && result.outcome==NETPING_TX_FAILED);
+    request.start_delay_ms=0;
+    assert(net_ipv4_ping_start(&request,60,1100)); net_ipv4_tick(1100);
+    net_ipv4_link_down();
+    assert(net_ipv4_ping_take(&result) && result.outcome==NETPING_TX_FAILED);
+    before=sends; net_ipv4_tick(1200); assert(sends==before && net_ipv4_idle());
+    puts("IPv4 stack ASan/UBSan PASS: echo bytes/padding, filters, routes, bounded ARP, saturation, matching, pacing/timeouts/TX failure and link-loss cancellation");
 }

@@ -361,6 +361,7 @@ def build_bootable_img(output_img: Path, iso_root: Path, limine_dir: Path,
             "    kernel_path: boot():/boot/fortress.elf\n"
             "    module_path: boot():/boot/initramfs.tar\n"
             f"    kernel_cmdline: usb_data=PARTUUID={part2_guid_str} usb_data_mode=rw verbose net=192.168.0.168/24,192.168.0.1 \n"
+            
         )
         custom_limine_conf.write_text(conf_content)
 

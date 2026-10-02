@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [net-link-recovery.md](net-link-recovery.md) | COMPLETE (2026-10-02): Cold cable waiting, deferred activation, and retained-ring link recovery; host/QEMU 8/8 PASS, Dell Latitude 5590 physical acceptance 6/6 PASS (autonomous PHY renegotiation confirmed). |
 | [net2-step7.md](net2-step7.md) | COMPLETE: DNS/nslookup/hostname nc, approved TCP deadlines, host/QEMU evidence and Dell 5590 physical DNS user-confirmed PASS; NET-2 7/7 complete. |
 | [net2-step6.md](net2-step6.md) | Dell 5590 physical TCP A–D user-confirmed PASS; Step 6 closed, NET-2 6/7 complete. |
 | [net2-step6-caseC.md](net2-step6-caseC.md) | Confirmed stdin invocation issue; terminal-aware nc listener and BIOS/UEFI tty/null/file/pipe data+FIN tests. Physical retry accepted. |

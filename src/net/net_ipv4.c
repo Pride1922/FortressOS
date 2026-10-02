@@ -88,6 +88,16 @@ bool net_ipv4_ping_start(const net_ping_v1_t *request, uint64_t token, uint64_t 
                (uint16_t)request->sequence,s_ping_data,32,start)) finish(NETPING_TX_FAILED,0);
     return true;
 }
+void net_ipv4_link_down(void) {
+    if (s_pending[0].active || s_ping_waiting) finish(NETPING_TX_FAILED,0);
+    for (unsigned i=0; i<2+NET_SOCKET_MAX; ++i) {
+        if (i>=2 && s_pending[i].active) {
+            s_udp[i-2].result=SYSCALL_EIO; s_udp[i-2].done=true;
+        }
+        s_pending[i].active=false;
+    }
+    memset(s_arp_recent,0,sizeof(s_arp_recent));
+}
 bool net_ipv4_ping_take(net_ping_v1_t *result) {
     if (!s_ping_done) return false;
     *result=s_ping; s_ping_done=false; return true;

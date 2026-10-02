@@ -916,6 +916,9 @@ test-net-dns-host:
 	@python3 tests/test_dns_fixture.py
 	@python3 tests/test_dns_lan_peer.py
 .PHONY: test-net-dns test-net-dns-lifecycle
+.PHONY: test-net-link
+test-net-link: $(BOOTABLE_ISO) test-net-i219-host test-net-rings-host test-net-eth-host test-net-ipv4-host test-net-tcp-socket-host
+	@python3 scripts/test_net_link.py
 .PHONY: test-net-tcp-deadlines
 test-net-tcp-deadlines: $(BOOTABLE_ISO) test-net-tcp-socket-host
 	@python3 scripts/test_net_tcp_deadlines.py

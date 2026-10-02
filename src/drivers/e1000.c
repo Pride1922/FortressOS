@@ -9,6 +9,7 @@
 
 static bool e1000_init_rings(void);
 static bool e1000_i219_init(void);
+static bool e1000_wait_for_cable(void);
 static e1000_device_t s_e1000_dev;
 
 /* Linux v6.12 e1000e hw.h: LM4=SPT, LM6/LM7=CNP. Older discovery IDs
@@ -250,7 +251,7 @@ bool net_boot_probe(void) {
     /* Keep the Phase 2a QEMU path unchanged; PCH has separate takeover/reset. */
     if (s_e1000_dev.pci.device_id == E1000_DEV_82540EM ||
         s_e1000_dev.pci.device_id == E1000_DEV_82574L)
-        return e1000_init_rings();
+        return s_e1000_dev.link_up ? e1000_init_rings() : e1000_wait_for_cable();
     if (is_i219()) return e1000_i219_init();
     return true;
 }
@@ -301,6 +302,27 @@ static spinlock_t g_net_dev_lock = SPINLOCK_RANKED(1, "net_dev");
 static bool g_net_fatal;
 static bool s_dma_attempted;
 static net_dev_t s_net_dev;
+/* Link state is independent of DMA ownership: DOWN retains activated rings. */
+static enum { LINK_UNINITIALIZED, LINK_WAITING, LINK_ONLINE, LINK_DOWN,
+              LINK_FAILED } s_link_state;
+static uint64_t s_link_check;
+
+static void e1000_publish_interface(void) {
+    memcpy(s_net_dev.name, "eth0", 5);
+    memcpy(s_net_dev.mac_addr, s_e1000_dev.mac_addr, 6);
+    s_net_dev.mtu = 1500;
+    s_net_dev.send_packet = e1000_send_raw;
+    s_net_dev.poll_rx = e1000_poll_rx;
+    s_net_dev.recycle_rx = e1000_recycle_rx;
+    s_net_dev.priv = &s_e1000_dev;
+}
+
+static bool e1000_wait_for_cable(void) {
+    e1000_publish_interface();
+    s_link_state = LINK_WAITING;
+    serial_puts("[NET link] Waiting for cable; DMA not allocated\n");
+    return true;
+}
 static volatile net_rx_desc_t *s_rx;
 static volatile net_tx_desc_t *s_tx;
 static uintptr_t s_rx_phys, s_tx_phys;
@@ -368,8 +390,8 @@ static const char *s_pch_stop_result;
 static const char *s_pch_stop_reset_error;
 
 /* PIT channel 2, as xhci.c's boot delay: independent of scheduler/IF.
- * No concurrent PCH lifecycle operations: boot takeover and a latched fatal
- * stop are the only users. Restore speaker/gate state on every outcome. */
+ * No concurrent PCH lifecycle operations: boot/first-link takeover and a
+ * latched fatal stop are BSP-owned. Restore speaker/gate on every outcome. */
 static bool pch_delay_ms(unsigned ms) {
 #ifdef E1000_PCH_HOST_TEST
     return e1000_mock_delay(ms);
@@ -691,7 +713,7 @@ static bool pch_dma_ready(void) {
 
 /* Narrow SPT link-up subset of e1000_check_for_copper_link_ich8lan (v6.12).
  * HV pages >=768 use PHY address 1 and register 31 selects page*32.
- * Boot-only, device lock held; no PHY reset, autoneg restart or SMBus override. */
+ * Device lock held; no PHY reset, autoneg restart or SMBus override. */
 static bool pch_mdic(bool write, unsigned reg, uint16_t *data, bool *idle) {
     uintptr_t base = s_e1000_dev.mmio_virt;
     uint32_t command = (1u << 21) | (reg << 16) |
@@ -760,11 +782,22 @@ static bool pch_spt_link_setup(void) {
 static bool e1000_i219_init(void) {
     spin_debug_assert_unheld();
     if (s_pch_attempted || g_net_fatal) return false;
-    s_pch_attempted = true;
     if (!pmm_high_memory_enabled()) return false;
     uint64_t irq = spin_lock_irqsave(&g_net_dev_lock);
-    bool ready = pch_wait(E1000_REG_STATUS, E1000_STATUS_LU, true, 500);
-    const char *reason = "link down after 500 ms; PHY recovery not attempted";
+    bool ready=false, timer_ok=true;
+    for (unsigned i=0; i<=500; ++i) {
+        if (e1000_read32(s_e1000_dev.mmio_virt,E1000_REG_STATUS)&E1000_STATUS_LU) {
+            ready=true; break;
+        }
+        if (i==500) break;
+        if (!pch_delay_ms(1)) { timer_ok=false; break; }
+    }
+    if (!ready && timer_ok) {
+        spin_unlock_irqrestore(&g_net_dev_lock, irq);
+        return e1000_wait_for_cable();
+    }
+    s_pch_attempted = true; /* Only an actual takeover consumes the one attempt. */
+    const char *reason = "link observation timer failed";
     if (ready) { ready = pch_reset(); reason = s_pch_reset_error; }
     if (ready) {
         ready = pch_wait(E1000_REG_STATUS, E1000_STATUS_LU, true, 500);
@@ -787,6 +820,7 @@ bool e1000_quiesce(void) {
     spin_debug_assert_unheld();
     if (!s_e1000_found) return false;
     uint64_t irq = spin_lock_irqsave(&g_net_dev_lock);
+    s_link_state = LINK_FAILED;
     if (is_i219()) {
         bool already_fatal = g_net_fatal;
         g_net_fatal = true;
@@ -917,14 +951,9 @@ static bool e1000_init_rings(void) {
     net_command(net_command_read() | PCI_COMMAND_BUS_MASTER | PCI_COMMAND_INT_DISABLE);
     if (!(net_command_read() & PCI_COMMAND_BUS_MASTER)) goto failed;
     if (is_i219() && !pch_dma_ready()) goto failed;
-    memcpy(s_net_dev.name, "eth0", 5);
-    memcpy(s_net_dev.mac_addr, s_e1000_dev.mac_addr, 6);
-    s_net_dev.mtu = 1500;
-    s_net_dev.send_packet = e1000_send_raw;
-    s_net_dev.poll_rx = e1000_poll_rx;
-    s_net_dev.recycle_rx = e1000_recycle_rx;
-    s_net_dev.priv = &s_e1000_dev;
+    e1000_publish_interface();
     s_net_dev.flags = NET_UP | (s_e1000_dev.link_up ? NET_RUNNING : 0);
+    s_link_state = s_e1000_dev.link_up ? LINK_ONLINE : LINK_DOWN;
     if (is_i219()) {
         pch_puts("[NET 2b] TCTL post-reset/final="); pch_hex(inherited_tctl);
         pch_puts("/"); pch_hex(e1000_read32(base, E1000_REG_TCTL)); pch_puts("\n");
@@ -941,7 +970,7 @@ failed:
 net_dev_t *e1000_get_net_device(void) {
     spin_debug_assert_unheld();
     uint64_t irq = spin_lock_irqsave(&g_net_dev_lock);
-    net_dev_t *dev = s_net_dev.flags ? &s_net_dev : NULL;
+    net_dev_t *dev = !g_net_fatal && (s_net_dev.flags || s_link_state == LINK_WAITING) ? &s_net_dev : NULL;
     spin_unlock_irqrestore(&g_net_dev_lock, irq);
     return dev;
 }
@@ -949,10 +978,56 @@ net_dev_t *e1000_get_net_device(void) {
 bool e1000_network_online(net_dev_t *dev) {
     spin_debug_assert_unheld();
     uint64_t irq=spin_lock_irqsave(&g_net_dev_lock);
-    bool online=dev==&s_net_dev && !g_net_fatal && (s_net_dev.flags&NET_UP) &&
+    bool online=dev==&s_net_dev && !g_net_fatal && s_link_state==LINK_ONLINE &&
+        (s_net_dev.flags&NET_UP) &&
         (e1000_read32(s_e1000_dev.mmio_virt,E1000_REG_STATUS)&E1000_STATUS_LU);
     spin_unlock_irqrestore(&g_net_dev_lock,irq);
     return online;
+}
+
+bool e1000_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
+    spin_debug_assert_unheld();
+    if (dev != &s_net_dev || g_net_fatal || s_link_state == LINK_FAILED ||
+        s_link_state == LINK_UNINITIALIZED) return false;
+    /* One read per 250 ms while waiting; online/down reads stay cheap and
+     * observe loss before protocol sweeps. No PHY reset or autoneg restart. */
+    if (s_link_state == LINK_WAITING && now < s_link_check) return false;
+    uint64_t interval = tick_hz / 4;
+    if (!interval) interval = 1;
+    s_link_check = now > UINT64_MAX - interval ? UINT64_MAX : now + interval;
+    uint64_t irq = spin_lock_irqsave(&g_net_dev_lock);
+    bool up = (e1000_read32(s_e1000_dev.mmio_virt, E1000_REG_STATUS) & E1000_STATUS_LU) != 0;
+    spin_unlock_irqrestore(&g_net_dev_lock, irq);
+    if (s_link_state == LINK_WAITING) {
+        if (!up) return false;
+        s_e1000_dev.link_up = true;
+        /* Same one-shot, bounded takeover as cable-present boot. No DMA or
+         * protocol-table reinitialization ever runs on subsequent link flaps. */
+        bool ready = is_i219() ? e1000_i219_init() : e1000_init_rings();
+        if (!ready && !g_net_fatal) (void)e1000_quiesce();
+        return ready && e1000_network_online(dev);
+    }
+    if (up != (s_link_state == LINK_ONLINE)) {
+        /* Speed-dependent SPT PLL/K1/FIFO programming belongs to each link
+         * acquisition. Reuse the validated bounded helper; no MAC reset,
+         * autoneg restart, descriptor rewrite or allocation on a replug. */
+        if (up && is_i219()) {
+            irq=spin_lock_irqsave(&g_net_dev_lock);
+            bool configured=pch_spt_link_setup();
+            if (!configured) pch_capture("runtime link-up PHY configuration failed");
+            spin_unlock_irqrestore(&g_net_dev_lock,irq);
+            if (!configured) { (void)e1000_quiesce(); return false; }
+        }
+        s_link_state = up ? LINK_ONLINE : LINK_DOWN;
+        s_e1000_dev.link_up = up;
+        irq = spin_lock_irqsave(&g_net_dev_lock);
+        if (up) s_net_dev.flags |= NET_RUNNING;
+        else s_net_dev.flags &= ~NET_RUNNING;
+        spin_unlock_irqrestore(&g_net_dev_lock, irq);
+        serial_puts(up ? "[NET link] Online; retained rings\n" :
+                        "[NET link] Cable disconnected; retained rings\n");
+    }
+    return up;
 }
 
 int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len) {

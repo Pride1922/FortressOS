@@ -67,6 +67,9 @@ bool e1000_boot_probe(void);
 bool net_boot_probe(void);
 const e1000_device_t *e1000_get_active_device(void);
 net_dev_t *e1000_get_net_device(void);
+/* BSP worker, unlocked thread context. Cold waiting allocates no DMA; after
+ * activation link flaps retain the same rings. Fatal containment is terminal. */
+bool e1000_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz);
 /* Unlocked thread context; read-only link/fatal snapshot, no recovery writes. */
 bool e1000_network_online(net_dev_t *dev);
 int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len);

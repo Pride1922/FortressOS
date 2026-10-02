@@ -18,6 +18,7 @@ static bool deny_ownership, reset_stuck, pending_stuck, post_timer_fail;
 static bool reset_waiting;
 static bool complete_tdt;
 static bool lose_link_after_reset;
+static bool cold_timer_fail;
 static uint32_t ignored_write;
 static unsigned reset_writes, elapsed_ms, log_calls;
 static char captured_log[8192];
@@ -87,6 +88,7 @@ static void e1000_mock_write(uintptr_t base, uint32_t reg, uint32_t value) {
     }
 }
 static bool e1000_mock_delay(unsigned ms) {
+    if (cold_timer_fail && ms==1 && !s_pch_attempted) return false;
     if (ms == 1 && (s_net_dev.flags & NET_UP) && !s_tx_pending) {
         ++rx_waits;
         if (rx_inject && rx_waits == 3) {
@@ -147,6 +149,7 @@ static void pch_fixture(uint16_t id) {
     ignored_write = UINT32_MAX;
     complete_tdt = false;
     test_refuse_master_disable = lose_link_after_reset = false;
+    cold_timer_fail=false;
     reset_writes = elapsed_ms = log_calls = 0;
     captured_length = 0;
     captured_log[0] = 0;
@@ -273,9 +276,44 @@ int main(void) {
         stopped(146);
     }
     puts("[PASS] SPT/CNP DMA configuration, address restore, one-shot init and TX fatal reset/quarantine");
-    pch_fixture(ids[0]); registers[E1000_REG_STATUS / 4] = 0;
-    assert(!e1000_i219_init() && reset_writes == 0 && elapsed_ms == 500);
-    stopped(0);
+    const uint16_t recovery_ids[] = {E1000_DEV_I219_LM_15D7, E1000_DEV_I219_LM_1A1E};
+    for (unsigned i=0; i<2; ++i) {
+        pch_fixture(recovery_ids[i]); registers[E1000_REG_STATUS / 4] = 0;
+        assert(e1000_i219_init() && reset_writes==0 && elapsed_ms==500);
+        assert(!allocations && !g_net_fatal && !s_pch_attempted && !s_pch_failed);
+        assert(e1000_get_net_device()==&s_net_dev && s_net_dev.mtu==1500);
+        unsigned char frame[60]={0};
+        assert(!e1000_poll_rx(&s_net_dev));
+        assert(e1000_send_raw(&s_net_dev,frame,sizeof(frame))==-1);
+        assert(!e1000_service_link(&s_net_dev,0,100));
+        registers[E1000_REG_STATUS / 4] |= E1000_STATUS_LU;
+        assert(!e1000_service_link(&s_net_dev,24,100) && !allocations);
+        assert(e1000_service_link(&s_net_dev,25,100));
+        assert(allocations==146 && reset_writes==1);
+        uintptr_t rx=s_rx_phys, tx=s_tx_phys;
+        for (unsigned flap=0; flap<100; ++flap) {
+            registers[E1000_REG_STATUS / 4] &= ~E1000_STATUS_LU;
+            assert(!e1000_service_link(&s_net_dev,26+2*flap,100));
+            assert(s_link_state==LINK_DOWN && !e1000_network_online(&s_net_dev));
+            assert(e1000_send_raw(&s_net_dev,frame,sizeof(frame))==-1);
+            registers[E1000_REG_STATUS / 4] |= E1000_STATUS_LU;
+            assert(e1000_service_link(&s_net_dev,27+2*flap,100));
+            assert(allocations==146 && reset_writes==1 && s_rx_phys==rx && s_tx_phys==tx);
+        }
+        (void)e1000_quiesce();
+        assert(!e1000_service_link(&s_net_dev,1000,100)); stopped(146);
+    }
+    for (unsigned oom=0; oom<146; ++oom) {
+        pch_fixture(ids[0]); registers[E1000_REG_STATUS / 4]=0;
+        assert(e1000_i219_init()); fail_at=oom;
+        registers[E1000_REG_STATUS / 4] |= E1000_STATUS_LU;
+        assert(!e1000_service_link(&s_net_dev,0,100)); stopped(oom);
+        assert(!e1000_service_link(&s_net_dev,1000,100) && allocations==oom);
+    }
+    pch_fixture(ids[0]); registers[E1000_REG_STATUS / 4]=0; cold_timer_fail=true;
+    assert(!e1000_i219_init() && s_link_state==LINK_FAILED);
+    assert(strstr(s_pch_failure.reason,"observation timer failed")); stopped(0);
+    puts("[PASS] cold cable activation, 100 flaps retain rings, deferred OOM and terminal quarantine (5590/5530 mocks)");
     pch_fixture(ids[0]); pending_stuck = true;
     assert(!e1000_i219_init() && !reset_writes && elapsed_ms == 100);
     stopped(0);

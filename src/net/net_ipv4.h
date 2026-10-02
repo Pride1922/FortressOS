@@ -6,6 +6,8 @@
 void net_ipv4_init(net_dev_t *dev, const net_config_t *config);
 void net_ipv4_input(const uint8_t *packet, size_t len);
 void net_ipv4_tick(uint64_t now);
+/* Sole BSP worker: fail copied pending traffic on a disconnected interface. */
+void net_ipv4_link_down(void);
 bool net_ipv4_unicast(uint32_t ip);
 bool net_ipv4_route(uint32_t destination, uint32_t *hop); /* Immutable config only. */
 uint32_t net_ipv4_local(void);

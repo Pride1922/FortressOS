@@ -19,6 +19,7 @@ OVMF*.fd
 
 # Editor and OS artifacts
 .vscode/
+.VSCodeCounter/
 .idea/
 *.swp
 *~

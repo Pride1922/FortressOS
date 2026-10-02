@@ -92,6 +92,7 @@ static void fixture(void) {
     s_e1000_dev.link_up = true;
     s_e1000_found = true;
     s_dma_attempted = g_net_fatal = s_rx_discard = false;
+    s_link_state = LINK_UNINITIALIZED; s_link_check = 0;
     s_rx_next = s_tx_next = s_tx_pending = 0;
     s_rx = NULL; s_tx = NULL;
     memset(&s_net_dev, 0, sizeof(s_net_dev));

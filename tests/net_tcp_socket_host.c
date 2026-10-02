@@ -12,6 +12,7 @@ static unsigned tcp_packets;
 static unsigned fin_packets, reset_packets;
 static bool interrupt_after_send, interrupt_wait_before_reply, expire_wait_with_reply;
 static bool listener_fixture, invalidate_listener_wait;
+static bool disconnect_listener_wait;
 static unsigned listener_wait_slot;
 static tcp_header_t synacks[16];
 static unsigned adoption_listener, adoption_checks;
@@ -112,6 +113,11 @@ static void tcp_service(void) {
 /* This fixture substitutes its own finite scheduler driver via a macro below. */
 static void tcp_wait(const void *channel, bool (*ready)(void *), void *arg) {
     assert(channel);
+    if (disconnect_listener_wait) {
+        disconnect_listener_wait=false;
+        net_socket_worker_tick(now,false); net_tcp_tick(now,false);
+        assert(ready(arg)); return;
+    }
     if (invalidate_listener_wait) {
         invalidate_listener_wait=false;
         net_tcp_close(listener_wait_slot); net_tcp_tick(now,true); return;
@@ -227,6 +233,21 @@ static void repeated_receive_event_test(net_config_t *cfg) {
     closefd(listener); closefd(child); net_tcp_tick(now,true); listener_fixture=false;
     assert(!allocations);
     puts("[PASS] equal-sized RX batches separated by userspace consume publish a fresh wake event without a zero-count worker sample");
+}
+static void listener_link_loss_test(net_config_t *cfg) {
+    assert(!allocations); peer_active=false; listener_fixture=true;
+    net_socket_init(&dev,cfg); net_ipv4_init(&dev,cfg); net_socket_enable();
+    int listener=listenfd(); disconnect_listener_wait=true;
+    assert(acceptfd(listener,NULL,NULL)==SYSCALL_EIO && !disconnect_listener_wait);
+    assert(stream()==SYSCALL_EIO); /* No new socket while disconnected. */
+    net_socket_worker_tick(now,true); net_tcp_tick(now,true);
+    assert(acceptfd(listener,NULL,NULL)==SYSCALL_EIO); /* Old endpoint stays failed. */
+    closefd(listener); net_tcp_tick(now,true);
+    listener=listenfd(); memset(synacks,0,sizeof(synacks)); passive_open(0,true);
+    int child=(int)acceptfd(listener,NULL,NULL); assert(child>=0);
+    closefd(listener); closefd(child); net_tcp_tick(now,true); listener_fixture=false;
+    assert(!allocations);
+    puts("[PASS] blocked ACCEPT link loss returns EIO; old listener stays failed after replug; fresh listener binds and accepts");
 }
 static void listener_tests(net_config_t *cfg) {
     assert(!allocations); peer_active=false; listener_fixture=true;
@@ -495,6 +516,7 @@ int main(void) {
     listener_tests(&cfg);
     listener_data_fin_tests(&cfg);
     repeated_receive_event_test(&cfg);
+    listener_link_loss_test(&cfg);
     /* Event-counter exhaustion invalidates identity and clears timed hints;
      * neither the old hint nor an old continuation may attach to slot reuse. */
     peer_active=false; now=13000;
