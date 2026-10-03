@@ -33,6 +33,8 @@ uint32_t usb_get_sector_size(void);
 uint64_t usb_get_sector_count(void);
 bool usb_block_read(block_dev_t *dev, uint64_t lba, void *buf);
 bool usb_block_write(block_dev_t *dev, uint64_t lba, const void *buf);
+bool usb_block_read_sectors(block_dev_t *,uint64_t,uint32_t,void *);
+bool usb_block_write_sectors(block_dev_t *,uint64_t,uint32_t,const void *);
 bool usb_block_flush(block_dev_t *dev);
 /* Boot/thread context only, with no subsystem/console lock held.
  * Consumes a copied flush failure; never reads controller or DMA memory. */

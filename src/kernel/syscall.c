@@ -998,10 +998,10 @@ static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
 
 static int64_t sys_reboot(uint64_t cmd) {
     if (cmd == REBOOT_CMD_RESTART) {
-        if (!ext2_sync_all()) return SYSCALL_EIO;
+        if (!usb_mount_freeze_and_sync()) return SYSCALL_EIO;
         power_reboot();
     } else if (cmd == REBOOT_CMD_POWEROFF) {
-        if (!ext2_sync_all()) return SYSCALL_EIO;
+        if (!usb_mount_freeze_and_sync()) return SYSCALL_EIO;
         power_shutdown();
     }
     return SYSCALL_EINVAL;

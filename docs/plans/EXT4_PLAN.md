@@ -1,6 +1,6 @@
 # FortressOS EXT4 implementation plan
 
-Status: Phases 0-4 delivered (RO reads, bounded mutation engine and non-journaled RW VFS); Phases 5-10 pending. Production RW ext4 and hardware acceptance are not claimed. See [Phase-0 baseline](EXT4_PHASE0.md), [Phase-1 evidence](../roadmap/ext4-phase1.md), [Phase-2 evidence](../roadmap/ext4-phase2.md) [Phase-3 evidence](../roadmap/ext4-phase3.md) and [Phase-4 evidence](../roadmap/ext4-phase4.md).
+Status: Phases 0-4 delivered (RO reads, bounded mutation engine and non-journaled RW VFS); Phase 5 E4-A production USB integration COMPLETE: automated gates and Dell 5590 physical acceptance PASS (2026-10-03); Phases 6-7 recovery/writer workbenches delivered and host-verified; Phases 8-10 pending. Physical evidence is limited to the reported Phase-5 checks; journaling hardware acceptance is not claimed. See [Phase-0 baseline](EXT4_PHASE0.md), [Phase-1 evidence](../roadmap/ext4-phase1.md), [Phase-2 evidence](../roadmap/ext4-phase2.md), [Phase-3 evidence](../roadmap/ext4-phase3.md), [Phase-4 evidence](../roadmap/ext4-phase4.md), [Phase-5 handoff](../roadmap/ext4-phase5.md), [Phase-6 evidence](../roadmap/ext4-phase6.md) and [Phase-7 evidence](../roadmap/ext4-phase7.md).
 Date: 2026-10-03. Based on the supplied notes, the current block/VFS/ext2/USB contracts, and Linux's ext4 format documentation.
 
 ## 1. Decision and corrections
@@ -127,7 +127,7 @@ Gate: ext2/storage/USB regressions, mount eligibility tests and SMP append pass 
 
 Implement journal identity/geometry/feature validation, descriptor/tag decoding, escape handling, sequence wrap, checksum validation and revoke processing. Analyze recovery entirely before modifying the target. Replay complete committed transactions that need checkpointing; disregard incomplete tails. Reject corrupt or unsupported journals without guessing transaction boundaries.
 
-Gate: proposed `test-jbd2-replay-host` uses independently generated Linux journals and deliberate corruptions. Revoked block reuse, circular wrap, truncated descriptors, wrong UUID and replay interruption are covered. Repeated recovery is idempotent. A read-only source is never changed; recovery requires explicit writable admission or runs on a disposable copy.
+Gate implemented: `test-jbd2-replay-host` passes 12 geometry/source cases and 48 zero-write rejections, revokes/reuse, escapes, circular/sequence wrap, incomplete tails, replay interruption and idempotence. The experimental debugfs producer's zero tag UUIDs are normalized and descriptor CRCs independently resealed; raw output is retained and Linux replay is the independent oracle. Read-only analysis changes nothing; replay requires explicit writable admission. Production mounts still reject journals; filesystem RECOVER/clean/orphan transitions belong to Phase 8. See [scope and limitations](../roadmap/ext4-phase6.md).
 
 ### Phase 7 — Ordered transaction writer and checkpoints
 
@@ -135,7 +135,7 @@ Define transaction credit accounting and bounded block images; preflight space f
 
 Track transaction state and failure semantics. Uncertain commit means taint/abort, not fictitious rollback. Handle sequence wrap and journal-full admission without sleeping under a spinlock. Existing overwritten data is not promised atomic by ordered metadata journaling.
 
-Gate: proposed `test-jbd2-write-host` checks actual ordered writes/barriers and interrupted commits against an independent durability model; Linux can replay FortressOS-written transactions. FortressOS can replay Linux-written transactions for the declared profile.
+Gate implemented: `test-jbd2-write-host` passes 12 geometry/placement cases with ordered-data/log/activation/commit/checkpoint/tail barriers, 3,568 atomic cut/restart cases, sector tears, credit limits, read/OOM failures and reuse. Linux replays unmodified FortressOS-written committed journals and checks bytes/mode/fsck (36 copies). Phase-6 regression checks reverse interoperability with its documented debugfs UUID normalization. One exclusive transaction is staged/committed/checkpointed at a time; production VFS transactions remain Phase 8. See [writer evidence/limits](../roadmap/ext4-phase7.md).
 
 ### Phase 8 — Journal all mutations, orphan recovery and sync
 
@@ -173,4 +173,6 @@ Linux validation: inspect via `dumpe2fs`/`debugfs`, run `e2fsck -fn` only on unm
 
 Compatibility extensions after E4-B: HTree, flex_bg/64bit, additional inode mappings/types and xattrs are separate phases with feature-specific gates. Performance caching and delayed allocation come after correctness; no full-ext4 label or terabyte capacity promise without matching validation.
 
-Next implementation unit: **Phase 5 E4-A integration and physical acceptance**. Phase 4 bounded RW VFS passes host and BIOS/UEFI persistence gates; production mounting remains disabled. Kernel fixtures record raw TSC callback costs; physical latency remains to be measured before accepting RW integration. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.
+Next implementation unit: **Phase 8 journal all mutations, recovery/orphans and sync**. Phases 6-7 provide bounded reader/writer workbenches; production mount integration and complete metadata coverage follow next. Phase-5 [Dell acceptance](../roadmap/ext4-phase5-dell.md), now includes manual performance/hash/reboot/fsck PASS at 6–7 seconds/MiB; all checklist items are now user-confirmed PASS, separately from journal acceptance. The user authorized continuing journaling before final performance profiling/acceptance. The default image remains ext2; the optional EXT4 image remains non-journaled. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.
+
+E4-A [complete physical acceptance record](../roadmap/ext4-phase5-acceptance.md): all seven checklist items PASS. Flush timing attribution and proposed count reductions remain estimates, not measured guarantees.

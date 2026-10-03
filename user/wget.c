@@ -17,7 +17,7 @@
 #endif
 
 /* Static BSS storage strictly adhering to Ring 3 stack budget */
-static uint8_t s_io_buf[4096];
+static uint8_t s_io_buf[MAX_SYSCALL_WRITE_LEN];
 static uint8_t s_header_buf[WGET_MAX_HEADER_BYTES + 1];
 static wget_url_t s_current_url;
 static wget_url_t s_redirect_url;
@@ -393,33 +393,46 @@ redirect_loop:
 
     /* 8. Stream Response Body */
     uint64_t total_received = 0;
+    size_t buffered = 0;
 
     /* Write any body bytes already read into s_header_buf */
     size_t initial_body_bytes = total_hdr_read - header_len;
     if (initial_body_bytes > 0) {
-        if (!write_all(out_fd, s_header_buf + header_len, initial_body_bytes)) {
+        if (out_fd != 1) {
+            for (size_t i=0;i<initial_body_bytes;i++) s_io_buf[i]=s_header_buf[header_len+i];
+            buffered=initial_body_bytes;
+        } else if (!write_all(out_fd, s_header_buf + header_len, initial_body_bytes)) {
             body_write_error(total_received);
             goto failure;
         }
-        total_received += (uint64_t)initial_body_bytes;
+        if (out_fd == 1) total_received += (uint64_t)initial_body_bytes;
     }
 
     /* Stream until server closes connection (recv == 0) */
     for (;;) {
-        long n = WGET_CALL(SYS_READ, sock, (uintptr_t)s_io_buf, sizeof(s_io_buf), 0, 0, 0);
+        long n = WGET_CALL(SYS_READ, sock, (uintptr_t)(s_io_buf+buffered), sizeof(s_io_buf)-buffered, 0, 0, 0);
         if (n < 0) {
             message("wget: read error during body transfer\n");
             goto failure;
         }
         if (n == 0) {
             /* EOF reached */
+            if (buffered && !write_all(out_fd,s_io_buf,buffered)) {
+                body_write_error(total_received);
+                goto failure;
+            }
+            total_received += buffered;
             break;
         }
-        if (!write_all(out_fd, s_io_buf, (size_t)n)) {
+        buffered += (size_t)n;
+        /* Keep stdout streaming; regular output batches small TCP receives. */
+        if (out_fd != 1 && buffered < sizeof(s_io_buf)) continue;
+        if (!write_all(out_fd, s_io_buf, buffered)) {
             body_write_error(total_received);
             goto failure;
         }
-        total_received += (uint64_t)n;
+        total_received += buffered;
+        buffered=0;
     }
 
     /* Clean close of socket and output file */

@@ -12,6 +12,7 @@ Covers:
    - Boot 3: Reboot third time, verify exact persistence of modified and second file, remove second file, clean shutdown, offline e2fsck -fn (0 errors).
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -124,6 +125,7 @@ def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
         expected_devices = ['qemu-xhci,id=xhci,p2=4,p3=0', 'usb-storage,drive=usbdrive,bootindex=1']
         assert [cmd[i + 1] for i, arg in enumerate(cmd) if arg == '-device'] == expected_devices
 
+        log_path.with_suffix('.argv.json').write_text(json.dumps(cmd,indent=2)+'\n')
         log_path.write_text('')
         stderr_path = log_path.with_suffix('.stderr')
 

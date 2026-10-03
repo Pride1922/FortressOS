@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../src/fs/ext4.c"
+#include "../src/fs/jbd2.c"
 
 static uint8_t *disk;
 static size_t disk_len, live, reads, writes, flushes;

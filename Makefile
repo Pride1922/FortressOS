@@ -380,6 +380,11 @@ test-usb-descriptors: $(BOOTABLE_ISO)
 	@python3 scripts/test_usb_discovery.py --descriptors
 
 .PHONY: test-usb-block
+.PHONY: test-xhci-bot-host test-usb-mount-host
+test-xhci-bot-host:
+	@python3 scripts/test_xhci_bot_host.py
+test-usb-mount-host:
+	@python3 scripts/test_usb_mount_host.py
 test-usb-block: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 	@python3 scripts/test_xhci_bot_host.py
 	@python3 scripts/test_usb_discovery.py --block
@@ -1199,3 +1204,24 @@ test-ext4-write-host:
 .PHONY: test-ext4-write
 test-ext4-write: all
 	@python3 scripts/test_ext4_write.py
+
+.PHONY: image-ext4
+image-ext4: all
+	@python3 scripts/create_ext4_boot_img.py --iso-root $(ISO_ROOT) --limine-dir $(LIMINE_DIR)
+	@python3 scripts/prepare_ext4_dell.py
+
+.PHONY: test-ext4-usb
+test-ext4-usb: all
+	@python3 scripts/test_ext4_usb.py
+
+.PHONY: test-jbd2-replay-host
+test-jbd2-replay-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_replay_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/jbd2_replay_host
+	@python3 scripts/test_jbd2_replay_host.py
+
+.PHONY: test-jbd2-write-host
+test-jbd2-write-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_write_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/jbd2_write_host
+	@python3 scripts/test_jbd2_write_host.py

@@ -3,11 +3,38 @@
 #include "serial.h"
 #include "xhci.h"
 #include "ext2.h"
+#include "ext4.h"
 #include "vfs.h"
 
 /* Cached mounted block device for normal mid-session sync. Set only when a
  * writable mount succeeds; cleared on failure. Never freed or reallocated. */
 static block_dev_t *s_mounted_rw_dev = NULL;
+static ext4_mount_t *s_ext4_mount;
+
+/* Probe only the selected partition. Full feature/geometry validation remains
+ * the filesystem's admission responsibility; extents never fall back to ext2. */
+static int usb_mount_format(block_dev_t *dev) {
+    uint8_t sector[4096];
+    if (!dev || (dev->sector_size != 512 && dev->sector_size != 4096)) return -1;
+    uint64_t lba = (1024 + 56) / dev->sector_size;
+    if (!block_read_sector(dev, lba, sector)) return -1;
+    size_t base = 1024 % dev->sector_size;
+    /* The required superblock prefix fits one sector for both geometries. */
+    if (sector[base+56] != 0x53 || sector[base+57] != 0xef) return -1;
+    uint32_t incompat = (uint32_t)sector[base+96] |
+        ((uint32_t)sector[base+97]<<8) | ((uint32_t)sector[base+98]<<16) |
+        ((uint32_t)sector[base+99]<<24);
+    if (incompat & 0x40) return 4;
+    uint32_t compat = (uint32_t)sector[base+92] |
+        ((uint32_t)sector[base+93]<<8) | ((uint32_t)sector[base+94]<<16) |
+        ((uint32_t)sector[base+95]<<24);
+    uint32_t ro = (uint32_t)sector[base+100] |
+        ((uint32_t)sector[base+101]<<8) | ((uint32_t)sector[base+102]<<16) |
+        ((uint32_t)sector[base+103]<<24);
+    /* Same legacy profile as ext2 RO admission. In particular an ext3 journal
+     * must not enter the legacy RW API, which does not check compat features. */
+    return (compat & ~0x38u) || (incompat & ~2u) || (ro & ~3u) ? -1 : 2;
+}
 
 void usb_mount_parse_cmdline(const char *cmdline, usb_mount_config_t *out_cfg) {
     if (!out_cfg) return;
@@ -130,6 +157,14 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
     serial_puts(target_str);
     serial_puts(")\n");
 
+    int format = usb_mount_format(&matched_part->block_dev);
+    if (format < 0) {
+        serial_puts("[USB 9G.3] Invalid filesystem or probe I/O failure; /mnt left unmounted\n");
+        return false;
+    }
+    serial_puts(format == 4 ? "[USB E4-A] Selected filesystem: ext4\n" :
+                             "[USB 9G.3] Selected filesystem: ext2\n");
+
     /* Determine RW eligibility using the durability state machine (9G.4).
      * The durability mode was probed during boot by xhci_bot_probe_durability(). */
     bool rw_eligible = false;
@@ -174,7 +209,9 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
     }
 
     if (rw_eligible) {
-        bool mounted = ext2_mount_rw(&matched_part->block_dev, "/mnt");
+        bool mounted = format == 4 ?
+            ext4_mount_rw(&matched_part->block_dev, "/mnt", &s_ext4_mount) == 0 :
+            ext2_mount_rw(&matched_part->block_dev, "/mnt");
         if (mounted) {
             s_mounted_rw_dev = &matched_part->block_dev;
             serial_puts("[USB 9G.4] Mount mode: read-write\n");
@@ -184,7 +221,8 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
             return true;
         } else {
             usb_report_flush_failure();
-            serial_puts("[USB 9G.4] FAIL: ext2 writable mount failed on ");
+            serial_puts(format == 4 ? "[USB E4-A] FAIL: ext4 writable mount failed on " :
+                                      "[USB 9G.4] FAIL: ext2 writable mount failed on ");
             serial_puts(matched_part->block_dev.name);
             serial_puts("; attempting read-only fallback\n");
         }
@@ -192,14 +230,17 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
 
     serial_puts("[USB 9G.3] Mount mode: read-only\n");
 
-    bool mounted = ext2_mount(&matched_part->block_dev, "/mnt");
+    bool mounted = format == 4 ?
+        ext4_mount_ro(&matched_part->block_dev, "/mnt", &s_ext4_mount) == 0 :
+        ext2_mount(&matched_part->block_dev, "/mnt");
     if (mounted) {
         serial_puts("[USB 9G.3] PASS: Mounted ");
         serial_puts(matched_part->block_dev.name);
         serial_puts(" read-only at /mnt\n");
         return true;
     } else {
-        serial_puts("[USB 9G.3] FAIL: ext2 mount failed on ");
+        serial_puts(format == 4 ? "[USB E4-A] FAIL: ext4 mount failed on " :
+                                  "[USB 9G.3] FAIL: ext2 mount failed on ");
         serial_puts(matched_part->block_dev.name);
         serial_puts("; /mnt left unmounted\n");
         return false;
@@ -212,6 +253,13 @@ bool usb_mount_sync(void) {
      * This is explicitly distinct from ext2_sync_all() (shutdown-only clean close).
      * Returns true if the barrier succeeded; false on any error. */
     if (!s_mounted_rw_dev) return false;
-    return block_flush(s_mounted_rw_dev);
+    return s_ext4_mount ? ext4_sync(s_ext4_mount) == 0 : block_flush(s_mounted_rw_dev);
 }
 
+
+bool usb_mount_freeze_and_sync(void) {
+    /* Call each filesystem separately: never nest rank-1 filesystem locks. */
+    bool ext4_ok = !s_ext4_mount || ext4_freeze_and_sync(s_ext4_mount) == 0;
+    bool ext2_ok = ext2_sync_all();
+    return ext4_ok && ext2_ok;
+}

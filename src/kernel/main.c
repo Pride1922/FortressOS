@@ -3098,12 +3098,14 @@ static void ext4_fixture_verify(const char *path,uint64_t size,uint8_t *buffer) 
     }
     require_ext2(vfs_read(file,buffer,1)==0,"ext4 persisted EOF");vfs_close(file);
 }
-static void test_ext4_writes(void) {
+static void test_ext4_writes(bool production_usb) {
+    if (!production_usb) {
     require_ext2(nvme_init(),"ext4 write fixture NVMe init");block_init();
     require_ext2(block_register_nvme(),"ext4 write fixture registration");
     gpt_policy_result_t policy;
     require_ext2(gpt_parse_ex(block_get_dev_by_name("nvme0n1"),&policy) && policy==GPT_POLICY_PRIMARY_CONSISTENT,"ext4 write fixture GPT");
     require_ext2(!ext4_mount_rw(block_get_dev_by_name("nvme0n1p1"),"/mnt",&g_ext4_fixture_mount),"ext4 RW fixture mount");
+    } else require_ext2(vfs_lookup("/mnt") != NULL,"ext4 production USB mount");
     uint8_t *buffer=kmalloc(32768);require_ext2(buffer!=NULL,"ext4 write fixture buffer");
     unsigned phase=qemu_fw_cfg_has_key("opt/fortress/ext4_write_cleanup") ? 3 :
                    qemu_fw_cfg_has_key("opt/fortress/ext4_write_verify") ? 2 : 1;
@@ -3116,6 +3118,9 @@ static void test_ext4_writes(void) {
             uint64_t start=ext4_fixture_cycles();int64_t n=vfs_write(file,buffer,32768);uint64_t elapsed=ext4_fixture_cycles()-start;
             if (elapsed>peak) peak=elapsed;
             require_ext2(n>0,"ext4 saved write");at+=(uint64_t)n;
+            if (production_usb && !(at % (1024*1024))) {
+                serial_puts("[EXT4 USB] Saved MiB=");serial_print_dec(at/(1024*1024));serial_puts("\n");
+            }
         }
         vfs_close(file);ext4_fixture_verify("/mnt/saved.bin",16*1024*1024,buffer);
         require_ext2(!vfs_mkdir("/mnt/sub",0),"ext4 mkdir");
@@ -5720,7 +5725,7 @@ pf_boot_guard_done:
          * Phase 9 (Step 9C.1): GPT Partition Parsing & Bounded Block Devices
          * ========================================================================= */
         if (qemu_fw_cfg_has_key("opt/fortress/ext4_write_test")) {
-            test_ext4_writes();
+            test_ext4_writes(false);
         } else if (qemu_fw_cfg_has_key("opt/fortress/ext4_read_test")) {
             test_ext4_reads();
         } else {
@@ -5786,6 +5791,15 @@ pf_boot_guard_done:
     net_start(boot_info.cmdline, sizeof(boot_info.cmdline));
     boot_status("Mounting persistent storage (/mnt)...");
     usb_mount_production_storage(&boot_info);
+    if (qemu_fw_cfg_has_key("opt/fortress/ext4_usb_test")) {
+        test_ext4_writes(true);
+        if (qemu_fw_cfg_has_key("opt/fortress/ext4_usb_append")) {
+            serial_puts("[EXT4 USB] SMP append fixture\n");
+            require_ext2(run_append_scenario("/mnt/smp_app_indep.txt",false,smp_get_cpu_count()),"ext4 USB independent append");
+            require_ext2(run_append_scenario("/mnt/smp_app_shared.txt",true,smp_get_cpu_count()),"ext4 USB shared append");
+            serial_puts("[EXT4 USB] SMP APPEND PASS\n");
+        }
+    }
     if (qemu_fw_cfg_has_key("opt/fortress/taint_test")) {
         serial_puts("[TEST] opt/fortress/taint_test active: marking ext2 storage tainted before shell startup\n");
         ext2_mark_tainted();

@@ -95,7 +95,38 @@ static bool mock_flush(block_dev_t *dev) {
 }
 
 bool block_flush(block_dev_t *dev) { return dev && dev->flush && dev->flush(dev); }
+bool block_write_sector(block_dev_t *dev,uint64_t lba,const void *buf) {
+    return dev && dev->write_sector && dev->write_sector(dev,lba,buf);
+}
 void usb_report_flush_failure(void) { s_report_calls++; }
+
+static bool s_probe_ok = true, s_magic_ok = true;
+static uint32_t s_probe_compat, s_probe_ro;
+static unsigned s_format = 2, s_e4_ro, s_e4_rw, s_e4_sync, s_e4_freeze;
+static int s_e4_result, s_e4_sync_result, s_e4_freeze_result;
+bool block_read_sector(block_dev_t *dev, uint64_t lba, void *buf) {
+    if (!s_probe_ok) return false;
+    size_t size = dev->sector_size ? dev->sector_size : 512;
+    assert(lba == 1080 / size);
+    memset(buf, 0, size); size_t base=1024 % size;
+    ((uint8_t *)buf)[base+56]=s_magic_ok ? 0x53 : 0; ((uint8_t *)buf)[base+57]=0xef;
+    ((uint8_t *)buf)[base+96]=s_format == 4 ? 0x40 : 2;
+    memcpy((uint8_t *)buf+base+92,&s_probe_compat,4);
+    memcpy((uint8_t *)buf+base+100,&s_probe_ro,4);
+    return true;
+}
+#include "../src/fs/ext4.h"
+int ext4_mount_ro(block_dev_t *dev,const char *path,ext4_mount_t **out) {
+    (void)dev;(void)path;s_e4_ro++;*out=(ext4_mount_t *)(uintptr_t)1;return s_e4_result;
+}
+int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
+    (void)dev;(void)path;s_e4_rw++;assert(s_flush_calls && s_flush_result);
+    *out=s_e4_result ? NULL : (ext4_mount_t *)(uintptr_t)1;return s_e4_result;
+}
+int ext4_sync(ext4_mount_t *fs) {assert(fs);s_e4_sync++;return s_e4_sync_result;}
+int ext4_freeze_and_sync(ext4_mount_t *fs) {assert(fs);s_e4_freeze++;return s_e4_freeze_result;}
+static bool s_e2_sync_result=true;
+bool ext2_sync_all(void) {return s_e2_sync_result;}
 
 /* Controllable durability mode stub for 9G.4 eligibility tests */
 static usb_durability_mode_t s_durability_mode = USB_DURABILITY_SYNC_BACKED;
@@ -205,6 +236,7 @@ static void test_production_mount_selection(void) {
 
     /* Case C: Partition on NVMe device with matching GUID (provenance rejected) */
     g_partition_count = 1;
+    g_partitions[0].block_dev.sector_size = 512;
     g_partitions[0].parent = &nvme_dev;
     g_partitions[0].unique_guid = target_guid;
     copy_str(g_partitions[0].block_dev.name, "nvme0n1p2", sizeof(g_partitions[0].block_dev.name));
@@ -214,6 +246,7 @@ static void test_production_mount_selection(void) {
 
     /* Case D: Ambiguous clones (>1 matches on USB) */
     g_partition_count = 2;
+    g_partitions[0].block_dev.sector_size = 512;
     g_partitions[0].parent = &usb_sda;
     g_partitions[0].unique_guid = target_guid;
     copy_str(g_partitions[0].block_dev.name, "sdap2", sizeof(g_partitions[0].block_dev.name));
@@ -243,6 +276,7 @@ static void test_production_mount_selection(void) {
     /* Case G: Explicit RW requested with consistent GPT and valid write/flush capabilities (Phase 9G.4) */
     copy_str(bi.cmdline, "usb_data=PARTUUID=CB667616-2FC7-4820-9B24-C5D9DE4227AD usb_data_mode=rw", sizeof(bi.cmdline));
     g_last_policy = GPT_POLICY_PRIMARY_CONSISTENT;
+    g_partitions[0].block_dev.sector_size = 512;
     g_partitions[0].block_dev.write_sector = mock_write_sector;
     g_partitions[0].block_dev.flush = mock_flush;
     s_ext2_mount_called = false;
@@ -268,6 +302,7 @@ static void test_production_mount_selection(void) {
 
     /* Case I: Explicit RW requested, but device lacks write or flush (fallback to RO) */
     g_last_policy = GPT_POLICY_PRIMARY_CONSISTENT;
+    g_partitions[0].block_dev.sector_size = 512;
     g_partitions[0].block_dev.write_sector = NULL;
     s_ext2_mount_called = false;
     s_ext2_mount_rw_called = false;
@@ -277,6 +312,7 @@ static void test_production_mount_selection(void) {
     assert(s_ext2_mount_called);
     assert(str_contains(s_last_serial_log, "Device missing write or flush capability; RW not eligible"));
     assert(str_contains(s_last_serial_log, "PASS: Mounted sdap2 read-only at /mnt"));
+    g_partitions[0].block_dev.sector_size = 512;
     g_partitions[0].block_dev.write_sector = mock_write_sector;
 
     /* Case J: Explicit RW requested, but ext2_mount_rw fails (attempting RO fallback) */
@@ -307,6 +343,7 @@ static void test_production_mount_selection(void) {
     /* Case K: Explicit RW requested, durability = READ_ONLY (device reported WCE=1, sync failed) */
     s_durability_mode = USB_DURABILITY_READ_ONLY;
     g_last_policy = GPT_POLICY_PRIMARY_CONSISTENT;
+    g_partitions[0].block_dev.sector_size = 512;
     g_partitions[0].block_dev.write_sector = mock_write_sector;
     g_partitions[0].block_dev.flush = mock_flush;
     s_ext2_mount_called = s_ext2_mount_rw_called = false;
@@ -324,6 +361,7 @@ static void test_production_mount_selection(void) {
     /* Case L: Explicit RW requested, durability = ASSUMED_WRITE_THROUGH (device uncooperative, sync failed) */
     s_durability_mode = USB_DURABILITY_ASSUMED_WRITE_THROUGH;
     g_last_policy = GPT_POLICY_PRIMARY_CONSISTENT;
+    g_partitions[0].block_dev.sector_size = 512;
     g_partitions[0].block_dev.write_sector = mock_write_sector;
     g_partitions[0].block_dev.flush = mock_flush;
     s_ext2_mount_called = s_ext2_mount_rw_called = false;
@@ -376,8 +414,10 @@ static void test_usb_mount_sync(void) {
     gpt_guid_t tg;
     assert(gpt_str_to_guid("AB001234-2FC7-4820-9B24-C5D9DE4227AD", &tg));
     g_partition_count = 1;
+    g_partitions[0].block_dev.sector_size = 512;
     g_partitions[0].parent = &usb_sda_s;
     g_partitions[0].unique_guid = tg;
+    g_partitions[0].block_dev.sector_size = 512;
     g_partitions[0].block_dev.write_sector = mock_write_sector;
     g_partitions[0].block_dev.flush = mock_flush;
     copy_str(g_partitions[0].block_dev.name, "sdap2", sizeof(g_partitions[0].block_dev.name));
@@ -408,11 +448,89 @@ static void test_usb_mount_sync(void) {
     printf("  [PASS] usb_mount_sync verified\n");
 }
 
+
+static void test_ext4_dispatch(void) {
+    block_dev_t parent={0};copy_str(parent.name,"sda",sizeof(parent.name));
+    g_partition_count=1;g_partitions[0].parent=&parent;
+    gpt_str_to_guid("12345678-1234-1234-1234-123456789ABC",&g_partitions[0].unique_guid);
+    boot_info_t bi={0};copy_str(bi.cmdline,"usb_data=PARTUUID=12345678-1234-1234-1234-123456789ABC usb_data_mode=rw",sizeof(bi.cmdline));
+    g_partitions[0].block_dev.write_sector=mock_write_sector;
+    g_partitions[0].block_dev.flush=mock_flush;
+    for (unsigned geometry=0;geometry<2;geometry++) {
+        g_partitions[0].block_dev.sector_size=geometry ? 4096 : 512;
+        for (unsigned scenario=0;scenario<9;scenario++) {
+            s_mounted_rw_dev=NULL;s_ext4_mount=NULL;s_ext2_mount_called=s_ext2_mount_rw_called=false;
+            s_e4_ro=s_e4_rw=s_e4_sync=s_e4_freeze=0;s_flush_calls=s_write_calls=0;
+            s_format=4;s_probe_compat=s_probe_ro=0;s_flush_result=true;s_e4_result=0;s_probe_ok=s_magic_ok=true;
+            g_last_policy=GPT_POLICY_PRIMARY_CONSISTENT;s_durability_mode=USB_DURABILITY_SYNC_BACKED;
+            if (scenario==1) g_last_policy=GPT_POLICY_DEGRADED_PRIMARY;
+            if (scenario==2) s_durability_mode=USB_DURABILITY_UNKNOWN;
+            if (scenario==3) s_flush_result=false;
+            if (scenario==4) s_probe_ok=false;
+            if (scenario==5) s_magic_ok=false;
+            if (scenario==6) s_e4_result=-VFS_EOPNOTSUPP;
+            if (scenario==7) { s_format=2;s_probe_compat=4; }
+            if (scenario==8) { s_format=2;s_probe_ro=0x400; }
+            bool ok=usb_mount_production_storage(&bi);
+            assert(!s_ext2_mount_called && !s_ext2_mount_rw_called && !s_write_calls);
+            if (scenario==0) {
+                assert(ok && s_e4_rw==1 && !s_e4_ro);
+                assert(usb_mount_sync() && s_e4_sync==1);
+                s_e4_sync_result=-VFS_EIO;assert(!usb_mount_sync());s_e4_sync_result=0;
+                assert(usb_mount_freeze_and_sync() && s_e4_freeze==1);
+                s_e4_freeze_result=-VFS_EIO;assert(!usb_mount_freeze_and_sync());s_e4_freeze_result=0;
+                s_e2_sync_result=false;assert(!usb_mount_freeze_and_sync());s_e2_sync_result=true;
+            } else if (scenario<4) assert(ok && !s_e4_rw && s_e4_ro==1);
+            else if (scenario<6) assert(!ok && !s_e4_rw && !s_e4_ro && !s_flush_calls);
+            else if (scenario==6) assert(!ok && s_e4_rw==1 && s_e4_ro==1);
+            else assert(!ok && !s_e4_rw && !s_e4_ro && !s_flush_calls);
+        }
+    }
+    s_format=2;s_probe_compat=s_probe_ro=0;s_probe_ok=s_magic_ok=s_flush_result=true;s_e4_result=0;
+    s_mounted_rw_dev=NULL;s_ext4_mount=NULL;
+    printf("  [PASS] EXT4 dispatch/geometry/eligibility/no-ext2-fallback/sync/freeze errors\n");
+}
+
+static unsigned run_calls;
+static uint64_t run_lba;
+static bool run_ok=true;
+static bool parent_run_read(block_dev_t *d,uint64_t l,uint32_t n,void *b) {
+    run_calls++;run_lba=l;memset(b,0x75,n*d->sector_size);return run_ok;
+}
+static bool parent_run_write(block_dev_t *d,uint64_t l,uint32_t n,const void *b) {
+    (void)d;(void)n;(void)b;run_calls++;run_lba=l;return run_ok;
+}
+static void test_partition_runs(void) {
+    uint8_t b[4096];
+    for (unsigned ss=512;ss<=4096;ss*=8) {
+        block_dev_t parent={.sector_size=ss,.sector_count=200,.read_sector=block_read_sector,
+            .write_sector=mock_write_sector,.read_sectors=parent_run_read,.write_sectors=parent_run_write};
+        gpt_partition_t p={.parent=&parent,.starting_lba=100,.ending_lba=109,.sector_count=10};
+        p.block_dev=(block_dev_t){.sector_size=ss,.sector_count=10,.priv=&p,
+            .read_sector=gpt_partition_read_sector,.write_sector=gpt_partition_write_sector,
+            .read_sectors=gpt_partition_read_sectors,.write_sectors=gpt_partition_write_sectors};
+        unsigned n=4096/ss;run_calls=0;run_ok=true;
+        assert(block_read_sectors(&p.block_dev,0,n,b) && run_lba==100 && b[4095]==0x75);
+        assert(block_write_sectors(&p.block_dev,10-n,n,b) && run_lba==110-n && run_calls==2);
+        assert(!block_write_sectors(&p.block_dev,9,2,b));
+        assert(!block_read_sectors(&p.block_dev,0,n+1,b));
+        assert(!block_read_sectors(&p.block_dev,UINT64_MAX,1,b) && run_calls==2);
+        run_ok=false;unsigned before=s_write_calls;
+        assert(!block_write_sectors(&p.block_dev,0,n,b) && run_calls==3 && s_write_calls==before);
+        p.block_dev.write_sector=NULL;p.block_dev.write_sectors=NULL;
+        assert(!block_write_sectors(&p.block_dev,0,n,b) && run_calls==3);
+        p.starting_lba=UINT64_MAX-1;p.ending_lba=UINT64_MAX;
+        assert(!block_read_sectors(&p.block_dev,2,1,b) && run_calls==3);
+    }
+    run_ok=true;printf("  [PASS] 512/4096 GPT run bounds/translation, RO exclusion and no failed-write replay\n");
+}
 int main(void) {
     test_guid_conversions();
     test_cmdline_parsing();
     test_production_mount_selection();
     test_usb_mount_sync();
+    test_ext4_dispatch();
+    test_partition_runs();
     printf("[ALL PASS] Phase 9G.4 host unit tests passed successfully!\n");
     return 0;
 }

@@ -20,7 +20,7 @@ static void e4_set_bit(uint8_t *map,uint32_t bit,bool value) {
     uint8_t mask=(uint8_t)(1u<<(bit%8));
     if (value) map[bit/8]|=mask; else map[bit/8]&=(uint8_t)~mask;
 }
-static uint8_t *e4_stage(ext4_engine_t *e,uint32_t block,unsigned role) {
+static uint8_t *e4_stage_image(ext4_engine_t *e,uint32_t block,unsigned role,bool zero) {
     if (e->error) return NULL;
     for (unsigned i=0;i<e->images;i++) if (e->image[i].block==block) {
         if (e->image[i].role!=role) { e->error=-VFS_EIO; return NULL; }
@@ -28,10 +28,19 @@ static uint8_t *e4_stage(ext4_engine_t *e,uint32_t block,unsigned role) {
     }
     if (e->images==E4_IMAGES) { e->error=-VFS_EFBIG; return NULL; }
     e4_image_t *image=&e->image[e->images++]; image->block=block; image->role=role;
-    if (!e4_bytes(e->fs,(uint64_t)block*e->fs->bs,image->bytes,e->fs->bs)) {
+    if (zero) memset(image->bytes,0,e->fs->bs);
+    else if (!e4_bytes(e->fs,(uint64_t)block*e->fs->bs,image->bytes,e->fs->bs)) {
         e->error=-VFS_EIO; return NULL;
     }
     return image->bytes;
+}
+static uint8_t *e4_stage(ext4_engine_t *e,uint32_t block,unsigned role) {
+    return e4_stage_image(e,block,role,false);
+}
+/* Only proven new/unwritten storage may skip the read. Existing initialized
+ * blocks still preserve untouched bytes; an already staged image is retained. */
+static uint8_t *e4_stage_zero(ext4_engine_t *e,uint32_t block) {
+    return e4_stage_image(e,block,E4_NEW,true);
 }
 static uint8_t *e4_super(ext4_engine_t *e) {
     uint32_t block=1024/e->fs->bs;bool existed=false;
@@ -204,7 +213,7 @@ static void e4_rebuild(ext4_engine_t *e,e4_inode_t *in,uint8_t *raw) {
     if (blocks>UINT32_MAX/(fs->bs/512)) { e->error=-VFS_EFBIG; return; }
     for (unsigned i=0;i<leaves;i++) {
         uint32_t block=e4_allocate(e); if (!block) return;
-        uint8_t *b=e4_stage(e,block,E4_NEW); if (!b) return;
+        uint8_t *b=e4_stage_zero(e,block); if (!b) return;
         memset(b,0,fs->bs); unsigned at=i*capacity, n=count-at; if (n>capacity) n=capacity;
         e4_header(b,n,capacity,0);
         for (unsigned k=0;k<n;k++) e4_leaf(b+12+k*12,&fs->pending[at+k]);
@@ -214,7 +223,7 @@ static void e4_rebuild(ext4_engine_t *e,e4_inode_t *in,uint8_t *raw) {
     }
     for (unsigned i=0;i<indexes;i++) {
         uint32_t block=e4_allocate(e); if (!block) return;
-        uint8_t *b=e4_stage(e,block,E4_NEW); if (!b) return;
+        uint8_t *b=e4_stage_zero(e,block); if (!b) return;
         memset(b,0,fs->bs); unsigned at=i*capacity,n=leaves-at; if (n>capacity) n=capacity;
         e4_header(b,n,capacity,1);
         for (unsigned k=0;k<n;k++) e4_index(b+12+k*12,e->keys[at+k],e->new_nodes[at+k]);
@@ -300,6 +309,11 @@ static bool e4_write_bytes(ext4_engine_t *e,uint64_t off,const uint8_t *data,siz
     ext4_mount_t *fs=e->fs; uint64_t cap=(uint64_t)fs->blocks*fs->bs;
     if (off>cap || len>cap-off) return false;
     while (len) {
+        if (!(off%fs->dev->sector_size) && len>=fs->dev->sector_size) {
+            unsigned ss=fs->dev->sector_size;size_t n=len<4096 ? len : 4096;n-=n%ss;
+            if (!block_write_sectors(fs->dev,off/ss,(uint32_t)(n/ss),data)) return false;
+            off+=n;data+=n;len-=n;continue;
+        }
         unsigned ss=fs->dev->sector_size; size_t skip=off%ss,n=ss-skip; if (n>len) n=len;
         if ((skip || n!=ss) && !block_read_sector(fs->dev,off/ss,fs->sector)) return false;
         memcpy(fs->sector+skip,data,n);
@@ -350,9 +364,13 @@ static bool e4_hold_frees(ext4_engine_t *e,bool hold) {
     return true;
 }
 static bool e4_write_role(ext4_engine_t *e,unsigned role) {
-    for (unsigned i=0;i<e->images;i++) if (e->image[i].role==role &&
-        !e4_write_bytes(e,(uint64_t)e->image[i].block*e->fs->bs,e->image[i].bytes,e->fs->bs)) return false;
-    return block_flush(e->fs->dev);
+    /* Zeroed allocations also precede publication, even without NEW images. */
+    bool wrote=role==E4_NEW && e->zeros;
+    for (unsigned i=0;i<e->images;i++) if (e->image[i].role==role) {
+        if (!e4_write_bytes(e,(uint64_t)e->image[i].block*e->fs->bs,e->image[i].bytes,e->fs->bs)) return false;
+        wrote=true;
+    }
+    return !wrote || block_flush(e->fs->dev);
 }
 static int e4_commit_unlocked(ext4_engine_t *e) {
     if (!e) return -VFS_EINVAL;
@@ -363,17 +381,21 @@ static int e4_commit_unlocked(ext4_engine_t *e) {
     if (!e4_hold_frees(e,true)) { r=e->error; e->ready=false; if (r==-VFS_EIO) e->tainted=true; goto done; }
     e4_seal(e); if (e->error) { r=e->error; e->ready=false; if (r==-VFS_EIO) e->tainted=true; goto done; }
     uint8_t *sb=e4_super(e);
-    if (!e4_bytes(e->fs,1024,e->fs->scratch,1024)) goto fail;
-    e4_p16(e->fs->scratch+58,0);
-    e4_p32(e->fs->scratch+1020,e4_crc(UINT32_MAX,e->fs->scratch,1020));
-    if (!e4_write_bytes(e,1024,e->fs->scratch,1024) || !block_flush(e->fs->dev)) goto fail;
-    e->dirty=true;
+    if (!e->dirty) {
+        if (!e4_bytes(e->fs,1024,e->fs->scratch,1024)) goto fail;
+        e4_p16(e->fs->scratch+58,0);
+        e4_p32(e->fs->scratch+1020,e4_crc(UINT32_MAX,e->fs->scratch,1020));
+        if (!e4_write_bytes(e,1024,e->fs->scratch,1024) || !block_flush(e->fs->dev)) goto fail;
+        e->dirty=true;
+    }
     memset(e->fs->scratch,0,e->fs->bs);
     for (unsigned i=0;i<e->zeros;i++) if (!e4_write_bytes(e,(uint64_t)e->zero[i].lo*e->fs->bs,e->fs->scratch,e->fs->bs)) goto fail;
     if (!e4_write_role(e,E4_NEW) || !e4_write_role(e,E4_ALLOC) || !e4_write_role(e,E4_REFERENCE)) goto fail;
-    if (!e4_hold_frees(e,false)) goto fail;
-    e4_seal(e);
-    if (e->error || !sb || !e4_write_role(e,E4_ALLOC)) goto fail;
+    if (e->frees || e->release_ino) {
+        if (!e4_hold_frees(e,false)) goto fail;
+        e4_seal(e);
+        if (e->error || !sb || !e4_write_role(e,E4_ALLOC)) goto fail;
+    }
     for (uint32_t g=0;g<e->fs->groups;g++) {
         uint32_t offset=g*32,block=e->fs->first+1+offset/e->fs->bs;
         for (unsigned i=0;i<e->images;i++) if (e->image[i].block==block)

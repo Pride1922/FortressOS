@@ -220,6 +220,12 @@ bool xhci_scsi_sync_cache(const xhci_rings_io_t *io,
                           xhci_dma_buffers_t *ring_dma,
                           const xhci_dev_dma_t *dev_dma,
                           xhci_bot_rings_t *bot_rings);
+/* Runs use the existing 4 KiB bounce page, caller serialization and failure
+ * quarantine. A failed data OUT is never replayed through a sector fallback. */
+bool xhci_scsi_read_sectors(const xhci_rings_io_t *,xhci_dma_buffers_t *,
+                           const xhci_dev_dma_t *,xhci_bot_rings_t *,uint64_t,uint32_t,void *);
+bool xhci_scsi_write_sectors(const xhci_rings_io_t *,xhci_dma_buffers_t *,
+                            const xhci_dev_dma_t *,xhci_bot_rings_t *,uint64_t,uint32_t,const void *);
 
 /* MODE SENSE caching page discovery (Commit 2).
  * Attempts MODE SENSE(6) then MODE SENSE(10) for page 0x08 (current values).

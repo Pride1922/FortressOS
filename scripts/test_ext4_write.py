@@ -45,7 +45,7 @@ def preflight(cmd,mode,disk,variables,phase,iso,out):
     for path in (disk,variables,iso):assert path.resolve().parent==out.resolve()
     assert disk.is_file() and iso.is_file() and not str(disk).startswith('/dev/')
 
-def boot(mode,disk,variables,phase,iso,out,port,bs):
+def boot(mode,disk,variables,phase,iso,out,port,bs,production=False):
     label=f'{mode}-{bs}-boot{phase}';cmd=command(mode,disk,variables,phase,iso)
     preflight(cmd,mode,disk,variables,phase,iso,out)
     for extra in (['-drive','file=/dev/sda'],['-blockdev','driver=host_device'],['-device','usb-storage,drive=unsafe']):
@@ -80,7 +80,7 @@ def boot(mode,disk,variables,phase,iso,out,port,bs):
             wait(lambda t:'fortress:' in t[start:] and ' $ ' in t[start:],timeout)
             return transcript[start:].decode(errors='replace')
         try:
-            wait(lambda t:'[BOOT] Interactive shell ready.' in t and 'fortress:' in t,240)
+            wait(lambda t:'[BOOT] Interactive shell ready.' in t and 'fortress:' in t,1200 if production else 240)
             assert f'[EXT4 WRITE] PASS boot {phase};' in transcript.decode(errors='replace')
             if phase==1:
                 # Retry only the explicit kernel TCP reboot-quiet response.
@@ -91,12 +91,19 @@ def boot(mode,disk,variables,phase,iso,out,port,bs):
                     if 'saved [' in text and '1048576' in text:break
                     assert 'quiet' in text and time.monotonic()<deadline,text
                     time.sleep(5)
-                text=shell(f'wget -O /mnt/download-16m.bin http://10.0.2.2:{port}/16m',600)
+                text=shell(f'wget -O /mnt/download-16m.bin http://10.0.2.2:{port}/16m',1800 if production else 600)
                 assert 'saved [' in text and '16777216' in text and 'write error' not in text,text
             for name,payload in [('saved.bin',DATA16),('download-1m.bin',DATA1),('download-16m.bin',DATA16)]:
-                digest=hashlib.sha256(payload).hexdigest();text=shell(f'sha256sum /mnt/{name}',180);assert digest in text,text
-            assert '[EXT4 WRITE] SYNC PASS' in shell('echo sync > /ext4-test-control')
-            assert '[EXT4 WRITE] FREEZE PASS' in shell('echo freeze > /ext4-test-control')
+                digest=hashlib.sha256(payload).hexdigest();text=shell(f'sha256sum /mnt/{name}',900 if production else 180);assert digest in text,text
+            if production:
+                text=shell('sync')
+                assert 'Filesystem synced.' in text,text
+                # Mutation after SYS_SYNC proves that sync did not freeze the mount.
+                text=shell('echo still-writable > /mnt/sync-after.txt')
+                assert 'error' not in text.lower() and 'failed' not in text.lower(),text
+            else:
+                assert '[EXT4 WRITE] SYNC PASS' in shell('echo sync > /ext4-test-control')
+                assert '[EXT4 WRITE] FREEZE PASS' in shell('echo freeze > /ext4-test-control')
             proc.stdin.write(b'poweroff\n');proc.stdin.flush()
             proc.wait(timeout=30);assert proc.returncode==0
         finally:

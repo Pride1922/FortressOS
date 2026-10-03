@@ -11,6 +11,8 @@ typedef struct {
     uint32_t (*read32)(void *ctx, uint32_t offset);
     void (*write32)(void *ctx, uint32_t offset, uint32_t value);
     bool (*delay_ms)(void *ctx);
+    /* Optional bounded micro-delay; no sleeps/IRQ enables under FS locks. */
+    bool (*delay_us)(void *ctx,unsigned microseconds);
 } xhci_rings_io_t;
 
 typedef struct {

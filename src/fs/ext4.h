@@ -2,9 +2,10 @@
 #define FORTRESS_EXT4_H
 
 #include "block.h"
+#include "jbd2.h"
 
-/* E4-A restricted-profile mounts at /mnt. Production USB dispatch remains
- * disabled pending Phase 5. Reads <=64KiB, writes <=32KiB per callback;
+/* E4-A restricted-profile mounts at /mnt. Production USB dispatch uses the existing
+ * explicit PARTUUID, GPT and durability admission policy. Reads <=64KiB, writes <=32KiB per callback;
  * extent depth <=2, 4096 extent/node traversal budget, 64 metadata/data images
  * per operation. Excess credits fail before writes. RW has immediate allocation
  * and synchronous barriers, with no journal or crash-consistency guarantee.
@@ -29,5 +30,12 @@ int ext4_sync(ext4_mount_t *mount);
  * if healthy. A failure leaves frozen/tainted state and never claims clean.
  * Mount objects/VFS nodes stay alive; no unmount/lifetime change is implied. */
 int ext4_freeze_and_sync(ext4_mount_t *mount);
+
+/* Phase-6 exclusive recovery workbench: derive internal journal identity/map
+ * from disk, analyze without writes or VFS publication. Production mounts still
+ * reject journals. Caller exclusively owns disposable/eligible partition;
+ * jbd2_replay requires explicit admission and does not clear ext4 RECOVER. */
+int ext4_journal_analyze(block_dev_t *partition,jbd2_plan_t **out,
+                         jbd2_report_t *report);
 
 #endif

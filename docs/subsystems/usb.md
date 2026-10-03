@@ -22,6 +22,12 @@ Phase 9G is complete through 9G.5b. The staged plan, per-stage acceptance eviden
 
 ### What 9G does NOT do
 
+2026-10-03 transport follow-up: bounded synchronous runs use the existing 4 KiB
+BOT bounce page and short completions use fine PIT polling. BOT/GPT sanitizer
+tests, EXT4 BIOS/UEFI SMP=1/4 persistence and ext2 USB persistence regressions
+PASS. Existing durability, locking and quarantine contracts remain intact;
+Dell manual retest PASS: 6–7 seconds/MiB, 16 MiB in 1m52s, matching hashes, reboot persistence, responsive quiet background commands and clean Linux Mint fsck (exit 0). See [performance evidence](../roadmap/ext4-usb-performance.md).
+
 - No USB 3.x hub support (SuperSpeed devices on root ports work; devices behind a SuperSpeed hub do not). No SuperSpeedPlus (10 Gbps) verification. No streams.
 - No external USB hubs; xHCI root-port management remains required.
 - No hot-plug enumeration, reconnection or removal recovery beyond safe failure.
@@ -111,3 +117,5 @@ These are measurements for 9G.1/9G.2 (flush capability for 9G.4), not assumed ha
 - Phase 9G.3 Mount Policy: [`docs/roadmap/phase-9g3-usb-mount.md`](../roadmap/phase-9g3-usb-mount.md)
 - Phase 9G.4 Durability & RW: [`docs/roadmap/phase-9g4-usb-durability.md`](../roadmap/phase-9g4-usb-durability.md)
 - Phase 9G.5 SuperSpeed: [`docs/roadmap/phase-9g5-superspeed.md`](../roadmap/phase-9g5-superspeed.md)
+
+E4-A SanDisk/Dell 5590 [physical acceptance](../roadmap/ext4-phase5-acceptance.md): all seven Phase-5 checklist items user-confirmed PASS, 2026-10-03.

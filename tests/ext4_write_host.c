@@ -7,6 +7,7 @@
 #include "ext4_host/spinlock.h"
 #define HOST_SPINLOCK_H
 static size_t live, reads, writes, flushes;
+static size_t read_runs,write_runs;
 static long fail_alloc=-1, fail_read=-1, fail_write=-1, fail_flush=-1;
 static bool uncertain;
 static uint8_t *disk;
@@ -21,6 +22,7 @@ bool console_is_quiet(void) { return false; }
 int64_t input_read(void *p,size_t n) { (void)p;(void)n;return 0; }
 #include "../src/fs/vfs.c"
 #include "../src/fs/ext4.c"
+#include "../src/fs/jbd2.c"
 bool block_read_sector(block_dev_t *d,uint64_t lba,void *p) {
     assert(lba<d->sector_count);reads++;
     if (!fail_read) return false;
@@ -36,6 +38,16 @@ static bool store(block_dev_t *d,uint64_t lba,const void *p) {
 static bool barrier(block_dev_t *d) { (void)d;flushes++;if (!fail_flush) return false;if (fail_flush>0) fail_flush--;return true; }
 bool block_write_sector(block_dev_t *d,uint64_t l,const void *p) { return d->write_sector(d,l,p); }
 bool block_flush(block_dev_t *d) { return d->flush(d); }
+static bool read_run(block_dev_t *d,uint64_t l,uint32_t n,void *p) {
+    assert(n && n<=4096/d->sector_size && l<d->sector_count && n<=d->sector_count-l);read_runs++;
+    for (uint32_t i=0;i<n;i++) if (!block_read_sector(d,l+i,(uint8_t *)p+i*d->sector_size)) return false;
+    return true;
+}
+static bool write_run(block_dev_t *d,uint64_t l,uint32_t n,const void *p) {
+    assert(n && n<=4096/d->sector_size && l<d->sector_count && n<=d->sector_count-l);write_runs++;
+    for (uint32_t i=0;i<n;i++) if (!store(d,l+i,(const uint8_t *)p+i*d->sector_size)) return false;
+    return true;
+}
 static void reset(void) {
     if (e4_active) { e4_discard(e4_active);e4_active=NULL; }
     kfree(g_vfs_root);g_vfs_root=NULL;assert(!live);
@@ -136,6 +148,8 @@ int main(int argc,char **argv) {
         assert(ext4_mount_rw(&dev,"/mnt",&m)==-VFS_EIO && !m && live==1 && !writes && !flushes);
     }
     fault_matrix(&dev,original);
+    dev.read_sectors=read_run;dev.write_sectors=write_run;
+    fault_matrix(&dev,original); /* same failure/taint gates with accepted prefixes */
     reset();memcpy(disk,original,disk_len);assert(!ext4_mount_rw(&dev,"/mnt",&m));
     uint32_t bs=m->bs;
     /* Prefill only free data ranges to make stale exposure observable. */
@@ -164,7 +178,15 @@ int main(int argc,char **argv) {
     for (size_t i=0;i<n;i++) expected[i]=(uint8_t)(i*17+3);
     file_t *large=vfs_open("/mnt/large.bin",VFS_O_CREAT|VFS_O_RDWR);assert(large);
     write_bytes(large,expected,n);vfs_close(large);check_file("/mnt/large.bin",expected,n);
-    file_t *one=vfs_open("/mnt/one.bin",VFS_O_CREAT|VFS_O_RDWR);assert(one);write_bytes(one,expected,1048576);vfs_close(one);check_file("/mnt/one.bin",expected,1048576);
+    file_t *one=vfs_open("/mnt/one.bin",VFS_O_CREAT|VFS_O_RDWR);assert(one);
+    size_t before_flush=flushes,before_write=writes,before_runs=write_runs,before_reads=read_runs;
+    /* Match wget's syscall-sized batches, independent of VFS callback cap. */
+    for (size_t at=0;at<1048576;at+=16384) write_bytes(one,expected+at,16384);
+    printf("EXT4 1MiB batched I/O: sectors=%zu barriers=%zu\n",writes-before_write,flushes-before_flush);
+    printf("EXT4 1MiB transport: read runs=%zu write runs=%zu (max 4096 bytes)\n",read_runs-before_reads,write_runs-before_runs);
+    if (bs==4096 && dev.sector_size==512) assert((write_runs-before_runs)*8==writes-before_write);
+    assert(flushes-before_flush<=64*3);
+    vfs_close(one);check_file("/mnt/one.bin",expected,1048576);
     file_t *a=vfs_open("/mnt/append.bin",VFS_O_CREAT|VFS_O_RDWR|VFS_O_APPEND),*b=vfs_open("/mnt/append.bin",VFS_O_WRONLY|VFS_O_APPEND);assert(a && b);
     assert(vfs_write(a,"abc",3)==3 && vfs_write(b,"def",3)==3 && a->offset==3 && b->offset==6);
     assert(vfs_unlink("/mnt/append.bin")==-VFS_EOPNOTSUPP);

@@ -41,17 +41,19 @@ static void mmio_write(void *ctx, uint32_t off, uint32_t v) {
     __asm__ volatile("" ::: "memory");
 }
 
-/* Boot-only PIT channel 2, no scheduler ticks/IRQs required. As with APIC
+/* PIT channel 2, no scheduler ticks/IRQs required. As with APIC
  * calibration, restore speaker/gate control; the timer channel is not shared
- * with a running sound driver. Outer protocol waits count these 1 ms periods;
+ * with a running sound driver. Outer protocol waits count requested periods;
  * the iteration cap additionally bounds broken timer hardware. */
-static bool delay_ms(void *ctx) {
+static bool delay_us(void *ctx,unsigned us) {
     (void)ctx;
+    if (!us || us>1000) return false;
+    uint16_t ticks=(uint16_t)((1193182u*us+999999u)/1000000u);
     uint8_t saved = inb(0x61);
     outb(0x61, saved & ~3u);
     outb(0x43, 0xb0);
-    outb(0x42, (uint8_t)1193);
-    outb(0x42, (uint8_t)(1193 >> 8));
+    outb(0x42, (uint8_t)ticks);
+    outb(0x42, (uint8_t)(ticks >> 8));
     outb(0x61, (saved & ~3u) | 1);
     bool done = false;
     for (unsigned i = 0; i < 1000000; ++i) {
@@ -61,6 +63,7 @@ static bool delay_ms(void *ctx) {
     outb(0x61, saved);
     return done;
 }
+static bool delay_ms(void *ctx) { return delay_us(ctx,1000); }
 
 static void print_value(const char *name, uint32_t value) {
     serial_puts(name);
@@ -336,6 +339,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
         .read32 = mmio_read,
         .write32 = mmio_write,
         .delay_ms = delay_ms,
+        .delay_us = delay_us,
     };
 
     /* Enable bus mastering for DMA transfers */
@@ -705,6 +709,16 @@ bool usb_block_write(block_dev_t *dev, uint64_t lba, const void *buf) {
     return xhci_scsi_write_sector(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings, lba, buf);
 }
 
+bool usb_block_read_sectors(block_dev_t *dev,uint64_t lba,uint32_t count,void *buf) {
+    xhci_controller_t *ctl=s_active_usb_controller;(void)dev;
+    if (!ctl || !s_usb_storage_ready) return false;
+    return xhci_scsi_read_sectors(&ctl->rings_io,&ctl->dma,&ctl->dev_dma,&ctl->bot_rings,lba,count,buf);
+}
+bool usb_block_write_sectors(block_dev_t *dev,uint64_t lba,uint32_t count,const void *buf) {
+    xhci_controller_t *ctl=s_active_usb_controller;(void)dev;
+    if (!ctl || !s_usb_storage_ready) return false;
+    return xhci_scsi_write_sectors(&ctl->rings_io,&ctl->dma,&ctl->dev_dma,&ctl->bot_rings,lba,count,buf);
+}
 bool usb_block_flush(block_dev_t *dev) {
     xhci_controller_t *ctl = s_active_usb_controller;
     if (!ctl) return false;

@@ -163,6 +163,8 @@ bool block_register_usb(void) {
     g_usb_base_dev.read_sector  = usb_block_read;
     g_usb_base_dev.write_sector = usb_block_write;
     g_usb_base_dev.flush        = usb_block_flush;
+    g_usb_base_dev.read_sectors  = usb_block_read_sectors;
+    g_usb_base_dev.write_sectors = usb_block_write_sectors;
     g_usb_base_dev.priv         = NULL;
 
     return block_register_dev(&g_usb_base_dev);

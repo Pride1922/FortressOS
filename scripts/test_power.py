@@ -42,7 +42,7 @@ def test_power_command(cmd_name):
             while time.monotonic() < deadline:
                 if log.exists():
                     txt = log.read_text(errors="replace")
-                    if "fortress> " in txt:
+                    if "fortress:/ $ " in txt:
                         prompt_found = True
                         break
                 assert child.poll() is None, child.stderr.read().decode()

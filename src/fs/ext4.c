@@ -29,6 +29,8 @@ struct ext4_mount {
     e4_map_t *rw_map;
     uint32_t rw_ino, rw_generation;
     bool frozen;
+    bool journal_bootstrap;
+    uint32_t journal_ino;
     uint32_t bs, blocks, inodes, first, bpg, ipg, groups, seed, gdt_blocks;
     e4_group_t *gd;
     e4_range_t *reserved;
@@ -65,6 +67,11 @@ static bool e4_bytes(ext4_mount_t *fs, uint64_t off, void *out, size_t len) {
     if (off>cap || len>cap-off) return false;
     while (len) {
         unsigned ss=fs->dev->sector_size;
+        if (!(off%ss) && len>=ss) {
+            size_t n=len<4096 ? len : 4096;n-=n%ss;
+            if (!block_read_sectors(fs->dev,off/ss,(uint32_t)(n/ss),out)) return false;
+            out=(uint8_t *)out+n;off+=n;len-=n;continue;
+        }
         size_t skip=off % ss, n=ss-skip;
         if (n>len) n=len;
         if (!block_read_sector(fs->dev,off/ss,fs->sector)) return false;
@@ -141,8 +148,10 @@ static int e4_inode(ext4_mount_t *fs,uint32_t ino,e4_inode_t *out) {
     uint32_t g=(ino-1)/fs->ipg, index=(ino-1)%fs->ipg;
     const uint8_t *gd=fs->gd[g].raw;
     if (e4_u16(gd+18)&1) return -VFS_EIO;
-    if (!e4_bitmap(fs,g,true) ||
-        !e4_bit(fs->scratch,index)) return -VFS_EIO;
+    if (fs->journal_bootstrap) {
+        if (ino!=fs->journal_ino) return -VFS_EINVAL;
+    } else if (!e4_bitmap(fs,g,true) ||
+               !e4_bit(fs->scratch,index)) return -VFS_EIO;
     uint8_t raw[256];
     if (!e4_bytes(fs,(uint64_t)e4_u32(gd+8)*fs->bs+(uint64_t)index*256,raw,256)) return -VFS_EIO;
     uint16_t extra=e4_u16(raw+128);
@@ -167,6 +176,7 @@ static int e4_reference(ext4_mount_t *fs,uint32_t lo,uint32_t len) {
     if (!e4_data_range(fs,lo,len)) return -VFS_EIO;
     if (fs->physical_count==E4_MAP_MAX*2) return -VFS_EFBIG;
     fs->physical[fs->physical_count++]=(e4_range_t){lo,len};
+    if (fs->journal_bootstrap) return 0;
     while (len) {
         uint32_t g=(lo-fs->first)/fs->bpg, bit=(lo-fs->first)%fs->bpg;
         uint32_t n=fs->bpg-bit; if (n>len) n=len;
@@ -403,14 +413,36 @@ static void e4_discard(ext4_mount_t *fs) {
     while (fs->maps) { e4_map_t *map=fs->maps; fs->maps=map->next; kfree(map); }
     kfree(fs->rw_map); kfree(fs->engine); kfree(fs->reserved); kfree(fs->gd); kfree(fs);
 }
+static const unsigned e4_journal_identity[][2]={{0,8},{20,24},{76,4},{88,2},{92,4},{100,20},{208,28},{254,2},{373,1}};
+static bool e4_journal_backup(ext4_mount_t *fs,uint8_t *sb) {
+    /* Recovery-only bootstrap after a sector-atomic partial SB checkpoint.
+     * A checksummed group-1 backup must corroborate every immutable identity
+     * field. Never repair or use this path for ordinary mount admission. */
+    uint32_t shift=e4_u32(sb+24),bpg=e4_u32(sb+32),first=e4_u32(sb+20);
+    if (shift>2 || !bpg || bpg>(1024u<<shift)*8 || first!=(shift==0)) return false;
+    uint8_t backup[1024];uint64_t where=(uint64_t)(first+bpg)*(1024u<<shift);
+    if (!e4_bytes(fs,where,backup,1024) || e4_u16(backup+56)!=0xef53 ||
+        e4_u16(backup+90)!=1 || e4_u32(backup+1020)!=e4_crc(UINT32_MAX,backup,1020)) return false;
+    for (unsigned i=0;i<sizeof(e4_journal_identity)/sizeof(e4_journal_identity[0]);i++)
+        if (memcmp(sb+e4_journal_identity[i][0],backup+e4_journal_identity[i][0],e4_journal_identity[i][1])) return false;
+    if ((e4_u32(sb+96)&~4u)!=(e4_u32(backup+96)&~4u)) return false;
+    memcpy(sb,backup,1024);return true;
+}
 static int e4_admit(ext4_mount_t *fs) {
     uint8_t sb[1024];
     if (!e4_bytes(fs,1024,sb,sizeof(sb))) return -VFS_EIO;
-    if (e4_u16(sb+56)!=0xef53 || e4_u32(sb+1020)!=e4_crc(UINT32_MAX,sb,1020)) return -VFS_EIO;
-    if (e4_u32(sb+92)!=0 || e4_u32(sb+96)!=0x42 || e4_u32(sb+100)!=0x403 ||
+    if (e4_u16(sb+56)!=0xef53) return -VFS_EIO;
+    if (e4_u32(sb+1020)!=e4_crc(UINT32_MAX,sb,1020) &&
+        (!fs->journal_bootstrap || !e4_journal_backup(fs,sb))) return -VFS_EIO;
+    if (e4_u32(sb+92)!=(fs->journal_bootstrap ? 4u : 0u) ||
+        (fs->journal_bootstrap ? (e4_u32(sb+96)&~4u)!=0x42 : e4_u32(sb+96)!=0x42) || e4_u32(sb+100)!=0x403 ||
         e4_u32(sb+72) || e4_u32(sb+76)!=1 || e4_u16(sb+88)!=256 || sb[373]!=1 ||
-        e4_u32(sb+224) || e4_u32(sb+228) || e4_u32(sb+232) || e4_u16(sb+206)) return -VFS_EOPNOTSUPP;
-    if (e4_u16(sb+58)!=1 || e4_u32(sb+336) || e4_u32(sb+340) || e4_u32(sb+344)) return -VFS_EIO;
+        (!fs->journal_bootstrap && e4_u32(sb+224)) || e4_u32(sb+228) || e4_u32(sb+232) || e4_u16(sb+206)) return -VFS_EOPNOTSUPP;
+    if (fs->journal_bootstrap) {
+        fs->journal_ino=e4_u32(sb+224);
+        if (!fs->journal_ino || fs->journal_ino>e4_u32(sb) || e4_u32(sb+228) || e4_u32(sb+232) ||
+            e4_u16(sb+58)>1) return -VFS_EIO;
+    } else if (e4_u16(sb+58)!=1 || e4_u32(sb+336) || e4_u32(sb+340) || e4_u32(sb+344)) return -VFS_EIO;
     uint32_t shift=e4_u32(sb+24);
     if (shift>2 || e4_u32(sb+28)!=shift) return -VFS_EOPNOTSUPP;
     fs->bs=1024u<<shift; fs->blocks=e4_u32(sb+4); fs->inodes=e4_u32(sb);
@@ -450,7 +482,7 @@ static int e4_admit(ext4_mount_t *fs) {
             !e4_reserve(fs,i,1) || !e4_reserve(fs,t,itable)) return -VFS_EIO;
         /* UNINIT bitmaps have no valid on-disk contents. They cannot contain
          * accessible inodes/data; skip their checksum until initialized later. */
-        if (!(e4_u16(d+18)&2)) {
+        if (!fs->journal_bootstrap && !(e4_u16(d+18)&2)) {
             if (!e4_bytes(fs,(uint64_t)b*fs->bs,fs->scratch,fs->bs) ||
                 (uint16_t)e4_crc(fs->seed,fs->scratch,fs->bpg/8)!=e4_u16(d+24)) return -VFS_EIO;
             for (unsigned j=0;j<fs->ranges;j++) {
@@ -460,12 +492,12 @@ static int e4_admit(ext4_mount_t *fs) {
                         if (!e4_bit(fs->scratch,range.lo-start+k)) return -VFS_EIO;
             }
         }
-        if (!(e4_u16(d+18)&1)) {
+        if (!fs->journal_bootstrap && !(e4_u16(d+18)&1)) {
             if (!e4_bytes(fs,(uint64_t)i*fs->bs,fs->scratch,fs->bs) ||
                 (uint16_t)e4_crc(fs->seed,fs->scratch,fs->ipg/8)!=e4_u16(d+26)) return -VFS_EIO;
         }
     }
-    if (free_blocks!=e4_u32(sb+12) || free_inodes!=e4_u32(sb+16)) return -VFS_EIO;
+    if (!fs->journal_bootstrap && (free_blocks!=e4_u32(sb+12) || free_inodes!=e4_u32(sb+16))) return -VFS_EIO;
     e4_range_sort(fs->reserved,fs->ranges);fs->reserved_sorted=true;
     return 0;
 }
@@ -517,3 +549,4 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 
 #include "ext4_mutate.inc"
 #include "ext4_write.inc"
+#include "ext4_journal.inc"

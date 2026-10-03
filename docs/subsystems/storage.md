@@ -8,12 +8,16 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
+| **EXT4 Phase 7** | **WRITER WORKBENCH VERIFIED** | Bounded staging, ordered commit/checkpoint and circular reuse; host crash/restart/tear gates plus Linux replay/fsck/bytes. Production mutation coverage/mount integration remains Phase 8. [Scope/evidence](../roadmap/ext4-phase7.md). |
+| **EXT4 Phase 6** | **RECOVERY WORKBENCH VERIFIED** | Bounded internal JBD2 CSUM_V3/revoke reader, explicit checkpoint admission, host crash/restart and Linux audits. Production journal mounts remain disabled; writer is Phase 7. [Scope/evidence](../roadmap/ext4-phase6.md). |
 | **Phase 9D Bounded writable ext2** | **COMPLETE** | Explicit opt-in writable mount, allocation/truncation ordering, emergency read-only remount, 3-boot BIOS/UEFI persistence. Full detail: [`docs/roadmap/phase-9d-writable-ext2.md`](../roadmap/phase-9d-writable-ext2.md). |
-| **EXT4 Phases 0-4** | **BOUNDED RW VFS VERIFIED** | RO/RW host and BIOS/UEFI persistence, 1/16 MiB downloads, bounded allocation/namespace, failure injection and Linux audits. Production dispatch remains disabled; image stays ext2. [Evidence](../roadmap/ext4-phase4.md), [plan](../plans/EXT4_PLAN.md). |
+| **EXT4 Phases 0-4** | **BOUNDED RW VFS VERIFIED** | RO/RW host and BIOS/UEFI persistence, 1/16 MiB downloads, bounded allocation/namespace, failure injection and Linux audits. Phase 5 adds selected-USB EXT4 dispatch and sync/shutdown; automated gates verified; Dell performance/hash/reboot/fsck checks PASS, all Phase-5 physical checklist items user-confirmed PASS (2026-10-03). Default image stays ext2; separate opt-in image available. [Phase-5 evidence](../roadmap/ext4-phase5.md), [VFS evidence](../roadmap/ext4-phase4.md), [plan](../plans/EXT4_PLAN.md). |
 | **Phase 9E Saved File Management** | **COMPLETE** | Directory ops (`mkdir`/`rename`/`unlink`), on-disk inode/block reclamation. Full detail: [`docs/roadmap/phase-9e-exec-and-files.md`](../roadmap/phase-9e-exec-and-files.md). |
 | **Phase 9H RAM capacity** | **COMPLETE** (2026-09-20) | PMM extended to cover 32 GiB, two-stage PMM/VMM init to stay within Limine's HHDM coverage until the kernel PML4 is active. Verified on Dell 5590 (32 GiB) with a write-readback probe. Full detail: [`docs/roadmap/phase-9h-ram.md`](../roadmap/phase-9h-ram.md). |
 
 ---
+
+EXT4 physical follow-up: RW/GPT/SYNC_BACKED admission was user-confirmed, but a 1 MiB file download exceeded three minutes versus three seconds to stdout; ext2 was reported fast. After redundant-barrier and wget-batching changes, the user reports approximately **50 seconds for 1 MiB**, still unacceptable. Bounded 4 KiB USB runs, fine BOT polling and zero staging now pass host and BIOS/UEFI USB persistence gates; a host 1 MiB case uses 512 write commands instead of 4096. Durability barriers and IRQ serialization remain unchanged. Dell retest now passes: 1 MiB in 6–7 seconds, 16 MiB in 1m52s, both hashes match, clean reboot persistence and quiet background console responsiveness PASS. Linux Mint offline e2fsck -fn completed five passes with exit 0 (user screenshot); independent Mint file hashes also match (user-confirmed PASS). All seven Phase-5 checklist items are now user-confirmed PASS; background prompt redraw remains a separate issue. See [transport evidence](../roadmap/ext4-usb-performance.md) and [Phase-5 follow-up](../roadmap/ext4-phase5.md).
 
 ## 2. Storage & Memory Invariant Notes
 
@@ -61,3 +65,5 @@ This annex documents the current status, hardware facts, verification evidence, 
 - Phase 9D Writable ext2: [`docs/roadmap/phase-9d-writable-ext2.md`](../roadmap/phase-9d-writable-ext2.md)
 - Phase 9E File Management: [`docs/roadmap/phase-9e-exec-and-files.md`](../roadmap/phase-9e-exec-and-files.md)
 - Phase 9H 32 GiB RAM: [`docs/roadmap/phase-9h-ram.md`](../roadmap/phase-9h-ram.md)
+
+E4-A **physically accepted on Dell 5590 (2026-10-03)**: all seven Phase-5 items user-confirmed PASS; [complete record](../roadmap/ext4-phase5-acceptance.md). Non-journaled scope and clean-state admission remain unchanged.

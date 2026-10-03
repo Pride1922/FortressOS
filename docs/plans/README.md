@@ -6,7 +6,7 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
-| [EXT4_PLAN.md](EXT4_PLAN.md) / [Phase 0](EXT4_PHASE0.md) | Bounded ext4 profile, extents/checksums, JBD2 writer/recovery, crash injection and persistent-root/package/installer handoff. | **PHASES 0-4 DELIVERED**; bounded RW VFS host + BIOS/UEFI persistence verified; production dispatch and physical acceptance pending |
+| [EXT4_PLAN.md](EXT4_PLAN.md) / [Phase 0](EXT4_PHASE0.md) | Bounded ext4 profile, extents/checksums, JBD2 writer/recovery, crash injection and persistent-root/package/installer handoff. | **PHASES 0-4 DELIVERED**; Phase 5 automated gates verified, Dell performance/hash/reboot/fsck manually PASS; all Phase-5 physical checklist items user-confirmed PASS (2026-10-03); Phases 6-7 reader/writer workbenches host-verified; Phase 8 integration next |
 | [NANO_PLAN.md](NANO_PLAN.md) | Standalone full-screen visual text editor (/bin/nano): static BSS buffer, ANSI rendering, scrolling, safe direct write. | **IMPLEMENTED**; automated evidence in AGENTS.md, Dell acceptance pending |
 | [DOWNLOAD_TOOLS_PLAN.md](DOWNLOAD_TOOLS_PLAN.md) | Streaming checksums, bounded USTAR extraction, finite ICMP traceroute and separate wget Dell acceptance. | **CHECKSUMS + TRACEROUTE IMPLEMENTED**; tar policy open, Dell acceptance pending |
 | [NETCTL_TRACE_ABI.md](NETCTL_TRACE_ABI.md) | Finite ICMP traceroute probe layout, error precedence, quoted-wire identity and ownership proof obligations. | **APPROVED + IMPLEMENTED**; automated gates, physical pending |

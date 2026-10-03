@@ -20,6 +20,10 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [ext4-phase7.md](ext4-phase7.md) | Ordered JBD2 writer/checkpoint workbench, credits/states/circular reuse, 12 geometry/placement cases and Linux replay/fsck; production VFS journaling remains Phase 8. |
+| [ext4-phase6.md](ext4-phase6.md) | Bounded JBD2 recovery workbench, explicit replay admission, host crash/restart model, 12 geometry/source cases and 48 zero-write rejections; production journal mounts remain disabled. |
+| [ext4-phase5.md](ext4-phase5.md) / [Dell checklist](ext4-phase5-dell.md) | Selected USB EXT4 mount/sync/shutdown integration, separate non-journaled image; automated validation verified; Dell performance/hash/reboot/fsck manually PASS, all Phase-5 physical checklist items user-confirmed PASS (2026-10-03). |
+| [ext4-usb-performance.md](ext4-usb-performance.md) | Bounded 4 KiB BOT runs, fine polling and zero staging; host and BIOS/UEFI USB gates PASS, Dell manual performance/hash/reboot/fsck PASS. |
 | [net-traceroute.md](net-traceroute.md) | Finite numeric ICMP traceroute, approved probe ABI and shared ping mailbox; host sanitizer and QEMU 4/4 PASS, Dell acceptance pending. |
 | [download-checksums.md](download-checksums.md) | Streaming MD5/SHA-256 tools and manifests; host sanitizer/4 GiB streams and BIOS/UEFI 32/32 PASS, Dell acceptance pending. |
 | [net-config.md](net-config.md) | COMPLETE (2026-10-02): NET-3 runtime network configuration (/bin/ifconfig, /bin/ifup, /mnt/.fortress/network.conf, DNS fallback); host ASan/UBSan PASS, BIOS/UEFI QEMU 10/10 PASS, Dell Latitude 5590 physical acceptance user-confirmed PASS. |
@@ -99,3 +103,5 @@ and are not proof that every current revision has passed every test — check
 [NET NET-1]  Ethernet/ARP, IPv4/ICMP ping, BSP worker       (Phases 0–4 COMPLETE: host + QEMU; 4b physical LAN-peer accepted; 5 UDP next)
 [Following]  Accounts/permissions, then installer           (NEXT)
 ```
+
+E4-A: [Dell 5590 physical acceptance](ext4-phase5-acceptance.md), all seven Phase-5 items PASS, 2026-10-03.

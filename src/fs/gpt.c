@@ -193,6 +193,23 @@ static bool gpt_partition_write_sector(block_dev_t *dev, uint64_t lba, const voi
 }
 
 /* Bounded Partition Device Flush Handler */
+static bool gpt_run_range(block_dev_t *dev,uint64_t lba,uint32_t count,uint64_t *parent_lba) {
+    if (!dev || !dev->priv || !count) return false;
+    gpt_partition_t *p=dev->priv;
+    if (!p->parent || dev->sector_size!=p->parent->sector_size || lba>=p->sector_count ||
+        count>p->sector_count-lba || lba>UINT64_MAX-p->starting_lba) return false;
+    *parent_lba=p->starting_lba+lba;
+    return *parent_lba<=p->ending_lba && count-1<=p->ending_lba-*parent_lba;
+}
+static bool gpt_partition_read_sectors(block_dev_t *dev,uint64_t lba,uint32_t n,void *buf) {
+    uint64_t parent_lba;if (!gpt_run_range(dev,lba,n,&parent_lba)) return false;
+    return block_read_sectors(((gpt_partition_t *)dev->priv)->parent,parent_lba,n,buf);
+}
+static bool gpt_partition_write_sectors(block_dev_t *dev,uint64_t lba,uint32_t n,const void *buf) {
+    uint64_t parent_lba;
+    if (!dev || !dev->write_sector || !gpt_run_range(dev,lba,n,&parent_lba)) return false;
+    return block_write_sectors(((gpt_partition_t *)dev->priv)->parent,parent_lba,n,buf);
+}
 static bool gpt_partition_flush(block_dev_t *dev) {
     if (!dev) return false;
     gpt_partition_t *part = (gpt_partition_t *)dev->priv;
@@ -625,6 +642,8 @@ policy_done:
         part->block_dev.read_sector  = gpt_partition_read_sector;
         bool can_write = (dev->write_sector != NULL) && (resolved_policy == GPT_POLICY_PRIMARY_CONSISTENT);
         part->block_dev.write_sector = can_write ? gpt_partition_write_sector : NULL;
+        part->block_dev.read_sectors = gpt_partition_read_sectors;
+        part->block_dev.write_sectors = can_write ? gpt_partition_write_sectors : NULL;
         part->block_dev.flush        = can_write ? gpt_partition_flush : NULL;
         part->block_dev.priv         = part;
 

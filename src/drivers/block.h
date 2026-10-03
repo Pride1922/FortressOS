@@ -14,6 +14,10 @@ typedef struct block_dev {
     bool      (*write_sector)(struct block_dev *dev, uint64_t lba, const void *buf);
     bool      (*flush)(struct block_dev *dev);
     void       *priv;
+    /* Optional synchronous runs, at most 4096 bytes. Failure may have accepted
+     * a prefix; callers must not retry writes or claim rollback. */
+    bool (*read_sectors)(struct block_dev *,uint64_t,uint32_t,void *);
+    bool (*write_sectors)(struct block_dev *,uint64_t,uint32_t,const void *);
 } block_dev_t;
 
 void         block_init(void);
@@ -40,6 +44,24 @@ static inline uint64_t block_get_capacity_bytes(const block_dev_t *dev) {
 bool         block_read_sector(block_dev_t *dev, uint64_t lba, void *buf);
 bool         block_write_sector(block_dev_t *dev, uint64_t lba, const void *buf);
 bool         block_flush(block_dev_t *dev);
+
+/* Bounded run adapters retain existing single-sector backends and host fault
+ * shims. Validate the complete run before any callback; never retry a failed
+ * bulk callback through the sector fallback. */
+static inline bool block_read_sectors(block_dev_t *d,uint64_t l,uint32_t n,void *b) {
+    if (!d || !b || !d->read_sector || !d->sector_size || !n ||
+        n>4096/d->sector_size || l>=d->sector_count || n>d->sector_count-l) return false;
+    if (d->read_sectors) return d->read_sectors(d,l,n,b);
+    for (uint32_t i=0;i<n;i++) if (!block_read_sector(d,l+i,(uint8_t *)b+i*d->sector_size)) return false;
+    return true;
+}
+static inline bool block_write_sectors(block_dev_t *d,uint64_t l,uint32_t n,const void *b) {
+    if (!d || !b || !d->write_sector || !d->sector_size || !n ||
+        n>4096/d->sector_size || l>=d->sector_count || n>d->sector_count-l) return false;
+    if (d->write_sectors) return d->write_sectors(d,l,n,b);
+    for (uint32_t i=0;i<n;i++) if (!block_write_sector(d,l+i,(const uint8_t *)b+i*d->sector_size)) return false;
+    return true;
+}
 
 /* Register NVMe active namespace as block device "nvme0n1" */
 bool         block_register_nvme(void);

@@ -30,6 +30,13 @@ static inline uint32_t bswap32(uint32_t val) {
            ((val << 24) & 0xff000000u);
 }
 
+/* Preserve the polled/IRQ-off contract and protocol budget: 10 us polling
+ * during the first 2 ms, then the existing 1 ms fallback. */
+static bool bot_poll_delay(const xhci_rings_io_t *io,unsigned *elapsed_us) {
+    unsigned step=io->delay_us && *elapsed_us<2000 ? 10 : 1000;
+    *elapsed_us+=step;
+    return step==10 ? io->delay_us(io->mmio_ctx,step) : io->delay_ms(io->mmio_ctx);
+}
 /* Helper to send command TRB to Command Ring and wait for completion */
 static bool send_command(const xhci_rings_io_t *io,
                          xhci_dma_buffers_t *ring_dma,
@@ -58,7 +65,7 @@ static bool send_command(const xhci_rings_io_t *io,
     __asm__ volatile("mfence" ::: "memory");
     io->write32(io->mmio_ctx, dboff + 0, 0);
 
-    for (unsigned ms = 0; ms <= 500; ++ms) {
+    for (unsigned elapsed_us = 0; elapsed_us <= 500000;) {
         for (unsigned drained = 0; drained < XHCI_RING_TRB_COUNT; ++drained) {
             volatile const xhci_trb_t *event = &ring_dma->event_ring_virt[ring_dma->event_dequeue_idx];
             __asm__ volatile("" ::: "memory");
@@ -83,7 +90,7 @@ static bool send_command(const xhci_rings_io_t *io,
                        comp_code == XHCI_COMP_SUCCESS;
             }
         }
-        if (!io->delay_ms(io->mmio_ctx)) return false;
+        if (!bot_poll_delay(io,&elapsed_us)) return false;
     }
     return false;
 }
@@ -99,7 +106,7 @@ static bool wait_transfer_event(const xhci_rings_io_t *io,
     uint32_t rtsoff = io->read32(io->mmio_ctx, 0x18);
     uint32_t intr0 = rtsoff + 0x20;
 
-    for (unsigned ms = 0; ms <= 1000; ++ms) {
+    for (unsigned elapsed_us = 0; elapsed_us <= 1000000;) {
         for (unsigned drained = 0; drained < XHCI_RING_TRB_COUNT; ++drained) {
             volatile const xhci_trb_t *event = &ring_dma->event_ring_virt[ring_dma->event_dequeue_idx];
             __asm__ volatile("" ::: "memory");
@@ -127,7 +134,7 @@ static bool wait_transfer_event(const xhci_rings_io_t *io,
                 return comp_code == XHCI_COMP_SUCCESS || comp_code == XHCI_COMP_SHORT_PACKET;
             }
         }
-        if (!io->delay_ms(io->mmio_ctx)) return false;
+        if (!bot_poll_delay(io,&elapsed_us)) return false;
     }
     return false;
 }
@@ -478,13 +485,17 @@ bool xhci_scsi_read_capacity(const xhci_rings_io_t *io,
     return true;
 }
 
-bool xhci_scsi_read_sector(const xhci_rings_io_t *io,
+bool xhci_scsi_read_sectors(const xhci_rings_io_t *io,
                            xhci_dma_buffers_t *ring_dma,
                            const xhci_dev_dma_t *dev_dma,
                            xhci_bot_rings_t *bot_rings,
                            uint64_t lba,
+                           uint32_t count,
                            void *buf) {
-    if (!bot_rings || !buf || lba >= bot_rings->sector_count || lba > 0xffffffffu) return false;
+    if (!bot_rings || !buf || !count ||
+        (bot_rings->sector_size!=512 && bot_rings->sector_size!=4096) ||
+        count>4096/bot_rings->sector_size || lba>=bot_rings->sector_count ||
+        count>bot_rings->sector_count-lba || lba>UINT32_MAX || count-1>UINT32_MAX-lba) return false;
 
     uint32_t lba32 = (uint32_t)lba;
     uint8_t cdb[10] = {
@@ -495,21 +506,25 @@ bool xhci_scsi_read_sector(const xhci_rings_io_t *io,
         (uint8_t)(lba32 >> 8),
         (uint8_t)(lba32),
         0,
-        0, /* Transfer length MSB (1 sector) */
-        1, /* Transfer length LSB (1 sector) */
+        0,
+        (uint8_t)count,
         0
     };
 
-    return xhci_bot_transfer(io, ring_dma, dev_dma, bot_rings, cdb, sizeof(cdb), buf, bot_rings->sector_size, true);
+    return xhci_bot_transfer(io, ring_dma, dev_dma, bot_rings, cdb, sizeof(cdb), buf, count*bot_rings->sector_size, true);
 }
 
-bool xhci_scsi_write_sector(const xhci_rings_io_t *io,
+bool xhci_scsi_write_sectors(const xhci_rings_io_t *io,
                             xhci_dma_buffers_t *ring_dma,
                             const xhci_dev_dma_t *dev_dma,
                             xhci_bot_rings_t *bot_rings,
                             uint64_t lba,
+                            uint32_t count,
                             const void *buf) {
-    if (!bot_rings || !buf || lba >= bot_rings->sector_count || lba > 0xffffffffu) return false;
+    if (!bot_rings || !buf || !count ||
+        (bot_rings->sector_size!=512 && bot_rings->sector_size!=4096) ||
+        count>4096/bot_rings->sector_size || lba>=bot_rings->sector_count ||
+        count>bot_rings->sector_count-lba || lba>UINT32_MAX || count-1>UINT32_MAX-lba) return false;
 
     uint32_t lba32 = (uint32_t)lba;
     uint8_t cdb[10] = {
@@ -520,12 +535,21 @@ bool xhci_scsi_write_sector(const xhci_rings_io_t *io,
         (uint8_t)(lba32 >> 8),
         (uint8_t)(lba32),
         0,
-        0, /* Transfer length MSB (1 sector) */
-        1, /* Transfer length LSB (1 sector) */
+        0,
+        (uint8_t)count,
         0
     };
 
-    return xhci_bot_transfer(io, ring_dma, dev_dma, bot_rings, cdb, sizeof(cdb), (void *)buf, bot_rings->sector_size, false);
+    return xhci_bot_transfer(io, ring_dma, dev_dma, bot_rings, cdb, sizeof(cdb), (void *)buf, count*bot_rings->sector_size, false);
+}
+
+bool xhci_scsi_read_sector(const xhci_rings_io_t *io,xhci_dma_buffers_t *r,
+                          const xhci_dev_dma_t *d,xhci_bot_rings_t *b,uint64_t l,void *v) {
+    return xhci_scsi_read_sectors(io,r,d,b,l,1,v);
+}
+bool xhci_scsi_write_sector(const xhci_rings_io_t *io,xhci_dma_buffers_t *r,
+                           const xhci_dev_dma_t *d,xhci_bot_rings_t *b,uint64_t l,const void *v) {
+    return xhci_scsi_write_sectors(io,r,d,b,l,1,v);
 }
 
 bool xhci_scsi_sync_cache(const xhci_rings_io_t *io,

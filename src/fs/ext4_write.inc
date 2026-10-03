@@ -121,7 +121,7 @@ static int64_t e4_write(vfs_node_t *node,uint64_t *offset,bool append,const void
         uint64_t pos=off+at; unsigned skip=pos%fs->bs; size_t n=fs->bs-skip; if (n>len-at) n=len-at;
         bool zero; uint32_t block=e4_initialize(e,(uint32_t)(pos/fs->bs),&zero);
         if (!block) { r=e->error; goto abort; }
-        uint8_t *b=e4_stage(e,block,E4_NEW); if (!b) { r=e->error; goto abort; }
+        uint8_t *b=zero ? e4_stage_zero(e,block) : e4_stage(e,block,E4_NEW); if (!b) { r=e->error; goto abort; }
         if (zero) memset(b,0,fs->bs);
         memcpy(b+skip,(const uint8_t *)data+at,n); at+=n;
     }
@@ -193,7 +193,7 @@ static int e4_dir_edit(ext4_engine_t *e,e4_inode_t *in,const char *name,uint32_t
     r=e4_load_plan(e,in->ino,&loaded,&raw); if (r) return r;
     bool zero; uint32_t block=e4_initialize(e,(uint32_t)(in->size/fs->bs),&zero);
     if (!block || !zero) return e->error ? e->error : (e->error=-VFS_EIO);
-    uint8_t *b=e4_stage(e,block,E4_NEW); if (!b) return e->error;
+    uint8_t *b=e4_stage_zero(e,block); if (!b) return e->error;
     memset(b,0,fs->bs); e4_dir_entry(b,ino,fs->bs-12,name,type); e4_dir_sum(in,b);
     loaded.size+=fs->bs; e4_merge_pending(fs); e4_rebuild(e,&loaded,raw);
     return e->error;
@@ -216,7 +216,7 @@ static vfs_node_t *e4_create(vfs_node_t *parent,const char *name,vfs_node_type_t
     e4_p16(raw+26,type==VFS_DIRECTORY ? 2 : 1);
     e4_inode_t in={.fs=fs,.ino=ino,.generation=e4_u32(raw+100),.mode=type==VFS_DIRECTORY ? 0x4000 : 0x8000};
     if (type==VFS_DIRECTORY) {
-        uint32_t block=e4_allocate(e); uint8_t *b=block ? e4_stage(e,block,E4_NEW) : NULL;
+        uint32_t block=e4_allocate(e); uint8_t *b=block ? e4_stage_zero(e,block) : NULL;
         if (!b) { r=e->error; goto fail; }
         memset(b,0,fs->bs); e4_dir_entry(b,ino,12,".",2);
         e4_dir_entry(b+12,dir->ino,fs->bs-24,"..",2); e4_dir_sum(&in,b);

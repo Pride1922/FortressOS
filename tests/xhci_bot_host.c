@@ -49,8 +49,18 @@ typedef struct {
     bool mode_short, stall_out_data;
     unsigned out_data_attempts;
     uint8_t recovery_dci;
+    xhci_trb_t pending_event;
+    bool pending;
+    unsigned latency_us, elapsed_us, due_us, fine_delays, coarse_delays;
 
 } mock_bot_hw_t;
+
+static void mock_event(mock_bot_hw_t *m,xhci_trb_t ev) {
+    if (m->latency_us) {
+        assert(!m->pending);m->pending_event=ev;m->pending=true;
+        m->due_us=m->elapsed_us+m->latency_us;
+    } else m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx]=ev;
+}
 
 static uint32_t mock_read32(void *ctx, uint32_t off) {
     mock_bot_hw_t *m = ctx;
@@ -109,7 +119,7 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                 ev.status = (XHCI_COMP_SUCCESS << 24);
             }
         }
-        m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx] = ev;
+        mock_event(m,ev);
     }
 
     /* EP0 uses an independent hardware cursor, not the software event cycle. */
@@ -141,7 +151,7 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
         ev.parameter_high = (uint32_t)(status_phys >> 32);
         ev.status = XHCI_COMP_SUCCESS << 24;
         ev.control = (32u << 10) | (m->bot_rings.slot_id << 24) | (1u << 16) | m->ring_dma.event_cycle;
-        m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx] = ev;
+        mock_event(m,ev);
     }
 
     /* Bulk OUT doorbell (Target 4 = DCI 4) */
@@ -184,15 +194,16 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                 uint32_t lba = ((uint32_t)m->last_cbw.CBWCB[2] << 24) |
                                ((uint32_t)m->last_cbw.CBWCB[3] << 16) |
                                ((uint32_t)m->last_cbw.CBWCB[4] << 8) | m->last_cbw.CBWCB[5];
-                assert(lba < 16 && len == m->disk_sector_size);
-                assert(m->last_cbw.bCBWCBLength == 10 && m->last_cbw.CBWCB[8] == 1);
+                unsigned count=m->last_cbw.CBWCB[8];
+                assert(count && lba+count<=16 && len==count*m->disk_sector_size);
+                assert(m->last_cbw.bCBWCBLength == 10 && !m->last_cbw.CBWCB[7]);
                 memcpy(&m->disk_data[lba * m->disk_sector_size], m->bounce, len);
                 m->write_count++;
             }
         }
         if (m->fault == BOT_FAULT_SHORT_CBW && len == sizeof(usb_bot_cbw_t))
             ev.status = (XHCI_COMP_SHORT_PACKET << 24) | 1;
-        m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx] = ev;
+        mock_event(m,ev);
     }
 
     /* Bulk IN doorbell (Target 3 = DCI 3) */
@@ -286,7 +297,9 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                                    ((uint32_t)m->last_cbw.CBWCB[4] << 8) |
                                    ((uint32_t)m->last_cbw.CBWCB[5]);
                     if (lba < 16) {
-                        memcpy(m->dev_dma.bounce_buf_virt, &m->disk_data[lba * m->disk_sector_size], m->disk_sector_size);
+                        unsigned count=m->last_cbw.CBWCB[8];
+                        assert(count && lba+count<=16 && in_len==count*m->disk_sector_size);
+                        memcpy(m->dev_dma.bounce_buf_virt, &m->disk_data[lba * m->disk_sector_size], in_len);
                     }
                 }
                 if (m->mode_short && (opcode == SCSI_CMD_MODE_SENSE_6 || opcode == SCSI_CMD_MODE_SENSE_10)) {
@@ -298,12 +311,22 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                 if (m->fault == BOT_FAULT_SHORT_DATA) ev.status = (XHCI_COMP_SHORT_PACKET << 24) | 1;
             }
         }
-        m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx] = ev;
+        mock_event(m,ev);
     }
 }
 
 static bool mock_delay(void *ctx) {
-    (void)ctx;
+    mock_bot_hw_t *m=ctx;m->coarse_delays++;m->elapsed_us+=1000;
+    if (m->pending && m->elapsed_us>=m->due_us) {
+        m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx]=m->pending_event;m->pending=false;
+    }
+    return true;
+}
+static bool mock_delay_us(void *ctx,unsigned us) {
+    mock_bot_hw_t *m=ctx;assert(us==10);m->fine_delays++;m->elapsed_us+=us;
+    if (m->pending && m->elapsed_us>=m->due_us) {
+        m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx]=m->pending_event;m->pending=false;
+    }
     return true;
 }
 
@@ -676,6 +699,32 @@ int main(void) {
     }
 
     test_flush_and_writes();
+    for (unsigned ss=512;ss<=4096;ss*=8) {
+        mock_bot_hw_t m;init_mock_hw(&m,BOT_FAULT_NONE);
+        xhci_rings_io_t io={.mmio_ctx=&m,.read32=mock_read32,.write32=mock_write32,.delay_ms=mock_delay,.delay_us=mock_delay_us};
+        xhci_bot_device_t device={.slot_id=3,.bulk_in_ep=0x81,.bulk_out_ep=0x02};
+        assert(xhci_configure_bulk_endpoints(&io,&m.ring_dma,&m.dev_dma,&device,&m.bot_rings));
+        m.bot_rings.sector_size=m.disk_sector_size=ss;m.bot_rings.sector_count=16;
+        uint8_t written[4096],readback[4096];for (unsigned i=0;i<4096;i++) written[i]=(uint8_t)(i*13);
+        m.latency_us=50;m.elapsed_us=m.coarse_delays=m.fine_delays=0;
+        assert(xhci_scsi_write_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,8,4096/ss,written));
+        assert(m.write_count==1 && m.last_cbw.CBWCB[8]==4096/ss);
+        assert(xhci_scsi_read_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,8,4096/ss,readback));
+        assert(!memcmp(written,readback,4096) && !m.coarse_delays && m.elapsed_us==300);
+        unsigned tag=m.bot_rings.tag;
+        assert(!xhci_scsi_write_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,15,2,written));
+        assert(!xhci_scsi_write_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,4096/ss+1,written));
+        assert(!xhci_scsi_read_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,UINT64_MAX,1,readback));
+        assert(!xhci_scsi_read_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,0,readback));
+        assert(m.bot_rings.tag==tag);
+        m.latency_us=3500;m.elapsed_us=m.coarse_delays=m.fine_delays=0;
+        assert(xhci_scsi_read_sector(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,readback));
+        assert(m.fine_delays==600 && m.coarse_delays==6 && m.elapsed_us==12000);
+        m.fault=BOT_FAULT_TIMEOUT;m.elapsed_us=m.coarse_delays=m.fine_delays=0;
+        assert(!xhci_scsi_read_sector(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,readback));
+        assert(m.fine_delays==200 && m.coarse_delays==999 && m.elapsed_us==1001000);
+        printf("PASS: 4KiB multi-sector BOT, bounds, fast/slow polling and bounded timeout sector=%u\n",ss);
+    }
     printf("ALL BOT/SCSI HOST UNIT TESTS PASSED!\n");
     return 0;
 }

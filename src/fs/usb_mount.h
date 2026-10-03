@@ -23,8 +23,13 @@ bool usb_mount_production_storage(const boot_info_t *boot_info);
 /* Mid-session durability barrier flush.
  * Flushes the block device backing a writable /mnt mount via the durability
  * barrier (SYNCHRONIZE CACHE for sync-backed, barrier check for write-through).
- * Does NOT mark the filesystem clean; does NOT freeze writes.
+ * EXT4 dispatch also enforces filesystem taint semantics; ext2 retains its
+ * existing device barrier. Does NOT mark the filesystem clean; does NOT freeze writes.
  * Returns true on success; false if no writable mount is active or barrier fails. */
 bool usb_mount_sync(void);
+
+/* Shutdown/reboot: freeze EXT4 if selected and clean-close ext2 mounts.
+ * Does not release backing devices; failure must prevent a clean shutdown claim. */
+bool usb_mount_freeze_and_sync(void);
 
 #endif /* FORTRESS_USB_MOUNT_H */
