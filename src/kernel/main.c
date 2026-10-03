@@ -30,6 +30,7 @@
 #include "crc32.h"
 #include "gpt.h"
 #include "ext2.h"
+#include "ext4.h"
 #include "usb_mount.h"
 #include "power.h"
 #include "logo.h"
@@ -3015,6 +3016,54 @@ static bool qemu_fw_cfg_has_key(const char *key) {
     return false;
 }
 
+/* Explicit QEMU fixture key, additionally gated by the QEMU NVMe PCI identity
+ * at the call site. This never selects physical or production USB storage. */
+static void test_ext4_reads(void) {
+    require_ext2(nvme_init(), "ext4 fixture NVMe init");
+    block_init();
+    require_ext2(block_register_nvme(), "ext4 fixture registration");
+    block_dev_t *disk=block_get_dev_by_name("nvme0n1");
+    gpt_policy_result_t policy;
+    require_ext2(disk && gpt_parse_ex(disk,&policy) &&
+                 policy==GPT_POLICY_PRIMARY_CONSISTENT, "ext4 fixture GPT");
+    ext4_mount_t *mount=NULL;
+    require_ext2(!ext4_mount_ro(block_get_dev_by_name("nvme0n1p1"),"/mnt",&mount), "ext4 RO mount");
+    vfs_node_t *fragment=vfs_lookup("/mnt/fragmented.bin");
+    require_ext2(fragment && fragment->size%3200==0, "fragmented fixture inode");
+    unsigned bs=(unsigned)(fragment->size/3200);
+    require_ext2(bs==1024 || bs==2048 || bs==4096, "ext4 block size");
+    uint8_t *buffer=kmalloc(65536);
+    require_ext2(buffer!=NULL, "ext4 read test buffer");
+    const char *paths[]={"/mnt/data.bin","/mnt/fragmented.bin","/mnt/unwritten.bin"};
+    for (unsigned f=0;f<3;f++) {
+        file_t *file=vfs_open(paths[f],VFS_O_RDONLY);
+        require_ext2(file!=NULL, "ext4 VFS open");
+        uint64_t at=0;
+        while (at<file->node->size) {
+            int64_t n=vfs_read(file,buffer,65536);
+            require_ext2(n>0 && n<=65536, "ext4 VFS progress");
+            for (int64_t k=0;k<n;k++) {
+                uint64_t position=at+(uint64_t)k, block=position/bs;
+                uint8_t expected=f==0 ? (uint8_t)position :
+                    f==1 && !(block%2) ? (uint8_t)((block/2)%251+1) : 0;
+                require_ext2(buffer[k]==expected, "ext4 exact file bytes");
+            }
+            at+=(uint64_t)n;
+        }
+        require_ext2(vfs_read(file,buffer,1)==0, "ext4 EOF");
+        vfs_close(file);
+    }
+    vfs_node_t *sparse=vfs_lookup("/mnt/sparse.bin");
+    require_ext2(sparse!=NULL, "ext4 sparse inode");
+    uint64_t position=(1ULL<<32)+bs+17;
+    require_ext2(sparse->read(sparse,position-17,buffer,100)==32, "ext4 high offset EOF");
+    for (unsigned i=0;i<17;i++) require_ext2(buffer[i]==0, "ext4 high offset hole");
+    require_ext2(!memcmp(buffer+17,"EXT4-above-4GiB",15), "ext4 high offset bytes");
+    require_ext2(!ext4_sync(mount), "ext4 RO sync");
+    kfree(buffer);
+    serial_puts("[EXT4 READ] PASS exact bytes: 1MiB, depth-2 fragmented, holes, unwritten, above-4GiB, EOF\n");
+}
+
 static void test_ext2_and_audits(void) {
     serial_puts("\n[TEST] Read-only ext2 and architectural audits\n");
     require_ext2(spin_debug_selftest(), "lock ranks and caller IRQ restoration");
@@ -5579,9 +5628,12 @@ pf_boot_guard_done:
         /* =========================================================================
          * Phase 9 (Step 9C.1): GPT Partition Parsing & Bounded Block Devices
          * ========================================================================= */
-        test_phase9c1_gpt();
-
-        test_ext2_and_audits();
+        if (qemu_fw_cfg_has_key("opt/fortress/ext4_read_test")) {
+            test_ext4_reads();
+        } else {
+            test_phase9c1_gpt();
+            test_ext2_and_audits();
+        }
 
         serial_puts("\n[BOOT] FortressOS Phase 9 (Step 9C.2) complete.\n");
     }

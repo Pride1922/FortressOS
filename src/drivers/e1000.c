@@ -388,6 +388,8 @@ typedef struct {
 static pch_snapshot_t s_pch_failure, s_pch_before_reset;
 static bool s_pch_failed, s_pch_attempted, s_pch_mmio_safe = true;
 static bool s_pch_tx_trial;
+static bool s_tx_report_done;
+static bool s_tx_bringup_report;
 static const char *s_pch_reset_error;
 static const char *s_pch_stop_result;
 static const char *s_pch_stop_reset_error;
@@ -1098,8 +1100,11 @@ int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len) {
     s_tx[slot].length = (uint16_t)len;
     s_tx[slot].cmd = 1u | 2u | 8u; /* EOP | IFCS | RS */
     s_tx[slot].status = 0;
-    bool trace = is_i219() && slot == 0 && !s_pch_tx_trial;
-    bool core_trace = is_i219() && slot == 0 && s_pch_tx_trial;
+    /* Preserve selftest TX bring-up evidence without logging normal traffic.
+     * Claim under the device lock; print copied diagnostics after unlocking. */
+    bool trace = is_i219() && slot == 0 && s_tx_bringup_report && !s_tx_report_done && !s_pch_tx_trial;
+    bool core_trace = is_i219() && slot == 0 && s_tx_bringup_report && !s_tx_report_done && s_pch_tx_trial;
+    if (trace || core_trace) s_tx_report_done = true;
     if (core_trace) {
         pch_tx_core_copy(core_checkpoint);
         __asm__ volatile("sfence" ::: "memory");
@@ -1202,7 +1207,7 @@ int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len) {
             ++waited_ms;
         } else __asm__ volatile("pause" ::: "memory");
     }
-    if (trace) {
+    if (is_i219()) {
         irq = spin_lock_irqsave(&g_net_dev_lock);
         /* Never read MAC MMIO if another caller has already contained it. */
         trace = !s_pch_tx_trial && !g_net_fatal && s_pch_mmio_safe;
@@ -1369,7 +1374,10 @@ void e1000_raw_selftest(const char *cmdline) {
     memcpy(frame + 14, "FORTRESS-NET-2A-TX", 18);
     if (is_i219()) memcpy(frame + 14, "FORTRESS-NET-2B-TX", 18);
     if (is_i219() && !s_pch_tx_trial) net_vtd_prepare(); /* no locks held */
-    if (e1000_send_raw(&s_net_dev, frame, sizeof(frame))) {
+    s_tx_bringup_report = true;
+    int tx_result = e1000_send_raw(&s_net_dev, frame, sizeof(frame));
+    s_tx_bringup_report = false;
+    if (tx_result) {
         if (is_i219()) { (void)e1000_quiesce(); return; }
         serial_puts("[NET 2a] TX FAIL; DMA quarantined\n");
         return;

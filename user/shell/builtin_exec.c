@@ -309,6 +309,7 @@ int builtin_exec(int argc, const char *const *argv, const builtin_ctx_t *ctx) {
     switch (b) {
         case CMD_ECHO:    return exec_echo(argc, argv);
         case CMD_PWD:     return exec_pwd();
+        case CMD_CLEAR:   return write_str("\033[2J\033[H");
         case CMD_TRUE:    return 0;
         case CMD_FALSE:   return 1;
         case CMD_ENV:     return exec_env(ctx);

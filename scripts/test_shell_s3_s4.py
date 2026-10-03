@@ -214,7 +214,7 @@ def run(mode):
             # --- S4: Prompt Customization ---
             # 17. Inspect and configure prompt templates
             out = uart_cmd("prompt\n")
-            assert "Prompt template: fortress> " in out, out
+            assert "Prompt template: fortress:<cwd> $ " in out, out
             out = uart_cmd("prompt cwd\n", prompt_pat=r"fortress:.* \$ ")
             assert "fortress:/ $" in out, out
 
@@ -228,8 +228,8 @@ def run(mode):
             print(f"[{mode.upper()}] S4 Configurable prompt (fortress:<cwd> $) & status indicator verified.", flush=True)
 
             # Restore default prompt
-            out = uart_cmd("prompt default\n", prompt_pat=r"fortress> ")
-            assert "fortress> " in out, out
+            out = uart_cmd("prompt default\n", prompt_pat=r"fortress:.* \$ ")
+            assert "fortress:" in out, out
             out = uart_cmd("cd /\n")
 
             # --- S4: Persistent History ---

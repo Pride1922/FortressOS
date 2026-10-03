@@ -250,7 +250,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         return execute_simple_command(argc - 1, argv + 1, actions, action_count);
     }
     if (b == CMD_TRUE || b == CMD_FALSE || b == CMD_ECHO || b == CMD_ENV ||
-        b == CMD_VERSION || b == CMD_LS || b == CMD_VIEW) {
+        b == CMD_VERSION || b == CMD_CLEAR || b == CMD_LS || b == CMD_VIEW) {
         /* Shared handlers: route through builtin_exec for byte-identical output. */
         (void)vars_build_envp(s_env_strings, s_envp_ptrs);
         builtin_ctx_t ctx = builtin_ctx_from_envp(s_envp_ptrs);
@@ -403,7 +403,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     if (b == CMD_PROMPT) {
         if (argc > 1) {
             if (equal(argv[1], "default")) {
-                shell_set_prompt_template("fortress> ");
+                shell_set_prompt_template("fortress:<cwd> $ ");
             } else if (equal(argv[1], "cwd")) {
                 shell_set_prompt_template("fortress:<cwd> $ ");
             } else {

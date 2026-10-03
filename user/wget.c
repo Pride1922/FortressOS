@@ -77,11 +77,34 @@ static void print_usage(void) {
             "  -h, --help       display this help and exit\n");
 }
 
+static long s_write_error;
+static size_t s_write_prefix;
+
+static void body_write_error(uint64_t received) {
+    message("wget: write error writing body to output: ");
+    switch (-s_write_error) {
+        case VFS_ENOSPC: message("no space available or filesystem file-size limit reached"); break;
+        case VFS_EFBIG: message("filesystem file-size limit reached"); break;
+        case VFS_EROFS: message("read-only filesystem"); break;
+        case VFS_EIO: message("storage I/O error"); break;
+        case VFS_ENOMEM: message("out of memory"); break;
+        default: message("write failed"); break;
+    }
+    message(" (errno "); print_dec((uint64_t)-s_write_error);
+    message(", after "); print_dec(received + s_write_prefix);
+    message(" bytes)\n");
+}
+
 static bool write_all(long fd, const uint8_t *data, size_t len) {
     size_t at = 0;
+    s_write_error = 0; s_write_prefix = 0;
     while (at < len) {
         long n = WGET_CALL(SYS_WRITE, fd, (uintptr_t)(data + at), len - at, 0, 0, 0);
-        if (n <= 0 || (size_t)n > len - at) return false;
+        if (n <= 0 || (size_t)n > len - at) {
+            s_write_error = n < 0 ? n : -VFS_EIO;
+            s_write_prefix = at;
+            return false;
+        }
         at += (size_t)n;
     }
     return true;
@@ -375,7 +398,7 @@ redirect_loop:
     size_t initial_body_bytes = total_hdr_read - header_len;
     if (initial_body_bytes > 0) {
         if (!write_all(out_fd, s_header_buf + header_len, initial_body_bytes)) {
-            message("wget: write error writing body to output\n");
+            body_write_error(total_received);
             goto failure;
         }
         total_received += (uint64_t)initial_body_bytes;
@@ -393,7 +416,7 @@ redirect_loop:
             break;
         }
         if (!write_all(out_fd, s_io_buf, (size_t)n)) {
-            message("wget: write error writing body to output\n");
+            body_write_error(total_received);
             goto failure;
         }
         total_received += (uint64_t)n;

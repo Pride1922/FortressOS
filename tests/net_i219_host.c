@@ -72,12 +72,12 @@ static void e1000_mock_write(uintptr_t base, uint32_t reg, uint32_t value) {
         }
     }
     *(uint32_t *)(base + reg) = value;
-    if (reg == REG_TDT && complete_tdt && s_tx && value) {
-        unsigned slot = (value - 1) % NET_RING_COUNT;
+    if (reg == REG_TDT && complete_tdt && s_tx) {
+        unsigned slot = (value + NET_RING_COUNT - 1) % NET_RING_COUNT;
         assert(s_tx[slot].buffer_addr == s_tx_pages[slot]);
         assert(s_tx[slot].length == 60 && s_tx[slot].cmd == 0x0b);
         assert(s_tx[slot].status == 0);
-        s_tx[(value - 1) % NET_RING_COUNT].status = DESC_DD;
+        s_tx[slot].status = DESC_DD;
     }
     if (reg == E1000_REG_CTRL && (value & PCH_MASTER_DISABLE) && !pending_stuck)
         registers[E1000_REG_STATUS / 4] &= ~PCH_MASTER_ACTIVE;
@@ -158,6 +158,8 @@ static void pch_fixture(uint16_t id) {
     rx_waits = 0; rx_inject = rx_bad = false;
     reset_tctl_default = 0;
     mdic_stuck = mdic_error = phy_ignore_write = s_pch_tx_trial = false;
+    s_tx_report_done = false; /* Each fixture represents a fresh boot. */
+    s_tx_bringup_report = false;
     memset(mock_phy, 0, sizeof(mock_phy)); mock_phy_page = 0x120;
     memset(mock_vtd, 0, sizeof(mock_vtd));
     assert(!test_lock_depth);
@@ -222,6 +224,19 @@ int main(void) {
     assert(strstr(captured_log, "TARC0 SPT request field (expected 20000000)=20000000"));
     assert(strstr(captured_log, "tx-reg 00000410 = 00602008"));
     assert(strstr(captured_log, "TIPG IPGT/IPGR1/IPGR2 (hex)=00000008/00000008/00000006"));
+    captured_length = 0; captured_log[0] = 0;
+    complete_tdt = true;
+    uint8_t quiet_frame[60] = {0};
+    for (unsigned i = 0; i < NET_RING_COUNT; ++i)
+        assert(e1000_send_raw(&s_net_dev, quiet_frame, sizeof(quiet_frame)) == 0);
+    assert(!strstr(captured_log, "[NET 2b]"));
+    pch_fixture(E1000_DEV_I219_LM_15D7); assert(e1000_i219_init());
+    captured_length = 0; captured_log[0] = 0;
+    complete_tdt = true;
+    for (unsigned i = 0; i <= NET_RING_COUNT; ++i)
+        assert(e1000_send_raw(&s_net_dev, quiet_frame, sizeof(quiet_frame)) == 0);
+    assert(!strstr(captured_log, "[NET 2b]") && !s_tx_report_done);
+    puts("[PASS] normal first TX and ring wrap are quiet; selftest retains one-time TX evidence");
     pch_fixture(E1000_DEV_I219_LM_15D7); assert(e1000_i219_init());
     e1000_raw_selftest("net_test=rings net_tx_trial=1");
     const char *timeout_core = strstr(captured_log, "TX TIMEOUT, captured BEFORE containment");

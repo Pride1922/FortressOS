@@ -6,6 +6,7 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
+| [EXT4_PLAN.md](EXT4_PLAN.md) / [Phase 0](EXT4_PHASE0.md) | Bounded ext4 profile, extents/checksums, JBD2 writer/recovery, crash injection and persistent-root/package/installer handoff. | **PHASES 0-3 DELIVERED**; RO reads host + BIOS/UEFI verified; allocation/mutation host-verified, RW VFS/production dispatch pending |
 | [NANO_PLAN.md](NANO_PLAN.md) | Standalone full-screen visual text editor (/bin/nano): static BSS buffer, ANSI rendering, scrolling, safe direct write. | **IMPLEMENTED**; automated evidence in AGENTS.md, Dell acceptance pending |
 | [DOWNLOAD_TOOLS_PLAN.md](DOWNLOAD_TOOLS_PLAN.md) | Streaming checksums, bounded USTAR extraction, finite ICMP traceroute and separate wget Dell acceptance. | **CHECKSUMS + TRACEROUTE IMPLEMENTED**; tar policy open, Dell acceptance pending |
 | [NETCTL_TRACE_ABI.md](NETCTL_TRACE_ABI.md) | Finite ICMP traceroute probe layout, error precedence, quoted-wire identity and ownership proof obligations. | **APPROVED + IMPLEMENTED**; automated gates, physical pending |

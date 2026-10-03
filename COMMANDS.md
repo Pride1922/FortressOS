@@ -35,6 +35,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | Command | Type | Category | Summary |
 |:---|:---|:---|:---|
 | [`help`](#help) | Builtin (child-safe) | Shell | Show help overview or help for a specific command |
+| [`clear`](#clear) | Builtin (child-safe) | Shell | Clear the screen and move the cursor home |
 | [`cd`](#cd) | Builtin | Navigation | Change working directory |
 | [`pwd`](#pwd) | Builtin (child-safe) | Navigation | Print working directory |
 | [`type`](#type) | Builtin (child-safe) | Shell | Display how a command name would be interpreted |
@@ -100,6 +101,11 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 ---
 
 ## 3. Shell Built-in Commands
+
+### `clear`
+**Syntax:** `clear`
+
+**Description:** Clears the visible terminal screen and moves the cursor to the top left. The shell prints a fresh prompt; command history is retained.
 
 ### `help`
 **Syntax:** `help [command]`  
@@ -384,7 +390,7 @@ history clear
 **Child-Safe in Pipelines:** No  
 **Description:** Configures the shell prompt appearance.
 * `prompt` displays the current prompt template.
-* `prompt default` resets the prompt to `fortress> `.
+* `prompt default` resets the prompt to `fortress:<cwd> $ `, showing the current working directory.
 * `prompt cwd` sets the prompt to `fortress:<cwd> $ `.
 * `prompt "<template>"` sets a custom prompt string. `<cwd>` is dynamically replaced with the current directory.  
 **Examples:**

@@ -80,7 +80,7 @@ void vars_init(void) {
     }
     vars_set("PATH", "/bin", true);
     vars_set("HOME", "/", true);
-    vars_set("PS1", "fortress> ", false);
+    vars_set("PS1", "fortress:<cwd> $ ", false);
     vars_set("PS2", "> ", false);
 }
 
@@ -264,4 +264,3 @@ int vars_build_envp_checked(char env_strings[32][MAX_VAR_NAME + MAX_VAR_VAL + 2]
     if (total > 32) return -1;
     return vars_build_envp(env_strings, envp_ptrs);
 }
-

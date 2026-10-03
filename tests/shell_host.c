@@ -339,7 +339,7 @@ int main(void) {
     vars_init();
     assert(!strcmp(vars_get("PATH"), "/bin"));
     assert(!strcmp(vars_get("HOME"), "/"));
-    assert(!strcmp(vars_get("PS1"), "fortress> "));
+    assert(!strcmp(vars_get("PS1"), "fortress:<cwd> $ "));
     assert(vars_get("NONEXISTENT") == NULL);
 
     assert(vars_set("TEST_VAR", "12345", false) == 0);

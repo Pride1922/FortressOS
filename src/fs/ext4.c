@@ -1,0 +1,476 @@
+/* E4-A: bounded, read-only metadata and extent-backed file reads. */
+#include "ext4.h"
+#include "vfs.h"
+#include "heap.h"
+#include "string.h"
+#include "spinlock.h"
+
+#define E4_GROUPS 1024u
+#define E4_NODES 1024u
+#define E4_DIR_MAX (1024u * 1024u)
+#define E4_MAP_MAX 4096u
+typedef struct { uint32_t logical, physical, len; bool unwritten; } e4_extent_t;
+typedef struct e4_map { struct e4_map *next; unsigned count; e4_extent_t entries[]; } e4_map_t;
+typedef struct { uint32_t lo, len; } e4_range_t;
+typedef struct { uint8_t raw[32]; } e4_group_t;
+typedef struct {
+    ext4_mount_t *fs;
+    uint32_t ino, generation;
+    uint64_t size;
+    uint16_t mode;
+    uint8_t extent[60];
+    e4_map_t *map;
+} e4_inode_t;
+typedef struct { vfs_node_t node; e4_inode_t inode; } e4_node_t;
+struct ext4_mount {
+    block_dev_t *dev;
+    uint32_t bs, blocks, inodes, first, bpg, ipg, groups, seed, gdt_blocks;
+    e4_group_t *gd;
+    e4_range_t *reserved;
+    unsigned ranges, nodes;
+    e4_node_t *cached[E4_NODES];
+    uint8_t sector[4096], scratch[4096];
+    uint8_t tree[2][4096], validation_bitmap[4096];
+    uint32_t validation_group;
+    bool validation_valid, reserved_sorted;
+    e4_extent_t pending[E4_MAP_MAX];
+    e4_range_t physical[E4_MAP_MAX * 2];
+    unsigned pending_count, physical_count, visits, map_entries;
+    e4_map_t *maps;
+};
+static spinlock_t e4_lock = SPINLOCK_RANKED(1, "ext4");
+static ext4_mount_t *e4_active;
+static bool e4_engine_busy;
+static uint16_t e4_u16(const uint8_t *p) { return p[0] | (uint16_t)p[1] << 8; }
+static uint32_t e4_u32(const uint8_t *p) { return e4_u16(p) | (uint32_t)e4_u16(p+2) << 16; }
+static void e4_p32(uint8_t *p, uint32_t v) {
+    for (unsigned i=0;i<4;i++) p[i]=(uint8_t)(v >> (i*8));
+}
+/* Reflected Castagnoli, no final complement: ext4 chains raw CRC states. */
+static uint32_t e4_crc(uint32_t crc, const void *data, size_t len) {
+    const uint8_t *p=data;
+    while (len--) {
+        crc ^= *p++;
+        for (unsigned b=0;b<8;b++) crc=(crc >> 1) ^ (0x82f63b78u & (0u-(crc & 1u)));
+    }
+    return crc;
+}
+static bool e4_bytes(ext4_mount_t *fs, uint64_t off, void *out, size_t len) {
+    uint64_t cap=(uint64_t)fs->blocks*fs->bs;
+    if (off>cap || len>cap-off) return false;
+    while (len) {
+        unsigned ss=fs->dev->sector_size;
+        size_t skip=off % ss, n=ss-skip;
+        if (n>len) n=len;
+        if (!block_read_sector(fs->dev,off/ss,fs->sector)) return false;
+        memcpy(out,fs->sector+skip,n);
+        out=(uint8_t *)out+n; off+=n; len-=n;
+    }
+    return true;
+}
+static bool e4_power(uint32_t n,uint32_t base) {
+    while (n>1 && n%base==0) n/=base;
+    return n==1;
+}
+static bool e4_backup(uint32_t g) {
+    return g==0 || g==1 || e4_power(g,3) || e4_power(g,5) || e4_power(g,7);
+}
+static bool e4_reserve(ext4_mount_t *fs,uint32_t lo,uint32_t len) {
+    if (!len || lo<fs->first || lo>=fs->blocks || len>fs->blocks-lo) return false;
+    for (unsigned i=0;i<fs->ranges;i++) {
+        e4_range_t r=fs->reserved[i];
+        if (lo<r.lo+r.len && r.lo<lo+len) return false;
+    }
+    fs->reserved[fs->ranges++]=(e4_range_t){lo,len};
+    return true;
+}
+/* Heap sort avoids quadratic alias/reservation work on bounded large trees. */
+static void e4_range_heap(e4_range_t *ranges,unsigned root,unsigned count) {
+    while (root<count/2) {
+        unsigned child=root*2+1;
+        if (child+1<count && ranges[child].lo<ranges[child+1].lo) child++;
+        if (ranges[root].lo>=ranges[child].lo) break;
+        e4_range_t swap=ranges[root];ranges[root]=ranges[child];ranges[child]=swap;root=child;
+    }
+}
+static void e4_range_sort(e4_range_t *ranges,unsigned count) {
+    for (unsigned i=count/2;i;i--) e4_range_heap(ranges,i-1,count);
+    for (unsigned i=count;i>1;i--) {
+        e4_range_t swap=ranges[0];ranges[0]=ranges[i-1];ranges[i-1]=swap;
+        e4_range_heap(ranges,0,i-1);
+    }
+}
+static bool e4_data_range(ext4_mount_t *fs,uint32_t lo,uint32_t len) {
+    if (!len || lo<fs->first || lo>=fs->blocks || len>fs->blocks-lo) return false;
+    if (fs->reserved_sorted) {
+        unsigned left=0,right=fs->ranges;
+        while (left<right) {
+            unsigned mid=left+(right-left)/2;
+            if (fs->reserved[mid].lo<lo+len) left=mid+1;else right=mid;
+        }
+        return !left || fs->reserved[left-1].lo+fs->reserved[left-1].len<=lo;
+    }
+    for (unsigned i=0;i<fs->ranges;i++) {
+        e4_range_t r=fs->reserved[i];
+        if (lo<r.lo+r.len && r.lo<lo+len) return false;
+    }
+    return true;
+}
+static bool e4_bit(const uint8_t *map,uint32_t bit) { return (map[bit/8] >> (bit%8)) & 1; }
+static bool e4_bitmap(ext4_mount_t *fs,uint32_t group,bool inode) {
+    const uint8_t *d=fs->gd[group].raw;
+    unsigned flag=inode ? 1 : 2;
+    if (e4_u16(d+18)&flag) return false;
+    uint32_t block=e4_u32(d+(inode ? 4 : 0));
+    size_t size=(inode ? fs->ipg : fs->bpg)/8;
+    return e4_bytes(fs,(uint64_t)block*fs->bs,fs->scratch,fs->bs) &&
+           (uint16_t)e4_crc(fs->seed,fs->scratch,size)==e4_u16(d+(inode ? 26 : 24));
+}
+static uint32_t e4_inode_seed(ext4_mount_t *fs,uint32_t ino,uint32_t generation) {
+    uint8_t b[4]; e4_p32(b,ino);
+    uint32_t seed=e4_crc(fs->seed,b,4); e4_p32(b,generation);
+    return e4_crc(seed,b,4);
+}
+static int e4_inode(ext4_mount_t *fs,uint32_t ino,e4_inode_t *out) {
+    if (!ino || ino>fs->inodes) return -VFS_EIO;
+    uint32_t g=(ino-1)/fs->ipg, index=(ino-1)%fs->ipg;
+    const uint8_t *gd=fs->gd[g].raw;
+    if (e4_u16(gd+18)&1) return -VFS_EIO;
+    if (!e4_bitmap(fs,g,true) ||
+        !e4_bit(fs->scratch,index)) return -VFS_EIO;
+    uint8_t raw[256];
+    if (!e4_bytes(fs,(uint64_t)e4_u32(gd+8)*fs->bs+(uint64_t)index*256,raw,256)) return -VFS_EIO;
+    uint16_t extra=e4_u16(raw+128);
+    if (extra<4 || extra>128 || extra%4) return -VFS_EIO;
+    uint32_t generation=e4_u32(raw+100);
+    uint32_t stored=e4_u16(raw+124) | (uint32_t)e4_u16(raw+130)<<16;
+    raw[124]=raw[125]=raw[130]=raw[131]=0;
+    if (e4_crc(e4_inode_seed(fs,ino,generation),raw,256)!=stored) return -VFS_EIO;
+    uint16_t mode=e4_u16(raw)&0xf000;
+    if ((mode!=0x4000 && mode!=0x8000) || e4_u32(raw+32)!=0x80000 ||
+        e4_u32(raw+104) || e4_u16(raw+118)) return -VFS_EOPNOTSUPP;
+    uint64_t size=e4_u32(raw+4) | (uint64_t)e4_u32(raw+108)<<32;
+    if (size>8ULL*1024*1024*1024) return -VFS_EFBIG;
+    if (!e4_u16(raw+26)) return -VFS_EIO;
+    *out=(e4_inode_t){.fs=fs,.ino=ino,.generation=generation,.size=size,.mode=mode};
+    memcpy(out->extent,raw+40,60);
+    return 0;
+}
+/* All referenced blocks are checked before a map is published. The immutable
+ * RO map is owned by the mount, including maps built during failed admission. */
+static int e4_reference(ext4_mount_t *fs,uint32_t lo,uint32_t len) {
+    if (!e4_data_range(fs,lo,len)) return -VFS_EIO;
+    if (fs->physical_count==E4_MAP_MAX*2) return -VFS_EFBIG;
+    fs->physical[fs->physical_count++]=(e4_range_t){lo,len};
+    while (len) {
+        uint32_t g=(lo-fs->first)/fs->bpg, bit=(lo-fs->first)%fs->bpg;
+        uint32_t n=fs->bpg-bit; if (n>len) n=len;
+        if (!fs->validation_valid || fs->validation_group!=g) {
+            fs->validation_valid=false;
+            if (!e4_bitmap(fs,g,false)) return -VFS_EIO;
+            memcpy(fs->validation_bitmap,fs->scratch,fs->bs);
+            fs->validation_group=g;fs->validation_valid=true;
+        }
+        for (uint32_t i=0;i<n;i++) if (!e4_bit(fs->validation_bitmap,bit+i)) return -VFS_EIO;
+        lo+=n; len-=n;
+    }
+    return 0;
+}
+static int e4_tree(e4_inode_t *in,const uint8_t *h,unsigned depth,
+                   bool root,uint64_t lower,uint64_t upper) {
+    ext4_mount_t *fs=in->fs;
+    if (root) fs->validation_valid=false;
+    if (++fs->visits>E4_MAP_MAX) return -VFS_EFBIG;
+    unsigned count=e4_u16(h+2), maximum=root ? 4 : (fs->bs-12)/12;
+    if (e4_u16(h)!=0xf30a || e4_u16(h+4)!=maximum || count>maximum ||
+        e4_u16(h+6)!=depth || (!root && !count) || (depth && !count)) return -VFS_EIO;
+    if (!root) {
+        unsigned tail=12+maximum*12;
+        if (e4_crc(e4_inode_seed(fs,in->ino,in->generation),h,tail)!=e4_u32(h+tail)) return -VFS_EIO;
+    }
+    uint64_t previous=lower;
+    for (unsigned i=0;i<count;i++) {
+        const uint8_t *e=h+12+i*12;
+        uint32_t logical=e4_u32(e);
+        if (logical<previous || logical>=upper || (!root && !i && logical!=lower)) return -VFS_EIO;
+        if (depth) {
+            uint64_t limit=i+1<count ? e4_u32(e+12) : upper;
+            uint32_t child=e4_u32(e+4);
+            if (limit<=logical || limit>upper || e4_u16(e+8) || e4_u16(e+10)) return -VFS_EIO;
+            int r=e4_reference(fs,child,1); if (r) return r;
+            uint8_t *buffer=fs->tree[depth-1];
+            if (!e4_bytes(fs,(uint64_t)child*fs->bs,buffer,fs->bs)) return -VFS_EIO;
+            r=e4_tree(in,buffer,depth-1,false,logical,limit); if (r) return r;
+            previous=limit;
+        } else {
+            unsigned raw=e4_u16(e+4), len=raw>32768 ? raw-32768 : raw;
+            uint32_t physical=e4_u32(e+8);
+            uint64_t end=(uint64_t)logical+len;
+            if (!len || e4_u16(e+6) || end>upper) return -VFS_EIO;
+            if (fs->pending_count==E4_MAP_MAX) return -VFS_EFBIG;
+            int r=e4_reference(fs,physical,len); if (r) return r;
+            fs->pending[fs->pending_count++]=(e4_extent_t){logical,physical,len,raw>32768};
+            previous=end;
+        }
+    }
+    if (root) {
+        e4_range_sort(fs->physical,fs->physical_count);
+        for (unsigned i=1;i<fs->physical_count;i++)
+            if (fs->physical[i].lo<fs->physical[i-1].lo+fs->physical[i-1].len) return -VFS_EIO;
+    }
+    return 0;
+}
+static int e4_mapping(e4_inode_t *in) {
+    if (in->map) return 0;
+    ext4_mount_t *fs=in->fs;
+    unsigned depth=e4_u16(in->extent+6);
+    if (depth>2) return -VFS_EOPNOTSUPP;
+    fs->visits=fs->pending_count=fs->physical_count=0;
+    int r=e4_tree(in,in->extent,depth,true,0,1ULL<<32); if (r) return r;
+    if (fs->pending_count>E4_MAP_MAX-fs->map_entries) return -VFS_EFBIG;
+    e4_map_t *map=kmalloc(sizeof(*map)+fs->pending_count*sizeof(e4_extent_t));
+    if (!map) return -VFS_ENOMEM;
+    map->count=fs->pending_count;
+    memcpy(map->entries,fs->pending,map->count*sizeof(e4_extent_t));
+    map->next=fs->maps; fs->maps=map; fs->map_entries+=map->count; in->map=map;
+    return 0;
+}
+static const e4_extent_t *e4_find(e4_inode_t *in,uint32_t logical) {
+    unsigned lo=0, hi=in->map->count;
+    while (lo<hi) {
+        unsigned mid=lo+(hi-lo)/2;
+        if (in->map->entries[mid].logical<=logical) lo=mid+1; else hi=mid;
+    }
+    if (!lo) return NULL;
+    const e4_extent_t *e=&in->map->entries[lo-1];
+    return (uint64_t)logical< (uint64_t)e->logical+e->len ? e : NULL;
+}
+static int e4_dir_block(e4_inode_t *in,uint32_t logical,uint32_t *physical) {
+    int r=e4_mapping(in); if (r) return r;
+    const e4_extent_t *e=e4_find(in,logical);
+    if (!e || e->unwritten) return -VFS_EIO;
+    *physical=e->physical+logical-e->logical;
+    return 0;
+}
+/* Scan validates the whole directory even after finding a requested entry.
+ * Unsupported names/types fail visibly rather than becoming truncated aliases. */
+static int e4_scan(e4_inode_t *in,const char *name,uint64_t wanted,vfs_dirent_t *out,uint32_t *found) {
+    ext4_mount_t *fs=in->fs;
+    if (in->mode!=0x4000) return -VFS_EINVAL;
+    if (!in->size || in->size%fs->bs || in->size>E4_DIR_MAX) return -VFS_EFBIG;
+    uint64_t count=0; int result=0; *found=0;
+    for (uint32_t logical=0;logical<in->size/fs->bs;logical++) {
+        uint32_t physical; int r=e4_dir_block(in,logical,&physical);
+        if (r) return r;
+        if (!e4_bytes(fs,(uint64_t)physical*fs->bs,fs->scratch,fs->bs)) return -VFS_EIO;
+        uint8_t *b=fs->scratch, *tail=b+fs->bs-12;
+        if (e4_u32(tail) || e4_u16(tail+4)!=12 || tail[6] || tail[7]!=0xde ||
+            e4_crc(e4_inode_seed(fs,in->ino,in->generation),b,fs->bs-12)!=e4_u32(tail+8)) return -VFS_EIO;
+        for (unsigned at=0;at<fs->bs-12;) {
+            uint8_t *e=b+at; uint32_t ino=e4_u32(e);
+            unsigned len=e4_u16(e+4), nl=e[6], type=e[7];
+            if (len<8 || len%4 || len>fs->bs-12-at || nl>len-8) return -VFS_EIO;
+            if (ino) {
+                if (ino>fs->inodes || !nl) return -VFS_EIO;
+                if (nl>=VFS_MAX_NAME || (type!=1 && type!=2)) return -VFS_EOPNOTSUPP;
+                for (unsigned k=0;k<nl;k++) if (!e[8+k] || e[8+k]=='/') return -VFS_EIO;
+                bool match=name ? strlen(name)==nl && !memcmp(name,e+8,nl) : count==wanted;
+                if (match) {
+                    if (*found) return -VFS_EIO;
+                    *found=ino; result=1;
+                    if (out) {
+                        memset(out,0,sizeof(*out)); memcpy(out->name,e+8,nl);
+                        out->type=type==2 ? VFS_DIRECTORY : VFS_FILE;
+                    }
+                }
+                count++;
+            }
+            at+=len;
+        }
+    }
+    return result;
+}
+static int e4_can_write(vfs_node_t *node) { (void)node; return -VFS_EROFS; }
+static int64_t e4_read(vfs_node_t *node,uint64_t off,void *buf,size_t len) {
+    if (!node || (!buf && len)) return -VFS_EINVAL;
+    e4_inode_t *in=node->fs_private;
+    if (!len || off>=in->size) return 0;
+    if (len>65536) len=65536;
+    if (len>in->size-off) len=(size_t)(in->size-off);
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    int r=e4_mapping(in); size_t done=0;
+    if (!r) while (done<len) {
+        uint64_t position=off+done;
+        uint32_t logical=(uint32_t)(position/in->fs->bs);
+        unsigned skip=position%in->fs->bs;
+        size_t n=in->fs->bs-skip; if (n>len-done) n=len-done;
+        const e4_extent_t *e=e4_find(in,logical);
+        if (!e || e->unwritten) memset((uint8_t *)buf+done,0,n);
+        else if (!e4_bytes(in->fs,(uint64_t)(e->physical+logical-e->logical)*in->fs->bs+skip,
+                           (uint8_t *)buf+done,n)) { r=-VFS_EIO; break; }
+        done+=n;
+    }
+    spin_unlock_irqrestore(&e4_lock,flags);
+    return done ? (int64_t)done : r;
+}
+static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name);
+static int e4_readdir(vfs_node_t *node,uint64_t cookie,void *out) {
+    if (!node || !out) return -VFS_EINVAL;
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    e4_inode_t *in=node->fs_private, child; uint32_t ino;
+    int r=e4_scan(in,NULL,cookie,out,&ino);
+    if (r==1) {
+        r=e4_inode(in->fs,ino,&child);
+        if (!r) {
+            vfs_dirent_t *de=out;
+            if (de->type!=(child.mode==0x4000 ? VFS_DIRECTORY : VFS_FILE)) r=-VFS_EIO;
+            else { de->size=child.size; r=1; }
+        }
+    }
+    spin_unlock_irqrestore(&e4_lock,flags); return r;
+}
+static void e4_setup(e4_node_t *n, e4_inode_t *in) {
+    n->inode=*in; n->node.fs_private=&n->inode; n->node.size=in->size;
+    n->node.type=in->mode==0x4000 ? VFS_DIRECTORY : VFS_FILE;
+    n->node.can_write=e4_can_write;
+    if (n->node.type==VFS_DIRECTORY) { n->node.lookup=e4_lookup; n->node.readdir=e4_readdir; }
+    else n->node.read=e4_read;
+}
+static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name) {
+    if (!parent || !name || !*name || strlen(name)>=VFS_MAX_NAME) return NULL;
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    e4_inode_t *in=parent->fs_private, child; ext4_mount_t *fs=in->fs; uint32_t ino;
+    vfs_dirent_t entry;
+    int r=e4_scan(in,name,0,&entry,&ino); vfs_node_t *result=NULL;
+    if (r==1 && !e4_inode(fs,ino,&child) &&
+        entry.type==(child.mode==0x4000 ? VFS_DIRECTORY : VFS_FILE)) {
+        for (vfs_node_t *p=parent->children;p;p=p->next) if (!strcmp(p->name,name)) { result=p; break; }
+        size_t plen=strlen(parent->path), nl=strlen(name);
+        if (!result && fs->nodes<E4_NODES && plen+1+nl<VFS_MAX_PATH) {
+            e4_node_t *n=kcalloc(1,sizeof(*n));
+            if (n) {
+                memcpy(n->node.name,name,nl+1); memcpy(n->node.path,parent->path,plen);
+                n->node.path[plen]='/'; memcpy(n->node.path+plen+1,name,nl+1);
+                n->node.parent=parent; e4_setup(n,&child);
+                n->node.next=parent->children; parent->children=&n->node;
+                fs->cached[fs->nodes++]=n; result=&n->node;
+            }
+        }
+    }
+    spin_unlock_irqrestore(&e4_lock,flags); return result;
+}
+static void e4_discard(ext4_mount_t *fs) {
+    if (!fs) return;
+    for (unsigned i=0;i<fs->nodes;i++) kfree(fs->cached[i]);
+    while (fs->maps) { e4_map_t *map=fs->maps; fs->maps=map->next; kfree(map); }
+    kfree(fs->reserved); kfree(fs->gd); kfree(fs);
+}
+static int e4_admit(ext4_mount_t *fs) {
+    uint8_t sb[1024];
+    if (!e4_bytes(fs,1024,sb,sizeof(sb))) return -VFS_EIO;
+    if (e4_u16(sb+56)!=0xef53 || e4_u32(sb+1020)!=e4_crc(UINT32_MAX,sb,1020)) return -VFS_EIO;
+    if (e4_u32(sb+92)!=0 || e4_u32(sb+96)!=0x42 || e4_u32(sb+100)!=0x403 ||
+        e4_u32(sb+72) || e4_u32(sb+76)!=1 || e4_u16(sb+88)!=256 || sb[373]!=1 ||
+        e4_u32(sb+224) || e4_u32(sb+228) || e4_u32(sb+232) || e4_u16(sb+206)) return -VFS_EOPNOTSUPP;
+    if (e4_u16(sb+58)!=1 || e4_u32(sb+336) || e4_u32(sb+340) || e4_u32(sb+344)) return -VFS_EIO;
+    uint32_t shift=e4_u32(sb+24);
+    if (shift>2 || e4_u32(sb+28)!=shift) return -VFS_EOPNOTSUPP;
+    fs->bs=1024u<<shift; fs->blocks=e4_u32(sb+4); fs->inodes=e4_u32(sb);
+    fs->first=e4_u32(sb+20); fs->bpg=e4_u32(sb+32); fs->ipg=e4_u32(sb+40);
+    if (fs->first!=(fs->bs==1024) || !fs->bpg || fs->bpg>fs->bs*8 || fs->bpg%8 ||
+        !fs->ipg || fs->ipg>fs->bs*8 || fs->ipg%8 || e4_u32(sb+36)!=fs->bpg ||
+        fs->blocks<=fs->first || !fs->inodes || fs->inodes>1048576 ||
+        e4_u32(sb+12)>fs->blocks || e4_u32(sb+16)>fs->inodes) return -VFS_EIO;
+    uint64_t bytes=(uint64_t)fs->blocks*fs->bs;
+    if (bytes>8ULL*1024*1024*1024) return -VFS_EFBIG;
+    if (bytes>fs->dev->sector_count*fs->dev->sector_size) return -VFS_EIO;
+    fs->groups=(fs->blocks-fs->first+fs->bpg-1)/fs->bpg;
+    if (!fs->groups || fs->groups>E4_GROUPS) return -VFS_EFBIG;
+    if ((uint64_t)fs->groups*fs->ipg!=fs->inodes) return -VFS_EIO;
+    fs->seed=e4_crc(UINT32_MAX,sb+104,16);
+    fs->gdt_blocks=(fs->groups*32+fs->bs-1)/fs->bs;
+    fs->gd=kcalloc(fs->groups,sizeof(*fs->gd));
+    fs->reserved=kcalloc(fs->groups*4,sizeof(*fs->reserved));
+    if (!fs->gd || !fs->reserved) return -VFS_ENOMEM;
+    if (!e4_bytes(fs,(uint64_t)(fs->first+1)*fs->bs,fs->gd,fs->groups*32)) return -VFS_EIO;
+    uint32_t itable=(fs->ipg*256+fs->bs-1)/fs->bs;
+    uint64_t free_blocks=0, free_inodes=0;
+    for (uint32_t g=0;g<fs->groups;g++) {
+        uint8_t *d=fs->gd[g].raw, number[4], copy[32];
+        memcpy(copy,d,32); copy[30]=copy[31]=0; e4_p32(number,g);
+        if ((uint16_t)e4_crc(e4_crc(fs->seed,number,4),copy,32)!=e4_u16(d+30)) return -VFS_EIO;
+        uint32_t start=fs->first+g*fs->bpg, end=fs->blocks-start;
+        if (end>fs->bpg) end=fs->bpg;
+        if (e4_u16(d+18)&~7u || e4_u32(d+20) || e4_u16(d+12)>end ||
+            e4_u16(d+14)>fs->ipg || e4_u16(d+16)>fs->ipg || e4_u16(d+28)>fs->ipg) return -VFS_EIO;
+        if ((e4_u16(d+18)&1) && (e4_u16(d+14)!=fs->ipg || e4_u16(d+16))) return -VFS_EIO;
+        free_blocks+=e4_u16(d+12); free_inodes+=e4_u16(d+14);
+        if (e4_backup(g) && !e4_reserve(fs,start,1+fs->gdt_blocks)) return -VFS_EIO;
+        uint32_t b=e4_u32(d), i=e4_u32(d+4), t=e4_u32(d+8);
+        if (b<start || b>=start+end || i<start || i>=start+end || t<start ||
+            t>=start+end || itable>start+end-t || !e4_reserve(fs,b,1) ||
+            !e4_reserve(fs,i,1) || !e4_reserve(fs,t,itable)) return -VFS_EIO;
+        /* UNINIT bitmaps have no valid on-disk contents. They cannot contain
+         * accessible inodes/data; skip their checksum until initialized later. */
+        if (!(e4_u16(d+18)&2)) {
+            if (!e4_bytes(fs,(uint64_t)b*fs->bs,fs->scratch,fs->bs) ||
+                (uint16_t)e4_crc(fs->seed,fs->scratch,fs->bpg/8)!=e4_u16(d+24)) return -VFS_EIO;
+            for (unsigned j=0;j<fs->ranges;j++) {
+                e4_range_t range=fs->reserved[j];
+                if (range.lo>=start && range.lo<start+end)
+                    for (uint32_t k=0;k<range.len;k++)
+                        if (!e4_bit(fs->scratch,range.lo-start+k)) return -VFS_EIO;
+            }
+        }
+        if (!(e4_u16(d+18)&1)) {
+            if (!e4_bytes(fs,(uint64_t)i*fs->bs,fs->scratch,fs->bs) ||
+                (uint16_t)e4_crc(fs->seed,fs->scratch,fs->ipg/8)!=e4_u16(d+26)) return -VFS_EIO;
+        }
+    }
+    if (free_blocks!=e4_u32(sb+12) || free_inodes!=e4_u32(sb+16)) return -VFS_EIO;
+    e4_range_sort(fs->reserved,fs->ranges);fs->reserved_sorted=true;
+    return 0;
+}
+int ext4_mount_ro(block_dev_t *dev,const char *path,ext4_mount_t **out) {
+    spin_debug_assert_unheld();
+    if (out) *out=NULL;
+    if (!out || !dev || !dev->read_sector || !path || strcmp(path,"/mnt") ||
+        (dev->sector_size!=512 && dev->sector_size!=4096) || !dev->sector_count ||
+        dev->sector_count>UINT64_MAX/dev->sector_size) return -VFS_EINVAL;
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    if (e4_active || e4_engine_busy || vfs_lookup(path)) { spin_unlock_irqrestore(&e4_lock,flags); return -VFS_EEXIST; }
+    ext4_mount_t *fs=kcalloc(1,sizeof(*fs)); int r=-VFS_ENOMEM;
+    if (!fs) goto done;
+    fs->dev=dev; fs->bs=dev->sector_size;
+    /* Initial byte-reader ceiling is the actual device until SB validated. */
+    if (dev->sector_count>UINT32_MAX) { r=-VFS_EFBIG; goto fail; }
+    fs->blocks=(uint32_t)dev->sector_count;
+    r=e4_admit(fs); if (r) goto fail;
+    e4_inode_t root; r=e4_inode(fs,2,&root); if (r) goto fail;
+    if (root.mode!=0x4000) { r=-VFS_EIO; goto fail; }
+    uint32_t ino; r=e4_scan(&root,NULL,UINT64_MAX,NULL,&ino); if (r<0) goto fail;
+    r=e4_scan(&root,".",0,NULL,&ino);
+    if (r!=1 || ino!=2) { r=-VFS_EIO; goto fail; }
+    r=e4_scan(&root,"..",0,NULL,&ino);
+    if (r!=1 || ino!=2) { r=-VFS_EIO; goto fail; }
+    vfs_node_t *parent=vfs_lookup("/");
+    if (!parent) { r=-VFS_EINVAL; goto fail; }
+    e4_node_t *node=kcalloc(1,sizeof(*node));
+    if (!node) { r=-VFS_ENOMEM; goto fail; }
+    memcpy(node->node.name,"mnt",4); memcpy(node->node.path,"/mnt",5);
+    node->node.parent=parent; e4_setup(node,&root);
+    fs->cached[fs->nodes++]=node;
+    node->node.next=parent->children; parent->children=&node->node;
+    e4_active=fs; *out=fs; r=0; goto done;
+fail:
+    e4_discard(fs);
+done:
+    spin_unlock_irqrestore(&e4_lock,flags); return r;
+}
+int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
+    (void)dev; (void)path; if (out) *out=NULL; return -VFS_EROFS;
+}
+int ext4_sync(ext4_mount_t *mount) { return mount && mount==e4_active ? 0 : -VFS_EINVAL; }
+int ext4_freeze_and_sync(ext4_mount_t *mount) { return ext4_sync(mount); }
+
+#include "ext4_mutate.inc"

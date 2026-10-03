@@ -7,6 +7,7 @@ static const struct {
     bool child_safe; /* May run as a /bin/sh-builtin pipeline stage. Default: false. */
 } commands[] = {
     {"help",     "Show commands [name]",                                    CMD_HELP,     true},
+    {"clear",    "Clear the screen and move the cursor home",               CMD_CLEAR,    true},
     {"cd",       "Change working directory [path | -]",                    CMD_CD,       false},
     {"pwd",      "Print working directory",                                CMD_PWD,      true},
     {"type",     "Display information about command type",                 CMD_TYPE,     true},
@@ -94,7 +95,7 @@ void builtin_help(const char *topic) {
     puts("Editing: Tab complete, Arrows/Home/End/Del, Up/Down history, Ctrl+R search.\n"
          "Shortcuts: Ctrl+A/E/W/U/K/Y/L, Ctrl+C cancels input, Ctrl+D empty exits.\n"
          "Syntax: Quotes ('...'/\"...\"), escapes (\\), chaining (;, &&, ||), negation (!).\n"
-         "Pipelines: echo pwd true false env help version ls view type run as pipeline stages.\n"
+         "Pipelines: echo pwd true false env help version clear ls view type run as pipeline stages.\n"
          "  Other builtins (cd, export, alias, ...) are not available in pipeline stages.\n"
          "  In pipeline context, 'type' reports only pipeline-stage builtins (not cd etc.).\n"
          "Stream tools: cat, head, tail, wc (external; use TOOL --help). cat preserves bytes; view sanitizes text.\n"
@@ -102,4 +103,3 @@ void builtin_help(const char *topic) {
          "Discovery: direct execution (/bin/hello, ./tool, hello searches /bin).\n"
          "History: RAM history bounded 1000/256K; persistent at /mnt/.fortress/history.\n");
 }
-

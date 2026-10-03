@@ -18,7 +18,7 @@ static void prompt_sigtstp(unsigned sig) { (void)sig; }
 static int64_t g_ui_status = 0;
 static char g_ui_cwd[256] = "/";
 static bool g_ui_continuation = false;
-static char g_prompt_template[64] = "fortress> ";
+static char g_prompt_template[64] = "fortress:<cwd> $ ";
 
 void shell_set_prompt_template(const char *tmpl) {
     if (!tmpl || !*tmpl) return;

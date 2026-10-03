@@ -1012,6 +1012,16 @@ test-net-tcp-socket-host:
 	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(subst tests/net_socket_host.c,tests/net_tcp_socket_host.c,$(NET_SOCKET_HOST_SRCS)) -Wl,--wrap=net_tcp_send -o $(BUILD_DIR)/net_tcp_socket_host
 	@$(BUILD_DIR)/net_tcp_socket_host
 	@python3 tests/test_tcp_deadline_guard.py
+.PHONY: ext4-fixtures
+ext4-fixtures:
+	@python3 scripts/create_ext4_fixtures.py
+
+.PHONY: test-ext4-format-host
+test-ext4-format-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_format_host.c -o $(BUILD_DIR)/ext4_format_host
+	@python3 scripts/test_ext4_format_host.py
+
 .PHONY: test-wget-host test-wget
 test-wget-host:
 	@mkdir -p $(BUILD_DIR)
@@ -1150,3 +1160,15 @@ test-net-i219-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O2 -g -fsanitize=address,undefined -Wall -Wextra -Werror -ffunction-sections -fdata-sections -pthread -Isrc/include -Isrc/drivers -Isrc/mm -Isrc/arch/x86_64 -Isrc/lib tests/net_i219_host.c -Wl,--gc-sections -o $(BUILD_DIR)/net_i219_host
 	@$(BUILD_DIR)/net_i219_host
+
+.PHONY: test-ext4-read-host test-ext4-read
+test-ext4-read-host: test-ext4-format-host
+
+test-ext4-read: all
+	python3 scripts/test_ext4_read.py
+
+.PHONY: test-ext4-alloc-host
+test-ext4-alloc-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_alloc_host.c -o $(BUILD_DIR)/ext4_alloc_host
+	@python3 scripts/test_ext4_alloc_host.py
