@@ -73,15 +73,18 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`head`](#head) | Binary (`/bin/head`) | Stream Tool | Output first part of files (lines or bytes) |
 | [`tail`](#tail) | Binary (`/bin/tail`) | Stream Tool | Output last part of files (bounded buffer) |
 | [`wc`](#wc) | Binary (`/bin/wc`) | Stream Tool | Print newline, word, and byte counts |
+| [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
 | [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display CPU, uptime, RAM, and process metrics |
 | [`ifconfig`](#ifconfig) | Binary (`/bin/ifconfig`) | Networking | Query network interface status and packet counters |
 | [`ifup`](#ifup) | Binary (`/bin/ifup`) | Networking | Configure network interface statically or via config file |
 | [`ping`](#ping) | Binary (`/bin/ping`) | Networking | Send ICMP Echo Request packets to IPv4 host |
+| [`traceroute`](#traceroute) | Binary (`/bin/traceroute`) | Networking | Finite numeric ICMP trace with TTL-expiry/error reporting |
 | [`nslookup`](#nslookup) | Binary (`/bin/nslookup`) | Networking | Query DNS name server for IPv4 addresses |
 | [`nc`](#nc) | Binary (`/bin/nc`) | Networking | Arbitrary TCP connections and listens (Netcat) |
 | [`wget`](#wget) | Binary (`/bin/wget`) | Networking | Download files over HTTP/1.0 and HTTP/1.1 |
+| [`md5sum` / `sha256sum`](#md5sum--sha256sum) | Binaries (`/bin/md5sum`, `/bin/sha256sum`) | Files | Stream digests and verify manifests |
 | [`hello`](#hello) | Binary (`/bin/hello`) | Diagnostic | Test ELF binary with argument echoing and `--spin` |
 | [`dual_stream`](#dual_stream) | Binary (`/bin/dual_stream`) | Diagnostic | Diagnostic tool emitting distinct stdout and stderr streams |
 | [`tcptest`](#tcptest) | Binary (`/bin/tcptest`) | Diagnostic | TCP client test fixture |
@@ -572,6 +575,22 @@ When running `edit <path>`, the shell enters an interactive line editor with a d
 
 Located in `/bin/`, these standalone ELFs process input streams with high performance and strict bounds.
 
+### `md5sum` / `sha256sum`
+
+**Syntax:** `sha256sum [--] [FILE ...]` or `sha256sum -c MANIFEST`; `md5sum` accepts the same arguments.
+
+Both hash exact bytes using fixed buffers, regardless of file size. No operands or `-` reads stdin. Output is lowercase digest, two spaces, filename; stdin is named `-`. Prefer SHA-256 for downloads; MD5 is compatibility-only. A digest verifies bytes against an expected value, not the trustworthiness of its source.
+
+Verification reads paths relative to the current directory, accepts text/binary manifest markers and prints `FILE: OK` or `FILE: FAILED`. Escaped filenames, newline/backslash-containing paths and stdin file entries in manifests are unsupported. Lines are limited to 512 bytes, paths to 255 bytes; malformed/empty manifests fail. Exit 0 means every requested hash/check succeeded, 1 means mismatch or I/O/manifest failure, 2 means invalid command options. Referenced files must be regular files; unrelated operands/entries continue after failure.
+
+```sh
+sha256sum /mnt/archive.tar
+sha256sum /mnt/archive.tar > /mnt/archive.sha256
+sha256sum -c /mnt/archive.sha256
+cat /mnt/archive.tar | sha256sum
+md5sum /mnt/archive.tar
+```
+
 ### `cat`
 **Syntax:** `cat [--] [FILE ...]`  
 **Path:** `/bin/cat`  
@@ -641,6 +660,26 @@ wc /etc/motd
 wc -l /etc/network.conf
 echo "one two three" | wc -w
 cat /bin/hello | wc -c
+```
+
+---
+
+### `nano`
+**Syntax:** `nano [path]`  
+**Path:** `/bin/nano`  
+**Description:** Standalone full-screen, non-modal interactive visual text editor for FortressOS running in Ring 3. Features real-time cursor navigation, viewport scrolling, in-memory editing, search, cut/uncut clipboard, and file I/O. Uses a pure static BSS buffer model (up to 256 KiB file capacity, 4,096 lines) without dynamic heap allocation.
+* **Navigation:** Arrow keys, Home (`Ctrl+A`), End (`Ctrl+E`), Page Up, Page Down.
+* **Editing:** Direct ASCII character typing, Backspace (character deletion and row merge), Delete, Enter (row split).
+* **WriteOut (`Ctrl+O`):** Prompt for filename and save buffer to persistent storage with `SYS_SYNC`.
+* **Exit (`Ctrl+X`):** Clean terminal exit. If buffer is modified, prompts to save changes (`Y`/`N`/`C`).
+* **WhereIs / Search (`Ctrl+W`):** Case-insensitive forward and wrap-around search with viewport centering.
+* **Cut (`Ctrl+K`) / Uncut (`Ctrl+U`):** Cut line into clipboard and paste line.
+* **Redraw (`Ctrl+L`):** Clear and repaint full terminal frame.  
+**Examples:**
+```sh
+nano /mnt/network.conf
+nano /mnt/notes.txt
+nano
 ```
 
 ---
@@ -782,6 +821,20 @@ nc -l 8080
 ```
 
 ---
+
+### `traceroute`
+
+**Syntax:** `traceroute [-m 1..30] [-q 1..3] [-W 1..5] IPV4`
+**Path:** `/bin/traceroute`
+
+Numeric IPv4 only. Defaults: 30 hops, three probes per hop, one second per probe. One 120-second deadline covers the entire command, including ARP; remaining command time bounds every probe. Each probe gets a distinct internal label and prints its own line: `HOP  ADDRESS  RTT ms` or `HOP  *`. RTT follows BSP timer resolution. TTL expiry reports the router; destination Echo Reply ends successfully. An unreachable result ends with `!N`, `!H`, `!P`, `!PORT`, `!FRAG` or `!ROUTE` for ICMP codes 0–5. Other error codes are ignored and may result in a timeout.
+
+Ping and trace share one finite probe resource. Contention prints `ping/trace busy; retry manually` and exits 1 immediately, without retrying. Exit 0 means the destination replied, 1 means an unsuccessful trace/control error, 2 means usage error. Routers may decline ICMP replies; `*` alone does not prove loss of connectivity. No `tracert` alias is provided in this milestone.
+
+```sh
+traceroute 192.168.0.1
+traceroute -m 10 -q 1 -W 2 192.0.2.9
+```
 
 ### `wget`
 **Syntax:** `wget [options] <URL>`  

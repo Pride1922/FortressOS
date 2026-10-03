@@ -18,6 +18,13 @@ bool net_ipv4_ping_take(net_ping_v1_t *result) {
     *result=(net_ping_v1_t){.outcome=0,.echoed_bytes=32,.rtt_ticks=5,.tick_hz=100}; complete=false; return true;
 }
 void net_ipv4_ping_cancel(uint64_t token) { assert(token==current); ++cancels; }
+bool net_ipv4_trace_start(const net_trace_v1_t *req, uint64_t token, uint32_t identity, uint64_t now) {
+    (void)req; (void)token; (void)identity; (void)now; assert(!"unexpected trace"); return false;
+}
+bool net_ipv4_trace_take(net_trace_v1_t *result, int64_t *error) {
+    (void)result; (void)error; assert(!"unexpected trace"); return false;
+}
+void net_ipv4_trace_cancel(uint64_t token) { (void)token; assert(!"unexpected trace"); }
 int main(void) {
     net_ping_v1_t req={.version=1,.destination=123,.timeout_seconds=1}, result;
     uint64_t token, other;

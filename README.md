@@ -45,8 +45,9 @@ Dell hardware.
 | Files | Read, create, write, truncate, make directories, rename/move, and delete. Initramfs provides boot-time programs; ext2 provides persistent storage. |
 | Networking — driver | Intel e1000 (82540EM), e1000e (82574L), and integrated I219-LM driver with polling-only ingress on a BSP-pinned worker. The same descriptor layout serves QEMU and bare metal. I219 physical acceptance on the Dell Latitude 5590 (8086:15D7) and 5530 (8086:1A1E). DMA quarantine on controller fault. No NIC interrupt handlers or MSI vectors in this milestone. |
 | Networking — protocols | Ethernet II framing; ARP request/reply with reply-only cache learning; IPv4 unicast with header validation; ICMP Echo Request/Reply; UDP with a bounded 16-socket table; TCP with Reno slow start, congestion avoidance, fast retransmit, SRTT/RTTVAR RTO and Karn's rule; a userspace DNS stub resolver. All bounded, static, and BSP-owned. |
-| Networking — ABI | SYS_NETCTL=42 (ping, NETCTL_IFGET, NETCTL_IFSET); SYS_SOCKET/BIND/SENDTO/RECVFROM = 38–41 (UDP); SYS_CONNECT/LISTEN/ACCEPT/SEND/RECV/SHUTDOWN = 43–48 (TCP); SYS_SEND_UNTIL/RECV_UNTIL/CONNECT_UNTIL = 49–51 (opt-in absolute BSP-tick deadlines, max 60 s horizon). All BSP-only, explicitly rejecting AP callers. |
-| Networking — tools | /bin/ifconfig, /bin/ifup, /bin/ping, /bin/udptest, /bin/echoc, /bin/echos, /bin/tcpserve, /bin/nc (serial request/response with hostname resolution), /bin/nslookup, /bin/wget. |
+| Networking — ABI | SYS_NETCTL=42 (ping, NETCTL_IFGET, NETCTL_IFSET, NETCTL_TRACE_PROBE); SYS_SOCKET/BIND/SENDTO/RECVFROM = 38–41 (UDP); SYS_CONNECT/LISTEN/ACCEPT/SEND/RECV/SHUTDOWN = 43–48 (TCP); SYS_SEND_UNTIL/RECV_UNTIL/CONNECT_UNTIL = 49–51 (opt-in absolute BSP-tick deadlines, max 60 s horizon). All BSP-only, explicitly rejecting AP callers. |
+| Networking — tools | /bin/ifconfig, /bin/ifup, /bin/ping, /bin/traceroute, /bin/udptest, /bin/echoc, /bin/echos, /bin/tcpserve, /bin/nc (serial request/response with hostname resolution), /bin/nslookup, /bin/wget. |
+| New tools — physical acceptance pending | wget, streaming md5sum/sha256sum, traceroute and nano have automated test evidence; Dell hardware tests remain pending. Tar extraction awaits the changed-archive policy decision. |
 | Networking — physical acceptance | Dell Latitude 5590: ICMP (4/4, matched request/reply pairs, second-host Wireshark screenshot), UDP (user-reported PASS, capture audit pending), TCP (10/10 QEMU matrix; physical acceptance for client, real HTTP server, guest listener, and RST recovery), DNS (10/10 QEMU matrix; physical acceptance for A, CNAME, NXDOMAIN, TC→TCP fallback, stall timeout, and hostname nc), link recovery (cold waiting, autonomous PHY renegotiation, retained-ring replug, 6/6 PASS), and runtime network configuration (ifconfig query, on-the-fly ifup, persistent config apply, ping gateway, and DNS fallback PASS). Dell Latitude 5530: driver bring-up and ICMP. |
 | Shell (Milestones S0–S9) | Modular Ring 3 shell (user/shell/) featuring 4096-byte line editing, horizontal viewport, cursor movement, Ctrl shortcuts, RAM history, incremental Ctrl+R search, bracketed paste review, raw/timed input (SYS_INPUT_READ), terminal mode control (SYS_TERMCTL), Belgian AZERTY AltGr operator decoding, working directories (cd/pwd), logic chaining (;, &&, ||, !), parameter expansion ($VAR, ${VAR}, $?), aliases, globbing, uniform descriptors (0–31), redirections (<, >, >>, 2>&1, n>&-), retained UI terminal handle (fd 31 with CLOEXEC), version builtin, persistent history (/mnt/.fortress/history), pipes and stream utilities, job control (jobs, fg, bg, kill), signals (SIGINT, SIGPIPE, SIGTSTP, SIGCONT, SIGCHLD), process groups, terminal foreground ownership, and introspection utilities (ps, top, sysinfo). |
 | Power and platform | BIOS/UEFI boot images, ACPI S5 shutdown, and reset fallbacks. Shutdown and reboot verified on bare-metal Dell Latitude 5590. |
@@ -166,6 +167,7 @@ jobs                  # list background jobs
 fg %1                 # bring job 1 to foreground
 kill -INT %1          # send SIGINT to job 1
 top                   # live process view with CPU% and stable PID sorting
+nano /mnt/notes.txt   # visual full-screen interactive text editor
 sysinfo               # managed-RAM total, monotonic timebase, and system info
 terminal local        # select output mode: local (full screen), serial, mirror, or plain
 layout azerty         # Belgian AZERTY with AltGr (| \ {} [] ~)
@@ -502,7 +504,7 @@ src/net/           Networking stack: Ethernet, ARP, IPv4, ICMP, UDP, TCP, DNS re
 src/drivers/       Console, input, PCI, NVMe, xHCI, USB BOT, e1000/e1000e/I219, power
 src/fs/            VFS, tar initramfs, GPT, ext2, USB mount policy
 src/include/       Shared kernel and user ABI definitions (syscalls, terminal)
-user/              Freestanding user programs (init, hello, ping, udptest, echoc, echos, tcpserve, nc, nslookup, ps, sysinfo, top) and shell entry
+user/              Freestanding user programs (init, hello, ping, udptest, echoc, echos, tcpserve, nc, nslookup, ps, sysinfo, top, nano) and shell entry
 user/shell/        Modular shell engine (line editing, builtins, UI, RAM history, file editor)
 tests/             Host tests and mocks
 scripts/           Image creation and QEMU verification

@@ -1364,6 +1364,27 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
                 }
                 memcpy((void *)frame->rsi, &ping, sizeof(ping));
                 break;
+            } else if (frame->rdi == NETCTL_TRACE_PROBE) {
+                if (frame->rdx != sizeof(net_trace_v1_t)) { result=SYSCALL_EINVAL; break; }
+                if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),frame->rsi,sizeof(net_trace_v1_t),true)) {
+                    result=SYSCALL_EFAULT; break;
+                }
+                net_trace_v1_t trace;
+                memcpy(&trace,(const void *)frame->rsi,sizeof(trace));
+                uint64_t token;
+                result=net_trace_submit(&trace,&token);
+                if (result) break;
+                sched_wait_until(&g_net_ping_channel,net_ping_ready,&token);
+                if (process_signal_pending()) {
+                    net_ping_cancel(token); result=SYSCALL_EINTR; break;
+                }
+                result=net_trace_collect(token,&trace);
+                if (result) { net_ping_cancel(token); break; }
+                if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),frame->rsi,sizeof(trace),true)) {
+                    result=SYSCALL_EFAULT; break;
+                }
+                memcpy((void *)frame->rsi,&trace,sizeof(trace));
+                break;
             } else if (frame->rdi == NETCTL_IFGET) {
                 if (frame->rdx != sizeof(netctl_ifget_t)) {
                     result = SYSCALL_EINVAL; break;

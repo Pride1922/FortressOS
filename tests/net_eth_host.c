@@ -14,9 +14,11 @@ void net_tcp_input(uint32_t source, const uint8_t *data, size_t len) {
     (void)source; (void)data; (void)len;
 }
 void net_tcp_tick(uint64_t ticks, bool online) { (void)ticks; (void)online; }
+void net_tcp_set_local_ip(uint32_t ip) { (void)ip; }
 /* Phase 3 isolation: sockets are tested separately with actual implementation. */
 void net_socket_init(net_dev_t *d, const net_config_t *cfg) { (void)d; (void)cfg; }
 void net_socket_enable(void) {}
+void net_socket_set_local(uint32_t ip) { (void)ip; }
 void net_socket_worker_tick(uint64_t now, bool online) { (void)now; (void)online; }
 void net_socket_input(uint32_t ip, uint16_t sp, uint16_t dp, const uint8_t *data, size_t len) {
     (void)ip; (void)sp; (void)dp; (void)data; (void)len;

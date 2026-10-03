@@ -2,6 +2,7 @@
 #define FORTRESS_NET_IPV4_STACK_H
 #include "net.h"
 #include "ping_abi.h"
+#include "trace_abi.h"
 /* Worker-only entry points. Every buffer is copied before return. */
 void net_ipv4_init(net_dev_t *dev, const net_config_t *config);
 void net_ipv4_input(const uint8_t *packet, size_t len);
@@ -22,4 +23,8 @@ bool net_ipv4_udp_take(unsigned slot, uint64_t token, int64_t *result);
 bool net_ipv4_ping_start(const net_ping_v1_t *request, uint64_t token, uint64_t now);
 bool net_ipv4_ping_take(net_ping_v1_t *result);
 void net_ipv4_ping_cancel(uint64_t token);
+bool net_ipv4_trace_start(const net_trace_v1_t *request, uint64_t token,
+                          uint32_t wire_identity, uint64_t now);
+bool net_ipv4_trace_take(net_trace_v1_t *result, int64_t *error);
+void net_ipv4_trace_cancel(uint64_t token);
 #endif

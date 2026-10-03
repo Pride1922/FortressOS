@@ -165,9 +165,15 @@ def run(root,mode,model,cold):
         at=case.start('nc -l 9000')
         until=time.monotonic()+1
         while time.monotonic()<until: case.pump()
+        assert '[PROCESS] Exit' not in case.text()[at:],'listener exited before link loss'
         case.link(False)
         result=case.finish(at,15)
-        assert 'nc: socket or I/O failure' in result,result
+        # Current finite nc reports I/O failure through its exit status, without
+        # the old diagnostic string. Still require blocked-before-loss, bounded
+        # failure and a fresh listener's independently checked recovery below.
+        assert '[PROCESS] Exit status 1' in result,result
+        status=case.finish(case.start('echo $?'),15)
+        assert '1' in status.splitlines(),status
         case.ping(False)
         case.link(True); case.wait(lambda t:'Online; retained rings' in t,15)
         case.ping(True); case.listener(); case.ping(True)

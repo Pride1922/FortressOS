@@ -146,6 +146,17 @@ test-s9-top-host:
 test-s9-top: $(BOOTABLE_ISO)
 	@python3 scripts/test_s9_top.py
 
+.PHONY: test-nano-host
+test-nano-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O2 -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser tests/nano_host.c -o $(BUILD_DIR)/nano_host
+	@$(BUILD_DIR)/nano_host
+
+.PHONY: test-nano
+test-nano: $(BOOTABLE_ISO)
+	@python3 scripts/test_nano.py
+
+
 .PHONY: test-s8-groups-host
 	@python3 scripts/test_process_table_host.py --groups
 
@@ -469,8 +480,12 @@ $(USER_UDP_ELFS): $(BUILD_DIR)/%.elf: $(BUILD_DIR)/%.o user/tools/start.asm user
 
 $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)/net/udp.o $(BUILD_DIR)/net/net_ipv4.o: CFLAGS += -Os -Wframe-larger-than=512 -fstack-usage
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
+USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 STREAM_TOOLS := cat head tail wc
 STREAM_TOOL_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(STREAM_TOOLS)))
+CHECKSUM_TOOLS := md5sum sha256sum
+CHECKSUM_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(CHECKSUM_TOOLS)))
+USER_TRACEROUTE_ELF := $(BUILD_DIR)/traceroute.elf
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
 
 $(BUILD_DIR)/tool-common.o: user/tools/common.c user/tools/common.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
@@ -483,8 +498,41 @@ $(STREAM_TOOL_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/common.h
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-common.o -o $@
 
 .PHONY: test-stream-tools-host
+$(BUILD_DIR)/tool-digest.o: user/tools/digest.c user/tools/digest.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(BUILD_DIR)/tool-checksum.o: user/tools/checksum.c user/tools/digest.h user/tools/common.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(CHECKSUM_ELFS): $(BUILD_DIR)/tool-%.elf: $(BUILD_DIR)/tool-checksum.o $(BUILD_DIR)/tool-digest.o $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-checksum.o $(BUILD_DIR)/tool-digest.o $(BUILD_DIR)/tool-common.o -o $@
+
+.PHONY: test-checksum-host test-checksum
+test-checksum-host:
+	@python3 scripts/test_checksum_host.py
+
+test-checksum: $(BOOTABLE_ISO) test-checksum-host
+	@python3 scripts/test_checksum.py
+
 test-stream-tools-host:
 	@python3 scripts/test_stream_tools_host.py
+
+$(BUILD_DIR)/traceroute.o: user/traceroute.c user/tools/common.h src/include/trace_abi.h src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(USER_TRACEROUTE_ELF): $(BUILD_DIR)/traceroute.o $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(AS) -f elf64 -DTOOL_ENTRY=traceroute_main user/tools/start.asm -o $(BUILD_DIR)/traceroute_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/traceroute_start.o $(BUILD_DIR)/traceroute.o $(BUILD_DIR)/tool-common.o -o $@
+
+$(BUILD_DIR)/trace_probe.o: user/trace_probe.c user/tools/common.h src/include/trace_abi.h src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
+$(BUILD_DIR)/trace_probe.elf: $(BUILD_DIR)/trace_probe.o $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(AS) -f elf64 -DTOOL_ENTRY=trace_probe_main user/tools/start.asm -o $(BUILD_DIR)/trace_probe_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/trace_probe_start.o $(BUILD_DIR)/trace_probe.o $(BUILD_DIR)/tool-common.o -o $@
 
 # Build user standalone init executable
 $(USER_INIT_ELF): $(USER_DIR)/init.asm $(USER_DIR)/linker.ld
@@ -609,8 +657,19 @@ $(BUILD_DIR)/top_start.o: $(USER_DIR)/tools/start.asm
 $(USER_TOP_ELF): $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o -o $@
 
+$(BUILD_DIR)/nano.o: $(USER_DIR)/nano.c $(USER_DIR)/nano.h $(USER_DIR)/nano_core.c src/include/types.h src/include/syscall_abi.h src/include/terminal.h src/fs/vfs.h src/include/signal_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -I$(USER_DIR) -c $< -o $@
+
+$(BUILD_DIR)/nano_start.o: $(USER_DIR)/tools/start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 -DTOOL_ENTRY=nano_main $< -o $@
+
+$(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
+
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(STREAM_TOOL_ELFS) COMMANDS.md Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(STREAM_TOOL_ELFS) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) COMMANDS.md Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -633,7 +692,11 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_TCPDEADLINE_ELF) $(BUILD_DIR)/initramfs/bin/tcpdeadline
 	@cp -f $(USER_WGET_ELF) $(BUILD_DIR)/initramfs/bin/wget
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
+	@cp -f $(USER_NANO_ELF) $(BUILD_DIR)/initramfs/bin/nano
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
+	@$(foreach tool,$(CHECKSUM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
+	@cp -f $(USER_TRACEROUTE_ELF) $(BUILD_DIR)/initramfs/bin/traceroute
+
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
 	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, view and echo.\nExternal cat preserves bytes; head, tail and wc process streams. Use TOOL --help.\nFull command reference available in /docs/commands.txt\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
 	@cp -f COMMANDS.md $(BUILD_DIR)/initramfs/docs/commands.txt
@@ -1025,6 +1088,15 @@ test-net-ping-host:
 	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_ping_host.c tests/net_lock_host.c src/net/net_ping.c -o $(BUILD_DIR)/net_ping_host
 	@$(BUILD_DIR)/net_ping_host
 .PHONY: test-net-ping-host
+.PHONY: test-net-trace-host test-net-trace
+test-net-trace-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -DNET_TRACE_HOST_TEST -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_trace_host.c tests/net_lock_host.c src/net/net_ping.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c -o $(BUILD_DIR)/net_trace_host
+	@$(BUILD_DIR)/net_trace_host
+	@$(CC) -O1 -g -DTOOL_HOST_TEST -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/fs -Iuser/tools tests/traceroute_host.c user/traceroute.c user/tools/common.c -o $(BUILD_DIR)/traceroute_host
+	@$(BUILD_DIR)/traceroute_host
+test-net-trace: $(BOOTABLE_ISO) $(BUILD_DIR)/trace_probe.elf test-net-trace-host
+	@python3 scripts/test_net_trace.py
 test-net-icmp: $(BOOTABLE_ISO) test-net-icmp-host test-net-ipv4-host test-net-ping-host
 	@python3 scripts/test_net_icmp.py
 .PHONY: test-net-icmp

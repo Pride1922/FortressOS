@@ -1,12 +1,12 @@
 # Download tools: checksums, tar, and traceroute
 
-Status: DRAFT FOR USER REVIEW (2026-10-03). This document proposes three milestones; no implementation or new network ABI is approved by drafting it. Wget is implemented, but Dell acceptance remains pending.
+Status: IMPLEMENTATION STARTED (2026-10-03), following the user's implementation request. Milestone 1 checksums are implemented with host and BIOS/UEFI evidence in [the checksum report](../roadmap/download-checksums.md). Traceroute's [concrete ABI](NETCTL_TRACE_ABI.md) has user approval, including fixed-budget, distinct-label and no-EAGAIN-retry clarifications; implementation and synthetic-router evidence are recorded in [the trace report](../roadmap/net-traceroute.md). Tar's changed-archive policy remains an explicit unresolved gate. Wget and traceroute Dell acceptance remain pending.
 
 ## Order and boundaries
 
 Implement checksums first, tar second, traceroute third. Checksums provide an independent download/extraction gate. Traceroute has a separate kernel design gate because existing ping cannot vary TTL or report ICMP errors.
 
-Existing `/bin/ping` remains the reachability tool. Neither `tracert` nor `traceroute` currently exists. Preserve existing socket and NETCTL_PING ABIs, BSP ownership, worker cadence, wait signatures, lock ranks, driver workarounds and DMA quarantine. No scheduler, signal or timer-hook changes are proposed.
+Existing `/bin/ping` remains the reachability tool. `/bin/traceroute` now implements the approved probe ABI; no `tracert` alias is provided. Preserve existing socket and NETCTL_PING ABIs, BSP ownership, worker cadence, wait signatures, lock ranks, driver workarounds and DMA quarantine. No scheduler, signal or timer-hook changes are proposed.
 
 All tools are freestanding, stream bounded buffers, handle short I/O, close owned descriptors and return nonzero on failure. Package binaries explicitly in the initramfs. Host sanitizer tests prove logic; QEMU proves live integration; physical results are recorded separately.
 
@@ -89,7 +89,7 @@ Current ping sends TTL 64 and exposes echo outcomes only. A real traceroute need
 
 Proposed limits: TTL 1–30, three probes per hop, one-second default timeout (maximum five), one outstanding trace probe, and a 120-second whole-command budget including ARP. Print router address/RTT or `*`; stop on matching destination Echo Reply, terminal unreachable or budget expiry. Document BSP tick RTT resolution.
 
-Specify ping/trace contention and bounded cleanup explicitly: a busy shared facility returns EBUSY rather than cancelling another caller. Reuse established worker and wait mechanisms; STOP, interruption and owner exit must not leave a permanent reservation.
+Specify ping/trace contention and bounded cleanup explicitly: a busy shared facility returns the project's existing SYSCALL_EAGAIN rather than cancelling another caller (there is no SYSCALL_EBUSY). Reuse established worker and wait mechanisms; STOP, interruption and owner exit must not leave a permanent reservation.
 
 ### B. Bounded ICMP error parsing and matching
 

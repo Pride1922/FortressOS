@@ -6,7 +6,10 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
-| [DOWNLOAD_TOOLS_PLAN.md](DOWNLOAD_TOOLS_PLAN.md) | Streaming checksums, bounded USTAR extraction, finite ICMP traceroute and separate wget Dell acceptance. | **DRAFT FOR USER REVIEW** |
+| [NANO_PLAN.md](NANO_PLAN.md) | Standalone full-screen visual text editor (/bin/nano): static BSS buffer, ANSI rendering, scrolling, safe direct write. | **IMPLEMENTED**; automated evidence in AGENTS.md, Dell acceptance pending |
+| [DOWNLOAD_TOOLS_PLAN.md](DOWNLOAD_TOOLS_PLAN.md) | Streaming checksums, bounded USTAR extraction, finite ICMP traceroute and separate wget Dell acceptance. | **CHECKSUMS + TRACEROUTE IMPLEMENTED**; tar policy open, Dell acceptance pending |
+| [NETCTL_TRACE_ABI.md](NETCTL_TRACE_ABI.md) | Finite ICMP traceroute probe layout, error precedence, quoted-wire identity and ownership proof obligations. | **APPROVED + IMPLEMENTED**; automated gates, physical pending |
+| [TRACE_WAIT_LIFECYCLE_PROOF.md](TRACE_WAIT_LIFECYCLE_PROOF.md) | Shared ping/trace admission, copied ownership, fixed deadlines, cancellation and finite result leases. | **IMPLEMENTED**; evidence boundaries explicit |
 | [NET2_PLAN.md](NET2_PLAN.md) | Seven steps: TCP design/codec, simulator, client, server, finite nc, physical gate and userspace DNS. | **7/7 COMPLETE**; Dell 5590 physical DNS user-confirmed PASS |
 | [NET2_STEP7_DNS.md](NET2_STEP7_DNS.md) | Userspace DNS, nslookup, hostname nc, bounded fallback and acceptance gates. | **COMPLETE**; host/QEMU evidence and user-confirmed physical acceptance |
 | [TCP_IO_DEADLINE.md](TCP_IO_DEADLINE.md) | Opt-in absolute TCP connect/send/receive deadlines, concrete syscall ABI and non-owning wake-hint proof. | **APPROVED + IMPLEMENTED**; host/live evidence in Step 7 |

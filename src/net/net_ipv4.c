@@ -7,6 +7,7 @@
 #include "net_socket.h"
 #include "syscall_abi.h"
 #include "net_tcp.h"
+#define TRACE_IP_IDENTIFIER 1u /* Ping/ordinary IPv4 encoder uses zero. */
 
 typedef struct {
     uint8_t frame[ETH_MAX_FRAME_LEN];
@@ -27,6 +28,11 @@ static uint8_t s_ping_data[32], s_mac[ETH_ALEN];
 static uint64_t s_token, s_sent_tick, s_echo_deadline;
 static struct { uint32_t ip; uint64_t tick; bool used; } s_arp_recent[2+NET_SOCKET_MAX];
 static bool s_ping_waiting, s_ping_done;
+static net_trace_v1_t s_trace;
+static uint32_t s_trace_identity;
+static uint64_t s_trace_deadline;
+static int64_t s_trace_error;
+static bool s_trace_active, s_trace_done, s_trace_waiting;
 static uint64_t s_reply_dropped;
 static uint64_t s_udp_malformed;
 
@@ -55,7 +61,7 @@ void net_ipv4_set_config(uint32_t local_ip, uint8_t prefix, uint32_t gateway) {
     s_cfg.gateway = gateway;
 }
 bool net_ipv4_idle(void) {
-    if (s_ping_waiting) return false;
+    if (s_ping_waiting || s_trace_active) return false;
     if (!net_tcp_idle()) return false;
     for (unsigned i=0; i<2+NET_SOCKET_MAX; ++i) if (s_pending[i].active) return false;
     return true;
@@ -65,13 +71,14 @@ void net_ipv4_init(net_dev_t *dev, const net_config_t *config) {
     memset(s_pending,0,sizeof(s_pending));
     memset(s_udp,0,sizeof(s_udp)); memset(s_arp_recent,0,sizeof(s_arp_recent));
     s_ping_waiting=s_ping_done=false; s_token=0; s_reply_dropped=s_udp_malformed=0;
+    s_trace_active=s_trace_done=s_trace_waiting=false; s_trace_error=0;
 }
 static bool build(pending_t *p, uint32_t dest, uint8_t type, uint16_t id,
-                  uint16_t seq, const uint8_t *data, size_t len, uint64_t now) {
-    if (len>1472 || len+28>s_dev->mtu || !net_ipv4_route(dest,&p->next_hop)) return false;
+                  uint16_t seq, const uint8_t *data, size_t len, uint64_t now, uint8_t ttl) {
+    if (!s_dev || len>1472 || len+28>s_dev->mtu || !net_ipv4_route(dest,&p->next_hop)) return false;
     memset(p->frame,0,sizeof(p->frame));
     if (icmp_echo_encode(p->frame+34,sizeof(p->frame)-34,type,id,seq,data,len) ||
-        ipv4_encode(p->frame+14,sizeof(p->frame)-14,s_cfg.local_ip,dest,1,(uint16_t)(8+len),64,NULL)) return false;
+        ipv4_encode(p->frame+14,sizeof(p->frame)-14,s_cfg.local_ip,dest,1,(uint16_t)(8+len),ttl,NULL)) return false;
     p->len=42+len; if (p->len<60) p->len=60;
     p->attempts=0; p->next_arp=now; p->start=now;
     p->expire=now+3*apic_timer_get_frequency(); p->active=true;
@@ -84,16 +91,59 @@ static void finish(uint32_t outcome, uint64_t rtt) {
     s_pending[0].active=false; s_ping_waiting=false; s_ping_done=true;
 }
 bool net_ipv4_ping_start(const net_ping_v1_t *request, uint64_t token, uint64_t now) {
-    if (s_pending[0].active || s_ping_waiting || s_ping_done) return false;
+    if (s_pending[0].active || s_ping_waiting || s_ping_done || s_trace_active || s_trace_done) return false;
     s_ping=*request; s_token=token;
     for (unsigned i=0; i<32; ++i) s_ping_data[i]=(uint8_t)(0xa0+i);
     for (unsigned i=0; i<8; ++i) s_ping_data[i]=(uint8_t)(token>>(i*8));
     uint64_t start=now+(request->start_delay_ms ? apic_timer_get_frequency() : 0);
     if (!build(&s_pending[0],request->destination,8,(uint16_t)token,
-               (uint16_t)request->sequence,s_ping_data,32,start)) finish(NETPING_TX_FAILED,0);
+               (uint16_t)request->sequence,s_ping_data,32,start,64)) finish(NETPING_TX_FAILED,0);
     return true;
 }
+static void trace_finish(uint32_t outcome, uint32_t responder, uint8_t type, uint8_t code, uint64_t rtt) {
+    s_trace.outcome=outcome; s_trace.responder=responder;
+    s_trace.icmp_type=type; s_trace.icmp_code=code; s_trace.rtt_ticks=rtt;
+    s_trace.tick_hz=apic_timer_get_frequency();
+    s_pending[0].active=false; s_trace_active=s_trace_waiting=false; s_trace_done=true;
+}
+bool net_ipv4_trace_start(const net_trace_v1_t *request, uint64_t token, uint32_t identity, uint64_t now) {
+    if (s_pending[0].active || s_ping_waiting || s_ping_done || s_trace_active || s_trace_done) return false;
+    s_trace=*request; s_token=token; s_trace_identity=identity; s_trace_error=0;
+    uint64_t hz=apic_timer_get_frequency(), duration=request->timeout_seconds*hz;
+    /* Scalar validation in submit bounds multiplication and horizon. Saturate
+     * addition defensively; min() enforces the unchanged command deadline. */
+    s_trace_deadline=duration>UINT64_MAX-now ? UINT64_MAX:now+duration;
+    if (s_trace_deadline>request->deadline_ticks) s_trace_deadline=request->deadline_ticks;
+    s_trace_active=true;
+    for (unsigned i=0;i<32;i++) s_ping_data[i]=(uint8_t)(0xa0+i);
+    for (unsigned i=0;i<8;i++) s_ping_data[i]=(uint8_t)(token>>(i*8));
+    if (now>=s_trace_deadline) trace_finish(NETTRACE_PROBE_TIMEOUT,0,0,0,0);
+    else {
+        if (!build(&s_pending[0],request->destination,ICMP_ECHO_REQUEST,(uint16_t)(identity>>16),
+                    (uint16_t)identity,s_ping_data,32,now,(uint8_t)request->ttl))
+            trace_finish(NETTRACE_TX_FAILED,0,0,0,0);
+        else {
+            uint64_t remaining=s_trace_deadline-now;
+            s_pending[0].expire=now+(remaining<3*hz ? remaining:3*hz);
+            /* A quoted old ping must not alias a trace's short ICMP identity.
+             * Distinct IP ID separates them without changing ping wire bytes. */
+            ipv4_header_t *header=(void *)(s_pending[0].frame+14);
+            header->id=htons(TRACE_IP_IDENTIFIER);
+            header->checksum=ipv4_calculate_checksum(header);
+        }
+    }
+    return true;
+}
+bool net_ipv4_trace_take(net_trace_v1_t *result, int64_t *error) {
+    if (!s_trace_done) return false;
+    *result=s_trace; *error=s_trace_error; s_trace_done=false; return true;
+}
+void net_ipv4_trace_cancel(uint64_t token) {
+    if (token!=s_token) return;
+    s_pending[0].active=false; s_trace_active=s_trace_done=s_trace_waiting=false;
+}
 void net_ipv4_link_down(void) {
+    if (s_trace_active) { s_trace_error=SYSCALL_EIO; trace_finish(NETTRACE_TX_FAILED,0,0,0,0); }
     if (s_pending[0].active || s_ping_waiting) finish(NETPING_TX_FAILED,0);
     for (unsigned i=0; i<2+NET_SOCKET_MAX; ++i) {
         if (i>=2 && s_pending[i].active) {
@@ -148,25 +198,41 @@ void net_ipv4_input(const uint8_t *packet, size_t len) {
         return;
     }
     if (s_ip.protocol!=1) return;
-    if (icmp_echo_decode(packet+20,n,&s_echo,&data,&data_len)) return;
     uint64_t now=apic_timer_get_bsp_ticks();
+    if (s_trace_active && now>=s_trace_deadline) trace_finish(NETTRACE_PROBE_TIMEOUT,0,0,0,0);
+    if (s_trace_waiting && n && (packet[20]==ICMP_TIME_EXCEEDED || packet[20]==ICMP_DEST_UNREACHABLE)) {
+        icmp_quote_t quote;
+        if (!icmp_quote_decode(packet+20,n,&quote) && quote.source==s_cfg.local_ip &&
+            quote.destination==s_trace.destination && quote.identifier==(uint16_t)(s_trace_identity>>16) &&
+            quote.sequence==(uint16_t)s_trace_identity && quote.ip_identifier==TRACE_IP_IDENTIFIER)
+            trace_finish(quote.type==ICMP_TIME_EXCEEDED ? NETTRACE_HOP_EXPIRED:NETTRACE_UNREACHABLE,
+                         s_ip.src_ip,quote.type,quote.code,now-s_sent_tick);
+        return;
+    }
+    if (icmp_echo_decode(packet+20,n,&s_echo,&data,&data_len)) return;
     if (s_echo.type==ICMP_ECHO_REQUEST) {
         if (s_pending[1].active) { ++s_reply_dropped; return; }
-        (void)build(&s_pending[1],s_ip.src_ip,0,s_echo.identifier,s_echo.sequence,data,data_len,now);
-    } else if (s_ping_waiting && now<s_echo_deadline && s_ip.src_ip==s_ping.destination &&
+        (void)build(&s_pending[1],s_ip.src_ip,0,s_echo.identifier,s_echo.sequence,data,data_len,now,64);
+    } else if (s_trace_waiting && s_ip.src_ip==s_trace.destination &&
+        s_echo.identifier==(uint16_t)(s_trace_identity>>16) && s_echo.sequence==(uint16_t)s_trace_identity &&
+        data_len==32 && !memcmp(data,s_ping_data,32))
+        trace_finish(NETTRACE_REPLY,s_ip.src_ip,0,0,now-s_sent_tick);
+    else if (s_ping_waiting && now<s_echo_deadline && s_ip.src_ip==s_ping.destination &&
         s_echo.identifier==(uint16_t)s_token && s_echo.sequence==s_ping.sequence &&
         data_len==32 && !memcmp(data,s_ping_data,32)) finish(NETPING_REPLY,now-s_sent_tick);
 }
 void net_ipv4_tick(uint64_t now) {
     if (!s_dev) return;
     uint64_t hz=apic_timer_get_frequency();
+    if (s_trace_active && now>=s_trace_deadline) trace_finish(NETTRACE_PROBE_TIMEOUT,0,0,0,0);
     if (s_ping_waiting && now>=s_echo_deadline) finish(NETPING_ECHO_TIMEOUT,0);
     for (unsigned i=0; i<2+NET_SOCKET_MAX; ++i) {
         pending_t *p=&s_pending[i];
         if (!p->active || now<p->start) continue;
         if (now>=p->expire) {
             p->active=false;
-            if (!i) finish(NETPING_ARP_TIMEOUT,0);
+            if (!i && s_trace_active) trace_finish(NETTRACE_ARP_TIMEOUT,0,0,0,0);
+            else if (!i) finish(NETPING_ARP_TIMEOUT,0);
             else if (i>=2) { s_udp[i-2].result=SYSCALL_EIO; s_udp[i-2].done=true; }
             continue;
         }
@@ -186,7 +252,9 @@ void net_ipv4_tick(uint64_t now) {
                 s_arp_recent[recent].used=true; s_arp_recent[recent].ip=p->next_hop; s_arp_recent[recent].tick=now;
             }
             if (resolved<0) {
-                p->active=false; if (!i) finish(NETPING_TX_FAILED,0);
+                p->active=false;
+                if (!i && s_trace_active) trace_finish(NETTRACE_TX_FAILED,0,0,0,0);
+                else if (!i) finish(NETPING_TX_FAILED,0);
                 else if (i>=2) { s_udp[i-2].result=SYSCALL_EIO; s_udp[i-2].done=true; }
                 continue;
             }
@@ -196,9 +264,14 @@ void net_ipv4_tick(uint64_t now) {
         p->active=false;
         int sent=s_dev->send_packet(s_dev,p->frame,p->len);
         if (i>=2) { s_udp[i-2].result=sent ? SYSCALL_EIO : (int64_t)s_udp[i-2].len; s_udp[i-2].done=true; }
-        else if (sent) { if (!i) finish(NETPING_TX_FAILED,0); }
+        else if (sent) {
+            if (!i && s_trace_active) trace_finish(NETTRACE_TX_FAILED,0,0,0,0);
+            else if (!i) finish(NETPING_TX_FAILED,0);
+        }
         else if (!i) {
-            s_sent_tick=now; s_echo_deadline=now+s_ping.timeout_seconds*hz; s_ping_waiting=true;
+            s_sent_tick=now;
+            if (s_trace_active) s_trace_waiting=true;
+            else { s_echo_deadline=now+s_ping.timeout_seconds*hz; s_ping_waiting=true; }
         }
     }
 }

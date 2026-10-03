@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "ping_abi.h"
+#include "trace_abi.h"
 
 /* SYS_NETCTL = 42 command codes */
 #ifndef NETCTL_PING
