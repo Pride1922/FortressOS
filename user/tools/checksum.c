@@ -85,7 +85,8 @@ static int verify(const char *path) {
         long n=position<buffered ? 1:0;
         uint8_t c=n ? manifest_buffer[position++]:0;
         if (!n || c=='\n') {
-            if (len || bad || n) {
+            if (len && manifest_line[len-1]=='\r') manifest_line[--len]=0;
+            if (len || bad) {
                 entries++;
                 manifest_line[len]=0;
                 if (bad) status=tool_error(name,"overlong or invalid manifest entry",NULL);
@@ -93,8 +94,13 @@ static int verify(const char *path) {
             }
             len=0; bad=false;
             if (!n || tool_output_failed) break;
-        } else if (!c || len==MANIFEST_LINE) bad=true;
-        else if (!bad) manifest_line[len++]=(char)c;
+        } else if (!c && !len) {
+            continue;
+        } else if (!c || len==MANIFEST_LINE) {
+            bad=true;
+        } else if (!bad) {
+            manifest_line[len++]=(char)c;
+        }
     }
     if (!entries) status=tool_error(name,"empty manifest",path);
     if (owned && tool_syscall(SYS_CLOSE,fd,0,0)<0) status=tool_error(name,"close error",path);

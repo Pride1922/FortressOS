@@ -18,7 +18,7 @@ import uuid
 ROOT = Path(__file__).resolve().parent.parent
 CODE = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
 VARS = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
-PROMPT = re.compile(r"(?:fortress> |\[[a-zA-Z0-9_\-\./]+\]# )")
+PROMPT = re.compile(r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# )")
 
 
 def fixture(directory):
@@ -29,6 +29,7 @@ def fixture(directory):
     for algorithm in ("md5", "sha256"):
         digest = hashlib.new(algorithm, data).hexdigest()
         files[f"checks/{algorithm}.manifest"] = (digest + "  /checks/binary\n").encode()
+        files[f"checks/{algorithm}.binmode"] = (digest + " */checks/binary\n").encode()
         files[f"checks/{algorithm}.bad"] = ("0" * len(digest) + "  /checks/binary\n").encode()
     files["checks/malformed"] = b"not a digest\n"
     with tarfile.open(root / "boot/initramfs.tar", "a", format=tarfile.USTAR_FORMAT) as archive:
@@ -158,6 +159,7 @@ def run(mode, directory, iso, data):
                 empty = hashlib.new(algorithm, b"").hexdigest()
                 check(f"/bin/{tool} /checks/empty", [empty + "  /checks/empty"], 0)
                 check(f"/bin/{tool} -c /checks/{algorithm}.manifest", ["/checks/binary: OK"], 0)
+                check(f"/bin/{tool} -c /checks/{algorithm}.binmode", ["/checks/binary: OK"], 0)
                 check(f"/bin/{tool} -c /checks/{algorithm}.bad", ["/checks/binary: FAILED"], 1)
                 check(f"/bin/{tool} -c /checks/malformed", [], 1)
                 check(f"/bin/{tool} /checks/missing /checks/binary", [digest + "  /checks/binary"], 1)

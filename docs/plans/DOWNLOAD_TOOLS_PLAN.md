@@ -1,6 +1,6 @@
 # Download tools: checksums, tar, and traceroute
 
-Status: IMPLEMENTATION STARTED (2026-10-03), following the user's implementation request. Milestone 1 checksums are implemented with host and BIOS/UEFI evidence in [the checksum report](../roadmap/download-checksums.md). Traceroute's [concrete ABI](NETCTL_TRACE_ABI.md) has user approval, including fixed-budget, distinct-label and no-EAGAIN-retry clarifications; implementation and synthetic-router evidence are recorded in [the trace report](../roadmap/net-traceroute.md). Tar's changed-archive policy remains an explicit unresolved gate. Wget and traceroute Dell acceptance remain pending.
+Status: IMPLEMENTATION STARTED (2026-10-03), following the user's implementation request. Milestone 1 checksums are implemented with host and BIOS/UEFI evidence in [the checksum report](../roadmap/download-checksums.md). Traceroute's [concrete ABI](NETCTL_TRACE_ABI.md) has user approval, including fixed-budget, distinct-label and no-EAGAIN-retry clarifications; implementation and synthetic-router evidence are recorded in [the trace report](../roadmap/net-traceroute.md). Tar's changed-archive policy is resolved (Option A); implementation underway. Wget and traceroute Dell acceptance remain pending.
 
 ## Order and boundaries
 
@@ -55,7 +55,11 @@ Pass 1 streams and validates the complete archive before creating the destinatio
 
 Reopen the archive for pass 2 because there is no seek syscall. Extract by bounded streaming. Compare a streaming SHA-256 over both passes to detect source changes; this detects a changed archive but is not an atomic snapshot guarantee.
 
-**Open review issue — changed-archive guarantee:** the requested rule, "abort before creating the destination if the pass-2 hash differs," cannot be enforced by this two-pass streaming design: the full pass-2 hash becomes available only after extraction. An additional preflight hash pass could reject changes observed before extraction, but cannot prevent changes during the subsequent extraction pass. A strict guarantee of no partial extraction from a changed archive requires a stable snapshot or enforced source immutability, which this plan has not established. Resolve this requirement before tar implementation; do not claim that the final hash comparison provides it.
+Decision: Option A (partial + reported).
+
+The tool identifies but does not delete a partial destination. If extraction fails partway (including a changed-archive abort), the tool reports the retained directory path and exits nonzero. It does not recursively delete the tree, because another process may have modified it.
+
+A changed archive aborts before creating the destination. If the SHA-256 recorded during validation pass 1 differs from the hash observed during extraction pass 2, the extraction aborts before creating the destination. Partial extraction under a changed archive is not permitted. The two-pass validation is the security boundary; the destination is only created after both passes agree.
 
 On any extraction/write/source-change failure, return nonzero and identify the retained partial destination. Do not recursively delete a tree that another process could have modified. Success does not promise power-failure durability; document `sync` before shutdown/removal.
 

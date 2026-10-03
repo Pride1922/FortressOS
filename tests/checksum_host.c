@@ -10,7 +10,7 @@ typedef struct { bool open; const uint8_t *data; size_t size, pos; } fd_t;
 static fd_t fds[32];
 static uint8_t data[8193];
 static char manifest[2048], output[8192], errors[8192];
-static size_t out_size, err_size;
+static size_t out_size, err_size, manifest_len;
 static int opens, closes, reads;
 static bool read_error, write_error, close_error, open_error, zero_write;
 static void copy_text(char *dest, const char *src) { memcpy(dest,src,strlen(src)+1); }
@@ -18,7 +18,7 @@ static void reset(void) {
     memset(fds,0,sizeof(fds));
     fds[0]=(fd_t){true,(const uint8_t *)"abc",3,0};
     for (size_t i=0;i<sizeof(data);i++) data[i]=(uint8_t)i;
-    out_size=err_size=0; output[0]=errors[0]=0;
+    out_size=err_size=manifest_len=0; output[0]=errors[0]=0;
     opens=closes=reads=0;
     read_error=write_error=close_error=open_error=zero_write=false;
 }
@@ -37,7 +37,7 @@ long tool_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
         for (int i=3;i<32;i++) if (!fds[i].open) {
             const uint8_t *d=data; size_t size=sizeof(data);
             if (!strcmp(p,"abc")) { d=(const uint8_t *)"abc"; size=3; }
-            if (!strcmp(p,"manifest")) { d=(const uint8_t *)manifest; size=strlen(manifest); }
+            if (!strcmp(p,"manifest")) { d=(const uint8_t *)manifest; size=manifest_len ? manifest_len : strlen(manifest); }
             if (!strcmp(p,"empty")) size=0;
             fds[i]=(fd_t){true,d,size,0}; opens++; return i;
         }
@@ -110,13 +110,49 @@ int main(int argc,char **argv) {
     reset(); assert(run(false,2,plain)==0); assert(!strcmp(output,"900150983cd24fb0d6963f7d28e17f72  abc\n"));
     char *stream[]={"sum"}; reset(); assert(run(true,1,stream)==0); assert(strstr(output,"  -\n"));
     char *check[]={"sum","-c","manifest"};
+    /* md5sum -c tests: two spaces, asterisk, wrong hash */
     reset(); copy_text(manifest,"900150983cd24fb0d6963f7d28e17f72  abc\n900150983cd24fb0d6963f7d28e17f72 *abc");
     assert(run(false,3,check)==0); assert(!strcmp(output,"abc: OK\nabc: OK\n"));
+    reset(); copy_text(manifest,"900150983cd24fb0d6963f7d28e17f72  abc\n");
+    assert(run(false,3,check)==0); assert(!strcmp(output,"abc: OK\n"));
+    reset(); copy_text(manifest,"900150983cd24fb0d6963f7d28e17f72 *abc\n");
+    assert(run(false,3,check)==0); assert(!strcmp(output,"abc: OK\n"));
+    reset(); copy_text(manifest,"900150983cd24fb0d6963f7d28e17f72  abc\n");
+    manifest_len=512; memset(manifest+strlen(manifest),0,512-strlen(manifest));
+    assert(run(false,3,check)==0); assert(!strcmp(output,"abc: OK\n"));
     reset(); copy_text(manifest,"000150983cd24fb0d6963f7d28e17f72  abc\n900150983cd24fb0d6963f7d28e17f72  abc\n");
     assert(run(false,3,check)==1); assert(!strcmp(output,"abc: FAILED\nabc: OK\n"));
+
+    /* sha256sum -c tests: two spaces, asterisk, wrong hash, trailing padding */
+    reset(); copy_text(manifest,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\n");
+    assert(run(true,3,check)==0); assert(!strcmp(output,"abc: OK\n"));
+    reset(); copy_text(manifest,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad *abc\n");
+    assert(run(true,3,check)==0); assert(!strcmp(output,"abc: OK\n"));
+    reset(); copy_text(manifest,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\nba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad *abc\n");
+    assert(run(true,3,check)==0); assert(!strcmp(output,"abc: OK\nabc: OK\n"));
+    reset(); copy_text(manifest,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\n");
+    manifest_len=512; memset(manifest+strlen(manifest),0,512-strlen(manifest));
+    assert(run(true,3,check)==0); assert(!strcmp(output,"abc: OK\n"));
+    reset(); copy_text(manifest,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\n\n");
+    assert(run(true,3,check)==0); assert(!strcmp(output,"abc: OK\n"));
+    reset(); copy_text(manifest,"007816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\n");
+    assert(run(true,3,check)==1); assert(!strcmp(output,"abc: FAILED\n"));
+    reset(); copy_text(manifest,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  missing\n");
+    assert(run(true,3,check)==1); assert(!strcmp(output,"missing: FAILED\n"));
+    reset(); copy_text(manifest,"za7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\n");
+    assert(run(true,3,check)==1); assert(out_size==0);
+    reset(); copy_text(manifest,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad abc\n");
+    assert(run(true,3,check)==1); assert(out_size==0);
+    reset(); copy_text(manifest,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\tabc\n");
+    assert(run(true,3,check)==1); assert(out_size==0);
+    reset(); copy_text(manifest,"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\n");
+    manifest[20]=0; manifest_len=strlen("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\n");
+    assert(run(true,3,check)==1); assert(out_size==0);
+
     const char *invalid[]={"","\n","xyz\n","900150983cd24fb0d6963f7d28e17f72  missing\n",
         "900150983cd24fb0d6963f7d28e17f72  dir\n","900150983cd24fb0d6963f7d28e17f72  -\n",
-        "900150983cd24fb0d6963f7d28e17f7z  abc\n","900150983cd24fb0d6963f7d28e17f72  a\\b\n"};
+        "900150983cd24fb0d6963f7d28e17f7z  abc\n","900150983cd24fb0d6963f7d28e17f72  a\\b\n",
+        "900150983cd24fb0d6963f7d28e17f72 abc\n","900150983cd24fb0d6963f7d28e17f72\tabc\n"};
     for (size_t i=0;i<sizeof(invalid)/sizeof(invalid[0]);i++) {
         reset(); copy_text(manifest,invalid[i]); assert(run(false,3,check)==1);
     }

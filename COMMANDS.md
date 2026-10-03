@@ -597,6 +597,34 @@ cat /mnt/archive.tar | sha256sum
 md5sum /mnt/archive.tar
 ```
 
+---
+
+### `tar`
+**Syntax:** `tar -tf ARCHIVE` or `tar -xf ARCHIVE -C NEW_DIR`  
+**Path:** `/bin/tar`  
+**Description:** Lists or extracts uncompressed POSIX USTAR archives into a newly created destination directory using bounded streaming buffers and strict two-pass validation.  
+**Options:**
+* `-t`: List archive contents (`-tf ARCHIVE`).
+* `-x`: Extract archive members (`-xf ARCHIVE -C NEW_DIR`).
+* `-f ARCHIVE`: Specify path to archive file.
+* `-C NEW_DIR`: Destination directory for extraction (must not exist beforehand).
+* `--help`: Display usage summary.
+
+**Safety and Constraints:**
+* **Format:** Uncompressed POSIX USTAR regular files and directories only.
+* **Rejections:** Rejects symlinks, hard links, device files, FIFOs, sparse files, PAX/GNU extensions, and compressed archives.
+* **Path Security:** Rejects absolute paths, parent traversal (`..` or `.`), empty components, duplicate member paths, and file/directory prefix conflicts.
+* **Caps & Bounds:** Maximum 256 members, depth 16, 16 MiB per file, 64 MiB total expanded data, full path < 256 bytes, each component < 64 bytes, 4096-byte streaming buffer. Requires two 512-byte zero end blocks and only zero padding thereafter.
+* **Changed-Archive Policy (Option A):** Two-pass validation before mutation. If the SHA-256 recorded during validation pass 1 differs from pass 2, extraction aborts before creating the destination directory. If extraction fails partway (including I/O or source change during extraction), the tool reports the retained partial destination directory path and exits nonzero without recursive deletion.
+
+**Examples:**
+```sh
+tar -tf /mnt/archive.tar
+tar -xf /mnt/archive.tar -C /mnt/extracted
+```
+
+---
+
 ### `cat`
 **Syntax:** `cat [--] [FILE ...]`  
 **Path:** `/bin/cat`  
