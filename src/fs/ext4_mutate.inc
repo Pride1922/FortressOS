@@ -173,7 +173,7 @@ static void e4_inode_sum(ext4_mount_t *fs,uint32_t ino,uint8_t *raw) {
 }
 static uint8_t *e4_inode_image(ext4_engine_t *e,uint32_t ino) {
     ext4_mount_t *fs=e->fs;
-    if (ino<11 || ino>fs->inodes) { e->error=-VFS_EINVAL; return NULL; }
+    if ((ino<11 && ino!=2) || ino>fs->inodes) { e->error=-VFS_EINVAL; return NULL; }
     uint32_t g=(ino-1)/fs->ipg, index=(ino-1)%fs->ipg, offset=index*256;
     uint8_t *b=e4_stage(e,e4_u32(fs->gd[g].raw+8)+offset/fs->bs,E4_REFERENCE);
     return b ? b+offset%fs->bs : NULL;
@@ -354,10 +354,9 @@ static bool e4_write_role(ext4_engine_t *e,unsigned role) {
         !e4_write_bytes(e,(uint64_t)e->image[i].block*e->fs->bs,e->image[i].bytes,e->fs->bs)) return false;
     return block_flush(e->fs->dev);
 }
-int ext4_engine_commit(ext4_engine_t *e) {
-    spin_debug_assert_unheld();
+static int e4_commit_unlocked(ext4_engine_t *e) {
     if (!e) return -VFS_EINVAL;
-    uint64_t flags=spin_lock_irqsave(&e4_lock); int r=-VFS_EINVAL;
+    int r=-VFS_EINVAL;
     if (e->tainted) { r=-VFS_EIO; goto done; }
     if (!e->ready) goto done;
     /* Preflight all interim counters/checksums before the first disk write. */
@@ -388,11 +387,16 @@ int ext4_engine_commit(ext4_engine_t *e) {
 fail:
     e->tainted=true; e->ready=false; r=-VFS_EIO;
 done:
-    spin_unlock_irqrestore(&e4_lock,flags); return r;
+    return r;
 }
-int ext4_engine_reserve_inode_kind(ext4_engine_t *e,bool directory,uint32_t *ino) {
-    spin_debug_assert_unheld(); if (ino) *ino=0; if (!ino) return -VFS_EINVAL;
-    uint64_t flags=spin_lock_irqsave(&e4_lock); int r=e4_plan_begin(e);
+int ext4_engine_commit(ext4_engine_t *e) {
+    spin_debug_assert_unheld(); uint64_t flags=spin_lock_irqsave(&e4_lock);
+    int r=e4_commit_unlocked(e); spin_unlock_irqrestore(&e4_lock,flags); return r;
+}
+static int e4_reserve_inode_unlocked(ext4_engine_t *e,bool directory,uint32_t *ino) {
+    if (ino) *ino=0;
+    if (!ino) return -VFS_EINVAL;
+    int r=e4_plan_begin(e);
     if (r) goto done;
     if (e->reserved_inodes==64) { e->error=-VFS_EFBIG; goto end; }
     for (uint32_t g=0;g<e->fs->groups;g++) {
@@ -421,7 +425,11 @@ int ext4_engine_reserve_inode_kind(ext4_engine_t *e,bool directory,uint32_t *ino
 end:
     r=e4_plan_end(e); if (r) *ino=0;
 done:
-    spin_unlock_irqrestore(&e4_lock,flags); return r;
+    return r;
+}
+int ext4_engine_reserve_inode_kind(ext4_engine_t *e,bool directory,uint32_t *ino) {
+    spin_debug_assert_unheld(); uint64_t flags=spin_lock_irqsave(&e4_lock);
+    int r=e4_reserve_inode_unlocked(e,directory,ino); spin_unlock_irqrestore(&e4_lock,flags); return r;
 }
 int ext4_engine_reserve_inode(ext4_engine_t *e,uint32_t *ino) {
     return ext4_engine_reserve_inode_kind(e,false,ino);

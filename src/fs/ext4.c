@@ -1,9 +1,10 @@
-/* E4-A: bounded, read-only metadata and extent-backed file reads. */
+/* E4-A: bounded extent-backed reads and synchronous non-journaled writes. */
 #include "ext4.h"
 #include "vfs.h"
 #include "heap.h"
 #include "string.h"
 #include "spinlock.h"
+#include "ext4_engine.h"
 
 #define E4_GROUPS 1024u
 #define E4_NODES 1024u
@@ -21,9 +22,13 @@ typedef struct {
     uint8_t extent[60];
     e4_map_t *map;
 } e4_inode_t;
-typedef struct { vfs_node_t node; e4_inode_t inode; } e4_node_t;
+typedef struct { vfs_node_t node; e4_inode_t inode; unsigned opens; bool removed; } e4_node_t;
 struct ext4_mount {
     block_dev_t *dev;
+    ext4_engine_t *engine;
+    e4_map_t *rw_map;
+    uint32_t rw_ino, rw_generation;
+    bool frozen;
     uint32_t bs, blocks, inodes, first, bpg, ipg, groups, seed, gdt_blocks;
     e4_group_t *gd;
     e4_range_t *reserved;
@@ -221,18 +226,23 @@ static int e4_tree(e4_inode_t *in,const uint8_t *h,unsigned depth,
     return 0;
 }
 static int e4_mapping(e4_inode_t *in) {
-    if (in->map) return 0;
     ext4_mount_t *fs=in->fs;
+    if (fs->engine) {
+        if (fs->rw_ino==in->ino && fs->rw_generation==in->generation) { in->map=fs->rw_map; return 0; }
+        in->map=NULL;
+    } else if (in->map) return 0;
     unsigned depth=e4_u16(in->extent+6);
     if (depth>2) return -VFS_EOPNOTSUPP;
     fs->visits=fs->pending_count=fs->physical_count=0;
     int r=e4_tree(in,in->extent,depth,true,0,1ULL<<32); if (r) return r;
     if (fs->pending_count>E4_MAP_MAX-fs->map_entries) return -VFS_EFBIG;
-    e4_map_t *map=kmalloc(sizeof(*map)+fs->pending_count*sizeof(e4_extent_t));
+    e4_map_t *map=fs->engine ? fs->rw_map : kmalloc(sizeof(*map)+fs->pending_count*sizeof(e4_extent_t));
     if (!map) return -VFS_ENOMEM;
     map->count=fs->pending_count;
     memcpy(map->entries,fs->pending,map->count*sizeof(e4_extent_t));
-    map->next=fs->maps; fs->maps=map; fs->map_entries+=map->count; in->map=map;
+    if (!fs->engine) { map->next=fs->maps; fs->maps=map; fs->map_entries+=map->count; }
+    if (fs->engine) { fs->rw_ino=in->ino; fs->rw_generation=in->generation; }
+    in->map=map;
     return 0;
 }
 static const e4_extent_t *e4_find(e4_inode_t *in,uint32_t logical) {
@@ -290,14 +300,24 @@ static int e4_scan(e4_inode_t *in,const char *name,uint64_t wanted,vfs_dirent_t 
     }
     return result;
 }
-static int e4_can_write(vfs_node_t *node) { (void)node; return -VFS_EROFS; }
+static int e4_can_write(vfs_node_t *node);
+static int e4_open(vfs_node_t *node);
+static void e4_close(vfs_node_t *node);
+static int64_t e4_write(vfs_node_t *,uint64_t *,bool,const void *,size_t);
+static vfs_node_t *e4_create(vfs_node_t *,const char *,vfs_node_type_t);
+static int e4_unlink(vfs_node_t *,const char *);
+static int e4_rename(vfs_node_t *,const char *,vfs_node_t *,const char *);
+static int e4_truncate(vfs_node_t *,uint64_t);
+static int e4_rw_workspace(ext4_mount_t *);
 static int64_t e4_read(vfs_node_t *node,uint64_t off,void *buf,size_t len) {
     if (!node || (!buf && len)) return -VFS_EINVAL;
     e4_inode_t *in=node->fs_private;
-    if (!len || off>=in->size) return 0;
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    if (((e4_node_t *)node)->removed) { spin_unlock_irqrestore(&e4_lock,flags); return -VFS_ENOENT; }
+    if (!len || off>=in->size) { spin_unlock_irqrestore(&e4_lock,flags); return 0; }
     if (len>65536) len=65536;
     if (len>in->size-off) len=(size_t)(in->size-off);
-    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    if (in->fs->engine) in->map=NULL;
     int r=e4_mapping(in); size_t done=0;
     if (!r) while (done<len) {
         uint64_t position=off+done;
@@ -318,6 +338,7 @@ static int e4_readdir(vfs_node_t *node,uint64_t cookie,void *out) {
     if (!node || !out) return -VFS_EINVAL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
     e4_inode_t *in=node->fs_private, child; uint32_t ino;
+    if (in->fs->engine) in->map=NULL;
     int r=e4_scan(in,NULL,cookie,out,&ino);
     if (r==1) {
         r=e4_inode(in->fs,ino,&child);
@@ -333,6 +354,12 @@ static void e4_setup(e4_node_t *n, e4_inode_t *in) {
     n->inode=*in; n->node.fs_private=&n->inode; n->node.size=in->size;
     n->node.type=in->mode==0x4000 ? VFS_DIRECTORY : VFS_FILE;
     n->node.can_write=e4_can_write;
+    if (in->fs->engine) {
+        n->node.owns_nodes=true; n->node.rename_no_replace=true;
+        n->node.open=e4_open; n->node.close=e4_close;
+        if (in->mode==0x4000) { n->node.create=e4_create; n->node.unlink=e4_unlink; n->node.rename=e4_rename; }
+        else { n->node.write=e4_write; n->node.truncate=e4_truncate; }
+    }
     if (n->node.type==VFS_DIRECTORY) { n->node.lookup=e4_lookup; n->node.readdir=e4_readdir; }
     else n->node.read=e4_read;
 }
@@ -341,9 +368,20 @@ static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name) {
     uint64_t flags=spin_lock_irqsave(&e4_lock);
     e4_inode_t *in=parent->fs_private, child; ext4_mount_t *fs=in->fs; uint32_t ino;
     vfs_dirent_t entry;
+    if (fs->engine) in->map=NULL;
     int r=e4_scan(in,name,0,&entry,&ino); vfs_node_t *result=NULL;
     if (r==1 && !e4_inode(fs,ino,&child) &&
         entry.type==(child.mode==0x4000 ? VFS_DIRECTORY : VFS_FILE)) {
+        if (fs->engine && !strcmp(name,".")) {
+            result=ino==in->ino ? parent : NULL;
+            spin_unlock_irqrestore(&e4_lock,flags); return result;
+        }
+        if (fs->engine && !strcmp(name,"..")) {
+            vfs_node_t *up=parent==&fs->cached[0]->node ? parent : parent->parent;
+            e4_inode_t *up_inode=up ? up->fs_private : NULL;
+            result=up_inode && up_inode->fs==fs && up_inode->ino==ino ? up : NULL;
+            spin_unlock_irqrestore(&e4_lock,flags); return result;
+        }
         for (vfs_node_t *p=parent->children;p;p=p->next) if (!strcmp(p->name,name)) { result=p; break; }
         size_t plen=strlen(parent->path), nl=strlen(name);
         if (!result && fs->nodes<E4_NODES && plen+1+nl<VFS_MAX_PATH) {
@@ -363,7 +401,7 @@ static void e4_discard(ext4_mount_t *fs) {
     if (!fs) return;
     for (unsigned i=0;i<fs->nodes;i++) kfree(fs->cached[i]);
     while (fs->maps) { e4_map_t *map=fs->maps; fs->maps=map->next; kfree(map); }
-    kfree(fs->reserved); kfree(fs->gd); kfree(fs);
+    kfree(fs->rw_map); kfree(fs->engine); kfree(fs->reserved); kfree(fs->gd); kfree(fs);
 }
 static int e4_admit(ext4_mount_t *fs) {
     uint8_t sb[1024];
@@ -431,16 +469,19 @@ static int e4_admit(ext4_mount_t *fs) {
     e4_range_sort(fs->reserved,fs->ranges);fs->reserved_sorted=true;
     return 0;
 }
-int ext4_mount_ro(block_dev_t *dev,const char *path,ext4_mount_t **out) {
+static int e4_mount(block_dev_t *dev,const char *path,ext4_mount_t **out,bool rw) {
     spin_debug_assert_unheld();
     if (out) *out=NULL;
+    if (rw && (!dev || !dev->write_sector || !dev->flush)) return -VFS_EROFS;
     if (!out || !dev || !dev->read_sector || !path || strcmp(path,"/mnt") ||
         (dev->sector_size!=512 && dev->sector_size!=4096) || !dev->sector_count ||
         dev->sector_count>UINT64_MAX/dev->sector_size) return -VFS_EINVAL;
+    ext4_mount_t *fs=kcalloc(1,sizeof(*fs));
+    if (!fs) return -VFS_ENOMEM;
+    int r=rw ? e4_rw_workspace(fs) : 0;
+    if (r) { e4_discard(fs); return r; }
     uint64_t flags=spin_lock_irqsave(&e4_lock);
-    if (e4_active || e4_engine_busy || vfs_lookup(path)) { spin_unlock_irqrestore(&e4_lock,flags); return -VFS_EEXIST; }
-    ext4_mount_t *fs=kcalloc(1,sizeof(*fs)); int r=-VFS_ENOMEM;
-    if (!fs) goto done;
+    if (e4_active || e4_engine_busy || vfs_lookup(path)) { r=-VFS_EEXIST; goto fail; }
     fs->dev=dev; fs->bs=dev->sector_size;
     /* Initial byte-reader ceiling is the actual device until SB validated. */
     if (dev->sector_count>UINT32_MAX) { r=-VFS_EFBIG; goto fail; }
@@ -467,10 +508,12 @@ fail:
 done:
     spin_unlock_irqrestore(&e4_lock,flags); return r;
 }
-int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
-    (void)dev; (void)path; if (out) *out=NULL; return -VFS_EROFS;
+int ext4_mount_ro(block_dev_t *dev,const char *path,ext4_mount_t **out) {
+    return e4_mount(dev,path,out,false);
 }
-int ext4_sync(ext4_mount_t *mount) { return mount && mount==e4_active ? 0 : -VFS_EINVAL; }
-int ext4_freeze_and_sync(ext4_mount_t *mount) { return ext4_sync(mount); }
+int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
+    return e4_mount(dev,path,out,true);
+}
 
 #include "ext4_mutate.inc"
+#include "ext4_write.inc"

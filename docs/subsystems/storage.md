@@ -9,7 +9,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
 | **Phase 9D Bounded writable ext2** | **COMPLETE** | Explicit opt-in writable mount, allocation/truncation ordering, emergency read-only remount, 3-boot BIOS/UEFI persistence. Full detail: [`docs/roadmap/phase-9d-writable-ext2.md`](../roadmap/phase-9d-writable-ext2.md). |
-| **EXT4 Phases 0-3** | **RO READS + HOST-VERIFIED MUTATION ENGINE** | RO host/BIOS/UEFI; bounded allocation, extent rebuilding and reclamation, metadata checksums, fault cuts and Linux audits. RW VFS/production dispatch remain disabled; image stays ext2. [Evidence](../roadmap/ext4-phase3.md), [plan](../plans/EXT4_PLAN.md). |
+| **EXT4 Phases 0-4** | **BOUNDED RW VFS VERIFIED** | RO/RW host and BIOS/UEFI persistence, 1/16 MiB downloads, bounded allocation/namespace, failure injection and Linux audits. Production dispatch remains disabled; image stays ext2. [Evidence](../roadmap/ext4-phase4.md), [plan](../plans/EXT4_PLAN.md). |
 | **Phase 9E Saved File Management** | **COMPLETE** | Directory ops (`mkdir`/`rename`/`unlink`), on-disk inode/block reclamation. Full detail: [`docs/roadmap/phase-9e-exec-and-files.md`](../roadmap/phase-9e-exec-and-files.md). |
 | **Phase 9H RAM capacity** | **COMPLETE** (2026-09-20) | PMM extended to cover 32 GiB, two-stage PMM/VMM init to stay within Limine's HHDM coverage until the kernel PML4 is active. Verified on Dell 5590 (32 GiB) with a write-readback probe. Full detail: [`docs/roadmap/phase-9h-ram.md`](../roadmap/phase-9h-ram.md). |
 

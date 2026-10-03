@@ -3,15 +3,20 @@
 
 #include "block.h"
 
-/* Phase 2 implements read-only metadata and extent-backed reads at /mnt.
- * Production USB dispatch is not enabled. Read callbacks return at most 64 KiB;
- * trees are limited to depth 2 and 4096 nodes/extents per mounted map budget.
- * Mounted media must remain immutable; validated maps are cached for its lifetime.
- * Caller owns the partition block device for the entire mounted lifetime.
- * All calls require unlocked thread/boot context. Return 0 or negative VFS
- * errno; failed admission performs no filesystem writes and publishes nothing.
- * RO never replays a journal onto the source device. RW requires external
- * PARTUUID/GPT/durability admission plus the driver's feature validation. */
+/* E4-A restricted-profile mounts at /mnt. Production USB dispatch remains
+ * disabled pending Phase 5. Reads <=64KiB, writes <=32KiB per callback;
+ * extent depth <=2, 4096 extent/node traversal budget, 64 metadata/data images
+ * per operation. Excess credits fail before writes. RW has immediate allocation
+ * and synchronous barriers, with no journal or crash-consistency guarantee.
+ * create/mkdir, unlink/rmdir, regular-file rename without replacement, and
+ * truncate-to-zero are supported. Directory rename and active-target deletion
+ * return EOPNOTSUPP; replacement returns EEXIST without removing either name.
+ * Nodes, including removed tombstones, persist for mount lifetime (1024 total).
+ * RO media stays immutable; RW refreshes mappings after changes. Caller owns
+ * the stable partition device throughout the mount and supplies external
+ * PARTUUID/GPT/durability admission before calling mount_rw. All calls require
+ * unlocked thread/boot context. Failed admission writes nothing and publishes
+ * nothing. Dirty/recovery-needed volumes reject; RO never replays a journal. */
 typedef struct ext4_mount ext4_mount_t;
 int ext4_mount_ro(block_dev_t *partition, const char *path, ext4_mount_t **out);
 int ext4_mount_rw(block_dev_t *partition, const char *path, ext4_mount_t **out);

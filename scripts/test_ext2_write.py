@@ -84,7 +84,7 @@ def run_session(img_path, commands, log_path, mode="bios"):
                     time.sleep(0.005)
 
             # Wait for initial shell prompt
-            wait_for("fortress> ")
+            wait_for("fortress:/ $ ")
 
             for cmd, expect in commands:
                 send_str(cmd)
@@ -136,7 +136,7 @@ def run_firmware_test(orig_img, build_dir, mode):
 
     print(f"[TEST 9D] [{mode.upper()}] Boot 1: Creating and writing /mnt/written.txt...", flush=True)
     boot1_commands = [
-        ("ls /mnt\n", "fortress> "),
+        ("ls /mnt\n", "fortress:/ $ "),
         ("edit /mnt/written.txt\n", "edit> "),
         ("a\n", "> "),
         (f"Phase 9D writable ext2 persistence test {mode} line 1\n", "> "),
@@ -144,7 +144,7 @@ def run_firmware_test(orig_img, build_dir, mode):
         (".\n", "edit> "),
         ("stats\n", "edit> "),
         ("w\n", "Saved"),
-        ("q\n", "fortress> "),
+        ("q\n", "fortress:/ $ "),
         ("cat /mnt/written.txt\n", "Second line written by Ring 3 editor"),
         ("ls /mnt\n", "written.txt"),
         ("shutdown\n", None)
@@ -176,7 +176,7 @@ def run_firmware_test(orig_img, build_dir, mode):
         ("Phase 9D shorter truncated single line\n", "> "),
         (".\n", "edit> "),
         ("w\n", "Saved"),
-        ("q\n", "fortress> "),
+        ("q\n", "fortress:/ $ "),
         ("cat /mnt/written.txt\n", "Phase 9D shorter truncated single line"),
         ("shutdown\n", None)
     ]
@@ -199,14 +199,14 @@ def run_firmware_test(orig_img, build_dir, mode):
     print(f"[TEST 9D] [{mode.upper()}] Boot 3: Verifying cross-boot persistence & testing mkdir, mv, rm...", flush=True)
     boot3_commands = [
         ("cat /mnt/written.txt\n", "Phase 9D shorter truncated single line"),
-        ("mkdir /mnt/saved_dir\n", "fortress> "),
+        ("mkdir /mnt/saved_dir\n", "fortress:/ $ "),
         ("ls /mnt\n", "saved_dir"),
-        ("mv /mnt/written.txt /mnt/saved_dir/nested.txt\n", "fortress> "),
+        ("mv /mnt/written.txt /mnt/saved_dir/nested.txt\n", "fortress:/ $ "),
         ("cat /mnt/saved_dir/nested.txt\n", "Phase 9D shorter truncated single line"),
         ("rm /mnt/saved_dir\n", "directory not empty"),
-        ("rm /mnt/saved_dir/nested.txt\n", "fortress> "),
-        ("rm /mnt/saved_dir\n", "fortress> "),
-        ("ls /mnt\n", "fortress> "),
+        ("rm /mnt/saved_dir/nested.txt\n", "fortress:/ $ "),
+        ("rm /mnt/saved_dir\n", "fortress:/ $ "),
+        ("ls /mnt\n", "fortress:/ $ "),
         ("shutdown\n", None)
     ]
 

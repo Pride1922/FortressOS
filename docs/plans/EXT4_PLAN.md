@@ -1,6 +1,6 @@
 # FortressOS EXT4 implementation plan
 
-Status: Phases 0-3 delivered (RO metadata/extent reads and host-verified allocation/mutation engine); Phases 4-10 pending. Production RW ext4 and hardware acceptance are not claimed. See [Phase-0 baseline](EXT4_PHASE0.md), [Phase-1 evidence](../roadmap/ext4-phase1.md), [Phase-2 evidence](../roadmap/ext4-phase2.md) and [Phase-3 evidence](../roadmap/ext4-phase3.md).
+Status: Phases 0-4 delivered (RO reads, bounded mutation engine and non-journaled RW VFS); Phases 5-10 pending. Production RW ext4 and hardware acceptance are not claimed. See [Phase-0 baseline](EXT4_PHASE0.md), [Phase-1 evidence](../roadmap/ext4-phase1.md), [Phase-2 evidence](../roadmap/ext4-phase2.md) [Phase-3 evidence](../roadmap/ext4-phase3.md) and [Phase-4 evidence](../roadmap/ext4-phase4.md).
 Date: 2026-10-03. Based on the supplied notes, the current block/VFS/ext2/USB contracts, and Linux's ext4 format documentation.
 
 ## 1. Decision and corrections
@@ -173,4 +173,4 @@ Linux validation: inspect via `dumpe2fs`/`debugfs`, run `e2fsck -fn` only on unm
 
 Compatibility extensions after E4-B: HTree, flex_bg/64bit, additional inode mappings/types and xattrs are separate phases with feature-specific gates. Performance caching and delayed allocation come after correctness; no full-ext4 label or terabyte capacity promise without matching validation.
 
-Next implementation unit: **Phase 4 non-journaled VFS write and namespace operations**. Phase 3 has a bounded, host-verified allocation/extent mutation workbench; RW VFS and production mounting remain disabled. Measure kernel/device operation latency before enabling RW integration. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.
+Next implementation unit: **Phase 5 E4-A integration and physical acceptance**. Phase 4 bounded RW VFS passes host and BIOS/UEFI persistence gates; production mounting remains disabled. Kernel fixtures record raw TSC callback costs; physical latency remains to be measured before accepting RW integration. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.

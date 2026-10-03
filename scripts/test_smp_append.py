@@ -137,7 +137,7 @@ def run_smp_append_test(mode="bios", cpus=4):
             wait_for("[ OK ] SMP ext2 concurrent append verification complete.")
 
             # Wait for shell prompt
-            wait_for("fortress> ")
+            wait_for("fortress:/ $ ")
             print(f"[{mode.upper()}] Kernel tests completed; interactive shell ready.", flush=True)
 
             # Clean shutdown: send poweroff

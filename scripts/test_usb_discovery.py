@@ -18,6 +18,7 @@ import tempfile
 import time
 import argparse
 from test_nmi_transitions import QMP
+from test_usb_persistence import configure_disposable_img_mode
 
 REPO = Path(__file__).resolve().parent.parent
 CODE = Path('/usr/share/OVMF/OVMF_CODE_4M.fd')
@@ -68,6 +69,7 @@ def run(firmware, present, mode='discovery'):
                 usb_disk = Path(tmp) / 'usb_storage.img'
                 assert (REPO / 'bin' / 'fortress.img').exists(), "bin/fortress.img required for mount test"
                 usb_disk.write_bytes((REPO / 'bin' / 'fortress.img').read_bytes())
+                configure_disposable_img_mode(usb_disk, writable=False)
                 cmd += ['-device', 'usb-storage,drive=usbdrive,bootindex=1',
                         '-drive', f'if=none,id=usbdrive,format=raw,file={usb_disk}']
             else:
@@ -128,10 +130,22 @@ def run(firmware, present, mode='discovery'):
                     time.sleep(0.5)
                     if log.exists():
                         output = log.read_text(errors='replace')
-                        if 'FortressOS shell (Ring 3)' in output and 'fortress> ' in output:
+                        if 'FortressOS shell (Ring 3)' in output and 'fortress:/ $ ' in output:
                             break
                 else:
                     raise AssertionError(f'{name}: shell prompt not reached within timeout')
+                if qmp is not None:
+                    start = len(log.read_text(errors='replace'))
+                    qmp_type_string(qmp, 'lqyout us\n')
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        reply = log.read_text(errors='replace')[start:]
+                        if 'Keyboard layout set to US QWERTY.' in reply and 'fortress:/ $ ' in reply:
+                            break
+                        assert child.poll() is None
+                        time.sleep(0.05)
+                    else:
+                        raise AssertionError(f'{name}: keyboard setup failed')
                 output = log.read_text(errors='replace')
                 if present:
                     assert '[USB 9G.1a] xHCI controller 1/1: BDF=' in output
@@ -177,7 +191,7 @@ def run(firmware, present, mode='discovery'):
                     deadline = time.monotonic() + 10
                     while time.monotonic() < deadline:
                         reply = log.read_text(errors='replace')[start:].replace('\r', '')
-                        if '\nresetok\n' in reply and 'fortress> ' in reply:
+                        if '\nresetok\n' in reply and 'fortress:/ $ ' in reply:
                             break
                         assert child.poll() is None
                         time.sleep(0.05)
@@ -198,7 +212,7 @@ def run(firmware, present, mode='discovery'):
                         deadline = time.monotonic() + 15
                         while time.monotonic() < deadline:
                             reply = log.read_text(errors='replace')[start:].replace('\r', '')
-                            if 'README.txt' in reply and 'fortress> ' in reply:
+                            if 'README.txt' in reply and 'fortress:/ $ ' in reply:
                                 break
                             assert child.poll() is None
                             time.sleep(0.05)
@@ -211,7 +225,7 @@ def run(firmware, present, mode='discovery'):
                         deadline = time.monotonic() + 15
                         while time.monotonic() < deadline:
                             reply = log.read_text(errors='replace')[start:].replace('\r', '')
-                            if 'FortressOS Persistent Storage' in reply and 'fortress> ' in reply:
+                            if 'FortressOS Persistent Storage' in reply and 'fortress:/ $ ' in reply:
                                 break
                             assert child.poll() is None
                             time.sleep(0.05)
@@ -224,7 +238,7 @@ def run(firmware, present, mode='discovery'):
                         deadline = time.monotonic() + 10
                         while time.monotonic() < deadline:
                             reply = log.read_text(errors='replace')[start:].replace('\r', '')
-                            if '\nabsentok\n' in reply and 'fortress> ' in reply:
+                            if '\nabsentok\n' in reply and 'fortress:/ $ ' in reply:
                                 break
                             assert child.poll() is None
                             time.sleep(0.05)

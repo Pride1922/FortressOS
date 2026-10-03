@@ -59,6 +59,13 @@ typedef struct vfs_node {
     int (*truncate)(struct vfs_node *node, uint64_t new_size);
     int (*readdir)(struct vfs_node *, uint64_t, void *);
     int (*can_write)(struct vfs_node *node);
+    /* Optional file_t lifetime pin; paired with close once per independent
+     * open, not per dup. Filesystem-owned nodes survive namespace removal. */
+    int (*open)(struct vfs_node *node);
+    /* When true, unlink/rename callbacks own hierarchy changes and retain
+     * detached nodes; VFS must neither free nor move them a second time. */
+    bool owns_nodes;
+    bool rename_no_replace;
     /* Called once on final file_t release; may destroy anonymous nodes. */
     void (*close)(struct vfs_node *node);
 } vfs_node_t;

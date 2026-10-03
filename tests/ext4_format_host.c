@@ -33,6 +33,7 @@ static bool wr(block_dev_t *d,uint64_t lba,const void *p) {
 static bool fl(block_dev_t *d) { (void)d; flushes++; return false; }
 bool block_write_sector(block_dev_t *d,uint64_t lba,const void *p) { return d->write_sector(d,lba,p); }
 bool block_flush(block_dev_t *d) { return d->flush(d); }
+void vfs_set_last_create_error(int err) { (void)err; }
 vfs_node_t *vfs_lookup(const char *path) {
     if (!strcmp(path,"/")) return &root;
     if (!strcmp(path,"/mnt")) return root.children;
@@ -198,7 +199,7 @@ static void run_image(const char *path) {
         }
         assert(found && !ext4_sync(m) && !ext4_freeze_and_sync(m));
         ext4_mount_t *other=(void *)1;
-        assert(ext4_mount_rw(&dev,"/mnt",&other)==-VFS_EROFS && !other);
+        assert(ext4_mount_rw(&dev,"/mnt",&other)==-VFS_EEXIST && !other);
         assert(ext4_mount_ro(&dev,"/mnt",&other)==-VFS_EEXIST && !other);
         reset();
         for (long i=0;i<5;i++) { fail_alloc=i; reject(&dev,-VFS_ENOMEM); reset(); }

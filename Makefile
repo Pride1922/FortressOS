@@ -1172,3 +1172,13 @@ test-ext4-alloc-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_alloc_host.c -o $(BUILD_DIR)/ext4_alloc_host
 	@python3 scripts/test_ext4_alloc_host.py
+
+.PHONY: test-ext4-write-host
+test-ext4-write-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_write_host.c -o $(BUILD_DIR)/ext4_write_host
+	@python3 scripts/test_ext4_write_host.py
+
+.PHONY: test-ext4-write
+test-ext4-write: all
+	@python3 scripts/test_ext4_write.py

@@ -76,12 +76,13 @@ def check_offline_ext2(img_path: Path) -> None:
         assert res.returncode == 0, f"Offline e2fsck integrity check failed:\n{res.stdout}\n{res.stderr}"
 
 
-def configure_disposable_img_rw(img_path: Path) -> None:
+def configure_disposable_img_mode(img_path: Path, writable: bool = True) -> None:
     """Configures limine.conf on the disposable image to boot in persistent writable mode."""
     fat_offset = 2048 * 512
     res = subprocess.run(["mtype", "-i", f"{img_path}@@{fat_offset}", "::limine.conf"],
                          capture_output=True, text=True, check=True)
-    conf = res.stdout.replace("usb_data_mode=ro", "usb_data_mode=rw")
+    conf = res.stdout.replace("usb_data_mode=ro" if writable else "usb_data_mode=rw",
+                              "usb_data_mode=rw" if writable else "usb_data_mode=ro")
     with tempfile.NamedTemporaryFile("w", suffix=".conf") as tmp_conf:
         tmp_conf.write(conf)
         tmp_conf.flush()
@@ -138,12 +139,12 @@ def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
                     time.sleep(0.5)
                     if log_path.exists():
                         output = log_path.read_text(errors='replace')
-                        if 'FortressOS shell (Ring 3)' in output and 'fortress> ' in output:
+                        if 'FortressOS shell (Ring 3)' in output and 'fortress:/ $ ' in output:
                             break
                 else:
                     raise AssertionError(f'{round_name}: shell prompt not reached within timeout')
 
-                # Verify the actual mount mode, including the shipped RO default.
+                # Verify the actual mount mode, including the explicitly selected RO mode.
                 output = log_path.read_text(errors='replace')
                 mode = 'read-write' if writable else 'read-only'
                 stage = '9G.4' if writable else '9G.3'
@@ -152,6 +153,11 @@ def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
                     assert '[USB 9G.4] Flush preflight passed' in output, f"Flush preflight missing in {round_name}"
 
                 # Execute round actions
+                # QMP qcodes below describe a US physical keyboard. Select it
+                # explicitly; the shipped default may be AZERTY.
+                # Default is Belgian AZERTY: physical Q produces logical A.
+                reply = send_command(qmp, child, log_path, 'lqyout us\n', 'fortress:/ $ ')
+                assert 'Keyboard layout set to US QWERTY.' in reply
                 action_cb(qmp, child, log_path)
 
                 # Wait for clean shutdown
@@ -173,11 +179,12 @@ def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
                         child.wait()
 
 
-def test_read_only_default(firmware: str):
-    """Reproduce the reported editor failure without changing the boot default."""
+def test_read_only_mode(firmware: str):
+    """Reproduce the reported editor failure on an explicitly read-only disposable boot entry."""
     with tempfile.TemporaryDirectory(prefix='fortress-usb-ro-') as tmp:
         img = Path(tmp) / 'usb.img'
         shutil.copyfile(REPO / 'bin' / 'fortress.img', img)
+        configure_disposable_img_mode(img, writable=False)
         log = REPO / 'build' / f'usb-editor-ro-{firmware}.log'
 
         def action(qmp, child, log_path):
@@ -191,13 +198,13 @@ def test_read_only_default(firmware: str):
             assert 'Buffer preserved in memory only' in reply
             reply = send_command(qmp, child, log_path, 'p\n', 'edit> ')
             assert 'test' in reply
-            send_command(qmp, child, log_path, 'q\n', 'fortress> ')
-            send_command(qmp, child, log_path, 'cat /mnt/dell.txt\n', 'No such file')
+            send_command(qmp, child, log_path, 'q\n', 'fortress:/ $ ')
+            send_command(qmp, child, log_path, 'cat /mnt/dell.txt\n', 'cannot open /mnt/dell.txt')
             send_command(qmp, child, log_path, 'shutdown\n')
 
         run_qemu_session(firmware, img, log, action, f'{firmware}-ro', writable=False)
         check_offline_ext2(img)
-        print(f'[PASS] {firmware}: RO default rejects save with guidance and preserves editor buffer.', flush=True)
+        print(f'[PASS] {firmware}: Explicit RO mode rejects save with guidance and preserves editor buffer.', flush=True)
 
 
 def test_firmware_persistence(firmware: str):
@@ -213,7 +220,7 @@ def test_firmware_persistence(firmware: str):
         shutil.copyfile(src_img, disposable_img)
 
         # Enable writable persistence in limine.conf on disposable image
-        configure_disposable_img_rw(disposable_img)
+        configure_disposable_img_mode(disposable_img)
 
         # Pre-boot offline audit
         check_offline_ext2(disposable_img)
@@ -232,7 +239,7 @@ def test_firmware_persistence(firmware: str):
             send_command(qmp, child, log_path, 'Phase 9G.4 persistence round 1 line 2\n', '> ')
             send_command(qmp, child, log_path, '.\n', 'edit> ')
             send_command(qmp, child, log_path, 'w\n', 'Saved')
-            send_command(qmp, child, log_path, 'q\n', 'fortress> ')
+            send_command(qmp, child, log_path, 'q\n', 'fortress:/ $ ')
             send_command(qmp, child, log_path, 'cat /mnt/persist.txt\n', 'Phase 9G.4 persistence round 1 line 2')
             send_command(qmp, child, log_path, 'ls /mnt\n', 'persist.txt')
             send_command(qmp, child, log_path, 'shutdown\n', None)
@@ -261,7 +268,7 @@ def test_firmware_persistence(firmware: str):
             send_command(qmp, child, log_path, 'Overwritten truncated content in round 2\n', '> ')
             send_command(qmp, child, log_path, '.\n', 'edit> ')
             send_command(qmp, child, log_path, 'w\n', 'Saved')
-            send_command(qmp, child, log_path, 'q\n', 'fortress> ')
+            send_command(qmp, child, log_path, 'q\n', 'fortress:/ $ ')
             send_command(qmp, child, log_path, 'cat /mnt/persist.txt\n', 'Overwritten truncated content in round 2')
 
             send_command(qmp, child, log_path, 'edit /mnt/second.txt\n', 'edit> ')
@@ -269,7 +276,7 @@ def test_firmware_persistence(firmware: str):
             send_command(qmp, child, log_path, 'Second persistent file\n', '> ')
             send_command(qmp, child, log_path, '.\n', 'edit> ')
             send_command(qmp, child, log_path, 'w\n', 'Saved')
-            send_command(qmp, child, log_path, 'q\n', 'fortress> ')
+            send_command(qmp, child, log_path, 'q\n', 'fortress:/ $ ')
             send_command(qmp, child, log_path, 'ls /mnt\n', 'second.txt')
             send_command(qmp, child, log_path, 'shutdown\n', None)
 
@@ -290,8 +297,8 @@ def test_firmware_persistence(firmware: str):
         def action_boot3(qmp, child, log_path):
             send_command(qmp, child, log_path, 'cat /mnt/persist.txt\n', 'Overwritten truncated content in round 2')
             send_command(qmp, child, log_path, 'cat /mnt/second.txt\n', 'Second persistent file')
-            send_command(qmp, child, log_path, 'rm /mnt/second.txt\n', 'fortress> ')
-            send_command(qmp, child, log_path, 'cat /mnt/second.txt\n', 'No such file')
+            send_command(qmp, child, log_path, 'rm /mnt/second.txt\n', 'fortress:/ $ ')
+            send_command(qmp, child, log_path, 'cat /mnt/second.txt\n', 'cannot open /mnt/second.txt')
             send_command(qmp, child, log_path, 'shutdown\n', None)
 
         run_qemu_session(firmware, disposable_img, log_b3, action_boot3, f"{firmware}-boot3")
@@ -312,5 +319,5 @@ if __name__ == '__main__':
 
     firmwares = ['bios', 'uefi'] if args.firmware == 'both' else [args.firmware]
     for fw in firmwares:
-        test_read_only_default(fw)
+        test_read_only_mode(fw)
         test_firmware_persistence(fw)

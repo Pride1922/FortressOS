@@ -3064,6 +3064,97 @@ static void test_ext4_reads(void) {
     serial_puts("[EXT4 READ] PASS exact bytes: 1MiB, depth-2 fragmented, holes, unwritten, above-4GiB, EOF\n");
 }
 
+/* Test-only control node exists exclusively for the explicit ext4 fixture.
+ * It exercises public sync/freeze without routing production USB policy. */
+static ext4_mount_t *g_ext4_fixture_mount;
+static int ext4_fixture_truncate(vfs_node_t *n,uint64_t size) { (void)n; return size ? -VFS_EINVAL : 0; }
+static int64_t ext4_fixture_control(vfs_node_t *n,uint64_t *off,bool append,const void *data,size_t len) {
+    (void)n; (void)off; (void)append;
+    int r=-VFS_EINVAL;
+    if (len==1 && !memcmp(data,"\n",1)) r=0;
+    if ((len==4 || (len==5 && ((const char *)data)[4]=='\n')) && !memcmp(data,"sync",4)) {
+        r=ext4_sync(g_ext4_fixture_mount);
+        if (!r) serial_puts("[EXT4 WRITE] SYNC PASS\n");
+    }
+    if ((len==6 || (len==7 && ((const char *)data)[6]=='\n')) && !memcmp(data,"freeze",6)) {
+        r=ext4_freeze_and_sync(g_ext4_fixture_mount);
+        if (!r) serial_puts("[EXT4 WRITE] FREEZE PASS\n");
+    }
+    return r ? r : (int64_t)len;
+}
+static uint64_t ext4_fixture_cycles(void) {
+    uint32_t lo,hi;
+    __asm__ volatile("lfence; rdtsc" : "=a"(lo),"=d"(hi) :: "memory");
+    return (uint64_t)hi<<32 | lo;
+}
+static void ext4_fixture_verify(const char *path,uint64_t size,uint8_t *buffer) {
+    file_t *file=vfs_open(path,VFS_O_RDONLY);
+    require_ext2(file && file->node->size==size,"ext4 persistence size");
+    uint64_t at=0;
+    while (at<size) {
+        int64_t n=vfs_read(file,buffer,32768); require_ext2(n>0,"ext4 persisted read");
+        for (int64_t k=0;k<n;k++) require_ext2(buffer[k]==(uint8_t)((at+(uint64_t)k)*17+3),"ext4 persisted bytes");
+        at+=(uint64_t)n;
+    }
+    require_ext2(vfs_read(file,buffer,1)==0,"ext4 persisted EOF");vfs_close(file);
+}
+static void test_ext4_writes(void) {
+    require_ext2(nvme_init(),"ext4 write fixture NVMe init");block_init();
+    require_ext2(block_register_nvme(),"ext4 write fixture registration");
+    gpt_policy_result_t policy;
+    require_ext2(gpt_parse_ex(block_get_dev_by_name("nvme0n1"),&policy) && policy==GPT_POLICY_PRIMARY_CONSISTENT,"ext4 write fixture GPT");
+    require_ext2(!ext4_mount_rw(block_get_dev_by_name("nvme0n1p1"),"/mnt",&g_ext4_fixture_mount),"ext4 RW fixture mount");
+    uint8_t *buffer=kmalloc(32768);require_ext2(buffer!=NULL,"ext4 write fixture buffer");
+    unsigned phase=qemu_fw_cfg_has_key("opt/fortress/ext4_write_cleanup") ? 3 :
+                   qemu_fw_cfg_has_key("opt/fortress/ext4_write_verify") ? 2 : 1;
+    uint64_t peak=0;
+    if (phase==1) {
+        file_t *file=vfs_open("/mnt/saved.bin",VFS_O_CREAT|VFS_O_RDWR);require_ext2(file!=NULL,"ext4 saved create");
+        uint64_t at=0;
+        while (at<16*1024*1024) {
+            for (unsigned k=0;k<32768;k++) buffer[k]=(uint8_t)((at+k)*17+3);
+            uint64_t start=ext4_fixture_cycles();int64_t n=vfs_write(file,buffer,32768);uint64_t elapsed=ext4_fixture_cycles()-start;
+            if (elapsed>peak) peak=elapsed;
+            require_ext2(n>0,"ext4 saved write");at+=(uint64_t)n;
+        }
+        vfs_close(file);ext4_fixture_verify("/mnt/saved.bin",16*1024*1024,buffer);
+        require_ext2(!vfs_mkdir("/mnt/sub",0),"ext4 mkdir");
+        file=vfs_open("/mnt/sub/append",VFS_O_CREAT|VFS_O_RDWR|VFS_O_APPEND);
+        file_t *other=vfs_open("/mnt/sub/append",VFS_O_WRONLY|VFS_O_APPEND);
+        require_ext2(file && other,"ext4 independent opens");
+        require_ext2(vfs_write(file,"abc",3)==3 && vfs_write(other,"def",3)==3,"ext4 append");
+        require_ext2(vfs_unlink("/mnt/sub/append")==-VFS_EOPNOTSUPP,"ext4 open unlink denial");
+        vfs_close(file);vfs_close(other);
+        require_ext2(!vfs_rename("/mnt/sub/append","/mnt/renamed"),"ext4 cross-directory rename");
+        require_ext2(vfs_rename("/mnt/renamed","/mnt/saved.bin")==-VFS_EEXIST,"ext4 replacement denial");
+        require_ext2(!vfs_truncate(vfs_lookup("/mnt/renamed"),0),"ext4 truncate zero");
+        for (unsigned i=0;i<100;i++) {
+            char path[64]="/mnt/sub/directory-growth-000";unsigned len=strlen(path);
+            path[len-3]=(char)('0'+i/100);path[len-2]=(char)('0'+i/10%10);path[len-1]=(char)('0'+i%10);
+            require_ext2(vfs_create(path,VFS_FILE)!=NULL,"ext4 directory growth");
+        }
+    } else {
+        ext4_fixture_verify("/mnt/saved.bin",16*1024*1024,buffer);
+        ext4_fixture_verify("/mnt/download-1m.bin",1048576,buffer);
+        ext4_fixture_verify("/mnt/download-16m.bin",16*1024*1024,buffer);
+        if (phase==2) {
+            require_ext2(!vfs_unlink("/mnt/renamed"),"ext4 persisted unlink");
+            for (unsigned i=0;i<100;i++) {
+                char path[64]="/mnt/sub/directory-growth-000";unsigned len=strlen(path);
+                path[len-3]=(char)('0'+i/100);path[len-2]=(char)('0'+i/10%10);path[len-1]=(char)('0'+i%10);
+                require_ext2(!vfs_unlink(path),"ext4 directory reclamation");
+            }
+            require_ext2(!vfs_unlink("/mnt/sub"),"ext4 rmdir");
+        } else require_ext2(!vfs_lookup("/mnt/sub") && !vfs_lookup("/mnt/renamed"),"ext4 persisted namespace deletion");
+    }
+    kfree(buffer);
+    vfs_node_t *control=vfs_create_node("/ext4-test-control",VFS_STREAM,0,NULL);
+    require_ext2(control!=NULL,"ext4 test control node");control->is_stream=true;
+    control->write=ext4_fixture_control;control->truncate=ext4_fixture_truncate;
+    serial_puts("[EXT4 WRITE] PASS boot ");serial_print_dec(phase);
+    serial_puts("; largest 32KiB write callback cycles=");serial_print_dec(peak);serial_puts("\n");
+}
+
 static void test_ext2_and_audits(void) {
     serial_puts("\n[TEST] Read-only ext2 and architectural audits\n");
     require_ext2(spin_debug_selftest(), "lock ranks and caller IRQ restoration");
@@ -5628,7 +5719,9 @@ pf_boot_guard_done:
         /* =========================================================================
          * Phase 9 (Step 9C.1): GPT Partition Parsing & Bounded Block Devices
          * ========================================================================= */
-        if (qemu_fw_cfg_has_key("opt/fortress/ext4_read_test")) {
+        if (qemu_fw_cfg_has_key("opt/fortress/ext4_write_test")) {
+            test_ext4_writes();
+        } else if (qemu_fw_cfg_has_key("opt/fortress/ext4_read_test")) {
             test_ext4_reads();
         } else {
             test_phase9c1_gpt();

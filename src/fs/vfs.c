@@ -393,6 +393,8 @@ int vfs_unlink(const char *path) {
     int res = dir->unlink(dir, name);
     if (res != 0) return res;
 
+    if (target->owns_nodes) return VFS_SUCCESS;
+
     /* Unlink succeeded in filesystem; detach target from VFS child tree */
     vfs_node_t **curr = &dir->children;
     while (*curr) {
@@ -402,7 +404,7 @@ int vfs_unlink(const char *path) {
         }
         curr = &(*curr)->next;
     }
-    kfree(target);
+    if (!target->owns_nodes) kfree(target);
     return VFS_SUCCESS;
 }
 
@@ -464,6 +466,7 @@ int vfs_rename(const char *oldpath, const char *newpath) {
     vfs_node_t *dest = vfs_lookup(norm_new);
     if (dest) {
         if (dest == target) return VFS_SUCCESS;
+        if (old_dir->rename_no_replace) return -VFS_EEXIST;
         if (dest->type == VFS_DIRECTORY && target->type != VFS_DIRECTORY) return -7; /* EISDIR */
         if (dest->type != VFS_DIRECTORY && target->type == VFS_DIRECTORY) return -8; /* ENOTDIR */
         int ures = vfs_unlink(norm_new);
@@ -472,6 +475,8 @@ int vfs_rename(const char *oldpath, const char *newpath) {
 
     int res = old_dir->rename(old_dir, old_name, new_dir, new_name);
     if (res != 0) return res;
+
+    if (target->owns_nodes) return VFS_SUCCESS;
 
     /* Move target in VFS hierarchy */
     if (old_dir != new_dir) {
@@ -562,9 +567,18 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
         }
     }
 
+    if (node->open) {
+        int pin_err = node->open(node);
+        if (pin_err < 0) {
+            kfree(file);
+            if (err_out) *err_out = pin_err;
+            return NULL;
+        }
+    }
     if ((flags & VFS_O_TRUNC) && access_mode != VFS_O_RDONLY) {
         int trunc_res = vfs_truncate(node, 0);
         if (trunc_res < 0) {
+            if (node->open && node->close) node->close(node);
             kfree(file);
             if (err_out) *err_out = trunc_res;
             return NULL;
@@ -660,7 +674,7 @@ int64_t vfs_write(file_t *file, const void *buf, size_t count) {
         int64_t result = file->node->write(file->node, &write_off, append, buf, count);
         if (result > 0) {
             file->offset = write_off;
-            if (file->offset > file->node->size) {
+            if (!file->node->owns_nodes && file->offset > file->node->size) {
                 file->node->size = file->offset;
             }
         }
