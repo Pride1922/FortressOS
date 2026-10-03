@@ -145,6 +145,34 @@ Connect `SYS_SYNC` to commit/checkpoint/barrier; define durability on successful
 
 Gate: transaction coverage audit finds no direct metadata write bypass. Fault injection covers each operation, orphan cleanup, open-unlink, shared handles and append. Recovery restores consistent ownership and namespace within declared operation boundaries.
 
+#### Phase 8 implementation parts — agreed 2026-10-03
+
+Implement sequentially as six separately reviewable and committable parts,
+each with a focused verification gate. Next starting point: **8.1**.
+No Phase-8 implementation is claimed by this breakdown.
+
+| Part | Implementation scope | Verification gate |
+| --- | --- | --- |
+| **8.1 — Transaction foundation** | Inventory every metadata write path, define bounded credits and transaction ownership, and connect the journal writer to the mutation engine. Preserve the non-journaled E4-A path. | Enabled journal mutation paths have no direct metadata-home write bypass; credit exhaustion and staging failures occur before publication, with existing taint semantics preserved. |
+| **8.2 — File writes and allocation** | Journal allocation, extents, inode sizes, bitmaps, counters and checksums. Flush newly exposed data before committing references; preserve ordered-mode limits for overwrites. | Write/append fault and recovery tests pass, including shared handles, allocation ownership and stale-byte exclusion. |
+| **8.3 — Namespace operations** | Integrate create, mkdir, rename, unlink and rmdir within the supported profile. Define operation transaction boundaries before enabling each path. | Interrupted operations recover consistent names, directory checksums, reference counts and ownership. |
+| **8.4 — Truncate and orphans** | Make truncation and reclamation restartable; implement supported traditional orphan tracking, open-unlink lifetime and required revokes. Keep orphan_file excluded. | Recovery resumes interrupted cleanup without leaked allocations, double frees or replay overwriting reused blocks. |
+| **8.5 — Mount, sync and shutdown** | Validate and recover before VFS publication, subject to explicit writable/recovery admission. Connect SYS_SYNC, shutdown freeze/drain, barriers and clean-state transitions. | Successful sync satisfies the declared durability contract without freezing; failed recovery never admits RW; clean state follows successful drain and barriers only. |
+| **8.6 — Integration audit** | Audit every mutation for transaction coverage and run combined host/QEMU operation, lifecycle and recovery tests. | No metadata bypass remains; complete Phase-8 integration gate above passes across the supported configurations. |
+
+Each part includes focused write/flush fault and crash tests. Phase 9 retains
+the exhaustive crash campaign and E4-B acceptance. Production journaled RW
+stays disabled until complete integration passes; intermediate verification
+uses explicit disposable test fixtures. The default image stays ext2 and the
+accepted optional E4-A image stays non-journaled until a separately verified
+journaled test image is provided.
+
+Retain current clean-state rejection for dirty non-journaled external volumes:
+they require an offline filesystem checker, not automatic flag clearing.
+Journaled recovery validates and replays supported transactions, completes
+required orphan cleanup, and flushes before a clean-state claim. Neither
+journaling nor a readable volume proves arbitrary corruption can be repaired.
+
 ### Phase 9 — Crash campaign and E4-B acceptance
 
 Enumerate every write/flush cut point in representative transactions. The fake device separates volatile cache from stable media; model cache loss, reordered unflushed writes, torn sectors, failed flushes and disconnects. Corrupt durable journal content must be detected; do not promise reconstruction of arbitrary corruption.
