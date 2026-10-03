@@ -46,7 +46,7 @@ Dell hardware.
 | Networking — driver | Intel e1000 (82540EM), e1000e (82574L), and integrated I219-LM driver with polling-only ingress on a BSP-pinned worker. The same descriptor layout serves QEMU and bare metal. I219 physical acceptance on the Dell Latitude 5590 (8086:15D7) and 5530 (8086:1A1E). DMA quarantine on controller fault. No NIC interrupt handlers or MSI vectors in this milestone. |
 | Networking — protocols | Ethernet II framing; ARP request/reply with reply-only cache learning; IPv4 unicast with header validation; ICMP Echo Request/Reply; UDP with a bounded 16-socket table; TCP with Reno slow start, congestion avoidance, fast retransmit, SRTT/RTTVAR RTO and Karn's rule; a userspace DNS stub resolver. All bounded, static, and BSP-owned. |
 | Networking — ABI | SYS_NETCTL=42 (ping, NETCTL_IFGET, NETCTL_IFSET); SYS_SOCKET/BIND/SENDTO/RECVFROM = 38–41 (UDP); SYS_CONNECT/LISTEN/ACCEPT/SEND/RECV/SHUTDOWN = 43–48 (TCP); SYS_SEND_UNTIL/RECV_UNTIL/CONNECT_UNTIL = 49–51 (opt-in absolute BSP-tick deadlines, max 60 s horizon). All BSP-only, explicitly rejecting AP callers. |
-| Networking — tools | /bin/ifconfig, /bin/ifup, /bin/ping, /bin/udptest, /bin/echoc, /bin/echos, /bin/tcpserve, /bin/nc (serial request/response with hostname resolution), /bin/nslookup. |
+| Networking — tools | /bin/ifconfig, /bin/ifup, /bin/ping, /bin/udptest, /bin/echoc, /bin/echos, /bin/tcpserve, /bin/nc (serial request/response with hostname resolution), /bin/nslookup, /bin/wget. |
 | Networking — physical acceptance | Dell Latitude 5590: ICMP (4/4, matched request/reply pairs, second-host Wireshark screenshot), UDP (user-reported PASS, capture audit pending), TCP (10/10 QEMU matrix; physical acceptance for client, real HTTP server, guest listener, and RST recovery), DNS (10/10 QEMU matrix; physical acceptance for A, CNAME, NXDOMAIN, TC→TCP fallback, stall timeout, and hostname nc), link recovery (cold waiting, autonomous PHY renegotiation, retained-ring replug, 6/6 PASS), and runtime network configuration (ifconfig query, on-the-fly ifup, persistent config apply, ping gateway, and DNS fallback PASS). Dell Latitude 5530: driver bring-up and ICMP. |
 | Shell (Milestones S0–S9) | Modular Ring 3 shell (user/shell/) featuring 4096-byte line editing, horizontal viewport, cursor movement, Ctrl shortcuts, RAM history, incremental Ctrl+R search, bracketed paste review, raw/timed input (SYS_INPUT_READ), terminal mode control (SYS_TERMCTL), Belgian AZERTY AltGr operator decoding, working directories (cd/pwd), logic chaining (;, &&, ||, !), parameter expansion ($VAR, ${VAR}, $?), aliases, globbing, uniform descriptors (0–31), redirections (<, >, >>, 2>&1, n>&-), retained UI terminal handle (fd 31 with CLOEXEC), version builtin, persistent history (/mnt/.fortress/history), pipes and stream utilities, job control (jobs, fg, bg, kill), signals (SIGINT, SIGPIPE, SIGTSTP, SIGCONT, SIGCHLD), process groups, terminal foreground ownership, and introspection utilities (ps, top, sysinfo). |
 | Power and platform | BIOS/UEFI boot images, ACPI S5 shutdown, and reset fallbacks. Shutdown and reboot verified on bare-metal Dell Latitude 5590. |
@@ -147,6 +147,8 @@ FortressOS features a distraction-free, modern boot experience inspired by the T
 
 ## At the shell
 
+> For the comprehensive reference explaining every single command, shell builtin, stream tool, network utility, and keyboard shortcut, see [`COMMANDS.md`](COMMANDS.md).
+
 ```text
 version               # print kernel version, architecture, and Pride1922 branding
 help                  # view available commands and builtins
@@ -168,7 +170,11 @@ sysinfo               # managed-RAM total, monotonic timebase, and system info
 terminal local        # select output mode: local (full screen), serial, mirror, or plain
 layout azerty         # Belgian AZERTY with AltGr (| \ {} [] ~)
 layout us             # US QWERTY
-ping -c 4 192.168.0.1 # send four ICMP Echo Requests to the gateway
+ifconfig              # query network interface address, link state, and packet counters
+ifup 10.0.2.15/24 10.0.2.2 # configure network interface statically
+ping -c 4 10.0.2.2    # send four ICMP Echo Requests to the gateway
+nslookup example.com  # resolve domain name to IPv4 address via DNS
+wget http://example.com/index.html # download file over HTTP
 run /bin/hello world  # execute user program
 echo $?               # exit status of last command
 ```

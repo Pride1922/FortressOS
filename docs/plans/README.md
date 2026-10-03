@@ -6,6 +6,7 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
+| [DOWNLOAD_TOOLS_PLAN.md](DOWNLOAD_TOOLS_PLAN.md) | Streaming checksums, bounded USTAR extraction, finite ICMP traceroute and separate wget Dell acceptance. | **DRAFT FOR USER REVIEW** |
 | [NET2_PLAN.md](NET2_PLAN.md) | Seven steps: TCP design/codec, simulator, client, server, finite nc, physical gate and userspace DNS. | **7/7 COMPLETE**; Dell 5590 physical DNS user-confirmed PASS |
 | [NET2_STEP7_DNS.md](NET2_STEP7_DNS.md) | Userspace DNS, nslookup, hostname nc, bounded fallback and acceptance gates. | **COMPLETE**; host/QEMU evidence and user-confirmed physical acceptance |
 | [TCP_IO_DEADLINE.md](TCP_IO_DEADLINE.md) | Opt-in absolute TCP connect/send/receive deadlines, concrete syscall ABI and non-owning wake-hint proof. | **APPROVED + IMPLEMENTED**; host/live evidence in Step 7 |

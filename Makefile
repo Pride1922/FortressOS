@@ -610,7 +610,7 @@ $(USER_TOP_ELF): $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o $(USER_DIR)/shell.l
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/top_start.o $(BUILD_DIR)/top.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(STREAM_TOOL_ELFS) Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(STREAM_TOOL_ELFS) COMMANDS.md Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -635,7 +635,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
-	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, view and echo.\nExternal cat preserves bytes; head, tail and wc process streams. Use TOOL --help.\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
+	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, view and echo.\nExternal cat preserves bytes; head, tail and wc process streams. Use TOOL --help.\nFull command reference available in /docs/commands.txt\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
+	@cp -f COMMANDS.md $(BUILD_DIR)/initramfs/docs/commands.txt
 	@printf "# Fortress Network Configuration\naddress 10.0.2.15/24\ngateway 10.0.2.2\ndns 10.0.2.3\n" > $(BUILD_DIR)/initramfs/etc/network.conf
 	@echo "  [TAR] Generating USTAR archive $@"
 	@tar --format=ustar -cf $(INITRAMFS_TAR) -C $(BUILD_DIR)/initramfs bin etc docs
