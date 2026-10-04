@@ -75,6 +75,9 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`head`](#head) | Binary (`/bin/head`) | Stream Tool | Output first part of files (lines or bytes) |
 | [`tail`](#tail) | Binary (`/bin/tail`) | Stream Tool | Output last part of files (bounded buffer) |
 | [`wc`](#wc) | Binary (`/bin/wc`) | Stream Tool | Print newline, word, and byte counts |
+| [`grep`](#grep) | Binary (`/bin/grep`) | Stream Tool | Search text matching regular expressions with bounded bitmask NFA |
+| [`uniq`](#uniq) | Binary (`/bin/uniq`) | Stream Tool | Filter adjacent matching lines |
+| [`xxd`](#xxd) | Binary (`/bin/xxd`) | Stream Tool | Make hex dump or revert hex to binary with bounded buffers |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
@@ -840,6 +843,34 @@ cat /etc/network.conf | uniq -c
 ps | uniq -u
 uniq -d duplicate_words.txt
 uniq input.txt output.txt
+```
+
+---
+
+### `xxd`
+**Syntax:** `xxd [OPTIONS] [INFILE [OUTFILE]]`  
+**Path:** `/bin/xxd`  
+**Description:** Creates a hex dump of a file or standard input, or reverses a hex dump back into binary data. Operates on arbitrary stream lengths with zero heap allocation using static BSS buffers and streaming chunk I/O conforming to the freestanding Ring 3 ABI.  
+**Options:**
+* `-c COLS`: Format `<COLS>` octets per line [1..256] (default: 16 in normal mode, 30 in plain mode).
+* `-g BYTES`: Number of octets per group in normal mode (default: 2, 0 to disable grouping).
+* `-l LEN`: Stop after writing `<LEN>` octets.
+* `-s SEEK`: Start at `<SEEK>` bytes offset (decimal or `0x` hexadecimal).
+* `-p`: Output plain continuous hex dump style without offsets or ASCII sidebar.
+* `-r`: Reverse operation: convert hex dump back to binary.
+* `-u`: Use uppercase hex digits (`0123456789ABCDEF`).
+* `--help`: Display usage summary and exit.
+* `--`: Ends option scanning.
+* `-`: Read from standard input or write to standard output.  
+**Examples:**
+```sh
+xxd /etc/motd
+xxd -l 32 /etc/motd
+xxd -s 0x10 -l 16 /etc/motd
+head -c 32 /etc/motd | xxd -p
+echo "48656c6c6f" | xxd -r -p
+xxd input.bin dump.hex
+xxd -r dump.hex restored.bin
 ```
 
 ---
