@@ -6,8 +6,8 @@ from pathlib import Path
 from create_ext4_fixtures import ROOT,run
 from test_jbd2_replay_host import FEATURES,blocks,be,put,seal,sbseal,oracle
 
-def main():
-    parent=ROOT/'build/jbd2-write';parent.mkdir(exist_ok=True)
+def main(binary='jbd2_write_host',foundation=False):
+    parent=ROOT/('build/ext4-phase8-1' if foundation else 'build/jbd2-write');parent.mkdir(exist_ok=True)
     out=Path(tempfile.mkdtemp(prefix='run-',dir=parent));records=[]
     (out/'versions.txt').write_text(run(['mke2fs','-V'])+run(['debugfs','-V']))
     for bs in (1024,2048,4096):
@@ -44,12 +44,12 @@ def main():
                 committed=Path(str(prefix)+'-committed.img')
                 checkpointed=Path(str(prefix)+'-checkpointed.img')
                 recovered=Path(str(prefix)+'-recovered.img')
-                cmd=[str(ROOT/'build/jbd2_write_host'),str(source),str(config),str(ss),str(committed),str(checkpointed),str(recovered)]
+                cmd=[str(ROOT/'build'/binary),str(source),str(config),str(ss),str(committed),str(checkpointed),str(recovered)]
                 text=run(cmd);print(text,end='',flush=True)
                 expected=bytes.fromhex('c03b3998')+b'A'*(bs-4)+b'C'*bs+b'O'*bs
                 # Linux independently validates the writer's descriptor/tags,
                 # escaped payload CRC, revoke and commit -- no normalization.
-                for image in (committed,checkpointed,recovered):
+                for image in ((checkpointed,recovered) if foundation else (committed,checkpointed,recovered)):
                     linux=Path(str(image)+'.linux.img');oracle(image,linux,Path(str(image)+'.linux.log'))
                     dumped=Path(str(image)+'.bin');run(['debugfs','-R',f'dump /target.bin {dumped}',str(linux)])
                     assert dumped.read_bytes()==expected,(image,'bytes')
@@ -58,5 +58,5 @@ def main():
                 Path(str(prefix)+'.log').write_text(text)
                 records.append({'block':bs,'sector':ss,'wrap':wrap,'argv':cmd,'committed_sha256':hashlib.sha256(committed.read_bytes()).hexdigest()})
     (out/'manifest.json').write_text(json.dumps(records,indent=2)+'\n')
-    print(f'JBD2 writer host PASS 12/12; evidence: {out}; no journaled VFS/physical durability claim.')
+    print(f'{"EXT4 transaction foundation" if foundation else "JBD2 writer"} host PASS 12/12; evidence: {out}; no journaled VFS/physical durability claim.')
 if __name__=='__main__':main()

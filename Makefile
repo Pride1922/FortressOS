@@ -1244,6 +1244,12 @@ test-jbd2-replay-host:
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_replay_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/jbd2_replay_host
 	@python3 scripts/test_jbd2_replay_host.py
 
+.PHONY: test-ext4-transaction-host
+test-ext4-transaction-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_transaction_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/ext4_transaction_host
+	@python3 scripts/test_ext4_transaction_host.py
+
 .PHONY: test-jbd2-write-host
 test-jbd2-write-host:
 	@mkdir -p $(BUILD_DIR)

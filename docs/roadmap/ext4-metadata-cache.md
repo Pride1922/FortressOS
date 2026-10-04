@@ -13,8 +13,10 @@ was negligible. Dell physical acceptance passed on 2026-10-04 (user-confirmed).
 
 Each mount has eight fixed 4096-byte slots in its heap object (32 KiB payload,
 plus tags), guarded by the existing EXT4 lock. Enable only for production RW
-mounts after geometry/profile admission. RO and exclusive allocation/journal
-workbenches remain uncached. No hot-path allocations or stack buffers.
+mounts after geometry/profile admission. RO and exclusive allocation/recovery
+workbenches remain uncached. Phase 8.1's exclusive transaction workbench tests
+the same clean-cache publication helpers under single-caller ownership, without
+VFS exposure. No production hot-path allocations or stack buffers.
 
 Cache only the main superblock, group descriptors, block/inode bitmaps and
 inode tables. Ordinary data, directories and extent traversal remain uncached.
@@ -100,3 +102,6 @@ Use sync; dmesg -n 40; download /mnt http://192.168.0.153:8000/data-16m.bin;
 sync; dmesg -n 40; sha256sum /mnt/data-16m.bin. Snapshot before hashing or
 saving extra logs. Capture the download and record elapsed time. A new cache
 hits/misses line is included in the existing on-demand sync snapshot.
+User-confirmed physical cache acceptance: 16 MiB download 7.06 s, hashes pass
+after reboot and independently on Mint; unmounted `e2fsck -fn` exits 0.
+This acceptance does not cover journaled operation or crash recovery.

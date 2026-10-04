@@ -2,6 +2,8 @@
 
 Status: Phases 0-4 delivered (RO reads, bounded mutation engine and non-journaled RW VFS); Phase 5 E4-A production USB integration COMPLETE: automated gates and Dell 5590 physical acceptance PASS (2026-10-03); Phases 6-7 recovery/writer workbenches delivered and host-verified; Phases 8-10 pending. Physical evidence is limited to the reported Phase-5 checks; journaling hardware acceptance is not claimed. See [Phase-0 baseline](EXT4_PHASE0.md), [Phase-1 evidence](../roadmap/ext4-phase1.md), [Phase-2 evidence](../roadmap/ext4-phase2.md), [Phase-3 evidence](../roadmap/ext4-phase3.md), [Phase-4 evidence](../roadmap/ext4-phase4.md), [Phase-5 handoff](../roadmap/ext4-phase5.md), [Phase-6 evidence](../roadmap/ext4-phase6.md) and [Phase-7 evidence](../roadmap/ext4-phase7.md).
 Date: 2026-10-03. Based on the supplied notes, the current block/VFS/ext2/USB contracts, and Linux's ext4 format documentation.
+Phase 8.1 update (2026-10-04): exclusive transaction foundation delivered;
+Phases 8.2-8.6 and production journaled RW remain pending.
 
 ## 1. Decision and corrections
 
@@ -148,8 +150,9 @@ Gate: transaction coverage audit finds no direct metadata write bypass. Fault in
 #### Phase 8 implementation parts — agreed 2026-10-03
 
 Implement sequentially as six separately reviewable and committable parts,
-each with a focused verification gate. Next starting point: **8.1**.
-No Phase-8 implementation is claimed by this breakdown.
+each with a focused verification gate. Part **8.1** implements the exclusive
+block-image transaction foundation; operation integration starts at **8.2**.
+See [8.1 inventory, ownership and evidence](../roadmap/ext4-phase8-1.md).
 
 | Part | Implementation scope | Verification gate |
 | --- | --- | --- |

@@ -30,6 +30,33 @@ static bool e4_journal_home(void *context,uint32_t block,const uint8_t *bytes) {
     }
     return true;
 }
+static int e4_journal_source(ext4_mount_t *fs,e4_journal_guard_t *guard,
+                              uint32_t **map_out,jbd2_source_t *source) {
+    int r=e4_admit(fs);if (r) return r;
+    guard->fs=fs;
+    if (!e4_bytes(fs,1024,guard->sb,1024)) return -VFS_EIO;
+    uint8_t zero[16]={0};
+    if (memcmp(guard->sb+208,zero,16) && memcmp(guard->sb+208,guard->sb+104,16)) return -VFS_EOPNOTSUPP;
+    e4_inode_t inode;r=e4_inode(fs,fs->journal_ino,&inode);if (r) return r;
+    if (inode.mode!=0x8000 || inode.size%fs->bs || inode.size/fs->bs<4 || inode.size/fs->bs>JBD2_MAP_MAX) return -VFS_EFBIG;
+    unsigned group=(inode.ino-1)/fs->ipg,index=(inode.ino-1)%fs->ipg;
+    uint64_t where=(uint64_t)e4_u32(fs->gd[group].raw+8)*fs->bs+(uint64_t)index*256;
+    guard->inode_block=(uint32_t)(where/fs->bs);guard->inode_offset=(uint32_t)(where%fs->bs);
+    if (!e4_bytes(fs,where,guard->inode,256)) return -VFS_EIO;
+    r=e4_mapping(&inode);if (r) return r;
+    unsigned length=(unsigned)(inode.size/fs->bs),at=0;
+    uint32_t *map=kmalloc(length*sizeof(uint32_t));if (!map) return -VFS_ENOMEM;
+    *map_out=map;
+    for (unsigned i=0;i<inode.map->count;i++) {
+        e4_extent_t x=inode.map->entries[i];
+        if (x.logical!=at || x.unwritten || x.len>length-at) return -VFS_EIO;
+        for (unsigned n=0;n<x.len;n++) map[at++]=x.physical+n;
+    }
+    if (at!=length) return -VFS_EIO;
+    *source=(jbd2_source_t){.block_size=fs->bs,.filesystem_blocks=fs->blocks,
+        .journal_blocks=length,.journal_map=map,.validate_home=e4_journal_home,.context=guard};
+    memcpy(source->uuid,guard->sb+104,16);return 0;
+}
 int ext4_journal_analyze(block_dev_t *dev,jbd2_plan_t **out,jbd2_report_t *report) {
     spin_debug_assert_unheld();if (out) *out=NULL;
     if (!out || !dev || !dev->read_sector || (dev->sector_size!=512 && dev->sector_size!=4096) ||
@@ -39,31 +66,9 @@ int ext4_journal_analyze(block_dev_t *dev,jbd2_plan_t **out,jbd2_report_t *repor
     if (e4_active || e4_engine_busy) { spin_unlock_irqrestore(&e4_lock,flags);e4_discard(fs);return -VFS_EEXIST; }
     e4_engine_busy=true;spin_unlock_irqrestore(&e4_lock,flags);
     fs->dev=dev;fs->bs=dev->sector_size;fs->blocks=(uint32_t)dev->sector_count;fs->journal_bootstrap=true;
-    int r=e4_admit(fs);uint32_t *map=NULL;if (r) goto done;
-    e4_journal_guard_t guard={.fs=fs};
-    if (!e4_bytes(fs,1024,guard.sb,1024)) { r=-VFS_EIO;goto done; }
-    uint8_t zero[16]={0};
-    if (memcmp(guard.sb+208,zero,16) && memcmp(guard.sb+208,guard.sb+104,16)) { r=-VFS_EOPNOTSUPP;goto done; }
-    e4_inode_t inode;r=e4_inode(fs,fs->journal_ino,&inode);if (r) goto done;
-    if (inode.mode!=0x8000 || inode.size%fs->bs || inode.size/fs->bs<4 || inode.size/fs->bs>JBD2_MAP_MAX) { r=-VFS_EFBIG;goto done; }
-    unsigned group=(inode.ino-1)/fs->ipg,index=(inode.ino-1)%fs->ipg;
-    uint64_t where=(uint64_t)e4_u32(fs->gd[group].raw+8)*fs->bs+(uint64_t)index*256;
-    guard.inode_block=(uint32_t)(where/fs->bs);guard.inode_offset=(uint32_t)(where%fs->bs);
-    if (!e4_bytes(fs,where,guard.inode,256)) { r=-VFS_EIO;goto done; }
-    r=e4_mapping(&inode);if (r) goto done;
-    unsigned length=(unsigned)(inode.size/fs->bs),at=0;
-    map=kmalloc(length*sizeof(uint32_t));if (!map) { r=-VFS_ENOMEM;goto done; }
-    for (unsigned i=0;i<inode.map->count;i++) {
-        e4_extent_t x=inode.map->entries[i];
-        if (x.logical!=at || x.unwritten || x.len>length-at) { r=-VFS_EIO;goto done; }
-        for (unsigned n=0;n<x.len;n++) map[at++]=x.physical+n;
-    }
-    if (at!=length) { r=-VFS_EIO;goto done; }
-    jbd2_source_t source={.block_size=fs->bs,.filesystem_blocks=fs->blocks,
-        .journal_blocks=length,.journal_map=map,.validate_home=e4_journal_home,.context=&guard};
-    memcpy(source.uuid,guard.sb+104,16);
-    r=jbd2_analyze(dev,&source,out,report);
-done:
+    uint32_t *map=NULL;e4_journal_guard_t guard={0};jbd2_source_t source;
+    int r=e4_journal_source(fs,&guard,&map,&source);
+    if (!r) r=jbd2_analyze(dev,&source,out,report);
     kfree(map);e4_discard(fs);
     flags=spin_lock_irqsave(&e4_lock);e4_engine_busy=false;spin_unlock_irqrestore(&e4_lock,flags);
     return r;

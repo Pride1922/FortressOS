@@ -653,6 +653,7 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 #include "ext4_mutate.inc"
 #include "ext4_write.inc"
 #include "ext4_journal.inc"
+#include "ext4_transaction.inc"
 
 static size_t e4_profile_text(char *out,size_t cap,size_t n,const char *text) {
     while (*text) { if (n<cap) out[n++]=*text; text++; } return n;

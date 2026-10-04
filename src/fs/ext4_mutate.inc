@@ -2,7 +2,7 @@
 #include "ext4_engine.h"
 #define E4_IMAGES 64u
 #define E4_FREES (E4_MAP_MAX+64u)
-enum { E4_ALLOC, E4_REFERENCE, E4_NEW };
+enum { E4_ALLOC, E4_REFERENCE, E4_NEW, E4_DATA };
 typedef struct { uint32_t block; unsigned role; uint8_t bytes[4096]; } e4_image_t;
 struct ext4_engine {
     ext4_mount_t *fs;
@@ -15,7 +15,13 @@ struct ext4_engine {
     int error, reserved_inodes, inode_delta;
     uint32_t reserved[64], reserve_ino, release_ino;
     bool ready, dirty, tainted, release_dir;
+    jbd2_writer_t *writer;
+    void *journal_guard;
+    jbd2_credits_t credits;
+    uint32_t revokes[64];
+    unsigned revoke_count;
 };
+static int e4_transaction_commit(ext4_engine_t *e);
 static void e4_p16(uint8_t *p,uint16_t n) { p[0]=(uint8_t)n; p[1]=(uint8_t)(n>>8); }
 static void e4_set_bit(uint8_t *map,uint32_t bit,bool value) {
     uint8_t mask=(uint8_t)(1u<<(bit%8));
@@ -191,6 +197,7 @@ static uint8_t *e4_inode_image(ext4_engine_t *e,uint32_t ino) {
 static int e4_plan_begin(ext4_engine_t *e) {
     if (!e) return -VFS_EINVAL;
     if (e->tainted) return -VFS_EIO;
+    if (e->writer) return -VFS_EOPNOTSUPP;
     if (e->ready) return -VFS_EINVAL;
     e->images=e->frees=e->old_count=e->zeros=0;
     e->error=e->inode_delta=0; e->reserve_ino=e->release_ino=0; e->release_dir=false;
@@ -307,6 +314,8 @@ int ext4_engine_trim(ext4_engine_t *e,uint32_t ino,uint32_t keep) {
     int r=e4_change(e,ino,keep,0,true); spin_unlock_irqrestore(&e4_lock,f); return r;
 }
 static bool e4_write_bytes(ext4_engine_t *e,uint64_t off,const uint8_t *data,size_t len) {
+    /* Journal workbench can only reach home storage through JBD2 checkpoint. */
+    if (e->writer) return false;
     ext4_mount_t *fs=e->fs; uint64_t cap=(uint64_t)fs->blocks*fs->bs;
     if (off>cap || len>cap-off || block_get_max_run_bytes(fs->dev)<fs->dev->sector_size) return false;
     e4_cache_invalidate(fs,off,len);
@@ -388,6 +397,7 @@ static bool e4_write_role(ext4_engine_t *e,unsigned role) {
 }
 static int e4_commit_unlocked(ext4_engine_t *e) {
     if (!e) return -VFS_EINVAL;
+    if (e->writer) return -VFS_EOPNOTSUPP; /* Never call JBD2 under e4_lock. */
     int r=-VFS_EINVAL;
     if (e->tainted) { r=-VFS_EIO; goto done; }
     if (!e->ready) goto done;
@@ -429,7 +439,9 @@ done:
     return r;
 }
 int ext4_engine_commit(ext4_engine_t *e) {
-    spin_debug_assert_unheld(); uint64_t flags=spin_lock_irqsave(&e4_lock);
+    spin_debug_assert_unheld();
+    if (e && e->writer) return e4_transaction_commit(e);
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
     int r=e4_commit_unlocked(e); spin_unlock_irqrestore(&e4_lock,flags); return r;
 }
 static int e4_reserve_inode_unlocked(ext4_engine_t *e,bool directory,uint32_t *ino) {
@@ -522,11 +534,16 @@ int ext4_engine_open(block_dev_t *dev,ext4_engine_t **out) {
 }
 void ext4_engine_abort(ext4_engine_t *e) {
     spin_debug_assert_unheld(); if (!e) return;
+    if (e->writer) {
+        if (jbd2_writer_state(e->writer)==JBD2_WRITE_STAGING) (void)jbd2_writer_abort(e->writer);
+        e->ready=false; e->error=0; e->images=e->revoke_count=0; return;
+    }
     uint64_t flags=spin_lock_irqsave(&e4_lock); e->ready=false;
     spin_unlock_irqrestore(&e4_lock,flags);
 }
 int ext4_engine_finish(ext4_engine_t *e) {
     spin_debug_assert_unheld(); if (!e) return -VFS_EINVAL;
+    if (e->writer) return e->tainted ? -VFS_EIO : -VFS_EOPNOTSUPP;
     uint64_t flags=spin_lock_irqsave(&e4_lock); int r=0;
     if (e->tainted) r=-VFS_EIO;
     else if (e->ready || e->reserved_inodes) r=-VFS_EINVAL;
@@ -543,6 +560,7 @@ int ext4_engine_finish(ext4_engine_t *e) {
 }
 void ext4_engine_close(ext4_engine_t *e) {
     spin_debug_assert_unheld(); if (!e) return;
+    jbd2_writer_close(e->writer); kfree(e->journal_guard);
     uint64_t flags=spin_lock_irqsave(&e4_lock); e4_engine_busy=false;
     spin_unlock_irqrestore(&e4_lock,flags);
     e4_discard(e->fs); kfree(e);

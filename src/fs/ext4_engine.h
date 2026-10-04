@@ -1,6 +1,7 @@
 #ifndef FORTRESS_EXT4_ENGINE_H
 #define FORTRESS_EXT4_ENGINE_H
 #include "block.h"
+#include "jbd2.h"
 /* Internal Phase-3 workbench, not a VFS RW mount. Caller must exclusively own
  * disposable/eligible media; never share with a mounted filesystem.
  * One staged operation, 64 metadata images, <=64KiB newly zeroed data per grow.
@@ -25,4 +26,19 @@ int ext4_engine_release_inode(ext4_engine_t *engine, uint32_t ino);
 int ext4_engine_commit(ext4_engine_t *engine);
 void ext4_engine_abort(ext4_engine_t *engine);
 int ext4_engine_finish(ext4_engine_t *engine);
+/* Phase 8.1 exclusive transaction workbench, never a production/VFS mount.
+ * Explicit durability admission; discovers and owns the journal guard/map.
+ * Caller serializes every call, including close, from unlocked thread context.
+ * Only presealed block-image transactions are enabled; grow/trim/inode and
+ * finish remain disabled pending operation and mount integration (8.2-8.5).
+ * One transaction: <=64 combined metadata/data snapshots, <=64 revokes.
+ * Begin reserves worst-case ring credits before staging; duplicate replacement
+ * consumes no credit. Any staging error latches until abort, with zero writes.
+ * Commit synchronously checkpoints; cache/descriptor publication follows all
+ * barriers. Uncertain I/O taints permanently. Close never writes/marks clean. */
+int ext4_engine_open_journal(block_dev_t *dev, bool admitted, ext4_engine_t **out);
+int ext4_engine_transaction_begin(ext4_engine_t *engine, jbd2_credits_t credits);
+int ext4_engine_transaction_metadata(ext4_engine_t *engine, uint32_t block, const void *bytes);
+int ext4_engine_transaction_data(ext4_engine_t *engine, uint32_t block, const void *bytes);
+int ext4_engine_transaction_revoke(ext4_engine_t *engine, uint32_t block);
 #endif
