@@ -86,9 +86,21 @@ class TestHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
 
+class ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
+        super().server_bind()
+
+
 def start_http_server(port):
-    server = socketserver.TCPServer(("0.0.0.0", port), TestHTTPHandler)
-    server.allow_reuse_address = True
+    server = ReusableTCPServer(("0.0.0.0", port), TestHTTPHandler)
     th = threading.Thread(target=server.serve_forever, daemon=True)
     th.start()
     return server
@@ -251,7 +263,34 @@ def run_session(mode, iso, tmp, port):
             assert "1" in out_status, f"Expected non-zero exit code on mismatch: {out_status}"
             print(f"[{mode}] Case 8 (Content-Length mismatch detection & exit 1): PASS")
 
-            # 11. Clean poweroff
+            # 11. Test /bin/download --help
+            out = run_command("/bin/download --help")
+            assert "usage: download" in out, f"download --help failed: {out}"
+            print(f"[{mode}] Case 9 (download --help): PASS")
+
+            # 12. Test download [dir] [URL]
+            out = run_command(f"/bin/download /mnt http://10.0.2.2:{port}/hello.txt")
+            assert "200 OK" in out, f"download /mnt url failed: {out}"
+            assert "'/mnt/hello.txt' saved" in out, f"download save path mismatch: {out}"
+            out_cat = run_command("cat /mnt/hello.txt")
+            assert "Hello FortressOS World!" in out_cat, f"downloaded content mismatch: {out_cat}"
+            print(f"[{mode}] Case 10 (download /mnt URL): PASS")
+
+            # 13. Test download [URL] [dir]
+            out = run_command(f"/bin/download http://10.0.2.2:{port}/data.bin /mnt")
+            assert "200 OK" in out, f"download url /mnt failed: {out}"
+            assert "'/mnt/data.bin' saved" in out, f"download save path mismatch: {out}"
+            out_wc = run_command("wc -c /mnt/data.bin")
+            assert "2048" in out_wc, f"wc byte count mismatch: {out_wc}"
+            print(f"[{mode}] Case 11 (download URL /mnt): PASS")
+
+            # 14. Test wget [dir] [URL]
+            out = run_command(f"/bin/wget /mnt http://10.0.2.2:{port}/hello.txt")
+            assert "200 OK" in out, f"wget /mnt url failed: {out}"
+            assert "'/mnt/hello.txt' saved" in out, f"wget save path mismatch: {out}"
+            print(f"[{mode}] Case 12 (wget /mnt URL): PASS")
+
+            # 15. Clean poweroff
             uart.sendall(b"poweroff\n")
             proc.wait(timeout=10)
             print(f"[{mode}] Poweroff clean")
@@ -290,6 +329,7 @@ def main():
             run_session(mode, ISO, tmp, SERVER_PORT)
 
     server.shutdown()
+    server.server_close()
     print("\n>>> ALL WGET QEMU TESTS PASSED (100%) <<<")
 
 

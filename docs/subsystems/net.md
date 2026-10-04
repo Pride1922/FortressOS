@@ -6,6 +6,31 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-04 Dell 1 ms RX grace retest: captured stdout 1 MiB transfer 0.71 s;
+file SHA-256 user-confirmed PASS. Some approximately 10 ms stalls remain.
+On-demand NET POLL dmesg counters now measure expiration, clock failure,
+wait returns and yield duration; host and BIOS/UEFI smoke PASS. No budget
+increase in this diagnostic image. [Counters and retest](../roadmap/net-poll-diagnostics.md).
+
+2026-10-04 TX fast-poll Dell retest: stdout 1 MiB capture spans 1.45 seconds;
+window-update separation disappears but median data-to-ACK remains 9.98 ms.
+User-approved follow-up extends cooperative active RX grace to 1 ms. Host
+worker/socket and strict build PASS; physical performance remains pending.
+[RX window evidence and image](../roadmap/net-rx-poll-window.md).
+
+2026-10-04 Dell supervisor retest: two captured 1 MiB transfers improved to
+2.22/1.60 seconds, with approximately 1.1 ms window reopening. Approved next
+change adds bounded 20 us I219 TX completion polling before the existing PIT
+fallback; host sanitizer and QEMU ring 4/4 regressions PASS. RX budget remains
+200 us; new-image physical speed pending. [Evidence and retest](../roadmap/net-i219-tx-fast-poll.md).
+
+2026-10-04 approved TCP follow-up: shell supervisor now blocks on terminal-state
+exit events instead of remaining runnable in HLT. Live blocked-state, zero idle
+tick growth and three shell restarts PASS under BIOS/UEFI at SMP=1/4. Focused
+TCP wire regression PASS; Dell speed pending. [Supervisor fix](../roadmap/kernel-supervisor-wait.md).
+
+2026-10-04 TCP performance follow-up: application poll hints and iteration-based RX grace did not improve Dell throughput (seven seconds per MiB, file and stdout). Full capture shows recurring 20 ms data-ACK and window-update delays. Approved follow-up retains the existing reader yield, adds a post-consume syscall yield, and replaces grace with a 200 us boot-calibrated invariant-TSC budget with unavailable/failed-clock timer fallback. Strict build, host stream/UDP/worker, focused BIOS/UEFI wire/wget and final-image smoke gates PASS. TCG selects fallback; active clock admission and throughput remain pending on Dell. [Plan](../plans/TCP_PERFORMANCE_FIX_PLAN.md), [scope and evidence](../roadmap/net-tcp-poll-hints.md).
+
 Finite numeric `/bin/traceroute` is implemented (2026-10-03) using approved `NETCTL_TRACE_PROBE` command 4 and the existing shared ping mailbox/worker wait path. Host sanitizer tests and BIOS/UEFI × e1000/e1000e synthetic-router QEMU 4/4 PASS; Dell acceptance remains pending. Existing socket and ping ABIs, scheduler, signals, wait signatures, timer hook, DMA and drivers are unchanged. See [implementation and evidence](../roadmap/net-traceroute.md).
 
 NET-3 (runtime network configuration) is implemented and physically accepted on the Dell Latitude 5590: `/bin/ifconfig` (read-only query), `/bin/ifup` (CLI and file reconfiguration), `/mnt/.fortress/network.conf` parser, and DNS server integration for `nslookup` and `nc` when `-s` is omitted. Kernel ABI `SYS_NETCTL = 42` extended with `NETCTL_IFGET` (2u) and `NETCTL_IFSET` (3u) updating all protocol layers atomically under Rank-1 `g_net_stack_lock`. Full ASan/UBSan host test suite, BIOS/UEFI QEMU 10/10 PASS, and Dell 5590 physical acceptance confirmed (2026-10-02). Details: [runtime network configuration](../roadmap/net-config.md).
@@ -68,7 +93,7 @@ physical acceptance and its evidence boundaries; [NETCTL_PING ABI](../plans/NETC
 specifies the 48-byte layout and errors. Ring 3 callers use a bounded mailbox; the
 BSP worker remains the sole protocol owner. No scheduler/signal/driver changes or
 new timer hook were needed. Hard-exit/STOP cleanup is bounded by a finite lease,
-with stale-token protection. Phase 5a has since landed; 5590 UDP is user-reported PASS; capture audit remains pending. Earlier Phase 3/2b
+with stale-token protection. Phase 5a has since landed; 5590 UDP is user-reported PASS; capture audit remains pending. On-the-fly positional DNS in `/bin/ifup` and `/bin/ping` hostname resolution via the stub resolver were implemented and physically accepted on the Dell Latitude 5590 (2026-10-04, user-confirmed PASS). Earlier Phase 3/2b
 checkpoint descriptions below are historical evidence.
 
 Phase 3 is implemented (2026-10-01): Ethernet/ARP dispatch, bounded `net=`

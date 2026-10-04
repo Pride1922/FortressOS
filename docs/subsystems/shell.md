@@ -94,3 +94,30 @@ User-supplied testing confirms hardware operation on a Latitude 5590 (Core i5-83
 | `make test-shell-integration` | Existing shell integration extended with cursor/screen-state, history/search/paste, timeout/log separation and no-UART coverage; snapshot NVMe fixture for normal runs |
 | `make test-input` | Host ASan/UBSan: decoder, modifiers and bounded FIFO |
 | `make test-shell` | BIOS/UEFI IRQ1/IRQ4 interaction, sleeping readers, restart counts; also UEFI 8 GiB without COM1 |
+
+---
+
+## 6. Diagnostic & Troubleshooting Utilities
+
+| Utility | Invocation | Pipeline Safe | Description |
+| --- | --- | --- | --- |
+| `dmesg` | `dmesg [-n N \| tail [N]] [<lines>] [path]` | **Yes** (`child_safe = true`) | Inspects the kernel 64 KiB ring buffer (`SYS_DMESG`). Available as a shell builtin and standalone ELF tool `/bin/dmesg`. Supports direct tailing (`dmesg -n 13`, `dmesg tail 20`, `dmesg 15`), disk persistence (`dmesg -n 25 /mnt/error.log`), and child-safe pipeline integration (`dmesg \| tail`, `dmesg \| wc -l`) for rapid live troubleshooting of driver, storage sync, and network events. |
+
+---
+
+## 7. Interactive Terminal & Prompt Resilience
+
+### Screen Generation Tracking & Automatic Prompt Redraw
+Background jobs (e.g. `wget &`, background compiler or download workers) writing to `/dev/tty` previously clobbered the interactive prompt, requiring `wget -q` or pressing Enter to restore visual context.
+
+FortressOS implements display generation tracking and reactive prompt restoration:
+1. **Kernel Generation Counter (`console_inc_generation`):**
+   - The kernel maintains an atomic generation counter incremented whenever bytes are written to the terminal (`terminal_write` in VFS and `console_terminal_write`).
+   - The current generation is reported via `SYS_TERMCTL(TERM_GET, &term)`.
+2. **Interactive Redraw Loop (`user/shell/ui.c`):**
+   - When idling at the prompt in `shell_read_line()`, the shell blocks on input with 100 ms timeouts.
+   - On each timeout or interrupt, the shell checks `SYS_TERMCTL(TERM_GET, &cur_term)`.
+   - If `cur_term.generation != term.generation`, external output has occurred on the display. The editor emits `\n` to clear past the background text, restores the prompt, and repaints the active draft line and cursor position without user keypress.
+   - Prompt painting itself synchronizes `term.generation` to avoid spurious redraw loops.
+
+

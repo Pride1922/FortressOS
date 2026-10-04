@@ -113,7 +113,10 @@ with tempfile.TemporaryDirectory(prefix="fortress-jobs-idle-") as directory:
                         uart.sendall(bytes([byte]))
                         time.sleep(0.005)
 
-                wait(r"fortress> ", seconds=90)
+                wait(r"(?:fortress> |fortress:[^\r\n]* \$ )", seconds=90)
+                start = len(output())
+                type_uart("prompt 'fortress> '\n")
+                wait(r"fortress> ", start)
                 start = len(output())
                 type_uart("layout us\n")
                 wait(r"Keyboard layout set to US QWERTY", start)

@@ -43,6 +43,7 @@ void sched_wake_all(const void *channel) {
 int64_t input_read(void *buf, size_t n) { (void)buf; (void)n; assert(0); return 0; }
 bool console_is_quiet(void) { return true; }
 void console_terminal_write(const char *buf, size_t n) { (void)buf; (void)n; assert(0); }
+void console_inc_generation(void) {}
 void serial_raw_putc(char c) { (void)c; assert(0); }
 
 void *kmalloc(size_t n) {

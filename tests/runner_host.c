@@ -66,8 +66,27 @@ long write_bytes_fd(int fd, const char *s, size_t n) {
 int puts(const char *s) { write_bytes_fd(1, s, strlen(s)); return 0; }
 long puts_err(const char *s) { return write_bytes_fd(2, s, strlen(s)); }
 void file_error_err(long e) { (void)e; }
+void put_dec(size_t val) {
+    char buf[32];
+    int idx = 0;
+    if (val == 0) buf[idx++] = '0';
+    else {
+        char tmp[32]; int t = 0;
+        while (val > 0) { tmp[t++] = (char)('0' + (val % 10)); val /= 10; }
+        while (t > 0) buf[idx++] = tmp[--t];
+    }
+    buf[idx] = '\0';
+    write_bytes_fd(1, buf, idx);
+}
 
 long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
+    if (nr == SYS_DMESG) {
+        const char *log = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\n";
+        size_t n = strlen(log);
+        if ((size_t)b < n) n = (size_t)b;
+        memcpy((char *)a, log, n);
+        return (long)n;
+    }
     if (nr == SYS_GETCWD) {
         char *buf = (char *)a;
         const char *cwd = "/testcwd";
@@ -146,6 +165,74 @@ static void test_echo(void) {
     stdout_fail_after = 1; stdout_fail_error = SYSCALL_EIO;
     r = builtin_exec(3, argv, NULL);
     assert(r == 1);
+}
+
+static void test_printf(void) {
+    /* 1. Exact bytes without newline (RFC "abc" test vector) */
+    reset();
+    const char *argv_abc[] = {"printf", "abc", NULL};
+    int r = builtin_exec(2, argv_abc, NULL);
+    assert(r == 0);
+    assert(!strcmp(out_buf, "abc"));
+    assert(out_pos == 3);
+
+    /* 2. Format %s without newline */
+    reset();
+    const char *argv_s[] = {"printf", "%s", "abc", NULL};
+    r = builtin_exec(3, argv_s, NULL);
+    assert(r == 0);
+    assert(!strcmp(out_buf, "abc"));
+    assert(out_pos == 3);
+
+    /* 3. Explicit newline in format */
+    reset();
+    const char *argv_nl[] = {"printf", "abc\n", NULL};
+    r = builtin_exec(2, argv_nl, NULL);
+    assert(r == 0);
+    assert(!strcmp(out_buf, "abc\n"));
+    assert(out_pos == 4);
+
+    /* 4. Multiple format specifiers and numeric conversions */
+    reset();
+    const char *argv_multi[] = {"printf", "%s=%d 0x%04x\n", "count", "42", "42", NULL};
+    r = builtin_exec(5, argv_multi, NULL);
+    assert(r == 0);
+    assert(!strcmp(out_buf, "count=42 0x002a\n"));
+
+    /* 5. Argument cycle / format reuse */
+    reset();
+    const char *argv_cycle[] = {"printf", "%s\n", "foo", "bar", "baz", NULL};
+    r = builtin_exec(5, argv_cycle, NULL);
+    assert(r == 0);
+    assert(!strcmp(out_buf, "foo\nbar\nbaz\n"));
+
+    /* 6. Escape sequences: tabs, hex */
+    reset();
+    const char *argv_esc[] = {"printf", "a\\tb\\x41\\n", NULL};
+    r = builtin_exec(2, argv_esc, NULL);
+    assert(r == 0);
+    assert(!strcmp(out_buf, "a\tbA\n"));
+
+    /* 7. Stop escape \c */
+    reset();
+    const char *argv_stop[] = {"printf", "hello\\cworld", NULL};
+    r = builtin_exec(2, argv_stop, NULL);
+    assert(r == 0);
+    assert(!strcmp(out_buf, "hello"));
+
+    /* 8. Empty call */
+    reset();
+    const char *argv_empty[] = {"printf", NULL};
+    r = builtin_exec(1, argv_empty, NULL);
+    assert(r == 0);
+    assert(out_pos == 0);
+
+    /* 9. -- argument separator */
+    reset();
+    const char *argv_dash[] = {"printf", "--", "-n", NULL};
+    r = builtin_exec(3, argv_dash, NULL);
+    assert(r == 0);
+    assert(!strcmp(out_buf, "-n"));
 }
 
 static void test_true_false(void) {
@@ -307,6 +394,8 @@ static void test_child_safe_api(void) {
     assert(builtin_is_child_safe("ls"));
     assert(builtin_is_child_safe("view"));
     assert(builtin_is_child_safe("type"));
+    assert(builtin_is_child_safe("dmesg"));
+    assert(builtin_is_child_safe("printf"));
     /* Forbidden */
     assert(!builtin_is_child_safe("cd"));
     assert(!builtin_is_child_safe("exit"));
@@ -322,6 +411,52 @@ static void test_child_safe_api(void) {
     assert(!builtin_is_child_safe(NULL));
 }
 
+static void test_dmesg(void) {
+    reset();
+    const char *argv[] = {"dmesg", NULL};
+    int r = builtin_exec(1, argv, NULL);
+    assert(r == 0);
+    assert(strstr(out_buf, "line1\n"));
+    assert(strstr(out_buf, "line15\n"));
+
+    /* Test tail -n 13 */
+    reset();
+    const char *argv2[] = {"dmesg", "-n", "13", NULL};
+    r = builtin_exec(3, argv2, NULL);
+    assert(r == 0);
+    assert(!strstr(out_buf, "line1\n"));
+    assert(!strstr(out_buf, "line2\n"));
+    assert(strstr(out_buf, "line3\n"));
+    assert(strstr(out_buf, "line15\n"));
+
+    /* Test dmesg tail 5 */
+    reset();
+    const char *argv3[] = {"dmesg", "tail", "5", NULL};
+    r = builtin_exec(3, argv3, NULL);
+    assert(r == 0);
+    assert(!strstr(out_buf, "line10\n"));
+    assert(strstr(out_buf, "line11\n"));
+    assert(strstr(out_buf, "line15\n"));
+
+    /* Test dmesg tail (default 10) */
+    reset();
+    const char *argv4[] = {"dmesg", "tail", NULL};
+    r = builtin_exec(2, argv4, NULL);
+    assert(r == 0);
+    assert(!strstr(out_buf, "line5\n"));
+    assert(strstr(out_buf, "line6\n"));
+    assert(strstr(out_buf, "line15\n"));
+
+    /* Test dmesg 3 */
+    reset();
+    const char *argv5[] = {"dmesg", "3", NULL};
+    r = builtin_exec(2, argv5, NULL);
+    assert(r == 0);
+    assert(!strstr(out_buf, "line12\n"));
+    assert(strstr(out_buf, "line13\n"));
+    assert(strstr(out_buf, "line15\n"));
+}
+
 static void test_ctx_path(void) {
     builtin_ctx_t ctx = builtin_ctx_from_envp(envp_sample);
     assert(ctx.path && !strcmp(ctx.path, "/bin:/usr/bin"));
@@ -332,6 +467,7 @@ static void test_ctx_path(void) {
 
 int main(void) {
     test_echo();
+    test_printf();
     test_true_false();
     test_pwd();
     test_env();
@@ -345,7 +481,8 @@ int main(void) {
     test_type_allowlist();
     test_forbidden();
     test_child_safe_api();
+    test_dmesg();
     test_ctx_path();
-    puts("PASS runner: dispatch, EPIPE, view stdin/file/no-LF, type allowlist narrowing, forbidden commands, child_safe API\n");
+    puts("PASS runner: dispatch, EPIPE, view stdin/file/no-LF, type allowlist narrowing, forbidden commands, child_safe API, dmesg\n");
     return 0;
 }

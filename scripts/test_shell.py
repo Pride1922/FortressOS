@@ -102,7 +102,7 @@ def run(mode):
                 deadline = time.monotonic() + 45
                 while time.monotonic() < deadline:
                     text = output()
-                    if "\nfortress> " in text[after:]:
+                    if re.search(r"(?:\nfortress> |\nabcfortress> |(?:^|\n)(?:\[-?\d+\] )?fortress:[^\r\n]* \$ )", text[after:]):
                         time.sleep(0.1)  # Let read enter the blocked list.
                         return text[after:]
                     assert child.poll() is None, child.stderr.read().decode()
@@ -227,6 +227,7 @@ def run(mode):
             time.sleep(0.3)
             second = snapshot()
             assert first["ticks"] == second["ticks"] and second["timer"] > first["timer"]
+            uart_command("prompt 'fortress> '\n")
             uart_command("layout us\n")   # keyboard-driven tests below use US-layout QMP keycodes
             assert "Show commands" in keyboard_command("helx\bp\n")
             assert "Hello\nfortress> " in keyboard_command("echo Hello\n")
@@ -348,6 +349,21 @@ def run(mode):
             assert "\nABI-editor-sentinel\n" in uart_command("echo ABI-editor-sentinel\n")
             kernel_log = uart_command("dmesg\n")
             assert "ABI-editor-sentinel" not in kernel_log, "User output polluted dmesg"
+            dmesg_tail_13 = uart_command("dmesg -n 13\n")
+            assert 1 <= len(dmesg_tail_13.strip().splitlines()) <= 15
+            dmesg_tail_cmd = uart_command("dmesg tail 5\n")
+            assert 1 <= len(dmesg_tail_cmd.strip().splitlines()) <= 7
+            dmesg_num_cmd = uart_command("dmesg 3\n")
+            assert 1 <= len(dmesg_num_cmd.strip().splitlines()) <= 5
+            dmesg_pipe = uart_command("dmesg | tail\n")
+            assert 1 <= len(dmesg_pipe.strip().splitlines()) <= 12
+            out_printf = uart_command("printf abc\n")
+            assert "abc" in out_printf
+            out_pipe = uart_command("printf abc | wc -c\n")
+            assert "3" in out_pipe
+            nc_help = uart_command("nc --help\n")
+            assert "Serial Request/Response Limitation" in nc_help
+            assert "can deadlock the serial nc" in nc_help
             assert "echo alpha" in uart_command("history\n")
             uart_command("history clear\n")
             assert "echo alpha" not in uart_command("history\n")

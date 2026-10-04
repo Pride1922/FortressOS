@@ -105,3 +105,9 @@ and are not proof that every current revision has passed every test — check
 ```
 
 E4-A: [Dell 5590 physical acceptance](ext4-phase5-acceptance.md), all seven Phase-5 items PASS, 2026-10-03.
+
+[TCP application poll hints](net-tcp-poll-hints.md): avoid tick-only delay for queued application ACK/window updates, 2026-10-04; physical throughput retest pending.
+
+[TCP performance fix: four-step plan](../plans/TCP_PERFORMANCE_FIX_PLAN.md): reader handoff, window-update service, bounded active RX wait, and automated/Dell acceptance; 2026-10-04.
+
+[Blocking shell supervisor](kernel-supervisor-wait.md): approved scope extension removes runnable HLT waiter; BIOS/UEFI SMP=1/4 blocked-state and restart checks PASS; Dell throughput pending.

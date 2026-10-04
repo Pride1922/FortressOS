@@ -411,6 +411,7 @@ USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
 USER_SH_BUILTIN_ELF := $(BUILD_DIR)/sh-builtin.elf
 USER_PS_ELF := $(BUILD_DIR)/ps.elf
 USER_SYSINFO_ELF := $(BUILD_DIR)/sysinfo.elf
+USER_DMESG_ELF := $(BUILD_DIR)/dmesg.elf
 USER_IFCONFIG_ELF := $(BUILD_DIR)/ifconfig.elf
 USER_IFUP_ELF := $(BUILD_DIR)/ifup.elf
 USER_PING_ELF := $(BUILD_DIR)/ping.elf
@@ -423,6 +424,7 @@ USER_NSLOOKUP_ELF := $(BUILD_DIR)/nslookup.elf
 USER_DNSPROBE_ELF := $(BUILD_DIR)/dnsprobe.elf
 USER_TCPDEADLINE_ELF := $(BUILD_DIR)/tcpdeadline.elf
 USER_WGET_ELF := $(BUILD_DIR)/wget.elf
+USER_DOWNLOAD_ELF := $(BUILD_DIR)/download.elf
 DNS_OBJECTS := $(BUILD_DIR)/dns.o $(BUILD_DIR)/dns_codec.o
 $(DNS_OBJECTS): $(BUILD_DIR)/%.o: user/%.c user/dns.h user/dns_codec.h src/include/syscall_abi.h src/include/socket_abi.h
 	@mkdir -p $(BUILD_DIR)
@@ -463,6 +465,12 @@ $(BUILD_DIR)/wget.o: user/wget.c user/wget_codec.h user/dns.h user/dns_codec.h u
 $(USER_WGET_ELF): $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=wget_main user/tools/start.asm -o $(BUILD_DIR)/wget_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/wget_start.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
+$(BUILD_DIR)/download.o: user/download.c user/wget.h user/udp_common.h src/include/syscall_abi.h src/include/socket_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(USER_DOWNLOAD_ELF): $(BUILD_DIR)/download.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=download_main user/tools/start.asm -o $(BUILD_DIR)/download_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/download_start.o $(BUILD_DIR)/download.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
 $(BUILD_DIR)/tcpserve.o: user/tcpserve.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
@@ -616,16 +624,16 @@ $(BUILD_DIR)/sysinfo.o: $(USER_DIR)/sysinfo.c src/include/types.h src/include/sy
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
 
-$(BUILD_DIR)/ping.o: $(USER_DIR)/ping.c src/include/types.h src/include/syscall_abi.h src/include/ping_abi.h
+$(BUILD_DIR)/ping.o: $(USER_DIR)/ping.c $(USER_DIR)/dns.h $(USER_DIR)/dns_codec.h src/include/types.h src/include/syscall_abi.h src/include/ping_abi.h
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -Wframe-larger-than=512 -fstack-usage -c $< -o $@
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -Wframe-larger-than=512 -fstack-usage -I$(USER_DIR) -c $< -o $@
 
 $(BUILD_DIR)/ping_start.o: $(USER_DIR)/tools/start.asm
 	@mkdir -p $(BUILD_DIR)
 	@$(AS) -f elf64 -DTOOL_ENTRY=ping_main $< -o $@
 
-$(USER_PING_ELF): $(BUILD_DIR)/ping_start.o $(BUILD_DIR)/ping.o $(USER_DIR)/shell.ld
-	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/ping_start.o $(BUILD_DIR)/ping.o -o $@
+$(USER_PING_ELF): $(BUILD_DIR)/ping_start.o $(BUILD_DIR)/ping.o $(DNS_OBJECTS) $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/ping_start.o $(BUILD_DIR)/ping.o $(DNS_OBJECTS) -o $@
 
 $(BUILD_DIR)/net_ping_probe.o: $(USER_DIR)/net_ping_probe.c src/include/syscall_abi.h src/include/ping_abi.h
 	@mkdir -p $(BUILD_DIR)
@@ -644,6 +652,17 @@ $(BUILD_DIR)/sysinfo_start.o: $(USER_DIR)/tools/start.asm
 
 $(USER_SYSINFO_ELF): $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o -o $@
+
+$(BUILD_DIR)/dmesg.o: user/dmesg.c $(SHELL_HEADERS) src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Iuser -c $< -o $@
+
+$(BUILD_DIR)/dmesg_start.o: $(USER_DIR)/tools/start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 -DTOOL_ENTRY=dmesg_main $< -o $@
+
+$(USER_DMESG_ELF): $(BUILD_DIR)/dmesg_start.o $(BUILD_DIR)/dmesg.o $(SH_BUILTIN_OBJECTS) $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/dmesg_start.o $(BUILD_DIR)/dmesg.o $(SH_BUILTIN_OBJECTS) -o $@
 
 $(BUILD_DIR)/ifconfig.o: $(USER_DIR)/ifconfig.c src/include/types.h src/include/syscall_abi.h src/include/netctl_abi.h
 	@mkdir -p $(BUILD_DIR)
@@ -690,7 +709,7 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(STREAM_TOOL_ELFS) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) COMMANDS.md Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) COMMANDS.md Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -699,6 +718,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
 	@cp -f $(USER_PS_ELF) $(BUILD_DIR)/initramfs/bin/ps
 	@cp -f $(USER_SYSINFO_ELF) $(BUILD_DIR)/initramfs/bin/sysinfo
+	@cp -f $(USER_DMESG_ELF) $(BUILD_DIR)/initramfs/bin/dmesg
 	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/bin/ifconfig
 	@cp -f $(USER_IFUP_ELF) $(BUILD_DIR)/initramfs/bin/ifup
 	@cp -f $(USER_PING_ELF) $(BUILD_DIR)/initramfs/bin/ping
@@ -712,6 +732,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DNSPROBE_ELF) $(BUILD_DIR)/initramfs/bin/dnsprobe
 	@cp -f $(USER_TCPDEADLINE_ELF) $(BUILD_DIR)/initramfs/bin/tcpdeadline
 	@cp -f $(USER_WGET_ELF) $(BUILD_DIR)/initramfs/bin/wget
+	@cp -f $(USER_DOWNLOAD_ELF) $(BUILD_DIR)/initramfs/bin/download
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@cp -f $(USER_NANO_ELF) $(BUILD_DIR)/initramfs/bin/nano
 	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
@@ -1000,6 +1021,9 @@ NET_TCP_STACK_SRCS := src/net/net_tcp.c src/net/net_tcp_syscall.c src/net/tcp_tc
 NET_SOCKET_HOST_SRCS := tests/net_socket_host.c tests/net_lock_host.c src/net/net_socket.c src/net/net_socket_syscall.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c $(NET_TCP_STACK_SRCS)
 .PHONY: test-net-tcp-socket-host
 .PHONY: test-net-tcp-client
+.PHONY: test-supervisor-wait
+test-supervisor-wait: $(BOOTABLE_ISO)
+	@python3 scripts/test_supervisor_wait.py
 .PHONY: test-net-tcp-server
 .PHONY: test-net-tcp-fixture test-net-nc-host test-net-tcp-matrix test-net-tcp-retention test-net-tcp-synthetic
 test-net-tcp-fixture:

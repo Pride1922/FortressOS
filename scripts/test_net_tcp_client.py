@@ -142,7 +142,7 @@ def run(mode, model, cpus, iso, tmp, extended):
                     if predicate(t): return t
                     assert proc.poll() is None, (root / 'stderr.log').read_text()
                 raise AssertionError(text()[-7000:])
-            wait(lambda t: 'fortress> ' in t and 'Gateway ARP resolved' in t, 120)
+            wait(lambda t: re.search(r'(?:fortress> |fortress:[^\r\n]* \$ )',t) and 'Gateway ARP resolved' in t, 120)
             if cpus==4: wait(lambda t: '[NET 5] AP socket dispatch rejection PASS' in t)
             def start(line):
                 at = len(text())
@@ -151,7 +151,7 @@ def run(mode, model, cpus, iso, tmp, extended):
             def execute(line, timeout=60):
                 at = start(line)
                 if line.endswith('&'): return wait(lambda t: re.search(r'\[\d+\] \d+', t[at:]), timeout)[at:]
-                return wait(lambda t: t[at:].rstrip().endswith('fortress>') and '\n' in t[at:], timeout)[at:]
+                return wait(lambda t: re.search(r'(?:fortress>|(?:\[-?\d+\] )?fortress:[^\r\n]* \$)\s*$',t[at:]) and '\n' in t[at:], timeout)[at:]
             # Policy-independent retry permits the explicit reboot quiet period;
             # no test bypass or changed guest timer. Bound overall warm-up.
             until = time.monotonic() + 180
@@ -163,7 +163,7 @@ def run(mode, model, cpus, iso, tmp, extended):
             assert 'TCP 65536 bytes each direction / ABI / dup / read-write / half-close PASS' in result, result
             at = start('tcptest 10.0.2.99 7777 --connect-caught')
             wait(lambda t: 'TCP caught connect ready' in t[at:]); uart.sendall(b'\x03')
-            wait(lambda t: 'TCP caught connect PASS' in t[at:] and t[at:].rstrip().endswith('fortress>'))
+            wait(lambda t: 'TCP caught connect PASS' in t[at:] and re.search(r'(?:fortress>|(?:\[-?\d+\] )?fortress:[^\r\n]* \$)\s*$',t[at:]))
             result = execute(f'tcptest 10.0.2.2 {reset_port} --reset')
             assert 'TCP buffered reset PASS' in result, result
             result = execute(f'tcptest 10.0.2.2 {unread_port} --unread')
@@ -171,7 +171,7 @@ def run(mode, model, cpus, iso, tmp, extended):
             assert unread_complete.wait(15), errors
             at = start(f'tcptest 10.0.2.2 {hold_port} --caught')
             wait(lambda t: 'TCP caught receive ready' in t[at:]); uart.sendall(b'\x03')
-            wait(lambda t: 'TCP caught receive PASS' in t[at:] and t[at:].rstrip().endswith('fortress>'))
+            wait(lambda t: 'TCP caught receive PASS' in t[at:] and re.search(r'(?:fortress>|(?:\[-?\d+\] )?fortress:[^\r\n]* \$)\s*$',t[at:]))
             if extended:
                 at=start(f'tcptest 10.0.2.2 {bulk_port} &')
                 wait(lambda t: 'TCP client connected' in t[at:]); assert bulk_busy.wait(3)
