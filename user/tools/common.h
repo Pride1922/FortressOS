@@ -70,4 +70,5 @@ int grep_main(int argc, char **argv);
 int uniq_main(int argc, char **argv);
 int xxd_main(int argc, char **argv);
 int sort_main(int argc, char **argv);
+int diff_main(int argc, char **argv);
 #endif

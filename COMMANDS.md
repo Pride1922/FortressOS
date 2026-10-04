@@ -79,6 +79,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`sort`](#sort) | Binary (`/bin/sort`) | Stream Tool | Sort lines of text files with stack-free bottom-up merge sort |
 | [`uniq`](#uniq) | Binary (`/bin/uniq`) | Stream Tool | Filter adjacent matching lines |
 | [`xxd`](#xxd) | Binary (`/bin/xxd`) | Stream Tool | Make hex dump or revert hex to binary with bounded buffers |
+| [`diff`](#diff) | Binary (`/bin/diff`) | Stream Tool | Compare files line by line using stack-free Myers algorithm |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
@@ -902,6 +903,31 @@ head -c 32 /etc/motd | xxd -p
 echo "48656c6c6f" | xxd -r -p
 xxd input.bin dump.hex
 xxd -r dump.hex restored.bin
+```
+
+---
+
+### `diff`
+**Syntax:** `diff [OPTIONS] FILE1 FILE2`  
+**Path:** `/bin/diff`  
+**Description:** Compares two files line by line, or compares a file with standard input (using `-`). Employs an iterative, stack-free Myers divide-and-conquer diff algorithm ensuring optimal edit scripts with bounded BSS memory (128 KiB text pool and 2,048 lines per file) without dynamic heap allocation.
+* **Exit Codes:** `0` if files are identical, `1` if differences are found, or `2` upon error (missing file, unreadable operand, or file exceeding buffer capacity).  
+**Options:**
+* `-u`, `-U NUM`: Output unified diff format with `NUM` (default 3) lines of context, displaying `---`, `+++`, `@@ -a,b +c,d @@`, and `+`/`-` edit markers.
+* `-q`, `--brief`: Report only whether files differ (`Files FILE1 and FILE2 differ`) without detailing line-by-line differences.
+* `-i`, `--ignore-case`: Ignore case differences in line contents (folds ASCII `A-Z` to `a-z`; non-ASCII bytes are compared byte-wise).
+* `-w`, `--ignore-all-space`: Ignore all white space (`' '`, `'\t'`, `'\r'`) when comparing lines.
+* `-b`, `--ignore-space-change`: Ignore changes in the amount of white space (treats any whitespace sequence as equivalent).
+* `--help`: Display usage summary and exit.
+* `--`: Ends option scanning.
+* `-`: Read from standard input.  
+**Examples:**
+```sh
+diff /etc/motd /etc/motd
+diff -u /etc/network.conf /mnt/network.conf
+diff -q /etc/motd /etc/network.conf
+cat /etc/motd | diff /etc/motd -
+diff -i -w file1.txt file2.txt
 ```
 
 ---
