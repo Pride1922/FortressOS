@@ -121,6 +121,181 @@ See `docs/roadmap/phase-9d-writable-ext2.md` for the full write/truncation
 ordering, prefix-durability rules, superblock clean/dirty lifecycle, and
 verification evidence.
 
+## ext2 write cap
+
+The ext2 write path supports **direct and single-indirect block mappings only**.
+Double-indirect and triple-indirect blocks are not implemented. Files that
+would require them are rejected at inode validation, not silently truncated.
+
+### What "rejected" means
+
+Two distinct rejection points exist in the code:
+
+- **At inode open / validate (`src/fs/ext2.c:547`):** An inode whose block
+  array contains a double-indirect or triple-indirect pointer is rejected
+  with an unsupported-structure error.
+- **At truncate / block collection (`src/fs/ext2.c:856`):** A truncate
+  operation that would need to walk past the single-indirect boundary
+  is rejected before any mutation is attempted.
+
+Both rejections are **explicit and fail-closed**: they do not silently
+truncate, silently zero, or silently accept a partial write.
+
+### Supported block sizes
+
+The mount path accepts the three standard ext2 block sizes and rejects
+anything larger (`src/fs/ext2.c:1603`):
+
+```c
+if (... || u32(sb + 24) > 2 || ...) return false;
+```
+
+`s_log_block_size > 2` is rejected at mount time.
+
+### Maximum file size
+
+The cap depends on the filesystem's block size:
+
+| Block size | Max file size | Formula |
+| --- | --- | --- |
+| 1 KiB | 268 KiB | (12 + 256) × 1024 = 274,432 |
+| 2 KiB | 1 MiB | (12 + 512) × 2048 = 1,073,152 |
+| 4 KiB | 4 MiB | (12 + 1024) × 4096 = 4,243,456 |
+
+The general formula is:
+
+```text
+max_size = (12 + block_size / 4) × block_size
+```
+
+where the 12 is the direct block array and `block_size / 4` is the number
+of 4-byte block pointers that fit in one indirect block.
+
+The first block is also block-size dependent (`src/fs/ext2.c:1641`):
+1 KiB filesystems start data at block 1; larger block sizes start at block 0.
+This is enforced at mount time.
+
+### Why this limit exists
+
+The ext2 write path exists for three purposes:
+
+1. Reading and writing disposable QEMU test fixtures. The E4-A
+   non-journaled path uses ext2 as its substrate.
+2. Compatibility with existing ext2 images that a user might attach
+   or that tests might construct.
+3. Boot-time persistence for the raw disk image's data partition
+   (before the ext4 journal is production-enabled).
+
+It is not the target for new filesystem features. The README states
+"ext2 writes support direct and single-indirect blocks, with explicit
+rejection of unsupported structures" — that's this limit.
+
+### Per-operation cap (separate)
+
+There is also a per-read and per-write cap of 64 KiB:
+
+```c
+#define EXT2_MAX_READ  (64U * 1024U)   /* src/fs/ext2.c:12 */
+#define EXT2_MAX_WRITE (64U * 1024U)   /* src/fs/ext2.c:13 */
+```
+
+These bound a single read or write call, not file size. A file can be
+up to the block-mapping cap above; individual I/O operations against it
+are limited to 64 KiB. Callers loop for larger transfers.
+
+### Feature-flag policy
+
+The mount path accepts only the features the implementation understands
+(`src/fs/ext2.c:1614–1624`):
+
+- **Compat (`s_feature_compat`):** bits 3, 4, 5 only.
+- **Incompat (`s_feature_incompat`):** bit 1 (FILETYPE) only.
+- **Read-only compat (`s_feature_ro_compat`):** bits 0, 1 (SPARSE_SUPER,
+  LARGE_FILE) only.
+
+Anything else → mount rejected. This is how unsupported inode flags
+(extents, compression, indexed directories) are caught: they require
+incompat flags the mount path doesn't accept.
+
+### Writable-mount restrictions
+
+Writable mounts are stricter than read-only mounts (`src/fs/ext2.c:1625–1638`):
+
+- `s_feature_incompat` must be exactly FILETYPE (bit 1).
+- `s_feature_ro_compat` must be exactly SPARSE_SUPER or LARGE_FILE.
+
+A filesystem not marked clean (`s_state != EXT2_VALID_FS`) warns but
+proceeds, matching Linux's ext2 driver. A stronger recovery path
+(fsck, journal) is deferred.
+
+### Where new filesystem work lives
+
+New filesystem capabilities target the ext4 path:
+
+- Journaling (JBD2 transactions).
+- Crash-consistency guarantees.
+- Larger files (extent trees, not indirect block chains).
+- Atomic metadata updates.
+
+See:
+
+- `docs/plans/EXT4_PLAN.md` — the ext4 target and phases.
+- `docs/roadmap/ext4-phase8-4.md` — truncate and orphan recovery.
+- `docs/roadmap/ext4-phase8-6.md` — integration audit.
+- `docs/plans/EXT4_PHASE9_PLAN.md` — crash campaign and E4-B acceptance.
+
+### Non-goals
+
+Not planned for ext2:
+
+- Double-indirect or triple-indirect block support (`ext2.c:547`, `:856`).
+- Ext2 crash-consistency or journaling.
+- Ext2 extent trees.
+- Ext2 indexed directories.
+- Ext2 compression.
+- Ext2 external extended attributes.
+- Ext2 format conversion in place.
+
+The default boot image remains ext2 (non-journaled). Accepted E4-A USB
+media remain ext2 (non-journaled). ext4 is the target for production
+journaled RW, currently disabled pending Phase 9 acceptance.
+
+### Related limits
+
+**LARGE_FILE feature.** `src/fs/ext2.c:194` notes the LARGE_FILE feature
+is honored only when the file's high size word is zero. Files whose
+`i_size_high` field is non-zero (nominally ≥ 4 GiB) are treated as if
+the high word were zero. The block-mapping cap already limits files to
+a few MiB, so this is not the binding constraint — but the size-field
+handling is deliberately narrower than ext2's own spec.
+
+### Verification
+
+The cap is verified by:
+
+- `make test-ext2-write` — bounded read/write against disposable images.
+- `make test-storage` — GPT/ext2 parsing and user-space reads.
+- `make test-ext2` — ext2/VFS code under ASan/UBSan, including
+  malformed data and injected failures.
+
+See `docs/roadmap/` for retained evidence per phase.
+
+### Cross-references
+
+- `src/fs/ext2.c:12-13` — 64 KiB per-operation read/write caps.
+- `src/fs/ext2.c:193` — inode flag rejection.
+- `src/fs/ext2.c:194` — LARGE_FILE narrowness.
+- `src/fs/ext2.c:547` — double/triple indirect rejection at validation.
+- `src/fs/ext2.c:856` — double/triple indirect guard at truncate.
+- `src/fs/ext2.c:1603` — block-size upper bound at mount.
+- `src/fs/ext2.c:1614-1624` — feature-flag audit.
+- `src/fs/ext2.c:1625-1638` — writable-mount restrictions.
+- `src/fs/ext2.c:1641` — first-block consistency check.
+- `README.md` "Storage" section — top-level summary.
+- `docs/plans/EXT4_PLAN.md` — where new work lives.
+- `docs/roadmap/ext4-phase8-6.md` — the most recent journal acceptance.
+
+
 ## Implemented: exact-boundary NMI delivery verification
 
 See `docs/roadmap/subsystems.md` ("NMI transition and physical-boot

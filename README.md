@@ -53,10 +53,10 @@ Dell hardware.
 | Power and platform | BIOS/UEFI boot images, ACPI S5 shutdown, and reset fallbacks. Shutdown and reboot verified on bare-metal Dell Latitude 5590. |
 
 User-process fault isolation and resource reclamation have targeted tests; this
-is not a claim of complete security isolation. ext2 writes support direct and
-single-indirect blocks, with explicit rejection of unsupported structures. The
-filesystem does not promise crash-atomic updates or recovery from arbitrary
-power loss.
+is not a claim of complete security isolation. ext2 writes are bounded to direct
+and single-indirect blocks; see `ARCH_REVIEW.md` § "ext2 write cap" for the exact
+limit and the ext4 target. The filesystem does not promise crash-atomic updates
+or recovery from arbitrary power loss.
 
 USB durability is classified per device and disclosed in the boot log. A device
 that reports its caching page and accepts SYNCHRONIZE CACHE gets the strong
