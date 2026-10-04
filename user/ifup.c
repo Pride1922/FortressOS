@@ -11,6 +11,7 @@ static inline long ifup_default_syscall(long nr, uintptr_t a, uintptr_t b, uintp
 }
 #define IFUP_SYSCALL ifup_default_syscall
 #endif
+#include "resolv_conf.h"
 
 static size_t ifup_strlen(const char *s) {
     size_t n = 0;
@@ -88,20 +89,19 @@ static void ifup_write_resolv_conf(const uint32_t *servers, int count) {
         ifup_append_str(buf, sizeof(buf), &pos, "\n");
     }
 
-    (void)IFUP_SYSCALL(SYS_MKDIR, (uintptr_t)"/tmp", 0755, 0);
-    long fd = IFUP_SYSCALL(SYS_OPEN, (uintptr_t)"/tmp/resolv.conf", 0x241, 0644);
-    if (fd >= 0) {
-        size_t off = 0;
-        while (off < pos) {
-            long n = IFUP_SYSCALL(SYS_WRITE, (uintptr_t)fd, (uintptr_t)(buf + off), pos - off);
-            if (n <= 0) break;
-            off += (size_t)n;
-        }
-        (void)IFUP_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
+    const char *path = resolv_conf_path();
+    char dir[32];
+    size_t last_slash = 0;
+    for (size_t i = 0; path[i] && i < sizeof(dir) - 1; i++) {
+        dir[i] = path[i];
+        if (path[i] == '/') last_slash = i;
+    }
+    if (last_slash > 0 && last_slash < sizeof(dir)) {
+        dir[last_slash] = '\0';
+        (void)IFUP_SYSCALL(SYS_MKDIR, (uintptr_t)dir, 0755, 0);
     }
 
-    (void)IFUP_SYSCALL(SYS_MKDIR, (uintptr_t)"/mnt/.fortress", 0755, 0);
-    fd = IFUP_SYSCALL(SYS_OPEN, (uintptr_t)"/mnt/.fortress/resolv.conf", 0x241, 0644);
+    long fd = IFUP_SYSCALL(SYS_OPEN, (uintptr_t)path, 0x241, 0644);
     if (fd >= 0) {
         size_t off = 0;
         while (off < pos) {

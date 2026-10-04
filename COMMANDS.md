@@ -847,6 +847,7 @@ sysinfo
 * Hardware MAC address (`HWaddr`).
 * Link carrier status: `UP`, `DOWN`, or `WAITING (no cable)`.
 * IPv4 address, subnet mask, prefix length, and default gateway.
+* Configured DNS servers list (one line, comma-separated, read via `resolv_conf_path()`). Omitted if no DNS servers are configured.
 * Maximum Transmission Unit (MTU).
 * Monotonic 64-bit RX and TX packet and byte counters.  
 **Examples:**

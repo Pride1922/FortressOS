@@ -13,6 +13,7 @@ static long sys_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
 }
 #define IFCONFIG_SYSCALL sys_call
 #endif
+#include "resolv_conf.h"
 
 static bool write_all(int fd, const char *buf, size_t count) {
     while (count > 0) {
@@ -79,6 +80,75 @@ static unsigned count_prefix(uint32_t mask_net) {
     return count;
 }
 
+static bool parse_ipv4(const char *s, size_t len, uint32_t *out) {
+    uint32_t val = 0;
+    size_t i = 0;
+    for (int oct = 0; oct < 4; ++oct) {
+        if (i >= len || s[i] < '0' || s[i] > '9') return false;
+        unsigned num = 0;
+        int digits = 0;
+        while (i < len && s[i] >= '0' && s[i] <= '9') {
+            num = num * 10 + (unsigned)(s[i++] - '0');
+            if (++digits > 3 || num > 255) return false;
+        }
+        val = (val << 8) | (num & 0xff);
+        if (oct < 3) {
+            if (i >= len || s[i++] != '.') return false;
+        }
+    }
+    if (i != len) return false;
+    *out = __builtin_bswap32(val);
+    return true;
+}
+
+static bool is_unicast(uint32_t ip) {
+    uint32_t h = __builtin_bswap32(ip);
+    uint32_t b0 = (h >> 24) & 0xff;
+    return b0 != 0 && b0 != 127 && b0 < 224 && ip != 0xffffffffu;
+}
+
+static unsigned ifconfig_load_dns(uint32_t *servers, unsigned max_servers) {
+    const char *path = resolv_conf_path();
+    long fd = IFCONFIG_SYSCALL(SYS_OPEN, (uintptr_t)path, 0, 0);
+    if (fd < 0) return 0;
+    static char buf[512];
+    long n = IFCONFIG_SYSCALL(SYS_READ, (uintptr_t)fd, (uintptr_t)buf, sizeof(buf) - 1);
+    IFCONFIG_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+
+    unsigned count = 0;
+    size_t at = 0;
+    while (at < (size_t)n && count < max_servers) {
+        while (at < (size_t)n && (buf[at] == ' ' || buf[at] == '\t' || buf[at] == '\r' || buf[at] == '\n')) at++;
+        if (at >= (size_t)n) break;
+        if (buf[at] == '#' || buf[at] == ';') {
+            while (at < (size_t)n && buf[at] != '\n') at++;
+            continue;
+        }
+        const char *line = buf + at;
+        size_t line_len = 0;
+        while (at + line_len < (size_t)n && line[line_len] != '\r' && line[line_len] != '\n') line_len++;
+        at += line_len;
+
+        if (line_len > 11 &&
+            line[0] == 'n' && line[1] == 'a' && line[2] == 'm' && line[3] == 'e' &&
+            line[4] == 's' && line[5] == 'e' && line[6] == 'r' && line[7] == 'v' &&
+            line[8] == 'e' && line[9] == 'r' && (line[10] == ' ' || line[10] == '\t')) {
+            size_t p = 11;
+            while (p < line_len && (line[p] == ' ' || line[p] == '\t')) p++;
+            size_t ip_start = p;
+            while (p < line_len && line[p] != ' ' && line[p] != '\t') p++;
+            size_t ip_len = p - ip_start;
+            uint32_t ip = 0;
+            if (ip_len > 0 && parse_ipv4(line + ip_start, ip_len, &ip) && is_unicast(ip)) {
+                servers[count++] = ip;
+            }
+        }
+    }
+    return count;
+}
+
 int ifconfig_main(int argc, char **argv) {
     (void)argc; (void)argv;
     s_req.struct_version = 1;
@@ -122,6 +192,18 @@ int ifconfig_main(int argc, char **argv) {
             append_ip(s_buf, &pos, s_req.gateway_ipv4);
             append_str(s_buf, &pos, "\n");
         }
+
+        uint32_t dns_srv[4];
+        unsigned dns_count = ifconfig_load_dns(dns_srv, 4);
+        if (dns_count > 0) {
+            append_str(s_buf, &pos, "      dns ");
+            for (unsigned i = 0; i < dns_count; ++i) {
+                if (i > 0) append_str(s_buf, &pos, ", ");
+                append_ip(s_buf, &pos, dns_srv[i]);
+            }
+            append_str(s_buf, &pos, "\n");
+        }
+
         append_str(s_buf, &pos, "      mtu ");
         append_u64(s_buf, &pos, s_req.mtu);
         append_str(s_buf, &pos, "\n      link UP\n      RX ");

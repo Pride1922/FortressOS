@@ -3,6 +3,7 @@
 #ifndef DNS_CALL
 #define DNS_CALL udp_call
 #endif
+#include "resolv_conf.h"
 #define DNS_MAGIC 0x444e5301u
 /* Character access to declared uint64_t storage is legal C11 aliasing. */
 static uint32_t get32(const uint8_t *w,unsigned at) { uint32_t n; dns_copy(&n,w+at,4); return n; }
@@ -135,9 +136,7 @@ static unsigned parse_resolv_file(uint8_t *w, const char *path, uint32_t *server
     return count;
 }
 static unsigned load_dns_servers(uint8_t *w, uint32_t *servers, unsigned max_servers) {
-    unsigned count = parse_resolv_file(w, "/tmp/resolv.conf", servers, max_servers);
-    if (!count) count = parse_resolv_file(w, "/mnt/.fortress/resolv.conf", servers, max_servers);
-    return count;
+    return parse_resolv_file(w, resolv_conf_path(), servers, max_servers);
 }
 int dns_resolve_ipv4(dns_context_t *ctx,const dns_options_t *opt,
                      const char *name,size_t n,dns_result_t *result) {

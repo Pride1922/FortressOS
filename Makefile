@@ -664,9 +664,9 @@ $(BUILD_DIR)/dmesg_start.o: $(USER_DIR)/tools/start.asm
 $(USER_DMESG_ELF): $(BUILD_DIR)/dmesg_start.o $(BUILD_DIR)/dmesg.o $(SH_BUILTIN_OBJECTS) $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/dmesg_start.o $(BUILD_DIR)/dmesg.o $(SH_BUILTIN_OBJECTS) -o $@
 
-$(BUILD_DIR)/ifconfig.o: $(USER_DIR)/ifconfig.c src/include/types.h src/include/syscall_abi.h src/include/netctl_abi.h
+$(BUILD_DIR)/ifconfig.o: $(USER_DIR)/ifconfig.c $(USER_DIR)/resolv_conf.h src/include/types.h src/include/syscall_abi.h src/include/netctl_abi.h
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -I$(USER_DIR) -c $< -o $@
 
 $(BUILD_DIR)/ifconfig_start.o: $(USER_DIR)/tools/start.asm
 	@mkdir -p $(BUILD_DIR)
@@ -675,9 +675,9 @@ $(BUILD_DIR)/ifconfig_start.o: $(USER_DIR)/tools/start.asm
 $(USER_IFCONFIG_ELF): $(BUILD_DIR)/ifconfig_start.o $(BUILD_DIR)/ifconfig.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/ifconfig_start.o $(BUILD_DIR)/ifconfig.o -o $@
 
-$(BUILD_DIR)/ifup.o: $(USER_DIR)/ifup.c $(USER_DIR)/netconf.h src/include/types.h src/include/syscall_abi.h src/include/netctl_abi.h
+$(BUILD_DIR)/ifup.o: $(USER_DIR)/ifup.c $(USER_DIR)/resolv_conf.h $(USER_DIR)/netconf.h src/include/types.h src/include/syscall_abi.h src/include/netctl_abi.h
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -I$(USER_DIR) -c $< -o $@
 
 $(BUILD_DIR)/ifup_start.o: $(USER_DIR)/tools/start.asm
 	@mkdir -p $(BUILD_DIR)

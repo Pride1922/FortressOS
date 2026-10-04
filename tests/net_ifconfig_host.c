@@ -89,6 +89,7 @@ static size_t s_mock_file_pos = 0;
 
 static char s_captured_resolv[512];
 static size_t s_captured_resolv_len = 0;
+static size_t s_captured_resolv_read_pos = 0;
 
 static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     if (nr == SYS_MKDIR) {
@@ -127,6 +128,13 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
             return 3;
         }
         if (!strcmp(path, "/tmp/resolv.conf") || !strcmp(path, "/mnt/.fortress/resolv.conf")) {
+            if (b == 0) {
+                if (s_captured_resolv_len > 0) {
+                    s_captured_resolv_read_pos = 0;
+                    return 5;
+                }
+                return -1;
+            }
             s_captured_resolv_len = 0;
             return 4;
         }
@@ -141,9 +149,17 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
             s_mock_file_pos += chunk;
             return (long)chunk;
         }
+        if (a == 5 && s_captured_resolv_len > 0) {
+            if (s_captured_resolv_read_pos >= s_captured_resolv_len) return 0;
+            size_t avail = s_captured_resolv_len - s_captured_resolv_read_pos;
+            size_t chunk = (c < avail) ? c : avail;
+            memcpy((void *)b, s_captured_resolv + s_captured_resolv_read_pos, chunk);
+            s_captured_resolv_read_pos += chunk;
+            return (long)chunk;
+        }
         return -1;
     } else if (nr == SYS_CLOSE) {
-        if (a == 3 || a == 4) return 0;
+        if (a == 3 || a == 4 || a == 5) return 0;
         return -1;
     } else if (nr == SYS_NETCTL) {
         if (s_mock_netctl_ret != 0) return s_mock_netctl_ret;
@@ -559,6 +575,20 @@ int main(void) {
     assert(ifup_main(5, cli_dns2) == 0);
     assert(strcmp(s_captured_stdout, "eth0: address 192.168.0.222/24 gateway 192.168.0.1 applied\n") == 0);
     assert(strcmp(s_captured_resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n") == 0);
+
+    /* Test /bin/ifconfig Ring 3 tool output with DNS servers present */
+    s_captured_stdout_len = 0;
+    s_captured_stderr_len = 0;
+    assert(ifconfig_main(1, NULL) == 0);
+    const char *expected_online_dns =
+        "eth0  HWaddr c8:f7:50:0e:35:80\n"
+        "      inet 192.168.0.222/24  netmask 255.255.255.0  broadcast 192.168.0.255\n"
+        "      gateway 192.168.0.1\n"
+        "      dns 1.1.1.1, 8.8.8.8\n"
+        "      mtu 1500\n"
+        "      link UP\n"
+        "      RX 1234  TX 567\n";
+    assert(strcmp(s_captured_stdout, expected_online_dns) == 0);
 
     /* CLI form: dotted-decimal + gateway + 2 DNS */
     s_captured_stdout_len = 0;
