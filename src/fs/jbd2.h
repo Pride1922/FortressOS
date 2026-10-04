@@ -14,6 +14,10 @@ typedef struct {
     /* Optional filesystem identity guard: analysis and writer metadata staging. */
     bool (*validate_home)(void *context,uint32_t block,const uint8_t *bytes);
     void *context;
+    /* Optional writer-only ownership assertion. Mounted EXT4 uses its ranked
+     * IRQ-save lock with bounded polled callbacks; NULL retains unlocked-only
+     * workbench calls. No sleeping, scheduling or IF enable is permitted. */
+    void (*assert_writer_owner)(void *context);
 } jbd2_source_t;
 typedef struct {
     uint32_t transactions, images, revokes, replayed, revoked, next_sequence;
@@ -32,6 +36,10 @@ int jbd2_analyze(block_dev_t *partition,const jbd2_source_t *source,
  * Failure poisons this plan; retry requires fresh analysis after restart.
  * Does not clear ext4 RECOVER, clean-state or orphan metadata (Phase 8). */
 int jbd2_replay(jbd2_plan_t *plan,bool writable_admitted);
+/* Read-only view of the validated replay result, including an empty journal
+ * superblock. Caller serializes reads with replay/release. No disk writes or
+ * clean-state policy; enables filesystem validation BEFORE admitted replay. */
+bool jbd2_preview_read_sector(jbd2_plan_t *plan,uint64_t lba,void *bytes);
 void jbd2_release(jbd2_plan_t *plan);
 
 #define JBD2_WRITE_IMAGES_MAX 64u
@@ -41,7 +49,7 @@ typedef enum {
     JBD2_WRITE_IDLE, JBD2_WRITE_STAGING, JBD2_WRITE_COMMITTING,
     JBD2_WRITE_DURABLE, JBD2_WRITE_CHECKPOINTING, JBD2_WRITE_FAILED
 } jbd2_write_state_t;
-/* Exclusive workbench only: caller serializes ALL calls and owns a stable
+/* Caller serializes ALL calls and owns a stable
  * partition/source context until close. Open validates an empty journal and
  * requires external writable/durability admission. No filesystem state bits
  * or VFS operations are changed. Recover a nonempty journal before opening.

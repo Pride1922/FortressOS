@@ -52,10 +52,23 @@ static bool write_run(block_dev_t *d,uint64_t l,uint32_t n,const void *p) {
     for (uint32_t i=0;i<n;i++) if (!store(d,l+i,(const uint8_t *)p+i*d->sector_size)) return false;
     return true;
 }
-static void reset(void) {
-    if (e4_active) { e4_discard(e4_active);e4_active=NULL; }
+static size_t root_live;
+static void drop_root(void) {
+    if (e4_active) {
+        assert(g_vfs_root->children==&e4_active->cached[0]->node);
+        g_vfs_root->children=g_vfs_root->children->next;e4_discard(e4_active);e4_active=NULL;
+    }
+    while (g_vfs_root && g_vfs_root->children) {
+        vfs_node_t *node=g_vfs_root->children;
+        assert(node->type==VFS_DIRECTORY && !node->children && !node->fs_private);
+        g_vfs_root->children=node->next;kfree(node);
+    }
     kfree(g_vfs_root);g_vfs_root=NULL;assert(!live);
+}
+static void reset(void) {
+    drop_root();
     fail_alloc=fail_read=fail_write=fail_flush=-1;reads=writes=flushes=0;uncertain=false;vfs_init();
+    root_live=live;
 }
 static void save(const char *path) { FILE *f=fopen(path,"wbx");assert(f && fwrite(disk,1,disk_len,f)==disk_len);fclose(f); }
 static void check_file(const char *path,const uint8_t *expected,size_t n) {
@@ -151,10 +164,10 @@ int main(int argc,char **argv) {
     block_dev_t dev={.sector_size=(uint32_t)atoi(argv[3]),.sector_count=disk_len/(unsigned)atoi(argv[3]),.read_sector=block_read_sector,.write_sector=store,.flush=barrier};
     reset();ext4_mount_t *m;
     assert(!ext4_mount_rw(&dev,"/mnt",&m) && !writes && !flushes);
-    size_t mount_allocs=live;
+    size_t mount_allocs=live-root_live+1;
     cache_checks(m);
     reset();memcpy(disk,original,disk_len);
-    for (size_t cut=1;cut<mount_allocs;cut++) { fail_alloc=(long)cut-1;int r=ext4_mount_rw(&dev,"/mnt",&m);assert(r==-VFS_ENOMEM && !m && !writes && !flushes && live==1);fail_alloc=-1; }
+    for (size_t cut=1;cut<mount_allocs;cut++) { fail_alloc=(long)cut-1;int r=ext4_mount_rw(&dev,"/mnt",&m);assert(r==-VFS_ENOMEM && !m && !writes && !flushes && live==root_live);fail_alloc=-1; }
     reset();memcpy(disk,original,disk_len);assert(!ext4_mount_rw(&dev,"/mnt",&m));
     assert(vfs_create("/mnt/dirty.bin",VFS_FILE));reset();
     assert(ext4_mount_rw(&dev,"/mnt",&m)==-VFS_EIO && !m && !writes && !flushes);
@@ -177,7 +190,7 @@ int main(int argc,char **argv) {
     reset();memcpy(disk,original,disk_len);assert(!ext4_mount_rw(&dev,"/mnt",&m));size_t mount_reads=reads;
     for (size_t cut=0;cut<mount_reads;cut++) {
         reset();memcpy(disk,original,disk_len);fail_read=(long)cut;
-        assert(ext4_mount_rw(&dev,"/mnt",&m)==-VFS_EIO && !m && live==1 && !writes && !flushes);
+        assert(ext4_mount_rw(&dev,"/mnt",&m)==-VFS_EIO && !m && live==root_live && !writes && !flushes);
     }
     fault_matrix(&dev,original);
     dev.read_sectors=read_run;dev.write_sectors=write_run;dev.max_run_bytes=16384;
@@ -300,7 +313,7 @@ int main(int argc,char **argv) {
     assert(vfs_create("/mnt/frozen",VFS_FILE)==NULL && vfs_get_last_create_error()==-VFS_EROFS);
     save(argv[2]);reset();assert(!ext4_mount_ro(&dev,"/mnt",&m));
     for (size_t i=0;i<n;i++) expected[i]=(uint8_t)(i*17+3);
-    check_file("/mnt/large.bin",expected,n);reset();kfree(g_vfs_root);g_vfs_root=NULL;assert(!live);
+    check_file("/mnt/large.bin",expected,n);reset();drop_root();
     free(expected);free(original);free(disk);
     printf("PASS VFS ext4 bs=%u sector=%u: 16MiB/1MiB, append, lifetime, gap, namespace, freeze/remount\n",bs,dev.sector_size);return 0;
 }

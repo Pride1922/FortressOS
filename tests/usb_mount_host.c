@@ -125,6 +125,8 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 }
 int ext4_sync(ext4_mount_t *fs) {assert(fs);s_e4_sync++;return s_e4_sync_result;}
 int ext4_freeze_and_sync(ext4_mount_t *fs) {assert(fs);s_e4_freeze++;return s_e4_freeze_result;}
+int ext4_sync_journal_fixture(void) {return -VFS_EROFS;}
+int ext4_freeze_journal_fixture(void) {return 0;}
 static bool s_e2_sync_result=true;
 bool ext2_sync_all(void) {return s_e2_sync_result;}
 

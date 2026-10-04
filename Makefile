@@ -1247,6 +1247,35 @@ test-jbd2-replay-host:
 	@python3 scripts/test_jbd2_replay_host.py
 
 .PHONY: test-ext4-namespace-host
+.PHONY: test-ext4-orphan-host
+.PHONY: test-ext4-mount-host
+.PHONY: test-ext4-journal-mount
+.PHONY: test-ext4-mount-smoke-host
+EXT4_MOUNT_EVIDENCE ?= .codex-remote-attachments/ext4-phase8-5
+test-ext4-mount-smoke-host:
+	@mkdir -p $(EXT4_MOUNT_EVIDENCE)/bin
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_mount_host.c tests/ext4_fault_disk.c -o $(EXT4_MOUNT_EVIDENCE)/bin/ext4_mount_host_smoke
+	@FORTRESS_EXT4_EVIDENCE=$(EXT4_MOUNT_EVIDENCE) python3 scripts/test_ext4_mount_host.py --smoke $(EXT4_MOUNT_FIXTURES)
+
+test-ext4-journal-mount: all
+	@FORTRESS_EXT4_EVIDENCE=$(EXT4_MOUNT_EVIDENCE) python3 scripts/test_ext4_journal_mount.py
+
+test-ext4-mount-host:
+	@mkdir -p $(EXT4_MOUNT_EVIDENCE)/bin
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_mount_host.c tests/ext4_fault_disk.c -o $(EXT4_MOUNT_EVIDENCE)/bin/ext4_mount_host
+	@FORTRESS_EXT4_EVIDENCE=$(EXT4_MOUNT_EVIDENCE) python3 scripts/test_ext4_mount_host.py
+
+.PHONY: test-ext4-orphan-deep-host
+test-ext4-orphan-deep-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_orphan_deep_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/ext4_orphan_deep_host
+	@python3 scripts/test_ext4_orphan_deep_host.py $(EXT4_ORPHAN_DEEP_ARGS)
+
+test-ext4-orphan-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_orphan_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/ext4_orphan_host
+	@python3 scripts/test_ext4_orphan_host.py $(EXT4_ORPHAN_ARGS)
+
 test-ext4-namespace-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_namespace_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/ext4_namespace_host

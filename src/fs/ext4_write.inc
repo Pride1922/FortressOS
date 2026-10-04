@@ -10,7 +10,7 @@ static int e4_rw_workspace(ext4_mount_t *fs) {
 static int e4_state(vfs_node_t *node) {
     if (!node || !node->fs_private) return -VFS_EINVAL;
     e4_node_t *n=(e4_node_t *)node;
-    if (n->removed) return -VFS_ENOENT;
+    if (n->removed && !(n->opens && e4_mounted_orphan(n->inode.fs,n->inode.ino))) return -VFS_ENOENT;
     ext4_mount_t *fs=n->inode.fs;
     if (fs->engine && fs->engine->tainted) return -VFS_EIO;
     return !fs->engine || fs->frozen ? -VFS_EROFS : 0;
@@ -33,7 +33,8 @@ static void e4_close(vfs_node_t *node) {
 static int e4_load_plan(ext4_engine_t *e,uint32_t ino,e4_inode_t *in,uint8_t **raw) {
     int r=e4_inode(e->fs,ino,in); if (r) { e->error=r; return r; }
     *raw=e4_inode_image(e,ino); if (!*raw) return e->error;
-    if (in->mode==0x8000 && e4_u16(*raw+26)!=1) return e->error=-VFS_EOPNOTSUPP;
+    if (in->mode==0x8000 && e4_u16(*raw+26)!=1 &&
+        !(e->fs->orphan_access==ino && !e4_u16(*raw+26))) return e->error=-VFS_EOPNOTSUPP;
     ext4_mount_t *fs=e->fs;
     fs->pending_count=fs->physical_count=fs->visits=0; e->old_count=0;
     unsigned depth=e4_u16(in->extent+6);
@@ -364,7 +365,8 @@ int ext4_sync(ext4_mount_t *fs) {
     spin_debug_assert_unheld(); uint64_t f=spin_lock_irqsave(&e4_lock);
     int r=!fs || fs!=e4_active ? -VFS_EINVAL : 0;
     if (!r && fs->engine) {
-        if (fs->engine->tainted) r=-VFS_EIO;
+        if (fs->journal_mounted) r=e4_journal_drain(fs,false);
+        else if (fs->engine->tainted) r=-VFS_EIO;
         else if (!block_flush(fs->dev)) { fs->engine->tainted=true;e4_cache_drop(fs,true); r=-VFS_EIO; }
     }
     spin_unlock_irqrestore(&e4_lock,f); return r;
@@ -374,6 +376,9 @@ int ext4_freeze_and_sync(ext4_mount_t *fs) {
     uint64_t f=spin_lock_irqsave(&e4_lock);
     if (!fs || fs!=e4_active) { spin_unlock_irqrestore(&e4_lock,f); return -VFS_EINVAL; }
     fs->frozen=true; ext4_engine_t *e=fs->engine;
+    if (fs->journal_mounted) {
+        int r=e4_journal_drain(fs,true);spin_unlock_irqrestore(&e4_lock,f);return r;
+    }
     spin_unlock_irqrestore(&e4_lock,f);
     return e ? ext4_engine_finish(e) : 0;
 }

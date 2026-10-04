@@ -13,9 +13,10 @@ static bool e4_namespace_name(const char *name) {
     return n && n<VFS_MAX_NAME && strcmp(name,".") && strcmp(name,"..");
 }
 static int e4_namespace_begin(ext4_engine_t *e) {
-    spin_debug_assert_unheld();
+    e4_engine_owner(e);
     if (!e || !e->namespace_enabled) return -VFS_EOPNOTSUPP;
     if (e->tainted) return -VFS_EIO;
+    if (e->orphan_recovery_required) return -VFS_EAGAIN;
     if (e->ready || jbd2_writer_state(e->writer)!=JBD2_WRITE_IDLE) return -VFS_EAGAIN;
     e->file_planning=true;
     int r=e4_plan_begin(e);
@@ -75,6 +76,7 @@ done:
     r=e4_namespace_end(e,r);if (!r) *out=ino;return r;
 }
 int ext4_engine_namespace_remove(ext4_engine_t *e,uint32_t parent,const char *name,bool directory) {
+    if (e && e->orphan_enabled) return ext4_engine_orphan_unlink(e,parent,name,directory);
     if (!e4_namespace_name(name)) return -VFS_EINVAL;
     int r=e4_namespace_begin(e);if (r) return r;
     e4_inode_t dir,in;uint32_t ino=0;

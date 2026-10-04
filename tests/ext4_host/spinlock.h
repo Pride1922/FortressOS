@@ -16,4 +16,5 @@ static inline void spin_unlock_irqrestore(spinlock_t *lock,uint64_t flags) {
     assert(!pthread_mutex_unlock(&lock->mutex));
 }
 static inline void spin_debug_assert_unheld(void) { assert(!ext4_host_lock_depth); }
+static inline void spin_debug_assert_held(spinlock_t *lock) { (void)lock;assert(ext4_host_lock_depth==1); }
 #endif

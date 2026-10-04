@@ -1,13 +1,13 @@
 /* Phase 8.1 block-image foundation and 8.2 exclusive file workbench.
  * No production VFS journal mount is admitted. */
-int ext4_engine_open_journal(block_dev_t *dev,bool admitted,ext4_engine_t **out) {
+static int e4_open_journal_owned(block_dev_t *dev,bool admitted,ext4_engine_t **out,bool reserved) {
     spin_debug_assert_unheld();if (out) *out=NULL;
     if (!out || !dev || !dev->read_sector ||
         (dev->sector_size!=512 && dev->sector_size!=4096) || !dev->sector_count ||
         dev->sector_count>UINT32_MAX || dev->sector_count>UINT64_MAX/dev->sector_size) return -VFS_EINVAL;
     if (!admitted || !dev->write_sector || !dev->flush) return -VFS_EROFS;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
-    if (e4_active || e4_engine_busy) { spin_unlock_irqrestore(&e4_lock,flags);return -VFS_EEXIST; }
+    if (e4_active || (e4_engine_busy && !reserved)) { spin_unlock_irqrestore(&e4_lock,flags);return -VFS_EEXIST; }
     e4_engine_busy=true;spin_unlock_irqrestore(&e4_lock,flags);
     ext4_engine_t *e=kcalloc(1,sizeof(*e));
     ext4_mount_t *fs=kcalloc(1,sizeof(*fs));
@@ -27,8 +27,11 @@ int ext4_engine_open_journal(block_dev_t *dev,bool admitted,ext4_engine_t **out)
 fail:
     kfree(map);if (e) jbd2_writer_close(e->writer);
     kfree(guard);e4_discard(fs);kfree(e);
-    flags=spin_lock_irqsave(&e4_lock);e4_engine_busy=false;spin_unlock_irqrestore(&e4_lock,flags);
+    if (!reserved) { flags=spin_lock_irqsave(&e4_lock);e4_engine_busy=false;spin_unlock_irqrestore(&e4_lock,flags); }
     return r;
+}
+int ext4_engine_open_journal(block_dev_t *dev,bool admitted,ext4_engine_t **out) {
+    return e4_open_journal_owned(dev,admitted,out,false);
 }
 int ext4_engine_transaction_begin(ext4_engine_t *e,jbd2_credits_t credits) {
     spin_debug_assert_unheld();if (!e || !e->writer) return -VFS_EINVAL;
@@ -91,7 +94,7 @@ int ext4_engine_transaction_revoke(ext4_engine_t *e,uint32_t block) {
     e->revokes[e->revoke_count++]=block;return 0;
 }
 static int e4_transaction_commit(ext4_engine_t *e) {
-    spin_debug_assert_unheld();if (e->tainted) return -VFS_EIO;
+    e4_engine_owner(e);if (e->tainted) return -VFS_EIO;
     if (!e->ready) return -VFS_EINVAL;
     int r=e->error;if (r) return r;
     unsigned metadata=0;
@@ -121,11 +124,12 @@ static int e4_transaction_commit(ext4_engine_t *e) {
 }
 /* Phase 8.2 needs consistent allocation ownership, unlike recovery bootstrap.
  * No recovery or RECOVER activation is implicit in file admission. */
-int ext4_engine_open_journal_files(block_dev_t *dev,bool admitted,ext4_engine_t **out) {
-    int r=ext4_engine_open_journal(dev,admitted,out);if (r) return r;
+static int e4_open_journal_files_owned(block_dev_t *dev,bool admitted,bool orphans,ext4_engine_t **out,bool reserved,bool lifecycle) {
+    int r=e4_open_journal_owned(dev,admitted,out,reserved);if (r) return r;
     ext4_engine_t *e=*out;ext4_mount_t *fs=e->fs;uint8_t sb[1024];
     if (!e4_bytes(fs,1024,sb,1024) || e4_u32(sb+1020)!=e4_crc(UINT32_MAX,sb,1020)) { r=-VFS_EIO;goto fail; }
-    if (e4_u32(sb+96)!=0x46 || e4_u32(sb+232) || e4_u32(sb+336) || e4_u32(sb+340) || e4_u32(sb+344)) {
+    if ((e4_u32(sb+96)!=0x46 && !(lifecycle && e4_u32(sb+96)==0x42 && e4_u16(sb+58)==1 && !e4_u32(sb+232))) ||
+        (!orphans && e4_u32(sb+232)) || e4_u32(sb+336) || e4_u32(sb+340) || e4_u32(sb+344)) {
         r=-VFS_EOPNOTSUPP;goto fail;
     }
     uint64_t blocks=0,inodes=0;
@@ -156,9 +160,17 @@ int ext4_engine_open_journal_files(block_dev_t *dev,bool admitted,ext4_engine_t 
         if (!e4_bit(fs->scratch,(block-fs->first)%fs->bpg)) { r=-VFS_EIO;goto fail; }
     }
     fs->journal_bootstrap=false;e->file_enabled=true;e->dirty=e4_u16(sb+58)==0;
+    ((e4_journal_guard_t *)e->journal_guard)->lifecycle=lifecycle;
     return 0;
 fail:
-    ext4_engine_close(e);*out=NULL;return r;
+    if (reserved) e4_engine_dispose(e);else ext4_engine_close(e);
+    *out=NULL;return r;
+}
+static int e4_open_journal_files(block_dev_t *dev,bool admitted,bool orphans,ext4_engine_t **out) {
+    return e4_open_journal_files_owned(dev,admitted,orphans,out,false,false);
+}
+int ext4_engine_open_journal_files(block_dev_t *dev,bool admitted,ext4_engine_t **out) {
+    return e4_open_journal_files(dev,admitted,false,out);
 }
 /* Complete a sealed semantic operation as one bounded journal transaction.
  * Every released block is revoked; no staged home image may overlap a revoke.
@@ -190,10 +202,15 @@ static void e4_semantic_invalidate(ext4_engine_t *e) {
     e->fs->map_entries=0;
 }
 int64_t ext4_engine_file_write(ext4_engine_t *e,uint32_t ino,uint64_t *offset,bool append,const void *data,size_t len) {
-    spin_debug_assert_unheld();if (!e || !e->file_enabled || !offset || (!data && len)) return -VFS_EINVAL;
+    e4_engine_owner(e);if (!e || !e->file_enabled || !offset || (!data && len)) return -VFS_EINVAL;
     if (e->tainted) return -VFS_EIO;
+    if (e->orphan_recovery_required) return -VFS_EAGAIN;
     if (e->ready || jbd2_writer_state(e->writer)!=JBD2_WRITE_IDLE) return -VFS_EAGAIN;
     if (ino==e->fs->journal_ino) return -VFS_EOPNOTSUPP;
+    /* Linked truncate intents must be completed before any growth. Unlinked
+     * open files may still be written through their validated handle. */
+    for (unsigned i=0;i<e->orphan_count;i++) if (e->orphans[i]==ino && e->fs->orphan_access!=ino)
+        return -VFS_EAGAIN;
     if (len>32768) len=32768;
     uint64_t next=*offset;e->file_planning=true;
     int r=e4_file_plan(e,ino,&next,append,data,len);e->file_planning=false;

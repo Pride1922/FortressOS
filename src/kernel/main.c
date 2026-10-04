@@ -3098,6 +3098,33 @@ static void ext4_fixture_verify(const char *path,uint64_t size,uint8_t *buffer) 
     }
     require_ext2(vfs_read(file,buffer,1)==0,"ext4 persisted EOF");vfs_close(file);
 }
+/* Separate explicit QEMU fixture gate. Never called by production storage
+ * dispatch; caller asserts primary-consistent GPT on the sole NVMe fixture. */
+static void test_ext4_journal_mount(void) {
+    require_ext2(nvme_init(),"ext4 journal fixture NVMe init");block_init();
+    require_ext2(block_register_nvme(),"ext4 journal fixture registration");gpt_policy_result_t policy;
+    require_ext2(gpt_parse_ex(block_get_dev_by_name("nvme0n1"),&policy) &&
+        policy==GPT_POLICY_PRIMARY_CONSISTENT,"ext4 journal fixture GPT");
+    ext4_journal_admission_t admission={true,true,true};
+    require_ext2(!ext4_mount_journal_fixture(block_get_dev_by_name("nvme0n1p1"),"/mnt",admission,&g_ext4_fixture_mount),
+        "ext4 journal recovery/publication");
+    require_ext2(!vfs_lookup("/mnt/target.bin"),"ext4 journal startup orphan cleanup");
+    bool second=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_verify");uint8_t *bytes=kmalloc(16384);
+    require_ext2(bytes!=NULL,"ext4 journal fixture buffer");
+    if (!second) {
+        file_t *file=vfs_open("/mnt/journal-persist.bin",VFS_O_CREAT|VFS_O_RDWR);
+        require_ext2(file!=NULL,"ext4 journal create");
+        for (unsigned k=0;k<16384;k++) bytes[k]=(uint8_t)(k*17+3);
+        require_ext2(vfs_write(file,bytes,16384)==16384,"ext4 journal write");vfs_close(file);
+        require_ext2(usb_mount_sync(),"ext4 journal ordinary sync dispatch");
+        file=vfs_open("/mnt/journal-later.bin",VFS_O_CREAT|VFS_O_RDWR);
+        require_ext2(file && vfs_write(file,bytes,17)==17,"ext4 journal mutation after sync");vfs_close(file);
+    }
+    ext4_fixture_verify("/mnt/journal-persist.bin",16384,bytes);
+    ext4_fixture_verify("/mnt/journal-later.bin",17,bytes);
+    kfree(bytes);serial_puts(second ? "[EXT4 JOURNAL] PASS boot 2; replay/bytes/namespace\n" :
+        "[EXT4 JOURNAL] PASS boot 1; recovered orphans/sync/later-write\n");
+}
 static void test_ext4_writes(bool production_usb) {
     if (!production_usb) {
     require_ext2(nvme_init(),"ext4 write fixture NVMe init");block_init();
@@ -5724,7 +5751,9 @@ pf_boot_guard_done:
         /* =========================================================================
          * Phase 9 (Step 9C.1): GPT Partition Parsing & Bounded Block Devices
          * ========================================================================= */
-        if (qemu_fw_cfg_has_key("opt/fortress/ext4_write_test")) {
+        if (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test")) {
+            test_ext4_journal_mount();
+        } else if (qemu_fw_cfg_has_key("opt/fortress/ext4_write_test")) {
             test_ext4_writes(false);
         } else if (qemu_fw_cfg_has_key("opt/fortress/ext4_read_test")) {
             test_ext4_reads();

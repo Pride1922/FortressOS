@@ -30,6 +30,8 @@ struct ext4_mount {
     uint32_t rw_ino, rw_generation;
     bool frozen;
     bool journal_bootstrap;
+    bool journal_mounted, state_transition;
+    uint32_t orphan_access; /* Exclusive 8.4 workbench, one validated orphan. */
     uint32_t journal_ino;
     e4_range_t *journal_reserved;
     unsigned journal_ranges;
@@ -54,6 +56,10 @@ struct ext4_mount {
 static spinlock_t e4_lock = SPINLOCK_RANKED(1, "ext4");
 static ext4_mount_t *e4_active;
 static bool e4_engine_busy;
+static void e4_engine_owner(ext4_engine_t *e);
+static int e4_journal_drain(ext4_mount_t *fs,bool finish);
+static bool e4_mounted_orphan(ext4_mount_t *fs,uint32_t ino);
+static int e4_journal_refresh(vfs_node_t *node);
 static uint16_t e4_u16(const uint8_t *p) { return p[0] | (uint16_t)p[1] << 8; }
 static uint32_t e4_u32(const uint8_t *p) { return e4_u16(p) | (uint32_t)e4_u16(p+2) << 16; }
 static void e4_p32(uint8_t *p, uint32_t v) {
@@ -273,7 +279,7 @@ static int e4_inode(ext4_mount_t *fs,uint32_t ino,e4_inode_t *out) {
         e4_u32(raw+104) || e4_u16(raw+118)) return -VFS_EOPNOTSUPP;
     uint64_t size=e4_u32(raw+4) | (uint64_t)e4_u32(raw+108)<<32;
     if (size>8ULL*1024*1024*1024) return -VFS_EFBIG;
-    if (!e4_u16(raw+26)) return -VFS_EIO;
+    if (!e4_u16(raw+26) && fs->orphan_access!=ino) return -VFS_EIO;
     *out=(e4_inode_t){.fs=fs,.ino=ino,.generation=generation,.size=size,.mode=mode};
     memcpy(out->extent,raw+40,60);
     return 0;
@@ -426,12 +432,22 @@ static vfs_node_t *e4_create(vfs_node_t *,const char *,vfs_node_type_t);
 static int e4_unlink(vfs_node_t *,const char *);
 static int e4_rename(vfs_node_t *,const char *,vfs_node_t *,const char *);
 static int e4_truncate(vfs_node_t *,uint64_t);
+static int64_t e4_jwrite(vfs_node_t *,uint64_t *,bool,const void *,size_t);
+static vfs_node_t *e4_jcreate(vfs_node_t *,const char *,vfs_node_type_t);
+static int e4_junlink(vfs_node_t *,const char *);
+static int e4_jrename(vfs_node_t *,const char *,vfs_node_t *,const char *);
+static int e4_jtruncate(vfs_node_t *,uint64_t);
+static void e4_jclose(vfs_node_t *);
 static int e4_rw_workspace(ext4_mount_t *);
 static int64_t e4_read(vfs_node_t *node,uint64_t off,void *buf,size_t len) {
     if (!node || (!buf && len)) return -VFS_EINVAL;
     e4_inode_t *in=node->fs_private;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
-    if (((e4_node_t *)node)->removed) { spin_unlock_irqrestore(&e4_lock,flags); return -VFS_ENOENT; }
+    if (((e4_node_t *)node)->removed && !in->fs->journal_mounted) { spin_unlock_irqrestore(&e4_lock,flags); return -VFS_ENOENT; }
+    if (in->fs->journal_mounted) {
+        int status=e4_journal_refresh(node);
+        if (status) { spin_unlock_irqrestore(&e4_lock,flags);return status; }
+    }
     if (!len || off>=in->size) { spin_unlock_irqrestore(&e4_lock,flags); return 0; }
     if (len>65536) len=65536;
     if (len>in->size-off) len=(size_t)(in->size-off);
@@ -456,6 +472,9 @@ static int e4_readdir(vfs_node_t *node,uint64_t cookie,void *out) {
     if (!node || !out) return -VFS_EINVAL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
     e4_inode_t *in=node->fs_private, child; uint32_t ino;
+    if (in->fs->journal_mounted) {
+        int r=e4_journal_refresh(node);if (r) { spin_unlock_irqrestore(&e4_lock,flags);return r; }
+    }
     if (in->fs->engine) in->map=NULL;
     int r=e4_scan(in,NULL,cookie,out,&ino);
     if (r==1) {
@@ -477,6 +496,11 @@ static void e4_setup(e4_node_t *n, e4_inode_t *in) {
         n->node.open=e4_open; n->node.close=e4_close;
         if (in->mode==0x4000) { n->node.create=e4_create; n->node.unlink=e4_unlink; n->node.rename=e4_rename; }
         else { n->node.write=e4_write; n->node.truncate=e4_truncate; }
+        if (in->fs->journal_mounted) {
+            n->node.close=e4_jclose;
+            if (in->mode==0x4000) { n->node.create=e4_jcreate;n->node.unlink=e4_junlink;n->node.rename=e4_jrename; }
+            else { n->node.write=e4_jwrite;n->node.truncate=e4_jtruncate; }
+        }
     }
     if (n->node.type==VFS_DIRECTORY) { n->node.lookup=e4_lookup; n->node.readdir=e4_readdir; }
     else n->node.read=e4_read;
@@ -485,6 +509,7 @@ static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name) {
     if (!parent || !name || !*name || strlen(name)>=VFS_MAX_NAME) return NULL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
     e4_inode_t *in=parent->fs_private, child; ext4_mount_t *fs=in->fs; uint32_t ino;
+    if (fs->journal_mounted && e4_journal_refresh(parent)) { spin_unlock_irqrestore(&e4_lock,flags);return NULL; }
     vfs_dirent_t entry;
     if (fs->engine) in->map=NULL;
     int r=e4_scan(in,name,0,&entry,&ino); vfs_node_t *result=NULL;
@@ -521,7 +546,8 @@ static void e4_discard(ext4_mount_t *fs) {
     while (fs->maps) { e4_map_t *map=fs->maps; fs->maps=map->next; kfree(map); }
     kfree(fs->journal_reserved);kfree(fs->rw_map); kfree(fs->engine); kfree(fs->reserved); kfree(fs->gd); kfree(fs);
 }
-static const unsigned e4_journal_identity[][2]={{0,8},{20,24},{76,4},{88,2},{92,4},{100,20},{208,28},{254,2},{373,1}};
+/* s_last_orphan (232) is mutable transaction state, not journal identity. */
+static const unsigned e4_journal_identity[][2]={{0,8},{20,24},{76,4},{88,2},{92,4},{100,20},{208,24},{254,2},{373,1}};
 static bool e4_journal_backup(ext4_mount_t *fs,uint8_t *sb) {
     /* Recovery-only bootstrap after a sector-atomic partial SB checkpoint.
      * A checksummed group-1 backup must corroborate every immutable identity
@@ -545,11 +571,14 @@ static int e4_admit(ext4_mount_t *fs) {
     if (e4_u32(sb+92)!=(fs->journal_bootstrap ? 4u : 0u) ||
         (fs->journal_bootstrap ? (e4_u32(sb+96)&~4u)!=0x42 : e4_u32(sb+96)!=0x42) || e4_u32(sb+100)!=0x403 ||
         e4_u32(sb+72) || e4_u32(sb+76)!=1 || e4_u16(sb+88)!=256 || sb[373]!=1 ||
-        (!fs->journal_bootstrap && e4_u32(sb+224)) || e4_u32(sb+228) || e4_u32(sb+232) || e4_u16(sb+206)) return -VFS_EOPNOTSUPP;
+        (!fs->journal_bootstrap && e4_u32(sb+224)) || e4_u32(sb+228) ||
+        (!fs->journal_bootstrap && e4_u32(sb+232)) || e4_u16(sb+206)) return -VFS_EOPNOTSUPP;
     if (fs->journal_bootstrap) {
         fs->journal_ino=e4_u32(sb+224);
-        if (!fs->journal_ino || fs->journal_ino>e4_u32(sb) || e4_u32(sb+228) || e4_u32(sb+232) ||
+        if (!fs->journal_ino || fs->journal_ino>e4_u32(sb) || e4_u32(sb+228) ||
             e4_u16(sb+58)>1) return -VFS_EIO;
+        uint32_t orphan=e4_u32(sb+232);
+        if (orphan && (orphan<11 || orphan>e4_u32(sb) || orphan==fs->journal_ino)) return -VFS_EIO;
     } else if (e4_u16(sb+58)!=1 || e4_u32(sb+336) || e4_u32(sb+340) || e4_u32(sb+344)) return -VFS_EIO;
     uint32_t shift=e4_u32(sb+24);
     if (shift>2 || e4_u32(sb+28)!=shift) return -VFS_EOPNOTSUPP;
@@ -661,6 +690,8 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 #include "ext4_journal.inc"
 #include "ext4_transaction.inc"
 #include "ext4_namespace.inc"
+#include "ext4_orphan.inc"
+#include "ext4_mount_journal.inc"
 
 static size_t e4_profile_text(char *out,size_t cap,size_t n,const char *text) {
     while (*text) { if (n<cap) out[n++]=*text; text++; } return n;

@@ -24,6 +24,20 @@
 typedef struct ext4_mount ext4_mount_t;
 int ext4_mount_ro(block_dev_t *partition, const char *path, ext4_mount_t **out);
 int ext4_mount_rw(block_dev_t *partition, const char *path, ext4_mount_t **out);
+/* Phase 8.5 test admission only. Never used by production USB dispatch.
+ * Caller owns an explicit disposable partition exclusively and admits both
+ * recovery writes and RW durability. Validate replayed ownership/namespace
+ * before recovery I/O, recover orphans, durably activate RECOVER, then publish.
+ * Rejection before admitted recovery writes nothing; I/O failure can leave a
+ * recoverable prefix, never a published mount. Existing E4-A admission stays
+ * unchanged. Bounds are the Phase 8.4 profile; no orphan_file/hard links. */
+typedef struct { bool disposable_fixture, writable, recovery; } ext4_journal_admission_t;
+int ext4_mount_journal_fixture(block_dev_t *partition,const char *path,
+                               ext4_journal_admission_t admission,ext4_mount_t **out);
+/* Existing SYS_SYNC / shutdown routing fallback for the explicit fixture
+ * mount only. No fixture: sync returns EROFS; shutdown succeeds as a no-op. */
+int ext4_sync_journal_fixture(void);
+int ext4_freeze_journal_fixture(void);
 
 /* Mid-session: commit/checkpoint (when journaled), then device barrier.
  * Does not freeze or mark clean. Failed barrier taints the mount. */
@@ -33,7 +47,8 @@ int ext4_sync(ext4_mount_t *mount);
 size_t ext4_io_profile_format(char *out,size_t capacity);
 
 /* Shutdown-only: stop new mutations, drain, barrier, then mark clean only
- * if healthy. A failure leaves frozen/tainted state and never claims clean.
+ * if healthy. A failure leaves the mount frozen and never reports clean.
+ * Uncertain I/O taints; staging failure or pinned orphans permit a later retry.
  * Mount objects/VFS nodes stay alive; no unmount/lifetime change is implied. */
 int ext4_freeze_and_sync(ext4_mount_t *mount);
 

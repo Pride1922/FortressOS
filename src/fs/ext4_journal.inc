@@ -5,7 +5,13 @@ typedef struct {
     ext4_mount_t *fs;
     uint8_t sb[1024], inode[256];
     uint32_t inode_block, inode_offset;
+    bool lifecycle;
 } e4_journal_guard_t;
+static void e4_journal_owner(void *context) {
+    e4_journal_guard_t *g=context;
+    if (g->fs->journal_mounted) spin_debug_assert_held(&e4_lock);
+    else spin_debug_assert_unheld();
+}
 static bool e4_journal_home(void *context,uint32_t block,const uint8_t *bytes) {
     e4_journal_guard_t *g=context;ext4_mount_t *fs=g->fs;
     /* Include extent-tree nodes as well as journal data in self-write denial. */
@@ -16,7 +22,13 @@ static bool e4_journal_home(void *context,uint32_t block,const uint8_t *bytes) {
         const uint8_t *sb=bytes+1024%fs->bs;
         for (unsigned i=0;i<sizeof(e4_journal_identity)/sizeof(e4_journal_identity[0]);i++)
             if (memcmp(sb+e4_journal_identity[i][0],g->sb+e4_journal_identity[i][0],e4_journal_identity[i][1])) return false;
-        if (e4_u32(sb+96)!=e4_u32(g->sb+96)) return false;
+        bool transition=g->lifecycle && (fs->journal_bootstrap || fs->state_transition);
+        if (transition) {
+            if ((e4_u32(sb+96)&~4u)!=(e4_u32(g->sb+96)&~4u) ||
+                ((e4_u32(sb+96)&4) ? e4_u16(sb+58)!=0 : (e4_u16(sb+58)!=1 || e4_u32(sb+232)))) return false;
+        } else if (e4_u32(sb+96)!=e4_u32(g->sb+96)) return false;
+        uint32_t orphan=e4_u32(sb+232);
+        if (orphan && (orphan<11 || orphan>fs->inodes || orphan==fs->journal_ino)) return false;
         if (e4_u32(sb+1020)!=e4_crc(UINT32_MAX,sb,1020)) return false;
     }
     if (block>=fs->first+1 && block-fs->first-1<fs->gdt_blocks) {
@@ -58,7 +70,8 @@ static int e4_journal_source(ext4_mount_t *fs,e4_journal_guard_t *guard,
     memcpy(fs->journal_reserved,fs->physical,fs->physical_count*sizeof(e4_range_t));
     fs->journal_ranges=fs->physical_count;
     *source=(jbd2_source_t){.block_size=fs->bs,.filesystem_blocks=fs->blocks,
-        .journal_blocks=length,.journal_map=map,.validate_home=e4_journal_home,.context=guard};
+        .journal_blocks=length,.journal_map=map,.validate_home=e4_journal_home,.context=guard,
+        .assert_writer_owner=e4_journal_owner};
     memcpy(source->uuid,guard->sb+104,16);return 0;
 }
 int ext4_journal_analyze(block_dev_t *dev,jbd2_plan_t **out,jbd2_report_t *report) {

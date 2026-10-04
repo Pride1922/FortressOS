@@ -1,17 +1,23 @@
-/* Phase-7 single-owner writer. No spinlock is held across block callbacks.
- * Filesystem transaction coverage and mount policy are Phase 8. */
+/* Single-owner writer. Default workbench calls are unlocked. The explicit
+ * mounted EXT4 owner uses ranked IRQ-save exclusion and bounded polled I/O;
+ * its ownership assertion never permits sleeping/scheduling/IF enables. */
 struct jbd2_writer {
     jbd2_plan_t *io;
     uint32_t *map, head, sequence, end;
     uint8_t uuid[16];
     bool (*validate_home)(void *,uint32_t,const uint8_t *);
     void *context;
+    void (*assert_owner)(void *);
     jbd2_credits_t credits;
     jbd2_write_state_t state;
     unsigned metadata_count, data_count, revoke_count;
     j_image_t metadata[JBD2_WRITE_IMAGES_MAX], data[JBD2_WRITE_IMAGES_MAX];
     uint32_t revokes[JBD2_WRITE_IMAGES_MAX];
 };
+static void jw_owner(jbd2_writer_t *w) {
+    if (w && w->assert_owner) w->assert_owner(w->context);
+    else spin_debug_assert_unheld();
+}
 static void jw_discard(jbd2_writer_t *w) {
     for (unsigned i=0;i<w->metadata_count;i++) kfree(w->metadata[i].bytes);
     for (unsigned i=0;i<w->data_count;i++) kfree(w->data[i].bytes);
@@ -38,6 +44,7 @@ int jbd2_writer_open(block_dev_t *dev,const jbd2_source_t *s,bool admitted,jbd2_
     w->map=kmalloc(p->length*sizeof(uint32_t));if (!w->map) { jbd2_writer_close(w);return -VFS_ENOMEM; }
     memcpy(w->map,s->journal_map,p->length*sizeof(uint32_t));memcpy(w->uuid,s->uuid,16);
     w->validate_home=s->validate_home;w->context=s->context;w->state=JBD2_WRITE_IDLE;
+    w->assert_owner=s->assert_writer_owner;
     *out=w;return 0;
 }
 static unsigned jw_blocks(jbd2_writer_t *w,unsigned images,unsigned revokes) {
@@ -50,7 +57,7 @@ static int jw_staging(jbd2_writer_t *w) {
     return w->state==JBD2_WRITE_STAGING ? 0 : -VFS_EINVAL;
 }
 int jbd2_writer_begin(jbd2_writer_t *w,jbd2_credits_t c) {
-    spin_debug_assert_unheld();if (!w) return -VFS_EINVAL;
+    jw_owner(w);if (!w) return -VFS_EINVAL;
     if (w->state==JBD2_WRITE_FAILED) return -VFS_EIO;
     if (w->state!=JBD2_WRITE_IDLE) return -VFS_EAGAIN;
     if (c.metadata>64 || c.ordered_data>64 || c.revokes>64) return -VFS_EFBIG;
@@ -75,13 +82,13 @@ static int jw_stage(jbd2_writer_t *w,uint32_t block,const void *bytes,bool data)
     memcpy(copy,bytes,w->io->bs);own[*count]=(j_image_t){block,0,copy};(*count)++;return 0;
 }
 int jbd2_writer_metadata(jbd2_writer_t *w,uint32_t b,const void *v) {
-    spin_debug_assert_unheld();return jw_stage(w,b,v,false);
+    jw_owner(w);return jw_stage(w,b,v,false);
 }
 int jbd2_writer_data(jbd2_writer_t *w,uint32_t b,const void *v) {
-    spin_debug_assert_unheld();return jw_stage(w,b,v,true);
+    jw_owner(w);return jw_stage(w,b,v,true);
 }
 int jbd2_writer_revoke(jbd2_writer_t *w,uint32_t block) {
-    spin_debug_assert_unheld();int r=jw_staging(w);if (r) return r;
+    jw_owner(w);int r=jw_staging(w);if (r) return r;
     if (!j_target(w->io,block)) return -VFS_EINVAL;
     for (unsigned i=0;i<w->metadata_count;i++) if (w->metadata[i].block==block) return -VFS_EINVAL;
     for (unsigned i=0;i<w->data_count;i++) if (w->data[i].block==block) return -VFS_EINVAL;
@@ -90,7 +97,7 @@ int jbd2_writer_revoke(jbd2_writer_t *w,uint32_t block) {
     w->revokes[w->revoke_count++]=block;return 0;
 }
 int jbd2_writer_abort(jbd2_writer_t *w) {
-    spin_debug_assert_unheld();int r=jw_staging(w);if (r) return r;
+    jw_owner(w);int r=jw_staging(w);if (r) return r;
     jw_discard(w);w->state=JBD2_WRITE_IDLE;return 0;
 }
 static void jw_header(jbd2_writer_t *w,uint8_t *b,unsigned type) {
@@ -104,7 +111,7 @@ static bool jw_log(jbd2_writer_t *w,uint32_t *cursor,uint8_t *b) {
     *cursor=j_next(w->io,*cursor);return true;
 }
 int jbd2_writer_commit(jbd2_writer_t *w) {
-    spin_debug_assert_unheld();int r=jw_staging(w);if (r) return r;
+    jw_owner(w);int r=jw_staging(w);if (r) return r;
     if (!w->metadata_count && !w->revoke_count) return -VFS_EINVAL;
     jbd2_plan_t *p=w->io;uint8_t *b=p->scratch,*data=p->data,seq[4];j_put(seq,w->sequence);
     w->state=JBD2_WRITE_COMMITTING;
@@ -148,7 +155,7 @@ fail:
     w->state=JBD2_WRITE_FAILED;return -VFS_EIO;
 }
 int jbd2_writer_checkpoint(jbd2_writer_t *w) {
-    spin_debug_assert_unheld();if (!w) return -VFS_EINVAL;
+    jw_owner(w);if (!w) return -VFS_EINVAL;
     if (w->state==JBD2_WRITE_FAILED) return -VFS_EIO;
     if (w->state!=JBD2_WRITE_DURABLE) return -VFS_EINVAL;
     jbd2_plan_t *p=w->io;w->state=JBD2_WRITE_CHECKPOINTING;

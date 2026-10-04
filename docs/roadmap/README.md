@@ -20,6 +20,8 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [ext4-phase8-5.md](ext4-phase8-5.md) | Explicit disposable journal mounts with validated recovery before publication, real VFS lifetimes, SYS_SYNC and shutdown clean-state transactions; production journaled RW remains disabled. |
+| [ext4-phase8-4.md](ext4-phase8-4.md) | Exclusive traditional orphan/shrink recovery, bounded in-place reclamation and revokes, open-unlink handle lifetimes and disposable host/Linux verification; production journaled RW remains disabled. |
 | [ext4-metadata-cache.md](ext4-metadata-cache.md) | Bounded coherent RW metadata cache, validation on hits and commit/failure containment; Dell physical acceptance PASS, 16 MiB 10.15 → 7.06 s, reboot/Mint hashes and unmounted fsck exit 0. |
 | [ext4-phase7.md](ext4-phase7.md) | Ordered JBD2 writer/checkpoint workbench, credits/states/circular reuse, 12 geometry/placement cases and Linux replay/fsck; production VFS journaling remains Phase 8. |
 | [ext4-phase6.md](ext4-phase6.md) | Bounded JBD2 recovery workbench, explicit replay admission, host crash/restart model, 12 geometry/source cases and 48 zero-write rejections; production journal mounts remain disabled. |

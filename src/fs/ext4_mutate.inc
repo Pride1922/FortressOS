@@ -21,7 +21,17 @@ struct ext4_engine {
     uint32_t revokes[64];
     unsigned revoke_count;
     bool file_enabled, file_planning, namespace_enabled;
+    bool orphan_enabled, orphan_recovery_required;
+    uint32_t orphans[64];
+    unsigned orphan_count;
+    uint64_t handle_serial;
+    struct { uint64_t token, offset; uint32_t ino, generation, refs; } handles[16];
+    uint8_t orphan_tree[2][4096]; /* No recursive 4KiB stack buffers. */
 };
+static void e4_engine_owner(ext4_engine_t *e) {
+    if (e && e->fs->journal_mounted) spin_debug_assert_held(&e4_lock);
+    else spin_debug_assert_unheld();
+}
 static int e4_transaction_commit(ext4_engine_t *e);
 static void e4_p16(uint8_t *p,uint16_t n) { p[0]=(uint8_t)n; p[1]=(uint8_t)(n>>8); }
 static void e4_set_bit(uint8_t *map,uint32_t bit,bool value) {
@@ -541,7 +551,7 @@ int ext4_engine_open(block_dev_t *dev,ext4_engine_t **out) {
     if (r) { e4_discard(fs); kfree(e); } return r;
 }
 void ext4_engine_abort(ext4_engine_t *e) {
-    spin_debug_assert_unheld(); if (!e) return;
+    e4_engine_owner(e); if (!e) return;
     if (e->writer) {
         if (jbd2_writer_state(e->writer)==JBD2_WRITE_STAGING) (void)jbd2_writer_abort(e->writer);
         e->ready=false; e->error=0; e->images=e->revoke_count=0; return;
@@ -566,10 +576,15 @@ int ext4_engine_finish(ext4_engine_t *e) {
     }
     spin_unlock_irqrestore(&e4_lock,flags); return r;
 }
+static void e4_engine_dispose(ext4_engine_t *e) {
+    spin_debug_assert_unheld();if (!e) return;
+    jbd2_writer_close(e->writer); kfree(e->journal_guard);
+    if (e->fs->engine==e) e->fs->engine=NULL;
+    e4_discard(e->fs);kfree(e);
+}
 void ext4_engine_close(ext4_engine_t *e) {
     spin_debug_assert_unheld(); if (!e) return;
-    jbd2_writer_close(e->writer); kfree(e->journal_guard);
+    e4_engine_dispose(e);
     uint64_t flags=spin_lock_irqsave(&e4_lock); e4_engine_busy=false;
     spin_unlock_irqrestore(&e4_lock,flags);
-    e4_discard(e->fs); kfree(e);
 }

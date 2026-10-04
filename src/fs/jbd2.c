@@ -164,15 +164,44 @@ success:
 fail:
     jbd2_release(p);return r;
 }
+static bool j_revoked(const jbd2_plan_t *p,unsigned i) {
+    for (unsigned k=0;k<p->revokes;k++)
+        if (p->revoke[k].block==p->image[i].block && p->revoke[k].ordinal>=p->image[i].ordinal) return true;
+    return false;
+}
+bool jbd2_preview_read_sector(jbd2_plan_t *p,uint64_t lba,void *bytes) {
+    spin_debug_assert_unheld();
+    if (!p || p->poisoned || !bytes || lba>=p->dev->sector_count) return false;
+    if (!block_read_sector(p->dev,lba,bytes)) return false;
+    uint64_t lo=lba*p->dev->sector_size,hi=lo+p->dev->sector_size;
+    for (unsigned i=0;i<=p->images;i++) {
+        uint32_t block;const uint8_t *source;
+        if (i<p->images) {
+            if (j_revoked(p,i)) continue;
+            block=p->image[i].block;source=p->image[i].bytes;
+        } else {
+            block=p->super_block;memcpy(p->scratch,p->super,p->bs);
+            if (j_be(p->super+28)) {
+                j_put(p->scratch+24,p->report.next_sequence);j_put(p->scratch+28,0);j_put(p->scratch+88,p->first);
+                j_put(p->scratch+252,0);j_put(p->scratch+252,j_crc(UINT32_MAX,p->scratch,1024));
+            }
+            source=p->scratch;
+        }
+        uint64_t start=(uint64_t)block*p->bs,end=start+p->bs;
+        if (start<hi && end>lo) {
+            uint64_t a=start>lo ? start : lo,b=end<hi ? end : hi;
+            memcpy((uint8_t *)bytes+a-lo,source+a-start,(size_t)(b-a));
+        }
+    }
+    return true;
+}
 int jbd2_replay(jbd2_plan_t *p,bool admitted) {
     spin_debug_assert_unheld();if (!p) return -VFS_EINVAL;
     if (!admitted || !p->dev->write_sector || !p->dev->flush) return -VFS_EROFS;
     if (p->poisoned) return -VFS_EIO;
     if (p->applied || !j_be(p->super+28)) return 0;
     for (unsigned i=0;i<p->images;i++) {
-        bool revoked=false;
-        for (unsigned k=0;k<p->revokes;k++) if (p->revoke[k].block==p->image[i].block && p->revoke[k].ordinal>=p->image[i].ordinal) revoked=true;
-        if (!revoked && !j_io(p,p->image[i].block,p->image[i].bytes,true)) goto fail;
+        if (!j_revoked(p,i) && !j_io(p,p->image[i].block,p->image[i].bytes,true)) goto fail;
     }
     if (!block_flush(p->dev)) goto fail;
     j_put(p->super+24,p->report.next_sequence);j_put(p->super+28,0);j_put(p->super+88,p->first);

@@ -98,6 +98,7 @@ static void simulate_crash(void) {
 
 #include "../src/fs/vfs.c"
 #include "../src/fs/ext2.c"
+static size_t root_live;
 
 static void reset(void) {
     while (live) free(allocations[--live]);
@@ -109,6 +110,7 @@ static void reset(void) {
     flush_failure = false;
     fail_write_at = fail_flush_at = 0;
     vfs_init();
+    root_live=live;
 }
 
 static void rejected_field(block_dev_t *dev, size_t offset, uint32_t value) {
@@ -141,7 +143,7 @@ static void review_regressions(block_dev_t *dev) {
             fail_after = test - 1;
             assert(!ext2_mount_rw(dev, "/mnt"));
             assert(!g_mounted_ext2 && !vfs_lookup("/mnt"));
-            assert(writes == w && flushes == f && live == 1);
+            assert(writes == w && flushes == f && live == root_live);
             assert(!memcmp(disk, original, disk_size));
             continue;
         }
@@ -149,7 +151,7 @@ static void review_regressions(block_dev_t *dev) {
             if (test == 4) fail_flush_at = flushes + 1;
             else fail_write_at = writes + 1;
             assert(!ext2_mount_rw(dev, "/mnt"));
-            assert(!g_mounted_ext2 && !vfs_lookup("/mnt") && live == 1);
+            assert(!g_mounted_ext2 && !vfs_lookup("/mnt") && live == root_live);
             w = writes; f = flushes;
             assert(ext2_sync_all());
             assert(writes == w && flushes == f);
@@ -295,17 +297,17 @@ int main(int argc, char **argv) {
     rejected_field(&dev, gdt + 8, UINT32_MAX);   /* inode table */
     uint64_t old_capacity = dev.sector_count;
     dev.sector_count = 1;
-    assert(!ext2_mount(&dev, "/mnt") && live == 1);
+    assert(!ext2_mount(&dev, "/mnt") && live == root_live);
     dev.sector_count = UINT64_MAX;
-    assert(!ext2_mount(&dev, "/mnt") && live == 1);
+    assert(!ext2_mount(&dev, "/mnt") && live == root_live);
     dev.sector_count = old_capacity;
     io_failure = true;
-    assert(!ext2_mount(&dev, "/mnt") && live == 1);
+    assert(!ext2_mount(&dev, "/mnt") && live == root_live);
     io_failure = false;
     /* All three allocations in mount fail transactionally. */
     for (int i = 0; i < 3; i++) {
         fail_after = i;
-        assert(!ext2_mount(&dev, "/mnt") && live == 1);
+        assert(!ext2_mount(&dev, "/mnt") && live == root_live);
     }
     fail_after = -1;
     assert(ext2_mount(&dev, "/mnt"));
