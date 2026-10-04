@@ -219,7 +219,7 @@ static void windows_and_reno(void) {
     uint32_t threshold=a.ssthresh;
     assert(send_one(&a,&b,false)); assert(send_one(&b,&a,false));
     assert(!a.fast_recovery && a.cwnd==threshold); settle();
-    for (unsigned batch=0; batch<3; ++batch) {
+    for (unsigned batch=0; batch<7; ++batch) {
         for (unsigned i=0; i<8; ++i) assert(tcp_conn_queue(&a,offered,sizeof(offered))==1024);
         settle();
     }
@@ -495,7 +495,38 @@ static void simulate(bool faults, size_t total, unsigned seed) {
         produced[0],produced[1],received[0],received[1],a.state,b.state,a.tx_count,b.tx_count,a.rx_count,b.rx_count);
     assert(!"bounded simulation did not complete");
 }
+static void window_capping_and_buffer_limits(void) {
+    setup(false,100,200);
+    assert(sizeof(a.rx)==65536);
+    assert(sizeof(a.rx_valid)==8192);
+    assert(TCP_RXBUF_MAX==65536U);
+    assert(TCP_WINDOW_MAX==65535U);
+
+    /* Empty buffer: advertised window returns 65535, never 0 due to truncation */
+    tcp_action_t act;
+    assert(!tcp_conn_prepare(&a,&act,scratch,sizeof(scratch)));
+    assert(act.header.window==65535);
+
+    /* Free space 65535 (1 byte occupied) -> window 65535 */
+    a.rx_count=1; a.action_pending=false;
+    assert(!tcp_conn_prepare(&a,&act,scratch,sizeof(scratch)));
+    assert(act.header.window==65535);
+
+    /* Free space 65534 (2 bytes occupied) -> window 65534 */
+    a.rx_count=2; a.action_pending=false;
+    assert(!tcp_conn_prepare(&a,&act,scratch,sizeof(scratch)));
+    assert(act.header.window==65534);
+
+    /* Buffer holds 65536 bytes; when completely full, window returns 0 */
+    a.rx_count=65536; a.action_pending=false;
+    assert(!tcp_conn_prepare(&a,&act,scratch,sizeof(scratch)));
+    assert(act.header.window==0);
+
+    puts("[PASS] window capped at 65535 on empty buffer, returns 0 on full 65536 buffer, no truncation");
+}
+
 int main(void) {
+    window_capping_and_buffer_limits();
     transactions(); partial_ack(); receive_cases(); timers(); reset_and_close();
     windows_and_reno(); pool_cases(); control_edges(); control_loss(); hostile_inputs();
     simulate(false,2*1024*1024,0);

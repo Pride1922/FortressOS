@@ -14,7 +14,9 @@ static void changed(tcp_conn_t *c) {
     ++c->revision; c->action_pending=false;
 }
 static uint16_t window(const tcp_conn_t *c) {
-    return c->eof ? 0 : (uint16_t)(TCP_RXBUF_MAX-c->rx_count);
+    uint32_t free = TCP_RXBUF_MAX - c->rx_count;
+    if (free > TCP_WINDOW_MAX) free = TCP_WINDOW_MAX;
+    return c->eof ? 0 : (uint16_t)free;
 }
 static tcp_header_t header(const tcp_conn_t *c) {
     return (tcp_header_t){.source=c->tuple.local_port,.destination=c->tuple.remote_port,
@@ -325,7 +327,7 @@ int tcp_conn_consume(tcp_conn_t *c, size_t len) {
     changed(c);
     for (size_t i=0; i<len; ++i) setbit(c,(c->rx_head+(unsigned)i)%TCP_RXBUF_MAX,false);
     c->rx_head=(uint16_t)((c->rx_head+len)%TCP_RXBUF_MAX);
-    c->rx_count=(uint16_t)(c->rx_count-len); c->rx_sequence+=(uint32_t)len;
+    c->rx_count=c->rx_count-(uint32_t)len; c->rx_sequence+=(uint32_t)len;
     if (!c->eof && c->state!=TCP_CLOSED) c->ack_pending=true;
     return 0;
 }

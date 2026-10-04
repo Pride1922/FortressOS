@@ -5,7 +5,8 @@
 #define TCP_CB_MAX 8U
 #define TCP_TIMEWAIT_MAX 16U
 #define TCP_TXBUF_MAX 8192U
-#define TCP_RXBUF_MAX 32768U
+#define TCP_RXBUF_MAX 65536U   /* buffer size: power of two for fast modulo */
+#define TCP_WINDOW_MAX 65535U  /* maximum advertised window (16-bit field) */
 #define TCP_RETX_MAX 32U
 #define TCP_MSS_MAX 1460U
 #define TCP_TIMEWAIT_MS 240000U /* 2 * explicitly chosen 120-second MSL. */
@@ -52,7 +53,8 @@ typedef struct {
     uint32_t rcv_nxt, rx_sequence, tx_sequence;
     uint32_t cwnd, ssthresh, ca_acked, srtt_ms, rttvar_ms, rto_ms;
     uint32_t fin_sequence, remote_fin_sequence;
-    uint16_t local_mss, peer_mss, mss, tx_head, tx_count, rx_head, rx_count;
+    uint16_t local_mss, peer_mss, mss, tx_head, tx_count, rx_head;
+    uint32_t rx_count;
     uint8_t retx_count, retries, dupacks, persist_backoff;
     bool syn_sent, syn_ack, ack_pending, retransmit_pending, retransmit_timeout;
     bool want_fin, fin_sent, fin_acked, remote_fin_pending, eof;

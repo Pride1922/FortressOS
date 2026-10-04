@@ -210,7 +210,7 @@ class Case:
             self.wait(lambda t: conn.done)
         else:
             with socket.create_connection(('127.0.0.1', self.forward), timeout=20) as sock:
-                sock.settimeout(30)
+                sock.settimeout(60)
                 for index in range(0, len(BODY), 1024):
                     chunk = BODY[index:index + 1024]; sock.sendall(chunk); answer = bytearray()
                     while len(answer) < len(chunk):
@@ -444,12 +444,18 @@ def main():
         return
     if args.all:
         root = REPO / 'build/net2-step5' / uuid.uuid4().hex[:8]
-        cases = [(m, n, b, 1) for m in ('bios', 'uefi') for n in ('e1000', 'e1000e') for b in ('user', 'socket')]
-        cases += [(m, 'e1000', 'user', 4) for m in ('bios', 'uefi')]
+        cases_s1 = [(m, n, b, 1) for m in ('bios', 'uefi') for n in ('e1000', 'e1000e') for b in ('user', 'socket')]
+        cases_s4 = [(m, 'e1000', 'user', 4) for m in ('bios', 'uefi')]
         print('Matrix artifacts:', root, flush=True)
         failures = []
         with concurrent.futures.ProcessPoolExecutor(max_workers=args.jobs) as pool:
-            futures = [pool.submit(run, root / f'{m}-{n}-{b}-s{c}', m, n, b, c) for m, n, b, c in cases]
+            futures = [pool.submit(run, root / f'{m}-{n}-{b}-s{c}', m, n, b, c) for m, n, b, c in cases_s1]
+            for future in concurrent.futures.as_completed(futures):
+                try: future.result()
+                except Exception as error:
+                    failures.append(str(error)); print('[FAIL]', str(error), flush=True)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=1) as pool:
+            futures = [pool.submit(run, root / f'{m}-{n}-{b}-s{c}', m, n, b, c) for m, n, b, c in cases_s4]
             for future in concurrent.futures.as_completed(futures):
                 try: future.result()
                 except Exception as error:

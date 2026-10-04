@@ -456,7 +456,8 @@ void net_tcp_tick(uint64_t ticks, bool online) {
             }
             tcp_conn_tick(c,clock_ms);
             if (!online && !e->error) e->error=SYSCALL_EIO;
-            uint64_t observed=c->rx_count | ((uint64_t)c->tx_count<<16) |
+            uint64_t rx_token=(c->rx_count&0xffffU)^(c->rx_count>>16);
+            uint64_t observed=rx_token | ((uint64_t)c->tx_count<<16) |
                 ((uint64_t)c->state<<32) | ((uint64_t)(uint8_t)(-c->error)<<40) |
                 ((uint64_t)c->eof<<48) | ((uint64_t)c->want_fin<<49) |
                 ((uint64_t)(uint8_t)(-e->error)<<50) | ((uint64_t)ready<<58);
