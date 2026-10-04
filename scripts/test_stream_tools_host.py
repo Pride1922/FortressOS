@@ -39,3 +39,14 @@ if __name__ == "__main__":
             ], cwd=REPO, check=True)
             subprocess.run([str(grep_exe)], check=True, timeout=30)
 
+            uniq_exe = Path(tmp) / "uniq_host"
+            subprocess.run([
+                "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-DTOOL_HOST_TEST",
+                "-Isrc/include", "-Isrc/fs", "-Iuser/tools",
+                "tests/uniq_host.c", "user/tools/common.c", "user/tools/uniq.c",
+                "-o", str(uniq_exe)
+            ], cwd=REPO, check=True)
+            subprocess.run([str(uniq_exe)], check=True, timeout=30)
+
+

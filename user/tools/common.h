@@ -42,4 +42,5 @@ int tail_main(int argc, char **argv);
 int wc_main(int argc, char **argv);
 int tar_main(int argc, char **argv);
 int grep_main(int argc, char **argv);
+int uniq_main(int argc, char **argv);
 #endif

@@ -821,6 +821,29 @@ echo "hello world" | grep -q "world"
 
 ---
 
+### `uniq`
+**Syntax:** `uniq [OPTIONS] [INPUT [OUTPUT]]`  
+**Path:** `/bin/uniq`  
+**Description:** Filters adjacent matching lines from `INPUT` (or standard input) and writes to `OUTPUT` (or standard output). Operates on arbitrary stream lengths with zero heap allocation using a dual-line sliding BSS window.  
+**Options:**
+* `-c`: Prefix lines by the number of occurrences.
+* `-d`: Only print duplicate lines.
+* `-u`: Only print unique lines.
+* `-i`: Ignore differences in case when comparing.
+* `--help`: Display usage summary and exit.
+* `--`: Ends option scanning.
+* `-`: Read from standard input or write to standard output.  
+**Examples:**
+```sh
+uniq /etc/motd
+cat /etc/network.conf | uniq -c
+ps | uniq -u
+uniq -d duplicate_words.txt
+uniq input.txt output.txt
+```
+
+---
+
 ### `nano`
 **Syntax:** `nano [path]`  
 **Path:** `/bin/nano`  

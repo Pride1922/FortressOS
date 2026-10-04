@@ -494,7 +494,7 @@ $(USER_UDP_ELFS): $(BUILD_DIR)/%.elf: $(BUILD_DIR)/%.o user/tools/start.asm user
 $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)/net/udp.o $(BUILD_DIR)/net/net_ipv4.o: CFLAGS += -Os -Wframe-larger-than=512 -fstack-usage
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
-STREAM_TOOLS := cat head tail wc grep
+STREAM_TOOLS := cat head tail wc grep uniq
 STREAM_TOOL_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(STREAM_TOOLS)))
 CHECKSUM_TOOLS := md5sum sha256sum
 CHECKSUM_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(CHECKSUM_TOOLS)))
