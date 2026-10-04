@@ -10,7 +10,7 @@
 #include "string.h"
 #include "apic.h"
 /* BSP IF-clear only, no retained user pointer or packet-size stack buffer. */
-static uint8_t received[TCP_BUFFER_SIZE];
+static uint8_t received[TCP_RXBUF_MAX];
 static bool range(uintptr_t p, size_t n, bool write) {
     return !n || vmm_validate_user_range(vmm_get_active_pml4_virt(),p,n,write);
 }

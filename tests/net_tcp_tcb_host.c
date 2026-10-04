@@ -178,7 +178,7 @@ static void reset_and_close(void) {
     setup(false,100,200); handshake();
     input(&a,a.rcv_nxt+1,a.snd_nxt,8192,TCP_RST,NULL,0);
     assert(a.state==TCP_ESTABLISHED && a.ack_pending); settle();
-    input(&a,a.rcv_nxt+8192,a.snd_nxt,8192,TCP_RST,NULL,0); assert(a.state==TCP_ESTABLISHED);
+    input(&a,a.rcv_nxt+TCP_RXBUF_MAX,a.snd_nxt,8192,TCP_RST,NULL,0); assert(a.state==TCP_ESTABLISHED);
     input(&a,a.rcv_nxt,a.snd_nxt,8192,TCP_RST,NULL,0);
     assert(a.state==TCP_CLOSED && a.error==TCP_RESET && !a.reset_pending);
     setup(false,100,200); handshake();
@@ -219,15 +219,19 @@ static void windows_and_reno(void) {
     uint32_t threshold=a.ssthresh;
     assert(send_one(&a,&b,false)); assert(send_one(&b,&a,false));
     assert(!a.fast_recovery && a.cwnd==threshold); settle();
-    assert(b.rx_count==8192 && !a.tx_count && !a.snd_wnd);
-    for (unsigned i=0; i<8192; ++i) assert(b.rx[i]==offered[i%1024]);
+    for (unsigned batch=0; batch<3; ++batch) {
+        for (unsigned i=0; i<8; ++i) assert(tcp_conn_queue(&a,offered,sizeof(offered))==1024);
+        settle();
+    }
+    assert(b.rx_count==TCP_RXBUF_MAX && !a.tx_count && !a.snd_wnd);
+    for (unsigned i=0; i<TCP_RXBUF_MAX; ++i) assert(b.rx[i]==offered[i%1024]);
     assert(tcp_conn_queue(&a,"zero-window",11)==11);
     tcp_conn_tick(&a,now); assert(a.persist_deadline);
     now=a.persist_deadline; tcp_conn_tick(&a,now);
     uint32_t cwnd=a.cwnd; uint8_t retries=a.retries;
     assert(send_one(&a,&b,false)); assert(send_one(&b,&a,false));
-    assert(a.retries==retries && a.cwnd==cwnd && b.rx_count==8192 && a.tx_count==11);
-    assert(!tcp_conn_consume(&b,8192)); assert(send_one(&b,&a,true)); /* lost window update */
+    assert(a.retries==retries && a.cwnd==cwnd && b.rx_count==TCP_RXBUF_MAX && a.tx_count==11);
+    assert(!tcp_conn_consume(&b,TCP_RXBUF_MAX)); assert(send_one(&b,&a,true)); /* lost window update */
     now=a.persist_deadline; tcp_conn_tick(&a,now);
     assert(send_one(&a,&b,false)); assert(send_one(&b,&a,false)); settle();
     assert(!a.tx_count && b.rx_count==11 && !a.persist_deadline);
@@ -333,7 +337,7 @@ static void control_edges(void) {
     input(&b,b.rcv_nxt,b.iss,8192,TCP_ACK,NULL,0);
     assert(b.state==TCP_SYN_RCVD && b.reset_pending); assert(send_one(&b,&a,true));
     setup(false,100,200); handshake();
-    input(&a,a.rcv_nxt+8192,a.snd_nxt,8192,TCP_ACK,"outside",7);
+    input(&a,a.rcv_nxt+TCP_RXBUF_MAX,a.snd_nxt,8192,TCP_ACK,"outside",7);
     assert(!a.rx_count && a.ack_pending); settle();
     saved=a;
     input(&a,a.rcv_nxt,a.snd_nxt,8192,TCP_ACK|TCP_URG,"urgent",6);
@@ -380,10 +384,10 @@ static void control_loss(void) {
     puts("[PASS] lost final handshake ACK, FIN retransmission and lost final teardown ACK recovery");
 }
 static void invariants(const tcp_conn_t *c) {
-    assert(c->rx_count<=8192 && c->tx_count<=8192 && c->retx_count<=32);
+    assert(c->rx_count<=TCP_RXBUF_MAX && c->tx_count<=TCP_TXBUF_MAX && c->retx_count<=32);
     assert(c->rcv_nxt==c->rx_sequence+c->rx_count+(c->eof ? 1U : 0U));
     for (unsigned i=0; i<c->rx_count; ++i) {
-        unsigned pos=(c->rx_head+i)%8192;
+        unsigned pos=(c->rx_head+i)%TCP_RXBUF_MAX;
         assert(c->rx_valid[pos/8]&(1U<<(pos%8)));
     }
     if (c->state!=TCP_CLOSED) {
@@ -458,7 +462,7 @@ static void simulate(bool faults, size_t total, unsigned seed) {
         }
         for (unsigned side=0; side<2; ++side) {
             tcp_conn_t *c=side ? &b : &a;
-            assert(!c->error && c->tx_count<=8192 && c->rx_count<=8192 && c->retx_count<=32);
+            assert(!c->error && c->tx_count<=TCP_TXBUF_MAX && c->rx_count<=TCP_RXBUF_MAX && c->retx_count<=32);
             if (produced[side]<total && (c->state==TCP_ESTABLISHED || c->state==TCP_CLOSE_WAIT)) {
                 size_t n=total-produced[side]; if (n>sizeof(offered)) n=sizeof(offered);
                 for (size_t i=0; i<n; ++i) offered[i]=pattern(side,produced[side]+i);

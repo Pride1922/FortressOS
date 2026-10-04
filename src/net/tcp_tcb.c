@@ -14,7 +14,7 @@ static void changed(tcp_conn_t *c) {
     ++c->revision; c->action_pending=false;
 }
 static uint16_t window(const tcp_conn_t *c) {
-    return c->eof ? 0 : (uint16_t)(TCP_BUFFER_SIZE-c->rx_count);
+    return c->eof ? 0 : (uint16_t)(TCP_RXBUF_MAX-c->rx_count);
 }
 static tcp_header_t header(const tcp_conn_t *c) {
     return (tcp_header_t){.source=c->tuple.local_port,.destination=c->tuple.remote_port,
@@ -49,7 +49,7 @@ int tcp_conn_init(tcp_conn_t *c, tcp_tuple_t tuple, uint64_t generation,
     c->now_ms=now; c->iss=c->snd_una=c->snd_nxt=isn; c->tx_sequence=isn+1;
     c->local_mss=(uint16_t)min32(mtu-40,TCP_MSS_MAX); c->peer_mss=536;
     c->mss=(uint16_t)min32(c->local_mss,c->peer_mss);
-    c->cwnd=c->mss; c->ssthresh=TCP_BUFFER_SIZE; c->rto_ms=1000;
+    c->cwnd=c->mss; c->ssthresh=TCP_TXBUF_MAX; c->rto_ms=1000;
     c->state=active ? TCP_SYN_SENT : TCP_LISTEN;
     if (active) c->handshake_deadline=deadline(now,TCP_HANDSHAKE_MS);
     return TCP_OK;
@@ -89,7 +89,7 @@ static void ack_new(tcp_conn_t *c, uint32_t ack) {
     }
     uint32_t bytes=0;
     if (!tcp_seq_before(ack,c->tx_sequence)) bytes=min32(ack-c->tx_sequence,c->tx_count);
-    c->tx_head=(uint16_t)((c->tx_head+bytes)%TCP_BUFFER_SIZE);
+    c->tx_head=(uint16_t)((c->tx_head+bytes)%TCP_TXBUF_MAX);
     c->tx_count=(uint16_t)(c->tx_count-bytes); c->tx_sequence+=bytes;
     unsigned removed=0;
     while (removed<c->retx_count) {
@@ -115,7 +115,7 @@ static void ack_new(tcp_conn_t *c, uint32_t ack) {
             c->ca_acked+=bytes;
             if (c->ca_acked>=c->cwnd) { c->ca_acked-=c->cwnd; c->cwnd+=c->mss; }
         }
-        c->cwnd=min32(c->cwnd,TCP_BUFFER_SIZE);
+        c->cwnd=min32(c->cwnd,TCP_TXBUF_MAX);
     }
     if (c->fin_sent && ack==c->fin_sequence+1) {
         c->fin_acked=true;
@@ -144,9 +144,9 @@ static void process_ack(tcp_conn_t *c, const tcp_header_t *h, size_t len) {
             !(c->retx[0].flags&(TCP_SYN|TCP_FIN))) {
             uint32_t half=(c->snd_nxt-c->snd_una)/2;
             c->ssthresh=half>2U*c->mss ? half : 2U*c->mss;
-            c->cwnd=min32(c->ssthresh+3U*c->mss,TCP_BUFFER_SIZE);
+            c->cwnd=min32(c->ssthresh+3U*c->mss,TCP_TXBUF_MAX);
             c->fast_recovery=true; c->retransmit_pending=true; c->retransmit_timeout=false;
-        } else if (c->dupacks>3 && c->fast_recovery) c->cwnd=min32(c->cwnd+c->mss,TCP_BUFFER_SIZE);
+        } else if (c->dupacks>3 && c->fast_recovery) c->cwnd=min32(c->cwnd+c->mss,TCP_TXBUF_MAX);
     }
 }
 static bool bit(const tcp_conn_t *c, unsigned i) { return (c->rx_valid[i/8]&(1U<<(i%8)))!=0; }
@@ -165,14 +165,14 @@ static void receive_data(tcp_conn_t *c, const tcp_header_t *h, const uint8_t *da
     if (c->eof) return;
     int64_t start=offset(h->sequence,c->rx_sequence);
     size_t skip=start<0 ? (size_t)(-start) : 0;
-    if (skip<len && start+(int64_t)skip<TCP_BUFFER_SIZE) {
+    if (skip<len && start+(int64_t)skip<TCP_RXBUF_MAX) {
         unsigned pos=(unsigned)(start+(int64_t)skip);
         size_t n=len-skip;
-        if (n>TCP_BUFFER_SIZE-pos) n=TCP_BUFFER_SIZE-pos;
+        if (n>TCP_RXBUF_MAX-pos) n=TCP_RXBUF_MAX-pos;
         for (size_t i=0; i<n; ++i) {
             uint32_t sequence=h->sequence+(uint32_t)(skip+i);
             if (c->remote_fin_pending && !tcp_seq_before(sequence,c->remote_fin_sequence)) break;
-            unsigned index=(c->rx_head+pos+(unsigned)i)%TCP_BUFFER_SIZE;
+            unsigned index=(c->rx_head+pos+(unsigned)i)%TCP_RXBUF_MAX;
             if (!bit(c,index)) { c->rx[index]=data[skip+i]; setbit(c,index,true); }
         }
     }
@@ -182,9 +182,9 @@ static void receive_data(tcp_conn_t *c, const tcp_header_t *h, const uint8_t *da
             c->remote_fin_sequence=fin; c->remote_fin_pending=true;
         }
     }
-    while (c->rx_count<TCP_BUFFER_SIZE &&
+    while (c->rx_count<TCP_RXBUF_MAX &&
            (!c->remote_fin_pending || c->rcv_nxt!=c->remote_fin_sequence) &&
-           bit(c,(c->rx_head+c->rx_count)%TCP_BUFFER_SIZE)) {
+           bit(c,(c->rx_head+c->rx_count)%TCP_RXBUF_MAX)) {
         ++c->rx_count; ++c->rcv_nxt;
     }
     received_fin(c);
@@ -305,10 +305,10 @@ int tcp_conn_queue(tcp_conn_t *c, const void *data, size_t len) {
     if (c->want_fin) return TCP_WRITE_CLOSED;
     if (c->state!=TCP_ESTABLISHED && c->state!=TCP_CLOSE_WAIT) return TCP_NOT_CONNECTED;
     if (!len) return 0;
-    size_t n=TCP_BUFFER_SIZE-c->tx_count; if (n>len) n=len;
+    size_t n=TCP_TXBUF_MAX-c->tx_count; if (n>len) n=len;
     if (!n) return TCP_WOULD_BLOCK;
     changed(c);
-    for (size_t i=0; i<n; ++i) c->tx[(c->tx_head+c->tx_count+i)%TCP_BUFFER_SIZE]=((const uint8_t *)data)[i];
+    for (size_t i=0; i<n; ++i) c->tx[(c->tx_head+c->tx_count+i)%TCP_TXBUF_MAX]=((const uint8_t *)data)[i];
     c->tx_count=(uint16_t)(c->tx_count+n); return (int)n;
 }
 int tcp_conn_peek(const tcp_conn_t *c, void *data, size_t capacity) {
@@ -316,15 +316,15 @@ int tcp_conn_peek(const tcp_conn_t *c, void *data, size_t capacity) {
     if (!capacity) return 0;
     size_t n=c->rx_count; if (n>capacity) n=capacity;
     if (!n) return c->error ? c->error : c->eof ? 0 : TCP_WOULD_BLOCK;
-    for (size_t i=0; i<n; ++i) ((uint8_t *)data)[i]=c->rx[(c->rx_head+i)%TCP_BUFFER_SIZE];
+    for (size_t i=0; i<n; ++i) ((uint8_t *)data)[i]=c->rx[(c->rx_head+i)%TCP_RXBUF_MAX];
     return (int)n;
 }
 int tcp_conn_consume(tcp_conn_t *c, size_t len) {
     if (!c || len>c->rx_count) return TCP_INVALID;
     if (!len) return 0;
     changed(c);
-    for (size_t i=0; i<len; ++i) setbit(c,(c->rx_head+(unsigned)i)%TCP_BUFFER_SIZE,false);
-    c->rx_head=(uint16_t)((c->rx_head+len)%TCP_BUFFER_SIZE);
+    for (size_t i=0; i<len; ++i) setbit(c,(c->rx_head+(unsigned)i)%TCP_RXBUF_MAX,false);
+    c->rx_head=(uint16_t)((c->rx_head+len)%TCP_RXBUF_MAX);
     c->rx_count=(uint16_t)(c->rx_count-len); c->rx_sequence+=(uint32_t)len;
     if (!c->eof && c->state!=TCP_CLOSED) c->ack_pending=true;
     return 0;
@@ -346,7 +346,7 @@ void tcp_conn_detach(tcp_conn_t *c, uint64_t now) {
 }
 static void copy_tx(const tcp_conn_t *c, uint32_t seq, uint8_t *data, size_t n) {
     unsigned off=(unsigned)(seq-c->tx_sequence);
-    for (size_t i=0; i<n; ++i) data[i]=c->tx[(c->tx_head+off+i)%TCP_BUFFER_SIZE];
+    for (size_t i=0; i<n; ++i) data[i]=c->tx[(c->tx_head+off+i)%TCP_TXBUF_MAX];
 }
 int tcp_conn_prepare(tcp_conn_t *c, tcp_action_t *out, void *data, size_t capacity) {
     if (!c || !out || c->action_pending) return TCP_INVALID;

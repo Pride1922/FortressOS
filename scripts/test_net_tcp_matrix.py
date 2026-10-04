@@ -114,7 +114,7 @@ class Case:
         assert self.uart is not None, 'UART creation timeout'
         self.uart.settimeout(.05)
         self.start_reader()
-        self.wait(lambda t: 'fortress> ' in t and 'Gateway ARP resolved' in t, 120)
+        self.wait(lambda t: re.search(r'(?:fortress> |fortress:[^\r\n]* \$ )', t) and 'Gateway ARP resolved' in t, 120)
         if self.cpus == 4: self.wait(lambda t: 'AP socket dispatch rejection PASS' in t)
 
     def start_reader(self):
@@ -168,7 +168,7 @@ class Case:
         return at
 
     def finish(self, at, timeout=120):
-        return self.wait(lambda t: '\n' in t[at:] and t[at:].rstrip().endswith('fortress>'), timeout)[at:]
+        return self.wait(lambda t: '\n' in t[at:] and re.search(r'(?:fortress>|(?:\[-?\d+\] )?fortress:[^\r\n]* \$)\s*$', t[at:]), timeout)[at:]
 
     def client(self, port, profile='clean', mss=536):
         if self.peer: self.peer.listen(port, BODY, BODY, profile, mss)

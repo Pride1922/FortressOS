@@ -4,7 +4,8 @@
 
 #define TCP_CB_MAX 8U
 #define TCP_TIMEWAIT_MAX 16U
-#define TCP_BUFFER_SIZE 8192U
+#define TCP_TXBUF_MAX 8192U
+#define TCP_RXBUF_MAX 32768U
 #define TCP_RETX_MAX 32U
 #define TCP_MSS_MAX 1460U
 #define TCP_TIMEWAIT_MS 240000U /* 2 * explicitly chosen 120-second MSL. */
@@ -59,9 +60,9 @@ typedef struct {
     tcp_header_t reset_header;
     tcp_action_t action;
     tcp_retx_t retx[TCP_RETX_MAX];
-    uint8_t tx[TCP_BUFFER_SIZE], rx[TCP_BUFFER_SIZE];
+    uint8_t tx[TCP_TXBUF_MAX], rx[TCP_RXBUF_MAX];
     /* Byte-indexed OOO occupancy shares the RX buffer, no extra payload pool. */
-    uint8_t rx_valid[TCP_BUFFER_SIZE/8];
+    uint8_t rx_valid[TCP_RXBUF_MAX/8];
 } tcp_conn_t;
 typedef struct {
     tcp_tuple_t tuple;
