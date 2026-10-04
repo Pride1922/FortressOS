@@ -59,4 +59,14 @@ if __name__ == "__main__":
             ], cwd=REPO, check=True)
             subprocess.run([str(xxd_exe)], check=True, timeout=30)
 
+            sort_exe = Path(tmp) / "sort_host"
+            subprocess.run([
+                "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-DTOOL_HOST_TEST",
+                "-Isrc/include", "-Isrc/fs", "-Iuser/tools",
+                "tests/sort_host.c", "user/tools/common.c", "user/tools/sort.c",
+                "-o", str(sort_exe)
+            ], cwd=REPO, check=True)
+            subprocess.run([str(sort_exe)], check=True, timeout=30)
+
 

@@ -76,6 +76,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`tail`](#tail) | Binary (`/bin/tail`) | Stream Tool | Output last part of files (bounded buffer) |
 | [`wc`](#wc) | Binary (`/bin/wc`) | Stream Tool | Print newline, word, and byte counts |
 | [`grep`](#grep) | Binary (`/bin/grep`) | Stream Tool | Search text matching regular expressions with bounded bitmask NFA |
+| [`sort`](#sort) | Binary (`/bin/sort`) | Stream Tool | Sort lines of text files with stack-free bottom-up merge sort |
 | [`uniq`](#uniq) | Binary (`/bin/uniq`) | Stream Tool | Filter adjacent matching lines |
 | [`xxd`](#xxd) | Binary (`/bin/xxd`) | Stream Tool | Make hex dump or revert hex to binary with bounded buffers |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
@@ -820,6 +821,33 @@ grep -c -v '^#' /etc/network.conf
 grep -n '1500' /etc/network.conf
 grep -l '10.0.2' /etc/*.conf
 echo "hello world" | grep -q "world"
+```
+
+---
+
+### `sort`
+**Syntax:** `sort [OPTIONS] [FILE...]`  
+**Path:** `/bin/sort`  
+**Description:** Sorts lines of text files from files or standard input and writes the result to standard output or a designated output file. Employs an iterative, stack-free bottom-up merge sort algorithm ensuring strict $O(N \log N)$ complexity, stability on equal keys, and bounded BSS memory (up to 256 KiB pool, 8,192 lines) without dynamic heap allocation.  
+**Options:**
+* `-r`, `--reverse`: Reverse the result of comparisons.
+* `-n`, `--numeric-sort`: Compare according to string numerical value (supports signed 64-bit integers and leading whitespace).
+* `-u`, `--unique`: Output only the first of an equal run (or verify strict order when used with `-c`).
+* `-f`, `--ignore-case`: Fold lowercase to uppercase characters before comparing.
+* `-c`, `-C`, `--check`: Check if input is already sorted; exits with 0 if sorted, or 1 if a disorder is encountered without modifying output.
+* `-k POS`: Sort by key field starting at `POS` (1-indexed, whitespace-separated).
+* `-o FILE`: Write sorted result to `FILE` instead of standard output (safe even when `FILE` is one of the inputs).
+* `--help`: Display usage summary and exit.
+* `--`: Ends option scanning.
+* `-`: Read from standard input.  
+**Examples:**
+```sh
+sort /etc/motd
+cat /etc/passwd | sort -u
+ps | sort -k 2 -n
+sort -r -n numbers.txt
+sort -c -n log_timestamps.txt
+sort -o sorted.txt input.txt
 ```
 
 ---
