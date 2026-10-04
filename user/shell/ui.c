@@ -126,7 +126,11 @@ void shell_terminal(const char *arg) {
 }
 
 void shell_history(const char *arg) {
-    if (equal(arg, "clear")) { history_clear(); return; }
+    if (equal(arg, "clear")) {
+        history_clear();
+        history_mark_dirty();
+        return;
+    }
     if (equal(arg, "save")) {
         if (history_save()) puts("History saved to /mnt/.fortress/history\n");
         else puts("Failed to save history\n");
@@ -290,6 +294,7 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
             for (size_t i = 0; i <= edit.len; i++) out[i] = edit.text[i];
             if (!continuation) {
                 history_add(out);
+                history_mark_dirty();
             }
             return true;
         }

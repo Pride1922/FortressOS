@@ -443,9 +443,16 @@ dmesg -n 25 /mnt/error_tail.log # Save last 25 diagnostic lines to disk
 **Child-Safe in Pipelines:** No  
 **Description:** Manages the shell command history.
 * `history` without arguments displays the numbered list of previous commands.
-* `history clear` wipes the in-memory history buffer.
-* `history save` explicitly writes the history buffer to `/mnt/.fortress/history`.
-* `history load` reloads previous command history from `/mnt/.fortress/history`.  
+* `history clear` wipes the in-memory history buffer (and marks history dirty for auto-flush).
+* `history save` explicitly writes the history buffer to `/mnt/.fortress/history` and resets the auto-flush counter.
+* `history load` reloads previous command history from `/mnt/.fortress/history`, resetting the auto-flush counter, dirty flag, and warning flag.
+
+**Auto-Flush Behavior:**
+During interactive sessions (when stdin is a terminal), history automatically auto-flushes to `/mnt/.fortress/history` every 5 accepted commands (`HISTORY_AUTOFLUSH_INTERVAL = 5`) whenever persistent storage is writable and history has changed.
+* Triggers immediately after command completion so the command that just executed is included in the save.
+* Failed commands (syntax errors, commands not found, non-zero exits) count toward the 5-command interval.
+* On write failure (e.g. read-only filesystem), warns once per session and suppresses repeated warnings.
+* Non-interactive execution (pipes and scripts) bypasses auto-flush and relies on clean-exit saves.  
 **Examples:**
 ```sh
 history

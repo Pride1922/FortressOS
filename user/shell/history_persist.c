@@ -1,6 +1,7 @@
 #include "history_persist.h"
 #include "lineedit.h"
 #include "syscall_abi.h"
+#include "terminal.h"
 #include "io.h"
 #include "vfs.h"
 
@@ -8,6 +9,27 @@
 #define HISTORY_DIR  "/mnt/.fortress"
 #define HISTORY_MAGIC "FOSHIS1\n"
 
+static bool s_history_dirty = false;
+static uint32_t s_history_cmd_counter = 0;
+static bool s_history_warned = false;
+
+void history_mark_dirty(void) {
+    s_history_dirty = true;
+}
+
+bool history_is_dirty(void) {
+    return s_history_dirty;
+}
+
+uint32_t history_get_counter(void) {
+    return s_history_cmd_counter;
+}
+
+bool history_is_warned(void) {
+    return s_history_warned;
+}
+
+#ifndef HISTORY_PERSIST_HOST_MOCK
 static char io_buf[512];
 
 static void put_number_str(char *buf, size_t *pos, uint64_t n) {
@@ -27,7 +49,11 @@ bool history_save(void) {
     /* 1. Ensure directory /mnt/.fortress exists */
     long r = call(SYS_MKDIR, (uintptr_t)HISTORY_DIR, 0755, 0);
     if (r < 0 && r == SYSCALL_EROFS) {
-        puts("history: persistent storage is read-only\n");
+        if (!s_history_warned) {
+            puts("history: persistent storage is read-only\n");
+            s_history_warned = true;
+        }
+        s_history_cmd_counter = 0;
         return false;
     }
 
@@ -35,8 +61,12 @@ bool history_save(void) {
     long fd = call(SYS_OPEN, (uintptr_t)HISTORY_PATH, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
     if (fd < 0) {
         if (fd == SYSCALL_EROFS) {
-            puts("history: persistent storage is read-only\n");
+            if (!s_history_warned) {
+                puts("history: persistent storage is read-only\n");
+                s_history_warned = true;
+            }
         }
+        s_history_cmd_counter = 0;
         return false;
     }
 
@@ -61,18 +91,21 @@ bool history_save(void) {
         io_buf[bpos++] = '\n';
         if (call(SYS_WRITE, fd, (uintptr_t)io_buf, bpos) <= 0) {
             (void)call(SYS_CLOSE, fd, 0, 0);
+            s_history_cmd_counter = 0;
             return false;
         }
 
         if (elen > 0) {
             if (call(SYS_WRITE, fd, (uintptr_t)entry, elen) <= 0) {
                 (void)call(SYS_CLOSE, fd, 0, 0);
+                s_history_cmd_counter = 0;
                 return false;
             }
         }
         char nl = '\n';
         if (call(SYS_WRITE, fd, (uintptr_t)&nl, 1) <= 0) {
             (void)call(SYS_CLOSE, fd, 0, 0);
+            s_history_cmd_counter = 0;
             return false;
         }
     }
@@ -81,10 +114,18 @@ bool history_save(void) {
 
     /* 5. Sync storage */
     (void)call(SYS_SYNC, 0, 0, 0);
+
+    s_history_dirty = false;
+    s_history_cmd_counter = 0;
     return true;
 }
+#endif
 
 bool history_load(void) {
+    s_history_dirty = false;
+    s_history_cmd_counter = 0;
+    s_history_warned = false;
+
     long fd = call(SYS_OPEN, (uintptr_t)HISTORY_PATH, VFS_O_RDONLY, 0);
     if (fd < 0) return false;
 
@@ -147,4 +188,24 @@ bool history_load(void) {
 
     (void)call(SYS_CLOSE, fd, 0, 0);
     return true;
+}
+
+void history_autoflush_maybe(void) {
+    long isatty = call(SYS_TERMCTL, TERM_ISATTY, 0, 0);
+    if (isatty != 1) return;
+
+    s_history_cmd_counter++;
+    if (s_history_cmd_counter < HISTORY_AUTOFLUSH_INTERVAL) return;
+
+    s_history_cmd_counter = 0;
+    if (!s_history_dirty) return;
+
+    if (history_save()) {
+        s_history_dirty = false;
+    } else {
+        if (!s_history_warned) {
+            puts("history: auto-save failed\n");
+            s_history_warned = true;
+        }
+    }
 }

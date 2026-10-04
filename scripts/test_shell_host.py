@@ -25,3 +25,15 @@ with tempfile.TemporaryDirectory(prefix="fortress-shell-host-") as tmp:
                    cwd=repo, check=True)
     subprocess.run([exe], check=True)
     print("PASS shell I/O: short writes, partial failure, zero progress and closed stderr")
+
+    hist_exe = str(Path(tmp) / "history_host")
+    subprocess.run(["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+                    "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
+                    "-DHISTORY_PERSIST_HOST_MOCK=1",
+                    "-Isrc/include", "-Isrc/fs", "-Iuser/shell",
+                    "tests/history_persist_host.c",
+                    "user/shell/history_persist.c",
+                    "user/shell/lineedit.c",
+                    "-o", hist_exe], cwd=repo, check=True)
+    subprocess.run([hist_exe], check=True)
+

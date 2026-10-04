@@ -617,6 +617,7 @@ void shell_main(void) {
             puts(parse_tree.error_msg ? parse_tree.error_msg : "syntax error");
             puts("\n");
             last_status = 2;
+            history_autoflush_maybe();
             continue;
         }
         if (pr == PARSE_OK) {
@@ -625,5 +626,6 @@ void shell_main(void) {
 
         /* Drain any reports generated during execution. */
         jobs_reap_children();
+        history_autoflush_maybe();
     }
 }
