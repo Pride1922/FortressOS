@@ -36,6 +36,10 @@ struct ext4_mount {
     e4_range_t *reserved;
     unsigned ranges, nodes;
     e4_node_t *cached[E4_NODES];
+    /* RW-only clean metadata cache. Sole writer is serialized by e4_lock. */
+    struct { uint32_t block; bool valid; uint8_t bytes[4096]; } metadata[8];
+    unsigned metadata_next;
+    bool metadata_enabled;
     uint8_t sector[4096], scratch[4096];
     uint8_t tree[2][4096], validation_bitmap[4096];
     uint32_t validation_group;
@@ -125,9 +129,49 @@ static bool e4_bytes_impl(ext4_mount_t *fs, uint64_t off, void *out, size_t len,
     }
     return true;
 }
+static uint64_t e4_cache_hits,e4_cache_misses;
+static void e4_cache_drop(ext4_mount_t *fs,bool disable) {
+    for (unsigned i=0;i<8;i++) fs->metadata[i].valid=false;
+    if (disable) fs->metadata_enabled=false;
+}
+static void e4_cache_invalidate(ext4_mount_t *fs,uint64_t off,size_t len) {
+    if (!len) return;
+    uint64_t first=off/fs->bs,last=(off+len-1)/fs->bs;
+    for (unsigned i=0;i<8;i++) if (fs->metadata[i].valid &&
+        fs->metadata[i].block>=first && fs->metadata[i].block<=last) fs->metadata[i].valid=false;
+}
+static unsigned e4_cache_slot(ext4_mount_t *fs,uint32_t block) {
+    for (unsigned i=0;i<8;i++) if (fs->metadata[i].valid && fs->metadata[i].block==block) return i;
+    for (unsigned i=0;i<8;i++) if (!fs->metadata[i].valid) return i;
+    unsigned slot=fs->metadata_next;fs->metadata_next=(slot+1)%8;return slot;
+}
+/* Only already committed images may seed the clean cache. Callers retain
+ * checksum/bitmap/inode validation on every use; no pending images enter it. */
+static void e4_cache_committed(ext4_mount_t *fs,uint32_t block,const uint8_t *bytes) {
+    if (!fs->metadata_enabled || e4_read_kind(fs,(uint64_t)block*fs->bs)>E4_PR_INODE) return;
+    unsigned slot=e4_cache_slot(fs,block);
+    fs->metadata[slot].valid=false;fs->metadata[slot].block=block;
+    memcpy(fs->metadata[slot].bytes,bytes,fs->bs);fs->metadata[slot].valid=true;
+}
+static bool e4_cached_bytes(ext4_mount_t *fs,uint64_t off,void *out,size_t len,unsigned kind) {
+    uint64_t cap=(uint64_t)fs->blocks*fs->bs;
+    if (off>cap || len>cap-off) return false;
+    if (!fs->metadata_enabled || kind>E4_PR_INODE || !len || len>fs->bs-off%fs->bs)
+        return e4_bytes_impl(fs,off,out,len,kind);
+    uint32_t block=(uint32_t)(off/fs->bs);
+    for (unsigned i=0;i<8;i++) if (fs->metadata[i].valid && fs->metadata[i].block==block) {
+        e4_cache_hits++;memcpy(out,fs->metadata[i].bytes+off%fs->bs,len);return true;
+    }
+    e4_cache_misses++;unsigned slot=e4_cache_slot(fs,block);
+    fs->metadata[slot].valid=false;
+    if (!e4_bytes_impl(fs,(uint64_t)block*fs->bs,fs->metadata[slot].bytes,fs->bs,kind)) return false;
+    fs->metadata[slot].block=block;fs->metadata[slot].valid=true;
+    memcpy(out,fs->metadata[slot].bytes+off%fs->bs,len);return true;
+}
 static bool e4_bytes_kind(ext4_mount_t *fs,uint64_t off,void *out,size_t len,unsigned kind) {
     e4_read_sample_t *p=&e4_read_profile[kind];uint64_t start=e4_tsc();
-    bool ok=e4_bytes_impl(fs,off,out,len,kind);uint64_t end=e4_tsc();
+    bool ok=e4_cached_bytes(fs,off,out,len,kind);uint64_t end=e4_tsc();
+    if (!ok) e4_cache_drop(fs,true);
     __atomic_fetch_add(&p->calls,1,__ATOMIC_RELAXED);
     __atomic_fetch_add(&p->bytes,len,__ATOMIC_RELAXED);
     __atomic_fetch_add(&p->failures,!ok,__ATOMIC_RELAXED);
@@ -577,6 +621,7 @@ static int e4_mount(block_dev_t *dev,const char *path,ext4_mount_t **out,bool rw
     if (dev->sector_count>UINT32_MAX) { r=-VFS_EFBIG; goto fail; }
     fs->blocks=(uint32_t)dev->sector_count;
     r=e4_admit(fs); if (r) goto fail;
+    fs->metadata_enabled=rw;
     e4_inode_t root; r=e4_inode(fs,2,&root); if (r) goto fail;
     if (root.mode!=0x4000) { r=-VFS_EIO; goto fail; }
     uint32_t ino; r=e4_scan(&root,NULL,UINT64_MAX,NULL,&ino); if (r<0) goto fail;
@@ -647,6 +692,8 @@ size_t ext4_io_profile_format(char *out,size_t capacity) {
     E4_PT(" bytes=");E4_PN(__atomic_load_n(&e4_crc_bytes,__ATOMIC_RELAXED));
     E4_PT(" cycles=");E4_PN(__atomic_load_n(&e4_crc_cycles,__ATOMIC_RELAXED));
     E4_PT(" anomalies=");E4_PN(__atomic_load_n(&e4_crc_anomalies,__ATOMIC_RELAXED));E4_PT("\n");
+    E4_PT("[EXT4 PERF] cache hits=");E4_PN(e4_cache_hits);
+    E4_PT(" misses=");E4_PN(e4_cache_misses);E4_PT("\n");
 #undef E4_PT
 #undef E4_PN
     spin_unlock_irqrestore(&e4_lock,flags);return n;

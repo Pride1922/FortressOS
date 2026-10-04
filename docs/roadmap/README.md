@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [ext4-metadata-cache.md](ext4-metadata-cache.md) | Bounded coherent RW metadata cache, validation on hits and commit/failure containment; Dell physical acceptance PASS, 16 MiB 10.15 → 7.06 s, reboot/Mint hashes and unmounted fsck exit 0. |
 | [ext4-phase7.md](ext4-phase7.md) | Ordered JBD2 writer/checkpoint workbench, credits/states/circular reuse, 12 geometry/placement cases and Linux replay/fsck; production VFS journaling remains Phase 8. |
 | [ext4-phase6.md](ext4-phase6.md) | Bounded JBD2 recovery workbench, explicit replay admission, host crash/restart model, 12 geometry/source cases and 48 zero-write rejections; production journal mounts remain disabled. |
 | [ext4-phase5.md](ext4-phase5.md) / [Dell checklist](ext4-phase5-dell.md) | Selected USB EXT4 mount/sync/shutdown integration, separate non-journaled image; automated validation verified; Dell performance/hash/reboot/fsck manually PASS, all Phase-5 physical checklist items user-confirmed PASS (2026-10-03). |

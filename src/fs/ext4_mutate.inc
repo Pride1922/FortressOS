@@ -309,6 +309,7 @@ int ext4_engine_trim(ext4_engine_t *e,uint32_t ino,uint32_t keep) {
 static bool e4_write_bytes(ext4_engine_t *e,uint64_t off,const uint8_t *data,size_t len) {
     ext4_mount_t *fs=e->fs; uint64_t cap=(uint64_t)fs->blocks*fs->bs;
     if (off>cap || len>cap-off || block_get_max_run_bytes(fs->dev)<fs->dev->sector_size) return false;
+    e4_cache_invalidate(fs,off,len);
     while (len) {
         if (!(off%fs->dev->sector_size) && len>=fs->dev->sector_size) {
             unsigned ss=fs->dev->sector_size;size_t limit=block_get_max_run_bytes(fs->dev);size_t n=len<limit ? len : limit;n-=n%ss;
@@ -418,10 +419,13 @@ static int e4_commit_unlocked(ext4_engine_t *e) {
     if (e->inode_delta<0) for (int i=0;i<e->reserved_inodes;i++) if (e->reserved[i]==e->release_ino) {
         e->reserved[i]=e->reserved[--e->reserved_inodes]; break;
     }
+    /* All role/free barriers succeeded and descriptor state now matches disk. */
+    for (unsigned i=0;i<e->images;i++) e4_cache_committed(e->fs,e->image[i].block,e->image[i].bytes);
     e->ready=false; r=0; goto done;
 fail:
     e->tainted=true; e->ready=false; r=-VFS_EIO;
 done:
+    if (e->tainted) e4_cache_drop(e->fs,true);
     return r;
 }
 int ext4_engine_commit(ext4_engine_t *e) {
@@ -533,7 +537,7 @@ int ext4_engine_finish(ext4_engine_t *e) {
             e4_p32(e->fs->scratch+1020,e4_crc(UINT32_MAX,e->fs->scratch,1020));
             if (!block_flush(e->fs->dev) || !e4_write_bytes(e,1024,e->fs->scratch,1024) || !block_flush(e->fs->dev)) r=-VFS_EIO;
         }
-        if (r) e->tainted=true; else e->dirty=false;
+        if (r) { e->tainted=true;e4_cache_drop(e->fs,true); } else e->dirty=false;
     }
     spin_unlock_irqrestore(&e4_lock,flags); return r;
 }

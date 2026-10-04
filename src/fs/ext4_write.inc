@@ -84,7 +84,7 @@ static void e4_invalidate(ext4_mount_t *fs) {
 static int e4_refresh(vfs_node_t *node) {
     e4_node_t *n=(e4_node_t *)node; e4_inode_t in;
     int r=e4_inode(n->inode.fs,n->inode.ino,&in);
-    if (r) { n->inode.fs->engine->tainted=true; return r; }
+    if (r) { n->inode.fs->engine->tainted=true;e4_cache_drop(n->inode.fs,true); return r; }
     n->inode=in; node->size=in.size; return 0;
 }
 static int e4_publish(ext4_engine_t *e) {
@@ -243,7 +243,7 @@ static vfs_node_t *e4_create(vfs_node_t *parent,const char *name,vfs_node_type_t
     e->inode_delta=0; e->reserve_ino=0;
     r=e4_publish(e); if (r) goto fail;
     r=e4_refresh(parent); if (r) goto fail;
-    r=e4_inode(fs,ino,&in); if (r) { e->tainted=true; goto fail; }
+    r=e4_inode(fs,ino,&in); if (r) { e->tainted=true;e4_cache_drop(fs,true); goto fail; }
     e4_setup(n,&in); memcpy(n->node.name,name,strlen(name)+1); memcpy(n->node.path,parent->path,strlen(parent->path)+1);
     size_t plen=strlen(n->node.path); n->node.path[plen]='/'; memcpy(n->node.path+plen+1,name,strlen(name)+1);
     n->node.parent=parent; n->node.next=parent->children; parent->children=&n->node;
@@ -357,7 +357,7 @@ int ext4_sync(ext4_mount_t *fs) {
     int r=!fs || fs!=e4_active ? -VFS_EINVAL : 0;
     if (!r && fs->engine) {
         if (fs->engine->tainted) r=-VFS_EIO;
-        else if (!block_flush(fs->dev)) { fs->engine->tainted=true; r=-VFS_EIO; }
+        else if (!block_flush(fs->dev)) { fs->engine->tainted=true;e4_cache_drop(fs,true); r=-VFS_EIO; }
     }
     spin_unlock_irqrestore(&e4_lock,f); return r;
 }

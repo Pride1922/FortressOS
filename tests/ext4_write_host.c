@@ -92,7 +92,10 @@ static void fault_matrix(block_dev_t *dev,const uint8_t *original) {
                 if (which==0) fail_read=(long)cut;else if (which==1) fail_write=(long)cut;else fail_flush=(long)cut;
                 int r=operation(kind);assert(r<0);
                 if (!writes) assert(!memcmp(disk,original,disk_len));
-                else assert(m->engine->tainted);
+                else {
+                    assert(m->engine->tainted && !m->metadata_enabled);
+                    for (unsigned i=0;i<8;i++) assert(!m->metadata[i].valid);
+                }
                 fail_read=fail_write=fail_flush=-1;
                 if (m->engine->tainted) { size_t before=writes;assert(ext4_sync(m)==-VFS_EIO && ext4_freeze_and_sync(m)==-VFS_EIO && writes==before); }
             }
@@ -101,6 +104,30 @@ static void fault_matrix(block_dev_t *dev,const uint8_t *original) {
         fail_write=0;uncertain=true;assert(operation(kind)<0 && m->engine->tainted);
         printf("PASS fault events operation=%u reads=%zu writes=%zu barriers=%zu\n",kind,rd,wr,fl);
     }
+}
+static void cache_checks(ext4_mount_t *m) {
+    assert(m->metadata_enabled);uint8_t expected[4096],actual[4096];
+    uint32_t block=e4_u32(m->gd[0].raw+8);
+    assert(e4_bytes(m,(uint64_t)block*m->bs,expected,m->bs));size_t before=reads;
+    assert(e4_bytes(m,(uint64_t)block*m->bs+128,actual,128));
+    assert(reads==before && !memcmp(actual,expected+128,128));
+    /* A hit does not bypass the caller's checksum verification. */
+    assert(e4_bitmap(m,0,true));uint32_t bitmap=e4_u32(m->gd[0].raw+4);
+    unsigned slot=e4_cache_slot(m,bitmap);assert(m->metadata[slot].valid);
+    m->metadata[slot].bytes[0]^=1;assert(!e4_bitmap(m,0,true));
+    m->metadata[slot].bytes[0]^=1;assert(e4_bitmap(m,0,true));
+    /* More than eight distinct inode-table blocks force bounded eviction. */
+    for (unsigned i=0;i<9;i++) assert(e4_bytes(m,(uint64_t)(block+i)*m->bs,actual,m->bs));
+    unsigned valid=0;for (unsigned i=0;i<8;i++) valid+=m->metadata[i].valid;assert(valid==8);
+    before=reads;assert(e4_bytes(m,(uint64_t)block*m->bs,actual,m->bs));assert(reads>before);
+    assert(!memcmp(actual,expected,m->bs));
+    /* Invalidation covers every overlapping block, including partial writes. */
+    e4_cache_invalidate(m,(uint64_t)block*m->bs+128,1);
+    for (unsigned i=0;i<8;i++) assert(!m->metadata[i].valid || m->metadata[i].block!=block);
+    fail_read=m->bs>m->dev->sector_size ? 1 : 0;
+    assert(!e4_bytes(m,(uint64_t)block*m->bs,actual,m->bs));fail_read=-1;
+    assert(!m->metadata_enabled);for (unsigned i=0;i<8;i++) assert(!m->metadata[i].valid);
+    printf("PASS metadata cache: hit slices, checksum revalidation, bounded eviction, partial-read failure/invalidation\n");
 }
 typedef struct { file_t *file; unsigned id; } append_arg_t;
 static void *append_thread(void *opaque) {
@@ -125,6 +152,7 @@ int main(int argc,char **argv) {
     reset();ext4_mount_t *m;
     assert(!ext4_mount_rw(&dev,"/mnt",&m) && !writes && !flushes);
     size_t mount_allocs=live;
+    cache_checks(m);
     reset();memcpy(disk,original,disk_len);
     for (size_t cut=1;cut<mount_allocs;cut++) { fail_alloc=(long)cut-1;int r=ext4_mount_rw(&dev,"/mnt",&m);assert(r==-VFS_ENOMEM && !m && !writes && !flushes && live==1);fail_alloc=-1; }
     reset();memcpy(disk,original,disk_len);assert(!ext4_mount_rw(&dev,"/mnt",&m));
@@ -201,6 +229,7 @@ int main(int argc,char **argv) {
     if (bs==4096 && dev.sector_size==512) assert(write_runs-before_runs < (writes-before_write)/8);
     assert(flushes-before_flush<=64*3);
     if (bs<4096 && dev.sector_size==512) assert(write_runs-before_runs<=514);
+    assert(read_runs-before_reads<=4); /* committed metadata survives between writes */
     vfs_close(one);check_file("/mnt/one.bin",expected,1048576);
     /* Snapshot must perform no I/O, fit its public bound, and classify data. */
     char profile[2049],tiny[2]={0,0x55};size_t saved_reads=reads,saved_writes=writes;

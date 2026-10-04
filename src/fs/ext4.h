@@ -12,6 +12,9 @@
  * create/mkdir, unlink/rmdir, regular-file rename without replacement, and
  * truncate-to-zero are supported. Directory rename and active-target deletion
  * return EOPNOTSUPP; replacement returns EEXIST without removing either name.
+ * RW owns an eight-block clean metadata cache under the filesystem lock.
+ * The mounted device requires exclusive write ownership; external/raw changes
+ * require remount. Cache hits retain all metadata checksum/structure checks.
  * Nodes, including removed tombstones, persist for mount lifetime (1024 total).
  * RO media stays immutable; RW refreshes mappings after changes. Caller owns
  * the stable partition device throughout the mount and supplies external
