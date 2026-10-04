@@ -9,8 +9,8 @@ typedef struct {
 static bool e4_journal_home(void *context,uint32_t block,const uint8_t *bytes) {
     e4_journal_guard_t *g=context;ext4_mount_t *fs=g->fs;
     /* Include extent-tree nodes as well as journal data in self-write denial. */
-    for (unsigned i=0;i<fs->physical_count;i++)
-        if (block>=fs->physical[i].lo && block-fs->physical[i].lo<fs->physical[i].len) return false;
+    for (unsigned i=0;i<fs->journal_ranges;i++)
+        if (block>=fs->journal_reserved[i].lo && block-fs->journal_reserved[i].lo<fs->journal_reserved[i].len) return false;
     if (block==g->inode_block && memcmp(bytes+g->inode_offset,g->inode,256)) return false;
     if (block==1024/fs->bs) {
         const uint8_t *sb=bytes+1024%fs->bs;
@@ -53,6 +53,10 @@ static int e4_journal_source(ext4_mount_t *fs,e4_journal_guard_t *guard,
         for (unsigned n=0;n<x.len;n++) map[at++]=x.physical+n;
     }
     if (at!=length) return -VFS_EIO;
+    fs->journal_reserved=kmalloc(fs->physical_count*sizeof(e4_range_t));
+    if (!fs->journal_reserved) return -VFS_ENOMEM;
+    memcpy(fs->journal_reserved,fs->physical,fs->physical_count*sizeof(e4_range_t));
+    fs->journal_ranges=fs->physical_count;
     *source=(jbd2_source_t){.block_size=fs->bs,.filesystem_blocks=fs->blocks,
         .journal_blocks=length,.journal_map=map,.validate_home=e4_journal_home,.context=guard};
     memcpy(source->uuid,guard->sb+104,16);return 0;

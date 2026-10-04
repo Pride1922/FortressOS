@@ -1,5 +1,5 @@
-/* Phase 8.1: exclusive, unlocked block-image transaction foundation.
- * No VFS journal mount or semantic operation is admitted by this workbench. */
+/* Phase 8.1 block-image foundation and 8.2 exclusive file workbench.
+ * No production VFS journal mount is admitted. */
 int ext4_engine_open_journal(block_dev_t *dev,bool admitted,ext4_engine_t **out) {
     spin_debug_assert_unheld();if (out) *out=NULL;
     if (!out || !dev || !dev->read_sector ||
@@ -33,6 +33,7 @@ fail:
 int ext4_engine_transaction_begin(ext4_engine_t *e,jbd2_credits_t credits) {
     spin_debug_assert_unheld();if (!e || !e->writer) return -VFS_EINVAL;
     if (e->tainted) return -VFS_EIO;
+    if (e->file_enabled) return -VFS_EOPNOTSUPP;
     if (e->ready) return -VFS_EAGAIN;
     if (credits.metadata>E4_IMAGES || credits.ordered_data>E4_IMAGES ||
         credits.metadata+credits.ordered_data>E4_IMAGES) return -VFS_EFBIG;
@@ -42,13 +43,14 @@ int ext4_engine_transaction_begin(ext4_engine_t *e,jbd2_credits_t credits) {
 static int e4_transaction_stage(ext4_engine_t *e,uint32_t block,const void *bytes,unsigned role) {
     spin_debug_assert_unheld();if (!e || !e->writer) return -VFS_EINVAL;
     if (e->tainted) return -VFS_EIO;
+    if (e->file_enabled) return -VFS_EOPNOTSUPP;
     if (!e->ready) return -VFS_EINVAL;
     if (e->error) return e->error;
     if (!bytes || block>=e->fs->blocks) return e->error=-VFS_EINVAL;
     if (role==E4_DATA) {
         if (!e4_data_range(e->fs,block,1)) return e->error=-VFS_EINVAL;
-        for (unsigned i=0;i<e->fs->physical_count;i++)
-            if (block>=e->fs->physical[i].lo && block-e->fs->physical[i].lo<e->fs->physical[i].len)
+        for (unsigned i=0;i<e->fs->journal_ranges;i++)
+            if (block>=e->fs->journal_reserved[i].lo && block-e->fs->journal_reserved[i].lo<e->fs->journal_reserved[i].len)
                 return e->error=-VFS_EINVAL;
     }
     for (unsigned i=0;i<e->revoke_count;i++) if (e->revokes[i]==block) return e->error=-VFS_EINVAL;
@@ -64,6 +66,7 @@ static int e4_transaction_stage(ext4_engine_t *e,uint32_t block,const void *byte
     if (e->images==E4_IMAGES || count==(role==E4_DATA ? e->credits.ordered_data : e->credits.metadata))
         return e->error=-VFS_EFBIG;
     e4_image_t *image=&e->image[e->images++];image->block=block;image->role=role;
+    image->ordered=role==E4_DATA;
     memcpy(image->bytes,bytes,e->fs->bs);return 0;
 }
 int ext4_engine_transaction_metadata(ext4_engine_t *e,uint32_t block,const void *bytes) {
@@ -75,11 +78,12 @@ int ext4_engine_transaction_data(ext4_engine_t *e,uint32_t block,const void *byt
 int ext4_engine_transaction_revoke(ext4_engine_t *e,uint32_t block) {
     spin_debug_assert_unheld();if (!e || !e->writer) return -VFS_EINVAL;
     if (e->tainted) return -VFS_EIO;
+    if (e->file_enabled) return -VFS_EOPNOTSUPP;
     if (!e->ready) return -VFS_EINVAL;
     if (e->error) return e->error;
     if (block>=e->fs->blocks || !e4_data_range(e->fs,block,1)) return e->error=-VFS_EINVAL;
-    for (unsigned i=0;i<e->fs->physical_count;i++)
-        if (block>=e->fs->physical[i].lo && block-e->fs->physical[i].lo<e->fs->physical[i].len)
+    for (unsigned i=0;i<e->fs->journal_ranges;i++)
+        if (block>=e->fs->journal_reserved[i].lo && block-e->fs->journal_reserved[i].lo<e->fs->journal_reserved[i].len)
             return e->error=-VFS_EINVAL;
     for (unsigned i=0;i<e->images;i++) if (e->image[i].block==block) return e->error=-VFS_EINVAL;
     for (unsigned i=0;i<e->revoke_count;i++) if (e->revokes[i]==block) return 0;
@@ -91,12 +95,12 @@ static int e4_transaction_commit(ext4_engine_t *e) {
     if (!e->ready) return -VFS_EINVAL;
     int r=e->error;if (r) return r;
     unsigned metadata=0;
-    for (unsigned i=0;i<e->images;i++) if (e->image[i].role!=E4_DATA) metadata++;
+    for (unsigned i=0;i<e->images;i++) if (!e->image[i].ordered) metadata++;
     if (!metadata && !e->revoke_count) return e->error=-VFS_EINVAL;
     /* Snapshot and identity/credit checks ALL precede the first device write. */
     for (unsigned i=0;!r && i<e->images;i++) {
         e4_image_t *image=&e->image[i];
-        r=image->role==E4_DATA ? jbd2_writer_data(e->writer,image->block,image->bytes) :
+        r=image->ordered ? jbd2_writer_data(e->writer,image->block,image->bytes) :
             jbd2_writer_metadata(e->writer,image->block,image->bytes);
     }
     for (unsigned i=0;!r && i<e->revoke_count;i++) r=jbd2_writer_revoke(e->writer,e->revokes[i]);
@@ -112,6 +116,76 @@ static int e4_transaction_commit(ext4_engine_t *e) {
             memcpy(e->fs->gd[g].raw,e->image[i].bytes+offset%e->fs->bs,32);
     }
     for (unsigned i=0;i<e->images;i++)
-        if (e->image[i].role!=E4_DATA) e4_cache_committed(e->fs,e->image[i].block,e->image[i].bytes);
+        if (!e->image[i].ordered) e4_cache_committed(e->fs,e->image[i].block,e->image[i].bytes);
     return 0;
+}
+/* Phase 8.2 needs consistent allocation ownership, unlike recovery bootstrap.
+ * No recovery or RECOVER activation is implicit in file admission. */
+int ext4_engine_open_journal_files(block_dev_t *dev,bool admitted,ext4_engine_t **out) {
+    int r=ext4_engine_open_journal(dev,admitted,out);if (r) return r;
+    ext4_engine_t *e=*out;ext4_mount_t *fs=e->fs;uint8_t sb[1024];
+    if (!e4_bytes(fs,1024,sb,1024) || e4_u32(sb+1020)!=e4_crc(UINT32_MAX,sb,1020)) { r=-VFS_EIO;goto fail; }
+    if (e4_u32(sb+96)!=0x46 || e4_u32(sb+232) || e4_u32(sb+336) || e4_u32(sb+340) || e4_u32(sb+344)) {
+        r=-VFS_EOPNOTSUPP;goto fail;
+    }
+    uint64_t blocks=0,inodes=0;
+    for (uint32_t g=0;g<fs->groups;g++) {
+        blocks+=e4_u16(fs->gd[g].raw+12);inodes+=e4_u16(fs->gd[g].raw+14);
+        for (unsigned kind=0;kind<2;kind++) if (!(e4_u16(fs->gd[g].raw+18)&(kind ? 1u : 2u))) {
+            if (!e4_bitmap(fs,g,kind!=0)) { r=-VFS_EIO;goto fail; }
+            uint32_t start=fs->first+g*fs->bpg,count=kind ? fs->ipg : fs->blocks-start;
+            if (!kind && count>fs->bpg) count=fs->bpg;
+            unsigned free=0;for (uint32_t bit=0;bit<count;bit++) free+=!e4_bit(fs->scratch,bit);
+            if (free!=e4_u16(fs->gd[g].raw+(kind ? 14 : 12))) { r=-VFS_EIO;goto fail; }
+            if (!kind) for (unsigned i=0;i<fs->ranges;i++) {
+                e4_range_t range=fs->reserved[i];
+                if (range.lo>=start && range.lo<start+count) for (unsigned k=0;k<range.len;k++)
+                    if (!e4_bit(fs->scratch,range.lo-start+k)) { r=-VFS_EIO;goto fail; }
+            }
+        }
+    }
+    if (blocks!=e4_u32(sb+12) || inodes!=e4_u32(sb+16)) { r=-VFS_EIO;goto fail; }
+    if (!e4_bitmap(fs,(fs->journal_ino-1)/fs->ipg,true) ||
+        !e4_bit(fs->scratch,(fs->journal_ino-1)%fs->ipg)) { r=-VFS_EIO;goto fail; }
+    for (unsigned i=0;i<fs->journal_ranges;i++) for (uint32_t k=0;k<fs->journal_reserved[i].len;k++) {
+        uint32_t block=fs->journal_reserved[i].lo+k,g=(block-fs->first)/fs->bpg;
+        /* Cache the validated bitmap for a whole journal range's group. */
+        if (!k || g!=(block-1-fs->first)/fs->bpg) {
+            if (!e4_bitmap(fs,g,false)) { r=-VFS_EIO;goto fail; }
+        }
+        if (!e4_bit(fs->scratch,(block-fs->first)%fs->bpg)) { r=-VFS_EIO;goto fail; }
+    }
+    fs->journal_bootstrap=false;e->file_enabled=true;e->dirty=e4_u16(sb+58)==0;
+    return 0;
+fail:
+    ext4_engine_close(e);*out=NULL;return r;
+}
+int64_t ext4_engine_file_write(ext4_engine_t *e,uint32_t ino,uint64_t *offset,bool append,const void *data,size_t len) {
+    spin_debug_assert_unheld();if (!e || !e->file_enabled || !offset || (!data && len)) return -VFS_EINVAL;
+    if (e->tainted) return -VFS_EIO;
+    if (e->ready || jbd2_writer_state(e->writer)!=JBD2_WRITE_IDLE) return -VFS_EAGAIN;
+    if (ino==e->fs->journal_ino) return -VFS_EOPNOTSUPP;
+    if (len>32768) len=32768;
+    uint64_t next=*offset;e->file_planning=true;
+    int r=e4_file_plan(e,ino,&next,append,data,len);e->file_planning=false;
+    if (r || !len) goto done;
+    r=e4_plan_end(e);if (r) goto done;
+    e4_seal(e);if (e->error) { r=e->error;goto done; }
+    jbd2_credits_t credits={0};e->revoke_count=0;
+    for (unsigned i=0;i<e->images;i++) {
+        if (e->image[i].ordered) credits.ordered_data++;else credits.metadata++;
+    }
+    /* Old external tree nodes are freed in the same transaction as the new
+     * inode root. Fully checkpoint before the next allocation may reuse them. */
+    for (unsigned i=0;i<e->frees;i++) for (uint32_t k=0;k<e->released[i].len;k++) {
+        if (e->revoke_count==64) { r=-VFS_EFBIG;goto done; }
+        e->revokes[e->revoke_count++]=e->released[i].lo+k;
+    }
+    credits.revokes=e->revoke_count;
+    r=jbd2_writer_begin(e->writer,credits);if (r) goto done;
+    e->credits=credits;r=e4_transaction_commit(e);
+    if (!r) { e->dirty=true;*offset=next; }
+done:
+    if (r || !len) ext4_engine_abort(e);
+    e4_invalidate(e->fs);return r ? r : (int64_t)len;
 }

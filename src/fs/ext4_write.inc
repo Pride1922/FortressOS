@@ -91,21 +91,17 @@ static int e4_publish(ext4_engine_t *e) {
     int r=e4_plan_end(e); if (!r) r=e4_commit_unlocked(e);
     e4_invalidate(e->fs); e->ready=false; return r;
 }
-static int64_t e4_write(vfs_node_t *node,uint64_t *offset,bool append,const void *data,size_t len) {
-    if (!offset || (!data && len)) return -VFS_EINVAL;
-    spin_debug_assert_unheld();uint64_t lock_start=e4_tsc();
-    uint64_t f=spin_lock_irqsave(&e4_lock);
-    uint64_t profile_start=e4_tsc();e4_write_calls++;
-    e4_elapsed(&e4_write_lock_wait_cycles,lock_start,profile_start);
-    int r=e4_state(node); if (r) goto done;
-    ext4_mount_t *fs=((e4_inode_t *)node->fs_private)->fs; ext4_engine_t *e=fs->engine;
-    r=e4_plan_begin(e); if (r) goto done;
+/* Shared write-free planner. Caller owns serialization; never commits or
+ * publishes offsets/nodes. Journal workbench calls it with no lock held. */
+static int e4_file_plan(ext4_engine_t *e,uint32_t ino,uint64_t *offset,bool append,const void *data,size_t len) {
+    ext4_mount_t *fs=e->fs;
+    int r=e4_plan_begin(e);if (r) return r;
     e4_inode_t in; uint8_t *raw;
-    r=e4_load_plan(e,((e4_inode_t *)node->fs_private)->ino,&in,&raw); if (r) goto abort;
+    r=e4_load_plan(e,ino,&in,&raw);if (r) return r;
+    if (in.mode!=0x8000) return -VFS_EOPNOTSUPP;
     uint64_t off=append ? in.size : *offset;
-    if (len>32768) len=32768;
-    if (off>8ULL*1024*1024*1024 || len>8ULL*1024*1024*1024-off) { r=-VFS_EFBIG; goto abort; }
-    if (!len) { r=0; goto abort; }
+    if (off>8ULL*1024*1024*1024 || len>8ULL*1024*1024*1024-off) return -VFS_EFBIG;
+    if (!len) return 0;
     /* Clear any initialized allocations between old EOF and a distant write.
      * Holes and unwritten extents need no I/O. Credits reject large gaps. */
     if (off>in.size) for (unsigned i=0;i<fs->pending_count;i++) {
@@ -116,31 +112,43 @@ static int64_t e4_write(vfs_node_t *node,uint64_t *offset,bool append,const void
         while (lo<hi) {
             unsigned skip=lo%fs->bs; size_t n=fs->bs-skip; if (n>hi-lo) n=(size_t)(hi-lo);
             uint32_t block=x.physical+(uint32_t)(lo/fs->bs)-x.logical;
-            uint8_t *b=e4_stage(e,block,E4_NEW); if (!b) { r=e->error; goto abort; }
+            uint8_t *b=e4_stage_data(e,block,false);if (!b) return e->error;
             memset(b+skip,0,n); lo+=n;
         }
     }
     for (size_t at=0;at<len;) {
         uint64_t pos=off+at; unsigned skip=pos%fs->bs; size_t n=fs->bs-skip; if (n>len-at) n=len-at;
         bool zero; uint32_t block=e4_initialize(e,(uint32_t)(pos/fs->bs),&zero);
-        if (!block) { r=e->error; goto abort; }
+        if (!block) return e->error;
         bool full=skip==0 && n==fs->bs;
-        uint8_t *b=(zero || full) ? e4_stage_zero(e,block) : e4_stage(e,block,E4_NEW); if (!b) { r=e->error; goto abort; }
+        uint8_t *b=e4_stage_data(e,block,zero || full);if (!b) return e->error;
         if (zero) memset(b,0,fs->bs);
         memcpy(b+skip,(const uint8_t *)data+at,n); at+=n;
     }
     if (in.size<off+len) in.size=off+len;
     e4_merge_pending(fs); e4_rebuild(e,&in,raw);
+    *offset=off+len;return e->error;
+}
+static int64_t e4_write(vfs_node_t *node,uint64_t *offset,bool append,const void *data,size_t len) {
+    if (!offset || (!data && len)) return -VFS_EINVAL;
+    spin_debug_assert_unheld();uint64_t lock_start=e4_tsc();
+    uint64_t f=spin_lock_irqsave(&e4_lock);
+    uint64_t profile_start=e4_tsc();e4_write_calls++;
+    e4_elapsed(&e4_write_lock_wait_cycles,lock_start,profile_start);
+    int r=e4_state(node); if (r) goto done;
+    ext4_mount_t *fs=((e4_inode_t *)node->fs_private)->fs; ext4_engine_t *e=fs->engine;
+    if (len>32768) len=32768;
+    uint64_t next=*offset;
+    r=e4_file_plan(e,((e4_inode_t *)node->fs_private)->ino,&next,append,data,len);
+    if (r || !len) { e->ready=false;goto done; }
     uint64_t plan_end=e4_tsc();e4_elapsed(&e4_plan_cycles,profile_start,plan_end);
     r=e4_publish(e);uint64_t commit_end=e4_tsc();e4_elapsed(&e4_commit_cycles,plan_end,commit_end);
     if (r) goto done;
     r=e4_refresh(node);uint64_t refresh_end=e4_tsc();e4_elapsed(&e4_refresh_cycles,commit_end,refresh_end);
-    if (!r) { *offset=off+len;e4_write_bytes_total+=len;
+    if (!r) { *offset=next;e4_write_bytes_total+=len;
         e4_write_elapsed(profile_start,refresh_end);
         spin_unlock_irqrestore(&e4_lock,f); return (int64_t)len; }
     goto done;
-abort:
-    e->ready=false;
 done:
     e4_write_failures+=r<0;e4_write_elapsed(profile_start,e4_tsc());
     spin_unlock_irqrestore(&e4_lock,f); return r;

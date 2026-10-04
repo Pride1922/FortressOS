@@ -41,4 +41,17 @@ int ext4_engine_transaction_begin(ext4_engine_t *engine, jbd2_credits_t credits)
 int ext4_engine_transaction_metadata(ext4_engine_t *engine, uint32_t block, const void *bytes);
 int ext4_engine_transaction_data(ext4_engine_t *engine, uint32_t block, const void *bytes);
 int ext4_engine_transaction_revoke(ext4_engine_t *engine, uint32_t block);
+/* Phase 8.2 file workbench: empty supported journal, existing RECOVER bit,
+ * consistent checksummed allocation ownership. Same exclusive single-caller
+ * contract; no VFS publication, namespace, truncate, orphan or clean-state API.
+ * Existing regular singly-linked files only. <=32KiB per write, 64 combined
+ * data/metadata images, 64 old-tree revokes. Append reads authoritative EOF;
+ * *offset advances only after durable commit/checkpoint. Shared handles use
+ * the same offset pointer; independent handles have independent pointers.
+ * Atomic metadata, ordered exposed data; overwritten data is NOT atomic on
+ * crash. Staging failures write nothing; uncertain I/O permanently taints.
+ * Raw image transactions are disabled in this mode. Caller seals no metadata. */
+int ext4_engine_open_journal_files(block_dev_t *dev, bool admitted, ext4_engine_t **out);
+int64_t ext4_engine_file_write(ext4_engine_t *engine, uint32_t ino, uint64_t *offset,
+                               bool append, const void *data, size_t len);
 #endif

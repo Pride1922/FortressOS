@@ -2,8 +2,9 @@
 
 Status: Phases 0-4 delivered (RO reads, bounded mutation engine and non-journaled RW VFS); Phase 5 E4-A production USB integration COMPLETE: automated gates and Dell 5590 physical acceptance PASS (2026-10-03); Phases 6-7 recovery/writer workbenches delivered and host-verified; Phases 8-10 pending. Physical evidence is limited to the reported Phase-5 checks; journaling hardware acceptance is not claimed. See [Phase-0 baseline](EXT4_PHASE0.md), [Phase-1 evidence](../roadmap/ext4-phase1.md), [Phase-2 evidence](../roadmap/ext4-phase2.md), [Phase-3 evidence](../roadmap/ext4-phase3.md), [Phase-4 evidence](../roadmap/ext4-phase4.md), [Phase-5 handoff](../roadmap/ext4-phase5.md), [Phase-6 evidence](../roadmap/ext4-phase6.md) and [Phase-7 evidence](../roadmap/ext4-phase7.md).
 Date: 2026-10-03. Based on the supplied notes, the current block/VFS/ext2/USB contracts, and Linux's ext4 format documentation.
-Phase 8.1 update (2026-10-04): exclusive transaction foundation delivered;
-Phases 8.2-8.6 and production journaled RW remain pending.
+Phase 8.2 update (2026-10-04): exclusive transaction foundation and file-write/
+allocation workbench delivered and host-verified. Phases 8.3-8.6 and production
+journaled RW remain pending. See [8.2 evidence and limits](../roadmap/ext4-phase8-2.md).
 
 ## 1. Decision and corrections
 
@@ -153,6 +154,9 @@ Implement sequentially as six separately reviewable and committable parts,
 each with a focused verification gate. Part **8.1** implements the exclusive
 block-image transaction foundation; operation integration starts at **8.2**.
 See [8.1 inventory, ownership and evidence](../roadmap/ext4-phase8-1.md).
+Part 8.2 is implemented as an exclusive file workbench: 12 host cases,
+20,256 crash cuts and 48 Linux oracle copies PASS; production mount integration
+remains disabled. See [8.2 ownership and evidence](../roadmap/ext4-phase8-2.md).
 
 | Part | Implementation scope | Verification gate |
 | --- | --- | --- |
@@ -204,6 +208,6 @@ Linux validation: inspect via `dumpe2fs`/`debugfs`, run `e2fsck -fn` only on unm
 
 Compatibility extensions after E4-B: HTree, flex_bg/64bit, additional inode mappings/types and xattrs are separate phases with feature-specific gates. Performance caching and delayed allocation come after correctness; no full-ext4 label or terabyte capacity promise without matching validation.
 
-Next implementation unit: **Phase 8 journal all mutations, recovery/orphans and sync**. Phases 6-7 provide bounded reader/writer workbenches; production mount integration and complete metadata coverage follow next. Phase-5 [Dell acceptance](../roadmap/ext4-phase5-dell.md), now includes manual performance/hash/reboot/fsck PASS at 6–7 seconds/MiB; all checklist items are now user-confirmed PASS, separately from journal acceptance. The user authorized continuing journaling before final performance profiling/acceptance. The default image remains ext2; the optional EXT4 image remains non-journaled. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.
+Next implementation unit: **Phase 8.3 namespace operations**. Phases 8.1-8.2 provide transaction and file-allocation workbenches; production mount integration and complete metadata coverage remain parts 8.3-8.6. Phase-5 [Dell acceptance](../roadmap/ext4-phase5-dell.md) includes the user-confirmed metadata-cache run: 16 MiB in 7.06 seconds, hashes after reboot and independently on Mint, and unmounted e2fsck -fn exit 0, separately from journal acceptance. The default image remains ext2; the optional EXT4 image remains non-journaled. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.
 
 E4-A [complete physical acceptance record](../roadmap/ext4-phase5-acceptance.md): all seven checklist items PASS. Flush timing attribution and proposed count reductions remain estimates, not measured guarantees.

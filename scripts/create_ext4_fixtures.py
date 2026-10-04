@@ -13,9 +13,9 @@ FEATURES = "none,extent,filetype,sparse_super,large_file,metadata_csum"
 MASKS = (0, 0x42, 0x403)
 
 
-def run(argv):
+def run(argv, timeout=120):
     p = subprocess.run(argv, text=True, stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT, check=False, timeout=120)
+                       stderr=subprocess.STDOUT, check=False, timeout=timeout)
     if p.returncode:
         raise RuntimeError(f"{argv!r}: exit {p.returncode}\n{p.stdout}")
     return p.stdout

@@ -31,6 +31,8 @@ struct ext4_mount {
     bool frozen;
     bool journal_bootstrap;
     uint32_t journal_ino;
+    e4_range_t *journal_reserved;
+    unsigned journal_ranges;
     uint32_t bs, blocks, inodes, first, bpg, ipg, groups, seed, gdt_blocks;
     e4_group_t *gd;
     e4_range_t *reserved;
@@ -216,6 +218,10 @@ static void e4_range_sort(e4_range_t *ranges,unsigned count) {
 }
 static bool e4_data_range(ext4_mount_t *fs,uint32_t lo,uint32_t len) {
     if (!len || lo<fs->first || lo>=fs->blocks || len>fs->blocks-lo) return false;
+    for (unsigned i=0;i<fs->journal_ranges;i++) {
+        e4_range_t r=fs->journal_reserved[i];
+        if (lo<r.lo+r.len && r.lo<lo+len) return false;
+    }
     if (fs->reserved_sorted) {
         unsigned left=0,right=fs->ranges;
         while (left<right) {
@@ -513,7 +519,7 @@ static void e4_discard(ext4_mount_t *fs) {
     if (!fs) return;
     for (unsigned i=0;i<fs->nodes;i++) kfree(fs->cached[i]);
     while (fs->maps) { e4_map_t *map=fs->maps; fs->maps=map->next; kfree(map); }
-    kfree(fs->rw_map); kfree(fs->engine); kfree(fs->reserved); kfree(fs->gd); kfree(fs);
+    kfree(fs->journal_reserved);kfree(fs->rw_map); kfree(fs->engine); kfree(fs->reserved); kfree(fs->gd); kfree(fs);
 }
 static const unsigned e4_journal_identity[][2]={{0,8},{20,24},{76,4},{88,2},{92,4},{100,20},{208,28},{254,2},{373,1}};
 static bool e4_journal_backup(ext4_mount_t *fs,uint8_t *sb) {

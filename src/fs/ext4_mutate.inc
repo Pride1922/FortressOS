@@ -3,7 +3,7 @@
 #define E4_IMAGES 64u
 #define E4_FREES (E4_MAP_MAX+64u)
 enum { E4_ALLOC, E4_REFERENCE, E4_NEW, E4_DATA };
-typedef struct { uint32_t block; unsigned role; uint8_t bytes[4096]; } e4_image_t;
+typedef struct { uint32_t block; unsigned role; bool ordered; uint8_t bytes[4096]; } e4_image_t;
 struct ext4_engine {
     ext4_mount_t *fs;
     e4_image_t image[E4_IMAGES];
@@ -20,6 +20,7 @@ struct ext4_engine {
     jbd2_credits_t credits;
     uint32_t revokes[64];
     unsigned revoke_count;
+    bool file_enabled, file_planning;
 };
 static int e4_transaction_commit(ext4_engine_t *e);
 static void e4_p16(uint8_t *p,uint16_t n) { p[0]=(uint8_t)n; p[1]=(uint8_t)(n>>8); }
@@ -35,6 +36,7 @@ static uint8_t *e4_stage_image(ext4_engine_t *e,uint32_t block,unsigned role,boo
     }
     if (e->images==E4_IMAGES) { e->error=-VFS_EFBIG; return NULL; }
     e4_image_t *image=&e->image[e->images++]; image->block=block; image->role=role;
+    image->ordered=false;
     if (zero) memset(image->bytes,0,e->fs->bs);
     else if (!e4_bytes(e->fs,(uint64_t)block*e->fs->bs,image->bytes,e->fs->bs)) {
         e->error=-VFS_EIO; return NULL;
@@ -49,6 +51,12 @@ static uint8_t *e4_stage(ext4_engine_t *e,uint32_t block,unsigned role) {
 static uint8_t *e4_stage_zero(ext4_engine_t *e,uint32_t block) {
     return e4_stage_image(e,block,E4_NEW,true);
 }
+static uint8_t *e4_stage_data(ext4_engine_t *e,uint32_t block,bool zero) {
+    uint8_t *bytes=e4_stage_image(e,block,E4_NEW,zero);
+    if (bytes) for (unsigned i=0;i<e->images;i++)
+        if (e->image[i].block==block) e->image[i].ordered=true;
+    return bytes;
+}
 static uint8_t *e4_super(ext4_engine_t *e) {
     uint32_t block=1024/e->fs->bs;bool existed=false;
     for (unsigned i=0;i<e->images;i++) if (e->image[i].block==block) existed=true;
@@ -58,8 +66,8 @@ static uint8_t *e4_super(ext4_engine_t *e) {
         uint64_t blocks=0,inodes=0;
         for (uint32_t g=0;g<e->fs->groups;g++) { blocks+=e4_u16(e->fs->gd[g].raw+12);inodes+=e4_u16(e->fs->gd[g].raw+14); }
         if (e4_u32(sb+1020)!=e4_crc(UINT32_MAX,sb,1020) || e4_u16(sb+58)!=(e->dirty ? 0 : 1) ||
-            e4_u32(sb+12)!=blocks || e4_u32(sb+16)!=inodes || e4_u32(sb+92) ||
-            e4_u32(sb+96)!=0x42 || e4_u32(sb+100)!=0x403) { e->error=-VFS_EIO;return NULL; }
+            e4_u32(sb+12)!=blocks || e4_u32(sb+16)!=inodes || e4_u32(sb+92)!=(e->writer ? 4u : 0u) ||
+            e4_u32(sb+96)!=(e->writer ? 0x46u : 0x42u) || e4_u32(sb+100)!=0x403) { e->error=-VFS_EIO;return NULL; }
     }
     return sb;
 }
@@ -197,7 +205,7 @@ static uint8_t *e4_inode_image(ext4_engine_t *e,uint32_t ino) {
 static int e4_plan_begin(ext4_engine_t *e) {
     if (!e) return -VFS_EINVAL;
     if (e->tainted) return -VFS_EIO;
-    if (e->writer) return -VFS_EOPNOTSUPP;
+    if (e->writer && !e->file_planning) return -VFS_EOPNOTSUPP;
     if (e->ready) return -VFS_EINVAL;
     e->images=e->frees=e->old_count=e->zeros=0;
     e->error=e->inode_delta=0; e->reserve_ino=e->release_ino=0; e->release_dir=false;
