@@ -28,3 +28,14 @@ if __name__ == "__main__":
             exe = Path(tmp) / "tools"
             build(exe)
             subprocess.run([str(exe)], check=True, timeout=30)
+
+            grep_exe = Path(tmp) / "grep_host"
+            subprocess.run([
+                "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-DTOOL_HOST_TEST",
+                "-Isrc/include", "-Isrc/fs", "-Iuser/tools",
+                "tests/grep_host.c", "user/tools/common.c", "user/tools/grep.c",
+                "-o", str(grep_exe)
+            ], cwd=REPO, check=True)
+            subprocess.run([str(grep_exe)], check=True, timeout=30)
+

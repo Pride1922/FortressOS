@@ -783,6 +783,44 @@ cat /bin/hello | wc -c
 
 ---
 
+### `grep`
+**Syntax:** `grep [OPTIONS] PATTERN [FILE ...]`  
+**Path:** `/bin/grep`  
+**Description:** Searches files or standard input for lines matching a pattern (substring or regular expression). Operates on arbitrary stream lengths with zero heap allocation using static 4 KiB chunking. Returns exit code 0 if any matching lines are found, 1 if no match, and 2 on error.  
+**Options:**
+* `-i`: Ignore case distinctions.
+* `-v`: Invert the sense of matching (select non-matching lines).
+* `-c`: Print only a count of selected lines per file.
+* `-n`: Prefix each output line with its 1-based line number.
+* `-l`: Print only the names of files containing at least one match.
+* `-q`: Quiet mode; suppress all output, exit 0 immediately on first match, exit 1 if no match.
+* `-h`: Suppress filename prefixes when searching multiple files.
+* `-H`: Always print filename prefix for each match.
+* `-F`: Interpret `PATTERN` as a fixed string instead of a regular expression.
+* `-E`: Interpret `PATTERN` as an extended regular expression.
+* `--help`: Display usage summary and exit.
+* `--`: Ends option scanning.
+* `-`: Read from standard input.  
+**Pattern Metacharacters:**
+* `^`: Anchor match to beginning of line.
+* `$`: Anchor match to end of line.
+* `.`: Matches any single character (except newline).
+* `*`: Matches zero or more occurrences of the preceding element.
+* `[...]` / `[^...]`: Character classes (e.g. `[0-9]`, `[a-zA-Z]`, `[^0-9]`).
+* `\`: Escapes metacharacters (`\.`, `\*`, `\\`, etc.).  
+**Examples:**
+```sh
+grep Fortress /etc/motd
+cat /etc/motd | grep -i fortress
+ps | grep shell
+grep -c -v '^#' /etc/network.conf
+grep -n '1500' /etc/network.conf
+grep -l '10.0.2' /etc/*.conf
+echo "hello world" | grep -q "world"
+```
+
+---
+
 ### `nano`
 **Syntax:** `nano [path]`  
 **Path:** `/bin/nano`  
