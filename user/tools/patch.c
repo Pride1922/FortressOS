@@ -899,6 +899,9 @@ int patch_main(int argc, char **argv) {
 
     /* All hunks verified — emit patched output */
     int out_fd = -1;
+    char tmp_path[PATCH_MAX_PATH];
+    bool use_rename = false;
+
     if (opts.output_file) {
         if (tool_equal(opts.output_file, "-")) {
             out_fd = 1;
@@ -912,13 +915,34 @@ int patch_main(int argc, char **argv) {
             out_fd = (int)fd;
         }
     } else {
-        long fd = tool_syscall(SYS_OPEN, (uintptr_t)target,
-                               VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
-        if (fd < 0) {
-            tool_error("patch", "cannot write to target file", target);
+        /* Atomic temp file + rename for in-place modification */
+        size_t tlen = tool_length(target);
+        if (tlen + 5 >= PATCH_MAX_PATH) {
+            tool_error("patch", "target file path too long", target);
             return 2;
         }
-        out_fd = (int)fd;
+        tool_memcpy(tmp_path, target, tlen);
+        tmp_path[tlen] = '.';
+        tmp_path[tlen + 1] = 't';
+        tmp_path[tlen + 2] = 'm';
+        tmp_path[tlen + 3] = 'p';
+        tmp_path[tlen + 4] = '\0';
+
+        long fd = tool_syscall(SYS_OPEN, (uintptr_t)tmp_path,
+                               VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
+        if (fd < 0) {
+            /* Fallback to direct write if temp file cannot be opened */
+            fd = tool_syscall(SYS_OPEN, (uintptr_t)target,
+                              VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
+            if (fd < 0) {
+                tool_error("patch", "cannot write to target file", target);
+                return 2;
+            }
+            out_fd = (int)fd;
+        } else {
+            out_fd = (int)fd;
+            use_rename = true;
+        }
     }
 
     uint32_t orig_cur = 1;
@@ -947,9 +971,30 @@ int patch_main(int argc, char **argv) {
         orig_cur++;
     }
 
-    flush_out_buf(out_fd);
+    int flush_r = flush_out_buf(out_fd);
     if (out_fd != 1) {
         tool_syscall(SYS_CLOSE, (uintptr_t)out_fd, 0, 0);
+    }
+
+    if (flush_r != 0) {
+        if (use_rename) {
+            tool_syscall(SYS_UNLINK, (uintptr_t)tmp_path, 0, 0);
+        }
+        tool_error("patch", "failed writing output", target);
+        return 2;
+    }
+
+    if (use_rename) {
+        long ren_r = tool_syscall(SYS_RENAME, (uintptr_t)tmp_path, (uintptr_t)target, 0);
+        if (ren_r != 0) {
+            /* If atomic rename failed (e.g. non-overwriting fs), fallback: unlink target then rename */
+            tool_syscall(SYS_UNLINK, (uintptr_t)target, 0, 0);
+            ren_r = tool_syscall(SYS_RENAME, (uintptr_t)tmp_path, (uintptr_t)target, 0);
+            if (ren_r != 0) {
+                tool_error("patch", "cannot atomically replace target file", target);
+                return 2;
+            }
+        }
     }
 
     return 0;

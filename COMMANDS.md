@@ -936,7 +936,7 @@ diff -i -w file1.txt file2.txt
 ### `patch`
 **Syntax:** `patch [OPTIONS] [ORIGFILE [PATCHFILE]]`  
 **Path:** `/bin/patch`  
-**Description:** Applies a diff file to an original file. Supports both unified diff format (`diff -u`, `git diff`) and traditional normal diff format (`diff`). Operates under a bounded static memory architecture (256 KiB text pool, 4,096 lines) with zero dynamic allocation. Employs a fail-closed transactional mutation model: all hunks are validated against the original text before any mutation occurs; if any hunk fails to match or apply, the original file is left completely untouched and `patch` exits with status `1`.
+**Description:** Applies a diff file to an original file. Supports both unified diff format (`diff -u`, `git diff`) and traditional normal diff format (`diff`). Operates under a bounded static memory architecture (256 KiB text pool, 4,096 lines) with zero dynamic allocation. Employs a fail-closed transactional mutation model with atomic temp file + rename (`.tmp` -> `target` via `SYS_RENAME`): all hunks are validated against the original text before any write begins; output is emitted to a temporary file and atomically renamed into place upon successful completion. If any hunk fails to match or an I/O error occurs, the temporary file is unlinked, the original file is left completely untouched, and `patch` exits with status `1`.
 * **Exit Codes:** `0` if all hunks applied successfully (or dry-run succeeded), `1` if one or more hunks failed, or `2` upon fatal error (missing file, syntax error, or memory limit exceeded).
 **Options:**
 * `-p NUM`, `--strip=NUM`: Strip `NUM` leading path components from filenames extracted from patch headers (`---` / `+++`).

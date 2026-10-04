@@ -50,7 +50,37 @@ long tool_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
             fds[fd].is_write = (flags & VFS_O_WRONLY) != 0;
             return fd;
         }
+        if (strstr(name, ".tmp")) {
+            int fd = 8;
+            fds[fd].open = true;
+            if (flags & VFS_O_TRUNC) {
+                fds[fd].len = 0;
+                fds[fd].pos = 0;
+            }
+            fds[fd].is_write = (flags & VFS_O_WRONLY) != 0;
+            return fd;
+        }
         return SYSCALL_ENOENT;
+    }
+    if (nr == SYS_UNLINK) {
+        const char *name = (const char *)a;
+        if (strstr(name, ".tmp")) {
+            fds[8].len = 0;
+            fds[8].open = false;
+        }
+        return 0;
+    }
+    if (nr == SYS_RENAME) {
+        const char *oldname = (const char *)a;
+        const char *newname = (const char *)b;
+        if (strstr(oldname, ".tmp") && (!strcmp(newname, "orig.txt") || !strcmp(newname, "file.txt") || !strcmp(newname, "source.c"))) {
+            memcpy(fds[4].data, fds[8].data, fds[8].len);
+            fds[4].len = fds[8].len;
+            fds[4].data[fds[4].len] = 0;
+            fds[8].len = 0;
+            return 0;
+        }
+        return 0;
     }
     if (nr == SYS_CLOSE) {
         assert(a < 32 && fds[a].open);
