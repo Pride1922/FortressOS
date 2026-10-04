@@ -160,6 +160,35 @@ int ext4_engine_open_journal_files(block_dev_t *dev,bool admitted,ext4_engine_t 
 fail:
     ext4_engine_close(e);*out=NULL;return r;
 }
+/* Complete a sealed semantic operation as one bounded journal transaction.
+ * Every released block is revoked; no staged home image may overlap a revoke.
+ * The tail barrier retires this transaction before a subsequent allocator. */
+static int e4_semantic_commit(ext4_engine_t *e) {
+    int r=e4_plan_end(e);if (r) return r;
+    e4_seal(e);if (e->error) return e->error;
+    jbd2_credits_t credits={0};e->revoke_count=0;
+    for (unsigned i=0;i<e->images;i++) {
+        if (e->image[i].ordered) credits.ordered_data++;else credits.metadata++;
+    }
+    /* Reclaimed data and old external tree nodes are revoked with their
+     * reference changes. Checkpoint before subsequent allocation may reuse. */
+    for (unsigned i=0;i<e->frees;i++) for (uint32_t k=0;k<e->released[i].len;k++) {
+        if (e->revoke_count==64) return -VFS_EFBIG;
+        e->revokes[e->revoke_count++]=e->released[i].lo+k;
+    }
+    credits.revokes=e->revoke_count;
+    r=jbd2_writer_begin(e->writer,credits);if (r) return r;
+    e->credits=credits;r=e4_transaction_commit(e);
+    if (!r) e->dirty=true;
+    return r;
+}
+/* Semantic workbenches expose no VFS nodes or map handles. Drop temporary
+ * reader maps between operations instead of charging them to mount lifetime. */
+static void e4_semantic_invalidate(ext4_engine_t *e) {
+    e4_invalidate(e->fs);
+    while (e->fs->maps) { e4_map_t *map=e->fs->maps;e->fs->maps=map->next;kfree(map); }
+    e->fs->map_entries=0;
+}
 int64_t ext4_engine_file_write(ext4_engine_t *e,uint32_t ino,uint64_t *offset,bool append,const void *data,size_t len) {
     spin_debug_assert_unheld();if (!e || !e->file_enabled || !offset || (!data && len)) return -VFS_EINVAL;
     if (e->tainted) return -VFS_EIO;
@@ -169,23 +198,9 @@ int64_t ext4_engine_file_write(ext4_engine_t *e,uint32_t ino,uint64_t *offset,bo
     uint64_t next=*offset;e->file_planning=true;
     int r=e4_file_plan(e,ino,&next,append,data,len);e->file_planning=false;
     if (r || !len) goto done;
-    r=e4_plan_end(e);if (r) goto done;
-    e4_seal(e);if (e->error) { r=e->error;goto done; }
-    jbd2_credits_t credits={0};e->revoke_count=0;
-    for (unsigned i=0;i<e->images;i++) {
-        if (e->image[i].ordered) credits.ordered_data++;else credits.metadata++;
-    }
-    /* Old external tree nodes are freed in the same transaction as the new
-     * inode root. Fully checkpoint before the next allocation may reuse them. */
-    for (unsigned i=0;i<e->frees;i++) for (uint32_t k=0;k<e->released[i].len;k++) {
-        if (e->revoke_count==64) { r=-VFS_EFBIG;goto done; }
-        e->revokes[e->revoke_count++]=e->released[i].lo+k;
-    }
-    credits.revokes=e->revoke_count;
-    r=jbd2_writer_begin(e->writer,credits);if (r) goto done;
-    e->credits=credits;r=e4_transaction_commit(e);
-    if (!r) { e->dirty=true;*offset=next; }
+    r=e4_semantic_commit(e);
+    if (!r) *offset=next;
 done:
     if (r || !len) ext4_engine_abort(e);
-    e4_invalidate(e->fs);return r ? r : (int64_t)len;
+    e4_semantic_invalidate(e);return r ? r : (int64_t)len;
 }

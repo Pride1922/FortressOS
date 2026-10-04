@@ -20,7 +20,7 @@ struct ext4_engine {
     jbd2_credits_t credits;
     uint32_t revokes[64];
     unsigned revoke_count;
-    bool file_enabled, file_planning;
+    bool file_enabled, file_planning, namespace_enabled;
 };
 static int e4_transaction_commit(ext4_engine_t *e);
 static void e4_p16(uint8_t *p,uint16_t n) { p[0]=(uint8_t)n; p[1]=(uint8_t)(n>>8); }

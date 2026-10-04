@@ -11,7 +11,7 @@ typedef struct {
     uint32_t block_size, filesystem_blocks, journal_blocks;
     const uint32_t *journal_map; /* Complete logical -> partition block map. */
     uint8_t uuid[16];
-    /* Optional filesystem identity guard, called only during analysis. */
+    /* Optional filesystem identity guard: analysis and writer metadata staging. */
     bool (*validate_home)(void *context,uint32_t block,const uint8_t *bytes);
     void *context;
 } jbd2_source_t;

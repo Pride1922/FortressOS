@@ -54,4 +54,21 @@ int ext4_engine_transaction_revoke(ext4_engine_t *engine, uint32_t block);
 int ext4_engine_open_journal_files(block_dev_t *dev, bool admitted, ext4_engine_t **out);
 int64_t ext4_engine_file_write(ext4_engine_t *engine, uint32_t ino, uint64_t *offset,
                                bool append, const void *data, size_t len);
+/* Phase 8.3 exclusive namespace workbench, extending the 8.2 admission above.
+ * No VFS mount/handles may coexist. Caller serializes every call and owns media
+ * exclusively; open-target deletion and orphan/restartable cleanup are 8.4.
+ * One transaction per operation, <=64 combined images and <=64 freed blocks.
+ * Create/mkdir, regular-file rename without replacement, closed single-link
+ * unlink and empty rmdir only. Directory moves/replacement reject unchanged.
+ * Parent links, directory checksums, inode/bitmap/counter ownership and bounded
+ * reclamation commit together. Output inode changes only after durability.
+ * Unsupported/over-budget plans write nothing. I/O failure permanently taints.
+ * Production journaling and clean-state transitions remain disabled. */
+int ext4_engine_open_journal_namespace(block_dev_t *dev, bool admitted, ext4_engine_t **out);
+int ext4_engine_namespace_create(ext4_engine_t *engine, uint32_t parent,
+                                 const char *name, bool directory, uint32_t *ino);
+int ext4_engine_namespace_remove(ext4_engine_t *engine, uint32_t parent,
+                                 const char *name, bool directory);
+int ext4_engine_namespace_rename(ext4_engine_t *engine, uint32_t old_parent,
+                                 const char *old_name, uint32_t new_parent, const char *new_name);
 #endif

@@ -1044,6 +1044,8 @@ test-net-nc-host:
 	@$(BUILD_DIR)/net_nc_host
 test-net-tcp-matrix: $(BOOTABLE_ISO) test-net-tcp-fixture test-net-nc-host test-net-tcp-socket-host
 	@python3 scripts/test_net_tcp_matrix.py --all
+.PHONY: test-net-tcp
+test-net-tcp: test-net-tcp-matrix
 test-net-tcp-retention: $(BOOTABLE_ISO)
 	@python3 scripts/test_net_tcp_matrix.py --retention
 test-net-tcp-synthetic: $(BOOTABLE_ISO) test-net-tcp-fixture
@@ -1243,6 +1245,12 @@ test-jbd2-replay-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_replay_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/jbd2_replay_host
 	@python3 scripts/test_jbd2_replay_host.py
+
+.PHONY: test-ext4-namespace-host
+test-ext4-namespace-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_namespace_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/ext4_namespace_host
+	@python3 scripts/test_ext4_namespace_host.py
 
 .PHONY: test-ext4-journal-file-host
 test-ext4-journal-file-host:
