@@ -1,8 +1,10 @@
 # EXT4 Phase 9 — Crash campaign and E4-B acceptance
 
-Proposed execution plan, 2026-10-04. Phase 8.6 implementation checkpoint:
+Execution plan, 2026-10-04. Phase 8.6 implementation checkpoint:
 `3229ad4`. This expands [Phase 9 in the EXT4 plan](EXT4_PLAN.md), without
-starting implementation or enabling production journaled RW.
+enabling production journaled RW. Phase 9.1 is host-verified; remaining parts are
+planned. See [9.1 specification](EXT4_PHASE9_1.md) and
+[verification evidence](../roadmap/ext4-phase9-1.md).
 
 ```mermaid
 flowchart TD

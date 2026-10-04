@@ -207,6 +207,12 @@ journaling nor a readable volume proves arbitrary corruption can be repaired.
 
 Proposed six-part execution sequence: [Phase 9 detailed plan](EXT4_PHASE9.md).
 
+Part 9.1 is host-verified: calibrated persistence model, 156 mounted operation
+inventories, 228 omitted-commit-flush controls and independent Linux integrity/
+byte/namespace checks. See [specification](EXT4_PHASE9_1.md) and
+[evidence and limits](../roadmap/ext4-phase9-1.md). The 333,424 initial 9.2 fault
+cases are planned, not executed. E4-B acceptance remains pending.
+
 Enumerate every write/flush cut point in representative transactions. The fake device separates volatile cache from stable media; model cache loss, reordered unflushed writes, torn sectors, failed flushes and disconnects. Corrupt durable journal content must be detected; do not promise reconstruction of arbitrary corruption.
 
 For supported crash scenarios: crash, recover using FortressOS, check independent namespace/data oracle and run offline `e2fsck -fn`. Reverse interoperability: replay FortressOS images on Linux copies, and Linux images on FortressOS. Model journal-full and crash-during-recovery/checkpoint cases. Extend BIOS/UEFI QEMU power-cut runs and preserve exact argv, image before/after, logs and seed. Deliberate physical power-cut tests require a separate sacrificial-media procedure; clean physical reboots alone prove no crash-recovery property.

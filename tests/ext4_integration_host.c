@@ -197,6 +197,7 @@ static size_t staging_failures(block_dev_t *dev,const uint8_t *initial,bool trun
     }
     return checked;
 }
+#ifndef EXT4_INTEGRATION_LIBRARY
 int main(int argc,char **argv) {
     assert(argc==4 || (argc==5 && (!strcmp(argv[4],"--offset-only") || !strcmp(argv[4],"--staging") ||
         !strcmp(argv[4],"--truncate-staging"))));
@@ -243,3 +244,4 @@ int main(int argc,char **argv) {
     printf("EXT4 integration PASS block=%u sector=%u cuts=%zu metadata=%zu data=%zu journal=%zu stages=%zu\n",
         bs,ss,cuts,metadata_writes,data_writes,journal_writes,stages);return 0;
 }
+#endif
