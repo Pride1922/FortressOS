@@ -211,8 +211,16 @@ int main(void) {
         char *argv[] = {"sort", "-c", NULL};
         int rc = sort_main(2, argv);
         assert(rc == 1);
-        assert(strstr(errors, "disorder") != NULL);
-        printf("  [PASS] Test 10: Check -c disordered\n");
+        assert(strstr(errors, "disorder on line 2") != NULL);
+        printf("  [PASS] Test 10: Check -c reports line number\n");
+
+        /* Also test -C: silent on disorder */
+        reset_io_str(sample);
+        char *argv_C[] = {"sort", "-C", NULL};
+        rc = sort_main(2, argv_C);
+        assert(rc == 1);
+        assert(errors_len == 0); /* Silent! */
+        printf("  [PASS] Test 10b: Check -C silent exit 1 on disorder\n");
     }
 
     /* 11. Output file option (-o out_file) */

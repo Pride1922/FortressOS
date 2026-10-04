@@ -828,14 +828,16 @@ echo "hello world" | grep -q "world"
 ### `sort`
 **Syntax:** `sort [OPTIONS] [FILE...]`  
 **Path:** `/bin/sort`  
-**Description:** Sorts lines of text files from files or standard input and writes the result to standard output or a designated output file. Employs an iterative, stack-free bottom-up merge sort algorithm ensuring strict $O(N \log N)$ complexity, stability on equal keys, and bounded BSS memory (up to 256 KiB pool, 8,192 lines) without dynamic heap allocation.  
+**Description:** Sorts lines of text files from files or standard input and writes the result to standard output or a designated output file. Employs an iterative, stack-free bottom-up merge sort algorithm ensuring strict $O(N \log N)$ complexity, stability on equal keys, and bounded BSS memory without dynamic heap allocation.
+* **Buffer Capacity:** Maximum total input is 256 KiB text pool (`SORT_POOL_SIZE = 262144` bytes) and up to 8,192 lines (`SORT_MAX_LINES = 8192`). Inputs exceeding either limit cleanly fail with a diagnostic.  
 **Options:**
-* `-r`, `--reverse`: Reverse the result of comparisons.
-* `-n`, `--numeric-sort`: Compare according to string numerical value (supports signed 64-bit integers and leading whitespace).
-* `-u`, `--unique`: Output only the first of an equal run (or verify strict order when used with `-c`).
-* `-f`, `--ignore-case`: Fold lowercase to uppercase characters before comparing.
-* `-c`, `-C`, `--check`: Check if input is already sorted; exits with 0 if sorted, or 1 if a disorder is encountered without modifying output.
-* `-k POS`: Sort by key field starting at `POS` (1-indexed, whitespace-separated).
+* `-r`, `--reverse`: Reverse the result of comparisons while preserving stability.
+* `-n`, `--numeric-sort`: Compare according to string numerical value (supports signed 64-bit integers and leading whitespace). Equal numeric values tie-break on the full line content (also respecting `-f`), or deduplicate under `-u`.
+* `-u`, `--unique`: Output only the first line of an equal run (or verify strict order when used with `-c`).
+* `-f`, `--ignore-case`: Fold ASCII `A-Z` to `a-z` only. Non-ASCII bytes (`0x80..0xFF`) are compared byte-wise.
+* `-c`, `--check`: Check if input is already sorted; exits with 0 if sorted, or 1 and prints a diagnostic with the line number (`disorder on line N`) if a disorder is detected.
+* `-C`: Check if input is already sorted silently; exits with 1 on disorder without emitting any diagnostic message.
+* `-k POS`: Sort by key field starting at 1-indexed field `POS` (whitespace-delimited) and extending to the end of the line (GNU-style).
 * `-o FILE`: Write sorted result to `FILE` instead of standard output (safe even when `FILE` is one of the inputs).
 * `--help`: Display usage summary and exit.
 * `--`: Ends option scanning.
@@ -844,9 +846,10 @@ echo "hello world" | grep -q "world"
 ```sh
 sort /etc/motd
 cat /etc/passwd | sort -u
-ps | sort -k 2 -n
+ps | sort -k 1 -n
 sort -r -n numbers.txt
-sort -c -n log_timestamps.txt
+sort -c /etc/network.conf
+sort -C /etc/network.conf || echo "Disordered"
 sort -o sorted.txt input.txt
 ```
 

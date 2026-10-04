@@ -95,8 +95,35 @@ def test_sort_qemu():
             assert "Welcome to FortressOS" in out, f"Unexpected output: {out}"
             print("  [PASS] Pipeline cat | sort -r succeeded.")
 
-            # Test 4: sort --help
-            print("  [5] Testing: sort --help")
+            # Test 4: sort -k 1 -n in pipeline with ps
+            print("  [5] Testing: ps | grep -v PID | sort -k 1 -n")
+            pos = len(log_path.read_text(errors="replace"))
+            send_str(uart, "ps | grep -v PID | sort -k 1 -n\n")
+            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos, timeout=10)
+            out = log_path.read_text(errors="replace")[pos:]
+            assert "shell" in out and "/bin/sort" in out, f"Expected shell and /bin/sort in ps output: {out}"
+            print("  [PASS] Pipeline ps | sort -k 1 -n succeeded.")
+
+            # Test 5: sort -c detecting disorder on /etc/network.conf
+            print("  [6] Testing: sort -c /etc/network.conf (expect disorder)")
+            pos = len(log_path.read_text(errors="replace"))
+            send_str(uart, "sort -c /etc/network.conf\n")
+            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos, timeout=10)
+            out = log_path.read_text(errors="replace")[pos:]
+            assert "disorder on line" in out, f"Expected disorder diagnostic: {out}"
+            print("  [PASS] sort -c disorder detection succeeded.")
+
+            # Test 6: sort | sort -c pipeline (verify sorted input passes -c cleanly)
+            print("  [7] Testing: sort /etc/network.conf | sort -c")
+            pos = len(log_path.read_text(errors="replace"))
+            send_str(uart, "sort /etc/network.conf | sort -c\n")
+            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos, timeout=10)
+            out = log_path.read_text(errors="replace")[pos:]
+            assert "disorder" not in out, f"Unexpected disorder on sorted input: {out}"
+            print("  [PASS] Pipeline sort | sort -c succeeded.")
+
+            # Test 7: sort --help
+            print("  [8] Testing: sort --help")
             pos = len(log_path.read_text(errors="replace"))
             send_str(uart, "sort --help\n")
             wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos, timeout=10)

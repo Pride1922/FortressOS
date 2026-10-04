@@ -13,7 +13,8 @@ typedef struct {
     bool numeric;       /* -n */
     bool unique;        /* -u */
     bool ignore_case;   /* -f */
-    bool check;         /* -c */
+    bool check;         /* -c or -C */
+    bool check_silent;  /* -C */
     uint32_t key_field; /* -k */
     const char *output_file; /* -o */
     int input_start;    /* argv index of first input file */
@@ -262,7 +263,8 @@ static int print_help(void) {
         "  -n, --numeric-sort  Compare according to string numerical value\n"
         "  -u, --unique        Output only the first of an equal run\n"
         "  -f, --ignore-case   Fold lower case to upper case characters\n"
-        "  -c, -C, --check     Check for sorted order; do not sort\n"
+        "  -c, --check         Check for sorted order and report disorder; do not sort\n"
+        "  -C                  Check for sorted order silently; do not sort\n"
         "  -k POS              Sort by key field starting at POS (1-indexed)\n"
         "  -o FILE             Write result to FILE instead of standard output\n"
         "  --help              Display this help text and exit\n";
@@ -300,8 +302,12 @@ static int parse_sort_options(int argc, char **argv, sort_options_t *opts) {
                 opts->unique = true;
             } else if (opt == 'f') {
                 opts->ignore_case = true;
-            } else if (opt == 'c' || opt == 'C') {
+            } else if (opt == 'c') {
                 opts->check = true;
+                opts->check_silent = false;
+            } else if (opt == 'C') {
+                opts->check = true;
+                opts->check_silent = true;
             } else if (opt == 'k') {
                 const char *val_str = NULL;
                 if (arg[j + 1] != '\0') {
@@ -439,7 +445,19 @@ int sort_main(int argc, char **argv) {
                 else if (cmp == 0 && opts.unique) disorder = true;
             }
             if (disorder) {
-                return tool_error("sort", "disorder encountered", NULL);
+                if (opts.check_silent) return 1;
+                char line_num_str[32];
+                size_t npos = 0;
+                size_t lineno = i + 1;
+                do {
+                    line_num_str[npos++] = (char)('0' + (lineno % 10));
+                    lineno /= 10;
+                } while (lineno > 0);
+                char diag[64] = "disorder on line ";
+                size_t dpos = 17;
+                while (npos > 0) diag[dpos++] = line_num_str[--npos];
+                diag[dpos] = '\0';
+                return tool_error("sort", diag, NULL);
             }
         }
         return 0;
