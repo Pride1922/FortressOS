@@ -6,6 +6,13 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-04 prompt redraw note: The shell now redraws after background output.
+Background network jobs (such as `wget &` or `download &`) emitting progress or
+completion lines to the terminal previously clobbered the interactive prompt;
+the shell editor now tracks display generation via `SYS_TERMCTL` (`TERM_GET`) on
+100 ms idling timeouts and automatically repaints the prompt, active draft text,
+and cursor position without user keypress. See [`docs/subsystems/shell.md`](shell.md) (§7).
+
 2026-10-04 Dell 1 ms RX grace retest: captured stdout 1 MiB transfer 0.71 s;
 file SHA-256 user-confirmed PASS. Some approximately 10 ms stalls remain.
 On-demand NET POLL dmesg counters now measure expiration, clock failure,
