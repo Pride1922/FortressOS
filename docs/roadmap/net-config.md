@@ -89,3 +89,45 @@ Verified on bare-metal Dell Latitude 5590 with integrated Intel I219-LM (`8086:1
    - Unresolvable hostnames report `ping: cannot resolve <name>` to stderr with exit code 1.
 4. **Physical Acceptance (Dell Latitude 5590)**:
    - Verified on bare-metal Dell Latitude 5590: `ping` with domain hostname resolution confirmed working end-to-end with live DNS lookups and subsequent ICMP echo exchanges.
+
+---
+
+## 5. DNS Server Display in `/bin/ifconfig` & Centralized `resolv_conf_path` (2026-10-04)
+
+1. **Centralized `resolv_conf_path()` (`user/resolv_conf.h`)**:
+   - Single source of truth returning the active `resolv.conf` path:
+     - `/tmp/resolv.conf` if it exists.
+     - Else `/mnt/.fortress/resolv.conf` if it exists.
+     - Else `/tmp/resolv.conf` (default write target).
+   - Uniform callers:
+     - `user/dns.c`: parses nameservers via `resolv_conf_path()`.
+     - `user/ifup.c`: writes positional DNS arguments (`dns1`, `dns2`) to `resolv_conf_path()`.
+     - `user/ifconfig.c`: reads configured nameservers via `resolv_conf_path()`.
+   - Eliminates hardcoded paths across userspace networking tools.
+
+2. **In-Memory RAM `/tmp` Directory (`src/fs/vfs.c`)**:
+   - Registered writable `/tmp` directory node during `vfs_init()`.
+   - Supports creating, writing, and truncating files in memory without requiring a mounted disk or partition.
+   - Guarantees `open("/tmp/resolv.conf", O_CREAT | O_WRONLY | O_TRUNC)` succeeds even on read-only boot media.
+
+3. **Output Formatting in `/bin/ifconfig`**:
+   - Displays configured nameservers comma-separated immediately after `gateway` and before `mtu`:
+     ```text
+     eth0  HWaddr c8:f7:50:0e:35:80
+           inet 192.168.0.168/24  netmask 255.255.255.0  broadcast 192.168.0.255
+           gateway 192.168.0.1
+           dns 1.1.1.1, 8.8.8.8
+           mtu 1500
+           link UP
+           RX 1234  TX 567
+     ```
+   - Edge cases:
+     - No servers configured (or file unreadable): `dns` line is completely omitted.
+     - Single server: `dns 1.1.1.1` (no trailing comma).
+     - Multiple servers: `dns 1.1.1.1, 8.8.8.8`.
+
+4. **Verification & Physical Acceptance (Dell Latitude 5590)**:
+   - Host unit tests (`make test-net-ifconfig-host`): PASS under ASan/UBSan.
+   - QEMU integration tests (`make test-net-ifconfig`, `make test-net-ifup`): PASS under both BIOS and UEFI.
+   - Dell Latitude 5590 bare-metal acceptance: user verified `ifup 192.168.0.x/24 192.168.0.1 1.1.1.1 8.8.8.8` followed by `ifconfig` displaying `dns 1.1.1.1, 8.8.8.8`.
+

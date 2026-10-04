@@ -79,17 +79,7 @@ static void ifup_append_ip(char *buf, size_t cap, size_t *pos, uint32_t be_ip) {
     if (*pos < cap) buf[*pos] = '\0';
 }
 
-static void ifup_write_resolv_conf(const uint32_t *servers, int count) {
-    if (count <= 0) return;
-    char buf[128];
-    size_t pos = 0;
-    for (int i = 0; i < count; i++) {
-        ifup_append_str(buf, sizeof(buf), &pos, "nameserver ");
-        ifup_append_ip(buf, sizeof(buf), &pos, servers[i]);
-        ifup_append_str(buf, sizeof(buf), &pos, "\n");
-    }
-
-    const char *path = resolv_conf_path();
+static void ifup_write_to_file(const char *path, const char *buf, size_t pos) {
     char dir[32];
     size_t last_slash = 0;
     for (size_t i = 0; path[i] && i < sizeof(dir) - 1; i++) {
@@ -111,6 +101,20 @@ static void ifup_write_resolv_conf(const uint32_t *servers, int count) {
         }
         (void)IFUP_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
     }
+}
+
+static void ifup_write_resolv_conf(const uint32_t *servers, int count) {
+    if (count <= 0) return;
+    char buf[128];
+    size_t pos = 0;
+    for (int i = 0; i < count; i++) {
+        ifup_append_str(buf, sizeof(buf), &pos, "nameserver ");
+        ifup_append_ip(buf, sizeof(buf), &pos, servers[i]);
+        ifup_append_str(buf, sizeof(buf), &pos, "\n");
+    }
+
+    const char *target = resolv_conf_path();
+    ifup_write_to_file(target, buf, pos);
 }
 
 static void ifup_usage(void) {

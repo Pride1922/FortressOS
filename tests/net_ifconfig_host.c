@@ -627,6 +627,27 @@ int main(void) {
     assert(net_get_ifconfig(&req) == 0);
     assert(req.local_ipv4 == htonl(0xc0a800fa));
 
+    /* Verify ifup applied DNS from CLI to resolv.conf */
+    s_captured_stdout_len = 0;
+    s_captured_stderr_len = 0;
+    s_captured_resolv_len = 0;
+    char *cli_single_dns[] = {"ifup", "192.168.0.250/24", "192.168.0.1", "1.1.1.1"};
+    assert(ifup_main(4, cli_single_dns) == 0);
+    assert(strcmp(s_captured_resolv, "nameserver 1.1.1.1\n") == 0);
+
+    /* Verify ifconfig displays DNS server from resolv.conf */
+    s_captured_stdout_len = 0;
+    s_captured_stderr_len = 0;
+    assert(ifconfig_main(1, NULL) == 0);
+    assert(strstr(s_captured_stdout, "dns 1.1.1.1\n") != NULL);
+
+    /* Verify ifconfig omits dns line when resolv.conf is empty */
+    s_captured_resolv_len = 0;
+    s_captured_stdout_len = 0;
+    s_captured_stderr_len = 0;
+    assert(ifconfig_main(1, NULL) == 0);
+    assert(strstr(s_captured_stdout, "dns ") == NULL);
+
     /* Test netconf_read_dns helper */
     uint32_t dns_ip = 0;
     assert(netconf_read_dns("/mnt/.fortress/network.conf", &dns_ip) == 0);

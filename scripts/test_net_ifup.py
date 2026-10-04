@@ -176,6 +176,8 @@ def run_session(mode, iso, tmp):
             # 12. ifup with positional DNS servers (CIDR)
             out = run_command("/bin/ifup 10.0.2.15/24 10.0.2.2 1.1.1.1 8.8.8.8")
             assert "eth0: address 10.0.2.15/24 gateway 10.0.2.2 applied" in out, f"ifup positional DNS failed: {out}"
+            out = run_command("/bin/ifconfig")
+            assert "dns 1.1.1.1, 8.8.8.8" in out, f"ifconfig did not show applied DNS servers: {out}"
             print(f"[{mode}] Case 11 (ifup CIDR with positional DNS servers): PASS")
 
             # 13. ifup with positional DNS servers (dotted-decimal)

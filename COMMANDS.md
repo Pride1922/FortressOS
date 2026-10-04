@@ -845,13 +845,19 @@ sysinfo
 ### `ifconfig`
 **Syntax:** `ifconfig`  
 **Path:** `/bin/ifconfig`  
-**Description:** Queries the network subsystem via `SYS_NETCTL` (`NETCTL_IFGET`) and displays the status of the network interface (`eth0`):
-* Hardware MAC address (`HWaddr`).
-* Link carrier status: `UP`, `DOWN`, or `WAITING (no cable)`.
-* IPv4 address, subnet mask, prefix length, and default gateway.
-* Configured DNS servers list (one line, comma-separated, read via `resolv_conf_path()`). Omitted if no DNS servers are configured.
-* Maximum Transmission Unit (MTU).
-* Monotonic 64-bit RX and TX packet and byte counters.  
+**Description:** Queries network interface status via `SYS_NETCTL` (`NETCTL_IFGET`).
+
+Output includes:
+* `HWaddr`: MAC address
+* `inet`: IPv4 address, netmask, broadcast
+* `gateway`: Default gateway
+* `dns`: Configured DNS servers (from `resolv.conf`, comma-separated; omitted if none configured)
+* `mtu`: Interface MTU
+* `link`: Link state (`UP`, `DOWN`, `WAITING`)
+* `RX/TX`: Packet counters
+
+The DNS list is read from the same `resolv.conf` the resolver uses via `resolv_conf_path()`.
+Path is provisional: `/tmp/resolv.conf` or `/mnt/.fortress/resolv.conf`, depending on which exists. After the installer lands, this will move to `/etc/resolv.conf`.  
 **Examples:**
 ```sh
 ifconfig

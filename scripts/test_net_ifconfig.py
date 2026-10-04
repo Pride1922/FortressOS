@@ -118,6 +118,7 @@ def run_session(mode, iso, tmp):
             assert "eth0  HWaddr 52:54:00:12:34:56" in output, f"MAC missing in output: {output}"
             assert "inet 10.0.2.15/24  netmask 255.255.255.0  broadcast 10.0.2.255" in output, f"IP/netmask missing in output: {output}"
             assert "gateway 10.0.2.2" in output, f"Gateway missing in output: {output}"
+            assert "dns " not in output, f"DNS unexpectedly present in boot output: {output}"
             assert "mtu 1500" in output, f"MTU missing in output: {output}"
             assert "link UP" in output, f"Link status missing in output: {output}"
             assert re.search(r"RX \d+\s+TX \d+", output), f"Packet counters missing in output: {output}"

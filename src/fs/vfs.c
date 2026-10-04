@@ -89,6 +89,81 @@ file_t *vfs_open_terminal(int flags) {
     return file;
 }
 
+typedef struct {
+    char data[4096];
+    size_t size;
+} tmp_mem_file_t;
+
+static int64_t tmp_file_read(vfs_node_t *node, uint64_t offset, void *buf, size_t count) {
+    tmp_mem_file_t *f = (tmp_mem_file_t *)node->fs_private;
+    if (!f || offset >= f->size) return 0;
+    size_t avail = f->size - offset;
+    size_t to_read = count < avail ? count : avail;
+    memcpy(buf, f->data + offset, to_read);
+    return (int64_t)to_read;
+}
+
+static int64_t tmp_file_write(vfs_node_t *node, uint64_t *offset, bool append, const void *buf, size_t count) {
+    tmp_mem_file_t *f = (tmp_mem_file_t *)node->fs_private;
+    if (!f) return -VFS_EIO;
+    uint64_t off = append ? f->size : *offset;
+    if (off >= sizeof(f->data)) return -VFS_ENOSPC;
+    size_t avail = sizeof(f->data) - off;
+    size_t to_write = count < avail ? count : avail;
+    memcpy(f->data + off, buf, to_write);
+    off += to_write;
+    if (off > f->size) f->size = off;
+    node->size = f->size;
+    *offset = off;
+    return (int64_t)to_write;
+}
+
+static int tmp_file_truncate(vfs_node_t *node, uint64_t new_size) {
+    tmp_mem_file_t *f = (tmp_mem_file_t *)node->fs_private;
+    if (!f) return -VFS_EIO;
+    if (new_size > sizeof(f->data)) return -VFS_EFBIG;
+    if (new_size < f->size) {
+        memset(f->data + new_size, 0, f->size - new_size);
+    }
+    f->size = new_size;
+    node->size = new_size;
+    return VFS_SUCCESS;
+}
+
+static int tmp_dir_unlink(vfs_node_t *dir, const char *name) {
+    (void)dir; (void)name;
+    return VFS_SUCCESS;
+}
+
+static vfs_node_t *tmp_dir_create(vfs_node_t *dir, const char *name, vfs_node_type_t type) {
+    if (type != VFS_FILE) return NULL;
+    vfs_node_t *c = dir->children;
+    while (c) {
+        if (strcmp(c->name, name) == 0) return c;
+        c = c->next;
+    }
+    vfs_node_t *node = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
+    if (!node) return NULL;
+    tmp_mem_file_t *f = (tmp_mem_file_t *)kmalloc(sizeof(tmp_mem_file_t));
+    if (!f) { kfree(node); return NULL; }
+    memset(f, 0, sizeof(tmp_mem_file_t));
+    memset(node, 0, sizeof(vfs_node_t));
+    memcpy(node->name, name, strlen(name) + 1);
+    size_t curr_len = strlen(dir->path);
+    memcpy(node->path, dir->path, curr_len);
+    if (curr_len > 1) node->path[curr_len++] = '/';
+    memcpy(node->path + curr_len, name, strlen(name) + 1);
+    node->type = VFS_FILE;
+    node->parent = dir;
+    node->next = dir->children;
+    dir->children = node;
+    node->fs_private = f;
+    node->read = tmp_file_read;
+    node->write = tmp_file_write;
+    node->truncate = tmp_file_truncate;
+    return node;
+}
+
 void vfs_init(void) {
     if (g_vfs_root) return;
 
@@ -105,6 +180,19 @@ void vfs_init(void) {
     g_vfs_root->path[0] = '/';
     g_vfs_root->path[1] = '\0';
     g_vfs_root->type    = VFS_DIRECTORY;
+
+    vfs_node_t *tmp_node = (vfs_node_t *)kmalloc(sizeof(vfs_node_t));
+    if (tmp_node) {
+        memset(tmp_node, 0, sizeof(vfs_node_t));
+        memcpy(tmp_node->name, "tmp", 4);
+        memcpy(tmp_node->path, "/tmp", 5);
+        tmp_node->type = VFS_DIRECTORY;
+        tmp_node->parent = g_vfs_root;
+        tmp_node->next = g_vfs_root->children;
+        g_vfs_root->children = tmp_node;
+        tmp_node->create = tmp_dir_create;
+        tmp_node->unlink = tmp_dir_unlink;
+    }
 
     serial_puts("[ OK ] VFS root (/) initialized\n");
 }
