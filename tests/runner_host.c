@@ -465,6 +465,26 @@ static void test_ctx_path(void) {
     assert(!ctx2.path);
 }
 
+static void test_help_topics(void) {
+    reset();
+    const char *argv[] = {"help", "tracert", NULL};
+    int r = builtin_exec(2, argv, NULL);
+    assert(r == 0);
+    assert(strstr(out_buf, "tracert - Alias for traceroute\n"));
+
+    reset();
+    const char *argv2[] = {"help", "traceroute", NULL};
+    r = builtin_exec(2, argv2, NULL);
+    assert(r == 0);
+    assert(strstr(out_buf, "traceroute - Trace network route to IPv4 host\n"));
+
+    reset();
+    const char *argv3[] = {"help", NULL};
+    r = builtin_exec(1, argv3, NULL);
+    assert(r == 0);
+    assert(strstr(out_buf, "tracert (alias for traceroute)"));
+}
+
 int main(void) {
     test_echo();
     test_printf();
@@ -483,6 +503,7 @@ int main(void) {
     test_child_safe_api();
     test_dmesg();
     test_ctx_path();
-    puts("PASS runner: dispatch, EPIPE, view stdin/file/no-LF, type allowlist narrowing, forbidden commands, child_safe API, dmesg\n");
+    test_help_topics();
+    puts("PASS runner: dispatch, EPIPE, view stdin/file/no-LF, type allowlist narrowing, forbidden commands, child_safe API, dmesg, help topics\n");
     return 0;
 }

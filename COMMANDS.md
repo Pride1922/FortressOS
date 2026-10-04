@@ -83,6 +83,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`ifup`](#ifup) | Binary (`/bin/ifup`) | Networking | Configure network interface statically or via config file |
 | [`ping`](#ping) | Binary (`/bin/ping`) | Networking | Send ICMP Echo Request packets to IPv4 host or hostname |
 | [`traceroute`](#traceroute) | Binary (`/bin/traceroute`) | Networking | Finite numeric ICMP trace with TTL-expiry/error reporting |
+| [`tracert`](#traceroute) | Alias (`traceroute`) | Networking | Alias for `traceroute` |
 | [`nslookup`](#nslookup) | Binary (`/bin/nslookup`) | Networking | Query DNS name server for IPv4 addresses |
 | [`nc`](#nc) | Binary (`/bin/nc`) | Networking | Arbitrary TCP connections and listens (Netcat) |
 | [`wget`](#wget) | Binary (`/bin/wget`) | Networking | Download files over HTTP/1.0 and HTTP/1.1 |
@@ -546,6 +547,7 @@ env | head -n 5
 * `alias` without arguments prints all currently defined aliases.
 * `alias name='command'` creates an alias.
 * `alias name` displays the definition of the alias `name`.  
+* Default aliases configured at shell startup include `tracert='traceroute'`.
 **Examples:**
 ```sh
 alias
@@ -967,13 +969,15 @@ echo "server-ready" | nc -l 7777
 
 **Syntax:** `traceroute [-m 1..30] [-q 1..3] [-W 1..5] IPV4`
 **Path:** `/bin/traceroute`
+**Alias:** `tracert`
 
 Numeric IPv4 only. Defaults: 30 hops, three probes per hop, one second per probe. One 120-second deadline covers the entire command, including ARP; remaining command time bounds every probe. Each probe gets a distinct internal label and prints its own line: `HOP  ADDRESS  RTT ms` or `HOP  *`. RTT follows BSP timer resolution. TTL expiry reports the router; destination Echo Reply ends successfully. An unreachable result ends with `!N`, `!H`, `!P`, `!PORT`, `!FRAG` or `!ROUTE` for ICMP codes 0–5. Other error codes are ignored and may result in a timeout.
 
-Ping and trace share one finite probe resource. Contention prints `ping/trace busy; retry manually` and exits 1 immediately, without retrying. Exit 0 means the destination replied, 1 means an unsuccessful trace/control error, 2 means usage error. Routers may decline ICMP replies; `*` alone does not prove loss of connectivity. No `tracert` alias is provided in this milestone.
+Ping and trace share one finite probe resource. Contention prints `ping/trace busy; retry manually` and exits 1 immediately, without retrying. Exit 0 means the destination replied, 1 means an unsuccessful trace/control error, 2 means usage error. Routers may decline ICMP replies; `*` alone does not prove loss of connectivity. The shell provides `tracert` as a default alias for `traceroute`.
 
 ```sh
 traceroute 192.168.0.1
+tracert 192.168.0.1
 traceroute -m 10 -q 1 -W 2 192.0.2.9
 ```
 

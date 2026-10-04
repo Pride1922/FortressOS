@@ -81,6 +81,14 @@ void builtin_help(const char *topic) {
                 return;
             }
         }
+        if (equal(topic, "tracert")) {
+            puts("tracert - Alias for traceroute\n");
+            return;
+        }
+        if (equal(topic, "traceroute")) {
+            puts("traceroute - Trace network route to IPv4 host\n");
+            return;
+        }
         puts("help: no help topic for '");
         puts(topic);
         puts("'\n");
@@ -100,6 +108,7 @@ void builtin_help(const char *topic) {
          "  Other builtins (cd, export, alias, ...) are not available in pipeline stages.\n"
          "  In pipeline context, 'type' reports only pipeline-stage builtins (not cd etc.).\n"
          "Stream tools: cat, head, tail, wc (external; use TOOL --help). cat preserves bytes; view sanitizes text.\n"
+         "Aliases: tracert (alias for traceroute).\n"
          "Working Dir: cd, cd -, pwd, process-inherited cwd.\n"
          "Discovery: direct execution (/bin/hello, ./tool, hello searches /bin).\n"
          "History: RAM history bounded 1000/256K; persistent at /mnt/.fortress/history.\n");

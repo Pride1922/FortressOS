@@ -386,10 +386,12 @@ int main(void) {
 
     /* Test S5 Aliases */
     alias_init();
-    assert(alias_set("ll", "ls -l") == 0);
-    assert(!strcmp(alias_get("ll"), "ls -l"));
+    assert(alias_get("tracert") != NULL && !strcmp(alias_get("tracert"), "traceroute"));
 
     char abuf[512];
+    assert(alias_expand_line("tracert 1.1.1.1", abuf, sizeof(abuf)) && !strcmp(abuf, "traceroute 1.1.1.1"));
+    assert(alias_set("ll", "ls -l") == 0);
+    assert(!strcmp(alias_get("ll"), "ls -l"));
     assert(alias_expand_line("ll /bin", abuf, sizeof(abuf)) && !strcmp(abuf, "ls -l /bin"));
     assert(!alias_expand_line("'ll' /bin", abuf, sizeof(abuf))); /* Quoted command word is not expanded */
     assert(!alias_expand_line("\"ll\" /bin", abuf, sizeof(abuf)));
