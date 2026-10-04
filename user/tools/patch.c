@@ -142,6 +142,17 @@ static void print_msg(const char *msg) {
     tool_write("patch", msg, tool_length(msg));
 }
 
+static void print_diag(const char *msg) {
+    size_t len = tool_length(msg);
+    const unsigned char *p = (const unsigned char *)msg;
+    while (len) {
+        long w = tool_syscall(SYS_WRITE, 2, (uintptr_t)p, len);
+        if (w <= 0) break;
+        p += w;
+        len -= (size_t)w;
+    }
+}
+
 static void print_hunk_success(uint32_t hunk_num, uint32_t line, int32_t offset) {
     char num_buf[32];
     print_msg("Hunk #");
@@ -931,6 +942,7 @@ int patch_main(int argc, char **argv) {
         long fd = tool_syscall(SYS_OPEN, (uintptr_t)tmp_path,
                                VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
         if (fd < 0) {
+            print_diag("[patch] WARNING: cannot create temp file, falling back to direct write\n");
             /* Fallback to direct write if temp file cannot be opened */
             fd = tool_syscall(SYS_OPEN, (uintptr_t)target,
                               VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
@@ -987,11 +999,15 @@ int patch_main(int argc, char **argv) {
     if (use_rename) {
         long ren_r = tool_syscall(SYS_RENAME, (uintptr_t)tmp_path, (uintptr_t)target, 0);
         if (ren_r != 0) {
+            print_diag("[patch] WARNING: atomic rename failed, falling back to unlink+rename\n");
             /* If atomic rename failed (e.g. non-overwriting fs), fallback: unlink target then rename */
             tool_syscall(SYS_UNLINK, (uintptr_t)target, 0, 0);
             ren_r = tool_syscall(SYS_RENAME, (uintptr_t)tmp_path, (uintptr_t)target, 0);
             if (ren_r != 0) {
-                tool_error("patch", "cannot atomically replace target file", target);
+                print_diag("[patch] FATAL: target unlinked, patched content is at ");
+                print_diag(tmp_path);
+                print_diag("\n");
+                tool_error("patch", "cannot replace target file", target);
                 return 2;
             }
         }
