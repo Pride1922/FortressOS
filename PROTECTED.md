@@ -38,24 +38,31 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
   IRQ-enables under the ext2 lock), DMA quarantine on failure, and USB class
   filtering (only 0x08/0x06/0x50 accepted as BOT mass storage).
 
-## Networking contracts (established in NET-1 and NET-2; see docs/subsystems/net.md)
+## Networking contracts (established in NET-1 through NET-4; see docs/subsystems/net.md)
 
-- Sole BSP protocol owner: all NIC I/O, timer sweeps, and TCP state changes
+- **Sole BSP protocol owner.** All NIC I/O, timer sweeps, and TCP state changes
   run on CPU 0. AP code may publish detach requests but must not mutate
   connections or perform NIC work.
-- Polling-only ingress: no NIC interrupt handlers or MSI vectors. Adding one
+- **Polling-only ingress.** No NIC interrupt handlers or MSI vectors. Adding one
   is a contract change, not an optimization.
-- Rank-1 network locks (g_net_dev_lock, g_net_stack_lock, g_socket_table_lock,
-  g_tcp_endpoints_lock, the ping mailbox lock, the socket manager lock):
-  never nest with each other or with any other Rank-1 lock.
-- Bounded static state: 16 socket handles, 8 TCP connections,
-  4-datagram-per-socket RX queues, one wake hint per endpoint. No dynamic
-  allocation on hot paths.
-- Absolute per-call I/O deadlines; no socket-wide timeout option.
-- 120-second TCP reboot quiet period. ISN generation is deliberately
-  non-cryptographic; the quiet period is the mitigation.
-- NIC DMA quarantine: same shape as the storage quarantine. Uncertain
+- **Rank-1 network locks.** `g_net_dev_lock`, `g_socket_table_lock`,
+  `g_tcp_endpoints_lock`, `g_net_stack_lock`, the ping mailbox lock, and the
+  socket-manager mailbox lock are all Rank 1. They never nest with each other
+  or with any other Rank-1 lock.
+- **Bounded static state.** 16 socket handles, 8 TCP connections,
+  4-datagram-per-socket RX queues, one wake hint per endpoint, bounded work
+  credits per transaction. No dynamic allocation on hot paths.
+- **Absolute per-call I/O deadlines.** `SYS_SEND_UNTIL`/`SYS_RECV_UNTIL`/
+  `SYS_CONNECT_UNTIL` take a by-value uint64_t BSP-tick deadline. No
+  socket-wide timeout option.
+- **120-second TCP reboot quiet period.** ISN generation is deliberately
+  non-cryptographic; the quiet period is the RFC 9293 §3.4.3 fallback.
+- **NIC DMA quarantine.** Same shape as the storage quarantine. Uncertain
   controller ownership means terminal FAILED, never reallocation.
+- **Metadata cache coherence.** The ext4 metadata cache invalidates affected
+  entries before any write and republishes only after the durability
+  barriers succeed. This is a filesystem contract, noted here because the
+  network and storage paths share the bounded-state discipline.
 
 ## Lock ranks (quick reference)
 
@@ -64,7 +71,7 @@ Acquire in increasing rank order; release LIFO; never hold a spinlock across
 
 | Rank | Lock |
 | --- | --- |
-| 1 | per-CPU scheduler locks **or** `ext2_lock` **or** `g_process_lock` **or** `g_net_dev_lock` **or** `g_net_stack_lock` **or** `g_socket_table_lock` **or** `g_tcp_endpoints_lock` **or** the ping/socket-manager mailbox locks (all ordinary lock kind). Process/ext2 cannot nest with any rank-1 lock in either order; only scheduler pairs in increasing address order via `sched_lock_pair` are exempt. Network Rank-1 locks follow the same rule: they never nest with each other or with any other Rank-1 lock. |
+| 1 | per-CPU scheduler locks **or** `ext2_lock` **or** `g_process_lock` (global process/child metadata) **or** network locks (`g_net_dev_lock`, `g_socket_table_lock`, `g_tcp_endpoints_lock`, `g_net_stack_lock`, the ping mailbox lock, the socket-manager mailbox lock; all ordinary lock kind). Process/ext2 cannot nest with any rank-1 lock in either order; only scheduler pairs in increasing address order via `sched_lock_pair` are exempt. Network Rank-1 locks follow the same rule: they never nest with each other or with any other Rank-1 lock. |
 | 2 | heap |
 | 3 | VMM |
 | 4 | PMM |
