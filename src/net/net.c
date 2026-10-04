@@ -1,4 +1,5 @@
 #include "net.h"
+#include "poll_budget.h"
 #include "arp.h"
 #include "string.h"
 #include "apic.h"
@@ -23,6 +24,7 @@ static eth_header_t s_eth;
 static arp_packet_t s_arp;
 static uint64_t s_deadline, s_test_deadline;
 static bool s_worker_started, s_test_pending;
+static bool s_work_pending;
 static uint8_t s_gateway_mac[ETH_ALEN];
 static net_ping_v1_t s_probe;
 static uint64_t s_probe_token;
@@ -30,6 +32,34 @@ static bool s_probe_pending;
 static uint64_t s_idle_start, s_idle_ticks;
 static bool s_idle_reported;
 static unsigned s_ap_probe_result;
+enum { PP_HZ, PP_RX, PP_START, PP_CAUGHT, PP_EXPIRED, PP_BACKWARD,
+    PP_BACKSTOP, PP_SLEEP, PP_TIMER, PP_HINT, PP_WAIT_TICKS, PP_YIELD_SLOW,
+    PP_YIELD_MAX_US, PP_COUNT };
+static uint64_t s_poll_profile[PP_COUNT];
+static void poll_count(unsigned index) {
+    __atomic_fetch_add(&s_poll_profile[index],1,__ATOMIC_RELAXED);
+}
+size_t net_poll_profile_format(char *out, size_t cap) {
+    static const char *const names[PP_COUNT]={"clock-hz","rx-frames","budget-starts",
+        "rx-after-active-turn","expired","backward-clock","iteration-backstop",
+        "wait-returns","tick-deadline-returns","hint-returns","wait-ticks",
+        "yield-over-1ms","max-yield-us"};
+    size_t n=0;
+    for (unsigned i=0;i<PP_COUNT;i++) {
+        char line[96], digits[20]; size_t len=0; unsigned count=0;
+        const char *prefix="[NET POLL] ";
+        while (*prefix) line[len++]=*prefix++;
+        const char *name=names[i]; while (*name) line[len++]=*name++;
+        line[len++]='=';
+        uint64_t v=__atomic_load_n(&s_poll_profile[i],__ATOMIC_RELAXED);
+        do { digits[count++]=(char)('0'+v%10); v/=10; } while (v);
+        while (count) line[len++]=digits[--count];
+        line[len++]='\n';
+        if (len>cap-n) break;
+        memcpy(out+n,line,len); n+=len;
+    }
+    return n;
+}
 static const uint8_t broadcast[ETH_ALEN] = {255,255,255,255,255,255};
 
 static bool space(char c) { return c==' ' || c=='\t' || c=='\r' || c=='\n'; }
@@ -139,14 +169,32 @@ int net_arp_lookup(uint32_t ip, uint8_t out_mac[ETH_ALEN]) {
     return arp_cache_lookup(&s_arp_cache,ip,out_mac);
 }
 static bool deadline_reached(void *arg) {
-    /* Under scheduler lock: ticks only, no device/cache lock or callbacks. */
-    return apic_timer_get_bsp_ticks()>=*(uint64_t *)arg;
+    /* Under scheduler lock: only ticks and an atomic hint, no nested locks. */
+    return __atomic_load_n(&s_work_pending,__ATOMIC_ACQUIRE) ||
+           apic_timer_get_bsp_ticks()>=*(uint64_t *)arg;
+}
+void net_request_poll(void) {
+#ifdef TEST_SMP_MEMORY
+    extern void net_test_assert_unheld(void);
+    net_test_assert_unheld();
+#else
+    spin_debug_assert_unheld();
+#endif
+    __atomic_store_n(&s_work_pending,true,__ATOMIC_RELEASE);
+    if (s_worker_started) sched_wake_all(&g_net_poll_channel);
 }
 void net_timer_tick(void) {
     if (s_worker_started) sched_wake_all(&g_net_poll_channel);
 }
 void net_worker_main(void *arg) {
     (void)arg;
+    net_poll_budget_t rx_budget={0};
+    net_poll_adaptive_t adaptive={0};
+    uint64_t poll_hz=apic_poll_clock_hz();
+    __atomic_store_n(&s_poll_profile[PP_HZ],poll_hz,__ATOMIC_RELAXED);
+    serial_puts(poll_hz ? "[NET CLOCK] invariant TSC boot-calibrated Hz=" :
+        "[NET CLOCK] high-resolution clock unavailable; timer sleep fallback Hz=");
+    serial_print_hex(poll_hz); serial_puts("\n");
     bool was_online=e1000_network_online(s_if);
     if (s_config.test_icmp) {
         s_probe=(net_ping_v1_t){.version=1,.destination=s_config.gateway,.timeout_seconds=1,.sequence=1};
@@ -160,6 +208,7 @@ void net_worker_main(void *arg) {
         serial_puts(result==1 ? "[NET 3] Gateway ARP request submitted\n" : "[NET 3] Gateway ARP request failed\n");
     }
     for (;;) {
+        bool work=__atomic_exchange_n(&s_work_pending,false,__ATOMIC_ACQ_REL);
         unsigned probe=__atomic_exchange_n(&s_ap_probe_result,0,__ATOMIC_ACQ_REL);
         if (probe) serial_puts(probe==1 ? "[NET 5] AP socket dispatch rejection PASS\n" :
             "[NET 5] AP socket dispatch rejection FAIL\n");
@@ -171,7 +220,9 @@ void net_worker_main(void *arg) {
             pbuf_t *p=s_if->poll_rx(s_if);
             if (!p) break;
             net_input(s_if,p);
+            poll_count(PP_RX);
         }
+        if (count && rx_budget.active) poll_count(PP_CAUGHT);
         if (s_test_pending) {
             if (!arp_cache_lookup(&s_arp_cache,s_config.gateway,s_gateway_mac)) {
                 serial_puts("[NET 3] Gateway ARP resolved\n");
@@ -211,10 +262,48 @@ void net_worker_main(void *arg) {
                 s_idle_reported=true;
             }
         }
-        if (count==64) thread_yield();
+        /* Already yields on RX: retain this reader handoff, add no duplicate.
+         * Application work includes window updates; budget starts after TX.
+         * Full protocol/deadline sweeps still run on every turn. */
+        if (online && poll_hz && (count || work)) {
+            unsigned us=net_poll_adaptive_us(&adaptive,apic_timer_get_bsp_ticks(),
+                apic_timer_get_frequency(),net_tcp_receiving(),count!=0);
+            net_poll_budget_start_us(&rx_budget,apic_poll_clock_read(),poll_hz,us);
+            poll_count(PP_START);
+        }
+        if (!online) { rx_budget.active=false; adaptive.batches=0; }
+        bool had_budget=rx_budget.active;
+        uint64_t budget_now=apic_poll_clock_read();
+        bool backwards=had_budget && budget_now<rx_budget.last;
+        bool active=rx_budget.active && net_poll_budget_continue(&rx_budget,budget_now);
+        if (had_budget && !active) poll_count(rx_budget.failed ?
+            (backwards ? PP_BACKWARD : PP_BACKSTOP) : PP_EXPIRED);
+        if (rx_budget.failed) {
+            poll_hz=0; /* Fail closed for this worker lifetime. */
+            __atomic_store_n(&s_poll_profile[PP_HZ],0,__ATOMIC_RELAXED);
+        }
+        if (count || work || active) {
+            thread_yield();
+            if (poll_hz) {
+                uint64_t after=apic_poll_clock_read();
+                if (after>=budget_now) {
+                    uint64_t cycles=after-budget_now;
+                    uint64_t us=cycles/(poll_hz/1000000u ? poll_hz/1000000u : 1);
+                    if (cycles>=poll_hz/1000u) poll_count(PP_YIELD_SLOW);
+                    uint64_t max=__atomic_load_n(&s_poll_profile[PP_YIELD_MAX_US],__ATOMIC_RELAXED);
+                    if (us>max) __atomic_store_n(&s_poll_profile[PP_YIELD_MAX_US],us,__ATOMIC_RELAXED);
+                }
+            }
+        }
         else {
-            s_deadline=apic_timer_get_bsp_ticks()+1;
+            uint64_t before=apic_timer_get_bsp_ticks();
+            s_deadline=before+1;
             sched_wait_until(&g_net_poll_channel,deadline_reached,&s_deadline);
+            uint64_t after=apic_timer_get_bsp_ticks();
+            poll_count(PP_SLEEP);
+            if (after>=s_deadline) poll_count(PP_TIMER);
+            if (__atomic_load_n(&s_work_pending,__ATOMIC_ACQUIRE)) poll_count(PP_HINT);
+            if (after>=before) __atomic_fetch_add(&s_poll_profile[PP_WAIT_TICKS],after-before,__ATOMIC_RELAXED);
         }
     }
 }

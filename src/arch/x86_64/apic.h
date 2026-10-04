@@ -86,6 +86,11 @@ bool apic_timer_verify(void (*work)(void));
 uint64_t apic_timer_get_ticks(void);
 uint64_t apic_timer_get_bsp_ticks(void);
 uint64_t apic_timer_get_frequency(void);
+/* BSP-only unlocked clock: invariant TSC measured during the existing early
+ * boot PIT calibration. Zero Hz means unavailable. No runtime PIT access,
+ * TSC writes, cross-CPU synchronization claim or scheduler timebase change. */
+uint64_t apic_poll_clock_hz(void);
+uint64_t apic_poll_clock_read(void);
 void     apic_timer_reset_bsp_ticks(void);
 uint64_t lapic_get_spurious_count(void);
 

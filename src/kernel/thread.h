@@ -178,6 +178,9 @@ void   process_exit(uint64_t exit_code);
 bool   process_wait(uint64_t pid, uint64_t *out_exit_code);
 bool   process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_preempt_count, uint64_t *out_total_ticks);
 bool   process_is_alive(uint64_t pid);
+/* BSP kernel supervisor only, unlocked thread context. Blocks until the PID
+ * is no longer live; preserves exit records for process_wait. */
+void   process_wait_quiescent(uint64_t pid);
 
 /* Preemption Control & Timer Hook */
 void   sched_enable_preemption(void);

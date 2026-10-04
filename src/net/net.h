@@ -26,6 +26,12 @@ void net_start(const char *cmdline, size_t len);
 void net_worker_main(void *arg);
 /* Called only on BSP from the existing APIC timer path, after EOI. */
 void net_timer_tick(void);
+/* Thread context, no spinlock held. Coalesced hint only: the BSP worker
+ * remains the sole NIC/protocol owner. Predicate retains the hint until polled. */
+void net_request_poll(void);
+/* On-demand cumulative diagnostics; no NIC access or counter reset. Thread
+ * context, no locks held. Individual atomic samples, not a coherent epoch. */
+size_t net_poll_profile_format(char *out, size_t cap);
 extern const char g_net_poll_channel;
 
 /* Snapshot current interface and protocol configuration for SYS_NETCTL. */

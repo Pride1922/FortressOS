@@ -22,7 +22,7 @@ REPO = Path(__file__).resolve().parent.parent
 CODE = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
 VARS = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
 ISO = REPO / "bin" / "fortress.iso"
-PROMPT_PATTERN = r"(?:fortress> |\[[a-zA-Z0-9_\-\./]+\]# )"
+PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# )"
 
 
 def qemu_command(mode, iso, variables, log, uart_path):
@@ -173,7 +173,17 @@ def run_session(mode, iso, tmp):
             assert "no DNS server specified" in out, f"nslookup did not print missing DNS server diagnostic: {out}"
             print(f"[{mode}] Case 10 (nslookup missing DNS server diagnostic): PASS")
 
-            # 12. Clean shutdown
+            # 12. ifup with positional DNS servers (CIDR)
+            out = run_command("/bin/ifup 10.0.2.15/24 10.0.2.2 1.1.1.1 8.8.8.8")
+            assert "eth0: address 10.0.2.15/24 gateway 10.0.2.2 applied" in out, f"ifup positional DNS failed: {out}"
+            print(f"[{mode}] Case 11 (ifup CIDR with positional DNS servers): PASS")
+
+            # 13. ifup with positional DNS servers (dotted-decimal)
+            out = run_command("/bin/ifup 10.0.2.15 255.255.255.0 10.0.2.2 1.1.1.1 8.8.8.8")
+            assert "eth0: address 10.0.2.15/24 gateway 10.0.2.2 applied" in out, f"ifup dotted positional DNS failed: {out}"
+            print(f"[{mode}] Case 12 (ifup dotted with positional DNS servers): PASS")
+
+            # 14. Clean shutdown
             uart.sendall(b"poweroff\n")
             proc.wait(timeout=10)
             print(f"[{mode}] PASS")

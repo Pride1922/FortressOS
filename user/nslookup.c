@@ -24,18 +24,17 @@ int nslookup_main(int argc, char **argv) {
     dns_options_t options = {0};
     const char *target = 0;
 
+    bool has_s = false;
     if (argc == 4 && udp_equal(argv[1], "-s")) {
         if (!udp_ip(argv[2], &options.server_ipv4)) {
             (void)write_text(2, "usage: nslookup [-s server-IPv4] name\n");
             return 1;
         }
+        has_s = true;
         target = argv[3];
     } else if (argc == 2 && !udp_equal(argv[1], "-h") && !udp_equal(argv[1], "--help")) {
         target = argv[1];
-        if (netconf_read_dns(0, &options.server_ipv4) != 0) {
-            (void)write_text(2, "nslookup: no DNS server specified (-s) and none found in /mnt/.fortress/network.conf\n");
-            return 1;
-        }
+        options.server_ipv4 = 0;
     } else {
         (void)write_text(2, "usage: nslookup [-s server-IPv4] name\n");
         return 1;
@@ -47,6 +46,10 @@ int nslookup_main(int argc, char **argv) {
     dns_context_init(&context);
     int status = dns_resolve_ipv4(&context, &options, target, len, &result);
     if (status) {
+        if (!has_s && dns_servers_configured(&context) == 0) {
+            (void)write_text(2, "nslookup: no DNS server specified (-s) and none found in /mnt/.fortress/network.conf\n");
+            return 1;
+        }
         (void)write_text(2, "nslookup: ");
         (void)write_text(2, dns_status_name(status));
         (void)write_text(2, "\n");
@@ -54,7 +57,8 @@ int nslookup_main(int argc, char **argv) {
     }
 
     char ip[16];
-    dns_format_ipv4(options.server_ipv4, ip);
+    uint32_t srv = options.server_ipv4 ? options.server_ipv4 : dns_server_used(&context);
+    dns_format_ipv4(srv, ip);
     if (!write_text(1, "Server: ") || !write_text(1, ip) || !write_text(1, "\nName: ") ||
         !write_text(1, result.canonical_name) || !write_text(1, "\n")) return 1;
 

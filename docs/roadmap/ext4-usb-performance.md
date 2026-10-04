@@ -1,5 +1,40 @@
 # EXT4 USB transport performance follow-up
 
+## Flush polling audit — after E4-A acceptance
+
+The user reports Linux Mint `dd` with direct I/O and one final fsync writes
+16 MiB in under one second, versus FortressOS's 112 seconds. This motivates
+further profiling, but does not isolate flush latency: the operations differ
+in batching and number of durability barriers.
+
+Current BOT completion wait inventory:
+
+| Completion | Path | Polling |
+| --- | --- | --- |
+| Configure Endpoint / recovery command TRBs | `send_command` | Shared `bot_poll_delay`: 10 us for first 2 ms, then 1 ms; nominal 500 ms budget. |
+| READ/WRITE CBW, data and CSW | `submit_normal_trb` -> `wait_transfer_event` | Same helper; nominal 1000 ms budget per phase. |
+| SYNCHRONIZE CACHE CBW and CSW | `xhci_scsi_sync_cache` -> `xhci_bot_transfer` -> `submit_normal_trb` | Same helper; no data phase or separate coarse completion wait. |
+| REQUEST SENSE / recovery EP0 status | BOT transfer / `wait_transfer_event` | Same helper. |
+
+`usb_block_flush` passes the controller's same `rings_io`, with `delay_us`
+installed. The direct 1 ms delay in `xhci_scsi_test_unit_ready` is a bounded
+command-failure retry pause, not a completion wait or normal flush phase;
+it remains unchanged. Thus the proposed missing flush polling fix is already
+present in the accepted image, and no production polling change is warranted
+by this audit.
+
+Added explicit SYNCHRONIZE CACHE host tests: two delayed 50 us completions
+require 100 us total and zero coarse waits; 3500 us completions exercise fine
+polling then coarse fallback; missing completion retains the existing nominal
+1001 ms timeout and transport-failure latch. `make test-xhci-bot-host` PASS
+under ASan/UBSan, including existing flush rejection/sense/retry tests.
+No command sequence, timeout, barrier or durability contract changed.
+
+Next performance work requires measured read/write/flush counts and latencies
+on the actual driver path before assigning the remaining time to flushes.
+The requested under-2-second / under-10-second hardware targets are not yet
+established; this test-only change cannot improve the accepted binary's speed.
+
 2026-10-03. User reported roughly 50 seconds to download 1 MiB to EXT4 on
 the Dell 5590, versus about three seconds when streaming to stdout and fast
 ext2 writes. Physical EXT4 performance acceptance remains open.
@@ -149,3 +184,140 @@ USB VID/PID and negotiated link speed are not specified in this extraction.
 **E4-A physically accepted — Dell 5590 — PASS (2026-10-03).** All seven
 checklist items are explicitly user-confirmed. Earlier pending/failed notes
 are historical checkpoints superseded by the [complete acceptance record](ext4-phase5-acceptance.md).
+
+## Measured-path profiling image
+
+The follow-up instruments each submitted BOT command with serialized raw TSC
+reads, grouped as READ(10), WRITE(10), SYNCHRONIZE CACHE(10), and other SCSI
+commands. Reports include command counts, requested bytes, failures, accumulated
+TSC cycles and backwards-clock anomalies. A command that fails preflight or is
+rejected by an offline transport is not counted as submitted. REQUEST SENSE and
+Unit Attention retries are separate commands. ASSUMED_WRITE_THROUGH barriers
+that submit no SCSI flush therefore do not appear as flush commands.
+
+Counters are bounded static storage, use atomic field updates/sampling, and
+introduce no allocations, waits, extra device operations or new locks. Existing
+BOT serialization still applies; atomic counters do not make BOT concurrent.
+Report fields are sampled individually, so exact deltas require quiescent I/O.
+Raw cycles are not calibrated milliseconds and include host/controller wait,
+copy and recovery costs inside the BOT operation. TSC migration/rate limitations
+apply; a backwards clock increments anomalies rather than a huge duration.
+
+Explicit SYS_SYNC appends four cumulative rows to dmesg after filesystem locks
+are released, even if sync fails. There is no per-command printing and no console
+output from this reporter. Counters persist since controller initialization;
+subtract before/after snapshots rather than assuming the first snapshot is zero.
+This is a diagnostic image, not a throughput fix or a journaled image.
+
+For the Dell retest, use the newly built optional image (2026-10-03 22:57:31),
+SHA-256 `834713f61712197d657740e3c73fc35647c75c492ae60ec4038faf8c979a5916`,
+PARTUUID `D5E403C2-6E3F-48F1-AEDA-87AD6C2853C6`. It replaces the regular build
+artifact; the earlier accepted physical image's identity remains historical.
+Reflashing the designated disposable USB replaces its data; copy needed evidence
+elsewhere before flashing. Default fortress.img remains ext2.
+
+Run the test without concurrent disk tools and capture both snapshots externally
+(photo/copy), so saving a log to USB does not contaminate the measured interval:
+
+```text
+sync
+dmesg | tail -n 6
+wget -q -O /mnt/profile-1m.bin http://192.168.0.153:8000/data-1m.bin
+sync
+dmesg | tail -n 6
+```
+
+Record elapsed wget time too. Verify the size/hash after capturing the second
+snapshot. Counter differences give actual command amplification; cycle differences
+show the proportion of BOT time spent reading, writing and flushing. Comparing
+that total with wall time distinguishes BOT cost from time elsewhere, provided
+TSC frequency is separately established. No promised hardware target follows
+from synthetic polling tests.
+
+### Barrier audit
+
+The E4-A engine writes a durable dirty marker once, initializes zero/new images,
+flushes NEW, writes and flushes ALLOC, then writes and flushes REFERENCE. Pending
+frees remain held until references are durable; release then requires a final
+ALLOC write/barrier. Successful writes and shutdown keep their existing durability
+contract. Current implementation also deliberately initializes storage durably
+before publishing allocation ownership.
+
+A combined NEW/ALLOC barrier is an optimization candidate, not implemented here:
+it must preserve initialized data and ownership before reference publication and
+must audit partially persisted allocations, stale-byte exposure, checksums and
+failure taint at every cut. Existing synchronous-sector failure tests alone do not
+model reordered volatile writes. A separate disposable cache-loss/tear oracle and
+ordering proof are required before changing this ordering. Delayed/batched journal
+commits likewise require an explicit durability contract and complete Phase-8
+metadata/orphan coverage. These measurements determine which work gives the most
+benefit without guessing that 98% of physical time is flush latency.
+
+Verification: strict kernel build / make image-ext4 and BOT/GPT/mount ASan/UBSan
+PASS. BOT tests additionally verify actual command accounting for successful
+reads/writes, flush retries, sense commands, timeouts and offline rejection.
+Delivered-image BIOS/UEFI smoke verifies on-demand dmesg rows, no reporter console
+output, sync followed by another mutation, clean shutdown and independent Linux
+bytes/fsck PASS in both BIOS and UEFI; retained evidence
+`build/ext4-usb/run-svgtfvrh`. A preliminary smoke runner attempt used an
+unsupported QMP pipe keycode; the corrected test invokes dmesg directly and
+the failed workspace is retained separately, not counted as a pass.
+
+## First Dell command-profile snapshots
+
+User supplied before/after photographs for the profiling image's 1 MiB test.
+Transcribed cumulative values (all shown failures and clock anomalies are 0):
+
+| Class | Before commands / bytes / cycles | After commands / bytes / cycles | Delta commands / bytes / cycles |
+| --- | --- | --- | --- |
+| READ | 28 / 47104 / 13019163 | 623 / 2008064 / 337802926 | 595 / 1960960 / 324783763 |
+| WRITE | 0 / 0 / 0 | 520 / 2126848 / 1177500204 | 520 / 2126848 / 1177500204 |
+| FLUSH | 3 / 0 / 563861 | 201 / 0 / 240370815 | 198 / 0 / 239806954 |
+| OTHER | 4 / 72 / 1428109 | 4 / 72 / 1428109 | 0 / 0 / 0 |
+
+Total measured BOT delta: 1742090921 raw TSC cycles. WRITE accounts for
+67.59%, READ 18.64%, FLUSH 13.77%. Mean cycles/command: WRITE 2264423,
+READ 545855, FLUSH 1211146. This disproves the proposed 98% flush attribution
+for this interval; the first commentary reading incorrectly grouped a digit
+in the flush counter and was corrected before this record.
+
+The 198 flush commands include the selected before/after interval's file
+creation and explicit sync, not only 64 body-write batches. Requested write
+traffic is approximately 2.03 MiB and reads 1.87 MiB for a 1 MiB payload:
+metadata traffic and command amplification matter. These counters include
+failures if present; none are shown. They do not give calibrated seconds or
+account for TCP, filesystem CPU work outside BOT, or scheduler delays. Elapsed
+time for this particular run and an established TSC rate are still needed to
+compare measured USB time against the complete download.
+
+Eliminating all flush time would remove only 13.77% of measured BOT time in
+this sample. A one-third flush reduction alone would remove about 4.59%,
+assuming other costs constant. Consequently barrier merging is not supported
+as the primary explanation or a promised route from 112 seconds to under 10.
+Prioritize actual write/metadata amplification and end-to-end attribution;
+retain current barriers while the transaction and failure-ordering work is
+verified. Journal batching is still a design target, not a measured speedup.
+
+The user confirms this profiling download took approximately **7 seconds**.
+The next diagnostic image adds a boot-only raw TSC rate estimate using ten
+existing bounded PIT 1 ms delays with IRQs already excluded by boot-probe
+contract. Programming/polling overhead is included, so the reported rate is
+explicitly approximate and is not used for timeout or scheduling decisions.
+If calibration fails, the estimate is 0 and raw cycle reporting still works.
+Dividing BOT cycle deltas by this estimate permits approximate end-to-end
+attribution without treating a nominal CPU core frequency as the TSC rate.
+
+Latest diagnostic image: 2026-10-03 23:10:57,
+SHA-256 `618343ea446e3fba9a456f545f8d800266c3102f8044b2748bbaf48285e53f89`,
+PARTUUID `4914F2C9-9647-4231-B9C5-C3B1E901BEB9`. The new
+`[USB PERF] PIT tsc-hz-estimate=...` row precedes the four command rows.
+Capture this row along with before/after counters. Calibration and counter
+updates preserve device commands, filesystem barriers and SYNC_BACKED policy.
+
+## Calibrated repeat and network-only control — 2026-10-04
+
+User supplied snapshots with PIT TSC estimate 1971896600 Hz. Approximately
+0.38 seconds are spent in BOT commands for this 1 MiB interval; network-only
+wget piped to wc also takes approximately seven seconds. Investigate network
+pacing before changing storage barriers. See [TCP work hints](net-tcp-poll-hints.md)
+for exact latest rows, implementation and acceptance limits.

@@ -53,8 +53,10 @@ static uint32_t e4_u32(const uint8_t *p) { return e4_u16(p) | (uint32_t)e4_u16(p
 static void e4_p32(uint8_t *p, uint32_t v) {
     for (unsigned i=0;i<4;i++) p[i]=(uint8_t)(v >> (i*8));
 }
+static uint64_t e4_tsc(void);
+static uint64_t e4_crc_calls,e4_crc_bytes,e4_crc_cycles,e4_crc_anomalies;
 /* Reflected Castagnoli, no final complement: ext4 chains raw CRC states. */
-static uint32_t e4_crc(uint32_t crc, const void *data, size_t len) {
+static uint32_t e4_crc_impl(uint32_t crc, const void *data, size_t len) {
     const uint8_t *p=data;
     while (len--) {
         crc ^= *p++;
@@ -62,23 +64,79 @@ static uint32_t e4_crc(uint32_t crc, const void *data, size_t len) {
     }
     return crc;
 }
-static bool e4_bytes(ext4_mount_t *fs, uint64_t off, void *out, size_t len) {
+static uint32_t e4_crc(uint32_t crc,const void *data,size_t len) {
+    uint64_t start=e4_tsc();uint32_t result=e4_crc_impl(crc,data,len);uint64_t end=e4_tsc();
+    __atomic_fetch_add(&e4_crc_calls,1,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&e4_crc_bytes,len,__ATOMIC_RELAXED);
+    if (end>=start) __atomic_fetch_add(&e4_crc_cycles,end-start,__ATOMIC_RELAXED);
+    else __atomic_fetch_add(&e4_crc_anomalies,1,__ATOMIC_RELAXED);
+    return result;
+}
+/* Diagnostic counters only; no caching, I/O ordering or scheduling changes. */
+enum { E4_PR_SUPER,E4_PR_DESCRIPTOR,E4_PR_BITMAP,E4_PR_INODE,
+       E4_PR_EXTENT,E4_PR_DIRECTORY,E4_PR_DATA,E4_PR_OTHER,E4_PR_COUNT };
+typedef struct { uint64_t calls,requests,bytes,cycles,failures,anomalies; } e4_read_sample_t;
+static e4_read_sample_t e4_read_profile[E4_PR_COUNT];
+static uint64_t e4_write_calls,e4_write_bytes_total,e4_write_cycles,e4_write_failures;
+static uint64_t e4_plan_cycles,e4_commit_cycles,e4_refresh_cycles,e4_clock_anomalies;
+static uint64_t e4_write_max_cycles,e4_write_lock_wait_cycles;
+static uint64_t e4_tsc(void) {
+    uint32_t lo,hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo),"=d"(hi) :: "memory");
+    return ((uint64_t)hi<<32)|lo;
+}
+static void e4_elapsed(uint64_t *total,uint64_t start,uint64_t end) {
+    if (end>=start) *total+=end-start; else e4_clock_anomalies++;
+}
+static void e4_write_elapsed(uint64_t start,uint64_t end) {
+    e4_elapsed(&e4_write_cycles,start,end);
+    if (end>=start && end-start>e4_write_max_cycles) e4_write_max_cycles=end-start;
+}
+static unsigned e4_read_kind(ext4_mount_t *fs,uint64_t off) {
+    if (!fs->bs) return E4_PR_OTHER;
+    uint64_t block=off/fs->bs;
+    if (block==1024/fs->bs) return E4_PR_SUPER;
+    if (block>=fs->first+1u && block<(uint64_t)fs->first+1+fs->gdt_blocks) return E4_PR_DESCRIPTOR;
+    if (fs->gd) for (uint32_t g=0;g<fs->groups;g++) {
+        const uint8_t *d=fs->gd[g].raw;
+        if (block==e4_u32(d) || block==e4_u32(d+4)) return E4_PR_BITMAP;
+        uint64_t table=e4_u32(d+8),count=((uint64_t)fs->ipg*256+fs->bs-1)/fs->bs;
+        if (block>=table && block-table<count) return E4_PR_INODE;
+    }
+    return E4_PR_OTHER;
+}
+static bool e4_bytes_impl(ext4_mount_t *fs, uint64_t off, void *out, size_t len,unsigned kind) {
     uint64_t cap=(uint64_t)fs->blocks*fs->bs;
     if (off>cap || len>cap-off) return false;
     while (len) {
         unsigned ss=fs->dev->sector_size;
         if (!(off%ss) && len>=ss) {
             size_t n=len<4096 ? len : 4096;n-=n%ss;
+            __atomic_fetch_add(&e4_read_profile[kind].requests,1,__ATOMIC_RELAXED);
             if (!block_read_sectors(fs->dev,off/ss,(uint32_t)(n/ss),out)) return false;
             out=(uint8_t *)out+n;off+=n;len-=n;continue;
         }
         size_t skip=off % ss, n=ss-skip;
         if (n>len) n=len;
+        __atomic_fetch_add(&e4_read_profile[kind].requests,1,__ATOMIC_RELAXED);
         if (!block_read_sector(fs->dev,off/ss,fs->sector)) return false;
         memcpy(out,fs->sector+skip,n);
         out=(uint8_t *)out+n; off+=n; len-=n;
     }
     return true;
+}
+static bool e4_bytes_kind(ext4_mount_t *fs,uint64_t off,void *out,size_t len,unsigned kind) {
+    e4_read_sample_t *p=&e4_read_profile[kind];uint64_t start=e4_tsc();
+    bool ok=e4_bytes_impl(fs,off,out,len,kind);uint64_t end=e4_tsc();
+    __atomic_fetch_add(&p->calls,1,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&p->bytes,len,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&p->failures,!ok,__ATOMIC_RELAXED);
+    if (end>=start) __atomic_fetch_add(&p->cycles,end-start,__ATOMIC_RELAXED);
+    else __atomic_fetch_add(&p->anomalies,1,__ATOMIC_RELAXED);
+    return ok;
+}
+static bool e4_bytes(ext4_mount_t *fs,uint64_t off,void *out,size_t len) {
+    return e4_bytes_kind(fs,off,out,len,e4_read_kind(fs,off));
 }
 static bool e4_power(uint32_t n,uint32_t base) {
     while (n>1 && n%base==0) n/=base;
@@ -214,7 +272,7 @@ static int e4_tree(e4_inode_t *in,const uint8_t *h,unsigned depth,
             if (limit<=logical || limit>upper || e4_u16(e+8) || e4_u16(e+10)) return -VFS_EIO;
             int r=e4_reference(fs,child,1); if (r) return r;
             uint8_t *buffer=fs->tree[depth-1];
-            if (!e4_bytes(fs,(uint64_t)child*fs->bs,buffer,fs->bs)) return -VFS_EIO;
+            if (!e4_bytes_kind(fs,(uint64_t)child*fs->bs,buffer,fs->bs,E4_PR_EXTENT)) return -VFS_EIO;
             r=e4_tree(in,buffer,depth-1,false,logical,limit); if (r) return r;
             previous=limit;
         } else {
@@ -282,7 +340,7 @@ static int e4_scan(e4_inode_t *in,const char *name,uint64_t wanted,vfs_dirent_t 
     for (uint32_t logical=0;logical<in->size/fs->bs;logical++) {
         uint32_t physical; int r=e4_dir_block(in,logical,&physical);
         if (r) return r;
-        if (!e4_bytes(fs,(uint64_t)physical*fs->bs,fs->scratch,fs->bs)) return -VFS_EIO;
+        if (!e4_bytes_kind(fs,(uint64_t)physical*fs->bs,fs->scratch,fs->bs,E4_PR_DIRECTORY)) return -VFS_EIO;
         uint8_t *b=fs->scratch, *tail=b+fs->bs-12;
         if (e4_u32(tail) || e4_u16(tail+4)!=12 || tail[6] || tail[7]!=0xde ||
             e4_crc(e4_inode_seed(fs,in->ino,in->generation),b,fs->bs-12)!=e4_u32(tail+8)) return -VFS_EIO;
@@ -336,8 +394,8 @@ static int64_t e4_read(vfs_node_t *node,uint64_t off,void *buf,size_t len) {
         size_t n=in->fs->bs-skip; if (n>len-done) n=len-done;
         const e4_extent_t *e=e4_find(in,logical);
         if (!e || e->unwritten) memset((uint8_t *)buf+done,0,n);
-        else if (!e4_bytes(in->fs,(uint64_t)(e->physical+logical-e->logical)*in->fs->bs+skip,
-                           (uint8_t *)buf+done,n)) { r=-VFS_EIO; break; }
+        else if (!e4_bytes_kind(in->fs,(uint64_t)(e->physical+logical-e->logical)*in->fs->bs+skip,
+                           (uint8_t *)buf+done,n,E4_PR_DATA)) { r=-VFS_EIO; break; }
         done+=n;
     }
     spin_unlock_irqrestore(&e4_lock,flags);
@@ -550,3 +608,46 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 #include "ext4_mutate.inc"
 #include "ext4_write.inc"
 #include "ext4_journal.inc"
+
+static size_t e4_profile_text(char *out,size_t cap,size_t n,const char *text) {
+    while (*text) { if (n<cap) out[n++]=*text; text++; } return n;
+}
+static size_t e4_profile_number(char *out,size_t cap,size_t n,uint64_t value) {
+    char digits[20];unsigned count=0;
+    do { digits[count++]=(char)('0'+value%10);value/=10; } while (value);
+    while (count) { char c=digits[--count];if (n<cap) out[n++]=c; } return n;
+}
+size_t ext4_io_profile_format(char *out,size_t capacity) {
+    if (!out || !capacity) return 0;
+    spin_debug_assert_unheld();uint64_t flags=spin_lock_irqsave(&e4_lock);size_t n=0;
+    static const char *names[]={"super","descriptor","bitmap","inode","extent","directory","data","other"};
+#define E4_PT(text) n=e4_profile_text(out,capacity,n,text)
+#define E4_PN(value) n=e4_profile_number(out,capacity,n,value)
+    for (unsigned i=0;i<E4_PR_COUNT;i++) {
+        e4_read_sample_t *p=&e4_read_profile[i];
+        E4_PT("[EXT4 PERF] read ");E4_PT(names[i]);
+        E4_PT(" calls=");E4_PN(__atomic_load_n(&p->calls,__ATOMIC_RELAXED));
+        E4_PT(" requests=");E4_PN(__atomic_load_n(&p->requests,__ATOMIC_RELAXED));
+        E4_PT(" bytes=");E4_PN(__atomic_load_n(&p->bytes,__ATOMIC_RELAXED));
+        E4_PT(" cycles=");E4_PN(__atomic_load_n(&p->cycles,__ATOMIC_RELAXED));
+        E4_PT(" failures=");E4_PN(__atomic_load_n(&p->failures,__ATOMIC_RELAXED));
+        E4_PT(" anomalies=");E4_PN(__atomic_load_n(&p->anomalies,__ATOMIC_RELAXED));E4_PT("\n");
+    }
+    E4_PT("[EXT4 PERF] write calls=");E4_PN(e4_write_calls);
+    E4_PT(" bytes=");E4_PN(e4_write_bytes_total);
+    E4_PT(" total-cycles=");E4_PN(e4_write_cycles);
+    E4_PT(" failures=");E4_PN(e4_write_failures);
+    E4_PT(" anomalies=");E4_PN(e4_clock_anomalies);E4_PT("\n");
+    E4_PT("[EXT4 PERF] phases plan-cycles=");E4_PN(e4_plan_cycles);
+    E4_PT(" commit-cycles=");E4_PN(e4_commit_cycles);
+    E4_PT(" refresh-cycles=");E4_PN(e4_refresh_cycles);
+    E4_PT("\n[EXT4 PERF] lock max-cycles=");E4_PN(e4_write_max_cycles);
+    E4_PT(" wait-cycles=");E4_PN(e4_write_lock_wait_cycles);E4_PT("\n");
+    E4_PT("[EXT4 PERF] checksum calls=");E4_PN(__atomic_load_n(&e4_crc_calls,__ATOMIC_RELAXED));
+    E4_PT(" bytes=");E4_PN(__atomic_load_n(&e4_crc_bytes,__ATOMIC_RELAXED));
+    E4_PT(" cycles=");E4_PN(__atomic_load_n(&e4_crc_cycles,__ATOMIC_RELAXED));
+    E4_PT(" anomalies=");E4_PN(__atomic_load_n(&e4_crc_anomalies,__ATOMIC_RELAXED));E4_PT("\n");
+#undef E4_PT
+#undef E4_PN
+    spin_unlock_irqrestore(&e4_lock,flags);return n;
+}

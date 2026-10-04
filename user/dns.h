@@ -26,5 +26,7 @@ void dns_context_init(dns_context_t *ctx);
 int dns_resolve_ipv4(dns_context_t *ctx, const dns_options_t *options,
     const char *name, size_t name_length, dns_result_t *result);
 int64_t dns_last_syscall_error(const dns_context_t *ctx);
+uint32_t dns_server_used(const dns_context_t *ctx);
+uint32_t dns_servers_configured(const dns_context_t *ctx);
 const char *dns_status_name(int status);
 #endif

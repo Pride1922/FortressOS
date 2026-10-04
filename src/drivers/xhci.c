@@ -10,6 +10,7 @@
 #include "pmm.h"
 #include "serial.h"
 #include "spinlock.h"
+#include "dmesg.h"
 #include <string.h>
 
 static xhci_controller_t s_controllers[XHCI_MAX_CONTROLLERS];
@@ -19,6 +20,7 @@ static xhci_controller_t *s_active_usb_controller;
 static const boot_info_t *s_probe_boot_info;
 static bool s_usb_storage_ready = false;
 static bool s_flush_error_pending;
+static uint64_t s_profile_tsc_hz_estimate;
 
 /* Dedicated boot-only UC/NX window, separate from LAPIC/IOAPIC and heap. */
 #define XHCI_PROBE_VIRT 0xffffffffe1000000ULL
@@ -64,6 +66,23 @@ static bool delay_us(void *ctx,unsigned us) {
     return done;
 }
 static bool delay_ms(void *ctx) { return delay_us(ctx,1000); }
+
+static uint64_t profile_tsc(void) {
+    uint32_t lo,hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo),"=d"(hi) :: "memory");
+    return ((uint64_t)hi<<32)|lo;
+}
+/* Boot-only diagnostic estimate using the existing bounded PIT delay.
+ * Ten requested 1 ms intervals include programming/polling overhead: this
+ * is an estimate, not an authoritative CPU frequency or timeout clock. */
+static void profile_calibrate(void) {
+    if (!s_usb_storage_ready) return;
+    uint64_t start=profile_tsc();
+    for (unsigned i=0;i<10;i++) if (!delay_ms(NULL)) return;
+    uint64_t end=profile_tsc();
+    if (end>start && end-start<=UINT64_MAX/100)
+        s_profile_tsc_hz_estimate=(end-start)*100;
+}
 
 static void print_value(const char *name, uint32_t value) {
     serial_puts(name);
@@ -263,7 +282,21 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
     uintptr_t input_ctx_phys = pmm_alloc_page();
     uintptr_t output_ctx_phys = pmm_alloc_page();
     uintptr_t ep0_ring_phys = pmm_alloc_page();
-    uintptr_t bounce_buf_phys = pmm_alloc_page();
+    /* Align four usable pages inside seven contiguous pages. A normal TRB
+     * cannot cross a 64KiB boundary. Retain the original allocation, including
+     * padding, on every existing uncertain-ownership quarantine path. */
+    uint32_t bounce_pages=7, bounce_size=16384;
+    uintptr_t bounce_allocation=pmm_alloc_pages(bounce_pages);
+    bool ac64=(mmio_read((void *)probe_virt,0x10)&1u)!=0;
+    uintptr_t bounce_buf_phys=xhci_bounce_run_base(bounce_allocation,ac64);
+    if (!bounce_buf_phys) {
+        if (bounce_allocation) pmm_free_pages(bounce_allocation,bounce_pages);
+        bounce_pages=1; bounce_size=4096;
+        bounce_allocation=bounce_buf_phys=pmm_alloc_page();
+        if (bounce_buf_phys && bounce_buf_phys>UINT32_MAX-4095u && !ac64) {
+            pmm_free_pages(bounce_allocation,bounce_pages); bounce_allocation=bounce_buf_phys=0;
+        }
+    }
 
     if (!cmd_phys || !event_phys || !erst_phys || !dcbaa_phys ||
         (sp_count > 0 && !sp_arr_phys) || sp_oom ||
@@ -280,7 +313,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
         if (input_ctx_phys) pmm_free_page(input_ctx_phys);
         if (output_ctx_phys) pmm_free_page(output_ctx_phys);
         if (ep0_ring_phys) pmm_free_page(ep0_ring_phys);
-        if (bounce_buf_phys) pmm_free_page(bounce_buf_phys);
+        if (bounce_allocation) pmm_free_pages(bounce_allocation,bounce_pages);
         error = NULL;
         goto unmap;
     }
@@ -327,6 +360,9 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
         .ep0_ring_phys = ep0_ring_phys,
         .ep0_ring_virt = (xhci_trb_t *)vmm_phys_to_virt(ep0_ring_phys),
         .bounce_buf_phys = bounce_buf_phys,
+        .bounce_buf_size = bounce_size,
+        .bounce_allocation_phys = bounce_allocation,
+        .bounce_allocation_pages = bounce_pages,
         .bounce_buf_virt = (uint8_t *)vmm_phys_to_virt(bounce_buf_phys),
     };
     for (uint32_t i = 0; i < sp_count; ++i) {
@@ -515,6 +551,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                                 if (block_register_usb()) {
                                     *out_registered_storage = true;
                                     serial_puts("[USB 9G.2] PASS: Registered block device \"sda\"\n");
+                                    serial_puts(bounce_size==16384 ? "[USB 9G.2] Max run: 16384 bytes\n" : "[USB 9G.2] Max run: 4096 bytes\n");
 
                                     block_dev_t *sda = block_get_dev_by_name("sda");
                                     if (sda) {
@@ -632,7 +669,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
         pmm_free_page(input_ctx_phys);
         pmm_free_page(output_ctx_phys);
         pmm_free_page(ep0_ring_phys);
-        pmm_free_page(bounce_buf_phys);
+        pmm_free_pages(bounce_allocation,bounce_pages);
         if (ctl->bot_rings.bulk_in_ring_phys) pmm_free_page(ctl->bot_rings.bulk_in_ring_phys);
         if (ctl->bot_rings.bulk_out_ring_phys) pmm_free_page(ctl->bot_rings.bulk_out_ring_phys);
     } else {
@@ -675,10 +712,16 @@ void xhci_boot_probe(const boot_info_t *boot_info) {
         xhci_init_one_controller(&s_controllers[i], &devices[i], &registered_storage);
     }
     s_probe_boot_info = NULL;
+    profile_calibrate();
 }
 
 bool usb_is_initialized(void) {
     return s_usb_storage_ready;
+}
+
+uint32_t usb_get_max_run_bytes(void) {
+    return s_usb_storage_ready && s_active_usb_controller ?
+        s_active_usb_controller->dev_dma.bounce_buf_size : 4096u;
 }
 
 uint32_t usb_get_sector_size(void) {
@@ -734,6 +777,55 @@ bool usb_block_flush(block_dev_t *dev) {
     }
     __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
     return ok;
+}
+
+static size_t profile_text(char *out,size_t n,const char *s) {
+    while (*s) out[n++]=*s++;
+    return n;
+}
+static size_t profile_number(char *out,size_t n,uint64_t v) {
+    char digits[20];unsigned count=0;
+    do { digits[count++]=(char)('0'+v%10);v/=10; } while (v);
+    while (count) out[n++]=digits[--count];
+    return n;
+}
+void usb_report_io_profile(void) {
+    spin_debug_assert_unheld();
+    xhci_controller_t *ctl=s_active_usb_controller;
+    if (!ctl || !s_usb_storage_ready) return;
+    static const char *const names[]={"read","write","flush","other"};
+    /* Maximum line: fixed labels plus five 20-digit uint64 values < 256.
+     * No device access, allocations or new lock nesting during reporting. */
+    char line[256];
+    size_t header=profile_text(line,0,"[USB PERF] PIT tsc-hz-estimate=");
+    header=profile_number(line,header,s_profile_tsc_hz_estimate);
+    line[header++]='\n';
+    uint64_t header_flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(header_flags) :: "memory");
+    dmesg_append_str(line,header);
+    __asm__ volatile("push %0; popfq" :: "r"(header_flags) : "memory");
+    for (unsigned i=0;i<USB_IO_CLASSES;i++) {
+        usb_io_sample_t *s=&ctl->bot_rings.io_profile[i];
+        uint64_t commands=__atomic_load_n(&s->commands,__ATOMIC_RELAXED);
+        uint64_t bytes=__atomic_load_n(&s->bytes,__ATOMIC_RELAXED);
+        uint64_t failures=__atomic_load_n(&s->failures,__ATOMIC_RELAXED);
+        uint64_t cycles=__atomic_load_n(&s->cycles,__ATOMIC_RELAXED);
+        uint64_t anomalies=__atomic_load_n(&s->clock_anomalies,__ATOMIC_RELAXED);
+        size_t n=profile_text(line,0,"[USB PERF] cumulative ");
+        n=profile_text(line,n,names[i]);
+        n=profile_text(line,n," commands=");n=profile_number(line,n,commands);
+        n=profile_text(line,n," bytes=");n=profile_number(line,n,bytes);
+        n=profile_text(line,n," failures=");n=profile_number(line,n,failures);
+        n=profile_text(line,n," tsc-cycles=");n=profile_number(line,n,cycles);
+        n=profile_text(line,n," clock-anomalies=");n=profile_number(line,n,anomalies);
+        line[n++]='\n';
+        /* Same IRQ-excluded single-CPU publication used by current dmesg
+         * callers. Counter updates on other CPUs remain atomic. */
+        uint64_t flags;
+        __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+        dmesg_append_str(line,n);
+        __asm__ volatile("push %0; popfq" :: "r"(flags) : "memory");
+    }
 }
 
 void usb_report_flush_failure(void) {

@@ -68,6 +68,278 @@ static int exec_echo(int argc, const char *const *argv) {
     return r < 0 ? io_err(r) : 0;
 }
 
+/* ---------- printf -------------------------------------------------------- */
+
+typedef struct {
+    char buf[256];
+    size_t len;
+} printf_out_t;
+
+static int p_flush(printf_out_t *out) {
+    if (out->len == 0) return 0;
+    long r = write_bytes_fd(1, out->buf, out->len);
+    out->len = 0;
+    return r < 0 ? io_err(r) : 0;
+}
+
+static int p_char(printf_out_t *out, char c) {
+    if (out->len >= sizeof(out->buf)) {
+        int r = p_flush(out);
+        if (r) return r;
+    }
+    out->buf[out->len++] = c;
+    return 0;
+}
+
+static int64_t parse_int64(const char *s) {
+    if (!s) return 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '\'' || *s == '"') return (unsigned char)s[1];
+    bool neg = false;
+    if (*s == '-') { neg = true; s++; }
+    else if (*s == '+') { s++; }
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+        uint64_t val = 0;
+        while (*s) {
+            char c = *s++;
+            if (c >= '0' && c <= '9') val = (val << 4) | (c - '0');
+            else if (c >= 'a' && c <= 'f') val = (val << 4) | (c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') val = (val << 4) | (c - 'A' + 10);
+            else break;
+        }
+        return neg ? -(int64_t)val : (int64_t)val;
+    }
+    int64_t val = 0;
+    while (*s >= '0' && *s <= '9') {
+        val = val * 10 + (*s++ - '0');
+    }
+    return neg ? -val : val;
+}
+
+static int format_uint(printf_out_t *out, uint64_t val, int width, bool left_align, bool zero_pad, unsigned base, bool upper) {
+    char num_buf[32];
+    int npos = 0;
+    const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    do {
+        num_buf[npos++] = digits[val % base];
+        val /= base;
+    } while (val > 0);
+    int pad = width > npos ? width - npos : 0;
+    if (!left_align && pad > 0) {
+        char pad_ch = zero_pad ? '0' : ' ';
+        for (int i = 0; i < pad; i++) {
+            if (p_char(out, pad_ch)) return 1;
+        }
+    }
+    while (npos > 0) {
+        if (p_char(out, num_buf[--npos])) return 1;
+    }
+    if (left_align && pad > 0) {
+        for (int i = 0; i < pad; i++) {
+            if (p_char(out, ' ')) return 1;
+        }
+    }
+    return 0;
+}
+
+static int format_int(printf_out_t *out, int64_t val, int width, bool left_align, bool zero_pad) {
+    bool neg = false;
+    uint64_t uval;
+    if (val < 0) {
+        neg = true;
+        uval = (uint64_t)(-(val + 1)) + 1;
+    } else {
+        uval = (uint64_t)val;
+    }
+    char num_buf[32];
+    int npos = 0;
+    do {
+        num_buf[npos++] = '0' + (char)(uval % 10);
+        uval /= 10;
+    } while (uval > 0);
+    int total_len = npos + (neg ? 1 : 0);
+    int pad = width > total_len ? width - total_len : 0;
+    if (neg && zero_pad) {
+        if (p_char(out, '-')) return 1;
+        neg = false;
+    }
+    if (!left_align && pad > 0) {
+        char pad_ch = zero_pad ? '0' : ' ';
+        for (int i = 0; i < pad; i++) {
+            if (p_char(out, pad_ch)) return 1;
+        }
+    }
+    if (neg) {
+        if (p_char(out, '-')) return 1;
+    }
+    while (npos > 0) {
+        if (p_char(out, num_buf[--npos])) return 1;
+    }
+    if (left_align && pad > 0) {
+        for (int i = 0; i < pad; i++) {
+            if (p_char(out, ' ')) return 1;
+        }
+    }
+    return 0;
+}
+
+int exec_printf(int argc, const char *const *argv) {
+    if (argc < 2) return 0;
+    if (argc == 2 && equal(argv[1], "--help")) {
+        return write_str("Usage: printf FORMAT [ARGUMENT...]\nFormat and print ARGUMENT(s) according to FORMAT.\n");
+    }
+    int fmt_idx = 1;
+    if (equal(argv[1], "--")) {
+        fmt_idx = 2;
+        if (fmt_idx >= argc) return 0;
+    }
+    const char *fmt = argv[fmt_idx];
+    int arg_idx = fmt_idx + 1;
+    bool has_args = (arg_idx < argc);
+
+    printf_out_t out = {.len = 0};
+
+    do {
+        const char *p = fmt;
+        while (*p) {
+            if (*p == '\\') {
+                p++;
+                char c = *p;
+                if (!c) {
+                    if (p_char(&out, '\\')) return 1;
+                    break;
+                }
+                p++;
+                if (c == 'n') { if (p_char(&out, '\n')) return 1; }
+                else if (c == 't') { if (p_char(&out, '\t')) return 1; }
+                else if (c == 'r') { if (p_char(&out, '\r')) return 1; }
+                else if (c == 'a') { if (p_char(&out, '\a')) return 1; }
+                else if (c == 'b') { if (p_char(&out, '\b')) return 1; }
+                else if (c == 'f') { if (p_char(&out, '\f')) return 1; }
+                else if (c == 'v') { if (p_char(&out, '\v')) return 1; }
+                else if (c == '\\') { if (p_char(&out, '\\')) return 1; }
+                else if (c == '\'') { if (p_char(&out, '\'')) return 1; }
+                else if (c == '\"') { if (p_char(&out, '\"')) return 1; }
+                else if (c == 'c') { (void)p_flush(&out); return 0; }
+                else if (c == 'x') {
+                    unsigned val = 0;
+                    int digits = 0;
+                    while (digits < 2 && *p) {
+                        char h = *p;
+                        if (h >= '0' && h <= '9') val = (val << 4) | (h - '0');
+                        else if (h >= 'a' && h <= 'f') val = (val << 4) | (h - 'a' + 10);
+                        else if (h >= 'A' && h <= 'F') val = (val << 4) | (h - 'A' + 10);
+                        else break;
+                        p++; digits++;
+                    }
+                    if (digits > 0) { if (p_char(&out, (char)val)) return 1; }
+                    else { if (p_char(&out, 'x')) return 1; }
+                } else if (c >= '0' && c <= '7') {
+                    unsigned val = (c - '0');
+                    int digits = 1;
+                    while (digits < 3 && *p >= '0' && *p <= '7') {
+                        val = (val << 3) | (*p++ - '0');
+                        digits++;
+                    }
+                    if (p_char(&out, (char)val)) return 1;
+                } else {
+                    if (p_char(&out, c)) return 1;
+                }
+            } else if (*p == '%') {
+                p++;
+                if (*p == '%') {
+                    p++;
+                    if (p_char(&out, '%')) return 1;
+                    continue;
+                }
+                bool left_align = false;
+                bool zero_pad = false;
+                while (*p == '-' || *p == '0' || *p == '+' || *p == ' ') {
+                    if (*p == '-') left_align = true;
+                    else if (*p == '0') zero_pad = true;
+                    p++;
+                }
+                int width = 0;
+                while (*p >= '0' && *p <= '9') {
+                    width = width * 10 + (*p++ - '0');
+                }
+                int prec = -1;
+                if (*p == '.') {
+                    p++;
+                    prec = 0;
+                    while (*p >= '0' && *p <= '9') {
+                        prec = prec * 10 + (*p++ - '0');
+                    }
+                }
+                char spec = *p ? *p++ : '\0';
+                const char *val_str = (arg_idx < argc) ? argv[arg_idx++] : "";
+                if (spec == 's') {
+                    size_t slen = length(val_str);
+                    if (prec >= 0 && (size_t)prec < slen) slen = (size_t)prec;
+                    int pad = width > (int)slen ? width - (int)slen : 0;
+                    if (!left_align && pad > 0) {
+                        for (int k = 0; k < pad; k++) if (p_char(&out, ' ')) return 1;
+                    }
+                    for (size_t k = 0; k < slen; k++) {
+                        if (p_char(&out, val_str[k])) return 1;
+                    }
+                    if (left_align && pad > 0) {
+                        for (int k = 0; k < pad; k++) if (p_char(&out, ' ')) return 1;
+                    }
+                } else if (spec == 'b') {
+                    const char *bs = val_str;
+                    while (*bs) {
+                        if (*bs == '\\') {
+                            bs++;
+                            char bc = *bs;
+                            if (!bc) { if (p_char(&out, '\\')) return 1; break; }
+                            bs++;
+                            if (bc == 'n') { if (p_char(&out, '\n')) return 1; }
+                            else if (bc == 't') { if (p_char(&out, '\t')) return 1; }
+                            else if (bc == 'r') { if (p_char(&out, '\r')) return 1; }
+                            else if (bc == 'a') { if (p_char(&out, '\a')) return 1; }
+                            else if (bc == 'b') { if (p_char(&out, '\b')) return 1; }
+                            else if (bc == 'f') { if (p_char(&out, '\f')) return 1; }
+                            else if (bc == 'v') { if (p_char(&out, '\v')) return 1; }
+                            else if (bc == '\\') { if (p_char(&out, '\\')) return 1; }
+                            else if (bc == 'c') { (void)p_flush(&out); return 0; }
+                            else { if (p_char(&out, bc)) return 1; }
+                        } else {
+                            if (p_char(&out, *bs++)) return 1;
+                        }
+                    }
+                } else if (spec == 'c') {
+                    char ch = val_str[0];
+                    if (p_char(&out, ch)) return 1;
+                } else if (spec == 'd' || spec == 'i') {
+                    int64_t num = parse_int64(val_str);
+                    if (format_int(&out, num, width, left_align, zero_pad)) return 1;
+                } else if (spec == 'u') {
+                    uint64_t unum = (uint64_t)parse_int64(val_str);
+                    if (format_uint(&out, unum, width, left_align, zero_pad, 10, false)) return 1;
+                } else if (spec == 'x') {
+                    uint64_t xnum = (uint64_t)parse_int64(val_str);
+                    if (format_uint(&out, xnum, width, left_align, zero_pad, 16, false)) return 1;
+                } else if (spec == 'X') {
+                    uint64_t xnum = (uint64_t)parse_int64(val_str);
+                    if (format_uint(&out, xnum, width, left_align, zero_pad, 16, true)) return 1;
+                } else if (spec == 'o') {
+                    uint64_t onum = (uint64_t)parse_int64(val_str);
+                    if (format_uint(&out, onum, width, left_align, zero_pad, 8, false)) return 1;
+                } else if (spec) {
+                    if (p_char(&out, '%')) return 1;
+                    if (p_char(&out, spec)) return 1;
+                }
+            } else {
+                if (p_char(&out, *p++)) return 1;
+            }
+        }
+    } while (has_args && arg_idx < argc);
+
+    return p_flush(&out);
+}
+
 /* ---------- pwd ----------------------------------------------------------- */
 
 static int exec_pwd(void) {
@@ -297,6 +569,137 @@ static int exec_version(void) {
                      "Freestanding C11/NASM Preemptive Microkernel with Limine v8 Bootloader\n");
 }
 
+/* ---------- dmesg --------------------------------------------------------- */
+
+static char s_dmesg_buf[DMESG_SIZE];
+
+static bool parse_uint(const char *s, uint64_t *val) {
+    if (!s || !*s) return false;
+    uint64_t res = 0;
+    for (size_t i = 0; s[i]; i++) {
+        if (s[i] < '0' || s[i] > '9') return false;
+        res = res * 10 + (uint64_t)(s[i] - '0');
+    }
+    *val = res;
+    return true;
+}
+
+int exec_dmesg(int argc, const char *const *argv) {
+    uint64_t tail_lines = 0;
+    const char *dest_path = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (equal(arg, "-h") || equal(arg, "--help")) {
+            write_str("usage: dmesg [-n N | tail [N]] [path]\n"
+                      "       dmesg [path]\n\n"
+                      "Print or save kernel diagnostic ring buffer messages.\n"
+                      "options:\n"
+                      "  -n N, tail [N]   print only the last N lines (e.g. dmesg -n 13)\n"
+                      "  -h, --help       display this help and exit\n");
+            return 0;
+        } else if (equal(arg, "-n")) {
+            if (i + 1 >= argc || !parse_uint(argv[i + 1], &tail_lines)) {
+                write_err("dmesg: option -n requires a numeric argument\n");
+                return 1;
+            }
+            i++;
+        } else if (equal(arg, "tail") || equal(arg, "--tail") || equal(arg, "-t")) {
+            tail_lines = 10; /* default tail if count not specified */
+            if (i + 1 < argc) {
+                if (equal(argv[i + 1], "-n") && i + 2 < argc) {
+                    if (parse_uint(argv[i + 2], &tail_lines)) {
+                        i += 2;
+                    }
+                } else {
+                    uint64_t val = 0;
+                    if (parse_uint(argv[i + 1], &val)) {
+                        tail_lines = val;
+                        i++;
+                    }
+                }
+            }
+        } else {
+            uint64_t val = 0;
+            if (parse_uint(arg, &val)) {
+                tail_lines = val;
+            } else if (!dest_path) {
+                dest_path = arg;
+            } else {
+                write_err("dmesg: unrecognized argument '");
+                write_err(arg);
+                write_err("'\n");
+                return 1;
+            }
+        }
+    }
+
+    long n = call(SYS_DMESG, (uintptr_t)s_dmesg_buf, sizeof(s_dmesg_buf), 0);
+    if (n < 0) {
+        write_err("dmesg: kernel log unavailable\n");
+        return 1;
+    }
+    if (n == 0) return 0;
+
+    size_t len = (size_t)n;
+    size_t start = 0;
+
+    if (tail_lines > 0) {
+        size_t idx = len;
+        if (idx > 0 && s_dmesg_buf[idx - 1] == '\n') idx--;
+        uint64_t count = 0;
+        while (idx > 0) {
+            idx--;
+            if (s_dmesg_buf[idx] == '\n') {
+                count++;
+                if (count == tail_lines) {
+                    start = idx + 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    size_t out_len = len - start;
+    const char *out_ptr = s_dmesg_buf + start;
+
+    if (dest_path) {
+        long fd = call(SYS_OPEN, (uintptr_t)dest_path, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
+        if (fd < 0) {
+            file_error_err(fd);
+            return 1;
+        }
+        size_t off = 0;
+        bool err = false;
+        while (off < out_len) {
+            size_t chunk = out_len - off;
+            if (chunk > WRITE_CHUNK) chunk = WRITE_CHUNK;
+            long w = call(SYS_WRITE, fd, (uintptr_t)(out_ptr + off), chunk);
+            if (w <= 0) { err = true; break; }
+            off += (size_t)w;
+        }
+        (void)call(SYS_CLOSE, fd, 0, 0);
+        if (err) {
+            write_err("dmesg: write failed, file may be incomplete\n");
+            return 1;
+        }
+        puts("Saved ");
+        put_dec(out_len);
+        puts(" bytes to ");
+        puts(dest_path);
+        puts("\n");
+        return 0;
+    }
+
+    long r = write_bytes_fd(1, out_ptr, out_len);
+    if (r < 0) return io_err(r);
+    if (out_len > 0 && out_ptr[out_len - 1] != '\n') {
+        long rnl = write_bytes_fd(1, "\n", 1);
+        if (rnl < 0) return io_err(rnl);
+    }
+    return 0;
+}
+
 /* ---------- public dispatch ----------------------------------------------- */
 
 int builtin_exec(int argc, const char *const *argv, const builtin_ctx_t *ctx) {
@@ -320,6 +723,8 @@ int builtin_exec(int argc, const char *const *argv, const builtin_ctx_t *ctx) {
         case CMD_TYPE:
             /* Runner context: no alias lookup (NULL) */
             return exec_type(argc, argv, ctx, NULL);
+        case CMD_DMESG:   return exec_dmesg(argc, argv);
+        case CMD_PRINTF:  return exec_printf(argc, argv);
         default: return 2;
     }
 }

@@ -50,12 +50,13 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`mv`](#mv) | Builtin | Filesystem | Rename or move a file or directory |
 | [`sync`](#sync) | Builtin | Filesystem | Flush dirty filesystem buffers to persistent storage |
 | [`echo`](#echo) | Builtin (child-safe) | Text | Print arguments to standard output (supports `$?`, `$VAR`) |
+| [`printf`](#printf) | Builtin (child-safe) | Text | Format and print data without trailing newline (exact bytes, RFC vectors) |
 | [`run`](#run) | Builtin | Process | Compatibility wrapper to spawn an executable binary |
 | [`layout`](#layout) | Builtin | System | Query or set keyboard layout (`us` or `azerty`) |
 | [`reboot`](#reboot) | Builtin | System | Save state and reboot system |
 | [`shutdown`](#shutdown) / [`poweroff`](#poweroff) | Builtin | System | Save state and ACPI power off |
 | [`exit`](#exit) | Builtin | Shell | Exit the current shell session |
-| [`dmesg`](#dmesg) | Builtin | System | Display or save kernel diagnostic ring buffer log |
+| [`dmesg`](#dmesg) | Builtin / `/bin/dmesg` | System | Display, tail, or save kernel diagnostic ring buffer log |
 | [`history`](#history) | Builtin | Shell | Display, clear, save, or load command history |
 | [`prompt`](#prompt) | Builtin | Shell | Configure shell prompt template |
 | [`terminal`](#terminal) | Builtin | Shell | Select terminal display mode (`local`, `serial`, `mirror`, `plain`) |
@@ -80,11 +81,12 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display CPU, uptime, RAM, and process metrics |
 | [`ifconfig`](#ifconfig) | Binary (`/bin/ifconfig`) | Networking | Query network interface status and packet counters |
 | [`ifup`](#ifup) | Binary (`/bin/ifup`) | Networking | Configure network interface statically or via config file |
-| [`ping`](#ping) | Binary (`/bin/ping`) | Networking | Send ICMP Echo Request packets to IPv4 host |
+| [`ping`](#ping) | Binary (`/bin/ping`) | Networking | Send ICMP Echo Request packets to IPv4 host or hostname |
 | [`traceroute`](#traceroute) | Binary (`/bin/traceroute`) | Networking | Finite numeric ICMP trace with TTL-expiry/error reporting |
 | [`nslookup`](#nslookup) | Binary (`/bin/nslookup`) | Networking | Query DNS name server for IPv4 addresses |
 | [`nc`](#nc) | Binary (`/bin/nc`) | Networking | Arbitrary TCP connections and listens (Netcat) |
 | [`wget`](#wget) | Binary (`/bin/wget`) | Networking | Download files over HTTP/1.0 and HTTP/1.1 |
+| [`download`](#download) | Binary (`/bin/download`) | Networking | Simple file downloader (`download [dest] <URL>`) |
 | [`md5sum` / `sha256sum`](#md5sum--sha256sum) | Binaries (`/bin/md5sum`, `/bin/sha256sum`) | Files | Stream digests and verify manifests |
 | [`hello`](#hello) | Binary (`/bin/hello`) | Diagnostic | Test ELF binary with argument echoing and `--spin` |
 | [`dual_stream`](#dual_stream) | Binary (`/bin/dual_stream`) | Diagnostic | Diagnostic tool emitting distinct stdout and stderr streams |
@@ -291,6 +293,29 @@ echo "Current path:" $PATH
 
 ---
 
+### `printf`
+**Syntax:** `printf <format> [arguments...]`  
+**Child-Safe in Pipelines:** Yes  
+**Description:** Formats and writes text to standard output without an automatic trailing newline. Fills a vital pipeline gap where exact byte sequences are required (e.g. RFC test vectors, binary streams, or hashes).
+* **Exact Bytes:** Does not append a newline unless explicitly requested via `\n` in the format string.
+* **Format Specifiers:** Supports `%s` (string), `%b` (string with backslash escapes expanded), `%c` (single character), `%d` / `%i` (signed decimal integer), `%u` (unsigned decimal integer), `%x` / `%X` (hexadecimal), `%o` (octal), and `%%` (literal percent).
+* **Width & Alignment:** Supports field widths (e.g. `%10s`), left-alignment (`%-10s`), and zero-padding (`%04x`).
+* **Escape Sequences:** Interprets `\n` (newline), `\t` (tab), `\r` (carriage return), `\xHH` (hex byte), `\NNN` (octal byte), and `\c` (terminate output immediately).
+* **Format Reuse:** If more arguments are provided than format specifiers, the format string is reused until all arguments are consumed.
+
+**Examples:**
+```sh
+printf "abc"                         # Exact 3 bytes 'abc' without trailing newline (RFC test vector)
+printf "abc" | wc -c                 # Outputs 3 (contrasting with echo abc | wc -c which outputs 4)
+printf "%s\n" "hello"                # Outputs 'hello\n' with explicit newline
+printf "%s\n" foo bar baz            # Format reuse: outputs foo\nbar\nbaz\n
+printf "count=%d hex=0x%04x\n" 42 42 # Outputs count=42 hex=0x002a\n
+printf "a\tb\nc\n"                   # Tab and newline escape sequences
+printf "\x41\x42\x43"                # Hexadecimal byte sequence (emits ABC)
+```
+
+---
+
 ### `run`
 **Syntax:** `run <binary_path> [args...]`  
 **Child-Safe in Pipelines:** No  
@@ -355,15 +380,59 @@ exit 0
 ---
 
 ### `dmesg`
-**Syntax:** `dmesg [path]`  
-**Child-Safe in Pipelines:** No  
-**Description:** Prints kernel diagnostic ring buffer messages.
-* `dmesg` without arguments prints the kernel log to the terminal.
-* `dmesg <path>` saves the complete kernel log to the specified file path on disk (e.g. `/mnt/dmesg.txt`).  
+**Syntax:** `dmesg [-n <lines>] [tail [<lines>]] [<lines>] [path]`  
+**Child-Safe in Pipelines:** Yes  
+**Description:** Prints or saves kernel diagnostic ring buffer messages. Supports inspecting the most recent log entries directly or redirecting through pipelines.
+* `dmesg` without arguments prints the complete kernel log to the terminal (or pipeline).
+* `dmesg -n <N>` or `dmesg tail <N>` or `dmesg <N>` prints only the last `<N>` lines of the kernel log.
+* `dmesg tail` defaults to the last 10 lines of the kernel log.
+* `dmesg <path>` or `dmesg -n <N> <path>` saves the (tail or full) output to the specified file path on disk.
+* `dmesg` can run in pipelines (e.g. `dmesg | tail`, `dmesg | wc -l`). Also available as `/bin/dmesg`.
+
+#### Troubleshooting with `dmesg` (The Killer Troubleshooting Feature)
+Kernel subsystems—including USB storage (`[USB]`), network devices (`[NET]`), filesystem mutations (`[EXT4]`, `[JBD2]`), memory management (`[PMM]`, `[VMM]`), and SMP synchronization—write status, warnings, and metric counters continuously to the kernel diagnostic ring buffer.
+
+Because FortressOS defaults to a quiet graphical splash with a clean shell handoff, the boot log can contain hundreds of initialization lines. Tailing `dmesg` is the single fastest way to troubleshoot runtime issues without drowning in early boot logs:
+
+1. **Diagnosing USB Storage & Sync Performance:**
+   When running disk-heavy commands or benchmarking sync times, the kernel appends performance rows (TSC cycle counts, BOT transfer counts, cache flush latencies) to `dmesg`. Running:
+   ```sh
+   sync
+   dmesg -n 6
+   ```
+   immediately displays the latest sync rows and transaction commits without touching the rest of the screen.
+
+2. **Network Connection & Packet Drop Troubleshooting:**
+   If `wget` or `ping` encounters unexpected latency, timeouts, or connection failures, `dmesg tail` reveals interface link status transitions, socket states, and packet drop reasons:
+   ```sh
+   wget http://192.168.0.153:8000/testfile.txt
+   dmesg tail 15
+   ```
+
+3. **Driver Bring-Up & Mount Issues:**
+   If a partition fails to mount or an external device behaves unexpectedly:
+   ```sh
+   dmesg -n 25
+   ```
+   shows the exact SCSI sense codes, partition table parsing alerts, or filesystem mount rejections.
+
+4. **Saving Post-Mortem Diagnostics:**
+   To capture the exact failure state for reporting or offline analysis without overwriting the terminal:
+   ```sh
+   dmesg -n 30 /mnt/troubleshoot.log
+   ```
+
 **Examples:**
 ```sh
-dmesg
-dmesg /mnt/boot.log
+dmesg                           # Full kernel ring buffer log
+dmesg -n 13                     # Last 13 lines (instant recent troubleshooting)
+dmesg tail 20                   # Last 20 lines using explicit 'tail' verb
+dmesg 15                        # Last 15 lines using shorthand number
+dmesg tail                      # Last 10 lines (default tail)
+dmesg | tail                    # Piped into stream tool
+dmesg | wc -l                   # Count total diagnostic lines emitted
+dmesg /mnt/boot.log             # Dump entire ring buffer to persistent disk
+dmesg -n 25 /mnt/error_tail.log # Save last 25 diagnostic lines to disk
 ```
 
 ---
@@ -545,6 +614,13 @@ kill %1 STOP
 kill %1 CONT
 kill %1 KILL
 ```
+
+#### Background Output and Automatic Prompt Redraw
+When a background job (such as `wget &` or background workers writing to `/dev/tty`) produces output while the shell is waiting for user input at the prompt:
+* The kernel terminal driver tracks console screen output generations (`console_inc_generation`).
+* The shell's interactive input loop periodically samples `SYS_TERMCTL(TERM_GET, &term)`.
+* If background output modifies the display (`cur_term.generation != term.generation`), the shell automatically advances to a new line and redraws the prompt along with any in-progress input draft and cursor position within 100 ms.
+* This eliminates prompt corruption caused by asynchronous background tasks without requiring workarounds like `wget -q`.
 
 ---
 
@@ -783,13 +859,14 @@ ifconfig
 ### `ifup`
 **Syntax:**
 * `ifup [--dry-run] [config-file]`
-* `ifup [--dry-run] <ip>/<prefix> [gateway]`
-* `ifup [--dry-run] <ip> <netmask> [gateway]`  
+* `ifup [--dry-run] <ip>/<prefix> [gateway] [<dns1>] [<dns2>]`
+* `ifup [--dry-run] <ip> <netmask> [gateway] [<dns1>] [<dns2>]`  
 **Path:** `/bin/ifup`  
 **Description:** Configures the primary network interface statically on the fly via `SYS_NETCTL` (`NETCTL_IFSET`).
 * Can load configuration from a file (defaults to `/mnt/.fortress/network.conf` or `/etc/network.conf`).
-* Accepts CIDR notation (`10.0.2.15/24 10.0.2.2`) or dotted-decimal notation (`10.0.2.15 255.255.255.0 10.0.2.2`).
+* Accepts CIDR notation (`10.0.2.15/24 10.0.2.2 [dns1] [dns2]`) or dotted-decimal notation (`10.0.2.15 255.255.255.0 10.0.2.2 [dns1] [dns2]`).
 * Validates IP formatting, unicast ranges, netmask bounds, and gateway subnet reachability before applying.
+* When optional positional DNS servers are provided (`dns1`, `dns2`), writes them to `/tmp/resolv.conf` (or `/mnt/.fortress/resolv.conf` if `/mnt` is writable) formatted as `nameserver <ip>`.
 * Automatically syncs DNS server definitions to `/mnt/.fortress/network.conf`.  
 **Options:**
 * `-n`, `--dry-run`: Parse and validate the network configuration without applying changes to the kernel.
@@ -799,21 +876,28 @@ ifconfig
 ifup --help
 ifup --dry-run 10.0.2.50/24 10.0.2.2
 ifup 10.0.2.15/24 10.0.2.2
+ifup 192.168.0.168/24 192.168.0.1 1.1.1.1 8.8.8.8
+ifup 192.168.0.168 255.255.255.0 192.168.0.1 1.1.1.1 8.8.8.8
 ifup /etc/network.conf
 ```
 
 ---
 
 ### `ping`
-**Syntax:** `ping <ip> [-c count] [-W timeout]`  
+**Syntax:** `ping <IPv4|hostname> [-c count] [-W timeout]`  
 **Path:** `/bin/ping`  
-**Description:** Sends ICMP Echo Request packets (32 data bytes) to an IPv4 target and listens for Echo Replies via `SYS_NETCTL` (`NETCTL_PING`). Prints round-trip sequence numbers, RTT in milliseconds, packet loss statistics, and min/avg/max round-trip times.  
+**Description:** Sends ICMP Echo Request packets (32 data bytes) to an IPv4 target or domain hostname and listens for Echo Replies via `SYS_NETCTL` (`NETCTL_PING`).
+* If given a hostname, resolves it using the userspace DNS resolver (reading `/tmp/resolv.conf` or `/mnt/.fortress/resolv.conf`).
+* Displays `PING <hostname> (<ip>) (32 data bytes)` for resolved hostnames and `PING <ip> (32 data bytes)` for numeric IPv4 addresses.
+* If resolution fails, reports `ping: cannot resolve <name>`.
+* Prints round-trip sequence numbers, RTT in milliseconds, packet loss statistics, and min/avg/max round-trip times.  
 **Options:**
 * `-c <count>`: Number of echo requests to send (1 to 100, default 4).
 * `-W <timeout>`: Timeout in seconds to wait for each reply (1 to 5, default 1).  
 **Examples:**
 ```sh
 ping 10.0.2.2
+ping google.com
 ping 10.0.2.2 -c 10
 ping 1.1.1.1 -c 4 -W 2
 ```
@@ -824,7 +908,9 @@ ping 1.1.1.1 -c 4 -W 2
 **Syntax:** `nslookup [-s server-ip] <domain>`  
 **Path:** `/bin/nslookup`  
 **Description:** Resolves a domain hostname to an IPv4 address (A record) using the FortressOS userspace DNS stub resolver.
-* If `-s` is omitted, automatically reads the DNS server configured in `/mnt/.fortress/network.conf` or `/etc/network.conf` (e.g. `10.0.2.3`).
+* If `-s` is specified, queries the explicit DNS server.
+* If `-s` is omitted, reads nameservers from `/tmp/resolv.conf` (or `/mnt/.fortress/resolv.conf`).
+* Queries servers in order; if a server times out, automatically falls back to the next configured server. Returns a timeout error if all servers fail.
 * Supports UDP queries with automatic fallback to TCP on truncated responses (`TC` bit set).  
 **Options:**
 * `-s <server-ip>`: Explicitly specifies the DNS server IPv4 address to query.  
@@ -839,19 +925,39 @@ nslookup -s 8.8.8.8 google.com
 
 ### `nc` (Netcat)
 **Syntax:**
-* Connect: `nc <IPv4> <port>`
-* Connect by Hostname: `nc <hostname> <port>`
+* Connect: `nc [options] <IPv4|hostname> <port>`
 * Connect with DNS override: `nc -s <dns-server-ip> <hostname> <port>`
-* Listen: `nc -l <port>`  
+* Listen: `nc -l <port>`
+* Help: `nc -h` or `nc --help`  
 **Path:** `/bin/nc`  
-**Description:** Versatile TCP stream client and listener designed for serial request/response operations.
-* **Client Mode:** Connects to an IPv4 host or domain, drains standard input, transmits data, half-closes the write direction, and prints the server response to stdout.
-* **Listener Mode (`-l`):** Binds to the specified TCP port, awaits an incoming connection, transmits any piped/redirected input, and receives incoming data to stdout. (Terminal stdin is automatically skipped when running interactively).  
+**Description:** TCP stream client and listener designed for finite serial (half-duplex) request/response operations.
+* **Client Mode:** Connects to an IPv4 host or domain, drains all data from standard input to EOF, transmits it, half-closes the write direction (`SHUT_WR`), and prints the server response to stdout until EOF.
+* **Listener Mode (`-l`):** Binds to the specified TCP port, awaits an incoming connection, transmits any piped/redirected input, and receives incoming data to stdout. (Terminal stdin is automatically skipped when running interactively, functioning as a receive-only listener).
+* **Options:**
+  * `-s <server-ip>`: Override DNS server IPv4 address for domain hostname resolution (defaults to nameservers configured in `/tmp/resolv.conf` or `/mnt/.fortress/resolv.conf` with automatic server fallback on timeout).
+  * `-l <port>`: Run in listener mode on the specified TCP port.
+  * `-h`, `--help`: Display usage text and architecture notes.
+
+#### Serial Request/Response Architecture & Deadlock Warning
+* **Half-Duplex Serial Flow:** `nc` is not an interactive full-duplex terminal client. It strictly serializes transmission before reception: all standard input is sent first, followed by half-close (`SHUT_WR`), before reading begins from the network socket.
+* **Deadlock Hazard:** `nc` does not multiplex `stdin` and the socket concurrently. If a peer begins sending a large response (filling the TCP window) *before* consuming the client's entire request, mutual buffer exhaustion will deadlock the transfer. Always use small finite requests or ensure the peer protocol consumes requests before replying.
+* **No Client Timeout:** `nc` has no application timeout; it blocks until connection closure, RST, or manual interruption (`Ctrl+C`).  
 **Examples:**
 ```sh
-echo "GET / HTTP/1.0\r\n\r\n" | nc 93.184.216.34 80
-echo "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n" | nc example.com 80
+# Send HTTP request and display response
+echo -e "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n" | nc example.com 80
+
+# Send finite payload using numeric IPv4
+echo hello | nc 192.168.0.222 7777
+
+# Connect with DNS server override
+echo fortress-dns | nc -s 192.168.0.153 service.test 9000
+
+# Listen on port 8080 (receive-only from terminal)
 nc -l 8080
+
+# Listen with piped response data
+echo "server-ready" | nc -l 7777
 ```
 
 ---
@@ -871,24 +977,56 @@ traceroute -m 10 -q 1 -W 2 192.0.2.9
 ```
 
 ### `wget`
-**Syntax:** `wget [options] <URL>`  
+**Syntax:** `wget [options] <URL>` or `wget [destination] <URL>`  
 **Path:** `/bin/wget`  
 **Description:** Downloads files over HTTP/1.0 and HTTP/1.1.
-* Resolves domain hostnames via configured DNS.
-* Follows HTTP 301 and 302 redirects automatically (up to 3 hops).
+* Resolves domain hostnames via configured DNS (reads `/tmp/resolv.conf` or `/mnt/.fortress/resolv.conf` with automatic server fallback on timeout, or overridden via `-s`).
+* Follows HTTP 301 and 302 redirects automatically (up to 5 hops).
 * Bounded header scanner (up to 8192 bytes) protects against memory exhaustion.
 * Verifies `Content-Length` header framing against received payload size.
-* Plain HTTP only (HTTPS is explicitly rejected with clear guidance).  
+* Plain HTTP only (HTTPS is explicitly rejected with clear guidance).
+* Automatically detects directory destinations and appends the remote filename.
+* Measures elapsed wall time and download speed upon completion.  
 **Options:**
-* `-O <file>`: Write downloaded content to `<file>`. Use `-O -` to stream directly to standard output.
+* `-O <file|dir>`: Write downloaded content to `<file>` or directory `<dir>`. Use `-O -` to stream directly to standard output.
+* `-P <dir>`: Save files to specified directory prefix `<dir>`.
 * `-q`, `--quiet`: Quiet mode. Suppresses diagnostic and progress messages on stderr.
 * `-s <server-ip>`: Override the DNS server IPv4 address used for hostname resolution.
 * `-h`, `--help`: Display usage summary.  
 **Examples:**
 ```sh
 wget http://example.com/index.html
+wget /mnt http://10.0.2.2:8000/archive.tar
 wget -O /mnt/data.bin http://10.0.2.2:8000/archive.tar
+wget -P /mnt http://10.0.2.2:8000/archive.tar
 wget -q -O - http://example.com/ | wc -c
+```
+
+### `download`
+**Syntax:** `download [destination] <URL>` or `download <URL> [destination]`  
+**Path:** `/bin/download`  
+**Description:** Simplified file downloader for FortressOS designed for quick, hassle-free file fetching.
+* Automatically appends the remote filename if the destination is a directory (such as `/mnt` or `/mnt/`).
+* Automatically defaults destination to `/mnt` if mounted and no destination path is specified, avoiding read-only rootfs errors (`-EROFS`).
+* Transparently handles IPv4 addresses, DNS hostnames (resolved via `/tmp/resolv.conf` or `/mnt/.fortress/resolv.conf` with fallback), HTTP redirects, and speed calculation.
+* Supports destination either as the first or second argument.  
+**Options:**
+* `-q`, `--quiet`: Quiet mode. Suppresses diagnostic and status output.
+* `-s <server-ip>`: Override DNS server IPv4 address.
+* `-h`, `--help`: Display usage summary.  
+**Examples:**
+```sh
+# Destination directory first
+download /mnt http://192.168.0.153:8000/testfile.txt
+
+# URL first
+download http://192.168.0.153:8000/testfile.txt /mnt
+
+# Omit destination entirely (auto-defaults to /mnt if mounted)
+download http://192.168.0.153:8000/testfile.txt
+
+# Download directly to a specific filename
+download /mnt/custom.bin http://192.168.0.153:8000/data.bin
 ```
 
 ---

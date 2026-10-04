@@ -223,7 +223,11 @@ static void repeated_receive_event_test(net_config_t *cfg) {
     int listener=listenfd(); memset(synacks,0,sizeof(synacks)); passive_open(0,true);
     int child=(int)acceptfd(listener,NULL,NULL); assert(child>=0);
     incoming(0,TCP_ACK|TCP_PSH,synacks[0].sequence+1,"ab",2); net_tcp_tick(now,true);
+    unsigned before_poll=poll_requests;
+    unsigned before_yield=handoff_yields;
     uint8_t bytes[2]; assert(stream_receive_call(SYS_RECV,child,bytes,2)==2 && !memcmp(bytes,"ab",2));
+    assert(poll_requests>before_poll); /* Application drain requests ACK service. */
+    assert(handoff_yields==before_yield+1);
     net_tcp_wait_t wait; assert(net_tcp_snapshot(net_socket_index(process.fd_table[child]),&wait));
     /* No zero-count worker sample between consume and equal-sized next batch. */
     incoming_at(0,103,TCP_ACK|TCP_PSH,synacks[0].sequence+1,"cd",2);
@@ -444,8 +448,11 @@ int main(void) {
     for (unsigned i=0; i<16384; ++i) assert(peer_bytes[i]==0x5a);
     closefd(fd); tcp_service(); peer_active=false;
     fd=stream(); assert(fd>=0); assert(!connectfd(fd));
+    unsigned no_handoff=handoff_yields;
     assert(call(SYS_RECV,fd,(uintptr_t)output,1,NET_MSG_DONTWAIT,0,0)==SYSCALL_EAGAIN);
     assert(call(SYS_RECV,fd,(uintptr_t)readonly,1,0,0,0)==SYSCALL_EFAULT);
+    assert(call(SYS_RECV,fd,0,0,0,0,0)==0);
+    assert(handoff_yields==no_handoff);
     assert(call(SYS_SEND,fd,0,0,0,0,0)==0);
     peer_return=true;
     for (unsigned i=0; i<65536; ++i) stream_output[i]=(uint8_t)(i*31);
@@ -464,7 +471,9 @@ int main(void) {
         long got=call(SYS_RECV,fd,(uintptr_t)(stream_output+at),n,0,0,0);
         assert(got>0); at+=(size_t)got;
     }
+    no_handoff=handoff_yields;
     assert(call(SYS_RECV,fd,(uintptr_t)output,1,0,0,0)==0);
+    assert(handoff_yields==no_handoff);
     for (unsigned i=0; i<65536; ++i) assert(stream_output[i]==(uint8_t)(i*31));
     assert(peer_count==65536);
     net_tcp_wait_t stale; assert(net_tcp_snapshot(net_socket_index(process.fd_table[fd]),&stale));

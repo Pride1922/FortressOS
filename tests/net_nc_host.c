@@ -101,6 +101,9 @@ int main(void) {
     assert(closed[10]==1 && closed[11]==1);
     char *bad[][3]={{"nc","hostname","7777"},{"nc","10.0.2.256","7777"},{"nc","-l","0"},{"nc","10.0.2.2","65536"},{"nc","-k","7777"}};
     for(unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);++i) { setup(false); assert(nc_main(3,bad[i])==1 && !sockets && warning_seen); }
+    char *help_short[]={"nc","-h"}, *help_long[]={"nc","--help"};
+    setup(false); assert(nc_main(2,help_short)==0 && !sockets && warning_seen);
+    setup(false); assert(nc_main(2,help_long)==0 && !sockets && warning_seen);
     puts("nc tty listener skip / nonterminal and client stdin / binary short I/O / EOF / buffered reset / errors / cleanup PASS");
     return 0;
 }

@@ -110,7 +110,18 @@ typedef struct {
 
     uintptr_t bounce_buf_phys;
     uint8_t  *bounce_buf_virt;
+    uint32_t bounce_buf_size; /* Zero retains 4 KiB for legacy adapters. */
+    uintptr_t bounce_allocation_phys; /* Includes alignment padding. */
+    uint32_t bounce_allocation_pages;
 } xhci_dev_dma_t;
+
+/* Layout only: seven page-aligned frames contain an aligned 16KiB run.
+ * Reject overflow and controllers unable to address the whole usable region. */
+static inline uintptr_t xhci_bounce_run_base(uintptr_t allocation,bool ac64) {
+    if (!allocation || (allocation&4095u) || allocation>UINTPTR_MAX-28671u) return 0;
+    uintptr_t base=(allocation+16383u)&~(uintptr_t)16383u;
+    return !ac64 && base+16383u>UINT32_MAX ? 0 : base;
+}
 
 /* Performs Phase 9G.1e:
  * - Issues Enable Slot -> acquires Slot ID

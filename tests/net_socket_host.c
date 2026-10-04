@@ -69,6 +69,10 @@ int vfs_close(file_t *f) {
     return 0;
 }
 static void closefd(int fd) { vfs_close(process.fd_table[fd]); process.fd_table[fd]=NULL; }
+static unsigned poll_requests;
+static unsigned handoff_yields;
+void thread_yield(void) { net_test_assert_unheld(); ++handoff_yields; }
+void net_request_poll(void) { net_test_assert_unheld(); ++poll_requests; }
 void sched_wake_all(const void *channel) { assert(channel); ++wakes; }
 int net_arp_lookup(uint32_t ip, uint8_t mac[6]) { (void)ip; memset(mac,2,6); return cached ? 0 : -1; }
 int arp_resolve(net_dev_t *d, uint32_t ip, uint8_t mac[6]) { (void)d; ++arps; return cached ? net_arp_lookup(ip,mac) : 1; }

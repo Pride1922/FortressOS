@@ -89,12 +89,63 @@ static bool unicast(uint32_t ip) {
     uint8_t b[4]; dns_copy(b,&ip,4);
     return b[0] && b[0]!=127 && b[0]<224 && ip!=UINT32_MAX;
 }
+uint32_t dns_server_used(const dns_context_t *ctx) {
+    return ctx ? get32((const uint8_t *)ctx, 24) : 0;
+}
+uint32_t dns_servers_configured(const dns_context_t *ctx) {
+    return ctx ? get32((const uint8_t *)ctx, 28) : 0;
+}
+static unsigned parse_resolv_file(uint8_t *w, const char *path, uint32_t *servers, unsigned max_servers) {
+    long fd = DNS_CALL(SYS_OPEN, (uintptr_t)path, 0, 0, 0, 0, 0);
+    if (fd < 0) return 0;
+    char buf[512];
+    long n = DNS_CALL(SYS_READ, (uintptr_t)fd, (uintptr_t)buf, sizeof(buf) - 1, 0, 0, 0);
+    closefd(w, fd);
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+    unsigned count = 0;
+    size_t at = 0;
+    while (at < (size_t)n && count < max_servers) {
+        while (at < (size_t)n && (buf[at] == ' ' || buf[at] == '\t' || buf[at] == '\r' || buf[at] == '\n')) at++;
+        if (at >= (size_t)n) break;
+        if (buf[at] == '#' || buf[at] == ';') {
+            while (at < (size_t)n && buf[at] != '\n') at++;
+            continue;
+        }
+        const char *line = buf + at;
+        size_t line_len = 0;
+        while (at + line_len < (size_t)n && line[line_len] != '\r' && line[line_len] != '\n') line_len++;
+        at += line_len;
+
+        if (line_len > 11 &&
+            line[0] == 'n' && line[1] == 'a' && line[2] == 'm' && line[3] == 'e' &&
+            line[4] == 's' && line[5] == 'e' && line[6] == 'r' && line[7] == 'v' &&
+            line[8] == 'e' && line[9] == 'r' && (line[10] == ' ' || line[10] == '\t')) {
+            size_t p = 11;
+            while (p < line_len && (line[p] == ' ' || line[p] == '\t')) p++;
+            size_t ip_start = p;
+            while (p < line_len && line[p] != ' ' && line[p] != '\t') p++;
+            size_t ip_len = p - ip_start;
+            uint32_t ip = 0;
+            if (ip_len > 0 && dns_ipv4(line + ip_start, ip_len, &ip) && unicast(ip)) {
+                servers[count++] = ip;
+            }
+        }
+    }
+    return count;
+}
+static unsigned load_dns_servers(uint8_t *w, uint32_t *servers, unsigned max_servers) {
+    unsigned count = parse_resolv_file(w, "/tmp/resolv.conf", servers, max_servers);
+    if (!count) count = parse_resolv_file(w, "/mnt/.fortress/resolv.conf", servers, max_servers);
+    return count;
+}
 int dns_resolve_ipv4(dns_context_t *ctx,const dns_options_t *opt,
                      const char *name,size_t n,dns_result_t *result) {
     uint8_t *w=(uint8_t *)ctx;
     if(get32(w,0)!=DNS_MAGIC) return DNS_INVALID;
     if(get32(w,4)) return DNS_BUSY;
     put32(w,4,1); dns_zero(w+16,8);
+    put32(w,24,0); put32(w,28,0);
     int status=DNS_INVALID; long fd=-1; bool tcp_used=false,numeric_bypass=false;
     uint64_t now=0,hz=0,deadline=opt->deadline_ticks;
     if(opt->reserved || !n || n>254) goto done;
@@ -107,62 +158,163 @@ int dns_resolve_ipv4(dns_context_t *ctx,const dns_options_t *opt,
     bool digits=true;
     for(size_t i=0;i<n;++i) if((name[i]<'0' || name[i]>'9') && name[i]!='.') digits=false;
     if(digits || dns_normalize(name,n,(char *)w+DNS_CURRENT)) goto done;
-    if(!unicast(opt->server_ipv4)) goto done;
-    status=clock_read(w,&now,&hz); if(status) goto done;
-    if(hz>UINT64_MAX/30 || (!deadline && now>UINT64_MAX-30*hz)) { status=DNS_INVALID; goto done; }
-    if(!deadline) deadline=now+30*hz;
-    if(deadline<=now) { status=DNS_TIMEOUT; goto done; }
-    if(deadline-now>30*hz) { status=DNS_INVALID; goto done; }
-    net_sockaddr_in_t server={.family=NET_AF_INET,.port=__builtin_bswap16(53),.address=opt->server_ipv4};
-    unsigned hops=0,visited=1,noise=0;
-    dns_zero(w+DNS_VISITED,9*256); dns_copy(w+DNS_VISITED,w+DNS_CURRENT,dns_length((char *)w+DNS_CURRENT)+1);
-    for(unsigned question=0;question<9;++question) {
-        status=budget(w,deadline,hz); if(status) goto done;
-        uint32_t sequence=get32(w,8)+1; put32(w,8,sequence);
-        uint16_t id=(uint16_t)(sequence^(uint32_t)now^(uint32_t)(now>>16));
-        size_t qlen; status=dns_encode((char *)w+DNS_CURRENT,id,w+DNS_QUERY,&qlen); if(status) goto done;
-        fd=DNS_CALL(SYS_SOCKET,NET_AF_INET,NET_SOCK_DGRAM|NET_SOCK_CLOEXEC,17,0,0,0);
-        if(error(w,fd)<0) { status=failure(fd); fd=-1; goto done; }
-        bool next=false;
-        for(unsigned attempt=0;attempt<3 && !next;++attempt) {
-            status=budget(w,deadline,hz); if(status) goto done;
-            long r=DNS_CALL(SYS_SENDTO,(uintptr_t)fd,(uintptr_t)(w+DNS_QUERY),qlen,0,(uintptr_t)&server,16);
-            if(error(w,r)<0) { status=failure(r); goto done; }
-            if((size_t)r!=qlen) { status=DNS_IO; goto done; }
-            for(;;) {
-                status=budget(w,deadline,hz); if(status) goto done;
-                net_sockaddr_in_t from; uint32_t size=16;
-                r=DNS_CALL(SYS_RECVFROM,(uintptr_t)fd,(uintptr_t)(w+DNS_WIRE),1472,0,(uintptr_t)&from,(uintptr_t)&size);
-                if(r<0) {
-                    error(w,r); if(r==SYSCALL_EAGAIN) { status=budget(w,deadline,hz); if(status) goto done; break; }
-                    status=failure(r); goto done;
+
+    uint32_t servers[4];
+    unsigned server_count = 0;
+    if (opt->server_ipv4 != 0) {
+        if (!unicast(opt->server_ipv4)) goto done;
+        servers[0] = opt->server_ipv4;
+        server_count = 1;
+    } else {
+        server_count = load_dns_servers(w, servers, 4);
+        if (server_count == 0) {
+            status = DNS_TIMEOUT;
+            goto done;
+        }
+    }
+    put32(w, 28, server_count);
+
+    status = clock_read(w, &now, &hz);
+    if (status) goto done;
+    if (hz > UINT64_MAX / 30 || (!deadline && now > UINT64_MAX - 30 * hz)) {
+        status = DNS_INVALID;
+        goto done;
+    }
+    if (!deadline) deadline = now + 30 * hz;
+    if (deadline <= now) {
+        status = DNS_TIMEOUT;
+        goto done;
+    }
+    if (deadline - now > 30 * hz) {
+        status = DNS_INVALID;
+        goto done;
+    }
+
+    char initial_name[DNS_NAME_CAP];
+    dns_copy(initial_name, w + DNS_CURRENT, dns_length((char *)w + DNS_CURRENT) + 1);
+
+    for (unsigned s_idx = 0; s_idx < server_count; s_idx++) {
+        uint32_t current_server = servers[s_idx];
+        net_sockaddr_in_t server = {.family = NET_AF_INET, .port = __builtin_bswap16(53), .address = current_server};
+
+        dns_copy(w + DNS_CURRENT, initial_name, dns_length(initial_name) + 1);
+        unsigned hops = 0, visited = 1, noise = 0;
+        dns_zero(w + DNS_VISITED, 9 * 256);
+        dns_copy(w + DNS_VISITED, w + DNS_CURRENT, dns_length((char *)w + DNS_CURRENT) + 1);
+
+        bool server_timed_out = false;
+        for (unsigned question = 0; question < 9; ++question) {
+            status = budget(w, deadline, hz);
+            if (status) {
+                if (status == DNS_TIMEOUT) { server_timed_out = true; break; }
+                goto done;
+            }
+            uint32_t sequence = get32(w, 8) + 1;
+            put32(w, 8, sequence);
+            uint16_t id = (uint16_t)(sequence ^ (uint32_t)now ^ (uint32_t)(now >> 16));
+            size_t qlen;
+            status = dns_encode((char *)w + DNS_CURRENT, id, w + DNS_QUERY, &qlen);
+            if (status) goto done;
+            fd = DNS_CALL(SYS_SOCKET, NET_AF_INET, NET_SOCK_DGRAM | NET_SOCK_CLOEXEC, 17, 0, 0, 0);
+            if (error(w, fd) < 0) {
+                status = failure(fd);
+                fd = -1;
+                goto done;
+            }
+            bool next = false;
+            for (unsigned attempt = 0; attempt < 3 && !next; ++attempt) {
+                status = budget(w, deadline, hz);
+                if (status) {
+                    if (status == DNS_TIMEOUT) { server_timed_out = true; break; }
+                    goto done;
                 }
-                status=budget(w,deadline,hz); if(status) goto done;
-                if((size_t)r>1472 || size!=16) { status=DNS_IO; goto done; }
-                const uint8_t *p=w+DNS_WIRE;
-                if(from.family!=NET_AF_INET || from.address!=server.address || from.port!=server.port ||
-                    r<2 || (uint16_t)((unsigned)p[0]*256+p[1])!=id) status=DNS_UNMATCHED;
-                else if(r>512) status=DNS_LIMIT;
-                else status=dns_decode(w,(size_t)r,id,&hops,&visited);
-                if(status==DNS_UNMATCHED) { if(++noise>32) { status=DNS_LIMIT; goto done; } continue; }
-                if(status==DNS_TRUNCATED) {
-                    closefd(w,fd); fd=-1; tcp_used=true;
-                    status=tcp_query(w,&server,qlen,id,deadline,hz,&hops,&visited);
+                long r = DNS_CALL(SYS_SENDTO, (uintptr_t)fd, (uintptr_t)(w + DNS_QUERY), qlen, 0, (uintptr_t)&server, 16);
+                if (error(w, r) < 0) {
+                    status = failure(r);
+                    goto done;
                 }
-                if(status==DNS_BUSY) { next=true; break; }
-                if(status) goto done;
-                goto publish;
+                if ((size_t)r != qlen) {
+                    status = DNS_IO;
+                    goto done;
+                }
+                for (;;) {
+                    status = budget(w, deadline, hz);
+                    if (status) {
+                        if (status == DNS_TIMEOUT) { server_timed_out = true; break; }
+                        goto done;
+                    }
+                    net_sockaddr_in_t from;
+                    uint32_t size = 16;
+                    r = DNS_CALL(SYS_RECVFROM, (uintptr_t)fd, (uintptr_t)(w + DNS_WIRE), 1472, 0, (uintptr_t)&from, (uintptr_t)&size);
+                    if (r < 0) {
+                        error(w, r);
+                        if (r == SYSCALL_EAGAIN) {
+                            status = budget(w, deadline, hz);
+                            if (status) {
+                                if (status == DNS_TIMEOUT) server_timed_out = true;
+                                goto done_server_loop;
+                            }
+                            break;
+                        }
+                        status = failure(r);
+                        goto done;
+                    }
+                    status = budget(w, deadline, hz);
+                    if (status) {
+                        if (status == DNS_TIMEOUT) { server_timed_out = true; break; }
+                        goto done;
+                    }
+                    if ((size_t)r > 1472 || size != 16) {
+                        status = DNS_IO;
+                        goto done;
+                    }
+                    const uint8_t *p = w + DNS_WIRE;
+                    if (from.family != NET_AF_INET || from.address != server.address || from.port != server.port ||
+                        r < 2 || (uint16_t)((unsigned)p[0] * 256 + p[1]) != id)
+                        status = DNS_UNMATCHED;
+                    else if (r > 512)
+                        status = DNS_LIMIT;
+                    else
+                        status = dns_decode(w, (size_t)r, id, &hops, &visited);
+
+                    if (status == DNS_UNMATCHED) {
+                        if (++noise > 32) { status = DNS_LIMIT; goto done; }
+                        continue;
+                    }
+                    if (status == DNS_TRUNCATED) {
+                        closefd(w, fd);
+                        fd = -1;
+                        tcp_used = true;
+                        status = tcp_query(w, &server, qlen, id, deadline, hz, &hops, &visited);
+                    }
+                    if (status == DNS_BUSY) { next = true; break; }
+                    if (status) goto done;
+                    put32(w, 24, current_server);
+                    goto publish;
+                }
+            }
+        done_server_loop:
+            if (fd >= 0) { closefd(w, fd); fd = -1; }
+            if (server_timed_out) break;
+            if (!next) {
+                server_timed_out = true;
+                break;
             }
         }
-        if(fd>=0) { closefd(w,fd); fd=-1; }
-        if(!next) { status=DNS_TIMEOUT; goto done; }
+        if (fd >= 0) { closefd(w, fd); fd = -1; }
+        if (server_timed_out) {
+            status = DNS_TIMEOUT;
+            continue;
+        }
     }
-    status=DNS_LIMIT; goto done;
+    status = DNS_TIMEOUT;
+    goto done;
 publish:
-    if(!numeric_bypass) { status=budget(w,deadline,hz); if(status) goto done; }
-    if(tcp_used) put32(w,DNS_STAGE+292,DNS_RESULT_TCP);
-    dns_copy(result,w+DNS_STAGE,sizeof(*result));
+    if (!numeric_bypass) { status = budget(w, deadline, hz); if (status) goto done; }
+    if (tcp_used) put32(w, DNS_STAGE + 292, DNS_RESULT_TCP);
+    dns_copy(result, w + DNS_STAGE, sizeof(*result));
 done:
-    if(fd>=0) closefd(w,fd);
-    put32(w,4,0); return status;
+    if (fd >= 0) closefd(w, fd);
+    put32(w, 4, 0);
+    return status;
 }

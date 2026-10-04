@@ -69,3 +69,23 @@ Verified on bare-metal Dell Latitude 5590 with integrated Intel I219-LM (`8086:1
 4. **Connectivity**: Gateway ping succeeds after runtime reconfiguration.
 5. **DNS integration**: `/bin/nslookup` resolves using the DNS server from `/mnt/.fortress/network.conf` when `-s` is omitted.
 6. **User confirmation**: All physical test cases passed on hardware with clean prompt return and no kernel faults.
+
+---
+
+## 4. Positional DNS Arguments & Hostname Resolution (2026-10-04)
+
+1. **Positional DNS in `/bin/ifup`**:
+   - Accepts up to two optional DNS server addresses following the gateway in both CIDR and dotted-decimal notation:
+     - `ifup <ip>/<prefix> <gateway> [<dns1>] [<dns2>]`
+     - `ifup <ip> <netmask> <gateway> [<dns1>] [<dns2>]`
+   - Automatically writes `nameserver <ip>\n` entries to `/tmp/resolv.conf` (and `/mnt/.fortress/resolv.conf` when `/mnt` is writable).
+2. **Userspace Stub Resolver Multi-Server Fallback (`user/dns.c`)**:
+   - When `-s` is omitted, loads nameservers sequentially from `/tmp/resolv.conf` or `/mnt/.fortress/resolv.conf`.
+   - Queries configured servers in priority order, falling back to secondary DNS servers upon timeout (`DNS_TIMEOUT`).
+3. **Hostname Resolution in `/bin/ping` (`/bin/ping`)**:
+   - Retains exact existing behavior for numeric IPv4 addresses (`PING <ip> (32 data bytes)`).
+   - Non-numeric arguments are resolved via `dns_resolve_ipv4()`.
+   - Banner displays `PING <hostname> (<ip>) (32 data bytes)` and subsequent reply lines print `32 bytes from <ip>: icmp_seq=N time=... ms`.
+   - Unresolvable hostnames report `ping: cannot resolve <name>` to stderr with exit code 1.
+4. **Physical Acceptance (Dell Latitude 5590)**:
+   - Verified on bare-metal Dell Latitude 5590: `ping` with domain hostname resolution confirmed working end-to-end with live DNS lookups and subsequent ICMP echo exchanges.

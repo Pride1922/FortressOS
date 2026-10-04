@@ -43,6 +43,7 @@ static void terminal_cursor(bool show);
 static bool g_console_quiet = false;
 
 uint64_t console_generation(void) { return __atomic_load_n(&display_generation, __ATOMIC_RELAXED); }
+void console_inc_generation(void) { __atomic_add_fetch(&display_generation, 1, __ATOMIC_RELAXED); }
 
 bool console_is_initialized(void) {
     return g_console.initialized;
@@ -325,7 +326,8 @@ static void terminal_csi(char final) {
     }
 }
 void console_terminal_write(const char *data, size_t count) {
-    if (!g_console.initialized || console_is_quiet()) return;
+    if (!g_console.initialized || console_is_quiet() || !count) return;
+    __atomic_add_fetch(&display_generation, 1, __ATOMIC_RELAXED);
     while (count) {
         size_t chunk = count > 256 ? 256 : count;
         uint64_t flags = spin_lock_irqsave(&g_console_lock);

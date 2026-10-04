@@ -38,4 +38,7 @@ const void *net_tcp_channel(const net_tcp_wait_t *wait);
 void net_tcp_input(uint32_t source, const uint8_t *data, size_t len);
 void net_tcp_tick(uint64_t ticks, bool online);
 bool net_tcp_idle(void);
+/* Sole BSP worker only; receive-capable connection present, including local
+ * send half-close while the peer response is still arriving. */
+bool net_tcp_receiving(void);
 #endif

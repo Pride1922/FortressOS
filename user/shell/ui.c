@@ -204,11 +204,14 @@ static void paint(void) {
     size_t n = edit.len - edit.view; if (n > room) n = room;
 
     if (term.mode == TERM_PLAIN) {
-        ui_puts("\n"); ui_puts(prompt); ui_write_bytes(edit.text, edit.len); return;
+        ui_puts("\n"); ui_puts(prompt); ui_write_bytes(edit.text, edit.len);
+        (void)call(SYS_TERMCTL, TERM_GET, (uintptr_t)&term, sizeof(term));
+        return;
     }
     ui_puts("\r\033[?25l"); ui_puts(prompt);
     ui_write_bytes(edit.text + edit.view, n);
     ui_puts("\033[K\r\033["); ui_put_dec(plen + edit.cursor - edit.view); ui_puts("C\033[?25h");
+    (void)call(SYS_TERMCTL, TERM_GET, (uintptr_t)&term, sizeof(term));
 }
 
 bool shell_read_line(char out[LINE_CAP], bool continuation) {
@@ -236,6 +239,19 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
                     (void)lineedit_timeout(&edit);
                     repaint = true;
                 }
+                terminal_info_t cur_term;
+                if (call(SYS_TERMCTL, TERM_GET, (uintptr_t)&cur_term, sizeof(cur_term)) == 0) {
+                    if (cur_term.generation != term.generation) {
+                        /* Background output occurred: advance line and redraw prompt */
+                        ui_puts("\n");
+                        repaint = true;
+                    }
+                    if (cur_term.dropped != term.dropped) {
+                        lineedit_lost(&edit);
+                        repaint = true;
+                    }
+                    term = cur_term;
+                }
                 if (repaint && !prompt_interrupt) paint();
                 continue;
             }
@@ -245,10 +261,14 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
             input_len = (size_t)n; input_pos = 0;
         }
 
-        uint64_t generation = term.generation, dropped = term.dropped;
-        (void)call(SYS_TERMCTL, TERM_GET, (uintptr_t)&term, sizeof(term));
-        if (term.dropped != dropped) { lineedit_lost(&edit); paint(); }
-        if (term.generation != generation) { ui_puts("\n"); paint(); }
+        terminal_info_t cur_term;
+        if (call(SYS_TERMCTL, TERM_GET, (uintptr_t)&cur_term, sizeof(cur_term)) == 0) {
+            bool repaint = false;
+            if (cur_term.dropped != term.dropped) { lineedit_lost(&edit); repaint = true; }
+            if (cur_term.generation != term.generation) { ui_puts("\n"); repaint = true; }
+            term = cur_term;
+            if (repaint) paint();
+        }
 
         unsigned char c = (unsigned char)input[input_pos++];
         bool append = edit.cursor == edit.len && !edit.search && !edit.escape_len &&
@@ -275,7 +295,10 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
         }
 
         if (result == EDIT_CLEAR && term.mode != TERM_PLAIN) ui_puts("\033[2J\033[H");
-        if (append && !edit.blocked) ui_write_bytes((const char *)&c, 1);
+        if (append && !edit.blocked) {
+            ui_write_bytes((const char *)&c, 1);
+            (void)call(SYS_TERMCTL, TERM_GET, (uintptr_t)&term, sizeof(term));
+        }
         else if (result != EDIT_NONE) paint();
     }
 }

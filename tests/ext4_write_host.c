@@ -8,6 +8,8 @@
 #define HOST_SPINLOCK_H
 static size_t live, reads, writes, flushes;
 static size_t read_runs,write_runs;
+static uint64_t watched_lo,watched_hi;
+static size_t watched_reads;
 static long fail_alloc=-1, fail_read=-1, fail_write=-1, fail_flush=-1;
 static bool uncertain;
 static uint8_t *disk;
@@ -18,6 +20,7 @@ void kfree(void *p) { if (p) { assert(live);live--;free(p); } }
 void serial_puts(const char *s) { (void)s; }
 void serial_raw_putc(char c) { (void)c; }
 void console_terminal_write(const char *s,size_t n) { (void)s;(void)n; }
+void console_inc_generation(void) {}
 bool console_is_quiet(void) { return false; }
 int64_t input_read(void *p,size_t n) { (void)p;(void)n;return 0; }
 #include "../src/fs/vfs.c"
@@ -25,6 +28,7 @@ int64_t input_read(void *p,size_t n) { (void)p;(void)n;return 0; }
 #include "../src/fs/jbd2.c"
 bool block_read_sector(block_dev_t *d,uint64_t lba,void *p) {
     assert(lba<d->sector_count);reads++;
+    if (lba>=watched_lo && lba<watched_hi) watched_reads++;
     if (!fail_read) return false;
     if (fail_read>0) fail_read--;
     memcpy(p,disk+lba*d->sector_size,d->sector_size);return true;
@@ -39,12 +43,12 @@ static bool barrier(block_dev_t *d) { (void)d;flushes++;if (!fail_flush) return 
 bool block_write_sector(block_dev_t *d,uint64_t l,const void *p) { return d->write_sector(d,l,p); }
 bool block_flush(block_dev_t *d) { return d->flush(d); }
 static bool read_run(block_dev_t *d,uint64_t l,uint32_t n,void *p) {
-    assert(n && n<=4096/d->sector_size && l<d->sector_count && n<=d->sector_count-l);read_runs++;
+    assert(n && n<=block_get_max_run_bytes(d)/d->sector_size && l<d->sector_count && n<=d->sector_count-l);read_runs++;
     for (uint32_t i=0;i<n;i++) if (!block_read_sector(d,l+i,(uint8_t *)p+i*d->sector_size)) return false;
     return true;
 }
 static bool write_run(block_dev_t *d,uint64_t l,uint32_t n,const void *p) {
-    assert(n && n<=4096/d->sector_size && l<d->sector_count && n<=d->sector_count-l);write_runs++;
+    assert(n && n<=block_get_max_run_bytes(d)/d->sector_size && l<d->sector_count && n<=d->sector_count-l);write_runs++;
     for (uint32_t i=0;i<n;i++) if (!store(d,l+i,(const uint8_t *)p+i*d->sector_size)) return false;
     return true;
 }
@@ -148,7 +152,17 @@ int main(int argc,char **argv) {
         assert(ext4_mount_rw(&dev,"/mnt",&m)==-VFS_EIO && !m && live==1 && !writes && !flushes);
     }
     fault_matrix(&dev,original);
-    dev.read_sectors=read_run;dev.write_sectors=write_run;
+    dev.read_sectors=read_run;dev.write_sectors=write_run;dev.max_run_bytes=16384;
+    /* Accepted-prefix failure must dispatch once, never sector fallback. */
+    uint8_t run_probe[16384]={0};
+    reads=writes=0;size_t calls=write_runs;fail_write=1;
+    assert(!block_write_sectors(&dev,0,16384/dev.sector_size,run_probe));
+    assert(write_runs==calls+1 && writes==2);fail_write=-1;
+    calls=write_runs;
+    assert(!block_write_sectors(&dev,0,16384/dev.sector_size+1,run_probe));
+    assert(!block_write_sectors(&dev,dev.sector_count-1,2,run_probe));
+    assert(write_runs==calls);
+
     fault_matrix(&dev,original); /* same failure/taint gates with accepted prefixes */
     reset();memcpy(disk,original,disk_len);assert(!ext4_mount_rw(&dev,"/mnt",&m));
     uint32_t bs=m->bs;
@@ -183,10 +197,35 @@ int main(int argc,char **argv) {
     /* Match wget's syscall-sized batches, independent of VFS callback cap. */
     for (size_t at=0;at<1048576;at+=16384) write_bytes(one,expected+at,16384);
     printf("EXT4 1MiB batched I/O: sectors=%zu barriers=%zu\n",writes-before_write,flushes-before_flush);
-    printf("EXT4 1MiB transport: read runs=%zu write runs=%zu (max 4096 bytes)\n",read_runs-before_reads,write_runs-before_runs);
-    if (bs==4096 && dev.sector_size==512) assert((write_runs-before_runs)*8==writes-before_write);
+    printf("EXT4 1MiB transport: read runs=%zu write runs=%zu (max 16384 bytes)\n",read_runs-before_reads,write_runs-before_runs);
+    if (bs==4096 && dev.sector_size==512) assert(write_runs-before_runs < (writes-before_write)/8);
     assert(flushes-before_flush<=64*3);
+    if (bs<4096 && dev.sector_size==512) assert(write_runs-before_runs<=514);
     vfs_close(one);check_file("/mnt/one.bin",expected,1048576);
+    /* Snapshot must perform no I/O, fit its public bound, and classify data. */
+    char profile[2049],tiny[2]={0,0x55};size_t saved_reads=reads,saved_writes=writes;
+    size_t profile_len=ext4_io_profile_format(profile,sizeof(profile)-1);
+    assert(profile_len<sizeof(profile)-1);profile[profile_len]=0;
+    assert(strstr(profile,"[EXT4 PERF] read inode calls=") && strstr(profile,"[EXT4 PERF] write calls="));
+    assert(e4_read_profile[E4_PR_DATA].calls && e4_read_profile[E4_PR_INODE].calls && e4_write_bytes_total>=1048576);
+    assert(ext4_io_profile_format(tiny,1)==1 && tiny[1]==0x55);
+    assert(ext4_io_profile_format(NULL,1)==0 && ext4_io_profile_format(tiny,0)==0);
+    assert(reads==saved_reads && writes==saved_writes);
+
+    /* Existing initialized data: a complete aligned overwrite does not read
+     * its old contents; partial overwrite must preserve its neighbours. */
+    e4_inode_t *one_inode=&((e4_node_t *)vfs_lookup("/mnt/one.bin"))->inode;
+    assert(!e4_u16(one_inode->extent+6));
+    uint32_t physical=e4_u32(one_inode->extent+20);
+    watched_lo=(uint64_t)physical*bs/dev.sector_size;
+    watched_hi=((uint64_t)physical*bs+bs+dev.sector_size-1)/dev.sector_size;
+    one=vfs_open("/mnt/one.bin",VFS_O_RDWR);assert(one);
+    watched_reads=0;assert(vfs_write(one,expected,bs)==bs);
+    if (bs>=dev.sector_size) assert(!watched_reads);
+    one->offset=1;watched_reads=0;assert(vfs_write(one,expected+1,bs-2)==bs-2);
+    assert(watched_reads);
+    watched_lo=watched_hi=0;vfs_close(one);
+    check_file("/mnt/one.bin",expected,1048576);
     file_t *a=vfs_open("/mnt/append.bin",VFS_O_CREAT|VFS_O_RDWR|VFS_O_APPEND),*b=vfs_open("/mnt/append.bin",VFS_O_WRONLY|VFS_O_APPEND);assert(a && b);
     assert(vfs_write(a,"abc",3)==3 && vfs_write(b,"def",3)==3 && a->offset==3 && b->offset==6);
     assert(vfs_unlink("/mnt/append.bin")==-VFS_EOPNOTSUPP);

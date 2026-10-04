@@ -19,6 +19,7 @@
 #include "power.h"
 #include "keyboard.h"
 #include "ext2.h"
+#include "ext4.h"
 #include "heap.h"
 #include "elf.h"
 #include "usb_mount.h"
@@ -956,6 +957,13 @@ static int64_t sys_dmesg(uintptr_t user_buf, uint64_t cap) {
         return SYSCALL_EFAULT;
     }
 
+    /* On-demand snapshot only; syscall entry keeps IRQs masked on BSP. No
+     * hot-path output, new syscall or network configuration semantics. */
+    if (cpu_current()->id==0) {
+        char profile[1024];
+        size_t n=net_poll_profile_format(profile,sizeof(profile));
+        dmesg_append_str(profile,n);
+    }
     return (int64_t)dmesg_read((char *)user_buf, (size_t)cap);
 }
 
@@ -1121,6 +1129,10 @@ static int64_t sys_sync(void) {
     /* Flush the writable /mnt device via the durability barrier.
      * Returns SYSCALL_SUCCESS (0) on success; SYSCALL_EIO on failure or no RW mount. */
     bool ok = usb_mount_sync();
+    usb_report_io_profile();
+    char ext4_profile[2048];
+    size_t profile_len=ext4_io_profile_format(ext4_profile,sizeof(ext4_profile));
+    dmesg_append_str(ext4_profile,profile_len);
     if (!ok) {
         usb_report_flush_failure();
         return SYSCALL_EIO;

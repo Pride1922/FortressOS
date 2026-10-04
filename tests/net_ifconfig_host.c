@@ -40,7 +40,10 @@ void serial_puts(const char *s) { (void)s; }
 void serial_print_hex(uint64_t n) { (void)n; }
 uint64_t apic_timer_get_bsp_ticks(void) { return 100; }
 uint64_t apic_timer_get_frequency(void) { return 100; }
+uint64_t apic_poll_clock_hz(void) { return 0; }
+uint64_t apic_poll_clock_read(void) { return 0; }
 bool net_tcp_idle(void) { return true; }
+bool net_tcp_receiving(void) { return false; }
 void net_tcp_input(uint32_t source, const uint8_t *data, size_t len) {
     (void)source; (void)data; (void)len;
 }
@@ -84,8 +87,13 @@ static const char *s_mock_file_path = NULL;
 static const char *s_mock_file_content = NULL;
 static size_t s_mock_file_pos = 0;
 
+static char s_captured_resolv[512];
+static size_t s_captured_resolv_len = 0;
+
 static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
-    if (nr == SYS_WRITE) {
+    if (nr == SYS_MKDIR) {
+        return 0;
+    } else if (nr == SYS_WRITE) {
         int fd = (int)a;
         const char *buf = (const char *)b;
         size_t count = (size_t)c;
@@ -103,6 +111,13 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
                 s_captured_stderr[s_captured_stderr_len] = '\0';
             }
             return (long)count;
+        } else if (fd == 4) {
+            if (s_captured_resolv_len + count < sizeof(s_captured_resolv)) {
+                memcpy(s_captured_resolv + s_captured_resolv_len, buf, count);
+                s_captured_resolv_len += count;
+                s_captured_resolv[s_captured_resolv_len] = '\0';
+            }
+            return (long)count;
         }
         return -1;
     } else if (nr == SYS_OPEN) {
@@ -110,6 +125,10 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
         if (s_mock_file_path && strcmp(path, s_mock_file_path) == 0) {
             s_mock_file_pos = 0;
             return 3;
+        }
+        if (!strcmp(path, "/tmp/resolv.conf") || !strcmp(path, "/mnt/.fortress/resolv.conf")) {
+            s_captured_resolv_len = 0;
+            return 4;
         }
         return -1;
     } else if (nr == SYS_READ) {
@@ -124,7 +143,7 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
         }
         return -1;
     } else if (nr == SYS_CLOSE) {
-        if (a == 3) return 0;
+        if (a == 3 || a == 4) return 0;
         return -1;
     } else if (nr == SYS_NETCTL) {
         if (s_mock_netctl_ret != 0) return s_mock_netctl_ret;
@@ -522,6 +541,33 @@ int main(void) {
     char *cli_dotted[] = {"ifup", "192.168.0.223", "255.255.255.0", "192.168.0.1"};
     assert(ifup_main(4, cli_dotted) == 0);
     assert(strcmp(s_captured_stdout, "eth0: address 192.168.0.223/24 gateway 192.168.0.1 applied\n") == 0);
+
+    /* CLI form: CIDR + gateway + 1 DNS */
+    s_captured_stdout_len = 0;
+    s_captured_stderr_len = 0;
+    s_captured_resolv_len = 0;
+    char *cli_dns1[] = {"ifup", "192.168.0.222/24", "192.168.0.1", "1.1.1.1"};
+    assert(ifup_main(4, cli_dns1) == 0);
+    assert(strcmp(s_captured_stdout, "eth0: address 192.168.0.222/24 gateway 192.168.0.1 applied\n") == 0);
+    assert(strcmp(s_captured_resolv, "nameserver 1.1.1.1\n") == 0);
+
+    /* CLI form: CIDR + gateway + 2 DNS */
+    s_captured_stdout_len = 0;
+    s_captured_stderr_len = 0;
+    s_captured_resolv_len = 0;
+    char *cli_dns2[] = {"ifup", "192.168.0.222/24", "192.168.0.1", "1.1.1.1", "8.8.8.8"};
+    assert(ifup_main(5, cli_dns2) == 0);
+    assert(strcmp(s_captured_stdout, "eth0: address 192.168.0.222/24 gateway 192.168.0.1 applied\n") == 0);
+    assert(strcmp(s_captured_resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n") == 0);
+
+    /* CLI form: dotted-decimal + gateway + 2 DNS */
+    s_captured_stdout_len = 0;
+    s_captured_stderr_len = 0;
+    s_captured_resolv_len = 0;
+    char *cli_dotted_dns[] = {"ifup", "192.168.0.223", "255.255.255.0", "192.168.0.1", "1.1.1.1", "8.8.8.8"};
+    assert(ifup_main(6, cli_dotted_dns) == 0);
+    assert(strcmp(s_captured_stdout, "eth0: address 192.168.0.223/24 gateway 192.168.0.1 applied\n") == 0);
+    assert(strcmp(s_captured_resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n") == 0);
 
     /* CLI dry-run */
     s_captured_stdout_len = 0;

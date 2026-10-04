@@ -23,7 +23,6 @@ static char cmd_buf[LINE_CAP * 2];
 static char line_input[LINE_CAP];
 static parse_tree_t parse_tree;
 static int64_t last_status = 0;
-static char dmesg_buf[DMESG_SIZE];
 static char current_cwd[VFS_MAX_PATH] = "/";
 static char oldpwd[VFS_MAX_PATH] = "";
 static local_var_scope_t s_local_scope;
@@ -68,54 +67,6 @@ static int spawn_program(const char *path, const char **argv, const spawn_fd_act
     (void)vars_build_envp(s_env_strings, s_envp_ptrs);
 
     return pipeline_run_program(path,argv,s_envp_ptrs,actions,action_count);
-}
-
-
-
-static void dmesg_cmd(const char *arg) {
-    long n = call(SYS_DMESG, (uintptr_t)dmesg_buf, DMESG_SIZE, 0);
-    if (n < 0) {
-        puts("dmesg: kernel log unavailable (");
-        put_dec(-n);
-        puts(")\n");
-        last_status = 1;
-        return;
-    }
-
-    if (*arg) {
-        long fd = call(SYS_OPEN, (uintptr_t)arg, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
-        if (fd < 0) { file_error(fd); last_status = 1; return; }
-
-        size_t total = (size_t)n, off = 0;
-        bool err = false;
-        while (off < total) {
-            size_t chunk = total - off;
-            if (chunk > WRITE_CHUNK) chunk = WRITE_CHUNK;
-            long w = call(SYS_WRITE, fd, (uintptr_t)(dmesg_buf + off), chunk);
-            if (w <= 0) { err = true; break; }
-            off += (size_t)w;
-        }
-        (void)call(SYS_CLOSE, fd, 0, 0);
-
-        if (err) {
-            puts("dmesg: write failed, file may be incomplete\n");
-            last_status = 1;
-        } else {
-            puts("Saved ");
-            put_dec(total);
-            puts(" bytes to ");
-            puts(arg);
-            puts("\n");
-            last_status = 0;
-        }
-        return;
-    }
-
-    put_dec((uint64_t)n);
-    puts(" bytes\n");
-    write_bytes(dmesg_buf, (size_t)n);
-    if (dmesg_buf[n - 1] != '\n') puts("\n");
-    last_status = 0;
 }
 
 static int cd_cmd(int argc, char **argv) {
@@ -249,7 +200,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         if (argc < 2) return 0;
         return execute_simple_command(argc - 1, argv + 1, actions, action_count);
     }
-    if (b == CMD_TRUE || b == CMD_FALSE || b == CMD_ECHO || b == CMD_ENV ||
+    if (b == CMD_TRUE || b == CMD_FALSE || b == CMD_ECHO || b == CMD_PRINTF || b == CMD_ENV ||
         b == CMD_VERSION || b == CMD_CLEAR || b == CMD_LS || b == CMD_VIEW) {
         /* Shared handlers: route through builtin_exec for byte-identical output. */
         (void)vars_build_envp(s_env_strings, s_envp_ptrs);
@@ -393,7 +344,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         return 1;
     }
     if (b == CMD_DMESG) {
-        dmesg_cmd(argc > 1 ? argv[1] : "");
+        last_status = exec_dmesg(argc, (const char *const *)argv);
         return (int)last_status;
     }
     if (b == CMD_HISTORY) {

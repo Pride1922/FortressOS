@@ -638,6 +638,7 @@ policy_done:
         part->block_dev.name[parent_len + 2] = '\0';
 
         part->block_dev.sector_size  = dev->sector_size;
+        part->block_dev.max_run_bytes = block_get_max_run_bytes(dev);
         part->block_dev.sector_count = part->sector_count;
         part->block_dev.read_sector  = gpt_partition_read_sector;
         bool can_write = (dev->write_sector != NULL) && (resolved_policy == GPT_POLICY_PRIMARY_CONSISTENT);

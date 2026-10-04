@@ -25,6 +25,7 @@ static int64_t terminal_read(vfs_node_t *node, uint64_t offset, void *buf, size_
 static int64_t terminal_write(vfs_node_t *node, uint64_t *offset, bool append, const void *buf, size_t count) {
     (void)node; (void)offset; (void)append;
     if (!buf || count == 0) return 0;
+    console_inc_generation();
     const char *ptr = (const char *)buf;
     tcb_t *owner = thread_current();
     unsigned mode = owner ? owner->terminal_mode : TERM_MIRROR;

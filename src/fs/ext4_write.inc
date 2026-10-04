@@ -93,7 +93,10 @@ static int e4_publish(ext4_engine_t *e) {
 }
 static int64_t e4_write(vfs_node_t *node,uint64_t *offset,bool append,const void *data,size_t len) {
     if (!offset || (!data && len)) return -VFS_EINVAL;
-    spin_debug_assert_unheld(); uint64_t f=spin_lock_irqsave(&e4_lock);
+    spin_debug_assert_unheld();uint64_t lock_start=e4_tsc();
+    uint64_t f=spin_lock_irqsave(&e4_lock);
+    uint64_t profile_start=e4_tsc();e4_write_calls++;
+    e4_elapsed(&e4_write_lock_wait_cycles,lock_start,profile_start);
     int r=e4_state(node); if (r) goto done;
     ext4_mount_t *fs=((e4_inode_t *)node->fs_private)->fs; ext4_engine_t *e=fs->engine;
     r=e4_plan_begin(e); if (r) goto done;
@@ -121,18 +124,25 @@ static int64_t e4_write(vfs_node_t *node,uint64_t *offset,bool append,const void
         uint64_t pos=off+at; unsigned skip=pos%fs->bs; size_t n=fs->bs-skip; if (n>len-at) n=len-at;
         bool zero; uint32_t block=e4_initialize(e,(uint32_t)(pos/fs->bs),&zero);
         if (!block) { r=e->error; goto abort; }
-        uint8_t *b=zero ? e4_stage_zero(e,block) : e4_stage(e,block,E4_NEW); if (!b) { r=e->error; goto abort; }
+        bool full=skip==0 && n==fs->bs;
+        uint8_t *b=(zero || full) ? e4_stage_zero(e,block) : e4_stage(e,block,E4_NEW); if (!b) { r=e->error; goto abort; }
         if (zero) memset(b,0,fs->bs);
         memcpy(b+skip,(const uint8_t *)data+at,n); at+=n;
     }
     if (in.size<off+len) in.size=off+len;
     e4_merge_pending(fs); e4_rebuild(e,&in,raw);
-    r=e4_publish(e); if (r) goto done;
-    r=e4_refresh(node); if (!r) { *offset=off+len; spin_unlock_irqrestore(&e4_lock,f); return (int64_t)len; }
+    uint64_t plan_end=e4_tsc();e4_elapsed(&e4_plan_cycles,profile_start,plan_end);
+    r=e4_publish(e);uint64_t commit_end=e4_tsc();e4_elapsed(&e4_commit_cycles,plan_end,commit_end);
+    if (r) goto done;
+    r=e4_refresh(node);uint64_t refresh_end=e4_tsc();e4_elapsed(&e4_refresh_cycles,commit_end,refresh_end);
+    if (!r) { *offset=off+len;e4_write_bytes_total+=len;
+        e4_write_elapsed(profile_start,refresh_end);
+        spin_unlock_irqrestore(&e4_lock,f); return (int64_t)len; }
     goto done;
 abort:
     e->ready=false;
 done:
+    e4_write_failures+=r<0;e4_write_elapsed(profile_start,e4_tsc());
     spin_unlock_irqrestore(&e4_lock,f); return r;
 }
 static int e4_truncate(vfs_node_t *node,uint64_t size) {
@@ -171,7 +181,7 @@ static int e4_dir_edit(ext4_engine_t *e,e4_inode_t *in,const char *name,uint32_t
     unsigned need=(8+(unsigned)strlen(name)+3)&~3u;
     for (uint32_t l=0;l<in->size/fs->bs;l++) {
         uint32_t physical; r=e4_dir_block(in,l,&physical); if (r) return e->error=r;
-        if (!e4_bytes(fs,(uint64_t)physical*fs->bs,fs->scratch,fs->bs)) return e->error=-VFS_EIO;
+        if (!e4_bytes_kind(fs,(uint64_t)physical*fs->bs,fs->scratch,fs->bs,E4_PR_DIRECTORY)) return e->error=-VFS_EIO;
         for (unsigned at=0;at<fs->bs-12;) {
             uint8_t *d=fs->scratch+at; unsigned rec=e4_u16(d+4),used=e4_u32(d) ? (8+d[6]+3)&~3u : 0;
             bool match=e4_u32(d) && d[6]==strlen(name) && !memcmp(d+8,name,d[6]);

@@ -46,8 +46,8 @@ Dell hardware.
 | Networking — driver | Intel e1000 (82540EM), e1000e (82574L), and integrated I219-LM driver with polling-only ingress on a BSP-pinned worker. The same descriptor layout serves QEMU and bare metal. I219 physical acceptance on the Dell Latitude 5590 (8086:15D7) and 5530 (8086:1A1E). DMA quarantine on controller fault. No NIC interrupt handlers or MSI vectors in this milestone. |
 | Networking — protocols | Ethernet II framing; ARP request/reply with reply-only cache learning; IPv4 unicast with header validation; ICMP Echo Request/Reply; UDP with a bounded 16-socket table; TCP with Reno slow start, congestion avoidance, fast retransmit, SRTT/RTTVAR RTO and Karn's rule; a userspace DNS stub resolver. All bounded, static, and BSP-owned. |
 | Networking — ABI | SYS_NETCTL=42 (ping, NETCTL_IFGET, NETCTL_IFSET, NETCTL_TRACE_PROBE); SYS_SOCKET/BIND/SENDTO/RECVFROM = 38–41 (UDP); SYS_CONNECT/LISTEN/ACCEPT/SEND/RECV/SHUTDOWN = 43–48 (TCP); SYS_SEND_UNTIL/RECV_UNTIL/CONNECT_UNTIL = 49–51 (opt-in absolute BSP-tick deadlines, max 60 s horizon). All BSP-only, explicitly rejecting AP callers. |
-| Networking — tools | /bin/ifconfig, /bin/ifup, /bin/ping, /bin/traceroute, /bin/udptest, /bin/echoc, /bin/echos, /bin/tcpserve, /bin/nc (serial request/response with hostname resolution), /bin/nslookup, /bin/wget. |
-| New tools — physical acceptance pending | wget, streaming md5sum/sha256sum, traceroute and nano have automated test evidence; Dell hardware tests remain pending. Tar extraction awaits the changed-archive policy decision. |
+| Networking — tools | /bin/ifconfig, /bin/ifup, /bin/ping, /bin/traceroute, /bin/udptest, /bin/echoc, /bin/echos, /bin/tcpserve, /bin/nc (serial request/response with hostname resolution), /bin/nslookup, /bin/wget, /bin/download. |
+| New tools — physical acceptance pending | download, wget, streaming md5sum/sha256sum, traceroute and nano have automated test evidence; Dell hardware tests remain pending. Tar extraction awaits the changed-archive policy decision. |
 | Networking — physical acceptance | Dell Latitude 5590: ICMP (4/4, matched request/reply pairs, second-host Wireshark screenshot), UDP (user-reported PASS, capture audit pending), TCP (10/10 QEMU matrix; physical acceptance for client, real HTTP server, guest listener, and RST recovery), DNS (10/10 QEMU matrix; physical acceptance for A, CNAME, NXDOMAIN, TC→TCP fallback, stall timeout, and hostname nc), link recovery (cold waiting, autonomous PHY renegotiation, retained-ring replug, 6/6 PASS), and runtime network configuration (ifconfig query, on-the-fly ifup, persistent config apply, ping gateway, and DNS fallback PASS). Dell Latitude 5530: driver bring-up and ICMP. |
 | Shell (Milestones S0–S9) | Modular Ring 3 shell (user/shell/) featuring 4096-byte line editing, horizontal viewport, cursor movement, Ctrl shortcuts, RAM history, incremental Ctrl+R search, bracketed paste review, raw/timed input (SYS_INPUT_READ), terminal mode control (SYS_TERMCTL), Belgian AZERTY AltGr operator decoding, working directories (cd/pwd), logic chaining (;, &&, ||, !), parameter expansion ($VAR, ${VAR}, $?), aliases, globbing, uniform descriptors (0–31), redirections (<, >, >>, 2>&1, n>&-), retained UI terminal handle (fd 31 with CLOEXEC), version builtin, persistent history (/mnt/.fortress/history), pipes and stream utilities, job control (jobs, fg, bg, kill), signals (SIGINT, SIGPIPE, SIGTSTP, SIGCONT, SIGCHLD), process groups, terminal foreground ownership, and introspection utilities (ps, top, sysinfo). |
 | Power and platform | BIOS/UEFI boot images, ACPI S5 shutdown, and reset fallbacks. Shutdown and reboot verified on bare-metal Dell Latitude 5590. |
@@ -139,7 +139,7 @@ Use `shutdown` or `poweroff` in the shell to flush the filesystem and finish a c
 FortressOS features a distraction-free, modern boot experience inspired by the Tokyo Night color palette:
 
 - **Quiet Graphical Splash:** The framebuffer displays a centered, custom-rendered FortressOS shield logo on a `#1A1B26` backdrop with a live centered status ticker updating kernel boot milestones in real time.
-- **Diagnostic Preservation:** Raw boot logs are suppressed on the screen by default to maintain a clean aesthetic, but 100% of diagnostic output is continuously captured in the 64 KiB in-memory `dmesg` buffer and mirrored to COM1 serial (UART).
+- **Diagnostic Preservation & Instant Troubleshooting:** Raw boot logs are suppressed on the screen by default to maintain a clean aesthetic, but 100% of diagnostic output is continuously captured in the 64 KiB in-memory `dmesg` buffer and mirrored to COM1 serial (UART). In the shell, `dmesg -n 13` or `dmesg tail 20` enables instant live troubleshooting of recent driver, network, and storage events without scrolling or rebooting.
 - **Auto-Unmute Crash Protection:** If the kernel encounters any assertion failure (`[FAIL]`) or panic (`[PANIC]`), quiet mode is automatically disabled and the full diagnostic context is dumped to the screen for immediate troubleshooting.
 - **Limine Bootloader Modes:**
   - `FortressOS` (default): Quiet graphical boot with live status ticker and clean handoff to the Ring 3 shell.
@@ -160,6 +160,7 @@ echo $FOO             # variable expansion
 alias ll="ls -l"      # define command alias
 echo "data" > out.txt # redirect stdout to file
 echo "more" >> out.txt# append stdout to file
+printf "abc" | wc -c  # format exact bytes without newline (RFC vectors)
 cat < out.txt         # redirect stdin from file
 ls /missing 2> err.log# redirect stderr
 history               # display in-memory command history
@@ -177,6 +178,9 @@ ifup 10.0.2.15/24 10.0.2.2 # configure network interface statically
 ping -c 4 10.0.2.2    # send four ICMP Echo Requests to the gateway
 nslookup example.com  # resolve domain name to IPv4 address via DNS
 wget http://example.com/index.html # download file over HTTP
+download /mnt http://192.168.0.153:8000/testfile.txt # simple file download to /mnt
+dmesg -n 13           # view last 13 kernel diagnostic lines (tail)
+dmesg /mnt/boot.log   # dump kernel ring buffer to persistent file
 run /bin/hello world  # execute user program
 echo $?               # exit status of last command
 ```
@@ -209,27 +213,32 @@ After reboot, `cat /mnt/notes/saved.txt` returns the exact preserved file.
 
 ## Networking quick start
 
-With a wired connection on a LAN where 192.168.0.168 is free and 192.168.0.1
-is the gateway, boot with the Verbose Debug entry and the boot cmdline:
+With a wired connection on a LAN where 192.168.0.168 is free, 192.168.0.1
+is the gateway, and DNS servers are reachable at 1.1.1.1 and 8.8.8.8, configure
+the interface dynamically or via boot cmdline:
 
 ```text
-net=192.168.0.168/24,192.168.0.1
+ifup 192.168.0.168/24 192.168.0.1 1.1.1.1 8.8.8.8
 ```
 
-ICMP:
+ICMP ping (numeric IPv4 or domain hostname):
 
 ```text
 ping -c 4 192.168.0.1
+```
+or ping by hostname via the userspace DNS resolver:
+```text
+ping -c 4 google.com
 ```
 
 Expected output:
 
 ```text
-PING 192.168.0.1 (32 data bytes)
-32 bytes from 192.168.0.1: icmp_seq=1 time=20 ms
-32 bytes from 192.168.0.1: icmp_seq=2 time=20 ms
-32 bytes from 192.168.0.1: icmp_seq=3 time=20 ms
-32 bytes from 192.168.0.1: icmp_seq=4 time=20 ms
+PING google.com (142.250.72.14) (32 data bytes)
+32 bytes from 142.250.72.14: icmp_seq=1 time=20 ms
+32 bytes from 142.250.72.14: icmp_seq=2 time=20 ms
+32 bytes from 142.250.72.14: icmp_seq=3 time=20 ms
+32 bytes from 142.250.72.14: icmp_seq=4 time=20 ms
 4 probes, 4 replies, 0% loss
 rtt min/avg/max = 20/20/20 ms
 ```
@@ -277,8 +286,9 @@ acceptance on the Dell Latitude 5590 is recorded for each layer with
 second-host Wireshark captures. TCP and DNS retain full pcapng evidence; ICMP
 and UDP are recorded as second-host screenshots (no retained pcap, so no
 independent payload/checksum verification is claimed for those two). There is
-no DHCP client. /bin/ping accepts numeric IPv4 only; nslookup and nc accept
-either a numeric server (via -s) or a hostname (via the resolver).
+no DHCP client. /bin/ping accepts both numeric IPv4 and domain hostnames (resolved
+via the userspace stub resolver with automatic fallback across configured servers);
+nslookup, nc, wget, and download resolve hostnames via /tmp/resolv.conf or /mnt/.fortress/resolv.conf.
 
 ## Real hardware: what has been verified
 
@@ -289,7 +299,7 @@ passing to /bin/hello, ACPI shutdown, reboot, full use of the machine's 32 GiB
 of RAM, and the complete networking path: Intel I219-LM driver bring-up, ARP
 resolution of the LAN gateway, a matched two-way ICMP exchange, UDP echo, TCP
 client/server flows, DNS resolution (A records, CNAME chains, NXDOMAIN,
-TC→TCP fallback, and bounded stall recovery), and runtime link recovery (cold
+TC→TCP fallback, multi-server fallback, and hostname ping), and runtime link recovery (cold
 cable waiting, autonomous PHY renegotiation on insertion, and retained-ring
 continuity across flaps). A Dell Latitude 5530 (8086:1A1E) has also been
 verified for driver bring-up and ICMP.

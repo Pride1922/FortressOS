@@ -130,6 +130,14 @@ typedef struct {
     uint8_t ascq;
 } xhci_bot_error_t;
 
+/* Diagnostic counters only: existing caller serialization still owns BOT.
+ * Atomic fields permit unlocked sampling; sample when I/O is quiescent for
+ * exact deltas. Cycles are raw TSC intervals, not calibrated nanoseconds. */
+enum { USB_IO_READ, USB_IO_WRITE, USB_IO_FLUSH, USB_IO_OTHER, USB_IO_CLASSES };
+typedef struct {
+    uint64_t commands, bytes, failures, cycles, clock_anomalies;
+} usb_io_sample_t;
+
 typedef struct {
     uintptr_t  bulk_in_ring_phys;
     xhci_trb_t *bulk_in_ring_virt;
@@ -163,6 +171,7 @@ typedef struct {
      * on transport_failed/latched_offline latch. */
     usb_durability_mode_t durability_mode;
     scsi_durability_info_t durability_info;
+    usb_io_sample_t io_profile[USB_IO_CLASSES];
 } xhci_bot_rings_t;
 
 /* Configures Bulk-In and Bulk-Out transfer rings on the controller via Configure Endpoint */
@@ -220,7 +229,7 @@ bool xhci_scsi_sync_cache(const xhci_rings_io_t *io,
                           xhci_dma_buffers_t *ring_dma,
                           const xhci_dev_dma_t *dev_dma,
                           xhci_bot_rings_t *bot_rings);
-/* Runs use the existing 4 KiB bounce page, caller serialization and failure
+/* Runs use the validated per-device bounce region (4 or 16 KiB), caller serialization and failure
  * quarantine. A failed data OUT is never replayed through a sector fallback. */
 bool xhci_scsi_read_sectors(const xhci_rings_io_t *,xhci_dma_buffers_t *,
                            const xhci_dev_dma_t *,xhci_bot_rings_t *,uint64_t,uint32_t,void *);

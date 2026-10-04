@@ -8,6 +8,20 @@
 #define TEST_SMP_MEMORY 1
 static void spin_debug_assert_unheld(void) {}
 #include "../src/drivers/e1000.c"
+static uint64_t mock_poll_hz, mock_poll_now;
+static unsigned mock_poll_reads, mock_complete_read;
+static bool mock_poll_stalled, mock_poll_backward;
+uint64_t apic_poll_clock_hz(void) { return mock_poll_hz; }
+uint64_t apic_poll_clock_read(void) {
+    assert(!pthread_mutex_trylock(&g_net_dev_lock.mutex));
+    assert(!pthread_mutex_unlock(&g_net_dev_lock.mutex));
+    ++mock_poll_reads;
+    if (mock_complete_read && mock_poll_reads == mock_complete_read)
+        s_tx[0].status = DESC_DD;
+    if (mock_poll_backward) return mock_poll_reads == 1 ? 100 : 99;
+    if (!mock_poll_stalled) mock_poll_now += 1000;
+    return mock_poll_now;
+}
 
 static unsigned char memory[160][4096] __attribute__((aligned(4096)));
 static uint32_t registers[0x6000 / 4];

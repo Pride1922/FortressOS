@@ -14,11 +14,18 @@ typedef struct block_dev {
     bool      (*write_sector)(struct block_dev *dev, uint64_t lba, const void *buf);
     bool      (*flush)(struct block_dev *dev);
     void       *priv;
-    /* Optional synchronous runs, at most 4096 bytes. Failure may have accepted
+    /* Optional synchronous runs, bounded by max_run_bytes. Failure may have accepted
      * a prefix; callers must not retry writes or claim rollback. */
     bool (*read_sectors)(struct block_dev *,uint64_t,uint32_t,void *);
     bool (*write_sectors)(struct block_dev *,uint64_t,uint32_t,const void *);
+    uint32_t max_run_bytes; /* Zero retains the legacy 4096-byte limit. */
 } block_dev_t;
+
+#define BLOCK_MAX_RUN_BYTES 16384u
+static inline uint32_t block_get_max_run_bytes(const block_dev_t *d) {
+    uint32_t n=d && d->max_run_bytes ? d->max_run_bytes : 4096u;
+    return n>BLOCK_MAX_RUN_BYTES ? BLOCK_MAX_RUN_BYTES : n;
+}
 
 void         block_init(void);
 bool         block_register_dev(block_dev_t *dev);
@@ -50,14 +57,14 @@ bool         block_flush(block_dev_t *dev);
  * bulk callback through the sector fallback. */
 static inline bool block_read_sectors(block_dev_t *d,uint64_t l,uint32_t n,void *b) {
     if (!d || !b || !d->read_sector || !d->sector_size || !n ||
-        n>4096/d->sector_size || l>=d->sector_count || n>d->sector_count-l) return false;
+        n>block_get_max_run_bytes(d)/d->sector_size || l>=d->sector_count || n>d->sector_count-l) return false;
     if (d->read_sectors) return d->read_sectors(d,l,n,b);
     for (uint32_t i=0;i<n;i++) if (!block_read_sector(d,l+i,(uint8_t *)b+i*d->sector_size)) return false;
     return true;
 }
 static inline bool block_write_sectors(block_dev_t *d,uint64_t l,uint32_t n,const void *b) {
     if (!d || !b || !d->write_sector || !d->sector_size || !n ||
-        n>4096/d->sector_size || l>=d->sector_count || n>d->sector_count-l) return false;
+        n>block_get_max_run_bytes(d)/d->sector_size || l>=d->sector_count || n>d->sector_count-l) return false;
     if (d->write_sectors) return d->write_sectors(d,l,n,b);
     for (uint32_t i=0;i<n;i++) if (!block_write_sector(d,l+i,(const uint8_t *)b+i*d->sector_size)) return false;
     return true;

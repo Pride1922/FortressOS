@@ -1,4 +1,5 @@
 #include "net_tcp.h"
+#include "net.h"
 #include "net_ipv4.h"
 #include "socket_abi.h"
 #include "syscall_abi.h"
@@ -276,7 +277,9 @@ static int64_t connect_start(unsigned slot, uint32_t ip, uint16_t port, bool tim
             (uint16_t)device->mtu,true,now);
         if (!result) { pool.timewait[tw].tuple=tuple; e->started=true; publish(e); }
     }
-    spin_unlock_irqrestore(&lock,flags); return result;
+    spin_unlock_irqrestore(&lock,flags);
+    if (!result) net_request_poll();
+    return result;
 }
 int64_t net_tcp_connect(unsigned slot, uint32_t ip, uint16_t port) {
     return connect_start(slot,ip,port,false,0);
@@ -313,6 +316,7 @@ int64_t net_tcp_send(unsigned slot, const void *data, size_t len) {
     /* A later worker batch may restore the same count sampled before this
      * user operation. Invalidate the sample so its readiness event is fresh. */
     e->observed=UINT64_MAX; publish(e); spin_unlock_irqrestore(&lock,flags);
+    if (result>0) net_request_poll();
     return result;
 }
 int64_t net_tcp_peek(unsigned slot, void *data, size_t capacity) {
@@ -331,11 +335,13 @@ int64_t net_tcp_consume(unsigned slot, size_t len) {
     /* Do not miss equal-sized RX batches arriving after this consume but before
      * the worker has sampled the intervening empty queue. */
     endpoints[slot].observed=UINT64_MAX; publish(&endpoints[slot]); spin_unlock_irqrestore(&lock,flags);
+    if (!result && len) net_request_poll();
     return result;
 }
 int64_t net_tcp_shutdown(unsigned slot) {
     tcp_conn_t *c=connection(&endpoints[slot]);
     int result=tcp_conn_shutdown(c);
+    if (!result) net_request_poll();
     return result ? SYSCALL_ENOTCONN : 0;
 }
 bool net_tcp_snapshot(unsigned slot, net_tcp_wait_t *w) {
@@ -504,4 +510,12 @@ bool net_tcp_idle(void) {
     for (unsigned i=0; i<TCP_CB_MAX; ++i) if (pool.used[i] && pool.blocks[i].tuple.remote_ip &&
         (pool.blocks[i].retx_count || pool.blocks[i].tx_count || pool.blocks[i].ack_pending)) return false;
     return true;
+}
+bool net_tcp_receiving(void) {
+    for (unsigned i=0;i<TCP_CB_MAX;i++)
+        if (pool.used[i] && !pool.blocks[i].orphan &&
+            (pool.blocks[i].state==TCP_ESTABLISHED ||
+             pool.blocks[i].state==TCP_FIN_WAIT_1 ||
+             pool.blocks[i].state==TCP_FIN_WAIT_2)) return true;
+    return false;
 }

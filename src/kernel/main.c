@@ -5826,10 +5826,7 @@ pf_boot_guard_done:
         apic_timer_reset_bsp_ticks();
         apic_timer_start();
         serial_puts("[BOOT] Interactive shell ready.\n");
-        while (process_is_alive(pid)) {
-            sched_reap_dead();
-            __asm__ volatile("sti; hlt" ::: "memory");
-        }
+        process_wait_quiescent(pid);
         __asm__ volatile("cli" ::: "memory");
         sched_disable_preemption();
         uint64_t status;

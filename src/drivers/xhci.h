@@ -30,6 +30,7 @@ void usb_dump_state(void);
 /* Block device operations for USB Mass Storage ("sda") */
 bool usb_is_initialized(void);
 uint32_t usb_get_sector_size(void);
+uint32_t usb_get_max_run_bytes(void);
 uint64_t usb_get_sector_count(void);
 bool usb_block_read(block_dev_t *dev, uint64_t lba, void *buf);
 bool usb_block_write(block_dev_t *dev, uint64_t lba, const void *buf);
@@ -39,6 +40,9 @@ bool usb_block_flush(block_dev_t *dev);
 /* Boot/thread context only, with no subsystem/console lock held.
  * Consumes a copied flush failure; never reads controller or DMA memory. */
 void usb_report_flush_failure(void);
+/* Unlocked thread context only. Cumulative BOT command counters and raw TSC
+ * times go to dmesg only, on explicit SYS_SYNC; no per-transfer output. */
+void usb_report_io_profile(void);
 
 /* Returns current USB durability mode (USB_DURABILITY_UNKNOWN if not initialized).
  * Thread context only; no lock held. */

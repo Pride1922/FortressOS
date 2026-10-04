@@ -32,6 +32,7 @@ typedef struct {
 static tcb_t *staged_processes;
 static const char child_wait_channel;
 static uint64_t child_wake_seen;
+static uint64_t kernel_exit_sequence, kernel_exit_wake_seen;
 static void cancel_staged_children(uint64_t parent);
 
 /* SMP Piece 4: Per-CPU scheduler state */
@@ -706,6 +707,9 @@ void thread_exit(void) {
     (void)rflags;
     tcb_t *curr = g_current_thread;
     curr->state = THREAD_TERMINATED;
+    /* Publish only after liveness changes, including exits without a userspace
+     * child record. Atomic predicate avoids scheduler/process lock nesting. */
+    if (!__atomic_add_fetch(&kernel_exit_sequence,1,__ATOMIC_RELEASE)) __builtin_trap();
 
     if (curr->is_user && curr->cr3 != 0) {
         vmm_space_retire(curr->cr3);
@@ -996,8 +1000,10 @@ void sched_on_timer_tick(void) {
      * Only timer context wakes: no metadata lock nests with scheduler lock. */
     if (cpu_current()->id == 0) {
         uint64_t seq = process_record_sequence();
-        if (seq != child_wake_seen) {
+        uint64_t exited=__atomic_load_n(&kernel_exit_sequence,__ATOMIC_ACQUIRE);
+        if (seq != child_wake_seen || exited != kernel_exit_wake_seen) {
             child_wake_seen = seq;
+            kernel_exit_wake_seen=exited;
             sched_wake_all(&child_wait_channel);
         }
     }
@@ -1922,6 +1928,25 @@ bool process_is_alive(uint64_t pid) {
         spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
     }
     return false;
+}
+
+static bool kernel_exit_changed(void *arg) {
+    return __atomic_load_n(&kernel_exit_sequence,__ATOMIC_ACQUIRE)!=*(uint64_t *)arg;
+}
+void process_wait_quiescent(uint64_t pid) {
+    spin_debug_assert_unheld();
+    if (!pid || cpu_current()->id!=0 || !thread_current() || thread_current()->is_user)
+        __builtin_trap();
+    for (;;) {
+        /* Snapshot before checking: an exit between check and BLOCKED insertion
+         * changes the predicate even if its wake already ran. No liveness scan
+         * is performed under the scheduler lock. AP exits are bridged by BSP
+         * timer service after their terminal-state publication. */
+        uint64_t seq=__atomic_load_n(&kernel_exit_sequence,__ATOMIC_ACQUIRE);
+        if (!process_is_alive(pid)) break;
+        sched_wait_until(&child_wait_channel,kernel_exit_changed,&seq);
+    }
+    sched_reap_dead();
 }
 
 bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_preempt_count, uint64_t *out_total_ticks) {

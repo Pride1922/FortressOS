@@ -5,11 +5,25 @@
 #include "../src/net/net.h"
 #include "arp.h"
 #include "thread.h"
+#include "../src/net/poll_budget.h"
 
 static net_dev_t dev;
 static bool carrier=true;
 static unsigned link_checks, rx_polls;
+static bool test_poll_hint;
+static bool test_rx_burst;
+static unsigned peer_yield = 1;
+static uint64_t poll_hz,poll_cycles;
+static unsigned poll_fault, poll_reads;
+uint64_t apic_poll_clock_hz(void) { return poll_hz; }
+uint64_t apic_poll_clock_read(void) {
+    ++poll_reads;
+    if (poll_fault==2 || (poll_fault==1 && poll_reads>5)) return 0;
+    poll_cycles+=10; return poll_cycles;
+}
 bool net_tcp_idle(void) { return true; }
+static bool mock_tcp_receiving;
+bool net_tcp_receiving(void) { return mock_tcp_receiving; }
 void net_tcp_input(uint32_t source, const uint8_t *data, size_t len) {
     (void)source; (void)data; (void)len;
 }
@@ -52,6 +66,13 @@ void sched_wake_all(const void *channel) { assert(channel==&g_net_poll_channel);
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
     assert(channel==&g_net_poll_channel && !ready(arg));
     assert(*(uint64_t *)arg==ticks+1);
+    if (test_poll_hint) {
+        unsigned before=wakes;
+        net_request_poll();net_request_poll();
+        assert(wakes==before+2 && ready(arg));
+        if (++waits==3) longjmp(done,1);
+        return; /* No timer progress: worker must consume the hint next pass. */
+    }
     unsigned before=wakes;
     ++ticks;
     net_timer_tick();
@@ -63,7 +84,12 @@ static int send_packet(net_dev_t *d, const void *buf, size_t len) {
     memcpy(sent,buf,len); ++sends;
     return fail_send ? -1 : 0;
 }
-static pbuf_t *poll_rx(net_dev_t *d) { assert(d==&dev); ++rx_polls; return NULL; }
+static pbuf_t *poll_rx(net_dev_t *d) {
+    assert(d==&dev); ++rx_polls;
+    /* Peer response arrives only after the first application scheduling turn. */
+    if (test_rx_burst && (rx_polls==1 || (yields==peer_yield && rx_polls==peer_yield+2))) return &packet;
+    return NULL;
+}
 static void recycle(net_dev_t *d, pbuf_t *p) { assert(d==&dev && p==&packet); ++recycles; }
 static void input(void) { unsigned before=recycles; net_input(&dev,&packet); assert(recycles==before+1); }
 static void make_arp(const uint8_t *dest, bool reply, uint32_t target) {
@@ -136,6 +162,90 @@ int main(void) {
     waits=wakes=0; carrier=true;
     if (!setjmp(done)) net_worker_main(NULL);
     assert(waits==3 && wakes==3 && yields==0 && rx_polls==before_polls+3 && link_checks==9);
+    waits=wakes=0;test_poll_hint=true;volatile uint64_t before_ticks=ticks;
+    if (!setjmp(done)) net_worker_main(NULL);
+    assert(waits==3 && wakes==6 && ticks==before_ticks && yields==2);
+    test_poll_hint=false; test_rx_burst=true;
+    poll_hz=1000000;
+    waits=wakes=rx_polls=yields=0;
+    volatile unsigned before_recycles=recycles;
+    make_arp(broadcast,false,cfg.local_ip);
+    before_ticks=ticks;
+    if (!setjmp(done)) net_worker_main(NULL);
+    /* Both packets arrive without advancing ticks, then the budget expires and the
+     * ordinary timer sleep resumes. Every packet is recycled once. */
+    assert(recycles==before_recycles+2 && yields>30 && yields<4096 && waits==3);
+    assert(ticks==before_ticks+3 && rx_polls==yields+5);
+    /* Deliver the peer response beyond 200us but before 1ms. Both
+     * packets must be handled before the first timer wait, then return idle. */
+    peer_yield=30; poll_cycles=0; waits=wakes=rx_polls=yields=0;
+    before_recycles=recycles; before_ticks=ticks;
+    if (!setjmp(done)) net_worker_main(NULL);
+    assert(recycles==before_recycles+2 && yields>peer_yield && yields<4096 && waits==3);
+    assert(ticks==before_ticks+3 && rx_polls==yields+5);
+    peer_yield=1;
+    mock_tcp_receiving=true; poll_cycles=0; waits=wakes=rx_polls=yields=0;
+    before_recycles=recycles; before_ticks=ticks;
+    if (!setjmp(done)) net_worker_main(NULL);
+    assert(recycles==before_recycles+2 && yields>100 && yields<4096 && waits==3);
+    assert(ticks==before_ticks+3 && rx_polls==yields+5);
+    mock_tcp_receiving=false;
+    net_poll_budget_t budget;
+    net_poll_adaptive_t adaptive={0};
+    assert(net_poll_adaptive_us(&adaptive,10,100,true,true)==1000);
+    assert(net_poll_adaptive_us(&adaptive,11,100,true,true)==2000);
+    assert(net_poll_adaptive_us(&adaptive,12,100,true,false)==2000);
+    assert(net_poll_adaptive_us(&adaptive,13,100,true,false)==1000);
+    assert(net_poll_adaptive_us(&adaptive,14,100,true,true)==1000);
+    assert(net_poll_adaptive_us(&adaptive,14,100,true,true)==2000);
+    assert(net_poll_adaptive_us(&adaptive,14,100,false,true)==1000);
+    net_poll_budget_start_us(&budget,100,1000000,2000);
+    assert(net_poll_budget_continue(&budget,2099));
+    assert(!net_poll_budget_continue(&budget,2100) && !budget.failed);
+    net_poll_budget_start(&budget,100,1000000);
+    /* A peer arriving after the old 200us window still gets polled, without
+     * extending the original deadline on empty turns. */
+    assert(net_poll_budget_continue(&budget,450));
+    assert(net_poll_budget_continue(&budget,1099));
+    assert(!net_poll_budget_continue(&budget,1100));
+    assert(!budget.failed);
+    net_poll_budget_start(&budget,100,1000000);
+    assert(!net_poll_budget_continue(&budget,99));
+    assert(budget.failed);
+    net_poll_budget_start(&budget,100,1000000);
+    for (unsigned i=0;i<4095;++i) assert(net_poll_budget_continue(&budget,100));
+    assert(!net_poll_budget_continue(&budget,100));
+    assert(budget.failed);
+    net_poll_budget_start(&budget,100,0);
+    assert(!net_poll_budget_continue(&budget,100));
+    poll_hz=0; waits=wakes=rx_polls=yields=0;
+    before_recycles=recycles;
+    if (!setjmp(done)) net_worker_main(NULL);
+    assert(recycles==before_recycles+2 && yields==2 && waits==3 && rx_polls==7);
+    char profile[1025]; size_t profile_len=net_poll_profile_format(profile,1024);
+    profile[profile_len]=0;
+    assert(strstr(profile,"[NET POLL] clock-hz=0\n"));
+    assert(strstr(profile,"[NET POLL] expired="));
+    assert(strstr(profile,"[NET POLL] backward-clock=0\n"));
+    assert(strstr(profile,"[NET POLL] iteration-backstop=0\n"));
+    assert(strstr(profile,"[NET POLL] hint-returns=2\n"));
+    assert(strstr(profile,"[NET POLL] yield-over-1ms=0\n"));
+    for (volatile unsigned fault=1;fault<=2;fault++) {
+        poll_fault=fault; poll_reads=0; poll_cycles=0; poll_hz=1000000;
+        waits=wakes=rx_polls=yields=0;
+        if (!setjmp(done)) net_worker_main(NULL);
+        profile_len=net_poll_profile_format(profile,1024); profile[profile_len]=0;
+        assert(strstr(profile,"[NET POLL] clock-hz=0\n"));
+        assert(strstr(profile,"[NET POLL] backward-clock=1\n"));
+        if (fault==2) assert(strstr(profile,"[NET POLL] iteration-backstop=1\n"));
+        assert(waits==3 && yields<=4097);
+    }
+    poll_fault=0;
+    for (size_t cap=0;cap<80;cap++) {
+        memset(profile,0x5a,sizeof(profile));
+        size_t n=net_poll_profile_format(profile,cap);
+        assert(n<=cap && profile[cap]==0x5a);
+    }
     printf("NET 3 host PASS: dispatch/recycle, cache/resolve, bounded config, timer deadline (mock scheduler); %u inputs recycled\n",recycles);
     return 0;
 }

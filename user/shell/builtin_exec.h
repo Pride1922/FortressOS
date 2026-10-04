@@ -33,4 +33,10 @@ int builtin_exec(int argc, const char *const *argv, const builtin_ctx_t *ctx);
 /* Build a builtin_ctx_t from a NULL-terminated envp array. */
 builtin_ctx_t builtin_ctx_from_envp(const char *const *envp);
 
+/* Execute dmesg builtin / utility */
+int exec_dmesg(int argc, const char *const *argv);
+
+/* Execute printf builtin / utility */
+int exec_printf(int argc, const char *const *argv);
+
 #endif /* SHELL_BUILTIN_EXEC_H */

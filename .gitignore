@@ -31,3 +31,4 @@ __pycache__/
 
 # IDE attachments
 .codex-remote-attachments/
+data256k.bin.sha256

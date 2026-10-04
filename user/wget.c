@@ -7,6 +7,7 @@
 #include "dns_codec.h"
 #include "netconf.h"
 #include "wget_codec.h"
+#include "wget.h"
 
 #ifndef WGET_CALL
 #define WGET_CALL udp_call
@@ -26,6 +27,8 @@ static dns_context_t s_dns_context;
 static dns_result_t s_dns_result;
 static char s_out_path[WGET_MAX_FILENAME_LEN];
 static char s_request_buf[2048];
+static sysinfo_t s_start_sysinfo;
+static sysinfo_t s_end_sysinfo;
 
 static void message(const char *text) {
     size_t left = udp_length(text);
@@ -68,10 +71,61 @@ static void print_ip(uint32_t ip) {
     print_dec(host_order & 0xFF);
 }
 
+static void print_time_and_speed(uint64_t bytes, uint64_t ticks, uint64_t hz) {
+    message(" in ");
+    if (hz == 0) {
+        message("?s");
+        return;
+    }
+    uint64_t elapsed_ms = (ticks * 1000) / hz;
+    uint64_t sec = elapsed_ms / 1000;
+    uint64_t cs = (elapsed_ms % 1000) / 10;
+    print_dec(sec);
+    message(".");
+    if (cs < 10) message("0");
+    print_dec(cs);
+    message("s (");
+
+    if (ticks == 0) {
+        message("--.- KB/s");
+    } else {
+        uint64_t bps;
+        if (bytes <= UINT64_MAX / hz) {
+            bps = (bytes * hz) / ticks;
+        } else {
+            bps = (bytes / ticks) * hz;
+        }
+
+        if (bps < 1024) {
+            print_dec(bps);
+            message(" B/s");
+        } else if (bps < 1024 * 1024) {
+            uint64_t kb = bps / 1024;
+            uint64_t frac = ((bps % 1024) * 100) / 1024;
+            print_dec(kb);
+            message(".");
+            if (frac < 10) message("0");
+            print_dec(frac);
+            message(" KB/s");
+        } else {
+            uint64_t mb = bps / (1024 * 1024);
+            uint64_t frac = ((bps % (1024 * 1024)) * 100) / (1024 * 1024);
+            print_dec(mb);
+            message(".");
+            if (frac < 10) message("0");
+            print_dec(frac);
+            message(" MB/s");
+        }
+    }
+    message(")");
+}
+
 static void print_usage(void) {
     message("usage: wget [options] <URL>\n"
+            "       wget [destination] <URL>\n"
             "options:\n"
-            "  -O <file>        write output to <file> ('-' for stdout)\n"
+            "  -O <file|dir>    write output to <file|dir> ('-' for stdout)\n"
+            "  -P <dir>         save files to directory <dir>\n"
             "  -q, --quiet      quiet mode (suppress status messages on stderr)\n"
             "  -s <server-ip>   override DNS server IPv4 address\n"
             "  -h, --help       display this help and exit\n");
@@ -110,12 +164,27 @@ static bool write_all(long fd, const uint8_t *data, size_t len) {
     return true;
 }
 
+static bool is_url_arg(const char *s) {
+    if (!s) return false;
+    if (s[0] == '/' || (s[0] == '.' && (s[1] == '/' || s[1] == '\0'))) return false;
+    if (s[0] == '-' && s[1] == '\0') return false;
+    for (size_t i = 0; s[i]; i++) {
+        if (s[i] == ':' && s[i+1] == '/' && s[i+2] == '/') return true;
+    }
+    return true;
+}
+
+int wget_run(const char *raw_url, const char *custom_out, bool quiet,
+             uint32_t dns_override, bool has_dns_override);
+
 int wget_main(int argc, char **argv) {
     const char *raw_url = NULL;
     const char *custom_out = NULL;
     uint32_t dns_override = 0;
     bool has_dns_override = false;
     bool quiet = false;
+    const char *pos_args[4];
+    int pos_count = 0;
 
     for (int i = 1; i < argc; i++) {
         if (udp_equal(argv[i], "-h") || udp_equal(argv[i], "--help")) {
@@ -126,6 +195,13 @@ int wget_main(int argc, char **argv) {
         } else if (udp_equal(argv[i], "-O")) {
             if (i + 1 >= argc) {
                 message("wget: option -O requires an argument\n");
+                print_usage();
+                return 1;
+            }
+            custom_out = argv[++i];
+        } else if (udp_equal(argv[i], "-P")) {
+            if (i + 1 >= argc) {
+                message("wget: option -P requires a directory\n");
                 print_usage();
                 return 1;
             }
@@ -145,16 +221,43 @@ int wget_main(int argc, char **argv) {
             print_usage();
             return 1;
         } else {
-            if (!raw_url) {
-                raw_url = argv[i];
+            if (pos_count < 4) {
+                pos_args[pos_count++] = argv[i];
             } else {
-                message("wget: multiple URLs specified\n");
+                message("wget: too many arguments\n");
                 print_usage();
                 return 1;
             }
         }
     }
 
+    if (pos_count == 0) {
+        print_usage();
+        return 1;
+    } else if (pos_count == 1) {
+        raw_url = pos_args[0];
+    } else if (pos_count == 2) {
+        if (is_url_arg(pos_args[0]) && !is_url_arg(pos_args[1])) {
+            raw_url = pos_args[0];
+            if (!custom_out) custom_out = pos_args[1];
+        } else if (!is_url_arg(pos_args[0]) && is_url_arg(pos_args[1])) {
+            raw_url = pos_args[1];
+            if (!custom_out) custom_out = pos_args[0];
+        } else {
+            raw_url = pos_args[0];
+            if (!custom_out) custom_out = pos_args[1];
+        }
+    } else {
+        message("wget: too many arguments\n");
+        print_usage();
+        return 1;
+    }
+
+    return wget_run(raw_url, custom_out, quiet, dns_override, has_dns_override);
+}
+
+int wget_run(const char *raw_url, const char *custom_out, bool quiet,
+             uint32_t dns_override, bool has_dns_override) {
     if (!raw_url) {
         print_usage();
         return 1;
@@ -173,12 +276,38 @@ int wget_main(int argc, char **argv) {
 
     /* Determine output filename */
     if (custom_out) {
+        bool is_dir = false;
         size_t out_len = udp_length(custom_out);
-        if (out_len >= sizeof(s_out_path)) {
-            message("wget: output filename too long\n");
-            return 1;
+        if (out_len > 0 && custom_out[out_len - 1] == '/') {
+            is_dir = true;
+        } else if (udp_equal(custom_out, "/mnt")) {
+            is_dir = true;
+        } else if (out_len > 0 && !(out_len == 1 && custom_out[0] == '-')) {
+            vfs_stat_t st;
+            if (WGET_CALL(SYS_STAT, (uintptr_t)custom_out, (uintptr_t)&st, 0, 0, 0, 0) == 0 &&
+                st.type == VFS_DIRECTORY) {
+                is_dir = true;
+            }
         }
-        for (size_t k = 0; k <= out_len; k++) s_out_path[k] = custom_out[k];
+
+        if (is_dir) {
+            size_t fn_len = udp_length(s_current_url.filename);
+            size_t need_slash = (out_len > 0 && custom_out[out_len - 1] == '/') ? 0 : 1;
+            if (out_len + need_slash + fn_len >= sizeof(s_out_path)) {
+                message("wget: output filename too long\n");
+                return 1;
+            }
+            size_t pos = 0;
+            for (size_t k = 0; k < out_len; k++) s_out_path[pos++] = custom_out[k];
+            if (need_slash) s_out_path[pos++] = '/';
+            for (size_t k = 0; k <= fn_len; k++) s_out_path[pos++] = s_current_url.filename[k];
+        } else {
+            if (out_len >= sizeof(s_out_path)) {
+                message("wget: output filename too long\n");
+                return 1;
+            }
+            for (size_t k = 0; k <= out_len; k++) s_out_path[k] = custom_out[k];
+        }
     } else {
         size_t fn_len = udp_length(s_current_url.filename);
         for (size_t k = 0; k <= fn_len; k++) s_out_path[k] = s_current_url.filename[k];
@@ -197,23 +326,20 @@ redirect_loop:
     /* 1. Resolve host */
     uint32_t target_ip = 0;
     if (!udp_ip(s_current_url.host, &target_ip)) {
-        uint32_t dns_server = dns_override;
-        if (!has_dns_override) {
-            if (netconf_read_dns(0, &dns_server) != 0) {
-                message("wget: no DNS server specified (-s) and none found in network.conf\n");
-                goto failure;
-            }
-        }
         if (!quiet) {
             message("Resolving ");
             message(s_current_url.host);
             message("...\n");
         }
         size_t host_len = udp_length(s_current_url.host);
-        dns_options_t dns_opts = {.server_ipv4 = dns_server};
+        dns_options_t dns_opts = {.server_ipv4 = has_dns_override ? dns_override : 0};
         dns_context_init(&s_dns_context);
         int dns_status = dns_resolve_ipv4(&s_dns_context, &dns_opts, s_current_url.host, host_len, &s_dns_result);
         if (dns_status != 0) {
+            if (!has_dns_override && dns_servers_configured(&s_dns_context) == 0) {
+                message("wget: no DNS server specified (-s) and none found in network.conf\n");
+                goto failure;
+            }
             message("wget: host resolution failed: ");
             message(dns_status_name(dns_status));
             message("\n");
@@ -282,6 +408,8 @@ redirect_loop:
     }
     const char *p3 = "\r\nUser-Agent: FortressOS-Wget/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n";
     while (*p3) s_request_buf[req_len++] = *p3++;
+
+    WGET_CALL(SYS_SYSINFO, (uintptr_t)&s_start_sysinfo, 0, 0, 0, 0, 0);
 
     if (!write_all(sock, (const uint8_t *)s_request_buf, req_len)) {
         message("wget: failed to send HTTP request\n");
@@ -435,6 +563,8 @@ redirect_loop:
         buffered=0;
     }
 
+    WGET_CALL(SYS_SYSINFO, (uintptr_t)&s_end_sysinfo, 0, 0, 0, 0, 0);
+
     /* Clean close of socket and output file */
     WGET_CALL(SYS_CLOSE, sock, 0, 0, 0, 0, 0);
     sock = -1;
@@ -464,7 +594,13 @@ redirect_loop:
             message("/");
             print_dec(s_response.content_length);
         }
-        message("]\n");
+        message("]");
+        if (s_end_sysinfo.tick_hz > 0 && s_start_sysinfo.tick_hz > 0) {
+            uint64_t ticks = (s_end_sysinfo.uptime_ticks >= s_start_sysinfo.uptime_ticks) ?
+                             (s_end_sysinfo.uptime_ticks - s_start_sysinfo.uptime_ticks) : 0;
+            print_time_and_speed(total_received, ticks, s_end_sysinfo.tick_hz);
+        }
+        message("\n");
     }
 
     return 0;

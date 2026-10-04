@@ -23,20 +23,44 @@ static const uint8_t alias_golden[]={0x12,0x34,0x81,0x80,0,1,0,2,0,0,0,0,
   5,'a','l','i','a','s',4,'t','e','s','t',0,0,1,0,1,
   0xc0,0x0c,0,5,0,1,0,0,0,60,0,14,7,'s','e','r','v','i','c','e',4,'t','e','s','t',0,
   0xc0,0x28,0,1,0,1,0,0,0,60,0,4,10,0,2,2};
+static const char *s_mock_resolv = NULL;
+static size_t s_mock_resolv_pos = 0;
+static uint32_t last_send_server = 0;
 static void reset(unsigned scenario) {
     dns_context_init(&ctx); memset(&out,0xa5,sizeof(out)); untouched=out;
     calls=sockets=closes=sends=receives=tcp_sends=0; ticks=13000;
     response_len=sizeof(golden); memcpy(response,golden,sizeof(golden));
-    mode=scenario; tcp_at=0; observed_deadline=0;
+    mode=scenario; tcp_at=0; observed_deadline=0; last_send_server=0;
 }
 static long mock_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,uintptr_t e,uintptr_t f) {
     ++calls;
+    if(nr==SYS_OPEN) {
+        const char *path = (const char *)a;
+        if(s_mock_resolv && (!strcmp(path,"/tmp/resolv.conf") || !strcmp(path,"/mnt/.fortress/resolv.conf"))) {
+            s_mock_resolv_pos = 0;
+            return 25;
+        }
+        return -1;
+    }
+    if(nr==SYS_READ) {
+        if(a==25 && s_mock_resolv) {
+            size_t total = strlen(s_mock_resolv);
+            if(s_mock_resolv_pos >= total) return 0;
+            size_t avail = total - s_mock_resolv_pos;
+            size_t chunk = (c < avail) ? c : avail;
+            memcpy((void *)b, s_mock_resolv + s_mock_resolv_pos, chunk);
+            s_mock_resolv_pos += chunk;
+            return (long)chunk;
+        }
+        return -1;
+    }
     if(nr==SYS_SYSINFO) { sysinfo_t info={.uptime_ticks=ticks,.tick_hz=hz}; memcpy((void *)a,&info,sizeof(info)); return 0; }
-    if(nr==SYS_SOCKET) { ++sockets; assert(b&NET_SOCK_CLOEXEC); return sockets==1 || mode==10 ? 10 : 11; }
-    if(nr==SYS_CLOSE) { assert(a==10 || a==11); ++closes; return 0; }
+    if(nr==SYS_SOCKET) { ++sockets; assert(b&NET_SOCK_CLOEXEC); return c==17 ? 10 : 11; }
+    if(nr==SYS_CLOSE) { if(a==25) return 0; assert(a==10 || a==11); ++closes; return 0; }
     if(nr==SYS_SENDTO) {
         ++sends; assert(a==10 && c<=272 && d==0 && f==16);
         const net_sockaddr_in_t *s=(void *)e; assert(s->port==__builtin_bswap16(53));
+        last_send_server=s->address;
         query_len=c; memcpy(query,(void *)b,c); response[0]=query[0]; response[1]=query[1];
         if(mode==10) {
             memcpy(response,query,query_len); response[2]=0x81; response[3]=0x80; response[7]=1;
@@ -53,6 +77,14 @@ static long mock_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,ui
         ++receives; assert(a==10 && c==1472 && !d);
         if(mode==1) { ticks+=5*hz; return SYSCALL_EAGAIN; }
         if(mode==2) return SYSCALL_EINTR;
+        if(mode==20) {
+            if(last_send_server == __builtin_bswap32(0x01010101)) { ticks+=5*hz; return SYSCALL_EAGAIN; }
+            net_sockaddr_in_t s={.family=2,.port=__builtin_bswap16(53),.address=__builtin_bswap32(0x08080808)};
+            memcpy((void *)e,&s,16); *(uint32_t *)f=16;
+            memcpy((void *)b,response,response_len);
+            return (long)response_len;
+        }
+        if(mode==21) { ticks+=5*hz; return SYSCALL_EAGAIN; }
         net_sockaddr_in_t s={.family=2,.port=__builtin_bswap16(53),.address=__builtin_bswap32(0xc0000201)};
         memcpy((void *)e,&s,16); *(uint32_t *)f=16;
         if(mode==3 || (mode>=5 && mode<=9) || mode==12) { response[2]|=2; response_len=query_len; }
@@ -85,6 +117,10 @@ static long mock_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,ui
 }
 static int resolve(void) {
     dns_options_t options={.server_ipv4=__builtin_bswap32(0xc0000201)};
+    return dns_resolve_ipv4(&ctx,&options,"example.test",12,&out);
+}
+static int resolve_auto(void) {
+    dns_options_t options={0};
     return dns_resolve_ipv4(&ctx,&options,"example.test",12,&out);
 }
 static void codec(void) {
@@ -179,6 +215,26 @@ int main(void) {
     assert(dns_resolve_ipv4(&ctx,&opt,"example.test",12,&out)==DNS_BUSY && dns_last_syscall_error(&ctx)==SYSCALL_EINTR);
     put32((uint8_t *)&ctx,4,0); opt.reserved=0;
     assert(!dns_resolve_ipv4(&ctx,&opt,"192.0.2.7",9,&out) && !dns_last_syscall_error(&ctx));
+
+    /* Test resolv.conf reading and server fallback (server 1 times out, server 2 succeeds) */
+    s_mock_resolv = "nameserver 1.1.1.1\nnameserver 8.8.8.8\n";
+    reset(20);
+    assert(resolve_auto() == DNS_OK);
+    assert(out.address_count == 1);
+    assert(dns_server_used(&ctx) == __builtin_bswap32(0x08080808));
+    assert(dns_servers_configured(&ctx) == 2);
+
+    /* Test all servers timeout in resolv.conf */
+    reset(21);
+    assert(resolve_auto() == DNS_TIMEOUT);
+    assert(dns_servers_configured(&ctx) == 2);
+
+    /* Test missing resolv.conf */
+    s_mock_resolv = NULL;
+    reset(22);
+    assert(resolve_auto() == DNS_TIMEOUT);
+    assert(dns_servers_configured(&ctx) == 0);
+
     puts("DNS host PASS: literal vectors, bounded codec/fuzz, actual UDP/TCP resolver, exact deadlines at 100/1000 Hz, noise, interruption/quiet/EOF/cleanup/numeric bypass");
     return 0;
 }

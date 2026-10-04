@@ -22,13 +22,14 @@ static const struct {
     {"mv",       "Rename file or directory",                               CMD_MV,       false},
     {"sync",     "Flush writable storage",                                 CMD_SYNC,     false},
     {"echo",     "Print text (supports $?)",                               CMD_ECHO,     true},
+    {"printf",   "Format and print data without trailing newline",         CMD_PRINTF,   true},
     {"run",      "Launch /path [args] (compat wrapper)",                   CMD_RUN,      false},
     {"layout",   "Keyboard: us | azerty",                                  CMD_LAYOUT,   false},
     {"reboot",   "Restart system",                                         CMD_REBOOT,   false},
     {"shutdown", "Power off system",                                       CMD_SHUTDOWN, false},
     {"poweroff", "Alias for shutdown",                                     CMD_POWEROFF, false},
     {"exit",     "Exit shell [status]",                                    CMD_EXIT,     false},
-    {"dmesg",    "Print/save kernel log [path]",                           CMD_DMESG,    false},
+    {"dmesg",    "Print/save kernel log [-n N | tail [N]] [path]",         CMD_DMESG,    true},
     {"history",  "History [clear | save | load]",                          CMD_HISTORY,  false},
     {"prompt",   "Configure prompt format [default | cwd | <template>]",  CMD_PROMPT,   false},
     {"terminal", "Select local | serial | mirror | plain output",          CMD_TERMINAL, false},
@@ -95,7 +96,7 @@ void builtin_help(const char *topic) {
     puts("Editing: Tab complete, Arrows/Home/End/Del, Up/Down history, Ctrl+R search.\n"
          "Shortcuts: Ctrl+A/E/W/U/K/Y/L, Ctrl+C cancels input, Ctrl+D empty exits.\n"
          "Syntax: Quotes ('...'/\"...\"), escapes (\\), chaining (;, &&, ||), negation (!).\n"
-         "Pipelines: echo pwd true false env help version clear ls view type run as pipeline stages.\n"
+         "Pipelines: echo printf pwd true false env help version clear ls view type dmesg run as pipeline stages.\n"
          "  Other builtins (cd, export, alias, ...) are not available in pipeline stages.\n"
          "  In pipeline context, 'type' reports only pipeline-stage builtins (not cd etc.).\n"
          "Stream tools: cat, head, tail, wc (external; use TOOL --help). cat preserves bytes; view sanitizes text.\n"

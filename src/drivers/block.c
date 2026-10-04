@@ -159,6 +159,7 @@ bool block_register_usb(void) {
     g_usb_base_dev.name[name_len] = '\0';
 
     g_usb_base_dev.sector_size  = usb_get_sector_size();
+    g_usb_base_dev.max_run_bytes = usb_get_max_run_bytes();
     g_usb_base_dev.sector_count = usb_get_sector_count();
     g_usb_base_dev.read_sector  = usb_block_read;
     g_usb_base_dev.write_sector = usb_block_write;

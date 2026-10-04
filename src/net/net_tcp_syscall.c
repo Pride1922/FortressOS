@@ -145,6 +145,10 @@ int64_t net_tcp_syscall(interrupt_frame_t *f) {
                 if (result>0) {
                     memcpy((void *)f->rsi,received,(size_t)result);
                     (void)net_tcp_consume(slot,(size_t)result);
+                    /* Copy and consume are committed. No retained scratch/user
+                     * pointer is accessed after this unlocked scheduling turn.
+                     * The poll hint is already published by consume. */
+                    thread_yield();
                 }
             } else result=net_tcp_send(slot,(const void *)f->rsi,f->rdx);
         }

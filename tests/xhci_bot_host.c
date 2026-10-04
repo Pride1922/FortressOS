@@ -27,7 +27,7 @@ typedef struct {
     xhci_dma_buffers_t ring_dma;
     xhci_dev_dma_t dev_dma;
     xhci_bot_rings_t bot_rings;
-    uint8_t bounce[4096];
+    _Alignas(16384) uint8_t bounce[16384];
     uint8_t bounce_guard[128];
     uint8_t bulk_in_ring[4096];
     uint8_t bulk_out_ring[4096];
@@ -35,7 +35,7 @@ typedef struct {
     /* Emulated SCSI disk */
     uint32_t disk_sectors;
     uint32_t disk_sector_size;
-    uint8_t  disk_data[16 * 4096];
+    uint8_t  disk_data[64 * 4096];
     uint8_t  tur_count;
     unsigned flush_count, sense_count, write_count;
     bool reject_flush, unit_attention_once, repeated_unit_attention;
@@ -195,7 +195,7 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                                ((uint32_t)m->last_cbw.CBWCB[3] << 16) |
                                ((uint32_t)m->last_cbw.CBWCB[4] << 8) | m->last_cbw.CBWCB[5];
                 unsigned count=m->last_cbw.CBWCB[8];
-                assert(count && lba+count<=16 && len==count*m->disk_sector_size);
+                assert(count && lba+count<=64 && len==count*m->disk_sector_size);
                 assert(m->last_cbw.bCBWCBLength == 10 && !m->last_cbw.CBWCB[7]);
                 memcpy(&m->disk_data[lba * m->disk_sector_size], m->bounce, len);
                 m->write_count++;
@@ -296,9 +296,9 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
                                    ((uint32_t)m->last_cbw.CBWCB[3] << 16) |
                                    ((uint32_t)m->last_cbw.CBWCB[4] << 8) |
                                    ((uint32_t)m->last_cbw.CBWCB[5]);
-                    if (lba < 16) {
+                    if (lba < 64) {
                         unsigned count=m->last_cbw.CBWCB[8];
-                        assert(count && lba+count<=16 && in_len==count*m->disk_sector_size);
+                        assert(count && lba+count<=64 && in_len==count*m->disk_sector_size);
                         memcpy(m->dev_dma.bounce_buf_virt, &m->disk_data[lba * m->disk_sector_size], in_len);
                     }
                 }
@@ -393,6 +393,11 @@ static void test_flush_and_writes(void) {
         assert(m.flush_count == ((scenario == 2 || scenario == 6) ? 2u : 1u));
         assert(m.sense_count == ((scenario == 0) ? 0u : (scenario == 6 ? 2u : 1u)));
         assert(m.write_count == 0);
+        assert(m.bot_rings.io_profile[USB_IO_FLUSH].commands==m.flush_count);
+        assert(m.bot_rings.io_profile[USB_IO_FLUSH].bytes==0);
+        assert(m.bot_rings.io_profile[USB_IO_FLUSH].failures==m.flush_count-(ok ? 1u : 0u));
+        assert(m.bot_rings.io_profile[USB_IO_OTHER].commands==m.sense_count);
+        assert(!m.bot_rings.io_profile[USB_IO_FLUSH].clock_anomalies);
         if (scenario == 1 || scenario == 5) {
             assert(m.bot_rings.last_error.sense_valid);
             assert(m.bot_rings.last_error.opcode == SCSI_CMD_SYNCHRONIZE_CACHE_10);
@@ -699,6 +704,32 @@ int main(void) {
     }
 
     test_flush_and_writes();
+    /* SYNCHRONIZE CACHE has CBW and CSW waits, no data phase. Both must
+     * use the same fine polling and timeout as ordinary BOT transfers. */
+    for (unsigned scenario=0;scenario<3;++scenario) {
+        mock_bot_hw_t m;init_mock_hw(&m,BOT_FAULT_NONE);
+        xhci_rings_io_t io={.mmio_ctx=&m,.read32=mock_read32,.write32=mock_write32,.delay_ms=mock_delay,.delay_us=mock_delay_us};
+        xhci_bot_device_t device={.slot_id=3,.bulk_in_ep=0x81,.bulk_out_ep=0x02};
+        assert(xhci_configure_bulk_endpoints(&io,&m.ring_dma,&m.dev_dma,&device,&m.bot_rings));
+        m.latency_us=scenario==1 ? 3500 : 50;
+        m.elapsed_us=m.coarse_delays=m.fine_delays=0;
+        if (scenario==2) m.fault=BOT_FAULT_TIMEOUT;
+        bool ok=xhci_scsi_sync_cache(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings);
+        assert(ok==(scenario!=2));
+        assert(m.bot_rings.io_profile[USB_IO_FLUSH].commands==1);
+        assert(m.bot_rings.io_profile[USB_IO_FLUSH].failures==(scenario==2));
+        assert(m.bot_rings.io_profile[USB_IO_FLUSH].cycles>0);
+        if (scenario==2) {
+            uint64_t before=m.bot_rings.io_profile[USB_IO_FLUSH].cycles;
+            assert(!xhci_scsi_sync_cache(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings));
+            assert(m.bot_rings.io_profile[USB_IO_FLUSH].commands==1 &&
+                   m.bot_rings.io_profile[USB_IO_FLUSH].cycles==before);
+        }
+        if (scenario==0) assert(m.elapsed_us==100 && m.fine_delays==10 && !m.coarse_delays);
+        if (scenario==1) assert(m.elapsed_us==8000 && m.fine_delays==400 && m.coarse_delays==4);
+        if (scenario==2) assert(m.elapsed_us==1001000 && m.fine_delays==200 && m.coarse_delays==999 && m.bot_rings.transport_failed);
+    }
+    printf("PASS: SYNCHRONIZE CACHE fine polling, coarse fallback and unchanged timeout\n");
     for (unsigned ss=512;ss<=4096;ss*=8) {
         mock_bot_hw_t m;init_mock_hw(&m,BOT_FAULT_NONE);
         xhci_rings_io_t io={.mmio_ctx=&m,.read32=mock_read32,.write32=mock_write32,.delay_ms=mock_delay,.delay_us=mock_delay_us};
@@ -711,6 +742,12 @@ int main(void) {
         assert(m.write_count==1 && m.last_cbw.CBWCB[8]==4096/ss);
         assert(xhci_scsi_read_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,8,4096/ss,readback));
         assert(!memcmp(written,readback,4096) && !m.coarse_delays && m.elapsed_us==300);
+        assert(m.bot_rings.io_profile[USB_IO_READ].commands==1 &&
+               m.bot_rings.io_profile[USB_IO_WRITE].commands==1);
+        assert(m.bot_rings.io_profile[USB_IO_READ].bytes==4096 &&
+               m.bot_rings.io_profile[USB_IO_WRITE].bytes==4096);
+        assert(!m.bot_rings.io_profile[USB_IO_READ].failures &&
+               !m.bot_rings.io_profile[USB_IO_WRITE].failures);
         unsigned tag=m.bot_rings.tag;
         assert(!xhci_scsi_write_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,15,2,written));
         assert(!xhci_scsi_write_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,4096/ss+1,written));
@@ -726,5 +763,43 @@ int main(void) {
         printf("PASS: 4KiB multi-sector BOT, bounds, fast/slow polling and bounded timeout sector=%u\n",ss);
     }
     printf("ALL BOT/SCSI HOST UNIT TESTS PASSED!\n");
+    for (unsigned ss=512;ss<=4096;ss*=8) {
+        mock_bot_hw_t m;init_mock_hw(&m,BOT_FAULT_NONE);
+        m.dev_dma.bounce_buf_size=16384;
+        xhci_rings_io_t io={.mmio_ctx=&m,.read32=mock_read32,.write32=mock_write32,.delay_ms=mock_delay,.delay_us=mock_delay_us};
+        xhci_bot_device_t device={.slot_id=3,.bulk_in_ep=0x81,.bulk_out_ep=0x02};
+        assert(xhci_configure_bulk_endpoints(&io,&m.ring_dma,&m.dev_dma,&device,&m.bot_rings));
+        m.bot_rings.sector_size=m.disk_sector_size=ss;m.bot_rings.sector_count=64;
+        uint8_t written[16384],readback[16384];
+        for (unsigned i=0;i<sizeof(written);i++) written[i]=(uint8_t)(i*17);
+        assert(xhci_scsi_write_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,16384/ss,written));
+        assert(m.write_count==1 && m.last_cbw.CBWCB[8]==16384/ss);
+        assert(xhci_scsi_read_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,16384/ss,readback));
+        assert(!memcmp(written,readback,sizeof(written)));
+        for (unsigned i=0;i<sizeof(m.bounce_guard);i++) assert(m.bounce_guard[i]==0xa5);
+        unsigned tag=m.bot_rings.tag;
+        assert(!xhci_scsi_write_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,16384/ss+1,written));
+        m.dev_dma.bounce_buf_phys=(m.dev_dma.bounce_buf_phys & ~(uintptr_t)65535u)+57344u;
+        assert(!xhci_scsi_write_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,16384/ss,written));
+        assert(m.bot_rings.tag==tag && m.write_count==1);
+        m.dev_dma.bounce_buf_phys=(uintptr_t)m.bounce;
+        m.stall_out_data=true;
+        unsigned attempts=m.out_data_attempts;
+        assert(!xhci_scsi_write_sectors(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,16384/ss,written));
+        assert(m.out_data_attempts==attempts+1); /* never replay the payload */
+
+    }
+    printf("PASS: 16KiB exact runs, guard, capacity and 64KiB boundary rejection\n");
+    for (uintptr_t a=4096;a<131072;a+=4096) {
+        uintptr_t b=xhci_bounce_run_base(a,false);
+        assert(b>=a && b+16384<=a+7*4096 && !(b&16383u));
+        assert((b&65535u)+16384<=65536);
+    }
+    assert(!xhci_bounce_run_base(0,true));
+    assert(!xhci_bounce_run_base(4097,true));
+    assert(!xhci_bounce_run_base(UINTPTR_MAX-4095,true));
+    assert(!xhci_bounce_run_base((uintptr_t)UINT32_MAX+1,false));
+    assert(xhci_bounce_run_base((uintptr_t)UINT32_MAX+1,true));
+    printf("PASS: bounce layout offsets, overflow and 32/64-bit addressability\n");
     return 0;
 }

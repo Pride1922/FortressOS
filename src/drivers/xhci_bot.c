@@ -272,14 +272,19 @@ bool xhci_configure_bulk_endpoints(const xhci_rings_io_t *io,
 }
 
 /* Polling only: no logging/allocation under the caller's ext2 lock. */
-bool xhci_bot_transfer(const xhci_rings_io_t *io,
+static bool bot_transfer_impl(const xhci_rings_io_t *io,
                        xhci_dma_buffers_t *ring_dma,
                        const xhci_dev_dma_t *dev_dma,
                        xhci_bot_rings_t *bot_rings,
                        const void *cdb, uint8_t cdb_len,
                        void *data, uint32_t data_len, bool dir_in) {
     if (!io || !ring_dma || !dev_dma || !bot_rings || !cdb ||
-        cdb_len == 0 || cdb_len > 16 || data_len > 4096 ||
+        cdb_len == 0 || cdb_len > 16 || data_len > (dev_dma->bounce_buf_size ? dev_dma->bounce_buf_size : 4096u) ||
+        dev_dma->bounce_buf_size > 16384u ||
+        (dev_dma->bounce_buf_size && dev_dma->bounce_buf_size<4096u) ||
+        (dev_dma->bounce_buf_size && dev_dma->bounce_buf_phys>UINTPTR_MAX-(dev_dma->bounce_buf_size-1u)) ||
+        (dev_dma->bounce_buf_size &&
+         ((dev_dma->bounce_buf_phys & 65535u)+dev_dma->bounce_buf_size>65536u)) ||
         (data_len && !data)) return false;
     if (bot_rings->transport_failed || bot_rings->latched_offline) return false;
     bot_rings->last_error = (xhci_bot_error_t){.opcode = ((const uint8_t *)cdb)[0]};
@@ -305,8 +310,8 @@ bool xhci_bot_transfer(const xhci_rings_io_t *io,
                           dev_dma->bounce_buf_phys, sizeof(cbw), &resid, &code) || resid)
         goto transport_error;
 
-    /* CBW DMA has completed. Reuse the page at offset zero so a full 4096-byte
-     * sector fits. The CSW area is reused only after data DMA/copy completes. */
+    /* CBW DMA has completed. Reuse the bounded region at offset zero so the full
+     * run fits. The CSW area is reused only after data DMA/copy completes. */
     if (data_len) {
         uint8_t *data_virt = dev_dma->bounce_buf_virt;
         if (dir_in) memset(data_virt, 0, data_len);
@@ -374,6 +379,38 @@ transport_error:
     bot_rings->transport_failed = true;
     bot_rings->last_error.transport_failed = true;
     return false;
+}
+
+static uint64_t bot_tsc(void) {
+    uint32_t lo,hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo),"=d"(hi) :: "memory");
+    return ((uint64_t)hi<<32)|lo;
+}
+bool xhci_bot_transfer(const xhci_rings_io_t *io,
+                       xhci_dma_buffers_t *ring_dma,
+                       const xhci_dev_dma_t *dev_dma,
+                       xhci_bot_rings_t *bot_rings,
+                       const void *cdb,uint8_t cdb_len,
+                       void *data,uint32_t data_len,bool dir_in) {
+    uint32_t old_tag=bot_rings ? bot_rings->tag : 0;
+    uint64_t start=bot_tsc();
+    bool ok=bot_transfer_impl(io,ring_dma,dev_dma,bot_rings,cdb,cdb_len,data,data_len,dir_in);
+    uint64_t end=bot_tsc();
+    /* Preflight/offline rejection submits no command. Each sense/UA retry
+     * invokes this wrapper separately; never count a retry as a barrier. */
+    if (bot_rings && bot_rings->tag!=old_tag) {
+        uint8_t op=((const uint8_t *)cdb)[0];
+        unsigned kind=op==SCSI_CMD_READ_10 ? USB_IO_READ :
+                      op==SCSI_CMD_WRITE_10 ? USB_IO_WRITE :
+                      op==SCSI_CMD_SYNCHRONIZE_CACHE_10 ? USB_IO_FLUSH : USB_IO_OTHER;
+        usb_io_sample_t *s=&bot_rings->io_profile[kind];
+        __atomic_fetch_add(&s->commands,1,__ATOMIC_RELAXED);
+        __atomic_fetch_add(&s->bytes,data_len,__ATOMIC_RELAXED);
+        __atomic_fetch_add(&s->failures,!ok,__ATOMIC_RELAXED);
+        if (end>=start) __atomic_fetch_add(&s->cycles,end-start,__ATOMIC_RELAXED);
+        else __atomic_fetch_add(&s->clock_anomalies,1,__ATOMIC_RELAXED);
+    }
+    return ok;
 }
 
 /* Only after a valid command-failed CSW. Never submit another transfer after
@@ -492,9 +529,9 @@ bool xhci_scsi_read_sectors(const xhci_rings_io_t *io,
                            uint64_t lba,
                            uint32_t count,
                            void *buf) {
-    if (!bot_rings || !buf || !count ||
+    if (!dev_dma || !bot_rings || !buf || !count ||
         (bot_rings->sector_size!=512 && bot_rings->sector_size!=4096) ||
-        count>4096/bot_rings->sector_size || lba>=bot_rings->sector_count ||
+        count>(dev_dma->bounce_buf_size ? dev_dma->bounce_buf_size : 4096u)/bot_rings->sector_size || lba>=bot_rings->sector_count ||
         count>bot_rings->sector_count-lba || lba>UINT32_MAX || count-1>UINT32_MAX-lba) return false;
 
     uint32_t lba32 = (uint32_t)lba;
@@ -521,9 +558,9 @@ bool xhci_scsi_write_sectors(const xhci_rings_io_t *io,
                             uint64_t lba,
                             uint32_t count,
                             const void *buf) {
-    if (!bot_rings || !buf || !count ||
+    if (!dev_dma || !bot_rings || !buf || !count ||
         (bot_rings->sector_size!=512 && bot_rings->sector_size!=4096) ||
-        count>4096/bot_rings->sector_size || lba>=bot_rings->sector_count ||
+        count>(dev_dma->bounce_buf_size ? dev_dma->bounce_buf_size : 4096u)/bot_rings->sector_size || lba>=bot_rings->sector_count ||
         count>bot_rings->sector_count-lba || lba>UINT32_MAX || count-1>UINT32_MAX-lba) return false;
 
     uint32_t lba32 = (uint32_t)lba;

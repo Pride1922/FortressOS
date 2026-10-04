@@ -6,6 +6,7 @@
 #include "spinlock.h"
 #include "console.h"
 #include "netctl_abi.h"
+#include "apic.h"
 #include <stddef.h>
 
 static bool e1000_init_rings(void);
@@ -1182,7 +1183,14 @@ int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len) {
     }
     bool pch = is_i219(), timer_ok = true;
     unsigned waited_ms = 0;
-    for (unsigned i = 0; i < (pch ? 101u : NET_POLL_LIMIT); ++i) {
+    /* One bounded fast stage before the existing PIT fallback. No timer
+     * ownership, IRQ changes or polling under the device lock. A failed or
+     * unavailable clock selects the original 100 verified 1ms intervals. */
+    uint64_t fast_hz = pch ? apic_poll_clock_hz() : 0;
+    uint64_t fast_start = fast_hz ? apic_poll_clock_read() : 0;
+    uint64_t fast_last = fast_start;
+    unsigned fast_turns = 0;
+    for (unsigned i = 0; i < (pch ? 101u : NET_POLL_LIMIT);) {
         irq = spin_lock_irqsave(&g_net_dev_lock);
         bool done = (s_tx[slot].status & DESC_DD) != 0;
         bool fatal = g_net_fatal;
@@ -1200,12 +1208,23 @@ int e1000_send_raw(net_dev_t *dev, const void *buf, size_t len) {
             return 0;
         }
         if (pch) {
+            if (fast_hz) {
+                uint64_t now = apic_poll_clock_read();
+                if (now >= fast_last && now - fast_start < fast_hz / 50000u &&
+                    ++fast_turns < 4096u) {
+                    fast_last = now;
+                    __asm__ volatile("pause" ::: "memory");
+                    continue;
+                }
+                fast_hz = 0;
+            }
             if (i == 100) break;
             /* Boot polling only: PIT does not depend on IF/scheduler ticks.
              * Wait outside the device lock; 100 verified 1ms intervals. */
             if (!pch_delay_ms(1)) { timer_ok = false; break; }
             ++waited_ms;
         } else __asm__ volatile("pause" ::: "memory");
+        ++i;
     }
     if (is_i219()) {
         irq = spin_lock_irqsave(&g_net_dev_lock);

@@ -154,6 +154,9 @@ static void pch_fixture(uint16_t id) {
     captured_length = 0;
     captured_log[0] = 0;
     tx_waits = complete_after = 0;
+    mock_poll_hz = mock_poll_now = 0;
+    mock_poll_reads = mock_complete_read = 0;
+    mock_poll_stalled = mock_poll_backward = false;
     tx_timer_fail = vtd_map_fail = false;
     rx_waits = 0; rx_inject = rx_bad = false;
     reset_tctl_default = 0;
@@ -428,6 +431,19 @@ int main(void) {
     assert(e1000_send_raw(&s_net_dev, timed_frame, 60) == -1 && tx_waits == 1);
     assert(strstr(captured_log, "timer failed; stopped early")); stopped(146);
     puts("[PASS] PIT budget: late completion at 90ms, 100ms timeout, early timer failure; waits outside lock");
+    pch_fixture(ids[0]); assert(e1000_i219_init());
+    mock_poll_hz = 1000000000; mock_complete_read = 5;
+    assert(e1000_send_raw(&s_net_dev, timed_frame, 60) == 0);
+    assert(tx_waits == 0 && !s_tx_pending && !g_net_fatal);
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        pch_fixture(ids[0]); assert(e1000_i219_init());
+        mock_poll_hz = 1000000000;
+        mock_poll_stalled = mode == 1; mock_poll_backward = mode == 2;
+        assert(e1000_send_raw(&s_net_dev, timed_frame, 60) == -1);
+        assert(tx_waits == 100 && mock_poll_reads <= 4097);
+        stopped(146);
+    }
+    puts("[PASS] bounded 20us TX fast completion; expiry/stalled/backward clock retain 100ms PIT timeout and quarantine");
 
     pch_fixture(ids[0]);
     uint8_t dmar[64] = {0};

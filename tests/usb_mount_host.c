@@ -501,7 +501,7 @@ static bool parent_run_write(block_dev_t *d,uint64_t l,uint32_t n,const void *b)
     (void)d;(void)n;(void)b;run_calls++;run_lba=l;return run_ok;
 }
 static void test_partition_runs(void) {
-    uint8_t b[4096];
+    uint8_t b[16384];
     for (unsigned ss=512;ss<=4096;ss*=8) {
         block_dev_t parent={.sector_size=ss,.sector_count=200,.read_sector=block_read_sector,
             .write_sector=mock_write_sector,.read_sectors=parent_run_read,.write_sectors=parent_run_write};
@@ -517,10 +517,17 @@ static void test_partition_runs(void) {
         assert(!block_read_sectors(&p.block_dev,UINT64_MAX,1,b) && run_calls==2);
         run_ok=false;unsigned before=s_write_calls;
         assert(!block_write_sectors(&p.block_dev,0,n,b) && run_calls==3 && s_write_calls==before);
+        parent.max_run_bytes=p.block_dev.max_run_bytes=16384;
+        p.ending_lba=163;p.sector_count=p.block_dev.sector_count=64;
+        run_ok=true;
+        assert(block_write_sectors(&p.block_dev,0,16384/ss,b) && run_calls==4);
+        run_ok=false;before=s_write_calls;
+        assert(!block_write_sectors(&p.block_dev,0,16384/ss,b) && run_calls==5 && s_write_calls==before);
+        assert(!block_write_sectors(&p.block_dev,63,2,b) && run_calls==5);
         p.block_dev.write_sector=NULL;p.block_dev.write_sectors=NULL;
-        assert(!block_write_sectors(&p.block_dev,0,n,b) && run_calls==3);
+        assert(!block_write_sectors(&p.block_dev,0,n,b) && run_calls==5);
         p.starting_lba=UINT64_MAX-1;p.ending_lba=UINT64_MAX;
-        assert(!block_read_sectors(&p.block_dev,2,1,b) && run_calls==3);
+        assert(!block_read_sectors(&p.block_dev,2,1,b) && run_calls==5);
     }
     run_ok=true;printf("  [PASS] 512/4096 GPT run bounds/translation, RO exclusion and no failed-write replay\n");
 }

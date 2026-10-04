@@ -26,6 +26,9 @@ int ext4_mount_rw(block_dev_t *partition, const char *path, ext4_mount_t **out);
  * Does not freeze or mark clean. Failed barrier taints the mount. */
 int ext4_sync(ext4_mount_t *mount);
 
+/* Bounded diagnostic snapshot; unlocked thread context, no media I/O. */
+size_t ext4_io_profile_format(char *out,size_t capacity);
+
 /* Shutdown-only: stop new mutations, drain, barrier, then mark clean only
  * if healthy. A failure leaves frozen/tainted state and never claims clean.
  * Mount objects/VFS nodes stay alive; no unmount/lifetime change is implied. */

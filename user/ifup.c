@@ -78,15 +78,50 @@ static void ifup_append_ip(char *buf, size_t cap, size_t *pos, uint32_t be_ip) {
     if (*pos < cap) buf[*pos] = '\0';
 }
 
+static void ifup_write_resolv_conf(const uint32_t *servers, int count) {
+    if (count <= 0) return;
+    char buf[128];
+    size_t pos = 0;
+    for (int i = 0; i < count; i++) {
+        ifup_append_str(buf, sizeof(buf), &pos, "nameserver ");
+        ifup_append_ip(buf, sizeof(buf), &pos, servers[i]);
+        ifup_append_str(buf, sizeof(buf), &pos, "\n");
+    }
+
+    (void)IFUP_SYSCALL(SYS_MKDIR, (uintptr_t)"/tmp", 0755, 0);
+    long fd = IFUP_SYSCALL(SYS_OPEN, (uintptr_t)"/tmp/resolv.conf", 0x241, 0644);
+    if (fd >= 0) {
+        size_t off = 0;
+        while (off < pos) {
+            long n = IFUP_SYSCALL(SYS_WRITE, (uintptr_t)fd, (uintptr_t)(buf + off), pos - off);
+            if (n <= 0) break;
+            off += (size_t)n;
+        }
+        (void)IFUP_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
+    }
+
+    (void)IFUP_SYSCALL(SYS_MKDIR, (uintptr_t)"/mnt/.fortress", 0755, 0);
+    fd = IFUP_SYSCALL(SYS_OPEN, (uintptr_t)"/mnt/.fortress/resolv.conf", 0x241, 0644);
+    if (fd >= 0) {
+        size_t off = 0;
+        while (off < pos) {
+            long n = IFUP_SYSCALL(SYS_WRITE, (uintptr_t)fd, (uintptr_t)(buf + off), pos - off);
+            if (n <= 0) break;
+            off += (size_t)n;
+        }
+        (void)IFUP_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
+    }
+}
+
 static void ifup_usage(void) {
     ifup_print_err("usage: ifup [--dry-run] [config-file]\n"
-                   "       ifup [--dry-run] <ip>/<prefix> [gateway]\n"
-                   "       ifup [--dry-run] <ip> <netmask> [gateway]\n");
+                   "       ifup [--dry-run] <ip>/<prefix> [gateway] [dns1] [dns2]\n"
+                   "       ifup [--dry-run] <ip> <netmask> [gateway] [dns1] [dns2]\n");
 }
 
 int ifup_main(int argc, char **argv) {
     bool dry_run = false;
-    const char *args[4];
+    const char *args[6];
     int arg_count = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -96,7 +131,7 @@ int ifup_main(int argc, char **argv) {
         } else if (ifup_str_equals(argv[i], "--dry-run") || ifup_str_equals(argv[i], "-n")) {
             dry_run = true;
         } else {
-            if (arg_count < 4) {
+            if (arg_count < 6) {
                 args[arg_count++] = argv[i];
             } else {
                 ifup_usage();
@@ -110,6 +145,8 @@ int ifup_main(int argc, char **argv) {
     req.struct_version = 1;
 
     uint8_t prefix = 0;
+    uint32_t dns_servers[2] = {0, 0};
+    int dns_count = 0;
 
     if (arg_count == 0 || (arg_count == 1 && netconf_parse_cidr(args[0], &req.local_ipv4, &prefix, &req.netmask_ipv4) != 0 &&
                            !ifup_str_equals(args[0], "-"))) {
@@ -145,40 +182,67 @@ int ifup_main(int argc, char **argv) {
         prefix = conf.prefix;
     } else {
         /* CLI argument mode */
-        if (arg_count == 1) {
-            /* args[0] is CIDR */
-            if (netconf_parse_cidr(args[0], &req.local_ipv4, &prefix, &req.netmask_ipv4) != 0) {
-                ifup_print_err("ifup: invalid address/prefix\n");
-                return 1;
-            }
-            req.gateway_ipv4 = 0;
-        } else if (arg_count == 2) {
-            if (netconf_parse_cidr(args[0], &req.local_ipv4, &prefix, &req.netmask_ipv4) == 0) {
-                /* <cidr> <gateway> */
+        if (netconf_parse_cidr(args[0], &req.local_ipv4, &prefix, &req.netmask_ipv4) == 0) {
+            /* CIDR mode: ifup <cidr> [gateway] [dns1] [dns2] */
+            if (arg_count == 1) {
+                req.gateway_ipv4 = 0;
+            } else if (arg_count >= 2 && arg_count <= 4) {
                 if (netconf_parse_ipv4(args[1], &req.gateway_ipv4) != 0) {
                     ifup_print_err("ifup: invalid gateway\n");
                     return 1;
                 }
+                if (arg_count >= 3) {
+                    if (netconf_parse_ipv4(args[2], &dns_servers[0]) != 0) {
+                        ifup_print_err("ifup: invalid dns server\n");
+                        return 1;
+                    }
+                    dns_count = 1;
+                }
+                if (arg_count == 4) {
+                    if (netconf_parse_ipv4(args[3], &dns_servers[1]) != 0) {
+                        ifup_print_err("ifup: invalid dns server\n");
+                        return 1;
+                    }
+                    dns_count = 2;
+                }
             } else {
-                /* <ip> <netmask> */
+                ifup_usage();
+                return 1;
+            }
+        } else {
+            /* Dotted decimal mode: ifup <ip> <netmask> [gateway] [dns1] [dns2] */
+            if (arg_count == 2) {
                 if (netconf_parse_ipv4(args[0], &req.local_ipv4) != 0 ||
                     netconf_parse_netmask(args[1], &prefix, &req.netmask_ipv4) != 0) {
                     ifup_print_err("ifup: invalid ip or netmask\n");
                     return 1;
                 }
                 req.gateway_ipv4 = 0;
-            }
-        } else if (arg_count == 3) {
-            /* <ip> <netmask> <gateway> */
-            if (netconf_parse_ipv4(args[0], &req.local_ipv4) != 0 ||
-                netconf_parse_netmask(args[1], &prefix, &req.netmask_ipv4) != 0 ||
-                netconf_parse_ipv4(args[2], &req.gateway_ipv4) != 0) {
-                ifup_print_err("ifup: invalid ip, netmask, or gateway\n");
+            } else if (arg_count >= 3 && arg_count <= 5) {
+                if (netconf_parse_ipv4(args[0], &req.local_ipv4) != 0 ||
+                    netconf_parse_netmask(args[1], &prefix, &req.netmask_ipv4) != 0 ||
+                    netconf_parse_ipv4(args[2], &req.gateway_ipv4) != 0) {
+                    ifup_print_err("ifup: invalid ip, netmask, or gateway\n");
+                    return 1;
+                }
+                if (arg_count >= 4) {
+                    if (netconf_parse_ipv4(args[3], &dns_servers[0]) != 0) {
+                        ifup_print_err("ifup: invalid dns server\n");
+                        return 1;
+                    }
+                    dns_count = 1;
+                }
+                if (arg_count == 5) {
+                    if (netconf_parse_ipv4(args[4], &dns_servers[1]) != 0) {
+                        ifup_print_err("ifup: invalid dns server\n");
+                        return 1;
+                    }
+                    dns_count = 2;
+                }
+            } else {
+                ifup_usage();
                 return 1;
             }
-        } else {
-            ifup_usage();
-            return 1;
         }
     }
 
@@ -210,6 +274,10 @@ int ifup_main(int argc, char **argv) {
             ifup_print_err("ifup: failed to apply interface configuration\n");
         }
         return 1;
+    }
+
+    if (dns_count > 0) {
+        ifup_write_resolv_conf(dns_servers, dns_count);
     }
 
     static char s_msg[256];

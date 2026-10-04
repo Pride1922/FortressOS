@@ -121,6 +121,23 @@ def smoke(mode,out):
         send_command(qmp,child,path,'q\n','fortress:/ $ ')
         reply=send_command(qmp,child,path,'sync\n','fortress:/ $ ')
         assert 'Filesystem synced.' in reply
+        assert '[USB PERF]' not in reply,'profiling must not flood console on sync'
+        reply=send_command(qmp,child,path,'dmesg\n','fortress:/ $ ')
+        import re
+        for field in ('clock-hz','rx-frames','budget-starts','rx-after-active-turn',
+                      'expired','backward-clock','iteration-backstop','wait-returns',
+                      'tick-deadline-returns','hint-returns','wait-ticks',
+                      'yield-over-1ms','max-yield-us'):
+            assert re.search(r'\[NET POLL\] '+field+r'=\d+',reply),(field,reply)
+        assert re.search(r'\[USB PERF\] PIT tsc-hz-estimate=\d+',reply),reply
+        for kind in ('read','write','flush','other'):
+            match=re.search(r'\[USB PERF\] cumulative '+kind+r' commands=(\d+) bytes=(\d+) failures=(\d+) tsc-cycles=(\d+) clock-anomalies=(\d+)',reply)
+            assert match,(kind,reply)
+            values=list(map(int,match.groups()))
+            if kind!='other':assert values[0]>0 and values[3]>0 and values[2]==values[4]==0,values
+        assert '[EXT4 PERF] read inode calls=' in reply,reply
+        assert re.search(r'\[EXT4 PERF\] write calls=[1-9]\d* bytes=[1-9]\d* total-cycles=[1-9]\d*',reply),reply
+        assert re.search(r'\[EXT4 PERF\] checksum calls=[1-9]\d* bytes=[1-9]\d* cycles=[1-9]\d*',reply),reply
         reply=send_command(qmp,child,path,'mkdir /mnt/after-sync\n','fortress:/ $ ')
         assert 'cannot' not in reply.lower(),reply
         send_command(qmp,child,path,'poweroff\n',None)

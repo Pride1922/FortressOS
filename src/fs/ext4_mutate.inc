@@ -7,6 +7,7 @@ typedef struct { uint32_t block; unsigned role; uint8_t bytes[4096]; } e4_image_
 struct ext4_engine {
     ext4_mount_t *fs;
     e4_image_t image[E4_IMAGES];
+    uint8_t write_run[BLOCK_MAX_RUN_BYTES]; /* Heap workspace, bounded block API run. */
     unsigned images, frees, old_count;
     e4_range_t released[E4_FREES], zero[64];
     uint32_t old_nodes[64], new_nodes[64], keys[64];
@@ -37,8 +38,8 @@ static uint8_t *e4_stage_image(ext4_engine_t *e,uint32_t block,unsigned role,boo
 static uint8_t *e4_stage(ext4_engine_t *e,uint32_t block,unsigned role) {
     return e4_stage_image(e,block,role,false);
 }
-/* Only proven new/unwritten storage may skip the read. Existing initialized
- * blocks still preserve untouched bytes; an already staged image is retained. */
+/* New/unwritten storage or a caller replacing every byte may skip the read.
+ * Partial initialized writes preserve untouched bytes. Staged images remain. */
 static uint8_t *e4_stage_zero(ext4_engine_t *e,uint32_t block) {
     return e4_stage_image(e,block,E4_NEW,true);
 }
@@ -307,10 +308,10 @@ int ext4_engine_trim(ext4_engine_t *e,uint32_t ino,uint32_t keep) {
 }
 static bool e4_write_bytes(ext4_engine_t *e,uint64_t off,const uint8_t *data,size_t len) {
     ext4_mount_t *fs=e->fs; uint64_t cap=(uint64_t)fs->blocks*fs->bs;
-    if (off>cap || len>cap-off) return false;
+    if (off>cap || len>cap-off || block_get_max_run_bytes(fs->dev)<fs->dev->sector_size) return false;
     while (len) {
         if (!(off%fs->dev->sector_size) && len>=fs->dev->sector_size) {
-            unsigned ss=fs->dev->sector_size;size_t n=len<4096 ? len : 4096;n-=n%ss;
+            unsigned ss=fs->dev->sector_size;size_t limit=block_get_max_run_bytes(fs->dev);size_t n=len<limit ? len : limit;n-=n%ss;
             if (!block_write_sectors(fs->dev,off/ss,(uint32_t)(n/ss),data)) return false;
             off+=n;data+=n;len-=n;continue;
         }
@@ -367,7 +368,19 @@ static bool e4_write_role(ext4_engine_t *e,unsigned role) {
     /* Zeroed allocations also precede publication, even without NEW images. */
     bool wrote=role==E4_NEW && e->zeros;
     for (unsigned i=0;i<e->images;i++) if (e->image[i].role==role) {
-        if (!e4_write_bytes(e,(uint64_t)e->image[i].block*e->fs->bs,e->image[i].bytes,e->fs->bs)) return false;
+        unsigned count=1,bs=e->fs->bs;
+        /* Preserve staging order and role barriers. Merge only consecutive
+         * images whose disk blocks are adjacent, within the advertised device run cap. */
+        while (count<block_get_max_run_bytes(e->fs->dev)/bs && i+count<e->images &&
+               e->image[i+count].role==role &&
+               (uint64_t)e->image[i].block+count==e->image[i+count].block) count++;
+        const uint8_t *data=e->image[i].bytes;
+        if (count>1) {
+            for (unsigned j=0;j<count;j++) memcpy(e->write_run+j*bs,e->image[i+j].bytes,bs);
+            data=e->write_run;
+        }
+        if (!e4_write_bytes(e,(uint64_t)e->image[i].block*bs,data,count*bs)) return false;
+        i+=count-1;
         wrote=true;
     }
     return !wrote || block_flush(e->fs->dev);

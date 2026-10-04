@@ -41,12 +41,33 @@ static void message(const char *text) {
 }
 
 static void print_usage(void) {
-    message("usage: nc IPv4 port | nc host port | nc -s server-IPv4 host port | nc -l port (finite serial request/response)\n"
-            "nc -l skips terminal stdin; piped or redirected stdin is sent before receiving.\n"
-            "A peer that sends a large response before consuming the whole request can deadlock the serial nc; use small finite requests or a cooperating peer.\n");
+    message("usage: nc [options] <IPv4|host> <port>\n"
+            "       nc -l <port>\n"
+            "\n"
+            "Options:\n"
+            "  -s <server-ip>   Override DNS server IPv4 address for host resolution\n"
+            "  -l <port>        Listen mode: accept a single incoming TCP connection\n"
+            "  -h, --help       Display this help text\n"
+            "\n"
+            "Serial Request/Response Limitation:\n"
+            "  FortressOS nc operates strictly in finite serial (half-duplex) mode:\n"
+            "  1. Client Mode: reads all data from standard input to EOF, transmits it,\n"
+            "     half-closes the write channel (SHUT_WR), and only then reads the response.\n"
+            "  2. Listener Mode (-l): terminal stdin is skipped (receive-only). Piped or\n"
+            "     redirected stdin is transmitted in full before receiving incoming data.\n"
+            "  3. Deadlock Hazard: nc does not multiplex stdin and socket concurrently.\n"
+            "     A peer that sends a large response before consuming the whole request\n"
+            "     can deadlock the serial nc; use small finite requests or a cooperating peer.\n"
+            "  4. No Application Timeout: nc blocks until connection closure or RST.\n");
 }
 
 int nc_main(int argc, char **argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (udp_equal(argv[i], "-h") || udp_equal(argv[i], "--help")) {
+            print_usage();
+            return 0;
+        }
+    }
     bool listen=argc==3 && udp_equal(argv[1],"-l");
     unsigned port;
     uint32_t ip=0;
@@ -60,15 +81,17 @@ int nc_main(int argc, char **argv) {
         return 1;
     }
     if (!listen && !udp_ip(host, &ip)) {
-        if (!has_s && netconf_read_dns(0, &server) != 0) {
-            message("nc: no DNS server specified (-s) and none found in /mnt/.fortress/network.conf\n");
-            print_usage();
-            return 1;
-        }
         size_t length=0; while(length<=254 && host[length]) ++length;
-        dns_options_t options={.server_ipv4=server}; dns_context_init(&dns_context);
+        dns_options_t options={.server_ipv4=has_s ? server : 0}; dns_context_init(&dns_context);
         int status=dns_resolve_ipv4(&dns_context,&options,host,length,&dns_result);
-        if(status) { message("nc: "); message(dns_status_name(status)); message("\n"); return 1; }
+        if(status) {
+            if (!has_s && dns_servers_configured(&dns_context) == 0) {
+                message("nc: no DNS server specified (-s) and none found in /mnt/.fortress/network.conf\n");
+                print_usage();
+                return 1;
+            }
+            message("nc: "); message(dns_status_name(status)); message("\n"); return 1;
+        }
         ip=dns_result.addresses[0];
     }
     long fd=NC_CALL(SYS_SOCKET,NET_AF_INET,NET_SOCK_STREAM|NET_SOCK_CLOEXEC,6,0,0,0), listener=-1;
