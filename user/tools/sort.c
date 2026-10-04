@@ -447,15 +447,10 @@ int sort_main(int argc, char **argv) {
             if (disorder) {
                 if (opts.check_silent) return 1;
                 char line_num_str[32];
-                size_t npos = 0;
-                size_t lineno = i + 1;
-                do {
-                    line_num_str[npos++] = (char)('0' + (lineno % 10));
-                    lineno /= 10;
-                } while (lineno > 0);
+                tool_format_u64(line_num_str, (uint64_t)(i + 1));
                 char diag[64] = "disorder on line ";
                 size_t dpos = 17;
-                while (npos > 0) diag[dpos++] = line_num_str[--npos];
+                for (size_t k = 0; line_num_str[k]; k++) diag[dpos++] = line_num_str[k];
                 diag[dpos] = '\0';
                 return tool_error("sort", diag, NULL);
             }

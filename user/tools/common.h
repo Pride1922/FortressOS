@@ -33,6 +33,31 @@ int tool_options(enum tool_kind kind, int argc, char **argv, tool_options_t *out
 int tool_help(enum tool_kind kind);
 int tool_inputs(const char *name, int argc, char **argv, int first,
                 int (*consume)(int fd, const char *label, void *ctx), void *ctx);
+static inline size_t tool_format_u64(char *buf, uint64_t val) {
+    char tmp[32];
+    size_t tpos = 0;
+    do {
+        tmp[tpos++] = (char)('0' + (val % 10));
+        val /= 10;
+    } while (val > 0);
+
+    size_t out_len = tpos;
+    for (size_t i = 0; i < out_len; i++) {
+        buf[i] = tmp[tpos - 1 - i];
+    }
+    buf[out_len] = '\0';
+    return out_len;
+}
+
+static inline size_t tool_format_i64(char *buf, int64_t val) {
+    if (val < 0) {
+        buf[0] = '-';
+        uint64_t u = (uint64_t)(-(val + 1)) + 1;
+        return 1 + tool_format_u64(buf + 1, u);
+    }
+    return tool_format_u64(buf, (uint64_t)val);
+}
+
 /* Transactional updates permit overflow injection without enormous input. */
 bool wc_count_chunk(wc_counts_t *counts, bool *in_word, const unsigned char *p, size_t n);
 bool wc_add_counts(wc_counts_t *sum, const wc_counts_t *add);

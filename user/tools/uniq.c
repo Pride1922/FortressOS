@@ -52,17 +52,12 @@ static int write_out(int out_fd, const void *data, size_t n) {
 
 static size_t format_count(char *buf, uint64_t count) {
     char num[32];
-    size_t npos = 0;
-    do {
-        num[npos++] = (char)('0' + (count % 10));
-        count /= 10;
-    } while (count && npos < sizeof(num));
-
+    size_t npos = tool_format_u64(num, count);
     size_t width = npos < 7 ? 7 : npos;
     size_t spaces = width - npos;
     size_t bpos = 0;
     for (size_t i = 0; i < spaces; i++) buf[bpos++] = ' ';
-    while (npos > 0) buf[bpos++] = num[--npos];
+    for (size_t i = 0; i < npos; i++) buf[bpos++] = num[i];
     buf[bpos++] = ' ';
     buf[bpos] = '\0';
     return bpos;
