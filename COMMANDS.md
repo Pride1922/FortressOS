@@ -80,6 +80,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`uniq`](#uniq) | Binary (`/bin/uniq`) | Stream Tool | Filter adjacent matching lines |
 | [`xxd`](#xxd) | Binary (`/bin/xxd`) | Stream Tool | Make hex dump or revert hex to binary with bounded buffers |
 | [`diff`](#diff) | Binary (`/bin/diff`) | Stream Tool | Compare files line by line using stack-free Myers algorithm |
+| [`patch`](#patch) | Binary (`/bin/patch`) | Stream Tool | Apply unified or normal diff files with fail-closed transactional safety |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
@@ -928,6 +929,32 @@ diff -u /etc/network.conf /mnt/network.conf
 diff -q /etc/motd /etc/network.conf
 cat /etc/motd | diff /etc/motd -
 diff -i -w file1.txt file2.txt
+```
+
+---
+
+### `patch`
+**Syntax:** `patch [OPTIONS] [ORIGFILE [PATCHFILE]]`  
+**Path:** `/bin/patch`  
+**Description:** Applies a diff file to an original file. Supports both unified diff format (`diff -u`, `git diff`) and traditional normal diff format (`diff`). Operates under a bounded static memory architecture (256 KiB text pool, 4,096 lines) with zero dynamic allocation. Employs a fail-closed transactional mutation model: all hunks are validated against the original text before any mutation occurs; if any hunk fails to match or apply, the original file is left completely untouched and `patch` exits with status `1`.
+* **Exit Codes:** `0` if all hunks applied successfully (or dry-run succeeded), `1` if one or more hunks failed, or `2` upon fatal error (missing file, syntax error, or memory limit exceeded).
+**Options:**
+* `-p NUM`, `--strip=NUM`: Strip `NUM` leading path components from filenames extracted from patch headers (`---` / `+++`).
+* `-i FILE`, `--input=FILE`: Read patch from `FILE` instead of standard input.
+* `-o FILE`, `--output=FILE`: Write patched output to `FILE` instead of in-place modifying the target file (use `-o -` for standard output).
+* `-R`, `--reverse`: Reverse the patch (treat removals as additions and additions as removals).
+* `-u`, `--unified`: Interpret the patch as unified diff.
+* `-s`, `-q`, `--quiet`, `--silent`: Suppress non-error diagnostics (only emit hunk failure warnings and summary).
+* `--dry-run`: Test the patch against target without modifying any files or writing output.
+* `--help`: Display usage summary and exit.
+* `--`: Ends option scanning.  
+**Examples:**
+```sh
+patch file.txt patch.diff
+patch -p1 < feature.patch
+patch -R -o restored.txt current.txt patch.diff
+patch --dry-run /etc/network.conf network.patch
+cat bugfix.diff | patch -o - source.c
 ```
 
 ---

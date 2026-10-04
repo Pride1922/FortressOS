@@ -79,4 +79,15 @@ if __name__ == "__main__":
             ], cwd=REPO, check=True)
             subprocess.run([str(diff_exe)], check=True, timeout=30)
 
+            patch_exe = Path(tmp) / "patch_host"
+            subprocess.run([
+                "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-DTOOL_HOST_TEST",
+                "-Isrc/include", "-Isrc/fs", "-Iuser/tools",
+                "tests/patch_host.c", "user/tools/common.c", "user/tools/patch.c",
+                "-o", str(patch_exe)
+            ], cwd=REPO, check=True)
+            subprocess.run([str(patch_exe)], check=True, timeout=30)
+
+
 
