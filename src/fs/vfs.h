@@ -65,6 +65,10 @@ typedef struct vfs_node {
     /* When true, unlink/rename callbacks own hierarchy changes and retain
      * detached nodes; VFS must neither free nor move them a second time. */
     bool owns_nodes;
+    /* Write callback serializes the shared file_t offset and node size under
+     * filesystem exclusion. VFS must pass the real offset, without an unlocked
+     * snapshot or a second publication after the callback returns. */
+    bool serializes_write_offset;
     bool rename_no_replace;
     /* Called once on final file_t release; may destroy anonymous nodes. */
     void (*close)(struct vfs_node *node);

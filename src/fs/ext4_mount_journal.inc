@@ -106,7 +106,12 @@ static int e4_jtruncate(vfs_node_t *node,uint64_t size) {
     if (!r) {
         e4_node_t *file=(e4_node_t *)node;ext4_mount_t *fs=file->inode.fs;
         r=e4_orphan_pinned_truncate(fs->engine,file->inode.ino,size);
-        if (!r && e4_journal_refresh(node)) { e4_jtaint(fs);r=-VFS_EIO; }
+        /* A later cleanup staging failure can follow a durable shrink intent.
+         * Its authoritative size is already published, even when reclamation
+         * must be retried. Never retain the old VFS size on that healthy mount.
+         * Uncertain I/O still taints and requires restart; do not infer a size. */
+        if ((!r || (!fs->engine->tainted && e4_mounted_orphan(fs,file->inode.ino))) &&
+            e4_journal_refresh(node)) { e4_jtaint(fs);r=-VFS_EIO; }
     }
     spin_unlock_irqrestore(&e4_lock,flags);return r;
 }

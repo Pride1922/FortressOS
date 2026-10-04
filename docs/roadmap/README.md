@@ -20,6 +20,7 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
+| [ext4-phase8-6.md](ext4-phase8-6.md) | Complete bounded fixture integration audit, runtime home-image coverage, shared write offsets, durable-truncate cache coherence; host fault/staging and BIOS/UEFI SMP=1/4 recovery/lifecycle gates. Production journaled RW remains disabled. |
 | [ext4-phase8-5.md](ext4-phase8-5.md) | Explicit disposable journal mounts with validated recovery before publication, real VFS lifetimes, SYS_SYNC and shutdown clean-state transactions; production journaled RW remains disabled. |
 | [ext4-phase8-4.md](ext4-phase8-4.md) | Exclusive traditional orphan/shrink recovery, bounded in-place reclamation and revokes, open-unlink handle lifetimes and disposable host/Linux verification; production journaled RW remains disabled. |
 | [ext4-metadata-cache.md](ext4-metadata-cache.md) | Bounded coherent RW metadata cache, validation on hits and commit/failure containment; Dell physical acceptance PASS, 16 MiB 10.15 → 7.06 s, reboot/Mint hashes and unmounted fsck exit 0. |

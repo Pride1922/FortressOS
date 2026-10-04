@@ -759,6 +759,9 @@ int64_t vfs_write(file_t *file, const void *buf, size_t count) {
             return file->node->write(file->node, &stream_off, false, buf, count);
         }
         bool append = (file->flags & VFS_O_APPEND) != 0;
+        if (file->node->serializes_write_offset) {
+            return file->node->write(file->node, &file->offset, append, buf, count);
+        }
         uint64_t write_off = file->offset;
         int64_t result = file->node->write(file->node, &write_off, append, buf, count);
         if (result > 0) {

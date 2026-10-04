@@ -1,5 +1,5 @@
-/* Phase 8.1 block-image foundation and 8.2 exclusive file workbench.
- * No production VFS journal mount is admitted. */
+/* Transaction foundation and semantic planners. Phase 8.5 reuses these under
+ * ranked mounted exclusion; production journal mounts remain disabled. */
 static int e4_open_journal_owned(block_dev_t *dev,bool admitted,ext4_engine_t **out,bool reserved) {
     spin_debug_assert_unheld();if (out) *out=NULL;
     if (!out || !dev || !dev->read_sector ||

@@ -415,7 +415,7 @@ static bool e4_write_role(ext4_engine_t *e,unsigned role) {
 }
 static int e4_commit_unlocked(ext4_engine_t *e) {
     if (!e) return -VFS_EINVAL;
-    if (e->writer) return -VFS_EOPNOTSUPP; /* Never call JBD2 under e4_lock. */
+    if (e->writer) return -VFS_EOPNOTSUPP; /* Legacy direct-home commit only. */
     int r=-VFS_EINVAL;
     if (e->tainted) { r=-VFS_EIO; goto done; }
     if (!e->ready) goto done;

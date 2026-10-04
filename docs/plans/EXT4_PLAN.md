@@ -1,10 +1,11 @@
 # FortressOS EXT4 implementation plan
 
-Status: Phases 0-4 delivered (RO reads, bounded mutation engine and non-journaled RW VFS); Phase 5 E4-A production USB integration COMPLETE: automated gates and Dell 5590 physical acceptance PASS (2026-10-03); Phases 6-7 recovery/writer workbenches delivered and host-verified; Phases 8-10 pending. Physical evidence is limited to the reported Phase-5 checks; journaling hardware acceptance is not claimed. See [Phase-0 baseline](EXT4_PHASE0.md), [Phase-1 evidence](../roadmap/ext4-phase1.md), [Phase-2 evidence](../roadmap/ext4-phase2.md), [Phase-3 evidence](../roadmap/ext4-phase3.md), [Phase-4 evidence](../roadmap/ext4-phase4.md), [Phase-5 handoff](../roadmap/ext4-phase5.md), [Phase-6 evidence](../roadmap/ext4-phase6.md) and [Phase-7 evidence](../roadmap/ext4-phase7.md).
+Status: Phases 0-4 delivered (RO reads, bounded mutation engine and non-journaled RW VFS); Phase 5 E4-A production USB integration COMPLETE: automated gates and Dell 5590 physical acceptance PASS (2026-10-03); Phases 6-7 recovery/writer workbenches delivered and host-verified; Phase 8 bounded disposable journal integration COMPLETE (2026-10-04); Phases 9-10 pending. Production journaled RW remains disabled. Physical evidence is limited to the reported Phase-5 checks; journaling hardware acceptance is not claimed. See [Phase-0 baseline](EXT4_PHASE0.md), [Phase-1 evidence](../roadmap/ext4-phase1.md), [Phase-2 evidence](../roadmap/ext4-phase2.md), [Phase-3 evidence](../roadmap/ext4-phase3.md), [Phase-4 evidence](../roadmap/ext4-phase4.md), [Phase-5 handoff](../roadmap/ext4-phase5.md), [Phase-6 evidence](../roadmap/ext4-phase6.md) and [Phase-7 evidence](../roadmap/ext4-phase7.md).
 Date: 2026-10-03. Based on the supplied notes, the current block/VFS/ext2/USB contracts, and Linux's ext4 format documentation.
-Phase 8.4 update (2026-10-04): exclusive transaction, file-write/allocation,
-bounded namespace and restartable orphan workbenches delivered. Phases 8.5-8.6 and
-production journaled RW remain pending. See [8.2 evidence and limits](../roadmap/ext4-phase8-2.md)
+Phase 8.6 update (2026-10-04): transaction, file-write/allocation, bounded
+namespace, restartable orphan, mounted lifecycle and combined integration
+gates delivered on explicit disposable fixtures. Production journaled RW
+remains disabled pending Phase-9 acceptance and rollout. See [8.2 evidence and limits](../roadmap/ext4-phase8-2.md)
 and [8.3 operation boundaries/evidence](../roadmap/ext4-phase8-3.md), plus
 [8.4 recovery, lifetime and verification boundaries](../roadmap/ext4-phase8-4.md).
 
@@ -173,7 +174,12 @@ freeze/drain and journaled clean-state markers. Twelve host configurations,
 16,480 lifecycle interruption/restart checks, 84 independent Linux host copies
 and BIOS/UEFI 6/6 guest cases (12 boots) PASS. See
 [8.5 scope and retained evidence](../roadmap/ext4-phase8-5.md).
-Production journaled RW remains disabled pending 8.6 integration audit.
+Part 8.6 completes the mutation-coverage audit and combined mounted gate:
+12 host configurations, 6,624 focused crash cuts, 6,712 staging/credit injections,
+204 independent Linux host copies and BIOS/UEFI SMP=1/4 12/12 guest cases
+(24 boots) PASS. It also fixes shared write-offset serialization and cache
+publication after durable truncate intent. See [8.6 audit and limits](../roadmap/ext4-phase8-6.md).
+Production journaled RW remains disabled pending Phase-9 acceptance and rollout.
 
 | Part | Implementation scope | Verification gate |
 | --- | --- | --- |
@@ -225,6 +231,6 @@ Linux validation: inspect via `dumpe2fs`/`debugfs`, run `e2fsck -fn` only on unm
 
 Compatibility extensions after E4-B: HTree, flex_bg/64bit, additional inode mappings/types and xattrs are separate phases with feature-specific gates. Performance caching and delayed allocation come after correctness; no full-ext4 label or terabyte capacity promise without matching validation.
 
-Next implementation unit: **Phase 8.6 integration audit**. Phases 8.1-8.4 provide transaction, file-allocation, bounded namespace and restartable orphan workbenches; Phase 8.5 connects explicit disposable journal mounts to VFS, sync and shutdown. Production mount eligibility and the complete combined metadata-coverage gate remain disabled pending 8.6. Phase-5 [Dell acceptance](../roadmap/ext4-phase5-dell.md) includes the user-confirmed metadata-cache run: 16 MiB in 7.06 seconds, hashes after reboot and independently on Mint, and unmounted e2fsck -fn exit 0, separately from journal acceptance. The default image remains ext2; the optional EXT4 image remains non-journaled. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.
+Next implementation unit: **Phase 9 crash campaign and E4-B acceptance**. Phases 8.1-8.4 provide transaction, file-allocation, bounded namespace and restartable orphan workbenches; Phase 8.5 connects explicit disposable journal mounts to VFS, sync and shutdown; Phase 8.6 completes the combined metadata-coverage and mounted integration gate. Production journaled mount eligibility remains disabled; passing integration does not substitute for Phase-9 crash/physical acceptance or authorize production rollout. Phase-5 [Dell acceptance](../roadmap/ext4-phase5-dell.md) includes the user-confirmed metadata-cache run: 16 MiB in 7.06 seconds, hashes after reboot and independently on Mint, and unmounted e2fsck -fn exit 0, separately from journal acceptance. The default image remains ext2; the optional EXT4 image remains non-journaled. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.
 
 E4-A [complete physical acceptance record](../roadmap/ext4-phase5-acceptance.md): all seven checklist items PASS. Flush timing attribution and proposed count reductions remain estimates, not measured guarantees.

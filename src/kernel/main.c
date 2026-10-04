@@ -3122,6 +3122,32 @@ static void test_ext4_journal_mount(void) {
     }
     ext4_fixture_verify("/mnt/journal-persist.bin",16384,bytes);
     ext4_fixture_verify("/mnt/journal-later.bin",17,bytes);
+    if (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_integration")) {
+        if (!second) {
+            require_ext2(!vfs_mkdir("/mnt/integration-dir",0),"journal integration mkdir");
+            file_t *a=vfs_open("/mnt/integration.bin",VFS_O_CREAT|VFS_O_RDWR);
+            require_ext2(a && vfs_write(a,bytes,16384)==16384,"journal integration allocation");
+            require_ext2(!vfs_truncate(a->node,1041),"journal integration partial truncate");vfs_close(a);
+            require_ext2(!vfs_rename("/mnt/integration.bin","/mnt/integration-dir/persist.bin"),"journal integration rename");
+            require_ext2(!vfs_mkdir("/mnt/empty-dir",0) && !vfs_unlink("/mnt/empty-dir"),"journal integration rmdir");
+            a=vfs_open("/mnt/pinned.bin",VFS_O_CREAT|VFS_O_RDWR|VFS_O_APPEND);
+            require_ext2(a && vfs_write(a,bytes,16384)==16384,"journal integration pinned allocation");
+            file_t *b=vfs_open("/mnt/pinned.bin",VFS_O_RDWR);require_ext2(b!=NULL,"journal integration independent pin");
+            __atomic_fetch_add(&a->ref_count,1,__ATOMIC_ACQ_REL);
+            require_ext2(!vfs_unlink("/mnt/pinned.bin") && !vfs_lookup("/mnt/pinned.bin"),"journal integration open unlink");
+            require_ext2(vfs_write(a,bytes,17)==17 && !vfs_truncate(b->node,1041),"journal integration unlinked write/shrink");
+            uint8_t check[17];require_ext2(vfs_read(b,check,17)==17 && !memcmp(check,bytes,17),"journal integration retained bytes");
+            vfs_close(a);vfs_close(b);vfs_close(a);
+            a=vfs_open("/mnt/reuse.bin",VFS_O_CREAT|VFS_O_RDWR);
+            require_ext2(a && vfs_write(a,bytes,8192)==8192,"journal integration post-reclaim allocation");vfs_close(a);
+            require_ext2(usb_mount_sync(),"journal integration drain sync");
+        }
+        require_ext2(!vfs_lookup("/mnt/pinned.bin") && !vfs_lookup("/mnt/integration.bin") &&
+            !vfs_lookup("/mnt/empty-dir"),"journal integration persisted namespace");
+        ext4_fixture_verify("/mnt/integration-dir/persist.bin",1041,bytes);
+        ext4_fixture_verify("/mnt/reuse.bin",8192,bytes);
+        serial_puts("[EXT4 INTEGRATION] namespace/truncate/pins/reuse PASS\n");
+    }
     kfree(bytes);serial_puts(second ? "[EXT4 JOURNAL] PASS boot 2; replay/bytes/namespace\n" :
         "[EXT4 JOURNAL] PASS boot 1; recovered orphans/sync/later-write\n");
 }
@@ -5820,6 +5846,12 @@ pf_boot_guard_done:
     net_start(boot_info.cmdline, sizeof(boot_info.cmdline));
     boot_status("Mounting persistent storage (/mnt)...");
     usb_mount_production_storage(&boot_info);
+    if (g_ext4_fixture_mount && qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") &&
+        qemu_fw_cfg_has_key("opt/fortress/ext4_journal_integration") && smp_get_cpu_count()>=2) {
+        require_ext2(run_append_scenario("/mnt/journal-app-independent.txt",false,smp_get_cpu_count()),"journal AP independent append");
+        require_ext2(run_append_scenario("/mnt/journal-app-shared.txt",true,smp_get_cpu_count()),"journal AP shared append");
+        serial_puts("[EXT4 INTEGRATION] SMP APPEND PASS\n");
+    }
     if (qemu_fw_cfg_has_key("opt/fortress/ext4_usb_test")) {
         test_ext4_writes(true);
         if (qemu_fw_cfg_has_key("opt/fortress/ext4_usb_append")) {

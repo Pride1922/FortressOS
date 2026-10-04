@@ -1252,6 +1252,23 @@ test-jbd2-replay-host:
 .PHONY: test-ext4-journal-mount
 .PHONY: test-ext4-mount-smoke-host
 EXT4_MOUNT_EVIDENCE ?= .codex-remote-attachments/ext4-phase8-5
+EXT4_INTEGRATION_EVIDENCE ?= .codex-remote-attachments/ext4-phase8-6
+.PHONY: test-ext4-integration-host
+.PHONY: test-ext4-integration-staging-host
+test-ext4-integration-staging-host:
+	@mkdir -p $(EXT4_INTEGRATION_EVIDENCE)/bin
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_integration_host.c tests/ext4_fault_disk.c -o $(EXT4_INTEGRATION_EVIDENCE)/bin/ext4_integration_staging
+	@FORTRESS_EXT4_INTEGRATION_EVIDENCE=$(EXT4_INTEGRATION_EVIDENCE) python3 scripts/test_ext4_integration_host.py $(EXT4_INTEGRATION_FIXTURES) --staging
+.PHONY: test-ext4-integration
+test-ext4-integration: all
+	@FORTRESS_EXT4_INTEGRATION_EVIDENCE=$(EXT4_INTEGRATION_EVIDENCE) FORTRESS_EXT4_INTEGRATION_SMP=1 python3 scripts/test_ext4_integration.py $(EXT4_INTEGRATION_FIXTURES)
+	@FORTRESS_EXT4_INTEGRATION_EVIDENCE=$(EXT4_INTEGRATION_EVIDENCE) FORTRESS_EXT4_INTEGRATION_SMP=4 python3 scripts/test_ext4_integration.py $(EXT4_INTEGRATION_FIXTURES)
+
+test-ext4-integration-host:
+	@mkdir -p $(EXT4_INTEGRATION_EVIDENCE)/bin
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_integration_host.c tests/ext4_fault_disk.c -o $(EXT4_INTEGRATION_EVIDENCE)/bin/ext4_integration_host
+	@FORTRESS_EXT4_INTEGRATION_EVIDENCE=$(EXT4_INTEGRATION_EVIDENCE) python3 scripts/test_ext4_integration_host.py $(EXT4_INTEGRATION_FIXTURES)
+
 test-ext4-mount-smoke-host:
 	@mkdir -p $(EXT4_MOUNT_EVIDENCE)/bin
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_mount_host.c tests/ext4_fault_disk.c -o $(EXT4_MOUNT_EVIDENCE)/bin/ext4_mount_host_smoke

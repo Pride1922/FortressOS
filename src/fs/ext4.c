@@ -493,6 +493,7 @@ static void e4_setup(e4_node_t *n, e4_inode_t *in) {
     n->node.can_write=e4_can_write;
     if (in->fs->engine) {
         n->node.owns_nodes=true; n->node.rename_no_replace=true;
+        n->node.serializes_write_offset=true;
         n->node.open=e4_open; n->node.close=e4_close;
         if (in->mode==0x4000) { n->node.create=e4_create; n->node.unlink=e4_unlink; n->node.rename=e4_rename; }
         else { n->node.write=e4_write; n->node.truncate=e4_truncate; }

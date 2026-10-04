@@ -1,6 +1,6 @@
-/* Traditional s_last_orphan / i_dtime chain. Exclusive workbench only.
- * Every intent, right-edge reclamation and chain removal uses JBD2. No direct
- * metadata I/O, no allocation while shrinking, no mounted handle publication. */
+/* Traditional s_last_orphan / i_dtime chain. Exclusive workbench or ranked
+ * fixture-mount owner. Every intent, right-edge reclamation and chain removal
+ * uses JBD2; no direct metadata I/O or allocation while shrinking. */
 static int e4_orphan_index(ext4_engine_t *e,uint32_t ino) {
     for (unsigned i=0;i<e->orphan_count;i++) if (e->orphans[i]==ino) return (int)i;
     return -1;
