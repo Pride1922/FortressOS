@@ -43,7 +43,8 @@ static bool inventory_flush(block_dev_t *dev) {
 }
 int main(int argc,char **argv) {
     (void)shared_offsets;(void)staging_failures;(void)recovered_oracle;
-    assert(argc==4);size_t n;uint8_t *initial=load(argv[1],&n);
+    assert(argc==4 || (argc==5 && !strcmp(argv[4],"--write-only")));
+    size_t n;uint8_t *initial=load(argv[1],&n);
     unsigned ss=(unsigned)strtoul(argv[2],NULL,10);
     assert((ss==512 || ss==4096) && n%ss==0);
     ext4_fault_disk_t disk={.stable=malloc(n),.volatile_bytes=malloc(n),.bytes=n,.cut=-1};
@@ -51,6 +52,7 @@ int main(int argc,char **argv) {
     block_dev_t dev={.sector_size=ss,.sector_count=n/ss,.read_sector=ext4_fault_read,
         .write_sector=inventory_write,.flush=inventory_flush,.priv=&disk};
     for (unsigned op=0;op<OPERATIONS;op++) {
+        if (argc==5 && op!=WRITE) continue;
         file_t *f=prepare(&dev,initial,op);char prefix[1024],path[1100];
         assert(snprintf(prefix,sizeof(prefix),"%s-%s",argv[3],names[op])<(int)sizeof(prefix));
         save(prefix,"before",disk.stable,n);

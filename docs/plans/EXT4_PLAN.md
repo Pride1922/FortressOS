@@ -210,8 +210,11 @@ Proposed six-part execution sequence: [Phase 9 detailed plan](EXT4_PHASE9.md).
 Part 9.1 is host-verified: calibrated persistence model, 156 mounted operation
 inventories, 228 omitted-commit-flush controls and independent Linux integrity/
 byte/namespace checks. See [specification](EXT4_PHASE9_1.md) and
-[evidence and limits](../roadmap/ext4-phase9-1.md). The 333,424 initial 9.2 fault
-cases are planned, not executed. E4-B acceptance remains pending.
+[evidence and limits](../roadmap/ext4-phase9-1.md). Part 9.2 has passed its 333,424
+initial schedules and 22,244 fragmented-growth schedules, plus regressions.
+Extra mounted depth-promotion coverage and final evidence consolidation remain
+outstanding. See [9.2 specification](EXT4_PHASE9_2.md) and
+[evidence](../roadmap/ext4-phase9-2.md). E4-B acceptance remains pending.
 
 Enumerate every write/flush cut point in representative transactions. The fake device separates volatile cache from stable media; model cache loss, reordered unflushed writes, torn sectors, failed flushes and disconnects. Corrupt durable journal content must be detected; do not promise reconstruction of arbitrary corruption.
 

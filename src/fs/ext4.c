@@ -563,6 +563,18 @@ static bool e4_journal_backup(ext4_mount_t *fs,uint8_t *sb) {
     if ((e4_u32(sb+96)&~4u)!=(e4_u32(backup+96)&~4u)) return false;
     memcpy(sb,backup,1024);return true;
 }
+static bool e4_journal_descriptor_backup(ext4_mount_t *fs,uint32_t group,uint8_t *primary) {
+    /* Recovery-only identity bootstrap for a torn descriptor checkpoint.
+     * Borrow a checksummed backup in memory; NEVER repair primary media here.
+     * Replay preview must still validate the authoritative descriptor/bitmaps. */
+    if (fs->groups<2) return false;
+    uint8_t backup[32],copy[32],number[4];
+    uint64_t where=((uint64_t)fs->first+fs->bpg+1)*fs->bs+(uint64_t)group*32;
+    if (!e4_bytes(fs,where,backup,sizeof(backup)) || memcmp(primary,backup,12)) return false;
+    memcpy(copy,backup,sizeof(copy));copy[30]=copy[31]=0;e4_p32(number,group);
+    if ((uint16_t)e4_crc(e4_crc(fs->seed,number,4),copy,32)!=e4_u16(backup+30)) return false;
+    memcpy(primary,backup,32);return true;
+}
 static int e4_admit(ext4_mount_t *fs) {
     uint8_t sb[1024];
     if (!e4_bytes(fs,1024,sb,sizeof(sb))) return -VFS_EIO;
@@ -606,7 +618,8 @@ static int e4_admit(ext4_mount_t *fs) {
     for (uint32_t g=0;g<fs->groups;g++) {
         uint8_t *d=fs->gd[g].raw, number[4], copy[32];
         memcpy(copy,d,32); copy[30]=copy[31]=0; e4_p32(number,g);
-        if ((uint16_t)e4_crc(e4_crc(fs->seed,number,4),copy,32)!=e4_u16(d+30)) return -VFS_EIO;
+        if ((uint16_t)e4_crc(e4_crc(fs->seed,number,4),copy,32)!=e4_u16(d+30) &&
+            (!fs->journal_bootstrap || !e4_journal_descriptor_backup(fs,g,d))) return -VFS_EIO;
         uint32_t start=fs->first+g*fs->bpg, end=fs->blocks-start;
         if (end>fs->bpg) end=fs->bpg;
         if (e4_u16(d+18)&~7u || e4_u32(d+20) || e4_u16(d+12)>end ||

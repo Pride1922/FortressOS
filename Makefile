@@ -1255,6 +1255,24 @@ EXT4_MOUNT_EVIDENCE ?= .codex-remote-attachments/ext4-phase8-5
 EXT4_INTEGRATION_EVIDENCE ?= .codex-remote-attachments/ext4-phase8-6
 EXT4_CRASH_EVIDENCE ?= .codex-remote-attachments/ext4-phase9
 .PHONY: test-ext4-crash-model-host
+.PHONY: test-ext4-crash-host
+.PHONY: test-ext4-crash-controls-host test-ext4-crash-fragment-host
+test-ext4-crash-controls-host:
+	@mkdir -p $(EXT4_CRASH_EVIDENCE)/bin
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_crash_bootstrap_host.c tests/ext4_fault_disk.c -o $(EXT4_CRASH_EVIDENCE)/bin/ext4_crash_bootstrap_host
+	@FORTRESS_EXT4_CRASH_EVIDENCE=$(EXT4_CRASH_EVIDENCE) python3 scripts/test_ext4_crash_bootstrap.py $(EXT4_CRASH_INVENTORY)
+	@FORTRESS_EXT4_CRASH_EVIDENCE=$(EXT4_CRASH_EVIDENCE) python3 scripts/test_ext4_crash_recovery_oracle.py $(EXT4_CRASH_INVENTORY)
+	@python3 scripts/test_ext4_crash_oracle.py $(EXT4_CRASH_INVENTORY)
+test-ext4-crash-fragment-host:
+	@mkdir -p $(EXT4_CRASH_EVIDENCE)/bin
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_crash_fragment_host.c tests/ext4_fault_disk.c -o $(EXT4_CRASH_EVIDENCE)/bin/ext4_crash_fragment_host
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_crash_inventory_host.c tests/ext4_fault_disk.c -o $(EXT4_CRASH_EVIDENCE)/bin/ext4_crash_inventory_host
+	@FORTRESS_EXT4_CRASH_EVIDENCE=$(EXT4_CRASH_EVIDENCE) python3 scripts/test_ext4_crash_fragment.py $(EXT4_INTEGRATION_FIXTURES)
+test-ext4-crash-host:
+	@mkdir -p $(EXT4_CRASH_EVIDENCE)/bin
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_crash_recover_host.c tests/ext4_fault_disk.c -o $(EXT4_CRASH_EVIDENCE)/bin/ext4_crash_recover_host
+	@python3 scripts/test_ext4_crash_sparse.py
+	@FORTRESS_EXT4_CRASH_EVIDENCE=$(EXT4_CRASH_EVIDENCE) python3 scripts/test_ext4_crash_recovery.py $(EXT4_CRASH_INVENTORY)
 test-ext4-crash-model-host:
 	@mkdir -p $(EXT4_CRASH_EVIDENCE)/bin
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_crash_inventory_host.c tests/ext4_fault_disk.c -o $(EXT4_CRASH_EVIDENCE)/bin/ext4_crash_inventory_host

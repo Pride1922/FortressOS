@@ -25,14 +25,14 @@ def command(argv, log):
     return (result.stdout + result.stderr).decode(errors='replace')
 
 
-def linux_snapshot(image, bs, op, log):
+def linux_snapshot(image, bs, op, log, committed=True):
     # Read-only fsck, never repair the output to make an audit pass.
     command(['e2fsck', '-fn', str(image)], log)
-    path = '/sub/renamed.bin' if op == 'rename' else '/reuse.bin' if op == 'reuse' else '/target.bin'
-    expected = b'I' * (2 * bs) if op == 'reuse' else b'O' * (bs + 17) if op == 'truncate' \
-        else b'O' * (3 * bs) + b'I' * (2 * bs) if op == 'write' \
-        else b'O' * (3 * bs) + b'I' * 17 if op == 'append' else b'O' * (3 * bs)
-    absent = op in ('unlink', 'open-unlink', 'last-close')
+    path = '/sub/renamed.bin' if op == 'rename' and committed else '/reuse.bin' if op == 'reuse' else '/target.bin'
+    expected = (b'I' * (2 * bs) if committed else b'') if op == 'reuse' else b'O' * (bs + 17) if op == 'truncate' and committed \
+        else b'O' * (3 * bs) + b'I' * (2 * bs) if op == 'write' and committed \
+        else b'O' * (3 * bs) + b'I' * 17 if op == 'append' and committed else b'O' * (3 * bs)
+    absent = op == 'last-close' or committed and op in ('unlink', 'open-unlink')
     text = command(['debugfs', '-R', f'stat {path}', str(image)], log)
     observed = {'present': 'File not found' not in text}
     wanted = {'present': not absent}
@@ -45,9 +45,9 @@ def linux_snapshot(image, bs, op, log):
         wanted.update(size=len(expected), links=1, sha256=hashlib.sha256(expected).hexdigest())
         dump.unlink()
     validate_snapshot(observed, [wanted])
-    for missing in (['/target.bin'] if op in ('rename', 'reuse') else ['/sub'] if op == 'rmdir' else []):
+    for missing in (['/target.bin'] if op == 'reuse' or op == 'rename' and committed else ['/sub'] if op == 'rmdir' and committed else []):
         assert 'File not found' in command(['debugfs', '-R', f'stat {missing}', str(image)], log)
-    if op in ('create', 'mkdir'):
+    if op in ('create', 'mkdir') and committed:
         name = '/new.bin' if op == 'create' else '/newdir'
         text = command(['debugfs', '-R', f'stat {name}', str(image)], log)
         assert 'Type: ' + ('regular' if op == 'create' else 'directory') in text
@@ -75,9 +75,9 @@ def linux_snapshot(image, bs, op, log):
             if kind == 'directory': pending.append(name)
     wanted_names = {'/lost+found': 'directory'}
     if not absent: wanted_names[path] = 'file'
-    if op == 'rename': wanted_names['/sub'] = 'directory'
-    if op == 'create': wanted_names['/new.bin'] = 'file'
-    if op == 'mkdir': wanted_names['/newdir'] = 'directory'
+    if op == 'rename' or op == 'rmdir' and not committed: wanted_names['/sub'] = 'directory'
+    if op == 'create' and committed: wanted_names['/new.bin'] = 'file'
+    if op == 'mkdir' and committed: wanted_names['/newdir'] = 'directory'
     validate_snapshot({n: v['kind'] for n, v in namespace.items()}, [wanted_names])
     for name, entry in namespace.items():
         links = 1 if entry['kind'] == 'file' else 2 + sum(
@@ -106,14 +106,15 @@ def retain_image(image):
 
 
 def main():
-    assert len(sys.argv) == 2, 'explicit completed Phase-8.5 fixture directory required'
+    assert len(sys.argv) == 2 or len(sys.argv)==3 and sys.argv[2]=='--write-only', 'explicit fixture directory [--write-only] required'
+    operations = ('write',) if len(sys.argv)==3 else OPS
     fixture = Path(sys.argv[1]).resolve()
     evidence = Path(os.environ.get('FORTRESS_EXT4_CRASH_EVIDENCE', ROOT / '.codex-remote-attachments/ext4-phase9')).resolve()
     allowed = (ROOT / '.codex-remote-attachments').resolve()
     assert fixture.is_relative_to(allowed) and (fixture / 'manifest.json').is_file()
     assert evidence.is_relative_to(allowed)
     out = Path(tempfile.mkdtemp(prefix='foundation-', dir=evidence))
-    manifest = {'argv': sys.argv, 'scope': '9.1 baseline, not crash acceptance', 'cases': [], 'errors': []}
+    manifest = {'argv': sys.argv, 'scope': 'baseline, not crash acceptance', 'operations': operations, 'cases': [], 'errors': []}
     started = time.monotonic()
     try:
         command([sys.executable, str(ROOT / 'scripts/test_ext4_crash_model.py')], out / 'calibration.log')
@@ -124,8 +125,10 @@ def main():
                 for ss in (512, 4096):
                     label = f'{bs}-{placement}-{ss}'
                     prefix = out / label
-                    command([str(evidence / 'bin/ext4_crash_inventory_host'), str(source), str(ss), str(prefix)], out / f'{label}.log')
-                    for op in OPS:
+                    argv = [str(evidence / 'bin/ext4_crash_inventory_host'), str(source), str(ss), str(prefix)]
+                    if len(operations)==1: argv.append('--write-only')
+                    command(argv, out / f'{label}.log')
+                    for op in operations:
                         stem = Path(str(prefix) + '-' + op)
                         events = [json.loads(line) for line in Path(str(stem) + '.events.jsonl').read_text().splitlines()]
                         payload = Path(str(stem) + '.payload.bin').read_bytes()
@@ -159,7 +162,7 @@ def main():
                                   'payload_sha256': hashlib.sha256(payload).hexdigest(),
                                   'images': [retain_image(p) for p in (before, after, clean)]}
                         manifest['cases'].append(record)
-                    print(f'PASS {label}: 13 operation inventories, reconstructed media, Linux audits', flush=True)
+                    print(f'PASS {label}: {len(operations)} operation inventories, reconstructed media, Linux audits', flush=True)
     except Exception as error:
         manifest['errors'].append(repr(error))
         raise
