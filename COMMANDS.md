@@ -81,6 +81,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`xxd`](#xxd) | Binary (`/bin/xxd`) | Stream Tool | Make hex dump or revert hex to binary with bounded buffers |
 | [`diff`](#diff) | Binary (`/bin/diff`) | Stream Tool | Compare files line by line using stack-free Myers algorithm |
 | [`patch`](#patch) | Binary (`/bin/patch`) | Stream Tool | Apply unified or normal diff files with fail-closed transactional safety |
+| [`diskbench`](#diskbench) | Binary (`/bin/diskbench`) | Stream Tool / Benchmark | Filesystem throughput and latency benchmark tool |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
@@ -956,6 +957,35 @@ patch -p1 < feature.patch
 patch -R -o restored.txt current.txt patch.diff
 patch --dry-run /etc/network.conf network.patch
 cat bugfix.diff | patch -o - source.c
+```
+
+---
+
+### `diskbench`
+**Syntax:** `diskbench [OPTIONS] [MOUNT_POINT]`  
+**Path:** `/bin/diskbench`  
+**Description:** Filesystem throughput and metadata latency benchmark utility for FortressOS running in Ring 3. Measures sequential write throughput, sequential read throughput, and metadata creation/unlink performance across storage targets (such as NVMe or USB mass storage) with zero dynamic allocation, static BSS storage (16 KiB I/O buffer), and a strict 512B stack budget. Automatic cleanup is guaranteed on normal completion, error, or interruption via signal (`SIGINT`, `SIGTERM`).
+* **Exit Codes:** `0` on successful execution, `1` on I/O or filesystem error (e.g. read-only filesystem or inaccessible directory), or `2` on invalid argument or bounds violation.
+* **Storage Limits & Memory Bounds:**
+  - Sequential write size: default 16 MiB, maximum 64 MiB (parsed with optional `K`/`M`/`G` suffixes).
+  - Metadata file count: default 1,000 files, maximum 4,096 files.
+  - Chunk size: 16 KiB chunks aligned with kernel `MAX_SYSCALL_WRITE_LEN`.
+  - Ext2 awareness: On 1 KiB block ext2 filesystems, files larger than 268 KiB hit the single-indirect mapping cap; `-w` should be set accordingly (e.g. `-w 128K` or `-w 256K`) when testing default ext2 fixtures.
+**Options:**
+* `-w SIZE`: Write test file size in bytes (e.g. `128K`, `16M`; default: `16M`, maximum: `64M`).
+* `-n COUNT`: Metadata test file count (default: `1000`, maximum: `4096`).
+* `-t TEST`: Benchmark test filter: `write` | `read` | `meta` | `all` (default: `all`).
+* `-d DIR`: Directory path for temporary test files (default: `<MOUNT_POINT>/diskbench-tmp`).
+* `-c`: Emit comparison-friendly single-line machine-parseable metrics for automation.
+* `-s`: Silent / summary-only mode (suppresses banner and prints concise per-test results).
+* `--help`: Display usage summary and exit.
+**Examples:**
+```sh
+diskbench /mnt
+diskbench -w 128K -n 50 /mnt
+diskbench -t write -w 1M /mnt
+diskbench -c -w 256K -n 100 /mnt
+diskbench -s -w 64K -n 20 /mnt
 ```
 
 ---

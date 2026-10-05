@@ -72,4 +72,5 @@ int xxd_main(int argc, char **argv);
 int sort_main(int argc, char **argv);
 int diff_main(int argc, char **argv);
 int patch_main(int argc, char **argv);
+int diskbench_main(int argc, char **argv);
 #endif
