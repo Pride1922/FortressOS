@@ -15,6 +15,7 @@ A comprehensive guide to every command, shell builtin, core utility, and diagnos
 7. [Network Management & Internet Tools](#7-network-management--internet-tools)
 8. [Diagnostic, Test & Internal Binaries](#8-diagnostic-test--internal-binaries)
 9. [Keyboard Shortcuts & Line Editing](#9-keyboard-shortcuts--line-editing)
+10. [Storage Annex: ext2 Write Cap & Filesystem Limits](#10-storage-annex-ext2-write-cap--filesystem-limits)
 
 ---
 
@@ -1359,6 +1360,60 @@ The FortressOS Ring 3 shell includes a powerful interactive line editor with his
 * **Ctrl+Z**: Suspend current foreground process (`SIGTSTP`), sending it to the background.
 * **Ctrl+D**: On an empty line, exits the shell (`exit`). Inside utilities, signals End-Of-File (EOF).
 * **Ctrl+L**: Clear the screen and redraw current line.
+
+---
+
+## 10. Storage Annex: ext2 Write Cap & Filesystem Limits
+
+### ext2 Write Cap
+
+The ext2 write path supports **direct and single-indirect block mappings only**. Double-indirect and triple-indirect blocks are not implemented. Files that would require them are rejected at inode validation, not silently truncated.
+
+#### What "rejected" means
+
+Two distinct rejection points exist in the code:
+
+- **At inode open / validate (`src/fs/ext2.c:547`):** An inode whose block array contains a double-indirect or triple-indirect pointer is rejected with an unsupported-structure error.
+- **At truncate / block collection (`src/fs/ext2.c:856`):** A truncate operation that would need to walk past the single-indirect boundary is rejected before any mutation is attempted.
+
+Both rejections are **explicit and fail-closed**: they do not silently truncate, silently zero, or silently accept a partial write.
+
+#### Supported block sizes
+
+The mount path accepts the three standard ext2 block sizes and rejects anything larger (`src/fs/ext2.c:1603`):
+
+```c
+if (... || u32(sb + 24) > 2 || ...) return false;
+```
+`s_log_block_size > 2` is rejected at mount time.
+
+#### Maximum file size
+
+The cap depends on the filesystem's block size:
+
+| Block size | Max file size | Formula |
+|:---|:---|:---|
+| 1 KiB | 268 KiB | `(12 + 256) × 1024 = 274,432` |
+| 2 KiB | 1 MiB | `(12 + 512) × 2048 = 1,073,152` |
+| 4 KiB | 4 MiB | `(12 + 1024) × 4096 = 4,243,456` |
+
+The general formula is:
+```text
+max_size = (12 + block_size / 4) × block_size
+```
+where `12` is the direct block array and `block_size / 4` is the number of 4-byte block pointers that fit in one indirect block.
+
+The first data block is also block-size dependent (`src/fs/ext2.c:1641`):
+1 KiB filesystems start data at block 1; larger block sizes start at block 0. This is enforced at mount time.
+
+#### Why this limit exists
+
+The ext2 write path exists for three purposes:
+1. Reading and writing disposable QEMU test fixtures. The E4-A non-journaled path uses ext2 as its substrate.
+2. Compatibility with existing ext2 images that a user might attach or that tests might construct.
+3. Boot-time persistence for system configurations and small files under `/mnt`.
+
+Larger filesystems and enterprise storage workloads are targeted by the ext4 journaled driver (`ext4_mount_rw` with 4 KiB block sizes, extents, and JBD2 journaling).
 
 ---
 *Documented for FortressOS x86_64 SMP.*
