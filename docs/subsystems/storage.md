@@ -26,6 +26,12 @@ EXT4 physical follow-up: RW/GPT/SYNC_BACKED admission was user-confirmed, but a 
 - **Read-Only Default and Explicit Opt-in**: ext2 mounts are strictly read-only by default. Writable mounts require deliberate boot-level opt-in (`usb_data_mode=rw`).
 - **Atomic Append Serialization**: Append mode (`VFS_O_APPEND`) serializes authoritative EOF determination and sector writeback under `ext2_lock` (`ext2_write(..., &offset, append, ...)`), updating `*off` and `node->size` before lock release. True multi-core SMP concurrent append is verified by `make test-smp-append`.
 - **Tainted Storage Assertions**: Distinct error strings (`Read-only filesystem.` and `I/O error.`). An unrecoverable I/O or flush failure taints the filesystem, immediately suppresses further writes, freezes state before backing device release, and returns `-EIO` while preserving read capability.
+- **ext2 Write Cap & Inode Boundaries**: The ext2 write path supports direct and single-indirect block mappings only. Double-indirect and triple-indirect blocks are not implemented. Files that would require them are rejected explicitly and fail-closed:
+  - At inode open / validate (`src/fs/ext2.c:547`): Inodes with double/triple indirect pointers are rejected with an unsupported-structure error.
+  - At truncate / block collection (`src/fs/ext2.c:856`): Truncate operations walking past the single-indirect boundary are rejected before mutation is attempted.
+  - The cap depends on the filesystem block size: `max_size = (12 + block_size / 4) * block_size`. For 1 KiB block filesystems, the maximum write size is 268 KiB (274,432 bytes); for 2 KiB, 1 MiB; for 4 KiB, 4 MiB. Standard 1 KiB filesystems start data at block 1 (`src/fs/ext2.c:1641`).
+  - This limit accommodates disposable QEMU test fixtures, legacy ext2 image compatibility, and boot-time `/mnt` persistence. Large files and enterprise workloads are targeted by the ext4 journaled driver (`ext4_mount_rw`).
+
 
 ### GPT Partitioning and Disk Layout
 
