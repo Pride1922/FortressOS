@@ -2,17 +2,23 @@
 #define EXT4_INTEGRATION_LIBRARY
 #include "ext4_integration_host.c"
 static uint8_t *touched;
+static uint64_t deep_size;
+static bool deep_committed;
 static bool tracked_write(block_dev_t *dev,uint64_t lba,const void *bytes) {
     assert(lba<dev->sector_count);touched[lba]=1;return ext4_fault_write(dev,lba,bytes);
 }
 static void exact_file(const char *path,bool exists,uint64_t size,unsigned bs,bool fresh) {
     vfs_node_t *node=vfs_lookup(path);assert((node!=NULL)==exists);if (!node) return;
     assert(node->type==VFS_FILE && node->size==size);file_t *f=vfs_open(path,VFS_O_RDONLY);assert(f);
-    uint8_t bytes[4096];uint64_t offset=0;
+    uint8_t bytes[65536];uint64_t offset=0;
     while (offset<size) {
         size_t count=size-offset;if (count>sizeof(bytes)) count=sizeof(bytes);
         assert(vfs_read(f,bytes,count)==(int64_t)count);
-        for (size_t k=0;k<count;k++) assert(bytes[k]==(fresh || offset+k>=3u*bs ? 'I' : 'O'));
+        for (size_t k=0;k<count;k++) {
+            uint64_t pos=offset+k;
+            unsigned char expected=deep_size ? (pos<3u*bs ? 'O' : (deep_committed && pos<5u*bs ? 'I' : 0)) : (fresh || pos>=3u*bs ? 'I' : 'O');
+            assert(bytes[k]==expected);
+        }
         offset+=count;
     }
     assert(!vfs_read(f,bytes,1) && !vfs_close(f));
@@ -24,6 +30,7 @@ static void exact_namespace(unsigned op,bool committed,unsigned bs) {
     if (committed && op==WRITE) size=5u*bs;
     if (committed && op==APPEND) size+=17;
     if (committed && op==TRUNCATE) size=bs+17;
+    if (deep_size) {assert(op==WRITE);size=deep_size;deep_committed=committed;}
     exact_file("/mnt/target.bin",target,size,bs,false);
     exact_file("/mnt/sub/renamed.bin",op==RENAME && committed,3u*bs,bs,false);
     exact_file("/mnt/reuse.bin",op==REUSE,committed ? 2u*bs : 0,bs,true);
@@ -41,10 +48,15 @@ static void exact_namespace(unsigned op,bool committed,unsigned bs) {
         seen[5]==(op==MKDIR && committed) && seen[6]==(op==RENAME || (op==RMDIR && !committed)) && seen[7]==(op==REUSE));
     assert(!e4_active->engine->orphan_count);
 }
+#ifdef EXT4_RECOVERY_LIBRARY
+int phase92_worker_main(int argc,char **argv) {
+#else
 int main(int argc,char **argv) {
+#endif
     (void)shared_offsets;(void)staging_failures;(void)recovered_oracle;(void)prepare;(void)operate;(void)names;
     (void)audited_write;(void)audited_flush;
-    assert(argc==3);size_t bytes;uint8_t *base=load(argv[1],&bytes);unsigned ss=(unsigned)strtoul(argv[2],NULL,10);
+    assert(argc==3 || argc==4);size_t bytes;uint8_t *base=load(argv[1],&bytes);unsigned ss=(unsigned)strtoul(argv[2],NULL,10);
+    if (argc==4) {char *end;deep_size=strtoull(argv[3],&end,10);assert(!*end && deep_size>=5u*4096 && deep_size<=128u*1024*1024);}
     assert((ss==512 || ss==4096) && !(bytes%ss));
     ext4_fault_disk_t disk={.stable=malloc(bytes),.volatile_bytes=malloc(bytes),.bytes=bytes,.cut=-1};
     touched=calloc(bytes/ss,1);assert(touched && disk.stable && disk.volatile_bytes);

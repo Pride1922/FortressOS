@@ -63,7 +63,11 @@ int main(int argc,char **argv) {
         assert(!fclose(events_file) && !fclose(payload_file));save(prefix,"after",disk.stable,n);
         printf("inventory %s events=%zu writes=%zu flushes=%zu\n",names[op],disk.events,disk.writes,disk.flushes);
         if (f && op!=LAST_CLOSE) assert(!vfs_close(f));
-        assert(!ext4_freeze_and_sync(e4_active));clean_check(e4_active);save(prefix,"clean",disk.stable,n);
+        int freeze=ext4_freeze_and_sync(e4_active);
+        if (freeze) fprintf(stderr,"freeze=%d taint=%u ready=%u error=%d orphans=%u revokes=%u images=%u\n",
+            freeze,e4_active->engine->tainted,e4_active->engine->ready,e4_active->engine->error,
+            e4_active->engine->orphan_count,e4_active->engine->revoke_count,e4_active->engine->images);
+        assert(!freeze);clean_check(e4_active);save(prefix,"clean",disk.stable,n);
     }
     assert(metadata_writes && data_writes && journal_writes);
     teardown();free(initial);free(disk.stable);free(disk.volatile_bytes);puts("inventory PASS");return 0;

@@ -18,6 +18,10 @@ static int e4_journal_mark(ext4_engine_t *e,bool clean) {
     uint8_t *sb=block+1024%e->fs->bs;
     e4_p16(sb+58,clean ? 1 : 0);e4_p32(sb+96,clean ? 0x42 : 0x46);
     e4_p32(sb+1020,e4_crc(UINT32_MAX,sb,1020));
+    /* Lifecycle transactions own only the superblock image. A preceding
+     * extent-tree replacement may have retired blocks; those revokes already
+     * belong to its checkpointed transaction, never this zero-revoke plan. */
+    e->revoke_count=0;
     e->fs->state_transition=true;e->ready=true;e->credits=(jbd2_credits_t){1,0,0};
     r=jbd2_writer_begin(e->writer,e->credits);
     if (!r) r=e4_transaction_commit(e);

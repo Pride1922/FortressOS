@@ -1,6 +1,6 @@
 # EXT4 Phase 9.2 — Mounted transaction crash evidence
 
-2026-10-05; verification in progress. See the
+2026-10-05; host verification complete. See the
 [execution specification](../plans/EXT4_PHASE9_2.md). Production journaled RW
 remains disabled. No guest, USB or physical acceptance is claimed here.
 
@@ -90,10 +90,39 @@ recovery/writer, namespace, orphan/deep cleanup and allocation. Namespace passed
 The full depth-2 cleanup check and maximum 4096-extent allocation checks passed.
 The separate retained policy log is `policy-pve24ns6/host.log`.
 
-This is a checkpoint, not Phase 9.2 acceptance. The additional direct mounted
-depth-1-to-depth-2 promotion fixture/campaign has not run. Its fixture setup and
-the final evidence consolidation remain outstanding. No test is currently
-running at this checkpoint. Phase 9.3 has been authorized but not started.
+### Final implementation reruns
+
+The depth-1-to-depth-2 fixture exposed stale revoke ownership in the clean-state
+transaction: previously checkpointed extent-node revokes were carried into a
+zero-revoke lifecycle plan. Lifecycle staging now clears that preceding revoke
+list before opening its superblock-only transaction. Freeze succeeds without
+changing transaction barriers or taint handling.
+
+Six independently Linux-checked fixtures have four full extent leaves and a
+visible sparse file covering every unwritten mapping. Actual mounted writes
+fill the initial hole and promote the tree to depth 2 in all 12 geometry and
+placement cases. Full logical bytes, including sparse zeros, are checked by
+both the recovery worker and Linux audit; fixture construction uses debugfs,
+while the measured promotion uses FortressOS VFS mutation.
+
+All final campaigns completed with exit 0 and empty error lists:
+
+- `campaign-9rhgkabs`: 333,424 primary schedules; ledger verification checks
+  6,554 reconstructed inputs and 3,226 Linux audit deltas.
+- `campaign-3n7kfeeb`: 22,244 root-to-leaf promotion schedules; ledger verification
+  checks 478 reconstructed inputs and 1,488 Linux audit deltas.
+- `campaign-wi7tcc89`: 36,184 depth-1-to-depth-2 promotion schedules; ledger
+  verification checks 540 reconstructed inputs and 1,490 Linux audit deltas.
+
+These total 391,852 final schedule identities. Kernel compilation/linking and
+the transaction-foundation and journal-file regressions also passed after the
+lifecycle fix. Fixture/inventory evidence is `depth-povnsjn1` and
+`foundation-kbtf8zt9`. Earlier failed fixture attempts remain retained and are
+excluded from accepted counts. Final evidence is copied and hash-verified in
+`verification-moitfvv3`, with original images reconstructed after compression,
+source snapshots, binaries and tool versions. Phase 9.2 host acceptance is
+complete; Phase 9.3 has started with recovery input preparation and event
+inventory, without claiming its interruption/reuse/interoperability gate.
 
 ## Reproduction
 

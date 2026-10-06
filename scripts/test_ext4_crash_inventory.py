@@ -25,13 +25,16 @@ def command(argv, log):
     return (result.stdout + result.stderr).decode(errors='replace')
 
 
-def linux_snapshot(image, bs, op, log, committed=True):
+def linux_snapshot(image, bs, op, log, committed=True, deep_size=None):
     # Read-only fsck, never repair the output to make an audit pass.
     command(['e2fsck', '-fn', str(image)], log)
     path = '/sub/renamed.bin' if op == 'rename' and committed else '/reuse.bin' if op == 'reuse' else '/target.bin'
     expected = (b'I' * (2 * bs) if committed else b'') if op == 'reuse' else b'O' * (bs + 17) if op == 'truncate' and committed \
         else b'O' * (3 * bs) + b'I' * (2 * bs) if op == 'write' and committed \
         else b'O' * (3 * bs) + b'I' * 17 if op == 'append' and committed else b'O' * (3 * bs)
+    if deep_size is not None:
+        assert op in ('write','sync') and deep_size>=5*bs
+        expected=b'O'*(3*bs)+(b'I'*(2*bs) if op=='write' and committed else bytes(2*bs))+bytes(deep_size-5*bs)
     absent = op == 'last-close' or committed and op in ('unlink', 'open-unlink')
     text = command(['debugfs', '-R', f'stat {path}', str(image)], log)
     observed = {'present': 'File not found' not in text}
@@ -109,6 +112,7 @@ def main():
     assert len(sys.argv) == 2 or len(sys.argv)==3 and sys.argv[2]=='--write-only', 'explicit fixture directory [--write-only] required'
     operations = ('write',) if len(sys.argv)==3 else OPS
     fixture = Path(sys.argv[1]).resolve()
+    fixture_manifest=json.loads((fixture/'manifest.json').read_text())
     evidence = Path(os.environ.get('FORTRESS_EXT4_CRASH_EVIDENCE', ROOT / '.codex-remote-attachments/ext4-phase9')).resolve()
     allowed = (ROOT / '.codex-remote-attachments').resolve()
     assert fixture.is_relative_to(allowed) and (fixture / 'manifest.json').is_file()
@@ -153,7 +157,9 @@ def main():
                                 else:
                                     raise AssertionError((label, op, 'missing commit flush undetected'))
                         clean = Path(str(stem) + '-clean.img')
-                        observed = linux_snapshot(clean, bs, op, Path(str(stem) + '.linux.log'))
+                        config=next((c for c in fixture_manifest.get('cases',[]) if c.get('block')==bs and c.get('placement')==placement),{})
+                        deep_size=config.get('deep_size')
+                        observed = linux_snapshot(clean, bs, op, Path(str(stem) + '.linux.log'),deep_size=deep_size)
                         record = {'block': bs, 'sector': ss, 'placement': placement, 'operation': op,
                                   'events': len(events), 'writes': sum(e['kind'] == 'write' for e in events),
                                   'flushes': sum(e['kind'] == 'flush' for e in events), 'snapshot': observed,
@@ -162,6 +168,7 @@ def main():
                                   'payload_sha256': hashlib.sha256(payload).hexdigest(),
                                   'images': [retain_image(p) for p in (before, after, clean)]}
                         manifest['cases'].append(record)
+                        if deep_size is not None:record['deep_size']=deep_size
                     print(f'PASS {label}: {len(operations)} operation inventories, reconstructed media, Linux audits', flush=True)
     except Exception as error:
         manifest['errors'].append(repr(error))

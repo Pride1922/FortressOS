@@ -119,7 +119,9 @@ def main():
             outcomes = {'recovered': 0, 'rejected': 0, 'unique_inputs': 0, 'linux_audits': 0}
             stderr = (folder/'worker.log').open('wb')
             basefile = folder/'base.img'; basefile.write_bytes(base)
-            worker = subprocess.Popen([str(binary), str(basefile), str(ss)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr)
+            worker_args = [str(binary), str(basefile), str(ss)]
+            if baseline.get('deep_size') is not None: worker_args.append(str(baseline['deep_size']))
+            worker = subprocess.Popen(worker_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr)
             ledger = (folder/'cases.jsonl').open('w')
             try:
                 for profile in PROFILES:
@@ -163,7 +165,7 @@ def main():
                                 home_key = digest(home)
                                 if home_key not in linux_cache:
                                     write_image(work, base, recovered, ss)
-                                    linux_snapshot(work, bs, op, folder/f'linux-{home_key}.log', committed=expected==1)
+                                    linux_snapshot(work, bs, op, folder/f'linux-{home_key}.log', committed=expected==1, deep_size=baseline.get('deep_size'))
                                     linux_cache[home_key] = {'image_sha256': hashlib.sha256(work.read_bytes()).hexdigest()}
                                     (folder/f'linux-{home_key}.delta').write_bytes(recovered)
                                     outcomes['linux_audits'] += 1

@@ -3,9 +3,11 @@
 Execution plan, 2026-10-04. Phase 8.6 implementation checkpoint:
 `3229ad4`. This expands [Phase 9 in the EXT4 plan](EXT4_PLAN.md), without
 enabling production journaled RW. Phase 9.1 is host-verified; Phase 9.2 has passed
-its declared crash schedules and regressions; extra mounted depth-promotion
-coverage and final evidence consolidation remain outstanding; 9.3–9.6 remain
-planned. See [9.1 specification](EXT4_PHASE9_1.md),
+its declared crash schedules, both mounted depth promotions and regressions;
+all final ledgers and evidence retention are verified. Phase 9.3's declared host
+campaign and evidence review passed; Phase 9.4 isolated guest preparation has
+started. Phases 9.5–9.6 remain planned.
+See [9.3 execution](EXT4_PHASE9_3.md), [9.1 specification](EXT4_PHASE9_1.md),
 [9.1 evidence](../roadmap/ext4-phase9-1.md), [9.2 specification](EXT4_PHASE9_2.md)
 and [9.2 evidence](../roadmap/ext4-phase9-2.md).
 
