@@ -1543,13 +1543,16 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             }
             sysinfo_t info;
             memset(&info, 0, sizeof(info));
-            info.total_ram_bytes = pmm_get_managed_ram_bytes();
-            info.free_ram_bytes  = (uint64_t)pmm_get_free_pages() * PAGE_SIZE;
-            info.uptime_ticks    = apic_timer_get_bsp_ticks();
-            info.tick_hz         = apic_timer_get_frequency();
-            info.cpu_count       = (uint32_t)smp_get_cpu_count();
-            info.task_count      = process_record_count_enumerable();
-            info.tsc_hz         = apic_poll_clock_hz();
+            info.total_ram_bytes   = pmm_get_managed_ram_bytes();
+            info.free_ram_bytes    = (uint64_t)pmm_get_free_pages() * PAGE_SIZE;
+            info.uptime_ticks      = apic_timer_get_bsp_ticks();
+            info.tick_hz           = apic_timer_get_frequency();
+            info.cpu_count         = (uint32_t)smp_get_cpu_count();
+            info.task_count        = process_record_count_enumerable();
+            info.tsc_hz            = apic_poll_clock_hz();
+            info.kernel_heap_used  = heap_get_used_bytes();
+            info.kernel_heap_total = heap_get_total_bytes();
+            info.thread_count      = (uint32_t)sched_get_thread_count();
             memcpy((void *)frame->rdi, &info, sizeof(info));
             result = 0;
             break;

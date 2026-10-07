@@ -152,16 +152,20 @@ _Static_assert(__builtin_offsetof(proc_info_t, cpu_ticks) == 40, "proc_info_t.cp
 _Static_assert(__builtin_offsetof(proc_info_t, name) == 48, "proc_info_t.name offset");
 
 typedef struct {
-    uint64_t total_ram_bytes; /* managed RAM (prereq 1 definition) */
-    uint64_t free_ram_bytes;  /* free PMM frames × PAGE_SIZE */
-    uint64_t uptime_ticks;    /* BSP elapsed timer ticks (prereq 2) */
-    uint64_t tick_hz;         /* calibrated frequency; also cpu_ticks' unit */
-    uint32_t cpu_count;       /* initialized scheduler CPUs, BSP included */
-    uint32_t task_count;      /* enumerable user processes, zombies included */
-    uint64_t tsc_hz;          /* calibrated invariant TSC frequency (0 if unavailable) */
+    uint64_t total_ram_bytes;   /* managed RAM (prereq 1 definition) */
+    uint64_t free_ram_bytes;    /* free PMM frames × PAGE_SIZE */
+    uint64_t uptime_ticks;      /* BSP elapsed timer ticks (prereq 2) */
+    uint64_t tick_hz;           /* calibrated frequency; also cpu_ticks' unit */
+    uint32_t cpu_count;         /* initialized scheduler CPUs, BSP included */
+    uint32_t task_count;        /* enumerable user processes, zombies included */
+    uint64_t tsc_hz;            /* calibrated invariant TSC frequency (0 if unavailable) */
+    uint64_t kernel_heap_used;  /* bytes allocated in kernel heap */
+    uint64_t kernel_heap_total; /* total bytes of kernel heap */
+    uint32_t thread_count;      /* total active threads */
+    uint32_t reserved;          /* padding/reserved */
 } sysinfo_t;
 
-_Static_assert(sizeof(sysinfo_t) == 48, "sysinfo_t ABI size");
+_Static_assert(sizeof(sysinfo_t) == 72, "sysinfo_t ABI size");
 _Static_assert(__builtin_offsetof(sysinfo_t, total_ram_bytes) == 0, "sysinfo_t.total_ram_bytes offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, free_ram_bytes) == 8, "sysinfo_t.free_ram_bytes offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, uptime_ticks) == 16, "sysinfo_t.uptime_ticks offset");
@@ -169,6 +173,10 @@ _Static_assert(__builtin_offsetof(sysinfo_t, tick_hz) == 24, "sysinfo_t.tick_hz 
 _Static_assert(__builtin_offsetof(sysinfo_t, cpu_count) == 32, "sysinfo_t.cpu_count offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, task_count) == 36, "sysinfo_t.task_count offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, tsc_hz) == 40, "sysinfo_t.tsc_hz offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, kernel_heap_used) == 48, "sysinfo_t.kernel_heap_used offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, kernel_heap_total) == 56, "sysinfo_t.kernel_heap_total offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, thread_count) == 64, "sysinfo_t.thread_count offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, reserved) == 68, "sysinfo_t.reserved offset");
 
 /* =========================================================================
  * Storage Observability ABI (SYS_MOUNTINFO, SYS_BLOCKINFO)

@@ -188,6 +188,7 @@ void   sched_disable_preemption(void);
 bool   sched_is_preemption_enabled(void);
 void   sched_on_timer_tick(void);
 uint64_t sched_get_active_stack_slots_mask(void);
+size_t   sched_get_thread_count(void);
 uint64_t sched_get_timer_preempt_count(void);
 uint64_t sched_get_runnable_switches_count(void);
 

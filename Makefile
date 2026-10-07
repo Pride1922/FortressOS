@@ -12,6 +12,8 @@ QEMU    ?= qemu-system-x86_64
 XORRISO ?= xorriso
 GIT     ?= git
 SMP     ?= 1
+BUILD_GIT_HASH ?= $(shell $(GIT) rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE     ?= $(shell date -u +%Y-%m-%d 2>/dev/null || echo "unknown")
 
 # Strict freestanding compilation flags
 CFLAGS  := -std=c11 \
@@ -628,7 +630,7 @@ $(USER_PS_ELF): $(BUILD_DIR)/ps_start.o $(BUILD_DIR)/ps.o $(USER_DIR)/shell.ld
 
 $(BUILD_DIR)/sysinfo.o: $(USER_DIR)/sysinfo.c src/include/types.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -DBUILD_GIT_HASH=\"$(BUILD_GIT_HASH)\" -DBUILD_DATE=\"$(BUILD_DATE)\" -c $< -o $@
 
 $(BUILD_DIR)/ping.o: $(USER_DIR)/ping.c $(USER_DIR)/dns.h $(USER_DIR)/dns_codec.h src/include/types.h src/include/syscall_abi.h src/include/ping_abi.h
 	@mkdir -p $(BUILD_DIR)
