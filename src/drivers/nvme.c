@@ -243,7 +243,7 @@ static bool nvme_submit_io_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe) {
             break; /* Entry is ready */
         }
 
-        if (nvme_read32(NVME_REG_CSTS) & NVME_CSTS_CFS) {
+        if ((poll_count & 0x3FF) == 0 && (nvme_read32(NVME_REG_CSTS) & NVME_CSTS_CFS)) {
             serial_puts("[FAIL] NVMe Controller Fatal Status (CFS) detected during I/O poll!\n");
             g_controller_fatal = true;
             g_initialized = false;
@@ -617,48 +617,76 @@ uint32_t nvme_get_sector_size(void) {
 }
 
 /* Synchronous Read of a Single Sector via I/O Queue 1 */
-bool nvme_read_sector(uint64_t lba, void *buf) {
-    if (!g_initialized || !buf || g_controller_fatal || g_dma_quarantined) {
+bool nvme_read_sectors(uint64_t lba, uint32_t count, void *buf) {
+    if (!g_initialized || !buf || !count || g_controller_fatal || g_dma_quarantined) {
         return false;
     }
 
-    memset(g_dma_buf_virt, 0, g_sector_size);
+    uint32_t max_sectors = PAGE_SIZE / g_sector_size;
+    uint8_t *dest = (uint8_t *)buf;
+    while (count > 0) {
+        uint32_t n = count > max_sectors ? max_sectors : count;
+        memset(g_dma_buf_virt, 0, n * g_sector_size);
 
-    nvme_sq_entry_t cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.opcode = NVME_NVM_OP_READ;
-    cmd.nsid   = g_active_nsid;
-    cmd.prp1   = g_dma_buf_phys;
-    cmd.cdw10  = (uint32_t)(lba & 0xFFFFFFFF);
-    cmd.cdw11  = (uint32_t)(lba >> 32);
-    cmd.cdw12  = 0; /* 0-based: 0 indicates 1 logical block */
+        nvme_sq_entry_t cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.opcode = NVME_NVM_OP_READ;
+        cmd.nsid   = g_active_nsid;
+        cmd.prp1   = g_dma_buf_phys;
+        cmd.cdw10  = (uint32_t)(lba & 0xFFFFFFFF);
+        cmd.cdw11  = (uint32_t)(lba >> 32);
+        cmd.cdw12  = (uint32_t)(n - 1); /* 0-based */
 
-    if (!nvme_submit_io_cmd(&cmd, NULL)) {
-        return false;
+        if (!nvme_submit_io_cmd(&cmd, NULL)) {
+            return false;
+        }
+
+        memcpy(dest, g_dma_buf_virt, n * g_sector_size);
+        dest += n * g_sector_size;
+        lba += n;
+        count -= n;
     }
-
-    memcpy(buf, g_dma_buf_virt, g_sector_size);
     return true;
 }
 
-/* Synchronous Write of a Single Sector via I/O Queue 1 */
-bool nvme_write_sector(uint64_t lba, const void *buf) {
-    if (!g_initialized || !buf || g_controller_fatal || g_dma_quarantined) {
+bool nvme_read_sector(uint64_t lba, void *buf) {
+    return nvme_read_sectors(lba, 1, buf);
+}
+
+/* Synchronous Write of Multiple Sectors via I/O Queue 1 */
+bool nvme_write_sectors(uint64_t lba, uint32_t count, const void *buf) {
+    if (!g_initialized || !buf || !count || g_controller_fatal || g_dma_quarantined) {
         return false;
     }
 
-    memcpy(g_dma_buf_virt, buf, g_sector_size);
+    uint32_t max_sectors = PAGE_SIZE / g_sector_size;
+    const uint8_t *src = (const uint8_t *)buf;
+    while (count > 0) {
+        uint32_t n = count > max_sectors ? max_sectors : count;
+        memcpy(g_dma_buf_virt, src, n * g_sector_size);
 
-    nvme_sq_entry_t cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.opcode = NVME_NVM_OP_WRITE;
-    cmd.nsid   = g_active_nsid;
-    cmd.prp1   = g_dma_buf_phys;
-    cmd.cdw10  = (uint32_t)(lba & 0xFFFFFFFF);
-    cmd.cdw11  = (uint32_t)(lba >> 32);
-    cmd.cdw12  = 0; /* 0-based: 0 indicates 1 logical block */
+        nvme_sq_entry_t cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.opcode = NVME_NVM_OP_WRITE;
+        cmd.nsid   = g_active_nsid;
+        cmd.prp1   = g_dma_buf_phys;
+        cmd.cdw10  = (uint32_t)(lba & 0xFFFFFFFF);
+        cmd.cdw11  = (uint32_t)(lba >> 32);
+        cmd.cdw12  = (uint32_t)(n - 1); /* 0-based */
 
-    return nvme_submit_io_cmd(&cmd, NULL);
+        if (!nvme_submit_io_cmd(&cmd, NULL)) {
+            return false;
+        }
+
+        src += n * g_sector_size;
+        lba += n;
+        count -= n;
+    }
+    return true;
+}
+
+bool nvme_write_sector(uint64_t lba, const void *buf) {
+    return nvme_write_sectors(lba, 1, buf);
 }
 
 /* Synchronous Flush of volatile cache to non-volatile media */

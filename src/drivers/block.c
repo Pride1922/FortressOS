@@ -111,6 +111,16 @@ static bool nvme_block_write(block_dev_t *dev, uint64_t lba, const void *buf) {
     return nvme_write_sector(lba, buf);
 }
 
+static bool nvme_block_read_sectors(block_dev_t *dev, uint64_t lba, uint32_t count, void *buf) {
+    (void)dev;
+    return nvme_read_sectors(lba, count, buf);
+}
+
+static bool nvme_block_write_sectors(block_dev_t *dev, uint64_t lba, uint32_t count, const void *buf) {
+    (void)dev;
+    return nvme_write_sectors(lba, count, buf);
+}
+
 static bool nvme_block_flush(block_dev_t *dev) {
     (void)dev;
     return nvme_flush();
@@ -132,12 +142,15 @@ bool block_register_nvme(void) {
     memcpy(g_nvme_base_dev.name, dev_name, name_len);
     g_nvme_base_dev.name[name_len] = '\0';
 
-    g_nvme_base_dev.sector_size  = nvme_get_sector_size();
-    g_nvme_base_dev.sector_count = nvme_get_sector_count();
-    g_nvme_base_dev.read_sector  = nvme_block_read;
-    g_nvme_base_dev.write_sector = nvme_block_write;
-    g_nvme_base_dev.flush        = nvme_block_flush;
-    g_nvme_base_dev.priv         = NULL;
+    g_nvme_base_dev.sector_size   = nvme_get_sector_size();
+    g_nvme_base_dev.sector_count  = nvme_get_sector_count();
+    g_nvme_base_dev.max_run_bytes = 4096;
+    g_nvme_base_dev.read_sector   = nvme_block_read;
+    g_nvme_base_dev.write_sector  = nvme_block_write;
+    g_nvme_base_dev.read_sectors  = nvme_block_read_sectors;
+    g_nvme_base_dev.write_sectors = nvme_block_write_sectors;
+    g_nvme_base_dev.flush         = nvme_block_flush;
+    g_nvme_base_dev.priv          = NULL;
 
     return block_register_dev(&g_nvme_base_dev);
 }

@@ -137,9 +137,11 @@ uint32_t nvme_get_sector_size(void);
 
 /* Synchronous read of a single sector (LBA) into buffer */
 bool     nvme_read_sector(uint64_t lba, void *buf);
+bool     nvme_read_sectors(uint64_t lba, uint32_t count, void *buf);
 
 /* Synchronous write of a single sector (LBA) from buffer */
 bool     nvme_write_sector(uint64_t lba, const void *buf);
+bool     nvme_write_sectors(uint64_t lba, uint32_t count, const void *buf);
 
 /* Synchronous flush: commit volatile write cache to non-volatile media */
 bool     nvme_flush(void);
