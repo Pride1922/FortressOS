@@ -222,13 +222,27 @@ typedef struct {
     uint32_t       sector_size;
     uint32_t       reserved;    /* Reserved for v2: Bits 0-7: class, Bits 8-15: durability, Bits 16-31: flags */
     uint64_t       size_bytes;
+    char           partuuid[40]; /* Formatted UUID: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" */
+    char           label[40];    /* Partition label / name (NUL-terminated) */
+    char           type_guid[40];/* Partition Type GUID string */
+    uint64_t       start_lba;    /* Starting LBA (0 if base device) */
+    uint64_t       sector_count; /* Sector count */
+    uint32_t       is_partition; /* 1 if partition, 0 if base block device */
+    uint32_t       part_index;   /* Partition index (1-based, 0 if not partition) */
 } block_info_t;
 
-_Static_assert(sizeof(block_info_t) == 48, "block_info_t ABI size");
+_Static_assert(sizeof(block_info_t) == 192, "block_info_t ABI size");
 _Static_assert(__builtin_offsetof(block_info_t, name) == 0, "block_info_t.name offset");
 _Static_assert(__builtin_offsetof(block_info_t, sector_size) == 32, "block_info_t.sector_size offset");
 _Static_assert(__builtin_offsetof(block_info_t, reserved) == 36, "block_info_t.reserved offset");
 _Static_assert(__builtin_offsetof(block_info_t, size_bytes) == 40, "block_info_t.size_bytes offset");
+_Static_assert(__builtin_offsetof(block_info_t, partuuid) == 48, "block_info_t.partuuid offset");
+_Static_assert(__builtin_offsetof(block_info_t, label) == 88, "block_info_t.label offset");
+_Static_assert(__builtin_offsetof(block_info_t, type_guid) == 128, "block_info_t.type_guid offset");
+_Static_assert(__builtin_offsetof(block_info_t, start_lba) == 168, "block_info_t.start_lba offset");
+_Static_assert(__builtin_offsetof(block_info_t, sector_count) == 176, "block_info_t.sector_count offset");
+_Static_assert(__builtin_offsetof(block_info_t, is_partition) == 184, "block_info_t.is_partition offset");
+_Static_assert(__builtin_offsetof(block_info_t, part_index) == 188, "block_info_t.part_index offset");
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0

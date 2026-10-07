@@ -613,6 +613,13 @@ policy_done:
         part->sector_count = count;
         part->type_guid    = entry->type_guid;
         part->unique_guid  = entry->unique_partition_guid;
+        size_t k = 0;
+        for (size_t c = 0; c < 35; c++) {
+            uint16_t ch = entry->partition_name[c];
+            if (ch == 0) break;
+            part->label[k++] = (ch < 128) ? (char)ch : '?';
+        }
+        part->label[k] = '\0';
     }
 
     /* All entries validated successfully. Release temporary allocation. */

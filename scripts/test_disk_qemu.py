@@ -177,6 +177,36 @@ def test_disk_qemu():
             assert "diskbench meta files=10" in out_bench_cmp, f"Missing meta in bench -c: {out_bench_cmp}"
             print("  [PASS] disk bench -c verified.")
 
+            # Test 8: disk info nvme0n1p1
+            print("  [9] Testing: disk info nvme0n1p1")
+            pos = len(log_path.read_text(errors="replace"))
+            cmd8 = "disk info nvme0n1p1\n"
+            send_str(uart, cmd8)
+            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd8) - 5, timeout=20)
+            out_info = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            print(f"      Info Output:\n{out_info.strip()}\n")
+            assert "Device:           nvme0n1p1" in out_info
+            assert "Type:             Partition (index 1)" in out_info
+            assert "Size:             4M (4194304 bytes)" in out_info
+            assert "Partition UUID:   11223344-5566-7788-99AA-BBCCDDEEFF00" in out_info
+            assert "Partition Label:  Fortress Storage" in out_info
+            assert "Mount point:      /mnt (ext2, read-write)" in out_info
+            print("  [PASS] disk info verified.")
+
+            # Test 9: disk info -c /dev/nvme0n1p1
+            print("  [10] Testing: disk info -c /dev/nvme0n1p1")
+            pos = len(log_path.read_text(errors="replace"))
+            cmd9 = "disk info -c /dev/nvme0n1p1\n"
+            send_str(uart, cmd9)
+            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd9) - 5, timeout=20)
+            out_info_cmp = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            print(f"      Info Comparison Output:\n{out_info_cmp.strip()}\n")
+            assert "device=nvme0n1p1 type=partition index=1" in out_info_cmp
+            assert "partuuid=11223344-5566-7788-99AA-BBCCDDEEFF00" in out_info_cmp
+            assert "label=Fortress Storage" in out_info_cmp
+            assert "mount=/mnt fs=ext2 flags=rw" in out_info_cmp
+            print("  [PASS] disk info -c verified.")
+
             print("=== ALL DISK QEMU TESTS PASSED ===")
 
         finally:

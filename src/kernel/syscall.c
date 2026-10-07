@@ -22,6 +22,7 @@
 #include "ext4.h"
 #include "tarfs.h"
 #include "block.h"
+#include "../fs/gpt.h"
 #include "heap.h"
 #include "elf.h"
 #include "usb_mount.h"
@@ -1233,6 +1234,26 @@ static int64_t sys_blockinfo(uint32_t index, uintptr_t user_buf) {
     info.name[nlen] = '\0';
     info.sector_size = dev->sector_size;
     info.size_bytes = dev->sector_count * (uint64_t)dev->sector_size;
+
+    /* Check if this device is a GPT partition */
+    if (dev->priv != NULL) {
+        for (size_t p = 0; p < gpt_get_partition_count(); p++) {
+            gpt_partition_t *part = gpt_get_partition(p);
+            if (part && (&part->block_dev == dev || part == dev->priv)) {
+                info.is_partition = 1;
+                info.part_index = part->part_index;
+                info.start_lba = part->starting_lba;
+                info.sector_count = part->sector_count;
+                gpt_guid_to_str(&part->unique_guid, info.partuuid);
+                gpt_guid_to_str(&part->type_guid, info.type_guid);
+                size_t llen = strlen(part->label);
+                if (llen >= sizeof(info.label)) llen = sizeof(info.label) - 1;
+                memcpy(info.label, part->label, llen);
+                info.label[llen] = '\0';
+                break;
+            }
+        }
+    }
 
     memcpy((void *)user_buf, &info, sizeof(info));
     return 1;

@@ -996,7 +996,8 @@ diskbench -s -w 64K -n 20 /mnt
 **Path:** `/bin/disk`  
 **Description:** Storage observability utility for FortressOS running in Ring 3. Queries passive kernel device and filesystem registry information without mutating storage or issuing disk writes.
 * **Subcommands:**
-  * `list` (default): Enumerate registered block devices, capacity, sector size, and active mount correlations.
+  * `list` (default): Enumerate registered block devices, capacity, sector size, GPT partition labels, PARTUUIDs, and active mount correlations.
+  * `info <device>`: Display detailed metadata for a specific block device or partition (type, capacity in human-readable and raw bytes, sector size, partition start LBA, sector count, PARTUUID, GPT label, GPT type GUID with type description, and mount point status). Accepts bare name (e.g. `nvme0n1p1`) or `/dev/` path (e.g. `/dev/nvme0n1p1`).
   * `usage`: Display mounted filesystem usage (total/used/available blocks, use percentage, inodes).
   * `bench`: Benchmark filesystem throughput (merging diskbench).
     - *Note on naming*: Output prefixes retain 'diskbench' ('=== diskbench: ... ===' and comparison prefix 'diskbench ...') for backward compatibility with automated parsing pipelines.
@@ -1006,8 +1007,10 @@ diskbench -s -w 64K -n 20 /mnt
   * `-h`, `--help`: Display usage summary and exit.
 **Examples:**
 ```sh
-disk                     # List all block devices (flat table, default)
-disk list -c             # List devices in comparison key=value format
+disk                     # List all block devices (flat table including LABEL and PARTUUID)
+disk list -c             # List devices in comparison key=value format (includes label=, partuuid=)
+disk info nvme0n1p1      # Detailed view of partition nvme0n1p1
+disk info -c /dev/sda    # Detailed view in machine-parseable comparison format
 disk usage               # Show filesystem disk space and inode usage table
 disk usage -c            # Show filesystem usage in comparison format
 ```

@@ -235,6 +235,7 @@ int main(void) {
         assert(rc == 0);
         assert(strstr(stdout_buf, "Usage: disk [subcommand]") != NULL);
         assert(strstr(stdout_buf, "list  [-c]") != NULL);
+        assert(strstr(stdout_buf, "info  [-c] <dev>") != NULL);
         assert(strstr(stdout_buf, "usage [-c]") != NULL);
         assert(strstr(stdout_buf, "bench [options]") != NULL);
         printf("[disk_host] Test 1: --help passed\n");
@@ -259,6 +260,8 @@ int main(void) {
         assert(strstr(stdout_buf, "NAME") != NULL);
         assert(strstr(stdout_buf, "SIZE") != NULL);
         assert(strstr(stdout_buf, "SECTOR") != NULL);
+        assert(strstr(stdout_buf, "LABEL") != NULL);
+        assert(strstr(stdout_buf, "PARTUUID") != NULL);
         assert(strstr(stdout_buf, "MOUNT") != NULL);
         assert(strstr(stdout_buf, "initramfs") != NULL);
         assert(strstr(stdout_buf, "1M") != NULL);
@@ -283,9 +286,15 @@ int main(void) {
         mock_blocks[0].sector_size = 512;
         mock_blocks[0].size_bytes = 1048576;
 
-        safe_strcpy(mock_blocks[1].name, "nvme0n1", sizeof(mock_blocks[1].name));
+        safe_strcpy(mock_blocks[1].name, "nvme0n1p1", sizeof(mock_blocks[1].name));
         mock_blocks[1].sector_size = 512;
         mock_blocks[1].size_bytes = 4194304;
+        mock_blocks[1].is_partition = 1;
+        mock_blocks[1].part_index = 1;
+        mock_blocks[1].start_lba = 2048;
+        mock_blocks[1].sector_count = 8192;
+        safe_strcpy(mock_blocks[1].partuuid, "e4d3c2b1-1234-5678-9abc-def012345678", sizeof(mock_blocks[1].partuuid));
+        safe_strcpy(mock_blocks[1].label, "fortress-data", sizeof(mock_blocks[1].label));
 
         safe_strcpy(mock_blocks[2].name, "sda", sizeof(mock_blocks[2].name));
         mock_blocks[2].sector_size = 512;
@@ -299,11 +308,15 @@ int main(void) {
         assert(strstr(stdout_buf, "NAME") != NULL);
         assert(strstr(stdout_buf, "SIZE") != NULL);
         assert(strstr(stdout_buf, "SECTOR") != NULL);
+        assert(strstr(stdout_buf, "LABEL") != NULL);
+        assert(strstr(stdout_buf, "PARTUUID") != NULL);
         assert(strstr(stdout_buf, "MOUNT") != NULL);
 
         assert(strstr(stdout_buf, "initramfs") != NULL);
-        assert(strstr(stdout_buf, "nvme0n1") != NULL);
+        assert(strstr(stdout_buf, "nvme0n1p1") != NULL);
         assert(strstr(stdout_buf, "sda") != NULL);
+        assert(strstr(stdout_buf, "fortress-data") != NULL);
+        assert(strstr(stdout_buf, "e4d3c2b1-1234-5678-9abc-def012345678") != NULL);
         assert(strstr(stdout_buf, "/") != NULL);
         assert(strstr(stdout_buf, "/mnt") != NULL);
         assert(strstr(stdout_buf, "—") != NULL);
@@ -327,9 +340,15 @@ int main(void) {
         mock_blocks[0].sector_size = 512;
         mock_blocks[0].size_bytes = 1048576;
 
-        safe_strcpy(mock_blocks[1].name, "nvme0n1", sizeof(mock_blocks[1].name));
+        safe_strcpy(mock_blocks[1].name, "nvme0n1p1", sizeof(mock_blocks[1].name));
         mock_blocks[1].sector_size = 512;
         mock_blocks[1].size_bytes = 4194304;
+        mock_blocks[1].is_partition = 1;
+        mock_blocks[1].part_index = 1;
+        mock_blocks[1].start_lba = 2048;
+        mock_blocks[1].sector_count = 8192;
+        safe_strcpy(mock_blocks[1].partuuid, "e4d3c2b1-1234-5678-9abc-def012345678", sizeof(mock_blocks[1].partuuid));
+        safe_strcpy(mock_blocks[1].label, "fortress-data", sizeof(mock_blocks[1].label));
 
         safe_strcpy(mock_blocks[2].name, "sda", sizeof(mock_blocks[2].name));
         mock_blocks[2].sector_size = 512;
@@ -341,7 +360,7 @@ int main(void) {
         assert(rc == 0);
 
         assert(strstr(stdout_buf, "name=initramfs sector=512 size=1048576 mount=/") != NULL);
-        assert(strstr(stdout_buf, "name=nvme0n1 sector=512 size=4194304\n") != NULL);
+        assert(strstr(stdout_buf, "name=nvme0n1p1 sector=512 size=4194304 label=fortress-data partuuid=e4d3c2b1-1234-5678-9abc-def012345678\n") != NULL);
         assert(strstr(stdout_buf, "name=sda sector=512 size=4194304 mount=/mnt") != NULL);
 
         printf("[disk_host] Test 4: disk list -c comparison format passed\n");
@@ -468,6 +487,101 @@ int main(void) {
         printf("[disk_host] Test 11: disk bench -c comparison mode passed\n");
     }
 
-    printf("[disk_host] All 11 host tests passed successfully!\n");
+    /* Test 12: disk info <device> */
+    {
+        reset_mock();
+        safe_strcpy(mock_mounts[0].source, "nvme0n1p1", sizeof(mock_mounts[0].source));
+        safe_strcpy(mock_mounts[0].mount_path, "/mnt", sizeof(mock_mounts[0].mount_path));
+        mock_mounts[0].fs_type = VFS_FS_EXT2;
+        mock_mounts[0].flags = MOUNT_FLAGS_RW;
+        mock_mount_count = 1;
+
+        safe_strcpy(mock_blocks[0].name, "nvme0n1p1", sizeof(mock_blocks[0].name));
+        mock_blocks[0].sector_size = 512;
+        mock_blocks[0].size_bytes = 4194304;
+        mock_blocks[0].is_partition = 1;
+        mock_blocks[0].part_index = 1;
+        mock_blocks[0].start_lba = 2048;
+        mock_blocks[0].sector_count = 8192;
+        safe_strcpy(mock_blocks[0].partuuid, "e4d3c2b1-1234-5678-9abc-def012345678", sizeof(mock_blocks[0].partuuid));
+        safe_strcpy(mock_blocks[0].label, "fortress-data", sizeof(mock_blocks[0].label));
+        safe_strcpy(mock_blocks[0].type_guid, "0fc63daf-8483-4772-8e79-3d69d8477de4", sizeof(mock_blocks[0].type_guid));
+        mock_block_count = 1;
+
+        char *argv[] = { "disk", "info", "nvme0n1p1", NULL };
+        int rc = disk_main(3, argv);
+        assert(rc == 0);
+        assert(strstr(stdout_buf, "Device:") != NULL);
+        assert(strstr(stdout_buf, "nvme0n1p1") != NULL);
+        assert(strstr(stdout_buf, "Type:") != NULL);
+        assert(strstr(stdout_buf, "Partition (index 1)") != NULL);
+        assert(strstr(stdout_buf, "Size:") != NULL);
+        assert(strstr(stdout_buf, "4M (4194304 bytes)") != NULL);
+        assert(strstr(stdout_buf, "Sector size:") != NULL);
+        assert(strstr(stdout_buf, "512B (512 bytes)") != NULL);
+        assert(strstr(stdout_buf, "Start LBA:") != NULL);
+        assert(strstr(stdout_buf, "2048") != NULL);
+        assert(strstr(stdout_buf, "Sector count:") != NULL);
+        assert(strstr(stdout_buf, "8192") != NULL);
+        assert(strstr(stdout_buf, "Partition UUID:") != NULL);
+        assert(strstr(stdout_buf, "e4d3c2b1-1234-5678-9abc-def012345678") != NULL);
+        assert(strstr(stdout_buf, "Partition Label:") != NULL);
+        assert(strstr(stdout_buf, "fortress-data") != NULL);
+        assert(strstr(stdout_buf, "Partition Type:") != NULL);
+        assert(strstr(stdout_buf, "0fc63daf-8483-4772-8e79-3d69d8477de4 (Linux filesystem data)") != NULL);
+        assert(strstr(stdout_buf, "Mount point:") != NULL);
+        assert(strstr(stdout_buf, "/mnt (ext2, read-write)") != NULL);
+        printf("[disk_host] Test 12: disk info <device> passed\n");
+    }
+
+    /* Test 13: disk info -c /dev/<device> */
+    {
+        reset_mock();
+        safe_strcpy(mock_mounts[0].source, "nvme0n1p1", sizeof(mock_mounts[0].source));
+        safe_strcpy(mock_mounts[0].mount_path, "/mnt", sizeof(mock_mounts[0].mount_path));
+        mock_mounts[0].fs_type = VFS_FS_EXT2;
+        mock_mounts[0].flags = MOUNT_FLAGS_RW;
+        mock_mount_count = 1;
+
+        safe_strcpy(mock_blocks[0].name, "nvme0n1p1", sizeof(mock_blocks[0].name));
+        mock_blocks[0].sector_size = 512;
+        mock_blocks[0].size_bytes = 4194304;
+        mock_blocks[0].is_partition = 1;
+        mock_blocks[0].part_index = 1;
+        mock_blocks[0].start_lba = 2048;
+        mock_blocks[0].sector_count = 8192;
+        safe_strcpy(mock_blocks[0].partuuid, "e4d3c2b1-1234-5678-9abc-def012345678", sizeof(mock_blocks[0].partuuid));
+        safe_strcpy(mock_blocks[0].label, "fortress-data", sizeof(mock_blocks[0].label));
+        safe_strcpy(mock_blocks[0].type_guid, "0fc63daf-8483-4772-8e79-3d69d8477de4", sizeof(mock_blocks[0].type_guid));
+        mock_block_count = 1;
+
+        char *argv[] = { "disk", "info", "-c", "/dev/nvme0n1p1", NULL };
+        int rc = disk_main(4, argv);
+        assert(rc == 0);
+        assert(strstr(stdout_buf, "device=nvme0n1p1 type=partition index=1 start_lba=2048 sectors=8192 partuuid=e4d3c2b1-1234-5678-9abc-def012345678 label=fortress-data type_guid=0fc63daf-8483-4772-8e79-3d69d8477de4 sector=512 size=4194304 mount=/mnt fs=ext2 flags=rw\n") != NULL);
+        printf("[disk_host] Test 13: disk info -c /dev/<device> passed\n");
+    }
+
+    /* Test 14: disk info non-existent device */
+    {
+        reset_mock();
+        char *argv[] = { "disk", "info", "missing_dev", NULL };
+        int rc = disk_main(3, argv);
+        assert(rc == 1);
+        assert(strstr(stderr_buf, "device not found") != NULL);
+        printf("[disk_host] Test 14: disk info non-existent device passed\n");
+    }
+
+    /* Test 15: disk info missing target */
+    {
+        reset_mock();
+        char *argv[] = { "disk", "info", NULL };
+        int rc = disk_main(2, argv);
+        assert(rc == 2);
+        assert(strstr(stderr_buf, "missing device argument for info") != NULL);
+        printf("[disk_host] Test 15: disk info missing target passed\n");
+    }
+
+    printf("[disk_host] All 15 host tests passed successfully!\n");
     return 0;
 }

@@ -131,8 +131,9 @@ static void format_pct(char *buf, size_t buf_sz, uint64_t used, uint64_t total) 
 static void print_help(void) {
     out_str("Usage: disk [subcommand] [options]\n\n");
     out_str("Subcommands:\n");
-    out_str("  list  [-c]       List block devices (default)\n");
+    out_str("  list  [-c]       List block devices and partitions (default)\n");
     out_str("  usage [-c]       Show filesystem disk space and inode usage\n");
+    out_str("  info  [-c] <dev> Show detailed information for a block device or partition\n");
     out_str("  bench [options]  Benchmark filesystem throughput\n\n");
     out_str("Options:\n");
     out_str("  -c, --comparison Output comparison-friendly single-line format\n");
@@ -171,10 +172,10 @@ static int collect_blocks(void) {
     return 0;
 }
 
-static const char *find_mount_for_dev(const char *dev_name) {
+static mount_info_t *find_mount_for_dev(const char *dev_name) {
     for (uint32_t i = 0; i < s_mount_count; i++) {
         if (tool_equal(s_mounts[i].source, dev_name)) {
-            return s_mounts[i].mount_path;
+            return &s_mounts[i];
         }
     }
     return NULL;
@@ -201,6 +202,10 @@ static int disk_list(bool comparison) {
         out_str(" ");
         out_right("SECTOR", 7);
         out_str("  ");
+        out_left("LABEL", 12);
+        out_str(" ");
+        out_left("PARTUUID", 38);
+        out_str(" ");
         out_left("MOUNT", 10);
         out_str("\n");
 
@@ -210,8 +215,10 @@ static int disk_list(bool comparison) {
             format_size(size_buf, sizeof(size_buf), b->size_bytes);
             format_sector(sector_buf, sizeof(sector_buf), b->sector_size);
 
-            const char *mnt = find_mount_for_dev(b->name);
-            const char *mnt_str = mnt ? mnt : "—";
+            mount_info_t *m = find_mount_for_dev(b->name);
+            const char *mnt_str = m ? m->mount_path : "—";
+            const char *lbl_str = (b->label[0] != '\0') ? b->label : "—";
+            const char *uuid_str = (b->partuuid[0] != '\0') ? b->partuuid : "—";
 
             out_left(b->name, 14);
             out_str(" ");
@@ -219,6 +226,10 @@ static int disk_list(bool comparison) {
             out_str(" ");
             out_right(sector_buf, 7);
             out_str("  ");
+            out_left(lbl_str, 12);
+            out_str(" ");
+            out_left(uuid_str, 38);
+            out_str(" ");
             out_left(mnt_str, 10);
             out_str("\n");
         }
@@ -233,10 +244,19 @@ static int disk_list(bool comparison) {
             out_str(" size=");
             out_u64(b->size_bytes);
 
-            const char *mnt = find_mount_for_dev(b->name);
-            if (mnt) {
+            if (b->label[0] != '\0') {
+                out_str(" label=");
+                out_str(b->label);
+            }
+            if (b->partuuid[0] != '\0') {
+                out_str(" partuuid=");
+                out_str(b->partuuid);
+            }
+
+            mount_info_t *m = find_mount_for_dev(b->name);
+            if (m) {
                 out_str(" mount=");
-                out_str(mnt);
+                out_str(m->mount_path);
             }
             out_str("\n");
         }
@@ -383,6 +403,153 @@ static int disk_usage(bool comparison) {
     return 0;
 }
 
+static int disk_info(const char *target, bool comparison) {
+    if (!target || target[0] == '\0') {
+        tool_error("disk", "missing device target", NULL);
+        return 2;
+    }
+    if (collect_mounts() < 0 || collect_blocks() < 0) {
+        return 1;
+    }
+
+    const char *clean_target = target;
+    if (target[0] == '/' && target[1] == 'd' && target[2] == 'e' && target[3] == 'v' && target[4] == '/') {
+        clean_target = target + 5;
+    }
+
+    block_info_t *b = NULL;
+    for (uint32_t i = 0; i < s_block_count; i++) {
+        if (tool_equal(s_blocks[i].name, clean_target)) {
+            b = &s_blocks[i];
+            break;
+        }
+    }
+
+    if (!b) {
+        tool_error("disk", "device not found", target);
+        return 1;
+    }
+
+    mount_info_t *m = find_mount_for_dev(b->name);
+
+    if (!comparison) {
+        out_left("Device:", 18);
+        out_str(b->name);
+        out_str("\n");
+
+        out_left("Type:", 18);
+        if (b->is_partition) {
+            out_str("Partition (index ");
+            out_u64((uint64_t)b->part_index);
+            out_str(")\n");
+        } else if (tool_equal(b->name, "initramfs")) {
+            out_str("RAM Disk (initramfs)\n");
+        } else {
+            out_str("Base Block Device\n");
+        }
+
+        char size_buf[16];
+        format_size(size_buf, sizeof(size_buf), b->size_bytes);
+        out_left("Size:", 18);
+        out_str(size_buf);
+        out_str(" (");
+        out_u64(b->size_bytes);
+        out_str(" bytes)\n");
+
+        char sec_buf[16];
+        format_sector(sec_buf, sizeof(sec_buf), b->sector_size);
+        out_left("Sector size:", 18);
+        out_str(sec_buf);
+        out_str(" (");
+        out_u64((uint64_t)b->sector_size);
+        out_str(" bytes)\n");
+
+        if (b->is_partition) {
+            out_left("Start LBA:", 18);
+            out_u64(b->start_lba);
+            out_str("\n");
+
+            out_left("Sector count:", 18);
+            out_u64(b->sector_count);
+            out_str("\n");
+
+            out_left("Partition UUID:", 18);
+            out_str((b->partuuid[0] != '\0') ? b->partuuid : "—");
+            out_str("\n");
+
+            out_left("Partition Label:", 18);
+            out_str((b->label[0] != '\0') ? b->label : "—");
+            out_str("\n");
+
+            out_left("Partition Type:", 18);
+            out_str((b->type_guid[0] != '\0') ? b->type_guid : "—");
+            if (tool_equal(b->type_guid, "0fc63daf-8483-4772-8e79-3d69d8477de4") ||
+                tool_equal(b->type_guid, "0FC63DAF-8483-4772-8E79-3D69D8477DE4")) {
+                out_str(" (Linux filesystem data)");
+            } else if (tool_equal(b->type_guid, "c12a7328-f81f-11d2-ba4b-00a0c93ec93b") ||
+                       tool_equal(b->type_guid, "C12A7328-F81F-11D2-BA4B-00A0C93EC93B")) {
+                out_str(" (EFI System Partition)");
+            }
+            out_str("\n");
+        }
+
+        out_left("Mount point:", 18);
+        if (m) {
+            out_str(m->mount_path);
+            out_str(" (");
+            out_str(fs_type_str(m->fs_type));
+            out_str(", ");
+            out_str((m->flags & MOUNT_FLAGS_RW) ? "read-write" : "read-only");
+            out_str(")\n");
+        } else {
+            out_str("—\n");
+        }
+    } else {
+        out_str("device=");
+        out_str(b->name);
+        out_str(" type=");
+        if (b->is_partition) {
+            out_str("partition index=");
+            out_u64((uint64_t)b->part_index);
+            out_str(" start_lba=");
+            out_u64(b->start_lba);
+            out_str(" sectors=");
+            out_u64(b->sector_count);
+            if (b->partuuid[0] != '\0') {
+                out_str(" partuuid=");
+                out_str(b->partuuid);
+            }
+            if (b->label[0] != '\0') {
+                out_str(" label=");
+                out_str(b->label);
+            }
+            if (b->type_guid[0] != '\0') {
+                out_str(" type_guid=");
+                out_str(b->type_guid);
+            }
+        } else if (tool_equal(b->name, "initramfs")) {
+            out_str("ramdisk");
+        } else {
+            out_str("disk");
+        }
+        out_str(" sector=");
+        out_u64((uint64_t)b->sector_size);
+        out_str(" size=");
+        out_u64(b->size_bytes);
+        if (m) {
+            out_str(" mount=");
+            out_str(m->mount_path);
+            out_str(" fs=");
+            out_str(fs_type_str(m->fs_type));
+            out_str(" flags=");
+            out_str((m->flags & MOUNT_FLAGS_RW) ? "rw" : "ro");
+        }
+        out_str("\n");
+    }
+
+    return 0;
+}
+
 int disk_main(int argc, char **argv) {
     if (argc >= 2 && tool_equal(argv[1], "bench")) {
         return diskbench_main(argc - 1, argv + 1);
@@ -390,6 +557,7 @@ int disk_main(int argc, char **argv) {
 
     bool comparison = false;
     const char *subcmd = NULL;
+    const char *target_dev = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
@@ -398,8 +566,15 @@ int disk_main(int argc, char **argv) {
         } else if (tool_equal(arg, "-h") || tool_equal(arg, "--help") || tool_equal(arg, "help")) {
             print_help();
             return 0;
-        } else if (arg[0] != '-' && subcmd == NULL) {
-            subcmd = arg;
+        } else if (arg[0] != '-') {
+            if (subcmd == NULL) {
+                subcmd = arg;
+            } else if (target_dev == NULL) {
+                target_dev = arg;
+            } else {
+                tool_error("disk", "too many arguments", arg);
+                return 2;
+            }
         } else {
             tool_error("disk", "unrecognized argument", arg);
             return 2;
@@ -415,6 +590,12 @@ int disk_main(int argc, char **argv) {
         return disk_list(comparison);
     } else if (tool_equal(subcmd, "usage")) {
         return disk_usage(comparison);
+    } else if (tool_equal(subcmd, "info")) {
+        if (!target_dev) {
+            tool_error("disk", "missing device argument for info", NULL);
+            return 2;
+        }
+        return disk_info(target_dev, comparison);
     } else {
         tool_error("disk", "unknown subcommand", subcmd);
         print_help();
