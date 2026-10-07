@@ -1,4 +1,4 @@
-"""Archive explicit completed host evidence without deleting original outputs."""
+"""Archive explicit completed evidence without deleting original outputs."""
 import argparse
 import gzip
 import hashlib
@@ -23,7 +23,7 @@ def main():
             relative=path.relative_to(ROOT);target=out/'artifacts'/relative
             target.parent.mkdir(parents=True,exist_ok=True)
             rawhash=hashlib.sha256()
-            if path.suffix=='.img':
+            if path.suffix in ('.img','.ext4'):
                 target=Path(str(target)+'.gz')
                 with path.open('rb') as inp,target.open('xb') as raw,gzip.GzipFile(filename='',mode='wb',fileobj=raw,mtime=0,compresslevel=1) as compressed:
                     while chunk:=inp.read(1024*1024):rawhash.update(chunk);compressed.write(chunk)

@@ -2,7 +2,10 @@
 
 Execution plan, 2026-10-06. Prerequisite: the declared Phase-9.4 guest gate
 passed 66/66 cases and evidence review; see [results](../roadmap/ext4-phase9-4.md).
-This document plans the next implementation. It asserts no Phase-9.5 passes.
+The declared automated gate passed on 2026-10-07: 144 main cases, ten separate
+admission controls, relevant regressions and evidence review. See the
+[implementation and limits](../roadmap/ext4-phase9-5.md). Physical acceptance
+and production activation remain separate.
 
 ## Goal and boundaries
 

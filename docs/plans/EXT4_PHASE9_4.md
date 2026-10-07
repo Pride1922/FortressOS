@@ -1,5 +1,9 @@
 # EXT4 Phase 9.4 — Disposable guest crash execution
 
+Declared finite gate passed 2026-10-06: 66/66 native guest cases, six normal
+SMP=4 regression cases (12 boots), and evidence review. See
+[results and limits](../roadmap/ext4-phase9-4.md).
+
 Authorized after verified Phase-9.3 host acceptance. Production mount gates,
 USB dispatch, protected synchronization and DMA contracts remain unchanged.
 

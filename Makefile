@@ -1255,6 +1255,34 @@ EXT4_MOUNT_EVIDENCE ?= .codex-remote-attachments/ext4-phase8-5
 EXT4_INTEGRATION_EVIDENCE ?= .codex-remote-attachments/ext4-phase8-6
 EXT4_CRASH_EVIDENCE ?= .codex-remote-attachments/ext4-phase9
 .PHONY: test-ext4-crash-model-host
+.PHONY: test-ext4-guest-crash
+.PHONY: test-ext4-journal-usb test-ext4-journal-usb-admission test-ext4-journal-usb-crash test-ext4-journal-usb-fault
+# Prepared with create_ext4_guest_workspace.py --usb-journal; no shared build.
+test-ext4-journal-usb:
+	@test -n "$(EXT4_USB_JOURNAL_WORKSPACE)" || (echo "Set EXT4_USB_JOURNAL_WORKSPACE to the prepared isolated snapshot"; exit 1)
+	python3 scripts/test_ext4_journal_usb.py "$(EXT4_USB_JOURNAL_WORKSPACE)" --matrix --integration
+test-ext4-journal-usb-admission:
+	@test -n "$(EXT4_USB_JOURNAL_WORKSPACE)" || (echo "Set EXT4_USB_JOURNAL_WORKSPACE"; exit 1)
+	python3 scripts/test_ext4_usb_journal_admission.py "$(EXT4_USB_JOURNAL_WORKSPACE)"
+test-ext4-journal-usb-crash:
+	@test -n "$(EXT4_USB_JOURNAL_WORKSPACE)" || (echo "Set EXT4_USB_JOURNAL_WORKSPACE"; exit 1)
+	python3 scripts/test_ext4_guest_crash.py "$(EXT4_USB_JOURNAL_WORKSPACE)" --usb --matrix
+	python3 scripts/test_ext4_guest_crash.py "$(EXT4_USB_JOURNAL_WORKSPACE)" --usb --matrix --recovery-only
+	python3 scripts/test_ext4_guest_append_crash.py "$(EXT4_USB_JOURNAL_WORKSPACE)" --usb
+	python3 scripts/test_ext4_guest_orphan_crash.py "$(EXT4_USB_JOURNAL_WORKSPACE)" --usb
+test-ext4-journal-usb-fault:
+	@test -n "$(EXT4_USB_JOURNAL_WORKSPACE)" || (echo "Set EXT4_USB_JOURNAL_WORKSPACE"; exit 1)
+	python3 scripts/test_ext4_usb_journal_fault.py "$(EXT4_USB_JOURNAL_WORKSPACE)" --calibrate
+	python3 scripts/test_ext4_usb_journal_fault.py "$(EXT4_USB_JOURNAL_WORKSPACE)" --matrix
+
+# Prepared isolated workspace only: never rebuild the shared boot artifacts.
+test-ext4-guest-crash:
+	@test -n "$(EXT4_GUEST_WORKSPACE)" || (echo "Set EXT4_GUEST_WORKSPACE to a prepared isolated snapshot"; exit 1)
+	python3 scripts/test_ext4_guest_crash.py "$(EXT4_GUEST_WORKSPACE)" --matrix
+	python3 scripts/test_ext4_guest_crash.py "$(EXT4_GUEST_WORKSPACE)" --matrix --recovery-only
+	python3 scripts/test_ext4_guest_append_crash.py "$(EXT4_GUEST_WORKSPACE)"
+	python3 scripts/test_ext4_guest_orphan_crash.py "$(EXT4_GUEST_WORKSPACE)"
+
 .PHONY: test-ext4-crash-host
 .PHONY: test-ext4-crash-controls-host test-ext4-crash-fragment-host
 test-ext4-crash-controls-host:

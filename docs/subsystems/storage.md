@@ -73,3 +73,8 @@ EXT4 physical follow-up: RW/GPT/SYNC_BACKED admission was user-confirmed, but a 
 - Phase 9H 32 GiB RAM: [`docs/roadmap/phase-9h-ram.md`](../roadmap/phase-9h-ram.md)
 
 E4-A **physically accepted on Dell 5590 (2026-10-03)**: all seven Phase-5 items user-confirmed PASS; [complete record](../roadmap/ext4-phase5-acceptance.md). Non-journaled scope and clean-state admission remain unchanged.
+
+E4-B Phase 9.5 **automated disposable USB gate PASS (2026-10-07)**: 144 main
+cases, ten admission controls, E4-A/ext2 USB, BOT/mount-policy and NVMe journal
+regressions; [implementation, evidence and limits](../roadmap/ext4-phase9-5.md).
+Production journaled RW remains disabled; physical acceptance is Phase 9.6.

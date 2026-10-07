@@ -3099,18 +3099,32 @@ static void ext4_fixture_verify(const char *path,uint64_t size,uint8_t *buffer) 
     require_ext2(vfs_read(file,buffer,1)==0,"ext4 persisted EOF");vfs_close(file);
 }
 /* Separate explicit QEMU fixture gate. Never called by production storage
- * dispatch; caller asserts primary-consistent GPT on the sole NVMe fixture. */
-static void test_ext4_journal_mount(void) {
-    require_ext2(nvme_init(),"ext4 journal fixture NVMe init");block_init();
-    require_ext2(block_register_nvme(),"ext4 journal fixture registration");gpt_policy_result_t policy;
-    require_ext2(gpt_parse_ex(block_get_dev_by_name("nvme0n1"),&policy) &&
-        policy==GPT_POLICY_PRIMARY_CONSISTENT,"ext4 journal fixture GPT");
+ * dispatch; caller admits a primary-consistent GPT on its sole test device. */
+static void test_ext4_journal_mount_on(block_dev_t *partition) {
     ext4_journal_admission_t admission={true,true,true};
-    require_ext2(!ext4_mount_journal_fixture(block_get_dev_by_name("nvme0n1p1"),"/mnt",admission,&g_ext4_fixture_mount),
+    require_ext2(!ext4_mount_journal_fixture(partition,"/mnt",admission,&g_ext4_fixture_mount),
         "ext4 journal recovery/publication");
     require_ext2(!vfs_lookup("/mnt/target.bin"),"ext4 journal startup orphan cleanup");
     bool second=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_verify");uint8_t *bytes=kmalloc(16384);
     require_ext2(bytes!=NULL,"ext4 journal fixture buffer");
+    bool write_fault=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_write_fault");
+    bool sync_fault=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_sync_fault");
+    if (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test") && (write_fault || sync_fault)) {
+        require_ext2(!second && write_fault!=sync_fault,"USB journal fault fixture mode");
+        file_t *file=vfs_open("/mnt/journal-persist.bin",VFS_O_CREAT|VFS_O_RDWR);
+        require_ext2(file!=NULL,"USB journal fault file");
+        for (unsigned k=0;k<16384;k++) bytes[k]=(uint8_t)(k*17+3);
+        int64_t written=vfs_write(file,bytes,16384);
+        if (sync_fault) {
+            require_ext2(written==16384,"USB journal pre-fault write");
+            require_ext2(!usb_mount_sync(),"USB journal failed sync returns error");
+        } else require_ext2(written==-VFS_EIO,"USB journal failed write returns EIO");
+        require_ext2(vfs_write(file,bytes,17)==-VFS_EIO,"USB journal taint blocks later write");
+        require_ext2(!usb_mount_sync(),"USB journal taint blocks later sync");
+        require_ext2(ext4_freeze_and_sync(g_ext4_fixture_mount)==-VFS_EIO,"USB journal failed freeze never claims clean");
+        vfs_close(file);kfree(bytes);
+        serial_puts("[EXT4 USB JOURNAL] FAULT PASS; EIO/taint/later-write/sync/freeze\n");return;
+    }
     if (!second) {
         file_t *file=vfs_open("/mnt/journal-persist.bin",VFS_O_CREAT|VFS_O_RDWR);
         require_ext2(file!=NULL,"ext4 journal create");
@@ -3150,6 +3164,45 @@ static void test_ext4_journal_mount(void) {
     }
     kfree(bytes);serial_puts(second ? "[EXT4 JOURNAL] PASS boot 2; replay/bytes/namespace\n" :
         "[EXT4 JOURNAL] PASS boot 1; recovered orphans/sync/later-write\n");
+}
+static void test_ext4_journal_mount(void) {
+    require_ext2(nvme_init(),"ext4 journal fixture NVMe init");block_init();
+    require_ext2(block_register_nvme(),"ext4 journal fixture registration");gpt_policy_result_t policy;
+    require_ext2(gpt_parse_ex(block_get_dev_by_name("nvme0n1"),&policy) &&
+        policy==GPT_POLICY_PRIMARY_CONSISTENT,"ext4 journal fixture GPT");
+    test_ext4_journal_mount_on(block_get_dev_by_name("nvme0n1p1"));
+}
+/* Explicit QEMU-only USB fixture admission, separate from production dispatch.
+ * Called after normal USB discovery, in unlocked thread context. */
+static void test_ext4_journal_usb_mount(const boot_info_t *info) {
+    usb_mount_config_t cfg;usb_mount_parse_cmdline(info->cmdline,&cfg);
+    block_dev_t *disk=block_get_dev_by_name("sda");gpt_partition_t *selected=NULL;
+    unsigned matches=0;usb_durability_mode_t durability=usb_get_durability_mode();
+    if (!cfg.malformed && cfg.has_target && cfg.mode==USB_MOUNT_MODE_RW &&
+        usb_is_initialized() && disk && gpt_get_last_policy()==GPT_POLICY_PRIMARY_CONSISTENT) {
+        for (size_t i=0;i<gpt_get_partition_count();i++) {
+            gpt_partition_t *part=gpt_get_partition(i);
+            if (part && part->parent==disk && gpt_guid_equal(&part->unique_guid,&cfg.target_guid)) {
+                selected=part;matches++;
+            }
+        }
+    }
+    if (matches!=1 || vfs_lookup("/mnt") ||
+        (durability!=USB_DURABILITY_SYNC_BACKED && durability!=USB_DURABILITY_WRITE_THROUGH &&
+         durability!=USB_DURABILITY_ASSUMED_WRITE_THROUGH) ||
+        !selected->block_dev.write_sector || !selected->block_dev.flush) {
+        serial_puts("[EXT4 USB JOURNAL] REJECT admission; no filesystem writes\n");return;
+    }
+    if (!block_flush(&selected->block_dev)) {
+        usb_report_flush_failure();
+        serial_puts("[EXT4 USB JOURNAL] REJECT flush preflight; no filesystem writes\n");return;
+    }
+    char target[40];gpt_guid_to_str(&cfg.target_guid,target);
+    serial_puts("[EXT4 USB JOURNAL] Selected sda PARTUUID=");serial_puts(target);
+    serial_puts(", durability=");
+    serial_puts(durability==USB_DURABILITY_SYNC_BACKED ? "sync-backed\n" :
+        durability==USB_DURABILITY_WRITE_THROUGH ? "write-through\n" : "assumed-write-through\n");
+    test_ext4_journal_mount_on(&selected->block_dev);
 }
 static void test_ext4_writes(bool production_usb) {
     if (!production_usb) {
@@ -5756,6 +5809,17 @@ pf_boot_guard_done:
      * including its exact geometry and fixture files. Do not apply it to a
      * laptop's existing NVMe namespaces. PCI discovery above is read-only. */
     pci_device_t storage_fixture;
+    if (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) {
+        pci_device_t usb_fixture;
+        require_ext2(!qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") &&
+            !qemu_fw_cfg_has_key("opt/fortress/ext4_usb_test") &&
+            !qemu_fw_cfg_has_key("opt/fortress/ext4_write_test") &&
+            !qemu_fw_cfg_has_key("opt/fortress/ext4_read_test") &&
+            !pci_find_device(PCI_CLASS_STORAGE,PCI_SUBCLASS_STORAGE_NVME,PCI_PROGIF_STORAGE_NVME,&storage_fixture) &&
+            pci_find_device(PCI_CLASS_SERIAL_BUS,PCI_SUBCLASS_USB,PCI_PROGIF_USB_XHCI,&usb_fixture) &&
+            usb_fixture.vendor_id==0x1b36 && usb_fixture.device_id==0x000d,
+            "exclusive QEMU USB journal fixture admission");
+    }
     if (!pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME,
                          PCI_PROGIF_STORAGE_NVME, &storage_fixture) ||
         storage_fixture.vendor_id != 0x1b36 || storage_fixture.device_id != 0x0010) {
@@ -5845,8 +5909,10 @@ pf_boot_guard_done:
     e1000_raw_selftest(boot_info.cmdline);
     net_start(boot_info.cmdline, sizeof(boot_info.cmdline));
     boot_status("Mounting persistent storage (/mnt)...");
-    usb_mount_production_storage(&boot_info);
-    if (g_ext4_fixture_mount && qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") &&
+    if (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) test_ext4_journal_usb_mount(&boot_info);
+    else usb_mount_production_storage(&boot_info);
+    if (g_ext4_fixture_mount && (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") ||
+        qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) &&
         qemu_fw_cfg_has_key("opt/fortress/ext4_journal_integration") && smp_get_cpu_count()>=2) {
         require_ext2(run_append_scenario("/mnt/journal-app-independent.txt",false,smp_get_cpu_count()),"journal AP independent append");
         require_ext2(run_append_scenario("/mnt/journal-app-shared.txt",true,smp_get_cpu_count()),"journal AP shared append");

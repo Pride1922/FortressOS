@@ -50,7 +50,7 @@ def preflight(cmd,mode,disk,variables,phase,iso,out):
     assert disk.is_file() and iso.is_file()
     assert all(p.resolve().parent==out.resolve() for p in (disk,variables,iso))
 
-def boot(mode,disk,variables,phase,iso,out,label):
+def boot(mode,disk,variables,phase,iso,out,label,removed=()):
     cmd=command(mode,disk,variables,phase,iso);preflight(cmd,mode,disk,variables,phase,iso,out)
     for extra in (['-drive','file=/dev/sda'],['-blockdev','driver=host_device'],['-snapshot']):
         try:preflight(cmd+extra,mode,disk,variables,phase,iso,out)
@@ -85,6 +85,11 @@ def boot(mode,disk,variables,phase,iso,out,label):
             assert 'Filesystem synced.' in shell('sync')
             for name,payload in [('journal-persist.bin',DATA),('journal-later.bin',DATA[:17])]:
                 assert hashlib.sha256(payload).hexdigest() in shell(f'sha256sum /mnt/{name}')
+            for name in removed:
+                assert name in ('journal-later.bin','ring-later.bin'),'undeclared cleanup'
+                reply=shell(f'rm /mnt/{name}')
+                assert 'error' not in reply.lower() and 'failed' not in reply.lower(),reply
+            if removed:assert 'Filesystem synced.' in shell('sync')
             proc.stdin.write(b'shutdown\n');proc.stdin.flush()
             proc.wait(timeout=30);assert proc.returncode==0
         finally:
@@ -97,7 +102,7 @@ def boot(mode,disk,variables,phase,iso,out,label):
             (out/f'{label}-boot{phase}.log').write_bytes(transcript)
     return {'phase':phase,'argv':cmd,'disk_sha256':hashlib.sha256(disk.read_bytes()).hexdigest()}
 
-def audit(disk,out,label,phase):
+def audit(disk,out,label,phase,removed=()):
     with disk.open('rb') as f:
         f.seek(1056);first,last=struct.unpack('<QQ',f.read(16));f.seek(first*512);data=f.read((last-first+1)*512)
     assert struct.unpack_from('<H',data,1082)[0]==1
@@ -113,6 +118,8 @@ def audit(disk,out,label,phase):
     assert stored==crc(0xffffffff,checked),'journal superblock checksum'
     log=run(['e2fsck','-fn',str(image)])
     for name,payload in [('journal-persist.bin',DATA),('journal-later.bin',DATA[:17]),('ring-later.bin',b'post-sync\n')]:
+        if name in removed:
+            result=run(['debugfs','-R',f'stat /{name}',str(image)]);assert 'File not found' in result,name;log+=result;continue
         target=out/f'{label}-boot{phase}-{name}'
         target.unlink(missing_ok=True)
         log+=run(['debugfs','-R',f'dump /{name} {target}',str(image)])

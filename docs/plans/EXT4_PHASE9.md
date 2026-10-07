@@ -5,8 +5,11 @@ Execution plan, 2026-10-04. Phase 8.6 implementation checkpoint:
 enabling production journaled RW. Phase 9.1 is host-verified; Phase 9.2 has passed
 its declared crash schedules, both mounted depth promotions and regressions;
 all final ledgers and evidence retention are verified. Phase 9.3's declared host
-campaign and evidence review passed; Phase 9.4 isolated guest preparation has
-started. Phases 9.5–9.6 remain planned.
+campaign and evidence review passed; Phase 9.4's declared 66-case guest gate
+and evidence review passed. Phase 9.5's declared 144-case USB gate, ten admission
+controls, regressions and evidence review passed; see the
+[9.5 results](../roadmap/ext4-phase9-5.md). Phase 9.6 remains pending; see the
+[9.5 execution plan](EXT4_PHASE9_5.md).
 See [9.3 execution](EXT4_PHASE9_3.md), [9.1 specification](EXT4_PHASE9_1.md),
 [9.1 evidence](../roadmap/ext4-phase9-1.md), [9.2 specification](EXT4_PHASE9_2.md)
 and [9.2 evidence](../roadmap/ext4-phase9-2.md).

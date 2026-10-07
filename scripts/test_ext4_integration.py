@@ -33,8 +33,8 @@ def boot(mode,disk,variables,phase,iso,out,label):
     if SMP==4:assert '[EXT4 INTEGRATION] SMP APPEND PASS' in text
     return record
 
-def audit(disk,out,label,phase):
-    original_audit(disk,out,label,phase)
+def audit(disk,out,label,phase,base=True):
+    if base:original_audit(disk,out,label,phase)
     image=out/f'{label}-boot{phase}.ext4';log=''
     for name,payload in [('integration-dir/persist.bin',guest.DATA[:1041]),('reuse.bin',guest.DATA[:8192])]:
         target=out/f'{label}-boot{phase}-{name.replace("/","-")}'
