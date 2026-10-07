@@ -7,6 +7,9 @@ typedef struct {
     uint32_t regs[0x8000 / 4];
     unsigned reset_count;
     unsigned rw1c_cleared;
+    unsigned elapsed_ms;
+    unsigned connect_at_ms;
+    unsigned fail_at_ms;
 } mock_ports_hw_t;
 
 static uint32_t mock_read32(void *ctx, uint32_t off) {
@@ -47,7 +50,11 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
 }
 
 static bool mock_delay_ms(void *ctx) {
-    (void)ctx;
+    mock_ports_hw_t *m = ctx;
+    ++m->elapsed_ms;
+    if (m->fail_at_ms && m->elapsed_ms == m->fail_at_ms) return false;
+    if (m->connect_at_ms && m->elapsed_ms == m->connect_at_ms)
+        m->regs[0x450 / 4] |= XHCI_PORTSC_CCS;
     return true;
 }
 
@@ -116,16 +123,34 @@ int main(void) {
     assert(report.ports[1].connected);
     assert(report.ports[1].enabled);
     assert(report.ports[1].speed == XHCI_SPEED_HIGH);
-    assert(report.selected_usb2_port == 2);
-    assert(report.selected_speed == XHCI_SPEED_HIGH);
-    assert(m.reset_count == 1);
-    assert(m.rw1c_cleared == 1);
+    assert(m.reset_count == 2);
+    assert(m.rw1c_cleared == 2);
 
-    /* Port 5 was SuperSpeed connected -> should NOT have been reset */
+    /* SuperSpeed reset behavior is part of the current driver. */
     assert(report.ports[4].connected);
     assert(report.ports[4].speed == XHCI_SPEED_SUPER);
     assert(report.ports[4].protocol_major == 3);
+    assert(report.ports[4].enabled);
 
-    puts("PASS xHCI ports: protocol discovery (USB2/USB3), PORTSC inspection, USB2 port reset, speed negotiation, SuperSpeed isolation, write safety");
+    setup_mock(&m);
+    m.regs[0x450 / 4] &= ~XHCI_PORTSC_CCS;
+    m.connect_at_ms = 750;
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report));
+    assert(report.ports[1].connected && report.ports[1].enabled);
+    assert(m.elapsed_ms == 1020);
+
+    setup_mock(&m);
+    m.regs[0x450 / 4] &= ~XHCI_PORTSC_CCS;
+    m.regs[0x480 / 4] &= ~XHCI_PORTSC_CCS;
+    assert(xhci_discover_and_reset_ports(&io, NULL, &report));
+    assert(report.connected_count == 0 && m.reset_count == 0);
+    assert(m.elapsed_ms == 1000);
+
+    setup_mock(&m);
+    m.fail_at_ms = 50;
+    assert(!xhci_discover_and_reset_ports(&io, NULL, &report));
+    assert(m.elapsed_ms == 50 && m.reset_count == 0);
+
+    puts("PASS xHCI ports: protocols, USB2/USB3 resets, delayed attachment, absent device bound, failed timer, write safety");
     return 0;
 }

@@ -54,6 +54,18 @@ struct ext4_mount {
     e4_map_t *maps;
 };
 static spinlock_t e4_lock = SPINLOCK_RANKED(1, "ext4");
+#ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
+static ext4_mount_t *e4_pause_mount;
+static void (*e4_pause_callback)(void);
+int ext4_test_arm_commit_pause(ext4_mount_t *mount,void (*pause)(void)) {
+    spin_debug_assert_unheld();
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    int r=0;
+    if (!mount || !pause || !mount->journal_mounted || !mount->engine || e4_pause_callback) r=-VFS_EINVAL;
+    else { e4_pause_mount=mount;e4_pause_callback=pause; }
+    spin_unlock_irqrestore(&e4_lock,flags);return r;
+}
+#endif
 static ext4_mount_t *e4_active;
 static bool e4_engine_busy;
 static void e4_engine_owner(ext4_engine_t *e);

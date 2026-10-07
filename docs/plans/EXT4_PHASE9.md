@@ -134,6 +134,10 @@ accepted E4-A and default ext2 remain intact. This gate does not enable producti
 
 ## 9.6 — Evidence review and physical acceptance
 
+Execution preparation started 2026-10-07; see the
+[target identification, artifact and physical procedure](EXT4_PHASE9_6.md).
+Physical results remain pending.
+
 Review complete coverage and every failure before declaring automated acceptance.
 Require exact expected bytes/namespace, ownership agreement, clean fsck for
 recoverable cases and precise rejection for unsupported/corrupt inputs. Record

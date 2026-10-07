@@ -59,6 +59,7 @@ static bool send_command(const xhci_rings_io_t *io,
             uint32_t trb_type = (event->control & XHCI_TRB_TYPE_MASK) >> XHCI_TRB_TYPE_SHIFT;
             uint32_t comp_code = (event->status >> 24) & 0xff;
             uint64_t cmd_ptr = ((uint64_t)event->parameter_high << 32) | event->parameter_low;
+            xhci_trb_t snapshot = *event;
 
             /* Advance dequeue pointer and acknowledge to hardware via ERDP */
             dma->event_dequeue_idx = (dma->event_dequeue_idx + 1) % XHCI_RING_TRB_COUNT;
@@ -68,13 +69,13 @@ static bool send_command(const xhci_rings_io_t *io,
             io->write32(io->mmio_ctx, intr0 + 0x1c, (uint32_t)(new_erdp >> 32));
 
             if (trb_type == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-                if (out_event) *out_event = *(const xhci_trb_t *)event;
+                if (out_event) *out_event = snapshot;
                 return (cmd_ptr == submitted_cmd_phys && comp_code == XHCI_COMP_SUCCESS);
             } else if (trb_type == XHCI_TRB_TYPE_PORT_STATUS_EVENT) {
                 continue;
             }
         }
-        io->delay_ms(io->mmio_ctx);
+        if (!io->delay_ms(io->mmio_ctx)) return false;
     }
     return false;
 }
@@ -141,6 +142,11 @@ static bool control_transfer(const xhci_rings_io_t *io,
 
     /* 3. Status Stage TRB */
     uintptr_t status_trb_phys = dev_dma->ep0_ring_phys + (s_ep0_idx * sizeof(xhci_trb_t));
+    if (device) {
+        device->expected_status_trb=status_trb_phys;
+        device->last_comp_code=0;device->last_residual=0;device->last_trb_param=0;
+        device->control_wait_ms=0;device->control_failure=1;
+    }
     xhci_trb_t status_trb = {0};
     status_trb.control = (XHCI_TRB_TYPE_STATUS_STAGE << 10) | (dir_in ? 0 : (1u << 16)) | (1u << 5) /* IOC */ | (s_ep0_cycle ? 1u : 0);
     dev_dma->ep0_ring_virt[s_ep0_idx++] = status_trb;
@@ -156,7 +162,8 @@ static bool control_transfer(const xhci_rings_io_t *io,
 
     /* Poll Event Ring for Transfer Event */
     for (unsigned ms = 0; ms <= 500; ++ms) {
-        while (1) {
+        if (device) device->control_wait_ms=(uint16_t)ms;
+        for (unsigned drained=0; drained<XHCI_RING_TRB_COUNT; ++drained) {
             volatile const xhci_trb_t *event = &ring_dma->event_ring_virt[ring_dma->event_dequeue_idx];
             __asm__ volatile("" ::: "memory");
             uint32_t c_bit = event->control & XHCI_TRB_C;
@@ -164,6 +171,8 @@ static bool control_transfer(const xhci_rings_io_t *io,
 
             uint32_t trb_type = (event->control & XHCI_TRB_TYPE_MASK) >> XHCI_TRB_TYPE_SHIFT;
             uint32_t comp_code = (event->status >> 24) & 0xff;
+            /* ERDP releases this slot to hardware. Never reread it afterward. */
+            xhci_trb_t snapshot = *event;
 
             ring_dma->event_dequeue_idx = (ring_dma->event_dequeue_idx + 1) % XHCI_RING_TRB_COUNT;
             if (ring_dma->event_dequeue_idx == 0) ring_dma->event_cycle ^= 1;
@@ -172,17 +181,24 @@ static bool control_transfer(const xhci_rings_io_t *io,
             io->write32(io->mmio_ctx, intr0 + 0x1c, (uint32_t)(new_erdp >> 32));
 
             if (trb_type == XHCI_TRB_TYPE_TRANSFER_EVENT) {
-                uint64_t trb_ptr = ((uint64_t)event->parameter_high << 32) | event->parameter_low;
+                if ((snapshot.control >> 24) != slot_id ||
+                    ((snapshot.control >> 16) & 0x1f) != 1) continue;
+                uint64_t trb_ptr = ((uint64_t)snapshot.parameter_high << 32) | snapshot.parameter_low;
                 if (device) {
                     device->last_comp_code = comp_code;
-                    device->last_residual = event->status & 0xffffff;
+                    device->last_residual = snapshot.status & 0xffffff;
                     device->last_trb_param = trb_ptr;
                 }
                 if (comp_code != XHCI_COMP_SUCCESS && comp_code != XHCI_COMP_SHORT_PACKET) {
+                    if (device) device->control_failure=3;
                     return false;
                 }
                 /* If this transfer event was for an earlier TRB (e.g. Setup Stage), keep polling for Status Stage */
-                if (trb_ptr != 0 && trb_ptr != status_trb_phys) {
+                if (snapshot.control & (1u << 2)) {
+                    if (device) device->control_failure=4;
+                    return false;
+                }
+                if (trb_ptr != status_trb_phys) {
                     continue;
                 }
                 if (dir_in && length > 0 && data_buf) {
@@ -190,12 +206,16 @@ static bool control_transfer(const xhci_rings_io_t *io,
                     __asm__ volatile("mfence" ::: "memory");
                     memcpy(data_buf, dev_dma->bounce_buf_virt, length);
                 }
+                if (device) device->control_failure=0;
                 return true;
             } else if (trb_type == XHCI_TRB_TYPE_PORT_STATUS_EVENT) {
                 continue;
             }
         }
-        io->delay_ms(io->mmio_ctx);
+        if (!io->delay_ms(io->mmio_ctx)) {
+            if (device) device->control_failure=2;
+            return false;
+        }
     }
     return false;
 }
@@ -393,6 +413,12 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
 
     uint8_t cfg_hdr[9] = {0};
     bool cfg_ok = control_transfer(io, ring_dma, dev_dma, slot_id, get_cfg_desc, cfg_hdr, 9, true, device);
+    if (!cfg_ok) {
+        /* Completion is uncertain: keep the DMA quarantine contract. A larger
+         * descriptor request is not recovery for an unfinished EP0 transfer. */
+        device->error_msg = "Read Configuration Descriptor header transfer failed";
+        return false;
+    }
     memcpy(device->raw_cfg_hdr, cfg_hdr, 9);
     uint16_t total_len = cfg_hdr[2] | ((uint16_t)cfg_hdr[3] << 8);
     device->total_cfg_len = total_len;
@@ -401,7 +427,7 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
 
     uint8_t full_cfg[XHCI_MAX_CFG_DESC_SIZE] = {0};
 
-    if (cfg_ok && total_len >= 9 && total_len <= XHCI_MAX_CFG_DESC_SIZE && cfg_hdr[1] == USB_DESC_CONFIGURATION) {
+    if (total_len >= 9 && total_len <= XHCI_MAX_CFG_DESC_SIZE && cfg_hdr[1] == USB_DESC_CONFIGURATION) {
         /* Read full configuration descriptors using the reported length */
         device->step = 6;
         get_cfg_desc.wLength = total_len;

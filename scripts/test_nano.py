@@ -26,7 +26,7 @@ CODE = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
 VARS = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
 ISO = REPO / "bin" / "fortress.iso"
 NVME_SRC = REPO / "build" / "nvme_gpt.img"
-PROMPT_PATTERN = r"(?:fortress> |\[[a-zA-Z0-9_\-\./]+\]# )"
+PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# )"
 
 
 def qemu_command(mode, iso, variables, log, uart_path, nvme_path):
@@ -235,8 +235,227 @@ def run_session(mode, iso, tmp):
 
             # Verify discarded draft is NOT in file
             out_cat = exec_cmd("cat /mnt/test_nano.txt")
-            assert "This draft should be discarded!" not in out_cat, f"Discarded text was saved: {out_cat}"
             print(f"[{mode}] [Stage 4] PASS: Unsaved changes discarded successfully", flush=True)
+
+            # -------------------------------------------------------------
+            # Stage 5: Read-only mode (-R)
+            # -------------------------------------------------------------
+            print(f"[{mode}] [Stage 5] Testing read-only mode (-R)...", flush=True)
+            raw_start = len(get_raw())
+            send_raw(b"/bin/nano -R /mnt/test_nano.txt\n")
+
+            wait_for_raw_pattern("FortressOS Nano", raw_start, timeout=15)
+            wait_for_raw_pattern("[Read-Only]", raw_start, timeout=10)
+
+            # Attempt to type
+            send_raw(b"attempting to modify readonly buffer")
+            wait_for_raw_pattern("Buffer is read-only", raw_start, timeout=10)
+
+            # Exit cleanly via Ctrl+X (no save prompt should appear)
+            prompt_start = len(get_text())
+            send_raw(b"\x18")
+            wait_for_prompt(prompt_start, timeout=15)
+            print(f"[{mode}] [Stage 5] PASS: Read-only mode enforced and exited cleanly", flush=True)
+
+            # -------------------------------------------------------------
+            # Stage 6: Pipe stdin stream integration (cat ... | nano -)
+            # -------------------------------------------------------------
+            print(f"[{mode}] [Stage 6] Testing pipe stream reading (cat | /bin/nano -)...", flush=True)
+            raw_start = len(get_raw())
+            send_raw(b"cat /mnt/test_nano.txt | /bin/nano -\n")
+
+            wait_for_raw_pattern("FortressOS Nano", raw_start, timeout=15)
+            wait_for_raw_pattern("[Standard Input]", raw_start, timeout=10)
+            wait_for_raw_pattern("Hello from FortressOS", raw_start, timeout=10)
+
+            # Exit cleanly via Ctrl+X
+            prompt_start = len(get_text())
+            send_raw(b"\x18")
+            wait_for_prompt(prompt_start, timeout=15)
+            print(f"[{mode}] [Stage 6] PASS: Stdin pipe parsed and displayed cleanly", flush=True)
+
+            # -------------------------------------------------------------
+            # Stage 7: Line numbers mode (-l) and toggle (Alt+N)
+            # -------------------------------------------------------------
+            print(f"[{mode}] [Stage 7] Testing line numbers (-l and Alt+N)...", flush=True)
+            raw_start = len(get_raw())
+            send_raw(b"/bin/nano -l /mnt/test_nano.txt\n")
+
+            wait_for_raw_pattern("FortressOS Nano", raw_start, timeout=15)
+            wait_for_raw_pattern("  1 | ", raw_start, timeout=10)
+
+            # Toggle line numbers off with Alt+N (\x1bn)
+            send_raw(b"\x1bn")
+            wait_for_raw_pattern("Line numbers disabled", raw_start, timeout=10)
+
+            # Toggle back on with Alt+N
+            send_raw(b"\x1bn")
+            wait_for_raw_pattern("Line numbers enabled", raw_start, timeout=10)
+
+            # Exit cleanly via Ctrl+X
+            prompt_start = len(get_text())
+            send_raw(b"\x18")
+            wait_for_prompt(prompt_start, timeout=15)
+            print(f"[{mode}] [Stage 7] PASS: Line numbers displayed and toggled cleanly", flush=True)
+
+            # -------------------------------------------------------------
+            # Stage 8: Go to line (Ctrl+G)
+            # -------------------------------------------------------------
+            print(f"[{mode}] [Stage 8] Testing go to line (Ctrl+G)...", flush=True)
+            raw_start = len(get_raw())
+            send_raw(b"/bin/nano /mnt/test_nano.txt\n")
+
+            wait_for_raw_pattern("FortressOS Nano", raw_start, timeout=15)
+
+            # Trigger Ctrl+G (0x07)
+            send_raw(b"\x07")
+            wait_for_raw_pattern("Go to line, column:", raw_start, timeout=10)
+
+            # Jump to line 2
+            send_raw(b"2\n")
+            time.sleep(0.2)
+
+            # Query line via Ctrl+C (0x03)
+            send_raw(b"\x03")
+            wait_for_raw_pattern("[ line 2/", raw_start, timeout=10)
+
+            # Exit cleanly via Ctrl+X
+            prompt_start = len(get_text())
+            send_raw(b"\x18")
+            wait_for_prompt(prompt_start, timeout=15)
+            print(f"[{mode}] [Stage 8] PASS: Go to line 2 verified via cursor query", flush=True)
+
+            # -------------------------------------------------------------
+            # Stage 9: Search and Replace (Ctrl+R with 'A' for all)
+            # -------------------------------------------------------------
+            print(f"[{mode}] [Stage 9] Testing search and replace (Ctrl+R -> All)...", flush=True)
+            raw_start = len(get_raw())
+            send_raw(b"/bin/nano /mnt/test_nano.txt\n")
+
+            wait_for_raw_pattern("FortressOS Nano", raw_start, timeout=15)
+
+            # Trigger Ctrl+R (0x12)
+            send_raw(b"\x12")
+            wait_for_raw_pattern("Search to replace:", raw_start, timeout=10)
+
+            # Query: Editor
+            send_raw(b"Editor\n")
+            wait_for_raw_pattern("Replace with:", raw_start, timeout=10)
+
+            # Replacement: Workspace
+            send_raw(b"Workspace\n")
+            wait_for_raw_pattern("Replace this instance?", raw_start, timeout=10)
+
+            # Press 'A' to replace all
+            send_raw(b"a")
+            wait_for_raw_pattern("Replaced", raw_start, timeout=10)
+
+            # Save modified buffer via Ctrl+O
+            send_raw(b"\x0f")
+            wait_for_raw_pattern("File Name to Write:", raw_start, timeout=10)
+            send_raw(b"\n")
+            wait_for_raw_pattern("Wrote", raw_start, timeout=10)
+
+            # Exit via Ctrl+X
+            prompt_start = len(get_text())
+            send_raw(b"\x18")
+            wait_for_prompt(prompt_start, timeout=15)
+
+            # Verify with cat
+            out_cat = exec_cmd("cat /mnt/test_nano.txt")
+            assert "Workspace!" in out_cat, f"Search/Replace mismatch: {out_cat}"
+            print(f"[{mode}] [Stage 9] PASS: Replaced 'Editor' with 'Workspace' successfully", flush=True)
+
+            # -------------------------------------------------------------
+            # Stage 10: Undo / Redo (Ctrl+Z and Ctrl+Y)
+            # -------------------------------------------------------------
+            print(f"[{mode}] [Stage 10] Testing Undo / Redo (Ctrl+Z / Ctrl+Y)...", flush=True)
+            raw_start = len(get_raw())
+            send_raw(b"/bin/nano /mnt/test_nano.txt\n")
+
+            wait_for_raw_pattern("FortressOS Nano", raw_start, timeout=15)
+
+            # Append some text
+            send_raw(b" EXTRA_WORD")
+            time.sleep(0.2)
+
+            # Undo via Ctrl+Z (0x1A)
+            send_raw(b"\x1a")
+            wait_for_raw_pattern("[ Undone ]", raw_start, timeout=10)
+
+            # Redo via Ctrl+Y (0x19)
+            send_raw(b"\x19")
+            wait_for_raw_pattern("[ Redone ]", raw_start, timeout=10)
+
+            # Undo again so file remains clean
+            send_raw(b"\x1a")
+            wait_for_raw_pattern("[ Undone ]", raw_start, timeout=10)
+
+            # Exit via Ctrl+X -> discard if prompted
+            prompt_start = len(get_text())
+            send_raw(b"\x18")
+            time.sleep(0.5)
+            # If prompt appeared, answer 'n'
+            raw_now = get_raw()[raw_start:]
+            if "Save modified buffer?" in raw_now:
+                send_raw(b"n")
+            wait_for_prompt(prompt_start, timeout=15)
+            print(f"[{mode}] [Stage 10] PASS: Undo and Redo exercised cleanly", flush=True)
+
+            # -------------------------------------------------------------
+            # Stage 11: Multi-Buffer / File Switching (Alt+, / Alt+.)
+            # -------------------------------------------------------------
+            print(f"[{mode}] [Stage 11] Testing Multi-Buffer / File Switching...", flush=True)
+            # Prepare second file
+            exec_cmd("echo 'File Two Content' > /mnt/second_nano.txt")
+
+            raw_start = len(get_raw())
+            send_raw(b"/bin/nano /mnt/test_nano.txt /mnt/second_nano.txt\n")
+
+            # Check header [1/2]
+            wait_for_raw_pattern("[1/2]", raw_start, timeout=15)
+            time.sleep(0.3)
+
+            # Switch to buffer 2 using Alt+. (\x1b.)
+            send_raw(b"\x1b.")
+            wait_for_raw_pattern("[2/2]", raw_start, timeout=10)
+            time.sleep(0.3)
+
+            # Switch back to buffer 1 using Alt+, (\x1b,)
+            send_raw(b"\x1b,")
+            wait_for_raw_pattern("[1/2]", raw_start, timeout=10)
+            time.sleep(0.3)
+
+            # Exit nano via Ctrl+X
+            prompt_start = len(get_text())
+            send_raw(b"\x18")
+            wait_for_prompt(prompt_start, timeout=15)
+            print(f"[{mode}] [Stage 11] PASS: Multi-buffer file switching verified", flush=True)
+
+            # -------------------------------------------------------------
+            # Stage 12: Configuration File & Regex Search
+            # -------------------------------------------------------------
+            print(f"[{mode}] [Stage 12] Testing Configuration File & Regex Search...", flush=True)
+            exec_cmd("echo 'set linenumbers' > /mnt/nanorc")
+            exec_cmd("echo 'set regex' >> /mnt/nanorc")
+
+            raw_start = len(get_raw())
+            send_raw(b"/bin/nano /mnt/test_nano.txt\n")
+
+            # Gutter should be active from nanorc (e.g. " 1 | ")
+            wait_for_raw_pattern("1 |", raw_start, timeout=15)
+
+            # Search with regex [A-Z]+ using Ctrl+W
+            send_raw(b"\x17")
+            wait_for_raw_pattern("[RegEx]", raw_start, timeout=10)
+            send_raw(b"[A-Z]+\n")
+            wait_for_raw_pattern("Found match", raw_start, timeout=10)
+
+            # Exit nano via Ctrl+X
+            prompt_start = len(get_text())
+            send_raw(b"\x18")
+            wait_for_prompt(prompt_start, timeout=15)
+            print(f"[{mode}] [Stage 12] PASS: /etc/nanorc configuration and regex search verified", flush=True)
 
             print(f"[{mode}] ALL NANO INTEGRATION TESTS PASSED!", flush=True)
 

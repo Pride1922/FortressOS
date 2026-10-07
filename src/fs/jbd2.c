@@ -195,6 +195,15 @@ bool jbd2_preview_read_sector(jbd2_plan_t *p,uint64_t lba,void *bytes) {
     }
     return true;
 }
+#ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
+static block_dev_t *j_pause_partition;
+static void (*j_pause_callback)(void);
+int jbd2_test_arm_recovery_pause(block_dev_t *partition,void (*pause)(void)) {
+    spin_debug_assert_unheld();
+    if (!partition || !pause || j_pause_callback) return -VFS_EINVAL;
+    j_pause_partition=partition;j_pause_callback=pause;return 0;
+}
+#endif
 int jbd2_replay(jbd2_plan_t *p,bool admitted) {
     spin_debug_assert_unheld();if (!p) return -VFS_EINVAL;
     if (!admitted || !p->dev->write_sector || !p->dev->flush) return -VFS_EROFS;
@@ -202,6 +211,18 @@ int jbd2_replay(jbd2_plan_t *p,bool admitted) {
     if (p->applied || !j_be(p->super+28)) return 0;
     for (unsigned i=0;i<p->images;i++) {
         if (!j_revoked(p,i) && !j_io(p,p->image[i].block,p->image[i].bytes,true)) goto fail;
+#ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
+        if (!j_revoked(p,i) && j_pause_partition==p->dev && j_pause_callback) {
+            bool later=false;
+            for (unsigned k=i+1;k<p->images;k++)
+                if (!j_revoked(p,k) && p->image[k].block!=p->image[i].block) later=true;
+            if (!later) goto fail;
+            if (!block_flush(p->dev)) goto fail;
+            void (*pause)(void)=j_pause_callback;
+            j_pause_callback=NULL;j_pause_partition=NULL;pause();
+            goto fail; /* A terminal hook must not return. */
+        }
+#endif
     }
     if (!block_flush(p->dev)) goto fail;
     j_put(p->super+24,p->report.next_sequence);j_put(p->super+28,0);j_put(p->super+88,p->first);

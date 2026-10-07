@@ -14,6 +14,24 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 2. Hardware Facts and Verification Boundaries
 
+### Open follow-up: pre-mount work-stealing startup timeout
+
+During EXT4 Phase 9.5, one BIOS/2 KiB/SMP=4 recovery boot stopped at the
+forced work-stealing startup selftest with `[FAIL] Timed out waiting for
+stolen workers to execute!`, before USB discovery/mount and journal recovery.
+The retry passed. Retained evidence is
+`.codex-remote-attachments/ext4-phase9/guest-usb-fault-btljklz5/bios-2048-smp4-checkpoint-write-recovered.serial.log`
+and the failed campaign image, also archived in `verification-1p643qew`.
+See the [campaign report](../roadmap/ext4-phase9-5.md).
+
+Track this separately for a future SMP/scheduler review: reproduce with the
+same isolated ISO, QEMU TCG/SMP=4 and startup conditions; inspect worker
+completion, runqueues, AP timer/preemption and timeout accounting. Determine
+whether it reflects scheduler behavior, test timing or debugger/emulator
+interaction. The cause and frequency are unconfirmed; the observed startup
+failure remains open despite the successful retry. It is outside the EXT4
+Phase 9 gate and provides no evidence of a journal or USB fault.
+
 | ID | Evidence / constraint |
 | --- | --- |
 | H8 | **Recorded QEMU evidence:** 40 exact-boundary NMIs on IST2; no proof of physical NMI injection, nested-fault completeness, SWAPGS or SMP safety. (See `docs/plans/SMP_DESIGN.md` SM9 and `docs/roadmap/subsystems.md` for BSP-only boundaries). |

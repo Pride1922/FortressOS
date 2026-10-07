@@ -101,6 +101,12 @@ where the host arming command lacked backend write permission; the runner now
 requires successful arming before accepting any native result. The six-profile
 calibration `guest-usb-fault-yfe1tcgy` passed before matrix expansion.
 
+The pre-mount timeout is an open [SMP/scheduler follow-up](../subsystems/smp.md#open-follow-up-pre-mount-work-stealing-startup-timeout)
+outside Phase 9. Its cause and frequency remain unconfirmed; the retained
+failure should be investigated independently of the journal gate. The arming
+permission failure was a corrected test-harness issue. Neither failed attempt
+demonstrates a journal defect.
+
 ## Regressions and reproducibility
 
 In the final isolated workspace:
@@ -150,6 +156,19 @@ after decompression; original campaign directories remain present. Matching
 build-source snapshots and the review are retained alongside the archive.
 
 ## Remaining limits and handoff
+
+### Post-scheduler-fix rerun — 2026-10-07
+
+The user reports the full campaign rerun with scheduler commit `91bf034`:
+scheduler tests 10/10, USB journal persistence 36/36 boots, Phase 9.4 crash
+matrix 24/24, and native USB failure profiles 72/72 PASS. The final failure
+manifest at `guest-usb-fault-p6b92luk/manifest.json` was independently read in
+this chat: 72 cases, empty errors, workspace `guest-workspace-tfu4ngx5`,
+ELF SHA-256 `c13387eea07d68e1a4ae3c3239296932119f5b7975fd6d7af9017ac92bfccb2d`.
+The other totals are user-reported here, not independently re-audited in this
+update. This supports the scheduler fix within the exercised campaign; it
+does not establish universal scheduler correctness or physical USB acceptance.
+The original failed attempts remain part of the historical report.
 
 This finite campaign demonstrates the bounded supported journal profile
 through emulated USB. QEMU termination retains host page cache; it does not

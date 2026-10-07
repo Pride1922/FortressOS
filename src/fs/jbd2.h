@@ -1,6 +1,13 @@
 #ifndef FORTRESS_JBD2_H
 #define FORTRESS_JBD2_H
 #include "block.h"
+#include "ext4_physical_fixture.h"
+#ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
+/* Disposable, target-specific, one-shot terminal replay instrumentation.
+ * Arm only after physical admission, before recovery. Callback cannot return
+ * to normal execution or issue I/O, schedule or publish a mount. */
+int jbd2_test_arm_recovery_pause(block_dev_t *partition, void (*pause)(void));
+#endif
 
 #define JBD2_MAP_MAX 32768u
 #define JBD2_IMAGES_MAX 1024u

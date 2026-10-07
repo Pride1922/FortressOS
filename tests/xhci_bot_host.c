@@ -52,13 +52,19 @@ typedef struct {
     xhci_trb_t pending_event;
     bool pending;
     unsigned latency_us, elapsed_us, due_us, fine_delays, coarse_delays;
+    unsigned write_data_latency_us, write_status_latency_us;
 
 } mock_bot_hw_t;
 
 static void mock_event(mock_bot_hw_t *m,xhci_trb_t ev) {
-    if (m->latency_us) {
+    unsigned latency=m->latency_us;
+    if (m->bot_rings.last_error.opcode==SCSI_CMD_WRITE_10) {
+        if (m->bot_rings.last_error.phase==2 && m->write_data_latency_us) latency=m->write_data_latency_us;
+        if (m->bot_rings.last_error.phase==3 && m->write_status_latency_us) latency=m->write_status_latency_us;
+    }
+    if (latency) {
         assert(!m->pending);m->pending_event=ev;m->pending=true;
-        m->due_us=m->elapsed_us+m->latency_us;
+        m->due_us=m->elapsed_us+latency;
     } else m->ring_dma.event_ring_virt[m->ring_dma.event_dequeue_idx]=ev;
 }
 
@@ -704,6 +710,29 @@ int main(void) {
     }
 
     test_flush_and_writes();
+    for (unsigned scenario=0;scenario<3;++scenario) {
+        mock_bot_hw_t m;init_mock_hw(&m,BOT_FAULT_NONE);
+        xhci_rings_io_t io={.mmio_ctx=&m,.read32=mock_read32,.write32=mock_write32,.delay_ms=mock_delay,.delay_us=mock_delay_us};
+        xhci_bot_device_t device={.slot_id=3,.bulk_in_ep=0x81,.bulk_out_ep=0x02};
+        assert(xhci_configure_bulk_endpoints(&io,&m.ring_dma,&m.dev_dma,&device,&m.bot_rings));
+        m.bot_rings.sector_size=m.disk_sector_size=512;m.bot_rings.sector_count=16;
+        uint8_t written[512],readback[512];memset(written,0x5a,sizeof(written));
+        m.write_data_latency_us=scenario==2 ? 6000000 : 2000000;
+        m.write_status_latency_us=scenario==1 ? 2000000 : 0;
+        bool ok=xhci_scsi_write_sector(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,written);
+        assert(ok==(scenario!=2) && m.out_data_attempts==1);
+        if (ok) {
+            assert(xhci_scsi_read_sector(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,readback));
+            assert(!memcmp(written,readback,sizeof(written)));
+        } else {
+            assert(m.bot_rings.transport_failed && m.bot_rings.last_error.phase==2);
+            assert(m.elapsed_us==5001000);
+            unsigned submitted=m.out_data_attempts;uint32_t tag=m.bot_rings.tag;
+            assert(!xhci_scsi_write_sector(&io,&m.ring_dma,&m.dev_dma,&m.bot_rings,0,written));
+            assert(m.out_data_attempts==submitted && m.bot_rings.tag==tag);
+        }
+    }
+    printf("PASS: slow write data/status, bounded timeout and no ambiguous-write retry\n");
     /* SYNCHRONIZE CACHE has CBW and CSW waits, no data phase. Both must
      * use the same fine polling and timeout as ordinary BOT transfers. */
     for (unsigned scenario=0;scenario<3;++scenario) {

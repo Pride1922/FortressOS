@@ -4,6 +4,12 @@
 SHELL := /bin/bash
 .DELETE_ON_ERROR:
 
+# Owned isolated pause build only; never builds or attaches shared data disks.
+.PHONY: test-ext4-physical-commit-pause
+test-ext4-physical-commit-pause:
+	@test -n "$(PHYSICAL_WORKSPACE)" || { echo 'Set PHYSICAL_WORKSPACE to the prepared disposable pause build'; exit 1; }
+	@python3 scripts/test_ext4_physical_commit_pause.py "$(PHYSICAL_WORKSPACE)"
+
 # Toolchain configuration
 CC      ?= gcc
 LD      ?= ld

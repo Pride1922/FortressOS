@@ -87,6 +87,9 @@ typedef struct {
     uint32_t last_comp_code;
     uint32_t last_residual;
     uint64_t last_trb_param;
+    uint64_t expected_status_trb;
+    uint16_t control_wait_ms;
+    uint8_t control_failure; /* 0 success, 1 timeout, 2 delay, 3 completion, 4 Event Data */
 } xhci_bot_device_t;
 
 /* Dynamic memory allocated for device management */

@@ -110,6 +110,13 @@ static int e4_transaction_commit(ext4_engine_t *e) {
     if (r) { e->error=r;return r; } /* Abort required, no publication or taint. */
     e4_cache_drop(e->fs,false);
     r=jbd2_writer_commit(e->writer);
+#ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
+    if (!r && e4_pause_callback && e4_pause_mount==e->fs) {
+        void (*pause)(void)=e4_pause_callback;
+        e4_pause_callback=NULL;e4_pause_mount=NULL;
+        pause();
+    }
+#endif
     if (!r) r=jbd2_writer_checkpoint(e->writer);
     e->ready=false;
     if (r) { e->tainted=true;e4_cache_drop(e->fs,true);return r; }

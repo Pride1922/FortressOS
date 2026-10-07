@@ -3,6 +3,7 @@
 
 #include "block.h"
 #include "jbd2.h"
+#include "ext4_physical_fixture.h"
 
 /* E4-A restricted-profile mounts at /mnt. Production USB dispatch uses the existing
  * explicit PARTUUID, GPT and durability admission policy. Reads <=64KiB, writes <=32KiB per callback;
@@ -22,6 +23,11 @@
  * unlocked thread/boot context. Failed admission writes nothing and publishes
  * nothing. Dirty/recovery-needed volumes reject; RO never replays a journal. */
 typedef struct ext4_mount ext4_mount_t;
+#ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
+/* Disposable test only; callback runs under mounted exclusion after durable
+ * commit, before checkpoint. No device I/O, scheduling or filesystem calls. */
+int ext4_test_arm_commit_pause(ext4_mount_t *mount,void (*pause)(void));
+#endif
 int ext4_mount_ro(block_dev_t *partition, const char *path, ext4_mount_t **out);
 int ext4_mount_rw(block_dev_t *partition, const char *path, ext4_mount_t **out);
 /* Phase 8.5 test admission only. Never used by production USB dispatch.
@@ -34,6 +40,11 @@ int ext4_mount_rw(block_dev_t *partition, const char *path, ext4_mount_t **out);
 typedef struct { bool disposable_fixture, writable, recovery; } ext4_journal_admission_t;
 int ext4_mount_journal_fixture(block_dev_t *partition,const char *path,
                                ext4_journal_admission_t admission,ext4_mount_t **out);
+/* Same fixture mount and cleanup, with optional caller-owned diagnostic output.
+ * stage receives a static string naming the last attempted step, or "mounted"
+ * on success. No logging, extra I/O, allocation or policy override is added. */
+int ext4_mount_journal_fixture_diagnose(block_dev_t *partition,const char *path,
+    ext4_journal_admission_t admission,ext4_mount_t **out,const char **stage);
 /* Existing SYS_SYNC / shutdown routing fallback for the explicit fixture
  * mount only. No fixture: sync returns EROFS; shutdown succeeds as a no-op. */
 int ext4_sync_journal_fixture(void);

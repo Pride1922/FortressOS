@@ -140,18 +140,30 @@ static uint8_t *pending_source(block_dev_t *dev,const uint8_t *initial,bool inva
     save(prefix,invalid ? "preview-rejected" : "pending-seed",source,d->bytes);return source;
 }
 static void admission(block_dev_t *dev,const uint8_t *initial,const uint8_t *bad) {
-    ext4_fault_disk_t *d=dev->priv;ext4_mount_t *fs=NULL;
+    ext4_fault_disk_t *d=dev->priv;ext4_mount_t *fs=NULL;const char *stage=NULL;
+    reset(d,initial);
+    assert(ext4_mount_journal_fixture_diagnose(dev,"/bad",admitted,&fs,&stage)==-VFS_EINVAL);
+    assert(!strcmp(stage,"arguments") && !fs && !d->events && !reads);
     for (unsigned missing=0;missing<3;missing++) {
         reset(d,initial);ext4_journal_admission_t policy=admitted;
         if (!missing) policy.disposable_fixture=false;else if (missing==1) policy.writable=false;else policy.recovery=false;
-        assert(ext4_mount_journal_fixture(dev,"/mnt",policy,&fs)==-VFS_EROFS && !fs && !d->events && !reads);
+        assert(ext4_mount_journal_fixture_diagnose(dev,"/mnt",policy,&fs,&stage)==-VFS_EROFS && !fs && !d->events && !reads);
+        assert(!strcmp(stage,"writable-admission"));
     }
     reset(d,initial);assert(ext4_mount_rw(dev,"/mnt",&fs)==-VFS_EOPNOTSUPP && !fs && !d->events);
     assert(ext4_mount_ro(dev,"/mnt",&fs)==-VFS_EOPNOTSUPP && !fs && !d->events);
     reset(d,bad);jbd2_plan_t *plan=NULL;jbd2_report_t report;
     assert(!ext4_journal_analyze(dev,&plan,&report) && report.transactions==1);jbd2_release(plan);
-    assert(ext4_mount_journal_fixture(dev,"/mnt",admitted,&fs)<0 && !fs && !d->events && !vfs_lookup("/mnt"));
+    assert(ext4_mount_journal_fixture_diagnose(dev,"/mnt",admitted,&fs,&stage)<0 && !fs && !d->events && !vfs_lookup("/mnt"));
+    assert(!strcmp(stage,"recovery-preview"));
     assert(!e4_engine_busy);teardown();
+    reset(d,initial);fail_read=0;
+    assert(ext4_mount_journal_fixture_diagnose(dev,"/mnt",admitted,&fs,&stage)==-VFS_EIO);
+    assert(!strcmp(stage,"journal-source") && !fs && !d->events && !e4_engine_busy && !vfs_lookup("/mnt"));
+    fail_read=-1;teardown();reset(d,initial);
+    assert(!ext4_mount_journal_fixture_diagnose(dev,"/mnt",admitted,&fs,&stage));
+    assert(!strcmp(stage,"mounted") && fs);
+    assert(!ext4_freeze_and_sync(fs));clean_check(fs);teardown();
     puts("admission PASS: explicit policy/production exclusion, valid journal with invalid replayed ownership rejects before writes");fflush(stdout);
 }
 static size_t mount_faults(block_dev_t *dev,const uint8_t *source,bool deleted,const char *prefix) {

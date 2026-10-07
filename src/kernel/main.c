@@ -3100,12 +3100,78 @@ static void ext4_fixture_verify(const char *path,uint64_t size,uint8_t *buffer) 
 }
 /* Separate explicit QEMU fixture gate. Never called by production storage
  * dispatch; caller admits a primary-consistent GPT on its sole test device. */
+#include "ext4_physical_fixture.h"
+static const char *g_ext4_physical_cmd="";
+#ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
+#include "jbd2.h"
+#endif
+static bool ext4_physical_token(const char *token) {
+    const char *cmd=g_ext4_physical_cmd;size_t len=strlen(token);
+    while (*cmd) {
+        while (*cmd==' ' || *cmd=='\t') cmd++;
+        if (!strncmp(cmd,token,len) && (!cmd[len] || cmd[len]==' ' || cmd[len]=='\t')) return true;
+        while (*cmd && *cmd!=' ' && *cmd!='\t') cmd++;
+    }
+    return false;
+}
+static bool ext4_physical_requested(void) {
+#ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
+    if (ext4_physical_token("ext4_physical=cut-recovery")) return true;
+#endif
+#ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
+    if (ext4_physical_token("ext4_physical=cut-commit")) return true;
+#endif
+    return ext4_physical_token("ext4_physical=start") || ext4_physical_token("ext4_physical=verify");
+}
+#ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
+static void ext4_physical_commit_pause(void) {
+    console_set_quiet(false);
+    console_puts("\nEXT4 TEST PAUSED: COMMIT DURABLE; CHECKPOINT NOT STARTED\n");
+    serial_puts("[EXT4 CUT] DURABLE COMMIT BEFORE CHECKPOINT; /mnt/cut-commit.txt\n");
+    /* Terminal disposable test stop. Commit returned: no outstanding USB DMA.
+     * Never release exclusion or run another filesystem operation afterward. */
+    for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+}
+#endif
+static bool ext4_journal_integration_requested(void) {
+    return qemu_fw_cfg_has_key("opt/fortress/ext4_journal_integration") || ext4_physical_requested();
+}
+#ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
+static void ext4_physical_recovery_pause(void) {
+    console_set_quiet(false);
+    console_puts("\nEXT4 TEST PAUSED: RECOVERY PARTIAL DURABLE; JOURNAL RETAINED\n");
+    serial_puts("[EXT4 CUT] RECOVERY PARTIAL DURABLE; JOURNAL RETAINED\n");
+    for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+}
+#endif
 static void test_ext4_journal_mount_on(block_dev_t *partition) {
+#ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
+    if (ext4_physical_token("ext4_physical=cut-recovery"))
+        require_ext2(!jbd2_test_arm_recovery_pause(partition,ext4_physical_recovery_pause),"recovery pause arm");
+#endif
     ext4_journal_admission_t admission={true,true,true};
-    require_ext2(!ext4_mount_journal_fixture(partition,"/mnt",admission,&g_ext4_fixture_mount),
+    const char *mount_stage=NULL;
+    int mount_error=ext4_physical_requested() ?
+        ext4_mount_journal_fixture_diagnose(partition,"/mnt",admission,&g_ext4_fixture_mount,&mount_stage) :
+        ext4_mount_journal_fixture(partition,"/mnt",admission,&g_ext4_fixture_mount);
+    if (mount_error && ext4_physical_requested()) {
+        serial_puts("[EXT4 DEBUG] mount stage=");serial_puts(mount_stage);
+        serial_puts(" errno=");serial_print_dec((uint64_t)-(int64_t)mount_error);
+        serial_puts(" published=");serial_print_dec(g_ext4_fixture_mount!=NULL);serial_puts("\n");
+        usb_report_last_io_state();
+    }
+    require_ext2(!mount_error,
         "ext4 journal recovery/publication");
+#ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
+    if (ext4_physical_token("ext4_physical=cut-commit")) {
+        require_ext2(!vfs_lookup("/mnt/cut-commit.txt"),"cut fixture must be fresh");
+        require_ext2(!ext4_test_arm_commit_pause(g_ext4_fixture_mount,ext4_physical_commit_pause),"cut fixture arm");
+        (void)vfs_create("/mnt/cut-commit.txt",VFS_FILE);
+        require_ext2(false,"cut fixture did not reach durable milestone");
+    }
+#endif
     require_ext2(!vfs_lookup("/mnt/target.bin"),"ext4 journal startup orphan cleanup");
-    bool second=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_verify");uint8_t *bytes=kmalloc(16384);
+    bool second=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_verify") || ext4_physical_token("ext4_physical=verify");uint8_t *bytes=kmalloc(16384);
     require_ext2(bytes!=NULL,"ext4 journal fixture buffer");
     bool write_fault=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_write_fault");
     bool sync_fault=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_sync_fault");
@@ -3136,7 +3202,7 @@ static void test_ext4_journal_mount_on(block_dev_t *partition) {
     }
     ext4_fixture_verify("/mnt/journal-persist.bin",16384,bytes);
     ext4_fixture_verify("/mnt/journal-later.bin",17,bytes);
-    if (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_integration")) {
+    if (ext4_journal_integration_requested()) {
         if (!second) {
             require_ext2(!vfs_mkdir("/mnt/integration-dir",0),"journal integration mkdir");
             file_t *a=vfs_open("/mnt/integration.bin",VFS_O_CREAT|VFS_O_RDWR);
@@ -3178,6 +3244,40 @@ static void test_ext4_journal_usb_mount(const boot_info_t *info) {
     usb_mount_config_t cfg;usb_mount_parse_cmdline(info->cmdline,&cfg);
     block_dev_t *disk=block_get_dev_by_name("sda");gpt_partition_t *selected=NULL;
     unsigned matches=0;usb_durability_mode_t durability=usb_get_durability_mode();
+    if (ext4_physical_requested()) {
+#ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
+        if (ext4_physical_token("ext4_physical=cut-recovery") &&
+            (ext4_physical_token("ext4_physical=start") ||
+             ext4_physical_token("ext4_physical=verify") ||
+             ext4_physical_token("ext4_physical=cut-commit"))) {
+            serial_puts("[EXT4 PHYSICAL] REJECT conflicting test modes; no filesystem writes\n");return;
+        }
+#endif
+#ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
+        if (ext4_physical_token("ext4_physical=cut-commit") &&
+            (ext4_physical_token("ext4_physical=start") || ext4_physical_token("ext4_physical=verify"))) {
+            serial_puts("[EXT4 PHYSICAL] REJECT conflicting test modes; no filesystem writes\n");return;
+        }
+#endif
+#ifdef FORTRESS_EXT4_PHYSICAL_PARTUUID
+        gpt_guid_t expected;
+        if (!gpt_str_to_guid(FORTRESS_EXT4_PHYSICAL_PARTUUID,&expected) ||
+            !cfg.has_target || !gpt_guid_equal(&cfg.target_guid,&expected) ||
+            !disk || disk->sector_size!=512 ||
+            block_get_capacity_bytes(disk)!=FORTRESS_EXT4_PHYSICAL_CAPACITY ||
+            qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test") ||
+            qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") ||
+            qemu_fw_cfg_has_key("opt/fortress/ext4_usb_test") ||
+            qemu_fw_cfg_has_key("opt/fortress/ext4_write_test") ||
+            qemu_fw_cfg_has_key("opt/fortress/ext4_read_test") ||
+            (ext4_physical_token("ext4_physical=start") && ext4_physical_token("ext4_physical=verify"))) {
+            serial_puts("[EXT4 PHYSICAL] REJECT target/geometry/exclusivity; no filesystem writes\n");return;
+        }
+        serial_puts("[EXT4 PHYSICAL] Authorized disposable fixture; internal NVMe excluded\n");
+#else
+        serial_puts("[EXT4 PHYSICAL] REJECT disabled in ordinary build; no filesystem writes\n");return;
+#endif
+    }
     if (!cfg.malformed && cfg.has_target && cfg.mode==USB_MOUNT_MODE_RW &&
         usb_is_initialized() && disk && gpt_get_last_policy()==GPT_POLICY_PRIMARY_CONSISTENT) {
         for (size_t i=0;i<gpt_get_partition_count();i++) {
@@ -5803,6 +5903,7 @@ pf_boot_guard_done:
      * Phase 9 (Step 9A): PCI Discovery & NVMe MMIO BAR Verification
      * ========================================================================= */
     boot_status("Probing storage devices...");
+    g_ext4_physical_cmd=boot_info.cmdline;
     test_phase9a_pci_discovery(&boot_info);
 
     /* The following storage acceptance suite assumes a disposable QEMU image,
@@ -5811,7 +5912,7 @@ pf_boot_guard_done:
     pci_device_t storage_fixture;
     if (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) {
         pci_device_t usb_fixture;
-        require_ext2(!qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") &&
+        require_ext2(!ext4_physical_requested() && !qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") &&
             !qemu_fw_cfg_has_key("opt/fortress/ext4_usb_test") &&
             !qemu_fw_cfg_has_key("opt/fortress/ext4_write_test") &&
             !qemu_fw_cfg_has_key("opt/fortress/ext4_read_test") &&
@@ -5820,7 +5921,7 @@ pf_boot_guard_done:
             usb_fixture.vendor_id==0x1b36 && usb_fixture.device_id==0x000d,
             "exclusive QEMU USB journal fixture admission");
     }
-    if (!pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME,
+    if (ext4_physical_requested() || !pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME,
                          PCI_PROGIF_STORAGE_NVME, &storage_fixture) ||
         storage_fixture.vendor_id != 0x1b36 || storage_fixture.device_id != 0x0010) {
         serial_puts("[BOOT] Hardware diagnostics complete. QEMU storage fixture tests skipped.\n");
@@ -5909,11 +6010,11 @@ pf_boot_guard_done:
     e1000_raw_selftest(boot_info.cmdline);
     net_start(boot_info.cmdline, sizeof(boot_info.cmdline));
     boot_status("Mounting persistent storage (/mnt)...");
-    if (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) test_ext4_journal_usb_mount(&boot_info);
+    if (ext4_physical_requested() || qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) test_ext4_journal_usb_mount(&boot_info);
     else usb_mount_production_storage(&boot_info);
     if (g_ext4_fixture_mount && (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") ||
-        qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) &&
-        qemu_fw_cfg_has_key("opt/fortress/ext4_journal_integration") && smp_get_cpu_count()>=2) {
+        qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test") || ext4_physical_requested()) &&
+        ext4_journal_integration_requested() && smp_get_cpu_count()>=2) {
         require_ext2(run_append_scenario("/mnt/journal-app-independent.txt",false,smp_get_cpu_count()),"journal AP independent append");
         require_ext2(run_append_scenario("/mnt/journal-app-shared.txt",true,smp_get_cpu_count()),"journal AP shared append");
         serial_puts("[EXT4 INTEGRATION] SMP APPEND PASS\n");
@@ -5940,6 +6041,20 @@ pf_boot_guard_done:
     if (console_is_quiet()) {
         console_set_quiet(false);
         console_clear();
+    }
+    if (ext4_physical_requested()) {
+        if (g_ext4_fixture_mount) {
+            console_puts(ext4_physical_token("ext4_physical=verify") ?
+                "EXT4 9.6 disposable journal fixture: VERIFY PASS\n" :
+                "EXT4 9.6 disposable journal fixture: START PASS\n");
+            console_puts(smp_get_cpu_count()>=2 ?
+                "Namespace/truncate/pins/reuse PASS; AP append PASS\n" :
+                "Namespace/truncate/pins/reuse PASS; AP append not run (one CPU)\n");
+            usb_durability_mode_t durability=usb_get_durability_mode();
+            console_puts(durability==USB_DURABILITY_SYNC_BACKED ? "USB durability: sync-backed\n" :
+                durability==USB_DURABILITY_WRITE_THROUGH ? "USB durability: write-through\n" : "USB durability: assumed-write-through\n");
+            console_puts("Internal NVMe excluded\n");
+        } else console_puts("EXT4 9.6 fixture REJECTED; /mnt was not published\n");
     }
     for (;;) {
         /* Spawn with preemption disabled until the PID is safely copied. */

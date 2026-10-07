@@ -101,12 +101,13 @@ static bool wait_transfer_event(const xhci_rings_io_t *io,
                                 uint8_t slot_id,
                                 uint8_t dci,
                                 uintptr_t submitted_phys,
-                                uint32_t *out_residual, uint8_t *out_code) {
+                                uint32_t *out_residual, uint8_t *out_code,
+                                unsigned timeout_us) {
     if (out_code) *out_code = 0;
     uint32_t rtsoff = io->read32(io->mmio_ctx, 0x18);
     uint32_t intr0 = rtsoff + 0x20;
 
-    for (unsigned elapsed_us = 0; elapsed_us <= 1000000;) {
+    for (unsigned elapsed_us = 0; elapsed_us <= timeout_us;) {
         for (unsigned drained = 0; drained < XHCI_RING_TRB_COUNT; ++drained) {
             volatile const xhci_trb_t *event = &ring_dma->event_ring_virt[ring_dma->event_dequeue_idx];
             __asm__ volatile("" ::: "memory");
@@ -150,7 +151,8 @@ static bool submit_normal_trb(const xhci_rings_io_t *io,
                               uint8_t *ring_cycle,
                               uintptr_t buf_phys,
                               uint32_t length,
-                              uint32_t *out_residual, uint8_t *out_code) {
+                              uint32_t *out_residual, uint8_t *out_code,
+                              unsigned timeout_us) {
     uint32_t dboff = io->read32(io->mmio_ctx, 0x14);
     uint32_t idx = *ring_idx;
     uintptr_t submitted_phys = ring_phys + idx * sizeof(xhci_trb_t);
@@ -179,7 +181,7 @@ static bool submit_normal_trb(const xhci_rings_io_t *io,
     /* Ring Doorbell for this endpoint: Target = DCI */
     io->write32(io->mmio_ctx, dboff + slot_id * 4, dci);
 
-    return wait_transfer_event(io, ring_dma, slot_id, dci, submitted_phys, out_residual, out_code);
+    return wait_transfer_event(io, ring_dma, slot_id, dci, submitted_phys, out_residual, out_code, timeout_us);
 }
 
 bool xhci_configure_bulk_endpoints(const xhci_rings_io_t *io,
@@ -303,11 +305,16 @@ static bool bot_transfer_impl(const xhci_rings_io_t *io,
 
     uint32_t resid = 0, data_resid = 0;
     uint8_t code = 0;
+    /* Slow flash may NAK while programming media. Allow a bounded longer
+     * WRITE(10) data/status wait, not a resubmission of an ambiguous write.
+     * CBW, reads, flushes and endpoint recovery retain their existing budget.
+     * Physical Alcor acceptance is pending; see usb-alcor-startup.md. */
+    unsigned payload_timeout_us = cbw.CBWCB[0] == SCSI_CMD_WRITE_10 ? 5000000u : 1000000u;
     bot_rings->last_error.phase = 1;
     if (!submit_normal_trb(io, ring_dma, bot_rings->slot_id, bot_rings->out_dci,
                           bot_rings->bulk_out_ring_phys,
                           bot_rings->bulk_out_ring_virt, &bot_rings->out_idx, &bot_rings->out_cycle,
-                          dev_dma->bounce_buf_phys, sizeof(cbw), &resid, &code) || resid)
+                          dev_dma->bounce_buf_phys, sizeof(cbw), &resid, &code, 1000000u) || resid)
         goto transport_error;
 
     /* CBW DMA has completed. Reuse the bounded region at offset zero so the full
@@ -324,7 +331,8 @@ static bool bot_transfer_impl(const xhci_rings_io_t *io,
         bot_rings->last_error.phase = 2;
         bool data_ok = submit_normal_trb(io, ring_dma, bot_rings->slot_id, dci,
                               dir_in ? bot_rings->bulk_in_ring_phys : bot_rings->bulk_out_ring_phys,
-                              ring, idx, cycle, dev_dma->bounce_buf_phys, data_len, &data_resid, &code);
+                              ring, idx, cycle, dev_dma->bounce_buf_phys, data_len, &data_resid, &code,
+                              payload_timeout_us);
         if (data_resid > data_len) goto transport_error;
         if (!data_ok) {
             if (code != XHCI_COMP_STALL_ERROR) goto transport_error;
@@ -347,7 +355,8 @@ static bool bot_transfer_impl(const xhci_rings_io_t *io,
         bool csw_ok = submit_normal_trb(io, ring_dma, bot_rings->slot_id, bot_rings->in_dci,
                           bot_rings->bulk_in_ring_phys,
                           bot_rings->bulk_in_ring_virt, &bot_rings->in_idx, &bot_rings->in_cycle,
-                          dev_dma->bounce_buf_phys + 64, sizeof(usb_bot_csw_t), &resid, &code);
+                          dev_dma->bounce_buf_phys + 64, sizeof(usb_bot_csw_t), &resid, &code,
+                          payload_timeout_us);
         if (csw_ok) {
             if (resid) goto transport_error;
             break;
@@ -672,7 +681,7 @@ bool xhci_bot_endpoint_reset(const xhci_rings_io_t *io,
     uint32_t residual = 0;
     uint8_t code = 0;
     if (!wait_transfer_event(io, ring_dma, bot_rings->slot_id, 1,
-                             status_phys, &residual, &code) ||
+                             status_phys, &residual, &code, 1000000u) ||
         code != XHCI_COMP_SUCCESS || residual) goto latch;
 
     /* Skip the completed stalled TD, preserving the bulk producer cycle.

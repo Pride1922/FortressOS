@@ -15,6 +15,8 @@ def main():
     parent=ROOT/'.codex-remote-attachments/ext4-phase9'
     out=Path(tempfile.mkdtemp(prefix='guest-workspace-',dir=parent));records={};overrides={}
     names=subprocess.check_output(['git','ls-files','-z'],cwd=ROOT).decode().split('\0')
+    if (ROOT/'src/include/ext4_physical_fixture.h').is_file() and 'src/include/ext4_physical_fixture.h' not in names:
+        names.append('src/include/ext4_physical_fixture.h')
     for name in names:
         if not name:continue
         source=ROOT/name

@@ -17,7 +17,10 @@ enum mock_dev_fault {
     DEV_FAULT_NOT_MASS_STORAGE,
     DEV_FAULT_WEBCAM,
     DEV_FAULT_NO_BULK_ENDPOINTS,
-    DEV_FAULT_SET_CONFIG
+    DEV_FAULT_SET_CONFIG,
+    DEV_FAULT_CFG_TIMEOUT,
+    DEV_FAULT_WRONG_EP,
+    DEV_FAULT_EVENT_DATA
 };
 
 typedef struct {
@@ -28,6 +31,7 @@ typedef struct {
     unsigned db0_count;
     unsigned db1_count;
     unsigned disable_count;
+    bool recycle_on_ack;
 } mock_dev_hw_t;
 
 static uint32_t mock_read32(void *ctx, uint32_t off) {
@@ -66,6 +70,10 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
     mock_dev_hw_t *m = ctx;
     assert(!(off & 3) && off < sizeof(m->regs));
     m->regs[off / 4] = val;
+    if (off==0x1038 && m->recycle_on_ack) {
+        unsigned old=(m->ring_dma.event_dequeue_idx+XHCI_RING_TRB_COUNT-1)%XHCI_RING_TRB_COUNT;
+        memset(&m->ring_dma.event_ring_virt[old],0,sizeof(xhci_trb_t));
+    }
 
     if (off == 0x40) { /* USBCMD */
         if (val & 1) {
@@ -118,6 +126,7 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
 
         if (setup.bRequest == USB_REQ_GET_DESCRIPTOR) {
             uint8_t desc_type = setup.wValue >> 8;
+            if (m->fault==DEV_FAULT_CFG_TIMEOUT && desc_type==USB_DESC_CONFIGURATION) return;
             if (desc_type == USB_DESC_DEVICE) {
                 if (m->fault == DEV_FAULT_BAD_DESC_HEADER) {
                     memset(m->dev_dma.bounce_buf_virt, 0, setup.wLength);
@@ -167,7 +176,9 @@ static void mock_write32(void *ctx, uint32_t off, uint32_t val) {
         } else {
             event->status = 1u << 24; /* Success */
         }
-        event->control = (32u << 10) | (1u << 24) /* Slot ID 1 */ | 1u;
+        event->control = (32u << 10) | (1u << 24) /* Slot ID 1 */ | (1u << 16) /* EP0 */ | 1u;
+        if (m->fault==DEV_FAULT_WRONG_EP) event->control += (1u << 16);
+        if (m->fault==DEV_FAULT_EVENT_DATA) event->control |= (1u << 2);
     }
 }
 
@@ -259,6 +270,23 @@ int main(void) {
      * Runtime halt clearing must start at this producer, not EP0 index zero. */
     assert(dev.ep0_enqueue_idx == 11 && dev.ep0_cycle == 1);
     printf("PASS: xHCI 9G.1e host enumeration and descriptor validation\n");
+    setup_mock(&m, DEV_FAULT_NONE);
+    m.recycle_on_ack=true;
+    ok=xhci_enumerate_device(&io,&m.ring_dma,&m.dev_dma,2,XHCI_SPEED_HIGH,&dev);
+    assert(ok && dev.is_valid_bot_storage && dev.slot_id==1);
+    printf("PASS: controller event-slot reuse after ERDP cannot corrupt enumeration\n");
+    for (unsigned fault=DEV_FAULT_CFG_TIMEOUT;fault<=DEV_FAULT_EVENT_DATA;++fault) {
+        setup_mock(&m,(enum mock_dev_fault)fault);
+        ok=xhci_enumerate_device(&io,&m.ring_dma,&m.dev_dma,2,XHCI_SPEED_HIGH,&dev);
+        assert(!ok && !dev.is_valid_bot_storage);
+        assert(m.db1_count==(fault==DEV_FAULT_CFG_TIMEOUT ? 2u : 1u));
+        assert(dev.control_failure==(fault==DEV_FAULT_EVENT_DATA ? 4u : 1u));
+        assert(dev.expected_status_trb!=0);
+        if (fault==DEV_FAULT_CFG_TIMEOUT) {
+            assert(dev.control_wait_ms==500 && dev.last_comp_code==0 && dev.last_trb_param==0);
+        }
+    }
+    printf("PASS: configuration timeout never resubmitted; unrelated EP and Event Data cannot complete EP0\n");
 
     /* 2. Enable slot fault */
     setup_mock(&m, DEV_FAULT_ENABLE_SLOT);

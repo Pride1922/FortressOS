@@ -76,6 +76,13 @@ bool xhci_discover_and_reset_ports(const xhci_rings_io_t *io,
         ext = next ? ext + next : 0;
     }
 
+    /* HCRST starts ports disconnected. Allow attached devices time to signal
+     * again before the one-shot boot scan. This is bounded PIT polling, not
+     * runtime hot-plug; no DMA/event-ring ownership is changed here. */
+    for (unsigned ms = 0; ms < 1000; ++ms) {
+        if (!io->delay_ms(io->mmio_ctx)) return false;
+    }
+
     /* 2. Inspect each root port */
     for (uint32_t p = 1; p <= max_ports; ++p) {
         uint32_t portsc_off = op + 0x400 + (p - 1) * 0x10;

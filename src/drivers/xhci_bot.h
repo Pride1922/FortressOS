@@ -181,7 +181,10 @@ bool xhci_configure_bulk_endpoints(const xhci_rings_io_t *io,
                                    const xhci_bot_device_t *device,
                                    xhci_bot_rings_t *bot_rings);
 
-/* Executes a synchronous BOT transaction: CBW -> Data -> CSW */
+/* Executes a synchronous BOT transaction: CBW -> Data -> CSW.
+ * Polling delay budgets: CBW 1 s; WRITE(10) data/status 5 s per wait;
+ * other data/status 1 s. Matching CSW STALL permits the existing single
+ * status retry after endpoint recovery. Uncertain writes are never replayed. */
 bool xhci_bot_transfer(const xhci_rings_io_t *io,
                        xhci_dma_buffers_t *ring_dma,
                        const xhci_dev_dma_t *dev_dma,

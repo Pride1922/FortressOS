@@ -3,7 +3,7 @@
 **A 64-bit operating system built from the kernel up.**
 
 FortressOS is a freestanding C11 and x86-64 assembly kernel with isolated user
-processes, an interactive shell, a writable ext2 filesystem, and a from-scratch
+processes, an interactive shell, writable ext2 and ext4 filesystems, and a from-scratch
 TCP/IP stack. It boots through [Limine](https://github.com/limine-bootloader/limine) under UEFI or legacy BIOS, runs in QEMU,
 and has been tested on real Dell Latitude 5590 and 5530 hardware.
 
@@ -16,54 +16,65 @@ paths, and tests that distinguish emulator results from hardware observations.
 > what's safe to change, read [`AGENTS.md`](AGENTS.md) and [`PROTECTED.md`](PROTECTED.md) — those are kept in sync
 > with the code, this file is kept in sync with those.
 
-Current milestone: Networking NET-1, NET-2, runtime link recovery, and NET-3 (runtime network configuration) are
-complete. The stack covers the Intel e1000/e1000e/I219-LM driver, Ethernet II
-framing, ARP, IPv4 unicast, ICMP Echo (/bin/ping), UDP sockets (/bin/udptest),
-TCP streams (echoc/echos/tcpserve/nc), a userspace DNS resolver (nslookup,
-hostname nc), cold cable insertion with retained-ring link recovery, and runtime
-network configuration (/bin/ifconfig, /bin/ifup, /mnt/.fortress/network.conf).
-Physical acceptance is recorded on the Dell Latitude 5590 for ICMP, UDP, TCP,
-DNS, link recovery (all six cold-wait, insertion, unplug/replug, and listener
-error cases), and runtime network configuration (/bin/ifconfig, /bin/ifup,
-on-the-fly CLI reconfig, /mnt/.fortress/network.conf, and DNS fallback).
-Shell milestones S0–S9 are complete: editing, history, expansion,
-redirection, pipes, jobs, signals, process groups, terminal foreground ownership,
-and introspection (ps, top, sysinfo) verified on QEMU BIOS/UEFI and physical
-Dell hardware.
+Current milestone: **EXT4 Phase 9 (journaled filesystem integration)** is the active milestone (2026-10-07).
+Phases 9.1–9.5 are complete, covering bounded JBD2 journal replay, transaction commit/checkpoint,
+crash-consistency under emulated power fault, and 144 automated USB verification cases (36 boots across
+BIOS/UEFI and 1/4 CPUs). Phase 9.6 physical acceptance is currently in progress on the Dell Latitude 5590
+using a dedicated physical-test build; clean persistence (START, VERIFY, offline `e2fsck` audits, reboot,
+downloads, overwrite/delete) is verified, while interruption tests remain pending (Case 1 is running).
+The journaling filesystem is nearly production-ready, but production journaled RW remains disabled until
+gate E4-B closes; ext2 remains the default image filesystem.
+
+Prior milestones are complete and verified on bare metal:
+- **Networking (NET-1–NET-3)**: Intel e1000/e1000e/I219-LM driver, Ethernet II, ARP, IPv4, ICMP Echo (`/bin/ping`),
+  UDP (`/bin/udptest`), TCP streams (`echoc`/`echos`/`tcpserve`/`nc`), userspace DNS resolver (`nslookup`, hostname `nc`),
+  cold cable insertion with retained-ring link recovery, runtime network configuration (`/bin/ifconfig`, `/bin/ifup`,
+  `/mnt/.fortress/network.conf`), and bare-metal TCP throughput of 19.27 MB/s (~154 Mbps) on the Dell 5590, matching
+  Linux Mint on identical hardware.
+- **Shell (S0–S9)**: Editing, history, expansion, redirection, pipes, jobs, signals, process groups, terminal foreground
+  ownership, and introspection (`ps`, `top`, and a structured 5-section `sysinfo`).
+- **Multi-Core SMP (Pieces 1–6)**: 8-core concurrent execution, AP discovery, per-CPU state, lock hierarchy, distributed
+  preemptive scheduler with dual-lock work-stealing (recently hardened against scheduler races across 10/10 verified runs),
+  IPIs, TLB shootdown, and contention-safe memory management.
 
 ## What works today
 
 | Area | Implemented capabilities |
 | --- | --- |
-| Boot & Visual UX | Quiet graphical boot splash with custom FortressOS logo (Tokyo Night color palette) and live centered status ticker. Raw boot diagnostics suppressed on framebuffer by default (100% preserved in COM1 serial and in-memory dmesg). Automatic console un-mute and context dump on [FAIL] or [PANIC]. Clean screen transition into Ring 3 shell. Limine menu supports standard quiet boot and FortressOS (Verbose Debug) fallback. |
-| Multi-Core (SMP) | 8-core concurrent execution verified on bare metal. AP discovery via Limine/ACPI MADT (Piece 1); per-CPU GS base, GDT, TSS, and IST stacks (Piece 2); strict rank-checked lock discipline with contention telemetry and panic isolation (Piece 3); distributed multi-core preemptive scheduler with per-CPU runqueues and dual-lock work-stealing (Piece 4); APIC ICR cross-core IPIs and broadcast synchronous TLB shootdowns (Piece 5); and full multi-core memory architecture with contention deadlock breaking, op_refs, sched_refs, and deferred address-space reaping (Piece 6). |
-| Memory | Physical page allocator covering 32 GiB RAM with two-stage boot initialization (Phase 9H / Piece 6A); concurrent PMM allocation safety verified across 320,000 cycles under 622k+ contention events (Piece 6B); contention-safe TLB shootdown and CR3 reload (Piece 6C); per-process address spaces with transient operation references (op_refs), scheduler references (sched_refs), hardware active CPU masks, and guaranteed zero-leak deferred destruction (Piece 6D). |
-| CPU and scheduling | GDT/IDT per CPU, exception diagnostics, dedicated double-fault/NMI stacks, ACPI discovery, APIC timer preemption (100 Hz), per-CPU runqueues, and work-stealing across online cores. |
-| User programs | Ring 3 execution, ELF loading, fast syscall MSRs configured across all cores, System V AMD64 argument passing, validated syscalls, cross-core child waiting, exit status propagation, and deferred process reclamation. |
-| Storage | PCI discovery, NVMe reads/writes/flush, xHCI + USB Mass Storage BOT (USB 2.0 and USB 3.x SuperSpeed), validated GPT partitions, and bounded read/write ext2 support. Multi-core concurrent append serialization verified under QEMU -smp 4 and Dell Latitude 5590 hardware with offline e2fsck -fn audits. Write persistence is verified on QEMU NVMe fixtures and on two independent physical USB devices. |
+| Boot & Visual UX | Quiet graphical boot splash with custom FortressOS logo (Tokyo Night color palette) and live centered status ticker. Raw boot diagnostics suppressed on framebuffer by default (100% preserved in COM1 serial and in-memory dmesg). Automatic console un-mute and context dump on `[FAIL]` or `[PANIC]`. Clean screen transition into Ring 3 shell. Limine menu supports standard quiet boot and FortressOS (Verbose Debug) fallback. |
+| Multi-Core (SMP) | 8-core concurrent execution verified on bare metal (Dell Latitude 5590). AP discovery via Limine/ACPI MADT (Piece 1); per-CPU GS base, GDT, TSS, and IST stacks (Piece 2); strict rank-checked lock discipline with contention telemetry and panic isolation (Piece 3); distributed multi-core preemptive scheduler with per-CPU runqueues and dual-lock work-stealing (Piece 4; scheduler race conditions resolved and verified across 10/10 runs; pre-mount work-stealing timeout recorded as a follow-up in `docs/subsystems/smp.md`); APIC ICR cross-core IPIs and broadcast synchronous TLB shootdowns (Piece 5); and full multi-core memory architecture with contention deadlock breaking, `op_refs`, `sched_refs`, and deferred address-space reaping (Piece 6). |
+| Memory | Physical page allocator covering 32 GiB RAM with two-stage boot initialization (Phase 9H / Piece 6A); concurrent PMM allocation safety verified across 320,000 cycles under 622k+ contention events (Piece 6B); contention-safe TLB shootdown and CR3 reload (Piece 6C); per-process address spaces with transient operation references (`op_refs`), scheduler references (`sched_refs`), hardware active CPU masks, and guaranteed zero-leak deferred destruction (Piece 6D). Dynamic heap introspection with committed and peak tracking exposed in `sysinfo`. |
+| CPU and scheduling | GDT/IDT per CPU, exception diagnostics, dedicated double-fault/NMI stacks, ACPI discovery, APIC timer preemption (100 Hz), per-CPU runqueues, and work-stealing across online cores. Hardware invariant TSC calibrated against APIC/PIT, exposed via `SYS_SYSINFO` (`tsc_hz`) for sub-microsecond performance timing in `sysinfo` and `disk bench`. |
+| Filesystems | **ext2** (default image filesystem): Bounded direct and single-indirect blocks, atomic append serialized under `ext2_lock`, optimized write path with deferred transaction barriers, in-memory block bitmap cache (`bmp_cache`), and multi-sector NVMe transfers yielding ~4× write speedup (~4.2 MiB/s writes, 16–20 MiB/s reads).<br>**ext4** (active verification): Full JBD2 journaling, extent and block mappings, crash-consistent commit/checkpointing, and recovery replay. Phases 9.1–9.5 automated USB verification complete (144 cases); Phase 9.6 physical acceptance underway on Dell 5590. Production journaled RW remains disabled until gate E4-B closes. |
+| Storage | PCI discovery, NVMe reads/writes/flush with multi-sector batching, xHCI + USB Mass Storage BOT (USB 2.0 and USB 3.x SuperSpeed), validated GPT partitions with PARTUUID and UTF-16 decoded labels exposed via `SYS_BLOCKINFO`. Storage observability and benchmarking via `/bin/disk` (`list`, `usage`, `info`, `bench`). Multi-core concurrent append serialization verified under QEMU `-smp 4` and Dell Latitude 5590 hardware with offline `e2fsck -fn` audits. Write persistence is verified on QEMU NVMe fixtures and on two independent physical USB devices. |
 | USB | Multiple xHCI controllers enumerated and initialized; device enumeration and descriptor parsing; BOT/SCSI reads and writes; durability classification with per-device policy; explicit writable opt-in. Both USB 2.0 and directly-attached USB 3.x (SuperSpeed) devices are supported; external hubs and hot-plug are not. |
-| Files | Read, create, write, truncate, make directories, rename/move, and delete. Initramfs provides boot-time programs; ext2 provides persistent storage. |
+| Files | Read, create, write, truncate, make directories, rename/move, and delete. Initramfs provides boot-time programs; ext2 provides persistent storage today; ext4 is the target production filesystem. |
+| User programs & tools | Ring 3 execution, ELF loading, fast syscall MSRs configured across all cores, System V AMD64 argument passing, validated syscalls, cross-core child waiting, exit status propagation, and deferred process reclamation.<br>**Standard & Stream Toolset:** Full-screen editor `nano` v2.1 (Pike VM regex search/replace, undo/redo, multi-buffer, line numbers, nanorc config), storage utility `disk` (list with UUID/label, device info, usage, microsecond benchmark), stream processing (`grep`, `sort`, `uniq`, `xxd`, `diff`, `patch`, `printf`, `cat`, `head`, `tail`, `wc`), file integrity (`md5sum`, `sha256sum`, `tar`), and system introspection (`ps`, `top`, 5-section `sysinfo`). |
+| New tools — physical acceptance | `disk` storage observability, `nano` v2.1 editor, stream tools (`grep`, `sort`, `uniq`, `xxd`, `diff`, `patch`), checksums (`md5sum`, `sha256sum`), and `tar` verified across automated host and QEMU test suites. Clean persistence on physical Dell 5590 verified during Phase 9.6 (downloads, checksums, overwrites, deletes); physical interruption tests remain pending. |
 | Networking — driver | Intel e1000 (82540EM), e1000e (82574L), and integrated I219-LM driver with polling-only ingress on a BSP-pinned worker. The same descriptor layout serves QEMU and bare metal. I219 physical acceptance on the Dell Latitude 5590 (8086:15D7) and 5530 (8086:1A1E). DMA quarantine on controller fault. No NIC interrupt handlers or MSI vectors in this milestone. |
 | Networking — protocols | Ethernet II framing; ARP request/reply with reply-only cache learning; IPv4 unicast with header validation; ICMP Echo Request/Reply; UDP with a bounded 16-socket table; TCP with Reno slow start, congestion avoidance, fast retransmit, SRTT/RTTVAR RTO and Karn's rule; a userspace DNS stub resolver. All bounded, static, and BSP-owned. |
-| Networking — ABI | SYS_NETCTL=42 (ping, NETCTL_IFGET, NETCTL_IFSET, NETCTL_TRACE_PROBE); SYS_SOCKET/BIND/SENDTO/RECVFROM = 38–41 (UDP); SYS_CONNECT/LISTEN/ACCEPT/SEND/RECV/SHUTDOWN = 43–48 (TCP); SYS_SEND_UNTIL/RECV_UNTIL/CONNECT_UNTIL = 49–51 (opt-in absolute BSP-tick deadlines, max 60 s horizon). All BSP-only, explicitly rejecting AP callers. |
-| Networking — tools | /bin/ifconfig, /bin/ifup, /bin/ping, /bin/traceroute, /bin/udptest, /bin/echoc, /bin/echos, /bin/tcpserve, /bin/nc (serial request/response with hostname resolution), /bin/nslookup, /bin/wget, /bin/download. |
-| New tools — physical acceptance pending | download, wget, streaming md5sum/sha256sum, traceroute and nano have automated test evidence; Dell hardware tests remain pending. Tar extraction awaits the changed-archive policy decision. |
-| Networking — physical acceptance | Dell Latitude 5590: ICMP (4/4, matched request/reply pairs, second-host Wireshark screenshot), UDP (user-reported PASS, capture audit pending), TCP (10/10 QEMU matrix; physical acceptance for client, real HTTP server, guest listener, and RST recovery), DNS (10/10 QEMU matrix; physical acceptance for A, CNAME, NXDOMAIN, TC→TCP fallback, stall timeout, and hostname nc), link recovery (cold waiting, autonomous PHY renegotiation, retained-ring replug, 6/6 PASS), and runtime network configuration (ifconfig query, on-the-fly ifup, persistent config apply, ping gateway, and DNS fallback PASS). Dell Latitude 5530: driver bring-up and ICMP. |
-| Shell (Milestones S0–S9) | Modular Ring 3 shell (user/shell/) featuring 4096-byte line editing, horizontal viewport, cursor movement, Ctrl shortcuts, RAM history, incremental Ctrl+R search, bracketed paste review, raw/timed input (SYS_INPUT_READ), terminal mode control (SYS_TERMCTL), Belgian AZERTY AltGr operator decoding, working directories (cd/pwd), logic chaining (;, &&, ||, !), parameter expansion ($VAR, ${VAR}, $?), aliases, globbing, uniform descriptors (0–31), redirections (<, >, >>, 2>&1, n>&-), retained UI terminal handle (fd 31 with CLOEXEC), version builtin, persistent history (/mnt/.fortress/history), pipes and stream utilities, job control (jobs, fg, bg, kill), signals (SIGINT, SIGPIPE, SIGTSTP, SIGCONT, SIGCHLD), process groups, terminal foreground ownership, and introspection utilities (ps, top, sysinfo). |
+| Networking — ABI | `SYS_NETCTL=42` (ping, NETCTL_IFGET, NETCTL_IFSET, NETCTL_TRACE_PROBE); `SYS_SOCKET`/`BIND`/`SENDTO`/`RECVFROM` = 38–41 (UDP); `SYS_CONNECT`/`LISTEN`/`ACCEPT`/`SEND`/`RECV`/`SHUTDOWN` = 43–48 (TCP); `SYS_SEND_UNTIL`/`RECV_UNTIL`/`CONNECT_UNTIL` = 49–51 (opt-in absolute BSP-tick deadlines, max 60 s horizon). All BSP-only, explicitly rejecting AP callers. |
+| Networking — tools | `/bin/ifconfig`, `/bin/ifup`, `/bin/ping`, `/bin/traceroute`, `/bin/udptest`, `/bin/echoc`, `/bin/echos`, `/bin/tcpserve`, `/bin/nc` (serial request/response with hostname resolution), `/bin/nslookup`, `/bin/wget`, `/bin/download`. |
+| Networking — physical acceptance | Dell Latitude 5590: ICMP (4/4, matched request/reply pairs, second-host Wireshark capture), UDP, TCP (10/10 QEMU matrix; physical acceptance for client, real HTTP server, guest listener, RST recovery, and measured 19.27 MB/s / ~154 Mbps sustained bare-metal throughput matching Linux Mint), DNS (10/10 QEMU matrix; physical acceptance for A, CNAME, NXDOMAIN, TC→TCP fallback, stall timeout, and hostname nc), link recovery (cold waiting, autonomous PHY renegotiation, retained-ring replug, 6/6 PASS), and runtime network configuration (ifconfig query, on-the-fly ifup, persistent config apply, gateway ping, and DNS fallback PASS). Dell Latitude 5530: driver bring-up and ICMP. |
+| Shell (Milestones S0–S9) | Modular Ring 3 shell (`user/shell/`) featuring 4096-byte line editing, horizontal viewport, cursor movement, Ctrl shortcuts, RAM history, incremental `Ctrl+R` search, bracketed paste review, raw/timed input (`SYS_INPUT_READ`), terminal mode control (`SYS_TERMCTL`), Belgian AZERTY AltGr operator decoding, working directories (`cd`/`pwd`), logic chaining (`;`, `&&`, `||`, `!`), parameter expansion (`$VAR`, `${VAR}`, `$?`), aliases, globbing, uniform descriptors (0–31), redirections (`<`, `>`, `>>`, `2>&1`, `n>&-`), retained UI terminal handle (fd 31 with CLOEXEC), version builtin, persistent history (`/mnt/.fortress/history`), pipes and stream utilities, job control (`jobs`, `fg`, `bg`, `kill`), signals (`SIGINT`, `SIGPIPE`, `SIGTSTP`, `SIGCONT`, `SIGCHLD`), process groups, terminal foreground ownership, and introspection utilities (`ps`, `top`, `sysinfo`). |
 | Power and platform | BIOS/UEFI boot images, ACPI S5 shutdown, and reset fallbacks. Shutdown and reboot verified on bare-metal Dell Latitude 5590. |
 
 User-process fault isolation and resource reclamation have targeted tests; this
 is not a claim of complete security isolation. ext2 writes are bounded to direct
-and single-indirect blocks; see `ARCH_REVIEW.md` § "ext2 write cap" for the exact
-limit and the ext4 target. The filesystem does not promise crash-atomic updates
-or recovery from arbitrary power loss.
+and single-indirect blocks; see `ARCH_REVIEW.md` § "ext2 write cap" and `docs/subsystems/storage.md`
+for the exact limit and the ext4 target. ext2 does not promise crash-atomic updates or recovery
+from arbitrary power loss.
+
+ext4 with JBD2 journaling is currently in verification (Phase 9.6). While crash consistency and journal
+replay have been verified across hundreds of automated fault-injection cycles (Phase 9.5), production
+journaled RW remains disabled on release images until physical acceptance gate E4-B is closed.
 
 USB durability is classified per device and disclosed in the boot log. A device
-that reports its caching page and accepts SYNCHRONIZE CACHE gets the strong
+that reports its caching page and accepts `SYNCHRONIZE CACHE` gets the strong
 guarantee; a device that reports neither is mounted write-through on the
 assumption that it behaves like every other consumer stick, with an explicit
 warning that power loss during writes may lose data. Physical power-loss
-tolerance is not claimed for any device, even a SYNC_BACKED one — clean shutdown
+tolerance is not claimed for any device, even a `SYNC_BACKED` one — clean shutdown
 is what's verified.
 
 Networking is polling-only: no NIC interrupt handlers or MSI vectors are
@@ -160,16 +171,24 @@ echo $FOO             # variable expansion
 alias ll="ls -l"      # define command alias
 echo "data" > out.txt # redirect stdout to file
 echo "more" >> out.txt# append stdout to file
-printf "abc" | wc -c  # format exact bytes without newline (RFC vectors)
+printf "abc\n"        # formatted output
 cat < out.txt         # redirect stdin from file
+grep -i "data" out.txt# stream search with pattern matching
+sort out.txt | uniq   # sort lines and filter duplicates
+xxd -l 32 out.txt     # hex dump binary or text files
+diff file1 file2      # compare files line-by-line
 ls /missing 2> err.log# redirect stderr
 history               # display in-memory command history
 jobs                  # list background jobs
 fg %1                 # bring job 1 to foreground
 kill -INT %1          # send SIGINT to job 1
 top                   # live process view with CPU% and stable PID sorting
-nano /mnt/notes.txt   # visual full-screen interactive text editor
-sysinfo               # managed-RAM total, monotonic timebase, and system info
+nano /mnt/notes.txt   # visual full-screen text editor (v2.1: regex, undo, multi-buffer)
+disk                  # list storage devices with capacity, sector size, label, PARTUUID
+disk info nvme0n1p1   # detailed low-level block geometry, GUIDs, and mount status
+disk usage            # filesystem capacity and inode utilization table
+disk bench /mnt       # microsecond-resolution TSC filesystem throughput benchmark
+sysinfo               # 5 sections: OS identity, CPU (TSC), memory/heap, tasks, storage
 terminal local        # select output mode: local (full screen), serial, mirror, or plain
 layout azerty         # Belgian AZERTY with AltGr (| \ {} [] ~)
 layout us             # US QWERTY
@@ -179,6 +198,9 @@ ping -c 4 10.0.2.2    # send four ICMP Echo Requests to the gateway
 nslookup example.com  # resolve domain name to IPv4 address via DNS
 wget http://example.com/index.html # download file over HTTP
 download /mnt http://192.168.0.153:8000/testfile.txt # simple file download to /mnt
+md5sum /mnt/test.txt  # compute MD5 hash of file
+sha256sum /mnt/test.txt # compute SHA-256 hash of file
+tar -tf archive.tar   # list contents of tar archive
 dmesg -n 13           # view last 13 kernel diagnostic lines (tail)
 dmesg /mnt/boot.log   # dump kernel ring buffer to persistent file
 run /bin/hello world  # execute user program
@@ -203,7 +225,7 @@ cd /mnt/notes
 echo "Hello from FortressOS" > hello.txt
 cat hello.txt
 echo "Appended log entry" >> hello.txt
-edit hello.txt
+nano hello.txt
 mv hello.txt saved.txt
 sync
 shutdown
@@ -284,41 +306,50 @@ Expected: the peer's echo prints and the prompt returns.
 The stack sends correct Ethernet, ARP, IPv4, ICMP, UDP, and TCP frames. Physical
 acceptance on the Dell Latitude 5590 is recorded for each layer with
 second-host Wireshark captures. TCP and DNS retain full pcapng evidence; ICMP
-and UDP are recorded as second-host screenshots (no retained pcap, so no
-independent payload/checksum verification is claimed for those two). There is
-no DHCP client. /bin/ping accepts both numeric IPv4 and domain hostnames (resolved
-via the userspace stub resolver with automatic fallback across configured servers);
-nslookup, nc, wget, and download resolve hostnames via /tmp/resolv.conf or /mnt/.fortress/resolv.conf.
+and UDP are recorded as second-host screenshots. Bare-metal TCP throughput reached
+**19.27 MB/s (~154 Mbps)** on the Dell Latitude 5590, matching Linux Mint on the same
+laptop. There is no DHCP client. `/bin/ping` accepts both numeric IPv4 and domain hostnames
+(resolved via the userspace stub resolver with automatic fallback across configured servers);
+`nslookup`, `nc`, `wget`, and `download` resolve hostnames via `/tmp/resolv.conf` or `/mnt/.fortress/resolv.conf`.
 
 ## Real hardware: what has been verified
 
 Manual testing on a Dell Latitude 5590 (Core i5-8350U, 32 GiB installed RAM,
 256 GB NVMe, Intel UHD 620) has confirmed USB boot, the framebuffer console,
 PS/2 keyboard input, Belgian AZERTY behavior, shell interaction, argument
-passing to /bin/hello, ACPI shutdown, reboot, full use of the machine's 32 GiB
+passing to `/bin/hello`, ACPI shutdown, reboot, full use of the machine's 32 GiB
 of RAM, and the complete networking path: Intel I219-LM driver bring-up, ARP
 resolution of the LAN gateway, a matched two-way ICMP exchange, UDP echo, TCP
-client/server flows, DNS resolution (A records, CNAME chains, NXDOMAIN,
-TC→TCP fallback, multi-server fallback, and hostname ping), and runtime link recovery (cold
-cable waiting, autonomous PHY renegotiation on insertion, and retained-ring
-continuity across flaps). A Dell Latitude 5530 (8086:1A1E) has also been
-verified for driver bring-up and ICMP.
+client/server flows (measuring 19.27 MB/s throughput), DNS resolution (A records,
+CNAME chains, NXDOMAIN, TC→TCP fallback, multi-server fallback, and hostname ping),
+and runtime link recovery (cold cable waiting, autonomous PHY renegotiation on
+insertion, and retained-ring continuity across flaps). A Dell Latitude 5530
+(8086:1A1E) has also been verified for driver bring-up and ICMP.
 
 USB storage is verified on physical hardware across two device classes. The kernel discovers xHCI controllers, addresses both a USB 2.0 stick (Kingston) and a USB 3.x SuperSpeed stick (SanDisk), parses GPT on each, mounts their ext2 partitions read-write, and persists files written from the editor across a full power cycle. `e2fsck -fn` on the unmounted stick from Linux reports 0 errors. A **Dell Latitude 5530**, which exposes two independent xHCI controllers, has also been verified: both controllers initialize, and a stick is reachable and mountable on either one.
 
-The internal physical NVMe is deliberately excluded from the USB storage mount path by parent-device provenance. Adding an ext2 partition to the laptop's SSD does not enable automatic mounting.
+**EXT4 Phase 9.6 clean-persistence acceptance** on the Dell Latitude 5590 has been verified:
+- Dedicated physical-test build flashed to authorized 3.75 GiB USB media.
+- Clean boot and primary GPT validation without mount degradation.
+- START token execution: namespace allocation, directory population, file writes, and multi-core append.
+- Clean reboot and VERIFY token execution: clean mount, journal verification, 100% data integrity check.
+- Wget and download file transfers persisted cleanly to the USB data partition.
+- File overwrite, truncate, and deletion with zero orphan leaks verified by post-boot offline `e2fsck -fn` (0 errors).
+- *Interruption tests remain pending:* Case 1 physical power cut / fault injection is currently running.
+
+The internal physical NVMe is deliberately excluded from the USB storage mount path by parent-device provenance. Adding an ext2 or ext4 partition to the laptop's internal SSD does not enable automatic mounting.
 
 What is not yet verified on hardware:
 
-- Physical power-loss tolerance for USB storage. Even a SYNC_BACKED device's
+- Physical power-loss tolerance for USB storage. Even a `SYNC_BACKED` device's
   guarantee is about a completed flush, not about surviving power loss
   mid-write. Only clean-shutdown persistence is verified on any device.
 - NVMe write persistence on physical hardware. NVMe read/write/flush and ext2
   writable-mount persistence are verified against QEMU fixtures; the equivalent
   three-boot e2fsck-clean test has not yet been run against the Dell's
   internal NVMe.
-- Sustained network load, line-rate throughput, and measured idle CPU. The
-  ingress worker is verified for correctness, not measured throughput.
+- Sustained line-rate network load and measured idle CPU. The
+  ingress worker is verified for correctness and measured throughput, not line-rate saturation.
 - Cross-core socket operation. All socket syscalls are BSP-only; AP callers
   receive an explicit unsupported-context error.
 
@@ -353,7 +384,7 @@ The classification is what gates writable mount: only devices that can either pr
 ## Networking architecture
 
 The networking subsystem is a self-contained driver and protocol stack under
-src/net/ and src/drivers/e1000.c. It targets the Intel Gigabit Ethernet family:
+`src/net/` and `src/drivers/e1000.c`. It targets the Intel Gigabit Ethernet family:
 e1000 (82540EM), e1000e (82574L), and the integrated I219-LM found on modern
 Dell laptops. The same descriptor layout and MMIO register set is shared across
 all three, so a single driver serves QEMU and bare metal.
@@ -362,7 +393,7 @@ Layered scope:
 
 ```text
 Ring 3 user programs (/bin/ping, /bin/udptest, /bin/echoc, /bin/echos,
-/bin/tcpserve, /bin/nc, /bin/nslookup)
+/bin/tcpserve, /bin/nc, /bin/nslookup, /bin/wget, /bin/download)
     |  SYS_NETCTL=42 (ping); 38–41 (UDP sockets); 43–48 (TCP sockets);
     |  49–51 (opt-in absolute-deadline SEND/RECV/CONNECT)
     v
@@ -389,21 +420,22 @@ Design constraints:
 - Sole BSP protocol owner. All NIC I/O, timer sweeps, and TCP state changes
   run on CPU 0. AP code may publish detach requests but must not mutate
   connections or perform NIC work. The stack is non-reentrant.
-- Rank-1 network locks. g_net_dev_lock, g_socket_table_lock,
-  g_tcp_endpoints_lock, the ping mailbox lock, and the socket-manager lock are
+- Rank-1 network locks. `g_net_dev_lock`, `g_socket_table_lock`,
+  `g_tcp_endpoints_lock`, the ping mailbox lock, and the socket-manager lock are
   all Rank-1 and never nest. Copy-out/drop/acquire sequencing throughout.
 - Bounded static state. No dynamic allocation on hot paths. 16 socket handles,
   8 TCP connections, 4-datagram-per-socket RX queues, one wake hint per
   endpoint. No general packet queue.
-- Absolute per-call I/O deadlines. SYS_SEND_UNTIL/SYS_RECV_UNTIL/
-  SYS_CONNECT_UNTIL take a by-value uint64_t BSP-tick deadline. No
-  socket-wide timeout option; dup/inherited descriptors cannot silently
-  change another continuation's timeout. 60-second reviewable horizon.
+- Absolute per-call I/O deadlines. `SYS_SEND_UNTIL`/`SYS_RECV_UNTIL`/`SYS_CONNECT_UNTIL`
+  take a by-value uint64_t BSP-tick deadline. No socket-wide timeout option;
+  dup/inherited descriptors cannot silently change another continuation's timeout.
+  60-second reviewable horizon.
 - DMA quarantine on controller failure. Uncertain ownership means terminal
-  FAILED and quarantine, never reallocation. Same shape as the storage path.
+  `FAILED` and quarantine, never reallocation. Same shape as the storage path.
 - Static IP configuration. No DHCP client. The boot cmdline accepts
-  net=<IPv4>/<prefix>,<gateway> with bounded parsing and warning/default
-  fallback on malformed input.
+  `net=<IPv4>/<prefix>,<gateway>` with bounded parsing and warning/default
+  fallback on malformed input. Runtime reconfiguration is performed via `/bin/ifconfig`
+  and `/bin/ifup`.
 - Non-cryptographic ISN with a 120-second TCP-only reboot quiet period. The
   quiet period is the RFC 9293 §3.4.3 fallback for systems without a
   cryptographic entropy source. UDP and ICMP remain usable during the window.
@@ -424,7 +456,7 @@ Multi-core execution is complete and verified on bare metal (Dell Latitude 5590,
 1. [**AP discovery and boot**](docs/roadmap/smp-piece1-ap-discovery.md) — Limine SMP protocol cross-checked with ACPI MADT; boots every core to a parked state.
 2. [**Per-CPU storage**](docs/roadmap/smp-piece2-percpu.md) — GS-base CPU locals, per-CPU GDTs, TSS selectors, and IST1/IST2 stacks with SWAPGS and NMI isolation.
 3. [**Lock discipline under real concurrency**](docs/roadmap/smp-piece3-lock-discipline.md) — Hierarchical rank checks (L1), contention telemetry, atomic spinlocks, and panic isolation.
-4. [**SMP Scheduler & Work-Stealing**](docs/roadmap/smp-piece4-scheduler.md) — Per-CPU runqueues, 100 Hz APIC timer preemption, task migration, and dual-lock work-stealing across online cores.
+4. [**SMP Scheduler & Work-Stealing**](docs/roadmap/smp-piece4-scheduler.md) — Per-CPU runqueues, 100 Hz APIC timer preemption, task migration, and dual-lock work-stealing across online cores. Scheduler races resolved and re-verified across 10/10 runs; pre-mount work-stealing timeout recorded as a follow-up in [`docs/subsystems/smp.md`](docs/subsystems/smp.md).
 5. [**IPIs and TLB shootdown**](docs/roadmap/smp-piece5-ipi.md) — APIC ICR messaging, synchronous broadcast TLB invalidation barriers, remote core wakeups, and real VMM unmap synchronization.
 6. [**Multi-core memory architecture**](docs/roadmap/smp-piece6-memory.md) —
    - **6A**: 1 GiB boot ceiling and two-stage PMM/VMM initialization.
@@ -434,19 +466,15 @@ Multi-core execution is complete and verified on bare metal (Dell Latitude 5590,
 
 Next milestones:
 
-- Network configuration: /bin/ifconfig (read-only), /bin/ifup + a config file
-  (runtime IFSET), DNS server from the config file. DHCP deferred.
-- Persistent rootfs integration (/paradise).
-- MicroPython port.
-- Accounts, permissions, and installer.
+- **E4-B completion**: Physical power interruption and recovery verification for journaled ext4 on USB media.
+- **Permissions**: Unix permissions (Phases 1–4: mode bits, UID/GID, process credentials, permission checks on VFS nodes).
+- **Package manager**: Bounded package archive handling and deployment.
+- **Installer**: Native interactive installer deploying FortressOS to target disks.
+- **Persistent rootfs**: Integrated persistent rootfs (`/paradise`).
 
-Larger follow-ups: a journaling filesystem (ext4 or similar), TLS, a DHCP
-client, and a readiness primitive (select/poll) when a second consumer
-appears.
+Larger follow-ups: TLS, a DHCP client, and a readiness primitive (`select`/`poll`) when a second consumer appears.
 
-See docs/roadmap/ for checkpoint history and hardware evidence, docs/plans/
-for architectural plans, and AGENTS.md for implementation contracts and
-invariants.
+See [`docs/roadmap/`](docs/roadmap/README.md) for checkpoint history and hardware evidence, [`docs/subsystems/`](docs/subsystems/README.md) for subsystem annexes (`smp.md`, `storage.md`), [`docs/plans/`](docs/plans/README.md) for architectural plans, and [`AGENTS.md`](AGENTS.md) for implementation contracts and invariants.
 
 ## Testing
 
@@ -471,9 +499,23 @@ The project combines host sanitizer tests, QEMU integration tests, offline files
 | `make test-xhci-bot-host` | BOT stall recovery, MODE SENSE parsing, and durability policy under ASan/UBSan |
 | `make test-usb-mount-host` | Mount eligibility, durability modes, and sync path under ASan/UBSan |
 | `make test-console` | Framebuffer rendering, wrapping, scrolling, and bounds |
-| `make test-ext2` | Actual ext2/VFS code under ASan/UBSan, malformed data and injected failures |
-| `make test-ext2-write` | BIOS/UEFI multi-boot persistence on disposable NVMe images, with offline `e2fsck -fn` |
+| `make test-ext2` | Actual ext2/VFS code under ASan/UBSan, malformed data, and injected failures |
+| `make test-ext2-write` | BIOS/UEFI multi-boot persistence on disposable NVMe images with offline `e2fsck -fn`, testing batching and bitmap cache |
 | `make test-storage` | BIOS/UEFI GPT/ext2, user-space reads, and allocation audits |
+| `make test-ext4-read-host` | ASan/UBSan: ext4 extent tree traversal, block map decoding, inode validation |
+| `make test-ext4-write-host` | ASan/UBSan: ext4 block allocation, extent insertions, and metadata writeback |
+| `make test-jbd2-replay-host` | ASan/UBSan: JBD2 journal descriptor, commit block, revoke record replay |
+| `make test-ext4-crash-host` | ASan/UBSan: Crash simulation and recovery validation across journal transaction states |
+| `make test-ext4-journal-mount` | QEMU BIOS/UEFI: Journal recovery on mount and post-recovery filesystem validation |
+| `make test-nano-host` | ASan/UBSan: `nano` v2.1 text buffer engine, Pike VM regex search, line numbering, undo/redo history |
+| `make test-nano` | QEMU BIOS/UEFI: Interactive editor navigation, file writeout, and viewport stability |
+| `scripts/test_disk_host.py` | ASan/UBSan: `/bin/disk` device listing, partition UUID/label formatting, info subcommand, and benchmark math |
+| `scripts/test_disk_qemu.py` | QEMU BIOS/UEFI: Real NVMe GPT inspection via `disk list`, `disk info`, `disk usage`, and `disk bench` |
+| `make test-s9-sysinfo-host` | ASan/UBSan: `sysinfo` multi-section formatting, uptime math, and memory arithmetic |
+| `make test-s9-sysinfo` | QEMU BIOS/UEFI: System introspection formatting against live kernel syscalls |
+| `make test-stream-tools-host` | ASan/UBSan: Stream utilities (`grep`, `sort`, `uniq`, `xxd`, `diff`, `patch`, `printf`, `wc`) |
+| `make test-checksum-host` | ASan/UBSan: RFC 1321 MD5 and FIPS 180-4 SHA-256 streaming digest verification |
+| `make test-tar-host` | ASan/UBSan: USTAR archive header parsing, path validation, and extraction bounds |
 | `make test-shell-host` | Consolidated ASan/UBSan: keyboard/queue, framebuffer CSI terminal parser, and line editor/search/history limits |
 | `make test-shell-integration` | BIOS/UEFI shell interaction, cursor/screen-state, history/search/paste, and no-UART coverage |
 | `make test-shell` | Shell interaction, input wakeups, process execution, and reclamation |
@@ -489,18 +531,18 @@ The project combines host sanitizer tests, QEMU integration tests, offline files
 | `make test-net-ipv4-host` | ASan/UBSan: IPv4/ICMP stack with mocked callbacks |
 | `make test-net-ping-host` | ASan/UBSan: ping mailbox and ABI adapters |
 | `make test-net-icmp` | QEMU BIOS/UEFI × e1000/e1000e, SMP=1: `/bin/ping` integration, negative cases, timeout recovery |
-| make test-net-udp-host | ASan/UBSan: UDP codec, pseudo-header checksum, odd/zero/max payload, corrupt/omitted checksum |
-| make test-net-socket-host | ASan/UBSan: actual UDP socket/syscall code with memory/fd/tick/scheduler/NIC adapters |
-| make test-net-udp | QEMU BIOS/UEFI × e1000/e1000e × user/socket, SMP=1: real /bin/udptest, pcap audit, 10/10 |
-| make test-net-tcp-host | ASan/UBSan: TCP codec, options, checksums |
-| make test-net-tcp-tcb-host | ASan/UBSan: TCP state machine with synthetic inputs |
-| make test-net-tcp-socket-host | ASan/UBSan: TCP socket + syscall integration with mocked NIC/clock |
-| make test-net-tcp | QEMU BIOS/UEFI × e1000/e1000e × user/socket, SMP=1: TCP client/server matrix with independent audit |
-| make test-net-tcp-retention | Failure-artifact retention under assertion, timeout, and QEMU crash |
-| make test-net-tcp-deadlines | QEMU BIOS/UEFI: SEND_UNTIL/RECV_UNTIL/CONNECT_UNTIL with real Ring 3 client |
-| make test-net-dns-host | ASan/UBSan: DNS codec, literal RFC 1035 vectors, malformed-input fuzz, syscall adapters |
-| make test-net-dns | QEMU BIOS/UEFI × e1000/e1000e × user/socket, SMP=1: nslookup, CNAME, NXDOMAIN, TC→TCP, stall timeout, hostname nc, 10/10 |
-| make test-net-dns-lifecycle | QEMU BIOS/UEFI: SIGINT during timed TCP fallback, STOP/CONT past deadline, KILL recovery |
+| `make test-net-udp-host` | ASan/UBSan: UDP codec, pseudo-header checksum, odd/zero/max payload, corrupt/omitted checksum |
+| `make test-net-socket-host` | ASan/UBSan: actual UDP socket/syscall code with memory/fd/tick/scheduler/NIC adapters |
+| `make test-net-udp` | QEMU BIOS/UEFI × e1000/e1000e × user/socket, SMP=1: real `/bin/udptest`, pcap audit, 10/10 |
+| `make test-net-tcp-host` | ASan/UBSan: TCP codec, options, checksums |
+| `make test-net-tcp-tcb-host` | ASan/UBSan: TCP state machine with synthetic inputs |
+| `make test-net-tcp-socket-host` | ASan/UBSan: TCP socket + syscall integration with mocked NIC/clock |
+| `make test-net-tcp` | QEMU BIOS/UEFI × e1000/e1000e × user/socket, SMP=1: TCP client/server matrix with independent audit |
+| `make test-net-tcp-retention` | Failure-artifact retention under assertion, timeout, and QEMU crash |
+| `make test-net-tcp-deadlines` | QEMU BIOS/UEFI: SEND_UNTIL/RECV_UNTIL/CONNECT_UNTIL with real Ring 3 client |
+| `make test-net-dns-host` | ASan/UBSan: DNS codec, literal RFC 1035 vectors, malformed-input fuzz, syscall adapters |
+| `make test-net-dns` | QEMU BIOS/UEFI × e1000/e1000e × user/socket, SMP=1: nslookup, CNAME, NXDOMAIN, TC→TCP, stall timeout, hostname nc, 10/10 |
+| `make test-net-dns-lifecycle` | QEMU BIOS/UEFI: SIGINT during timed TCP fallback, STOP/CONT past deadline, KILL recovery |
 
 Recorded test results and their limits live in [`docs/roadmap/`](docs/roadmap/README.md). A listed test target is not a claim that every revision has passed it, and QEMU success is not physical-hardware acceptance. Storage tests must use disposable images, never an existing physical disk. Networking physical acceptance is recorded per phase; the Dell I219-LM path is the only NIC verified on bare metal.
 
@@ -512,14 +554,17 @@ src/kernel/        Boot, scheduler, processes, ELF loader, syscalls, lock discip
 src/mm/            Physical memory (PMM), paging (VMM), heap
 src/net/           Networking stack: Ethernet, ARP, IPv4, ICMP, UDP, TCP, DNS resolver, checksums, net_dev_t
 src/drivers/       Console, input, PCI, NVMe, xHCI, USB BOT, e1000/e1000e/I219, power
-src/fs/            VFS, tar initramfs, GPT, ext2, USB mount policy
-src/include/       Shared kernel and user ABI definitions (syscalls, terminal)
-user/              Freestanding user programs (init, hello, ping, udptest, echoc, echos, tcpserve, nc, nslookup, ps, sysinfo, top, nano) and shell entry
+src/fs/            VFS, tar initramfs, GPT, ext2, ext4 (with JBD2 journaling), USB mount policy
+src/include/       Shared kernel and user ABI definitions (syscalls, terminal, block info)
+user/              Freestanding user programs (init, hello, ping, udptest, echoc, echos, tcpserve, nc, nslookup, ps, sysinfo, top, download, wget)
+user/nano*         nano v2.1 visual text editor (nano.c, nano_core.c, Pike VM regex, nanorc parser)
+user/tools/        Modular user utilities: disk (storage info/bench), stream tools (grep, sort, uniq, xxd, diff, patch, wc, cat), checksums, tar
 user/shell/        Modular shell engine (line editing, builtins, UI, RAM history, file editor)
-tests/             Host tests and mocks
-scripts/           Image creation and QEMU verification
+tests/             Host unit test suites and mocked syscall fixtures (ASan/UBSan)
+scripts/           Image creation, benchmark runners, QEMU integration, and hardware verification scripts
 docs/plans/        Architecture specifications and staged implementation plans
-docs/roadmap/      Checkpoint implementation history and hardware verification evidence
+docs/roadmap/      Checkpoint implementation history, benchmarks, and hardware verification evidence
+docs/subsystems/   Subsystem reference annexes (smp.md, storage.md, net.md, shell.md, usb.md, platform.md)
 ```
 
-Before changing kernel code, read [`PROTECTED.md`](PROTECTED.md) first, then [`AGENTS.md`](AGENTS.md). For supported formats, architectural limits, and technical debt, see [`ARCH_REVIEW.md`](ARCH_REVIEW.md). For design plans, see [`docs/plans/`](docs/plans/README.md). Contributions should state what changed, which tests were run, and whether the evidence comes from host tests, QEMU, or physical hardware.
+Before changing kernel code, read [`PROTECTED.md`](PROTECTED.md) first, then [`AGENTS.md`](AGENTS.md). For supported formats, architectural limits, and technical debt, see [`ARCH_REVIEW.md`](ARCH_REVIEW.md) and [`docs/subsystems/storage.md`](docs/subsystems/storage.md). For design plans, see [`docs/plans/`](docs/plans/README.md). Contributions should state what changed, which tests were run, and whether the evidence comes from host tests, QEMU, or physical hardware.

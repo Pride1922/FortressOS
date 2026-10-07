@@ -469,6 +469,16 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                         serial_puts(" (Port ");
                         serial_print_hex(bot_dev.port_num);
                         serial_puts(")\n");
+                        if (bot_dev.control_failure) {
+                            serial_puts("[USB EP0] port=");serial_print_hex(p);
+                            serial_puts(" step=");serial_print_hex(bot_dev.step);
+                            serial_puts(" failure=");serial_print_hex(bot_dev.control_failure);
+                            serial_puts(" wait-ms=");serial_print_dec(bot_dev.control_wait_ms);
+                            serial_puts(" completion=");serial_print_hex(bot_dev.last_comp_code);
+                            serial_puts(" seen=");serial_print_hex(bot_dev.last_trb_param);
+                            serial_puts(" expected=");serial_print_hex(bot_dev.expected_status_trb);
+                            serial_puts("\n");
+                        }
                         serial_puts("[USB 9G.1e] PASS: BOT Mass Storage device found on Slot ");
                         serial_print_hex(bot_dev.slot_id);
                         serial_puts(" (Port ");
@@ -777,6 +787,27 @@ bool usb_block_flush(block_dev_t *dev) {
     }
     __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
     return ok;
+}
+
+void usb_report_last_io_state(void) {
+    spin_debug_assert_unheld();
+    xhci_controller_t *ctl=s_active_usb_controller;
+    if (!ctl) { serial_puts("[USB DEBUG] no active controller\n");return; }
+    xhci_bot_error_t error=ctl->bot_rings.last_error;
+    bool failed=ctl->bot_rings.transport_failed,offline=ctl->bot_rings.latched_offline;
+    uint32_t transferred=ctl->bot_rings.data_transferred;
+    serial_puts("[USB DEBUG] last-op=");serial_print_hex(error.opcode);
+    serial_puts(" phase=");serial_print_dec(error.phase);
+    serial_puts(" completion=");serial_print_dec(error.completion_code);
+    serial_puts(" csw=");serial_print_dec(error.csw_status);
+    serial_puts(" bytes=");serial_print_dec(transferred);serial_puts("\n");
+    serial_puts("[USB DEBUG] command-failed=");serial_print_dec(error.command_failed);
+    serial_puts(" transport-failed=");serial_print_dec(failed || error.transport_failed);
+    serial_puts(" offline=");serial_print_dec(offline);serial_puts("\n");
+    serial_puts("[USB DEBUG] sense-valid=");serial_print_dec(error.sense_valid);
+    serial_puts(" key=");serial_print_hex(error.sense_key);
+    serial_puts(" asc=");serial_print_hex(error.asc);
+    serial_puts(" ascq=");serial_print_hex(error.ascq);serial_puts("\n");
 }
 
 static size_t profile_text(char *out,size_t n,const char *s) {

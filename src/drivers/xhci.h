@@ -40,6 +40,9 @@ bool usb_block_flush(block_dev_t *dev);
 /* Boot/thread context only, with no subsystem/console lock held.
  * Consumes a copied flush failure; never reads controller or DMA memory. */
 void usb_report_flush_failure(void);
+/* Quiescent BSP boot/thread context, no lock held. Prints a copied last BOT
+ * command status and latches only; never submits USB I/O or reads DMA/MMIO. */
+void usb_report_last_io_state(void);
 /* Unlocked thread context only. Cumulative BOT command counters and raw TSC
  * times go to dmesg only, on explicit SYS_SYNC; no per-transfer output. */
 void usb_report_io_profile(void);
