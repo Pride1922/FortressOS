@@ -58,6 +58,8 @@
 #define SYS_SEND_UNTIL    49 /* (fd, data, len, flags=0, absolute BSP ticks) */
 #define SYS_RECV_UNTIL    50 /* (fd, data, cap, flags=0, absolute BSP ticks) */
 #define SYS_CONNECT_UNTIL 51 /* (fd, sockaddr, size, absolute BSP ticks) */
+#define SYS_MOUNTINFO     52 /* (uint32_t index, mount_info_t *out) -> 1=entry, 0=done, -errno */
+#define SYS_BLOCKINFO     53 /* (uint32_t index, block_info_t *out) -> 1=entry, 0=done, -errno */
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1
@@ -150,23 +152,97 @@ _Static_assert(__builtin_offsetof(proc_info_t, cpu_ticks) == 40, "proc_info_t.cp
 _Static_assert(__builtin_offsetof(proc_info_t, name) == 48, "proc_info_t.name offset");
 
 typedef struct {
-    uint64_t total_ram_bytes; /* managed RAM (prereq 1 definition) */
-    uint64_t free_ram_bytes;  /* free PMM frames × PAGE_SIZE */
-    uint64_t uptime_ticks;    /* BSP elapsed timer ticks (prereq 2) */
-    uint64_t tick_hz;         /* calibrated frequency; also cpu_ticks' unit */
-    uint32_t cpu_count;       /* initialized scheduler CPUs, BSP included */
-    uint32_t task_count;      /* enumerable user processes, zombies included */
-    uint64_t reserved;        /* zero */
+    uint64_t total_ram_bytes;   /* managed RAM (prereq 1 definition) */
+    uint64_t free_ram_bytes;    /* free PMM frames × PAGE_SIZE */
+    uint64_t uptime_ticks;      /* BSP elapsed timer ticks (prereq 2) */
+    uint64_t tick_hz;           /* calibrated frequency; also cpu_ticks' unit */
+    uint32_t cpu_count;         /* initialized scheduler CPUs, BSP included */
+    uint32_t task_count;        /* enumerable user processes, zombies included */
+    uint64_t tsc_hz;            /* calibrated invariant TSC frequency (0 if unavailable) */
+    uint64_t kernel_heap_used;  /* bytes allocated in kernel heap */
+    uint64_t kernel_heap_total; /* total bytes of kernel heap */
+    uint32_t thread_count;      /* total active threads */
+    uint32_t reserved;          /* padding/reserved */
 } sysinfo_t;
 
-_Static_assert(sizeof(sysinfo_t) == 48, "sysinfo_t ABI size");
+_Static_assert(sizeof(sysinfo_t) == 72, "sysinfo_t ABI size");
 _Static_assert(__builtin_offsetof(sysinfo_t, total_ram_bytes) == 0, "sysinfo_t.total_ram_bytes offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, free_ram_bytes) == 8, "sysinfo_t.free_ram_bytes offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, uptime_ticks) == 16, "sysinfo_t.uptime_ticks offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, tick_hz) == 24, "sysinfo_t.tick_hz offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, cpu_count) == 32, "sysinfo_t.cpu_count offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, task_count) == 36, "sysinfo_t.task_count offset");
-_Static_assert(__builtin_offsetof(sysinfo_t, reserved) == 40, "sysinfo_t.reserved offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, tsc_hz) == 40, "sysinfo_t.tsc_hz offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, kernel_heap_used) == 48, "sysinfo_t.kernel_heap_used offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, kernel_heap_total) == 56, "sysinfo_t.kernel_heap_total offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, thread_count) == 64, "sysinfo_t.thread_count offset");
+_Static_assert(__builtin_offsetof(sysinfo_t, reserved) == 68, "sysinfo_t.reserved offset");
+
+/* =========================================================================
+ * Storage Observability ABI (SYS_MOUNTINFO, SYS_BLOCKINFO)
+ * ========================================================================= */
+
+typedef enum {
+    VFS_FS_NONE   = 0,
+    VFS_FS_TARFS  = 1,
+    VFS_FS_EXT2   = 2,
+    VFS_FS_EXT4   = 3
+} vfs_fs_type_t;
+
+#define MOUNT_FLAGS_RO  0u
+#define MOUNT_FLAGS_RW  1u
+
+typedef struct {
+    char           source[32];
+    char           mount_path[256];
+    uint32_t       fs_type;         /* vfs_fs_type_t */
+    uint32_t       flags;           /* MOUNT_FLAGS_RO / MOUNT_FLAGS_RW */
+    uint64_t       total_blocks;
+    uint64_t       free_blocks;
+    uint64_t       total_inodes;
+    uint64_t       free_inodes;
+    uint32_t       block_size;
+    uint32_t       reserved;
+} mount_info_t;
+
+_Static_assert(sizeof(mount_info_t) == 336, "mount_info_t ABI size");
+_Static_assert(__builtin_offsetof(mount_info_t, source) == 0, "mount_info_t.source offset");
+_Static_assert(__builtin_offsetof(mount_info_t, mount_path) == 32, "mount_info_t.mount_path offset");
+_Static_assert(__builtin_offsetof(mount_info_t, fs_type) == 288, "mount_info_t.fs_type offset");
+_Static_assert(__builtin_offsetof(mount_info_t, flags) == 292, "mount_info_t.flags offset");
+_Static_assert(__builtin_offsetof(mount_info_t, total_blocks) == 296, "mount_info_t.total_blocks offset");
+_Static_assert(__builtin_offsetof(mount_info_t, free_blocks) == 304, "mount_info_t.free_blocks offset");
+_Static_assert(__builtin_offsetof(mount_info_t, total_inodes) == 312, "mount_info_t.total_inodes offset");
+_Static_assert(__builtin_offsetof(mount_info_t, free_inodes) == 320, "mount_info_t.free_inodes offset");
+_Static_assert(__builtin_offsetof(mount_info_t, block_size) == 328, "mount_info_t.block_size offset");
+_Static_assert(__builtin_offsetof(mount_info_t, reserved) == 332, "mount_info_t.reserved offset");
+
+typedef struct {
+    char           name[32];
+    uint32_t       sector_size;
+    uint32_t       reserved;    /* Reserved for v2: Bits 0-7: class, Bits 8-15: durability, Bits 16-31: flags */
+    uint64_t       size_bytes;
+    char           partuuid[40]; /* Formatted UUID: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" */
+    char           label[40];    /* Partition label / name (NUL-terminated) */
+    char           type_guid[40];/* Partition Type GUID string */
+    uint64_t       start_lba;    /* Starting LBA (0 if base device) */
+    uint64_t       sector_count; /* Sector count */
+    uint32_t       is_partition; /* 1 if partition, 0 if base block device */
+    uint32_t       part_index;   /* Partition index (1-based, 0 if not partition) */
+} block_info_t;
+
+_Static_assert(sizeof(block_info_t) == 192, "block_info_t ABI size");
+_Static_assert(__builtin_offsetof(block_info_t, name) == 0, "block_info_t.name offset");
+_Static_assert(__builtin_offsetof(block_info_t, sector_size) == 32, "block_info_t.sector_size offset");
+_Static_assert(__builtin_offsetof(block_info_t, reserved) == 36, "block_info_t.reserved offset");
+_Static_assert(__builtin_offsetof(block_info_t, size_bytes) == 40, "block_info_t.size_bytes offset");
+_Static_assert(__builtin_offsetof(block_info_t, partuuid) == 48, "block_info_t.partuuid offset");
+_Static_assert(__builtin_offsetof(block_info_t, label) == 88, "block_info_t.label offset");
+_Static_assert(__builtin_offsetof(block_info_t, type_guid) == 128, "block_info_t.type_guid offset");
+_Static_assert(__builtin_offsetof(block_info_t, start_lba) == 168, "block_info_t.start_lba offset");
+_Static_assert(__builtin_offsetof(block_info_t, sector_count) == 176, "block_info_t.sector_count offset");
+_Static_assert(__builtin_offsetof(block_info_t, is_partition) == 184, "block_info_t.is_partition offset");
+_Static_assert(__builtin_offsetof(block_info_t, part_index) == 188, "block_info_t.part_index offset");
 
 /* System Call Error Codes */
 #define SYSCALL_SUCCESS   0

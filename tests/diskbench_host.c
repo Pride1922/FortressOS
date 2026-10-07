@@ -37,6 +37,7 @@ static size_t stderr_len = 0;
 
 static uint64_t mock_uptime_ticks = 1000;
 static uint64_t mock_tick_hz = 100;
+static uint64_t mock_tsc_hz = 0;
 static uint64_t sigint_handler = 0;
 static uint64_t sigterm_handler = 0;
 
@@ -54,6 +55,7 @@ static void reset_mock(void) {
     stderr_buf[0] = '\0';
     mock_uptime_ticks = 1000;
     mock_tick_hz = 100;
+    mock_tsc_hz = 0;
     sigint_handler = 0;
     sigterm_handler = 0;
     intercept_exit = false;
@@ -85,6 +87,7 @@ long tool_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
         memset(info, 0, sizeof(*info));
         info->uptime_ticks = mock_uptime_ticks;
         info->tick_hz = mock_tick_hz;
+        info->tsc_hz = mock_tsc_hz;
         mock_uptime_ticks += 25; /* Advance 250 ms every time sysinfo is sampled */
         return 0;
     }
@@ -256,6 +259,7 @@ int main(void) {
         assert(rc == 0);
         assert(strstr(stdout_buf, "diskbench context mount=/mnt fs=ext2") != NULL);
         assert(strstr(stdout_buf, "diskbench write bytes=65536 time_ms=") != NULL);
+        assert(strstr(stdout_buf, "time_us=") != NULL);
         assert(strstr(stdout_buf, "diskbench read bytes=65536 time_ms=") != NULL);
         assert(strstr(stdout_buf, "diskbench meta files=5 time_ms=") != NULL);
         assert(active_entry_count() == 0);
@@ -399,6 +403,18 @@ int main(void) {
             assert(active_entry_count() == 0);
             printf("PASS: test 11 (simulated signal cleanup on SIGINT)\n");
         }
+    }
+
+    /* Test 12: High-resolution TSC timing validation */
+    {
+        reset_mock();
+        mock_tsc_hz = 2000000000ULL; /* 2.0 GHz mock TSC */
+        char *argv[] = {"diskbench", "-c", "-w", "64K", "-n", "5", "/mnt"};
+        int rc = diskbench_main(7, argv);
+        assert(rc == 0);
+        assert(strstr(stdout_buf, "time_us=") != NULL);
+        assert(active_entry_count() == 0);
+        printf("PASS: test 12 (high-resolution TSC timing validation)\n");
     }
 
     printf("ALL DISKBENCH HOST TESTS PASSED\n");

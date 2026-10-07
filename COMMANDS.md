@@ -82,10 +82,11 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`diff`](#diff) | Binary (`/bin/diff`) | Stream Tool | Compare files line by line using stack-free Myers algorithm |
 | [`patch`](#patch) | Binary (`/bin/patch`) | Stream Tool | Apply unified or normal diff files with fail-closed transactional safety |
 | [`diskbench`](#diskbench) | Binary (`/bin/diskbench`) | Stream Tool / Benchmark | Filesystem throughput and latency benchmark tool |
+| [`disk`](#disk) | Binary (`/bin/disk`) | Storage Tool | Storage device inspection and filesystem usage tool |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
-| [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display CPU, uptime, RAM, and process metrics |
+| [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display OS identity, CPU, memory/heap, tasks, and storage summary |
 | [`ifconfig`](#ifconfig) | Binary (`/bin/ifconfig`) | Networking | Query network interface status and packet counters |
 | [`ifup`](#ifup) | Binary (`/bin/ifup`) | Networking | Configure network interface statically or via config file |
 | [`ping`](#ping) | Binary (`/bin/ping`) | Networking | Send ICMP Echo Request packets to IPv4 host or hostname |
@@ -990,6 +991,32 @@ diskbench -s -w 64K -n 20 /mnt
 
 ---
 
+### `disk`
+**Syntax:** `disk [subcommand] [OPTIONS]`  
+**Path:** `/bin/disk`  
+**Description:** Storage observability utility for FortressOS running in Ring 3. Queries passive kernel device and filesystem registry information without mutating storage or issuing disk writes.
+* **Subcommands:**
+  * `list` (default): Enumerate registered block devices, capacity, sector size, GPT partition labels, PARTUUIDs, and active mount correlations.
+  * `info <device>`: Display detailed metadata for a specific block device or partition (type, capacity in human-readable and raw bytes, sector size, partition start LBA, sector count, PARTUUID, GPT label, GPT type GUID with type description, and mount point status). Accepts bare name (e.g. `nvme0n1p1`) or `/dev/` path (e.g. `/dev/nvme0n1p1`).
+  * `usage`: Display mounted filesystem usage (total/used/available blocks, use percentage, inodes).
+  * `bench`: Benchmark filesystem throughput (merging diskbench).
+    - *Note on naming*: Output prefixes retain 'diskbench' ('=== diskbench: ... ===' and comparison prefix 'diskbench ...') for backward compatibility with automated parsing pipelines.
+    - *High-Resolution Timing*: Elapsed time is measured using hardware CPU cycle counters (`rdtsc`) calibrated against kernel invariant TSC (`tsc_hz` from `SYS_SYSINFO`), giving sub-microsecond precision and stable throughput calculations even for small workloads. If TSC is unavailable, it seamlessly falls back to system timer ticks (`tick_hz=100`; 10 ms granularity). Both `time_ms=` and high-resolution `time_us=` are emitted in `-c` comparison output.
+* **Options:**
+  * `-c`, `--comparison`: Comparison-friendly single-line machine-parseable output (`key=value`).
+  * `-h`, `--help`: Display usage summary and exit.
+**Examples:**
+```sh
+disk                     # List all block devices (flat table including LABEL and PARTUUID)
+disk list -c             # List devices in comparison key=value format (includes label=, partuuid=)
+disk info nvme0n1p1      # Detailed view of partition nvme0n1p1
+disk info -c /dev/sda    # Detailed view in machine-parseable comparison format
+disk usage               # Show filesystem disk space and inode usage table
+disk usage -c            # Show filesystem usage in comparison format
+```
+
+---
+
 ### `nano`
 **Syntax:** `nano [path]`  
 **Path:** `/bin/nano`  
@@ -1040,16 +1067,35 @@ top | head -n 8
 ### `sysinfo`
 **Syntax:** `sysinfo`  
 **Path:** `/bin/sysinfo`  
-**Description:** Queries kernel system statistics via `SYS_SYSINFO` and formats hardware and operating parameters:
-* Number of active online CPUs.
-* Monotonic system uptime formatted as `HH:MM:SS`.
-* Total managed physical RAM in MiB.
-* Free physical RAM in MiB.
-* Used physical RAM in MiB.
-* Total number of active tasks/processes.  
+**Description:** Queries kernel system statistics and displays structured system information across 5 sections:
+* **Kernel / OS identity**: FortressOS release banner, SMP configuration, build commit hash and date, formatted uptime (`Hh Mm Ss`).
+* **CPU**: Active CPUs online vs detected total, preemption frequency (100 Hz), calibrated TSC frequency in GHz with hardware status (`invariant` or `standard`).
+* **Memory**: Total, used, and free managed physical RAM formatted with unit scaling (`GiB`/`MiB`), and kernel heap allocated vs committed memory (`max 512 MiB`).
+* **Tasks**: Total enumerable processes with state breakdown (`running`, `sleeping`, `zombie`), and total active thread count.
+* **Storage summary**: Block devices, partitions, and active mounted filesystem counts.
+
 **Examples:**
 ```sh
 sysinfo
+```
+
+Sample output:
+```text
+FortressOS 1.0 (x86_64 SMP, 4 CPUs)
+Build: 7f9a446 (2026-10-07)
+Uptime: 0h 0m 2s
+
+CPUs online:  4 / 4
+Kernel:       SMP, 100 Hz preemption
+TSC:          3.45 GHz (standard)
+
+RAM:  total 2 GiB, used 24 MiB, free 2 GiB
+Heap: 38 KiB / 60 KiB committed (max 512 MiB)
+
+Processes:  2 (2 running, 0 sleeping, 0 zombies)
+Threads:    9
+
+Storage:  1 device, 1 partition, 2 mounted
 ```
 
 ---

@@ -24,7 +24,10 @@ static int mock_sys_sysinfo(sysinfo_t *buf, bool valid_address) {
     buf->tick_hz = mock_tick_hz;
     buf->cpu_count = mock_cpus;
     buf->task_count = mock_tasks;
-    buf->reserved = 0;
+    buf->tsc_hz = 0;
+    buf->kernel_heap_used = 512 * 1024;
+    buf->kernel_heap_total = 4 * 1024 * 1024;
+    buf->thread_count = 10;
     return 0;
 }
 
@@ -34,16 +37,20 @@ static void test_efault_and_reserved(void) {
     memset(&info, 0xFF, sizeof(info));
     assert(mock_sys_sysinfo(&info, false) == SYSCALL_EFAULT);
     /* Buffer untouched on error */
-    assert(info.reserved == 0xFFFFFFFFFFFFFFFFULL);
+    assert(info.tsc_hz == 0xFFFFFFFFFFFFFFFFULL);
 
     assert(mock_sys_sysinfo(&info, true) == 0);
-    assert(info.reserved == 0);
+    assert(info.tsc_hz == 0);
     assert(info.total_ram_bytes == mock_managed_ram);
     assert(info.free_ram_bytes == mock_free_ram);
     assert(info.uptime_ticks == mock_uptime_ticks);
     assert(info.tick_hz == mock_tick_hz);
     assert(info.cpu_count == mock_cpus);
     assert(info.task_count == mock_tasks);
+    assert(info.kernel_heap_used == 512 * 1024);
+    assert(info.kernel_heap_total == 4 * 1024 * 1024);
+    assert(info.thread_count == 10);
+    assert(info.reserved == 0);
     puts("PASS sysinfo host: EFAULT range validation and reserved field zeroing");
 }
 

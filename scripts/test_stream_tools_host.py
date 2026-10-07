@@ -99,6 +99,16 @@ if __name__ == "__main__":
             ], cwd=REPO, check=True)
             subprocess.run([str(diskbench_exe)], check=True, timeout=30)
 
+            disk_exe = Path(tmp) / "disk_host"
+            subprocess.run([
+                "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-DTOOL_HOST_TEST",
+                "-Isrc/include", "-Isrc/fs", "-Iuser/tools",
+                "tests/disk_host.c", "user/tools/common.c", "user/tools/disk.c", "user/tools/diskbench.c",
+                "-o", str(disk_exe)
+            ], cwd=REPO, check=True)
+            subprocess.run([str(disk_exe)], check=True, timeout=30)
+
 
 
 

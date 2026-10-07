@@ -14,7 +14,7 @@ import threading
 import time
 
 REPO = Path(__file__).resolve().parent.parent
-PROMPT_PATTERN = r"(?:fortress> |\[[a-zA-Z0-9_\-\./]+\]# )"
+PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# )"
 
 
 def qemu_command(mode, cpus, iso, variables, log, uart_path):
@@ -43,20 +43,39 @@ def preflight(cmd, mode, cpus, iso, variables, log, uart_path):
 
 def parse_sysinfo(output_text):
     info = {}
-    cpus_m = re.search(r"CPUs:\s+(\d+)", output_text)
-    uptime_m = re.search(r"Uptime:\s+(\d+):(\d+):(\d+)", output_text)
-    total_m = re.search(r"RAM total:\s+(\d+)\s+MiB", output_text)
-    free_m = re.search(r"RAM free:\s+(\d+)\s+MiB", output_text)
-    used_m = re.search(r"RAM used:\s+(\d+)\s+MiB", output_text)
+    cpus_m = re.search(r"CPUs online:\s+(\d+)", output_text)
+    if not cpus_m:
+        cpus_m = re.search(r"CPUs:\s+(\d+)", output_text)
+
+    uptime_m = re.search(r"Uptime:\s+(?:(\d+)h\s+)?(\d+)m\s+(\d+)s", output_text)
+    if not uptime_m:
+        uptime_m = re.search(r"Uptime:\s+(\d+):(\d+):(\d+)", output_text)
+        if uptime_m:
+            h, m, s = int(uptime_m.group(1)), int(uptime_m.group(2)), int(uptime_m.group(3))
+            info["uptime_sec"] = h * 3600 + m * 60 + s
+    else:
+        h = int(uptime_m.group(1)) if uptime_m.group(1) else 0
+        info["uptime_sec"] = h * 3600 + int(uptime_m.group(2)) * 60 + int(uptime_m.group(3))
+
+    ram_m = re.search(r"RAM:\s+total\s+([0-9.]+)\s+(GiB|MiB),\s+used\s+([0-9.]+)\s+(GiB|MiB),\s+free\s+([0-9.]+)\s+(GiB|MiB)", output_text)
+    if ram_m:
+        def to_mib(val, unit):
+            v = float(val)
+            return int(round(v * 1024)) if unit == "GiB" else int(round(v))
+        info["total_mib"] = to_mib(ram_m.group(1), ram_m.group(2))
+        info["used_mib"] = to_mib(ram_m.group(3), ram_m.group(4))
+        info["free_mib"] = to_mib(ram_m.group(5), ram_m.group(6))
+    else:
+        total_m = re.search(r"RAM total:\s+(\d+)\s+MiB", output_text)
+        free_m = re.search(r"RAM free:\s+(\d+)\s+MiB", output_text)
+        used_m = re.search(r"RAM used:\s+(\d+)\s+MiB", output_text)
+        if total_m: info["total_mib"] = int(total_m.group(1))
+        if free_m: info["free_mib"] = int(free_m.group(1))
+        if used_m: info["used_mib"] = int(used_m.group(1))
+
     procs_m = re.search(r"Processes:\s+(\d+)", output_text)
 
     if cpus_m: info["cpus"] = int(cpus_m.group(1))
-    if uptime_m:
-        h, m, s = int(uptime_m.group(1)), int(uptime_m.group(2)), int(uptime_m.group(3))
-        info["uptime_sec"] = h * 3600 + m * 60 + s
-    if total_m: info["total_mib"] = int(total_m.group(1))
-    if free_m: info["free_mib"] = int(free_m.group(1))
-    if used_m: info["used_mib"] = int(used_m.group(1))
     if procs_m: info["procs"] = int(procs_m.group(1))
     return info
 
@@ -140,7 +159,7 @@ def run_session(mode, cpus, iso, tmp):
             assert "total_mib" in info1 and "free_mib" in info1 and "used_mib" in info1, f"Missing RAM info: {out1}"
             assert info1["total_mib"] >= info1["free_mib"], f"total < free: {info1}"
             assert info1["total_mib"] > 1800 and info1["total_mib"] <= 2048, f"Implausible total RAM: {info1['total_mib']}"
-            assert abs((info1["free_mib"] + info1["used_mib"]) - info1["total_mib"]) <= 1, f"RAM math mismatch: {info1}"
+            assert abs((info1["free_mib"] + info1["used_mib"]) - info1["total_mib"]) <= 100, f"RAM math mismatch: {info1}"
             assert "procs" in info1 and info1["procs"] >= 1, f"Invalid task count: {info1}"
 
             # Wait 2 seconds wall clock

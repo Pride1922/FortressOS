@@ -822,6 +822,16 @@ uint64_t sched_get_active_stack_slots_mask(void) {
     return mask;
 }
 
+size_t sched_get_thread_count(void) {
+    uint64_t mask = sched_get_active_stack_slots_mask();
+    size_t count = 0;
+    while (mask != 0) {
+        mask &= (mask - 1);
+        count++;
+    }
+    return count + 1;
+}
+
 size_t sched_cpu_ready_count(size_t cpu_id) {
     if (cpu_id >= MAX_DETECTED_CPUS) return 0;
     uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[cpu_id].sched_lock);

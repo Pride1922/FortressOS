@@ -92,6 +92,7 @@ typedef struct {
     uint64_t     sector_count;
     gpt_guid_t   type_guid;
     gpt_guid_t   unique_guid;
+    char         label[36];                  /* UTF-8 / ASCII partition name */
     block_dev_t  block_dev;                  /* Bounded block device adapter */
 } gpt_partition_t;
 

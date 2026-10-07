@@ -12,6 +12,8 @@ QEMU    ?= qemu-system-x86_64
 XORRISO ?= xorriso
 GIT     ?= git
 SMP     ?= 1
+BUILD_GIT_HASH ?= $(shell $(GIT) rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE     ?= $(shell date -u +%Y-%m-%d 2>/dev/null || echo "unknown")
 
 # Strict freestanding compilation flags
 CFLAGS  := -std=c11 \
@@ -496,6 +498,7 @@ USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench
 STREAM_TOOL_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(STREAM_TOOLS)))
+USER_DISK_ELF := $(BUILD_DIR)/tool-disk.elf
 CHECKSUM_TOOLS := md5sum sha256sum
 CHECKSUM_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(CHECKSUM_TOOLS)))
 USER_TAR_ELF := $(BUILD_DIR)/tool-tar.elf
@@ -510,6 +513,11 @@ $(STREAM_TOOL_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/common.h
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-$*.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-common.o -o $@
+
+$(USER_DISK_ELF): user/tools/disk.c $(BUILD_DIR)/tool-diskbench.elf $(BUILD_DIR)/tool-diskbench.o user/tools/common.h user/tools/start.asm user/shell.ld $(BUILD_DIR)/tool-common.o src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-disk.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=disk_main user/tools/start.asm -o $(BUILD_DIR)/tool-disk-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-disk-start.o $(BUILD_DIR)/tool-disk.o $(BUILD_DIR)/tool-diskbench.o $(BUILD_DIR)/tool-common.o -o $@
 
 .PHONY: test-stream-tools-host
 $(BUILD_DIR)/tool-digest.o: user/tools/digest.c user/tools/digest.h src/include/types.h
@@ -622,7 +630,7 @@ $(USER_PS_ELF): $(BUILD_DIR)/ps_start.o $(BUILD_DIR)/ps.o $(USER_DIR)/shell.ld
 
 $(BUILD_DIR)/sysinfo.o: $(USER_DIR)/sysinfo.c src/include/types.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -DBUILD_GIT_HASH=\"$(BUILD_GIT_HASH)\" -DBUILD_DATE=\"$(BUILD_DATE)\" -c $< -o $@
 
 $(BUILD_DIR)/ping.o: $(USER_DIR)/ping.c $(USER_DIR)/dns.h $(USER_DIR)/dns_codec.h src/include/types.h src/include/syscall_abi.h src/include/ping_abi.h
 	@mkdir -p $(BUILD_DIR)
@@ -709,7 +717,7 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) COMMANDS.md Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) COMMANDS.md Makefile
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -735,7 +743,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DOWNLOAD_ELF) $(BUILD_DIR)/initramfs/bin/download
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@cp -f $(USER_NANO_ELF) $(BUILD_DIR)/initramfs/bin/nano
-	@$(foreach tool,$(STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
+	@$(foreach tool,$(STREAM_TOOLS) disk,cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@$(foreach tool,$(CHECKSUM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@cp -f $(USER_TRACEROUTE_ELF) $(BUILD_DIR)/initramfs/bin/traceroute
 	@cp -f $(USER_TAR_ELF) $(BUILD_DIR)/initramfs/bin/tar

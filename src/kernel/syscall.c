@@ -20,6 +20,9 @@
 #include "keyboard.h"
 #include "ext2.h"
 #include "ext4.h"
+#include "tarfs.h"
+#include "block.h"
+#include "../fs/gpt.h"
 #include "heap.h"
 #include "elf.h"
 #include "usb_mount.h"
@@ -1140,6 +1143,122 @@ static int64_t sys_sync(void) {
     return SYSCALL_SUCCESS;
 }
 
+static int64_t sys_mountinfo(uint32_t index, uintptr_t user_buf) {
+    uint64_t *pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(pml4, user_buf, sizeof(mount_info_t), true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    /* Index 0: Root filesystem (TarFS / initramfs) */
+    if (index == 0) {
+        mount_info_t info;
+        memset(&info, 0, sizeof(info));
+        memcpy(info.source, "initramfs", 10);
+        memcpy(info.mount_path, "/", 2);
+        info.fs_type = VFS_FS_TARFS;
+        info.flags = MOUNT_FLAGS_RO;
+        info.block_size = 512;
+        size_t archive_size = 0;
+        uint32_t file_count = 0;
+        tarfs_get_stats(&archive_size, &file_count);
+        info.total_blocks = archive_size ? (archive_size / 512) : 0;
+        info.free_blocks = 0;
+        info.total_inodes = file_count;
+        info.free_inodes = 0;
+        memcpy((void *)user_buf, &info, sizeof(info));
+        return 1;
+    }
+
+    /* Index 1: Persistent storage (/mnt) if mounted */
+    if (index == 1) {
+        vfs_node_t *node = vfs_lookup("/mnt");
+        if (!node) return 0;
+
+        mount_info_t info;
+        memset(&info, 0, sizeof(info));
+        memcpy(info.mount_path, "/mnt", 5);
+
+        if (ext2_get_mount_info(node, &info)) {
+            memcpy((void *)user_buf, &info, sizeof(info));
+            return 1;
+        }
+
+        /* Check if ext4 or other mounted filesystem */
+        memcpy(info.source, "ext4", 5);
+        info.fs_type = VFS_FS_EXT4;
+        info.flags = (node->write != NULL) ? MOUNT_FLAGS_RW : MOUNT_FLAGS_RO;
+        info.block_size = 4096;
+        info.total_blocks = 0;
+        info.free_blocks = 0;
+        info.total_inodes = 0;
+        info.free_inodes = 0;
+        memcpy((void *)user_buf, &info, sizeof(info));
+        return 1;
+    }
+
+    return 0;
+}
+
+static int64_t sys_blockinfo(uint32_t index, uintptr_t user_buf) {
+    uint64_t *pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(pml4, user_buf, sizeof(block_info_t), true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    /* Index 0: initramfs (TarFS / RAM) */
+    if (index == 0) {
+        block_info_t info;
+        memset(&info, 0, sizeof(info));
+        memcpy(info.name, "initramfs", 10);
+        info.sector_size = 512;
+        size_t archive_size = 0;
+        uint32_t file_count = 0;
+        tarfs_get_stats(&archive_size, &file_count);
+        info.size_bytes = (uint64_t)archive_size;
+        memcpy((void *)user_buf, &info, sizeof(info));
+        return 1;
+    }
+
+    /* Index 1..N: Registered block devices */
+    size_t dev_idx = (size_t)(index - 1);
+    block_dev_t *dev = block_get_dev_by_index(dev_idx);
+    if (!dev) {
+        return 0;
+    }
+
+    block_info_t info;
+    memset(&info, 0, sizeof(info));
+    size_t nlen = strlen(dev->name);
+    if (nlen >= sizeof(info.name)) nlen = sizeof(info.name) - 1;
+    memcpy(info.name, dev->name, nlen);
+    info.name[nlen] = '\0';
+    info.sector_size = dev->sector_size;
+    info.size_bytes = dev->sector_count * (uint64_t)dev->sector_size;
+
+    /* Check if this device is a GPT partition */
+    if (dev->priv != NULL) {
+        for (size_t p = 0; p < gpt_get_partition_count(); p++) {
+            gpt_partition_t *part = gpt_get_partition(p);
+            if (part && (&part->block_dev == dev || part == dev->priv)) {
+                info.is_partition = 1;
+                info.part_index = part->part_index;
+                info.start_lba = part->starting_lba;
+                info.sector_count = part->sector_count;
+                gpt_guid_to_str(&part->unique_guid, info.partuuid);
+                gpt_guid_to_str(&part->type_guid, info.type_guid);
+                size_t llen = strlen(part->label);
+                if (llen >= sizeof(info.label)) llen = sizeof(info.label) - 1;
+                memcpy(info.label, part->label, llen);
+                info.label[llen] = '\0';
+                break;
+            }
+        }
+    }
+
+    memcpy((void *)user_buf, &info, sizeof(info));
+    return 1;
+}
+
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
     if (!frame) return SYSCALL_EINVAL;
 
@@ -1445,13 +1564,16 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             }
             sysinfo_t info;
             memset(&info, 0, sizeof(info));
-            info.total_ram_bytes = pmm_get_managed_ram_bytes();
-            info.free_ram_bytes  = (uint64_t)pmm_get_free_pages() * PAGE_SIZE;
-            info.uptime_ticks    = apic_timer_get_bsp_ticks();
-            info.tick_hz         = apic_timer_get_frequency();
-            info.cpu_count       = (uint32_t)smp_get_cpu_count();
-            info.task_count      = process_record_count_enumerable();
-            info.reserved        = 0;
+            info.total_ram_bytes   = pmm_get_managed_ram_bytes();
+            info.free_ram_bytes    = (uint64_t)pmm_get_free_pages() * PAGE_SIZE;
+            info.uptime_ticks      = apic_timer_get_bsp_ticks();
+            info.tick_hz           = apic_timer_get_frequency();
+            info.cpu_count         = (uint32_t)smp_get_cpu_count();
+            info.task_count        = process_record_count_enumerable();
+            info.tsc_hz            = apic_poll_clock_hz();
+            info.kernel_heap_used  = heap_get_used_bytes();
+            info.kernel_heap_total = heap_get_total_bytes();
+            info.thread_count      = (uint32_t)sched_get_thread_count();
             memcpy((void *)frame->rdi, &info, sizeof(info));
             result = 0;
             break;
@@ -1459,6 +1581,14 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_PIPE:
             result = sys_pipe(frame->rdi, (uint32_t)frame->rsi);
+            break;
+
+        case SYS_MOUNTINFO:
+            result = sys_mountinfo((uint32_t)frame->rdi, frame->rsi);
+            break;
+
+        case SYS_BLOCKINFO:
+            result = sys_blockinfo((uint32_t)frame->rdi, frame->rsi);
             break;
 
         case SYS_SIGRETURN:
