@@ -232,6 +232,9 @@ void sched_reap_dead(void) {
 
     size_t limit = g_total_sched_cpus ? g_total_sched_cpus : 1;
     for (size_t c = 0; c < limit; c++) {
+        if (!__atomic_load_n(&scheduler_cpus[c].dead_threads, __ATOMIC_RELAXED)) {
+            continue;
+        }
         uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
         tcb_t *dead = scheduler_cpus[c].dead_threads;
         scheduler_cpus[c].dead_threads = NULL;
@@ -308,12 +311,21 @@ static void idle_thread_entry(void *arg) {
     for (;;) {
         sched_reap_dead();
         thread_yield();
-        __asm__ volatile("sti; hlt" ::: "memory");
+        bool work_exists = false;
+        for (size_t c = 0; c < g_total_sched_cpus; c++) {
+            if (__atomic_load_n(&scheduler_cpus[c].runqueue_head, __ATOMIC_RELAXED)) {
+                work_exists = true;
+                break;
+            }
+        }
+        if (!work_exists) {
+            __asm__ volatile("sti; hlt" ::: "memory");
+        }
     }
 }
 
-static bool sched_steal_work(size_t thief_cpu) {
-    if (g_total_sched_cpus <= 1) return false;
+static tcb_t *sched_steal_work(size_t thief_cpu) {
+    if (g_total_sched_cpus <= 1) return NULL;
 
     for (size_t i = 0; i < g_total_sched_cpus; i++) {
         size_t victim_cpu = (thief_cpu + 1 + i) % g_total_sched_cpus;
@@ -355,20 +367,12 @@ static bool sched_steal_work(size_t thief_cpu) {
             }
             candidate->next = NULL;
             candidate->current_cpu = thief_cpu;
-
-            if (!scheduler_cpus[thief_cpu].runqueue_head) {
-                scheduler_cpus[thief_cpu].runqueue_head = candidate;
-                scheduler_cpus[thief_cpu].runqueue_tail = candidate;
-            } else {
-                scheduler_cpus[thief_cpu].runqueue_tail->next = candidate;
-                scheduler_cpus[thief_cpu].runqueue_tail = candidate;
-            }
             scheduler_cpus[thief_cpu].stolen_tasks_count++;
 
             sched_unlock_pair(&scheduler_cpus[thief_cpu].sched_lock,
                               &scheduler_cpus[victim_cpu].sched_lock);
             __asm__ volatile("push %0; popfq" : : "r"(rflags) : "memory");
-            return true;
+            return candidate;
         }
 
         sched_unlock_pair(&scheduler_cpus[thief_cpu].sched_lock,
@@ -376,7 +380,7 @@ static bool sched_steal_work(size_t thief_cpu) {
         __asm__ volatile("push %0; popfq" : : "r"(rflags) : "memory");
     }
 
-    return false;
+    return NULL;
 }
 
 void sched_init(void) {
@@ -529,6 +533,10 @@ static tcb_t *thread_create_internal(size_t target_cpu, int affinity, const char
 
     if (target_cpu != cpu_current()->id) {
         smp_send_resched(target_cpu);
+    } else if (affinity == -1 && g_total_sched_cpus > 1) {
+        for (size_t c = 1; c < g_total_sched_cpus; c++) {
+            smp_send_resched(c);
+        }
     }
     return t;
 }
@@ -555,12 +563,8 @@ void thread_yield(void) {
 
     if (!next && g_total_sched_cpus > 1) {
         spin_unlock_irqrestore(&g_sched_lock, rflags);
-        if (sched_steal_work(cpu_current()->id)) {
-            rflags = spin_lock_irqsave(&g_sched_lock);
-            next = runqueue_pop_next_locked();
-        } else {
-            rflags = spin_lock_irqsave(&g_sched_lock);
-        }
+        next = sched_steal_work(cpu_current()->id);
+        rflags = spin_lock_irqsave(&g_sched_lock);
     }
 
     if (!next) {

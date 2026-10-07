@@ -13,12 +13,14 @@ Verifies:
    - Reaches interactive shell prompt
 """
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 
 REPO = Path(__file__).resolve().parent.parent
+PROMPT_PATTERN = r'(?:fortress> |fortress:[^\r\n]* \$ )'
 
 
 def run_sched_test(mode, cpus):
@@ -39,7 +41,7 @@ def run_sched_test(mode, cpus):
         try:
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
-                if log.exists() and "fortress> " in log.read_text(errors="replace"):
+                if log.exists() and re.search(PROMPT_PATTERN, log.read_text(errors="replace")):
                     break
                 assert child.poll() is None, child.stderr.read().decode()
                 time.sleep(0.1)

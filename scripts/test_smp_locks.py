@@ -15,6 +15,7 @@ Verifies:
 """
 import json
 from pathlib import Path
+import re
 import shutil
 import socket
 import struct
@@ -23,6 +24,8 @@ import tempfile
 import time
 
 REPO = Path(__file__).resolve().parent.parent
+PROMPT_RE = re.compile(r"(?:fortress> |fortress:[^\r\n]* \$ )")
+
 
 
 def symbols():
@@ -126,7 +129,7 @@ def run_contention_test(mode, cpus):
         try:
             deadline = time.monotonic() + 45
             while time.monotonic() < deadline:
-                if log.exists() and "fortress> " in log.read_text(errors="replace"):
+                if log.exists() and PROMPT_RE.search(log.read_text(errors="replace")):
                     break
                 assert child.poll() is None, child.stderr.read().decode()
                 time.sleep(0.1)
@@ -172,7 +175,7 @@ def run_inversion_test(mode):
 
             deadline = time.monotonic() + 45
             while time.monotonic() < deadline:
-                if log.exists() and "fortress> " in log.read_text(errors="replace"):
+                if log.exists() and PROMPT_RE.search(log.read_text(errors="replace")):
                     break
                 assert child.poll() is None, child.stderr.read().decode()
                 time.sleep(0.1)
@@ -187,7 +190,7 @@ def run_inversion_test(mode):
         assert "held chain" in output, "Held chain diagnostic missing"
         assert "AP 1 rank inversion caught and isolated via spin_panic_ap; BSP unharmed" in output, "Inversion pass missing"
         assert "[ OK ] SMP Piece 3 (Lock discipline) complete." in output, "Piece 3 completion missing"
-        assert "fortress> " in output, "Shell prompt missing"
+        assert PROMPT_RE.search(output), "Shell prompt missing"
         print(f"PASS {mode} rank inversion: AP 1 trapped & halted via spin_panic_ap, BSP unharmed, shell reached")
 
 
@@ -225,7 +228,7 @@ def run_assert_held_test(mode):
         output = log.read_text(errors="replace")
         assert "Lock discipline on BSP: assertion failed: lock not held by caller: unheld-lock" in output, "Assert held panic missing"
         assert "held chain" in output, "Held chain diagnostic missing"
-        assert "fortress> " not in output, "Shell should not have been reached after BSP fatal panic"
+        assert not PROMPT_RE.search(output), "Shell should not have been reached after BSP fatal panic"
         print(f"PASS {mode} assert_held negative: BSP fatal trap on unheld lock verified, CPU halted")
 
 
