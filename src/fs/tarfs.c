@@ -50,11 +50,21 @@ static bool is_zero_block(const uint8_t *block) {
     return true;
 }
 
+static size_t s_tarfs_archive_size = 0;
+static uint32_t s_tarfs_files_count = 0;
+
+void tarfs_get_stats(size_t *archive_size, uint32_t *file_count) {
+    if (archive_size) *archive_size = s_tarfs_archive_size;
+    if (file_count) *file_count = s_tarfs_files_count;
+}
+
 int tarfs_init(const void *archive_data, size_t archive_size) {
     if (!archive_data || archive_size < 512) {
         serial_puts("[FAIL] TarFS: Invalid archive memory or size\n");
         return -1;
     }
+
+    s_tarfs_archive_size = archive_size;
 
     vfs_init();
 
@@ -158,6 +168,7 @@ int tarfs_init(const void *archive_data, size_t archive_size) {
         offset = data_offset + (size_t)padded_size;
     }
 
+    s_tarfs_files_count = (uint32_t)files_loaded;
     serial_puts("[ OK ] TarFS initialized: ");
     serial_print_dec(files_loaded);
     serial_puts(" files mounted into VFS\n");

@@ -21,4 +21,8 @@ bool ext2_sync_all(void);
 /* Test-only: mark mounted ext2 filesystem as tainted (e.g. for Phase C audit).
  * Safe no-op if no filesystem is mounted. */
 void ext2_mark_tainted(void);
+
+#include "syscall_abi.h"
+/* Passive, read-only query of mounted ext2 metrics (zero I/O, zero locks). */
+bool ext2_get_mount_info(const void *vfs_node, mount_info_t *out);
 #endif

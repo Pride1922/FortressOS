@@ -13,16 +13,19 @@ static uint32_t g_target_hz;
 static uint32_t g_timer_init_count = 0;
 static uint64_t g_poll_clock_hz;
 static bool invariant_tsc(void) {
-    uint32_t a,b,c,d;
-    __asm__ volatile("cpuid" : "=a"(a),"=b"(b),"=c"(c),"=d"(d) : "a"(1),"c"(0));
-    if (!(d & (1U<<4))) return false;
-    __asm__ volatile("cpuid" : "=a"(a),"=b"(b),"=c"(c),"=d"(d) : "a"(0x80000000U),"c"(0));
-    if (a<0x80000007U) return false;
-    __asm__ volatile("cpuid" : "=a"(a),"=b"(b),"=c"(c),"=d"(d) : "a"(0x80000007U),"c"(0));
-    return (d & (1U<<8))!=0;
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+    if (!(d & (1U << 4))) return false;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000000U), "c"(0));
+    if (a >= 0x80000007U) {
+        __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000007U), "c"(0));
+        if (d & (1U << 8)) return true;
+    }
+    return true; /* Fallback to standard TSC on QEMU / CPUs without DVFS */
 }
+
 uint64_t apic_poll_clock_hz(void) {
-    return cpu_current()->id==0 ? g_poll_clock_hz : 0;
+    return g_poll_clock_hz;
 }
 uint64_t apic_poll_clock_read(void) {
     uint32_t lo,hi;
@@ -249,8 +252,8 @@ bool apic_timer_init(uint32_t target_hz) {
     idt_register_handler(APIC_TIMER_VECTOR, apic_timer_handler);
     lapic_write(APIC_REG_TIMER_DIV, APIC_TIMER_DIV_16);
     lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED | APIC_TIMER_VECTOR);
-    bool tsc_ok=invariant_tsc();
-    g_poll_clock_hz=0;
+    bool tsc_ok = invariant_tsc();
+    g_poll_clock_hz = 0;
     uint8_t saved = pit_begin(11932);
     lapic_write(APIC_REG_TIMER_INITCNT, UINT32_MAX);
     uint64_t tsc_start=tsc_ok ? apic_poll_clock_read() : 0;
@@ -268,7 +271,7 @@ bool apic_timer_init(uint32_t target_hz) {
     if (!count || count > UINT32_MAX) return false;
     if (tsc_ok && tsc_end>tsc_start && tsc_end-tsc_start<=UINT64_MAX/1193182) {
         uint64_t hz=((tsc_end-tsc_start)*1193182)/11932;
-        if (hz>=100000000 && hz<=10000000000ULL) g_poll_clock_hz=hz;
+        if (hz >= 100000000ULL && hz <= 10000000000ULL) g_poll_clock_hz = hz;
     }
     g_target_hz = target_hz;
     g_timer_init_count = (uint32_t)count;

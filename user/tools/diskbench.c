@@ -54,9 +54,9 @@ static void out_u64(uint64_t val) {
     out_str(buf);
 }
 
-static void out_throughput(uint64_t bytes, uint64_t ms) {
-    if (ms == 0) ms = 1;
-    uint64_t mib_s_x100 = (bytes * 1000ULL * 100ULL) / (ms * 1024ULL * 1024ULL);
+static void out_throughput_us(uint64_t bytes, uint64_t us) {
+    if (us == 0) us = 1;
+    uint64_t mib_s_x100 = (bytes * 1000000ULL * 100ULL) / (us * 1024ULL * 1024ULL);
     uint64_t whole = mib_s_x100 / 100;
     uint64_t frac = mib_s_x100 % 100;
     out_u64(whole);
@@ -66,15 +66,23 @@ static void out_throughput(uint64_t bytes, uint64_t ms) {
     out_str(" MiB/s");
 }
 
-static void out_throughput_raw(uint64_t bytes, uint64_t ms) {
-    if (ms == 0) ms = 1;
-    uint64_t mib_s_x100 = (bytes * 1000ULL * 100ULL) / (ms * 1024ULL * 1024ULL);
+static void out_throughput_raw_us(uint64_t bytes, uint64_t us) {
+    if (us == 0) us = 1;
+    uint64_t mib_s_x100 = (bytes * 1000000ULL * 100ULL) / (us * 1024ULL * 1024ULL);
     uint64_t whole = mib_s_x100 / 100;
     uint64_t frac = mib_s_x100 % 100;
     out_u64(whole);
     out_str(".");
     if (frac < 10) out_str("0");
     out_u64(frac);
+}
+
+__attribute__((unused)) static void out_throughput(uint64_t bytes, uint64_t ms) {
+    out_throughput_us(bytes, ms * 1000ULL);
+}
+
+__attribute__((unused)) static void out_throughput_raw(uint64_t bytes, uint64_t ms) {
+    out_throughput_raw_us(bytes, ms * 1000ULL);
 }
 
 static void err_str(const char *s) {
@@ -89,6 +97,9 @@ static void err_str(const char *s) {
     }
 }
 
+static uint64_t s_tsc_hz = 0;
+static bool s_timing_initialized = false;
+
 static uint64_t get_time_ms(void) {
     sysinfo_t info;
     if (tool_syscall(SYS_SYSINFO, (uintptr_t)&info, 0, 0) == 0) {
@@ -96,6 +107,33 @@ static uint64_t get_time_ms(void) {
         return (info.uptime_ticks * 1000ULL) / hz;
     }
     return 0;
+}
+
+static void init_timing(void) {
+    if (s_timing_initialized) return;
+    sysinfo_t info;
+    if (tool_syscall(SYS_SYSINFO, (uintptr_t)&info, 0, 0) == 0) {
+        s_tsc_hz = info.tsc_hz;
+    }
+    s_timing_initialized = true;
+}
+
+static uint64_t get_time_us(void) {
+    init_timing();
+    if (s_tsc_hz > 0) {
+        uint64_t cycles = tool_rdtsc();
+        return (cycles * 1000000ULL) / s_tsc_hz;
+    }
+    return get_time_ms() * 1000ULL;
+}
+
+__attribute__((unused)) static uint64_t get_time_ns(void) {
+    init_timing();
+    if (s_tsc_hz > 0) {
+        uint64_t cycles = tool_rdtsc();
+        return (cycles * 1000000000ULL) / s_tsc_hz;
+    }
+    return get_time_ms() * 1000000ULL;
 }
 
 static void make_meta_filename(const char *dir, uint32_t index, char *out, size_t max_len) {
@@ -424,10 +462,10 @@ int diskbench_main(int argc, char **argv) {
     s_cleanup_file[fp] = '\0';
 
     uint64_t actual_write_bytes = 0;
-    uint64_t write_ms = 0;
+    uint64_t write_us = 0;
     uint64_t actual_read_bytes = 0;
-    uint64_t read_ms = 0;
-    uint64_t meta_ms = 0;
+    uint64_t read_us = 0;
+    uint64_t meta_us = 0;
 
     /* Write Test */
     if (opts.test_filter == TEST_ALL || opts.test_filter == TEST_WRITE || opts.test_filter == TEST_READ) {
@@ -440,7 +478,7 @@ int diskbench_main(int argc, char **argv) {
             return 1;
         }
 
-        uint64_t start_t = get_time_ms();
+        uint64_t start_t = get_time_us();
         while (actual_write_bytes < opts.write_size) {
             size_t chunk = BENCH_CHUNK_SIZE;
             if (opts.write_size - actual_write_bytes < (uint64_t)chunk) {
@@ -451,9 +489,10 @@ int diskbench_main(int argc, char **argv) {
             actual_write_bytes += (uint64_t)w;
         }
         tool_syscall(SYS_CLOSE, (uintptr_t)fd, 0, 0);
-        uint64_t end_t = get_time_ms();
-        write_ms = (end_t >= start_t) ? (end_t - start_t) : 1;
-        if (write_ms == 0) write_ms = 1;
+        uint64_t end_t = get_time_us();
+        write_us = (end_t >= start_t) ? (end_t - start_t) : 1;
+        if (write_us == 0) write_us = 1;
+        uint64_t write_ms = write_us / 1000ULL;
 
         if (opts.test_filter != TEST_READ) {
             if (opts.comparison_mode) {
@@ -461,8 +500,10 @@ int diskbench_main(int argc, char **argv) {
                 out_u64(actual_write_bytes);
                 out_str(" time_ms=");
                 out_u64(write_ms);
+                out_str(" time_us=");
+                out_u64(write_us);
                 out_str(" throughput_mibs=");
-                out_throughput_raw(actual_write_bytes, write_ms);
+                out_throughput_raw_us(actual_write_bytes, write_us);
                 out_str("\n");
             } else if (opts.silent_mode) {
                 out_str("write: ");
@@ -470,7 +511,7 @@ int diskbench_main(int argc, char **argv) {
                 out_str(" bytes in ");
                 out_u64(write_ms);
                 out_str(" ms (");
-                out_throughput(actual_write_bytes, write_ms);
+                out_throughput_us(actual_write_bytes, write_us);
                 out_str(")\n");
             } else {
                 out_str("Write: ");
@@ -478,7 +519,7 @@ int diskbench_main(int argc, char **argv) {
                 out_str(" bytes in ");
                 out_u64(write_ms);
                 out_str(" ms -> ");
-                out_throughput(actual_write_bytes, write_ms);
+                out_throughput_us(actual_write_bytes, write_us);
                 out_str("\n");
             }
         }
@@ -488,24 +529,27 @@ int diskbench_main(int argc, char **argv) {
     if (opts.test_filter == TEST_ALL || opts.test_filter == TEST_READ) {
         long fd = tool_syscall(SYS_OPEN, (uintptr_t)s_cleanup_file, VFS_O_RDONLY, 0);
         if (fd >= 0) {
-            uint64_t start_t = get_time_ms();
+            uint64_t start_t = get_time_us();
             for (;;) {
                 long r = tool_syscall(SYS_READ, (uintptr_t)fd, (uintptr_t)s_io_buf, BENCH_CHUNK_SIZE);
                 if (r <= 0) break;
                 actual_read_bytes += (uint64_t)r;
             }
             tool_syscall(SYS_CLOSE, (uintptr_t)fd, 0, 0);
-            uint64_t end_t = get_time_ms();
-            read_ms = (end_t >= start_t) ? (end_t - start_t) : 1;
-            if (read_ms == 0) read_ms = 1;
+            uint64_t end_t = get_time_us();
+            read_us = (end_t >= start_t) ? (end_t - start_t) : 1;
+            if (read_us == 0) read_us = 1;
+            uint64_t read_ms = read_us / 1000ULL;
 
             if (opts.comparison_mode) {
                 out_str("diskbench read bytes=");
                 out_u64(actual_read_bytes);
                 out_str(" time_ms=");
                 out_u64(read_ms);
+                out_str(" time_us=");
+                out_u64(read_us);
                 out_str(" throughput_mibs=");
-                out_throughput_raw(actual_read_bytes, read_ms);
+                out_throughput_raw_us(actual_read_bytes, read_us);
                 out_str("\n");
             } else if (opts.silent_mode) {
                 out_str("read:  ");
@@ -513,7 +557,7 @@ int diskbench_main(int argc, char **argv) {
                 out_str(" bytes in ");
                 out_u64(read_ms);
                 out_str(" ms (");
-                out_throughput(actual_read_bytes, read_ms);
+                out_throughput_us(actual_read_bytes, read_us);
                 out_str(")\n");
             } else {
                 out_str("Read:  ");
@@ -521,7 +565,7 @@ int diskbench_main(int argc, char **argv) {
                 out_str(" bytes in ");
                 out_u64(read_ms);
                 out_str(" ms -> ");
-                out_throughput(actual_read_bytes, read_ms);
+                out_throughput_us(actual_read_bytes, read_us);
                 out_str("\n");
             }
         }
@@ -535,7 +579,7 @@ int diskbench_main(int argc, char **argv) {
 
     /* Metadata Test */
     if (opts.test_filter == TEST_ALL || opts.test_filter == TEST_META) {
-        uint64_t start_t = get_time_ms();
+        uint64_t start_t = get_time_us();
         for (uint32_t k = 0; k < opts.meta_count; k++) {
             make_meta_filename(opts.test_dir, k, s_path_buf, sizeof(s_path_buf));
             long fd = tool_syscall(SYS_OPEN, (uintptr_t)s_path_buf, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0644);
@@ -549,17 +593,20 @@ int diskbench_main(int argc, char **argv) {
             tool_syscall(SYS_UNLINK, (uintptr_t)s_path_buf, 0, 0);
         }
         s_created_meta_count = 0;
-        uint64_t end_t = get_time_ms();
-        meta_ms = (end_t >= start_t) ? (end_t - start_t) : 1;
-        if (meta_ms == 0) meta_ms = 1;
+        uint64_t end_t = get_time_us();
+        meta_us = (end_t >= start_t) ? (end_t - start_t) : 1;
+        if (meta_us == 0) meta_us = 1;
+        uint64_t meta_ms = meta_us / 1000ULL;
 
-        uint64_t ops_per_sec = (opts.meta_count * 2ULL * 1000ULL) / meta_ms;
+        uint64_t ops_per_sec = (opts.meta_count * 2ULL * 1000000ULL) / meta_us;
 
         if (opts.comparison_mode) {
             out_str("diskbench meta files=");
             out_u64(opts.meta_count);
             out_str(" time_ms=");
             out_u64(meta_ms);
+            out_str(" time_us=");
+            out_u64(meta_us);
             out_str(" ops_per_sec=");
             out_u64(ops_per_sec);
             out_str("\n");
@@ -585,11 +632,11 @@ int diskbench_main(int argc, char **argv) {
     if (!opts.comparison_mode && !opts.silent_mode && opts.test_filter == TEST_ALL) {
         out_str("Summary:\n");
         out_str("  Write: ");
-        out_throughput(actual_write_bytes, write_ms);
+        out_throughput_us(actual_write_bytes, write_us);
         out_str("\n  Read:  ");
-        out_throughput(actual_read_bytes, read_ms);
+        out_throughput_us(actual_read_bytes, read_us);
         out_str("\n  Meta:  ");
-        uint64_t ops_per_sec = (opts.meta_count * 2ULL * 1000ULL) / (meta_ms ? meta_ms : 1);
+        uint64_t ops_per_sec = (opts.meta_count * 2ULL * 1000000ULL) / (meta_us ? meta_us : 1);
         out_u64(ops_per_sec);
         out_str(" ops/s\n");
     }
