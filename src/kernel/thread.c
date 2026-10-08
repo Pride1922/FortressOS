@@ -204,16 +204,20 @@ static void kstack_free(int slot, uintptr_t base_addr) {
     spin_unlock_irqrestore(&g_kstack_lock, rflags);
 }
 
-static void runqueue_push_locked(tcb_t *t) {
-    if (!t || t->is_idle) return;
+static void runqueue_push_cpu_locked(size_t cpu_id, tcb_t *t) {
+    if (!t || t->is_idle || cpu_id >= MAX_DETECTED_CPUS) return;
     t->next = NULL;
-    if (!g_runqueue_head) {
-        g_runqueue_head = t;
-        g_runqueue_tail = t;
+    if (!scheduler_cpus[cpu_id].runqueue_head) {
+        scheduler_cpus[cpu_id].runqueue_head = t;
+        scheduler_cpus[cpu_id].runqueue_tail = t;
     } else {
-        g_runqueue_tail->next = t;
-        g_runqueue_tail = t;
+        scheduler_cpus[cpu_id].runqueue_tail->next = t;
+        scheduler_cpus[cpu_id].runqueue_tail = t;
     }
+}
+
+static void runqueue_push_locked(tcb_t *t) {
+    runqueue_push_cpu_locked(cpu_current()->id, t);
 }
 
 static tcb_t *runqueue_pop_next_locked(void) {
@@ -228,8 +232,6 @@ static tcb_t *runqueue_pop_next_locked(void) {
 }
 
 void sched_reap_dead(void) {
-    if (cpu_current()->id != 0) return;
-
     size_t limit = g_total_sched_cpus ? g_total_sched_cpus : 1;
     for (size_t c = 0; c < limit; c++) {
         if (!__atomic_load_n(&scheduler_cpus[c].dead_threads, __ATOMIC_RELAXED)) {
@@ -311,14 +313,8 @@ static void idle_thread_entry(void *arg) {
     for (;;) {
         sched_reap_dead();
         thread_yield();
-        bool work_exists = false;
-        for (size_t c = 0; c < g_total_sched_cpus; c++) {
-            if (__atomic_load_n(&scheduler_cpus[c].runqueue_head, __ATOMIC_RELAXED)) {
-                work_exists = true;
-                break;
-            }
-        }
-        if (!work_exists) {
+        size_t my_cpu = cpu_current()->id;
+        if (!__atomic_load_n(&scheduler_cpus[my_cpu].runqueue_head, __ATOMIC_RELAXED)) {
             __asm__ volatile("sti; hlt" ::: "memory");
         }
     }
@@ -347,8 +343,10 @@ static tcb_t *sched_steal_work(size_t thief_cpu) {
         tcb_t *cand_prev = NULL;
 
         while (curr) {
-            if (!curr->is_idle &&
-                (curr->cpu_affinity == -1 || curr->cpu_affinity == (int)thief_cpu)) {
+            bool allowed = (curr->cpus_allowed != 0) ?
+                           ((curr->cpus_allowed & CPU_MASK_ONE(thief_cpu)) != 0) :
+                           (curr->cpu_affinity == -1 || curr->cpu_affinity == (int)thief_cpu);
+            if (!curr->is_idle && allowed) {
                 candidate = curr;
                 cand_prev = prev;
             }
@@ -410,6 +408,7 @@ void sched_init(void) {
     g_main_thread.next = NULL;
     g_main_thread.cpu_affinity = 0;
     g_main_thread.current_cpu = 0;
+    g_main_thread.cpus_allowed = CPU_MASK_ONE(0);
     g_main_thread.cwd[0] = '/';
     g_main_thread.cwd[1] = '\0';
 
@@ -433,6 +432,7 @@ void sched_init(void) {
         g_idle_thread->is_idle = true;
         g_idle_thread->cpu_affinity = 0;
         g_idle_thread->current_cpu = 0;
+        g_idle_thread->cpus_allowed = CPU_MASK_ONE(0);
         /* Remove idle thread from normal runqueue so it only runs when queue is empty */
         if (g_runqueue_head == g_idle_thread) {
             g_runqueue_head = g_idle_thread->next;
@@ -471,6 +471,7 @@ static tcb_t *thread_create_internal(size_t target_cpu, int affinity, const char
     t->tid = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
     t->cpu_affinity = affinity;
     t->current_cpu = target_cpu;
+    t->cpus_allowed = (affinity >= 0) ? CPU_MASK_ONE(affinity) : CPU_MASK_ALL;
 
     if (name) {
         size_t len = strlen(name);
@@ -551,6 +552,22 @@ tcb_t *thread_create_on_cpu(size_t target_cpu, const char *name, void (*entry)(v
 
 tcb_t *thread_create_unbound_on_cpu(size_t target_cpu, const char *name, void (*entry)(void *), void *arg) {
     return thread_create_internal(target_cpu, -1, name, entry, arg);
+}
+
+tcb_t *thread_create_with_mask(uint64_t cpus_allowed, const char *name, void (*entry)(void *), void *arg) {
+    size_t target_cpu = 0;
+    for (size_t i = 0; i < MAX_DETECTED_CPUS; i++) {
+        if (cpus_allowed & CPU_MASK_ONE(i)) {
+            target_cpu = i;
+            break;
+        }
+    }
+    int aff = (cpus_allowed == CPU_MASK_ONE(target_cpu)) ? (int)target_cpu : -1;
+    tcb_t *t = thread_create_internal(target_cpu, aff, name, entry, arg);
+    if (t) {
+        t->cpus_allowed = cpus_allowed;
+    }
+    return t;
 }
 
 void thread_yield(void) {
@@ -690,20 +707,58 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
 /* IRQ-safe: enqueue only; the timer/idle path performs the actual switch, so
  * the hardware handler can finish and its dispatcher can acknowledge EOI. */
 void sched_wake_all(const void *channel) {
-    uint64_t flags = spin_lock_irqsave(&g_sched_lock);
-    tcb_t **link = &g_blocked_threads;
-    while (*link) {
-        tcb_t *t = *link;
-        if (t->state != THREAD_BLOCKED || t->wait_channel != channel) {
-            link = &t->next;
-            continue;
+    if (!channel) return;
+    for (size_t c = 0; c < g_total_sched_cpus; c++) {
+        uint64_t flags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+        tcb_t **link = &scheduler_cpus[c].blocked_threads;
+        bool woke_any = false;
+        while (*link) {
+            tcb_t *t = *link;
+            if (t->state != THREAD_BLOCKED || t->wait_channel != channel) {
+                link = &t->next;
+                continue;
+            }
+            *link = t->next;
+            t->wait_channel = NULL;
+            t->state = THREAD_READY;
+            runqueue_push_cpu_locked(c, t);
+            woke_any = true;
         }
-        *link = t->next;
-        t->wait_channel = NULL;
-        t->state = THREAD_READY;
-        runqueue_push_locked(t);
+        spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, flags);
+        if (woke_any && c != cpu_current()->id) {
+            smp_send_resched(c);
+        }
     }
-    spin_unlock_irqrestore(&g_sched_lock, flags);
+}
+
+void thread_wake_for_signal(uint64_t pid) {
+    if (!pid) return;
+    for (size_t c = 0; c < g_total_sched_cpus; c++) {
+        uint64_t flags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+        tcb_t **link = &scheduler_cpus[c].blocked_threads;
+        bool woke = false;
+        while (*link) {
+            tcb_t *t = *link;
+            if (t->tid == pid) {
+                if (t->state == THREAD_BLOCKED && signal_state_ready(&t->signals)) {
+                    *link = t->next;
+                    t->wait_channel = NULL;
+                    t->state = THREAD_READY;
+                    runqueue_push_cpu_locked(c, t);
+                    woke = true;
+                }
+                break;
+            }
+            link = &t->next;
+        }
+        bool target_running_on_c = (cpu_locals[c].current_thread &&
+                                    cpu_locals[c].current_thread->tid == pid);
+        spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, flags);
+        if ((woke || target_running_on_c) && c != cpu_current()->id) {
+            smp_send_resched(c);
+        }
+        if (woke) break;
+    }
 }
 
 void thread_exit(void) {
@@ -896,6 +951,7 @@ void sched_init_aps(size_t total_cpus) {
         idle->pml4_virt = vmm_get_kernel_pml4_virt();
         idle->cpu_affinity = (int)i;
         idle->current_cpu = i;
+        idle->cpus_allowed = CPU_MASK_ONE(i);
 
         /* Setup stack frame for idle entry */
         uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);
@@ -1289,6 +1345,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     p->has_exited = false;
     p->current_cpu = target_cpu;
     p->cpu_affinity = affinity;
+    p->cpus_allowed = (affinity >= 0) ? CPU_MASK_ONE(affinity) : CPU_MASK_ALL;
 
     /* Initialize file descriptors for process */
     tcb_t *parent_thread = thread_current();
@@ -1421,6 +1478,10 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
 
     if (target_cpu != cpu_current()->id) {
         smp_send_resched(target_cpu);
+    } else if (affinity == -1 && g_total_sched_cpus > 1) {
+        for (size_t c = 1; c < g_total_sched_cpus; c++) {
+            smp_send_resched(c);
+        }
     }
 
     return p;
@@ -1592,23 +1653,19 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
                                    int envc, const char *const envp[], const char *cwd,
                                    int action_count, const spawn_kaction_t *actions,
                                    uint32_t spawn_flags, uint64_t pgid, int64_t *out_pid) {
-    if (cpu_current()->id != 0) return SYSCALL_EOPNOTSUPP;
     if (!path || !*path || !out_pid) return SYSCALL_EINVAL;
-    /* Keep publication and PID capture atomic on this bootstrap-only CPU.
-     * No scheduler lock is held across filesystem or loader operations. */
-    uint64_t flags;
-    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
     int64_t result = SYSCALL_ENOMEM;
     uint64_t pid = 0;
     file_t *file = NULL;
     void *buffer = NULL;
-    if (!g_current_thread || !g_current_thread->is_user) {
+    tcb_t *curr = thread_current();
+    if (!curr || !curr->is_user) {
         result = SYSCALL_EINVAL;
         goto out;
     }
     sched_reap_dead();
     pid = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
-    result = process_record_begin(pid, g_current_thread->tid, true, spawn_flags, pgid);
+    result = process_record_begin(pid, curr->tid, true, spawn_flags, pgid);
     if (result) { pid = 0; goto out; }
     result = SYSCALL_ENOMEM;
     int err = 0;
@@ -1637,16 +1694,33 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
         }
         image = buffer;
     }
-    tcb_t *child = process_spawn_internal(cpu_current()->id, (int)cpu_current()->id, path, image, size,
+    size_t target_cpu = 0;
+    int affinity = -1;
+    if (argc >= 3 && argv && argv[1] && strcmp(argv[1], "--worker") == 0) {
+        size_t wid = 0;
+        const char *s = argv[2];
+        while (*s >= '0' && *s <= '9') {
+            wid = wid * 10 + (*s - '0');
+            s++;
+        }
+        if (g_total_sched_cpus > 1) {
+            target_cpu = wid % g_total_sched_cpus;
+            affinity = (int)target_cpu;
+        }
+    } else if (g_total_sched_cpus > 1) {
+        target_cpu = (size_t)(pid % g_total_sched_cpus);
+        affinity = -1;
+    }
+    tcb_t *child = process_spawn_internal(target_cpu, affinity, path, image, size,
                                           argc, argv, envc, envp, cwd, action_count, actions, 0, pid, spawn_flags, &result);
     if (!child) goto out;
+    child->cpus_allowed = (affinity >= 0) ? CPU_MASK_ONE(affinity) : CPU_MASK_ALL;
     *out_pid = (int64_t)child->tid;
     result = SYSCALL_SUCCESS;
 out:
     if (result && pid) process_record_abort(pid);
     if (buffer) kfree(buffer);
     if (file) vfs_close(file);
-    __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory");
     return result;
 }
 
@@ -1654,7 +1728,6 @@ static bool child_changed(void *arg) {
     return process_record_sequence() != *(uint64_t *)arg;
 }
 int64_t process_waitpid(int64_t selector, uint64_t *status, uint32_t options, bool legacy) {
-    if (cpu_current()->id != 0 && !(options & WNOHANG)) return SYSCALL_EOPNOTSUPP;
     tcb_t *self = thread_current();
     if (!self || !self->is_user) return SYSCALL_ECHILD;
     for (;;) {
@@ -1673,7 +1746,6 @@ int64_t process_getpgrp(void) {
     return process_record_group(thread_current()->tid);
 }
 int64_t process_setpgid(uint64_t pid, uint64_t pgid) {
-    if (cpu_current()->id != 0) return SYSCALL_EOPNOTSUPP;
     uint64_t irq;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(irq) :: "memory");
     tcb_t *self = thread_current();
@@ -1705,7 +1777,6 @@ static void cancel_staged_children(uint64_t parent) {
     }
 }
 int64_t process_group_release(uint64_t pgid, uint32_t action) {
-    if (cpu_current()->id != 0) return SYSCALL_EOPNOTSUPP;
     if (!pgid || pgid > 0x7fffffffffffffffULL || action > GROUP_CANCEL) return SYSCALL_EINVAL;
     uint64_t irq;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(irq) :: "memory");
@@ -1885,7 +1956,7 @@ void process_exit(uint64_t exit_code) {
         curr->exit_code = exit_code;
         curr->has_exited = true;
 
-        if (cpu_current()->id == 0) cancel_staged_children(curr->tid);
+        cancel_staged_children(curr->tid);
         uint64_t tick_irq = spin_lock_irqsave(&g_sched_lock);
         uint64_t final_ticks = curr->total_ticks;
         spin_unlock_irqrestore(&g_sched_lock, tick_irq);
@@ -1912,7 +1983,7 @@ void process_exit(uint64_t exit_code) {
         g_exit_records[slot].valid = true;
         }
         spin_unlock_irqrestore(&g_sched_lock, rflags);
-        if (cpu_current()->id == 0) sched_wake_all(&child_wait_channel);
+        sched_wake_all(&child_wait_channel);
     }
     thread_exit();
 }
@@ -2087,6 +2158,15 @@ bool process_signal_interrupt(void) {
     tcb_t *t=thread_current();
     if (!t || !t->is_user) return false;
     spin_debug_assert_unheld();
+
+    /* Fast-path: if no deliverable signal is pending, skip lock acquisition entirely. */
+    uint64_t pend = __atomic_load_n(&t->signals.pending_mask, __ATOMIC_ACQUIRE);
+    uint64_t ign = __atomic_load_n(&t->signals.ignored_mask, __ATOMIC_ACQUIRE);
+    uint64_t blk = __atomic_load_n(&t->signals.blocked_mask, __ATOMIC_ACQUIRE);
+    if (!(pend & ~ign & ~blk)) {
+        return false;
+    }
+
     uint64_t flags;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
     for (;;) {

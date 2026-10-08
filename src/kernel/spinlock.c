@@ -1,6 +1,30 @@
 #include "spinlock.h"
 #include "percpu.h"
 #include "serial.h"
+#include "dmesg.h"
+
+#define MAX_TRACKED_LOCKS 64
+static spinlock_t *g_tracked_locks[MAX_TRACKED_LOCKS];
+static uint32_t g_tracked_lock_count = 0;
+static bool g_in_selftest = false;
+
+extern uint8_t stack_bottom[], stack_top[];
+
+static void track_lock(spinlock_t *lock) {
+    if (g_in_selftest) return;
+    if (!lock || !lock->name) return;
+    if ((uintptr_t)lock < 0xFFFFFFFF80000000ULL || (uintptr_t)lock >= 0xFFFFFFFFA0000000ULL) return;
+    if ((uint8_t *)lock >= stack_bottom && (uint8_t *)lock < stack_top) return;
+    if ((uintptr_t)lock->name < 0xFFFFFFFF80000000ULL) return;
+    if (lock->rank < 1 || lock->rank > 5 || lock->name[0] < 'a' || lock->name[0] > 'z') return;
+
+    for (uint32_t i = 0; i < g_tracked_lock_count; i++) {
+        if (g_tracked_locks[i] == lock) return;
+    }
+    if (g_tracked_lock_count < MAX_TRACKED_LOCKS) {
+        g_tracked_locks[g_tracked_lock_count++] = lock;
+    }
+}
 
 /*
  * Lock Discipline & Invariant Enforcement
@@ -24,6 +48,11 @@ static bool can_acquire(cpu_local_t *cpu, spinlock_t *lock) {
         if (h->rank == lock->rank) {
             /* SM11a: Two scheduler locks allowed if strictly ordered by ascending address */
             if (h->kind == LOCK_KIND_SCHED && lock->kind == LOCK_KIND_SCHED &&
+                (uintptr_t)h < (uintptr_t)lock) {
+                continue;
+            }
+            /* Process shard locks allowed if strictly ordered by ascending address */
+            if (h->kind == LOCK_KIND_PROCESS && lock->kind == LOCK_KIND_PROCESS &&
                 (uintptr_t)h < (uintptr_t)lock) {
                 continue;
             }
@@ -91,6 +120,7 @@ static void fail(const char *reason, spinlock_t *lock) {
 }
 
 void spin_debug_acquire(spinlock_t *lock) {
+    track_lock(lock);
     cpu_local_t *cpu = cpu_current();
     if (!can_acquire(cpu, lock)) fail("recursive/inverted acquisition: ", lock);
     if (cpu->lock_depth >= MAX_HELD_LOCKS) fail("lock tracker capacity exceeded: ", lock);
@@ -132,7 +162,71 @@ void spin_debug_warn_high_contention(spinlock_t *lock, uint64_t iters) {
     serial_raw_puts(" iters\n");
 }
 
+static size_t format_u64_str(char *dest, size_t max, uint64_t val) {
+    char tmp[32];
+    size_t t = 0;
+    do {
+        tmp[t++] = '0' + (char)(val % 10);
+        val /= 10;
+    } while (val > 0);
+    size_t out = 0;
+    while (t > 0 && out + 1 < max) {
+        dest[out++] = tmp[--t];
+    }
+    dest[out] = '\0';
+    return out;
+}
+
+int lockstat_dump(char *buf, size_t cap) {
+    size_t total_written = 0;
+    for (uint32_t i = 0; i < g_tracked_lock_count; i++) {
+        spinlock_t *l = g_tracked_locks[i];
+        if (!l || !l->name) continue;
+        if (l->rank < 1 || l->rank > 5) continue;
+        if (l->name[0] < 'a' || l->name[0] > 'z') continue;
+        char line[160];
+        size_t pos = 0;
+        const char *p = "[LOCKSTAT] name=";
+        while (*p) line[pos++] = *p++;
+        p = l->name;
+        while (*p) line[pos++] = *p++;
+        p = " rank=";
+        while (*p) line[pos++] = *p++;
+        pos += format_u64_str(line + pos, sizeof(line) - pos, l->rank);
+        p = " kind=";
+        while (*p) line[pos++] = *p++;
+        pos += format_u64_str(line + pos, sizeof(line) - pos, l->kind);
+        p = " acquires=";
+        while (*p) line[pos++] = *p++;
+        pos += format_u64_str(line + pos, sizeof(line) - pos, l->acquire_count);
+        p = " contentions=";
+        while (*p) line[pos++] = *p++;
+        pos += format_u64_str(line + pos, sizeof(line) - pos, l->contention_count);
+        p = " max_spin=";
+        while (*p) line[pos++] = *p++;
+        pos += format_u64_str(line + pos, sizeof(line) - pos, l->max_spin_iters);
+        line[pos++] = '\n';
+        line[pos] = '\0';
+
+        dmesg_append_str(line, pos);
+
+        if (buf && total_written + 1 < cap) {
+            size_t to_copy = pos;
+            if (total_written + to_copy >= cap) {
+                to_copy = cap - 1 - total_written;
+            }
+            for (size_t k = 0; k < to_copy; k++) {
+                buf[total_written + k] = line[k];
+            }
+            total_written += to_copy;
+            buf[total_written] = '\0';
+        }
+    }
+    return (int)total_written;
+}
+
 bool spin_debug_selftest(void) {
+    g_in_selftest = true;
     spinlock_t a = SPINLOCK_RANKED(1, "test-a");
     spinlock_t b = SPINLOCK_RANKED(2, "test-b");
     cpu_local_t *cpu = cpu_current();
@@ -184,5 +278,6 @@ bool spin_debug_selftest(void) {
     ok = ok && !can_acquire(cpu, &process);
     spin_unlock_irqrestore(&ext2, fe);
     ok = ok && cpu->lock_depth == 0;
+    g_in_selftest = false;
     return ok;
 }

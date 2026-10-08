@@ -3,8 +3,10 @@
 /* Single-threaded adapter: detect lock-held scheduler calls; QEMU tests sleep. */
 #include "types.h"
 #include <assert.h>
+enum lock_kind { LOCK_KIND_ORDINARY = 0, LOCK_KIND_SCHED = 1, LOCK_KIND_PROCESS = 2 };
 typedef struct { unsigned rank; bool held; } spinlock_t;
 #define SPINLOCK_RANKED(r, n) {(r), false}
+#define SPINLOCK_RANKED_KIND(r, k, n) {(r), false}
 static unsigned pipe_host_lock_depth;
 static inline uint64_t spin_lock_irqsave(spinlock_t *lock) {
     assert(!lock->held && pipe_host_lock_depth == 0);

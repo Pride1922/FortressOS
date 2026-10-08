@@ -60,6 +60,7 @@
 #define SYS_CONNECT_UNTIL 51 /* (fd, sockaddr, size, absolute BSP ticks) */
 #define SYS_MOUNTINFO     52 /* (uint32_t index, mount_info_t *out) -> 1=entry, 0=done, -errno */
 #define SYS_BLOCKINFO     53 /* (uint32_t index, block_info_t *out) -> 1=entry, 0=done, -errno */
+#define SYS_LOCKSTAT      54 /* (char *buf, uint64_t cap) -> bytes written or -errno */
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1

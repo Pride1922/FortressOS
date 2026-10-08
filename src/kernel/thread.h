@@ -79,10 +79,15 @@ typedef struct tcb {
     const void *wait_channel; /* Only on blocked list while sleeping. */
     int            cpu_affinity;     /* Target CPU affinity: -1 for any, or 0..MAX-1 */
     size_t         current_cpu;      /* CPU ID where thread is currently queued/running */
+    uint64_t       cpus_allowed;     /* CPU affinity bitmask: bit N allowed if (cpus_allowed & (1ULL << N)) */
     uint32_t       terminal_mode;
     uint32_t       terminal_cols;
     char           cwd[256];         /* Current working directory (bounded by VFS_MAX_PATH) */
 } tcb_t;
+
+#define CPU_MASK_ALL (~0ULL)
+#define CPU_MASK_ONE(cpu) (1ULL << (cpu))
+tcb_t *thread_create_with_mask(uint64_t cpus_allowed, const char *name, void (*entry)(void *), void *arg);
 
 struct file;
 int          fd_init_std(tcb_t *proc);
@@ -110,6 +115,7 @@ void   thread_yield(void);
  * it must neither block nor acquire locks. Publish events before waking. */
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg);
 void sched_wake_all(const void *channel);
+void thread_wake_for_signal(uint64_t pid);
 /* Lock-free current-task readiness; Phase 2B: custom handler delivery. */
 bool process_signal_pending(void);
 /* Lock-free call site required, own process continuation. Handles default stop

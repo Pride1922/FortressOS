@@ -2,6 +2,10 @@
 #include "spinlock.h"
 #include "syscall_abi.h"
 
+__attribute__((weak)) void thread_wake_for_signal(uint64_t pid) {
+    (void)pid;
+}
+
 /* Separate from scheduler placement and the overwriteable kernel-test history.
  * Members include unpublished spawn reservations. External references retain an
  * empty identity, but do not keep any TCB or child status alive. */
@@ -31,6 +35,28 @@ typedef struct {
 static process_record_t processes[PROCESS_CAPACITY];
 static child_record_t children[PROCESS_CAPACITY];
 static spinlock_t g_process_lock = SPINLOCK_RANKED(1, "process");
+#define PROCESS_SHARDS 16
+static spinlock_t g_process_shards[PROCESS_SHARDS] = {
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-0"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-1"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-2"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-3"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-4"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-5"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-6"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-7"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-8"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-9"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-10"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-11"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-12"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-13"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-14"),
+    SPINLOCK_RANKED_KIND(1, LOCK_KIND_PROCESS, "proc-15"),
+};
+static inline spinlock_t *process_shard_lock(uint64_t pid) {
+    return &g_process_shards[pid % PROCESS_SHARDS];
+}
 _Static_assert(PROC_INFO_MAX == PROCESS_CAPACITY, "PROC_INFO_MAX must equal PROCESS_CAPACITY");
 static uint64_t sequence;
 static process_record_t *find(uint64_t pid) {
@@ -39,7 +65,7 @@ static process_record_t *find(uint64_t pid) {
     return NULL;
 }
 void process_record_set_name(uint64_t pid, const char *name) {
-    uint64_t irq = spin_lock_irqsave(&g_process_lock);
+    uint64_t irq = spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p = find(pid);
     if (p && !p->published && !p->exited) {
         unsigned n = 0;
@@ -49,17 +75,17 @@ void process_record_set_name(uint64_t pid, const char *name) {
         }
         while (n < sizeof(p->name)) p->name[n++] = 0;
     }
-    spin_unlock_irqrestore(&g_process_lock, irq);
+    spin_unlock_irqrestore(process_shard_lock(pid), irq);
 }
 void process_record_merge_ticks(const process_tick_sample_t *samples, size_t count) {
     if (!samples || count > PROCESS_CAPACITY) return;
-    uint64_t irq = spin_lock_irqsave(&g_process_lock);
     for (size_t i = 0; i < count; ++i) {
+        uint64_t irq = spin_lock_irqsave(process_shard_lock(samples[i].pid));
         process_record_t *p = find(samples[i].pid);
         if (p && p->published && !p->exited && samples[i].cpu_ticks > p->cpu_ticks)
             p->cpu_ticks = samples[i].cpu_ticks;
+        spin_unlock_irqrestore(process_shard_lock(samples[i].pid), irq);
     }
-    spin_unlock_irqrestore(&g_process_lock, irq);
 }
 bool process_record_snapshot(uint64_t index, process_snapshot_t *out) {
     if (!out || index >= PROCESS_CAPACITY) return false;
@@ -467,22 +493,55 @@ int64_t process_group_signal(const process_group_ref_t *owned, uint64_t sig) {
     uint64_t irq=spin_lock_irqsave(&g_process_lock);
     process_group_t *g=group_ref_locked(owned);
     int result=SYSCALL_ESRCH;
+    uint64_t woken[PROCESS_CAPACITY];
+    unsigned woken_count = 0;
     if (g) for (unsigned i=0; i<PROCESS_CAPACITY; ++i) {
         process_record_t *p=&processes[i];
         if (!p->used || p->exited || !p->signals || p->group != g) continue;
         signal_publish(p, sig);
+        if (woken_count < PROCESS_CAPACITY) woken[woken_count++] = p->pid;
         result=0;
     }
     spin_unlock_irqrestore(&g_process_lock, irq);
+    for (unsigned i = 0; i < woken_count; ++i) {
+        thread_wake_for_signal(woken[i]);
+    }
     return result;
 }
 int64_t process_signal_send(uint64_t caller, int64_t selector, uint64_t sig) {
     if (sig>31 || (sig && !(SIGNAL_SUPPORTED & SIGNAL_BIT(sig))) ||
         selector == -1 || selector == (-0x7fffffffffffffffLL-1)) return SYSCALL_EINVAL;
+
+    /* Fast path 1: Self signal */
+    if (selector > 0 && (uint64_t)selector == caller) {
+        process_record_t *self = find(caller);
+        if (!self || self->exited || !self->signals) return SYSCALL_ESRCH;
+        uint64_t irq = spin_lock_irqsave(process_shard_lock(caller));
+        signal_publish(self, sig);
+        spin_unlock_irqrestore(process_shard_lock(caller), irq);
+        thread_wake_for_signal(caller);
+        return 0;
+    }
+
+    /* Fast path 2: Group signal for group leader where group has only self */
+    if (selector == 0) {
+        process_record_t *self = find(caller);
+        if (!self || self->exited || !self->signals) return SYSCALL_ESRCH;
+        if (self->group && self->group->members == 1 && self->pgid == self->pid) {
+            uint64_t irq = spin_lock_irqsave(process_shard_lock(caller));
+            signal_publish(self, sig);
+            spin_unlock_irqrestore(process_shard_lock(caller), irq);
+            thread_wake_for_signal(caller);
+            return 0;
+        }
+    }
+
     uint64_t irq=spin_lock_irqsave(&g_process_lock);
     process_record_t *self=find(caller);
     int result=SYSCALL_ESRCH;
     if (!self || self->exited) goto out;
+    uint64_t woken[PROCESS_CAPACITY];
+    unsigned woken_count = 0;
     for (unsigned i=0;i<PROCESS_CAPACITY;i++) {
         process_record_t *p=&processes[i];
         if (!p->used || p->exited || !p->signals) continue;
@@ -492,9 +551,13 @@ int64_t process_signal_send(uint64_t caller, int64_t selector, uint64_t sig) {
         if (p->sid != self->sid) { if (result) result=SYSCALL_EPERM; continue; }
         result=0;
         signal_publish(p, sig);
+        if (woken_count < PROCESS_CAPACITY) woken[woken_count++] = p->pid;
     }
 out:
     spin_unlock_irqrestore(&g_process_lock,irq);
+    for (unsigned i = 0; i < woken_count; ++i) {
+        thread_wake_for_signal(woken[i]);
+    }
     return result;
 }
 int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t *act, signal_action_t *old) {
@@ -509,7 +572,7 @@ int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t 
         if (act->handler < 0x1000ULL || act->handler >= 0x0000800000000000ULL)
             return SYSCALL_EINVAL;
     }
-    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    uint64_t irq=spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p=find(pid);
     int result=SYSCALL_ESRCH;
     if (p && !p->exited && p->signals) {
@@ -537,19 +600,19 @@ int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t 
         }
         result=0;
     }
-    spin_unlock_irqrestore(&g_process_lock,irq);
+    spin_unlock_irqrestore(process_shard_lock(pid),irq);
     return result;
 }
 /* Returns the handler address stored for sig under the process lock.
  * Used by the delivery path to atomically snapshot the action. */
 uint64_t process_signal_handler(uint64_t pid, uint64_t sig) {
     if (!sig || sig>31) return SIG_DFL;
-    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    uint64_t irq=spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p=find(pid);
     uint64_t h=SIG_DFL;
     if (p && !p->exited && p->signals)
         h=p->signals->action_handlers[sig];
-    spin_unlock_irqrestore(&g_process_lock,irq);
+    spin_unlock_irqrestore(process_shard_lock(pid),irq);
     return h;
 }
 /* Take a pending deliverable signal and snapshot its action atomically.
@@ -557,7 +620,7 @@ uint64_t process_signal_handler(uint64_t pid, uint64_t sig) {
  * On success, clears the pending bit and fills *out_action. */
 static unsigned take_action(uint64_t pid, signal_action_t *out_action,
                             uint64_t *out_old_mask, bool control_only) {
-    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    uint64_t irq=spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p=find(pid);
     unsigned sig=0;
     if (p && !p->exited && p->signals) {
@@ -571,8 +634,13 @@ static unsigned take_action(uint64_t pid, signal_action_t *out_action,
         }
         if (sig && !(control_only && sig==SIGKILL)) {
             __atomic_fetch_and(&s->pending_mask,~SIGNAL_BIT(sig),__ATOMIC_RELEASE);
-            if ((SIGNAL_STOPS & SIGNAL_BIT(sig)) && s->action_handlers[sig]==SIG_DFL)
+            if ((SIGNAL_STOPS & SIGNAL_BIT(sig)) && s->action_handlers[sig]==SIG_DFL) {
+                spin_unlock_irqrestore(process_shard_lock(pid), irq);
+                uint64_t girq = spin_lock_irqsave(&g_process_lock);
                 stopped_locked(p, sig);
+                spin_unlock_irqrestore(&g_process_lock, girq);
+                irq = spin_lock_irqsave(process_shard_lock(pid));
+            }
             if (out_old_mask) *out_old_mask=s->blocked_mask;
             if (out_action) {
                 out_action->handler=s->action_handlers[sig];
@@ -582,7 +650,7 @@ static unsigned take_action(uint64_t pid, signal_action_t *out_action,
             }
         }
     }
-    spin_unlock_irqrestore(&g_process_lock,irq);
+    spin_unlock_irqrestore(process_shard_lock(pid),irq);
     return sig;
 }
 unsigned process_signal_take_action(uint64_t pid, signal_action_t *action, uint64_t *mask) {
@@ -616,7 +684,7 @@ bool process_record_resume(uint64_t pid) {
 }
 int64_t process_signal_mask(uint64_t pid, uint64_t how, const uint64_t *mask, uint64_t *old) {
     if (mask && (how>SIG_SETMASK || (*mask & ~SIGNAL_SUPPORTED))) return SYSCALL_EINVAL;
-    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    uint64_t irq=spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p=find(pid);
     int result=SYSCALL_ESRCH;
     if (p && !p->exited && p->signals) {
@@ -629,11 +697,11 @@ int64_t process_signal_mask(uint64_t pid, uint64_t how, const uint64_t *mask, ui
         }
         result=0;
     }
-    spin_unlock_irqrestore(&g_process_lock,irq);
+    spin_unlock_irqrestore(process_shard_lock(pid),irq);
     return result;
 }
 unsigned process_signal_take(uint64_t pid) {
-    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    uint64_t irq=spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p=find(pid);
     unsigned sig=0;
     if (p && !p->exited && p->signals) {
@@ -643,12 +711,12 @@ unsigned process_signal_take(uint64_t pid) {
         else for (unsigned i=1;i<32;i++) if (pending&SIGNAL_BIT(i)) { sig=i; break; }
         if (sig) __atomic_fetch_and(&s->pending_mask,~SIGNAL_BIT(sig),__ATOMIC_RELEASE);
     }
-    spin_unlock_irqrestore(&g_process_lock,irq);
+    spin_unlock_irqrestore(process_shard_lock(pid),irq);
     return sig;
 }
 /* Push an active-frame entry. Returns 0 on success, SYSCALL_ENOMEM on overflow. */
 int process_signal_push_frame(uint64_t pid, uintptr_t frame_addr, uint64_t *out_generation) {
-    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    uint64_t irq=spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p=find(pid);
     int result=SYSCALL_ESRCH;
     if (p && !p->exited && p->signals) {
@@ -664,13 +732,13 @@ int process_signal_push_frame(uint64_t pid, uintptr_t frame_addr, uint64_t *out_
             result=0;
         }
     }
-    spin_unlock_irqrestore(&g_process_lock,irq);
+    spin_unlock_irqrestore(process_shard_lock(pid),irq);
     return result;
 }
 /* Pop the active-frame entry if the top generation matches expected_generation.
  * Returns 0 on success, SYSCALL_EINVAL on mismatch/empty. */
 int process_signal_pop_frame(uint64_t pid, uint64_t expected_generation) {
-    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    uint64_t irq=spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p=find(pid);
     int result=SYSCALL_EINVAL;
     if (p && !p->exited && p->signals) {
@@ -681,12 +749,12 @@ int process_signal_pop_frame(uint64_t pid, uint64_t expected_generation) {
             result=0;
         }
     }
-    spin_unlock_irqrestore(&g_process_lock,irq);
+    spin_unlock_irqrestore(process_shard_lock(pid),irq);
     return result;
 }
 /* Atomically install a new blocked mask (for handler entry). */
 int process_signal_set_mask(uint64_t pid, uint64_t new_mask) {
-    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    uint64_t irq=spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p=find(pid);
     int result=SYSCALL_ESRCH;
     if (p && !p->exited && p->signals) {
@@ -694,14 +762,14 @@ int process_signal_set_mask(uint64_t pid, uint64_t new_mask) {
                          new_mask & ~SIGNAL_UNBLOCKABLE, __ATOMIC_RELEASE);
         result=0;
     }
-    spin_unlock_irqrestore(&g_process_lock,irq);
+    spin_unlock_irqrestore(process_shard_lock(pid),irq);
     return result;
 }
 /* Verify that the top active-frame entry matches (frame_addr, generation).
  * Returns true only if the match is exact; false on any mismatch or empty stack.
  * No side effects — used as the pre-validation check in sys_sigreturn. */
 bool process_signal_check_frame_id(uint64_t pid, uintptr_t frame_addr, uint64_t generation) {
-    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    uint64_t irq=spin_lock_irqsave(process_shard_lock(pid));
     process_record_t *p=find(pid);
     bool ok=false;
     if (p && !p->exited && p->signals) {
@@ -710,6 +778,6 @@ bool process_signal_check_frame_id(uint64_t pid, uintptr_t frame_addr, uint64_t 
               s->active_frames[s->nesting_depth-1].generation == generation &&
               s->active_frames[s->nesting_depth-1].frame_addr == frame_addr);
     }
-    spin_unlock_irqrestore(&g_process_lock,irq);
+    spin_unlock_irqrestore(process_shard_lock(pid),irq);
     return ok;
 }

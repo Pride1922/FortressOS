@@ -3605,8 +3605,8 @@ static void test_smp_piece4_scheduler(void) {
 
     /* Test T3.b: Dual-Lock Ordering & Inversion Test */
     serial_puts("[TEST] SMP Piece 4: Testing sched_lock_pair dual-lock ordering (T3.b)...\n");
-    spinlock_t lock_a = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "test-sched-a");
-    spinlock_t lock_b = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "test-sched-b");
+    static spinlock_t lock_a = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "test-sched-a");
+    static spinlock_t lock_b = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "test-sched-b");
 
     uint64_t f1;
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(f1) : : "memory");
@@ -3718,6 +3718,365 @@ static void test_smp_piece4_scheduler(void) {
     }
 
     serial_puts("[ OK ] SMP Piece 4 (Scheduler & Work-Stealing) complete.\n\n");
+}
+
+/* =========================================================================
+ * SMP Step 1A: cpus_allowed mask & explicit BSP pinning
+ * Verification: Spawn thread with cpus_allowed={1}. Verify runs on CPU 1.
+ * ========================================================================= */
+static volatile uint64_t g_step1a_actual_cpu = 0xDEAD;
+static volatile uint32_t g_step1a_done = 0;
+
+static void step1a_worker(void *arg) {
+    (void)arg;
+    g_step1a_actual_cpu = cpu_current()->id;
+    __atomic_store_n(&g_step1a_done, 1, __ATOMIC_RELEASE);
+    thread_exit();
+}
+
+static bool test_smp_step1a_cpus_allowed(void) {
+    size_t total_cpus = smp_get_cpu_count();
+    serial_puts("========================================================\n");
+    serial_puts("SMP Step 1A: cpus_allowed Mask & Thread Placement\n");
+    serial_puts("========================================================\n");
+    if (total_cpus < 2) {
+        serial_puts("       [ OK ] Single-CPU system: BSP pinning explicit; AP placement skipped.\n");
+        serial_puts("[ OK ] SMP Step 1A (cpus_allowed mask) complete.\n\n");
+        return true;
+    }
+    serial_puts("[TEST] SMP Step 1A: Spawning thread with cpus_allowed={1}...\n");
+    g_step1a_actual_cpu = 0xDEAD;
+    g_step1a_done = 0;
+    tcb_t *t = thread_create_with_mask(CPU_MASK_ONE(1), "step1a_w1", step1a_worker, NULL);
+    if (!t) {
+        serial_puts("       [FAIL] Failed to create thread with cpus_allowed={1}!\n");
+        hcf();
+    }
+    uint64_t timeout = 50000000;
+    while (__atomic_load_n(&g_step1a_done, __ATOMIC_ACQUIRE) == 0) {
+        __asm__ volatile("pause");
+        thread_yield();
+        if (--timeout == 0) {
+            serial_puts("       [FAIL] Timed out waiting for thread with cpus_allowed={1} to execute!\n");
+            hcf();
+        }
+    }
+    if (g_step1a_actual_cpu == 1) {
+        serial_puts("       [PASS] Sub-step A verified: Thread with cpus_allowed={1} executed strictly on CPU 1\n");
+        serial_puts("[ OK ] SMP Step 1A (cpus_allowed mask) complete.\n\n");
+        return true;
+    } else {
+        serial_puts("       [FAIL] Sub-step A: Thread ran on CPU ");
+        serial_print_dec(g_step1a_actual_cpu);
+        serial_puts(" (expected CPU 1)!\n");
+        hcf();
+        return false;
+    }
+}
+
+/* =========================================================================
+ * SMP Step 1B: Preemption Tick on APs
+ * Verification: Read per-CPU tick counters. All CPUs ~100 Hz.
+ * ========================================================================= */
+static bool test_smp_step1b_preempt_ticks(void) {
+    size_t total_cpus = smp_get_cpu_count();
+    serial_puts("========================================================\n");
+    serial_puts("SMP Step 1B: Preemption Tick on APs Verification\n");
+    serial_puts("========================================================\n");
+    if (total_cpus < 2) {
+        serial_puts("       [ OK ] Single-CPU system: BSP tick active; AP ticks skipped.\n");
+        serial_puts("[ OK ] SMP Step 1B (Preemption tick on APs) complete.\n\n");
+        return true;
+    }
+
+    serial_puts("[TEST] Reading per-CPU tick counters over 1000ms window...\n");
+    uint64_t start_ticks[MAX_DETECTED_CPUS];
+    for (size_t c = 0; c < total_cpus; c++) {
+        start_ticks[c] = apic_timer_get_cpu_ticks(c);
+    }
+
+    /* Wait for 100 ticks on BSP (~1.0s window at 100 Hz) */
+    uint64_t target_bsp = start_ticks[0] + 100;
+    while (apic_timer_get_cpu_ticks(0) < target_bsp) {
+        __asm__ volatile("pause");
+    }
+
+    uint64_t end_ticks[MAX_DETECTED_CPUS];
+    for (size_t c = 0; c < total_cpus; c++) {
+        end_ticks[c] = apic_timer_get_cpu_ticks(c);
+    }
+
+    bool all_ok = true;
+    for (size_t c = 0; c < total_cpus; c++) {
+        uint64_t delta = end_ticks[c] - start_ticks[c];
+        serial_puts("       CPU ");
+        serial_print_dec(c);
+        serial_puts(" tick count: ");
+        serial_print_dec(delta);
+        serial_puts(" ticks/sec (~");
+        serial_print_dec(delta);
+        serial_puts(" Hz)\n");
+
+        /* Tolerate emulator scheduling jitter (e.g., TCG/QEMU) while verifying active ~100 Hz tick */
+        if (delta < 50 || delta > 150) {
+            all_ok = false;
+        }
+    }
+
+    if (!all_ok) {
+        serial_puts("       [FAIL] One or more CPUs not receiving preemption ticks at ~100 Hz!\n");
+        hcf();
+        return false;
+    }
+
+    serial_puts("       [PASS] Sub-step B verified: All CPUs receiving preemption ticks at ~100 Hz (verified ");
+    serial_print_dec(total_cpus);
+    serial_puts(" CPUs)\n");
+    serial_puts("[ OK ] SMP Step 1B (Preemption tick on APs) complete.\n\n");
+    return true;
+}
+
+/* =========================================================================
+ * SMP Step 1C: IPI Kick on Wake & HLT Idle
+ * Verification: Spawn thread on CPU 1. Verify it wakes and runs without BSP.
+ * ========================================================================= */
+static const char g_step1c_channel;
+static volatile uint32_t g_step1c_ready = 0;
+static volatile uint32_t g_step1c_worker_ran_before_wake = 0;
+static volatile uint32_t g_step1c_worker_ran_after_wake = 0;
+static volatile uint64_t g_step1c_worker_cpu = 0xDEAD;
+static volatile uint32_t g_step1c_done = 0;
+
+static bool step1c_ready_pred(void *arg) {
+    (void)arg;
+    return __atomic_load_n(&g_step1c_ready, __ATOMIC_ACQUIRE) != 0;
+}
+
+static void step1c_worker(void *arg) {
+    (void)arg;
+    g_step1c_worker_cpu = cpu_current()->id;
+    __atomic_store_n(&g_step1c_worker_ran_before_wake, 1, __ATOMIC_RELEASE);
+
+    /* Thread blocks on channel. On CPU 1, idle thread will enter sti; hlt */
+    sched_wait_until(&g_step1c_channel, step1c_ready_pred, NULL);
+
+    /* Resumed execution on CPU 1 after IPI kick */
+    __atomic_store_n(&g_step1c_worker_ran_after_wake, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_step1c_done, 1, __ATOMIC_RELEASE);
+    thread_exit();
+}
+
+static bool test_smp_step1c_ipi_wake(void) {
+    size_t total_cpus = smp_get_cpu_count();
+    serial_puts("========================================================\n");
+    serial_puts("SMP Step 1C: IPI Kick on Wake & HLT Idle Verification\n");
+    serial_puts("========================================================\n");
+    if (total_cpus < 2) {
+        serial_puts("       [ OK ] Single-CPU system: AP IPI wake skipped.\n");
+        serial_puts("[ OK ] SMP Step 1C (IPI kick on wake & HLT idle) complete.\n\n");
+        return true;
+    }
+
+    g_step1c_ready = 0;
+    g_step1c_worker_ran_before_wake = 0;
+    g_step1c_worker_ran_after_wake = 0;
+    g_step1c_worker_cpu = 0xDEAD;
+    g_step1c_done = 0;
+
+    serial_puts("[TEST] Spawning thread on CPU 1 (cpus_allowed={1})...\n");
+    tcb_t *t = thread_create_with_mask(CPU_MASK_ONE(1), "step1c_w1", step1c_worker, NULL);
+    if (!t) {
+        serial_puts("       [FAIL] Failed to create thread for Step 1C!\n");
+        hcf();
+    }
+
+    /* Wait until worker starts on CPU 1 and blocks on channel */
+    uint64_t timeout = 50000000;
+    while (__atomic_load_n(&g_step1c_worker_ran_before_wake, __ATOMIC_ACQUIRE) == 0) {
+        __asm__ volatile("pause");
+        if (--timeout == 0) {
+            serial_puts("       [FAIL] Worker on CPU 1 did not start!\n");
+            hcf();
+        }
+    }
+
+    /* Allow brief time for CPU 1 to switch to idle thread and halt in sti; hlt */
+    for (volatile int d = 0; d < 100000; d++) __asm__ volatile("pause");
+
+    serial_puts("       [INFO] Worker running on CPU 1 blocked on channel; CPU 1 entered hlt idle.\n");
+    serial_puts("       [TEST] Kicking CPU 1 via sched_wake_all with BSP interrupts DISABLED (cli)...\n");
+
+    /* Disable interrupts on BSP so BSP CANNOT execute timer ticks or help scheduling */
+    __asm__ volatile("cli" ::: "memory");
+
+    /* Mark predicate ready and wake the channel -> triggers IPI kick to CPU 1! */
+    __atomic_store_n(&g_step1c_ready, 1, __ATOMIC_RELEASE);
+    sched_wake_all(&g_step1c_channel);
+
+    /* BSP spins with interrupts disabled: CPU 1 MUST wake and run independently! */
+    timeout = 50000000;
+    while (__atomic_load_n(&g_step1c_done, __ATOMIC_ACQUIRE) == 0) {
+        __asm__ volatile("pause");
+        if (--timeout == 0) {
+            __asm__ volatile("sti" ::: "memory");
+            serial_puts("       [FAIL] Worker on CPU 1 failed to wake and run without BSP!\n");
+            hcf();
+        }
+    }
+
+    /* Re-enable interrupts on BSP */
+    __asm__ volatile("sti" ::: "memory");
+
+    if (g_step1c_worker_cpu != 1) {
+        serial_puts("       [FAIL] Worker ran on CPU ");
+        serial_print_dec(g_step1c_worker_cpu);
+        serial_puts(" instead of CPU 1!\n");
+        hcf();
+    }
+
+    serial_puts("       [PASS] Sub-step C verified: Thread on CPU 1 woke via IPI and ran without BSP (verified on CPU 1)\n");
+    serial_puts("[ OK ] SMP Step 1C (IPI kick on wake & HLT idle) complete.\n\n");
+    return true;
+}
+
+/* =========================================================================
+ * SMP Step 1D: Uniform TSC-based Clock Across Cores
+ * Verification: Read TSC on CPU 0 and CPU 3. Should agree.
+ * ========================================================================= */
+static volatile uint64_t g_step1d_tsc_cpu0_t0 = 0;
+static volatile uint64_t g_step1d_tsc_cpu0_t1 = 0;
+static volatile uint64_t g_step1d_tsc_target = 0;
+static volatile uint32_t g_step1d_ping = 0;
+static volatile uint32_t g_step1d_pong = 0;
+static volatile uint32_t g_step1d_done = 0;
+
+static void step1d_worker(void *arg) {
+    (void)arg;
+    /* Wait for ping from CPU 0 */
+    while (__atomic_load_n(&g_step1d_ping, __ATOMIC_ACQUIRE) == 0) {
+        __asm__ volatile("pause");
+    }
+
+    /* Sample local TSC on target CPU immediately */
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
+    g_step1d_tsc_target = ((uint64_t)hi << 32) | lo;
+
+    /* Signal pong back to CPU 0 */
+    __atomic_store_n(&g_step1d_pong, 1, __ATOMIC_RELEASE);
+
+    /* Wait for CPU 0 to finish */
+    while (__atomic_load_n(&g_step1d_done, __ATOMIC_ACQUIRE) == 0) {
+        __asm__ volatile("pause");
+    }
+    thread_exit();
+}
+
+static bool test_smp_step1d_tsc_sync(void) {
+    size_t total_cpus = smp_get_cpu_count();
+    serial_puts("========================================================\n");
+    serial_puts("SMP Step 1D: Uniform TSC-based Clock Across Cores\n");
+    serial_puts("========================================================\n");
+    if (total_cpus < 2) {
+        serial_puts("       [ OK ] Single-CPU system: Cross-core TSC verification skipped.\n");
+        serial_puts("[ OK ] SMP Step 1D (Uniform TSC clock) complete.\n\n");
+        return true;
+    }
+
+    size_t target_cpu = (total_cpus >= 4) ? 3 : 1;
+    g_step1d_ping = 0;
+    g_step1d_pong = 0;
+    g_step1d_done = 0;
+    g_step1d_tsc_cpu0_t0 = 0;
+    g_step1d_tsc_cpu0_t1 = 0;
+    g_step1d_tsc_target = 0;
+
+    serial_puts("[TEST] Spawning TSC synchronization worker on CPU ");
+    serial_print_dec(target_cpu);
+    serial_puts(" (cpus_allowed={");
+    serial_print_dec(target_cpu);
+    serial_puts("})...\n");
+
+    tcb_t *t = thread_create_with_mask(CPU_MASK_ONE(target_cpu), "step1d_w", step1d_worker, NULL);
+    if (!t) {
+        serial_puts("       [FAIL] Failed to spawn Step 1D worker thread!\n");
+        hcf();
+    }
+
+    /* Small delay to ensure worker is scheduled and spinning on ping */
+    for (volatile int d = 0; d < 100000; d++) __asm__ volatile("pause");
+
+    /* CPU 0 samples t0, issues ping, and waits for pong to sample t1 */
+    uint32_t lo0, hi0, lo1, hi1;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo0), "=d"(hi0) :: "memory");
+    g_step1d_tsc_cpu0_t0 = ((uint64_t)hi0 << 32) | lo0;
+
+    __atomic_store_n(&g_step1d_ping, 1, __ATOMIC_RELEASE);
+
+    uint64_t timeout = 50000000;
+    while (__atomic_load_n(&g_step1d_pong, __ATOMIC_ACQUIRE) == 0) {
+        __asm__ volatile("pause");
+        if (--timeout == 0) {
+            serial_puts("       [FAIL] Timed out waiting for pong from target CPU!\n");
+            hcf();
+        }
+    }
+
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo1), "=d"(hi1) :: "memory");
+    g_step1d_tsc_cpu0_t1 = ((uint64_t)hi1 << 32) | lo1;
+
+    __atomic_store_n(&g_step1d_done, 1, __ATOMIC_RELEASE);
+
+    uint64_t t0 = g_step1d_tsc_cpu0_t0;
+    uint64_t t1 = g_step1d_tsc_cpu0_t1;
+    uint64_t t_target = g_step1d_tsc_target;
+    uint64_t t_mid = t0 + (t1 - t0) / 2;
+    uint64_t rtt = t1 - t0;
+
+    int64_t diff = (int64_t)t_target - (int64_t)t_mid;
+    uint64_t abs_diff = (diff >= 0) ? (uint64_t)diff : (uint64_t)(-diff);
+
+    uint64_t hz = apic_poll_clock_hz();
+    if (hz == 0) hz = 2000000000ULL;
+
+    uint64_t diff_us = (abs_diff * 1000000ULL) / hz;
+    uint64_t rtt_us = (rtt * 1000000ULL) / hz;
+
+    serial_puts("       CPU 0 TSC (t0): ");
+    serial_print_dec(t0);
+    serial_puts("\n       CPU ");
+    serial_print_dec(target_cpu);
+    serial_puts(" TSC:     ");
+    serial_print_dec(t_target);
+    serial_puts("\n       CPU 0 TSC (t1): ");
+    serial_print_dec(t1);
+    serial_puts("\n       Round-trip delay: ");
+    serial_print_dec(rtt);
+    serial_puts(" cycles (~");
+    serial_print_dec(rtt_us);
+    serial_puts(" us)\n       Estimated offset: ");
+    if (diff < 0) serial_puts("-");
+    serial_print_dec(abs_diff);
+    serial_puts(" cycles (~");
+    serial_print_dec(diff_us);
+    serial_puts(" us)\n");
+
+    /* Invariant TSC across cores agrees within measurement latency / small microsecond bound. */
+    if (diff_us > 100) {
+        serial_puts("       [FAIL] TSC disagreement between CPU 0 and CPU ");
+        serial_print_dec(target_cpu);
+        serial_puts(" exceeds tolerance (> 100 us)!\n");
+        hcf();
+        return false;
+    }
+
+    serial_puts("       [PASS] Sub-step D verified: TSC on CPU 0 and CPU ");
+    serial_print_dec(target_cpu);
+    serial_puts(" agree within measurement uncertainty (offset: ");
+    serial_print_dec(diff_us);
+    serial_puts(" us)\n");
+    serial_puts("[ OK ] SMP Step 1D (Uniform TSC clock across cores) complete.\n\n");
+    return true;
 }
 
 /* =========================================================================
@@ -6005,6 +6364,10 @@ pf_boot_guard_done:
     test_smp_piece1_ap_discovery(&madt_info);
     test_smp_piece3_lock_discipline();
     test_smp_piece4_scheduler();
+    test_smp_step1a_cpus_allowed();
+    test_smp_step1b_preempt_ticks();
+    test_smp_step1c_ipi_wake();
+    test_smp_step1d_tsc_sync();
     test_smp_piece5_ipi(master_kernel_pml4);
 
     if (qemu_fw_cfg_has_key("opt/fortress/s9_metadata_test")) {

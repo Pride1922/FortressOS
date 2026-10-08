@@ -9,8 +9,11 @@
 #include "../src/kernel/thread.h"
 #include "../src/fs/pipe.c"
 #include "../src/fs/vfs.c"
+uint64_t lockstat_dump(char *buf, uint64_t cap);
 #include "../src/kernel/syscall.c"
 #include "../src/kernel/process_table.c"
+
+uint64_t lockstat_dump(char *buf, uint64_t cap) { (void)buf; (void)cap; return 0; }
 
 static size_t heap_live, pages_live, alloc_calls;
 static int fail_after = -1;

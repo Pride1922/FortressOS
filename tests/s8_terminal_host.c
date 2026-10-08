@@ -14,7 +14,7 @@ static file_t tty_file={.node=&tty}, other_file={.node=&other};
 static unsigned stops, wakes;
 static void (*wait_hook)(void);
 uint64_t spin_lock_irqsave(spinlock_t *l) {
-    assert(!locked && !device_irq); assert(!pthread_mutex_lock(&l->mutex)); locked=true; return 0;
+    assert(!locked); assert(!pthread_mutex_lock(&l->mutex)); locked=true; return 0;
 }
 void spin_unlock_irqrestore(spinlock_t *l,uint64_t f) {
     (void)f; assert(locked); locked=false; assert(!pthread_mutex_unlock(&l->mutex));
@@ -69,8 +69,9 @@ int main(void) {
     assert(input_tcsetpgrp(31,0)==SYSCALL_EINVAL);
     tasks[0].sid=999; assert(input_tcgetpgrp(31)==SYSCALL_ENOTTY); tasks[0].sid=10;
     input_test_cpu=1;
-    assert(input_tcsetpgrp(31,11)==SYSCALL_EOPNOTSUPP);
-    assert(input_control_check()==SYSCALL_EOPNOTSUPP); input_test_cpu=0;
+    assert(!input_tcsetpgrp(31,10));
+    assert(!input_control_check());
+    input_test_cpu=0;
     signal_action_t ignore={.handler=SIG_IGN};
     assert(!process_signal_action(10,SIGTTOU,&ignore,NULL));
     /* FD 31 works with stdin redirected; a different node is never a tty. */

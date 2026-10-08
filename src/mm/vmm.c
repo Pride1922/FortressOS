@@ -79,46 +79,45 @@ int vmm_space_retire(uintptr_t pml4_phys) {
     return VMM_ERR_INVALID_ADDR;
 }
 
-int vmm_space_get_op(uint64_t *pml4_virt) {
+static int vmm_space_get_op_locked(uint64_t *pml4_virt) {
     if (!pml4_virt) return VMM_ERR_INVALID_ADDR;
-
-    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     vmm_space_t *curr = g_vmm_spaces_list;
     while (curr) {
         if (curr->pml4_virt == pml4_virt) {
-            if (curr->is_kernel) {
-                spin_unlock_irqrestore(&g_vmm_lock, rflags);
-                return VMM_OK;
-            }
-            if (curr->state != VMM_SPACE_LIVE) {
-                spin_unlock_irqrestore(&g_vmm_lock, rflags);
-                return VMM_ERR_INVALID_ADDR;
-            }
+            if (curr->is_kernel) return VMM_OK;
+            if (curr->state != VMM_SPACE_LIVE) return VMM_ERR_INVALID_ADDR;
             curr->op_refs++;
-            spin_unlock_irqrestore(&g_vmm_lock, rflags);
             return VMM_OK;
         }
         curr = curr->next;
     }
-    spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return VMM_ERR_INVALID_ADDR;
 }
 
-void vmm_space_put_op(uint64_t *pml4_virt) {
-    if (!pml4_virt) return;
-
+int vmm_space_get_op(uint64_t *pml4_virt) {
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    int res = vmm_space_get_op_locked(pml4_virt);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    return res;
+}
+
+static void vmm_space_put_op_locked(uint64_t *pml4_virt) {
+    if (!pml4_virt) return;
     vmm_space_t *curr = g_vmm_spaces_list;
     while (curr) {
         if (curr->pml4_virt == pml4_virt) {
             if (!curr->is_kernel && curr->op_refs > 0) {
                 curr->op_refs--;
             }
-            spin_unlock_irqrestore(&g_vmm_lock, rflags);
             return;
         }
         curr = curr->next;
     }
+}
+
+void vmm_space_put_op(uint64_t *pml4_virt) {
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    vmm_space_put_op_locked(pml4_virt);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
 }
 
@@ -668,14 +667,16 @@ static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintp
 }
 
 int vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
-    int op_status = vmm_space_get_op(pml4_virt);
-    if (op_status != VMM_OK) return op_status;
-
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    int res = vmm_map_page_unlocked(pml4_virt, virt_addr, phys_addr, flags);
-    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    int op_status = vmm_space_get_op_locked(pml4_virt);
+    if (op_status != VMM_OK) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        return op_status;
+    }
 
-    vmm_space_put_op(pml4_virt);
+    int res = vmm_map_page_unlocked(pml4_virt, virt_addr, phys_addr, flags);
+    vmm_space_put_op_locked(pml4_virt);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return res;
 }
 
@@ -716,12 +717,17 @@ static int vmm_unmap_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
 }
 
 int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
-    int op_status = vmm_space_get_op(pml4_virt);
-    if (op_status != VMM_OK) return op_status;
-
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    int op_status = vmm_space_get_op_locked(pml4_virt);
+    if (op_status != VMM_OK) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        return op_status;
+    }
+
     int res = vmm_unmap_page_unlocked(pml4_virt, virt_addr);
+    vmm_space_put_op_locked(pml4_virt);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
+
     if (res == VMM_OK) {
         uintptr_t cr3 = 0;
         if (pml4_virt && pml4_virt != vmm_get_kernel_pml4_virt()) {
@@ -729,8 +735,6 @@ int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
         }
         smp_tlb_shootdown(virt_addr, cr3);
     }
-
-    vmm_space_put_op(pml4_virt);
     return res;
 }
 
@@ -755,13 +759,16 @@ static bool vmm_is_mapped_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
 }
 
 bool vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr) {
-    if (vmm_space_get_op(pml4_virt) != VMM_OK) return false;
-
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    bool res = vmm_is_mapped_unlocked(pml4_virt, virt_addr);
-    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    int op_status = vmm_space_get_op_locked(pml4_virt);
+    if (op_status != VMM_OK) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        return false;
+    }
 
-    vmm_space_put_op(pml4_virt);
+    bool res = vmm_is_mapped_unlocked(pml4_virt, virt_addr);
+    vmm_space_put_op_locked(pml4_virt);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return res;
 }
 
@@ -788,13 +795,16 @@ static uintptr_t vmm_get_physical_address_unlocked(uint64_t *pml4_virt, uintptr_
 }
 
 uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr) {
-    if (vmm_space_get_op(pml4_virt) != VMM_OK) return 0;
-
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    uintptr_t res = vmm_get_physical_address_unlocked(pml4_virt, virt_addr);
-    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    int op_status = vmm_space_get_op_locked(pml4_virt);
+    if (op_status != VMM_OK) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        return 0;
+    }
 
-    vmm_space_put_op(pml4_virt);
+    uintptr_t res = vmm_get_physical_address_unlocked(pml4_virt, virt_addr);
+    vmm_space_put_op_locked(pml4_virt);
+    spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return res;
 }
 

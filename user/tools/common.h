@@ -74,6 +74,8 @@ int diff_main(int argc, char **argv);
 int patch_main(int argc, char **argv);
 int diskbench_main(int argc, char **argv);
 int disk_main(int argc, char **argv);
+int smpbench_main(int argc, char **argv);
+int lockstat_main(int argc, char **argv);
 static inline uint64_t tool_rdtsc(void) {
     uint32_t lo, hi;
     __asm__ __volatile__("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");

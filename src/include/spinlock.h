@@ -16,6 +16,7 @@ typedef struct spinlock {
 } spinlock_t;
 
 #define SPINLOCK_RANKED(r, n) {PTHREAD_MUTEX_INITIALIZER, (r), (n), 0, 0, 0}
+#define SPINLOCK_RANKED_KIND(r, k, n) {PTHREAD_MUTEX_INITIALIZER, (r), (n), 0, 0, 0}
 
 uint64_t spin_lock_irqsave(spinlock_t *lock);
 void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags);
@@ -56,6 +57,7 @@ void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags);
 enum lock_kind {
     LOCK_KIND_ORDINARY = 0,
     LOCK_KIND_SCHED    = 1,
+    LOCK_KIND_PROCESS  = 2,
 };
 
 typedef struct spinlock {
@@ -78,6 +80,7 @@ void spin_debug_assert_held(spinlock_t *lock);
 void spin_debug_assert_unheld(void);
 bool spin_debug_selftest(void);
 void spin_debug_warn_high_contention(spinlock_t *lock, uint64_t iters);
+int lockstat_dump(char *buf, size_t cap);
 
 /* SMP Piece 6C: Polled TLB shootdown service in spinlock wait loops.
  * Prevents deadlock when waiter has IF=0 and initiator is waiting for waiter's ACK.

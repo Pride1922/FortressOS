@@ -1259,6 +1259,18 @@ static int64_t sys_blockinfo(uint32_t index, uintptr_t user_buf) {
     return 1;
 }
 
+static int64_t sys_lockstat(uintptr_t user_buf, uint64_t cap) {
+    if (user_buf == 0 || cap == 0) {
+        lockstat_dump(NULL, 0);
+        return 0;
+    }
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(active_pml4, user_buf, cap, true)) {
+        return SYSCALL_EFAULT;
+    }
+    return (int64_t)lockstat_dump((char *)user_buf, (size_t)cap);
+}
+
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
     if (!frame) return SYSCALL_EINVAL;
 
@@ -1589,6 +1601,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_BLOCKINFO:
             result = sys_blockinfo((uint32_t)frame->rdi, frame->rsi);
+            break;
+
+        case SYS_LOCKSTAT:
+            result = sys_lockstat(frame->rdi, frame->rsi);
             break;
 
         case SYS_SIGRETURN:

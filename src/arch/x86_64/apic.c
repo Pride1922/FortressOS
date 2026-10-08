@@ -9,6 +9,7 @@ static volatile uint8_t *g_lapic_mmio = (volatile uint8_t *)LAPIC_VIRT_ADDR;
 static volatile uint64_t g_spurious_count = 0;
 static volatile uint64_t g_timer_ticks = 0;
 static volatile uint64_t g_bsp_timer_ticks = 0;
+static volatile uint64_t g_cpu_timer_ticks[MAX_DETECTED_CPUS];
 static uint32_t g_target_hz;
 static uint32_t g_timer_init_count = 0;
 static uint64_t g_poll_clock_hz;
@@ -99,13 +100,17 @@ static void apic_spurious_handler(interrupt_frame_t *frame) {
 
 static void apic_timer_handler(interrupt_frame_t *frame) {
     (void)frame;
+    size_t cid = cpu_current()->id;
+    if (cid < MAX_DETECTED_CPUS) {
+        __atomic_fetch_add(&g_cpu_timer_ticks[cid], 1, __ATOMIC_RELAXED);
+    }
     g_timer_ticks++;
-    if (cpu_current()->id == 0) {
+    if (cid == 0) {
         __atomic_fetch_add(&g_bsp_timer_ticks, 1, __ATOMIC_RELAXED);
     }
     lapic_eoi(); /* Single-owner EOI: acknowledged immediately on timer entry */
     input_timer_tick(g_target_hz);
-    if (cpu_current()->id == 0) net_timer_tick();
+    if (cid == 0) net_timer_tick();
     extern void sched_on_timer_tick(void);
     sched_on_timer_tick();
 }
@@ -277,6 +282,9 @@ bool apic_timer_init(uint32_t target_hz) {
     g_timer_init_count = (uint32_t)count;
     g_timer_ticks = 0;
     __atomic_store_n(&g_bsp_timer_ticks, 0, __ATOMIC_RELEASE);
+    for (size_t i = 0; i < MAX_DETECTED_CPUS; i++) {
+        __atomic_store_n(&g_cpu_timer_ticks[i], 0, __ATOMIC_RELEASE);
+    }
     lapic_write(APIC_REG_LVT_TIMER, APIC_LVT_MASKED | APIC_TIMER_PERIODIC | APIC_TIMER_VECTOR);
     lapic_write(APIC_REG_TIMER_INITCNT, (uint32_t)count);
     serial_puts("[ OK ] LAPIC calibrated against PIT; periodic timer remains masked\n");
@@ -328,6 +336,14 @@ uint64_t apic_timer_get_frequency(void) {
 
 void apic_timer_reset_bsp_ticks(void) {
     __atomic_store_n(&g_bsp_timer_ticks, 0, __ATOMIC_RELEASE);
+    for (size_t i = 0; i < MAX_DETECTED_CPUS; i++) {
+        __atomic_store_n(&g_cpu_timer_ticks[i], 0, __ATOMIC_RELEASE);
+    }
+}
+
+uint64_t apic_timer_get_cpu_ticks(size_t cpu_id) {
+    if (cpu_id >= MAX_DETECTED_CPUS) return 0;
+    return __atomic_load_n(&g_cpu_timer_ticks[cpu_id], __ATOMIC_ACQUIRE);
 }
 
 uint64_t lapic_get_spurious_count(void) {
