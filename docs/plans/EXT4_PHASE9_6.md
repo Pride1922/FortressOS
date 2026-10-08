@@ -1,7 +1,10 @@
 # EXT4 Phase 9.6 — Evidence review and physical acceptance
 
-Started 2026-10-07. Automated Phase 9.5 is complete; physical acceptance is
-pending. This procedure preserves production journaled RW being disabled.
+Started 2026-10-07; bounded E4-B acceptance COMPLETE 2026-10-08. All three
+controlled physical cases passed. The user subsequently authorized enabling
+production journaled USB RW, committing/pushing and preparing a normal live-test
+image. Historical fixture-only instructions below describe acceptance execution;
+current implementation and limits are in the [closeout report](../roadmap/ext4-phase9-6.md).
 
 Dedicated first-target image readiness passed on 2026-10-07: six emulated
 boot cycles, sixteen rejection controls, independent audits and focused
@@ -113,8 +116,8 @@ cannot be inferred from QEMU or from non-journaled physical tests.
 ## 4. Recovery and interruption gate
 
 The [three case procedures](EXT4_PHASE9_6_INTERRUPTION_CASES.md) define milestones
-and expected recovery results. Only case 1 has verified instrumentation; cases
-2 and 3 still need their hooks, artifacts and audits before approval.
+and expected recovery results. All three cases have verified instrumentation;
+case 3 awaits case-specific physical approval and execution.
 
 First run deterministic seeded recovery on physical media and verify the
 recovered bytes/namespace before fixture rewrite. This exercises recovery

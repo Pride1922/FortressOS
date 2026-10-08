@@ -16,14 +16,15 @@ paths, and tests that distinguish emulator results from hardware observations.
 > what's safe to change, read [`AGENTS.md`](AGENTS.md) and [`PROTECTED.md`](PROTECTED.md) — those are kept in sync
 > with the code, this file is kept in sync with those.
 
-Current milestone: **EXT4 Phase 9 (journaled filesystem integration)** is the active milestone (2026-10-07).
-Phases 9.1–9.5 are complete, covering bounded JBD2 journal replay, transaction commit/checkpoint,
-crash-consistency under emulated power fault, and 144 automated USB verification cases (36 boots across
-BIOS/UEFI and 1/4 CPUs). Phase 9.6 physical acceptance is currently in progress on the Dell Latitude 5590
-using a dedicated physical-test build; clean persistence (START, VERIFY, offline `e2fsck` audits, reboot,
-downloads, overwrite/delete) is verified, while interruption tests remain pending (Case 1 is running).
-The journaling filesystem is nearly production-ready, but production journaled RW remains disabled until
-gate E4-B closes; ext2 remains the default image filesystem.
+**EXT4 E4-B / Phase 9.6 is complete for the bounded accepted profile (2026-10-08).**
+Automated crash/recovery gates and all three controlled physical interruption cases
+passed on Dell Latitude 5590 / the identified 4 GB Generic Flash Disk. See the
+[9.6 evidence and limits](docs/roadmap/ext4-phase9-6.md).
+Journaled RW is now enabled for explicitly selected USB PARTUUIDs with `usb_data_mode=rw`,
+consistent GPT and eligible durability. Every journal mount validates recovery before
+publication. ext2 remains the default image filesystem; non-journaled E4-A remains supported.
+Intermittent USB enumeration remains an open driver issue; other hardware and arbitrary
+power-loss scenarios are not covered by this acceptance.
 
 Prior milestones are complete and verified on bare metal:
 - **Networking (NET-1–NET-3)**: Intel e1000/e1000e/I219-LM driver, Ethernet II, ARP, IPv4, ICMP Echo (`/bin/ping`),
@@ -45,12 +46,12 @@ Prior milestones are complete and verified on bare metal:
 | Multi-Core (SMP) | 8-core concurrent execution verified on bare metal (Dell Latitude 5590). AP discovery via Limine/ACPI MADT (Piece 1); per-CPU GS base, GDT, TSS, and IST stacks (Piece 2); strict rank-checked lock discipline with contention telemetry and panic isolation (Piece 3); distributed multi-core preemptive scheduler with per-CPU runqueues and dual-lock work-stealing (Piece 4; scheduler race conditions resolved and verified across 10/10 runs; pre-mount work-stealing timeout recorded as a follow-up in `docs/subsystems/smp.md`); APIC ICR cross-core IPIs and broadcast synchronous TLB shootdowns (Piece 5); and full multi-core memory architecture with contention deadlock breaking, `op_refs`, `sched_refs`, and deferred address-space reaping (Piece 6). |
 | Memory | Physical page allocator covering 32 GiB RAM with two-stage boot initialization (Phase 9H / Piece 6A); concurrent PMM allocation safety verified across 320,000 cycles under 622k+ contention events (Piece 6B); contention-safe TLB shootdown and CR3 reload (Piece 6C); per-process address spaces with transient operation references (`op_refs`), scheduler references (`sched_refs`), hardware active CPU masks, and guaranteed zero-leak deferred destruction (Piece 6D). Dynamic heap introspection with committed and peak tracking exposed in `sysinfo`. |
 | CPU and scheduling | GDT/IDT per CPU, exception diagnostics, dedicated double-fault/NMI stacks, ACPI discovery, APIC timer preemption (100 Hz), per-CPU runqueues, and work-stealing across online cores. Hardware invariant TSC calibrated against APIC/PIT, exposed via `SYS_SYSINFO` (`tsc_hz`) for sub-microsecond performance timing in `sysinfo` and `disk bench`. |
-| Filesystems | **ext2** (default image filesystem): Bounded direct and single-indirect blocks, atomic append serialized under `ext2_lock`, optimized write path with deferred transaction barriers, in-memory block bitmap cache (`bmp_cache`), and multi-sector NVMe transfers yielding ~4× write speedup (~4.2 MiB/s writes, 16–20 MiB/s reads).<br>**ext4** (active verification): Full JBD2 journaling, extent and block mappings, crash-consistent commit/checkpointing, and recovery replay. Phases 9.1–9.5 automated USB verification complete (144 cases); Phase 9.6 physical acceptance underway on Dell 5590. Production journaled RW remains disabled until gate E4-B closes. |
+| Filesystems | **ext2** (default image filesystem): Bounded direct and single-indirect blocks, atomic append serialized under `ext2_lock`, optimized write path with deferred transaction barriers, in-memory block bitmap cache (`bmp_cache`), and multi-sector NVMe transfers yielding ~4× write speedup (~4.2 MiB/s writes, 16–20 MiB/s reads).<br>**ext4** (bounded E4-B accepted): ordered JBD2 transactions, extent mappings, commit/checkpoint and recovery. Phase 9.6 physical acceptance complete on the tested Dell 5590 / 4 GB stick. Explicit USB journaled RW enabled; [evidence and limits](docs/roadmap/ext4-phase9-6.md). |
 | Storage | PCI discovery, NVMe reads/writes/flush with multi-sector batching, xHCI + USB Mass Storage BOT (USB 2.0 and USB 3.x SuperSpeed), validated GPT partitions with PARTUUID and UTF-16 decoded labels exposed via `SYS_BLOCKINFO`. Storage observability and benchmarking via `/bin/disk` (`list`, `usage`, `info`, `bench`). Multi-core concurrent append serialization verified under QEMU `-smp 4` and Dell Latitude 5590 hardware with offline `e2fsck -fn` audits. Write persistence is verified on QEMU NVMe fixtures and on two independent physical USB devices. |
 | USB | Multiple xHCI controllers enumerated and initialized; device enumeration and descriptor parsing; BOT/SCSI reads and writes; durability classification with per-device policy; explicit writable opt-in. Both USB 2.0 and directly-attached USB 3.x (SuperSpeed) devices are supported; external hubs and hot-plug are not. |
 | Files | Read, create, write, truncate, make directories, rename/move, and delete. Initramfs provides boot-time programs; ext2 provides persistent storage today; ext4 is the target production filesystem. |
 | User programs & tools | Ring 3 execution, ELF loading, fast syscall MSRs configured across all cores, System V AMD64 argument passing, validated syscalls, cross-core child waiting, exit status propagation, and deferred process reclamation.<br>**Standard & Stream Toolset:** Full-screen editor `nano` v2.1 (Pike VM regex search/replace, undo/redo, multi-buffer, line numbers, nanorc config), storage utility `disk` (list with UUID/label, device info, usage, microsecond benchmark), stream processing (`grep`, `sort`, `uniq`, `xxd`, `diff`, `patch`, `printf`, `cat`, `head`, `tail`, `wc`), file integrity (`md5sum`, `sha256sum`, `tar`), and system introspection (`ps`, `top`, 5-section `sysinfo`). |
-| New tools — physical acceptance | `disk` storage observability, `nano` v2.1 editor, stream tools (`grep`, `sort`, `uniq`, `xxd`, `diff`, `patch`), checksums (`md5sum`, `sha256sum`), and `tar` verified across automated host and QEMU test suites. Clean persistence on physical Dell 5590 verified during Phase 9.6 (downloads, checksums, overwrites, deletes); physical interruption tests remain pending. |
+| New tools — physical acceptance | `disk` storage observability, `nano` v2.1 editor, stream tools (`grep`, `sort`, `uniq`, `xxd`, `diff`, `patch`), checksums (`md5sum`, `sha256sum`), and `tar` verified across automated host and QEMU test suites. Clean persistence on physical Dell 5590 verified during Phase 9.6 (downloads, checksums, overwrites, deletes); all three controlled physical interruption cases passed on the identified 4 GB stick. |
 | Networking — driver | Intel e1000 (82540EM), e1000e (82574L), and integrated I219-LM driver with polling-only ingress on a BSP-pinned worker. The same descriptor layout serves QEMU and bare metal. I219 physical acceptance on the Dell Latitude 5590 (8086:15D7) and 5530 (8086:1A1E). DMA quarantine on controller fault. No NIC interrupt handlers or MSI vectors in this milestone. |
 | Networking — protocols | Ethernet II framing; ARP request/reply with reply-only cache learning; IPv4 unicast with header validation; ICMP Echo Request/Reply; UDP with a bounded 16-socket table; TCP with Reno slow start, congestion avoidance, fast retransmit, SRTT/RTTVAR RTO and Karn's rule; a userspace DNS stub resolver. All bounded, static, and BSP-owned. |
 | Networking — ABI | `SYS_NETCTL=42` (ping, NETCTL_IFGET, NETCTL_IFSET, NETCTL_TRACE_PROBE); `SYS_SOCKET`/`BIND`/`SENDTO`/`RECVFROM` = 38–41 (UDP); `SYS_CONNECT`/`LISTEN`/`ACCEPT`/`SEND`/`RECV`/`SHUTDOWN` = 43–48 (TCP); `SYS_SEND_UNTIL`/`RECV_UNTIL`/`CONNECT_UNTIL` = 49–51 (opt-in absolute BSP-tick deadlines, max 60 s horizon). All BSP-only, explicitly rejecting AP callers. |
@@ -65,9 +66,10 @@ and single-indirect blocks; see `ARCH_REVIEW.md` § "ext2 write cap" and `docs/s
 for the exact limit and the ext4 target. ext2 does not promise crash-atomic updates or recovery
 from arbitrary power loss.
 
-ext4 with JBD2 journaling is currently in verification (Phase 9.6). While crash consistency and journal
-replay have been verified across hundreds of automated fault-injection cycles (Phase 9.5), production
-journaled RW remains disabled on release images until physical acceptance gate E4-B is closed.
+Bounded ext4 with JBD2 journaling passed Phase 9.6. Production USB dispatch now
+admits journaled RW only after explicit target/RW selection and GPT/durability
+preflight. Recovery failure leaves `/mnt` unmounted; it cannot fall back to ext2
+or disguise a partially recovered volume as read-only. See [the acceptance report](docs/roadmap/ext4-phase9-6.md).
 
 USB durability is classified per device and disclosed in the boot log. A device
 that reports its caching page and accepts `SYNCHRONIZE CACHE` gets the strong
@@ -328,22 +330,20 @@ insertion, and retained-ring continuity across flaps). A Dell Latitude 5530
 
 USB storage is verified on physical hardware across two device classes. The kernel discovers xHCI controllers, addresses both a USB 2.0 stick (Kingston) and a USB 3.x SuperSpeed stick (SanDisk), parses GPT on each, mounts their ext2 partitions read-write, and persists files written from the editor across a full power cycle. `e2fsck -fn` on the unmounted stick from Linux reports 0 errors. A **Dell Latitude 5530**, which exposes two independent xHCI controllers, has also been verified: both controllers initialize, and a stick is reachable and mountable on either one.
 
-**EXT4 Phase 9.6 clean-persistence acceptance** on the Dell Latitude 5590 has been verified:
+**EXT4 Phase 9.6 bounded physical acceptance** on the Dell Latitude 5590 has been verified:
 - Dedicated physical-test build flashed to authorized 3.75 GiB USB media.
 - Clean boot and primary GPT validation without mount degradation.
 - START token execution: namespace allocation, directory population, file writes, and multi-core append.
 - Clean reboot and VERIFY token execution: clean mount, journal verification, 100% data integrity check.
 - Wget and download file transfers persisted cleanly to the USB data partition.
 - File overwrite, truncate, and deletion with zero orphan leaks verified by post-boot offline `e2fsck -fn` (0 errors).
-- *Interruption tests remain pending:* Case 1 physical power cut / fault injection is currently running.
+- Durable commit before checkpoint, interrupted recovery, and durable open-unlink: all three physical cases PASS with preserved pre/post captures and independent Linux audits.
 
 The internal physical NVMe is deliberately excluded from the USB storage mount path by parent-device provenance. Adding an ext2 or ext4 partition to the laptop's internal SSD does not enable automatic mounting.
 
 What is not yet verified on hardware:
 
-- Physical power-loss tolerance for USB storage. Even a `SYNC_BACKED` device's
-  guarantee is about a completed flush, not about surviving power loss
-  mid-write. Only clean-shutdown persistence is verified on any device.
+- General USB power-loss tolerance across arbitrary in-flight writes or other devices. The three controlled EXT4 interruption cases cover only the tested Dell/stick and specified durable boundaries; flush acknowledgement cannot prove a device never lies about its cache.
 - NVMe write persistence on physical hardware. NVMe read/write/flush and ext2
   writable-mount persistence are verified against QEMU fixtures; the equivalent
   three-boot e2fsck-clean test has not yet been run against the Dell's
@@ -466,7 +466,7 @@ Multi-core execution is complete and verified on bare metal (Dell Latitude 5590,
 
 Next milestones:
 
-- **E4-B completion**: Physical power interruption and recovery verification for journaled ext4 on USB media.
+- **Journaled RW live-image acceptance**: user verification of the ordinary production mount path; broaden hardware coverage separately. E4-B bounded acceptance is complete.
 - **Permissions**: Unix permissions (Phases 1–4: mode bits, UID/GID, process credentials, permission checks on VFS nodes).
 - **Package manager**: Bounded package archive handling and deployment.
 - **Installer**: Native interactive installer deploying FortressOS to target disks.

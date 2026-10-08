@@ -2,8 +2,9 @@
 
 Each case needs separate approval, a hashed artifact and verified instrumentation
 on the identified Dell 5590 / disposable 4 GB Generic Flash Disk. Production
-journaled RW remains disabled. Only case 1 is currently implemented and tested.
-Cases 2 and 3 specify required work; they are not ready for physical execution.
+journaled RW remains disabled. Cases 1 and 2 have verified instrumentation.
+Case 1 has physical evidence; Case 2 awaits physical approval/execution.
+Case 3 now has verified instrumentation and awaits physical approval/execution.
 
 ## Common procedure
 
@@ -39,7 +40,11 @@ produce one regular empty file and preserve existing downloads/namespace.
 Pre-recovery audit: `python3 scripts/audit_ext4_commit_cut.py <capture>` in WSL.
 Exact-artifact BIOS/UEFI tests passed; no physical interruption has occurred.
 
-## 2. Interrupted recovery — hook, artifact and audit pending
+## 2. Interrupted recovery — implemented, physical approval pending
+
+The [concrete Case 2 artifact and procedure](EXT4_PHASE9_6_RECOVERY_CUT.md)
+now supplies the verified hook, image hashes, audit command and restart sequence.
+The design requirements below are fulfilled for that bounded fixture.
 
 Prepare a valid pending journal containing at least two distinct unrevoked home
 images with recorded old/final hashes and expected namespace/bytes. Required
@@ -61,7 +66,12 @@ added test barrier: this exercises a durable partial-replay boundary, not all
 in-flight tears. Implement the capture audit and publish exact commands/hashes;
 verify BIOS/UEFI pause, restart and idempotence before requesting approval.
 
-## 3. Durable open-unlink — hook, artifact and audit pending
+## 3. Durable open-unlink — implemented, physical approval pending
+
+The [concrete Case 3 procedure](EXT4_PHASE9_6_OPEN_UNLINK.md) supplies the
+verified hook, capture audit and restart sequence. Artifact/evidence hashes
+are recorded in the roadmap. The following design requirements are fulfilled
+for that bounded fixture.
 
 Create/checkpoint `/mnt/cut-open-unlink.bin` with deterministic bounded data.
 Record inode, payload SHA, exclusively owned blocks and free-count baseline.

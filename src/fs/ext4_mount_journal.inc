@@ -34,15 +34,15 @@ static int e4_journal_mark(ext4_engine_t *e,bool clean) {
 static void e4_mount_stage(const char **stage,const char *name) {
     if (stage) *stage=name;
 }
-int ext4_mount_journal_fixture_diagnose(block_dev_t *dev,const char *path,
-    ext4_journal_admission_t admission,ext4_mount_t **out,const char **stage) {
+static int e4_mount_journal_admitted(block_dev_t *dev,const char *path,
+    bool admitted,ext4_mount_t **out,const char **stage) {
     e4_mount_stage(stage,"arguments");
     spin_debug_assert_unheld();if (out) *out=NULL;
     if (!out || !dev || !path || strcmp(path,"/mnt") || !dev->read_sector ||
         (dev->sector_size!=512 && dev->sector_size!=4096) || !dev->sector_count ||
         dev->sector_count>UINT32_MAX || dev->sector_count>UINT64_MAX/dev->sector_size) return -VFS_EINVAL;
     e4_mount_stage(stage,"writable-admission");
-    if (!admission.disposable_fixture || !admission.writable || !admission.recovery ||
+    if (!admitted ||
         !dev->write_sector || !dev->flush) return -VFS_EROFS;
     e4_mount_stage(stage,"exclusive-mount");
     uint64_t flags=spin_lock_irqsave(&e4_lock);vfs_node_t *parent=vfs_lookup("/");
@@ -100,6 +100,14 @@ fail:
     kfree(map);jbd2_release(plan);e4_discard(bootstrap);kfree(node);
     if (engine) { engine->fs->journal_mounted=false;e4_engine_dispose(engine); }
     flags=spin_lock_irqsave(&e4_lock);e4_engine_busy=false;spin_unlock_irqrestore(&e4_lock,flags);return r;
+}
+int ext4_mount_journal_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
+    return e4_mount_journal_admitted(dev,path,true,out,NULL);
+}
+int ext4_mount_journal_fixture_diagnose(block_dev_t *dev,const char *path,
+    ext4_journal_admission_t admission,ext4_mount_t **out,const char **stage) {
+    return e4_mount_journal_admitted(dev,path,
+        admission.disposable_fixture && admission.writable && admission.recovery,out,stage);
 }
 int ext4_mount_journal_fixture(block_dev_t *dev,const char *path,
                                ext4_journal_admission_t admission,ext4_mount_t **out) {

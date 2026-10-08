@@ -123,6 +123,10 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
     (void)dev;(void)path;s_e4_rw++;assert(s_flush_calls && s_flush_result);
     *out=s_e4_result ? NULL : (ext4_mount_t *)(uintptr_t)1;return s_e4_result;
 }
+static unsigned s_journal_mounts;
+int ext4_mount_journal_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
+    s_journal_mounts++;return ext4_mount_rw(dev,path,out);
+}
 int ext4_sync(ext4_mount_t *fs) {assert(fs);s_e4_sync++;return s_e4_sync_result;}
 int ext4_freeze_and_sync(ext4_mount_t *fs) {assert(fs);s_e4_freeze++;return s_e4_freeze_result;}
 int ext4_sync_journal_fixture(void) {return -VFS_EROFS;}
@@ -458,12 +462,13 @@ static void test_ext4_dispatch(void) {
     boot_info_t bi={0};copy_str(bi.cmdline,"usb_data=PARTUUID=12345678-1234-1234-1234-123456789ABC usb_data_mode=rw",sizeof(bi.cmdline));
     g_partitions[0].block_dev.write_sector=mock_write_sector;
     g_partitions[0].block_dev.flush=mock_flush;
+    for (unsigned journal=0;journal<2;journal++) {
     for (unsigned geometry=0;geometry<2;geometry++) {
         g_partitions[0].block_dev.sector_size=geometry ? 4096 : 512;
         for (unsigned scenario=0;scenario<9;scenario++) {
             s_mounted_rw_dev=NULL;s_ext4_mount=NULL;s_ext2_mount_called=s_ext2_mount_rw_called=false;
-            s_e4_ro=s_e4_rw=s_e4_sync=s_e4_freeze=0;s_flush_calls=s_write_calls=0;
-            s_format=4;s_probe_compat=s_probe_ro=0;s_flush_result=true;s_e4_result=0;s_probe_ok=s_magic_ok=true;
+            s_journal_mounts=0;s_e4_ro=s_e4_rw=s_e4_sync=s_e4_freeze=0;s_flush_calls=s_write_calls=0;
+            s_format=4;s_probe_compat=journal ? 4 : 0;s_probe_ro=0;s_flush_result=true;s_e4_result=0;s_probe_ok=s_magic_ok=true;
             g_last_policy=GPT_POLICY_PRIMARY_CONSISTENT;s_durability_mode=USB_DURABILITY_SYNC_BACKED;
             if (scenario==1) g_last_policy=GPT_POLICY_DEGRADED_PRIMARY;
             if (scenario==2) s_durability_mode=USB_DURABILITY_UNKNOWN;
@@ -476,6 +481,7 @@ static void test_ext4_dispatch(void) {
             bool ok=usb_mount_production_storage(&bi);
             assert(!s_ext2_mount_called && !s_ext2_mount_rw_called && !s_write_calls);
             if (scenario==0) {
+                assert(s_journal_mounts==journal);
                 assert(ok && s_e4_rw==1 && !s_e4_ro);
                 assert(usb_mount_sync() && s_e4_sync==1);
                 s_e4_sync_result=-VFS_EIO;assert(!usb_mount_sync());s_e4_sync_result=0;
@@ -484,9 +490,10 @@ static void test_ext4_dispatch(void) {
                 s_e2_sync_result=false;assert(!usb_mount_freeze_and_sync());s_e2_sync_result=true;
             } else if (scenario<4) assert(ok && !s_e4_rw && s_e4_ro==1);
             else if (scenario<6) assert(!ok && !s_e4_rw && !s_e4_ro && !s_flush_calls);
-            else if (scenario==6) assert(!ok && s_e4_rw==1 && s_e4_ro==1);
+            else if (scenario==6) assert(!ok && s_e4_rw==1 && s_e4_ro==(journal ? 0u : 1u));
             else assert(!ok && !s_e4_rw && !s_e4_ro && !s_flush_calls);
         }
+    }
     }
     s_format=2;s_probe_compat=s_probe_ro=0;s_probe_ok=s_magic_ok=s_flush_result=true;s_e4_result=0;
     s_mounted_rw_dev=NULL;s_ext4_mount=NULL;

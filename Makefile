@@ -11,6 +11,12 @@ test-ext4-physical-commit-pause:
 	@python3 scripts/test_ext4_physical_commit_pause.py "$(PHYSICAL_WORKSPACE)"
 
 # Toolchain configuration
+.PHONY: test-ext4-physical-open-unlink
+test-ext4-physical-open-unlink:
+	@test -n "$(PHYSICAL_WORKSPACE)" -a -n "$(PHYSICAL_ARTIFACT)" || { echo 'Set PHYSICAL_WORKSPACE and PHYSICAL_ARTIFACT to the prepared disposable case'; exit 1; }
+	@python3 scripts/test_ext4_physical_open_unlink.py "$(PHYSICAL_WORKSPACE)" "$(PHYSICAL_ARTIFACT)"
+
+# Toolchain configuration
 CC      ?= gcc
 LD      ?= ld
 AS      := nasm

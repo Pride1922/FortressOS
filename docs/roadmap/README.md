@@ -20,8 +20,8 @@ and are not proof that every current revision has passed every test — check
 
 | File | Covers |
 | --- | --- |
-| [ext4-phase9-6.md](ext4-phase9-6.md) | Dedicated Dell 5590 image ready: 22 emulation cases and focused regressions reviewed. Physical acceptance pending. |
-| [ext4-phase9-5.md](ext4-phase9-5.md) | **COMPLETE** automated USB gate: 144 main cases, ten admission controls, regressions and verified evidence. Phase 9.6 physical acceptance next; production journaled RW remains disabled. |
+| [ext4-phase9-6.md](ext4-phase9-6.md) | **COMPLETE — bounded E4-B**: Dell 5590 / 4 GB stick, clean persistence and three controlled interruption cases PASS; explicit journaled USB RW enabled, limits recorded. |
+| [ext4-phase9-5.md](ext4-phase9-5.md) | **COMPLETE** automated USB gate: 144 main cases, ten admission controls, regressions and verified evidence. Phase 9.6 subsequently accepted the bounded physical profile; see its report for production rollout. |
 | [ext4-phase9-4.md](ext4-phase9-4.md) | Complete finite 66-case guest crash/recovery gate and evidence review. |
 | [ext4-phase8-6.md](ext4-phase8-6.md) | Complete bounded fixture integration audit, runtime home-image coverage, shared write offsets, durable-truncate cache coherence; host fault/staging and BIOS/UEFI SMP=1/4 recovery/lifecycle gates. Production journaled RW remains disabled. |
 | [ext4-phase9-1.md](ext4-phase9-1.md) | Calibrated persistence model, actual mounted event inventory, barrier/oracle negative controls and frozen initial crash matrix; exhaustive recovery campaign and E4-B acceptance remain pending. |

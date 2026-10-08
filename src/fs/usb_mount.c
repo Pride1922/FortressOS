@@ -24,7 +24,12 @@ static int usb_mount_format(block_dev_t *dev) {
     uint32_t incompat = (uint32_t)sector[base+96] |
         ((uint32_t)sector[base+97]<<8) | ((uint32_t)sector[base+98]<<16) |
         ((uint32_t)sector[base+99]<<24);
-    if (incompat & 0x40) return 4;
+    if (incompat & 0x40) {
+        uint32_t compat=(uint32_t)sector[base+92] |
+            ((uint32_t)sector[base+93]<<8) | ((uint32_t)sector[base+94]<<16) |
+            ((uint32_t)sector[base+95]<<24);
+        return (compat & 4u) ? 5 : 4; /* E4-B journal vs accepted E4-A. */
+    }
     uint32_t compat = (uint32_t)sector[base+92] |
         ((uint32_t)sector[base+93]<<8) | ((uint32_t)sector[base+94]<<16) |
         ((uint32_t)sector[base+95]<<24);
@@ -162,7 +167,8 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
         serial_puts("[USB 9G.3] Invalid filesystem or probe I/O failure; /mnt left unmounted\n");
         return false;
     }
-    serial_puts(format == 4 ? "[USB E4-A] Selected filesystem: ext4\n" :
+    serial_puts(format == 5 ? "[USB E4-B] Selected filesystem: ext4 journaled\n" :
+                format == 4 ? "[USB E4-A] Selected filesystem: ext4\n" :
                              "[USB 9G.3] Selected filesystem: ext2\n");
 
     /* Determine RW eligibility using the durability state machine (9G.4).
@@ -209,7 +215,8 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
     }
 
     if (rw_eligible) {
-        bool mounted = format == 4 ?
+        bool mounted = format == 5 ?
+            ext4_mount_journal_rw(&matched_part->block_dev,"/mnt",&s_ext4_mount) == 0 : format == 4 ?
             ext4_mount_rw(&matched_part->block_dev, "/mnt", &s_ext4_mount) == 0 :
             ext2_mount_rw(&matched_part->block_dev, "/mnt");
         if (mounted) {
@@ -220,6 +227,10 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
             serial_puts(" read-write at /mnt\n");
             return true;
         } else {
+            if (format == 5) {
+                serial_puts("[USB E4-B] Journal recovery/mount failed; /mnt left unmounted\n");
+                return false; /* Recovery may have written: never hide failure as RO. */
+            }
             usb_report_flush_failure();
             serial_puts(format == 4 ? "[USB E4-A] FAIL: ext4 writable mount failed on " :
                                       "[USB 9G.4] FAIL: ext2 writable mount failed on ");
@@ -230,7 +241,7 @@ bool usb_mount_production_storage(const boot_info_t *boot_info) {
 
     serial_puts("[USB 9G.3] Mount mode: read-only\n");
 
-    bool mounted = format == 4 ?
+    bool mounted = format >= 4 ?
         ext4_mount_ro(&matched_part->block_dev, "/mnt", &s_ext4_mount) == 0 :
         ext2_mount(&matched_part->block_dev, "/mnt");
     if (mounted) {

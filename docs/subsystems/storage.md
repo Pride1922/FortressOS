@@ -9,7 +9,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
 | **EXT4 Phase 9.5** | **COMPLETE — AUTOMATED** (2026-10-07) | 144 main cases, ten admission controls, regressions and verified evidence; [report](../roadmap/ext4-phase9-5.md). Production journaled RW remains disabled. |
-| **EXT4 Phase 9.6** | **IMAGE READY — PHYSICAL ACCEPTANCE PENDING** | Authorized Dell 5590 image passed 22 emulated readiness cases and focused regressions; [artifact/handoff](../roadmap/ext4-phase9-6.md), [procedure](../plans/EXT4_PHASE9_6.md). |
+| **EXT4 Phase 9.6** | **COMPLETE — BOUNDED E4-B** (2026-10-08) | Dell 5590 / identified 4 GB stick: clean persistence and all three controlled interruption cases PASS; explicit production USB journaled RW enabled; [artifact/handoff](../roadmap/ext4-phase9-6.md), [procedure](../plans/EXT4_PHASE9_6.md). |
 | **EXT4 Phase 7** | **WRITER WORKBENCH VERIFIED** | Bounded staging, ordered commit/checkpoint and circular reuse; host crash/restart/tear gates plus Linux replay/fsck/bytes. Production mutation coverage/mount integration remains Phase 8. [Scope/evidence](../roadmap/ext4-phase7.md). |
 | **EXT4 Phase 6** | **RECOVERY WORKBENCH VERIFIED** | Bounded internal JBD2 CSUM_V3/revoke reader, explicit checkpoint admission, host crash/restart and Linux audits. Production journal mounts remain disabled; writer is Phase 7. [Scope/evidence](../roadmap/ext4-phase6.md). |
 | **Phase 9D Bounded writable ext2** | **COMPLETE** | Explicit opt-in writable mount, allocation/truncation ordering, emergency read-only remount, 3-boot BIOS/UEFI persistence. Full detail: [`docs/roadmap/phase-9d-writable-ext2.md`](../roadmap/phase-9d-writable-ext2.md). |
@@ -79,4 +79,4 @@ E4-A **physically accepted on Dell 5590 (2026-10-03)**: all seven Phase-5 items 
 E4-B Phase 9.5 **automated disposable USB gate PASS (2026-10-07)**: 144 main
 cases, ten admission controls, E4-A/ext2 USB, BOT/mount-policy and NVMe journal
 regressions; [implementation, evidence and limits](../roadmap/ext4-phase9-5.md).
-Production journaled RW remains disabled; physical acceptance is Phase 9.6.
+Phase 9.6 bounded physical acceptance completed 2026-10-08; explicit production USB journaled RW enabled. Other device coverage and intermittent enumeration remain open.

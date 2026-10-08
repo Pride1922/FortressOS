@@ -1,4 +1,10 @@
-# EXT4 Phase 9.6 — Physical acceptance preparation
+# EXT4 Phase 9.6 — Bounded E4-B acceptance
+
+**Closeout 2026-10-08: bounded physical acceptance COMPLETE.** All three controlled
+interruption cases passed on the tested Dell 5590 / identified 4 GB stick.
+Production USB journaled RW rollout explicitly authorized after these results;
+see the closeout/rollout section below. Earlier pending/disabled statements in
+this chronological report describe their execution dates.
 
 2026-10-07: artifact preparation and automated readiness review **PASS**;
 physical acceptance **PENDING**. The first Dell boot rejected admission before
@@ -417,3 +423,192 @@ pending capture and subsequent FortressOS recovered state. Enumeration failures
 and intervening COMMIT PAUSE boot are retained limitations; this does not establish
 reliable USB startup or general power-loss conformance. Interrupted recovery and
 durable open-unlink cases remain unimplemented/pending.
+
+### Case 2 image ready — physical interruption pending
+
+[Concrete procedure](../plans/EXT4_PHASE9_6_RECOVERY_CUT.md).
+Artifact `physical-recovery-cut-artifact-c7kpwuuk/fortress-9.6-recovery-cut-dell5590.img`,
+SHA256 `d65d962e6463086a9a374758e372f35c550e8212334ed548c0931a5a9fb3fda8`.
+Uses preserved original case-1 pending capture, not a fabricated physical cut.
+Isolated replay hook flushes first replay image then pauses with journal retained.
+Strict build PASS; exact-artifact BIOS/UEFI interruption/restart PASS 2/2 in
+`physical-recovery-pause-oq9ifre8`; second recovery boots PASS 2/2;
+Linux partial-state/replay adapter smoke PASS; isolated JBD2 host ASan/UBSan
+replay regression PASS (`physical-workspace-oenfuvha/build/jbd2-replay/run-ao61_o1x`).
+Windows image SHA agrees. Initial adapter tried reading inode mapping from the
+inconsistent partial state; corrected to use hashed original seed mapping, with
+failed attempt retained. Original captures untouched; no physical writes.
+Only case-specific physical approval/execution remain for this case. Production
+journaled RW disabled; no new USB startup reliability claim.
+
+### Case 2 physical partial-recovery capture — 2026-10-08
+
+Initial attempt rejected before filesystem writes due to USB configuration
+header enumeration failure (photo `896bb4d7`). Subsequent boot reached the exact
+RECOVERY PARTIAL DURABLE / JOURNAL RETAINED milestone (`23705e97`). Operator
+explicitly approved this Case 2 interruption, followed the capture procedure
+and supplied SHA256 `d5aa05280a9a2ece1266422fe9c69c5f5906039251ee2060347cc6fb77b3464c`.
+Capture found and independently matched in
+`physical-start-capture-fc4de8768640403a96f6fc554d0748ca/after-start.ext4`.
+Invocation: `python3 scripts/audit_ext4_recovery_cut.py <capture> physical-recovery-cut-artifact-c7kpwuuk/manifest.json`
+under WSL Ubuntu-24.04, exit 0 PASS. Durable partial replay and retained active
+journal verified against hashed original seed; Linux restart on a separate copy
+recovers the regular empty cut file and passes e2fsck. Original hash unchanged,
+no physical writes by audit. Logs and case2-audit.json retained beside capture.
+Fresh physical FortressOS RECOVERY VERIFY and final clean capture remain pending.
+
+### Case 2 physical restart and final audit — PASS, 2026-10-08
+
+Photo `e55759e3` shows physical RECOVERY VERIFY PASS, namespace/truncate/pins/reuse
+PASS, AP append PASS, WRITE_THROUGH and internal NVMe exclusion. Original stick
+was booted after the preserved partial-recovery capture; no Linux repair or
+reflash was requested between these steps. Final capture supplied by operator:
+`physical-start-capture-dd989b45daf041a4bb366458adf70c91/after-start.ext4`,
+SHA256 `35b79bef4141178690b2312ef2893bf37e5e3d80131f0e967b1367cc9199ba06`.
+Invocation: `python3 .codex-remote-attachments/ext4-phase9/audit-case2-final.py`
+under Ubuntu-24.04; exit 0 PASS. Read-only e2fsck -fn, clean state, empty journal,
+zero orphan head, checksums, recovered empty regular cut file, fixture namespace
+and exact bytes, both 200-record append files, both download hashes, overwrite
+`after\n` and deletion absence PASS. Original SHA unchanged; no repairs/physical
+writes by audit. Logs and final-cut-audit.json beside capture.
+
+Case 2 interrupted recovery passes for this tested Dell 5590 / 4 GB stick
+combination and controlled durable partial-replay boundary. Initial USB
+configuration-header enumeration rejection is retained separately. Case 3
+(durable open-unlink) remains pending; production journaled RW disabled.
+
+### Case 3 durable open-unlink artifact ready — 2026-10-08
+
+[Procedure](../plans/EXT4_PHASE9_6_OPEN_UNLINK.md).
+Artifact: `physical-open-unlink-artifact-cn9hbuvt/fortress-9.6-open-unlink-dell5590.img`.
+SHA256 `151d76de033553e933af77b13cf3fb1c747361d7ee8a10b19ac7e5fcb02c83b7`.
+Isolated workspace `physical-workspace-qd2oa6jk`, snapshot HEAD 44b5acf plus
+explicit test-only main/gate changes. Baseline is the independently audited
+Case 2 final capture SHA256 `35b79bef4141178690b2312ef2893bf37e5e3d80131f0e967b1367cc9199ba06`.
+Boot defaults RECOVERY VERIFY; separate OPEN UNLINK PAUSE selects Case 3.
+The gate admits only the identified Dell/stick profile before filesystem I/O.
+At the terminal milestone, deterministic 8192-byte file creation is durable,
+unlink/orphan checkpoint is durable and the retained open reference reads exact
+bytes. No outstanding USB I/O, no final close or subsequent mutation.
+
+Invocation: `python3 scripts/test_ext4_physical_open_unlink.py <workspace> <artifact-manifest>`.
+Exact-artifact BIOS/UEFI pause, independent Linux orphan cleanup, FortressOS
+restart and repeated recovery/reuse PASS 2/2 in `physical-open-unlink-pause-t2j2ms1z`.
+Independent supplemental audit verifies zero links/traditional orphan, exact
+retained payload, precisely two allocated blocks/one inode, then bitmap ownership
+and free counts restored exactly to baseline, clean fsck, empty orphan chain,
+absent pathname and both preserved download hashes in Linux/Fortress/repeat copies.
+Capture-audit adapter smoke PASS; nano host 100% and disk host 15/15 ASan/UBSan
+PASS. Bundle includes /bin/nano, /bin/disk and /bin/diskbench with manifest hashes.
+Independent Windows full-image SHA agrees.
+
+Retained first test attempt `physical-open-unlink-pause-7oyve_vf` failed the
+post-restart ownership audit because the QEMU shell harness creates ring-later.bin.
+Corrected harness to delete its own file before clean shutdown, then reran the
+full campaign. Linux orphan cleanup had already passed in that first attempt;
+no journal defect inferred. Initial isolated make hit diskbench side-effect object
+prerequisite without a standalone rule; built diskbench ELF first then completed
+strict build, without changing shared build state. Logs retained. Completed full
+QEMU image copies discarded; compact partition captures/logs remain.
+
+No Case 3 physical power cut requested/executed yet; exact-case approval remains
+required. Production journaled RW disabled. USB enumeration reliability remains
+an independent unresolved limitation.
+
+### Case 3 physical orphan capture — 2026-10-08
+
+Photo `50be7b34` shows the exact OPEN UNLINK DURABLE / REFERENCE RETAINED
+milestone. Operator subsequently supplied the post-interruption capture:
+`physical-start-capture-dd81a5af519a4c5b84333e3ad10b7bf0/after-start.ext4`,
+SHA256 `9398f9f4380ab36062f0174528bfa0da8dd7498111f0e1a4686d4167cbdd0c53`.
+The operator supplied the capture rather than a separate textual yes to the
+case approval question; record the performed action without inventing a reply.
+Invocation: `python3 scripts/audit_ext4_open_unlink.py <capture> physical-open-unlink-artifact-cn9hbuvt/manifest.json`
+in Ubuntu-24.04, exit 0 PASS. Original has absent pathname, traditional zero-link
+orphan, exact 8192-byte payload and precisely two retained blocks/one inode.
+Linux cleanup on a separate copy restores allocation bitmaps/free counts exactly
+to baseline, clears orphan state, passes read-only fsck and preserves both
+download hashes. Original SHA unchanged; no physical writes by audit. Logs and
+case3-audit.json retained beside capture. Fresh physical FortressOS VERIFY and
+final clean capture remain pending.
+
+### Case 3 final physical recovery audit — PASS, 2026-10-08
+
+Photo `8d655a4d` shows RECOVERY VERIFY PASS, namespace/truncate/pins/reuse PASS,
+AP append PASS, WRITE_THROUGH and internal NVMe exclusion. Operator supplied
+final post-shutdown capture `physical-start-capture-241905caa6b04cd4b11d481d0498a5ae/after-start.ext4`,
+SHA256 `33d0b3ece644a5e5ed1594f895ecfe081f779b5a739200d8f4c6573b084c3770`.
+Invocation: `python3 .codex-remote-attachments/ext4-phase9/audit-case3-final.py`
+in Ubuntu-24.04, exit 0 PASS. Independent read-only audit confirms unlinked name
+absent, orphan chain empty, exact block/inode bitmap ownership and free counts
+restored to the original baseline, clean e2fsck -fn, empty journal, checksums,
+fixture/namespace bytes, both exact append record sets, both download hashes,
+overwrite and deletion persistence. Original capture SHA unchanged; no repairs
+or physical writes. Logs and case3-final-audit.json retained beside capture.
+
+All three controlled physical interruption cases have passing capture/recovery
+results on the tested Dell 5590 / 4 GB Generic Flash Disk combination. This is
+bounded evidence: it does not cover arbitrary in-flight tears, other hardware,
+lying device caches or reliable USB enumeration. Production journaled RW remains
+disabled. Final milestone status/rollout review is separate from these passes.
+
+## E4-B closeout and authorized production rollout — 2026-10-08
+
+**Phase 9.6 / bounded E4-B COMPLETE.** The three controlled physical cases and
+clean persistence passed on Dell Latitude 5590, Intel xHCI 8086:9D2F, Alcor
+058F:6387 Generic Flash Disk, 4,026,531,840 bytes / 512-byte sectors,
+PARTUUID e68c8e17-8fcd-47fe-b7dd-8f070b5a81d5, WRITE_THROUGH classification.
+Physical firmware selection and successful port number are not independently
+captured; no other firmware/port/controller combination is inferred. Earlier
+USB enumeration failures remain a real unresolved driver limitation. The Case 1
+intervening COMMIT PAUSE boot may have performed replay before VERIFY; its
+pending/final captures establish the result without inventing first-replay timing.
+
+Accepted physical filesystem is 32 MiB, 4 KiB blocks, 256-byte inodes, extents,
+filetype, sparse_super, large_file, metadata_csum and internal JBD2 journal.
+JBD2 profile: v2 superblock, CSUM_V3, REVOKE, 32-bit tags, ordered data and
+synchronous commit/checkpoint; no async/fast/external journal. Transaction budget
+is 64 combined metadata/ordered-data images and bounded revokes; traditional
+orphan chain limit 64, extent traversal/map budget 4096, cached VFS node limit
+1024. VFS callback limits remain 64 KiB reads / 32 KiB writes. Hard links,
+symlinks, special files, directory rename/replacement, orphan_file, xattrs,
+HTree/flex_bg/64bit compatibility expansion and general large-volume claims
+remain outside acceptance. Earlier automated geometries remain separately
+recorded; physical evidence does not expand them.
+
+User explicitly authorized production journaled RW, docs, GitHub push and an
+ordinary live-test image after Case 3 passed. `ext4_mount_journal_rw` now shares
+the validated replay/preview/orphan/transactional publication implementation
+with fixture mounts, without presenting production storage as disposable.
+USB dispatch probes has_journal only on the explicitly selected extents volume;
+strict GPT, write/flush callbacks, eligible durability and successful flush
+preflight precede writable admission. Failure during journal mount leaves /mnt
+unmounted with no RO/ext2 fallback. RO never replays. E4-A and ext2 dispatch,
+cache coherence, taint, barriers, DMA quarantine and synchronization contracts
+are preserved. Default generic image format remains ext2; no conversion/root
+switch/internal-NVMe admission is introduced.
+
+Final ordinary production image:
+`journaled-live-artifact-ytyhfyj4/fortress-journaled-live-dell5590.img`, SHA256
+`3932f827fd94d57463029e0a68b0610a827a566f662d5cac593ad56eeef9002e`.
+Capacity-matched to the authorized stick; 64 MiB ESP / 32 MiB ext4 data.
+Preserves Case 3's audited clean baseline and downloads. Normal Limine entry uses
+only explicit PARTUUID + usb_data_mode=rw; no physical fixture tokens or compiled
+pause gates. Includes nano/disk/diskbench. Shared unrelated SMP/syscall edits
+were excluded from source snapshot `guest-workspace-f0p9c371` and this commit.
+
+Strict isolated build and actual production-dispatch host ASan/UBSan PASS:
+E4-A/E4-B x 512/4096 sector mocks, eligibility, failed journal mount no fallback,
+sync/freeze errors. Exact-artifact ordinary BIOS/UEFI (SMP=1) gate PASS in
+`journaled-production-c264wl61`: four RW recovery/persistence boots and four RO/
+wrong-target zero-write controls. Actual journal replay, create/write, sync,
+reboot bytes, rename/unlink/rmdir and /bin/disk exercised without fixture flags.
+Linux read-only fsck, exact baseline allocation reclamation and both downloads
+PASS. Windows full-image hash matches. `phase9-6-closeout.json` independently
+rechecks all three final physical capture hashes/audit records and final ledgers.
+No exhaustive campaign rerun was necessary for the shared admission wrapper;
+prior actual engine/USB campaigns remain the implementation evidence.
+
+Next: user live acceptance of this ordinary production image. No additional power
+cut is required. Cross-device coverage, intermittent EP0 enumeration, production
+capacity expansion and persistent-root/permissions design are separate work.

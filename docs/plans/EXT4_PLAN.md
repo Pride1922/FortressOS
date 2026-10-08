@@ -220,8 +220,8 @@ evidence review passed, with normal SMP=4 regressions. See
 [9.4 evidence and limits](../roadmap/ext4-phase9-4.md) and
 [9.3 evidence](../roadmap/ext4-phase9-3.md).
 See [9.2 specification](EXT4_PHASE9_2.md) and
-[evidence](../roadmap/ext4-phase9-2.md). E4-B acceptance remains pending.
-Next: [Phase 9.5 journaled USB execution plan](EXT4_PHASE9_5.md).
+[evidence](../roadmap/ext4-phase9-2.md). E4-B bounded acceptance completed 2026-10-08; [9.6 evidence](../roadmap/ext4-phase9-6.md).
+Completed: [Phase 9.5 journaled USB execution plan](EXT4_PHASE9_5.md) and [9.6 physical acceptance](EXT4_PHASE9_6.md).
 
 Enumerate every write/flush cut point in representative transactions. The fake device separates volatile cache from stable media; model cache loss, reordered unflushed writes, torn sectors, failed flushes and disconnects. Corrupt durable journal content must be detected; do not promise reconstruction of arbitrary corruption.
 
@@ -249,11 +249,10 @@ Linux validation: inspect via `dumpe2fs`/`debugfs`, run `e2fsck -fn` only on unm
 
 Compatibility extensions after E4-B: HTree, flex_bg/64bit, additional inode mappings/types and xattrs are separate phases with feature-specific gates. Performance caching and delayed allocation come after correctness; no full-ext4 label or terabyte capacity promise without matching validation.
 
-Next implementation unit: **Phase 9 crash campaign and E4-B acceptance**. Phases 8.1-8.4 provide transaction, file-allocation, bounded namespace and restartable orphan workbenches; Phase 8.5 connects explicit disposable journal mounts to VFS, sync and shutdown; Phase 8.6 completes the combined metadata-coverage and mounted integration gate. Production journaled mount eligibility remains disabled; passing integration does not substitute for Phase-9 crash/physical acceptance or authorize production rollout. Phase-5 [Dell acceptance](../roadmap/ext4-phase5-dell.md) includes the user-confirmed metadata-cache run: 16 MiB in 7.06 seconds, hashes after reboot and independently on Mint, and unmounted e2fsck -fn exit 0, separately from journal acceptance. The default image remains ext2; the optional EXT4 image remains non-journaled. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.
+**Phase 9 / bounded E4-B acceptance COMPLETE (2026-10-08).** Phases 8.1-8.4 provide transaction, file-allocation, bounded namespace and restartable orphan workbenches; Phase 8.5 connects explicit disposable journal mounts to VFS, sync and shutdown; Phase 8.6 completes the combined metadata-coverage and mounted integration gate. Production journaled mount eligibility remains disabled; passing integration does not substitute for Phase-9 crash/physical acceptance or authorize production rollout. Phase-5 [Dell acceptance](../roadmap/ext4-phase5-dell.md) includes the user-confirmed metadata-cache run: 16 MiB in 7.06 seconds, hashes after reboot and independently on Mint, and unmounted e2fsck -fn exit 0, separately from journal acceptance. The default image remains ext2; the optional EXT4 image remains non-journaled. This plan authorizes no format conversion, root switch, real-disk installation or protected synchronization change.
 
 E4-A [complete physical acceptance record](../roadmap/ext4-phase5-acceptance.md): all seven checklist items PASS. Flush timing attribution and proposed count reductions remain estimates, not measured guarantees.
 
 Phase 9.5 [automated USB acceptance](../roadmap/ext4-phase9-5.md) passed its
 144-case main gate, ten admission controls, regressions and evidence review
-on 2026-10-07. The next acceptance unit is Phase 9.6 physical evidence on
-separately identified disposable media. Production journaled RW remains disabled.
+on 2026-10-07. Phase 9.6 physical evidence passed on identified disposable media; explicit production USB journaled RW rollout authorized 2026-10-08. No default format conversion or root switch.

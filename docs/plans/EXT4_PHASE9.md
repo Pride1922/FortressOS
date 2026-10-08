@@ -8,7 +8,7 @@ all final ledgers and evidence retention are verified. Phase 9.3's declared host
 campaign and evidence review passed; Phase 9.4's declared 66-case guest gate
 and evidence review passed. Phase 9.5's declared 144-case USB gate, ten admission
 controls, regressions and evidence review passed; see the
-[9.5 results](../roadmap/ext4-phase9-5.md). Phase 9.6 remains pending; see the
+[9.5 results](../roadmap/ext4-phase9-5.md). Phase 9.6 bounded acceptance is complete (2026-10-08); see the
 [9.5 execution plan](EXT4_PHASE9_5.md).
 See [9.3 execution](EXT4_PHASE9_3.md), [9.1 specification](EXT4_PHASE9_1.md),
 [9.1 evidence](../roadmap/ext4-phase9-1.md), [9.2 specification](EXT4_PHASE9_2.md)
@@ -136,7 +136,7 @@ accepted E4-A and default ext2 remain intact. This gate does not enable producti
 
 Execution preparation started 2026-10-07; see the
 [target identification, artifact and physical procedure](EXT4_PHASE9_6.md).
-Physical results remain pending.
+All three controlled physical cases passed on Dell 5590 / identified 4 GB stick. Production journaled USB RW rollout was explicitly authorized on 2026-10-08; see the evidence report.
 
 Review complete coverage and every failure before declaring automated acceptance.
 Require exact expected bytes/namespace, ownership agreement, clean fsck for

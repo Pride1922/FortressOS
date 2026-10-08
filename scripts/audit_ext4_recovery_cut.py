@@ -21,7 +21,7 @@ def main():
  assert applied and remaining
  # The replay journal must remain active at the captured pause.
  import struct
- ino=struct.unpack_from('<I',data,1248)[0]; mapping=blocks(source,f'<{ino}>')
+ ino=struct.unpack_from('<I',seed,1248)[0]; mapping=blocks(seedpath,f'<{ino}>')
  assert be(data[mapping[0]*4096:mapping[0]*4096+1024],28)!=0
  stat=subprocess.run(['debugfs','-R','stat /cut-commit.txt',str(copy)],capture_output=True,text=True,check=True)
  assert 'Type: regular' in stat.stdout and 'Size: 0' in stat.stdout

@@ -30,6 +30,11 @@ int ext4_test_arm_commit_pause(ext4_mount_t *mount,void (*pause)(void));
 #endif
 int ext4_mount_ro(block_dev_t *partition, const char *path, ext4_mount_t **out);
 int ext4_mount_rw(block_dev_t *partition, const char *path, ext4_mount_t **out);
+/* Production bounded E4-B RW mount. Caller explicitly admits exclusive writes
+ * and recovery after target/GPT/durability checks and successful flush preflight.
+ * Uses the same validated replay, orphan cleanup and transactional lifecycle
+ * as the accepted fixture. No implicit admission or format conversion. */
+int ext4_mount_journal_rw(block_dev_t *partition,const char *path,ext4_mount_t **out);
 /* Phase 8.5 test admission only. Never used by production USB dispatch.
  * Caller owns an explicit disposable partition exclusively and admits both
  * recovery writes and RW durability. Validate replayed ownership/namespace

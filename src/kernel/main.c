@@ -3115,6 +3115,9 @@ static bool ext4_physical_token(const char *token) {
     return false;
 }
 static bool ext4_physical_requested(void) {
+#ifdef FORTRESS_EXT4_OPEN_UNLINK_PAUSE_TEST
+    if (ext4_physical_token("ext4_physical=cut-open-unlink")) return true;
+#endif
 #ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
     if (ext4_physical_token("ext4_physical=cut-recovery")) return true;
 #endif
@@ -3162,6 +3165,27 @@ static void test_ext4_journal_mount_on(block_dev_t *partition) {
     }
     require_ext2(!mount_error,
         "ext4 journal recovery/publication");
+#ifdef FORTRESS_EXT4_OPEN_UNLINK_PAUSE_TEST
+    if (ext4_physical_token("ext4_physical=cut-open-unlink")) {
+        static uint8_t payload[8192],observed[8192];
+        const char *path="/mnt/cut-open-unlink.bin";
+        require_ext2(!vfs_lookup(path),"open unlink fixture must be fresh");
+        for (unsigned i=0;i<sizeof(payload);i++) payload[i]=(uint8_t)(i*17u+3u);
+        file_t *writer=vfs_open(path,VFS_O_CREAT|VFS_O_WRONLY);
+        require_ext2(writer && vfs_write(writer,payload,sizeof(payload))==(int64_t)sizeof(payload),"open unlink seed");
+        require_ext2(!vfs_close(writer) && !ext4_sync(g_ext4_fixture_mount),"open unlink seed barrier");
+        file_t *retained=vfs_open(path,VFS_O_RDONLY);
+        require_ext2(retained && !vfs_unlink(path),"open unlink retain/unlink");
+        require_ext2(!ext4_sync(g_ext4_fixture_mount) && !vfs_lookup(path),"open unlink durable namespace");
+        require_ext2(vfs_read(retained,observed,sizeof(observed))==(int64_t)sizeof(observed) &&
+            !memcmp(payload,observed,sizeof(payload)),"open unlink retained bytes");
+        console_set_quiet(false);
+        console_puts("\nEXT4 TEST PAUSED: OPEN UNLINK DURABLE; REFERENCE RETAINED\n");
+        serial_puts("[EXT4 CUT] OPEN UNLINK DURABLE; REFERENCE RETAINED\n");
+        /* All synchronous I/O completed; deliberately never close retained. */
+        for (;;) __asm__ volatile("cli; hlt" ::: "memory");
+    }
+#endif
 #ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
     if (ext4_physical_token("ext4_physical=cut-commit")) {
         require_ext2(!vfs_lookup("/mnt/cut-commit.txt"),"cut fixture must be fresh");
@@ -3245,6 +3269,13 @@ static void test_ext4_journal_usb_mount(const boot_info_t *info) {
     block_dev_t *disk=block_get_dev_by_name("sda");gpt_partition_t *selected=NULL;
     unsigned matches=0;usb_durability_mode_t durability=usb_get_durability_mode();
     if (ext4_physical_requested()) {
+#ifdef FORTRESS_EXT4_OPEN_UNLINK_PAUSE_TEST
+        if (ext4_physical_token("ext4_physical=cut-open-unlink") &&
+            (ext4_physical_token("ext4_physical=start") || ext4_physical_token("ext4_physical=verify") ||
+             ext4_physical_token("ext4_physical=cut-commit") || ext4_physical_token("ext4_physical=cut-recovery"))) {
+            serial_puts("[EXT4 PHYSICAL] REJECT conflicting test modes; no filesystem writes\n");return;
+        }
+#endif
 #ifdef FORTRESS_EXT4_RECOVERY_PAUSE_TEST
         if (ext4_physical_token("ext4_physical=cut-recovery") &&
             (ext4_physical_token("ext4_physical=start") ||
