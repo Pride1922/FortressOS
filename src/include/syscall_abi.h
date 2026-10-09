@@ -3,6 +3,8 @@
 #include "types.h"
 #include "signal_abi.h"
 #include "netctl_abi.h"
+#include "spawn_profile_abi.h"
+#include "wait_profile_abi.h"
 /* System Call Numbers */
 #define SYS_EXIT      0
 #define SYS_WRITE     1
@@ -42,7 +44,8 @@
 #define SYS_SIGRETURN  32 /* () -> kernel restores full context; no user-visible return */
 #define SYS_WAITPID    33 /* (int64_t selector, uint64_t *status, uint32_t options) -> pid/0/-errno */
 #define SYS_GROUP_RELEASE 35 /* (uint64_t pgid, uint32_t action) -> 0 */
-#define SYS_PROCINFO      36 /* (uint64_t index, proc_info_t *buf) -> 1/0/-errno */
+#define SYS_PROCINFO      36 /* (index or PROC_INFO_SELF, proc_info_t *buf) -> 1/0/-errno */
+#define PROC_INFO_SELF UINT64_MAX /* Own published identity and scheduler ticks; same layout. */
 #define SYS_SYSINFO       37 /* (sysinfo_t *buf) -> 0/-errno */
 #define SYS_SOCKET        38
 #define SYS_BIND          39
@@ -61,6 +64,7 @@
 #define SYS_MOUNTINFO     52 /* (uint32_t index, mount_info_t *out) -> 1=entry, 0=done, -errno */
 #define SYS_BLOCKINFO     53 /* (uint32_t index, block_info_t *out) -> 1=entry, 0=done, -errno */
 #define SYS_LOCKSTAT      54 /* (char *buf, uint64_t cap) -> bytes written or -errno */
+#define SYS_SPAWN_PROFILE 55 /* Spawn 0..2/160B; waits 3..5/72B; pipe I/O 6..8/184B. */
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1

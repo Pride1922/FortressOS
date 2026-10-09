@@ -13,6 +13,25 @@
 #include <string.h>
 
 #include "vmm.h"
+#include "thread.h"
+#include <pthread.h>
+_Thread_local tcb_t *g_vmm_host_current;
+static pthread_mutex_t host_vmm_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t host_pmm_mutex = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local bool host_vmm_held;
+static _Thread_local unsigned host_vmm_acquires;
+uint64_t vmm_host_lock(spinlock_t *lock) {
+    assert(lock->rank == 3 && !host_vmm_held);
+    assert(pthread_mutex_lock(&host_vmm_mutex) == 0);
+    host_vmm_held = true;
+    host_vmm_acquires++;
+    return 0;
+}
+void vmm_host_unlock(spinlock_t *lock) {
+    assert(lock->rank == 3 && host_vmm_held);
+    host_vmm_held = false;
+    assert(pthread_mutex_unlock(&host_vmm_mutex) == 0);
+}
 
 /* --- Host Shims & Mocking --- */
 uintptr_t g_host_mock_cr3 = 0x1000;
@@ -21,9 +40,29 @@ void serial_puts(const char *s) { (void)s; }
 void serial_print_hex(uint64_t v) { (void)v; }
 void serial_print_dec(uint64_t v) { (void)v; }
 size_t smp_get_cpu_count(void) { return 1; }
-void smp_tlb_shootdown(uintptr_t va, uintptr_t cr3) { (void)va; (void)cr3; }
+static unsigned host_shootdowns;
+static bool expect_batch_pin;
+void smp_tlb_shootdown(uintptr_t va, uintptr_t cr3) {
+    __atomic_add_fetch(&host_shootdowns, 1, __ATOMIC_RELAXED);
+    (void)va;
+    assert(!host_vmm_held);
+    if (expect_batch_pin) {
+        assert(va == 0x1ff000 && cr3 != 0);
+        vmm_space_t *s = vmm_space_lookup(cr3);
+        assert(s && s->op_refs > 0);
+    }
+    if (va && cr3) {
+        vmm_space_t *space = vmm_space_lookup(cr3);
+        assert(space && space->op_refs > 0);
+    }
+}
 
 #include "percpu.h"
+void smp_tlb_shootdown_pages(uintptr_t va, uintptr_t cr3, size_t count) {
+    assert(count > 0 && count <= 16);
+    if (expect_batch_pin) assert(count == 4);
+    smp_tlb_shootdown(va, cr3);
+}
 cpu_local_t cpu_locals[MAX_DETECTED_CPUS];
 volatile bool g_cpu_installed[MAX_DETECTED_CPUS];
 
@@ -46,25 +85,40 @@ static uint8_t g_mock_ram[MAX_MOCK_PAGES * MOCK_PAGE_SIZE] __attribute__((aligne
 static bool g_mock_page_allocated[MAX_MOCK_PAGES];
 static size_t g_mock_allocated_count = 0;
 static bool g_fail_pmm_alloc = false;
+static int g_pmm_alloc_budget = -1;
+static void (*g_before_pmm_alloc)(void);
 
 uintptr_t pmm_alloc_page(void) {
-    if (g_fail_pmm_alloc) return 0;
+    assert(!host_vmm_held); /* Allocation must precede installation lock. */
+    if (g_before_pmm_alloc) {
+        void (*hook)(void) = g_before_pmm_alloc;
+        g_before_pmm_alloc = NULL;
+        hook();
+    }
+    if (g_fail_pmm_alloc || g_pmm_alloc_budget == 0) return 0;
+    if (g_pmm_alloc_budget > 0) g_pmm_alloc_budget--;
+    assert(pthread_mutex_lock(&host_pmm_mutex) == 0);
     for (size_t i = 1; i < MAX_MOCK_PAGES; i++) {
         if (!g_mock_page_allocated[i]) {
             g_mock_page_allocated[i] = true;
             g_mock_allocated_count++;
+            pthread_mutex_unlock(&host_pmm_mutex);
             return i * MOCK_PAGE_SIZE;
         }
     }
+    pthread_mutex_unlock(&host_pmm_mutex);
     return 0;
 }
 
 void pmm_free_page(uintptr_t phys) {
+    assert(!host_vmm_held);
+    pthread_mutex_lock(&host_pmm_mutex);
     size_t idx = phys / MOCK_PAGE_SIZE;
     assert(idx < MAX_MOCK_PAGES);
     assert(g_mock_page_allocated[idx]);
     g_mock_page_allocated[idx] = false;
     g_mock_allocated_count--;
+    pthread_mutex_unlock(&host_pmm_mutex);
 }
 
 bool pmm_unlock_high_memory(void) { return true; }
@@ -455,6 +509,278 @@ static void test_deferred_destruction_queue(void) {
     printf("       [PASS] Deferred destruction queue safely defers and drains with 0 leaks\n");
 }
 
+static void test_atomic_walk_boundaries(void) {
+    size_t baseline = g_mock_allocated_count;
+    uintptr_t root = vmm_create_user_pml4();
+    vmm_space_t *space = vmm_space_lookup(root);
+    uint64_t *table = space->pml4_virt;
+    uintptr_t frame = pmm_alloc_page();
+    for (int budget = 0; budget < 3; budget++) {
+        size_t before_pages = g_mock_allocated_count;
+        g_pmm_alloc_budget = budget;
+        assert(vmm_map_page(table, 0x400000, frame, PTE_USER | PTE_WRITABLE) == VMM_ERR_NOMEM);
+        g_pmm_alloc_budget = -1;
+        assert(g_mock_allocated_count == before_pages);
+        assert(table[0] == 0);
+    }
+    assert(table[0] == 0); /* OOM publishes no partial hierarchy. */
+    assert(vmm_map_page(table, 0x400000, frame, PTE_USER | PTE_WRITABLE) == VMM_OK);
+    assert(vmm_map_page(table, 0x401000, frame, PTE_USER) == VMM_OK);
+    assert(vmm_get_physical_address(table, 0x400123) == frame + 0x123);
+    assert(vmm_validate_user_range(table, 0x400FFF, 2, false));
+    assert(!vmm_validate_user_range(table, 0x400FFF, 2, true));
+    assert(!vmm_validate_user_range(table, 0x402000, 1, false));
+    assert(!vmm_validate_user_range(table, UINTPTR_MAX - 1, 4, false));
+    assert(!vmm_validate_user_range(table, 0x800000000000ULL, 1, false));
+    assert(vmm_map_page(table, 0x400000, frame, PTE_USER) == VMM_ERR_ALREADY_MAPPED);
+    assert(vmm_space_add_sched_ref(root) == VMM_OK);
+    tcb_t task = {.cr3 = root, .vmm_space = space};
+    g_vmm_host_current = &task;
+    unsigned before = host_vmm_acquires;
+    for (unsigned i = 0; i < 1000; i++)
+        assert(vmm_validate_user_range(table, 0x400000, 4096, true));
+    assert(host_vmm_acquires == before); /* Own-task validation acquires no lock. */
+    assert(vmm_unmap_page(table, 0x400000) == VMM_OK);
+    assert(!vmm_validate_user_range(table, 0x400000, 1, false));
+    assert(vmm_space_retire(root) == VMM_OK);
+    before = host_vmm_acquires;
+    assert(!vmm_validate_user_range(table, 0x401000, 1, false));
+    assert(host_vmm_acquires == before);
+    g_vmm_host_current = NULL;
+    vmm_space_sub_sched_ref(root);
+    assert(vmm_destroy_pml4(root, false) == VMM_OK);
+    pmm_free_page(frame);
+    assert(g_mock_allocated_count == baseline);
+    puts("[PASS] Atomic walk boundaries, zero-lock own-task validation, OOM and retirement");
+}
+
+static uint64_t *race_root;
+static uintptr_t race_frame;
+static void competing_mapper(void) {
+    assert(vmm_map_page(race_root, 0x401000, race_frame, PTE_USER) == VMM_OK);
+}
+static void test_spare_table_race(void) {
+    bool baseline[MAX_MOCK_PAGES];
+    memcpy(baseline, g_mock_page_allocated, sizeof(baseline));
+    uintptr_t root = vmm_create_user_pml4();
+    race_root = vmm_space_lookup(root)->pml4_virt;
+    race_frame = pmm_alloc_page();
+    g_before_pmm_alloc = competing_mapper;
+    assert(vmm_map_page(race_root, 0x400000, race_frame, PTE_USER) == VMM_OK);
+    assert(vmm_is_mapped(race_root, 0x400000));
+    assert(vmm_is_mapped(race_root, 0x401000));
+    assert(vmm_destroy_pml4(root, false) == VMM_OK);
+    pmm_free_page(race_frame);
+    assert(memcmp(baseline, g_mock_page_allocated, sizeof(baseline)) == 0);
+    puts("[PASS] Competing mapper supplies hierarchy during allocation; unused spares reclaimed");
+}
+
+typedef struct { vmm_space_t *space; unsigned id; uintptr_t frame; } walk_worker_t;
+static void *walk_worker(void *arg) {
+    walk_worker_t *w = arg;
+    tcb_t task = {.cr3 = w->space->cr3, .vmm_space = w->space};
+    g_vmm_host_current = &task;
+    uintptr_t va = 0x400000 + w->id * 4096;
+    for (unsigned i = 0; i < 1000; i++) {
+        assert(vmm_map_page(w->space->pml4_virt, va, w->frame, PTE_USER | PTE_WRITABLE) == VMM_OK);
+        assert(vmm_validate_user_range(w->space->pml4_virt, va, 4096, true));
+        /* Other threads may change adjacent leaves while this snapshot walks. */
+        (void)vmm_validate_user_range(w->space->pml4_virt, 0x400000, 4 * 4096, true);
+        assert(vmm_get_physical_address(w->space->pml4_virt, va + 7) == w->frame + 7);
+        assert(vmm_unmap_page(w->space->pml4_virt, va) == VMM_OK);
+    }
+    g_vmm_host_current = NULL;
+    return NULL;
+}
+static void test_concurrent_walks(void) {
+    size_t baseline = g_mock_allocated_count;
+    uintptr_t root = vmm_create_user_pml4();
+    vmm_space_t *space = vmm_space_lookup(root);
+    pthread_t workers[4];
+    walk_worker_t args[4];
+    for (unsigned i = 0; i < 4; i++) {
+        assert(vmm_space_add_sched_ref(root) == VMM_OK);
+        args[i] = (walk_worker_t){space, i, pmm_alloc_page()};
+        assert(args[i].frame);
+    }
+    for (unsigned i = 0; i < 4; i++)
+        assert(pthread_create(&workers[i], NULL, walk_worker, &args[i]) == 0);
+    for (unsigned i = 0; i < 4; i++) {
+        assert(pthread_join(workers[i], NULL) == 0);
+        vmm_space_sub_sched_ref(root);
+        pmm_free_page(args[i].frame);
+    }
+    assert(space->op_refs == 0);
+    assert(vmm_destroy_pml4(root, false) == VMM_OK);
+    assert(g_mock_allocated_count == baseline);
+    puts("[PASS] Four concurrent map/unmap/walk workers, exact frame reclamation");
+}
+
+static void test_invalidation_and_rejected_teardown(void) {
+    bool baseline[MAX_MOCK_PAGES];
+    memcpy(baseline, g_mock_page_allocated, sizeof(baseline));
+    uintptr_t root = vmm_create_user_pml4(), frame = pmm_alloc_page();
+    vmm_space_t *s = vmm_space_lookup(root);
+    unsigned start = host_shootdowns;
+    assert(vmm_map_page(s->pml4_virt, 0x400000, frame, PTE_USER) == VMM_OK);
+    assert(vmm_unmap_page(s->pml4_virt, 0x400000) == VMM_OK);
+    assert(host_shootdowns == start);
+    /* Raw CR3 switches must also make the sticky residency mark. */
+    vmm_switch_pml4(root);
+    assert(s->ever_active);
+    vmm_switch_pml4(vmm_get_kernel_pml4());
+    assert(vmm_map_page(s->pml4_virt, 0x400000, frame, PTE_USER) == VMM_OK);
+    assert(host_shootdowns == start + 1);
+    assert(vmm_unmap_page(s->pml4_virt, 0x400000) == VMM_OK);
+    assert(host_shootdowns == start + 2);
+    uint64_t saved = s->pml4_virt[0];
+    s->pml4_virt[0] |= PTE_HUGE;
+    size_t count = g_mock_allocated_count;
+    assert(vmm_destroy_pml4(root, false) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_space_lookup(root) == s && g_mock_allocated_count == count);
+    assert(vmm_space_get_op(s->pml4_virt) == VMM_OK);
+    assert(vmm_destroy_pml4(root, false) == VMM_ERR_BUSY);
+    vmm_space_put_op(s->pml4_virt);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_space_lookup(root) == s && vmm_get_deferred_count() == 1);
+    s->pml4_virt[0] = saved;
+    assert(vmm_drain_deferred_destructions() == 1);
+    pmm_free_page(frame);
+    assert(memcmp(baseline, g_mock_page_allocated, sizeof(baseline)) == 0);
+    puts("[PASS] Private construction skips IPIs; used roots invalidate; invalid teardown retains ownership");
+}
+
+static void test_batch_unmap(void) {
+    bool baseline[MAX_MOCK_PAGES];
+    memcpy(baseline, g_mock_page_allocated, sizeof(baseline));
+    uintptr_t root = vmm_create_user_pml4();
+    vmm_space_t *s = vmm_space_lookup(root);
+    uintptr_t frames[4], removed[4] = {123,123,123,123};
+    const uintptr_t va = 0x1ff000; /* Cross a PT boundary. */
+    assert(vmm_space_enter(root) == VMM_OK);
+    vmm_space_leave(root, false, true);
+    for (size_t i = 0; i < 4; i++) {
+        frames[i] = pmm_alloc_page();
+        assert(vmm_map_page(s->pml4_virt, va + i * 4096, frames[i],
+                            PTE_USER | (i == 2 ? PTE_GLOBAL : 0)) == VMM_OK);
+    }
+    assert(vmm_unmap_pages(s->pml4_virt, va, 4, removed) == VMM_ERR_INVALID_ADDR);
+    assert(removed[0] == 123 && s->op_refs == 0);
+    for (size_t i = 0; i < 4; i++) assert(vmm_is_mapped(s->pml4_virt, va + i * 4096));
+    assert(vmm_unmap_page(s->pml4_virt, va + 2 * 4096) == VMM_OK);
+    assert(vmm_unmap_pages(s->pml4_virt, va, 4, removed) == VMM_ERR_NOT_MAPPED);
+    assert(vmm_is_mapped(s->pml4_virt, va) && removed[0] == 123 && s->op_refs == 0);
+    assert(vmm_map_page(s->pml4_virt, va + 2 * 4096, frames[2], PTE_USER) == VMM_OK);
+    assert(vmm_unmap_pages(s->pml4_virt, va, 0, removed) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_unmap_pages(s->pml4_virt, va, 17, removed) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_unmap_pages(s->pml4_virt, UINTPTR_MAX - 4095, 4, removed) == VMM_ERR_INVALID_ADDR);
+    unsigned before = host_shootdowns;
+    expect_batch_pin = true;
+    assert(vmm_unmap_pages(s->pml4_virt, va, 4, removed) == VMM_OK);
+    expect_batch_pin = false;
+    assert(host_shootdowns == before + 1 && s->op_refs == 0);
+    for (size_t i = 0; i < 4; i++) {
+        assert(removed[i] == frames[i] && !vmm_is_mapped(s->pml4_virt, va + i * 4096));
+        pmm_free_page(frames[i]);
+    }
+    assert(vmm_destroy_pml4(root, false) == VMM_OK);
+    assert(memcmp(baseline, g_mock_page_allocated, sizeof(baseline)) == 0);
+    puts("[PASS] Batch unmap crosses PT boundary, validates before mutation and keeps pin through one flush");
+}
+
+static void test_batch_map(void) {
+    bool baseline[MAX_MOCK_PAGES];
+    memcpy(baseline, g_mock_page_allocated, sizeof(baseline));
+    uintptr_t root = vmm_create_user_pml4();
+    vmm_space_t *space = vmm_space_lookup(root);
+    uint64_t *table = space->pml4_virt;
+    uintptr_t frames[4];
+    for (size_t i = 0; i < 4; i++) frames[i] = pmm_alloc_page();
+    unsigned shoots = host_shootdowns;
+    for (int budget = 0; budget < 3; budget++) {
+        bool before[MAX_MOCK_PAGES];
+        memcpy(before, g_mock_page_allocated, sizeof(before));
+        size_t tables = vmm_get_allocated_table_frames();
+        g_pmm_alloc_budget = budget;
+        assert(vmm_map_pages(table, 0x401000, 4, frames, PTE_USER | PTE_WRITABLE | PTE_NX) == VMM_ERR_NOMEM);
+        g_pmm_alloc_budget = -1;
+        assert(!table[0] && !space->op_refs && host_shootdowns == shoots);
+        assert(vmm_get_allocated_table_frames() == tables);
+        assert(!memcmp(before, g_mock_page_allocated, sizeof(before)));
+    }
+    assert(vmm_map_pages(table, 0x401000, 0, frames, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_map_pages(table, 0x401000, 17, frames, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_map_pages(table, 0x1ff000, 4, frames, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_map_pages(table, UINTPTR_MAX - 4095, 4, frames, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_map_pages(table, 0x401001, 4, frames, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_map_pages(table, 0x800000000000ULL, 4, frames, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_map_pages(table, 0xffffffffa0001000ULL, 4, frames, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_map_pages(table, 0x401000, 4, frames, PTE_USER | PTE_HUGE) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_map_pages(table, 0x401000, 4, frames, PTE_USER | PTE_GLOBAL) == VMM_ERR_INVALID_ADDR);
+    uintptr_t bad[4]; memcpy(bad, frames, sizeof(bad)); bad[3] = frames[0];
+    assert(vmm_map_pages(table, 0x401000, 4, bad, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    bad[3] = frames[3] + 1;
+    assert(vmm_map_pages(table, 0x401000, 4, bad, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    bad[3] = 1ULL << 60;
+    assert(vmm_map_pages(table, 0x401000, 4, bad, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    table[0] = PTE_PRESENT | PTE_HUGE;
+    assert(vmm_map_pages(table, 0x401000, 4, frames, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    assert(table[0] == (PTE_PRESENT | PTE_HUGE) && !space->op_refs);
+    table[0] = 0;
+    assert(vmm_map_pages(table, 0x401000, 4, frames, PTE_USER | PTE_WRITABLE | PTE_NX) == VMM_OK);
+    assert(host_shootdowns == shoots && !space->op_refs); /* never-loaded root */
+    assert(!vmm_is_mapped(table, 0x400000)); /* guard stays absent */
+    for (size_t i = 0; i < 4; i++)
+        assert(vmm_get_physical_address(table, 0x401000 + i * 4096) == frames[i]);
+    assert(vmm_validate_user_range(table, 0x401000, 4 * 4096, true));
+    uint64_t *pdpt = vmm_phys_to_virt(table[0] & PTE_ADDR_MASK);
+    uint64_t *pd = vmm_phys_to_virt(pdpt[0] & PTE_ADDR_MASK);
+    uint64_t *pt = vmm_phys_to_virt(pd[2] & PTE_ADDR_MASK);
+    for (size_t i = 0; i < 4; i++)
+        assert((pt[1 + i] & ~PTE_ADDR_MASK) == (PTE_PRESENT | PTE_USER | PTE_WRITABLE | PTE_NX));
+    assert(vmm_map_pages(table, 0x401000, 4, frames, PTE_USER) == VMM_ERR_ALREADY_MAPPED);
+    uintptr_t removed[4];
+    assert(vmm_unmap_pages(table, 0x401000, 4, removed) == VMM_OK);
+    assert(vmm_space_enter(root) == VMM_OK);
+    assert(vmm_map_pages(table, 0x401000, 4, frames, PTE_USER) == VMM_OK);
+    assert(host_shootdowns == shoots + 1 && !space->op_refs);
+    /* A mapped middle leaf rejects the entire batch without installing holes. */
+    assert(vmm_unmap_page(table, 0x401000) == VMM_OK);
+    shoots = host_shootdowns;
+    assert(vmm_map_pages(table, 0x401000, 4, frames, PTE_USER) == VMM_ERR_ALREADY_MAPPED);
+    assert(!vmm_is_mapped(table, 0x401000) && host_shootdowns == shoots);
+    assert(vmm_space_retire(root) == VMM_OK);
+    assert(vmm_map_pages(table, 0x401000, 4, frames, PTE_USER) == VMM_ERR_INVALID_ADDR);
+    vmm_space_leave(root, false, true);
+    assert(vmm_destroy_pml4(root, false) == VMM_OK);
+    for (size_t i = 0; i < 4; i++) pmm_free_page(frames[i]);
+    assert(!memcmp(baseline, g_mock_page_allocated, sizeof(baseline)));
+    puts("[PASS] Batch map exact OOM rollback, boundaries, guard, collision, inactive/active flush and lifecycle pin");
+}
+
+static void batch_competing_mapper(void) {
+    assert(vmm_map_page(race_root, 0x403000, race_frame, PTE_USER) == VMM_OK);
+}
+static void test_batch_map_race(void) {
+    bool baseline[MAX_MOCK_PAGES];
+    memcpy(baseline, g_mock_page_allocated, sizeof(baseline));
+    uintptr_t root = vmm_create_user_pml4();
+    race_root = vmm_space_lookup(root)->pml4_virt;
+    uintptr_t frames[4];
+    for (size_t i = 0; i < 4; i++) frames[i] = pmm_alloc_page();
+    race_frame = frames[2];
+    g_before_pmm_alloc = batch_competing_mapper;
+    assert(vmm_map_pages(race_root, 0x401000, 4, frames, PTE_USER) == VMM_ERR_ALREADY_MAPPED);
+    assert(!vmm_is_mapped(race_root, 0x401000) && !vmm_is_mapped(race_root, 0x402000));
+    assert(vmm_get_physical_address(race_root, 0x403000) == frames[2]);
+    assert(!vmm_is_mapped(race_root, 0x404000));
+    assert(!vmm_space_lookup(root)->op_refs);
+    assert(vmm_destroy_pml4(root, false) == VMM_OK);
+    for (size_t i = 0; i < 4; i++) pmm_free_page(frames[i]);
+    assert(!memcmp(baseline, g_mock_page_allocated, sizeof(baseline)));
+    puts("[PASS] Batch map repeats full preflight after competing mapper, spares reclaimed");
+}
+
 int main(void) {
     printf("========================================================\n");
     printf("SMP Piece 6D Step 4: Complete Address Space Lifetime\n");
@@ -470,9 +796,14 @@ int main(void) {
     test_scheduler_context_switch_lifecycle();
     test_kernel_space_context_switch_noops();
     test_deferred_destruction_queue();
+    test_atomic_walk_boundaries();
+    test_concurrent_walks();
+    test_spare_table_race();
+    test_invalidation_and_rejected_teardown();
+    test_batch_unmap();
+    test_batch_map();
+    test_batch_map_race();
 
     printf("\n[ OK ] All SMP Piece 6D Step 4 host tests passed successfully!\n");
     return 0;
 }
-
-

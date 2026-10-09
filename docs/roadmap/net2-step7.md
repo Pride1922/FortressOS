@@ -159,7 +159,7 @@ No data disk enters these tests. Host adapters alone make no scheduler/IRQ claim
 The user confirms all six cases on Dell Latitude 5590, I219 8086:15D7,
 MAC c8:f7:50:0e:35:80, guest 192.168.0.168 and gateway 192.168.0.1.
 The Windows peer was 192.168.0.153 on Wi-Fi. The authoritative session note is
-[PHYSICAL.md](../../build/net2-step7/physical/PHYSICAL.md).
+[physical notes](evidence/net2-step7-physical.md).
 
 | Case | User-confirmed result |
 | --- | --- |

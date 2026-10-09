@@ -106,6 +106,22 @@ bool process_record_snapshot(uint64_t index, process_snapshot_t *out) {
     spin_unlock_irqrestore(&g_process_lock, irq);
     return found;
 }
+bool process_record_snapshot_pid(uint64_t pid, process_snapshot_t *out) {
+    if (!out) return false;
+    uint64_t irq = spin_lock_irqsave(&g_process_lock);
+    process_record_t *p = find(pid);
+    bool found = p && p->published && (!p->exited || p->uncollected);
+    if (found) {
+        *out = (process_snapshot_t){.pid=p->pid, .parent=p->parent,
+            .pgid=p->pgid, .sid=p->sid, .cpu_ticks=p->cpu_ticks,
+            .state=p->exited ? PROCESS_ZOMBIE :
+                   p->stopped ? PROCESS_STOPPED : PROCESS_RUNNING};
+        for (unsigned n=0; n<sizeof(out->name); ++n) out->name[n]=p->name[n];
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    return found;
+}
+
 uint32_t process_record_count_enumerable(void) {
     uint32_t count = 0;
     uint64_t irq = spin_lock_irqsave(&g_process_lock);

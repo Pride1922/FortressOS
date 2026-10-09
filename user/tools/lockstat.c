@@ -215,5 +215,13 @@ int lockstat_main(int argc, char **argv) {
         out_str("\n");
     }
 
+    /* Preserve the diagnostic TLB row in both human and compare output. */
+    for (size_t start = 0; start < (size_t)n;) {
+        size_t end = start;
+        while (end < (size_t)n && s_raw_buf[end] != '\n') end++;
+        if (end - start >= 9 && s_raw_buf[start] == '[' && s_raw_buf[start + 1] == 'T')
+            tool_write("lockstat", s_raw_buf + start, end - start + (end < (size_t)n));
+        start = end + 1;
+    }
     return 0;
 }

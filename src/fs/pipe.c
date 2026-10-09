@@ -30,6 +30,39 @@ static void pipe_publish(pipe_t *p) {
     __atomic_store_n(&p->space_bytes, PIPE_CAPACITY - p->count, __ATOMIC_RELEASE);
 }
 
+static void profile_add(pipe_t *p, uint64_t *value, uint64_t n) {
+    if (n > UINT64_MAX - *value) p->profile.valid = 0;
+    else *value += n;
+}
+
+/* Called only with the existing IRQ-excluded pipe lock held. */
+static void profile_transfer(pipe_t *p, bool write, size_t n, size_t before) {
+    if (!p->profile_enabled) return;
+    pipe_io_profile_t *s = &p->profile;
+    profile_add(p, write ? &s->writes : &s->reads, 1);
+    profile_add(p, write ? &s->write_bytes : &s->read_bytes, n);
+    uint64_t *maximum = write ? &s->write_max : &s->read_max;
+    if (n > *maximum) *maximum = n;
+    uint64_t *bucket = write ? (n < 1024 ? &s->write_small : n == 1024 ? &s->write_1k : &s->write_large)
+                             : (n < 1024 ? &s->read_small : n == 1024 ? &s->read_1k : &s->read_large);
+    profile_add(p, bucket, 1);
+    if (write && !before) profile_add(p, &s->empty_fills, 1);
+    if (write && p->count == PIPE_CAPACITY) profile_add(p, &s->full_fills, 1);
+    if (!write && !p->count) profile_add(p, &s->empty_drains, 1);
+    uint8_t direction = write ? 2 : 1;
+    tcb_t *self = thread_current();
+    if (!self || self->current_cpu >= 64) { s->valid = 0; return; }
+    uint8_t cpu = (uint8_t)self->current_cpu;
+    if (write) s->writer_cpus |= 1ULL << cpu;
+    else s->reader_cpus |= 1ULL << cpu;
+    if (p->profile_direction) {
+        if (direction != p->profile_direction) profile_add(p, &s->direction_changes, 1);
+        if (cpu != p->profile_cpu) profile_add(p, &s->cpu_changes, 1);
+    }
+    p->profile_direction = direction;
+    p->profile_cpu = cpu;
+}
+
 static int64_t pipe_read(vfs_node_t *node, uint64_t offset, void *buf, size_t count) {
     (void)offset;
     if (!count) return 0;
@@ -38,6 +71,7 @@ static int64_t pipe_read(vfs_node_t *node, uint64_t offset, void *buf, size_t co
         if (process_signal_interrupt()) return -VFS_EINTR;
         uint64_t flags = spin_lock_irqsave(&p->lock);
         if (p->count) {
+            size_t before = p->count;
             size_t n = count < p->count ? count : p->count;
             size_t first = PIPE_CAPACITY - p->tail;
             if (first > n) first = n;
@@ -45,17 +79,19 @@ static int64_t pipe_read(vfs_node_t *node, uint64_t offset, void *buf, size_t co
             memcpy((uint8_t *)buf + first, p->buffer, n - first);
             p->tail = (p->tail + n) % PIPE_CAPACITY;
             p->count -= n;
+            profile_transfer(p, false, n, before);
             pipe_publish(p);
             spin_unlock_irqrestore(&p->lock, flags);
-            sched_wake_all(p);
+            sched_wake_all(&p->space_bytes);
             return (int64_t)n;
         }
         if (!__atomic_load_n(&p->writers, __ATOMIC_ACQUIRE)) {
             spin_unlock_irqrestore(&p->lock, flags);
             return 0;
         }
+        if (p->profile_enabled) profile_add(p, &p->profile.read_waits, 1);
         spin_unlock_irqrestore(&p->lock, flags);
-        sched_wait_until(p, pipe_read_ready, p);
+        sched_wait_until(&p->data_bytes, pipe_read_ready, p);
     }
 }
 
@@ -73,6 +109,7 @@ static int64_t pipe_write(vfs_node_t *node, uint64_t *offset, bool append,
         }
         size_t space = PIPE_CAPACITY - p->count;
         if (space && (count > PIPE_BUF || space >= count)) {
+            size_t before = p->count;
             size_t n = count < space ? count : space;
             size_t first = PIPE_CAPACITY - p->head;
             if (first > n) first = n;
@@ -80,15 +117,36 @@ static int64_t pipe_write(vfs_node_t *node, uint64_t *offset, bool append,
             memcpy(p->buffer, (const uint8_t *)buf + first, n - first);
             p->head = (p->head + n) % PIPE_CAPACITY;
             p->count += n;
+            profile_transfer(p, true, n, before);
             pipe_publish(p);
             spin_unlock_irqrestore(&p->lock, flags);
-            sched_wake_all(p);
+            sched_wake_all(&p->data_bytes);
             return (int64_t)n;
         }
         pipe_wait_write_t wait = {p, count <= PIPE_BUF ? count : 1};
+        if (p->profile_enabled) profile_add(p, &p->profile.write_waits, 1);
         spin_unlock_irqrestore(&p->lock, flags);
-        sched_wait_until(p, pipe_write_ready, &wait);
+        sched_wait_until(&p->space_bytes, pipe_write_ready, &wait);
     }
+}
+
+int pipe_profile(vfs_node_t *node, uint64_t action, pipe_io_profile_t *out) {
+    if (!node || !out || (node->read != pipe_read && node->write != pipe_write) ||
+        !node->fs_private || action < PIPE_PROFILE_READ || action > PIPE_PROFILE_DISABLE)
+        return -VFS_EINVAL;
+    pipe_t *p = node->fs_private;
+    uint64_t flags = spin_lock_irqsave(&p->lock);
+    if (action == PIPE_PROFILE_ENABLE) {
+        memset(&p->profile, 0, sizeof(p->profile));
+        p->profile.valid = 1;
+        p->profile_direction = 0;
+        p->profile_enabled = true;
+    } else if (action == PIPE_PROFILE_DISABLE) p->profile_enabled = false;
+    uint64_t fd = out->fd;
+    *out = p->profile;
+    out->fd = fd;
+    spin_unlock_irqrestore(&p->lock, flags);
+    return 0;
 }
 
 int pipe_create(vfs_node_t **out_read_node, vfs_node_t **out_write_node) {
@@ -139,7 +197,8 @@ void pipe_close_endpoint(vfs_node_t *node) {
     node->fs_private = NULL;
     spin_unlock_irqrestore(&p->lock, flags);
     /* Retain this endpoint's lifetime reference until the wake completes. */
-    sched_wake_all(p);
+    sched_wake_all(&p->data_bytes);
+    sched_wake_all(&p->space_bytes);
     if (__atomic_sub_fetch(&p->active_endpoints, 1, __ATOMIC_ACQ_REL) == 0) {
         pmm_free_pages(p->buffer_phys, 16);
         kfree(p->read_node);

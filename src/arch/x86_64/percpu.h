@@ -25,6 +25,12 @@ typedef struct cpu_local {
     struct spinlock *held_locks[16];
     uint32_t lock_depth;
     uint32_t lock_panic;
+    /* Local IPI publishes; safe user return consumes with IF clear. Appended
+     * so all assembly GS offsets remain unchanged. Never touched by NMI. */
+    uint32_t resched_pending;
+    uint64_t resched_requests, resched_services;
+    uint64_t resched_urgent_requests, resched_work_requests;
+    uint64_t resched_urgent_services, resched_work_services, resched_work_deferred;
 } cpu_local_t;
 #define MAX_HELD_LOCKS 16
 _Static_assert(__builtin_offsetof(cpu_local_t, syscall_rsp) == 8, "GS scratch ABI");

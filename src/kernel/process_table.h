@@ -26,6 +26,7 @@ typedef struct { uint64_t pid, cpu_ticks; } process_tick_sample_t;
 void process_record_set_name(uint64_t pid, const char *name);
 void process_record_merge_ticks(const process_tick_sample_t *samples, size_t count);
 bool process_record_snapshot(uint64_t index, process_snapshot_t *out);
+bool process_record_snapshot_pid(uint64_t pid, process_snapshot_t *out);
 uint32_t process_record_count_enumerable(void);
 /* Final accounting supplied by the exiting owner with local IRQs excluded.
  * No scheduler lock held. Legacy metadata-only exit helpers retain cached ticks. */

@@ -763,6 +763,22 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
     return (int64_t)fd;
 }
 
+static int64_t sys_pipe_profile(uint64_t action, uintptr_t address, uint64_t size) {
+    if (action < PIPE_PROFILE_READ || action > PIPE_PROFILE_DISABLE || size != sizeof(pipe_io_profile_t))
+        return SYSCALL_EINVAL;
+    if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), address, sizeof(pipe_io_profile_t), true))
+        return SYSCALL_EFAULT;
+    tcb_t *self = thread_current();
+    if (!self || !self->is_user) return SYSCALL_EINVAL;
+    pipe_io_profile_t snapshot;
+    memcpy(&snapshot, (void *)address, sizeof(snapshot));
+    file_t *file = snapshot.fd < MAX_PROCESS_FDS ? fd_get(self, (int)snapshot.fd) : NULL;
+    if (!file) return SYSCALL_EBADF;
+    int64_t result = syscall_from_vfs_error(pipe_profile(file->node, action, &snapshot));
+    if (!result) memcpy((void *)address, &snapshot, sizeof(snapshot));
+    return result;
+}
+
 static int64_t sys_pipe(uintptr_t user_pipefd, uint32_t flags) {
     const size_t bytes = sizeof(int) * 2;
     if (user_pipefd < 0x1000 || user_pipefd > 0x0000800000000000ULL - bytes ||
@@ -1440,9 +1456,17 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
                 result = SYSCALL_EFAULT;
                 break;
             }
-            process_refresh_cpu_ticks();
             process_snapshot_t snap;
-            if (frame->rdi < PROC_INFO_MAX && process_record_snapshot(frame->rdi, &snap)) {
+            bool have_snapshot = false;
+            if (frame->rdi == PROC_INFO_SELF) {
+                tcb_t *self = thread_current();
+                have_snapshot = self && process_record_snapshot_pid(self->tid, &snap);
+                if (have_snapshot) snap.cpu_ticks = self->total_ticks;
+            } else {
+                process_refresh_cpu_ticks();
+                have_snapshot = frame->rdi < PROC_INFO_MAX && process_record_snapshot(frame->rdi, &snap);
+            }
+            if (have_snapshot) {
                 proc_info_t info;
                 memset(&info, 0, sizeof(info));
                 info.pid = (int64_t)snap.pid;
@@ -1568,6 +1592,56 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             }
         }
 
+        case SYS_SPAWN_PROFILE: {
+            if (frame->rdi >= PIPE_PROFILE_READ && frame->rdi <= PIPE_PROFILE_DISABLE) {
+                result = sys_pipe_profile(frame->rdi, frame->rsi, frame->rdx);
+                break;
+            }
+            if (frame->rdi >= WAIT_PROFILE_READ && frame->rdi <= WAIT_PROFILE_DISABLE) {
+                if (frame->rdx != sizeof(wait_profile_t)) { result = SYSCALL_EINVAL; break; }
+                if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rsi,
+                                             sizeof(wait_profile_t), true)) { result = SYSCALL_EFAULT; break; }
+                tcb_t *self = thread_current();
+                if (!self || !self->is_user) { result = SYSCALL_EINVAL; break; }
+                if (frame->rdi == WAIT_PROFILE_ENABLE) {
+                    memset(&self->wait_trace, 0, sizeof(self->wait_trace));
+                    self->wait_trace.counters.valid = 1;
+                    self->wait_trace.enabled = true;
+                } else if (frame->rdi == WAIT_PROFILE_DISABLE) self->wait_trace.enabled = false;
+                if (self->wait_trace.stage) self->wait_trace.counters.valid = 0;
+                memcpy((void *)frame->rsi, &self->wait_trace.counters, sizeof(wait_profile_t));
+                result = 0;
+                break;
+            }
+            if (frame->rdi > SPAWN_PROFILE_DISABLE || frame->rdx != sizeof(spawn_profile_t)) {
+                result = SYSCALL_EINVAL;
+                break;
+            }
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rsi,
+                                         sizeof(spawn_profile_t), true)) {
+                result = SYSCALL_EFAULT;
+                break;
+            }
+            tcb_t *self = thread_current();
+            if (!self || !self->is_user) { result = SYSCALL_EINVAL; break; }
+            if (frame->rdi == SPAWN_PROFILE_ENABLE) {
+                uint64_t queued = self->spawn_profile.queued_cycles;
+                uint64_t first = self->spawn_profile.first_run_cycles;
+                memset(&self->spawn_profile, 0, sizeof(self->spawn_profile));
+                self->spawn_profile.queued_cycles = queued;
+                self->spawn_profile.first_run_cycles = first;
+                self->spawn_profile.valid = 1;
+                self->spawn_profile_enabled = true;
+            } else if (frame->rdi == SPAWN_PROFILE_DISABLE) {
+                self->spawn_profile_enabled = false;
+            }
+            self->spawn_profile.birth_valid = self->spawn_profile.queued_cycles > 0 &&
+                self->spawn_profile.first_run_cycles >= self->spawn_profile.queued_cycles;
+            memcpy((void *)frame->rsi, &self->spawn_profile, sizeof(spawn_profile_t));
+            result = 0;
+            break;
+        }
+
         case SYS_SYSINFO: {
             if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rdi,
                                          sizeof(sysinfo_t), true)) {
@@ -1627,6 +1701,7 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
     }
 
     frame->rax = (uint64_t)result;
+    sched_resched_user_return(frame);
     process_signal_user_return(frame);
 
     /* Validate and sanitize return state before returning to assembly stub */

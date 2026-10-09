@@ -55,6 +55,7 @@ bool lapic_init_ap(const acpi_madt_info_t *info);
 
 /* IPI Vectors */
 #define IPI_VECTOR_TLB          0xFC  /* Vector 252: Synchronous TLB shootdown */
+#define IPI_VECTOR_WORK_HINT    0xFB  /* Vector 251: Fresh runnable work, wake idle CPU */
 #define IPI_VECTOR_RESCHED      0xFD  /* Vector 253: Remote CPU wake/reschedule */
 #define IPI_VECTOR_PANIC        0xFE  /* Vector 254: Multi-core emergency freeze */
 

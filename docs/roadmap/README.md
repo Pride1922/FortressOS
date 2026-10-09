@@ -18,6 +18,11 @@ and are not proof that every current revision has passed every test — check
 
 ## Phase files
 
+Latest SMP environment evidence: [Dell benchmark results and decision](smpbench-dell-results.md).
+Next measurement build: [spawn and pipe writer startup diagnostics](smpbench-spawn-profile.md).
+Physical subphase findings: [Dell spawn and pipe startup results](smpbench-spawn-dell-results.md).
+Targeted experiment: [kernel-stack batch mapping and matched Dell images](kstack-batch-map.md).
+
 | File | Covers |
 | --- | --- |
 | [ext4-phase9-6.md](ext4-phase9-6.md) | **COMPLETE — bounded E4-B**: Dell 5590 / 4 GB stick, clean persistence and three controlled interruption cases PASS; explicit journaled USB RW enabled, limits recorded. |
@@ -120,3 +125,25 @@ E4-A: [Dell 5590 physical acceptance](ext4-phase5-acceptance.md), all seven Phas
 [TCP performance fix: four-step plan](../plans/TCP_PERFORMANCE_FIX_PLAN.md): reader handoff, window-update service, bounded active RX wait, and automated/Dell acceptance; 2026-10-04.
 
 [Blocking shell supervisor](kernel-supervisor-wait.md): approved scope extension removes runnable HLT waiter; BIOS/UEFI SMP=1/4 blocked-state and restart checks PASS; Dell throughput pending.
+
+[SMP panic capture](smp-panic-capture.md): frozen all-CPU register/stack/RAM evidence on failure; original debug exception unresolved.
+
+[Benchmark readiness barrier](smpbench-barrier.md): host failure adapters and BIOS/UEFI SMP=1/4/8 checks PASS; timing variance remains, per-phase profiling next.
+
+[Benchmark per-phase profiling](smpbench-profile.md): opt-in syscall/compute and pipe-peer attribution; BIOS/UEFI SMP=1/4/8 checks PASS; environment decision next.
+
+[Dell benchmark handoff](smpbench-dell-handoff.md): frozen verified image and command sequence prepared; UEFI disposable USB smoke PASS; physical execution/environment decision pending.
+
+[ELF page initialization](elf-page-init.md): host byte/rollback and BIOS/UEFI lifecycle checks PASS; Dell ABBA spawn duration improves 51.6%, plain pipes regress 22.1%, scheduling investigation follows.
+
+[Pipe wait investigation](pipe-wait-profile.md): opt-in block/wake/select/resume counters and wait-only observer mode; host and QEMU checks PASS, matched Dell observer comparison prepared.
+
+[Safe user-return rescheduling](resched-user-return.md): coalesced IPI requests, eligible return service and outgoing-context theft exclusion; retained initial failure captures and corrected matched Dell experiment.
+
+[Reschedule reason policy](resched-policy.md): distinguish urgent waiter/signal requests from fresh-work hints after the Dell latency/throughput tradeoff; shared correctness guard and fresh matched A/B experiment.
+
+[One-command benchmark capture](benchrun.md): benchrun automates per-boot commands, separate capture directories, error checks, sync and optional shutdown.
+
+[Pipe handoff profiling](pipe-handoff-profile.md): opt-in transfer sizes, wait attempts, buffer transitions and logical CPU masks; matched A/B images and automated capture validated in QEMU, Dell attribution pending.
+
+[Pipe writer batching test](pipe-batch-test.md): one-boot 1 KiB versus 4 KiB writer batches with equal payload and explicit saved batch labels.

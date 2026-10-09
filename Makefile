@@ -4,6 +4,28 @@
 SHELL := /bin/bash
 .DELETE_ON_ERROR:
 
+.PHONY: test-resched-return-host
+
+
+test-resched-return-host:
+	@mkdir -p build
+	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -no-pie -Isrc/include -Isrc/kernel -Isrc/arch/x86_64 tests/resched_return_host.c -o build/resched-return-host
+	@build/resched-return-host
+
+.PHONY: test-wait-profile-host
+test-wait-profile-host: test-smpbench-profile-host
+	@mkdir -p build
+	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -no-pie -Isrc/include -Isrc/kernel tests/wait_profile_host.c -o build/wait-profile-host
+	@build/wait-profile-host
+
+.PHONY: test-elf-page-host
+test-elf-page-host:
+	@mkdir -p build
+	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-pie -no-pie -Isrc/include -Isrc/kernel tests/elf_page_host.c -o build/elf-page-host
+	@build/elf-page-host
+	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-pie -no-pie -Isrc/include -Isrc/kernel -Isrc/mm -Isrc/drivers tests/elf_loader_host.c src/kernel/elf.c -o build/elf-loader-host
+	@build/elf-loader-host
+
 # Owned isolated pause build only; never builds or attaches shared data disks.
 .PHONY: test-ext4-physical-commit-pause
 test-ext4-physical-commit-pause:
@@ -80,6 +102,7 @@ ISO_ROOT  := $(BUILD_DIR)/iso_root
 KERNEL_ELF := $(BIN_DIR)/fortress.elf
 BOOTABLE_ISO := $(BIN_DIR)/fortress.iso
 BOOTABLE_IMG := $(BIN_DIR)/fortress.img
+
 
 # Source files
 C_SRCS   := $(shell find $(SRC_DIR) -type f -name '*.c')
@@ -349,12 +372,59 @@ test-pmm-boot-host:
 test-vmm-host:
 	@python3 scripts/test_vmm_space_host.py
 
+.PHONY: test-kstack-batch-host
+test-kstack-batch-host: test-vmm-host
+	@python3 scripts/test_kstack_batch_host.py
+
 test-smp-memory-boot: $(BOOTABLE_ISO)
 	@python3 scripts/test_smp_memory_boot.py
 
 .PHONY: test-smp-vmm
 test-smp-vmm: $(BOOTABLE_ISO)
 	@python3 scripts/test_smp_vmm.py
+
+.PHONY: capture-smp-panic
+# BIOS/TCG, ISO only; diagnostic capture, not a performance or correctness gate.
+capture-smp-panic: $(BOOTABLE_ISO) scripts/capture_smp_panic.py
+	@python3 scripts/capture_smp_panic.py --iso bin/fortress.iso --elf bin/fortress.elf --cpus $(SMP) --runs 5 --reps 7 --dump-ram --output build/panic-capture-$$(date -u +%Y%m%d-%H%M%S)
+
+.PHONY: test-smpbench-barrier-host test-smpbench-barrier
+test-smpbench-barrier-host:
+	@python3 scripts/test_smpbench_barrier_host.py
+
+test-smpbench-barrier: $(BOOTABLE_ISO) test-smpbench-barrier-host
+	@python3 scripts/test_smpbench_barrier.py
+
+.PHONY: test-smpbench-profile-host test-smpbench-profile
+test-smpbench-profile-host: test-smpbench-barrier-host
+	@python3 scripts/test_smp_profile_parser.py
+
+test-smpbench-profile: $(BOOTABLE_ISO) test-smpbench-profile-host
+	@python3 scripts/test_smpbench_barrier.py --profile
+
+.PHONY: prepare-dell-smpbench
+prepare-dell-smpbench: $(BOOTABLE_IMG)
+	@python3 scripts/prepare_dell_smpbench.py --output build/dell-smpbench-$$(date -u +%Y%m%d-%H%M%S)
+
+.PHONY: prepare-kstack-comparison
+.PHONY: prepare-elf-copy-comparison
+prepare-elf-copy-comparison: $(BOOTABLE_IMG)
+	@python3 scripts/prepare_kstack_comparison.py --experiment elf-copy --output build/elf-copy-ab-$$(date -u +%Y%m%d-%H%M%S)
+
+.PHONY: prepare-pipe-wait-comparison
+prepare-pipe-wait-comparison: $(BOOTABLE_IMG)
+	@python3 scripts/prepare_kstack_comparison.py --experiment elf-copy --pipe-waits --output build/pipe-wait-ab-$$(date -u +%Y%m%d-%H%M%S)
+
+.PHONY: prepare-resched-comparison
+prepare-resched-comparison: $(BOOTABLE_IMG)
+	@python3 scripts/prepare_kstack_comparison.py --experiment resched --pipe-waits --output build/resched-ab-$$(date -u +%Y%m%d-%H%M%S)
+
+.PHONY: prepare-resched-policy-comparison
+prepare-resched-policy-comparison: $(BOOTABLE_IMG)
+	@python3 scripts/prepare_kstack_comparison.py --experiment resched-policy --pipe-waits --output build/resched-policy-ab-$$(date -u +%Y%m%d-%H%M%S)
+
+prepare-kstack-comparison: $(BOOTABLE_IMG)
+	@python3 scripts/prepare_kstack_comparison.py --output build/kstack-ab-$$(date -u +%Y%m%d-%H%M%S)
 
 test-ext2:
 	@python3 scripts/test_ext2.py
@@ -521,8 +591,11 @@ $(BUILD_DIR)/tool-common.o: user/tools/common.c user/tools/common.h src/include/
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
 
-$(STREAM_TOOL_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/common.h user/tools/start.asm user/shell.ld $(BUILD_DIR)/tool-common.o src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
-	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-$*.o
+$(addprefix $(BUILD_DIR)/tool-,$(addsuffix .o,$(STREAM_TOOLS))): $(BUILD_DIR)/tool-%.o: user/tools/%.c user/tools/common.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(STREAM_TOOL_ELFS): $(BUILD_DIR)/tool-%.elf: $(BUILD_DIR)/tool-%.o user/tools/start.asm user/shell.ld $(BUILD_DIR)/tool-common.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-common.o -o $@
 
@@ -765,7 +838,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f COMMANDS.md $(BUILD_DIR)/initramfs/docs/commands.txt
 	@printf "# Fortress Network Configuration\naddress 10.0.2.15/24\ngateway 10.0.2.2\ndns 10.0.2.3\n" > $(BUILD_DIR)/initramfs/etc/network.conf
 	@echo "  [TAR] Generating USTAR archive $@"
-	@tar --format=ustar -cf $(INITRAMFS_TAR) -C $(BUILD_DIR)/initramfs bin etc docs
+	@tar --format=ustar --exclude=bin/benchrun -cf $(INITRAMFS_TAR) -C $(BUILD_DIR)/initramfs bin etc docs
 
 # Compile C source files to object files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
@@ -853,10 +926,15 @@ $(BOOTABLE_ISO): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf limine-setup
 	@$(LIMINE_DIR)/limine bios-install $(BOOTABLE_ISO) 2>/dev/null || true
 	@echo "[OK] Bootable ISO generated: $(BOOTABLE_ISO)"
 
-# Package bootable raw disk image (dual-boot GPT/ESP + persistent ext2)
+# Package bootable raw disk image (dual-boot GPT/ESP + journaled EXT4)
+.PHONY: test-default-ext4-image
+test-default-ext4-image: $(BOOTABLE_IMG)
+	@python3 scripts/test_default_ext4_image.py --firmware bios --cpus 8 --output $(BUILD_DIR)/default-ext4-bios-$(shell date +%s)
+	@python3 scripts/test_default_ext4_image.py --firmware uefi --cpus 8 --output $(BUILD_DIR)/default-ext4-uefi-$(shell date +%s)
+
 img: $(BOOTABLE_IMG)
 
-$(BOOTABLE_IMG): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf limine-setup $(BOOTABLE_ISO)
+$(BOOTABLE_IMG): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf scripts/create_boot_img.py scripts/initialize_ext4_journal.py limine-setup $(BOOTABLE_ISO)
 	@mkdir -p $(BIN_DIR)
 	@echo "--> Creating bootable raw disk image with scripts/create_boot_img.py..."
 	@python3 scripts/create_boot_img.py $@ --iso-root $(ISO_ROOT) --limine-dir $(LIMINE_DIR)

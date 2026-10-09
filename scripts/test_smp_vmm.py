@@ -12,6 +12,7 @@ Verifies:
 7. Clean boot to interactive shell prompt.
 """
 import argparse
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -87,7 +88,7 @@ def run_case(iso, temp, firmware, cpus, ram, timeout):
                 output = log.read_text(errors="replace")
                 if "[FAIL] SMP memory" in output:
                     raise AssertionError(f"VMM lifecycle assertion failed: {log}")
-                if "fortress> " in output:
+                if re.search(r"(?:fortress> |fortress:[^\r\n]* \$ )", output):
                     break
                 if child.poll() is not None:
                     raise RuntimeError(f"QEMU exited early; see {log} and {error}")
@@ -111,6 +112,7 @@ def run_case(iso, temp, firmware, cpus, ram, timeout):
         "[PASS] SMP memory 6D: zero deferred destructions remaining (all drained)",
         "[PASS] SMP memory 6D: exact table-frame counter equality (matches baseline)",
         "[PASS] SMP memory 6D: exact physical frame equality (zero frame leaks)",
+        "[PASS] SMP memory 6D: exact physical allocation-set equality",
         "[PASS] SMP memory 6D: all worker stacks reaped cleanly",
         "[ OK ] SMP Piece 6D (Address-Space Lifetime & Deferred Reaping) complete.",
     ]

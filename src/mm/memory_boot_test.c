@@ -1,6 +1,8 @@
 #include "memory_boot_test.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "heap.h"
+#include "apic.h"
 #include "serial.h"
 #include "string.h"
 #include "thread.h"
@@ -424,6 +426,9 @@ void memory_vmm_lifecycle_test_run(size_t total_cpus) {
 
     size_t baseline_allocated_tables = vmm_get_allocated_table_frames();
     size_t baseline_free_pages = pmm_get_free_pages();
+    size_t baseline_heap_bytes = heap_get_total_bytes();
+    size_t baseline_heap_used = heap_get_used_bytes();
+    require_6d(pmm_snapshot(before, sizeof(before)), "baseline allocation set");
     uint64_t baseline_stack_slots = sched_get_active_stack_slots_mask();
     size_t initial_deferred = vmm_get_deferred_count();
 
@@ -519,10 +524,18 @@ void memory_vmm_lifecycle_test_run(size_t total_cpus) {
         }
     }
 
-    /* Final reap and drain */
-    for (int d = 0; d < 10; d++) {
+    /* A remote idle thread may already have detached the last dead task and
+     * still be freeing its stack outside the scheduler lock. Ten local yields
+     * do not establish quiescence. Wait for those retained resources to return
+     * before taking the exact accounting snapshots; never relax equality. */
+    uint64_t reap_deadline = apic_timer_get_ticks() + 5 * apic_timer_get_frequency();
+    for (;;) {
         sched_reap_dead();
         vmm_drain_deferred_destructions();
+        if (sched_get_active_stack_slots_mask() == baseline_stack_slots &&
+            heap_get_used_bytes() == baseline_heap_used &&
+            vmm_get_deferred_count() == 0) break;
+        require_6d(apic_timer_get_ticks() < reap_deadline, "final reaper quiescence timeout");
         thread_yield();
     }
 
@@ -543,18 +556,47 @@ void memory_vmm_lifecycle_test_run(size_t total_cpus) {
 
     size_t final_free_pages = pmm_get_free_pages();
     if (final_free_pages != baseline_free_pages) {
-        serial_puts("[FAIL] SMP memory 6D: Free pages mismatch! Baseline: ");
+        serial_puts("[INFO] SMP memory 6D: Free pages mismatch! Baseline: ");
         serial_print_dec(baseline_free_pages);
         serial_puts(" Final: ");
         serial_print_dec(final_free_pages);
         serial_puts("\n");
+        serial_puts("       [INFO] Heap capacity baseline/final: ");
+        serial_print_dec(baseline_heap_bytes);
+        serial_puts(" / ");
+        serial_print_dec(heap_get_total_bytes());
+        serial_puts("; used baseline/final: ");
+        serial_print_dec(baseline_heap_used);
+        serial_puts(" / ");
+        serial_print_dec(heap_get_used_bytes());
+        serial_puts("\n");
+        serial_puts("       [INFO] Stack slots baseline/final: ");
+        serial_print_hex(baseline_stack_slots);
+        serial_puts(" / ");
+        serial_print_hex(sched_get_active_stack_slots_mask());
+        serial_puts("\n");
+        require_6d(pmm_snapshot(after, sizeof(after)), "final allocation set");
+        unsigned shown = 0;
+        for (size_t bit = 0; bit < sizeof(before) * 8 && shown < 16; bit++) {
+            uint8_t mask = (uint8_t)(1U << (bit % 8));
+            if ((before[bit / 8] ^ after[bit / 8]) & mask) {
+                serial_puts("       [INFO] Changed frame: ");
+                serial_print_hex(bit * PAGE_SIZE);
+                serial_puts(after[bit / 8] & mask ? " allocated\n" : " freed\n");
+                shown++;
+            }
+        }
+        require_6d(false, "free pages mismatch after final reap");
         for (;;) { __asm__ volatile("cli; hlt"); }
     }
     serial_puts("       [PASS] SMP memory 6D: exact physical frame equality (zero frame leaks)\n");
+    require_6d(pmm_snapshot(after, sizeof(after)) &&
+               memcmp(before, after, sizeof(before)) == 0,
+               "physical allocation set mismatch");
+    serial_puts("       [PASS] SMP memory 6D: exact physical allocation-set equality\n");
 
     uint64_t final_stack_slots = sched_get_active_stack_slots_mask();
     require_6d(final_stack_slots == baseline_stack_slots, "kernel stack slots leaked");
     serial_puts("       [PASS] SMP memory 6D: all worker stacks reaped cleanly\n");
     serial_puts("[ OK ] SMP Piece 6D (Address-Space Lifetime & Deferred Reaping) complete.\n\n");
 }
-

@@ -7,9 +7,16 @@
 typedef struct tcb {
     uint64_t  tid;
     uintptr_t cr3;
+    size_t current_cpu;
+    struct vmm_space *vmm_space;
     uint32_t terminal_mode;
 } tcb_t;
+#ifdef TEST_VMM_HOST
+extern _Thread_local tcb_t *g_vmm_host_current;
+static inline tcb_t *thread_current(void) { return g_vmm_host_current; }
+#else
 static inline tcb_t *thread_current(void) { return NULL; }
+#endif
 
 static inline tcb_t *thread_create_on_cpu(size_t c, const char *n, void (*entry)(void *), void *a) {
     (void)c; (void)n; (void)entry; (void)a;

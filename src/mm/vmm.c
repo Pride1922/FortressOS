@@ -69,7 +69,7 @@ int vmm_space_retire(uintptr_t pml4_phys) {
                 spin_unlock_irqrestore(&g_vmm_lock, rflags);
                 return VMM_OK; /* Idempotent */
             }
-            curr->state = VMM_SPACE_DYING;
+            __atomic_store_n(&curr->state, VMM_SPACE_DYING, __ATOMIC_RELEASE);
             spin_unlock_irqrestore(&g_vmm_lock, rflags);
             return VMM_OK;
         }
@@ -136,6 +136,7 @@ int vmm_space_enter(uintptr_t next_cr3) {
                 return VMM_ERR_INVALID_ADDR;
             }
             uint32_t cid = cpu_current()->id;
+            __atomic_store_n(&curr->ever_active, true, __ATOMIC_RELEASE);
             if (cid < 64) {
                 curr->active_cpus_mask |= (1ULL << cid);
             }
@@ -264,44 +265,44 @@ uint64_t vmm_kernel_mapping_fingerprint(void) {
     return result;
 }
 
-static uint64_t *get_or_create_table(uint64_t *parent_table, size_t index, uint64_t flags) {
-    uint64_t entry = parent_table[index];
-
+/* Published tables remain linked until whole-space teardown. Readers must hold
+ * an op reference or their own task's scheduler reference. */
+static uint64_t *get_or_create_table(uint64_t *parent, size_t index,
+                                    uint64_t flags, uintptr_t *spares,
+                                    unsigned *count) {
+    uint64_t entry = __atomic_load_n(&parent[index], __ATOMIC_ACQUIRE);
     if (entry & PTE_PRESENT) {
-        /* If child mapping requires user mode, upgrade intermediate table entry */
-        if (flags & PTE_USER) {
-            parent_table[index] |= PTE_USER;
-        }
-        uintptr_t table_phys = entry & PTE_ADDR_MASK;
-        return (uint64_t *)phys_to_virt(table_phys);
+        if (entry & PTE_HUGE) return NULL;
+        if ((flags & PTE_USER) && !(entry & PTE_USER))
+            __atomic_fetch_or(&parent[index], PTE_USER, __ATOMIC_RELEASE);
+        return phys_to_virt(entry & PTE_ADDR_MASK);
     }
+    if (!*count) return NULL;
+    uintptr_t phys = spares[--*count];
+    __atomic_add_fetch(&g_vmm_allocated_table_frames, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&parent[index], phys | PTE_PRESENT | PTE_WRITABLE |
+                     (flags & PTE_USER), __ATOMIC_RELEASE);
+    return phys_to_virt(phys);
+}
 
-    /* Allocate a fresh 4 KiB frame from PMM for the intermediate page table */
-    uintptr_t new_table_phys = pmm_alloc_page();
-    if (new_table_phys == 0) {
-        return NULL; /* Out of physical memory */
+/* Under g_vmm_lock: count the missing suffix before allocating outside it. */
+static int missing_tables(uint64_t *root, uintptr_t va) {
+    size_t indices[] = {pml4_index(va), pdpt_index(va), pd_index(va)};
+    for (unsigned level = 0; level < 3; level++) {
+        uint64_t entry = __atomic_load_n(&root[indices[level]], __ATOMIC_ACQUIRE);
+        if (!(entry & PTE_PRESENT)) return 3 - level;
+        if (entry & PTE_HUGE) return VMM_ERR_INVALID_ADDR;
+        root = phys_to_virt(entry & PTE_ADDR_MASK);
     }
-
-    g_vmm_allocated_table_frames++;
-    uint64_t *new_table_virt = (uint64_t *)phys_to_virt(new_table_phys);
-    memset(new_table_virt, 0, PAGE_SIZE);
-
-    /* Link table into parent hierarchy */
-    parent_table[index] = new_table_phys | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
-    return new_table_virt;
+    return 0;
 }
 
 uintptr_t vmm_create_pml4(void) {
-    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     uintptr_t pml4_phys = pmm_alloc_page();
-    if (pml4_phys == 0) {
-        spin_unlock_irqrestore(&g_vmm_lock, rflags);
-        return 0;
-    }
-
-    g_vmm_allocated_table_frames++;
-    uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
-    memset(pml4_virt, 0, PAGE_SIZE);
+    if (pml4_phys == 0) return 0;
+    memset(phys_to_virt(pml4_phys), 0, PAGE_SIZE);
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    __atomic_add_fetch(&g_vmm_allocated_table_frames, 1, __ATOMIC_RELAXED);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
     return pml4_phys;
 }
@@ -322,7 +323,7 @@ uintptr_t vmm_create_user_pml4(void) {
 
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
 
-    g_vmm_allocated_table_frames++;
+    __atomic_add_fetch(&g_vmm_allocated_table_frames, 1, __ATOMIC_RELAXED);
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
 
     /* 1. Clear lower half (user space, PML4 entries 0..255) */
@@ -345,6 +346,7 @@ uintptr_t vmm_create_user_pml4(void) {
     space->sched_refs = 0;
     space->op_refs = 0;
     space->active_cpus_mask = 0;
+    space->ever_active = false;
     space->free_user_frames = false;
     space->deferred_queued = false;
     space->deferred_next = NULL;
@@ -366,7 +368,7 @@ uintptr_t vmm_get_current_pml4(void) {
 #endif
 }
 
-static int vmm_teardown_pml4_tables_unlocked(uintptr_t pml4_phys, bool free_user_frames) {
+static int vmm_validate_teardown(uintptr_t pml4_phys) {
     uint64_t *pml4_virt = (uint64_t *)phys_to_virt(pml4_phys);
 
     /*
@@ -377,6 +379,7 @@ static int vmm_teardown_pml4_tables_unlocked(uintptr_t pml4_phys, bool free_user
      */
     for (size_t i = 0; i < 256; i++) {
         if (!(pml4_virt[i] & PTE_PRESENT)) continue;
+        if (pml4_virt[i] & PTE_HUGE) return VMM_ERR_INVALID_ADDR;
 
         uintptr_t pdpt_phys = pml4_virt[i] & PTE_ADDR_MASK;
         uint64_t *pdpt_virt = (uint64_t *)phys_to_virt(pdpt_phys);
@@ -399,6 +402,13 @@ static int vmm_teardown_pml4_tables_unlocked(uintptr_t pml4_phys, bool free_user
         }
     }
 
+    return VMM_OK;
+}
+
+/* Registry detached, references drained: this hierarchy is exclusively ours.
+ * PMM work and synchronous IPIs must not hold the registry lock. */
+static int vmm_teardown_pml4_tables_unlocked(uintptr_t pml4_phys, bool free_user_frames) {
+    uint64_t *pml4_virt = phys_to_virt(pml4_phys);
     /*
      * PASS 2: Safe Destruction Pass.
      * Traverse ONLY lower half (user space, PML4 entries 0..255).
@@ -434,25 +444,25 @@ static int vmm_teardown_pml4_tables_unlocked(uintptr_t pml4_phys, bool free_user
 
                 /* Free Level 1 PT frame */
                 pmm_free_page(pt_phys);
-                g_vmm_allocated_table_frames--;
+                __atomic_sub_fetch(&g_vmm_allocated_table_frames, 1, __ATOMIC_RELAXED);
                 pd_virt[k] = 0;
             }
 
             /* Free Level 2 PD frame */
             pmm_free_page(pd_phys);
-            g_vmm_allocated_table_frames--;
+            __atomic_sub_fetch(&g_vmm_allocated_table_frames, 1, __ATOMIC_RELAXED);
             pdpt_virt[j] = 0;
         }
 
         /* Free Level 3 PDPT frame */
         pmm_free_page(pdpt_phys);
-        g_vmm_allocated_table_frames--;
+        __atomic_sub_fetch(&g_vmm_allocated_table_frames, 1, __ATOMIC_RELAXED);
         pml4_virt[i] = 0;
     }
 
     /* Free root Level 4 PML4 frame */
     pmm_free_page(pml4_phys);
-    g_vmm_allocated_table_frames--;
+    __atomic_sub_fetch(&g_vmm_allocated_table_frames, 1, __ATOMIC_RELAXED);
 
     return VMM_OK;
 }
@@ -469,22 +479,6 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
     if (pml4_phys == (vmm_get_current_pml4() & PTE_ADDR_MASK)) {
         return VMM_ERR_INVALID_ADDR;
     }
-
-    vmm_space_t *sp = vmm_space_lookup(pml4_phys);
-    if (sp && sp->is_kernel) {
-        return VMM_ERR_INVALID_ADDR;
-    }
-
-    /* SMP Invariant: Ensure no other online core is running in this address space */
-    for (size_t i = 0; i < smp_get_cpu_count(); i++) {
-        if (cpu_locals[i].current_thread &&
-            (cpu_locals[i].current_thread->cr3 & PTE_ADDR_MASK) == pml4_phys) {
-            return VMM_ERR_INVALID_ADDR;
-        }
-    }
-
-    /* Synchronously invalidate TLB entries on any cores that cached this PML4 */
-    smp_tlb_shootdown(0, pml4_phys);
 
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
 
@@ -509,7 +503,7 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
         space_to_free->sched_refs != 0 ||
         space_to_free->op_refs != 0) {
         /* Enqueue for deferred destruction once all references and active masks drain */
-        space_to_free->state = VMM_SPACE_DYING;
+        __atomic_store_n(&space_to_free->state, VMM_SPACE_DYING, __ATOMIC_RELEASE);
         space_to_free->free_user_frames = free_user_frames;
         if (!space_to_free->deferred_queued) {
             space_to_free->deferred_queued = true;
@@ -518,6 +512,12 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
         }
         spin_unlock_irqrestore(&g_vmm_lock, rflags);
         return VMM_ERR_BUSY;
+    }
+
+    int validation = vmm_validate_teardown(pml4_phys);
+    if (validation != VMM_OK) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        return validation;
     }
 
     /* If on deferred list, unlink from it */
@@ -539,10 +539,11 @@ int vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames) {
 
     /* Unlink space metadata under lock once pre-validation succeeds */
     *link = space_to_free->next;
-    space_to_free->state = VMM_SPACE_DEAD;
+    __atomic_store_n(&space_to_free->state, VMM_SPACE_DEAD, __ATOMIC_RELEASE);
 
-    int teardown_status = vmm_teardown_pml4_tables_unlocked(pml4_phys, free_user_frames);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    if (space_to_free->ever_active) smp_tlb_shootdown(0, pml4_phys);
+    int teardown_status = vmm_teardown_pml4_tables_unlocked(pml4_phys, free_user_frames);
 
     if (space_to_free && !space_to_free->is_kernel) {
         kfree(space_to_free);
@@ -560,7 +561,8 @@ size_t vmm_drain_deferred_destructions(void) {
 
     while (curr) {
         vmm_space_t *next = curr->deferred_next;
-        if (curr->active_cpus_mask == 0 && curr->sched_refs == 0 && curr->op_refs == 0) {
+        if (curr->active_cpus_mask == 0 && curr->sched_refs == 0 && curr->op_refs == 0 &&
+            vmm_validate_teardown(curr->cr3) == VMM_OK) {
             /* Unlink from deferred list */
             if (prev) {
                 prev->deferred_next = next;
@@ -579,10 +581,7 @@ size_t vmm_drain_deferred_destructions(void) {
                 }
                 link = &(*link)->next;
             }
-            curr->state = VMM_SPACE_DEAD;
-
-            /* Teardown page table hierarchy */
-            vmm_teardown_pml4_tables_unlocked(curr->cr3, curr->free_user_frames);
+            __atomic_store_n(&curr->state, VMM_SPACE_DEAD, __ATOMIC_RELEASE);
 
             /* Queue for kfree outside g_vmm_lock */
             curr->next = free_list;
@@ -598,6 +597,8 @@ size_t vmm_drain_deferred_destructions(void) {
     /* Free space metadata structures outside g_vmm_lock (Rank 3 -> Rank 2) */
     while (free_list) {
         vmm_space_t *next = free_list->next;
+        if (free_list->ever_active) smp_tlb_shootdown(0, free_list->cr3);
+        vmm_teardown_pml4_tables_unlocked(free_list->cr3, free_list->free_user_frames);
         if (!free_list->is_kernel) {
             kfree(free_list);
         }
@@ -619,7 +620,9 @@ size_t vmm_get_deferred_count(void) {
     return count;
 }
 
-static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
+static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr,
+                                 uintptr_t phys_addr, uint64_t flags,
+                                 uintptr_t *spares, unsigned *count) {
     if (!pml4_virt) return VMM_ERR_INVALID_ADDR;
     if ((virt_addr % PAGE_SIZE) != 0 || (phys_addr % PAGE_SIZE) != 0) {
         return VMM_ERR_INVALID_ADDR;
@@ -639,15 +642,15 @@ static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintp
     size_t pt_i   = pt_index(virt_addr);
 
     /* 1. Level 4 -> Level 3 (PDPT) */
-    uint64_t *pdpt = get_or_create_table(pml4_virt, pml4_i, flags);
+    uint64_t *pdpt = get_or_create_table(pml4_virt, pml4_i, flags, spares, count);
     if (!pdpt) return VMM_ERR_NOMEM;
 
     /* 2. Level 3 -> Level 2 (PD) */
-    uint64_t *pd = get_or_create_table(pdpt, pdpt_i, flags);
+    uint64_t *pd = get_or_create_table(pdpt, pdpt_i, flags, spares, count);
     if (!pd) return VMM_ERR_NOMEM;
 
     /* 3. Level 2 -> Level 1 (PT) */
-    uint64_t *pt = get_or_create_table(pd, pd_i, flags);
+    uint64_t *pt = get_or_create_table(pd, pd_i, flags, spares, count);
     if (!pt) return VMM_ERR_NOMEM;
 
     /* 4. Level 1 Entry */
@@ -655,28 +658,129 @@ static int vmm_map_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr, uintp
         return VMM_ERR_ALREADY_MAPPED;
     }
 
-    pt[pt_i] = (phys_addr & PTE_ADDR_MASK) | flags | PTE_PRESENT;
+    __atomic_store_n(&pt[pt_i], (phys_addr & PTE_ADDR_MASK) | flags | PTE_PRESENT, __ATOMIC_RELEASE);
 
-    /* Invalidate TLB for this virtual address */
-#ifndef TEST_VMM_HOST
-    __asm__ volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
-#else
-    (void)virt_addr;
-#endif
     return VMM_OK;
 }
 
-int vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
-    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    int op_status = vmm_space_get_op_locked(pml4_virt);
-    if (op_status != VMM_OK) {
-        spin_unlock_irqrestore(&g_vmm_lock, rflags);
-        return op_status;
-    }
+/* Called under the registry lock. A never-loaded private root cannot have
+ * stale translations. Shared kernel mappings always require invalidation. */
+static bool needs_invalidation(uint64_t *root, uintptr_t va) {
+    if (pml4_index(va) >= 256) return true;
+    for (vmm_space_t *s = g_vmm_spaces_list; s; s = s->next)
+        if (s->pml4_virt == root)
+            return s->is_kernel || __atomic_load_n(&s->ever_active, __ATOMIC_ACQUIRE);
+    return true;
+}
 
-    int res = vmm_map_page_unlocked(pml4_virt, virt_addr, phys_addr, flags);
-    vmm_space_put_op_locked(pml4_virt);
+int vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags) {
+    if (!pml4_virt || virt_addr % PAGE_SIZE || phys_addr % PAGE_SIZE ||
+        !is_canonical_address(virt_addr) || (flags & PTE_HUGE) ||
+        ((flags & PTE_USER) && virt_addr >= 0xFFFF800000000000ULL))
+        return VMM_ERR_INVALID_ADDR;
+    uintptr_t spares[3];
+    unsigned count = 0;
+    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    int res = vmm_space_get_op_locked(pml4_virt);
+    if (res != VMM_OK) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        return res;
+    }
+    int needed = missing_tables(pml4_virt, virt_addr);
+    if (needed > 0) {
+        spin_unlock_irqrestore(&g_vmm_lock, rflags);
+        for (int i = 0; i < needed; i++) {
+            uintptr_t phys = pmm_alloc_page();
+            if (!phys) break;
+            memset(phys_to_virt(phys), 0, PAGE_SIZE);
+            spares[count++] = phys;
+        }
+        rflags = spin_lock_irqsave(&g_vmm_lock);
+        /* Another mapper can have supplied tables during allocation. */
+        needed = missing_tables(pml4_virt, virt_addr);
+    }
+    if (needed < 0) res = needed;
+    else if ((unsigned)needed > count) res = VMM_ERR_NOMEM;
+    else res = vmm_map_page_unlocked(pml4_virt, virt_addr, phys_addr, flags, spares, &count);
+    bool invalidate = needs_invalidation(pml4_virt, virt_addr);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    while (count) pmm_free_page(spares[--count]);
+    /* Keep op_refs until synchronous invalidation has completed. */
+    if (res == VMM_OK && invalidate)
+        smp_tlb_shootdown(virt_addr, pml4_index(virt_addr) >= 256 ? 0 : virt_to_phys(pml4_virt));
+    vmm_space_put_op(pml4_virt);
+    return res;
+}
+
+/* Same PT region: all leaves share a missing suffix, bounded by three pages.
+ * Preflight is repeated after allocation since competing mappers can run. */
+static int map_batch_check(uint64_t *root, uintptr_t va, size_t count) {
+    int needed = missing_tables(root, va);
+    if (needed != 0) return needed;
+    uint64_t *pdpt = phys_to_virt(root[pml4_index(va)] & PTE_ADDR_MASK);
+    uint64_t *pd = phys_to_virt(pdpt[pdpt_index(va)] & PTE_ADDR_MASK);
+    uint64_t *pt = phys_to_virt(pd[pd_index(va)] & PTE_ADDR_MASK);
+    for (size_t i = 0; i < count; i++)
+        if (__atomic_load_n(&pt[pt_index(va) + i], __ATOMIC_ACQUIRE) & PTE_PRESENT)
+            return VMM_ERR_ALREADY_MAPPED;
+    return 0;
+}
+
+int vmm_map_pages(uint64_t *root, uintptr_t va, size_t pages,
+                   const uintptr_t *input, uint64_t pte_flags) {
+    if (!root || !input || !pages || pages > 16 || va % PAGE_SIZE ||
+        va > UINT64_MAX - (pages * PAGE_SIZE - 1) ||
+        !is_canonical_address(va) || !is_canonical_address(va + pages * PAGE_SIZE - 1) ||
+        (va >> 21) != ((va + pages * PAGE_SIZE - 1) >> 21) ||
+        (pte_flags & (PTE_HUGE | PTE_GLOBAL)) ||
+        ((pte_flags & PTE_USER) && pml4_index(va) >= 256))
+        return VMM_ERR_INVALID_ADDR;
+    uintptr_t frames[16], spares[3];
+    unsigned count = 0;
+    for (size_t i = 0; i < pages; i++) {
+        frames[i] = input[i];
+        if (!frames[i] || frames[i] % PAGE_SIZE || (frames[i] & ~PTE_ADDR_MASK))
+            return VMM_ERR_INVALID_ADDR;
+        for (size_t j = 0; j < i; j++)
+            if (frames[i] == frames[j]) return VMM_ERR_INVALID_ADDR;
+    }
+    uint64_t irq = spin_lock_irqsave(&g_vmm_lock);
+    int res = vmm_space_get_op_locked(root);
+    if (res != VMM_OK) {
+        spin_unlock_irqrestore(&g_vmm_lock, irq);
+        return res;
+    }
+    int needed = map_batch_check(root, va, pages);
+    if (needed > 0) {
+        spin_unlock_irqrestore(&g_vmm_lock, irq);
+        for (int i = 0; i < needed; i++) {
+            uintptr_t frame = pmm_alloc_page();
+            if (!frame) break;
+            memset(phys_to_virt(frame), 0, PAGE_SIZE);
+            spares[count++] = frame;
+        }
+        irq = spin_lock_irqsave(&g_vmm_lock);
+        needed = map_batch_check(root, va, pages);
+    }
+    if (needed < 0) res = needed;
+    else if ((unsigned)needed > count) res = VMM_ERR_NOMEM;
+    else {
+        /* Preflight and reserved suffix guarantee these cannot fail. No
+         * allocation or fallible operation remains after table publication. */
+        uint64_t *pdpt = get_or_create_table(root, pml4_index(va), pte_flags, spares, &count);
+        uint64_t *pd = get_or_create_table(pdpt, pdpt_index(va), pte_flags, spares, &count);
+        uint64_t *pt = get_or_create_table(pd, pd_index(va), pte_flags, spares, &count);
+        for (size_t i = 0; i < pages; i++)
+            __atomic_store_n(&pt[pt_index(va) + i], frames[i] | pte_flags | PTE_PRESENT, __ATOMIC_RELEASE);
+        res = VMM_OK;
+    }
+    bool invalidate = needs_invalidation(root, va);
+    spin_unlock_irqrestore(&g_vmm_lock, irq);
+    while (count) pmm_free_page(spares[--count]);
+    /* op_refs spans the synchronous flush; never wait for IPIs under VMM. */
+    if (res == VMM_OK && invalidate)
+        smp_tlb_shootdown_pages(va, pml4_index(va) >= 256 ? 0 : virt_to_phys(root), pages);
+    vmm_space_put_op(root);
     return res;
 }
 
@@ -694,121 +798,123 @@ static int vmm_unmap_page_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
     size_t pt_i   = pt_index(virt_addr);
 
     if (!(pml4_virt[pml4_i] & PTE_PRESENT)) return VMM_ERR_NOT_MAPPED;
+    if (pml4_virt[pml4_i] & PTE_HUGE) return VMM_ERR_INVALID_ADDR;
     uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4_virt[pml4_i] & PTE_ADDR_MASK);
 
     if (!(pdpt[pdpt_i] & PTE_PRESENT)) return VMM_ERR_NOT_MAPPED;
+    if (pdpt[pdpt_i] & PTE_HUGE) return VMM_ERR_INVALID_ADDR;
     uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpt_i] & PTE_ADDR_MASK);
 
     if (!(pd[pd_i] & PTE_PRESENT)) return VMM_ERR_NOT_MAPPED;
+    if (pd[pd_i] & PTE_HUGE) return VMM_ERR_INVALID_ADDR;
     uint64_t *pt = (uint64_t *)phys_to_virt(pd[pd_i] & PTE_ADDR_MASK);
 
     if (!(pt[pt_i] & PTE_PRESENT)) return VMM_ERR_NOT_MAPPED;
 
     /* Clear entry (ownership rule: does NOT free physical frame) */
-    pt[pt_i] = 0;
+    __atomic_store_n(&pt[pt_i], 0, __ATOMIC_RELEASE);
 
-    /* Invalidate TLB */
-#ifndef TEST_VMM_HOST
-    __asm__ volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
-#else
-    (void)virt_addr;
-#endif
     return VMM_OK;
 }
 
 int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    int op_status = vmm_space_get_op_locked(pml4_virt);
-    if (op_status != VMM_OK) {
+    int res = vmm_space_get_op_locked(pml4_virt);
+    if (res != VMM_OK) {
         spin_unlock_irqrestore(&g_vmm_lock, rflags);
-        return op_status;
+        return res;
     }
-
-    int res = vmm_unmap_page_unlocked(pml4_virt, virt_addr);
-    vmm_space_put_op_locked(pml4_virt);
+    res = vmm_unmap_page_unlocked(pml4_virt, virt_addr);
+    bool invalidate = needs_invalidation(pml4_virt, virt_addr);
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
-
-    if (res == VMM_OK) {
-        uintptr_t cr3 = 0;
-        if (pml4_virt && pml4_virt != vmm_get_kernel_pml4_virt()) {
-            cr3 = (uintptr_t)pml4_virt - hhdm_offset;
-        }
-        smp_tlb_shootdown(virt_addr, cr3);
-    }
+    if (res == VMM_OK && invalidate)
+        smp_tlb_shootdown(virt_addr, pml4_index(virt_addr) >= 256 ? 0 : virt_to_phys(pml4_virt));
+    vmm_space_put_op(pml4_virt);
     return res;
 }
 
-static bool vmm_is_mapped_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
-    if (!pml4_virt || !is_canonical_address(virt_addr)) return false;
+static uint64_t walk_leaf(uint64_t *table, uintptr_t va, uint64_t required);
 
-    size_t pml4_i = pml4_index(virt_addr);
-    size_t pdpt_i = pdpt_index(virt_addr);
-    size_t pd_i   = pd_index(virt_addr);
-    size_t pt_i   = pt_index(virt_addr);
+int vmm_unmap_pages(uint64_t *root, uintptr_t va, size_t count, uintptr_t *out_frames) {
+    if (!root || !out_frames || !count || count > 16 || va % PAGE_SIZE ||
+        va > UINT64_MAX - (count * PAGE_SIZE - 1) ||
+        !is_canonical_address(va) || !is_canonical_address(va + count * PAGE_SIZE - 1))
+        return VMM_ERR_INVALID_ADDR;
+    uintptr_t frames[16];
+    uint64_t flags = spin_lock_irqsave(&g_vmm_lock);
+    int res = vmm_space_get_op_locked(root);
+    if (res != VMM_OK) {
+        spin_unlock_irqrestore(&g_vmm_lock, flags);
+        return res;
+    }
+    for (size_t i = 0; i < count; i++) {
+        uint64_t leaf = walk_leaf(root, va + i * PAGE_SIZE, PTE_PRESENT);
+        if (!leaf || (leaf & PTE_GLOBAL)) {
+            vmm_space_put_op_locked(root);
+            spin_unlock_irqrestore(&g_vmm_lock, flags);
+            return leaf ? VMM_ERR_INVALID_ADDR : VMM_ERR_NOT_MAPPED;
+        }
+        frames[i] = leaf & PTE_ADDR_MASK;
+    }
+    for (size_t i = 0; i < count; i++)
+        vmm_unmap_page_unlocked(root, va + i * PAGE_SIZE);
+    bool invalidate = needs_invalidation(root, va);
+    spin_unlock_irqrestore(&g_vmm_lock, flags);
+    /* One mailbox round, bounded INVLPG on each target. Shared kernel stacks
+     * require every online CPU; unrelated translations stay cached. */
+    if (invalidate)
+        smp_tlb_shootdown_pages(va, pml4_index(va) >= 256 ? 0 : virt_to_phys(root), count);
+    vmm_space_put_op(root);
+    for (size_t i = 0; i < count; i++) out_frames[i] = frames[i];
+    return VMM_OK;
+}
 
-    if (!(pml4_virt[pml4_i] & PTE_PRESENT)) return false;
-    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4_virt[pml4_i] & PTE_ADDR_MASK);
-
-    if (!(pdpt[pdpt_i] & PTE_PRESENT)) return false;
-    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpt_i] & PTE_ADDR_MASK);
-
-    if (!(pd[pd_i] & PTE_PRESENT)) return false;
-    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pd_i] & PTE_ADDR_MASK);
-
-    return (pt[pt_i] & PTE_PRESENT) != 0;
+static uint64_t walk_leaf(uint64_t *table, uintptr_t va, uint64_t required) {
+    if (!table || !is_canonical_address(va)) return 0;
+    size_t indices[] = {pml4_index(va), pdpt_index(va), pd_index(va), pt_index(va)};
+    for (unsigned level = 0; level < 4; level++) {
+        uint64_t entry = __atomic_load_n(&table[indices[level]], __ATOMIC_ACQUIRE);
+        if ((entry & required) != required) return 0;
+        if (level == 3) return entry;
+        if (entry & PTE_HUGE) return 0;
+        table = phys_to_virt(entry & PTE_ADDR_MASK);
+    }
+    return 0;
 }
 
 bool vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr) {
-    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    int op_status = vmm_space_get_op_locked(pml4_virt);
-    if (op_status != VMM_OK) {
-        spin_unlock_irqrestore(&g_vmm_lock, rflags);
-        return false;
-    }
-
-    bool res = vmm_is_mapped_unlocked(pml4_virt, virt_addr);
-    vmm_space_put_op_locked(pml4_virt);
-    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    if (vmm_space_get_op(pml4_virt) != VMM_OK) return false;
+    bool res = (walk_leaf(pml4_virt, virt_addr, PTE_PRESENT) & PTE_PRESENT) != 0;
+    vmm_space_put_op(pml4_virt);
     return res;
 }
 
-static uintptr_t vmm_get_physical_address_unlocked(uint64_t *pml4_virt, uintptr_t virt_addr) {
-    if (!pml4_virt || !is_canonical_address(virt_addr)) return 0;
-
-    size_t pml4_i = pml4_index(virt_addr);
-    size_t pdpt_i = pdpt_index(virt_addr);
-    size_t pd_i   = pd_index(virt_addr);
-    size_t pt_i   = pt_index(virt_addr);
-
-    if (!(pml4_virt[pml4_i] & PTE_PRESENT)) return 0;
-    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4_virt[pml4_i] & PTE_ADDR_MASK);
-
-    if (!(pdpt[pdpt_i] & PTE_PRESENT)) return 0;
-    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpt_i] & PTE_ADDR_MASK);
-
-    if (!(pd[pd_i] & PTE_PRESENT)) return 0;
-    uint64_t *pt = (uint64_t *)phys_to_virt(pd[pd_i] & PTE_ADDR_MASK);
-
-    if (!(pt[pt_i] & PTE_PRESENT)) return 0;
-
-    return (pt[pt_i] & PTE_ADDR_MASK) | (virt_addr & 0xFFF);
-}
-
 uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr) {
-    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    int op_status = vmm_space_get_op_locked(pml4_virt);
-    if (op_status != VMM_OK) {
-        spin_unlock_irqrestore(&g_vmm_lock, rflags);
-        return 0;
-    }
-
-    uintptr_t res = vmm_get_physical_address_unlocked(pml4_virt, virt_addr);
-    vmm_space_put_op_locked(pml4_virt);
-    spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    if (vmm_space_get_op(pml4_virt) != VMM_OK) return 0;
+    uint64_t entry = walk_leaf(pml4_virt, virt_addr, PTE_PRESENT);
+    uintptr_t res = entry ? (entry & PTE_ADDR_MASK) | (virt_addr & 0xFFF) : 0;
+    vmm_space_put_op(pml4_virt);
     return res;
 }
 
 void vmm_switch_pml4(uintptr_t pml4_phys) {
+    /* Scheduler entry already marks its pinned record. Raw fixture switches
+     * must also mark residency before CR3 changes, without adding sched refs. */
+    uintptr_t root = pml4_phys & PTE_ADDR_MASK;
+    if (root && root != kernel_pml4_phys) {
+        tcb_t *t = thread_current();
+        if (t && t->vmm_space && t->vmm_space->cr3 == root) {
+            __atomic_store_n(&t->vmm_space->ever_active, true, __ATOMIC_RELEASE);
+        } else {
+            uint64_t flags = spin_lock_irqsave(&g_vmm_lock);
+            for (vmm_space_t *s = g_vmm_spaces_list; s; s = s->next)
+                if (s->cr3 == root) {
+                    __atomic_store_n(&s->ever_active, true, __ATOMIC_RELEASE);
+                    break;
+                }
+            spin_unlock_irqrestore(&g_vmm_lock, flags);
+        }
+    }
 #ifdef TEST_VMM_HOST
     extern uintptr_t g_host_mock_cr3;
     g_host_mock_cr3 = pml4_phys & PTE_ADDR_MASK;
@@ -849,10 +955,7 @@ uint64_t *vmm_get_kernel_pml4_virt(void) {
 }
 
 size_t vmm_get_allocated_table_frames(void) {
-    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
-    size_t res = g_vmm_allocated_table_frames;
-    spin_unlock_irqrestore(&g_vmm_lock, rflags);
-    return res;
+    return __atomic_load_n(&g_vmm_allocated_table_frames, __ATOMIC_RELAXED);
 }
 
 size_t vmm_get_retained_table_frames(void) {
@@ -888,31 +991,8 @@ static bool vmm_validate_user_range_unlocked(uint64_t *pml4_virt, uintptr_t virt
     uintptr_t end_page   = (virt_addr + length - 1) & ~(PAGE_SIZE - 1);
 
     for (uintptr_t page = start_page; ; page += PAGE_SIZE) {
-        size_t pml4_i = pml4_index(page);
-        size_t pdpt_i = pdpt_index(page);
-        size_t pd_i   = pd_index(page);
-        size_t pt_i   = pt_index(page);
-
-        /* Level 4 entry */
-        if (!(pml4_virt[pml4_i] & PTE_PRESENT) || !(pml4_virt[pml4_i] & PTE_USER)) return false;
-        if (write_req && !(pml4_virt[pml4_i] & PTE_WRITABLE)) return false;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4_virt[pml4_i] & PTE_ADDR_MASK);
-
-        /* Level 3 entry */
-        if (!(pdpt[pdpt_i] & PTE_PRESENT) || !(pdpt[pdpt_i] & PTE_USER)) return false;
-        if (write_req && !(pdpt[pdpt_i] & PTE_WRITABLE)) return false;
-        if (pdpt[pdpt_i] & PTE_HUGE) return false; /* User space restricted to 4 KiB */
-        uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpt_i] & PTE_ADDR_MASK);
-
-        /* Level 2 entry */
-        if (!(pd[pd_i] & PTE_PRESENT) || !(pd[pd_i] & PTE_USER)) return false;
-        if (write_req && !(pd[pd_i] & PTE_WRITABLE)) return false;
-        if (pd[pd_i] & PTE_HUGE) return false; /* User space restricted to 4 KiB */
-        uint64_t *pt = (uint64_t *)phys_to_virt(pd[pd_i] & PTE_ADDR_MASK);
-
-        /* Level 1 entry */
-        if (!(pt[pt_i] & PTE_PRESENT) || !(pt[pt_i] & PTE_USER)) return false;
-        if (write_req && !(pt[pt_i] & PTE_WRITABLE)) return false;
+        uint64_t required = PTE_PRESENT | PTE_USER | (write_req ? PTE_WRITABLE : 0);
+        if (!walk_leaf(pml4_virt, page, required)) return false;
 
         if (page == end_page) break;
     }
@@ -921,12 +1001,17 @@ static bool vmm_validate_user_range_unlocked(uint64_t *pml4_virt, uintptr_t virt
 }
 
 bool vmm_validate_user_range(uint64_t *pml4_virt, uintptr_t virt_addr, size_t length, bool write_req) {
+    /* Own continuation retains its sched_ref even across preemption/migration.
+     * No intermediate table is freed by unmap; teardown waits for sched_refs.
+     * Cached metadata is immutable and pinned for the same lifetime. */
+    tcb_t *current = thread_current();
+    if (current && current->vmm_space && current->vmm_space->pml4_virt == pml4_virt) {
+        if (__atomic_load_n(&current->vmm_space->state, __ATOMIC_ACQUIRE) != VMM_SPACE_LIVE)
+            return false;
+        return vmm_validate_user_range_unlocked(pml4_virt, virt_addr, length, write_req);
+    }
     if (vmm_space_get_op(pml4_virt) != VMM_OK) return false;
-
-    uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     bool res = vmm_validate_user_range_unlocked(pml4_virt, virt_addr, length, write_req);
-    spin_unlock_irqrestore(&g_vmm_lock, rflags);
-
     vmm_space_put_op(pml4_virt);
     return res;
 }

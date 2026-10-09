@@ -5,6 +5,8 @@
 #include "spinlock.h"
 #include "signal_state.h"
 #include "idt.h"
+#include "spawn_profile_abi.h"
+#include "wait_profile.h"
 
 #define KERNEL_STACKS_BASE    0xFFFFFFFFA0000000ULL
 #define MAX_KERNEL_THREADS    64
@@ -64,6 +66,7 @@ typedef struct tcb {
     /* Process Address Space & Privilege Extensions */
     uintptr_t      cr3;              /* Physical CR3 (0 for kernel threads) */
     uint64_t      *pml4_virt;        /* Virtual address of PML4 (NULL for kernel threads) */
+    struct vmm_space *vmm_space;    /* Immutable; pinned by this task's sched_ref. */
     bool           is_user;          /* True if user-space process */
     uint64_t       exit_code;        /* Exit code captured upon termination */
     bool           has_exited;       /* True if process has exited */
@@ -79,10 +82,18 @@ typedef struct tcb {
     const void *wait_channel; /* Only on blocked list while sleeping. */
     int            cpu_affinity;     /* Target CPU affinity: -1 for any, or 0..MAX-1 */
     size_t         current_cpu;      /* CPU ID where thread is currently queued/running */
+    bool           context_busy;     /* Release-cleared only after outgoing stack save. */
     uint64_t       cpus_allowed;     /* CPU affinity bitmask: bit N allowed if (cpus_allowed & (1ULL << N)) */
     uint32_t       terminal_mode;
     uint32_t       terminal_cols;
     char           cwd[256];         /* Current working directory (bounded by VFS_MAX_PATH) */
+    /* Self-owned counters; birth stamps set before publication/first selection.
+     * Profiling enablement is never inherited by a child. */
+    bool           spawn_profile_enabled;
+    spawn_profile_t spawn_profile;
+    /* Stamps/counters protected by owner scheduler lock while blocked/queued;
+     * enable/snapshot and resume belong exclusively to the running task. */
+    wait_trace_t wait_trace;
 } tcb_t;
 
 #define CPU_MASK_ALL (~0ULL)
@@ -111,11 +122,16 @@ tcb_t *thread_create(const char *name, void (*entry)(void *), void *arg);
 tcb_t *thread_create_on_cpu(size_t target_cpu, const char *name, void (*entry)(void *), void *arg);
 tcb_t *thread_create_unbound_on_cpu(size_t target_cpu, const char *name, void (*entry)(void *), void *arg);
 void   thread_yield(void);
-/* Bootstrap CPU only. Predicate runs under sched lock with IRQs disabled;
+/* Wait on the calling CPU; wake scans all scheduler CPUs. Predicate runs
+ * under the local sched lock with IRQs disabled;
  * it must neither block nor acquire locks. Publish events before waking. */
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg);
 void sched_wake_all(const void *channel);
 void thread_wake_for_signal(uint64_t pid);
+/* Post-EOI/IRQ-depth-unwind or normal syscall user return only, IF=0.
+ * Retain pending requests on unsafe/nested/locked/kernel/test returns.
+ * Ordinary IPI handlers publish only; they never call this function. */
+void sched_resched_user_return(interrupt_frame_t *frame);
 /* Lock-free current-task readiness; Phase 2B: custom handler delivery. */
 bool process_signal_pending(void);
 /* Lock-free call site required, own process continuation. Handles default stop

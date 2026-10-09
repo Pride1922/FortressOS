@@ -13,7 +13,7 @@ def main():
         subprocess.run([
             "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
             "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
-            "-DTEST_VMM_HOST",
+            "-DTEST_VMM_HOST", "-pthread",
             "-iquote", "tests/host", "-iquote", "src/include",
             "-iquote", "src/drivers", "-iquote", "src/mm",
             "-iquote", "src/kernel", "-iquote", "src/arch/x86_64",

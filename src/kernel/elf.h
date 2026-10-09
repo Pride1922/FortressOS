@@ -133,5 +133,7 @@ typedef struct {
 
 /* Public Loader API */
 int elf_load_executable(const void *image, size_t image_size, elf_loaded_process_t *out_proc);
+int elf_load_executable_profile(const void *image, size_t image_size,
+                               elf_loaded_process_t *out_proc, spawn_profile_t *profile);
 
 #endif /* FORTRESS_ELF_H */

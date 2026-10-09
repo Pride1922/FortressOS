@@ -32,9 +32,9 @@ from test_nmi_transitions import QMP
 
 def qmp_type_string(qmp, text, delay=0.03):
     for char in text:
-        is_upper = char.isupper()
+        is_upper = char.isupper() or char in '_>'
         base = char.lower()
-        code = {' ': 'spc', '\n': 'ret', '/': 'slash', '.': 'dot', '_': 'minus', '-': 'minus'}.get(base, base)
+        code = {' ': 'spc', '\n': 'ret', '/': 'slash', '.': 'dot', '_': 'minus', '-': 'minus', '>': 'dot'}.get(base, base)
         events = []
         if is_upper:
             events.append({'type': 'key', 'data': {'down': True, 'key': {'type': 'qcode', 'data': 'shift'}}})
@@ -93,11 +93,12 @@ def configure_disposable_img_mode(img_path: Path, writable: bool = True) -> None
 
 
 def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
-                     action_cb, round_name: str, writable: bool = True) -> None:
+                     action_cb, round_name: str, writable: bool = True, cpus: int = 1) -> None:
     """Runs a single QEMU session with strict drive assertions and executes action_cb(qmp, child, log_path)."""
+    assert cpus in (1,4,8)
     with tempfile.TemporaryDirectory(prefix=f"fortress-persist-{round_name}-") as tmp:
         cmd = ['qemu-system-x86_64', '-M', 'q35', '-m', '2G', '-accel', 'tcg',
-               '-smp', '1', '-display', 'none', '-monitor', 'none', '-no-reboot',
+               '-smp', str(cpus), '-display', 'none', '-monitor', 'none', '-no-reboot',
                '-serial', f'file:{log_path}']
         firmware_drives = []
         if firmware == 'uefi':

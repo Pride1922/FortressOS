@@ -6,6 +6,7 @@ default rel
 
 extern isr_exception_handler
 extern process_signal_user_return
+extern sched_resched_user_return
 
 section .text
 
@@ -81,6 +82,8 @@ isr_common_stub:
     jb .signal_done
     test byte [rsp + 144], 3
     jz .signal_done
+    mov rdi, rsp
+    call sched_resched_user_return
     mov rdi, rsp
     call process_signal_user_return
 .signal_done:

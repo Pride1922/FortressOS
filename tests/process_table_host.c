@@ -14,6 +14,10 @@ static void *worker(void *arg) {
         assert(!process_record_begin(pid,base,true,SPAWN_SETPGROUP,0));
         assert(process_record_group(pid)==(int64_t)pid);
         process_record_commit(pid);
+        process_snapshot_t self;
+        assert(process_record_snapshot_pid(pid, &self));
+        assert(self.pid == pid && self.parent == base && self.pgid == pid &&
+               self.state == PROCESS_RUNNING);
         assert(process_record_wait(base,-1,WNOHANG,&status,false)==0 && status==999);
         assert(process_record_exit(pid,137));
         process_record_forget(pid);
@@ -25,6 +29,9 @@ static void *worker(void *arg) {
     return NULL;
 }
 int main(void) {
+    process_snapshot_t missing;
+    assert(!process_record_snapshot_pid(999999, &missing));
+    assert(!process_record_snapshot_pid(1, NULL));
     uint64_t status;
     assert(!process_record_begin(1,0,false,0,0));
     assert(!process_record_begin(2,0,false,0,0));

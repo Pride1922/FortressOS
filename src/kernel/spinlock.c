@@ -2,6 +2,7 @@
 #include "percpu.h"
 #include "serial.h"
 #include "dmesg.h"
+#include "smp.h"
 
 #define MAX_TRACKED_LOCKS 64
 static spinlock_t *g_tracked_locks[MAX_TRACKED_LOCKS];
@@ -221,6 +222,22 @@ int lockstat_dump(char *buf, size_t cap) {
             total_written += to_copy;
             buf[total_written] = '\0';
         }
+    }
+    smp_tlb_stats_t stats;
+    smp_tlb_get_stats(&stats);
+    char tlb_line[256];
+    size_t pos = 0;
+    const char *keys[] = {"[TLBSTAT] calls=", " remote_batches=", " target_cpus=", " wait_iters=", " wait_cycles="};
+    uint64_t values[] = {stats.calls, stats.remote_batches, stats.target_cpus, stats.wait_iters, stats.wait_cycles};
+    for (unsigned i = 0; i < 5; i++) {
+        const char *key = keys[i];
+        while (*key) tlb_line[pos++] = *key++;
+        pos += format_u64_str(tlb_line + pos, sizeof(tlb_line) - pos, values[i]);
+    }
+    tlb_line[pos++] = '\n';
+    if (buf && total_written + pos < cap) {
+        for (size_t k = 0; k < pos; k++) buf[total_written++] = tlb_line[k];
+        buf[total_written] = 0;
     }
     return (int)total_written;
 }

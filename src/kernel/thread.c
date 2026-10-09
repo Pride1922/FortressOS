@@ -13,8 +13,22 @@
 #include "apic.h"
 #include "smp.h"
 #include "signal_frame.h"
+#include "spawn_profile.h"
+#include "resched_return.h"
+#include "resched_policy.h"
 
 extern uint8_t kernel_stack_guard[];
+
+/* Called under the selected task's owning scheduler lock, before switching. */
+static void spawn_note_first_run(tcb_t *next) {
+    /* Selecting a queued peer already satisfies the current local request.
+     * IF is clear; another IPI can publish again after the incoming resume. */
+    __atomic_store_n(&cpu_current()->resched_pending, 0, __ATOMIC_RELEASE);
+    if (next->wait_trace.enabled && next->wait_trace.stage)
+        wait_trace_select(&next->wait_trace, spawn_profile_clock(&next->spawn_profile));
+    if (next->spawn_profile.queued_cycles && !next->spawn_profile.first_run_cycles)
+        next->spawn_profile.first_run_cycles = spawn_profile_clock(&next->spawn_profile);
+}
 
 /* Process Exit Records Table */
 typedef struct {
@@ -59,6 +73,7 @@ static struct scheduler_cpu {
     uintptr_t     prev_cr3;
     bool          prev_terminated;
     bool          prev_cr3_changed;
+    tcb_t        *prev_context;
 } scheduler_cpus[MAX_DETECTED_CPUS] = { [0] = { .next_tid = 1, .sched_lock = SPINLOCK_RANKED_KIND(1, LOCK_KIND_SCHED, "sched-0") } };
 
 static const char *g_sched_lock_names[MAX_DETECTED_CPUS] = {
@@ -143,41 +158,25 @@ static int kstack_alloc(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_s
 
     uint64_t *pml4 = vmm_get_kernel_pml4_virt();
 
-    /* Map 4 pages for usable stack region; guard page at slot_addr remains unmapped */
-    for (size_t p = 0; p < (STACK_USABLE_SIZE / PAGE_SIZE); p++) {
-        uintptr_t phys = pmm_alloc_page();
-        if (phys == 0) {
-            for (size_t r = 0; r < p; r++) {
-                uintptr_t mapped_virt = base_addr + r * PAGE_SIZE;
-                uintptr_t mapped_phys = vmm_get_physical_address(pml4, mapped_virt);
-                vmm_unmap_page(pml4, mapped_virt);
-                if (mapped_phys) pmm_free_page(mapped_phys);
-            }
-            rflags = spin_lock_irqsave(&g_kstack_lock);
-            g_stack_slots_bitmap &= ~(1ULL << slot);
-            spin_unlock_irqrestore(&g_kstack_lock, rflags);
-            return -1;
-        }
-
-        int status = vmm_map_page(pml4, base_addr + p * PAGE_SIZE, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
-        if (status != VMM_OK) {
-            serial_puts("[WARN] vmm_map_page failed in kstack_alloc with error: ");
-            serial_print_dec(status);
-            serial_puts(" at virt: ");
-            serial_print_hex(base_addr + p * PAGE_SIZE);
-            serial_puts("\n");
-            pmm_free_page(phys);
-            for (size_t r = 0; r < p; r++) {
-                uintptr_t mapped_virt = base_addr + r * PAGE_SIZE;
-                uintptr_t mapped_phys = vmm_get_physical_address(pml4, mapped_virt);
-                vmm_unmap_page(pml4, mapped_virt);
-                if (mapped_phys) pmm_free_page(mapped_phys);
-            }
-            rflags = spin_lock_irqsave(&g_kstack_lock);
-            g_stack_slots_bitmap &= ~(1ULL << slot);
-            spin_unlock_irqrestore(&g_kstack_lock, rflags);
-            return -1;
-        }
+    /* Reserve all caller-owned frames before publishing any stack mapping.
+     * The guard page stays absent; one completed shootdown covers all leaves. */
+    uintptr_t frames[STACK_USABLE_SIZE / PAGE_SIZE];
+    size_t allocated = 0;
+    while (allocated < STACK_USABLE_SIZE / PAGE_SIZE) {
+        uintptr_t frame = pmm_alloc_page();
+        if (!frame) break;
+        frames[allocated++] = frame;
+    }
+    int status = allocated == STACK_USABLE_SIZE / PAGE_SIZE
+        ? vmm_map_pages(pml4, base_addr, allocated, frames, PTE_PRESENT | PTE_WRITABLE | PTE_NX)
+        : VMM_ERR_NOMEM;
+    if (status != VMM_OK) {
+        /* Batch rejection/OOM publishes no leaves. Frames remain ours. */
+        while (allocated) pmm_free_page(frames[--allocated]);
+        rflags = spin_lock_irqsave(&g_kstack_lock);
+        g_stack_slots_bitmap &= ~(1ULL << slot);
+        spin_unlock_irqrestore(&g_kstack_lock, rflags);
+        return -1;
     }
 
     *out_guard = guard_addr;
@@ -190,14 +189,13 @@ static void kstack_free(int slot, uintptr_t base_addr) {
     if (slot < 0 || slot >= MAX_KERNEL_THREADS) return;
     uint64_t *pml4 = vmm_get_kernel_pml4_virt();
 
-    for (size_t p = 0; p < (STACK_USABLE_SIZE / PAGE_SIZE); p++) {
-        uintptr_t virt = base_addr + p * PAGE_SIZE;
-        uintptr_t phys = vmm_get_physical_address(pml4, virt);
-        vmm_unmap_page(pml4, virt);
-        if (phys) {
-            pmm_free_page(phys);
-        }
+    uintptr_t frames[STACK_USABLE_SIZE / PAGE_SIZE];
+    if (vmm_unmap_pages(pml4, base_addr, STACK_USABLE_SIZE / PAGE_SIZE, frames) != VMM_OK) {
+        serial_raw_puts("[FATAL] Kernel stack batch unmap failed; frames and slot retained\n");
+        for (;;) __asm__ volatile("cli; hlt");
     }
+    for (size_t p = 0; p < STACK_USABLE_SIZE / PAGE_SIZE; p++)
+        pmm_free_page(frames[p]);
 
     uint64_t rflags = spin_lock_irqsave(&g_kstack_lock);
     g_stack_slots_bitmap &= ~(1ULL << slot);
@@ -284,6 +282,8 @@ void sched_reap_dead(void) {
 }
 
 void sched_post_switch(void) {
+    uint64_t handoff_flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(handoff_flags) : : "memory");
     size_t cid = cpu_current()->id;
     if (cid < MAX_DETECTED_CPUS) {
         uintptr_t prev_cr3 = scheduler_cpus[cid].prev_cr3;
@@ -305,7 +305,14 @@ void sched_post_switch(void) {
             scheduler_cpus[cid].dead_threads = z;
             spin_unlock_irqrestore(&scheduler_cpus[cid].sched_lock, zflags);
         }
+        /* A runnable/woken outgoing task must not be stolen until its saved
+         * RSP and the CPU-private address-space handoff are complete. No
+         * access to that task is permitted after publishing this release. */
+        tcb_t *previous = scheduler_cpus[cid].prev_context;
+        scheduler_cpus[cid].prev_context = NULL;
+        if (previous) __atomic_store_n(&previous->context_busy, false, __ATOMIC_RELEASE);
     }
+    if (handoff_flags & (1ULL << 9)) __asm__ volatile("sti" ::: "memory");
 }
 
 static void idle_thread_entry(void *arg) {
@@ -346,7 +353,8 @@ static tcb_t *sched_steal_work(size_t thief_cpu) {
             bool allowed = (curr->cpus_allowed != 0) ?
                            ((curr->cpus_allowed & CPU_MASK_ONE(thief_cpu)) != 0) :
                            (curr->cpu_affinity == -1 || curr->cpu_affinity == (int)thief_cpu);
-            if (!curr->is_idle && allowed) {
+            if (!curr->is_idle && allowed &&
+                !__atomic_load_n(&curr->context_busy, __ATOMIC_ACQUIRE)) {
                 candidate = curr;
                 cand_prev = prev;
             }
@@ -533,10 +541,10 @@ static tcb_t *thread_create_internal(size_t target_cpu, int affinity, const char
     spin_unlock_irqrestore(&scheduler_cpus[target_cpu].sched_lock, rflags);
 
     if (target_cpu != cpu_current()->id) {
-        smp_send_resched(target_cpu);
+        smp_send_work_hint(target_cpu);
     } else if (affinity == -1 && g_total_sched_cpus > 1) {
         for (size_t c = 1; c < g_total_sched_cpus; c++) {
-            smp_send_resched(c);
+            smp_send_work_hint(c);
         }
     }
     return t;
@@ -591,6 +599,8 @@ void thread_yield(void) {
     }
 
     if (old->state == THREAD_RUNNING && !old->is_idle) {
+        __atomic_store_n(&old->context_busy, true, __ATOMIC_RELAXED);
+        scheduler_cpus[cpu_current()->id].prev_context = old;
         old->state = THREAD_READY;
         runqueue_push_locked(old);
         /* If both old and next are user processes, track switch between runnable user processes */
@@ -600,6 +610,7 @@ void thread_yield(void) {
     }
 
     next->state = THREAD_RUNNING;
+    spawn_note_first_run(next);
     next->ticks_remaining = DEFAULT_QUANTUM_TICKS;
     g_current_thread = next;
 
@@ -650,6 +661,35 @@ void thread_yield(void) {
     sched_reap_dead();
 }
 
+void sched_resched_user_return(interrupt_frame_t *frame) {
+#ifdef FORTRESS_RESCHED_RETURN_DISABLED
+    (void)frame;
+    return; /* Isolated A/B control build only. */
+#else
+    cpu_local_t *cpu = cpu_current();
+    if (!__atomic_load_n(&cpu->resched_pending, __ATOMIC_ACQUIRE)) return;
+    uint64_t flags;
+    __asm__ volatile("pushfq; pop %0" : "=r"(flags) : : "memory");
+    tcb_t *self = cpu->current_thread;
+    if (!resched_return_allowed(frame, !(flags & (1ULL << 9)), cpu->irq_depth,
+                                cpu->lock_depth, g_preemption_enabled,
+                                self && self->is_user && !self->is_idle && self->state == THREAD_RUNNING)) return;
+    uint32_t reasons = __atomic_exchange_n(&cpu->resched_pending, 0, __ATOMIC_ACQ_REL);
+    bool all_work = false;
+#ifdef FORTRESS_RESCHED_ALL_WORK
+    all_work = true; /* Matched control: immediate service of fresh-work hints. */
+#endif
+    if (!resched_request_requires_yield(reasons, all_work)) {
+        if (reasons & RESCHED_WORK_HINT) cpu->resched_work_deferred++;
+        return;
+    }
+    cpu->resched_services++;
+    if (reasons & RESCHED_URGENT) cpu->resched_urgent_services++;
+    else cpu->resched_work_services++;
+    thread_yield();
+#endif
+}
+
 /* Checking the event and publishing BLOCKED are one IRQ-disabled scheduler
  * transaction. Producers cannot slip a wakeup between these operations. */
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
@@ -669,11 +709,16 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
             serial_raw_puts("[FATAL] Invalid scheduler sleep context\n");
             for (;;) __asm__ volatile("cli; hlt");
         }
+        __atomic_store_n(&old->context_busy, true, __ATOMIC_RELAXED);
+        scheduler_cpus[cpu_current()->id].prev_context = old;
         old->state = THREAD_BLOCKED;
+        if (old->wait_trace.enabled)
+            wait_trace_block(&old->wait_trace, spawn_profile_clock(&old->spawn_profile));
         old->wait_channel = channel;
         old->next = g_blocked_threads;
         g_blocked_threads = old;
         next->state = THREAD_RUNNING;
+        spawn_note_first_run(next);
         next->ticks_remaining = DEFAULT_QUANTUM_TICKS;
         g_current_thread = next;
         gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);
@@ -698,6 +743,8 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
         switch_context(&old->rsp, next->rsp);
         cpu_current()->irq_depth = suspended_irq_depth;
 
+        if (old->wait_trace.enabled)
+            wait_trace_resume(&old->wait_trace, spawn_profile_clock(&old->spawn_profile));
         sched_post_switch();
         if (flags & (1ULL << 9)) __asm__ volatile("sti" ::: "memory");
         /* Another reader may have consumed the event before we resumed. */
@@ -721,6 +768,8 @@ void sched_wake_all(const void *channel) {
             *link = t->next;
             t->wait_channel = NULL;
             t->state = THREAD_READY;
+            if (t->wait_trace.enabled)
+                wait_trace_wake(&t->wait_trace, spawn_profile_clock(&t->spawn_profile));
             runqueue_push_cpu_locked(c, t);
             woke_any = true;
         }
@@ -733,6 +782,16 @@ void sched_wake_all(const void *channel) {
 
 void thread_wake_for_signal(uint64_t pid) {
     if (!pid) return;
+
+    /* Fast path: self-signal. If the target is the currently executing thread,
+     * it cannot be in THREAD_BLOCKED on any CPU. It will process the pending
+     * signal on its own return to userspace (via syscall / interrupt return).
+     * Avoid scanning all CPUs and acquiring their scheduler locks. */
+    tcb_t *curr = thread_current();
+    if (curr && curr->tid == pid) {
+        return;
+    }
+
     for (size_t c = 0; c < g_total_sched_cpus; c++) {
         uint64_t flags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
         tcb_t **link = &scheduler_cpus[c].blocked_threads;
@@ -744,6 +803,8 @@ void thread_wake_for_signal(uint64_t pid) {
                     *link = t->next;
                     t->wait_channel = NULL;
                     t->state = THREAD_READY;
+                    if (t->wait_trace.enabled)
+                        wait_trace_wake(&t->wait_trace, spawn_profile_clock(&t->spawn_profile));
                     runqueue_push_cpu_locked(c, t);
                     woke = true;
                 }
@@ -792,6 +853,7 @@ void thread_exit(void) {
     }
 
     next->state = THREAD_RUNNING;
+    spawn_note_first_run(next);
     next->ticks_remaining = DEFAULT_QUANTUM_TICKS;
     g_current_thread = next;
 
@@ -1050,6 +1112,8 @@ void sched_on_timer_tick(void) {
         *link=t->next;
         t->wait_channel=NULL;
         t->state=THREAD_READY;
+        if (t->wait_trace.enabled)
+            wait_trace_wake(&t->wait_trace, spawn_profile_clock(&t->spawn_profile));
         runqueue_push_locked(t);
         spin_unlock_irqrestore(&g_sched_lock,flags);
     }
@@ -1063,6 +1127,8 @@ void sched_on_timer_tick(void) {
         *blocked=t->next;
         t->wait_channel=NULL;
         t->state=THREAD_READY;
+        if (t->wait_trace.enabled)
+            wait_trace_wake(&t->wait_trace, spawn_profile_clock(&t->spawn_profile));
         runqueue_push_locked(t);
     }
     spin_unlock_irqrestore(&g_sched_lock,signal_irq);
@@ -1252,11 +1318,17 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     if (!elf_data || elf_size == 0) return NULL;
     if (target_cpu >= MAX_DETECTED_CPUS) target_cpu = cpu_current()->id;
 
+    tcb_t *caller = thread_current();
+    spawn_profile_t *profile = caller && caller->spawn_profile_enabled ? &caller->spawn_profile : NULL;
+    uint64_t phase_begin = spawn_profile_clock(profile);
     sched_reap_dead();
+    SPAWN_ADD(profile, phase[SP_REAP], phase_begin);
+    phase_begin = spawn_profile_clock(profile);
 
     /* 1. Load ELF executable into a freshly created user address space */
     elf_loaded_process_t proc_info;
-    int elf_status = elf_load_executable(elf_data, elf_size, &proc_info);
+    int elf_status = elf_load_executable_profile(elf_data, elf_size, &proc_info, profile);
+    SPAWN_ADD(profile, phase[SP_ELF], phase_begin);
     if (elf_status != ELF_OK) {
         *error = elf_status == ELF_ERR_NOMEM ? SYSCALL_ENOMEM : SYSCALL_ENOEXEC;
         serial_puts("[EXEC] ELF loader rejected image with code ");
@@ -1265,6 +1337,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         return NULL;
     }
 
+    phase_begin = spawn_profile_clock(profile);
     /* 2. Setup user stack */
     uintptr_t user_rsp = 0;
     uintptr_t user_argv = 0;
@@ -1293,16 +1366,20 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         rdx_val = 0;
     }
 
+    SPAWN_ADD(profile, phase[SP_USTACK], phase_begin);
+    phase_begin = spawn_profile_clock(profile);
     /* 3. Allocate dedicated page-backed kernel stack */
     uintptr_t guard_virt = 0, stack_base = 0;
     size_t stack_size = 0;
     int slot = kstack_alloc(&guard_virt, &stack_base, &stack_size);
+    SPAWN_ADD(profile, phase[SP_KSTACK], phase_begin);
     if (slot < 0) {
         serial_puts("[FAIL] process_spawn: kstack_alloc failed\n");
         vmm_destroy_pml4(proc_info.pml4_phys, true);
         return NULL;
     }
 
+    phase_begin = spawn_profile_clock(profile);
     /* 4. Allocate Process / Thread Control Block */
     tcb_t *p = (tcb_t *)kmalloc(sizeof(tcb_t));
     if (!p) {
@@ -1339,6 +1416,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
 
     /* Process specifics */
     p->cr3 = proc_info.pml4_phys;
+    p->vmm_space = vmm_space_lookup(p->cr3);
     p->pml4_virt = (uint64_t *)vmm_phys_to_virt(proc_info.pml4_phys);
     p->is_user = true;
     p->exit_code = 0;
@@ -1347,6 +1425,8 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     p->cpu_affinity = affinity;
     p->cpus_allowed = (affinity >= 0) ? CPU_MASK_ONE(affinity) : CPU_MASK_ALL;
 
+    SPAWN_ADD(profile, phase[SP_TCB], phase_begin);
+    phase_begin = spawn_profile_clock(profile);
     /* Initialize file descriptors for process */
     tcb_t *parent_thread = thread_current();
     if (parent_thread && parent_thread->is_user) {
@@ -1415,6 +1495,8 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     /* Actions may use inherited CLOEXEC sources. Sweep only after all actions,
      * with no locks held and before publishing the child to its runqueue. */
     fd_close_cloexec(p);
+    SPAWN_ADD(profile, phase[SP_FDS], phase_begin);
+    phase_begin = spawn_profile_clock(profile);
 
     if (cwd && cwd[0]) {
         size_t clen = strlen(cwd);
@@ -1463,10 +1545,12 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         p->state = THREAD_STAGED;
         p->next = staged_processes;
         staged_processes = p;
+        SPAWN_ADD(profile, phase[SP_PUBLISH], phase_begin);
         return p;
     }
     process_record_commit(p->tid);
     rflags = spin_lock_irqsave(&scheduler_cpus[target_cpu].sched_lock);
+    if (profile) p->spawn_profile.queued_cycles = spawn_profile_clock(profile);
     if (!scheduler_cpus[target_cpu].runqueue_head) {
         scheduler_cpus[target_cpu].runqueue_head = p;
         scheduler_cpus[target_cpu].runqueue_tail = p;
@@ -1477,13 +1561,14 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     spin_unlock_irqrestore(&scheduler_cpus[target_cpu].sched_lock, rflags);
 
     if (target_cpu != cpu_current()->id) {
-        smp_send_resched(target_cpu);
+        smp_send_work_hint(target_cpu);
     } else if (affinity == -1 && g_total_sched_cpus > 1) {
         for (size_t c = 1; c < g_total_sched_cpus; c++) {
-            smp_send_resched(c);
+            smp_send_work_hint(c);
         }
     }
 
+    SPAWN_ADD(profile, phase[SP_PUBLISH], phase_begin);
     return p;
 
 fail_actions:
@@ -1659,11 +1744,16 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     file_t *file = NULL;
     void *buffer = NULL;
     tcb_t *curr = thread_current();
+    spawn_profile_t *profile = curr && curr->spawn_profile_enabled ? &curr->spawn_profile : NULL;
+    uint64_t total_begin = spawn_profile_clock(profile);
+    uint64_t phase_begin = total_begin;
     if (!curr || !curr->is_user) {
         result = SYSCALL_EINVAL;
         goto out;
     }
     sched_reap_dead();
+    SPAWN_ADD(profile, phase[SP_REAP], phase_begin);
+    phase_begin = spawn_profile_clock(profile);
     pid = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
     result = process_record_begin(pid, curr->tid, true, spawn_flags, pgid);
     if (result) { pid = 0; goto out; }
@@ -1711,6 +1801,7 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
         target_cpu = (size_t)(pid % g_total_sched_cpus);
         affinity = -1;
     }
+    SPAWN_ADD(profile, phase[SP_FILE], phase_begin);
     tcb_t *child = process_spawn_internal(target_cpu, affinity, path, image, size,
                                           argc, argv, envc, envp, cwd, action_count, actions, 0, pid, spawn_flags, &result);
     if (!child) goto out;
@@ -1718,9 +1809,16 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     *out_pid = (int64_t)child->tid;
     result = SYSCALL_SUCCESS;
 out:
+    phase_begin = spawn_profile_clock(profile);
     if (result && pid) process_record_abort(pid);
     if (buffer) kfree(buffer);
     if (file) vfs_close(file);
+    SPAWN_ADD(profile, phase[SP_CLEANUP], phase_begin);
+    SPAWN_ADD(profile, total, total_begin);
+    if (profile) {
+        if (profile->calls == UINT64_MAX || (result && profile->failures == UINT64_MAX)) profile->valid = 0;
+        else { profile->calls++; if (result) profile->failures++; }
+    }
     return result;
 }
 
@@ -2125,11 +2223,14 @@ static void sched_stop_current(void) {
     tcb_t *next=runqueue_pop_next_locked();
     if (!next) next=g_idle_thread;
     if (!old || !old->is_user || old->is_idle || !next) __builtin_trap();
+    __atomic_store_n(&old->context_busy, true, __ATOMIC_RELAXED);
+    scheduler_cpus[cpu_current()->id].prev_context=old;
     old->state=THREAD_STOPPED;
     old->wait_channel=NULL;
     old->next=g_blocked_threads;
     g_blocked_threads=old;
     next->state=THREAD_RUNNING;
+    spawn_note_first_run(next);
     next->ticks_remaining=DEFAULT_QUANTUM_TICKS;
     g_current_thread=next;
     gdt_set_tss_rsp0(next->kstack_base + next->kstack_size);

@@ -3,7 +3,7 @@
 2026-10-02. COMPLETE by explicit user acceptance. NET-2 is 6/7 done;
 Step 7 (userspace DNS + nslookup) remains.
 
-The user's [physical session notes](../../build/net2-step6/2026-10-02/session-notes.md)
+The user's [physical session notes](evidence/net2-step6-session-notes.md)
 are retained verbatim as the session record. Dell Latitude 5590, I219-LM
 8086:15D7, MAC c8:f7:50:0e:35:80, guest 192.168.0.168/24, gateway 192.168.0.1.
 The Windows peer was 192.168.0.153 over Wi-Fi; Wireshark ran on that adapter.

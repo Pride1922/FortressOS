@@ -37,7 +37,7 @@ typedef enum {
 typedef struct vmm_space {
     uintptr_t           cr3;              /* Normalized physical root address */
     uint64_t           *pml4_virt;        /* Virtual address of PML4 root */
-    vmm_space_state_t   state;            /* LIVE / DYING / DEAD */
+    vmm_space_state_t   state;            /* LIVE / DYING / DEAD; release-published transitions */
     bool                is_kernel;        /* True if permanent master kernel space */
     bool                free_user_frames; /* Saved preference for deferred teardown */
     bool                deferred_queued;  /* True if queued on deferred destruction list */
@@ -49,6 +49,7 @@ typedef struct vmm_space {
 
     /* Hardware residency */
     uint64_t            active_cpus_mask; /* Bitmask of CPUs currently using this CR3 */
+    bool                ever_active;      /* Sticky: root has been loaded into hardware */
 
     struct vmm_space   *next;             /* Intrusive link in global registry */
     struct vmm_space   *deferred_next;    /* Intrusive link in deferred destruction queue */
@@ -76,6 +77,9 @@ typedef struct vmm_space {
  * 4. Structural Pre-Validation:
  *    - Before freeing any tables, vmm_destroy_pml4() verifies the structure is supported.
  *      If unsupported huge pages (PTE_HUGE) or malformed entries are found, destruction is rejected.
+ *    - Valid, unreferenced spaces detach under the registry lock; synchronous
+ *      invalidation and PMM reclamation then run with exclusive ownership
+ *      outside that lock. Rejected structures retain registry ownership.
  * 5. Self-Destruction Guard:
  *    - Attempting to destroy kernel_pml4_phys or the currently active CR3 (normalized)
  *      returns VMM_ERR_INVALID_ADDR.
@@ -88,7 +92,20 @@ uintptr_t vmm_create_pml4(void);
 uintptr_t vmm_create_user_pml4(void);
 int       vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames);
 int       vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags);
+/* Install 1..16 absent 4 KiB leaves within one 2 MiB PT region. Frames must
+ * be aligned, distinct and caller-owned; flags cannot include HUGE/GLOBAL.
+ * Reject/OOM changes no leaves. Reserve missing tables outside g_vmm_lock;
+ * install under one lock and complete one synchronous range invalidation
+ * before returning. Input array must not alias page tables. */
+int       vmm_map_pages(uint64_t *pml4_virt, uintptr_t virt_addr,
+                        size_t page_count, const uintptr_t *frames, uint64_t flags);
 int       vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr);
+/* Remove 1..16 contiguous, present, non-global 4 KiB leaves in one registry
+ * transaction and one synchronous flush. Returns their frame addresses to
+ * the caller, which retains ownership. Validation failure changes no leaves.
+ * out_frames must have page_count elements and must not alias page tables. */
+int       vmm_unmap_pages(uint64_t *pml4_virt, uintptr_t virt_addr,
+                          size_t page_count, uintptr_t *out_frames);
 bool      vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr);
 uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr);
 void      vmm_switch_pml4(uintptr_t pml4_phys);
@@ -101,6 +118,10 @@ uintptr_t vmm_get_current_pml4(void);
 uint64_t *vmm_get_active_pml4_virt(void);
 uint64_t  vmm_get_hhdm_offset(void);
 void     *vmm_phys_to_virt(uintptr_t phys);
+/* Acquire-snapshot walk. Own-task validation uses its scheduler lifetime pin
+ * without taking g_vmm_lock; other roots acquire transient op references.
+ * Unmap retains intermediate tables until whole-space teardown. Validation
+ * does not pin data frames or make a later user copy atomic with unmap. */
 bool      vmm_validate_user_range(uint64_t *pml4_virt, uintptr_t virt_addr, size_t length, bool write_req);
 size_t    vmm_get_allocated_table_frames(void);
 size_t    vmm_get_retained_table_frames(void); /* Backward-compatible alias */
@@ -119,4 +140,3 @@ size_t       vmm_drain_deferred_destructions(void);
 size_t       vmm_get_deferred_count(void);
 
 #endif /* FORTRESS_VMM_H */
-

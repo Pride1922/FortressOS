@@ -19,6 +19,7 @@ static size_t heap_live, pages_live, alloc_calls;
 static int fail_after = -1;
 static bool fail_pages, valid_range = true;
 static void *backing;
+static pipe_t *host_pipe;
 static tcb_t current;
 static int fd_fail_after = -1;
 static void (*wait_step)(const void *, bool (*)(void *), void *);
@@ -37,7 +38,9 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
 }
 void sched_wake_all(const void *channel) {
     spin_debug_assert_unheld();
-    const pipe_t *p = channel;
+    /* A channel is one of the two atomic mirrors, never the shared pipe. */
+    const pipe_t *p = host_pipe;
+    assert(channel == &p->data_bytes || channel == &p->space_bytes);
     assert(p->active_endpoints > 0 && pages_live == 16);
     assert(p->data_bytes == p->count && p->space_bytes == PIPE_CAPACITY - p->count);
     wakes++;
@@ -55,6 +58,7 @@ void *kmalloc(size_t n) {
     if (fail_after > 0) fail_after--;
     void *p = malloc(n);
     assert(p);
+    if (n == sizeof(pipe_t)) host_pipe = p;
     heap_live++;
     return p;
 }
@@ -75,7 +79,7 @@ void pmm_free_pages(uintptr_t phys, size_t n) {
 uint64_t *vmm_get_active_pml4_virt(void) { return (uint64_t *)&current; }
 bool vmm_validate_user_range(uint64_t *pml4, uintptr_t addr, size_t n, bool write) {
     assert(pml4 == (uint64_t *)&current && addr >= 0x1000);
-    if (write) assert(n == 8); /* sys_pipe output; sys_write validates input. */
+    if (write) assert(n == 8 || n == sizeof(pipe_io_profile_t));
     return valid_range;
 }
 tcb_t *thread_current(void) { return &current; }
@@ -161,7 +165,8 @@ static void ring_tests(void) {
 static file_t *wait_reader, *wait_writer;
 static unsigned wait_kind;
 static void release_wait(const void *channel, bool (*ready)(void *), void *arg) {
-    pipe_t *p = (pipe_t *)channel;
+    pipe_t *p = ready == pipe_read_ready ? arg : ((pipe_wait_write_t *)arg)->pipe;
+    assert(channel == (ready == pipe_read_ready ? &p->data_bytes : &p->space_bytes));
     static unsigned char scratch[PIPE_BUF];
     if (wait_kind == 0) {
         assert(vfs_write(wait_writer, "X", 1) == 1);
@@ -185,6 +190,8 @@ static void blocking_tests(void) {
     static unsigned char data[PIPE_CAPACITY];
     for (wait_kind = 0; wait_kind < 5; wait_kind++) {
         pair(&wait_reader, &wait_writer);
+        pipe_io_profile_t profile = {0};
+        assert(!pipe_profile(wait_reader->node, PIPE_PROFILE_ENABLE, &profile));
         if (wait_kind >= 2)
             assert(vfs_write(wait_writer, data, wait_kind == 2 ? PIPE_CAPACITY - 1 : PIPE_CAPACITY) ==
                    (wait_kind == 2 ? PIPE_CAPACITY - 1 : PIPE_CAPACITY));
@@ -198,6 +205,8 @@ static void blocking_tests(void) {
             assert(vfs_write(wait_writer, data, n) ==
                    (wait_kind == 2 ? PIPE_BUF : wait_kind == 3 ? 17 : -VFS_EPIPE));
         }
+        assert(!pipe_profile(wait_kind == 4 ? wait_writer->node : wait_reader->node, PIPE_PROFILE_READ, &profile));
+        assert(profile.valid && profile.read_waits == (wait_kind < 2) && profile.write_waits == (wait_kind >= 2));
         if (wait_kind != 1) vfs_close(wait_writer);
         if (wait_kind != 4) vfs_close(wait_reader);
         clean();
@@ -329,7 +338,67 @@ static void sigpipe_tests(void) {
     current.signals = (signal_state_t){0};
 }
 
+static void profile_tests(void) {
+    file_t *r, *w; pair(&r, &w);
+    char bytes[PIPE_CAPACITY] = {0};
+    pipe_io_profile_t s = {.fd = 4};
+    current.is_user = true;
+    current.fd_table[4] = r;
+    assert(sys_pipe_profile(PIPE_PROFILE_READ, (uintptr_t)&s, 0) == SYSCALL_EINVAL);
+    valid_range = false;
+    assert(sys_pipe_profile(PIPE_PROFILE_READ, (uintptr_t)&s, sizeof(s)) == SYSCALL_EFAULT);
+    valid_range = true;
+    s.fd = UINT64_MAX;
+    assert(sys_pipe_profile(PIPE_PROFILE_READ, (uintptr_t)&s, sizeof(s)) == SYSCALL_EBADF);
+    s.fd = 4;
+    vfs_node_t ordinary = {0};
+    file_t ordinary_file = {.node = &ordinary};
+    current.fd_table[5] = &ordinary_file;
+    s.fd = 5;
+    assert(sys_pipe_profile(PIPE_PROFILE_ENABLE, (uintptr_t)&s, sizeof(s)) == SYSCALL_EINVAL);
+    current.fd_table[5] = NULL;
+    s.fd = 4;
+    assert(sys_pipe_profile(PIPE_PROFILE_ENABLE, (uintptr_t)&s, sizeof(s)) == 0);
+    assert(sys_pipe_profile(PIPE_PROFILE_DISABLE, (uintptr_t)&s, sizeof(s)) == 0);
+    assert(pipe_profile(r->node, PIPE_PROFILE_ENABLE, &s) == 0);
+    host_pipe->profile.valid = 0;
+    assert(pipe_profile(r->node, PIPE_PROFILE_READ, &s) == 0 && !s.valid);
+    assert(pipe_profile(r->node, 99, &s) == -VFS_EINVAL);
+    vfs_node_t other = {0};
+    assert(pipe_profile(&other, PIPE_PROFILE_ENABLE, &s) == -VFS_EINVAL);
+    assert(pipe_profile(r->node, PIPE_PROFILE_ENABLE, &s) == 0 && s.valid && s.fd == 4);
+    current.current_cpu = 2;
+    assert(vfs_write(w, bytes, 8) == 8);
+    assert(vfs_write(w, bytes, 1024) == 1024);
+    current.current_cpu = 3;
+    assert(vfs_read(r, bytes, 8) == 8);
+    assert(vfs_read(r, bytes, 1024) == 1024);
+    current.current_cpu = 2;
+    assert(vfs_write(w, bytes, sizeof(bytes)) == sizeof(bytes));
+    current.current_cpu = 3;
+    assert(vfs_read(r, bytes, sizeof(bytes)) == sizeof(bytes));
+    assert(pipe_profile(w->node, PIPE_PROFILE_DISABLE, &s) == 0);
+    assert(s.valid && s.reads == 3 && s.writes == 3);
+    assert(s.read_bytes == sizeof(bytes)+1032 && s.write_bytes == s.read_bytes);
+    assert(s.read_small == 1 && s.read_1k == 1 && s.read_large == 1);
+    assert(s.write_small == 1 && s.write_1k == 1 && s.write_large == 1);
+    assert(s.reader_cpus == 8 && s.writer_cpus == 4);
+    assert(s.direction_changes == 3 && s.cpu_changes == 3);
+    assert(s.empty_drains == 2 && s.empty_fills == 2 && s.full_fills == 1);
+    assert(s.read_max == PIPE_CAPACITY && s.write_max == PIPE_CAPACITY);
+    assert(vfs_write(w, bytes, 1) == 1);
+    assert(pipe_profile(r->node, PIPE_PROFILE_READ, &s) == 0 && s.writes == 3);
+    assert(pipe_profile(r->node, PIPE_PROFILE_ENABLE, &s) == 0 && s.writes == 0);
+    host_pipe->profile.reads = UINT64_MAX;
+    assert(vfs_read(r, bytes, 1) == 1);
+    assert(pipe_profile(r->node, PIPE_PROFILE_READ, &s) == 0 && !s.valid && s.reads == UINT64_MAX);
+    current.current_cpu = 0;
+    current.fd_table[4] = NULL;
+    vfs_close(r); vfs_close(w); clean();
+}
+
 int main(void) {
+    profile_tests();
     ring_tests(); blocking_tests(); syscall_tests(); interrupted_tests(); clean();
     sigpipe_tests();
     puts("pipe host: ring, atomic boundaries, lifetime, syscall validation and rollback PASS");

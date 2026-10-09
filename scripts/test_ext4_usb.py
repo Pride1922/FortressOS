@@ -163,7 +163,7 @@ def main():
     print(f'Native workbench: {out}; retained evidence: {evidence}',flush=True)
     SOURCE=out/'source.img'
     if args.smoke_only:shutil.copyfile(ROOT/'bin/fortress-ext4-test.img',SOURCE)
-    else:run(['python3','scripts/create_boot_img.py',str(SOURCE),'--filesystem','ext4'])
+    else:run(['python3','scripts/create_boot_img.py',str(SOURCE),'--filesystem','ext4-nojournal'])
     iso=SOURCE
     (out/'versions.txt').write_text(run(['mke2fs','-V'])+run(['qemu-system-x86_64','--version']))
     (out/'source-sha256.txt').write_text(hashlib.sha256(SOURCE.read_bytes()).hexdigest()+'\n')

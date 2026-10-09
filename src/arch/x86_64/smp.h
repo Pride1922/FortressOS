@@ -51,7 +51,16 @@ void smp_start_schedulers(void);
 /* SMP Piece 5: Cross-Core Coordination & IPIs */
 void smp_ipi_init(void);
 void smp_tlb_shootdown(uintptr_t virt_addr, uintptr_t cr3);
+/* Synchronously INVLPG 1..16 contiguous pages; no whole-CR3 flush. */
+void smp_tlb_shootdown_pages(uintptr_t virt_addr, uintptr_t cr3, size_t page_count);
+/* Cumulative diagnostic counters; independent relaxed snapshots, no reset.
+ * wait_cycles measures the ACK wait loop in TSC cycles, not CPU service time. */
+typedef struct { uint64_t calls, remote_batches, target_cpus, wait_iters, wait_cycles; } smp_tlb_stats_t;
+void smp_tlb_get_stats(smp_tlb_stats_t *out);
 void smp_send_resched(size_t cpu_id);
+/* Fresh thread/process publication: wake idle CPUs, without forcing busy
+ * user tasks to yield. Waiter wakes and signal nudges use smp_send_resched. */
+void smp_send_work_hint(size_t cpu_id);
 void smp_send_panic(void);
 
 /* SMP Piece 6C: Contention-Safe TLB Shootdown (SM14, SM15)
@@ -68,4 +77,3 @@ extern volatile uint64_t g_ipi_resched_count[MAX_DETECTED_CPUS];
 extern volatile uint64_t g_tlb_poll_serviced_count[MAX_DETECTED_CPUS];
 
 #endif /* FORTRESS_SMP_H */
-

@@ -22,9 +22,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ext4-image-',dir=directory) as temporary:
         candidate=Path(temporary)/'image.img'
         subprocess.run([sys.executable,str(ROOT/'scripts/create_boot_img.py'),str(candidate),
-                        '--filesystem','ext4','--iso-root',str(args.iso_root),
+                        '--filesystem','ext4-nojournal','--iso-root',str(args.iso_root),
                         '--limine-dir',str(args.limine_dir)],cwd=ROOT,check=True)
         candidate.replace(output)
-    print(f'EXT4 opt-in image: {output}; default fortress.img remains ext2.')
+    print(f'EXT4 no-journal workbench image: {output}; default fortress.img uses journaled EXT4.')
 
 if __name__=='__main__':main()

@@ -23,6 +23,14 @@ EXT4 physical follow-up: RW/GPT/SYNC_BACKED admission was user-confirmed, but a 
 
 ## 2. Storage & Memory Invariant Notes
 
+### Default production image (2026-10-09)
+
+Normal `make` and `scripts/create_boot_img.py` now create journaled EXT4 at
+`bin/fortress.img`. Legacy ext2 remains supported only through explicit format
+selection or dedicated legacy test fixtures. Earlier SMP benchmark captures
+used ext2; they do not establish journaled EXT4 performance. The Phase-5
+"default stays ext2" statement above describes that historical milestone.
+
 ### ext2 Filesystem and VFS Boundaries
 
 - **Read-Only Default and Explicit Opt-in**: ext2 mounts are strictly read-only by default. Writable mounts require deliberate boot-level opt-in (`usb_data_mode=rw`).

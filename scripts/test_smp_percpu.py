@@ -93,7 +93,9 @@ def run(mode, count):
             qmp.execute("cont")
             deadline = time.monotonic() + 45
             while time.monotonic() < deadline:
-                if "fortress> " in log.read_text(errors="replace"):
+                shell_output = log.read_text(errors="replace")
+                if ("FortressOS shell (Ring 3)" in shell_output and
+                        ("fortress> " in shell_output or "fortress:/ $ " in shell_output)):
                     break
                 assert child.poll() is None, child.stderr.read().decode()
                 time.sleep(0.1)

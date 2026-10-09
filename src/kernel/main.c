@@ -4658,7 +4658,8 @@ static void pipe_test_worker(void *arg) {
     __asm__ volatile("cli" ::: "memory");
     if (pipe_test.mode < 2) {
         PIPE_REQUIRE(pipe_test.main->state == THREAD_BLOCKED);
-        PIPE_REQUIRE(pipe_test.main->wait_channel == pipe_test.writer->node->fs_private);
+        pipe_t *p = pipe_test.writer->node->fs_private;
+        PIPE_REQUIRE(pipe_test.main->wait_channel == &p->data_bytes);
         if (pipe_test.mode == 0)
             PIPE_REQUIRE(vfs_write(pipe_test.writer, "pipe", 4) == 4);
     } else if (pipe_test.mode == 2) {
@@ -4718,7 +4719,8 @@ static void test_pipe_kernel_lifecycle(void) {
     for (unsigned i = 0; i < 32; i++) {
         thread_yield();
         PIPE_REQUIRE(worker->state == THREAD_BLOCKED);
-        PIPE_REQUIRE(worker->wait_channel == pipe_test.reader->node->fs_private);
+        pipe_t *p = pipe_test.reader->node->fs_private;
+        PIPE_REQUIRE(worker->wait_channel == &p->space_bytes);
         pipe_test_check_block(i);
     }
     pipe_test_join();

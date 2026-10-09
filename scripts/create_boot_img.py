@@ -8,7 +8,7 @@ Creates a bootable raw disk image featuring:
 - Embedded Limine BIOS Stage 2 in GPT gap (LBAs 34..2047)
 - Partition 1 (ESP, FAT32): LBAs 2048..133119 (64 MiB) with UEFI/BIOS loaders,
   kernel, initramfs, configuration, and boot splash.
-- Partition 2 (Linux FS, ext2): LBAs 133120..264191 (64 MiB) with clean ext2
+- Partition 2 (Linux FS, journaled EXT4): LBAs 133120..264191 (64 MiB) with clean EXT4
   filesystem for persistent user storage mounted at /mnt.
 - Backup GPT Partition Array (LBAs total-33..total-2) and Backup GPT Header (LBA total-1).
 """
@@ -31,7 +31,7 @@ PART1_START = 2048
 PART1_SECTORS = 131072
 PART1_END = PART1_START + PART1_SECTORS - 1  # 133119
 
-# Partition 2: Persistent ext2 Data (64 MiB = 131072 sectors)
+# Partition 2: Persistent data (64 MiB = 131072 sectors)
 PART2_START = 133120
 PART2_SECTORS = 131072
 PART2_END = PART2_START + PART2_SECTORS - 1  # 264191
@@ -145,8 +145,8 @@ def create_esp_partition(esp_path: Path, iso_root: Path, limine_dir: Path,
             print(f"Warning: mcopy failed copying {src} -> {dst}: {res.stderr.decode()}", file=sys.stderr)
 
 
-def create_ext2_partition(ext2_path: Path, filesystem="ext2"):
-    """Formats a 64 MiB ext2 partition with clean superblock and initial files."""
+def create_data_partition(ext2_path: Path, filesystem="ext4"):
+    """Formats persistent data; journaled EXT4 is the normal build default."""
     ext2_bytes = PART2_SECTORS * SECTOR_SIZE
     with open(ext2_path, "wb") as f:
         f.truncate(ext2_bytes)
@@ -160,7 +160,7 @@ def create_ext2_partition(ext2_path: Path, filesystem="ext2"):
             "=====================================================\n"
             "Files created, modified, or saved here persist across\n"
             "system reboots.\n\n"
-            f"Filesystem: {filesystem} ({4096 if filesystem == 'ext4' else 1024}-byte blocks, revision 1)\n"
+            f"Filesystem: {filesystem} ({1024 if filesystem == 'ext2' else 4096}-byte blocks, revision 1)\n"
             "Mountpoint: /mnt\n"
         )
         (staging_dir / "README.txt").write_text(readme)
@@ -177,23 +177,29 @@ def create_ext2_partition(ext2_path: Path, filesystem="ext2"):
             "-d", str(staging_dir),
             "-F", str(ext2_path)
         ]
-        if filesystem == "ext4":
+        if filesystem in ("ext4", "ext4-nojournal"):
             cmd_mke2fs = ["mke2fs", "-q", "-t", "ext4", "-b", "4096", "-I", "256",
                 "-O", "none,extent,filetype,sparse_super,large_file,metadata_csum",
                 "-E", "lazy_itable_init=0", "-m", "0", "-g", "4096", "-N", "512",
-                "-L", "FORTRESS_E4_TEST", "-d", str(staging_dir), "-F", str(ext2_path)]
+                "-L", "FORTRESS_DATA", "-d", str(staging_dir), "-F", str(ext2_path)]
+            if filesystem == "ext4":
+                cmd_mke2fs[cmd_mke2fs.index("-O")+1] += ",has_journal"
+                cmd_mke2fs[1:1] = ["-J", "size=4"]
         subprocess.run(cmd_mke2fs, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if filesystem == "ext4":
+            from initialize_ext4_journal import initialize
+            initialize(ext2_path)
 
     # Verify integrity with e2fsck
     res = subprocess.run(["e2fsck", "-fn", str(ext2_path)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     if res.returncode != 0:
-        raise RuntimeError(f"e2fsck verification failed on new ext2 partition: {res.stderr.decode()}")
+        raise RuntimeError(f"e2fsck verification failed on new {filesystem} partition: {res.stderr.decode()}")
 
 
 def build_bootable_img(output_img: Path, iso_root: Path, limine_dir: Path,
                        kernel_elf: Path, initramfs_tar: Path, limine_conf: Path,
-                       splash_file: Path, filesystem="ext2"):
+                       splash_file: Path, filesystem="ext4"):
     """Constructs the complete GPT partitioned dual-boot raw disk image."""
     total_bytes = TOTAL_SECTORS * SECTOR_SIZE
 
@@ -340,7 +346,7 @@ def build_bootable_img(output_img: Path, iso_root: Path, limine_dir: Path,
     with tempfile.TemporaryDirectory() as temp_dir:
         temp = Path(temp_dir)
         part1_img = temp / "part1_esp.img"
-        part2_img = temp / "part2_ext2.img"
+        part2_img = temp / "part2_data.img"
         custom_limine_conf = temp / "limine.conf"
 
         conf_content = (
@@ -369,7 +375,11 @@ def build_bootable_img(output_img: Path, iso_root: Path, limine_dir: Path,
             
         )
         if filesystem == "ext4":
+            conf_content = conf_content.replace("/FortressOS (", "/FortressOS EXT4 Journaled (")
+        elif filesystem == "ext4-nojournal":
             conf_content = conf_content.replace("/FortressOS (", "/FortressOS EXT4 E4-A TEST - NO JOURNAL (")
+        else:
+            conf_content = conf_content.replace("/FortressOS (", "/FortressOS LEGACY EXT2 (")
         custom_limine_conf.write_text(conf_content)
 
         print(f"  [IMG] Data partition PARTUUID: {part2_guid_str}")
@@ -378,7 +388,7 @@ def build_bootable_img(output_img: Path, iso_root: Path, limine_dir: Path,
                              initramfs_tar, custom_limine_conf, splash_file)
 
         print(f"  [IMG] Formatting {filesystem} Persistent Data Partition (64 MiB)...")
-        create_ext2_partition(part2_img, filesystem)
+        create_data_partition(part2_img, filesystem)
 
         print(f"  [IMG] Assembling raw disk image ({TOTAL_SECTORS * SECTOR_SIZE // (1024 * 1024)} MiB)...")
         with open(output_img, "wb") as f:
@@ -400,7 +410,7 @@ def build_bootable_img(output_img: Path, iso_root: Path, limine_dir: Path,
             f.seek(PART1_START * SECTOR_SIZE)
             f.write(part1_img.read_bytes())
 
-            # LBAs 133120..264191: Partition 2 (ext2)
+            # LBAs 133120..264191: Partition 2 (persistent data)
             f.seek(PART2_START * SECTOR_SIZE)
             f.write(part2_img.read_bytes())
 
@@ -427,7 +437,7 @@ def build_bootable_img(output_img: Path, iso_root: Path, limine_dir: Path,
 
 
 def verify_image(img_path: Path) -> bool:
-    """Verifies MBR, GPT, FAT32, and ext2 structures in an existing raw disk image."""
+    """Verifies MBR, GPT, FAT32, and persistent data in an existing raw disk image."""
     print(f"[VERIFY] Checking raw disk image: {img_path}")
     if not img_path.is_file():
         print(f"Error: {img_path} does not exist", file=sys.stderr)
@@ -533,7 +543,7 @@ def verify_image(img_path: Path) -> bool:
         print(f"FAIL: FAT32 ESP missing BOOTX64.EFI:\n{res.stderr}", file=sys.stderr)
         return False
 
-    # 6. Check ext2 filesystem with e2fsck
+    # 6. Check EXT4 or explicitly selected legacy ext2 with e2fsck
     with tempfile.TemporaryDirectory(prefix="fortress-verify-ext2-") as tmp:
         part2_file = Path(tmp) / "part2.ext2"
         ext2_offset = PART2_START * SECTOR_SIZE
@@ -542,14 +552,14 @@ def verify_image(img_path: Path) -> bool:
             f.seek(ext2_offset)
             ext2_data = f.read(ext2_size)
             if len(ext2_data) != ext2_size:
-                print("FAIL: Truncated ext2 partition data", file=sys.stderr)
+                print("FAIL: Truncated persistent partition data", file=sys.stderr)
                 return False
             part2_file.write_bytes(ext2_data)
 
         res = subprocess.run(["e2fsck", "-fn", str(part2_file)],
                              capture_output=True, text=True)
         if res.returncode != 0:
-            print(f"FAIL: ext2 filesystem check failed:\n{res.stdout}\n{res.stderr}", file=sys.stderr)
+            print(f"FAIL: persistent filesystem check failed:\n{res.stdout}\n{res.stderr}", file=sys.stderr)
             return False
 
     print("  [PASS] Protective MBR verified (Type 0xEE, valid boot signature)")
@@ -575,8 +585,8 @@ def main():
                         help="Path to limine.conf")
     parser.add_argument("--splash", type=Path, default=Path("assets/splash.png"),
                         help="Path to splash image")
-    parser.add_argument("--filesystem", choices=("ext2", "ext4"), default="ext2",
-                        help="ext4 creates a separately labelled restricted non-journaled test image")
+    parser.add_argument("--filesystem", choices=("ext2", "ext4", "ext4-nojournal"), default="ext4",
+                        help="default: journaled EXT4; ext2 is an explicit legacy fixture; ext4-nojournal is E4-A")
     parser.add_argument("--verify", action="store_true",
                         help="Verify an existing image rather than generating one")
 
@@ -587,7 +597,7 @@ def main():
         success = verify_image(out_path)
         sys.exit(0 if success else 1)
 
-    if args.filesystem == "ext4":
+    if args.filesystem == "ext4-nojournal":
         if out_path.resolve() == Path("bin/fortress.img").resolve() or out_path.exists() or str(out_path.resolve()).startswith("/dev/"):
             parser.error("EXT4 requires a new regular-file output, separate from bin/fortress.img")
     build_bootable_img(

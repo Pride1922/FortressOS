@@ -105,7 +105,7 @@ Broader TCP/DNS regression results are recorded below after the runs finish.
 The user confirms all six cases on Dell Latitude 5590, I219 8086:15D7,
 MAC c8:f7:50:0e:35:80, guest 192.168.0.168, gateway 192.168.0.1, boot cmdline
 `net=192.168.0.168/24,192.168.0.1 verbose`. The session record lives in
-`build/net-link/physical/PHYSICAL.md`.
+`docs/roadmap/evidence/net-link-physical.md`.
 
 | Case | Result | Detail |
 | --- | --- | --- |
