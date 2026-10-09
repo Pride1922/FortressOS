@@ -18,12 +18,10 @@ build targets and initramfs. Its dedicated guest/host runners are removed;
 historical benchmark procedure documents remain as evidence, not current
 commands. The standalone smpbench and reusable core correctness tests remain.
 
-The user explicitly requested deletion of the entire build folder and all
-generated comparison images. Host execution policy blocked both bulk deletion
-and individual generated-file deletion; cleanup requires a user-side action.
-Previously tracked physical evidence notes are relocated to
-docs/roadmap/evidence before cleanup. Conclusions in reports are retained;
-after cleanup, do not claim independent revalidation of deleted raw evidence.
+The user confirmed the build folder is clean after removing generated
+comparison images (2026-10-09). Previously tracked physical evidence notes
+were relocated to docs/roadmap/evidence before cleanup. Conclusions in reports
+are retained; do not claim independent revalidation of deleted raw evidence.
 Initramfs packaging explicitly excludes stale staged benchrun binaries.
 
 The normal image builder now defaults to journaled EXT4, including a clean
