@@ -48,6 +48,8 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`mkdir`](#mkdir) | Builtin | Filesystem | Create a new directory |
 | [`rm`](#rm) | Builtin | Filesystem | Remove a file or empty directory |
 | [`mv`](#mv) | Builtin | Filesystem | Rename or move a file or directory |
+| [`cp`](#cp) | Builtin / `/bin/cp` | Filesystem | Copy files and preserve permissions with bounded buffers |
+| [`touch`](#touch) | Builtin / `/bin/touch` | Filesystem | Update file timestamps or create empty files |
 | [`sync`](#sync) | Builtin | Filesystem | Flush dirty filesystem buffers to persistent storage |
 | [`echo`](#echo) | Builtin (child-safe) | Text | Print arguments to standard output (supports `$?`, `$VAR`) |
 | [`printf`](#printf) | Builtin (child-safe) | Text | Format and print data without trailing newline (exact bytes, RFC vectors) |
@@ -274,6 +276,36 @@ rm /mnt/data
 **Examples:**
 ```sh
 mv /mnt/old.txt /mnt/new.txt
+```
+
+---
+
+### `cp`
+**Syntax:** `cp <source> <dest>` or `cp <source>... <directory>`  
+**Path:** Builtin / `/bin/cp`  
+**Child-Safe in Pipelines:** No  
+**Description:** Copies files using a bounded-buffer read/write loop with exact byte fidelity. Preserves source file permissions upon successful copy. When the target destination is an existing directory, copies each source file into that directory with its original basename. Rejects copying a file onto itself or copying directories without recursion.  
+**Examples:**
+```sh
+cp /etc/motd /mnt/motd.backup
+cp /mnt/f1.txt /mnt/f2.txt /mnt/backup_dir
+```
+
+---
+
+### `touch`
+**Syntax:** `touch [-c] <path>...`  
+**Path:** Builtin / `/bin/touch`  
+**Child-Safe in Pipelines:** No  
+**Description:** Updates timestamps or creates files. Opens files with `O_CREAT | O_WRONLY` without truncation, ensuring existing file contents are preserved intact. When `-c` or `--no-create` is supplied, non-existent files are not created.  
+**Options:**
+* `-c`, `--no-create`: Do not create missing files.
+* `--`: Ends option scanning.  
+**Examples:**
+```sh
+touch /mnt/newfile.txt
+touch -c /mnt/maybe_exists.txt
+touch file1.txt file2.txt file3.txt
 ```
 
 ---

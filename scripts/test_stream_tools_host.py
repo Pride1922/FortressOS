@@ -109,6 +109,17 @@ if __name__ == "__main__":
             ], cwd=REPO, check=True)
             subprocess.run([str(disk_exe)], check=True, timeout=30)
 
+            cp_touch_exe = Path(tmp) / "cp_touch_host"
+            subprocess.run([
+                "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-DTOOL_HOST_TEST",
+                "-Isrc/include", "-Isrc/fs", "-Iuser/tools",
+                "tests/cp_touch_host.c", "user/tools/common.c", "user/tools/cp.c", "user/tools/touch.c",
+                "-o", str(cp_touch_exe)
+            ], cwd=REPO, check=True)
+            subprocess.run([str(cp_touch_exe)], check=True, timeout=30)
+
+
 
 
 

@@ -322,6 +322,134 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         puts("Usage: mv <old> <new>\n");
         return 1;
     }
+    if (b == CMD_CP) {
+        if (argc > 2) {
+            const char *dest = argv[argc - 1];
+            vfs_stat_t dst_st;
+            long dst_r = call(SYS_STAT, (uintptr_t)dest, (uintptr_t)&dst_st, 0);
+            bool dst_is_dir = (dst_r == 0 && dst_st.type == VFS_DIRECTORY);
+            if (argc > 3 && !dst_is_dir) {
+                puts_err("cp: target is not a directory\n");
+                return 1;
+            }
+            int status = 0;
+            char target_buf[VFS_MAX_PATH];
+            char copy_buf[512];
+            for (int i = 1; i < argc - 1; i++) {
+                const char *src = argv[i];
+                const char *target = dest;
+                if (dst_is_dir) {
+                    const char *base = src;
+                    for (const char *p = src; *p; p++) if (*p == '/') base = p + 1;
+                    size_t dlen = length(dest);
+                    size_t blen = length(base);
+                    bool need_slash = (dlen > 0 && dest[dlen - 1] != '/');
+                    if (dlen + (need_slash ? 1 : 0) + blen >= sizeof(target_buf)) {
+                        puts_err("cp: path too long\n");
+                        status = 1;
+                        continue;
+                    }
+                    size_t pos = 0;
+                    for (size_t k = 0; k < dlen; k++) target_buf[pos++] = dest[k];
+                    if (need_slash) target_buf[pos++] = '/';
+                    for (size_t k = 0; k < blen; k++) target_buf[pos++] = base[k];
+                    target_buf[pos] = '\0';
+                    target = target_buf;
+                }
+                if (equal(src, target)) {
+                    puts_err("cp: source and destination are identical\n");
+                    status = 1;
+                    continue;
+                }
+                vfs_stat_t src_st;
+                long sr = call(SYS_STAT, (uintptr_t)src, (uintptr_t)&src_st, 0);
+                if (sr < 0) {
+                    puts_err("cp: "); file_error_err(sr);
+                    status = 1;
+                    continue;
+                }
+                if (src_st.type == VFS_DIRECTORY) {
+                    puts_err("cp: omitting directory\n");
+                    status = 1;
+                    continue;
+                }
+                long sfd = call(SYS_OPEN, (uintptr_t)src, VFS_O_RDONLY, 0);
+                if (sfd < 0) {
+                    puts_err("cp: "); file_error_err(sfd);
+                    status = 1;
+                    continue;
+                }
+                long dfd = call(SYS_OPEN, (uintptr_t)target, VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0);
+                if (dfd < 0) {
+                    call(SYS_CLOSE, (uintptr_t)sfd, 0, 0);
+                    puts_err("cp: "); file_error_err(dfd);
+                    status = 1;
+                    continue;
+                }
+                bool copy_ok = true;
+                for (;;) {
+                    long n = call(SYS_READ, (uintptr_t)sfd, (uintptr_t)copy_buf, sizeof(copy_buf));
+                    if (n < 0) {
+                        puts_err("cp: read error\n");
+                        copy_ok = false;
+                        break;
+                    }
+                    if (n == 0) break;
+                    size_t rem = (size_t)n;
+                    const char *p = copy_buf;
+                    while (rem > 0) {
+                        long w = call(SYS_WRITE, (uintptr_t)dfd, (uintptr_t)p, (uintptr_t)rem);
+                        if (w <= 0) {
+                            puts_err("cp: write error\n");
+                            copy_ok = false;
+                            break;
+                        }
+                        p += w;
+                        rem -= (size_t)w;
+                    }
+                    if (!copy_ok) break;
+                }
+                call(SYS_CLOSE, (uintptr_t)sfd, 0, 0);
+                long c = call(SYS_CLOSE, (uintptr_t)dfd, 0, 0);
+                if (c < 0 && copy_ok) {
+                    puts_err("cp: close error\n");
+                    copy_ok = false;
+                }
+                if (copy_ok && (src_st.mode & 07777)) {
+                    long chr = call(SYS_CHMOD, (uintptr_t)target, src_st.mode & 07777, 0);
+                    if (chr < 0) {
+                        puts_err("cp: preserving permissions for '");
+                        puts_err(target);
+                        puts_err("' failed: ");
+                        file_error_err(chr);
+                        status = 1;
+                    }
+                }
+                if (!copy_ok) status = 1;
+            }
+            return status;
+        }
+        puts("Usage: cp <source> <dest>\n");
+        return 1;
+    }
+    if (b == CMD_TOUCH) {
+        if (argc > 1) {
+            int status = 0;
+            for (int i = 1; i < argc; i++) {
+                long r = call(SYS_OPEN, (uintptr_t)argv[i], VFS_O_CREAT | VFS_O_WRONLY, 0);
+                if (r < 0) {
+                    puts_err("touch: ");
+                    file_error_err(r);
+                    status = 1;
+                } else {
+                    call(SYS_CLOSE, (uintptr_t)r, 0, 0);
+                }
+            }
+            return status;
+        }
+        puts("Usage: touch <path> ...\n");
+        return 1;
+    }
     if (b == CMD_LAYOUT) {
         if (argc > 1) {
             if (equal(argv[1], "azerty")) {

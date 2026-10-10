@@ -18,6 +18,8 @@ enum builtin {
     CMD_MKDIR,
     CMD_RM,
     CMD_MV,
+    CMD_CP,
+    CMD_TOUCH,
     CMD_SYNC,
     CMD_ECHO,
     CMD_RUN,

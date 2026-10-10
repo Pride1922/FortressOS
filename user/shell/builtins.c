@@ -21,6 +21,8 @@ static const struct {
     {"mkdir",    "Create directory",                                       CMD_MKDIR,    false},
     {"rm",       "Remove file or empty directory",                         CMD_RM,       false},
     {"mv",       "Rename file or directory",                               CMD_MV,       false},
+    {"cp",       "Copy files [source] [destination]",                      CMD_CP,       false},
+    {"touch",    "Update timestamps or create file",                       CMD_TOUCH,    false},
     {"sync",     "Flush writable storage",                                 CMD_SYNC,     false},
     {"echo",     "Print text (supports $?)",                               CMD_ECHO,     true},
     {"printf",   "Format and print data without trailing newline",         CMD_PRINTF,   true},
