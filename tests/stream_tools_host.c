@@ -27,6 +27,7 @@ long tool_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
         stats++;
         const char *name = (const char *)a;
         if (!strcmp(name, "missing")) return SYSCALL_ENOENT;
+        if (!strcmp(name, "denied")) return SYSCALL_EACCES;
         ((vfs_stat_t *)b)->type = !strcmp(name, "dir") ? VFS_DIRECTORY : VFS_FILE;
         return 0;
     }
@@ -113,7 +114,11 @@ int main(void) {
         assert(opens == 1 && closes == 1 && !fds[low].open);
     }
     reset("x", 1); assert(invoke(cat_main, "missing", "f1", NULL) == 1);
-    bytes_equal("x", 1); assert(strstr(errors, "cannot open missing"));
+    bytes_equal("x", 1); assert(strstr(errors, "no such file or directory: missing"));
+    reset("",0); char *denied_args[]={"cat","denied"};
+    assert(cat_main(2,denied_args)==1);
+    assert(strstr(errors,"permission denied: denied"));
+
     reset("x", 1); assert(invoke(cat_main, "dir", NULL, NULL) == 1 && !reads && !opens);
     reset("x", 1); fail_open = 1;
     assert(invoke(cat_main, "f1", NULL, NULL) == 1 && !reads && !closes);

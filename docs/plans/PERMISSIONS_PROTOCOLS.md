@@ -3,12 +3,13 @@
 Status: Phases 0–4 complete locally, 2026-10-10. Production DAC and login are enabled.
 [Phase 2 evidence](../roadmap/permissions-phase2-gates.md) records authoritative
 admission, metadata transactions, syscall/tool acceptance and verification limits.
-Issue #5. No GitHub state changes or physical testing.
+Issue #5. No GitHub state changes; physical evidence is user-supplied.
 The user approved global registry consolidation, completion of Phase 0 and
 EXT2 lifetime repair. Credential bindings and filesystem metadata now exist;
 authorization and metadata/query syscalls are implemented. General credential
 transition syscalls, login, set-ID execution and sudo are delivered. Phase 5
-automated hardening is complete locally; physical acceptance remains pending.
+automated hardening is complete locally; user Dell functional and Linux audits
+PASS with limits retained in the physical checklist closeout.
 See [Phase 5 gates](../roadmap/permissions-phase5-gates.md).
 Read alongside PERMISSIONS_PLAN.md and the evidence checklist.
 

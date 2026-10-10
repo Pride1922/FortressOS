@@ -72,7 +72,7 @@ def run(mode,cpus,bootiso,kind):
             assert proc.poll() is None,clean(transcript[-6000:])
         raise TimeoutError(clean(transcript[-6000:]))
     def send(s):proc.stdin.write((s+'\n').encode());proc.stdin.flush()
-    def prompt(t):return re.search(r'fortress:[^\n]* \$ $',t)
+    def prompt(t):return re.search(r'(?:^|\n)[#$] $',t)
     def execute(command,expected):
         start=len(transcript);send(command);return wait(lambda t:expected in t and prompt(t),start)
     try:

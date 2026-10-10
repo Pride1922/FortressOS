@@ -31,7 +31,7 @@ def run(mode,cpus,disk,number):
     proc=subprocess.Popen(cmd,cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err)
     selector=selectors.DefaultSelector();selector.register(proc.stdout,selectors.EVENT_READ)
     def clean(data):return re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]','',data.decode(errors='replace')).replace('\r','')
-    def prompt(t):return re.search(r'fortress:[^\n]* \$ $',t)
+    def prompt(t):return re.search(r'(?:^|\n)[#$] $',t)
     def wait(pred,start=0,timeout=180):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
@@ -58,11 +58,11 @@ def run(mode,cpus,disk,number):
         text=clean(transcript);assert 'WARNING:' in text and 'passwordless' in text
         assert 'read-write at /mnt' in text and 'Journal recovery' not in text
         success('id','uid=1000 gid=1000');success('env','HOME=/run/user/1000')
-        execute('cat /etc/shadow','cat: cannot open /etc/shadow')
+        execute('cat /etc/shadow','cat: permission denied: /etc/shadow')
         success('sudo id','uid=0 gid=0 groups=0')
         execute('/bin/dmesg','[PROCESS] Exit status 1');success('sudo dmesg','-->')
         if number==1:
-            success('sudo /bin/shell','FortressOS shell (Ring 3)')
+            success('sudo /bin/shell','# ')
             success('id','uid=0 gid=0')
             success('mkdir /mnt/permissions-phase5')
             success('chown 1000:1000 /mnt/permissions-phase5')
@@ -76,11 +76,11 @@ def run(mode,cpus,disk,number):
         else:
             success('sudo cat /mnt/permissions-phase5/owned.txt','phase5-owned-persistence')
             success('ls -l /mnt/permissions-phase5/owned.txt','4294967295 4294967294')
-        execute('cat /mnt/permissions-phase5/owned.txt','cat: cannot open')
+        execute('cat /mnt/permissions-phase5/owned.txt','cat: permission denied:')
         execute('/mnt/permissions-phase5/nosuid-sudo id','sudo: privileged installation required')
         success('id','uid=1000 gid=1000')
         success('sync','Filesystem synced.')
-        success('sudo /bin/shell','FortressOS shell (Ring 3)')
+        success('sudo /bin/shell','# ')
         start=len(transcript);send('shutdown')
         wait(lambda t:'Shutdown initiated' in t,start);assert proc.wait(timeout=30)==0
         cases.append({'firmware':mode,'smp':cpus,'boot':number,'result':'PASS','argv':label+'-argv.json','disk_sha256':sha(disk)})

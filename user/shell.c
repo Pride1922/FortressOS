@@ -91,6 +91,7 @@ static int cd_cmd(int argc, char **argv) {
     if (r < 0) {
         if (r == SYSCALL_ENOENT) puts("cd: no such file or directory\n");
         else if (r == SYSCALL_ENOTDIR) puts("cd: not a directory\n");
+        else if (r == SYSCALL_EACCES || r == SYSCALL_EPERM) puts_err("cd: permission denied\n");
         else puts("cd: cannot change directory\n");
         return 1;
     }
@@ -293,7 +294,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     if (b == CMD_MKDIR) {
         if (argc > 1) {
             long r = call(SYS_MKDIR, (uintptr_t)argv[1], 0755, 0);
-            if (r < 0) { puts("mkdir: cannot create directory\n"); return 1; }
+            if (r < 0) { puts_err("mkdir: "); file_error_err(r); return 1; }
             return 0;
         }
         puts("Usage: mkdir <path>\n");
@@ -304,7 +305,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
             long r = call(SYS_UNLINK, (uintptr_t)argv[1], 0, 0);
             if (r < 0) {
                 if (r == SYSCALL_ENOTEMPTY) puts("rm: directory not empty\n");
-                else puts("rm: cannot remove\n");
+                else { puts_err("rm: "); file_error_err(r); }
                 return 1;
             }
             return 0;
@@ -315,7 +316,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     if (b == CMD_MV) {
         if (argc > 2) {
             long r = call(SYS_RENAME, (uintptr_t)argv[1], (uintptr_t)argv[2], 0);
-            if (r < 0) { puts("mv: cannot rename\n"); return 1; }
+            if (r < 0) { puts_err("mv: "); file_error_err(r); return 1; }
             return 0;
         }
         puts("Usage: mv <old> <new>\n");
@@ -344,13 +345,15 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     if (b == CMD_REBOOT) {
         puts("Restarting system...\n");
         (void)history_save();
-        (void)call(SYS_REBOOT, 1, 0, 0);
+        long r = call(SYS_REBOOT, 1, 0, 0);
+        if (r < 0) { puts_err("reboot: "); file_error_err(r); return 1; }
         return 0;
     }
     if (b == CMD_SHUTDOWN || b == CMD_POWEROFF) {
         puts("Shutting down system...\n");
         (void)history_save();
-        (void)call(SYS_REBOOT, 2, 0, 0);
+        long r = call(SYS_REBOOT, 2, 0, 0);
+        if (r < 0) { puts_err("shutdown: "); file_error_err(r); return 1; }
         return 0;
     }
     if (b == CMD_SYNC) {
@@ -573,7 +576,7 @@ void shell_main(int argc,char **argv,const char *const *envp) {
     alias_init();
     (void)history_load();
 
-    puts("\nFortressOS shell (Ring 3) — Crafted by Pride1922\nType help for commands.\n");
+    puts_fd(shell_get_terminal_fd(), "\033[2J\033[H");
 
     /* Install flag-only SIGCHLD handler for job notification. */
     signal_action_t chld_action = { .handler = (uintptr_t)prompt_sigchld };

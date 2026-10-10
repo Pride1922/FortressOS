@@ -26,6 +26,7 @@ extern bool tool_output_failed;
 long tool_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c);
 size_t tool_length(const char *s);
 bool tool_equal(const char *a, const char *b);
+int tool_sys_error(const char *tool, const char *message, const char *operand, long error);
 int tool_error(const char *tool, const char *message, const char *operand);
 int tool_write(const char *tool, const void *data, size_t n);
 /* 0: parsed, 1: --help, 2: usage error. */

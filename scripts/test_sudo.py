@@ -71,7 +71,7 @@ try:
         proc=subprocess.Popen(cmd,cwd=workspace,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err)
         selector=selectors.DefaultSelector();selector.register(proc.stdout,selectors.EVENT_READ)
         def clean(data):return re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]','',data.decode(errors='replace')).replace('\r','')
-        def prompt(t):return re.search(r'fortress:[^\n]* \$ $',t)
+        def prompt(t):return re.search(r'(?:^|\n)[#$] $',t)
         def wait(pred,start=0,timeout=180):
             end=time.monotonic()+timeout
             while time.monotonic()<end:
@@ -100,7 +100,7 @@ try:
                 wait(lambda t:'FortressOS login: ' in t);send('operator')
                 if kind!='passwordless':wait(lambda t:t.endswith('Password: '));send(password)
                 wait(prompt)
-                execute('cat /etc/shadow','cat: cannot open /etc/shadow')
+                execute('cat /etc/shadow','cat: permission denied: /etc/shadow')
                 if kind=='nonwheel':execute('sudo id','sudo: user is not authorized')
                 else:
                     if kind!='passwordless':sudo('id','sudo: authentication failed',True)
@@ -112,11 +112,11 @@ try:
                     assert 'PHASE5 DENIAL/FUZZ PASS' in text
                     sudo('dmesg','-->')
                     # Secure shell drops hostile imported PATH/HOME and retains entry ABI.
-                    execute('export PATH=/evil; export HOME=/evil; /bin/secure-shell','FortressOS shell (Ring 3)')
+                    execute('export PATH=/evil; export HOME=/evil; /bin/secure-shell','# ')
                     text=execute('env','PATH=/bin');assert 'HOME=/evil' not in text and 'PATH=/evil' not in text
-                    execute('exit','fortress:')
+                    execute('exit','$ ')
                 execute('/bin/id','uid=1000 gid=1000')
-                execute('/bin/cat /etc/shadow','cat: cannot open /etc/shadow')
+                execute('/bin/cat /etc/shadow','cat: permission denied: /etc/shadow')
             cases.append({'firmware':mode,'smp':cpus,'kind':kind,'result':'PASS','argv':label+'-argv.json'})
             print('PASS',label,flush=True)
         finally:

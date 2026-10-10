@@ -78,7 +78,7 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
     spawn_opts_t opts={.size=sizeof(opts),.version=1,.argv=(uintptr_t)(argv+1),.envp=(uintptr_t)environment};
     db_wipe(&database,sizeof(database));
     long pid=tool_syscall(SYS_SPAWN_EXT,(uintptr_t)command,(uintptr_t)&opts,sizeof(opts));
-    if (pid<0) return tool_error("sudo","cannot start command",argv[1]);
+    if (pid<0) return tool_sys_error("sudo","cannot start command",argv[1],pid);
     uint64_t status=0;
     return tool_syscall(SYS_WAIT,pid,(uintptr_t)&status,0)<0 ? 1 : (int)status;
 }

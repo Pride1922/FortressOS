@@ -36,6 +36,12 @@ int tool_error(const char *tool, const char *message, const char *operand) {
     (void)diagnostic_part("\n");
     return 1;
 }
+int tool_sys_error(const char *tool, const char *message, const char *operand, long error) {
+    if (error == SYSCALL_EACCES || error == SYSCALL_EPERM) message = "permission denied:";
+    else if (error == SYSCALL_ENOENT) message = "no such file or directory:";
+    else if (error == SYSCALL_EROFS) message = "read-only filesystem:";
+    return tool_error(tool, message, operand);
+}
 int tool_write(const char *tool, const void *data, size_t n) {
     long r = write_all(1, data, n);
     if (r >= 0) return 0;
@@ -111,14 +117,15 @@ int tool_inputs(const char *name, int argc, char **argv, int first,
         long fd = 0;
         if (owned) {
             vfs_stat_t st;
-            if (tool_syscall(SYS_STAT, (uintptr_t)label, (uintptr_t)&st, 0) < 0) {
-                result = tool_error(name, "cannot open", label); continue;
+            long stat_result = tool_syscall(SYS_STAT, (uintptr_t)label, (uintptr_t)&st, 0);
+            if (stat_result < 0) {
+                result = tool_sys_error(name, "cannot open", label, stat_result); continue;
             }
             if (st.type == VFS_DIRECTORY) {
                 result = tool_error(name, "is a directory", label); continue;
             }
             fd = tool_syscall(SYS_OPEN, (uintptr_t)label, VFS_O_RDONLY, 0);
-            if (fd < 0) { result = tool_error(name, "cannot open", label); continue; }
+            if (fd < 0) { result = tool_sys_error(name, "cannot open", label, fd); continue; }
         }
         int status = consume((int)fd, label, ctx);
         if (owned && tool_syscall(SYS_CLOSE, fd, 0, 0) < 0) {

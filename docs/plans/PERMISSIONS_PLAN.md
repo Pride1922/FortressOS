@@ -1,11 +1,11 @@
 # FortressOS permissions implementation plan
 
 Status: Phases 0–4 COMPLETE locally (2026-10-10); production DAC, login and sudo are enabled.
-Phase 5 automated hardening is complete locally; Dell physical acceptance is
-pending user results. [Phase 5 evidence](../roadmap/permissions-phase5-gates.md).
+Phase 5 automated hardening is complete locally; user Dell functional and Linux
+audits PASS with documented verification limits. [Phase 5 evidence](../roadmap/permissions-phase5-gates.md).
 The user approved registry global-lock consolidation, completion of Phase 0
 and the reproduced EXT2 lifetime repair, then bounded GPT boot scratch repair.
-GitHub issue/project state is unchanged. No physical testing is included.
+GitHub issue/project state is unchanged. Physical observations are user-supplied.
 Memory/SMP checkpoint `9d5c5ee` and paused performance limitations are preserved.
 The protocol document distinguishes current APIs, historical audit and proposed
 authorization. Existing local evidence/checklists track individual gates.
@@ -325,7 +325,7 @@ its authentication is passwordless. No authentication cache is added.
 - [x] Audit all 71 dispatcher cases (including the test-only case) against the ABI and trace indirect descriptor/filesystem/process/terminal/network paths. Process listing remains public. SYS_DMESG requires effective UID zero before any buffer/log effects; NETCTL_IFSET requires CAP_SYS_ADMIN before configuration effects. Existing power, signals, low-port bind and storage gates remain.
 - [x] Actual-code ASan/UBSan: 30,000 USTAR header/length mutations, 30,000 passwd/group/shadow mutations, 10,000 malformed spawn-option vectors; rollback, zero-effect denial and allocation cleanup. TarFS validates checksum, strict fields, lengths/components, payload/types and complete terminators before namespace publication. Real set-ID/nosuid/capability/secure descriptor boundaries have host and Ring 3 gates.
 - [x] Aggregate/focused host, actual filesystem denial/interleaving/crash-cut/Linux gates; disposable BIOS/UEFI permission, login and sudo regressions. Fresh normal raw image independently verified and booted twice under BIOS/UEFI × SMP=1/4 for ownership, bytes, nosuid and Linux integrity audits. Exact evidence and failed attempts: [Phase 5 report](../roadmap/permissions-phase5-gates.md).
-- [ ] Dell 5590 physical acceptance: boot/login/sudo/USB nosuid and EXT4 ownership across reboot plus independent Linux `ls -ln`/integrity/bytes audits. [User checklist](../roadmap/permissions-phase5-dell.md). Pending until user-supplied results; automated passes do not close this gate.
+- [x] Dell 5590 user physical functional acceptance (with documented limits): boot/login/sudo/USB nosuid and EXT4 ownership across reboot plus independent Linux `ls -ln`/integrity/bytes audits. [User checklist](../roadmap/permissions-phase5-dell.md). User reports/photos support PASS; source hash confirmed, USB pre-write read-back and full boot identity not captured, Linux automounted RW before audit. First exit anomaly unresolved. See checklist closeout; no broader hardware claim.
 
 ## 7. Verification matrix
 

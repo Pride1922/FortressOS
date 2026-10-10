@@ -17,6 +17,7 @@ static void prompt_sigtstp(unsigned sig) { (void)sig; }
 
 static int64_t g_ui_status = 0;
 static char g_ui_cwd[256] = "/";
+static uint32_t g_ui_euid = UINT32_MAX;
 static bool g_ui_continuation = false;
 static char g_prompt_template[64] = "fortress:<cwd> $ ";
 
@@ -98,6 +99,8 @@ static void ui_put_dec(size_t val) {
 
 void shell_set_prompt_state(int64_t status, const char *cwd) {
     g_ui_status = status;
+    uint32_t real, effective, saved;
+    g_ui_euid = call(SYS_GETRESUID, (uintptr_t)&real, (uintptr_t)&effective, (uintptr_t)&saved) == 0 ? effective : UINT32_MAX;
     if (cwd && *cwd) {
         size_t n = 0;
         while (cwd[n] && n < sizeof(g_ui_cwd) - 1) {
@@ -167,40 +170,11 @@ static void paint(void) {
     } else if (g_ui_continuation) {
         prompt = "> ";
     } else {
-        if (equal(g_prompt_template, "fortress> ")) {
-            prompt = "fortress> ";
-        } else {
-            size_t n = 0;
-            if (g_ui_status != 0) {
-                prompt_buf[n++] = '[';
-                if (g_ui_status < 0) {
-                    prompt_buf[n++] = '-';
-                    uint64_t v = (uint64_t)(0 - g_ui_status);
-                    char tmp[24]; int tp = 0;
-                    while (v > 0) { tmp[tp++] = (char)('0' + (v % 10)); v /= 10; }
-                    while (tp > 0) prompt_buf[n++] = tmp[--tp];
-                } else {
-                    uint64_t v = (uint64_t)g_ui_status;
-                    char tmp[24]; int tp = 0;
-                    while (v > 0) { tmp[tp++] = (char)('0' + (v % 10)); v /= 10; }
-                    while (tp > 0) prompt_buf[n++] = tmp[--tp];
-                }
-                prompt_buf[n++] = ']';
-                prompt_buf[n++] = ' ';
-            }
-            const char *pfx = "fortress:";
-            while (*pfx) prompt_buf[n++] = *pfx++;
-            const char *c = g_ui_cwd;
-            while (*c && n < sizeof(prompt_buf) - 5) prompt_buf[n++] = *c++;
-            prompt_buf[n++] = ' ';
-            prompt_buf[n++] = '$';
-            prompt_buf[n++] = ' ';
-            prompt_buf[n] = '\0';
-        }
+        prompt = g_ui_euid == 0 ? "# " : "$ ";
     }
 
     size_t plen = length(prompt);
-    if (plen + 3 >= width) { prompt = "> "; plen = 2; }
+    if (plen + 3 >= width) { prompt = g_ui_euid == 0 ? "# " : "$ "; plen = length(prompt); }
     size_t room = width - plen - 2;
     if (edit.cursor < edit.view) edit.view = edit.cursor;
     if (edit.cursor >= edit.view + room) edit.view = edit.cursor - room + 1;

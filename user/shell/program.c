@@ -16,6 +16,7 @@ long program_launch(const char *path, const char *const *argv,
 
 int program_error(long error) {
     switch (error) {
+        case SYSCALL_EACCES: case SYSCALL_EPERM: puts_err("Permission denied: command or redirection is not allowed.\n"); return 126;
         case SYSCALL_ENOENT: puts_err("No such file or directory.\n"); return 127;
         case SYSCALL_ENOEXEC: puts_err("Invalid executable.\n"); return 126;
         case SYSCALL_ENOMEM: puts_err("Out of memory or process capacity.\n"); return 1;

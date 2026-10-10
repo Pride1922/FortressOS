@@ -1,10 +1,12 @@
 # Permissions Phase 5 hardening and automated acceptance
 
 2026-10-10. Continued locally from `700ba89`. Automated work complete;
-**Dell Latitude 5590 physical acceptance PENDING USER RESULTS**.
+**Dell Latitude 5590 user functional and Linux audits PASS WITH LIMITS**.
 At the automated acceptance checkpoint there were no commits, GitHub changes,
 pushes, physical device access or flashing. The user subsequently requested a
-local commit of all remaining changes; physical acceptance remains pending.
+local commit of all remaining changes. Subsequent user physical observations
+are recorded in the Dell checklist; automated artifacts retain their original
+pending status as historical snapshots.
 The two initially untracked Phase 2 logs are byte-identical, with baseline copies,
 and are included unchanged in that local commit.
 Prior bin artifacts, including the intentionally old raw image, are retained.
@@ -201,5 +203,10 @@ fresh root-owned USB; HOME remains temporary and is not silently redirected.
 
 The [Dell checklist](permissions-phase5-dell.md) covers boot/login, sudo, USB
 nosuid, clean reboot ownership/bytes and independent Linux ownership/integrity
-audits on explicit disposable media. Physical acceptance remains pending until
-the user supplies results; diagnoses and closeout must cite those observations.
+audits on explicit disposable media. Subsequent user photos/reports support
+functional physical PASS and independent Linux ownership, fsck and exact hash
+PASS. The checklist records per-observation evidence and limits: no USB
+pre-write read-back/full boot identity, Linux automounted RW before auditing,
+firmware/CPU/internal-NVMe observations not captured, temporary file creation
+unconfirmed and first ineffective exit unresolved. No broader hardware or
+physical crash-recovery acceptance is claimed.

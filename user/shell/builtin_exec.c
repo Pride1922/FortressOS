@@ -427,7 +427,7 @@ static int exec_ls(int argc, const char *const *argv) {
     if (result < 0) {
         write_err("ls: ");
         write_err(path);
-        write_err(": no such file or directory\n");
+        write_err(result==SYSCALL_EACCES || result==SYSCALL_EPERM ? ": permission denied\n" : ": no such file or directory\n");
         return 1;
     }
     if (st.type != VFS_DIRECTORY) {
@@ -440,7 +440,7 @@ static int exec_ls(int argc, const char *const *argv) {
     }
     long fd = call(SYS_OPEN, (uintptr_t)path, 0, 0);
     if (fd < 0) {
-        write_err("ls: cannot open directory\n");
+        write_err(fd==SYSCALL_EACCES || fd==SYSCALL_EPERM ? "ls: permission denied\n" : "ls: cannot open directory\n");
         return 1;
     }
     vfs_dirent_t entry;
@@ -490,10 +490,10 @@ static int exec_view(int argc, const char *const *argv) {
     if (path) {
         vfs_stat_t st;
         long r = call(SYS_STAT, (uintptr_t)path, (uintptr_t)&st, 0);
-        if (r < 0) { write_err("view: no such file or directory\n"); return 1; }
+        if (r < 0) { write_err(r==SYSCALL_EACCES || r==SYSCALL_EPERM ? "view: permission denied\n" : "view: no such file or directory\n"); return 1; }
         if (st.type != VFS_FILE) { write_err("view: not a regular file\n"); return 1; }
         fd = call(SYS_OPEN, (uintptr_t)path, 0, 0);
-        if (fd < 0) { write_err("view: cannot open file\n"); return 1; }
+        if (fd < 0) { write_err(fd==SYSCALL_EACCES || fd==SYSCALL_EPERM ? "view: permission denied\n" : "view: cannot open file\n"); return 1; }
     }
     static char buf[512]; /* BSS; safe for freestanding */
     bool newline = true;
@@ -698,7 +698,7 @@ int exec_dmesg(int argc, const char *const *argv) {
 
     long n = call(SYS_DMESG, (uintptr_t)s_dmesg_buf, sizeof(s_dmesg_buf), 0);
     if (n < 0) {
-        write_err("dmesg: kernel log unavailable\n");
+        write_err(n == SYSCALL_EPERM || n == SYSCALL_EACCES ? "dmesg: permission denied; root access required (use sudo dmesg).\n" : "dmesg: kernel log unavailable\n");
         return 1;
     }
     if (n == 0) return 0;

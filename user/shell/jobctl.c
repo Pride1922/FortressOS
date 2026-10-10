@@ -49,7 +49,7 @@ int jobctl_exec(int argc, const char *const *argv) {
     const job_t *job=jobs_get(slot);
     if (command==CMD_FG) return pipeline_foreground(slot,false,0);
     long result=call(SYS_KILL,(uintptr_t)-job->pgid,(uintptr_t)sig,0);
-    if (result<0) return error(argv[0],result==SYSCALL_ESRCH ? "job no longer exists" : "signal failed");
+    if (result<0) return error(argv[0],result==SYSCALL_EACCES || result==SYSCALL_EPERM ? "permission denied" : result==SYSCALL_ESRCH ? "job no longer exists" : "signal failed");
     if (sig==SIGCONT) jobs_mark_running(slot);
     if (command==CMD_BG) {
         jobs_set_foreground(slot,false);

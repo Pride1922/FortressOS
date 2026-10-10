@@ -17,7 +17,9 @@ int chown_main(int argc,char **argv) {
     }
     if (flags==(CHOWN_KEEP_UID|CHOWN_KEEP_GID)) return tool_error("chown","missing UID and GID",s);
     int status=0;
-    for (int i=2;i<argc;i++) if (permission_call4(SYS_CHOWN,(uintptr_t)argv[i],uid,gid,flags)<0)
-        status=tool_error("chown","cannot change owner",argv[i]);
+    for (int i=2;i<argc;i++) {
+        long r=permission_call4(SYS_CHOWN,(uintptr_t)argv[i],uid,gid,flags);
+        if (r<0) status=tool_sys_error("chown","cannot change owner",argv[i],r);
+    }
     return status;
 }

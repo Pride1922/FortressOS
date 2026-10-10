@@ -45,6 +45,7 @@ long puts_err(const char *s) {
 
 void puts(const char *s) { write_bytes(s, length(s)); }
 static const char *file_error_string(long error) {
+    if (error == SYSCALL_EACCES || error == SYSCALL_EPERM) return "Permission denied.\n";
     if (error == SYSCALL_EROFS) return "Read-only filesystem.\n";
     if (error == SYSCALL_EIO)   return "I/O error.\n";
     if (error == SYSCALL_ENOENT) return "No such file or directory.\n";

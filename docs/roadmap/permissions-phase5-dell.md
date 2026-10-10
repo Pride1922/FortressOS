@@ -1,8 +1,109 @@
 # Permissions Phase 5 — Dell Latitude 5590 acceptance
 
-Status: **PENDING USER RESULTS**, 2026-10-10. All listed outcomes below are
-expected results, not physical observations. The agent has performed no
+Status: **USER PHYSICAL FUNCTIONAL AND LINUX AUDITS PASS WITH LIMITS**,
+2026-10-10. Observations below distinguish supplied evidence from the checklist's
+expected results. The agent has performed no
 flashing, physical disk access or Dell operation.
+
+User observations received 2026-10-10 (image identity not yet confirmed):
+
+- Root login with a password rejected: user-reported PASS.
+- Operator passwordless login succeeds: user-reported PASS.
+- Passwordless/temporary-home warning not visible: user-reported FAIL;
+  diagnosis pending. Remaining checks and overall physical acceptance pending.
+- User reports the complete access/sudo command sequence PASS: plain
+  `cat /etc/shadow` and `/bin/dmesg` denied; `sudo dmesg` succeeds;
+  two `sudo id` invocations succeed with the expected warnings/root identity;
+  parent `id` remains operator; `sudo /bin/sh-builtin false` followed by
+  `echo $?` returns 1. This is user-reported physical evidence, not an
+  independently captured transcript. USB nosuid, ownership/reboot and Linux
+  integrity audits remain pending.
+- Subsequent user photo shows `sudo /bin/shell`, root `id`, directory
+  preparation, `exit`, then `id` still reporting UID/GID 0. Return to operator
+  is unresolved and overrides any assumption that this nested-shell step
+  passed. The photo alone does not establish which shell remains active or
+  whether the booted image matches the delivered hash. Pause operator-based
+  ownership/nosuid checks pending process/image diagnosis.
+- Follow-up photo shows login PID 94 -> operator shell 95 -> sudo 113 ->
+  elevated shell 114 -> ps 121. Elevated environment is HOME=/root,
+  USER/LOGNAME=root. A subsequent `exit` returns to UID/GID 1000 with groups
+  1000,10,44,104: return-to-operator PASS supported by photo. The first
+  ineffective `exit` remains unexplained; this evidence does not demonstrate
+  parent credential elevation. Operator-based checks may resume; image
+  identity and login-warning visibility remain unresolved.
+- Ownership/DAC photo confirms owned.txt initially operator:operator,
+  mode 0640, size 25; sudo chown changes IDs to 12345678:87654321 while
+  retaining mode 0640. Plain cat fails with exit status 1; sudo cat displays
+  phase5-owned-persistence. Passwordless sudo warnings are visible for both
+  chown and cat. This live ownership/DAC step PASS; reboot persistence and
+  independent Linux byte/integrity verification remain pending.
+- First USB nosuid photo: copy/chown succeeded (root:root, size 71608), but
+  command was mistyped as `sudo chmox 4755 ...` and failed to start. Copy
+  remained non-executable; launch reports Unable to load executable, parent
+  remains UID/GID 1000. This attempt is not nosuid acceptance; retry actual
+  chmod 4755 and verify mode before execution. Retain failed attempt photo.
+- Corrected USB nosuid photo confirms `sudo chmod 4755` succeeds and ls
+  displays -rwsr-xr-x root:root, size 71608. Executing the USB copy prints
+  `sudo: privileged installation required`, exit status 1; final id remains
+  UID/GID 1000, groups 1000,10,44,104. Live USB nosuid test PASS supported
+  by photo. Clean reboot persistence and independent Linux audits pending.
+- Reboot login photo clearly displays `WARNING: live-media operator login
+  is passwordless; home is temporary.` before the first login prompt.
+  Warning visibility PASS supported by photo; supersedes the earlier
+  not-observed report. Post-reboot ownership/bytes/nosuid checks pending.
+- Post-reboot photo confirms operator UID/GID 1000, groups 1000,10,44,104,
+  HOME=/run/user/1000 and USER/LOGNAME=operator. Temporary file cannot be
+  opened (pre-reboot creation has not been independently captured). Persistent
+  owned.txt retains 12345678:87654321, mode 0640, size 25; plain cat is denied
+  with status 1 and sudo cat displays the original text. USB sudo retains
+  root:root 4755, size 71608, rejects privileged installation with status 1,
+  and parent remains operator. Reboot ownership/DAC/displayed-content/nosuid
+  PASS supported by photo. History auto-save warning matches the documented
+  existing history-path limitation. Independent Linux integrity/exact-byte
+  audits and delivered-image identity confirmation remain pending.
+- User supplied PowerShell Get-FileHash output for bin/fortress.img matching
+  7c6a70d1a50252efed9b5f07e44c5cb210ae94f5ecd7fdcea20a60951c03b53f:
+  source-image identity PASS. This verifies the source file, not a USB
+  read-back or byte identity of the booted media. Linux audits pending.
+- Linux identification photo: /dev/sda has TRAN=usb, model SanDisk SSD PLUS
+  240GB, reported size 115.1G; /dev/sda2 is 64M EXT4 with expected PARTUUID
+  705536e3-a337-4b30-a0cf-0f316ebda29c. Mounted at
+  /media/pride1922/FORTRESS_DATA with rw,nosuid,nodev,relatime,errors=remount-ro.
+  Selected USB partition identity supported by photo. Linux automounted RW,
+  so subsequent clean-state audit is after that mount and cannot alone prove
+  the untouched FortressOS shutdown state. Unmount before fsck; no repair.
+- Linux fsck photo confirms successful umount /dev/sda2 and empty findmnt
+  result; e2fsck 1.47.0 -fn completes all five passes, 19/512 files,
+  1100/16384 blocks, exit 0. Independent post-Linux-mount filesystem
+  consistency PASS; no repair performed by this command. Linux ownership,
+  journal information and exact-byte/hash checks remain pending.
+- Linux dumpe2fs photo confirms filesystem state clean, has_journal,
+  extent and metadata_csum features, 4096-byte blocks, 256-byte inodes,
+  journal inode 8, journal_checksum_v3, journal start 0 and 4096k journal.
+  Independent journal/profile metadata check PASS after the disclosed Linux
+  RW mount. Inode ownership and exact-byte/hash checks remain pending.
+- Two Linux debugfs photos independently confirm inode 18 owned.txt:
+  regular file, mode 0640, UID 12345678, GID 87654321, size 25; inode 19
+  nosuid-sudo: regular file, mode 04755, UID/GID 0, size 71608. Independent
+  on-disk ownership/mode/size audit PASS. Mounted numeric ownership and
+  exact-byte/hash comparisons remain pending.
+- Final Linux photo confirms corrected `mount -o ro,noload`, numeric ls
+  ownership/modes/sizes, both expected SHA-256 hashes and exact owned.txt
+  bytes ending 0a. Unmount completes without diagnostic. An initial mount
+  command typo reports bad usage and an accidental nload command is not
+  found; corrected audit succeeds. Mounted ownership and exact-byte audit
+  PASS supported by photo.
+
+Physical closeout: supplied Dell photos/user reports support login/root
+rejection, visible default warnings, sudo and parent credentials, high-ID
+ownership/DAC across reboot, USB nosuid and independent Linux integrity,
+journal metadata, ownership and exact bytes. Functional checklist accepted
+with these retained limits: no pre-write USB read-back hash or full booted
+kernel identity evidence; firmware/CPU count and internal-NVMe exclusion
+not independently captured; Linux automounted RW before the integrity audit;
+temporary-file creation before reboot not captured; first ineffective exit
+remains unexplained (later exit correctly restored operator). No physical
+crash/tear, general hardware or alternate-firmware acceptance is claimed.
 
 ## Verified image and test boundary
 
