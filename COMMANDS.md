@@ -479,11 +479,11 @@ dmesg -n 25 /mnt/error_tail.log # Save last 25 diagnostic lines to disk
 ---
 
 ### `history`
-**Syntax:** `history [clear | save | load]`  
+**Syntax:** `history [-c | clear | save | load]`  
 **Child-Safe in Pipelines:** No  
 **Description:** Manages the shell command history.
 * `history` without arguments displays the numbered list of previous commands.
-* `history clear` wipes the in-memory history buffer (and marks history dirty for auto-flush).
+* `history clear` or `history -c` wipes the in-memory history buffer and immediately saves the cleared empty history to persistent storage (`/mnt/.fortress/history`).
 * `history save` explicitly writes the history buffer to `/mnt/.fortress/history` and resets the auto-flush counter.
 * `history load` reloads previous command history from `/mnt/.fortress/history`, resetting the auto-flush counter, dirty flag, and warning flag.
 
@@ -498,6 +498,7 @@ During interactive sessions (when stdin is a terminal), history automatically au
 history
 history save
 history clear
+history -c
 ```
 
 ---

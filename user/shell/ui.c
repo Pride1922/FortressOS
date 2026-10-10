@@ -129,9 +129,11 @@ void shell_terminal(const char *arg) {
 }
 
 void shell_history(const char *arg) {
-    if (equal(arg, "clear")) {
+    if (equal(arg, "clear") || equal(arg, "-c")) {
         history_clear();
-        history_mark_dirty();
+        if (!history_save()) {
+            history_mark_dirty();
+        }
         return;
     }
     if (equal(arg, "save")) {
@@ -144,7 +146,7 @@ void shell_history(const char *arg) {
         else puts("Failed to load history\n");
         return;
     }
-    if (*arg) { puts("Usage: history [clear | save | load]\n"); return; }
+    if (*arg) { puts("Usage: history [-c | clear | save | load]\n"); return; }
     for (size_t i = 0; i < history_count(); i++) {
         put_dec(i + 1); puts("  "); puts(history_get(i)); puts("\n");
     }

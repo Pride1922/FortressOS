@@ -237,17 +237,34 @@ def run(mode):
             out = uart_cmd("history save\n")
             assert "History saved to /mnt/.fortress/history" in out, out
 
-            # 19. Clear in-memory history
+            # Backup saved history file to test reload after clear
+            uart_cmd("cp /mnt/.fortress/history /mnt/.fortress/history.bak\n")
+
+            # 19. Clear in-memory history and persistent file
             out = uart_cmd("history clear\n")
             out = uart_cmd("history\n")
             assert "hello world" not in out, out
 
-            # 20. Load history from persistent storage
+            # Verify persistent file was also cleared (history load loads empty file)
+            out = uart_cmd("history load\n")
+            assert "History loaded from /mnt/.fortress/history" in out, out
+            out = uart_cmd("history\n")
+            assert "hello world" not in out, out
+
+            # 20. Restore backup and verify loading populated history
+            uart_cmd("cp /mnt/.fortress/history.bak /mnt/.fortress/history\n")
             out = uart_cmd("history load\n")
             assert "History loaded from /mnt/.fortress/history" in out, out
             out = uart_cmd("history\n")
             assert "echo 'hello world && not_a_command'" in out, out
-            print(f"[{mode.upper()}] S4 Persistent history save/load to /mnt/.fortress/history verified.", flush=True)
+
+            # 21. Also verify 'history -c' clears persistent storage
+            out = uart_cmd("history -c\n")
+            out = uart_cmd("history load\n")
+            assert "History loaded from /mnt/.fortress/history" in out, out
+            out = uart_cmd("history\n")
+            assert "echo 'hello world && not_a_command'" not in out, out
+            print(f"[{mode.upper()}] S4 Persistent history save/load/clear to /mnt/.fortress/history verified.", flush=True)
 
             print(f"PASS {mode}: All S3 and S4 integration checks passed cleanly!", flush=True)
 

@@ -33,7 +33,7 @@ static const struct {
     {"poweroff", "Alias for shutdown",                                     CMD_POWEROFF, false},
     {"exit",     "Exit shell [status]",                                    CMD_EXIT,     false},
     {"dmesg",    "Print/save kernel log [-n N | tail [N]] [path]",         CMD_DMESG,    true},
-    {"history",  "History [clear | save | load]",                          CMD_HISTORY,  false},
+    {"history",  "History [-c | clear | save | load]",                         CMD_HISTORY,  false},
     {"prompt",   "Configure prompt format [default | cwd | <template>]",  CMD_PROMPT,   false},
     {"terminal", "Select local | serial | mirror | plain output",          CMD_TERMINAL, false},
     {"set",      "Print all shell variables",                              CMD_SET,      false},
