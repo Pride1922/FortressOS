@@ -2,6 +2,7 @@
 from pathlib import Path
 import hashlib,json,selectors,shutil,subprocess,tarfile,tempfile,time,re,sys,os
 from test_ext4_read import gpt
+from contextlib import nullcontext
 ROOT=Path(__file__).resolve().parent.parent
 phase2=os.environ.get('PERM_PHASE2_EXPECT')=='1'
 output_root=ROOT/('build/permissions-phase2' if phase2 else 'build/permissions-phase0')
@@ -12,7 +13,8 @@ usb=len(sys.argv)==3
 if usb:assert sys.argv[2]=='--usb'
 source=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else None
 if source:assert source.is_file() and source.is_relative_to(ROOT/'build/permissions-phase0')
-with tempfile.TemporaryDirectory(prefix='fortress-perm-') as directory:
+retained=out/'artifacts';retained.mkdir()
+with nullcontext(str(retained)) as directory:
  tmp=Path(directory);root=tmp/'iso';shutil.copytree(ROOT/'build/iso_root',root)
  archive=tmp/'initramfs.tar'
  with tarfile.open(ROOT/'bin/initramfs.tar') as src,tarfile.open(archive,'w',format=tarfile.USTAR_FORMAT) as dst:
@@ -23,6 +25,9 @@ with tempfile.TemporaryDirectory(prefix='fortress-perm-') as directory:
  for p in (root/'boot/initramfs.tar',root/'initramfs.tar'):shutil.copyfile(archive,p)
  config='timeout: 0\n/FortressOS Phase0 Test\n    protocol: limine\n    kernel_path: boot():/boot/fortress.elf\n    module_path: boot():/boot/initramfs.tar\n'
  if usb:config+='    kernel_cmdline: usb_data=PARTUUID=11223344-5566-7788-99aa-bbccddeeff00 usb_data_mode=rw\n'
+ if os.environ.get('PERM_LOGIN_BYPASS')=='1':
+  assert phase2,'login bypass allowed only in explicit Phase2 regression'
+  config=config.rstrip()+' login=0\n'
  for p in (root/'limine.conf',root/'boot/limine.conf',root/'boot/limine/limine.conf'):p.write_text(config)
  iso=tmp/'permissions.iso'
  subprocess.run(['xorriso','-as','mkisofs','-b','boot/limine/limine-bios-cd.bin','-no-emul-boot','-boot-load-size','4','-boot-info-table','--efi-boot','boot/limine/limine-uefi-cd.bin','-efi-boot-part','--efi-boot-image','--protective-msdos-label',str(root),'-o',str(iso)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)

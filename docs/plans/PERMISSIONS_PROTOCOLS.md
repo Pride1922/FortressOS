@@ -8,8 +8,35 @@ The user approved global registry consolidation, completion of Phase 0 and
 EXT2 lifetime repair. Credential bindings and filesystem metadata now exist;
 authorization and metadata/query syscalls are implemented. General credential
 transition syscalls, login, set-ID execution and sudo are delivered. Phase 5
-hardening/physical acceptance remains open.
+automated hardening is complete locally; physical acceptance remains pending.
+See [Phase 5 gates](../roadmap/permissions-phase5-gates.md).
 Read alongside PERMISSIONS_PLAN.md and the evidence checklist.
+
+## Phase 5 admission and archive hardening (2026-10-10)
+
+SYS_DMESG snapshots its published actor under G, releases G and requires
+effective UID zero before zero-length probes, output validation or on-demand
+network profile publication. UID-zero callers with dropped capabilities remain
+eligible under this explicit root-only policy. Non-root capabilities do not
+substitute for effective UID zero. NETCTL_IFSET uses CAP_SYS_ADMIN before input
+validation/configuration mutation, within the unchanged BSP/affinity fence.
+An ordinary unpinned process still receives EOPNOTSUPP at that fence; no AP
+network ownership or socket support is added.
+
+TarFS checks the complete immutable USTAR module before VFS initialization or
+node publication: checksum, strict USTAR version, numeric metadata/size, bounded
+full paths and components, no parent traversal, supported types, payload bounds
+and two zero blocks with an all-zero tail. This prevents malformed later headers
+from publishing an earlier set-ID image. Allocation failure during subsequent
+boot population remains a fatal initialization error; this adds no transactional
+VFS allocator or recovery from a failed boot-module construction.
+
+All syscall cases have an explicit reviewed authority classification, including
+public process/geometry/system queries, parent/session controls, self operations,
+already-admitted shared descriptors and trusted kernel terminal/CHLD/SIGPIPE
+paths. Inventory drift is checked against the ABI; textual classification alone
+does not establish arbitrary execution safety. Finite sanitizer and Ring 3
+evidence, exact-image hashes and physical limits are in the Phase 5 report.
 
 ## Phase 3 credential syscall publication (2026-10-10)
 

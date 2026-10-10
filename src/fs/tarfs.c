@@ -40,7 +40,9 @@ static uint64_t parse_octal(const char *str, size_t max_len) {
         i++;
     }
 
-    return val;
+    bool digits = i > 0 && str[i-1] >= '0' && str[i-1] <= '7';
+    while (i < max_len && (str[i] == 0 || str[i] == ' ')) i++;
+    return digits && i == max_len ? val : UINT64_MAX;
 }
 
 static bool is_zero_block(const uint8_t *block) {
@@ -64,6 +66,54 @@ static bool metadata_octal(const char *text,size_t size,uint32_t limit,uint32_t 
 static size_t s_tarfs_archive_size = 0;
 static uint32_t s_tarfs_files_count = 0;
 
+/* Validate the complete immutable module before publishing any namespace.
+ * USTAR is deliberately the only supported format; reject ambiguous names
+ * rather than allowing truncation or dot-dot aliases of privileged images. */
+static int tarfs_validate(const uint8_t *data, size_t size) {
+    size_t offset=0;
+    while (size-offset >= 512) {
+        const struct ustar_header *h=(const void *)(data+offset);
+        if (is_zero_block(data+offset)) {
+            if (size-offset < 1024 || !is_zero_block(data+offset+512)) return -2;
+            for (size_t i=offset;i<size;i++) if (data[i]) return -2;
+            return 0;
+        }
+        if (memcmp(h->magic,"ustar\0",6) || memcmp(h->version,"00",2)) return -2;
+        uint32_t mode,uid,gid;
+        if (!metadata_octal(h->mode,8,07777,&mode) ||
+            !metadata_octal(h->uid,8,UINT32_MAX,&uid) ||
+            !metadata_octal(h->gid,8,UINT32_MAX,&gid)) return -7;
+        uint64_t checksum=parse_octal(h->chksum,8), sum=0;
+        for (size_t i=0;i<512;i++) sum += i>=148 && i<156 ? ' ' : data[offset+i];
+        if (checksum!=sum) return -2;
+        size_t p=0,n=0;
+        while (p<sizeof(h->prefix) && h->prefix[p]) p++;
+        while (n<sizeof(h->name) && h->name[n]) n++;
+        if (!n || p+n+(p ? 1:0)>=VFS_MAX_PATH-1) return -2;
+        char path[VFS_MAX_PATH];size_t count=0;
+        if (p) {memcpy(path,h->prefix,p);count=p;path[count++]='/';}
+        memcpy(path+count,h->name,n);count+=n;path[count]=0;
+        if (path[0]=='/') return -2;
+        for (size_t i=0;i<count;) {
+            size_t start=i;while (i<count && path[i]!='/') {
+                if ((unsigned char)path[i]<32 || (unsigned char)path[i]==127) return -2;
+                i++;
+            }
+            if (i-start==2 && path[start]=='.' && path[start+1]=='.') return -2;
+            if (i-start>=VFS_MAX_NAME) return -2;
+            i++;
+        }
+        uint64_t bytes=parse_octal(h->size,12);
+        if (bytes>UINT64_MAX-511) return -3;
+        uint64_t padded=(bytes+511)&~511ULL;
+        if (padded>size-offset-512) return -4;
+        if (h->typeflag!='0' && h->typeflag!=0 && h->typeflag!='5') return -6;
+        if (h->typeflag=='5' && bytes) return -4;
+        offset+=512+(size_t)padded;
+    }
+    return -2;
+}
+
 void tarfs_get_stats(size_t *archive_size, uint32_t *file_count) {
     if (archive_size) *archive_size = s_tarfs_archive_size;
     if (file_count) *file_count = s_tarfs_files_count;
@@ -74,6 +124,9 @@ int tarfs_init(const void *archive_data, size_t archive_size) {
         serial_puts("[FAIL] TarFS: Invalid archive memory or size\n");
         return -1;
     }
+
+    int validated=tarfs_validate(archive_data,archive_size);
+    if (validated) return validated;
 
     s_tarfs_archive_size = archive_size;
 

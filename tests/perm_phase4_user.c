@@ -2,6 +2,7 @@
 #include "../user/permissions_cli.h"
 #include "../user/entry_security.h"
 #include "creds.h"
+#include "../src/drivers/power.h"
 #define REQUIRE(x) do {if (!(x)) return tool_error("PHASE4 FAIL",#x,0);} while (0)
 static int run(const char *path,const char *arg,const spawn_fd_action_t *actions,unsigned count,bool staged) {
     const char *args[]={path,arg,NULL},*env[]={"PATH=/evil","HOME=/evil","TERM=test",NULL};
@@ -39,6 +40,7 @@ int phase4_main(int argc,char **argv,const char *const *envp) {
     }
     if (argc==2 && tool_equal(argv[1],"--root-child")) {
         REQUIRE(!u && !e && !caps && user_entry_secure(envp));
+        REQUIRE(tool_syscall(SYS_DMESG,(uintptr_t)&byte,1,0)>=0);
         return tool_write("probe","PHASE4 ROOT DROP PASS\n",22);
     }
     if (argc==2 && tool_equal(argv[1],"--root-drop")) {
@@ -46,6 +48,30 @@ int phase4_main(int argc,char **argv,const char *const *envp) {
         REQUIRE(!run("/bin/suid-probe","--root-child",NULL,0,false));return 0;
     }
     REQUIRE(u==1000 && e==1000 && caps==0);
+    byte=0xa5;
+    REQUIRE(tool_syscall(SYS_DMESG,(uintptr_t)&byte,1,0)==SYSCALL_EPERM && byte==0xa5);
+    REQUIRE(tool_syscall(SYS_DMESG,0,0,0)==SYSCALL_EPERM);
+    /* Ordinary processes remain unpinned: preserve the network BSP fence.
+     * The actual admitted IFSET handler has separate host authority gates. */
+    long net_result=tool_syscall(SYS_NETCTL,NETCTL_IFSET,0,0);
+    REQUIRE(net_result==SYSCALL_EPERM || net_result==SYSCALL_EOPNOTSUPP);
+    REQUIRE(tool_syscall(SYS_REBOOT,REBOOT_CMD_POWEROFF,0,0)==SYSCALL_EPERM);
+    proc_info_t info;
+    REQUIRE(tool_syscall(SYS_PROCINFO,0,(uintptr_t)&info,0)==1);
+    sysinfo_mem_t before,after;
+    REQUIRE(!tool_syscall(SYS_MEMINFO,(uintptr_t)&before,sizeof(before),0));
+    unsigned rng=5590;
+    for (unsigned i=0;i<256;i++) {
+        rng=rng*1664525+1013904223;
+        spawn_fd_action_t action={.type=SPAWN_FD_ACTION_OPEN,.dst_fd=9,.flags=VFS_O_RDONLY,.path=(uintptr_t)"/etc/shadow",.reserved=rng|1};
+        spawn_opts_t bad={.size=sizeof(bad),.version=1,.action_count=1,.fd_actions=(uintptr_t)&action};
+        if (i&1) {bad.action_count=0;bad.fd_actions=0;bad.reserved1=rng|1;}
+        REQUIRE(tool_syscall(SYS_SPAWN_EXT,(uintptr_t)"/bin/suid-probe",(uintptr_t)&bad,sizeof(bad))==SYSCALL_EINVAL);
+    }
+    REQUIRE(!tool_syscall(SYS_MEMINFO,(uintptr_t)&after,sizeof(after),0));
+    REQUIRE(before.heap_used_bytes==after.heap_used_bytes && before.vmm_table_frames==after.vmm_table_frames);
+    REQUIRE(tool_syscall(SYS_CAPGET,0,0,0)==0);
+    tool_write("probe","PHASE5 DENIAL/FUZZ PASS\n",23);
     REQUIRE(tool_syscall(SYS_OPEN,(uintptr_t)"/etc/shadow",VFS_O_RDONLY,0)==SYSCALL_EACCES);
     int fd=tool_syscall(SYS_OPEN,(uintptr_t)"/etc/passwd",VFS_O_RDONLY,0);REQUIRE(fd>=3);
     REQUIRE(tool_syscall(SYS_DUP2,fd,31,0)==31);

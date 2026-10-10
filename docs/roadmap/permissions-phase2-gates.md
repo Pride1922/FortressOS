@@ -1,5 +1,10 @@
 # Permissions Phase 2 enforcement delivery
 
+Phase 5 continuation from `700ba89` reruns current host admission/crash-cut
+and BIOS/UEFI × SMP=1/4 Ring 3 enforcement gates. See
+[Phase 5 evidence](permissions-phase5-gates.md); this document's original
+artifact hashes and historical build statements remain unchanged.
+
 2026-10-10. Phase 2 complete locally. Production kernel CFLAGS enable
 `FORTRESS_DAC_ENFORCED`. No GitHub changes or Dell/physical testing.
 All pre-existing uncommitted work was preserved. Baselines of the initial 69

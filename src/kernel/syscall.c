@@ -958,6 +958,11 @@ static int64_t sys_stat_ext(uintptr_t path,uintptr_t output,uint64_t size,uint64
 #include "permissions_syscalls.inc"
 
 static int64_t sys_dmesg(uintptr_t user_buf, uint64_t cap) {
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    /* Phase 5 policy is effective-root only, including zero-length probes.
+     * Reject before profile publication or touching the caller's buffer. */
+    if (actor.euid != 0) return SYSCALL_EPERM;
     if (cap == 0) return 0;
     if (cap > DMESG_SIZE) cap = DMESG_SIZE;
 
@@ -974,6 +979,22 @@ static int64_t sys_dmesg(uintptr_t user_buf, uint64_t cap) {
         dmesg_append_str(profile,n);
     }
     return (int64_t)dmesg_read((char *)user_buf, (size_t)cap);
+}
+
+static int64_t sys_net_ifset(uintptr_t user_config, uint64_t size) {
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    if (permission_capability(&actor,CAP_SYS_ADMIN)) return SYSCALL_EPERM;
+    if (size != sizeof(netctl_ifset_t)) return SYSCALL_EINVAL;
+    if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),user_config,size,false))
+        return SYSCALL_EFAULT;
+    netctl_ifset_t input;
+    memcpy(&input,(const void *)user_config,sizeof(input));
+    net_config_t config;
+    int64_t result=net_validate_ifset(&input,&config);
+    if (result) return result;
+    net_set_config(&config);
+    return 0;
 }
 
 static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
@@ -1600,19 +1621,7 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
                 memcpy((void *)frame->rsi, &ifget, sizeof(ifget));
                 break;
             } else if (frame->rdi == NETCTL_IFSET) {
-                if (frame->rdx != sizeof(netctl_ifset_t)) {
-                    result = SYSCALL_EINVAL; break;
-                }
-                if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rsi, sizeof(netctl_ifset_t), false)) {
-                    result = SYSCALL_EFAULT; break;
-                }
-                netctl_ifset_t ifset;
-                memcpy(&ifset, (const void *)frame->rsi, sizeof(ifset));
-                net_config_t new_cfg;
-                result = net_validate_ifset(&ifset, &new_cfg);
-                if (result) break;
-                net_set_config(&new_cfg);
-                result = 0;
+                result=sys_net_ifset(frame->rsi,frame->rdx);
                 break;
             } else {
                 result = SYSCALL_EINVAL;

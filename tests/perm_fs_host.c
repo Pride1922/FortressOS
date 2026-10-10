@@ -78,6 +78,8 @@ int main(void) {
  unsigned char tar[1536]={0};struct ustar_header *h=(void *)tar;
  memcpy(h->magic,"ustar",5);memcpy(h->name,"metadata",9);memcpy(h->mode,"0006754",7);
  memcpy(h->uid,"0001234",7);memcpy(h->gid,"0005670",7);memcpy(h->size,"00000000000",11);h->typeflag='0';
+ h->version[0]=h->version[1]='0';memset(h->chksum,' ',8);
+ unsigned sum=0;for(unsigned i=0;i<512;i++)sum+=tar[i];snprintf(h->chksum,8,"%06o",sum);h->chksum[7]=' ';
  assert(tarfs_init(tar,sizeof(tar))==0);check("/metadata",VFS_S_IFREG|06754,01234,05670);
  h->mode[0]='8';assert(tarfs_init(tar,sizeof(tar))==-7);
  n=vfs_lookup("/metadata");assert(n);g_vfs_root->children=n->next;kfree(n);kfree(g_vfs_root);

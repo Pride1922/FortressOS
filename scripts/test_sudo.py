@@ -79,7 +79,8 @@ try:
                     b=key.fileobj.read1(65536)
                     if b:transcript.extend(b);(out/(label+'.log')).write_bytes(transcript)
                 text=clean(transcript[start:])
-                assert not any(s in clean(transcript) for s in ('PHASE4 FAIL','CPU EXCEPTION KERNEL PANIC','[FATAL]')),clean(transcript[-6000:])
+                assert not any(s in clean(transcript) for s in ('CPU EXCEPTION KERNEL PANIC','[FATAL]')),clean(transcript[-6000:])
+                assert not re.search(r'PHASE4 FAIL[^\n]*\n',clean(transcript)),clean(transcript[-6000:])
                 if pred(text):return text
                 assert proc.poll() is None,clean(transcript[-6000:])
             raise TimeoutError(clean(transcript[-6000:]))
@@ -107,7 +108,9 @@ try:
                     text=sudo('cat /etc/shadow','root:!:::::::');assert ('operator::::::::' if kind=='passwordless' else 'operator:$5$') in text
                     text=sudo('/bin/sh-builtin env','HOME=/root');assert 'PATH=/bin' in text and 'USER=root' in text and '/evil' not in text
                     sudo('/bin/sh-builtin false','[PROCESS] Exit status 1')
-                    execute('/bin/phase4-probe','PHASE4 SPAWN/FDS/STAGED/NOSUID PASS')
+                    text=execute('/bin/phase4-probe','PHASE4 SPAWN/FDS/STAGED/NOSUID PASS')
+                    assert 'PHASE5 DENIAL/FUZZ PASS' in text
+                    sudo('dmesg','-->')
                     # Secure shell drops hostile imported PATH/HOME and retains entry ABI.
                     execute('export PATH=/evil; export HOME=/evil; /bin/secure-shell','FortressOS shell (Ring 3)')
                     text=execute('env','PATH=/bin');assert 'HOME=/evil' not in text and 'PATH=/evil' not in text

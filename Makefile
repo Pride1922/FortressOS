@@ -85,6 +85,9 @@ ASFLAGS := -f elf64 -g -F dwarf
 ifeq ($(PERMISSIONS_TRACE),1)
 CFLAGS += -DFORTRESS_PERMISSIONS_TRACE
 endif
+ifeq ($(PERMISSIONS_TEST),1)
+CFLAGS += -DTEST_PERMISSIONS_ENFORCEMENT
+endif
 
 # Linker flags for higher-half 64-bit ELF kernel
 LDFLAGS := -m elf_x86_64 \
@@ -1657,6 +1660,9 @@ test-perm-device-host:
 	@$(BUILD_DIR)/perm_device_host $(PERM_DEVICE_FIXTURE)
 
 .PHONY: test-perm-spawn-host test-sudo
+.PHONY: test-perm-phase5-host
+test-perm-phase5-host:
+	@python3 scripts/test_perm_phase5_host.py
 test-perm-spawn-host:
 	@python3 scripts/test_perm_spawn_host.py
 test-sudo:

@@ -1,5 +1,9 @@
 # Permissions Phase 3: database, login and credential syscalls
 
+Phase 5 reruns login 9/9 and expands hostile mutations to 10,000 each for
+passwd, group and shadow. See [Phase 5 evidence](permissions-phase5-gates.md).
+The historical image-not-rebuilt statement below describes Phase 3 only.
+
 2026-10-10. Complete locally. No GitHub changes or Dell/physical testing.
 All changes remain uncommitted. Phase 4 set-ID execution/sudo is not included.
 

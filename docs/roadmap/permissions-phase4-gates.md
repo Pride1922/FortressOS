@@ -1,5 +1,10 @@
 # Permissions Phase 4: set-ID spawn and sudo
 
+Phase 5 continuation from `700ba89` reruns and extends sudo 10/10, retains
+secure-descriptor/USB nosuid controls and prepares a fresh normal boot image.
+See [Phase 5 evidence](permissions-phase5-gates.md). The unchanged raw-image
+hash and Phase-5-not-started statements below describe the Phase 4 checkpoint.
+
 2026-10-10. Phase 4 complete locally. Local continuation from `81973c0`. No GitHub changes or Dell testing.
 The two pre-existing untracked Phase 2 logs are preserved, with copies in
 `build/permissions-phase4/baseline`. No reset, clean or commit is performed.

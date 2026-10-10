@@ -22,8 +22,15 @@ int main(void) {
     char nul[sizeof(passwd)];memcpy(nul,passwd,sizeof(nul));nul[10]=0;assert(!db_passwd(&db,nul,sizeof(nul)-1));
     /* Deterministic hostile-byte coverage and complete failure rollback. */
     unsigned rng=23;
-    for (unsigned i=0;i<3000;i++) {char text[sizeof(passwd)];memcpy(text,passwd,sizeof(text));rng=rng*1664525+1013904223;text[rng%(sizeof(text)-1)]=(char)(rng>>24);
-        old=db;if (!db_passwd(&db,text,sizeof(text)-1)) assert(!memcmp(&db,&old,sizeof(db)));db=old;}
+    for (unsigned kind=0;kind<3;kind++) for (unsigned i=0;i<10000;i++) {
+        char text[DB_FILE_MAX];const char *seed=kind==0 ? passwd:kind==1 ? groups:shadow;
+        size_t length=strlen(seed);memcpy(text,seed,length);
+        rng=rng*1664525+1013904223;text[rng%length]=(char)(rng>>24);
+        if (i%3==0) length=rng%(length+1);
+        old=db;bool ok=kind==0 ? db_passwd(&db,text,length):kind==1 ? db_group(&db,text,length):db_shadow(&db,text,length);
+        if (!ok) assert(!memcmp(&db,&old,sizeof(db)));
+        db=old;
+    }
     const char *keys[]={"", "Hello world!", "password", "a", "0123456789012345678901234567890123456789012345678901234567890123456789"};
     const char *settings[]={"$5$saltstring", "$5$rounds=1000$a", "$5$rounds=10000$abcdefghijklmnop", "$5$rounds=5000$./ABC123"};
     unsigned vectors=0;
@@ -36,5 +43,5 @@ int main(void) {
     assert(!db_verify("p","!") && !db_verify("","*") && db_verify("","") && !db_verify("p",""));
     assert(!db_hash_valid("$5$rounds=100001$salt$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
     assert(db_shadow(&db,"u:!:0::::::\n",strlen("u:!:0::::::\n")) && db.shadows[0].restricted);
-    printf("PASS bounded passwd/group/9-field shadow, duplicates/overflow/rollback, 3000 hostile inputs; %u glibc crypt vectors and fixed known vector\n",vectors);
+    printf("PASS bounded passwd/group/9-field shadow, duplicates/overflow/rollback, 30000 hostile inputs; %u glibc crypt vectors and fixed known vector\n",vectors);
 }
