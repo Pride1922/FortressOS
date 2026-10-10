@@ -104,6 +104,9 @@ typedef struct vfs_node {
     void (*put)(struct vfs_node *);
     /* Actor adapters decide from authoritative values under filesystem
      * exclusion. Trusted callbacks above remain separate. No G on entry. */
+    /* Allocates an owned image copy; bytes, EXEC decision and metadata share
+     * filesystem exclusion. Caller frees copy after loader consumption. */
+    int (*exec_snapshot)(struct vfs_node *,const creds_t *,vfs_metadata_t *,void **);
     int (*permission_actor)(struct vfs_node *, unsigned, const creds_t *);
     struct vfs_node *(*lookup_actor)(struct vfs_node *, const char *, const creds_t *, int *);
     struct vfs_node *(*create_actor)(struct vfs_node *, const char *, vfs_node_type_t,

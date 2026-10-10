@@ -1,3 +1,4 @@
+#include "entry_security.h"
 /*
  * /bin/sh-builtin — Builtin pipeline stage runner.
  *
@@ -74,7 +75,7 @@ int sh_builtin_main(int argc, const char *const *argv, const char *const *envp) 
     }
 
     /* Build context from envp (envp may be NULL in degenerate cases). */
-    builtin_ctx_t ctx = builtin_ctx_from_envp(envp);
+    builtin_ctx_t ctx = builtin_ctx_from_envp(user_entry_secure(envp) ? NULL:envp);
 
     /* Dispatch; builtin_exec() rejects non-allowlist names with status 2. */
     return builtin_exec(argc, argv, &ctx);

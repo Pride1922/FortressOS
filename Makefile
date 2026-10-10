@@ -632,7 +632,7 @@ $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench lockstat chmod chown id
-LOGIN_TOOLS := login whoami
+LOGIN_TOOLS := login whoami sudo
 LOGIN_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(LOGIN_TOOLS)))
 
 ifeq ($(LOGIN_TEST),1)
@@ -647,7 +647,7 @@ $(BUILD_DIR)/tool-userdb_io.o: user/tools/userdb_io.c user/tools/userdb.h user/t
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $< -o $@
 
-$(LOGIN_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/userdb.h $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/tools/start.asm user/shell.ld
+$(LOGIN_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/userdb.h user/entry_security.h user/permissions_cli.h $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/tools/start.asm user/shell.ld
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-$*.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-digest.o $(BUILD_DIR)/tool-common.o -o $@
@@ -769,7 +769,7 @@ $(USER_DUAL_STREAM_ELF): $(USER_DIR)/dual_stream.asm $(USER_DIR)/linker.ld
 
 # Freestanding user shell, separate address-space ELF (no host runtime).
 SHELL_MODULES := $(wildcard user/shell/*.c)
-SHELL_HEADERS := $(wildcard user/shell/*.h) src/include/terminal.h src/include/syscall_abi.h user/tools/userdb.h
+SHELL_HEADERS := user/entry_security.h $(wildcard user/shell/*.h) src/include/terminal.h src/include/syscall_abi.h user/tools/userdb.h
 SHELL_OBJECTS := $(patsubst user/shell/%.c,$(BUILD_DIR)/shell-%.o,$(SHELL_MODULES)) $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-digest.o
 
 $(BUILD_DIR)/shell-%.o: user/shell/%.c $(SHELL_HEADERS)
@@ -1655,3 +1655,16 @@ test-perm-device-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/perm_device_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/perm_device_host
 	@$(BUILD_DIR)/perm_device_host $(PERM_DEVICE_FIXTURE)
+
+.PHONY: test-perm-spawn-host test-sudo
+test-perm-spawn-host:
+	@python3 scripts/test_perm_spawn_host.py
+test-sudo:
+	@python3 scripts/test_sudo.py
+
+$(BUILD_DIR)/perm_phase4_user.elf: tests/perm_phase4_user.c user/entry_security.h user/tools/common.h user/permissions_cli.h $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $< -o $(BUILD_DIR)/perm_phase4_user.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=phase4_main user/tools/start.asm -o $(BUILD_DIR)/perm_phase4_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/perm_phase4_user_start.o $(BUILD_DIR)/perm_phase4_user.o $(BUILD_DIR)/tool-common.o -o $@
+
+$(USER_SH_BUILTIN_ELF): user/entry_security.h

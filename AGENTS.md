@@ -64,6 +64,7 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-perm-spawn-host` / `make test-sudo` | Permissions Phase 4 actual-code sanitizer helpers and secure-entry/descriptor/credential policies; BIOS/UEFI 10/10 with password SMP=1/4, non-wheel/passwordless/dropped-cap controls and disposable guest-RO USB nosuid probe, unchanged-image audit. Login regression 9/9; [evidence](docs/roadmap/permissions-phase4-gates.md). No physical claim. |
 | `make test-nano-host` | Pure in-memory editor buffer, row splitting, merging, character insertion, boundary saturation (256 KiB), viewport scrolling, tab expansion, search, cut/paste, and ANSI frame renderer under ASan/UBSan: 100% PASS 2026-10-03. |
 | `make test-nano` | Interactive Ring 3 `/bin/nano` visual editor acceptance under BIOS & UEFI: non-TTY rejection, interactive new file creation, text typing, `Ctrl+O` writeout commit to ext2 with `SYS_SYNC`, byte verification via `cat`, reopen, append, `Ctrl+X -> Y` save, and `Ctrl+X -> N` discard. 100% PASS 2026-10-03. |
 | `make test-net-trace-host` / `make test-net-trace` | Finite traceroute codec/mailbox/CLI ASan/UBSan at 100/1000 Hz, quoted-wire matching, deadlines/leases/identity exhaustion; BIOS/UEFI × e1000/e1000e socket backend 4/4 PASS, independent capture/injection audit, contention/Ctrl-C/recovery. Disposable ISO/OVMF, no data disks; [evidence](docs/roadmap/net-traceroute.md), Dell acceptance pending. |

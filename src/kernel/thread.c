@@ -1,4 +1,5 @@
 #include "thread.h"
+#include "spawn_security.h"
 #include "process_table.h"
 #include "percpu.h"
 #include "heap.h"
@@ -1394,15 +1395,17 @@ int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const a
 
     if ((argc == 0 || !argv) && (envc == 0 || !envp)) {
         /* Minimal empty stack frame with argc=0 */
-        size_t table_bytes = 5 * sizeof(uint64_t);
+        size_t table_bytes = 7 * sizeof(uint64_t);
         uintptr_t rsp = (USER_STACK_TOP_VIRT - table_bytes) & ~0xFULL;
         size_t page_offset = (size_t)(rsp - USER_STACK_PAGE_VIRT);
         uint64_t *table = (uint64_t *)(stack_mem + page_offset);
         table[0] = 0; /* argc = 0 */
         table[1] = 0; /* argv[0] = NULL */
         table[2] = 0; /* envp[0] = NULL */
-        table[3] = 0; /* AT_NULL a_type = 0 */
-        table[4] = 0; /* AT_NULL a_val = 0 */
+        table[3] = 23; /* AT_SECURE */
+        table[4] = 0;
+        table[5] = 0; /* AT_NULL */
+        table[6] = 0;
         *out_user_rsp = rsp;
         *out_user_argv = rsp + sizeof(uint64_t);
         if (out_user_envp) *out_user_envp = rsp + 2 * sizeof(uint64_t);
@@ -1465,10 +1468,10 @@ int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const a
     if (cur_offset != PAGE_SIZE) return -1;
 
     /* 3. Compute 16-byte aligned RSP below strings for:
-     *    argc (1) + argv[0..argc-1] (argc) + NULL (1) + envp[0..envc-1] (envc) + NULL (1) + AT_NULL (2)
-     *    = argc + envc + 5 entries
+     *    argc (1) + argv[0..argc-1] (argc) + NULL (1) + envp[0..envc-1] (envc) + NULL (1) + AT_SECURE (2) + AT_NULL (2)
+     *    = argc + envc + 7 entries
      */
-    size_t table_entries = (size_t)(argc + envc + 5);
+    size_t table_entries = (size_t)(argc + envc + 7);
     size_t table_bytes = table_entries * sizeof(uint64_t);
     uintptr_t str_virt_start = USER_STACK_TOP_VIRT - total_str_len;
     uintptr_t rsp = (str_virt_start - table_bytes) & ~0xFULL;
@@ -1492,6 +1495,8 @@ int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const a
     }
     table[idx++] = 0; /* envp[envc] = NULL */
 
+    table[idx++] = 23; /* AT_SECURE */
+    table[idx++] = 0;
     table[idx++] = 0; /* AT_NULL a_type */
     table[idx++] = 0; /* AT_NULL a_val */
 
@@ -1511,7 +1516,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
                                      int envc, const char *const envp[],
                                      const char *cwd,
                                      int action_count, const spawn_kaction_t *actions,
-                                     uint64_t scalar_arg, uint64_t reserved_pid, uint32_t spawn_flags, int64_t *error, const creds_t *actor) {
+                                     uint64_t scalar_arg, uint64_t reserved_pid, uint32_t spawn_flags, int64_t *error, const creds_t *actor, const creds_t *exec_creds, bool secure) {
     *error = SYSCALL_ENOMEM;
     if (!elf_data || elf_size == 0) return NULL;
     if (target_cpu >= MAX_DETECTED_CPUS) target_cpu = cpu_current()->id;
@@ -1563,6 +1568,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     uint64_t rdx_val = 0;
 
     if (argv != NULL) {
+        if (!envp) envc=0;
         int setup_res = process_setup_user_stack(proc_info.stack_phys, argc, argv,
                                                 envc, envp,
                                                 &user_rsp, &user_argv, &user_envp);
@@ -1571,6 +1577,9 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
             vmm_destroy_pml4(proc_info.pml4_phys, true);
             return NULL;
         }
+        uint64_t *aux=(uint64_t *)((uint8_t *)vmm_phys_to_virt(proc_info.stack_phys) +
+            user_envp-USER_STACK_PAGE_VIRT)+(envc+1);
+        aux[1]=secure ? 1 : 0;
         rdi_val = (uint64_t)argc;
         rsi_val = (uint64_t)user_argv;
         rdx_val = (uint64_t)user_envp;
@@ -1616,7 +1625,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
 
     uint64_t rflags;
     p->tid = reserved_pid;
-    p->creds=inherited;
+    p->creds=exec_creds ? *exec_creds : inherited;
     p->parent_pid = thread_current() && thread_current()->is_user ? thread_current()->tid : 0;
     p->pgid = (uint64_t)process_record_group(p->tid);
     p->sid = process_record_session(p->tid);
@@ -1725,6 +1734,14 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
 
     /* Actions may use inherited CLOEXEC sources. Sweep only after all actions,
      * with no locks held and before publishing the child to its runqueue. */
+    if (secure) {
+        uint32_t mapped=spawn_mapped_fds(action_count,actions);
+        for (unsigned fd=3;fd<MAX_PROCESS_FDS;fd++) {
+            if (!(mapped & (1u<<fd)) && p->fd_table[fd]) {
+                vfs_close(p->fd_table[fd]);p->fd_table[fd]=NULL;p->fd_flags[fd]=0;
+            }
+        }
+    }
     fd_close_cloexec(p);
     SPAWN_ADD(profile, phase[SP_FDS], phase_begin);
     phase_begin = spawn_profile_clock(profile);
@@ -1829,7 +1846,7 @@ tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf
     if (process_record_begin(pid, ppid, false, 0, 0)) return NULL;
     int64_t error;
     tcb_t *p = process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
-                                  0, NULL, 0, NULL, NULL, 0, NULL, arg, pid, 0, &error, NULL);
+                                  0, NULL, 0, NULL, NULL, 0, NULL, arg, pid, 0, &error, NULL, NULL, false);
     if (!p) {
         g_last_aborted_pid = pid;
         process_record_abort(pid);
@@ -1844,7 +1861,7 @@ tcb_t *process_spawn_with_actions(size_t target_cpu, const char *name, const voi
     if (process_record_begin(pid, ppid, false, 0, 0)) return NULL;
     int64_t error;
     tcb_t *p = process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
-                                      0, NULL, 0, NULL, NULL, action_count, actions, 0, pid, 0, &error, NULL);
+                                      0, NULL, 0, NULL, NULL, action_count, actions, 0, pid, 0, &error, NULL, NULL, false);
     if (!p) {
         g_last_aborted_pid = pid;
         process_record_abort(pid);
@@ -1902,7 +1919,7 @@ void process_metadata_test_run(void) {
         int64_t error;
         metadata_test_require(process_spawn_internal(cpu,(int)cpu,"metadata-worker-long",
             embedded_init_elf_start, embedded_init_elf_end-embedded_init_elf_start,
-            0,NULL,0,NULL,NULL,0,NULL,1,pid,0,&error, NULL) != NULL);
+            0,NULL,0,NULL,NULL,0,NULL,1,pid,0,&error, NULL, NULL, false) != NULL);
         {
             process_snapshot_t s = {0};
             bool found = false;
@@ -2075,10 +2092,20 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     if ((image_metadata.mode & VFS_S_IFMT) != VFS_S_IFREG) {
         result = SYSCALL_ENOEXEC; goto out;
     }
-    size_t size = file->node->size;
+    size_t size = image_metadata.size;
     if (!size) { result = SYSCALL_ENOEXEC; goto out; }
     if (size > MAX_ELF_FILE_SIZE) { result = SYSCALL_EFBIG; goto out; }
     const void *image = file->node->data;
+    if (file->node->exec_snapshot) {
+        err=file->node->exec_snapshot(file->node,&actor,&image_metadata,&buffer);
+        if (err) { result=syscall_from_vfs_error(err);goto out; }
+        size=image_metadata.size;image=buffer;
+    } else if (file->node->owns_nodes && !(image_metadata.mnt_flags & VFS_MNT_NOSUID)) {
+        /* Unknown mutable executable adapters need a coherent snapshot first. */
+        result=SYSCALL_EOPNOTSUPP;goto out;
+    }
+    creds_t exec_creds;
+    bool secure=spawn_credentials(&actor,&image_metadata,&exec_creds);
     if (!image) {
         buffer = kmalloc(size);
         if (!buffer) goto out;
@@ -2112,7 +2139,7 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     }
     SPAWN_ADD(profile, phase[SP_FILE], phase_begin);
     tcb_t *child = process_spawn_internal(target_cpu, affinity, path, image, size,
-                                          argc, argv, envc, envp, cwd, action_count, actions, 0, pid, spawn_flags, &result, &actor);
+                                          argc, argv, envc, envp, cwd, action_count, actions, 0, pid, spawn_flags, &result, &actor, &exec_creds, secure);
     if (!child) goto out;
     child->cpus_allowed = (affinity >= 0) ? CPU_MASK_ONE(affinity) : CPU_MASK_ALL;
     *out_pid = (int64_t)child->tid;

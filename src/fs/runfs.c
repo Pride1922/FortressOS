@@ -1,6 +1,7 @@
 #include "runfs.h"
 #include "spinlock.h"
 #include "string.h"
+#include "heap.h"
 
 #define RUNFS_NODES 64u
 #define RUNFS_BYTES 4096u
@@ -98,6 +99,7 @@ static int run_permission_actor(vfs_node_t *,unsigned,const creds_t *);
 static vfs_node_t *run_lookup_actor(vfs_node_t *,const char *,const creds_t *,int *);
 static vfs_node_t *run_create_actor(vfs_node_t *,const char *,vfs_node_type_t,uint32_t,const creds_t *,int *);
 static int run_open_actor(vfs_node_t *,unsigned,bool,const creds_t *);
+static int run_exec_snapshot(vfs_node_t *,const creds_t *,vfs_metadata_t *,void **);
 static int run_unlink_actor(vfs_node_t *,const char *,bool,const creds_t *);
 static int run_rename_actor(vfs_node_t *,const char *,vfs_node_t *,const char *,bool,const creds_t *);
 static int run_setattr_actor(vfs_node_t *,bool,uint32_t,creds_id_change_t,creds_id_change_t,const creds_t *);
@@ -122,6 +124,7 @@ static void run_setup(run_node_t *n,vfs_node_t *parent,const char *name,vfs_node
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
     n->node.permission_actor=run_permission_actor;n->node.open_actor=run_open_actor;
     n->node.setattr_actor=run_setattr_actor;
+    n->node.exec_snapshot=run_exec_snapshot;
     if (type==VFS_DIRECTORY) {
         n->node.lookup_actor=run_lookup_actor;n->node.create_actor=run_create_actor;
         n->node.unlink_actor=run_unlink_actor;

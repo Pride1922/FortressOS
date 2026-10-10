@@ -189,3 +189,16 @@ static int run_rename_actor(vfs_node_t *old,const char *name,vfs_node_t *dest,
 done:
     spin_unlock_irqrestore(&run_lock,irq);return r;
 }
+
+static int run_exec_snapshot(vfs_node_t *n,const creds_t *actor,vfs_metadata_t *out,void **bytes) {
+    uint64_t irq=spin_lock_irqsave(&run_lock);
+    int r=run_access_locked(n,VFS_MAY_EXEC,actor);
+    void *copy=NULL;
+    if (!r && (n->type!=VFS_FILE || !n->size)) r=-VFS_EINVAL;
+    if (!r) {
+        copy=kmalloc(n->size);
+        if (!copy) r=-VFS_ENOMEM;
+        else { memcpy(copy,run_entry(n)->data,n->size);*out=run_value_locked(n);*bytes=copy; }
+    }
+    spin_unlock_irqrestore(&run_lock,irq);return r;
+}

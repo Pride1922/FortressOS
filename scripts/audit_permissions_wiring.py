@@ -38,7 +38,7 @@ for token in ('vfs_open_creds','vfs_lookup_creds','vfs_mkdir_creds','vfs_unlink_
 thread=(ROOT/'src/kernel/thread.c').read_text()
 assert 'vfs_open_exec_creds(path, &actor, &err)' in thread
 assert 'vfs_open_mode_creds(act->path, act->flags, act->mode, &inherited' in thread
-assert 'pid, spawn_flags, &result, &actor)' in thread
+assert 'pid, spawn_flags, &result, &actor, &exec_creds, secure)' in thread
 net=(ROOT/'src/net/net_socket_syscall.c').read_text()
 assert 'ntohs(a.port)<1024' in net and 'process_record_creds(caller->tid,&actor)' in net
 value={'scope':'source/API inventory including Phase2 metadata and descriptor content paths; dynamic admission evidence separate',

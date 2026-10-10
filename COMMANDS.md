@@ -1436,3 +1436,16 @@ The FortressOS Ring 3 shell includes a powerful interactive line editor with his
 
 ---
 *Documented for FortressOS x86_64 SMP.*
+## Permissions and sudo
+
+Live media logs in as `operator` with a visible passwordless warning and a
+temporary home at `/run/user/1000`. Root login is locked. An explicit build
+hash can require a password for both login and sudo.
+
+`sudo command [args]` authenticates the real user and requires membership in
+`wheel`. It runs the command as root with a minimal environment and returns
+the command's exit status. Bare command names resolve under `/bin`; use an
+absolute path for other programs. There is no authentication cache.
+
+Examples: `sudo id`, `sudo cat /etc/shadow`, `sudo /bin/sh-builtin env`.
+Plain `cat /etc/shadow` is denied. USB filesystem mounts ignore set-ID bits.

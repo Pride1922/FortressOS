@@ -1,3 +1,4 @@
+#include "entry_security.h"
 /* A standalone Ring 3 program. Only the public syscall ABI crosses into kernel. */
 #include "types.h"
 #include "vfs.h"
@@ -568,7 +569,7 @@ void shell_main(int argc,char **argv,const char *const *envp) {
     update_cwd();
     shell_ui_init();
     vars_init();
-    if (!vars_import(envp)) {puts("shell: invalid entry environment\n");return;}
+    if (!user_entry_secure(envp) && !vars_import(envp)) {puts("shell: invalid entry environment\n");return;}
     alias_init();
     (void)history_load();
 

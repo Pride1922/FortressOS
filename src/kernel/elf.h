@@ -108,7 +108,7 @@ typedef struct {
 
 /* Spawn vector limits come from syscall_abi.h; preserve the stack floor. */
 #define MINIMUM_USER_STACK_FLOOR 512
-#define MAX_POINTER_TABLE_BYTES  (((MAX_SPAWN_ARGS + MAX_SPAWN_ENVP + 5) * 8) + 16)
+#define MAX_POINTER_TABLE_BYTES  (((MAX_SPAWN_ARGS + MAX_SPAWN_ENVP + 7) * 8) + 16)
 
 /* Verify that maximum strings, pointer tables, and minimal stack frame strictly fit within 4 KiB */
 _Static_assert(MAX_TOTAL_ARGS_LEN + MAX_TOTAL_ENVP_LEN + MAX_POINTER_TABLE_BYTES + MINIMUM_USER_STACK_FLOOR <= 4096,

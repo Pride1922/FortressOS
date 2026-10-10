@@ -190,7 +190,8 @@ void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
  * uses an ordinary rank-1 process lock, never nested with scheduler/ext2.
  * v2 staged children remain exclusively BSP-owned until release/cancellation.
  * Clones all descriptors/flags as shared file_t references (ACQ_REL refcounts),
- * applies ordered spawn fd actions, then closes remaining CLOEXEC descriptors
+ * applies ordered spawn fd actions using caller authority, then closes unmapped
+ * descriptors >2 for admitted set-ID images and remaining CLOEXEC descriptors
  * before publishing the child. */
 int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const argv[],
                              int envc, const char *const envp[],

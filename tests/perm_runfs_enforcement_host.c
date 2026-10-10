@@ -40,6 +40,18 @@ int main(void) {
     assert(!vfs_metadata(file->node,&m) && m.mode==(VFS_S_IFREG|06770));
     assert(!vfs_fchmod_creds(file,0,&user));
     assert(vfs_write_creds(file,"d",1,&user)==1); /* admitted fd survives chmod */
+    /* EXEC bytes and ownership are one coherent snapshot, retained after writes. */
+    assert(!vfs_fchmod_creds(file,04755,&root));
+    vfs_metadata_t executable;void *image=NULL;
+    assert(!file->node->exec_snapshot(file->node,&user,&executable,&image));
+    assert(executable.mode==(VFS_S_IFREG|04755) && executable.uid==1001 && executable.size==4);
+    assert(!memcmp(image,"abcd",4));
+    assert(vfs_write_creds(file,"e",1,&user)==1);
+    assert(!memcmp(image,"abcd",4) && executable.mode==(VFS_S_IFREG|04755));kfree(image);
+    assert(!vfs_fchmod_creds(file,0,&user));
+    image=(void *)0x1234;executable=(vfs_metadata_t){.uid=0xdeadbeef};
+    assert(file->node->exec_snapshot(file->node,&user,&executable,&image)==-VFS_EACCES);
+    assert(image==(void *)0x1234 && executable.uid==0xdeadbeef);
     run_node_t *before=malloc(sizeof(run_pool));assert(before);
     memcpy(before,run_pool,sizeof(run_pool));
     assert(vfs_unlink_creds("/tmp/private",&other)==-VFS_EPERM);unchanged(before);

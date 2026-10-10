@@ -25,6 +25,7 @@ Targeted experiment: [kernel-stack batch mapping and matched Dell images](kstack
 
 | File | Covers |
 | --- | --- |
+| [permissions-phase4-gates.md](permissions-phase4-gates.md) | Set-ID/sudo: actual-code host gates, 10/10 BIOS/UEFI disposable USB gates and 9/9 login regression; Phase 5 remains open. |
 | [ext4-phase9-6.md](ext4-phase9-6.md) | **COMPLETE — bounded E4-B**: Dell 5590 / 4 GB stick, clean persistence and three controlled interruption cases PASS; explicit journaled USB RW enabled, limits recorded. |
 | [ext4-phase9-5.md](ext4-phase9-5.md) | **COMPLETE** automated USB gate: 144 main cases, ten admission controls, regressions and verified evidence. Phase 9.6 subsequently accepted the bounded physical profile; see its report for production rollout. |
 | [ext4-phase9-4.md](ext4-phase9-4.md) | Complete finite 66-case guest crash/recovery gate and evidence review. |

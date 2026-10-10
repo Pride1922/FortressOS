@@ -1,7 +1,7 @@
 # FortressOS permissions implementation plan
 
-Status: Phases 0–3 COMPLETE locally (2026-10-10); production DAC and login are enabled.
-Phases 4–5 remain open. [Phase 3 evidence](../roadmap/permissions-phase3-gates.md).
+Status: Phases 0–4 COMPLETE locally (2026-10-10); production DAC, login and sudo are enabled.
+Phase 5 remains open. [Phase 4 evidence](../roadmap/permissions-phase4-gates.md).
 The user approved registry global-lock consolidation, completion of Phase 0
 and the reproduced EXT2 lifetime repair, then bounded GPT boot scratch repair.
 GitHub issue/project state is unchanged. No physical testing is included.
@@ -169,7 +169,7 @@ uint16_t vfs_create_mode(const vfs_node_t *dir, uint16_t requested, const creds_
 | Event | Rule |
 | --- | --- |
 | Spawn, ordinary image with no admitted identity transition | Child copies a consistent parent `creds_t` snapshot, including umask, groups and remaining effective caps; never replenish dropped caps solely because euid is 0 |
-| Spawn, `S_ISUID` image, mount allows suid | `euid = suid = node->uid`; caps = `CAP_ALL` iff new euid is 0 |
+| Spawn, `S_ISUID` image, mount allows suid | `euid = suid = node->uid`; changed euid gets `CAP_ALL` iff zero, otherwise zero caps; unchanged euid preserves dropped caps |
 | Spawn, `S_ISGID` image (with group-x) | `egid = sgid = node->gid` |
 | Spawn, setuid/setgid with `nosuid` mount | Bits ignored, spawn succeeds unprivileged (Linux behaviour) |
 | `setresuid` | Unprivileged: each new value ∈ {uid, euid, suid}. `CAP_SETUID`: any. After: if none of uid/euid/suid is 0, clear `cap_effective` |
@@ -307,9 +307,17 @@ stack; they are not reentrant/shared-user-thread APIs.
 
 ### Phase 4: setuid and `sudo`
 
-- Spawn applies §4.3 setuid/setgid rules, secure-spawn fd closing and `AT_SECURE` flag; `nosuid` honoured.
-- `user/tools/sudo.c`, installed `root:root 04755`: resolve real uid → passwd entry; require `wheel` membership; read the password from the controlling terminal with no echo; verify `$5$`; `setresgid(0,0,0)`, `setgroups(root's)`, `setresuid(0,0,0)`; spawn the target with a rebuilt minimal environment (`PATH=/bin`, `HOME=/root`, `USER=root`, `TERM` preserved); exit status propagated. No credential caching in this phase.
-- **Gate:** QEMU: operator runs `sudo cat /etc/shadow` → success after the correct password, fails with the wrong one, fails for a non-wheel test user; `sudo id` shows `uid=0`; a `04755` binary on a USB (`nosuid`) mount runs unprivileged; a setuid spawn closes unmapped fds above 2; plain `cat /etc/shadow` still `-EACCES`.
+- [x] Spawn applies §4.3 setuid/setgid rules, secure-spawn fd closing and `AT_SECURE` flag; `nosuid` honoured.
+- [x] `user/tools/sudo.c`, installed `root:root 04755`: resolve real uid → passwd entry; require `wheel` membership; read the password from the controlling terminal with no echo; verify `$5$`; `setresgid(0,0,0)`, `setgroups(root's)`, `setresuid(0,0,0)`; spawn the target with a rebuilt minimal environment (`PATH=/bin`, `HOME=/root`, `USER=root`, `TERM` preserved); exit status propagated. No credential caching in this phase.
+- [x] **Gate:** QEMU: operator runs `sudo cat /etc/shadow` → success after the correct password, fails with the wrong one, fails for a non-wheel test user; `sudo id` shows `uid=0`; a `04755` binary on a USB (`nosuid`) mount runs unprivileged; a setuid spawn closes unmapped fds above 2; plain `cat /etc/shadow` still `-EACCES`.
+
+Phase 4 completion: actual-code ASan/UBSan helpers, full aggregate host and
+focused permission/credential/database gates PASS. `make test-sudo` passes
+10/10 BIOS/UEFI cases; login regression passes 9/9. Evidence, concurrent-image
+policy, unchanged-capability rules and finite boundaries are in the
+[Phase 4 gate report](../roadmap/permissions-phase4-gates.md). The approved
+passwordless live operator and temporary home are unchanged; sudo warns when
+its authentication is passwordless. No authentication cache is added.
 
 ### Phase 5: hardening and physical acceptance
 
@@ -330,7 +338,8 @@ stack; they are not reentrant/shared-user-thread APIs.
 | `test-perm-syscalls-host`, `test-perm-privileges-host` | Actual syscall/process/network adapters | Output validation, keep flags, umask publication, signal and capability admission |
 | `PERM_PHASE2_EXPECT=1 python3 scripts/test_perm_guest.py build/permissions-phase0/source.ext4 --usb` | Isolated TEST_PERMISSIONS_ENFORCEMENT build; BIOS/UEFI × SMP=1/4 | Non-root Ring 3 enforcement and root tools; explicit disposable USB journal fixtures |
 | `test-login` | QEMU BIOS+UEFI | Phase 3 assertions |
-| `test-sudo` | QEMU BIOS+UEFI, disposable USB image with a `nosuid` probe binary | Phase 4 assertions |
+| `test-perm-spawn-host` | Actual credential policy, verbatim stack builder, actual sudo syscall adapters under ASan/UBSan | Set-ID/nosuid/drop preservation, fd destinations, AT_SECURE/stack bounds, wheel/terminal/password/environment/status |
+| `test-sudo` | QEMU BIOS+UEFI, disposable USB image with a `nosuid` probe binary | Phase 4 assertions; 10/10 PASS, guest RO image hashes unchanged |
 | ext4 crash campaign | Existing Phase 9 harness | `chmod`/`chown`/create-with-mode cut points recover to old-or-new metadata, never mixed |
 
 ## 8. Out of scope and handoff

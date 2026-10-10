@@ -1,13 +1,14 @@
 # Permissions Phase 0 protocol review
 
-Status: Phases 0–3 complete locally, 2026-10-10. Production DAC and login are enabled.
+Status: Phases 0–4 complete locally, 2026-10-10. Production DAC and login are enabled.
 [Phase 2 evidence](../roadmap/permissions-phase2-gates.md) records authoritative
 admission, metadata transactions, syscall/tool acceptance and verification limits.
 Issue #5. No GitHub state changes or physical testing.
 The user approved global registry consolidation, completion of Phase 0 and
 EXT2 lifetime repair. Credential bindings and filesystem metadata now exist;
 authorization and metadata/query syscalls are implemented. General credential
-transition syscalls and login are delivered; set-ID execution remains Phase 4.
+transition syscalls, login, set-ID execution and sudo are delivered. Phase 5
+hardening/physical acceptance remains open.
 Read alongside PERMISSIONS_PLAN.md and the evidence checklist.
 
 ## Phase 3 credential syscall publication (2026-10-10)
@@ -71,7 +72,7 @@ credentials are initialized before signal attachment and remain valid until
 abort/exit detachment. Spawn captures inheritance during construction; staged
 release does not recapture credentials or propagate later parent changes. Kernel threads initialize root values;
 ordinary user spawn copies one published caller snapshot, including dropped
-capabilities. UID zero does not replenish them. No set-ID spawn is implemented.
+capabilities. UID zero does not replenish them. Set-ID construction now follows the Phase 4 protocol below.
 
 ## Filesystem foundation and authorization boundary
 
@@ -559,3 +560,34 @@ work. The final [Phase 2 evidence](../roadmap/permissions-phase2-gates.md)
 records finite denial/interleaving coverage, 4,088 crash cuts, independent
 Linux audits and BIOS/UEFI × SMP=1/4 Ring 3 acceptance. No physical or GitHub
 changes are included.
+
+## Phase 4 admitted-image and secure construction (2026-10-10)
+
+Set-ID decisions use the retained executable identity, never a fresh pathname.
+TarFS metadata and bytes are immutable boot-module values. Runfs reauthorizes
+EXEC and copies complete bytes/metadata under run_lock; allocation follows the
+existing rank-1 -> heap rank-2 order. Copy ownership remains with the spawn
+continuation until loader consumption/cleanup. Unsupported mutable suid-capable
+adapters fail closed. Production EXT2/EXT4 always return nosuid/nodev; ordinary
+mutable disk executable reads do not gain a freeze/atomic-byte claim.
+
+The actor value authorizes explicit cwd and OPEN actions. A separate private
+child value receives admitted setuid/setgid changes before registry binding,
+staging or publication. Only a changed effective UID equal to zero replenishes
+capabilities. An already-root caller's dropped mask remains dropped. No process
+lock spans filesystem entry, user copy or scheduling. Staged release never
+recomputes credentials; failure uses the existing private-resource unwind.
+
+Secure descriptor admission tracks final explicitly mapped destinations after
+ordered actions. Above-2 inherited descriptors without that admission close,
+then CLOEXEC closes normally. Parent descriptors and caller OPEN authority are
+preserved. Vector stacks carry AT_SECURE=23 before AT_NULL, within the original
+alignment/floor budget; shell/builtin entry ignores inherited environment when
+secure. Sudo resolves real-user wheel membership in the immutable database,
+authenticates via controlling tty, then installs root credentials and a minimal
+target environment. The approved empty operator hash prints an explicit warning;
+locked root login and temporary /run/user/1000 remain unchanged.
+
+[Phase 4 gates](../roadmap/permissions-phase4-gates.md) records host and 10/10
+BIOS/UEFI acceptance plus the 9/9 login regression. No physical, shared-thread,
+general concurrent disk executable-write or cross-core socket claim follows.
