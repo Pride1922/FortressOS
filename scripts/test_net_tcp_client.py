@@ -41,9 +41,11 @@ def audit(path):
             assert old == value, 'conflicting retransmitted payload'
         if tcp[13] & 1:
             stream['fin'] = True
-    expected = bytes((i * 31) & 255 for i in range(65536))
+    isns = [s['isn'] for s in streams.values()]
+    assert len(isns) == len(set(isns)), f'duplicate ISN detected across connections: {isns}'
     assert any(len(s['bytes']) == 65536 and s['fin'] and
                bytes(s['bytes'][i] for i in range(65536)) == expected for s in streams.values())
+
 
 
 def run(mode, model, cpus, iso, tmp, extended):

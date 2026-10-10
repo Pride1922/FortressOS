@@ -28,7 +28,7 @@ static tcp_pool_t pool;
 static bool passive_tw[TCP_TIMEWAIT_MAX];
 static spinlock_t lock=SPINLOCK_RANKED(1,"tcp_endpoints");
 static net_dev_t *device;
-static uint32_t local_ip, salt, isn_clock;
+static uint32_t local_ip;
 static uint16_t ephemeral;
 static uint64_t clock_ms, arp_next[TCP_CB_MAX];
 static unsigned cursor;
@@ -111,34 +111,199 @@ static bool port_used(uint16_t port, endpoint_t *self) {
             (!self || !connection(self) || pool.timewait[i].generation!=self->generation)) return true;
     return false;
 }
-static uint32_t mix(uint32_t value) {
-    value^=value>>16; value*=0x7feb352dU; value^=value>>15;
-    value*=0x846ca68bU; return value^(value>>16);
+static uint8_t boot_secret[32];
+static bool isn_crypto_guaranteed = false;
+
+bool net_tcp_isn_crypto_guaranteed(void) {
+    return isn_crypto_guaranteed;
 }
+
+static inline uint64_t read_tsc(void) {
+#ifdef TEST_SMP_MEMORY
+    return (uint64_t)apic_timer_get_bsp_ticks() * 1000000ULL;
+#else
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
+    return ((uint64_t)hi << 32) | lo;
+#endif
+}
+
+static uint32_t ror32(uint32_t v, unsigned n) { return (v >> n) | (v << (32 - n)); }
+
+static void sha256_block(uint32_t state[8], const uint8_t block[64]) {
+    static const uint32_t K[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+    uint32_t w[64];
+    for (unsigned i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)block[i*4] << 24) | ((uint32_t)block[i*4+1] << 16) |
+               ((uint32_t)block[i*4+2] << 8) | (uint32_t)block[i*4+3];
+    }
+    for (unsigned i = 16; i < 64; i++) {
+        uint32_t s0 = ror32(w[i-15], 7) ^ ror32(w[i-15], 18) ^ (w[i-15] >> 3);
+        uint32_t s1 = ror32(w[i-2], 17) ^ ror32(w[i-2], 19) ^ (w[i-2] >> 10);
+        w[i] = w[i-16] + s0 + w[i-7] + s1;
+    }
+    uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
+    uint32_t e = state[4], f = state[5], g = state[6], h = state[7];
+    for (unsigned i = 0; i < 64; i++) {
+        uint32_t s1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t t1 = h + s1 + ch + K[i] + w[i];
+        uint32_t s0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t t2 = s0 + maj;
+        h = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
+    }
+    state[0] += a; state[1] += b; state[2] += c; state[3] += d;
+    state[4] += e; state[5] += f; state[6] += g; state[7] += h;
+}
+
+static void sha256_hash(const void *data, size_t len, uint8_t out[32]) {
+    uint32_t state[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    };
+    uint8_t block[64];
+    size_t offset = 0;
+    const uint8_t *p = (const uint8_t *)data;
+
+    while (len - offset >= 64) {
+        memcpy(block, p + offset, 64);
+        sha256_block(state, block);
+        offset += 64;
+    }
+
+    size_t rem = len - offset;
+    memcpy(block, p + offset, rem);
+    block[rem++] = 0x80;
+    if (rem > 56) {
+        memset(block + rem, 0, 64 - rem);
+        sha256_block(state, block);
+        rem = 0;
+    }
+    memset(block + rem, 0, 56 - rem);
+    uint64_t bits = (uint64_t)len * 8;
+    for (unsigned i = 0; i < 8; i++) {
+        block[56 + i] = (uint8_t)(bits >> ((7 - i) * 8));
+    }
+    sha256_block(state, block);
+
+    for (unsigned i = 0; i < 8; i++) {
+        out[i * 4]     = (uint8_t)(state[i] >> 24);
+        out[i * 4 + 1] = (uint8_t)(state[i] >> 16);
+        out[i * 4 + 2] = (uint8_t)(state[i] >> 8);
+        out[i * 4 + 3] = (uint8_t)state[i];
+    }
+}
+
 static uint32_t initial_sequence(tcp_tuple_t tuple, uint64_t now) {
-    uint32_t m=(uint32_t)now*250U;
-    /* Consecutive opens within a coarse tick never use identical clock values. */
-    if (!tcp_seq_before(isn_clock,m)) m=isn_clock+1;
-    isn_clock=m;
-    uint32_t h=mix(salt^ntohl(tuple.local_ip));
-    h=mix(h^ntohl(tuple.remote_ip));
-    h=mix(h^((uint32_t)tuple.local_port<<16)^tuple.remote_port);
-    return m+h; /* Predictable experimental LAN mixer, not entropy/PRF. */
+    (void)now;
+    /* RFC 6528: ISN = M + H(secret || src_ip || src_port || dst_ip || dst_port || counter)
+     * Using TSC as both monotonic M and snapshot counter. */
+    uint64_t tsc_now = read_tsc();
+    uint32_t m = (uint32_t)tsc_now;
+
+    struct {
+        uint8_t secret[32];
+        uint32_t local_ip;
+        uint16_t local_port;
+        uint32_t remote_ip;
+        uint16_t remote_port;
+        uint64_t counter;
+    } input;
+
+    memcpy(input.secret, boot_secret, 32);
+    input.local_ip = tuple.local_ip;
+    input.local_port = tuple.local_port;
+    input.remote_ip = tuple.remote_ip;
+    input.remote_port = tuple.remote_port;
+    input.counter = tsc_now;
+
+    uint8_t digest[32];
+    sha256_hash(&input, sizeof(input), digest);
+
+    uint32_t h = ((uint32_t)digest[0] << 24) | ((uint32_t)digest[1] << 16) |
+                 ((uint32_t)digest[2] << 8)  | (uint32_t)digest[3];
+    return m + h;
 }
+
 void net_tcp_init(net_dev_t *dev, const net_config_t *cfg) {
-    action_inflight=false;
-    deadline_clock_last=apic_timer_get_bsp_ticks();
-    __atomic_store_n(&deadline_clock_failed,false,__ATOMIC_RELEASE);
-    device=dev; local_ip=cfg->local_ip; ephemeral=49152; cursor=0;
-    clock_ms=milliseconds(apic_timer_get_bsp_ticks()); isn_clock=(uint32_t)clock_ms*250U;
-    tw_pending=false;
-    /* Only available BSP uptime is sampled; no wall-clock/entropy assumption. */
-    salt=mix((uint32_t)apic_timer_get_bsp_ticks()^ntohl(local_ip));
-    memset(endpoints,0,sizeof(endpoints)); memset(arp_next,0,sizeof(arp_next)); tcp_pool_init(&pool);
-    memset(passive_tw,0,sizeof(passive_tw));
-    for (unsigned i=0; i<NET_SOCKET_MAX; ++i) {
-        endpoints[i].block=-1;
-        for (unsigned j=0; j<NET_TCP_BACKLOG_MAX; ++j) endpoints[i].pending[j].block=-1;
+    action_inflight = false;
+    deadline_clock_last = apic_timer_get_bsp_ticks();
+    __atomic_store_n(&deadline_clock_failed, false, __ATOMIC_RELEASE);
+    device = dev; local_ip = cfg->local_ip; ephemeral = 49152; cursor = 0;
+    clock_ms = milliseconds(apic_timer_get_bsp_ticks());
+    tw_pending = false;
+
+    /* Harvest boot entropy: RDRAND/RDSEED primary when supported by CPU.
+     * Note: Boot entropy without RDRAND is not a cryptographic guarantee. */
+    struct {
+        uint64_t hw_random[4];
+        uint64_t tsc_sample;
+        uint64_t apic_ticks;
+        uint32_t local_ip;
+        uint8_t  mac[6];
+        uint8_t  cmos_rtc[6];
+    } entropy_pool;
+    memset(&entropy_pool, 0, sizeof(entropy_pool));
+
+    entropy_pool.tsc_sample = read_tsc();
+    entropy_pool.apic_ticks = apic_timer_get_bsp_ticks();
+    entropy_pool.local_ip   = local_ip;
+    if (device) memcpy(entropy_pool.mac, device->mac_addr, 6);
+
+#ifndef TEST_SMP_MEMORY
+    /* Sample CMOS RTC date/time registers */
+    for (uint8_t reg = 0; reg < 6; reg++) {
+        __asm__ volatile("outb %0, $0x70" : : "a"(reg) : "memory");
+        uint8_t val;
+        __asm__ volatile("inb $0x71, %0" : "=a"(val) : : "memory");
+        entropy_pool.cmos_rtc[reg] = val;
+    }
+
+    /* CPUID check for RDRAND (leaf 1, ECX bit 30) and RDSEED (leaf 7, EBX bit 18) */
+    uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
+    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1), "c"(0));
+    bool has_rdrand = (ecx & (1u << 30)) != 0;
+
+    eax = 7; ecx = 0;
+    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(7), "c"(0));
+    bool has_rdseed = (ebx & (1u << 18)) != 0;
+
+    unsigned collected = 0;
+    for (unsigned i = 0; i < 4; i++) {
+        uint64_t val = 0;
+        unsigned char ok = 0;
+        if (has_rdseed) {
+            __asm__ volatile("rdseed %0; setc %1" : "=r"(val), "=qm"(ok));
+        }
+        if (!ok && has_rdrand) {
+            __asm__ volatile("rdrand %0; setc %1" : "=r"(val), "=qm"(ok));
+        }
+        if (ok) {
+            entropy_pool.hw_random[i] = val;
+            collected++;
+        }
+    }
+    isn_crypto_guaranteed = (collected == 4);
+#endif
+
+    sha256_hash(&entropy_pool, sizeof(entropy_pool), boot_secret);
+
+    memset(endpoints, 0, sizeof(endpoints)); memset(arp_next, 0, sizeof(arp_next)); tcp_pool_init(&pool);
+    memset(passive_tw, 0, sizeof(passive_tw));
+    for (unsigned i = 0; i < NET_SOCKET_MAX; ++i) {
+        endpoints[i].block = -1;
+        for (unsigned j = 0; j < NET_TCP_BACKLOG_MAX; ++j) endpoints[i].pending[j].block = -1;
     }
 }
 void net_tcp_set_local_ip(uint32_t new_ip) {
@@ -256,8 +421,6 @@ int64_t net_tcp_bind(unsigned slot, uint16_t port) {
 static int64_t connect_start(unsigned slot, uint32_t ip, uint16_t port, bool timed, uint64_t deadline) {
     uint32_t hop;
     if (!net_ipv4_route(ip,&hop)) return SYSCALL_EINVAL;
-    /* One chosen MSL after reboot; timestamps are not an entropy guarantee. */
-    if (milliseconds(apic_timer_get_bsp_ticks())<120000) return SYSCALL_EAGAIN;
     uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
     tcp_conn_t *c=connection(e); int64_t result=0;
     if (!e->used || !c) result=SYSCALL_ENOTCONN;

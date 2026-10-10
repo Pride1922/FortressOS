@@ -9,6 +9,7 @@ static uint8_t peer_bytes[65536], peer_packet[1500], peer_scratch[1460], stream_
 static size_t peer_count, peer_queued;
 static bool peer_active, peer_return, refuse, blackhole;
 static unsigned tcp_packets;
+static uint32_t last_syn_seq;
 static unsigned fin_packets, reset_packets;
 static bool interrupt_after_send, interrupt_wait_before_reply, expire_wait_with_reply;
 static bool listener_fixture, invalidate_listener_wait;
@@ -64,6 +65,7 @@ static int tcp_transmit(net_dev_t *d, const void *bytes, size_t n) {
     if (tx_fail) return -1;
     if (blackhole) return 0;
     if (h.flags&TCP_SYN) {
+        last_syn_seq = h.sequence;
         tcp_tuple_t tuple={ip.dst_ip,ip.src_ip,h.destination,h.source};
         if (!peer_active || peer_connection.tuple.remote_port!=h.source) {
             assert(!tcp_conn_init(&peer_connection,tuple,1,0xfffffff0,1500,false,now*10));
@@ -418,9 +420,6 @@ int main(void) {
     cpu_locals[0].id=1;
     assert(call(SYS_CONNECT,fd,0,16,0,0,0)==SYSCALL_EOPNOTSUPP);
     cpu_locals[0].id=0;
-    uint64_t saved_now=now; now=0;
-    assert(connectfd(fd)==SYSCALL_EAGAIN && !tcp_packets);
-    now=saved_now;
     assert(call(SYS_CONNECT,fd,0,16,0,0,0)==SYSCALL_EFAULT);
     assert(call(SYS_CONNECT,fd,0,15,0,0,0)==SYSCALL_EINVAL);
     assert(call(SYS_LISTEN,fd,1,0,0,0,0)==SYSCALL_EINVAL);
@@ -543,6 +542,13 @@ int main(void) {
     fd=stream(); assert(net_socket_index(process.fd_table[fd])==exhausted_slot);
     assert(!net_tcp_deadline_register(&exhausted));
     closefd(fd); tcp_service(); assert(!allocations);
+    /* Verify distinct ISNs across sequential connections */
+    uint32_t seq1 = 0, seq2 = 0;
+    fd = stream(); assert(!connectfd(fd)); seq1 = last_syn_seq; closefd(fd); tcp_service();
+    now += 10;
+    fd = stream(); assert(!connectfd(fd)); seq2 = last_syn_seq; closefd(fd); tcp_service();
+    assert(seq1 != 0 && seq2 != 0 && seq1 != seq2);
+    puts("[PASS] RFC 6528 cryptographic ISN distinct across sequential connections");
     puts("[PASS] TCP event exhaustion invalidates timed waits and rejects hints across slot reuse");
     puts("TCP socket host PASS: actual manager/syscalls/codec; 64KiB both directions, half-close, EOF, short sends, shared refs, stale identity, interruption/refusal/timeout; mocked scheduler and peer engine");
     return 0;

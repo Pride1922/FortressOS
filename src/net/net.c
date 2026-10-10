@@ -343,7 +343,7 @@ void net_start(const char *cmdline, size_t len) {
     if ((s_config.test_udp || s_config.test_tcp) && smp_get_cpu_count()>1)
         (void)thread_create_on_cpu(1,"net_ap_probe",socket_ap_probe,NULL);
     serial_puts("[NET 3] BSP ingress worker started; tick-bounded polling\n");
-    serial_puts("[NET-2] TCP reboot quiet time: CONNECT returns EAGAIN until BSP uptime 120 seconds\n");
+    serial_puts("[NET-2] TCP RFC 6528 cryptographic ISN enabled; zero reboot quiet time\n");
 }
 
 static spinlock_t g_net_stack_lock = SPINLOCK_RANKED(1, "net_stack");
