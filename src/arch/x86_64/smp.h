@@ -53,6 +53,12 @@ void smp_ipi_init(void);
 void smp_tlb_shootdown(uintptr_t virt_addr, uintptr_t cr3);
 /* Synchronously INVLPG 1..16 contiguous pages; no whole-CR3 flush. */
 void smp_tlb_shootdown_pages(uintptr_t virt_addr, uintptr_t cr3, size_t page_count);
+typedef struct {
+    uint64_t dispatch_tsc;
+    uint64_t ack_poll_tsc;
+    uint64_t service_tsc;
+} smp_tlb_trace_metrics_t;
+void smp_tlb_shootdown_pages_tracked(uintptr_t virt_addr, uintptr_t cr3, size_t page_count, smp_tlb_trace_metrics_t *metrics);
 /* Cumulative diagnostic counters; independent relaxed snapshots, no reset.
  * wait_cycles measures the ACK wait loop in TSC cycles, not CPU service time. */
 typedef struct { uint64_t calls, remote_batches, target_cpus, wait_iters, wait_cycles; } smp_tlb_stats_t;
@@ -70,9 +76,10 @@ void smp_send_panic(void);
  *   3. Initiator wait loop (smp_tlb_shootdown, IF=0, thread context).
  * Invariant: No locks, no sleep, no schedule, no enable IF, no heap allocation.
  */
-void smp_tlb_service_local(void);
+size_t smp_tlb_service_local(void);
 
 extern volatile uint64_t g_ipi_tlb_count[MAX_DETECTED_CPUS];
+extern volatile uint64_t g_ipi_tlb_service_tsc[MAX_DETECTED_CPUS];
 extern volatile uint64_t g_ipi_resched_count[MAX_DETECTED_CPUS];
 extern volatile uint64_t g_tlb_poll_serviced_count[MAX_DETECTED_CPUS];
 

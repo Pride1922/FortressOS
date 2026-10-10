@@ -22,7 +22,7 @@ typedef struct {
     uint8_t extent[60];
     e4_map_t *map;
 } e4_inode_t;
-typedef struct { vfs_node_t node; e4_inode_t inode; unsigned opens; bool removed; } e4_node_t;
+typedef struct { vfs_node_t node; e4_inode_t inode; unsigned opens, refs; bool removed, legacy; } e4_node_t;
 struct ext4_mount {
     block_dev_t *dev;
     ext4_engine_t *engine;
@@ -480,6 +480,52 @@ static int64_t e4_read(vfs_node_t *node,uint64_t off,void *buf,size_t len) {
     return done ? (int64_t)done : r;
 }
 static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name);
+static vfs_node_t *e4_lookup_ref(vfs_node_t *parent,const char *name,int *error);
+static vfs_node_t *e4_jcreate_ref(vfs_node_t *parent,const char *name,vfs_node_type_t type,int *error);
+
+/* Cached children (including detached open nodes) keep their parent address
+ * alive. Root and legacy raw-pointer nodes are never eviction candidates. */
+static bool e4_cache_remove(ext4_mount_t *fs,e4_node_t *node) {
+    spin_debug_assert_held(&e4_lock);
+    if (!fs->journal_mounted || node==fs->cached[0] || node->refs || node->opens ||
+        node->legacy || node->node.children) return false;
+    for (unsigned i=0;i<fs->nodes;i++)
+        if (fs->cached[i]->node.parent==&node->node) return false;
+    unsigned at=1;
+    while (at<fs->nodes && fs->cached[at]!=node) at++;
+    if (at==fs->nodes) return false;
+    vfs_node_t **link=&node->node.parent->children;
+    while (*link && *link!=&node->node) link=&(*link)->next;
+    if (*link) *link=node->node.next;
+    fs->cached[at]=fs->cached[--fs->nodes];fs->cached[fs->nodes]=NULL;
+    kfree(node);return true;
+}
+static void e4_collect_removed(e4_node_t *node) {
+    ext4_mount_t *fs=node->inode.fs;
+    while (node!=fs->cached[0] && node->removed) {
+        e4_node_t *parent=(e4_node_t *)node->node.parent;
+        if (!e4_cache_remove(fs,node)) break;
+        node=parent;
+    }
+}
+static bool e4_cache_room(ext4_mount_t *fs) {
+    if (fs->nodes<E4_NODES) return true;
+    for (unsigned i=1;i<fs->nodes;i++)
+        if (e4_cache_remove(fs,fs->cached[i])) return true;
+    return false;
+}
+static int e4_node_get(vfs_node_t *node) {
+    uint64_t flags=spin_lock_irqsave(&e4_lock);e4_node_t *n=(e4_node_t *)node;
+    int error=n->refs==UINT32_MAX ? -VFS_EFBIG : 0;
+    if (!error) n->refs++;
+    spin_unlock_irqrestore(&e4_lock,flags);return error;
+}
+static void e4_node_put(vfs_node_t *node) {
+    uint64_t flags=spin_lock_irqsave(&e4_lock);e4_node_t *n=(e4_node_t *)node;
+    if (n->refs) n->refs--;
+    e4_collect_removed(n);
+    spin_unlock_irqrestore(&e4_lock,flags);
+}
 static int e4_readdir(vfs_node_t *node,uint64_t cookie,void *out) {
     if (!node || !out) return -VFS_EINVAL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
@@ -510,38 +556,48 @@ static void e4_setup(e4_node_t *n, e4_inode_t *in) {
         if (in->mode==0x4000) { n->node.create=e4_create; n->node.unlink=e4_unlink; n->node.rename=e4_rename; }
         else { n->node.write=e4_write; n->node.truncate=e4_truncate; }
         if (in->fs->journal_mounted) {
+            n->node.get=e4_node_get;n->node.put=e4_node_put;
             n->node.close=e4_jclose;
-            if (in->mode==0x4000) { n->node.create=e4_jcreate;n->node.unlink=e4_junlink;n->node.rename=e4_jrename; }
+            if (in->mode==0x4000) {
+                n->node.lookup_ref=e4_lookup_ref;n->node.create_ref=e4_jcreate_ref;
+                n->node.create=e4_jcreate;n->node.unlink=e4_junlink;n->node.rename=e4_jrename;
+            }
             else { n->node.write=e4_jwrite;n->node.truncate=e4_jtruncate; }
         }
     }
     if (n->node.type==VFS_DIRECTORY) { n->node.lookup=e4_lookup; n->node.readdir=e4_readdir; }
     else n->node.read=e4_read;
 }
-static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name) {
+static vfs_node_t *e4_lookup_common(vfs_node_t *parent,const char *name,int *error,bool owned) {
+    if (error) *error=-VFS_EINVAL;
     if (!parent || !name || !*name || strlen(name)>=VFS_MAX_NAME) return NULL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
     e4_inode_t *in=parent->fs_private, child; ext4_mount_t *fs=in->fs; uint32_t ino;
-    if (fs->journal_mounted && e4_journal_refresh(parent)) { spin_unlock_irqrestore(&e4_lock,flags);return NULL; }
+    int status=fs->journal_mounted ? e4_journal_refresh(parent) : 0;
+    if (status) { if (error) *error=status;spin_unlock_irqrestore(&e4_lock,flags);return NULL; }
     vfs_dirent_t entry;
     if (fs->engine) in->map=NULL;
     int r=e4_scan(in,name,0,&entry,&ino); vfs_node_t *result=NULL;
-    if (r==1 && !e4_inode(fs,ino,&child) &&
+    status=r<0 ? r : -VFS_ENOENT;
+    int inode_error=r==1 ? e4_inode(fs,ino,&child) : 0;
+    if (inode_error) status=inode_error;
+    if (r==1 && !inode_error &&
         entry.type==(child.mode==0x4000 ? VFS_DIRECTORY : VFS_FILE)) {
         if (fs->engine && !strcmp(name,".")) {
             result=ino==in->ino ? parent : NULL;
-            spin_unlock_irqrestore(&e4_lock,flags); return result;
+            goto publish;
         }
         if (fs->engine && !strcmp(name,"..")) {
             vfs_node_t *up=parent==&fs->cached[0]->node ? parent : parent->parent;
             e4_inode_t *up_inode=up ? up->fs_private : NULL;
             result=up_inode && up_inode->fs==fs && up_inode->ino==ino ? up : NULL;
-            spin_unlock_irqrestore(&e4_lock,flags); return result;
+            goto publish;
         }
         for (vfs_node_t *p=parent->children;p;p=p->next) if (!strcmp(p->name,name)) { result=p; break; }
         size_t plen=strlen(parent->path), nl=strlen(name);
-        if (!result && fs->nodes<E4_NODES && plen+1+nl<VFS_MAX_PATH) {
+        if (!result && plen+1+nl<VFS_MAX_PATH && e4_cache_room(fs)) {
             e4_node_t *n=kcalloc(1,sizeof(*n));
+            status=-VFS_ENOMEM;
             if (n) {
                 memcpy(n->node.name,name,nl+1); memcpy(n->node.path,parent->path,plen);
                 n->node.path[plen]='/'; memcpy(n->node.path+plen+1,name,nl+1);
@@ -549,9 +605,24 @@ static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name) {
                 n->node.next=parent->children; parent->children=&n->node;
                 fs->cached[fs->nodes++]=n; result=&n->node;
             }
-        }
+        } else if (!result) status=-VFS_EFBIG;
     }
+publish:
+    if (result && fs->journal_mounted) {
+        e4_node_t *node=(e4_node_t *)result;
+        if (owned) {
+            if (node->refs==UINT32_MAX) { result=NULL;status=-VFS_EFBIG; }
+            else node->refs++;
+        } else node->legacy=true;
+    }
+    if (error) *error=result ? 0 : status;
     spin_unlock_irqrestore(&e4_lock,flags); return result;
+}
+static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name) {
+    return e4_lookup_common(parent,name,NULL,false);
+}
+static vfs_node_t *e4_lookup_ref(vfs_node_t *parent,const char *name,int *error) {
+    return e4_lookup_common(parent,name,error,true);
 }
 static void e4_discard(ext4_mount_t *fs) {
     if (!fs) return;

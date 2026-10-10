@@ -16,7 +16,12 @@
  * RW owns an eight-block clean metadata cache under the filesystem lock.
  * The mounted device requires exclusive write ownership; external/raw changes
  * require remount. Cache hits retain all metadata checksum/structure checks.
- * Nodes, including removed tombstones, persist for mount lifetime (1024 total).
+ * E4-A nodes persist for mount lifetime (1024 total). Journaled E4-B retains
+ * at most 1024 cached nodes: owned VFS references/open handles protect nodes;
+ * unpinned tombstones are reclaimed and idle leaf nodes evicted at capacity.
+ * Legacy raw lookup/create results stay stable for mount lifetime, so callers
+ * must use the owned VFS API for reclaimable nodes. Cached descendants retain
+ * parent addresses. Fully pinned capacity reports EFBIG, never false ENOENT.
  * RO media stays immutable; RW refreshes mappings after changes. Caller owns
  * the stable partition device throughout the mount and supplies external
  * PARTUUID/GPT/durability admission before calling mount_rw. All calls require

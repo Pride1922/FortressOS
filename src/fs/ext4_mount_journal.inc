@@ -158,14 +158,18 @@ static void e4_jclose(vfs_node_t *node) {
      * registered; sync/shutdown returns its retry or taint error. */
     spin_unlock_irqrestore(&e4_lock,flags);
 }
-static vfs_node_t *e4_jcreate(vfs_node_t *parent,const char *name,vfs_node_type_t type) {
+static vfs_node_t *e4_jcreate_common(vfs_node_t *parent,const char *name,vfs_node_type_t type,int *error,bool owned) {
     if (!e4_namespace_name(name) || (type!=VFS_FILE && type!=VFS_DIRECTORY)) {
+        if (error) *error=-VFS_EINVAL;
         vfs_set_last_create_error(-VFS_EINVAL);return NULL;
     }
-    e4_node_t *node=kcalloc(1,sizeof(*node));if (!node) { vfs_set_last_create_error(-VFS_ENOMEM);return NULL; }
+    e4_node_t *node=kcalloc(1,sizeof(*node));if (!node) {
+        if (error) *error=-VFS_ENOMEM;
+        vfs_set_last_create_error(-VFS_ENOMEM);return NULL;
+    }
     uint64_t flags=spin_lock_irqsave(&e4_lock);int r=e4_state(parent);
     ext4_mount_t *fs=((e4_inode_t *)parent->fs_private)->fs;uint32_t ino=0;
-    if (!r && (fs->nodes==E4_NODES || strlen(parent->path)+strlen(name)+1>=VFS_MAX_PATH)) r=-VFS_EFBIG;
+    if (!r && (strlen(parent->path)+strlen(name)+1>=VFS_MAX_PATH || !e4_cache_room(fs))) r=-VFS_EFBIG;
     if (!r) r=ext4_engine_namespace_create(fs->engine,((e4_inode_t *)parent->fs_private)->ino,name,type==VFS_DIRECTORY,&ino);
     e4_inode_t in;
     if (!r) {
@@ -174,13 +178,20 @@ static vfs_node_t *e4_jcreate(vfs_node_t *parent,const char *name,vfs_node_type_
         if (r) e4_jtaint(fs); /* Known commit; failed cache publication is not rollback. */
     }
     if (!r) {
-        e4_setup(node,&in);memcpy(node->node.name,name,strlen(name)+1);
+        e4_setup(node,&in);node->refs=owned ? 1 : 0;node->legacy=!owned;memcpy(node->node.name,name,strlen(name)+1);
         size_t length=strlen(parent->path);memcpy(node->node.path,parent->path,length);node->node.path[length]='/';
         memcpy(node->node.path+length+1,name,strlen(name)+1);node->node.parent=parent;
         node->node.next=parent->children;parent->children=&node->node;fs->cached[fs->nodes++]=node;
     }
     spin_unlock_irqrestore(&e4_lock,flags);
+    if (error) *error=r;
     if (r) { kfree(node);vfs_set_last_create_error(r);return NULL; }return &node->node;
+}
+static vfs_node_t *e4_jcreate(vfs_node_t *parent,const char *name,vfs_node_type_t type) {
+    return e4_jcreate_common(parent,name,type,NULL,false);
+}
+static vfs_node_t *e4_jcreate_ref(vfs_node_t *parent,const char *name,vfs_node_type_t type,int *error) {
+    return e4_jcreate_common(parent,name,type,error,true);
 }
 static int e4_junlink(vfs_node_t *parent,const char *name) {
     if (!e4_namespace_name(name)) return -VFS_EINVAL;
@@ -196,7 +207,10 @@ static int e4_junlink(vfs_node_t *parent,const char *name) {
         vfs_node_t **link=&parent->children;
         while (*link) {
             e4_node_t *node=(e4_node_t *)*link;
-            if (node->inode.ino==ino) { node->removed=true;*link=node->node.next;node->node.next=NULL;break; }
+            if (node->inode.ino==ino) {
+                node->removed=true;*link=node->node.next;node->node.next=NULL;
+                e4_collect_removed(node);break;
+            }
             link=&(*link)->next;
         }
         if (e4_journal_refresh(parent)) { e4_jtaint(fs);if (!r) r=-VFS_EIO; }

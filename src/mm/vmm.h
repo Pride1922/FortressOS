@@ -97,8 +97,24 @@ int       vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_
  * Reject/OOM changes no leaves. Reserve missing tables outside g_vmm_lock;
  * install under one lock and complete one synchronous range invalidation
  * before returning. Input array must not alias page tables. */
+typedef struct {
+    uint64_t lock_wait_tsc;
+    uint64_t lock_hold_tsc;
+    uint64_t pt_work_tsc;
+    uint64_t pre_lock_tsc;
+    uint64_t post_lock_prep_tsc;
+    uint64_t put_op_wait_tsc;
+    uint64_t put_op_hold_tsc;
+    uint64_t tlb_dispatch_tsc;
+    uint64_t tlb_ack_poll_tsc;
+    uint64_t tlb_service_tsc;
+} vmm_op_metrics_t;
+
 int       vmm_map_pages(uint64_t *pml4_virt, uintptr_t virt_addr,
                         size_t page_count, const uintptr_t *frames, uint64_t flags);
+int       vmm_map_pages_tracked(uint64_t *pml4_virt, uintptr_t virt_addr,
+                                size_t page_count, const uintptr_t *frames, uint64_t flags,
+                                vmm_op_metrics_t *metrics);
 int       vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr);
 /* Remove 1..16 contiguous, present, non-global 4 KiB leaves in one registry
  * transaction and one synchronous flush. Returns their frame addresses to
@@ -106,6 +122,9 @@ int       vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr);
  * out_frames must have page_count elements and must not alias page tables. */
 int       vmm_unmap_pages(uint64_t *pml4_virt, uintptr_t virt_addr,
                           size_t page_count, uintptr_t *out_frames);
+int       vmm_unmap_pages_tracked(uint64_t *pml4_virt, uintptr_t virt_addr,
+                            size_t page_count, uintptr_t *out_frames,
+                            vmm_op_metrics_t *metrics);
 bool      vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr);
 uintptr_t vmm_get_physical_address(uint64_t *pml4_virt, uintptr_t virt_addr);
 void      vmm_switch_pml4(uintptr_t pml4_phys);

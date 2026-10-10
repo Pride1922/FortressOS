@@ -1,6 +1,7 @@
 # FortressOS permissions implementation plan
 
 Status: PROPOSED (2026-10-05). Not started. Begins after EXT4 Phase 9 acceptance (QEMU crash campaign, then bare metal). Precedes the installer and package manager, which depend on ownership and mode semantics.
+Planning update (2026-10-08): EXT4 9.6 accepted; implementation remains deferred while the current SMP bugs are being fixed. The requirements below are design work only, not implemented support.
 Based on the externally supplied "Final Plan: FortressOS Permission System" draft, reconciled with the current `vfs.h`/`vfs.c`, `thread.h`, `syscall.c`, `tarfs.c`, `ext2.c` and `ext4.c` contracts. Target semantics are Linux-flavoured POSIX DAC plus a single 64-bit capability mask.
 
 ## 1. Decision and corrections
@@ -20,7 +21,7 @@ Corrections to the source draft:
 - **Setuid must not depend on read-only state.** The draft's "verify `node->read_only` is false" would block `sudo` itself, which lives on read-only TarFS. Use a per-mount `nosuid` flag: TarFS allows suid; USB mounts default to `nosuid,nodev` (Linux udisks convention).
 - **Read-only precedence applies to files, directories and symlinks only.** Linux returns EROFS before DAC for those types, but writes to device nodes on a read-only filesystem are allowed. `/dev` nodes are not on TarFS in this design, but the rule is encoded anyway.
 - **Login sequence locks itself out.** `setgroups → setresgid → capset(0) → setresuid(1000)` fails because `setresuid` needs `CAP_SETUID`, which was just dropped. Adopt the Linux rule instead: when a `setres*uid` call leaves no UID equal to 0, `cap_effective` is cleared automatically. `capset` becomes a drop-only refinement.
-- **Capability inheritance across spawn was unspecified.** Rule (§4.3): child caps are `~0` iff the resulting euid is 0, else 0. A non-setuid spawn by UID 1000 can never acquire caps.
+- **Capability inheritance across spawn was unspecified.** Ordinary spawn copies the parent's remaining effective capabilities; UID 0 alone must not restore capabilities dropped through `capset`. Privilege elevation is limited to the explicitly admitted setuid transition (§4.3).
 - **`CAP_DAC_READ_SEARCH`.** The draft only matched `mask == MAY_READ || mask == MAY_EXEC` on directories, so `MAY_READ|MAY_EXEC` slipped through, and Linux also grants file reads. Corrected in §4.2.
 - **Password hashing.** A single SHA-256 over `salt||password` is too fast for offline attack resistance. Use sha-crypt `$5$` (SHA-256-crypt, default 5000 rounds, configurable `rounds=`) and the standard 9-field `/etc/shadow` layout, so Linux tools can read and generate FortressOS shadow files. Reuse the SHA-256 core behind `user/tools/digest.h`.
 - **Missing user-facing surface.** The draft had no `chmod`, `chown`, `fchmod`, uid/gid in `stat`, `getresuid`/`getresgid`/`getgroups`, or tools (`ls -l`, `id`, `whoami`, `chmod`, `chown`, `umask` builtin). Without them the installer and package manager cannot set ownership. Added to Phase 2.
@@ -32,13 +33,28 @@ Corrections to the source draft:
 
 Read PROTECTED.md and AGENTS.md sections 4, 7.1, 7.4, 7.6 and 9 before implementation. Preserve:
 
-- Lock ranks and the no-lock-across-switch rule. Credentials are read by the current thread from its own TCB without a lock; cross-thread reads (e.g. `ps`, signal permission) take the existing process-table lock. Credential mutation happens only on the current TCB, during syscalls.
+- Lock ranks and the no-lock-across-switch rule. Resolve credentials into a consistent snapshot at syscall entry. Cross-thread readers (e.g. process inspection and signal authorization) and current-thread credential writers must share a synchronization protocol; a reader-only lock is insufficient. Choose the protocol against the final SMP process-table lifetime/locking APIs, not the former single global process lock. Never retain a target TCB beyond its protected lifetime or hold that lock across filesystem I/O or scheduling.
 - `ENABLE_*` raw-write gates, hardware storage exclusions (H6: the internal NVMe is not mounted) and DMA quarantine. **Permissions are an additional layer, never a replacement.** A `root:disk 0660` block node with `CAP_SYS_RAWIO` still cannot write unless the existing gate allows it.
 - `-EROFS` (policy) vs `-EIO` (taint) distinction. Permission denial is `-EACCES` (DAC) or `-EPERM` (ownership/capability operations such as `chown`, `setresuid`, sticky-bit unlink), matching Linux.
 - ext4 metadata writes (`chmod`, `chown`, create with mode/uid/gid) go through the existing JBD2 transaction engine and must be covered by the Phase 9 crash-injection harness before journaled RW is advertised.
 - Kernel-internal lookups (boot init spawn, `usb_mount`, initramfs population, the terminal node) bypass permission checks through explicit `_kernel` entry points, never by passing a fake root credential.
 
 Each user `tcb_t` is one process today (it owns `fd_table` and `cwd`). Credentials live in `tcb_t`. If shared-address-space user threads are introduced, credentials move to a shared process object first; that move is a precondition, not a follow-up.
+
+### 2.1 Foundation readiness and SMP handoff
+
+No additional scheduler, allocator, USB transport or network protocol milestone is required solely for permissions. Before implementation, reconcile the plan with the completed SMP fixes. Commit `438fae0` introduces AP scheduling, unpinned workloads, cross-core signals and PID-bucket process locks; this is context, not a claim that its outstanding bugs are fixed or its tests have been rerun here.
+
+| Foundation | Required integration / gate |
+| --- | --- |
+| SMP | Consistent credential publication, spawn inheritance and cross-core signal authorization using the final process lifetime/locking protocol; stress concurrent inspection, credential changes and target exit without mixed identities or stale TCB access. |
+| Memory / ABI | Reuse existing address-space isolation and user-buffer validation; bounded group arrays, size/version-checked stat and credential ABI, fault/overflow tests, and no partial credential publication on invalid input. No allocator redesign. |
+| USB | Propagate `nosuid`/`nodev` to all selected-volume nodes; retain durability admission, raw-write gates, DMA quarantine and internal-NVMe exclusion. No transport changes required. |
+| Network | Audit privileged network configuration and low-port bind at syscall entry; preserve BSP protocol ownership unless the separate SMP/network work explicitly changes it. No TCP/UDP changes required. |
+| EXT4 / ext2 | Decode and preserve full mode and 32-bit ownership; route EXT4 metadata changes through the journal and add focused old-or-new metadata recovery tests. Existing acceptance does not certify these new operations. |
+| VFS | Synchronize permission checks with authoritative node identity/metadata and namespace mutation. Checks followed by unlocked rename/unlink/create are insufficient; document lock order and revalidation before mutation. Keep explicit kernel entry points. |
+
+Phase 0 must document the credential snapshot/publication and VFS authorization/mutation protocols before enforcement work begins. Add regressions proving ordinary spawn cannot restore dropped capabilities, and that denied operations leave namespace, inode metadata and allocation unchanged. Do not hold process locks across filesystem locks/I/O; follow the existing rank-1 non-nesting contract.
 
 ## 3. Data layout
 
@@ -58,7 +74,8 @@ Each user `tcb_t` is one process today (it owns `fd_table` and `cwd`). Credentia
 #define CAP_SYS_ADMIN       (1ULL << 8)  /* mount/umount, driver control */
 #define CAP_SYS_RAWIO       (1ULL << 9)  /* raw block access (still subject to ENABLE_*) */
 #define CAP_SYS_BOOT        (1ULL << 10) /* power off / reboot */
-#define CAP_ALL             ((1ULL << 11) - 1)
+#define CAP_FSETID          (1ULL << 11) /* explicit set-ID preservation rules */
+#define CAP_ALL             ((1ULL << 12) - 1)
 
 typedef struct creds {
     uint32_t uid, euid, suid;
@@ -133,7 +150,7 @@ uint16_t vfs_create_mode(const vfs_node_t *dir, uint16_t requested, const creds_
 
 | Event | Rule |
 | --- | --- |
-| Spawn, non-setuid image | Child copies parent `creds_t` (including umask and groups); `cap_effective = (euid == 0) ? CAP_ALL : 0` |
+| Spawn, ordinary image with no admitted identity transition | Child copies a consistent parent `creds_t` snapshot, including umask, groups and remaining effective caps; never replenish dropped caps solely because euid is 0 |
 | Spawn, `S_ISUID` image, mount allows suid | `euid = suid = node->uid`; caps = `CAP_ALL` iff new euid is 0 |
 | Spawn, `S_ISGID` image (with group-x) | `egid = sgid = node->gid` |
 | Spawn, setuid/setgid with `nosuid` mount | Bits ignored, spawn succeeds unprivileged (Linux behaviour) |
@@ -143,6 +160,8 @@ uint16_t vfs_create_mode(const vfs_node_t *dir, uint16_t requested, const creds_
 | `umask(m)` | Returns old; stores `m & 0777` |
 
 Setuid spawns are "secure" spawns: the kernel closes inherited descriptors above 2 that are not explicitly mapped by `spawn_opts` fd actions, and passes an `AT_SECURE`-style flag in the entry block (see `user-entry-envp.md`) so the user runtime ignores `PATH`-like inputs. Environment filtering itself is done by `sudo` in user space, not the kernel.
+
+Before Phase 2, specify set-ID clearing/preservation for create, chmod, chown, ordinary writes and truncation, including `CAP_FSETID` and group membership. Perform any required mode-bit clearing in the same filesystem transaction as the associated metadata mutation; test denied/no-op/failed operations separately. Ordinary spawn with `nosuid`-ignored bits follows the ordinary inheritance rule. Genuine admitted setuid elevation remains an explicit Phase 4 transition, not a side effect of ordinary root spawn.
 
 ### 4.4 Call sites (all in `src/fs/vfs.c` unless noted)
 
@@ -177,6 +196,20 @@ Block nodes are **read-only in this plan**: their `write` is NULL regardless of 
 
 **runfs** (`/run`, new): bounded in-memory directory tree (fixed node pool, fixed per-file byte cap, no file data beyond what login needs). `/run` is `root:root 0755`; `/run/user` is `root:root 0755`; login creates `/run/user/<uid>` as `<uid>:<gid> 0700`. Pool exhaustion → `-VFS_ENOSPC`. No persistence across boot.
 
+### 5.1 Directory layout and ownership baseline
+
+| Path | Initial ownership / mode | Lifetime / policy |
+| --- | --- | --- |
+| `/`, `/bin`, `/etc` | root:root 0755 | Boot image; individual files use their declared modes; `/etc/shadow` is 0600. |
+| `/dev` | root:root 0755 | Boot-lifetime devfs; node rules above. |
+| `/tmp` | root:root 1777 | Existing memory-backed directory; clear at reboot; enforce sticky deletion/rename rules and explicit resource bounds. |
+| `/run`, `/run/user` | root:root 0755 | Bounded runtime filesystem; clear at reboot. |
+| `/run/user/<uid>` | user:primary-group 0700 | Created and assigned by privileged login before credential drop. |
+| `/mnt` | From the selected filesystem's root inode | Persistent USB data; do not silently rewrite existing ownership to make login work. |
+| User home | user:primary-group 0700 | Choose `/home/<name>` or `/paradise/<name>` and its persistent backing before Phase 3; the current read-only root cannot host writable homes by directory creation alone. |
+
+Creating the layout is part of Phase 0. A persistent root, generic mount-point expansion, symlinks and package management are separate work; no root filesystem migration is implied here.
+
 ## 6. Phases
 
 ### Phase 0: node metadata, devfs and runfs (no enforcement)
@@ -186,6 +219,7 @@ Block nodes are **read-only in this plan**: their `write` is NULL regardless of 
 - TarFS header parse; Makefile normalises archive ownership and modes.
 - ext4: retain full `i_mode`, decode 32-bit uid/gid; create with requested mode/uid/gid (remove `0x4180`/`0x8180`). ext2: decode uid/gid; create with requested mode.
 - devfs replaces the special-cased nodes; runfs mounted at `/run`.
+- Establish §5.1 ownership/lifetime defaults and document §2.1 synchronization protocols against the final SMP APIs; remain non-enforcing.
 - **Gate:** existing `test-host`, `test-shell`, `test-ext2`, ext4 host and QEMU suites, and the Phase 9 crash campaign pass unchanged. New host test: ext4/ext2 inode roundtrip with uid `0x12345678`, gid `0x87654321`, every mode in 07777, checksum valid, `e2fsck -fn` clean on a disposable image. `stat` from Ring 3 reports correct mode/uid/gid for TarFS, ext4, devfs and runfs nodes.
 
 ### Phase 1: call-site wiring with a permissive stub
@@ -205,7 +239,7 @@ Block nodes are **read-only in this plan**: their `write` is NULL regardless of 
 
 - Syscalls: `setresuid`, `setresgid`, `setgroups`, `capset`, plus no-echo terminal read (reuse nano's raw mode path).
 - `/etc/passwd` (0644), `/etc/group` (0644), `/etc/shadow` (0600, root:root) staged at build. Groups: `root:0`, `tty:5`, `disk:6`, `wheel:10`, `video:44`, `input:104`, `operator:1000`. Members: `operator` in `wheel,video,input`.
-- `user/tools/login.c`: bounded parsers for the three files; sha-crypt `$5$` verification in constant time; failed-attempt delay; sequence `setgroups → setresgid → setresuid` (caps clear automatically); create `/run/user/<uid>` 0700; set `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`; spawn the shell.
+- `user/tools/login.c`: bounded parsers for the three files; sha-crypt `$5$` verification in constant time; failed-attempt delay; after successful authentication, create/validate and assign `/run/user/<uid>` 0700 while privileged, then `setgroups → setresgid → setresuid` (caps clear automatically); set `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`; spawn the shell. Reject unexpected ownership/type of an existing runtime directory; do not reuse an untrusted path.
 - `user/init.asm` spawns `/bin/login` instead of the shell. A boot parameter (`login=0`, test images only) keeps direct-shell boot for existing runners.
 - `whoami`; `ls -l` resolves names.
 - **Gate:** host tests for passwd/group/shadow parsers (malformed, oversize, missing fields, 9-field shadow) and `$5$` against known vectors from glibc's crypt. QEMU: boot to login prompt; operator login gives `uid=1000 euid=1000 caps=0` and groups `1000,10,44,104`; `/run/user/1000` is `1000:1000 0700`; wrong password fails with delay; locked root cannot log in; reading `/etc/shadow` as operator is `-EACCES`.
@@ -245,3 +279,4 @@ ACLs, xattrs, SELinux-style labels, file capabilities, user namespaces, PAM, `pa
 1. Expose the internal NVMe as a read-only `/dev` node, or keep it absent per H6?
 2. Live-media operator authentication: build-variable password hash, or passwordless with a boot warning?
 3. Keep internal capability numbering, or adopt Linux `CAP_*` numbers for future compatibility of tooling?
+4. Choose the user-home name and persistent backing before Phase 3; do not assume writable `/home` or `/paradise` exists.

@@ -9,9 +9,11 @@
 
 static void *allocations[4096];
 static size_t live;
+static size_t allocation_attempts, allocation_failures;
 static int fail_after = -1;
 void *kmalloc(size_t n) {
-    if (fail_after == 0) return NULL;
+    allocation_attempts++;
+    if (fail_after == 0) { allocation_failures++;return NULL; }
     if (fail_after > 0) fail_after--;
     void *p = malloc(n);
     assert(p && live < 4096);
@@ -189,11 +191,20 @@ static void review_regressions(block_dev_t *dev) {
             if (test == 6) {
                 uint32_t free_before = fs->free_blocks;
                 w = writes;
-                fail_after = 1; /* zero buffer succeeds, bitmap buffer fails */
-                assert(vfs_write(file, "x", 1) < 0);
+                size_t attempts_before = allocation_attempts, failures_before = allocation_failures;
+                /* RW mount owns the bitmap buffer; cached direct writes no
+                 * longer allocate a zero/bitmap buffer per block. */
+                assert(fs->bmp_cache);
+                fail_after = 0;
+                assert(vfs_write(file, "x", 1) == 1);
+                assert(allocation_attempts == attempts_before && allocation_failures == failures_before);
                 fail_after = -1;
-                assert(fs->free_blocks == free_before && writes == w && !fs->tainted);
-                assert(in->blocks[0] == 0);
+                assert(fs->free_blocks == free_before - 1 && writes > w && !fs->tainted);
+                assert(in->blocks[0] != 0 && in->size == 1 && !fs->bmp_cache_dirty);
+                assert(!memcmp(pending_disk, durable_disk, disk_size));
+                file->offset = 0;
+                char byte = 0;
+                assert(vfs_read(file, &byte, 1) == 1 && byte == 'x');
             } else if (test == 7) {
                 in->blocks[0] = fs->group_descs[0].block_bitmap;
                 w = writes;
@@ -517,11 +528,17 @@ int main(int argc, char **argv) {
     vfs_close(fnospc);
     fs->free_blocks = saved_free_blks;
 
-    /* 6. Injected kmalloc failure during write */
+    /* 6. Injected OOM at the actual truncate prevalidation workspace. */
     file_t *foom = vfs_open("/mnt/indir.bin", VFS_O_WRONLY);
     assert(foom);
+    size_t oom_attempts = allocation_attempts, oom_failures = allocation_failures;
+    size_t oom_live = live, oom_writes = writes, oom_flushes = flushes;
+    uint32_t oom_free_blocks = fs->free_blocks;
     fail_after = 0;
-    assert(vfs_write(foom, "data", 4) < 0);
+    assert(vfs_truncate(foom->node, 0) == -VFS_ENOMEM);
+    assert(allocation_attempts == oom_attempts + 1 && allocation_failures == oom_failures + 1);
+    assert(live == oom_live && writes == oom_writes && flushes == oom_flushes);
+    assert(fs->free_blocks == oom_free_blocks && foom->node->size == 0 && !fs->tainted);
     fail_after = -1;
     vfs_close(foom);
 

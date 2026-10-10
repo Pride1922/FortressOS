@@ -11,14 +11,22 @@
 
 /* Static BSS storage to strictly respect the 512-byte Ring 3 stack budget. */
 static sysinfo_t s_info;
+static sysinfo_mem_t s_mem;
 static proc_info_t s_proc;
 static block_info_t s_block;
 static mount_info_t s_mount;
-static char s_buf[1024];
+static char s_buf[2048];
 
 static long sys_write(int fd, const void *buf, size_t count) {
     long nr = SYS_WRITE;
     __asm__ volatile("syscall" : "+a"(nr) : "D"((uintptr_t)fd), "S"((uintptr_t)buf), "d"((uintptr_t)count)
+                     : "rcx", "r11", "memory", "cc");
+    return nr;
+}
+
+static long sys_meminfo(sysinfo_mem_t *buf, size_t size) {
+    long nr = SYS_MEMINFO;
+    __asm__ volatile("syscall" : "+a"(nr) : "D"((uintptr_t)buf), "S"((uintptr_t)size)
                      : "rcx", "r11", "memory", "cc");
     return nr;
 }
@@ -177,9 +185,119 @@ static size_t str_len(const char *s, size_t max) {
     return len;
 }
 
+static int format_memory_report(void) {
+    long ret = sys_meminfo(&s_mem, sizeof(s_mem));
+    if (ret < 0) {
+        static const char err_msg[] = "sysinfo: error reading memory information\n";
+        write_all(2, err_msg, sizeof(err_msg) - 1);
+        return 1;
+    }
+
+    size_t pos = 0;
+
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "FortressOS Memory Subsystem Observability\n\n");
+
+    /* Section 1: Physical Memory (PMM) */
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "Physical Memory (PMM):\n");
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Total managed:      ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.pmm_total_frames);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " frames (");
+    format_ram_val(s_buf, &pos, sizeof(s_buf), s_mem.pmm_total_frames * 4096ULL);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), ")\n");
+
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Used / allocated:   ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.pmm_used_frames);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " frames (");
+    format_ram_val(s_buf, &pos, sizeof(s_buf), s_mem.pmm_used_frames * 4096ULL);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), ")\n");
+
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Free / available:   ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.pmm_free_frames);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " frames (");
+    format_ram_val(s_buf, &pos, sizeof(s_buf), s_mem.pmm_free_frames * 4096ULL);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), ")\n");
+
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Allocatable (<1G):  ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.pmm_allocatable_frames);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " frames (");
+    format_ram_val(s_buf, &pos, sizeof(s_buf), s_mem.pmm_allocatable_frames * 4096ULL);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), ")\n\n");
+
+    /* Section 2: Kernel Dynamic Heap */
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "Kernel Dynamic Heap:\n");
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Live used:          ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.heap_used_bytes);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " B (including 32B block metadata)\n");
+
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Reusable free:      ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.heap_free_bytes);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " B (within committed capacity)\n");
+
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Committed backing:  ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.heap_committed_bytes);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " B (");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.heap_committed_bytes / 4096ULL);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " physical frames)\n");
+
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Largest free chunk: ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.heap_largest_payload);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " B payload (excludes block tags)\n");
+
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Free blocks count:  ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.heap_free_blocks);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "\n\n");
+
+    /* Section 3: Virtual Memory Management (VMM) */
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "Virtual Memory Management (VMM):\n");
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Page-table frames:  ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.vmm_table_frames);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " frames (kernel + user hierarchy)\n");
+
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Deferred teardown:  ");
+    buf_append_u64(s_buf, &pos, sizeof(s_buf), s_mem.vmm_deferred_spaces);
+    buf_append_str(s_buf, &pos, sizeof(s_buf), " queued address spaces\n\n");
+
+    /* Section 4: Snapshot Notice */
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "Snapshot Notice:\n");
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  Counters are individually coherent; cross-subsystem values\n");
+    buf_append_str(s_buf, &pos, sizeof(s_buf), "  are observed sequentially without global lock nesting.\n");
+
+    if (pos >= sizeof(s_buf)) {
+        pos = sizeof(s_buf) - 1;
+    }
+
+    if (write_all(1, s_buf, pos) != 0) {
+        return 1;
+    }
+    return 0;
+}
+
 int sysinfo_main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
+    bool mem_only = false;
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (str_equal(arg, "-m") || str_equal(arg, "--memory")) {
+            mem_only = true;
+        } else if (str_equal(arg, "-h") || str_equal(arg, "--help")) {
+            static const char help_msg[] =
+                "Usage: sysinfo [-m|--memory] [-h|--help]\n"
+                "  (no flags)    Display system identity, CPU, tasks, storage and memory overview\n"
+                "  -m, --memory  Display detailed memory subsystem observability (PMM, Heap, VMM)\n";
+            write_all(1, help_msg, sizeof(help_msg) - 1);
+            return 0;
+        } else {
+            static const char err_prefix[] = "sysinfo: unknown option: ";
+            static const char err_suffix[] = "\nUsage: sysinfo [-m|--memory] [-h|--help]\n";
+            write_all(2, err_prefix, sizeof(err_prefix) - 1);
+            write_all(2, arg, str_len(arg, 64));
+            write_all(2, err_suffix, sizeof(err_suffix) - 1);
+            return 1;
+        }
+    }
+
+    if (mem_only) {
+        return format_memory_report();
+    }
 
     long ret = sys_sysinfo(&s_info);
     if (ret < 0) {

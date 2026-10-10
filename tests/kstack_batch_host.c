@@ -41,12 +41,24 @@ int vmm_map_pages(uint64_t *root, uintptr_t va, size_t count,
     mapped = true; mapped_base = va;
     memcpy(mapped_frames, frames, sizeof(mapped_frames)); return VMM_OK;
 }
+int vmm_map_pages_tracked(uint64_t *root, uintptr_t va, size_t count,
+                          const uintptr_t *frames, uint64_t flags, vmm_op_metrics_t *metrics) {
+    (void)metrics;
+    return vmm_map_pages(root, va, count, frames, flags);
+}
 int vmm_unmap_pages(uint64_t *root, uintptr_t va, size_t count, uintptr_t *frames) {
     assert(!held && root == dummy_root && mapped && va == mapped_base && count == 4);
     memcpy(frames, mapped_frames, sizeof(mapped_frames)); mapped = false; return VMM_OK;
 }
+int vmm_unmap_pages_tracked(uint64_t *root, uintptr_t va, size_t count, uintptr_t *frames, vmm_op_metrics_t *metrics) {
+    (void)metrics;
+    return vmm_unmap_pages(root, va, count, frames);
+}
 void serial_puts(const char *s) { (void)s; }
 void serial_raw_puts(const char *s) { (void)s; }
+static spawn_fault_type_t g_spawn_fault_type = SPAWN_FAULT_NONE;
+static size_t g_spawn_fault_trigger = 0;
+void spawn_record_fault_hit(void) {}
 #include "kstack_impl.h"
 
 int main(void) {

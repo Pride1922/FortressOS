@@ -372,6 +372,54 @@ test-pmm-boot-host:
 test-vmm-host:
 	@python3 scripts/test_vmm_space_host.py
 
+.PHONY: test-heap-memory-host test-ext4-memory-churn-host test-memory-churn test-memory-nodes
+test-memory-nodes: all
+	@python3 scripts/test_ext4_memory_churn_host.py
+	@python3 scripts/test_ext4_memory_churn_host.py --api
+	@python3 scripts/test_memory_node_mount.py
+	@python3 scripts/test_memory_churn.py
+
+.PHONY: test-memory-pressure
+test-memory-pressure: all
+	@python3 scripts/test_memory_pressure.py
+
+.PHONY: test-memory-burst
+test-memory-burst: all
+	@python3 scripts/test_memory_burst.py
+
+.PHONY: test-memory-cohort
+test-memory-cohort: all
+	@python3 scripts/test_memory_cohort.py
+
+.PHONY: test-memory-rollback
+test-memory-rollback: all
+	@python3 scripts/test_memory_rollback.py
+
+.PHONY: test-memory-observability
+test-memory-observability: all
+	@python3 scripts/test_memory_observability.py
+
+.PHONY: test-smp-memory-profile
+test-smp-memory-profile: all
+	@python3 scripts/test_smp_memory_profile.py
+
+test-memory-churn: all
+	@python3 scripts/test_memory_churn.py
+
+test-ext4-memory-churn-host: $(BOOTABLE_IMG)
+	@python3 scripts/test_ext4_memory_churn_host.py
+
+test-heap-memory-host:
+	@python3 scripts/test_heap_memory_host.py
+
+.PHONY: test-pmm-audit-host
+test-pmm-audit-host:
+	@python3 scripts/test_pmm_audit_host.py
+
+.PHONY: test-memory
+test-memory:
+	@python3 scripts/test_memory_investigation.py
+
 .PHONY: test-kstack-batch-host
 test-kstack-batch-host: test-vmm-host
 	@python3 scripts/test_kstack_batch_host.py

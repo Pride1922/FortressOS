@@ -65,6 +65,7 @@
 #define SYS_BLOCKINFO     53 /* (uint32_t index, block_info_t *out) -> 1=entry, 0=done, -errno */
 #define SYS_LOCKSTAT      54 /* (char *buf, uint64_t cap) -> bytes written or -errno */
 #define SYS_SPAWN_PROFILE 55 /* Spawn 0..2/160B; waits 3..5/72B; pipe I/O 6..8/184B. */
+#define SYS_MEMINFO       56 /* (sysinfo_mem_t *buf, uint64_t size) -> 0/-errno */
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1
@@ -182,6 +183,47 @@ _Static_assert(__builtin_offsetof(sysinfo_t, kernel_heap_used) == 48, "sysinfo_t
 _Static_assert(__builtin_offsetof(sysinfo_t, kernel_heap_total) == 56, "sysinfo_t.kernel_heap_total offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, thread_count) == 64, "sysinfo_t.thread_count offset");
 _Static_assert(__builtin_offsetof(sysinfo_t, reserved) == 68, "sysinfo_t.reserved offset");
+
+/* =========================================================================
+ * Memory Subsystem Observability ABI (SYS_MEMINFO)
+ * ========================================================================= */
+
+typedef struct {
+    uint32_t struct_size;          /* sizeof(sysinfo_mem_t) */
+    uint32_t flags;                /* reserved, 0 */
+
+    /* PMM frame metrics */
+    uint64_t pmm_total_frames;     /* managed physical RAM frames */
+    uint64_t pmm_used_frames;      /* currently allocated physical frames */
+    uint64_t pmm_free_frames;      /* available physical frames */
+    uint64_t pmm_allocatable_frames; /* free frames below current allocation ceiling (boot limit or unlocked total) */
+
+    /* Heap metrics (Rank-2 snapshot; byte totals include 32B block metadata) */
+    uint64_t heap_used_bytes;      /* live allocated bytes (payload + boundary tags) */
+    uint64_t heap_free_bytes;      /* reusable free bytes within committed capacity */
+    uint64_t heap_committed_bytes; /* total committed virtual backing bytes */
+    uint64_t heap_largest_payload; /* largest existing free-block payload (excluding 32B block tags) */
+    uint64_t heap_free_blocks;     /* count of free blocks in explicit free list */
+
+    /* VMM metrics */
+    uint64_t vmm_table_frames;     /* active physical frames allocated to page tables */
+    uint64_t vmm_deferred_spaces;  /* address spaces queued for deferred destruction */
+} sysinfo_mem_t;
+
+_Static_assert(sizeof(sysinfo_mem_t) == 96, "sysinfo_mem_t ABI size");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, struct_size) == 0, "sysinfo_mem_t.struct_size offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, flags) == 4, "sysinfo_mem_t.flags offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, pmm_total_frames) == 8, "sysinfo_mem_t.pmm_total_frames offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, pmm_used_frames) == 16, "sysinfo_mem_t.pmm_used_frames offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, pmm_free_frames) == 24, "sysinfo_mem_t.pmm_free_frames offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, pmm_allocatable_frames) == 32, "sysinfo_mem_t.pmm_allocatable_frames offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, heap_used_bytes) == 40, "sysinfo_mem_t.heap_used_bytes offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, heap_free_bytes) == 48, "sysinfo_mem_t.heap_free_bytes offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, heap_committed_bytes) == 56, "sysinfo_mem_t.heap_committed_bytes offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, heap_largest_payload) == 64, "sysinfo_mem_t.heap_largest_payload offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, heap_free_blocks) == 72, "sysinfo_mem_t.heap_free_blocks offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, vmm_table_frames) == 80, "sysinfo_mem_t.vmm_table_frames offset");
+_Static_assert(__builtin_offsetof(sysinfo_mem_t, vmm_deferred_spaces) == 88, "sysinfo_mem_t.vmm_deferred_spaces offset");
 
 /* =========================================================================
  * Storage Observability ABI (SYS_MOUNTINFO, SYS_BLOCKINFO)

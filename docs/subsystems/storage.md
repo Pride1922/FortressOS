@@ -88,3 +88,19 @@ E4-B Phase 9.5 **automated disposable USB gate PASS (2026-10-07)**: 144 main
 cases, ten admission controls, E4-A/ext2 USB, BOT/mount-policy and NVMe journal
 regressions; [implementation, evidence and limits](../roadmap/ext4-phase9-5.md).
 Phase 9.6 bounded physical acceptance completed 2026-10-08; explicit production USB journaled RW enabled. Other device coverage and intermittent enumeration remain open.
+
+Journaled EXT4 node lifetime (2026-10-09): normal VFS operations use owned
+lookup/create references; open handles and cached descendants retain node
+addresses. Unpinned deleted nodes are reclaimed, and idle leaf nodes are
+evicted only at the unchanged 1024-node cache limit. Legacy raw-pointer APIs
+retain mount-lifetime stability. Full pinned capacity returns EFBIG instead of
+misreporting an existing file as absent. `make test-memory-nodes` runs host
+sanitizers, mounted-journal checks, BIOS/UEFI disposable USB churn and Linux
+audits. This is not new physical acceptance or a latency claim; see
+[memory investigation](../roadmap/memory-investigation.md).
+
+Legacy ext2 host verification gap resolved (2026-10-09): `make test-ext2`
+passes all eight block/inode/sector cases under ASan/UBSan. Stale per-write
+allocation-fault assumptions were replaced with allocation-free cached-write
+checks and a real truncate-workspace OOM check; kernel ext2 code is unchanged.
+Evidence and scope are in the memory investigation report.

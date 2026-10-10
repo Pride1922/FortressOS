@@ -5392,10 +5392,16 @@ pf_boot_guard_done:
     }
 
     /* 6D: Failed krealloc preserves original allocation and data intact */
-    void *failed_realloc = krealloc(relocated_buf, (size_t)-1 / 2);
-    if (failed_realloc != NULL) {
-        serial_puts("       [FAIL] Excessive krealloc unexpectedly succeeded!\n");
-        hcf();
+    const size_t rejected_resize_sizes[] = {SIZE_MAX, SIZE_MAX - 15, SIZE_MAX - 31, SIZE_MAX / 2};
+    for (size_t i = 0; i < sizeof(rejected_resize_sizes) / sizeof(*rejected_resize_sizes); i++) {
+        size_t used_before_resize = heap_get_used_bytes();
+        size_t blocks_before_resize = heap_get_allocated_blocks();
+        if (krealloc(relocated_buf, rejected_resize_sizes[i]) != NULL ||
+            heap_get_used_bytes() != used_before_resize ||
+            heap_get_allocated_blocks() != blocks_before_resize) {
+            serial_puts("       [FAIL] Excessive krealloc changed allocation state!\n");
+            hcf();
+        }
     }
     if (memcmp(relocated_buf, test_msg, 31) != 0 || relocated_buf[100] != 'X') {
         serial_puts("       [FAIL] Failed krealloc corrupted original buffer!\n");
@@ -5417,8 +5423,9 @@ pf_boot_guard_done:
         hcf();
     }
     /* Shrinking: splits remainder and immediately coalesces with free right neighbor */
+    size_t blocks_before_shrink = heap_get_allocated_blocks();
     void *shrunk_in_place = krealloc(grown_in_place, 48);
-    if (shrunk_in_place != grow_buf) {
+    if (shrunk_in_place != grow_buf || heap_get_allocated_blocks() != blocks_before_shrink) {
         serial_puts("       [FAIL] krealloc shrink did not remain in-place!\n");
         hcf();
     }
@@ -5620,6 +5627,7 @@ pf_boot_guard_done:
 
     serial_puts("       [PASS] Deterministic mixed-size stress test passed (all blocks coalesced & audit verified)\n");
     serial_puts("[ OK ] Dynamic Kernel Heap Allocator (Phase 4B) verified successfully!\n\n");
+    if (qemu_fw_cfg_has_key("opt/fortress/memory_pressure_test")) memory_pressure_test_run();
 
     /* 13. Framebuffer Initialization & Test Pattern (Using Kernel-Owned boot_info) */
     if (!boot_info.has_framebuffer) {
@@ -6384,6 +6392,26 @@ pf_boot_guard_done:
         memory_vmm_lifecycle_test_run(smp_get_cpu_count());
     }
 
+    if (memory_burst_test_enabled(&boot_info) || qemu_fw_cfg_has_key("opt/fortress/memory_burst_test")) {
+        memory_burst_test_run(smp_get_cpu_count());
+    }
+
+    if (memory_cohort_test_enabled(&boot_info) || qemu_fw_cfg_has_key("opt/fortress/memory_cohort_test")) {
+        memory_cohort_test_run(smp_get_cpu_count());
+    }
+
+    if (memory_rollback_test_enabled(&boot_info) || qemu_fw_cfg_has_key("opt/fortress/memory_rollback_test")) {
+        memory_rollback_test_run(smp_get_cpu_count());
+    }
+
+    if (memory_kstack_profile_enabled(&boot_info) || qemu_fw_cfg_has_key("opt/fortress/memory_kstack_profile")) {
+        memory_kstack_profile_run(smp_get_cpu_count());
+    }
+
+    if (memory_kstack_control_enabled(&boot_info) || qemu_fw_cfg_has_key("opt/fortress/memory_kstack_control")) {
+        memory_kstack_control_run(smp_get_cpu_count());
+    }
+
     if (smp_append_test_enabled(&boot_info)) {
         test_smp_ext2_concurrent_append();
     }
@@ -6408,6 +6436,16 @@ pf_boot_guard_done:
     boot_status("Mounting persistent storage (/mnt)...");
     if (ext4_physical_requested() || qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) test_ext4_journal_usb_mount(&boot_info);
     else usb_mount_production_storage(&boot_info);
+    if (qemu_fw_cfg_has_key("opt/fortress/memory_storage_test") ||
+        qemu_fw_cfg_has_key("opt/fortress/memory_storage_churn")) {
+        pci_device_t controller, internal_disk;
+        require_ext2(pci_find_device(PCI_CLASS_SERIAL_BUS, PCI_SUBCLASS_USB, PCI_PROGIF_USB_XHCI, &controller) &&
+            controller.vendor_id == 0x1b36 && controller.device_id == 0x000d &&
+            !pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME, PCI_PROGIF_STORAGE_NVME, &internal_disk),
+            "exclusive QEMU memory storage fixture");
+        if (qemu_fw_cfg_has_key("opt/fortress/memory_storage_churn")) memory_storage_churn_test_run();
+        else memory_storage_test_run();
+    }
     if (g_ext4_fixture_mount && (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_test") ||
         qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test") || ext4_physical_requested()) &&
         ext4_journal_integration_requested() && smp_get_cpu_count()>=2) {

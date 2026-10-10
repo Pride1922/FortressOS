@@ -315,7 +315,8 @@ static void *kmalloc_unlocked(size_t size) {
     }
 
     /* Arithmetic overflow check */
-    if (size > (size_t)(KERNEL_HEAP_MAX - KERNEL_HEAP_START)) {
+    if (size > (size_t)(KERNEL_HEAP_MAX - KERNEL_HEAP_START) -
+                   sizeof(heap_block_header_t) - sizeof(heap_block_footer_t)) {
         return NULL;
     }
 
@@ -526,6 +527,11 @@ static void *krealloc_unlocked(void *ptr, size_t new_size) {
 
     size_t old_payload_size = hdr->size - sizeof(heap_block_header_t) - sizeof(heap_block_footer_t);
 
+    if (new_size > (size_t)(KERNEL_HEAP_MAX - KERNEL_HEAP_START) -
+                       sizeof(heap_block_header_t) - sizeof(heap_block_footer_t)) {
+        return NULL;
+    }
+
     size_t req_aligned = ALIGN_UP(new_size, HEAP_ALIGNMENT);
     if (req_aligned < sizeof(heap_free_node_t)) {
         req_aligned = sizeof(heap_free_node_t);
@@ -552,7 +558,9 @@ static void *krealloc_unlocked(void *ptr, size_t new_size) {
             rem_ftr->is_free = 0;
             rem_ftr->size = excess;
 
-            /* Free the excess remainder */
+            /* The synthetic allocated remainder is already included in byte
+             * accounting, but needs a block reference before normal free. */
+            g_allocated_blocks++;
             kfree_unlocked((void *)((uint8_t *)rem + sizeof(heap_block_header_t)));
         }
         return ptr;
@@ -691,6 +699,23 @@ size_t heap_get_free_blocks(void) {
     return res;
 }
 
+void heap_get_stats(heap_stats_t *out) {
+    if (!out) return;
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    *out = (heap_stats_t){g_allocated_bytes, 0, g_heap_end - g_heap_start,
+                         g_allocated_blocks, 0, 0};
+    for (heap_free_node_t *node = g_free_list_head; node; node = node->next) {
+        heap_block_header_t *hdr = (heap_block_header_t *)((uint8_t *)node - sizeof(*hdr));
+        if (!is_valid_block(hdr) || hdr->is_free != 1)
+            heap_panic("Corrupt free block during heap snapshot", (uintptr_t)hdr);
+        out->free_bytes += hdr->size;
+        out->free_blocks++;
+        size_t payload = hdr->size - sizeof(*hdr) - sizeof(heap_block_footer_t);
+        if (payload > out->largest_free_payload) out->largest_free_payload = payload;
+    }
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+}
+
 /* Linear Debug Heap Walk (Internal Unlocked) */
 static bool heap_verify_integrity_unlocked(void) {
     if (!g_heap_ready) return false;
@@ -698,6 +723,7 @@ static bool heap_verify_integrity_unlocked(void) {
     uintptr_t curr_addr = g_heap_start;
     size_t calculated_used = 0;
     size_t calculated_free = 0;
+    size_t allocated_block_count = 0;
     size_t free_block_count = 0;
     bool prev_was_free = false;
 
@@ -723,6 +749,7 @@ static bool heap_verify_integrity_unlocked(void) {
         } else {
             prev_was_free = false;
             calculated_used += hdr->size;
+            allocated_block_count++;
         }
 
         curr_addr += hdr->size;
@@ -746,13 +773,19 @@ static bool heap_verify_integrity_unlocked(void) {
 
     /* Verify invariant: calculated_used + calculated_free == total */
     size_t total = heap_get_total_bytes_unlocked();
-    if (calculated_used + calculated_free != total || calculated_used != g_allocated_bytes) {
+    if (calculated_used + calculated_free != total || calculated_used != g_allocated_bytes ||
+        allocated_block_count != g_allocated_blocks) {
         serial_puts("[HEAP-AUDIT FAIL] Heap metric invariant violated! used=");
         serial_print_dec(calculated_used);
         serial_puts(" (g_alloc=");
         serial_print_dec(g_allocated_bytes);
         serial_puts(") free=");
         serial_print_dec(calculated_free);
+        serial_puts(" blocks=");
+        serial_print_dec(allocated_block_count);
+        serial_puts(" (g_blocks=");
+        serial_print_dec(g_allocated_blocks);
+        serial_puts(")");
         serial_puts(" total=");
         serial_print_dec(total);
         serial_puts(" sum=");

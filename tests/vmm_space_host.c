@@ -14,6 +14,7 @@
 
 #include "vmm.h"
 #include "thread.h"
+#include "smp.h"
 #include <pthread.h>
 _Thread_local tcb_t *g_vmm_host_current;
 static pthread_mutex_t host_vmm_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -62,6 +63,10 @@ void smp_tlb_shootdown_pages(uintptr_t va, uintptr_t cr3, size_t count) {
     assert(count > 0 && count <= 16);
     if (expect_batch_pin) assert(count == 4);
     smp_tlb_shootdown(va, cr3);
+}
+void smp_tlb_shootdown_pages_tracked(uintptr_t va, uintptr_t cr3, size_t count, smp_tlb_trace_metrics_t *metrics) {
+    (void)metrics;
+    smp_tlb_shootdown_pages(va, cr3, count);
 }
 cpu_local_t cpu_locals[MAX_DETECTED_CPUS];
 volatile bool g_cpu_installed[MAX_DETECTED_CPUS];
@@ -781,6 +786,295 @@ static void test_batch_map_race(void) {
     puts("[PASS] Batch map repeats full preflight after competing mapper, spares reclaimed");
 }
 
+static void test_burst_memory_accounting(void) {
+    bool baseline_pages[MAX_MOCK_PAGES];
+    memcpy(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages));
+    size_t baseline_allocated = g_mock_allocated_count;
+    size_t baseline_tables = vmm_get_allocated_table_frames();
+
+    /* 1. Warmed baseline: Create, map and destroy a single space */
+    uintptr_t warm_root = vmm_create_user_pml4();
+    assert(warm_root != 0);
+    uint64_t *warm_pml4 = vmm_space_lookup(warm_root)->pml4_virt;
+    uintptr_t warm_frame = pmm_alloc_page();
+    assert(warm_frame != 0);
+    assert(vmm_map_page(warm_pml4, 0x400000, warm_frame, PTE_PRESENT | PTE_WRITABLE | PTE_USER) == VMM_OK);
+    assert(vmm_destroy_pml4(warm_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+
+    /* 2. Burst of user spaces with deferred destruction */
+    #define BURST_COUNT 4
+    uintptr_t roots[BURST_COUNT];
+    uintptr_t data_frames[BURST_COUNT];
+    for (int i = 0; i < BURST_COUNT; i++) {
+        roots[i] = vmm_create_user_pml4();
+        assert(roots[i] != 0);
+        vmm_space_t *s = vmm_space_lookup(roots[i]);
+        assert(s != NULL);
+        data_frames[i] = pmm_alloc_page();
+        assert(data_frames[i] != 0);
+        assert(vmm_map_page(s->pml4_virt, 0x400000, data_frames[i], PTE_PRESENT | PTE_WRITABLE | PTE_USER) == VMM_OK);
+        /* Acquire transient op_ref so destruction defers */
+        assert(vmm_space_get_op(s->pml4_virt) == VMM_OK);
+        assert(vmm_destroy_pml4(roots[i], true) == VMM_ERR_BUSY);
+    }
+    assert(vmm_get_deferred_count() == BURST_COUNT);
+    assert(g_mock_allocated_count > baseline_allocated);
+
+    /* Release transient op_refs and drain */
+    for (int i = 0; i < BURST_COUNT; i++) {
+        vmm_space_t *s = vmm_space_lookup(roots[i]);
+        assert(s != NULL);
+        vmm_space_put_op(s->pml4_virt);
+    }
+    size_t drained = vmm_drain_deferred_destructions();
+    assert(drained == BURST_COUNT);
+    assert(vmm_get_deferred_count() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)) == 0);
+
+    /* 3. Bounded PMM pressure & clean OOM rollback */
+    g_pmm_alloc_budget = 1;
+    uintptr_t oom_root = vmm_create_user_pml4();
+    if (oom_root != 0) {
+        vmm_space_t *s = vmm_space_lookup(oom_root);
+        assert(s != NULL);
+        uintptr_t frame = pmm_alloc_page();
+        assert(frame == 0);
+        assert(vmm_destroy_pml4(oom_root, true) == VMM_OK);
+    }
+    g_pmm_alloc_budget = -1;
+    assert(vmm_get_deferred_count() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)) == 0);
+
+    puts("[PASS] Burst memory accounting and bounded PMM pressure recovery");
+}
+
+static void test_concurrent_cohort_and_fragmented_pmm(void) {
+    bool baseline_pages[MAX_MOCK_PAGES];
+    memcpy(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages));
+    size_t baseline_allocated = g_mock_allocated_count;
+    size_t baseline_tables = vmm_get_allocated_table_frames();
+
+    /* 1. Concurrent cohorts of sizes 2 and 4 */
+    const size_t test_cohorts[] = {2, 4};
+    for (size_t c = 0; c < 2; c++) {
+        size_t n = test_cohorts[c];
+        size_t pass0_tables = 0, pass0_alloc = 0;
+        for (int pass = 0; pass < 2; pass++) {
+            uintptr_t roots[4];
+            uintptr_t data[4];
+            for (size_t i = 0; i < n; i++) {
+                roots[i] = vmm_create_user_pml4();
+                assert(roots[i] != 0);
+                vmm_space_t *s = vmm_space_lookup(roots[i]);
+                assert(s != NULL);
+                data[i] = pmm_alloc_page();
+                assert(data[i] != 0);
+                assert(vmm_map_page(s->pml4_virt, 0x400000, data[i], PTE_PRESENT | PTE_WRITABLE | PTE_USER) == VMM_OK);
+                assert(vmm_space_add_sched_ref(roots[i]) == VMM_OK);
+            }
+            if (pass == 0) {
+                pass0_tables = vmm_get_allocated_table_frames();
+                pass0_alloc = g_mock_allocated_count;
+            } else {
+                assert(vmm_get_allocated_table_frames() == pass0_tables);
+                assert(g_mock_allocated_count == pass0_alloc);
+            }
+
+            /* Mixed-order release & destruction */
+            size_t order[4];
+            for (size_t i = 0; i < n; i++) order[i] = (n - 1 - i);
+            for (size_t i = 0; i < n; i++) {
+                size_t idx = order[i];
+                vmm_space_sub_sched_ref(roots[idx]);
+                assert(vmm_destroy_pml4(roots[idx], true) == VMM_OK);
+            }
+            assert(vmm_drain_deferred_destructions() == 0);
+            assert(vmm_get_allocated_table_frames() == baseline_tables);
+            assert(g_mock_allocated_count == baseline_allocated);
+            assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+        }
+    }
+
+    /* 2. Controlled scattered free frames & fragmented PMM */
+    uintptr_t scatter[16];
+    for (size_t i = 0; i < 16; i++) {
+        scatter[i] = pmm_alloc_page();
+        assert(scatter[i] != 0);
+    }
+    for (size_t i = 0; i < 16; i += 2) {
+        pmm_free_page(scatter[i]);
+    }
+    uintptr_t single = pmm_alloc_page();
+    assert(single != 0);
+    pmm_free_page(single);
+
+    uintptr_t sc_root = vmm_create_user_pml4();
+    assert(sc_root != 0);
+    vmm_space_t *sc_space = vmm_space_lookup(sc_root);
+    assert(sc_space != NULL);
+    uintptr_t sc_data = pmm_alloc_page();
+    assert(sc_data != 0);
+    assert(vmm_map_page(sc_space->pml4_virt, 0x400000, sc_data, PTE_PRESENT | PTE_WRITABLE | PTE_USER) == VMM_OK);
+    assert(vmm_destroy_pml4(sc_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+
+    for (size_t i = 1; i < 16; i += 2) {
+        pmm_free_page(scatter[i]);
+    }
+
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    puts("[PASS] Concurrent cohorts and fragmented PMM host verification");
+}
+
+static void test_process_launch_rollback(void) {
+    bool baseline_pages[MAX_MOCK_PAGES];
+    memcpy(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages));
+    size_t baseline_allocated = g_mock_allocated_count;
+    size_t baseline_tables = vmm_get_allocated_table_frames();
+
+    /* Cut 1: Failure during user PML4 allocation */
+    g_fail_kmalloc = true;
+    uintptr_t cut1_root = vmm_create_user_pml4();
+    assert(cut1_root == 0);
+    g_fail_kmalloc = false;
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    /* Cut 2: Failure during first segment page allocation */
+    uintptr_t cut2_root = vmm_create_user_pml4();
+    assert(cut2_root != 0);
+    assert(vmm_destroy_pml4(cut2_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    /* Cut 3: Segment page 1 mapped, segment page 2 mapping failure */
+    uintptr_t cut3_root = vmm_create_user_pml4();
+    assert(cut3_root != 0);
+    vmm_space_t *cut3_space = vmm_space_lookup(cut3_root);
+    assert(cut3_space != NULL);
+    uintptr_t seg1 = pmm_alloc_page();
+    assert(seg1 != 0);
+    assert(vmm_map_page(cut3_space->pml4_virt, 0x400000, seg1, PTE_PRESENT | PTE_USER) == VMM_OK);
+    uintptr_t seg2 = pmm_alloc_page();
+    assert(seg2 != 0);
+    pmm_free_page(seg2);
+    assert(vmm_destroy_pml4(cut3_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    /* Cut 4: Segment mapped, sigrestorer allocation failure */
+    uintptr_t cut4_root = vmm_create_user_pml4();
+    assert(cut4_root != 0);
+    vmm_space_t *cut4_space = vmm_space_lookup(cut4_root);
+    uintptr_t c4_seg = pmm_alloc_page();
+    assert(c4_seg != 0);
+    assert(vmm_map_page(cut4_space->pml4_virt, 0x400000, c4_seg, PTE_PRESENT | PTE_USER) == VMM_OK);
+    assert(vmm_destroy_pml4(cut4_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    /* Cut 5: Segment and restorer mapped, user stack allocation failure */
+    uintptr_t cut5_root = vmm_create_user_pml4();
+    assert(cut5_root != 0);
+    vmm_space_t *cut5_space = vmm_space_lookup(cut5_root);
+    uintptr_t c5_seg = pmm_alloc_page();
+    uintptr_t c5_rest = pmm_alloc_page();
+    assert(c5_seg != 0 && c5_rest != 0);
+    assert(vmm_map_page(cut5_space->pml4_virt, 0x400000, c5_seg, PTE_PRESENT | PTE_USER) == VMM_OK);
+    assert(vmm_map_page(cut5_space->pml4_virt, 0x7fffffffe000, c5_rest, PTE_PRESENT | PTE_USER) == VMM_OK);
+    assert(vmm_destroy_pml4(cut5_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    /* Cut 6: All user pages mapped, kernel stack allocation failure */
+    uintptr_t cut6_root = vmm_create_user_pml4();
+    assert(cut6_root != 0);
+    vmm_space_t *cut6_space = vmm_space_lookup(cut6_root);
+    uintptr_t c6_seg = pmm_alloc_page();
+    uintptr_t c6_rest = pmm_alloc_page();
+    uintptr_t c6_stack = pmm_alloc_page();
+    assert(c6_seg != 0 && c6_rest != 0 && c6_stack != 0);
+    assert(vmm_map_page(cut6_space->pml4_virt, 0x400000, c6_seg, PTE_PRESENT | PTE_USER) == VMM_OK);
+    assert(vmm_map_page(cut6_space->pml4_virt, 0x7fffffffe000, c6_rest, PTE_PRESENT | PTE_USER) == VMM_OK);
+    assert(vmm_map_page(cut6_space->pml4_virt, 0x7ffffffff000, c6_stack, PTE_PRESENT | PTE_WRITABLE | PTE_USER) == VMM_OK);
+    assert(vmm_destroy_pml4(cut6_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    /* Cut 7: All user pages mapped, kstack allocated (4 pages), TCB kmalloc failure */
+    uintptr_t cut7_root = vmm_create_user_pml4();
+    assert(cut7_root != 0);
+    vmm_space_t *cut7_space = vmm_space_lookup(cut7_root);
+    uintptr_t c7_seg = pmm_alloc_page();
+    assert(c7_seg != 0);
+    assert(vmm_map_page(cut7_space->pml4_virt, 0x400000, c7_seg, PTE_PRESENT | PTE_USER) == VMM_OK);
+    uintptr_t kstack_frames[4];
+    for (int k = 0; k < 4; k++) {
+        kstack_frames[k] = pmm_alloc_page();
+        assert(kstack_frames[k] != 0);
+    }
+    for (int k = 0; k < 4; k++) pmm_free_page(kstack_frames[k]);
+    assert(vmm_destroy_pml4(cut7_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    /* Cut 8: All user pages mapped, kstack allocated, sched_ref acquisition failure */
+    uintptr_t cut8_root = vmm_create_user_pml4();
+    assert(cut8_root != 0);
+    vmm_space_t *cut8_space = vmm_space_lookup(cut8_root);
+    uintptr_t c8_seg = pmm_alloc_page();
+    assert(c8_seg != 0);
+    assert(vmm_map_page(cut8_space->pml4_virt, 0x400000, c8_seg, PTE_PRESENT | PTE_USER) == VMM_OK);
+    for (int k = 0; k < 4; k++) kstack_frames[k] = pmm_alloc_page();
+    for (int k = 0; k < 4; k++) pmm_free_page(kstack_frames[k]);
+    assert(vmm_destroy_pml4(cut8_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    /* Verify subsequent normal process creation succeeds */
+    uintptr_t norm_root = vmm_create_user_pml4();
+    assert(norm_root != 0);
+    vmm_space_t *norm_space = vmm_space_lookup(norm_root);
+    uintptr_t norm_seg = pmm_alloc_page();
+    assert(norm_seg != 0);
+    assert(vmm_map_page(norm_space->pml4_virt, 0x400000, norm_seg, PTE_PRESENT | PTE_USER) == VMM_OK);
+    assert(vmm_space_add_sched_ref(norm_root) == VMM_OK);
+    vmm_space_sub_sched_ref(norm_root);
+    assert(vmm_destroy_pml4(norm_root, true) == VMM_OK);
+    assert(vmm_drain_deferred_destructions() == 0);
+    assert(vmm_get_allocated_table_frames() == baseline_tables);
+    assert(g_mock_allocated_count == baseline_allocated);
+    assert(!memcmp(baseline_pages, g_mock_page_allocated, sizeof(baseline_pages)));
+
+    puts("[PASS] Process launch allocation-failure rollback host verification");
+}
+
 int main(void) {
     printf("========================================================\n");
     printf("SMP Piece 6D Step 4: Complete Address Space Lifetime\n");
@@ -803,6 +1097,9 @@ int main(void) {
     test_batch_unmap();
     test_batch_map();
     test_batch_map_race();
+    test_burst_memory_accounting();
+    test_concurrent_cohort_and_fragmented_pmm();
+    test_process_launch_rollback();
 
     printf("\n[ OK ] All SMP Piece 6D Step 4 host tests passed successfully!\n");
     return 0;

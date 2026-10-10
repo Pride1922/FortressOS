@@ -93,9 +93,11 @@ def configure_disposable_img_mode(img_path: Path, writable: bool = True) -> None
 
 
 def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
-                     action_cb, round_name: str, writable: bool = True, cpus: int = 1) -> None:
+                     action_cb, round_name: str, writable: bool = True, cpus: int = 1,
+                     memory_probe: bool = False, memory_churn: bool = False) -> None:
     """Runs a single QEMU session with strict drive assertions and executes action_cb(qmp, child, log_path)."""
     assert cpus in (1,4,8)
+    assert not (memory_probe and memory_churn)
     with tempfile.TemporaryDirectory(prefix=f"fortress-persist-{round_name}-") as tmp:
         cmd = ['qemu-system-x86_64', '-M', 'q35', '-m', '2G', '-accel', 'tcg',
                '-smp', str(cpus), '-display', 'none', '-monitor', 'none', '-no-reboot',
@@ -116,6 +118,10 @@ def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
                 '-device', 'usb-storage,drive=usbdrive,bootindex=1',
                 '-drive', f'if=none,id=usbdrive,format=raw,file={img_path}',
                 '-qmp', f'unix:{tmp}/qmp,server=on,wait=off']
+        if memory_probe:
+            cmd += ['-fw_cfg', 'name=opt/fortress/memory_storage_test,string=1']
+        if memory_churn:
+            cmd += ['-fw_cfg', 'name=opt/fortress/memory_storage_churn,string=1']
 
         # Preflight assertions: only firmware drives and the disposable USB image are permitted
         permitted_drives = list(firmware_drives) + [f'if=none,id=usbdrive,format=raw,file={img_path}']
@@ -136,7 +142,7 @@ def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
             try:
                 qmp = QMP(Path(tmp) / 'qmp')
                 # Wait for interactive shell prompt
-                deadline = time.monotonic() + 90
+                deadline = time.monotonic() + (600 if memory_churn else 90)
                 while time.monotonic() < deadline:
                     assert child.poll() is None, f"QEMU crashed during startup: {stderr_path.read_text()}"
                     time.sleep(0.5)

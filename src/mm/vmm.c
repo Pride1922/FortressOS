@@ -28,6 +28,12 @@ static vmm_space_t *g_vmm_deferred_list = NULL;
 static size_t      g_vmm_allocated_table_frames = 0;
 static spinlock_t  g_vmm_lock = SPINLOCK_RANKED(3, "vmm");
 
+static inline uint64_t vmm_trace_clock(void) {
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
+    return ((uint64_t)hi << 32) | lo;
+}
+
 vmm_space_t *vmm_space_lookup(uintptr_t cr3) {
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
     vmm_space_t *curr = g_vmm_spaces_list;
@@ -115,10 +121,19 @@ static void vmm_space_put_op_locked(uint64_t *pml4_virt) {
     }
 }
 
-void vmm_space_put_op(uint64_t *pml4_virt) {
+void vmm_space_put_op_tracked(uint64_t *pml4_virt, uint64_t *out_wait_tsc, uint64_t *out_hold_tsc) {
+    uint64_t t0 = vmm_trace_clock();
     uint64_t rflags = spin_lock_irqsave(&g_vmm_lock);
+    uint64_t t1 = vmm_trace_clock();
     vmm_space_put_op_locked(pml4_virt);
+    uint64_t t2 = vmm_trace_clock();
     spin_unlock_irqrestore(&g_vmm_lock, rflags);
+    if (out_wait_tsc) *out_wait_tsc = (t1 >= t0) ? (t1 - t0) : 0;
+    if (out_hold_tsc) *out_hold_tsc = (t2 >= t1) ? (t2 - t1) : 0;
+}
+
+void vmm_space_put_op(uint64_t *pml4_virt) {
+    vmm_space_put_op_tracked(pml4_virt, NULL, NULL);
 }
 
 int vmm_space_enter(uintptr_t next_cr3) {
@@ -728,6 +743,13 @@ static int map_batch_check(uint64_t *root, uintptr_t va, size_t count) {
 
 int vmm_map_pages(uint64_t *root, uintptr_t va, size_t pages,
                    const uintptr_t *input, uint64_t pte_flags) {
+    return vmm_map_pages_tracked(root, va, pages, input, pte_flags, NULL);
+}
+
+int vmm_map_pages_tracked(uint64_t *root, uintptr_t va, size_t pages,
+                          const uintptr_t *input, uint64_t pte_flags,
+                          vmm_op_metrics_t *metrics) {
+    uint64_t t_entry = vmm_trace_clock();
     if (!root || !input || !pages || pages > 16 || va % PAGE_SIZE ||
         va > UINT64_MAX - (pages * PAGE_SIZE - 1) ||
         !is_canonical_address(va) || !is_canonical_address(va + pages * PAGE_SIZE - 1) ||
@@ -744,22 +766,42 @@ int vmm_map_pages(uint64_t *root, uintptr_t va, size_t pages,
         for (size_t j = 0; j < i; j++)
             if (frames[i] == frames[j]) return VMM_ERR_INVALID_ADDR;
     }
+    uint64_t t_lock_start = vmm_trace_clock();
     uint64_t irq = spin_lock_irqsave(&g_vmm_lock);
+    uint64_t t_lock_acq = vmm_trace_clock();
+    if (metrics) {
+        metrics->pre_lock_tsc = (t_lock_start >= t_entry) ? (t_lock_start - t_entry) : 0;
+        metrics->lock_wait_tsc = (t_lock_acq >= t_lock_start) ? (t_lock_acq - t_lock_start) : 0;
+    }
     int res = vmm_space_get_op_locked(root);
     if (res != VMM_OK) {
+        uint64_t t_lock_rel = vmm_trace_clock();
         spin_unlock_irqrestore(&g_vmm_lock, irq);
+        if (metrics) {
+            metrics->lock_hold_tsc = (t_lock_rel >= t_lock_acq) ? (t_lock_rel - t_lock_acq) : 0;
+        }
         return res;
     }
+    uint64_t t_pt_start = vmm_trace_clock();
     int needed = map_batch_check(root, va, pages);
     if (needed > 0) {
+        uint64_t t_lock_rel = vmm_trace_clock();
         spin_unlock_irqrestore(&g_vmm_lock, irq);
+        if (metrics) {
+            metrics->lock_hold_tsc += (t_lock_rel >= t_lock_acq) ? (t_lock_rel - t_lock_acq) : 0;
+        }
         for (int i = 0; i < needed; i++) {
             uintptr_t frame = pmm_alloc_page();
             if (!frame) break;
             memset(phys_to_virt(frame), 0, PAGE_SIZE);
             spares[count++] = frame;
         }
+        t_lock_start = vmm_trace_clock();
         irq = spin_lock_irqsave(&g_vmm_lock);
+        t_lock_acq = vmm_trace_clock();
+        if (metrics) {
+            metrics->lock_wait_tsc += (t_lock_acq >= t_lock_start) ? (t_lock_acq - t_lock_start) : 0;
+        }
         needed = map_batch_check(root, va, pages);
     }
     if (needed < 0) res = needed;
@@ -774,13 +816,37 @@ int vmm_map_pages(uint64_t *root, uintptr_t va, size_t pages,
             __atomic_store_n(&pt[pt_index(va) + i], frames[i] | pte_flags | PTE_PRESENT, __ATOMIC_RELEASE);
         res = VMM_OK;
     }
+    uint64_t t_pt_end = vmm_trace_clock();
     bool invalidate = needs_invalidation(root, va);
+    uint64_t t_lock_rel = vmm_trace_clock();
     spin_unlock_irqrestore(&g_vmm_lock, irq);
     while (count) pmm_free_page(spares[--count]);
+
+    if (metrics) {
+        metrics->lock_hold_tsc += (t_lock_rel >= t_lock_acq) ? (t_lock_rel - t_lock_acq) : 0;
+        metrics->pt_work_tsc = (t_pt_end >= t_pt_start) ? (t_pt_end - t_pt_start) : 0;
+    }
+
+    uint64_t t_post_lock = vmm_trace_clock();
+    if (metrics) {
+        metrics->post_lock_prep_tsc = (t_post_lock >= t_lock_rel) ? (t_post_lock - t_lock_rel) : 0;
+    }
+
     /* op_refs spans the synchronous flush; never wait for IPIs under VMM. */
-    if (res == VMM_OK && invalidate)
-        smp_tlb_shootdown_pages(va, pml4_index(va) >= 256 ? 0 : virt_to_phys(root), pages);
-    vmm_space_put_op(root);
+    if (res == VMM_OK && invalidate) {
+        smp_tlb_trace_metrics_t tlb_m = {0};
+        smp_tlb_shootdown_pages_tracked(va, pml4_index(va) >= 256 ? 0 : virt_to_phys(root), pages, &tlb_m);
+        if (metrics) {
+            metrics->tlb_dispatch_tsc = tlb_m.dispatch_tsc;
+            metrics->tlb_ack_poll_tsc = tlb_m.ack_poll_tsc;
+            metrics->tlb_service_tsc  = tlb_m.service_tsc;
+        }
+    }
+    if (metrics) {
+        vmm_space_put_op_tracked(root, &metrics->put_op_wait_tsc, &metrics->put_op_hold_tsc);
+    } else {
+        vmm_space_put_op(root);
+    }
     return res;
 }
 
@@ -836,36 +902,81 @@ int vmm_unmap_page(uint64_t *pml4_virt, uintptr_t virt_addr) {
 static uint64_t walk_leaf(uint64_t *table, uintptr_t va, uint64_t required);
 
 int vmm_unmap_pages(uint64_t *root, uintptr_t va, size_t count, uintptr_t *out_frames) {
+    return vmm_unmap_pages_tracked(root, va, count, out_frames, NULL);
+}
+
+int vmm_unmap_pages_tracked(uint64_t *root, uintptr_t va, size_t count, uintptr_t *out_frames,
+                            vmm_op_metrics_t *metrics) {
+    uint64_t t_entry = vmm_trace_clock();
     if (!root || !out_frames || !count || count > 16 || va % PAGE_SIZE ||
         va > UINT64_MAX - (count * PAGE_SIZE - 1) ||
         !is_canonical_address(va) || !is_canonical_address(va + count * PAGE_SIZE - 1))
         return VMM_ERR_INVALID_ADDR;
     uintptr_t frames[16];
+    uint64_t t_lock_start = vmm_trace_clock();
     uint64_t flags = spin_lock_irqsave(&g_vmm_lock);
+    uint64_t t_lock_acq = vmm_trace_clock();
+    if (metrics) {
+        metrics->pre_lock_tsc = (t_lock_start >= t_entry) ? (t_lock_start - t_entry) : 0;
+        metrics->lock_wait_tsc = (t_lock_acq >= t_lock_start) ? (t_lock_acq - t_lock_start) : 0;
+    }
     int res = vmm_space_get_op_locked(root);
     if (res != VMM_OK) {
+        uint64_t t_lock_rel = vmm_trace_clock();
         spin_unlock_irqrestore(&g_vmm_lock, flags);
+        if (metrics) {
+            metrics->lock_hold_tsc = (t_lock_rel >= t_lock_acq) ? (t_lock_rel - t_lock_acq) : 0;
+        }
         return res;
     }
+    uint64_t t_pt_start = vmm_trace_clock();
     for (size_t i = 0; i < count; i++) {
         uint64_t leaf = walk_leaf(root, va + i * PAGE_SIZE, PTE_PRESENT);
         if (!leaf || (leaf & PTE_GLOBAL)) {
             vmm_space_put_op_locked(root);
+            uint64_t t_lock_rel = vmm_trace_clock();
             spin_unlock_irqrestore(&g_vmm_lock, flags);
+            if (metrics) {
+                metrics->lock_hold_tsc = (t_lock_rel >= t_lock_acq) ? (t_lock_rel - t_lock_acq) : 0;
+            }
             return leaf ? VMM_ERR_INVALID_ADDR : VMM_ERR_NOT_MAPPED;
         }
         frames[i] = leaf & PTE_ADDR_MASK;
     }
     for (size_t i = 0; i < count; i++)
         vmm_unmap_page_unlocked(root, va + i * PAGE_SIZE);
+    uint64_t t_pt_end = vmm_trace_clock();
     bool invalidate = needs_invalidation(root, va);
+    uint64_t t_lock_rel = vmm_trace_clock();
     spin_unlock_irqrestore(&g_vmm_lock, flags);
+
+    if (metrics) {
+        metrics->lock_hold_tsc = (t_lock_rel >= t_lock_acq) ? (t_lock_rel - t_lock_acq) : 0;
+        metrics->pt_work_tsc = (t_pt_end >= t_pt_start) ? (t_pt_end - t_pt_start) : 0;
+    }
+
+    uint64_t t_post_lock = vmm_trace_clock();
+    if (metrics) {
+        metrics->post_lock_prep_tsc = (t_post_lock >= t_lock_rel) ? (t_post_lock - t_lock_rel) : 0;
+    }
+
     /* One mailbox round, bounded INVLPG on each target. Shared kernel stacks
      * require every online CPU; unrelated translations stay cached. */
-    if (invalidate)
-        smp_tlb_shootdown_pages(va, pml4_index(va) >= 256 ? 0 : virt_to_phys(root), count);
-    vmm_space_put_op(root);
+    if (invalidate) {
+        smp_tlb_trace_metrics_t tlb_m = {0};
+        smp_tlb_shootdown_pages_tracked(va, pml4_index(va) >= 256 ? 0 : virt_to_phys(root), count, &tlb_m);
+        if (metrics) {
+            metrics->tlb_dispatch_tsc = tlb_m.dispatch_tsc;
+            metrics->tlb_ack_poll_tsc = tlb_m.ack_poll_tsc;
+            metrics->tlb_service_tsc  = tlb_m.service_tsc;
+        }
+    }
     for (size_t i = 0; i < count; i++) out_frames[i] = frames[i];
+    if (metrics) {
+        vmm_space_put_op_tracked(root, &metrics->put_op_wait_tsc, &metrics->put_op_hold_tsc);
+    } else {
+        vmm_space_put_op(root);
+    }
     return VMM_OK;
 }
 

@@ -441,39 +441,48 @@ uint64_t pmm_get_managed_ram_bytes(void) {
 }
 
 bool pmm_audit(void) {
-    /* 1. Verify bitmap is placed at or above 1 MiB and page-aligned */
-    if (bitmap_phys_addr < 0x100000 || (bitmap_phys_addr % PAGE_SIZE) != 0) {
-        serial_puts("[FAIL] PMM Audit: Bitmap physical address invalid or unaligned!\n");
-        return false;
-    }
-    if (bitmap_phys_addr >= PMM_BOOT_ALLOC_LIMIT ||
-        bitmap_total_pages > (PMM_BOOT_ALLOC_LIMIT - bitmap_phys_addr) / PAGE_SIZE) {
-        serial_puts("[FAIL] PMM Audit: Bitmap outside early mapped RAM!\n");
-        return false;
-    }
-
-    /* 2. Verify all bitmap frames are marked as reserved/used in the bitmap itself */
+    const char *failure = NULL;
+    uint64_t flags = spin_lock_irqsave(&g_pmm_lock);
     size_t bm_start = bitmap_phys_addr / PAGE_SIZE;
-    for (size_t i = 0; i < bitmap_total_pages; i++) {
-        if (!bitmap_test(bm_start + i)) {
-            serial_puts("[FAIL] PMM Audit: Bitmap frame not marked as reserved!\n");
-            return false;
+    if (!bitmap || !total_pages || total_pages > PMM_BITMAP_MAX_RAM_BYTES / PAGE_SIZE ||
+        alloc_limit_pages > total_pages) {
+        failure = "Invalid bitmap or managed capacity";
+    } else if (bitmap_phys_addr < 0x100000 || bitmap_phys_addr % PAGE_SIZE ||
+               bitmap_phys_addr >= PMM_BOOT_ALLOC_LIMIT ||
+               bitmap_total_pages > (PMM_BOOT_ALLOC_LIMIT - bitmap_phys_addr) / PAGE_SIZE ||
+               bm_start >= total_pages || bitmap_total_pages > total_pages - bm_start) {
+        failure = "Invalid bitmap backing range";
+    } else if (!bitmap_test(0) || !frame_reserved(0)) {
+        failure = "Physical frame zero is not reserved";
+    } else {
+        for (size_t i = 0; i < bitmap_total_pages; i++) {
+            if (!bitmap_test(bm_start + i) || !frame_reserved(bm_start + i)) {
+                failure = "Bitmap backing frame is not reserved";
+                break;
+            }
         }
+        size_t counted_used = 0;
+        for (size_t i = 0; !failure && i < (total_pages + 7) / 8; i++) {
+            uint8_t mask = 0xFF;
+            if (total_pages - i * 8 < 8)
+                mask = (uint8_t)((1U << (total_pages - i * 8)) - 1U);
+            uint8_t allocated = bitmap[i] & mask;
+            if ((reserved_bitmap[i] & mask & allocated) != (reserved_bitmap[i] & mask)) {
+                failure = "Reserved frame marked free";
+                break;
+            }
+            for (unsigned bit = 0; bit < 8; bit++) counted_used += (allocated >> bit) & 1U;
+        }
+        if (!failure && (counted_used != used_pages || free_pages != total_pages - counted_used))
+            failure = "Bitmap/accounting mismatch";
     }
-
-    /* 3. Verify physical frame 0 is reserved */
-    if (!bitmap_test(0)) {
-        serial_puts("[FAIL] PMM Audit: Physical frame 0 is unreserved!\n");
-        return false;
+    spin_unlock_irqrestore(&g_pmm_lock, flags);
+    if (failure) {
+        serial_puts("[FAIL] PMM Audit: ");
+        serial_puts(failure);
+        serial_puts("\n");
     }
-
-    /* 4. Verify total managed memory does not exceed bitmap capacity */
-    if (pmm_get_total_memory() > PMM_BITMAP_MAX_RAM_BYTES) {
-        serial_puts("[FAIL] PMM Audit: Total memory exceeds bitmap capacity!\n");
-        return false;
-    }
-
-    return true;
+    return failure == NULL;
 }
 
 size_t pmm_reclaim_bootloader_memory(struct limine_memmap_response *memmap) {

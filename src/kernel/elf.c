@@ -5,6 +5,7 @@
 #include "serial.h"
 #include "spawn_profile.h"
 #include "elf_page.h"
+#include "thread.h"
 
 /* Restorer stub symbols from sigrestorer.asm (linked into the kernel image). */
 extern uint8_t sigrestorer_start[];
@@ -183,7 +184,9 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
 
     /* 3. Address Space Creation */
     uint64_t phase_begin = spawn_profile_clock(profile);
-    uintptr_t pml4_phys = vmm_create_user_pml4();
+    uintptr_t pml4_phys = (spawn_get_fault_type() == SPAWN_FAULT_VMM_USER_PML4)
+        ? (spawn_record_fault_hit(), 0)
+        : vmm_create_user_pml4();
     SPAWN_ADD(profile, elf[SE_SPACE], phase_begin);
     if (pml4_phys == 0) {
         return ELF_ERR_NOMEM;
@@ -191,6 +194,7 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
     uint64_t *pml4_virt = (uint64_t *)vmm_phys_to_virt(pml4_phys);
 
     /* 4. Segment Loading Pass with Frame Ownership & Rollback */
+    size_t seg_page_idx = 0;
     for (size_t i = 0; i < ehdr->e_phnum; i++) {
         const Elf64_Phdr *p = &phdrs[i];
         if (p->p_type != PT_LOAD || p->p_memsz == 0) continue;
@@ -204,7 +208,11 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
 
         for (uintptr_t page = seg_start_page; page <= seg_end_page; page += PAGE_SIZE) {
             phase_begin = spawn_profile_clock(profile);
-            uintptr_t frame_phys = pmm_alloc_page();
+            bool fail_seg_pmm = (spawn_get_fault_type() == SPAWN_FAULT_ELF_SEGMENT_PMM &&
+                                 seg_page_idx == spawn_get_fault_trigger());
+            uintptr_t frame_phys = fail_seg_pmm
+                ? (spawn_record_fault_hit(), 0)
+                : pmm_alloc_page();
             SPAWN_ADD(profile, elf[SE_ALLOC], phase_begin);
             if (frame_phys == 0) {
                 vmm_destroy_pml4(pml4_phys, true);
@@ -227,7 +235,11 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
 
             SPAWN_ADD(profile, elf[SE_COPY], phase_begin);
             phase_begin = spawn_profile_clock(profile);
-            int map_res = vmm_map_page(pml4_virt, page, frame_phys, flags);
+            bool fail_seg_map = (spawn_get_fault_type() == SPAWN_FAULT_ELF_SEGMENT_MAP &&
+                                 seg_page_idx == spawn_get_fault_trigger());
+            int map_res = fail_seg_map
+                ? (spawn_record_fault_hit(), VMM_ERR_NOMEM)
+                : vmm_map_page(pml4_virt, page, frame_phys, flags);
             SPAWN_ADD(profile, elf[SE_MAP], phase_begin);
             if (map_res != VMM_OK) {
                 /* Explicit rollback: free unmapped frame before destroying PML4 */
@@ -235,6 +247,7 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
                 vmm_destroy_pml4(pml4_phys, true);
                 return ELF_ERR_NOMEM;
             }
+            seg_page_idx++;
         }
     }
 
@@ -249,7 +262,9 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
     }
 
     phase_begin = spawn_profile_clock(profile);
-    uintptr_t restorer_phys = pmm_alloc_page();
+    uintptr_t restorer_phys = (spawn_get_fault_type() == SPAWN_FAULT_SIGRESTORER_PMM)
+        ? (spawn_record_fault_hit(), 0)
+        : pmm_alloc_page();
     SPAWN_ADD(profile, elf[SE_ALLOC], phase_begin);
     if (restorer_phys == 0) {
         vmm_destroy_pml4(pml4_phys, true);
@@ -262,8 +277,10 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
     SPAWN_ADD(profile, elf[SE_COPY], phase_begin);
     phase_begin = spawn_profile_clock(profile);
     /* PTE: present | user | executable (no PTE_WRITABLE, no PTE_NX). */
-    int restorer_map = vmm_map_page(pml4_virt, USER_SIGRESTORER_VIRT, restorer_phys,
-                                     PTE_PRESENT | PTE_USER);
+    int restorer_map = (spawn_get_fault_type() == SPAWN_FAULT_SIGRESTORER_MAP)
+        ? (spawn_record_fault_hit(), VMM_ERR_NOMEM)
+        : vmm_map_page(pml4_virt, USER_SIGRESTORER_VIRT, restorer_phys,
+                       PTE_PRESENT | PTE_USER);
     SPAWN_ADD(profile, elf[SE_MAP], phase_begin);
     if (restorer_map != VMM_OK) {
         pmm_free_page(restorer_phys);
@@ -274,7 +291,9 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
 
     /* 6. User Stack Allocation */
     phase_begin = spawn_profile_clock(profile);
-    uintptr_t stack_phys = pmm_alloc_page();
+    uintptr_t stack_phys = (spawn_get_fault_type() == SPAWN_FAULT_USER_STACK_PMM)
+        ? (spawn_record_fault_hit(), 0)
+        : pmm_alloc_page();
     SPAWN_ADD(profile, elf[SE_ALLOC], phase_begin);
     if (stack_phys == 0) {
         vmm_destroy_pml4(pml4_phys, true);
@@ -286,8 +305,10 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
 
     SPAWN_ADD(profile, elf[SE_COPY], phase_begin);
     phase_begin = spawn_profile_clock(profile);
-    int stack_map_res = vmm_map_page(pml4_virt, USER_STACK_PAGE_VIRT, stack_phys,
-                                     PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
+    int stack_map_res = (spawn_get_fault_type() == SPAWN_FAULT_USER_STACK_MAP)
+        ? (spawn_record_fault_hit(), VMM_ERR_NOMEM)
+        : vmm_map_page(pml4_virt, USER_STACK_PAGE_VIRT, stack_phys,
+                       PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
     SPAWN_ADD(profile, elf[SE_MAP], phase_begin);
     if (stack_map_res != VMM_OK) {
         pmm_free_page(stack_phys);

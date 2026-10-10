@@ -49,6 +49,43 @@ static uint64_t child_wake_seen;
 static uint64_t kernel_exit_sequence, kernel_exit_wake_seen;
 static void cancel_staged_children(uint64_t parent);
 
+static spawn_fault_type_t g_spawn_fault_type = SPAWN_FAULT_NONE;
+static size_t g_spawn_fault_trigger = 0;
+static size_t g_spawn_fault_hits = 0;
+static uint64_t g_last_aborted_pid = 0;
+
+void spawn_set_fault_injection(spawn_fault_type_t type, size_t trigger_count) {
+    g_spawn_fault_type = type;
+    g_spawn_fault_trigger = trigger_count;
+    g_spawn_fault_hits = 0;
+}
+
+void spawn_clear_fault_injection(void) {
+    g_spawn_fault_type = SPAWN_FAULT_NONE;
+    g_spawn_fault_trigger = 0;
+    g_spawn_fault_hits = 0;
+}
+
+spawn_fault_type_t spawn_get_fault_type(void) {
+    return g_spawn_fault_type;
+}
+
+size_t spawn_get_fault_trigger(void) {
+    return g_spawn_fault_trigger;
+}
+
+size_t spawn_get_fault_hits(void) {
+    return g_spawn_fault_hits;
+}
+
+void spawn_record_fault_hit(void) {
+    g_spawn_fault_hits++;
+}
+
+uint64_t spawn_get_last_aborted_pid(void) {
+    return g_last_aborted_pid;
+}
+
 /* SMP Piece 4: Per-CPU scheduler state */
 /* SMP Piece 4: Per-CPU scheduler state */
 static struct scheduler_cpu {
@@ -163,13 +200,23 @@ static int kstack_alloc(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_s
     uintptr_t frames[STACK_USABLE_SIZE / PAGE_SIZE];
     size_t allocated = 0;
     while (allocated < STACK_USABLE_SIZE / PAGE_SIZE) {
+        if (g_spawn_fault_type == SPAWN_FAULT_KSTACK_PMM && allocated == g_spawn_fault_trigger) {
+            spawn_record_fault_hit();
+            break;
+        }
         uintptr_t frame = pmm_alloc_page();
         if (!frame) break;
         frames[allocated++] = frame;
     }
-    int status = allocated == STACK_USABLE_SIZE / PAGE_SIZE
-        ? vmm_map_pages(pml4, base_addr, allocated, frames, PTE_PRESENT | PTE_WRITABLE | PTE_NX)
-        : VMM_ERR_NOMEM;
+    int status = VMM_ERR_NOMEM;
+    if (allocated == STACK_USABLE_SIZE / PAGE_SIZE) {
+        if (g_spawn_fault_type == SPAWN_FAULT_KSTACK_MAP) {
+            spawn_record_fault_hit();
+            status = VMM_ERR_NOMEM;
+        } else {
+            status = vmm_map_pages(pml4, base_addr, allocated, frames, PTE_PRESENT | PTE_WRITABLE | PTE_NX);
+        }
+    }
     if (status != VMM_OK) {
         /* Batch rejection/OOM publishes no leaves. Frames remain ours. */
         while (allocated) pmm_free_page(frames[--allocated]);
@@ -200,6 +247,152 @@ static void kstack_free(int slot, uintptr_t base_addr) {
     uint64_t rflags = spin_lock_irqsave(&g_kstack_lock);
     g_stack_slots_bitmap &= ~(1ULL << slot);
     spin_unlock_irqrestore(&g_kstack_lock, rflags);
+}
+
+static inline uint64_t kstack_read_tsc(void) {
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
+    return ((uint64_t)hi << 32) | lo;
+}
+
+int kstack_alloc_tracked(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_size, kstack_subinterval_t *metrics) {
+    if (!metrics) {
+        return kstack_alloc(out_guard, out_base, out_size);
+    }
+    uint64_t t0 = kstack_read_tsc();
+    uint64_t rflags = spin_lock_irqsave(&g_kstack_lock);
+    uint64_t t1 = kstack_read_tsc();
+    int slot = -1;
+    for (int i = 0; i < MAX_KERNEL_THREADS; i++) {
+        if (!(g_stack_slots_bitmap & (1ULL << i))) {
+            g_stack_slots_bitmap |= (1ULL << i);
+            slot = i;
+            break;
+        }
+    }
+    uint64_t t2 = kstack_read_tsc();
+    spin_unlock_irqrestore(&g_kstack_lock, rflags);
+
+    metrics->slot_wait_tsc = (t1 >= t0) ? (t1 - t0) : 0;
+    metrics->slot_hold_tsc = (t2 >= t1) ? (t2 - t1) : 0;
+
+    if (slot == -1) {
+        serial_puts("[WARN] Thread stack slots exhausted (max 64 concurrent threads)!\n");
+        return -1;
+    }
+
+    uintptr_t slot_addr  = KERNEL_STACKS_BASE + (uintptr_t)slot * STACK_SLOT_SIZE;
+    uintptr_t guard_addr = slot_addr;
+    uintptr_t base_addr  = slot_addr + STACK_GUARD_SIZE;
+
+    uint64_t *pml4 = vmm_get_kernel_pml4_virt();
+
+    uintptr_t frames[STACK_USABLE_SIZE / PAGE_SIZE];
+    size_t allocated = 0;
+    uint64_t tp0 = kstack_read_tsc();
+    metrics->alloc_prep_tsc = (tp0 >= t2) ? (tp0 - t2) : 0;
+
+    while (allocated < STACK_USABLE_SIZE / PAGE_SIZE) {
+        if (g_spawn_fault_type == SPAWN_FAULT_KSTACK_PMM && allocated == g_spawn_fault_trigger) {
+            spawn_record_fault_hit();
+            break;
+        }
+        uintptr_t frame = pmm_alloc_page();
+        if (!frame) break;
+        frames[allocated++] = frame;
+    }
+    uint64_t tp1 = kstack_read_tsc();
+    metrics->pmm_tsc = (tp1 >= tp0) ? (tp1 - tp0) : 0;
+
+    int status = VMM_ERR_NOMEM;
+    vmm_op_metrics_t vmm_m = {0};
+    uint64_t tm0 = kstack_read_tsc();
+    metrics->map_prep_tsc = (tm0 >= tp1) ? (tm0 - tp1) : 0;
+
+    if (allocated == STACK_USABLE_SIZE / PAGE_SIZE) {
+        if (g_spawn_fault_type == SPAWN_FAULT_KSTACK_MAP) {
+            spawn_record_fault_hit();
+            status = VMM_ERR_NOMEM;
+        } else {
+            status = vmm_map_pages_tracked(pml4, base_addr, allocated, frames,
+                                           PTE_PRESENT | PTE_WRITABLE | PTE_NX, &vmm_m);
+        }
+    }
+    uint64_t tm1 = kstack_read_tsc();
+    metrics->vmm_lock_wait_tsc      = vmm_m.lock_wait_tsc;
+    metrics->vmm_lock_hold_tsc      = vmm_m.lock_hold_tsc;
+    metrics->vmm_pt_work_tsc        = vmm_m.pt_work_tsc;
+    metrics->vmm_pre_lock_tsc       = vmm_m.pre_lock_tsc;
+    metrics->vmm_post_lock_prep_tsc = vmm_m.post_lock_prep_tsc;
+    metrics->vmm_put_op_wait_tsc    = vmm_m.put_op_wait_tsc;
+    metrics->vmm_put_op_hold_tsc    = vmm_m.put_op_hold_tsc;
+    metrics->vmm_tlb_dispatch_tsc   = vmm_m.tlb_dispatch_tsc;
+    metrics->vmm_tlb_ack_poll_tsc   = vmm_m.tlb_ack_poll_tsc;
+    metrics->vmm_tlb_service_tsc    = vmm_m.tlb_service_tsc;
+
+    if (status != VMM_OK) {
+        while (allocated) pmm_free_page(frames[--allocated]);
+        rflags = spin_lock_irqsave(&g_kstack_lock);
+        g_stack_slots_bitmap &= ~(1ULL << slot);
+        spin_unlock_irqrestore(&g_kstack_lock, rflags);
+        return -1;
+    }
+
+    *out_guard = guard_addr;
+    *out_base  = base_addr;
+    *out_size  = STACK_USABLE_SIZE;
+
+    uint64_t t_end = kstack_read_tsc();
+    metrics->alloc_tail_tsc = (t_end >= tm1) ? (t_end - tm1) : 0;
+    metrics->inner_tsc = (t_end >= t0) ? (t_end - t0) : 0;
+    return slot;
+}
+
+void kstack_free_tracked(int slot, uintptr_t base_addr, kstack_subinterval_t *metrics) {
+    if (!metrics) {
+        kstack_free(slot, base_addr);
+        return;
+    }
+    if (slot < 0 || slot >= MAX_KERNEL_THREADS) return;
+    uint64_t t_free_entry = kstack_read_tsc();
+    uint64_t *pml4 = vmm_get_kernel_pml4_virt();
+
+    uintptr_t frames[STACK_USABLE_SIZE / PAGE_SIZE];
+    vmm_op_metrics_t vmm_m = {0};
+    if (vmm_unmap_pages_tracked(pml4, base_addr, STACK_USABLE_SIZE / PAGE_SIZE, frames, &vmm_m) != VMM_OK) {
+        serial_raw_puts("[FATAL] Kernel stack batch unmap failed; frames and slot retained\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+    uint64_t tu1 = kstack_read_tsc();
+    metrics->vmm_lock_wait_tsc      = vmm_m.lock_wait_tsc;
+    metrics->vmm_lock_hold_tsc      = vmm_m.lock_hold_tsc;
+    metrics->vmm_pt_work_tsc        = vmm_m.pt_work_tsc;
+    metrics->vmm_pre_lock_tsc       = vmm_m.pre_lock_tsc;
+    metrics->vmm_post_lock_prep_tsc = vmm_m.post_lock_prep_tsc;
+    metrics->vmm_put_op_wait_tsc    = vmm_m.put_op_wait_tsc;
+    metrics->vmm_put_op_hold_tsc    = vmm_m.put_op_hold_tsc;
+    metrics->vmm_tlb_dispatch_tsc   = vmm_m.tlb_dispatch_tsc;
+    metrics->vmm_tlb_ack_poll_tsc   = vmm_m.tlb_ack_poll_tsc;
+    metrics->vmm_tlb_service_tsc    = vmm_m.tlb_service_tsc;
+
+    uint64_t tp0 = kstack_read_tsc();
+    metrics->free_mid_tsc = (tp0 >= tu1) ? (tp0 - tu1) : 0;
+    for (size_t p = 0; p < STACK_USABLE_SIZE / PAGE_SIZE; p++)
+        pmm_free_page(frames[p]);
+    uint64_t tp1 = kstack_read_tsc();
+    metrics->pmm_tsc = (tp1 >= tp0) ? (tp1 - tp0) : 0;
+
+    uint64_t t0 = kstack_read_tsc();
+    metrics->free_tail_tsc = (t0 >= tp1) ? (t0 - tp1) : 0;
+    uint64_t rflags = spin_lock_irqsave(&g_kstack_lock);
+    uint64_t t1 = kstack_read_tsc();
+    g_stack_slots_bitmap &= ~(1ULL << slot);
+    uint64_t t2 = kstack_read_tsc();
+    spin_unlock_irqrestore(&g_kstack_lock, rflags);
+
+    metrics->slot_wait_tsc = (t1 >= t0) ? (t1 - t0) : 0;
+    metrics->slot_hold_tsc = (t2 >= t1) ? (t2 - t1) : 0;
+    metrics->inner_tsc = (t2 >= t_free_entry) ? (t2 - t_free_entry) : 0;
 }
 
 static void runqueue_push_cpu_locked(size_t cpu_id, tcb_t *t) {
@@ -1371,19 +1564,27 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     /* 3. Allocate dedicated page-backed kernel stack */
     uintptr_t guard_virt = 0, stack_base = 0;
     size_t stack_size = 0;
-    int slot = kstack_alloc(&guard_virt, &stack_base, &stack_size);
+    int slot = (g_spawn_fault_type == SPAWN_FAULT_KSTACK_ALLOC)
+        ? (spawn_record_fault_hit(), -1)
+        : kstack_alloc(&guard_virt, &stack_base, &stack_size);
     SPAWN_ADD(profile, phase[SP_KSTACK], phase_begin);
     if (slot < 0) {
-        serial_puts("[FAIL] process_spawn: kstack_alloc failed\n");
+        if (g_spawn_fault_type == SPAWN_FAULT_NONE) {
+            serial_puts("[FAIL] process_spawn: kstack_alloc failed\n");
+        }
         vmm_destroy_pml4(proc_info.pml4_phys, true);
         return NULL;
     }
 
     phase_begin = spawn_profile_clock(profile);
     /* 4. Allocate Process / Thread Control Block */
-    tcb_t *p = (tcb_t *)kmalloc(sizeof(tcb_t));
+    tcb_t *p = (g_spawn_fault_type == SPAWN_FAULT_TCB_KMALLOC)
+        ? (spawn_record_fault_hit(), NULL)
+        : (tcb_t *)kmalloc(sizeof(tcb_t));
     if (!p) {
-        serial_puts("[FAIL] process_spawn: kmalloc(tcb) failed\n");
+        if (g_spawn_fault_type == SPAWN_FAULT_NONE) {
+            serial_puts("[FAIL] process_spawn: kmalloc(tcb) failed\n");
+        }
         kstack_free(slot, stack_base);
         vmm_destroy_pml4(proc_info.pml4_phys, true);
         return NULL;
@@ -1429,7 +1630,11 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     phase_begin = spawn_profile_clock(profile);
     /* Initialize file descriptors for process */
     tcb_t *parent_thread = thread_current();
-    if (parent_thread && parent_thread->is_user) {
+    if (g_spawn_fault_type == SPAWN_FAULT_FD_INIT) {
+        spawn_record_fault_hit();
+        *error = SYSCALL_ENOMEM;
+        goto fail_actions;
+    } else if (parent_thread && parent_thread->is_user) {
         fd_clone_table(parent_thread, p);
     } else if (fd_init_std(p) < 0) {
         *error = SYSCALL_ENOMEM;
@@ -1533,7 +1738,9 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
 
     p->rsp = (uint64_t)stack_top;
 
-    int sref_err = vmm_space_add_sched_ref(proc_info.pml4_phys);
+    int sref_err = (g_spawn_fault_type == SPAWN_FAULT_SCHED_REF)
+        ? (spawn_record_fault_hit(), VMM_ERR_NOMEM)
+        : vmm_space_add_sched_ref(proc_info.pml4_phys);
     if (sref_err != VMM_OK) {
         *error = SYSCALL_ENOMEM;
         goto fail_actions;
@@ -1588,7 +1795,25 @@ tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf
     int64_t error;
     tcb_t *p = process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
                                   0, NULL, 0, NULL, NULL, 0, NULL, arg, pid, 0, &error);
-    if (!p) process_record_abort(pid);
+    if (!p) {
+        g_last_aborted_pid = pid;
+        process_record_abort(pid);
+    }
+    return p;
+}
+tcb_t *process_spawn_with_actions(size_t target_cpu, const char *name, const void *elf_data, size_t elf_size, int action_count, const spawn_kaction_t *actions) {
+    sched_reap_dead();
+    uint64_t pid = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
+    tcb_t *parent = thread_current();
+    uint64_t ppid = parent && parent->is_user ? parent->tid : 0;
+    if (process_record_begin(pid, ppid, false, 0, 0)) return NULL;
+    int64_t error;
+    tcb_t *p = process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
+                                      0, NULL, 0, NULL, NULL, action_count, actions, 0, pid, 0, &error);
+    if (!p) {
+        g_last_aborted_pid = pid;
+        process_record_abort(pid);
+    }
     return p;
 }
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg) {

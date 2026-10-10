@@ -289,6 +289,52 @@ vfs_node_t *vfs_lookup(const char *path) {
     return curr;
 }
 
+void vfs_node_put(vfs_node_t *node) {
+    if (node && node->put) node->put(node);
+}
+
+vfs_node_t *vfs_lookup_ref(const char *path, int *err_out) {
+    int error = -VFS_EINVAL;
+    vfs_node_t *curr = NULL;
+    if (!g_vfs_root || !path || strlen(path) >= VFS_MAX_PATH) goto done;
+    char norm[VFS_MAX_PATH];
+    normalize_path(path, norm, sizeof(norm));
+    curr = g_vfs_root;
+    if (!strcmp(norm, "/dev/tty")) curr = &g_terminal_node;
+    else if (!strcmp(norm, "/dev/null")) curr = &g_null_node;
+    if (curr != g_vfs_root || !strcmp(norm, "/")) { error = 0; goto done; }
+    const char *p = norm + 1;
+    while (*p) {
+        char component[VFS_MAX_NAME];size_t length = 0;
+        while (*p && *p != '/' && length + 1 < sizeof(component)) component[length++] = *p++;
+        component[length] = 0;
+        if (*p && *p != '/') { error = -VFS_EINVAL; goto fail; }
+        if (*p == '/') p++;
+        if (curr->type != VFS_DIRECTORY) { error = -8; goto fail; }
+        vfs_node_t *next = NULL;
+        error = -VFS_ENOENT;
+        if (curr->lookup_ref) next = curr->lookup_ref(curr, component, &error);
+        else {
+            if (curr->lookup) next = curr->lookup(curr, component);
+            else for (vfs_node_t *child = curr->children; child; child = child->next)
+                if (!strcmp(child->name, component)) { next = child; break; }
+            if (next && next->get) {
+                error = next->get(next);
+                if (error) next = NULL;
+            }
+        }
+        if (!next) goto fail;
+        vfs_node_put(curr);curr = next;
+    }
+    error = 0;
+    goto done;
+fail:
+    vfs_node_put(curr);curr = NULL;
+done:
+    if (err_out) *err_out = error;
+    return curr;
+}
+
 vfs_node_t *vfs_create_node(const char *path, vfs_node_type_t type, uint64_t size, const void *data) {
     if (!g_vfs_root || !path) return NULL;
 
@@ -387,7 +433,7 @@ int vfs_get_last_create_error(void) {
     return g_last_create_error;
 }
 
-vfs_node_t *vfs_create_ext(const char *path, vfs_node_type_t type, int *err_out) {
+static vfs_node_t *vfs_create_common(const char *path, vfs_node_type_t type, int *err_out, bool owned) {
     if (err_out) *err_out = -VFS_EINVAL;
     if (!path || strlen(path) >= VFS_MAX_PATH) return NULL;
     char norm[VFS_MAX_PATH];
@@ -412,26 +458,40 @@ vfs_node_t *vfs_create_ext(const char *path, vfs_node_type_t type, int *err_out)
     const char *name = last_slash + 1;
     if (!*name || strlen(name) >= VFS_MAX_NAME) return NULL;
 
-    vfs_node_t *dir = vfs_lookup(dir_path);
+    int lookup_error = 0;
+    vfs_node_t *dir = vfs_lookup_ref(dir_path, &lookup_error);
     if (!dir) {
-        if (err_out) *err_out = -VFS_ENOENT;
+        if (err_out) *err_out = lookup_error;
         return NULL;
     }
     if (dir->type != VFS_DIRECTORY) {
         if (err_out) *err_out = -8; /* ENOTDIR */
+        vfs_node_put(dir);
         return NULL;
     }
     if (!dir->create) {
         if (err_out) *err_out = -VFS_EROFS;
+        vfs_node_put(dir);
         return NULL;
     }
-    vfs_node_t *res = dir->create(dir, name, type);
+    int create_error = 0;
+    vfs_node_t *res = owned && dir->create_ref ? dir->create_ref(dir, name, type, &create_error) : dir->create(dir, name, type);
+    if (!res && !create_error) create_error = vfs_get_last_create_error();
+    vfs_node_put(dir);
     if (!res) {
-        if (err_out) *err_out = vfs_get_last_create_error();
+        if (err_out) *err_out = create_error;
         return NULL;
     }
     if (err_out) *err_out = VFS_SUCCESS;
     return res;
+}
+
+vfs_node_t *vfs_create_ext(const char *path, vfs_node_type_t type, int *err_out) {
+    return vfs_create_common(path, type, err_out, false);
+}
+
+vfs_node_t *vfs_create_ref(const char *path, vfs_node_type_t type, int *err_out) {
+    return vfs_create_common(path, type, err_out, true);
 }
 
 vfs_node_t *vfs_create(const char *path, vfs_node_type_t type) {
@@ -441,8 +501,9 @@ vfs_node_t *vfs_create(const char *path, vfs_node_type_t type) {
 int vfs_mkdir(const char *path, uint32_t mode) {
     (void)mode;
     int err = 0;
-    vfs_node_t *node = vfs_create_ext(path, VFS_DIRECTORY, &err);
+    vfs_node_t *node = vfs_create_ref(path, VFS_DIRECTORY, &err);
     if (!node) return err ? err : -VFS_EIO;
+    vfs_node_put(node);
     return VFS_SUCCESS;
 }
 
@@ -470,9 +531,15 @@ int vfs_unlink(const char *path) {
     const char *name = last_slash + 1;
     if (!*name || !strcmp(name, ".") || !strcmp(name, "..")) return -VFS_EINVAL;
 
-    vfs_node_t *dir = vfs_lookup(dir_path);
-    if (!dir) return -VFS_ENOENT;
-    if (dir->type != VFS_DIRECTORY) return -8; /* ENOTDIR */
+    int lookup_error = 0;
+    vfs_node_t *dir = vfs_lookup_ref(dir_path, &lookup_error);
+    if (!dir) return lookup_error;
+    if (dir->type != VFS_DIRECTORY) { vfs_node_put(dir);return -8; }
+    if (dir->create_ref) {
+        int result=dir->unlink ? dir->unlink(dir,name) : -VFS_EROFS;
+        vfs_node_put(dir);return result;
+    }
+    vfs_node_put(dir); /* Legacy filesystem nodes retain their stable lifetime. */
 
     vfs_node_t *target = vfs_lookup(norm);
     if (!target) return -VFS_ENOENT;
@@ -533,9 +600,30 @@ int vfs_rename(const char *oldpath, const char *newpath) {
     if (!*old_name || !*new_name) return -VFS_EINVAL;
     if (strlen(new_name) >= VFS_MAX_NAME) return -VFS_EINVAL;
 
-    vfs_node_t *old_dir = vfs_lookup(old_dir_path);
-    vfs_node_t *new_dir = vfs_lookup(new_dir_path);
-    if (!old_dir || !new_dir) return -VFS_ENOENT;
+    int old_error=0,new_error=0;
+    vfs_node_t *old_dir = vfs_lookup_ref(old_dir_path,&old_error);
+    vfs_node_t *new_dir = vfs_lookup_ref(new_dir_path,&new_error);
+    if (!old_dir || !new_dir) {
+        vfs_node_put(old_dir);vfs_node_put(new_dir);return !old_dir ? old_error : new_error;
+    }
+    if (old_dir->type!=VFS_DIRECTORY || new_dir->type!=VFS_DIRECTORY) {
+        vfs_node_put(new_dir);vfs_node_put(old_dir);return -8;
+    }
+    if (old_dir->create_ref || new_dir->create_ref) {
+        int result=-VFS_EROFS;
+        if (old_dir->type!=VFS_DIRECTORY || new_dir->type!=VFS_DIRECTORY) result=-8;
+        else if (old_dir->rename && old_dir->rename==new_dir->rename) {
+            vfs_node_t *target=vfs_lookup_ref(norm_old,&result);
+            if (target) {
+                size_t a=strlen(oldpath),b=strlen(newpath);
+                if (target->type!=VFS_DIRECTORY && ((a>1 && oldpath[a-1]=='/') || (b>1 && newpath[b-1]=='/'))) result=-8;
+                else result=old_dir->rename(old_dir,old_name,new_dir,new_name);
+                vfs_node_put(target);
+            }
+        }
+        vfs_node_put(new_dir);vfs_node_put(old_dir);return result;
+    }
+    vfs_node_put(new_dir);vfs_node_put(old_dir);
     if (old_dir->type != VFS_DIRECTORY || new_dir->type != VFS_DIRECTORY) return -8; /* ENOTDIR */
 
     size_t oldpath_len = strlen(oldpath);
@@ -616,11 +704,12 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
         return NULL;
     }
 
-    vfs_node_t *node = vfs_lookup(path);
+    int lookup_error = 0;
+    vfs_node_t *node = vfs_lookup_ref(path, &lookup_error);
     if (!node) {
-        if (flags & VFS_O_CREAT) {
+        if ((flags & VFS_O_CREAT) && lookup_error == -VFS_ENOENT) {
             int create_err = 0;
-            node = vfs_create_ext(path, VFS_FILE, &create_err);
+            node = vfs_create_ref(path, VFS_FILE, &create_err);
             if (!node) {
                 kfree(file);
                 if (err_out) *err_out = create_err ? create_err : -VFS_EIO;
@@ -628,12 +717,13 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
             }
         } else {
             kfree(file);
-            if (err_out) *err_out = -VFS_ENOENT;
+            if (err_out) *err_out = lookup_error;
             return NULL;
         }
     }
 
     if (node->type == VFS_DIRECTORY && access_mode != VFS_O_RDONLY) {
+        vfs_node_put(node);
         kfree(file);
         if (err_out) *err_out = -7; /* EISDIR */
         return NULL;
@@ -642,6 +732,7 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
     /* If writing or truncating is requested, ensure node is writable */
     if (access_mode != VFS_O_RDONLY || (flags & VFS_O_TRUNC)) {
         if (!node->write || !node->truncate) {
+            vfs_node_put(node);
             kfree(file);
             if (err_out) *err_out = -VFS_EROFS;
             return NULL;
@@ -649,6 +740,7 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
         if (node->can_write) {
             int can_err = node->can_write(node);
             if (can_err < 0) {
+                vfs_node_put(node);
                 kfree(file);
                 if (err_out) *err_out = can_err;
                 return NULL;
@@ -659,6 +751,7 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
     if (node->open) {
         int pin_err = node->open(node);
         if (pin_err < 0) {
+            vfs_node_put(node);
             kfree(file);
             if (err_out) *err_out = pin_err;
             return NULL;
@@ -668,6 +761,7 @@ file_t *vfs_open_ext(const char *path, int flags, int *err_out) {
         int trunc_res = vfs_truncate(node, 0);
         if (trunc_res < 0) {
             if (node->open && node->close) node->close(node);
+            vfs_node_put(node);
             kfree(file);
             if (err_out) *err_out = trunc_res;
             return NULL;
@@ -782,7 +876,9 @@ int vfs_close(file_t *file) {
     }
 
     if (__atomic_sub_fetch(&file->ref_count, 1, __ATOMIC_ACQ_REL) <= 0) {
+        void (*put)(vfs_node_t *)=file->node ? file->node->put : NULL;
         if (file->node && file->node->close) file->node->close(file->node);
+        if (put) put(file->node);
         kfree(file);
     }
 

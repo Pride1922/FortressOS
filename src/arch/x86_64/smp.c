@@ -283,6 +283,7 @@ bool smp_run_lock_tests(void) {
  * ========================================================================= */
 
 volatile uint64_t g_ipi_tlb_count[MAX_DETECTED_CPUS] = {0};
+volatile uint64_t g_ipi_tlb_service_tsc[MAX_DETECTED_CPUS] = {0};
 volatile uint64_t g_ipi_resched_count[MAX_DETECTED_CPUS] = {0};
 volatile uint64_t g_tlb_poll_serviced_count[MAX_DETECTED_CPUS] = {0};
 
@@ -310,9 +311,9 @@ void smp_tlb_get_stats(smp_tlb_stats_t *out) {
     out->wait_iters = __atomic_load_n(&g_tlb_stats.wait_iters, __ATOMIC_RELAXED);
     out->wait_cycles = __atomic_load_n(&g_tlb_stats.wait_cycles, __ATOMIC_RELAXED);
 }
-static uint64_t tlb_clock(void) {
+static inline uint64_t tlb_clock(void) {
     uint32_t lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi) :: "memory");
+    __asm__ volatile("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
     return ((uint64_t)hi << 32) | lo;
 }
 
@@ -376,17 +377,18 @@ static void tlb_invalidate_local(uintptr_t va, size_t count) {
     }
 }
 
-static inline void smp_tlb_service_local_internal(bool from_ipi) {
+static inline size_t smp_tlb_service_local_internal(bool from_ipi) {
     uint64_t active = __atomic_load_n(&g_smp_tlb_active_initiators, __ATOMIC_ACQUIRE);
     if (__builtin_expect(active == 0, 1)) {
-        return;
+        return 0;
     }
 
     cpu_local_t *cpu = cpu_current();
-    if (!cpu) return;
+    if (!cpu) return 0;
     size_t cid = cpu->id;
-    if (cid >= MAX_DETECTED_CPUS) return;
+    if (cid >= MAX_DETECTED_CPUS) return 0;
     uint64_t my_bit = (1ULL << cid);
+    size_t serviced_count = 0;
 
     for (size_t init_id = 0; init_id < MAX_DETECTED_CPUS; init_id++) {
         if (!(active & (1ULL << init_id))) {
@@ -426,23 +428,30 @@ static inline void smp_tlb_service_local_internal(bool from_ipi) {
             }
             /* Clear our bit in initiator's ack_mask with RELEASE semantics */
             __atomic_fetch_and(&slot->ack_mask, ~my_bit, __ATOMIC_RELEASE);
+            serviced_count++;
         }
     }
+    return serviced_count;
 }
 
 
-void smp_tlb_service_local(void) {
-    smp_tlb_service_local_internal(false);
+size_t smp_tlb_service_local(void) {
+    return smp_tlb_service_local_internal(false);
 }
 
 static void smp_ipi_tlb_handler(interrupt_frame_t *frame) {
     (void)frame;
+    uint64_t t_enter = tlb_clock();
     cpu_local_t *cpu = cpu_current();
     size_t cid = cpu ? cpu->id : 0;
     if (cid < MAX_DETECTED_CPUS) {
         g_ipi_tlb_count[cid]++;
     }
     smp_tlb_service_local_internal(true);
+    uint64_t t_exit = tlb_clock();
+    if (cid < MAX_DETECTED_CPUS && t_exit >= t_enter) {
+        g_ipi_tlb_service_tsc[cid] += (t_exit - t_enter);
+    }
 }
 
 #include "resched_policy.h"
@@ -480,7 +489,7 @@ void smp_ipi_init(void) {
     idt_register_hardware_handler(IPI_VECTOR_PANIC, smp_ipi_panic_handler);
 }
 
-static void smp_tlb_shootdown_impl(uintptr_t virt_addr, uintptr_t cr3, size_t page_count) {
+static void smp_tlb_shootdown_impl(uintptr_t virt_addr, uintptr_t cr3, size_t page_count, smp_tlb_trace_metrics_t *metrics) {
     __atomic_fetch_add(&g_tlb_stats.calls, 1, __ATOMIC_RELAXED);
     if (g_total_cpu_count <= 1) {
         tlb_invalidate_local(virt_addr, page_count);
@@ -520,6 +529,7 @@ static void smp_tlb_shootdown_impl(uintptr_t virt_addr, uintptr_t cr3, size_t pa
          * 2. Write virt_addr and cr3 parameters.
          * 3. Set active bit in g_smp_tlb_active_initiators BEFORE publishing ack_mask.
          * 4. Publish target_mask into ack_mask with RELEASE semantics. */
+        uint64_t t_disp_start = tlb_clock();
         uint64_t gen = slot->generation + 1;
         __atomic_store_n(&slot->generation, gen, __ATOMIC_RELAXED);
         __atomic_store_n(&slot->virt_addr, virt_addr, __ATOMIC_RELAXED);
@@ -532,14 +542,28 @@ static void smp_tlb_shootdown_impl(uintptr_t virt_addr, uintptr_t cr3, size_t pa
 
         /* Invalidate on initiator */
         tlb_invalidate_local(virt_addr, page_count);
+        uint64_t t_disp_end = tlb_clock();
+        if (metrics) {
+            metrics->dispatch_tsc = (t_disp_end >= t_disp_start) ? (t_disp_end - t_disp_start) : 0;
+        }
 
         /* Initiator wait loop:
-         * Polls local TLB service while waiting for targets to ACK, preventing
-         * initiator-initiator lockups if multiple cores shootdown concurrently. */
+         * Unconditionally polls local TLB service while waiting for targets to ACK,
+         * preventing initiator-initiator lockups if multiple cores shootdown concurrently.
+         * Telemetry clocking is conditionally sampled only when peer requests exist. */
         uint64_t iters = 0;
         uint64_t wait_start = tlb_clock();
+        uint64_t service_cycles = 0;
         while (__atomic_load_n(&slot->ack_mask, __ATOMIC_ACQUIRE) != 0) {
-            smp_tlb_service_local();
+            uint64_t active = __atomic_load_n(&g_smp_tlb_active_initiators, __ATOMIC_ACQUIRE);
+            if (__builtin_expect((active & ~(1ULL << my_id)) != 0, 0)) {
+                uint64_t s0 = tlb_clock();
+                size_t serviced = smp_tlb_service_local();
+                uint64_t s1 = tlb_clock();
+                if (serviced > 0 && s1 >= s0) service_cycles += (s1 - s0);
+            } else {
+                smp_tlb_service_local();
+            }
             __asm__ volatile("pause" ::: "memory");
             iters++;
             if (iters > SMP_TLB_TIMEOUT_ITERS) {
@@ -547,9 +571,15 @@ static void smp_tlb_shootdown_impl(uintptr_t virt_addr, uintptr_t cr3, size_t pa
                 smp_tlb_panic_ack_timeout(my_id, target_mask, rem);
             }
         }
+        uint64_t wait_end = tlb_clock();
+        uint64_t total_wait = (wait_end >= wait_start) ? (wait_end - wait_start) : 0;
+        if (metrics) {
+            metrics->service_tsc = service_cycles;
+            metrics->ack_poll_tsc = (total_wait >= service_cycles) ? (total_wait - service_cycles) : 0;
+        }
 
         __atomic_fetch_add(&g_tlb_stats.wait_iters, iters, __ATOMIC_RELAXED);
-        __atomic_fetch_add(&g_tlb_stats.wait_cycles, tlb_clock() - wait_start, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_tlb_stats.wait_cycles, total_wait, __ATOMIC_RELAXED);
         /* Clear our active initiator bit */
         __atomic_fetch_and(&g_smp_tlb_active_initiators, ~(1ULL << my_id), __ATOMIC_RELEASE);
     } else {
@@ -563,10 +593,14 @@ static void smp_tlb_shootdown_impl(uintptr_t virt_addr, uintptr_t cr3, size_t pa
 
 
 void smp_tlb_shootdown(uintptr_t va, uintptr_t cr3) {
-    smp_tlb_shootdown_impl(va, cr3, va ? 1 : 0);
+    smp_tlb_shootdown_impl(va, cr3, va ? 1 : 0, NULL);
 }
 
 void smp_tlb_shootdown_pages(uintptr_t va, uintptr_t cr3, size_t count) {
+    smp_tlb_shootdown_pages_tracked(va, cr3, count, NULL);
+}
+
+void smp_tlb_shootdown_pages_tracked(uintptr_t va, uintptr_t cr3, size_t count, smp_tlb_trace_metrics_t *metrics) {
     /* Never return after an invalid request: callers may reclaim frames. */
     if (!count || count > 16 || va % PAGE_SIZE ||
         va > UINT64_MAX - (count * PAGE_SIZE - 1) ||
@@ -577,7 +611,7 @@ void smp_tlb_shootdown_pages(uintptr_t va, uintptr_t cr3, size_t count) {
         smp_send_panic();
         for (;;) __asm__ volatile("cli; hlt");
     }
-    smp_tlb_shootdown_impl(va, cr3, count);
+    smp_tlb_shootdown_impl(va, cr3, count, metrics);
 }
 
 void smp_send_resched(size_t cpu_id) {

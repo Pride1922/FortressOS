@@ -85,7 +85,7 @@ int lockstat_dump(char *buf, size_t cap);
 /* SMP Piece 6C: Polled TLB shootdown service in spinlock wait loops.
  * Prevents deadlock when waiter has IF=0 and initiator is waiting for waiter's ACK.
  * Invariant: Must not acquire locks, sleep, schedule, or re-enable IF. */
-void smp_tlb_service_local(void);
+size_t smp_tlb_service_local(void);
 
 #define SPINLOCK_WARN_THRESHOLD 1000000ULL
 

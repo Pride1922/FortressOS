@@ -143,6 +143,29 @@ void process_signal_user_return(interrupt_frame_t *frame);
  * Sets *return_disposition = 1 (RETURN_SIGRETURN) on success. */
 int64_t sys_sigreturn(interrupt_frame_t *frame, int *return_disposition);
 void   thread_exit(void);
+typedef struct {
+    uint64_t slot_wait_tsc;
+    uint64_t slot_hold_tsc;
+    uint64_t alloc_prep_tsc;
+    uint64_t pmm_tsc;
+    uint64_t map_prep_tsc;
+    uint64_t vmm_lock_wait_tsc;
+    uint64_t vmm_lock_hold_tsc;
+    uint64_t vmm_pt_work_tsc;
+    uint64_t vmm_pre_lock_tsc;
+    uint64_t vmm_post_lock_prep_tsc;
+    uint64_t vmm_put_op_wait_tsc;
+    uint64_t vmm_put_op_hold_tsc;
+    uint64_t vmm_tlb_dispatch_tsc;
+    uint64_t vmm_tlb_ack_poll_tsc;
+    uint64_t vmm_tlb_service_tsc;
+    uint64_t alloc_tail_tsc;
+    uint64_t free_mid_tsc;
+    uint64_t free_tail_tsc;
+    uint64_t inner_tsc;
+} kstack_subinterval_t;
+int    kstack_alloc_tracked(uintptr_t *out_guard, uintptr_t *out_base, size_t *out_size, kstack_subinterval_t *metrics);
+void   kstack_free_tracked(int slot, uintptr_t base_addr, kstack_subinterval_t *metrics);
 void   sched_reap_dead(void);
 /* Thread context, no locks held. Bounded value-only all-CPU tick refresh;
  * scheduler locks and process lock never overlap. No TCB pointers escape. */
@@ -218,5 +241,32 @@ uint64_t sched_get_runnable_switches_count(void);
 extern void switch_context(uint64_t *old_rsp, uint64_t new_rsp);
 extern void thread_trampoline(void);
 extern void user_process_trampoline(void);
+
+/* Process Launch Fault Injection (Verification Only) */
+typedef enum {
+    SPAWN_FAULT_NONE = 0,
+    SPAWN_FAULT_VMM_USER_PML4,    /* Fail at vmm_create_user_pml4 */
+    SPAWN_FAULT_ELF_SEGMENT_PMM,  /* Fail at elf segment frame alloc (trigger: page idx) */
+    SPAWN_FAULT_ELF_SEGMENT_MAP,  /* Fail at elf segment vmm_map_page (trigger: page idx) */
+    SPAWN_FAULT_SIGRESTORER_PMM,  /* Fail at sigrestorer frame alloc */
+    SPAWN_FAULT_SIGRESTORER_MAP,  /* Fail at sigrestorer vmm_map_page */
+    SPAWN_FAULT_USER_STACK_PMM,   /* Fail at user stack frame alloc */
+    SPAWN_FAULT_USER_STACK_MAP,   /* Fail at user stack vmm_map_page */
+    SPAWN_FAULT_KSTACK_PMM,       /* Fail inside kstack_alloc during frame alloc loop */
+    SPAWN_FAULT_KSTACK_MAP,       /* Fail inside kstack_alloc during vmm_map_pages */
+    SPAWN_FAULT_KSTACK_ALLOC,     /* Fail at kstack_alloc (slot exhaustion) */
+    SPAWN_FAULT_TCB_KMALLOC,      /* Fail at kmalloc(sizeof(tcb_t)) */
+    SPAWN_FAULT_FD_INIT,          /* Fail at fd_init_std */
+    SPAWN_FAULT_SCHED_REF,        /* Fail at vmm_space_add_sched_ref */
+} spawn_fault_type_t;
+
+void spawn_set_fault_injection(spawn_fault_type_t type, size_t trigger_count);
+void spawn_clear_fault_injection(void);
+spawn_fault_type_t spawn_get_fault_type(void);
+size_t spawn_get_fault_trigger(void);
+size_t spawn_get_fault_hits(void);
+void spawn_record_fault_hit(void);
+uint64_t spawn_get_last_aborted_pid(void);
+tcb_t *process_spawn_with_actions(size_t target_cpu, const char *name, const void *elf_data, size_t elf_size, int action_count, const spawn_kaction_t *actions);
 
 #endif /* FORTRESS_THREAD_H */

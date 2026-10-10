@@ -956,13 +956,15 @@ static int64_t sys_stat(uintptr_t user_path, uintptr_t user_statbuf) {
         return SYSCALL_EFAULT;
     }
 
-    vfs_node_t *node = vfs_lookup(kpath);
+    int lookup_error=0;
+    vfs_node_t *node = vfs_lookup_ref(kpath,&lookup_error);
     if (!node) {
-        return SYSCALL_ENOENT;
+        return syscall_from_vfs_error(lookup_error);
     }
 
     vfs_stat_t st;
     vfs_stat(node, &st);
+    vfs_node_put(node);
     memcpy((void *)user_statbuf, &st, sizeof(vfs_stat_t));
     return SYSCALL_SUCCESS;
 }
@@ -1116,9 +1118,12 @@ static int64_t sys_chdir(uintptr_t user_path) {
     err = resolve_path(curr, raw_path, resolved, sizeof(resolved));
     if (err != SYSCALL_SUCCESS) return err;
 
-    vfs_node_t *node = vfs_lookup(resolved);
-    if (!node) return SYSCALL_ENOENT;
-    if (node->type != VFS_DIRECTORY) return SYSCALL_ENOTDIR;
+    int lookup_error=0;
+    vfs_node_t *node = vfs_lookup_ref(resolved,&lookup_error);
+    if (!node) return syscall_from_vfs_error(lookup_error);
+    bool directory=node->type==VFS_DIRECTORY;
+    vfs_node_put(node);
+    if (!directory) return SYSCALL_ENOTDIR;
 
     size_t rlen = strlen(resolved);
     if (rlen >= sizeof(curr->cwd)) return SYSCALL_EINVAL;
@@ -1680,6 +1685,44 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         case SYS_LOCKSTAT:
             result = sys_lockstat(frame->rdi, frame->rsi);
             break;
+
+        case SYS_MEMINFO: {
+            if (frame->rsi < sizeof(sysinfo_mem_t)) {
+                result = SYSCALL_EINVAL;
+                break;
+            }
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), frame->rdi,
+                                         sizeof(sysinfo_mem_t), true)) {
+                result = SYSCALL_EFAULT;
+                break;
+            }
+            sysinfo_mem_t mem;
+            memset(&mem, 0, sizeof(mem));
+            mem.struct_size = sizeof(sysinfo_mem_t);
+            mem.flags = 0;
+
+            pmm_stats_t pmm;
+            pmm_get_stats(&pmm);
+            mem.pmm_total_frames       = (uint64_t)pmm.total_pages;
+            mem.pmm_used_frames        = (uint64_t)pmm.used_pages;
+            mem.pmm_free_frames        = (uint64_t)pmm.free_pages;
+            mem.pmm_allocatable_frames = (uint64_t)pmm.allocatable_pages;
+
+            heap_stats_t heap;
+            heap_get_stats(&heap);
+            mem.heap_used_bytes      = (uint64_t)heap.used_bytes;
+            mem.heap_free_bytes      = (uint64_t)heap.free_bytes;
+            mem.heap_committed_bytes = (uint64_t)heap.total_bytes;
+            mem.heap_largest_payload = (uint64_t)heap.largest_free_payload;
+            mem.heap_free_blocks     = (uint64_t)heap.free_blocks;
+
+            mem.vmm_table_frames     = (uint64_t)vmm_get_allocated_table_frames();
+            mem.vmm_deferred_spaces  = (uint64_t)vmm_get_deferred_count();
+
+            memcpy((void *)frame->rdi, &mem, sizeof(mem));
+            result = 0;
+            break;
+        }
 
         case SYS_SIGRETURN:
             result = sys_sigreturn(frame, &return_disposition);

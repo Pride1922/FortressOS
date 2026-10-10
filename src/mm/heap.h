@@ -14,9 +14,9 @@
  * - Invariant: heap_get_used_bytes() + heap_get_free_bytes() == heap_get_total_bytes().
  *
  * Concurrency & Execution Context Contract:
- * - Single-CPU only; non-reentrant.
+ * - Serialized by the rank-2 IRQ-save heap lock; supports concurrent CPUs.
  * - MUST NOT be called from Interrupt Service Routines (ISRs) or interrupt context.
- * - Full spinlock synchronization will be integrated in Phase 6 (Scheduling & Threads).
+ * - Non-recursive; callers must respect the heap -> VMM -> PMM lock order.
  */
 
 /* Virtual Address Bounds for Kernel Dynamic Heap (512 MiB capacity) */
@@ -46,6 +46,13 @@ size_t heap_get_total_bytes(void);
 size_t heap_get_allocated_blocks(void);
 size_t heap_get_free_blocks(void);
 bool   heap_verify_integrity(void);
+typedef struct {
+    size_t used_bytes, free_bytes, total_bytes;
+    size_t allocated_blocks, free_blocks, largest_free_payload;
+} heap_stats_t;
+/* Coherent rank-2 snapshot. Byte totals include block metadata; largest free
+ * payload excludes header/footer. Traverses the free list; thread context. */
+void heap_get_stats(heap_stats_t *out);
 
 /* Controlled Fault Injection Hooks (For Transactional Rollback Testing) */
 typedef enum {

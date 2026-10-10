@@ -72,6 +72,13 @@ typedef struct vfs_node {
     bool rename_no_replace;
     /* Called once on final file_t release; may destroy anonymous nodes. */
     void (*close)(struct vfs_node *node);
+    /* Optional owned-node API. lookup_ref/create_ref return one reference
+     * acquired under filesystem exclusion; put releases it. Legacy lookup/
+     * create callbacks must continue returning mount-lifetime stable nodes. */
+    struct vfs_node *(*lookup_ref)(struct vfs_node *, const char *, int *);
+    struct vfs_node *(*create_ref)(struct vfs_node *, const char *, vfs_node_type_t, int *);
+    int (*get)(struct vfs_node *);
+    void (*put)(struct vfs_node *);
 } vfs_node_t;
 
 typedef struct file {
@@ -95,6 +102,11 @@ typedef struct {
 
 void        vfs_init(void);
 vfs_node_t *vfs_lookup(const char *path);
+/* Owned reference, including errors from filesystem lookup. Pair success with
+ * vfs_node_put. Non-managed filesystems retain their existing stable lifetime. */
+vfs_node_t *vfs_lookup_ref(const char *path, int *err_out);
+vfs_node_t *vfs_create_ref(const char *path, vfs_node_type_t type, int *err_out);
+void        vfs_node_put(vfs_node_t *node);
 vfs_node_t *vfs_create_node(const char *path, vfs_node_type_t type, uint64_t size, const void *data);
 vfs_node_t *vfs_create(const char *path, vfs_node_type_t type);
 vfs_node_t *vfs_create_ext(const char *path, vfs_node_type_t type, int *err_out);

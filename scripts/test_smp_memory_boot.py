@@ -81,7 +81,7 @@ def run_case(iso, temp, firmware, cpus, ram, timeout):
                 output = log.read_text(errors="replace")
                 if "[FAIL] SMP memory 6A:" in output:
                     raise AssertionError(f"Memory boot assertion failed: {log}")
-                if "fortress> " in output:
+                if re.search(r"(?:fortress> |fortress:[^\r\n]* \$ )", output):
                     break
                 if child.poll() is not None:
                     raise RuntimeError(f"QEMU exited early; see {log} and {error}")

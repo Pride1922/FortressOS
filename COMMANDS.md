@@ -1065,21 +1065,23 @@ top | head -n 8
 ---
 
 ### `sysinfo`
-**Syntax:** `sysinfo`  
+**Syntax:** `sysinfo [-m|--memory] [-h|--help]`  
 **Path:** `/bin/sysinfo`  
-**Description:** Queries kernel system statistics and displays structured system information across 5 sections:
+**Description:** Queries kernel system statistics and displays structured system information across 5 sections (or detailed memory observability with `-m`):
 * **Kernel / OS identity**: FortressOS release banner, SMP configuration, build commit hash and date, formatted uptime (`Hh Mm Ss`).
 * **CPU**: Active CPUs online vs detected total, preemption frequency (100 Hz), calibrated TSC frequency in GHz with hardware status (`invariant` or `standard`).
 * **Memory**: Total, used, and free managed physical RAM formatted with unit scaling (`GiB`/`MiB`), and kernel heap allocated vs committed memory (`max 512 MiB`).
 * **Tasks**: Total enumerable processes with state breakdown (`running`, `sleeping`, `zombie`), and total active thread count.
 * **Storage summary**: Block devices, partitions, and active mounted filesystem counts.
+* **Memory Observability (`-m`)**: Detailed physical memory (PMM) frames, kernel heap live/free/committed bytes, largest free payload, free block count, VMM page-table frames, and deferred teardown queue length.
 
 **Examples:**
 ```sh
 sysinfo
+sysinfo -m
 ```
 
-Sample output:
+Sample output (`sysinfo`):
 ```text
 FortressOS 1.0 (x86_64 SMP, 4 CPUs)
 Build: 7f9a446 (2026-10-07)
@@ -1096,6 +1098,32 @@ Processes:  2 (2 running, 0 sleeping, 0 zombies)
 Threads:    9
 
 Storage:  1 device, 1 partition, 2 mounted
+```
+
+Sample output (`sysinfo -m`):
+```text
+FortressOS Memory Subsystem Observability
+
+Physical Memory (PMM):
+  Total managed:      65536 frames (256.0 MiB)
+  Used / allocated:   5126 frames (20.0 MiB)
+  Free / available:   60410 frames (235.9 MiB)
+  Allocatable (<1G):  60410 frames (235.9 MiB)
+
+Kernel Dynamic Heap:
+  Live used:          29920 B (including 32B block metadata)
+  Reusable free:      15136 B (within committed capacity)
+  Committed backing:  45056 B (11 physical frames)
+  Largest free chunk: 15104 B payload (excludes block tags)
+  Free blocks count:  1
+
+Virtual Memory Management (VMM):
+  Page-table frames:  279 frames (kernel + user hierarchy)
+  Deferred teardown:  0 queued address spaces
+
+Snapshot Notice:
+  Counters are individually coherent; cross-subsystem values
+  are observed sequentially without global lock nesting.
 ```
 
 ---
