@@ -32,10 +32,22 @@ void console_inc_generation(void) {}
 bool console_is_quiet(void) { return false; }
 int64_t input_read(void *p,size_t n) { (void)p;(void)n;return 0; }
 bool block_read_sector(block_dev_t *dev,uint64_t lba,void *bytes) {
+#ifdef TEST_PERM_DEVICE_IO
+    extern void permissions_device_lock_observed(void);
+    permissions_device_lock_observed();
+#endif
     reads++;if (!fail_read) return false;if (fail_read>0) fail_read--;return dev->read_sector(dev,lba,bytes);
 }
 bool block_write_sector(block_dev_t *dev,uint64_t lba,const void *bytes) { return dev->write_sector(dev,lba,bytes); }
 bool block_flush(block_dev_t *dev) { return dev->flush(dev); }
+#include "../src/fs/gpt.h"
+size_t gpt_get_partition_count(void) { return 0; }
+gpt_partition_t *gpt_get_partition(size_t i) { (void)i;return NULL; }
+#ifndef TEST_PERM_DEVICE_IO
+bool ext2_device_read_sector(block_dev_t *d,uint64_t l,void *b) { (void)d;(void)l;(void)b;assert(0);return false; }
+#endif
+#include "../src/fs/runfs.c"
+#include "../src/fs/devfs.c"
 #include "../src/fs/vfs.c"
 #include "../src/fs/ext4.c"
 #include "../src/fs/jbd2.c"
@@ -47,11 +59,8 @@ static void teardown(void) {
         g_vfs_root->children=g_vfs_root->children->next;ext4_engine_close(e);
     }
     /* VFS may install unrelated empty in-memory root directories. */
-    while (g_vfs_root && g_vfs_root->children) {
-        vfs_node_t *node=g_vfs_root->children;
-        assert(node->type==VFS_DIRECTORY && !node->children && !node->fs_private);
-        g_vfs_root->children=node->next;kfree(node);
-    }
+    /* Static boot mounts are reset by the next boot-only vfs_init. */
+    if (g_vfs_root) g_vfs_root->children=NULL;
     kfree(g_vfs_root);g_vfs_root=NULL;assert(!live && !e4_engine_busy);
     fail_read=fail_alloc=-1;
 }

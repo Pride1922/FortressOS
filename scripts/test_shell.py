@@ -96,7 +96,12 @@ def run(mode):
             qmp.execute("cont")
 
             def output():
-                return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", log.read_bytes().decode(errors="replace")).replace("\r", "")
+                text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", log.read_bytes().decode(errors="replace")).replace("\r", "")
+                if os.environ.get("PERM_TRACE_EXPECT") == "1":
+                    # Raw UART stays intact for independent trace audit. Trace
+                    # output may cause the shell to emit a separating blank line.
+                    text = re.sub(r"(?:PERM TRACE mask=\d+ euid=\d+ egid=\d+ caps=0x[0-9A-Fa-f]+\n)+\n?", "", text)
+                return text
 
             def wait_prompt(after=0):
                 deadline = time.monotonic() + 45
@@ -172,23 +177,26 @@ def run(mode):
                     node = u64(node + next_offset)
                 return 0
 
-            def find_shell_blocked(deadline=2.0):
+            def find_shell_blocked(deadline=2.0, keep_stopped=False):
                 end = time.time() + deadline
                 while True:
                     qmp.execute("stop")
+                    node = 0
                     try:
                         scheduler_symbols(remote, sym)
                         node = shell_blocked_node()
                     finally:
-                        qmp.execute("cont")
+                        if not node or not keep_stopped:
+                            qmp.execute("cont")
                     if node: return node
                     if time.time() > end:
                         raise AssertionError("stdin reader must sleep, not yield/poll")
                     time.sleep(0.02)
 
             def snapshot():
-                find_shell_blocked()
-                qmp.execute("stop")
+                # Keep the stop that admitted the blocked reader. Resuming then
+                # stopping again creates a second observation window.
+                find_shell_blocked(keep_stopped=True)
                 try:
                     scheduler_symbols(remote, sym)
                     # Re-walk under the held stop so the assertions below describe

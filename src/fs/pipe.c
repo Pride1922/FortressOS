@@ -178,9 +178,9 @@ int pipe_create(vfs_node_t **out_read_node, vfs_node_t **out_write_node) {
     p->active_endpoints = 2;
     p->data_bytes = 0;
     p->space_bytes = PIPE_CAPACITY;
-    *p->read_node = (vfs_node_t){ .type = VFS_STREAM, .is_stream = true,
+    *p->read_node = (vfs_node_t){ .type = VFS_STREAM, .mode=VFS_S_IFIFO|0600, .is_stream = true,
         .fs_private = p, .read = pipe_read, .close = pipe_close_endpoint };
-    *p->write_node = (vfs_node_t){ .type = VFS_STREAM, .is_stream = true,
+    *p->write_node = (vfs_node_t){ .type = VFS_STREAM, .mode=VFS_S_IFIFO|0600, .is_stream = true,
         .fs_private = p, .write = pipe_write, .close = pipe_close_endpoint };
     *out_read_node = p->read_node;
     *out_write_node = p->write_node;

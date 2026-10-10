@@ -39,7 +39,8 @@ enum builtin {
     CMD_JOBS, CMD_FG, CMD_BG, CMD_KILL,
     CMD_VERSION,
     CMD_CLEAR,
-    CMD_PRINTF
+    CMD_PRINTF,
+    CMD_UMASK
 };
 
 enum builtin builtin_find(const char *name);

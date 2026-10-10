@@ -154,7 +154,7 @@ int64_t net_tcp_syscall(interrupt_frame_t *f) {
         }
         if (result!=SYSCALL_EAGAIN) {
             if (send && result==SYSCALL_EPIPE)
-                (void)process_signal_send(caller->tid,(int64_t)caller->tid,SIGPIPE);
+                (void)process_signal_send_kernel(caller->tid,(int64_t)caller->tid,SIGPIPE);
             return result;
         }
         if (!connect && (f->rax==SYS_SEND || f->rax==SYS_RECV) && f->r10==NET_MSG_DONTWAIT) return result;

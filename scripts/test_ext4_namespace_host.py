@@ -61,7 +61,7 @@ def main():
                         if profile in (0,6):assert 'Size: 0' in stat,stat
                         if profile==1:
                             listing=run(['debugfs','-R','ls -l /newdir',str(linux)])
-                            assert '..' in listing and re.search(r'Mode:\s+0600',stat),listing+stat
+                            assert '..' in listing and re.search(r'Mode:\s+0755',stat),listing+stat
                 records.append({'block':bs,'sector':ss,'wrap':wrap,'argv':cmd,
                     'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest()})
     (out/'manifest.json').write_text(json.dumps(records,indent=2)+'\n')

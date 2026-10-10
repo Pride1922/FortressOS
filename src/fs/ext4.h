@@ -5,6 +5,11 @@
 #include "jbd2.h"
 #include "ext4_physical_fixture.h"
 
+/* Trusted devfs read adapter, no locks held on entry. handled distinguishes
+ * no boot-published EXT4 mount from a handled I/O error (never retry errors).
+ * Mount selection is boot-only; this is not a hot-mount/transport API. */
+bool ext4_device_read_sector(block_dev_t *,uint64_t,void *,bool *handled);
+
 /* E4-A restricted-profile mounts at /mnt. Production USB dispatch uses the existing
  * explicit PARTUUID, GPT and durability admission policy. Reads <=64KiB, writes <=32KiB per callback;
  * extent depth <=2, 4096 extent/node traversal budget, 64 metadata/data images

@@ -2,6 +2,7 @@
 """Phase 0: real all-CPU Ring 3 accounting; disposable ISO, no data disks."""
 from pathlib import Path
 import shutil
+import re
 import subprocess
 import tempfile
 import time
@@ -54,7 +55,8 @@ def main():
                         while time.monotonic() < deadline:
                             output = log.read_text(errors="replace")
                             assert "S9 METADATA FAIL" not in output and "[FATAL]" not in output, output[-4000:]
-                            if "S9 METADATA PASS" in output and "fortress> " in output:
+                            if "S9 METADATA PASS" in output and re.search(
+                                    r"(?:fortress> |fortress:[^\r\n]* \$ )", output):
                                 break
                             assert child.poll() is None, output[-4000:]
                             time.sleep(0.1)

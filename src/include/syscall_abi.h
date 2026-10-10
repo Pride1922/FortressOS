@@ -66,6 +66,35 @@
 #define SYS_LOCKSTAT      54 /* (char *buf, uint64_t cap) -> bytes written or -errno */
 #define SYS_SPAWN_PROFILE 55 /* Spawn 0..2/160B; waits 3..5/72B; pipe I/O 6..8/184B. */
 #define SYS_MEMINFO       56 /* (sysinfo_mem_t *buf, uint64_t size) -> 0/-errno */
+#define SYS_STAT_EXT      57 /* (path, stat_ext_v1_t *out, size, version=1) -> 0/-errno */
+#define SYS_UMASK         58 /* (mask) -> previous low-0777 mask */
+#define SYS_CHMOD         59 /* (path, mode) -> 0/-errno */
+#define SYS_FCHMOD        60 /* (fd, mode) -> 0/-errno */
+#define SYS_CHOWN         61 /* (path, uint32 uid, uint32 gid, keep flags) */
+#define SYS_GETRESUID     62 /* (uint32 *real, *effective, *saved) -> 0/-errno */
+#define SYS_GETRESGID     63 /* Same pointer contract as GETRESUID. */
+#define SYS_GETGROUPS     64 /* (capacity, uint32 *groups); capacity=0 queries count */
+#define SYS_SETRESUID     66 /* (uint32 real, effective, saved, keep_flags) */
+#define SYS_SETRESGID     67 /* Same full-width IDs/keep flags as SETRESUID. */
+#define SYS_SETGROUPS     68 /* (count <= 16, const uint32 *groups) */
+#define SYS_CAPSET        69 /* (uint64 mask): drop-only, rejects undefined bits */
+#define SYS_CAPGET        70 /* () -> effective defined-bit mask */
+#define CREDS_KEEP_REAL 1u
+#define CREDS_KEEP_EFFECTIVE 2u
+#define CREDS_KEEP_SAVED 4u
+#define UMASK_QUERY UINT64_MAX /* Read current mask without changing it. */
+#define CHOWN_KEEP_UID 1u
+#define CHOWN_KEEP_GID 2u
+#ifdef TEST_PERMISSIONS_ENFORCEMENT
+#define SYS_TEST_SETCREDS 65 /* Test image only: fixed UID/GID 1001, no caps. */
+#endif
+typedef struct {
+    uint32_t size, version;
+    uint64_t file_size;
+    uint32_t type, mode, uid, gid, mnt_flags, reserved;
+} stat_ext_v1_t;
+_Static_assert(sizeof(stat_ext_v1_t)==40, "stat_ext v1 size");
+_Static_assert(offsetof(stat_ext_v1_t,file_size)==8, "stat_ext v1 offset");
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1
@@ -325,6 +354,7 @@ _Static_assert(__builtin_offsetof(block_info_t, part_index) == 188, "block_info_
 #define SYSCALL_EADDRINUSE -29
 #define SYSCALL_ETIMEDOUT -30
 #define SYSCALL_EISCONN -31
+#define SYSCALL_EACCES        (-32)
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

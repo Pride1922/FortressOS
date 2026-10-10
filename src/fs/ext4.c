@@ -1,6 +1,9 @@
 /* E4-A: bounded extent-backed reads and synchronous non-journaled writes. */
 #include "ext4.h"
 #include "vfs.h"
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+#include "permission_values.h"
+#endif
 #include "heap.h"
 #include "string.h"
 #include "spinlock.h"
@@ -18,7 +21,9 @@ typedef struct {
     ext4_mount_t *fs;
     uint32_t ino, generation;
     uint64_t size;
-    uint16_t mode;
+    uint16_t mode; /* type discriminator retained for bounded engine helpers */
+    uint16_t full_mode;
+    uint32_t uid,gid;
     uint8_t extent[60];
     e4_map_t *map;
 } e4_inode_t;
@@ -67,6 +72,16 @@ int ext4_test_arm_commit_pause(ext4_mount_t *mount,void (*pause)(void)) {
 }
 #endif
 static ext4_mount_t *e4_active;
+/* Boot publishes at most one /mnt filesystem before user execution. Raw
+ * read-only devfs I/O joins that same exclusion; never nests filesystem locks. */
+bool ext4_device_read_sector(block_dev_t *dev,uint64_t lba,void *buf,bool *handled) {
+    spin_debug_assert_unheld();
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    *handled=e4_active!=NULL;
+    bool ok=*handled && block_read_sector(dev,lba,buf);
+    spin_unlock_irqrestore(&e4_lock,flags);
+    return ok;
+}
 static bool e4_engine_busy;
 static void e4_engine_owner(ext4_engine_t *e);
 static int e4_journal_drain(ext4_mount_t *fs,bool finish);
@@ -292,7 +307,9 @@ static int e4_inode(ext4_mount_t *fs,uint32_t ino,e4_inode_t *out) {
     uint64_t size=e4_u32(raw+4) | (uint64_t)e4_u32(raw+108)<<32;
     if (size>8ULL*1024*1024*1024) return -VFS_EFBIG;
     if (!e4_u16(raw+26) && fs->orphan_access!=ino) return -VFS_EIO;
-    *out=(e4_inode_t){.fs=fs,.ino=ino,.generation=generation,.size=size,.mode=mode};
+    *out=(e4_inode_t){.fs=fs,.ino=ino,.generation=generation,.size=size,.mode=mode,.full_mode=e4_u16(raw),
+        .uid=e4_u16(raw+2)|(uint32_t)e4_u16(raw+120)<<16,
+        .gid=e4_u16(raw+24)|(uint32_t)e4_u16(raw+122)<<16};
     memcpy(out->extent,raw+40,60);
     return 0;
 }
@@ -482,6 +499,8 @@ static int64_t e4_read(vfs_node_t *node,uint64_t off,void *buf,size_t len) {
 static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name);
 static vfs_node_t *e4_lookup_ref(vfs_node_t *parent,const char *name,int *error);
 static vfs_node_t *e4_jcreate_ref(vfs_node_t *parent,const char *name,vfs_node_type_t type,int *error);
+static vfs_node_t *e4_jcreate_attrs(vfs_node_t *,const char *,vfs_node_type_t,const vfs_create_attrs_t *,int *);
+static vfs_node_t *e4_create_attrs(vfs_node_t *,const char *,vfs_node_type_t,const vfs_create_attrs_t *,int *);
 
 /* Cached children (including detached open nodes) keep their parent address
  * alive. Root and legacy raw-pointer nodes are never eviction candidates. */
@@ -545,22 +564,58 @@ static int e4_readdir(vfs_node_t *node,uint64_t cookie,void *out) {
     }
     spin_unlock_irqrestore(&e4_lock,flags); return r;
 }
+static int e4_metadata(vfs_node_t *node,vfs_metadata_t *out) {
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    e4_node_t *n=(e4_node_t *)node;e4_inode_t in;ext4_mount_t *fs=n->inode.fs;
+    int r=0;
+    if (fs->journal_mounted) r=e4_journal_refresh(node);
+    if (!r) {
+        if (fs->journal_mounted) in=n->inode;
+        else r=e4_inode(fs,n->inode.ino,&in);
+    }
+    if (!r) *out=(vfs_metadata_t){.size=in.size,.type=node->type,.mode=in.full_mode,
+        .uid=in.uid,.gid=in.gid,.mnt_flags=node->mnt_flags};
+    spin_unlock_irqrestore(&e4_lock,flags);return r;
+}
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+static vfs_metadata_t e4_value(const e4_inode_t *);
+static int e4_access_locked(vfs_node_t *,unsigned,const creds_t *);
+static int e4_permission_actor(vfs_node_t *,unsigned,const creds_t *);
+static vfs_node_t *e4_lookup_actor(vfs_node_t *,const char *,const creds_t *,int *);
+static vfs_node_t *e4_create_actor(vfs_node_t *,const char *,vfs_node_type_t,uint32_t,const creds_t *,int *);
+static int e4_open_actor(vfs_node_t *,unsigned,bool,const creds_t *);
+static int e4_unlink_actor(vfs_node_t *,const char *,bool,const creds_t *);
+static int e4_rename_actor(vfs_node_t *,const char *,vfs_node_t *,const char *,bool,const creds_t *);
+static int e4_setattr_actor(vfs_node_t *,bool,uint32_t,creds_id_change_t,creds_id_change_t,const creds_t *);
+static int64_t e4_write_actor(vfs_node_t *,uint64_t *,bool,const void *,size_t,const creds_t *);
+#endif
 static void e4_setup(e4_node_t *n, e4_inode_t *in) {
     n->inode=*in; n->node.fs_private=&n->inode; n->node.size=in->size;
     n->node.type=in->mode==0x4000 ? VFS_DIRECTORY : VFS_FILE;
+    n->node.mode=in->full_mode;n->node.uid=in->uid;n->node.gid=in->gid;
+    n->node.mnt_flags=(in->fs->engine ? 0 : VFS_MNT_RDONLY)|VFS_MNT_NOSUID|VFS_MNT_NODEV;
+    n->node.metadata=e4_metadata;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    n->node.permission_actor=e4_permission_actor;n->node.open_actor=e4_open_actor;
+    n->node.setattr_actor=e4_setattr_actor;
+    if (in->mode==VFS_S_IFDIR) {
+        n->node.lookup_actor=e4_lookup_actor;n->node.create_actor=e4_create_actor;
+        n->node.unlink_actor=e4_unlink_actor;n->node.rename_actor=e4_rename_actor;
+    } else n->node.write_actor=e4_write_actor;
+#endif
     n->node.can_write=e4_can_write;
     if (in->fs->engine) {
         n->node.owns_nodes=true; n->node.rename_no_replace=true;
         n->node.serializes_write_offset=true;
         n->node.open=e4_open; n->node.close=e4_close;
-        if (in->mode==0x4000) { n->node.create=e4_create; n->node.unlink=e4_unlink; n->node.rename=e4_rename; }
+        if (in->mode==0x4000) { n->node.create=e4_create;n->node.create_attrs_ref=e4_create_attrs; n->node.unlink=e4_unlink; n->node.rename=e4_rename; }
         else { n->node.write=e4_write; n->node.truncate=e4_truncate; }
         if (in->fs->journal_mounted) {
             n->node.get=e4_node_get;n->node.put=e4_node_put;
             n->node.close=e4_jclose;
             if (in->mode==0x4000) {
                 n->node.lookup_ref=e4_lookup_ref;n->node.create_ref=e4_jcreate_ref;
-                n->node.create=e4_jcreate;n->node.unlink=e4_junlink;n->node.rename=e4_jrename;
+                n->node.create=e4_jcreate;n->node.create_attrs_ref=e4_jcreate_attrs;n->node.unlink=e4_junlink;n->node.rename=e4_jrename;
             }
             else { n->node.write=e4_jwrite;n->node.truncate=e4_jtruncate; }
         }
@@ -568,12 +623,17 @@ static void e4_setup(e4_node_t *n, e4_inode_t *in) {
     if (n->node.type==VFS_DIRECTORY) { n->node.lookup=e4_lookup; n->node.readdir=e4_readdir; }
     else n->node.read=e4_read;
 }
-static vfs_node_t *e4_lookup_common(vfs_node_t *parent,const char *name,int *error,bool owned) {
+static vfs_node_t *e4_lookup_common(vfs_node_t *parent,const char *name,int *error,bool owned,const creds_t *actor) {
     if (error) *error=-VFS_EINVAL;
     if (!parent || !name || !*name || strlen(name)>=VFS_MAX_NAME) return NULL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
     e4_inode_t *in=parent->fs_private, child; ext4_mount_t *fs=in->fs; uint32_t ino;
     int status=fs->journal_mounted ? e4_journal_refresh(parent) : 0;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if (!status && actor) status=e4_access_locked(parent,VFS_MAY_EXEC,actor);
+#else
+    (void)actor;
+#endif
     if (status) { if (error) *error=status;spin_unlock_irqrestore(&e4_lock,flags);return NULL; }
     vfs_dirent_t entry;
     if (fs->engine) in->map=NULL;
@@ -583,12 +643,16 @@ static vfs_node_t *e4_lookup_common(vfs_node_t *parent,const char *name,int *err
     if (inode_error) status=inode_error;
     if (r==1 && !inode_error &&
         entry.type==(child.mode==0x4000 ? VFS_DIRECTORY : VFS_FILE)) {
-        if (fs->engine && !strcmp(name,".")) {
+        if (!strcmp(name,".")) {
             result=ino==in->ino ? parent : NULL;
             goto publish;
         }
-        if (fs->engine && !strcmp(name,"..")) {
-            vfs_node_t *up=parent==&fs->cached[0]->node ? parent : parent->parent;
+        if (!strcmp(name,"..")) {
+            if (parent==&fs->cached[0]->node) {
+                result=ino==in->ino ? parent->parent : NULL;
+                goto publish;
+            }
+            vfs_node_t *up=parent->parent;
             e4_inode_t *up_inode=up ? up->fs_private : NULL;
             result=up_inode && up_inode->fs==fs && up_inode->ino==ino ? up : NULL;
             goto publish;
@@ -608,7 +672,7 @@ static vfs_node_t *e4_lookup_common(vfs_node_t *parent,const char *name,int *err
         } else if (!result) status=-VFS_EFBIG;
     }
 publish:
-    if (result && fs->journal_mounted) {
+    if (result && result->get==e4_node_get) {
         e4_node_t *node=(e4_node_t *)result;
         if (owned) {
             if (node->refs==UINT32_MAX) { result=NULL;status=-VFS_EFBIG; }
@@ -619,10 +683,10 @@ publish:
     spin_unlock_irqrestore(&e4_lock,flags); return result;
 }
 static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name) {
-    return e4_lookup_common(parent,name,NULL,false);
+    return e4_lookup_common(parent,name,NULL,false,NULL);
 }
 static vfs_node_t *e4_lookup_ref(vfs_node_t *parent,const char *name,int *error) {
-    return e4_lookup_common(parent,name,error,true);
+    return e4_lookup_common(parent,name,error,true,NULL);
 }
 static void e4_discard(ext4_mount_t *fs) {
     if (!fs) return;
@@ -747,7 +811,7 @@ static int e4_mount(block_dev_t *dev,const char *path,ext4_mount_t **out,bool rw
     int r=rw ? e4_rw_workspace(fs) : 0;
     if (r) { e4_discard(fs); return r; }
     uint64_t flags=spin_lock_irqsave(&e4_lock);
-    if (e4_active || e4_engine_busy || vfs_lookup(path)) { r=-VFS_EEXIST; goto fail; }
+    if (e4_active || e4_engine_busy || vfs_lookup_kernel(path)) { r=-VFS_EEXIST; goto fail; }
     fs->dev=dev; fs->bs=dev->sector_size;
     /* Initial byte-reader ceiling is the actual device until SB validated. */
     if (dev->sector_count>UINT32_MAX) { r=-VFS_EFBIG; goto fail; }
@@ -761,7 +825,7 @@ static int e4_mount(block_dev_t *dev,const char *path,ext4_mount_t **out,bool rw
     if (r!=1 || ino!=2) { r=-VFS_EIO; goto fail; }
     r=e4_scan(&root,"..",0,NULL,&ino);
     if (r!=1 || ino!=2) { r=-VFS_EIO; goto fail; }
-    vfs_node_t *parent=vfs_lookup("/");
+    vfs_node_t *parent=vfs_lookup_kernel("/");
     if (!parent) { r=-VFS_EINVAL; goto fail; }
     e4_node_t *node=kcalloc(1,sizeof(*node));
     if (!node) { r=-VFS_ENOMEM; goto fail; }
@@ -789,6 +853,9 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 #include "ext4_namespace.inc"
 #include "ext4_orphan.inc"
 #include "ext4_mount_journal.inc"
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+#include "ext4_permissions.inc"
+#endif
 
 static size_t e4_profile_text(char *out,size_t cap,size_t n,const char *text) {
     while (*text) { if (n<cap) out[n++]=*text; text++; } return n;

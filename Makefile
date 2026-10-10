@@ -50,7 +50,7 @@ BUILD_GIT_HASH ?= $(shell $(GIT) rev-parse --short HEAD 2>/dev/null || echo "unk
 BUILD_DATE     ?= $(shell date -u +%Y-%m-%d 2>/dev/null || echo "unknown")
 
 # Strict freestanding compilation flags
-CFLAGS  := -std=c11 \
+CFLAGS  := -std=c11 -DFORTRESS_DAC_ENFORCED \
            -ffreestanding \
            -fno-stack-protector \
            -fno-stack-check \
@@ -80,6 +80,11 @@ CFLAGS  := -std=c11 \
 
 # Assembler flags for NASM (with DWARF debugging symbols)
 ASFLAGS := -f elf64 -g -F dwarf
+
+# Explicit isolated test builds only. Normal builds have no permission logging.
+ifeq ($(PERMISSIONS_TRACE),1)
+CFLAGS += -DFORTRESS_PERMISSIONS_TRACE
+endif
 
 # Linker flags for higher-half 64-bit ELF kernel
 LDFLAGS := -m elf_x86_64 \
@@ -626,7 +631,41 @@ $(USER_UDP_ELFS): $(BUILD_DIR)/%.elf: $(BUILD_DIR)/%.o user/tools/start.asm user
 $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)/net/udp.o $(BUILD_DIR)/net/net_ipv4.o: CFLAGS += -Os -Wframe-larger-than=512 -fstack-usage
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
-STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench lockstat
+STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench lockstat chmod chown id
+LOGIN_TOOLS := login whoami
+LOGIN_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(LOGIN_TOOLS)))
+
+ifeq ($(LOGIN_TEST),1)
+CFLAGS += -DTEST_LOGIN_BOOT
+endif
+
+$(BUILD_DIR)/tool-userdb.o: user/tools/userdb.c user/tools/userdb.h user/tools/digest.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(BUILD_DIR)/tool-userdb_io.o: user/tools/userdb_io.c user/tools/userdb.h user/tools/common.h user/permissions_cli.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $< -o $@
+
+$(LOGIN_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/userdb.h $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-$*.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-digest.o $(BUILD_DIR)/tool-common.o -o $@
+
+.PHONY: stage-user-database test-perm-db-host test-login
+stage-user-database:
+	@python3 scripts/stage_user_database.py $(BUILD_DIR)/initramfs/etc
+
+test-perm-db-host:
+	@python3 scripts/test_user_database_host.py
+
+test-login:
+	@python3 scripts/test_login.py
+
+$(BUILD_DIR)/perm_phase3_user.elf: tests/perm_phase3_user.c user/tools/common.h user/permissions_cli.h $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $< -o $(BUILD_DIR)/perm_phase3_user.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=phase3_main user/tools/start.asm -o $(BUILD_DIR)/perm_phase3_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/perm_phase3_user_start.o $(BUILD_DIR)/perm_phase3_user.o $(BUILD_DIR)/tool-common.o -o $@
 STREAM_TOOL_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(STREAM_TOOLS)))
 USER_DISK_ELF := $(BUILD_DIR)/tool-disk.elf
 CHECKSUM_TOOLS := md5sum sha256sum
@@ -634,12 +673,13 @@ CHECKSUM_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(CHECKSUM_TOOL
 USER_TAR_ELF := $(BUILD_DIR)/tool-tar.elf
 USER_TRACEROUTE_ELF := $(BUILD_DIR)/traceroute.elf
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
+$(INITRAMFS_TAR): $(LOGIN_ELFS) stage-user-database scripts/stage_user_database.py
 
 $(BUILD_DIR)/tool-common.o: user/tools/common.c user/tools/common.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
 
-$(addprefix $(BUILD_DIR)/tool-,$(addsuffix .o,$(STREAM_TOOLS))): $(BUILD_DIR)/tool-%.o: user/tools/%.c user/tools/common.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
+$(addprefix $(BUILD_DIR)/tool-,$(addsuffix .o,$(STREAM_TOOLS))): $(BUILD_DIR)/tool-%.o: user/tools/%.c user/tools/common.h user/permissions_cli.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
 
@@ -729,8 +769,8 @@ $(USER_DUAL_STREAM_ELF): $(USER_DIR)/dual_stream.asm $(USER_DIR)/linker.ld
 
 # Freestanding user shell, separate address-space ELF (no host runtime).
 SHELL_MODULES := $(wildcard user/shell/*.c)
-SHELL_HEADERS := $(wildcard user/shell/*.h) src/include/terminal.h src/include/syscall_abi.h
-SHELL_OBJECTS := $(patsubst user/shell/%.c,$(BUILD_DIR)/shell-%.o,$(SHELL_MODULES))
+SHELL_HEADERS := $(wildcard user/shell/*.h) src/include/terminal.h src/include/syscall_abi.h user/tools/userdb.h
+SHELL_OBJECTS := $(patsubst user/shell/%.c,$(BUILD_DIR)/shell-%.o,$(SHELL_MODULES)) $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-digest.o
 
 $(BUILD_DIR)/shell-%.o: user/shell/%.c $(SHELL_HEADERS)
 	@mkdir -p $(BUILD_DIR)
@@ -743,7 +783,7 @@ $(USER_SHELL_ELF): $(SHELL_OBJECTS) $(SHELL_HEADERS) $(USER_DIR)/shell.c $(USER_
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/shell_start.o $(BUILD_DIR)/shell.o $(SHELL_OBJECTS) -o $@
 
 # Runner ELF for /bin/sh-builtin: links builtin_exec, builtins, io (no UI/history/alias/editor).
-SH_BUILTIN_OBJECTS := $(BUILD_DIR)/shell-builtin_exec.o $(BUILD_DIR)/shell-builtins.o $(BUILD_DIR)/shell-io.o
+SH_BUILTIN_OBJECTS := $(BUILD_DIR)/shell-builtin_exec.o $(BUILD_DIR)/shell-builtins.o $(BUILD_DIR)/shell-io.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-digest.o
 $(USER_SH_BUILTIN_ELF): $(SH_BUILTIN_OBJECTS) $(SHELL_HEADERS) $(USER_DIR)/sh_builtin_main.c $(USER_DIR)/sh_builtin_start.asm $(USER_DIR)/shell.ld src/fs/vfs.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $(USER_DIR)/sh_builtin_main.c -o $(BUILD_DIR)/sh_builtin_main.o
@@ -850,10 +890,11 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) COMMANDS.md Makefile
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
+	@$(foreach tool,$(LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@cp -f $(USER_SH_BUILTIN_ELF) $(BUILD_DIR)/initramfs/bin/sh-builtin
 	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
@@ -886,7 +927,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f COMMANDS.md $(BUILD_DIR)/initramfs/docs/commands.txt
 	@printf "# Fortress Network Configuration\naddress 10.0.2.15/24\ngateway 10.0.2.2\ndns 10.0.2.3\n" > $(BUILD_DIR)/initramfs/etc/network.conf
 	@echo "  [TAR] Generating USTAR archive $@"
-	@tar --format=ustar --exclude=bin/benchrun -cf $(INITRAMFS_TAR) -C $(BUILD_DIR)/initramfs bin etc docs
+	@python3 scripts/create_initramfs.py $(BUILD_DIR)/initramfs $(INITRAMFS_TAR)
 
 # Compile C source files to object files
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
@@ -1183,6 +1224,18 @@ test-net-nc-data-fin: $(BOOTABLE_ISO) test-net-tcp-socket-host test-net-nc-host
 .PHONY: test-net-nc-data-fin
 
 .PHONY: test-net-nc-boundaries
+
+.PHONY: test-perm-creds-host
+.PHONY: test-process-registry-host
+test-process-registry-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -DTEST_SMP_MEMORY -DTEST_PROCESS_REGISTRY_AUDIT -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/kernel tests/process_registry_audit_host.c src/kernel/process_table.c src/kernel/creds.c -o $(BUILD_DIR)/process_registry_audit_host
+	@timeout 15s $(BUILD_DIR)/process_registry_audit_host
+
+test-perm-creds-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include tests/perm_creds_host.c src/kernel/creds.c -o $(BUILD_DIR)/perm_creds_host
+	@$(BUILD_DIR)/perm_creds_host
 
 test-net-nc-host:
 	@mkdir -p $(BUILD_DIR)
@@ -1513,3 +1566,92 @@ test-jbd2-write-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/jbd2_write_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/jbd2_write_host
 	@python3 scripts/test_jbd2_write_host.py
+
+.PHONY: test-perm-fs-host
+.PHONY: test-perm-matrix-host test-perm-create-host
+test-perm-matrix-host test-perm-create-host:
+	@python3 scripts/test_perm_values.py
+
+.PHONY: test-perm-admission-host
+.PHONY: test-perm-runfs-host
+.PHONY: test-perm-filesystems-host
+.PHONY: test-perm-syscalls-host
+.PHONY: test-perm-privileges-host
+test-perm-privileges-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O0 -g -DTEST_SMP_MEMORY -DTEST_PERMISSIONS_VALUES -DTEST_PERMISSIONS_ENFORCEMENT -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/kernel tests/perm_signal_enforcement_host.c src/kernel/process_table.c src/kernel/creds.c -o $(BUILD_DIR)/perm_signal_enforcement_host
+	@$(BUILD_DIR)/perm_signal_enforcement_host
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -DTEST_PERMISSIONS_VALUES -DTEST_PERMISSIONS_ENFORCEMENT -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(NET_SOCKET_HOST_SRCS) src/kernel/creds.c -o $(BUILD_DIR)/perm_bind_enforcement_host
+	@$(BUILD_DIR)/perm_bind_enforcement_host
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/pipe_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 tests/perm_power_enforcement_host.c src/kernel/creds.c src/fs/permission_values.c -o $(BUILD_DIR)/perm_power_enforcement_host
+	@$(BUILD_DIR)/perm_power_enforcement_host
+
+test-perm-syscalls-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/pipe_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 tests/perm_syscalls_host.c src/kernel/creds.c -o $(BUILD_DIR)/perm_syscalls_host
+	@$(BUILD_DIR)/perm_syscalls_host
+
+test-perm-filesystems-host:
+	@python3 scripts/test_perm_enforcement_host.py "$(PERM_FIXTURE_DIR)"
+
+$(BUILD_DIR)/perm_phase2_user.elf: tests/perm_phase2_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -DTEST_PERMISSIONS_ENFORCEMENT -Os -fno-pie -fno-asynchronous-unwind-tables -c $< -o $(BUILD_DIR)/perm_phase2_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/perm_phase2_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/perm_phase2_user_start.o $(BUILD_DIR)/perm_phase2_user.o -o $@
+
+test-perm-runfs-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/perm_runfs_enforcement_host.c src/fs/permission_values.c src/kernel/creds.c -o $(BUILD_DIR)/perm_runfs_enforcement_host
+	@$(BUILD_DIR)/perm_runfs_enforcement_host
+
+test-perm-admission-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/perm_admission_host.c -o $(BUILD_DIR)/perm_admission_host
+	@$(BUILD_DIR)/perm_admission_host
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/pipe_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 tests/perm_readdir_syscall_host.c src/kernel/creds.c -o $(BUILD_DIR)/perm_readdir_syscall_host
+	@$(BUILD_DIR)/perm_readdir_syscall_host
+
+test-perm-wiring-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/perm_wiring_host.c -o $(BUILD_DIR)/perm_wiring_host
+	@$(BUILD_DIR)/perm_wiring_host
+
+.PHONY: test-perm-wiring-host test-perm-signal-wiring-host test-perm-capability-host
+.PHONY: test-perm-phase1
+test-perm-phase1:
+	@PERM_PHASE1_FIXTURE="$(PERM_PHASE1_FIXTURE)" python3 scripts/test_perm_phase1.py
+test-perm-signal-wiring-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O0 -g -DTEST_SMP_MEMORY -DTEST_PERMISSIONS_VALUES -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/kernel tests/perm_signal_wiring_host.c src/kernel/process_table.c src/kernel/creds.c -o $(BUILD_DIR)/perm_signal_wiring_host
+	@$(BUILD_DIR)/perm_signal_wiring_host
+test-perm-capability-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -DTEST_PERMISSIONS_VALUES -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(NET_SOCKET_HOST_SRCS) -o $(BUILD_DIR)/perm_capability_host
+	@$(BUILD_DIR)/perm_capability_host
+	@python3 scripts/test_perm_power_host.py
+
+test-perm-fs-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/perm_fs_host.c -o $(BUILD_DIR)/perm_fs_host
+	@$(BUILD_DIR)/perm_fs_host
+
+$(BUILD_DIR)/perm_user.elf: tests/perm_user.c user/shell_start.asm user/shell.ld src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c tests/perm_user.c -o $(BUILD_DIR)/perm_user.o
+	@$(AS) -f elf64 user/shell_start.asm -o $(BUILD_DIR)/perm_user_start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/perm_user_start.o $(BUILD_DIR)/perm_user.o -o $@
+
+.PHONY: test-perm-inode-host test-perm-phase0-guest
+test-perm-inode-host:
+	@python3 scripts/test_perm_inodes.py
+
+test-perm-phase0-guest: $(BUILD_DIR)/perm_user.elf $(KERNEL_ELF) $(BOOTABLE_ISO)
+	@python3 scripts/test_perm_guest.py $(PERM_INODE_FIXTURE) $(PERM_GUEST_ARGS)
+
+.PHONY: test-perm-device-host
+test-perm-device-host:
+	@test -n "$(PERM_DEVICE_FIXTURE)" || (echo "Set PERM_DEVICE_FIXTURE to a disposable EXT4 source image"; exit 1)
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/perm_device_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/perm_device_host
+	@$(BUILD_DIR)/perm_device_host $(PERM_DEVICE_FIXTURE)

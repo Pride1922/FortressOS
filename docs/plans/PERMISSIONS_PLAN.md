@@ -1,14 +1,21 @@
 # FortressOS permissions implementation plan
 
-Status: PROPOSED (2026-10-05). Not started. Begins after EXT4 Phase 9 acceptance (QEMU crash campaign, then bare metal). Precedes the installer and package manager, which depend on ownership and mode semantics.
-Planning update (2026-10-08): EXT4 9.6 accepted; implementation remains deferred while the current SMP bugs are being fixed. The requirements below are design work only, not implemented support.
+Status: Phases 0–3 COMPLETE locally (2026-10-10); production DAC and login are enabled.
+Phases 4–5 remain open. [Phase 3 evidence](../roadmap/permissions-phase3-gates.md).
+The user approved registry global-lock consolidation, completion of Phase 0
+and the reproduced EXT2 lifetime repair, then bounded GPT boot scratch repair.
+GitHub issue/project state is unchanged. No physical testing is included.
+Memory/SMP checkpoint `9d5c5ee` and paused performance limitations are preserved.
+The protocol document distinguishes current APIs, historical audit and proposed
+authorization. Existing local evidence/checklists track individual gates.
 Based on the externally supplied "Final Plan: FortressOS Permission System" draft, reconciled with the current `vfs.h`/`vfs.c`, `thread.h`, `syscall.c`, `tarfs.c`, `ext2.c` and `ext4.c` contracts. Target semantics are Linux-flavoured POSIX DAC plus a single 64-bit capability mask.
 
 ## 1. Decision and corrections
 
 Implement Unix DAC (owner/group/other mode bits, supplementary groups, umask, setgid directories, sticky bit) enforced in the VFS against resolved nodes, with a kernel capability mask for privileged overrides. Deliver in six phases: node metadata and `/dev` + `/run`, call-site wiring with a permissive stub, enforcement plus metadata syscalls, users and login, setuid and `sudo`, then hardening. No ACLs, xattrs, namespaces, LSM or per-file capabilities in this plan.
 
-Corrections to the source draft:
+Corrections to the source draft (historical baseline; delivered Phase 0 changes
+are recorded in §6 and the local evidence checklist):
 
 - **File map.** `vfs_lookup.inc`, `vfs_file.inc`, `vfs_dir.inc`, `process.c`, `exec.c`, `sched.h`, `ext4_layout.inc`, `user/init.c` and `initramfs/etc/` do not exist. VFS logic is in `src/fs/vfs.c`; the TCB is `tcb_t` in `src/kernel/thread.h`; program start is `SYS_SPAWN`/`SYS_SPAWN_EXT` → `process_spawn_from_vfs_group()` → `elf.c`; init is `user/init.asm`; initramfs is staged by the Makefile into `$(BUILD_DIR)/initramfs/{bin,etc,docs}`. There is no fork/exec: credential inheritance and setuid belong in the spawn path.
 - **Node shape.** `vfs_node_t` has no `mode`/`uid`/`gid` and no `read_only` field. Type is `vfs_node_type_t` (FILE/DIRECTORY/STREAM); writability is `create == NULL`, `write == NULL` or the `can_write` callback. The draft's struct replacement is not adopted; fields are added alongside existing ones (§3).
@@ -42,6 +49,17 @@ Read PROTECTED.md and AGENTS.md sections 4, 7.1, 7.4, 7.6 and 9 before implement
 Each user `tcb_t` is one process today (it owns `fd_table` and `cwd`). Credentials live in `tcb_t`. If shared-address-space user threads are introduced, credentials move to a shared process object first; that move is a precondition, not a follow-up.
 
 ### 2.1 Foundation readiness and SMP handoff
+
+The verified post-consolidation ownership map, historical G/shard discrepancy,
+credential lifecycle and filesystem boundaries are in
+[PERMISSIONS_PROTOCOLS.md](PERMISSIONS_PROTOCOLS.md). Global consolidation is
+implemented and tested; TCB credentials now use complete validated publication,
+value snapshots and explicit detachment before destruction. Process exclusion
+never nests with filesystem or scheduler exclusion. Owned VFS references protect
+lifetime, while metadata and mutation decisions require filesystem exclusion.
+The approved EXT2 repair retains referenced tombstones and rejects active-open
+unlink/replacement before media writes; it does not add POSIX open-unlinked disk
+retention. See the local checklist for acceptance still outstanding.
 
 No additional scheduler, allocator, USB transport or network protocol milestone is required solely for permissions. Before implementation, reconcile the plan with the completed SMP fixes. Commit `438fae0` introduces AP scheduling, unpinned workloads, cross-core signals and PID-bucket process locks; this is context, not a claim that its outstanding bugs are fixed or its tests have been rerun here.
 
@@ -102,11 +120,11 @@ uint16_t mode;        /* full S_IFMT | 07777 */
 uint8_t  mnt_flags;   /* VFS_MNT_RDONLY | VFS_MNT_NOSUID | VFS_MNT_NODEV */
 ```
 
-`vfs_node_type_t` stays; invariant: `type == VFS_DIRECTORY ⇔ S_ISDIR(mode)`, `type == VFS_FILE ⇔ S_ISREG(mode)`, device and stream nodes carry `S_IFCHR`/`S_IFBLK`/`S_IFIFO`. A debug assertion in the node constructors checks agreement. `S_*` and `MAY_*` constants go in `vfs.h` with `VFS_` prefixes where they could collide with user headers.
+`vfs_node_type_t` stays; invariant: `type == VFS_DIRECTORY ⇔ S_ISDIR(mode)`, `type == VFS_FILE` denotes regular or block-backed linear I/O, device and stream nodes carry `S_IFCHR`/`S_IFBLK`/`S_IFIFO`. Constructors retain the existing I/O enum; metadata carries the precise inode/device type. `S_*` and `MAY_*` constants go in `vfs.h` with `VFS_` prefixes where they could collide with user headers.
 
 `mnt_flags` is copied by the filesystem when it materialises a node (TarFS: `RDONLY`; ext2/ext4 from mount state; USB mounts add `NOSUID|NODEV`; devfs/runfs: 0). `can_write` remains the source of dynamic EROFS/EIO (taint).
 
-`vfs_stat_t` gains `uid`, `gid`; `mode` carries the full mode. This is a user ABI size change: bump through the existing size-checked pattern, never silently.
+`vfs_stat_t` stays 16 bytes; `mode` carries full mode. Current SYS_STAT_EXT (57), version 1, is a separate size-checked 40-byte interface carrying uid/gid and mount flags; old callers remain compatible.
 
 ### 3.3 On-disk mapping
 
@@ -163,6 +181,19 @@ Setuid spawns are "secure" spawns: the kernel closes inherited descriptors above
 
 Before Phase 2, specify set-ID clearing/preservation for create, chmod, chown, ordinary writes and truncation, including `CAP_FSETID` and group membership. Perform any required mode-bit clearing in the same filesystem transaction as the associated metadata mutation; test denied/no-op/failed operations separately. Ordinary spawn with `nosuid`-ignored bits follows the ordinary inheritance rule. Genuine admitted setuid elevation remains an explicit Phase 4 transition, not a side effect of ordinary root spawn.
 
+Phase 2's local value policy is now specified/tested in
+[`permission_values.h`](../../src/fs/permission_values.h) and the
+[Phase 2 checkpoint](../roadmap/permissions-phase2-gates.md). These helpers
+are not connected to production admission. chmod strips requested setgid for
+a caller outside the inode group unless CAP_FSETID is held. Changing ownership
+of a non-directory clears setuid and group-executable setgid even with
+CAP_FSETID, including an admitted request with identical IDs. Non-executable
+setgid also clears outside the inode group without CAP_FSETID. Directories
+retain their set-ID bits on chown. Positive regular-file writes and admitted
+truncation (including unchanged size) apply the same stripping, with CAP_FSETID
+preservation. Denied/failed operations and zero-byte writes publish no proposed mode. Each future adapter
+must commit the content/identity and mode proposal in the same transaction.
+
 ### 4.4 Call sites (all in `src/fs/vfs.c` unless noted)
 
 | Path | Check |
@@ -172,7 +203,7 @@ Before Phase 2, specify set-ID clearing/preservation for create, chmod, chown, o
 | `vfs_create_ext`, `vfs_mkdir` | Parent `MAY_WRITE|MAY_EXEC`; `vfs_create_mode`. `create` callback gains `(mode, uid, gid)` |
 | `vfs_unlink` (files and directories) | `vfs_may_delete` |
 | `vfs_rename` | `vfs_may_delete` on source; parent `MAY_WRITE|MAY_EXEC` on destination, plus `vfs_may_delete` on an existing destination; moving a directory to a new parent also requires `MAY_WRITE` on the moved directory (its `..` changes) |
-| `vfs_readdir` via `SYS_READDIR` | `MAY_READ` on the directory |
+| `vfs_readdir_file` via `SYS_READDIR` | READ right admitted at directory open; no fresh path DAC, filesystem errors retained |
 | Spawn (`process_spawn_from_vfs_group`) | `MAY_EXEC` on the image, regular file only; then §4.3 |
 | `SYS_CHDIR` | `MAY_EXEC` on target |
 | `SYS_CHMOD`/`FCHMOD` | Caller is owner or `CAP_FOWNER`, else `-VFS_EPERM`; non-member non-`CAP_FSETID` clears `S_ISGID` |
@@ -206,7 +237,7 @@ Block nodes are **read-only in this plan**: their `write` is NULL regardless of 
 | `/run`, `/run/user` | root:root 0755 | Bounded runtime filesystem; clear at reboot. |
 | `/run/user/<uid>` | user:primary-group 0700 | Created and assigned by privileged login before credential drop. |
 | `/mnt` | From the selected filesystem's root inode | Persistent USB data; do not silently rewrite existing ownership to make login work. |
-| User home | user:primary-group 0700 | Choose `/home/<name>` or `/paradise/<name>` and its persistent backing before Phase 3; the current read-only root cannot host writable homes by directory creation alone. |
+| Live-media user home | user:primary-group 0700 | User-approved Phase 3 default: temporary `/run/user/<uid>`. Persistent homes await writable root support; selected USB ownership is not changed. |
 
 Creating the layout is part of Phase 0. A persistent root, generic mount-point expansion, symlinks and package management are separate work; no root filesystem migration is implied here.
 
@@ -214,35 +245,65 @@ Creating the layout is part of Phase 0. A persistent root, generic mount-point e
 
 ### Phase 0: node metadata, devfs and runfs (no enforcement)
 
-- `creds.h`; `creds_t` in `tcb_t`; root init credentials; spawn copies credentials.
-- `vfs_node_t` fields, `vfs_stat_t` uid/gid/mode, `VFS_EACCES`/`VFS_ENOTDIR`.
-- TarFS header parse; Makefile normalises archive ownership and modes.
-- ext4: retain full `i_mode`, decode 32-bit uid/gid; create with requested mode/uid/gid (remove `0x4180`/`0x8180`). ext2: decode uid/gid; create with requested mode.
-- devfs replaces the special-cased nodes; runfs mounted at `/run`.
-- Establish §5.1 ownership/lifetime defaults and document §2.1 synchronization protocols against the final SMP APIs; remain non-enforcing.
-- **Gate:** existing `test-host`, `test-shell`, `test-ext2`, ext4 host and QEMU suites, and the Phase 9 crash campaign pass unchanged. New host test: ext4/ext2 inode roundtrip with uid `0x12345678`, gid `0x87654321`, every mode in 07777, checksum valid, `e2fsck -fn` clean on a disposable image. `stat` from Ring 3 reports correct mode/uid/gid for TarFS, ext4, devfs and runfs nodes.
+Implementation update: bounded TCB credentials, root initialization, snapshot
+inheritance and validated publication are implemented. Metadata callbacks,
+compatible extended stat, full inode mode/owner creation, normalized TarFS,
+minimal devfs and bounded runfs are implemented. Authoritative creation accepts
+already-derived attributes; user actor/umask/setgid wiring remains Phase 1/2.
+No enforcement, login, sudo or user credential mutation syscall exists.
+The [local delivery checklist and evidence](../roadmap/permissions-phase0-values.md)
+records completed finite acceptance and retained failures. EXT2 active-open
+unlink/replacement returns EOPNOTSUPP; runfs has 64 nodes and 4 KiB per file.
+Generic VFS shared-read offsets/reference accounting and foreign EXT2 creator-OS
+semantics are not certified by this foundation. See the protocol for those gates.
+
+- [x] `creds.h`; `creds_t` in `tcb_t`; root init credentials; spawn copies credentials.
+- [x] `vfs_node_t` fields, compatible extended stat uid/gid/mode, `VFS_EACCES`/`VFS_ENOTDIR`.
+- [x] TarFS header parse; Makefile normalises archive ownership and modes.
+- [x] ext4: retain full `i_mode`, decode 32-bit uid/gid; create with requested mode/uid/gid (remove `0x4180`/`0x8180`). ext2: decode uid/gid; create with requested mode.
+- [x] devfs replaces the special-cased nodes; runfs mounted at `/run`.
+- [x] Establish §5.1 ownership/lifetime defaults and document §2.1 synchronization protocols against the final SMP APIs; remain non-enforcing.
+- [x] **Gate:** existing host/shell/EXT2, EXT4 mounted/namespace/integration and 66-case Phase 9 crash checks pass within the recorded finite coverage. The directory creation oracle changes to the intended 0755 default; an obsolete shell prompt matcher was corrected. New EXT2/EXT4 full mode/owner matrices, 1000 atomic creation cuts, Linux fsck/stat and Ring 3 ABI/namespace/spawn checks pass. Final raw USB peer checks pass BIOS/UEFI × SMP=1/4 after the approved GPT scratch repair. Exact source snapshots, failed attempts and limitations are retained in the evidence checklist; no broader IRQ/hardware or permissions-enforcement claim follows.
 
 ### Phase 1: call-site wiring with a permissive stub
 
-- `vfs_permission` returns 0 but every call site in §4.4 is present and passes real credentials; kernel paths use `_kernel` variants.
-- `create` callback signature carries mode/uid/gid end to end.
-- **Gate:** all Phase 0 gates; a trace build records every `vfs_permission` call during `test-shell` and shows no path that bypasses it (audit list attached to the roadmap evidence).
+- [x] Actor-aware path/open/exec/namespace/readdir hooks use actual published credential snapshots; trusted production paths use explicit `_kernel` variants. Hooks remain permissive.
+- [x] Spawn uses one actor for image, explicit cwd, FD actions and inheritance; regular-file admission and complete error propagation are present.
+- [x] Creation carries requested mode and actual euid/egid end to end. Umask/setgid derivation remains Phase 2.
+- [x] User signal decisions run against current bound actor/target values under G; capability hooks precede power and low-port network side effects.
+- [x] **Gate:** final aggregate/focused host checks PASS; isolated BIOS/UEFI trace shell 2/2, USB Ring 3 4/4, normal untraced control 4/4 PASS; finite source/callback bypass inventory classifies 139 sites with no unclassified production path/trusted calls. See [wiring evidence](../roadmap/permissions-phase1-wiring.md). Trace coverage is finite and does not establish that arbitrary executions cannot bypass a hook.
+
+**Before enforcement:** authoritative filesystem-owned authorization/mutation
+adapters, complete traversal semantics for components removed by lexical
+`.`/`..` normalization, same-path rename no-op/error precedence, descriptor
+rights and umask/setgid derivation remain explicit gates. Do not turn on DAC
+by replacing the permissive VFS stub outside filesystem exclusion. No Phase 2
+implementation or enforcement support is approved by Phase 1 acceptance.
 
 ### Phase 2: enforcement plus metadata syscalls and tools
 
-- Real `vfs_permission`, `vfs_may_delete`, `vfs_create_mode`.
-- Syscalls: `umask`, `chmod`, `fchmod`, `chown`, `getresuid`, `getresgid`, `getgroups`; stat ABI update. Numbers are the next free at implementation time (51 is the current maximum).
-- `ls -l` (numeric IDs until Phase 3 provides names), `chmod`, `chown`, `id`, shell `umask` builtin.
-- **Gate:** generated host matrix (§7) under ASan/UBSan. QEMU: a test program spawned through a debug-only `SYS_TEST_SETCREDS` (compiled only into test images) as UID 1001, caps 0, asserts `-EACCES` on a root `0600` file, on traversal through a `0700` directory, on writing `/dev/usb0p*`; `-EROFS` on TarFS writes; `-EPERM` on chown and on sticky-directory deletion of another user's file; umask 0027 yields `0640`/`0750`. Root shell workflows unchanged. ext4 `chmod`/`chown` added to the crash-injection inventory and recovered state verified by `e2fsck -fn`.
+- [x] Filesystem-owned DAC, namespace, creation and metadata decisions under EXT2/EXT4/runfs exclusion, original-component traversal, locked no-op rename, immutable TarFS/devfs and NODEV/raw-I/O policy. Production builds enable `FORTRESS_DAC_ENFORCED`.
+- [x] Syscalls 58–64: `umask`, `chmod`, `fchmod`, `chown`, `getresuid`, `getresgid`, `getgroups`. Extended stat remains the separate 40-byte v1 ABI at 57. Explicit chown keep flags preserve all 32-bit IDs; `UMASK_QUERY` reads without temporary mutation.
+- [x] Numeric `ls -l`, `chmod`, `chown`, `id`, and parent-shell `umask` builtin.
+- [x] Generated sanitizer oracle, actual-filesystem denial/interleaving tests, capability/signal/ABI checks, EXT4 metadata/content old-or-new crash inventory and Linux audits. Debug-only fixed UID/GID 1001, zero-capability Ring 3 acceptance uses disposable USB journal fixtures under BIOS/UEFI at SMP=1/4; root tools and shell checks pass. Test credential mutation is absent from the normal kernel. See [Phase 2 evidence and limits](../roadmap/permissions-phase2-gates.md).
 
 ### Phase 3: user database, login, credential syscalls
 
-- Syscalls: `setresuid`, `setresgid`, `setgroups`, `capset`, plus no-echo terminal read (reuse nano's raw mode path).
-- `/etc/passwd` (0644), `/etc/group` (0644), `/etc/shadow` (0600, root:root) staged at build. Groups: `root:0`, `tty:5`, `disk:6`, `wheel:10`, `video:44`, `input:104`, `operator:1000`. Members: `operator` in `wheel,video,input`.
-- `user/tools/login.c`: bounded parsers for the three files; sha-crypt `$5$` verification in constant time; failed-attempt delay; after successful authentication, create/validate and assign `/run/user/<uid>` 0700 while privileged, then `setgroups → setresgid → setresuid` (caps clear automatically); set `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH`; spawn the shell. Reject unexpected ownership/type of an existing runtime directory; do not reuse an untrusted path.
-- `user/init.asm` spawns `/bin/login` instead of the shell. A boot parameter (`login=0`, test images only) keeps direct-shell boot for existing runners.
-- `whoami`; `ls -l` resolves names.
-- **Gate:** host tests for passwd/group/shadow parsers (malformed, oversize, missing fields, 9-field shadow) and `$5$` against known vectors from glibc's crypt. QEMU: boot to login prompt; operator login gives `uid=1000 euid=1000 caps=0` and groups `1000,10,44,104`; `/run/user/1000` is `1000:1000 0700`; wrong password fails with delay; locked root cannot log in; reading `/etc/shadow` as operator is `-EACCES`.
+- [x] Syscalls 66–70: `setresuid`, `setresgid`, `setgroups`, drop-only `capset`, and `capget`. Explicit keep flags preserve all 32-bit IDs; complete expected-old publication uses existing registry exclusion. Existing `SYS_INPUT_READ` provides non-echoed terminal input; no new terminal ABI.
+- [x] `/etc/passwd` (0644), `/etc/group` (0644), `/etc/shadow` (0600, root:root) staged at build. Groups: `root:0`, `tty:5`, `disk:6`, `wheel:10`, `video:44`, `input:104`, `operator:1000`. Members: `operator` in `wheel,video,input`. User-approved live-media default: locked root, passwordless operator with a warning; optional `FORTRESS_OPERATOR_HASH_FILE` supplies an explicit build hash. No known password/hash in source.
+- [x] `user/tools/login.c`: bounded parsers and `$5$` verification with a fixed-length digest comparison; two-second BSP-time failure delay; privileged runtime directory creation/validation, `setgroups → setresgid → setresuid`, zero capabilities, minimal shell environment and temporary home. Unexpected owner/group/type/mode/mount fails without repairing the existing path. The shell imports its loader environment before history/commands. Login ignores prompt INT/TSTP while waiting for the shell.
+- [x] Actual boot launcher in `src/kernel/main.c` starts `/bin/login`. The old plan's `user/init.asm` reference was incorrect: that binary is a standalone Ring 3 self-test, not the shell launcher. `LOGIN_TEST=1` compiles the test-only `login=0` escape; normal kernels ignore it. `create_ext4_guest_workspace.py --login-test` prepares legacy direct-shell test ISO configuration; build that snapshot with `LOGIN_TEST=1`.
+- [x] `whoami`; `ls -l` resolves database names with full-width numeric fallback.
+- [x] **Gate:** actual-code host sanitizer parser/hash/login-helper/credential-ABI tests and BIOS/UEFI × SMP=1/4 password login PASS, plus BIOS/UEFI root-bypass controls, passwordless control and BIOS/UEFI normal-kernel login=0 rejection: 9/9 PASS. See [Phase 3 gates](../roadmap/permissions-phase3-gates.md).
+
+Database bounds: 16 records/file, 8192 bytes/file, 512 bytes/line, 31-byte
+names, 127-byte absolute canonical paths and 128 printable ASCII password
+bytes. SHA-256-crypt supports default 5000 rounds or explicit 1000–100000
+rounds; higher work factors reject rather than silently clamp. Nine-field
+shadow aging fields are validated; configurations requiring password change
+or calendar expiration fail closed because no calendar-clock policy exists.
+Parsers use process-local static scratch to preserve the existing 4 KiB user
+stack; they are not reentrant/shared-user-thread APIs.
 
 ### Phase 4: setuid and `sudo`
 
@@ -260,12 +321,14 @@ Creating the layout is part of Phase 0. A persistent root, generic mount-point e
 
 | Target | Harness | Assertions |
 | --- | --- | --- |
-| `test-perm-matrix-host` | Host ASan/UBSan, real `vfs_permission` | Generated: all 4096 mode values × 7 non-empty masks × {owner, group-egid, group-supplementary, other} × {no caps, DAC_OVERRIDE, DAC_READ_SEARCH} × {file, dir} × {rw, ro mount}, compared against an independent reference implementation written in Python from the Linux rules; the generator emits both |
+| `test-perm-matrix-host` | Host ASan/UBSan, actual pure value engine | Generated: all 4096 mode values × 7 non-empty masks × {owner, group-egid, group-supplementary, other} × {no caps, DAC_OVERRIDE, DAC_READ_SEARCH} × {file, dir} × {rw, ro mount}, compared against an independent Python reference |
 | `test-perm-create-host` | Host | umask/setgid-parent/non-member setgid stripping for files and directories |
 | `test-perm-creds-host` | Host | `setres*`/`setgroups`/`capset` transition table incl. automatic cap clear, 16-group bound, unknown cap bits |
 | `test-perm-inode-host` | Host + `e2fsck -fn` | ext2/ext4 roundtrip, checksums, 32-bit IDs |
 | `test-perm-db-host` | Host | passwd/group/shadow parsers, `$5$` vectors |
-| `test-perm` | QEMU BIOS+UEFI, disposable ext4 data disk | Phase 2 Ring 3 assertions |
+| `test-perm-runfs-host`, `test-perm-filesystems-host PERM_FIXTURE_DIR=...` | Actual VFS/filesystem adapters, ASan/UBSan | Denied mutation invariance, controlled admission interleavings, metadata/content publication and EXT4 crash cuts |
+| `test-perm-syscalls-host`, `test-perm-privileges-host` | Actual syscall/process/network adapters | Output validation, keep flags, umask publication, signal and capability admission |
+| `PERM_PHASE2_EXPECT=1 python3 scripts/test_perm_guest.py build/permissions-phase0/source.ext4 --usb` | Isolated TEST_PERMISSIONS_ENFORCEMENT build; BIOS/UEFI × SMP=1/4 | Non-root Ring 3 enforcement and root tools; explicit disposable USB journal fixtures |
 | `test-login` | QEMU BIOS+UEFI | Phase 3 assertions |
 | `test-sudo` | QEMU BIOS+UEFI, disposable USB image with a `nosuid` probe binary | Phase 4 assertions |
 | ext4 crash campaign | Existing Phase 9 harness | `chmod`/`chown`/create-with-mode cut points recover to old-or-new metadata, never mixed |
@@ -277,6 +340,6 @@ ACLs, xattrs, SELinux-style labels, file capabilities, user namespaces, PAM, `pa
 ## 9. Open decisions
 
 1. Expose the internal NVMe as a read-only `/dev` node, or keep it absent per H6?
-2. Live-media operator authentication: build-variable password hash, or passwordless with a boot warning?
+2. Resolved for Phase 3: passwordless live-media operator with a warning; optional explicit build hash file.
 3. Keep internal capability numbering, or adopt Linux `CAP_*` numbers for future compatibility of tooling?
-4. Choose the user-home name and persistent backing before Phase 3; do not assume writable `/home` or `/paradise` exists.
+4. Resolved for live media: temporary `/run/user/1000`. Persistent home naming/backing remains part of writable-root work.

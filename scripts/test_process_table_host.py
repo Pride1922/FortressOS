@@ -12,5 +12,6 @@ with tempfile.TemporaryDirectory(prefix='fortress-process-') as tmp:
     subprocess.run(['gcc','-std=c11','-Wall','-Wextra','-Werror','-g','-pthread',
         '-fsanitize=address,undefined','-fno-omit-frame-pointer','-no-pie',
         '-DTEST_SMP_MEMORY','-Isrc/include','-Isrc/kernel',source,
-        *([] if stops or groups else ['src/kernel/process_table.c']),'-o',str(exe)],cwd=repo,check=True,timeout=60)
+        *([] if stops or groups else ['src/kernel/process_table.c']),
+        'src/kernel/creds.c','-o',str(exe)],cwd=repo,check=True,timeout=60)
     subprocess.run([str(exe)],check=True,timeout=60,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=1','UBSAN_OPTIONS':'halt_on_error=1'})

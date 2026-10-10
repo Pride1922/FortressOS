@@ -49,6 +49,17 @@ static bool is_zero_block(const uint8_t *block) {
     }
     return true;
 }
+static bool metadata_octal(const char *text,size_t size,uint32_t limit,uint32_t *out) {
+    uint64_t n=0;size_t i=0;bool digits=false;
+    while (i<size && text[i]==' ') i++;
+    while (i<size && text[i]>='0' && text[i]<='7') {
+        digits=true;n=n*8+(unsigned)(text[i++]-'0');
+        if (n>limit) return false;
+    }
+    while (i<size && (text[i]==0 || text[i]==' ')) i++;
+    if (!digits || i!=size) return false;
+    *out=(uint32_t)n;return true;
+}
 
 static size_t s_tarfs_archive_size = 0;
 static uint32_t s_tarfs_files_count = 0;
@@ -93,6 +104,12 @@ int tarfs_init(const void *archive_data, size_t archive_size) {
         }
 
         uint64_t file_size = parse_octal(hdr->size, sizeof(hdr->size));
+        uint32_t mode,uid,gid;
+        if (!metadata_octal(hdr->mode,sizeof(hdr->mode),07777,&mode) ||
+            !metadata_octal(hdr->uid,sizeof(hdr->uid),UINT32_MAX,&uid) ||
+            !metadata_octal(hdr->gid,sizeof(hdr->gid),UINT32_MAX,&gid)) {
+            serial_puts("[FAIL] TarFS: Invalid ownership/mode metadata\n");return -7;
+        }
         if (file_size == 0xFFFFFFFFFFFFFFFFULL) {
             serial_puts("[FAIL] TarFS: Octal size overflow at offset ");
             serial_print_hex(offset);
@@ -137,13 +154,15 @@ int tarfs_init(const void *archive_data, size_t archive_size) {
         /* Enforce supported entry types: only regular files ('0' or '\0') and directories ('5') */
         if (hdr->typeflag == '5') {
             /* Directory */
-            vfs_create_node(full_path, VFS_DIRECTORY, 0, NULL);
+            vfs_node_t *node=vfs_create_node_kernel(full_path,VFS_DIRECTORY,0,NULL);
+            if (!node) return -5;
+            node->mode=VFS_S_IFDIR|mode;node->uid=uid;node->gid=gid;
             serial_puts("       [DIR ] ");
             serial_puts(full_path);
             serial_puts("\n");
         } else if (hdr->typeflag == '0' || hdr->typeflag == '\0') {
             /* Regular File */
-            vfs_node_t *node = vfs_create_node(full_path, VFS_FILE, file_size, file_data);
+            vfs_node_t *node = vfs_create_node_kernel(full_path, VFS_FILE, file_size, file_data);
             if (!node) {
                 serial_puts("[FAIL] TarFS: Failed to register file: ");
                 serial_puts(full_path);
@@ -151,6 +170,7 @@ int tarfs_init(const void *archive_data, size_t archive_size) {
                 return -5;
             }
             files_loaded++;
+            node->mode=VFS_S_IFREG|mode;node->uid=uid;node->gid=gid;
             serial_puts("       [FILE] ");
             serial_puts(full_path);
             serial_puts(" (");

@@ -90,7 +90,7 @@ void usb_mount_parse_cmdline(const char *cmdline, usb_mount_config_t *out_cfg) {
 }
 
 bool usb_mount_production_storage(const boot_info_t *boot_info) {
-    if (vfs_lookup("/mnt") != NULL) {
+    if (vfs_lookup_kernel("/mnt") != NULL) {
         serial_puts("[USB 9G.3] /mnt is already mounted; skipping USB mount\n");
         return true;
     }

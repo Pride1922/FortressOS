@@ -21,6 +21,36 @@
 #include "thread.h"
 #include "percpu.h"
 static tcb_t process;
+#ifdef TEST_PERMISSIONS_ENFORCEMENT
+static uint64_t bind_caps;
+#endif
+void net_test_assert_unheld(void);
+#ifdef TEST_PERMISSIONS_VALUES
+static unsigned capability_checks;
+void permission_capability_test(const creds_t *actor,uint64_t capability) {
+    net_test_assert_unheld();
+    assert(actor && actor->euid==1001 && capability==CAP_NET_BIND);
+#ifdef TEST_PERMISSIONS_ENFORCEMENT
+    assert(actor->cap_effective==bind_caps);
+#else
+    assert(!actor->cap_effective);
+#endif
+    capability_checks++;
+}
+void permission_signal_test(const creds_t *a,const creds_t *b,unsigned sig) {
+    (void)a;(void)b;(void)sig;assert(false);
+}
+#endif
+/* Credential publication adapter only; actual bind admission runs below.
+ * Non-root, no caps keeps Phase 1 low-port checks demonstrably permissive. */
+bool process_record_creds(uint64_t pid,creds_t *out) {
+    assert(pid==process.tid);
+    *out=(creds_t){.uid=1001,.euid=1001,.suid=1001,.gid=1001,.egid=1001,.sgid=1001,.umask=0022};
+#ifdef TEST_PERMISSIONS_ENFORCEMENT
+    out->cap_effective=bind_caps;
+#endif
+    return true;
+}
 void net_test_assert_unheld(void);
 cpu_local_t cpu_locals[MAX_DETECTED_CPUS];
 volatile bool g_cpu_installed[MAX_DETECTED_CPUS];
@@ -125,6 +155,30 @@ int main(void) {
     dev=(net_dev_t){.mtu=1500,.send_packet=transmit};
     net_config_t cfg={.local_ip=htonl(0x0a00020f),.gateway=htonl(0x0a000202),.prefix=24};
     net_ipv4_init(&dev,&cfg); net_socket_init(&dev,&cfg); net_socket_enable();
+#ifdef TEST_PERMISSIONS_VALUES
+    unsigned ports[]={0,1,53,256,1023,1024,4096};
+    for (unsigned i=0;i<sizeof(ports)/sizeof(ports[0]);i++) {
+        int probe=create();assert(probe>=0);unsigned before=capability_checks;
+        net_sockaddr_in_t address={.family=2,.port=htons(ports[i])};
+#ifdef TEST_PERMISSIONS_ENFORCEMENT
+        bool low=ports[i]>0 && ports[i]<1024;
+        assert(call(SYS_BIND,probe,(uintptr_t)&address,sizeof(address),0,0,0)==(low ? SYSCALL_EPERM : 0));
+        if (low) {
+            assert(capability_checks==before+1);bind_caps=CAP_NET_BIND;
+            assert(!call(SYS_BIND,probe,(uintptr_t)&address,sizeof(address),0,0,0));
+            bind_caps=0;before++;
+        }
+#else
+        assert(!call(SYS_BIND,probe,(uintptr_t)&address,sizeof(address),0,0,0));
+#endif
+        assert(capability_checks==before+(ports[i]>0 && ports[i]<1024));closefd(probe);
+    }
+#ifdef TEST_PERMISSIONS_ENFORCEMENT
+    puts("PASS CAP_NET_BIND enforcement: zero-cap low-port denial then same-fd capability retry, byte-order and ephemeral/high boundaries, no network lock held");
+#else
+    puts("PASS Phase1 CAP_NET_BIND values: non-root/caps=0, network byte order, ephemeral/low/high boundary, no network lock held");
+#endif
+#endif
     destination=(net_sockaddr_in_t){.family=2,.port=htons(7777),.address=cfg.gateway};
     for (unsigned i=0; i<1472; ++i) buffer[i]=(uint8_t)i;
     cpu_locals[0].id=1; assert(create()==SYSCALL_EOPNOTSUPP); cpu_locals[0].id=0;

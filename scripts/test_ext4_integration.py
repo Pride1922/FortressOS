@@ -53,7 +53,7 @@ def audit(disk,out,label,phase,base=True):
     (out/f'{label}-boot{phase}-integration-linux.log').write_text(log)
 
 def main():
-    assert len(sys.argv)==2,'usage: test_ext4_integration.py completed-phase85-host-directory'
+    assert len(sys.argv) in (2,4),'usage: test_ext4_integration.py fixture-directory [firmware block-size]'
     fixtures=Path(sys.argv[1]).resolve()
     assert fixtures.is_relative_to((ROOT/'.codex-remote-attachments').resolve())
     guest.command=command;guest.boot=boot;guest.audit=audit
@@ -61,17 +61,21 @@ def main():
     EVIDENCE.mkdir(parents=True,exist_ok=True)
     out=Path(tempfile.mkdtemp(prefix=f'guest-smp{SMP}-',dir=EVIDENCE))
     iso=out/'fixture.iso';guest.snapshot_iso(ROOT/'bin/fortress.iso',iso)
+    configurations=[(mode,bs) for bs in (1024,2048,4096) for mode in ('bios','uefi')]
+    if len(sys.argv)==4:
+        requested=(sys.argv[2],int(sys.argv[3]));assert requested in configurations
+        configurations=[requested]
     records=[];errors=[]
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         pending=[pool.submit(guest.case,mode,bs,
             fixtures/f'{bs}-{"wrap" if bs==2048 else "normal"}-512-pending-seed.img',out,iso)
-            for bs in (1024,2048,4096) for mode in ('bios','uefi')]
+            for mode,bs in configurations]
         for future in concurrent.futures.as_completed(pending):
             try:records.append(future.result())
             except Exception as error:errors.append(str(error));print(f'FAIL {error}',flush=True)
-    (out/'manifest.json').write_text(json.dumps({'smp':SMP,'cases':records,'errors':errors,
+    (out/'manifest.json').write_text(json.dumps({'smp':SMP,'configurations':configurations,'cases':records,'errors':errors,
         'iso_sha256':hashlib.sha256(iso.read_bytes()).hexdigest()},indent=2)+'\n')
     assert not errors,errors
-    print(f'EXT4 Phase 8.6 QEMU PASS 6/6, 12 boots, SMP={SMP}; evidence: {out}')
+    print(f'EXT4 Phase 8.6 QEMU PASS {len(records)}/{len(configurations)}, {2*len(records)} boots, SMP={SMP}; evidence: {out}')
 
 if __name__=='__main__':main()

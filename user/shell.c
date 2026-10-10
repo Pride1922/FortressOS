@@ -188,6 +188,21 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     if (b == CMD_CD) {
         return cd_cmd(argc, argv);
     }
+    if (b == CMD_UMASK) {
+        uint32_t mask=0;
+        if (argc>2) { puts("umask: expected one octal mask\n");return 1; }
+        if (argc==2) {
+            if (!argv[1][0]) return 1;
+            for (const char *p=argv[1];*p;p++) {
+                if (*p<'0' || *p>'7' || mask>0777u/8u) {puts("umask: invalid octal mask\n");return 1;}
+                mask=mask*8u+(unsigned)(*p-'0');
+            }
+            return call(SYS_UMASK,mask,0,0)<0 ? 1 : 0;
+        }
+        long old=call(SYS_UMASK,UMASK_QUERY,0,0);if (old<0) return 1;
+        char output[]={'0','0'+((old>>6)&7),'0'+((old>>3)&7),'0'+(old&7),'\n'};
+        return write_bytes_fd(1,output,sizeof(output))<0 ? 1 : 0;
+    }
     if (b == CMD_PWD) {
         builtin_ctx_t ctx = {0};
         const char *pwd_argv[1] = {"pwd"};
@@ -537,7 +552,8 @@ static void execute_parse_tree(parse_tree_t *tree, const char *cmd_text) {
                                            execute_single_command, cmd_text);
 }
 
-void shell_main(void) {
+void shell_main(int argc,char **argv,const char *const *envp) {
+    (void)argc;(void)argv;
     if (call(SYS_READ, 0, 0, 1) != -2 || call(SYS_READ, 0, (uintptr_t)"readonly", 1) != -2 ||
         call(SYS_READ, 0, 0, 0) != 0 ||
         call(SYS_INPUT_READ, 0, 1, 0) != -2 ||
@@ -552,6 +568,7 @@ void shell_main(void) {
     update_cwd();
     shell_ui_init();
     vars_init();
+    if (!vars_import(envp)) {puts("shell: invalid entry environment\n");return;}
     alias_init();
     (void)history_load();
 

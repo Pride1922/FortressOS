@@ -3,6 +3,7 @@ import argparse
 import functools
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -180,6 +181,16 @@ def linux_committed(disk,out,label,expected=DATA):
     (out/f'{label}-dump.log').write_bytes(result.stdout+result.stderr);assert dump.read_bytes()==expected
 
 
+def fixture_source(bs, placement='normal'):
+    allowed=(REPO/'.codex-remote-attachments').resolve()
+    directory=Path(os.environ.get('FORTRESS_EXT4_GUEST_FIXTURES',
+        allowed/'ext4-phase8-5/host-frz8r6nu')).resolve()
+    assert directory.is_relative_to(allowed) and (directory/'manifest.json').is_file()
+    source=directory/f'{bs}-{placement}-512-pending-seed.img'
+    assert source.is_file()
+    return source
+
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('workspace',type=Path);parser.add_argument('--matrix',action='store_true');parser.add_argument('--recovery-only',action='store_true');parser.add_argument('--usb',action='store_true');args=parser.parse_args()
     allowed=(REPO/'.codex-remote-attachments').resolve();workspace=args.workspace.resolve();assert workspace.is_relative_to(allowed)
@@ -199,7 +210,7 @@ def main():
         if args.recovery_only:milestones=('recovery-interruption',)
         for mode,bs,smp in configurations:
             placement='wrap' if args.usb and bs==2048 else 'normal'
-            source=allowed/f'ext4-phase8-5/host-frz8r6nu/{bs}-{placement}-512-pending-seed.img'
+            source=fixture_source(bs,placement)
             for milestone in milestones:
                 label=f'{mode}-{bs}-smp{smp}-{milestone}';disk=out/f'{label}.img';gpt(source,disk)
                 before=milestone=='before-write';expected=b'' if before else DATA

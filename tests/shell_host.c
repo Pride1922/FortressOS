@@ -341,6 +341,13 @@ int main(void) {
     assert(!strcmp(vars_get("HOME"), "/"));
     assert(!strcmp(vars_get("PS1"), "fortress:<cwd> $ "));
     assert(vars_get("NONEXISTENT") == NULL);
+    const char *entry_env[]={"HOME=/run/user/1000","USER=operator","LOGNAME=operator","SHELL=/bin/shell","PATH=/bin",NULL};
+    assert(vars_import(entry_env) && !strcmp(vars_get("HOME"),"/run/user/1000") && !strcmp(vars_get("USER"),"operator"));
+    const char *bad_entry[]={"HOME=/bad","1INVALID=value",NULL};
+    assert(!vars_import(bad_entry) && !strcmp(vars_get("HOME"),"/run/user/1000"));
+    char huge_env[300];memset(huge_env,'a',sizeof(huge_env));huge_env[0]='X';huge_env[1]='=';huge_env[sizeof(huge_env)-1]=0;
+    const char *oversize_entry[]={huge_env,NULL};assert(!vars_import(oversize_entry));
+    vars_init();
 
     assert(vars_set("TEST_VAR", "12345", false) == 0);
     assert(!strcmp(vars_get("TEST_VAR"), "12345"));

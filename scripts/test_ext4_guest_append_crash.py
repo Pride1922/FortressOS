@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import test_ext4_journal_mount as guest
-from test_ext4_guest_crash import stop_at_write,writer_offsets,partition,REPO
+from test_ext4_guest_crash import stop_at_write,writer_offsets,partition,REPO,fixture_source
 from test_ext4_read import gpt
 from test_jbd2_replay_host import oracle
 from test_net_pci import VARS
@@ -49,7 +49,7 @@ def main():
             for bs in (1024,2048,4096):
                 for kind in (0,1):
                     label=f'{mode}-{bs}-'+('shared' if kind else 'independent');disk=out/f'{label}.img'
-                    source=allowed/f'ext4-phase8-5/host-frz8r6nu/{bs}-normal-512-pending-seed.img';gpt(source,disk)
+                    source=fixture_source(bs);gpt(source,disk)
                     milestone=stop_at_write(out,iso,elf,disk,offsets,'jbd2_writer_checkpoint',label+'-cut',3,mode,bs,4,append_kind=kind,usb=args.usb)
                     record=bytes.fromhex(milestone['append_record_hex']);check(disk,out,label+'-crash',kind,record)
                     stop_at_write(out,iso,elf,disk,offsets,'run_append_scenario',label+'-recovered',0,mode,bs,4,recover_append=True,usb=args.usb)

@@ -98,6 +98,14 @@ static void simulate_crash(void) {
     memcpy(pending_disk, durable_disk, disk_size);
 }
 
+#include "../src/fs/gpt.h"
+size_t gpt_get_partition_count(void) { return 0; }
+gpt_partition_t *gpt_get_partition(size_t i) { (void)i;return NULL; }
+bool ext4_device_read_sector(block_dev_t *d,uint64_t l,void *b,bool *handled) {
+    (void)d;(void)l;(void)b;*handled=false;return false;
+}
+#include "../src/fs/runfs.c"
+#include "../src/fs/devfs.c"
 #include "../src/fs/vfs.c"
 #include "../src/fs/ext2.c"
 static size_t root_live;
@@ -633,8 +641,8 @@ int main(int argc, char **argv) {
     vfs_close(fmove);
 
     /* Edge case: trailing slash on file must fail with -ENOTDIR (-8) */
-    assert(vfs_rename("/mnt/dir1/item.txt/", "/mnt/dir2/item.txt") == -8);
-    assert(vfs_rename("/mnt/dir1/item.txt", "/mnt/dir2/item.txt/") == -8);
+    assert(vfs_rename("/mnt/dir1/item.txt/", "/mnt/dir2/item.txt") == -VFS_ENOTDIR);
+    assert(vfs_rename("/mnt/dir1/item.txt", "/mnt/dir2/item.txt/") == -VFS_ENOTDIR);
 
     /* Edge case: rename onto self succeeds immediately as a no-op */
     assert(vfs_rename("/mnt/dir1/item.txt", "/mnt/dir1/item.txt") == VFS_SUCCESS);
@@ -780,4 +788,5 @@ int main(int argc, char **argv) {
     free(pending_disk);
     free(durable_disk);
     printf("PASS ext2: block=%u sector=%u, malformed metadata, shutdown/mount barriers, I/O/OOM ownership, indirect bounds\n", bs, ss);
+    return 0;
 }

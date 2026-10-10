@@ -306,7 +306,7 @@ int ext4_engine_orphan_recover(ext4_engine_t *e) {
     }
     e->orphan_recovery_required=false;return 0;
 }
-int ext4_engine_file_truncate(ext4_engine_t *e,uint32_t ino,uint64_t size) {
+static int e4_file_truncate_actor(ext4_engine_t *e,uint32_t ino,uint64_t size,const creds_t *actor) {
     int r=e4_orphan_begin(e);if (r) return r;
     if (e->orphan_recovery_required) return e4_namespace_end(e,-VFS_EAGAIN);
     if (ino<11 || ino==e->fs->journal_ino) return e4_namespace_end(e,-VFS_EOPNOTSUPP);
@@ -314,6 +314,17 @@ int ext4_engine_file_truncate(ext4_engine_t *e,uint32_t ino,uint64_t size) {
     e4_inode_t in;uint8_t *raw;r=e4_load_plan(e,ino,&in,&raw);
     if (r) return e4_namespace_end(e,r);
     if (in.mode!=0x8000 || size>in.size) return e4_namespace_end(e,-VFS_EOPNOTSUPP);
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if (actor) {
+        vfs_metadata_t value=e4_value(&in);uint16_t mode=permission_content_mode(&value,actor);
+        if (size==in.size && mode!=in.full_mode) {
+            e4_p16(raw,mode);e4_inode_sum(e->fs,ino,raw);return e4_namespace_end(e,0);
+        }
+        e4_p16(raw,mode);
+    }
+#else
+    (void)actor;
+#endif
     if (size==in.size) { ext4_engine_abort(e);e->file_planning=false;e4_semantic_invalidate(e);return 0; }
     r=e4_orphan_add(e,ino,raw);if (r) return e4_namespace_end(e,r);
     /* Journal the one partial tail with the size intent, rather than ordered
@@ -329,6 +340,9 @@ int ext4_engine_file_truncate(ext4_engine_t *e,uint32_t ino,uint64_t size) {
     e4_p32(raw+4,(uint32_t)size);e4_p32(raw+108,(uint32_t)(size>>32));e4_inode_sum(e->fs,ino,raw);
     r=e4_namespace_end(e,0);if (r) return r;e4_orphan_added(e,ino);
     return e4_orphan_cleanup(e,ino,false);
+}
+int ext4_engine_file_truncate(ext4_engine_t *e,uint32_t ino,uint64_t size) {
+    return e4_file_truncate_actor(e,ino,size,NULL);
 }
 int ext4_engine_orphan_unlink(ext4_engine_t *e,uint32_t parent,const char *name,bool directory) {
     if (!e4_namespace_name(name)) return -VFS_EINVAL;

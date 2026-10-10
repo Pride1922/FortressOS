@@ -11,10 +11,12 @@ from create_ext4_fixtures import ROOT
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--usb-journal',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--usb-journal',action='store_true')
+    parser.add_argument('--login-test',action='store_true',help='Disposable login=0 ISO configuration; build with LOGIN_TEST=1')
+    args=parser.parse_args()
     parent=ROOT/'.codex-remote-attachments/ext4-phase9'
     out=Path(tempfile.mkdtemp(prefix='guest-workspace-',dir=parent));records={};overrides={}
-    names=subprocess.check_output(['git','ls-files','-z'],cwd=ROOT).decode().split('\0')
+    names=subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','-z'],cwd=ROOT).decode().split('\0')
     if (ROOT/'src/include/ext4_physical_fixture.h').is_file() and 'src/include/ext4_physical_fixture.h' not in names:
         names.append('src/include/ext4_physical_fixture.h')
     for name in names:
@@ -23,9 +25,12 @@ def main():
         if not source.is_file():continue
         data=source.read_bytes()
         assert source.read_bytes()==data, f'source changed during snapshot: {name}'
-        if args.usb_journal and name=='limine.conf':
+        if (args.usb_journal or args.login_test) and name=='limine.conf':
+            additions=[]
+            if args.usb_journal:additions.append('usb_data=PARTUUID=11223344-5566-7788-99aa-bbccddeeff00 usb_data_mode=rw')
+            if args.login_test:additions.append('login=0')
             overrides[name]={'original_sha256':hashlib.sha256(data).hexdigest(),
-                'append_cmdline':'usb_data=PARTUUID=11223344-5566-7788-99aa-bbccddeeff00 usb_data_mode=rw'}
+                'append_cmdline':' '.join(additions)}
             text,count=re.subn(r'(kernel_cmdline:[^\r\n]*)',r'\1 '+overrides[name]['append_cmdline'],data.decode(),count=1)
             assert count==1;data=text.encode()
         target=out/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)

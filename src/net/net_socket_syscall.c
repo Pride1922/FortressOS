@@ -7,6 +7,8 @@
 #include "vmm.h"
 #include "string.h"
 #include "net_tcp_syscall.h"
+#include "process_table.h"
+#include "permissions.h"
 
 static bool range(uintptr_t p, size_t n, bool write) {
     return !n || vmm_validate_user_range(vmm_get_active_pml4_virt(),p,n,write);
@@ -60,6 +62,11 @@ int64_t net_socket_syscall(interrupt_frame_t *f) {
         if (!range(f->rsi,sizeof(net_sockaddr_in_t),false)) return SYSCALL_EFAULT;
         net_sockaddr_in_t a; memcpy(&a,(const void *)f->rsi,sizeof(a));
         if (!fields(&a) || (a.address && a.address!=net_ipv4_local())) return SYSCALL_EINVAL;
+        if (a.port && ntohs(a.port)<1024) {
+            creds_t actor;
+            if (!process_record_creds(caller->tid,&actor)) return SYSCALL_ESRCH;
+            if (permission_capability(&actor,CAP_NET_BIND)) return SYSCALL_EPERM;
+        }
         return net_socket_bind(file,&a);
     }
     net_socket_wait_t wait;

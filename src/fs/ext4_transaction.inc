@@ -208,7 +208,7 @@ static void e4_semantic_invalidate(ext4_engine_t *e) {
     while (e->fs->maps) { e4_map_t *map=e->fs->maps;e->fs->maps=map->next;kfree(map); }
     e->fs->map_entries=0;
 }
-int64_t ext4_engine_file_write(ext4_engine_t *e,uint32_t ino,uint64_t *offset,bool append,const void *data,size_t len) {
+static int64_t e4_file_write_actor(ext4_engine_t *e,uint32_t ino,uint64_t *offset,bool append,const void *data,size_t len,const creds_t *actor) {
     e4_engine_owner(e);if (!e || !e->file_enabled || !offset || (!data && len)) return -VFS_EINVAL;
     if (e->tainted) return -VFS_EIO;
     if (e->orphan_recovery_required) return -VFS_EAGAIN;
@@ -219,12 +219,31 @@ int64_t ext4_engine_file_write(ext4_engine_t *e,uint32_t ino,uint64_t *offset,bo
     for (unsigned i=0;i<e->orphan_count;i++) if (e->orphans[i]==ino && e->fs->orphan_access!=ino)
         return -VFS_EAGAIN;
     if (len>32768) len=32768;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    uint16_t content_mode=0;
+    if (actor && len) {
+        e4_inode_t in;int status=e4_inode(e->fs,ino,&in);if (status) return status;
+        vfs_metadata_t value=e4_value(&in);content_mode=permission_content_mode(&value,actor);
+    }
+#else
+    (void)actor;
+#endif
     uint64_t next=*offset;e->file_planning=true;
     int r=e4_file_plan(e,ino,&next,append,data,len);e->file_planning=false;
     if (r || !len) goto done;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if (actor) {
+        uint8_t *raw=e4_inode_image(e,ino);if (!raw) {r=e->error;goto done;}
+        e4_p16(raw,content_mode);e4_inode_sum(e->fs,ino,raw);
+    }
+#endif
     r=e4_semantic_commit(e);
     if (!r) *offset=next;
 done:
     if (r || !len) ext4_engine_abort(e);
     e4_semantic_invalidate(e);return r ? r : (int64_t)len;
+}
+
+int64_t ext4_engine_file_write(ext4_engine_t *e,uint32_t ino,uint64_t *off,bool append,const void *data,size_t len) {
+    return e4_file_write_actor(e,ino,off,append,data,len,NULL);
 }

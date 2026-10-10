@@ -45,8 +45,8 @@ static int e4_mount_journal_admitted(block_dev_t *dev,const char *path,
     if (!admitted ||
         !dev->write_sector || !dev->flush) return -VFS_EROFS;
     e4_mount_stage(stage,"exclusive-mount");
-    uint64_t flags=spin_lock_irqsave(&e4_lock);vfs_node_t *parent=vfs_lookup("/");
-    int r=!parent ? -VFS_EINVAL : e4_active || e4_engine_busy || vfs_lookup(path) ? -VFS_EEXIST : 0;
+    uint64_t flags=spin_lock_irqsave(&e4_lock);vfs_node_t *parent=vfs_lookup_kernel("/");
+    int r=!parent ? -VFS_EINVAL : e4_active || e4_engine_busy || vfs_lookup_kernel(path) ? -VFS_EEXIST : 0;
     if (!r) e4_engine_busy=true;
     spin_unlock_irqrestore(&e4_lock,flags);if (r) return r;
     e4_mount_stage(stage,"workspace-allocation");
@@ -91,7 +91,7 @@ static int e4_mount_journal_admitted(block_dev_t *dev,const char *path,
     r=e4_inode(fs,2,&root);if (r) goto fail;
     e4_mount_stage(stage,"publication");
     flags=spin_lock_irqsave(&e4_lock);
-    if (e4_active || vfs_lookup(path)) { r=-VFS_EEXIST;spin_unlock_irqrestore(&e4_lock,flags);goto fail; }
+    if (e4_active || vfs_lookup_kernel(path)) { r=-VFS_EEXIST;spin_unlock_irqrestore(&e4_lock,flags);goto fail; }
     memcpy(node->node.name,"mnt",4);memcpy(node->node.path,"/mnt",5);node->node.parent=parent;e4_setup(node,&root);
     fs->cached[fs->nodes++]=node;node->node.next=parent->children;parent->children=&node->node;
     e4_active=fs;e4_engine_busy=false;*out=fs;
@@ -121,7 +121,7 @@ static int e4_journal_refresh(vfs_node_t *node) {
     if (n->removed && (!n->opens || !e4_mounted_orphan(fs,n->inode.ino))) return -VFS_ENOENT;
     fs->orphan_access=n->removed ? n->inode.ino : 0;int r=e4_inode(fs,n->inode.ino,&in);fs->orphan_access=0;
     if (!r && in.generation!=n->inode.generation) r=-VFS_EIO;
-    if (!r) { n->inode=in;node->size=in.size; }return r;
+    if (!r) { n->inode=in;node->size=in.size;node->mode=in.full_mode;node->uid=in.uid;node->gid=in.gid; }return r;
 }
 static void e4_jtaint(ext4_mount_t *fs) { fs->engine->tainted=true;e4_cache_drop(fs,true); }
 static int64_t e4_jwrite(vfs_node_t *node,uint64_t *off,bool append,const void *bytes,size_t len) {
@@ -158,19 +158,30 @@ static void e4_jclose(vfs_node_t *node) {
      * registered; sync/shutdown returns its retry or taint error. */
     spin_unlock_irqrestore(&e4_lock,flags);
 }
-static vfs_node_t *e4_jcreate_common(vfs_node_t *parent,const char *name,vfs_node_type_t type,int *error,bool owned) {
+static vfs_node_t *e4_jcreate_common(vfs_node_t *parent,const char *name,vfs_node_type_t type,int *error,bool owned,const vfs_create_attrs_t *attrs,const creds_t *actor) {
     if (!e4_namespace_name(name) || (type!=VFS_FILE && type!=VFS_DIRECTORY)) {
         if (error) *error=-VFS_EINVAL;
         vfs_set_last_create_error(-VFS_EINVAL);return NULL;
     }
-    e4_node_t *node=kcalloc(1,sizeof(*node));if (!node) {
-        if (error) *error=-VFS_ENOMEM;
-        vfs_set_last_create_error(-VFS_ENOMEM);return NULL;
-    }
+    e4_node_t *node=NULL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);int r=e4_state(parent);
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    vfs_create_attrs_t derived;
+    if (!r && actor) {
+        r=e4_access_locked(parent,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
+        if (!r) {
+            vfs_metadata_t value=e4_value(parent->fs_private);
+            r=permission_create_value(&value,type,attrs ? attrs->mode : 0644,actor,&derived);
+            if (!r) attrs=&derived;
+        }
+    }
+#else
+    (void)actor;
+#endif
     ext4_mount_t *fs=((e4_inode_t *)parent->fs_private)->fs;uint32_t ino=0;
     if (!r && (strlen(parent->path)+strlen(name)+1>=VFS_MAX_PATH || !e4_cache_room(fs))) r=-VFS_EFBIG;
-    if (!r) r=ext4_engine_namespace_create(fs->engine,((e4_inode_t *)parent->fs_private)->ino,name,type==VFS_DIRECTORY,&ino);
+    if (!r) {node=kcalloc(1,sizeof(*node));if (!node) r=-VFS_ENOMEM;}
+    if (!r) r=ext4_engine_namespace_create_attrs(fs->engine,((e4_inode_t *)parent->fs_private)->ino,name,type==VFS_DIRECTORY,attrs,&ino);
     e4_inode_t in;
     if (!r) {
         r=e4_inode(fs,ino,&in);
@@ -188,22 +199,38 @@ static vfs_node_t *e4_jcreate_common(vfs_node_t *parent,const char *name,vfs_nod
     if (r) { kfree(node);vfs_set_last_create_error(r);return NULL; }return &node->node;
 }
 static vfs_node_t *e4_jcreate(vfs_node_t *parent,const char *name,vfs_node_type_t type) {
-    return e4_jcreate_common(parent,name,type,NULL,false);
+    return e4_jcreate_common(parent,name,type,NULL,false,NULL,NULL);
 }
 static vfs_node_t *e4_jcreate_ref(vfs_node_t *parent,const char *name,vfs_node_type_t type,int *error) {
-    return e4_jcreate_common(parent,name,type,error,true);
+    return e4_jcreate_common(parent,name,type,error,true,NULL,NULL);
 }
-static int e4_junlink(vfs_node_t *parent,const char *name) {
+static vfs_node_t *e4_jcreate_attrs(vfs_node_t *p,const char *n,vfs_node_type_t t,const vfs_create_attrs_t *a,int *error) {
+    return e4_jcreate_common(p,n,t,error,true,a,NULL);
+}
+static int e4_junlink_common(vfs_node_t *parent,const char *name,bool require_directory,const creds_t *actor) {
     if (!e4_namespace_name(name)) return -VFS_EINVAL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);int r=e4_state(parent);uint32_t ino=0;e4_inode_t in;
     ext4_mount_t *fs=((e4_inode_t *)parent->fs_private)->fs;
     if (!r) { r=e4_journal_refresh(parent);if (!r) r=e4_scan(parent->fs_private,name,0,NULL,&ino); }
     if (r>=0 && !ino) r=-VFS_ENOENT;
     if (r>=0) r=e4_inode(fs,ino,&in);
+    if (!r && require_directory && in.mode!=VFS_S_IFDIR) r=-VFS_ENOTDIR;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if (!r && actor) {
+        r=e4_access_locked(parent,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
+        if (!r) {
+            vfs_metadata_t d=e4_value(parent->fs_private),v=e4_value(&in);
+            r=permission_delete_value(&d,&v,actor);
+        }
+    }
+#else
+    (void)actor;
+#endif
+    bool attempted=!r;
     if (!r) r=ext4_engine_namespace_remove(fs->engine,((e4_inode_t *)parent->fs_private)->ino,name,in.mode==0x4000);
     /* Cleanup can fail after the durable name removal. Retire the cached name
      * on success or a still-registered orphan; do not expose a stale dentry. */
-    if (!r || (ino && e4_orphan_index(fs->engine,ino)>=0)) {
+    if (!r || (attempted && ino && e4_orphan_index(fs->engine,ino)>=0)) {
         vfs_node_t **link=&parent->children;
         while (*link) {
             e4_node_t *node=(e4_node_t *)*link;
@@ -217,12 +244,37 @@ static int e4_junlink(vfs_node_t *parent,const char *name) {
     }
     spin_unlock_irqrestore(&e4_lock,flags);return r;
 }
-static int e4_jrename(vfs_node_t *old,const char *name,vfs_node_t *dest,const char *next) {
+static int e4_junlink(vfs_node_t *parent,const char *name) {
+    return e4_junlink_common(parent,name,false,NULL);
+}
+static int e4_jrename_common(vfs_node_t *old,const char *name,vfs_node_t *dest,const char *next,bool require_directory,const creds_t *actor) {
     if (!e4_namespace_name(name) || !e4_namespace_name(next)) return -VFS_EINVAL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);int r=e4_state(old);if (!r) r=e4_state(dest);
     ext4_mount_t *fs=((e4_inode_t *)old->fs_private)->fs;
     if (!r && fs!=((e4_inode_t *)dest->fs_private)->fs) r=-VFS_EOPNOTSUPP;
     if (!r && strlen(dest->path)+strlen(next)+1>=VFS_MAX_PATH) r=-VFS_EFBIG;
+    uint32_t source=0;e4_inode_t in;
+    if (!r) {r=e4_journal_refresh(old);if (!r) r=e4_scan(old->fs_private,name,0,NULL,&source);if (r>=0) r=source ? e4_inode(fs,source,&in) : -VFS_ENOENT;}
+    if (!r && require_directory && in.mode!=VFS_S_IFDIR) r=-VFS_ENOTDIR;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if (!r && actor) {
+        r=e4_access_locked(old,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
+        if (!r) r=e4_access_locked(dest,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
+        if (!r) {
+            vfs_metadata_t d=e4_value(old->fs_private),v=e4_value(&in);
+            r=permission_delete_value(&d,&v,actor);
+        }
+        uint32_t victim=0;
+        if (!r) { r=e4_scan(dest->fs_private,next,0,NULL,&victim);if (r>=0) r=0; }
+        if (!r && victim) {
+            e4_inode_t target;r=e4_inode(fs,victim,&target);
+            if (!r) {vfs_metadata_t d=e4_value(dest->fs_private),v=e4_value(&target);r=permission_delete_value(&d,&v,actor);}
+        }
+    }
+#else
+    (void)actor;
+#endif
+    if (!r && old==dest && !strcmp(name,next)) goto done;
     if (!r) r=ext4_engine_namespace_rename(fs->engine,((e4_inode_t *)old->fs_private)->ino,name,
                                          ((e4_inode_t *)dest->fs_private)->ino,next);
     if (!r) {
@@ -235,7 +287,11 @@ static int e4_jrename(vfs_node_t *old,const char *name,vfs_node_t *dest,const ch
         }
         if (e4_journal_refresh(old) || (dest!=old && e4_journal_refresh(dest))) { e4_jtaint(fs);r=-VFS_EIO; }
     }
+done:
     spin_unlock_irqrestore(&e4_lock,flags);return r;
+}
+static int e4_jrename(vfs_node_t *old,const char *name,vfs_node_t *dest,const char *next) {
+    return e4_jrename_common(old,name,dest,next,false,NULL);
 }
 static int e4_journal_drain(ext4_mount_t *fs,bool finish) {
     spin_debug_assert_held(&e4_lock);ext4_engine_t *e=fs->engine;

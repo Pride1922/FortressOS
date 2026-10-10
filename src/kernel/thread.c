@@ -604,6 +604,7 @@ void sched_init(void) {
     g_main_thread.cr3 = vmm_get_kernel_pml4();
     g_main_thread.pml4_virt = vmm_get_kernel_pml4_virt();
     g_main_thread.is_user = false;
+    creds_init_root(&g_main_thread.creds);
     g_main_thread.exit_code = 0;
     g_main_thread.has_exited = false;
     g_main_thread.next = NULL;
@@ -694,6 +695,7 @@ static tcb_t *thread_create_internal(size_t target_cpu, int affinity, const char
     t->cr3 = 0;
     t->pml4_virt = NULL;
     t->is_user = false;
+    creds_init_root(&t->creds);
     t->exit_code = 0;
     t->has_exited = false;
     tcb_t *curr_thread = thread_current();
@@ -1184,6 +1186,7 @@ void sched_init_aps(size_t total_cpus) {
             for (;;) __asm__ volatile("cli; hlt");
         }
         memset(idle, 0, sizeof(tcb_t));
+        creds_init_root(&idle->creds);
 
         uintptr_t guard_virt = 0, stack_base = 0;
         size_t stack_size = 0;
@@ -1500,18 +1503,38 @@ int process_setup_user_stack(uintptr_t stack_phys, int argc, const char *const a
     return 0;
 }
 
+static bool permissions_spawn_test;
+void process_permissions_test_enable(void) { permissions_spawn_test=true; }
 static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
                                      const char *name, const void *elf_data, size_t elf_size,
                                      int argc, const char *const argv[],
                                      int envc, const char *const envp[],
                                      const char *cwd,
                                      int action_count, const spawn_kaction_t *actions,
-                                     uint64_t scalar_arg, uint64_t reserved_pid, uint32_t spawn_flags, int64_t *error) {
+                                     uint64_t scalar_arg, uint64_t reserved_pid, uint32_t spawn_flags, int64_t *error, const creds_t *actor) {
     *error = SYSCALL_ENOMEM;
     if (!elf_data || elf_size == 0) return NULL;
     if (target_cpu >= MAX_DETECTED_CPUS) target_cpu = cpu_current()->id;
 
     tcb_t *caller = thread_current();
+    creds_t inherited;
+    if (actor) inherited=*actor;
+    else if (caller && caller->is_user) {
+        if (!process_record_creds(caller->tid,&inherited)) {
+            *error=SYSCALL_ESRCH;return NULL;
+        }
+        /* Explicit disposable-QEMU fixture only: drop the actor's caps through
+         * the real publication API before ordinary user-to-user inheritance.
+         * Normal boot never enables this gate; no user credential syscall. */
+        if (permissions_spawn_test) {
+            creds_t dropped;
+            if (creds_capset(&inherited,0,&dropped) ||
+                !process_record_publish_creds(caller->tid,&inherited,&dropped)) {
+                *error=SYSCALL_EINVAL;return NULL;
+            }
+            inherited=dropped;
+        }
+    } else creds_init_root(&inherited);
     spawn_profile_t *profile = caller && caller->spawn_profile_enabled ? &caller->spawn_profile : NULL;
     uint64_t phase_begin = spawn_profile_clock(profile);
     sched_reap_dead();
@@ -1593,6 +1616,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
 
     uint64_t rflags;
     p->tid = reserved_pid;
+    p->creds=inherited;
     p->parent_pid = thread_current() && thread_current()->is_user ? thread_current()->tid : 0;
     p->pgid = (uint64_t)process_record_group(p->tid);
     p->sid = process_record_session(p->tid);
@@ -1650,7 +1674,9 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
                     goto fail_actions;
                 }
                 int vfs_err = 0;
-                file_t *f = vfs_open_ext(act->path, act->flags, &vfs_err);
+                file_t *f = caller && caller->is_user ?
+                    vfs_open_mode_creds(act->path, act->flags, act->mode, &inherited, &vfs_err) :
+                    vfs_open_ext_kernel(act->path, act->flags, &vfs_err);
                 if (!f) {
                     *error = syscall_from_vfs_error(vfs_err);
                     goto fail_actions;
@@ -1747,7 +1773,16 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     }
 
     process_record_set_name(p->tid, p->name);
+    if (!process_record_bind_creds(p->tid,&p->creds)) {
+        vmm_space_sub_sched_ref(p->cr3);
+        *error=SYSCALL_EINVAL;goto fail_actions;
+    }
     process_record_attach_signals(p->tid, &p->signals);
+    if (permissions_spawn_test && caller && caller->is_user) {
+        if (memcmp(&p->creds,&inherited,sizeof(inherited)) || p->creds.cap_effective)
+            __builtin_trap();
+        serial_puts("PERM PHASE0 dropped-cap user spawn PASS\n");
+    }
     if (spawn_flags & SPAWN_STAGED) {
         p->state = THREAD_STAGED;
         p->next = staged_processes;
@@ -1794,7 +1829,7 @@ tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf
     if (process_record_begin(pid, ppid, false, 0, 0)) return NULL;
     int64_t error;
     tcb_t *p = process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
-                                  0, NULL, 0, NULL, NULL, 0, NULL, arg, pid, 0, &error);
+                                  0, NULL, 0, NULL, NULL, 0, NULL, arg, pid, 0, &error, NULL);
     if (!p) {
         g_last_aborted_pid = pid;
         process_record_abort(pid);
@@ -1809,7 +1844,7 @@ tcb_t *process_spawn_with_actions(size_t target_cpu, const char *name, const voi
     if (process_record_begin(pid, ppid, false, 0, 0)) return NULL;
     int64_t error;
     tcb_t *p = process_spawn_internal(target_cpu, (int)target_cpu, name, elf_data, elf_size,
-                                      0, NULL, 0, NULL, NULL, action_count, actions, 0, pid, 0, &error);
+                                      0, NULL, 0, NULL, NULL, action_count, actions, 0, pid, 0, &error, NULL);
     if (!p) {
         g_last_aborted_pid = pid;
         process_record_abort(pid);
@@ -1821,9 +1856,16 @@ tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf
 }
 
 static uint32_t metadata_reader_stop, metadata_reader_done, metadata_reader_count;
+static uint64_t metadata_creds_pid;
+static creds_t metadata_creds_a,metadata_creds_b;
 static void metadata_test_reader(void *unused) {
     (void)unused;
     while (!__atomic_load_n(&metadata_reader_stop, __ATOMIC_ACQUIRE)) {
+        uint64_t pid=__atomic_load_n(&metadata_creds_pid,__ATOMIC_ACQUIRE);
+        creds_t value;
+        if (pid && process_record_creds(pid,&value) &&
+            memcmp(&value,&metadata_creds_a,sizeof(value)) && memcmp(&value,&metadata_creds_b,sizeof(value)))
+            __builtin_trap();
         process_refresh_cpu_ticks();
         process_snapshot_t snapshot;
         (void)process_record_snapshot(0, &snapshot);
@@ -1848,6 +1890,10 @@ void process_metadata_test_run(void) {
     process_record_set_name(parent, "metadata-parent");
     process_record_commit(parent);
     metadata_reader_stop=metadata_reader_done=metadata_reader_count=0;
+    metadata_creds_pid=0;creds_init_root(&metadata_creds_a);metadata_creds_b=metadata_creds_a;
+    metadata_creds_b.ngroups=CREDS_MAX_GROUPS;metadata_creds_b.cap_effective=0;
+    metadata_creds_b.uid=123;metadata_creds_b.euid=456;metadata_creds_b.suid=789;
+    for (unsigned i=0;i<CREDS_MAX_GROUPS;i++) metadata_creds_b.groups[i]=0x87654321u+i;
     metadata_test_require(thread_create_on_cpu(g_total_sched_cpus-1, "metadata-reader",
                                                metadata_test_reader, NULL) != NULL);
     for (size_t cpu=0; cpu<g_total_sched_cpus; ++cpu) {
@@ -1856,7 +1902,7 @@ void process_metadata_test_run(void) {
         int64_t error;
         metadata_test_require(process_spawn_internal(cpu,(int)cpu,"metadata-worker-long",
             embedded_init_elf_start, embedded_init_elf_end-embedded_init_elf_start,
-            0,NULL,0,NULL,NULL,0,NULL,1,pid,0,&error) != NULL);
+            0,NULL,0,NULL,NULL,0,NULL,1,pid,0,&error, NULL) != NULL);
         {
             process_snapshot_t s = {0};
             bool found = false;
@@ -1867,7 +1913,9 @@ void process_metadata_test_run(void) {
             serial_puts(" found="); serial_print_dec(found);
             serial_puts(" state="); serial_print_dec(s.state); serial_puts("\n");
         }
+        __atomic_store_n(&metadata_creds_pid,pid,__ATOMIC_RELEASE);
         uint64_t deadline=apic_timer_get_ticks()+10000, previous=0;
+        unsigned credential_publications=0;
         bool zombie=false;
         process_snapshot_t snapshot={0};
                 bool probed=false;
@@ -1881,6 +1929,12 @@ void process_metadata_test_run(void) {
                 serial_puts("S9 POLL cpu="); serial_print_dec(cpu);
                 serial_puts(" first_found="); serial_print_dec(pf);
                 serial_puts(" state="); serial_print_dec(ps.state); serial_puts("\n");
+            }
+            creds_t old;
+            if (process_record_creds(pid,&old)) {
+                metadata_test_require(!memcmp(&old,&metadata_creds_a,sizeof(old)) || !memcmp(&old,&metadata_creds_b,sizeof(old)));
+                if (process_record_publish_creds(pid,&old,credential_publications&1 ? &metadata_creds_a : &metadata_creds_b))
+                    credential_publications++;
             }
             process_refresh_cpu_ticks();
             for (unsigned i=0;i<PROCESS_CAPACITY;++i) {
@@ -1912,6 +1966,11 @@ void process_metadata_test_run(void) {
                 serial_puts("\n");
             }
             metadata_test_require(zombie && previous > 0);
+        creds_t detached;
+        metadata_test_require(credential_publications && !process_record_creds(pid,&detached) &&
+            !process_record_publish_creds(pid,&metadata_creds_a,&metadata_creds_b));
+        __atomic_store_n(&metadata_creds_pid,0,__ATOMIC_RELEASE);
+        serial_puts("PERM PHASE0 CPU ");serial_print_dec(cpu);serial_puts(" publication/exit PASS\n");
         /* Reap before wait: value-only zombie and final accounting survive. */
         for (unsigned i=0;i<32;++i) { thread_yield(); sched_reap_dead(); }
         process_tick_sample_t stale={pid,UINT64_MAX};
@@ -1984,13 +2043,38 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     if (result) { pid = 0; goto out; }
     result = SYSCALL_ENOMEM;
     int err = 0;
-    file = vfs_open_ext(path, VFS_O_RDONLY, &err);
+    creds_t actor;
+    if (!process_record_creds(curr->tid,&actor)) { result=SYSCALL_ESRCH;goto out; }
+    if (permissions_spawn_test) {
+        creds_t dropped;
+        if (creds_capset(&actor,0,&dropped) ||
+            !process_record_publish_creds(curr->tid,&actor,&dropped)) { result=SYSCALL_EINVAL;goto out; }
+        actor=dropped;
+    }
+    char canonical_cwd[VFS_MAX_PATH];
+    if (cwd && cwd[0]) {
+        vfs_node_t *directory = vfs_lookup_creds(cwd, &actor, &err);
+        if (!directory) { result = syscall_from_vfs_error(err); goto out; }
+        if (directory->type != VFS_DIRECTORY) result = SYSCALL_ENOTDIR;
+        else result = syscall_from_vfs_error(vfs_permission(directory, VFS_MAY_EXEC, &actor));
+        vfs_node_put(directory);
+        if (result) goto out;
+        err=vfs_canonical_path(cwd,canonical_cwd,sizeof(canonical_cwd));
+        if (err) { result=syscall_from_vfs_error(err);goto out; }
+        cwd=canonical_cwd;
+    }
+    file = vfs_open_exec_creds(path, &actor, &err);
     if (!file) {
-        result = err == -VFS_ENOENT ? SYSCALL_ENOENT :
-                 err == -VFS_ENOMEM ? SYSCALL_ENOMEM : SYSCALL_EIO;
+        result = syscall_from_vfs_error(err);
         goto out;
     }
     if (file->node->type != VFS_FILE) { result = SYSCALL_EISDIR; goto out; }
+    vfs_metadata_t image_metadata;
+    err = vfs_metadata(file->node, &image_metadata);
+    if (err) { result = syscall_from_vfs_error(err); goto out; }
+    if ((image_metadata.mode & VFS_S_IFMT) != VFS_S_IFREG) {
+        result = SYSCALL_ENOEXEC; goto out;
+    }
     size_t size = file->node->size;
     if (!size) { result = SYSCALL_ENOEXEC; goto out; }
     if (size > MAX_ELF_FILE_SIZE) { result = SYSCALL_EFBIG; goto out; }
@@ -2028,7 +2112,7 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     }
     SPAWN_ADD(profile, phase[SP_FILE], phase_begin);
     tcb_t *child = process_spawn_internal(target_cpu, affinity, path, image, size,
-                                          argc, argv, envc, envp, cwd, action_count, actions, 0, pid, spawn_flags, &result);
+                                          argc, argv, envc, envp, cwd, action_count, actions, 0, pid, spawn_flags, &result, &actor);
     if (!child) goto out;
     child->cpus_allowed = (affinity >= 0) ? CPU_MASK_ONE(affinity) : CPU_MASK_ALL;
     *out_pid = (int64_t)child->tid;
@@ -2141,9 +2225,9 @@ int fd_init_std(tcb_t *proc) {
         proc->fd_table[i] = NULL;
         proc->fd_flags[i] = 0;
     }
-    file_t *f0 = vfs_open_terminal(VFS_O_RDONLY);
-    file_t *f1 = vfs_open_terminal(VFS_O_WRONLY);
-    file_t *f2 = vfs_open_terminal(VFS_O_WRONLY);
+    file_t *f0 = vfs_open_terminal_kernel(VFS_O_RDONLY);
+    file_t *f1 = vfs_open_terminal_kernel(VFS_O_WRONLY);
+    file_t *f2 = vfs_open_terminal_kernel(VFS_O_WRONLY);
     if (!f0 || !f1 || !f2) {
         if (f0) vfs_close(f0);
         if (f1) vfs_close(f1);

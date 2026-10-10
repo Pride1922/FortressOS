@@ -7,7 +7,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
-from test_ext4_guest_crash import stop_at_write,writer_offsets,partition,REPO
+from test_ext4_guest_crash import stop_at_write,writer_offsets,partition,REPO,fixture_source
 from test_ext4_read import gpt
 from test_jbd2_replay_host import oracle
 import test_ext4_journal_mount as guest
@@ -41,7 +41,7 @@ def main():
         configurations=[(mode,bs,smp) for mode in ('bios','uefi') for bs in (1024,2048,4096) for smp in ((1,4) if args.usb else (1,))]
         for mode,bs,smp in configurations:
                 label=f'{mode}-{bs}'+(f'-smp{smp}' if args.usb else '');disk=out/f'{label}.img'
-                source=allowed/f'ext4-phase8-5/host-frz8r6nu/{bs}-normal-512-pending-seed.img';gpt(source,disk)
+                source=fixture_source(bs);gpt(source,disk)
                 cut=stop_at_write(out,iso,elf,disk,offsets,'jbd2_writer_checkpoint',label+'-cut',3,mode,bs,smp,orphan=True,usb=args.usb)
                 check(disk,out,label+'-crash',True)
                 stop_at_write(out,iso,elf,disk,offsets,'vfs_lookup',label+'-recovered',0,mode,bs,smp,recover_mount=True,usb=args.usb)

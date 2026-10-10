@@ -32,6 +32,7 @@
 #include "ext2.h"
 #include "ext4.h"
 #include "usb_mount.h"
+#include "devfs.h"
 #include "power.h"
 #include "logo.h"
 #include "e1000.h"
@@ -1948,7 +1949,7 @@ static void test_phase8b_vfs_initramfs(const boot_info_t *boot_info, uint64_t *m
 
     /* TEST 1: VFS Root and Tree Node Lookup */
     serial_puts("[TEST 1] Verifying VFS Tree Hierarchy & File Resolution...\n");
-    vfs_node_t *motd_node = vfs_lookup("/etc/motd");
+    vfs_node_t *motd_node = vfs_lookup_kernel("/etc/motd");
     if (!motd_node || motd_node->type != VFS_FILE || motd_node->size == 0) {
         serial_puts("       [FAIL] /etc/motd not found in VFS or invalid type/size!\n");
         hcf();
@@ -1957,7 +1958,7 @@ static void test_phase8b_vfs_initramfs(const boot_info_t *boot_info, uint64_t *m
     serial_print_dec(motd_node->size);
     serial_puts(" bytes)\n");
 
-    vfs_node_t *bin_node = vfs_lookup("/bin");
+    vfs_node_t *bin_node = vfs_lookup_kernel("/bin");
     if (!bin_node || bin_node->type != VFS_DIRECTORY) {
         serial_puts("       [FAIL] /bin directory not found or not a directory!\n");
         hcf();
@@ -1968,7 +1969,7 @@ static void test_phase8b_vfs_initramfs(const boot_info_t *boot_info, uint64_t *m
     serial_puts("[TEST 2] Testing Directory Enumeration (vfs_readdir)...\n");
     vfs_dirent_t dent;
     int dent_count = 0;
-    while (vfs_readdir(bin_node, dent_count, &dent) == 1) {
+    while (vfs_readdir_kernel(bin_node, dent_count, &dent) == 1) {
         serial_puts("       [DENT] /bin/");
         serial_puts(dent.name);
         serial_puts(" (Type: ");
@@ -1988,8 +1989,8 @@ static void test_phase8b_vfs_initramfs(const boot_info_t *boot_info, uint64_t *m
 
     /* TEST 3: Independent Open-File Seek Offsets */
     serial_puts("[TEST 3] Testing Independent Open-File Seek Offsets (Dual Open)...\n");
-    file_t *f1 = vfs_open("/etc/motd", 0);
-    file_t *f2 = vfs_open("/etc/motd", 0);
+    file_t *f1 = vfs_open_kernel("/etc/motd", 0);
+    file_t *f2 = vfs_open_kernel("/etc/motd", 0);
     if (!f1 || !f2 || f1 == f2) {
         serial_puts("       [FAIL] vfs_open failed or returned identical file pointers!\n");
         hcf();
@@ -3028,7 +3029,7 @@ static void test_ext4_reads(void) {
                  policy==GPT_POLICY_PRIMARY_CONSISTENT, "ext4 fixture GPT");
     ext4_mount_t *mount=NULL;
     require_ext2(!ext4_mount_ro(block_get_dev_by_name("nvme0n1p1"),"/mnt",&mount), "ext4 RO mount");
-    vfs_node_t *fragment=vfs_lookup("/mnt/fragmented.bin");
+    vfs_node_t *fragment=vfs_lookup_kernel("/mnt/fragmented.bin");
     require_ext2(fragment && fragment->size%3200==0, "fragmented fixture inode");
     unsigned bs=(unsigned)(fragment->size/3200);
     require_ext2(bs==1024 || bs==2048 || bs==4096, "ext4 block size");
@@ -3036,7 +3037,7 @@ static void test_ext4_reads(void) {
     require_ext2(buffer!=NULL, "ext4 read test buffer");
     const char *paths[]={"/mnt/data.bin","/mnt/fragmented.bin","/mnt/unwritten.bin"};
     for (unsigned f=0;f<3;f++) {
-        file_t *file=vfs_open(paths[f],VFS_O_RDONLY);
+        file_t *file=vfs_open_kernel(paths[f],VFS_O_RDONLY);
         require_ext2(file!=NULL, "ext4 VFS open");
         uint64_t at=0;
         while (at<file->node->size) {
@@ -3053,7 +3054,7 @@ static void test_ext4_reads(void) {
         require_ext2(vfs_read(file,buffer,1)==0, "ext4 EOF");
         vfs_close(file);
     }
-    vfs_node_t *sparse=vfs_lookup("/mnt/sparse.bin");
+    vfs_node_t *sparse=vfs_lookup_kernel("/mnt/sparse.bin");
     require_ext2(sparse!=NULL, "ext4 sparse inode");
     uint64_t position=(1ULL<<32)+bs+17;
     require_ext2(sparse->read(sparse,position-17,buffer,100)==32, "ext4 high offset EOF");
@@ -3088,7 +3089,7 @@ static uint64_t ext4_fixture_cycles(void) {
     return (uint64_t)hi<<32 | lo;
 }
 static void ext4_fixture_verify(const char *path,uint64_t size,uint8_t *buffer) {
-    file_t *file=vfs_open(path,VFS_O_RDONLY);
+    file_t *file=vfs_open_kernel(path,VFS_O_RDONLY);
     require_ext2(file && file->node->size==size,"ext4 persistence size");
     uint64_t at=0;
     while (at<size) {
@@ -3169,14 +3170,14 @@ static void test_ext4_journal_mount_on(block_dev_t *partition) {
     if (ext4_physical_token("ext4_physical=cut-open-unlink")) {
         static uint8_t payload[8192],observed[8192];
         const char *path="/mnt/cut-open-unlink.bin";
-        require_ext2(!vfs_lookup(path),"open unlink fixture must be fresh");
+        require_ext2(!vfs_lookup_kernel(path),"open unlink fixture must be fresh");
         for (unsigned i=0;i<sizeof(payload);i++) payload[i]=(uint8_t)(i*17u+3u);
-        file_t *writer=vfs_open(path,VFS_O_CREAT|VFS_O_WRONLY);
+        file_t *writer=vfs_open_kernel(path,VFS_O_CREAT|VFS_O_WRONLY);
         require_ext2(writer && vfs_write(writer,payload,sizeof(payload))==(int64_t)sizeof(payload),"open unlink seed");
         require_ext2(!vfs_close(writer) && !ext4_sync(g_ext4_fixture_mount),"open unlink seed barrier");
-        file_t *retained=vfs_open(path,VFS_O_RDONLY);
-        require_ext2(retained && !vfs_unlink(path),"open unlink retain/unlink");
-        require_ext2(!ext4_sync(g_ext4_fixture_mount) && !vfs_lookup(path),"open unlink durable namespace");
+        file_t *retained=vfs_open_kernel(path,VFS_O_RDONLY);
+        require_ext2(retained && !vfs_unlink_kernel(path),"open unlink retain/unlink");
+        require_ext2(!ext4_sync(g_ext4_fixture_mount) && !vfs_lookup_kernel(path),"open unlink durable namespace");
         require_ext2(vfs_read(retained,observed,sizeof(observed))==(int64_t)sizeof(observed) &&
             !memcmp(payload,observed,sizeof(payload)),"open unlink retained bytes");
         console_set_quiet(false);
@@ -3188,20 +3189,20 @@ static void test_ext4_journal_mount_on(block_dev_t *partition) {
 #endif
 #ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
     if (ext4_physical_token("ext4_physical=cut-commit")) {
-        require_ext2(!vfs_lookup("/mnt/cut-commit.txt"),"cut fixture must be fresh");
+        require_ext2(!vfs_lookup_kernel("/mnt/cut-commit.txt"),"cut fixture must be fresh");
         require_ext2(!ext4_test_arm_commit_pause(g_ext4_fixture_mount,ext4_physical_commit_pause),"cut fixture arm");
-        (void)vfs_create("/mnt/cut-commit.txt",VFS_FILE);
+        (void)vfs_create_kernel("/mnt/cut-commit.txt",VFS_FILE);
         require_ext2(false,"cut fixture did not reach durable milestone");
     }
 #endif
-    require_ext2(!vfs_lookup("/mnt/target.bin"),"ext4 journal startup orphan cleanup");
+    require_ext2(!vfs_lookup_kernel("/mnt/target.bin"),"ext4 journal startup orphan cleanup");
     bool second=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_verify") || ext4_physical_token("ext4_physical=verify");uint8_t *bytes=kmalloc(16384);
     require_ext2(bytes!=NULL,"ext4 journal fixture buffer");
     bool write_fault=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_write_fault");
     bool sync_fault=qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_sync_fault");
     if (qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test") && (write_fault || sync_fault)) {
         require_ext2(!second && write_fault!=sync_fault,"USB journal fault fixture mode");
-        file_t *file=vfs_open("/mnt/journal-persist.bin",VFS_O_CREAT|VFS_O_RDWR);
+        file_t *file=vfs_open_kernel("/mnt/journal-persist.bin",VFS_O_CREAT|VFS_O_RDWR);
         require_ext2(file!=NULL,"USB journal fault file");
         for (unsigned k=0;k<16384;k++) bytes[k]=(uint8_t)(k*17+3);
         int64_t written=vfs_write(file,bytes,16384);
@@ -3216,38 +3217,38 @@ static void test_ext4_journal_mount_on(block_dev_t *partition) {
         serial_puts("[EXT4 USB JOURNAL] FAULT PASS; EIO/taint/later-write/sync/freeze\n");return;
     }
     if (!second) {
-        file_t *file=vfs_open("/mnt/journal-persist.bin",VFS_O_CREAT|VFS_O_RDWR);
+        file_t *file=vfs_open_kernel("/mnt/journal-persist.bin",VFS_O_CREAT|VFS_O_RDWR);
         require_ext2(file!=NULL,"ext4 journal create");
         for (unsigned k=0;k<16384;k++) bytes[k]=(uint8_t)(k*17+3);
         require_ext2(vfs_write(file,bytes,16384)==16384,"ext4 journal write");vfs_close(file);
         require_ext2(usb_mount_sync(),"ext4 journal ordinary sync dispatch");
-        file=vfs_open("/mnt/journal-later.bin",VFS_O_CREAT|VFS_O_RDWR);
+        file=vfs_open_kernel("/mnt/journal-later.bin",VFS_O_CREAT|VFS_O_RDWR);
         require_ext2(file && vfs_write(file,bytes,17)==17,"ext4 journal mutation after sync");vfs_close(file);
     }
     ext4_fixture_verify("/mnt/journal-persist.bin",16384,bytes);
     ext4_fixture_verify("/mnt/journal-later.bin",17,bytes);
     if (ext4_journal_integration_requested()) {
         if (!second) {
-            require_ext2(!vfs_mkdir("/mnt/integration-dir",0),"journal integration mkdir");
-            file_t *a=vfs_open("/mnt/integration.bin",VFS_O_CREAT|VFS_O_RDWR);
+            require_ext2(!vfs_mkdir_kernel("/mnt/integration-dir",0),"journal integration mkdir");
+            file_t *a=vfs_open_kernel("/mnt/integration.bin",VFS_O_CREAT|VFS_O_RDWR);
             require_ext2(a && vfs_write(a,bytes,16384)==16384,"journal integration allocation");
-            require_ext2(!vfs_truncate(a->node,1041),"journal integration partial truncate");vfs_close(a);
-            require_ext2(!vfs_rename("/mnt/integration.bin","/mnt/integration-dir/persist.bin"),"journal integration rename");
-            require_ext2(!vfs_mkdir("/mnt/empty-dir",0) && !vfs_unlink("/mnt/empty-dir"),"journal integration rmdir");
-            a=vfs_open("/mnt/pinned.bin",VFS_O_CREAT|VFS_O_RDWR|VFS_O_APPEND);
+            require_ext2(!vfs_truncate_kernel(a->node,1041),"journal integration partial truncate");vfs_close(a);
+            require_ext2(!vfs_rename_kernel("/mnt/integration.bin","/mnt/integration-dir/persist.bin"),"journal integration rename");
+            require_ext2(!vfs_mkdir_kernel("/mnt/empty-dir",0) && !vfs_unlink_kernel("/mnt/empty-dir"),"journal integration rmdir");
+            a=vfs_open_kernel("/mnt/pinned.bin",VFS_O_CREAT|VFS_O_RDWR|VFS_O_APPEND);
             require_ext2(a && vfs_write(a,bytes,16384)==16384,"journal integration pinned allocation");
-            file_t *b=vfs_open("/mnt/pinned.bin",VFS_O_RDWR);require_ext2(b!=NULL,"journal integration independent pin");
+            file_t *b=vfs_open_kernel("/mnt/pinned.bin",VFS_O_RDWR);require_ext2(b!=NULL,"journal integration independent pin");
             __atomic_fetch_add(&a->ref_count,1,__ATOMIC_ACQ_REL);
-            require_ext2(!vfs_unlink("/mnt/pinned.bin") && !vfs_lookup("/mnt/pinned.bin"),"journal integration open unlink");
-            require_ext2(vfs_write(a,bytes,17)==17 && !vfs_truncate(b->node,1041),"journal integration unlinked write/shrink");
+            require_ext2(!vfs_unlink_kernel("/mnt/pinned.bin") && !vfs_lookup_kernel("/mnt/pinned.bin"),"journal integration open unlink");
+            require_ext2(vfs_write(a,bytes,17)==17 && !vfs_truncate_kernel(b->node,1041),"journal integration unlinked write/shrink");
             uint8_t check[17];require_ext2(vfs_read(b,check,17)==17 && !memcmp(check,bytes,17),"journal integration retained bytes");
             vfs_close(a);vfs_close(b);vfs_close(a);
-            a=vfs_open("/mnt/reuse.bin",VFS_O_CREAT|VFS_O_RDWR);
+            a=vfs_open_kernel("/mnt/reuse.bin",VFS_O_CREAT|VFS_O_RDWR);
             require_ext2(a && vfs_write(a,bytes,8192)==8192,"journal integration post-reclaim allocation");vfs_close(a);
             require_ext2(usb_mount_sync(),"journal integration drain sync");
         }
-        require_ext2(!vfs_lookup("/mnt/pinned.bin") && !vfs_lookup("/mnt/integration.bin") &&
-            !vfs_lookup("/mnt/empty-dir"),"journal integration persisted namespace");
+        require_ext2(!vfs_lookup_kernel("/mnt/pinned.bin") && !vfs_lookup_kernel("/mnt/integration.bin") &&
+            !vfs_lookup_kernel("/mnt/empty-dir"),"journal integration persisted namespace");
         ext4_fixture_verify("/mnt/integration-dir/persist.bin",1041,bytes);
         ext4_fixture_verify("/mnt/reuse.bin",8192,bytes);
         serial_puts("[EXT4 INTEGRATION] namespace/truncate/pins/reuse PASS\n");
@@ -3318,7 +3319,7 @@ static void test_ext4_journal_usb_mount(const boot_info_t *info) {
             }
         }
     }
-    if (matches!=1 || vfs_lookup("/mnt") ||
+    if (matches!=1 || vfs_lookup_kernel("/mnt") ||
         (durability!=USB_DURABILITY_SYNC_BACKED && durability!=USB_DURABILITY_WRITE_THROUGH &&
          durability!=USB_DURABILITY_ASSUMED_WRITE_THROUGH) ||
         !selected->block_dev.write_sector || !selected->block_dev.flush) {
@@ -3342,13 +3343,13 @@ static void test_ext4_writes(bool production_usb) {
     gpt_policy_result_t policy;
     require_ext2(gpt_parse_ex(block_get_dev_by_name("nvme0n1"),&policy) && policy==GPT_POLICY_PRIMARY_CONSISTENT,"ext4 write fixture GPT");
     require_ext2(!ext4_mount_rw(block_get_dev_by_name("nvme0n1p1"),"/mnt",&g_ext4_fixture_mount),"ext4 RW fixture mount");
-    } else require_ext2(vfs_lookup("/mnt") != NULL,"ext4 production USB mount");
+    } else require_ext2(vfs_lookup_kernel("/mnt") != NULL,"ext4 production USB mount");
     uint8_t *buffer=kmalloc(32768);require_ext2(buffer!=NULL,"ext4 write fixture buffer");
     unsigned phase=qemu_fw_cfg_has_key("opt/fortress/ext4_write_cleanup") ? 3 :
                    qemu_fw_cfg_has_key("opt/fortress/ext4_write_verify") ? 2 : 1;
     uint64_t peak=0;
     if (phase==1) {
-        file_t *file=vfs_open("/mnt/saved.bin",VFS_O_CREAT|VFS_O_RDWR);require_ext2(file!=NULL,"ext4 saved create");
+        file_t *file=vfs_open_kernel("/mnt/saved.bin",VFS_O_CREAT|VFS_O_RDWR);require_ext2(file!=NULL,"ext4 saved create");
         uint64_t at=0;
         while (at<16*1024*1024) {
             for (unsigned k=0;k<32768;k++) buffer[k]=(uint8_t)((at+k)*17+3);
@@ -3360,37 +3361,37 @@ static void test_ext4_writes(bool production_usb) {
             }
         }
         vfs_close(file);ext4_fixture_verify("/mnt/saved.bin",16*1024*1024,buffer);
-        require_ext2(!vfs_mkdir("/mnt/sub",0),"ext4 mkdir");
-        file=vfs_open("/mnt/sub/append",VFS_O_CREAT|VFS_O_RDWR|VFS_O_APPEND);
-        file_t *other=vfs_open("/mnt/sub/append",VFS_O_WRONLY|VFS_O_APPEND);
+        require_ext2(!vfs_mkdir_kernel("/mnt/sub",0),"ext4 mkdir");
+        file=vfs_open_kernel("/mnt/sub/append",VFS_O_CREAT|VFS_O_RDWR|VFS_O_APPEND);
+        file_t *other=vfs_open_kernel("/mnt/sub/append",VFS_O_WRONLY|VFS_O_APPEND);
         require_ext2(file && other,"ext4 independent opens");
         require_ext2(vfs_write(file,"abc",3)==3 && vfs_write(other,"def",3)==3,"ext4 append");
-        require_ext2(vfs_unlink("/mnt/sub/append")==-VFS_EOPNOTSUPP,"ext4 open unlink denial");
+        require_ext2(vfs_unlink_kernel("/mnt/sub/append")==-VFS_EOPNOTSUPP,"ext4 open unlink denial");
         vfs_close(file);vfs_close(other);
-        require_ext2(!vfs_rename("/mnt/sub/append","/mnt/renamed"),"ext4 cross-directory rename");
-        require_ext2(vfs_rename("/mnt/renamed","/mnt/saved.bin")==-VFS_EEXIST,"ext4 replacement denial");
-        require_ext2(!vfs_truncate(vfs_lookup("/mnt/renamed"),0),"ext4 truncate zero");
+        require_ext2(!vfs_rename_kernel("/mnt/sub/append","/mnt/renamed"),"ext4 cross-directory rename");
+        require_ext2(vfs_rename_kernel("/mnt/renamed","/mnt/saved.bin")==-VFS_EEXIST,"ext4 replacement denial");
+        require_ext2(!vfs_truncate_kernel(vfs_lookup_kernel("/mnt/renamed"),0),"ext4 truncate zero");
         for (unsigned i=0;i<100;i++) {
             char path[64]="/mnt/sub/directory-growth-000";unsigned len=strlen(path);
             path[len-3]=(char)('0'+i/100);path[len-2]=(char)('0'+i/10%10);path[len-1]=(char)('0'+i%10);
-            require_ext2(vfs_create(path,VFS_FILE)!=NULL,"ext4 directory growth");
+            require_ext2(vfs_create_kernel(path,VFS_FILE)!=NULL,"ext4 directory growth");
         }
     } else {
         ext4_fixture_verify("/mnt/saved.bin",16*1024*1024,buffer);
         ext4_fixture_verify("/mnt/download-1m.bin",1048576,buffer);
         ext4_fixture_verify("/mnt/download-16m.bin",16*1024*1024,buffer);
         if (phase==2) {
-            require_ext2(!vfs_unlink("/mnt/renamed"),"ext4 persisted unlink");
+            require_ext2(!vfs_unlink_kernel("/mnt/renamed"),"ext4 persisted unlink");
             for (unsigned i=0;i<100;i++) {
                 char path[64]="/mnt/sub/directory-growth-000";unsigned len=strlen(path);
                 path[len-3]=(char)('0'+i/100);path[len-2]=(char)('0'+i/10%10);path[len-1]=(char)('0'+i%10);
-                require_ext2(!vfs_unlink(path),"ext4 directory reclamation");
+                require_ext2(!vfs_unlink_kernel(path),"ext4 directory reclamation");
             }
-            require_ext2(!vfs_unlink("/mnt/sub"),"ext4 rmdir");
-        } else require_ext2(!vfs_lookup("/mnt/sub") && !vfs_lookup("/mnt/renamed"),"ext4 persisted namespace deletion");
+            require_ext2(!vfs_unlink_kernel("/mnt/sub"),"ext4 rmdir");
+        } else require_ext2(!vfs_lookup_kernel("/mnt/sub") && !vfs_lookup_kernel("/mnt/renamed"),"ext4 persisted namespace deletion");
     }
     kfree(buffer);
-    vfs_node_t *control=vfs_create_node("/ext4-test-control",VFS_STREAM,0,NULL);
+    vfs_node_t *control=vfs_create_node_kernel("/ext4-test-control",VFS_STREAM,0,NULL);
     require_ext2(control!=NULL,"ext4 test control node");control->is_stream=true;
     control->write=ext4_fixture_control;control->truncate=ext4_fixture_truncate;
     serial_puts("[EXT4 WRITE] PASS boot ");serial_print_dec(phase);
@@ -3411,34 +3412,34 @@ static void test_ext2_and_audits(void) {
         mnt_ok = ext2_mount(mnt_dev, "/mnt");
     }
     require_ext2(mnt_ok, "mount");
-    require_ext2(vfs_lookup("/etc/motd") != NULL, "initramfs preserved");
-    require_ext2(vfs_lookup("/mnt/nested/note.txt") != NULL, "nested path");
-    require_ext2(vfs_lookup("/mnt/missing") == NULL, "missing path");
-    file_t *wopen = vfs_open("/mnt/hello.txt", 1);
+    require_ext2(vfs_lookup_kernel("/etc/motd") != NULL, "initramfs preserved");
+    require_ext2(vfs_lookup_kernel("/mnt/nested/note.txt") != NULL, "nested path");
+    require_ext2(vfs_lookup_kernel("/mnt/missing") == NULL, "missing path");
+    file_t *wopen = vfs_open_kernel("/mnt/hello.txt", 1);
     if (mnt_dev && mnt_dev->write_sector && write_opt_in) {
         require_ext2(wopen != NULL, "write open supported");
         vfs_close(wopen);
     } else {
         require_ext2(wopen == NULL, "write open rejected on read-only mount");
     }
-    vfs_node_t *dir = vfs_lookup("/mnt");
+    vfs_node_t *dir = vfs_lookup_kernel("/mnt");
     vfs_dirent_t dent;
     bool saw_hello = false;
     int result;
     uint64_t index = 0;
-    while ((result = vfs_readdir(dir, index++, &dent)) == 1) {
+    while ((result = vfs_readdir_kernel(dir, index++, &dent)) == 1) {
         if (!strcmp(dent.name, "hello.txt")) saw_hello = true;
         require_ext2(index < 32, "bounded enumeration");
     }
     require_ext2(result == 0 && saw_hello, "directory enumeration");
-    file_t *a = vfs_open("/mnt/hello.txt", 0), *b = vfs_open("/mnt/hello.txt", 0);
+    file_t *a = vfs_open_kernel("/mnt/hello.txt", 0), *b = vfs_open_kernel("/mnt/hello.txt", 0);
     require_ext2(a && b, "independent open");
     uint8_t buf[1024], other[16];
     require_ext2(vfs_read(a, buf, 16) == 16 && vfs_read(b, other, 16) == 16 &&
                  !memcmp(buf, other, 16), "independent offsets");
     require_ext2(vfs_read(a, buf, 0) == 0 && a->offset == 16, "zero read");
     vfs_close(a); vfs_close(b);
-    a = vfs_open("/mnt/large.bin", 0);
+    a = vfs_open_kernel("/mnt/large.bin", 0);
     require_ext2(a != NULL, "large open");
     size_t off = 0;
     while ((result = (int)vfs_read(a, buf, sizeof(buf))) > 0) {
@@ -3448,7 +3449,7 @@ static void test_ext2_and_audits(void) {
     }
     require_ext2(result == 0 && off == 400000, "large EOF");
     vfs_close(a);
-    a = vfs_open("/mnt/sparse.bin", 0);
+    a = vfs_open_kernel("/mnt/sparse.bin", 0);
     require_ext2(a != NULL, "sparse open");
     off = 0;
     while ((result = (int)vfs_read(a, buf, sizeof(buf))) > 0) {
@@ -4328,7 +4329,7 @@ static void smp_append_worker(void *raw_arg) {
     size_t wid = arg->worker_id;
     file_t *f = arg->file;
     if (!f) {
-        f = vfs_open(arg->path, VFS_O_WRONLY | VFS_O_APPEND);
+        f = vfs_open_kernel(arg->path, VFS_O_WRONLY | VFS_O_APPEND);
         if (!f) {
             __atomic_fetch_add(&g_append_write_errors, 1, __ATOMIC_RELAXED);
             __atomic_fetch_add(&g_append_done, 1, __ATOMIC_RELEASE);
@@ -4380,7 +4381,7 @@ static bool run_append_scenario(const char *path, bool shared_handle, size_t tot
     serial_puts("...\n");
 
     /* 1. Truncate / create empty file */
-    file_t *init_f = vfs_open(path, VFS_O_CREAT | VFS_O_TRUNC | VFS_O_WRONLY);
+    file_t *init_f = vfs_open_kernel(path, VFS_O_CREAT | VFS_O_TRUNC | VFS_O_WRONLY);
     if (!init_f) {
         serial_puts("       [FAIL] Failed to create test file\n");
         return false;
@@ -4395,7 +4396,7 @@ static bool run_append_scenario(const char *path, bool shared_handle, size_t tot
 
     file_t *shared_f = NULL;
     if (shared_handle) {
-        shared_f = vfs_open(path, VFS_O_WRONLY | VFS_O_APPEND);
+        shared_f = vfs_open_kernel(path, VFS_O_WRONLY | VFS_O_APPEND);
         if (!shared_f) {
             serial_puts("       [FAIL] Failed to open shared handle\n");
             return false;
@@ -4462,7 +4463,7 @@ static bool run_append_scenario(const char *path, bool shared_handle, size_t tot
     }
 
     /* 3. Read back and verify every byte and record */
-    file_t *rf = vfs_open(path, VFS_O_RDONLY);
+    file_t *rf = vfs_open_kernel(path, VFS_O_RDONLY);
     if (!rf) {
         serial_puts("       [FAIL] Failed to open file for read verification\n");
         return false;
@@ -4596,7 +4597,7 @@ static void test_smp_ext2_concurrent_append(void) {
         return;
     }
 
-    vfs_node_t *mnt = vfs_lookup("/mnt");
+    vfs_node_t *mnt = vfs_lookup_kernel("/mnt");
     if (!mnt) {
         serial_puts("       [FAIL] /mnt is not mounted; cannot run ext2 append test.\n");
         hcf();
@@ -6380,6 +6381,8 @@ pf_boot_guard_done:
     test_smp_step1d_tsc_sync();
     test_smp_piece5_ipi(master_kernel_pml4);
 
+    if (qemu_fw_cfg_has_key("opt/fortress/permissions_test"))
+        process_permissions_test_enable();
     if (qemu_fw_cfg_has_key("opt/fortress/s9_metadata_test")) {
         process_metadata_test_run();
     }
@@ -6436,6 +6439,7 @@ pf_boot_guard_done:
     boot_status("Mounting persistent storage (/mnt)...");
     if (ext4_physical_requested() || qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) test_ext4_journal_usb_mount(&boot_info);
     else usb_mount_production_storage(&boot_info);
+    devfs_add_usb_partitions();
     if (qemu_fw_cfg_has_key("opt/fortress/memory_storage_test") ||
         qemu_fw_cfg_has_key("opt/fortress/memory_storage_churn")) {
         pci_device_t controller, internal_disk;
@@ -6466,9 +6470,14 @@ pf_boot_guard_done:
         serial_puts("[TEST] opt/fortress/taint_test active: marking ext2 storage tainted before shell startup\n");
         ext2_mark_tainted();
     }
-    vfs_node_t *shell = vfs_lookup("/bin/shell");
+    const char *initial_program="/bin/login";
+#ifdef TEST_LOGIN_BOOT
+    /* Only explicit test kernels accept the legacy direct-shell escape. */
+    if (strstr(boot_info.cmdline,"login=0")) initial_program="/bin/shell";
+#endif
+    vfs_node_t *shell = vfs_lookup_kernel(initial_program);
     if (!shell || shell->type != VFS_FILE || !shell->data) {
-        serial_puts("[FAIL] /bin/shell missing from initramfs.\n");
+        serial_puts("[FAIL] Initial login program missing from initramfs.\n");
         hcf();
     }
     boot_status("Interactive shell ready.");
@@ -6492,7 +6501,7 @@ pf_boot_guard_done:
     }
     for (;;) {
         /* Spawn with preemption disabled until the PID is safely copied. */
-        tcb_t *process = process_spawn("shell", shell->data, shell->size);
+        tcb_t *process = process_spawn(initial_program, shell->data, shell->size);
         if (!process) { serial_puts("[FAIL] Cannot start shell.\n"); hcf(); }
         uint64_t pid = process->tid;
         if (input_terminal_bootstrap(pid)) {

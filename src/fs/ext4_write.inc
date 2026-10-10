@@ -217,12 +217,13 @@ static int e4_dir_edit(ext4_engine_t *e,e4_inode_t *in,const char *name,uint32_t
     loaded.size+=fs->bs; e4_merge_pending(fs); e4_rebuild(e,&loaded,raw);
     return e->error;
 }
-static vfs_node_t *e4_create(vfs_node_t *parent,const char *name,vfs_node_type_t type) {
+static vfs_node_t *e4_create_common(vfs_node_t *parent,const char *name,vfs_node_type_t type,const vfs_create_attrs_t *attrs,int *error) {
+    if (error) *error=-VFS_EINVAL;
     vfs_set_last_create_error(-VFS_EINVAL);
     if (!e4_name(name) || (type!=VFS_FILE && type!=VFS_DIRECTORY)) return NULL;
     /* Reserve the node before any media mutation. */
     e4_node_t *n=kcalloc(1,sizeof(*n));
-    if (!n) { vfs_set_last_create_error(-VFS_ENOMEM); return NULL; }
+    if (!n) { if (error) *error=-VFS_ENOMEM;vfs_set_last_create_error(-VFS_ENOMEM); return NULL; }
     uint64_t f=spin_lock_irqsave(&e4_lock); int r=e4_state(parent);
     e4_inode_t *dir=parent->fs_private; ext4_mount_t *fs=dir->fs; ext4_engine_t *e=fs->engine;
     if (r) goto fail;
@@ -232,6 +233,9 @@ static vfs_node_t *e4_create(vfs_node_t *parent,const char *name,vfs_node_type_t
     if (found) { r=-VFS_EEXIST; goto fail; }
     uint32_t ino; r=e4_reserve_inode_unlocked(e,type==VFS_DIRECTORY,&ino); if (r) goto fail;
     uint8_t *raw=e4_inode_image(e,ino); if (!raw) { r=e->error; goto fail; }
+    e4_p16(raw,(type==VFS_DIRECTORY ? VFS_S_IFDIR : VFS_S_IFREG)|(attrs ? attrs->mode : type==VFS_DIRECTORY ? 0755 : 0644));
+    e4_p16(raw+2,attrs ? attrs->uid : 0);e4_p16(raw+120,attrs ? attrs->uid>>16 : 0);
+    e4_p16(raw+24,attrs ? attrs->gid : 0);e4_p16(raw+122,attrs ? attrs->gid>>16 : 0);
     e4_p16(raw+26,type==VFS_DIRECTORY ? 2 : 1);
     e4_inode_t in={.fs=fs,.ino=ino,.generation=e4_u32(raw+100),.mode=type==VFS_DIRECTORY ? 0x4000 : 0x8000};
     if (type==VFS_DIRECTORY) {
@@ -256,10 +260,17 @@ static vfs_node_t *e4_create(vfs_node_t *parent,const char *name,vfs_node_type_t
     e4_setup(n,&in); memcpy(n->node.name,name,strlen(name)+1); memcpy(n->node.path,parent->path,strlen(parent->path)+1);
     size_t plen=strlen(n->node.path); n->node.path[plen]='/'; memcpy(n->node.path+plen+1,name,strlen(name)+1);
     n->node.parent=parent; n->node.next=parent->children; parent->children=&n->node;
-    fs->cached[fs->nodes++]=n; spin_unlock_irqrestore(&e4_lock,f); return &n->node;
+    fs->cached[fs->nodes++]=n;if (error) *error=0; spin_unlock_irqrestore(&e4_lock,f); return &n->node;
 fail:
     if (e) e->ready=false;
-    spin_unlock_irqrestore(&e4_lock,f); kfree(n); vfs_set_last_create_error(r); return NULL;
+    spin_unlock_irqrestore(&e4_lock,f); kfree(n);if (error) *error=r; vfs_set_last_create_error(r); return NULL;
+}
+static vfs_node_t *e4_create(vfs_node_t *p,const char *n,vfs_node_type_t t) {
+    return e4_create_common(p,n,t,NULL,NULL);
+}
+static vfs_node_t *e4_create_attrs(vfs_node_t *p,const char *n,vfs_node_type_t t,const vfs_create_attrs_t *a,int *error) {
+    vfs_node_t *node=e4_create_common(p,n,t,a,error);
+    return node; /* legacy nonjournaled nodes retain mount lifetime */
 }
 static int e4_unlink(vfs_node_t *parent,const char *name) {
     if (!e4_name(name)) return -VFS_EINVAL;

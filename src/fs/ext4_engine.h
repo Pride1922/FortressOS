@@ -1,6 +1,7 @@
 #ifndef FORTRESS_EXT4_ENGINE_H
 #define FORTRESS_EXT4_ENGINE_H
 #include "block.h"
+#include "vfs.h"
 #include "jbd2.h"
 /* Internal Phase-3 workbench, not a VFS RW mount. Caller must exclusively own
  * disposable/eligible media; never share with a mounted filesystem.
@@ -72,6 +73,8 @@ int64_t ext4_engine_file_write(ext4_engine_t *engine, uint32_t ino, uint64_t *of
 int ext4_engine_open_journal_namespace(block_dev_t *dev, bool admitted, ext4_engine_t **out);
 int ext4_engine_namespace_create(ext4_engine_t *engine, uint32_t parent,
                                  const char *name, bool directory, uint32_t *ino);
+int ext4_engine_namespace_create_attrs(ext4_engine_t *engine,uint32_t parent,
+    const char *name,bool directory,const vfs_create_attrs_t *attrs,uint32_t *ino);
 int ext4_engine_namespace_remove(ext4_engine_t *engine, uint32_t parent,
                                  const char *name, bool directory);
 int ext4_engine_namespace_rename(ext4_engine_t *engine, uint32_t old_parent,

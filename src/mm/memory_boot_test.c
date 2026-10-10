@@ -24,10 +24,10 @@ void memory_storage_test_run(void) {
     static uint8_t data[4096], readback[4096];
     static const char path[] = "/mnt/memory-probe.bin";
     for (size_t i = 0; i < sizeof(data); i++) data[i] = (uint8_t)(i * 17 + 43);
-    file_t *file = vfs_open(path, VFS_O_CREAT | VFS_O_RDWR | VFS_O_TRUNC);
+    file_t *file = vfs_open_kernel(path, VFS_O_CREAT | VFS_O_RDWR | VFS_O_TRUNC);
     require(file != NULL, "storage probe open");
     require(vfs_write(file, data, sizeof(data)) == sizeof(data), "storage warm write");
-    require(vfs_truncate(file->node, 0) == 0 && vfs_close(file) == 0 && usb_mount_sync(),
+    require(vfs_truncate_kernel(file->node, 0) == 0 && vfs_close(file) == 0 && usb_mount_sync(),
             "storage warm cleanup");
     require(heap_verify_integrity() && pmm_audit(), "storage baseline integrity");
     heap_stats_t heap_before, heap_after;
@@ -39,13 +39,13 @@ void memory_storage_test_run(void) {
     uint64_t mappings_before = vmm_kernel_mapping_fingerprint();
     snapshot_begin();
     for (unsigned round = 0; round < 10; round++) {
-        file = vfs_open(path, VFS_O_RDWR);
+        file = vfs_open_kernel(path, VFS_O_RDWR);
         require(file != NULL, "storage repeated open");
         require(vfs_write(file, data, sizeof(data)) == sizeof(data), "storage repeated write");
         file->offset = 0;
         require(vfs_read(file, readback, sizeof(readback)) == sizeof(readback) &&
                 memcmp(data, readback, sizeof(data)) == 0, "storage exact readback");
-        require(vfs_truncate(file->node, 0) == 0 && vfs_close(file) == 0 && usb_mount_sync(),
+        require(vfs_truncate_kernel(file->node, 0) == 0 && vfs_close(file) == 0 && usb_mount_sync(),
                 "storage truncate/close/sync");
         require(heap_verify_integrity() && pmm_audit(), "storage repeated integrity");
     }
@@ -73,22 +73,22 @@ void memory_storage_test_run(void) {
     serial_puts(" free_blocks="); serial_print_dec(heap_after.free_blocks);
     serial_puts(" pmm_free="); serial_print_dec(pmm_after.free_pages);
     serial_puts(" tables="); serial_print_dec(table_before); serial_puts("\n");
-    require(vfs_unlink(path) == 0 && usb_mount_sync(), "storage unlink cleanup");
+    require(vfs_unlink_kernel(path) == 0 && usb_mount_sync(), "storage unlink cleanup");
 }
 
 void memory_storage_churn_test_run(void) {
     static const char path[] = "/mnt/memory-churn.bin";
     heap_stats_t baseline, completed;
-    file_t *warm=vfs_open(path,VFS_O_CREAT|VFS_O_RDWR);
-    require(warm && vfs_close(warm)==0 && vfs_unlink(path)==0, "churn warm cleanup");
+    file_t *warm=vfs_open_kernel(path,VFS_O_CREAT|VFS_O_RDWR);
+    require(warm && vfs_close(warm)==0 && vfs_unlink_kernel(path)==0, "churn warm cleanup");
     heap_get_stats(&baseline);
     snapshot_begin();
     unsigned rounds = 0;
     int error = 0;
     for (; rounds < 1152; rounds++) {
-        file_t *file = vfs_open_ext(path, VFS_O_CREAT | VFS_O_RDWR, &error);
+        file_t *file = vfs_open_ext_kernel(path, VFS_O_CREAT | VFS_O_RDWR, &error);
         require(file != NULL && error==0, "churn create past old capacity");
-        require(vfs_close(file) == 0 && vfs_unlink(path) == 0 && vfs_lookup(path) == NULL,
+        require(vfs_close(file) == 0 && vfs_unlink_kernel(path) == 0 && vfs_lookup_kernel(path) == NULL,
                 "churn close/unlink/absence");
         if ((rounds + 1) % 128 == 0) {
             require(heap_verify_integrity() && pmm_audit(), "churn periodic integrity");
@@ -105,7 +105,7 @@ void memory_storage_churn_test_run(void) {
     serial_puts(" committed_before="); serial_print_dec(baseline.total_bytes);
     serial_puts(" committed_after="); serial_print_dec(completed.total_bytes);
     serial_puts("; exact bitmap, absent file, sync and memory audits\n");
-    file_t *existing=vfs_open("/mnt/README.txt",VFS_O_RDONLY);
+    file_t *existing=vfs_open_kernel("/mnt/README.txt",VFS_O_RDONLY);
     require(existing != NULL, "churn existing file lookup");
     uint8_t byte;
     require(vfs_read(existing,&byte,1)==1 && vfs_close(existing)==0, "churn existing file read");

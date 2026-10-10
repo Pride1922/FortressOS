@@ -4,6 +4,7 @@
 #include "types.h"
 #include "spinlock.h"
 #include "signal_state.h"
+#include "creds.h"
 #include "idt.h"
 #include "spawn_profile_abi.h"
 #include "wait_profile.h"
@@ -48,6 +49,7 @@ typedef struct tcb {
     uint64_t       tid;
     uint64_t       parent_pid, pgid, sid;
     signal_state_t signals;
+    creds_t creds; /* Private until binding; then process_table value APIs only. */
     unsigned exit_signal;
     char           name[32];
     thread_state_t state;
@@ -269,4 +271,6 @@ void spawn_record_fault_hit(void);
 uint64_t spawn_get_last_aborted_pid(void);
 tcb_t *process_spawn_with_actions(size_t target_cpu, const char *name, const void *elf_data, size_t elf_size, int action_count, const spawn_kaction_t *actions);
 
+/* Explicit fw_cfg disposable fixture; normal boot never enables this. */
+void process_permissions_test_enable(void);
 #endif /* FORTRESS_THREAD_H */

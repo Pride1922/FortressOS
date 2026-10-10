@@ -4,6 +4,9 @@
 #include "string.h"
 #include "spinlock.h"
 #include "serial.h"
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+#include "permission_values.h"
+#endif
 
 
 #define EXT2_MAX_GROUPS 4096U
@@ -32,6 +35,7 @@ typedef struct {
     uint32_t free_inodes;
     ext2_group_desc_t *group_descs;
     size_t nodes;
+    vfs_node_t *cache;
     bool read_only;
     bool tainted;
     uint8_t *bmp_cache;
@@ -43,18 +47,34 @@ typedef struct {
     ext2_fs_t *fs;
     uint32_t ino;
     uint16_t mode;
+    uint32_t uid,gid;
     uint16_t links;
     uint32_t size;
     uint32_t i_blocks;
     uint32_t file_acl;
     uint32_t blocks[15];
+    uint32_t refs,opens;
+    bool removed,legacy;
+    vfs_node_t *cache_next;
 } ext2_inode_t;
 
 static ext2_fs_t *g_mounted_ext2;
 
-/* Serializes reads, writes, allocations and cache publication on the bootstrap CPU.
- * Replace with sleepable I/O locking before asynchronous storage or SMP. */
+/* Serializes reads, writes, allocations, namespace and node lifetime across
+ * callers. Block completion must poll without sleeping or enabling interrupts
+ * while this ordinary rank-1 IRQ-save lock is held. */
 static spinlock_t ext2_lock = SPINLOCK_RANKED(1, "ext2");
+
+/* Devfs calls this only when no EXT4 mount was boot-published. It shares
+ * exclusion with EXT2 reads/writes, including read-only mounts, or serializes
+ * raw readers when no data filesystem was admitted. No locks held on entry. */
+bool ext2_device_read_sector(block_dev_t *dev,uint64_t lba,void *buf) {
+    spin_debug_assert_unheld();
+    uint64_t flags=spin_lock_irqsave(&ext2_lock);
+    bool ok=block_read_sector(dev,lba,buf);
+    spin_unlock_irqrestore(&ext2_lock,flags);
+    return ok;
+}
 
 static uint16_t u16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
 static uint32_t u32(const uint8_t *p) {
@@ -212,6 +232,8 @@ static bool inode(ext2_fs_t *fs, uint32_t number, ext2_inode_t *out) {
     if (!bytes(fs, off, raw, fs->inode_size)) return false;
     memset(out, 0, sizeof(*out));
     out->fs = fs; out->ino = number; out->mode = u16(raw);
+    out->uid=u16(raw+2)|(uint32_t)u16(raw+120)<<16;
+    out->gid=u16(raw+24)|(uint32_t)u16(raw+122)<<16;
     out->links = u16(raw + 26);
     out->size = u32(raw + 4);
     out->i_blocks = u32(raw + 28);
@@ -249,6 +271,8 @@ static bool write_inode_to_disk(ext2_inode_t *in) {
     }
     /* Preserve untouched fields (uid, gid, flags, etc.) */
     put16(raw, in->mode);
+    put16(raw+2,in->uid);put16(raw+120,in->uid>>16);
+    put16(raw+24,in->gid);put16(raw+122,in->gid>>16);
     put32(raw + 4, in->size);
     /* Update modification timestamp */
     put32(raw + 16, 1726500000);
@@ -765,37 +789,37 @@ static int dir_entry(ext2_inode_t *dir, const char *name, uint64_t index,
     uint64_t off = 0, curr_idx = 0;
     while (off < dir->size) {
         uint8_t h[8];
-        if (read_inode(dir, off, h, 8) != 8) return -1;
+        if (read_inode(dir, off, h, 8) != 8) return -VFS_EIO;
         uint32_t ino = u32(h);
         uint16_t rec = u16(h + 4);
         uint16_t len = dir->fs->incompat & 2 ? h[6] : u16(h + 6);
         if (rec < 8 || rec % 4 ||
             rec > dir->fs->block_size - (off % dir->fs->block_size) ||
-            rec > dir->size - off || len > rec - 8 || len > 255) return -1;
+            rec > dir->size - off || len > rec - 8 || len > 255) return -VFS_EIO;
         if (ino) {
             char found[256];
             if (!len || ino > dir->fs->inodes ||
-                read_inode(dir, off + 8, found, len) != (int64_t)len) return -1;
+                read_inode(dir, off + 8, found, len) != (int64_t)len) return -VFS_EIO;
             for (unsigned i = 0; i < len; i++) {
-                if (!found[i] || found[i] == '/') return -1;
+                if (!found[i] || found[i] == '/') return -VFS_EIO;
             }
             found[len] = '\0';
             if (name) {
                 if (!strcmp(found, name)) {
                     if (out_name) {
-                        if (len >= VFS_MAX_NAME) return -1;
+                        if (len >= VFS_MAX_NAME) return -VFS_EIO;
                         memcpy(out_name, found, len + 1);
                     }
-                    return inode(dir->fs, ino, out_inode) ? 1 : -1;
+                    return inode(dir->fs, ino, out_inode) ? 1 : -VFS_EIO;
                 }
             } else {
                 if (strcmp(found, ".") && strcmp(found, "..")) {
                     if (curr_idx == index) {
                         if (out_name) {
-                            if (len >= VFS_MAX_NAME) return -1;
+                            if (len >= VFS_MAX_NAME) return -VFS_EIO;
                             memcpy(out_name, found, len + 1);
                         }
-                        return inode(dir->fs, ino, out_inode) ? 1 : -1;
+                        return inode(dir->fs, ino, out_inode) ? 1 : -VFS_EIO;
                     }
                     curr_idx++;
                 }
@@ -904,7 +928,8 @@ static bool ext2_add_dir_entry(ext2_inode_t *dir, const char *name, uint32_t new
 static int64_t ext_read(vfs_node_t *node, uint64_t off, void *buf, size_t len) {
     if (len > EXT2_MAX_READ) len = EXT2_MAX_READ;
     uint64_t flags = spin_lock_irqsave(&ext2_lock);
-    int64_t r = read_inode(node->fs_private, off, buf, len);
+    ext2_inode_t *in = node->fs_private;
+    int64_t r = in->removed ? -VFS_ENOENT : read_inode(in, off, buf, len);
     spin_unlock_irqrestore(&ext2_lock, flags);
     return r;
 }
@@ -913,6 +938,10 @@ static int64_t ext_write(vfs_node_t *node, uint64_t *off, bool append, const voi
     if (!node || !node->fs_private || !off) return -VFS_EINVAL;
     uint64_t flags = spin_lock_irqsave(&ext2_lock);
     ext2_inode_t *in = (ext2_inode_t *)node->fs_private;
+    if (in->removed) {
+        spin_unlock_irqrestore(&ext2_lock, flags);
+        return -VFS_ENOENT;
+    }
     if (append) {
         *off = in->size;
     } else if (*off > in->size) {
@@ -929,28 +958,18 @@ static int64_t ext_write(vfs_node_t *node, uint64_t *off, bool append, const voi
     return r;
 }
 
-static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
+static int ext_truncate_locked(vfs_node_t *node, uint64_t new_size) {
     if (!node || node->type != VFS_FILE) return -1;
     ext2_inode_t *in = node->fs_private;
     if (!in || !in->fs) return -1;
     ext2_fs_t *fs = in->fs;
-    if (fs->tainted) return -5;  /* -EIO */
-    if (fs->read_only) return -30; /* -EROFS */
-
-    /* For Phase 9D, truncation is bounded to truncating to 0 */
-    if (new_size != 0) return -22; /* -EINVAL */
-
-    /* Guard: Double or triple indirection is unsupported */
-    if (in->blocks[13] != 0 || in->blocks[14] != 0) {
-        return -27; /* -EFBIG */
+    int admission = in->removed ? -VFS_ENOENT : fs->tainted ? -VFS_EIO :
+        fs->read_only ? -VFS_EROFS : new_size != 0 ? -VFS_EINVAL :
+        (in->blocks[13] || in->blocks[14]) ? -VFS_EFBIG :
+        in->file_acl ? -VFS_EOPNOTSUPP : 0;
+    if (admission) {
+        return admission;
     }
-
-    /* Guard: External extended attribute block is unsupported */
-    if (in->file_acl != 0) {
-        return -95; /* -EOPNOTSUPP */
-    }
-
-    uint64_t flags = spin_lock_irqsave(&ext2_lock);
 
     /* =========================================================================
      * Stage 1: Complete Pre-Validation (even if size == 0)
@@ -960,7 +979,6 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
     size_t max_blocks = 12 + 1 + fs->block_size / 4;
     uint32_t *to_free = kmalloc(max_blocks * sizeof(uint32_t) + fs->block_size);
     if (!to_free) {
-        spin_unlock_irqrestore(&ext2_lock, flags);
         return -12; /* -ENOMEM */
     }
     uint8_t *free_bitmap = (uint8_t *)(to_free + max_blocks);
@@ -972,13 +990,11 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
         if (blk) {
             if (ext2_is_metadata_block(fs, blk)) {
                 kfree(to_free);
-                spin_unlock_irqrestore(&ext2_lock, flags);
                 return -22; /* -EINVAL */
             }
             for (size_t k = 0; k < count; k++) {
                 if (to_free[k] == blk) {
                     kfree(to_free);
-                    spin_unlock_irqrestore(&ext2_lock, flags);
                     return -22; /* -EINVAL duplicate pointer */
                 }
             }
@@ -991,13 +1007,11 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
         uint32_t indir_blk = in->blocks[12];
         if (ext2_is_metadata_block(fs, indir_blk)) {
             kfree(to_free);
-            spin_unlock_irqrestore(&ext2_lock, flags);
             return -22;
         }
         for (size_t k = 0; k < count; k++) {
             if (to_free[k] == indir_blk) {
                 kfree(to_free);
-                spin_unlock_irqrestore(&ext2_lock, flags);
                 return -22;
             }
         }
@@ -1006,14 +1020,12 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
         uint8_t *indir_buf = kmalloc(fs->block_size);
         if (!indir_buf) {
             kfree(to_free);
-            spin_unlock_irqrestore(&ext2_lock, flags);
             return -12;
         }
         if (!bytes(fs, (uint64_t)indir_blk * fs->block_size, indir_buf, fs->block_size)) {
             kfree(indir_buf);
             kfree(to_free);
             fs->tainted = true;
-            spin_unlock_irqrestore(&ext2_lock, flags);
             return -5;
         }
 
@@ -1024,14 +1036,12 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
                 if (ext2_is_metadata_block(fs, leaf)) {
                     kfree(indir_buf);
                     kfree(to_free);
-                    spin_unlock_irqrestore(&ext2_lock, flags);
                     return -22;
                 }
                 for (size_t k = 0; k < count; k++) {
                     if (to_free[k] == leaf) {
                         kfree(indir_buf);
                         kfree(to_free);
-                        spin_unlock_irqrestore(&ext2_lock, flags);
                         return -22;
                     }
                 }
@@ -1046,13 +1056,11 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
         uint32_t blk = to_free[i];
         if (blk < fs->first || blk >= fs->blocks || ext2_is_metadata_block(fs, blk)) {
             kfree(to_free);
-            spin_unlock_irqrestore(&ext2_lock, flags);
             return -22;
         }
         uint32_t g = (blk - fs->first) / fs->bpg;
         if (g >= fs->groups) {
             kfree(to_free);
-            spin_unlock_irqrestore(&ext2_lock, flags);
             return -22;
         }
         uint32_t bit = (blk - fs->first) % fs->bpg;
@@ -1064,14 +1072,12 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
             if (!bytes(fs, (uint64_t)bmp * fs->block_size + (bit / 8), &byte_val, 1)) {
                 kfree(to_free);
                 fs->tainted = true;
-                spin_unlock_irqrestore(&ext2_lock, flags);
                 return -5;
             }
         }
         if (!(byte_val & (1 << (bit % 8)))) {
             kfree(to_free);
             fs->tainted = true;
-            spin_unlock_irqrestore(&ext2_lock, flags);
             return -22;
         }
     }
@@ -1087,13 +1093,11 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
     if (!write_inode_to_disk(in)) {
         kfree(to_free);
         fs->tainted = true;
-        spin_unlock_irqrestore(&ext2_lock, flags);
         return -5;
     }
     if (fs->dev->flush && !block_flush(fs->dev)) {
         kfree(to_free);
         fs->tainted = true;
-        spin_unlock_irqrestore(&ext2_lock, flags);
         return -5;
     }
 
@@ -1111,18 +1115,21 @@ static int ext_truncate(vfs_node_t *node, uint64_t new_size) {
     kfree(to_free);
 
     if (reclamation_failed) {
-        spin_unlock_irqrestore(&ext2_lock, flags);
         return -5;
     }
 
     if (fs->dev->flush && !block_flush(fs->dev)) {
         fs->tainted = true;
-        spin_unlock_irqrestore(&ext2_lock, flags);
         return -5;
     }
 
-    spin_unlock_irqrestore(&ext2_lock, flags);
     return 0;
+}
+
+
+static int ext_truncate(vfs_node_t *node,uint64_t size) {
+    uint64_t irq=spin_lock_irqsave(&ext2_lock);int r=ext_truncate_locked(node,size);
+    spin_unlock_irqrestore(&ext2_lock,irq);return r;
 }
 
 static int ext_readdir(vfs_node_t *dir, uint64_t index, void *out) {
@@ -1130,7 +1137,8 @@ static int ext_readdir(vfs_node_t *dir, uint64_t index, void *out) {
     if (!dir || dir->type != VFS_DIRECTORY || !out_dent) return -1;
     uint64_t flags = spin_lock_irqsave(&ext2_lock);
     ext2_inode_t in;
-    int r = dir_entry(dir->fs_private, NULL, index, out_dent->name, &in);
+    ext2_inode_t *source = dir->fs_private;
+    int r = source->removed ? -VFS_ENOENT : dir_entry(source, NULL, index, out_dent->name, &in);
     if (r == 1) {
         out_dent->size = in.size;
         out_dent->type = (in.mode & 0xf000) == 0x4000 ? VFS_DIRECTORY : VFS_FILE;
@@ -1139,24 +1147,85 @@ static int ext_readdir(vfs_node_t *dir, uint64_t index, void *out) {
     return r;
 }
 
+static void ext_collect_locked(vfs_node_t *node) {
+    ext2_inode_t *in=node->fs_private;
+    if (!in->removed || in->refs || in->opens || in->legacy) return;
+    vfs_node_t **link=&in->fs->cache;
+    while (*link && *link!=node) link=&((ext2_inode_t *)(*link)->fs_private)->cache_next;
+    if (*link) *link=in->cache_next;
+    if (in->fs->nodes) in->fs->nodes--;
+    kfree(node);
+}
+static int ext_get(vfs_node_t *node) {
+    uint64_t irq=spin_lock_irqsave(&ext2_lock);ext2_inode_t *in=node->fs_private;
+    int r=in->refs==UINT32_MAX ? -VFS_EFBIG : 0;
+    if (!r) in->refs++;
+    spin_unlock_irqrestore(&ext2_lock,irq);return r;
+}
+static void ext_put(vfs_node_t *node) {
+    uint64_t irq=spin_lock_irqsave(&ext2_lock);ext2_inode_t *in=node->fs_private;
+    if (!in->refs) __builtin_trap();
+    in->refs--;ext_collect_locked(node);spin_unlock_irqrestore(&ext2_lock,irq);
+}
+static int ext_open(vfs_node_t *node) {
+    uint64_t irq=spin_lock_irqsave(&ext2_lock);ext2_inode_t *in=node->fs_private;
+    int r=in->removed ? -VFS_ENOENT : in->opens==UINT32_MAX ? -VFS_EFBIG : 0;
+    if (!r) in->opens++;
+    spin_unlock_irqrestore(&ext2_lock,irq);return r;
+}
+static void ext_close(vfs_node_t *node) {
+    uint64_t irq=spin_lock_irqsave(&ext2_lock);ext2_inode_t *in=node->fs_private;
+    if (!in->opens) __builtin_trap();
+    in->opens--;ext_collect_locked(node);spin_unlock_irqrestore(&ext2_lock,irq);
+}
+static vfs_node_t *ext_lookup_ref(vfs_node_t *,const char *,int *);
+static vfs_node_t *ext_create_ref(vfs_node_t *,const char *,vfs_node_type_t,int *);
 static vfs_node_t *ext_lookup(vfs_node_t *parent, const char *name);
 static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_type_t type);
 static int ext_unlink(vfs_node_t *dir_node, const char *name);
 static int ext_rename(vfs_node_t *old_dir_node, const char *old_name,
                       vfs_node_t *new_dir_node, const char *new_name);
 
+static vfs_node_t *ext_create_attrs(vfs_node_t *,const char *,vfs_node_type_t,const vfs_create_attrs_t *,int *);
+static int ext_metadata(vfs_node_t *,vfs_metadata_t *);
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+static int ext_access_locked(vfs_node_t *,unsigned,const creds_t *);
+static int ext_permission_actor(vfs_node_t *,unsigned,const creds_t *);
+static vfs_metadata_t ext_value(const ext2_inode_t *);
+static vfs_node_t *ext_lookup_actor(vfs_node_t *,const char *,const creds_t *,int *);
+static vfs_node_t *ext_create_actor(vfs_node_t *,const char *,vfs_node_type_t,uint32_t,const creds_t *,int *);
+static int ext_open_actor(vfs_node_t *,unsigned,bool,const creds_t *);
+static int ext_unlink_actor(vfs_node_t *,const char *,bool,const creds_t *);
+static int ext_rename_actor(vfs_node_t *,const char *,vfs_node_t *,const char *,bool,const creds_t *);
+static int ext_setattr_actor(vfs_node_t *,bool,uint32_t,creds_id_change_t,creds_id_change_t,const creds_t *);
+static int64_t ext_write_actor(vfs_node_t *,uint64_t *,bool,const void *,size_t,const creds_t *);
+#endif
 static int ext_can_write(vfs_node_t *node) {
     if (!node || !node->fs_private) return -VFS_EINVAL;
     ext2_inode_t *in = (ext2_inode_t *)node->fs_private;
-    if (!in->fs) return -VFS_EIO;
-    if (in->fs->tainted) return -VFS_EIO;
-    if (in->fs->read_only) return -VFS_EROFS;
-    return 0;
+    uint64_t flags = spin_lock_irqsave(&ext2_lock);
+    int r = in->removed ? -VFS_ENOENT : !in->fs ? -VFS_EIO :
+        in->fs->tainted ? -VFS_EIO : in->fs->read_only ? -VFS_EROFS : 0;
+    spin_unlock_irqrestore(&ext2_lock, flags);
+    return r;
 }
 
 static void setup(vfs_node_t *node, ext2_inode_t *in) {
-    node->close = NULL;
+    node->close=ext_close;node->open=ext_open;node->get=ext_get;node->put=ext_put;
+    node->owns_nodes=true;node->serializes_write_offset=true;
     node->fs_private = in;
+    in->cache_next=in->fs->cache;in->fs->cache=node;
+    node->mode=in->mode;node->uid=in->uid;node->gid=in->gid;
+    node->mnt_flags=(in->fs->read_only ? VFS_MNT_RDONLY : 0)|VFS_MNT_NOSUID|VFS_MNT_NODEV;
+    node->metadata=ext_metadata;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    node->permission_actor=ext_permission_actor;node->open_actor=ext_open_actor;
+    node->setattr_actor=ext_setattr_actor;
+    if ((in->mode & VFS_S_IFMT)==VFS_S_IFDIR) {
+        node->lookup_actor=ext_lookup_actor;node->create_actor=ext_create_actor;
+        node->unlink_actor=ext_unlink_actor;node->rename_actor=ext_rename_actor;
+    } else node->write_actor=ext_write_actor;
+#endif
     node->size = in->size;
     node->type = (in->mode & 0xf000) == 0x4000 ? VFS_DIRECTORY : VFS_FILE;
     node->read = ext_read;
@@ -1170,9 +1239,11 @@ static void setup(vfs_node_t *node, ext2_inode_t *in) {
         node->can_write = ext_can_write;
     }
     if (node->type == VFS_DIRECTORY) {
-        node->lookup = ext_lookup;
+        node->lookup = ext_lookup;node->lookup_ref=ext_lookup_ref;
         node->readdir = ext_readdir;
         node->create = in->fs->read_only ? NULL : ext_create;
+        node->create_ref=in->fs->read_only ? NULL : ext_create_ref;
+        node->create_attrs_ref=in->fs->read_only ? NULL : ext_create_attrs;
         node->unlink = in->fs->read_only ? NULL : ext_unlink;
         node->rename = in->fs->read_only ? NULL : ext_rename;
     }
@@ -1222,24 +1293,41 @@ static bool ext2_remove_dir_entry(ext2_inode_t *dir, const char *name, uint32_t 
     return false;
 }
 
-static int ext_unlink(vfs_node_t *dir_node, const char *name) {
+static int ext_unlink_locked(vfs_node_t *dir_node, const char *name,bool require_directory,const creds_t *actor) {
     if (!dir_node || !name || dir_node->type != VFS_DIRECTORY) return -VFS_EINVAL;
     ext2_inode_t *dir = dir_node->fs_private;
     if (!dir || !dir->fs) return -VFS_EIO;
+    if (dir->removed) return -VFS_ENOENT;
     if (dir->fs->read_only) return -VFS_EROFS;
     if (dir->fs->tainted) return -VFS_EIO;
 
     ext2_fs_t *fs = dir->fs;
-    uint64_t flags = spin_lock_irqsave(&ext2_lock);
     int res = VFS_SUCCESS;
 
     ext2_inode_t target_in;
     int dres = dir_entry(dir, name, 0, NULL, &target_in);
     if (dres != 1) {
-        res = -VFS_ENOENT;
+        res = dres<0 ? -VFS_EIO : -VFS_ENOENT;
         goto done;
     }
 
+    if (require_directory && (target_in.mode & VFS_S_IFMT)!=VFS_S_IFDIR) return -VFS_ENOTDIR;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if (actor) {
+        int r=ext_access_locked(dir_node,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);if (r) return r;
+        ext2_inode_t fresh;if (!inode(fs,dir->ino,&fresh)) return -VFS_EIO;
+        vfs_metadata_t d=ext_value(&fresh),v=ext_value(&target_in);
+        r=permission_delete_value(&d,&v,actor);if (r) return r;
+    }
+#else
+    (void)actor;
+#endif
+    vfs_node_t *cached=NULL;
+    for (vfs_node_t *n=fs->cache;n;n=((ext2_inode_t *)n->fs_private)->cache_next) {
+        ext2_inode_t *in=n->fs_private;
+        if (!in->removed && in->ino==target_in.ino && in->opens) return -VFS_EOPNOTSUPP;
+    }
+    for (vfs_node_t *n=dir_node->children;n;n=n->next) if (!strcmp(n->name,name)) {cached=n;break;}
     bool is_dir = (target_in.mode & 0xf000) == 0x4000;
     if (is_dir) {
         /* Verify empty directory */
@@ -1362,15 +1450,23 @@ static int ext_unlink(vfs_node_t *dir_node, const char *name) {
         res = -VFS_EIO;
         goto done;
     }
-    if (fs->nodes > 0) fs->nodes--;
+    if (cached) {
+        vfs_node_t **link=&dir_node->children;while (*link && *link!=cached) link=&(*link)->next;
+        if (*link) *link=cached->next;
+        cached->next=NULL;((ext2_inode_t *)cached->fs_private)->removed=true;ext_collect_locked(cached);
+    }
 
 done:
-    spin_unlock_irqrestore(&ext2_lock, flags);
     return res;
 }
 
-static int ext_rename(vfs_node_t *old_dir_node, const char *old_name,
-                      vfs_node_t *new_dir_node, const char *new_name) {
+static int ext_unlink(vfs_node_t *dir,const char *name) {
+    uint64_t irq=spin_lock_irqsave(&ext2_lock);int r=ext_unlink_locked(dir,name,false,NULL);
+    spin_unlock_irqrestore(&ext2_lock,irq);return r;
+}
+
+static int ext_rename_common(vfs_node_t *old_dir_node, const char *old_name,
+                      vfs_node_t *new_dir_node, const char *new_name,bool require_directory,const creds_t *actor) {
     if (!old_dir_node || !new_dir_node || !old_name || !new_name) return -VFS_EINVAL;
     if (old_dir_node->type != VFS_DIRECTORY || new_dir_node->type != VFS_DIRECTORY) return -8;
     ext2_inode_t *old_dir = old_dir_node->fs_private;
@@ -1378,11 +1474,10 @@ static int ext_rename(vfs_node_t *old_dir_node, const char *old_name,
     if (!old_dir || !new_dir || !old_dir->fs || !new_dir->fs) return -VFS_EIO;
     if (old_dir->fs != new_dir->fs) return -VFS_EROFS;
     ext2_fs_t *fs = old_dir->fs;
-    if (fs->read_only) return -VFS_EROFS;
-    if (fs->tainted) return -VFS_EIO;
-
     uint64_t flags = spin_lock_irqsave(&ext2_lock);
-    int res = VFS_SUCCESS;
+    int res = old_dir->removed || new_dir->removed ? -VFS_ENOENT :
+        fs->tainted ? -VFS_EIO : fs->read_only ? -VFS_EROFS : 0;
+    if (res) goto done;
 
     ext2_inode_t old_in;
     int dres = dir_entry(old_dir, old_name, 0, NULL, &old_in);
@@ -1390,7 +1485,60 @@ static int ext_rename(vfs_node_t *old_dir_node, const char *old_name,
         res = -VFS_ENOENT;
         goto done;
     }
+    if (require_directory && (old_in.mode & VFS_S_IFMT)!=VFS_S_IFDIR) {res=-VFS_ENOTDIR;goto done;}
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if (actor) {
+        res=ext_access_locked(old_dir_node,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
+        if (!res) res=ext_access_locked(new_dir_node,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
+        ext2_inode_t current;
+        if (!res && !inode(fs,old_dir->ino,&current)) res=-VFS_EIO;
+        if (!res) {
+            vfs_metadata_t d=ext_value(&current),v=ext_value(&old_in);
+            res=permission_delete_value(&d,&v,actor);
+        }
+        if (res) goto done;
+    }
+#endif
     bool is_dir = (old_in.mode & 0xf000) == 0x4000;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if (actor && is_dir && old_dir_node!=new_dir_node) {
+        for (vfs_node_t *p=new_dir_node;p && p->get==ext_get;p=p->parent)
+            if (((ext2_inode_t *)p->fs_private)->ino==old_in.ino) {res=-VFS_EINVAL;goto done;}
+        vfs_metadata_t value=ext_value(&old_in);
+        res=permission_access_value(&value,VFS_MAY_WRITE,actor);if (res) goto done;
+    }
+#endif
+    vfs_node_t *cached=NULL;
+    for (vfs_node_t *n=old_dir_node->children;n;n=n->next) if (!strcmp(n->name,old_name)) {cached=n;break;}
+    char old_path[VFS_MAX_PATH],new_path[VFS_MAX_PATH];
+    size_t old_len=0,new_len=strlen(new_dir_node->path),name_len=strlen(new_name);
+    if (new_len+name_len+2>VFS_MAX_PATH) {res=-VFS_EINVAL;goto done;}
+    memcpy(new_path,new_dir_node->path,new_len);new_path[new_len++]='/';
+    memcpy(new_path+new_len,new_name,name_len+1);new_len+=name_len;
+    if (cached) {
+        old_len=strlen(cached->path);memcpy(old_path,cached->path,old_len+1);
+        for (vfs_node_t *n=fs->cache;n;n=((ext2_inode_t *)n->fs_private)->cache_next) {
+            if (!strncmp(n->path,old_path,old_len) && (n->path[old_len]==0 || n->path[old_len]=='/') &&
+                new_len+strlen(n->path+old_len)>=VFS_MAX_PATH) {res=-VFS_EINVAL;goto done;}
+        }
+    }
+    ext2_inode_t destination;
+    int found=dir_entry(new_dir,new_name,0,NULL,&destination);
+    if (found<0) {res=found;goto done;}
+    if (found==1) {
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+        if (actor) {
+            ext2_inode_t current;if (!inode(fs,new_dir->ino,&current)) {res=-VFS_EIO;goto done;}
+            vfs_metadata_t d=ext_value(&current),v=ext_value(&destination);
+            res=permission_delete_value(&d,&v,actor);if (res) goto done;
+        }
+#endif
+
+        if (destination.ino==old_in.ino) goto done;
+        bool destination_dir=(destination.mode&0xf000)==0x4000;
+        if (destination_dir!=is_dir) {res=destination_dir ? -7 : -VFS_ENOTDIR;goto done;}
+        res=ext_unlink_locked(new_dir_node,new_name,false,actor);if (res) goto done;
+    }
 
     /* Add entry to new_dir */
     uint8_t file_type = is_dir ? 2 : 1;
@@ -1440,62 +1588,93 @@ static int ext_rename(vfs_node_t *old_dir_node, const char *old_name,
         goto done;
     }
 
+    if (cached) {
+        vfs_node_t **link=&old_dir_node->children;while (*link && *link!=cached) link=&(*link)->next;
+        if (*link) *link=cached->next;
+        cached->parent=new_dir_node;cached->next=new_dir_node->children;new_dir_node->children=cached;
+        memcpy(cached->name,new_name,name_len+1);
+        for (vfs_node_t *n=fs->cache;n;n=((ext2_inode_t *)n->fs_private)->cache_next) {
+            if (!strncmp(n->path,old_path,old_len) && (n->path[old_len]==0 || n->path[old_len]=='/')) {
+                size_t tail=strlen(n->path+old_len)+1;
+                memmove(n->path+new_len,n->path+old_len,tail);memcpy(n->path,new_path,new_len);
+            }
+        }
+    }
 done:
     spin_unlock_irqrestore(&ext2_lock, flags);
     return res;
 }
 
-static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_type_t type) {
+static int ext_rename(vfs_node_t *old,const char *name,vfs_node_t *dest,const char *next) {
+    return ext_rename_common(old,name,dest,next,false,NULL);
+}
+
+static void ext_create_error(int *out,int value) { if (out) *out=value;vfs_set_last_create_error(value); }
+static vfs_node_t *ext_create_common(vfs_node_t *dir_node, const char *name, vfs_node_type_t type,const vfs_create_attrs_t *attrs,int *error,bool owned,const creds_t *actor) {
+    if (error) *error=-VFS_EINVAL;
     if (!dir_node || !name || dir_node->type != VFS_DIRECTORY) {
-        vfs_set_last_create_error(-VFS_EINVAL);
+        ext_create_error(error,-VFS_EINVAL);
         return NULL;
     }
     ext2_inode_t *dir = dir_node->fs_private;
     if (!dir || !dir->fs) {
-        vfs_set_last_create_error(-VFS_EIO);
-        return NULL;
-    }
-    if (dir->fs->read_only) {
-        vfs_set_last_create_error(-VFS_EROFS);
-        return NULL;
-    }
-    if (dir->fs->tainted) {
-        vfs_set_last_create_error(-VFS_EIO);
+        ext_create_error(error,-VFS_EIO);
         return NULL;
     }
     ext2_fs_t *fs = dir->fs;
-
     uint64_t flags = spin_lock_irqsave(&ext2_lock);
+    int admission = dir->removed ? -VFS_ENOENT : fs->tainted ? -VFS_EIO :
+        fs->read_only ? -VFS_EROFS : fs->nodes >= EXT2_MAX_NODES ? -VFS_EFBIG : 0;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    vfs_create_attrs_t derived;
+    if (!admission && actor) {
+        admission=ext_access_locked(dir_node,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
+        ext2_inode_t current;
+        if (!admission && !inode(fs,dir->ino,&current)) admission=-VFS_EIO;
+        if (!admission) {
+            vfs_metadata_t value=ext_value(&current);
+            admission=permission_create_value(&value,type,attrs ? attrs->mode : 0644,actor,&derived);
+            if (!admission) attrs=&derived;
+        }
+    }
+#else
+    (void)actor;
+#endif
+    if (admission) {
+        spin_unlock_irqrestore(&ext2_lock, flags);
+        ext_create_error(error, admission);
+        return NULL;
+    }
     vfs_node_t *result = NULL;
 
     ext2_inode_t existing;
     char found_name[VFS_MAX_NAME];
     int dres = dir_entry(dir, name, 0, found_name, &existing);
     if (dres == 1) {
-        vfs_set_last_create_error(-VFS_EEXIST);
+        ext_create_error(error,-VFS_EEXIST);
         goto done;
     } else if (dres != 0) {
-        vfs_set_last_create_error(-VFS_EIO);
+        ext_create_error(error,-VFS_EIO);
         goto done;
     }
 
     size_t plen = strlen(dir_node->path), nlen = strlen(name);
     if (plen + 1 + nlen >= VFS_MAX_PATH) {
-        vfs_set_last_create_error(-VFS_EINVAL);
+        ext_create_error(error,-VFS_EINVAL);
         goto done;
     }
 
     /* Pre-reserve memory for the VFS node and cached inode BEFORE any disk mutations */
     result = kcalloc(1, sizeof(*result) + sizeof(ext2_inode_t));
     if (!result) {
-        vfs_set_last_create_error(-VFS_ENOMEM);
+        ext_create_error(error,-VFS_ENOMEM);
         goto done;
     }
 
     bool is_dir = (type == VFS_DIRECTORY);
     uint32_t ino = ext2_alloc_inode(fs, is_dir);
     if (!ino) {
-        vfs_set_last_create_error(-VFS_ENOSPC);
+        ext_create_error(error,-VFS_ENOSPC);
         kfree(result);
         result = NULL;
         goto done;
@@ -1506,7 +1685,7 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
         dir_blk = ext2_alloc_block(fs, true, true);
         if (!dir_blk) {
             ext2_free_inode(fs, ino, is_dir);
-            vfs_set_last_create_error(-VFS_ENOSPC);
+            ext_create_error(error,-VFS_ENOSPC);
             kfree(result);
             result = NULL;
             goto done;
@@ -1516,7 +1695,7 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
             uint8_t *fb = kmalloc(fs->block_size);
             if (fb) { ext2_free_block(fs, dir_blk, fb); kfree(fb); }
             ext2_free_inode(fs, ino, is_dir);
-            vfs_set_last_create_error(-VFS_ENOMEM);
+            ext_create_error(error,-VFS_ENOMEM);
             kfree(result);
             result = NULL;
             goto done;
@@ -1551,7 +1730,7 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
             if (fb) { ext2_free_block(fs, dir_blk, fb); kfree(fb); }
             ext2_free_inode(fs, ino, is_dir);
             fs->tainted = true;
-            vfs_set_last_create_error(-VFS_EIO);
+            ext_create_error(error,-VFS_EIO);
             kfree(result);
             result = NULL;
             goto done;
@@ -1563,7 +1742,8 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
     memset(&new_in, 0, sizeof(new_in));
     new_in.fs = fs;
     new_in.ino = ino;
-    new_in.mode = is_dir ? (0x4000 | 0755) : (0x8000 | 0644);
+    new_in.mode=(is_dir ? VFS_S_IFDIR : VFS_S_IFREG)|(attrs ? attrs->mode : is_dir ? 0755 : 0644);
+    new_in.uid=attrs ? attrs->uid : 0;new_in.gid=attrs ? attrs->gid : 0;
     new_in.links = is_dir ? 2 : 1;
     new_in.size = is_dir ? fs->block_size : 0;
     new_in.i_blocks = is_dir ? (fs->block_size / 512) : 0;
@@ -1576,26 +1756,28 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
     uint8_t raw[256];
     memset(raw, 0, sizeof(raw));
     put16(raw, new_in.mode);
+    put16(raw+2,new_in.uid);put16(raw+120,new_in.uid>>16);
+    put16(raw+24,new_in.gid);put16(raw+122,new_in.gid>>16);
     put32(raw + 4, new_in.size);
     put32(raw + 8, 1726500000);
     put32(raw + 12, 1726500000);
     put32(raw + 16, 1726500000);
     put32(raw + 20, 0);
-    put16(raw + 24, 0);
+    /* gid was encoded above, including its high half. */
     put16(raw + 26, new_in.links);
     put32(raw + 28, new_in.i_blocks);
     put32(raw + 32, 0);
     if (is_dir) put32(raw + 40, dir_blk);
 
     if (!write_bytes(fs, inode_off, raw, fs->inode_size)) {
-        vfs_set_last_create_error(-VFS_EIO);
+        ext_create_error(error,-VFS_EIO);
         fs->tainted = true;
         kfree(result);
         result = NULL;
         goto done;
     }
     if (fs->dev->flush && !block_flush(fs->dev)) {
-        vfs_set_last_create_error(-VFS_EIO);
+        ext_create_error(error,-VFS_EIO);
         fs->tainted = true;
         kfree(result);
         result = NULL;
@@ -1604,7 +1786,7 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
 
     ext2_inode_t *stored = (ext2_inode_t *)(result + 1);
     *stored = new_in;
-    setup(result, stored);
+    stored->refs=owned ? 1 : 0;stored->legacy=!owned;
     memcpy(result->name, name, nlen + 1);
     memcpy(result->path, dir_node->path, plen);
     if (plen > 1) result->path[plen++] = '/';
@@ -1623,7 +1805,7 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
             if (!ext2_free_inode(fs, ino, is_dir) || !block_flush(fs->dev))
                 fs->tainted = true;
         }
-        vfs_set_last_create_error(fs->tainted ? -VFS_EIO : -VFS_ENOSPC);
+        ext_create_error(error,fs->tainted ? -VFS_EIO : -VFS_ENOSPC);
         kfree(result);
         result = NULL;
         goto done;
@@ -1636,32 +1818,69 @@ static vfs_node_t *ext_create(vfs_node_t *dir_node, const char *name, vfs_node_t
         }
     }
 
+    setup(result,stored);
     result->next = dir_node->children;
     dir_node->children = result;
     fs->nodes++;
-    vfs_set_last_create_error(VFS_SUCCESS);
+    ext_create_error(error,VFS_SUCCESS);
 
 done:
     spin_unlock_irqrestore(&ext2_lock, flags);
     return result;
 }
 
-static vfs_node_t *ext_lookup(vfs_node_t *parent, const char *name) {
+static vfs_node_t *ext_create(vfs_node_t *p,const char *n,vfs_node_type_t t) {
+    return ext_create_common(p,n,t,NULL,NULL,false,NULL);
+}
+static vfs_node_t *ext_create_attrs(vfs_node_t *p,const char *n,vfs_node_type_t t,const vfs_create_attrs_t *a,int *error) {
+    vfs_node_t *node=ext_create_common(p,n,t,a,error,true,NULL);
+    return node;
+}
+static vfs_node_t *ext_create_ref(vfs_node_t *p,const char *n,vfs_node_type_t t,int *error) {
+    return ext_create_common(p,n,t,NULL,error,true,NULL);
+}
+static int ext_metadata(vfs_node_t *node,vfs_metadata_t *out) {
+    uint64_t irq=spin_lock_irqsave(&ext2_lock);
+    ext2_inode_t *bound=node->fs_private,in;
+    int r=bound->removed ? -VFS_ENOENT : inode(bound->fs,bound->ino,&in) ? 0 : -VFS_EIO;
+    if (!r) *out=(vfs_metadata_t){.size=in.size,.type=node->type,.mode=in.mode,
+        .uid=in.uid,.gid=in.gid,.mnt_flags=node->mnt_flags};
+    spin_unlock_irqrestore(&ext2_lock,irq);return r;
+}
+static vfs_node_t *ext_lookup_common(vfs_node_t *parent,const char *name,int *error,bool owned,const creds_t *actor) {
     uint64_t flags = spin_lock_irqsave(&ext2_lock);
-    vfs_node_t *result = NULL;
-    if (!strcmp(name, ".")) { result = parent; goto done; }
-    if (!strcmp(name, "..")) { result = parent->parent; goto done; }
+    vfs_node_t *result = NULL;int r=-VFS_ENOENT;
+    if (((ext2_inode_t *)parent->fs_private)->removed) goto done;
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if (actor) {r=ext_access_locked(parent,VFS_MAY_EXEC,actor);if (r) goto done;}
+#else
+    (void)actor;
+#endif
+    if (!strcmp(name,".") || !strcmp(name,"..")) {
+        ext2_inode_t navigation;int found=dir_entry(parent->fs_private,name,0,NULL,&navigation);
+        if (found!=1) {r=-VFS_EIO;goto done;}
+        ext2_inode_t *self=parent->fs_private;
+        if (!strcmp(name,".")) {if (navigation.ino==self->ino) result=parent;}
+        else if (self->ino==2) {if (navigation.ino==2) result=parent->parent;}
+        else if (parent->parent && parent->parent->get==ext_get) {
+            ext2_inode_t *up=parent->parent->fs_private;
+            if (up->fs==self->fs && up->ino==navigation.ino) result=parent->parent;
+        }
+        if (!result) r=-VFS_EIO;
+        goto done;
+    }
     for (vfs_node_t *n = parent->children; n; n = n->next) {
         if (!strcmp(n->name, name)) { result = n; goto done; }
     }
     ext2_inode_t *dir = parent->fs_private, in;
     char actual[VFS_MAX_NAME];
-    if (dir->fs->nodes >= EXT2_MAX_NODES ||
-        dir_entry(dir, name, 0, actual, &in) != 1) goto done;
+    if (dir->fs->nodes>=EXT2_MAX_NODES) {r=-VFS_EFBIG;goto done;}
+    int found=dir_entry(dir,name,0,actual,&in);
+    if (found!=1) { r=found<0 ? -VFS_EIO : -VFS_ENOENT;goto done; }
     size_t plen = strlen(parent->path), nlen = strlen(actual);
     if (plen + 1 + nlen >= VFS_MAX_PATH) goto done;
     result = kcalloc(1, sizeof(*result) + sizeof(in));
-    if (!result) goto done;
+    if (!result) {r=-VFS_ENOMEM;goto done;}
     ext2_inode_t *stored = (ext2_inode_t *)(result + 1);
     *stored = in;
     setup(result, stored);
@@ -1674,15 +1893,31 @@ static vfs_node_t *ext_lookup(vfs_node_t *parent, const char *name) {
     parent->children = result;
     dir->fs->nodes++;
 done:
+    if (result) {
+        r=0;
+        if (result->get==ext_get) {
+            ext2_inode_t *bound=result->fs_private;
+            if (owned && bound->refs==UINT32_MAX) {result=NULL;r=-VFS_EFBIG;}
+            else if (owned) bound->refs++;else bound->legacy=true;
+        }
+    }
+    if (error) *error=r;
     spin_unlock_irqrestore(&ext2_lock, flags);
     return result;
 }
+
+static vfs_node_t *ext_lookup(vfs_node_t *parent,const char *name) {return ext_lookup_common(parent,name,NULL,false,NULL);}
+static vfs_node_t *ext_lookup_ref(vfs_node_t *parent,const char *name,int *error) {return ext_lookup_common(parent,name,error,true,NULL);}
+
+#if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+#include "ext2_permissions.inc"
+#endif
 
 static bool ext2_mount_internal(block_dev_t *dev, const char *path, bool writable) {
     if (!dev || !dev->read_sector ||
         (dev->sector_size != 512 && dev->sector_size != 4096) ||
         dev->sector_count > UINT64_MAX / dev->sector_size || !path ||
-        strcmp(path, "/mnt") || vfs_lookup(path)) return false;
+        strcmp(path, "/mnt") || vfs_lookup_kernel(path)) return false;
 
     /* Enforce prerequisites for writable mount */
     if (writable) {
@@ -1693,6 +1928,10 @@ static bool ext2_mount_internal(block_dev_t *dev, const char *path, bool writabl
 uint8_t sb[1024];
 if (!bytes(&fs, 1024, sb, sizeof(sb)) || u16(sb + 56) != 0xef53 ||
     u32(sb + 24) > 2 || u32(sb + 76) > 1) return false;
+/* Ownership decoding uses Linux osd2 (including 32-bit IDs at 0x78/0x7a).
+ * Foreign creator layouts are not supported, even on a read-only mount.
+ * Reject before allocation, dirty-marker writes or namespace publication. */
+if (u32(sb + 72) != 0) return false;
 /* Dirty filesystems may be mounted read-only (with a warning),
  * but a writable mount must refuse them: the on-disk state is
  * unknown and a write could compound the corruption. */
@@ -1768,12 +2007,13 @@ if (writable && u16(sb + 58) != 1) return false;
     ext2_inode_t *ri = (ext2_inode_t *)(mounted + 1);
     *ri = root; ri->fs = mounted;
     /* /mnt is the only supported mountpoint. Reserve its detached node first. */
-    vfs_node_t *parent = vfs_lookup("/");
+    vfs_node_t *parent = vfs_lookup_kernel("/");
     vfs_node_t *node = kcalloc(1, sizeof(*node));
     if (!node || !parent) { kfree(node); kfree(mounted); goto fail; }
     memcpy(node->name, "mnt", 4);
     memcpy(node->path, "/mnt", 5);
     node->parent = parent;
+    ri->legacy=true;
     setup(node, ri);
     if (writable) {
         uint8_t state[2];

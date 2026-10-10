@@ -477,7 +477,7 @@ static int e4_reserve_inode_unlocked(ext4_engine_t *e,bool directory,uint32_t *i
             uint8_t *raw=e4_inode_image(e,n); if (!raw) goto end;
             uint32_t generation=e4_u32(raw+100);
             if (generation==UINT32_MAX) { e->error=-VFS_EFBIG; goto end; }
-            memset(raw,0,256); e4_p16(raw,directory ? 0x4180 : 0x8180);
+            memset(raw,0,256); e4_p16(raw,directory ? VFS_S_IFDIR|0755 : VFS_S_IFREG|0644);
             e4_p32(raw+100,generation+1); e4_p32(raw+32,0x80000);
             e4_p16(raw+128,32); e4_header(raw+40,0,4,0); e4_inode_sum(e->fs,n,raw);
             e4_set_bit(map,bit,true); if (!e4_account(e,g,true,-1)) goto end;

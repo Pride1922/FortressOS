@@ -551,7 +551,10 @@ policy_done:
     /* =====================================================================
      * Step 4: Validate Entire Table Into Staging Buffer (All-or-Nothing)
      * ===================================================================== */
-    gpt_partition_t staged_parts[GPT_MAX_PARTITIONS];
+    /* Boot-only parser already owns global registry/sector scratch exclusively.
+     * Keep bounded unpublished staging off the 16 KiB bootstrap stack: array
+     * allocation can expand the heap beneath xHCI discovery's live frames. */
+    static gpt_partition_t staged_parts[GPT_MAX_PARTITIONS];
     size_t staged_count = 0;
     memset(staged_parts, 0, sizeof(staged_parts));
 

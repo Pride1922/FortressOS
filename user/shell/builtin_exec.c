@@ -17,6 +17,8 @@
 #include "io.h"
 #include "syscall_abi.h"
 #include "vfs.h"
+#include "../permissions_cli.h"
+#include "../tools/userdb.h"
 
 /* ---------- internal I/O helpers ----------------------------------------- */
 
@@ -370,8 +372,56 @@ static int exec_env(const builtin_ctx_t *ctx) {
 
 /* ---------- ls ------------------------------------------------------------ */
 
+static int ls_number(uint64_t value) {
+    char digits[24],out[24];unsigned count=0;
+    do {digits[count++]='0'+value%10;value/=10;} while (value);
+    for (unsigned i=0;i<count;i++) out[i]=digits[count-i-1];
+    return write_bytes_fd(1,out,count)<0 ? 1 : 0;
+}
+static userdb_t ls_database;
+static void ls_names(void) {
+    static char bytes[DB_FILE_MAX+1];ls_database=(userdb_t){0};
+    const char *paths[]={"/etc/passwd","/etc/group"};
+    for (unsigned i=0;i<2;i++) {
+        long fd=call(SYS_OPEN,(uintptr_t)paths[i],VFS_O_RDONLY|VFS_O_CLOEXEC,0);
+        if (fd<0) return;
+        size_t n=0;long r;
+        do {r=call(SYS_READ,fd,(uintptr_t)(bytes+n),sizeof(bytes)-n);if (r>0) n+=(size_t)r;}
+        while (r>0 && n<sizeof(bytes));
+        (void)call(SYS_CLOSE,fd,0,0);
+        if (r!=0 || n>DB_FILE_MAX || !(i ? db_group(&ls_database,bytes,n) : db_passwd(&ls_database,bytes,n))) {
+            ls_database=(userdb_t){0};return;
+        }
+    }
+}
+static int ls_owner(uint32_t id,bool group) {
+    const char *name=0;
+    if (group) {const db_group_t *g=db_group_id(&ls_database,id);if (g) name=g->name;}
+    else {const db_user_t *u=db_user_id(&ls_database,id);if (u) name=u->name;}
+    return name ? write_str(name) : ls_number(id);
+}
+static int ls_long(const char *path,const char *label) {
+    stat_ext_v1_t st;
+    if (permission_call4(SYS_STAT_EXT,(uintptr_t)path,(uintptr_t)&st,sizeof(st),1)<0) {
+        write_err("ls: cannot read metadata: ");write_err(path);write_err("\n");return 1;
+    }
+    unsigned type=st.mode & VFS_S_IFMT;
+    char mode[11]={type==VFS_S_IFDIR ? 'd' : type==VFS_S_IFCHR ? 'c' : type==VFS_S_IFBLK ? 'b' : '-',0};
+    for (unsigned i=0;i<9;i++) mode[i+1]=(st.mode & (1u<<(8-i))) ? "rwx"[i%3] : '-';
+    if (st.mode & 04000) mode[3]=(st.mode & 0100) ? 's' : 'S';
+    if (st.mode & 02000) mode[6]=(st.mode & 0010) ? 's' : 'S';
+    if (st.mode & 01000) mode[9]=(st.mode & 0001) ? 't' : 'T';
+    if (write_str(mode) || write_str(" ") || ls_owner(st.uid,false) || write_str(" ") ||
+        ls_owner(st.gid,true) || write_str(" ") || ls_number(st.file_size) ||
+        write_str(" ") || write_str(label) || write_str("\n")) return 1;
+    return 0;
+}
 static int exec_ls(int argc, const char *const *argv) {
-    const char *path = argc > 1 ? argv[1] : ".";
+    bool detail=argc>1 && equal(argv[1],"-l");
+    if (detail) ls_names();
+    int first=detail ? 2 : 1;
+    if (argc>first+1) {write_err("ls: expected [-l] [path]\n");return 1;}
+    const char *path = argc > first ? argv[first] : ".";
     vfs_stat_t st;
     long result = call(SYS_STAT, (uintptr_t)path, (uintptr_t)&st, 0);
     if (result < 0) {
@@ -381,6 +431,7 @@ static int exec_ls(int argc, const char *const *argv) {
         return 1;
     }
     if (st.type != VFS_DIRECTORY) {
+        if (detail) return ls_long(path,path);
         /* Single file: just print its name. */
         int rc = write_str(path);
         if (rc) return rc;
@@ -396,6 +447,17 @@ static int exec_ls(int argc, const char *const *argv) {
     int out_err = 0;
     while ((result = call(SYS_READDIR, fd, (uintptr_t)&entry, 0)) == 1) {
         if (!out_err) {
+            if (detail) {
+                char child[VFS_MAX_PATH];size_t a=length(path),b=length(entry.name);
+                if (a+b+2>sizeof(child)) {write_err("ls: path too long\n");out_err=1;}
+                else {
+                    for (size_t i=0;i<a;i++) child[i]=path[i];
+                    child[a++]='/';
+                    for (size_t i=0;i<=b;i++) child[a+i]=entry.name[i];
+                    out_err=ls_long(child,entry.name);
+                }
+                continue;
+            }
             int rc = write_str(entry.name);
             if (!rc) {
                 const char *suffix = entry.type == VFS_DIRECTORY ? "/\n" : "\n";

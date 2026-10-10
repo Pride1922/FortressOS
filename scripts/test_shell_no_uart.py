@@ -7,6 +7,7 @@ storage fixture tests. This does not validate the physical Dell's controller.
 """
 from pathlib import Path
 import shutil
+import re
 import subprocess
 import tempfile
 import time
@@ -57,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="fortress-keyboard-") as tmp:
         # (main.c:4049-5645). It is deliberately not user-visible; it reaches
         # dmesg and COM1 only. The keyboard-only contract this test covers is
         # verified by the echo and blocked-reader assertions below.
-        assert "fortress> echo hello\nhello\nfortress>" in text, text
+        assert re.search(r"fortress(?:>|:[^\n]* \$) echo hello\nhello\nfortress(?:>|:[^\n]* \$)",text),text
         from test_shell import scheduler_symbols
         scheduler_symbols(remote, sym)
         assert int.from_bytes(remote.memory(sym["g_blocked_threads"], 8), "little") != 0

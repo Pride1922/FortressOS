@@ -71,6 +71,23 @@ bool vars_is_assignment(const char *str, char *name_out, size_t name_cap, const 
     return true;
 }
 
+bool vars_import(const char *const *envp) {
+    if (!envp) return true;
+    for (unsigned i=0;envp[i];i++) {
+        if (i==MAX_SPAWN_ENVP) return false;
+        const char *p=envp[i];size_t n=0;
+        while (p[n] && p[n]!='=') n++;
+        if (!n || n>=MAX_VAR_NAME || p[n]!='=' || str_len(p+n+1)>=MAX_VAR_VAL) return false;
+        char name[MAX_VAR_NAME];for (size_t j=0;j<n;j++) name[j]=p[j];name[n]=0;
+        if (!vars_is_valid_name(name)) return false;
+    }
+    for (unsigned i=0;envp[i];i++) {
+        char name[MAX_VAR_NAME];const char *value;
+        if (!vars_is_assignment(envp[i],name,sizeof(name),&value) || vars_set(name,value,true)!=0) return false;
+    }
+    return true;
+}
+
 void vars_init(void) {
     for (int i = 0; i < MAX_VARS; i++) {
         g_vars[i].used = false;

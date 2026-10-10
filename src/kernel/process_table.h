@@ -2,13 +2,25 @@
 #define FORTRESS_PROCESS_TABLE_H
 #include "types.h"
 #include "signal_state.h"
+#include "creds.h"
+/* Trusted construction binds exclusively owned TCB storage before commit.
+ * Readers receive values only. Snapshot excludes unpublished/dead records.
+ * Publication validates a full value and compares the expected old snapshot
+ * under registry exclusion; stale publication fails without changing state.
+ * Detach on abort/exit/forget precedes TCB destruction. No locks on entry. */
+bool process_record_bind_creds(uint64_t pid, creds_t *storage);
+bool process_record_creds(uint64_t pid, creds_t *out);
+bool process_record_publish_creds(uint64_t pid, const creds_t *expected, const creds_t *next);
 /* Global bounded identity/group/session and child reservation/status store.
  * Metadata APIs acquire the private ordinary rank-1 g_process_lock internally;
  * callers hold no locks. It never nests with scheduler/ext2/other rank-1 locks.
  * process_record_sequence() is an exception: an atomic acquire read usable
  * by scheduler wait predicates, paired with release publication under the
  * process lock. No TCB pointers escape this module; scheduler placement and
- * TCB lifetime remain scheduler-owned. process_group_try_retain() is the other
+ * TCB lifetime remain scheduler-owned. Bound signal pointers are dereferenced
+ * only under this lock and detached before TCB destruction; even self lookups
+ * use the global lock. Name/tick updates share lifecycle exclusion. There are
+ * no independent PID-shard registry paths. process_group_try_retain() is the other
  * exception, documented below. PID allocation is monotonic; a living process
  * may recreate its namesake PGID after leaving it, so group generations differ. */
 #define PROCESS_CAPACITY 64
@@ -73,6 +85,13 @@ int64_t process_record_wait(uint64_t parent, int64_t selector, uint32_t options,
 uint64_t process_record_sequence(void);
 void process_record_attach_signals(uint64_t pid, signal_state_t *state);
 int64_t process_signal_send(uint64_t caller, int64_t selector, uint64_t sig);
+/* User signal gate uses bound actor and current target credential values under
+ * the same G critical section as publication, including attached staged targets.
+ * Effective permission gate; existing session rule remains. No pointers escape. */
+int64_t process_signal_send_creds(uint64_t caller,int64_t selector,uint64_t sig);
+static inline int64_t process_signal_send_kernel(uint64_t c,int64_t p,uint64_t s) {
+    return process_signal_send(c,p,s);
+}
 int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t *act, signal_action_t *old);
 int64_t process_signal_mask(uint64_t pid, uint64_t how, const uint64_t *mask, uint64_t *old);
 unsigned process_signal_take(uint64_t pid);

@@ -1,4 +1,6 @@
 #include "syscall.h"
+#include "permissions.h"
+static bool syscall_actor(creds_t *out);
 #include "../net/net.h"
 #include "../net/net_ping.h"
 #include "../net/net_socket_syscall.h"
@@ -136,6 +138,8 @@ bool syscall_was_exit_called(uint64_t *out_exit_code) {
 int64_t syscall_from_vfs_error(int64_t vfs_err) {
     switch (vfs_err) {
         case 0:                return SYSCALL_SUCCESS;
+        case -VFS_EPERM:       return SYSCALL_EPERM;
+        case -VFS_EACCES:      return SYSCALL_EACCES;
         case -VFS_ENOENT:      return SYSCALL_ENOENT;      /* -5 */
         case -VFS_EIO:         return SYSCALL_EIO;         /* -9 */
         case -VFS_EBADF:       return SYSCALL_EBADF;       /* -3 */
@@ -151,6 +155,7 @@ int64_t syscall_from_vfs_error(int64_t vfs_err) {
         case -VFS_ENOTEMPTY:   return SYSCALL_ENOTEMPTY;   /* -19 */
         case -VFS_EOPNOTSUPP:  return SYSCALL_EOPNOTSUPP;  /* -14 */
         case -7:               return SYSCALL_EISDIR;      /* -7 */
+        case -VFS_ENOTDIR:    return SYSCALL_ENOTDIR;
         case -8:               return SYSCALL_ENOTDIR;     /* -8 */
         default:               return SYSCALL_EINVAL;      /* -1 */
     }
@@ -187,14 +192,18 @@ static int64_t sys_write(uint64_t fd, uintptr_t user_buf, size_t count) {
         return SYSCALL_EBADF;
     }
 
-    int64_t res = vfs_write(file, (const void *)user_buf, count);
+    int64_t res;
+    if (file->node && file->node->write_actor) {
+        creds_t actor;if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+        res=vfs_write_creds(file,(const void *)user_buf,count,&actor);
+    } else res = vfs_write(file, (const void *)user_buf, count);
     if (res == -VFS_EPIPE) {
         /* The pipe callback has released its rank-2 lock. Publish only to the
          * writer (selector 0 would signal its entire group). Delivery belongs
          * to the existing user-return boundary, after frame->rax holds EPIPE.
          * Positive short writes remain positive; their next write may fail. */
         spin_debug_assert_unheld();
-        (void)process_signal_send(curr->tid, (int64_t)curr->tid, SIGPIPE);
+        (void)process_signal_send_kernel(curr->tid, (int64_t)curr->tid, SIGPIPE);
     }
     if (res < 0) {
         return syscall_from_vfs_error(res);
@@ -364,77 +373,9 @@ static int copy_user_string(uint64_t *pml4, uintptr_t user_ptr, char *dest, size
     return SYSCALL_EINVAL;
 }
 
-static int resolve_path(tcb_t *proc, const char *in_path, char *out_path, size_t out_cap) {
-    if (!in_path || !out_path || out_cap < 2) return SYSCALL_EINVAL;
-
-    char combined[VFS_MAX_PATH * 2];
-    size_t in_len = strlen(in_path);
-
-    if (in_path[0] == '/') {
-        if (in_len >= sizeof(combined)) return SYSCALL_EINVAL;
-        memcpy(combined, in_path, in_len + 1);
-    } else {
-        const char *cwd = (proc && proc->cwd[0]) ? proc->cwd : "/";
-        size_t cwd_len = strlen(cwd);
-        if (cwd_len + 1 + in_len >= sizeof(combined)) return SYSCALL_EINVAL;
-        memcpy(combined, cwd, cwd_len);
-        if (cwd_len > 0 && combined[cwd_len - 1] != '/') {
-            combined[cwd_len] = '/';
-            cwd_len++;
-        }
-        memcpy(combined + cwd_len, in_path, in_len + 1);
-    }
-
-    char *out = out_path;
-    *out++ = '/';
-    *out = '\0';
-
-    const char *p = combined;
-    while (*p) {
-        while (*p == '/') p++;
-        if (!*p) break;
-
-        const char *seg_start = p;
-        while (*p && *p != '/') p++;
-        size_t seg_len = (size_t)(p - seg_start);
-
-        if (seg_len == 1 && seg_start[0] == '.') {
-            continue;
-        }
-
-        if (seg_len == 2 && seg_start[0] == '.' && seg_start[1] == '.') {
-            if (out > out_path + 1) {
-                out--;
-                while (out > out_path && *out != '/') out--;
-                if (out == out_path) {
-                    out = out_path + 1;
-                    *out = '\0';
-                } else {
-                    *out = '\0';
-                }
-            }
-            continue;
-        }
-
-        size_t current_len = (size_t)(out - out_path);
-        size_t needed = (current_len > 1 ? 1 : 0) + seg_len + 1;
-        if (current_len + needed > out_cap) {
-            return SYSCALL_EINVAL;
-        }
-
-        if (current_len > 1) {
-            *out++ = '/';
-        }
-        memcpy(out, seg_start, seg_len);
-        out += seg_len;
-        *out = '\0';
-    }
-
-    if (out == out_path) {
-        out_path[0] = '/';
-        out_path[1] = '\0';
-    }
-    return SYSCALL_SUCCESS;
+static int resolve_path(tcb_t *proc,const char *in_path,char *out_path,size_t out_cap) {
+    int r=vfs_join_path(proc && proc->cwd[0] ? proc->cwd : "/",in_path,out_path,out_cap);
+    return syscall_from_vfs_error(r);
 }
 
 static int copy_user_string_vector(uint64_t *active_pml4, uintptr_t user_vec,
@@ -688,6 +629,17 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
             if (action_paths) kfree(action_paths);
             return err;
         }
+        /* Admit an explicit spawn cwd through the same canonical path rules
+         * used by CHDIR; the spawn path checks its directory/search hook. */
+        char resolved_cwd[VFS_MAX_PATH];
+        err = resolve_path(thread_current(), cwd_buf, resolved_cwd, sizeof(resolved_cwd));
+        if (err) {
+            kfree(args_buf);
+            if (env_buf) kfree(env_buf);
+            if (action_paths) kfree(action_paths);
+            return err;
+        }
+        memcpy(cwd_buf, resolved_cwd, strlen(resolved_cwd) + 1);
         kcwd = cwd_buf;
     }
 
@@ -745,7 +697,9 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
     }
 
     int vfs_err = 0;
-    file_t *file = vfs_open_ext(kpath, flags & ~VFS_O_CLOEXEC, &vfs_err);
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    file_t *file = vfs_open_creds(kpath, flags & ~VFS_O_CLOEXEC, &actor, &vfs_err);
     if (!file) {
         return syscall_from_vfs_error(vfs_err);
     }
@@ -937,6 +891,12 @@ static int64_t sys_read(int fd, uintptr_t user_buf, size_t count) {
     return res;
 }
 
+/* One bounded actor snapshot; G is released before any filesystem work. */
+static bool syscall_actor(creds_t *out) {
+    tcb_t *curr=thread_current();
+    return curr && process_record_creds(curr->tid,out);
+}
+
 static int64_t sys_stat(uintptr_t user_path, uintptr_t user_statbuf) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
     char raw_path[VFS_MAX_PATH];
@@ -957,17 +917,45 @@ static int64_t sys_stat(uintptr_t user_path, uintptr_t user_statbuf) {
     }
 
     int lookup_error=0;
-    vfs_node_t *node = vfs_lookup_ref(kpath,&lookup_error);
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    vfs_node_t *node = vfs_lookup_creds(kpath,&actor,&lookup_error);
     if (!node) {
         return syscall_from_vfs_error(lookup_error);
     }
 
     vfs_stat_t st;
-    vfs_stat(node, &st);
+    err=vfs_stat(node, &st);
     vfs_node_put(node);
+    if (err) return syscall_from_vfs_error(err);
     memcpy((void *)user_statbuf, &st, sizeof(vfs_stat_t));
     return SYSCALL_SUCCESS;
 }
+
+static int64_t sys_stat_ext(uintptr_t path,uintptr_t output,uint64_t size,uint64_t version) {
+    if (size!=sizeof(stat_ext_v1_t) || version!=1) return SYSCALL_EINVAL;
+    uint64_t *pml4=vmm_get_active_pml4_virt();
+    char raw[VFS_MAX_PATH],resolved[VFS_MAX_PATH];
+    int r=copy_user_string(pml4,path,raw,sizeof(raw));
+    if (r) return r;
+    r=resolve_path(thread_current(),raw,resolved,sizeof(resolved));
+    if (r) return r;
+    if (!vmm_validate_user_range(pml4,output,sizeof(stat_ext_v1_t),true)) return SYSCALL_EFAULT;
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    vfs_node_t *node=vfs_lookup_creds(resolved,&actor,&r);
+    if (!node) return syscall_from_vfs_error(r);
+    vfs_metadata_t meta;
+    r=vfs_metadata(node,&meta);
+    vfs_node_put(node);
+    if (r) return syscall_from_vfs_error(r);
+    stat_ext_v1_t value={.size=sizeof(value),.version=1,.file_size=meta.size,
+        .type=meta.type,.mode=meta.mode,.uid=meta.uid,.gid=meta.gid,.mnt_flags=meta.mnt_flags};
+    memcpy((void *)output,&value,sizeof(value));
+    return 0;
+}
+
+#include "permissions_syscalls.inc"
 
 static int64_t sys_dmesg(uintptr_t user_buf, uint64_t cap) {
     if (cap == 0) return 0;
@@ -1013,19 +1001,22 @@ static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
     }
 
     vfs_dirent_t dent;
-    int res = vfs_readdir(file->node, file->offset, &dent);
+    int res = vfs_readdir_file(file, &dent);
     if (res == 1) {
-        file->offset++;
         memcpy((void *)user_dirent, &dent, sizeof(vfs_dirent_t));
         return 1;
     }
     if (res == 0) {
         return 0; /* EOF */
     }
-    return SYSCALL_EINVAL;
+    return syscall_from_vfs_error(res);
 }
 
 static int64_t sys_reboot(uint64_t cmd) {
+    if (cmd!=REBOOT_CMD_RESTART && cmd!=REBOOT_CMD_POWEROFF) return SYSCALL_EINVAL;
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    if (permission_capability(&actor,CAP_SYS_BOOT)) return SYSCALL_EPERM;
     if (cmd == REBOOT_CMD_RESTART) {
         if (!usb_mount_freeze_and_sync()) return SYSCALL_EIO;
         power_reboot();
@@ -1060,7 +1051,9 @@ static int64_t sys_mkdir(uintptr_t user_path, uint64_t mode) {
     err = resolve_path(curr, raw_path, kpath, sizeof(kpath));
     if (err != SYSCALL_SUCCESS) return err;
 
-    int res = vfs_mkdir(kpath, (uint32_t)mode);
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    int res = vfs_mkdir_creds(kpath, (uint32_t)mode, &actor);
     if (res < 0) return syscall_from_vfs_error(res);
     return SYSCALL_SUCCESS;
 }
@@ -1076,7 +1069,9 @@ static int64_t sys_unlink(uintptr_t user_path) {
     err = resolve_path(curr, raw_path, kpath, sizeof(kpath));
     if (err != SYSCALL_SUCCESS) return err;
 
-    int res = vfs_unlink(kpath);
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    int res = vfs_unlink_creds(kpath, &actor);
     if (res < 0) return syscall_from_vfs_error(res);
     return SYSCALL_SUCCESS;
 }
@@ -1100,7 +1095,9 @@ static int64_t sys_rename(uintptr_t user_oldpath, uintptr_t user_newpath) {
     err = resolve_path(curr, raw_new, knewpath, sizeof(knewpath));
     if (err != SYSCALL_SUCCESS) return err;
 
-    int res = vfs_rename(koldpath, knewpath);
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    int res = vfs_rename_creds(koldpath, knewpath, &actor);
     if (res < 0) return syscall_from_vfs_error(res);
     return SYSCALL_SUCCESS;
 }
@@ -1119,15 +1116,22 @@ static int64_t sys_chdir(uintptr_t user_path) {
     if (err != SYSCALL_SUCCESS) return err;
 
     int lookup_error=0;
-    vfs_node_t *node = vfs_lookup_ref(resolved,&lookup_error);
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+    vfs_node_t *node = vfs_lookup_creds(resolved,&actor,&lookup_error);
     if (!node) return syscall_from_vfs_error(lookup_error);
     bool directory=node->type==VFS_DIRECTORY;
+    int access=directory ? vfs_permission(node,VFS_MAY_EXEC,&actor) : 0;
     vfs_node_put(node);
+    if (access) return syscall_from_vfs_error(access);
     if (!directory) return SYSCALL_ENOTDIR;
 
-    size_t rlen = strlen(resolved);
+    char canonical[VFS_MAX_PATH];
+    int canon=vfs_canonical_path(resolved,canonical,sizeof(canonical));
+    if (canon) return syscall_from_vfs_error(canon);
+    size_t rlen = strlen(canonical);
     if (rlen >= sizeof(curr->cwd)) return SYSCALL_EINVAL;
-    memcpy(curr->cwd, resolved, rlen + 1);
+    memcpy(curr->cwd, canonical, rlen + 1);
     return SYSCALL_SUCCESS;
 }
 
@@ -1192,7 +1196,7 @@ static int64_t sys_mountinfo(uint32_t index, uintptr_t user_buf) {
 
     /* Index 1: Persistent storage (/mnt) if mounted */
     if (index == 1) {
-        vfs_node_t *node = vfs_lookup("/mnt");
+        vfs_node_t *node = vfs_lookup_kernel("/mnt");
         if (!node) return 0;
 
         mount_info_t info;
@@ -1350,6 +1354,25 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             result = sys_dmesg(frame->rdi, frame->rsi);
             break;
 
+        case SYS_STAT_EXT:
+            result=sys_stat_ext(frame->rdi,frame->rsi,frame->rdx,frame->r10);
+            break;
+        case SYS_UMASK: result=sys_umask(frame->rdi);break;
+        case SYS_CHMOD: result=sys_chmod(frame->rdi,frame->rsi);break;
+        case SYS_FCHMOD: result=sys_fchmod(frame->rdi,frame->rsi);break;
+        case SYS_CHOWN: result=sys_chown(frame->rdi,frame->rsi,frame->rdx,frame->r10);break;
+        case SYS_GETRESUID: result=sys_getres(false,frame->rdi,frame->rsi,frame->rdx);break;
+        case SYS_GETRESGID: result=sys_getres(true,frame->rdi,frame->rsi,frame->rdx);break;
+        case SYS_GETGROUPS: result=sys_getgroups(frame->rdi,frame->rsi);break;
+        case SYS_SETRESUID: result=sys_setres(false,frame->rdi,frame->rsi,frame->rdx,frame->r10);break;
+        case SYS_SETRESGID: result=sys_setres(true,frame->rdi,frame->rsi,frame->rdx,frame->r10);break;
+        case SYS_SETGROUPS: result=sys_setgroups(frame->rdi,frame->rsi);break;
+        case SYS_CAPSET: result=sys_capset(frame->rdi);break;
+        case SYS_CAPGET: result=sys_capget();break;
+#ifdef TEST_PERMISSIONS_ENFORCEMENT
+        case SYS_TEST_SETCREDS: result=sys_test_setcreds();break;
+#endif
+
         case SYS_STAT:
             result = sys_stat(frame->rdi, frame->rsi);
             break;
@@ -1407,7 +1430,7 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
 
         case SYS_KILL:
-            result=process_signal_send(thread_current()->tid,(int64_t)frame->rdi,frame->rsi);
+            result=process_signal_send_creds(thread_current()->tid,(int64_t)frame->rdi,frame->rsi);
             break;
         case SYS_SIGACTION: {
             signal_action_t act, old;

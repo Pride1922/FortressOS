@@ -96,7 +96,8 @@ typedef struct {
     block_dev_t  block_dev;                  /* Bounded block device adapter */
 } gpt_partition_t;
 
-/* GPT Parser API */
+/* GPT Parser API: boot-only, non-reentrant; caller excludes concurrent parse,
+ * reset and registry readers until publication. Uses bounded static scratch. */
 bool                 gpt_parse(block_dev_t *dev);
 bool                 gpt_parse_ex(block_dev_t *dev, gpt_policy_result_t *out_policy);
 void                 gpt_reset(void);

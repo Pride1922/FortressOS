@@ -198,7 +198,7 @@ static int access_check(bool mutation) {
         uint64_t unavailable = __atomic_load_n(&t->signals.blocked_mask, __ATOMIC_ACQUIRE) |
                                __atomic_load_n(&t->signals.ignored_mask, __ATOMIC_ACQUIRE);
         if (unavailable & SIGNAL_BIT(sig)) return mutation ? 0 : SYSCALL_EIO;
-        int64_t result = process_signal_send(t->tid, 0, sig);
+        int64_t result = process_signal_send_kernel(t->tid, 0, sig);
         if (result) return (int)result;
         if (process_signal_interrupt()) return SYSCALL_EINTR;
         /* Default stop resumes here. Recheck ownership and disposition */

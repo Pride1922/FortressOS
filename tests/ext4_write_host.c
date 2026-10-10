@@ -23,6 +23,14 @@ void console_terminal_write(const char *s,size_t n) { (void)s;(void)n; }
 void console_inc_generation(void) {}
 bool console_is_quiet(void) { return false; }
 int64_t input_read(void *p,size_t n) { (void)p;(void)n;return 0; }
+#include "../src/fs/gpt.h"
+size_t gpt_get_partition_count(void) { return 0; }
+gpt_partition_t *gpt_get_partition(size_t i) { (void)i;return NULL; }
+#ifndef TEST_PERM_DEVICE_IO
+bool ext2_device_read_sector(block_dev_t *d,uint64_t l,void *b) { (void)d;(void)l;(void)b;assert(0);return false; }
+#endif
+#include "../src/fs/runfs.c"
+#include "../src/fs/devfs.c"
 #include "../src/fs/vfs.c"
 #include "../src/fs/ext4.c"
 #include "../src/fs/jbd2.c"
@@ -58,11 +66,8 @@ static void drop_root(void) {
         assert(g_vfs_root->children==&e4_active->cached[0]->node);
         g_vfs_root->children=g_vfs_root->children->next;e4_discard(e4_active);e4_active=NULL;
     }
-    while (g_vfs_root && g_vfs_root->children) {
-        vfs_node_t *node=g_vfs_root->children;
-        assert(node->type==VFS_DIRECTORY && !node->children && !node->fs_private);
-        g_vfs_root->children=node->next;kfree(node);
-    }
+    /* Static boot mounts are reset by the next boot-only vfs_init. */
+    if (g_vfs_root) g_vfs_root->children=NULL;
     kfree(g_vfs_root);g_vfs_root=NULL;assert(!live);
 }
 static void reset(void) {

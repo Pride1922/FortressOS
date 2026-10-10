@@ -21,6 +21,10 @@ static bool fail_pages, valid_range = true;
 static void *backing;
 static pipe_t *host_pipe;
 static tcb_t current;
+#ifdef TEST_PERMISSIONS_SYSCALLS
+static uintptr_t reject_range;
+static unsigned validation_calls;
+#endif
 static int fd_fail_after = -1;
 static void (*wait_step)(const void *, bool (*)(void *), void *);
 static unsigned waits, wakes;
@@ -78,9 +82,21 @@ void pmm_free_pages(uintptr_t phys, size_t n) {
 }
 uint64_t *vmm_get_active_pml4_virt(void) { return (uint64_t *)&current; }
 bool vmm_validate_user_range(uint64_t *pml4, uintptr_t addr, size_t n, bool write) {
+#ifdef TEST_PERMISSIONS_SYSCALLS
+    assert(pml4==(uint64_t *)&current);validation_calls++;
+    (void)write;
+    return valid_range && addr>=0x1000 && addr!=reject_range && n<=UINTPTR_MAX-addr;
+#else
     assert(pml4 == (uint64_t *)&current && addr >= 0x1000);
-    if (write) assert(n == 8 || n == sizeof(pipe_io_profile_t));
+    if (write) {
+#ifdef TEST_PERMISSIONS_READDIR
+        assert(n == sizeof(vfs_dirent_t));
+#else
+        assert(n == 8 || n == sizeof(pipe_io_profile_t));
+#endif
+    }
     return valid_range;
+#endif
 }
 tcb_t *thread_current(void) { return &current; }
 file_t *fd_get(tcb_t *p, int fd) { return p->fd_table[fd]; }

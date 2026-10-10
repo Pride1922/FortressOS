@@ -16,10 +16,13 @@ with tempfile.TemporaryDirectory(prefix="fortress-runner-host-") as tmp:
     subprocess.run([
         "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
+        "-DPERMISSIONS_CLI_HOST_TEST",
         "-Isrc/include", "-Isrc/fs", "-Iuser/shell",
         "tests/runner_host.c",
         "user/shell/builtin_exec.c",
+        "user/tools/userdb.c", "user/tools/digest.c",
         "user/shell/builtins.c",
         "-o", exe,
     ], cwd=repo, check=True)
     subprocess.run([exe], check=True, timeout=30)
+    print("PASS runner handlers, including ls -l database names and full-width numeric fallback")

@@ -46,7 +46,8 @@ static int e4_namespace_parent(ext4_engine_t *e,uint32_t ino,e4_inode_t *in) {
     if (!raw) return e->error;
     return e4_u16(raw+26)>=2 ? 0 : -VFS_EIO;
 }
-int ext4_engine_namespace_create(ext4_engine_t *e,uint32_t parent,const char *name,bool directory,uint32_t *out) {
+int ext4_engine_namespace_create_attrs(ext4_engine_t *e,uint32_t parent,const char *name,bool directory,const vfs_create_attrs_t *attrs,uint32_t *out) {
+    if (attrs && (attrs->mode & ~07777u)) return -VFS_EINVAL;
     if (!out || !e4_namespace_name(name)) return -VFS_EINVAL;
     int r=e4_namespace_begin(e);if (r) return r;
     e4_inode_t dir;uint32_t found=0,ino=0;
@@ -57,6 +58,9 @@ int ext4_engine_namespace_create(ext4_engine_t *e,uint32_t parent,const char *na
      * The fresh plan owns every allocation and the namespace link together. */
     r=e4_reserve_inode_unlocked(e,directory,&ino);if (r) goto done;
     uint8_t *raw=e4_inode_image(e,ino);if (!raw) { r=e->error;goto done; }
+    e4_p16(raw,(directory ? VFS_S_IFDIR : VFS_S_IFREG)|(attrs ? attrs->mode : directory ? 0755 : 0644));
+    e4_p16(raw+2,attrs ? attrs->uid : 0);e4_p16(raw+120,attrs ? attrs->uid>>16 : 0);
+    e4_p16(raw+24,attrs ? attrs->gid : 0);e4_p16(raw+122,attrs ? attrs->gid>>16 : 0);
     e4_p16(raw+26,directory ? 2 : 1);
     e4_inode_t in={.fs=e->fs,.ino=ino,.generation=e4_u32(raw+100),.mode=directory ? 0x4000 : 0x8000};
     if (directory) {
@@ -74,6 +78,9 @@ int ext4_engine_namespace_create(ext4_engine_t *e,uint32_t parent,const char *na
     e->inode_delta=0;e->reserve_ino=0;
 done:
     r=e4_namespace_end(e,r);if (!r) *out=ino;return r;
+}
+int ext4_engine_namespace_create(ext4_engine_t *e,uint32_t parent,const char *name,bool directory,uint32_t *out) {
+    return ext4_engine_namespace_create_attrs(e,parent,name,directory,NULL,out);
 }
 int ext4_engine_namespace_remove(ext4_engine_t *e,uint32_t parent,const char *name,bool directory) {
     if (e && e->orphan_enabled) return ext4_engine_orphan_unlink(e,parent,name,directory);

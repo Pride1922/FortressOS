@@ -26,6 +26,8 @@ static int read_idx;
 static char read_data[4096];
 static size_t read_data_len;
 static size_t read_data_pos;
+static bool database_fixture;
+static uint32_t owner_uid,owner_gid;
 
 static void reset(void) {
     out_pos = err_pos = 0;
@@ -36,6 +38,7 @@ static void reset(void) {
     memset(read_returns, 0, sizeof(read_returns));
     read_idx = 0;
     read_data_len = read_data_pos = 0;
+    database_fixture=false;owner_uid=1000;owner_gid=44;
 }
 
 size_t length(const char *s) { return strlen(s); }
@@ -105,6 +108,12 @@ long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     }
     if (nr == SYS_OPEN) {
         if (open_fail) return open_fail;
+        if (database_fixture) {
+            const char *text=!strcmp((char *)a,"/etc/passwd") ?
+                "root:x:0:0::/root:/bin/shell\noperator:x:1000:1000::/run/user/1000:/bin/shell\n" :
+                "root:x:0:\nvideo:x:44:operator\noperator:x:1000:\n";
+            read_data_len=strlen(text);memcpy(read_data,text,read_data_len);read_data_pos=0;
+        }
         return 7; /* fd 7 */
     }
     if (nr == SYS_CLOSE) { return 0; }
@@ -124,6 +133,11 @@ long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     }
     assert(!"unexpected syscall");
     return SYSCALL_ENOSYS;
+}
+long permission_call4(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
+    (void)a;assert(nr==SYS_STAT_EXT && c==sizeof(stat_ext_v1_t) && d==1);
+    *(stat_ext_v1_t *)b=(stat_ext_v1_t){.type=VFS_FILE,.mode=VFS_S_IFREG|0644,.uid=owner_uid,.gid=owner_gid,.file_size=12};
+    return 0;
 }
 
 /* ---- helpers ------------------------------------------------------------- */
@@ -295,6 +309,12 @@ static void test_ls_missing(void) {
     int r = builtin_exec(2, argv, NULL);
     assert(r == 1);
     assert(strstr(err_buf, "no such file"));
+}
+static void test_ls_names(void) {
+    reset();database_fixture=true;const char *args[]={"ls","-l","/file",NULL};
+    assert(!builtin_exec(3,args,NULL) && !strcmp(out_buf,"-rw-r--r-- operator video 12 /file\n"));
+    reset();database_fixture=true;owner_uid=owner_gid=UINT32_MAX;
+    assert(!builtin_exec(3,args,NULL) && !strcmp(out_buf,"-rw-r--r-- 4294967295 4294967295 12 /file\n"));
 }
 
 static void test_view_file(void) {
@@ -494,6 +514,7 @@ int main(void) {
     test_version();
     test_ls_empty_dir();
     test_ls_missing();
+    test_ls_names();
     test_view_file();
     test_view_stdin();
     test_view_epipe();
