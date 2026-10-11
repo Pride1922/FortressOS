@@ -2,6 +2,7 @@
 #define FORTRESS_EXT4_H
 
 #include "block.h"
+#include "vfs.h"
 #include "jbd2.h"
 #include "ext4_physical_fixture.h"
 
@@ -38,6 +39,27 @@ typedef struct ext4_mount ext4_mount_t;
  * commit, before checkpoint. No device I/O, scheduling or filesystem calls. */
 int ext4_test_arm_commit_pause(ext4_mount_t *mount,void (*pause)(void));
 #endif
+/* Boot-only trusted-root constructor. Caller admits exclusive recovery/write
+ * policy BEFORE entry. No namespace publication; owned lookups validate detached
+ * root before publish. Module/bootstrap backing survives for the entire boot.
+ * Discard requires all validation references closed; does not undo replay writes. */
+#ifdef TEST_ROOT_PHASE1
+void ext4_test_snapshot_fault(unsigned fault);
+#endif
+int ext4_prepare_root(block_dev_t *,bool admitted,ext4_mount_t **);
+int ext4_prepare_root_diagnose(block_dev_t *,bool admitted,ext4_mount_t **,const char **stage);
+vfs_node_t *ext4_prepared_root(ext4_mount_t *);
+int ext4_publish_root(ext4_mount_t *);
+int ext4_discard_prepared_root(ext4_mount_t *);
+/* Phase2 boot-only pin of immutable account policy. No mutable authentication
+ * until the Phase3 coherent reader/writer service replaces this exclusion. */
+int ext4_root_lock_accounts(ext4_mount_t *,vfs_node_t *nodes[4]);
+int ext4_sync_installed_root(bool *handled);
+int ext4_freeze_installed_root(bool *handled);
+/* After successful freeze: excludes all filesystem/raw reads, then invokes the
+ * polling controller stop under the same exclusion. No reopen in this boot. */
+int ext4_quiesce_installed_root(bool (*stop)(void));
+
 int ext4_mount_ro(block_dev_t *partition, const char *path, ext4_mount_t **out);
 int ext4_mount_rw(block_dev_t *partition, const char *path, ext4_mount_t **out);
 /* Production bounded E4-B RW mount. Caller explicitly admits exclusive writes

@@ -34,6 +34,10 @@ int main(void) {
     runtime_stat.type=VFS_FILE;assert(!runtime(&u,path) && !writes);runtime_stat.type=VFS_DIRECTORY;
     runtime_stat.mnt_flags=VFS_MNT_RDONLY;assert(!runtime(&u,path) && !writes);runtime_stat.mnt_flags=0;
     missing=true;assert(runtime(&u,path) && writes==3 && mkdirs==1 && chowns==1 && chmods==1);
+    missing=true;memcpy(u.home,"/home/operator",15);unsigned before=writes;assert(!runtime(&u,path) && writes==before);
+    missing=false;runtime_stat.mnt_flags=VFS_MNT_NODEV;assert(runtime(&u,path) && writes==before);
+    runtime_stat.mnt_flags=VFS_MNT_NODEV|VFS_MNT_NOSUID;assert(!runtime(&u,path) && writes==before);
+    runtime_stat.mnt_flags=VFS_MNT_NODEV|VFS_MNT_RDONLY;assert(!runtime(&u,path) && writes==before);
     input="secret\n";char password[129];assert(line(password,sizeof(password),false) && !strcmp(password,"secret"));
     assert(output_size==1 && output[0]=='\n');db_wipe(password,sizeof(password));for (unsigned i=0;i<sizeof(password);i++) assert(!password[i]);
     input="very-long-input\n";char small[4];assert(!line(small,sizeof(small),false) && !*input);

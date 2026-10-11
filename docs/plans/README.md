@@ -6,6 +6,7 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
+| [PERSISTENT_ROOT_INSTALLER_PLAN.md](PERSISTENT_ROOT_INSTALLER_PLAN.md) / [Phase 2 contracts](PERSISTENT_ROOT_PHASE2.md) | Persistent NVMe root, recovery, durable accounts, separate live/installer builds and NVMe-only installation. | **PHASE 2 COMPLETE** (2026-10-11); installed boot/recovery/shutdown host and BIOS/UEFI SMP gates pass; mutable accounts, installer and physical acceptance pending |
 | [EXT4_PLAN.md](EXT4_PLAN.md) / [Phase 9](EXT4_PHASE9.md) | Bounded ext4 profile, extents/checksums, JBD2 writer/recovery, crash injection and persistent-root/package/installer handoff. | **PHASE 9 / E4-B COMPLETE** for the bounded profile; [9.6 report](../roadmap/ext4-phase9-6.md). Explicit production USB journaled RW enabled. E4-A remains accepted. |
 | [PERMISSIONS_PLAN.md](PERMISSIONS_PLAN.md) | Unix DAC + capability mask: node metadata, devfs/runfs, VFS enforcement, chmod/chown, users/login, setuid sudo. | **PHASES 0–4 COMPLETE locally**; [Phase 4 gates](../roadmap/permissions-phase4-gates.md), Phase 5 hardening/physical acceptance open |
 | [EXT4_PHASE9_6.md](EXT4_PHASE9_6.md) | Separate physical journal fixture, target identity, clean persistence, seeded recovery and individually authorized interruptions. | **COMPLETE — bounded physical acceptance** (2026-10-08); production live-image verification recorded in the report |

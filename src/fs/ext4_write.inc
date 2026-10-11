@@ -13,6 +13,7 @@ static int e4_state(vfs_node_t *node) {
     if (n->removed && !(n->opens && e4_mounted_orphan(n->inode.fs,n->inode.ino))) return -VFS_ENOENT;
     ext4_mount_t *fs=n->inode.fs;
     if (fs->engine && fs->engine->tainted) return -VFS_EIO;
+    if (e4_account_inode(fs,n->inode.ino)) return -VFS_EROFS;
     return !fs->engine || fs->frozen ? -VFS_EROFS : 0;
 }
 static int e4_can_write(vfs_node_t *node) {
@@ -374,7 +375,7 @@ done:
 }
 int ext4_sync(ext4_mount_t *fs) {
     spin_debug_assert_unheld(); uint64_t f=spin_lock_irqsave(&e4_lock);
-    int r=!fs || fs!=e4_active ? -VFS_EINVAL : 0;
+    int r=!fs || (fs!=e4_active && !fs->detached) ? -VFS_EINVAL : 0;
     if (!r && fs->engine) {
         if (fs->journal_mounted) r=e4_journal_drain(fs,false);
         else if (fs->engine->tainted) r=-VFS_EIO;
@@ -385,7 +386,7 @@ int ext4_sync(ext4_mount_t *fs) {
 int ext4_freeze_and_sync(ext4_mount_t *fs) {
     spin_debug_assert_unheld();
     uint64_t f=spin_lock_irqsave(&e4_lock);
-    if (!fs || fs!=e4_active) { spin_unlock_irqrestore(&e4_lock,f); return -VFS_EINVAL; }
+    if (!fs || (fs!=e4_active && !fs->detached)) { spin_unlock_irqrestore(&e4_lock,f); return -VFS_EINVAL; }
     fs->frozen=true; ext4_engine_t *e=fs->engine;
     if (fs->journal_mounted) {
         int r=e4_journal_drain(fs,true);spin_unlock_irqrestore(&e4_lock,f);return r;

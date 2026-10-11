@@ -35,6 +35,10 @@ typedef struct {
 
     /* Deep-copied kernel command line (kernel-owned) */
     char     cmdline[512];
+    bool     cmdline_truncated;
+    bool     installed_modules_valid;
+    uint64_t readiness_vaddr, readiness_size;
+    uint64_t kernel_file_vaddr, kernel_file_size;
 } boot_info_t;
 
 void boot_info_init(boot_info_t *out_info,

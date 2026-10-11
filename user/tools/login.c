@@ -27,6 +27,17 @@ static void delay(void) {
     } while (info.uptime_ticks-start<ticks);
 }
 static bool runtime(const db_user_t *u,char path[128]) {
+    /* Installed homes already exist; never create a persistent home during
+     * authentication. Readonly DB admission distinguishes the stable set. */
+    if ((u->home[0]=='/' && u->home[1]=='h' && u->home[2]=='o' && u->home[3]=='m' && u->home[4]=='e' && u->home[5]=='/') ||
+        (u->uid==0 && tool_equal(u->home,"/root"))) {
+        size_t n=tool_length(u->home);if (n>=128) return false;
+        for (size_t i=0;i<=n;i++) path[i]=u->home[i];
+        stat_ext_v1_t st;
+        return permission_call4(SYS_STAT_EXT,(uintptr_t)path,(uintptr_t)&st,sizeof(st),1)==0 &&
+            st.type==VFS_DIRECTORY && st.mode==(VFS_S_IFDIR|0700) && st.uid==u->uid && st.gid==u->gid &&
+            !(st.mnt_flags & (VFS_MNT_RDONLY|VFS_MNT_NOSUID));
+    }
     char id[12];tool_format_u64(id,u->uid);size_t n=0;
     const char *prefix="/run/user/";while (*prefix) path[n++]=*prefix++;
     for (size_t i=0;id[i];i++) path[n++]=id[i];
@@ -42,11 +53,14 @@ static bool runtime(const db_user_t *u,char path[128]) {
     return r==0 && st.type==VFS_DIRECTORY && st.mode==(VFS_S_IFDIR|0700) && st.uid==u->uid && st.gid==u->gid && !st.mnt_flags;
 }
 static void env(char *out,const char *key,const char *value) {while (*key) *out++=*key++;while (*value) *out++=*value++;*out=0;}
+static int failure(bool installed,const char *message) {
+    int r=tool_error("login",message,0);return installed ? 125 : r;
+}
 int login_main(int argc,char **argv) {
-    (void)argc;(void)argv;
+    bool installed=argc==2 && tool_equal(argv[1],"--installed");
     uint32_t uid,euid,suid;
     if (tool_syscall(SYS_GETRESUID,(uintptr_t)&uid,(uintptr_t)&euid,(uintptr_t)&suid)<0 || uid || euid || suid ||
-        tool_syscall(SYS_TERMCTL,TERM_ISATTY,0,0)!=1 || !db_load(&database,true)) return tool_error("login","invalid privileged terminal/database",0);
+        tool_syscall(SYS_TERMCTL,TERM_ISATTY,0,0)!=1 || !db_load(&database,true)) return failure(installed,"invalid privileged terminal/database");
     const db_shadow_t *op=db_shadow_name(&database,"operator");
     if (op && !*op->hash) say("WARNING: live-media operator login is passwordless; home is temporary.\n");
     for (;;) {
@@ -61,20 +75,20 @@ int login_main(int argc,char **argv) {
         db_wipe(password,sizeof(password));
         if (!ok) {delay();say("Login incorrect\n");continue;}
         uint32_t groups[16];unsigned count;char home[128];
-        if (!db_groups(&database,u,groups,&count) || !runtime(u,home)) return tool_error("login","unsafe runtime directory",0);
-        /* Input never echoes and normal ISIG remains intact. Killing login
-         * causes the kernel to restart a fresh privileged login process. */
+        if (!db_groups(&database,u,groups,&count) || !runtime(u,home)) return failure(installed,"unsafe runtime directory");
+        /* Input never echoes and normal ISIG remains intact. Installed boot
+         * treats a killed login supervisor as an authentication failure. */
         if (tool_syscall(SYS_SETGROUPS,count,(uintptr_t)groups,0)<0 ||
             permission_call4(SYS_SETRESGID,u->gid,u->gid,u->gid,0)<0 ||
             permission_call4(SYS_SETRESUID,u->uid,u->uid,u->uid,0)<0 ||
-            tool_syscall(SYS_CAPGET,0,0,0)!=0) return tool_error("login","credential drop failed",0);
+            tool_syscall(SYS_CAPGET,0,0,0)!=0) return failure(installed,"credential drop failed");
         /* Login waits in the shell's foreground group. Prompt control signals
          * must not kill/stop the session parent; the shell sets its own prompt
          * dispositions, and its job launcher restores command dispositions. */
         signal_action_t ignore={.handler=SIG_IGN};
         if (tool_syscall(SYS_SIGACTION,SIGINT,(uintptr_t)&ignore,0)<0 ||
             tool_syscall(SYS_SIGACTION,SIGTSTP,(uintptr_t)&ignore,0)<0)
-            return tool_error("login","cannot protect session parent",0);
+            return failure(installed,"cannot protect session parent");
         char h[144],user[48],logname[48],shell[144];
         env(h,"HOME=",home);env(user,"USER=",u->name);env(logname,"LOGNAME=",u->name);env(shell,"SHELL=",u->shell);
         const char *environment[]={h,user,logname,shell,"PATH=/bin","TERM=fortress",0};
@@ -83,8 +97,10 @@ int login_main(int argc,char **argv) {
         /* Group is inherited from the boot login and remains foreground. */
         long pid=tool_syscall(SYS_SPAWN_EXT,(uintptr_t)u->shell,(uintptr_t)&opts,sizeof(opts));
         db_wipe(&database,sizeof(database));
-        if (pid<0) return tool_error("login","cannot start shell",0);
+        if (pid<0) return failure(installed,"cannot start shell");
         uint64_t status=0;long r=tool_syscall(SYS_WAIT,pid,(uintptr_t)&status,0);
-        return r<0 ? 1 : (int)status;
+        /* Child exit codes cannot impersonate the installed supervisor's
+         * reserved failure status. Successful session collection is logout. */
+        return r<0 ? failure(installed,"cannot wait for shell") : installed ? 0 : (int)status;
     }
 }

@@ -1,6 +1,7 @@
 #include "boot_info.h"
 #include "string.h"
 #include "serial.h"
+#include "root_boot.h"
 
 void boot_info_init(boot_info_t *out_info,
                     struct limine_memmap_response *memmap_resp,
@@ -89,14 +90,43 @@ void boot_info_init(boot_info_t *out_info,
     /* 5. Snapshot Kernel Command Line */
     if (kernel_file_resp && kernel_file_resp->kernel_file && kernel_file_resp->kernel_file->cmdline) {
         const char *cmd = kernel_file_resp->kernel_file->cmdline;
-        size_t len = strlen(cmd);
-        if (len >= sizeof(out_info->cmdline)) {
-            len = sizeof(out_info->cmdline) - 1;
-        }
+        size_t len = 0;
+        while (len < sizeof(out_info->cmdline) - 1 && cmd[len]) len++;
+        out_info->cmdline_truncated = cmd[len] != '\0';
         memcpy(out_info->cmdline, cmd, len);
         out_info->cmdline[len] = '\0';
+        out_info->kernel_file_vaddr=(uint64_t)kernel_file_resp->kernel_file->address;
+        out_info->kernel_file_size=kernel_file_resp->kernel_file->size;
     } else {
         out_info->cmdline[0] = '\0';
+    }
+
+    root_boot_config_t root=root_boot_parse(out_info->cmdline,sizeof(out_info->cmdline),out_info->cmdline_truncated);
+    if (root.mode!=ROOT_BOOT_LIVE || root.has_root || !root.valid) {
+        out_info->has_initramfs=false;
+        bool good=module_resp && module_resp->modules && module_resp->module_count==2;
+        if (module_resp && module_resp->modules && module_resp->module_count<=2) for (unsigned i=0;i<module_resp->module_count;i++) {
+            struct limine_file *m=module_resp->modules[i];
+            if (!m || !m->path || !m->cmdline || !m->address) {good=false;break;}
+            const char *base=m->path;
+            size_t path_len=0,role_len=0;
+            while (path_len<256 && m->path[path_len]) {
+                if (m->path[path_len]=='/') base=m->path+path_len+1;
+                path_len++;
+            }
+            while (role_len<32 && m->cmdline[role_len]) role_len++;
+            if (path_len==256 || role_len==32) {good=false;continue;}
+            if (!strcmp(base,"bootstrap.tar") && !strcmp(m->cmdline,"role=bootstrap") &&
+                m->size && m->size<=8u*1024*1024 && !out_info->has_initramfs) {
+                out_info->has_initramfs=true;out_info->initramfs_vaddr=(uint64_t)m->address;
+                out_info->initramfs_size=m->size;
+                out_info->initramfs_paddr=hhdm_resp ? (uint64_t)m->address-hhdm_resp->offset : 0;
+            } else if (!strcmp(base,"readiness.v1") && !strcmp(m->cmdline,"role=readiness") &&
+                m->size==512 && !out_info->readiness_vaddr) {
+                out_info->readiness_vaddr=(uint64_t)m->address;out_info->readiness_size=m->size;
+            } else good=false;
+        }
+        out_info->installed_modules_valid=good && out_info->has_initramfs && out_info->readiness_vaddr;
     }
 
     if (out_info->cmdline[0] != '\0') {

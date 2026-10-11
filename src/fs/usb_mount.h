@@ -31,5 +31,8 @@ bool usb_mount_sync(void);
 /* Shutdown/reboot: freeze EXT4 if selected and clean-close ext2 mounts.
  * Does not release backing devices; failure must prevent a clean shutdown claim. */
 bool usb_mount_freeze_and_sync(void);
+/* All admitted writable mounts, preserving readonly/taint errors. */
+int storage_sync_all(void);
+int storage_freeze_all(void);
 
 #endif /* FORTRESS_USB_MOUNT_H */

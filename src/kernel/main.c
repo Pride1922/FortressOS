@@ -29,6 +29,7 @@
 #include "block.h"
 #include "crc32.h"
 #include "gpt.h"
+#include "installed_root.h"
 #include "ext2.h"
 #include "ext4.h"
 #include "usb_mount.h"
@@ -3137,6 +3138,113 @@ static void ext4_physical_commit_pause(void) {
     for (;;) __asm__ volatile("cli; hlt" ::: "memory");
 }
 #endif
+/* Phase1 fixture has no production root selector or installation authority. */
+static bool g_installed_boot;
+static bool g_explicit_live_boot;
+static bool root_phase1_requested(void) {
+#ifdef TEST_ROOT_PHASE1
+    return qemu_fw_cfg_has_key("opt/fortress/root_phase1");
+#else
+    return false;
+#endif
+}
+static bool root_boot_workflow_requested(void) {return g_installed_boot || root_phase1_requested();}
+static void root_phase1_fixture(const boot_info_t *info) {
+    pci_device_t device;
+    require_ext2(pci_find_device(PCI_CLASS_STORAGE,PCI_SUBCLASS_STORAGE_NVME,
+        PCI_PROGIF_STORAGE_NVME,&device) && device.vendor_id==0x1b36 && device.device_id==0x0010,
+        "Phase1 QEMU-only NVMe fixture");
+    require_ext2(nvme_init(),"Phase1 NVMe init");block_init();
+    require_ext2(block_register_nvme(),"Phase1 block registration");
+    gpt_policy_result_t policy;
+    require_ext2(gpt_parse_ex(block_get_dev_by_name("nvme0n1"),&policy) &&
+        policy==GPT_POLICY_PRIMARY_CONSISTENT,"Phase1 GPT");
+    block_dev_t *part=block_get_dev_by_name("nvme0n1p2");
+    require_ext2(part && part->sector_size==512 && part->sector_count==524288,"Phase1 root geometry");
+    ext4_mount_t *fs=NULL;
+    const void *bootstrap=(const void *)info->initramfs_vaddr;
+    uint8_t bootstrap_prefix[64];memcpy(bootstrap_prefix,bootstrap,sizeof(bootstrap_prefix));
+    require_ext2(!ext4_prepare_root(part,true,&fs),"Phase1 detached prepare");
+    creds_t actor;creds_init_root(&actor);int error;
+    vfs_node_t *root=ext4_prepared_root(fs);
+    const char *paths[]={"/bin/login","/bin/shell","/bin/sudo","/etc/passwd","/etc/group","/etc/shadow"};
+    for (unsigned i=0;i<6;i++) {
+        vfs_node_t *n=vfs_lookup_at_creds(root,paths[i],&actor,&error);
+        require_ext2(n && !error,"Phase1 detached validation");vfs_node_put(n);
+    }
+    /* Read-only account-consumer policy remains intact until later phases. */
+    require_ext2(!ext4_freeze_and_sync(fs),"Phase1 fixture freeze");
+    vfs_node_t *tty=vfs_get_terminal_node();
+    require_ext2(!ext4_publish_root(fs),"Phase1 root publication");
+    require_ext2(vfs_lookup_kernel("/dev/tty")==tty &&
+        bootstrap==(const void *)info->initramfs_vaddr,"Phase1 stable bootstrap/volatile backing");
+    for (unsigned i=0;i<1100;i++) {
+        char path[64];char number[16];unsigned n=0,value=i;do {number[n++]=(char)('0'+value%10);value/=10;} while (value);
+        for (unsigned k=0;k<n/2;k++) {char c=number[k];number[k]=number[n-1-k];number[n-1-k]=c;}number[n]=0;
+        memcpy(path,"/cache-",8);memcpy(path+7,number,strlen(number)+1);
+        vfs_node_t *node=vfs_lookup_creds(path,&actor,&error);
+        require_ext2(node && !error,"Phase1 cache churn");vfs_node_put(node);
+    }
+    serial_puts("[ROOT PHASE1] detached validation, frozen root, volatile identity, 1100-node churn PASS\n");
+#ifdef TEST_ROOT_PHASE1
+    file_t *image=vfs_open_exec_creds("/bin/login",&actor,&error);
+    require_ext2(image!=NULL,"Phase1 pinned image");
+    size_t snapshot_blocks=heap_get_allocated_blocks();vfs_metadata_t metadata;void *bytes=NULL;
+    ext4_test_snapshot_fault(1);
+    require_ext2(vfs_exec_image(image,&actor,&metadata,&bytes)==-VFS_ENOMEM && !bytes,"Phase1 snapshot OOM");
+    ext4_test_snapshot_fault(2);
+    require_ext2(vfs_exec_image(image,&actor,&metadata,&bytes)==-VFS_EIO && !bytes,"Phase1 snapshot short read");
+    ext4_test_snapshot_fault(0);
+    require_ext2(heap_get_allocated_blocks()==snapshot_blocks,"Phase1 snapshot error cleanup");
+    vfs_node_t **pins=kcalloc(1100,sizeof(*pins));require_ext2(pins!=NULL,"Phase1 pin array");unsigned count=0;
+    for (;count<1100;count++) {
+        char path[64];char number[16];unsigned n=0,value=count;
+        do {number[n++]=(char)('0'+value%10);value/=10;} while (value);
+        for (unsigned k=0;k<n/2;k++) {char c=number[k];number[k]=number[n-1-k];number[n-1-k]=c;}number[n]=0;
+        memcpy(path,"/cache-",8);memcpy(path+7,number,strlen(number)+1);
+        pins[count]=vfs_lookup_creds(path,&actor,&error);
+        if (!pins[count]) {require_ext2(error==-VFS_EFBIG,"Phase1 pinned capacity error");break;}
+    }
+    require_ext2(count<1100 && !vfs_exec_image(image,&actor,&metadata,&bytes),"Phase1 pinned executable survives saturation");
+    kfree(bytes);
+    for (unsigned i=0;i<count;i++) vfs_node_put(pins[i]);
+    kfree(pins);vfs_close(image);
+    serial_puts("[ROOT PHASE1] snapshot OOM/short read, pinned saturation, cleanup PASS\n");
+#endif
+
+    require_ext2(!process_spawn_initial_vfs("/bin/bad-elf"),"Phase1 malformed ELF rejection");
+    for (unsigned fault=SPAWN_FAULT_VMM_USER_PML4;fault<=SPAWN_FAULT_SCHED_REF;fault++) {
+        spawn_set_fault_injection((spawn_fault_type_t)fault,0);
+        require_ext2(!process_spawn_initial_vfs("/bin/sh-builtin"),"Phase1 spawn failure rollback");
+        spawn_clear_fault_injection();sched_reap_dead();
+    }
+    size_t pages=0,tables=0,blocks=0;uint64_t slots=0;
+    for (unsigned cycle=0;cycle<=100;cycle++) {
+        tcb_t *p=process_spawn_initial_vfs("/bin/sh-builtin");
+        require_ext2(p!=NULL,"Phase1 persistent process spawn");uint64_t pid=p->tid,status;
+        apic_timer_start();sched_enable_preemption();
+        __asm__ volatile("sti" ::: "memory");
+        process_wait_quiescent(pid);
+        require_ext2(process_wait(pid,&status) && status==2,"Phase1 wait/status");
+        __asm__ volatile("cli" ::: "memory");
+        apic_timer_stop();sched_disable_preemption();sched_reap_dead();
+        if (!cycle) {pages=pmm_get_free_pages();tables=vmm_get_allocated_table_frames();
+            blocks=heap_get_allocated_blocks();slots=sched_get_active_stack_slots_mask();}
+        else if (pages!=pmm_get_free_pages() || tables!=vmm_get_allocated_table_frames() ||
+            blocks!=heap_get_allocated_blocks() || slots!=sched_get_active_stack_slots_mask()) {
+            serial_puts("[ROOT PHASE1 RESOURCE] cycle=");serial_print_dec(cycle);
+            serial_puts(" pages=");serial_print_dec(pages);serial_puts("/");serial_print_dec(pmm_get_free_pages());
+            serial_puts(" tables=");serial_print_dec(tables);serial_puts("/");serial_print_dec(vmm_get_allocated_table_frames());
+            serial_puts(" blocks=");serial_print_dec(blocks);serial_puts("/");serial_print_dec(heap_get_allocated_blocks());
+            serial_puts(" slots=");serial_print_hex(slots);serial_puts("/");serial_print_hex(sched_get_active_stack_slots_mask());serial_puts("\n");
+            require_ext2(false,"Phase1 process resource reclamation");
+        }
+    }
+    require_ext2(heap_verify_integrity(),"Phase1 heap integrity");
+    require_ext2(!memcmp(bootstrap,bootstrap_prefix,sizeof(bootstrap_prefix)),"Phase1 retained module bytes");
+    serial_puts("[ROOT PHASE1] malformed ELF, spawn failure rollback, 100 spawn/exit cycles, zero resource leaks PASS\n");
+
+}
 static bool ext4_journal_integration_requested(void) {
     return qemu_fw_cfg_has_key("opt/fortress/ext4_journal_integration") || ext4_physical_requested();
 }
@@ -4996,6 +5104,9 @@ void kmain(void) {
                    rsdp_request.response,
                    module_request.response,
                    kernel_file_request.response);
+    g_installed_boot=installed_root_requested(&boot_info);
+    root_boot_config_t root_config=root_boot_parse(boot_info.cmdline,sizeof(boot_info.cmdline),boot_info.cmdline_truncated);
+    g_explicit_live_boot=root_config.valid && root_config.explicit_mode && root_config.mode==ROOT_BOOT_LIVE;
 
     bool memory_boot_test = memory_boot_test_enabled(&boot_info);
     if (memory_boot_test) memory_boot_test_before_vmm();
@@ -6263,6 +6374,7 @@ pf_boot_guard_done:
     /* =========================================================================
      * Phase 7 (Checkpoint 1): Ring 3 Privilege Transition via iretq & Trap Hook
      * ========================================================================= */
+    if (!root_boot_workflow_requested()) {
     test_phase7_checkpoint1_ring3(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
     /* =========================================================================
@@ -6290,6 +6402,7 @@ pf_boot_guard_done:
      * ========================================================================= */
     test_phase7_checkpoint5_fast_syscall(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
+    } else syscall_init();
     /* =========================================================================
      * Phase 8 (Step 8A): Basic Framebuffer Text Console
      * ========================================================================= */
@@ -6298,7 +6411,7 @@ pf_boot_guard_done:
     /* =========================================================================
      * Phase 8 (Step 8B): Initramfs, Minimal VFS & File Descriptors
      * ========================================================================= */
-    test_phase8b_vfs_initramfs(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
+    if (!root_boot_workflow_requested()) test_phase8b_vfs_initramfs(&boot_info, master_kernel_pml4, master_kernel_pml4_phys);
 
     /* =========================================================================
      * Phase 9 (Step 9A): PCI Discovery & NVMe MMIO BAR Verification
@@ -6322,7 +6435,7 @@ pf_boot_guard_done:
             usb_fixture.vendor_id==0x1b36 && usb_fixture.device_id==0x000d,
             "exclusive QEMU USB journal fixture admission");
     }
-    if (ext4_physical_requested() || !pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME,
+    if (root_boot_workflow_requested() || g_explicit_live_boot || ext4_physical_requested() || !pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME,
                          PCI_PROGIF_STORAGE_NVME, &storage_fixture) ||
         storage_fixture.vendor_id != 0x1b36 || storage_fixture.device_id != 0x0010) {
         serial_puts("[BOOT] Hardware diagnostics complete. QEMU storage fixture tests skipped.\n");
@@ -6374,12 +6487,22 @@ pf_boot_guard_done:
     }
     test_smp_piece1_ap_discovery(&madt_info);
     test_smp_piece3_lock_discipline();
-    test_smp_piece4_scheduler();
-    test_smp_step1a_cpus_allowed();
-    test_smp_step1b_preempt_ticks();
-    test_smp_step1c_ipi_wake();
-    test_smp_step1d_tsc_sync();
-    test_smp_piece5_ipi(master_kernel_pml4);
+    if (root_boot_workflow_requested()) {
+        /* Preserve scheduler startup without unrelated diagnostic worker cohorts
+         * or the legacy TCG-sensitive TSC timing tolerance. */
+        apic_timer_start();sched_enable_preemption();
+        __asm__ volatile("sti" ::: "memory");
+        smp_start_schedulers();
+        __asm__ volatile("cli" ::: "memory");
+        apic_timer_stop();sched_disable_preemption();
+    } else {
+        test_smp_piece4_scheduler();
+        test_smp_step1a_cpus_allowed();
+        test_smp_step1b_preempt_ticks();
+        test_smp_step1c_ipi_wake();
+        test_smp_step1d_tsc_sync();
+        test_smp_piece5_ipi(master_kernel_pml4);
+    }
 
     if (qemu_fw_cfg_has_key("opt/fortress/permissions_test"))
         process_permissions_test_enable();
@@ -6438,7 +6561,7 @@ pf_boot_guard_done:
     net_start(boot_info.cmdline, sizeof(boot_info.cmdline));
     boot_status("Mounting persistent storage (/mnt)...");
     if (ext4_physical_requested() || qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) test_ext4_journal_usb_mount(&boot_info);
-    else usb_mount_production_storage(&boot_info);
+    else if (!g_installed_boot) usb_mount_production_storage(&boot_info);
     devfs_add_usb_partitions();
     if (qemu_fw_cfg_has_key("opt/fortress/memory_storage_test") ||
         qemu_fw_cfg_has_key("opt/fortress/memory_storage_churn")) {
@@ -6470,21 +6593,28 @@ pf_boot_guard_done:
         serial_puts("[TEST] opt/fortress/taint_test active: marking ext2 storage tainted before shell startup\n");
         ext2_mark_tainted();
     }
+    if (root_phase1_requested()) root_phase1_fixture(&boot_info);
+#ifdef TEST_ROOT_PHASE2
+    installed_root_test_faults(qemu_fw_cfg_has_key("opt/fortress/root_flush_fail"),
+        qemu_fw_cfg_has_key("opt/fortress/root_replay_fail"));
+#endif
+    bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);
+    bool recovery_shell=false;
+#ifdef TEST_ROOT_PHASE2
+    bool login_fault=g_installed_boot && installed_ready && qemu_fw_cfg_has_key("opt/fortress/root_login_fail");
+    if (login_fault) spawn_set_fault_injection(SPAWN_FAULT_VMM_USER_PML4,0);
+#endif
     const char *initial_program="/bin/login";
 #ifdef TEST_LOGIN_BOOT
     /* Only explicit test kernels accept the legacy direct-shell escape. */
-    if (strstr(boot_info.cmdline,"login=0")) initial_program="/bin/shell";
+    if (!g_installed_boot && strstr(boot_info.cmdline,"login=0")) initial_program="/bin/shell";
 #endif
-    vfs_node_t *shell = vfs_lookup_kernel(initial_program);
-    if (!shell || shell->type != VFS_FILE || !shell->data) {
-        serial_puts("[FAIL] Initial login program missing from initramfs.\n");
-        hcf();
-    }
-    boot_status("Interactive shell ready.");
+    boot_status(installed_ready ? "Interactive shell ready." : "Recovery environment selected.");
     if (console_is_quiet()) {
         console_set_quiet(false);
         console_clear();
     }
+    if (!installed_ready) installed_root_recovery_notice();
     if (ext4_physical_requested()) {
         if (g_ext4_fixture_mount) {
             console_puts(ext4_physical_token("ext4_physical=verify") ?
@@ -6501,22 +6631,44 @@ pf_boot_guard_done:
     }
     for (;;) {
         /* Spawn with preemption disabled until the PID is safely copied. */
-        tcb_t *process = process_spawn(initial_program, shell->data, shell->size);
-        if (!process) { serial_puts("[FAIL] Cannot start shell.\n"); hcf(); }
+        tcb_t *process;
+        if (g_installed_boot && !installed_ready) {
+            const char *hash=installed_root_recovery_hash();
+            if (!hash) hcf();
+            const char *args[]={"/bin/recovery",hash};
+            process=recovery_shell ? process_spawn_initial_bootstrap("/bin/shell",0,NULL) :
+                process_spawn_initial_bootstrap("/bin/recovery",2,args);
+        } else if (g_installed_boot) {
+            const char *args[]={initial_program,"--installed"};
+            process=process_spawn_initial_vfs_args(initial_program,2,args);
+        } else process=process_spawn_initial_vfs(initial_program);
+#ifdef TEST_ROOT_PHASE2
+        if (login_fault) {spawn_clear_fault_injection();login_fault=false;}
+#endif
+        if (!process) {
+            if (g_installed_boot && installed_ready) {
+                installed_ready=false;installed_root_login_failed();installed_root_recovery_notice();continue;
+            }
+            serial_puts("[FAIL] Cannot start bootstrap program.\n");hcf();
+        }
         uint64_t pid = process->tid;
         if (input_terminal_bootstrap(pid)) {
             serial_puts("[FAIL] Cannot assign shell terminal ownership.\n"); hcf();
         }
         sched_enable_preemption();
-        apic_timer_reset_bsp_ticks();
+        if (!g_installed_boot) apic_timer_reset_bsp_ticks();
         apic_timer_start();
-        serial_puts("[BOOT] Interactive shell ready.\n");
+        serial_puts(g_installed_boot && !installed_ready ? recovery_shell ?
+            "[BOOT] Authenticated recovery shell ready.\n" : "[BOOT] Recovery authentication ready.\n" :
+            "[BOOT] Interactive shell ready.\n");
         process_wait_quiescent(pid);
         __asm__ volatile("cli" ::: "memory");
         sched_disable_preemption();
-        uint64_t status;
+        uint64_t status=1;
         (void)process_wait(pid, &status);
         sched_reap_dead();
+        if (g_installed_boot && !installed_ready) recovery_shell=!recovery_shell && status==0;
+        else if (g_installed_boot && (status==125 || status>=128)) {installed_ready=false;installed_root_login_failed();installed_root_recovery_notice();}
         serial_puts("[SHELL] Process exited; restarting.\n");
     }
 }

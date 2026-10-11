@@ -160,6 +160,8 @@ void     pci_print_bdf(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn);
 void     pci_report_xhci(void);
 
 bool     pci_is_mcfg_available(void);
+/* False for truncated/malformed firmware ranges or failed ECAM reads. */
+bool     pci_inventory_complete(void);
 size_t   pci_get_segment_count(void);
 
 #endif /* FORTRESS_PCI_H */

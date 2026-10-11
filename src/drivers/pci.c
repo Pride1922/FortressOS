@@ -19,6 +19,7 @@ typedef struct {
 static pci_mcfg_record_t g_mcfg_records[MAX_PCI_SEGMENTS];
 static size_t g_mcfg_record_count = 0;
 static bool g_mcfg_available = false;
+static bool g_inventory_complete = true;
 
 /* Ensure MMIO page is mapped uncached and execute-disabled in VMM */
 static bool pci_ensure_mapped(uintptr_t phys_addr, size_t length) {
@@ -99,6 +100,7 @@ static uint32_t pci_ecam_read32(const pci_mcfg_record_t *rec, uint8_t bus, uint8
                       ((uint64_t)(offset & 0xFFC))));
 
     if (!pci_ensure_mapped(phys, 4)) {
+        g_inventory_complete = false;
         return 0xFFFFFFFF;
     }
 
@@ -184,6 +186,7 @@ static void pci_parse_mcfg(void) {
     }
 
     if (mcfg_hdr->length < sizeof(acpi_sdt_header_t) + 8) {
+        g_inventory_complete = false;
         serial_puts("[PCI] ACPI MCFG table too short. Falling back to Legacy PCI configuration.\n");
         g_mcfg_available = false;
         return;
@@ -191,8 +194,11 @@ static void pci_parse_mcfg(void) {
 
     size_t payload_len = mcfg_hdr->length - (sizeof(acpi_sdt_header_t) + 8);
     size_t entry_count = payload_len / sizeof(acpi_mcfg_allocation_t);
+    if (payload_len % sizeof(acpi_mcfg_allocation_t) || entry_count > MAX_PCI_SEGMENTS)
+        g_inventory_complete = false;
 
     if (entry_count == 0) {
+        g_inventory_complete = false;
         serial_puts("[PCI] ACPI MCFG contains 0 allocation entries.\n");
         g_mcfg_available = false;
         return;
@@ -203,6 +209,14 @@ static void pci_parse_mcfg(void) {
 
     for (size_t i = 0; i < entry_count && g_mcfg_record_count < MAX_PCI_SEGMENTS; i++) {
         const acpi_mcfg_allocation_t *alloc = (const acpi_mcfg_allocation_t *)(entry_bytes + i * sizeof(acpi_mcfg_allocation_t));
+        if (!alloc->base_address || (alloc->base_address & ((1u<<20)-1)) ||
+            alloc->start_bus_number > alloc->end_bus_number ||
+            alloc->base_address > UINTPTR_MAX - ((uint64_t)(alloc->end_bus_number-alloc->start_bus_number+1)<<20))
+            g_inventory_complete = false;
+        for (size_t j=0;j<g_mcfg_record_count;j++)
+            if (g_mcfg_records[j].segment==alloc->pci_segment_group &&
+                alloc->start_bus_number<=g_mcfg_records[j].end_bus &&
+                alloc->end_bus_number>=g_mcfg_records[j].start_bus) g_inventory_complete=false;
         g_mcfg_records[g_mcfg_record_count].base_address = alloc->base_address;
         g_mcfg_records[g_mcfg_record_count].segment      = alloc->pci_segment_group;
         g_mcfg_records[g_mcfg_record_count].start_bus    = alloc->start_bus_number;
@@ -234,6 +248,7 @@ void pci_init(uintptr_t hhdm_offset) {
     g_hhdm_offset = hhdm_offset;
     g_mcfg_record_count = 0;
     g_mcfg_available = false;
+    g_inventory_complete = true;
 
     serial_puts("[PCI] Initializing PCI / PCIe bus subsystem...\n");
     pci_parse_mcfg();
@@ -242,6 +257,7 @@ void pci_init(uintptr_t hhdm_offset) {
 bool pci_is_mcfg_available(void) {
     return g_mcfg_available;
 }
+bool pci_inventory_complete(void) { return g_inventory_complete; }
 
 size_t pci_get_segment_count(void) {
     return g_mcfg_record_count;

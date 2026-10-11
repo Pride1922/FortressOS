@@ -23,7 +23,7 @@ test-elf-page-host:
 	@mkdir -p build
 	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-pie -no-pie -Isrc/include -Isrc/kernel tests/elf_page_host.c -o build/elf-page-host
 	@build/elf-page-host
-	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-pie -no-pie -Isrc/include -Isrc/kernel -Isrc/mm -Isrc/drivers tests/elf_loader_host.c src/kernel/elf.c -o build/elf-loader-host
+	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-pie -no-pie -Isrc/include -Isrc/kernel -Isrc/mm -Isrc/drivers -Isrc/arch/x86_64 -DFORTRESS_THREAD_H -include tests/host/thread.h tests/elf_loader_host.c src/kernel/elf.c -o build/elf-loader-host
 	@build/elf-loader-host
 
 # Owned isolated pause build only; never builds or attaches shared data disks.
@@ -154,6 +154,19 @@ endif
 QEMU_FLAGS := -M q35 -m 2G -serial stdio $(QEMU_NVME_FLAGS) $(QEMU_EXTRA)
 
 .DEFAULT_GOAL := all
+.PHONY: test-root-boot-host test-root-phase2-host test-root-phase2
+test-root-boot-host:
+	@mkdir -p build
+	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/host -Isrc/include -Isrc/lib -Isrc/fs -Isrc/kernel -Isrc/mm -Isrc/drivers tests/root_boot_host.c src/kernel/root_boot.c src/kernel/boot_info.c src/fs/gpt.c user/tools/userdb.c user/tools/digest.c -o build/root-boot-host
+	@build/root-boot-host
+	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/host -Isrc/include -Isrc/mm -Isrc/drivers tests/pci_inventory_host.c -o build/pci-inventory-host
+	@build/pci-inventory-host
+	@gcc -std=c11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -no-pie -DTOOL_HOST_TEST -ffunction-sections -fdata-sections -Wl,--gc-sections -Isrc/include -Isrc/fs tests/recovery_host.c user/tools/common.c user/tools/digest.c -lcrypt -o build/recovery-host
+	@build/recovery-host
+test-root-phase2-host:
+	@python3 scripts/test_root_phase2.py --host-only
+test-root-phase2:
+	@python3 scripts/test_root_phase2.py
 .PHONY: all clean distclean run run-bios run-img run-img-bios run-img-usb debug limine-setup ovmf-setup iso img nvme-disk nvme-gpt-disk nvme-raw-disk
 
 all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
@@ -635,7 +648,7 @@ $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench lockstat chmod chown id shutdown reboot poweroff mkdir rm mv cp touch
-LOGIN_TOOLS := login whoami sudo
+LOGIN_TOOLS := login whoami sudo recovery
 LOGIN_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(LOGIN_TOOLS)))
 
 ifeq ($(LOGIN_TEST),1)
@@ -1674,3 +1687,21 @@ $(BUILD_DIR)/perm_phase4_user.elf: tests/perm_phase4_user.c user/entry_security.
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/perm_phase4_user_start.o $(BUILD_DIR)/perm_phase4_user.o $(BUILD_DIR)/tool-common.o -o $@
 
 $(USER_SH_BUILTIN_ELF): user/entry_security.h
+
+# Phase 0 only: fresh regular-file NVMe fixtures and firmware-loader evidence.
+.PHONY: test-root-phase0
+test-root-phase0: $(KERNEL_ELF) $(INITRAMFS_TAR)
+	@python3 scripts/test_root_phase0.py
+
+ifeq ($(ROOT_PHASE1_TEST),1)
+CFLAGS += -DTEST_ROOT_PHASE1
+endif
+ifeq ($(ROOT_PHASE2_TEST),1)
+CFLAGS += -DTEST_ROOT_PHASE2
+endif
+
+.PHONY: test-root-phase1-host test-root-phase1
+test-root-phase1-host: $(KERNEL_ELF) $(INITRAMFS_TAR)
+	@python3 scripts/test_root_phase1.py --host-only
+test-root-phase1: $(KERNEL_ELF) $(INITRAMFS_TAR)
+	@python3 scripts/test_root_phase1.py

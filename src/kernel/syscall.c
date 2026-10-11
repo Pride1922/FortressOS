@@ -28,6 +28,7 @@ static bool syscall_actor(creds_t *out);
 #include "heap.h"
 #include "elf.h"
 #include "usb_mount.h"
+#include "installed_root.h"
 #include "xhci.h"
 #include "dmesg.h"
 #include "terminal.h"
@@ -1039,10 +1040,12 @@ static int64_t sys_reboot(uint64_t cmd) {
     if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
     if (permission_capability(&actor,CAP_SYS_BOOT)) return SYSCALL_EPERM;
     if (cmd == REBOOT_CMD_RESTART) {
-        if (!usb_mount_freeze_and_sync()) return SYSCALL_EIO;
+        int r=storage_freeze_all();if (r) return syscall_from_vfs_error(r);
+        if (!installed_root_quiesce()) return SYSCALL_EIO;
         power_reboot();
     } else if (cmd == REBOOT_CMD_POWEROFF) {
-        if (!usb_mount_freeze_and_sync()) return SYSCALL_EIO;
+        int r=storage_freeze_all();if (r) return syscall_from_vfs_error(r);
+        if (!installed_root_quiesce()) return SYSCALL_EIO;
         power_shutdown();
     }
     return SYSCALL_EINVAL;
@@ -1177,14 +1180,14 @@ static int64_t sys_getcwd(uintptr_t user_buf, uint64_t size) {
 static int64_t sys_sync(void) {
     /* Flush the writable /mnt device via the durability barrier.
      * Returns SYSCALL_SUCCESS (0) on success; SYSCALL_EIO on failure or no RW mount. */
-    bool ok = usb_mount_sync();
+    int sync_result = storage_sync_all();
     usb_report_io_profile();
     char ext4_profile[2048];
     size_t profile_len=ext4_io_profile_format(ext4_profile,sizeof(ext4_profile));
     dmesg_append_str(ext4_profile,profile_len);
-    if (!ok) {
+    if (sync_result) {
         usb_report_flush_failure();
-        return SYSCALL_EIO;
+        return syscall_from_vfs_error(sync_result);
     }
     return SYSCALL_SUCCESS;
 }

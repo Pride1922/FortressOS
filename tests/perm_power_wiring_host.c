@@ -15,7 +15,8 @@ void permission_capability_test(const creds_t *actor, uint64_t cap) {
 void permission_signal_test(const creds_t *actor,const creds_t *target,unsigned sig) {
     (void)actor; (void)target; (void)sig;
 }
-bool usb_mount_freeze_and_sync(void) { assert(capability_calls == 1); sync_calls++; return sync_ok; }
+int storage_freeze_all(void) { assert(capability_calls == 1); sync_calls++; return sync_ok ? 0 : -VFS_EIO; }
+bool installed_root_quiesce(void) {assert(sync_calls==1 && sync_ok);return true;}
 void power_reboot(void) { assert(sync_calls == 1); power_calls++; longjmp(power_return,1); }
 void power_shutdown(void) { assert(sync_calls == 1); power_calls++; longjmp(power_return,1); }
 int main(void) {

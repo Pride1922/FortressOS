@@ -14,6 +14,43 @@
 #endif
 
 static vfs_node_t *g_vfs_root = NULL;
+static vfs_node_t *g_bootstrap_root;
+static vfs_node_t *g_boot_volatile[3];
+static bool g_root_published, g_namespace_sealed, g_root_preparing;
+
+static vfs_node_t *boot_route(vfs_node_t *dir,const char *name) {
+    if (!g_root_published || dir!=g_vfs_root) return NULL;
+    for (unsigned i=0;i<3;i++)
+        if (g_boot_volatile[i] && !strcmp(name,g_boot_volatile[i]->name)) return g_boot_volatile[i];
+    return NULL;
+}
+void vfs_boot_seal_namespace(void) { __atomic_store_n(&g_namespace_sealed,true,__ATOMIC_RELEASE); }
+bool vfs_boot_root_available(void) {
+    return g_vfs_root && !__atomic_load_n(&g_namespace_sealed,__ATOMIC_ACQUIRE) && !g_root_published && !g_root_preparing;
+}
+int vfs_boot_begin_root_preparation(void) {
+    if (!vfs_boot_root_available()) return -VFS_EPERM;
+    g_root_preparing=true;return 0;
+}
+void vfs_boot_cancel_root_preparation(void) { g_root_preparing=false; }
+bool vfs_boot_namespace_ready(void) { return !g_root_preparing; }
+int vfs_boot_publish_root(vfs_node_t *root) {
+    if (__atomic_load_n(&g_namespace_sealed,__ATOMIC_ACQUIRE) || g_root_published) return -VFS_EPERM;
+    if (!root || root==g_vfs_root || root->type!=VFS_DIRECTORY ||
+        strcmp(root->path,"/") || root->parent || !g_vfs_root) return -VFS_EINVAL;
+    const char *names[]={"dev","run","tmp"};
+    vfs_node_t *mounts[3]={0};
+    for (unsigned i=0;i<3;i++) {
+        for (vfs_node_t *n=g_vfs_root->children;n;n=n->next)
+            if (!strcmp(n->name,names[i])) mounts[i]=n;
+        if (!mounts[i]) return -VFS_ENOENT;
+    }
+    int r=root->get ? root->get(root) : 0;if (r) return r;
+    g_bootstrap_root=g_vfs_root;
+    for (unsigned i=0;i<3;i++) { g_boot_volatile[i]=mounts[i];mounts[i]->parent=root; }
+    g_vfs_root=root;g_root_published=true;g_root_preparing=false;return 0;
+}
+
 
 static int64_t terminal_read(vfs_node_t *node, uint64_t offset, void *buf, size_t count) {
     (void)node; (void)offset;
@@ -113,6 +150,8 @@ void vfs_init(void) {
     g_vfs_root->mode=VFS_S_IFDIR|0755;
     g_vfs_root->mnt_flags=VFS_MNT_RDONLY;
 
+    g_bootstrap_root=g_vfs_root;g_root_published=false;g_namespace_sealed=false;g_root_preparing=false;
+    memset(g_boot_volatile,0,sizeof(g_boot_volatile));
     runfs_init(g_vfs_root);
     devfs_init(g_vfs_root,&g_terminal_node,&g_null_node);
 
@@ -212,6 +251,8 @@ vfs_node_t *vfs_lookup(const char *path) {
         if (*p == '/') p++;
 
         if (curr->type != VFS_DIRECTORY) return NULL;
+        vfs_node_t *routed=boot_route(curr,comp);
+        if (routed) { curr=routed;continue; }
         if (curr->lookup) {
             curr = curr->lookup(curr, comp);
             if (!curr) return NULL;
@@ -243,15 +284,16 @@ void vfs_node_put(vfs_node_t *node) {
     if (node && node->put) node->put(node);
 }
 
-static vfs_node_t *lookup_common(const char *path, const creds_t *actor, int *err_out) {
+static vfs_node_t *lookup_namespace(vfs_node_t *root,const char *path, const creds_t *actor, int *err_out) {
     int error = -VFS_EINVAL;
     vfs_node_t *curr = NULL;
-    if (!g_vfs_root || !path || strlen(path) >= VFS_MAX_PATH) goto done;
+    if (!root || !path || strlen(path) >= VFS_MAX_PATH) goto done;
     char norm[VFS_MAX_PATH];
     /* Preserve dot components and terminal slash until each is admitted. */
     if (vfs_join_path("/",path,norm,sizeof(norm))) goto done;
-    curr = g_vfs_root;
-    if (curr != g_vfs_root || !strcmp(norm, "/")) { error = 0; goto done; }
+    curr = root;
+    if (curr->get) { error=curr->get(curr);if (error) { curr=NULL;goto done; } }
+    if (!strcmp(norm, "/")) { error = 0; goto done; }
     const char *p = norm + 1;
     while (*p) {
         while (*p=='/') p++;
@@ -268,7 +310,10 @@ static vfs_node_t *lookup_common(const char *path, const creds_t *actor, int *er
         }
         vfs_node_t *next = NULL;
         error = -VFS_ENOENT;
-        if (actor && curr->lookup_actor) next=curr->lookup_actor(curr,component,actor,&error);
+        vfs_node_t *routed=boot_route(curr,component);
+        if (!strcmp(component,"..") && (curr==g_boot_volatile[0] || curr==g_boot_volatile[1] || curr==g_boot_volatile[2])) routed=root;
+        if (routed) { next=routed;error=next->get ? next->get(next) : 0;if (error) next=NULL; }
+        else if (actor && curr->lookup_actor) next=curr->lookup_actor(curr,component,actor,&error);
         else if (curr->lookup_ref) next = curr->lookup_ref(curr, component, &error);
         else {
             if (!strcmp(component,".")) next=curr;
@@ -424,6 +469,41 @@ int vfs_may_delete(const vfs_node_t *dir,const vfs_node_t *victim,const creds_t 
     (void)victim; /* Sticky/owner decision and authoritative adapters: Phase 2. */
     return vfs_permission(dir,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
 }
+static vfs_node_t *lookup_common(const char *p,const creds_t *a,int *e) {
+    return lookup_namespace(g_vfs_root,p,a,e);
+}
+vfs_node_t *vfs_lookup_at_creds(vfs_node_t *root,const char *p,const creds_t *a,int *e) {
+    return lookup_namespace(root,p,a,e);
+}
+vfs_node_t *vfs_bootstrap_lookup_creds(const char *p,const creds_t *a,int *e) {
+    return lookup_namespace(g_bootstrap_root ? g_bootstrap_root : g_vfs_root,p,a,e);
+}
+int vfs_exec_image(file_t *file,const creds_t *actor,vfs_metadata_t *out,void **bytes) {
+    if (!file || !actor || !out || !bytes) return -VFS_EINVAL;
+    *bytes=NULL;int r;
+    if (file->node->exec_snapshot) r=file->node->exec_snapshot(file->node,actor,out,bytes);
+    else {
+        r=vfs_metadata(file->node,out);if (r) return r;
+        /* Preserve existing external nosuid adapters. Trusted mutable executables
+         * require a filesystem-coherent snapshot before any credential decision. */
+        if (file->node->owns_nodes && !(out->mnt_flags & VFS_MNT_NOSUID)) return -VFS_EOPNOTSUPP;
+        r=vfs_permission(file->node,VFS_MAY_EXEC,actor);if (r) return r;
+        if (!out->size || out->size>VFS_MAX_EXEC_SIZE || (out->mode & VFS_S_IFMT)!=VFS_S_IFREG)
+            return out->size>VFS_MAX_EXEC_SIZE ? -VFS_EFBIG : -VFS_EINVAL;
+        void *copy=kmalloc(out->size);if (!copy) return -VFS_ENOMEM;
+        size_t done=0;file->offset=0;
+        while (done<out->size) {
+            int64_t n=vfs_read(file,(uint8_t *)copy+done,out->size-done);
+            if (n<=0 || (uint64_t)n>out->size-done) { kfree(copy);return n==-VFS_ENOMEM ? -VFS_ENOMEM : -VFS_EIO; }
+            done+=(size_t)n;
+        }
+        *bytes=copy;r=0;
+    }
+    if (r) { kfree(*bytes);*bytes=NULL;return r; }
+    if (!r && (!*bytes || !out->size || out->size>VFS_MAX_EXEC_SIZE ||
+        (out->mode & VFS_S_IFMT)!=VFS_S_IFREG)) { kfree(*bytes);*bytes=NULL;return -VFS_EINVAL; }
+    return r;
+}
 vfs_node_t *vfs_lookup_ref(const char *path,int *error) { return lookup_common(path,NULL,error); }
 vfs_node_t *vfs_lookup_creds(const char *path,const creds_t *actor,int *error) {
     if (!actor) { if (error) *error=-VFS_EINVAL;return NULL; }
@@ -568,6 +648,7 @@ static int unlink_common(const char *path,const creds_t *actor) {
     vfs_node_t *dir = lookup_common(dir_path, actor, &lookup_error);
     if (!dir) return lookup_error;
     if (dir->type != VFS_DIRECTORY) { vfs_node_put(dir);return -VFS_ENOTDIR; }
+    if (boot_route(dir,name)) { vfs_node_put(dir);return -VFS_EPERM; }
     if (actor && dir->unlink_actor) {
 #ifdef TEST_PERMISSIONS_INTERLEAVING
         vfs_admission_interleave_test(dir,2);
@@ -654,6 +735,9 @@ static int rename_common(const char *oldpath, const char *newpath,const creds_t 
     }
     if (old_dir->type!=VFS_DIRECTORY || new_dir->type!=VFS_DIRECTORY) {
         vfs_node_put(new_dir);vfs_node_put(old_dir);return -VFS_ENOTDIR;
+    }
+    if (boot_route(old_dir,old_name) || boot_route(new_dir,new_name)) {
+        vfs_node_put(new_dir);vfs_node_put(old_dir);return -VFS_EPERM;
     }
     if (actor && old_dir->rename_actor) {
 #ifdef TEST_PERMISSIONS_INTERLEAVING

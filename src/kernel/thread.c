@@ -18,6 +18,7 @@
 #include "resched_return.h"
 #include "resched_policy.h"
 
+_Static_assert(MAX_ELF_FILE_SIZE==VFS_MAX_EXEC_SIZE,"shared exec size bound");
 extern uint8_t kernel_stack_guard[];
 
 /* Called under the selected task's owning scheduler lock, before switching. */
@@ -1518,6 +1519,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
                                      int action_count, const spawn_kaction_t *actions,
                                      uint64_t scalar_arg, uint64_t reserved_pid, uint32_t spawn_flags, int64_t *error, const creds_t *actor, const creds_t *exec_creds, bool secure) {
     *error = SYSCALL_ENOMEM;
+    if (!vfs_boot_namespace_ready()) { *error=SYSCALL_EAGAIN;return NULL; }
     if (!elf_data || elf_size == 0) return NULL;
     if (target_cpu >= MAX_DETECTED_CPUS) target_cpu = cpu_current()->id;
 
@@ -1794,6 +1796,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         vmm_space_sub_sched_ref(p->cr3);
         *error=SYSCALL_EINVAL;goto fail_actions;
     }
+    vfs_boot_seal_namespace();
     process_record_attach_signals(p->tid, &p->signals);
     if (permissions_spawn_test && caller && caller->is_user) {
         if (memcmp(&p->creds,&inherited,sizeof(inherited)) || p->creds.cap_effective)
@@ -2087,39 +2090,12 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     }
     if (file->node->type != VFS_FILE) { result = SYSCALL_EISDIR; goto out; }
     vfs_metadata_t image_metadata;
-    err = vfs_metadata(file->node, &image_metadata);
-    if (err) { result = syscall_from_vfs_error(err); goto out; }
-    if ((image_metadata.mode & VFS_S_IFMT) != VFS_S_IFREG) {
-        result = SYSCALL_ENOEXEC; goto out;
-    }
-    size_t size = image_metadata.size;
-    if (!size) { result = SYSCALL_ENOEXEC; goto out; }
-    if (size > MAX_ELF_FILE_SIZE) { result = SYSCALL_EFBIG; goto out; }
-    const void *image = file->node->data;
-    if (file->node->exec_snapshot) {
-        err=file->node->exec_snapshot(file->node,&actor,&image_metadata,&buffer);
-        if (err) { result=syscall_from_vfs_error(err);goto out; }
-        size=image_metadata.size;image=buffer;
-    } else if (file->node->owns_nodes && !(image_metadata.mnt_flags & VFS_MNT_NOSUID)) {
-        /* Unknown mutable executable adapters need a coherent snapshot first. */
-        result=SYSCALL_EOPNOTSUPP;goto out;
-    }
+    err=vfs_exec_image(file,&actor,&image_metadata,&buffer);
+    if (err) { result=err==-VFS_EINVAL ? SYSCALL_ENOEXEC : syscall_from_vfs_error(err);goto out; }
+    size_t size=image_metadata.size;
+    const void *image=buffer;
     creds_t exec_creds;
     bool secure=spawn_credentials(&actor,&image_metadata,&exec_creds);
-    if (!image) {
-        buffer = kmalloc(size);
-        if (!buffer) goto out;
-        size_t read = 0;
-        while (read < size) {
-            int64_t n = vfs_read(file, (uint8_t *)buffer + read, size - read);
-            if (n <= 0 || (uint64_t)n > size - read) {
-                result = n == -VFS_ENOMEM ? SYSCALL_ENOMEM : SYSCALL_EIO;
-                goto out;
-            }
-            read += (size_t)n;
-        }
-        image = buffer;
-    }
     size_t target_cpu = 0;
     int affinity = -1;
     if (argc >= 3 && argv && argv[1] && strcmp(argv[1], "--worker") == 0) {
@@ -2156,6 +2132,50 @@ out:
         else { profile->calls++; if (result) profile->failures++; }
     }
     return result;
+}
+
+/* Trusted BSP supervisor: explicit root authority, owned image, no user
+ * caller requirement. Caller keeps preemption disabled until terminal handoff. */
+static tcb_t *process_spawn_initial_namespace(const char *path,bool bootstrap,int argc,const char *const argv[]) {
+    tcb_t *caller=thread_current();
+    if (!caller || caller->is_user || cpu_current()->id || sched_is_preemption_enabled()) return NULL;
+    creds_t actor,exec;creds_init_root(&actor);
+    int error=0;file_t *file=NULL;
+    if (bootstrap) {
+        vfs_node_t *node=vfs_bootstrap_lookup_creds(path,&actor,&error);
+        if (!node) return NULL;
+        error=vfs_permission(node,VFS_MAY_EXEC,&actor);
+        if (!error) {
+            file=kcalloc(1,sizeof(*file));
+            if (file) {file->node=node;file->flags=VFS_O_RDONLY;file->ref_count=1;}
+        }
+        if (!file) {vfs_node_put(node);return NULL;}
+    } else file=vfs_open_exec_creds(path,&actor,&error);
+    if (!file) return NULL;
+    vfs_metadata_t metadata;void *bytes=NULL;
+    error=vfs_exec_image(file,&actor,&metadata,&bytes);
+    tcb_t *child=NULL;uint64_t pid=0;
+    if (!error) {
+        bool secure=spawn_credentials(&actor,&metadata,&exec);
+        pid=__atomic_fetch_add(&g_global_next_tid,1,__ATOMIC_RELAXED);
+        error=process_record_begin(pid,0,false,0,0);
+        if (!error) {
+            int64_t result;
+            child=process_spawn_internal(0,0,path,bytes,metadata.size,
+                argc,argv,0,NULL,"/",0,NULL,0,pid,0,&result,&actor,&exec,secure);
+            if (!child) { g_last_aborted_pid=pid;process_record_abort(pid); }
+        }
+    }
+    kfree(bytes);vfs_close(file);return child;
+}
+tcb_t *process_spawn_initial_vfs(const char *path) {
+    return process_spawn_initial_namespace(path,false,0,NULL);
+}
+tcb_t *process_spawn_initial_vfs_args(const char *path,int argc,const char *const argv[]) {
+    return process_spawn_initial_namespace(path,false,argc,argv);
+}
+tcb_t *process_spawn_initial_bootstrap(const char *path,int argc,const char *const argv[]) {
+    return process_spawn_initial_namespace(path,true,argc,argv);
 }
 
 static bool child_changed(void *arg) {

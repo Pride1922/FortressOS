@@ -18,6 +18,10 @@ and are not proof that every current revision has passed every test — check
 
 ## Phase files
 
+Persistent root / NVMe installer: [Phase 0 contracts and disposable fixture evidence](persistent-root-phase0.md).
+Executable and boot-only namespace plumbing: [Phase 1 acceptance evidence](persistent-root-phase1.md).
+Installed boot, authenticated recovery and shutdown: [Phase 2 acceptance evidence](persistent-root-phase2.md).
+
 Latest SMP environment evidence: [Dell benchmark results and decision](smpbench-dell-results.md).
 Next measurement build: [spawn and pipe writer startup diagnostics](smpbench-spawn-profile.md).
 Physical subphase findings: [Dell spawn and pipe startup results](smpbench-spawn-dell-results.md).

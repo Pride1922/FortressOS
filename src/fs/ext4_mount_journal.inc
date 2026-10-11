@@ -35,10 +35,10 @@ static void e4_mount_stage(const char **stage,const char *name) {
     if (stage) *stage=name;
 }
 static int e4_mount_journal_admitted(block_dev_t *dev,const char *path,
-    bool admitted,ext4_mount_t **out,const char **stage) {
+    bool admitted,ext4_mount_t **out,const char **stage,bool detached) {
     e4_mount_stage(stage,"arguments");
     spin_debug_assert_unheld();if (out) *out=NULL;
-    if (!out || !dev || !path || strcmp(path,"/mnt") || !dev->read_sector ||
+    if (!out || !dev || !path || (detached ? strcmp(path,"/") : strcmp(path,"/mnt")) || !dev->read_sector ||
         (dev->sector_size!=512 && dev->sector_size!=4096) || !dev->sector_count ||
         dev->sector_count>UINT32_MAX || dev->sector_count>UINT64_MAX/dev->sector_size) return -VFS_EINVAL;
     e4_mount_stage(stage,"writable-admission");
@@ -46,7 +46,7 @@ static int e4_mount_journal_admitted(block_dev_t *dev,const char *path,
         !dev->write_sector || !dev->flush) return -VFS_EROFS;
     e4_mount_stage(stage,"exclusive-mount");
     uint64_t flags=spin_lock_irqsave(&e4_lock);vfs_node_t *parent=vfs_lookup_kernel("/");
-    int r=!parent ? -VFS_EINVAL : e4_active || e4_engine_busy || vfs_lookup_kernel(path) ? -VFS_EEXIST : 0;
+    int r=!parent ? -VFS_EINVAL : e4_active || e4_engine_busy || (!detached && vfs_lookup_kernel(path)) ? -VFS_EEXIST : 0;
     if (!r) e4_engine_busy=true;
     spin_unlock_irqrestore(&e4_lock,flags);if (r) return r;
     e4_mount_stage(stage,"workspace-allocation");
@@ -89,6 +89,12 @@ static int e4_mount_journal_admitted(block_dev_t *dev,const char *path,
     e4_inode_t root;
     e4_mount_stage(stage,"root-inode");
     r=e4_inode(fs,2,&root);if (r) goto fail;
+    if (detached) {
+        fs->detached=true;fs->trusted_root=true;
+        memcpy(node->node.name,"/",2);memcpy(node->node.path,"/",2);e4_setup(node,&root);
+        fs->cached[fs->nodes++]=node;*out=fs;
+        e4_mount_stage(stage,"prepared");return 0;
+    }
     e4_mount_stage(stage,"publication");
     flags=spin_lock_irqsave(&e4_lock);
     if (e4_active || vfs_lookup_kernel(path)) { r=-VFS_EEXIST;spin_unlock_irqrestore(&e4_lock,flags);goto fail; }
@@ -102,12 +108,12 @@ fail:
     flags=spin_lock_irqsave(&e4_lock);e4_engine_busy=false;spin_unlock_irqrestore(&e4_lock,flags);return r;
 }
 int ext4_mount_journal_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
-    return e4_mount_journal_admitted(dev,path,true,out,NULL);
+    return e4_mount_journal_admitted(dev,path,true,out,NULL,false);
 }
 int ext4_mount_journal_fixture_diagnose(block_dev_t *dev,const char *path,
     ext4_journal_admission_t admission,ext4_mount_t **out,const char **stage) {
     return e4_mount_journal_admitted(dev,path,
-        admission.disposable_fixture && admission.writable && admission.recovery,out,stage);
+        admission.disposable_fixture && admission.writable && admission.recovery,out,stage,false);
 }
 int ext4_mount_journal_fixture(block_dev_t *dev,const char *path,
                                ext4_journal_admission_t admission,ext4_mount_t **out) {
@@ -190,7 +196,7 @@ static vfs_node_t *e4_jcreate_common(vfs_node_t *parent,const char *name,vfs_nod
     }
     if (!r) {
         e4_setup(node,&in);node->refs=owned ? 1 : 0;node->legacy=!owned;memcpy(node->node.name,name,strlen(name)+1);
-        size_t length=strlen(parent->path);memcpy(node->node.path,parent->path,length);node->node.path[length]='/';
+        size_t length=!strcmp(parent->path,"/") ? 0 : strlen(parent->path);memcpy(node->node.path,parent->path,length);node->node.path[length]='/';
         memcpy(node->node.path+length+1,name,strlen(name)+1);node->node.parent=parent;
         node->node.next=parent->children;parent->children=&node->node;fs->cached[fs->nodes++]=node;
     }
@@ -214,6 +220,7 @@ static int e4_junlink_common(vfs_node_t *parent,const char *name,bool require_di
     if (!r) { r=e4_journal_refresh(parent);if (!r) r=e4_scan(parent->fs_private,name,0,NULL,&ino); }
     if (r>=0 && !ino) r=-VFS_ENOENT;
     if (r>=0) r=e4_inode(fs,ino,&in);
+    if (!r && e4_account_inode(fs,ino)) r=-VFS_EROFS;
     if (!r && require_directory && in.mode!=VFS_S_IFDIR) r=-VFS_ENOTDIR;
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
     if (!r && actor) {
@@ -255,6 +262,8 @@ static int e4_jrename_common(vfs_node_t *old,const char *name,vfs_node_t *dest,c
     if (!r && strlen(dest->path)+strlen(next)+1>=VFS_MAX_PATH) r=-VFS_EFBIG;
     uint32_t source=0;e4_inode_t in;
     if (!r) {r=e4_journal_refresh(old);if (!r) r=e4_scan(old->fs_private,name,0,NULL,&source);if (r>=0) r=source ? e4_inode(fs,source,&in) : -VFS_ENOENT;}
+    if (!r && e4_account_inode(fs,source)) r=-VFS_EROFS;
+    uint32_t victim=0;bool victim_scanned=false;
     if (!r && require_directory && in.mode!=VFS_S_IFDIR) r=-VFS_ENOTDIR;
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
     if (!r && actor) {
@@ -264,8 +273,7 @@ static int e4_jrename_common(vfs_node_t *old,const char *name,vfs_node_t *dest,c
             vfs_metadata_t d=e4_value(old->fs_private),v=e4_value(&in);
             r=permission_delete_value(&d,&v,actor);
         }
-        uint32_t victim=0;
-        if (!r) { r=e4_scan(dest->fs_private,next,0,NULL,&victim);if (r>=0) r=0; }
+        if (!r) {r=e4_scan(dest->fs_private,next,0,NULL,&victim);if (r>=0) r=0;victim_scanned=true;}
         if (!r && victim) {
             e4_inode_t target;r=e4_inode(fs,victim,&target);
             if (!r) {vfs_metadata_t d=e4_value(dest->fs_private),v=e4_value(&target);r=permission_delete_value(&d,&v,actor);}
@@ -274,6 +282,8 @@ static int e4_jrename_common(vfs_node_t *old,const char *name,vfs_node_t *dest,c
 #else
     (void)actor;
 #endif
+    if (!r && !victim_scanned) {r=e4_scan(dest->fs_private,next,0,NULL,&victim);if (r>=0) r=0;}
+    if (!r && victim && e4_account_inode(fs,victim)) r=-VFS_EROFS;
     if (!r && old==dest && !strcmp(name,next)) goto done;
     if (!r) r=ext4_engine_namespace_rename(fs->engine,((e4_inode_t *)old->fs_private)->ino,name,
                                          ((e4_inode_t *)dest->fs_private)->ino,next);
@@ -295,7 +305,7 @@ static int e4_jrename(vfs_node_t *old,const char *name,vfs_node_t *dest,const ch
 }
 static int e4_journal_drain(ext4_mount_t *fs,bool finish) {
     spin_debug_assert_held(&e4_lock);ext4_engine_t *e=fs->engine;
-    if (e->tainted) return -VFS_EIO;
+    if (e->tainted || fs->quiesced) return -VFS_EIO;
     if (e->ready || jbd2_writer_state(e->writer)!=JBD2_WRITE_IDLE) return -VFS_EAGAIN;
     if (!e->dirty) return block_flush(fs->dev) ? 0 : (e4_jtaint(fs),-VFS_EIO);
     int r=ext4_engine_orphan_recover(e);if (r) return r;
@@ -314,4 +324,57 @@ int ext4_freeze_journal_fixture(void) {
     spin_debug_assert_unheld();uint64_t flags=spin_lock_irqsave(&e4_lock);
     ext4_mount_t *fs=e4_active && e4_active->journal_mounted ? e4_active : NULL;
     spin_unlock_irqrestore(&e4_lock,flags);return fs ? ext4_freeze_and_sync(fs) : 0;
+}
+
+int ext4_prepare_root(block_dev_t *dev,bool admitted,ext4_mount_t **out) {
+    return ext4_prepare_root_diagnose(dev,admitted,out,NULL);
+}
+int ext4_prepare_root_diagnose(block_dev_t *dev,bool admitted,ext4_mount_t **out,const char **stage) {
+    int r=vfs_boot_begin_root_preparation();
+    if (r) { if (out) *out=NULL;return r; }
+    r=e4_mount_journal_admitted(dev,"/",admitted,out,stage,true);
+    if (r) vfs_boot_cancel_root_preparation();
+    return r;
+}
+int ext4_root_lock_accounts(ext4_mount_t *fs,vfs_node_t *nodes[4]) {
+    if (!fs || !fs->detached || !nodes) return -VFS_EINVAL;
+    uint64_t flags=spin_lock_irqsave(&e4_lock);int r=0;
+    for (unsigned i=0;i<4;i++)
+        if (!nodes[i] || !nodes[i]->fs_private || ((e4_inode_t *)nodes[i]->fs_private)->fs!=fs) r=-VFS_EINVAL;
+    if (!r) for (unsigned i=0;i<4;i++) fs->account_inodes[i]=((e4_inode_t *)nodes[i]->fs_private)->ino;
+    spin_unlock_irqrestore(&e4_lock,flags);return r;
+}
+int ext4_sync_installed_root(bool *handled) {
+    spin_debug_assert_unheld();uint64_t flags=spin_lock_irqsave(&e4_lock);
+    ext4_mount_t *fs=e4_active && e4_active->trusted_root ? e4_active : NULL;
+    spin_unlock_irqrestore(&e4_lock,flags);*handled=fs!=NULL;return fs ? ext4_sync(fs) : 0;
+}
+int ext4_freeze_installed_root(bool *handled) {
+    spin_debug_assert_unheld();uint64_t flags=spin_lock_irqsave(&e4_lock);
+    ext4_mount_t *fs=e4_active && e4_active->trusted_root ? e4_active : NULL;
+    spin_unlock_irqrestore(&e4_lock,flags);*handled=fs!=NULL;return fs ? ext4_freeze_and_sync(fs) : 0;
+}
+int ext4_quiesce_installed_root(bool (*stop)(void)) {
+    spin_debug_assert_unheld();uint64_t flags=spin_lock_irqsave(&e4_lock);
+    ext4_mount_t *fs=e4_active && e4_active->trusted_root ? e4_active : NULL;
+    int r=!fs || !stop ? -VFS_EINVAL : fs->engine->tainted ? -VFS_EIO :
+        !fs->frozen || fs->engine->dirty ? -VFS_EAGAIN : 0;
+    if (!r) {fs->quiesced=true;if (!stop()) {e4_jtaint(fs);r=-VFS_EIO;}}
+    spin_unlock_irqrestore(&e4_lock,flags);return r;
+}
+vfs_node_t *ext4_prepared_root(ext4_mount_t *fs) {
+    return fs && fs->detached && fs->nodes ? &fs->cached[0]->node : NULL;
+}
+int ext4_publish_root(ext4_mount_t *fs) {
+    if (!fs || !fs->detached || e4_active) return -VFS_EINVAL;
+    int r=vfs_boot_publish_root(&fs->cached[0]->node);
+    if (r) return r;
+    fs->detached=false;e4_active=fs;e4_engine_busy=false;return 0;
+}
+int ext4_discard_prepared_root(ext4_mount_t *fs) {
+    if (!fs || !fs->detached) return -VFS_EINVAL;
+    for (unsigned i=0;i<fs->nodes;i++)
+        if (fs->cached[i]->refs || fs->cached[i]->opens || fs->cached[i]->legacy) return -VFS_EAGAIN;
+    fs->journal_mounted=false;e4_engine_dispose(fs->engine);e4_engine_busy=false;
+    vfs_boot_cancel_root_preparation();return 0;
 }

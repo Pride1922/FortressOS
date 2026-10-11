@@ -131,6 +131,11 @@ int ext4_sync(ext4_mount_t *fs) {assert(fs);s_e4_sync++;return s_e4_sync_result;
 int ext4_freeze_and_sync(ext4_mount_t *fs) {assert(fs);s_e4_freeze++;return s_e4_freeze_result;}
 int ext4_sync_journal_fixture(void) {return -VFS_EROFS;}
 int ext4_freeze_journal_fixture(void) {return 0;}
+static bool s_installed_root;
+static int s_root_sync_error,s_root_freeze_error;
+static unsigned s_root_sync_calls,s_root_freeze_calls;
+int ext4_sync_installed_root(bool *handled) {*handled=s_installed_root;if (s_installed_root) s_root_sync_calls++;return s_root_sync_error;}
+int ext4_freeze_installed_root(bool *handled) {*handled=s_installed_root;if (s_installed_root) s_root_freeze_calls++;return s_root_freeze_error;}
 static bool s_e2_sync_result=true;
 bool ext2_sync_all(void) {return s_e2_sync_result;}
 
@@ -540,6 +545,18 @@ static void test_partition_runs(void) {
     }
     run_ok=true;printf("  [PASS] 512/4096 GPT run bounds/translation, RO exclusion and no failed-write replay\n");
 }
+static void test_global_storage_dispatch(void) {
+    s_mounted_rw_dev=NULL;s_ext4_mount=NULL;s_installed_root=false;
+    assert(storage_sync_all()==-VFS_EROFS);
+    s_installed_root=true;s_root_sync_calls=s_root_freeze_calls=0;
+    assert(!storage_sync_all() && s_root_sync_calls==1);
+    s_root_sync_error=-VFS_EIO;assert(storage_sync_all()==-VFS_EIO && s_root_sync_calls==2);s_root_sync_error=0;
+    assert(!storage_freeze_all() && s_root_freeze_calls==1);
+    s_root_freeze_error=-VFS_EAGAIN;assert(storage_freeze_all()==-VFS_EAGAIN);s_root_freeze_error=0;
+    s_e2_sync_result=false;assert(storage_freeze_all()==-VFS_EIO);s_e2_sync_result=true;
+    s_installed_root=false;
+    printf("  [PASS] global root sync/freeze, readonly/taint/retry results and external freeze failure\n");
+}
 int main(void) {
     test_guid_conversions();
     test_cmdline_parsing();
@@ -547,6 +564,7 @@ int main(void) {
     test_usb_mount_sync();
     test_ext4_dispatch();
     test_partition_runs();
+    test_global_storage_dispatch();
     printf("[ALL PASS] Phase 9G.4 host unit tests passed successfully!\n");
     return 0;
 }

@@ -219,6 +219,10 @@ int64_t process_setpgid(uint64_t pid, uint64_t pgid);
 int64_t process_getpgrp(void);
 int64_t process_group_release(uint64_t pgid, uint32_t action);
 bool process_wait_child(uint64_t pid, uint64_t *out_exit_code);
+tcb_t *process_spawn_initial_vfs(const char *path);
+tcb_t *process_spawn_initial_vfs_args(const char *path,int argc,const char *const argv[]);
+tcb_t *process_spawn_initial_bootstrap(const char *path,int argc,const char *const argv[]);
+
 tcb_t *process_spawn(const char *name, const void *elf_data, size_t elf_size);
 tcb_t *process_spawn_with_arg(const char *name, const void *elf_data, size_t elf_size, uint64_t arg);
 tcb_t *process_spawn_on_cpu(size_t target_cpu, const char *name, const void *elf_data, size_t elf_size, uint64_t arg);

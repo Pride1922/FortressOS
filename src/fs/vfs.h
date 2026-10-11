@@ -4,6 +4,8 @@
 #include "types.h"
 #include "creds.h"
 
+#define VFS_MAX_EXEC_SIZE (4ULL * 1024 * 1024)
+
 #define VFS_MAX_PATH     256
 #define VFS_MAX_NAME     64
 #define MAX_PROCESS_FDS  32
@@ -139,6 +141,20 @@ typedef struct {
 } vfs_dirent_t;
 
 void        vfs_init(void);
+/* Boot supervisor only, before any user publication. Root and bootstrap backing
+ * are pinned for boot lifetime. Publication is one-way; seal forbids late pivots. */
+int vfs_boot_publish_root(vfs_node_t *root);
+void vfs_boot_seal_namespace(void);
+bool vfs_boot_root_available(void);
+int vfs_boot_begin_root_preparation(void);
+void vfs_boot_cancel_root_preparation(void);
+bool vfs_boot_namespace_ready(void);
+/* Explicit borrowed namespace root; result is owned. Boot validation/recovery only. */
+vfs_node_t *vfs_lookup_at_creds(vfs_node_t *,const char *,const creds_t *,int *);
+vfs_node_t *vfs_bootstrap_lookup_creds(const char *,const creds_t *,int *);
+/* Owned bytes, also for immutable boot files. Pair success with kfree. */
+int vfs_exec_image(file_t *,const creds_t *,vfs_metadata_t *,void **);
+
 vfs_node_t *vfs_lookup(const char *path);
 /* Owned reference, including errors from filesystem lookup. Pair success with
  * vfs_node_put. Non-managed filesystems retain their existing stable lifetime. */

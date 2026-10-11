@@ -20,6 +20,8 @@ static uintptr_t g_mmio_virt    = 0;
 
 static uint8_t  g_dstrd         = 0;
 static uint32_t g_active_nsid   = 1;
+static bool g_unique_namespace;
+static bool g_root_geometry;
 static uint64_t g_sector_count  = 0;
 static uint32_t g_sector_size   = 512;
 
@@ -501,11 +503,15 @@ bool nvme_init(void) {
     cmd.prp1   = g_dma_buf_phys;
     cmd.cdw10  = NVME_IDENTIFY_CNS_ACTIVE_NS;
 
+    g_unique_namespace=false;
     if (!nvme_submit_admin_cmd(&cmd, NULL)) {
         serial_puts("[WARN] Active Namespace List query unsupported, assuming NSID 1\n");
         g_active_nsid = 1;
     } else {
         uint32_t *active_list = (uint32_t *)g_dma_buf_virt;
+        g_unique_namespace=active_list[0]!=0;
+        for (unsigned i=1;i<PAGE_SIZE/sizeof(uint32_t);i++)
+            if (active_list[i]) g_unique_namespace=false;
         if (active_list[0] != 0) {
             g_active_nsid = active_list[0];
         } else {
@@ -534,6 +540,12 @@ bool nvme_init(void) {
     g_sector_count = id_ns->nsze;
     uint8_t flbas_idx = id_ns->flbas & 0x0F;
 
+    if (flbas_idx>id_ns->nlbaf || (id_ns->flbas & 0xf0) ||
+        (id_ns->lbaf[flbas_idx].lbads!=9 && id_ns->lbaf[flbas_idx].lbads!=12)) {
+        serial_puts("[FAIL] Namespace uses unsupported LBA geometry!\n");
+        nvme_quiesce();return false;
+    }
+
     if (g_sector_count == 0) {
         serial_puts("[FAIL] Active Namespace reports 0 capacity!\n");
         nvme_quiesce();
@@ -552,7 +564,9 @@ bool nvme_init(void) {
         return false;
     }
 
-    g_sector_size = 1 << id_ns->lbaf[flbas_idx].lbads;
+    g_sector_size = 1u << id_ns->lbaf[flbas_idx].lbads;
+    if (g_sector_count>UINT64_MAX/g_sector_size) {nvme_quiesce();return false;}
+    g_root_geometry=g_sector_size==512 && id_ns->ncap==id_ns->nsze && !(id_ns->nsfeat & 1);
 
     serial_puts("[NVMe] Namespace Geometry:\n");
     serial_puts("       - Total Sectors (NSZE): ");
@@ -607,6 +621,8 @@ bool nvme_is_initialized(void) {
 uint32_t nvme_get_active_nsid(void) {
     return g_active_nsid;
 }
+bool nvme_has_unique_namespace(void) { return g_initialized && g_unique_namespace; }
+bool nvme_root_geometry_supported(void) {return g_initialized && g_root_geometry;}
 
 uint64_t nvme_get_sector_count(void) {
     return g_sector_count;

@@ -5,7 +5,8 @@
 #undef main
 static jmp_buf power_return;
 static unsigned sync_calls,power_calls;
-bool usb_mount_freeze_and_sync(void) {sync_calls++;return true;}
+int storage_freeze_all(void) {sync_calls++;return 0;}
+bool installed_root_quiesce(void) {return true;}
 void power_reboot(void) {power_calls++;longjmp(power_return,1);}
 void power_shutdown(void) {power_calls++;longjmp(power_return,1);}
 int main(void) {

@@ -131,6 +131,10 @@ typedef struct {
 /* Public NVMe Driver API */
 bool     nvme_init(void);
 bool     nvme_is_initialized(void);
+/* True only after a successful complete active-list query with exactly one
+ * namespace; legacy NSID fallback never qualifies for installed admission. */
+bool     nvme_has_unique_namespace(void);
+bool     nvme_root_geometry_supported(void);
 uint32_t nvme_get_active_nsid(void);
 uint64_t nvme_get_sector_count(void);
 uint32_t nvme_get_sector_size(void);

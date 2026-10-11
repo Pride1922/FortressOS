@@ -3,7 +3,7 @@
 static vfs_metadata_t e4_value(const e4_inode_t *in) {
     return (vfs_metadata_t){.size=in->size,.mode=in->full_mode,.uid=in->uid,.gid=in->gid,
         .type=in->mode==VFS_S_IFDIR ? VFS_DIRECTORY : VFS_FILE,
-        .mnt_flags=(in->fs->engine ? 0 : VFS_MNT_RDONLY)|VFS_MNT_NOSUID|VFS_MNT_NODEV};
+        .mnt_flags=(in->fs->engine && !in->fs->frozen && !e4_account_inode(in->fs,in->ino) ? 0 : VFS_MNT_RDONLY)|(in->fs->trusted_root ? 0 : VFS_MNT_NOSUID)|VFS_MNT_NODEV};
 }
 static int e4_access_locked(vfs_node_t *node,unsigned mask,const creds_t *actor) {
     e4_node_t *n=(e4_node_t *)node;e4_inode_t in;int r=0;
@@ -102,4 +102,43 @@ static int64_t e4_write_actor(vfs_node_t *node,uint64_t *offset,bool append,
         if (result>=0 && e4_journal_refresh(node)) {e4_jtaint(fs);result=-VFS_EIO;}
     }
     spin_unlock_irqrestore(&e4_lock,irq);return result;
+}
+
+#ifdef TEST_ROOT_PHASE1
+/* Explicit disposable guest adapters only: allocation failure and zero/short
+ * image read. They exercise unwind paths, never claim hardware error injection. */
+static unsigned e4_snapshot_test_fault;
+void ext4_test_snapshot_fault(unsigned fault) { e4_snapshot_test_fault=fault; }
+#endif
+
+/* Bytes and authoritative EXEC/set-ID metadata are captured under one exclusion.
+ * The loader never runs here; it consumes/frees this bounded copy afterward. */
+static int e4_exec_snapshot(vfs_node_t *node,const creds_t *actor,vfs_metadata_t *out,void **bytes) {
+    if (!node || !actor || !out || !bytes) return -VFS_EINVAL;
+    *bytes=NULL;
+    uint64_t irq=spin_lock_irqsave(&e4_lock);
+    int r=e4_access_locked(node,VFS_MAY_EXEC,actor);
+    e4_inode_t *in=node->fs_private;void *copy=NULL;
+    if (!r && (in->mode!=VFS_S_IFREG || !in->size)) r=-VFS_EINVAL;
+    if (!r && in->size>VFS_MAX_EXEC_SIZE) r=-VFS_EFBIG;
+    if (!r) {
+#ifdef TEST_ROOT_PHASE1
+        copy=e4_snapshot_test_fault==1 ? NULL : kmalloc(in->size);
+#else
+        copy=kmalloc(in->size);
+#endif
+        if (!copy) r=-VFS_ENOMEM;
+    }
+    size_t done=0;
+    while (!r && done<in->size) {
+        int64_t n=e4_read_locked(node,done,(uint8_t *)copy+done,in->size-done);
+#ifdef TEST_ROOT_PHASE1
+        if (e4_snapshot_test_fault==2) n=done ? 0 : (n>1 ? 1 : 0);
+#endif
+        if (n<=0 || (uint64_t)n>in->size-done) r=n==-VFS_ENOMEM ? -VFS_ENOMEM : -VFS_EIO;
+        else done+=(size_t)n;
+    }
+    if (!r) { *out=e4_value(in);*bytes=copy; }
+    else kfree(copy);
+    spin_unlock_irqrestore(&e4_lock,irq);return r;
 }

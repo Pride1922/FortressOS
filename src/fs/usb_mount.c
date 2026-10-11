@@ -263,14 +263,26 @@ bool usb_mount_sync(void) {
      * barrier WITHOUT marking the filesystem clean or freezing writes.
      * This is explicitly distinct from ext2_sync_all() (shutdown-only clean close).
      * Returns true if the barrier succeeded; false on any error. */
-    if (!s_mounted_rw_dev) return ext4_sync_journal_fixture()==0;
-    return s_ext4_mount ? ext4_sync(s_ext4_mount) == 0 : block_flush(s_mounted_rw_dev);
+    return storage_sync_all()==0;
+}
+int storage_sync_all(void) {
+    bool root=false;int r=ext4_sync_installed_root(&root);
+    int external=0;
+    if (s_mounted_rw_dev) external=s_ext4_mount ? ext4_sync(s_ext4_mount) :
+        block_flush(s_mounted_rw_dev) ? 0 : -VFS_EIO;
+    else if (!root) external=ext4_sync_journal_fixture();
+    return r ? r : external;
 }
 
 
 bool usb_mount_freeze_and_sync(void) {
     /* Call each filesystem separately: never nest rank-1 filesystem locks. */
-    bool ext4_ok = s_ext4_mount ? ext4_freeze_and_sync(s_ext4_mount)==0 : ext4_freeze_journal_fixture()==0;
-    bool ext2_ok = ext2_sync_all();
-    return ext4_ok && ext2_ok;
+    return storage_freeze_all()==0;
+}
+int storage_freeze_all(void) {
+    bool root=false;int r=ext4_freeze_installed_root(&root);
+    int external=s_ext4_mount ? ext4_freeze_and_sync(s_ext4_mount) :
+        root ? 0 : ext4_freeze_journal_fixture();
+    bool ext2_ok=ext2_sync_all();
+    return r ? r : external ? external : ext2_ok ? 0 : -VFS_EIO;
 }
