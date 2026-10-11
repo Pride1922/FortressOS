@@ -11,6 +11,7 @@
 #include "elf.h"
 #include "vfs.h"
 #include "syscall.h"
+#include "accounts.h"
 #include "apic.h"
 #include "smp.h"
 #include "signal_frame.h"
@@ -1699,6 +1700,10 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
                 p->fd_table[act->dst_fd] = f;
                 p->fd_flags[act->dst_fd] = 0;
             } else if (act->type == SPAWN_FD_ACTION_DUP2) {
+                if (parent_thread && act->src_fd>=0 && act->src_fd<MAX_PROCESS_FDS &&
+                    parent_thread->fd_table[act->src_fd] && parent_thread->fd_table[act->src_fd]->exclusive_owner) {
+                    *error=SYSCALL_EBADF;goto fail_actions;
+                }
                 if (act->src_fd < 0 || act->src_fd >= MAX_PROCESS_FDS ||
                     act->dst_fd < 0 || act->dst_fd >= MAX_PROCESS_FDS) {
                     *error = SYSCALL_EBADF;
@@ -2298,7 +2303,7 @@ void fd_clone_table(tcb_t *parent, tcb_t *child) {
         return;
     }
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
-        if (parent->fd_table[i]) {
+        if (parent->fd_table[i] && !parent->fd_table[i]->exclusive_owner) {
             child->fd_table[i] = parent->fd_table[i];
             __atomic_fetch_add(&child->fd_table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
             child->fd_flags[i] = parent->fd_flags[i];
@@ -2357,7 +2362,7 @@ int fd_dup2(tcb_t *proc, int oldfd, int newfd) {
     if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS || newfd < 0 || newfd >= MAX_PROCESS_FDS) {
         return SYSCALL_EBADF;
     }
-    if (!proc->fd_table[oldfd]) {
+    if (!proc->fd_table[oldfd] || proc->fd_table[oldfd]->exclusive_owner) {
         return SYSCALL_EBADF;
     }
     if (oldfd == newfd) {
@@ -2374,7 +2379,7 @@ int fd_dup2(tcb_t *proc, int oldfd, int newfd) {
 }
 
 int fd_dup(tcb_t *proc, int oldfd) {
-    if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS || !proc->fd_table[oldfd]) {
+    if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS || !proc->fd_table[oldfd] || proc->fd_table[oldfd]->exclusive_owner) {
         return SYSCALL_EBADF;
     }
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
@@ -2390,6 +2395,7 @@ int fd_dup(tcb_t *proc, int oldfd) {
 
 void fd_close_all(tcb_t *proc) {
     if (!proc) return;
+    accounts_process_exit(proc->tid);
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
         if (proc->fd_table[i]) {
             vfs_close(proc->fd_table[i]);

@@ -7,15 +7,16 @@ static int e4_rw_workspace(ext4_mount_t *fs) {
     fs->map_entries=0; fs->engine=e; fs->rw_map=map; e->fs=fs;
     return 0;
 }
-static int e4_state(vfs_node_t *node) {
+static int e4_state_account(vfs_node_t *node,bool account) {
     if (!node || !node->fs_private) return -VFS_EINVAL;
     e4_node_t *n=(e4_node_t *)node;
     if (n->removed && !(n->opens && e4_mounted_orphan(n->inode.fs,n->inode.ino))) return -VFS_ENOENT;
     ext4_mount_t *fs=n->inode.fs;
     if (fs->engine && fs->engine->tainted) return -VFS_EIO;
-    if (e4_account_inode(fs,n->inode.ino)) return -VFS_EROFS;
+    if (!account && e4_account_inode(fs,n->inode.ino)) return -VFS_EROFS;
     return !fs->engine || fs->frozen ? -VFS_EROFS : 0;
 }
+static int e4_state(vfs_node_t *node) {return e4_state_account(node,false);}
 static int e4_can_write(vfs_node_t *node) {
     uint64_t f=spin_lock_irqsave(&e4_lock); int r=e4_state(node);
     spin_unlock_irqrestore(&e4_lock,f); return r;

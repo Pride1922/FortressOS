@@ -35,6 +35,7 @@
 /* Public Heap API */
 void  heap_init(void);
 void *kmalloc(size_t size);
+void *kmalloc_large(size_t size);
 void  kfree(void *ptr);
 void *kcalloc(size_t num, size_t size);
 void *krealloc(void *ptr, size_t new_size);

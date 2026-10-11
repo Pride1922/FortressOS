@@ -1,10 +1,15 @@
 # Persistent Root and Installer Plan
 
-Date: 2026-10-11. Status: **PHASE 2 COMPLETE — installed boot, recovery and shutdown**.
+Date: 2026-10-11. Status: **PHASE 3 COMPLETE; PHASE 4 IN PROGRESS**.
 Detailed decisions: [Phase 0 contracts](PERSISTENT_ROOT_PHASE0.md).
 Executed gates and limitations: [Phase 0 evidence](../roadmap/persistent-root-phase0.md).
 Phase 1: [contracts](PERSISTENT_ROOT_PHASE1.md) and [executed evidence](../roadmap/persistent-root-phase1.md).
 Phase 2: [contracts](PERSISTENT_ROOT_PHASE2.md) and [executed evidence](../roadmap/persistent-root-phase2.md).
+Phase 3: [contracts](PERSISTENT_ROOT_PHASE3.md) and [executed evidence](../roadmap/persistent-root-phase3.md).
+Phase 4: [runtime/installer contracts and remaining gates](PERSISTENT_ROOT_PHASE4.md),
+[executed evidence](../roadmap/persistent-root-phase4.md), and
+[Dell interface-only preview](../installer-preview.md). Physical preview PASS
+does not establish physical installation acceptance.
 
 This is the next milestone after bounded journaled EXT4, permissions, and the
 SMP/memory stability work. It expands the [EXT4 Phase 10 handoff](EXT4_PLAN.md)
@@ -321,6 +326,12 @@ identified. Live boot still works with absent/unusable storage.
 
 ### Phase 3 — Durable machine identity and accounts
 
+**COMPLETE (2026-10-11), disposable scope.** Kernel-owned no-replacement redo,
+serialized snapshots and checked authentication decisions, mandatory-password
+tools and installed configuration/history precedence pass the
+[966-case host/BIOS/UEFI gate](../roadmap/persistent-root-phase3.md).
+Installer construction and physical acceptance remain Phases 4/5.
+
 Add passwd and the minimal account-creation tool needed by provisioning. Preserve
 SHA-256-crypt compatibility and shadow secrecy. Define persistent hostname,
 network config and shell-history precedence; installed /etc is authoritative,
@@ -339,6 +350,9 @@ updaters, ENOSPC/OOM, write/flush errors, unprivileged access and sudo regressio
 coverage pass. Installer credentials are mandatory; secrets stay out of logs.
 
 ### Phase 4 — Installer engine on disposable targets
+
+**IN PROGRESS:** [admission, templates, detached provisioning and remaining work](PERSISTENT_ROOT_PHASE4.md).
+This is not installer acceptance; [executed scope](../roadmap/persistent-root-phase4.md).
 
 Implement local payload validation, dry-run preview, exclusive target admission,
 bounded copy/readback, target-specific GPT/boot setup and account provisioning.
@@ -408,7 +422,7 @@ transport and device durability; no speed promise substitutes for correctness.
 - [x] Phase 0 contracts and protected changes reviewed; runtime implementation deferred.
 - [x] Persistent root and executable ownership gates pass.
 - [x] Root recovery and clean shutdown gates pass (disposable Phase 2 scope).
-- [ ] Persistent credentials/configuration update gates pass.
+- [x] Persistent credentials/configuration update gates pass (disposable Phase 3 scope).
 - [ ] Installer rejection, interruption and independent boot gates pass.
 - [ ] Spare NVMe physical installation accepted; existing OS disk protected.
 - [ ] Release documentation and subsystem status match evidence.

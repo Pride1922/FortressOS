@@ -102,7 +102,7 @@ void boot_info_init(boot_info_t *out_info,
     }
 
     root_boot_config_t root=root_boot_parse(out_info->cmdline,sizeof(out_info->cmdline),out_info->cmdline_truncated);
-    if (root.mode!=ROOT_BOOT_LIVE || root.has_root || !root.valid) {
+    if ((root.mode!=ROOT_BOOT_LIVE && root.mode!=ROOT_BOOT_INSTALLER) || root.has_root || !root.valid) {
         out_info->has_initramfs=false;
         bool good=module_resp && module_resp->modules && module_resp->module_count==2;
         if (module_resp && module_resp->modules && module_resp->module_count<=2) for (unsigned i=0;i<module_resp->module_count;i++) {
@@ -127,6 +127,49 @@ void boot_info_init(boot_info_t *out_info,
             } else good=false;
         }
         out_info->installed_modules_valid=good && out_info->has_initramfs && out_info->readiness_vaddr;
+    }
+
+    if (root.valid && root.mode==ROOT_BOOT_INSTALLER && kernel_file_resp && kernel_file_resp->kernel_file) {
+        struct limine_file *kernel=kernel_file_resp->kernel_file;
+        bool optical=kernel->media_type==LIMINE_MEDIA_TYPE_OPTICAL;
+        bool generic=kernel->media_type==LIMINE_MEDIA_TYPE_GENERIC;
+        uint8_t guid[16];memcpy(guid,&kernel->gpt_disk_uuid,sizeof(guid));
+        bool nonzero=false;for (unsigned i=0;i<16;i++) nonzero|=guid[i]!=0;
+        bool good=(optical || (generic && nonzero)) && module_resp && module_resp->modules &&
+            module_resp->module_count && module_resp->module_count<=16;
+        if (good) for (uint64_t i=0;i<module_resp->module_count;i++) {
+            struct limine_file *m=module_resp->modules[i];
+            if (!m || !m->address || !m->size || m->media_type!=kernel->media_type ||
+                (!optical && memcmp(&m->gpt_disk_uuid,guid,16))) {good=false;break;}
+        }
+        out_info->installer_source_valid=good;out_info->installer_source_optical=optical;
+        if (good && !optical) memcpy(out_info->installer_source_disk_guid,guid,16);
+        /* Exact typed payload set. Provenance alone does not admit arbitrary
+         * modules as trusted installation inputs. Keep bootstrap backing alive. */
+        bool payload=good && module_resp->module_count==6;
+        unsigned found=0,bootstrap_count=0;
+        const char *roles[]={"role=install-esp","role=install-root","role=install-bios","role=install-mbr","role=install-manifest"};
+        const char *names[]={"esp.img","root.img","bios.img","mbr.bin","payload.v1"};
+        const uint64_t sizes[]={64u*1024*1024,256u*1024*1024,1024u*1024,440,256};
+        if (payload) for (uint64_t i=0;i<module_resp->module_count;i++) {
+            struct limine_file *m=module_resp->modules[i];
+            size_t path=0,role=0;const char *base=m->path;
+            if (!m->path || !m->cmdline) {payload=false;break;}
+            while (path<256 && m->path[path]) {if (m->path[path]=='/') base=m->path+path+1;path++;}
+            while (role<32 && m->cmdline[role]) role++;
+            if (path==256 || role==32) {payload=false;break;}
+            if (!strcmp(base,"initramfs.tar") && !strcmp(m->cmdline,"role=bootstrap") &&
+                m->size<=8u*1024*1024 && !bootstrap_count++) {
+                out_info->initramfs_vaddr=(uint64_t)m->address;out_info->initramfs_size=m->size;
+                out_info->initramfs_paddr=hhdm_resp ? (uint64_t)m->address-hhdm_resp->offset : 0;
+                continue;
+            }
+            unsigned j=0;while (j<5 && strcmp(m->cmdline,roles[j])) j++;
+            if (j==5 || strcmp(base,names[j]) || m->size!=sizes[j] || (found & (1u<<j))) {payload=false;break;}
+            found|=1u<<j;out_info->installer_payload_vaddr[j]=(uint64_t)m->address;
+            out_info->installer_payload_size[j]=m->size;
+        }
+        out_info->installer_payload_valid=payload && found==31 && bootstrap_count==1;
     }
 
     if (out_info->cmdline[0] != '\0') {

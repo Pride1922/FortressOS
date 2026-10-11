@@ -39,6 +39,12 @@ typedef struct {
     bool     installed_modules_valid;
     uint64_t readiness_vaddr, readiness_size;
     uint64_t kernel_file_vaddr, kernel_file_size;
+    /* Installer admission needs complete, matching provenance for every module.
+     * Unknown/TFTP origins fail closed; generic media must identify its GPT disk. */
+    bool installer_source_valid, installer_source_optical;
+    uint8_t installer_source_disk_guid[16];
+    bool installer_payload_valid;
+    uint64_t installer_payload_vaddr[5], installer_payload_size[5];
 } boot_info_t;
 
 void boot_info_init(boot_info_t *out_info,

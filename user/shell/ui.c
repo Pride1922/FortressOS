@@ -137,12 +137,12 @@ void shell_history(const char *arg) {
         return;
     }
     if (equal(arg, "save")) {
-        if (history_save()) puts("History saved to /mnt/.fortress/history\n");
+        if (history_save()) puts("History saved\n");
         else puts("Failed to save history\n");
         return;
     }
     if (equal(arg, "load")) {
-        if (history_load()) puts("History loaded from /mnt/.fortress/history\n");
+        if (history_load()) puts("History loaded\n");
         else puts("Failed to load history\n");
         return;
     }

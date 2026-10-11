@@ -8,6 +8,10 @@ import test_root_phase0 as fixture
 from concurrent.futures import ThreadPoolExecutor, as_completed
 ROOT=fixture.REPO
 CANCEL=threading.Event()
+PHASE=2
+SESSION_HOOK=None
+HOST_HOOK=None
+AUDIT_HOOK=None
 
 def parallel(function,cases,jobs):
     pool=ThreadPoolExecutor(max_workers=jobs);futures=[]
@@ -23,9 +27,9 @@ def parallel(function,cases,jobs):
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--host-only',action='store_true');parser.add_argument('--quick',action='store_true');parser.add_argument('--skip-host',action='store_true',help='Focused guest debug, not the complete phase gate');parser.add_argument('--jobs',type=int,default=2);args=parser.parse_args()
     assert 1<=args.jobs<=3 and not (args.host_only and args.skip_host)
-    parent=ROOT/'build/root-phase2';parent.mkdir(parents=True,exist_ok=True)
+    parent=ROOT/f'build/root-phase{PHASE}';parent.mkdir(parents=True,exist_ok=True)
     out=Path(tempfile.mkdtemp(prefix='gate-',dir=parent));manifest={'commands':fixture.COMMANDS,'cases':[]}
-    manifest['scope']='focused debug' if args.quick or args.skip_host else 'host-only' if args.host_only else 'complete Phase2 gate'
+    manifest['scope']='focused debug' if args.quick or args.skip_host else 'host-only' if args.host_only else f'complete Phase{PHASE} gate'
     manifest['git_head']=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     normal={str(p):fixture.digest(p) for p in (ROOT/'bin/fortress.iso',ROOT/'bin/fortress.img') if p.is_file()}
     run=lambda cmd,timeout=240:fixture.run(cmd,out/'commands.log',timeout)
@@ -70,6 +74,7 @@ def main():
             commands += [f'set_inode_field {name} mode 0{mode:o}',f'set_inode_field {name} uid {uid}',f'set_inode_field {name} gid {gid}']
         attrs=out/'attrs.commands';attrs.write_text('\n'.join(commands)+'\n');run(['debugfs','-w','-f',str(attrs),str(root)])
         fixture.initialize_journal(root,out);run(['e2fsck','-fn',str(root)])
+        if HOST_HOOK and not args.skip_host:HOST_HOOK(out,root,run,manifest)
         run(['make','test-root-boot-host','test-perm-db-host','test-elf-page-host','test-perm-spawn-host','test-perm-capability-host','test-perm-privileges-host','test-usb-mount-host'],300)
         binary=out/'host'
         run(['gcc','-std=c11','-O1','-g','-fsanitize=address,undefined','-Wall','-Wextra','-Werror','-no-pie','-pthread','-DTEST_ROOT_PHASE2_ACCOUNTS',
@@ -95,9 +100,9 @@ def main():
         with tarfile.open(bootstrap) as src:credential.write_bytes(src.extractfile('bootstrap/recovery.v1').read())
         if not args.skip_host:
             admission=out/'admission-host'
-            run(['gcc','-std=c11','-O1','-g','-fsanitize=address,undefined','-Wall','-Wextra','-Werror','-no-pie','-pthread',
-                '-Itests/ext4_host','-Itests/host','-Isrc/include','-Isrc/lib','-Isrc/fs','-Isrc/drivers','-Isrc/mm','-Isrc/kernel',
-                'tests/root_phase2_admission_host.c','tests/ext4_fault_disk.c','src/kernel/installed_root.c','src/kernel/root_boot.c','user/tools/userdb.c','user/tools/digest.c','-o',str(admission)])
+            run(['gcc','-std=c11','-O1','-g','-fsanitize=address,undefined','-Wall','-Wextra','-Werror','-no-pie','-pthread','-ffunction-sections','-fdata-sections','-Wl,--gc-sections',
+                '-Itests/ext4_host','-Itests/host','-Isrc/include','-Isrc/lib','-Isrc/fs','-Isrc/drivers','-Isrc/mm','-Isrc/kernel','-Isrc/arch/x86_64',
+                'tests/root_phase2_admission_host.c','tests/ext4_fault_disk.c','src/kernel/installed_root.c','src/kernel/root_boot.c','src/kernel/accounts.c','src/lib/account_redo.c','user/tools/userdb.c','user/tools/digest.c','-o',str(admission)])
             for kind in ('multiple','inventory','namespaces','truncated','flush','replay','success','freeze-taint'):
                 disk=out/('admission-'+kind+'.img');run(['cp','--sparse=always',str(template),str(disk)])
                 if kind=='replay':
@@ -232,8 +237,11 @@ def extract_root(disk,out):
         while remaining:
             b=src.read(min(1024*1024,remaining));assert b;dst.write(b);remaining-=len(b)
 
-def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None):
-    label=f'{mode}-{cpus}-{boot}';argv=['qemu-system-x86_64','-M','q35','-m','2G','-accel','tcg','-smp',str(cpus),'-display','none','-monitor','none','-no-reboot','-net','none','-serial','stdio']
+def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None,accel='tcg'):
+    assert accel in ('tcg','kvm')
+    label=f'{mode}-{cpus}-{boot}';argv=['qemu-system-x86_64','-M','q35','-m','2G','-accel',accel,'-smp',str(cpus),'-display','none','-monitor','none','-no-reboot','-net','none','-serial','stdio']
+    if accel=='kvm':argv+=['-cpu','host']
+    elif PHASE==3:argv+=['-cpu','max'] # advertise bounded RDSEED/RDRAND salt source
     if live_iso:
         assert live_iso.is_file() and live_iso.resolve().parent==out.resolve();argv+=['-cdrom',str(live_iso)]
     else:
@@ -293,6 +301,8 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
             if not live_iso:wait(lambda t:t.endswith('Password: '));send(operator)
             wait(prompt)
             command('pwd','/run/user/1000' if live_iso else '/home/operator');command('id','uid=1000 gid=1000');command('cat /etc/shadow','permission denied')
+            if SESSION_HOOK and not live_iso:
+                operator=SESSION_HOOK(boot,operator,send,wait,command,prompt,transcript)
             if not live_iso:
                 if boot:command('cat phase2.txt',f'phase2-boot-{boot-1}')
                 command(f'echo phase2-boot-{boot} > phase2.txt','');command('sync','')
@@ -332,6 +342,7 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
             dumped=out/(label+'-probe.txt');fixture.run(['debugfs','-R',f'dump /home/operator/phase2.txt {dumped}',str(root)],out/(label+'-audit.log'))
             assert dumped.read_bytes()==f'phase2-boot-{boot}\n'.encode()
             metadata=fixture.run(['debugfs','-R','stat /home/operator/phase2.txt',str(root)],out/(label+'-audit.log'));assert 'User:  1000' in metadata and 'Group:  1000' in metadata
+            if AUDIT_HOOK:AUDIT_HOOK(out,label,root)
     manifest['cases'].append(result);print('PASS guest',label,flush=True)
     return result
 

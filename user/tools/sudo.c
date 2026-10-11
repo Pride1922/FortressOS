@@ -52,6 +52,7 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
         db_wipe(password,sizeof(password));tool_syscall(SYS_CLOSE,tty,0,0);
         if (!ok) {db_wipe(&database,sizeof(database));return tool_error("sudo","authentication failed",0);}
     }
+    if (!db_check()) {db_wipe(&database,sizeof(database));return tool_error("sudo","accounts changed; retry command",0);}
     uint32_t groups[16];unsigned count;
     if (!db_groups(&database,root,groups,&count) ||
         permission_call4(SYS_SETRESGID,0,0,0,0)<0 ||

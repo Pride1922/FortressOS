@@ -4,6 +4,8 @@
 #include "pmm.h"
 #include "serial.h"
 #include "string.h"
+#include "apic.h"
+#include "../../user/tools/digest.h"
 
 #define QUEUE_SIZE 32   /* 32 entries: compact, fits in 1 page, easily wraps in tests */
 
@@ -24,6 +26,25 @@ static bool g_unique_namespace;
 static bool g_root_geometry;
 static uint64_t g_sector_count  = 0;
 static uint32_t g_sector_size   = 512;
+static bool g_installer_deadlines;
+static bool g_installer_inventory_admitted;
+static uint32_t g_controller_id;
+static inline uint64_t nvme_read64(uint32_t offset);
+/* Existing iteration caps remain a clock-fault backstop. Installer commands
+ * also stop at ten monotonic seconds; CAP.TO transition deadline caps at 30s.
+ * Normal live/installed driver policy is unchanged. No IRQ/PIT dependency. */
+static uint64_t installer_deadline(bool transition) {
+    if (!g_installer_deadlines) return UINT64_MAX;
+    uint64_t hz=apic_poll_clock_hz(),now=apic_poll_clock_read();
+    uint64_t half_seconds=transition ? (uint64_t)NVME_CAP_TO(nvme_read64(NVME_REG_CAP)) : 20;
+    if (!half_seconds) half_seconds=1;
+    if (half_seconds>60) half_seconds=60;
+    uint64_t delta=hz*half_seconds/2;
+    return now>UINT64_MAX-delta ? UINT64_MAX : now+delta;
+}
+static bool installer_expired(uint64_t deadline) {
+    return g_installer_deadlines && apic_poll_clock_read()>=deadline;
+}
 
 /* DMA Queues & Bounce Buffer (Phys & Virt) */
 static uintptr_t g_asq_phys     = 0;
@@ -99,8 +120,9 @@ bool nvme_quiesce(void) {
 
     /* Bounded poll wait for CSTS.RDY == 0 */
     uint64_t timeout = 50000000;
+    uint64_t deadline=installer_deadline(true);
     while ((nvme_read32(NVME_REG_CSTS) & NVME_CSTS_RDY) != 0) {
-        if (--timeout == 0) {
+        if (--timeout == 0 || installer_expired(deadline)) {
             serial_puts("[CRITICAL] NVMe quiesce timeout! CSTS.RDY failed to clear!\n");
             serial_puts("[CRITICAL] Controller may still access memory! Quarantining DMA buffers!\n");
             g_controller_fatal = true;
@@ -145,6 +167,7 @@ static bool nvme_submit_admin_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe
 
     /* Bounded polling wait on Admin CQ */
     uint64_t poll_count = 100000000;
+    uint64_t deadline=installer_deadline(false);
     while (true) {
         uint16_t status_word = g_acq_virt[g_admin_cq_head].status;
         uint8_t phase_bit = status_word & 0x01;
@@ -153,7 +176,11 @@ static bool nvme_submit_admin_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe
             break; /* Entry is ready */
         }
 
-        if (nvme_read32(NVME_REG_CSTS) & NVME_CSTS_CFS) {
+        /* Installer identity refreshes use this queue for every transfer.
+         * Match the I/O queue's bounded status cadence rather than forcing an
+         * MMIO access on every spin; ordinary boot polling stays unchanged. */
+        if ((!g_installer_deadlines || (poll_count & 0x3ff)==0) &&
+            (nvme_read32(NVME_REG_CSTS) & NVME_CSTS_CFS)) {
             serial_puts("[FAIL] NVMe Controller Fatal Status (CFS) detected during Admin poll!\n");
             g_controller_fatal = true;
             g_initialized = false;
@@ -163,7 +190,7 @@ static bool nvme_submit_admin_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe
             return false;
         }
 
-        if (--poll_count == 0) {
+        if (--poll_count == 0 || ((poll_count & 0x3ff)==0 && installer_expired(deadline))) {
             serial_puts("[FAIL] NVMe Admin command timeout! Opcode: 0x");
             serial_print_hex(cmd->opcode);
             serial_puts(", CID: ");
@@ -176,7 +203,9 @@ static bool nvme_submit_admin_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe
             }
             return false;
         }
-        __asm__ volatile("pause");
+        /* PAUSE can trap under nested virtualization. Installer polling uses
+         * memory completion checks between bounded relaxation points. */
+        if (!g_installer_deadlines || (poll_count & 0x3ff)==0) __asm__ volatile("pause");
     }
 
     /* Validate Command ID */
@@ -186,6 +215,7 @@ static bool nvme_submit_admin_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe
         serial_puts(", Got: ");
         serial_print_dec(g_acq_virt[g_admin_cq_head].cid);
         serial_puts("\n");
+        if (g_installer_deadlines) {g_controller_fatal=true;g_initialized=false;if (!nvme_quiesce()) g_dma_quarantined=true;}
         return false;
     }
 
@@ -237,6 +267,7 @@ static bool nvme_submit_io_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe) {
 
     /* Bounded polling wait on I/O CQ 1 */
     uint64_t poll_count = 100000000;
+    uint64_t deadline=installer_deadline(false);
     while (true) {
         uint16_t status_word = g_iocq_virt[g_io_cq_head].status;
         uint8_t phase_bit = status_word & 0x01;
@@ -255,7 +286,7 @@ static bool nvme_submit_io_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe) {
             return false;
         }
 
-        if (--poll_count == 0) {
+        if (--poll_count == 0 || ((poll_count & 0x3ff)==0 && installer_expired(deadline))) {
             serial_puts("[FAIL] NVMe I/O command timeout! Opcode: 0x");
             serial_print_hex(cmd->opcode);
             serial_puts(", CID: ");
@@ -268,7 +299,7 @@ static bool nvme_submit_io_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe) {
             }
             return false;
         }
-        __asm__ volatile("pause");
+        if (!g_installer_deadlines || (poll_count & 0x3ff)==0) __asm__ volatile("pause");
     }
 
     /* Validate Command ID */
@@ -278,6 +309,7 @@ static bool nvme_submit_io_cmd(nvme_sq_entry_t *cmd, nvme_cq_entry_t *out_cqe) {
         serial_puts(", Got: ");
         serial_print_dec(g_iocq_virt[g_io_cq_head].cid);
         serial_puts("\n");
+        if (g_installer_deadlines) {g_controller_fatal=true;g_initialized=false;if (!nvme_quiesce()) g_dma_quarantined=true;}
         return false;
     }
 
@@ -320,6 +352,7 @@ bool nvme_init(void) {
     }
 
     g_pci_seg   = pci_dev.segment;
+    g_controller_id=(uint32_t)pci_dev.vendor_id | (uint32_t)pci_dev.device_id<<16;
     g_pci_bus   = pci_dev.bus;
     g_pci_dev   = pci_dev.device;
     g_pci_fn    = pci_dev.function;
@@ -481,13 +514,14 @@ bool nvme_init(void) {
 
     /* Bounded poll wait for CSTS.RDY == 1 */
     uint64_t wait_timeout = 50000000;
+    uint64_t deadline=installer_deadline(true);
     while ((nvme_read32(NVME_REG_CSTS) & NVME_CSTS_RDY) == 0) {
         if (nvme_read32(NVME_REG_CSTS) & NVME_CSTS_CFS) {
             serial_puts("[FAIL] NVMe Controller Fatal Status during enable!\n");
             nvme_quiesce();
             return false;
         }
-        if (--wait_timeout == 0) {
+        if (--wait_timeout == 0 || installer_expired(deadline)) {
             serial_puts("[FAIL] Timeout waiting for NVMe CSTS.RDY == 1!\n");
             nvme_quiesce();
             return false;
@@ -614,6 +648,49 @@ bool nvme_init(void) {
     return true;
 }
 
+bool nvme_installer_identity(install_identity_v1_t *id) {
+    if (!id || !apic_poll_clock_hz() || apic_poll_clock_hz()>UINT64_MAX/60) return false;
+    if (!pci_inventory_complete()) return false;
+    if (!g_installer_inventory_admitted) {
+        pci_device_t controllers[2];
+        if (pci_find_all_devices(PCI_CLASS_STORAGE,PCI_SUBCLASS_STORAGE_NVME,
+            PCI_PROGIF_STORAGE_NVME,controllers,2)!=1 || !pci_inventory_complete()) return false;
+        if (!nvme_init() || controllers[0].segment!=g_pci_seg || controllers[0].bus!=g_pci_bus ||
+            controllers[0].device!=g_pci_dev || controllers[0].function!=g_pci_fn) return false;
+        /* Pin this complete singleton admission for boot lifetime. There is no
+         * hotplug enrollment: every later operation refreshes only the selected
+         * BDF/controller and its complete namespace identity below. */
+        g_installer_inventory_admitted=true;
+    }
+    g_installer_deadlines=true;
+    if (!nvme_init() || !g_unique_namespace || !g_root_geometry || g_sector_size!=512 ||
+        pci_read_config32(g_pci_seg,g_pci_bus,g_pci_dev,g_pci_fn,PCI_REG_VENDOR_ID)!=g_controller_id) return false;
+    install_identity_v1_t next={.size=sizeof(next),.version=1,.generation=1,
+        .sector_count=g_sector_count,.sector_size=g_sector_size,.nsid=g_active_nsid,
+        .segment=g_pci_seg,.bus=g_pci_bus,.device=g_pci_dev,.function=g_pci_fn,.flags=INSTALL_ID_ELIGIBLE};
+    nvme_sq_entry_t cmd={.opcode=NVME_ADMIN_OP_IDENTIFY,.prp1=g_dma_buf_phys,.cdw10=NVME_IDENTIFY_CNS_CTRL};
+    memset(g_dma_buf_virt,0,PAGE_SIZE);
+    if (!nvme_submit_admin_cmd(&cmd,NULL)) return false;
+    memcpy(next.serial,g_dma_buf_virt+4,20);memcpy(next.model,g_dma_buf_virt+24,40);
+    /* Refresh complete active list and conventional geometry every operation.
+     * A namespace replacement or unsupported list never inherits write access. */
+    cmd=(nvme_sq_entry_t){.opcode=NVME_ADMIN_OP_IDENTIFY,.prp1=g_dma_buf_phys,.cdw10=NVME_IDENTIFY_CNS_ACTIVE_NS};
+    memset(g_dma_buf_virt,0,PAGE_SIZE);
+    if (!nvme_submit_admin_cmd(&cmd,NULL)) return false;
+    uint32_t *active=(void *)g_dma_buf_virt;
+    if (active[0]!=g_active_nsid) return false;
+    for (unsigned i=1;i<PAGE_SIZE/4;i++) if (active[i]) return false;
+    cmd=(nvme_sq_entry_t){.opcode=NVME_ADMIN_OP_IDENTIFY,.nsid=g_active_nsid,.prp1=g_dma_buf_phys,.cdw10=NVME_IDENTIFY_CNS_NS};
+    memset(g_dma_buf_virt,0,PAGE_SIZE);
+    if (!nvme_submit_admin_cmd(&cmd,NULL)) return false;
+    const nvme_id_namespace_t *ns=(void *)g_dma_buf_virt;
+    unsigned index=ns->flbas&15;
+    if (index>ns->nlbaf || (ns->flbas&0xf0) || ns->dps || ns->lbaf[index].ms ||
+        ns->lbaf[index].lbads!=9 || ns->nsze!=g_sector_count || ns->ncap!=ns->nsze || (ns->nsfeat&1)) return false;
+    memcpy(next.nguid,ns->nguid,16);memcpy(next.eui64,ns->eui64,8);
+    digest_t d;digest_init(&d,DIGEST_SHA256);(void)digest_update(&d,&next,128);digest_final(&d,next.digest);
+    *id=next;return true;
+}
 bool nvme_is_initialized(void) {
     return g_initialized;
 }

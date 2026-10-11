@@ -16,9 +16,11 @@ int main(void) {
     char cmd[600];snprintf(cmd,sizeof(cmd),"boot_mode=installed root=PARTUUID=%s",guid);
     root_boot_config_t c=root_boot_parse(cmd,sizeof(cmd),false);assert(c.valid && c.mode==ROOT_BOOT_INSTALLED && c.has_root);
     assert(root_boot_parse("",1,false).valid && root_boot_parse("boot_mode=live",15,false).valid);
+    c=root_boot_parse("boot_mode=installer",20,false);
+    assert(c.valid && c.explicit_mode && c.mode==ROOT_BOOT_INSTALLER && !c.has_root);
     const char *bad[]={"boot_mode=installed","boot_mode=nope","root=PARTUUID=11223344-5566-7788-99aa-bbccddeeff00",
         "boot_mode=live boot_mode=live","boot_mode=installed root=PARTUUID=00000000-0000-0000-0000-000000000000",
-        "boot_mode=live root=x","boot_mode=installed root=x root=x"};
+        "boot_mode=live root=x","boot_mode=installed root=x root=x","boot_mode=installer root=PARTUUID=11223344-5566-7788-99aa-bbccddeeff00"};
     for (unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);i++) assert(!root_boot_parse(bad[i],strlen(bad[i])+1,false).valid);
     assert(!root_boot_parse(cmd,sizeof(cmd),true).valid && !root_boot_parse(cmd,4,false).valid);
     char identity[256];snprintf(identity,sizeof(identity),"install_id=00112233445566778899aabbccddeeff\nroot_partuuid=%s\nfilesystem_uuid=%s\n",guid,guid);
@@ -45,6 +47,35 @@ int main(void) {
     boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);
     assert(info.installed_modules_valid && info.initramfs_vaddr==(uint64_t)bootstrap.address);
     modules[0]=&bootstrap;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installed_modules_valid);
+    memcpy(cmd,"boot_mode=installer",20);kernel.media_type=bootstrap.media_type=LIMINE_MEDIA_TYPE_OPTICAL;
+    mr.module_count=1;modules[0]=&bootstrap;
+    boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);
+    assert(info.installer_source_valid && info.installer_source_optical && !info.installed_modules_valid);
+    bootstrap.media_type=LIMINE_MEDIA_TYPE_TFTP;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installer_source_valid);
+    kernel.media_type=bootstrap.media_type=LIMINE_MEDIA_TYPE_GENERIC;
+    boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installer_source_valid);
+    kernel.gpt_disk_uuid.a=1;bootstrap.gpt_disk_uuid=kernel.gpt_disk_uuid;
+    boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(info.installer_source_valid && !info.installer_source_optical);
+    bootstrap.gpt_disk_uuid.a=2;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installer_source_valid);
+    kernel.media_type=bootstrap.media_type=LIMINE_MEDIA_TYPE_OPTICAL;
+    bootstrap.path="/boot/initramfs.tar";
+    struct limine_file payloads[5];struct limine_file *typed[6]={&bootstrap};
+    const char *roles[]={"role=install-esp","role=install-root","role=install-bios","role=install-mbr","role=install-manifest"};
+    const char *names[]={"/payload/esp.img","/payload/root.img","/payload/bios.img","/payload/mbr.bin","/payload/payload.v1"};
+    const uint64_t sizes[]={64u*1024*1024,256u*1024*1024,1024u*1024,440,256};
+    for (unsigned i=0;i<5;i++) {
+        payloads[i]=(struct limine_file){.path=(char *)names[i],.cmdline=(char *)roles[i],.size=sizes[i],.address=(void *)"payload",.media_type=LIMINE_MEDIA_TYPE_OPTICAL};typed[i+1]=&payloads[i];
+    }
+    mr.modules=typed;mr.module_count=6;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);
+    assert(info.installer_payload_valid && info.initramfs_vaddr==(uintptr_t)bootstrap.address);
+    for (unsigned i=0;i<5;i++) {
+        payloads[i].size--;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installer_payload_valid);payloads[i].size++;
+        payloads[i].media_type=LIMINE_MEDIA_TYPE_TFTP;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installer_payload_valid);payloads[i].media_type=LIMINE_MEDIA_TYPE_OPTICAL;
+    }
+    typed[5]=&payloads[0];boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installer_payload_valid);typed[5]=&payloads[4];
+    bootstrap.path="/boot/wrong.tar";boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installer_payload_valid);bootstrap.path="/boot/initramfs.tar";
+    mr.module_count=5;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installer_payload_valid);
+    mr.module_count=0;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installer_source_valid);
     memset(cmd,'a',599);cmd[599]=0;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(info.cmdline_truncated && !info.installed_modules_valid);
     puts("PASS root boot selection, binding, readiness corruption and module roles");
 }

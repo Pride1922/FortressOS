@@ -30,7 +30,14 @@ const db_shadow_t *db_shadow_name(const userdb_t *,const char *);
 bool db_groups(const userdb_t *,const db_user_t *,uint32_t out[16],unsigned *count);
 bool db_hash_valid(const char *);
 bool db_verify(const char *password,const char *hash);
+/* Generate rounds=100000 SHA-256-crypt using an externally supplied fresh
+ * 16-character crypt-alphabet salt. Output is 78 bytes including terminator. */
+bool db_crypt(const char *password,const char salt[17],char out[78]);
 void db_wipe(void *,size_t);
 /* Syscall adapters are separate from the pure parser/crypt implementation. */
 bool db_load(userdb_t *,bool shadow);
+/* Revalidate the generation captured by the most recent db_load. Live immutable
+ * databases have generation zero and need no runtime account service. */
+bool db_check(void);
+bool db_busy(void);
 #endif

@@ -3,7 +3,7 @@
 static vfs_metadata_t e4_value(const e4_inode_t *in) {
     return (vfs_metadata_t){.size=in->size,.mode=in->full_mode,.uid=in->uid,.gid=in->gid,
         .type=in->mode==VFS_S_IFDIR ? VFS_DIRECTORY : VFS_FILE,
-        .mnt_flags=(in->fs->engine && !in->fs->frozen && !e4_account_inode(in->fs,in->ino) ? 0 : VFS_MNT_RDONLY)|(in->fs->trusted_root ? 0 : VFS_MNT_NOSUID)|VFS_MNT_NODEV};
+        .mnt_flags=(in->fs->engine && !in->fs->frozen && !e4_account_readonly(in->fs,in->ino) ? 0 : VFS_MNT_RDONLY)|(in->fs->trusted_root ? 0 : VFS_MNT_NOSUID)|VFS_MNT_NODEV};
 }
 static int e4_access_locked(vfs_node_t *node,unsigned mask,const creds_t *actor) {
     e4_node_t *n=(e4_node_t *)node;e4_inode_t in;int r=0;

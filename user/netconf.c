@@ -9,6 +9,7 @@ static inline long netconf_default_syscall(long nr, uintptr_t a, uintptr_t b, ui
 }
 #define NETCONF_SYSCALL netconf_default_syscall
 #endif
+#include "machine_config.h"
 
 static size_t nc_strlen(const char *s) {
     size_t n = 0;
@@ -376,7 +377,7 @@ int netconf_parse_file(const char *path, const char *tool_name, bool verbose_war
 
 int netconf_read_dns(const char *path, uint32_t *out_dns) {
     if (!out_dns) return -1;
-    const char *p = path ? path : NETCONF_DEFAULT_PATH;
+    const char *p = path ? path : machine_installed(NETCONF_SYSCALL) ? "/etc/network.conf" : NETCONF_DEFAULT_PATH;
     netconf_t conf;
     int rc = netconf_parse_file(p, NULL, false, &conf, NULL, 0);
     if (rc != 0 || !conf.has_dns || conf.dns == 0) {

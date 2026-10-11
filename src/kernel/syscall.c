@@ -29,6 +29,8 @@ static bool syscall_actor(creds_t *out);
 #include "elf.h"
 #include "usb_mount.h"
 #include "installed_root.h"
+#include "accounts.h"
+#include "install_control.h"
 #include "xhci.h"
 #include "dmesg.h"
 #include "terminal.h"
@@ -828,6 +830,7 @@ static int64_t sys_fcntl(int fd, int cmd, uint64_t arg) {
             return (int64_t)curr->fd_flags[fd];
 
         case F_SETFD:
+            if (curr->fd_table[fd]->exclusive_owner && arg!=FD_FLAG_CLOEXEC) return SYSCALL_EPERM;
             if (arg & ~(uint64_t)FD_FLAG_CLOEXEC) {
                 return SYSCALL_EINVAL;
             }
@@ -836,6 +839,7 @@ static int64_t sys_fcntl(int fd, int cmd, uint64_t arg) {
 
         case F_DUPFD:
         case F_DUPFD_CLOEXEC: {
+            if (curr->fd_table[fd]->exclusive_owner) return SYSCALL_EBADF;
             int min_fd = (int)arg;
             if (min_fd < 0 || min_fd >= MAX_PROCESS_FDS) {
                 return SYSCALL_EINVAL;
@@ -1393,6 +1397,22 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         case SYS_SETGROUPS: result=sys_setgroups(frame->rdi,frame->rsi);break;
         case SYS_CAPSET: result=sys_capset(frame->rdi);break;
         case SYS_CAPGET: result=sys_capget();break;
+        case SYS_INSTALLCTL: {
+            creds_t actor;
+            if (frame->rdi>INSTALL_DEPLOY) {result=SYSCALL_EINVAL;break;}
+            if (!syscall_actor(&actor)) {result=SYSCALL_ESRCH;break;}
+            result=install_control((unsigned)frame->rdi,frame->rsi,frame->rdx,frame->r10,frame->r8,&actor);break;
+        }
+        case SYS_ACCOUNTCTL: {
+            creds_t actor;tcb_t *current=thread_current();
+            result=current && syscall_actor(&actor) ? accounts_control(frame->rdi,frame->rsi,frame->rdx,&actor,current->tid) : SYSCALL_ESRCH;
+            break;
+        }
+        case SYS_INSTALLSEED: {
+            creds_t actor;
+            result=syscall_actor(&actor) ? accounts_seed(frame->rdi,frame->rsi,&actor) : SYSCALL_ESRCH;
+            break;
+        }
 #ifdef TEST_PERMISSIONS_ENFORCEMENT
         case SYS_TEST_SETCREDS: result=sys_test_setcreds();break;
 #endif

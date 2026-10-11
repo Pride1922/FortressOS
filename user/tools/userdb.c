@@ -135,12 +135,7 @@ static void add(digest_t *d,const void *p,size_t n) {(void)digest_update(d,p,n);
 static void repeated(digest_t *d,const uint8_t p[32],size_t n) {while (n>=32) {add(d,p,32);n-=32;}add(d,p,n);}
 /* SHA-256-crypt per Ulrich Drepper's public specification, using our existing
  * SHA core. Verify a fixed 43-byte encoding without an early-exit comparison. */
-bool db_verify(const char *password,const char *hash) {
-    if (!password || !hash || *hash=='!' || *hash=='*') return false;
-    size_t np=length(password);if (np>DB_PASSWORD_MAX) return false;
-    if (!*hash) return !np;
-    const char *salt,*encoded;size_t ns;uint32_t rounds;
-    if (!setting(hash,&salt,&ns,&rounds,&encoded)) return false;
+static void crypt_result(const char *password,size_t np,const char *salt,size_t ns,uint32_t rounds,char result[43]) {
     uint8_t a[32],b[32],p[32],s[32];digest_t d;
     digest_init(&d,DIGEST_SHA256);add(&d,password,np);add(&d,salt,ns);add(&d,password,np);digest_final(&d,b);
     digest_init(&d,DIGEST_SHA256);add(&d,password,np);add(&d,salt,ns);repeated(&d,b,np);
@@ -157,11 +152,28 @@ bool db_verify(const char *password,const char *hash) {
         digest_final(&d,a);
     }
     const uint8_t order[10][3]={{0,10,20},{21,1,11},{12,22,2},{3,13,23},{24,4,14},{15,25,5},{6,16,26},{27,7,17},{18,28,8},{9,19,29}};
-    char result[43];unsigned pos=0;
+    unsigned pos=0;
     for (unsigned i=0;i<10;i++) {uint32_t v=((uint32_t)a[order[i][0]]<<16)|((uint32_t)a[order[i][1]]<<8)|a[order[i][2]];
         for (unsigned j=0;j<4;j++) {result[pos++]=alphabet[v&63];v>>=6;}}
     uint32_t v=((uint32_t)a[31]<<8)|a[30];for (unsigned j=0;j<3;j++) {result[pos++]=alphabet[v&63];v>>=6;}
+    db_wipe(a,sizeof(a));db_wipe(b,sizeof(b));db_wipe(p,sizeof(p));db_wipe(s,sizeof(s));db_wipe(&d,sizeof(d));
+}
+bool db_verify(const char *password,const char *hash) {
+    if (!password || !hash || *hash=='!' || *hash=='*') return false;
+    size_t np=length(password);if (np>DB_PASSWORD_MAX) return false;
+    if (!*hash) return !np;
+    const char *salt,*encoded;size_t ns;uint32_t rounds;
+    if (!setting(hash,&salt,&ns,&rounds,&encoded)) return false;
+    char result[43];crypt_result(password,np,salt,ns,rounds,result);
     unsigned diff=0;for (unsigned i=0;i<43;i++) diff|=(unsigned char)result[i]^(unsigned char)encoded[i];
-    db_wipe(a,sizeof(a));db_wipe(b,sizeof(b));db_wipe(p,sizeof(p));db_wipe(s,sizeof(s));db_wipe(&d,sizeof(d));db_wipe(result,sizeof(result));
-    return diff==0;
+    db_wipe(result,sizeof(result));return diff==0;
+}
+bool db_crypt(const char *password,const char salt[17],char out[78]) {
+    if (!password || !salt || !out || !*password || length(password)>DB_PASSWORD_MAX || length(salt)!=16) return false;
+    for (unsigned i=0;i<16;i++) if (!cryptchar(salt[i])) return false;
+    const char prefix[]="$5$rounds=100000$";
+    for (unsigned i=0;i<17;i++) out[i]=prefix[i];
+    for (unsigned i=0;i<16;i++) out[17+i]=salt[i];
+    out[33]='$';crypt_result(password,length(password),salt,16,100000,out+34);out[77]=0;
+    return true;
 }

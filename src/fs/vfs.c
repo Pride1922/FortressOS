@@ -128,6 +128,7 @@ file_t *vfs_open_terminal(int flags) {
     file->offset = 0;
     file->flags = flags;
     file->ref_count = 1;
+    file->exclusive_owner = false;
     return file;
 }
 
@@ -972,6 +973,7 @@ static file_t *open_common(const char *path, int flags, const creds_t *actor, bo
     file->offset    = (flags & VFS_O_APPEND) ? node->size : 0;
     file->flags     = flags;
     file->ref_count = 1;
+    file->exclusive_owner = false;
 
     if (err_out) *err_out = VFS_SUCCESS;
     return file;

@@ -11,6 +11,7 @@ static unsigned writes,mkdirs,chowns,chmods;
 static const char *input;
 static char output[1024];static size_t output_size;
 bool db_load(userdb_t *out,bool shadow) {(void)out;(void)shadow;return false;}
+bool db_busy(void) {return false;}
 long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
     if (nr==SYS_WRITE) {assert(a==1 || a==2);assert(output_size+c<sizeof(output));memcpy(output+output_size,(void *)b,c);output_size+=c;return c;}
     if (nr==SYS_INPUT_READ) {if (!*input) return SYSCALL_EINTR;*(char *)a=*input++;return 1;}

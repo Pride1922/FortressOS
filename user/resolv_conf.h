@@ -21,11 +21,16 @@ static inline long resolv_default_syscall(long nr, uintptr_t a, uintptr_t b, uin
 #endif
 #endif
 
+#include "machine_config.h"
+static inline long resolv_machine_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
+    return RESOLV_SYSCALL(nr,a,b,c);
+}
 /* Returns the resolv.conf path to read/write.
  * Order: /tmp/resolv.conf if it exists,
  *        else /mnt/.fortress/resolv.conf if it exists,
  *        else /tmp/resolv.conf (default write target). */
 static inline const char *resolv_conf_path(void) {
+    if (machine_installed(resolv_machine_call)) return "/etc/resolv.conf";
     static const char path_tmp[] = "/tmp/resolv.conf";
     static const char path_mnt[] = "/mnt/.fortress/resolv.conf";
 

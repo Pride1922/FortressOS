@@ -60,10 +60,14 @@ int login_main(int argc,char **argv) {
     bool installed=argc==2 && tool_equal(argv[1],"--installed");
     uint32_t uid,euid,suid;
     if (tool_syscall(SYS_GETRESUID,(uintptr_t)&uid,(uintptr_t)&euid,(uintptr_t)&suid)<0 || uid || euid || suid ||
-        tool_syscall(SYS_TERMCTL,TERM_ISATTY,0,0)!=1 || !db_load(&database,true)) return failure(installed,"invalid privileged terminal/database");
+        tool_syscall(SYS_TERMCTL,TERM_ISATTY,0,0)!=1) return failure(installed,"invalid privileged terminal/database");
+    while (!db_load(&database,true)) {if (!db_busy()) return failure(installed,"account authentication unavailable");delay();}
     const db_shadow_t *op=db_shadow_name(&database,"operator");
     if (op && !*op->hash) say("WARNING: live-media operator login is passwordless; home is temporary.\n");
     for (;;) {
+        /* Never retain an authentication snapshot while another generation is
+         * published. A password prompt owns copied bytes, not a reader lease. */
+        while (!db_load(&database,true)) {if (!db_busy()) return failure(installed,"account authentication unavailable");delay();}
         char username[32]={0},password[DB_PASSWORD_MAX+1]={0};
         say("FortressOS login: ");bool valid=line(username,sizeof(username),true);
         const db_user_t *u=valid ? db_user_name(&database,username) : 0;
@@ -74,6 +78,7 @@ int login_main(int argc,char **argv) {
         bool ok=valid && u && s && u->uid!=0 && !s->restricted && db_verify(password,s->hash);
         db_wipe(password,sizeof(password));
         if (!ok) {delay();say("Login incorrect\n");continue;}
+        if (!db_check()) {say("Accounts changed; retry login\n");continue;}
         uint32_t groups[16];unsigned count;char home[128];
         if (!db_groups(&database,u,groups,&count) || !runtime(u,home)) return failure(installed,"unsafe runtime directory");
         /* Input never echoes and normal ISIG remains intact. Installed boot

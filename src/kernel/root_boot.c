@@ -20,6 +20,7 @@ root_boot_config_t root_boot_parse(const char *cmd,size_t capacity,bool truncate
             if (n==14 && !memcmp(token+10,"live",4)) out.mode=ROOT_BOOT_LIVE;
             else if (n==19 && !memcmp(token+10,"installed",9)) out.mode=ROOT_BOOT_INSTALLED;
             else if (n==18 && !memcmp(token+10,"recovery",8)) out.mode=ROOT_BOOT_RECOVERY;
+            else if (n==19 && !memcmp(token+10,"installer",9)) out.mode=ROOT_BOOT_INSTALLER;
             else out.valid=false;
         } else if (n>=5 && !memcmp(token,"root=",5)) {
             if (out.has_root) out.valid=false;
@@ -34,7 +35,7 @@ root_boot_config_t root_boot_parse(const char *cmd,size_t capacity,bool truncate
             if (!nonzero) out.valid=false;
         }
     }
-    if (out.mode==ROOT_BOOT_LIVE ? out.has_root : !out.has_root) out.valid=false;
+    if (out.mode==ROOT_BOOT_LIVE || out.mode==ROOT_BOOT_INSTALLER ? out.has_root : !out.has_root) out.valid=false;
     return out;
 }
 

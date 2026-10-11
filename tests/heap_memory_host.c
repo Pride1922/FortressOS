@@ -247,6 +247,27 @@ static void test_pressure(void) {
            heap_get_free_bytes(), heap_get_free_bytes() - 32,
            (size_t)(heap_get_total_bytes() / PAGE_SIZE), count_tables());
 }
+static void test_bulk(void) {
+    const size_t bytes = 5 * 1024 * 1024;
+    size_t blocks = heap_get_allocated_blocks();
+    size_t total = heap_get_total_bytes();
+    assert(!kmalloc(bytes) && heap_get_total_bytes() == total);
+    /* Permit one batch and force a later batch to exhaust physical frames. */
+    size_t budget = frame_budget;
+    frame_budget = 520;
+    assert(!kmalloc_large(bytes));
+    assert(heap_get_total_bytes() > total);
+    assert(heap_get_allocated_blocks() == blocks && heap_verify_integrity());
+    frame_budget = budget - (heap_get_total_bytes() - total) / PAGE_SIZE;
+    unsigned char *p = kmalloc_large(bytes);
+    assert(p);
+    memset(p, 0x9b, bytes);
+    for (size_t i = 0; i < bytes; i++) assert(p[i] == 0x9b);
+    assert(heap_verify_integrity());
+    kfree(p);
+    assert(heap_get_allocated_blocks() == blocks && heap_verify_integrity());
+    puts("PASS bulk: single-batch cap preserved, later-batch OOM retains free heap, 5 MiB allocation/reclamation");
+}
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     initialize();
@@ -254,7 +275,7 @@ int main(int argc, char **argv) {
     if (!strcmp(which, "all") || !strcmp(which, "shrink")) test_shrink();
     if (!strcmp(which, "all") || !strcmp(which, "overflow")) test_overflow();
     if (!strcmp(which, "all")) {
-        test_audit(); test_resize(); test_pressure(); test_rollback();
+        test_audit(); test_resize(); test_pressure(); test_rollback(); test_bulk();
     }
     assert(munmap((void *)arena, HOST_PAGES * PAGE_SIZE) == 0);
     return 0;

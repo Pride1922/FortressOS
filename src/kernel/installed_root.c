@@ -7,6 +7,7 @@
 #include "string.h"
 #include "heap.h"
 #include "elf.h"
+#include "accounts.h"
 #include "vmm.h"
 #include "../../user/tools/userdb.h"
 
@@ -25,7 +26,7 @@ static bool rejected_write(block_dev_t *d,uint64_t l,const void *p) {(void)d;(vo
 
 bool installed_root_requested(const boot_info_t *info) {
     root_boot_config_t c=root_boot_parse(info->cmdline,sizeof(info->cmdline),info->cmdline_truncated);
-    return !c.valid || c.mode!=ROOT_BOOT_LIVE || c.has_root;
+    return !c.valid || (c.mode!=ROOT_BOOT_LIVE && c.mode!=ROOT_BOOT_INSTALLER) || c.has_root;
 }
 static bool read_node(vfs_node_t *node,void *bytes,size_t capacity,size_t *length) {
     vfs_metadata_t m;
@@ -74,10 +75,9 @@ static bool validate_tree(ext4_mount_t *mount) {
     }
     size_t len;
     if (!read_at(root,"/etc/fortress-install.v1",file_bytes,512,&len) || !root_manifest_validate(file_bytes,len,&recovery)) return false;
-    /* Durable account redo is Phase3. An intent is never ignored at this gate. */
-    vfs_node_t *pending=vfs_lookup_at_creds(root,"/var/lib/fortress/accounts/pending",&actor,&error);
-    if (pending) {vfs_node_put(pending);return false;}
-    if (error!=-VFS_ENOENT) return false;
+    /* Resolve redo against the detached root before reading canonical names.
+     * No installed authentication or process publication has occurred. */
+    if (accounts_prepare(mount)) return false;
     memset(&database,0,sizeof(database));
     const char *names[]={"/etc","/etc/passwd","/etc/group","/etc/shadow"};
     vfs_node_t *nodes[4]={0};bool ok=true;
@@ -174,16 +174,17 @@ bool installed_root_boot(const boot_info_t *info) {
     }
     reason="mandatory installed-system validation failed (recovery may have written)";
     if (!validate_tree(mount)) {
+        accounts_abandon();
         /* Detached nodes have no surviving validation handles. A failed freeze
          * is never reported clean, and tainted state is never reopened in place. */
         (void)ext4_freeze_and_sync(mount);(void)ext4_discard_prepared_root(mount);return false;
     }
     reason="root publication failed";
-    if (ext4_publish_root(mount)) {(void)ext4_freeze_and_sync(mount);(void)ext4_discard_prepared_root(mount);return false;}
+    if (ext4_publish_root(mount)) {accounts_abandon();(void)ext4_freeze_and_sync(mount);(void)ext4_discard_prepared_root(mount);return false;}
     published=true;
     serial_puts("[ROOT] Installed root admitted by PARTUUID; volatile namespaces attached\n");return true;
 }
-void installed_root_login_failed(void) {reason="installed login failed; installed authentication disabled";}
+void installed_root_login_failed(void) {accounts_disable();reason="installed login failed; installed authentication disabled";}
 bool installed_root_quiesce(void) {return !published || ext4_quiesce_installed_root(nvme_quiesce)==0;}
 const char *installed_root_recovery_hash(void) {return recovery_valid ? recovery.hash : NULL;}
 void installed_root_recovery_notice(void) {

@@ -5,11 +5,14 @@
 #include "vfs.h"
 #include "jbd2.h"
 #include "ext4_physical_fixture.h"
+#include "account_redo.h"
 
 /* Trusted devfs read adapter, no locks held on entry. handled distinguishes
  * no boot-published EXT4 mount from a handled I/O error (never retry errors).
  * Mount selection is boot-only; this is not a hot-mount/transport API. */
 bool ext4_device_read_sector(block_dev_t *,uint64_t,void *,bool *handled);
+/* Passive installer exclusion query. Includes a detached/preparing owner. */
+bool ext4_storage_owned(void);
 
 /* E4-A restricted-profile mounts at /mnt. Production USB dispatch uses the existing
  * explicit PARTUUID, GPT and durability admission policy. Reads <=64KiB, writes <=32KiB per callback;
@@ -48,12 +51,21 @@ void ext4_test_snapshot_fault(unsigned fault);
 #endif
 int ext4_prepare_root(block_dev_t *,bool admitted,ext4_mount_t **);
 int ext4_prepare_root_diagnose(block_dev_t *,bool admitted,ext4_mount_t **,const char **stage);
+/* Trusted installer handoff only: caller suspends all raw lease operations and
+ * owns the target exclusively until freeze/discard. This detached namespace can
+ * never be published as the running root and does not alter boot preparation. */
+int ext4_prepare_installer_root(block_dev_t *,bool exclusive,ext4_mount_t **,const char **stage);
 vfs_node_t *ext4_prepared_root(ext4_mount_t *);
 int ext4_publish_root(ext4_mount_t *);
 int ext4_discard_prepared_root(ext4_mount_t *);
 /* Phase2 boot-only pin of immutable account policy. No mutable authentication
  * until the Phase3 coherent reader/writer service replaces this exclusion. */
 int ext4_root_lock_accounts(ext4_mount_t *,vfs_node_t *nodes[4]);
+/* Trusted account service only. Fixed-role callbacks bypass account inode
+ * immutability only inside each filesystem operation, with no global bypass.
+ * Caller serializes readers/writers and supplies database validation callback. */
+int ext4_root_account_io(ext4_mount_t *,account_io_t *);
+int ext4_root_account_headroom(ext4_mount_t *);
 int ext4_sync_installed_root(bool *handled);
 int ext4_freeze_installed_root(bool *handled);
 /* After successful freeze: excludes all filesystem/raw reads, then invokes the

@@ -42,6 +42,11 @@ int main(void) {
     assert(db_verify("Hello world!","$5$saltstring$5B8vYYiY.CVt1RlTTf8KbXBH3hsxY/GNooZaBBGWEc5"));
     assert(!db_verify("p","!") && !db_verify("","*") && db_verify("","") && !db_verify("p",""));
     assert(!db_hash_valid("$5$rounds=100001$salt$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    char generated[78];
+    assert(db_crypt("a chosen password","abcdefghijklmnop",generated));
+    assert(!strcmp(generated,crypt("a chosen password","$5$rounds=100000$abcdefghijklmnop")));
+    assert(db_verify("a chosen password",generated) && !db_verify("wrong",generated));
+    assert(!db_crypt("","abcdefghijklmnop",generated) && !db_crypt("password","invalid!saltxxxxx",generated));
     assert(db_shadow(&db,"u:!:0::::::\n",strlen("u:!:0::::::\n")) && db.shadows[0].restricted);
     printf("PASS bounded passwd/group/9-field shadow, duplicates/overflow/rollback, 30000 hostile inputs; %u glibc crypt vectors and fixed known vector\n",vectors);
 }

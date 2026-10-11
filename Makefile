@@ -3,6 +3,29 @@
 
 SHELL := /bin/bash
 .DELETE_ON_ERROR:
+.PHONY: test-install-provision-host
+test-install-provision-host:
+	@python3 scripts/test_install_provision.py
+.PHONY: test-install-fat-host
+test-install-fat-host:
+	@python3 scripts/test_install_fat.py
+.PHONY: test-install-control-host
+test-install-control-host:
+	@python3 scripts/test_install_control.py
+
+.PHONY: test-install-payload-host
+test-install-payload-host:
+	@python3 scripts/test_install_payload.py
+
+.PHONY: test-account-redo-host test-accounts-persistent-host test-accounts-persistent
+test-account-redo-host:
+	@mkdir -p build
+	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -no-pie -Isrc/include tests/account_redo_host.c src/lib/account_redo.c user/tools/digest.c -o build/account-redo-host
+	@build/account-redo-host
+test-accounts-persistent-host:
+	@python3 scripts/test_root_phase3.py --host-only
+test-accounts-persistent:
+	@python3 scripts/test_root_phase3.py
 
 .PHONY: test-resched-return-host
 
@@ -647,23 +670,28 @@ $(USER_UDP_ELFS): $(BUILD_DIR)/%.elf: $(BUILD_DIR)/%.o user/tools/start.asm user
 $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)/net/udp.o $(BUILD_DIR)/net/net_ipv4.o: CFLAGS += -Os -Wframe-larger-than=512 -fstack-usage
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
-STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench lockstat chmod chown id shutdown reboot poweroff mkdir rm mv cp touch
-LOGIN_TOOLS := login whoami sudo recovery
+STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench lockstat chmod chown id shutdown reboot poweroff mkdir rm mv cp touch hostname
+LOGIN_TOOLS := login whoami sudo recovery passwd useradd
 LOGIN_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(LOGIN_TOOLS)))
+
+$(BUILD_DIR)/tool-hostname.o $(BUILD_DIR)/netconf.o $(BUILD_DIR)/ifup.o $(BUILD_DIR)/ifconfig.o: user/machine_config.h src/include/account_abi.h
 
 ifeq ($(LOGIN_TEST),1)
 CFLAGS += -DTEST_LOGIN_BOOT
+endif
+ifeq ($(INSTALLER_TEST),1)
+CFLAGS += -DTEST_INSTALLER
 endif
 
 $(BUILD_DIR)/tool-userdb.o: user/tools/userdb.c user/tools/userdb.h user/tools/digest.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
 
-$(BUILD_DIR)/tool-userdb_io.o: user/tools/userdb_io.c user/tools/userdb.h user/tools/common.h user/permissions_cli.h
+$(BUILD_DIR)/tool-userdb_io.o: user/tools/userdb_io.c user/tools/userdb.h user/tools/common.h user/permissions_cli.h src/include/account_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $< -o $@
 
-$(LOGIN_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/userdb.h user/entry_security.h user/permissions_cli.h $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/tools/start.asm user/shell.ld
+$(LOGIN_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/userdb.h user/tools/account_tool.h src/include/account_abi.h user/entry_security.h user/permissions_cli.h $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/tools/start.asm user/shell.ld
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-$*.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-digest.o $(BUILD_DIR)/tool-common.o -o $@
@@ -785,7 +813,7 @@ $(USER_DUAL_STREAM_ELF): $(USER_DIR)/dual_stream.asm $(USER_DIR)/linker.ld
 
 # Freestanding user shell, separate address-space ELF (no host runtime).
 SHELL_MODULES := $(wildcard user/shell/*.c)
-SHELL_HEADERS := user/entry_security.h $(wildcard user/shell/*.h) src/include/terminal.h src/include/syscall_abi.h user/tools/userdb.h
+SHELL_HEADERS := user/entry_security.h $(wildcard user/shell/*.h) src/include/terminal.h src/include/syscall_abi.h user/tools/userdb.h user/machine_config.h src/include/account_abi.h
 SHELL_OBJECTS := $(patsubst user/shell/%.c,$(BUILD_DIR)/shell-%.o,$(SHELL_MODULES)) $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-digest.o
 
 $(BUILD_DIR)/shell-%.o: user/shell/%.c $(SHELL_HEADERS)
@@ -1282,7 +1310,7 @@ ext4-fixtures:
 .PHONY: test-ext4-format-host
 test-ext4-format-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_format_host.c -o $(BUILD_DIR)/ext4_format_host
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_format_host.c -o $(BUILD_DIR)/ext4_format_host
 	@python3 scripts/test_ext4_format_host.py
 
 .PHONY: test-wget-host test-wget
@@ -1705,3 +1733,35 @@ test-root-phase1-host: $(KERNEL_ELF) $(INITRAMFS_TAR)
 	@python3 scripts/test_root_phase1.py --host-only
 test-root-phase1: $(KERNEL_ELF) $(INITRAMFS_TAR)
 	@python3 scripts/test_root_phase1.py
+
+.PHONY: installer-image
+# Separate workbench artifacts; preserve normal live media.
+installer-image: bin/fortress.elf bin/initramfs.tar build/tool-install.elf limine-setup
+	@python3 scripts/create_installer_media.py
+
+# Installer program is staged only by the separate media builder.
+build/tool-install.elf: user/tools/install.c src/include/install_abi.h src/include/terminal.h build/tool-userdb.o build/tool-common.o build/tool-digest.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c user/tools/install.c -o build/tool-install.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=install_main user/tools/start.asm -o build/tool-install-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld build/tool-install-start.o build/tool-install.o build/tool-userdb.o build/tool-digest.o build/tool-common.o -o $@
+
+build/tool-install-preview.elf: user/tools/install.c src/include/install_abi.h src/include/terminal.h build/tool-userdb.o build/tool-common.o build/tool-digest.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -DINSTALLER_PREVIEW -Os -fno-pie -fno-asynchronous-unwind-tables -c user/tools/install.c -o build/tool-install-preview.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=install_main user/tools/start.asm -o build/tool-install-preview-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld build/tool-install-preview-start.o build/tool-install-preview.o build/tool-userdb.o build/tool-digest.o build/tool-common.o -o $@
+
+.PHONY: test-install-runtime-host
+test-install-runtime-host: bin/fortress.elf bin/initramfs.tar
+	@python3 scripts/test_install_runtime.py
+
+.PHONY: test-install-cli-host test-root-phase4-host
+test-install-cli-host:
+	@python3 scripts/test_install_cli.py
+
+test-root-phase4-host: test-install-control-host test-install-payload-host test-install-fat-host test-install-provision-host test-install-runtime-host test-install-cli-host test-heap-memory-host test-root-boot-host
+
+.PHONY: test-root-phase4
+# Audited media workspace from create_installer_media.py, never a device path.
+test-root-phase4:
+	@test -n "$(INSTALLER_MEDIA)" || { echo 'Set INSTALLER_MEDIA to the retained build/root-phase4/media-* workspace'; exit 2; }
+	@python3 scripts/test_installer.py --media "$(INSTALLER_MEDIA)"

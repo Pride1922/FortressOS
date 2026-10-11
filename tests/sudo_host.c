@@ -6,6 +6,8 @@
 static bool authorized=true,empty=true,verify_ok=true,transition_fail;
 static unsigned transitions,spawns,reads,closes;
 static const char *input;static char output[2048];static size_t written;
+static bool generation_current=true;
+bool db_check(void) {return generation_current;}
 bool db_load(userdb_t *out,bool shadow) {
     assert(shadow);memset(out,0,sizeof(*out));out->nusers=2;out->ngroups=2;out->nshadows=1;
     out->users[0]=(db_user_t){.uid=0,.gid=0,.name="root"};
@@ -42,6 +44,8 @@ int main(void) {
     uintptr_t e[]={(uintptr_t)"PATH=/evil",(uintptr_t)"TERM=test",0,23,1,0,0};
     input="secret\n";assert(sudo_main(2,args,(const char *const *)e)==37);
     assert(transitions==3 && spawns==1 && !reads && closes==1);
+    generation_current=false;transitions=spawns=0;
+    assert(sudo_main(2,args,(const char *const *)e)==1 && !transitions && !spawns);generation_current=true;
     authorized=false;transitions=spawns=0;assert(sudo_main(2,args,(const char *const *)e)==1 && !transitions && !spawns);
     authorized=true;empty=false;assert(sudo_main(2,args,(const char *const *)e)==1 && !transitions && !spawns);
     empty=true;transition_fail=true;assert(sudo_main(2,args,(const char *const *)e)==1 && !spawns);

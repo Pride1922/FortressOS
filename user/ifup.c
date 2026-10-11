@@ -12,6 +12,7 @@ static inline long ifup_default_syscall(long nr, uintptr_t a, uintptr_t b, uintp
 #define IFUP_SYSCALL ifup_default_syscall
 #endif
 #include "resolv_conf.h"
+#include "machine_config.h"
 
 static size_t ifup_strlen(const char *s) {
     size_t n = 0;
@@ -155,7 +156,7 @@ int ifup_main(int argc, char **argv) {
     if (arg_count == 0 || (arg_count == 1 && netconf_parse_cidr(args[0], &req.local_ipv4, &prefix, &req.netmask_ipv4) != 0 &&
                            !ifup_str_equals(args[0], "-"))) {
         /* Config file mode */
-        const char *conf_path = (arg_count == 1) ? args[0] : NETCONF_DEFAULT_PATH;
+        const char *conf_path = (arg_count == 1) ? args[0] : machine_installed(IFUP_SYSCALL) ? "/etc/network.conf" : NETCONF_DEFAULT_PATH;
         static netconf_t conf;
         static char s_err_msg[256];
         s_err_msg[0] = '\0';

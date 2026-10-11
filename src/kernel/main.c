@@ -3140,6 +3140,7 @@ static void ext4_physical_commit_pause(void) {
 #endif
 /* Phase1 fixture has no production root selector or installation authority. */
 static bool g_installed_boot;
+static bool g_installer_boot;
 static bool g_explicit_live_boot;
 static bool root_phase1_requested(void) {
 #ifdef TEST_ROOT_PHASE1
@@ -3148,7 +3149,7 @@ static bool root_phase1_requested(void) {
     return false;
 #endif
 }
-static bool root_boot_workflow_requested(void) {return g_installed_boot || root_phase1_requested();}
+static bool root_boot_workflow_requested(void) {return g_installed_boot || g_installer_boot || root_phase1_requested();}
 static void root_phase1_fixture(const boot_info_t *info) {
     pci_device_t device;
     require_ext2(pci_find_device(PCI_CLASS_STORAGE,PCI_SUBCLASS_STORAGE_NVME,
@@ -5105,6 +5106,8 @@ void kmain(void) {
                    module_request.response,
                    kernel_file_request.response);
     g_installed_boot=installed_root_requested(&boot_info);
+    root_boot_config_t installer_config=root_boot_parse(boot_info.cmdline,sizeof(boot_info.cmdline),boot_info.cmdline_truncated);
+    g_installer_boot=installer_config.valid && installer_config.mode==ROOT_BOOT_INSTALLER;
     root_boot_config_t root_config=root_boot_parse(boot_info.cmdline,sizeof(boot_info.cmdline),boot_info.cmdline_truncated);
     g_explicit_live_boot=root_config.valid && root_config.explicit_mode && root_config.mode==ROOT_BOOT_LIVE;
 
@@ -6561,7 +6564,7 @@ pf_boot_guard_done:
     net_start(boot_info.cmdline, sizeof(boot_info.cmdline));
     boot_status("Mounting persistent storage (/mnt)...");
     if (ext4_physical_requested() || qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) test_ext4_journal_usb_mount(&boot_info);
-    else if (!g_installed_boot) usb_mount_production_storage(&boot_info);
+    else if (!g_installed_boot && !g_installer_boot) usb_mount_production_storage(&boot_info);
     devfs_add_usb_partitions();
     if (qemu_fw_cfg_has_key("opt/fortress/memory_storage_test") ||
         qemu_fw_cfg_has_key("opt/fortress/memory_storage_churn")) {
@@ -6598,6 +6601,15 @@ pf_boot_guard_done:
     installed_root_test_faults(qemu_fw_cfg_has_key("opt/fortress/root_flush_fail"),
         qemu_fw_cfg_has_key("opt/fortress/root_replay_fail"));
 #endif
+#ifdef TEST_INSTALLER
+    /* Separate disposable kernel only. Booting installer media alone never
+     * authorizes a backend; test runners must supply the exact fw_cfg gate. */
+    if (g_installer_boot && qemu_fw_cfg_has_key("opt/fortress/installer_disposable")) {
+        extern bool install_nvme_boot(const boot_info_t *,bool);
+        bool admitted=boot_info.installer_payload_valid && install_nvme_boot(&boot_info,true);
+        console_puts(admitted ? "Installer disposable backend ready\n" : "Installer target unavailable\n");
+    }
+#endif
     bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);
     bool recovery_shell=false;
 #ifdef TEST_ROOT_PHASE2
@@ -6605,6 +6617,7 @@ pf_boot_guard_done:
     if (login_fault) spawn_set_fault_injection(SPAWN_FAULT_VMM_USER_PML4,0);
 #endif
     const char *initial_program="/bin/login";
+    if (g_installer_boot) initial_program="/bin/install";
 #ifdef TEST_LOGIN_BOOT
     /* Only explicit test kernels accept the legacy direct-shell escape. */
     if (!g_installed_boot && strstr(boot_info.cmdline,"login=0")) initial_program="/bin/shell";

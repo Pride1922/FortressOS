@@ -15,11 +15,13 @@ typedef struct {
     xhci_dump_record_t dump_record;
 } xhci_controller_t;
 
-/* One-shot 9G.1b boot probe, after PCI/input initialization, with IRQs and
+/* One-shot boot probe, after PCI/input initialization, with IRQs and
  * preemption disabled and no locks held. Uses PIT channel 2 for bounded waits.
  * Sizes/restores BAR0 with decode disabled, maps UC/NX MMIO, requests firmware
  * ownership, halts/resets. Leaves bus mastering disabled and controller stopped.
- * No DMA allocation, rings, interrupts, port enumeration or USB I/O. Errors
+ * Explicit installer mode stops here: no DMA, rings, enumeration, storage
+ * registration or USB I/O. Ordinary mode continues the existing BOT storage
+ * probe and retains its DMA/quarantine ownership contracts. Errors
  * report in boot thread context and return to the caller; never halt the OS. */
 void xhci_boot_probe(const boot_info_t *boot_info);
 

@@ -3,7 +3,7 @@
 #include "types.h"
 #include "gpt.h"
 
-typedef enum { ROOT_BOOT_LIVE, ROOT_BOOT_INSTALLED, ROOT_BOOT_RECOVERY } root_boot_mode_t;
+typedef enum { ROOT_BOOT_LIVE, ROOT_BOOT_INSTALLED, ROOT_BOOT_RECOVERY, ROOT_BOOT_INSTALLER } root_boot_mode_t;
 typedef struct {
     root_boot_mode_t mode;
     gpt_guid_t partuuid;

@@ -11,6 +11,7 @@
 #include "serial.h"
 #include "spinlock.h"
 #include "dmesg.h"
+#include "root_boot.h"
 #include <string.h>
 
 static xhci_controller_t s_controllers[XHCI_MAX_CONTROLLERS];
@@ -258,6 +259,18 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
         goto unmap;
     }
     serial_puts("[USB 9G.1b] PASS: reset complete; halted, CNR=0\n");
+
+    /* Installer modules are already resident. Quiesce the firmware controller
+     * but do not enroll the source as writable runtime storage or allocate DMA
+     * rings. This preserves the exclusive raw-to-detached-root handoff. */
+    if (s_probe_boot_info) {
+        root_boot_config_t mode=root_boot_parse(s_probe_boot_info->cmdline,
+            sizeof(s_probe_boot_info->cmdline),s_probe_boot_info->cmdline_truncated);
+        if (mode.valid && mode.explicit_mode && mode.mode==ROOT_BOOT_INSTALLER) {
+            serial_puts("[USB] Installer mode: controller quiesced; source storage enrollment excluded\n");
+            error=NULL;goto unmap;
+        }
+    }
 
     /* Phase 9G.1c/d/e: Hardware Parameters & Structure Allocation */
     uint32_t op_off = mmio_read((void *)probe_virt, 0) & 0xff;

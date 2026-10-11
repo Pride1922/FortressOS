@@ -126,6 +126,8 @@ typedef struct file {
     uint64_t    offset;
     int         flags;
     int         ref_count;
+    /* Installer lease: one process/table entry; no duplication or inheritance. */
+    bool        exclusive_owner;
 } file_t;
 
 typedef struct {

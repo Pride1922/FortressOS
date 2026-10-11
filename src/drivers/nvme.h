@@ -2,6 +2,7 @@
 #define FORTRESS_NVME_H
 
 #include "types.h"
+#include "install_abi.h"
 
 /* NVMe Controller Register Offsets (Bar 0) */
 #define NVME_REG_CAP    0x0000  /* Controller Capabilities (64-bit) */
@@ -131,6 +132,10 @@ typedef struct {
 /* Public NVMe Driver API */
 bool     nvme_init(void);
 bool     nvme_is_initialized(void);
+/* Installer-only complete singleton inventory pinned at admission (no hotplug
+ * enrollment), selected-BDF validation and fresh complete Identify evidence on
+ * every call. Requires the calibrated BSP monotonic poll clock. No writes. */
+bool     nvme_installer_identity(install_identity_v1_t *);
 /* True only after a successful complete active-list query with exactly one
  * namespace; legacy NSID fallback never qualifies for installed admission. */
 bool     nvme_has_unique_namespace(void);

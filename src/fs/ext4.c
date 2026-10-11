@@ -38,6 +38,8 @@ struct ext4_mount {
     bool journal_bootstrap;
     bool journal_mounted, state_transition;
     bool trusted_root, detached;
+    bool installer_owned;
+    bool accounts_mutable;
     uint32_t account_inodes[4]; /* Phase2 immutable directory + complete DB set. */
     uint32_t orphan_access; /* Exclusive 8.4 workbench, one validated orphan. */
     uint32_t journal_ino;
@@ -79,6 +81,18 @@ static bool e4_account_inode(const ext4_mount_t *fs,uint32_t ino) {
     for (unsigned i=0;i<4;i++) if (fs->account_inodes[i]==ino) return true;
     return false;
 }
+static bool e4_account_readonly(const ext4_mount_t *fs,uint32_t ino) {
+    return e4_account_inode(fs,ino) && !(fs->accounts_mutable && ino==fs->account_inodes[0]);
+}
+static bool e4_account_directory(vfs_node_t *n) {
+    e4_inode_t *in=n->fs_private;return in->fs->accounts_mutable && in->ino==in->fs->account_inodes[0];
+}
+static bool e4_account_name(vfs_node_t *dir,const char *name) {
+    if (!e4_account_directory(dir)) return false;
+    const char *names[]={"passwd","group","shadow","passwd.publish","group.publish","shadow.publish"};
+    for (unsigned i=0;i<6;i++) if (!strcmp(name,names[i])) return true;
+    return false;
+}
 /* Boot publishes at most one /mnt filesystem before user execution. Raw
  * read-only devfs I/O joins that same exclusion; never nests filesystem locks. */
 bool ext4_device_read_sector(block_dev_t *dev,uint64_t lba,void *buf,bool *handled) {
@@ -90,6 +104,11 @@ bool ext4_device_read_sector(block_dev_t *dev,uint64_t lba,void *buf,bool *handl
     return ok;
 }
 static bool e4_engine_busy;
+bool ext4_storage_owned(void) {
+    spin_debug_assert_unheld();uint64_t flags=spin_lock_irqsave(&e4_lock);
+    bool owned=e4_active || e4_engine_busy;
+    spin_unlock_irqrestore(&e4_lock,flags);return owned;
+}
 static void e4_engine_owner(ext4_engine_t *e);
 static int e4_journal_drain(ext4_mount_t *fs,bool finish);
 static bool e4_mounted_orphan(ext4_mount_t *fs,uint32_t ino);
@@ -585,7 +604,7 @@ static int e4_metadata(vfs_node_t *node,vfs_metadata_t *out) {
         else r=e4_inode(fs,n->inode.ino,&in);
     }
     if (!r) *out=(vfs_metadata_t){.size=in.size,.type=node->type,.mode=in.full_mode,
-        .uid=in.uid,.gid=in.gid,.mnt_flags=(in.fs->engine && !in.fs->frozen && !e4_account_inode(in.fs,in.ino) ? 0 : VFS_MNT_RDONLY)|(in.fs->trusted_root ? 0 : VFS_MNT_NOSUID)|VFS_MNT_NODEV};
+        .uid=in.uid,.gid=in.gid,.mnt_flags=(in.fs->engine && !in.fs->frozen && !e4_account_readonly(in.fs,in.ino) ? 0 : VFS_MNT_RDONLY)|(in.fs->trusted_root ? 0 : VFS_MNT_NOSUID)|VFS_MNT_NODEV};
     spin_unlock_irqrestore(&e4_lock,flags);return r;
 }
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
@@ -605,7 +624,7 @@ static void e4_setup(e4_node_t *n, e4_inode_t *in) {
     n->inode=*in; n->node.fs_private=&n->inode; n->node.size=in->size;
     n->node.type=in->mode==0x4000 ? VFS_DIRECTORY : VFS_FILE;
     n->node.mode=in->full_mode;n->node.uid=in->uid;n->node.gid=in->gid;
-    n->node.mnt_flags=(in->fs->engine && !in->fs->frozen && !e4_account_inode(in->fs,in->ino) ? 0 : VFS_MNT_RDONLY)|(in->fs->trusted_root ? 0 : VFS_MNT_NOSUID)|VFS_MNT_NODEV;
+    n->node.mnt_flags=(in->fs->engine && !in->fs->frozen && !e4_account_readonly(in->fs,in->ino) ? 0 : VFS_MNT_RDONLY)|(in->fs->trusted_root ? 0 : VFS_MNT_NOSUID)|VFS_MNT_NODEV;
     n->node.metadata=e4_metadata;
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
     n->node.exec_snapshot=e4_exec_snapshot;
@@ -869,6 +888,7 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
 #include "ext4_permissions.inc"
 #endif
+#include "ext4_accounts.inc"
 
 static size_t e4_profile_text(char *out,size_t cap,size_t n,const char *text) {
     while (*text) { if (n<cap) out[n++]=*text; text++; } return n;

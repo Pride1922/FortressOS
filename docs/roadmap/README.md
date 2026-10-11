@@ -21,6 +21,9 @@ and are not proof that every current revision has passed every test — check
 Persistent root / NVMe installer: [Phase 0 contracts and disposable fixture evidence](persistent-root-phase0.md).
 Executable and boot-only namespace plumbing: [Phase 1 acceptance evidence](persistent-root-phase1.md).
 Installed boot, authenticated recovery and shutdown: [Phase 2 acceptance evidence](persistent-root-phase2.md).
+Durable accounts, machine configuration and private history: [Phase 3 acceptance evidence](persistent-root-phase3.md).
+Runtime deployment, text installer, separate media and Dell interface-only preview:
+[Phase 4 progress and outstanding gates](persistent-root-phase4.md).
 
 Latest SMP environment evidence: [Dell benchmark results and decision](smpbench-dell-results.md).
 Next measurement build: [spawn and pipe writer startup diagnostics](smpbench-spawn-profile.md).
@@ -120,7 +123,7 @@ Targeted experiment: [kernel-stack batch mapping and matched Dell images](kstack
 [Shell S7]    Pipes and stream utilities                      (Phases 1–6 COMPLETE; QEMU 1/4/8 CPUs, Dell RO/RW)
 [Shell S8]    Jobs, signals and process groups               (COMPLETE; QEMU BIOS/UEFI SMP=1 + Dell SIGPIPE observation)
 [NET NET-1]  Ethernet/ARP, IPv4/ICMP ping, BSP worker       (Phases 0–4 COMPLETE: host + QEMU; 4b physical LAN-peer accepted; 5 UDP next)
-[Following]  Accounts/permissions, then installer           (NEXT)
+[Current]    Persistent root installer Phase 4             (IN PROGRESS)
 ```
 
 E4-A: [Dell 5590 physical acceptance](ext4-phase5-acceptance.md), all seven Phase-5 items PASS, 2026-10-03.

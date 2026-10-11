@@ -4,10 +4,28 @@
 #include "terminal.h"
 #include "io.h"
 #include "vfs.h"
+#include "vars.h"
+#include "../machine_config.h"
 
 #define HISTORY_PATH "/mnt/.fortress/history"
 #define HISTORY_DIR  "/mnt/.fortress"
 #define HISTORY_MAGIC "FOSHIS1\n"
+#ifndef HISTORY_PERSIST_HOST_MOCK
+static char installed_history[VFS_MAX_PATH];
+#endif
+static const char *history_path(void) {
+#ifdef HISTORY_PERSIST_HOST_MOCK
+    return HISTORY_PATH;
+#else
+    if (!machine_installed(call)) return HISTORY_PATH;
+    const char *home=vars_get("HOME");size_t n=home ? length(home) : 0;
+    if (!n || home[0]!='/' || n+18>=sizeof(installed_history)) return NULL;
+    for (size_t i=0;i<n;i++) installed_history[i]=home[i];
+    const char tail[]="/.fortress-history";
+    for (size_t i=0;i<sizeof(tail);i++) installed_history[n+i]=tail[i];
+    return installed_history;
+#endif
+}
 
 static bool s_history_dirty = false;
 static uint32_t s_history_cmd_counter = 0;
@@ -32,6 +50,16 @@ bool history_is_warned(void) {
 #ifndef HISTORY_PERSIST_HOST_MOCK
 static char io_buf[512];
 
+static bool history_write(long fd, const char *data, size_t size) {
+    size_t off=0;
+    while (off<size) {
+        long n=call(SYS_WRITE,fd,(uintptr_t)(data+off),size-off);
+        if (n<=0 || (size_t)n>size-off) return false;
+        off+=(size_t)n;
+    }
+    return true;
+}
+
 static void put_number_str(char *buf, size_t *pos, uint64_t n) {
     char tmp[24];
     int tp = 0;
@@ -46,8 +74,9 @@ static void put_number_str(char *buf, size_t *pos, uint64_t n) {
 }
 
 bool history_save(void) {
+    const char *path=history_path();if (!path) return false;
     /* 1. Ensure directory /mnt/.fortress exists */
-    long r = call(SYS_MKDIR, (uintptr_t)HISTORY_DIR, 0755, 0);
+    long r = path==installed_history ? 0 : call(SYS_MKDIR, (uintptr_t)HISTORY_DIR, 0755, 0);
     if (r < 0 && r == SYSCALL_EROFS) {
         if (!s_history_warned) {
             puts("history: persistent storage is read-only\n");
@@ -58,7 +87,15 @@ bool history_save(void) {
     }
 
     /* 2. Open /mnt/.fortress/history with O_WRONLY | O_CREAT | O_TRUNC */
-    long fd = call(SYS_OPEN, (uintptr_t)HISTORY_PATH, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
+    bool installed=path==installed_history;
+    long mask=installed ? call(SYS_UMASK,0077,0,0) : 0;
+    if (mask<0) return false;
+    long fd = call(SYS_OPEN, (uintptr_t)path, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
+    if (installed) (void)call(SYS_UMASK,(uintptr_t)mask,0,0);
+    if (fd>=0 && installed && call(SYS_FCHMOD,fd,0600,0)<0) {
+        (void)call(SYS_CLOSE,fd,0,0);
+        return false;
+    }
     if (fd < 0) {
         if (fd == SYSCALL_EROFS) {
             if (!s_history_warned) {
@@ -74,7 +111,7 @@ bool history_save(void) {
     const char *magic = HISTORY_MAGIC;
     size_t mlen = 0;
     while (magic[mlen]) mlen++;
-    if (call(SYS_WRITE, fd, (uintptr_t)magic, mlen) <= 0) {
+    if (!history_write(fd,magic,mlen)) {
         (void)call(SYS_CLOSE, fd, 0, 0);
         return false;
     }
@@ -89,31 +126,31 @@ bool history_save(void) {
         size_t bpos = 0;
         put_number_str(io_buf, &bpos, elen);
         io_buf[bpos++] = '\n';
-        if (call(SYS_WRITE, fd, (uintptr_t)io_buf, bpos) <= 0) {
+        if (!history_write(fd,io_buf,bpos)) {
             (void)call(SYS_CLOSE, fd, 0, 0);
             s_history_cmd_counter = 0;
             return false;
         }
 
         if (elen > 0) {
-            if (call(SYS_WRITE, fd, (uintptr_t)entry, elen) <= 0) {
+            if (!history_write(fd,entry,elen)) {
                 (void)call(SYS_CLOSE, fd, 0, 0);
                 s_history_cmd_counter = 0;
                 return false;
             }
         }
         char nl = '\n';
-        if (call(SYS_WRITE, fd, (uintptr_t)&nl, 1) <= 0) {
+        if (!history_write(fd,&nl,1)) {
             (void)call(SYS_CLOSE, fd, 0, 0);
             s_history_cmd_counter = 0;
             return false;
         }
     }
 
-    (void)call(SYS_CLOSE, fd, 0, 0);
+    if (call(SYS_CLOSE, fd, 0, 0)<0) return false;
 
     /* 5. Sync storage */
-    (void)call(SYS_SYNC, 0, 0, 0);
+    if (call(SYS_SYNC, 0, 0, 0)<0) return false;
 
     s_history_dirty = false;
     s_history_cmd_counter = 0;
@@ -122,11 +159,12 @@ bool history_save(void) {
 #endif
 
 bool history_load(void) {
+    const char *path=history_path();if (!path) return false;
     s_history_dirty = false;
     s_history_cmd_counter = 0;
     s_history_warned = false;
 
-    long fd = call(SYS_OPEN, (uintptr_t)HISTORY_PATH, VFS_O_RDONLY, 0);
+    long fd = call(SYS_OPEN, (uintptr_t)path, VFS_O_RDONLY, 0);
     if (fd < 0) return false;
 
     /* Verify magic */

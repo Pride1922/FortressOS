@@ -308,8 +308,8 @@ void heap_init(void) {
     serial_puts(" (Capacity: 16 KiB)\n");
 }
 
-/* Internal unlocked kmalloc */
-static void *kmalloc_unlocked(size_t size) {
+/* Internal unlocked kmalloc; multi_batch is only used by kmalloc_large */
+static void *kmalloc_impl(size_t size, bool multi_batch) {
     if (size == 0 || !g_heap_ready) {
         return NULL;
     }
@@ -346,21 +346,34 @@ static void *kmalloc_unlocked(size_t size) {
 
     /* If no fit found, attempt to expand heap on-demand */
     if (!matched_hdr) {
-        if (!heap_expand(total_size)) {
-            return NULL; /* Out of memory */
+        /* Requests larger than one expansion batch grow the heap in several
+         * capped, individually transactional batches; adjacent free space is
+         * coalesced by heap_expand. A failed later batch leaves earlier ones
+         * as ordinary free heap. */
+        size_t batch_cap = (size_t)MAX_EXPANSION_BATCH_PAGES * PAGE_SIZE;
+        size_t remaining = total_size;
+        if (!multi_batch && remaining > batch_cap) {
+            return NULL; /* ordinary kmalloc keeps the single-batch cap */
         }
-        /* Search again after expansion */
-        curr = g_free_list_head;
-        while (curr) {
-            heap_block_header_t *hdr = (heap_block_header_t *)((uint8_t *)curr - sizeof(heap_block_header_t));
-            if (hdr->size >= total_size) {
-                matched_hdr = hdr;
-                break;
+        while (!matched_hdr) {
+            size_t step = remaining > batch_cap ? batch_cap : remaining;
+            if (!heap_expand(step)) {
+                return NULL; /* Out of memory */
             }
-            curr = curr->next;
-        }
-        if (!matched_hdr) {
-            return NULL;
+            remaining -= step < remaining ? step : remaining;
+            /* Search again after expansion */
+            curr = g_free_list_head;
+            while (curr) {
+                heap_block_header_t *hdr = (heap_block_header_t *)((uint8_t *)curr - sizeof(heap_block_header_t));
+                if (hdr->size >= total_size) {
+                    matched_hdr = hdr;
+                    break;
+                }
+                curr = curr->next;
+            }
+            if (!matched_hdr && remaining == 0) {
+                return NULL;
+            }
         }
     }
 
@@ -403,9 +416,23 @@ static void *kmalloc_unlocked(size_t size) {
     return (void *)((uint8_t *)matched_hdr + sizeof(heap_block_header_t));
 }
 
+static void *kmalloc_unlocked(size_t size) {
+    return kmalloc_impl(size, false);
+}
+
 void *kmalloc(size_t size) {
     uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
     void *ptr = kmalloc_unlocked(size);
+    spin_unlock_irqrestore(&g_heap_lock, rflags);
+    return ptr;
+}
+
+/* Bulk allocation for trusted one-shot buffers (installer ESP/archive). Same
+ * allocator and kfree(); only differs by growing the heap in several capped
+ * transactional batches. Ordinary kmalloc retains its single-batch cap. */
+void *kmalloc_large(size_t size) {
+    uint64_t rflags = spin_lock_irqsave(&g_heap_lock);
+    void *ptr = kmalloc_impl(size, true);
     spin_unlock_irqrestore(&g_heap_lock, rflags);
     return ptr;
 }
