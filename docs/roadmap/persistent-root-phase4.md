@@ -1,8 +1,11 @@
 # Persistent root Phase 4 progress evidence
 
-2026-10-11. **IN PROGRESS — runtime installer connected; full matrix running.**
-This does not complete the Phase 4 installer request or its acceptance gate.
-[Implementation progress and remaining work](../plans/PERSISTENT_ROOT_PHASE4.md).
+2026-10-12. **COMPLETE — DISPOSABLE TARGETS ONLY.**
+BIOS/UEFI installation/boot/recovery/exclusion/fault matrix: **70/70 PASS**.
+Earlier progress and failed attempts below remain historical evidence; the
+final acceptance checkpoint is at the end. Physical installation and release
+enablement remain Phase 5.
+[Implemented contracts and limits](../plans/PERSISTENT_ROOT_PHASE4.md).
 
 ## Baseline preservation
 
@@ -251,3 +254,115 @@ full Phase 4 acceptance are not established by these photos.
 Evidence paths under `build/` refer to retained local runs and are excluded from
 Git. Source, reproducible runners, contracts and this Dell photo are committed;
 generated disk images and full local test logs are not GitHub release artifacts.
+
+## Final disposable acceptance (2026-10-12)
+
+**70/70 PASS**, using audited [media-ktv6f0hm](../../build/root-phase4/media-ktv6f0hm/manifest.json):
+
+- BIOS/KVM [guest-slp8fcki](../../build/root-phase4/guest-slp8fcki/manifest.json): 35/35.
+- UEFI/KVM [guest-nw3dh4na](../../build/root-phase4/guest-nw3dh4na/manifest.json): 35/35.
+
+Exact commands: `FORTRESS_INSTALL_ACCEL=kvm python3 scripts/test_installer.py
+--media build/root-phase4/media-ktv6f0hm --firmware bios` and the same invocation
+with `--firmware uefi`. Each firmware covers seven zero-write input rejection
+profiles; ISO installation at 384/512 MiB and raw USB installation onto a blank
+384 MiB target; independent Linux GPT/FAT/EXT4, byte, permission and credential
+audits; three persistence boots; SMP=4/8 installed boot; eight authenticated
+root rejection/recovery cases; absent gate, unsupported geometry, two NVMe
+controllers, undersized target, source-parent exclusion; a real throttled NVMe
+deadline with quiescence; raw-source removal/boot; and cross-install recovery
+secret rejection. All six installations have distinct disk GUIDs, root PARTUUIDs,
+installation IDs and both credential salts, including across firmware runs.
+Both runs retain identical source-hash maps and unchanged normal ISO/raw hashes.
+
+The blank-target adapter now permits a zero MBR/primary-header/final-header
+tuple for generic source media. Nonzero malformed metadata, a remaining source
+protective MBR/backup header and read failures still reject before writes.
+Readonly source-parent exclusion and fresh Identify binding remain enforced.
+Actual-code host tests cover these admission decisions.
+
+QEMU xHCI/OVMF stalls before kernel entry; EHCI boots the same raw preview bytes
+in [preview-oo2nhbvu](../../build/root-phase4/preview-oo2nhbvu/manifest.json).
+The final UEFI raw installer fixture therefore uses EHCI; BIOS retains xHCI.
+This qualifies UEFI raw USB/EHCI acceptance, not QEMU xHCI firmware acceptance.
+Earlier UEFI [guest-ga01v8_a](../../build/root-phase4/guest-ga01v8_a/manifest.json)
+passed ISO install/persistence/recovery but was deliberately superseded to apply
+the blank-target and EHCI fixture changes; its interrupted result is not counted.
+
+Fresh `make test-root-phase4-host` passes: control/inspection
+[leases-60302657](../../build/root-phase4/leases-60302657/manifest.json),
+archive/deployment [payload-8ty611xq](../../build/root-phase4/payload-8ty611xq/manifest.json)
+(1548 archive cases, 284 deployment cases and independent output oracle),
+FAT [fat-v18hqbp0](../../build/root-phase4/fat-v18hqbp0/manifest.json),
+detached provisioning [provision-ft1hbw9r](../../build/root-phase4/provision-ft1hbw9r/manifest.json),
+actual runtime [runtime-6m2hm77r](../../build/root-phase4/runtime-6m2hm77r/manifest.json),
+CLI [cli-opnntpwt](../../build/root-phase4/cli-opnntpwt/manifest.json),
+actual heap bulk/OOM/reclamation tests, and boot/PCI/authenticated recovery host
+regressions. All mocks retain their previously labelled scope. Normal media
+remain SHA-256 `1fd918dff349a2928c2c56936357aaa844ae5bba84e4f92a65a5e1f0c358248c`
+(ISO) and `cb6b774d35d4ac1cad6728179e7907efa275e2bb1c3039e5b97f26c291294119` (raw).
+
+No host physical device was opened or written. These results complete Phase 4
+for disposable targets; physical cache durability, disconnect, interruption and
+installation remain Phase 5 acceptance.
+
+## Identity-only spare-drive preparation (2026-10-12)
+
+The user supplied “SK hynix 256 GB PCIe Gen 3 x4” and intends to fit the spare
+in the Dell 5590. Exact identity is pending the separate read-only inspection
+screen. See [Phase 5 preparation](../plans/PERSISTENT_ROOT_PHASE5.md).
+
+`bin/fortress-nvme-inspect.iso` is separately built with INSTALLER_INSPECT=1 and
+without TEST_INSTALLER. Only ENUM identity is available: eligibility is cleared,
+and sector read/write, flush and deploy callbacks are absent. Host tests prove
+the callback/identity policy; [inspect-q4iexbqg](../../build/root-phase4/inspect-q4iexbqg/manifest.json)
+passes BIOS/UEFI real-driver identity display with unchanged writable NVMe
+sentinel hashes. The ISO SHA-256 is
+`f6d0bd695307fa2502467b8b073378de851e29c19c1c4befcf1f37fd328cdccf`.
+This is not a physical write-enabled installer. The first packaging attempt used
+incorrect relative paths and failed before producing accepted media; rerunning
+with absolute isolated-workspace paths passed. Inspector source is now in the
+repository with `--inspect` producer support and a retained guest gate.
+
+### Installer usability revision — 2026-10-12
+
+The Dell operator reported hidden input, hard-to-read disk identity fields, a
+12-character password minimum, a fixed `operator` name, a 64-character erase
+confirmation and full restarts after input mistakes. The revised interface:
+
+- Shows one admitted disk by model, human-readable capacity and serial. Selection
+  is `1`; source media and other hardware remain excluded by the backend.
+- Echoes public choices and masks passwords with asterisks; file checking, hashing,
+  copying, provisioning and verification announce their work.
+- Accepts 8–128 printable ASCII characters for login and independent recovery.
+  Recovery authentication also uses the same eight-character minimum.
+- Lets the user choose a bounded lowercase username. Deployment ABI v2 is 288
+  bytes with the complete v1 prefix and a 32-byte name field; legacy v1 still
+  provisions `operator`. The detached account redo transaction installs the
+  chosen passwd/group/shadow records and a validated 0700 home owned by UID/GID
+  1000, with membership in wheel.
+- Uses final `YES` confirmation while preserving fresh complete identity/generation
+  checks, exclusive lease ownership and the compile-bound physical fingerprint.
+  Input mistakes retry the current step; `NO`, Escape or Ctrl-C cancel and wipe.
+
+Evidence: `build/root-phase4/bound-d3trzhts` passes 38 BIOS/UEFI regular-file
+checks with username `fabio` and eight-character login, including seven input
+retry/cancel paths per firmware, Linux audits, three boots, authenticated recovery
+and six hardware/exclusion controls. `build/root-phase4/credentials-b8f6xuja`
+passes eight further BIOS/UEFI install/audit/boot/recovery checks with both login
+and recovery passwords eight characters long; recovery rejects the login secret.
+The full host suite passes in `guest-workspace-hx7368pc` (log
+`build/root-phase4/ux-host-isolated.log`). Updated recovery host boundaries pass
+in `build/root-phase4/ux-recovery-host.log`; chosen-name runtime and Linux audits
+pass in `build/root-phase4/runtime-ievg451i`; final CLI sanitizer checks pass in
+`build/root-phase4/cli-yyjdwb32`. Sub-gigabyte capacity formatting was corrected
+after the guest suite and verified by the actual CLI host adapter.
+
+The first guest attempt, `build/root-phase4/bound-qx6j2eqf`, hit a real NVMe
+timeout during copying while host gates also ran. Its failure is retained; no
+success is claimed for that attempt and no cause was established. The separate
+subsequent guest run passed without changing the driver timeout policy.
+
+Normal live ISO/image hashes remain protected. All agent test writes are to
+disposable regular files. The user's physical install and clean-shutdown
+persistence results are recorded separately in the [Phase 5 evidence](persistent-root-phase5.md).

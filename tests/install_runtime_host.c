@@ -35,7 +35,7 @@ static void *load_module(const char *dir,const char *name,uint64_t *size) {
     void *p=malloc(st.st_size);assert(p && read(fd,p,st.st_size)==st.st_size);close(fd);*size=st.st_size;return p;
 }
 int main(int argc,char **argv) {
-    assert(argc==4);boot_info_t boot={.installer_source_valid=true,.installer_source_optical=true,.installer_payload_valid=true};
+    assert(argc==4 || argc==5);boot_info_t boot={.installer_source_valid=true,.installer_source_optical=true,.installer_payload_valid=true};
     const char *names[]={"esp.img","root.img","bios.img","mbr.bin","payload.v1"};
     for (unsigned i=0;i<5;i++) boot.installer_payload_vaddr[i]=(uintptr_t)load_module(argv[1],names[i],&boot.installer_payload_size[i]);
     boot.initramfs_vaddr=(uintptr_t)load_module(argv[1],"bootstrap-source.tar",&boot.initramfs_size);
@@ -56,7 +56,9 @@ int main(int argc,char **argv) {
         memset(g,i+1,16);g[7]=0x40;g[8]=0x80;
     }
     memset(request.install_id,0x17,16);
-    int r=install_runtime_deploy(&boot,&backend,&target_identity,&request,&status);
+    install_deploy_v2_t named={.base=request};
+    if (argc==5) {named.base.size=sizeof(named);named.base.version=2;snprintf(named.username,sizeof(named.username),"%s",argv[4]);}
+    int r=install_runtime_deploy(&boot,&backend,&target_identity,argc==5 ? &named.base : &request,&status);
     if (r) fprintf(stderr,"runtime error %d stage %u reads %u writes %u flushes %u\n",r,status.stage,target_reads,target_writes,target_flushes);
     assert(!r && status.complete && status.stage==INSTALL_STAGE_COMPLETE);
     assert(g_vfs_root==root && !enabled && !storage.context && !ext4_storage_owned() && live==baseline_live);

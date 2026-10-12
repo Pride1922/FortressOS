@@ -55,16 +55,17 @@ static int lease_check(tcb_t *proc,int fd) {
     return r;
 }
 int64_t install_control(unsigned op,uintptr_t input,size_t input_size,uintptr_t output,size_t output_size,const creds_t *actor) {
-    size_t required=op==INSTALL_DEPLOY ? sizeof(install_deploy_v1_t) : op==INSTALL_ENUM || op==INSTALL_FLUSH || op==INSTALL_RELEASE ? 4 :
+    size_t required=op==INSTALL_DEPLOY ? (input_size==sizeof(install_deploy_v2_t) ? sizeof(install_deploy_v2_t) : sizeof(install_deploy_v1_t)) : op==INSTALL_ENUM || op==INSTALL_FLUSH || op==INSTALL_RELEASE ? 4 :
         op==INSTALL_ACQUIRE ? sizeof(install_target_v1_t) : sizeof(install_io_v1_t);
     size_t out_size=op==INSTALL_DEPLOY ? sizeof(install_status_v1_t) : op==INSTALL_ENUM ? sizeof(install_identity_v1_t) : op==INSTALL_ACQUIRE ? 4 : 0;
     if (op>INSTALL_DEPLOY || input_size!=required || output_size!=out_size || (!out_size && output)) return SYSCALL_EINVAL;
     if (!range(input,required,false)) return SYSCALL_EFAULT;
-    union {uint32_t index;int32_t fd;install_target_v1_t target;install_io_v1_t io;install_deploy_v1_t deploy;} request;
+    union {uint32_t index;int32_t fd;install_target_v1_t target;install_io_v1_t io;install_deploy_v1_t deploy;install_deploy_v2_t deploy2;} request;
     memset(&request,0,sizeof(request));memcpy(&request,(void *)input,required);
-    if (op==INSTALL_DEPLOY && (request.deploy.size!=required || request.deploy.version!=1 ||
+    if (op==INSTALL_DEPLOY && (request.deploy.size!=required || request.deploy.version!=(required==sizeof(install_deploy_v2_t) ? 2u : 1u) ||
         request.deploy.flags>INSTALL_DRY_RUN || !zero(request.deploy.reserved,4) ||
         (request.deploy.flags==INSTALL_DRY_RUN && request.deploy.fd!=-1))) return SYSCALL_EINVAL;
+    if (op==INSTALL_DEPLOY && request.deploy.version==2 && !install_username_valid(request.deploy2.username)) return SYSCALL_EINVAL;
     if (op==INSTALL_ACQUIRE && (request.target.size!=required || request.target.version!=1 ||
         request.target.flags!=INSTALL_CONFIRM_WHOLE_DISK || !zero(request.target.reserved,8))) return SYSCALL_EINVAL;
     if ((op==INSTALL_READ || op==INSTALL_WRITE) && (request.io.size!=required || request.io.version!=1 ||

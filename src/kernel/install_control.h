@@ -14,6 +14,7 @@ typedef struct {
     /* Called while the control gate excludes all other lease/raw operations.
      * Trusted adapter owns detached mount handoff until freeze/discard. */
     int (*deploy)(void *,const install_deploy_v1_t *,install_status_v1_t *);
+    void (*progress)(void *,unsigned);
 } install_backend_t;
 void install_control_boot(const install_backend_t *,bool installer_mode);
 void install_identity_digest(install_identity_v1_t *);

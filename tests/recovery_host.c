@@ -39,5 +39,8 @@ int main(void) {
     snprintf(text,sizeof(text),"bad\001input\n%s\n",secret);reset(text);assert(!recovery_main(2,args) && wipes==2);
     reset("partial");assert(recovery_main(2,args)==1 && wipes==1 && !strstr(output,"partial"));
     root_actor=false;reset(text);assert(recovery_main(2,args)==1 && !written && !wipes);
-    puts("PASS actual independent recovery: crypt, no echo, empty/short/overflow/non-ASCII rejection, BSP deadlines, flood resistance and plaintext wipe");
+    root_actor=true;
+    value=crypt("recover8","$5$rounds=100000$abcdefghijklmnop");memcpy(hash,value,strlen(value)+1);
+    reset("seven77\nrecover8\n");assert(!recovery_main(2,args) && wipes==2 && delays>=2 && !strstr(output,"recover8"));
+    puts("PASS actual independent recovery: 8-character acceptance and 7-character rejection; crypt, no echo, empty/short/overflow/non-ASCII rejection, BSP deadlines, flood resistance and plaintext wipe");
 }

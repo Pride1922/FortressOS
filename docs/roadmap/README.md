@@ -23,7 +23,8 @@ Executable and boot-only namespace plumbing: [Phase 1 acceptance evidence](persi
 Installed boot, authenticated recovery and shutdown: [Phase 2 acceptance evidence](persistent-root-phase2.md).
 Durable accounts, machine configuration and private history: [Phase 3 acceptance evidence](persistent-root-phase3.md).
 Runtime deployment, text installer, separate media and Dell interface-only preview:
-[Phase 4 progress and outstanding gates](persistent-root-phase4.md).
+[Phase 4 disposable acceptance, 70/70 BIOS/UEFI cases](persistent-root-phase4.md).
+Dell spare-drive installation, USB-free boot and clean-shutdown persistence are user-confirmed; physical recovery and independent audits remain open: [Phase 5](persistent-root-phase5.md).
 
 Latest SMP environment evidence: [Dell benchmark results and decision](smpbench-dell-results.md).
 Next measurement build: [spawn and pipe writer startup diagnostics](smpbench-spawn-profile.md).
@@ -109,21 +110,22 @@ Targeted experiment: [kernel-stack batch mapping and matched Dell images](kstack
 ## Checkpoint sequence (for orientation only — not authoritative status)
 
 ```
-[Phase 1–9C] Boot, memory, threads, syscalls, VFS, storage track (COMPLETE)
-[Phase 9D]   Bounded writable ext2                         (COMPLETE)
-[Phase 9E]   Program execution, ABI, exit status            (COMPLETE)
-[Phase 9F]   Raw disk image packaging                       (COMPLETE)
-[Phase 9G]   USB storage, through 9G.5b                     (COMPLETE)
-[Phase 9G.5] USB topology expansion                         (9G.5a, 9G.5b complete; 9G.5c/d/e open)
-[Phase 9H]   32 GiB RAM support                              (COMPLETE)
-[SMP]        Multi-core support                              (Pieces 1-5, 6A, 6B, 6C, 6D COMPLETE)
-[Shell S0–S2] Terminal foundation, editing, RAM history      (Implemented, QEMU PASS, Dell pending)
-[Shell S3–S5] Quotes, variables, expansion, persistent history (COMPLETE)
-[Shell S6]    Redirection & descriptor architecture           (COMPLETE, Dell 5590 verified)
-[Shell S7]    Pipes and stream utilities                      (Phases 1–6 COMPLETE; QEMU 1/4/8 CPUs, Dell RO/RW)
-[Shell S8]    Jobs, signals and process groups               (COMPLETE; QEMU BIOS/UEFI SMP=1 + Dell SIGPIPE observation)
-[NET NET-1]  Ethernet/ARP, IPv4/ICMP ping, BSP worker       (Phases 0–4 COMPLETE: host + QEMU; 4b physical LAN-peer accepted; 5 UDP next)
-[Current]    Persistent root installer Phase 4             (IN PROGRESS)
+Boot / memory / threads        Complete
+ext2 / ext4 (9.1–9.6)          Complete (Dell physical acceptance)
+Program execution / ABI        Complete
+USB storage (9G)               Complete
+USB topology (9G.5)            In progress (c/d/e open)
+32 GiB RAM (9H)                Complete
+SMP (Pieces 1–6)               Complete (race fixed, 10/10 verified)
+Shell (S0–S9)                  Complete (Dell verified)
+NET (NET-1–NET-3)              Complete (Dell physical acceptance)
+TCP ISN (RFC 6528)             Complete
+Memory investigation           Complete
+VFS node lifetime              Complete
+Permissions (Phases 0–5)       Complete (Dell physical acceptance)
+Installer (Phases 0–3)         Complete
+Installer (Phase 4)            Complete (disposable acceptance)
+Installer (Phase 5)            Open (physical acceptance)
 ```
 
 E4-A: [Dell 5590 physical acceptance](ext4-phase5-acceptance.md), all seven Phase-5 items PASS, 2026-10-03.

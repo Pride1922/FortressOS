@@ -1,15 +1,16 @@
 # Persistent Root and Installer Plan
 
-Date: 2026-10-11. Status: **PHASE 3 COMPLETE; PHASE 4 IN PROGRESS**.
+Date: 2026-10-12. Status: **PHASES 3–4 COMPLETE — DISPOSABLE SCOPE; PHASE 5 PREPARATION**.
 Detailed decisions: [Phase 0 contracts](PERSISTENT_ROOT_PHASE0.md).
 Executed gates and limitations: [Phase 0 evidence](../roadmap/persistent-root-phase0.md).
 Phase 1: [contracts](PERSISTENT_ROOT_PHASE1.md) and [executed evidence](../roadmap/persistent-root-phase1.md).
 Phase 2: [contracts](PERSISTENT_ROOT_PHASE2.md) and [executed evidence](../roadmap/persistent-root-phase2.md).
 Phase 3: [contracts](PERSISTENT_ROOT_PHASE3.md) and [executed evidence](../roadmap/persistent-root-phase3.md).
-Phase 4: [runtime/installer contracts and remaining gates](PERSISTENT_ROOT_PHASE4.md),
+Phase 4: [runtime/installer contracts and accepted gates](PERSISTENT_ROOT_PHASE4.md),
 [executed evidence](../roadmap/persistent-root-phase4.md), and
 [Dell interface-only preview](../installer-preview.md). Physical preview PASS
 does not establish physical installation acceptance.
+Phase 5: [identified spare NVMe acceptance preparation](PERSISTENT_ROOT_PHASE5.md).
 
 This is the next milestone after bounded journaled EXT4, permissions, and the
 SMP/memory stability work. It expands the [EXT4 Phase 10 handoff](EXT4_PLAN.md)
@@ -351,8 +352,9 @@ coverage pass. Installer credentials are mandatory; secrets stay out of logs.
 
 ### Phase 4 — Installer engine on disposable targets
 
-**IN PROGRESS:** [admission, templates, detached provisioning and remaining work](PERSISTENT_ROOT_PHASE4.md).
-This is not installer acceptance; [executed scope](../roadmap/persistent-root-phase4.md).
+**COMPLETE (2026-10-12), disposable scope:** host gates and 70/70 BIOS/UEFI
+installation/boot/recovery/exclusion/fault cases pass. See [contracts](PERSISTENT_ROOT_PHASE4.md)
+and [executed scope](../roadmap/persistent-root-phase4.md). Physical acceptance remains Phase 5.
 
 Implement local payload validation, dry-run preview, exclusive target admission,
 bounded copy/readback, target-specific GPT/boot setup and account provisioning.

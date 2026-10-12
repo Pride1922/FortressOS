@@ -99,9 +99,9 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
     /* Caller keeps its source immutable for the whole operation. The engine also
      * rehashes each copied role; changed bytes cannot reach readiness publication. */
     uint8_t *data=work->data,*verify=work->verify,*first=work->first,*mbr=work->mbr;
-    result->stage=INSTALL_STAGE_ADMIT;
+    result->stage=INSTALL_STAGE_ADMIT;if (target->progress) target->progress(target->context,INSTALL_STAGE_ADMIT);
     r=exact(target->admit(target->context));if (r) goto done;
-    result->stage=INSTALL_STAGE_INVALIDATE;
+    result->stage=INSTALL_STAGE_INVALIDATE;if (target->progress) target->progress(target->context,INSTALL_STAGE_INVALIDATE);
     memset(data,0,INSTALL_CHUNK_BYTES);
     /* Invalidate old MBR, both GPT headers, old fixed ESP and root superblock
      * before deploying new bytes. An interrupted disk may need external rescue. */
@@ -111,7 +111,7 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
         r=exact(target->write(target->context,invalid[i],1,data));if (r) goto done;
     }
     r=exact(target->flush(target->context));if (r) goto done;
-    result->stage=INSTALL_STAGE_LAYOUT;entries(first,plan);
+    result->stage=INSTALL_STAGE_LAYOUT;if (target->progress) target->progress(target->context,INSTALL_STAGE_LAYOUT);entries(first,plan);
     uint32_t crc=crc32(0,first,512);
     for (unsigned i=1;i<32;i++) crc=crc32(crc,data,512);
     for (unsigned side=0;side<2;side++) {
@@ -123,7 +123,7 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
         r=checked_write(target,side ? target->sectors-1 : 1,1,data,verify);if (r) goto done;
         memset(data,0,INSTALL_CHUNK_BYTES);
     }
-    result->stage=INSTALL_STAGE_PAYLOAD;
+    result->stage=INSTALL_STAGE_PAYLOAD;if (target->progress) target->progress(target->context,INSTALL_STAGE_PAYLOAD);
     const uint8_t *manifest=bytes;
     for (unsigned role=0;role<3;role++) {
         digest_t d;digest_init(&d,DIGEST_SHA256);
@@ -145,9 +145,9 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
     mbr[510]=0x55;mbr[511]=0xaa;
     r=checked_write(target,0,1,mbr,verify);if (r) goto done;
     r=exact(target->flush(target->context));if (r) goto done;
-    result->stage=INSTALL_STAGE_PROVISION;
+    result->stage=INSTALL_STAGE_PROVISION;if (target->progress) target->progress(target->context,INSTALL_STAGE_PROVISION);
     r=exact(target->provision(target->context));if (r) goto done;
-    result->stage=INSTALL_STAGE_VERIFY;
+    result->stage=INSTALL_STAGE_VERIFY;if (target->progress) target->progress(target->context,INSTALL_STAGE_VERIFY);
     /* Re-audit immutable ESP, BIOS, MBR and GPT after the provisioning handoff.
      * Root changes are validated/frozen by the provision callback, never compared
      * against original payload hashes after legitimate account changes. */
@@ -179,7 +179,7 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
     r=exact(target->flush(target->context));if (r) goto done;
     r=exact(target->read(target->context,INSTALL_ESP_LBA+plan->readiness_lba,1,verify));if (r) goto done;
     if (memcmp(plan->readiness,verify,512)) {r=IO;goto done;}
-    result->stage=INSTALL_STAGE_COMPLETE;result->complete=true;
+    result->stage=INSTALL_STAGE_COMPLETE;if (target->progress) target->progress(target->context,INSTALL_STAGE_COMPLETE);result->complete=true;
 done:
     result->error=r;return r;
 }

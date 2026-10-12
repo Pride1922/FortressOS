@@ -36,23 +36,27 @@ def immutable_digest(disk):
     return digest.hexdigest()
 
 
-def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=None,source='iso',seed=None,operator=OPERATOR,recovery=RECOVERY):
+def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=None,source='iso',seed=None,operator=OPERATOR,recovery=RECOVERY,media_stem='fortress-installer',serial='INSTALLPHASE4',disposable_gate=True,username="operator",ui_capture=False):
     disk=out/'target.img'
     with disk.open('xb') as stream:stream.truncate(capacity*1024**2)
     if seed:shutil.copyfile(seed,disk)
-    iso=media/'fortress-installer.iso';assert iso.resolve().is_relative_to((ROOT/'build/root-phase4').resolve())
+    assert media_stem in ('fortress-installer','fortress-installer-bound') and re.fullmatch(r'[A-Za-z0-9-]{1,20}',serial)
+    iso=media/(media_stem+'.iso');assert iso.resolve().is_relative_to((ROOT/'build/root-phase4').resolve())
     assert all(stat.S_ISREG(p.stat().st_mode) and not p.is_symlink() for p in (disk,iso))
     argv=['qemu-system-x86_64','-M','q35','-m','2G','-accel',ACCEL,'-cpu','host' if ACCEL=='kvm' else 'max','-smp','1',
           '-display','none','-monitor','none','-no-reboot','-net','none','-serial','stdio',
           '-drive',f'file={disk},if=none,id=target,format=raw',
-          '-device','nvme,drive=target,serial=INSTALLPHASE4',
-          '-fw_cfg','name=opt/fortress/installer_disposable,string=1']
+          '-device','nvme,drive=target,serial='+serial]
+    if disposable_gate:argv+=['-fw_cfg','name=opt/fortress/installer_disposable,string=1']
     if source=='iso':argv+=['-boot','d','-cdrom',str(iso)]
     else:
-        raw=out/'source.img';shutil.copyfile(media/'fortress-installer.img',raw)
+        raw=out/'source.img';shutil.copyfile(media/(media_stem+'.img'),raw)
         if source=='usb':
+            # OVMF's QEMU xHCI preboot path stalls before Limine/kernel entry.
+            # The EHCI firmware path boots the same raw bytes and provenance.
+            usb_controller='ich9-usb-ehci1,id=xhci' if firmware=='uefi' else 'qemu-xhci,id=xhci'
             argv+=['-drive',f'file={raw},if=none,id=source,format=raw,readonly=on',
-                   '-device','qemu-xhci,id=xhci','-device','usb-storage,bus=xhci.0,drive=source,bootindex=1']
+                   '-device',usb_controller,'-device','usb-storage,bus=xhci.0,drive=source,bootindex=1']
         else:
             assert source=='nvme'
             argv[argv.index('-drive')+1]=f'file={raw},if=none,id=target,format=raw,readonly=on'
@@ -60,7 +64,7 @@ def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=No
     if reject=='no-gate':
         index=argv.index('-fw_cfg');del argv[index:index+2]
     if reject=='geometry':argv[argv.index('-device')+1]+=',logical_block_size=4096,physical_block_size=4096'
-    if reject=='timeout':argv+=['-qmp',f'unix:{out}/qmp.sock,server=on,wait=off']
+    if reject=='timeout' or ui_capture:argv+=['-qmp',f'unix:{out}/qmp.sock,server=on,wait=off']
     if reject=='two-disks':
         excluded=out/'excluded.img'
         with excluded.open('xb') as stream:stream.truncate(384*1024**2)
@@ -87,52 +91,73 @@ def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=No
                     if data:transcript.extend(data)
                 (out/'installer-serial.log').write_bytes(transcript)
                 assert not any(s in text() for s in ('KERNEL PANIC','[PROCESS FAULT]','[FATAL]')),text()[-6000:]
-                if reject is None:assert 'No admitted disposable NVMe target.' not in text(),text()[-6000:]
+                if reject is None:assert 'No admitted ' not in text(),text()[-6000:]
                 assert 'Payload validation failed' not in text() and (reject=='timeout' or 'Installation failed at stage' not in text()),text()[-6000:]
                 if marker in text()[start:]:return
                 assert proc.poll() is None,text()[-6000:]
             raise TimeoutError(text()[-6000:])
         def send(value):proc.stdin.write((value+'\n').encode());proc.stdin.flush()
         try:
-            if reject in ('no-gate','geometry','two-disks','source-parent'):
-                wait('No admitted disposable NVMe target.')
+            if reject in ('no-gate','geometry','two-disks','source-parent','identity'):
+                wait('Use live rescue or power off.')
                 assert all(fixture.digest(p)==value for p,value in untouched.items())
                 manifest['cases'].append({'installer_rejection':reject,'firmware':firmware,'result':'PASS'})
                 return None
-            wait('Enter target index 0, or cancel with Escape: ')
+            selection='Choose disk 1, or cancel with Escape: '
+            login='Choose login password (8..128 characters): '
+            recovery_prompt='Choose independent recovery passphrase (8..128 characters): '
+            confirmation='Type YES to erase this disk and install, or NO to cancel: '
+            wait(selection)
             if exercise_inputs:
                 baseline=fixture.digest(disk)
-                # Real Ring 3/supervisor retries; rejection must precede lease acquisition.
                 for profile in ('escape','blank-selection','empty-password','mismatch','empty-recovery','same-secret','wrong-confirmation'):
                     start=len(text())
-                    if profile=='escape':proc.stdin.write(b'\x1b');proc.stdin.flush()
-                    elif profile=='blank-selection':send('')
+                    if profile=='escape':
+                        proc.stdin.write(b'\x1b');proc.stdin.flush()
+                    elif profile=='blank-selection':
+                        send('');wait(selection,start)
+                        proc.stdin.write(b'\x1b');proc.stdin.flush()
                     else:
-                        send('0');wait('Choose operator password (12..128 printable ASCII): ',start)
-                        if profile=='empty-password':send('')
+                        send('1');wait('Choose username: ',start);send(username);wait(login,start)
+                        if profile=='empty-password':
+                            mark=len(text());send('');wait(login,mark)
                         else:
                             send(operator);wait('Confirm passphrase: ',start)
-                            if profile=='mismatch':send('mismatched-passphrase')
+                            mark=len(text());send('mismatched-passphrase' if profile=='mismatch' else operator)
+                            if profile=='mismatch':wait(login,mark)
                             else:
-                                send(operator);wait('Choose independent recovery passphrase (12..128 printable ASCII): ',start)
-                                if profile=='empty-recovery':send('')
+                                wait(recovery_prompt,mark)
+                                if profile=='empty-recovery':
+                                    mark=len(text());send('');wait(recovery_prompt,mark)
                                 else:
                                     recovery_choice=operator if profile=='same-secret' else recovery
-                                    mark=len(text());send(recovery_choice);wait('Confirm passphrase: ',mark);send(recovery_choice)
-                                    if profile=='wrong-confirmation':wait('Confirmation: ',mark);send('wrong disk identity')
-                    wait('Installer stopped; no success reported.',start)
-                    wait('Enter target index 0, or cancel with Escape: ',start)
+                                    mark=len(text());send(recovery_choice);wait('Confirm passphrase: ',mark)
+                                    mark=len(text());send(recovery_choice)
+                                    if profile=='same-secret':wait(recovery_prompt,mark)
+                                    else:
+                                        wait(confirmation,mark);mark=len(text());send('wrong');wait(confirmation,mark)
+                        assert fixture.digest(disk)==baseline,profile+' wrote target'
+                        proc.stdin.write(b'\x1b');proc.stdin.flush()
+                    wait('Installer stopped; no success reported.',start);wait(selection,start)
                     assert fixture.digest(disk)==baseline,profile+' wrote target'
-                    manifest['cases'].append({'input_rejection':profile,'firmware':firmware,'result':'PASS'})
-            target_before=fixture.digest(disk);send('0')
-            wait('Choose operator password (12..128 printable ASCII): ')
+                    manifest['cases'].append({'input_retry_or_cancel':profile,'firmware':firmware,'result':'PASS'})
+            target_before=fixture.digest(disk);start=len(text());send('1')
+            wait('Choose username: ',start);send(username);wait(login,start)
             assert fixture.digest(disk)==target_before,'preview/dry-run wrote target'
-            send(operator);wait('Confirm passphrase: ');start=len(text());send(operator)
-            wait('Choose independent recovery passphrase (12..128 printable ASCII): ',start)
+            send(operator);wait('Confirm passphrase: ',start);start=len(text());send(operator)
+            wait(recovery_prompt,start)
             send(recovery);wait('Confirm passphrase: ',start);start=len(text());send(recovery)
-            wait('Confirmation: ',start)
-            confirmation=re.findall(r'ERASE [0-9a-f]{64}',text()[start:]);assert len(confirmation)==1
+            wait(confirmation,start)
             assert fixture.digest(disk)==target_before,'credentials/confirmation wrote target'
+            if ui_capture:
+                connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);connection.settimeout(5);connection.connect(str(out/'qmp.sock'))
+                channel=connection.makefile('rwb');json.loads(channel.readline())
+                for command in ({'execute':'qmp_capabilities'},{'execute':'screendump','arguments':{'filename':str(out/'confirmation.png'),'format':'png'}}):
+                    channel.write(json.dumps(command).encode()+b'\n');channel.flush()
+                    while True:
+                        response=json.loads(channel.readline());assert 'error' not in response,response
+                        if 'return' in response:break
+                channel.close();connection.close()
             if reject=='timeout':
                 # QMP throttles only this disposable regular-file backend. This
                 # exercises the real driver's monotonic timeout and quiescence.
@@ -147,7 +172,7 @@ def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=No
                         assert 'error' not in response,response
                         if 'return' in response:break
                 (out/'qmp.json').write_text(json.dumps(history,indent=2)+'\n');qmp.close();sock.close()
-            started=time.monotonic();send(confirmation[0])
+            started=time.monotonic();send('YES')
             if reject=='timeout':
                 wait('Installer stopped; no success reported.',start,60)
                 elapsed=time.monotonic()-started
@@ -227,7 +252,7 @@ def main():
                             install(case,args.media,firmware,320 if kind=='small' else 384,manifest,reject=kind,source='nvme' if kind=='source-parent' else 'iso')
                         # Raw USB source is immutable and omitted from the installed boot.
                         case=native/'raw-usb';case.mkdir()
-                        raw_disk=install(case,args.media,firmware,384,manifest,source='usb',seed=disk)
+                        raw_disk=install(case,args.media,firmware,384,manifest,source='usb')
                         audit(raw_disk,case,args.media/'iso/boot/fortress.elf',OPERATOR,RECOVERY,manifest)
                         root_gate.guest(case,raw_disk,firmware,1,0,OPERATOR,RECOVERY,manifest,accel=ACCEL)
                         case=native/'capacity-512';case.mkdir()

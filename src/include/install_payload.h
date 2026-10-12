@@ -39,6 +39,8 @@ typedef struct {
     /* Controlled raw-to-filesystem handoff: provision, validate and freeze root.
      * No installed user code may run. Readiness is still invalid during this. */
     int (*provision)(void *);
+    /* Optional unlocked, bounded stage notification; never authorizes I/O. */
+    void (*progress)(void *,install_stage_t);
 } install_target_t;
 typedef struct {
     /* GPT on-disk little-endian UUIDs; all distinct, nonzero RFC4122 v4. */

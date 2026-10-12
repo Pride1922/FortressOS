@@ -37,6 +37,14 @@ def main():
             for cmd in (nvme_command,[str(out/'nvme-host')]):
                 manifest['commands'].append(cmd)
                 subprocess.run(cmd,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=120)
+            inspect_command=nvme_command+['-DTEST_INSTALLER_INSPECT']
+            for cmd in (inspect_command,[str(out/'nvme-host')]):
+                manifest['commands'].append(cmd)
+                subprocess.run(cmd,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=120)
+            physical_command=nvme_command+['-DINSTALLER_PHYSICAL']
+            for cmd in (physical_command,[str(out/'nvme-host')]):
+                manifest['commands'].append(cmd)
+                subprocess.run(cmd,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=120)
         assert all(hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==h for p,h in sources.items())
         manifest['result']='PASS';print((out/'host.log').read_text().strip());print(out)
     finally:(out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')

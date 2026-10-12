@@ -9,7 +9,7 @@ import uuid
 import test_root_phase0 as fixture
 
 
-def audit(disk,out,kernel,operator,recovery,manifest):
+def audit(disk,out,kernel,operator,recovery,manifest,username="operator"):
     def run(args):return fixture.run(list(map(str,args)),out/'independent-audit.log')
     with disk.open('rb') as stream:
         sectors=disk.stat().st_size//512
@@ -52,7 +52,7 @@ def audit(disk,out,kernel,operator,recovery,manifest):
     for name in ('passwd','group','shadow','fortress-install.v1','hostname'):
         run(['debugfs','-R',f'dump /etc/{name} {out / ("installed-"+name)}',root])
     assert (out/'installed-hostname').read_bytes()==b'fortress\n'
-    for path,mode,uid,gid in (('/etc/shadow','0600',0,0),('/home/operator','0700',1000,1000),('/etc/fortress-install.v1','0644',0,0)):
+    for path,mode,uid,gid in (('/etc/shadow','0600',0,0),('/home/'+username,'0700',1000,1000),('/etc/fortress-install.v1','0644',0,0)):
         text=run(['debugfs','-R','stat '+path,root])
         assert re.search(r'Mode:\s+'+mode,text) and re.search(r'User:\s+'+str(uid)+r'\s+Group:\s+'+str(gid),text)
     def record(data,magic):
@@ -74,7 +74,10 @@ def audit(disk,out,kernel,operator,recovery,manifest):
     assert ready['bootstrap_sha256']==hashlib.sha256(bootstrap).hexdigest()
     assert ready['kernel_sha256']==fixture.digest(kernel)
     assert ready['checksum']==hashlib.sha256(ready_bytes[:ready_bytes.index(b'checksum=')]).hexdigest()
-    shadow=(out/'installed-shadow').read_text();operator_hash=shadow.splitlines()[1].split(':')[1]
+    assert (out/'installed-passwd').read_text()==f'root:x:0:0::/root:/bin/shell\n{username}:x:1000:1000::/home/{username}:/bin/shell\n'
+    assert (out/'installed-group').read_text()==f'root:x:0:\n{username}:x:1000:\nwheel:x:10:{username}\n'
+    shadow=(out/'installed-shadow').read_text();assert shadow.splitlines()[1].split(':')[0]==username
+    operator_hash=shadow.splitlines()[1].split(':')[1]
     recovery_hash=recovery_record['password_hash']
     assert fixture.crypt_hash(operator,operator_hash)==operator_hash
     assert fixture.crypt_hash(recovery,recovery_hash)==recovery_hash

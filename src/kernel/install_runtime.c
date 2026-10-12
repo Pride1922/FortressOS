@@ -19,7 +19,7 @@ typedef struct {
     install_payload_work_t copy;
     install_fat_work_t fat;
     uint8_t manifest[256];
-    char recovery[512],root_record[512],config[4096],shadow[256];
+    char recovery[512],root_record[512],config[4096],shadow[256],passwd[256],group[256],username[32];
     size_t recovery_size,root_size;
     root_recovery_t binding;
     block_dev_t partition;
@@ -54,6 +54,9 @@ static int revalidate(runtime_t *w) {
     return r ? r<0 ? r : -VFS_EIO : memcmp(&now,&w->identity,sizeof(now)) ? -VFS_EIO : 0;
 }
 static int admit(void *ctx) {return revalidate(ctx);}
+static void progress(void *ctx,install_stage_t stage) {
+    runtime_t *w=ctx;if (w->backend->progress) w->backend->progress(w->backend->context,(unsigned)stage);
+}
 static int raw_read(void *ctx,uint64_t l,uint32_t n,void *p) {
     runtime_t *w=ctx;int r=revalidate(w);return r ? r : w->backend->read(w->backend->context,l,n,p);
 }
@@ -95,10 +98,23 @@ static int provision(void *ctx) {
         .read_sector=part_read,.write_sector=part_write,.flush=part_flush,.priv=w};
     int r=ext4_prepare_installer_root(&w->partition,true,&fs,NULL);
     if (r) return r;
-    static const char passwd[]="root:x:0:0::/root:/bin/shell\noperator:x:1000:1000::/home/operator:/bin/shell\n";
-    static const char group[]="root:x:0:\noperator:x:1000:\nwheel:x:10:operator\n";
-    const char *bytes[]={passwd,group,w->shadow};size_t sizes[]={sizeof(passwd)-1,sizeof(group)-1,strlen(w->shadow)};
-    r=accounts_provision_detached(fs,bytes,sizes);
+    if (strcmp(w->username,"operator")) {
+        creds_t actor;creds_init_root(&actor);
+        vfs_node_t *parent=vfs_lookup_at_creds(ext4_prepared_root(fs),"/home",&actor,&r);
+        if (parent) {
+            vfs_create_attrs_t attrs={.mode=0700,.uid=1000,.gid=1000};
+            vfs_node_t *home=parent->create_attrs_ref ? parent->create_attrs_ref(parent,w->username,VFS_DIRECTORY,&attrs,&r) : NULL;
+            if (!home && !r) r=-VFS_EOPNOTSUPP;
+            if (home) {
+                vfs_metadata_t meta;r=vfs_metadata(home,&meta);
+                if (!r && (meta.type!=VFS_DIRECTORY || meta.uid!=1000 || meta.gid!=1000 || (meta.mode&07777)!=0700)) r=-VFS_EINVAL;
+                vfs_node_put(home);
+            }
+            vfs_node_put(parent);
+        }
+    }
+    const char *bytes[]={w->passwd,w->group,w->shadow};size_t sizes[]={strlen(w->passwd),strlen(w->group),strlen(w->shadow)};
+    if (!r) r=accounts_provision_detached(fs,bytes,sizes);
     if (!r) r=root_file(fs,"fortress-install.v1",w->root_record,w->root_size);
     /* Template has no hostname file; create a durable explicit machine default. */
     if (!r) r=root_file(fs,"hostname","fortress\n",9);
@@ -107,6 +123,17 @@ static int provision(void *ctx) {
     return r;
 }
 static int personalize(runtime_t *w,const install_deploy_v1_t *req) {
+    const char *username=req->version==2 ? ((const install_deploy_v2_t *)req)->username : "operator";
+    if (!install_username_valid(username)) return -VFS_EINVAL;
+    memcpy(w->username,username,strlen(username)+1);
+    size_t at=0;
+    if (!add(w->passwd,sizeof(w->passwd),&at,"root:x:0:0::/root:/bin/shell\n") ||
+        !add(w->passwd,sizeof(w->passwd),&at,username) || !add(w->passwd,sizeof(w->passwd),&at,":x:1000:1000::/home/") ||
+        !add(w->passwd,sizeof(w->passwd),&at,username) || !add(w->passwd,sizeof(w->passwd),&at,":/bin/shell\n")) return -VFS_EINVAL;
+    at=0;
+    if (!add(w->group,sizeof(w->group),&at,"root:x:0:\n") || !add(w->group,sizeof(w->group),&at,username) ||
+        !add(w->group,sizeof(w->group),&at,":x:1000:\nwheel:x:10:") || !add(w->group,sizeof(w->group),&at,username) ||
+        !add(w->group,sizeof(w->group),&at,"\n")) return -VFS_EINVAL;
     for (unsigned i=0;i<4;i++) {
         const uint8_t *g=i ? req->partition_guid[i-1] : req->disk_guid;
         if (!guid_valid(g) || (!w->boot->installer_source_optical && !memcmp(g,w->boot->installer_source_disk_guid,16)) ||
@@ -132,7 +159,7 @@ static int personalize(runtime_t *w,const install_deploy_v1_t *req) {
     n=0;if (!add(w->root_record,512,&n,"FORTRESS-INSTALL-1\n") || !identity_lines(w->root_record,512,&n,b) ||
         !add(w->root_record,512,&n,"payload_version=1\n")) return -VFS_EINVAL;
     w->root_size=n;if (!root_manifest_validate(w->root_record,n,b)) return -VFS_EINVAL;
-    n=0;if (!add(w->shadow,sizeof(w->shadow),&n,"root:!:::::::\noperator:") ||
+    n=0;if (!add(w->shadow,sizeof(w->shadow),&n,"root:!:::::::\n") || !add(w->shadow,sizeof(w->shadow),&n,username) || !add(w->shadow,sizeof(w->shadow),&n,":") ||
         !add(w->shadow,sizeof(w->shadow),&n,req->operator_hash) || !add(w->shadow,sizeof(w->shadow),&n,":::::::\n")) return -VFS_EINVAL;
     int r=install_archive_personalize((void *)w->boot->initramfs_vaddr,w->boot->initramfs_size,
         w->recovery,w->recovery_size,w->archive,INSTALL_ARCHIVE_MAX,&w->archive_size);
@@ -178,7 +205,7 @@ int install_runtime_deploy(const boot_info_t *boot,const install_backend_t *back
     memcpy(w->manifest,(void *)boot->installer_payload_vaddr[4],256);
     r=personalize(w,req);if (r) goto done;
     install_target_t target={.context=w,.sectors=id->sector_count,.sector_size=id->sector_size,
-        .admit=admit,.read=raw_read,.write=raw_write,.flush=raw_flush,.provision=provision};
+        .admit=admit,.read=raw_read,.write=raw_write,.flush=raw_flush,.provision=provision,.progress=progress};
     install_result_t result;
     r=install_payload_deploy(w->manifest,256,&source,&target,&w->plan,false,&w->copy,&result);
     status->stage=result.stage;status->copied_bytes=result.copied_bytes;status->complete=result.complete;

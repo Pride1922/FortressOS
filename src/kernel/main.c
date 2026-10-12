@@ -6610,6 +6610,19 @@ pf_boot_guard_done:
         console_puts(admitted ? "Installer disposable backend ready\n" : "Installer target unavailable\n");
     }
 #endif
+#ifdef TEST_INSTALLER_INSPECT
+    /* Separate identity-only image: no target sector callbacks or raw lease. */
+    if (g_installer_boot) {
+        extern bool install_nvme_inspect_boot(const boot_info_t *);
+        console_puts(install_nvme_inspect_boot(&boot_info) ? "NVMe identity-only inspection ready\n" : "NVMe inspection unavailable\n");
+    }
+#endif
+#ifdef INSTALLER_PHYSICAL
+    if (g_installer_boot) {
+        extern bool install_nvme_physical_boot(const boot_info_t *);
+        console_puts(install_nvme_physical_boot(&boot_info) ? "Drive-bound physical installer ready\n" : "Bound installer target unavailable\n");
+    }
+#endif
     bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);
     bool recovery_shell=false;
 #ifdef TEST_ROOT_PHASE2

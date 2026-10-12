@@ -42,11 +42,12 @@ def main():
                 before={p.name:digest(p) for p in (disk,source)}
                 # Use the established TCG firmware profile for UEFI acceptance.
                 accel='tcg' if firmware=='uefi' else 'kvm'
+                usb_controller='ich9-usb-ehci1,id=xhci' if firmware=='uefi' else 'qemu-xhci,id=xhci'
                 argv=['qemu-system-x86_64','-M','q35','-m','2G','-accel',accel,'-cpu','max' if accel=='tcg' else 'host','-smp','1',
                     '-display','none','-monitor','none','-no-reboot','-net','none','-serial','stdio',
                     '-drive',f'file={disk},if=none,id=target,format=raw','-device','nvme,drive=target,serial=SENTINEL',
                     '-drive',f'file={source},if=none,id=source,format=raw,readonly=on',
-                    '-device','qemu-xhci,id=xhci','-device','usb-storage,bus=xhci.0,drive=source,bootindex=1',
+                    '-device',usb_controller,'-device','usb-storage,bus=xhci.0,drive=source,bootindex=1',
                     '-qmp',f'unix:{native}/qmp.sock,server=on,wait=off']
                 if firmware=='uefi':
                     variables=native/'vars.fd';shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd',variables)
@@ -87,15 +88,15 @@ def main():
                                 if 'return' in response:break
                         stream.close();connection.close();shutil.copyfile(native/name,retained/name)
                     try:
-                        wait('Enter target index 0, or cancel with Escape: ')
+                        wait('Choose disk 1, or cancel with Escape: ')
                         assert 'Synthetic preview target' in text() and 'Installation is disabled in this image.' in text()
-                        screenshot('interface.png');send('0');wait('Choose operator password (12..128 printable ASCII): ')
+                        screenshot('interface.png');send('1');wait('Choose username: ');send('demo');wait('Choose login password (8..128 characters): ')
                         send('demo-operator-passphrase');wait('Confirm passphrase: ');start=len(text());send('demo-operator-passphrase')
-                        wait('Choose independent recovery passphrase (12..128 printable ASCII): ',start)
+                        wait('Choose independent recovery passphrase (8..128 characters): ',start)
                         send('demo-recovery-passphrase');wait('Confirm passphrase: ',start);start=len(text());send('demo-recovery-passphrase')
-                        wait('Confirmation: ',start);screenshot('confirmation.png')
-                        confirmation=re.findall(r'ERASE [0-9a-f]{64}',text()[start:]);assert len(confirmation)==1
-                        send(confirmation[0]);wait('Preview complete. Installation remains disabled.',start)
+                        wait('Type YES to erase this disk and install, or NO to cancel: ',start);screenshot('confirmation.png')
+                        assert 'Username: demo' in text()[start:]
+                        send('YES');wait('Preview complete. Installation remains disabled.',start)
                         assert 'Installation complete.' not in text() and 'Installing; keep power' not in text()
                         assert 'Installer disposable backend ready' not in text() and '[BLOCK] Registered' not in text()
                         assert 'demo-operator-passphrase' not in text() and 'demo-recovery-passphrase' not in text()

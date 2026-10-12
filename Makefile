@@ -682,6 +682,15 @@ endif
 ifeq ($(INSTALLER_TEST),1)
 CFLAGS += -DTEST_INSTALLER
 endif
+ifeq ($(INSTALLER_INSPECT),1)
+CFLAGS += -DTEST_INSTALLER_INSPECT
+endif
+ifeq ($(INSTALLER_PHYSICAL),1)
+ifneq ($(INSTALLER_TEST)$(INSTALLER_INSPECT),)
+$(error Physical installer cannot be combined with disposable or inspection profiles)
+endif
+CFLAGS += -DINSTALLER_PHYSICAL
+endif
 
 $(BUILD_DIR)/tool-userdb.o: user/tools/userdb.c user/tools/userdb.h user/tools/digest.h
 	@mkdir -p $(BUILD_DIR)
@@ -1744,6 +1753,11 @@ build/tool-install.elf: user/tools/install.c src/include/install_abi.h src/inclu
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c user/tools/install.c -o build/tool-install.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=install_main user/tools/start.asm -o build/tool-install-start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld build/tool-install-start.o build/tool-install.o build/tool-userdb.o build/tool-digest.o build/tool-common.o -o $@
+
+build/tool-install-inspect.elf: user/tools/install_inspect.c src/include/install_abi.h build/tool-common.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $< -o build/tool-install-inspect.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=install_main user/tools/start.asm -o build/tool-install-inspect-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld build/tool-install-inspect-start.o build/tool-install-inspect.o build/tool-common.o -o $@
 
 build/tool-install-preview.elf: user/tools/install.c src/include/install_abi.h src/include/terminal.h build/tool-userdb.o build/tool-common.o build/tool-digest.o user/tools/start.asm user/shell.ld
 	@$(CC) $(CFLAGS) -DINSTALLER_PREVIEW -Os -fno-pie -fno-asynchronous-unwind-tables -c user/tools/install.c -o build/tool-install-preview.o

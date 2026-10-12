@@ -39,16 +39,17 @@ regular-file NVMe sentinel, completes every prompt, and verifies whole-image
 hashes of both the sentinel and source remain unchanged. Logs, command arguments,
 screenshots and hashes are retained under `build/root-phase4/preview-*`.
 
-The separately generated raw FAT image passes BIOS USB boot. OVMF USB boot of
-both raw FAT and hybrid transports stalled before kernel entry under WSL KVM
-and TCG; those interrupted attempts are retained and are not UEFI USB acceptance.
+The separately generated raw FAT image passes BIOS USB boot. Initial OVMF
+USB boot with QEMU xHCI stalled before kernel entry under KVM and TCG; those
+interrupted attempts are retained. On 2026-10-12 the same raw preview image
+passed BIOS/UEFI through EHCI, isolating the problem to the xHCI preboot fixture.
 Physical Dell interface verification passed by user-provided photos on
 2026-10-11: target selection, password/confirmation prompts, rejection of an
 identical recovery secret, exact final confirmation, and “Preview complete.
 Installation remains disabled.” The supervisor then restarted the preview.
 This verifies the interface only; no installation or physical disk integrity
 audit is claimed. The ISO extraction
-route is the recommended preview transport pending resolution of that firmware
-fixture issue.
+route remains the tested Dell preview transport. For identifying a real spare
+NVMe, use the separate [identity-only inspection image](plans/PERSISTENT_ROOT_PHASE5.md).
 
 ![Dell interface-only preview completed with installation disabled](assets/installer-preview-dell.jpg)

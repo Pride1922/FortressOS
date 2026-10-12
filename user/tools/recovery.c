@@ -31,7 +31,7 @@ int recovery_main(int argc,char **argv) {
             if (c<32 || c>126 || n==DB_PASSWORD_MAX) {invalid=true;continue;}
             password[n++]=(char)c;
         }
-        say("\n");bool ok=!invalid && n>=12 && db_verify(password,argv[1]);
+        say("\n");bool ok=!invalid && n>=8 && db_verify(password,argv[1]);
         db_wipe(password,sizeof(password));
         if (ok) {say("Recovery authenticated\n");return 0;}
         delay();say("Recovery denied\n");

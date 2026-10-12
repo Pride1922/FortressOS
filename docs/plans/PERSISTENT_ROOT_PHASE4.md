@@ -1,15 +1,15 @@
 # Persistent root Phase 4 implementation progress
 
-2026-10-11. **IN PROGRESS. This is not Phase 4 acceptance.**
+2026-10-12. **COMPLETE — DISPOSABLE TARGETS ONLY.**
 Parent: [installer plan](PERSISTENT_ROOT_INSTALLER_PLAN.md). Existing
 [Phase 0](PERSISTENT_ROOT_PHASE0.md) and [Phase 3](PERSISTENT_ROOT_PHASE3.md)
 contracts continue to apply. Admission, template editing and detached provisioning
 components are now connected through the bounded text installer and
 `INSTALL_DEPLOY` runtime adapter. Separate installer ISO/raw media are built;
-focused BIOS installation/boot/recovery gates pass; the full guest acceptance
-matrix remains outstanding. The separate interface-only preview completed on
-the Dell, with installation disabled throughout.
-No physical storage access or release installer enablement is authorized here.
+the BIOS/UEFI installation, boot, recovery, exclusion and timeout matrix passes
+70/70 cases. The separate interface-only preview completed on the Dell, with
+installation disabled throughout. Physical installation and release enablement
+remain Phase 5; see [identified spare-drive preparation](PERSISTENT_ROOT_PHASE5.md).
 
 ## Native deployment workbench
 
@@ -49,7 +49,7 @@ partitions. It copies partition capsules and combines the 440-byte BIOS MBR
 capsule with a newly constructed protective partition entry and signature.
 The host template producer compares fixed-position capsules from the pinned
 Limine utility at 384 and 512 MiB. Focused BIOS native installation and subsequent
-source-free target boots pass; full BIOS/UEFI acceptance remains outstanding.
+source-free target boots pass under both BIOS and UEFI.
 
 Readiness must be zero in the personalized input ESP. After payload barrier, the
 trusted provision callback must hand ownership to a detached filesystem adapter,
@@ -76,7 +76,7 @@ truncation, hidden trailers and overlapping output are rejected.
 The builder appends root-owned `bootstrap` mode 0700 and
 `bootstrap/recovery.v1` mode 0600, then two zero blocks. It copies no plaintext
 passwords. Valid disjoint output storage is zeroed before use and wiped on failure.
-Invalid or overlapping buffers remain untouched. Actual input prompts, no-echo
+Invalid or overlapping buffers remain untouched. Actual input prompts, masked-secret
 handling, new salt generation and mandatory operator/recovery choices remain
 implemented by `/bin/install`; this API never invents a default credential.
 
@@ -109,7 +109,10 @@ has no root selector and skips legacy raw disk diagnostics and USB mounts.
 `install_nvme.c` is a trusted adapter registered only by the separate
 `INSTALLER_TEST=1` kernel and exact disposable fw_cfg key, requiring an explicit
 disposable gate, complete source evidence and no registered/prepared/active
-storage. Generic source-parent admission reads a CRC-valid GPT header. Fresh
+storage. Generic source-parent admission reads a CRC-valid GPT header, or admits
+an unformatted target only when its MBR, primary GPT header sector and final
+backup-header sector are all zero. Nonzero malformed metadata and read failures
+reject; this does not repair a GPT. Fresh
 NVMe Identify evidence binds the singleton inventory, BDF, serial/model, namespace
 identity and conventional 512-byte geometry; replacement and uncertain I/O latch
 failure. The actual driver adds calibrated monotonic installer command deadlines
@@ -152,10 +155,16 @@ be heap/static storage rather than a kernel stack frame.
 
 The text installer displays controller/model/serial/namespace, capacity, sector
 size, layout and unused space, requires explicit index selection, validates the
-payload without target callbacks, and collects independent no-echo credentials.
+payload without target callbacks, and collects independent masked credentials.
 It rejects reuse of the operator password as the recovery passphrase, creates
-fresh salts/GUIDs, and requires `ERASE <identity digest>` before lease acquisition.
-Escape/Ctrl-C, invalid input and failures wipe the request, release any lease and
+fresh salts/GUIDs, and requires `YES` after showing the selected disk and username before lease acquisition.
+The backend still compares the complete digest and generation; human confirmation
+does not weaken drive binding. Deployment ABI v2 adds a bounded chosen username
+while retaining the v1 prefix and legacy operator provisioning. Login and recovery
+passwords accept 8–128 printable characters; secrets are masked and other input
+is echoed. Invalid choices, passwords and confirmation retry their current step.
+Payload checks and installation stages report work before long operations.
+Escape/Ctrl-C and fatal failures wipe the request, release any lease and
 restore terminal attributes. No plaintext password enters the deploy ABI.
 
 Private ESP/archive buffers use `kmalloc_large`, which grows through individually
@@ -168,20 +177,23 @@ and discards it, then re-audits immutable boot bytes and publishes readiness las
 artifacts and provides installer/live-rescue menu entries. Normal media and its
 bootstrap are preserved. Booting installer media alone does not enable writes.
 
-The BIOS raw USB source probe passes installation into a previously valid GPT
-regular-file target, Linux audits and source-free boot. Blank target admission
-with a raw source is not yet established.
+Both BIOS and UEFI raw USB source installation into blank regular-file targets,
+Linux audits and source-free boots pass. BIOS uses QEMU xHCI; UEFI uses EHCI.
 
 The interface-only `INSTALLER_PREVIEW` build replaces device enumeration with a
 synthetic target, contains no INSTALLCTL syscall path, uses a kernel without
 TEST_INSTALLER, and omits payload modules. BIOS/UEFI ISO guest tests and the
 user's Dell full prompt/confirmation flow pass. See [preview instructions and
-limits](../installer-preview.md). Raw USB OVMF boot stalls before kernel entry;
-this transport has no UEFI acceptance claim.
+limits](../installer-preview.md). The QEMU xHCI/OVMF preboot stall is isolated to
+that firmware/controller fixture. The same raw bytes boot through EHCI under
+UEFI; this does not claim UEFI QEMU xHCI acceptance.
 
-Remaining: complete the unchanged-source BIOS/UEFI install/source-removal/boot/
-recovery matrix, blank raw-source target admission, additional capacity and
-guest rejection/fault acceptance, and resolve raw USB UEFI boot. Phase 5 physical
-installation acceptance and release enablement remain separate.
+Accepted scope includes 384/512 MiB targets, ISO and raw USB source transports,
+three persistence boots, SMP=1/4/8 installed boot, authenticated rejection/recovery,
+distinct installation identities and credential salts, input/selection zero-write
+checks, excluded disk/source hashes and bounded real NVMe timeout/quiescence.
+Host interruption/failure adapters remain separately labelled; these tests do
+not establish physical cache durability, physical disconnect or physical
+installation. Normal live media remain byte-identical.
 
 Executed workbench evidence: [Phase 4 progress report](../roadmap/persistent-root-phase4.md).

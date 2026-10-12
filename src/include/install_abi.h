@@ -52,6 +52,23 @@ typedef struct {
     char operator_hash[78],recovery_hash[78];
     uint8_t reserved[4];
 } install_deploy_v1_t;
+/* Version 2 keeps the complete v1 prefix and adds the chosen login name. */
+typedef struct {
+    install_deploy_v1_t base;
+    char username[32];
+} install_deploy_v2_t;
+_Static_assert(sizeof(install_deploy_v2_t)==288,"installer deployment v2");
+static inline bool install_username_valid(const char name[32]) {
+    unsigned n=0;
+    for (;n<32 && name[n];n++) {
+        char c=name[n];
+        if (!((c>='a' && c<='z') || (c>='0' && c<='9' && n) || c=='_' || (c=='-' && n))) return false;
+    }
+    if (!n || n==32) return false;
+    if (n==4 && name[0]=='r' && name[1]=='o' && name[2]=='o' && name[3]=='t') return false;
+    if (n==5 && name[0]=='w' && name[1]=='h' && name[2]=='e' && name[3]=='e' && name[4]=='l') return false;
+    return true;
+}
 typedef struct {
     uint32_t size,version,stage;
     int32_t error;

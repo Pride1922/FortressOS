@@ -74,6 +74,17 @@ int main(void) {
     memcpy(target.digest,hardware.digest,32);int32_t fd;
     assert(install_control(INSTALL_ENUM,(uintptr_t)&index,4,(uintptr_t)&out,sizeof(out),&root)==SYSCALL_EOPNOTSUPP);
     install_control_boot(&b,true);
+    install_deploy_v2_t deploy2={.base={.size=288,.version=2,.fd=-1,.flags=INSTALL_DRY_RUN}};
+    install_status_v1_t deploy_status;
+    const char *bad_names[]={"","root","wheel","../root","a:b","1user","Upper","-user"};
+    for (unsigned i=0;i<sizeof(bad_names)/sizeof(bad_names[0]);i++) {
+        memset(deploy2.username,0,32);memcpy(deploy2.username,bad_names[i],strlen(bad_names[i])+1);
+        assert(install_control(INSTALL_DEPLOY,(uintptr_t)&deploy2,288,(uintptr_t)&deploy_status,32,&root)==SYSCALL_EINVAL);
+    }
+    memset(deploy2.username,'a',32);
+    assert(install_control(INSTALL_DEPLOY,(uintptr_t)&deploy2,288,(uintptr_t)&deploy_status,32,&root)==SYSCALL_EINVAL);
+    memcpy(deploy2.username,"fabio",6);
+    assert(install_control(INSTALL_DEPLOY,(uintptr_t)&deploy2,288,(uintptr_t)&deploy_status,32,&root)==SYSCALL_EOPNOTSUPP);
     creds_t user={.euid=1000};
     assert(install_control(INSTALL_ENUM,(uintptr_t)&index,4,(uintptr_t)&out,sizeof(out),&user)==SYSCALL_EPERM);
     deny_output=true;assert(install_control(INSTALL_ACQUIRE,(uintptr_t)&target,64,(uintptr_t)&fd,4,&root)==SYSCALL_EFAULT);deny_output=false;

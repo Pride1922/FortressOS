@@ -237,7 +237,7 @@ def extract_root(disk,out):
         while remaining:
             b=src.read(min(1024*1024,remaining));assert b;dst.write(b);remaining-=len(b)
 
-def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None,accel='tcg'):
+def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None,accel='tcg',username='operator'):
     assert accel in ('tcg','kvm')
     label=f'{mode}-{cpus}-{boot}';argv=['qemu-system-x86_64','-M','q35','-m','2G','-accel',accel,'-smp',str(cpus),'-display','none','-monitor','none','-no-reboot','-net','none','-serial','stdio']
     if accel=='kvm':argv+=['-cpu','host']
@@ -297,10 +297,10 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
             if not live_iso:assert '[ROOT] Installed root admitted by PARTUUID' in clean(transcript)
             else:assert '[ROOT] Installed root admitted' not in clean(transcript) and '[NVMe] Namespace Geometry' not in clean(transcript)
             assert ('All '+str(cpus)+' CPU(s) accounted for' in clean(transcript)) if cpus>1 else 'Single-CPU system confirmed' in clean(transcript)
-            send('operator')
+            send(username)
             if not live_iso:wait(lambda t:t.endswith('Password: '));send(operator)
             wait(prompt)
-            command('pwd','/run/user/1000' if live_iso else '/home/operator');command('id','uid=1000 gid=1000');command('cat /etc/shadow','permission denied')
+            command('pwd','/run/user/1000' if live_iso else '/home/'+username);command('id','uid=1000 gid=1000');command('cat /etc/shadow','permission denied')
             if SESSION_HOOK and not live_iso:
                 operator=SESSION_HOOK(boot,operator,send,wait,command,prompt,transcript)
             if not live_iso:
@@ -315,8 +315,8 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
                 for exit_status in (7,125):
                     start=len(transcript);send(f'exit {exit_status}');wait(lambda t:'FortressOS login: ' in t,start)
                     assert '[ROOT RECOVERY]' not in clean(transcript[start:])
-                    send('operator');wait(lambda t:t.endswith('Password: '));send(operator);wait(prompt)
-                command('pwd','/home/operator')
+                    send(username);wait(lambda t:t.endswith('Password: '));send(operator);wait(prompt)
+                command('pwd','/home/'+username)
             if boot==1:
                 # An abrupt whole-guest stop after a successful explicit barrier
                 # retains dirty+RECOVER; next boot must admit journal recovery.
@@ -339,9 +339,9 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
             else:
                 with root.open('rb') as f:f.seek(1024);sb=f.read(1024)
                 assert struct.unpack_from('<H',sb,58)[0]==0 and struct.unpack_from('<I',sb,96)[0]&4
-            dumped=out/(label+'-probe.txt');fixture.run(['debugfs','-R',f'dump /home/operator/phase2.txt {dumped}',str(root)],out/(label+'-audit.log'))
+            dumped=out/(label+'-probe.txt');fixture.run(['debugfs','-R',f'dump /home/{username}/phase2.txt {dumped}',str(root)],out/(label+'-audit.log'))
             assert dumped.read_bytes()==f'phase2-boot-{boot}\n'.encode()
-            metadata=fixture.run(['debugfs','-R','stat /home/operator/phase2.txt',str(root)],out/(label+'-audit.log'));assert 'User:  1000' in metadata and 'Group:  1000' in metadata
+            metadata=fixture.run(['debugfs','-R',f'stat /home/{username}/phase2.txt',str(root)],out/(label+'-audit.log'));assert 'User:  1000' in metadata and 'Group:  1000' in metadata
             if AUDIT_HOOK:AUDIT_HOOK(out,label,root)
     manifest['cases'].append(result);print('PASS guest',label,flush=True)
     return result

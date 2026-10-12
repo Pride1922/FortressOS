@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Separate installer media, created exclusively in regular-file workspaces.
 
-No target credentials or write gate are embedded. Runtime write admission still
-requires the disposable QEMU gate. The live rescue entry carries no payload roles.
+No target credentials are embedded. Standard media requires the disposable QEMU
+gate; separate bound media requires its compiled exact hardware fingerprint.
+The live rescue entry carries no payload roles.
 """
 import argparse
 import binascii
@@ -31,7 +32,16 @@ def regular(path):
     assert not path.is_symlink() and stat.S_ISREG(path.stat().st_mode), path
 
 
-def build(templates, kernel, bootstrap, installer, preview=False):
+def build(templates, kernel, bootstrap, installer, preview=False, inspect=False, bound_digest=None):
+    assert not (preview and inspect)
+    interface_only=preview or inspect
+    if bound_digest:
+        assert not interface_only and len(bound_digest)==64
+        fingerprint=bytes.fromhex(bound_digest);assert len(fingerprint)==32
+        kernel_bytes=kernel.read_bytes()
+        assert b'Drive-bound physical installer ready' in kernel_bytes
+        assert b'opt/fortress/installer_disposable' not in kernel_bytes
+        assert fingerprint in kernel_bytes
     templates = templates.resolve()
     assert templates.is_relative_to((ROOT / 'build/root-phase4').resolve())
     paths = [templates / name for name in ROLES]
@@ -45,19 +55,23 @@ def build(templates, kernel, bootstrap, installer, preview=False):
         assert wire[48+i*32:80+i*32] == bytes.fromhex(digest(path))
     for path in (kernel, bootstrap, installer):
         regular(path)
-    if preview:
+    if interface_only:
         assert b'opt/fortress/installer_disposable' not in kernel.read_bytes()
         assert b'Installation is disabled in this image.' in installer.read_bytes()
-    stem = 'fortress-installer-preview' if preview else 'fortress-installer'
-    media_mib = 64 if preview else 512
+    if inspect:
+        assert b'NVMe identity-only inspection ready' in kernel.read_bytes()
+        assert b'Actual hardware identity; no synthetic target.' in installer.read_bytes()
+    stem = 'fortress-installer-bound' if bound_digest else 'fortress-nvme-inspect' if inspect else 'fortress-installer-preview' if preview else 'fortress-installer'
+    media_mib = 64 if interface_only else 512
     normal = {str(p): digest(p) for p in (ROOT/'bin/fortress.iso', ROOT/'bin/fortress.img') if p.exists()}
     out = Path(tempfile.mkdtemp(prefix='media-', dir=ROOT/'build/root-phase4'))
     sources = paths + [kernel, bootstrap, installer] + [ROOT/'limine'/name for name in
         ('limine', 'limine-bios.sys', 'limine-bios-cd.bin', 'limine-uefi-cd.bin', 'BOOTX64.EFI')]
     sources += [Path(__file__).resolve()]
     hashes = {str(p): digest(p) for p in sources}
-    manifest = {'result': 'FAIL', 'scope': 'interface preview; synthetic target; installation disabled' if preview else 'separate media packaging; runtime installation not accepted',
+    manifest = {'result': 'FAIL', 'scope': 'actual NVMe identity-only inspection; installation disabled' if inspect else 'interface preview; synthetic target; installation disabled' if preview else 'separate media packaging; runtime installation not accepted',
                 'sources': hashes, 'normal_artifacts': normal, 'commands': []}
+    if bound_digest:manifest['bound_inspector_digest']=bound_digest
     def run(argv):
         command = list(map(str, argv))
         manifest['commands'].append(command)
@@ -75,7 +89,7 @@ def build(templates, kernel, bootstrap, installer, preview=False):
             info=tarfile.TarInfo('bin/install');info.mode=0o755;info.uid=info.gid=0;info.size=installer.stat().st_size
             with installer.open('rb') as stream:archive.addfile(info,stream)
         assert (tree/'boot/initramfs.tar').stat().st_size<=8*1024**2
-        for path in ([] if preview else paths):
+        for path in ([] if interface_only else paths):
             shutil.copyfile(path, tree/'payload'/path.name)
         for name in ('limine-bios.sys', 'limine-bios-cd.bin', 'limine-uefi-cd.bin'):
             shutil.copyfile(ROOT/'limine'/name, tree/'boot/limine'/name)
@@ -86,7 +100,7 @@ def build(templates, kernel, bootstrap, installer, preview=False):
                 for name, role in zip(ROLES, ('esp', 'root', 'bios', 'mbr', 'manifest')):
                     text += f'    module_path: boot():/payload/{name}\n    module_cmdline: role=install-{role}\n'
             return text
-        config = 'timeout: 5\n' + (entry('FortressOS installer PREVIEW - installation disabled', 'installer', False) if preview else entry('FortressOS installer (disposable workbench)', 'installer', True) + entry('FortressOS live rescue', 'live', False))
+        config = 'timeout: 5\n' + (entry('FortressOS NVMe inspection - installation disabled', 'installer', False) if inspect else entry('FortressOS installer PREVIEW - installation disabled', 'installer', False) if preview else entry('FortressOS installer (identified spare only)' if bound_digest else 'FortressOS installer (disposable workbench)', 'installer', True) + entry('FortressOS live rescue', 'live', False))
         for name in ('limine.conf', 'boot/limine.conf', 'boot/limine/limine.conf', 'EFI/BOOT/limine.conf'):
             (tree/name).write_text(config)
         iso = out/(stem+'.iso')
@@ -144,7 +158,7 @@ def build(templates, kernel, bootstrap, installer, preview=False):
             for _ in range(media_mib): h.update(stream.read(1024**2))
             assert h.hexdigest() == digest(esp)
         # Independently extract every transport payload from the FAT volume.
-        for path in ([] if preview else paths):
+        for path in ([] if interface_only else paths):
             extracted = out/('audit-'+path.name)
             run(['mcopy','-i',esp,'::payload/'+path.name,extracted])
             assert digest(extracted) == digest(path)
@@ -178,6 +192,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--templates', type=Path)
     parser.add_argument('--preview', action='store_true', help='Require interface-only tool and kernel without disposable write backend')
+    parser.add_argument('--inspect', action='store_true', help='Identity-only hardware inspection; sector/deploy callbacks absent')
+    parser.add_argument('--bound-digest', help='Require a separate physical-profile kernel containing this inspector SHA-256 identity')
     parser.add_argument('--kernel', type=Path, default=ROOT/'bin/fortress.elf')
     parser.add_argument('--bootstrap', type=Path, default=ROOT/'bin/initramfs.tar')
     parser.add_argument('--installer', type=Path, default=ROOT/'build/tool-install.elf')
@@ -187,7 +203,7 @@ def main():
             '--kernel',str(args.kernel),'--bootstrap',str(args.bootstrap)],cwd=ROOT,
             capture_output=True,text=True,check=True,timeout=600)
         args.templates = Path(result.stdout.strip().splitlines()[-1])
-    build(args.templates,args.kernel,args.bootstrap,args.installer,args.preview)
+    build(args.templates,args.kernel,args.bootstrap,args.installer,args.preview,args.inspect,args.bound_digest)
 
 
 if __name__ == '__main__': main()
