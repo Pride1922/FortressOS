@@ -9,11 +9,36 @@
 #define INSTALL_FLUSH 4u
 #define INSTALL_RELEASE 5u
 #define INSTALL_DEPLOY 6u
+#define INSTALL_LOG 7u
+#define INSTALL_LOG_START 0u
+#define INSTALL_LOG_CANCELLED 1u
+#define INSTALL_LOG_FAILED 2u
+#define INSTALL_STATUS_USB_LOG_WARNING 1u
+#define INSTALL_STATUS_ROOT_LOG_WARNING 2u
+/* Fixed events only: no console input, password or hash can be supplied. */
+typedef struct {
+    uint32_t size,version,event,stage;
+    int32_t error;
+    uint32_t reserved;
+    int64_t call;
+} install_log_event_v1_t;
+_Static_assert(sizeof(install_log_event_v1_t)==32,"installer log event v1");
 #define INSTALL_DRY_RUN 1u
 #define INSTALL_CONFIRM_WHOLE_DISK 1u
 #define INSTALL_ID_ELIGIBLE 1u
 #define INSTALL_ID_SOURCE 2u
 #define INSTALL_ID_MOUNTED 4u
+/* INSTALL_ENUM output only: identity.reserved2[0..3] carries a read-only summary of the
+ * existing partition table, gathered once at boot. It is not part of the digest and is
+ * zero in every other identity. [0]=valid, [1]=scheme, [2]=partition count, [3]=kinds. */
+#define INSTALL_SUMMARY_VALID 1u
+#define INSTALL_SUMMARY_GPT 1u
+#define INSTALL_SUMMARY_MBR 2u
+#define INSTALL_SUMMARY_EFI 1u
+#define INSTALL_SUMMARY_WINDOWS 2u
+#define INSTALL_SUMMARY_LINUX 4u
+#define INSTALL_SUMMARY_OTHER 8u
+#define INSTALL_SUMMARY_UNREADABLE 16u
 typedef struct {
     uint32_t size,version;
     uint64_t generation,sector_count;
@@ -73,6 +98,7 @@ typedef struct {
     uint32_t size,version,stage;
     int32_t error;
     uint64_t copied_bytes;
+    /* reserved is the log-warning bitmask in current installer profiles. */
     uint32_t complete,reserved;
 } install_status_v1_t;
 _Static_assert(sizeof(install_deploy_v1_t)==256,"installer deployment v1");

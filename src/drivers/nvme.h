@@ -131,6 +131,12 @@ typedef struct {
 
 /* Public NVMe Driver API */
 bool     nvme_init(void);
+/* Unlocked BSP boot-only multi-controller inventory, at most eight drives.
+ * Each retains its own DMA and terminal failure state. No hotplug enrollment.
+ * Select only before a filesystem/block registry owns the active device. */
+size_t   nvme_inventory_boot(void);
+bool     nvme_inventory_valid(void);
+bool     nvme_inventory_select(unsigned index);
 bool     nvme_is_initialized(void);
 /* Installer-only complete singleton inventory pinned at admission (no hotplug
  * enrollment), selected-BDF validation and fresh complete Identify evidence on

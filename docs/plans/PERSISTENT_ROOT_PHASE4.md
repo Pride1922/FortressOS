@@ -197,3 +197,100 @@ not establish physical cache durability, physical disconnect or physical
 installation. Normal live media remain byte-identical.
 
 Executed workbench evidence: [Phase 4 progress report](../roadmap/persistent-root-phase4.md).
+
+## Explicit NVMe disk selection extension
+
+The later `INSTALLER_MULTI=1` profile implements the user's request to list and
+choose between NVMe drives. Its model/capacity menu omits serial numbers and
+selects no default. This is a separate authority profile from the original
+disposable and Dell fingerprint-bound installers; it does not reinterpret their
+single-controller gates. See the [disk-selection contract and instructions](../installer-multi-nvme.md).
+
+Indexed enumeration and selection preserve complete identity checks, exclusive
+leases, source exclusion and failure latching. Installed boot locates a unique
+root PARTUUID across the pinned controllers before writable publication. The
+confirmation UI requires the selected one-based disk number; blank input, YES
+and another number retry without losing answers. Partition summaries use type
+hints, with an explicit unknown-contents warning rather than claiming an OS or
+used-space measurement. No disk is preselected.
+The two-controller workbench must establish unchanged non-target/media hashes,
+source exclusion and duplicate-root rejection in BIOS and UEFI. Physical
+two-controller acceptance remains separate from disposable-file evidence.
+
+Recovery storage acknowledgement: retain full masked password confirmation, then
+accept YES only after the user says it is stored safely. SHOW is an optional
+local-framebuffer reveal using the existing per-process TERM_LOCAL route; clear
+the display before restoring the prior route. No recovery plaintext is sent to
+UART or provisioning logs. Cancellation before deployment wipes temporary
+password buffers and performs no disk writes. A missing local screen leaves
+the password hidden. This acknowledgement does not prove external storage.
+
+Navigation extension: Escape returns to the previous numbered screen before
+lease acquisition (step 1 remains there). Ctrl-C and non-secret CANCEL provide
+separate cancellation. Retain selected disk, layout, username and completed
+hashes; no plaintext retention. Enter keeps saved values and CHANGE requests
+password replacement. Replacing login invalidates recovery to preserve the
+independent-secret check. Partial secrets wipe on back/cancel. Final target
+number confirmation and fresh identity lease checks remain mandatory; back
+navigation is unavailable after deployment starts.
+
+Password feedback extension: Tab toggles visibility while entering and
+confirming either password, hidden by default on each read. Switch to TERM_LOCAL
+before rendering plaintext; redraw bounded input locally so hiding/backspace
+removes wrapped text. Clear on Enter/back/cancel before restoring output mode.
+Without a local framebuffer, reveal is refused and input stays masked. Preserve
+existing plaintext wiping, password bounds and independent recovery checks.
+
+Screen consistency extension: centralize screen clearing and the branded
+step-number/title header. Keep the current numbered step and account/recovery
+context on password visibility redraws and hashing waits. File checks stay at
+step 2; confirmation, deployment and results stay at step 5. Progress updates
+remain beneath the retained header, with navigation absent during deployment.
+All secret clearing continues under local-only routing before restoring output.
+
+Error presentation extension: explain inventory, payload validation, lease
+acquisition and deployment failures in plain language. Use syscall error values
+for user guidance; backend status.error uses VFS errno and must not be treated
+as the same namespace. Keep original signed stage/error/call details. Before
+acquisition/deployment, state that no installation data was written; after
+attempted deployment conservatively warn of possible partial erasure. Wait for
+Enter before returning. Never retry writes automatically or report incomplete
+status as success; generic I/O errors do not identify a physical cause.
+
+
+Installer logging extension (2026-10-13): save a public diagnostic record at
+`/var/log/fortress-install.log` on the selected installed root and at
+`/fortress-install.log` on a separate FAT16 `FORTRESSLOG` USB volume. Never log
+plaintext passwords, password hashes, recovery material or captured console
+input. Record only generated stage/result/error events and validated public
+model/capacity/username fields. Each file is bounded to 4096 bytes; preserve
+recent events across the supervisor's installer retries within one boot.
+
+The compiled MULTI profile and explicit `installer_log_sha256=` installer entry
+permit private xHCI BOT enrollment solely for this log slot. Normal installer,
+preview, inspection, live and installed mount policies remain separate. No USB
+block/devfs/GPT registry enrollment or general FAT writer is added. Require
+trusted non-optical boot-source GUID equality, exact primary/backup GPT at the
+known image boundary, matching arrays and exact three-partition ranges, and a
+compiled fixed FAT16 metadata SHA-256 matching the configured selection. This
+admits a larger as-flashed stick without rewriting/relocating GPT. The complete
+BPB, both FATs and directory/LFN allocation must match before any write. Only
+its eight preallocated file-data sectors may change; never write GPT, FAT,
+directory, BIOS, ESP or transport payload bytes. Respect existing BOT durability
+classification and DMA quarantine. Latch log write/flush/readback failure until
+reboot; never retry or fall back to another disk.
+
+`INSTALL_LOG` accepts a fixed 32-byte event, validates user ranges, root/admin/
+raw-I/O authority and BSP ownership, and shares the existing serialized control
+gate. It grants no target sector access and can report failures even when target
+inventory is unavailable. Safe optional log failures warn without blocking the
+installation. A failed root filesystem write that taints storage, failed freeze/
+discard, or non-allocation errors during the final detached-root handoff remain
+installation failures; optional logging must not falsely certify unhealthy
+storage. The root log is refreshed after the actual readiness verification,
+then read back and frozen/discarded before the CLI reports completion.
+
+New source-write gates compare every byte outside the fixed 4096-byte USB file,
+plus independent FAT extraction/fsck and installed EXT4 log/fsck/boot audits.
+All automated fixtures remain disposable regular files. No physical-write or
+physical USB-log acceptance is inferred from these gates.

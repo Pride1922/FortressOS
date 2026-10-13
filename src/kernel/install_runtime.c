@@ -1,4 +1,5 @@
 #include "install_runtime.h"
+#include "install_log.h"
 #include "install_payload.h"
 #include "install_archive.h"
 #include "install_fat.h"
@@ -23,6 +24,8 @@ typedef struct {
     size_t recovery_size,root_size;
     root_recovery_t binding;
     block_dev_t partition;
+    uint32_t log_warnings;
+    char log_copy[INSTALL_LOG_BYTES];
 } runtime_t;
 
 static bool add(char *out,size_t cap,size_t *at,const char *s) {
@@ -55,6 +58,7 @@ static int revalidate(runtime_t *w) {
 }
 static int admit(void *ctx) {return revalidate(ctx);}
 static void progress(void *ctx,install_stage_t stage) {
+    install_log_stage((unsigned)stage);
     runtime_t *w=ctx;if (w->backend->progress) w->backend->progress(w->backend->context,(unsigned)stage);
 }
 static int raw_read(void *ctx,uint64_t l,uint32_t n,void *p) {
@@ -76,21 +80,42 @@ static bool part_write(block_dev_t *d,uint64_t l,const void *p) {
 }
 static bool part_flush(block_dev_t *d) {return !raw_flush(d->priv);}
 
-static int root_file(ext4_mount_t *fs,const char *name,const char *bytes,size_t size) {
+static int root_file_at(ext4_mount_t *fs,const char *directory,const char *name,const char *bytes,size_t size,bool existing) {
     creds_t actor;creds_init_root(&actor);int r;
-    vfs_node_t *parent=vfs_lookup_at_creds(ext4_prepared_root(fs),"/etc",&actor,&r);
+    vfs_node_t *parent=vfs_lookup_at_creds(ext4_prepared_root(fs),directory,&actor,&r);
     if (!parent) return r;
     vfs_create_attrs_t attrs={.mode=0644};
-    vfs_node_t *node=parent->create_attrs_ref ? parent->create_attrs_ref(parent,name,VFS_FILE,&attrs,&r) : NULL;
+    vfs_node_t *node=existing ? vfs_lookup_at_creds(parent,name,&actor,&r) : parent->create_attrs_ref ? parent->create_attrs_ref(parent,name,VFS_FILE,&attrs,&r) : NULL;
     vfs_node_put(parent);if (!node) return r ? r : -VFS_EOPNOTSUPP;
     uint64_t offset=0;int64_t n=node->write ? node->write(node,&offset,false,bytes,size) : -VFS_EOPNOTSUPP;
     r=n<0 ? (int)n : (size_t)n!=size ? -VFS_EIO : 0;
     /* Read authoritative bytes and metadata before releasing the reference. */
     vfs_metadata_t meta;char verify[512];
     if (!r) r=vfs_metadata(node,&meta);
-    if (!r && (meta.size!=size || meta.uid || meta.gid || (meta.mode&07777)!=0644 || size>sizeof(verify))) r=-VFS_EINVAL;
-    if (!r && (!node->read || node->read(node,0,verify,size)!=(int64_t)size || memcmp(verify,bytes,size))) r=-VFS_EIO;
+    if (!r && (meta.size!=size || meta.uid || meta.gid || (meta.mode&07777)!=0644)) r=-VFS_EINVAL;
+    for (size_t at=0;!r && at<size;at+=sizeof(verify)) {
+        size_t n=size-at;if (n>sizeof(verify)) n=sizeof(verify);
+        if (!node->read || node->read(node,at,verify,n)!=(int64_t)n || memcmp(verify,bytes+at,n)) r=-VFS_EIO;
+    }
     vfs_node_put(node);return r;
+}
+static int root_file(ext4_mount_t *fs,const char *name,const char *bytes,size_t size) {
+    return root_file_at(fs,"/etc",name,bytes,size,false);
+}
+static int write_install_log(runtime_t *w,ext4_mount_t *fs,bool existing) {
+    size_t n;const char *bytes=install_log_snapshot(&n);
+    if (n>sizeof(w->log_copy)) return -VFS_EINVAL;
+    memset(w->log_copy,' ',sizeof(w->log_copy));memcpy(w->log_copy,bytes,n);
+    w->log_copy[sizeof(w->log_copy)-1]='\n';
+    return root_file_at(fs,"/var/log","fortress-install.log",w->log_copy,sizeof(w->log_copy),existing);
+}
+/* Optional logging errors are warnings, but filesystem freeze/discard must still
+ * succeed: ignoring a tainted write would falsely report a healthy installation. */
+static int finish_install_log(runtime_t *w) {
+    ext4_mount_t *fs=NULL;int r=ext4_prepare_installer_root(&w->partition,true,&fs,NULL);
+    if (r) {w->log_warnings|=INSTALL_STATUS_ROOT_LOG_WARNING;return r==-VFS_ENOMEM ? 0 : r;}
+    if (write_install_log(w,fs,true)) w->log_warnings|=INSTALL_STATUS_ROOT_LOG_WARNING;
+    r=ext4_freeze_and_sync(fs);int discarded=ext4_discard_prepared_root(fs);return r ? r : discarded;
 }
 static int provision(void *ctx) {
     runtime_t *w=ctx;ext4_mount_t *fs=NULL;
@@ -118,6 +143,7 @@ static int provision(void *ctx) {
     if (!r) r=root_file(fs,"fortress-install.v1",w->root_record,w->root_size);
     /* Template has no hostname file; create a durable explicit machine default. */
     if (!r) r=root_file(fs,"hostname","fortress\n",9);
+    if (!r && write_install_log(w,fs,false)) w->log_warnings|=INSTALL_STATUS_ROOT_LOG_WARNING;
     int frozen=ext4_freeze_and_sync(fs);if (!r) r=frozen;
     int discarded=ext4_discard_prepared_root(fs);if (!r) r=discarded;
     return r;
@@ -204,13 +230,16 @@ int install_runtime_deploy(const boot_info_t *boot,const install_backend_t *back
     memcpy(w->esp,(void *)boot->installer_payload_vaddr[0],INSTALL_ESP_BYTES);
     memcpy(w->manifest,(void *)boot->installer_payload_vaddr[4],256);
     r=personalize(w,req);if (r) goto done;
+    install_log_target(id,w->username);
     install_target_t target={.context=w,.sectors=id->sector_count,.sector_size=id->sector_size,
         .admit=admit,.read=raw_read,.write=raw_write,.flush=raw_flush,.provision=provision,.progress=progress};
     install_result_t result;
     r=install_payload_deploy(w->manifest,256,&source,&target,&w->plan,false,&w->copy,&result);
     status->stage=result.stage;status->copied_bytes=result.copied_bytes;status->complete=result.complete;
+    install_log_result(result.stage,r,result.complete);
+    if (!r && result.complete) {r=finish_install_log(w);if (r) {status->complete=0;install_log_result(result.stage,r,false);}}
 done:
-    status->error=r;
+    status->error=r;status->reserved=w->log_warnings | (install_log_usb_ok() ? 0 : INSTALL_STATUS_USB_LOG_WARNING);
     if (w->archive) {db_wipe(w->archive,INSTALL_ARCHIVE_MAX);kfree(w->archive);}
     if (w->esp) {db_wipe(w->esp,INSTALL_ESP_BYTES);kfree(w->esp);}
     /* A failed discard must never leave a mounted device pointing at freed

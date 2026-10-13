@@ -119,3 +119,26 @@ These are measurements for 9G.1/9G.2 (flush capability for 9G.4), not assumed ha
 - Phase 9G.5 SuperSpeed: [`docs/roadmap/phase-9g5-superspeed.md`](../roadmap/phase-9g5-superspeed.md)
 
 E4-A SanDisk/Dell 5590 [physical acceptance](../roadmap/ext4-phase5-acceptance.md): all seven Phase-5 checklist items user-confirmed PASS, 2026-10-03.
+
+
+## Installer log slot (2026-10-13)
+
+The separate MULTI installer has a narrow source-write exception for the
+requested USB diagnostic log. Its installer entry explicitly selects the fixed
+log metadata SHA-256; trusted boot module provenance supplies the source GPT
+disk GUID. The private BOT transport is not registered as `sda`, mounted at
+`/mnt`, or exposed in devfs. Both GPT copies/arrays and the fixed FAT16 metadata
+are checked before writing only the preallocated `/fortress-install.log` data
+sectors on the `FORTRESSLOG` volume. Boot/payload/FAT/directory/GPT bytes remain
+immutable. Existing USB durability and quarantine rules apply; a failed log
+operation disables further log I/O for that boot. Normal production PARTUUID
+mount selection and writable opt-in retain their existing contracts.
+
+As-flashed larger sticks use the validated backup at the declared image
+boundary for this exact slot; this does not enable degraded production mounts
+or GPT repair. ISO, unknown source, missing selection and unsupported/read-only
+USB paths provide no writable log slot. Only the currently retained BOT
+transport can be considered; there is no USB inventory chooser or hot-plug
+fallback. See the [installer contracts](../plans/PERSISTENT_ROOT_PHASE4.md)
+and [installer guide](../installer-multi-nvme.md). Physical Dell USB logging
+acceptance is pending.

@@ -13,7 +13,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--templates',type=Path);parser.add_argument('--username');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--templates',type=Path);parser.add_argument('--username');parser.add_argument('--artifacts',type=Path,default=ROOT/'bin');args=parser.parse_args()
     parent=ROOT/'build/root-phase4';parent.mkdir(parents=True,exist_ok=True)
     out=Path(tempfile.mkdtemp(prefix='runtime-',dir=parent))
     sources={str(p.relative_to(ROOT)):fixture.digest(p) for base in ('src','tests','scripts','user')
@@ -25,20 +25,20 @@ def main():
         manifest['commands'].append(list(map(str,cmd)));return fixture.run(list(map(str,cmd)),out/'host.log',600)
     try:
         if args.templates is None:
-            args.templates=Path(run(['python3','scripts/create_installer_payload.py']).strip().splitlines()[-1])
+            args.templates=Path(run(['python3','scripts/create_installer_payload.py','--kernel',args.artifacts/'fortress.elf','--bootstrap',args.artifacts/'initramfs.tar']).strip().splitlines()[-1])
         manifest['templates']=str(args.templates)
         binary=out/'host'
         run(['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-no-pie','-pthread',
             '-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Itests/ext4_host','-Itests/host','-Isrc/include','-Isrc/lib',
             '-Isrc/fs','-Isrc/drivers','-Isrc/mm','-Isrc/kernel','-Isrc/arch/x86_64','tests/install_runtime_host.c',
-            'tests/ext4_fault_disk.c','src/kernel/install_runtime.c','src/kernel/root_boot.c','src/fs/gpt.c',
+            'tests/ext4_fault_disk.c','src/kernel/install_runtime.c','src/kernel/install_log.c','src/kernel/root_boot.c','src/fs/gpt.c',
             'src/lib/crc32.c','src/lib/account_redo.c','src/lib/install_payload.c','src/lib/install_archive.c','src/lib/install_fat.c',
             'user/tools/userdb.c','user/tools/digest.c','-o',binary])
         # Native WSL I/O; retain output even when assertions/audits fail.
         with tempfile.TemporaryDirectory(prefix='fortress-install-runtime-') as tmp:
             disk=Path(tmp)/'target.img'
             try:
-                run([binary,args.templates,disk,ROOT/'bin']+([args.username] if args.username else []))
+                run([binary,args.templates,disk,args.artifacts]+([args.username] if args.username else []))
                 for name,lba,size in (('esp.img',4096,64*1024**2),('root.img',135168,256*1024**2)):
                     with disk.open('rb') as source,(out/name).open('xb') as destination:
                         source.seek(lba*512)
@@ -47,6 +47,11 @@ def main():
                 run(['fsck.fat','-n',out/'esp.img']);run(['e2fsck','-fn',out/'root.img'])
                 for name in ('passwd','group','shadow','fortress-install.v1','hostname'):
                     path=out/name;run(['debugfs','-R',f'dump /etc/{name} {path}',out/'root.img']);assert path.is_file()
+                log=out/'fortress-install.log'
+                run(['debugfs','-R',f'dump /var/log/fortress-install.log {log}',out/'root.img'])
+                record=log.read_text();assert 'result=installation complete' in record and 'stage=6 Verifying installed files' in record
+                assert log.read_bytes().endswith(b'\n')
+                assert '$5$' not in record and 'recovery' not in record.lower()
                 assert (out/'hostname').read_bytes()==b'fortress\n'
                 username=args.username or 'operator'
                 assert (out/'shadow').read_bytes().startswith(('root:!:::::::\n'+username+':$5$rounds=100000$').encode())

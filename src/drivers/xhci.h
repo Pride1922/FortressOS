@@ -19,8 +19,10 @@ typedef struct {
  * preemption disabled and no locks held. Uses PIT channel 2 for bounded waits.
  * Sizes/restores BAR0 with decode disabled, maps UC/NX MMIO, requests firmware
  * ownership, halts/resets. Leaves bus mastering disabled and controller stopped.
- * Explicit installer mode stops here: no DMA, rings, enumeration, storage
- * registration or USB I/O. Ordinary mode continues the existing BOT storage
+ * Explicit installer mode stops here except the compiled MULTI log profile with
+ * its explicit immutable-metadata selection. That profile keeps a private BOT
+ * transport without block/devfs/GPT enrollment; its writer admits only the fixed
+ * source-GUID-bound log slot. Ordinary mode continues the existing BOT storage
  * probe and retains its DMA/quarantine ownership contracts. Errors
  * report in boot thread context and return to the caller; never halt the OS. */
 void xhci_boot_probe(const boot_info_t *boot_info);

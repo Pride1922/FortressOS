@@ -1399,7 +1399,7 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         case SYS_CAPGET: result=sys_capget();break;
         case SYS_INSTALLCTL: {
             creds_t actor;
-            if (frame->rdi>INSTALL_DEPLOY) {result=SYSCALL_EINVAL;break;}
+            if (frame->rdi>INSTALL_LOG) {result=SYSCALL_EINVAL;break;}
             if (!syscall_actor(&actor)) {result=SYSCALL_ESRCH;break;}
             result=install_control((unsigned)frame->rdi,frame->rsi,frame->rdx,frame->r10,frame->r8,&actor);break;
         }

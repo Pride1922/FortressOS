@@ -9,26 +9,87 @@
 
 #define QUEUE_SIZE 32   /* 32 entries: compact, fits in 1 page, easily wraps in tests */
 
-/* Controller State and Geometry */
-static bool     g_initialized   = false;
-static bool     g_controller_fatal = false;
-static bool     g_dma_quarantined  = false;
-static uint16_t g_pci_seg       = 0;
-static uint8_t  g_pci_bus       = 0;
-static uint8_t  g_pci_dev       = 0;
-static uint8_t  g_pci_fn        = 0;
-static uintptr_t g_bar0_phys    = 0;
-static uintptr_t g_mmio_virt    = 0;
+typedef struct {
+    bool g_initialized;
+    bool g_controller_fatal;
+    bool g_dma_quarantined;
+    uint16_t g_pci_seg;
+    uint8_t g_pci_bus;
+    uint8_t g_pci_dev;
+    uint8_t g_pci_fn;
+    uintptr_t g_bar0_phys;
+    uintptr_t g_mmio_virt;
+    uint8_t g_dstrd;
+    uint32_t g_active_nsid;
+    bool g_unique_namespace;
+    bool g_root_geometry;
+    uint64_t g_sector_count;
+    uint32_t g_sector_size;
+    bool g_installer_deadlines;
+    bool g_installer_inventory_admitted;
+    uint32_t g_controller_id;
+    uintptr_t g_asq_phys;
+    uintptr_t g_acq_phys;
+    uintptr_t g_iosq_phys;
+    uintptr_t g_iocq_phys;
+    uintptr_t g_dma_buf_phys;
+    uint16_t g_admin_sq_tail;
+    uint16_t g_admin_cq_head;
+    uint8_t g_admin_cq_phase;
+    uint16_t g_io_sq_tail;
+    uint16_t g_io_cq_head;
+    uint8_t g_io_cq_phase;
+    uint16_t g_cid_counter;
+    nvme_sq_entry_t *g_asq_virt;
+    nvme_cq_entry_t *g_acq_virt;
+    nvme_sq_entry_t *g_iosq_virt;
+    nvme_cq_entry_t *g_iocq_virt;
+    uint8_t *g_dma_buf_virt;
+} nvme_state_t;
+static nvme_state_t states[8]={{.g_active_nsid=1,.g_sector_size=512,.g_admin_cq_phase=1,.g_io_cq_phase=1,.g_cid_counter=1}};
+static nvme_state_t *active_state=&states[0];
+#define g_initialized (active_state->g_initialized)
+#define g_controller_fatal (active_state->g_controller_fatal)
+#define g_dma_quarantined (active_state->g_dma_quarantined)
+#define g_pci_seg (active_state->g_pci_seg)
+#define g_pci_bus (active_state->g_pci_bus)
+#define g_pci_dev (active_state->g_pci_dev)
+#define g_pci_fn (active_state->g_pci_fn)
+#define g_bar0_phys (active_state->g_bar0_phys)
+#define g_mmio_virt (active_state->g_mmio_virt)
+#define g_dstrd (active_state->g_dstrd)
+#define g_active_nsid (active_state->g_active_nsid)
+#define g_unique_namespace (active_state->g_unique_namespace)
+#define g_root_geometry (active_state->g_root_geometry)
+#define g_sector_count (active_state->g_sector_count)
+#define g_sector_size (active_state->g_sector_size)
+#define g_installer_deadlines (active_state->g_installer_deadlines)
+#define g_installer_inventory_admitted (active_state->g_installer_inventory_admitted)
+#define g_controller_id (active_state->g_controller_id)
+#define g_asq_phys (active_state->g_asq_phys)
+#define g_acq_phys (active_state->g_acq_phys)
+#define g_iosq_phys (active_state->g_iosq_phys)
+#define g_iocq_phys (active_state->g_iocq_phys)
+#define g_dma_buf_phys (active_state->g_dma_buf_phys)
+#define g_admin_sq_tail (active_state->g_admin_sq_tail)
+#define g_admin_cq_head (active_state->g_admin_cq_head)
+#define g_admin_cq_phase (active_state->g_admin_cq_phase)
+#define g_io_sq_tail (active_state->g_io_sq_tail)
+#define g_io_cq_head (active_state->g_io_cq_head)
+#define g_io_cq_phase (active_state->g_io_cq_phase)
+#define g_cid_counter (active_state->g_cid_counter)
 
-static uint8_t  g_dstrd         = 0;
-static uint32_t g_active_nsid   = 1;
-static bool g_unique_namespace;
-static bool g_root_geometry;
-static uint64_t g_sector_count  = 0;
-static uint32_t g_sector_size   = 512;
-static bool g_installer_deadlines;
-static bool g_installer_inventory_admitted;
-static uint32_t g_controller_id;
+#define g_asq_virt (active_state->g_asq_virt)
+#define g_acq_virt (active_state->g_acq_virt)
+#define g_iosq_virt (active_state->g_iosq_virt)
+#define g_iocq_virt (active_state->g_iocq_virt)
+#define g_dma_buf_virt (active_state->g_dma_buf_virt)
+static pci_device_t inventory[8];
+static size_t inventory_count;
+static bool inventory_pinned;
+static const pci_device_t *initial_device;
+/* Controller State and Geometry */
+
 static inline uint64_t nvme_read64(uint32_t offset);
 /* Existing iteration caps remain a clock-fault backstop. Installer commands
  * also stop at ten monotonic seconds; CAP.TO transition deadline caps at 30s.
@@ -47,28 +108,8 @@ static bool installer_expired(uint64_t deadline) {
 }
 
 /* DMA Queues & Bounce Buffer (Phys & Virt) */
-static uintptr_t g_asq_phys     = 0;
-static uintptr_t g_acq_phys     = 0;
-static uintptr_t g_iosq_phys    = 0;
-static uintptr_t g_iocq_phys    = 0;
-static uintptr_t g_dma_buf_phys = 0;
-
-static nvme_sq_entry_t *g_asq_virt  = NULL;
-static nvme_cq_entry_t *g_acq_virt  = NULL;
-static nvme_sq_entry_t *g_iosq_virt = NULL;
-static nvme_cq_entry_t *g_iocq_virt = NULL;
-static uint8_t         *g_dma_buf_virt = NULL;
 
 /* Queue Pointers & Phases */
-static uint16_t g_admin_sq_tail   = 0;
-static uint16_t g_admin_cq_head   = 0;
-static uint8_t  g_admin_cq_phase  = 1;
-
-static uint16_t g_io_sq_tail      = 0;
-static uint16_t g_io_cq_head      = 0;
-static uint8_t  g_io_cq_phase     = 1;
-
-static uint16_t g_cid_counter     = 1;
 
 /* MMIO Register Access Primitives */
 static inline void nvme_write32(uint32_t offset, uint32_t val) {
@@ -346,7 +387,8 @@ bool nvme_init(void) {
 
     /* 1. Discover NVMe PCI Device */
     pci_device_t pci_dev;
-    if (!pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME, PCI_PROGIF_STORAGE_NVME, &pci_dev)) {
+    if (initial_device) pci_dev=*initial_device;
+    else if (!pci_find_device(PCI_CLASS_STORAGE, PCI_SUBCLASS_STORAGE_NVME, PCI_PROGIF_STORAGE_NVME, &pci_dev)) {
         serial_puts("[FAIL] No NVMe storage controller found on PCI bus!\n");
         return false;
     }
@@ -648,10 +690,57 @@ bool nvme_init(void) {
     return true;
 }
 
+/* Boot-only inventory. Each controller keeps distinct DMA queues and failure
+ * state. Switching is permitted only before storage publication, on the BSP.
+ * No hotplug enrollment or DMA allocation reuse after failure. */
+bool nvme_inventory_valid(void) {
+    if (!inventory_pinned || !pci_inventory_complete()) return false;
+    /* Complete discovery is pinned once, as with the legacy singleton. Never
+     * rescan all firmware bus ranges in the block-I/O path or enroll hotplug.
+     * Refresh every pinned BDF's controller ID, class and BAR mapping. */
+    for (size_t i=0;i<inventory_count;i++) {
+        const pci_device_t *d=&inventory[i];
+        if (pci_read_config32(d->segment,d->bus,d->device,d->function,PCI_REG_VENDOR_ID)!=
+            ((uint32_t)d->vendor_id | (uint32_t)d->device_id<<16)) return false;
+        uint32_t class=pci_read_config32(d->segment,d->bus,d->device,d->function,8);
+        if ((class>>8)!=((uint32_t)PCI_CLASS_STORAGE<<16 | (uint32_t)PCI_SUBCLASS_STORAGE_NVME<<8 | PCI_PROGIF_STORAGE_NVME)) return false;
+        uint32_t low=pci_read_config32(d->segment,d->bus,d->device,d->function,PCI_REG_BAR0);
+        uint64_t bar=low & PCI_BAR_MEM_ADDR_MASK;
+        if (low & PCI_BAR_IO_SPACE) return false;
+        if ((low & PCI_BAR_MEM_TYPE_MASK)==PCI_BAR_MEM_TYPE_64)
+            bar|=(uint64_t)pci_read_config32(d->segment,d->bus,d->device,d->function,PCI_REG_BAR1)<<32;
+        if (bar!=d->bar[0]) return false;
+    }
+    return true;
+}
+size_t nvme_inventory_boot(void) {
+    if (inventory_pinned) return nvme_inventory_valid() ? inventory_count : 0;
+    if (!pci_inventory_complete() || !apic_poll_clock_hz() || apic_poll_clock_hz()>UINT64_MAX/60) return 0;
+    pci_device_t devices[9];
+    size_t n=pci_find_all_devices(PCI_CLASS_STORAGE,PCI_SUBCLASS_STORAGE_NVME,PCI_PROGIF_STORAGE_NVME,devices,9);
+    if (!n || n>8 || !pci_inventory_complete()) return 0;
+    /* Existing singleton state may already have DMA ownership. Never overwrite it. */
+    if (g_mmio_virt || g_initialized || g_controller_fatal || g_dma_quarantined) return 0;
+    memcpy(inventory,devices,n*sizeof(*devices));inventory_count=n;inventory_pinned=true;
+    for (size_t i=0;i<n;i++) {
+        active_state=&states[i];g_active_nsid=1;g_sector_size=512;
+        g_admin_cq_phase=g_io_cq_phase=1;g_cid_counter=1;g_installer_deadlines=true;
+        initial_device=&inventory[i];
+        if (!nvme_init()) { g_controller_fatal=true; /* Retain all DMA, no retry. */ }
+    }
+    initial_device=NULL;active_state=&states[0];
+    return nvme_inventory_valid() ? n : 0;
+}
+bool nvme_inventory_select(unsigned index) {
+    if (!nvme_inventory_valid() || index>=inventory_count) return false;
+    active_state=&states[index];
+    return g_initialized && !g_controller_fatal && !g_dma_quarantined;
+}
+
 bool nvme_installer_identity(install_identity_v1_t *id) {
     if (!id || !apic_poll_clock_hz() || apic_poll_clock_hz()>UINT64_MAX/60) return false;
     if (!pci_inventory_complete()) return false;
-    if (!g_installer_inventory_admitted) {
+    if (!g_installer_inventory_admitted && !inventory_pinned) {
         pci_device_t controllers[2];
         if (pci_find_all_devices(PCI_CLASS_STORAGE,PCI_SUBCLASS_STORAGE_NVME,
             PCI_PROGIF_STORAGE_NVME,controllers,2)!=1 || !pci_inventory_complete()) return false;
@@ -663,6 +752,7 @@ bool nvme_installer_identity(install_identity_v1_t *id) {
         g_installer_inventory_admitted=true;
     }
     g_installer_deadlines=true;
+    if (inventory_pinned && !nvme_inventory_valid()) return false;
     if (!nvme_init() || !g_unique_namespace || !g_root_geometry || g_sector_size!=512 ||
         pci_read_config32(g_pci_seg,g_pci_bus,g_pci_dev,g_pci_fn,PCI_REG_VENDOR_ID)!=g_controller_id) return false;
     install_identity_v1_t next={.size=sizeof(next),.version=1,.generation=1,

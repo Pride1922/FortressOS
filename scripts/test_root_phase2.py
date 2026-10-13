@@ -237,7 +237,7 @@ def extract_root(disk,out):
         while remaining:
             b=src.read(min(1024*1024,remaining));assert b;dst.write(b);remaining-=len(b)
 
-def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None,accel='tcg',username='operator'):
+def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None,accel='tcg',username='operator',extra_first=False):
     assert accel in ('tcg','kvm')
     label=f'{mode}-{cpus}-{boot}';argv=['qemu-system-x86_64','-M','q35','-m','2G','-accel',accel,'-smp',str(cpus),'-display','none','-monitor','none','-no-reboot','-net','none','-serial','stdio']
     if accel=='kvm':argv+=['-cpu','host']
@@ -248,12 +248,12 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
         # OVMF repairs an invalid backup GPT before booting the kernel when the
         # backend is writable. Keep this degraded-policy fixture immutable.
         protect=',readonly=on' if mode=='uefi' and boot=='degraded' else ''
-        argv+=['-drive',f'file={disk},if=none,id=target,format=raw'+protect,'-device','nvme,drive=target,serial=ROOTPHASE2,bootindex=1']
+        argv+=['-drive',f'file={disk},if=none,id=target,format=raw'+protect,'-device','nvme,drive=target,serial=ROOTPHASE2,bootindex=1'+(',addr=0x3' if extra_first else '')]
     if boot=='login-publication':argv+=['-fw_cfg','name=opt/fortress/root_login_fail,string=1']
     if boot in ('flush','replay'):argv+=['-fw_cfg',f'name=opt/fortress/root_{boot}_fail,string=1']
     if extra is not None:
         assert extra.is_file() and extra.resolve().parent==out.resolve()
-        argv+=['-drive',f'file={extra},if=none,id=excluded,format=raw','-device','nvme,drive=excluded,serial=EXCLUDED']
+        argv+=['-drive',f'file={extra},if=none,id=excluded,format=raw','-device','nvme,drive=excluded,serial=EXCLUDED'+(',addr=0x2' if extra_first else '')]
     if mode=='uefi':
         variables=out/(label+'-vars.fd');shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd',variables)
         argv+=['-drive','if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd','-drive',f'if=pflash,format=raw,unit=1,file={variables}']

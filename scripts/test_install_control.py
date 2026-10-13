@@ -26,7 +26,7 @@ def main():
         for name,text in segments.items():(out/name).write_text(text)
         command=['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-no-pie',
                  '-Isrc/include','-Isrc/fs','-Isrc/kernel','-Isrc/mm','-Isrc/drivers','-Isrc/arch/x86_64',
-                 '-I'+str(out),'tests/install_control_host.c','user/tools/digest.c','-o',str(out/'host')]
+                 '-I'+str(out),'tests/install_control_host.c','src/kernel/install_log.c','user/tools/digest.c','-o',str(out/'host')]
         with (out/'host.log').open('w') as log:
             for cmd in (command,[str(out/'host')]):
                 manifest['commands'].append(cmd)
@@ -35,6 +35,16 @@ def main():
                 '-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Isrc/include','-Isrc/fs','-Isrc/kernel','-Isrc/drivers','-Isrc/lib','-Isrc/mm','-Isrc/arch/x86_64',
                 'tests/install_nvme_host.c','src/kernel/root_boot.c','src/fs/gpt.c','user/tools/digest.c','-o',str(out/'nvme-host')]
             for cmd in (nvme_command,[str(out/'nvme-host')]):
+                manifest['commands'].append(cmd)
+                subprocess.run(cmd,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=120)
+            inventory_command=['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-no-pie',
+                '-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Isrc/include','-Isrc/fs','-Isrc/kernel','-Isrc/drivers','-Isrc/lib','-Isrc/mm','-Isrc/arch/x86_64',
+                'tests/nvme_inventory_host.c','-o',str(out/'inventory-host')]
+            for cmd in (inventory_command,[str(out/'inventory-host')]):
+                manifest['commands'].append(cmd)
+                subprocess.run(cmd,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=120)
+            multi_command=nvme_command+['-DINSTALLER_MULTI']
+            for cmd in (multi_command,[str(out/'nvme-host')]):
                 manifest['commands'].append(cmd)
                 subprocess.run(cmd,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=120)
             inspect_command=nvme_command+['-DTEST_INSTALLER_INSPECT']

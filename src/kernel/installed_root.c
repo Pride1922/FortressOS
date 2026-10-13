@@ -17,6 +17,31 @@ static bool published;
 static const char *reason="root admission";
 static userdb_t database;
 static char file_bytes[DB_FILE_MAX+1];
+#ifdef INSTALLER_MULTI
+static bool inventory_read(block_dev_t *disk,uint64_t lba,void *bytes) {
+    (void)disk;return nvme_read_sector(lba,bytes);
+}
+/* Scan read-only, reject duplicate identifiers across drives, then pin the
+ * matching controller before publishing any writable block/filesystem state. */
+static bool select_root_controller(const gpt_guid_t *uuid) {
+    size_t count=nvme_inventory_boot();unsigned matches=0,chosen=0;bool coherent=false;
+    if (!count) return false;
+    for (unsigned i=0;i<count;i++) {
+        if (!nvme_inventory_select(i) || !nvme_has_unique_namespace() || !nvme_root_geometry_supported()) return false;
+        block_dev_t disk={.sector_size=nvme_get_sector_size(),.sector_count=nvme_get_sector_count(),.read_sector=inventory_read};
+        memcpy(disk.name,"root-probe",11);gpt_policy_result_t policy;
+        bool parsed=gpt_parse_ex(&disk,&policy);
+        if (parsed) for (size_t j=0;j<gpt_get_partition_count();j++) {
+            gpt_partition_t *p=gpt_get_partition(j);
+            if (gpt_guid_equal(&p->unique_guid,uuid)) {
+                matches++;chosen=i;coherent=policy==GPT_POLICY_PRIMARY_CONSISTENT && gpt_guid_equal(&p->type_guid,&GPT_GUID_LINUX_FS);
+            }
+        }
+        gpt_reset();
+    }
+    return matches==1 && coherent && nvme_inventory_select(chosen);
+}
+#endif
 #ifdef TEST_ROOT_PHASE2
 static bool fail_flush,fail_replay_write;
 void installed_root_test_faults(bool f,bool w) {fail_flush=f;fail_replay_write=w;}
@@ -133,10 +158,15 @@ bool installed_root_boot(const boot_info_t *info) {
     reason="invalid or incomplete boot readiness";
     if (!info->installed_modules_valid || !root_readiness_validate((void *)info->readiness_vaddr,info->readiness_size,&recovery,
         (void *)info->kernel_file_vaddr,info->kernel_file_size,(void *)info->initramfs_vaddr,info->initramfs_size)) return false;
-    reason="ambiguous NVMe inventory";pci_device_t controllers[2];
+    reason="ambiguous NVMe inventory";
+#ifdef INSTALLER_MULTI
+    if (!select_root_controller(&c.partuuid)) return false;
+#else
+    pci_device_t controllers[2];
     if (!pci_inventory_complete() ||
         pci_find_all_devices(PCI_CLASS_STORAGE,PCI_SUBCLASS_STORAGE_NVME,PCI_PROGIF_STORAGE_NVME,controllers,2)!=1 ||
         !pci_inventory_complete()) return false;
+#endif
     reason="unsupported NVMe namespace/geometry";
     if (!nvme_init() || !nvme_has_unique_namespace() || !nvme_root_geometry_supported() || nvme_get_sector_size()!=512) return false;
     block_init();if (!block_register_nvme()) return false;

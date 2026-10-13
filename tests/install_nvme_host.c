@@ -8,6 +8,7 @@
 #include "install_runtime.h"
 #include "vfs.h"
 void console_puts(const char *s) {(void)s;}
+void console_terminal_write(const char *s,size_t n) {(void)s;(void)n;}
 void serial_puts(const char *s) {(void)s;}
 /* Deployment engine has its own actual-code integration gate. */
 int install_runtime_deploy(const boot_info_t *boot,const install_backend_t *backend,
@@ -43,9 +44,24 @@ bool nvme_read_sector(uint64_t lba,void *bytes) {
 bool nvme_read_sectors(uint64_t lba,uint32_t count,void *bytes) {(void)lba;reads++;if (io_failure) return false;memset(bytes,0,count*512);return true;}
 bool nvme_write_sectors(uint64_t lba,uint32_t count,const void *bytes) {(void)lba;(void)count;(void)bytes;writes++;return !io_failure;}
 bool nvme_flush(void) {flushes++;return !io_failure;}
+#ifdef INSTALLER_MULTI
+static install_identity_v1_t inventory_ids[2];
+static bool inventory_ok=true;
+static unsigned inventory_index;
+size_t nvme_inventory_boot(void) {return inventory_ok ? 2 : 0;}
+bool nvme_inventory_valid(void) {return inventory_ok;}
+bool nvme_inventory_select(unsigned index) {
+    if (!inventory_ok || index>=2) return false;
+    inventory_index=index;hardware=inventory_ids[index];return true;
+}
+#endif
 #include "../src/kernel/install_nvme.c"
 static boot_info_t info;
 static void reset(void) {
+#ifdef INSTALLER_MULTI
+    multi_count=multi_selected=0;inventory_ok=true;
+    memset(multi_ids,0,sizeof(multi_ids));memset(multi_raw,0,sizeof(multi_raw));
+#endif
 #ifdef INSTALLER_PHYSICAL
     physical_bound=false;memset(physical_expected,0,sizeof(physical_expected));
 #endif
@@ -62,6 +78,74 @@ static void make_header(uint8_t guid) {
     uint32_t crc=crc32(header,92);for (unsigned i=0;i<4;i++) header[16+i]=(uint8_t)(crc>>(i*8));
 }
 int main(void) {
+#ifdef INSTALLER_MULTI
+    reset();info.installer_payload_valid=true;inventory_ids[0]=hardware;inventory_ids[1]=hardware;
+    inventory_ids[1].serial[0]='2';install_identity_digest(&inventory_ids[1]);
+    assert(install_nvme_multi_boot(&info) && registrations==1 && !writes && !flushes);
+    install_identity_v1_t listed;
+    assert(registered.enumerate(NULL,0,&listed)==1 && listed.serial[0]!='2');
+    assert(registered.enumerate(NULL,1,&listed)==1 && listed.serial[0]=='2');
+    assert(!registered.enumerate(NULL,2,&listed));
+    assert(!registered.select(NULL,1) && inventory_index==1);
+    assert(!registered.identity(NULL,&listed) && listed.serial[0]=='2');
+    inventory_ids[1].serial[1]^=1;install_identity_digest(&inventory_ids[1]);
+    assert(registered.identity(NULL,&listed)==-VFS_EIO && failed);
+    reset();info.installer_payload_valid=true;inventory_ok=false;
+    assert(!install_nvme_multi_boot(&info) && !registrations && !writes);inventory_ok=true;
+    /* Non-optical boot admits drive with existing MBR and detects partition summary */
+    reset();info.installer_payload_valid=true;info.installer_source_optical=false;
+    mbr[510]=0x55;mbr[511]=0xAA;mbr[446+4]=0x07;
+    inventory_ids[0]=hardware;inventory_ids[1]=hardware;
+    inventory_ids[1].serial[0]='2';install_identity_digest(&inventory_ids[1]);
+    assert(install_nvme_multi_boot(&info) && registrations==1);
+    assert(registered.enumerate(NULL,0,&listed)==1 && listed.flags==INSTALL_ID_ELIGIBLE);
+    assert(listed.reserved2[0]==INSTALL_SUMMARY_VALID && listed.reserved2[1]==INSTALL_SUMMARY_MBR);
+    assert(listed.reserved2[2]==1 && (listed.reserved2[3]&INSTALL_SUMMARY_WINDOWS));
+    assert(!registered.select(NULL,0) && inventory_index==0);
+    assert(!registered.identity(NULL,&listed) && listed.flags==INSTALL_ID_ELIGIBLE);
+
+    /* Non-optical boot flags drive matching source_guid as INSTALL_ID_SOURCE and denies lease */
+    reset();info.installer_payload_valid=true;info.installer_source_optical=false;
+    info.installer_source_disk_guid[0]=1;make_header(1);
+    inventory_ids[0]=hardware;inventory_ids[1]=hardware;
+    inventory_ids[1].serial[0]='2';install_identity_digest(&inventory_ids[1]);
+    assert(install_nvme_multi_boot(&info) && registrations==1);
+    assert(registered.enumerate(NULL,0,&listed)==1 && (listed.flags & INSTALL_ID_SOURCE));
+    assert(registered.select(NULL,0)==-VFS_EACCES);
+
+    /* Non-matching GPT is admitted as eligible */
+    reset();info.installer_payload_valid=true;info.installer_source_optical=false;
+    info.installer_source_disk_guid[0]=1;make_header(2);
+    inventory_ids[0]=hardware;inventory_ids[1]=hardware;
+    inventory_ids[1].serial[0]='2';install_identity_digest(&inventory_ids[1]);
+    assert(install_nvme_multi_boot(&info) && registrations==1);
+    assert(registered.enumerate(NULL,0,&listed)==1 && listed.flags==INSTALL_ID_ELIGIBLE);
+    assert(!registered.select(NULL,0) && !registered.identity(NULL,&listed));
+
+    /* A read error never becomes a writable target. */
+    reset();info.installer_payload_valid=true;info.installer_source_optical=false;
+    inventory_ids[0]=hardware;inventory_ids[1]=hardware;io_failure=true;
+    assert(!install_nvme_multi_boot(&info) && failed && !registrations && !writes && !flushes);
+
+    /* Damaged primary still excludes a source identified by its backup. */
+    reset();info.installer_payload_valid=true;info.installer_source_optical=false;
+    info.installer_source_disk_guid[0]=1;make_header(1);memcpy(backup,header,512);header[0]=0;
+    inventory_ids[0]=hardware;inventory_ids[1]=hardware;
+    assert(install_nvme_multi_boot(&info));
+    assert(registered.enumerate(NULL,0,&listed)==1 && listed.flags==INSTALL_ID_SOURCE);
+    assert(registered.select(NULL,0)==-VFS_EACCES && !writes);
+
+    /* Invalid unrelated GPT is listed but cannot acquire a write lease. */
+    reset();info.installer_payload_valid=true;info.installer_source_optical=false;
+    info.installer_source_disk_guid[0]=1;make_header(2);header[16]^=1;
+    inventory_ids[0]=hardware;inventory_ids[1]=hardware;
+    assert(install_nvme_multi_boot(&info));
+    assert(registered.enumerate(NULL,0,&listed)==1 && !listed.flags);
+    assert(registered.select(NULL,0)==-VFS_EACCES && !writes);
+
+    puts("PASS multi-drive transport policy: indexed identity/selection, replacement and incomplete inventory fail closed");
+    return 0;
+#endif
 #ifdef INSTALLER_PHYSICAL
     reset();info.installer_payload_valid=true;
     assert(!install_nvme_physical_boot(&info) && failed && !reads && !writes && !flushes && !registrations);

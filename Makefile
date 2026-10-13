@@ -692,6 +692,13 @@ endif
 CFLAGS += -DINSTALLER_PHYSICAL
 endif
 
+ifeq ($(INSTALLER_MULTI),1)
+ifneq ($(INSTALLER_TEST)$(INSTALLER_INSPECT)$(INSTALLER_PHYSICAL),)
+$(error Multi-drive installer requires a separate build)
+endif
+CFLAGS += -DINSTALLER_MULTI
+endif
+
 $(BUILD_DIR)/tool-userdb.o: user/tools/userdb.c user/tools/userdb.h user/tools/digest.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
@@ -1769,6 +1776,17 @@ test-install-runtime-host: bin/fortress.elf bin/initramfs.tar
 	@python3 scripts/test_install_runtime.py
 
 .PHONY: test-install-cli-host test-root-phase4-host
+.PHONY: test-install-log-host test-install-log
+test-install-log-host:
+	@test -n "$(INSTALLER_MEDIA)" || { echo 'Set INSTALLER_MEDIA to retained multi installer media'; exit 2; }
+	@python3 scripts/test_install_log.py --media "$(INSTALLER_MEDIA)"
+test-install-log:
+	@test -n "$(INSTALLER_MEDIA)" || { echo 'Set INSTALLER_MEDIA to retained multi installer media'; exit 2; }
+	@python3 scripts/test_installer_logging.py --media "$(INSTALLER_MEDIA)"
+.PHONY: test-install-confirmation
+test-install-confirmation:
+	@test -n "$(INSTALLER_MEDIA)" || { echo 'Set INSTALLER_MEDIA to retained installer media'; exit 2; }
+	@python3 scripts/test_installer_confirmation.py --media "$(INSTALLER_MEDIA)"
 test-install-cli-host:
 	@python3 scripts/test_install_cli.py
 
@@ -1779,3 +1797,9 @@ test-root-phase4-host: test-install-control-host test-install-payload-host test-
 test-root-phase4:
 	@test -n "$(INSTALLER_MEDIA)" || { echo 'Set INSTALLER_MEDIA to the retained build/root-phase4/media-* workspace'; exit 2; }
 	@python3 scripts/test_installer.py --media "$(INSTALLER_MEDIA)"
+
+.PHONY: test-root-phase4-multi
+# Two-drive fixtures and source-free installed boot; regular files only.
+test-root-phase4-multi:
+	@test -n "$(INSTALLER_MEDIA)" || { echo 'Set INSTALLER_MEDIA to the retained multi-profile media workspace'; exit 2; }
+	@python3 scripts/test_installer_multi.py --media "$(INSTALLER_MEDIA)"

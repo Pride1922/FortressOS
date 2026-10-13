@@ -15,6 +15,11 @@ typedef struct {
      * Trusted adapter owns detached mount handoff until freeze/discard. */
     int (*deploy)(void *,const install_deploy_v1_t *,install_status_v1_t *);
     void (*progress)(void *,unsigned);
+    /* Optional indexed inventory and explicit selection before lease creation.
+     * Enumeration returns 1 for an entry, 0 at end, or a negative VFS error.
+     * select must not perform disk writes. Legacy backends expose index zero. */
+    int (*enumerate)(void *,unsigned,install_identity_v1_t *);
+    int (*select)(void *,unsigned);
 } install_backend_t;
 void install_control_boot(const install_backend_t *,bool installer_mode);
 void install_identity_digest(install_identity_v1_t *);

@@ -1,3 +1,4 @@
+#include "install_control.h"
 #include "input.h"
 #include "types.h"
 #include "limine.h"
@@ -143,7 +144,7 @@ static void __attribute__((unused)) pmm_high_memory_probe(void) {
         uintptr_t p = pmm_alloc_page_above(probes[i]);
         if (p == 0) {
             serial_print_hex(probes[i]);
-            serial_puts(" — no frame available\n");
+            serial_puts(" â€” no frame available\n");
             continue;
         }
         volatile uint64_t *v = (volatile uint64_t *)vmm_phys_to_virt(p);
@@ -152,7 +153,7 @@ static void __attribute__((unused)) pmm_high_memory_probe(void) {
         bool ok = (v[0] == 0xDEADBEEFCAFEBABEULL && v[1] == 0x0123456789ABCDEFULL);
         serial_puts("Allocated phys ");
         serial_print_hex(p);
-        serial_puts(ok ? " — HHDM readback PASS\n" : " — HHDM readback FAIL\n");
+        serial_puts(ok ? " â€” HHDM readback PASS\n" : " â€” HHDM readback FAIL\n");
         pmm_free_page(p);
     }
 }
@@ -3141,6 +3142,7 @@ static void ext4_physical_commit_pause(void) {
 /* Phase1 fixture has no production root selector or installation authority. */
 static bool g_installed_boot;
 static bool g_installer_boot;
+bool kernel_installer_boot_active(void) {return g_installer_boot;}
 static bool g_explicit_live_boot;
 static bool root_phase1_requested(void) {
 #ifdef TEST_ROOT_PHASE1
@@ -4925,7 +4927,7 @@ void kmain(void) {
     }
 
     serial_puts("\n========================================================\n");
-    serial_puts("       FORTRESS OS (x86_64 UEFI) — by Pride1922         \n");
+    serial_puts("       FORTRESS OS (x86_64 UEFI) â€” by Pride1922         \n");
     serial_puts("========================================================\n\n");
 
     if (serial_status == 0) {
@@ -6623,6 +6625,15 @@ pf_boot_guard_done:
         console_puts(install_nvme_physical_boot(&boot_info) ? "Drive-bound physical installer ready\n" : "Bound installer target unavailable\n");
     }
 #endif
+#ifdef INSTALLER_MULTI
+    if (g_installer_boot) {
+        extern bool install_nvme_multi_boot(const boot_info_t *);
+        extern void install_log_boot_usb(const boot_info_t *);
+        install_log_boot_usb(&boot_info);
+        install_control_boot(NULL,true);
+        console_puts(install_nvme_multi_boot(&boot_info) ? "NVMe disk selection installer ready\n" : "Installer inventory unavailable\n");
+    }
+#endif
     bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);
     bool recovery_shell=false;
 #ifdef TEST_ROOT_PHASE2
@@ -6684,7 +6695,7 @@ pf_boot_guard_done:
         sched_enable_preemption();
         if (!g_installed_boot) apic_timer_reset_bsp_ticks();
         apic_timer_start();
-        serial_puts(g_installed_boot && !installed_ready ? recovery_shell ?
+        if (!g_installer_boot) serial_raw_puts(g_installed_boot && !installed_ready ? recovery_shell ?
             "[BOOT] Authenticated recovery shell ready.\n" : "[BOOT] Recovery authentication ready.\n" :
             "[BOOT] Interactive shell ready.\n");
         process_wait_quiescent(pid);

@@ -3,8 +3,10 @@
 2026-10-12. **COMPLETE — DISPOSABLE TARGETS ONLY.**
 BIOS/UEFI installation/boot/recovery/exclusion/fault matrix: **70/70 PASS**.
 Earlier progress and failed attempts below remain historical evidence; the
-final acceptance checkpoint is at the end. Physical installation and release
-enablement remain Phase 5.
+original acceptance checkpoint is retained below. Later sections record Dell
+acceptance and subsequent installer improvements with their own test scope.
+The latest logging revision has focused BIOS/UEFI acceptance; physical USB
+logging and two-NVMe acceptance remain pending.
 [Implemented contracts and limits](../plans/PERSISTENT_ROOT_PHASE4.md).
 
 ## Baseline preservation
@@ -366,3 +368,314 @@ subsequent guest run passed without changing the driver timeout policy.
 Normal live ISO/image hashes remain protected. All agent test writes are to
 disposable regular files. The user's physical install and clean-shutdown
 persistence results are recorded separately in the [Phase 5 evidence](persistent-root-phase5.md).
+
+### Two-NVMe selection and stepped installer — 2026-10-13
+
+The separate `INSTALLER_MULTI=1` profile adds a numbered model/capacity menu
+without serials, with explicit selection among at most eight supported NVMe
+controllers. Queue/DMA/geometry/failure state is retained separately per
+controller. Complete boot discovery is pinned once; fresh pinned PCI and full
+selected Identify checks remain mandatory, without rescanning every firmware
+bus on each I/O. No hotplug enrollment is claimed. Original live, disposable,
+inspection and fingerprint-bound registration profiles remain separate.
+
+The user's clean-screen and stepped interface changes are retained: keyboard
+layout, disk, chosen username/login password, independent recovery password and
+final YES confirmation. Byte-driven framebuffer progress uses the terminal
+writer so ANSI erase-line sequences render correctly. Completion waits for
+Enter and releases the lease, wipes requests and restores terminal attributes
+before reboot. UART-only boot/network banners no longer enter the framebuffer
+or dmesg. `/etc/fortress-install.log` records provisioning without passwords;
+filesystem errors while creating it propagate before readiness is committed.
+
+Valid existing MBR and unrelated GPT targets are admitted. Read errors reject
+discovery; matching primary or backup source GUIDs remain excluded even with a
+damaged primary. Partition-summary bytes are enumeration-only and are excluded
+from the selected baseline identity. Installed boot scans drives read-only for
+one coherent matching root PARTUUID before publishing writable state;
+cross-drive duplicate identifiers enter authenticated recovery without writes.
+
+Host evidence: `leases-xly23kb2` passes actual control/descriptor, indexed lease,
+pinned driver inventory and transport-policy adapters, including MBR/GPT,
+backup source exclusion, invalid CRC, read failure and summary-free identities.
+`cli-jabpsr72` passes the actual CLI sanitizer adapter with keyboard selection,
+input retries, secret masking/wiping, cancellation and reboot cleanup.
+`provision-ahsxto9n` passes detached provisioning and Linux audits at 512/4096
+sectors; `runtime-qefni231` passes the actual deployment engine with username
+`fabio`, detached namespace/service isolation and independent Linux audits.
+`multi-host-current.log` records heap and root boot/recovery sanitizer regressions.
+`multi-timeout-tcd_reox` passes two BIOS/UEFI real-driver timeout cases using
+QMP throttling of regular-file targets: the updated failure screen waits for
+Enter, reports no success, and preserves target/source hashes. This focused
+deadline check uses one NVMe; the indexed two-controller cases are separate.
+The earlier aggregate host run failed its source-freeze assertion after source
+edits; the affected provisioning check was rerun successfully, rather than
+claiming acceptance for that interrupted aggregate.
+
+Final media producer: `build/root-phase4/media-vijrdnvd`; isolated build and
+overlay recorded in `build/root-phase4/multi-build-final-receipt.json`.
+All 333 kernel/user source files compared byte-identically with that build.
+`build/root-phase4/multi-_43ow6a3` passes the final BIOS/UEFI two-controller
+matrix: cancellation before writes, installation to each indexed target over
+existing MBR/GPT layouts, unchanged unselected/source/seed hashes, independent
+Linux filesystem/accounts/log audits, three boots with both controllers present,
+second-controller root discovery, duplicate-root authenticated recovery with no
+writes and installer-source clone exclusion. Final source/media hashes match.
+Framebuffer captures `multi-progress-final.png` and `multi-progress-uefi.png`
+verify clean progress rendering. All agent writes used disposable regular files.
+
+Earlier `multi-2yk1o5cm` was interrupted after exposing per-I/O full PCI rescans;
+that performance problem was corrected with pinned BDF checks. `multi-xvxkktj9`
+was interrupted to fix literal ANSI characters in the progress bar. These
+partial runs are retained and do not establish full acceptance.
+
+Raw image: 545259520 bytes (520 MiB), SHA-256
+`d56f1ec068fe6b366c83593e46b589220fc0ac54e8ae22d6dac8488f2338cc9e`.
+The [disk-selection instructions](../installer-multi-nvme.md) describe the
+separate image and supported scope. Physical two-NVMe acceptance remains
+pending; the earlier Dell single-drive installation evidence does not accept
+this new revision.
+
+### Simple disk-number confirmation — 2026-10-13
+
+Following the agreed design, the final prompt now requires the chosen one-based
+disk number instead of YES. Blank, YES and other numbers retry the same prompt
+with answers retained; NO, Escape and Ctrl-C still cancel. The summary shows
+simple partition-type hints (Windows-type, Linux-type, EFI boot, other), an
+unknown-contents warning when needed, and "Installing will erase this disk."
+No filesystem/OS/used-space detection is claimed; no partitions does not imply
+an empty disk. Full identity admission and lease behavior are unchanged.
+
+`make test-install-cli-host` passes ASan/UBSan in `cli-21u0gcln`, including correct
+disk-number acceptance, incorrect/blank/YES retries, warning variants and cleanup.
+`FORTRESS_INSTALL_ACCEL=kvm make test-install-confirmation
+INSTALLER_MEDIA=build/root-phase4/media-sp50jz5j` passes all four BIOS/UEFI x
+disk-1/disk-2 cases in `confirmation-fxtgrga9`. Actual Ring 3 prompts, retries and
+cancellation are exercised; target, non-target and source hashes remain unchanged.
+These guest cases stop at confirmation and do not repeat the previous full
+install/boot/recovery matrix. Screenshots and argv/logs are retained.
+
+Updated media producer: `media-sp50jz5j`; raw image remains 520 MiB, SHA-256
+`f722c84f32ee5863a18975d89aa2800a21d9400fe139a6b2138703f953b793d9`.
+All test writes were to disposable regular files; no physical disk access.
+
+### Advisory installer password strength — 2026-10-13
+
+Both login and independent recovery password entry now show Weak / OK / Strong
+after entry. The eight-character minimum remains; weak uncommon passwords can
+continue, and uppercase/digit/symbol mixing is not required. A small built-in
+common-password list rejects known words, keyboard/numeric patterns, project
+defaults, case variants and numeric/!/? suffixes. Comparison creates no extra
+plaintext copy. Hints use bounded length/distinct-character checks, with short
+repeating patterns rated Weak; this is advisory, not an entropy estimate or a
+breach-database check. Existing password confirmation, independence, hash format,
+masking and wiping remain intact. This policy is installer-only.
+
+`make test-install-cli-host` passes ASan/UBSan in `cli-xchrjiki`: common-case/suffix
+rejections, weak acceptance, lowercase OK/Strong passphrases, repeat hints, actual
+login/recovery retry flows and existing cleanup/lease tests.
+`FORTRESS_INSTALL_ACCEL=kvm python3 scripts/test_installer_confirmation.py --media
+build/root-phase4/media-dh1s6i_8 --password-guidance` passes four BIOS/UEFI x
+disk-choice guest flows in `confirmation-x6pi797q`, with four password-guidance
+and four confirmation/cancel result records. Common login/recovery retries,
+Weak eight-character acceptance, OK/Strong lowercase hints and no plaintext echo
+are checked in actual Ring 3. Cancellation preserves target/non-target/source
+hashes. These cases stop before installation; prior full installation acceptance
+remains labelled by revision. All fixtures are regular files.
+
+Final media producer `media-dh1s6i_8`, raw image 520 MiB, SHA-256
+`cb9cb36d2f86fdc059c62d804a7ee6d6052bbb8afb577a5a79cc086eb63bcc7a`.
+
+## 2026-10-13 - Recovery password reveal and storage acknowledgement
+
+The agreed recovery flow retains full masked confirmation, offers SHOW and
+requires YES to acknowledge safe storage. SHOW uses the existing TERM_LOCAL
+route to display the password only on the local framebuffer. Enter clears it
+before restoring the original route. Plaintext stays in existing short-lived,
+wiped password buffers, never deployment requests, UART or provisioning logs.
+Other answers retry; Escape/Ctrl-C cancels before deployment. Missing local
+screens refuse SHOW while leaving the password hidden.
+
+`make test-install-cli-host`: ASan/UBSan PASS in
+`build/root-phase4/cli-y4m1fmt_`, including repeated reveal, cancel while visible,
+routing restoration, request wiping, lease cleanup and unavailable-screen refusal.
+`FORTRESS_INSTALL_ACCEL=kvm python3 scripts/test_installer_confirmation.py
+--media build/root-phase4/media-rhgf610x --password-guidance`: four BIOS/UEFI x
+both disk choices PASS in `build/root-phase4/confirmation-5ng8vtcc`. Verified
+SHOW/Enter/NO/YES flow, masked/common-password retries, no plaintext UART leakage
+and unchanged target/non-target/source hashes. Local reveal screenshot visually
+checked. Disposable regular files only; no physical writes. These focused cases
+cancel before installation; the historical full install/boot/recovery matrix
+was not rerun.
+
+Updated image: `bin/fortress-installer-multi.img`, 545259520 bytes (520 MiB),
+audited producer `build/root-phase4/media-rhgf610x`, SHA-256
+`44adc99f1a5233a39cdadd40c4811531a49d886f35881e805ec939fff7d379c7`.
+
+## 2026-10-13 - Previous-step navigation and separate cancellation
+
+Escape returns to the previous numbered screen before installation. Step 1
+stays at keyboard layout. Ctrl-C cancels at every input prompt; CANCEL also
+cancels at non-password prompts (NO remains valid at final confirmation).
+The selected disk, layout, username and completed password hashes survive
+backtracking. Enter keeps them; CHANGE requests a password replacement.
+Replacing login wipes recovery and requires independent recovery setup again.
+Shorter usernames clear their old tail. Partial secret buffers wipe on back or
+cancel. Navigation is unavailable after lease acquisition/deployment starts;
+final disk-number confirmation and fresh complete identity checks are unchanged.
+
+`make test-install-cli-host`: actual CLI ASan/UBSan PASS, evidence
+`build/root-phase4/cli-h_3evf2j`. Includes all-step traversal without password
+rehashing, disk switching, login/recovery replacement, shortened username,
+partial-secret cancellation, request wiping, terminal and lease cleanup.
+`FORTRESS_INSTALL_ACCEL=kvm python3 scripts/test_installer_confirmation.py
+--media build/root-phase4/media-59gc1tlx --password-guidance`: BIOS/UEFI x both
+disk choices PASS in `build/root-phase4/confirmation-n48b433g`. All four flows
+walk from final confirmation through recovery/account/disk/layout, then retain
+answers with Enter, retry wrong confirmation and cancel. Common-password and
+local-only recovery reveal checks pass; both disks and installer media remain
+hash-identical. Disposable regular files only; no physical writes. These gates
+stop before installation, not a rerun of the historical full installation matrix.
+
+An initial runner attempt `confirmation-2jd8he0z` waited for old prompt wording;
+its disposable QEMU was stopped via QMP and artifacts retained before fixing
+the runner and passing the complete four-flow gate.
+
+Updated image: `bin/fortress-installer-multi.img`, 545259520 bytes (520 MiB),
+audited producer `build/root-phase4/media-59gc1tlx`, SHA-256
+`7c1e732aacf9e97f797e96a96e6166aebcb8adbbbcfa19aed938819960ca9ffe4`.
+
+## 2026-10-13 - Show/hide passwords while typing
+
+Tab toggles visibility for login/recovery entry and confirmation. Every input
+read starts hidden. Before showing any plaintext, switch to existing TERM_LOCAL
+routing. Redraw bounded input locally after edits so backspace/hiding removes
+previous characters, including wrapped text. Enter/Escape/Ctrl-C clear the
+local display before restoring prior output routing. Without a local screen,
+Tab keeps input hidden. Existing password bounds, independent recovery checks,
+secret-buffer wiping, navigation and raw-write gates are preserved.
+
+`make test-install-cli-host`: actual CLI ASan/UBSan PASS in
+`build/root-phase4/cli-bpxc2zrz`, including toggles before/after typing, repeated
+show/hide, backspace, confirmations, Escape while visible, unavailable-screen
+fallback, 128-character bounds, output-mode restoration and no UART plaintext.
+`FORTRESS_INSTALL_ACCEL=kvm python3 scripts/test_installer_confirmation.py
+--media build/root-phase4/media-qwcgtg6h --password-guidance`: BIOS/UEFI x both
+disk choices PASS in `build/root-phase4/confirmation-06xblrw8`. Each flow reveals
+both password inputs and confirmations, types an extra character/backspaces,
+hides and accepts. Framebuffer capture visually checked; no secrets in UART
+transcripts. Existing common-password, recovery-storage, all-step navigation and
+confirmation-cancellation cases pass, with both disks and source media hash
+unchanged. Disposable regular files only, no physical writes. Focused cases
+stop before installation; the historical full install/boot/recovery matrix was
+not rerun for this UI change.
+
+Updated image: `bin/fortress-installer-multi.img`, 545259520 bytes (520 MiB),
+audited producer `build/root-phase4/media-qwcgtg6h`, SHA-256
+`c14992e3fbf563f32ffc08061d191b1ce58ab4f39589b92d41b353eac694eeed`.
+
+## 2026-10-13 - Consistent installer headers and screen context
+
+Centralized screen clearing/header rendering: FortressOS installer - Step X of
+5, followed by the current screen title. Disk inventory/layout use step 1;
+selection/file checking use step 2; account and password hashing use step 3;
+recovery, reveal and hashing use step 4; confirmation, deployment and results
+use step 5. Password redraws preserve account/recovery context and distinguish
+entry from confirmation. Local secret clearing redraws the header before
+restoring output mode. The existing progress line remains beneath the deployment
+header. Navigation is still absent after deployment starts. No storage,
+identity, lease, boot-entry or error-policy changes were made.
+
+`make test-install-cli-host`: actual CLI ASan/UBSan PASS in
+`build/root-phase4/cli-p94nnf9p`, including password context/confirmation labels,
+deployment and success/failure headers, routing restoration, secret wiping,
+retained answers and lease cleanup. `FORTRESS_INSTALL_ACCEL=kvm python3
+scripts/test_installer_confirmation.py --media build/root-phase4/media-dqhop2om
+--password-guidance`: BIOS/UEFI x both disk choices PASS in
+`build/root-phase4/confirmation-p0m14qt6`, with all five numbered headers,
+file-check context, local password visibility/confirmation, recovery handling,
+back navigation and cancellation. Local confirmation screen visually checked.
+Both disks and source media retain their original hashes. Disposable regular
+files only; focused guest cases stop before writes. Full install/boot/recovery
+matrix and physical acceptance were not rerun for this presentation change.
+
+Updated image: `bin/fortress-installer-multi.img`, 545259520 bytes (520 MiB),
+audited producer `build/root-phase4/media-dqhop2om`, SHA-256
+`870155827e9bad1139770967804e71591516b7b94f309914416c14cbc3516ad0`.
+
+## 2026-10-13 - Plain installer errors with troubleshooting details
+
+Inventory, file validation, target acquisition and deployment failures now show
+plain explanations and next steps, with original signed stage/error/call codes
+below. Guidance covers memory/space exhaustion, busy or changed disk identity,
+unsupported or unsafe configurations, invalid installer files/settings and
+stage-specific preparation/copy/account/verification failures. Unknown errors
+use a conservative fallback. Syscall return values and raw VFS backend status
+errors remain distinct; a mapped explanatory reason never overwrites original
+codes. Incomplete status remains failure even when the call returned zero.
+
+Pre-deployment failures say no installation data was written. Once deployment
+has been attempted, the screen warns of possible partial erasure and advises
+against booting the disk. Error screens wait for Enter before returning. No
+automatic write retries, extra disk authority or hardware-cause inference added.
+
+`make test-install-cli-host`: actual CLI ASan/UBSan PASS in
+`build/root-phase4/cli-60h26cfi`, including pre-write validation/acquisition
+failures, deployment verification failure, partial-erasure guidance, namespace
+separation, zero-call backend error, unknown-code fallback and cleanup.
+`FORTRESS_INSTALL_ACCEL=kvm python3 scripts/test_installer_confirmation.py
+--media build/root-phase4/media-nsjqr1af --disk-timeout`: actual NVMe timeout
+BIOS/UEFI 2/2 PASS in `build/root-phase4/confirmation-o_u3in3a`; preparation
+failure wording, partial-install warning, signed details and Enter return are
+checked. Captured framebuffer visually checked. The retained manifest has the
+older generic confirmation scope label; its case records identify timeout runs.
+QMP throttles disposable regular-file target I/O; source/target hashes unchanged.
+
+The same command with `--password-guidance` passes four BIOS/UEFI x disk-choice
+UI flows in `build/root-phase4/confirmation-8krmtjt5`, preserving visibility,
+recovery, headers, all-step backtracking and confirmation/cancellation, with
+unchanged disks/media. These are focused UI and failure gates, not a rerun of
+the full install/boot/recovery matrix or physical acceptance. No physical writes.
+
+Updated image: `bin/fortress-installer-multi.img`, 545259520 bytes (520 MiB),
+audited producer `build/root-phase4/media-nsjqr1af`, SHA-256
+`d1aa6862b1ef508532fb9e2e78788439c9493e3c96e4eb02b09387233dd3f59a`.
+
+## 2026-10-13 - Installed and USB installer logs
+
+New installations save `/var/log/fortress-install.log`; installer USB media
+exposes `/fortress-install.log` on the separate FAT16 FORTRESSLOG volume.
+The bounded 4 KiB record includes session, selected model/capacity, username,
+stages, cancellation and signed error/result details. Passwords, password
+hashes and recovery secrets are excluded. Repeated attempts retain recent
+events. Log-only failures warn without blocking installation; filesystem
+health, freeze and discard failures still prevent a success result.
+
+The private USB writer admits only the boot-source GUID and audited fixed GPT
+and FAT metadata, writes the eight preallocated file-data sectors, flushes and
+reads them back. It never changes boot files, GPT, FAT allocation or directory
+metadata, and latches off after a write/flush/readback failure. No general USB
+write authority or disk registration is added.
+
+Actual-code ASan/UBSan gates PASS: CLI `build/root-phase4/cli-d1y2gph8`, control
+`build/root-phase4/leases-9c1dip9m`, runtime/EXT4
+`build/root-phase4/runtime-t3jzt6uw`, and bounded USB writer
+`build/root-phase4/logging-f73ww1zo`. Writer cases cover malformed metadata,
+wrong identity, unsupported devices, failures, bounded retention and signed
+codes, with independent byte-range, FAT and Linux filesystem audits.
+
+KVM guest logging gates PASS under BIOS in `build/root-phase4/log-guest-960reo8p`
+and UEFI in `build/root-phase4/log-guest-8_c9qpvd`: actual installation, both
+log copies, three boots including abrupt-stop recovery, independent authenticated
+recovery, read-only USB warning with successful installation, cancellation and
+real NVMe deadline failure. USB comparisons permit only the 4096-byte log slot;
+all other source bytes remain unchanged. BIOS uses xHCI directly. UEFI uses
+the existing EHCI preboot fixture plus an identical source-GUID xHCI clone for
+kernel logging because of the QEMU/OVMF xHCI preboot limitation. This does not
+establish physical USB logging support. Earlier failed/interrupted fixture runs
+remain retained; these are focused logging gates, not the entire Phase 4 matrix.
+
+Updated image: `bin/fortress-installer-multi.img`, 553648128 bytes (528 MiB),
+audited producer `build/root-phase4/media-emxhicsa`, SHA-256
+`59ac446baaec70bada55b4216138b1a4eca7648c04717f70c0f63158e36a9149`.
+All agent tests use disposable regular files; physical acceptance is pending.

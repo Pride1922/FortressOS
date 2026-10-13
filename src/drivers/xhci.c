@@ -12,6 +12,7 @@
 #include "spinlock.h"
 #include "dmesg.h"
 #include "root_boot.h"
+#include "install_log.h"
 #include <string.h>
 
 static xhci_controller_t s_controllers[XHCI_MAX_CONTROLLERS];
@@ -169,6 +170,10 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                                      bool *out_registered_storage) {
     *out_registered_storage = false;
     const boot_info_t *boot_info = s_probe_boot_info;
+    bool installer_log_only=false;
+#ifdef INSTALLER_MULTI
+    installer_log_only=install_log_requested(boot_info);
+#endif
     pci_device_t d = *pci_dev;
     size_t controller_index = (size_t)(ctl - s_controllers);
     /* VMM maps explicit pages: reserve one maximum BAR aperture per controller.
@@ -266,7 +271,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
     if (s_probe_boot_info) {
         root_boot_config_t mode=root_boot_parse(s_probe_boot_info->cmdline,
             sizeof(s_probe_boot_info->cmdline),s_probe_boot_info->cmdline_truncated);
-        if (mode.valid && mode.explicit_mode && mode.mode==ROOT_BOOT_INSTALLER) {
+        if (mode.valid && mode.explicit_mode && mode.mode==ROOT_BOOT_INSTALLER && !installer_log_only) {
             serial_puts("[USB] Installer mode: controller quiesced; source storage enrollment excluded\n");
             error=NULL;goto unmap;
         }
@@ -571,7 +576,11 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                                 s_active_usb_controller = ctl;
                                 s_usb_storage_ready = true;
 
-                                if (block_register_usb()) {
+                                if (installer_log_only) {
+                                    /* Private log-slot transport: no block/devfs/GPT enrollment. */
+                                    *out_registered_storage=true;
+                                    xhci_bot_probe_durability(&ctl->rings_io,&ctl->dma,&ctl->dev_dma,&ctl->bot_rings);
+                                } else if (block_register_usb()) {
                                     *out_registered_storage = true;
                                     serial_puts("[USB 9G.2] PASS: Registered block device \"sda\"\n");
                                     serial_puts(bounce_size==16384 ? "[USB 9G.2] Max run: 16384 bytes\n" : "[USB 9G.2] Max run: 4096 bytes\n");

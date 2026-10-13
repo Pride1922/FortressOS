@@ -9,6 +9,7 @@
 #include "thread.h"
 #include "syscall.h"
 #include "install_control.h"
+#include "install_log.h"
 static tcb_t process={.tid=10,.is_user=true},child={.tid=11,.is_user=true};
 static tcb_t *current=&process;
 static bool oom,deny_input,deny_output;
@@ -36,6 +37,9 @@ file_t *vfs_open_terminal(int flags) {
 #include "install_fds.inc"
 #include "install_fcntl.inc"
 #include "install_errors.inc"
+bool block_read_sector(block_dev_t *d,uint64_t l,void *p) {return d && l<d->sector_count && d->read_sector && d->read_sector(d,l,p);}
+bool block_write_sector(block_dev_t *d,uint64_t l,const void *p) {return d && l<d->sector_count && d->write_sector && d->write_sector(d,l,p);}
+bool block_flush(block_dev_t *d) {return d && d->flush && d->flush(d);}
 #include "../src/kernel/install_control.c"
 static install_identity_v1_t hardware;
 static creds_t root={.cap_effective=CAP_ALL};
@@ -59,6 +63,14 @@ static int device_write(void *ctx,uint64_t lba,uint32_t n,const void *data) {
 }
 static int device_flush(void *ctx) {(void)ctx;flushes++;return fail_flush ? -VFS_EIO : 0;}
 static install_backend_t b={.identity=identity,.read=device_read,.write=device_write,.flush=device_flush};
+static install_identity_v1_t indexed[2];
+static unsigned selected_index;
+static int indexed_enum(void *ctx,unsigned i,install_identity_v1_t *id) {
+    (void)ctx;if (i>=2) return 0;*id=indexed[i];return 1;
+}
+static int indexed_select(void *ctx,unsigned i) {
+    (void)ctx;if (i>=2) return -VFS_EINVAL;selected_index=i;hardware=indexed[i];return 0;
+}
 static int acquire(void) {
     install_target_v1_t t={.size=64,.version=1,.generation=hardware.generation,.flags=1};
     memcpy(t.digest,hardware.digest,32);int32_t fd=-1;
@@ -67,6 +79,14 @@ static int acquire(void) {
 static int release(int32_t fd) {return (int)install_control(INSTALL_RELEASE,(uintptr_t)&fd,4,0,0,&root);}
 static void unchanged(unsigned old) {assert(writes==old);}
 int main(void) {
+    install_log_event_v1_t event={.size=32,.version=1};
+    install_control_boot(NULL,true);
+    assert(install_control(INSTALL_LOG,(uintptr_t)&event,32,0,0,&root)==SYSCALL_EIO);
+    event.reserved=1;assert(install_control(INSTALL_LOG,(uintptr_t)&event,32,0,0,&root)==SYSCALL_EINVAL);event.reserved=0;
+    assert(install_control(INSTALL_LOG,(uintptr_t)&event,31,0,0,&root)==SYSCALL_EINVAL);
+    assert(install_control(INSTALL_LOG,0,32,0,0,&root)==SYSCALL_EFAULT);
+    process.current_cpu=1;assert(install_control(INSTALL_LOG,(uintptr_t)&event,32,0,0,&root)==SYSCALL_EPERM);process.current_cpu=0;
+    install_control_boot(NULL,false);assert(install_control(INSTALL_LOG,(uintptr_t)&event,32,0,0,&root)==SYSCALL_EOPNOTSUPP);
     hardware=(install_identity_v1_t){.size=192,.version=1,.generation=1,.sector_size=512,
         .sector_count=384*2048,.nsid=1,.flags=INSTALL_ID_ELIGIBLE};
     memcpy(hardware.serial,"fixture-only",12);install_identity_digest(&hardware);
@@ -133,5 +153,19 @@ int main(void) {
     fd=acquire();fd_close_cloexec(&process);assert(!install_control_owned() && !process.fd_table[fd]);
     fd=acquire();fd_close_all(&process);assert(!install_control_owned() && !allocations);
     assert(release(fd)==SYSCALL_EBADF);puts("PASS installer control: ABI, exclusions, stale identity, failures, non-inherited/dup/CLOEXEC/exit leases");
+    indexed[0]=hardware;indexed[1]=hardware;indexed[1].serial[0]='2';install_identity_digest(&indexed[1]);
+    b.enumerate=indexed_enum;b.select=indexed_select;install_control_boot(&b,true);
+    index=1;assert(install_control(INSTALL_ENUM,(uintptr_t)&index,4,(uintptr_t)&out,sizeof(out),&root)==1);
+    target.index=1;memcpy(target.digest,out.digest,32);
+    target.digest[0]^=1;old=writes;
+    assert(install_control(INSTALL_ACQUIRE,(uintptr_t)&target,64,(uintptr_t)&fd,4,&root)==SYSCALL_EAGAIN);
+    unchanged(old);target.digest[0]^=1;
+    assert(!install_control(INSTALL_ACQUIRE,(uintptr_t)&target,64,(uintptr_t)&fd,4,&root));
+    assert(selected_index==1);
+    index=0;assert(install_control(INSTALL_ENUM,(uintptr_t)&index,4,(uintptr_t)&out,sizeof(out),&root)==SYSCALL_EAGAIN);
+    io.fd=fd;assert(!install_control(INSTALL_WRITE,(uintptr_t)&io,40,0,0,&root));assert(selected_index==1);
+    assert(!release(fd));target.index=2;
+    assert(install_control(INSTALL_ACQUIRE,(uintptr_t)&target,64,(uintptr_t)&fd,4,&root)==SYSCALL_EINVAL);
+    puts("PASS indexed inventory: second-drive lease, stale selection, invalid index and enumeration excluded while leased");
     return 0;
 }

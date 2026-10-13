@@ -1,4 +1,5 @@
 #include "install_control.h"
+#include "install_log.h"
 #include "thread.h"
 #include "syscall.h"
 #include "vfs.h"
@@ -55,12 +56,12 @@ static int lease_check(tcb_t *proc,int fd) {
     return r;
 }
 int64_t install_control(unsigned op,uintptr_t input,size_t input_size,uintptr_t output,size_t output_size,const creds_t *actor) {
-    size_t required=op==INSTALL_DEPLOY ? (input_size==sizeof(install_deploy_v2_t) ? sizeof(install_deploy_v2_t) : sizeof(install_deploy_v1_t)) : op==INSTALL_ENUM || op==INSTALL_FLUSH || op==INSTALL_RELEASE ? 4 :
+    size_t required=op==INSTALL_LOG ? sizeof(install_log_event_v1_t) : op==INSTALL_DEPLOY ? (input_size==sizeof(install_deploy_v2_t) ? sizeof(install_deploy_v2_t) : sizeof(install_deploy_v1_t)) : op==INSTALL_ENUM || op==INSTALL_FLUSH || op==INSTALL_RELEASE ? 4 :
         op==INSTALL_ACQUIRE ? sizeof(install_target_v1_t) : sizeof(install_io_v1_t);
     size_t out_size=op==INSTALL_DEPLOY ? sizeof(install_status_v1_t) : op==INSTALL_ENUM ? sizeof(install_identity_v1_t) : op==INSTALL_ACQUIRE ? 4 : 0;
-    if (op>INSTALL_DEPLOY || input_size!=required || output_size!=out_size || (!out_size && output)) return SYSCALL_EINVAL;
+    if (op>INSTALL_LOG || input_size!=required || output_size!=out_size || (!out_size && output)) return SYSCALL_EINVAL;
     if (!range(input,required,false)) return SYSCALL_EFAULT;
-    union {uint32_t index;int32_t fd;install_target_v1_t target;install_io_v1_t io;install_deploy_v1_t deploy;install_deploy_v2_t deploy2;} request;
+    union {uint32_t index;int32_t fd;install_target_v1_t target;install_io_v1_t io;install_deploy_v1_t deploy;install_deploy_v2_t deploy2;install_log_event_v1_t log;} request;
     memset(&request,0,sizeof(request));memcpy(&request,(void *)input,required);
     if (op==INSTALL_DEPLOY && (request.deploy.size!=required || request.deploy.version!=(required==sizeof(install_deploy_v2_t) ? 2u : 1u) ||
         request.deploy.flags>INSTALL_DRY_RUN || !zero(request.deploy.reserved,4) ||
@@ -71,13 +72,15 @@ int64_t install_control(unsigned op,uintptr_t input,size_t input_size,uintptr_t 
     if ((op==INSTALL_READ || op==INSTALL_WRITE) && (request.io.size!=required || request.io.version!=1 ||
         request.io.reserved0 || request.io.reserved1 || !request.io.count || request.io.count>8)) return SYSCALL_EINVAL;
     if (!actor || actor->euid || (actor->cap_effective & (CAP_SYS_ADMIN|CAP_SYS_RAWIO))!=(CAP_SYS_ADMIN|CAP_SYS_RAWIO)) return SYSCALL_EPERM;
-    if (!mode || !backend.identity) return SYSCALL_EOPNOTSUPP;
+    if (!mode || (op!=INSTALL_LOG && !backend.identity)) return SYSCALL_EOPNOTSUPP;
     if (out_size && !range(output,out_size,true)) return SYSCALL_EFAULT;
     if ((op==INSTALL_READ || op==INSTALL_WRITE) && !range(request.io.buffer,request.io.count*512,op==INSTALL_READ)) return SYSCALL_EFAULT;
     tcb_t *proc=thread_current();if (!proc || !proc->is_user || proc->current_cpu) return SYSCALL_EPERM;
     if (__atomic_exchange_n(&busy,1,__ATOMIC_ACQUIRE)) return SYSCALL_EAGAIN;
     int r=0;int64_t result=0;
-    if (op==INSTALL_DEPLOY) {
+    if (op==INSTALL_LOG) {
+        r=install_log_event(&request.log);
+    } else if (op==INSTALL_DEPLOY) {
         if (!backend.deploy) {r=-VFS_EOPNOTSUPP;goto done;}
         if (!request.deploy.flags) {r=lease_check(proc,request.deploy.fd);if (r) goto done;}
         install_status_v1_t status={.size=sizeof(status),.version=1};
@@ -86,12 +89,20 @@ int64_t install_control(unsigned op,uintptr_t input,size_t input_size,uintptr_t 
         if (r && !request.deploy.flags) valid=false;
         memcpy((void *)output,&status,sizeof(status));
     } else if (op==INSTALL_ENUM) {
-        if (request.index) {result=0;goto done;}
-        install_identity_v1_t id;r=current_identity(&id);
+        if (leased && backend.enumerate) {r=-VFS_EAGAIN;goto done;}
+        if (request.index && !backend.enumerate) {result=0;goto done;}
+        install_identity_v1_t id;
+        if (backend.enumerate) {
+            memset(&id,0,sizeof(id));r=backend.enumerate(backend.context,request.index,&id);
+            if (!r) goto done;
+            if (r==1) {install_identity_v1_t plain=id;memset(plain.reserved2,0,sizeof(plain.reserved2));r=identity_valid(&plain) ? 0 : -VFS_EIO;}
+            else {r=r<0 ? r : -VFS_EIO;goto done;}
+        } else r=current_identity(&id);
         if (!r) {memcpy((void *)output,&id,sizeof(id));result=1;}
     } else if (op==INSTALL_ACQUIRE) {
         if (leased) {r=-VFS_EAGAIN;goto done;}
-        if (request.target.index) {r=-VFS_EINVAL;goto done;}
+        if (backend.select) {r=backend.select(backend.context,request.target.index);if (r) goto done;}
+        else if (request.target.index) {r=-VFS_EINVAL;goto done;}
         install_identity_v1_t id;r=current_identity(&id);if (r) goto done;
         if (request.target.generation!=id.generation || memcmp(request.target.digest,id.digest,32)) {r=-VFS_EAGAIN;goto done;}
         if (id.flags!=INSTALL_ID_ELIGIBLE) {r=-VFS_EACCES;goto done;}

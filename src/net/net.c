@@ -192,9 +192,9 @@ void net_worker_main(void *arg) {
     net_poll_adaptive_t adaptive={0};
     uint64_t poll_hz=apic_poll_clock_hz();
     __atomic_store_n(&s_poll_profile[PP_HZ],poll_hz,__ATOMIC_RELAXED);
-    serial_puts(poll_hz ? "[NET CLOCK] invariant TSC boot-calibrated Hz=" :
+    serial_raw_puts(poll_hz ? "[NET CLOCK] invariant TSC boot-calibrated Hz=" :
         "[NET CLOCK] high-resolution clock unavailable; timer sleep fallback Hz=");
-    serial_print_hex(poll_hz); serial_puts("\n");
+    serial_raw_print_hex(poll_hz); serial_raw_puts("\n");
     bool was_online=e1000_network_online(s_if);
     if (s_config.test_icmp) {
         s_probe=(net_ping_v1_t){.version=1,.destination=s_config.gateway,.timeout_seconds=1,.sequence=1};

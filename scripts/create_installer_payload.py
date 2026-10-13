@@ -49,7 +49,7 @@ def main():
                     target.parent.mkdir(parents=True,exist_ok=True)
                     with target.open('xb') as f:shutil.copyfileobj(archive.extractfile(member),f)
                 metadata[name]=(member.mode,member.uid,member.gid)
-        for name in ('bin','etc','dev','run','tmp','mnt','home','var','root','home/operator'):
+        for name in ('bin','etc','dev','run','tmp','mnt','home','var','var/log','root','home/operator'):
             (tree/name).mkdir(parents=True,exist_ok=True)
         (tree/'etc/passwd').write_text('root:x:0:0::/root:/bin/shell\noperator:x:1000:1000::/home/operator:/bin/shell\n')
         (tree/'etc/group').write_text('root:x:0:\noperator:x:1000:\nwheel:x:10:operator\n')
