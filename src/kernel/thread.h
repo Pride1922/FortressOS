@@ -8,6 +8,7 @@
 #include "idt.h"
 #include "spawn_profile_abi.h"
 #include "wait_profile.h"
+#include "handoff.h"
 
 #define KERNEL_STACKS_BASE    0xFFFFFFFFA0000000ULL
 #define MAX_KERNEL_THREADS    64
@@ -96,6 +97,9 @@ typedef struct tcb {
     /* Stamps/counters protected by owner scheduler lock while blocked/queued;
      * enable/snapshot and resume belong exclusively to the running task. */
     wait_trace_t wait_trace;
+    /* Self-owned value registration; owner never retains a TCB pointer.
+     * Exit abandons unlocked before fd/CR3 teardown; reaper is idempotent. */
+    handoff_registration_t handoff;
 } tcb_t;
 
 #define CPU_MASK_ALL (~0ULL)
@@ -186,7 +190,8 @@ void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
 /* Kernel path, syscall error codes. Reserves one of 64 child records until
  * wait or parent exit; never overwrites an uncollected child status.
  * Process entry ABI: RSP points to argc, RDI = argc, RSI = argv, RDX = envp.
- * VFS spawn is BSP-only with local IRQ-excluded publication. Global metadata
+ * Ordinary VFS children are BSP-pinned from publication; explicit --worker
+ * benchmark children retain their requested CPU placement. Global metadata
  * uses an ordinary rank-1 process lock, never nested with scheduler/ext2.
  * v2 staged children remain exclusively BSP-owned until release/cancellation.
  * Clones all descriptors/flags as shared file_t references (ACQ_REL refcounts),

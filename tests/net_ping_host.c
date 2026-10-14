@@ -50,3 +50,5 @@ int main(void) {
     assert(cancels==3 && starts==4);
     puts("Ping mailbox ASan/UBSan PASS: ABI bounds, busy, publication, completion, finite abandoned-owner/result lease, stale token/cancel");
 }
+
+bool net_unicast_snapshot(uint32_t ip) { return net_ipv4_unicast(ip); }

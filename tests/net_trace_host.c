@@ -201,3 +201,5 @@ int main(void) {
     assert(wakes && sends && arp);
     puts("Trace host PASS: 100/1000 Hz, independent quote/fuzz, shared mailbox, stale identities, deadlines, ARP, link/lease/cancel and ping fence");
 }
+
+bool net_unicast_snapshot(uint32_t ip) { return net_ipv4_unicast(ip); }

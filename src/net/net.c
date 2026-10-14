@@ -8,6 +8,7 @@
 #include "serial.h"
 #include "net_ipv4.h"
 #include "net_ping.h"
+#include "net_control.h"
 #include "net_socket.h"
 #include "net_socket_syscall.h"
 #include "syscall_abi.h"
@@ -170,8 +171,9 @@ int net_arp_lookup(uint32_t ip, uint8_t out_mac[ETH_ALEN]) {
 }
 static bool deadline_reached(void *arg) {
     /* Under scheduler lock: only ticks and an atomic hint, no nested locks. */
-    return __atomic_load_n(&s_work_pending,__ATOMIC_ACQUIRE) ||
-           apic_timer_get_bsp_ticks()>=*(uint64_t *)arg;
+    uint64_t now=apic_timer_get_bsp_ticks(), deadline=*(uint64_t *)arg;
+    return handoff_owner_ready(NULL) || __atomic_load_n(&s_work_pending,__ATOMIC_ACQUIRE) ||
+           now>=deadline || (deadline && now<deadline-1);
 }
 void net_request_poll(void) {
 #ifdef TEST_SMP_MEMORY
@@ -181,13 +183,18 @@ void net_request_poll(void) {
     spin_debug_assert_unheld();
 #endif
     __atomic_store_n(&s_work_pending,true,__ATOMIC_RELEASE);
-    if (s_worker_started) sched_wake_all(&g_net_poll_channel);
+    if (s_worker_started) sched_wake_all(&handoff_owner_channel);
 }
 void net_timer_tick(void) {
-    if (s_worker_started) sched_wake_all(&g_net_poll_channel);
+    if (s_worker_started) {
+        sched_wake_all(&handoff_owner_channel);
+        /* Absolute trace deadlines include admission; predicate reads no lock. */
+        sched_wake_all(&handoff_admission_channel);
+    }
 }
 void net_worker_main(void *arg) {
     (void)arg;
+    net_control_register_owner();
     net_poll_budget_t rx_budget={0};
     net_poll_adaptive_t adaptive={0};
     uint64_t poll_hz=apic_poll_clock_hz();
@@ -247,6 +254,8 @@ void net_worker_main(void *arg) {
                 "[NET 4] Echo probe reply matched\n" : "[NET 4] Echo probe failed\n");
             s_probe_pending=false;
         }
+        net_control_service();
+        work=work || handoff_owner_ready(NULL);
         /* Explicit test-only observation; own immortal worker TCB, no new
          * introspection ABI or scheduler operation. Idle means no RX packets
          * or active IPv4 TX/echo transaction throughout the measured window. */
@@ -298,7 +307,7 @@ void net_worker_main(void *arg) {
         else {
             uint64_t before=apic_timer_get_bsp_ticks();
             s_deadline=before+1;
-            sched_wait_until(&g_net_poll_channel,deadline_reached,&s_deadline);
+            sched_wait_until(&handoff_owner_channel,deadline_reached,&s_deadline);
             uint64_t after=apic_timer_get_bsp_ticks();
             poll_count(PP_SLEEP);
             if (after>=s_deadline) poll_count(PP_TIMER);
@@ -334,6 +343,7 @@ void net_start(const char *cmdline, size_t len) {
     }
     s_worker_started=true;
     net_ping_init(true);
+    net_control_start();
     net_socket_enable();
     /* Publish cold-offline before userspace can create a socket. */
     if (!e1000_network_online(dev))
@@ -347,6 +357,15 @@ void net_start(const char *cmdline, size_t len) {
 }
 
 static spinlock_t g_net_stack_lock = SPINLOCK_RANKED(1, "net_stack");
+
+bool net_unicast_snapshot(uint32_t ip) {
+    uint64_t irq=spin_lock_irqsave(&g_net_stack_lock);
+    uint32_t host=ntohl(ip);
+    bool valid=s_if ? net_ipv4_unicast(ip) :
+        ((host>>24)!=0 && (host>>24)!=127 && (host>>24)<224);
+    spin_unlock_irqrestore(&g_net_stack_lock,irq);
+    return valid;
+}
 
 int net_get_ifconfig(netctl_ifget_t *out) {
     if (!out) return SYSCALL_EINVAL;

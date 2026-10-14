@@ -4,6 +4,7 @@
 #include "types.h"
 
 #define NETCONF_DEFAULT_PATH "/mnt/.fortress/network.conf"
+#define NETCONF_INSTALLED_PATH "/etc/network/network.conf"
 #define NETCONF_MAX_FILE_SIZE 4096
 #define NETCONF_MAX_LINE_LEN  256
 
@@ -13,9 +14,11 @@ typedef struct {
     uint32_t netmask;      /* be32 */
     uint32_t gateway;      /* be32 (0 if none) */
     uint32_t dns;          /* be32 (0 if none) */
+    uint32_t dns2;         /* Optional second resolver, be32. */
     bool has_address;
     bool has_gateway;
     bool has_dns;
+    bool has_dns2;
 } netconf_t;
 
 /* Parse an IPv4 dotted-decimal string into network byte order. Returns 0 on success, -1 on error. */

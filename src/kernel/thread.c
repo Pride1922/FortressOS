@@ -438,6 +438,7 @@ void sched_reap_dead(void) {
 
         while (dead) {
             tcb_t *next = dead->next;
+            handoff_abandon(&dead->handoff);
 
             /* Invariant 1: The executing thread must never be the dead thread */
             if (dead == g_current_thread) {
@@ -1021,6 +1022,7 @@ void thread_wake_for_signal(uint64_t pid) {
 }
 
 void thread_exit(void) {
+    handoff_abandon(&thread_current()->handoff);
     uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
     (void)rflags;
     tcb_t *curr = g_current_thread;
@@ -2102,7 +2104,10 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     creds_t exec_creds;
     bool secure=spawn_credentials(&actor,&image_metadata,&exec_creds);
     size_t target_cpu = 0;
-    int affinity = -1;
+    /* Ordinary commands and their helpers may use BSP-owned network APIs.
+     * Keep them pinned from publication, including staged pipeline children.
+     * Explicit benchmark workers retain their requested CPU placement. */
+    int affinity = 0;
     if (argc >= 3 && argv && argv[1] && strcmp(argv[1], "--worker") == 0) {
         size_t wid = 0;
         const char *s = argv[2];
@@ -2114,15 +2119,11 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
             target_cpu = wid % g_total_sched_cpus;
             affinity = (int)target_cpu;
         }
-    } else if (g_total_sched_cpus > 1) {
-        target_cpu = (size_t)(pid % g_total_sched_cpus);
-        affinity = -1;
     }
     SPAWN_ADD(profile, phase[SP_FILE], phase_begin);
     tcb_t *child = process_spawn_internal(target_cpu, affinity, path, image, size,
                                           argc, argv, envc, envp, cwd, action_count, actions, 0, pid, spawn_flags, &result, &actor, &exec_creds, secure);
     if (!child) goto out;
-    child->cpus_allowed = (affinity >= 0) ? CPU_MASK_ONE(affinity) : CPU_MASK_ALL;
     *out_pid = (int64_t)child->tid;
     result = SYSCALL_SUCCESS;
 out:
@@ -2406,6 +2407,7 @@ void fd_close_all(tcb_t *proc) {
 }
 
 void process_exit(uint64_t exit_code) {
+    handoff_abandon(&thread_current()->handoff);
     /* Do not allow a woken parent to run/reap before thread_exit detaches us. */
     __asm__ volatile("cli" ::: "memory");
     tcb_t *curr = thread_current();

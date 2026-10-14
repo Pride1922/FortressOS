@@ -51,6 +51,10 @@ Phase 9 gate and provides no evidence of a journal or USB fault.
 - **Current SMP Execution Boundaries:**
   - Pipe and input peers remain BSP-pinned; cross-core wake channels remain future work.
   - Networking RX/TX worker remains BSP-pinned.
+  - Network SMP Phase 2A control and finite probes accept copied requests from
+    every application CPU through the same registered CPU-0 owner. Real Ring 3
+    AP execution remains snapshot-only; production spawn pinning and UDP/TCP
+    guards remain. See [qualified gates](../roadmap/network-smp-phase2a.md).
 
 ---
 

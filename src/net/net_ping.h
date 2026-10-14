@@ -4,6 +4,9 @@
 #include "trace_abi.h"
 extern const char g_net_ping_channel;
 void net_ping_init(bool available);
+/* Read-only copied ABI validation, safe in any caller context. */
+int64_t net_ping_validate(const net_ping_v1_t *request);
+int64_t net_trace_validate(const net_trace_v1_t *request);
 int64_t net_ping_submit(const net_ping_v1_t *request, uint64_t *token);
 bool net_ping_ready(void *token); /* Lock-free predicate under scheduler lock. */
 int64_t net_ping_collect(uint64_t token, net_ping_v1_t *result);

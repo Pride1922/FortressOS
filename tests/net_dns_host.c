@@ -25,6 +25,7 @@ static const uint8_t alias_golden[]={0x12,0x34,0x81,0x80,0,1,0,2,0,0,0,0,
   0xc0,0x28,0,1,0,1,0,0,0,60,0,4,10,0,2,2};
 static const char *s_mock_resolv = NULL;
 static size_t s_mock_resolv_pos = 0;
+static bool s_installed = false;
 static uint32_t last_send_server = 0;
 static void reset(unsigned scenario) {
     dns_context_init(&ctx); memset(&out,0xa5,sizeof(out)); untouched=out;
@@ -34,9 +35,11 @@ static void reset(unsigned scenario) {
 }
 static long mock_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,uintptr_t e,uintptr_t f) {
     ++calls;
+    if(nr==SYS_ACCOUNTCTL) return s_installed ? 0 : SYSCALL_EOPNOTSUPP;
     if(nr==SYS_OPEN) {
         const char *path = (const char *)a;
-        if(s_mock_resolv && (!strcmp(path,"/tmp/resolv.conf") || !strcmp(path,"/mnt/.fortress/resolv.conf"))) {
+        if(s_mock_resolv && (s_installed ? !strcmp(path,"/etc/resolv.conf") :
+            (!strcmp(path,"/tmp/resolv.conf") || !strcmp(path,"/mnt/.fortress/resolv.conf")))) {
             s_mock_resolv_pos = 0;
             return 25;
         }
@@ -221,6 +224,13 @@ int main(void) {
     reset(20);
     assert(resolve_auto() == DNS_OK);
     assert(out.address_count == 1);
+    assert(dns_server_used(&ctx) == __builtin_bswap32(0x08080808));
+    assert(dns_servers_configured(&ctx) == 2);
+
+    /* Installed DNS uses the durable resolver file with the same fallback. */
+    s_installed = true;
+    reset(20);
+    assert(resolve_auto() == DNS_OK);
     assert(dns_server_used(&ctx) == __builtin_bswap32(0x08080808));
     assert(dns_servers_configured(&ctx) == 2);
 

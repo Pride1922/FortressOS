@@ -55,16 +55,19 @@ uint64_t apic_timer_get_bsp_ticks(void) { return ticks; }
 uint64_t apic_timer_get_frequency(void) { return 100; }
 void serial_puts(const char *s) { (void)s; }
 void serial_print_hex(uint64_t n) { (void)n; }
+void serial_raw_puts(const char *s) { (void)s; }
+void serial_raw_print_hex(uint64_t n) { (void)n; }
 tcb_t *thread_current(void) { static tcb_t worker; return &worker; }
 net_dev_t *e1000_get_net_device(void) { return absent ? NULL : &dev; }
 tcb_t *thread_create_on_cpu(size_t cpu, const char *name, void (*entry)(void *), void *arg) {
     assert(cpu==0 && !strcmp(name,"net_worker") && entry==net_worker_main && !arg);
     return fail_create ? NULL : (tcb_t *)&dev;
 }
+bool process_signal_interrupt(void) { return false; }
 void thread_yield(void) { ++yields; }
-void sched_wake_all(const void *channel) { assert(channel==&g_net_poll_channel); ++wakes; }
+void sched_wake_all(const void *channel) { if (channel==&handoff_owner_channel) ++wakes; }
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
-    assert(channel==&g_net_poll_channel && !ready(arg));
+    assert(channel==&handoff_owner_channel && !ready(arg));
     assert(*(uint64_t *)arg==ticks+1);
     if (test_poll_hint) {
         unsigned before=wakes;
@@ -153,6 +156,7 @@ int main(void) {
     fail_create=true; net_start(NULL,0); net_timer_tick(); assert(!wakes); fail_create=false;
     net_start("net_test=rings",14); net_timer_tick(); assert(!wakes);
     net_start(NULL,0);
+    waits=wakes=0; /* Initial owner publication is a separate wake. */
     if (!setjmp(done)) net_worker_main(NULL);
     assert(waits==3 && wakes==3 && yields==0);
     unsigned before_polls=rx_polls;

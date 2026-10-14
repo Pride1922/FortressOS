@@ -6,6 +6,8 @@
 #include "../src/net/net.h"
 #include "netctl_abi.h"
 #include "syscall_abi.h"
+#include "account_abi.h"
+#include "../user/netconf.h"
 
 /* Mock device and driver callbacks */
 static net_dev_t dev;
@@ -38,6 +40,8 @@ size_t smp_get_cpu_count(void) { return 1; }
 int64_t net_socket_syscall(interrupt_frame_t *frame) { (void)frame; return -14; }
 void serial_puts(const char *s) { (void)s; }
 void serial_print_hex(uint64_t n) { (void)n; }
+void serial_raw_puts(const char *s) { (void)s; }
+void serial_raw_print_hex(uint64_t n) { (void)n; }
 uint64_t apic_timer_get_bsp_ticks(void) { return 100; }
 uint64_t apic_timer_get_frequency(void) { return 100; }
 uint64_t apic_poll_clock_hz(void) { return 0; }
@@ -66,6 +70,7 @@ tcb_t *thread_create_on_cpu(size_t cpu, const char *name, void (*entry)(void *),
     (void)cpu; (void)name; (void)entry; (void)arg;
     return (tcb_t *)&dev;
 }
+bool process_signal_interrupt(void) { return false; }
 void thread_yield(void) {}
 void sched_wake_all(const void *channel) { (void)channel; }
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
@@ -90,10 +95,21 @@ static size_t s_mock_file_pos = 0;
 static char s_captured_resolv[512];
 static size_t s_captured_resolv_len = 0;
 static size_t s_captured_resolv_read_pos = 0;
+static bool s_installed;
+static char s_saved_network[256];
+static size_t s_saved_network_len, s_saved_network_read;
+static int s_config_writes, s_syncs, s_file_closes;
+static long s_mkdir_error, s_open_error, s_write_error, s_close_error, s_sync_error;
+static size_t s_write_chunk;
 
 static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
-    if (nr == SYS_MKDIR) {
-        return 0;
+    if (nr == SYS_ACCOUNTCTL) {
+        return s_installed ? 0 : SYSCALL_EOPNOTSUPP;
+    } else if (nr == SYS_SYNC) {
+        s_syncs++;
+        return s_sync_error;
+    } else if (nr == SYS_MKDIR) {
+        return s_installed ? s_mkdir_error : 0;
     } else if (nr == SYS_WRITE) {
         int fd = (int)a;
         const char *buf = (const char *)b;
@@ -112,6 +128,15 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
                 s_captured_stderr[s_captured_stderr_len] = '\0';
             }
             return (long)count;
+        } else if (fd == 6) {
+            s_config_writes++;
+            if (s_write_error) return s_write_error == 1 ? 0 : s_write_error;
+            if (s_write_chunk && count > s_write_chunk) count = s_write_chunk;
+            assert(s_saved_network_len + count < sizeof(s_saved_network));
+            memcpy(s_saved_network + s_saved_network_len, buf, count);
+            s_saved_network_len += count;
+            s_saved_network[s_saved_network_len] = '\0';
+            return (long)count;
         } else if (fd == 4) {
             if (s_captured_resolv_len + count < sizeof(s_captured_resolv)) {
                 memcpy(s_captured_resolv + s_captured_resolv_len, buf, count);
@@ -123,11 +148,21 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
         return -1;
     } else if (nr == SYS_OPEN) {
         const char *path = (const char *)a;
+        if (!strcmp(path, NETCONF_INSTALLED_PATH)) {
+            if (b == 0) {
+                s_saved_network_read = 0;
+                return s_saved_network_len ? 7 : SYSCALL_ENOENT;
+            }
+            if (s_open_error) return s_open_error;
+            s_saved_network_len = 0;
+            s_saved_network[0] = '\0';
+            return 6;
+        }
         if (s_mock_file_path && strcmp(path, s_mock_file_path) == 0) {
             s_mock_file_pos = 0;
             return 3;
         }
-        if (!strcmp(path, "/tmp/resolv.conf") || !strcmp(path, "/mnt/.fortress/resolv.conf")) {
+        if (!strcmp(path, "/tmp/resolv.conf") || !strcmp(path, "/mnt/.fortress/resolv.conf") || !strcmp(path, "/etc/resolv.conf")) {
             if (b == 0) {
                 if (s_captured_resolv_len > 0) {
                     s_captured_resolv_read_pos = 0;
@@ -140,6 +175,13 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
         }
         return -1;
     } else if (nr == SYS_READ) {
+        if (a == 7) {
+            size_t n = s_saved_network_len - s_saved_network_read;
+            if (n > c) n = c;
+            memcpy((void *)b, s_saved_network + s_saved_network_read, n);
+            s_saved_network_read += n;
+            return (long)n;
+        }
         if (a == 3 && s_mock_file_content) {
             size_t total = strlen(s_mock_file_content);
             if (s_mock_file_pos >= total) return 0;
@@ -159,6 +201,8 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
         }
         return -1;
     } else if (nr == SYS_CLOSE) {
+        if (a == 6) { s_file_closes++; return s_close_error; }
+        if (a == 7) return 0;
         if (a == 3 || a == 4 || a == 5) return 0;
         return -1;
     } else if (nr == SYS_NETCTL) {
@@ -652,6 +696,53 @@ int main(void) {
     uint32_t dns_ip = 0;
     assert(netconf_read_dns("/mnt/.fortress/network.conf", &dns_ip) == 0);
     assert(dns_ip == htonl(0x01010101));
+
+    /* Installed configuration: actual CLI/parser, mocked filesystem/dispatch.
+     * Exact bytes, read-back, DNS round trip, checked failures and dry-run. */
+    s_installed = true;
+    s_mkdir_error = SYSCALL_EEXIST;
+    s_write_chunk = 7; /* exercise every short-write continuation */
+    assert(ifup_main(5, cli_dns2) == 0);
+    const char *saved = "address 192.168.0.222/24\ngateway 192.168.0.1\ndns 1.1.1.1\ndns2 8.8.8.8\n";
+    assert(!strcmp(s_saved_network, saved));
+    assert(s_syncs == 1 && s_file_closes == 1);
+    assert(!strcmp(resolv_conf_path(), "/etc/resolv.conf"));
+    assert(netconf_read_dns(NULL, &dns_ip) == 0 && dns_ip == htonl(0x01010101));
+    s_captured_resolv_len = 0;
+    assert(ifup_main(1, file_argv) == 0);
+    assert(!strcmp(s_saved_network, saved));
+    assert(!strcmp(s_captured_resolv, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"));
+    int writes = s_config_writes, syncs = s_syncs;
+    assert(ifup_main(4, cli_dry) == 0);
+    assert(s_config_writes == writes && s_syncs == syncs && !strcmp(s_saved_network, saved));
+    s_mock_netctl_ret = SYSCALL_EPERM;
+    s_captured_stderr_len = 0;
+    assert(ifup_main(3, cli_argv) == 1);
+    assert(strstr(s_captured_stderr, "use sudo ifup"));
+    assert(s_config_writes == writes && s_syncs == syncs);
+    s_mock_netctl_ret = 0;
+    s_mkdir_error = SYSCALL_EACCES;
+    assert(ifup_main(3, cli_argv) == 1 && s_syncs == syncs);
+    s_mkdir_error = 0;
+    s_open_error = SYSCALL_EROFS;
+    assert(ifup_main(3, cli_argv) == 1 && s_syncs == syncs);
+    s_open_error = 0;
+    int closes = s_file_closes;
+    s_write_error = SYSCALL_EIO;
+    assert(ifup_main(3, cli_argv) == 1 && s_file_closes == ++closes && s_syncs == syncs);
+    s_write_error = 1; /* zero write is failure, not an infinite loop */
+    assert(ifup_main(3, cli_argv) == 1 && s_file_closes == ++closes && s_syncs == syncs);
+    s_write_error = 0;
+    s_close_error = SYSCALL_EIO;
+    assert(ifup_main(3, cli_argv) == 1 && s_syncs == syncs);
+    s_close_error = 0;
+    s_sync_error = SYSCALL_EIO;
+    assert(ifup_main(3, cli_argv) == 1 && s_syncs == syncs + 1);
+    s_sync_error = 0;
+    assert(ifup_main(4, cli_dotted) == 0);
+    assert(!strcmp(s_saved_network, "address 192.168.0.223/24\ngateway 192.168.0.1\n"));
+    const char *invalid_dns2 = "address 10.0.2.15/24\ndns2 invalid\n";
+    assert(netconf_parse_buffer(invalid_dns2, strlen(invalid_dns2), "dns2.conf", "ifup", false, &conf, err_msg, sizeof(err_msg)) == -1);
 
     puts("NETCTL_IFGET, NETCTL_IFSET, netconf parser & ifup/ifconfig host ASan/UBSan PASS: full validation suite, multi-layer sync, CIDR/dotted CLI, file parser, dry-run, and tool outputs verified");
     return 0;

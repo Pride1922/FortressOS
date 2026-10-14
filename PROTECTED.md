@@ -41,8 +41,11 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
 ## Networking contracts (established in NET-1 through NET-4; see docs/subsystems/net.md)
 
 - **Sole BSP protocol owner.** All NIC I/O, timer sweeps, and TCP state changes
-  run on CPU 0. AP code may publish detach requests but must not mutate
-  connections or perform NIC work.
+  run on CPU 0. Application callers on any CPU may publish copied IFGET,
+  authorized IFSET, ping and traceroute requests to the registered CPU-0
+  worker, plus detach requests. AP code must not mutate connections or perform
+  NIC work. UDP/TCP syscall CPU guards and production spawn pinning remain;
+  broader socket ownership integration is deferred past Phase 2A.
 - **Polling-only ingress.** No NIC interrupt handlers or MSI vectors. Adding one
   is a contract change, not an optimization.
 - **Rank-1 network locks.** `g_net_dev_lock`, `g_socket_table_lock`,
@@ -55,8 +58,13 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
 - **Absolute per-call I/O deadlines.** `SYS_SEND_UNTIL`/`SYS_RECV_UNTIL`/
   `SYS_CONNECT_UNTIL` take a by-value uint64_t BSP-tick deadline. No
   socket-wide timeout option.
-- **120-second TCP reboot quiet period.** ISN generation is deliberately
-  non-cryptographic; the quiet period is the RFC 9293 §3.4.3 fallback.
+- **Existing TCP ISN and reboot policy.** Preserve the SHA-256 boot-secret /
+  tuple / TSC ISN implementation introduced by `056a12d`, with no reboot
+  quiet period. Hardware entropy assurance is conditional on all four random
+  samples succeeding; hashing fallback inputs does not establish cryptographic
+  assurance. The unconditional startup banner is not evidence of assurance.
+  Documentation reconciliation authorized 2026-10-14; this does not authorize
+  changing production TCP behavior or claim an independent security audit.
 - **NIC DMA quarantine.** Same shape as the storage quarantine. Uncertain
   controller ownership means terminal FAILED, never reallocation.
 - **Metadata cache coherence.** The ext4 metadata cache invalidates affected

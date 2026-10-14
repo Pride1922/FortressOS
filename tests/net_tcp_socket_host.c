@@ -424,6 +424,17 @@ int main(void) {
     assert(call(SYS_CONNECT,fd,0,15,0,0,0)==SYSCALL_EINVAL);
     assert(call(SYS_LISTEN,fd,1,0,0,0,0)==SYSCALL_EINVAL);
     assert(!connectfd(fd)); assert(connectfd(fd)==SYSCALL_EISCONN);
+    extern bool net_tcp_test_tuple(unsigned,tcp_tuple_t *);
+    tcp_tuple_t retained_tuple=peer_connection.tuple, before_config, after_config;
+    unsigned config_slot=net_socket_index(process.fd_table[fd]);
+    assert(net_tcp_test_tuple(config_slot,&before_config));
+    net_tcp_set_local_ip(htonl(0x0a000232));
+    assert(!net_tcp_connected(config_slot));
+    assert(net_tcp_test_tuple(config_slot,&after_config));
+    assert(!memcmp(&before_config,&after_config,sizeof(before_config)));
+    /* Existing receive filters follow the configured address. Restore it before
+     * asserting transfer recovery; old-address traffic is not a new guarantee. */
+    net_tcp_set_local_ip(cfg.local_ip);
     /* Exact space-limited count; no service/ACK may free space between calls. */
     memset(stream_output,0x5a,sizeof(stream_output));
     assert(call(SYS_SEND,fd,(uintptr_t)stream_output,8185,0,0,0)==8185);
@@ -445,6 +456,9 @@ int main(void) {
     for (unsigned i=0; i<2000 && peer_count<16384; ++i) tcp_service();
     assert(peer_count==16384);
     for (unsigned i=0; i<16384; ++i) assert(peer_bytes[i]==0x5a);
+    assert(!memcmp(&retained_tuple,&peer_connection.tuple,sizeof(retained_tuple)));
+    net_tcp_set_local_ip(cfg.local_ip);
+    puts("[PASS] default-local-IP change preserves established tuple; restored configuration transfers exact 16384 peer bytes");
     closefd(fd); tcp_service(); peer_active=false;
     fd=stream(); assert(fd>=0); assert(!connectfd(fd));
     unsigned no_handoff=handoff_yields;

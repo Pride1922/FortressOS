@@ -276,8 +276,11 @@ int netconf_parse_buffer(const char *buf, size_t len, const char *source_name,
                 return -1;
             }
             out_conf->has_gateway = true;
-        } else if (str_eq(key, "dns")) {
-            if (out_conf->has_dns && verbose_warnings) {
+        } else if (str_eq(key, "dns") || str_eq(key, "dns2")) {
+            bool second = str_eq(key, "dns2");
+            uint32_t *server = second ? &out_conf->dns2 : &out_conf->dns;
+            bool *present = second ? &out_conf->has_dns2 : &out_conf->has_dns;
+            if (*present && verbose_warnings) {
                 char w[256];
                 size_t pos = 0;
                 if (tool_name) {
@@ -287,24 +290,28 @@ int netconf_parse_buffer(const char *buf, size_t len, const char *source_name,
                 nc_append_str(w, sizeof(w), &pos, source_name);
                 nc_append_str(w, sizeof(w), &pos, ":");
                 nc_append_u32(w, sizeof(w), &pos, line_num);
-                nc_append_str(w, sizeof(w), &pos, ": duplicate key \"dns\" (overwriting)\n");
+                nc_append_str(w, sizeof(w), &pos, ": duplicate key \"");
+                nc_append_str(w, sizeof(w), &pos, key);
+                nc_append_str(w, sizeof(w), &pos, "\" (overwriting)\n");
                 nc_write_stderr(w);
             }
             if (val[0] == '\0') {
-                out_conf->dns = 0;
-            } else if (netconf_parse_ipv4(val, &out_conf->dns) != 0) {
+                *server = 0;
+            } else if (netconf_parse_ipv4(val, server) != 0) {
                 if (err_msg && err_cap > 0) {
                     size_t pos = 0;
                     nc_append_str(err_msg, err_cap, &pos, source_name);
                     nc_append_str(err_msg, err_cap, &pos, ":");
                     nc_append_u32(err_msg, err_cap, &pos, line_num);
-                    nc_append_str(err_msg, err_cap, &pos, ": invalid dns \"");
+                    nc_append_str(err_msg, err_cap, &pos, ": invalid ");
+                    nc_append_str(err_msg, err_cap, &pos, key);
+                    nc_append_str(err_msg, err_cap, &pos, " \"");
                     nc_append_str(err_msg, err_cap, &pos, val);
                     nc_append_str(err_msg, err_cap, &pos, "\"");
                 }
                 return -1;
             }
-            out_conf->has_dns = true;
+            *present = true;
         } else {
             if (verbose_warnings) {
                 char w[256];
@@ -377,7 +384,7 @@ int netconf_parse_file(const char *path, const char *tool_name, bool verbose_war
 
 int netconf_read_dns(const char *path, uint32_t *out_dns) {
     if (!out_dns) return -1;
-    const char *p = path ? path : machine_installed(NETCONF_SYSCALL) ? "/etc/network.conf" : NETCONF_DEFAULT_PATH;
+    const char *p = path ? path : machine_installed(NETCONF_SYSCALL) ? NETCONF_INSTALLED_PATH : NETCONF_DEFAULT_PATH;
     netconf_t conf;
     int rc = netconf_parse_file(p, NULL, false, &conf, NULL, 0);
     if (rc != 0 || !conf.has_dns || conf.dns == 0) {

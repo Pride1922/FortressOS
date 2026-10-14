@@ -34,9 +34,11 @@ void net_request_poll(void);
 size_t net_poll_profile_format(char *out, size_t cap);
 extern const char g_net_poll_channel;
 
-/* Snapshot current interface and protocol configuration for SYS_NETCTL. */
+/* CPU-0 owner snapshot. Application callers use net_control_call. */
 int net_get_ifconfig(netctl_ifget_t *out);
-/* Validate and atomically apply runtime IPv4 configuration for SYS_NETCTL. */
+/* Caller-safe destination validation, serialized with configuration. */
+bool net_unicast_snapshot(uint32_t ip);
+/* Read-only validation is caller-safe; application remains owner-only. */
 int net_validate_ifset(const netctl_ifset_t *set, net_config_t *out_cfg);
 void net_set_config(const net_config_t *new_cfg);
 

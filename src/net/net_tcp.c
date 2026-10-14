@@ -91,6 +91,17 @@ void net_tcp_test_event_exhaustion(unsigned slot) {
 static tcp_conn_t *connection(endpoint_t *e) {
     return e->block>=0 && pool.used[e->block] ? &pool.blocks[e->block] : NULL;
 }
+#ifdef TEST_SMP_MEMORY
+/* Host-only observation for configuration tuple preservation; no policy change. */
+bool net_tcp_test_tuple(unsigned slot,tcp_tuple_t *out) {
+    if (slot>=NET_SOCKET_MAX || !out) return false;
+    uint64_t flags=spin_lock_irqsave(&lock);
+    tcp_conn_t *c=connection(&endpoints[slot]);
+    if (c) *out=c->tuple;
+    spin_unlock_irqrestore(&lock,flags);
+    return c!=NULL;
+}
+#endif
 static int64_t error_code(tcp_conn_t *c, bool connecting) {
     if (!c) return SYSCALL_ENOTCONN;
     if (c->error==TCP_RESET) return connecting ? SYSCALL_ECONNREFUSED : SYSCALL_ECONNRESET;

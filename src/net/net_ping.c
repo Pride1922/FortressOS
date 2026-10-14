@@ -29,17 +29,22 @@ void net_ping_init(bool available) {
     __atomic_store_n(&s_active,0,__ATOMIC_RELEASE);
     __atomic_store_n(&s_done,0,__ATOMIC_RELEASE);
 }
-int64_t net_ping_submit(const net_ping_v1_t *request, uint64_t *token) {
+int64_t net_ping_validate(const net_ping_v1_t *request) {
     /* Local config is immutable; no static scratch touched by this validation. */
     if (request->version!=1 || request->timeout_seconds<1 || request->timeout_seconds>5 ||
         request->sequence>65535 || request->reserved || request->outcome || request->echoed_bytes ||
         request->rtt_ticks || request->tick_hz ||
         (request->start_delay_ms && request->start_delay_ms!=1000)) return SYSCALL_EINVAL;
     if (!s_available || !apic_timer_get_frequency()) return SYSCALL_EIO;
-    if (!net_ipv4_unicast(request->destination)) return SYSCALL_EINVAL;
+    if (!net_unicast_snapshot(request->destination)) return SYSCALL_EINVAL;
+    return 0;
+}
+int64_t net_ping_submit(const net_ping_v1_t *request, uint64_t *token) {
+    int64_t error=net_ping_validate(request);
+    if (error) return error;
     uint64_t irq=spin_lock_irqsave(&s_lock);
-    if (s_used) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_EAGAIN; }
-    if (++s_generation==0) ++s_generation;
+    if (s_used || s_generation==UINT64_MAX) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_EAGAIN; }
+    ++s_generation;
     *token=s_generation; s_request=*request; s_trace_mode=false;
     s_expire=apic_timer_get_bsp_ticks()+(uint64_t)(request->timeout_seconds+6)*apic_timer_get_frequency();
     s_used=s_submitted=true; s_cancelled=false;
@@ -48,23 +53,29 @@ int64_t net_ping_submit(const net_ping_v1_t *request, uint64_t *token) {
     spin_unlock_irqrestore(&s_lock,irq);
     return 0;
 }
-int64_t net_trace_submit(const net_trace_v1_t *request, uint64_t *token) {
+int64_t net_trace_validate(const net_trace_v1_t *request) {
     uint64_t hz=apic_timer_get_frequency(), now=apic_timer_get_bsp_ticks();
     if (request->version!=1 || request->ttl<1 || request->ttl>30 || request->timeout_seconds<1 ||
         request->timeout_seconds>5 || request->sequence>65535 || request->reserved0 || request->reserved1 ||
         request->outcome || request->responder || request->icmp_type || request->icmp_code ||
-        request->rtt_ticks || request->tick_hz || !net_ipv4_unicast(request->destination) ||
+        request->rtt_ticks || request->tick_hz || !net_unicast_snapshot(request->destination) ||
         (hz && (hz>UINT64_MAX/(NETTRACE_HORIZON_SECONDS+2) ||
         (request->deadline_ticks>now && request->deadline_ticks-now>NETTRACE_HORIZON_SECONDS*hz))))
         return SYSCALL_EINVAL;
     if (!s_available || !hz) return SYSCALL_EIO;
     if (request->deadline_ticks<=now) return SYSCALL_ETIMEDOUT;
     if (request->deadline_ticks>UINT64_MAX-2*hz) return SYSCALL_EINVAL;
+    return 0;
+}
+int64_t net_trace_submit(const net_trace_v1_t *request, uint64_t *token) {
+    int64_t error=net_trace_validate(request);
+    if (error) return error;
+    uint64_t hz=apic_timer_get_frequency();
     uint64_t irq=spin_lock_irqsave(&s_lock);
-    if (s_used || s_trace_identity==UINT32_MAX) {
+    if (s_used || s_generation==UINT64_MAX || s_trace_identity==UINT32_MAX) {
         spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_EAGAIN;
     }
-    if (++s_generation==0) ++s_generation;
+    ++s_generation;
     ++s_trace_identity; *token=s_generation;
     s_trace_request=*request; s_trace_error=0; s_trace_mode=true;
     s_expire=request->deadline_ticks+2*hz;

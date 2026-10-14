@@ -424,3 +424,16 @@ read-only fallback for dirty-but-valid filesystems is deferred.
 This is open technical debt, not tied to a single phase — worth prioritizing
 over further USB topology work given how directly it affects anyone testing
 on real hardware (USB sticks get unplugged; that's the point of USB).
+
+## Network SMP control integration (2026-10-14)
+
+Phase 2A routes IFGET, authorized IFSET, ping and traceroute from any caller CPU
+through copied, kernel-owned requests and the registered CPU-0 network owner.
+Production spawn pinning and UDP/TCP CPU guards remain. BSP TCP continuations
+still own some transport mutations until later subphases; worker-only ownership
+of all networking is not claimed. File/endpoint references, payload staging and
+receive/accept transactions remain prerequisites. Existing receive filters follow
+the configured address despite retained TCP tuples; traffic across an address
+change is not a new guarantee. Host and 12 installed guest gates pass, with the
+original composite documentation-drift failure preserved and qualified.
+See [Phase 2A evidence and limits](docs/roadmap/network-smp-phase2a.md).

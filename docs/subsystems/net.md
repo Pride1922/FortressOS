@@ -6,6 +6,25 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-14 Network SMP Phase 2A: application IFGET, authorized IFSET, ping and
+traceroute use one registered CPU-0 owner through copied kernel-owned requests
+on both BSP and AP. Production spawn pinning and all UDP/TCP CPU guards remain.
+Actual-code ASan/UBSan/TSan and 12 BIOS/UEFI × SMP=1/4/8 installed-root boots pass;
+the original target's concurrent documentation-preservation FAIL is retained and
+qualified. Snapshot-only AP launch/provenance, exact recovery and independent
+configuration/reboot filesystem audits are recorded in
+[Phase 2A evidence](../roadmap/network-smp-phase2a.md). No physical/AP socket
+acceptance or Phase 2B implementation is claimed. Existing BSP TCP continuations
+still mutate transport state; their sole-worker migration is a later subphase.
+
+2026-10-13 installed `ifup` correction: ordinary VFS commands are BSP-pinned
+again, preserving the existing network syscall admission guard; explicit
+benchmark workers retain their requested CPU. Installed `ifup` saves applied
+settings to `/etc/network/network.conf`, checks write/close/sync, and reads that
+file by default on later invocations. Both DNS servers round-trip through
+`dns`/`dns2` and `/etc/resolv.conf`. Live defaults retain their existing paths.
+See [scope and validation](../roadmap/net-installed-ifup.md).
+
 2026-10-04 prompt redraw note: The shell now redraws after background output.
 Background network jobs (such as `wget &` or `download &`) emitting progress or
 completion lines to the terminal previously clobbered the interactive prompt;
@@ -40,7 +59,7 @@ TCP wire regression PASS; Dell speed pending. [Supervisor fix](../roadmap/kernel
 
 Finite numeric `/bin/traceroute` is implemented (2026-10-03) using approved `NETCTL_TRACE_PROBE` command 4 and the existing shared ping mailbox/worker wait path. Host sanitizer tests and BIOS/UEFI × e1000/e1000e synthetic-router QEMU 4/4 PASS; Dell acceptance remains pending. Existing socket and ping ABIs, scheduler, signals, wait signatures, timer hook, DMA and drivers are unchanged. See [implementation and evidence](../roadmap/net-traceroute.md).
 
-NET-3 (runtime network configuration) is implemented and physically accepted on the Dell Latitude 5590: `/bin/ifconfig` (read-only query), `/bin/ifup` (CLI and file reconfiguration), `/mnt/.fortress/network.conf` parser, and DNS server integration for `nslookup` and `nc` when `-s` is omitted. Kernel ABI `SYS_NETCTL = 42` extended with `NETCTL_IFGET` (2u) and `NETCTL_IFSET` (3u) updating all protocol layers atomically under Rank-1 `g_net_stack_lock`. Full ASan/UBSan host test suite, BIOS/UEFI QEMU 10/10 PASS, and Dell 5590 physical acceptance confirmed (2026-10-02). Details: [runtime network configuration](../roadmap/net-config.md).
+NET-3 (runtime network configuration) is implemented and physically accepted on the Dell Latitude 5590: `/sbin/ifconfig` (read-only query), `/sbin/ifup` (CLI and file reconfiguration), `/mnt/.fortress/network.conf` parser, and DNS server integration for `nslookup` and `nc` when `-s` is omitted. Kernel ABI `SYS_NETCTL = 42` extended with `NETCTL_IFGET` (2u) and `NETCTL_IFSET` (3u) updating all protocol layers atomically under Rank-1 `g_net_stack_lock`. Full ASan/UBSan host test suite, BIOS/UEFI QEMU 10/10 PASS, and Dell 5590 physical acceptance confirmed (2026-10-02). Details: [runtime network configuration](../roadmap/net-config.md).
 
 Cold cable insertion and runtime link recovery are implemented and physically
 accepted on the Dell Latitude 5590 (all six cases PASS, autonomous PHY
@@ -55,8 +74,13 @@ engine and loss/reordering simulator, host-sanitizer verified. The seven-step
 [plan](../plans/NET2_PLAN.md) preserves UDP capacity;
 [step 3](../roadmap/net2-step3.md) adds numeric-IP TCP clients, worker integration,
 reservation-free indefinite waits, stream read/write and half-close with a frozen
-[client ABI](../plans/TCP_SOCKET_ABI.md). TCP CONNECT returns EAGAIN during the
-first 120 seconds of BSP uptime for reboot quiet time. [Step 4](../roadmap/net2-step4.md)
+[client ABI](../plans/TCP_SOCKET_ABI.md). Commit `056a12d` superseded the
+historical 120-second CONNECT quiet period with SHA-256 boot-secret/tuple/TSC
+ISNs and zero quiet time. Hardware entropy assurance is conditional on four
+successful random samples; the startup banner overstates that assurance.
+The existing behavior was explicitly preserved in the 2026-10-14 protected
+documentation reconciliation; this is not an independent security audit.
+[Step 4](../roadmap/net2-step4.md)
 adds bounded listener/half-open queues, reservation-free ACCEPT with ownership
 rollback and an independent finite server. Host tests and five QEMU server
 cases verify real Ring 3 references/competing acceptors/signals and captures.
@@ -100,7 +124,7 @@ physical acceptance and its evidence boundaries; [NETCTL_PING ABI](../plans/NETC
 specifies the 48-byte layout and errors. Ring 3 callers use a bounded mailbox; the
 BSP worker remains the sole protocol owner. No scheduler/signal/driver changes or
 new timer hook were needed. Hard-exit/STOP cleanup is bounded by a finite lease,
-with stale-token protection. Phase 5a has since landed; 5590 UDP is user-reported PASS; capture audit remains pending. On-the-fly positional DNS in `/bin/ifup` and `/bin/ping` hostname resolution via the stub resolver were implemented and physically accepted on the Dell Latitude 5590 (2026-10-04, user-confirmed PASS). Earlier Phase 3/2b
+with stale-token protection. Phase 5a has since landed; 5590 UDP is user-reported PASS; capture audit remains pending. On-the-fly positional DNS in `/sbin/ifup` and `/bin/ping` hostname resolution via the stub resolver were implemented and physically accepted on the Dell Latitude 5590 (2026-10-04, user-confirmed PASS). Earlier Phase 3/2b
 checkpoint descriptions below are historical evidence.
 
 Phase 3 is implemented (2026-10-01): Ethernet/ARP dispatch, bounded `net=`
