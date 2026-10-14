@@ -91,6 +91,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
 | [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display OS identity, CPU, memory/heap, tasks, and storage summary |
+| [`free`](#free) | Binary (`/bin/free`) | Introspection | Display free and used memory summary from SYS_SYSINFO |
 | [`ifconfig`](#ifconfig) | Binary (`/sbin/ifconfig`) | Networking | Query network interface status and packet counters |
 | [`ifup`](#ifup) | Binary (`/sbin/ifup`) | Networking | Configure network interface statically or via config file |
 | [`ping`](#ping) | Binary (`/bin/ping`) | Networking | Send ICMP Echo Request packets to IPv4 host or hostname |
@@ -1163,6 +1164,36 @@ Virtual Memory Management (VMM):
 Snapshot Notice:
   Counters are individually coherent; cross-subsystem values
   are observed sequentially without global lock nesting.
+```
+
+---
+
+### `free`
+**Syntax:** `free [-h|--human] [-b|--bytes] [-k|--kibi] [-m|--mebi] [-g|--gibi] [--help]`  
+**Path:** `/bin/free`  
+**Description:** Queries kernel system statistics via `SYS_SYSINFO` (syscall 37) and displays a human-readable memory summary formatted similarly to standard Linux `free`. Reports `total`, `used`, `free`, `shared`, `buff/cache`, and `available` physical managed RAM, as well as `Swap` status. Defaults to human-readable units (`-h` / `--human`).
+
+**Options:**
+* `-h`, `--human`: Show all output fields automatically scaled to shortest unit with unit suffix (`B`, `Ki`, `Mi`, `Gi`, `Ti`). (Default)
+* `-b`, `--bytes`: Display amount of memory in bytes.
+* `-k`, `--kibi`: Display amount of memory in kibibytes (1024 bytes).
+* `-m`, `--mebi`: Display amount of memory in mebibytes (1048576 bytes).
+* `-g`, `--gibi`: Display amount of memory in gibibytes (1073741824 bytes).
+* `--help`: Display usage summary and exit.
+
+**Examples:**
+```sh
+free
+free -m
+free -h
+free | grep Mem
+```
+
+Sample output (`free`):
+```text
+               total        used        free      shared  buff/cache   available
+Mem:           2.0Gi        24Mi       1.9Gi          0B          0B       1.9Gi
+Swap:             0B          0B          0B
 ```
 
 ---

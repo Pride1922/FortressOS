@@ -684,7 +684,7 @@ $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 SBIN_STREAM_TOOLS := shutdown reboot poweroff lockstat
-USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench chmod chown id mkdir rm mv cp touch hostname
+USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free
 STREAM_TOOLS := $(USER_STREAM_TOOLS) $(SBIN_STREAM_TOOLS)
 SBIN_LOGIN_TOOLS := useradd
 USER_LOGIN_TOOLS := login whoami sudo recovery passwd
@@ -806,6 +806,14 @@ test-checksum: $(BOOTABLE_ISO) test-checksum-host
 
 test-stream-tools-host:
 	@python3 scripts/test_stream_tools_host.py
+
+.PHONY: test-free-host test-free
+test-free-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/free_host.c user/tools/common.c user/tools/free.c -o $(BUILD_DIR)/free_host && $(BUILD_DIR)/free_host
+
+test-free: $(BOOTABLE_ISO) test-free-host
+	@python3 scripts/test_free.py
 
 $(BUILD_DIR)/traceroute.o: user/traceroute.c user/tools/common.h src/include/trace_abi.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
