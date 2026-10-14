@@ -60,11 +60,17 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
         permission_call4(SYS_SETRESUID,0,0,0,0)<0)
         return tool_error("sudo","credential transition failed",0);
     char command[VFS_MAX_PATH];size_t n=tool_length(argv[1]);
-    if (!n || n+6>sizeof(command)) return tool_error("sudo","invalid command",0);
+    if (!n || n+7>sizeof(command)) return tool_error("sudo","invalid command",0);
     unsigned off=0;
     if (argv[1][0]!='/') {
         for (size_t i=0;i<n;i++) if (argv[1][i]=='/') return tool_error("sudo","absolute command path required",0);
-        const char *prefix="/bin/";while (*prefix) command[off++]=*prefix++;
+        vfs_stat_t st;
+        char probe[VFS_MAX_PATH];
+        const char *sb="/sbin/";
+        size_t sl=0;while (sb[sl]) {probe[sl]=sb[sl];sl++;}
+        for (size_t j=0;j<=n;j++) probe[sl+j]=argv[1][j];
+        const char *prefix=(tool_syscall(SYS_STAT,(uintptr_t)probe,(uintptr_t)&st,0)==0 && st.type==VFS_FILE) ? "/sbin/" : "/bin/";
+        while (*prefix) command[off++]=*prefix++;
     }
     for (size_t i=0;i<=n;i++) command[off+i]=argv[1][i];
     char term[64]="TERM=fortress";
@@ -75,7 +81,7 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
         for (size_t j=5;j<len;j++) if (p[j]<32 || p[j]>126) safe=false;
         if (safe) for (size_t j=0;j<=len;j++) term[j]=p[j];
     }
-    const char *environment[]={"PATH=/bin","HOME=/root","USER=root","LOGNAME=root","SHELL=/bin/shell",term,NULL};
+    const char *environment[]={"PATH=/bin:/sbin","HOME=/root","USER=root","LOGNAME=root","SHELL=/bin/shell",term,NULL};
     spawn_opts_t opts={.size=sizeof(opts),.version=1,.argv=(uintptr_t)(argv+1),.envp=(uintptr_t)environment};
     db_wipe(&database,sizeof(database));
     long pid=tool_syscall(SYS_SPAWN_EXT,(uintptr_t)command,(uintptr_t)&opts,sizeof(opts));

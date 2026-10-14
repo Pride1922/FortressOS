@@ -337,7 +337,7 @@ int main(void) {
 
     /* Test S5 Variables */
     vars_init();
-    assert(!strcmp(vars_get("PATH"), "/bin"));
+    assert(!strcmp(vars_get("PATH"), "/bin:/sbin"));
     assert(!strcmp(vars_get("HOME"), "/"));
     assert(!strcmp(vars_get("PS1"), "fortress:<cwd> $ "));
     assert(vars_get("NONEXISTENT") == NULL);

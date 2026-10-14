@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parent.parent
 CODE = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
 VARS = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
 ISO = REPO / "bin" / "fortress.iso"
-PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# )"
+PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# |[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\r\n]*[#$] )"
 
 
 def qemu_command(mode, iso, variables, log, uart_path):
@@ -93,12 +93,23 @@ def run_session(mode, iso, tmp):
             def get_text():
                 return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", log.read_bytes().decode(errors="replace")).replace("\r", "")
 
-            def wait_for_prompt(after_idx=0, timeout=60):
+            sent_login = False
+            def wait_for_prompt(after_idx=0, timeout=60, require_newline=False):
+                nonlocal sent_login
                 d = time.monotonic() + timeout
                 while time.monotonic() < d:
                     t = get_text()
-                    if re.search(PROMPT_PATTERN, t[after_idx:]):
-                        return t[after_idx:]
+                    if not sent_login and "FortressOS login: " in t[after_idx:]:
+                        sent_login = True
+                        uart.sendall(b"operator\n")
+                    chunk = t[after_idx:]
+                    if require_newline:
+                        nl = chunk.find("\n")
+                        if nl != -1 and re.search(PROMPT_PATTERN, chunk[nl+1:]):
+                            return chunk
+                    else:
+                        if re.search(PROMPT_PATTERN, chunk):
+                            return chunk
                     time.sleep(0.1)
                 raise TimeoutError(f"Prompt not seen within {timeout}s: {t[-500:]}")
 
@@ -106,13 +117,13 @@ def run_session(mode, iso, tmp):
             initial = wait_for_prompt()
             print(f"[{mode}] Shell ready")
 
-            # 2. Run /bin/ifconfig
+            # 2. Run /sbin/ifconfig
             before_len = len(get_text())
-            uart.sendall(b"/bin/ifconfig\n")
-            wait_for_prompt(after_idx=before_len, timeout=10)
+            uart.sendall(b"/sbin/ifconfig\n")
+            wait_for_prompt(after_idx=before_len, timeout=10, require_newline=True)
             output = get_text()[before_len:]
 
-            print(f"[{mode}] Output of /bin/ifconfig:\n{output.strip()}")
+            print(f"[{mode}] Output of /sbin/ifconfig:\n{output.strip()}")
 
             # 3. Assertions on output
             assert "eth0  HWaddr 52:54:00:12:34:56" in output, f"MAC missing in output: {output}"
@@ -124,7 +135,7 @@ def run_session(mode, iso, tmp):
             assert re.search(r"RX \d+\s+TX \d+", output), f"Packet counters missing in output: {output}"
 
             # 4. Clean shutdown
-            uart.sendall(b"poweroff\n")
+            uart.sendall(b"sudo poweroff\n")
             proc.wait(timeout=10)
             print(f"[{mode}] PASS")
 

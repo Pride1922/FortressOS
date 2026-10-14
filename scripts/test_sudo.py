@@ -71,7 +71,7 @@ try:
         proc=subprocess.Popen(cmd,cwd=workspace,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err)
         selector=selectors.DefaultSelector();selector.register(proc.stdout,selectors.EVENT_READ)
         def clean(data):return re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]','',data.decode(errors='replace')).replace('\r','')
-        def prompt(t):return re.search(r'(?:^|\n)[#$] $',t)
+        def prompt(t):return re.search(r'(?:^|\n)[^\r\n]*[#$] $',t)
         def wait(pred,start=0,timeout=180):
             end=time.monotonic()+timeout
             while time.monotonic()<end:

@@ -22,7 +22,7 @@ REPO = Path(__file__).resolve().parent.parent
 CODE = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
 VARS = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
 ISO = REPO / "bin" / "fortress.iso"
-PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# )"
+PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# |[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\r\n]*[#$] )"
 
 
 def qemu_command(mode, iso, variables, log, uart_path):
@@ -94,67 +94,80 @@ def run_session(mode, iso, tmp):
             def get_text():
                 return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", log.read_bytes().decode(errors="replace")).replace("\r", "")
 
-            def wait_for_prompt(after_idx=0, timeout=60):
+            sent_login = False
+            def wait_for_prompt(after_idx=0, timeout=60, require_newline=False):
+                nonlocal sent_login
                 d = time.monotonic() + timeout
                 while time.monotonic() < d:
                     t = get_text()
-                    if re.search(PROMPT_PATTERN, t[after_idx:]):
-                        return t[after_idx:]
+                    if not sent_login and "FortressOS login: " in t[after_idx:]:
+                        sent_login = True
+                        uart.sendall(b"operator\n")
+                    chunk = t[after_idx:]
+                    if require_newline:
+                        nl = chunk.find("\n")
+                        if nl != -1 and re.search(PROMPT_PATTERN, chunk[nl+1:]):
+                            return chunk
+                    else:
+                        if re.search(PROMPT_PATTERN, chunk):
+                            return chunk
                     time.sleep(0.1)
                 raise TimeoutError(f"Prompt not seen within {timeout}s: {t[-500:]}")
 
             def run_command(command, timeout=15):
                 before = len(get_text())
                 uart.sendall(command.encode("ascii") + b"\n")
-                wait_for_prompt(after_idx=before, timeout=timeout)
+                wait_for_prompt(after_idx=before, timeout=timeout, require_newline=True)
                 return get_text()[before:]
 
             # 1. Wait for initial Ring 3 shell prompt
             initial = wait_for_prompt()
+            if "operator@" in initial or "$" in initial:
+                run_command("sudo shell")
             print(f"[{mode}] Shell ready")
 
             # 2. Check initial ifconfig
-            out = run_command("/bin/ifconfig")
+            out = run_command("/sbin/ifconfig")
             assert "inet 10.0.2.15/24" in out, f"Unexpected initial IP: {out}"
             print(f"[{mode}] Case 1 (initial ifconfig 10.0.2.15/24): PASS")
 
             # 3. Test ifup --help
-            out = run_command("/bin/ifup --help")
+            out = run_command("/sbin/ifup --help")
             assert "usage: ifup" in out, f"ifup --help failed: {out}"
             print(f"[{mode}] Case 2 (ifup --help): PASS")
 
             # 4. Test ifup --dry-run
-            out = run_command("/bin/ifup --dry-run 10.0.2.50/24 10.0.2.2")
+            out = run_command("/sbin/ifup --dry-run 10.0.2.50/24 10.0.2.2")
             assert "eth0: address 10.0.2.50/24 gateway 10.0.2.2 valid (dry-run)" in out, f"dry-run failed: {out}"
-            out_check = run_command("/bin/ifconfig")
+            out_check = run_command("/sbin/ifconfig")
             assert "inet 10.0.2.15/24" in out_check, f"dry-run modified interface: {out_check}"
             print(f"[{mode}] Case 3 (ifup --dry-run no-op): PASS")
 
             # 5. Apply CIDR form: 10.0.2.50/24 10.0.2.2
-            out = run_command("/bin/ifup 10.0.2.50/24 10.0.2.2")
+            out = run_command("/sbin/ifup 10.0.2.50/24 10.0.2.2")
             assert "eth0: address 10.0.2.50/24 gateway 10.0.2.2 applied" in out, f"ifup CIDR apply failed: {out}"
-            out_check = run_command("/bin/ifconfig")
+            out_check = run_command("/sbin/ifconfig")
             assert "inet 10.0.2.50/24" in out_check, f"ifconfig did not reflect new IP: {out_check}"
             print(f"[{mode}] Case 4 (ifup CIDR apply 10.0.2.50/24): PASS")
 
             # 6. Apply dotted-decimal form: 10.0.2.60 255.255.255.0 10.0.2.2
-            out = run_command("/bin/ifup 10.0.2.60 255.255.255.0 10.0.2.2")
+            out = run_command("/sbin/ifup 10.0.2.60 255.255.255.0 10.0.2.2")
             assert "eth0: address 10.0.2.60/24 gateway 10.0.2.2 applied" in out, f"ifup dotted apply failed: {out}"
-            out_check = run_command("/bin/ifconfig")
+            out_check = run_command("/sbin/ifconfig")
             assert "inet 10.0.2.60/24" in out_check, f"ifconfig did not reflect new IP: {out_check}"
             print(f"[{mode}] Case 5 (ifup dotted apply 10.0.2.60/24): PASS")
 
             # 7. Malformed address rejection
-            out = run_command("/bin/ifup 10.0.2.300/24 10.0.2.2")
+            out = run_command("/sbin/ifup 10.0.2.300/24 10.0.2.2")
             assert "invalid" in out.lower(), f"ifup accepted malformed address: {out}"
-            out_check = run_command("/bin/ifconfig")
+            out_check = run_command("/sbin/ifconfig")
             assert "inet 10.0.2.60/24" in out_check, f"ifconfig changed after malformed address: {out_check}"
             print(f"[{mode}] Case 6 (malformed address rejection): PASS")
 
             # 8. Apply config file from /etc/network.conf
-            out = run_command("/bin/ifup /etc/network.conf")
+            out = run_command("/sbin/ifup /etc/network.conf")
             assert "eth0: address 10.0.2.15/24 gateway 10.0.2.2 applied" in out, f"ifup config file failed: {out}"
-            out_check = run_command("/bin/ifconfig")
+            out_check = run_command("/sbin/ifconfig")
             assert "inet 10.0.2.15/24" in out_check, f"ifconfig did not reflect file config: {out_check}"
             print(f"[{mode}] Case 7 (ifup config file /etc/network.conf): PASS")
 
@@ -164,29 +177,30 @@ def run_session(mode, iso, tmp):
             print(f"[{mode}] Case 8 (ping gateway after reconfiguration): PASS")
 
             # 10. ifup missing default config file diagnostic
-            out = run_command("/bin/ifup")
+            out = run_command("/sbin/ifup")
             assert "cannot open" in out.lower() or "error" in out.lower(), f"Unexpected missing config output: {out}"
             print(f"[{mode}] Case 9 (ifup missing /mnt/.fortress/network.conf diagnostic): PASS")
 
             # 11. nslookup missing DNS server diagnostic when -s omitted
+            run_command("/bin/rm /tmp/resolv.conf")
             out = run_command("/bin/nslookup service.test")
             assert "no DNS server specified" in out, f"nslookup did not print missing DNS server diagnostic: {out}"
             print(f"[{mode}] Case 10 (nslookup missing DNS server diagnostic): PASS")
 
             # 12. ifup with positional DNS servers (CIDR)
-            out = run_command("/bin/ifup 10.0.2.15/24 10.0.2.2 1.1.1.1 8.8.8.8")
+            out = run_command("/sbin/ifup 10.0.2.15/24 10.0.2.2 1.1.1.1 8.8.8.8")
             assert "eth0: address 10.0.2.15/24 gateway 10.0.2.2 applied" in out, f"ifup positional DNS failed: {out}"
-            out = run_command("/bin/ifconfig")
+            out = run_command("/sbin/ifconfig")
             assert "dns 1.1.1.1, 8.8.8.8" in out, f"ifconfig did not show applied DNS servers: {out}"
             print(f"[{mode}] Case 11 (ifup CIDR with positional DNS servers): PASS")
 
             # 13. ifup with positional DNS servers (dotted-decimal)
-            out = run_command("/bin/ifup 10.0.2.15 255.255.255.0 10.0.2.2 1.1.1.1 8.8.8.8")
+            out = run_command("/sbin/ifup 10.0.2.15 255.255.255.0 10.0.2.2 1.1.1.1 8.8.8.8")
             assert "eth0: address 10.0.2.15/24 gateway 10.0.2.2 applied" in out, f"ifup dotted positional DNS failed: {out}"
             print(f"[{mode}] Case 12 (ifup dotted with positional DNS servers): PASS")
 
             # 14. Clean shutdown
-            uart.sendall(b"poweroff\n")
+            uart.sendall(b"sudo poweroff\n")
             proc.wait(timeout=10)
             print(f"[{mode}] PASS")
 

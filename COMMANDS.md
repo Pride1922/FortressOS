@@ -50,13 +50,15 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`mv`](#mv) | Builtin | Filesystem | Rename or move a file or directory |
 | [`cp`](#cp) | Builtin / `/bin/cp` | Filesystem | Copy files and preserve permissions with bounded buffers |
 | [`touch`](#touch) | Builtin / `/bin/touch` | Filesystem | Update file timestamps or create empty files |
+| [`chmod`](#chmod) | Binary (`/bin/chmod`) | Filesystem | Change file or directory access permissions |
+| [`chown`](#chown) | Binary (`/bin/chown`) | Filesystem | Change file or directory ownership and group |
 | [`sync`](#sync) | Builtin | Filesystem | Flush dirty filesystem buffers to persistent storage |
 | [`echo`](#echo) | Builtin (child-safe) | Text | Print arguments to standard output (supports `$?`, `$VAR`) |
 | [`printf`](#printf) | Builtin (child-safe) | Text | Format and print data without trailing newline (exact bytes, RFC vectors) |
 | [`run`](#run) | Builtin | Process | Compatibility wrapper to spawn an executable binary |
 | [`layout`](#layout) | Builtin | System | Query or set keyboard layout (`us` or `azerty`) |
-| [`reboot`](#reboot) | Builtin | System | Save state and reboot system |
-| [`shutdown`](#shutdown) / [`poweroff`](#poweroff) | Builtin | System | Save state and ACPI power off |
+| [`reboot`](#reboot) | Builtin / `/sbin/reboot` | System | Save state and reboot system |
+| [`shutdown`](#shutdown) / [`poweroff`](#poweroff) | Builtin / `/sbin/shutdown`, `/sbin/poweroff` | System | Save state and ACPI power off |
 | [`exit`](#exit) | Builtin | Shell | Exit the current shell session |
 | [`dmesg`](#dmesg) | Builtin / `/bin/dmesg` | System | Display, tail, or save kernel diagnostic ring buffer log |
 | [`history`](#history) | Builtin | Shell | Display, clear, save, or load command history |
@@ -84,13 +86,13 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`diff`](#diff) | Binary (`/bin/diff`) | Stream Tool | Compare files line by line using stack-free Myers algorithm |
 | [`patch`](#patch) | Binary (`/bin/patch`) | Stream Tool | Apply unified or normal diff files with fail-closed transactional safety |
 | [`diskbench`](#diskbench) | Binary (`/bin/diskbench`) | Stream Tool / Benchmark | Filesystem throughput and latency benchmark tool |
-| [`disk`](#disk) | Binary (`/bin/disk`) | Storage Tool | Storage device inspection and filesystem usage tool |
+| [`disk`](#disk) | Binary (`/sbin/disk`) | Storage Tool | Storage device inspection and filesystem usage tool |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
 | [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display OS identity, CPU, memory/heap, tasks, and storage summary |
-| [`ifconfig`](#ifconfig) | Binary (`/bin/ifconfig`) | Networking | Query network interface status and packet counters |
-| [`ifup`](#ifup) | Binary (`/bin/ifup`) | Networking | Configure network interface statically or via config file |
+| [`ifconfig`](#ifconfig) | Binary (`/sbin/ifconfig`) | Networking | Query network interface status and packet counters |
+| [`ifup`](#ifup) | Binary (`/sbin/ifup`) | Networking | Configure network interface statically or via config file |
 | [`ping`](#ping) | Binary (`/bin/ping`) | Networking | Send ICMP Echo Request packets to IPv4 host or hostname |
 | [`traceroute`](#traceroute) | Binary (`/bin/traceroute`) | Networking | Finite numeric ICMP trace with TTL-expiry/error reporting |
 | [`tracert`](#traceroute) | Alias (`traceroute`) | Networking | Alias for `traceroute` |
@@ -99,6 +101,10 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`wget`](#wget) | Binary (`/bin/wget`) | Networking | Download files over HTTP/1.0 and HTTP/1.1 |
 | [`download`](#download) | Binary (`/bin/download`) | Networking | Simple file downloader (`download [dest] <URL>`) |
 | [`md5sum` / `sha256sum`](#md5sum--sha256sum) | Binaries (`/bin/md5sum`, `/bin/sha256sum`) | Files | Stream digests and verify manifests |
+| [`sudo`](#permissions-and-sudo) | Binary (`/bin/sudo`) [setuid root] | System / Security | Execute command with superuser (root) privileges |
+| [`passwd`](#passwd) | Binary (`/bin/passwd`) [setuid root] | System / Security | Update login password for self or user |
+| [`useradd`](#useradd) | Binary (`/sbin/useradd`) | System / Accounts | Provision persistent user account and create home directory |
+| [`lockstat`](#lockstat) | Binary (`/sbin/lockstat`) | Diagnostic | Display kernel spinlock contention and hold-time metrics |
 | [`hello`](#hello) | Binary (`/bin/hello`) | Diagnostic | Test ELF binary with argument echoing and `--spin` |
 | [`dual_stream`](#dual_stream) | Binary (`/bin/dual_stream`) | Diagnostic | Diagnostic tool emitting distinct stdout and stderr streams |
 | [`tcptest`](#tcptest) | Binary (`/bin/tcptest`) | Diagnostic | TCP client test fixture |
@@ -1026,7 +1032,7 @@ diskbench -s -w 64K -n 20 /mnt
 
 ### `disk`
 **Syntax:** `disk [subcommand] [OPTIONS]`  
-**Path:** `/bin/disk`  
+**Path:** `/sbin/disk`  
 **Description:** Storage observability utility for FortressOS running in Ring 3. Queries passive kernel device and filesystem registry information without mutating storage or issuing disk writes.
 * **Subcommands:**
   * `list` (default): Enumerate registered block devices, capacity, sector size, GPT partition labels, PARTUUIDs, and active mount correlations.
@@ -1165,7 +1171,7 @@ Snapshot Notice:
 
 ### `ifconfig`
 **Syntax:** `ifconfig`  
-**Path:** `/bin/ifconfig`  
+**Path:** `/sbin/ifconfig`  
 **Description:** Queries network interface status via `SYS_NETCTL` (`NETCTL_IFGET`).
 
 Output includes:
@@ -1191,7 +1197,7 @@ ifconfig
 * `ifup [--dry-run] [config-file]`
 * `ifup [--dry-run] <ip>/<prefix> [gateway] [<dns1>] [<dns2>]`
 * `ifup [--dry-run] <ip> <netmask> [gateway] [<dns1>] [<dns2>]`  
-**Path:** `/bin/ifup`  
+**Path:** `/sbin/ifup`  
 **Description:** Configures the primary network interface statically on the fly via `SYS_NETCTL` (`NETCTL_IFSET`).
 * Can load configuration from a file (defaults to `/mnt/.fortress/network.conf` or `/etc/network.conf`).
 * Accepts CIDR notation (`10.0.2.15/24 10.0.2.2 [dns1] [dns2]`) or dotted-decimal notation (`10.0.2.15 255.255.255.0 10.0.2.2 [dns1] [dns2]`).
@@ -1476,9 +1482,11 @@ temporary home at `/run/user/1000`. Root login is locked. An explicit build
 hash can require a password for both login and sudo.
 
 `sudo command [args]` authenticates the real user and requires membership in
-`wheel`. It runs the command as root with a minimal environment and returns
-the command's exit status. Bare command names resolve under `/bin`; use an
-absolute path for other programs. There is no authentication cache.
+`wheel`. It runs the command as root with a minimal environment (`PATH=/bin:/sbin`,
+`HOME=/root`, `USER=root`, `LOGNAME=root`, `SHELL=/bin/shell`) and returns the
+command's exit status. For bare command names, `sudo` probes `/sbin/<cmd>` first,
+falling back to `/bin/<cmd>`; use an absolute path for other locations. There is no
+authentication cache.
 
-Examples: `sudo id`, `sudo cat /etc/shadow`, `sudo /bin/sh-builtin env`.
+Examples: `sudo id`, `sudo cat /etc/shadow`, `sudo ifup /etc/network.conf`, `sudo poweroff`.
 Plain `cat /etc/shadow` is denied. USB filesystem mounts ignore set-ID bits.

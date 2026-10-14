@@ -165,15 +165,18 @@ int shell_do_completion(line_editor_t *e) {
                 cand_add(name);
             }
         }
-        /* Complete /bin/ executables */
-        long fd = call(SYS_OPEN, (uintptr_t)"/bin", 0, 0);
-        if (fd >= 0) {
-            while (call(SYS_READDIR, fd, (uintptr_t)&comp_dent, 0) == 1) {
-                if (comp_dent.name[0] != '.' && str_starts_with(comp_dent.name, comp_prefix)) {
-                    cand_add(comp_dent.name);
+        /* Complete /bin/ and /sbin/ executables */
+        const char *comp_dirs[] = { "/bin", "/sbin" };
+        for (size_t d = 0; d < 2; d++) {
+            long fd = call(SYS_OPEN, (uintptr_t)comp_dirs[d], 0, 0);
+            if (fd >= 0) {
+                while (call(SYS_READDIR, fd, (uintptr_t)&comp_dent, 0) == 1) {
+                    if (comp_dent.name[0] != '.' && str_starts_with(comp_dent.name, comp_prefix)) {
+                        cand_add(comp_dent.name);
+                    }
                 }
+                (void)call(SYS_CLOSE, fd, 0, 0);
             }
-            (void)call(SYS_CLOSE, fd, 0, 0);
         }
     } else {
         bool only_dirs = str_equal(comp_cmd_name, "cd");
@@ -186,14 +189,17 @@ int shell_do_completion(line_editor_t *e) {
                 const char *name = builtin_name(i);
                 if (str_starts_with(name, comp_prefix)) cand_add(name);
             }
-            long fd = call(SYS_OPEN, (uintptr_t)"/bin", 0, 0);
-            if (fd >= 0) {
-                while (call(SYS_READDIR, fd, (uintptr_t)&comp_dent, 0) == 1) {
-                    if (comp_dent.name[0] != '.' && str_starts_with(comp_dent.name, comp_prefix)) {
-                        cand_add(comp_dent.name);
+            const char *comp_dirs[] = { "/bin", "/sbin" };
+            for (size_t d = 0; d < 2; d++) {
+                long fd = call(SYS_OPEN, (uintptr_t)comp_dirs[d], 0, 0);
+                if (fd >= 0) {
+                    while (call(SYS_READDIR, fd, (uintptr_t)&comp_dent, 0) == 1) {
+                        if (comp_dent.name[0] != '.' && str_starts_with(comp_dent.name, comp_prefix)) {
+                            cand_add(comp_dent.name);
+                        }
                     }
+                    (void)call(SYS_CLOSE, fd, 0, 0);
                 }
-                (void)call(SYS_CLOSE, fd, 0, 0);
             }
         } else {
             /* General file / directory path completion */

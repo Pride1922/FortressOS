@@ -76,7 +76,7 @@ int program_resolve(const char *name, char path[VFS_MAX_PATH]) {
         }
     }
     const char *p = vars_get("PATH");
-    if (!p || !*p) p = "/bin";
+    if (!p || !*p) p = "/bin:/sbin";
     while (*p) {
         size_t n = 0;
         while (p[n] && p[n] != ':') n++;

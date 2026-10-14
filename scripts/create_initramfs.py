@@ -6,9 +6,9 @@ def metadata(member):
  if member.name=='bin/benchrun':return None
  if not (member.isdir() or member.isfile()):raise ValueError(f'Unsupported initramfs entry: {member.name}')
  member.uid=member.gid=0;member.uname=member.gname=''
- member.mode=0o755 if member.isdir() or member.name.startswith('bin/') else 0o644
+ member.mode=0o755 if member.isdir() or member.name.startswith(('bin/','sbin/')) else 0o644
  if member.name=='etc/shadow':member.mode=0o600
  if member.name in ('bin/sudo','bin/passwd'):member.mode=0o4755
  return member
 with tarfile.open(target,'w',format=tarfile.USTAR_FORMAT) as archive:
- for name in ('bin','etc','docs'):archive.add(source/name,arcname=name,filter=metadata)
+ for name in ('bin','sbin','etc','docs'):archive.add(source/name,arcname=name,filter=metadata)

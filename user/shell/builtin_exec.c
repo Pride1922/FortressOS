@@ -577,7 +577,7 @@ static int exec_type(int argc, const char *const *argv, const builtin_ctx_t *ctx
             }
         } else {
             const char *p = path_var;
-            if (!p || !*p) p = "/bin";
+            if (!p || !*p) p = "/bin:/sbin";
             while (*p && !found) {
                 size_t dlen = 0;
                 while (p[dlen] && p[dlen] != ':') dlen++;

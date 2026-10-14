@@ -1,7 +1,19 @@
 # FortressOS Build Automation
 # Target: x86_64 UEFI Bare-Metal OS
 
+# Phase 0 only: isolated installed NVMe fixtures, BIOS/UEFI x SMP=1/4/8.
+# Production networking/spawn sources are never patched or built in place.
+.PHONY: test-network-smp-phase0
+test-network-smp-phase0:
+	@python3 scripts/test_network_smp_phase0.py
+
 SHELL := /bin/bash
+.PHONY: test-network-smp-phase1-host
+.PHONY: test-network-smp-phase1
+test-network-smp-phase1: test-network-smp-phase1-host
+	@python3 scripts/test_network_smp_phase1.py
+test-network-smp-phase1-host:
+	@python3 scripts/test_network_smp_phase1_host.py
 .DELETE_ON_ERROR:
 .PHONY: test-install-provision-host
 test-install-provision-host:
@@ -350,6 +362,7 @@ test-shell-host: test-input test-console
 	@python3 scripts/test_shell_host.py
 	@python3 scripts/test_pipeline_host.py
 	@python3 scripts/test_shell_prompt_host.py
+	@python3 scripts/test_shell_identity_host.py
 	@python3 scripts/test_runner_host.py
 
 .PHONY: test-runner-host
@@ -670,8 +683,12 @@ $(USER_UDP_ELFS): $(BUILD_DIR)/%.elf: $(BUILD_DIR)/%.o user/tools/start.asm user
 $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)/net/udp.o $(BUILD_DIR)/net/net_ipv4.o: CFLAGS += -Os -Wframe-larger-than=512 -fstack-usage
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
-STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench lockstat chmod chown id shutdown reboot poweroff mkdir rm mv cp touch hostname
-LOGIN_TOOLS := login whoami sudo recovery passwd useradd
+SBIN_STREAM_TOOLS := shutdown reboot poweroff lockstat
+USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench chmod chown id mkdir rm mv cp touch hostname
+STREAM_TOOLS := $(USER_STREAM_TOOLS) $(SBIN_STREAM_TOOLS)
+SBIN_LOGIN_TOOLS := useradd
+USER_LOGIN_TOOLS := login whoami sudo recovery passwd
+LOGIN_TOOLS := $(USER_LOGIN_TOOLS) $(SBIN_LOGIN_TOOLS)
 LOGIN_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(LOGIN_TOOLS)))
 
 $(BUILD_DIR)/tool-hostname.o $(BUILD_DIR)/netconf.o $(BUILD_DIR)/ifup.o $(BUILD_DIR)/ifconfig.o: user/machine_config.h src/include/account_abi.h
@@ -951,18 +968,19 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 
 # Build USTAR Initramfs archive
 $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) COMMANDS.md Makefile scripts/create_initramfs.py
-	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
+	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
-	@$(foreach tool,$(LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
+	@$(foreach tool,$(USER_LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
+	@$(foreach tool,$(SBIN_LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
 	@cp -f $(USER_SH_BUILTIN_ELF) $(BUILD_DIR)/initramfs/bin/sh-builtin
 	@cp -f $(USER_HELLO_ELF) $(BUILD_DIR)/initramfs/bin/hello
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
 	@cp -f $(USER_PS_ELF) $(BUILD_DIR)/initramfs/bin/ps
 	@cp -f $(USER_SYSINFO_ELF) $(BUILD_DIR)/initramfs/bin/sysinfo
 	@cp -f $(USER_DMESG_ELF) $(BUILD_DIR)/initramfs/bin/dmesg
-	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/bin/ifconfig
-	@cp -f $(USER_IFUP_ELF) $(BUILD_DIR)/initramfs/bin/ifup
+	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/sbin/ifconfig
+	@cp -f $(USER_IFUP_ELF) $(BUILD_DIR)/initramfs/sbin/ifup
 	@cp -f $(USER_PING_ELF) $(BUILD_DIR)/initramfs/bin/ping
 	@cp -f $(USER_PING_PROBE_ELF) $(BUILD_DIR)/initramfs/bin/net-ping-probe
 	@cp -f $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/initramfs/bin/udptest
@@ -977,7 +995,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DOWNLOAD_ELF) $(BUILD_DIR)/initramfs/bin/download
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@cp -f $(USER_NANO_ELF) $(BUILD_DIR)/initramfs/bin/nano
-	@$(foreach tool,$(STREAM_TOOLS) disk,cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
+	@$(foreach tool,$(USER_STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
+	@$(foreach tool,$(SBIN_STREAM_TOOLS) disk,cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
 	@$(foreach tool,$(CHECKSUM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@cp -f $(USER_TRACEROUTE_ELF) $(BUILD_DIR)/initramfs/bin/traceroute
 	@cp -f $(USER_TAR_ELF) $(BUILD_DIR)/initramfs/bin/tar
@@ -1419,7 +1438,7 @@ test-net-icmp: $(BOOTABLE_ISO) test-net-icmp-host test-net-ipv4-host test-net-pi
 .PHONY: test-net-icmp
 test-net-eth-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_eth_host.c tests/net_lock_host.c src/net/net.c src/net/net_ping.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c src/net/arp.c -o $(BUILD_DIR)/net_eth_host
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_eth_host.c tests/net_lock_host.c src/net/net.c src/net/net_control.c src/kernel/handoff.c src/net/net_ping.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c src/net/arp.c -o $(BUILD_DIR)/net_eth_host
 	@$(BUILD_DIR)/net_eth_host
 
 .PHONY: test-net-eth-host test-net-eth
@@ -1433,7 +1452,7 @@ test-net-host:
 
 test-net-ifconfig-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_ifconfig_host.c tests/net_lock_host.c src/net/net.c src/net/net_ping.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c src/net/arp.c -o $(BUILD_DIR)/net_ifconfig_host
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm tests/net_ifconfig_host.c tests/net_lock_host.c src/net/net.c src/net/net_control.c src/kernel/handoff.c src/net/net_ping.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c src/net/arp.c -o $(BUILD_DIR)/net_ifconfig_host
 	@$(BUILD_DIR)/net_ifconfig_host
 
 .PHONY: test-net-ifconfig-host test-net-ifconfig test-net-ifup
@@ -1442,6 +1461,11 @@ test-net-ifconfig: $(BOOTABLE_ISO) test-net-ifconfig-host
 
 test-net-ifup: $(BOOTABLE_ISO) test-net-ifconfig-host
 	@python3 scripts/test_net_ifup.py
+
+# Isolated installed-root BIOS/UEFI SMP=1/4; disposable NVMe regular files.
+.PHONY: test-net-installed
+test-net-installed: test-net-ifconfig-host
+	@python3 scripts/test_net_installed.py
 
 # Networking Phase 1a: QEMU PCI discovery, MMIO mapping, MAC and STATUS registers
 .PHONY: test-net-pci
@@ -1776,7 +1800,10 @@ test-install-runtime-host: bin/fortress.elf bin/initramfs.tar
 	@python3 scripts/test_install_runtime.py
 
 .PHONY: test-install-cli-host test-root-phase4-host
-.PHONY: test-install-log-host test-install-log
+.PHONY: test-install-log-host test-install-log test-install-var
+test-install-var:
+	@test -n "$(INSTALLER_DISK)" || (echo "Set INSTALLER_DISK to a disposable installed image under build/root-phase4"; exit 1)
+	@python3 scripts/test_installer_var.py --disk "$(INSTALLER_DISK)"
 test-install-log-host:
 	@test -n "$(INSTALLER_MEDIA)" || { echo 'Set INSTALLER_MEDIA to retained multi installer media'; exit 2; }
 	@python3 scripts/test_install_log.py --media "$(INSTALLER_MEDIA)"
@@ -1803,3 +1830,10 @@ test-root-phase4:
 test-root-phase4-multi:
 	@test -n "$(INSTALLER_MEDIA)" || { echo 'Set INSTALLER_MEDIA to the retained multi-profile media workspace'; exit 2; }
 	@python3 scripts/test_installer_multi.py --media "$(INSTALLER_MEDIA)"
+
+# Phase 2A only: control/probes, isolated installed roots, no AP socket rollout.
+.PHONY: test-network-smp-phase2a-host test-network-smp-phase2a
+test-network-smp-phase2a-host:
+	@python3 scripts/test_network_smp_phase2a_host.py
+test-network-smp-phase2a: test-network-smp-phase2a-host
+	@python3 scripts/test_network_smp_phase2a.py

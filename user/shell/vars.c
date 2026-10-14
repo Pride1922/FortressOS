@@ -95,7 +95,7 @@ void vars_init(void) {
         g_vars[i].name[0] = '\0';
         g_vars[i].value[0] = '\0';
     }
-    vars_set("PATH", "/bin", true);
+    vars_set("PATH", "/bin:/sbin", true);
     vars_set("HOME", "/", true);
     vars_set("PS1", "fortress:<cwd> $ ", false);
     vars_set("PS2", "> ", false);
