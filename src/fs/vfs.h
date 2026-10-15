@@ -130,6 +130,19 @@ typedef struct file {
     bool        exclusive_owner;
 } file_t;
 
+/* Own-table borrowed lookup is stable until the next signal/wait. Acquire an
+ * operation reference before that boundary. Caller already owns a live ref;
+ * this helper cannot resurrect a released file or overflow its counter. */
+static inline bool vfs_file_get(file_t *file) {
+    if (!file) return false;
+    int count=__atomic_load_n(&file->ref_count,__ATOMIC_ACQUIRE);
+    while (count>0 && count<2147483647) {
+        if (__atomic_compare_exchange_n(&file->ref_count,&count,count+1,false,
+                                        __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) return true;
+    }
+    return false;
+}
+
 typedef struct {
     uint64_t size;
     uint32_t type;

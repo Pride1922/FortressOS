@@ -9,7 +9,7 @@
 #include "spinlock.h"
 #include "ext4_engine.h"
 
-#define E4_GROUPS 1024u
+#define E4_GROUPS 8192u
 #define E4_NODES 1024u
 #define E4_DIR_MAX (1024u * 1024u)
 #define E4_MAP_MAX 4096u
@@ -781,7 +781,7 @@ static int e4_admit(ext4_mount_t *fs) {
         fs->blocks<=fs->first || !fs->inodes || fs->inodes>1048576 ||
         e4_u32(sb+12)>fs->blocks || e4_u32(sb+16)>fs->inodes) return -VFS_EIO;
     uint64_t bytes=(uint64_t)fs->blocks*fs->bs;
-    if (bytes>8ULL*1024*1024*1024) return -VFS_EFBIG;
+    if (bytes>1024ULL*1024*1024*1024) return -VFS_EFBIG;
     if (bytes>fs->dev->sector_count*fs->dev->sector_size) return -VFS_EIO;
     fs->groups=(fs->blocks-fs->first+fs->bpg-1)/fs->bpg;
     if (!fs->groups || fs->groups>E4_GROUPS) return -VFS_EFBIG;

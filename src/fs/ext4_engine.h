@@ -82,7 +82,7 @@ int ext4_engine_namespace_rename(ext4_engine_t *engine, uint32_t old_parent,
 /* Phase 8.4 exclusive workbench; no production mount, sync or clean claim.
  * Admission validates the entire traditional orphan chain (<=64), allocation
  * ownership and absence of directory references to deleted orphans before writes.
- * Workbench bounds: <=1,048,576 blocks, <=65,536 inodes, <=1,024 directories; rmdir only
+ * Admission bounds: <=268,435,456 blocks, <=1,048,576 inodes, <=1,024 directories; rmdir only
  * a single dot block. Larger volumes/multi-block directories reject unchanged.
  * Caller must replay JBD2 first, then explicitly recover before normal work.
  * Shrink only: publish size + orphan intent atomically, then reclaim rightmost

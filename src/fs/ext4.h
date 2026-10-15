@@ -37,6 +37,9 @@ bool ext4_storage_owned(void);
  * unlocked thread/boot context. Failed admission writes nothing and publishes
  * nothing. Dirty/recovery-needed volumes reject; RO never replays a journal. */
 typedef struct ext4_mount ext4_mount_t;
+/* Geometry admission is bounded to 1 TiB, 8192 groups and 1,048,576 inodes.
+ * Journal ownership auditing uses bounded bulk heap buffers; admission fails
+ * cleanly on memory exhaustion, with no reduced validation or write fallback. */
 #ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
 /* Disposable test only; callback runs under mounted exclusion after durable
  * commit, before checkpoint. No device I/O, scheduling or filesystem calls. */

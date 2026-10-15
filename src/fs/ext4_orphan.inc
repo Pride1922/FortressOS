@@ -58,10 +58,13 @@ static int e4_orphan_validate(ext4_engine_t *e) {
         if (r) return r;
         e->orphans[e->orphan_count++]=ino;ino=next;
     }
-    if (fs->blocks>1048576 || fs->inodes>65536) return -VFS_EFBIG;
-    uint8_t *owned=kcalloc((fs->blocks+7)/8,1);if (!owned) return -VFS_ENOMEM;
-    struct { uint32_t incoming,subdirs,parent,owner;uint16_t mode,links; } *refs=kcalloc(fs->inodes+1,sizeof(*refs));
+    if (fs->blocks>268435456 || fs->inodes>1048576) return -VFS_EFBIG;
+    size_t owned_bytes=((size_t)fs->blocks+7)/8;
+    uint8_t *owned=kmalloc_large(owned_bytes);if (!owned) return -VFS_ENOMEM;
+    memset(owned,0,owned_bytes);
+    struct { uint32_t incoming,subdirs,parent,owner;uint16_t mode,links; } *refs=kmalloc_large(((size_t)fs->inodes+1)*sizeof(*refs));
     if (!refs) { kfree(owned);return -VFS_ENOMEM; }
+    memset(refs,0,((size_t)fs->inodes+1)*sizeof(*refs));
     int r=0;unsigned directories=0;
     for (unsigned i=0;i<fs->ranges;i++) for (uint32_t k=0;k<fs->reserved[i].len;k++)
         e4_set_bit(owned,fs->reserved[i].lo+k,true);
@@ -167,9 +170,14 @@ static int e4_orphan_validate(ext4_engine_t *e) {
                 for (uint32_t k=0;k<fs->reserved[i].len;k++) e4_set_bit(fs->scratch,fs->reserved[i].lo-start+k,true);
         }
         unsigned free=0;
-        for (uint32_t bit=0;bit<count;bit++) {
+        for (uint32_t byte=0;byte<count/8;byte++) {
+            uint8_t value=fs->scratch[byte];
+            if (value!=owned[start/8+byte]) {r=-VFS_EIO;goto done;}
+            for (unsigned bit=0;bit<8;bit++) free+=!(value&(1u<<bit));
+        }
+        for (uint32_t bit=count-count%8;bit<count;bit++) {
             bool allocated=e4_bit(fs->scratch,bit);
-            if (allocated!=e4_bit(owned,start+bit)) { r=-VFS_EIO;goto done; }
+            if (allocated!=e4_bit(owned,start+bit)) {r=-VFS_EIO;goto done;}
             free+=!allocated;
         }
         if (free!=e4_u16(fs->gd[g].raw+12)) { r=-VFS_EIO;goto done; }

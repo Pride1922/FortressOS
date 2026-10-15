@@ -23,6 +23,7 @@
 static size_t live,reads,allocations;
 static long fail_read=-1,fail_alloc=-1;
 void *kmalloc(size_t n) { allocations++;if (!fail_alloc) return NULL;if (fail_alloc>0) fail_alloc--;void *p=malloc(n);if (p) live++;return p; }
+void *kmalloc_large(size_t n) {return kmalloc(n);}
 void *kcalloc(size_t n,size_t z) { if (n && z>SIZE_MAX/n) return NULL;void *p=kmalloc(n*z);if (p) memset(p,0,n*z);return p; }
 void kfree(void *p) { if (p) { assert(live);live--;free(p); } }
 void serial_puts(const char *s) { (void)s; }
