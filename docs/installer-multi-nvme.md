@@ -30,7 +30,7 @@ Every screen uses the same FortressOS installer header and step number,
 including file checks, password visibility, hashing waits, installation progress
 and results. Password redraws retain account/recovery context and distinguish
 entry from confirmation. The five screens cover keyboard layout (US QWERTY or Belgian AZERTY), disk,
-login account, independent recovery password and final confirmation. Existing
+login account and computer name, independent recovery password and final confirmation. Existing
 partition summaries appear at confirmation, rather than cluttering the disk list.
 They use simple labels such as Windows-type and EFI boot; partition metadata
 does not establish an installed OS, filesystem type or used space. Uncertain
@@ -55,6 +55,36 @@ early failures can only be saved on the USB. ISO/read-only/unsupported USB
 logging shows a warning and installation can continue. Filesystem taint or
 failed durability barriers still prevent a successful installation.
 
+USB logging rejection/failure reasons are retained in the RAM session log and
+copied into the installed `/var/log/fortress-install.log`, even when the USB
+file cannot be written. Messages distinguish absent transport, unknown/read-only
+durability, incompatible configuration/geometry, source/GPT mismatch, changed
+FAT metadata, validation flush, data write, flush, read-back failure and byte
+mismatch. Data I/O failures include the sector. The first failure disables
+further USB log I/O for that boot; installation continues when otherwise healthy.
+The block callbacks return booleans, so these messages identify the failed
+operation without inventing a SCSI sense code or hardware cause. Rufus metadata
+changes are a possible diagnosis, not established by a generic USB warning.
+
+New installations make `/var` and its template subdirectories root-owned `0700`;
+template files under it and `/var/log/fortress-install.log` are root-owned `0600`.
+Ordinary users cannot list `/var`, traverse into it, or read/write/delete its log.
+Root can access it, including with `sudo`. Both installer log refreshes verify
+ownership and `0600`. Earlier installed roots remain bootable with their original
+`0755` `/var`; updating the installer image alone does not change that installation.
+The USB FAT log has no Unix owner/mode enforcement and remains independently readable.
+
+The account screen asks for computer name first, then username, then login
+password, keeping the username and password prompts together. The computer
+name defaults to `fortress`. Names
+contain 1-63 letters, digits or hyphens, with a letter/digit at both ends.
+Invalid names retry in place; the chosen name survives back navigation and is
+saved to `/etc/hostname`. The shell reads the effective user's account name and
+this file for a prompt such as `fabio@dell-5590:/home/fabio$ `. After `cd /tmp`,
+it shows `fabio@dell-5590:/tmp$ `. Root uses `#`; long paths keep their tail
+visible without hiding the user and machine name. Invalid/missing hostnames
+fall back to `fortress`.
+
 Before disk writes, Escape moves to the previous numbered screen (on step 1,
 it stays there). Ctrl-C cancels at any input prompt; CANCEL also cancels at
 non-password prompts. Going back retains the chosen disk, keyboard layout,
@@ -67,8 +97,8 @@ runs; the existing bounded write/failure path owns the operation.
 ## Separate image and build
 
 The raw image is `bin/fortress-installer-multi.img` (553648128 bytes, 528 MiB).
-SHA-256: `59ac446baaec70bada55b4216138b1a4eca7648c04717f70c0f63158e36a9149`.
-The audited producer workspace is `build/root-phase4/media-emxhicsa`.
+SHA-256: `6032f400a2031291c6a8588990b0d5fc83ba063a021a7c7d59fed4085bf40ef2`.
+The audited producer workspace is `build/root-phase4/media-j2a27xfq`.
 Flash that raw IMG to the installer USB using the same Rufus/DD procedure as the
 previous Dell image. Boot its installer entry using F12. Image extraction to a
 new USB filesystem is not supported: the source GPT identity must be preserved.
@@ -107,8 +137,11 @@ disposable, inspection and fingerprint-bound registration remain separate.
   during discovery. Valid existing MBR and unrelated GPT layouts are selectable;
   sector-read failures reject discovery, and matching primary or backup source
   GUIDs remain excluded even when source metadata is damaged.
-- Whole-disk confirmation replaces the selected disk's partitions. Layout stays
-  1 MiB BIOS, 64 MiB ESP and 256 MiB journaled root; remaining space unallocated.
+- Whole-disk confirmation replaces the selected disk's partitions. Layout uses
+  1 MiB BIOS, 64 MiB ESP and a journaled root partition extending to the last
+  usable GPT sector. The filesystem expands to use that partition, with only
+  sector/block alignment and an exceptionally short final group's metadata
+  padding unused. Root filesystems above 1 TiB are rejected before target writes.
   This is not a secure erase of every sector.
 - Installed boot scans GPTs read-only across the pinned controllers, requires
   exactly one matching root PARTUUID with coherent GPT/type, then selects that
@@ -204,7 +237,7 @@ Run against retained audited media with:
 
 ```sh
 FORTRESS_INSTALL_ACCEL=kvm make test-root-phase4-multi \
-  INSTALLER_MEDIA=build/root-phase4/media-emxhicsa
+  INSTALLER_MEDIA=build/root-phase4/media-j2a27xfq
 ```
 
 Physical two-NVMe acceptance is pending user testing. Agent commands never open
@@ -219,7 +252,7 @@ boot/xHCI logging-clone qualification are in the
 needs physical acceptance. Reproduce the focused gates with:
 
 ```sh
-make test-install-log-host INSTALLER_MEDIA=build/root-phase4/media-emxhicsa
+make test-install-log-host INSTALLER_MEDIA=build/root-phase4/media-j2a27xfq
 FORTRESS_INSTALL_ACCEL=kvm make test-install-log \
-  INSTALLER_MEDIA=build/root-phase4/media-emxhicsa
+  INSTALLER_MEDIA=build/root-phase4/media-j2a27xfq
 ```

@@ -142,3 +142,10 @@ transport can be considered; there is no USB inventory chooser or hot-plug
 fallback. See the [installer contracts](../plans/PERSISTENT_ROOT_PHASE4.md)
 and [installer guide](../installer-multi-nvme.md). Physical Dell USB logging
 acceptance is pending.
+
+Installer log rejection and I/O failures now leave fixed diagnostic messages in
+the RAM session record, which provisioning copies to `/var/log/fortress-install.log`.
+Boot transport absence, durability policy, source/GPT/FAT admission, write,
+flush and read-back failures are distinguished; data I/O reports the sector.
+The block ABI supplies a boolean result, not a SCSI sense code. No source-write
+boundary, GPT/FAT mutation permission, driver retry or durability policy changed.

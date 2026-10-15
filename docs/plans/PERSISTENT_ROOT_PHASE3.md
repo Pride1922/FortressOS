@@ -98,7 +98,7 @@ passwordless or skip mode. It grants no wheel membership. A failure after home
 creation may leave an unreachable home; it never removes a home after uncertain
 account publication. Retrying that name requires explicit recovery/cleanup.
 
-Installed `/etc/network.conf` and `/etc/resolv.conf` are authoritative default
+Installed `/etc/network/network.conf` and `/etc/resolv.conf` are authoritative default
 paths. Missing/malformed installed configuration does not fall back to `/mnt`.
 An explicit `ifup /mnt/.fortress/network.conf` remains an intentional import/apply
 path; live defaults retain `/mnt/.fortress` compatibility. `hostname [NAME]`

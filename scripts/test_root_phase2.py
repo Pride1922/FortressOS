@@ -233,7 +233,10 @@ def corrupt(disk,kind,out,run):
 
 def extract_root(disk,out):
     with disk.open('rb') as src,out.open('xb') as dst:
-        src.seek(fixture.ROOT_START*512);remaining=fixture.ROOT_BYTES
+        src.seek(fixture.ROOT_START*512+1024);sb=src.read(1024)
+        remaining=struct.unpack_from('<I',sb,4)[0]*(1024<<struct.unpack_from('<I',sb,24)[0])
+        assert fixture.ROOT_BYTES<=remaining<=disk.stat().st_size-fixture.ROOT_START*512
+        src.seek(fixture.ROOT_START*512)
         while remaining:
             b=src.read(min(1024*1024,remaining));assert b;dst.write(b);remaining-=len(b)
 
@@ -278,7 +281,7 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
             assert proc.poll() is None,clean(transcript[-6000:])
         raise TimeoutError(clean(transcript[-6000:]))
     def send(s):proc.stdin.write((s+'\n').encode());proc.stdin.flush()
-    prompt=lambda t:re.search(r'(?:^|\n)[#$] $',t)
+    prompt=lambda t:re.search(r'(?:^|\n)(?:[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\n]*|)[#$] $',t)
     def command(cmd,expected):
         start=len(transcript);send(cmd);wait(lambda t:expected in t and prompt(t),start)
     completed=False

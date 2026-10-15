@@ -51,6 +51,7 @@ static int plan_valid(const install_target_t *t,const install_plan_t *p) {
     if (!t || !p || t->sector_size!=512 || t->sectors<INSTALL_MIN_SECTORS ||
         t->sectors>UINT64_MAX/512 || !t->admit || !t->read || !t->write || !t->flush || !t->provision ||
         p->readiness_lba>=INSTALL_ESP_BYTES/512 || !uuid(p->disk_guid) || zero(p->readiness,512)) return BAD;
+    if (p->root_sectors && (p->root_sectors<INSTALL_ROOT_BYTES/512 || p->root_sectors>t->sectors-33-INSTALL_ROOT_LBA)) return BAD;
     const uint8_t *ids[4]={p->disk_guid,p->partition_guid[0],p->partition_guid[1],p->partition_guid[2]};
     for (unsigned i=0;i<4;i++) {
         if (!uuid(ids[i])) return BAD;
@@ -68,7 +69,7 @@ static void entries(uint8_t *array,const install_plan_t *p) {
     static const uint8_t bios[16]={0x48,0x61,0x68,0x21,0x49,0x64,0x6f,0x6e,0x74,0x4e,0x65,0x65,0x64,0x45,0x46,0x49};
     memset(array,0,512);
     entry(array,esp,p->partition_guid[0],starts[0],lengths[0]/512,"Fortress ESP");
-    entry(array+128,root,p->partition_guid[1],starts[1],lengths[1]/512,"Fortress Root");
+    entry(array+128,root,p->partition_guid[1],starts[1],p->root_sectors ? p->root_sectors : lengths[1]/512,"Fortress Root");
     entry(array+256,bios,p->partition_guid[2],starts[2],lengths[2]/512,"Fortress BIOS");
 }
 static void header(uint8_t *h,uint64_t current,uint64_t backup,uint64_t array,uint64_t sectors,const uint8_t *id,uint32_t crc) {

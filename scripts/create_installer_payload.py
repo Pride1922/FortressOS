@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import struct
+import subprocess
 import tarfile
 import tempfile
 import uuid
@@ -58,11 +59,19 @@ def main():
                          'etc/passwd':(0o644,0,0),'etc/group':(0o644,0,0),'etc/shadow':(0o600,0,0)})
         root=out/'root.img'
         with root.open('xb') as f:f.truncate(fixture.ROOT_BYTES)
-        run(['mke2fs','-q','-t','ext4','-b','4096','-I','256','-U',FS_UUID,'-O',fixture.FEATURES,
-             '-E','lazy_itable_init=0','-m','0','-g','4096','-N','4096','-J','size=4','-d',tree,root])
+        run(['mke2fs','-q','-t','ext4','-b','4096','-I','256','-U',FS_UUID,'-O',fixture.FEATURES+',resize_inode',
+             '-E','lazy_itable_init=0,resize=268435456','-m','0','-g','32768','-N','256','-J','size=4','-d',tree,root])
+        # Leave metadata beyond 64 free descriptor-growth blocks. Remove the
+        # resize-inode feature before shipping the restricted-profile seed.
+        run(['tune2fs','-O','^resize_inode',root])
+        repaired=subprocess.run(['e2fsck','-fy',str(root)],capture_output=True,text=True)
+        (out/'producer.log').open('a').write(repaired.stdout+repaired.stderr)
+        assert repaired.returncode in (0,1,2)
         commands=['set_inode_field / mode 040755','set_inode_field / uid 0','set_inode_field / gid 0']
         for path in sorted(tree.rglob('*')):
             name=path.relative_to(tree).as_posix();mode,uid,gid=metadata.get(name,(0o755 if path.is_dir() else 0o644,0,0))
+            if name=='var' or name.startswith('var/'):
+                mode,uid,gid=(0o700 if path.is_dir() else 0o600),0,0
             mode|=0o40000 if path.is_dir() else 0o100000
             commands.extend([f'set_inode_field /{name} mode 0{mode:o}',f'set_inode_field /{name} uid {uid}',f'set_inode_field /{name} gid {gid}'])
         attrs=out/'attrs';attrs.write_text('\n'.join(commands)+'\n');run(['debugfs','-w','-f',attrs,root])

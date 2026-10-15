@@ -10,6 +10,7 @@ static jmp_buf rebooted;
 static bool keyboard_pending,finish_pending;
 static char output[16384];
 static size_t output_size;
+static size_t hostname_prompt_seen;
 static unsigned acquisitions,deployments,releases,restores,seeds;
 static bool fail_deploy,fail_log;
 static unsigned fail_stage=7;
@@ -42,6 +43,9 @@ long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
     if (nr==SYS_REBOOT) {assert(releases==1 && restores==1);longjmp(rebooted,1);}
     if (nr==SYS_INPUT_READ) {
         if (keyboard_pending) {keyboard_pending=false;*(char *)a='\n';return 1;}
+        /* Existing navigation/password scenarios keep the default hostname. */
+        const char *hp=strstr(output+hostname_prompt_seen,"Computer name [");
+        if (hp) {hostname_prompt_seen=output_size;*(char *)a='\n';return 1;}
         if (!*input) {
             if (finish_pending && (deployments || strstr(output,"Press Enter to return to the installer"))) {finish_pending=false;*(char *)a='\n';return 1;}
             return SYSCALL_EINTR;
@@ -74,7 +78,8 @@ static long control(unsigned op,const void *in,size_t n,void *out,size_t m) {
     assert(op==INSTALL_DEPLOY);
     const install_deploy_v1_t *req=in;
     if (req->flags==INSTALL_DRY_RUN) {assert(!acquisitions);return fail_validation;}
-    assert(req->version==2 && req->size==288 && !strcmp(((const install_deploy_v2_t *)req)->username,expected_username));
+    assert(req->version==3 && req->size==352 && !strcmp(((const install_deploy_v3_t *)req)->username,expected_username));
+    assert(!strcmp(((const install_deploy_v3_t *)req)->hostname,"fortress"));
     deployments++;
     assert(db_verify(expected_password,req->operator_hash));
     assert(db_verify("independent-recovery",req->recovery_hash));
@@ -82,7 +87,7 @@ static long control(unsigned op,const void *in,size_t n,void *out,size_t m) {
     return fail_deploy ? SYSCALL_EIO : 0;
 }
 static void run(const char *bytes,bool success,bool destructive) {
-    input=bytes;output_size=0;acquisitions=deployments=releases=restores=seeds=0;
+    input=bytes;output_size=hostname_prompt_seen=0;acquisitions=deployments=releases=restores=seeds=0;
     keyboard_pending=finish_pending=true;output_mode=TERM_MIRROR;reveals=0;local_size=0;
     current=(terminal_attrs_t){.input_flags=TERM_ISIG};
     if (!setjmp(rebooted)) assert(install_main(0,NULL)==(success ? 0 : 1));
@@ -91,6 +96,12 @@ static void run(const char *bytes,bool success,bool destructive) {
     assert(strstr(output,"FortressOS installer - Step 1 of 5"));
     if (deployments) {assert(strstr(output,"FortressOS installer - Step 5 of 5\nInstalling FortressOS"));assert(strstr(output,"FortressOS installer - Step 5 of 5\nInstallation result"));}
     assert(strstr(output,"384 MiB NVMe"));assert(!strstr(output,"SECRET-SERIAL") && !strstr(output,"Serial:"));
+    if (deployments) {
+        const char *host=strstr(output,"Computer name [");
+        const char *user=strstr(output,"Choose username: ");
+        const char *pass=strstr(output,"Choose login password: ");
+        assert(host && user && pass && host<user && user<pass);
+    }
     assert(acquisitions==destructive && deployments==destructive && releases==destructive);
     const unsigned char *named=(void *)&named_request;for (size_t i=0;i<sizeof(named_request);i++) assert(!named[i]);
     const unsigned char *p=(void *)&request;for (size_t i=0;i<sizeof(request);i++) assert(!p[i]);
@@ -98,6 +109,8 @@ static void run(const char *bytes,bool success,bool destructive) {
     assert(!strstr(output,expected_password));
 }
 int main(void) {
+    assert(install_hostname_valid("dell-5590") && install_hostname_valid("a") && install_hostname_valid("HOST1"));
+    assert(!install_hostname_valid("") && !install_hostname_valid("-bad") && !install_hostname_valid("bad-") && !install_hostname_valid("bad name") && !install_hostname_valid("bad\033name"));
     assert(common_password("Password1") && common_password("P@ssw0rd!") && common_password("12345678"));
     assert(common_password("Password123456789!") && common_password("AZERTYUIOP") && common_password("FortressOS"));
     assert(!common_password("eight888") && !common_password("passwords can be longer"));

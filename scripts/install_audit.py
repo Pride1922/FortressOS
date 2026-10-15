@@ -9,7 +9,7 @@ import uuid
 import test_root_phase0 as fixture
 
 
-def audit(disk,out,kernel,operator,recovery,manifest,username="operator"):
+def audit(disk,out,kernel,operator,recovery,manifest,username="operator",hostname="fortress",whole_disk=None):
     def run(args):return fixture.run(list(map(str,args)),out/'independent-audit.log')
     with disk.open('rb') as stream:
         sectors=disk.stat().st_size//512
@@ -27,9 +27,13 @@ def audit(disk,out,kernel,operator,recovery,manifest,username="operator"):
             stream.seek(array*512);table=stream.read(16384);tables.append(table)
             assert binascii.crc32(table)==struct.unpack_from('<I',header,88)[0]
         assert tables[0]==tables[1] and headers[0][56:72]==headers[1][56:72]
+        if whole_disk is None:
+            root_end=struct.unpack_from('<Q',tables[0],128+40)[0]
+            assert root_end in (135168+524288-1,sectors-34)
+            whole_disk=root_end==sectors-34
         ids={uuid.UUID(bytes_le=bytes(headers[0][56:72]))};assert next(iter(ids)).version==4
         roles=((4096,131072,'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'),
-               (135168,524288,'0fc63daf-8483-4772-8e79-3d69d8477de4'),
+               (135168,sectors-33-135168 if whole_disk else 524288,'0fc63daf-8483-4772-8e79-3d69d8477de4'),
                (2048,2048,'21686148-6449-6e6f-744e-656564454649'))
         for index,(start,count,kind) in enumerate(roles):
             entry=tables[0][index*128:(index+1)*128]
@@ -38,7 +42,7 @@ def audit(disk,out,kernel,operator,recovery,manifest,username="operator"):
             assert struct.unpack_from('<QQ',entry,32)==(start,start+count-1)
         assert not any(tables[0][384:])
         root_id=str(uuid.UUID(bytes_le=tables[0][144:160]))
-        for name,start,count in (('installed-esp.img',4096,131072),('installed-root.img',135168,524288)):
+        for name,start,count in (('installed-esp.img',4096,131072),('installed-root.img',135168,roles[1][1])):
             stream.seek(start*512)
             with (out/name).open('xb') as target:
                 remaining=count*512
@@ -51,7 +55,7 @@ def audit(disk,out,kernel,operator,recovery,manifest,username="operator"):
     assert fixture.digest(out/'installed-fortress.elf')==fixture.digest(kernel)
     for name in ('passwd','group','shadow','fortress-install.v1','hostname'):
         run(['debugfs','-R',f'dump /etc/{name} {out / ("installed-"+name)}',root])
-    assert (out/'installed-hostname').read_bytes()==b'fortress\n'
+    assert (out/'installed-hostname').read_bytes()==(hostname+'\n').encode()
     for path,mode,uid,gid in (('/etc/shadow','0600',0,0),('/home/'+username,'0700',1000,1000),('/etc/fortress-install.v1','0644',0,0)):
         text=run(['debugfs','-R','stat '+path,root])
         assert re.search(r'Mode:\s+'+mode,text) and re.search(r'User:\s+'+str(uid)+r'\s+Group:\s+'+str(gid),text)

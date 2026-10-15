@@ -7,7 +7,7 @@
 static install_identity_v1_t identity;
 static install_identity_v1_t disks[8];
 static install_deploy_v1_t request;
-static install_deploy_v2_t named_request;
+static install_deploy_v3_t named_request;
 static install_status_v1_t status;
 static void say(const char *s) {(void)tool_write("install",s,tool_length(s));}
 static void clear_screen(void) {say("\033[2J\033[H");}
@@ -294,7 +294,7 @@ int install_main(int argc,char **argv) {
     (void)argc;(void)argv;
     terminal_attrs_t saved,attrs;bool changed=false;int result=1;int32_t fd=-1;char choice[129]={0};
     request=(install_deploy_v1_t){.size=sizeof(request),.version=1,.fd=-1,.flags=INSTALL_DRY_RUN};
-    named_request=(install_deploy_v2_t){0};
+    named_request=(install_deploy_v3_t){0};
     status=(install_status_v1_t){0};uint32_t index=0,count=0,layout=0;bool selected=false;go_back=false;
 #ifdef INSTALLER_PREVIEW
     say("FortressOS installer interface PREVIEW\nInstallation is disabled in this image.\nSynthetic target only; use example passphrases.\n\n");
@@ -371,6 +371,20 @@ disk_step:;
 account_step:;
     screen(3,"Create your account");navigation();
     for (;;) {
+        say("Computer name [");say(named_request.hostname[0] ? named_request.hostname : "fortress");say("]: ");
+        if (!line(choice,false)) {if (go_back) goto disk_step;goto done;}
+        if (!choice[0]) {
+            if (!named_request.hostname[0]) {const char *name="fortress";for (unsigned i=0;name[i];i++) named_request.hostname[i]=name[i];}
+            break;
+        }
+        if (tool_length(choice)<64 && install_hostname_valid(choice)) {
+            db_wipe(named_request.hostname,sizeof(named_request.hostname));
+            for (unsigned i=0;choice[i];i++) named_request.hostname[i]=choice[i];
+            break;
+        }
+        say("Use 1-63 letters, digits or hyphens. Start and end with a letter or digit.\n");
+    }
+    for (;;) {
         if (named_request.username[0]) {say("Current username: ");say(named_request.username);say(" (Enter keeps it)\n");}
         say("Choose username: ");if (!line(choice,false)) {if (go_back) goto disk_step;goto done;}
         if (!choice[0] && named_request.username[0]) break;
@@ -403,8 +417,8 @@ recovery_step:;
     if (tool_syscall(SYS_INSTALLSEED,(uintptr_t)request.disk_guid,80,0)) goto done;
     for (unsigned i=0;i<4;i++) {uint8_t *g=i ? request.partition_guid[i-1] : request.disk_guid;g[7]=(g[7]&15)|64;g[8]=(g[8]&63)|128;}
     screen(5,"Confirm installation");navigation();say("Disk ");number(index+1);say(": ");disk_label(&identity);
-    say("\nUsername: ");say(named_request.username);say("\nRemember/store the separate recovery password; losing it prevents authenticated recovery.");
-    say("\n\n");contents_warning(&identity);say("\nFortressOS uses a 64 MiB boot partition and a 256 MiB root partition.\nThe remaining space will be unallocated.\n\n");
+    say("\nUsername: ");say(named_request.username);say("\nComputer name: ");say(named_request.hostname);say("\nRemember/store the separate recovery password; losing it prevents authenticated recovery.");
+    say("\n\n");contents_warning(&identity);say("\nFortressOS uses a 64 MiB boot partition.\nThe root filesystem uses the remaining disk space.\n\n");
     for (;;) {
         say("Installing will erase this disk.\nType ");number(index+1);say(" to confirm, or NO to cancel: ");
         if (!line(choice,false)) {if (go_back) goto recovery_step;goto done;}
@@ -420,7 +434,7 @@ recovery_step:;
     long acquired=control(INSTALL_ACQUIRE,&target,sizeof(target),&fd,sizeof(fd));
     if (acquired) {failure_screen(5,"The selected disk could not be opened safely.",acquired,1,0,false);goto done;}
     request.fd=fd;request.flags=0;
-    request.size=sizeof(named_request);request.version=2;named_request.base=request;
+    request.size=sizeof(named_request);request.version=3;named_request.base=request;
     screen(5,"Installing FortressOS");say("Installing; keep power and installer media connected.\n\n");
     long deployed=control(INSTALL_DEPLOY,&named_request,sizeof(named_request),&status,sizeof(status));
     if (deployed || !status.complete || status.error) {

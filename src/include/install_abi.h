@@ -83,6 +83,18 @@ typedef struct {
     char username[32];
 } install_deploy_v2_t;
 _Static_assert(sizeof(install_deploy_v2_t)==288,"installer deployment v2");
+/* Version 3 preserves v2 and adds a bounded DNS-label computer name. */
+typedef struct { install_deploy_v1_t base; char username[32],hostname[64]; } install_deploy_v3_t;
+_Static_assert(sizeof(install_deploy_v3_t)==352,"installer deployment v3");
+static inline bool install_hostname_valid(const char *name) {
+    if (!name) return false;
+    unsigned n=0;
+    for (;n<64 && name[n];n++) {
+        char c=name[n];
+        if (!((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || (c=='-' && n))) return false;
+    }
+    return n && n<64 && name[n-1]!='-';
+}
 static inline bool install_username_valid(const char name[32]) {
     unsigned n=0;
     for (;n<32 && name[n];n++) {

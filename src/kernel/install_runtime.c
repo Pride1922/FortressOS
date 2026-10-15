@@ -17,10 +17,11 @@ typedef struct {
     uint8_t *esp,*archive;
     size_t archive_size;
     install_plan_t plan;
+    install_expand_work_t expand;
     install_payload_work_t copy;
     install_fat_work_t fat;
     uint8_t manifest[256];
-    char recovery[512],root_record[512],config[4096],shadow[256],passwd[256],group[256],username[32];
+    char recovery[512],root_record[512],config[4096],shadow[256],passwd[256],group[256],username[32],hostname[65];
     size_t recovery_size,root_size;
     root_recovery_t binding;
     block_dev_t partition;
@@ -80,11 +81,11 @@ static bool part_write(block_dev_t *d,uint64_t l,const void *p) {
 }
 static bool part_flush(block_dev_t *d) {return !raw_flush(d->priv);}
 
-static int root_file_at(ext4_mount_t *fs,const char *directory,const char *name,const char *bytes,size_t size,bool existing) {
+static int root_file_at(ext4_mount_t *fs,const char *directory,const char *name,const char *bytes,size_t size,bool existing,uint32_t mode) {
     creds_t actor;creds_init_root(&actor);int r;
     vfs_node_t *parent=vfs_lookup_at_creds(ext4_prepared_root(fs),directory,&actor,&r);
     if (!parent) return r;
-    vfs_create_attrs_t attrs={.mode=0644};
+    vfs_create_attrs_t attrs={.mode=mode};
     vfs_node_t *node=existing ? vfs_lookup_at_creds(parent,name,&actor,&r) : parent->create_attrs_ref ? parent->create_attrs_ref(parent,name,VFS_FILE,&attrs,&r) : NULL;
     vfs_node_put(parent);if (!node) return r ? r : -VFS_EOPNOTSUPP;
     uint64_t offset=0;int64_t n=node->write ? node->write(node,&offset,false,bytes,size) : -VFS_EOPNOTSUPP;
@@ -92,7 +93,7 @@ static int root_file_at(ext4_mount_t *fs,const char *directory,const char *name,
     /* Read authoritative bytes and metadata before releasing the reference. */
     vfs_metadata_t meta;char verify[512];
     if (!r) r=vfs_metadata(node,&meta);
-    if (!r && (meta.size!=size || meta.uid || meta.gid || (meta.mode&07777)!=0644)) r=-VFS_EINVAL;
+    if (!r && (meta.size!=size || meta.uid || meta.gid || (meta.mode&07777)!=mode)) r=-VFS_EINVAL;
     for (size_t at=0;!r && at<size;at+=sizeof(verify)) {
         size_t n=size-at;if (n>sizeof(verify)) n=sizeof(verify);
         if (!node->read || node->read(node,at,verify,n)!=(int64_t)n || memcmp(verify,bytes+at,n)) r=-VFS_EIO;
@@ -100,14 +101,14 @@ static int root_file_at(ext4_mount_t *fs,const char *directory,const char *name,
     vfs_node_put(node);return r;
 }
 static int root_file(ext4_mount_t *fs,const char *name,const char *bytes,size_t size) {
-    return root_file_at(fs,"/etc",name,bytes,size,false);
+    return root_file_at(fs,"/etc",name,bytes,size,false,0644);
 }
 static int write_install_log(runtime_t *w,ext4_mount_t *fs,bool existing) {
     size_t n;const char *bytes=install_log_snapshot(&n);
     if (n>sizeof(w->log_copy)) return -VFS_EINVAL;
     memset(w->log_copy,' ',sizeof(w->log_copy));memcpy(w->log_copy,bytes,n);
     w->log_copy[sizeof(w->log_copy)-1]='\n';
-    return root_file_at(fs,"/var/log","fortress-install.log",w->log_copy,sizeof(w->log_copy),existing);
+    return root_file_at(fs,"/var/log","fortress-install.log",w->log_copy,sizeof(w->log_copy),existing,0600);
 }
 /* Optional logging errors are warnings, but filesystem freeze/discard must still
  * succeed: ignoring a tainted write would falsely report a healthy installation. */
@@ -119,7 +120,11 @@ static int finish_install_log(runtime_t *w) {
 }
 static int provision(void *ctx) {
     runtime_t *w=ctx;ext4_mount_t *fs=NULL;
-    w->partition=(block_dev_t){.sector_size=512,.sector_count=INSTALL_ROOT_BYTES/512,
+    if (w->plan.root_sectors) {
+        install_target_t target={.context=w,.sectors=w->identity.sector_count,.sector_size=512,.read=raw_read,.write=raw_write,.flush=raw_flush};
+        int expanded=install_root_expand(&target,w->plan.root_sectors,&w->expand);if (expanded) return expanded;
+    }
+    w->partition=(block_dev_t){.sector_size=512,.sector_count=w->plan.root_sectors ? w->plan.root_sectors : INSTALL_ROOT_BYTES/512,
         .read_sector=part_read,.write_sector=part_write,.flush=part_flush,.priv=w};
     int r=ext4_prepare_installer_root(&w->partition,true,&fs,NULL);
     if (r) return r;
@@ -141,17 +146,24 @@ static int provision(void *ctx) {
     const char *bytes[]={w->passwd,w->group,w->shadow};size_t sizes[]={strlen(w->passwd),strlen(w->group),strlen(w->shadow)};
     if (!r) r=accounts_provision_detached(fs,bytes,sizes);
     if (!r) r=root_file(fs,"fortress-install.v1",w->root_record,w->root_size);
-    /* Template has no hostname file; create a durable explicit machine default. */
-    if (!r) r=root_file(fs,"hostname","fortress\n",9);
+    if (!r) r=root_file(fs,"hostname",w->hostname,strlen(w->hostname));
     if (!r && write_install_log(w,fs,false)) w->log_warnings|=INSTALL_STATUS_ROOT_LOG_WARNING;
     int frozen=ext4_freeze_and_sync(fs);if (!r) r=frozen;
     int discarded=ext4_discard_prepared_root(fs);if (!r) r=discarded;
     return r;
 }
 static int personalize(runtime_t *w,const install_deploy_v1_t *req) {
-    const char *username=req->version==2 ? ((const install_deploy_v2_t *)req)->username : "operator";
+    const char *username=req->version>=2 ? ((const install_deploy_v2_t *)req)->username : "operator";
     if (!install_username_valid(username)) return -VFS_EINVAL;
     memcpy(w->username,username,strlen(username)+1);
+    const char *hostname=req->version==3 ? ((const install_deploy_v3_t *)req)->hostname : "fortress";
+    if (!install_hostname_valid(hostname)) return -VFS_EINVAL;
+    size_t hn=strlen(hostname);memcpy(w->hostname,hostname,hn);w->hostname[hn]='\n';w->hostname[hn+1]=0;
+    if (req->version==3) {
+        if (w->identity.sector_count<INSTALL_MIN_SECTORS) return -VFS_EINVAL;
+        w->plan.root_sectors=w->identity.sector_count-INSTALL_ROOT_LBA-33;
+        if (w->plan.root_sectors/8>INSTALL_ROOT_MAX_BLOCKS) return -VFS_EFBIG;
+    }
     size_t at=0;
     if (!add(w->passwd,sizeof(w->passwd),&at,"root:x:0:0::/root:/bin/shell\n") ||
         !add(w->passwd,sizeof(w->passwd),&at,username) || !add(w->passwd,sizeof(w->passwd),&at,":x:1000:1000::/home/") ||

@@ -105,6 +105,15 @@ int main(void) {
     assert(install_control(INSTALL_DEPLOY,(uintptr_t)&deploy2,288,(uintptr_t)&deploy_status,32,&root)==SYSCALL_EINVAL);
     memcpy(deploy2.username,"fabio",6);
     assert(install_control(INSTALL_DEPLOY,(uintptr_t)&deploy2,288,(uintptr_t)&deploy_status,32,&root)==SYSCALL_EOPNOTSUPP);
+    install_deploy_v3_t deploy3={.base={.size=352,.version=3,.fd=-1,.flags=INSTALL_DRY_RUN},.username="fabio",.hostname="dell-5590"};
+    assert(install_control(INSTALL_DEPLOY,(uintptr_t)&deploy3,352,(uintptr_t)&deploy_status,32,&root)==SYSCALL_EOPNOTSUPP);
+    const char *bad_hosts[]={"","-bad","bad-","bad/name","bad name","bad\033host"};
+    for (unsigned i=0;i<sizeof(bad_hosts)/sizeof(bad_hosts[0]);i++) {
+        memset(deploy3.hostname,0,64);memcpy(deploy3.hostname,bad_hosts[i],strlen(bad_hosts[i])+1);
+        assert(install_control(INSTALL_DEPLOY,(uintptr_t)&deploy3,352,(uintptr_t)&deploy_status,32,&root)==SYSCALL_EINVAL);
+    }
+    memset(deploy3.hostname,'a',64);
+    assert(install_control(INSTALL_DEPLOY,(uintptr_t)&deploy3,352,(uintptr_t)&deploy_status,32,&root)==SYSCALL_EINVAL);
     creds_t user={.euid=1000};
     assert(install_control(INSTALL_ENUM,(uintptr_t)&index,4,(uintptr_t)&out,sizeof(out),&user)==SYSCALL_EPERM);
     deny_output=true;assert(install_control(INSTALL_ACQUIRE,(uintptr_t)&target,64,(uintptr_t)&fd,4,&root)==SYSCALL_EFAULT);deny_output=false;

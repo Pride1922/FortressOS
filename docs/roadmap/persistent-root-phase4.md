@@ -679,3 +679,131 @@ Updated image: `bin/fortress-installer-multi.img`, 553648128 bytes (528 MiB),
 audited producer `build/root-phase4/media-emxhicsa`, SHA-256
 `59ac446baaec70bada55b4216138b1a4eca7648c04717f70c0f63158e36a9149`.
 All agent tests use disposable regular files; physical acceptance is pending.
+
+## 2026-10-13 - Computer name, full-size root and shell identity
+
+The account screen now asks for a validated 1-63-character computer name with
+`fortress` as the default, retains it during navigation, repeats it at final
+confirmation and provisions `/etc/hostname` durably. Deployment ABI v3 adds this
+field without removing v1/v2 compatibility. The shell resolves the effective UID
+through passwd and reads the validated hostname for `username@hostname:path$ `;
+root uses `#`. Directory changes update the prompt; narrow screens retain the
+identity and the tail of a long path. No USER environment spoofing is used.
+
+New v3 installations use a root partition through the final usable GPT sector
+and expand the filesystem into it, rather than leaving a 256 MiB filesystem in
+a larger partition. Expansion preserves the verified seed data, initializes new
+bitmaps/inode tables, updates primary and sparse backup descriptors/superblocks,
+checks readback and flushes before account provisioning and readiness. It is an
+exclusive installer operation, not mounted filesystem resize. Root capacity is
+bounded to 1 TiB, 8192 groups and 1048576 inodes; complete journal ownership
+validation uses bounded bulk heap buffers. Existing per-operation and directory
+limits remain. Alignment and an exceptionally short final group's metadata
+padding may leave a small tail outside the filesystem. This is not secure erase.
+Boot capacity admission was updated while retaining all root identity and
+filesystem/account/executable checks.
+
+Actual-code host results:
+
+- CLI ASan/UBSan PASS: `build/root-phase4/cli-bdsbd6de`.
+- Control/lease and hostname boundary gates PASS:
+  `build/root-phase4/leases-mqyeclva`.
+- Actual prompt renderer ASan/UBSan PASS, including UID transitions, malformed
+  names, directory changes and narrow/deep paths:
+  `build/root-phase4/prompt-x5ln5mr7`; shared prompt-boundary tests also PASS.
+- Actual expansion ASan/UBSan and independent Linux fsck PASS for partial groups,
+  8 GiB, 256 GiB and 1 TiB sparse regular files:
+  `build/root-phase4/expand-t2jv23xj`.
+- Actual runtime/EXT4/JBD2/account provisioning plus independent Linux fsck,
+  hostname/home/account/log metadata and byte audits PASS at 256 GiB target size:
+  `build/root-phase4/runtime-un_vhaie`. NTFS exports are explicitly marked sparse.
+- Legacy deployment/archive regressions 284/1548 PASS:
+  `build/root-phase4/payload-x2m_9saa`; USB log-slot sanitizer and independent
+  byte-range/FAT audit PASS: `build/root-phase4/logging-5wygyemh`.
+
+Focused KVM BIOS gate PASS in `build/root-phase4/log-guest-4whwrko8`: disk 2
+installation with disk 1 unchanged, full-size GPT/filesystem audit, persistent
+chosen hostname, prompt/path updates, three boots including abrupt-stop replay,
+independent authenticated recovery, both logs, read-only USB warning with successful
+installation, cancellation/backtracking and real NVMe timeout. The matching UEFI
+gate also PASS in `build/root-phase4/log-guest-hm_6d4lk`. The UEFI fixture retains the EHCI boot plus
+source-GUID xHCI logging-clone qualification described above. These focused gates
+do not rerun the complete historic Phase 4 matrix or establish physical acceptance.
+
+Earlier runtime attempts used a mismatched kernel/template pair and correctly
+failed validation. An intermediate guest image installed successfully but was
+rejected by the old fixed-capacity boot guard; those interrupted runs remain
+retained. A large native runtime completed, but its first NTFS export was stopped
+because it was not sparse; the corrected export and full audit passed above.
+
+Updated image: `bin/fortress-installer-multi.img`, 553648128 bytes (528 MiB),
+audited producer `build/root-phase4/media-uuznm6a6`, SHA-256
+`3e7d4b12447c9f2ae13efb34e8f922378b80d2e43a8b8466f4b1aaec6ddf41a5`.
+All agent tests use disposable regular files. Dell acceptance of this revision
+is pending user testing.
+
+### 2026-10-13 - Account prompt order
+
+The account screen now asks for computer name, username, then login password.
+Actual CLI ASan/UBSan checks passed in `build/root-phase4/cli-bpztdj5x`, including prompt-order assertions and retained-step navigation cases. The strict installer-tool build and regular-file media packaging passed; the revised 528 MiB image is published in `bin/fortress-installer-multi.img` from `build/root-phase4/media-a9i_dv80`. SHA-256: `1e5a635d8299b990cfe4acc61f50ea41c20ec7452930b836f5bc23393d880abc`. The earlier BIOS/UEFI runtime gates cover the unchanged storage/runtime implementation; they were not repeated for this prompt-only change.
+
+### 2026-10-13 - USB failure diagnostics saved on the laptop
+
+User Dell/SanDisk/Rufus report: USB log was empty, and the installed log lacked
+an explanation. This report does not establish whether flashing metadata,
+transport initialization, durability admission or a data write caused the failure.
+
+Fixed boot rejection reasons and the first USB I/O failure now enter the bounded
+RAM session record before returning. Installed-root logging copies that record,
+including USB configuration/transport/durability/GPT/FAT rejection, write, flush,
+read-back and byte-mismatch messages. Data I/O failures include their sector.
+No write authority, metadata mutation, retry or driver policy changed. Boolean
+block callbacks cannot provide a fabricated SCSI sense code. Runtime installation
+failures also include a readable stage description with signed error values;
+the obsolete fixed-256-MiB root description was removed from the log.
+
+Actual logger ASan/UBSan and independent FAT/range audits passed in
+`build/root-phase4/logging-aq3kzdde`, including write/flush/read/mismatch and
+metadata rejection diagnostics, secret exclusion and no I/O retry after failure.
+Strict MULTI build and payload/media audits passed; latest 528 MiB image producer:
+`build/root-phase4/media-aqu900km`, SHA-256
+`fd1cf66dfdf03d8f0c6a67e91849590748693e033aa7c64ad9ab31ca37d0fa31`.
+
+KVM BIOS actual install, three reboots and authenticated recovery passed before
+the failed-USB fixture in `build/root-phase4/log-guest-qvkmbays`. The latter
+installed successfully with an empty USB log, and its laptop log contains:
+`USB log unavailable: writing the log data failed; sector=1052833`.
+The independent retained-log audit `usb-failure-log-audit.json` passes, including
+4096-byte size, completion and secret absence. The full runner's manifest remains
+FAIL: its test expected early read-only rejection but QEMU instead admitted the
+transport and rejected the data write. That overly narrow assertion was corrected;
+cancel/timeout cases were not reached or claimed rerun. An earlier default-TCG
+attempt in `log-guest-rdwlhktj` was interrupted and retained before installation
+completed; it is not acceptance evidence. Physical USB failure cause remains
+unidentified pending the revised image's diagnostic output on the Dell.
+
+### 2026-10-13 - Root-only installed /var
+
+User approved making all installed `/var` content private to root. New templates
+set root:root 0700 directories and 0600 files beneath `/var`; the installer log
+uses 0600 on creation and final refresh. Boot validation accepts the new private
+mode while retaining legacy root-owned 0755 admission, so existing installations
+are not broken or silently migrated. Normal files outside `/var` keep their modes.
+
+Strict MULTI build and payload/media audits passed with
+`templates-77p53hi7` / `media-j2a27xfq`. Published 528 MiB image SHA-256:
+`6032f400a2031291c6a8588990b0d5fc83ba063a021a7c7d59fed4085bf40ef2`.
+Actual runtime/VFS/EXT4 sanitizer checks and independent Linux filesystem/mode
+audits passed in `runtime-_tm8kk9v`: after both log writes and remount, root read
+succeeds, ordinary read/write and traversal fail, and public `/etc/hostname`
+remains readable. A preliminary host-test compile used incorrect credential
+field names (`ruid`/`rgid`); corrected to the public API's `uid`/`gid` before
+passing. The failed compile is retained in `runtime-ga_iv_yk`.
+
+`python3 scripts/test_installer_var.py --disk build/root-phase4/runtime-_tm8kk9v/target.img`
+passed BIOS/UEFI, three boots each, including abrupt-stop/replay, sudo log read,
+ordinary /var listing/read/truncate/create/delete rejection, public hostname
+readability and unchanged source-image audit. Evidence: `var-guest-72dc3w43`.
+The earlier interrupted `var-guest-rnavq1ra` exposed test-only capitalization
+expectations (`Permission denied.` versus `permission denied`); the test matcher
+now normalizes case. No physical writes or Dell acceptance are claimed.

@@ -24,9 +24,16 @@ def main():
     out=Path(tempfile.mkdtemp(prefix='log-guest-',dir=gate.ROOT/'build/root-phase4'))
     manifest={'result':'FAIL','media':str(media),'scope':'BIOS xHCI source; UEFI EHCI boot with xHCI source clone; regular-file install/boot/log audits','cases':[]}
     options={'source':'usb','disposable_gate':False,'media_stem':'fortress-installer-multi','username':'fabio',
-             'operator':'eight888','recovery':'recover8','usb_logging':True,'ui_capture':True}
+             'operator':'eight888','recovery':'recover8','usb_logging':True,'ui_capture':True,'hostname':'dell-test'}
     def verify_root_log(boot,password,send,wait,command,prompt,transcript):
-        command('cat /var/log/fortress-install.log','result=installation complete')
+        command('cat /var/log/fortress-install.log','permission denied')
+        command('ls /var','permission denied')
+        start=len(transcript);send('sudo cat /var/log/fortress-install.log')
+        wait(lambda t:t.endswith('sudo password: '),start);send(password)
+        wait(lambda t:'result=installation complete' in t and prompt(t),start)
+        command('hostname','dell-test')
+        command('cd /tmp','fabio@dell-test:/tmp$ ')
+        command('cd /home/fabio','fabio@dell-test:/home/fabio$ ')
         return password
     gate.root_gate.SESSION_HOOK=verify_root_log
     try:
@@ -35,15 +42,17 @@ def main():
             try:
                 for firmware in (('bios','uefi') if args.firmware=='all' else (args.firmware,)):
                     work=native/firmware;work.mkdir()
-                    disk=gate.install(work,media,firmware,384,manifest,**options)
+                    disk=gate.install(work,media,firmware,384,manifest,multi_selection=2,**options)
                     record=extract(work,firmware);assert 'result=installation complete' in record and 'stage=6 Verifying installed files' in record
                     serial=(work/'installer-serial.log').read_text();assert 'USB log could not be saved' not in serial
-                    gate.audit(disk,work,media/'iso/boot/fortress.elf','eight888','recover8',manifest,username='fabio')
+                    gate.audit(disk,work,media/'iso/boot/fortress.elf','eight888','recover8',manifest,username='fabio',hostname='dell-test',whole_disk=True)
                     rootlog=work/'root-install.log';gate.fixture.run(['debugfs','-R',f'dump /var/log/fortress-install.log {rootlog}',work/'installed-root.img'],work/'log-audit.txt')
                     assert 'result=installation complete' in rootlog.read_text() and '$5$' not in rootlog.read_text()
-                    gate.root_gate.guest(work,disk,firmware,1,0,'eight888','recover8',manifest,accel=gate.ACCEL,username='fabio')
-                    gate.root_gate.guest(work,disk,firmware,1,1,'eight888','recover8',manifest,accel=gate.ACCEL,username='fabio')
-                    gate.root_gate.guest(work,disk,firmware,1,2,'eight888','recover8',manifest,accel=gate.ACCEL,username='fabio')
+                    other=work/'excluded.img';other_hash=gate.fixture.digest(other)
+                    for boot in (0,1,2):
+                        gate.root_gate.guest(work,disk,firmware,1,boot,'eight888','recover8',manifest,accel=gate.ACCEL,username='fabio',extra=other,extra_first=True)
+                    assert gate.fixture.digest(other)==other_hash
+                    manifest['cases'].append({'second_nvme_install_and_boot':firmware,'unselected_unchanged':True,'result':'PASS'})
                     rejected=work/'missing-root.img';shutil.copyfile(disk,rejected)
                     gate.root_gate.corrupt(rejected,'missing',work,lambda cmd:gate.fixture.run(cmd,work/'recovery-fixture.log'))
                     recovery_hash=gate.fixture.digest(rejected)
@@ -51,8 +60,18 @@ def main():
                     assert gate.fixture.digest(rejected)==recovery_hash
                     readonly=native/(firmware+'-readonly');readonly.mkdir()
                     ro_options={**options,'usb_logging':False}
-                    gate.install(readonly,media,firmware,384,manifest,**ro_options)
+                    readonly_disk=gate.install(readonly,media,firmware,384,manifest,**ro_options)
                     assert 'USB log could not be saved' in (readonly/'installer-serial.log').read_text()
+                    readonly_root=readonly/'installed-root.img'
+                    gate.root_gate.extract_root(readonly_disk,readonly_root)
+                    readonly_log=readonly/'root-install.log'
+                    gate.fixture.run(['debugfs','-R',f'dump /var/log/fortress-install.log {readonly_log}',readonly_root],readonly/'log-audit.txt')
+                    diagnostic=readonly_log.read_text()
+                    assert 'USB log unavailable:' in diagnostic and 'installation complete' in diagnostic
+                    assert any(reason in diagnostic for reason in (
+                        'read-only','no initialized USB','writing the log data failed; sector='))
+                    assert '$5$' not in diagnostic and 'eight888' not in diagnostic and 'recover8' not in diagnostic
+                    manifest['cases'].append({'laptop_saved_usb_failure':firmware,'result':'PASS'})
                     for case in ('cancel','timeout'):
                         negative=native/(firmware+'-'+case);negative.mkdir()
                         gate.install(negative,media,firmware,384,manifest,confirmation_cancel=case=='cancel',reject='timeout' if case=='timeout' else None,**options)

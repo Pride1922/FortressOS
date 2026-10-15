@@ -12,6 +12,7 @@ import selectors
 import shutil
 import socket
 import stat
+import struct
 import subprocess
 import tempfile
 import time
@@ -29,7 +30,9 @@ assert ACCEL in ('tcg','kvm')
 def immutable_digest(disk):
     digest=hashlib.sha256()
     with disk.open('rb') as stream:
-        for start,length in ((0,135168*512),(659456*512,disk.stat().st_size-659456*512)):
+        stream.seek(2*512+128+40);root_end=struct.unpack('<Q',stream.read(8))[0]+1
+        assert 659456<=root_end<=disk.stat().st_size//512-33
+        for start,length in ((0,135168*512),(root_end*512,disk.stat().st_size-root_end*512)):
             stream.seek(start)
             while length:
                 data=stream.read(min(1024**2,length));assert data;digest.update(data);length-=len(data)
@@ -46,7 +49,7 @@ def usb_log_immutable(disk):
     return h.hexdigest()
 
 
-def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=None,source='iso',seed=None,operator=OPERATOR,recovery=RECOVERY,media_stem='fortress-installer',serial='INSTALLPHASE4',disposable_gate=True,username="operator",ui_capture=False,multi_selection=0,source_clone=False,cancel_only=False,confirmation_cancel=False,password_guidance=False,usb_logging=False):
+def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=None,source='iso',seed=None,operator=OPERATOR,recovery=RECOVERY,media_stem='fortress-installer',serial='INSTALLPHASE4',disposable_gate=True,username="operator",ui_capture=False,multi_selection=0,source_clone=False,cancel_only=False,confirmation_cancel=False,password_guidance=False,usb_logging=False,hostname="fortress"):
     disk=out/'target.img'
     with disk.open('xb') as stream:stream.truncate(capacity*1024**2)
     if seed:shutil.copyfile(seed,disk)
@@ -119,13 +122,18 @@ def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=No
         proc=subprocess.Popen(argv,cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err)
         selector=selectors.DefaultSelector();selector.register(proc.stdout,selectors.EVENT_READ)
         def text():return re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]','',transcript.decode(errors='replace')).replace('\r','')
+        hostname_seen=0
         def wait(marker,start=0,timeout=600):
+            nonlocal hostname_seen
             deadline=time.monotonic()+timeout
             while time.monotonic()<deadline:
                 for key,_ in selector.select(.1):
                     data=key.fileobj.read1(65536)
                     if data:transcript.extend(data)
                 (out/'installer-serial.log').write_bytes(transcript)
+                host_prompt=text().rfind('Computer name [')
+                if host_prompt>=hostname_seen and ']: ' in text()[host_prompt:]:
+                    hostname_seen=len(text());send(hostname)
                 assert not any(s in text() for s in ('KERNEL PANIC','[PROCESS FAULT]','[FATAL]')),text()[-6000:]
                 if reject is None:assert 'No admitted ' not in text() and 'Installation failed.' not in text(),text()[-6000:]
                 assert 'Payload validation failed' not in text() and (reject=='timeout' or 'Installation failed at stage' not in text()),text()[-6000:]

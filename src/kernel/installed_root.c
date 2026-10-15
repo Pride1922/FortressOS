@@ -95,7 +95,10 @@ static bool validate_tree(ext4_mount_t *mount) {
     for (unsigned i=0;i<sizeof(dirs)/sizeof(dirs[0]);i++) {
         vfs_node_t *n=vfs_lookup_at_creds(root,dirs[i],&actor,&error);vfs_metadata_t m;
         bool ok=n && !vfs_metadata(n,&m) && m.type==VFS_DIRECTORY && !m.uid && !m.gid &&
-            (m.mode & 07777)==(i==5 ? 0700u : i==9 ? 01777u : 0755u);
+            /* Keep earlier installed roots bootable; new installer roots make
+             * /var private. Both forms remain root-owned and non-user-writable. */
+            (i==4 ? ((m.mode & 07777)==0700u || (m.mode & 07777)==0755u) :
+             (m.mode & 07777)==(i==5 ? 0700u : i==9 ? 01777u : 0755u));
         vfs_node_put(n);if (!ok) return false;
     }
     size_t len;
@@ -183,7 +186,9 @@ bool installed_root_boot(const boot_info_t *info) {
     reason="missing or duplicate root PARTUUID";
     if (matches!=1 || !selected) return false;
     reason="unsupported installed root capacity";
-    if (selected->sector_count!=524288) return false;
+    /* Fixed legacy roots and new whole-disk installations share the same
+     * PARTUUID/readiness/filesystem admission. Keep explicit geometry bounds. */
+    if (selected->sector_count<524288 || selected->sector_count>2147483655ULL) return false;
     reason="filesystem identity mismatch";uint8_t sb[512];gpt_guid_t uuid;
     if (!gpt_str_to_guid(recovery.filesystem_uuid,&uuid) || !block_read_sector(selected,2,sb)) return false;
     uint8_t canonical[16];memcpy(canonical,uuid.bytes,16);

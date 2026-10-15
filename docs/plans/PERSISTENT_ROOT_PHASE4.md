@@ -294,3 +294,46 @@ New source-write gates compare every byte outside the fixed 4096-byte USB file,
 plus independent FAT extraction/fsck and installed EXT4 log/fsck/boot audits.
 All automated fixtures remain disposable regular files. No physical-write or
 physical USB-log acceptance is inferred from these gates.
+
+## 2026-10-13 - Computer name and whole-disk root
+
+Deployment ABI v3 preserves v1/v2 and adds the bounded computer name. The
+kernel validates both username and hostname before deployment; provisioning
+writes `/etc/hostname` with root-owned 0644 metadata and exact readback. The
+installer retries invalid input and preserves the name across backtracking.
+The effective UID, account file and validated hostname determine the shell
+prompt; mutable USER variables cannot impersonate another account in it.
+
+V3 extends the root GPT entry to the disk's last usable sector. Fixed seed
+payload lengths remain 64 MiB/256 MiB/1 MiB/440 bytes. The new audited root seed
+uses 4 KiB blocks, 32768 blocks and 128 inodes per group, with metadata beyond
+63 initially free descriptor-growth blocks. Host production temporarily uses
+resize_inode to place that metadata, then removes the feature and repairs/
+checks the seed before hashing it; production does not support resize_inode.
+
+An exclusive installer-only expansion callback runs before detached provisioning
+and before readiness publication. It validates the seed geometry, checksums and
+growth padding, initializes group bitmaps/inode tables and all sparse backup
+superblocks/descriptors, seals checksums and flushes/readbacks without retry.
+Failure remains an incomplete installation with invalid readiness. This grants
+no mounted resize or general formatter API. V1/v2 fixed-root fixtures remain
+compatible. Geometry is bounded to 1 TiB, 8192 groups and 1048576 inodes; orphan
+ownership auditing retains complete validation with bounded bulk heap buffers,
+and fails on allocation exhaustion. Per-file/transaction/directory limits remain.
+Installed boot accepts bounded variable capacity while retaining PARTUUID,
+coherent GPT, readiness, filesystem UUID, account and executable checks.
+
+### Installed /var privacy policy (2026-10-13)
+
+At the user's explicit request, new installer templates set `/var` and all
+included directories beneath it to root:root 0700, and included files to
+root:root 0600. The installed log is created and refreshed as 0600, verified
+with root ownership during both writes. Parent traversal/search prevents
+ordinary users from accessing anything beneath `/var`; public paths outside
+it retain their existing permissions. This is an installed-system policy;
+FAT USB logs have no Unix ownership enforcement.
+
+Boot admission accepts root-owned 0700 `/var` as well as legacy root-owned
+0755, retaining boot compatibility for previously installed roots. It does
+not silently rewrite an existing installation. Applying the policy there
+requires an explicit chmod of `/var`, `/var/log` and the installer log.

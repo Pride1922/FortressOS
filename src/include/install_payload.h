@@ -49,6 +49,9 @@ typedef struct {
      * Slot is relative to ESP, sector-aligned, exact 512-byte file. Adapter must
      * validate its FAT chain, entry, both FATs and slot location before admission. */
     uint64_t readiness_lba;
+    /* Zero preserves legacy fixed-root fixtures. Otherwise partition sectors;
+     * filesystem expansion is owned by the exclusive provisioning callback. */
+    uint64_t root_sectors;
     uint8_t readiness[512];
 } install_plan_t;
 typedef struct {
@@ -62,6 +65,12 @@ typedef struct {
 typedef struct {
     uint8_t data[4096],verify[4096],first[512],mbr[512];
 } install_payload_work_t;
+/* Installer-only expansion of the audited 4 KiB/32768-block/128-inode seed.
+ * Caller retains exclusive target ownership and invalid readiness throughout.
+ * No general mounted resize, journal or rollback authority. */
+#define INSTALL_ROOT_MAX_BLOCKS 268435456u
+typedef struct { uint8_t descriptors[262144],super[1024],block[4096],verify[4096]; } install_expand_work_t;
+int install_root_expand(const install_target_t *,uint64_t root_sectors,install_expand_work_t *);
 /* Manifest wire format (256 bytes): FOSPAY01 at 0, LE version=1 at 8,
  * LE size=256 at 12; four LE u64 role lengths at 16; role SHA256s at 48;
  * zero reserved [176,224); SHA256 of [0,224) at 224. Exact fixed lengths

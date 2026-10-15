@@ -69,7 +69,8 @@ def session(boot,operator,send,wait,command,prompt,transcript):
         interactive('sudo useradd phase3user 1100',[('sudo password: ',operator),('New password (12..128 characters): ',USER),('Confirm new password: ',USER)],'Account created')
         interactive('sudo hostname phase3-machine',[('sudo password: ',operator)],'')
         interactive('sudo shell',[('sudo password: ',operator)],'')
-        command('echo address=10.0.2.15/24 > /etc/network.conf','')
+        command('mkdir /etc/network','')
+        command('echo address=10.0.2.15/24 > /etc/network/network.conf','')
         command('echo nameserver 10.0.2.3 > /etc/resolv.conf','')
         command('exit','')
         command('ifup --dry-run','valid (dry-run)')
@@ -92,7 +93,7 @@ def audit(out,label,root):
     def dump(path,name):
         target=out/(label+'-'+name);gate.fixture.run(['debugfs','-R',f'dump {path} {target}',str(root)],log);return target.read_bytes()
     assert dump('/etc/hostname','hostname')==b'phase3-machine\n'
-    assert dump('/etc/network.conf','network.conf')==b'address=10.0.2.15/24\n'
+    assert dump('/etc/network/network.conf','network.conf')==b'address=10.0.2.15/24\n'
     assert dump('/etc/resolv.conf','resolv.conf')==b'nameserver 10.0.2.3\n'
     assert b'phase3user:x:1100:1100::/home/phase3user:/bin/shell\n' in dump('/etc/passwd','passwd')
     shadow=dump('/etc/shadow','shadow');assert shadow.startswith(b'root:!:::::::\n') and b'phase3user:$5$rounds=100000$' in shadow
