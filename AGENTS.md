@@ -30,7 +30,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
-| NET | COMPLETE through runtime network configuration (NET-3) — NET-2 7/7 complete; driver link recovery (cold cable waiting, autonomous PHY renegotiation, retained-ring link flaps) 8/8 QEMU PASS and 6/6 Dell 5590 physical PASS; NET-3 runtime network configuration (/sbin/ifconfig, /sbin/ifup, /mnt/.fortress/network.conf, DNS resolver fallback) host ASan/UBSan PASS, BIOS/UEFI QEMU 10/10 PASS, and Dell 5590 physical acceptance user-confirmed PASS; TCP matrix 10/10 PASS; Dell 5590 physical TCP A–D accepted. Step 7 DNS/nslookup/hostname nc and approved opt-in TCP deadlines PASS; Dell 5590 physical DNS user-confirmed PASS. nc listener skips tty stdin. SHA-256 boot-secret ISNs, no quiet period; hardware entropy assurance is conditional. UDP user-reported PASS on 5590; capture audit pending; physical ICMP accepted; 5530 8086:1A1E driver user-reported PASS | [docs/subsystems/net.md](docs/subsystems/net.md) |
+| NET | COMPLETE through runtime network configuration (NET-3) and DHCP Client v1 (/sbin/dhcpc, /bin/dhcp-probe) — NET-2 7/7 complete; driver link recovery (cold cable waiting, autonomous PHY renegotiation, retained-ring link flaps) 8/8 QEMU PASS and 6/6 Dell 5590 physical PASS; NET-3 runtime network configuration (/sbin/ifconfig, /sbin/ifup, /mnt/.fortress/network.conf, DNS resolver fallback) host ASan/UBSan PASS, BIOS/UEFI QEMU 10/10 PASS, and Dell 5590 physical acceptance user-confirmed PASS; DHCP client v1 (/sbin/dhcpc, /bin/dhcp-probe, kernel IPv4 broadcast RX/TX) host ASan/UBSan PASS, BIOS/UEFI QEMU PASS, and Dell 5590 physical acceptance user-confirmed PASS; DHCP v2 (lease renewal daemon, T1/T2 timers, SYS_NANOSLEEP) deferred to Time subsystem; TCP matrix 10/10 PASS; Dell 5590 physical TCP A–D accepted. Step 7 DNS/nslookup/hostname nc and approved opt-in TCP deadlines PASS; Dell 5590 physical DNS user-confirmed PASS. nc listener skips tty stdin. SHA-256 boot-secret ISNs, no quiet period; hardware entropy assurance is conditional. UDP user-reported PASS on 5590; capture audit pending; physical ICMP accepted; 5530 8086:1A1E driver user-reported PASS | [docs/subsystems/net.md](docs/subsystems/net.md) |
 | Shell S0–S9 | COMPLETE | [docs/subsystems/shell.md](docs/subsystems/shell.md) |
 | SMP | COMPLETE (2026-09-25) | [docs/subsystems/smp.md](docs/subsystems/smp.md) |
 | USB (9G) | COMPLETE through 9G.5b | [docs/subsystems/usb.md](docs/subsystems/usb.md) |
@@ -41,7 +41,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 | VFS node lifetime | COMPLETE | [docs/subsystems/storage.md](docs/subsystems/storage.md) |
 | Installer (Phases 0–4) | COMPLETE through Phase 4 (disposable acceptance) | [docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md](docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md) |
 
-Next open items not blocking any current milestone: Network SMP handoff (started), system introspection syscalls + `sysinfo`/`top`/`ps`, shell improvements, MicroPython.
+Next open items not blocking any current milestone: Network SMP handoff (started), system introspection syscalls + `sysinfo`/`top`/`ps`, shell improvements, MicroPython, Time subsystem & DHCP v2.
 
 Network SMP Phase 2B is COMPLETE: UDP create/bind/send/receive and DNS route
 through the CPU-0 owner from any CPU (BSP and AP), with retained file references,
@@ -85,6 +85,9 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 | `make test-free-host` / `make test-free` | Ring 3 `/bin/free` human memory summary tool via `SYS_SYSINFO` (syscall 37): host ASan/UBSan unit tests (100% PASS) covering scaling (`-b`, `-k`, `-m`, `-g`, `-h`/default), rounding, help, invalid flags, error handling, and 16 GiB / 256 MiB / 512 KiB boundaries; QEMU integration test verifying login, human output, numeric MiB/KiB modes, pipeline filtering (`free \| grep Mem`), and clean shutdown. PASS 2026-10-14. |
 | `make test-net-trace-host` / `make test-net-trace` | Finite traceroute codec/mailbox/CLI ASan/UBSan at 100/1000 Hz, quoted-wire matching, deadlines/leases/identity exhaustion; BIOS/UEFI × e1000/e1000e socket backend 4/4 PASS, independent capture/injection audit, contention/Ctrl-C/recovery. Disposable ISO/OVMF, no data disks; [evidence](docs/roadmap/net-traceroute.md), Dell acceptance pending. |
 | `make test-checksum-host` / `make test-checksum` | Actual streaming MD5/SHA-256 tools, manifest/failure/descriptor adapters under ASan/UBSan, independent digest boundaries and generated 4 GiB codec streams; BIOS/UEFI Ring 3 file/stdin/pipeline/manifest/status cases, disposable ISO/OVMF, no data disks. See [checksum evidence](docs/roadmap/download-checksums.md); Dell acceptance pending. |
+| `make test-dhcpc-host` | Host ASan/UBSan unit test suite for BOOTP/DHCP RFC 2131 encoder, decoder, magic cookie, option parser, truncation, and bounds. PASS 2026-10-15. |
+| `make test-dhcp-probe` | Bounded broadcast DHCPDISCOVER probe (`/bin/dhcp-probe`) under BIOS & UEFI QEMU (`-net user`), verifying end-to-end broadcast RX and TX against QEMU DHCP server at `10.0.2.2:67`. PASS 2026-10-15. |
+| `make test-dhcpc` | Full DHCP 4-way handshake client (`/sbin/dhcpc`) under BIOS & UEFI QEMU (`-net user`), verifying `--help`, `--dry-run`, lease acquisition (`10.0.2.15/24`, gateway `10.0.2.2`, DNS `10.0.2.3`), ifconfig, ping, nslookup, persistence file creation, and ifup re-apply. PASS 2026-10-15. |
 | `make test-wget-host` | Wget host ASan/UBSan: URL parser (ports, paths, query, filenames, HTTPS/unsupported rejection, bounds), bounded 8192B header scanner, HTTP status/header parser (200/301/302/404, Content-Length, Location), and redirect resolver. PASS 2026-10-02. |
 | `make test-wget` | `/bin/wget` HTTP client under BIOS/UEFI × e1000 SMP=1: 10/10 PASS 2026-10-02. Verified `--help`, HTTPS rejection diagnostic, plain HTTP file download with exact byte verification (`cat`), custom output `-O /mnt/data.bin` (2048B), quiet stdout stream (`-q -O - \| wc -c`), HTTP 302 redirect following, 404 error handling, and Content-Length framing mismatch detection. |
 | `make test-net-ifconfig-host` | NET-3 host ASan/UBSan: ABI struct layout/offsets, absent device EIO, link state mapping, monotonic 64-bit counters, IFSET validation suite, multi-layer atomic sync, config parser (CRLF, comments, duplicate/unknown keys, bounds, malformed), and `/sbin/ifup` CLI/dry-run/file execution. PASS 2026-10-02. |
@@ -498,3 +501,9 @@ Discuss intentional changes to these contracts before implementation unless the 
 - `ENABLE_*` raw-write gates, disposable fixture separation, hardware storage exclusions and DMA quarantine.
 - Shared kernel PML4 ownership, boot-module backing lifetime, and current single-CPU assumptions.
 - xHCI DMA ring state, BOT completion polling discipline (no sleeps/IRQ-enables under ext2 lock), DMA quarantine on failure, and USB class filtering (only 0x08/0x06/0x50 accepted as BOT mass storage).
+
+## Phase 2C update (2026-10-15, acceptance in progress)
+
+TCP client/stream calls on BSP and AP now use the same retained CPU-0 owner and eight shared 64 KiB payload credits. LISTEN/ACCEPT guards, existing adoption and production spawn pinning remain.
+
+Implementation is not full gate acceptance. [Current audit, evidence and remaining gates](docs/roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

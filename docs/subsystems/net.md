@@ -6,6 +6,18 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-15 DHCP Client v1 and Broadcast Probe: `/sbin/dhcpc` (dynamic IPv4 lease acquisition)
+and `/bin/dhcp-probe` (end-to-end broadcast RX/TX verification) are implemented.
+Kernel IPv4 broadcast reception (`0xFFFFFFFFu`), broadcast routing, and broadcast MAC
+bypass on TX are active. Host ASan/UBSan unit test suites (`make test-dhcpc-host`,
+`make test-net-ipv4-host`, `make test-net-socket-host`) and QEMU integration tests
+(`make test-dhcp-probe`, `make test-dhcpc`) pass 100% across BIOS and UEFI. Bounded
+busy-wait polling via `SYS_SYSINFO`; one-shot client without lease renewal in v1.
+Dell Latitude 5590 physical bare-metal acceptance is user-confirmed PASS.
+DHCP v2 (background lease renewal daemon, RFC 2131 T1/T2 timers, `SYS_NANOSLEEP`, and
+boot-time automatic configuration hooks) is deferred to the Time Subsystem milestone.
+See [DHCP v1 implementation and evidence](../roadmap/dhcp-v1.md).
+
 2026-10-15 Network SMP Phase 2B is COMPLETE: UDP create/bind/send/receive, copied
 payload reservation/commit and final detach use the registered CPU-0 owner from every
 application CPU (BSP and AP). DNS queries (`nslookup`, resolver fallback) route
@@ -250,6 +262,9 @@ gate is separate manual/user-supplied evidence — see
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-dhcpc-host` | Host ASan/UBSan unit test suite for BOOTP/DHCP RFC 2131 encoder, decoder, magic cookie, option parser, truncation, and bounds. PASS 2026-10-15. |
+| `make test-dhcp-probe` | Bounded broadcast DHCPDISCOVER probe (`/bin/dhcp-probe`) under BIOS & UEFI QEMU (`-net user`), verifying end-to-end broadcast RX and TX against QEMU DHCP server at `10.0.2.2:67`. PASS 2026-10-15. |
+| `make test-dhcpc` | Full DHCP 4-way handshake client (`/sbin/dhcpc`) under BIOS & UEFI QEMU (`-net user`), verifying `--help`, `--dry-run`, lease acquisition (`10.0.2.15/24`, gateway `10.0.2.2`, DNS `10.0.2.3`), ifconfig, ping, nslookup, persistence file creation, and ifup re-apply. PASS 2026-10-15. |
 | `make test-wget-host` | Wget host ASan/UBSan: URL parser (ports, paths, query, filenames, HTTPS/unsupported rejection, bounds), bounded 8192B header scanner, HTTP status/header parser (200/301/302/404, Content-Length, Location), and redirect resolver. PASS 2026-10-02. |
 | `make test-wget` | `/bin/wget` HTTP client under BIOS/UEFI × e1000 SMP=1: 10/10 PASS 2026-10-02. Verified `--help`, HTTPS rejection diagnostic, plain HTTP file download with exact byte verification (`cat`), custom output `-O /mnt/data.bin` (2048B), quiet stdout stream (`-q -O - \| wc -c`), HTTP 302 redirect following, 404 error handling, and Content-Length framing mismatch detection. |
 | `make test-net-dns-host` | Actual freestanding DNS codec/resolver under ASan/UBSan, literal golden vectors, malformed bounds/fuzz, syscall adapters at 100/1000 Hz, cleanup, diagnostics and deadline framing. PASS 2026-10-02; no IRQ/scheduler/hardware claim. |
@@ -282,3 +297,10 @@ gate is separate manual/user-supplied evidence — see
 - Phase 4a IPv4/ICMP and Ring 3 ping (automated): [`docs/roadmap/net-phase4a.md`](../roadmap/net-phase4a.md)
 - Phase 4b Physical Dell IPv4/ICMP LAN-peer acceptance (manual): [`docs/roadmap/net-phase4b.md`](../roadmap/net-phase4b.md)
 - Phase 5a UDP sockets and tools (host/QEMU; 5590 UDP user-reported PASS; capture audit pending): [`docs/roadmap/net-phase5a.md`](../roadmap/net-phase5a.md)
+- DHCP Client v1 Implementation & Verification: [`docs/roadmap/dhcp-v1.md`](../roadmap/dhcp-v1.md)
+
+## Phase 2C update (2026-10-15, acceptance in progress)
+
+TCP client/stream calls on BSP and AP now join the retained CPU-0 owner using the shared eight-credit 64 KiB staging pool. LISTEN/ACCEPT guards and adoption remain Phase 2D work; production spawn pinning remains.
+
+Implementation is not full gate acceptance. [Current audit, evidence and remaining gates](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

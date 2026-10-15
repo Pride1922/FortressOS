@@ -94,6 +94,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`free`](#free) | Binary (`/bin/free`) | Introspection | Display free and used memory summary from SYS_SYSINFO |
 | [`ifconfig`](#ifconfig) | Binary (`/sbin/ifconfig`) | Networking | Query network interface status and packet counters |
 | [`ifup`](#ifup) | Binary (`/sbin/ifup`) | Networking | Configure network interface statically or via config file |
+| [`dhcpc`](#dhcpc) | Binary (`/sbin/dhcpc`) | Networking | Acquire dynamic IPv4 lease and configure network interface |
 | [`ping`](#ping) | Binary (`/bin/ping`) | Networking | Send ICMP Echo Request packets to IPv4 host or hostname |
 | [`traceroute`](#traceroute) | Binary (`/bin/traceroute`) | Networking | Finite numeric ICMP trace with TTL-expiry/error reporting |
 | [`tracert`](#traceroute) | Alias (`traceroute`) | Networking | Alias for `traceroute` |
@@ -108,6 +109,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`lockstat`](#lockstat) | Binary (`/sbin/lockstat`) | Diagnostic | Display kernel spinlock contention and hold-time metrics |
 | [`hello`](#hello) | Binary (`/bin/hello`) | Diagnostic | Test ELF binary with argument echoing and `--spin` |
 | [`dual_stream`](#dual_stream) | Binary (`/bin/dual_stream`) | Diagnostic | Diagnostic tool emitting distinct stdout and stderr streams |
+| [`dhcp-probe`](#dhcp-probe) | Binary (`/bin/dhcp-probe`) | Diagnostic | Broadcast DHCPDISCOVER probe verifying end-to-end broadcast RX/TX |
 | [`tcptest`](#tcptest) | Binary (`/bin/tcptest`) | Diagnostic | TCP client test fixture |
 | [`tcpserve`](#tcpserve) | Binary (`/bin/tcpserve`) | Diagnostic | TCP echo server test fixture |
 | [`udptest`](#udptest) | Binary (`/bin/udptest`) | Diagnostic | UDP client and listener test fixture |
@@ -1250,6 +1252,32 @@ ifup /etc/network.conf
 
 ---
 
+### `dhcpc`
+**Syntax:** `dhcpc [--dry-run] [--help]`  
+**Path:** `/sbin/dhcpc`  
+**Description:** Acquires a dynamic IPv4 lease and network configuration from a DHCP server via UDP broadcast and configures `eth0` via `SYS_NETCTL` (`NETCTL_IFSET`).
+* Binds to `0.0.0.0:68` and broadcasts `DHCPDISCOVER` to `255.255.255.255:67`.
+* Collects `DHCPOFFER`, extracts offered client IP (`yiaddr`), subnet mask (Option 1), router/gateway (Option 3), and DNS nameservers (Option 6).
+* Transmits `DHCPREQUEST` and awaits `DHCPACK` confirmation.
+* Applies IP, subnet mask, and default gateway to the kernel network stack via `SYS_NETCTL` (`NETCTL_IFSET`).
+* Durably saves DNS server addresses to `resolv.conf` (via `resolv_conf_path()`) and network configuration to `/etc/network/network.conf` on persistent/installed systems (and `/mnt/.fortress/network.conf` if present).
+* Limitation (v1): One-shot client using bounded busy-wait; no background renewal daemon. The acquired lease lasts until reboot. Requires `sudo` (privileged port 68 and interface configuration). Version 2 (background lease renewal, RFC 2131 T1/T2 timers, and boot-time auto-acquisition) depends on the Time Subsystem and `SYS_NANOSLEEP`.
+
+**Options:**
+* `-n`, `--dry-run`: Perform full DHCP handshake (DISCOVER/OFFER/REQUEST/ACK) and display acquired parameters without modifying network interface or writing files.
+* `-h`, `--help`: Display usage summary and limitations.
+
+**Examples:**
+```sh
+# Dry run: discover lease parameters without configuring
+sudo dhcpc --dry-run
+
+# Acquire lease and configure network interface
+sudo dhcpc
+```
+
+---
+
 ### `ping`
 **Syntax:** `ping <IPv4|hostname> [-c count] [-W timeout]`  
 **Path:** `/bin/ping`  
@@ -1460,6 +1488,12 @@ These standalone binaries in `/bin/` verify kernel invariants, subsystem contrac
 ### `net-udp-probe`
 **Path:** `/bin/net-udp-probe`  
 **Description:** Validates kernel UDP socket ABI invariants, unaligned buffer addressing, and `EAGAIN` non-blocking semantics.
+
+---
+
+### `dhcp-probe`
+**Path:** `/bin/dhcp-probe`  
+**Description:** Verifies kernel broadcast IPv4 receive and transmit paths end-to-end. Binds to `0.0.0.0:68`, broadcasts `DHCPDISCOVER` to `255.255.255.255:67`, polls for up to 5 seconds, prints the responder IP and port on receipt, and exits 0 (or 1 on timeout). Requires `sudo` (privileged port 68).
 
 ---
 

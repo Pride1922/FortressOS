@@ -36,7 +36,7 @@ static bool s_trace_active, s_trace_done, s_trace_waiting;
 static uint64_t s_reply_dropped;
 static uint64_t s_udp_malformed;
 
-static uint32_t mask(void) { return 0xffffffffu << (32-s_cfg.prefix); }
+static uint32_t mask(void) { return s_cfg.prefix ? (0xffffffffu << (32-s_cfg.prefix)) : 0; }
 bool net_ipv4_unicast(uint32_t ip) {
     uint32_t h=ntohl(ip), local=ntohl(s_cfg.local_ip), m=mask();
     if (!(h>>24) || (h>>24)==127 || (h>>24)>=224) return false;
@@ -44,6 +44,10 @@ bool net_ipv4_unicast(uint32_t ip) {
     return true;
 }
 bool net_ipv4_route(uint32_t dest, uint32_t *hop) {
+    if (dest==0xffffffffu) {
+        if (hop) *hop=0xffffffffu;
+        return true;
+    }
     if (!net_ipv4_unicast(dest) || dest==s_cfg.local_ip) return false;
     uint32_t m=mask();
     if ((ntohl(dest)&m)==(ntohl(s_cfg.local_ip)&m)) *hop=dest;
@@ -168,8 +172,9 @@ bool net_ipv4_udp_start(unsigned slot, uint64_t token, uint32_t dest,
     pending_t *p=&s_pending[2+slot];
     if (p->active || !net_ipv4_route(dest,&p->next_hop)) return false;
     memset(p->frame,0,sizeof(p->frame));
-    if (udp_encode(p->frame+34,sizeof(p->frame)-34,s_cfg.local_ip,dest,sport,dport,data,len) ||
-        ipv4_encode(p->frame+14,sizeof(p->frame)-14,s_cfg.local_ip,dest,17,(uint16_t)(8+len),64,NULL)) return false;
+    uint32_t src_ip = (dest==0xffffffffu) ? 0 : s_cfg.local_ip;
+    if (udp_encode(p->frame+34,sizeof(p->frame)-34,src_ip,dest,sport,dport,data,len) ||
+        ipv4_encode(p->frame+14,sizeof(p->frame)-14,src_ip,dest,17,(uint16_t)(8+len),64,NULL)) return false;
     p->len=42+len; if (p->len<60) p->len=60;
     p->attempts=0; p->start=p->next_arp=now; p->expire=now+3*apic_timer_get_frequency(); p->active=true;
     s_udp[slot].token=token; s_udp[slot].len=len; s_udp[slot].done=false;
@@ -186,7 +191,7 @@ bool net_ipv4_udp_take(unsigned slot, uint64_t token, int64_t *result) {
 }
 void net_ipv4_input(const uint8_t *packet, size_t len) {
     if (!s_dev || ipv4_decode(packet,len,&s_ip,NULL,NULL) || ipv4_get_ihl_bytes(&s_ip)!=20 ||
-        !s_ip.ttl || s_ip.dst_ip!=s_cfg.local_ip || !net_ipv4_unicast(s_ip.src_ip)) return;
+        !s_ip.ttl || (s_ip.dst_ip!=0xffffffffu && s_ip.dst_ip!=s_cfg.local_ip) || !net_ipv4_unicast(s_ip.src_ip)) return;
     size_t n=ntohs(s_ip.total_len)-20;
     const uint8_t *data; size_t data_len;
     if (s_ip.protocol==6) { net_tcp_input(s_ip.src_ip,packet+20,n); return; }
@@ -211,6 +216,7 @@ void net_ipv4_input(const uint8_t *packet, size_t len) {
     }
     if (icmp_echo_decode(packet+20,n,&s_echo,&data,&data_len)) return;
     if (s_echo.type==ICMP_ECHO_REQUEST) {
+        if (s_ip.dst_ip==0xffffffffu) return;
         if (s_pending[1].active) { ++s_reply_dropped; return; }
         (void)build(&s_pending[1],s_ip.src_ip,0,s_echo.identifier,s_echo.sequence,data,data_len,now,64);
     } else if (s_trace_waiting && s_ip.src_ip==s_trace.destination &&
@@ -237,7 +243,13 @@ void net_ipv4_tick(uint64_t now) {
             continue;
         }
         /* Lookup is cache-only; resolve sends only at scheduled one-second retries. */
-        int resolved=net_arp_lookup(p->next_hop,s_mac);
+        int resolved;
+        if (p->next_hop==0xffffffffu) {
+            memset(s_mac,0xff,ETH_ALEN);
+            resolved=0;
+        } else {
+            resolved=net_arp_lookup(p->next_hop,s_mac);
+        }
         if (resolved && now>=p->next_arp && p->attempts<3) {
             unsigned recent=0;
             for (; recent<2+NET_SOCKET_MAX; ++recent)

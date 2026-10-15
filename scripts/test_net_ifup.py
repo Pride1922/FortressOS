@@ -164,12 +164,12 @@ def run_session(mode, iso, tmp):
             assert "inet 10.0.2.60/24" in out_check, f"ifconfig changed after malformed address: {out_check}"
             print(f"[{mode}] Case 6 (malformed address rejection): PASS")
 
-            # 8. Apply config file from /etc/network.conf
-            out = run_command("/sbin/ifup /etc/network.conf")
+            # 8. Apply config file from /etc/network/network.conf
+            out = run_command("/sbin/ifup /etc/network/network.conf")
             assert "eth0: address 10.0.2.15/24 gateway 10.0.2.2 applied" in out, f"ifup config file failed: {out}"
             out_check = run_command("/sbin/ifconfig")
             assert "inet 10.0.2.15/24" in out_check, f"ifconfig did not reflect file config: {out_check}"
-            print(f"[{mode}] Case 7 (ifup config file /etc/network.conf): PASS")
+            print(f"[{mode}] Case 7 (ifup config file /etc/network/network.conf): PASS")
 
             # 9. Ping SLIRP gateway with restored IP
             out = run_command("/bin/ping -c 2 10.0.2.2", timeout=20)

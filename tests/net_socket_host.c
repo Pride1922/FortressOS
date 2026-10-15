@@ -152,7 +152,7 @@ static void tick(void) {
 static pthread_mutex_t config_lock=PTHREAD_MUTEX_INITIALIZER;
 bool net_socket_address_snapshot(uint32_t ip,bool remote) {
     pthread_mutex_lock(&config_lock);
-    bool valid=remote ? net_ipv4_unicast(ip) && ip!=net_ipv4_local() : !ip || ip==net_ipv4_local();
+    bool valid=remote ? (ip==0xffffffffu || (net_ipv4_unicast(ip) && ip!=net_ipv4_local())) : !ip || ip==net_ipv4_local();
     pthread_mutex_unlock(&config_lock); return valid;
 }
 void (*net_host_wait_override)(const void *, bool (*)(void *), void *);

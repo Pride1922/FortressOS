@@ -100,7 +100,7 @@ def run(mode,cpus,bootiso,kind):
             execute('id','uid=1000 gid=1000 groups=1000,10,44,104')
             execute('whoami','operator\n')
             execute('ls -l /run/user','drwx------ operator operator 0 1000')
-            text=execute('env','HOME=/run/user/1000');assert all(x in text for x in ('USER=operator','LOGNAME=operator','SHELL=/bin/shell','PATH=/bin'))
+            text=execute('env','HOME=/run/user/1000');assert all(x in text for x in ('USER=operator','LOGNAME=operator','SHELL=/bin/shell','PATH=/bin:/sbin'))
             execute('pwd','/run/user/1000')
             execute('echo live > file; cat file','live\n')
             start=len(transcript);send('exit');wait(lambda t:'FortressOS login: ' in t,start)

@@ -614,6 +614,8 @@ USER_DNSPROBE_ELF := $(BUILD_DIR)/dnsprobe.elf
 USER_TCPDEADLINE_ELF := $(BUILD_DIR)/tcpdeadline.elf
 USER_WGET_ELF := $(BUILD_DIR)/wget.elf
 USER_DOWNLOAD_ELF := $(BUILD_DIR)/download.elf
+USER_DHCP_PROBE_ELF := $(BUILD_DIR)/dhcp-probe.elf
+USER_DHCPC_ELF := $(BUILD_DIR)/dhcpc.elf
 DNS_OBJECTS := $(BUILD_DIR)/dns.o $(BUILD_DIR)/dns_codec.o
 $(DNS_OBJECTS): $(BUILD_DIR)/%.o: user/%.c user/dns.h user/dns_codec.h src/include/syscall_abi.h src/include/socket_abi.h
 	@mkdir -p $(BUILD_DIR)
@@ -660,6 +662,21 @@ $(BUILD_DIR)/download.o: user/download.c user/wget.h user/udp_common.h src/inclu
 $(USER_DOWNLOAD_ELF): $(BUILD_DIR)/download.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=download_main user/tools/start.asm -o $(BUILD_DIR)/download_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/download_start.o $(BUILD_DIR)/download.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
+$(BUILD_DIR)/dhcp_codec.o: user/dhcp_codec.c user/dhcp_codec.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(BUILD_DIR)/dhcp_probe.o: user/tools/dhcp-probe.c user/dhcp_codec.h src/include/types.h src/include/syscall_abi.h src/include/socket_abi.h src/include/netctl_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(USER_DHCP_PROBE_ELF): $(BUILD_DIR)/dhcp_probe.o $(BUILD_DIR)/dhcp_codec.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=dhcp_probe_main user/tools/start.asm -o $(BUILD_DIR)/dhcp_probe_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcp_probe_start.o $(BUILD_DIR)/dhcp_probe.o $(BUILD_DIR)/dhcp_codec.o -o $@
+$(BUILD_DIR)/dhcpc.o: user/dhcpc.c user/dhcp_codec.h user/resolv_conf.h user/machine_config.h user/netconf.h src/include/types.h src/include/syscall_abi.h src/include/socket_abi.h src/include/netctl_abi.h src/include/account_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(USER_DHCPC_ELF): $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=dhcpc_main user/tools/start.asm -o $(BUILD_DIR)/dhcpc_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcpc_start.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o -o $@
 $(BUILD_DIR)/tcpserve.o: user/tcpserve.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
@@ -975,7 +992,7 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) COMMANDS.md Makefile scripts/create_initramfs.py
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -989,6 +1006,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DMESG_ELF) $(BUILD_DIR)/initramfs/bin/dmesg
 	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/sbin/ifconfig
 	@cp -f $(USER_IFUP_ELF) $(BUILD_DIR)/initramfs/sbin/ifup
+	@cp -f $(USER_DHCPC_ELF) $(BUILD_DIR)/initramfs/sbin/dhcpc
 	@cp -f $(USER_PING_ELF) $(BUILD_DIR)/initramfs/bin/ping
 	@cp -f $(USER_PING_PROBE_ELF) $(BUILD_DIR)/initramfs/bin/net-ping-probe
 	@cp -f $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/initramfs/bin/udptest
@@ -1001,6 +1019,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_TCPDEADLINE_ELF) $(BUILD_DIR)/initramfs/bin/tcpdeadline
 	@cp -f $(USER_WGET_ELF) $(BUILD_DIR)/initramfs/bin/wget
 	@cp -f $(USER_DOWNLOAD_ELF) $(BUILD_DIR)/initramfs/bin/download
+	@cp -f $(USER_DHCP_PROBE_ELF) $(BUILD_DIR)/initramfs/bin/dhcp-probe
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@cp -f $(USER_NANO_ELF) $(BUILD_DIR)/initramfs/bin/nano
 	@$(foreach tool,$(USER_STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
@@ -1011,8 +1030,9 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 
 	@printf "========================================================\n  Welcome to FortressOS (x86_64 SMP) — by Pride1922\n  \"Security through Isolation and Elegance\"\n========================================================\n" > $(BUILD_DIR)/initramfs/etc/motd
 	@printf "FortressOS Documentation\nThe Ring 3 shell supports help, ls, view and echo.\nExternal cat preserves bytes; head, tail and wc process streams. Use TOOL --help.\nFull command reference available in /docs/commands.txt\n" > $(BUILD_DIR)/initramfs/docs/readme.txt
-	@cp -f COMMANDS.md $(BUILD_DIR)/initramfs/docs/commands.txt
-	@printf "# Fortress Network Configuration\naddress 10.0.2.15/24\ngateway 10.0.2.2\ndns 10.0.2.3\n" > $(BUILD_DIR)/initramfs/etc/network.conf
+	@rm -f $(BUILD_DIR)/initramfs/etc/network.conf
+	@mkdir -p $(BUILD_DIR)/initramfs/etc/network
+	@printf "# Fortress Network Configuration\naddress 10.0.2.15/24\ngateway 10.0.2.2\ndns 10.0.2.3\n" > $(BUILD_DIR)/initramfs/etc/network/network.conf
 	@echo "  [TAR] Generating USTAR archive $@"
 	@python3 scripts/create_initramfs.py $(BUILD_DIR)/initramfs $(INITRAMFS_TAR)
 
@@ -1370,6 +1390,19 @@ test-wget-host:
 
 test-wget: $(BOOTABLE_ISO) $(NVME_GPT_IMG) test-wget-host
 	@python3 scripts/test_wget.py
+
+.PHONY: test-dhcpc-host test-dhcp-probe
+test-dhcpc-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser user/dhcp_codec.c tests/dhcpc_host.c -o $(BUILD_DIR)/dhcpc_host
+	@$(BUILD_DIR)/dhcpc_host
+
+test-dhcp-probe: $(BOOTABLE_ISO) test-dhcpc-host
+	@python3 scripts/test_dhcp_probe.py
+
+.PHONY: test-dhcpc
+test-dhcpc: $(BOOTABLE_ISO) test-dhcpc-host
+	@python3 scripts/test_dhcpc.py
 
 .PHONY: test-net-dns-host
 test-net-dns-host:

@@ -81,12 +81,12 @@ def test_diff_qemu():
             print("  [PASS] diff on identical files succeeded (no output).")
 
             # Test 2: diff -q brief on different files
-            print("  [3] Testing: diff -q /etc/motd /etc/network.conf")
+            print("  [3] Testing: diff -q /etc/motd /etc/network/network.conf")
             pos = len(log_path.read_text(errors="replace"))
-            send_str(uart, "diff -q /etc/motd /etc/network.conf\n")
+            send_str(uart, "diff -q /etc/motd /etc/network/network.conf\n")
             wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos, timeout=10)
             out = strip_ansi(log_path.read_text(errors="replace")[pos:])
-            assert "Files /etc/motd and /etc/network.conf differ" in out, f"Unexpected brief output: {out}"
+            assert "Files /etc/motd and /etc/network/network.conf differ" in out, f"Unexpected brief output: {out}"
             print("  [PASS] diff -q succeeded.")
 
             # Test 3: diff pipeline with stdin

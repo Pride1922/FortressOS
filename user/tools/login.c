@@ -96,7 +96,7 @@ int login_main(int argc,char **argv) {
             return failure(installed,"cannot protect session parent");
         char h[144],user[48],logname[48],shell[144];
         env(h,"HOME=",home);env(user,"USER=",u->name);env(logname,"LOGNAME=",u->name);env(shell,"SHELL=",u->shell);
-        const char *environment[]={h,user,logname,shell,"PATH=/bin","TERM=fortress",0};
+        const char *environment[]={h,user,logname,shell,"PATH=/bin:/sbin","TERM=fortress",0};
         const char *args[]={u->shell,0};spawn_opts_t opts={.size=sizeof(opts),.version=1,
             .argv=(uintptr_t)args,.envp=(uintptr_t)environment,.cwd=(uintptr_t)home};
         /* Group is inherited from the boot login and remains foreground. */

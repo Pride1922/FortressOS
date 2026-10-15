@@ -4,14 +4,22 @@
 #include "net_ipv4.h"
 #include "ipv4.h"
 #include "icmp.h"
+#include "udp.h"
 #include "checksum.h"
 static net_dev_t dev;
 bool net_tcp_idle(void) { return true; }
 void net_tcp_input(uint32_t source, const uint8_t *data, size_t len) {
     (void)source; (void)data; (void)len;
 }
+static unsigned s_socket_inputs;
+static uint32_t s_last_input_ip;
+static uint16_t s_last_input_sp, s_last_input_dp;
 void net_socket_input(uint32_t ip, uint16_t sp, uint16_t dp, const uint8_t *data, size_t len) {
-    (void)ip; (void)sp; (void)dp; (void)data; (void)len;
+    (void)data; (void)len;
+    ++s_socket_inputs;
+    s_last_input_ip = ip;
+    s_last_input_sp = sp;
+    s_last_input_dp = dp;
 }
 static uint64_t ticks;
 static unsigned sends, requests;
@@ -90,5 +98,40 @@ int main(void) {
     net_ipv4_link_down();
     assert(net_ipv4_ping_take(&result) && result.outcome==NETPING_TX_FAILED);
     before=sends; net_ipv4_tick(1200); assert(sends==before && net_ipv4_idle());
-    puts("IPv4 stack ASan/UBSan PASS: echo bytes/padding, filters, routes, bounded ARP, saturation, matching, pacing/timeouts/TX failure and link-loss cancellation");
+
+    /* Broadcast routing tests */
+    uint32_t bcast_hop = 0;
+    assert(net_ipv4_route(0xffffffffu, &bcast_hop) && bcast_hop == 0xffffffffu);
+    assert(!net_ipv4_route(0, &bcast_hop));
+    assert(!net_ipv4_route(htonl(0xe0000001), &bcast_hop)); /* 224.0.0.1 multicast */
+
+    /* Broadcast RX vs non-local unicast drop */
+    uint8_t udp_rx[64];
+    memset(udp_rx, 0, sizeof(udp_rx));
+    assert(!udp_encode(udp_rx + 20, sizeof(udp_rx) - 20, cfg.gateway, htonl(0xc0a80101), 67, 68, "dhcp", 4));
+    assert(!ipv4_encode(udp_rx, sizeof(udp_rx), cfg.gateway, htonl(0xc0a80101), 17, 12, 64, NULL));
+    unsigned inputs_before = s_socket_inputs;
+    net_ipv4_input(udp_rx, 32);
+    assert(s_socket_inputs == inputs_before); /* Non-local unicast dropped */
+
+    memset(udp_rx, 0, sizeof(udp_rx));
+    assert(!udp_encode(udp_rx + 20, sizeof(udp_rx) - 20, cfg.gateway, 0xffffffffu, 67, 68, "dhcp", 4));
+    assert(!ipv4_encode(udp_rx, sizeof(udp_rx), cfg.gateway, 0xffffffffu, 17, 12, 64, NULL));
+    net_ipv4_input(udp_rx, 32);
+    assert(s_socket_inputs == inputs_before + 1); /* Broadcast accepted */
+    assert(s_last_input_ip == cfg.gateway && s_last_input_sp == 67 && s_last_input_dp == 68);
+
+    /* Broadcast TX: sends to FF:FF:FF:FF:FF:FF and skips ARP */
+    unsigned req_before = requests;
+    before = sends;
+    assert(net_ipv4_udp_start(0, 101, 0xffffffffu, 68, 67, (const uint8_t *)"dhcp", 4, 1300));
+    net_ipv4_tick(1300);
+    assert(requests == req_before); /* No ARP requests for broadcast */
+    assert(sends == before + 1);
+    const uint8_t bcast_mac[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    assert(!memcmp(frame, bcast_mac, 6)); /* Destination MAC is broadcast */
+    int64_t udp_res = 0;
+    assert(net_ipv4_udp_take(0, 101, &udp_res) && udp_res == 4);
+
+    puts("IPv4 stack ASan/UBSan PASS: echo bytes/padding, filters, routes, broadcast RX/TX, bounded ARP, saturation, matching, pacing/timeouts/TX failure and link-loss cancellation");
 }

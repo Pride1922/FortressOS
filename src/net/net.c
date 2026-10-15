@@ -367,7 +367,7 @@ bool net_unicast_snapshot(uint32_t ip) {
 }
 bool net_socket_address_snapshot(uint32_t ip,bool remote) {
     uint64_t irq=spin_lock_irqsave(&g_net_stack_lock);
-    bool valid=remote ? net_ipv4_unicast(ip) && ip!=net_ipv4_local() :
+    bool valid=remote ? (ip==0xffffffffu || (net_ipv4_unicast(ip) && ip!=net_ipv4_local())) :
         (!ip || ip==net_ipv4_local());
     spin_unlock_irqrestore(&g_net_stack_lock,irq); return valid;
 }

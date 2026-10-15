@@ -49,7 +49,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 
 ### 🌐 Networking Stack
 - **Custom Stack:** From-scratch implementations of Ethernet II, ARP, IPv4, ICMP, UDP, and TCP (with RFC 1071 checksums and Reno congestion control).
-- **Userspace DNS:** Native stub resolver and `/bin/nslookup` with UDP-to-TCP fallback.
+- **Userspace DNS & DHCP:** Native stub resolver, `/bin/nslookup` with UDP-to-TCP fallback, and RFC 2131 DHCP client (`/sbin/dhcpc`) for dynamic lease acquisition.
 - **Hardware Drivers:** Intel e1000, e1000e, and physical Intel I219-LM (autonomous PHY renegotiation, cold-plug and flap recovery).
 - **Performance:** Bare-metal network throughput matches Linux Mint on identical hardware.
 
@@ -61,7 +61,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 ### 💻 Userland & Shell
 - **Interactive Shell:** Modular Ring 3 command shell supporting job control (`&`, `jobs`, `fg`, `kill`), pipelines (`|`), input/output redirection (`>`, `<`), and background redraw.
 - **Visual Editor:** Ring 3 visual text editor (`/bin/nano` v2.1) with Pike VM regex search, syntax highlighting, and buffer editing.
-- **System Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`), and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `wc`, `xxd`).
+- **System Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`, `/sbin/dhcpc`, `/bin/dhcp-probe`), and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `wc`, `xxd`).
 
 ### 💿 Persistent Root & NVMe Installer
 - **Text-Mode Installer:** Complete installer (`/sbin/install`) providing automated GPT disk partitioning, ext4 root deployment, and configuration.
@@ -93,6 +93,8 @@ We are actively transitioning the networking subsystem to support safe cross-cor
 - **Phase 3 (Production Spawn):** Re-enable unpinned process scheduling across all cores
 
 ### Downstream Roadmap
+- Time subsystem (`SYS_NANOSLEEP`, high-resolution timers, wall-clock time)
+- DHCP Client v2 (background lease renewal daemon, RFC 2131 T1/T2 timers, boot-time auto-acquisition via Time subsystem)
 - Native package manager
 - SSH daemon
 - Cross-core IPC pipes and message queues

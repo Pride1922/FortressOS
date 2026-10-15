@@ -82,7 +82,7 @@ def test_patch_qemu():
             # Test 2: diff -u pipeline into patch dry-run
             print("  [3] Testing: unified diff pipeline with patch --dry-run")
             pos = len(log_path.read_text(errors="replace"))
-            cmd2 = "cat /etc/network.conf | head -n 3 | diff -u /etc/network.conf - | patch --dry-run /etc/network.conf\n"
+            cmd2 = "cat /etc/network/network.conf | head -n 3 | diff -u /etc/network/network.conf - | patch --dry-run /etc/network/network.conf\n"
             send_str(uart, cmd2)
             time.sleep(0.5)
             wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd2) - 5, timeout=10)
@@ -91,9 +91,9 @@ def test_patch_qemu():
             print("  [PASS] patch --dry-run pipeline succeeded.")
 
             # Test 3: patch -s -o - stdout streaming
-            print("  [4] Testing: patch -s -o - /etc/network.conf streaming")
+            print("  [4] Testing: patch -s -o - /etc/network/network.conf streaming")
             pos = len(log_path.read_text(errors="replace"))
-            cmd3 = "cat /etc/network.conf | head -n 3 | diff -u /etc/network.conf - | patch -s -o - /etc/network.conf\n"
+            cmd3 = "cat /etc/network/network.conf | head -n 3 | diff -u /etc/network/network.conf - | patch -s -o - /etc/network/network.conf\n"
             send_str(uart, cmd3)
             time.sleep(0.5)
             wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd3) - 5, timeout=10)
