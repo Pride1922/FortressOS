@@ -1,65 +1,213 @@
-FortressOS
-A 64-bit operating system built from the kernel up.
+# FortressOS
 
-FortressOS is a freestanding C11 and x86-64 assembly kernel with isolated user processes, an interactive shell, journaled ext4, a from-scratch TCP/IP stack, and Unix-style permissions. It boots through Limine under UEFI or BIOS, runs in QEMU, and has been tested on real Dell Latitude hardware.
+<p align="center">
+  <strong>A freestanding, 64-bit operating system built from the kernel up.</strong>
+</p>
 
-It is an independent kernel, not a Linux distribution.
+<p align="center">
+  <img src="https://img.shields.io/badge/architecture-x86__64-blue.svg" alt="Architecture: x86_64">
+  <img src="https://img.shields.io/badge/bootloader-Limine%20v8%20(UEFI%2FBIOS)-brightgreen.svg" alt="Bootloader: Limine">
+  <img src="https://img.shields.io/badge/language-C11%20%7C%20NASM-orange.svg" alt="Language: C11 / NASM">
+  <img src="https://img.shields.io/badge/filesystem-Journaled%20ext4%20(JBD2)-informational.svg" alt="Filesystem: ext4">
+  <img src="https://img.shields.io/badge/SMP-8%20Cores%20Verified-blueviolet.svg" alt="SMP: 8 Cores">
+</p>
 
-What works today
-Boot — UEFI and BIOS, quiet graphical splash, clean handoff to Ring 3.
-Multi-core — 8 cores, per-CPU state, work-stealing scheduler, IPIs, TLB shootdown. Race-hardened, verified on hardware.
-Memory — 32 GiB physical allocator, paged virtual memory, per-process address spaces, deferred reclamation. Correctness-gated and profiled.
-Filesystems — journaled ext4 (default, JBD2 crash recovery) and ext2 (supported for legacy fixtures and the live USB data partition).
-Storage — NVMe, USB mass storage (xHCI, BOT/SCSI), per-device durability classification.
-Networking — Intel e1000/e1000e/I219, Ethernet, ARP, IPv4, ICMP, UDP, TCP, userspace DNS. Bare-metal throughput matches Linux Mint on identical hardware.
-Permissions — Unix DAC, UID/GID, mode bits, login, sudo, setuid, capabilities. Hardware-verified.
-Userland — Ring 3 processes, modular shell with job control and pipelines, nano v2.1, and a full stream-tool suite.
+---
 
-Design principles
-Explicit ownership. Every resource has a defined owner and lifetime.
-Bounded failure paths. No unbounded retries, no silent degradation.
-Evidence over claims. Tests distinguish host, QEMU, and physical hardware results.
-Every behavior is documented with its evidence boundary. Nothing claims more than it has proven.
+FortressOS is an independent, freestanding operating system kernel written in C11 and x86-64 assembly. It features preemptive multi-core scheduling, per-process virtual memory spaces, Unix-style discretionary access control and capabilities, a journaled ext4 filesystem, a custom TCP/IP networking stack, a modular userland shell, and a native text-mode installer.
 
-Try it in QEMU
-Build on Linux, or WSL Ubuntu-24.04 on Windows.
+FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is verified and physically accepted on bare-metal Dell Latitude hardware.
 
-sh
+> [!NOTE]
+> FortressOS is an independent kernel and operating system, not a Linux distribution or wrapper.
+
+---
+
+## What Works Today
+
+### 🚀 Boot & Architecture
+- **Firmware Support:** Native boot under both **UEFI** and **legacy BIOS** via Limine v8 (base revision 3).
+- **Early Diagnostics:** Framebuffer console, graphical boot splash, and early COM1 serial output operational before heap initialization.
+- **Ring 3 Transitions:** Clean user/kernel separation with atomic SYSRET/IRET transition frames.
+
+### ⚡ Multi-Core (SMP) & Scheduling
+- **Distributed Scheduler:** Work-stealing runqueues across up to 8 logical cores with load balancing.
+- **Per-CPU State:** Independent CPU-local GS structures (`GS_BASE`), IST stacks, and TSS descriptors.
+- **Inter-Processor Interrupts (IPIs):** Remote execution, reschedule signaling, and contention-safe TLB shootdown.
+- **Verification:** Verified on QEMU (1, 4, 8 cores) and bare-metal Dell Latitude hardware (8 logical CPUs, 32 GiB RAM).
+
+### 🧠 Memory Management
+- **Physical Memory (PMM):** Frame allocator managing up to 32 GiB with contiguous region support and allocation set auditing.
+- **Virtual Memory (VMM):** 4-level paging (PML4), higher-half kernel mapping (`0xffffffff80000000`), full HHDM coverage, and demand paging.
+- **Address Space Lifetime:** Contention-safe TLB invalidation, per-process PML4 teardown, and deferred address-space reaping.
+
+### 🗄️ Storage & Filesystems
+- **Journaled ext4:** Default filesystem with native **JBD2 journaling**, crash recovery, extent trees, and ordered writeback.
+- **Legacy ext2:** Full read-write support for legacy test fixtures and live USB data partitions.
+- **NVMe Driver:** Direct PCI NVMe 1.4 storage controller engine with queue management and quiescent reset.
+- **USB Mass Storage:** Native xHCI host controller driver with Bulk-Only Transport (BOT/SCSI) and durability classification.
+
+### 🌐 Networking Stack
+- **Custom Stack:** From-scratch implementations of Ethernet II, ARP, IPv4, ICMP, UDP, and TCP (with RFC 1071 checksums and Reno congestion control).
+- **Userspace DNS:** Native stub resolver and `/bin/nslookup` with UDP-to-TCP fallback.
+- **Hardware Drivers:** Intel e1000, e1000e, and physical Intel I219-LM (autonomous PHY renegotiation, cold-plug and flap recovery).
+- **Performance:** Bare-metal network throughput matches Linux Mint on identical hardware.
+
+### 🛡️ Permissions & Security
+- **Unix DAC:** Traditional UID, GID, and standard Unix file permission bits (`rwxrwxrwx`).
+- **Security Tools:** `/bin/login`, `/bin/sudo`, setuid execution, and fine-grained POSIX-style process capabilities (`CAP_NET_BIND`, `CAP_SYS_ADMIN`, etc.).
+- **Deterministic Cryptography:** SHA-256 boot-secret ISN generation with hardware entropy harvesting.
+
+### 💻 Userland & Shell
+- **Interactive Shell:** Modular Ring 3 command shell supporting job control (`&`, `jobs`, `fg`, `kill`), pipelines (`|`), input/output redirection (`>`, `<`), and background redraw.
+- **Visual Editor:** Ring 3 visual text editor (`/bin/nano` v2.1) with Pike VM regex search, syntax highlighting, and buffer editing.
+- **System Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`), and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `wc`, `xxd`).
+
+### 💿 Persistent Root & NVMe Installer
+- **Text-Mode Installer:** Complete installer (`/sbin/install`) providing automated GPT disk partitioning, ext4 root deployment, and configuration.
+- **Persistent Root:** Bootable persistent root partition, user account creation, machine hostname configuration, authenticated recovery, and clean shutdown.
+- **Hardware Acceptance:** Fully tested, confirmed, and physically accepted on bare-metal Dell Latitude hardware.
+
+---
+
+## Current Status
+
+| Subsystem | Status | Scope & Hardware Evidence |
+| :--- | :---: | :--- |
+| **Boot & Architecture** | **COMPLETE** | UEFI & BIOS boot via Limine; COM1 & framebuffer diagnostics. |
+| **Multi-Core (SMP)** | **COMPLETE** | 8 logical cores, work-stealing scheduler, TLB shootdown. Dell 5590 verified. |
+| **Memory Management** | **COMPLETE** | 32 GiB PMM, VMM 4-level paging, deferred CR3/PML4 reaping. |
+| **ext4 & ext2 Filesystems**| **COMPLETE** | Journaled ext4 with JBD2 crash recovery. Dell physical acceptance confirmed. |
+| **NVMe & USB Storage** | **COMPLETE** | NVMe 1.4 driver + xHCI BOT/SCSI USB storage. |
+| **Permissions & Security** | **COMPLETE** | Unix DAC, UID/GID, sudo, setuid, and capability policies. Dell verified. |
+| **Userland & Shell** | **COMPLETE** | Ring 3 shell, job control, pipelines, `/bin/nano`, `/bin/free`, full stream suite. |
+| **Persistent Root & Installer** | **COMPLETE** | Phases 0–4 complete. Dell spare-drive install & persistent boot verified on bare metal. |
+| **Network SMP (CPU-0 Handoff)**| **IN PROGRESS** | **Phase 2B COMPLETE** (UDP/DNS cross-core handoff, 12/12 QEMU PASS). Phase 2C (TCP) next. |
+
+### Active Focus: Network SMP Handoff
+We are actively transitioning the networking subsystem to support safe cross-core execution from any application CPU while keeping NIC I/O and protocol state serialized by the CPU-0 network worker:
+- **Phase 2A (Control Plane):** `IFGET`, `IFSET`, ICMP ping, and traceroute from any CPU — **COMPLETE**
+- **Phase 2B (UDP & DNS):** UDP socket create, bind, send, receive, and userspace DNS routing from any CPU — **COMPLETE** (12/12 boots PASS on e1000e, 4/4 boots PASS on e1000)
+- **Phase 2C (TCP Streams):** Cross-core TCP client, `SYS_CONNECT`, and stream I/O — **NEXT**
+- **Phase 2D (TCP Listener & Lifecycle):** Cross-core `SYS_LISTEN`, `SYS_ACCEPT`, and connection handover
+- **Phase 3 (Production Spawn):** Re-enable unpinned process scheduling across all cores
+
+### Downstream Roadmap
+- Native package manager
+- SSH daemon
+- Cross-core IPC pipes and message queues
+- Userland multithreading (`pthreads`)
+
+---
+
+## Design Principles
+
+- **Explicit Ownership:** Every resource (buffer, lock, file descriptor, endpoint) has a defined owner and lifetime. No borrowed pointers cross ownership boundaries.
+- **Bounded Failure Paths:** No unbounded retry loops, no silent degradation, and no dynamic heap allocation in critical I/O hot paths.
+- **Evidence Over Claims:** Automated test suites distinguish host sanitizer mocks (ASan/UBSan/TSan), QEMU virtualized runs, and physical bare-metal hardware acceptance.
+- **Strict Invariants:** Lock ranks (Ranks 1–5), no locks across context switches, and interrupt-frame preservation are strictly enforced.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+FortressOS builds in Linux environments or Windows Subsystem for Linux (WSL `Ubuntu-24.04`).
+
+```bash
+sudo apt-get update
 sudo apt-get install -y build-essential nasm xorriso qemu-system-x86 ovmf \
     git curl e2fsprogs python3 gdb mtools dosfstools
+```
 
+### Build
+
+```bash
 git clone https://github.com/Pride1922/FortressOS.git
 cd FortressOS
 make
-Produces bin/fortress.elf, bin/initramfs.tar, bin/fortress.iso, and bin/fortress.img.
+```
 
-sh
-make run-bios       # ISO, legacy BIOS
-make run-img        # Raw image, UEFI
-make run-img-usb    # Raw image presented as USB storage
-make debug          # Paused for GDB on port 1234
-Boot from USB
-sh
+The build produces:
+- `bin/fortress.elf` — The kernel binary
+- `bin/initramfs.tar` — Initial RAM filesystem containing userland tools
+- `bin/fortress.iso` — Bootable hybrid ISO (UEFI + BIOS)
+- `bin/fortress.img` — Bootable raw GPT disk image
+
+---
+
+## Running FortressOS
+
+### Running in QEMU
+
+```bash
+make run            # Boot hybrid ISO under UEFI in QEMU (q35, 2 GiB RAM, COM1)
+make run-bios       # Boot hybrid ISO under legacy BIOS
+make run-img        # Boot raw disk image (bin/fortress.img) under UEFI
+make run-img-bios   # Boot raw disk image under legacy BIOS
+make run-img-usb    # Boot raw disk image emulated as a USB mass storage flash drive
+make debug          # Launch QEMU paused with GDB server on localhost:1234
+```
+
+To attach GDB:
+```bash
+gdb bin/fortress.elf -ex "target remote :1234" -ex "break _start" -ex "continue"
+```
+
+### Flashing to a Physical USB Drive
+
+You can flash the raw disk image directly to a physical USB flash drive to boot on bare metal:
+
+```bash
 sudo dd if=bin/fortress.img of=/dev/sdX bs=4M status=progress conv=fdatasync
-The image carries a FAT32 EFI partition (Limine, kernel, initramfs) and a 64 MiB ext2 data partition (read-only by default; writable via usb_data_mode=rw). The normal image's primary filesystem is journaled ext4.
+```
 
-Verified on Dell Latitude 5590 and 5530 with multiple USB devices.
+> [!WARNING]
+> Ensure `/dev/sdX` is the correct target drive. All existing data on the device will be overwritten.
 
-Documentation
-AGENTS.md — implementation contracts and invariants (authoritative)
-PROTECTED.md — protected subsystems and contracts
-COMMANDS.md — every shell builtin, tool, and shortcut
-docs/roadmap/ — checkpoint history and hardware evidence
-docs/subsystems/ — subsystem references
-docs/plans/ — architectural plans
+The image contains a FAT32 EFI system partition (Limine, kernel, initramfs) and a 64 MiB ext2 data partition (read-only by default; writable when booted with `usb_data_mode=rw`).
 
-ARCH_REVIEW.md — limits and technical debt
+---
 
-Status
-Complete and hardware-verified: boot, SMP, memory, ext2/ext4, shell, networking, permissions, VFS lifetime, TCP ISN.
+## Repository Structure
 
-In progress: persistent root / NVMe installer (Phase 4).
+```text
+src/
+├── arch/x86_64/     CPU bring-up, GDT/IDT, APIC, IPI, context switching, syscall entry
+├── kernel/          Scheduler, processes, ELF loader, handoff queue, lock discipline
+├── mm/              Physical memory (PMM), virtual paging (VMM), kernel heap
+├── net/             TCP/IP stack: Ethernet, ARP, IPv4, ICMP, UDP, TCP, DNS resolver
+├── drivers/         PCI, NVMe, xHCI, USB BOT/SCSI, e1000/e1000e/I219-LM, console, power
+├── fs/              VFS, tar initramfs, GPT parser, ext2, journaled ext4 (JBD2)
+└── include/         Shared kernel and userland ABI headers (syscalls, termctl, block info)
 
-Downstream: package manager, SSH, cross-core sockets, userland threads.
+user/
+├── shell/           Interactive shell engine (line editing, job control, history, UI)
+├── nano/            Ring 3 visual text editor (nano v2.1, Pike VM regex, nanorc)
+├── tools/           Core utilities: disk, stream tools (grep, sort, uniq, wc), useradd, tar
+└── *.c              Freestanding binaries: init, ping, udptest, nc, tcpserve, wget, top, ps
 
-FortressOS is under active development. See AGENTS.md for the current state; this README is a human overview and may lag by a commit or two.
+docs/
+├── plans/           Architecture specifications and staged implementation roadmaps
+├── subsystems/      Subsystem references (smp.md, net.md, storage.md, shell.md, usb.md)
+└── roadmap/         Historical verification ledgers, checkpoints, and hardware evidence
+```
+
+---
+
+## Documentation Index
+
+- **[`AGENTS.md`](AGENTS.md):** Architecture guide, coding standards, lock ranks, and invariant rules *(authoritative)*.
+- **[`PROTECTED.md`](PROTECTED.md):** Guardrail contracts for boot, synchronization, address spaces, and drivers.
+- **[`COMMANDS.md`](COMMANDS.md):** Complete reference for shell builtins, user tools, and administrative utilities.
+- **[`ARCH_REVIEW.md`](ARCH_REVIEW.md):** Cross-cutting audit findings, limitations, and technical debt.
+- **[`docs/plans/`](docs/plans/):** Active implementation plans and design specifications.
+- **[`docs/subsystems/`](docs/subsystems/):** Deep-dive subsystem reference annexes.
+- **[`docs/roadmap/`](docs/roadmap/):** Checkpoint history, automated test logs, and bare-metal hardware evidence.
+
+---
+
+<p align="center">
+  <sub>FortressOS is under active development. See <a href="AGENTS.md">AGENTS.md</a> and <a href="docs/roadmap/README.md">docs/roadmap/</a> for detailed technical reports and verifiable evidence ledgers.</sub>
+</p>
