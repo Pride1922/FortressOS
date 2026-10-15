@@ -6,7 +6,10 @@ authorization. Phase 1 generic mechanism and inert-owner host/guest gates PASS;
 Phase 2A control/finite probes pass actual-code ASan/UBSan/TSan and 12 installed
 guest boots (BIOS/UEFI × SMP=1/4/8, two boots each). The original composite target
 FAIL for concurrent documentation drift remains qualified, not erased.
-[Phase 2A evidence](../roadmap/network-smp-phase2a.md). Phase 2B has not begun.
+[Phase 2A evidence](../roadmap/network-smp-phase2a.md). Phase 2B UDP/DNS integration
+is COMPLETE (primary campaign `gate-fhnnk8qq` 12/12 boots PASS, e1000 follow-up `gate-1te338y2` 4/4
+boots PASS, host ASan/UBSan/TSan PASS, legacy regressions PASS; see
+[Phase 2B evidence](../roadmap/network-smp-phase2b.md)). Phase 2C (TCP client/streams) remains next.
 [Phase 1 evidence](../roadmap/network-smp-phase1.md).
 [Decisions](NETWORK_SMP_PHASE0_CONTRACTS.md) and
 [evidence/qualifications](../roadmap/network-smp-phase0.md).

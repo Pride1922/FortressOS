@@ -1,6 +1,7 @@
 #include "net_control.h"
 #include "net.h"
 #include "net_ping.h"
+#include "net_udp_owner.h"
 #include "thread.h"
 #include "apic.h"
 #include "syscall_abi.h"
@@ -86,6 +87,9 @@ int64_t net_control_call(unsigned kind, net_control_value_t *value) {
 }
 
 static void step(handoff_token_t t,handoff_request_t r) {
+    if (r.kind>=NET_OWNER_UDP_CREATE && r.kind<=NET_OWNER_UDP_RECV) {
+        net_udp_step(t,r); return;
+    }
     control_slot_t *v=&values[t.slot];
     int64_t result=0;
     bool pending=false;
@@ -121,13 +125,17 @@ static void step(handoff_token_t t,handoff_request_t r) {
     } else result=SYSCALL_EINVAL;
     handoff_finish(t,(handoff_reply_t){.status=result},pending);
 }
-void net_control_service(void) {
+void net_control_assert_owner(void) {
     if (thread_current()->tid!=owner_tid) __builtin_trap();
 #ifndef TEST_SMP_MEMORY
     if (cpu_current()->id) __builtin_trap();
 #endif
+}
+void net_control_service(void) {
+    net_control_assert_owner();
     /* Acknowledgement cannot reclaim pending protocol state. Typed steps do. */
     handoff_acknowledge();
+    net_udp_maintenance();
     for (unsigned i=0;i<8;++i) {
         handoff_token_t t; handoff_request_t r;
         if (!handoff_claim(&t,&r)) break;

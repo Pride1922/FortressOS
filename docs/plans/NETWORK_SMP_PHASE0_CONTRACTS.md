@@ -1,5 +1,26 @@
 # Network SMP Phase 0 decisions
 
+Phase 2B acceptance qualification (2026-10-15): COMPLETE.
+[UDP/DNS audit and gates](../roadmap/network-smp-phase2b.md). Retained generic
+records now require explicit unlocked typed cleanup before recycling. UDP adds
+checked file references, endpoint detach acknowledgement and eight 1472-byte
+payload slabs (TCP must later share/extend the eight payload credits). Receive
+copy commit wins later cancellation; SEND cancellation resolves accepted wire
+submission before returning. The original finite receive deadline survives
+reservation expiry. Acknowledgement-only scheduler waits reuse the ordinary
+enrollment/context-switch core while deferring signals for the bounded owner
+decision. TCP (Phase 2C/2D) and production spawn policy (Phase 3) remain separate.
+
+UDP configuration-order qualification: “configuration at claim” means the
+owner turn that starts transport after caller payload publication. An earlier
+slab grant is preparation, not an accepted datagram or a reserved config epoch.
+IFSET may pass a sender that has not published its copied payload; otherwise
+a stopped copier could indefinitely block control progress. The owner builds
+the datagram with the configuration current at protocol acceptance. Specific
+bind addresses are rechecked at their owner transaction; existing TCP tuples
+remain unchanged. This refines the original single-claim sketch rather than
+claiming submission order freezes configuration across a copy handshake.
+
 Phase 1 implementation qualification (2026-10-14): see
 [mechanism/evidence](../roadmap/network-smp-phase1.md). The generic layer uses
 bounded scans of 64 static records instead of a separate runnable-token ring;

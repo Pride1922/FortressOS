@@ -115,6 +115,10 @@ static void tcp_service(void) {
 /* This fixture substitutes its own finite scheduler driver via a macro below. */
 static void tcp_wait(const void *channel, bool (*ready)(void *), void *arg) {
     assert(channel);
+    if (ready==handoff_ready || ready==handoff_admissible || ready==net_udp_ready) {
+        for (unsigned i=0;i<1000;++i) { if (ready(arg) || signal_pending) return; tick(); }
+        assert(!"UDP owner fixture wait exceeded budget"); return;
+    }
     if (disconnect_listener_wait) {
         disconnect_listener_wait=false;
         net_socket_worker_tick(now,false); net_tcp_tick(now,false);
@@ -286,7 +290,8 @@ static void listener_tests(net_config_t *cfg) {
     assert(acceptfd(listener,&peer,&size)==SYSCALL_EMFILE && allocations==baseline);
     for (unsigned i=0; i<32; ++i) if ((int)i!=listener) closefd((int)i);
     int udp_fds[15];
-    for (unsigned i=0; i<15; ++i) { udp_fds[i]=create(); assert(udp_fds[i]>=0); }
+    online=true; tick(); /* Restore the mock link before owner-serviced fillers. */
+    for (unsigned i=0; i<15; ++i) { udp_fds[i]=create(); if (udp_fds[i]<0) fprintf(stderr,"UDP filler %u: %d\n",i,udp_fds[i]); assert(udp_fds[i]>=0); }
     assert(acceptfd(listener,&peer,&size)==SYSCALL_ENOSPC);
     for (unsigned i=0; i<15; ++i) closefd(udp_fds[i]);
     assert(!net_tcp_accept_peek(slot,&after,&peer));

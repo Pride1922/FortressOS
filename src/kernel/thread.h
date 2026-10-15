@@ -132,6 +132,10 @@ void   thread_yield(void);
  * under the local sched lock with IRQs disabled;
  * it must neither block nor acquire locks. Publish events before waking. */
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg);
+/* Only for an already published bounded owner commit/cancel acknowledgement.
+ * Defers signals until acknowledgement; never use for peer/resource waits.
+ * Same IRQ-excluded enrollment/context ownership as sched_wait_until. */
+void sched_wait_until_ack(const void *channel, bool (*ready)(void *), void *arg);
 void sched_wake_all(const void *channel);
 void thread_wake_for_signal(uint64_t pid);
 /* Post-EOI/IRQ-depth-unwind or normal syscall user return only, IF=0.

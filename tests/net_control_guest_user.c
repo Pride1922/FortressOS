@@ -41,6 +41,7 @@ int net_cpu_probe_main(int argc,char **argv) {
         rc=call(SYS_NETCTL,NETCTL_PING,(uintptr_t)&ping,sizeof(ping));
         if (mode=='p' && (!rc && ping.outcome!=NETPING_REPLY)) return 7;
         if (rc!=0 && rc!=SYSCALL_EAGAIN && rc!=SYSCALL_EINTR) return 8;
+        if (mode=='e') return 0; /* All three finite lifecycle outcomes above are allowed. */
     } else if (mode=='t') {
         sysinfo_t info={0};
         if (call(SYS_SYSINFO,(uintptr_t)&info,sizeof(info),0)) return 13;

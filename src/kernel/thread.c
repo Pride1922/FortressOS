@@ -891,13 +891,14 @@ void sched_resched_user_return(interrupt_frame_t *frame) {
 
 /* Checking the event and publishing BLOCKED are one IRQ-disabled scheduler
  * transaction. Producers cannot slip a wakeup between these operations. */
-void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
+static void sched_wait_event(const void *channel, bool (*ready)(void *), void *arg,
+                             bool interruptible) {
     for (;;) {
         /* No subsystem lock is held here. A default stop parks this exact
          * continuation; after CONT it retries the operation's predicate. */
-        if (process_signal_interrupt()) return;
+        if (interruptible && process_signal_interrupt()) return;
         uint64_t flags = spin_lock_irqsave(&g_sched_lock);
-        if (ready(arg) || process_signal_pending()) {
+        if (ready(arg) || (interruptible && process_signal_pending())) {
             spin_unlock_irqrestore(&g_sched_lock, flags);
             return;
         }
@@ -948,6 +949,14 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
         if (flags & (1ULL << 9)) __asm__ volatile("sti" ::: "memory");
         /* Another reader may have consumed the event before we resumed. */
     }
+}
+
+void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
+    sched_wait_event(channel,ready,arg,true);
+}
+
+void sched_wait_until_ack(const void *channel, bool (*ready)(void *), void *arg) {
+    sched_wait_event(channel,ready,arg,false);
 }
 
 /* IRQ-safe: enqueue only; the timer/idle path performs the actual switch, so

@@ -43,6 +43,15 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 
 Next open items not blocking any current milestone: Network SMP handoff (started), system introspection syscalls + `sysinfo`/`top`/`ps`, shell improvements, MicroPython.
 
+Network SMP Phase 2B is COMPLETE: UDP create/bind/send/receive and DNS route
+through the CPU-0 owner from any CPU (BSP and AP), with retained file references,
+bounded copy pins, FIFO slab tickets, owner commit/abort and deferred detach.
+Acceptance campaign `gate-fhnnk8qq` PASS (12/12 boots on e1000e, BIOS/UEFI ×
+SMP=1/4/8) and follow-up `gate-1te338y2` PASS (4/4 boots on e1000, BIOS/UEFI SMP=4).
+Scope boundary: TCP remains BSP-pinned with CPU guards until Phase 2C/2D; production
+spawn pinning remains until Phase 3; no physical acceptance claimed. Read
+[Phase 2B audit and evidence](docs/roadmap/network-smp-phase2b.md).
+
 ## 3. Build, Run, Debug and Verify
 
 Run Linux tools in WSL `Ubuntu-24.04` at `/mnt/c/Sources/FortressOS` (or a Linux checkout). Prerequisites: GCC/binutils, NASM, make, xorriso, git, QEMU x86, OVMF, Python 3, e2fsprogs; GDB for interactive debugging. No hosted runtime in the OS.

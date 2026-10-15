@@ -51,10 +51,13 @@ Phase 9 gate and provides no evidence of a journal or USB fault.
 - **Current SMP Execution Boundaries:**
   - Pipe and input peers remain BSP-pinned; cross-core wake channels remain future work.
   - Networking RX/TX worker remains BSP-pinned.
-  - Network SMP Phase 2A control and finite probes accept copied requests from
-    every application CPU through the same registered CPU-0 owner. Real Ring 3
-    AP execution remains snapshot-only; production spawn pinning and UDP/TCP
-    guards remain. See [qualified gates](../roadmap/network-smp-phase2a.md).
+  - Network SMP Phase 2B is COMPLETE: UDP create/bind/send/receive and DNS
+    route through the CPU-0 owner from any application CPU, with retained file
+    references, copy pins, FIFO slab tickets, owner commit/abort and deferred
+    detach. Acceptance campaign `gate-fhnnk8qq` (12/12 boots PASS, e1000e) and
+    `gate-1te338y2` (4/4 boots PASS, e1000) verified under BIOS & UEFI SMP=1/4/8.
+    Production spawn pinning and TCP guards remain until Phase 2C/2D and Phase 3.
+    See [Phase 2B gates](../roadmap/network-smp-phase2b.md).
 
 ---
 

@@ -20,7 +20,10 @@
 #include "syscall_abi.h"
 #include "thread.h"
 #include "percpu.h"
-static tcb_t process;
+#include "net_udp_owner.h"
+static _Thread_local tcb_t process;
+static uint64_t net_host_owner_tid;
+void net_control_assert_owner(void) { if (net_host_owner_tid) assert(process.tid==net_host_owner_tid); }
 #ifdef TEST_PERMISSIONS_ENFORCEMENT
 static uint64_t bind_caps;
 #endif
@@ -55,7 +58,8 @@ void net_test_assert_unheld(void);
 cpu_local_t cpu_locals[MAX_DETECTED_CPUS];
 volatile bool g_cpu_installed[MAX_DETECTED_CPUS];
 static uint64_t now;
-static bool echo=true, cached=true, signal_pending, online=true, tx_fail;
+static bool echo=true, cached=true, online=true, tx_fail;
+static _Thread_local bool signal_pending;
 static int fail_alloc=-1;
 static unsigned allocations, sends, arps, wakes;
 static uint8_t frame[1514], reply[1500];
@@ -63,14 +67,14 @@ static const uint8_t readonly[16]={0};
 static net_dev_t dev;
 static uint64_t timer_hz=100;
 uint64_t apic_timer_get_frequency(void) { return timer_hz; }
-uint64_t apic_timer_get_bsp_ticks(void) { return now; }
+uint64_t apic_timer_get_bsp_ticks(void) { return __atomic_load_n(&now,__ATOMIC_ACQUIRE); }
 void *kmalloc(size_t n) {
     net_test_assert_unheld();
     if (fail_alloc==0) return NULL;
     if (fail_alloc>0) --fail_alloc;
-    void *p=malloc(n); if (p) ++allocations; return p;
+    void *p=malloc(n); if (p) __atomic_add_fetch(&allocations,1,__ATOMIC_ACQ_REL); return p;
 }
-void kfree(void *p) { if (p) { assert(allocations); --allocations; free(p); } }
+void kfree(void *p) { if (p) { assert(__atomic_fetch_sub(&allocations,1,__ATOMIC_ACQ_REL)); free(p); } }
 tcb_t *thread_current(void) { return &process; }
 bool process_signal_interrupt(void) { return signal_pending; }
 int64_t process_signal_send(uint64_t sender, int64_t selector, unsigned signal) {
@@ -98,14 +102,23 @@ int vfs_close(file_t *f) {
     if (__atomic_sub_fetch(&f->ref_count,1,__ATOMIC_ACQ_REL)==0) { f->node->close(f->node); kfree(f); }
     return 0;
 }
-static void closefd(int fd) { vfs_close(process.fd_table[fd]); process.fd_table[fd]=NULL; }
+static void tick(void);
+static void closefd(int fd) {
+    vfs_close(process.fd_table[fd]); process.fd_table[fd]=NULL;
+    /* Deferred last operation refs and final detach are owner acknowledgments. */
+    for (unsigned i=0;i<16;++i) tick();
+}
 static unsigned poll_requests;
 static unsigned handoff_yields;
 void thread_yield(void) { net_test_assert_unheld(); ++handoff_yields; }
 void net_request_poll(void) { net_test_assert_unheld(); ++poll_requests; }
-void sched_wake_all(const void *channel) { assert(channel); ++wakes; }
+void (*net_host_wake_override)(const void *);
+void sched_wake_all(const void *channel) {
+    assert(channel); __atomic_add_fetch(&wakes,1,__ATOMIC_RELAXED);
+    if (net_host_wake_override) net_host_wake_override(channel);
+}
 int net_arp_lookup(uint32_t ip, uint8_t mac[6]) { (void)ip; memset(mac,2,6); return cached ? 0 : -1; }
-int arp_resolve(net_dev_t *d, uint32_t ip, uint8_t mac[6]) { (void)d; ++arps; return cached ? net_arp_lookup(ip,mac) : 1; }
+int arp_resolve(net_dev_t *d, uint32_t ip, uint8_t mac[6]) { (void)d; __atomic_add_fetch(&arps,1,__ATOMIC_RELEASE); return cached ? net_arp_lookup(ip,mac) : 1; }
 static int transmit(net_dev_t *d, const void *bytes, size_t n) {
     net_test_assert_unheld();
     assert(d==&dev && n<=1514); ++sends; memcpy(frame,bytes,n);
@@ -121,7 +134,26 @@ static int transmit(net_dev_t *d, const void *bytes, size_t n) {
     return 0;
 }
 static void tick(void) {
-    net_socket_worker_tick(now,online); net_ipv4_tick(now); net_socket_worker_tick(now,online); ++now;
+    uint64_t at=apic_timer_get_bsp_ticks();
+    net_socket_worker_tick(at,online); net_ipv4_tick(at); net_socket_worker_tick(at,online);
+    __atomic_add_fetch(&now,1,__ATOMIC_RELEASE);
+    handoff_acknowledge(); net_udp_maintenance();
+    for (unsigned i=0;i<8;++i) {
+        handoff_token_t t; handoff_request_t r;
+        if (!handoff_claim(&t,&r)) break;
+        net_udp_step(t,r);
+    }
+    for (unsigned i=0;i<8;++i) {
+        handoff_token_t t; handoff_request_t r;
+        if (!handoff_pending(&t,&r)) break;
+        net_udp_step(t,r);
+    }
+}
+static pthread_mutex_t config_lock=PTHREAD_MUTEX_INITIALIZER;
+bool net_socket_address_snapshot(uint32_t ip,bool remote) {
+    pthread_mutex_lock(&config_lock);
+    bool valid=remote ? net_ipv4_unicast(ip) && ip!=net_ipv4_local() : !ip || ip==net_ipv4_local();
+    pthread_mutex_unlock(&config_lock); return valid;
 }
 void (*net_host_wait_override)(const void *, bool (*)(void *), void *);
 void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
@@ -137,11 +169,21 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg) {
     }
     assert(!"unbounded socket wait");
 }
+void sched_wait_until_ack(const void *channel,bool (*ready)(void *),void *arg) {
+    bool saved=signal_pending;
+    signal_pending=false;
+    sched_wait_until(channel,ready,arg);
+    signal_pending=saved;
+}
 static int64_t call(unsigned nr, uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
     interrupt_frame_t frame={.rax=nr,.rdi=a,.rsi=b,.rdx=c,.r10=d,.r8=e,.r9=f};
     return net_socket_syscall(&frame);
 }
-static int create(void) { return (int)call(SYS_SOCKET,2,2,0,0,0,0); }
+static int create(void) {
+    /* Adapter task identity survives fixtures that reset the rest of the TCB. */
+    if (!process.tid) process.tid=1;
+    return (int)call(SYS_SOCKET,2,2,0,0,0,0);
+}
 static net_sockaddr_in_t destination, source;
 static uint8_t buffer[1472], output[1472];
 static uint32_t source_size;
@@ -151,6 +193,7 @@ static int64_t recvfd(int fd, size_t n, unsigned flags) {
     return call(SYS_RECVFROM,fd,(uintptr_t)output,n,flags,(uintptr_t)&source,(uintptr_t)&source_size);
 }
 int main(void) {
+    process.tid=1; handoff_start();
     process.cpu_affinity=0;
     dev=(net_dev_t){.mtu=1500,.send_packet=transmit};
     net_config_t cfg={.local_ip=htonl(0x0a00020f),.gateway=htonl(0x0a000202),.prefix=24};
@@ -181,8 +224,8 @@ int main(void) {
 #endif
     destination=(net_sockaddr_in_t){.family=2,.port=htons(7777),.address=cfg.gateway};
     for (unsigned i=0; i<1472; ++i) buffer[i]=(uint8_t)i;
-    cpu_locals[0].id=1; assert(create()==SYSCALL_EOPNOTSUPP); cpu_locals[0].id=0;
-    process.cpu_affinity=-1; assert(create()==SYSCALL_EOPNOTSUPP); process.cpu_affinity=0;
+    cpu_locals[0].id=1; int ap=create(); assert(ap>=0); closefd(ap); cpu_locals[0].id=0;
+    process.cpu_affinity=-1; ap=create(); assert(ap>=0); closefd(ap); process.cpu_affinity=0;
     assert(call(SYS_SOCKET,2,0x100000002ull,0,0,0,0)==SYSCALL_EOPNOTSUPP);
     for (int fail=0; fail<2; ++fail) { fail_alloc=fail; assert(create()==SYSCALL_ENOMEM); assert(!allocations); }
     fail_alloc=-1;
@@ -208,7 +251,7 @@ int main(void) {
     for (unsigned i=0; i<5; ++i) { uint8_t value=(uint8_t)i; net_socket_input(cfg.gateway,123,7777,&value,1); }
     for (unsigned i=0; i<4; ++i) { assert(recvfd(fd,1,0)==1 && output[0]==i); }
     assert(recvfd(fd,1,NET_MSG_DONTWAIT)==SYSCALL_EAGAIN);
-    uint64_t start=now; assert(recvfd(fd,1,0)==SYSCALL_EAGAIN && now-start>=500 && now-start<505);
+    uint64_t start=now; assert(recvfd(fd,1,0)==SYSCALL_EAGAIN && now-start>=500 && now-start<525);
     signal_pending=true; assert(recvfd(fd,1,0)==SYSCALL_EINTR); signal_pending=false;
     net_socket_wait_t stale, active;
     assert(!net_socket_receive(process.fd_table[fd],false,&stale));
@@ -227,6 +270,7 @@ int main(void) {
     int fds[16];
     for (unsigned i=0; i<16; ++i) { fds[i]=create(); assert(fds[i]>=0); }
     assert(create()==SYSCALL_ENOSPC);
+    fail_alloc=0; assert(create()==SYSCALL_ENOSPC); fail_alloc=-1;
     /* Sixteen simultaneous cold sends share one ARP attempt per next hop. */
     net_socket_wait_t pending[16]; cached=false; echo=false; before=arps;
     for (unsigned i=0; i<16; ++i)
@@ -256,7 +300,9 @@ int main(void) {
         if (!original) process.fd_table[i]=NULL;
     }
     for (unsigned i=0; i<16; ++i) closefd(fds[i]);
-    assert(!allocations && sends && wakes);
+    for (unsigned i=0;i<16;++i) tick();
+    assert(!handoff_stats().live && !allocations && sends && wakes);
+    assert(!net_udp_owner_work());
     puts("UDP socket/syscall ASan/UBSan PASS: actual codecs/stack/pool/syscalls; mocked memory/fd/tick/scheduler adapters; bounds, payloads, timeout, lease, bind/queue/pool saturation, shared lifetime, failures");
     return 0;
 }

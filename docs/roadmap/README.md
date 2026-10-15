@@ -18,6 +18,8 @@ and are not proof that every current revision has passed every test — check
 
 ## Phase files
 
+Network SMP integration: COMPLETE [Phase 2B UDP/DNS audit, gates and qualifications](network-smp-phase2b.md); Phase 2C (TCP) remains next.
+
 Persistent root / NVMe installer: [Phase 0 contracts and disposable fixture evidence](persistent-root-phase0.md).
 Executable and boot-only namespace plumbing: [Phase 1 acceptance evidence](persistent-root-phase1.md).
 Installed boot, authenticated recovery and shutdown: [Phase 2 acceptance evidence](persistent-root-phase2.md).
@@ -49,7 +51,7 @@ Targeted experiment: [kernel-stack batch mapping and matched Dell images](kstack
 | [ext4-usb-performance.md](ext4-usb-performance.md) | Bounded 4 KiB BOT runs, fine polling and zero staging; host and BIOS/UEFI USB gates PASS, Dell manual performance/hash/reboot/fsck PASS. |
 | [net-traceroute.md](net-traceroute.md) | Finite numeric ICMP traceroute, approved probe ABI and shared ping mailbox; host sanitizer and QEMU 4/4 PASS, Dell acceptance pending. |
 | [download-checksums.md](download-checksums.md) | Streaming MD5/SHA-256 tools and manifests; host sanitizer/4 GiB streams and BIOS/UEFI 32/32 PASS, Dell acceptance pending. |
-| [net-config.md](net-config.md) | COMPLETE (2026-10-02): NET-3 runtime network configuration (/bin/ifconfig, /bin/ifup, /mnt/.fortress/network.conf, DNS fallback); host ASan/UBSan PASS, BIOS/UEFI QEMU 10/10 PASS, Dell Latitude 5590 physical acceptance user-confirmed PASS. |
+| [net-config.md](net-config.md) | COMPLETE (2026-10-02): NET-3 runtime network configuration (/sbin/ifconfig, /sbin/ifup, /mnt/.fortress/network.conf, DNS fallback); host ASan/UBSan PASS, BIOS/UEFI QEMU 10/10 PASS, Dell Latitude 5590 physical acceptance user-confirmed PASS. |
 | [net-link-recovery.md](net-link-recovery.md) | COMPLETE (2026-10-02): Cold cable waiting, deferred activation, and retained-ring link recovery; host/QEMU 8/8 PASS, Dell Latitude 5590 physical acceptance 6/6 PASS (autonomous PHY renegotiation confirmed). |
 | [net2-step7.md](net2-step7.md) | COMPLETE: DNS/nslookup/hostname nc, approved TCP deadlines, host/QEMU evidence and Dell 5590 physical DNS user-confirmed PASS; NET-2 7/7 complete. |
 | [net2-step6.md](net2-step6.md) | Dell 5590 physical TCP A–D user-confirmed PASS; Step 6 closed, NET-2 6/7 complete. |

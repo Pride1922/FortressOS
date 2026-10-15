@@ -7,6 +7,7 @@
 #include "heap.h"
 #include "string.h"
 #include "net_tcp.h"
+#include "net_control.h"
 
 typedef struct {
     net_sockaddr_in_t source;
@@ -16,10 +17,11 @@ typedef struct {
 typedef struct {
     uint64_t token, done, expire, deadline;
     int64_t result;
-    bool published;
+    bool published, retained;
 } operation_t;
 typedef struct {
-    bool used, bound, wake, stream, staged_stream;
+    bool used, bound, wake, stream, staged_stream, detaching;
+    uint64_t identity;
     uint16_t port; /* Host order; wildcard/local binds share a port namespace. */
     unsigned head, count;
     datagram_t rx[NET_SOCKET_RX_MAX], staged;
@@ -41,10 +43,10 @@ static uint8_t s_worker_data[NET_UDP_DATA_MAX];
 static unsigned s_cursor;
 static uint64_t s_unbound_dropped;
 
-static uint64_t generation(void) { if (++s_generation==0) ++s_generation; return s_generation; }
+static uint64_t generation(void) { return s_generation==UINT64_MAX ? 0 : ++s_generation; }
 static operation_t *operation(socket_t *s, bool receive) { return receive ? &s->receive : &s->tx; }
 static void invalidate(operation_t *op) {
-    op->published=false;
+    op->published=false; op->retained=false;
     __atomic_store_n(&op->token,0,__ATOMIC_RELEASE);
     __atomic_store_n(&op->done,0,__ATOMIC_RELEASE);
 }
@@ -56,10 +58,19 @@ static int64_t unsupported_write(vfs_node_t *n, uint64_t *o, bool a, const void 
 }
 static void socket_close(vfs_node_t *node) {
     socket_t *s=node->fs_private;
+    if (!s) { kfree(node); return; }
     uint64_t irq=spin_lock_irqsave(&s_lock);
     /* Capture kind before freeing the common slot: an AP final-close may
      * overlap a BSP constructor attempting to reuse it after unlock. */
     bool stream=s->stream, staged=s->staged_stream;
+    if (!stream) {
+        /* Final release never mutates UDP protocol state. Reuse is fenced until
+         * the CPU-0 sweep has cancelled the IPv4 operation and acknowledged. */
+        s->detaching=true;
+        spin_unlock_irqrestore(&s_lock,irq);
+        net_request_poll();
+        kfree(node); return;
+    }
     s->used=false; s->bound=false; s->count=0;
     s->wake=true;
     invalidate(&s->tx); invalidate(&s->receive);
@@ -76,6 +87,14 @@ bool net_socket_file(file_t *f) { return f && f->node && f->node->close==socket_
 static socket_t *slot(file_t *f) { return net_socket_file(f) ? f->node->fs_private : NULL; }
 bool net_socket_stream(file_t *f) { socket_t *s=slot(f); return s && s->stream; }
 unsigned net_socket_index(file_t *f) { return (unsigned)(slot(f)-s_slots); }
+uint64_t net_socket_identity(file_t *f) {
+    uint64_t irq=spin_lock_irqsave(&s_lock);
+    socket_t *s=slot(f); uint64_t identity=s && s->used ? s->identity : 0;
+    spin_unlock_irqrestore(&s_lock,irq); return identity;
+}
+bool net_socket_identity_live(file_t *f,uint64_t identity) {
+    return identity && net_socket_identity(f)==identity;
+}
 void net_socket_init(net_dev_t *dev, const net_config_t *cfg) {
     memset(s_slots,0,sizeof(s_slots)); s_generation=0; s_ephemeral=49152;
     net_tcp_init(dev,cfg);
@@ -102,6 +121,9 @@ static int64_t create(file_t **out, bool stream, bool staged) {
     socket_t *s=NULL;
     for (unsigned i=0; i<NET_SOCKET_MAX; ++i) if (!s_slots[i].used) { s=&s_slots[i]; break; }
     if (!s) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_ENOSPC; }
+    uint64_t identity=generation();
+    if (!identity) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_ENOSPC; }
+    s->identity=identity; s->detaching=false;
     s->used=true; s->bound=false; s->head=s->count=0; s->dropped=0;
     s->stream=stream;
     s->staged_stream=staged;
@@ -130,6 +152,30 @@ static int64_t create(file_t **out, bool stream, bool staged) {
     *out=file; return 0;
 }
 int64_t net_socket_create(file_t **out) { return create(out,false,false); }
+int64_t net_socket_prepare(file_t **out) {
+    *out=NULL;
+    vfs_node_t *node=kmalloc(sizeof(*node)); file_t *file=kmalloc(sizeof(*file));
+    if (!node || !file) { kfree(node); kfree(file); return SYSCALL_ENOMEM; }
+    *node=(vfs_node_t){.type=VFS_STREAM,.is_stream=true,.read=unsupported_read,
+        .write=unsupported_write,.close=socket_close};
+    *file=(file_t){.node=node,.flags=VFS_O_RDWR,.ref_count=1};
+    *out=file; return 0;
+}
+int64_t net_socket_activate(file_t *file) {
+    net_control_assert_owner();
+    if (!net_socket_available()) return SYSCALL_EIO;
+    uint64_t irq=spin_lock_irqsave(&s_lock);
+    socket_t *s=NULL;
+    for (unsigned i=0;i<NET_SOCKET_MAX;++i) if (!s_slots[i].used) { s=&s_slots[i]; break; }
+    uint64_t identity=s ? generation() : 0;
+    if (!identity) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_ENOSPC; }
+    if (!file) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_ENOMEM; }
+    s->used=true; s->identity=identity; s->detaching=false; s->stream=false;
+    s->staged_stream=false; s->bound=false; s->head=s->count=0; s->dropped=0;
+    invalidate(&s->tx); invalidate(&s->receive);
+    file->node->fs_private=s;
+    spin_unlock_irqrestore(&s_lock,irq); return 0;
+}
 int64_t net_socket_create_stream(file_t **out) { return create(out,true,false); }
 int64_t net_socket_stage_stream(file_t **out) { return create(out,true,true); }
 void net_socket_finish_adopt(file_t *file) {
@@ -162,20 +208,25 @@ int64_t net_socket_bind(file_t *file, const net_sockaddr_in_t *a) {
     if (a->address && a->address!=s_local) return SYSCALL_EINVAL;
     if (!net_socket_available()) return SYSCALL_EIO;
     if (s->stream) return net_tcp_bind((unsigned)(s-s_slots),ntohs(a->port));
+    net_control_assert_owner();
     uint64_t irq=spin_lock_irqsave(&s_lock);
     int64_t ret=bind_unlocked(s,ntohs(a->port));
     spin_unlock_irqrestore(&s_lock,irq); return ret;
 }
-static void reserve(operation_t *op, net_socket_wait_t *w, socket_t *s, bool receive) {
+static bool reserve(operation_t *op, net_socket_wait_t *w, socket_t *s, bool receive) {
     uint64_t now=apic_timer_get_bsp_ticks(), hz=apic_timer_get_frequency();
-    uint64_t token=generation(); op->expire=now+(receive ? 7 : 5)*hz;
-    op->deadline=now+5*hz; op->published=false; op->result=0;
+    uint64_t token=generation();
+    if (!token || hz>UINT64_MAX/7 || now>UINT64_MAX-7*hz) return false;
+    op->expire=now+(receive ? 7 : 5)*hz;
+    op->deadline=now+5*hz; op->published=false; op->retained=false; op->result=0;
     __atomic_store_n(&op->done,0,__ATOMIC_RELEASE);
     __atomic_store_n(&op->token,token,__ATOMIC_RELEASE);
     *w=(net_socket_wait_t){(unsigned)(s-s_slots),token,receive};
+    return true;
 }
 int64_t net_socket_send(file_t *file, const net_sockaddr_in_t *dest,
                         const void *data, size_t len, net_socket_wait_t *w) {
+    net_control_assert_owner();
     socket_t *s=slot(file);
     if (!s) return SYSCALL_EBADF;
     if (!net_socket_available() || s_mtu<28) return SYSCALL_EIO;
@@ -186,10 +237,11 @@ int64_t net_socket_send(file_t *file, const net_sockaddr_in_t *dest,
     if (s->tx.token) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_EAGAIN; }
     int64_t ret=s->bound ? 0 : bind_unlocked(s,0);
     if (ret) { spin_unlock_irqrestore(&s_lock,irq); return ret; }
-    reserve(&s->tx,w,s,false); s->dest=*dest; s->tx_len=len;
+    if (!reserve(&s->tx,w,s,false)) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_EIO; }
+    s->dest=*dest; s->tx_len=len;
     spin_unlock_irqrestore(&s_lock,irq);
-    /* Called from BSP syscall with IF clear. Exclusive reservation, no user
-     * copy under socket lock; worker cannot see data until published. */
+    /* Registered CPU-0 owner, exclusive reservation, copied kernel data.
+     * No payload copy under socket lock; transport sees data after publish. */
     if (len) memcpy(s->tx_data,data,len);
     irq=spin_lock_irqsave(&s_lock);
     if (s->tx.token!=w->token) ret=SYSCALL_EINTR;
@@ -197,6 +249,7 @@ int64_t net_socket_send(file_t *file, const net_sockaddr_in_t *dest,
     spin_unlock_irqrestore(&s_lock,irq); return ret;
 }
 int64_t net_socket_receive(file_t *file, bool nonblocking, net_socket_wait_t *w) {
+    net_control_assert_owner();
     socket_t *s=slot(file);
     if (!s) return SYSCALL_EBADF;
     if (!net_socket_available()) return SYSCALL_EIO;
@@ -205,7 +258,7 @@ int64_t net_socket_receive(file_t *file, bool nonblocking, net_socket_wait_t *w)
     int64_t ret=s->bound ? 0 : bind_unlocked(s,0);
     if (ret) { spin_unlock_irqrestore(&s_lock,irq); return ret; }
     if (nonblocking && !s->count) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_EAGAIN; }
-    reserve(&s->receive,w,s,true);
+    if (!reserve(&s->receive,w,s,true)) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_EIO; }
     if (s->count) __atomic_store_n(&s->receive.done,w->token,__ATOMIC_RELEASE);
     spin_unlock_irqrestore(&s_lock,irq); return 0;
 }
@@ -235,7 +288,17 @@ int64_t net_socket_result(const net_socket_wait_t *w, const uint8_t **data,
     }
     spin_unlock_irqrestore(&s_lock,irq); return ret;
 }
+void net_socket_retain(const net_socket_wait_t *w,uint64_t deadline) {
+    net_control_assert_owner();
+    uint64_t irq=spin_lock_irqsave(&s_lock);
+    operation_t *op=operation(&s_slots[w->slot],w->receive);
+    if (op->token!=w->token) __builtin_trap();
+    op->retained=true;
+    if (w->receive) op->deadline=deadline;
+    spin_unlock_irqrestore(&s_lock,irq);
+}
 void net_socket_finish(const net_socket_wait_t *w, bool consume) {
+    net_control_assert_owner();
     socket_t *s=&s_slots[w->slot]; operation_t *op=operation(s,w->receive);
     uint64_t irq=spin_lock_irqsave(&s_lock);
     if (op->token==w->token) {
@@ -268,8 +331,18 @@ void net_socket_worker_tick(uint64_t now, bool online) {
         socket_t *s=&s_slots[i];
         uint64_t irq=spin_lock_irqsave(&s_lock);
         bool wake=s->wake; s->wake=false;
-        if (s->tx.token && now>=s->tx.expire) { invalidate(&s->tx); wake=true; }
-        if (s->receive.token && now>=s->receive.expire) { invalidate(&s->receive); wake=true; }
+        if (s->detaching) {
+            invalidate(&s->tx); invalidate(&s->receive);
+            s->count=0; s->bound=false;
+            spin_unlock_irqrestore(&s_lock,irq);
+            net_ipv4_udp_sync(i,0);
+            irq=spin_lock_irqsave(&s_lock);
+            s->detaching=false; s->used=false;
+            spin_unlock_irqrestore(&s_lock,irq);
+            sched_wake_all(&s->channel); continue;
+        }
+        if (s->tx.token && !s->tx.retained && now>=s->tx.expire) { invalidate(&s->tx); wake=true; }
+        if (s->receive.token && !s->receive.retained && now>=s->receive.expire) { invalidate(&s->receive); wake=true; }
         uint64_t token=s->used ? s->tx.token : 0;
         bool submit=token && s->tx.published;
         net_sockaddr_in_t dest=s->dest; size_t len=s->tx_len; uint16_t port=s->port;

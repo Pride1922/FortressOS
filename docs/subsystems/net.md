@@ -6,7 +6,17 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
-2026-10-14 Network SMP Phase 2A: application IFGET, authorized IFSET, ping and
+2026-10-15 Network SMP Phase 2B is COMPLETE: UDP create/bind/send/receive, copied
+payload reservation/commit and final detach use the registered CPU-0 owner from every
+application CPU (BSP and AP). DNS queries (`nslookup`, resolver fallback) route
+through UDP to the CPU-0 owner from any CPU. Acceptance campaign `gate-fhnnk8qq`
+(12/12 boots on e1000e, BIOS/UEFI × SMP=1/4/8) and follow-up `gate-1te338y2` (4/4 boots
+on e1000, BIOS/UEFI SMP=4) PASS. Checked file references and endpoint reuse fences survive
+cancellation, inherited close and caller death. Production spawn pinning and TCP guards
+remain until Phase 2C/2D and Phase 3. See [Phase 2B audit and gates](../roadmap/network-smp-phase2b.md);
+no physical acceptance of this migration or Phase 2C implementation is claimed.
+
+Historical 2026-10-14 Network SMP Phase 2A: application IFGET, authorized IFSET, ping and
 traceroute use one registered CPU-0 owner through copied kernel-owned requests
 on both BSP and AP. Production spawn pinning and all UDP/TCP CPU guards remain.
 Actual-code ASan/UBSan/TSan and 12 BIOS/UEFI × SMP=1/4/8 installed-root boots pass;

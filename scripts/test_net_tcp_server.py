@@ -111,7 +111,7 @@ def run(mode, model, cpus, iso, tmp):
                         assert answer == chunk
                     connection.shutdown(socket.SHUT_WR); assert connection.recv(1) == b''
             wait(lambda t: 'fortress> ' in t and 'Gateway ARP resolved' in t, 120)
-            if cpus == 4: wait(lambda t: 'AP socket dispatch rejection PASS' in t)
+            if cpus == 4: wait(lambda t: 'AP TCP dispatch rejection PASS' in t)
             at = start('tcpserve 9000')
             wait(lambda t: 'TCP server listening' in t[at:]); peer()
             wait(lambda t: 'TCP finite server / accept ABI / child independence PASS' in t[at:] and t[at:].rstrip().endswith('fortress>'))

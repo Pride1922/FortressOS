@@ -38,6 +38,7 @@ extern const char g_net_poll_channel;
 int net_get_ifconfig(netctl_ifget_t *out);
 /* Caller-safe destination validation, serialized with configuration. */
 bool net_unicast_snapshot(uint32_t ip);
+bool net_socket_address_snapshot(uint32_t ip,bool remote);
 /* Read-only validation is caller-safe; application remains owner-only. */
 int net_validate_ifset(const netctl_ifset_t *set, net_config_t *out_cfg);
 void net_set_config(const net_config_t *new_cfg);

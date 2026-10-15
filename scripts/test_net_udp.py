@@ -145,6 +145,8 @@ def run(mode, model, backend, cpus, iso, tmp):
                 uart.settimeout(.1)
                 def text():
                     return re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]', '', log.read_text(errors='replace')).replace('\r', '')
+                def prompt(value):
+                    return re.search(r'(?:fortress>|[A-Za-z0-9_-]+@[^:\r\n ]+:[^\r\n]*[#$])\s*$',value)
                 def wait(predicate, timeout=45):
                     end = time.monotonic() + timeout
                     while time.monotonic() < end:
@@ -154,19 +156,25 @@ def run(mode, model, backend, cpus, iso, tmp):
                         if predicate(value): return value
                         assert proc.poll() is None, log.with_suffix('.stderr').read_text()
                     raise AssertionError(text()[-7000:])
-                wait(lambda t: 'fortress> ' in t and 'Gateway ARP resolved' in t, 120)
+                wait(lambda t: prompt(t) and 'Gateway ARP resolved' in t, 120)
                 if cpus == 4:
-                    wait(lambda t: '[NET 5] AP socket dispatch rejection PASS' in t)
+                    wait(lambda t: '[NET 5] AP TCP dispatch rejection PASS' in t)
                 def start(line):
                     at = len(text())
                     for byte in line.encode() + b'\n':
                         uart.sendall(bytes([byte])); time.sleep(.025)
+                        # Keep emulator output flowing during prompt redraws;
+                        # QEMU's logfile remains the unmodified evidence source.
+                        uart.setblocking(False)
+                        try: uart.recv(65536)
+                        except BlockingIOError: pass
+                        finally: uart.settimeout(.1)
                     return at
                 def execute(line, timeout=45):
                     at = start(line)
                     if line.endswith('&'):
                         return wait(lambda t: re.search(r'\[\d+\] \d+', t[at:]), timeout)[at:]
-                    return wait(lambda t: t[at:].rstrip().endswith('fortress>') and '\n' in t[at:], timeout)[at:]
+                    return wait(lambda t: prompt(t[at:]) and '\n' in t[at:], timeout)[at:]
                 target = '10.0.2.2'; echo_port = host_port if backend == 'user' else 7778
                 result = execute(f'udptest {target} {echo_port} fortress-phase5')
                 assert 'UDP echo PASS' in result, result
@@ -179,7 +187,7 @@ def run(mode, model, backend, cpus, iso, tmp):
                 at = start('/bin/net-udp-probe --caught')
                 wait(lambda t: 'UDP caught-signal receive ready' in t[at:])
                 uart.sendall(b'\x03')
-                wait(lambda t: 'UDP caught-signal receive PASS' in t[at:] and t[at:].rstrip().endswith('fortress>'))
+                wait(lambda t: 'UDP caught-signal receive PASS' in t[at:] and prompt(t[at:]))
                 # Incoming application traffic after the worker has slept.
                 at = start('udptest --listen 7777 4')
                 wait(lambda t: 'UDP listener ready' in t[at:])
@@ -198,7 +206,7 @@ def run(mode, model, backend, cpus, iso, tmp):
                             until = time.monotonic() + 5
                             while len(responses) == previous and time.monotonic() < until: time.sleep(.02)
                             assert responses[-1] == (5555, tag) and len(responses) == previous + 1
-                wait(lambda t: 'UDP listener PASS' in t[at:] and t[at:].rstrip().endswith('fortress>'))
+                wait(lambda t: 'UDP listener PASS' in t[at:] and prompt(t[at:]))
                 silent.set()
                 result = execute(f'udptest {target} {echo_port} silent')
                 assert 'udptest: error 21' in result, result
@@ -216,14 +224,17 @@ def run(mode, model, backend, cpus, iso, tmp):
                 at = start('udptest --listen 7777 1')
                 wait(lambda t: 'UDP listener ready' in t[at:])
                 uart.sendall(b'\x03')
-                wait(lambda t: t[at:].rstrip().endswith('fortress>'))
+                wait(lambda t: prompt(t[at:]))
                 if mode == 'bios' and model == 'e1000' and cpus == 1:
                     launch = execute('udptest --listen 7777 1 &')
                     job = re.search(r'\[(\d+)\] \d+', launch); assert job
                     execute(f'kill %{job[1]} STOP')
                     time.sleep(8)
                     at = len(text()); execute(f'kill %{job[1]} CONT')
-                    wait(lambda t: 'udptest: error 22' in t[at:])
+                    # Retained owner operations keep the original finite
+                    # receive deadline across STOP; expiry is EAGAIN, not the
+                    # superseded abandoned-operation lease's EINTR.
+                    wait(lambda t: 'udptest: error 21' in t[at:])
                     result = execute('udptest --listen 7777 1'); assert 'error 21' in result, result
                 result = execute('ping -c 1 10.0.2.2'); assert '1 probes, 1 replies' in result, result
                 assert not errors, errors
@@ -260,7 +271,7 @@ def main():
                 for model in ('e1000', 'e1000e'):
                     for backend in ('user', 'socket'): run(mode, model, backend, 1, iso, tmp)
             for mode in ('bios', 'uefi'): run(mode, 'e1000', 'user', 4, iso, tmp)
-            print('Phase 5a: eight SMP=1 cases + two SMP=4 BSP/AP-rejection smoke cases PASS; physical 5b pending.', flush=True)
+            print('Phase 5a: eight SMP=1 cases + two SMP=4 BSP/AP-TCP-rejection smoke cases PASS; physical 5b pending.', flush=True)
 
 
 if __name__ == '__main__':

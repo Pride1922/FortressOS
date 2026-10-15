@@ -32,8 +32,8 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
 - Shared kernel PML4 ownership, boot-module backing lifetime, and the
   current single-CPU assumptions (SMP pieces 1–6 are complete (see
   `docs/roadmap/smp-*.md`). The current binding assumption is that the
-  network worker and all socket syscalls remain BSP-pinned; cross-core
-  socket access is deferred).
+  network worker remains BSP-pinned and production commands remain pinned;
+  TCP syscall CPU/affinity guards remain until the separate TCP integration).
 - xHCI DMA ring state, BOT completion polling discipline (no sleeps or
   IRQ-enables under the ext2 lock), DMA quarantine on failure, and USB class
   filtering (only 0x08/0x06/0x50 accepted as BOT mass storage).
@@ -43,14 +43,19 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
 - **Sole BSP protocol owner.** All NIC I/O, timer sweeps, and TCP state changes
   run on CPU 0. Application callers on any CPU may publish copied IFGET,
   authorized IFSET, ping and traceroute requests to the registered CPU-0
-  worker, plus detach requests. AP code must not mutate connections or perform
-  NIC work. UDP/TCP syscall CPU guards and production spawn pinning remain;
-  broader socket ownership integration is deferred past Phase 2A.
+  worker, plus UDP create/bind/send/receive and detach requests (including UDP
+  DNS queries). UDP callers on every CPU retain checked file references and copy
+  through bounded pinned staging; only the registered owner mutates UDP state or
+  commits consumption. Final UDP close/death publishes cancellation/detach without
+  protocol work. AP code must not mutate connections or perform NIC work. TCP
+  CPU/affinity guards, existing BSP TCP continuations and production spawn
+  pinning remain; TCP ownership integration belongs to Phase 2C/2D.
 - **Polling-only ingress.** No NIC interrupt handlers or MSI vectors. Adding one
   is a contract change, not an optimization.
 - **Rank-1 network locks.** `g_net_dev_lock`, `g_socket_table_lock`,
   `g_tcp_endpoints_lock`, `g_net_stack_lock`, the ping mailbox lock, and the
-  socket-manager mailbox lock are all Rank 1. They never nest with each other
+  socket-manager mailbox lock, generic `handoff` and `udp_handoff_values`
+  locks are all Rank 1. They never nest with each other
   or with any other Rank-1 lock.
 - **Bounded static state.** 16 socket handles, 8 TCP connections,
   4-datagram-per-socket RX queues, one wake hint per endpoint, bounded work
@@ -79,7 +84,7 @@ Acquire in increasing rank order; release LIFO; never hold a spinlock across
 
 | Rank | Lock |
 | --- | --- |
-| 1 | per-CPU scheduler locks **or** `ext2_lock` **or** `g_process_lock` (global process/child metadata) **or** network locks (`g_net_dev_lock`, `g_socket_table_lock`, `g_tcp_endpoints_lock`, `g_net_stack_lock`, the ping mailbox lock, the socket-manager mailbox lock; all ordinary lock kind). Process/ext2 cannot nest with any rank-1 lock in either order; only scheduler pairs in increasing address order via `sched_lock_pair` are exempt. Network Rank-1 locks follow the same rule: they never nest with each other or with any other Rank-1 lock. |
+| 1 | per-CPU scheduler locks **or** `ext2_lock` **or** `g_process_lock` (global process/child metadata) **or** network locks (`g_net_dev_lock`, `g_socket_table_lock`, `g_tcp_endpoints_lock`, `g_net_stack_lock`, the ping mailbox lock, the socket-manager mailbox lock, `handoff`, `udp_handoff_values`; all ordinary lock kind). Process/ext2 cannot nest with any rank-1 lock in either order; only scheduler pairs in increasing address order via `sched_lock_pair` are exempt. Network Rank-1 locks follow the same rule: they never nest with each other or with any other Rank-1 lock. |
 | 2 | heap |
 | 3 | VMM |
 | 4 | PMM |

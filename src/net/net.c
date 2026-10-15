@@ -9,6 +9,7 @@
 #include "net_ipv4.h"
 #include "net_ping.h"
 #include "net_control.h"
+#include "net_udp_owner.h"
 #include "net_socket.h"
 #include "net_socket_syscall.h"
 #include "syscall_abi.h"
@@ -172,7 +173,7 @@ int net_arp_lookup(uint32_t ip, uint8_t out_mac[ETH_ALEN]) {
 static bool deadline_reached(void *arg) {
     /* Under scheduler lock: only ticks and an atomic hint, no nested locks. */
     uint64_t now=apic_timer_get_bsp_ticks(), deadline=*(uint64_t *)arg;
-    return handoff_owner_ready(NULL) || __atomic_load_n(&s_work_pending,__ATOMIC_ACQUIRE) ||
+    return handoff_owner_ready(NULL) || net_udp_owner_work() || __atomic_load_n(&s_work_pending,__ATOMIC_ACQUIRE) ||
            now>=deadline || (deadline && now<deadline-1);
 }
 void net_request_poll(void) {
@@ -217,8 +218,8 @@ void net_worker_main(void *arg) {
     for (;;) {
         bool work=__atomic_exchange_n(&s_work_pending,false,__ATOMIC_ACQ_REL);
         unsigned probe=__atomic_exchange_n(&s_ap_probe_result,0,__ATOMIC_ACQ_REL);
-        if (probe) serial_puts(probe==1 ? "[NET 5] AP socket dispatch rejection PASS\n" :
-            "[NET 5] AP socket dispatch rejection FAIL\n");
+        if (probe) serial_puts(probe==1 ? "[NET 5] AP TCP dispatch rejection PASS\n" :
+            "[NET 5] AP TCP dispatch rejection FAIL\n");
         bool online=e1000_service_link(s_if,apic_timer_get_bsp_ticks(),apic_timer_get_frequency());
         if (!online && was_online) arp_cache_init(&s_arp_cache);
         was_online=online;
@@ -255,7 +256,7 @@ void net_worker_main(void *arg) {
             s_probe_pending=false;
         }
         net_control_service();
-        work=work || handoff_owner_ready(NULL);
+        work=work || handoff_owner_ready(NULL) || net_udp_owner_work();
         /* Explicit test-only observation; own immortal worker TCB, no new
          * introspection ABI or scheduler operation. Idle means no RX packets
          * or active IPv4 TX/echo transaction throughout the measured window. */
@@ -319,10 +320,8 @@ void net_worker_main(void *arg) {
 static void socket_ap_probe(void *arg) {
     (void)arg;
     interrupt_frame_t frame={0}; bool pass=true;
-    for (unsigned nr=SYS_SOCKET; nr<=SYS_RECVFROM; ++nr) {
-        frame.rax=nr;
-        if (net_socket_syscall(&frame)!=SYSCALL_EOPNOTSUPP) pass=false;
-    }
+    frame=(interrupt_frame_t){.rax=SYS_SOCKET,.rdi=NET_AF_INET,.rsi=NET_SOCK_STREAM,.rdx=6};
+    if (net_socket_syscall(&frame)!=SYSCALL_EOPNOTSUPP) pass=false;
     for (unsigned nr=SYS_CONNECT; nr<=SYS_CONNECT_UNTIL; ++nr) {
         frame.rax=nr;
         if (net_socket_syscall(&frame)!=SYSCALL_EOPNOTSUPP) pass=false;
@@ -365,6 +364,12 @@ bool net_unicast_snapshot(uint32_t ip) {
         ((host>>24)!=0 && (host>>24)!=127 && (host>>24)<224);
     spin_unlock_irqrestore(&g_net_stack_lock,irq);
     return valid;
+}
+bool net_socket_address_snapshot(uint32_t ip,bool remote) {
+    uint64_t irq=spin_lock_irqsave(&g_net_stack_lock);
+    bool valid=remote ? net_ipv4_unicast(ip) && ip!=net_ipv4_local() :
+        (!ip || ip==net_ipv4_local());
+    spin_unlock_irqrestore(&g_net_stack_lock,irq); return valid;
 }
 
 int net_get_ifconfig(netctl_ifget_t *out) {

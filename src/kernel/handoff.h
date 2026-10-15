@@ -2,7 +2,7 @@
 #define FORTRESS_HANDOFF_H
 #include "types.h"
 
-/* Bounded value transport; Phase 2A control/probes are its network consumer.
+/* Bounded value transport; control/probes and retained UDP are its consumers.
  * One registered caller per actor; no pointers/TCBs or callbacks cross ownership.
  * API calls require thread context with no other locks held. The sole owner
  * serializes claim/finish/pending/control turns; it never blocks in a step.
@@ -18,6 +18,7 @@ typedef struct {
     int64_t cancel_status; /* Typed unclaimed cancellation; zero keeps inert -4. */
     uint32_t kind;
     bool control;
+    bool retained; /* Typed references require unlocked owner cleanup before recycle. */
 } handoff_request_t;
 typedef struct { int64_t status; uint64_t value; } handoff_reply_t;
 typedef enum {
@@ -52,6 +53,12 @@ void handoff_abandon(handoff_registration_t *registration);
 int handoff_collect(handoff_token_t token, handoff_reply_t *reply);
 /* <=8 acknowledgements per call; sole owner only. Caller release never frees. */
 unsigned handoff_acknowledge(void);
+bool handoff_inspect(handoff_token_t *token, handoff_request_t *request,
+                     handoff_state_t *state, bool *caller);
+/* Sole owner inspects one rotating record per call (eight per service turn).
+ * cleaned acknowledges typed references released outside the handoff lock;
+ * COMPLETED without caller interest still cannot recycle before this fence. */
+void handoff_cleaned(handoff_token_t token);
 handoff_stats_t handoff_stats(void);
 bool handoff_ready(void *token);
 uint64_t handoff_admission_snapshot(void);

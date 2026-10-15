@@ -5,6 +5,11 @@
 #include "../src/net/net.h"
 #include "arp.h"
 #include "thread.h"
+#include "net_udp_owner.h"
+/* This control/worker-only fixture has no socket subsystem. */
+void net_udp_step(handoff_token_t t,handoff_request_t r) { (void)t;(void)r;assert(false); }
+void net_udp_maintenance(void) {}
+bool net_udp_owner_work(void) { return false; }
 #include "../src/net/poll_budget.h"
 
 static net_dev_t dev;

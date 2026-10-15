@@ -7,6 +7,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import re
 import shutil
 import socket
 import struct
@@ -119,7 +120,7 @@ class LinkCase(Case):
         # Reassert the external carrier immediately while running, before its
         # 500-ms negotiation timer fires. No guest state is patched.
         if cold: self.link(False)
-        self.wait(lambda t:'fortress> ' in t and 'BSP ingress worker started' in t)
+        self.wait(lambda t:re.search(r'(?:fortress> |[A-Za-z0-9_-]+@[^:\r\n ]+:[^\r\n]*[#$] )',t) and 'BSP ingress worker started' in t)
         if cold:
             assert 'Waiting for cable; DMA not allocated' in self.text()
             assert 'DMA ready' not in self.text()

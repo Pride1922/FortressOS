@@ -114,8 +114,8 @@ class Case:
         assert self.uart is not None, 'UART creation timeout'
         self.uart.settimeout(.05)
         self.start_reader()
-        self.wait(lambda t: re.search(r'(?:fortress> |fortress:[^\r\n]* \$ )', t) and 'Gateway ARP resolved' in t, 120)
-        if self.cpus == 4: self.wait(lambda t: 'AP socket dispatch rejection PASS' in t)
+        self.wait(lambda t: re.search(r'(?:fortress> |fortress:[^\r\n]* \$ |[A-Za-z0-9_-]+@[^:\r\n ]+:[^\r\n]*[#$] )', t) and 'Gateway ARP resolved' in t, 120)
+        if self.cpus == 4: self.wait(lambda t: 'AP TCP dispatch rejection PASS' in t)
 
     def start_reader(self):
         # Drain independently of drvfs writes and packet/audit processing. A
@@ -168,7 +168,7 @@ class Case:
         return at
 
     def finish(self, at, timeout=120):
-        return self.wait(lambda t: '\n' in t[at:] and re.search(r'(?:fortress>|(?:\[-?\d+\] )?fortress:[^\r\n]* \$)\s*$', t[at:]), timeout)[at:]
+        return self.wait(lambda t: '\n' in t[at:] and re.search(r'(?:fortress>|(?:\[-?\d+\] )?fortress:[^\r\n]* \$|[A-Za-z0-9_-]+@[^:\r\n ]+:[^\r\n]*[#$])\s*$', t[at:]), timeout)[at:]
 
     def client(self, port, profile='clean', mss=536):
         if self.peer: self.peer.listen(port, BODY, BODY, profile, mss)

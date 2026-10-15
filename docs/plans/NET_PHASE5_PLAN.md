@@ -1,6 +1,10 @@
 # Networking Phase 5 — UDP and bounded socket syscalls
 
 Status: **5a IMPLEMENTED AND VERIFIED (2026-10-01); 5590 UDP user-reported PASS; capture audit pending**.
+Network SMP Phase 2B supersedes this plan's historical BSP-only UDP and AP-negative
+fixture wording; see [current UDP ABI](UDP_SOCKET_ABI.md) and
+[Phase 2B evidence](../roadmap/network-smp-phase2b.md). TCP guards and production
+spawn pinning remain. Earlier physical evidence does not validate this migration.
 User authorized implementation after approving the pre-coding contract.
 Companion to [NET_PLAN.md](NET_PLAN.md); implemented headers
 take precedence over historical sketches. Phase 4a automated evidence and

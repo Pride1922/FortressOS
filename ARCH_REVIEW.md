@@ -429,7 +429,7 @@ on real hardware (USB sticks get unplugged; that's the point of USB).
 
 Phase 2A routes IFGET, authorized IFSET, ping and traceroute from any caller CPU
 through copied, kernel-owned requests and the registered CPU-0 network owner.
-Production spawn pinning and UDP/TCP CPU guards remain. BSP TCP continuations
+At that Phase 2A baseline, production spawn pinning and UDP/TCP guards remained. BSP TCP continuations
 still own some transport mutations until later subphases; worker-only ownership
 of all networking is not claimed. File/endpoint references, payload staging and
 receive/accept transactions remain prerequisites. Existing receive filters follow
@@ -437,3 +437,38 @@ the configured address despite retained TCP tuples; traffic across an address
 change is not a new guarantee. Host and 12 installed guest gates pass, with the
 original composite documentation-drift failure preserved and qualified.
 See [Phase 2A evidence and limits](docs/roadmap/network-smp-phase2a.md).
+
+Phase 2B (2026-10-15, COMPLETE) routes UDP create/bind/send/receive and DNS
+queries from any CPU through the registered CPU-0 owner. Key established lifetime
+and concurrency behaviors:
+- **Retained-reference fence:** Generic retained records cannot recycle before
+  unlocked typed cleanup, even after caller interest disappears. Cleanup inspects
+  eight rotating records per turn with references dropped outside Rank-1 locks.
+  File installation has a separate checked reference; final UDP release marks detach
+  and requests polling, remaining unavailable for reuse until the owner cancels IPv4
+  work, invalidates operations, and acknowledges detach.
+- **FIFO payload tickets:** Eight static 1472-byte slabs stage complete UDP payloads.
+  FIFO payload tickets prevent new claims from repeatedly overtaking eligible pending
+  callers; ticket exhaustion fails closed. Caller copy pins prevent overwrite or
+  reclamation across signal and wait boundaries.
+- **Lock-free level predicate (`net_udp_owner_work()`):** Prevents typed copy decisions
+  and waiting payload grants with free credits from depending on periodic poll-tick rescue
+  after a generic wakeup hint clears. Evaluated both before owner sleep and after
+  bounded service turns.
+- **Configuration ordering at claim:** "Configuration at claim" linearizes at the
+  owner turn that starts transport after payload publication, not at initial slab
+  preparation. IFSET can pass a sender still copying payload without blocking control
+  progress; bind addresses are rechecked in the owner.
+- **Precedence and cancellation:** Receive commit beats later cancellation; SEND
+  cancellation resolves owner ack via `sched_wait_until_ack`, preserving accepted
+  positive results; ENOSPC beats preallocation ENOMEM; nonblocking slab admission
+  precedes autobind; unavailable EIO beats internal slab saturation for SEND and RECV;
+  the per-call clock floor advances on each owner turn.
+
+The acknowledgement-only scheduler wait core defers signals for the bounded owner
+decision; ordinary waits preserve their existing signal, lock, enrollment and context-save
+behavior. This entry must never wait on peer traffic. An unresponsive owner still has no
+safe restart or forced reclamation. TCP guards, shared TCP receive scratch, accept
+transactions and production spawn pinning remain Phase 2C/2D/Phase 3 prerequisites.
+Verified in `gate-fhnnk8qq` (12/12 boots PASS, e1000e) and `gate-1te338y2` (4/4 boots
+PASS, e1000). See [Phase 2B](docs/roadmap/network-smp-phase2b.md).

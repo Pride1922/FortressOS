@@ -145,7 +145,7 @@ def run(mode, model, cpus, iso, tmp, extended):
                     assert proc.poll() is None, (root / 'stderr.log').read_text()
                 raise AssertionError(text()[-7000:])
             wait(lambda t: re.search(r'(?:fortress> |fortress:[^\r\n]* \$ )',t) and 'Gateway ARP resolved' in t, 120)
-            if cpus==4: wait(lambda t: '[NET 5] AP socket dispatch rejection PASS' in t)
+            if cpus==4: wait(lambda t: '[NET 5] AP TCP dispatch rejection PASS' in t)
             def start(line):
                 at = len(text())
                 for b in line.encode() + b'\n': uart.sendall(bytes([b])); time.sleep(.025)

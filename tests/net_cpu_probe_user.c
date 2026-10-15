@@ -15,9 +15,10 @@ int net_cpu_probe_main(int argc, char **argv) {
     netctl_ifget_t info = {.struct_version = 1};
     long query = call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&info, sizeof(info));
     long socket = call(SYS_SOCKET, NET_AF_INET, NET_SOCK_DGRAM | NET_SOCK_CLOEXEC, 17);
-    bool ok = ap ? query == 0 && socket == SYSCALL_EOPNOTSUPP : query == 0 && socket >= 0;
+    bool ok = query == 0 && socket >= 0;
+    if (ap) ok = ok && call(SYS_SOCKET,NET_AF_INET,NET_SOCK_STREAM,6)==SYSCALL_EOPNOTSUPP;
     if (socket >= 0) ok = call(SYS_CLOSE, socket, 0, 0) == 0 && ok;
-    const char *msg = !ok ? "NET CPU admission FAIL\n" : ap ? "NET CPU AP control accepted; socket rejected PASS\n" : "NET CPU BSP accepted PASS\n";
+    const char *msg = !ok ? "NET CPU admission FAIL\n" : ap ? "NET CPU AP control/UDP accepted; TCP rejected PASS\n" : "NET CPU BSP accepted PASS\n";
     size_t n = 0; while (msg[n]) n++;
     call(SYS_WRITE, 1, (uintptr_t)msg, n);
     return ok ? 0 : 1;

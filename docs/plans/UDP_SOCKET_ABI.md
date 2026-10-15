@@ -1,7 +1,7 @@
 # UDP socket ABI — Phase 5 pre-coding contract
 
 2026-10-01. Written before coding; now implemented in Phase 5a (syscalls 38–41).
-Approved scope: BSP-only callers, five-second blocking receive, 16 global
+Original scope: BSP-only callers, five-second blocking receive, 16 global
 sockets, four RX datagrams per socket, and at most 1472 payload bytes.
 Companion: [Phase 5 plan](NET_PHASE5_PLAN.md).
 
@@ -28,8 +28,21 @@ AF_INET=2; SOCK_DGRAM=2; protocol=0 or 17. SOCKET optionally accepts
 SOCK_CLOEXEC=0x80000 in type, mapped to the existing descriptor CLOEXEC flag.
 Other family/type/protocol values return EOPNOTSUPP. RECVFROM flags are 0 or
 MSG_DONTWAIT=0x40; other flags return EINVAL. SENDTO accepts flags=0 only.
-All four new calls require current CPU=0 and caller affinity=0, including
-nonblocking calls. Generic close/dup/fd cleanup retains its existing contract.
+Network SMP Phase 2B removes the UDP CPU/affinity guards. BSP and AP callers
+use the same registered CPU-0 owner for create, bind, send, receive and detach.
+Production spawn pinning remains; genuine AP launch is fixture-only. TCP guards
+remain. Generic close/dup/fd cleanup retains its existing contract.
+
+Owner requests retain checked file references and fail-closed endpoint/request
+identities. Eight bounded payload slabs support caller copy pins. A one-second
+reservation lease restores unconsumed datagrams; it cannot recycle pinned bytes
+or restart the original five-second receive deadline. Owner commit consumes the
+whole datagram once; cancellation after copy commit returns the successful count.
+SEND interruption resolves owner acknowledgement and preserves already accepted
+datagrams. Nonblocking internal admission/slab saturation returns EAGAIN without
+starting an operation; blocking internal saturation sleeps. Final close publishes
+detach and endpoint reuse waits for the owner's acknowledgement. See
+[Phase 2B audit and gates](../roadmap/network-smp-phase2b.md).
 
 ## 2. Complete address layout
 
@@ -63,8 +76,9 @@ It too may be unaligned; use byte copies. No other user-visible structure.
 ## 3. Datagram and binding semantics
 
 BIND accepts address=0 or configured local IPv4. Port=0 allocates an ephemeral
-port from 49152–65535 with bounded scanning. Explicit ports 1–65535 need no
-privilege check. Ports are exclusive across wildcard/specific-local binds;
+port from 49152–65535 with bounded scanning. The later permissions gate requires
+CAP_NET_BIND for explicit ports 1–1023, checked in the caller before admission.
+Ports are exclusive across wildcard/specific-local binds;
 rebinding an already-bound socket or a conflicting port returns EEXIST.
 No SO_REUSEADDR, connected sockets or local self-delivery.
 
@@ -103,7 +117,7 @@ Reject overlap among the writable payload range [data,data+capacity), the
 16-byte source range and four-byte source-size range. Empty payload ranges
 do not overlap. Check range overflow before overlap calculations. SENDTO
 input payload/destination overlap is allowed because both are copied before
-publication. Revalidate receive outputs after waking, before dequeue/copy;
+transport publication. Revalidate receive outputs after waking, before dequeue/copy;
 socket state never stores user pointers. Reservation and copies must preserve
 the no-lock-across-user-copy rule through exclusive, generation-checked storage.
 
@@ -115,21 +129,24 @@ argument and pointer validation finishes. Unknown syscall numbers retain ENOSYS.
 
 | Call | Ordered stages |
 | --- | --- |
-| SOCKET | (1) BSP context; (2) family/type/protocol; (3) interface/worker/tick availability; (4) free process fd; (5) global socket slot; (6) node/file allocation and publication |
-| BIND | (1) BSP context; (2) socket fd/type; (3) exact address size; (4) readable address range/copy; (5) family/reserved/local-address fields; (6) interface availability; (7) already-bound/conflicting port; (8) ephemeral allocation if requested |
-| SENDTO | (1) BSP context; (2) socket fd/type; (3) flags, length <=1472, exact address size; (4) readable destination range/copy; (5) readable payload range/copy; (6) destination family/reserved/port/unicast fields; (7) interface/MTU/route availability; (8) active-send/capacity; (9) implicit ephemeral binding; (10) reserve/publish and wait for transport result |
-| RECVFROM | (1) BSP context; (2) socket fd/type; (3) flags, capacity <=1472, paired source pointers; (4) writable payload range; (5) writable source-size range/read capacity; (6) capacity >=16 and writable source range; (7) output overlap; (8) interface availability; (9) active-receive capacity; (10) implicit ephemeral binding; (11) reserve, take ready data or wait/return EAGAIN |
+| SOCKET | family/type/protocol; interface/tick availability; free process fd; retained owner admission; owner capacity check before reporting caller preallocation failure; caller fd installation |
+| BIND | socket fd/type; exact address size; readable range/copy; family/reserved/coherent local address; low-port capability; retained admission; owner-time local address and availability; conflict/ephemeral allocation |
+| SENDTO | socket fd/type; flags, length <=1472, exact address size; readable destination and payload ranges; destination fields/coherent unicast check; retained admission; owner availability and FIFO slab credit; caller revalidation/copy; owner MTU/route, direction capacity, autobind and transport publication |
+| RECVFROM | socket fd/type; flags, capacity <=1472, paired source pointers; writable payload and source-size ranges, capacity >=16, source range and overlap; retained admission; owner availability; nonblocking slab credit before endpoint mutation; direction capacity/autobind; finite receive and staged copy/commit |
 
 For zero payload size, skip payload range access/validation; no dereference is
-allowed. For recvfrom without source output, skip stages 5–6 and corresponding
+allowed. Without source output, skip source/source-size checks and corresponding
 overlap comparisons. Nonzero range wrap/inaccessibility returns EFAULT; numeric
 length above the ABI cap returns EINVAL before pointer checks. Invalid address
 family in BIND/SENDTO returns EINVAL, unlike unsupported SOCKET family.
 
-After sleep: honor existing signal interruption first (EINTR); reject a stale
-operation/generation (EINTR); revalidate receive output ranges (EFAULT), then
-observe latched interface failure (EIO), then operation result/ready data,
-then deadline expiration (EAGAIN for receive). Data already queued when a
+After sleep and before copy: honor signal interruption, revalidate ranges and
+pin the current immutable staged result. A successful receive copy publishes
+commit before any later signal check; owner consumption and its nonnegative
+result win subsequent cancellation. Interrupted SEND resolves owner cancellation
+acknowledgement and preserves any accepted nonnegative count. Before acceptance,
+interruption returns EINTR. Unavailable service returns EIO ahead of internal
+slab saturation, including MSG_DONTWAIT. Data already queued when a
 receive is reserved is immediately eligible; worker expiration of an empty
 receive is final for that token. Later packets remain queued for another call.
 Transport completion is final when worker publishes it; do not overwrite a
@@ -144,10 +161,10 @@ completed send with later link loss. No partial outputs on an error return.
 | SYSCALL_EIO | −9 | unavailable interface/worker/ticks, unsupported route, observed link/fatal failure, ARP exhaustion, TX failure |
 | SYSCALL_ENOMEM | −10 | node/file allocation failure |
 | SYSCALL_ENOSPC | −13 | socket pool or ephemeral range exhausted |
-| SYSCALL_EOPNOTSUPP | −14 | unsupported SOCKET family/type/protocol or caller CPU context |
+| SYSCALL_EOPNOTSUPP | −14 | unsupported SOCKET family/type/protocol; TCP CPU guard remains |
 | SYSCALL_EEXIST | −15 | bind conflict or rebind |
 | SYSCALL_EAGAIN | −21 | command/operation busy, empty nonblocking RX or five-second RX timeout |
-| SYSCALL_EINTR | −22 | existing signal interruption or stale/expired operation lease |
+| SYSCALL_EINTR | −22 | zero-progress signal interruption or invalidated operation |
 
 Reuse project errno values, not Linux numbers. Creation/auto-bind failures must
 unwind reservations and allocations exactly once; failed explicit bind leaves
@@ -162,15 +179,17 @@ retains NIC DMA buffers. Shared dup/spawn descriptors reference the same
 socket. One concurrent operation of each direction per socket; competitors
 return EAGAIN. Existing CLOEXEC and final file-reference cleanup apply.
 
-Final close invalidates generation and cancels work; late worker results and
-stale waiters cannot target a reused slot. Finite operation leases reclaim
-abandoned reservations (send five seconds, receive seven seconds including
-collection margin), without expiring an otherwise live socket or RX queue.
-STOP/CONT beyond lease may resume with EINTR. Hard-kill descriptor cleanup
-uses existing exit/reaper behavior; no new owner-exit or signal hook.
+Final UDP close publishes detach; the owner cancels work and acknowledges before
+endpoint reuse. Late results cannot target a replacement identity. Retained
+operation references replace the legacy five/seven-second abandoned-caller
+leases. A one-second copy lease restores unconsumed data without reusing pinned
+bytes; the original five-second receive deadline remains. STOP/CONT past that
+deadline returns EAGAIN. Hard-kill uses Phase 1 abandonment before descriptor
+and address-space destruction, with idempotent reaper fallback.
 
 Worker alone owns routing/ARP/protocol scratch. Publish atomic readiness before
-waking through existing primitives, with all rank-1 locks dropped. No scheduler,
-lock-rank, sched_wait_until-signature or timer-hook change. If tracing actual
-final-close/signal callers reveals an incompatibility, stop and report before
-implementing an alternative. Physical Phase 5b acceptance remains separate.
+waking with all Rank-1 locks dropped. Ordinary sched_wait_until semantics and
+signature, lock ranks and timer hooks remain; an acknowledgement-only entry
+shares the scheduler wait core while deferring signals for a bounded owner
+commit/cancel decision. It never waits for peer readiness. Physical Phase 5b
+history remains separate from acceptance of this SMP migration.

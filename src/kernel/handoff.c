@@ -5,7 +5,7 @@
 typedef struct {
     uint64_t generation, ticket;
     unsigned state;
-    bool caller, cancel;
+    bool caller, cancel, cleaned;
     handoff_request_t request;
     handoff_reply_t reply;
     unsigned channel;
@@ -13,7 +13,7 @@ typedef struct {
 static request_slot_t slots[HANDOFF_SLOTS];
 static spinlock_t lock=SPINLOCK_RANKED(1,"handoff");
 static uint64_t next_ticket, reclaimed;
-static unsigned queued, data, claim_cursor, pending_cursor, ack_cursor;
+static unsigned queued, data, claim_cursor, pending_cursor, ack_cursor, inspect_cursor;
 static bool online, started;
 static bool prefer_control=true;
 /* Sequence is a level-triggered owner hint. Clear under the same lock as
@@ -88,7 +88,7 @@ int handoff_begin(handoff_registration_t *r,handoff_request_t req) {
         for (unsigned i=0;i<HANDOFF_SLOTS;++i) if (state(&slots[i])==HANDOFF_FREE) {
             request_slot_t *s=&slots[i];
             if (!s->generation) __atomic_store_n(&s->generation,1,__ATOMIC_RELEASE);
-            s->request=req; s->ticket=0; s->caller=true; s->cancel=false;
+            s->request=req; s->ticket=0; s->caller=true; s->cancel=false; s->cleaned=!req.retained;
             s->reply=(handoff_reply_t){0};
             r->token=(handoff_token_t){.generation=s->generation,.slot=i}; r->active=true;
             set_state(s,HANDOFF_PREPARED); result=HANDOFF_OK; break;
@@ -215,7 +215,7 @@ unsigned handoff_acknowledge(void) {
             set_state(s,HANDOFF_COMPLETED);
             channels[count++]=&s->channel;
         }
-        if (state(s)==HANDOFF_COMPLETED && !s->caller) {
+        if (state(s)==HANDOFF_COMPLETED && !s->caller && s->cleaned) {
             ++reclaimed;
             if (s->generation==UINT64_MAX) set_state(s,HANDOFF_RETIRED);
             else {
@@ -251,6 +251,26 @@ unsigned handoff_acknowledge(void) {
     for (unsigned i=0;i<count;++i) sched_wake_all(channels[i]);
     sched_wake_all(&handoff_admission_channel);
     return count;
+}
+bool handoff_inspect(handoff_token_t *t, handoff_request_t *r,
+                     handoff_state_t *st, bool *caller) {
+    uint64_t f=spin_lock_irqsave(&lock);
+    unsigned i=inspect_cursor++%HANDOFF_SLOTS;
+    request_slot_t *s=&slots[i];
+    bool found=s->request.retained && state(s)!=HANDOFF_FREE && state(s)!=HANDOFF_RETIRED;
+    if (found) {
+        *t=(handoff_token_t){.slot=i,.generation=s->generation};
+        *r=s->request; *st=(handoff_state_t)state(s); *caller=s->caller;
+    }
+    spin_unlock_irqrestore(&lock,f);
+    return found;
+}
+void handoff_cleaned(handoff_token_t t) {
+    uint64_t f=spin_lock_irqsave(&lock);
+    if (matches(t) && state(&slots[t.slot])==HANDOFF_COMPLETED && !slots[t.slot].caller)
+        slots[t.slot].cleaned=true;
+    hint();
+    spin_unlock_irqrestore(&lock,f); wake();
 }
 handoff_stats_t handoff_stats(void) {
     handoff_stats_t v={0};

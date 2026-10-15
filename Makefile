@@ -1292,7 +1292,13 @@ test-s8-jobctl: $(BOOTABLE_ISO) $(BUILD_DIR)/s8_jobctl_user.elf $(BUILD_DIR)/s8_
 
 # Networking Phase 5: codecs plus actual stack/syscalls with host adapters.
 NET_TCP_STACK_SRCS := src/net/net_tcp.c src/net/net_tcp_syscall.c src/net/tcp_tcb.c src/net/tcp.c
-NET_SOCKET_HOST_SRCS := tests/net_socket_host.c tests/net_lock_host.c src/net/net_socket.c src/net/net_socket_syscall.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c $(NET_TCP_STACK_SRCS)
+NET_SOCKET_HOST_SRCS := tests/net_socket_host.c tests/net_lock_host.c src/kernel/handoff.c src/net/net_udp_owner.c src/net/net_socket.c src/net/net_socket_syscall.c src/net/net_ipv4.c src/net/udp.c src/net/icmp.c src/net/checksum.c src/net/ipv4.c src/net/eth.c $(NET_TCP_STACK_SRCS)
+
+.PHONY: test-network-smp-phase2b-host test-network-smp-phase2b
+test-network-smp-phase2b-host:
+	@python3 scripts/test_network_smp_phase2b_host.py
+test-network-smp-phase2b: test-network-smp-phase2b-host
+	@python3 scripts/test_network_smp_phase2b.py
 .PHONY: test-net-tcp-socket-host
 .PHONY: test-net-tcp-client
 .PHONY: test-supervisor-wait
