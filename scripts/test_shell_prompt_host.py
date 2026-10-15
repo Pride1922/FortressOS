@@ -33,6 +33,9 @@ class PromptBoundaryTests(unittest.TestCase):
         self.assertIsNotNone(ready_prompt("boot\nfortress> "))
         self.assertIsNone(ready_prompt("fortress> ", submitted=True))
         self.assertIsNotNone(ready_prompt("false\n[1] fortress:/mnt $ ", submitted=True))
+        self.assertIsNotNone(ready_prompt("boot\nfabio@dell-5590:/home/fabio$ "))
+        self.assertIsNotNone(ready_prompt("cd /tmp\nfabio@dell-5590:/tmp$ ",submitted=True))
+        self.assertIsNotNone(ready_prompt("sudo shell\nroot@dell-5590:/root# ",submitted=True))
 
 
 if __name__ == "__main__":

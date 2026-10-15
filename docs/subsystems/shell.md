@@ -6,6 +6,15 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-13 installer follow-up: the interactive prompt now displays the effective
+account, persistent computer name and current directory, for example
+`fabio@dell-5590:/home/fabio$ `. Root uses `#`. Invalid/missing hostnames fall
+back to `fortress`; long-path display retains the path tail and identity.
+Account names come from the effective UID and passwd database. Actual renderer
+ASan/UBSan adapters cover credential transitions, hostname validation, directory
+changes and narrow terminals (`build/root-phase4/prompt-x5ln5mr7`). Physical
+acceptance of this revision is pending.
+
 | Subsystem | Status | Detail |
 | --- | --- | --- |
 | **Shell S9** | **COMPLETE** (2026-09-30) | All phases verified. Phase 0 metadata prerequisites and cross-CPU spawn int 0x80 fix; Phase 1 `SYS_PROCINFO` and `/bin/ps` verified on QEMU and Dell 5590; Phase 2 `SYS_SYSINFO` and `/bin/sysinfo` verified on QEMU (BIOS/UEFI, SMP=1/4) with managed-RAM total and BSP monotonic timebase (multi-writer APIC scaling bug eliminated), plus Dell 5590 and Dell 5500 hardware acceptance; Phase 3 `/bin/top` live view verified on QEMU (BIOS/UEFI, SMP=1/4) and bare-metal Dell hardware (live console redraw, monotonic 100 Hz uptime, CPU% deltas, PS/2 'q' exit; all three tools ps/sysinfo/top verified live on physical hardware). Details: [`docs/roadmap/shell-s9-phase3.md`](../roadmap/shell-s9-phase3.md). |
@@ -121,3 +130,29 @@ FortressOS implements display generation tracking and reactive prompt restoratio
    - Prompt painting itself synchronizes `term.generation` to avoid spurious redraw loops.
 
 
+---
+
+## 8. Command Search Path (`$PATH`) & Administrative `/sbin` Partitioning
+
+FortressOS partitions system utilities into standard user executables (`/bin`) and administrative/root tools (`/sbin`).
+
+### Default Search Path and Fallback
+- **Environment Default:** The interactive shell initializes `PATH=/bin:/sbin`.
+- **Fallback Resolution:** If `PATH` is unset or empty, binary resolution falls back to `/bin:/sbin` for program execution and the `type` builtin.
+- **Tab Completion:** Interactive tab completion scans both `/bin` and `/sbin` directories without requiring full path qualification.
+
+### Administrative Tools (`/sbin`)
+The following 8 tools are located in `/sbin/` on the live initramfs image:
+- `ifconfig`: Network interface status, addressing, and packet counters.
+- `ifup`: Network interface addressing and configuration (static and file-based).
+- `reboot`: Clean shutdown and system reboot.
+- `shutdown` / `poweroff`: Clean shutdown and ACPI poweroff.
+- `useradd`: Persistent account provisioning and home directory creation.
+- `disk`: Storage block device and filesystem usage tool.
+- `lockstat`: Kernel spinlock contention and hold-time diagnostic monitor.
+
+### Privilege Elevation Resolution (`/bin/sudo`)
+When a bare (non-path) command is executed via `/bin/sudo <cmd>`:
+1. `sudo` tests `/sbin/<cmd>` via `SYS_STAT` first. If present and executable, it executes `/sbin/<cmd>`.
+2. Otherwise, it executes `/bin/<cmd>`.
+3. The elevated execution environment explicitly sets `PATH=/bin:/sbin`.

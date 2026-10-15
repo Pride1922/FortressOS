@@ -4,6 +4,8 @@
 #include "complete.h"
 #include "history_persist.h"
 #include "jobs.h"
+#include "../tools/userdb.h"
+#include "install_abi.h"
 
 static line_editor_t edit;
 static terminal_info_t term;
@@ -17,6 +19,9 @@ static void prompt_sigtstp(unsigned sig) { (void)sig; }
 
 static int64_t g_ui_status = 0;
 static char g_ui_cwd[256] = "/";
+static char g_ui_user[32]="user",g_ui_host[64]="fortress";
+static userdb_t prompt_database;
+static char prompt_accounts[DB_FILE_MAX+1];
 static uint32_t g_ui_euid = UINT32_MAX;
 static bool g_ui_continuation = false;
 static char g_prompt_template[64] = "fortress:<cwd> $ ";
@@ -101,6 +106,26 @@ void shell_set_prompt_state(int64_t status, const char *cwd) {
     g_ui_status = status;
     uint32_t real, effective, saved;
     g_ui_euid = call(SYS_GETRESUID, (uintptr_t)&real, (uintptr_t)&effective, (uintptr_t)&saved) == 0 ? effective : UINT32_MAX;
+    /* Resolve the effective UID from the account file, not a mutable USER
+     * environment variable. Bounded files and safe names cannot inject escapes. */
+    long fd=call(SYS_OPEN,(uintptr_t)"/etc/passwd",VFS_O_RDONLY|VFS_O_CLOEXEC,0);
+    const db_user_t *user=NULL;
+    if (fd>=0) {
+        long n=call(SYS_READ,fd,(uintptr_t)prompt_accounts,sizeof(prompt_accounts));
+        (void)call(SYS_CLOSE,fd,0,0);
+        if (n>0 && n<=DB_FILE_MAX && db_passwd(&prompt_database,prompt_accounts,(size_t)n)) user=db_user_id(&prompt_database,g_ui_euid);
+    }
+    const char *name=user ? user->name : g_ui_euid==0 ? "root" : "user";
+    unsigned un=0;while (name[un] && un<31) {g_ui_user[un]=name[un];un++;}g_ui_user[un]=0;
+    const char *default_host="fortress";for (unsigned i=0;i<9;i++) g_ui_host[i]=default_host[i];
+    fd=call(SYS_OPEN,(uintptr_t)"/etc/hostname",VFS_O_RDONLY|VFS_O_CLOEXEC,0);
+    if (fd>=0) {
+        char text[65]={0};long n=call(SYS_READ,fd,(uintptr_t)text,sizeof(text));(void)call(SYS_CLOSE,fd,0,0);
+        if (n>1 && n<=64 && text[n-1]=='\n') {
+            text[n-1]=0;
+            if (install_hostname_valid(text)) {unsigned i=0;for (;text[i];i++) g_ui_host[i]=text[i];g_ui_host[i]=0;}
+        }
+    }
     if (cwd && *cwd) {
         size_t n = 0;
         while (cwd[n] && n < sizeof(g_ui_cwd) - 1) {
@@ -154,7 +179,7 @@ void shell_history(const char *arg) {
 
 static void paint(void) {
     size_t width = term.cols > 20 ? term.cols : 20;
-    char prompt_buf[128];
+    char prompt_buf[384];
     const char *prompt = prompt_buf;
 
     if (edit.blocked) {
@@ -172,7 +197,25 @@ static void paint(void) {
     } else if (g_ui_continuation) {
         prompt = "> ";
     } else {
-        prompt = g_ui_euid == 0 ? "# " : "$ ";
+        size_t at=0;
+        const char *parts[]={g_ui_user,"@",g_ui_host,":",g_ui_cwd,g_ui_euid==0 ? "# " : "$ "};
+        for (unsigned i=0;i<6;i++) for (size_t j=0;parts[i][j] && at<sizeof(prompt_buf)-1;j++) prompt_buf[at++]=parts[i][j];
+        prompt_buf[at]=0;
+        /* Keep the end of a deep path visible while leaving command-edit room. */
+        if (at+12>=width && width>20) {
+            size_t names=width/4,un=length(g_ui_user),hn=length(g_ui_host);
+            if (un>names) un=names;
+            if (hn>names) hn=names;
+            at=0;for (size_t i=0;i<un;i++) prompt_buf[at++]=g_ui_user[i];prompt_buf[at++]='@';
+            for (size_t i=0;i<hn;i++) prompt_buf[at++]=g_ui_host[i];
+            prompt_buf[at++]=':';
+            size_t keep=width-at-14,n=length(g_ui_cwd);
+            if (n>keep) {prompt_buf[at++]='.';prompt_buf[at++]='.';keep=keep>2 ? keep-2 : 0;}
+            else keep=n;
+            for (size_t i=n-keep;i<n;i++) prompt_buf[at++]=g_ui_cwd[i];
+            prompt_buf[at++]=g_ui_euid==0 ? '#' : '$';prompt_buf[at++]=' ';prompt_buf[at]=0;
+        }
+        prompt=prompt_buf;
     }
 
     size_t plen = length(prompt);
@@ -253,7 +296,7 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
         unsigned char c = (unsigned char)input[input_pos++];
         bool append = edit.cursor == edit.len && !edit.search && !edit.escape_len &&
                       !edit.paste && !edit.blocked && !edit.review &&
-                      (term.mode == TERM_PLAIN || edit.len + 11 < term.cols) && c >= 32 && c < 127;
+                      term.mode == TERM_PLAIN && c >= 32 && c < 127;
 
         enum edit_result result = lineedit_byte(&edit, c);
         if (result == EDIT_COMPLETE) {

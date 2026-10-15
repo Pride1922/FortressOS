@@ -23,7 +23,7 @@ import threading
 from test_nmi_transitions import REPO, Remote, QMP, symbols, connect
 
 
-PROMPT_PATTERN = r"(?:fortress> |fortress:[^\n]* \$ )"
+PROMPT_PATTERN = r"(?:fortress> |fortress:[^\n]* \$ |[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\n]*[#$] )"
 
 
 def ready_prompt(text, pattern=PROMPT_PATTERN, *, submitted=False):
