@@ -80,11 +80,15 @@ int tool_options(enum tool_kind kind, int argc, char **argv, tool_options_t *out
                 else if (arg[j] == 'c') out->fields |= WC_BYTES;
                 else goto invalid;
             }
+        } else if (kind == TOOL_TAIL && tool_equal(arg, "-f")) {
+            out->follow = true;
         } else if ((kind == TOOL_HEAD || kind == TOOL_TAIL) && !counted &&
                    (tool_equal(arg, "-n") || tool_equal(arg, "-c"))) {
             out->bytes = arg[1] == 'c';
             if (++i == argc || !decimal(argv[i], &out->count)) goto invalid;
             counted = true;
+        } else if (tool_equal(arg, "--help")) {
+            return 1;
         } else goto invalid;
     }
     out->first = i;
@@ -102,7 +106,7 @@ int tool_help(enum tool_kind kind) {
     static const char *const help[] = {
         "Usage: cat [--] [FILE ...]\nCopy bytes unchanged; no operands or - reads stdin.\n",
         "Usage: head [-n N | -c N] [--] [FILE ...]\nDefault: 10 lines. Zero reads nothing.\n",
-        "Usage: tail [-n N | -c N] [--] [FILE ...]\nDefault: 10 lines; max 10 lines, 4096 content bytes per retained line, or 65536 bytes.\nTail always reads to EOF, including count zero; it cannot stop a producer early.\n",
+        "Usage: tail [-f] [-n N | -c N] [--] [FILE ...]\nDefault: 10 lines; max 10 lines, 4096 content bytes per retained line, or 65536 bytes.\nTail always reads to EOF, including count zero; it cannot stop a producer early.\n-f: follow file at 100ms intervals; resets to 0 on truncation; errors on deletion.\n",
         "Usage: wc [-lwc] [--] [FILE ...]\nCount LF bytes, ASCII-separated words and bytes; default all three.\n"
     };
     return tool_write(names[kind], help[kind], tool_length(help[kind]));

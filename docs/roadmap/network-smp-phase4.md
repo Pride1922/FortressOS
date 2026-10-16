@@ -88,3 +88,29 @@ installer-source exclusion). Separate UEFI single-NVMe installation, filesystem
 audit and installed boot PASS. Profile/symbol/archive checks confirm no fixed
 Dell drive binding or private network probes. These are virtual installer
 checks; physical installed-network persistence still requires user testing.
+
+## Combined DHCPv2 installer handoff
+
+Later on 2026-10-16, the user requested inclusion of the completed DHCPv2 work
+so one installation can test both milestones. A fresh isolated snapshot of
+`3cf6cf1b72e99d503f33eeaf3673a4817e5dd401` includes the
+committed DHCPv2 implementation without the earlier exclusions. The
+`INSTALLER_MULTI=1` disk-selection profile is retained; its installer sources
+are unchanged from the preceding handoff.
+
+Use `bin/fortress-installer-dhcpv2.img` for this combined test, rather than the
+earlier DHCPv1-only image. Size: 553,648,128 bytes (528 MiB).
+SHA-256: `f7e9bc612447166fe80b16d39bb9e63798c4432d6bf5b3b497dfa887ee627aaa`.
+Source/build/artifact receipt and guest logs:
+`build/network-smp-phase3/installer-dhcpv2-x0np7_mr/manifest.json`.
+
+Fresh checks PASS: DHCPv1/v2 codec ASan/UBSan; the existing DHCPv2 BIOS/UEFI
+lifecycle and offline-boot suite (four boots); exact-payload UEFI single-NVMe
+installation and independent Linux filesystem/account audit; two installed
+boots under SMP=4 with automatic DHCP before login, daemon status, interface
+address, gateway ping, renewal signaling and daemon survival. Installed data
+survives the reboot. These checks do not independently establish wire-level
+renewal ACKs, T1/T2 expiry, physical link recovery or physical installed-network
+acceptance. No production source edits or physical device writes were needed
+to prepare the image; the preceding two-disk suite was not repeated for this
+handoff. Its source/build provenance remains separately recorded above.

@@ -18,6 +18,7 @@ typedef struct {
     uint64_t count;
     bool bytes;
     unsigned fields;
+    bool follow;
 } tool_options_t;
 typedef struct { uint64_t lines, words, bytes; } wc_counts_t;
 

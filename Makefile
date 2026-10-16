@@ -859,6 +859,16 @@ test-time: $(BOOTABLE_ISO) test-time-host test-date-sleep-host test-time-cmd-hos
 test-time-cmd: $(BOOTABLE_ISO) test-time-cmd-host
 	@python3 scripts/test_time_cmd.py
 
+.PHONY: test-tail-f-host test-tail-follow-host test-tail-f
+test-tail-follow-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/tail_follow_host.c user/tools/common.c user/tools/tail.c -o $(BUILD_DIR)/tail_follow_host && $(BUILD_DIR)/tail_follow_host
+
+test-tail-f-host: test-tail-follow-host
+
+test-tail-f: $(BOOTABLE_ISO) $(NVME_GPT_IMG) test-tail-f-host
+	@python3 scripts/test_tail_f.py
+
 $(BUILD_DIR)/traceroute.o: user/traceroute.c user/tools/common.h src/include/trace_abi.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@

@@ -129,6 +129,16 @@ if __name__ == "__main__":
             ], cwd=REPO, check=True)
             subprocess.run([str(free_exe)], check=True, timeout=30)
 
+            tail_follow_exe = Path(tmp) / "tail_follow_host"
+            subprocess.run([
+                "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-DTOOL_HOST_TEST",
+                "-Isrc/include", "-Isrc/fs", "-Iuser/tools",
+                "tests/tail_follow_host.c", "user/tools/common.c", "user/tools/tail.c",
+                "-o", str(tail_follow_exe)
+            ], cwd=REPO, check=True)
+            subprocess.run([str(tail_follow_exe)], check=True, timeout=30)
+
 
 
 

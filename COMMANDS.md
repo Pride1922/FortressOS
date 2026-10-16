@@ -830,13 +830,14 @@ cat /etc/motd | head -c 20
 ---
 
 ### `tail`
-**Syntax:** `tail [-n N | -c N] [--] [FILE ...]`  
+**Syntax:** `tail [-f] [-n N | -c N] [--] [FILE ...]`  
 **Path:** `/bin/tail`  
-**Description:** Prints the last part of files or standard input. Defaults to 10 lines. Tail always reads to EOF.  
+**Description:** Prints the last part of files or standard input. Defaults to 10 lines. Tail reads to EOF; when `-f` is specified, continues following newly appended data.  
 **Limits:**
 * Maximum retained lines: 10 lines (up to 4096 bytes per line).
 * Maximum retained bytes: 65,536 bytes (`-c 65536`).  
 **Options:**
+* `-f`: Follow the file continuously as new data is appended at a bounded 100 ms poll interval via `SYS_NANOSLEEP`. Detects file truncation (`st.size < offset`), reports `tail: <file>: file truncated` to standard error, resets the read offset to 0, and follows from the beginning of the file. Detects file deletion/unlinking (`SYS_STAT` failure), reports `tail: <file>: file has been deleted` to standard error, and exits with code 1. When applied to standard input (`tail -f -` or no operands), processes existing stdin, emits diagnostic `tail: cannot follow standard input` on EOF, and exits cleanly with code 0. Cleanly terminates on `SIGINT` (Ctrl+C) with exit status 130 and `SIGTERM` with status 0.
 * `-n <N>`: Output the last `<N>` lines (maximum 10).
 * `-c <N>`: Output the last `<N>` bytes (maximum 65536).
 * `--help`: Display usage summary.  
@@ -845,6 +846,8 @@ cat /etc/motd | head -c 20
 tail /etc/motd
 tail -n 2 /etc/network.conf
 cat /mnt/log.txt | tail -c 128
+tail -f /mnt/test.log
+tail -n 5 -f /var/log/messages
 ```
 
 ---
