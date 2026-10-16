@@ -14,6 +14,8 @@
 #include "acpi.h"
 #include "ioapic.h"
 #include "apic.h"
+#include "rtc.h"
+#include "time.h"
 #include "smp.h"
 #include "memory_boot_test.h"
 #include "percpu.h"
@@ -5889,6 +5891,15 @@ pf_boot_guard_done:
     }
     serial_puts("[PASS] PIT-referenced timer progress and foreground heap integrity verified\n");
     serial_puts("[ OK ] Phase 5: ACPI Discovery & APIC Timer completed successfully!\n\n");
+
+    /* Initialize CMOS RTC and Kernel Timekeeper */
+    uint8_t century_reg = 0;
+    acpi_fadt_t *fadt = (acpi_fadt_t *)acpi_find_table("FACP");
+    if (fadt && fadt->header.length >= sizeof(acpi_fadt_t)) {
+        century_reg = fadt->century;
+    }
+    rtc_init(century_reg);
+    time_init();
 
     /* =========================================================================
      * Phase 6 (Checkpoint 1): Cooperative Multitasking Suite

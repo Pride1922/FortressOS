@@ -110,7 +110,11 @@ static void apic_timer_handler(interrupt_frame_t *frame) {
     }
     lapic_eoi(); /* Single-owner EOI: acknowledged immediately on timer entry */
     input_timer_tick(g_target_hz);
-    if (cid == 0) net_timer_tick();
+    if (cid == 0) {
+        net_timer_tick();
+        extern void time_timer_tick(void);
+        time_timer_tick();
+    }
     extern void sched_on_timer_tick(void);
     sched_on_timer_tick();
 }

@@ -89,6 +89,8 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`diskbench`](#diskbench) | Binary (`/bin/diskbench`) | Stream Tool / Benchmark | Filesystem throughput and latency benchmark tool |
 | [`disk`](#disk) | Binary (`/sbin/disk`) | Storage Tool | Storage device inspection and filesystem usage tool |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
+| [`date`](#date) | Binary (`/bin/date`) | Time / System | Display or format system date and time via `SYS_CLOCK_GETTIME` |
+| [`sleep`](#sleep) | Binary (`/bin/sleep`) | Time / Process | Delay execution for specified duration via `SYS_NANOSLEEP` |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
 | [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display OS identity, CPU, memory/heap, tasks, and storage summary |
@@ -1110,6 +1112,51 @@ disk usage -c                                         # Show filesystem usage in
 nano /mnt/network.conf
 nano /mnt/notes.txt
 nano
+```
+
+---
+
+### `date`
+**Syntax:** `date [-u|--utc] [-I|--iso-8601] [-R|--rfc-2822] [+FORMAT] [--help]`  
+**Path:** `/bin/date`  
+**Description:** Queries kernel wall-clock time via `SYS_CLOCK_GETTIME` (`CLOCK_REALTIME`, syscall 74) and outputs the current date and time in UTC. Supports default POSIX format (`Fri Oct 16 06:56:49 UTC 2026`), ISO-8601 format (`2026-10-16T06:56:49Z`), RFC-2822 format (`Fri, 16 Oct 2026 06:56:49 +0000`), and custom format tokens (including `+%s` for Unix epoch seconds, `+%Y-%m-%d`, `+%H:%M:%S`). Sub-second interpolation is driven by hardware TSC calibration against the APIC timer and PC/AT CMOS RTC.
+* **Options:**
+  - `-u`, `--utc`: Explicitly output time in Coordinated Universal Time (default).
+  - `-I`, `--iso-8601`: Output date and time in ISO-8601 format (`YYYY-MM-DDTHH:MM:SSZ`).
+  - `-R`, `--rfc-2822`: Output date and time in RFC-2822 format (`Day, DD Mon YYYY HH:MM:SS +0000`).
+  - `+FORMAT`: Custom format string supporting `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%s`, `%a`, `%b`, `%%`, `%t`, `%n`.
+  - `--help`, `-h`: Display command usage summary and exit.
+**Examples:**
+```sh
+date
+date -I
+date -R
+date +%s
+date +"Today is %Y-%m-%d, time: %H:%M:%S"
+```
+
+---
+
+### `sleep`
+**Syntax:** `sleep NUMBER[SUFFIX]... [--help]`  
+**Path:** `/bin/sleep`  
+**Description:** Suspends execution for the specified duration using kernel high-resolution sleep via `SYS_NANOSLEEP` (syscall 75). Supports decimal fractional seconds (e.g. `sleep 0.5`) and standard time unit suffixes (`s` for seconds, `m` for minutes, `h` for hours, `d` for days). If multiple duration arguments are given, they are summed together. Respects signal interruption (e.g. `Ctrl+C` via `SIGINT`), cleanly terminating with exit code 130 and writing the remaining duration if requested.
+* **Suffixes:**
+  - `s`: Seconds (default when no suffix is specified).
+  - `m`: Minutes (multiplies value by 60).
+  - `h`: Hours (multiplies value by 3,600).
+  - `d`: Days (multiplies value by 86,400).
+* **Exit Codes:**
+  - `0`: Sleep duration successfully elapsed.
+  - `1`: Invalid time interval or missing operand.
+  - `130`: Sleep interrupted by a terminating signal (`SIGINT`).
+**Examples:**
+```sh
+sleep 1
+sleep 0.25
+sleep 10s
+sleep 1m 30s
+sleep 0.5 0.5
 ```
 
 ---

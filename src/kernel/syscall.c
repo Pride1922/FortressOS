@@ -38,8 +38,14 @@ static bool syscall_actor(creds_t *out);
 #include "console.h"
 #include "smp.h"
 #include "apic.h"
+#include "time.h"
 
 extern void syscall_entry_stub(void);
+
+static bool nanosleep_ready(void *arg) {
+    uint64_t deadline = *(const uint64_t *)arg;
+    return apic_timer_get_bsp_ticks() >= deadline;
+}
 
 static volatile bool      g_user_exit_called     = false;
 static volatile uint64_t  g_user_exit_code       = 0;
@@ -1728,6 +1734,79 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             mem.vmm_deferred_spaces  = (uint64_t)vmm_get_deferred_count();
 
             memcpy((void *)frame->rdi, &mem, sizeof(mem));
+            result = 0;
+            break;
+        }
+
+        case SYS_CLOCK_GETTIME: {
+            uint32_t clk_id = (uint32_t)frame->rdi;
+            uintptr_t user_ts = frame->rsi;
+            if (!user_ts || !vmm_validate_user_range(vmm_get_active_pml4_virt(), user_ts, sizeof(timespec_t), true)) {
+                result = SYSCALL_EFAULT;
+                break;
+            }
+            timespec_t ts;
+            int ret = time_get_timespec(clk_id, &ts);
+            if (ret < 0) {
+                result = ret;
+                break;
+            }
+            memcpy((void *)user_ts, &ts, sizeof(timespec_t));
+            result = 0;
+            break;
+        }
+
+        case SYS_NANOSLEEP: {
+            uintptr_t user_req = frame->rdi;
+            uintptr_t user_rem = frame->rsi;
+            if (!user_req || !vmm_validate_user_range(vmm_get_active_pml4_virt(), user_req, sizeof(timespec_t), false)) {
+                result = SYSCALL_EFAULT;
+                break;
+            }
+            if (user_rem != 0 && !vmm_validate_user_range(vmm_get_active_pml4_virt(), user_rem, sizeof(timespec_t), true)) {
+                result = SYSCALL_EFAULT;
+                break;
+            }
+            timespec_t req;
+            memcpy(&req, (const void *)user_req, sizeof(timespec_t));
+            if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1000000000L) {
+                result = SYSCALL_EINVAL;
+                break;
+            }
+            if (req.tv_sec == 0 && req.tv_nsec == 0) {
+                thread_yield();
+                result = 0;
+                break;
+            }
+            uint64_t hz = apic_timer_get_frequency();
+            if (!hz) hz = 100;
+            uint64_t sec_ticks = 0;
+            if ((uint64_t)req.tv_sec > UINT64_MAX / hz) {
+                sec_ticks = UINT64_MAX - 1000000ULL;
+            } else {
+                sec_ticks = (uint64_t)req.tv_sec * hz;
+            }
+            uint64_t ns_per_tick = 1000000000ULL / hz;
+            uint64_t nsec_ticks = ((uint64_t)req.tv_nsec + ns_per_tick - 1) / ns_per_tick;
+            uint64_t total_ticks = sec_ticks + nsec_ticks;
+
+            uint64_t start_ticks = apic_timer_get_bsp_ticks();
+            uint64_t deadline = (total_ticks > UINT64_MAX - start_ticks) ? UINT64_MAX : (start_ticks + total_ticks);
+
+            sched_wait_until(time_get_sleep_channel(), nanosleep_ready, &deadline);
+
+            uint64_t end_ticks = apic_timer_get_bsp_ticks();
+            if (end_ticks < deadline && process_signal_pending()) {
+                if (user_rem != 0) {
+                    uint64_t rem_ticks = deadline - end_ticks;
+                    timespec_t rem;
+                    rem.tv_sec = (int64_t)(rem_ticks / hz);
+                    rem.tv_nsec = (int64_t)((rem_ticks % hz) * ns_per_tick);
+                    memcpy((void *)user_rem, &rem, sizeof(timespec_t));
+                }
+                result = SYSCALL_EINTR;
+                break;
+            }
             result = 0;
             break;
         }

@@ -15,6 +15,7 @@ static bool uncertain;
 static uint8_t *disk;
 static size_t disk_len;
 void *kmalloc(size_t n) { if (!fail_alloc) return NULL; if (fail_alloc>0) fail_alloc--; void *p=malloc(n); if (p) live++; return p; }
+void *kmalloc_large(size_t n) { return kmalloc(n); }
 void *kcalloc(size_t a,size_t b) { if (a && b>SIZE_MAX/a) return NULL; void *p=kmalloc(a*b); if (p) memset(p,0,a*b); return p; }
 void kfree(void *p) { if (p) { assert(live);live--;free(p); } }
 void serial_puts(const char *s) { (void)s; }

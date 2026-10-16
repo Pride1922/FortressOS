@@ -8,6 +8,12 @@
 #include "permission_values.h"
 #endif
 
+#if defined(HOST_TEST) || defined(__linux__)
+__attribute__((weak)) uint64_t time_get_epoch_seconds(void) { return 1726500000; }
+#else
+#include "../kernel/time.h"
+#endif
+
 
 #define EXT2_MAX_GROUPS 4096U
 #define EXT2_MAX_NODES 1024U
@@ -275,7 +281,9 @@ static bool write_inode_to_disk(ext2_inode_t *in) {
     put16(raw+24,in->gid);put16(raw+122,in->gid>>16);
     put32(raw + 4, in->size);
     /* Update modification timestamp */
-    put32(raw + 16, 1726500000);
+    uint32_t now = (uint32_t)time_get_epoch_seconds();
+    if (!now) now = 1726500000;
+    put32(raw + 16, now);
     put16(raw + 26, in->links);
     uint32_t sectors = in->i_blocks;
     if (!sectors && in->size) {
@@ -287,7 +295,7 @@ static bool write_inode_to_disk(ext2_inode_t *in) {
         put32(raw + 40 + i * 4, in->blocks[i]);
     }
     if (in->links == 0) {
-        put32(raw + 20, 1726500000); /* Deletion time (i_dtime) */
+        put32(raw + 20, now); /* Deletion time (i_dtime) */
         put32(raw + 4, 0);           /* i_size = 0 */
         put32(raw + 28, 0);          /* i_blocks = 0 */
         for (unsigned i = 0; i < 15; i++) {
@@ -1759,9 +1767,11 @@ static vfs_node_t *ext_create_common(vfs_node_t *dir_node, const char *name, vfs
     put16(raw+2,new_in.uid);put16(raw+120,new_in.uid>>16);
     put16(raw+24,new_in.gid);put16(raw+122,new_in.gid>>16);
     put32(raw + 4, new_in.size);
-    put32(raw + 8, 1726500000);
-    put32(raw + 12, 1726500000);
-    put32(raw + 16, 1726500000);
+    uint32_t now = (uint32_t)time_get_epoch_seconds();
+    if (!now) now = 1726500000;
+    put32(raw + 8, now);
+    put32(raw + 12, now);
+    put32(raw + 16, now);
     put32(raw + 20, 0);
     /* gid was encoded above, including its high half. */
     put16(raw + 26, new_in.links);

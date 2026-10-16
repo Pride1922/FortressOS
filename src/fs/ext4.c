@@ -9,6 +9,12 @@
 #include "spinlock.h"
 #include "ext4_engine.h"
 
+#if defined(HOST_TEST) || defined(__linux__)
+__attribute__((weak)) uint64_t time_get_epoch_seconds(void) { return 1726500000; }
+#else
+#include "../kernel/time.h"
+#endif
+
 #define E4_GROUPS 8192u
 #define E4_NODES 1024u
 #define E4_DIR_MAX (1024u * 1024u)

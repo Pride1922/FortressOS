@@ -79,6 +79,37 @@
 #define SYS_SETGROUPS     68 /* (count <= 16, const uint32 *groups) */
 #define SYS_CAPSET        69 /* (uint64 mask): drop-only, rejects undefined bits */
 #define SYS_CAPGET        70 /* () -> effective defined-bit mask */
+#define SYS_CLOCK_GETTIME 74 /* (uint32_t clk_id, timespec_t *ts) -> 0/-errno */
+#define SYS_NANOSLEEP     75 /* (const timespec_t *req, timespec_t *rem) -> 0/-errno */
+
+/* Clock identifiers */
+#define CLOCK_REALTIME           0
+#define CLOCK_MONOTONIC          1
+#define CLOCK_PROCESS_CPUTIME_ID 2
+#define CLOCK_THREAD_CPUTIME_ID  3
+#define CLOCK_MONOTONIC_RAW      4
+#define CLOCK_REALTIME_COARSE    5
+#define CLOCK_MONOTONIC_COARSE   6
+#define CLOCK_BOOTTIME           7
+
+/* POSIX-compatible time specification structure */
+typedef struct {
+    int64_t tv_sec;  /* Seconds */
+    int64_t tv_nsec; /* Nanoseconds: [0, 999999999] */
+} timespec_t;
+_Static_assert(sizeof(timespec_t) == 16, "timespec_t size");
+_Static_assert(offsetof(timespec_t, tv_sec) == 0, "timespec_t tv_sec offset");
+_Static_assert(offsetof(timespec_t, tv_nsec) == 8, "timespec_t tv_nsec offset");
+
+/* Traditional microsecond timeval structure */
+typedef struct {
+    int64_t tv_sec;  /* Seconds */
+    int64_t tv_usec; /* Microseconds: [0, 999999] */
+} timeval_t;
+_Static_assert(sizeof(timeval_t) == 16, "timeval_t size");
+_Static_assert(offsetof(timeval_t, tv_sec) == 0, "timeval_t tv_sec offset");
+_Static_assert(offsetof(timeval_t, tv_usec) == 8, "timeval_t tv_usec offset");
+
 #define CREDS_KEEP_REAL 1u
 #define CREDS_KEEP_EFFECTIVE 2u
 #define CREDS_KEEP_SAVED 4u
