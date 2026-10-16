@@ -41,7 +41,14 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 | VFS node lifetime | COMPLETE | [docs/subsystems/storage.md](docs/subsystems/storage.md) |
 | Installer (Phases 0–4) | COMPLETE through Phase 4 (disposable acceptance) | [docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md](docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md) |
 
-Next open items not blocking any current milestone: Network SMP handoff (started), system introspection syscalls + `sysinfo`/`top`/`ps`, shell improvements, MicroPython.
+Network SMP Phases 0–4 are COMPLETE through bounded user-confirmed Dell physical
+acceptance (2026-10-16). Installed networking, hashes, concurrency, cable recovery
+and reboot persistence pass; a separate live CS=3 observer proves ordinary AP
+network calls for ping/nslookup/wget/dhcpc with CPU-0 owner. See
+[Phase 4 evidence](docs/roadmap/network-smp-phase4.md). Phase 5 throughput
+redesign remains deferred; release images exclude the observer.
+
+Next open items not blocking any current milestone: system introspection syscalls + `sysinfo`/`top`/`ps`, shell improvements, MicroPython.
 
 Network SMP Phase 2B is COMPLETE: UDP create/bind/send/receive and DNS route
 through the CPU-0 owner from any CPU (BSP and AP), with retained file references,

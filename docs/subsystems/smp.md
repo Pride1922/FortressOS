@@ -1,5 +1,14 @@
 # Multi-Core (SMP) Subsystem Annex
 
+2026-10-16 Network SMP Phase 4: **COMPLETE, bounded user-confirmed Dell
+physical acceptance**. The live CS=3 observer proves ordinary AP network entry
+for ping (`0x9`), nslookup (`0x3`), wget (`0x5`) and dhcpc (`0x37`), with
+registered owner mask `0x1` and no placement overrides. Installed networking,
+concurrency, cable recovery and clean-reboot persistence are separately recorded
+in [the Phase 4 report](../roadmap/network-smp-phase4.md). The trusted pinned
+boot DHCP probe is excluded; release images have no observer. Phase 5 remains
+deferred.
+
 This annex documents the current status, hardware facts, verification evidence, and scope boundaries of the FortressOS symmetric multiprocessing (SMP) subsystem. Binding contracts, locking rules (L1–L4, `SPINLOCK_RANKED`, `sched_lock_pair`), memory ownership (M1–M4), and protected concurrency invariants live in [`AGENTS.md`](../../AGENTS.md) (§4 and §9). Architectural specifications and design invariants (`SM1`–`SM16`) live in [`docs/plans/SMP_DESIGN.md`](../plans/SMP_DESIGN.md).
 
 ---

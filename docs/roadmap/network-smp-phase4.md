@@ -1,8 +1,8 @@
 # Network SMP Phase 4 — physical acceptance
 
-2026-10-16. Live-USB and subsequent installed-system functional physical checks
-are user-confirmed. The final section records the installed/reboot photographs.
-The complete physical gate, including ordinary-command AP provenance, remains open under
+2026-10-16. **COMPLETE — bounded user-confirmed physical acceptance.**
+Installed functional/reboot checks and the separate live CS=3 observer results
+demonstrate ordinary AP networking with the protocol owner on CPU 0 under
 [the Phase 4 gate](../plans/NETWORK_SMP_PLAN.md#phase-4--physical-acceptance).
 
 ## User-reported HTTP timing
@@ -155,10 +155,68 @@ an empty stream; corrected foreground/background invocations match the reference
 The reboot photo retains an `ipconfig` typo (unknown command); the earlier
 `ifconfig` output shows the actual interface. Neither typo is a kernel failure.
 
-Functional physical acceptance above is demonstrated. The complete original
-Phase 4 gate remains open for approved physical evidence of ordinary network
+At this checkpoint functional physical acceptance above was demonstrated, but
+the Phase 4 gate remained open for physical evidence of ordinary network
 command AP syscall execution: eight CPUs online, successful commands and
 `smpbench` alone do not establish that provenance. Confirm remaining hardware
 metadata and any explicit `sudo ifup`/configuration-reload evidence before
 claiming every item of the original gate. No physical T1/T2-expiry, wire-level
 renewal, physical two-NVMe or independent filesystem-audit claim is added.
+
+## Physical AP observer image prepared
+
+The user explicitly requested the existing CS=3 observer on a separate Dell
+test image. [The Dell observer guide](../network-smp-dell-observer.md) records
+the image, hashes, exact commands, mask interpretation, implementation and
+retained validation failures. This live image does not request mounting the
+installed root/data or require reinstallation. Ordinary `ping`, `nslookup`,
+`wget` and DHCP calls are observed without worker-placement arguments. The
+trusted pinned boot DHCP probe is separately recorded and excluded.
+
+Handoff: `bin/fortress-dell-cpu-observer-test.img`, 130 MiB, SHA-256
+`41b12ad43d348bb95ee3ba9a2bbba1150ec1efc5b77d8c58c7141e9c15168fb1`.
+Receipt: `build/network-smp-phase4/dell-observer-wa1d_fa5/manifest.json`.
+Guest reader validation `guest-hyiy2otf`: 5/5 PASS, including BSP-only negative
+controls and four-command AP masks with CPU-0 owner on BIOS/UEFI SMP=8 and
+exact raw USB UEFI SMP=8. Kernel and target-command source comparison to the
+tested installed build passes. Release media hashes are unchanged.
+At image handoff, physical AP acceptance was pending the user's photographs;
+the results below close that requirement.
+
+## Final physical AP acceptance — PASS
+
+2026-10-16. The user supplied `image-1792174102336.jpg` from the Dell live
+observer image. It shows CS=3 syscall entry with no placement changes and:
+
+| Ordinary program | Network-call mask | CPUs observed |
+| --- | --- | --- |
+| `/bin/ping` | `0x9` | 0, 3 |
+| `/bin/nslookup` | `0x3` | 0, 1 |
+| `/bin/wget` | `0x5` | 0, 2 |
+| `/sbin/dhcpc` | `0x37` | 0, 1, 2, 4, 5 |
+
+Owner mask is `0x1`, with nonzero steps (`0xfba33`). The separate boot DHCP
+mask is `0x1` and is excluded from ordinary masks. The reader reports
+`AP evidence PASS: four commands; owner CPU0`. These are network syscall
+numbers 38–51, not inferences from CPU availability or non-network syscalls.
+No explicit worker placement or affinity change was used.
+
+Earlier photographs `image-1792173815157.jpg`, `image-1792173905144.jpg` and
+`image-1792173996338.jpg` retain the progression: wget/DHCP AP entry first,
+then ping, and finally nslookup after further ordinary launches. Initial
+incomplete reports and exit status 1 are retained, not relabeled as passes.
+Counters accumulate within the diagnostic boot; this does not require every
+invocation or every syscall to execute on an AP, nor every AP to be used.
+
+This closes the remaining physical AP evidence requirement. Together with the
+installed build `3cf6cf1` checks, matching HTTP hashes, concurrent commands,
+cable recovery and clean-reboot persistence documented above, **Network SMP
+Phase 4 is COMPLETE**. The AP measurement is explicitly from a separate live
+instrumented image with matching production kernel/target sources, not a claim
+that the ordinary installed release contains instrumentation. Hardware evidence
+is user-supplied photographs and confirmations, not an independent wire audit.
+
+Phase 5 throughput redesign remains deferred. This acceptance does not add
+physical T1/T2-expiry, wire-level DHCP renewal, physical two-NVMe, independent
+filesystem-audit, NIC interrupt/RSS or multi-owner protocol claims. The earlier
+116.51 Mb/s live-USB timing remains a separately qualified baseline.

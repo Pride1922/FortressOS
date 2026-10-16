@@ -172,10 +172,17 @@ Gate: ordinary commands work on BSP and APs, benchmarks retain explicit placemen
 
 ## Phase 4 — Physical acceptance
 
-Latest physical checkpoint (2026-10-16): installed build `3cf6cf1`, eight CPUs,
+**COMPLETE (2026-10-16), bounded user-confirmed Dell acceptance.** Installed
+functional/reboot checks plus the live CS=3 observer prove AP network calls for
+ping (`0x9`), nslookup (`0x3`), wget (`0x5`) and dhcpc (`0x37`), with owner mask
+`0x1`. No placement override was used. See [final physical acceptance](../roadmap/network-smp-phase4.md#final-physical-ap-acceptance--pass).
+Earlier checkpoints below retain their historical pending status. Phase 5 is
+separate and deferred; no throughput redesign or broader hardware claim follows.
+
+Earlier installed checkpoint (2026-10-16): build `3cf6cf1`, eight CPUs,
 automatic DHCP, peer/gateway ping, DNS, foreground/background 100 MiB HTTP hashes,
 renewal signaling, cable recovery and clean-reboot file/config persistence are
-user-confirmed with photographs. Full gate remains open for physical ordinary
+user-confirmed with photographs. At that checkpoint the gate remained open for physical ordinary
 network-command AP provenance and remaining metadata/config-reload confirmation.
 See [the physical results](../roadmap/network-smp-phase4.md#user-supplied-installed-system-physical-results).
 

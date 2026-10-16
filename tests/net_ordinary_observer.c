@@ -2,6 +2,7 @@
 #include "types.h"
 #include "syscall_abi.h"
 #include "socket_abi.h"
+#include "net_cpu_observation.h"
 static long invoke(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,uintptr_t e,uintptr_t f) {
     register uintptr_t r10 __asm__("r10")=d;
     register uintptr_t r8 __asm__("r8")=e;
@@ -10,6 +11,66 @@ static long invoke(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,uintp
     return nr;
 }
 static bool equal(const char *a,const char *b) { while (*a && *a==*b) {++a;++b;} return *a==*b; }
+static bool output(const char *s) {
+    size_t n=0,at=0;while(s[n]) ++n;
+    while(at<n) {
+        long w=invoke(SYS_WRITE,1,(uintptr_t)(s+at),n-at,0,0,0);
+        if(w<=0 || (size_t)w>n-at) return false;
+        at+=(size_t)w;
+    }
+    return true;
+}
+static void hex(uint64_t n) {
+    char s[19]={'0','x'};unsigned at=2;bool started=false;
+    for(int shift=60;shift>=0;shift-=4) {
+        unsigned digit=(unsigned)(n>>shift)&15;
+        if(digit || started || !shift) {s[at++]="0123456789abcdef"[digit];started=true;}
+    }
+    s[at]=0;(void)output(s);
+}
+static int cpu_report(bool detail,bool invalid) {
+    static net_cpu_observation_t snapshot;
+    if(invalid) {
+        if(invoke(NET_CPU_OBSERVATION_NR,0,0,sizeof(snapshot),0,0,0)!=SYSCALL_EFAULT ||
+           invoke(NET_CPU_OBSERVATION_NR,0,UINT64_MAX-32,sizeof(snapshot),0,0,0)!=SYSCALL_EFAULT ||
+           invoke(NET_CPU_OBSERVATION_NR,0,0xffffffff80000000ULL,sizeof(snapshot),0,0,0)!=SYSCALL_EFAULT ||
+           invoke(NET_CPU_OBSERVATION_NR,0,(uintptr_t)"readonly",sizeof(snapshot),0,0,0)!=SYSCALL_EFAULT ||
+           invoke(NET_CPU_OBSERVATION_NR,0,(uintptr_t)&snapshot,1,0,0,0)!=SYSCALL_EINVAL ||
+           invoke(NET_CPU_OBSERVATION_NR,UINT64_MAX,(uintptr_t)&snapshot,sizeof(snapshot),0,0,0)!=SYSCALL_ENOENT)
+            return 1;
+        return output("OBSERVER bounds PASS\n") ? 0 : 1;
+    }
+    (void)output("DELL OBSERVER TEST: CS=3 entry, no placement changes\n");
+    unsigned passed=0;uint64_t owner=0,steps=0,boot=0;
+    for(unsigned row=0;row<64;row++) {
+        long r=invoke(NET_CPU_OBSERVATION_NR,row,(uintptr_t)&snapshot,sizeof(snapshot),0,0,0);
+        if(r==SYSCALL_ENOENT) break;
+        if(r || snapshot.version!=NET_CPU_OBSERVATION_VERSION) {
+            (void)output("Observer unavailable or ABI mismatch; use diagnostic image.\n");return 1;
+        }
+        owner=snapshot.owner_cpus;steps=snapshot.owner_steps;boot=snapshot.boot_dhcp_cpus;
+        bool wanted=equal(snapshot.name,"/bin/ping") || equal(snapshot.name,"/bin/nslookup") ||
+            equal(snapshot.name,"/bin/wget") || equal(snapshot.name,"/sbin/dhcpc");
+        if(!wanted) continue;
+        uint64_t all=0,net=0;
+        for(unsigned nr=0;nr<NET_CPU_OBSERVATION_SYSCALLS;nr++) {
+            all|=snapshot.masks[nr];
+            if(nr>=SYS_SOCKET && nr<=SYS_CONNECT_UNTIL) net|=snapshot.masks[nr];
+        }
+        (void)output(snapshot.name);(void)output(" all=");hex(all);
+        (void)output(" net=");hex(net);(void)output((net&~1ULL)?" AP=YES\n":" AP=NO\n");
+        if(net&~1ULL) ++passed;
+        if(detail) for(unsigned nr=SYS_SOCKET;nr<=SYS_CONNECT_UNTIL;nr++) if(snapshot.masks[nr]) {
+            (void)output("  nr=");hex(nr);(void)output(" cpus=");hex(snapshot.masks[nr]);(void)output("\n");
+        }
+    }
+    (void)output("OWNER cpus=");hex(owner);(void)output(" steps=");hex(steps);
+    (void)output("\nBOOT DHCP pinned cpus=");hex(boot);
+    (void)output(" (excluded from ordinary masks)\n");
+    bool pass=passed==4 && owner==1 && steps;
+    (void)output(pass?"AP evidence PASS: four commands; owner CPU0\n":"AP evidence INCOMPLETE: run commands, then check again\n");
+    return pass?0:1;
+}
 static void close_fd(long fd) { (void)invoke(SYS_CLOSE,fd,0,0,0,0,0); }
 static int consume(long fd,unsigned count,bool echo) {
     uint8_t bytes[256];unsigned at=0;
@@ -83,6 +144,9 @@ static int listener(bool shared) {
     return 0;
 }
 int net_cpu_probe_main(int argc,char **argv) {
+    if(argc==2 && equal(argv[1],"cpu")) return cpu_report(false,false);
+    if(argc==2 && equal(argv[1],"cpu-detail")) return cpu_report(true,false);
+    if(argc==2 && equal(argv[1],"cpu-invalid")) return cpu_report(false,true);
     if (argc==2 && equal(argv[1],"udp-parent")) return inherited_udp(false);
     if (argc==2 && equal(argv[1],"udp-child")) return inherited_udp(true);
     if (argc==2 && equal(argv[1],"shared-listener")) return listener(false);

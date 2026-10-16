@@ -4,6 +4,14 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-16 Network SMP Phase 4: **COMPLETE, bounded user-confirmed physical
+acceptance**. Installed networking, HTTP integrity, concurrent commands,
+renewal signaling, cable recovery and clean-reboot persistence pass. A separate
+live CS=3 observer records AP network entry: ping `0x9`, nslookup `0x3`, wget
+`0x5`, dhcpc `0x37`; registered owner mask stays `0x1`. The intentionally pinned
+boot DHCP probe is excluded. [Physical evidence and limitations](../roadmap/network-smp-phase4.md).
+Release images remain uninstrumented. Phase 5 throughput redesign is deferred.
+
 2026-10-16 DHCP v2 Client & Background Renewal Daemon: `/sbin/dhcpc` full RFC 2131
 lease lifecycle is COMPLETE. Boot-time automatic network configuration (`net=dhcp`, fast
 <=3s probe before login shell) with background daemon fork via `SYS_SPAWN_EXT` (`SPAWN_SETPGROUP`),
@@ -13,7 +21,9 @@ Zero-CPU sleeping via monotonic `SYS_NANOSLEEP`. CLI management flags (`--boot`,
 `--status`, `--renew`, `--release`, `--dry-run`). Host ASan/UBSan unit test suites
 (`make test-dhcpc-v2-host`, `make test-dhcpc-host`) and multi-firmware QEMU integration
 suite (`make test-dhcpc-v2`) pass 100% (7/7 cases + offline resilience) across BIOS and UEFI.
-Dell Latitude 5590 physical bare-metal acceptance pending user execution.
+Dell physical functional boot/renewal-signaling/link-recovery/reboot results are
+recorded in the Phase 4 report above; physical T1/T2-expiry and independent
+wire-level renewal/rebinding audits are not claimed by those results.
 See [DHCP v2 architecture and plan](../plans/DHCP_V2_PLAN.md).
 
 2026-10-15 DHCP Client v1 and Broadcast Probe: `/sbin/dhcpc` (dynamic IPv4 lease acquisition)
