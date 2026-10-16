@@ -1,7 +1,8 @@
 # Network SMP Phase 4 — physical acceptance
 
-2026-10-16. Physical testing is in progress. The user reports testing from a
-live USB on a laptop. Full installed-root acceptance remains open under
+2026-10-16. Live-USB and subsequent installed-system functional physical checks
+are user-confirmed. The final section records the installed/reboot photographs.
+The complete physical gate, including ordinary-command AP provenance, remains open under
 [the Phase 4 gate](../plans/NETWORK_SMP_PLAN.md#phase-4--physical-acceptance).
 
 ## User-reported HTTP timing
@@ -52,9 +53,9 @@ were not supplied. Privileged `sudo ifup` invocation was not separately
 confirmed. `smpbench` success does not establish AP syscall execution by the
 ordinary network commands.
 
-Testing was live USB only. The user explicitly reports that installer-based
-persistent networking has not been tested. No installed-root configuration
-persistence/reload or installer acceptance is claimed.
+At this earlier checkpoint testing was live USB only, and the user reported
+installer-based persistent networking had not been tested. Subsequent installed
+configuration persistence and reboot results are recorded in the final section.
 
 Record laptop model, firmware, CPU count, boot-image hash, configuration path
 and exact commands/results. Confirm ordinary unpinned commands, authorized

@@ -179,13 +179,14 @@ user-confirmed with photographs. Full gate remains open for physical ordinary
 network-command AP provenance and remaining metadata/config-reload confirmation.
 See [the physical results](../roadmap/network-smp-phase4.md#user-supplied-installed-system-physical-results).
 
-Status (2026-10-16): IN PROGRESS. User-reported live-USB HTTP downloads:
+Earlier live-USB checkpoint (2026-10-16): user-reported HTTP downloads:
 100 MiB, ten runs averaging 7.20 seconds (116.51 Mb/s payload). This does not
 close the installed-root, reboot or physical AP evidence
 requirements below. See [the physical evidence report](../roadmap/network-smp-phase4.md).
 The user also confirms live-USB `ifup`, `ifconfig`, ping, DNS, `smpbench`,
-`sysinfo` and cable recovery passes. Installed-root persistent networking has
-not been tested; physical network-command AP execution remains unestablished.
+`sysinfo` and cable recovery passes. At that checkpoint installed-root persistent
+networking had not been tested. The latest installed results are recorded above;
+physical network-command AP execution remains unestablished.
 The user subsequently confirmed the streamed 100 MiB HTTP SHA-256 matches the
 Windows reference; the physical evidence report records the hash and separate
 live-partition capacity failure.
