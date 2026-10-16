@@ -1369,7 +1369,7 @@ test-net-tcp-client: $(BOOTABLE_ISO) test-net-tcp-host test-net-tcp-tcb-host tes
 	@python3 scripts/test_net_tcp_client.py
 test-net-tcp-socket-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(subst tests/net_socket_host.c,tests/net_tcp_socket_host.c,$(NET_SOCKET_HOST_SRCS)) -Wl,--wrap=net_tcp_send -o $(BUILD_DIR)/net_tcp_socket_host
+	@$(CC) -O1 -g -DTEST_SMP_MEMORY -pthread -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/net -Isrc/kernel -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/fs $(subst tests/net_socket_host.c,tests/net_tcp_owner_host.c,$(NET_SOCKET_HOST_SRCS)) -Wl,--wrap=net_tcp_send -o $(BUILD_DIR)/net_tcp_socket_host
 	@$(BUILD_DIR)/net_tcp_socket_host
 	@python3 tests/test_tcp_deadline_guard.py
 .PHONY: ext4-fixtures
@@ -1884,3 +1884,9 @@ test-network-smp-phase2a-host:
 	@python3 scripts/test_network_smp_phase2a_host.py
 test-network-smp-phase2a: test-network-smp-phase2a-host
 	@python3 scripts/test_network_smp_phase2a.py
+
+.PHONY: test-network-smp-phase2c-host test-network-smp-phase2c
+test-network-smp-phase2c-host:
+	@python3 scripts/test_network_smp_phase2c_host.py
+test-network-smp-phase2c: test-network-smp-phase2c-host
+	@python3 scripts/test_network_smp_phase2c.py

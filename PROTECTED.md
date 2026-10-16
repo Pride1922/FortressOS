@@ -33,7 +33,7 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
   current single-CPU assumptions (SMP pieces 1–6 are complete (see
   `docs/roadmap/smp-*.md`). The current binding assumption is that the
   network worker remains BSP-pinned and production commands remain pinned;
-  TCP syscall CPU/affinity guards remain until the separate TCP integration).
+  LISTEN/ACCEPT CPU/affinity guards remain until Phase 2D).
 - xHCI DMA ring state, BOT completion polling discipline (no sleeps or
   IRQ-enables under the ext2 lock), DMA quarantine on failure, and USB class
   filtering (only 0x08/0x06/0x50 accepted as BOT mass storage).
@@ -47,9 +47,11 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
   DNS queries). UDP callers on every CPU retain checked file references and copy
   through bounded pinned staging; only the registered owner mutates UDP state or
   commits consumption. Final UDP close/death publishes cancellation/detach without
-  protocol work. AP code must not mutate connections or perform NIC work. TCP
-  CPU/affinity guards, existing BSP TCP continuations and production spawn
-  pinning remain; TCP ownership integration belongs to Phase 2C/2D.
+  protocol work. TCP client/stream CREATE/BIND/CONNECT/SEND/RECV, timed calls,
+  READ/WRITE and SHUT_WR use that same owner from BSP and AP, sharing eight
+  bounded pinned 64 KiB credits with UDP. AP code must not mutate connections or
+  perform NIC work. LISTEN/ACCEPT keep their BSP continuations and CPU/affinity
+  guards until Phase 2D; production spawn pinning remains until Phase 3.
 - **Polling-only ingress.** No NIC interrupt handlers or MSI vectors. Adding one
   is a contract change, not an optimization.
 - **Rank-1 network locks.** `g_net_dev_lock`, `g_socket_table_lock`,
@@ -100,3 +102,9 @@ Full rationale and violation consequences: AGENTS.md §4 (L1–L4).
   `ARCH_REVIEW.md`.
 - **Historical evidence** for a specific hardware workaround: the relevant
   file under `docs/roadmap/`.
+
+## Phase 2C update (2026-10-16, verified; preservation qualified)
+
+Client CREATE/BIND/CONNECT/SEND/RECV, timed variants, socket READ/WRITE and SHUT_WR now use retained copied requests through the registered CPU-0 owner from every application CPU, including BSP. This supersedes the client-continuation/guard wording above. LISTEN/ACCEPT retain BSP/affinity guards and existing adoption until Phase 2D. Final close only publishes detach. Production pinning, polling-only ingress, ranks, bounded pools and ISN policy remain.
+
+Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](docs/roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

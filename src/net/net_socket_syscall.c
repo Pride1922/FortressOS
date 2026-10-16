@@ -57,11 +57,10 @@ static int64_t terminal(bool accepted_send) {
 int64_t net_socket_syscall(interrupt_frame_t *f) {
     tcb_t *caller=thread_current();
     if (!caller) return SYSCALL_EOPNOTSUPP;
-    bool remote=cpu_current()->id || caller->cpu_affinity!=0;
-    if (f->rax>=SYS_CONNECT && remote) return SYSCALL_EOPNOTSUPP;
+    if ((f->rax==SYS_LISTEN || f->rax==SYS_ACCEPT) &&
+        (cpu_current()->id || caller->cpu_affinity!=0)) return SYSCALL_EOPNOTSUPP;
     if (f->rax==SYS_SOCKET) {
         bool stream=f->rsi==NET_SOCK_STREAM || f->rsi==(NET_SOCK_STREAM|NET_SOCK_CLOEXEC);
-        if (stream && remote) return SYSCALL_EOPNOTSUPP;
         if (f->rdi!=NET_AF_INET || (!stream && f->rsi!=NET_SOCK_DGRAM &&
             f->rsi!=(NET_SOCK_DGRAM|NET_SOCK_CLOEXEC)) || (f->rdx && f->rdx!=(stream ? 6u : 17u))) return SYSCALL_EOPNOTSUPP;
         if (!net_socket_available()) return SYSCALL_EIO;
@@ -69,9 +68,8 @@ int64_t net_socket_syscall(interrupt_frame_t *f) {
         for (; i<MAX_PROCESS_FDS; ++i) if (!caller->fd_table[i]) break;
         if (i==MAX_PROCESS_FDS) return SYSCALL_EMFILE;
         file_t *file=NULL; int64_t ret;
-        if (stream) ret=net_socket_create_stream(&file);
-        else {
-            ret=net_udp_begin(NET_OWNER_UDP_CREATE,NULL,NULL,0,false);
+        {
+            ret=net_udp_begin(stream ? NET_OWNER_TCP_CREATE : NET_OWNER_UDP_CREATE,NULL,NULL,0,false);
             if (ret) return ret;
             handoff_token_t t=caller->handoff.token;
             while (!handoff_ready(&t)) {
@@ -92,17 +90,12 @@ int64_t net_socket_syscall(interrupt_frame_t *f) {
             }
             net_udp_release(); return ret;
         }
-        if (ret) return ret;
-        int fd=fd_alloc(caller,file);
-        if (fd<0) { vfs_close(file); return SYSCALL_EMFILE; }
-        if (f->rsi&NET_SOCK_CLOEXEC) caller->fd_flags[fd]=FD_FLAG_CLOEXEC;
-        return fd;
+
     }
     if (f->rdi>=MAX_PROCESS_FDS) return SYSCALL_EBADF;
     file_t *file=fd_get(caller,(int)f->rdi);
     if (!net_socket_file(file)) return SYSCALL_EBADF;
     if (f->rax>=SYS_CONNECT) return net_tcp_syscall(f);
-    if (net_socket_stream(file) && remote) return SYSCALL_EOPNOTSUPP;
     if (f->rax!=SYS_BIND && net_socket_stream(file)) return SYSCALL_EOPNOTSUPP;
     if (f->rax==SYS_BIND) {
         if (f->rdx!=sizeof(net_sockaddr_in_t)) return SYSCALL_EINVAL;
@@ -114,8 +107,7 @@ int64_t net_socket_syscall(interrupt_frame_t *f) {
             if (!process_record_creds(caller->tid,&actor)) return SYSCALL_ESRCH;
             if (permission_capability(&actor,CAP_NET_BIND)) return SYSCALL_EPERM;
         }
-        if (net_socket_stream(file)) return net_socket_bind(file,&a);
-        int64_t ret=net_udp_begin(NET_OWNER_UDP_BIND,file,&a,0,false);
+        int64_t ret=net_udp_begin(net_socket_stream(file) ? NET_OWNER_TCP_BIND : NET_OWNER_UDP_BIND,file,&a,0,false);
         return ret ? ret : terminal(false);
     }
     int64_t ret;

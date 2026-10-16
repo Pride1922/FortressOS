@@ -266,3 +266,9 @@ the manager's cached readiness observation, so equal-sized consecutive RX/TX
 batches cannot hide a readiness transition after a userspace drain. See the
 deterministic regression and physical-evidence boundary in the Step 7 record.
 The user-confirmed Dell 5590 DNS session closes NET-2 at 7/7.
+
+## Phase 2C update (2026-10-16, verified; preservation qualified)
+
+The register ABI and 60-second horizon remain unchanged. Client requests now use retained CPU-0 owner transactions from BSP and AP, preserving absolute BSP deadlines across admission, queueing and retries. The caller rechecks ranges/time after signal/STOP handling before pinning an offer. Positive accepted SEND and copied/committed receive results win later cancellation. CONNECT starts once and resolves its acknowledgement/cancellation on the owner. Only LISTEN/ACCEPT keep AP guards. Earlier BSP eligibility/reservation-free and quiet-period wording is historical; the reconciled current policy has zero reboot quiet time and conditional hardware entropy assurance.
+
+Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

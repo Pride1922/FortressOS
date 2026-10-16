@@ -9,7 +9,10 @@ FAIL for concurrent documentation drift remains qualified, not erased.
 [Phase 2A evidence](../roadmap/network-smp-phase2a.md). Phase 2B UDP/DNS integration
 is COMPLETE (primary campaign `gate-fhnnk8qq` 12/12 boots PASS, e1000 follow-up `gate-1te338y2` 4/4
 boots PASS, host ASan/UBSan/TSan PASS, legacy regressions PASS; see
-[Phase 2B evidence](../roadmap/network-smp-phase2b.md)). Phase 2C (TCP client/streams) remains next.
+[Phase 2B evidence](../roadmap/network-smp-phase2b.md)). Phase 2C client/stream
+implementation and network behavior gates are verified; the full-matrix source
+preservation qualification and current-checkout integration are recorded in
+[Phase 2C evidence](../roadmap/network-smp-phase2c.md). LISTEN/ACCEPT remain Phase 2D.
 [Phase 1 evidence](../roadmap/network-smp-phase1.md).
 [Decisions](NETWORK_SMP_PHASE0_CONTRACTS.md) and
 [evidence/qualifications](../roadmap/network-smp-phase0.md).
@@ -180,3 +183,9 @@ Sequence: Phase 0 -> Phase 1 host and guest proof -> Phase 2A–2D -> Phase 3 ->
 Each campaign retains source/build hashes, exact QEMU argv, disposable image identities, paired OVMF variables, serial logs, CPU provenance, peer captures, filesystem audits, failure artifacts and bounded process cleanup. Never attach physical disks or overwrite shared fixture images. Report host mocks, real guest execution and physical evidence separately.
 
 The foundation is accepted when ownership, progress, cancellation and reclamation are demonstrated under contention and failure—not merely when five commands succeed once.
+
+## Phase 2C update (2026-10-16, verified; preservation qualified)
+
+Client/stream implementation now uses shared retained UDP/TCP records, eight 64 KiB slabs, owner-only mutation and explicit readiness publication. LISTEN/ACCEPT and production affinity rollout remain deferred.
+
+Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

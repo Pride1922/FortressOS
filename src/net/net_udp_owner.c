@@ -1,5 +1,6 @@
 #include "net_udp_owner.h"
 #include "net_ipv4.h"
+#include "net_tcp.h"
 #include "net_control.h"
 #include "thread.h"
 #include "apic.h"
@@ -14,18 +15,20 @@ typedef struct {
     net_sockaddr_in_t address, source;
     net_socket_wait_t wait;
     size_t length;
-    int64_t result;
-    unsigned phase;
+    int64_t result, cancel_status;
+    unsigned phase, kind;
     int slab;
     bool active, nonblocking, pin;
+    bool timed, started, reserved, tcp_pending;
+    uint64_t tcp_generation;
 } udp_request_t;
 static udp_request_t values[HANDOFF_SLOTS];
-/* UDP needs only 1472 bytes. Eight staging slabs reserve the campaign's eight
- * payload credits; later TCP integration must share these credits/storage. */
-static uint8_t payload[8][NET_UDP_DATA_MAX];
+/* One shared pool for UDP and TCP. No peer wait retains a send slab. */
+static uint8_t payload[8][TCP_RXBUF_MAX];
 static bool slab_used[8];
 static uint64_t payload_sequence;
 static unsigned copy_decisions, slab_waiters, free_slabs=8;
+static bool tcp_runnable;
 static spinlock_t lock=SPINLOCK_RANKED(1,"udp_handoff_values");
 _Static_assert(sizeof(udp_request_t)<=512,"UDP copied record ledger");
 _Static_assert(sizeof(values)+sizeof(payload)+32768+12288+4096<589824,"handoff static ceiling");
@@ -37,7 +40,8 @@ static void credit_put(unsigned *value) {
 bool net_udp_owner_work(void) {
     /* Level publication survives a generic acknowledgement clearing its hint
      * before the rotating pending budget reaches this typed operation. */
-    return __atomic_load_n(&copy_decisions,__ATOMIC_ACQUIRE) ||
+    return __atomic_load_n(&tcp_runnable,__ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&copy_decisions,__ATOMIC_ACQUIRE) ||
         (__atomic_load_n(&slab_waiters,__ATOMIC_ACQUIRE) &&
          __atomic_load_n(&free_slabs,__ATOMIC_ACQUIRE));
 }
@@ -68,34 +72,73 @@ static void slab_put(udp_request_t *v) {
 }
 void net_udp_abandon(void) { handoff_abandon(&thread_current()->handoff); }
 void net_udp_release(void) { handoff_release(&thread_current()->handoff); }
+typedef struct { uint64_t sequence, floor, deadline; bool timed; } admission_t;
+static bool admission_ready(void *arg) {
+    admission_t *w=arg;
+    uint64_t now=apic_timer_get_bsp_ticks();
+    return handoff_admissible(&w->sequence) || (w->timed &&
+        (!net_tcp_deadline_clock_ok() || now<w->floor || now>=w->deadline));
+}
+static int64_t admission_error(unsigned kind,file_t *file,bool timed,uint64_t deadline,uint64_t *floor) {
+    if (kind==NET_OWNER_TCP_SEND || kind==NET_OWNER_TCP_RECV) {
+        net_tcp_wait_t wait;
+        if (!net_socket_stream(file)) return SYSCALL_EBADF;
+        if (!net_tcp_snapshot(net_socket_index(file),&wait)) return SYSCALL_ENOTCONN;
+        if (!net_socket_available()) return SYSCALL_EIO;
+    }
+    if (!timed) return 0;
+    uint64_t now=apic_timer_get_bsp_ticks();
+    if (!net_tcp_deadline_clock_ok() || now<*floor) return SYSCALL_EIO;
+    *floor=now;
+    return now>=deadline ? SYSCALL_ETIMEDOUT : 0;
+}
+static void cancel_offered_connect(int64_t error) {
+    /* A FIFO offer can be granted and claimed while its caller is stopped in
+     * admission. Resolve that published cancellation on the owner before a
+     * live caller can retry CONNECT on this endpoint. No peer wait is deferred. */
+    handoff_token_t t=thread_current()->handoff.token;
+    net_tcp_owner_cancel(error);
+    handoff_reply_t reply;
+    while (net_udp_collect(&reply)>0)
+        sched_wait_until_ack(handoff_channel(t),handoff_ready,&t);
+    net_udp_release();
+}
 int64_t net_udp_begin(unsigned kind,file_t *file,const net_sockaddr_in_t *a,size_t len,bool nb) {
+    return net_tcp_owner_begin(kind,file,a,len,nb,false,0,apic_timer_get_bsp_ticks());
+}
+int64_t net_tcp_owner_begin(unsigned kind,file_t *file,const net_sockaddr_in_t *a,
+                           size_t len,bool nb,bool timed,uint64_t deadline,uint64_t floor) {
+    size_t capacity=kind==NET_OWNER_TCP_SEND ? 4096 : kind==NET_OWNER_TCP_RECV ? TCP_RXBUF_MAX : NET_UDP_DATA_MAX;
+    if (kind<NET_OWNER_UDP_CREATE || kind>NET_OWNER_TCP_SHUTDOWN || len>capacity) return SYSCALL_EINVAL;
     tcb_t *self=thread_current();
-    uint64_t floor=apic_timer_get_bsp_ticks();
+    bool create=kind==NET_OWNER_UDP_CREATE || kind==NET_OWNER_TCP_CREATE;
     int rc;
     for (;;) {
         /* Before registration the caller still owns its fd and no transient
          * reference may survive an exit without a registered cleanup record. */
         if (process_signal_interrupt()) return SYSCALL_EINTR;
-        uint64_t sequence=handoff_admission_snapshot();
+        int64_t error=admission_error(kind,file,timed,deadline,&floor);
+        if (error) { if (self->handoff.active) net_udp_abandon(); return error; }
+        admission_t w={handoff_admission_snapshot(),floor,deadline,timed};
         rc=handoff_begin(&self->handoff,(handoff_request_t){.actor=self->tid,.value=floor,
-            .kind=kind,.control=kind==NET_OWNER_UDP_CREATE || kind==NET_OWNER_UDP_BIND,
+            .kind=kind,.control=create || kind==NET_OWNER_UDP_BIND || kind==NET_OWNER_TCP_BIND || kind==NET_OWNER_TCP_SHUTDOWN,
             .retained=true,.cancel_status=SYSCALL_EINTR});
         if (rc!=HANDOFF_WAIT) break;
         if (nb) return SYSCALL_EAGAIN;
-        sched_wait_until(&handoff_admission_channel,handoff_admissible,&sequence);
+        sched_wait_until(&handoff_admission_channel,admission_ready,&w);
     }
     if (rc) return SYSCALL_EIO;
     handoff_token_t t=self->handoff.token;
     /* No signal/wait boundary until the retained reference is registered. */
-    bool got=kind==NET_OWNER_UDP_CREATE || vfs_file_get(file);
-    uint64_t identity=got && kind!=NET_OWNER_UDP_CREATE ? net_socket_identity(file) : 0;
+    bool got=create || vfs_file_get(file);
+    uint64_t identity=got && !create ? net_socket_identity(file) : 0;
     uint64_t f=spin_lock_irqsave(&lock);
     values[t.slot]=(udp_request_t){.generation=t.generation,.file=got ? file : NULL,
         .identity=identity,.floor=floor,.address=a ? *a : (net_sockaddr_in_t){0},
-        .length=len,.nonblocking=nb,.slab=-1};
+        .kind=kind,.length=len,.nonblocking=nb,.slab=-1,.timed=timed,.deadline=deadline};
     spin_unlock_irqrestore(&lock,f);
     if (!got) { net_udp_abandon(); return SYSCALL_EBADF; }
-    if (kind==NET_OWNER_UDP_CREATE) {
+    if (create) {
         file_t *prepared=NULL;
         int64_t result=net_socket_prepare(&prepared);
         f=spin_lock_irqsave(&lock); values[t.slot].file=prepared; spin_unlock_irqrestore(&lock,f);
@@ -103,13 +146,27 @@ int64_t net_udp_begin(unsigned kind,file_t *file,const net_sockaddr_in_t *a,size
          * preserving ENOSPC ahead of ENOMEM without caller-side reservation. */
         (void)result;
     }
+    bool offered=false;
     for (;;) {
-        if (process_signal_interrupt()) { net_udp_abandon(); return SYSCALL_EINTR; }
-        uint64_t sequence=handoff_admission_snapshot();
-        rc=handoff_publish(t);
+        if (process_signal_interrupt()) {
+            if (offered && kind==NET_OWNER_TCP_CONNECT) cancel_offered_connect(SYSCALL_EINTR);
+            else net_udp_abandon();
+            return SYSCALL_EINTR;
+        }
+        int64_t error=admission_error(kind,file,timed,deadline,&floor);
+        if (error) {
+            if (offered && kind==NET_OWNER_TCP_CONNECT) cancel_offered_connect(error);
+            else if (self->handoff.active) net_udp_abandon();
+            return error;
+        }
+        admission_t w={handoff_admission_snapshot(),floor,deadline,timed};
+        if (!offered) {
+            f=spin_lock_irqsave(&lock); values[t.slot].floor=floor; spin_unlock_irqrestore(&lock,f);
+        }
+        rc=handoff_publish(t); offered=true;
         if (rc!=HANDOFF_WAIT) break;
         if (nb) { net_udp_abandon(); return SYSCALL_EAGAIN; }
-        sched_wait_until(&handoff_admission_channel,handoff_admissible,&sequence);
+        sched_wait_until(&handoff_admission_channel,admission_ready,&w);
     }
     if (rc) { net_udp_abandon(); return SYSCALL_EIO; }
     return 0;
@@ -123,6 +180,26 @@ bool net_udp_ready(void *arg) {
 int64_t net_udp_collect(handoff_reply_t *reply) {
     int rc=handoff_collect(thread_current()->handoff.token,reply);
     return rc==HANDOFF_WAIT ? 1 : rc ? SYSCALL_EIO : 0;
+}
+void net_tcp_owner_cancel(int64_t status) {
+    handoff_token_t t=thread_current()->handoff.token;
+    uint64_t f=spin_lock_irqsave(&lock);
+    if (values[t.slot].generation==t.generation) values[t.slot].cancel_status=status;
+    spin_unlock_irqrestore(&lock,f);
+    handoff_cancel(t);
+}
+bool net_tcp_owner_connect_ack(void) {
+    handoff_token_t t=thread_current()->handoff.token;
+    uint64_t f=spin_lock_irqsave(&lock);
+    udp_request_t *v=&values[t.slot];
+    bool ok=v->generation==t.generation && v->kind==NET_OWNER_TCP_CONNECT && v->phase==UDP_COPY;
+    if (ok) {
+        phase(v,UDP_COMMIT);
+        __atomic_add_fetch(&copy_decisions,1,__ATOMIC_RELEASE);
+    }
+    spin_unlock_irqrestore(&lock,f);
+    if (ok) handoff_notify();
+    return ok;
 }
 bool net_udp_pin(const uint8_t **data,int64_t *result,net_sockaddr_in_t *source) {
     handoff_token_t t=thread_current()->handoff.token;
@@ -157,8 +234,148 @@ static void cleanup(udp_request_t *v,bool consume) {
         v->active=false;
     }
 }
+static bool reader_reserved(udp_request_t *v) {
+    /* Owner-only reservation metadata. Other readers cannot consume the head
+     * until commit/abort/lease release; new RX appends behind it. */
+    bool reserved=false;
+    uint64_t f=spin_lock_irqsave(&lock);
+    for (unsigned i=0;i<HANDOFF_SLOTS;++i)
+        if (&values[i]!=v && values[i].reserved && values[i].identity==v->identity &&
+            values[i].file && net_socket_index(values[i].file)==net_socket_index(v->file)) {
+            reserved=true; break;
+        }
+    spin_unlock_irqrestore(&lock,f);
+    return reserved;
+}
+static void tcp_step(handoff_token_t t,handoff_request_t r) {
+    udp_request_t *v=&values[t.slot];
+    uint64_t now=apic_timer_get_bsp_ticks(), hz=apic_timer_get_frequency();
+    bool cancel=handoff_cancelled(t);
+    uint64_t f=spin_lock_irqsave(&lock);
+    unsigned p=v->phase;
+    if (v->pin) { spin_unlock_irqrestore(&lock,f); handoff_finish(t,(handoff_reply_t){0},true); return; }
+    bool commit=p==UDP_COMMIT, abort=p==UDP_ABORT;
+    int64_t cancellation=v->cancel_status ? v->cancel_status : SYSCALL_EINTR;
+    if (commit || abort) credit_put(&copy_decisions);
+    bool expiry=p==UDP_COPY && now>=v->lease;
+    /* Revocation must exclude a new AP pin/ack under the same lock. Merely
+     * sampling an unpinned offer and revoking it later can free pinned bytes. */
+    if (p==UDP_COPY && (expiry || cancel || (v->timed &&
+        (!net_tcp_deadline_clock_ok() || now<v->floor || now>=v->deadline)))) phase(v,UDP_IO);
+    spin_unlock_irqrestore(&lock,f);
+    int64_t result=0; bool pending=false;
+    bool receive=r.kind==NET_OWNER_TCP_RECV, send=r.kind==NET_OWNER_TCP_SEND;
+    unsigned slot=v->file && v->identity ? net_socket_index(v->file) : 0;
+    net_tcp_wait_t precedence;
+    if (receive && commit) {
+        /* Already copied positive bytes are irrevocable, including after a
+         * clock reversal or signal. Retained file fences final detach. */
+        if (!v->reserved || net_tcp_consume(slot,(size_t)v->result)) __builtin_trap();
+        result=v->result; v->reserved=false;
+    } else if (cancel || abort) result=cancellation;
+    else if (r.kind!=NET_OWNER_TCP_CREATE && !net_socket_identity_live(v->file,v->identity)) result=SYSCALL_ENOTCONN;
+    else if ((send || receive) && (!net_tcp_snapshot(slot,&precedence) ||
+        (v->tcp_generation && precedence.generation!=v->tcp_generation))) result=SYSCALL_ENOTCONN;
+    else if ((send || receive) && !net_socket_available()) result=SYSCALL_EIO;
+    else if (v->timed && (!net_tcp_deadline_clock_ok() || now<v->floor)) result=SYSCALL_EIO;
+    else if (v->timed && now>=v->deadline) result=SYSCALL_ETIMEDOUT;
+    else if (r.kind==NET_OWNER_TCP_CREATE) result=net_socket_activate_stream(v->file);
+    else if (r.kind==NET_OWNER_TCP_BIND) result=net_socket_bind(v->file,&v->address);
+    else if (r.kind==NET_OWNER_TCP_SHUTDOWN) result=net_tcp_shutdown(slot);
+    else if (!net_socket_available()) result=SYSCALL_EIO;
+    else {
+        net_tcp_wait_t wait;
+        if (!net_tcp_snapshot(slot,&wait) || (v->tcp_generation && v->tcp_generation!=wait.generation))
+            result=SYSCALL_ENOTCONN;
+        else {
+            v->tcp_generation=wait.generation;
+            if (v->timed) {
+                wait.timed=true; wait.deadline_ticks=v->deadline; wait.clock_floor=v->floor;
+                if (!net_tcp_deadline_register(&wait)) result=SYSCALL_ENOTCONN;
+            }
+            if (r.kind==NET_OWNER_TCP_CONNECT) {
+                if (!v->started) {
+                    result=v->timed ? net_tcp_connect_until(slot,v->address.address,ntohs(v->address.port),v->deadline) :
+                        net_tcp_connect(slot,v->address.address,ntohs(v->address.port));
+                    if (!result) v->started=true;
+                }
+                if (!result && p==UDP_COPY && !expiry) pending=true;
+                else if (!result && commit) result=0;
+                else if (!result) {
+                    result=net_tcp_connected(slot);
+                    if (!result) {
+                        if (!hz || now>UINT64_MAX-hz) result=SYSCALL_EIO;
+                        else {
+                            /* Handshake readiness is an offer, not a syscall
+                             * return. Caller signal/STOP handling precedes its
+                             * bounded acknowledgement; CONNECT is never restarted. */
+                            f=spin_lock_irqsave(&lock);
+                            v->lease=now+hz; phase(v,UDP_COPY);
+                            spin_unlock_irqrestore(&lock,f); pending=true;
+                        }
+                    }
+                }
+            } else if (send || receive) {
+                if (expiry) {
+                    v->reserved=false;
+                    f=spin_lock_irqsave(&lock); slab_put(v); phase(v,UDP_IO); spin_unlock_irqrestore(&lock,f);
+                    p=UDP_IO;
+                }
+                if (p==UDP_COPY) pending=true;
+                else if (send && commit) {
+                    result=net_tcp_send(slot,payload[v->slab],v->length);
+                    /* If a competing sender used the space while we copied,
+                     * release credit and requeue. No accepted bytes are retried. */
+                    f=spin_lock_irqsave(&lock); slab_put(v); phase(v,UDP_IO); spin_unlock_irqrestore(&lock,f);
+                } else {
+                    result=receive && reader_reserved(v) ? SYSCALL_EAGAIN : net_tcp_probe(slot,receive);
+                    if (result>0) {
+                        f=spin_lock_irqsave(&lock); v->slab=slab_get(v); spin_unlock_irqrestore(&lock,f);
+                        if (v->slab<0) result=v->slab==-2 ? SYSCALL_EIO : SYSCALL_EAGAIN;
+                        else if (!hz || now>UINT64_MAX-hz) result=SYSCALL_EIO;
+                        else {
+                            result=receive ? net_tcp_peek(slot,payload[v->slab],v->length) : (int64_t)v->length;
+                            if (result>0) {
+                                v->reserved=receive;
+                                f=spin_lock_irqsave(&lock);
+                                v->result=result; v->lease=now+hz; phase(v,UDP_COPY);
+                                spin_unlock_irqrestore(&lock,f); pending=true;
+                                sched_wake_all(handoff_channel(t));
+                            }
+                        }
+                    }
+                }
+            } else result=SYSCALL_EINVAL;
+        }
+    }
+    if (now>=v->floor) v->floor=now;
+    if (result==SYSCALL_EAGAIN && !v->nonblocking) pending=true;
+    if (!pending) {
+        if (r.kind==NET_OWNER_TCP_CONNECT && v->started && result)
+            net_tcp_cancel_connect(slot,v->tcp_generation);
+        f=spin_lock_irqsave(&lock);
+        /* An AP may have pinned after the initial phase snapshot but before a
+         * newly observed link/error result. Defer terminal cleanup until its
+         * commit/abort; a positive copied receive still wins that race. */
+        if (v->pin || ((!commit && !abort) &&
+            (v->phase==UDP_COMMIT || v->phase==UDP_ABORT))) {
+            /* A complete AP copy can also land after the snapshot. Keep its
+             * decision credit and reservation for the next owner turn; only
+             * checking pin would lose an already-unpinned positive receive. */
+            spin_unlock_irqrestore(&lock,f);
+            v->tcp_pending=true;
+            handoff_finish(t,(handoff_reply_t){0},true); return;
+        }
+        phase(v,UDP_IO); slab_put(v); v->reserved=false;
+        spin_unlock_irqrestore(&lock,f);
+        handoff_notify(); /* Reservation/slab release makes another caller eligible. */
+    }
+    v->tcp_pending=pending;
+    handoff_finish(t,(handoff_reply_t){.status=result},pending);
+}
 void net_udp_step(handoff_token_t t,handoff_request_t r) {
     net_control_assert_owner();
+    if (r.kind>=NET_OWNER_TCP_CREATE) { tcp_step(t,r); return; }
     udp_request_t *v=&values[t.slot];
     uint64_t now=apic_timer_get_bsp_ticks(),hz=apic_timer_get_frequency();
     bool cancel=handoff_cancelled(t);
@@ -273,7 +490,7 @@ void net_udp_maintenance(void) {
     net_control_assert_owner();
     for (unsigned i=0;i<8;++i) {
         handoff_token_t t; handoff_request_t r; handoff_state_t st; bool caller;
-        if (!handoff_inspect(&t,&r,&st,&caller) || r.kind<NET_OWNER_UDP_CREATE || r.kind>NET_OWNER_UDP_RECV) continue;
+        if (!handoff_inspect(&t,&r,&st,&caller) || r.kind<NET_OWNER_UDP_CREATE || r.kind>NET_OWNER_TCP_SHUTDOWN) continue;
         if (st!=HANDOFF_COMPLETED || caller) continue;
         udp_request_t *v=&values[t.slot];
         cleanup(v,false);
@@ -285,4 +502,35 @@ void net_udp_maintenance(void) {
         if (file) vfs_close(file);
         handoff_cleaned(t);
     }
+}
+
+void net_udp_refresh_work(void) {
+    net_control_assert_owner();
+    bool runnable=false;
+    uint64_t now=apic_timer_get_bsp_ticks();
+    /* Bounded readiness scan, no payload copy or protocol mutation. Keep work
+     * level-published even if the rotating eight-step budget misses a record. */
+    for (unsigned i=0;i<HANDOFF_SLOTS;++i) {
+        udp_request_t *v=&values[i];
+        uint64_t f=spin_lock_irqsave(&lock);
+        if (!v->tcp_pending) { spin_unlock_irqrestore(&lock,f); continue; }
+        unsigned p=v->phase; bool pinned=v->pin;
+        spin_unlock_irqrestore(&lock,f);
+        if (pinned) continue;
+        if (p==UDP_COMMIT || p==UDP_ABORT || (p==UDP_COPY && now>=v->lease) ||
+            (v->timed && (now<v->floor || now>=v->deadline || !net_tcp_deadline_clock_ok()))) {
+            runnable=true; break;
+        }
+        if (p!=UDP_IO || !v->file || !v->identity ||
+            (v->kind==NET_OWNER_TCP_RECV && reader_reserved(v))) continue;
+        int64_t available=v->kind==NET_OWNER_TCP_CONNECT ? net_tcp_connected(net_socket_index(v->file)) :
+            net_tcp_probe(net_socket_index(v->file),v->kind==NET_OWNER_TCP_RECV);
+        /* EOF/errors and CONNECT decisions need no payload credit. Only a
+         * positive data offer waits for one of the eight shared slabs. */
+        if (available!=SYSCALL_EAGAIN && (available<=0 ||
+            v->kind==NET_OWNER_TCP_CONNECT || __atomic_load_n(&free_slabs,__ATOMIC_ACQUIRE))) {
+            runnable=true; break;
+        }
+    }
+    __atomic_store_n(&tcp_runnable,runnable,__ATOMIC_RELEASE);
 }

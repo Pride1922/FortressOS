@@ -9,15 +9,9 @@
 #include "vmm.h"
 #include "string.h"
 #include "apic.h"
-/* BSP IF-clear only, no retained user pointer or packet-size stack buffer. */
-static uint8_t received[TCP_RXBUF_MAX];
+#include "net_udp_owner.h"
 static bool range(uintptr_t p, size_t n, bool write) {
     return !n || vmm_validate_user_range(vmm_get_active_pml4_virt(),p,n,write);
-}
-static bool interrupted(unsigned slot, const net_tcp_wait_t *wait, bool connect) {
-    if (!process_signal_interrupt()) return false;
-    if (connect) net_tcp_cancel_connect(slot,wait->generation);
-    return true;
 }
 static int64_t accept_outputs(const interrupt_frame_t *f) {
     if (!!f->rsi!=!!f->rdx || (f->r10 && f->r10!=NET_SOCK_CLOEXEC)) return SYSCALL_EINVAL;
@@ -66,7 +60,9 @@ static int64_t accept_socket(tcb_t *caller, unsigned slot, interrupt_frame_t *f)
 }
 int64_t net_tcp_syscall(interrupt_frame_t *f) {
     tcb_t *caller=thread_current();
-    if (cpu_current()->id || !caller || caller->cpu_affinity!=0) return SYSCALL_EOPNOTSUPP;
+    if (!caller) return SYSCALL_EOPNOTSUPP;
+    if ((f->rax==SYS_LISTEN || f->rax==SYS_ACCEPT) &&
+        (cpu_current()->id || caller->cpu_affinity!=0)) return SYSCALL_EOPNOTSUPP;
     if (f->rdi>=MAX_PROCESS_FDS) return SYSCALL_EBADF;
     file_t *file=fd_get(caller,(int)f->rdi);
     if (!net_socket_stream(file)) return SYSCALL_EBADF;
@@ -79,7 +75,16 @@ int64_t net_tcp_syscall(interrupt_frame_t *f) {
     if (f->rax==SYS_ACCEPT) return accept_socket(caller,slot,f);
     if (f->rax==SYS_SHUTDOWN) {
         if (f->rsi!=NET_SHUT_WR) return SYSCALL_EINVAL;
-        return net_tcp_shutdown(slot);
+        int64_t rc=net_udp_begin(NET_OWNER_TCP_SHUTDOWN,file,NULL,0,false);
+        if (rc) return rc;
+        handoff_token_t t=caller->handoff.token;
+        while (!handoff_ready(&t)) {
+            if (process_signal_interrupt()) { net_udp_abandon(); return SYSCALL_EINTR; }
+            sched_wait_until(handoff_channel(t),handoff_ready,&t);
+        }
+        handoff_reply_t reply;
+        rc=net_udp_collect(&reply); net_udp_release();
+        return rc ? SYSCALL_EIO : reply.status;
     }
     bool timed=f->rax==SYS_CONNECT_UNTIL || f->rax==SYS_SEND_UNTIL || f->rax==SYS_RECV_UNTIL;
     bool connect=f->rax==SYS_CONNECT || f->rax==SYS_CONNECT_UNTIL;
@@ -88,10 +93,11 @@ int64_t net_tcp_syscall(interrupt_frame_t *f) {
     uint64_t deadline=connect ? f->r10 : f->r8;
     uint64_t clock_floor=timed ? apic_timer_get_bsp_ticks() : 0;
     if (!connect && !receive && !send) return SYSCALL_ENOSYS;
+    net_sockaddr_in_t address={0};
     if (connect) {
         if (f->rdx!=16) return SYSCALL_EINVAL;
         if (!range(f->rsi,16,false)) return SYSCALL_EFAULT;
-        net_sockaddr_in_t address; memcpy(&address,(const void *)f->rsi,16);
+        memcpy(&address,(const void *)f->rsi,16);
         if (address.family!=NET_AF_INET || !address.port || !net_ipv4_unicast(address.address)) return SYSCALL_EINVAL;
         for (unsigned i=0; i<8; ++i) if (address.reserved[i]) return SYSCALL_EINVAL;
         if (!net_socket_available()) return SYSCALL_EIO;
@@ -100,11 +106,8 @@ int64_t net_tcp_syscall(interrupt_frame_t *f) {
             if (!net_tcp_deadline_clock_ok() || !hz || hz>UINT64_MAX/NET_TCP_IO_HORIZON_SECONDS) return SYSCALL_EIO;
             if (deadline>now && deadline-now>hz*NET_TCP_IO_HORIZON_SECONDS) return SYSCALL_EINVAL;
         }
-        int64_t result=timed ? net_tcp_connect_until(slot,address.address,ntohs(address.port),deadline) :
-            net_tcp_connect(slot,address.address,ntohs(address.port));
-        if (result) return result;
     } else {
-        if (f->rdx>MAX_SYSCALL_WRITE_LEN ||
+        if (f->rdx>(receive ? TCP_RXBUF_MAX : MAX_SYSCALL_WRITE_LEN) ||
             (timed && f->r10) ||
             ((f->rax==SYS_SEND || f->rax==SYS_RECV) && f->r10 && f->r10!=NET_MSG_DONTWAIT)) return SYSCALL_EINVAL;
         if (!range(f->rsi,f->rdx,receive)) return SYSCALL_EFAULT;
@@ -115,50 +118,64 @@ int64_t net_tcp_syscall(interrupt_frame_t *f) {
             if (deadline>now && deadline-now>hz*NET_TCP_IO_HORIZON_SECONDS) return SYSCALL_EINVAL;
         }
     }
-    net_tcp_wait_t wait;
-    if (!net_tcp_snapshot(slot,&wait)) return SYSCALL_ENOTCONN;
-    uint64_t identity=wait.generation;
-    for (;;) {
-        if (interrupted(slot,&wait,connect)) return SYSCALL_EINTR;
-        if (!net_tcp_snapshot(slot,&wait) || wait.generation!=identity) return SYSCALL_ENOTCONN;
-        wait.timed=timed; wait.deadline_ticks=deadline; wait.clock_floor=clock_floor;
-        if (!connect) {
+    bool nb=!timed && (f->rax==SYS_SEND || f->rax==SYS_RECV) && f->r10==NET_MSG_DONTWAIT;
+    size_t length=f->rdx;
+    if (send && length>4096) length=4096;
+    if (receive && length>TCP_RXBUF_MAX) length=TCP_RXBUF_MAX;
+    int64_t rc=net_tcp_owner_begin(connect ? NET_OWNER_TCP_CONNECT :
+        receive ? NET_OWNER_TCP_RECV : NET_OWNER_TCP_SEND,file,connect ? &address : NULL,
+        length,nb,timed,deadline,clock_floor);
+    if (rc) {
+        if (!connect && (rc==SYSCALL_EIO || rc==SYSCALL_ETIMEDOUT)) {
+            net_tcp_wait_t wait;
+            if (!net_tcp_snapshot(slot,&wait)) return SYSCALL_ENOTCONN;
             if (!range(f->rsi,f->rdx,receive)) return SYSCALL_EFAULT;
             if (!net_socket_available()) return SYSCALL_EIO;
         }
-        if (timed && (!net_tcp_deadline_clock_ok() || apic_timer_get_bsp_ticks()<clock_floor)) {
-            if (connect) net_tcp_cancel_connect(slot,identity);
-            return SYSCALL_EIO;
-        }
-        if (timed && apic_timer_get_bsp_ticks()>=deadline) {
-            if (connect) net_tcp_cancel_connect(slot,identity);
-            return SYSCALL_ETIMEDOUT;
-        }
-        /* Snapshot event before readiness test; IF stays clear through copy /
-         * commit. Competing readers may run only while this continuation sleeps. */
-        int64_t result;
-        if (connect) result=net_tcp_connected(slot);
-        else {
-            if (receive) {
-                size_t capacity=f->rdx; if (capacity>sizeof(received)) capacity=sizeof(received);
-                result=net_tcp_peek(slot,received,capacity);
-                if (result>0) {
-                    memcpy((void *)f->rsi,received,(size_t)result);
-                    (void)net_tcp_consume(slot,(size_t)result);
-                    /* Copy and consume are committed. No retained scratch/user
-                     * pointer is accessed after this unlocked scheduling turn.
-                     * The poll hint is already published by consume. */
-                    thread_yield();
-                }
-            } else result=net_tcp_send(slot,(const void *)f->rsi,f->rdx);
-        }
-        if (result!=SYSCALL_EAGAIN) {
-            if (send && result==SYSCALL_EPIPE)
+        return rc;
+    }
+    handoff_token_t t=caller->handoff.token;
+    bool decision=false;
+    for (;;) {
+        handoff_reply_t reply;
+        rc=net_udp_collect(&reply);
+        if (!rc) {
+            net_udp_release();
+            if (send && reply.status==SYSCALL_EPIPE)
                 (void)process_signal_send_kernel(caller->tid,(int64_t)caller->tid,SIGPIPE);
-            return result;
+            return reply.status;
         }
-        if (!connect && (f->rax==SYS_SEND || f->rax==SYS_RECV) && f->r10==NET_MSG_DONTWAIT) return result;
-        if (timed && !net_tcp_deadline_register(&wait)) return SYSCALL_ENOTCONN;
-        sched_wait_until(net_tcp_channel(&wait),net_tcp_ready,&wait);
+        if (rc<0) { net_udp_abandon(); return rc; }
+        if (decision) {
+            /* Copy decision is published. Deferral is only for the bounded
+             * owner commit/cancel acknowledgement, never peer/resource waits. */
+            sched_wait_until_ack(handoff_channel(t),handoff_ready,&t);
+            continue;
+        }
+        if (process_signal_interrupt()) {
+            net_tcp_owner_cancel(SYSCALL_EINTR); decision=true; continue;
+        }
+        if (connect && net_tcp_owner_connect_ack()) { decision=true; continue; }
+        if (!connect) {
+            if (!range(f->rsi,f->rdx,receive)) { net_udp_abandon(); return SYSCALL_EFAULT; }
+            if (timed) {
+                uint64_t now=apic_timer_get_bsp_ticks();
+                int64_t error=(!net_tcp_deadline_clock_ok() || now<clock_floor) ? SYSCALL_EIO :
+                    now>=deadline ? SYSCALL_ETIMEDOUT : 0;
+                if (error) { net_tcp_owner_cancel(error); decision=true; continue; }
+                clock_floor=now;
+            }
+            const uint8_t *data; int64_t count;
+            if (net_udp_pin(&data,&count,NULL)) {
+                if (receive) memcpy((void *)f->rsi,data,(size_t)count);
+                else memcpy((void *)data,(const void *)f->rsi,(size_t)count);
+                net_udp_unpin(true);
+                if (receive) decision=true;
+                /* SEND copy alone is not accepted TX. Owner may need space
+                 * again; ordinary waits remain interruptible until accepted. */
+                continue;
+            }
+        }
+        sched_wait_until(handoff_channel(t),net_udp_ready,&t);
     }
 }

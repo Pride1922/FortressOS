@@ -9,6 +9,7 @@
 /* This control/worker-only fixture has no socket subsystem. */
 void net_udp_step(handoff_token_t t,handoff_request_t r) { (void)t;(void)r;assert(false); }
 void net_udp_maintenance(void) {}
+void net_udp_refresh_work(void) {}
 bool net_udp_owner_work(void) { return false; }
 #include "../src/net/poll_budget.h"
 

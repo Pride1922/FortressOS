@@ -56,7 +56,8 @@ Phase 9 gate and provides no evidence of a journal or USB fault.
     references, copy pins, FIFO slab tickets, owner commit/abort and deferred
     detach. Acceptance campaign `gate-fhnnk8qq` (12/12 boots PASS, e1000e) and
     `gate-1te338y2` (4/4 boots PASS, e1000) verified under BIOS & UEFI SMP=1/4/8.
-    Production spawn pinning and TCP guards remain until Phase 2C/2D and Phase 3.
+    Phase 2C client/stream calls now join the owner from BSP and AP; LISTEN/ACCEPT
+    guards remain until Phase 2D and production spawn pinning until Phase 3.
     See [Phase 2B gates](../roadmap/network-smp-phase2b.md).
 
 ---
@@ -79,3 +80,9 @@ Phase 9 gate and provides no evidence of a journal or USB fault.
 
 - Master Architecture & Invariants (`SM1`–`SM16`): [`docs/plans/SMP_DESIGN.md`](../plans/SMP_DESIGN.md)
 - Piece 6 Memory & PMM/VMM Safety Evidence: [`docs/roadmap/smp-piece6-memory.md`](../roadmap/smp-piece6-memory.md)
+
+## Phase 2C update (2026-10-16, verified; preservation qualified)
+
+TCP client/stream calls on BSP and AP now join the retained CPU-0 owner with checked files, endpoint generations, copied staging and bounded acknowledgements. LISTEN/ACCEPT guards and production spawn pinning remain.
+
+Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

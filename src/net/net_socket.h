@@ -9,12 +9,13 @@ void net_socket_enable(void);
 void net_socket_set_local(uint32_t local_ip);
 bool net_socket_available(void);
 int64_t net_socket_create(file_t **out);
-/* Phase 2B constructor split: caller allocation, owner endpoint activation.
+/* Client constructor split: caller allocation, owner endpoint activation.
  * A NULL prepared file still checks capacity first (ENOSPC before ENOMEM).
  * Final UDP close publishes detach; slot reuse waits for owner acknowledgement.
  * UDP mutation APIs below require registered CPU-0 owner, no other locks. */
 int64_t net_socket_prepare(file_t **out);
 int64_t net_socket_activate(file_t *file);
+int64_t net_socket_activate_stream(file_t *file);
 uint64_t net_socket_identity(file_t *file);
 bool net_socket_identity_live(file_t *file, uint64_t identity);
 int64_t net_socket_create_stream(file_t **out);

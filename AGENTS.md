@@ -48,8 +48,9 @@ through the CPU-0 owner from any CPU (BSP and AP), with retained file references
 bounded copy pins, FIFO slab tickets, owner commit/abort and deferred detach.
 Acceptance campaign `gate-fhnnk8qq` PASS (12/12 boots on e1000e, BIOS/UEFI ×
 SMP=1/4/8) and follow-up `gate-1te338y2` PASS (4/4 boots on e1000, BIOS/UEFI SMP=4).
-Scope boundary: TCP remains BSP-pinned with CPU guards until Phase 2C/2D; production
-spawn pinning remains until Phase 3; no physical acceptance claimed. Read
+Scope boundary: Phase 2C client/stream calls now use the owner from BSP and AP;
+LISTEN/ACCEPT remain BSP-pinned with guards until Phase 2D. Production spawn
+pinning remains until Phase 3; no physical acceptance claimed. Read
 [Phase 2B audit and evidence](docs/roadmap/network-smp-phase2b.md).
 
 ## 3. Build, Run, Debug and Verify
@@ -502,8 +503,8 @@ Discuss intentional changes to these contracts before implementation unless the 
 - Shared kernel PML4 ownership, boot-module backing lifetime, and current single-CPU assumptions.
 - xHCI DMA ring state, BOT completion polling discipline (no sleeps/IRQ-enables under ext2 lock), DMA quarantine on failure, and USB class filtering (only 0x08/0x06/0x50 accepted as BOT mass storage).
 
-## Phase 2C update (2026-10-15, acceptance in progress)
+## Phase 2C update (2026-10-16, verified; preservation qualified)
 
 TCP client/stream calls on BSP and AP now use the same retained CPU-0 owner and eight shared 64 KiB payload credits. LISTEN/ACCEPT guards, existing adoption and production spawn pinning remain.
 
-Implementation is not full gate acceptance. [Current audit, evidence and remaining gates](docs/roadmap/network-smp-phase2c.md). No physical acceptance is claimed.
+Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](docs/roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

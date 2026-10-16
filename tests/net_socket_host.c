@@ -77,8 +77,12 @@ void *kmalloc(size_t n) {
 void kfree(void *p) { if (p) { assert(__atomic_fetch_sub(&allocations,1,__ATOMIC_ACQ_REL)); free(p); } }
 tcb_t *thread_current(void) { return &process; }
 bool process_signal_interrupt(void) { return signal_pending; }
+static uint64_t last_signal_actor;
+static int64_t last_signal_target;
+static unsigned last_signal_number;
 int64_t process_signal_send(uint64_t sender, int64_t selector, unsigned signal) {
-    (void)sender; (void)selector; (void)signal; return 0;
+    last_signal_actor=sender; last_signal_target=selector; last_signal_number=signal;
+    return 0;
 }
 uint64_t *vmm_get_active_pml4_virt(void) { return NULL; }
 bool vmm_validate_user_range(uint64_t *root, uintptr_t p, size_t n, bool write) {
@@ -148,6 +152,7 @@ static void tick(void) {
         if (!handoff_pending(&t,&r)) break;
         net_udp_step(t,r);
     }
+    net_udp_refresh_work();
 }
 static pthread_mutex_t config_lock=PTHREAD_MUTEX_INITIALIZER;
 bool net_socket_address_snapshot(uint32_t ip,bool remote) {

@@ -24,9 +24,11 @@ application CPU (BSP and AP). DNS queries (`nslookup`, resolver fallback) route
 through UDP to the CPU-0 owner from any CPU. Acceptance campaign `gate-fhnnk8qq`
 (12/12 boots on e1000e, BIOS/UEFI × SMP=1/4/8) and follow-up `gate-1te338y2` (4/4 boots
 on e1000, BIOS/UEFI SMP=4) PASS. Checked file references and endpoint reuse fences survive
-cancellation, inherited close and caller death. Production spawn pinning and TCP guards
-remain until Phase 2C/2D and Phase 3. See [Phase 2B audit and gates](../roadmap/network-smp-phase2b.md);
-no physical acceptance of this migration or Phase 2C implementation is claimed.
+cancellation, inherited close and caller death. Phase 2C client/stream calls now
+join this owner from BSP and AP; final-source acceptance is recorded separately
+in [Phase 2C](../roadmap/network-smp-phase2c.md). LISTEN/ACCEPT guards remain until
+Phase 2D, production pinning until Phase 3. See [Phase 2B gates](../roadmap/network-smp-phase2b.md).
+No physical acceptance of this migration is claimed.
 
 Historical 2026-10-14 Network SMP Phase 2A: application IFGET, authorized IFSET, ping and
 traceroute use one registered CPU-0 owner through copied kernel-owned requests
@@ -299,8 +301,8 @@ gate is separate manual/user-supplied evidence — see
 - Phase 5a UDP sockets and tools (host/QEMU; 5590 UDP user-reported PASS; capture audit pending): [`docs/roadmap/net-phase5a.md`](../roadmap/net-phase5a.md)
 - DHCP Client v1 Implementation & Verification: [`docs/roadmap/dhcp-v1.md`](../roadmap/dhcp-v1.md)
 
-## Phase 2C update (2026-10-15, acceptance in progress)
+## Phase 2C update (2026-10-16, verified; preservation qualified)
 
 TCP client/stream calls on BSP and AP now join the retained CPU-0 owner using the shared eight-credit 64 KiB staging pool. LISTEN/ACCEPT guards and adoption remain Phase 2D work; production spawn pinning remains.
 
-Implementation is not full gate acceptance. [Current audit, evidence and remaining gates](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.
+Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

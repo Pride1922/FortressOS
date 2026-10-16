@@ -278,3 +278,16 @@ network assumptions, ARCH_REVIEW.md, net.h/net_tcp.h caller comments, network/SM
 annexes, UDP/TCP ABI plans and AP-negative test descriptions. Keep pinning until
 Phase 3. Phase 0 changes none of those production contracts. Existing BSP syscall
 mutation is documented here rather than misrepresented as worker execution.
+
+## Phase 2C realized state ledger (2026-10-16)
+
+The Phase 0 per-row reservation-record estimate (<=128 bytes / 8192 total) is
+superseded for the combined UDP/TCP implementation: the checked ordinary ELF has
+168-byte typed records, 64 records =10752 bytes. The eight 65536-byte payload
+credits and hard 576 KiB ceiling are unchanged; there is no parallel TCP pool.
+All writable static sections of owner/control/generic modules total549558 bytes;
+including2048 registration and4096 alignment/metadata allowances gives555702,
+below589824. This reallocates ledger headroom rather than claiming every original
+per-row estimate was retained. The build-time aggregate assertion and ordinary
+ELF section measurements are recorded in
+[Phase 2C evidence](../roadmap/network-smp-phase2c.md).

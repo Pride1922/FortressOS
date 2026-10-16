@@ -146,7 +146,7 @@ def boot(out, disk, firmware, cpus, restart, password, peer_port):
         command('/sbin/ifconfig', 'inet 10.0.2.15/24')
         command('net-cpu-probe', 'NET CPU BSP accepted PASS')
         if cpus > 1:
-            command('net-cpu-probe --worker 1', 'NET CPU AP control/UDP accepted; TCP rejected PASS')
+            command('net-cpu-probe --worker 1', 'NET CPU AP clients accepted; listener guarded PASS')
         config = 'address 10.0.2.50/24\ngateway 10.0.2.2\ndns 1.1.1.1\ndns2 8.8.8.8\n'
         if not restart:
             command('/sbin/ifup', 'cannot open file "/etc/network/network.conf"')

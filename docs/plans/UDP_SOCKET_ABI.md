@@ -193,3 +193,9 @@ signature, lock ranks and timer hooks remain; an acknowledgement-only entry
 shares the scheduler wait core while deferring signals for a bounded owner
 commit/cancel decision. It never waits for peer readiness. Physical Phase 5b
 history remains separate from acceptance of this SMP migration.
+
+## Phase 2C update (2026-10-16, verified; preservation qualified)
+
+Phase 2C extends the same retained records, FIFO payload tickets and eight copy credits to TCP. Slabs grow to 65536 bytes without a parallel TCP pool. UDP remains bounded to 1472-byte datagrams with unchanged finite receive, commit and ABI semantics.
+
+Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

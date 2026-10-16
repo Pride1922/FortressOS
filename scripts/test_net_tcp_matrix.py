@@ -115,7 +115,7 @@ class Case:
         self.uart.settimeout(.05)
         self.start_reader()
         self.wait(lambda t: re.search(r'(?:fortress> |fortress:[^\r\n]* \$ |[A-Za-z0-9_-]+@[^:\r\n ]+:[^\r\n]*[#$] )', t) and 'Gateway ARP resolved' in t, 120)
-        if self.cpus == 4: self.wait(lambda t: 'AP TCP dispatch rejection PASS' in t)
+        if self.cpus == 4: self.wait(lambda t: 'AP TCP listener dispatch rejection PASS' in t)
 
     def start_reader(self):
         # Drain independently of drvfs writes and packet/audit processing. A

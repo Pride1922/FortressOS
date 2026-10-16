@@ -218,8 +218,8 @@ void net_worker_main(void *arg) {
     for (;;) {
         bool work=__atomic_exchange_n(&s_work_pending,false,__ATOMIC_ACQ_REL);
         unsigned probe=__atomic_exchange_n(&s_ap_probe_result,0,__ATOMIC_ACQ_REL);
-        if (probe) serial_puts(probe==1 ? "[NET 5] AP TCP dispatch rejection PASS\n" :
-            "[NET 5] AP TCP dispatch rejection FAIL\n");
+        if (probe) serial_puts(probe==1 ? "[NET 5] AP TCP listener dispatch rejection PASS\n" :
+            "[NET 5] AP TCP listener dispatch rejection FAIL\n");
         bool online=e1000_service_link(s_if,apic_timer_get_bsp_ticks(),apic_timer_get_frequency());
         if (!online && was_online) arp_cache_init(&s_arp_cache);
         was_online=online;

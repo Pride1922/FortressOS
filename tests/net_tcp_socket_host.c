@@ -2,6 +2,9 @@
 #define main udp_baseline_main
 #include "net_socket_host.c"
 #undef main
+#ifdef TCP_OWNER_FIXTURE
+#define main legacy_tcp_baseline_main
+#endif
 #include "net_tcp.h"
 #include "net_tcp_syscall.h"
 static tcp_conn_t peer_connection;
@@ -45,6 +48,9 @@ int64_t __wrap_net_tcp_send(unsigned slot, const void *data, size_t len) {
     int64_t result=__real_net_tcp_send(slot,data,len);
     if (interrupt_after_send && result>0) {
         interrupt_after_send=false; signal_pending=true;
+#ifdef TCP_OWNER_FIXTURE
+        handoff_cancel(process.handoff.token); /* After actual TX acceptance, before typed publication. */
+#endif
     }
     return result;
 }
@@ -233,7 +239,11 @@ static void repeated_receive_event_test(net_config_t *cfg) {
     unsigned before_yield=handoff_yields;
     uint8_t bytes[2]; assert(stream_receive_call(SYS_RECV,child,bytes,2)==2 && !memcmp(bytes,"ab",2));
     assert(poll_requests>before_poll); /* Application drain requests ACK service. */
+#ifdef TCP_OWNER_FIXTURE
+    assert(handoff_yields==before_yield); /* Commit executes in owner, not caller. */
+#else
     assert(handoff_yields==before_yield+1);
+#endif
     net_tcp_wait_t wait; assert(net_tcp_snapshot(net_socket_index(process.fd_table[child]),&wait));
     /* No zero-count worker sample between consume and equal-sized next batch. */
     incoming_at(0,103,TCP_ACK|TCP_PSH,synacks[0].sequence+1,"cd",2);

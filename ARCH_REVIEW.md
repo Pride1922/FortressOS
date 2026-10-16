@@ -468,7 +468,15 @@ and concurrency behaviors:
 The acknowledgement-only scheduler wait core defers signals for the bounded owner
 decision; ordinary waits preserve their existing signal, lock, enrollment and context-save
 behavior. This entry must never wait on peer traffic. An unresponsive owner still has no
-safe restart or forced reclamation. TCP guards, shared TCP receive scratch, accept
-transactions and production spawn pinning remain Phase 2C/2D/Phase 3 prerequisites.
+safe restart or forced reclamation. At that Phase 2B baseline, TCP guards, shared
+receive scratch, accept transactions and production pinning remained prerequisites.
+Phase 2C below replaces the client guards/scratch; listener adoption and production
+pinning remain Phase 2D/3 work.
 Verified in `gate-fhnnk8qq` (12/12 boots PASS, e1000e) and `gate-1te338y2` (4/4 boots
 PASS, e1000). See [Phase 2B](docs/roadmap/network-smp-phase2b.md).
+
+## Phase 2C update (2026-10-16, verified; preservation qualified)
+
+TCP client/stream calls now join the CPU-0 owner with checked file references and endpoint generations. Shared UDP/TCP staging uses eight 64 KiB slabs; the global TCP receive scratch is removed. Receive has pin/commit/abort ownership and CONNECT has caller acknowledgement. SEND stages <=4096 bytes; stalled peer waits hold no send slab. LISTEN/ACCEPT remain BSP IF-clear until Phase 2D, and production spawn pinning remains Phase 3 work.
+
+Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](docs/roadmap/network-smp-phase2c.md). No physical acceptance is claimed.

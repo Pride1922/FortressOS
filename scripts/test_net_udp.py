@@ -158,7 +158,7 @@ def run(mode, model, backend, cpus, iso, tmp):
                     raise AssertionError(text()[-7000:])
                 wait(lambda t: prompt(t) and 'Gateway ARP resolved' in t, 120)
                 if cpus == 4:
-                    wait(lambda t: '[NET 5] AP TCP dispatch rejection PASS' in t)
+                    wait(lambda t: '[NET 5] AP TCP listener dispatch rejection PASS' in t)
                 def start(line):
                     at = len(text())
                     for byte in line.encode() + b'\n':
@@ -271,7 +271,7 @@ def main():
                 for model in ('e1000', 'e1000e'):
                     for backend in ('user', 'socket'): run(mode, model, backend, 1, iso, tmp)
             for mode in ('bios', 'uefi'): run(mode, 'e1000', 'user', 4, iso, tmp)
-            print('Phase 5a: eight SMP=1 cases + two SMP=4 BSP/AP-TCP-rejection smoke cases PASS; physical 5b pending.', flush=True)
+            print('Phase 5a: eight SMP=1 cases + two SMP=4 BSP/AP-listener-guard smoke cases PASS; physical 5b pending.', flush=True)
 
 
 if __name__ == '__main__':

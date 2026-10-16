@@ -79,8 +79,9 @@ static void socket_close(vfs_node_t *node) {
         if (staged) net_tcp_unstage((unsigned)(s-s_slots));
         else net_tcp_close((unsigned)(s-s_slots));
     }
-    /* Static channel/backing outlives every waiter. BSP worker wakes on next
-     * pass; callback is also safe from an AP reaper, without scheduler calls. */
+    /* Static channel/backing outlives every waiter. Publish detach readiness
+     * and wake the BSP worker after releasing the common-slot lock. */
+    net_request_poll();
     kfree(node);
 }
 bool net_socket_file(file_t *f) { return f && f->node && f->node->close==socket_close; }
@@ -175,6 +176,29 @@ int64_t net_socket_activate(file_t *file) {
     invalidate(&s->tx); invalidate(&s->receive);
     file->node->fs_private=s;
     spin_unlock_irqrestore(&s_lock,irq); return 0;
+}
+int64_t net_socket_activate_stream(file_t *file) {
+    net_control_assert_owner();
+    if (!net_socket_available()) return SYSCALL_EIO;
+    uint64_t irq=spin_lock_irqsave(&s_lock);
+    socket_t *s=NULL;
+    for (unsigned i=0;i<NET_SOCKET_MAX;++i) if (!s_slots[i].used) { s=&s_slots[i]; break; }
+    uint64_t identity=s ? generation() : 0;
+    if (!identity) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_ENOSPC; }
+    s->used=true; s->identity=identity; s->detaching=false; s->stream=true;
+    s->staged_stream=false; s->bound=false; s->head=s->count=0; s->dropped=0;
+    invalidate(&s->tx); invalidate(&s->receive);
+    spin_unlock_irqrestore(&s_lock,irq);
+    /* Preserve capacity-before-allocation precedence, including TCP blocks and
+     * TIME_WAIT capacity. A failed caller preallocation still reaches this test.
+     * The temporary block follows the existing constructor OOM detach policy. */
+    int64_t result=net_tcp_create((unsigned)(s-s_slots));
+    if (!result && !file) { net_tcp_close((unsigned)(s-s_slots)); result=SYSCALL_ENOMEM; }
+    irq=spin_lock_irqsave(&s_lock);
+    if (result) s->used=false;
+    else file->node->fs_private=s;
+    spin_unlock_irqrestore(&s_lock,irq);
+    return result;
 }
 int64_t net_socket_create_stream(file_t **out) { return create(out,true,false); }
 int64_t net_socket_stage_stream(file_t **out) { return create(out,true,true); }

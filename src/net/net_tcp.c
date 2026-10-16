@@ -1,5 +1,6 @@
 #include "net_tcp.h"
 #include "net.h"
+#include "net_control.h"
 #include "net_ipv4.h"
 #include "socket_abi.h"
 #include "syscall_abi.h"
@@ -321,6 +322,7 @@ void net_tcp_set_local_ip(uint32_t new_ip) {
     local_ip = new_ip;
 }
 int64_t net_tcp_create(unsigned slot) {
+    net_control_assert_owner();
     if (slot>=NET_SOCKET_MAX || !device) return SYSCALL_EIO;
     uint64_t flags=spin_lock_irqsave(&lock);
     endpoint_t *e=&endpoints[slot];
@@ -414,6 +416,7 @@ void net_tcp_close(unsigned slot) {
     spin_unlock_irqrestore(&lock,flags);
 }
 int64_t net_tcp_bind(unsigned slot, uint16_t port) {
+    net_control_assert_owner();
     uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
     int64_t result=0;
     if (e->port || e->started) result=SYSCALL_EINVAL;
@@ -430,6 +433,7 @@ int64_t net_tcp_bind(unsigned slot, uint16_t port) {
     spin_unlock_irqrestore(&lock,flags); return result;
 }
 static int64_t connect_start(unsigned slot, uint32_t ip, uint16_t port, bool timed, uint64_t deadline) {
+    net_control_assert_owner();
     uint32_t hop;
     if (!net_ipv4_route(ip,&hop)) return SYSCALL_EINVAL;
     uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
@@ -476,8 +480,22 @@ void net_tcp_cancel_connect(unsigned slot, uint64_t generation) {
     if (e->used && e->generation==generation) { e->cancel=true; e->error=SYSCALL_ENOTCONN; publish(e); }
     spin_unlock_irqrestore(&lock,flags);
 }
+int64_t net_tcp_probe(unsigned slot, bool receive) {
+    net_control_assert_owner();
+    endpoint_t *e=&endpoints[slot]; tcp_conn_t *c=connection(e);
+    if (e->error) return e->error;
+    if (!e->started || !c || c->state==TCP_SYN_SENT || c->state==TCP_SYN_RCVD) return SYSCALL_ENOTCONN;
+    if (receive) {
+        if (c->rx_count) return c->rx_count;
+        return c->error ? error_code(c,false) : c->eof ? 0 : SYSCALL_EAGAIN;
+    }
+    if (c->want_fin) return SYSCALL_EPIPE;
+    if (c->state==TCP_CLOSED) return error_code(c,false);
+    return c->tx_count<TCP_TXBUF_MAX ? (int64_t)(TCP_TXBUF_MAX-c->tx_count) : SYSCALL_EAGAIN;
+}
 int64_t net_tcp_send(unsigned slot, const void *data, size_t len) {
-    /* BSP IF-clear continuation; no protocol mutation during unlocked copy. */
+    net_control_assert_owner();
+    /* Registered CPU-0 owner; immutable copied kernel staging for this step. */
     endpoint_t *e=&endpoints[slot]; tcp_conn_t *c=connection(e);
     if (e->error) return e->error;
     if (!e->started || !c || c->state==TCP_SYN_SENT || c->state==TCP_SYN_RCVD) return SYSCALL_ENOTCONN;
@@ -494,6 +512,7 @@ int64_t net_tcp_send(unsigned slot, const void *data, size_t len) {
     return result;
 }
 int64_t net_tcp_peek(unsigned slot, void *data, size_t capacity) {
+    net_control_assert_owner();
     endpoint_t *e=&endpoints[slot]; tcp_conn_t *c=connection(e);
     if (e->error) return e->error;
     if (!e->started || !c || c->state==TCP_SYN_SENT || c->state==TCP_SYN_RCVD) return SYSCALL_ENOTCONN;
@@ -503,6 +522,7 @@ int64_t net_tcp_peek(unsigned slot, void *data, size_t capacity) {
     return result;
 }
 int64_t net_tcp_consume(unsigned slot, size_t len) {
+    net_control_assert_owner();
     tcp_conn_t *c=connection(&endpoints[slot]);
     int result=tcp_conn_consume(c,len);
     uint64_t flags=spin_lock_irqsave(&lock);
@@ -513,6 +533,7 @@ int64_t net_tcp_consume(unsigned slot, size_t len) {
     return result;
 }
 int64_t net_tcp_shutdown(unsigned slot) {
+    net_control_assert_owner();
     tcp_conn_t *c=connection(&endpoints[slot]);
     int result=tcp_conn_shutdown(c);
     if (!result) net_request_poll();
