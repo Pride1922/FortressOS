@@ -3,6 +3,7 @@
 #include "thread.h"
 #include "percpu.h"
 #include "gdt.h"
+#include "time.h"
 
 extern void idtr_load(idt_ptr_t *ptr);
 extern uint8_t isr_stub_table[];
@@ -200,6 +201,10 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         cpu->nmi_count++;
         serial_nmi_report(cpu, frame->rip, frame->rsp);
         return;
+    }
+
+    if ((frame->cs & 3) != 0) {
+        time_account_user_to_kernel(thread_current());
     }
 
     /* Hardware or software interrupts (vectors >= 32, excluding syscall 0x80) */

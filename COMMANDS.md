@@ -1161,6 +1161,42 @@ sleep 0.5 0.5
 
 ---
 
+### `time`
+**Syntax:** `time [-p] command [arg...] [--help]`  
+**Path:** `/bin/time`  
+**Description:** Executes `command` with given arguments and measures elapsed wall-clock time (`real`), user CPU time (`user`), and system CPU time (`sys`). Wall-clock time is measured via `SYS_CLOCK_GETTIME` (`CLOCK_MONOTONIC`, syscall 74) with sub-second resolution calibrated against hardware TSC and APIC timer. Per-process CPU time accounting tracks cycles spent in user mode versus kernel mode across syscalls, interrupts, and context switches, exposed via `SYS_TIMES` (syscall 76) and sampled before child reclamation using `waitpid` (`WNOWAIT`). Writes timing statistics to `stderr` and propagates the executed command's exit status.
+* **Options:**
+  - `-p`: Use POSIX standard output format (`real %f\nuser %f\nsys %f\n` in seconds with two decimal digits).
+  - `-h`, `--help`: Display usage summary and exit.
+  - `--`: Stop option parsing; subsequent arguments are treated as command and args.
+* **Output Formats:**
+  - **Default (Linux-style):** Tab-separated minutes and seconds:
+    ```text
+    real	0m1.234s
+    user	0m0.891s
+    sys	0m0.102s
+    ```
+  - **POSIX (`-p`):** Space-separated seconds with two decimal places:
+    ```text
+    real 1.23
+    user 0.89
+    sys 0.10
+    ```
+* **Exit Codes:**
+  - Exits with the child command's exit status (or `128 + signal` if killed).
+  - `127`: Command not found.
+  - `126`: Command found but cannot be invoked.
+  - `2`: Missing command or invalid option.
+**Examples:**
+```sh
+time sleep 1
+time -p sleep 1
+time sha256sum /bin/shell
+time -p -- which date
+```
+
+---
+
 ## 6. System & Process Introspection
 
 ### `ps`

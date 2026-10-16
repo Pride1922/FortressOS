@@ -7,6 +7,7 @@ default rel
 extern isr_exception_handler
 extern process_signal_user_return
 extern sched_resched_user_return
+extern time_account_enter_user
 
 section .text
 
@@ -87,6 +88,10 @@ isr_common_stub:
     mov rdi, rsp
     call process_signal_user_return
 .signal_done:
+    test byte [rsp + 144], 3
+    jz .gs_check
+    call time_account_enter_user
+.gs_check:
 
     ; Undo entry swap, except an intentional user-to-kernel test recovery.
     test r12d, r12d

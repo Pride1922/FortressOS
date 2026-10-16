@@ -1334,6 +1334,11 @@ static int64_t sys_lockstat(uintptr_t user_buf, uint64_t cap) {
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
     if (!frame) return SYSCALL_EINVAL;
 
+    tcb_t *curr = thread_current();
+    if (curr) {
+        time_account_user_to_kernel(curr);
+    }
+
     uint64_t syscall_nr = frame->rax;
     int64_t result = SYSCALL_ENOSYS;
     int return_disposition = 0; /* 0=normal, 1=SIGRETURN (iretq, skip rax write) */
@@ -1811,6 +1816,22 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
         }
 
+        case SYS_TIMES: {
+            int64_t target_pid = (int64_t)frame->rdi;
+            uintptr_t user_buf = frame->rsi;
+            if (!user_buf || !vmm_validate_user_range(vmm_get_active_pml4_virt(), user_buf, sizeof(tms_t), true)) {
+                result = SYSCALL_EFAULT;
+                break;
+            }
+            uint64_t caller_pid = curr ? curr->tid : 0;
+            tms_t tms;
+            result = process_get_times(caller_pid, target_pid, &tms);
+            if (result == 0) {
+                memcpy((void *)user_buf, &tms, sizeof(tms_t));
+            }
+            break;
+        }
+
         case SYS_SIGRETURN:
             result = sys_sigreturn(frame, &return_disposition);
             break;
@@ -1827,6 +1848,9 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
      * frame->rax already holds kf.rax; do NOT overwrite. Skip signal delivery. */
     if (return_disposition == 1) {
         frame->vector = 0x100; /* SIGRETURN_VECTOR_MARKER — matches syscall_entry.asm */
+        if (curr) {
+            time_account_kernel_to_user(curr);
+        }
         return 0;
     }
 
@@ -1848,7 +1872,6 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         }
 
         /* Rogue user process attempting invalid return state: terminate on kernel stack */
-        tcb_t *curr = thread_current();
         if (curr && curr->is_user) {
             serial_puts("[SYSCALL] Terminating rogue process due to invalid return state (exit 141)\n");
             process_exit(141); /* 128 + 13 (#GP) */
@@ -1856,5 +1879,8 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         }
     }
 
+    if (curr) {
+        time_account_kernel_to_user(curr);
+    }
     return result;
 }

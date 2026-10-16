@@ -75,10 +75,12 @@ thread_trampoline:
 ; =============================================================================
 global user_process_trampoline
 extern process_signal_check
+extern time_account_enter_user
 user_process_trampoline:
     ; The entry arguments are callee-preserved. Keep RSP aligned for C.
     call sched_post_switch
     call process_signal_check
+    call time_account_enter_user
     ; Set user data segment selectors (DS, ES, FS, GS)
     mov ax, 0x1B    ; GDT_USER_DATA | 3 (RPL=3)
     mov ds, ax

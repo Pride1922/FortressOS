@@ -16,6 +16,17 @@ __attribute__((weak)) void thread_wake_for_signal(uint64_t pid) {
     (void)pid;
 }
 
+__attribute__((weak)) bool thread_get_cpu_times(uint64_t pid, uint64_t *utime, uint64_t *stime) {
+    (void)pid;
+    if (utime) *utime = 0;
+    if (stime) *stime = 0;
+    return false;
+}
+
+__attribute__((weak)) uint64_t time_tsc_to_ns(uint64_t cycles) {
+    return cycles;
+}
+
 /* Separate from scheduler placement and the overwriteable kernel-test history.
  * Members include unpublished spawn reservations. External references retain an
  * empty identity, but do not keep any TCB or child status alive. */
@@ -31,6 +42,10 @@ typedef struct {
     bool used, published, exited, stopped;
     bool uncollected, teardown_complete;
     uint64_t cpu_ticks;
+    uint64_t utime_tsc;
+    uint64_t stime_tsc;
+    uint64_t cutime_tsc;
+    uint64_t cstime_tsc;
     char name[16];
     signal_state_t *signals;
     creds_t *creds;
@@ -362,12 +377,14 @@ bool process_record_exit(uint64_t pid, uint64_t code) {
 bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal) {
     return process_record_exit_accounted(pid, code, signal, 0);
 }
-bool process_record_exit_accounted(uint64_t pid, uint64_t code, unsigned signal,
-                                   uint64_t final_ticks) {
+bool process_record_exit_accounted_times(uint64_t pid, uint64_t code, unsigned signal,
+                                         uint64_t final_ticks, uint64_t utime_tsc, uint64_t stime_tsc) {
     uint64_t irq = spin_lock_irqsave(&g_process_lock);
     process_record_t *p = find(pid);
     if (p) {
         if (!p->exited && final_ticks > p->cpu_ticks) p->cpu_ticks = final_ticks;
+        p->utime_tsc = utime_tsc;
+        p->stime_tsc = stime_tsc;
         group_leave(p); p->exited = true; p->signals = NULL; p->creds=NULL;
     }
     for (unsigned i=0; i<PROCESS_CAPACITY; ++i)
@@ -394,6 +411,11 @@ bool process_record_exit_accounted(uint64_t pid, uint64_t code, unsigned signal,
     changed();
     spin_unlock_irqrestore(&g_process_lock, irq);
     return recorded;
+}
+
+bool process_record_exit_accounted(uint64_t pid, uint64_t code, unsigned signal,
+                                   uint64_t final_ticks) {
+    return process_record_exit_accounted_times(pid, code, signal, final_ticks, 0, 0);
 }
 void process_record_forget(uint64_t pid) {
     uint64_t irq = spin_lock_irqsave(&g_process_lock);
@@ -451,7 +473,7 @@ out:
 }
 int64_t process_record_wait(uint64_t parent, int64_t selector, uint32_t options,
                             uint64_t *status, bool legacy) {
-    if ((options & ~(WNOHANG|WUNTRACED|WCONTINUED)) || selector == (-0x7fffffffffffffffLL-1))
+    if ((options & ~(WNOHANG|WUNTRACED|WCONTINUED|WNOWAIT)) || selector == (-0x7fffffffffffffffLL-1))
         return SYSCALL_EINVAL;
     uint64_t irq=spin_lock_irqsave(&g_process_lock);
     process_record_t *p=find(parent);
@@ -475,14 +497,92 @@ int64_t process_record_wait(uint64_t parent, int64_t selector, uint32_t options,
                                     (legacy ? c->code : ((c->code & 255) << 8));
         }
         result=(int64_t)c->pid;
-        c->reported_seq=c->event_seq;
-        if (c->done) { collected_locked(c->pid); c->used=false; }
+        if (!(options & WNOWAIT)) {
+            c->reported_seq=c->event_seq;
+            if (c->done) {
+                process_record_t *cp = find(c->pid);
+                if (cp && p) {
+                    p->cutime_tsc += (cp->utime_tsc + cp->cutime_tsc);
+                    p->cstime_tsc += (cp->stime_tsc + cp->cstime_tsc);
+                }
+                collected_locked(c->pid);
+                c->used=false;
+            }
+        }
         goto out;
     }
     if (eligible) result=0;
 out:
     spin_unlock_irqrestore(&g_process_lock, irq);
     return result;
+}
+
+int64_t process_get_times(uint64_t caller_pid, int64_t target_pid, tms_t *out) {
+    if (!out) return SYSCALL_EFAULT;
+    if (target_pid < 0) return SYSCALL_EINVAL;
+    uint64_t effective_target = (target_pid == 0) ? caller_pid : (uint64_t)target_pid;
+
+    uint64_t utime_tsc = 0;
+    uint64_t stime_tsc = 0;
+    uint64_t cutime_tsc = 0;
+    uint64_t cstime_tsc = 0;
+    bool is_exited = false;
+
+    uint64_t irq = spin_lock_irqsave(&g_process_lock);
+    process_record_t *caller = find(caller_pid);
+    process_record_t *target = find(effective_target);
+    if (!target) {
+        spin_unlock_irqrestore(&g_process_lock, irq);
+        return SYSCALL_ESRCH;
+    }
+
+    if (caller_pid != effective_target && target->parent != caller_pid) {
+        bool permitted = false;
+        if (caller && caller->creds) {
+            if (caller->creds->euid == 0 || (caller->creds->cap_effective & CAP_KILL)) {
+                permitted = true;
+            } else if (target->creds && (caller->creds->euid == target->creds->uid ||
+                                         caller->creds->euid == target->creds->euid)) {
+                permitted = true;
+            }
+        }
+        if (!permitted) {
+            spin_unlock_irqrestore(&g_process_lock, irq);
+            return SYSCALL_EPERM;
+        }
+    }
+
+    cutime_tsc = target->cutime_tsc;
+    cstime_tsc = target->cstime_tsc;
+    if (target->exited) {
+        utime_tsc = target->utime_tsc;
+        stime_tsc = target->stime_tsc;
+        is_exited = true;
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+
+    if (!is_exited) {
+        if (!thread_get_cpu_times(effective_target, &utime_tsc, &stime_tsc)) {
+            irq = spin_lock_irqsave(&g_process_lock);
+            target = find(effective_target);
+            if (target && target->exited) {
+                utime_tsc = target->utime_tsc;
+                stime_tsc = target->stime_tsc;
+                cutime_tsc = target->cutime_tsc;
+                cstime_tsc = target->cstime_tsc;
+            } else if (!target) {
+                spin_unlock_irqrestore(&g_process_lock, irq);
+                return SYSCALL_ESRCH;
+            }
+            spin_unlock_irqrestore(&g_process_lock, irq);
+        }
+    }
+
+    out->tms_utime_ns = (int64_t)time_tsc_to_ns(utime_tsc);
+    out->tms_stime_ns = (int64_t)time_tsc_to_ns(stime_tsc);
+    out->tms_cutime_ns = (int64_t)time_tsc_to_ns(cutime_tsc);
+    out->tms_cstime_ns = (int64_t)time_tsc_to_ns(cstime_tsc);
+    return 0;
 }
 
 /* No registry signal pointer is returned to a caller. It is dereferenced only

@@ -171,3 +171,62 @@ void time_get_timeval(timeval_t *tv) {
     tv->tv_sec = ts.tv_sec;
     tv->tv_usec = ts.tv_nsec / 1000;
 }
+
+uint64_t time_tsc_to_ns(uint64_t cycles) {
+    if (!g_timekeeper.tsc_valid || g_timekeeper.tsc_hz == 0) {
+        return cycles / 2;
+    }
+    uint64_t sec = cycles / g_timekeeper.tsc_hz;
+    uint64_t rem = cycles % g_timekeeper.tsc_hz;
+    return sec * 1000000000ULL + (rem * 1000000000ULL) / g_timekeeper.tsc_hz;
+}
+
+void time_account_user_to_kernel(struct tcb *t) {
+    if (!t) return;
+    if (t->in_user_mode) {
+        uint64_t now = apic_poll_clock_read();
+        if (now > t->last_tsc) {
+            t->utime_tsc += (now - t->last_tsc);
+        }
+        t->in_user_mode = false;
+        t->last_tsc = now;
+    }
+}
+
+void time_account_kernel_to_user(struct tcb *t) {
+    if (!t) return;
+    if (!t->in_user_mode) {
+        uint64_t now = apic_poll_clock_read();
+        if (now > t->last_tsc) {
+            t->stime_tsc += (now - t->last_tsc);
+        }
+        t->in_user_mode = true;
+        t->last_tsc = now;
+    }
+}
+
+void time_account_switch_out(struct tcb *outgoing) {
+    if (!outgoing) return;
+    uint64_t now = apic_poll_clock_read();
+    if (now > outgoing->last_tsc) {
+        uint64_t delta = now - outgoing->last_tsc;
+        if (outgoing->in_user_mode) {
+            outgoing->utime_tsc += delta;
+        } else {
+            outgoing->stime_tsc += delta;
+        }
+    }
+    outgoing->last_tsc = now;
+}
+
+void time_account_switch_in(struct tcb *incoming) {
+    if (!incoming) return;
+    incoming->last_tsc = apic_poll_clock_read();
+}
+
+void time_account_enter_user(void) {
+    tcb_t *curr = thread_current();
+    if (curr) {
+        time_account_kernel_to_user(curr);
+    }
+}

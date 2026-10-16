@@ -3,6 +3,7 @@
 #include "types.h"
 #include "signal_state.h"
 #include "creds.h"
+#include "syscall_abi.h"
 /* Trusted construction binds exclusively owned TCB storage before commit.
  * Readers receive values only. Snapshot excludes unpublished/dead records.
  * Publication validates a full value and compares the expected old snapshot
@@ -44,6 +45,9 @@ uint32_t process_record_count_enumerable(void);
  * No scheduler lock held. Legacy metadata-only exit helpers retain cached ticks. */
 bool process_record_exit_accounted(uint64_t pid, uint64_t code, unsigned signal,
                                    uint64_t final_ticks);
+bool process_record_exit_accounted_times(uint64_t pid, uint64_t code, unsigned signal,
+                                         uint64_t final_ticks, uint64_t utime_tsc, uint64_t stime_tsc);
+int64_t process_get_times(uint64_t caller_pid, int64_t target_pid, tms_t *out);
 /* Separate bounded group store: live/staged membership plus externally retained
  * empty groups. All implementation remains in process_table.c. No user ABI. */
 #define PROCESS_GROUP_CAPACITY (PROCESS_CAPACITY * 2)

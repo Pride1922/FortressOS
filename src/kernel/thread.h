@@ -66,6 +66,12 @@ typedef struct tcb {
     uint64_t       preempt_count;    /* Number of timer-driven preemptions experienced */
     bool           is_idle;          /* True if dedicated idle thread */
 
+    /* CPU-Time Accounting (TSC cycles) */
+    uint64_t       utime_tsc;        /* User-mode TSC cycles accumulated */
+    uint64_t       stime_tsc;        /* Kernel-mode TSC cycles accumulated */
+    uint64_t       last_tsc;         /* Timestamp of last accounting transition */
+    bool           in_user_mode;     /* Current accounting mode: true = user, false = kernel */
+
     /* Process Address Space & Privilege Extensions */
     uintptr_t      cr3;              /* Physical CR3 (0 for kernel threads) */
     uint64_t      *pml4_virt;        /* Virtual address of PML4 (NULL for kernel threads) */
@@ -138,6 +144,7 @@ void sched_wait_until(const void *channel, bool (*ready)(void *), void *arg);
 void sched_wait_until_ack(const void *channel, bool (*ready)(void *), void *arg);
 void sched_wake_all(const void *channel);
 void thread_wake_for_signal(uint64_t pid);
+bool thread_get_cpu_times(uint64_t pid, uint64_t *utime, uint64_t *stime);
 /* Post-EOI/IRQ-depth-unwind or normal syscall user return only, IF=0.
  * Retain pending requests on unsafe/nested/locked/kernel/test returns.
  * Ordinary IPI handlers publish only; they never call this function. */

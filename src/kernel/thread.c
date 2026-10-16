@@ -18,6 +18,7 @@
 #include "spawn_profile.h"
 #include "resched_return.h"
 #include "resched_policy.h"
+#include "time.h"
 
 _Static_assert(MAX_ELF_FILE_SIZE==VFS_MAX_EXEC_SIZE,"shared exec size bound");
 extern uint8_t kernel_stack_guard[];
@@ -507,7 +508,11 @@ void sched_post_switch(void) {
          * access to that task is permitted after publishing this release. */
         tcb_t *previous = scheduler_cpus[cid].prev_context;
         scheduler_cpus[cid].prev_context = NULL;
-        if (previous) __atomic_store_n(&previous->context_busy, false, __ATOMIC_RELEASE);
+        if (previous) {
+            time_account_switch_out(previous);
+            __atomic_store_n(&previous->context_busy, false, __ATOMIC_RELEASE);
+        }
+        time_account_switch_in(thread_current());
     }
     if (handoff_flags & (1ULL << 9)) __asm__ volatile("sti" ::: "memory");
 }
@@ -617,6 +622,7 @@ void sched_init(void) {
     g_main_thread.cpus_allowed = CPU_MASK_ONE(0);
     g_main_thread.cwd[0] = '/';
     g_main_thread.cwd[1] = '\0';
+    g_main_thread.last_tsc = apic_poll_clock_read();
 
     memset(g_exit_records, 0, sizeof(g_exit_records));
 
@@ -695,6 +701,10 @@ static tcb_t *thread_create_internal(size_t target_cpu, int affinity, const char
     t->kstack_size = stack_size;
     t->ticks_remaining = DEFAULT_QUANTUM_TICKS;
     t->total_ticks = 0;
+    t->utime_tsc = 0;
+    t->stime_tsc = 0;
+    t->last_tsc = apic_poll_clock_read();
+    t->in_user_mode = false;
     t->is_idle = false;
     t->cr3 = 0;
     t->pml4_virt = NULL;
@@ -1028,6 +1038,58 @@ void thread_wake_for_signal(uint64_t pid) {
         }
         if (woke) break;
     }
+}
+
+bool thread_get_cpu_times(uint64_t pid, uint64_t *utime, uint64_t *stime) {
+    if (!utime || !stime) return false;
+
+    tcb_t *curr = thread_current();
+    if (curr && curr->tid == pid) {
+        uint64_t u = curr->utime_tsc;
+        uint64_t s = curr->stime_tsc;
+        uint64_t now = apic_poll_clock_read();
+        if (now > curr->last_tsc) {
+            if (curr->in_user_mode) u += (now - curr->last_tsc);
+            else s += (now - curr->last_tsc);
+        }
+        *utime = u;
+        *stime = s;
+        return true;
+    }
+
+    for (size_t c = 0; c < g_total_sched_cpus; c++) {
+        uint64_t flags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+        tcb_t *target = NULL;
+        if (cpu_locals[c].current_thread && cpu_locals[c].current_thread->tid == pid) {
+            target = cpu_locals[c].current_thread;
+        } else {
+            for (tcb_t *t = scheduler_cpus[c].runqueue_head; t; t = t->next) {
+                if (t->tid == pid) { target = t; break; }
+            }
+            if (!target) {
+                for (tcb_t *t = scheduler_cpus[c].blocked_threads; t; t = t->next) {
+                    if (t->tid == pid) { target = t; break; }
+                }
+            }
+        }
+        if (target) {
+            uint64_t u = target->utime_tsc;
+            uint64_t s = target->stime_tsc;
+            if (c == cpu_current()->id && target == curr) {
+                uint64_t now = apic_poll_clock_read();
+                if (now > target->last_tsc) {
+                    if (target->in_user_mode) u += (now - target->last_tsc);
+                    else s += (now - target->last_tsc);
+                }
+            }
+            spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, flags);
+            *utime = u;
+            *stime = s;
+            return true;
+        }
+        spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, flags);
+    }
+    return false;
 }
 
 void thread_exit(void) {
@@ -2427,12 +2489,20 @@ void process_exit(uint64_t exit_code) {
         curr->exit_code = exit_code;
         curr->has_exited = true;
 
+        time_account_user_to_kernel(curr);
+        uint64_t now = apic_poll_clock_read();
+        if (now > curr->last_tsc) {
+            curr->stime_tsc += (now - curr->last_tsc);
+        }
+        curr->last_tsc = now;
+
         cancel_staged_children(curr->tid);
         uint64_t tick_irq = spin_lock_irqsave(&g_sched_lock);
         uint64_t final_ticks = curr->total_ticks;
         spin_unlock_irqrestore(&g_sched_lock, tick_irq);
-        bool child_recorded = process_record_exit_accounted(curr->tid, exit_code,
-                                                            curr->exit_signal, final_ticks);
+        bool child_recorded = process_record_exit_accounted_times(curr->tid, exit_code,
+                                                                 curr->exit_signal, final_ticks,
+                                                                 curr->utime_tsc, curr->stime_tsc);
         uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
         if (!child_recorded) {
         int slot = -1;

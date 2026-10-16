@@ -23,4 +23,15 @@ void time_timer_tick(void);
 /* Sleep channel token for nanosleep */
 const void *time_get_sleep_channel(void);
 
+/* Convert raw TSC cycle count into nanoseconds using calibrated TSC frequency */
+uint64_t time_tsc_to_ns(uint64_t cycles);
+
+struct tcb;
+/* Per-TCB CPU-time accounting hooks */
+void time_account_user_to_kernel(struct tcb *t);
+void time_account_kernel_to_user(struct tcb *t);
+void time_account_switch_out(struct tcb *outgoing);
+void time_account_switch_in(struct tcb *incoming);
+void time_account_enter_user(void);
+
 #endif /* FORTRESS_TIME_H */

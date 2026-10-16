@@ -701,7 +701,7 @@ $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 SBIN_STREAM_TOOLS := shutdown reboot poweroff lockstat
-USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free which env date sleep
+USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free which env date sleep time
 STREAM_TOOLS := $(USER_STREAM_TOOLS) $(SBIN_STREAM_TOOLS)
 SBIN_LOGIN_TOOLS := useradd
 USER_LOGIN_TOOLS := login whoami sudo recovery passwd
@@ -832,7 +832,7 @@ test-free-host:
 test-free: $(BOOTABLE_ISO) test-free-host
 	@python3 scripts/test_free.py
 
-.PHONY: test-time-host test-date-sleep-host test-time
+.PHONY: test-time-host test-date-sleep-host test-time-cmd-host test-time test-time-cmd
 test-time-host:
 	@mkdir -p $(BUILD_DIR)
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DHOST_TEST -Isrc/include -Isrc/drivers src/drivers/rtc.c tests/time_host.c -o $(BUILD_DIR)/time_host && $(BUILD_DIR)/time_host
@@ -841,8 +841,15 @@ test-date-sleep-host:
 	@mkdir -p $(BUILD_DIR)
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/date_sleep_host.c user/tools/common.c user/tools/date.c user/tools/sleep.c -o $(BUILD_DIR)/date_sleep_host && $(BUILD_DIR)/date_sleep_host
 
-test-time: $(BOOTABLE_ISO) test-time-host test-date-sleep-host
+test-time-cmd-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/time_cmd_host.c user/tools/common.c user/tools/time.c -o $(BUILD_DIR)/time_cmd_host && $(BUILD_DIR)/time_cmd_host
+
+test-time: $(BOOTABLE_ISO) test-time-host test-date-sleep-host test-time-cmd-host
 	@python3 scripts/test_time.py
+
+test-time-cmd: $(BOOTABLE_ISO) test-time-cmd-host
+	@python3 scripts/test_time_cmd.py
 
 $(BUILD_DIR)/traceroute.o: user/traceroute.c user/tools/common.h src/include/trace_abi.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)

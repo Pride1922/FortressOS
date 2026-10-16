@@ -81,6 +81,7 @@
 #define SYS_CAPGET        70 /* () -> effective defined-bit mask */
 #define SYS_CLOCK_GETTIME 74 /* (uint32_t clk_id, timespec_t *ts) -> 0/-errno */
 #define SYS_NANOSLEEP     75 /* (const timespec_t *req, timespec_t *rem) -> 0/-errno */
+#define SYS_TIMES         76 /* (int64_t pid, tms_t *buf) -> 0/-errno */
 
 /* Clock identifiers */
 #define CLOCK_REALTIME           0
@@ -110,6 +111,19 @@ _Static_assert(sizeof(timeval_t) == 16, "timeval_t size");
 _Static_assert(offsetof(timeval_t, tv_sec) == 0, "timeval_t tv_sec offset");
 _Static_assert(offsetof(timeval_t, tv_usec) == 8, "timeval_t tv_usec offset");
 
+/* Process CPU-time accounting structure (nanoseconds) */
+typedef struct {
+    int64_t tms_utime_ns;   /* user time in nanoseconds */
+    int64_t tms_stime_ns;   /* system time in nanoseconds */
+    int64_t tms_cutime_ns;  /* children user time */
+    int64_t tms_cstime_ns;  /* children system time */
+} tms_t;
+_Static_assert(sizeof(tms_t) == 32, "tms_t size");
+_Static_assert(offsetof(tms_t, tms_utime_ns) == 0, "tms_t tms_utime_ns offset");
+_Static_assert(offsetof(tms_t, tms_stime_ns) == 8, "tms_t tms_stime_ns offset");
+_Static_assert(offsetof(tms_t, tms_cutime_ns) == 16, "tms_t tms_cutime_ns offset");
+_Static_assert(offsetof(tms_t, tms_cstime_ns) == 24, "tms_t tms_cstime_ns offset");
+
 #define CREDS_KEEP_REAL 1u
 #define CREDS_KEEP_EFFECTIVE 2u
 #define CREDS_KEEP_SAVED 4u
@@ -134,6 +148,7 @@ _Static_assert(offsetof(stat_ext_v1_t,file_size)==8, "stat_ext v1 offset");
 #define SPAWN_V2_FLAGS (SPAWN_SETPGROUP | SPAWN_STAGED)
 #define WNOHANG    1u
 #define WUNTRACED  2u
+#define WNOWAIT    4u
 #define WCONTINUED 8u
 #define WIFEXITED(s) (((s) & 0x7f) == 0)
 #define WEXITSTATUS(s) (((s) >> 8) & 0xff)
