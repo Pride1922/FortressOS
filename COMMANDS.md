@@ -86,6 +86,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`xxd`](#xxd) | Binary (`/bin/xxd`) | Stream Tool | Make hex dump or revert hex to binary with bounded buffers |
 | [`diff`](#diff) | Binary (`/bin/diff`) | Stream Tool | Compare files line by line using stack-free Myers algorithm |
 | [`patch`](#patch) | Binary (`/bin/patch`) | Stream Tool | Apply unified or normal diff files with fail-closed transactional safety |
+| [`sed`](#sed) | Binary (`/bin/sed`) | Stream Tool | Bounded stream editor with bitmask NFA regex and line addressing |
 | [`diskbench`](#diskbench) | Binary (`/bin/diskbench`) | Stream Tool / Benchmark | Filesystem throughput and latency benchmark tool |
 | [`disk`](#disk) | Binary (`/sbin/disk`) | Storage Tool | Storage device inspection and filesystem usage tool |
 | [`df`](#df) | Binary (`/bin/df`) / Alias | Storage Tool | Display filesystem disk space and inode usage (alias for `disk usage`) |
@@ -1048,6 +1049,60 @@ patch -p1 < feature.patch
 patch -R -o restored.txt current.txt patch.diff
 patch --dry-run /etc/network.conf network.patch
 cat bugfix.diff | patch -o - source.c
+```
+
+---
+
+### `sed`
+**Syntax:** `sed [OPTIONS] [SCRIPT] [FILE ...]`  
+**Path:** `/bin/sed`  
+**Description:** Bounded stream editor for filtering and transforming text lines from standard input or files. Reuses the iterative, bounded bitmask NFA regular expression engine from `grep` augmented with $O(1)$-stack submatch capture tracking. Operates under a strictly bounded static memory architecture (64 KiB line buffer, 64 KiB lookahead buffer, zero dynamic heap allocation) conforming to the freestanding Ring 3 ABI.
+
+* **Supported Subset:**
+  * **Commands:**
+    * `s/pattern/replacement/flags`: Substitution command. Any non-newline/non-backslash character can be used as delimiter (e.g. `s/foo/bar/`, `s:foo:bar:`, `s#foo#bar#`).
+      * Flags: `g` (global substitution on the line), `p` (print line if substitution was made), `N` (replace only the Nth match on the line, e.g. `1`, `2`), `i` / `I` (case-insensitive matching).
+      * Replacement backreferences: `&` (inserts whole matched text), `\1`–`\9` (inserts matched capture group), `\\` (literal backslash), `\&` (literal `&`), `\n` (newline), `\t` (tab).
+    * `p`: Print the current line to standard output (or temporary file if `-i`).
+    * `d`: Delete the current line (suppresses further command processing on this line and prevents default printing).
+  * **Addressing:**
+    * `N`: 1-based line number (e.g. `2p`, `1s/a/b/`).
+    * `N,M`: Line number range from $N$ to $M$ inclusive (e.g. `1,2d`, `2,5s/foo/bar/`).
+    * `/pattern/`: Selects lines matching the regular expression (e.g. `/error/p`, `/^#/d`).
+    * `/pattern1/,/pattern2/`: Range starting on the first line matching `pattern1` and continuing through the next line matching `pattern2`.
+    * `$`: Selects the last line of input (evaluated via 1-line lookahead streaming buffer).
+    * `!`: Inverts address selection (e.g. `2!d` deletes all lines except line 2; `/pattern/!p` prints lines not matching pattern).
+  * **Options:**
+    * `-n`, `--quiet`, `--silent`: Suppress default printing of lines. Only lines explicitly printed by `p` or `s/.../.../p` are emitted.
+    * `-e <script>`: Specify a command script. Multiple `-e` options are concatenated and executed in sequential order on each line.
+    * `-i[SUFFIX]`: Edit files in place. Uses a fail-closed transactional temporary file (`<file>.tmp`) renamed atomically into place (`SYS_RENAME`). If `SUFFIX` is provided (e.g. `-i.bak`), saves a backup copy of the original file at `<file><SUFFIX>` before replacing it. If `-i` is given without suffix, modifies in place without creating a backup.
+    * `--help`: Display usage summary and exit.
+    * `--`: Ends option scanning.
+    * `-`: Read from standard input.
+
+* **Unsupported Commands (Rejected with Error):**
+  FortressOS `/bin/sed` enforces strict conformance to the supported stream subset. Every unsupported or unrecognised command is explicitly rejected with a clear diagnostic (e.g. `sed: unsupported command 'a'`) and exits nonzero (code 2):
+  * `a`, `i`, `c` (append, insert, change text input commands)
+  * `r`, `w` (read file, write file)
+  * `y` (transliterate characters)
+  * `h`, `H`, `g`, `G`, `x` (hold space and pattern exchange)
+  * `b`, `t`, `:` (branching, conditional jumps, labels)
+  * `{`, `}` (command blocks)
+  * `=` (print current line number)
+  * Step addressing (`first~step`)
+  * GNU extensions
+
+**Examples:**
+```sh
+echo "hello world" | sed 's/world/there/'           # Outputs: hello there
+echo "aaa" | sed 's/a/b/g'                          # Outputs: bbb
+printf 'line1\nline2\nline3\n' | sed -n '2p'        # Outputs: line2
+printf 'foo\nbar\nbaz\n' | sed 's/^/prefix-/'       # Outputs: prefix-foo\nprefix-bar\nprefix-baz\n
+printf 'a\nb\nc\n' | sed '1,2d'                     # Outputs: c
+echo "hello" | sed 's/\(hel\)lo/\1p/'               # Outputs: help
+sed -i 's/10.0.2.15/192.168.1.100/' /etc/network.conf
+sed -i.bak 's/foo/bar/g' /mnt/config.txt
+cat /etc/motd | sed 's/Fortress/FORTRESS/i' | sort | uniq
 ```
 
 ---
