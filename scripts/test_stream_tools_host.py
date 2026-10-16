@@ -99,6 +99,16 @@ if __name__ == "__main__":
             ], cwd=REPO, check=True)
             subprocess.run([str(sed_exe)], check=True, timeout=30)
 
+            awk_exe = Path(tmp) / "awk_host"
+            subprocess.run([
+                "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-DTOOL_HOST_TEST",
+                "-Isrc/include", "-Isrc/fs", "-Iuser/tools",
+                "tests/awk_host.c", "user/tools/common.c", "user/tools/awk.c",
+                "-o", str(awk_exe)
+            ], cwd=REPO, check=True)
+            subprocess.run([str(awk_exe)], check=True, timeout=30)
+
             diskbench_exe = Path(tmp) / "diskbench_host"
             subprocess.run([
                 "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",

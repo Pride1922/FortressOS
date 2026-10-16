@@ -87,6 +87,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`diff`](#diff) | Binary (`/bin/diff`) | Stream Tool | Compare files line by line using stack-free Myers algorithm |
 | [`patch`](#patch) | Binary (`/bin/patch`) | Stream Tool | Apply unified or normal diff files with fail-closed transactional safety |
 | [`sed`](#sed) | Binary (`/bin/sed`) | Stream Tool | Bounded stream editor with bitmask NFA regex and line addressing |
+| [`awk`](#awk) | Binary (`/bin/awk`) | Stream Tool | Bounded pattern scanning and text processing language |
 | [`diskbench`](#diskbench) | Binary (`/bin/diskbench`) | Stream Tool / Benchmark | Filesystem throughput and latency benchmark tool |
 | [`disk`](#disk) | Binary (`/sbin/disk`) | Storage Tool | Storage device inspection and filesystem usage tool |
 | [`df`](#df) | Binary (`/bin/df`) / Alias | Storage Tool | Display filesystem disk space and inode usage (alias for `disk usage`) |
@@ -1103,6 +1104,78 @@ echo "hello" | sed 's/\(hel\)lo/\1p/'               # Outputs: help
 sed -i 's/10.0.2.15/192.168.1.100/' /etc/network.conf
 sed -i.bak 's/foo/bar/g' /mnt/config.txt
 cat /etc/motd | sed 's/Fortress/FORTRESS/i' | sort | uniq
+```
+
+---
+
+### `awk`
+**Syntax:** `awk [OPTIONS] [PROGRAM] [FILE ...]`  
+**Path:** `/bin/awk`  
+**Description:** Bounded pattern scanning and processing tool for filtering, computing, and transforming delimited text streams. Reuses the iterative bitmask NFA regular expression engine from `grep` and the formatting semantics of `printf`. Operates under a strictly bounded static memory architecture (64 KiB line buffer, 64-field table, 256 AST nodes, 32 rules, zero dynamic heap allocation, all function stack frames $\le 608$ bytes) conforming to the freestanding Ring 3 ABI.
+
+* **Supported Subset (v1):**
+  * **Program Structure:**
+    * `pattern { action }`: If the current record matches `pattern`, execute `action`.
+    * `{ action }`: Pattern omitted; executes `action` on every input record.
+    * `pattern`: Action omitted; defaults to `{ print }` for matching records.
+    * Multiple `pattern { action }` pairs evaluated in sequential order per record.
+    * Multiple statements within an action block separated by semicolons (`;`).
+  * **Patterns:**
+    * `/regex/`: Matches the full line ($0) against regular expression (supports `^`, `$`, `.`, `*`, `[abc]`, `[^abc]`, `\(\)`).
+    * Expression patterns: Comparison and arithmetic expressions returning truthy/falsy values (e.g. `NR == 5`, `$1 == "foo"`, `$3 > 100`, `NF > 2`, `NR > 1 && $1 == "x"`).
+    * String and numeric literals: `"foo"`, `42`, `3.14`.
+  * **Fields:**
+    * `$0`: The whole current record/line.
+    * `$1`, `$2`, ..., `$N`: 1-based fields separated by `FS`.
+    * `$NF`: Dynamic field reference pointing to the last field of the current record.
+    * `$expr`: Dynamic field evaluation where `expr` evaluates to an integer index.
+    * Bounded field table: Supports up to 64 fields per record. Inputs exceeding 64 fields fail closed with `awk: line exceeds maximum fields (64)`.
+  * **Field Separators & Built-in Variables:**
+    * `-F <sep>`: Set single-character field delimiter (e.g. `-F:`, `-F,`, `-F'\t'`).
+    * Default `FS`: Whitespace (runs of contiguous spaces and tabs are collapsed).
+    * `NR`: Record (line) number, 1-based monotonic counter across input streams.
+    * `NF`: Number of fields in the current record.
+    * `FS`: Field separator string (read-only; configured via `-F`).
+    * `OFS`: Output field separator string (default: single space `" "`).
+  * **Actions & Statements:**
+    * `print`: Print `$0` followed by newline.
+    * `print expr1, expr2`: Print expressions separated by `OFS` and terminated by newline.
+    * `print expr1 expr2`: String concatenation by adjacency (no operator needed).
+    * `printf format, expr1, ...`: Formatted output supporting `%s`, `%d`, `%i`, `%u`, `%x`, `%X`, `%c`, `%f`, `%g`, width, precision, and alignment flags.
+    * Field assignment: `$1 = "new"`, `$2 = $2 + 10` (automatically reconstructs `$0` when referenced or printed).
+  * **Expressions & Operators:**
+    * Arithmetic: `+`, `-`, `*`, `/` (integer division), `%` (modulo), unary `-`.
+    * Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`.
+    * Logical: `&&`, `||`, `!`.
+    * Dual-Type Semantics: Values are dual-typed (string and 64-bit integer). In comparisons, if both operands parse as numeric strings, numeric comparison is performed; otherwise, lexicographical string comparison is performed (`compare as string if either is non-numeric, else compare as number`). Truthiness: non-zero integer or non-empty string is true; zero and empty string are false.
+  * **Options:**
+    * `-F <sep>`: Specify input field separator.
+    * `-f <script>`: Read awk program from file instead of command-line argument.
+    * `--help`: Display usage summary and exit.
+    * `--`: Ends option scanning.
+    * `-`: Read from standard input.
+
+* **Unsupported Constructs (Explicitly Rejected with Code 2):**
+  FortressOS `/bin/awk` strictly enforces the supported stream subset and rejects unsupported constructs with a diagnostic message and exit code 2:
+  * Arrays (`a[$1]`, `for (k in a)`) &rarr; `awk: arrays are unsupported`
+  * Control flow (`if`, `while`, `for`, `do`) &rarr; `awk: unsupported control flow '<name>'`
+  * Built-in functions (`length`, `substr`, `split`, `gsub`, `sub`, `index`, `toupper`, `tolower`, `sprintf`, `system`, `getline`) &rarr; `awk: unsupported function '<name>'`
+  * Special blocks (`BEGIN`, `END`) &rarr; `awk: unsupported block '<name>'`
+  * Ternary operator (`? :`) &rarr; `awk: ternary operator is unsupported`
+  * `-v` variable assignments &rarr; `awk: option '-v' is unsupported`
+  * Multiple `-f` scripts &rarr; `awk: multiple -f scripts are unsupported`
+
+**Examples:**
+```sh
+printf 'Alice 30\nBob 25\n' | awk '{ print $1 }'           # Outputs: Alice\nBob\n
+printf 'a:b:c\n' | awk -F: '{ print $2 }'                  # Outputs: b
+printf 'a b c\n' | awk '{ print NF }'                      # Outputs: 3
+printf '1\n2\n3\n' | awk 'NR == 2'                         # Outputs: 2
+printf 'Alice 30\nBob 25\n' | awk '$2 > 28 { print $1 }'   # Outputs: Alice
+echo "hello" | awk '{ printf "%s!\n", $1 }'                # Outputs: hello!
+ps | awk '{ print $1, $4 }' | sort
+cat /etc/passwd | awk -F: '$3 >= 1000 { print $1, $6 }'
+printf 'foo-x\nbar-x\n' | sed 's/-x/ 42/' | awk '{ print $1, $2 }'
 ```
 
 ---

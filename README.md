@@ -61,7 +61,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 ### 💻 Userland & Shell
 - **Interactive Shell:** Modular Ring 3 command shell supporting job control (`&`, `jobs`, `fg`, `kill`), pipelines (`|`), input/output redirection (`>`, `<`), and background redraw.
 - **Visual Editor:** Ring 3 visual text editor (`/bin/nano` v2.1) with Pike VM regex search, syntax highlighting, and buffer editing.
-- **System Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`, `/sbin/dhcpc`, `/bin/dhcp-probe`), and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `wc`, `xxd`).
+- **System Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`, `/sbin/dhcpc`, `/bin/dhcp-probe`), and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `sed`, `awk`, `wc`, `xxd`).
 
 ### 💿 Persistent Root & NVMe Installer
 - **Text-Mode Installer:** Complete installer (`/sbin/install`) providing automated GPT disk partitioning, ext4 root deployment, and configuration.
@@ -187,7 +187,7 @@ src/
 user/
 ├── shell/           Interactive shell engine (line editing, job control, history, UI)
 ├── nano/            Ring 3 visual text editor (nano v2.1, Pike VM regex, nanorc)
-├── tools/           Core utilities: disk, stream tools (grep, sort, uniq, wc), useradd, tar
+├── tools/           Core utilities: disk, stream tools (grep, sed, awk, sort, uniq, wc), useradd, tar
 └── *.c              Freestanding binaries: init, ping, udptest, nc, tcpserve, wget, top, ps
 
 docs/
