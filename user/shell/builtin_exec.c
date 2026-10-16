@@ -790,24 +790,115 @@ static bool parse_uint(const char *s, uint64_t *val) {
     return true;
 }
 
+#define MAX_DMESG_FILTERS 8
+
+static bool starts_with(const char *s, const char *prefix) {
+    if (!s || !prefix) return false;
+    while (*prefix) {
+        if (*s++ != *prefix++) return false;
+    }
+    return true;
+}
+
+static bool dmesg_tag_matches(const char *line, size_t line_len, const char *fac) {
+    size_t pos = 0;
+    while (pos < line_len && (line[pos] == ' ' || line[pos] == '\t')) {
+        pos++;
+    }
+    if (pos >= line_len || line[pos] != '[') {
+        return false;
+    }
+    pos++; /* skip '[' */
+
+    while (*fac == ' ' || *fac == '\t') fac++;
+    if (*fac == '[') fac++;
+    size_t flen = 0;
+    while (fac[flen] && fac[flen] != ']' && fac[flen] != ' ' && fac[flen] != '\t') {
+        flen++;
+    }
+    if (flen == 0) return false;
+
+    for (size_t i = 0; i < flen; i++) {
+        if (pos >= line_len) return false;
+        char c1 = line[pos++];
+        char c2 = fac[i];
+        if (c1 >= 'A' && c1 <= 'Z') c1 = (char)(c1 + ('a' - 'A'));
+        if (c2 >= 'A' && c2 <= 'Z') c2 = (char)(c2 + ('a' - 'A'));
+        if (c1 != c2) return false;
+    }
+
+    if (pos >= line_len || line[pos] != ']') {
+        return false;
+    }
+    return true;
+}
+
+static bool dmesg_line_matches(const char *line, size_t line_len, const char *const *filters, size_t num_filters) {
+    if (num_filters == 0) return true;
+    for (size_t i = 0; i < num_filters; i++) {
+        if (dmesg_tag_matches(line, line_len, filters[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int exec_dmesg(int argc, const char *const *argv) {
     uint64_t tail_lines = 0;
     const char *dest_path = NULL;
     bool append = false;
+    const char *filters[MAX_DMESG_FILTERS];
+    size_t num_filters = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (equal(arg, "-h") || equal(arg, "--help")) {
-            write_str("usage: dmesg [-a] [-n N | tail [N]] [path]\n"
+            write_str("usage: dmesg [-f FAC] [-a] [-n N | tail [N]] [path]\n"
                       "       dmesg [path]\n\n"
                       "Print or save kernel diagnostic ring buffer messages.\n"
                       "options:\n"
+                      "  -f FAC, --facility=FAC\n"
+                      "                   filter by facility tag (case-insensitive, exact tag)\n"
+                      "                   supported: NET, EXT4, USB, PMM, VMM, JBD2, BOOT, SMP,\n"
+                      "                              PCI, ACPI, NVME, HEAP, TIME, SIGNAL, SHELL\n"
                       "  -a, --append     append log output to file instead of overwriting\n"
                       "  -n N, tail [N]   print only the last N lines (e.g. dmesg -n 13)\n"
                       "  -h, --help       display this help and exit\n");
             return 0;
         } else if (equal(arg, "-a") || equal(arg, "--append")) {
             append = true;
+        } else if (equal(arg, "-f") || equal(arg, "--facility")) {
+            if (i + 1 >= argc || !argv[i + 1][0]) {
+                write_err("dmesg: option requires a facility argument\n");
+                return 1;
+            }
+            if (num_filters >= MAX_DMESG_FILTERS) {
+                write_err("dmesg: too many facility filters (maximum 8)\n");
+                return 1;
+            }
+            filters[num_filters++] = argv[++i];
+        } else if (starts_with(arg, "--facility=")) {
+            const char *fac = arg + 11;
+            if (!fac[0]) {
+                write_err("dmesg: option requires a facility argument\n");
+                return 1;
+            }
+            if (num_filters >= MAX_DMESG_FILTERS) {
+                write_err("dmesg: too many facility filters (maximum 8)\n");
+                return 1;
+            }
+            filters[num_filters++] = fac;
+        } else if (arg[0] == '-' && arg[1] == 'f' && arg[2] != '\0') {
+            const char *fac = (arg[2] == '=') ? arg + 3 : arg + 2;
+            if (!fac[0]) {
+                write_err("dmesg: option requires a facility argument\n");
+                return 1;
+            }
+            if (num_filters >= MAX_DMESG_FILTERS) {
+                write_err("dmesg: too many facility filters (maximum 8)\n");
+                return 1;
+            }
+            filters[num_filters++] = fac;
         } else if (equal(arg, "-n")) {
             if (i + 1 >= argc || !parse_uint(argv[i + 1], &tail_lines)) {
                 write_err("dmesg: option -n requires a numeric argument\n");
@@ -852,9 +943,35 @@ int exec_dmesg(int argc, const char *const *argv) {
     if (n == 0) return 0;
 
     size_t len = (size_t)n;
+
+    if (num_filters > 0) {
+        size_t write_pos = 0;
+        size_t line_start = 0;
+        while (line_start < len) {
+            size_t line_end = line_start;
+            while (line_end < len && s_dmesg_buf[line_end] != '\n') {
+                line_end++;
+            }
+            if (line_end < len && s_dmesg_buf[line_end] == '\n') {
+                line_end++;
+            }
+            size_t line_len = line_end - line_start;
+            if (dmesg_line_matches(s_dmesg_buf + line_start, line_len, filters, num_filters)) {
+                if (write_pos != line_start) {
+                    for (size_t k = 0; k < line_len; k++) {
+                        s_dmesg_buf[write_pos + k] = s_dmesg_buf[line_start + k];
+                    }
+                }
+                write_pos += line_len;
+            }
+            line_start = line_end;
+        }
+        len = write_pos;
+    }
+
     size_t start = 0;
 
-    if (tail_lines > 0) {
+    if (tail_lines > 0 && len > 0) {
         size_t idx = len;
         if (idx > 0 && s_dmesg_buf[idx - 1] == '\n') idx--;
         uint64_t count = 0;

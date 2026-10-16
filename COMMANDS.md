@@ -440,13 +440,15 @@ exit 0
 ---
 
 ### `dmesg`
-**Syntax:** `dmesg [-a] [-n <lines>] [tail [<lines>]] [<lines>] [path]`  
+**Syntax:** `dmesg [-f <facility> | --facility=<facility>] [-a] [-n <lines>] [tail [<lines>]] [<lines>] [path]`  
 **Child-Safe in Pipelines:** Yes  
-**Description:** Prints or saves kernel diagnostic ring buffer messages. Supports inspecting the most recent log entries directly or redirecting through pipelines.
+**Description:** Prints or saves kernel diagnostic ring buffer messages. Supports inspecting the most recent log entries directly, filtering by subsystem facility tag, or redirecting through pipelines.
 * `dmesg` without arguments prints the complete kernel log to the terminal (or pipeline).
-* `dmesg -n <N>` or `dmesg tail <N>` or `dmesg <N>` prints only the last `<N>` lines of the kernel log.
+* `dmesg -f <FACILITY>` or `dmesg --facility=<FACILITY>` filters output to lines whose facility tag matches (e.g. `[NET]`, `[EXT4]`, `[USB]`). Filtering is case-insensitive (e.g. `-f net` matches `[NET]`) and exact against the tag name (matches `[NET]`, not `[NETWORK]`). Lines must start with `[` followed by the facility name and `]` (after optional leading whitespace).
+* Multiple `-f` flags combine with OR logic (e.g. `dmesg -f NET -f USB` prints both network and USB messages). Up to 8 facility filters can be specified.
+* `dmesg -n <N>` or `dmesg tail <N>` or `dmesg <N>` prints only the last `<N>` lines of the (optionally filtered) kernel log.
 * `dmesg tail` defaults to the last 10 lines of the kernel log.
-* `dmesg <path>` or `dmesg -n <N> <path>` saves output to the specified file path (overwriting existing content).
+* `dmesg <path>` or `dmesg -f <FACILITY> <path>` or `dmesg -n <N> <path>` saves output to the specified file path (overwriting existing content).
 * `dmesg -a <path>` or `dmesg --append <path>` appends output to the specified file path on disk without truncating.
 * `dmesg` can run in pipelines (e.g. `dmesg | tail`, `dmesg | wc -l`). Also available as `/bin/dmesg`.
 
@@ -486,6 +488,13 @@ Because FortressOS defaults to a quiet graphical splash with a clean shell hando
 **Examples:**
 ```sh
 dmesg                           # Full kernel ring buffer log
+dmesg -f NET                    # Only [NET] subsystem lines
+dmesg -f EXT4                   # Only [EXT4] filesystem lines
+dmesg -f NET -n 20              # Last 20 [NET] lines
+dmesg -f NET -f USB             # Both [NET] and [USB] lines (OR filter)
+dmesg -f NET /mnt/net.log       # Write [NET] lines to persistent disk file
+dmesg --facility=NET            # Long form facility filter
+dmesg --help                    # Show usage and list supported facilities
 dmesg -n 13                     # Last 13 lines (instant recent troubleshooting)
 dmesg tail 20                   # Last 20 lines using explicit 'tail' verb
 dmesg 15                        # Last 15 lines using shorthand number
