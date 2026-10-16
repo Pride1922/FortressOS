@@ -36,7 +36,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 | USB (9G) | COMPLETE through 9G.5b | [docs/subsystems/usb.md](docs/subsystems/usb.md) |
 | Storage (9D/9E/9H, ext4 9.1–9.6) | COMPLETE (ext4 Phase 9.6 Dell physical acceptance) | [docs/subsystems/storage.md](docs/subsystems/storage.md) |
 | Power & layout (9C.5) | COMPLETE | [docs/subsystems/platform.md](docs/subsystems/platform.md) |
-| Permissions | COMPLETE (Phases 0–5; Dell physical acceptance) | [docs/plans/PERMISSIONS_PLAN.md](docs/plans/PERMISSIONS_PLAN.md) |
+| Permissions | COMPLETE (Phases 0–5; Dell physical acceptance); Credential snapshot protocol review (Roadmap #5) COMPLETE | [docs/plans/PERMISSIONS_PLAN.md](docs/plans/PERMISSIONS_PLAN.md), [docs/plans/CREDENTIAL_SNAPSHOT_PROTOCOL.md](docs/plans/CREDENTIAL_SNAPSHOT_PROTOCOL.md) |
 | Memory investigation | COMPLETE | [docs/roadmap/memory-investigation.md](docs/roadmap/memory-investigation.md) |
 | VFS node lifetime | COMPLETE | [docs/subsystems/storage.md](docs/subsystems/storage.md) |
 | Installer (Phases 0–4) | COMPLETE through Phase 4 (disposable acceptance) | [docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md](docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md) |
