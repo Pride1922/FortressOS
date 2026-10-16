@@ -330,3 +330,22 @@ the next event. repeated_receive_event_test forces that interleaving with two
 two-byte batches and no intervening zero-count worker sample. It fails before
 the invalidation fix and passes afterwards. This changes manager bookkeeping;
 the transport's sequence, ACK, window and EOF ordering are unchanged.
+
+
+## Phase 2D current listener lifecycle (2026-10-16)
+
+Earlier BSP continuation assumptions above are historical. LISTEN/ACCEPT now use
+the retained CPU-0 owner. The caller owns allocation, fd insertion and user-memory
+access; the owner exclusively reserves and commits exact child generations.
+Distinct retained offers exclude one another. A pin prevents lease revocation;
+published decisions are serviced without STOP-capable waits until acknowledgement.
+Output validation repeats after signal handling. No lock spans a caller wait.
+Level predicates cover pending offers/decisions even after generic hints clear.
+On cancel/death the owner releases reservations and provisional-file references;
+caller/reaper cancellation and final close are idempotent publications. Common
+slots remain detaching until owner-side TCP/UDP cleanup completes, so AP final
+close never unstages or mutates protocol state. Child transfer creates no second
+TCB; listener close does not kill independently adopted children.
+An unresponsive owner remains a containment limitation: no guessed timeout frees
+pinned storage or restarts protocol ownership. Production pinning remains.
+[Full path-by-path proof, forced interleavings and guest evidence](../roadmap/network-smp-phase2d.md).

@@ -20,13 +20,13 @@ int net_cpu_probe_main(int argc, char **argv) {
         long stream=call(SYS_SOCKET,NET_AF_INET,NET_SOCK_STREAM,6);
         ok=ok && stream>=0;
         if (stream>=0) {
-            ok=call(SYS_LISTEN,stream,1,0)==SYSCALL_EOPNOTSUPP && ok;
-            ok=call(SYS_ACCEPT,stream,0,0)==SYSCALL_EOPNOTSUPP && ok;
+            ok=call(SYS_LISTEN,stream,1,0)==SYSCALL_EINVAL && ok;
+            ok=call(SYS_ACCEPT,stream,0,0)==SYSCALL_EINVAL && ok;
             ok=call(SYS_CLOSE,stream,0,0)==0 && ok;
         }
     }
     if (socket >= 0) ok = call(SYS_CLOSE, socket, 0, 0) == 0 && ok;
-    const char *msg = !ok ? "NET CPU admission FAIL\n" : ap ? "NET CPU AP clients accepted; listener guarded PASS\n" : "NET CPU BSP accepted PASS\n";
+    const char *msg = !ok ? "NET CPU admission FAIL\n" : ap ? "NET CPU AP clients accepted; listener validation PASS\n" : "NET CPU BSP accepted PASS\n";
     size_t n = 0; while (msg[n]) n++;
     call(SYS_WRITE, 1, (uintptr_t)msg, n);
     return ok ? 0 : 1;

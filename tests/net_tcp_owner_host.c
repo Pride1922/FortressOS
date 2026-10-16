@@ -3,6 +3,9 @@
 #define TCP_OWNER_FIXTURE
 #include "net_tcp_socket_host.c"
 #undef main
+#ifdef TCP_LISTENER_OWNER_FIXTURE
+#define main client_owner_main
+#endif
 static unsigned snapshot_ack_checks, revoke_checks;
 static unsigned late_copy_checks;
 static void copy_after_snapshot(const char *name) {
@@ -59,7 +62,9 @@ static void owner_wait(const void *channel,bool (*ready)(void *),void *arg) {
         assert(tcp_packets>admission_packets);
         now=expire_admission; expire_admission=0; return;
     }
-    if (ready==net_tcp_ready) { tcp_wait(channel,ready,arg); return; }
+    if (ready==net_tcp_ready || disconnect_listener_wait || invalidate_listener_wait) {
+        tcp_wait(channel,ready,arg); return;
+    }
     for (unsigned i=0;i<10000;++i) {
         if (ready(arg) || signal_pending) {
             if (ready==net_udp_ready && cancel_offer) { cancel_offer=false; signal_pending=true; }

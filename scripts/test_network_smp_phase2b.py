@@ -57,8 +57,8 @@ def instrument(workspace):
           '    if ((frame->cs & 3)==3 && frame->rax==SYS_NETCTL) {\n        extern void net_control_fixture_entry(void);\n        net_control_fixture_entry();\n    }\n')
     patch('src/net/net_control.c','    control_slot_t *v=&values[t.slot];',
           '    extern void net_control_fixture_step(unsigned);\n    net_control_fixture_step(r.kind);\n    control_slot_t *v=&values[t.slot];')
-    patch('src/net/net_udp_owner.c','    udp_request_t *v=&values[t.slot];\n    uint64_t now=',
-          '    extern void net_control_fixture_step(unsigned);\n    net_control_fixture_step(r.kind);\n    udp_request_t *v=&values[t.slot];\n    uint64_t now=')
+    patch('src/net/net_udp_owner.c','    if (r.kind>=NET_OWNER_TCP_CREATE) { tcp_step(t,r); return; }\n    udp_request_t *v=&values[t.slot];\n    uint64_t now=',
+          '    if (r.kind>=NET_OWNER_TCP_CREATE) { tcp_step(t,r); return; }\n    extern void net_control_fixture_step(unsigned);\n    net_control_fixture_step(r.kind);\n    udp_request_t *v=&values[t.slot];\n    uint64_t now=')
     patch('src/net/net_control.c','    int64_t result=0;\n    bool pending=false;',
           '    extern bool net_udp_fixture_hold(void);\n'
           '    if (v->probe && net_udp_fixture_hold() && !handoff_cancelled(t)) {\n'

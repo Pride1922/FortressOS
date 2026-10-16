@@ -57,8 +57,6 @@ static int64_t terminal(bool accepted_send) {
 int64_t net_socket_syscall(interrupt_frame_t *f) {
     tcb_t *caller=thread_current();
     if (!caller) return SYSCALL_EOPNOTSUPP;
-    if ((f->rax==SYS_LISTEN || f->rax==SYS_ACCEPT) &&
-        (cpu_current()->id || caller->cpu_affinity!=0)) return SYSCALL_EOPNOTSUPP;
     if (f->rax==SYS_SOCKET) {
         bool stream=f->rsi==NET_SOCK_STREAM || f->rsi==(NET_SOCK_STREAM|NET_SOCK_CLOEXEC);
         if (f->rdi!=NET_AF_INET || (!stream && f->rsi!=NET_SOCK_DGRAM &&

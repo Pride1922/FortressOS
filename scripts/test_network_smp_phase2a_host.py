@@ -16,7 +16,7 @@ def main():
         for sanitizer in ('address,undefined','thread'):
             name='asan-ubsan' if sanitizer.startswith('address') else 'tsan'
             exe=out/name
-            argv=['gcc','-std=c11','-O1','-g','-DTEST_SMP_MEMORY','-pthread','-fsanitize='+sanitizer,'-no-pie','-Wall','-Wextra','-Werror','-Isrc/include','-Isrc/kernel','-Isrc/drivers','-Isrc/arch/x86_64','-Isrc/mm','-Isrc/net','tests/net_control_host.c','tests/net_lock_host.c','src/kernel/handoff.c','src/net/net_control.c','src/net/net.c','src/net/net_ping.c','src/net/net_ipv4.c','src/net/udp.c','src/net/icmp.c','src/net/checksum.c','src/net/ipv4.c','src/net/eth.c','src/net/arp.c','-o',str(exe)]
+            argv=['gcc','-std=c11','-O1','-g','-DTEST_SMP_MEMORY','-pthread','-fsanitize='+sanitizer,'-no-pie','-Wall','-Wextra','-Werror','-Isrc/include','-iquote','src/kernel','-Isrc/drivers','-Isrc/arch/x86_64','-Isrc/mm','-Isrc/net','tests/net_control_host.c','tests/net_lock_host.c','src/kernel/handoff.c','src/net/net_control.c','src/net/net.c','src/net/net_ping.c','src/net/net_ipv4.c','src/net/udp.c','src/net/icmp.c','src/net/checksum.c','src/net/ipv4.c','src/net/eth.c','src/net/arp.c','-o',str(exe)]
             run_argv=['setarch','x86_64','-R',str(exe)] if sanitizer=='thread' else [str(exe)]
             record={'build_argv':argv,'run_argv':run_argv}; manifest['runs'].append(record)
             with (out/(name+'.build.log')).open('w') as log:

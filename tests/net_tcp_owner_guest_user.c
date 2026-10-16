@@ -43,8 +43,8 @@ int net_cpu_probe_main(int argc,char **argv) {
     long fd=udp_call(SYS_SOCKET,NET_AF_INET,NET_SOCK_STREAM,6,0,0,0);
     if (fd<0) return 21;
     if (udp_call(0x7ff3,2,0,0,0,0,0)>0 &&
-        (udp_call(SYS_LISTEN,fd,1,0,0,0,0)!=SYSCALL_EOPNOTSUPP ||
-         udp_call(SYS_ACCEPT,fd,0,0,0,0,0)!=SYSCALL_EOPNOTSUPP)) return 43;
+        (udp_call(SYS_LISTEN,fd,1,0,0,0,0)!=SYSCALL_EINVAL ||
+         udp_call(SYS_ACCEPT,fd,0,0,0,0,0)!=SYSCALL_EINVAL)) return 43;
     net_sockaddr_in_t address={.family=2,.port=__builtin_bswap16(mode=='z' ? 17779 : 17778),.address=mode=='c' ? 0x7b02000a : ip};
     net_sockaddr_in_t local={.family=2};
     if (udp_call(SYS_BIND,fd,(uintptr_t)&local,16,0,0,0)) return 31;

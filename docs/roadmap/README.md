@@ -18,7 +18,7 @@ and are not proof that every current revision has passed every test — check
 
 ## Phase files
 
-Network SMP integration: COMPLETE [Phase 2B UDP/DNS audit, gates and qualifications](network-smp-phase2b.md); Phase 2C (TCP) remains next.
+Network SMP integration: [Phase 2B UDP/DNS](network-smp-phase2b.md), [Phase 2C client/stream with preservation qualifications](network-smp-phase2c.md), and [Phase 2D listener/lifecycle audit and gates](network-smp-phase2d.md). Production affinity rollout remains Phase 3.
 
 Persistent root / NVMe installer: [Phase 0 contracts and disposable fixture evidence](persistent-root-phase0.md).
 Executable and boot-only namespace plumbing: [Phase 1 acceptance evidence](persistent-root-phase1.md).

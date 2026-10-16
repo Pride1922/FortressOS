@@ -34,11 +34,11 @@ static void reuse_after_common_close(const char *name) {
     ++close_reuse_checks;
 }
 static void inserted_before_removal(tcb_t *caller, unsigned fd) {
-    net_tcp_child_t child; net_sockaddr_in_t peer; net_tcp_wait_t wait;
-    assert(caller==&process && net_socket_stream(caller->fd_table[fd]));
+    net_tcp_child_t child; net_sockaddr_in_t peer;
+    assert(caller==&process && net_socket_file(caller->fd_table[fd]));
     assert(!net_tcp_accept_peek(adoption_listener,&child,&peer));
     assert(child.block==expected_child.block && child.generation==expected_child.generation);
-    assert(!net_tcp_snapshot(net_socket_index(caller->fd_table[fd]),&wait));
+    assert(!net_socket_identity(caller->fd_table[fd]));
     ++adoption_checks;
 }
 /* Linker wrapper injects publication after actual queue acceptance and before
@@ -121,18 +121,18 @@ static void tcp_service(void) {
 /* This fixture substitutes its own finite scheduler driver via a macro below. */
 static void tcp_wait(const void *channel, bool (*ready)(void *), void *arg) {
     assert(channel);
-    if (ready==handoff_ready || ready==handoff_admissible || ready==net_udp_ready) {
-        for (unsigned i=0;i<1000;++i) { if (ready(arg) || signal_pending) return; tick(); }
-        assert(!"UDP owner fixture wait exceeded budget"); return;
-    }
     if (disconnect_listener_wait) {
-        disconnect_listener_wait=false;
+        disconnect_listener_wait=false; online=false;
         net_socket_worker_tick(now,false); net_tcp_tick(now,false);
-        assert(ready(arg)); return;
+        return;
     }
     if (invalidate_listener_wait) {
         invalidate_listener_wait=false;
         net_tcp_close(listener_wait_slot); net_tcp_tick(now,true); return;
+    }
+    if (ready==handoff_ready || ready==handoff_admissible || ready==net_udp_ready) {
+        for (unsigned i=0;i<1000;++i) { if (ready(arg) || signal_pending) return; tick(); }
+        assert(!"UDP owner fixture wait exceeded budget"); return;
     }
     if (interrupt_wait_before_reply) {
         interrupt_wait_before_reply=false;
@@ -260,7 +260,7 @@ static void listener_link_loss_test(net_config_t *cfg) {
     int listener=listenfd(); disconnect_listener_wait=true;
     assert(acceptfd(listener,NULL,NULL)==SYSCALL_EIO && !disconnect_listener_wait);
     assert(stream()==SYSCALL_EIO); /* No new socket while disconnected. */
-    net_socket_worker_tick(now,true); net_tcp_tick(now,true);
+    online=true; net_socket_worker_tick(now,true); net_tcp_tick(now,true);
     assert(acceptfd(listener,NULL,NULL)==SYSCALL_EIO); /* Old endpoint stays failed. */
     closefd(listener); net_tcp_tick(now,true);
     listener=listenfd(); memset(synacks,0,sizeof(synacks)); passive_open(0,true);
@@ -303,6 +303,7 @@ static void listener_tests(net_config_t *cfg) {
     online=true; tick(); /* Restore the mock link before owner-serviced fillers. */
     for (unsigned i=0; i<15; ++i) { udp_fds[i]=create(); if (udp_fds[i]<0) fprintf(stderr,"UDP filler %u: %d\n",i,udp_fds[i]); assert(udp_fds[i]>=0); }
     assert(acceptfd(listener,&peer,&size)==SYSCALL_ENOSPC);
+    fail_alloc=0; assert(acceptfd(listener,&peer,&size)==SYSCALL_ENOSPC); fail_alloc=-1;
     for (unsigned i=0; i<15; ++i) closefd(udp_fds[i]);
     assert(!net_tcp_accept_peek(slot,&after,&peer));
     assert(before.block==after.block && before.generation==after.generation);

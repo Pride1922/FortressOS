@@ -16,10 +16,11 @@ int64_t net_socket_create(file_t **out);
 int64_t net_socket_prepare(file_t **out);
 int64_t net_socket_activate(file_t *file);
 int64_t net_socket_activate_stream(file_t *file);
+int64_t net_socket_activate_staged(file_t *file); /* Owner: handle only, no TCB. */
 uint64_t net_socket_identity(file_t *file);
 bool net_socket_identity_live(file_t *file, uint64_t identity);
 int64_t net_socket_create_stream(file_t **out);
-int64_t net_socket_stage_stream(file_t **out); /* ACCEPT: no transport allocation. */
+int64_t net_socket_stage_stream(file_t **out); /* Owner/test constructor: no transport allocation. */
 void net_socket_finish_adopt(file_t *file);
 bool net_socket_stream(file_t *file);
 unsigned net_socket_index(file_t *file);

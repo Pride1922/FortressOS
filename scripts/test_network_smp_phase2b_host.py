@@ -20,7 +20,7 @@ def main():
         for sanitizer in ('address,undefined','thread'):
             name='asan-ubsan' if sanitizer.startswith('address') else 'tsan'
             exe=out/name
-            argv=['gcc','-std=c11','-O1','-g','-DTEST_SMP_MEMORY','-pthread','-fsanitize='+sanitizer,'-no-pie','-Wall','-Wextra','-Werror','-Isrc/include','-Isrc/kernel','-Isrc/drivers','-Isrc/arch/x86_64','-Isrc/mm','-Isrc/net',
+            argv=['gcc','-std=c11','-O1','-g','-DTEST_SMP_MEMORY','-pthread','-fsanitize='+sanitizer,'-no-pie','-Wall','-Wextra','-Werror','-Isrc/include','-iquote','src/kernel','-Isrc/drivers','-Isrc/arch/x86_64','-Isrc/mm','-Isrc/net',
                 'tests/net_udp_owner_host.c','tests/net_lock_host.c','src/kernel/handoff.c','src/net/net_udp_owner.c','src/net/net_socket.c','src/net/net_socket_syscall.c','src/net/net_ipv4.c','src/net/udp.c','src/net/icmp.c','src/net/checksum.c','src/net/ipv4.c','src/net/eth.c','src/net/net_tcp.c','src/net/net_tcp_syscall.c','src/net/tcp.c','src/net/tcp_tcb.c','-o',str(exe)]
             # Compiler-discovered transitive local headers and every linked TU,
             # including TCP used by the real socket manager, are identities.

@@ -21,6 +21,8 @@ typedef struct {
     bool active, nonblocking, pin;
     bool timed, started, reserved, tcp_pending;
     uint64_t tcp_generation;
+    net_tcp_child_t child;
+    file_t *accepted; /* Checked rollback ref until owner cleanup acknowledgement. */
 } udp_request_t;
 static udp_request_t values[HANDOFF_SLOTS];
 /* One shared pool for UDP and TCP. No peer wait retains a send slab. */
@@ -109,7 +111,7 @@ int64_t net_udp_begin(unsigned kind,file_t *file,const net_sockaddr_in_t *a,size
 int64_t net_tcp_owner_begin(unsigned kind,file_t *file,const net_sockaddr_in_t *a,
                            size_t len,bool nb,bool timed,uint64_t deadline,uint64_t floor) {
     size_t capacity=kind==NET_OWNER_TCP_SEND ? 4096 : kind==NET_OWNER_TCP_RECV ? TCP_RXBUF_MAX : NET_UDP_DATA_MAX;
-    if (kind<NET_OWNER_UDP_CREATE || kind>NET_OWNER_TCP_SHUTDOWN || len>capacity) return SYSCALL_EINVAL;
+    if (kind<NET_OWNER_UDP_CREATE || kind>NET_OWNER_TCP_ACCEPT || len>capacity) return SYSCALL_EINVAL;
     tcb_t *self=thread_current();
     bool create=kind==NET_OWNER_UDP_CREATE || kind==NET_OWNER_TCP_CREATE;
     int rc;
@@ -121,7 +123,7 @@ int64_t net_tcp_owner_begin(unsigned kind,file_t *file,const net_sockaddr_in_t *
         if (error) { if (self->handoff.active) net_udp_abandon(); return error; }
         admission_t w={handoff_admission_snapshot(),floor,deadline,timed};
         rc=handoff_begin(&self->handoff,(handoff_request_t){.actor=self->tid,.value=floor,
-            .kind=kind,.control=create || kind==NET_OWNER_UDP_BIND || kind==NET_OWNER_TCP_BIND || kind==NET_OWNER_TCP_SHUTDOWN,
+            .kind=kind,.control=create || kind==NET_OWNER_UDP_BIND || kind==NET_OWNER_TCP_BIND || kind==NET_OWNER_TCP_SHUTDOWN || kind==NET_OWNER_TCP_LISTEN,
             .retained=true,.cancel_status=SYSCALL_EINTR});
         if (rc!=HANDOFF_WAIT) break;
         if (nb) return SYSCALL_EAGAIN;
@@ -201,6 +203,28 @@ bool net_tcp_owner_connect_ack(void) {
     if (ok) handoff_notify();
     return ok;
 }
+bool net_tcp_owner_accept_pin(net_sockaddr_in_t *peer) {
+    handoff_token_t t=thread_current()->handoff.token;
+    uint64_t f=spin_lock_irqsave(&lock);
+    udp_request_t *v=&values[t.slot];
+    bool ok=v->generation==t.generation && v->kind==NET_OWNER_TCP_ACCEPT &&
+        v->phase==UDP_COPY && !v->pin;
+    if (ok) { v->pin=true; *peer=v->source; }
+    spin_unlock_irqrestore(&lock,f); return ok;
+}
+void net_tcp_owner_accept_decide(file_t *prepared,int64_t error) {
+    handoff_token_t t=thread_current()->handoff.token;
+    /* Caller owns prepared (fd or local reference). No signal boundary before
+     * storing this checked reference in the registered cleanup record. */
+    if (prepared && !vfs_file_get(prepared)) __builtin_trap();
+    uint64_t f=spin_lock_irqsave(&lock);
+    udp_request_t *v=&values[t.slot];
+    if (v->generation!=t.generation || v->kind!=NET_OWNER_TCP_ACCEPT || !v->pin || v->accepted) __builtin_trap();
+    v->accepted=prepared; v->cancel_status=error; v->pin=false;
+    phase(v,error ? UDP_ABORT : UDP_COMMIT);
+    __atomic_add_fetch(&copy_decisions,1,__ATOMIC_RELEASE);
+    spin_unlock_irqrestore(&lock,f); handoff_notify();
+}
 bool net_udp_pin(const uint8_t **data,int64_t *result,net_sockaddr_in_t *source) {
     handoff_token_t t=thread_current()->handoff.token;
     uint64_t f=spin_lock_irqsave(&lock);
@@ -247,7 +271,93 @@ static bool reader_reserved(udp_request_t *v) {
     spin_unlock_irqrestore(&lock,f);
     return reserved;
 }
+static unsigned accept_excluded(udp_request_t *self) {
+    unsigned excluded=0;
+    uint64_t f=spin_lock_irqsave(&lock);
+    for (unsigned i=0;i<HANDOFF_SLOTS;++i) {
+        udp_request_t *v=&values[i];
+        if (v!=self && v->kind==NET_OWNER_TCP_ACCEPT && v->reserved &&
+            v->child.block>=0 && v->child.block<(int)TCP_CB_MAX)
+            excluded|=1U<<v->child.block;
+    }
+    spin_unlock_irqrestore(&lock,f); return excluded;
+}
+static void accept_step(handoff_token_t t) {
+    udp_request_t *v=&values[t.slot];
+    uint64_t now=apic_timer_get_bsp_ticks(), hz=apic_timer_get_frequency();
+    bool cancel=handoff_cancelled(t);
+    uint64_t f=spin_lock_irqsave(&lock);
+    if (v->pin) { spin_unlock_irqrestore(&lock,f); handoff_finish(t,(handoff_reply_t){0},true); return; }
+    unsigned p=v->phase;
+    bool decision=p==UDP_COMMIT || p==UDP_ABORT;
+    int64_t cancellation=v->cancel_status;
+    if (decision) credit_put(&copy_decisions);
+    bool expiry=p==UDP_COPY && (now>=v->lease || now<v->floor);
+    /* Close the pin/decision race before leaving the lock. Unpinned offers may
+     * be revoked; a published decision is never revoked by lease or signals. */
+    if (expiry || cancel || decision) phase(v,UDP_IO);
+    if (expiry && !cancel && !decision) {
+        v->reserved=false;
+        spin_unlock_irqrestore(&lock,f);
+        /* Give competing pending acceptors a turn before offering this child
+         * again to a stopped caller. Expiry is internal retry, not a timeout. */
+        v->tcp_pending=true; handoff_notify();
+        handoff_finish(t,(handoff_reply_t){0},true); return;
+    }
+    spin_unlock_irqrestore(&lock,f);
+    int64_t result=0; bool pending=false;
+    unsigned slot=net_socket_index(v->file);
+    if (p==UDP_COMMIT || (p==UDP_ABORT && v->accepted && cancellation==SYSCALL_EMFILE)) {
+        result=net_socket_activate_staged(v->accepted);
+        if (!result && p==UDP_ABORT) result=SYSCALL_EMFILE;
+        else if (!result) {
+            result=net_tcp_accept_commit(slot,net_socket_index(v->accepted),v->child);
+            if (!result) net_socket_finish_adopt(v->accepted);
+        }
+    } else if (p==UDP_ABORT || cancel) result=cancellation ? cancellation : SYSCALL_EINTR;
+    else if (!net_socket_identity_live(v->file,v->identity)) result=SYSCALL_EBADF;
+    else {
+        net_tcp_wait_t wait;
+        if (!net_tcp_snapshot(slot,&wait) || (v->tcp_generation && wait.generation!=v->tcp_generation)) result=SYSCALL_EBADF;
+        else if (!net_socket_available()) result=SYSCALL_EIO;
+        else if (p==UDP_COPY && !expiry) pending=true;
+        else {
+            v->reserved=false;
+            v->tcp_generation=wait.generation;
+            net_tcp_child_t child; net_sockaddr_in_t peer;
+            result=net_tcp_accept_offer(slot,accept_excluded(v),&child,&peer);
+            if (!result) {
+                if (!hz || now>UINT64_MAX-hz) result=SYSCALL_EIO;
+                else {
+                    f=spin_lock_irqsave(&lock);
+                    v->child=child; v->source=peer; v->reserved=true;
+                    v->lease=now+hz; v->floor=now; phase(v,UDP_COPY);
+                    spin_unlock_irqrestore(&lock,f); pending=true;
+                    sched_wake_all(handoff_channel(t));
+                }
+            } else if (result==SYSCALL_EAGAIN) pending=true;
+        }
+    }
+    if (!pending) {
+        f=spin_lock_irqsave(&lock);
+        if (v->pin || (!decision && (v->phase==UDP_COMMIT || v->phase==UDP_ABORT))) {
+            spin_unlock_irqrestore(&lock,f); v->tcp_pending=true;
+            handoff_finish(t,(handoff_reply_t){0},true); return;
+        }
+        phase(v,UDP_IO); v->reserved=false;
+        file_t *accepted=v->accepted; v->accepted=NULL;
+        spin_unlock_irqrestore(&lock,f);
+        /* Adoption/rollback is resolved; a live provisional fd owns its own
+         * reference. Dead callers have closed theirs, so final put publishes
+         * detach here without requiring another caller or protocol callback. */
+        if (accepted) vfs_close(accepted);
+        handoff_notify();
+    }
+    v->tcp_pending=pending;
+    handoff_finish(t,(handoff_reply_t){.status=result},pending);
+}
 static void tcp_step(handoff_token_t t,handoff_request_t r) {
+    if (r.kind==NET_OWNER_TCP_ACCEPT) { accept_step(t); return; }
     udp_request_t *v=&values[t.slot];
     uint64_t now=apic_timer_get_bsp_ticks(), hz=apic_timer_get_frequency();
     bool cancel=handoff_cancelled(t);
@@ -282,6 +392,8 @@ static void tcp_step(handoff_token_t t,handoff_request_t r) {
     else if (r.kind==NET_OWNER_TCP_CREATE) result=net_socket_activate_stream(v->file);
     else if (r.kind==NET_OWNER_TCP_BIND) result=net_socket_bind(v->file,&v->address);
     else if (r.kind==NET_OWNER_TCP_SHUTDOWN) result=net_tcp_shutdown(slot);
+    else if (r.kind==NET_OWNER_TCP_LISTEN) result=net_socket_available() ?
+        net_tcp_listen(slot,(unsigned)v->length) : SYSCALL_EIO;
     else if (!net_socket_available()) result=SYSCALL_EIO;
     else {
         net_tcp_wait_t wait;
@@ -490,16 +602,17 @@ void net_udp_maintenance(void) {
     net_control_assert_owner();
     for (unsigned i=0;i<8;++i) {
         handoff_token_t t; handoff_request_t r; handoff_state_t st; bool caller;
-        if (!handoff_inspect(&t,&r,&st,&caller) || r.kind<NET_OWNER_UDP_CREATE || r.kind>NET_OWNER_TCP_SHUTDOWN) continue;
+        if (!handoff_inspect(&t,&r,&st,&caller) || r.kind<NET_OWNER_UDP_CREATE || r.kind>NET_OWNER_TCP_ACCEPT) continue;
         if (st!=HANDOFF_COMPLETED || caller) continue;
         udp_request_t *v=&values[t.slot];
         cleanup(v,false);
         uint64_t f=spin_lock_irqsave(&lock);
         if (v->pin) __builtin_trap();
-        slab_put(v); file_t *file=v->file; v->file=NULL;
+        slab_put(v); file_t *file=v->file, *accepted=v->accepted; v->file=NULL; v->accepted=NULL;
         spin_unlock_irqrestore(&lock,f);
         /* Final put invokes only detach publication; no lock is held. */
         if (file) vfs_close(file);
+        if (accepted) vfs_close(accepted);
         handoff_cleaned(t);
     }
 }
@@ -523,7 +636,11 @@ void net_udp_refresh_work(void) {
         }
         if (p!=UDP_IO || !v->file || !v->identity ||
             (v->kind==NET_OWNER_TCP_RECV && reader_reserved(v))) continue;
-        int64_t available=v->kind==NET_OWNER_TCP_CONNECT ? net_tcp_connected(net_socket_index(v->file)) :
+        int64_t available;
+        if (v->kind==NET_OWNER_TCP_ACCEPT) {
+            net_tcp_child_t child; net_sockaddr_in_t peer;
+            available=net_tcp_accept_offer(net_socket_index(v->file),accept_excluded(v),&child,&peer);
+        } else available=v->kind==NET_OWNER_TCP_CONNECT ? net_tcp_connected(net_socket_index(v->file)) :
             net_tcp_probe(net_socket_index(v->file),v->kind==NET_OWNER_TCP_RECV);
         /* EOF/errors and CONNECT decisions need no payload credit. Only a
          * positive data offer waits for one of the eight shared slabs. */

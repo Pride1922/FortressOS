@@ -26,8 +26,8 @@ through UDP to the CPU-0 owner from any CPU. Acceptance campaign `gate-fhnnk8qq`
 on e1000, BIOS/UEFI SMP=4) PASS. Checked file references and endpoint reuse fences survive
 cancellation, inherited close and caller death. Phase 2C client/stream calls now
 join this owner from BSP and AP; final-source acceptance is recorded separately
-in [Phase 2C](../roadmap/network-smp-phase2c.md). LISTEN/ACCEPT guards remain until
-Phase 2D, production pinning until Phase 3. See [Phase 2B gates](../roadmap/network-smp-phase2b.md).
+in [Phase 2C](../roadmap/network-smp-phase2c.md). LISTEN/ACCEPT now use retained owner transactions from BSP and AP
+([Phase 2D audit](../roadmap/network-smp-phase2d.md)); production pinning remains until Phase 3. See [Phase 2B gates](../roadmap/network-smp-phase2b.md).
 No physical acceptance of this migration is claimed.
 
 Historical 2026-10-14 Network SMP Phase 2A: application IFGET, authorized IFSET, ping and
@@ -306,3 +306,25 @@ gate is separate manual/user-supplied evidence — see
 TCP client/stream calls on BSP and AP now join the retained CPU-0 owner using the shared eight-credit 64 KiB staging pool. LISTEN/ACCEPT guards and adoption remain Phase 2D work; production spawn pinning remains.
 
 Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.
+
+
+## Phase 2D update (2026-10-16)
+
+LISTEN/ACCEPT now use the registered CPU-0 owner from every application CPU.
+ACCEPT reserves the existing child generation, retains it in the listener queue,
+and defers allocation, output validation and provisional descriptor insertion to
+the caller. The owner commits or aborts before rollback references are released.
+Reservations are exclusive; leases release only unpinned offers, with no public
+ACCEPT timeout. Published decisions receive bounded acknowledgement-only waits.
+Final close publishes detach; the owner fences common-slot reuse through cleanup.
+Production spawn pinning and Phase 3 rollout are unchanged. No physical acceptance
+is claimed. Earlier Phase 2C preservation qualifications remain historical evidence.
+See [Phase 2D audit](../roadmap/network-smp-phase2d.md) for implementation proof, exact artifacts, tests and retained failures.
+
+Phase 2D verification: actual-code ASan/UBSan and separate TSan PASS; 12/12
+BIOS/UEFI × SMP=1/4/8 e1000e listener boots, 4/4 absent-NIC boots,
+4/4 e1000 listener/carrier boots, 8/8 client/carrier regression boots and
+4/4 UDP/DNS regression boots PASS (32/32 total). Strict isolated ordinary
+kernel/initramfs build and private-probe exclusion PASS; realized static state
+557238/589824 bytes, shared release media unchanged. [Exact artifacts and retained
+qualifications](../roadmap/network-smp-phase2d.md).

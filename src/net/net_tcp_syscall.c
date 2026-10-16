@@ -21,48 +21,74 @@ static int64_t accept_outputs(const interrupt_frame_t *f) {
     if (size<16 || (f->rsi<f->rdx+4 && f->rdx<f->rsi+16)) return SYSCALL_EINVAL;
     return 0;
 }
-static int64_t accept_socket(tcb_t *caller, unsigned slot, interrupt_frame_t *f) {
+static int64_t accept_socket(tcb_t *caller, file_t *listener, interrupt_frame_t *f) {
+    unsigned slot=net_socket_index(listener);
     if (!net_tcp_listener(slot)) return SYSCALL_EINVAL;
-    net_tcp_wait_t wait;
-    if (!net_tcp_snapshot(slot,&wait)) return SYSCALL_EBADF;
-    uint64_t identity=wait.generation;
+    int64_t rc=accept_outputs(f); if (rc) return rc;
+    if (!net_socket_available()) return SYSCALL_EIO;
+    rc=net_udp_begin(NET_OWNER_TCP_ACCEPT,listener,NULL,0,false);
+    if (rc) return rc;
+    handoff_token_t t=caller->handoff.token;
+    int fd=-1; bool decision=false;
+    net_sockaddr_in_t peer={0};
     for (;;) {
-        int64_t result=accept_outputs(f); if (result) return result;
-        if (!net_socket_available()) return SYSCALL_EIO;
-        if (process_signal_interrupt()) return SYSCALL_EINTR;
-        /* STOP may switch inside the signal check. Repeat validation AFTER it
-         * and stage nothing until all potentially blocking checks finish. */
-        result=accept_outputs(f); if (result) return result;
-        if (!net_socket_available()) return SYSCALL_EIO;
-        if (!net_tcp_snapshot(slot,&wait) || wait.generation!=identity) return SYSCALL_EBADF;
-        net_tcp_child_t child; net_sockaddr_in_t peer;
-        result=net_tcp_accept_peek(slot,&child,&peer);
-        if (result==SYSCALL_EAGAIN) {
-            sched_wait_until(net_tcp_channel(&wait),net_tcp_ready,&wait); continue;
+        handoff_reply_t reply;
+        rc=net_udp_collect(&reply);
+        if (!rc) {
+            if (!decision) {
+                /* Terminal failure can race STOP, invalid outputs or a caught
+                 * signal. Preserve the old retry-loop precedence before an
+                 * adoption decision; committed success remains irrevocable. */
+                int64_t error=accept_outputs(f);
+                if (!error && !net_socket_available()) error=SYSCALL_EIO;
+                if (!error && process_signal_interrupt()) error=SYSCALL_EINTR;
+                if (!error) error=accept_outputs(f);
+                if (!error && !net_socket_available()) error=SYSCALL_EIO;
+                if (error) reply.status=error;
+            }
+            if (reply.status && fd>=0) {
+                file_t *rollback=caller->fd_table[fd];
+                caller->fd_table[fd]=NULL; caller->fd_flags[fd]=0;
+                vfs_close(rollback); fd=-1;
+            }
+            if (!reply.status && fd>=0 && f->rsi) {
+                uint32_t size=16;
+                memcpy((void *)f->rsi,&peer,16); memcpy((void *)f->rdx,&size,4);
+            }
+            net_udp_release();
+            return reply.status ? reply.status : fd;
         }
-        if (result) return result;
-        /* BSP IF remains clear: queued child and outputs cannot change. The
-         * staged constructor owns no transport block; failure leaves queue
-         * membership untouched. No signal check/sleep after this point. */
-        file_t *accepted; result=net_socket_stage_stream(&accepted);
-        if (result) return result;
-        int fd=fd_alloc(caller,accepted);
-        if (fd<0) { vfs_close(accepted); return SYSCALL_EMFILE; }
-        net_tcp_accept_commit(slot,net_socket_index(accepted),child);
-        net_socket_finish_adopt(accepted);
-        if (f->r10==NET_SOCK_CLOEXEC) caller->fd_flags[fd]=FD_FLAG_CLOEXEC;
-        if (f->rsi) {
-            uint32_t size=16;
-            memcpy((void *)f->rsi,&peer,16); memcpy((void *)f->rdx,&size,4);
+        if (rc<0) { net_udp_abandon(); return rc; }
+        if (decision) {
+            sched_wait_until_ack(handoff_channel(t),handoff_ready,&t); continue;
         }
-        return fd;
+        if (process_signal_interrupt()) {
+            net_tcp_owner_cancel(SYSCALL_EINTR); decision=true; continue;
+        }
+        /* STOP may switch. Validate all outputs again before the child pin.
+         * No signal check, sleep or user mapping change inside the pin. */
+        rc=accept_outputs(f);
+        if (rc) { net_tcp_owner_cancel(rc); decision=true; continue; }
+        if (net_tcp_owner_accept_pin(&peer)) {
+            file_t *accepted=NULL;
+            (void)net_socket_prepare(&accepted);
+            if (accepted) fd=fd_alloc(caller,accepted);
+            int64_t error=accepted && fd<0 ? SYSCALL_EMFILE : 0;
+            if (fd>=0) {
+                if (f->r10==NET_SOCK_CLOEXEC) caller->fd_flags[fd]=FD_FLAG_CLOEXEC;
+            }
+            /* Owner tests common-handle capacity before allocation/fd errors.
+             * The provisional fd and a checked rollback ref precede adoption. */
+            net_tcp_owner_accept_decide(accepted,error);
+            if (accepted && fd<0) vfs_close(accepted);
+            decision=true; continue;
+        }
+        sched_wait_until(handoff_channel(t),net_udp_ready,&t);
     }
 }
 int64_t net_tcp_syscall(interrupt_frame_t *f) {
     tcb_t *caller=thread_current();
     if (!caller) return SYSCALL_EOPNOTSUPP;
-    if ((f->rax==SYS_LISTEN || f->rax==SYS_ACCEPT) &&
-        (cpu_current()->id || caller->cpu_affinity!=0)) return SYSCALL_EOPNOTSUPP;
     if (f->rdi>=MAX_PROCESS_FDS) return SYSCALL_EBADF;
     file_t *file=fd_get(caller,(int)f->rdi);
     if (!net_socket_stream(file)) return SYSCALL_EBADF;
@@ -70,9 +96,17 @@ int64_t net_tcp_syscall(interrupt_frame_t *f) {
     if (f->rax==SYS_LISTEN) {
         if (!f->rsi || f->rsi>NET_TCP_BACKLOG_MAX) return SYSCALL_EINVAL;
         if (!net_socket_available()) return SYSCALL_EIO;
-        return net_tcp_listen(slot,(unsigned)f->rsi);
+        int64_t rc=net_udp_begin(NET_OWNER_TCP_LISTEN,file,NULL,(size_t)f->rsi,false);
+        if (rc) return rc;
+        handoff_token_t t=caller->handoff.token;
+        while (!handoff_ready(&t)) {
+            if (process_signal_interrupt()) { net_udp_abandon(); return SYSCALL_EINTR; }
+            sched_wait_until(handoff_channel(t),handoff_ready,&t);
+        }
+        handoff_reply_t reply; rc=net_udp_collect(&reply); net_udp_release();
+        return rc ? SYSCALL_EIO : reply.status;
     }
-    if (f->rax==SYS_ACCEPT) return accept_socket(caller,slot,f);
+    if (f->rax==SYS_ACCEPT) return accept_socket(caller,file,f);
     if (f->rax==SYS_SHUTDOWN) {
         if (f->rsi!=NET_SHUT_WR) return SYSCALL_EINVAL;
         int64_t rc=net_udp_begin(NET_OWNER_TCP_SHUTDOWN,file,NULL,0,false);

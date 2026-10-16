@@ -207,3 +207,22 @@ untimed socket ABI and data-before-EOF behavior are preserved.
 Client CREATE/BIND/CONNECT/SEND/RECV, deadline variants, socket READ/WRITE and SHUT_WR now use the registered CPU-0 owner from BSP and AP. LISTEN/ACCEPT retain CPU0/affinity0 guards and BSP staging/adoption. SEND validates the existing <=16384 request and returns a positive short chunk <=4096. RECV/READ accept <=65536. Immutable staging, copy pins and owner commit/abort replace reservation-free caller copying. Abort consumes nothing; positive commit wins cancellation. CONNECT starts once and offers handshake readiness for caller signal handling and bounded acknowledgement. Absolute BSP deadlines include admission/queueing/retries; no copy lease invents a public timeout. SIGPIPE targets the original writer. The BSP-only, reservation-free and 120-second quiet-period wording above is historical: the reconciled current ISN policy is SHA-256 boot-secret/tuple/TSC, zero reboot quiet time, conditional hardware entropy assurance.
 
 Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.
+
+
+## Phase 2D current ownership contract (2026-10-16)
+
+This supersedes earlier BSP IF-clear LISTEN/ACCEPT adoption descriptions.
+The public ABI, backlog policy, accepted-child independence and error constants
+are unchanged. BSP and AP calls use the same registered CPU-0 owner transaction.
+LISTEN rechecks link availability before mutation. ACCEPT reserves an existing
+queued child generation without another TCB allocation. After STOP-capable signal
+handling the caller revalidates outputs, pins the offer, allocates a provisional
+file/fd (with CLOEXEC), and publishes COMMIT/ABORT. Owner acknowledgement precedes
+peer copyout or rollback reference release. Failed adoption removes the fd and
+leaves eligible children queued; reset/stale children follow owner cleanup.
+Legacy validation/error precedence is preserved, including repeated output checks
+before terminal errors and common-handle capacity before fd exhaustion/OOM.
+Unpinned lease expiry releases a reservation for retry, never a public timeout;
+pinned or published decisions cannot be revoked. Signal deferral applies only to
+bounded published commit/cancel acknowledgements, not connection/resource waits.
+See [the actual-path proof and evidence](../roadmap/network-smp-phase2d.md).

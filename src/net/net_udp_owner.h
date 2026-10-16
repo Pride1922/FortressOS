@@ -4,7 +4,8 @@
 #include "handoff.h"
 enum { NET_OWNER_UDP_CREATE=16, NET_OWNER_UDP_BIND, NET_OWNER_UDP_SEND, NET_OWNER_UDP_RECV,
     NET_OWNER_TCP_CREATE, NET_OWNER_TCP_BIND, NET_OWNER_TCP_CONNECT,
-    NET_OWNER_TCP_SEND, NET_OWNER_TCP_RECV, NET_OWNER_TCP_SHUTDOWN };
+    NET_OWNER_TCP_SEND, NET_OWNER_TCP_RECV, NET_OWNER_TCP_SHUTDOWN,
+    NET_OWNER_TCP_LISTEN, NET_OWNER_TCP_ACCEPT };
 /* Shared UDP/TCP retained records and eight 64 KiB payload credits.
  * Own caller continuation, IF clear, no locks. begin retains a checked file
  * reference; cancellation/death transfers cleanup to the CPU-0 owner. */
@@ -14,6 +15,10 @@ int64_t net_tcp_owner_begin(unsigned kind,file_t *file,const net_sockaddr_in_t *
     size_t len,bool nonblocking,bool timed,uint64_t deadline,uint64_t floor);
 void net_tcp_owner_cancel(int64_t status);
 bool net_tcp_owner_connect_ack(void); /* Publish bounded completion acknowledgement. */
+/* ACCEPT: pin a child offer (no payload credit), then publish a prepared file
+ * and decision without a signal/wait boundary. The owner retains rollback refs. */
+bool net_tcp_owner_accept_pin(net_sockaddr_in_t *peer);
+void net_tcp_owner_accept_decide(file_t *prepared,int64_t error);
 bool net_udp_ready(void *token); /* Stage or terminal result, atomic predicate. */
 int64_t net_udp_collect(handoff_reply_t *reply);
 bool net_udp_pin(const uint8_t **data,int64_t *result,net_sockaddr_in_t *source);

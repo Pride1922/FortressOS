@@ -87,7 +87,7 @@ int64_t net_control_call(unsigned kind, net_control_value_t *value) {
 }
 
 static void step(handoff_token_t t,handoff_request_t r) {
-    if (r.kind>=NET_OWNER_UDP_CREATE && r.kind<=NET_OWNER_TCP_SHUTDOWN) {
+    if (r.kind>=NET_OWNER_UDP_CREATE && r.kind<=NET_OWNER_TCP_ACCEPT) {
         net_udp_step(t,r); return;
     }
     control_slot_t *v=&values[t.slot];

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#undef WNOWAIT
 #undef WNOHANG
 #undef WUNTRACED
 #undef WCONTINUED

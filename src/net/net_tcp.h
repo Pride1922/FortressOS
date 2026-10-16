@@ -8,7 +8,7 @@ typedef struct { unsigned slot; uint64_t generation, event, deadline_ticks, cloc
 /* Slots come only from a live common socket handle (0..NET_SOCKET_MAX-1).
  * Client create/bind/connect/queue/peek/consume/shutdown require the registered
  * CPU-0 owner; buffers are kernel-owned staging, never user addresses. Listener
- * stage/adoption remains BSP IF-clear until Phase 2D. Snapshot is atomic-only.
+ * stage/offer/adoption also require this owner. Snapshot is atomic-only.
  * Protocol input/tick/idle are sole-worker APIs; close is AP-safe publication. */
 void net_tcp_init(net_dev_t *dev, const net_config_t *cfg);
 void net_tcp_set_local_ip(uint32_t new_ip);
@@ -16,12 +16,13 @@ int64_t net_tcp_create(unsigned slot);
 void net_tcp_close(unsigned slot); /* AP-safe publication, no protocol work. */
 #define NET_TCP_BACKLOG_MAX 4U
 typedef struct { int block; uint64_t generation; } net_tcp_child_t;
-int64_t net_tcp_stage(unsigned slot); /* No transport block; BSP IF-clear. */
+int64_t net_tcp_stage(unsigned slot); /* Owner: no transport block. */
 void net_tcp_unstage(unsigned slot);
 int64_t net_tcp_listen(unsigned slot, unsigned backlog);
 bool net_tcp_listener(unsigned slot);
 int64_t net_tcp_accept_peek(unsigned slot, net_tcp_child_t *child, net_sockaddr_in_t *peer);
-void net_tcp_accept_commit(unsigned listener, unsigned target, net_tcp_child_t child);
+int64_t net_tcp_accept_offer(unsigned slot,unsigned excluded,net_tcp_child_t *child,net_sockaddr_in_t *peer);
+int64_t net_tcp_accept_commit(unsigned listener, unsigned target, net_tcp_child_t child);
 int64_t net_tcp_bind(unsigned slot, uint16_t port);
 int64_t net_tcp_connect(unsigned slot, uint32_t ip, uint16_t port);
 int64_t net_tcp_connect_until(unsigned slot, uint32_t ip, uint16_t port, uint64_t deadline);

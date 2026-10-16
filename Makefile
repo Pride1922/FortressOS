@@ -1909,3 +1909,9 @@ test-network-smp-phase2c-host:
 	@python3 scripts/test_network_smp_phase2c_host.py
 test-network-smp-phase2c: test-network-smp-phase2c-host
 	@python3 scripts/test_network_smp_phase2c.py
+
+.PHONY: test-network-smp-phase2d-host test-network-smp-phase2d
+test-network-smp-phase2d-host:
+	python3 scripts/test_network_smp_phase2d_host.py
+test-network-smp-phase2d: test-network-smp-phase2d-host
+	python3 scripts/test_network_smp_phase2d.py

@@ -12,7 +12,9 @@ boots PASS, host ASan/UBSan/TSan PASS, legacy regressions PASS; see
 [Phase 2B evidence](../roadmap/network-smp-phase2b.md)). Phase 2C client/stream
 implementation and network behavior gates are verified; the full-matrix source
 preservation qualification and current-checkout integration are recorded in
-[Phase 2C evidence](../roadmap/network-smp-phase2c.md). LISTEN/ACCEPT remain Phase 2D.
+[Phase 2C evidence](../roadmap/network-smp-phase2c.md). Phase 2D LISTEN/ACCEPT
+owner transactions and lifecycle gates are implemented and verified; see
+[Phase 2D evidence](../roadmap/network-smp-phase2d.md). Production pinning is unchanged.
 [Phase 1 evidence](../roadmap/network-smp-phase1.md).
 [Decisions](NETWORK_SMP_PHASE0_CONTRACTS.md) and
 [evidence/qualifications](../roadmap/network-smp-phase0.md).
@@ -146,7 +148,7 @@ Keep production commands pinned. Use test-only forced AP callers for positive cr
 | 2A: control / finite probes | IFGET, authorized IFSET, ping and traceroute; permission/pointer precedence, concurrent configuration and cancellation. `ifup` persists and reloads the installed default file. |
 | 2B: UDP / DNS | Create, bind, send, receive, close and shared lifetime; bounded queues, cancellation and independent UDP capture. `nslookup` and UDP DNS fallback paths work. |
 | 2C: TCP client / streams | CONNECT, SEND/RECV and timed variants, socket READ/WRITE, shutdown/EOF/reset and SIGPIPE. Numeric and hostname clients, DNS TCP fallback and HTTP downloads pass exact-byte/capture checks. |
-| 2D: listener / lifecycle | LISTEN/ACCEPT staging and adoption, shared/inherited fds, competing readers/acceptors, descriptor exhaustion, rollback, STOP/CONT/KILL, close during pending work and reaper cleanup. |
+| 2D: listener / lifecycle (verified 2026-10-16) | LISTEN/ACCEPT staging and adoption, shared/inherited fds, competing readers/acceptors, descriptor exhaustion, rollback, STOP/CONT/KILL, close during pending work and reaper cleanup. |
 
 At every subgate, exercise actual BSP and AP caller continuations using the same owner engine, preserve the pinned baseline, and update old AP-rejection tests only when replaced by stronger positive and failure coverage. Retain owner-only mutation assertions.
 
@@ -189,3 +191,25 @@ The foundation is accepted when ownership, progress, cancellation and reclamatio
 Client/stream implementation now uses shared retained UDP/TCP records, eight 64 KiB slabs, owner-only mutation and explicit readiness publication. LISTEN/ACCEPT and production affinity rollout remain deferred.
 
 Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](../roadmap/network-smp-phase2c.md). No physical acceptance is claimed.
+
+
+## Phase 2D update (2026-10-16)
+
+LISTEN/ACCEPT now use the registered CPU-0 owner from every application CPU.
+ACCEPT reserves the existing child generation, retains it in the listener queue,
+and defers allocation, output validation and provisional descriptor insertion to
+the caller. The owner commits or aborts before rollback references are released.
+Reservations are exclusive; leases release only unpinned offers, with no public
+ACCEPT timeout. Published decisions receive bounded acknowledgement-only waits.
+Final close publishes detach; the owner fences common-slot reuse through cleanup.
+Production spawn pinning and Phase 3 rollout are unchanged. No physical acceptance
+is claimed. Earlier Phase 2C preservation qualifications remain historical evidence.
+See [Phase 2D audit](../roadmap/network-smp-phase2d.md) for implementation proof, exact artifacts, tests and retained failures.
+
+Phase 2D verification: actual-code ASan/UBSan and separate TSan PASS; 12/12
+BIOS/UEFI × SMP=1/4/8 e1000e listener boots, 4/4 absent-NIC boots,
+4/4 e1000 listener/carrier boots, 8/8 client/carrier regression boots and
+4/4 UDP/DNS regression boots PASS (32/32 total). Strict isolated ordinary
+kernel/initramfs build and private-probe exclusion PASS; realized static state
+557238/589824 bytes, shared release media unchanged. [Exact artifacts and retained
+qualifications](../roadmap/network-smp-phase2d.md).

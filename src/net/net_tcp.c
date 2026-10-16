@@ -343,6 +343,7 @@ int64_t net_tcp_create(unsigned slot) {
     publish(e); spin_unlock_irqrestore(&lock,flags); return 0;
 }
 int64_t net_tcp_stage(unsigned slot) {
+    net_control_assert_owner();
     uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
     int64_t result=0;
     if (e->used || e->detach) result=SYSCALL_ENOSPC;
@@ -354,12 +355,18 @@ int64_t net_tcp_stage(unsigned slot) {
     spin_unlock_irqrestore(&lock,flags); return result;
 }
 void net_tcp_unstage(unsigned slot) {
+    net_control_assert_owner();
     uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
     if (!e->used || e->block!=-1 || e->started || e->generation) __builtin_trap();
     e->used=false; spin_unlock_irqrestore(&lock,flags);
 }
-bool net_tcp_listener(unsigned slot) { return endpoints[slot].used && endpoints[slot].listening; }
+bool net_tcp_listener(unsigned slot) {
+    uint64_t flags=spin_lock_irqsave(&lock);
+    bool result=endpoints[slot].used && endpoints[slot].listening;
+    spin_unlock_irqrestore(&lock,flags); return result;
+}
 int64_t net_tcp_listen(unsigned slot, unsigned backlog) {
+    net_control_assert_owner();
     uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
     tcp_conn_t *c=connection(e); int64_t result=0;
     if (!backlog || backlog>NET_TCP_BACKLOG_MAX || !e->port || e->started || !c) result=SYSCALL_EINVAL;
@@ -375,12 +382,17 @@ static tcp_conn_t *pending_connection(net_tcp_child_t child) {
         pool.blocks[child.block].generation==child.generation ? &pool.blocks[child.block] : NULL;
 }
 int64_t net_tcp_accept_peek(unsigned slot, net_tcp_child_t *child, net_sockaddr_in_t *peer) {
+    return net_tcp_accept_offer(slot,0,child,peer);
+}
+int64_t net_tcp_accept_offer(unsigned slot,unsigned excluded,net_tcp_child_t *child,net_sockaddr_in_t *peer) {
+    net_control_assert_owner();
     uint64_t flags=spin_lock_irqsave(&lock); endpoint_t *e=&endpoints[slot];
     int64_t result=e->error ? e->error : SYSCALL_EAGAIN;
-    if (!net_tcp_listener(slot)) result=SYSCALL_EINVAL;
+    if (!e->used || !e->listening) result=SYSCALL_EINVAL;
     else if (!e->error) for (unsigned i=0; i<e->backlog; ++i) {
         tcp_conn_t *c=pending_connection(e->pending[i]);
-        if (c && (c->state==TCP_ESTABLISHED || c->state==TCP_CLOSE_WAIT)) {
+        if (c && !(excluded & (1U<<e->pending[i].block)) &&
+            (c->state==TCP_ESTABLISHED || c->state==TCP_CLOSE_WAIT)) {
             *child=e->pending[i];
             *peer=(net_sockaddr_in_t){.family=NET_AF_INET,.port=htons(c->tuple.remote_port),.address=c->tuple.remote_ip};
             result=0; break;
@@ -388,16 +400,20 @@ int64_t net_tcp_accept_peek(unsigned slot, net_tcp_child_t *child, net_sockaddr_
     }
     spin_unlock_irqrestore(&lock,flags); return result;
 }
-void net_tcp_accept_commit(unsigned listener, unsigned target, net_tcp_child_t child) {
+int64_t net_tcp_accept_commit(unsigned listener, unsigned target, net_tcp_child_t child) {
+    net_control_assert_owner();
     uint64_t flags=spin_lock_irqsave(&lock);
     endpoint_t *e=&endpoints[listener], *accepted=&endpoints[target];
     tcp_conn_t *c=pending_connection(child); unsigned i=0;
     for (; i<e->backlog; ++i) if (e->pending[i].block==child.block && e->pending[i].generation==child.generation) break;
-    if (!net_tcp_listener(listener) || i==e->backlog || !c ||
+    if (!e->used || !e->listening || i==e->backlog || !c || e->error ||
         !accepted->used || accepted->block!=-1 || accepted->generation ||
-        (c->state!=TCP_ESTABLISHED && c->state!=TCP_CLOSE_WAIT)) __builtin_trap();
-    /* Ownership linearization: fd is inserted already, but BSP IF stays clear.
-     * No allocation/copy/signal check/sleep/tick can interrupt this transfer. */
+        (c->state!=TCP_ESTABLISHED && c->state!=TCP_CLOSE_WAIT)) {
+        int64_t result=e->error ? e->error : SYSCALL_EBADF;
+        spin_unlock_irqrestore(&lock,flags); return result;
+    }
+    /* Owner-only linearization after caller provisional fd insertion. A reset,
+     * expiry or link failure since reserve is a normal rollback, never a trap. */
     accepted->block=child.block; accepted->port=c->tuple.local_port;
     accepted->passive=true;
     accepted->started=true; accepted->observed=UINT64_MAX;
@@ -405,7 +421,7 @@ void net_tcp_accept_commit(unsigned listener, unsigned target, net_tcp_child_t c
     __atomic_store_n(&accepted->event,0,__ATOMIC_RELEASE);
     __atomic_store_n(&accepted->generation,child.generation,__ATOMIC_RELEASE);
     e->pending[i].block=-1; publish(e); publish(accepted);
-    spin_unlock_irqrestore(&lock,flags);
+    spin_unlock_irqrestore(&lock,flags); return 0;
 }
 void net_tcp_close(unsigned slot) {
     if (slot>=NET_SOCKET_MAX) return;

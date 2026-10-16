@@ -291,3 +291,16 @@ below589824. This reallocates ledger headroom rather than claiming every origina
 per-row estimate was retained. The build-time aggregate assertion and ordinary
 ELF section measurements are recorded in
 [Phase 2C evidence](../roadmap/network-smp-phase2c.md).
+
+
+## Phase 2D realized state (2026-10-16)
+
+The original 128-byte estimate and Phase 2C's realized 168-byte typed record are
+historical. LISTEN/ACCEPT add an existing-child identity and rollback file pointer:
+the ordinary build measures 192 bytes per typed record, 12288 bytes for 64 records.
+The shared owner object is 536645 bytes, control 8720, generic handoff 5729,
+registration array 2048, plus conservative 4096 allowance: **557238 bytes**, below
+the hard 589824-byte (576 KiB) ceiling. All `.bss` and `.data*` sections are counted.
+The same eight 64 KiB payload slabs serve UDP and TCP; ACCEPT allocates no second
+transport block and no independent payload pool. See
+[Phase 2D measurement and ordinary-build identity](../roadmap/network-smp-phase2d.md).

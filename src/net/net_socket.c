@@ -60,27 +60,10 @@ static void socket_close(vfs_node_t *node) {
     socket_t *s=node->fs_private;
     if (!s) { kfree(node); return; }
     uint64_t irq=spin_lock_irqsave(&s_lock);
-    /* Capture kind before freeing the common slot: an AP final-close may
-     * overlap a BSP constructor attempting to reuse it after unlock. */
-    bool stream=s->stream, staged=s->staged_stream;
-    if (!stream) {
-        /* Final release never mutates UDP protocol state. Reuse is fenced until
-         * the CPU-0 sweep has cancelled the IPv4 operation and acknowledged. */
-        s->detaching=true;
-        spin_unlock_irqrestore(&s_lock,irq);
-        net_request_poll();
-        kfree(node); return;
-    }
-    s->used=false; s->bound=false; s->count=0;
-    s->wake=true;
-    invalidate(&s->tx); invalidate(&s->receive);
+    /* Final release on any CPU only publishes detach. Common-slot reuse waits
+     * for owner acknowledgement, including provisional accepted endpoints. */
+    s->detaching=true;
     spin_unlock_irqrestore(&s_lock,irq);
-    if (stream) {
-        if (staged) net_tcp_unstage((unsigned)(s-s_slots));
-        else net_tcp_close((unsigned)(s-s_slots));
-    }
-    /* Static channel/backing outlives every waiter. Publish detach readiness
-     * and wake the BSP worker after releasing the common-slot lock. */
     net_request_poll();
     kfree(node);
 }
@@ -177,7 +160,7 @@ int64_t net_socket_activate(file_t *file) {
     file->node->fs_private=s;
     spin_unlock_irqrestore(&s_lock,irq); return 0;
 }
-int64_t net_socket_activate_stream(file_t *file) {
+static int64_t activate_stream(file_t *file,bool staged) {
     net_control_assert_owner();
     if (!net_socket_available()) return SYSCALL_EIO;
     uint64_t irq=spin_lock_irqsave(&s_lock);
@@ -186,23 +169,30 @@ int64_t net_socket_activate_stream(file_t *file) {
     uint64_t identity=s ? generation() : 0;
     if (!identity) { spin_unlock_irqrestore(&s_lock,irq); return SYSCALL_ENOSPC; }
     s->used=true; s->identity=identity; s->detaching=false; s->stream=true;
-    s->staged_stream=false; s->bound=false; s->head=s->count=0; s->dropped=0;
+    s->staged_stream=staged; s->bound=false; s->head=s->count=0; s->dropped=0;
     invalidate(&s->tx); invalidate(&s->receive);
     spin_unlock_irqrestore(&s_lock,irq);
     /* Preserve capacity-before-allocation precedence, including TCP blocks and
      * TIME_WAIT capacity. A failed caller preallocation still reaches this test.
      * The temporary block follows the existing constructor OOM detach policy. */
-    int64_t result=net_tcp_create((unsigned)(s-s_slots));
-    if (!result && !file) { net_tcp_close((unsigned)(s-s_slots)); result=SYSCALL_ENOMEM; }
+    int64_t result=staged ? net_tcp_stage((unsigned)(s-s_slots)) : net_tcp_create((unsigned)(s-s_slots));
+    if (!result && !file) {
+        if (staged) net_tcp_unstage((unsigned)(s-s_slots));
+        else net_tcp_close((unsigned)(s-s_slots));
+        result=SYSCALL_ENOMEM;
+    }
     irq=spin_lock_irqsave(&s_lock);
     if (result) s->used=false;
     else file->node->fs_private=s;
     spin_unlock_irqrestore(&s_lock,irq);
     return result;
 }
+int64_t net_socket_activate_stream(file_t *file) { return activate_stream(file,false); }
+int64_t net_socket_activate_staged(file_t *file) { return activate_stream(file,true); }
 int64_t net_socket_create_stream(file_t **out) { return create(out,true,false); }
 int64_t net_socket_stage_stream(file_t **out) { return create(out,true,true); }
 void net_socket_finish_adopt(file_t *file) {
+    net_control_assert_owner();
     uint64_t irq=spin_lock_irqsave(&s_lock);
     socket_t *s=slot(file);
     if (!s || !s->staged_stream) __builtin_trap();
@@ -358,8 +348,11 @@ void net_socket_worker_tick(uint64_t now, bool online) {
         if (s->detaching) {
             invalidate(&s->tx); invalidate(&s->receive);
             s->count=0; s->bound=false;
+            bool stream=s->stream, staged=s->staged_stream;
             spin_unlock_irqrestore(&s_lock,irq);
-            net_ipv4_udp_sync(i,0);
+            if (!stream) net_ipv4_udp_sync(i,0);
+            else if (staged) net_tcp_unstage(i);
+            else net_tcp_close(i);
             irq=spin_lock_irqsave(&s_lock);
             s->detaching=false; s->used=false;
             spin_unlock_irqrestore(&s_lock,irq);

@@ -480,3 +480,17 @@ PASS, e1000). See [Phase 2B](docs/roadmap/network-smp-phase2b.md).
 TCP client/stream calls now join the CPU-0 owner with checked file references and endpoint generations. Shared UDP/TCP staging uses eight 64 KiB slabs; the global TCP receive scratch is removed. Receive has pin/commit/abort ownership and CONNECT has caller acknowledgement. SEND stages <=4096 bytes; stalled peer waits hold no send slab. LISTEN/ACCEPT remain BSP IF-clear until Phase 2D, and production spawn pinning remains Phase 3 work.
 
 Phase 2C network behavior is verified: 12 e1000e matrix boots, 4 current-checkout e1000 boots and 4 carrier-recovery boots pass. The full-matrix repository-preservation guard remains qualified for concurrent unrelated user-command edits, with byte-identical network executable-section reconciliation; its original FAIL is retained. [Audit, exact results and preservation qualification](docs/roadmap/network-smp-phase2c.md). No physical acceptance is claimed.
+
+
+## Phase 2D update (2026-10-16)
+
+LISTEN/ACCEPT now use the registered CPU-0 owner from every application CPU.
+ACCEPT reserves the existing child generation, retains it in the listener queue,
+and defers allocation, output validation and provisional descriptor insertion to
+the caller. The owner commits or aborts before rollback references are released.
+Reservations are exclusive; leases release only unpinned offers, with no public
+ACCEPT timeout. Published decisions receive bounded acknowledgement-only waits.
+Final close publishes detach; the owner fences common-slot reuse through cleanup.
+Production spawn pinning and Phase 3 rollout are unchanged. No physical acceptance
+is claimed. Earlier Phase 2C preservation qualifications remain historical evidence.
+See [Phase 2D audit](docs/roadmap/network-smp-phase2d.md) for implementation proof, exact artifacts, tests and retained failures.
