@@ -67,7 +67,8 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`set`](#set) | Builtin | Environment | Display all shell variables |
 | [`unset`](#unset) | Builtin | Environment | Unset shell variables |
 | [`export`](#export) | Builtin | Environment | Set or export environment variables to child processes |
-| [`env`](#env) | Builtin (child-safe) | Environment | Print exported environment variables |
+| [`env`](#env) | Builtin / `/bin/env` | Environment | Set environment and run command, or print exported environment variables |
+| [`which`](#which) | Binary (`/bin/which`) | Shell | Locate a command in PATH |
 | [`alias`](#alias) | Builtin | Shell | Define or display command aliases |
 | [`unalias`](#unalias) | Builtin | Shell | Remove command aliases |
 | [`jobs`](#jobs) | Builtin | Job Control | List active background and stopped jobs |
@@ -331,12 +332,18 @@ sync
 ---
 
 ### `echo`
-**Syntax:** `echo [args...]`  
+**Syntax:** `echo [-n] [-e] [-E] [args...]`  
 **Child-Safe in Pipelines:** Yes  
-**Description:** Prints arguments separated by single spaces, followed by a newline. Evaluates variables expanded by the shell (e.g. `$?`, `$VAR`, `${VAR}`).  
+**Description:** Prints arguments separated by single spaces, followed by a newline (unless `-n` is specified). Evaluates variables expanded by the shell (e.g. `$?`, `$VAR`, `${VAR}`).
+* `-n`: Do not print the trailing newline.
+* `-e`: Enable interpretation of backslash escapes (`\\`, `\a`, `\b`, `\c`, `\e`, `\f`, `\n`, `\r`, `\t`, `\v`, `\0NNN` octal bytes, `\xHH` hex bytes). `\c` suppresses any further output immediately without a trailing newline.
+* `-E`: Disable backslash escape interpretation (default).  
 **Examples:**
 ```sh
 echo "Hello, FortressOS!"
+echo -n "No trailing newline"
+echo -e "First line\nSecond line\t(tabbed)"
+echo -e "Byte \x41 and octal \0102"      # Outputs Byte A and octal B
 echo "Exit status:" $?
 echo "Current path:" $PATH
 ```
@@ -348,9 +355,9 @@ echo "Current path:" $PATH
 **Child-Safe in Pipelines:** Yes  
 **Description:** Formats and writes text to standard output without an automatic trailing newline. Fills a vital pipeline gap where exact byte sequences are required (e.g. RFC test vectors, binary streams, or hashes).
 * **Exact Bytes:** Does not append a newline unless explicitly requested via `\n` in the format string.
-* **Format Specifiers:** Supports `%s` (string), `%b` (string with backslash escapes expanded), `%c` (single character), `%d` / `%i` (signed decimal integer), `%u` (unsigned decimal integer), `%x` / `%X` (hexadecimal), `%o` (octal), and `%%` (literal percent).
-* **Width & Alignment:** Supports field widths (e.g. `%10s`), left-alignment (`%-10s`), and zero-padding (`%04x`).
-* **Escape Sequences:** Interprets `\n` (newline), `\t` (tab), `\r` (carriage return), `\xHH` (hex byte), `\NNN` (octal byte), and `\c` (terminate output immediately).
+* **Format Specifiers:** Supports `%s` (string), `%b` (string with backslash escapes expanded, including `\0NNN` octal, `\xHH` hex, and width/precision padding), `%c` (single character), `%d` / `%i` (signed decimal integer), `%u` (unsigned decimal integer), `%x` / `%X` (hexadecimal), `%o` (octal), and `%%` (literal percent).
+* **Width & Alignment:** Supports field widths (e.g. `%10s`, `%10b`), left-alignment (`%-10s`, `%-10b`), and zero-padding (`%04x`).
+* **Escape Sequences:** Interprets `\n` (newline), `\t` (tab), `\r` (carriage return), `\xHH` (hex byte), `\0NNN` / `\NNN` (octal byte), `\e` (escape), and `\c` (terminate output immediately).
 * **Format Reuse:** If more arguments are provided than format specifiers, the format string is reused until all arguments are consumed.
 
 **Examples:**
@@ -430,13 +437,14 @@ exit 0
 ---
 
 ### `dmesg`
-**Syntax:** `dmesg [-n <lines>] [tail [<lines>]] [<lines>] [path]`  
+**Syntax:** `dmesg [-a] [-n <lines>] [tail [<lines>]] [<lines>] [path]`  
 **Child-Safe in Pipelines:** Yes  
 **Description:** Prints or saves kernel diagnostic ring buffer messages. Supports inspecting the most recent log entries directly or redirecting through pipelines.
 * `dmesg` without arguments prints the complete kernel log to the terminal (or pipeline).
 * `dmesg -n <N>` or `dmesg tail <N>` or `dmesg <N>` prints only the last `<N>` lines of the kernel log.
 * `dmesg tail` defaults to the last 10 lines of the kernel log.
-* `dmesg <path>` or `dmesg -n <N> <path>` saves the (tail or full) output to the specified file path on disk.
+* `dmesg <path>` or `dmesg -n <N> <path>` saves output to the specified file path (overwriting existing content).
+* `dmesg -a <path>` or `dmesg --append <path>` appends output to the specified file path on disk without truncating.
 * `dmesg` can run in pipelines (e.g. `dmesg | tail`, `dmesg | wc -l`). Also available as `/bin/dmesg`.
 
 #### Troubleshooting with `dmesg` (The Killer Troubleshooting Feature)
@@ -586,13 +594,38 @@ export DEBUG=1
 ---
 
 ### `env`
-**Syntax:** `env`  
+**Syntax:** `env [-i] [KEY=VALUE...] [COMMAND [ARG...]]`  
+**Path:** `/bin/env` (also builtin)  
 **Child-Safe in Pipelines:** Yes  
-**Description:** Prints all exported environment variables passed to the process.  
+**Description:** Runs a program in a modified environment, or prints all exported environment variables passed to the process.
+* `env` without arguments prints the current exported environment variables.
+* `env KEY=VALUE...` prints the environment with specified variable overrides or additions.
+* `env -i [KEY=VALUE...]` starts with an empty environment instead of inheriting the parent's environment.
+* `env [KEY=VALUE...] COMMAND [ARG...]` executes `COMMAND` with the modified environment array and returns the command's exit code.  
 **Examples:**
 ```sh
 env
-env | head -n 5
+env | grep PATH
+env FOO=bar myapp
+env -i PATH=/bin myapp
+```
+
+---
+
+### `which`
+**Syntax:** `which [-a] <command>...`  
+**Path:** `/bin/which`  
+**Child-Safe in Pipelines:** Yes  
+**Description:** Locates an executable file in the colon-separated directories specified by `$PATH` (defaulting to `/bin:/sbin`).
+* If a path contains a `/`, tests directly if the file exists and is executable.
+* `-a`, `--all`: Print all matching executables found in `$PATH` rather than stopping at the first match.
+* Returns exit code `0` if all requested commands are found, `1` if any command was not found.  
+**Examples:**
+```sh
+which ls
+which ifconfig
+which -a cat
+which /bin/nano
 ```
 
 ---
@@ -1039,22 +1072,24 @@ diskbench -s -w 64K -n 20 /mnt
 **Description:** Storage observability utility for FortressOS running in Ring 3. Queries passive kernel device and filesystem registry information without mutating storage or issuing disk writes.
 * **Subcommands:**
   * `list` (default): Enumerate registered block devices, capacity, sector size, GPT partition labels, PARTUUIDs, and active mount correlations.
-  * `info <device>`: Display detailed metadata for a specific block device or partition (type, capacity in human-readable and raw bytes, sector size, partition start LBA, sector count, PARTUUID, GPT label, GPT type GUID with type description, and mount point status). Accepts bare name (e.g. `nvme0n1p1`) or `/dev/` path (e.g. `/dev/nvme0n1p1`).
+  * `info <device|uuid>`: Display detailed metadata for a specific block device or partition (type, capacity in human-readable and raw bytes, sector size, partition start LBA, sector count, PARTUUID, GPT label, GPT type GUID with type description, and mount point status). Accepts bare name (e.g. `nvme0n1p1`), `/dev/` path (e.g. `/dev/nvme0n1p1`), or PARTUUID (e.g. `89B65A98-538C-4194-8AD2-142217C5153A` or `PARTUUID=...`).
   * `usage`: Display mounted filesystem usage (total/used/available blocks, use percentage, inodes).
   * `bench`: Benchmark filesystem throughput (merging diskbench).
     - *Note on naming*: Output prefixes retain 'diskbench' ('=== diskbench: ... ===' and comparison prefix 'diskbench ...') for backward compatibility with automated parsing pipelines.
     - *High-Resolution Timing*: Elapsed time is measured using hardware CPU cycle counters (`rdtsc`) calibrated against kernel invariant TSC (`tsc_hz` from `SYS_SYSINFO`), giving sub-microsecond precision and stable throughput calculations even for small workloads. If TSC is unavailable, it seamlessly falls back to system timer ticks (`tick_hz=100`; 10 ms granularity). Both `time_ms=` and high-resolution `time_us=` are emitted in `-c` comparison output.
 * **Options:**
-  * `-c`, `--comparison`: Comparison-friendly single-line machine-parseable output (`key=value`).
+  * `-c`, `--comparison`: Comparison-friendly single-line machine-parseable output (`key=value`). Also serves as shorthand to inspect a device or PARTUUID directly (e.g. `disk -c <UUID>`).
   * `-h`, `--help`: Display usage summary and exit.
 **Examples:**
 ```sh
-disk                     # List all block devices (flat table including LABEL and PARTUUID)
-disk list -c             # List devices in comparison key=value format (includes label=, partuuid=)
-disk info nvme0n1p1      # Detailed view of partition nvme0n1p1
-disk info -c /dev/sda    # Detailed view in machine-parseable comparison format
-disk usage               # Show filesystem disk space and inode usage table
-disk usage -c            # Show filesystem usage in comparison format
+disk                                                  # List all block devices (flat table including LABEL and PARTUUID)
+disk list -c                                          # List devices in comparison key=value format (includes label=, partuuid=)
+disk info nvme0n1p1                                   # Detailed view of partition nvme0n1p1
+disk info 89B65A98-538C-4194-8AD2-142217C5153A        # Detailed view of partition looked up by PARTUUID
+disk -c 89B65A98-538C-4194-8AD2-142217C5153A          # Shorthand inspection by PARTUUID in comparison format
+disk info -c /dev/sda                                 # Detailed view in machine-parseable comparison format
+disk usage                                            # Show filesystem disk space and inode usage table
+disk usage -c                                         # Show filesystem usage in comparison format
 ```
 
 ---
@@ -1082,12 +1117,19 @@ nano
 ## 6. System & Process Introspection
 
 ### `ps`
-**Syntax:** `ps`  
+**Syntax:** `ps [-o col1,col2,...]`  
 **Path:** `/bin/ps`  
-**Description:** Takes a snapshot of the kernel process table via `SYS_PROCINFO` and displays PID, PPID, process group ID (PGID), session ID (SID), state (`RUNNING`, `STOPPED`, `ZOMBIE`, `DONE`), and process name.  
+**Description:** Takes a snapshot of the kernel process table via `SYS_PROCINFO` and displays process metrics.
+* By default, prints `PID`, `PPID`, `PGID`, `SID`, `STATE` (`RUNNING`, `STOPPED`, `ZOMBIE`, `DONE`), and `NAME`.
+* `-o`, `--output`, `--format`: Custom comma-separated column selection.
+  - Supported columns: `pid`, `ppid`, `pgid`, `sid`, `state` (or `stat`), `name` (or `comm`, `cmd`, `args`).
+* `-h`, `--help`: Display usage summary and supported column names.  
 **Examples:**
 ```sh
 ps
+ps -o pid,name
+ps -o comm,state,ppid
+ps -o pid,state,args
 ```
 
 ---

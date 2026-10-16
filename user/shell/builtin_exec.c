@@ -58,16 +58,116 @@ builtin_ctx_t builtin_ctx_from_envp(const char *const *envp) {
 /* ---------- echo ---------------------------------------------------------- */
 
 static int exec_echo(int argc, const char *const *argv) {
-    for (int i = 1; i < argc; i++) {
-        if (i > 1) {
+    bool no_newline = false;
+    bool enable_escapes = false;
+    int arg_start = 1;
+
+    /* Parse leading flags (-n, -e, -E and combinations) */
+    while (arg_start < argc) {
+        const char *arg = argv[arg_start];
+        if (arg[0] != '-' || arg[1] == '\0') break;
+
+        /* Verify all characters after '-' are valid options */
+        bool valid = true;
+        for (int k = 1; arg[k]; k++) {
+            if (arg[k] != 'n' && arg[k] != 'e' && arg[k] != 'E') {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid) break;
+
+        /* Apply options */
+        for (int k = 1; arg[k]; k++) {
+            if (arg[k] == 'n') no_newline = true;
+            else if (arg[k] == 'e') enable_escapes = true;
+            else if (arg[k] == 'E') enable_escapes = false;
+        }
+        arg_start++;
+    }
+
+    for (int i = arg_start; i < argc; i++) {
+        if (i > arg_start) {
             long r = write_bytes_fd(1, " ", 1);
             if (r < 0) return io_err(r);
         }
-        int rc = write_str(argv[i]);
-        if (rc) return rc;
+        if (!enable_escapes) {
+            int rc = write_str(argv[i]);
+            if (rc) return rc;
+        } else {
+            const char *p = argv[i];
+            while (*p) {
+                if (*p == '\\') {
+                    p++;
+                    char c = *p;
+                    if (!c) {
+                        long r = write_bytes_fd(1, "\\", 1);
+                        if (r < 0) return io_err(r);
+                        break;
+                    }
+                    p++;
+                    if (c == 'c') {
+                        return 0; /* Stop all output immediately, no trailing newline */
+                    } else if (c == 'n') {
+                        long r = write_bytes_fd(1, "\n", 1); if (r < 0) return io_err(r);
+                    } else if (c == 't') {
+                        long r = write_bytes_fd(1, "\t", 1); if (r < 0) return io_err(r);
+                    } else if (c == 'r') {
+                        long r = write_bytes_fd(1, "\r", 1); if (r < 0) return io_err(r);
+                    } else if (c == 'a') {
+                        long r = write_bytes_fd(1, "\a", 1); if (r < 0) return io_err(r);
+                    } else if (c == 'b') {
+                        long r = write_bytes_fd(1, "\b", 1); if (r < 0) return io_err(r);
+                    } else if (c == 'e' || c == 'E') {
+                        long r = write_bytes_fd(1, "\033", 1); if (r < 0) return io_err(r);
+                    } else if (c == 'f') {
+                        long r = write_bytes_fd(1, "\f", 1); if (r < 0) return io_err(r);
+                    } else if (c == 'v') {
+                        long r = write_bytes_fd(1, "\v", 1); if (r < 0) return io_err(r);
+                    } else if (c == '\\') {
+                        long r = write_bytes_fd(1, "\\", 1); if (r < 0) return io_err(r);
+                    } else if (c == '0') {
+                        unsigned val = 0;
+                        int digits = 0;
+                        while (digits < 3 && *p >= '0' && *p <= '7') {
+                            val = (val << 3) | (*p++ - '0');
+                            digits++;
+                        }
+                        char ch = (char)(val & 0xFF);
+                        long r = write_bytes_fd(1, &ch, 1); if (r < 0) return io_err(r);
+                    } else if (c == 'x') {
+                        unsigned val = 0;
+                        int digits = 0;
+                        while (digits < 2 && *p) {
+                            char h = *p;
+                            if (h >= '0' && h <= '9') val = (val << 4) | (h - '0');
+                            else if (h >= 'a' && h <= 'f') val = (val << 4) | (h - 'a' + 10);
+                            else if (h >= 'A' && h <= 'F') val = (val << 4) | (h - 'A' + 10);
+                            else break;
+                            p++; digits++;
+                        }
+                        if (digits > 0) {
+                            char ch = (char)(val & 0xFF);
+                            long r = write_bytes_fd(1, &ch, 1); if (r < 0) return io_err(r);
+                        } else {
+                            long r = write_bytes_fd(1, "x", 1); if (r < 0) return io_err(r);
+                        }
+                    } else {
+                        char seq[2] = {'\\', c};
+                        long r = write_bytes_fd(1, seq, 2); if (r < 0) return io_err(r);
+                    }
+                } else {
+                    long r = write_bytes_fd(1, p++, 1);
+                    if (r < 0) return io_err(r);
+                }
+            }
+        }
     }
-    long r = write_bytes_fd(1, "\n", 1);
-    return r < 0 ? io_err(r) : 0;
+    if (!no_newline) {
+        long r = write_bytes_fd(1, "\n", 1);
+        return r < 0 ? io_err(r) : 0;
+    }
+    return 0;
 }
 
 /* ---------- printf -------------------------------------------------------- */
@@ -290,26 +390,70 @@ int exec_printf(int argc, const char *const *argv) {
                         for (int k = 0; k < pad; k++) if (p_char(&out, ' ')) return 1;
                     }
                 } else if (spec == 'b') {
+                    static char b_buf[512];
+                    size_t blen = 0;
+                    bool early_exit = false;
                     const char *bs = val_str;
-                    while (*bs) {
+                    while (*bs && blen < sizeof(b_buf)) {
                         if (*bs == '\\') {
                             bs++;
                             char bc = *bs;
-                            if (!bc) { if (p_char(&out, '\\')) return 1; break; }
+                            if (!bc) { b_buf[blen++] = '\\'; break; }
                             bs++;
-                            if (bc == 'n') { if (p_char(&out, '\n')) return 1; }
-                            else if (bc == 't') { if (p_char(&out, '\t')) return 1; }
-                            else if (bc == 'r') { if (p_char(&out, '\r')) return 1; }
-                            else if (bc == 'a') { if (p_char(&out, '\a')) return 1; }
-                            else if (bc == 'b') { if (p_char(&out, '\b')) return 1; }
-                            else if (bc == 'f') { if (p_char(&out, '\f')) return 1; }
-                            else if (bc == 'v') { if (p_char(&out, '\v')) return 1; }
-                            else if (bc == '\\') { if (p_char(&out, '\\')) return 1; }
-                            else if (bc == 'c') { (void)p_flush(&out); return 0; }
-                            else { if (p_char(&out, bc)) return 1; }
+                            if (bc == 'c') {
+                                early_exit = true;
+                                break;
+                            } else if (bc == 'n') { b_buf[blen++] = '\n'; }
+                            else if (bc == 't') { b_buf[blen++] = '\t'; }
+                            else if (bc == 'r') { b_buf[blen++] = '\r'; }
+                            else if (bc == 'a') { b_buf[blen++] = '\a'; }
+                            else if (bc == 'b') { b_buf[blen++] = '\b'; }
+                            else if (bc == 'e' || bc == 'E') { b_buf[blen++] = '\033'; }
+                            else if (bc == 'f') { b_buf[blen++] = '\f'; }
+                            else if (bc == 'v') { b_buf[blen++] = '\v'; }
+                            else if (bc == '\\') { b_buf[blen++] = '\\'; }
+                            else if (bc == '0') {
+                                unsigned val = 0;
+                                int digits = 0;
+                                while (digits < 3 && *bs >= '0' && *bs <= '7') {
+                                    val = (val << 3) | (*bs++ - '0');
+                                    digits++;
+                                }
+                                b_buf[blen++] = (char)(val & 0xFF);
+                            } else if (bc == 'x') {
+                                unsigned val = 0;
+                                int digits = 0;
+                                while (digits < 2 && *bs) {
+                                    char h = *bs;
+                                    if (h >= '0' && h <= '9') val = (val << 4) | (h - '0');
+                                    else if (h >= 'a' && h <= 'f') val = (val << 4) | (h - 'a' + 10);
+                                    else if (h >= 'A' && h <= 'F') val = (val << 4) | (h - 'A' + 10);
+                                    else break;
+                                    bs++; digits++;
+                                }
+                                if (digits > 0) b_buf[blen++] = (char)(val & 0xFF);
+                                else b_buf[blen++] = 'x';
+                            } else {
+                                b_buf[blen++] = bc;
+                            }
                         } else {
-                            if (p_char(&out, *bs++)) return 1;
+                            b_buf[blen++] = *bs++;
                         }
+                    }
+                    if (prec >= 0 && (size_t)prec < blen) blen = (size_t)prec;
+                    int pad = width > (int)blen ? width - (int)blen : 0;
+                    if (!left_align && pad > 0) {
+                        for (int k = 0; k < pad; k++) if (p_char(&out, ' ')) return 1;
+                    }
+                    for (size_t k = 0; k < blen; k++) {
+                        if (p_char(&out, b_buf[k])) return 1;
+                    }
+                    if (left_align && pad > 0) {
+                        for (int k = 0; k < pad; k++) if (p_char(&out, ' ')) return 1;
+                    }
+                    if (early_exit) {
+                        (void)p_flush(&out);
+                        return 0;
                     }
                 } else if (spec == 'c') {
                     char ch = val_str[0];
@@ -649,17 +793,21 @@ static bool parse_uint(const char *s, uint64_t *val) {
 int exec_dmesg(int argc, const char *const *argv) {
     uint64_t tail_lines = 0;
     const char *dest_path = NULL;
+    bool append = false;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (equal(arg, "-h") || equal(arg, "--help")) {
-            write_str("usage: dmesg [-n N | tail [N]] [path]\n"
+            write_str("usage: dmesg [-a] [-n N | tail [N]] [path]\n"
                       "       dmesg [path]\n\n"
                       "Print or save kernel diagnostic ring buffer messages.\n"
                       "options:\n"
+                      "  -a, --append     append log output to file instead of overwriting\n"
                       "  -n N, tail [N]   print only the last N lines (e.g. dmesg -n 13)\n"
                       "  -h, --help       display this help and exit\n");
             return 0;
+        } else if (equal(arg, "-a") || equal(arg, "--append")) {
+            append = true;
         } else if (equal(arg, "-n")) {
             if (i + 1 >= argc || !parse_uint(argv[i + 1], &tail_lines)) {
                 write_err("dmesg: option -n requires a numeric argument\n");
@@ -726,7 +874,8 @@ int exec_dmesg(int argc, const char *const *argv) {
     const char *out_ptr = s_dmesg_buf + start;
 
     if (dest_path) {
-        long fd = call(SYS_OPEN, (uintptr_t)dest_path, VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC, 0);
+        long flags = VFS_O_WRONLY | VFS_O_CREAT | (append ? VFS_O_APPEND : VFS_O_TRUNC);
+        long fd = call(SYS_OPEN, (uintptr_t)dest_path, flags, 0);
         if (fd < 0) {
             file_error_err(fd);
             return 1;
@@ -747,7 +896,7 @@ int exec_dmesg(int argc, const char *const *argv) {
         }
         puts("Saved ");
         put_dec(out_len);
-        puts(" bytes to ");
+        puts(append ? " bytes (appended) to " : " bytes to ");
         puts(dest_path);
         puts("\n");
         return 0;

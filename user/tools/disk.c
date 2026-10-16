@@ -46,6 +46,19 @@ static void out_right(const char *str, size_t width) {
     out_str(str);
 }
 
+static bool tool_equal_icase(const char *a, const char *b) {
+    if (!a || !b) return a == b;
+    while (*a && *b) {
+        char ca = *a;
+        char cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += ('a' - 'A');
+        if (cb >= 'A' && cb <= 'Z') cb += ('a' - 'A');
+        if (ca != cb) return false;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
 static const char *fs_type_str(uint32_t fs_type) {
     switch (fs_type) {
         case VFS_FS_TARFS: return "TarFS";
@@ -133,7 +146,7 @@ static void print_help(void) {
     out_str("Subcommands:\n");
     out_str("  list  [-c]       List block devices and partitions (default)\n");
     out_str("  usage [-c]       Show filesystem disk space and inode usage\n");
-    out_str("  info  [-c] <dev> Show detailed information for a block device or partition\n");
+    out_str("  info  [-c] <dev> Show detailed information for a block device or partition (accepts name or PARTUUID)\n");
     out_str("  bench [options]  Benchmark filesystem throughput\n\n");
     out_str("Options:\n");
     out_str("  -c, --comparison Output comparison-friendly single-line format\n");
@@ -417,11 +430,35 @@ static int disk_info(const char *target, bool comparison) {
         clean_target = target + 5;
     }
 
+    const char *uuid_target = target;
+    if ((uuid_target[0] == 'P' || uuid_target[0] == 'p') &&
+        (uuid_target[1] == 'A' || uuid_target[1] == 'a') &&
+        (uuid_target[2] == 'R' || uuid_target[2] == 'r') &&
+        (uuid_target[3] == 'T' || uuid_target[3] == 't') &&
+        (uuid_target[4] == 'U' || uuid_target[4] == 'u') &&
+        (uuid_target[5] == 'U' || uuid_target[5] == 'u') &&
+        (uuid_target[6] == 'I' || uuid_target[6] == 'i') &&
+        (uuid_target[7] == 'D' || uuid_target[7] == 'd') &&
+        uuid_target[8] == '=') {
+        uuid_target += 9;
+    }
+
     block_info_t *b = NULL;
     for (uint32_t i = 0; i < s_block_count; i++) {
         if (tool_equal(s_blocks[i].name, clean_target)) {
             b = &s_blocks[i];
             break;
+        }
+    }
+
+    if (!b) {
+        for (uint32_t i = 0; i < s_block_count; i++) {
+            if (s_blocks[i].partuuid[0] != '\0' &&
+                (tool_equal_icase(s_blocks[i].partuuid, clean_target) ||
+                 tool_equal_icase(s_blocks[i].partuuid, uuid_target))) {
+                b = &s_blocks[i];
+                break;
+            }
         }
     }
 
@@ -596,6 +633,9 @@ int disk_main(int argc, char **argv) {
             return 2;
         }
         return disk_info(target_dev, comparison);
+    } else if (comparison && target_dev == NULL) {
+        /* Direct device or PARTUUID comparison target, e.g. disk -c <UUID> */
+        return disk_info(subcmd, comparison);
     } else {
         tool_error("disk", "unknown subcommand", subcmd);
         print_help();

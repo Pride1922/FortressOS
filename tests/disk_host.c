@@ -582,6 +582,66 @@ int main(void) {
         printf("[disk_host] Test 15: disk info missing target passed\n");
     }
 
-    printf("[disk_host] All 15 host tests passed successfully!\n");
+    /* Test 16: disk info <PARTUUID> and PARTUUID= prefix */
+    {
+        reset_mock();
+        safe_strcpy(mock_blocks[0].name, "nvme0n1p1", sizeof(mock_blocks[0].name));
+        mock_blocks[0].sector_size = 512;
+        mock_blocks[0].size_bytes = 4194304;
+        mock_blocks[0].is_partition = 1;
+        mock_blocks[0].part_index = 1;
+        mock_blocks[0].start_lba = 2048;
+        mock_blocks[0].sector_count = 8192;
+        safe_strcpy(mock_blocks[0].partuuid, "e4d3c2b1-1234-5678-9abc-def012345678", sizeof(mock_blocks[0].partuuid));
+        mock_block_count = 1;
+
+        char *argv[] = { "disk", "info", "e4d3c2b1-1234-5678-9abc-def012345678", NULL };
+        int rc = disk_main(3, argv);
+        assert(rc == 0);
+        assert(strstr(stdout_buf, "Device:") != NULL);
+        assert(strstr(stdout_buf, "nvme0n1p1") != NULL);
+        assert(strstr(stdout_buf, "e4d3c2b1-1234-5678-9abc-def012345678") != NULL);
+
+        stdout_len = 0; stdout_buf[0] = '\0';
+        char *argv2[] = { "disk", "info", "PARTUUID=e4d3c2b1-1234-5678-9abc-def012345678", NULL };
+        rc = disk_main(3, argv2);
+        assert(rc == 0);
+        assert(strstr(stdout_buf, "nvme0n1p1") != NULL);
+        printf("[disk_host] Test 16: disk info <PARTUUID> passed\n");
+    }
+
+    /* Test 17: disk -c <PARTUUID> shorthand */
+    {
+        reset_mock();
+        safe_strcpy(mock_blocks[0].name, "nvme0n1p1", sizeof(mock_blocks[0].name));
+        mock_blocks[0].sector_size = 512;
+        mock_blocks[0].size_bytes = 4194304;
+        mock_blocks[0].is_partition = 1;
+        mock_blocks[0].part_index = 1;
+        mock_blocks[0].start_lba = 2048;
+        mock_blocks[0].sector_count = 8192;
+        safe_strcpy(mock_blocks[0].partuuid, "e4d3c2b1-1234-5678-9abc-def012345678", sizeof(mock_blocks[0].partuuid));
+        mock_block_count = 1;
+
+        char *argv[] = { "disk", "-c", "e4d3c2b1-1234-5678-9abc-def012345678", NULL };
+        int rc = disk_main(3, argv);
+        assert(rc == 0);
+        assert(strstr(stdout_buf, "device=nvme0n1p1") != NULL);
+        assert(strstr(stdout_buf, "partuuid=e4d3c2b1-1234-5678-9abc-def012345678") != NULL);
+        printf("[disk_host] Test 17: disk -c <PARTUUID> passed\n");
+    }
+
+    /* Test 18: disk -c <unknown_UUID> */
+    {
+        reset_mock();
+        mock_block_count = 1;
+        char *argv[] = { "disk", "-c", "00000000-0000-0000-0000-000000000000", NULL };
+        int rc = disk_main(3, argv);
+        assert(rc == 1);
+        assert(strstr(stderr_buf, "device not found") != NULL);
+        printf("[disk_host] Test 18: disk -c <unknown_UUID> passed\n");
+    }
+
+    printf("[disk_host] All 18 host tests passed successfully!\n");
     return 0;
 }

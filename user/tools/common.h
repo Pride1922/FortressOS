@@ -79,6 +79,8 @@ int smpbench_main(int argc, char **argv);
 int lockstat_main(int argc, char **argv);
 int cp_main(int argc, char **argv);
 int touch_main(int argc, char **argv);
+int which_main(int argc, char **argv, const char *const *envp);
+int env_main(int argc, char **argv, const char *const *envp);
 static inline uint64_t tool_rdtsc(void) {
     uint32_t lo, hi;
     __asm__ __volatile__("lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) :: "memory");
