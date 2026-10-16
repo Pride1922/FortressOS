@@ -6677,6 +6677,26 @@ pf_boot_guard_done:
             console_puts("Internal NVMe excluded\n");
         } else console_puts("EXT4 9.6 fixture REJECTED; /mnt was not published\n");
     }
+    /* Boot-time DHCP probe and daemon handoff (DHCP v2) */
+    net_config_t boot_net_cfg;
+    net_parse_config(boot_info.cmdline, sizeof(boot_info.cmdline), &boot_net_cfg);
+    if (!boot_net_cfg.disabled && !boot_net_cfg.is_static && e1000_get_net_device() &&
+        installed_ready && !g_installer_boot && vfs_lookup_kernel("/sbin/dhcpc")) {
+        const char *dhcp_args[] = {"/sbin/dhcpc", "--boot", NULL};
+        tcb_t *dhcp_proc = process_spawn_initial_vfs_args("/sbin/dhcpc", 2, dhcp_args);
+        if (dhcp_proc) {
+            uint64_t dhcp_pid = dhcp_proc->tid;
+            __asm__ volatile("sti" ::: "memory");
+            sched_enable_preemption();
+            apic_timer_start();
+            process_wait_quiescent(dhcp_pid);
+            __asm__ volatile("cli" ::: "memory");
+            sched_disable_preemption();
+            uint64_t status = 0;
+            (void)process_wait(dhcp_pid, &status);
+            sched_reap_dead();
+        }
+    }
     for (;;) {
         /* Spawn with preemption disabled until the PID is safely copied. */
         tcb_t *process;
@@ -6704,7 +6724,6 @@ pf_boot_guard_done:
             serial_puts("[FAIL] Cannot assign shell terminal ownership.\n"); hcf();
         }
         sched_enable_preemption();
-        if (!g_installed_boot) apic_timer_reset_bsp_ticks();
         apic_timer_start();
         if (!g_installer_boot) serial_raw_puts(g_installed_boot && !installed_ready ? recovery_shell ?
             "[BOOT] Authenticated recovery shell ready.\n" : "[BOOT] Recovery authentication ready.\n" :

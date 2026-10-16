@@ -667,7 +667,16 @@ static int64_t signal_send_common(uint64_t caller, int64_t selector, uint64_t si
         bool match=selector>0 ? p->pid==(uint64_t)selector :
                    p->pgid==(selector==0 ? self->pgid : (uint64_t)-selector);
         if (!match) continue;
-        if (p->sid != self->sid) { if (result) result=SYSCALL_EPERM; continue; }
+        if (p->sid != self->sid) {
+            bool cross_permitted = !user;
+            if (user && self->creds && (self->creds->euid == 0 || (self->creds->cap_effective & CAP_KILL))) {
+                cross_permitted = true;
+            }
+            if (!cross_permitted) {
+                if (result) result = SYSCALL_EPERM;
+                continue;
+            }
+        }
         if (user) {
             if (!p->creds) continue;
             if (permission_signal(self->creds,p->creds,(unsigned)sig)) {

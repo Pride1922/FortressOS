@@ -60,6 +60,8 @@
 #define DHCP_OPT_MSG_TYPE        53
 #define DHCP_OPT_SERVER_ID       54
 #define DHCP_OPT_PARAM_REQ_LIST  55
+#define DHCP_OPT_RENEWAL_TIME    58
+#define DHCP_OPT_REBINDING_TIME  59
 #define DHCP_OPT_CLIENT_ID       61
 #define DHCP_OPT_END             255
 
@@ -113,12 +115,31 @@ typedef struct {
     uint32_t dns_servers[2];
     int      dns_count;
     uint32_t lease_time;
+    uint32_t t1;
+    uint32_t t2;
 } dhcp_offer_t;
 
 int dhcp_encode_discover(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6], size_t *out_len);
 
 int dhcp_encode_request(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
                         uint32_t requested_ip, uint32_t server_ip, size_t *out_len);
+
+static inline int dhcp_encode_request_select(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
+                                             uint32_t requested_ip, uint32_t server_ip, size_t *out_len) {
+    return dhcp_encode_request(buf, max_len, xid, mac, requested_ip, server_ip, out_len);
+}
+
+int dhcp_encode_request_renew(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
+                              uint32_t client_ip, size_t *out_len);
+
+int dhcp_encode_request_rebind(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
+                               uint32_t client_ip, size_t *out_len);
+
+int dhcp_encode_request_reboot(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
+                               uint32_t requested_ip, size_t *out_len);
+
+int dhcp_encode_release(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
+                        uint32_t client_ip, uint32_t server_ip, size_t *out_len);
 
 int dhcp_decode_reply(const uint8_t *buf, size_t len, uint32_t expected_xid, const uint8_t mac[6],
                       dhcp_offer_t *out);

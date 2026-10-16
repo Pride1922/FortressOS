@@ -2,9 +2,19 @@
 
 This annex documents the current status, hardware facts, verification evidence, and scope boundaries of the FortressOS networking subsystem. Binding contracts, locking rules (L1–L4), memory ownership (M1, M4), and interrupt invariants (I1–I3) live in [`AGENTS.md`](../../AGENTS.md) (§4 and §9). Architectural specifications and roadmap milestones live in [`docs/plans/NET_PLAN.md`](../plans/NET_PLAN.md).
 
----
-
 ## 1. Subsystem Status and Overview
+
+2026-10-16 DHCP v2 Client & Background Renewal Daemon: `/sbin/dhcpc` full RFC 2131
+lease lifecycle is COMPLETE. Boot-time automatic network configuration (`net=dhcp`, fast
+<=3s probe before login shell) with background daemon fork via `SYS_SPAWN_EXT` (`SPAWN_SETPGROUP`),
+RFC 2131 $T_1$ unicast renewal, $T_2$ broadcast rebinding, expiration interface flush,
+carrier flap recovery (`INIT-REBOOT`), and clean release (`DHCPRELEASE` on `SIGTERM`).
+Zero-CPU sleeping via monotonic `SYS_NANOSLEEP`. CLI management flags (`--boot`, `--daemon`,
+`--status`, `--renew`, `--release`, `--dry-run`). Host ASan/UBSan unit test suites
+(`make test-dhcpc-v2-host`, `make test-dhcpc-host`) and multi-firmware QEMU integration
+suite (`make test-dhcpc-v2`) pass 100% (7/7 cases + offline resilience) across BIOS and UEFI.
+Dell Latitude 5590 physical bare-metal acceptance pending user execution.
+See [DHCP v2 architecture and plan](../plans/DHCP_V2_PLAN.md).
 
 2026-10-15 DHCP Client v1 and Broadcast Probe: `/sbin/dhcpc` (dynamic IPv4 lease acquisition)
 and `/bin/dhcp-probe` (end-to-end broadcast RX/TX verification) are implemented.
@@ -14,8 +24,6 @@ bypass on TX are active. Host ASan/UBSan unit test suites (`make test-dhcpc-host
 (`make test-dhcp-probe`, `make test-dhcpc`) pass 100% across BIOS and UEFI. Bounded
 busy-wait polling via `SYS_SYSINFO`; one-shot client without lease renewal in v1.
 Dell Latitude 5590 physical bare-metal acceptance is user-confirmed PASS.
-DHCP v2 (background lease renewal daemon, RFC 2131 T1/T2 timers, `SYS_NANOSLEEP`, and
-boot-time automatic configuration hooks) is deferred to the Time Subsystem milestone.
 See [DHCP v1 implementation and evidence](../roadmap/dhcp-v1.md).
 
 2026-10-15 Network SMP Phase 2B is COMPLETE: UDP create/bind/send/receive, copied

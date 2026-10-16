@@ -106,17 +106,31 @@ void net_parse_config(const char *cmdline, size_t len, net_config_t *out) {
         if (n==12 && !memcmp(start,"net_test=tcp",12)) out->test_tcp=true;
         if (n<4 || memcmp(start,"net=",4)) continue;
         const char *v=start+4;
+        if (n==8 && !memcmp(start,"net=dhcp",8)) {
+            if (seen) out->malformed=true;
+            else out->is_dhcp=true;
+            seen=true;
+            continue;
+        }
+        if ((n==8 && !memcmp(start,"net=none",8)) || (n==7 && !memcmp(start,"net=off",7))) {
+            if (seen) out->malformed=true;
+            else out->disabled=true;
+            seen=true;
+            continue;
+        }
         uint32_t local=0, gateway=0;
         unsigned prefix=0;
         bool valid=ipv4(&v,p,&local) && v<p && *v++=='/' &&
             decimal(&v,p,30,2,&prefix) && prefix>=1 && v<p && *v++==',' &&
             ipv4(&v,p,&gateway) && v==p;
         if (!valid || seen) out->malformed=true;
-        else { out->local_ip=local; out->gateway=gateway; out->prefix=(uint8_t)prefix; }
+        else { out->local_ip=local; out->gateway=gateway; out->prefix=(uint8_t)prefix; out->is_static=true; }
         seen=true;
     }
     if (out->malformed) {
         out->local_ip=htonl(0x0a00020f); out->gateway=htonl(0x0a000202); out->prefix=24;
+    } else if (!seen) {
+        out->is_dhcp=true;
     }
 }
 void net_init(net_dev_t *dev, const net_config_t *config) {
@@ -333,6 +347,10 @@ static void socket_ap_probe(void *arg) {
 void net_start(const char *cmdline, size_t len) {
     net_parse_config(cmdline,len,&s_config);
     if (s_config.malformed) serial_puts("[NET 3] Malformed net=; using 10.0.2.15/24,10.0.2.2\n");
+    if (s_config.disabled) {
+        serial_puts("[NET 3] Network disabled by cmdline (net=none/off)\n");
+        return;
+    }
     net_dev_t *dev=e1000_get_net_device();
     if (!dev || s_config.test_rings) return; /* Raw selftest remains sole RX owner. */
     net_init(dev,&s_config);
@@ -397,6 +415,21 @@ int net_validate_ifset(const netctl_ifset_t *set, net_config_t *out_cfg) {
     if (set->struct_version != 1 || set->reserved != 0 || set->flags != 0 ||
         set->reserved2[0] != 0 || set->reserved2[1] != 0) {
         return SYSCALL_EINVAL;
+    }
+
+    /* Interface flush: 0.0.0.0 address with 0.0.0.0 netmask and 0.0.0.0 gateway */
+    if (set->local_ipv4 == 0) {
+        if (set->netmask_ipv4 != 0 || set->gateway_ipv4 != 0) {
+            return SYSCALL_EINVAL;
+        }
+        if (!s_if || e1000_link_state_abi(s_if) != NET_IF_LINK_ONLINE) {
+            return SYSCALL_EIO;
+        }
+        memset(out_cfg, 0, sizeof(*out_cfg));
+        out_cfg->local_ip = 0;
+        out_cfg->gateway = 0;
+        out_cfg->prefix = 0;
+        return 0;
     }
 
     /* 2. local_ipv4 validation */

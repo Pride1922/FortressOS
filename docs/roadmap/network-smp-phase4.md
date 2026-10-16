@@ -23,11 +23,25 @@ The suggested timing command was:
 time -p wget -q -O /dev/null http://192.168.0.153:8000/test100m.bin
 ```
 
-The exact executed command, individual timings, minimum/maximum, server and
-link details, and a downloaded-file checksum were not supplied. File creation
+The exact executed timing command, individual timings, minimum/maximum, server
+and link details were not supplied. File creation
 and the mean timing are user-reported; no capture or independent byte audit
 is available. An earlier attempt returned `DNS_NXDOMAIN`; the exact failing
 command was not supplied, so its cause remains unconfirmed.
+
+The Windows reference SHA-256 for the 100 MiB file is
+`20492a4d0d84f8beb1767f6616229f85d44c2827b64bdbfb260ee12fa1109e0e`.
+The user subsequently confirmed that streaming the HTTP body through
+`wget -q -O - http://192.168.0.153:8000/test100m.bin | sha256sum`
+matched that reference. This is user-confirmed physical HTTP integrity without
+writing the body to USB; no independent capture audit is claimed.
+
+A prior attempt to save the file under `/mnt` failed after 62,685,184 bytes
+with reported error 13. The syscall ABI defines `SYSCALL_ENOSPC` as -13;
+the earlier conversational interpretation as permission denied was incorrect
+(the VFS and syscall error numberings differ). The user suspects the live data
+partition is 64 MiB, consistent with insufficient capacity for 100 MiB.
+This failed save is retained separately from the passing streamed checksum.
 
 ## Remaining acceptance evidence
 
@@ -44,8 +58,33 @@ persistence/reload or installer acceptance is claimed.
 
 Record laptop model, firmware, CPU count, boot-image hash, configuration path
 and exact commands/results. Confirm ordinary unpinned commands, authorized
-`sudo ifup`, `ifconfig`, gateway ping, DNS, HTTP checksum, reboot configuration
+`sudo ifup`, gateway-specific ping, reboot configuration
 persistence/reload, concurrent/background commands and cable loss/recovery
 with shell recovery. Record approved physical AP execution evidence separately
 from functional success. Live-USB downloads do not establish the plan's
 installed-root/reboot gate. Phase 3 automated acceptance remains separate.
+
+## Fresh disk-selection installer handoff
+
+2026-10-16: rebuilt the existing `INSTALLER_MULTI=1` profile from committed
+`859b4a52adc57f67b8a62b1f9000b3aef9ee7c58` in an isolated snapshot. All
+uncommitted parallel DHCPv2 changes, including Makefile, code, tests and plan,
+are excluded; committed DHCP v1 remains. No production source changes or
+physical disk writes were needed. The older Dell-bound profile is not the
+handoff image. The disk-selection profile lists supported NVMe disks and
+requires explicit selection and confirmation, with source-disk exclusion.
+
+Image: `bin/fortress-installer-network-phase4.img`, 553,648,128 bytes (528 MiB).
+SHA-256: `7439fd7f87a28318c405dc42bfd7afb0d3c183fe17229c1d1a71171c5f27a571`.
+Receipt, source manifest, build log, profile audit and separate single-NVMe
+evidence: `build/network-smp-phase3/installer-5fse8hqa/`.
+Snapshot: `.codex-remote-attachments/ext4-phase9/guest-workspace-to6q7gum`;
+audited producer: its `build/root-phase4/media-m_y20dok` directory.
+
+Fresh disposable-file KVM checks PASS: full BIOS/UEFI two-NVMe suite (both
+disk selections, three installed boots each, independent filesystem/account
+audits, unchanged unselected media, cancellation, duplicate-root recovery and
+installer-source exclusion). Separate UEFI single-NVMe installation, filesystem
+audit and installed boot PASS. Profile/symbol/archive checks confirm no fixed
+Dell drive binding or private network probes. These are virtual installer
+checks; physical installed-network persistence still requires user testing.

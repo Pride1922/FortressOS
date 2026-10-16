@@ -158,6 +158,205 @@ int dhcp_encode_request(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_
     return 0;
 }
 
+int dhcp_encode_request_renew(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
+                              uint32_t client_ip, size_t *out_len) {
+    if (!buf || max_len < DHCP_MIN_PACKET_LEN || !mac) return -1;
+    dhcp_memset(buf, 0, max_len);
+
+    dhcp_packet_hdr_t *hdr = (dhcp_packet_hdr_t *)buf;
+    hdr->op = DHCP_BOOTREQUEST;
+    hdr->htype = DHCP_HTYPE_ETHER;
+    hdr->hlen = DHCP_HLEN_ETHER;
+    hdr->hops = 0;
+    hdr->xid = xid;
+    hdr->secs = 0;
+    hdr->flags = 0;
+    hdr->ciaddr = client_ip;
+    hdr->yiaddr = 0;
+    hdr->siaddr = 0;
+    hdr->giaddr = 0;
+    dhcp_memcpy(hdr->chaddr, mac, 6);
+    hdr->magic = dhcp_htonl(DHCP_MAGIC_COOKIE);
+
+    size_t pos = DHCP_OPTIONS_OFFSET;
+    /* Option 53: Message Type = REQUEST */
+    buf[pos++] = DHCP_OPT_MSG_TYPE;
+    buf[pos++] = 1;
+    buf[pos++] = DHCP_MSG_REQUEST;
+
+    /* Option 61: Client Identifier (Hardware type 1 + MAC) */
+    buf[pos++] = DHCP_OPT_CLIENT_ID;
+    buf[pos++] = 7;
+    buf[pos++] = 1;
+    dhcp_memcpy(buf + pos, mac, 6);
+    pos += 6;
+
+    /* Option 55: Parameter Request List (1=Subnet Mask, 3=Router, 6=DNS) */
+    buf[pos++] = DHCP_OPT_PARAM_REQ_LIST;
+    buf[pos++] = 3;
+    buf[pos++] = DHCP_OPT_SUBNET_MASK;
+    buf[pos++] = DHCP_OPT_ROUTER;
+    buf[pos++] = DHCP_OPT_DNS;
+
+    /* Option 255: End */
+    buf[pos++] = DHCP_OPT_END;
+
+    if (pos < DHCP_MIN_PACKET_LEN) pos = DHCP_MIN_PACKET_LEN;
+    if (out_len) *out_len = pos;
+    return 0;
+}
+
+int dhcp_encode_request_rebind(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
+                               uint32_t client_ip, size_t *out_len) {
+    if (!buf || max_len < DHCP_MIN_PACKET_LEN || !mac) return -1;
+    dhcp_memset(buf, 0, max_len);
+
+    dhcp_packet_hdr_t *hdr = (dhcp_packet_hdr_t *)buf;
+    hdr->op = DHCP_BOOTREQUEST;
+    hdr->htype = DHCP_HTYPE_ETHER;
+    hdr->hlen = DHCP_HLEN_ETHER;
+    hdr->hops = 0;
+    hdr->xid = xid;
+    hdr->secs = 0;
+    hdr->flags = dhcp_htons(DHCP_FLAGS_BROADCAST);
+    hdr->ciaddr = client_ip;
+    hdr->yiaddr = 0;
+    hdr->siaddr = 0;
+    hdr->giaddr = 0;
+    dhcp_memcpy(hdr->chaddr, mac, 6);
+    hdr->magic = dhcp_htonl(DHCP_MAGIC_COOKIE);
+
+    size_t pos = DHCP_OPTIONS_OFFSET;
+    /* Option 53: Message Type = REQUEST */
+    buf[pos++] = DHCP_OPT_MSG_TYPE;
+    buf[pos++] = 1;
+    buf[pos++] = DHCP_MSG_REQUEST;
+
+    /* Option 61: Client Identifier */
+    buf[pos++] = DHCP_OPT_CLIENT_ID;
+    buf[pos++] = 7;
+    buf[pos++] = 1;
+    dhcp_memcpy(buf + pos, mac, 6);
+    pos += 6;
+
+    /* Option 55: Parameter Request List */
+    buf[pos++] = DHCP_OPT_PARAM_REQ_LIST;
+    buf[pos++] = 3;
+    buf[pos++] = DHCP_OPT_SUBNET_MASK;
+    buf[pos++] = DHCP_OPT_ROUTER;
+    buf[pos++] = DHCP_OPT_DNS;
+
+    /* Option 255: End */
+    buf[pos++] = DHCP_OPT_END;
+
+    if (pos < DHCP_MIN_PACKET_LEN) pos = DHCP_MIN_PACKET_LEN;
+    if (out_len) *out_len = pos;
+    return 0;
+}
+
+int dhcp_encode_request_reboot(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
+                               uint32_t requested_ip, size_t *out_len) {
+    if (!buf || max_len < DHCP_MIN_PACKET_LEN || !mac) return -1;
+    dhcp_memset(buf, 0, max_len);
+
+    dhcp_packet_hdr_t *hdr = (dhcp_packet_hdr_t *)buf;
+    hdr->op = DHCP_BOOTREQUEST;
+    hdr->htype = DHCP_HTYPE_ETHER;
+    hdr->hlen = DHCP_HLEN_ETHER;
+    hdr->hops = 0;
+    hdr->xid = xid;
+    hdr->secs = 0;
+    hdr->flags = dhcp_htons(DHCP_FLAGS_BROADCAST);
+    hdr->ciaddr = 0;
+    hdr->yiaddr = 0;
+    hdr->siaddr = 0;
+    hdr->giaddr = 0;
+    dhcp_memcpy(hdr->chaddr, mac, 6);
+    hdr->magic = dhcp_htonl(DHCP_MAGIC_COOKIE);
+
+    size_t pos = DHCP_OPTIONS_OFFSET;
+    /* Option 53: Message Type = REQUEST */
+    buf[pos++] = DHCP_OPT_MSG_TYPE;
+    buf[pos++] = 1;
+    buf[pos++] = DHCP_MSG_REQUEST;
+
+    /* Option 50: Requested IP */
+    buf[pos++] = DHCP_OPT_REQUESTED_IP;
+    buf[pos++] = 4;
+    dhcp_memcpy(buf + pos, &requested_ip, 4);
+    pos += 4;
+
+    /* Option 61: Client Identifier */
+    buf[pos++] = DHCP_OPT_CLIENT_ID;
+    buf[pos++] = 7;
+    buf[pos++] = 1;
+    dhcp_memcpy(buf + pos, mac, 6);
+    pos += 6;
+
+    /* Option 55: Parameter Request List */
+    buf[pos++] = DHCP_OPT_PARAM_REQ_LIST;
+    buf[pos++] = 3;
+    buf[pos++] = DHCP_OPT_SUBNET_MASK;
+    buf[pos++] = DHCP_OPT_ROUTER;
+    buf[pos++] = DHCP_OPT_DNS;
+
+    /* Option 255: End */
+    buf[pos++] = DHCP_OPT_END;
+
+    if (pos < DHCP_MIN_PACKET_LEN) pos = DHCP_MIN_PACKET_LEN;
+    if (out_len) *out_len = pos;
+    return 0;
+}
+
+int dhcp_encode_release(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6],
+                        uint32_t client_ip, uint32_t server_ip, size_t *out_len) {
+    if (!buf || max_len < DHCP_MIN_PACKET_LEN || !mac) return -1;
+    dhcp_memset(buf, 0, max_len);
+
+    dhcp_packet_hdr_t *hdr = (dhcp_packet_hdr_t *)buf;
+    hdr->op = DHCP_BOOTREQUEST;
+    hdr->htype = DHCP_HTYPE_ETHER;
+    hdr->hlen = DHCP_HLEN_ETHER;
+    hdr->hops = 0;
+    hdr->xid = xid;
+    hdr->secs = 0;
+    hdr->flags = 0;
+    hdr->ciaddr = client_ip;
+    hdr->yiaddr = 0;
+    hdr->siaddr = 0;
+    hdr->giaddr = 0;
+    dhcp_memcpy(hdr->chaddr, mac, 6);
+    hdr->magic = dhcp_htonl(DHCP_MAGIC_COOKIE);
+
+    size_t pos = DHCP_OPTIONS_OFFSET;
+    /* Option 53: Message Type = RELEASE */
+    buf[pos++] = DHCP_OPT_MSG_TYPE;
+    buf[pos++] = 1;
+    buf[pos++] = DHCP_MSG_RELEASE;
+
+    /* Option 54: Server Identifier */
+    if (server_ip) {
+        buf[pos++] = DHCP_OPT_SERVER_ID;
+        buf[pos++] = 4;
+        dhcp_memcpy(buf + pos, &server_ip, 4);
+        pos += 4;
+    }
+
+    /* Option 61: Client Identifier */
+    buf[pos++] = DHCP_OPT_CLIENT_ID;
+    buf[pos++] = 7;
+    buf[pos++] = 1;
+    dhcp_memcpy(buf + pos, mac, 6);
+    pos += 6;
+
+    /* Option 255: End */
+    buf[pos++] = DHCP_OPT_END;
+
+    if (pos < DHCP_MIN_PACKET_LEN) pos = DHCP_MIN_PACKET_LEN;
+    if (out_len) *out_len = pos;
+    return 0;
+}
+
 int dhcp_decode_reply(const uint8_t *buf, size_t len, uint32_t expected_xid, const uint8_t mac[6],
                       dhcp_offer_t *out) {
     if (!buf || len < DHCP_OPTIONS_OFFSET || !out) return -1;
@@ -202,9 +401,27 @@ int dhcp_decode_reply(const uint8_t *buf, size_t len, uint32_t expected_xid, con
             uint32_t lt;
             dhcp_memcpy(&lt, buf + pos, 4);
             out->lease_time = dhcp_ntohl(lt);
+        } else if (opt == DHCP_OPT_RENEWAL_TIME && opt_len == 4) {
+            uint32_t t1;
+            dhcp_memcpy(&t1, buf + pos, 4);
+            out->t1 = dhcp_ntohl(t1);
+        } else if (opt == DHCP_OPT_REBINDING_TIME && opt_len == 4) {
+            uint32_t t2;
+            dhcp_memcpy(&t2, buf + pos, 4);
+            out->t2 = dhcp_ntohl(t2);
         }
 
         pos += opt_len;
+    }
+
+    if (out->lease_time == 0) {
+        out->lease_time = 86400;
+    }
+    if (out->t1 == 0) {
+        out->t1 = out->lease_time / 2;
+    }
+    if (out->t2 == 0) {
+        out->t2 = (uint32_t)((uint64_t)out->lease_time * 7 / 8);
     }
 
     out->prefix = dhcp_mask_to_prefix(out->subnet_mask);

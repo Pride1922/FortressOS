@@ -174,11 +174,14 @@ Gate: ordinary commands work on BSP and APs, benchmarks retain explicit placemen
 
 Status (2026-10-16): IN PROGRESS. User-reported live-USB HTTP downloads:
 100 MiB, ten runs averaging 7.20 seconds (116.51 Mb/s payload). This does not
-close the installed-root, checksum, reboot, recovery or physical AP evidence
+close the installed-root, reboot or physical AP evidence
 requirements below. See [the physical evidence report](../roadmap/network-smp-phase4.md).
 The user also confirms live-USB `ifup`, `ifconfig`, ping, DNS, `smpbench`,
 `sysinfo` and cable recovery passes. Installed-root persistent networking has
 not been tested; physical network-command AP execution remains unestablished.
+The user subsequently confirmed the streamed 100 MiB HTTP SHA-256 matches the
+Windows reference; the physical evidence report records the hash and separate
+live-partition capacity failure.
 
 User-run Dell 5590 installed-root acceptance: ordinary unpinned commands, `sudo ifup`, `ifconfig`, gateway ping, DNS and HTTP download with checksum. Repeat after reboot to demonstrate configuration persistence/reload. Include concurrent/background commands and cable loss/recovery, with shell recovery.
 

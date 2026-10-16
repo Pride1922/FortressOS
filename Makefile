@@ -1418,8 +1418,13 @@ test-wget-host:
 test-wget: $(BOOTABLE_ISO) $(NVME_GPT_IMG) test-wget-host
 	@python3 scripts/test_wget.py
 
-.PHONY: test-dhcpc-host test-dhcp-probe
-test-dhcpc-host:
+.PHONY: test-dhcpc-host test-dhcpc-v2-host test-dhcp-probe
+test-dhcpc-v2-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser user/dhcp_codec.c tests/dhcpc_v2_host.c -o $(BUILD_DIR)/dhcpc_v2_host
+	@$(BUILD_DIR)/dhcpc_v2_host
+
+test-dhcpc-host: test-dhcpc-v2-host
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser user/dhcp_codec.c tests/dhcpc_host.c -o $(BUILD_DIR)/dhcpc_host
 	@$(BUILD_DIR)/dhcpc_host
@@ -1427,9 +1432,12 @@ test-dhcpc-host:
 test-dhcp-probe: $(BOOTABLE_ISO) test-dhcpc-host
 	@python3 scripts/test_dhcp_probe.py
 
-.PHONY: test-dhcpc
+.PHONY: test-dhcpc test-dhcpc-v2
 test-dhcpc: $(BOOTABLE_ISO) test-dhcpc-host
 	@python3 scripts/test_dhcpc.py
+
+test-dhcpc-v2: $(BOOTABLE_ISO) test-dhcpc-host
+	@python3 scripts/test_dhcpc_v2.py
 
 .PHONY: test-net-dns-host
 test-net-dns-host:
