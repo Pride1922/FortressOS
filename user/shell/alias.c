@@ -38,6 +38,7 @@ void alias_init(void) {
         g_aliases[i].value[0] = '\0';
     }
     alias_set("tracert", "traceroute");
+    alias_set("df", "disk usage");
 }
 
 const char *alias_get(const char *name) {

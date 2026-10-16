@@ -946,3 +946,44 @@ size_t ext4_io_profile_format(char *out,size_t capacity) {
 #undef E4_PN
     spin_unlock_irqrestore(&e4_lock,flags);return n;
 }
+
+bool ext4_get_mount_info(const void *vfs_node, mount_info_t *out) {
+    if (!vfs_node || !out) return false;
+    const vfs_node_t *node = (const vfs_node_t *)vfs_node;
+    if (node->metadata != e4_metadata || !node->fs_private) return false;
+    const e4_inode_t *in = (const e4_inode_t *)node->fs_private;
+    const ext4_mount_t *fs = in->fs;
+    if (!fs) return false;
+
+    spin_debug_assert_unheld();
+    uint64_t flags = spin_lock_irqsave(&e4_lock);
+
+    if (fs->dev && fs->dev->name[0]) {
+        size_t n = strlen(fs->dev->name);
+        if (n >= sizeof(out->source)) n = sizeof(out->source) - 1;
+        memcpy(out->source, fs->dev->name, n);
+        out->source[n] = '\0';
+    } else {
+        memcpy(out->source, "ext4", 5);
+    }
+    out->fs_type = VFS_FS_EXT4;
+    out->flags = (fs->engine && !fs->frozen) ? MOUNT_FLAGS_RW : MOUNT_FLAGS_RO;
+    out->block_size = fs->bs;
+    out->total_blocks = fs->blocks;
+    out->total_inodes = fs->inodes;
+
+    uint64_t free_blocks = 0;
+    uint64_t free_inodes = 0;
+    if (fs->gd) {
+        for (uint32_t g = 0; g < fs->groups; g++) {
+            free_blocks += e4_u16(fs->gd[g].raw + 12);
+            free_inodes += e4_u16(fs->gd[g].raw + 14);
+        }
+    }
+    out->free_blocks = free_blocks;
+    out->free_inodes = free_inodes;
+
+    spin_unlock_irqrestore(&e4_lock, flags);
+    return true;
+}
+

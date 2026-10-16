@@ -1211,10 +1211,25 @@ static int64_t sys_mountinfo(uint32_t index, uintptr_t user_buf) {
         return SYSCALL_EFAULT;
     }
 
-    /* Index 0: Root filesystem (TarFS / initramfs) */
+    /* Index 0: Root filesystem */
     if (index == 0) {
         mount_info_t info;
         memset(&info, 0, sizeof(info));
+        memcpy(info.mount_path, "/", 2);
+
+        vfs_node_t *root = vfs_lookup_kernel("/");
+        if (root && ext4_get_mount_info(root, &info)) {
+            memcpy(info.mount_path, "/", 2);
+            memcpy((void *)user_buf, &info, sizeof(info));
+            return 1;
+        }
+        if (root && ext2_get_mount_info(root, &info)) {
+            memcpy(info.mount_path, "/", 2);
+            memcpy((void *)user_buf, &info, sizeof(info));
+            return 1;
+        }
+
+        /* Default fallback: Root filesystem (TarFS / initramfs) */
         memcpy(info.source, "initramfs", 10);
         memcpy(info.mount_path, "/", 2);
         info.fs_type = VFS_FS_TARFS;
@@ -1241,13 +1256,20 @@ static int64_t sys_mountinfo(uint32_t index, uintptr_t user_buf) {
         memcpy(info.mount_path, "/mnt", 5);
 
         if (ext2_get_mount_info(node, &info)) {
+            memcpy(info.mount_path, "/mnt", 5);
             memcpy((void *)user_buf, &info, sizeof(info));
             return 1;
         }
 
-        /* Check if ext4 or other mounted filesystem */
-        memcpy(info.source, "ext4", 5);
-        info.fs_type = VFS_FS_EXT4;
+        if (ext4_get_mount_info(node, &info)) {
+            memcpy(info.mount_path, "/mnt", 5);
+            memcpy((void *)user_buf, &info, sizeof(info));
+            return 1;
+        }
+
+        /* Check if other mounted filesystem */
+        memcpy(info.source, "unknown", 8);
+        info.fs_type = VFS_FS_NONE;
         info.flags = (node->write != NULL) ? MOUNT_FLAGS_RW : MOUNT_FLAGS_RO;
         info.block_size = 4096;
         info.total_blocks = 0;

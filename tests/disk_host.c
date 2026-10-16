@@ -642,6 +642,57 @@ int main(void) {
         printf("[disk_host] Test 18: disk -c <unknown_UUID> passed\n");
     }
 
-    printf("[disk_host] All 18 host tests passed successfully!\n");
+    /* Test 19: df invocation */
+    {
+        reset_mock();
+        safe_strcpy(mock_mounts[0].source, "nvme0n1p2", sizeof(mock_mounts[0].source));
+        safe_strcpy(mock_mounts[0].mount_path, "/mnt", sizeof(mock_mounts[0].mount_path));
+        mock_mounts[0].fs_type = VFS_FS_EXT4;
+        mock_mounts[0].flags = 1; /* RW */
+        mock_mounts[0].block_size = 4096;
+        mock_mounts[0].total_blocks = 262144; /* 1 GiB */
+        mock_mounts[0].free_blocks = 131072;  /* 512 MiB */
+        mock_mounts[0].total_inodes = 65536;
+        mock_mounts[0].free_inodes = 65000;
+        mock_mount_count = 1;
+
+        char *argv[] = { "df", NULL };
+        int rc = disk_main(1, argv);
+        assert(rc == 0);
+        assert(strstr(stdout_buf, "MOUNT") != NULL);
+        assert(strstr(stdout_buf, "USED") != NULL);
+        assert(strstr(stdout_buf, "AVAIL") != NULL);
+        assert(strstr(stdout_buf, "/mnt") != NULL);
+        assert(strstr(stdout_buf, "ext4") != NULL);
+        assert(strstr(stdout_buf, "1G") != NULL);
+        assert(strstr(stdout_buf, "512M") != NULL);
+        printf("[disk_host] Test 19: df invocation passed\n");
+    }
+
+    /* Test 20: disk df subcommand */
+    {
+        reset_mock();
+        safe_strcpy(mock_mounts[0].source, "nvme0n1p2", sizeof(mock_mounts[0].source));
+        safe_strcpy(mock_mounts[0].mount_path, "/mnt", sizeof(mock_mounts[0].mount_path));
+        mock_mounts[0].fs_type = VFS_FS_EXT4;
+        mock_mounts[0].flags = 1;
+        mock_mounts[0].block_size = 4096;
+        mock_mounts[0].total_blocks = 262144;
+        mock_mounts[0].free_blocks = 131072;
+        mock_mounts[0].total_inodes = 65536;
+        mock_mounts[0].free_inodes = 65000;
+        mock_mount_count = 1;
+
+        char *argv[] = { "disk", "df", "-c", NULL };
+        int rc = disk_main(3, argv);
+        assert(rc == 0);
+        assert(strstr(stdout_buf, "mount=/mnt") != NULL);
+        assert(strstr(stdout_buf, "fs=ext4") != NULL);
+        assert(strstr(stdout_buf, "size=1G") != NULL);
+        assert(strstr(stdout_buf, "avail=512M") != NULL);
+        printf("[disk_host] Test 20: disk df subcommand passed\n");
+    }
+
+    printf("[disk_host] All 20 host tests passed successfully!\n");
     return 0;
 }

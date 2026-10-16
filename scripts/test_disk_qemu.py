@@ -17,26 +17,49 @@ from test_nmi_transitions import connect
 
 
 def strip_ansi(s):
-    return re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', s)
+    return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", s)
 
 
 def send_str(uart, s):
-    for b in s.encode():
-        uart.send(bytes([b]))
-        time.sleep(0.005)
+    uart.sendall(s.encode())
 
 
-def wait_for_pattern(log_path, pattern, child, start_pos=0, timeout=30):
+
+PROMPT_PATTERN = r"(?:fortress> |fortress:[^\n]* \$ |[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\n]*[#$] )"
+
+
+def get_clean_text(log_path):
+    if not log_path.exists():
+        return ""
+    raw = log_path.read_bytes().decode(errors="replace")
+    return strip_ansi(raw).replace("\r", "")
+
+
+def wait_for_prompt(log_path, child, start_pos=0, timeout=30, uart=None, submitted=False):
     deadline = time.monotonic() + timeout
+    sent_login = False
     while time.monotonic() < deadline:
         if log_path.exists():
-            txt = log_path.read_text(errors="replace").replace("\r", "")
-            if pattern in txt[start_pos:] or (pattern == "fortress:/ $ " and ":/ $ " in txt[start_pos:]):
-                return txt
+            txt = get_clean_text(log_path)
+            chunk = txt[start_pos:]
+            if uart and not sent_login and "FortressOS login: " in chunk:
+                sent_login = True
+                uart.sendall(b"operator\n")
+            if submitted:
+                newline = chunk.find("\n")
+                if newline >= 0:
+                    start = newline + 1
+                    m = re.search(r"(?:" + PROMPT_PATTERN + r")\s*\Z", chunk[start:])
+                    if m:
+                        return chunk
+            else:
+                m = re.search(r"(?:" + PROMPT_PATTERN + r")\s*\Z", chunk)
+                if m:
+                    return chunk
         assert child.poll() is None, f"QEMU exited prematurely with code {child.poll()}"
         time.sleep(0.05)
-    full = log_path.read_text(errors="replace") if log_path.exists() else ""
-    raise AssertionError(f"Timeout waiting for {pattern!r} after pos {start_pos}. Log tail:\n{full[-1000:]}")
+    full = get_clean_text(log_path)
+    raise AssertionError(f"Timeout waiting for prompt after pos {start_pos}. Log tail:\n{full[-1000:]}")
 
 
 def test_disk_qemu():
@@ -81,26 +104,31 @@ def test_disk_qemu():
                         continue
             threading.Thread(target=drain, daemon=True).start()
 
+            def exec_cmd(cmd_str, timeout=20):
+                pos = len(get_clean_text(log_path))
+                for b in (cmd_str + "\n").encode():
+                    uart.sendall(bytes([b]))
+                    time.sleep(0.005)
+                chunk = wait_for_prompt(log_path, proc, start_pos=pos, timeout=timeout, submitted=True)
+                nl = chunk.find("\n")
+                return chunk[nl+1:] if nl >= 0 else chunk
+
             print("  [1] Waiting for interactive shell prompt...")
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, timeout=40)
+            wait_for_prompt(log_path, proc, start_pos=0, timeout=40, uart=uart, submitted=False)
             print("  [1] Shell prompt ready.")
+
+            # Prepare /mnt permissions for diskbench tests
+            exec_cmd("sudo chmod 777 /mnt")
 
             # Test 1: disk --help
             print("  [2] Testing: disk --help")
-            pos = len(log_path.read_text(errors="replace"))
-            send_str(uart, "disk --help\n")
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos, timeout=10)
-            out = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            out = exec_cmd("disk --help")
             assert "Usage: disk" in out
             print("  [PASS] disk --help verified.")
 
             # Test 2: disk (default invocation -> disk list)
             print("  [3] Testing: disk (default invocation -> disk list)")
-            pos = len(log_path.read_text(errors="replace"))
-            cmd2 = "disk\n"
-            send_str(uart, cmd2)
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd2) - 5, timeout=20)
-            out_def = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            out_def = exec_cmd("disk")
             print(f"      Default (list) Output:\n{out_def.strip()}\n")
             assert "NAME" in out_def, f"Missing NAME header: {out_def}"
             assert "SIZE" in out_def, f"Missing SIZE header: {out_def}"
@@ -112,11 +140,7 @@ def test_disk_qemu():
 
             # Test 3: disk list -c (comparison format)
             print("  [4] Testing: disk list -c")
-            pos = len(log_path.read_text(errors="replace"))
-            cmd3 = "disk list -c\n"
-            send_str(uart, cmd3)
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd3) - 5, timeout=20)
-            out_list_cmp = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            out_list_cmp = exec_cmd("disk list -c")
             print(f"      List Comparison Output:\n{out_list_cmp.strip()}\n")
             assert "name=initramfs sector=512" in out_list_cmp, f"Missing initramfs in list -c: {out_list_cmp}"
             assert "mount=/" in out_list_cmp, f"Missing mount=/ in list -c: {out_list_cmp}"
@@ -125,11 +149,7 @@ def test_disk_qemu():
 
             # Test 4: disk usage (table format)
             print("  [5] Testing: disk usage")
-            pos = len(log_path.read_text(errors="replace"))
-            cmd4 = "disk usage\n"
-            send_str(uart, cmd4)
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd4) - 5, timeout=20)
-            out_tbl = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            out_tbl = exec_cmd("disk usage")
             print(f"      Table Output:\n{out_tbl.strip()}\n")
             assert "MOUNT" in out_tbl, f"Missing MOUNT header: {out_tbl}"
             assert "SOURCE" in out_tbl, f"Missing SOURCE header: {out_tbl}"
@@ -139,23 +159,23 @@ def test_disk_qemu():
 
             # Test 5: disk usage -c (comparison format)
             print("  [6] Testing: disk usage -c")
-            pos = len(log_path.read_text(errors="replace"))
-            cmd5 = "disk usage -c\n"
-            send_str(uart, cmd5)
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd5) - 5, timeout=20)
-            out_cmp = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            out_cmp = exec_cmd("disk usage -c")
             print(f"      Comparison Output:\n{out_cmp.strip()}\n")
             assert "mount=/" in out_cmp, f"Missing mount=/ in comparison output: {out_cmp}"
             assert "fs=TarFS" in out_cmp, f"Missing fs=TarFS in comparison output: {out_cmp}"
             print("  [PASS] disk usage -c (comparison) verified.")
 
+            # Test 5b: df (alias/tool)
+            print("  [6b] Testing: df")
+            out_df = exec_cmd("df")
+            print(f"      df Output:\n{out_df.strip()}\n")
+            assert "MOUNT" in out_df, f"Missing MOUNT header in df: {out_df}"
+            assert "AVAIL" in out_df, f"Missing AVAIL header in df: {out_df}"
+            print("  [PASS] df verified.")
+
             # Test 6: disk bench (standard run)
             print("  [7] Testing: disk bench -w 64K -n 10 /mnt")
-            pos = len(log_path.read_text(errors="replace"))
-            cmd6 = "disk bench -w 64K -n 10 /mnt\n"
-            send_str(uart, cmd6)
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd6) - 5, timeout=20)
-            out_bench = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            out_bench = exec_cmd("disk bench -w 64K -n 10 /mnt")
             print(f"      Bench Output:\n{out_bench.strip()}\n")
             assert "=== diskbench: /mnt ===" in out_bench, f"Missing bench header: {out_bench}"
             assert "Write: 65536 bytes" in out_bench, f"Missing write in bench: {out_bench}"
@@ -165,11 +185,7 @@ def test_disk_qemu():
 
             # Test 7: disk bench -c (comparison format)
             print("  [8] Testing: disk bench -c -w 64K -n 10 /mnt")
-            pos = len(log_path.read_text(errors="replace"))
-            cmd7 = "disk bench -c -w 64K -n 10 /mnt\n"
-            send_str(uart, cmd7)
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd7) - 5, timeout=20)
-            out_bench_cmp = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            out_bench_cmp = exec_cmd("disk bench -c -w 64K -n 10 /mnt")
             print(f"      Bench Comparison Output:\n{out_bench_cmp.strip()}\n")
             assert "diskbench context mount=/mnt" in out_bench_cmp, f"Missing context in bench -c: {out_bench_cmp}"
             assert "diskbench write bytes=65536" in out_bench_cmp, f"Missing write in bench -c: {out_bench_cmp}"
@@ -179,11 +195,7 @@ def test_disk_qemu():
 
             # Test 8: disk info nvme0n1p1
             print("  [9] Testing: disk info nvme0n1p1")
-            pos = len(log_path.read_text(errors="replace"))
-            cmd8 = "disk info nvme0n1p1\n"
-            send_str(uart, cmd8)
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd8) - 5, timeout=20)
-            out_info = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            out_info = exec_cmd("disk info nvme0n1p1")
             print(f"      Info Output:\n{out_info.strip()}\n")
             assert "Device:           nvme0n1p1" in out_info
             assert "Type:             Partition (index 1)" in out_info
@@ -195,11 +207,7 @@ def test_disk_qemu():
 
             # Test 9: disk info -c /dev/nvme0n1p1
             print("  [10] Testing: disk info -c /dev/nvme0n1p1")
-            pos = len(log_path.read_text(errors="replace"))
-            cmd9 = "disk info -c /dev/nvme0n1p1\n"
-            send_str(uart, cmd9)
-            wait_for_pattern(log_path, "fortress:/ $ ", proc, start_pos=pos + len(cmd9) - 5, timeout=20)
-            out_info_cmp = strip_ansi(log_path.read_text(errors="replace")[pos:])
+            out_info_cmp = exec_cmd("disk info -c /dev/nvme0n1p1")
             print(f"      Info Comparison Output:\n{out_info_cmp.strip()}\n")
             assert "device=nvme0n1p1 type=partition index=1" in out_info_cmp
             assert "partuuid=11223344-5566-7788-99AA-BBCCDDEEFF00" in out_info_cmp

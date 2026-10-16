@@ -122,4 +122,8 @@ int ext4_freeze_and_sync(ext4_mount_t *mount);
 int ext4_journal_analyze(block_dev_t *partition,jbd2_plan_t **out,
                          jbd2_report_t *report);
 
+#include "syscall_abi.h"
+/* Passive, read-only query of mounted ext4 metrics (zero I/O, zero allocation). */
+bool ext4_get_mount_info(const void *vfs_node, mount_info_t *out);
+
 #endif

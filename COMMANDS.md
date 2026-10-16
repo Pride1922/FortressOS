@@ -88,6 +88,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`patch`](#patch) | Binary (`/bin/patch`) | Stream Tool | Apply unified or normal diff files with fail-closed transactional safety |
 | [`diskbench`](#diskbench) | Binary (`/bin/diskbench`) | Stream Tool / Benchmark | Filesystem throughput and latency benchmark tool |
 | [`disk`](#disk) | Binary (`/sbin/disk`) | Storage Tool | Storage device inspection and filesystem usage tool |
+| [`df`](#df) | Binary (`/bin/df`) / Alias | Storage Tool | Display filesystem disk space and inode usage (alias for `disk usage`) |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`date`](#date) | Binary (`/bin/date`) | Time / System | Display or format system date and time via `SYS_CLOCK_GETTIME` |
 | [`sleep`](#sleep) | Binary (`/bin/sleep`) | Time / Process | Delay execution for specified duration via `SYS_NANOSLEEP` |
@@ -1073,12 +1074,12 @@ diskbench -s -w 64K -n 20 /mnt
 
 ### `disk`
 **Syntax:** `disk [subcommand] [OPTIONS]`  
-**Path:** `/sbin/disk`  
+**Path:** `/sbin/disk`, `/bin/disk`  
 **Description:** Storage observability utility for FortressOS running in Ring 3. Queries passive kernel device and filesystem registry information without mutating storage or issuing disk writes.
 * **Subcommands:**
   * `list` (default): Enumerate registered block devices, capacity, sector size, GPT partition labels, PARTUUIDs, and active mount correlations.
+  * `usage` (or `df`): Display mounted filesystem disk space usage, capacity, and inode metrics. Queries active filesystem metrics dynamically via `SYS_MOUNTINFO` (syscall 52) across Ext4, Ext2, and TarFS mounts. Columns include `MOUNT`, `SOURCE`, `FS`, `SIZE` (total capacity), `USED`, `AVAIL` (free space), `USE%`, `INODES` (total inodes), and `IUSE%` (inode utilization).
   * `info <device|uuid>`: Display detailed metadata for a specific block device or partition (type, capacity in human-readable and raw bytes, sector size, partition start LBA, sector count, PARTUUID, GPT label, GPT type GUID with type description, and mount point status). Accepts bare name (e.g. `nvme0n1p1`), `/dev/` path (e.g. `/dev/nvme0n1p1`), or PARTUUID (e.g. `89B65A98-538C-4194-8AD2-142217C5153A` or `PARTUUID=...`).
-  * `usage`: Display mounted filesystem usage (total/used/available blocks, use percentage, inodes).
   * `bench`: Benchmark filesystem throughput (merging diskbench).
     - *Note on naming*: Output prefixes retain 'diskbench' ('=== diskbench: ... ===' and comparison prefix 'diskbench ...') for backward compatibility with automated parsing pipelines.
     - *High-Resolution Timing*: Elapsed time is measured using hardware CPU cycle counters (`rdtsc`) calibrated against kernel invariant TSC (`tsc_hz` from `SYS_SYSINFO`), giving sub-microsecond precision and stable throughput calculations even for small workloads. If TSC is unavailable, it seamlessly falls back to system timer ticks (`tick_hz=100`; 10 ms granularity). Both `time_ms=` and high-resolution `time_us=` are emitted in `-c` comparison output.
@@ -1089,12 +1090,29 @@ diskbench -s -w 64K -n 20 /mnt
 ```sh
 disk                                                  # List all block devices (flat table including LABEL and PARTUUID)
 disk list -c                                          # List devices in comparison key=value format (includes label=, partuuid=)
+disk usage                                            # Show mounted filesystem disk space and inode usage table
+disk df                                               # Alias for disk usage
+disk usage -c                                         # Show filesystem usage in comparison format
 disk info nvme0n1p1                                   # Detailed view of partition nvme0n1p1
 disk info 89B65A98-538C-4194-8AD2-142217C5153A        # Detailed view of partition looked up by PARTUUID
 disk -c 89B65A98-538C-4194-8AD2-142217C5153A          # Shorthand inspection by PARTUUID in comparison format
 disk info -c /dev/sda                                 # Detailed view in machine-parseable comparison format
-disk usage                                            # Show filesystem disk space and inode usage table
-disk usage -c                                         # Show filesystem usage in comparison format
+```
+
+---
+
+### `df`
+**Syntax:** `df [OPTIONS]`  
+**Path:** `/bin/df` (and default shell alias `df='disk usage'`)  
+**Description:** Standard POSIX/UNIX disk space inspection tool for FortressOS running in Ring 3. Reports total capacity, used space, available space, utilization percentage, total inodes, and inode utilization for all actively mounted filesystems (`/`, `/mnt`, etc.) via `SYS_MOUNTINFO` (syscall 52). Supports dynamic querying of Ext4, Ext2, and TarFS filesystems.
+* **Options:**
+  * `-c`, `--comparison`: Emit comparison-friendly single-line machine-parseable output (`key=value`).
+  * `-h`, `--help`: Display usage summary and exit.
+**Examples:**
+```sh
+df                                                    # Display mounted filesystem space usage table
+df -c                                                 # Display space usage in key=value comparison format
+df | grep /mnt                                        # Filter usage for specific mount point
 ```
 
 ---

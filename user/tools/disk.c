@@ -588,6 +588,29 @@ static int disk_info(const char *target, bool comparison) {
 }
 
 int disk_main(int argc, char **argv) {
+    if (argc >= 1 && (tool_equal(argv[0], "df") ||
+                      tool_equal(argv[0], "/bin/df") ||
+                      tool_equal(argv[0], "/sbin/df"))) {
+        bool comparison = false;
+        for (int i = 1; i < argc; i++) {
+            const char *arg = argv[i];
+            if (tool_equal(arg, "-c") || tool_equal(arg, "--comparison")) {
+                comparison = true;
+            } else if (tool_equal(arg, "-h") || tool_equal(arg, "--help") || tool_equal(arg, "help")) {
+                out_str("Usage: df [options]\n\n"
+                        "Display mounted filesystem disk space and inode usage.\n\n"
+                        "Options:\n"
+                        "  -c, --comparison Output comparison-friendly single-line format\n"
+                        "  -h, --help       Show this help message\n");
+                return 0;
+            } else {
+                tool_error("df", "unrecognized argument", arg);
+                return 2;
+            }
+        }
+        return disk_usage(comparison);
+    }
+
     if (argc >= 2 && tool_equal(argv[1], "bench")) {
         return diskbench_main(argc - 1, argv + 1);
     }
@@ -625,7 +648,7 @@ int disk_main(int argc, char **argv) {
 
     if (tool_equal(subcmd, "list")) {
         return disk_list(comparison);
-    } else if (tool_equal(subcmd, "usage")) {
+    } else if (tool_equal(subcmd, "usage") || tool_equal(subcmd, "df")) {
         return disk_usage(comparison);
     } else if (tool_equal(subcmd, "info")) {
         if (!target_dev) {

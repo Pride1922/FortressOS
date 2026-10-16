@@ -146,6 +146,7 @@ _Static_assert(offsetof(stat_ext_v1_t,file_size)==8, "stat_ext v1 offset");
 #define SPAWN_SETPGROUP 1u /* v2: reserved2=0 creates group, >0 joins group */
 #define SPAWN_STAGED    2u /* v2: fully construct but do not schedule */
 #define SPAWN_V2_FLAGS (SPAWN_SETPGROUP | SPAWN_STAGED)
+#ifndef WNOHANG
 #define WNOHANG    1u
 #define WUNTRACED  2u
 #define WNOWAIT    4u
@@ -157,6 +158,7 @@ _Static_assert(offsetof(stat_ext_v1_t,file_size)==8, "stat_ext v1 offset");
 #define WIFSTOPPED(s) (((s) & 0xff) == 0x7f)
 #define WSTOPSIG(s) (((s) >> 8) & 0xff)
 #define WIFCONTINUED(s) ((s) == 0xffff)
+#endif
 
 #define F_DUPFD         0
 #define F_GETFD         1

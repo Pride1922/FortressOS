@@ -1061,6 +1061,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_NANO_ELF) $(BUILD_DIR)/initramfs/bin/nano
 	@$(foreach tool,$(USER_STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@$(foreach tool,$(SBIN_STREAM_TOOLS) disk,cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
+	@cp -f $(USER_DISK_ELF) $(BUILD_DIR)/initramfs/bin/df
+	@cp -f $(USER_DISK_ELF) $(BUILD_DIR)/initramfs/bin/disk
 	@$(foreach tool,$(CHECKSUM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@cp -f $(USER_TRACEROUTE_ELF) $(BUILD_DIR)/initramfs/bin/traceroute
 	@cp -f $(USER_TAR_ELF) $(BUILD_DIR)/initramfs/bin/tar
