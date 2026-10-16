@@ -156,3 +156,15 @@ When a bare (non-path) command is executed via `/bin/sudo <cmd>`:
 1. `sudo` tests `/sbin/<cmd>` via `SYS_STAT` first. If present and executable, it executes `/sbin/<cmd>`.
 2. Otherwise, it executes `/bin/<cmd>`.
 3. The elevated execution environment explicitly sets `PATH=/bin:/sbin`.
+## Network SMP Phase 3 rollout (2026-10-16)
+
+Ordinary VFS children now start on the caller CPU with affinity -1 and all-CPU
+eligibility before publication. Explicit benchmark worker placement is retained.
+Staged-list ownership uses a disjoint rank-1 lock and detaches before metadata,
+cleanup or scheduler work. Terminal predicates use atomic published snapshots;
+mutable regular-file reads advance shared positions under filesystem exclusion.
+The registered CPU-0 protocol owner, polling-only ingress, bounded credits and
+all network lifetime/transaction policies remain unchanged. Verification is
+tracked in [the Phase 3 audit](../roadmap/network-smp-phase3.md);
+no physical acceptance follows from this rollout. Earlier phase entries elsewhere
+are historical evidence and retain their original qualifications.

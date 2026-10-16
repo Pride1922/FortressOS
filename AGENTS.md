@@ -50,9 +50,18 @@ Acceptance campaign `gate-fhnnk8qq` PASS (12/12 boots on e1000e, BIOS/UEFI ×
 SMP=1/4/8) and follow-up `gate-1te338y2` PASS (4/4 boots on e1000, BIOS/UEFI SMP=4).
 Scope boundary: Phase 2D LISTEN/ACCEPT now join client/stream calls through the
 registered CPU-0 owner from BSP and AP. ACCEPT uses retained reserve/commit/abort;
-all final closes publish detach. Production spawn pinning remains until Phase 3;
+all final closes publish detach. Phase 3 restores ordinary unpinned VFS children;
 no physical acceptance claimed. See [Phase 2D audit](docs/roadmap/network-smp-phase2d.md). Read
 [Phase 2B audit and evidence](docs/roadmap/network-smp-phase2b.md).
+
+Phase 3 rollout and prerequisite evidence are tracked in
+[the Phase 3 audit](docs/roadmap/network-smp-phase3.md). Ordinary children start
+on the caller CPU with affinity -1 and CPU_MASK_ALL before publication. Explicit
+benchmark workers keep their CPU/mask; staged release uses the initialized target.
+The ordinary rank-1 staged-list lock never nests with another lock: detach before
+metadata, cleanup or runqueue work. Terminal predicates use published atomic
+values and recheck under terminal exclusion. Mutable regular files implement
+`read_offset` to serialize reading and shared-position advancement with writes.
 
 ## 3. Build, Run, Debug and Verify
 
@@ -398,6 +407,9 @@ Canonical examples: [vfs.c](src/fs/vfs.c), [tarfs.c](src/fs/tarfs.c), [ext2.c](s
 3. Bound paths, names, directory records and read sizes; return the existing errors/EOF semantics. Distinguish read-only policy (`-EROFS`) from tainted failure state (`-EIO`); do not collapse them into a single error.
 4. Wire callbacks and per-process descriptors without sharing offsets between independent opens. When implementing writes, append mode (`VFS_O_APPEND`) must serialize authoritative EOF determination and writeback under filesystem locking (e.g. `ext_write` under `ext2_lock`), updating `*off` and `node->size` before lock release. Stream nodes (`VFS_STREAM`) bypass file EOF checks and do not advance linear offsets. If a mount is conditional on external state (durability classification, PARTUUID match, provenance), reject or fall back to read-only before the first filesystem write — never dirty the superblock and then discover the mount was ineligible.
 5. Close/unwind references on failure and exit; keep `fd_close_all`/reaper cleanup valid. A tainted or read-only mount must still allow reads through the same paths.
+   Mutable regular files must provide `read_offset`: the filesystem reads and
+   advances the shared position under the same exclusion as writes. Streams
+   bypass positions. Immutable/read-only pure adapters may use VFS CAS retry.
 6. Test dual opens, short reads/EOF, directory iteration, malformed backing data and Ring 3 writable-output validation. For conditional writable mounts, test each eligibility outcome (eligible, degraded, ineligible, unknown) and assert zero filesystem writes occur on any rejected path. Use host tests plus relevant boot tests.
 
 ### 7.5 A test / make target

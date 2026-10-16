@@ -494,3 +494,15 @@ Final close publishes detach; the owner fences common-slot reuse through cleanup
 Production spawn pinning and Phase 3 rollout are unchanged. No physical acceptance
 is claimed. Earlier Phase 2C preservation qualifications remain historical evidence.
 See [Phase 2D audit](docs/roadmap/network-smp-phase2d.md) for implementation proof, exact artifacts, tests and retained failures.
+## Network SMP Phase 3 rollout (2026-10-16)
+
+Ordinary VFS children now start on the caller CPU with affinity -1 and all-CPU
+eligibility before publication. Explicit benchmark worker placement is retained.
+Staged-list ownership uses a disjoint rank-1 lock and detaches before metadata,
+cleanup or scheduler work. Terminal predicates use atomic published snapshots;
+mutable regular-file reads advance shared positions under filesystem exclusion.
+The registered CPU-0 protocol owner, polling-only ingress, bounded credits and
+all network lifetime/transaction policies remain unchanged. Verification is
+tracked in [the Phase 3 audit](docs/roadmap/network-smp-phase3.md);
+no physical acceptance follows from this rollout. Earlier phase entries elsewhere
+are historical evidence and retain their original qualifications.

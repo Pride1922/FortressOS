@@ -32,9 +32,10 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
 - Shared kernel PML4 ownership, boot-module backing lifetime, and the
   current single-CPU assumptions (SMP pieces 1–6 are complete (see
   `docs/roadmap/smp-*.md`). The current binding assumption is that the
-  network worker remains BSP-pinned and production commands remain pinned;
+  network worker remains BSP-pinned and ordinary VFS commands are unpinned;
   LISTEN/ACCEPT use the same registered owner from every application CPU;
-  production spawn pinning remains until Phase 3).
+  explicit benchmark workers retain their requested CPU placement. Phase 3
+  rollout verification is recorded separately from physical acceptance).
 - xHCI DMA ring state, BOT completion polling discipline (no sleeps or
   IRQ-enables under the ext2 lock), DMA quarantine on failure, and USB class
   filtering (only 0x08/0x06/0x50 accepted as BOT mass storage).
@@ -55,7 +56,9 @@ and §9 and ARCH_REVIEW.md; this file is the boundary list, not the mechanism.
   ACCEPT reserves an existing child, caller-installs a provisional fd, then
   owner-commits or aborts with a retained rollback reference until acknowledgement.
   Pinned decisions cannot expire; all final socket closes only publish detach.
-  Production spawn pinning remains until Phase 3.
+  Ordinary VFS children allow all CPUs from publication; explicit benchmark
+  placement is preserved. Staged-list exclusion is disjoint from scheduler,
+  process and filesystem locks; detach before publication or cleanup.
 - **Polling-only ingress.** No NIC interrupt handlers or MSI vectors. Adding one
   is a contract change, not an optimization.
 - **Rank-1 network locks.** `g_net_dev_lock`, `g_socket_table_lock`,
@@ -97,6 +100,10 @@ Acquire in increasing rank order; release LIFO; never hold a spinlock across
 | 5 | console |
 
 Full rationale and violation consequences: AGENTS.md §4 (L1–L4).
+
+Phase 3's `staged_lock` is also ordinary Rank 1, disjoint from every other lock.
+It owns only never-run list membership/TCBs. Detach before process metadata,
+descriptor/VM cleanup or scheduler publication; never hold it across a switch.
 
 ## Where the detail lives
 
