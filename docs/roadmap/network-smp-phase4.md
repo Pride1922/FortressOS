@@ -114,3 +114,50 @@ renewal ACKs, T1/T2 expiry, physical link recovery or physical installed-network
 acceptance. No production source edits or physical device writes were needed
 to prepare the image; the preceding two-disk suite was not repeated for this
 handoff. Its source/build provenance remains separately recorded above.
+
+## User-supplied installed-system physical results
+
+2026-10-16: the user supplied three photographs after installing the combined
+image and confirmed the tests worked, including a clean shutdown and restart
+following the instruction to remove installer USB media. The reboot photograph
+identifies build `3cf6cf1`, eight CPUs online, and one storage device with three
+partitions and two mounted filesystems. Laptop model and firmware mode were not
+separately shown in these photographs.
+
+Observed manual results:
+
+- DHCP lease at `192.168.0.168/24`, gateway/server `192.168.0.1`, DNS
+  `195.130.131.3` and `195.130.130.3`; daemon running, PID 52, 3600-second lease.
+- Peer `192.168.0.153` and gateway ping: four replies from four probes, zero loss.
+  `nslookup example.com` returned addresses.
+- Foreground and background HTTP streams produced the Windows 100 MiB reference
+  SHA-256 recorded above. Ping and DNS remained usable while a background
+  download ran; its job completed and `jobs` subsequently showed no jobs.
+- Privileged `dhcpc --renew` reported SIGHUP delivery; the daemon stayed alive
+  and the displayed lease expiry refreshed. This is functional renewal evidence,
+  not an independent packet-capture audit of the exchange.
+- Cable disconnect and reconnect produced retained-ring link-down/online
+  messages. Link UP, active DHCP status, gateway ping, DNS and the matching HTTP
+  checksum were observed afterward.
+- After reboot, `phase4-reboot.txt` contained `phase4-reboot-check`, and
+  `/etc/network/network.conf` retained the address, gateway and both DNS values.
+  DHCP status, gateway ping, DNS and HTTP checksum passed before any requested
+  manual reconfiguration. This demonstrates installed file/config persistence
+  and automatic networking after the user-run restart; it does not prove that
+  the DHCP path used the persisted static configuration to acquire its lease.
+
+Photo references supplied in this chat: `image-1792170904386.jpg`,
+`image-1792171520306.jpg`, and `image-1792172030720.jpg`. They are user-supplied
+physical observations, separate from the retained automated guest manifests.
+The first photo retains a malformed wget invocation followed by the SHA-256 of
+an empty stream; corrected foreground/background invocations match the reference.
+The reboot photo retains an `ipconfig` typo (unknown command); the earlier
+`ifconfig` output shows the actual interface. Neither typo is a kernel failure.
+
+Functional physical acceptance above is demonstrated. The complete original
+Phase 4 gate remains open for approved physical evidence of ordinary network
+command AP syscall execution: eight CPUs online, successful commands and
+`smpbench` alone do not establish that provenance. Confirm remaining hardware
+metadata and any explicit `sudo ifup`/configuration-reload evidence before
+claiming every item of the original gate. No physical T1/T2-expiry, wire-level
+renewal, physical two-NVMe or independent filesystem-audit claim is added.

@@ -172,6 +172,13 @@ Gate: ordinary commands work on BSP and APs, benchmarks retain explicit placemen
 
 ## Phase 4 — Physical acceptance
 
+Latest physical checkpoint (2026-10-16): installed build `3cf6cf1`, eight CPUs,
+automatic DHCP, peer/gateway ping, DNS, foreground/background 100 MiB HTTP hashes,
+renewal signaling, cable recovery and clean-reboot file/config persistence are
+user-confirmed with photographs. Full gate remains open for physical ordinary
+network-command AP provenance and remaining metadata/config-reload confirmation.
+See [the physical results](../roadmap/network-smp-phase4.md#user-supplied-installed-system-physical-results).
+
 Status (2026-10-16): IN PROGRESS. User-reported live-USB HTTP downloads:
 100 MiB, ten runs averaging 7.20 seconds (116.51 Mb/s payload). This does not
 close the installed-root, reboot or physical AP evidence
