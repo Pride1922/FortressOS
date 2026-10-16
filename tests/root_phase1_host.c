@@ -4,6 +4,30 @@
 #include "ext4_mount_host.c"
 #undef main
 #include <unistd.h>
+static unsigned offset_seen[512];
+static void *offset_reader(void *arg) {
+    uint32_t value;
+    for (;;) {
+        int64_t n=vfs_read(arg,&value,sizeof(value));
+        if (!n) break;
+        assert(n==sizeof(value) && value<512);
+        assert(__atomic_fetch_add(&offset_seen[value],1,__ATOMIC_RELAXED)==0);
+    }
+    return NULL;
+}
+static void shared_ext4_offsets(const creds_t *root) {
+    int error;file_t *file=vfs_open_mode_creds("/shared-read-proof",VFS_O_CREAT|VFS_O_RDWR,0600,root,&error);
+    assert(file && !error);uint32_t values[512];
+    for (unsigned i=0;i<512;i++) values[i]=i;
+    assert(vfs_write(file,values,sizeof(values))==sizeof(values));file->offset=0;
+    pthread_t readers[4];
+    for (unsigned i=0;i<4;i++) assert(!pthread_create(&readers[i],NULL,offset_reader,file));
+    for (unsigned i=0;i<4;i++) assert(!pthread_join(readers[i],NULL));
+    for (unsigned i=0;i<512;i++) assert(offset_seen[i]==1);
+    assert(file->offset==sizeof(values));vfs_close(file);
+    assert(!vfs_unlink_creds("/shared-read-proof",root));
+    puts("PASS actual mounted EXT4/VFS shared offsets: four readers, 512 exactly-once records, cleanup");
+}
 
 static bool image_read(block_dev_t *dev,uint64_t lba,void *bytes) {
     FILE *stream=dev->priv;
@@ -105,6 +129,7 @@ int main(int argc,char **argv) {
     file_t *sudo=vfs_open_exec_creds("/bin/sudo",&user,&err);assert(sudo);
     assert(!vfs_exec_image(sudo,&user,&m,&bytes));creds_t exec;
     assert(spawn_credentials(&user,&m,&exec) && !exec.euid);kfree(bytes);vfs_close(sudo);
+    shared_ext4_offsets(&root);
     /* Mounted nodes retain authoritative bytes while unrelated cache leaves churn. */
     char path[64];
     for (unsigned i=0;i<1100;i++) {

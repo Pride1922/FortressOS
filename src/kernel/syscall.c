@@ -53,8 +53,8 @@ static volatile uintptr_t g_syscall_recovery_rip = 0;
 static volatile uintptr_t g_syscall_recovery_rsp = 0;
 
 void syscall_init(void) {
-    g_user_exit_called     = false;
-    g_user_exit_code       = 0;
+    __atomic_store_n(&g_user_exit_called,false,__ATOMIC_RELEASE);
+    __atomic_store_n(&g_user_exit_code,0,__ATOMIC_RELAXED);
     g_syscall_recovery_rip = 0;
     g_syscall_recovery_rsp = 0;
     syscall_init_msrs();
@@ -128,8 +128,8 @@ bool syscall_verify_msrs(void) {
 }
 
 void syscall_set_recovery(uintptr_t rip, uintptr_t rsp) {
-    g_user_exit_called     = false;
-    g_user_exit_code       = 0;
+    __atomic_store_n(&g_user_exit_called,false,__ATOMIC_RELEASE);
+    __atomic_store_n(&g_user_exit_code,0,__ATOMIC_RELAXED);
     g_syscall_recovery_rip = rip;
     g_syscall_recovery_rsp = rsp;
 }
@@ -140,8 +140,8 @@ void syscall_clear_recovery(void) {
 }
 
 bool syscall_was_exit_called(uint64_t *out_exit_code) {
-    if (!g_user_exit_called) return false;
-    if (out_exit_code) *out_exit_code = g_user_exit_code;
+    if (!__atomic_load_n(&g_user_exit_called,__ATOMIC_ACQUIRE)) return false;
+    if (out_exit_code) *out_exit_code = __atomic_load_n(&g_user_exit_code,__ATOMIC_RELAXED);
     return true;
 }
 
@@ -274,8 +274,10 @@ static int64_t sys_termattr(uint64_t fd, uint64_t op, uintptr_t ptr, size_t size
 }
 
 static int64_t sys_exit(uint64_t exit_code, interrupt_frame_t *frame) {
-    g_user_exit_called = true;
-    g_user_exit_code   = exit_code;
+    /* Legacy observation remains global, but ordinary AP exits may overlap.
+     * Recovery execution itself is still an isolated supervisor test contract. */
+    __atomic_store_n(&g_user_exit_code,exit_code,__ATOMIC_RELAXED);
+    __atomic_store_n(&g_user_exit_called,true,__ATOMIC_RELEASE);
 
     if (g_syscall_recovery_rip != 0) {
         /* Legacy test harness redirect back to test function in Ring 0 */

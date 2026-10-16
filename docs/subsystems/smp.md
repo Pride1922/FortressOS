@@ -49,7 +49,8 @@ Phase 9 gate and provides no evidence of a journal or USB fault.
   - Monotonic 100 Hz BSP-driven timebase verified across CPUs (regression guard against multi-writer APIC scaling bug).
   - Ring 3 shell, `/bin/ps`, and `/bin/sysinfo` operational across cores.
 - **Current SMP Execution Boundaries:**
-  - Pipe and input peers remain BSP-pinned; cross-core wake channels remain future work.
+  - Ordinary pipe/input peers are now eligible across CPUs; cross-core wake and
+    ordinary-command evidence are tracked in the Phase 3 audit below.
   - Networking RX/TX worker remains BSP-pinned.
   - Network SMP Phase 2B is COMPLETE: UDP create/bind/send/receive and DNS
     route through the CPU-0 owner from any application CPU, with retained file
@@ -109,3 +110,15 @@ BIOS/UEFI × SMP=1/4/8 e1000e listener boots, 4/4 absent-NIC boots,
 kernel/initramfs build and private-probe exclusion PASS; realized static state
 557238/589824 bytes, shared release media unchanged. [Exact artifacts and retained
 qualifications](../roadmap/network-smp-phase2d.md).
+## Network SMP Phase 3 rollout (2026-10-16)
+
+Ordinary VFS children now start on the caller CPU with affinity -1 and all-CPU
+eligibility before publication. Explicit benchmark worker placement is retained.
+Staged-list ownership uses a disjoint rank-1 lock and detaches before metadata,
+cleanup or scheduler work. Terminal predicates use atomic published snapshots;
+mutable regular-file reads advance shared positions under filesystem exclusion.
+The registered CPU-0 protocol owner, polling-only ingress, bounded credits and
+all network lifetime/transaction policies remain unchanged. Verification is
+tracked in [the Phase 3 audit](../roadmap/network-smp-phase3.md);
+no physical acceptance follows from this rollout. Earlier phase entries elsewhere
+are historical evidence and retain their original qualifications.

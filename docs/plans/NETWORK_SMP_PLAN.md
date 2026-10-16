@@ -160,6 +160,10 @@ Verify configuration bytes/metadata after sync and reboot, Linux filesystem audi
 
 ## Phase 3 — Restore ordinary unpinned commands
 
+Phase 3 is COMPLETE (2026-10-16): ordinary VFS children are unpinned, with
+staged-list, terminal and shared-file-position prerequisites passing across 32 boots,
+host sanitizers and release verification. See [the Phase 3 audit](../roadmap/network-smp-phase3.md).
+
 Only after Phase 2 passes, restore ordinary VFS spawn eligibility to the intended unpinned policy, including correct affinity/mask initialization before publication. Preserve explicit benchmark `--worker` placement. Remove CPU/affinity rejection only from handlers whose ownership and lifecycle paths have passed integration.
 
 Repeat the installed-root BIOS/UEFI × SMP=1/4/8 matrix using ordinary shell-launched production commands. Prove actual AP syscall entry through test instrumentation without changing release command arguments. Cover shell/sudo/pipeline/background descendants, inherited socket descriptors and STOP/CONT/KILL. Run relevant non-network spawn, permissions, pipeline and persistence regressions.

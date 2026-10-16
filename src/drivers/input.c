@@ -42,6 +42,19 @@ static uint64_t input_ticks, observed_drops;
 static unsigned timed_readers;
 static uint32_t input_hz = 100;
 static bool worker_started;
+/* Scheduler predicates cannot take the terminal lock. Publish only values;
+ * consumers recheck authoritative state under the lock before consuming. */
+static uint64_t ready_sid, ready_pgid, ready_ticks;
+static bool read_ready, signal_ready;
+static void terminal_unlock(uint64_t flags) {
+    __atomic_store_n(&ready_sid,g_terminal.controlling_sid,__ATOMIC_RELEASE);
+    __atomic_store_n(&ready_pgid,g_terminal.fg_pgid,__ATOMIC_RELEASE);
+    __atomic_store_n(&ready_ticks,input_ticks,__ATOMIC_RELEASE);
+    __atomic_store_n(&read_ready,g_input.count || g_input.dropped!=observed_drops,__ATOMIC_RELEASE);
+    __atomic_store_n(&signal_ready,g_terminal.event_count ||
+        g_terminal.attrs.signal_dropped!=g_terminal.reported_drops,__ATOMIC_RELEASE);
+    spin_unlock_irqrestore(&g_terminal_lock,flags);
+}
 
 static bool on_bsp(void) {
 #ifdef INPUT_HOST_TEST
@@ -64,13 +77,13 @@ static void ingress(const char *bytes, size_t count) {
     }
     if (!sig) {
         (void)input_buffer_sequence(&g_input, bytes, count);
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
         return;
     }
     g_input.head = g_input.count = 0; /* flush ordinary input, including on overflow */
     observed_drops = g_input.dropped; /* deliberate flush acknowledges prior loss */
     if (!g_terminal.foreground.generation) {
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
         return; /* no owner yet */
     }
     for (unsigned i = 0; i < g_terminal.event_count; ++i) {
@@ -78,24 +91,24 @@ static void ingress(const char *bytes, size_t count) {
         if (e->signal == sig && e->target.slot == g_terminal.foreground.slot &&
             e->target.generation == g_terminal.foreground.generation) {
             ++g_terminal.attrs.signal_coalesced;
-            spin_unlock_irqrestore(&g_terminal_lock, flags);
+            terminal_unlock(flags);
             return;
         }
     }
     if (g_terminal.event_count == TERMINAL_EVENTS) {
         ++g_terminal.attrs.signal_dropped;
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
         return;
     }
     terminal_event_t *e = &g_terminal.events[(g_terminal.event_head + g_terminal.event_count) % TERMINAL_EVENTS];
     if (!process_group_try_retain(&g_terminal.foreground, &e->target)) {
         ++g_terminal.attrs.signal_dropped;
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
         return;
     }
     e->signal = sig;
     ++g_terminal.event_count;
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
+    terminal_unlock(flags);
 }
 
 static void serial_ingress(char c) {
@@ -108,7 +121,7 @@ static void serial_ingress(char c) {
 
 static bool events_ready(void *arg) {
     (void)arg;
-    return g_terminal.event_count || g_terminal.attrs.signal_dropped != g_terminal.reported_drops;
+    return __atomic_load_n(&signal_ready,__ATOMIC_ACQUIRE);
 }
 
 /* Owns the popped reference until publication finishes. No scheduler or console
@@ -116,14 +129,14 @@ static bool events_ready(void *arg) {
 static bool drain_event(void) {
     uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
     if (!g_terminal.event_count) {
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
         return false;
     }
     terminal_event_t e = g_terminal.events[g_terminal.event_head];
     g_terminal.events[g_terminal.event_head] = (terminal_event_t){0};
     g_terminal.event_head = (g_terminal.event_head + 1) % TERMINAL_EVENTS;
     --g_terminal.event_count;
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
+    terminal_unlock(flags);
 
     (void)process_group_signal(&e.target, e.signal);
     (void)process_group_release_ref(&e.target);
@@ -138,7 +151,7 @@ static void signal_worker(void *arg) {
         uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
         bool report = (g_terminal.reported_drops != g_terminal.attrs.signal_dropped);
         g_terminal.reported_drops = g_terminal.attrs.signal_dropped;
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
         if (report) serial_puts("[INPUT] terminal signal queue overflow; inspect TERMATTR counters\n");
         thread_yield();
     }
@@ -165,7 +178,7 @@ int input_terminal_bootstrap(uint64_t pid) {
         serial_last_cr = false;
         observed_drops = g_input.dropped;
         pending_wake = true;
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
         if (old.generation) (void)process_group_release_ref(&old);
     }
     return result;
@@ -179,7 +192,7 @@ static int terminal_caller(uint64_t fd) {
     if (f->node != vfs_get_terminal_node()) return SYSCALL_ENOTTY;
     uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
     uint64_t sid = g_terminal.controlling_sid;
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
+    terminal_unlock(flags);
     if (!t->is_user || t->sid != sid) return SYSCALL_ENOTTY;
     return 0;
 }
@@ -190,7 +203,7 @@ static int access_check(bool mutation) {
     uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
     uint64_t csid = g_terminal.controlling_sid;
     uint64_t fg = g_terminal.fg_pgid;
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
+    terminal_unlock(flags);
     if (t->sid != csid) return SYSCALL_ENOTTY;
     while (t->pgid != fg) {
         if (t->sid != csid) return SYSCALL_ENOTTY;
@@ -205,7 +218,7 @@ static int access_check(bool mutation) {
         flags = spin_lock_irqsave(&g_terminal_lock);
         csid = g_terminal.controlling_sid;
         fg = g_terminal.fg_pgid;
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
     }
     return 0;
 }
@@ -219,7 +232,7 @@ int64_t input_tcgetpgrp(uint64_t fd) {
     if (error) return error;
     uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
     int64_t result = (int64_t)g_terminal.fg_pgid;
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
+    terminal_unlock(flags);
     return result;
 }
 
@@ -231,7 +244,7 @@ int64_t input_tcsetpgrp(uint64_t fd, uint64_t pgid) {
 
     uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
     uint64_t csid = g_terminal.controlling_sid;
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
+    terminal_unlock(flags);
 
     process_group_ref_t ref = {0};
     error = process_group_acquire(csid, pgid, &ref);
@@ -241,7 +254,7 @@ int64_t input_tcsetpgrp(uint64_t fd, uint64_t pgid) {
         g_terminal.foreground = ref;
         g_terminal.fg_pgid = pgid;
         pending_wake = true;
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
         if (old.generation) (void)process_group_release_ref(&old);
         sched_wake_all(&g_input);
     }
@@ -263,13 +276,13 @@ int input_termattr(uint64_t fd, uint64_t op, terminal_attrs_t *attrs) {
             g_terminal.attrs.input_flags = attrs->input_flags;
             g_terminal.attrs.vintr = attrs->vintr;
             g_terminal.attrs.vsusp = attrs->vsusp;
-            spin_unlock_irqrestore(&g_terminal_lock, flags);
+            terminal_unlock(flags);
         }
     }
     if (!error && op == TERM_GET) {
         uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
         *attrs = g_terminal.attrs;
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
+        terminal_unlock(flags);
     }
     return error;
 }
@@ -279,23 +292,25 @@ void input_timer_tick(uint32_t hz) {
     uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
     input_ticks++;
     if (hz) input_hz = hz;
-    bool wake_term = (worker_started && events_ready(NULL));
+    bool wake_term = worker_started && (g_terminal.event_count ||
+        g_terminal.attrs.signal_dropped!=g_terminal.reported_drops);
     bool wake_input = (pending_wake || timed_readers);
     if (wake_input) pending_wake = false;
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
+    terminal_unlock(flags);
     if (wake_term) sched_wake_all(&g_terminal);
     if (wake_input) sched_wake_all(&g_input);
 }
 
-/* Metadata may be queried from another CPU; queue ownership remains BSP-only. */
+/* Ingress/ticks stay on BSP; readers on every CPU use terminal exclusion. */
 uint64_t input_dropped(void) { return __atomic_load_n(&g_input.dropped, __ATOMIC_RELAXED); }
 typedef struct { uint64_t deadline; bool timed; } input_wait_t;
 static bool available(void *arg) {
     input_wait_t *w = arg;
     tcb_t *t = thread_current();
-    return !t || t->sid != g_terminal.controlling_sid || t->pgid != g_terminal.fg_pgid ||
-           g_input.count != 0 || g_input.dropped != observed_drops ||
-           (w->timed && input_ticks >= w->deadline);
+    return !t || t->sid != __atomic_load_n(&ready_sid,__ATOMIC_ACQUIRE) ||
+           t->pgid != __atomic_load_n(&ready_pgid,__ATOMIC_ACQUIRE) ||
+           __atomic_load_n(&read_ready,__ATOMIC_ACQUIRE) ||
+           (w->timed && __atomic_load_n(&ready_ticks,__ATOMIC_ACQUIRE) >= w->deadline);
 }
 int64_t input_read(void *buffer, size_t count) {
     return input_read_timeout(buffer, count, -1);
@@ -307,15 +322,15 @@ int64_t input_read_timeout(void *buffer, size_t count, int64_t timeout_ms) {
     uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
     input_wait_t w = {input_ticks + ((uint64_t)(timeout_ms > 0 ? timeout_ms : 0) * input_hz + 999) / 1000, timeout_ms >= 0};
     if (w.timed) timed_readers++;
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
+    terminal_unlock(flags);
 
-    do {
+    for (;;) {
         int error = access_check(false);
         if (error) {
             if (w.timed) {
                 flags = spin_lock_irqsave(&g_terminal_lock);
                 timed_readers--;
-                spin_unlock_irqrestore(&g_terminal_lock, flags);
+                terminal_unlock(flags);
             }
             return error;
         }
@@ -324,7 +339,7 @@ int64_t input_read_timeout(void *buffer, size_t count, int64_t timeout_ms) {
             if (w.timed) {
                 flags = spin_lock_irqsave(&g_terminal_lock);
                 timed_readers--;
-                spin_unlock_irqrestore(&g_terminal_lock, flags);
+                terminal_unlock(flags);
             }
             return SYSCALL_EINTR;
         }
@@ -333,23 +348,34 @@ int64_t input_read_timeout(void *buffer, size_t count, int64_t timeout_ms) {
             if (w.timed) {
                 flags = spin_lock_irqsave(&g_terminal_lock);
                 timed_readers--;
-                spin_unlock_irqrestore(&g_terminal_lock, flags);
+                terminal_unlock(flags);
             }
             return error;
         }
-    } while (!available(&w));
-
-    flags = spin_lock_irqsave(&g_terminal_lock);
-    if (w.timed) timed_readers--;
-    if (g_input.dropped != observed_drops) {
-        observed_drops = g_input.dropped;
-        g_input.head = g_input.count = 0;
-        spin_unlock_irqrestore(&g_terminal_lock, flags);
-        return INPUT_LOST;
+        flags = spin_lock_irqsave(&g_terminal_lock);
+        tcb_t *self=thread_current();
+        if (!self || self->sid!=g_terminal.controlling_sid || self->pgid!=g_terminal.fg_pgid) {
+            terminal_unlock(flags);
+            continue;
+        }
+        if (g_input.dropped != observed_drops) {
+            observed_drops = g_input.dropped;
+            g_input.head = g_input.count = 0;
+            if (w.timed) timed_readers--;
+            terminal_unlock(flags);
+            return INPUT_LOST;
+        }
+        if (!g_input.count && !(w.timed && input_ticks>=w.deadline)) {
+            /* A different CPU consumed the indication before we got the lock.
+             * An untimed empty read must retry, never manufacture EOF. */
+            terminal_unlock(flags);
+            continue;
+        }
+        if (w.timed) timed_readers--;
+        size_t n = input_buffer_read(&g_input, buffer, count);
+        terminal_unlock(flags);
+        return (int64_t)n;
     }
-    size_t n = input_buffer_read(&g_input, buffer, count);
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
-    return (int64_t)n;
 }
 
 #ifndef INPUT_HOST_TEST
@@ -426,7 +452,11 @@ static void serial_irq(interrupt_frame_t *frame) {
         if (status == 0xff || !(status & 1)) break;
         char c = (char)inb(COM1_PORT);
         if (status & 0x1e) { /* A damaged stream must never become a command. */
-            __atomic_fetch_add(&g_input.dropped, 1, __ATOMIC_RELAXED); pending_wake = true; continue;
+            uint64_t flags=spin_lock_irqsave(&g_terminal_lock);
+            __atomic_fetch_add(&g_input.dropped, 1, __ATOMIC_RELAXED);
+            pending_wake = true;
+            terminal_unlock(flags);
+            continue;
         }
         serial_ingress(c);
     }
@@ -452,7 +482,7 @@ bool input_init(const acpi_madt_info_t *madt) {
         }
     }
     g_input_ready = keyboard || uart;
-    spin_unlock_irqrestore(&g_terminal_lock, flags);
+    terminal_unlock(flags);
     serial_puts(keyboard ? "[INPUT] PS/2 set 2 -> set 1, IRQ1 ready (US layout)\n" :
                           "[WARN] PS/2 keyboard unavailable\n");
     serial_puts(uart ? "[INPUT] COM1 RX IRQ4 ready\n" : "[INPUT] COM1 RX unavailable\n");

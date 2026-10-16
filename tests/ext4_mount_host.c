@@ -10,6 +10,7 @@
 #undef WNOHANG
 #undef WUNTRACED
 #undef WCONTINUED
+#undef WNOWAIT
 #undef WIFEXITED
 #undef WEXITSTATUS
 #undef WIFSIGNALED

@@ -77,6 +77,9 @@ typedef struct vfs_node {
     void *fs_private;
     struct vfs_node *(*lookup)(struct vfs_node *, const char *);
     int64_t (*read)(struct vfs_node *, uint64_t, void *, size_t);
+    /* Shared regular-file position: read and successful offset advancement
+     * share filesystem exclusion with writes. Streams bypass this callback. */
+    int64_t (*read_offset)(struct vfs_node *, uint64_t *, void *, size_t);
     int64_t (*write)(struct vfs_node *, uint64_t *, bool, const void *, size_t);
     struct vfs_node *(*create)(struct vfs_node *dir, const char *name, vfs_node_type_t type);
     int (*unlink)(struct vfs_node *dir, const char *name);

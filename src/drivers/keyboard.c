@@ -3,15 +3,12 @@
 static int g_keyboard_layout = KBD_LAYOUT_AZERTY;
 
 void keyboard_set_layout(int layout) {
-    if (layout == KBD_LAYOUT_AZERTY) {
-        g_keyboard_layout = KBD_LAYOUT_AZERTY;
-    } else {
-        g_keyboard_layout = KBD_LAYOUT_US;
-    }
+    __atomic_store_n(&g_keyboard_layout,
+        layout==KBD_LAYOUT_AZERTY ? KBD_LAYOUT_AZERTY : KBD_LAYOUT_US,__ATOMIC_RELEASE);
 }
 
 int keyboard_get_layout(void) {
-    return g_keyboard_layout;
+    return __atomic_load_n(&g_keyboard_layout,__ATOMIC_ACQUIRE);
 }
 
 static const char us_plain[128] = {
@@ -115,11 +112,12 @@ char keyboard_decode(keyboard_decoder_t *s, uint8_t code) {
         return 0;
     }
 
-    const char *plain_table = (g_keyboard_layout == KBD_LAYOUT_AZERTY) ? azerty_plain : us_plain;
-    const char *shifted_table = (g_keyboard_layout == KBD_LAYOUT_AZERTY) ? azerty_shifted : us_shifted;
+    int layout=keyboard_get_layout();
+    const char *plain_table = (layout == KBD_LAYOUT_AZERTY) ? azerty_plain : us_plain;
+    const char *shifted_table = (layout == KBD_LAYOUT_AZERTY) ? azerty_shifted : us_shifted;
 
     char c = plain_table[code];
-    if (s->altgr && g_keyboard_layout == KBD_LAYOUT_AZERTY) {
+    if (s->altgr && layout == KBD_LAYOUT_AZERTY) {
         /* Belgian (Period) KBDBE.DLL official layout specification */
         static const char third[128] = {
             [2]  = '|',   /* & 1 -> | */
@@ -146,7 +144,7 @@ char keyboard_decode(keyboard_decoder_t *s, uint8_t code) {
     }
     bool shift = s->left_shift || s->right_shift;
 
-    if (g_keyboard_layout == KBD_LAYOUT_AZERTY && code >= 2 && code <= 13) {
+    if (layout == KBD_LAYOUT_AZERTY && code >= 2 && code <= 13) {
         bool num_shifted = shift ^ s->caps;
         if (num_shifted && shifted_table[code]) return shifted_table[code];
         return c;

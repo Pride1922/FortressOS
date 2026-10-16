@@ -46,6 +46,25 @@ static void check(const char *path,uint32_t mode,uint32_t uid,uint32_t gid) {
 static void *append_worker(void *arg) {
  file_t *file=arg;for(unsigned i=0;i<500;i++) assert(vfs_write(file,"xy",2)==2);return NULL;
 }
+static unsigned read_seen[512];
+static void *shared_reader(void *arg) {
+ file_t *file=arg;uint32_t value;
+ for (;;) {
+  int64_t n=vfs_read(file,&value,sizeof(value));
+  if (!n) break;
+  assert(n==sizeof(value) && value<512);
+  assert(__atomic_fetch_add(&read_seen[value],1,__ATOMIC_RELAXED)==0);
+ }
+ return NULL;
+}
+static void check_shared_readers(file_t *file) {
+ memset(read_seen,0,sizeof(read_seen));file->offset=0;
+ pthread_t readers[4];
+ for(unsigned i=0;i<4;i++) assert(!pthread_create(&readers[i],NULL,shared_reader,file));
+ for(unsigned i=0;i<4;i++) assert(!pthread_join(readers[i],NULL));
+ for(unsigned i=0;i<512;i++) assert(read_seen[i]==1);
+ assert(file->offset==2048);
+}
 int main(void) {
  vfs_init();check("/run",VFS_S_IFDIR|0755,0,0);check("/tmp",VFS_S_IFDIR|01777,0,0);
  check("/dev/tty",VFS_S_IFCHR|0666,0,5);check("/dev/console",VFS_S_IFCHR|0620,0,5);
@@ -74,6 +93,13 @@ int main(void) {
  pthread_t x,y;assert(!pthread_create(&x,NULL,append_worker,f));assert(!pthread_create(&y,NULL,append_worker,f));
  assert(!pthread_join(x,NULL) && !pthread_join(y,NULL));assert(f->offset==2000);
  f->offset=0;assert(vfs_read(f,b,sizeof(b))==2000);for(unsigned i=0;i<2000;i++)assert(b[i]==(i&1 ? 'y' : 'x'));
+ uint32_t values[512];for(unsigned i=0;i<512;i++) values[i]=i;
+ assert(!vfs_truncate(f->node,0));f->offset=0;
+ assert(vfs_write(f,values,sizeof(values))==sizeof(values));
+ check_shared_readers(f);
+ vfs_node_t immutable={.type=VFS_FILE,.size=sizeof(values),.data=values};
+ file_t boot_bytes={.node=&immutable,.ref_count=1};check_shared_readers(&boot_bytes);
+ puts("PASS actual VFS/runfs shared offsets: four readers, 512 exactly-once records each for mutable and immutable files");
  vfs_close(f);assert(!vfs_unlink("/run/append"));
  unsigned char tar[1536]={0};struct ustar_header *h=(void *)tar;
  memcpy(h->magic,"ustar",5);memcpy(h->name,"metadata",9);memcpy(h->mode,"0006754",7);

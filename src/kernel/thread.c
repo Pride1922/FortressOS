@@ -45,9 +45,11 @@ typedef struct {
 
 #define MAX_EXIT_RECORDS 64
 
-/* Staged tasks are exclusively BSP-owned with local IRQ exclusion. They have
- * never run, hold a scheduler ref, and are not on any scheduler queue. */
+/* Never-run tasks hold a scheduler ref and are absent from scheduler queues.
+ * The ordinary rank-1 lock owns only this list and its staged TCBs. Detach
+ * before metadata, descriptor, VMM or scheduler work; no other lock nests. */
 static tcb_t *staged_processes;
+static spinlock_t staged_lock = SPINLOCK_RANKED(1, "staged");
 static const char child_wait_channel;
 static uint64_t child_wake_seen;
 static uint64_t kernel_exit_sequence, kernel_exit_wake_seen;
@@ -1883,8 +1885,10 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     }
     if (spawn_flags & SPAWN_STAGED) {
         p->state = THREAD_STAGED;
+        rflags = spin_lock_irqsave(&staged_lock);
         p->next = staged_processes;
         staged_processes = p;
+        spin_unlock_irqrestore(&staged_lock, rflags);
         SPAWN_ADD(profile, phase[SP_PUBLISH], phase_begin);
         return p;
     }
@@ -2174,11 +2178,11 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     const void *image=buffer;
     creds_t exec_creds;
     bool secure=spawn_credentials(&actor,&image_metadata,&exec_creds);
-    size_t target_cpu = 0;
-    /* Ordinary commands and their helpers may use BSP-owned network APIs.
-     * Keep them pinned from publication, including staged pipeline children.
-     * Explicit benchmark workers retain their requested CPU placement. */
-    int affinity = 0;
+    size_t target_cpu = cpu_current()->id;
+    /* Ordinary children start locally and are eligible for work stealing.
+     * Network calls from every CPU use the registered CPU-0 owner. Explicit
+     * benchmark workers retain their requested placement before publication. */
+    int affinity = -1;
     if (argc >= 3 && argv && argv[1] && strcmp(argv[1], "--worker") == 0) {
         size_t wid = 0;
         const char *s = argv[2];
@@ -2186,16 +2190,15 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
             wid = wid * 10 + (*s - '0');
             s++;
         }
-        if (g_total_sched_cpus > 1) {
-            target_cpu = wid % g_total_sched_cpus;
-            affinity = (int)target_cpu;
-        }
+        target_cpu = wid % g_total_sched_cpus;
+        affinity = (int)target_cpu;
     }
     SPAWN_ADD(profile, phase[SP_FILE], phase_begin);
     tcb_t *child = process_spawn_internal(target_cpu, affinity, path, image, size,
                                           argc, argv, envc, envp, cwd, action_count, actions, 0, pid, spawn_flags, &result, &actor, &exec_creds, secure);
     if (!child) goto out;
-    *out_pid = (int64_t)child->tid;
+    /* A remote child can exit and be reaped before this continuation resumes. */
+    *out_pid = (int64_t)pid;
     result = SYSCALL_SUCCESS;
 out:
     phase_begin = spawn_profile_clock(profile);
@@ -2284,8 +2287,11 @@ int64_t process_setpgid(uint64_t pid, uint64_t pgid) {
     if (!result) {
         uint64_t target = pid ? pid : self->tid;
         if (target == self->tid) self->pgid = (uint64_t)process_record_group(target);
+        uint64_t group = (uint64_t)process_record_group(target);
+        uint64_t flags = spin_lock_irqsave(&staged_lock);
         for (tcb_t *p=staged_processes; p; p=p->next)
-            if (p->tid == target) p->pgid = (uint64_t)process_record_group(target);
+            if (p->tid == target) p->pgid = group;
+        spin_unlock_irqrestore(&staged_lock, flags);
     }
     __asm__ volatile("push %0; popfq" :: "r"(irq) : "memory");
     return result;
@@ -2299,11 +2305,20 @@ static void destroy_staged(tcb_t *p) {
     kfree(p);
 }
 static void cancel_staged_children(uint64_t parent) {
+    tcb_t *detached = NULL;
+    uint64_t flags = spin_lock_irqsave(&staged_lock);
     tcb_t **link = &staged_processes;
     while (*link) {
         tcb_t *p = *link;
         if (p->parent_pid != parent) { link=&p->next; continue; }
         *link=p->next;
+        p->next=detached;
+        detached=p;
+    }
+    spin_unlock_irqrestore(&staged_lock, flags);
+    while (detached) {
+        tcb_t *p=detached;
+        detached=p->next;
         destroy_staged(p);
     }
 }
@@ -2313,27 +2328,45 @@ int64_t process_group_release(uint64_t pgid, uint32_t action) {
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(irq) :: "memory");
     uint64_t parent=thread_current()->tid;
     bool found=false;
+    uint64_t staged_flags=spin_lock_irqsave(&staged_lock);
     /* Validate whole group before mutation: no partial release on ownership error. */
     for (tcb_t *p=staged_processes; p; p=p->next) {
         if (p->pgid != pgid) continue;
         if (p->parent_pid != parent) {
+            spin_unlock_irqrestore(&staged_lock, staged_flags);
             __asm__ volatile("push %0; popfq" :: "r"(irq) : "memory");
             return SYSCALL_EPERM;
         }
         found=true;
     }
+    tcb_t *detached=NULL, **tail=&detached;
     tcb_t **link=&staged_processes;
     while (*link) {
         tcb_t *p=*link;
         if (p->pgid != pgid) { link=&p->next; continue; }
         *link=p->next;
         p->next=NULL;
+        *tail=p;
+        tail=&p->next;
+    }
+    spin_unlock_irqrestore(&staged_lock, staged_flags);
+    while (detached) {
+        tcb_t *p=detached;
+        detached=p->next;
+        p->next=NULL;
         if (action == GROUP_CANCEL) { destroy_staged(p); continue; }
         process_record_commit(p->tid);
         p->state=THREAD_READY;
-        uint64_t flags=spin_lock_irqsave(&g_sched_lock);
-        runqueue_push_locked(p);
-        spin_unlock_irqrestore(&g_sched_lock, flags);
+        size_t target=p->current_cpu;
+        bool unbound=p->cpu_affinity<0;
+        uint64_t flags=spin_lock_irqsave(&scheduler_cpus[target].sched_lock);
+        runqueue_push_cpu_locked(target,p);
+        spin_unlock_irqrestore(&scheduler_cpus[target].sched_lock, flags);
+        /* p is published: never dereference it again. */
+        if (target!=cpu_current()->id) smp_send_work_hint(target);
+        else if (unbound)
+            for (size_t c=0;c<g_total_sched_cpus;c++)
+                if (c!=target) smp_send_work_hint(c);
     }
     __asm__ volatile("push %0; popfq" :: "r"(irq) : "memory");
     return found ? 0 : SYSCALL_ESRCH;

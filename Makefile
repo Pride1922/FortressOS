@@ -8,6 +8,14 @@ test-network-smp-phase0:
 	@python3 scripts/test_network_smp_phase0.py
 
 SHELL := /bin/bash
+.PHONY: test-network-smp-phase3-host test-network-smp-phase3
+test-network-smp-phase3-host:
+	@python3 scripts/test_network_smp_phase3_host.py
+test-network-smp-phase3: test-network-smp-phase3-host
+	@python3 scripts/test_network_smp_phase3.py
+.PHONY: verify-network-smp-phase3-release
+verify-network-smp-phase3-release:
+	@python3 scripts/verify_network_smp_phase3_release.py
 .PHONY: test-network-smp-phase1-host
 .PHONY: test-network-smp-phase1
 test-network-smp-phase1: test-network-smp-phase1-host

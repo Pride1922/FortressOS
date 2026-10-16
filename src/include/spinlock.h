@@ -33,7 +33,7 @@ void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags);
  *
  * SUBSYSTEM LOCK HIERARCHY & ORDERING:
  * To avoid deadlocks, locks must always be acquired in increasing rank order:
- *   Level 1: per-CPU scheduler locks OR ext2_lock OR g_process_lock
+ *   Level 1: per-CPU scheduler locks OR ext2_lock OR g_process_lock OR staged_lock
  *   Level 2: g_heap_lock  (Kernel heap & free list)
  *   Level 3: g_vmm_lock   (Page tables & virtual mapping)
  *   Level 4: g_pmm_lock   (Physical frame bitmap allocator)
@@ -47,6 +47,8 @@ void spin_unlock_irqrestore(spinlock_t *lock, uint64_t flags);
  * filesystem work, user copies, descriptor cleanup or address-space teardown.
  * Its event sequence is release-published; wait predicates acquire-read the
  * sequence without taking this lock under a scheduler lock.
+ * staged_lock owns only the never-run task list. Detach before metadata,
+ * descriptor/VM cleanup or scheduler publication; it never nests another lock.
  *
  * CRITICAL CONSTRAINTS:
  * 1. Never acquire a higher-level lock while holding a lower-level lock.

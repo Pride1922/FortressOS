@@ -54,6 +54,13 @@ static int64_t run_read_file(vfs_node_t *node,uint64_t off,void *buf,size_t len)
     if (len) memcpy(buf,run_entry(node)->data+off,len);
     spin_unlock_irqrestore(&run_lock,irq);return len;
 }
+static int64_t run_read_offset(vfs_node_t *node,uint64_t *off,void *buf,size_t len) {
+    uint64_t irq=spin_lock_irqsave(&run_lock);
+    if (*off>=node->size) len=0;else if (len>node->size-*off) len=node->size-*off;
+    if (len) memcpy(buf,run_entry(node)->data+*off,len);
+    *off+=len;
+    spin_unlock_irqrestore(&run_lock,irq);return len;
+}
 static int64_t run_write_file(vfs_node_t *node,uint64_t *offset,bool append,const void *buf,size_t len) {
     uint64_t irq=spin_lock_irqsave(&run_lock);uint64_t off=append ? node->size : *offset;
     if (off>=RUNFS_BYTES) { spin_unlock_irqrestore(&run_lock,irq);return -VFS_ENOSPC; }
@@ -120,7 +127,7 @@ static void run_setup(run_node_t *n,vfs_node_t *parent,const char *name,vfs_node
         n->node.lookup=run_lookup;n->node.lookup_ref=run_lookup_ref;n->node.create=run_create;
         n->node.create_ref=run_create_ref;n->node.create_attrs_ref=run_create_attrs;
         n->node.unlink=run_unlink_node;n->node.readdir=run_readdir_node;
-    } else { n->node.read=run_read_file;n->node.write=run_write_file;n->node.truncate=run_truncate_file; }
+    } else { n->node.read=run_read_file;n->node.read_offset=run_read_offset;n->node.write=run_write_file;n->node.truncate=run_truncate_file; }
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
     n->node.permission_actor=run_permission_actor;n->node.open_actor=run_open_actor;
     n->node.setattr_actor=run_setattr_actor;

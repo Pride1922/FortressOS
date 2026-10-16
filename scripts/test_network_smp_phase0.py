@@ -59,6 +59,12 @@ def instrument(workspace):
         path = workspace / name
         original = path.read_bytes()
         content = original.decode().replace('\r\n', '\n')
+        if name.endswith('thread.c') and anchor not in content:
+            # Phase 3 production release now honors the initialized target for
+            # every child. Legacy explicit-worker probes need no launch patch.
+            assert 'size_t target=p->current_cpu;' in content
+            assert 'runqueue_push_cpu_locked(target,p);' in content
+            continue
         assert content.count(anchor) == 1, name
         if name.endswith('net.c'):
             content = '#include "percpu.h"\n' + content

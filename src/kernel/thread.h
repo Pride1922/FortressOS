@@ -201,10 +201,11 @@ void sched_unlock_pair(spinlock_t *a, spinlock_t *b);
 /* Kernel path, syscall error codes. Reserves one of 64 child records until
  * wait or parent exit; never overwrites an uncollected child status.
  * Process entry ABI: RSP points to argc, RDI = argc, RSI = argv, RDX = envp.
- * Ordinary VFS children are BSP-pinned from publication; explicit --worker
+ * Ordinary VFS children allow every CPU from publication; explicit --worker
  * benchmark children retain their requested CPU placement. Global metadata
  * uses an ordinary rank-1 process lock, never nested with scheduler/ext2.
- * v2 staged children remain exclusively BSP-owned until release/cancellation.
+ * v2 staged children are protected by the disjoint rank-1 staged-list lock;
+ * release/cancellation detaches before any metadata, cleanup or queue work.
  * Clones all descriptors/flags as shared file_t references (ACQ_REL refcounts),
  * applies ordered spawn fd actions using caller authority, then closes unmapped
  * descriptors >2 for admitted set-ID images and remaining CLOEXEC descriptors

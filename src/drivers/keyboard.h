@@ -13,7 +13,8 @@ typedef struct {
     unsigned pause_remaining;
 } keyboard_decoder_t;
 
-/* Set / get active keyboard layout (0 = US QWERTY, 1 = Belgian AZERTY) */
+/* All-CPU atomic layout publication (0 = US QWERTY, 1 = Belgian AZERTY).
+ * Decoder state itself remains exclusively owned by BSP ingress. */
 void keyboard_set_layout(int layout);
 int  keyboard_get_layout(void);
 

@@ -304,3 +304,15 @@ the hard 589824-byte (576 KiB) ceiling. All `.bss` and `.data*` sections are cou
 The same eight 64 KiB payload slabs serve UDP and TCP; ACCEPT allocates no second
 transport block and no independent payload pool. See
 [Phase 2D measurement and ordinary-build identity](../roadmap/network-smp-phase2d.md).
+## Network SMP Phase 3 rollout (2026-10-16)
+
+Ordinary VFS children now start on the caller CPU with affinity -1 and all-CPU
+eligibility before publication. Explicit benchmark worker placement is retained.
+Staged-list ownership uses a disjoint rank-1 lock and detaches before metadata,
+cleanup or scheduler work. Terminal predicates use atomic published snapshots;
+mutable regular-file reads advance shared positions under filesystem exclusion.
+The registered CPU-0 protocol owner, polling-only ingress, bounded credits and
+all network lifetime/transaction policies remain unchanged. Verification is
+tracked in [the Phase 3 audit](../roadmap/network-smp-phase3.md);
+no physical acceptance follows from this rollout. Earlier phase entries elsewhere
+are historical evidence and retain their original qualifications.

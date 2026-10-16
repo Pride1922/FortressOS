@@ -941,6 +941,14 @@ static int64_t ext_read(vfs_node_t *node, uint64_t off, void *buf, size_t len) {
     spin_unlock_irqrestore(&ext2_lock, flags);
     return r;
 }
+static int64_t ext_read_offset(vfs_node_t *node,uint64_t *off,void *buf,size_t len) {
+    if (len>EXT2_MAX_READ) len=EXT2_MAX_READ;
+    uint64_t flags=spin_lock_irqsave(&ext2_lock);
+    ext2_inode_t *in=node->fs_private;
+    int64_t r=in->removed ? -VFS_ENOENT : read_inode(in,*off,buf,len);
+    if (r>0) *off+=(uint64_t)r;
+    spin_unlock_irqrestore(&ext2_lock,flags);return r;
+}
 
 static int64_t ext_write(vfs_node_t *node, uint64_t *off, bool append, const void *buf, size_t len) {
     if (!node || !node->fs_private || !off) return -VFS_EINVAL;
@@ -1237,6 +1245,7 @@ static void setup(vfs_node_t *node, ext2_inode_t *in) {
     node->size = in->size;
     node->type = (in->mode & 0xf000) == 0x4000 ? VFS_DIRECTORY : VFS_FILE;
     node->read = ext_read;
+    node->read_offset = ext_read_offset;
     if (in->fs->read_only) {
         node->write = NULL;
         node->truncate = NULL;

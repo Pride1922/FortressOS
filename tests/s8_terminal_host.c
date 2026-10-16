@@ -3,16 +3,21 @@
 #include <assert.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <sched.h>
 #define INPUT_HOST_TEST
 #include "process_table.c"
 #include "input.c"
 unsigned input_test_cpu;
-static bool locked, device_irq;
-static tcb_t tasks[12], *current;
+static _Thread_local bool locked, device_irq;
+static tcb_t tasks[12];
+static _Thread_local tcb_t *current;
 static vfs_node_t tty, other;
 static file_t tty_file={.node=&tty}, other_file={.node=&other};
 static unsigned stops, wakes;
 static void (*wait_hook)(void);
+#ifdef TERMINAL_CONCURRENT_TEST
+static bool concurrent_mode;
+#endif
 uint64_t spin_lock_irqsave(spinlock_t *l) {
     assert(!locked); assert(!pthread_mutex_lock(&l->mutex)); locked=true; return 0;
 }
@@ -24,9 +29,16 @@ file_t *fd_get(tcb_t *t,int fd) { return fd>=0 && fd<32 ? t->fd_table[fd] : NULL
 vfs_node_t *vfs_get_terminal_node(void) { return &tty; }
 void serial_puts(const char *s) { (void)s; assert(!locked && !device_irq); }
 void thread_yield(void) { assert(!locked && !device_irq); }
-void sched_wake_all(const void *channel) { (void)channel; assert(!locked && !device_irq); ++wakes; }
+void sched_wake_all(const void *channel) { (void)channel; assert(!locked && !device_irq); __atomic_add_fetch(&wakes,1,__ATOMIC_RELAXED); }
 void sched_wait_until(const void *channel,bool (*ready)(void *),void *arg) {
     (void)channel; assert(!locked && !device_irq);
+#ifdef TERMINAL_CONCURRENT_TEST
+    if (concurrent_mode) {
+        unsigned retries=0;
+        while (!ready(arg)) { assert(++retries<10000000); sched_yield(); }
+        return;
+    }
+#endif
     if (wait_hook) { void (*hook)(void)=wait_hook; wait_hook=NULL; hook(); }
     assert(ready(arg));
 }
@@ -56,6 +68,53 @@ static void setup(unsigned i) {
 static void lose_foreground(void) {
     current=&tasks[0]; assert(!input_tcsetpgrp(31,10)); current=&tasks[1];
 }
+#ifdef TERMINAL_CONCURRENT_TEST
+static unsigned histograms[4][95];
+static tcb_t concurrent_tasks[4];
+static void *reader(void *arg) {
+    unsigned id=(unsigned)(uintptr_t)arg;
+    current=&concurrent_tasks[id];
+    for (unsigned i=0;i<4096;i++) {
+        char c=0;
+        assert(input_read(&c,1)==1 && c>=32 && c<=126);
+        histograms[id][(unsigned)c-32]++;
+    }
+    return NULL;
+}
+static void concurrent_readers(void) {
+    assert(!input_tcsetpgrp(31,10));
+    uint64_t flags=spin_lock_irqsave(&g_terminal_lock);
+    g_terminal.attrs.input_flags=0;
+    g_input.count=g_input.head=0;
+    observed_drops=g_input.dropped;
+    terminal_unlock(flags);
+    concurrent_mode=true;
+    pthread_t threads[4];
+    for (unsigned i=0;i<4;i++) {
+        concurrent_tasks[i]=(tcb_t){.tid=10,.sid=10,.pgid=10,.is_user=true};
+        assert(!pthread_create(&threads[i],NULL,reader,(void *)(uintptr_t)i));
+    }
+    for (unsigned i=0;i<16384;i++) {
+        for (;;) {
+            flags=spin_lock_irqsave(&g_terminal_lock);
+            bool room=g_input.count<INPUT_CAPACITY;
+            terminal_unlock(flags);
+            if (room) break;
+            sched_yield();
+        }
+        char c=(char)(32+i%95); bytes(&c,1);
+    }
+    for (unsigned i=0;i<4;i++) assert(!pthread_join(threads[i],NULL));
+    concurrent_mode=false;
+    for (unsigned c=0;c<95;c++) {
+        unsigned total=0;
+        for (unsigned i=0;i<4;i++) total+=histograms[i][c];
+        assert(total==16384/95+(c<16384%95));
+    }
+    assert(!g_input.count && g_input.dropped==observed_drops);
+    puts("PASS actual terminal: 4 concurrent consumers, 16384 exact bytes, no false EOF/loss/duplication (pthread scheduler adapter)");
+}
+#endif
 int main(void) {
     (void)signal_worker; /* worker loop itself is exercised by QEMU */
     for (unsigned i=0;i<12;++i) setup(i);
@@ -128,6 +187,9 @@ int main(void) {
     worker_started=true; unsigned before=wakes; input_timer_tick(100); assert(wakes>before);
     while (drain_event()) {}
     assert(!g_terminal.event_count);
+#ifdef TERMINAL_CONCURRENT_TEST
+    concurrent_readers();
+#endif
     /* Release every queue/foreground owner; no retained group slots leak. */
     assert(process_group_release_ref(&g_terminal.foreground));
     for (unsigned i=1;i<12;++i) process_record_abort(10+i);

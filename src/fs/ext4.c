@@ -532,6 +532,12 @@ static int64_t e4_read(vfs_node_t *node,uint64_t off,void *buf,size_t len) {
     int64_t r=e4_read_locked(node,off,buf,len);
     spin_unlock_irqrestore(&e4_lock,flags);return r;
 }
+static int64_t e4_read_offset(vfs_node_t *node,uint64_t *off,void *buf,size_t len) {
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    int64_t r=e4_read_locked(node,*off,buf,len);
+    if (r>0) *off+=(uint64_t)r;
+    spin_unlock_irqrestore(&e4_lock,flags);return r;
+}
 static vfs_node_t *e4_lookup(vfs_node_t *parent,const char *name);
 static vfs_node_t *e4_lookup_ref(vfs_node_t *parent,const char *name,int *error);
 static vfs_node_t *e4_jcreate_ref(vfs_node_t *parent,const char *name,vfs_node_type_t type,int *error);
@@ -659,7 +665,7 @@ static void e4_setup(e4_node_t *n, e4_inode_t *in) {
         }
     }
     if (n->node.type==VFS_DIRECTORY) { n->node.lookup=e4_lookup; n->node.readdir=e4_readdir; }
-    else n->node.read=e4_read;
+    else { n->node.read=e4_read;n->node.read_offset=e4_read_offset; }
 }
 static vfs_node_t *e4_lookup_common(vfs_node_t *parent,const char *name,int *error,bool owned,const creds_t *actor) {
     if (error) *error=-VFS_EINVAL;

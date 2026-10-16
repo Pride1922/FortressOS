@@ -1070,36 +1070,41 @@ int64_t vfs_read(file_t *file, void *buf, size_t count) {
         return file->node->read ? file->node->read(file->node, 0, buf, count) : -VFS_EBADF;
     }
 
-    if (file->node->serializes_write_offset && file->node->read) {
-        int64_t n=file->node->read(file->node,file->offset,buf,count);
-        if (n>0) file->offset+=(uint64_t)n;
-        return n;
-    }
+    if (file->node->read_offset)
+        return file->node->read_offset(file->node,&file->offset,buf,count);
 
-    if (file->offset >= file->node->size) {
-        return 0; /* EOF */
-    }
+    /* Remaining production regular nodes are immutable boot bytes or read-only
+     * partition views. Their reads have no consumption side effect: retry on
+     * a shared-position conflict before returning bytes to this continuation.
+     * Mutable files must implement read_offset under filesystem exclusion. */
+    for (;;) {
+        uint64_t offset=__atomic_load_n(&file->offset,__ATOMIC_ACQUIRE);
+        if (offset >= file->node->size) {
+            return 0; /* EOF */
+        }
 
-    uint64_t available = file->node->size - file->offset;
-    size_t to_read = count;
-    if (to_read > available) {
-        to_read = (size_t)available;
-    }
+        uint64_t available = file->node->size - offset;
+        size_t to_read = count;
+        if (to_read > available) {
+            to_read = (size_t)available;
+        }
 
-    if (file->node->read) {
-        int64_t result = file->node->read(file->node, file->offset, buf, to_read);
-        if (result > 0) file->offset += (uint64_t)result;
-        return result;
-    }
-    if (file->node->data) {
-        const uint8_t *src = (const uint8_t *)file->node->data + file->offset;
-        memcpy(buf, src, to_read);
-    } else {
-        memset(buf, 0, to_read);
-    }
+        if (file->node->read) {
+            int64_t result = file->node->read(file->node, offset, buf, to_read);
+            if (result>0 && !__atomic_compare_exchange_n(&file->offset,&offset,offset+(uint64_t)result,
+                    false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) continue;
+            return result;
+        }
+        if (file->node->data) {
+            const uint8_t *src = (const uint8_t *)file->node->data + offset;
+            memcpy(buf, src, to_read);
+        } else {
+            memset(buf, 0, to_read);
+        }
 
-    file->offset += to_read;
-    return (int64_t)to_read;
+        if (__atomic_compare_exchange_n(&file->offset,&offset,offset+to_read,false,
+                __ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) return (int64_t)to_read;
+    }
 }
 
 int64_t vfs_write(file_t *file, const void *buf, size_t count) {
@@ -1223,7 +1228,10 @@ int vfs_readdir_file(file_t *file, vfs_dirent_t *out) {
     if (!out) return -VFS_EINVAL;
     /* Open admitted READ. Metadata changes do not revoke descriptor rights.
      * The filesystem callback still owns lifetime and coherent enumeration. */
-    int result = vfs_readdir(file->node, file->offset, out);
-    if (result == 1) file->offset++;
-    return result;
+    for (;;) {
+        uint64_t offset=__atomic_load_n(&file->offset,__ATOMIC_ACQUIRE);
+        int result = vfs_readdir(file->node, offset, out);
+        if (result!=1 || __atomic_compare_exchange_n(&file->offset,&offset,offset+1,
+                false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) return result;
+    }
 }
