@@ -31,11 +31,21 @@ command was not supplied, so its cause remains unconfirmed.
 
 ## Remaining acceptance evidence
 
+The user subsequently confirmed live-USB passes for `ifup`, `ifconfig`, ping,
+DNS, `smpbench`, `sysinfo` and cable recovery. This is manual functional
+acceptance of those operations; exact arguments, outputs and recovery timings
+were not supplied. Privileged `sudo ifup` invocation was not separately
+confirmed. `smpbench` success does not establish AP syscall execution by the
+ordinary network commands.
+
+Testing was live USB only. The user explicitly reports that installer-based
+persistent networking has not been tested. No installed-root configuration
+persistence/reload or installer acceptance is claimed.
+
 Record laptop model, firmware, CPU count, boot-image hash, configuration path
 and exact commands/results. Confirm ordinary unpinned commands, authorized
 `sudo ifup`, `ifconfig`, gateway ping, DNS, HTTP checksum, reboot configuration
 persistence/reload, concurrent/background commands and cable loss/recovery
 with shell recovery. Record approved physical AP execution evidence separately
 from functional success. Live-USB downloads do not establish the plan's
-installed-root/reboot gate. The user's other preliminary tests have not yet
-been itemized here. Phase 3 automated acceptance remains separate.
+installed-root/reboot gate. Phase 3 automated acceptance remains separate.
