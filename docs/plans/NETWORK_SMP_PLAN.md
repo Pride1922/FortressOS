@@ -172,6 +172,11 @@ Gate: ordinary commands work on BSP and APs, benchmarks retain explicit placemen
 
 ## Phase 4 — Physical acceptance
 
+Status (2026-10-16): IN PROGRESS. User-reported live-USB HTTP downloads:
+100 MiB, ten runs averaging 7.20 seconds (116.51 Mb/s payload). This does not
+close the installed-root, checksum, reboot, recovery or physical AP evidence
+requirements below. See [the physical evidence report](../roadmap/network-smp-phase4.md).
+
 User-run Dell 5590 installed-root acceptance: ordinary unpinned commands, `sudo ifup`, `ifconfig`, gateway ping, DNS and HTTP download with checksum. Repeat after reboot to demonstrate configuration persistence/reload. Include concurrent/background commands and cable loss/recovery, with shell recovery.
 
 Record firmware, CPU count, image hash, config path, commands, results and failures in a roadmap evidence report. Establish AP execution through approved diagnostic evidence; functional success alone does not establish cross-core use. No physical write or automated hardware acceptance is authorized by this plan.
