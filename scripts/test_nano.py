@@ -26,7 +26,7 @@ CODE = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
 VARS = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
 ISO = REPO / "bin" / "fortress.iso"
 NVME_SRC = REPO / "build" / "nvme_gpt.img"
-PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# )"
+PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# |[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\r\n]*[#$] )"
 
 
 def qemu_command(mode, iso, variables, log, uart_path, nvme_path):
@@ -105,22 +105,31 @@ def run_session(mode, iso, tmp):
             def get_text():
                 return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", get_raw()).replace("\r", "")
 
-            def wait_for_prompt(after_idx=0, timeout=60):
+            sent_login = False
+            def wait_for_prompt(after_idx=0, timeout=60, require_newline=False):
+                nonlocal sent_login
                 d = time.monotonic() + timeout
                 while time.monotonic() < d:
                     t = get_text()
-                    if re.search(PROMPT_PATTERN, t[after_idx:]):
-                        return t[after_idx:]
+                    chunk = t[after_idx:]
+                    if not sent_login and "FortressOS login: " in chunk:
+                        sent_login = True
+                        uart.sendall(b"operator\n")
+                    if require_newline:
+                        nl = chunk.find("\n")
+                        if nl != -1 and re.search(PROMPT_PATTERN, chunk[nl+1:]):
+                            return chunk
+                    else:
+                        if re.search(PROMPT_PATTERN, chunk):
+                            return chunk
                     assert proc.poll() is None, "QEMU terminated prematurely"
                     time.sleep(0.05)
                 raise TimeoutError(f"Prompt wait timed out: {get_text()[-1000:]}")
 
-            def exec_cmd(cmd_str):
+            def exec_cmd(cmd_str, timeout=10):
                 start = len(get_text())
-                for b in cmd_str.encode() + b"\n":
-                    uart.send(bytes([b]))
-                    time.sleep(0.005)
-                return wait_for_prompt(start)
+                uart.sendall(cmd_str.encode() + b"\n")
+                return wait_for_prompt(start, timeout=timeout, require_newline=True)
 
             def send_raw(data):
                 for b in data:
@@ -141,6 +150,7 @@ def run_session(mode, iso, tmp):
             print(f"[{mode}] Waiting for shell prompt...", flush=True)
             wait_for_prompt(0, timeout=60)
             print(f"[{mode}] Shell ready", flush=True)
+            exec_cmd("sudo chmod 777 /mnt")
 
             # -------------------------------------------------------------
             # Stage 1: Non-TTY Rejection

@@ -1292,7 +1292,9 @@ size_t nano_render_frame(nano_state_t *s, const char *pool, char *out_buf, size_
                 while (npos > 0) {
                     if (pos < max_out) out_buf[pos++] = num_str[--npos];
                 }
-                buf_append_str(out_buf, &pos, max_out, " | \x1b[0m");
+                buf_append_str(out_buf, &pos, max_out, " | \x1b[0m\x1b[97m");
+            } else {
+                buf_append_str(out_buf, &pos, max_out, "\x1b[97m");
             }
 
             const char *chars = pool + s->rows[line_idx].offset;
@@ -1325,15 +1327,16 @@ size_t nano_render_frame(nano_state_t *s, const char *pool, char *out_buf, size_
                 for (size_t p = 0; p < digits; p++) {
                     if (pos < max_out) out_buf[pos++] = ' ';
                 }
-                buf_append_str(out_buf, &pos, max_out, " ~ | \x1b[0m");
+                buf_append_str(out_buf, &pos, max_out, " ~ | \x1b[0m\x1b[97m");
             } else {
-                buf_append_str(out_buf, &pos, max_out, "~");
+                buf_append_str(out_buf, &pos, max_out, "\x1b[90m~\x1b[0m\x1b[97m");
             }
         }
         buf_append_str(out_buf, &pos, max_out, "\x1b[K\r\n");
     }
 
     /* Row H-1: Status bar */
+    buf_append_str(out_buf, &pos, max_out, "\x1b[0m\x1b[97m");
     if (s->status_msg[0]) {
         buf_append_str(out_buf, &pos, max_out, s->status_msg);
     }
@@ -1351,7 +1354,7 @@ size_t nano_render_frame(nano_state_t *s, const char *pool, char *out_buf, size_
     buf_append_u32(out_buf, &pos, max_out, (uint32_t)scr_y);
     buf_append_str(out_buf, &pos, max_out, ";");
     buf_append_u32(out_buf, &pos, max_out, (uint32_t)scr_x);
-    buf_append_str(out_buf, &pos, max_out, "H\x1b[?25h");
+    buf_append_str(out_buf, &pos, max_out, "H\x1b[?25h\x1b[97m");
 
     return pos;
 }
@@ -1368,7 +1371,7 @@ size_t nano_render_cursor(const nano_state_t *s, const char *pool, char *out_buf
     buf_append_u32(out_buf, &pos, max_out, (uint32_t)scr_y);
     buf_append_str(out_buf, &pos, max_out, ";");
     buf_append_u32(out_buf, &pos, max_out, (uint32_t)scr_x);
-    buf_append_str(out_buf, &pos, max_out, "H");
+    buf_append_str(out_buf, &pos, max_out, "H\x1b[97m");
     return pos;
 }
 
@@ -1384,7 +1387,7 @@ size_t nano_render_prompt_cursor(const nano_state_t *s, size_t prompt_len, char 
     buf_append_u32(out_buf, &pos, max_out, prompt_row);
     buf_append_str(out_buf, &pos, max_out, ";");
     buf_append_u32(out_buf, &pos, max_out, prompt_col);
-    buf_append_str(out_buf, &pos, max_out, "H\x1b[?25h");
+    buf_append_str(out_buf, &pos, max_out, "H\x1b[?25h\x1b[97m");
     return pos;
 }
 

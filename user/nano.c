@@ -420,11 +420,11 @@ int nano_main(int argc, char **argv) {
         return 1;
     }
 
-    /* 2. Configure terminal attributes: disable TERM_ISIG so Ctrl+C and Ctrl+Z are passed as input bytes */
+    /* 2. Configure terminal attributes: disable TERM_ISIG, TERM_ECHO, TERM_ICANON */
     if (sys_termattr(0, TERM_GET, &s_orig_attrs) == 0) {
         s_attrs_saved = true;
         terminal_attrs_t raw_attrs = s_orig_attrs;
-        raw_attrs.input_flags &= ~TERM_ISIG;
+        raw_attrs.input_flags &= ~(TERM_ISIG | TERM_ECHO | TERM_ICANON);
         (void)sys_termattr(0, TERM_SET, &raw_attrs);
     }
 
@@ -1083,7 +1083,7 @@ cleanup_exit:
     if (s_attrs_saved) {
         (void)sys_termattr(0, TERM_SET, &s_orig_attrs);
     }
-    /* Clear screen, reset cursor */
-    (void)write_all(1, "\x1b[2J\x1b[H\x1b[?25h", 14);
+    /* Clear screen, reset cursor, reset attributes */
+    (void)write_all(1, "\x1b[0m\x1b[2J\x1b[H\x1b[?25h", 18);
     return 0;
 }
