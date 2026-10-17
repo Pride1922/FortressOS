@@ -41,6 +41,7 @@ return FortressOS `SYSCALL_EINVAL` before publication. Actual keygen propagates
 | SHA-256 | `crypto_sha256`, `crypto_sha256_init/update/final` | existing digest codec, unchanged |
 | SHA-512 | `crypto_sha512`, `crypto_sha512_init/update/final` | optional Monocypher module |
 | HMAC-SHA-256 | `crypto_hmac_sha256` | RFC2104 over existing streaming SHA-256, keys >64 bytes hashed first |
+| HKDF-SHA-256 | `crypto_hkdf_extract`, `crypto_hkdf_expand`, `crypto_hkdf` | RFC5869 Extract-and-Expand KDF over HMAC-SHA-256, max OKM 8,160 bytes (255×32), zero allocation, fail-closed erasure |
 | Ed25519 | `crypto_ed25519_from_seed`, `crypto_ed25519_keygen`, `crypto_ed25519_sign`, `crypto_ed25519_verify` | pure RFC8032 SHA-512 Ed25519, no ctx/ph/Ed448 |
 | X25519 | `crypto_x25519_from_seed`, `crypto_x25519_keygen`, `crypto_x25519` | scalar clamping, low-order/all-zero DH refusal |
 | ChaCha20-Poly1305 | `crypto_aead_lock`, `crypto_aead_unlock` | RFC8439, 32-byte key, 12-byte nonce, 16-byte tag |
