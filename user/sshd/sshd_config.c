@@ -36,6 +36,61 @@ static void cfg_copy(char *dst, const char *src, size_t cap) {
     dst[i] = '\0';
 }
 
+static void cfg_append(char *dst, const char *src, size_t cap) {
+    if (!dst || cap == 0) return;
+    size_t len = 0;
+    while (dst[len] && len < cap) len++;
+    size_t i = 0;
+    while (src && src[i] && len + 1 < cap) {
+        dst[len++] = src[i++];
+    }
+    dst[len] = '\0';
+}
+
+static void cfg_append_u32(char *dst, uint32_t val, size_t cap) {
+    char tmp[16];
+    int idx = 0;
+    if (val == 0) {
+        tmp[idx++] = '0';
+    } else {
+        while (val > 0) {
+            tmp[idx++] = (char)('0' + (val % 10));
+            val /= 10;
+        }
+    }
+    char rev[16];
+    for (int i = 0; i < idx; i++) {
+        rev[i] = tmp[idx - 1 - i];
+    }
+    rev[idx] = '\0';
+    cfg_append(dst, rev, cap);
+}
+
+static void cfg_format_out_of_range(char *err_msg, size_t err_cap, const char *directive,
+                                    const char *val, uint32_t line, const char *extra) {
+    if (!err_msg || err_cap == 0) return;
+    err_msg[0] = '\0';
+    cfg_append(err_msg, "sshd: out-of-range value '", err_cap);
+    cfg_append(err_msg, val, err_cap);
+    cfg_append(err_msg, "' for ", err_cap);
+    cfg_append(err_msg, directive, err_cap);
+    cfg_append(err_msg, " at line ", err_cap);
+    cfg_append_u32(err_msg, line, err_cap);
+    if (extra && extra[0]) {
+        cfg_append(err_msg, " ", err_cap);
+        cfg_append(err_msg, extra, err_cap);
+    }
+}
+
+static void cfg_format_unknown(char *err_msg, size_t err_cap, const char *key, uint32_t line) {
+    if (!err_msg || err_cap == 0) return;
+    err_msg[0] = '\0';
+    cfg_append(err_msg, "sshd: unknown directive '", err_cap);
+    cfg_append(err_msg, key, err_cap);
+    cfg_append(err_msg, "' at line ", err_cap);
+    cfg_append_u32(err_msg, line, err_cap);
+}
+
 static bool cfg_isspace(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
@@ -89,6 +144,8 @@ void sshd_config_init_defaults(sshd_config_t *cfg) {
     cfg->password_auth = true;
     cfg->pubkey_auth = true;
     cfg->max_sessions = 2;
+    cfg->max_auth_tries = 5;
+    cfg->login_grace_time = 60;
 }
 
 int sshd_config_parse_buffer(const char *buf, size_t len, sshd_config_t *out_cfg,
@@ -97,7 +154,9 @@ int sshd_config_parse_buffer(const char *buf, size_t len, sshd_config_t *out_cfg
     sshd_config_init_defaults(out_cfg);
 
     size_t pos = 0;
+    uint32_t line_num = 0;
     while (pos < len) {
+        line_num++;
         /* Read next line */
         size_t line_start = pos;
         while (pos < len && buf[pos] != '\n') pos++;
@@ -144,6 +203,9 @@ int sshd_config_parse_buffer(const char *buf, size_t len, sshd_config_t *out_cfg
                 out_cfg->enabled = true;
             } else if (cfg_strcasecmp(val, "no") || cfg_strcasecmp(val, "false") || cfg_strcasecmp(val, "0")) {
                 out_cfg->enabled = false;
+            } else {
+                cfg_format_out_of_range(err_msg, err_cap, "Enabled", val, line_num, NULL);
+                return -1;
             }
         } else if (cfg_strcasecmp(key, "Port")) {
             uint32_t p = 0;
@@ -155,9 +217,7 @@ int sshd_config_parse_buffer(const char *buf, size_t len, sshd_config_t *out_cfg
             if (*vp == '\0' && p > 0 && p <= 65535) {
                 out_cfg->port = (uint16_t)p;
             } else {
-                if (err_msg && err_cap > 0) {
-                    cfg_copy(err_msg, "Invalid port number", err_cap);
-                }
+                cfg_format_out_of_range(err_msg, err_cap, "Port", val, line_num, NULL);
                 return -1;
             }
         } else if (cfg_strcasecmp(key, "ListenAddress")) {
@@ -165,28 +225,34 @@ int sshd_config_parse_buffer(const char *buf, size_t len, sshd_config_t *out_cfg
             if (parse_ipv4(val, &ip) == 0) {
                 out_cfg->listen_address = ip;
             } else {
-                if (err_msg && err_cap > 0) {
-                    cfg_copy(err_msg, "Invalid ListenAddress", err_cap);
-                }
+                cfg_format_out_of_range(err_msg, err_cap, "ListenAddress", val, line_num, NULL);
                 return -1;
             }
         } else if (cfg_strcasecmp(key, "PermitRootLogin")) {
-            if (cfg_strcasecmp(val, "yes")) {
-                out_cfg->permit_root_login = true;
-            } else {
+            if (cfg_strcasecmp(val, "no") || cfg_strcasecmp(val, "false") || cfg_strcasecmp(val, "0")) {
                 out_cfg->permit_root_login = false;
+            } else {
+                /* FortressOS security contract: PermitRootLogin MUST be "no", reject "yes" */
+                cfg_format_out_of_range(err_msg, err_cap, "PermitRootLogin", val, line_num, "(must be 'no')");
+                return -1;
             }
         } else if (cfg_strcasecmp(key, "PasswordAuthentication")) {
-            if (cfg_strcasecmp(val, "no") || cfg_strcasecmp(val, "0")) {
+            if (cfg_strcasecmp(val, "no") || cfg_strcasecmp(val, "0") || cfg_strcasecmp(val, "false")) {
                 out_cfg->password_auth = false;
-            } else {
+            } else if (cfg_strcasecmp(val, "yes") || cfg_strcasecmp(val, "1") || cfg_strcasecmp(val, "true")) {
                 out_cfg->password_auth = true;
+            } else {
+                cfg_format_out_of_range(err_msg, err_cap, "PasswordAuthentication", val, line_num, NULL);
+                return -1;
             }
         } else if (cfg_strcasecmp(key, "PubkeyAuthentication")) {
-            if (cfg_strcasecmp(val, "no") || cfg_strcasecmp(val, "0")) {
+            if (cfg_strcasecmp(val, "no") || cfg_strcasecmp(val, "0") || cfg_strcasecmp(val, "false")) {
                 out_cfg->pubkey_auth = false;
-            } else {
+            } else if (cfg_strcasecmp(val, "yes") || cfg_strcasecmp(val, "1") || cfg_strcasecmp(val, "true")) {
                 out_cfg->pubkey_auth = true;
+            } else {
+                cfg_format_out_of_range(err_msg, err_cap, "PubkeyAuthentication", val, line_num, NULL);
+                return -1;
             }
         } else if (cfg_strcasecmp(key, "MaxSessions")) {
             uint32_t s = 0;
@@ -197,7 +263,40 @@ int sshd_config_parse_buffer(const char *buf, size_t len, sshd_config_t *out_cfg
             }
             if (*vp == '\0' && s >= 1 && s <= 2) {
                 out_cfg->max_sessions = s;
+            } else {
+                cfg_format_out_of_range(err_msg, err_cap, "MaxSessions", val, line_num, "(1-2)");
+                return -1;
             }
+        } else if (cfg_strcasecmp(key, "MaxAuthTries")) {
+            uint32_t t = 0;
+            const char *vp = val;
+            while (*vp >= '0' && *vp <= '9') {
+                t = t * 10 + (uint32_t)(*vp - '0');
+                vp++;
+            }
+            if (*vp == '\0' && t >= 1 && t <= 5) {
+                out_cfg->max_auth_tries = t;
+            } else {
+                cfg_format_out_of_range(err_msg, err_cap, "MaxAuthTries", val, line_num, "(1-5)");
+                return -1;
+            }
+        } else if (cfg_strcasecmp(key, "LoginGraceTime")) {
+            uint32_t g = 0;
+            const char *vp = val;
+            while (*vp >= '0' && *vp <= '9') {
+                g = g * 10 + (uint32_t)(*vp - '0');
+                vp++;
+            }
+            if (*vp == '\0' && g > 0 && g <= 600) {
+                out_cfg->login_grace_time = g;
+            } else {
+                cfg_format_out_of_range(err_msg, err_cap, "LoginGraceTime", val, line_num, NULL);
+                return -1;
+            }
+        } else {
+            /* Strict parser: unknown directive -> refuse to start with clear diagnostic */
+            cfg_format_unknown(err_msg, err_cap, key, line_num);
+            return -1;
         }
     }
 

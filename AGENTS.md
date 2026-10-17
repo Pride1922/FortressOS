@@ -40,6 +40,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 | Memory investigation | COMPLETE | [docs/roadmap/memory-investigation.md](docs/roadmap/memory-investigation.md) |
 | VFS node lifetime | COMPLETE | [docs/subsystems/storage.md](docs/subsystems/storage.md) |
 | Installer (Phases 0–4) | COMPLETE through Phase 4 (disposable acceptance) | [docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md](docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md) |
+| SSH (Phases 0–7) | COMPLETE through Phase 7 (Privilege-separated monitor & worker, strict `/etc/ssh/sshd_config` schema, boot readiness gate, global 2-session cap, in-kernel PTY duplex bridge, 5s bounded teardown) | [docs/subsystems/ssh.md](docs/subsystems/ssh.md) |
 
 Network SMP Phases 0–4 are COMPLETE through bounded user-confirmed Dell physical
 acceptance (2026-10-16). Installed networking, hashes, concurrency, cable recovery

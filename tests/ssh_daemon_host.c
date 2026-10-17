@@ -70,13 +70,50 @@ static void test_config_defaults_and_parsing(void) {
     /* Test invalid port */
     const char *bad_port = "Port 99999\n";
     assert(sshd_config_parse_buffer(bad_port, strlen(bad_port), &cfg, err_buf, sizeof(err_buf)) == -1);
-    assert(err_buf[0] != '\0');
+    assert(strstr(err_buf, "out-of-range value '99999' for Port at line 1") != NULL);
 
     /* Test invalid IP */
     const char *bad_ip = "ListenAddress 999.1.1.1\n";
     err_buf[0] = '\0';
     assert(sshd_config_parse_buffer(bad_ip, strlen(bad_ip), &cfg, err_buf, sizeof(err_buf)) == -1);
-    assert(err_buf[0] != '\0');
+    assert(strstr(err_buf, "out-of-range value '999.1.1.1' for ListenAddress at line 1") != NULL);
+
+    /* Test PermitRootLogin yes rejection (must be "no", reject "yes") */
+    const char *root_yes_conf = "PermitRootLogin yes\n";
+    err_buf[0] = '\0';
+    assert(sshd_config_parse_buffer(root_yes_conf, strlen(root_yes_conf), &cfg, err_buf, sizeof(err_buf)) == -1);
+    assert(strstr(err_buf, "PermitRootLogin at line 1 (must be 'no')") != NULL);
+
+    /* Test strict parser: unknown directive -> refuse to start with sshd: unknown directive '<name>' at line <N> */
+    const char *unknown_conf =
+        "# Valid comment\n"
+        "Port 22\n"
+        "X11Forwarding yes\n";
+    err_buf[0] = '\0';
+    assert(sshd_config_parse_buffer(unknown_conf, strlen(unknown_conf), &cfg, err_buf, sizeof(err_buf)) == -1);
+    assert(strstr(err_buf, "sshd: unknown directive 'X11Forwarding' at line 3") != NULL);
+
+    /* Test MaxAuthTries (1-5) and LoginGraceTime (seconds) */
+    const char *full_conf =
+        "Port 22\n"
+        "MaxAuthTries 4\n"
+        "LoginGraceTime 120\n";
+    err_buf[0] = '\0';
+    assert(sshd_config_parse_buffer(full_conf, strlen(full_conf), &cfg, err_buf, sizeof(err_buf)) == 0);
+    assert(cfg.max_auth_tries == 4);
+    assert(cfg.login_grace_time == 120);
+
+    /* Test MaxAuthTries out-of-range (>5) */
+    const char *bad_tries = "MaxAuthTries 10\n";
+    err_buf[0] = '\0';
+    assert(sshd_config_parse_buffer(bad_tries, strlen(bad_tries), &cfg, err_buf, sizeof(err_buf)) == -1);
+    assert(strstr(err_buf, "out-of-range value '10' for MaxAuthTries at line 1 (1-5)") != NULL);
+
+    /* Test MaxSessions out-of-range (>2) */
+    const char *bad_sessions = "MaxSessions 4\n";
+    err_buf[0] = '\0';
+    assert(sshd_config_parse_buffer(bad_sessions, strlen(bad_sessions), &cfg, err_buf, sizeof(err_buf)) == -1);
+    assert(strstr(err_buf, "out-of-range value '4' for MaxSessions at line 1 (1-2)") != NULL);
 
     printf("PASS: test_config_defaults_and_parsing\n");
 }

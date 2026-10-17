@@ -23,6 +23,8 @@ typedef struct {
     bool     password_auth;     /* Default true */
     bool     pubkey_auth;       /* Default true */
     uint32_t max_sessions;      /* Default 2, max 2 */
+    uint32_t max_auth_tries;    /* Default 5, range 1-5 */
+    uint32_t login_grace_time;  /* Default 60 seconds */
 } sshd_config_t;
 
 /* Initialize config with secure FortressOS defaults */
