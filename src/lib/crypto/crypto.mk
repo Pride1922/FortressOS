@@ -46,6 +46,10 @@ test-ssh-hostkeys-host:
 test-ssh-transport-host:
 	@python3 scripts/test_ssh_transport_host.py
 
+.PHONY: test-ssh-auth-host
+test-ssh-auth-host:
+	@python3 scripts/test_ssh_auth_host.py
+
 .PHONY: test-ssh-hostkeys-storage-host
 test-ssh-hostkeys-storage-host: test-ssh-hostkeys-host
 	@python3 scripts/test_ssh_hostkey_storage.py

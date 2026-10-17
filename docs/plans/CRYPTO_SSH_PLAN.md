@@ -1,7 +1,8 @@
 # Crypto library, SSH server and host identity
 
-Updated 2026-10-17. **Phases 1–2 complete; Phase 3 host identity implemented
-and verified within the evidence below. SSH service phases remain planned.**
+Updated 2026-10-17. **Phases 1–5 complete (randomness, crypto library, host identity,
+SSH transport, and authentication/privilege separation verified under automated gates).
+PTY/session channels, daemon lifecycle, and physical acceptance remain planned.**
 Tracks [crypto #50](https://github.com/Pride1922/FortressOS/issues/50),
 [SSH server #51](https://github.com/Pride1922/FortressOS/issues/51) and
 [host keys #52](https://github.com/Pride1922/FortressOS/issues/52).
@@ -222,6 +223,13 @@ metadata and unchanged templates/non-targets. No host secret in logs/artifacts.
 
 ### Phase 4 — SSH transport (#51 prerequisite)
 
+**COMPLETE (2026-10-17):** Verified via `make test-ssh-transport-host` under ASan/UBSan.
+Includes bounded identification exchange (`SSH-2.0-FortressSSH_0.1`), binary packet protocol
+(RFC 4253), dynamic buffer primitives (`sshbuf_t`), ChaCha20-Poly1305 packet AEAD with 4-byte
+length encryption and Poly1305 tag verification, Curve25519-SHA256 key exchange (RFC 8731),
+transcript exchange hash computation, host Ed25519 signature verification, SSH key derivation (RFC 4253 §7.2),
+and strict KEX packet ordering.
+
 Implement bounded identification/KEXINIT parsing, negotiated profile, transcript
 hash, host signature, key derivation, NEWKEYS and authenticated packet records.
 Handle split/coalesced TCP reads, short writes, EOF, maximum packet/padding
@@ -242,6 +250,16 @@ host transcript vectors plus sanitizer/fuzz coverage. Full session/SSH closure
 does not follow from handshake success.
 
 ### Phase 5 — authentication and privilege separation
+
+**COMPLETE (2026-10-17):** Verified via `make test-ssh-auth-host` under ASan/UBSan.
+Includes structured privilege-separated monitor IPC over anonymous pipes (`SYS_PIPE` 24)
+connecting the privileged monitor (`/sbin/sshd`, UID 0, CAP_SYS_ADMIN) with unprivileged
+network protocol workers (`sshd-net`, drop-only CAP=0). Verified operations:
+- `REQ_SIGN_HASH`: Session-bound host key signing oracle limited to 1 signature per KEX round. Arbitrary and out-of-order signing rejected.
+- `REQ_AUTH_PASSWORD`: Authenticated against `/etc/shadow` via `userdb_t` (`db_load`, `db_verify`). Constant-time dummy verification for unknown/locked/root accounts. Remote root login explicitly rejected.
+- `REQ_AUTH_PUBKEY`: RFC 4252 Ed25519 userauth signature check over `session_id || SSH_MSG_USERAUTH_REQUEST || ...`. Validates `~/.ssh/authorized_keys` with strict path, ownership (user or root), and permissions (dir 0700, file 0600).
+- `REQ_SPAWN_SESSION`: Prepares user session credentials per `CREDENTIAL_SNAPSHOT_PROTOCOL.md` (revalidates account generation via `db_check()`, sets real/effective/saved UID/GID, supplementary groups, drops all capabilities, and closes privileged and monitor descriptors).
+- SSH user authentication protocol engine (`user/sshd/auth.c`, `user/sshd/auth.h`) handling `SSH_MSG_SERVICE_REQUEST`, `SSH_MSG_USERAUTH_REQUEST` ("password" and "publickey"), `SSH_MSG_USERAUTH_SUCCESS`, `SSH_MSG_USERAUTH_FAILURE`, and `SSH_MSG_USERAUTH_BANNER`, with strict session binding (anti-replay) and bounded attempt limits (max 5 attempts).
 
 Keep private host keys and shadow data in a small privileged monitor. Run
 unauthenticated parsing/transport work in a restricted spawned process; narrow

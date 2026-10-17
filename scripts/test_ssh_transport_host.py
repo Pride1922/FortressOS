@@ -30,7 +30,8 @@ def main():
     for i, p in enumerate(vendor):
         obj = BUILD / f'vendor-{i}.o'
         objs.append(obj)
-        run(common + flags + ['-include', 'src/lib/crypto/namespace.h', '-c', p, '-o', obj])
+        if not obj.exists():
+            run(common + flags + ['-include', 'src/lib/crypto/namespace.h', '-c', p, '-o', obj])
 
     exe = BUILD / 'transport-test'
     run(common + flags + [
