@@ -805,6 +805,12 @@ static bool dmesg_tag_matches(const char *line, size_t line_len, const char *fac
     while (pos < line_len && (line[pos] == ' ' || line[pos] == '\t')) {
         pos++;
     }
+    if (pos + 2 < line_len && line[pos] == '<' && line[pos + 1] >= '0' && line[pos + 1] <= '7' && line[pos + 2] == '>') {
+        pos += 3;
+        while (pos < line_len && (line[pos] == ' ' || line[pos] == '\t')) {
+            pos++;
+        }
+    }
     if (pos >= line_len || line[pos] != '[') {
         return false;
     }
@@ -833,6 +839,109 @@ static bool dmesg_tag_matches(const char *line, size_t line_len, const char *fac
     return true;
 }
 
+static bool iequal(const char *tok, size_t len, const char *name) {
+    size_t i = 0;
+    while (i < len && name[i]) {
+        char c1 = tok[i];
+        char c2 = name[i];
+        if (c1 >= 'A' && c1 <= 'Z') c1 = (char)(c1 + ('a' - 'A'));
+        if (c2 >= 'A' && c2 <= 'Z') c2 = (char)(c2 + ('a' - 'A'));
+        if (c1 != c2) return false;
+        i++;
+    }
+    return (i == len && name[i] == '\0');
+}
+
+static int parse_level_token(const char *tok, size_t len, uint8_t *out_level) {
+    if (len == 1 && tok[0] >= '0' && tok[0] <= '7') {
+        *out_level = (uint8_t)(tok[0] - '0');
+        return 0;
+    }
+    if (iequal(tok, len, "emerg") || iequal(tok, len, "emergency") || iequal(tok, len, "panic")) {
+        *out_level = 0;
+        return 0;
+    }
+    if (iequal(tok, len, "alert")) {
+        *out_level = 1;
+        return 0;
+    }
+    if (iequal(tok, len, "crit") || iequal(tok, len, "critical")) {
+        *out_level = 2;
+        return 0;
+    }
+    if (iequal(tok, len, "err") || iequal(tok, len, "error")) {
+        *out_level = 3;
+        return 0;
+    }
+    if (iequal(tok, len, "warn") || iequal(tok, len, "warning")) {
+        *out_level = 4;
+        return 0;
+    }
+    if (iequal(tok, len, "notice")) {
+        *out_level = 5;
+        return 0;
+    }
+    if (iequal(tok, len, "info")) {
+        *out_level = 6;
+        return 0;
+    }
+    if (iequal(tok, len, "debug")) {
+        *out_level = 7;
+        return 0;
+    }
+    return -1;
+}
+
+static int parse_dmesg_levels(const char *arg, uint8_t *mask) {
+    if (!arg || !arg[0]) {
+        write_err("dmesg: option requires a level argument\n");
+        return 2;
+    }
+    const char *p = arg;
+    bool had_token = false;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ',') p++;
+        size_t tok_len = (size_t)(p - start);
+        bool comma_after = (*p == ',');
+        if (*p == ',') p++;
+
+        while (tok_len > 0 && (*start == ' ' || *start == '\t')) {
+            start++;
+            tok_len--;
+        }
+        while (tok_len > 0 && (start[tok_len - 1] == ' ' || start[tok_len - 1] == '\t')) {
+            tok_len--;
+        }
+        if (tok_len == 0) {
+            write_err("dmesg: invalid level ''\n");
+            return 2;
+        }
+
+        uint8_t lvl = 0;
+        if (parse_level_token(start, tok_len, &lvl) != 0) {
+            write_err("dmesg: unknown level '");
+            write_bytes_fd(2, start, tok_len);
+            write_err("'\n");
+            return 2;
+        }
+        *mask |= (uint8_t)(1 << lvl);
+        had_token = true;
+
+        if (comma_after && !*p) {
+            write_err("dmesg: invalid level ''\n");
+            return 2;
+        }
+    }
+    if (!had_token) {
+        write_err("dmesg: option requires a level argument\n");
+        return 2;
+    }
+    return 0;
+}
+
 static bool dmesg_line_matches(const char *line, size_t line_len, const char *const *filters, size_t num_filters) {
     if (num_filters == 0) return true;
     for (size_t i = 0; i < num_filters; i++) {
@@ -847,13 +956,16 @@ int exec_dmesg(int argc, const char *const *argv) {
     uint64_t tail_lines = 0;
     const char *dest_path = NULL;
     bool append = false;
+    bool raw_mode = false;
     const char *filters[MAX_DMESG_FILTERS];
     size_t num_filters = 0;
+    uint8_t level_mask = 0;
+    bool level_filter_active = false;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (equal(arg, "-h") || equal(arg, "--help")) {
-            write_str("usage: dmesg [-f FAC] [-a] [-n N | tail [N]] [path]\n"
+            write_str("usage: dmesg [-f FAC] [-l LEVELS] [-a] [-r] [-n N | tail [N]] [path]\n"
                       "       dmesg [path]\n\n"
                       "Print or save kernel diagnostic ring buffer messages.\n"
                       "options:\n"
@@ -861,12 +973,45 @@ int exec_dmesg(int argc, const char *const *argv) {
                       "                   filter by facility tag (case-insensitive, exact tag)\n"
                       "                   supported: NET, EXT4, USB, PMM, VMM, JBD2, BOOT, SMP,\n"
                       "                              PCI, ACPI, NVME, HEAP, TIME, SIGNAL, SHELL\n"
+                      "  -l LEVELS, --level=LEVELS\n"
+                      "                   filter by comma-separated severity levels (names or 0-7)\n"
+                      "                   supported: emerg (0), alert (1), crit (2), err (3),\n"
+                      "                              warn (4), notice (5), info (6), debug (7)\n"
+                      "  -r, --raw        do not strip kernel syslog level prefixes (<N>)\n"
                       "  -a, --append     append log output to file instead of overwriting\n"
                       "  -n N, tail [N]   print only the last N lines (e.g. dmesg -n 13)\n"
                       "  -h, --help       display this help and exit\n");
             return 0;
         } else if (equal(arg, "-a") || equal(arg, "--append")) {
             append = true;
+        } else if (equal(arg, "-r") || equal(arg, "--raw")) {
+            raw_mode = true;
+        } else if (equal(arg, "-l") || equal(arg, "--level")) {
+            if (i + 1 >= argc || !argv[i + 1][0]) {
+                write_err("dmesg: option requires a level argument\n");
+                return 2;
+            }
+            int rc = parse_dmesg_levels(argv[++i], &level_mask);
+            if (rc != 0) return rc;
+            level_filter_active = true;
+        } else if (starts_with(arg, "--level=")) {
+            const char *levels = arg + 8;
+            if (!levels[0]) {
+                write_err("dmesg: option requires a level argument\n");
+                return 2;
+            }
+            int rc = parse_dmesg_levels(levels, &level_mask);
+            if (rc != 0) return rc;
+            level_filter_active = true;
+        } else if (arg[0] == '-' && arg[1] == 'l' && arg[2] != '\0') {
+            const char *levels = (arg[2] == '=') ? arg + 3 : arg + 2;
+            if (!levels[0]) {
+                write_err("dmesg: option requires a level argument\n");
+                return 2;
+            }
+            int rc = parse_dmesg_levels(levels, &level_mask);
+            if (rc != 0) return rc;
+            level_filter_active = true;
         } else if (equal(arg, "-f") || equal(arg, "--facility")) {
             if (i + 1 >= argc || !argv[i + 1][0]) {
                 write_err("dmesg: option requires a facility argument\n");
@@ -944,30 +1089,45 @@ int exec_dmesg(int argc, const char *const *argv) {
 
     size_t len = (size_t)n;
 
-    if (num_filters > 0) {
-        size_t write_pos = 0;
-        size_t line_start = 0;
-        while (line_start < len) {
-            size_t line_end = line_start;
-            while (line_end < len && s_dmesg_buf[line_end] != '\n') {
-                line_end++;
-            }
-            if (line_end < len && s_dmesg_buf[line_end] == '\n') {
-                line_end++;
-            }
-            size_t line_len = line_end - line_start;
-            if (dmesg_line_matches(s_dmesg_buf + line_start, line_len, filters, num_filters)) {
-                if (write_pos != line_start) {
-                    for (size_t k = 0; k < line_len; k++) {
-                        s_dmesg_buf[write_pos + k] = s_dmesg_buf[line_start + k];
-                    }
-                }
-                write_pos += line_len;
-            }
-            line_start = line_end;
+    size_t write_pos = 0;
+    size_t line_start = 0;
+    while (line_start < len) {
+        size_t line_end = line_start;
+        while (line_end < len && s_dmesg_buf[line_end] != '\n') {
+            line_end++;
         }
-        len = write_pos;
+        if (line_end < len && s_dmesg_buf[line_end] == '\n') {
+            line_end++;
+        }
+        size_t line_len = line_end - line_start;
+        const char *line = s_dmesg_buf + line_start;
+
+        uint8_t line_level = 6; /* KLOG_INFO default */
+        const char *text = line;
+        size_t text_len = line_len;
+
+        if (line_len >= 3 && line[0] == '<' && line[1] >= '0' && line[1] <= '7' && line[2] == '>') {
+            line_level = (uint8_t)(line[1] - '0');
+            if (!raw_mode) {
+                text = line + 3;
+                text_len = line_len - 3;
+            }
+        }
+
+        bool match_fac = (num_filters == 0) || dmesg_line_matches(text, text_len, filters, num_filters);
+        bool match_lvl = (!level_filter_active) || ((level_mask & (1 << line_level)) != 0);
+
+        if (match_fac && match_lvl) {
+            if (write_pos != (size_t)(text - s_dmesg_buf)) {
+                for (size_t k = 0; k < text_len; k++) {
+                    s_dmesg_buf[write_pos + k] = text[k];
+                }
+            }
+            write_pos += text_len;
+        }
+        line_start = line_end;
     }
+    len = write_pos;
 
     size_t start = 0;
 

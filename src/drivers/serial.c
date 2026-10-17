@@ -140,6 +140,19 @@ void serial_putc(char c) {
 void serial_puts(const char *str) {
     if (!str) return;
 
+    if (str[0] == '<' && str[1] >= '0' && str[1] <= '7' && str[2] == '>') {
+        uint8_t level = (uint8_t)(str[1] - '0');
+        const char *body = str + 3;
+        dmesg_append_entry(level, body, strlen(body));
+        if (console_is_initialized() && !console_is_quiet()) {
+            console_puts(body);
+        }
+        while (*body) {
+            serial_raw_putc(*body++);
+        }
+        return;
+    }
+
     dmesg_append_str(str, strlen(str));
 
     if (console_is_initialized()) {

@@ -3,6 +3,7 @@
 #include "types.h"
 #include "limine.h"
 #include "serial.h"
+#include "dmesg.h"
 #include "gdt.h"
 #include "idt.h"
 #include "pmm.h"
@@ -6613,6 +6614,16 @@ pf_boot_guard_done:
         serial_puts("[TEST] opt/fortress/taint_test active: marking ext2 storage tainted before shell startup\n");
         ext2_mark_tainted();
     }
+
+    /* Severity level verification logs for dmesg -l (RFC 5424 levels 0..7) */
+    klog(KLOG_EMERG,   "[TEST] test log level 0 (emerg)\n");
+    klog(KLOG_ALERT,   "[TEST] test log level 1 (alert)\n");
+    klog(KLOG_CRIT,    "[TEST] test log level 2 (crit)\n");
+    klog(KLOG_ERR,     "[TEST] test log level 3 (err)\n");
+    klog(KLOG_WARNING, "[TEST] test log level 4 (warn)\n");
+    klog(KLOG_NOTICE,  "[TEST] test log level 5 (notice)\n");
+    klog(KLOG_INFO,    "[TEST] test log level 6 (info)\n");
+    klog(KLOG_DEBUG,   "[TEST] test log level 7 (debug)\n");
     if (root_phase1_requested()) root_phase1_fixture(&boot_info);
 #ifdef TEST_ROOT_PHASE2
     installed_root_test_faults(qemu_fw_cfg_has_key("opt/fortress/root_flush_fail"),

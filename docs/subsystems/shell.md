@@ -110,7 +110,7 @@ User-supplied testing confirms hardware operation on a Latitude 5590 (Core i5-83
 
 | Utility | Invocation | Pipeline Safe | Description |
 | --- | --- | --- | --- |
-| `dmesg` | `dmesg [-n N \| tail [N]] [<lines>] [path]` | **Yes** (`child_safe = true`) | Inspects the kernel 64 KiB ring buffer (`SYS_DMESG`). Available as a shell builtin and standalone ELF tool `/bin/dmesg`. Supports direct tailing (`dmesg -n 13`, `dmesg tail 20`, `dmesg 15`), disk persistence (`dmesg -n 25 /mnt/error.log`), and child-safe pipeline integration (`dmesg \| tail`, `dmesg \| wc -l`) for rapid live troubleshooting of driver, storage sync, and network events. |
+| `dmesg` | `dmesg [-f FAC] [-l LEVEL] [-n N \| tail [N]] [-r] [<lines>] [path]` | **Yes** (`child_safe = true`) | Inspects the kernel 64 KiB ring buffer (`SYS_DMESG`). Available as a shell builtin and standalone ELF tool `/bin/dmesg`. Supports facility filtering (`-f NET`, `--facility=USB`), RFC 5424 severity level filtering (`-l err`, `-l err,crit`, `-l 3`, `--level=warn`), combined intersection (`-f TEST -l warn`), raw output (`-r`/`--raw`), direct tailing (`dmesg -n 13`, `dmesg tail 20`, `dmesg 15`), disk persistence (`dmesg -f NET -l err /mnt/error.log`, `-a` append), and child-safe pipeline integration (`dmesg \| tail`, `dmesg \| wc -l`) for rapid live troubleshooting of driver, storage sync, and network events. |
 
 ---
 

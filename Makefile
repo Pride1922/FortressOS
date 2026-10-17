@@ -909,13 +909,15 @@ test-tail-f-host: test-tail-follow-host
 test-tail-f: $(BOOTABLE_ISO) $(NVME_GPT_IMG) test-tail-f-host
 	@python3 scripts/test_tail_f.py
 
-.PHONY: test-dmesg-filter-host test-dmesg-filter
+.PHONY: test-dmesg-filter-host test-dmesg-filter test-dmesg
 test-dmesg-filter-host:
 	@mkdir -p $(BUILD_DIR)
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -fno-builtin-puts -Isrc/include -Isrc/fs -Iuser -Iuser/shell tests/dmesg_filter_host.c user/shell/builtin_exec.c user/shell/builtins.c -o $(BUILD_DIR)/dmesg_filter_host && $(BUILD_DIR)/dmesg_filter_host
 
 test-dmesg-filter: $(BOOTABLE_ISO) $(NVME_GPT_IMG) test-dmesg-filter-host
 	@python3 scripts/test_dmesg_filter.py
+
+test-dmesg: test-dmesg-filter
 
 $(BUILD_DIR)/traceroute.o: user/traceroute.c user/tools/common.h src/include/trace_abi.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)

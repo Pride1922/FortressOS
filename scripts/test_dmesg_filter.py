@@ -224,12 +224,47 @@ def run_dmesg_filter_qemu(firmware="bios", smp=1):
             assert len(unf_lines) > 0, f"Expected lines from unfiltered dmesg: {unf_lines}"
             print(f"  [PASS] Unfiltered dmesg returned {len(unf_lines)} lines.")
 
+            # Test 9: dmesg -l err — returns exactly level 3 log
+            print("  [11] Testing: dmesg -l err")
+            err_lines = get_command_output("dmesg -l err")
+            assert len(err_lines) == 1, f"Expected exactly 1 line for dmesg -l err, got {len(err_lines)}: {err_lines}"
+            assert "test log level 3 (err)" in err_lines[0], f"Expected level 3 err log, got: {err_lines[0]}"
+            print(f"  [PASS] dmesg -l err returned exactly level 3 log: {err_lines[0]}")
+
+            # Test 10: dmesg -l err,crit — returns levels 2 and 3
+            print("  [12] Testing: dmesg -l err,crit")
+            err_crit_lines = get_command_output("dmesg -l err,crit")
+            assert len(err_crit_lines) == 2, f"Expected exactly 2 lines for dmesg -l err,crit, got {len(err_crit_lines)}: {err_crit_lines}"
+            assert any("level 2 (crit)" in l for l in err_crit_lines), f"Missing level 2 in {err_crit_lines}"
+            assert any("level 3 (err)" in l for l in err_crit_lines), f"Missing level 3 in {err_crit_lines}"
+            print(f"  [PASS] dmesg -l err,crit returned exactly levels 2 and 3: {err_crit_lines}")
+
+            # Test 11: dmesg -f TEST -l warn — correctly intersects facility and level
+            print("  [13] Testing: dmesg -f TEST -l warn")
+            test_warn_lines = get_command_output("dmesg -f TEST -l warn")
+            assert len(test_warn_lines) == 1, f"Expected exactly 1 line for dmesg -f TEST -l warn, got {len(test_warn_lines)}: {test_warn_lines}"
+            assert "test log level 4 (warn)" in test_warn_lines[0], f"Expected level 4 warn log, got: {test_warn_lines[0]}"
+            print(f"  [PASS] dmesg -f TEST -l warn correctly intersected: {test_warn_lines[0]}")
+
+            # Test 12: dmesg -l 3 (numeric)
+            print("  [14] Testing: dmesg -l 3")
+            num_lines = get_command_output("dmesg -l 3")
+            assert len(num_lines) == 1 and "level 3 (err)" in num_lines[0], f"Expected level 3 for numeric, got: {num_lines}"
+            print("  [PASS] dmesg -l 3 numeric filtering verified.")
+
+            # Test 13: dmesg -l invalid — exit code 2
+            print("  [15] Testing: dmesg -l invalid")
+            exec_cmd("dmesg -l invalid")
+            status_lines = get_command_output("echo $?")
+            assert any(l == "2" for l in status_lines), f"Expected exit status 2 for invalid level, got: {status_lines}"
+            print("  [PASS] dmesg -l invalid rejected with exit status 2.")
+
             # Power off
-            print("  [11] Powering off...")
+            print("  [16] Powering off...")
             send_str("poweroff\n")
             proc.wait(timeout=10)
             stop_drain.set()
-            print(f">>> {firmware.upper()} SMP={smp} dmesg -f INTEGRATION TEST PASSED <<<")
+            print(f">>> {firmware.upper()} SMP={smp} dmesg -f / -l INTEGRATION TEST PASSED <<<")
 
         finally:
             if proc.poll() is None:

@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+int snprintf(char *str, size_t size, const char *format, ...);
+
 #include "types.h"
 #include "vfs.h"
 #include "syscall_abi.h"
@@ -34,6 +36,20 @@ static const char *s_mock_dmesg =
     "[EXT4] Journal transaction committed\n"
     "[NET] Socket connection established\n";
 
+static const char *s_mock_dmesg_levels =
+    "<0>[TEST] test log level 0 (emerg)\n"
+    "<1>[TEST] test log level 1 (alert)\n"
+    "<2>[TEST] test log level 2 (crit)\n"
+    "<3>[TEST] test log level 3 (err)\n"
+    "<4>[TEST] test log level 4 (warn)\n"
+    "<5>[TEST] test log level 5 (notice)\n"
+    "<6>[TEST] test log level 6 (info)\n"
+    "<7>[TEST] test log level 7 (debug)\n"
+    "<3>[NET] e1000: Link down error\n"
+    "<6>[NET] e1000: Interface up info\n";
+
+static const char *s_current_dmesg = NULL;
+
 void mock_reset(void) {
     s_out_len = 0;
     s_out_buf[0] = '\0';
@@ -42,6 +58,7 @@ void mock_reset(void) {
     s_mock_file_len = 0;
     s_mock_file[0] = '\0';
     s_last_open_flags = 0;
+    s_current_dmesg = NULL;
 }
 
 long write_bytes_fd(int fd, const void *buf, size_t n) {
@@ -101,9 +118,10 @@ long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     if (nr == SYS_DMESG) {
         char *buf = (char *)a;
         size_t cap = (size_t)b;
-        size_t mlen = strlen(s_mock_dmesg);
+        const char *src = s_current_dmesg ? s_current_dmesg : s_mock_dmesg;
+        size_t mlen = strlen(src);
         if (mlen > cap) mlen = cap;
-        memcpy(buf, s_mock_dmesg, mlen);
+        memcpy(buf, src, mlen);
         return (long)mlen;
     }
     if (nr == SYS_OPEN) {
@@ -392,6 +410,157 @@ static void test_error_handling(void) {
     print_msg("PASS: error handling (missing/empty options, filter overflow, help text)\n");
 }
 
+/* 9. Severity level filtering: -l err, -l err,crit, numeric 0-7, intersection with facility */
+static void test_level_filtering(void) {
+    /* Test 1: dmesg -l err returns exactly level 3 log (stripped of <3>) */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args1[] = {"dmesg", "-l", "err"};
+    int rc = exec_dmesg(3, args1);
+    assert(rc == 0);
+    const char *expected1 =
+        "[TEST] test log level 3 (err)\n"
+        "[NET] e1000: Link down error\n";
+    assert(strcmp(s_out_buf, expected1) == 0);
+
+    /* Test 2: dmesg -l err,crit returns levels 2 and 3 */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args2[] = {"dmesg", "-l", "err,crit"};
+    rc = exec_dmesg(3, args2);
+    assert(rc == 0);
+    const char *expected2 =
+        "[TEST] test log level 2 (crit)\n"
+        "[TEST] test log level 3 (err)\n"
+        "[NET] e1000: Link down error\n";
+    assert(strcmp(s_out_buf, expected2) == 0);
+
+    /* Test 3: dmesg -f TEST -l warn correctly intersects facility and level */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args3[] = {"dmesg", "-f", "TEST", "-l", "warn"};
+    rc = exec_dmesg(5, args3);
+    assert(rc == 0);
+    const char *expected3 = "[TEST] test log level 4 (warn)\n";
+    assert(strcmp(s_out_buf, expected3) == 0);
+
+    /* Test 4: Numeric level dmesg -l 3 */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args4[] = {"dmesg", "-l", "3"};
+    rc = exec_dmesg(3, args4);
+    assert(rc == 0);
+    assert(strcmp(s_out_buf, expected1) == 0);
+
+    /* Test 5: Numeric levels dmesg -l 2,3 */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args5[] = {"dmesg", "-l", "2,3"};
+    rc = exec_dmesg(3, args5);
+    assert(rc == 0);
+    assert(strcmp(s_out_buf, expected2) == 0);
+
+    /* Test 6: Combined facility + level: dmesg -f TEST -l 3 */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args6[] = {"dmesg", "-f", "TEST", "-l", "3"};
+    rc = exec_dmesg(5, args6);
+    assert(rc == 0);
+    assert(strcmp(s_out_buf, "[TEST] test log level 3 (err)\n") == 0);
+
+    /* Test 7: Flag formats: --level=warn, -l=warn, -lwarn */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args7[] = {"dmesg", "-f", "TEST", "--level=warn"};
+    rc = exec_dmesg(4, args7);
+    assert(rc == 0);
+    assert(strcmp(s_out_buf, expected3) == 0);
+
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args8[] = {"dmesg", "-f", "TEST", "-l=warn"};
+    rc = exec_dmesg(4, args8);
+    assert(rc == 0);
+    assert(strcmp(s_out_buf, expected3) == 0);
+
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args9[] = {"dmesg", "-f", "TEST", "-lwarn"};
+    rc = exec_dmesg(4, args9);
+    assert(rc == 0);
+    assert(strcmp(s_out_buf, expected3) == 0);
+
+    /* Test 8: All levels individually 0 through 7 */
+    const char *level_names[8] = {"emerg", "alert", "crit", "err", "warn", "notice", "info", "debug"};
+    char expected_buf[64];
+    for (int lvl = 0; lvl <= 7; lvl++) {
+        mock_reset();
+        s_current_dmesg = s_mock_dmesg_levels;
+        const char *lvl_args[] = {"dmesg", "-f", "TEST", "-l", level_names[lvl]};
+        rc = exec_dmesg(5, lvl_args);
+        assert(rc == 0);
+        snprintf(expected_buf, sizeof(expected_buf), "[TEST] test log level %d (%s)\n", lvl, level_names[lvl]);
+        assert(strcmp(s_out_buf, expected_buf) == 0);
+    }
+
+    /* Test 9: Raw mode dmesg -r preserves <N> */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args_raw[] = {"dmesg", "-r", "-f", "TEST", "-l", "warn"};
+    rc = exec_dmesg(6, args_raw);
+    assert(rc == 0);
+    assert(strcmp(s_out_buf, "<4>[TEST] test log level 4 (warn)\n") == 0);
+
+    print_msg("PASS: severity level filtering (-l, --level, names, 0-7, combined with -f, -r raw)\n");
+}
+
+/* 10. Level error handling: invalid names, missing arg, exit code 2 */
+static void test_level_error_handling(void) {
+    /* Invalid level name: rejects with exit code 2 */
+    mock_reset();
+    const char *args1[] = {"dmesg", "-l", "invalid"};
+    int rc = exec_dmesg(3, args1);
+    assert(rc == 2);
+    assert(strstr(s_err_buf, "unknown level 'invalid'") != NULL);
+
+    /* Invalid level number 8: rejects with exit code 2 */
+    mock_reset();
+    const char *args2[] = {"dmesg", "-l", "8"};
+    rc = exec_dmesg(3, args2);
+    assert(rc == 2);
+    assert(strstr(s_err_buf, "unknown level '8'") != NULL);
+
+    /* Missing level arg: rejects with exit code 2 */
+    mock_reset();
+    const char *args3[] = {"dmesg", "-l"};
+    rc = exec_dmesg(2, args3);
+    assert(rc == 2);
+    assert(strstr(s_err_buf, "requires a level argument") != NULL);
+
+    /* Empty level string: rejects with exit code 2 */
+    mock_reset();
+    const char *args4[] = {"dmesg", "-l", ""};
+    rc = exec_dmesg(3, args4);
+    assert(rc == 2);
+    assert(strstr(s_err_buf, "requires a level argument") != NULL);
+
+    /* Trailing comma: rejects with exit code 2 */
+    mock_reset();
+    const char *args5[] = {"dmesg", "-l", "err,"};
+    rc = exec_dmesg(3, args5);
+    assert(rc == 2);
+    assert(strstr(s_err_buf, "invalid level ''") != NULL);
+
+    /* Empty --level= */
+    mock_reset();
+    const char *args6[] = {"dmesg", "--level="};
+    rc = exec_dmesg(2, args6);
+    assert(rc == 2);
+    assert(strstr(s_err_buf, "requires a level argument") != NULL);
+
+    print_msg("PASS: level error handling (invalid names, out of range 0-7, exit code 2)\n");
+}
+
 int main(void) {
     test_filter_parsing();
     test_case_insensitive_and_exact();
@@ -401,6 +570,8 @@ int main(void) {
     test_combined_with_tail();
     test_combined_with_file();
     test_error_handling();
+    test_level_filtering();
+    test_level_error_handling();
     print_msg("ALL DMESG FILTER HOST TESTS PASSED!\n");
     return 0;
 }
