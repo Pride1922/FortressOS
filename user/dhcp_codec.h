@@ -146,4 +146,6 @@ int dhcp_decode_reply(const uint8_t *buf, size_t len, uint32_t expected_xid, con
 
 uint8_t dhcp_mask_to_prefix(uint32_t mask_net_order);
 
+int dhcp_apply_jitter(uint32_t lease_time, uint32_t *t1, uint32_t *t2, int32_t delta1, int32_t delta2);
+
 #endif

@@ -415,6 +415,22 @@ static void setup_signals(void) {
     sys_call(SYS_SIGACTION, SIGHUP, (uintptr_t)&sa, 0, 0, 0, 0);
 }
 
+static void dhcpc_apply_random_jitter(dhcp_offer_t *offer) {
+    if (!offer || offer->lease_time == 0) return;
+    int32_t d1 = 0, d2 = 0;
+    uint32_t rnd[2] = {0, 0};
+    long r = sys_call(SYS_GETRANDOM, (uintptr_t)rnd, sizeof(rnd), 0, 0, 0, 0);
+    if (r <= 0) {
+        timespec_t ts = {0, 0};
+        sys_call(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (uintptr_t)&ts, 0, 0, 0, 0);
+        rnd[0] = (uint32_t)ts.tv_nsec;
+        rnd[1] = (uint32_t)(ts.tv_nsec ^ ((uint32_t)ts.tv_sec << 16));
+    }
+    d1 = (int32_t)(rnd[0] % 7) - 3;
+    d2 = (int32_t)(rnd[1] % 7) - 3;
+    dhcp_apply_jitter(offer->lease_time, &offer->t1, &offer->t2, d1, d2);
+}
+
 /* Perform full 4-way handshake (DISCOVER -> OFFER -> REQUEST -> ACK) */
 static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dry_run, dhcp_offer_t *out_offer) {
     long fd = sys_call(SYS_SOCKET, NET_AF_INET, NET_SOCK_DGRAM | NET_SOCK_CLOEXEC, 0, 0, 0, 0);
@@ -551,6 +567,8 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
         offer.subnet_mask = dhcpc_htonl(0xffffff00u);
     }
 
+    dhcpc_apply_random_jitter(&offer);
+
     if (out_offer) *out_offer = offer;
     return 0;
 }
@@ -620,6 +638,7 @@ static int dhcp_do_renew(const dhcp_offer_t *offer, const uint8_t mac[6], uint64
                         if (ack.lease_time) out_ack->lease_time = ack.lease_time;
                         if (ack.t1) out_ack->t1 = ack.t1;
                         if (ack.t2) out_ack->t2 = ack.t2;
+                        dhcpc_apply_random_jitter(out_ack);
                     }
                     return 0;
                 } else if (ack.msg_type == DHCP_MSG_NAK) {
@@ -700,6 +719,7 @@ static int dhcp_do_rebind(const dhcp_offer_t *offer, const uint8_t mac[6], uint6
                         if (ack.lease_time) out_ack->lease_time = ack.lease_time;
                         if (ack.t1) out_ack->t1 = ack.t1;
                         if (ack.t2) out_ack->t2 = ack.t2;
+                        dhcpc_apply_random_jitter(out_ack);
                     }
                     return 0;
                 } else if (ack.msg_type == DHCP_MSG_NAK) {
@@ -780,6 +800,7 @@ static int dhcp_do_reboot(const dhcp_offer_t *offer, const uint8_t mac[6], uint6
                         if (ack.lease_time) out_ack->lease_time = ack.lease_time;
                         if (ack.t1) out_ack->t1 = ack.t1;
                         if (ack.t2) out_ack->t2 = ack.t2;
+                        dhcpc_apply_random_jitter(out_ack);
                     }
                     return 0;
                 } else if (ack.msg_type == DHCP_MSG_NAK) {

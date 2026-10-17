@@ -158,7 +158,41 @@ int main(void) {
     assert(offer.t2 == 75600);
 
     /* =========================================================================
-     * 6. Mock RFC 2131 State Machine Transition Simulation
+     * 6. RFC 2131 §4.4.5 Randomized Jitter Verification
+     * ========================================================================= */
+    /* Standard 86400s lease with delta within [-3, +3] */
+    uint32_t jit_t1 = 43200;
+    uint32_t jit_t2 = 75600;
+    assert(dhcp_apply_jitter(86400, &jit_t1, &jit_t2, -2, 3) == 0);
+    assert(jit_t1 == 43198);
+    assert(jit_t2 == 75603);
+    assert(1 <= jit_t1 && jit_t1 < jit_t2 && jit_t2 < 86400);
+
+    /* Exhaustive bounds testing across deltas [-5, +5] on multiple lease durations */
+    static const uint32_t test_leases[] = {86400, 3600, 120, 10, 4, 3, 2};
+    for (size_t li = 0; li < sizeof(test_leases) / sizeof(test_leases[0]); li++) {
+        uint32_t L = test_leases[li];
+        uint32_t base_t1 = L / 2;
+        uint32_t base_t2 = (uint32_t)((uint64_t)L * 7 / 8);
+        for (int d1 = -5; d1 <= 5; d1++) {
+            for (int d2 = -5; d2 <= 5; d2++) {
+                uint32_t t1_test = base_t1;
+                uint32_t t2_test = base_t2;
+                assert(dhcp_apply_jitter(L, &t1_test, &t2_test, d1, d2) == 0);
+                assert(t1_test >= 1);
+                if (L > 2) {
+                    assert(t1_test < t2_test);
+                    assert(t2_test < L);
+                } else {
+                    assert(t1_test <= L);
+                    assert(t2_test <= L);
+                }
+            }
+        }
+    }
+
+    /* =========================================================================
+     * 7. Mock RFC 2131 State Machine Transition Simulation
      * ========================================================================= */
     typedef enum {
         MOCK_INIT,
@@ -255,6 +289,6 @@ int main(void) {
     state = MOCK_RELEASED;
     assert(state == MOCK_RELEASED);
 
-    puts("DHCP v2 codec & RFC 2131 ASan/UBSan PASS: Option 58/59, renew, rebind, reboot, release, and state transitions");
+    puts("DHCP v2 codec & RFC 2131 ASan/UBSan PASS: Option 58/59, jitter, renew, rebind, reboot, release, and state transitions");
     return 0;
 }

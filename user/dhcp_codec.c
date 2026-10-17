@@ -427,3 +427,28 @@ int dhcp_decode_reply(const uint8_t *buf, size_t len, uint32_t expected_xid, con
     out->prefix = dhcp_mask_to_prefix(out->subnet_mask);
     return 0;
 }
+
+int dhcp_apply_jitter(uint32_t lease_time, uint32_t *t1, uint32_t *t2, int32_t delta1, int32_t delta2) {
+    if (!t1 || !t2 || lease_time == 0) return -1;
+    if (lease_time <= 2) {
+        *t1 = 1;
+        *t2 = 1;
+        return 0;
+    }
+    int64_t new_t1 = (int64_t)(*t1) + delta1;
+    if (new_t1 < 1) new_t1 = 1;
+    if (new_t1 >= (int64_t)lease_time - 1) new_t1 = (int64_t)lease_time - 2;
+
+    int64_t new_t2 = (int64_t)(*t2) + delta2;
+    if (new_t2 <= new_t1) new_t2 = new_t1 + 1;
+    if (new_t2 >= (int64_t)lease_time) new_t2 = (int64_t)lease_time - 1;
+
+    if (new_t1 >= new_t2) {
+        new_t1 = new_t2 > 1 ? new_t2 - 1 : 1;
+    }
+
+    *t1 = (uint32_t)new_t1;
+    *t2 = (uint32_t)new_t2;
+    return 0;
+}
+

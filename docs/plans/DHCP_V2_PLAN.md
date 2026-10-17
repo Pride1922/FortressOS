@@ -33,12 +33,17 @@ With the completion of the Time Subsystem (`SYS_CLOCK_GETTIME` 74, `SYS_NANOSLEE
 1. **Ring 3 Authority:** DHCP client and renewal logic execute entirely in Ring 3 userspace. All kernel interactions occur via standard system calls (`SYS_SOCKET`, `SYS_BIND`, `SYS_SENDTO`, `SYS_RECVFROM`, `SYS_NETCTL`, `SYS_CLOCK_GETTIME`, `SYS_NANOSLEEP`, `SYS_SPAWN_EXT`, `SYS_SIGACTION`).
 2. **BSP Protocol Worker Contract (`PROTECTED.md`):** All socket operations and packet I/O are handled via the registered CPU-0 worker. The DHCP daemon can run on any CPU under the Phase 3 unpinned spawn policy; its socket system calls dispatch safely to CPU 0.
 3. **No Terminal Stealing:** The background daemon runs detached (`stdin` redirected from `/dev/null`, `stdout`/`stderr` directed to `/run/dhcpc.log` or closed). It must never interfere with the foreground interactive console owned by `/bin/login` or `/bin/shell`.
-4. **Filesystem Boundaries (Live USB vs Installed Root):**
-   - Active runtime state lives in `runfs`: `/run/dhcpc.pid`, `/run/dhcpc.lease`, and `/run/dhcpc.log`. These are always writable even on read-only Live USB TarFS roots.
+4. **Filesystem Boundaries & RAM-Backed Ephemeral State:**
+   - Active runtime state lives in `runfs` (`/run` and `/tmp`), which is FortressOS's static in-memory RAM-backed filesystem (equivalent to Linux `tmpfs`).
+   - Files `/run/dhcpc.pid`, `/run/dhcpc.lease`, and `/run/dhcpc.log` are strictly ephemeral: they reside in RAM, never touch persistent disk, and are inherently cleared on reboot.
    - Resolver configuration is written to `/tmp/resolv.conf` (and `/run/resolv.conf`).
    - Network configuration is written to `/tmp/network.conf` (live inspection) and, if `/etc/network` is writable, persisted to `/etc/network/network.conf`.
 5. **Monotonic Timing:** All timer accounting ($T_1$, $T_2$, lease expiration, retransmit backoff) uses `CLOCK_MONOTONIC` via `SYS_CLOCK_GETTIME` to remain completely immune to RTC / system wall-clock time adjustments.
 6. **No-Hang Guarantee:** System boot must never block indefinitely waiting for network responses. Bounded timeouts govern all early boot probes.
+7. **Single IPv4 Address Model & Active TCP Reset Constraint:**
+   - The kernel networking stack (`src/net/net.c`, `SYS_NETCTL` `NETCTL_IFSET`) implements a single-IP configuration per interface. Dual-IP alias migration (holding old and new IPs simultaneously during draining) is not supported.
+   - As long as the leased IP remains unchanged upon renewal, active TCP connections (such as ongoing SSH sessions) continue uninterrupted.
+   - If the DHCP server assigns a *different* IP during renewal/rebind (or following lease expiration / NAK recovery), active TCP connections will be reset when `SYS_NETCTL` reconfigures the interface. Clients must reconnect to the new address. The SSH daemon listener, bound to `0.0.0.0`, survives and accepts new connections on the new address immediately.
 
 ---
 
@@ -80,19 +85,27 @@ stateDiagram-v2
 | `SELECTING` | `DHCPOFFER` received | Select offer, record `yiaddr`, `server_id`, parameters | `255.255.255.255:67` | `DHCPREQUEST` (Broadcast, Option 50=`yiaddr`, Option 54=`server_id`, `ciaddr = 0.0.0.0`) |
 | `REQUESTING` | `DHCPACK` received | Apply IP/mask/gateway via `SYS_NETCTL`, write `/run/dhcpc.lease`, calculate $T_1$, $T_2$, $T_{\text{expire}}$ | N/A | State `BOUND` |
 | `BOUND` | Normal operation | Sleep via `SYS_NANOSLEEP` until $T_1$, link flap, or signal | N/A | Zero CPU consumption |
-| `RENEWING` | $T_1$ expired | Unicast request to lease server | `offer.server_ip:67` | `DHCPREQUEST` (Unicast, `ciaddr = local_ip`, NO Option 50/54) |
-| `REBINDING` | $T_2$ expired | Broadcast request to any server | `255.255.255.255:67` | `DHCPREQUEST` (Broadcast, `ciaddr = local_ip`, NO Option 50/54) |
-| `INIT-REBOOT` | Link restored | Confirm lease on reconnected network | `255.255.255.255:67` | `DHCPREQUEST` (Broadcast, Option 50=`local_ip`, NO Option 54, `ciaddr = 0.0.0.0`) |
+| `RENEWING` | $T_1$ expired | Unicast request to lease server | `offer.server_ip:67` | `DHCPREQUEST` (Unicast, `flags = 0`, `ciaddr = local_ip`, NO Option 50/54) |
+| `REBINDING` | $T_2$ expired | Broadcast request to any server | `255.255.255.255:67` | `DHCPREQUEST` (Broadcast, `flags = 0x8000`, `ciaddr = local_ip`, NO Option 50/54) |
+| `INIT-REBOOT` | Link restored | Confirm lease on reconnected network | `255.255.255.255:67` | `DHCPREQUEST` (Broadcast, `flags = 0x8000`, `ciaddr = 0.0.0.0`, Option 50=`last_ip`, NO Option 54) |
 | `RELEASE` | Process shutdown (`SIGTERM`/`SIGINT`) | Release IP to server, remove `/run/dhcpc.pid` | `offer.server_ip:67` | `DHCPRELEASE` (`ciaddr = local_ip`, Option 54=`server_id`, Option 61=`MAC`) |
 
-### 3.2 Timer Calculation (RFC 2131 §4.4.5)
+### 3.2 Timer Calculation & Randomized Jitter (RFC 2131 §4.4.5)
 - **Lease Time ($L$):** Parsed from Option 51 (`DHCP_OPT_LEASE_TIME`). Default if omitted: 86,400s (24h).
 - **Renewal Timer ($T_1$):** Parsed from Option 58 (`DHCP_OPT_RENEWAL_TIME`). If absent, computed as:
   $$T_1 = 0.5 \times L$$
 - **Rebind Timer ($T_2$):** Parsed from Option 59 (`DHCP_OPT_REBINDING_TIME`). If absent, computed as:
   $$T_2 = 0.875 \times L$$
+- **Randomized Jitter Mitigation (RFC 2131 §4.4.5):**
+  To prevent synchronized request bursts (thundering-herd spikes on DHCP servers) across large fleets of clients, random jitter is sampled using `SYS_GETRANDOM`:
+  - A random signed offset $\delta \in [-3, +3]\text{ seconds}$ is derived from cryptographic hardware / DRBG entropy.
+  - Applied to $T_1$ and $T_2$ upon acquiring or extending a lease:
+    $$T_{1,\text{eff}} = \max(1, T_1 + \delta_1)$$
+    $$T_{2,\text{eff}} = \max(T_{1,\text{eff}} + 1, \min(L - 1, T_2 + \delta_2))$$
+  - Strict ordering invariant maintained under all circumstances:
+    $$1 \le T_{1,\text{eff}} < T_{2,\text{eff}} < L$$
 - **Monotonic Expiration:**
-  $$t_{\text{renew}} = t_{\text{ack}} + T_1, \quad t_{\text{rebind}} = t_{\text{ack}} + T_2, \quad t_{\text{expire}} = t_{\text{ack}} + L$$
+  $$t_{\text{renew}} = t_{\text{ack}} + T_{1,\text{eff}}, \quad t_{\text{rebind}} = t_{\text{ack}} + T_{2,\text{eff}}, \quad t_{\text{expire}} = t_{\text{ack}} + L$$
 
 ---
 
@@ -185,7 +198,12 @@ The daemon avoids continuous polling:
   - Marks state `DISCONNECTED`. Suspends expiration timers.
 - **Carrier Restoration (`NET_IF_LINK_UP`):**
   - Transitions to `INIT-REBOOT`.
-  - Broadcasts `DHCPREQUEST` with Option 50 set to the previously held IP address, without Option 54 (RFC 2131 §4.3.2).
+  - Broadcasts `DHCPREQUEST` adhering strictly to RFC 2131 §4.3.2 wire semantics:
+    - `ciaddr = 0.0.0.0` (client is verifying, not using, the IP; MUST NOT be set in BOOTP header).
+    - `flags = DHCP_FLAGS_BROADCAST` (0x8000).
+    - Option 50 (`DHCP_OPT_REQUESTED_IP`) set to the previously held IP address.
+    - Option 54 (`DHCP_OPT_SERVER_ID`) MUST be omitted so any local DHCP server can respond.
+    - Sent to `255.255.255.255:67`.
   - If server responds with `DHCPACK`: lease is validated on the network; timers resume; state returns to `BOUND`.
   - If server responds with `DHCPNAK` (e.g. laptop plugged into a different subnet):
     - Flushes interface (`SYS_NETCTL` `NETCTL_IFSET` with `0.0.0.0`).
@@ -278,9 +296,10 @@ PID file: `/run/dhcpc.pid` containing the decimal PID of the active daemon.
     1. Option 58/59 parsing and default calculation ($0.5 \times L$ and $0.875 \times L$).
     2. Encoding and verification of Unicast Renewal `DHCPREQUEST` (RFC 2131 rules: `ciaddr` set, Option 50/54 absent).
     3. Encoding and verification of Broadcast Rebind `DHCPREQUEST` (RFC 2131 rules: broadcast flag, `ciaddr` set).
-    4. Encoding and verification of `INIT-REBOOT` `DHCPREQUEST` (Option 50 set, `ciaddr` zero).
+    4. Encoding and verification of `INIT-REBOOT` `DHCPREQUEST` (RFC 2131 wire assertions: `ciaddr` == 0, `flags` == `DHCP_FLAGS_BROADCAST`, Option 50 present matching previous IP, Option 54 strictly omitted).
     5. Encoding and verification of `DHCPRELEASE`.
-    6. Mock RFC 2131 state machine transition engine (full lifecycle step simulation).
+    6. Randomized jitter derivation ($\delta \in [-3, +3]\text{s}$) ensuring $1 \le T_{1,\text{eff}} < T_{2,\text{eff}} < L$.
+    7. Mock RFC 2131 state machine transition engine (full lifecycle step simulation).
 
 ### Milestone 2: Background Daemon & Timer Execution
 - **Implementation:**
