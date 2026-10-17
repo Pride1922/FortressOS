@@ -55,6 +55,8 @@ int pty_create(vfs_node_t **out_master, vfs_node_t **out_slave) {
     p->out_space_bytes = PTY_OUT_CAPACITY;
     p->master_open = true;
     p->slave_open = true;
+    p->master_refcount = 1;
+    p->slave_refcount = 1;
     p->active_endpoints = 2;
 
     /* Default terminal attributes: ICANON | ECHO | ISIG */
@@ -83,6 +85,7 @@ int pty_create(vfs_node_t **out_master, vfs_node_t **out_slave) {
         .fs_private = p,
         .read = (int64_t (*)(vfs_node_t *, uint64_t, void *, size_t))pty_master_read,
         .write = (int64_t (*)(vfs_node_t *, uint64_t *, bool, const void *, size_t))pty_master_write,
+        .open = pty_open_endpoint,
         .close = pty_close_endpoint
     };
 
@@ -93,6 +96,7 @@ int pty_create(vfs_node_t **out_master, vfs_node_t **out_slave) {
         .fs_private = p,
         .read = (int64_t (*)(vfs_node_t *, uint64_t, void *, size_t))pty_slave_read,
         .write = (int64_t (*)(vfs_node_t *, uint64_t *, bool, const void *, size_t))pty_slave_write,
+        .open = pty_open_endpoint,
         .close = pty_close_endpoint
     };
 
@@ -101,23 +105,65 @@ int pty_create(vfs_node_t **out_master, vfs_node_t **out_slave) {
     return 0;
 }
 
+int pty_open_endpoint(vfs_node_t *node) {
+    if (!node || !node->fs_private) return -VFS_EBADF;
+    pty_t *p = node->fs_private;
+    uint64_t flags = spin_lock_irqsave(&p->lock);
+    if (node == p->master_node) {
+        if (!p->master_open) {
+            spin_unlock_irqrestore(&p->lock, flags);
+            return -VFS_EIO;
+        }
+        p->master_refcount++;
+    } else {
+        if (!p->slave_open) {
+            spin_unlock_irqrestore(&p->lock, flags);
+            return -VFS_EIO;
+        }
+        p->slave_refcount++;
+    }
+    spin_unlock_irqrestore(&p->lock, flags);
+    return 0;
+}
+
 void pty_close_endpoint(vfs_node_t *node) {
     if (!node || !node->fs_private) return;
     pty_t *p = node->fs_private;
     uint64_t csid = 0;
     process_group_ref_t to_release = {0};
+    bool do_wake = false;
+    bool should_free = false;
 
     uint64_t flags = spin_lock_irqsave(&p->lock);
     if (node == p->master_node) {
-        p->master_open = false;
-        csid = p->controlling_sid;
+        if (p->master_refcount > 0) {
+            p->master_refcount--;
+        }
+        if (p->master_refcount == 0 && p->master_open) {
+            p->master_open = false;
+            node->fs_private = NULL;
+            csid = p->controlling_sid;
+            do_wake = true;
+            if (!p->slave_open) {
+                to_release = p->foreground;
+                p->foreground = (process_group_ref_t){0};
+            }
+            should_free = (__atomic_sub_fetch(&p->active_endpoints, 1, __ATOMIC_ACQ_REL) == 0);
+        }
     } else {
-        p->slave_open = false;
-    }
-    node->fs_private = NULL;
-    if (!p->master_open && !p->slave_open) {
-        to_release = p->foreground;
-        p->foreground = (process_group_ref_t){0};
+        if (p->slave_refcount > 0) {
+            p->slave_refcount--;
+        }
+        if (p->slave_refcount == 0 && p->slave_open) {
+            p->slave_open = false;
+            node->fs_private = NULL;
+            do_wake = true;
+            if (!p->master_open) {
+                to_release = p->foreground;
+                p->foreground = (process_group_ref_t){0};
+            }
+            should_free = (__atomic_sub_fetch(&p->active_endpoints, 1, __ATOMIC_ACQ_REL) == 0);
+        }
     }
     spin_unlock_irqrestore(&p->lock, flags);
 
@@ -125,19 +171,21 @@ void pty_close_endpoint(vfs_node_t *node) {
         (void)process_group_release_ref(&to_release);
     }
 
-    /* Wake all waiting readers and writers in both directions */
-    sched_wake_all(&p->in_data_bytes);
-    sched_wake_all(&p->in_space_bytes);
-    sched_wake_all(&p->out_data_bytes);
-    sched_wake_all(&p->out_space_bytes);
-    sched_wake_all((void *)time_get_sleep_channel());
+    if (do_wake) {
+        /* Wake all waiting readers and writers in both directions */
+        sched_wake_all(&p->in_data_bytes);
+        sched_wake_all(&p->in_space_bytes);
+        sched_wake_all(&p->out_data_bytes);
+        sched_wake_all(&p->out_space_bytes);
+        sched_wake_all((void *)time_get_sleep_channel());
 
-    /* Deliver SIGHUP to the entire session if master closed */
-    if (csid != 0) {
-        process_signal_send_session(csid, SIGHUP);
+        /* Deliver SIGHUP to the entire session if master closed */
+        if (csid != 0) {
+            process_signal_send_session(csid, SIGHUP);
+        }
     }
 
-    if (__atomic_sub_fetch(&p->active_endpoints, 1, __ATOMIC_ACQ_REL) == 0) {
+    if (should_free) {
         kfree(p->master_node);
         kfree(p->slave_node);
         kfree(p);

@@ -449,6 +449,41 @@ def run_ssh_qemu(firmware="bios", smp=1):
                     if b"PTY_DUPLEX_OK" in pty_buf:
                         break
 
+            # Test sudo /bin/shell elevation inside interactive SSH PTY
+            os.write(master_fd, b"sudo /bin/shell\n")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                r, _, _ = select.select([master_fd], [], [], 0.5)
+                if r:
+                    try:
+                        chunk = os.read(master_fd, 1024)
+                    except OSError:
+                        break
+                    if not chunk: break
+                    pty_buf += chunk
+                    if b"sudo password: " in pty_buf:
+                        break
+            assert b"sudo password: " in pty_buf, f"Missing sudo password prompt in SSH PTY:\n{pty_buf.decode(errors='replace')}"
+
+            # Submit password
+            os.write(master_fd, f"{TEST_PASSWORD}\n".encode())
+            time.sleep(0.5)
+            # Run command in root shell and exit root subshell
+            os.write(master_fd, b"id; exit\n")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                r, _, _ = select.select([master_fd], [], [], 0.5)
+                if r:
+                    try:
+                        chunk = os.read(master_fd, 1024)
+                    except OSError:
+                        break
+                    if not chunk: break
+                    pty_buf += chunk
+                    if b"uid=0" in pty_buf:
+                        break
+            assert b"uid=0" in pty_buf, f"Failed root elevation in SSH PTY (missing uid=0):\n{pty_buf.decode(errors='replace')}"
+
             # Exit interactive PTY session
             os.write(master_fd, b"exit\n")
             time.sleep(0.5)

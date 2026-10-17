@@ -45,10 +45,13 @@ typedef struct {
     vfs_node_t *slave_node;
     bool master_open;
     bool slave_open;
+    uint32_t master_refcount;
+    uint32_t slave_refcount;
     uint32_t active_endpoints;
 } pty_t;
 
 int pty_create(vfs_node_t **out_master, vfs_node_t **out_slave);
+int pty_open_endpoint(vfs_node_t *node);
 void pty_close_endpoint(vfs_node_t *node);
 
 bool is_pty_master(const vfs_node_t *node);

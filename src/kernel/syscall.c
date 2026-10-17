@@ -771,9 +771,25 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
         file_t *f = fd_get(curr, 0);
         if (!f || !f->node || !is_pty_slave(f->node)) f = fd_get(curr, 1);
         if (!f || !f->node || !is_pty_slave(f->node)) f = fd_get(curr, 2);
+        if (!f || !f->node || !is_pty_slave(f->node)) {
+            for (int i = 3; i < MAX_PROCESS_FDS; i++) {
+                file_t *cand = fd_get(curr, i);
+                if (cand && cand->node && is_pty_slave(cand->node)) {
+                    f = cand;
+                    break;
+                }
+            }
+        }
         if (f && f->node && is_pty_slave(f->node)) {
+            if (f->node->open) {
+                int pin_err = f->node->open(f->node);
+                if (pin_err < 0) return pin_err;
+            }
             file_t *file = (file_t *)kmalloc(sizeof(file_t));
-            if (!file) return SYSCALL_ENOMEM;
+            if (!file) {
+                if (f->node->close) f->node->close(f->node);
+                return SYSCALL_ENOMEM;
+            }
             file->node = f->node;
             file->offset = 0;
             file->flags = flags & ~VFS_O_CLOEXEC;
@@ -781,6 +797,7 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
             file->exclusive_owner = false;
             int fd = fd_alloc(curr, file);
             if (fd < 0) {
+                if (f->node->close) f->node->close(f->node);
                 kfree(file);
                 return SYSCALL_EMFILE;
             }
