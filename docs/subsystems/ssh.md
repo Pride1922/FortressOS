@@ -8,6 +8,22 @@ This document serves as the comprehensive architectural specification, contract 
 
 ## 1. Overview & Security Architecture
 
+To start SSH from an ordinary local user shell, use `sudo -b /sbin/sshd`.
+Sudo authenticates in the foreground and starts sshd in its own session, so
+leaving an intermediate root shell does not terminate it. `sudo /sbin/sshd`
+also works but occupies the foreground while the daemon runs. Appending `&`
+to a password-requiring sudo command stops it when it reads the terminal;
+`-b` avoids that problem without bypassing authentication. The existing SSH
+configuration and readiness gates still apply. `make test-sshd-sudo` exercises
+these paths with disposable QEMU fixtures and an OpenSSH key-exchange oracle.
+
+Nano uses the output PTY's negotiated window size over SSH, including subsequent
+window changes, rather than the laptop framebuffer size. It polls resize state
+and ignores SIGWINCH, and clips its bars to the available columns to avoid
+scrolling the editor offscreen. `make test-nano-ssh` checks a real OpenSSH
+password-authenticated session at 100×30 and 60×18 under BIOS/UEFI, visible text
+placement and saved-file SHA-256. See [nano SSH evidence](../roadmap/nano-ssh-viewport.md).
+
 FortressOS implements an in-tree, freestanding SSHv2 daemon (`/sbin/sshd`) complying with RFC 4251, RFC 4252, RFC 4253, RFC 4254, and RFC 8731. The daemon is engineered around privilege separation, capability drop boundaries, and strict denial-of-service / resource bounds.
 
 ```

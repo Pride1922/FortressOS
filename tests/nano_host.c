@@ -354,7 +354,7 @@ static void test_render_frame(void) {
     s_test_state.modified = true;
     memcpy(s_test_state.status_msg, "[ Wrote 3 lines ]", sizeof("[ Wrote 3 lines ]"));
     s_test_state.screen_rows = 10;
-    s_test_state.screen_cols = 40;
+    s_test_state.screen_cols = 120;
 
     size_t bytes = nano_render_frame(&s_test_state, s_test_pool, s_render_buf, sizeof(s_render_buf));
     assert(bytes > 0);
@@ -404,6 +404,28 @@ static void test_render_frame(void) {
     assert(pbytes > 0 && pbytes < 32);
     s_render_buf[pbytes] = '\0';
     assert(strstr(s_render_buf, "\x1b[9;13H\x1b[?25h") != NULL);
+}
+
+static void test_narrow_frames_do_not_wrap(void) {
+    nano_init(&s_test_state, s_test_pool);
+    memset(s_test_state.filename, 'f', sizeof(s_test_state.filename)-1);
+    memset(s_test_state.status_msg, 's', sizeof(s_test_state.status_msg)-1);
+    s_test_state.screen_rows=18;
+    for (unsigned width=20;width<=80;width+=20) {
+        s_test_state.screen_cols=width;
+        size_t n=nano_render_frame(&s_test_state,s_test_pool,s_render_buf,sizeof(s_render_buf));
+        size_t column=0,newlines=0;
+        for (size_t i=0;i<n;i++) {
+            unsigned char c=(unsigned char)s_render_buf[i];
+            if (c==27 && i+1<n && s_render_buf[i+1]=='[') {
+                i+=2;
+                while (i<n && (unsigned char)s_render_buf[i]<0x40) i++;
+            } else if (c=='\r') column=0;
+            else if (c=='\n') newlines++;
+            else if (c>=32) {column++;assert(column<=width);}
+        }
+        assert(newlines==17);
+    }
 }
 
 static void test_phase2_word_motion_and_goto(void) {
@@ -781,6 +803,7 @@ int main(void) {
     test_bounds_saturation_and_limits();
     test_viewport_scrolling();
     test_render_frame();
+    test_narrow_frames_do_not_wrap();
     test_phase2_word_motion_and_goto();
     test_phase2_search_and_replace();
     test_phase2_undo_redo();

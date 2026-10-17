@@ -1249,7 +1249,9 @@ size_t nano_render_frame(nano_state_t *s, const char *pool, char *out_buf, size_
     buf_append_str(out_buf, &pos, max_out, "\x1b[?25l\x1b[H");
 
     /* Row 1: Header (Inverted video) */
-    buf_append_str(out_buf, &pos, max_out, "\x1b[7m [ FortressOS Nano 2.0 ]");
+    buf_append_str(out_buf, &pos, max_out, "\x1b[0m\x1b[97m\x1b[7m");
+    size_t header_start = pos;
+    buf_append_str(out_buf, &pos, max_out, " [ FortressOS Nano 2.0 ]");
     if (s->buffer_count > 1) {
         buf_append_str(out_buf, &pos, max_out, " [");
         buf_append_u32(out_buf, &pos, max_out, (uint32_t)(s->buffer_idx + 1));
@@ -1267,6 +1269,7 @@ size_t nano_render_frame(nano_state_t *s, const char *pool, char *out_buf, size_
         buf_append_str(out_buf, &pos, max_out, " [Modified]");
     }
     buf_append_str(out_buf, &pos, max_out, s->dos_mode ? " [DOS]" : " [Unix]");
+    if (pos - header_start > cols) pos = header_start + cols;
     /* Clear line while inverted, then reset attributes */
     buf_append_str(out_buf, &pos, max_out, "\x1b[K\x1b[0m\r\n");
 
@@ -1337,13 +1340,18 @@ size_t nano_render_frame(nano_state_t *s, const char *pool, char *out_buf, size_
 
     /* Row H-1: Status bar */
     buf_append_str(out_buf, &pos, max_out, "\x1b[0m\x1b[97m");
+    size_t status_start = pos;
     if (s->status_msg[0]) {
         buf_append_str(out_buf, &pos, max_out, s->status_msg);
     }
+    if (pos - status_start > cols) pos = status_start + cols;
     buf_append_str(out_buf, &pos, max_out, "\x1b[K\r\n");
 
     /* Row H: Shortcut Legend */
-    buf_append_str(out_buf, &pos, max_out, "\x1b[7m^O Save  ^X Exit  ^W WhereIs  ^R Replace  ^G GotoLine  ^Z Undo  ^Y Redo\x1b[K\x1b[0m");
+    buf_append_str(out_buf, &pos, max_out, "\x1b[7m");
+    const char *legend = "^O Save  ^X Exit  ^W WhereIs  ^R Replace  ^G GotoLine  ^Z Undo  ^Y Redo";
+    for (size_t i = 0; legend[i] && i < cols && pos < max_out; i++) out_buf[pos++] = legend[i];
+    buf_append_str(out_buf, &pos, max_out, "\x1b[K\x1b[0m");
 
     /* Position screen cursor */
     size_t rx = nano_col_to_render(s, pool + s->rows[s->cy].offset, s->rows[s->cy].length, s->cx);

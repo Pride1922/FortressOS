@@ -1845,6 +1845,15 @@ is saved in history. Quoted `sudo '!!'` stays literal; missing history or an
 oversized expansion produces an error. This bounded shorthand applies only
 to a whole input line consisting of `sudo !!`, with optional whitespace.
 
+`sudo -b command [args]` authenticates in the foreground, then starts the
+command in a separate session with standard input from `/dev/null`. It prints
+the child PID and returns after spawning; command readiness is reported by the
+command itself. Output and diagnostics retain their existing destinations.
+For example, use `sudo -b /sbin/sshd` to start SSH without a root shell; it
+continues running after leaving that shell. Do not append `&` when sudo needs
+to read a password: background terminal reads stop the job. Ordinary shell
+background jobs remain subject to shell-exit cleanup.
+
 Examples: `sudo id`, `sudo cat /etc/shadow`, `sudo ifup /etc/network.conf`, `sudo poweroff`.
 Plain `cat /etc/shadow` is denied. USB filesystem mounts ignore set-ID bits.
 

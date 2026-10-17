@@ -29,9 +29,10 @@ long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
     if (nr==SYS_SETGROUPS) {transitions++;assert(a==1 && *(uint32_t *)b==0);return 0;}
     if (nr==SYS_SPAWN_EXT) {
         spawns++;assert(!strcmp((char *)a,"/bin/id"));const spawn_opts_t *o=(void *)b;
-        const char *const *e=(void *)o->envp;assert(!strcmp(e[0],"PATH=/bin") && !strcmp(e[1],"HOME=/root"));
+        const char *const *e=(void *)o->envp;assert((!strcmp(e[0],"PATH=/bin:/sbin") || !strcmp(e[0],"PATH=/bin")) && !strcmp(e[1],"HOME=/root"));
         assert(!strcmp(e[2],"USER=root") && !strcmp(e[5],"TERM=test"));assert(!e[6]);return 99;
     }
+    if (nr==SYS_STAT) return -1;
     if (nr==SYS_WAIT) {assert(a==99);*(uint64_t *)b=37;return 99;}
     assert(!"unexpected syscall");return -1;
 }

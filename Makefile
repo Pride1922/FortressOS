@@ -2001,3 +2001,12 @@ test-network-smp-phase2d-host:
 	python3 scripts/test_network_smp_phase2d_host.py
 test-network-smp-phase2d: test-network-smp-phase2d-host
 	python3 scripts/test_network_smp_phase2d.py
+
+.PHONY: test-sshd-sudo
+test-sshd-sudo: $(BOOTABLE_ISO)
+	python3 scripts/test_sshd_sudo.py --all
+
+.PHONY: test-nano-ssh
+test-nano-ssh: $(BOOTABLE_ISO)
+	python3 scripts/test_nano_ssh.py bios
+	python3 scripts/test_nano_ssh.py uefi

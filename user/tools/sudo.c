@@ -26,10 +26,14 @@ static bool password_line(int tty,char out[DB_PASSWORD_MAX+1]) {
 }
 int sudo_main(int argc,char **argv,const char *const *envp) {
     uint32_t uid,euid,suid;
+    bool background=false;
     char *shell_argv[]={"sudo","/bin/shell",NULL};
     if (argc==2 && tool_equal(argv[1],"-s")) {argv=shell_argv;argc=2;}
+    else if (argc>=3 && tool_equal(argv[1],"-b") && argv[2][0]!='-') {
+        background=true;argv++;argc--;
+    }
     else if (argc<2 || argv[1][0]=='-')
-        return tool_error("sudo","usage: sudo command [args] | sudo -s",0);
+        return tool_error("sudo","usage: sudo command [args] | sudo -s | sudo -b command [args]",0);
     if (tool_syscall(SYS_GETRESUID,(uintptr_t)&uid,(uintptr_t)&euid,(uintptr_t)&suid)<0 ||
         euid!=0 || (uid && !user_entry_secure(envp)) || !db_load(&database,true))
         return tool_error("sudo","privileged installation required",0);
@@ -86,9 +90,25 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
     }
     const char *environment[]={"PATH=/bin:/sbin","HOME=/root","USER=root","LOGNAME=root","SHELL=/bin/shell",term,NULL};
     spawn_opts_t opts={.size=sizeof(opts),.version=1,.argv=(uintptr_t)(argv+1),.envp=(uintptr_t)environment};
+    spawn_fd_action_t input={.type=SPAWN_FD_ACTION_OPEN,.dst_fd=0,
+        .flags=VFS_O_RDONLY,.path=(uintptr_t)"/dev/null"};
+    if (background) {
+        opts.version=2;opts.flags=SPAWN_SETSID;
+        opts.fd_actions=(uintptr_t)&input;opts.action_count=1;
+    }
     db_wipe(&database,sizeof(database));
     long pid=tool_syscall(SYS_SPAWN_EXT,(uintptr_t)command,(uintptr_t)&opts,sizeof(opts));
     if (pid<0) return tool_sys_error("sudo","cannot start command",argv[1],pid);
+    if (background) {
+        char message[64]="sudo: started background pid ";
+        size_t used=tool_length(message);
+        used+=tool_format_u64(message+used,(uint64_t)pid);
+        message[used++]='\n';
+        tool_write("sudo",message,used);
+        return 0;
+    }
     uint64_t status=0;
-    return tool_syscall(SYS_WAIT,pid,(uintptr_t)&status,0)<0 ? 1 : (int)status;
+    long waited;
+    do {waited=tool_syscall(SYS_WAIT,pid,(uintptr_t)&status,0);} while (waited==SYSCALL_EINTR);
+    return waited<0 ? 1 : (int)status;
 }

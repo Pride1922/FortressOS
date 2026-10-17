@@ -162,11 +162,16 @@ When a bare (non-path) command is executed via `/bin/sudo <cmd>`:
 3. The elevated execution environment explicitly sets `PATH=/bin:/sbin`.
 4. With no arguments, `sudo` prints usage. `sudo -s` runs `/bin/shell` using
    the same authorization and authentication path. `exit` returns to the
-   calling user shell. Other sudo options are not implemented.
+   calling user shell.
 5. A whole interactive input line `sudo !!` expands the last history entry,
    displays the expansion, and stores the expanded command. The bounded
    shorthand accepts surrounding spaces/tabs; quoted or escaped `!!` stays
    literal. Empty history and oversized expansions are rejected.
+6. `sudo -b command [args]` authenticates before launching a separate session
+   (`SPAWN_SETSID`), maps stdin to `/dev/null`, reports the child PID and returns
+   without waiting. The launched command survives shell job cleanup. Bare `&`
+   retains normal job control: a password read from the background stops sudo.
+   Other sudo options are not implemented.
 
 Interactive history is flushed before executing a command list containing an
 external command (2026-10-17). This saves the user's `sudo /bin/shell` entry

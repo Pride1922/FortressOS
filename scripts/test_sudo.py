@@ -105,10 +105,12 @@ try:
                 if kind=='nonwheel':
                     execute('sudo id','sudo: user is not authorized')
                     execute('sudo -s','sudo: user is not authorized')
+                    execute('sudo -b id','sudo: user is not authorized')
                 else:
                     if kind!='passwordless':
                         sudo('id','sudo: authentication failed',True)
                         sudo('-s','sudo: authentication failed',True)
+                        sudo('-b id','sudo: authentication failed',True)
                     sudo('id','uid=0 gid=0 groups=0')
                     text=sudo('cat /etc/shadow','root:!:::::::');assert ('operator::::::::' if kind=='passwordless' else 'operator:$5$') in text
                     text=sudo('/bin/sh-builtin env','HOME=/root');assert 'PATH=/bin' in text and 'USER=root' in text and '/evil' not in text

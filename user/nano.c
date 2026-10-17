@@ -71,6 +71,23 @@ static long sys_termattr(int fd, uint64_t op, terminal_attrs_t *attrs) {
     return nr;
 }
 
+static long read_terminal_info(terminal_info_t *info) {
+    long result = sys_termctl(TERM_GET, (uintptr_t)info, sizeof(*info));
+    if (result != 0) return result;
+    /* TERMCTL describes the physical console. SSH sessions have their own
+     * output PTY size, published by pty-req/window-change. */
+    winsize_t size = {0};
+    long nr = SYS_TERMATTR;
+    register uintptr_t r10 __asm__("r10") = sizeof(size);
+    __asm__ volatile("syscall" : "+a"(nr) : "D"((uintptr_t)1), "S"((uintptr_t)TERM_GET_WINSIZE),
+                     "d"((uintptr_t)&size), "r"(r10) : "rcx", "r11", "memory", "cc");
+    if (nr == 0) {
+        if (size.ws_row) info->rows = size.ws_row;
+        if (size.ws_col) info->cols = size.ws_col;
+    }
+    return 0;
+}
+
 /* Multi-Buffer Static Pools */
 static char               s_buffer_pools[NANO_MAX_BUFFERS][NANO_POOL_SIZE];
 static nano_state_t       s_buffers[NANO_MAX_BUFFERS];
@@ -413,7 +430,7 @@ static bool prompt_input_search(const char *base_prompt, const char *initial, ch
 int nano_main(int argc, char **argv) {
     /* 1. Verify stdout is a terminal */
     long isatty = sys_termctl(TERM_ISATTY, 1, 0);
-    long term_res = sys_termctl(TERM_GET, (uintptr_t)&s_term, sizeof(s_term));
+    long term_res = read_terminal_info(&s_term);
     if (isatty != 1 || term_res != 0 || s_term.mode == TERM_PLAIN) {
         static const char notty_msg[] = "nano: standard output is not a terminal\n";
         (void)write_all(2, notty_msg, sizeof(notty_msg) - 1);
@@ -430,6 +447,8 @@ int nano_main(int argc, char **argv) {
 
     signal_action_t sig_ign = { .handler = SIG_IGN, .mask = 0, .flags = 0, .reserved = 0 };
     (void)sys_sigaction(SIGINT, &sig_ign, 0);
+    /* Dimensions are polled below; window-change must not terminate nano. */
+    (void)sys_sigaction(SIGWINCH, &sig_ign, 0);
 
     /* 3. Initialize multi-buffers */
     for (int b = 0; b < NANO_MAX_BUFFERS; b++) {
@@ -588,7 +607,7 @@ int nano_main(int argc, char **argv) {
     for (;;) {
         /* Update terminal dimensions or redraw if generation changed */
         terminal_info_t cur_term;
-        if (sys_termctl(TERM_GET, (uintptr_t)&cur_term, sizeof(cur_term)) == 0 && cur_term.mode != TERM_PLAIN) {
+        if (read_terminal_info(&cur_term) == 0 && cur_term.mode != TERM_PLAIN) {
             if (cur_term.rows != s_state.screen_rows || cur_term.cols != s_state.screen_cols ||
                 cur_term.generation != s_term.generation) {
                 s_state.screen_rows = cur_term.rows ? cur_term.rows : 25;
