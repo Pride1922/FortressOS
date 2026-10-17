@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #else
 #include "syscall_abi.h"
+#include "vfs.h"
 static long mon_syscall(long n, uintptr_t a, uintptr_t b, uintptr_t c) {
     long ret;
     register long r10 __asm__("r10") = 0;

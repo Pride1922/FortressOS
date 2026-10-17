@@ -1,8 +1,8 @@
 # Crypto library, SSH server and host identity
 
-Updated 2026-10-17. **Phases 1–5 complete (randomness, crypto library, host identity,
-SSH transport, and authentication/privilege separation verified under automated gates).
-PTY/session channels, daemon lifecycle, and physical acceptance remain planned.**
+Updated 2026-10-17. **Phases 1–7 complete (randomness, crypto library, host identity,
+SSH transport, authentication/privilege separation, PTY/session channels, and daemon lifecycle verified under automated gates).
+Physical acceptance (Phase 8) remains planned.**
 Tracks [crypto #50](https://github.com/Pride1922/FortressOS/issues/50),
 [SSH server #51](https://github.com/Pride1922/FortressOS/issues/51) and
 [host keys #52](https://github.com/Pride1922/FortressOS/issues/52).
@@ -331,6 +331,20 @@ Includes:
   * `make test-ssh-pty-host` (100% PASS): PTY pair allocation, window resizing, zero-race staged spawn, duplex I/O under backpressure/short-writes, bounded 20ms nanosleep, and clean SIGHUP/SIGTERM teardown.
 
 ### Phase 7 — daemon lifecycle and deployment
+
+**COMPLETE (2026-10-17):** Verified via `make test-ssh-daemon-host` under ASan/UBSan, and integrated into system builds (`/sbin/sshd` in `bin/initramfs.tar`, `bin/fortress.iso`, and `bin/fortress.img`).
+Includes:
+- Safe daemon configuration parser (`user/sshd/sshd_config.h`, `user/sshd/sshd_config.c`):
+  * Supports `/mnt/.fortress/sshd.conf` (persistent root config) and fallback `/etc/ssh/sshd_config`.
+  * Options: `Port` (1..65535, default 22), `ListenAddress` (default 0.0.0.0), `PermitRootLogin` (enforces "no", rejects "yes"), `PasswordAuthentication` (yes/no), `PubkeyAuthentication` (yes/no), `MaxSessions` (enforced 1..2 cap), `Enabled` (yes/no, opt-in disabled by default).
+- Daemon lifecycle and deployment architecture (`user/sshd/sshd.c` -> `/sbin/sshd`):
+  * Privileged Monitor (`/sbin/sshd`, UID 0, CAP_SYS_ADMIN): reads host private key and `/etc/shadow`, binds TCP port 22 with backlog 2 via CPU-0 network ownership.
+  * Admission gate: strict cap of 2 concurrent client sessions; tracks active worker child PIDs via non-blocking `SYS_WAITPID(WNOHANG)` reaping. Excess connection attempts immediately rejected with short error before drop.
+  * Process boundary: on client accept, creates anonymous IPC pipes (`SYS_PIPE` 24) and spawns unprivileged protocol worker (`/sbin/sshd --worker <sid>`) via `SYS_SPAWN_EXT`, mapping IPC read/write and client socket fds to 3, 4, 5.
+  * Protocol Worker (`/sbin/sshd --worker <sid>`): immediately drops all capabilities via `SYS_CAPSET 0`, executes transport KEX, verifies user credentials via monitor IPC, sets up PTY pair (`SYS_PTY_PAIR` 80), spawns user session with zero-race staged binding (`SPAWN_SETSID | SPAWN_STAGED`, `PTY_SET_SESSION`, `GROUP_RELEASE`), runs 20ms bounded-poll duplex I/O loop (`SYS_NANOSLEEP`), and terminates with clean SIGHUP/SIGTERM teardown.
+- Verified Gates:
+  * `make test-ssh-daemon-host` (100% PASS): configuration parsing, default fallbacks, safe error handling, admission limits (2-session concurrency cap), and clean lifecycle termination.
+  * System packaging: `/sbin/sshd` built and verified in `bin/initramfs.tar`, `bin/fortress.iso`, and `bin/fortress.img`.
 
 Add explicit configuration for enablement, bind address/port, password policy
 and resource limits; reject unknown/unsafe settings. Bind port 22 through

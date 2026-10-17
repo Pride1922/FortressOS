@@ -1112,6 +1112,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f src/lib/crypto/LICENCE.md $(BUILD_DIR)/initramfs/docs/monocypher-licence.txt
 	@mkdir -p $(BUILD_DIR)/initramfs/sbin
 	@cp -f $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/initramfs/sbin/ssh-keygen
+	@cp -f $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/initramfs/sbin/sshd
 	@if [ "$(CRYPTO_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/crypto-probe.elf $(BUILD_DIR)/initramfs/bin/crypto-probe; else rm -f $(BUILD_DIR)/initramfs/bin/crypto-probe; fi
 	@if [ "$(FSTAT_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/fstat-probe.elf $(BUILD_DIR)/initramfs/bin/fstat-probe; else rm -f $(BUILD_DIR)/initramfs/bin/fstat-probe; fi
 	@if [ "$(HOSTKEY_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/hostkey-probe.elf $(BUILD_DIR)/initramfs/bin/hostkey-probe; else rm -f $(BUILD_DIR)/initramfs/bin/hostkey-probe; fi

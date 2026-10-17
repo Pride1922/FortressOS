@@ -11,10 +11,24 @@ CRYPTO_FLAGS := $(CFLAGS) -Os -fno-pie -fno-builtin -ffunction-sections -fdata-s
 
 all: $(CRYPTO_LIB)
 all: $(BUILD_DIR)/ssh-keygen.elf
+all: $(BUILD_DIR)/sshd.elf
 $(BUILD_DIR)/ssh-keygen.elf: user/tools/ssh_keygen.c src/include/ssh_hostkey.h src/include/hostkey_abi.h $(CRYPTO_LIB) $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
 	@$(CC) $(CRYPTO_FLAGS) -Iuser/tools -c $< -o $(CRYPTO_BUILD)/ssh-keygen.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=ssh_keygen_main user/tools/start.asm -o $(CRYPTO_BUILD)/ssh-keygen-start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack --gc-sections -T user/shell.ld $(CRYPTO_BUILD)/ssh-keygen-start.o $(CRYPTO_BUILD)/ssh-keygen.o $(CRYPTO_LIB) $(BUILD_DIR)/tool-common.o -o $@
+
+SSHD_DIR := user/sshd
+SSHD_BUILD := $(BUILD_DIR)/sshd
+SSHD_SRCS := $(wildcard $(SSHD_DIR)/*.c)
+SSHD_OBJS := $(patsubst $(SSHD_DIR)/%.c,$(SSHD_BUILD)/%.o,$(SSHD_SRCS))
+
+$(SSHD_BUILD)/%.o: $(SSHD_DIR)/%.c
+	@mkdir -p $(SSHD_BUILD)
+	@$(CC) $(CRYPTO_FLAGS) -Iuser/sshd -Iuser/tools -c $< -o $@
+
+$(BUILD_DIR)/sshd.elf: $(SSHD_OBJS) $(CRYPTO_LIB) $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(AS) -f elf64 -DTOOL_ENTRY=sshd_main user/tools/start.asm -o $(SSHD_BUILD)/sshd-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack --gc-sections -T user/shell.ld $(SSHD_BUILD)/sshd-start.o $(SSHD_OBJS) $(CRYPTO_LIB) $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-common.o -o $@
 $(CRYPTO_BUILD)/%.o: $(CRYPTO_DIR)/%.c src/include/crypto.h src/include/ssh_hostkey.h $(CRYPTO_DIR)/internal.h $(CRYPTO_DIR)/namespace.h $(CRYPTO_DIR)/namespace_end.h
 	@mkdir -p $(CRYPTO_BUILD)
 	@$(CC) $(CRYPTO_FLAGS) -c $< -o $@
@@ -57,6 +71,10 @@ test-ssh-channel-host:
 .PHONY: test-ssh-pty-host
 test-ssh-pty-host:
 	@python3 scripts/test_ssh_pty_host.py
+
+.PHONY: test-ssh-daemon-host
+test-ssh-daemon-host:
+	@python3 scripts/test_ssh_daemon_host.py
 
 .PHONY: test-ssh-hostkeys-storage-host
 test-ssh-hostkeys-storage-host: test-ssh-hostkeys-host
