@@ -3,6 +3,7 @@ CRYPTO_DIR := src/lib/crypto
 CRYPTO_BUILD := $(BUILD_DIR)/crypto
 CRYPTO_LIB := $(CRYPTO_BUILD)/libfortresscrypto.a
 CRYPTO_API := crypto_wipe crypto_verify32 crypto_sha256_init crypto_sha256_update crypto_sha256_final crypto_sha256 crypto_sha512_init crypto_sha512_update crypto_sha512_final crypto_sha512 crypto_hmac_sha256 crypto_ed25519_from_seed crypto_ed25519_keygen crypto_ed25519_sign crypto_ed25519_verify crypto_x25519_from_seed crypto_x25519_keygen crypto_x25519 crypto_aead_lock crypto_aead_unlock
+CRYPTO_API += crypto_hkdf_extract crypto_hkdf_expand crypto_hkdf
 CRYPTO_UNITS := hash curve aead entropy
 CRYPTO_API += ssh_hostkey_encode ssh_hostkey_decode ssh_hostkey_generate ssh_hostkey_public ssh_hostkey_fingerprint
 CRYPTO_UNITS += ssh_hostkey
@@ -48,9 +49,12 @@ $(CRYPTO_LIB): $(CRYPTO_OBJS) $(CRYPTO_BUILD)/runtime.o
 	@$(LD) -r --gc-sections $(addprefix -u ,$(CRYPTO_API)) $(CRYPTO_OBJS) -o $(CRYPTO_BUILD)/library.o
 	@ar rcs $@ $(CRYPTO_BUILD)/library.o $(CRYPTO_BUILD)/runtime.o
 
-.PHONY: test-crypto-host test-crypto
+.PHONY: test-crypto-host test-crypto test-crypto-hkdf-host
 test-crypto-host:
 	@python3 scripts/test_crypto_host.py
+
+test-crypto-hkdf-host:
+	@python3 scripts/test_crypto_hkdf_host.py
 
 .PHONY: test-ssh-hostkeys-host
 test-ssh-hostkeys-host:

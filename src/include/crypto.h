@@ -54,4 +54,8 @@ int crypto_x25519_keygen(uint8_t seckey[32],uint8_t pubkey[32]);
 int crypto_x25519(uint8_t shared[32],const uint8_t seckey[32],const uint8_t pubkey[32]);
 int crypto_aead_lock(uint8_t *ciphertext,uint8_t tag[16],const uint8_t key[32],const uint8_t nonce[12],const uint8_t *ad,size_t adlen,const uint8_t *plaintext,size_t n);
 int crypto_aead_unlock(uint8_t *plaintext,const uint8_t tag[16],const uint8_t key[32],const uint8_t nonce[12],const uint8_t *ad,size_t adlen,const uint8_t *ciphertext,size_t n);
+#define CRYPTO_HKDF_MAX_OKM_LEN 8160
+int crypto_hkdf_extract(const uint8_t *salt,size_t salt_len,const uint8_t *ikm,size_t ikm_len,uint8_t prk_out[32]);
+int crypto_hkdf_expand(const uint8_t *prk,size_t prk_len,const uint8_t *info,size_t info_len,uint8_t *okm,size_t okm_len);
+int crypto_hkdf(const uint8_t *salt,size_t salt_len,const uint8_t *ikm,size_t ikm_len,const uint8_t *info,size_t info_len,uint8_t *okm,size_t okm_len);
 #endif

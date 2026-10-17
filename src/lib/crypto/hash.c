@@ -76,3 +76,134 @@ int crypto_hmac_sha256(const uint8_t *key,size_t kn,const uint8_t *msg,size_t n,
 done:
     crypto_wipe(pad,sizeof(pad)); crypto_wipe(inner,sizeof(inner)); crypto_wipe(&c,sizeof(c)); return r;
 }
+
+int crypto_hkdf_extract(const uint8_t *salt,size_t salt_len,const uint8_t *ikm,size_t ikm_len,uint8_t prk_out[32]) {
+    if(!prk_out || !cr_range(prk_out,32)) return SYSCALL_EINVAL;
+    if(salt_len > 0) {
+        if(!salt || !cr_range(salt,salt_len)) return SYSCALL_EINVAL;
+        if(cr_overlap(prk_out,32,salt,salt_len)) return SYSCALL_EINVAL;
+    }
+    if(ikm_len > 0) {
+        if(!ikm || !cr_range(ikm,ikm_len)) return SYSCALL_EINVAL;
+        if(cr_overlap(prk_out,32,ikm,ikm_len)) return SYSCALL_EINVAL;
+    }
+    uint8_t zero_salt[32] = {0};
+    const uint8_t *s = salt;
+    size_t slen = salt_len;
+    if(salt_len == 0) {
+        s = zero_salt;
+        slen = sizeof(zero_salt);
+    }
+    int r = crypto_hmac_sha256(s,slen,ikm,ikm_len,prk_out);
+    crypto_wipe(zero_salt,sizeof(zero_salt));
+    if(r != 0) {
+        crypto_wipe(prk_out,32);
+        return r;
+    }
+    return 0;
+}
+
+int crypto_hkdf_expand(const uint8_t *prk,size_t prk_len,const uint8_t *info,size_t info_len,uint8_t *okm,size_t okm_len) {
+    if(okm_len > CRYPTO_HKDF_MAX_OKM_LEN) return SYSCALL_EINVAL;
+    if(!prk || prk_len < 32 || !cr_range(prk,prk_len)) return SYSCALL_EINVAL;
+    if(info_len > 0 && (!info || !cr_range(info,info_len))) return SYSCALL_EINVAL;
+    if(okm_len > 0) {
+        if(!okm || !cr_range(okm,okm_len)) return SYSCALL_EINVAL;
+        if(cr_overlap(okm,okm_len,prk,prk_len)) return SYSCALL_EINVAL;
+        if(info_len > 0 && cr_overlap(okm,okm_len,info,info_len)) return SYSCALL_EINVAL;
+    } else {
+        return 0;
+    }
+
+    uint8_t k_pad[64] = {0};
+    uint8_t ipad[64] = {0};
+    uint8_t opad[64] = {0};
+    uint8_t inner[32] = {0};
+    uint8_t t[32] = {0};
+    digest_t d;
+    size_t t_len = 0;
+    size_t written = 0;
+    int r = 0;
+
+    if(prk_len > 64) {
+        r = crypto_sha256(prk,prk_len,k_pad);
+        if(r) goto fail;
+    } else {
+        memcpy(k_pad,prk,prk_len);
+    }
+
+    for(unsigned i = 0; i < 64; i++) {
+        ipad[i] = (uint8_t)(k_pad[i] ^ 0x36);
+        opad[i] = (uint8_t)(k_pad[i] ^ 0x5c);
+    }
+    crypto_wipe(k_pad,sizeof(k_pad));
+
+    size_t n = (okm_len + 31) / 32;
+    for(unsigned i = 1; i <= n; i++) {
+        uint8_t ctr = (uint8_t)i;
+        digest_init(&d,DIGEST_SHA256);
+        if(!digest_update(&d,ipad,sizeof(ipad)) ||
+           (t_len > 0 && !digest_update(&d,t,t_len)) ||
+           (info_len > 0 && !digest_update(&d,info,info_len)) ||
+           !digest_update(&d,&ctr,1)) {
+            goto fail;
+        }
+        digest_final(&d,inner);
+
+        digest_init(&d,DIGEST_SHA256);
+        if(!digest_update(&d,opad,sizeof(opad)) ||
+           !digest_update(&d,inner,sizeof(inner))) {
+            goto fail;
+        }
+        digest_final(&d,t);
+        t_len = sizeof(t);
+
+        size_t chunk = (okm_len - written < 32) ? (okm_len - written) : 32;
+        memcpy(okm + written,t,chunk);
+        written += chunk;
+    }
+
+    crypto_wipe(ipad,sizeof(ipad));
+    crypto_wipe(opad,sizeof(opad));
+    crypto_wipe(inner,sizeof(inner));
+    crypto_wipe(t,sizeof(t));
+    crypto_wipe(&d,sizeof(d));
+    return 0;
+
+fail:
+    if(okm && okm_len > 0) crypto_wipe(okm,okm_len);
+    crypto_wipe(k_pad,sizeof(k_pad));
+    crypto_wipe(ipad,sizeof(ipad));
+    crypto_wipe(opad,sizeof(opad));
+    crypto_wipe(inner,sizeof(inner));
+    crypto_wipe(t,sizeof(t));
+    crypto_wipe(&d,sizeof(d));
+    return SYSCALL_EINVAL;
+}
+
+int crypto_hkdf(const uint8_t *salt,size_t salt_len,const uint8_t *ikm,size_t ikm_len,const uint8_t *info,size_t info_len,uint8_t *okm,size_t okm_len) {
+    if(okm_len > CRYPTO_HKDF_MAX_OKM_LEN) return SYSCALL_EINVAL;
+    if(okm_len > 0) {
+        if(!okm || !cr_range(okm,okm_len)) return SYSCALL_EINVAL;
+        if(salt_len > 0 && cr_overlap(okm,okm_len,salt,salt_len)) return SYSCALL_EINVAL;
+        if(ikm_len > 0 && cr_overlap(okm,okm_len,ikm,ikm_len)) return SYSCALL_EINVAL;
+        if(info_len > 0 && cr_overlap(okm,okm_len,info,info_len)) return SYSCALL_EINVAL;
+    }
+
+    uint8_t prk[32] = {0};
+    int r = crypto_hkdf_extract(salt,salt_len,ikm,ikm_len,prk);
+    if(r != 0) {
+        crypto_wipe(prk,sizeof(prk));
+        if(okm && okm_len > 0) crypto_wipe(okm,okm_len);
+        return r;
+    }
+
+    r = crypto_hkdf_expand(prk,sizeof(prk),info,info_len,okm,okm_len);
+    crypto_wipe(prk,sizeof(prk));
+    if(r != 0) {
+        if(okm && okm_len > 0) crypto_wipe(okm,okm_len);
+        return r;
+    }
+    return 0;
+}
+
