@@ -60,40 +60,36 @@ Interactive remote SSH sessions (RFC 4254) require per-session terminal isolatio
 ```c
 int64_t sys_pty_pair(uintptr_t u_fds /* int fds[2]: master, slave */, int flags);
 ```
-- **Atomic Creation:** Allocates both `master_fd` and `slave_fd` atomically without requiring dynamic `/dev/pts` directory nodes.
-- **Node Differentiation:** Master and slave nodes use function pointer discrimination:
-  - `is_pty_master(node)`: `node->read == pty_master_read`
-  - `is_pty_slave(node)`: `node->read == pty_slave_read`
+- **Atomic Creation & Fail-Closed Unwind:**
+  - Allocates both `master_fd` and `slave_fd` atomically without requiring dynamic `/dev/pts` directory nodes.
+  - If allocating any descriptor or node fails (e.g. `EMFILE`, `ENOMEM`), the syscall immediately rolls back all partial allocations, frees `pty_t`, closes allocated descriptors, and returns the error. Zero leaked memory or descriptors.
+- **Node Differentiation:**
+  - Master and slave nodes use function pointer discrimination:
+    - `is_pty_master(node)`: `node->read == pty_master_read`
+    - `is_pty_slave(node)`: `node->read == pty_slave_read`
 - **Flags:** `flags & VFS_O_NONBLOCK` applies directly to `master_fd`'s `file->flags`.
 
 ---
 
 ## 3. Session & Job Control Ownership (Pinned Rules)
 
-### 3.1 Session Creation: `SPAWN_SETSID`
+### 3.1 Race-Free Session Creation: `SPAWN_SETSID` + `SPAWN_STAGED`
 - `SPAWN_V2_FLAGS` in [`src/include/syscall_abi.h`](../../src/include/syscall_abi.h) is extended with:
   ```c
   #define SPAWN_SETSID 4u
   ```
-- When `SPAWN_SETSID` is set:
-  - Child becomes a new session leader: `sid = child_pid`.
-  - Child becomes a new process group leader: `pgid = child_pid`.
-  - Child has no controlling terminal until bound.
+- **Staged Binding Protocol (Zero-Race Guarantee):**
+  1. The bridge invokes `SYS_SPAWN_EXT` with `flags = SPAWN_SETSID | SPAWN_STAGED`. The child process is fully constructed with `sid = child_pid` and `pgid = child_pid`, but **remains in staged state (not scheduled)**.
+  2. The bridge invokes `sys_termattr(master_fd, PTY_SET_SESSION, &child_pid, sizeof(uint64_t))`. Because the child is staged, it cannot exit before this call.
+  3. The kernel sets `pty->controlling_sid = child_pid` and `pty->fg_pgid = child_pid` under `pty->lock`.
+  4. The bridge releases the staged child to run via `SYS_PROCESS_RELEASE(child_pid, GROUP_RELEASE)`. If binding fails, it cancels the child via `GROUP_CANCEL` and closes the PTY.
 
-### 3.2 Binding Controlling Terminal
-- The parent bridge calls:
-  ```c
-  sys_termattr(master_fd, PTY_SET_SESSION, &child_pid, sizeof(uint64_t));
-  ```
-- **Validation:**
-  - `child_pid` must exist and caller must be its parent (or have `CAP_SYS_ADMIN`).
-  - Sets `pty->controlling_sid = child_pid` and `pty->fg_pgid = child_pid` under `pty->lock`.
-
-### 3.3 `SYS_TCGETPGRP` / `SYS_TCSETPGRP` on PTY Slaves
+### 3.2 `SYS_TCGETPGRP` / `SYS_TCSETPGRP` on PTY Slaves
 - **`SYS_TCGETPGRP(slave_fd)`:**
   - Validates `caller->sid == pty->controlling_sid`. Returns `(int64_t)pty->fg_pgid`.
 - **`SYS_TCSETPGRP(slave_fd, pgid)`:**
   - Validates `caller->sid == pty->controlling_sid`.
+  - **Background Process Guard (`SIGTTOU`):** If `caller->pgid != pty->fg_pgid` (background process attempting to change foreground group), the kernel delivers `SIGTTOU` to `caller->pgid` unless `SIGTTOU` is blocked or ignored by the caller (standard POSIX exception). If delivered, returns `-SYSCALL_EINTR`.
   - Validates `pgid` is an active process group belonging to `pty->controlling_sid` (via `process_group_acquire(pty->controlling_sid, pgid, &ref)`).
   - Updates `pty->fg_pgid = pgid` under `pty->lock`.
   - Any attempt by an outside session to alter `pgid` returns `-SYSCALL_ENOTTY`.
@@ -110,9 +106,10 @@ int64_t sys_pty_pair(uintptr_t u_fds /* int fds[2]: master, slave */, int flags)
    - When `master_fd` is closed:
    - Target: `pty->controlling_sid` (**entire session**).
    - Delivered **immediately** upon master close, terminating background and stopped processes in the session (unless immune via `SIG_IGN`).
-3. **Slave EOF Timing:**
+3. **Slave EOF & Closed Descriptor Timing:**
    - Slave `read()` continues to drain any bytes remaining in `in_buffer`.
    - Only once `in_buffer` is completely empty does slave read return `0` (**EOF**).
+   - If the child's `SIGHUP` handler closes `slave_fd`, subsequent syscalls on that closed descriptor return `-SYSCALL_EBADF` (cleanup precedence).
 
 ---
 
@@ -155,7 +152,11 @@ int64_t sys_pty_pair(uintptr_t u_fds /* int fds[2]: master, slave */, int flags)
 
 ### 7.1 Window Dimensions (`SYS_TERMATTR`)
 - Window dimensions are managed via `SYS_TERMATTR(fd, op, ptr, sizeof(winsize_t))`:
-  - `TERM_SET_WINSIZE`: Can be called by master **before** or after child spawn. Sets `pty->cols` and `pty->rows`. If `pty->fg_pgid` is non-zero, delivers `SIGWINCH` to `pty->fg_pgid`.
+  - `TERM_SET_WINSIZE`: Can be called by master before or after child spawn. Sets `pty->cols` and `pty->rows`.
+    - **`SIGWINCH` Delivery Target:**
+      - If `pty->fg_pgid != 0`: delivers `SIGWINCH` to `pty->fg_pgid`.
+      - Else if `pty->controlling_sid != 0`: delivers `SIGWINCH` to `pty->controlling_sid` (session leader).
+      - Else: silently stores dimensions without error (dimensions ready for first `TERM_GET_WINSIZE`).
   - `TERM_GET_WINSIZE`: Called by slave (or nano) to query current viewport dimensions.
 
 ### 7.2 Terminal Identity (`isatty`)
@@ -175,6 +176,7 @@ int64_t sys_pty_pair(uintptr_t u_fds /* int fds[2]: master, slave */, int flags)
   - `F_GETFL` (cmd 3): Returns `file->flags`.
   - `F_SETFL` (cmd 4): Supports toggling `VFS_O_NONBLOCK` (`0x0800`).
 - **Single Source of Truth:** `file->flags & VFS_O_NONBLOCK` is authoritative for both open-time initialization and subsequent fcntl modifications.
+- **Non-Interrupting Semantics:** Calling `F_SETFL` does not interrupt or awaken an existing blocked read in `sched_wait_until`; the updated flag applies to subsequent read calls.
 
 ---
 
