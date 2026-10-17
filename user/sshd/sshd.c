@@ -19,6 +19,7 @@
 #include "sshd_config.h"
 #include "sshd_readiness.h"
 #include "sshd_admission.h"
+#include "sshd_teardown.h"
 
 #define SSHD_SERVER_VERSION "SSH-2.0-FortressSSH_0.1\r\n"
 #define SSHD_SERVER_VERSION_TRIM "SSH-2.0-FortressSSH_0.1"
@@ -56,10 +57,27 @@ static void on_sigterm(int sig) {
     g_terminate = 1;
 }
 
+static int sys_kill_wrapper(int64_t pid, int sig) {
+    return (int)SSHD_SYSCALL(SYS_KILL, (uintptr_t)pid, (uintptr_t)sig, 0, 0, 0, 0);
+}
+
+static int64_t sys_waitpid_wrapper(int64_t pid, uint64_t *status, int options) {
+    return (int64_t)SSHD_SYSCALL(SYS_WAITPID, (uintptr_t)pid, (uintptr_t)status, (uintptr_t)options, 0, 0, 0);
+}
+
+static int sys_close_wrapper(int fd) {
+    return (int)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
+}
+
 
 
 /* Worker Process: runs the connection protocol under dropped capabilities */
 static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon_out_fd) {
+    /* Setup signal handlers so SIGTERM breaks worker poll loop and runs clean pty_bridge_cleanup() */
+    signal_action_t sa = { .handler = (uintptr_t)on_sigterm, .mask = 0, .flags = 0, .reserved = 0 };
+    (void)SSHD_SYSCALL(SYS_SIGACTION, SIGTERM, (uintptr_t)&sa, 0, 0, 0, 0);
+    (void)SSHD_SYSCALL(SYS_SIGACTION, SIGINT, (uintptr_t)&sa, 0, 0, 0, 0);
+
     /* Step 1: Drop all capabilities immediately */
     (void)SSHD_SYSCALL(SYS_CAPSET, 0, 0, 0, 0, 0, 0);
 
@@ -466,17 +484,14 @@ static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_se
         pty_bridge_sleep_bounded(20);
     }
 
-    /* Shutdown: terminate active workers and close listening socket */
-    for (int i = 0; i < 2; i++) {
-        if (slots[i].active) {
-            (void)SSHD_SYSCALL(SYS_KILL, (uintptr_t)slots[i].pid, SIGTERM, 0, 0, 0, 0);
-            uint64_t st = 0;
-            (void)SSHD_SYSCALL(SYS_WAITPID, (uintptr_t)slots[i].pid, (uintptr_t)&st, WNOHANG, 0, 0, 0);
-            if (slots[i].p_mon_in >= 0) (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)slots[i].p_mon_in, 0, 0, 0, 0, 0);
-            if (slots[i].p_mon_out >= 0) (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)slots[i].p_mon_out, 0, 0, 0, 0, 0);
-        }
-    }
-    (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)sock_fd, 0, 0, 0, 0, 0);
+    /* Shutdown: terminate active workers and close listening socket via pinned teardown */
+    sshd_teardown_ops_t td_ops = {
+        .kill = (int (*)(int64_t, int))sys_kill_wrapper,
+        .waitpid = (int64_t (*)(int64_t, uint64_t *, int))sys_waitpid_wrapper,
+        .close = (int (*)(int))sys_close_wrapper,
+        .sleep_ms = pty_bridge_sleep_bounded
+    };
+    (void)sshd_daemon_teardown(slots, sock_fd, SSHD_TEARDOWN_TIMEOUT_MS, &td_ops);
     sshd_write_err("Daemon shut down cleanly.");
     return 0;
 }

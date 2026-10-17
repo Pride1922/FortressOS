@@ -15,6 +15,7 @@
 #include "user/sshd/sshd_config.h"
 #include "user/sshd/sshd_readiness.h"
 #include "user/sshd/sshd_admission.h"
+#include "user/sshd/sshd_teardown.h"
 #include "user/sshd/monitor.h"
 #include "src/include/syscall_abi.h"
 
@@ -414,12 +415,152 @@ static void test_boot_readiness_gate_sequence(void) {
     printf("PASS: test_boot_readiness_gate_sequence\n");
 }
 
+/* Mock state for daemon teardown verification */
+static int mock_td_kill_sigterm_count = 0;
+static int mock_td_kill_sigkill_count = 0;
+static int64_t mock_td_last_signaled_pid = 0;
+static int mock_td_closed_fds[16];
+static int mock_td_closed_fd_count = 0;
+static int mock_td_reap_behavior = 0; /* 0: instant reap on WNOHANG, 1: stuck child (escalates to SIGKILL) */
+static uint32_t mock_td_simulated_time_ms = 0;
+
+static int mock_td_kill(int64_t pid, int sig) {
+    mock_td_last_signaled_pid = pid;
+    if (sig == SIGTERM) mock_td_kill_sigterm_count++;
+    if (sig == SIGKILL) mock_td_kill_sigkill_count++;
+    return 0;
+}
+
+static int64_t mock_td_waitpid(int64_t pid, uint64_t *status, int options) {
+    if (status) *status = 0;
+    if (mock_td_reap_behavior == 0) {
+        return pid; /* Child exits promptly on SIGTERM */
+    } else {
+        /* Child is stuck until SIGKILL or blocking wait */
+        if (options == WNOHANG) {
+            if (mock_td_kill_sigkill_count > 0) return pid;
+            return 0; /* Still alive */
+        }
+        return pid; /* Reaped on blocking wait after SIGKILL */
+    }
+}
+
+static int mock_td_close(int fd) {
+    if (mock_td_closed_fd_count < (int)(sizeof(mock_td_closed_fds)/sizeof(mock_td_closed_fds[0]))) {
+        mock_td_closed_fds[mock_td_closed_fd_count++] = fd;
+    }
+    return 0;
+}
+
+static void mock_td_sleep_ms(uint32_t ms) {
+    mock_td_simulated_time_ms += ms;
+}
+
+static void test_daemon_teardown_sequence(void) {
+    printf("Running test_daemon_teardown_sequence...\n");
+
+    /* Case 1: Clean prompt exit with 2 active workers upon SIGTERM.
+     * Teardown sequence:
+     * 1. Receive SIGTERM
+     * 2. Stop accepting new connections -> listening sock_fd closed immediately
+     * 3. SIGTERM each active worker
+     * 4. Bounded wait reaps workers cleanly
+     * 5. Monitor IPC pipes closed, slots marked inactive, no SIGKILL escalation needed.
+     */
+    sshd_worker_slot_t slots[SSHD_MAX_CONCURRENT_SESSIONS];
+    memset(slots, 0, sizeof(slots));
+
+    slots[0].active = true;
+    slots[0].pid = 201;
+    slots[0].p_mon_in = 30;
+    slots[0].p_mon_out = 31;
+
+    slots[1].active = true;
+    slots[1].pid = 202;
+    slots[1].p_mon_in = 32;
+    slots[1].p_mon_out = 33;
+
+    long listen_sock_fd = 20;
+
+    mock_td_kill_sigterm_count = 0;
+    mock_td_kill_sigkill_count = 0;
+    mock_td_closed_fd_count = 0;
+    mock_td_simulated_time_ms = 0;
+    mock_td_reap_behavior = 0;
+
+    sshd_teardown_ops_t ops = {
+        .kill = mock_td_kill,
+        .waitpid = mock_td_waitpid,
+        .close = mock_td_close,
+        .sleep_ms = mock_td_sleep_ms
+    };
+
+    int rc = sshd_daemon_teardown(slots, listen_sock_fd, 5000, &ops);
+    assert(rc == 0);
+
+    /* Verify Step 2: Listening socket closed immediately */
+    assert(mock_td_closed_fd_count >= 1);
+    assert(mock_td_closed_fds[0] == 20);
+
+    /* Verify Step 3: Both workers sent SIGTERM */
+    assert(mock_td_kill_sigterm_count == 2);
+    assert(mock_td_kill_sigkill_count == 0); /* No escalation needed */
+
+    /* Verify Step 5: Both slots marked inactive */
+    assert(slots[0].active == false);
+    assert(slots[1].active == false);
+
+    /* Verify all IPC pipe descriptors closed */
+    bool found_30 = false, found_31 = false, found_32 = false, found_33 = false;
+    for (int i = 0; i < mock_td_closed_fd_count; i++) {
+        if (mock_td_closed_fds[i] == 30) found_30 = true;
+        if (mock_td_closed_fds[i] == 31) found_31 = true;
+        if (mock_td_closed_fds[i] == 32) found_32 = true;
+        if (mock_td_closed_fds[i] == 33) found_33 = true;
+    }
+    assert(found_30 && found_31 && found_32 && found_33);
+
+    /* Case 2: Stuck child process triggers 5s timeout and escalates to SIGKILL */
+    memset(slots, 0, sizeof(slots));
+    slots[0].active = true;
+    slots[0].pid = 301;
+    slots[0].p_mon_in = 40;
+    slots[0].p_mon_out = 41;
+
+    mock_td_kill_sigterm_count = 0;
+    mock_td_kill_sigkill_count = 0;
+    mock_td_closed_fd_count = 0;
+    mock_td_simulated_time_ms = 0;
+    mock_td_reap_behavior = 1; /* Stuck worker */
+
+    rc = sshd_daemon_teardown(slots, -1, 5000, &ops);
+    assert(rc == 0);
+
+    /* Verify SIGTERM was sent first */
+    assert(mock_td_kill_sigterm_count == 1);
+
+    /* Verify 5000ms bounded wait elapsed */
+    assert(mock_td_simulated_time_ms >= 5000);
+
+    /* Verify escalation to SIGKILL */
+    assert(mock_td_kill_sigkill_count == 1);
+    assert(mock_td_last_signaled_pid == 301);
+
+    /* Verify worker reaped and IPC pipes closed */
+    assert(slots[0].active == false);
+    assert(slots[0].p_mon_in == -1);
+    assert(slots[0].p_mon_out == -1);
+
+    printf("PASS: test_daemon_teardown_sequence\n");
+}
+
 int main(void) {
     printf("Starting SSH Daemon Lifecycle & Deployment test suite...\n");
     test_config_defaults_and_parsing();
     test_config_path_precedence();
     test_boot_readiness_gate_sequence();
     test_daemon_admission_limits();
+    test_daemon_teardown_sequence();
 
     printf("\nALL TESTS PASSED (tests/ssh_daemon_host.c)\n");
     return 0;

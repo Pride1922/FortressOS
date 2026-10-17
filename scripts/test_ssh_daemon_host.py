@@ -20,7 +20,8 @@ def main():
     sshd_units = [
         'user/sshd/sshd_config.c',
         'user/sshd/sshd_readiness.c',
-        'user/sshd/sshd_admission.c'
+        'user/sshd/sshd_admission.c',
+        'user/sshd/sshd_teardown.c'
     ]
     flags = ['-O1', '-g', '-no-pie', '-fsanitize=address,undefined', '-fno-omit-frame-pointer']
 
