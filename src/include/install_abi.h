@@ -15,6 +15,7 @@
 #define INSTALL_LOG_FAILED 2u
 #define INSTALL_STATUS_USB_LOG_WARNING 1u
 #define INSTALL_STATUS_ROOT_LOG_WARNING 2u
+#define INSTALL_STATUS_HOSTKEY_WARNING 4u
 /* Fixed events only: no console input, password or hash can be supplied. */
 typedef struct {
     uint32_t size,version,event,stage;
@@ -86,6 +87,15 @@ _Static_assert(sizeof(install_deploy_v2_t)==288,"installer deployment v2");
 /* Version 3 preserves v2 and adds a bounded DNS-label computer name. */
 typedef struct { install_deploy_v1_t base; char username[32],hostname[64]; } install_deploy_v3_t;
 _Static_assert(sizeof(install_deploy_v3_t)==352,"installer deployment v3");
+/* v4 preserves v3. Optional target-generated opaque OpenSSH host container.
+ * Buffer is private userspace input, copied/wiped by the runtime; never logged
+ * or included in payload templates. Zero pointer/length requests no host key.
+ * Provisioning does not enable SSH. Existing v1-v3 callers remain supported. */
+typedef struct {
+    install_deploy_v1_t base;char username[32],hostname[64];
+    uint64_t hostkey;uint32_t hostkey_bytes,reserved;
+} install_deploy_v4_t;
+_Static_assert(sizeof(install_deploy_v4_t)==368,"installer deployment v4");
 static inline bool install_hostname_valid(const char *name) {
     if (!name) return false;
     unsigned n=0;

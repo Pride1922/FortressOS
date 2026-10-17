@@ -5,6 +5,11 @@
 #include <setjmp.h>
 #define INSTALLER_CLI_HOST_TEST
 #include "../user/tools/install.c"
+/* Codec/randomness is independently tested using actual crypto; this adapter
+ * exercises installation continuation without a provisionable entropy source. */
+int ssh_hostkey_generate(char *p,size_t cap,size_t *n,ssh_hostkey_workspace *w) {
+    (void)p;(void)cap;(void)n;db_wipe(w,sizeof(*w));return SYSCALL_EIO;
+}
 static const char *input;
 static jmp_buf rebooted;
 static bool keyboard_pending,finish_pending;
@@ -78,7 +83,8 @@ static long control(unsigned op,const void *in,size_t n,void *out,size_t m) {
     assert(op==INSTALL_DEPLOY);
     const install_deploy_v1_t *req=in;
     if (req->flags==INSTALL_DRY_RUN) {assert(!acquisitions);return fail_validation;}
-    assert(req->version==3 && req->size==352 && !strcmp(((const install_deploy_v3_t *)req)->username,expected_username));
+    assert(req->version==4 && req->size==368 && !strcmp(((const install_deploy_v3_t *)req)->username,expected_username));
+    assert(!((const install_deploy_v4_t *)req)->hostkey && !((const install_deploy_v4_t *)req)->hostkey_bytes);
     assert(!strcmp(((const install_deploy_v3_t *)req)->hostname,"fortress"));
     deployments++;
     assert(db_verify(expected_password,req->operator_hash));

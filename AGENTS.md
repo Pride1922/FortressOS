@@ -93,6 +93,7 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-ssh-hostkeys-host` / `make test-ssh-hostkeys-storage-host` / `make test-ssh-hostkeys-installer-host` / `make test-ssh-hostkeys` | Phase 3 bounded OpenSSH codec, fixed installed-root key publication/load, installer v4 and Ring 3 provisioning/reboot gates. SSH remains disabled; rotation and physical acceptance are separate. [Contracts](docs/plans/SSH_PHASE3_HOST_IDENTITY.md), [evidence and limits](docs/roadmap/ssh-phase3-hostkeys.md). |
 | `make test-fstat-host` / `make test-fstat` | Actual SYS_FSTAT/VFS/runfs ASan/UBSan and isolated BIOS/UEFI × SMP=1/4/8; retained-object rename/replacement/unlink, descriptor/pointer errors, directory/pipe types, ordinary workers and path-stat/ls regression. Test probe excluded from release media. [Contract and evidence](docs/roadmap/fstat.md). |
 | `make test-crypto-host` / `make test-crypto` | Phase 2 COMPLETE: Monocypher 4.0.3 + unchanged existing SHA-256, actual-code RFC/negative/wipe ASan/UBSan and 96 independent differential cases; disk-free BIOS/UEFI SMP=1 ready/absent 4/4 PASS. User-approved verifier-only 1,280-byte frame ceiling (1,104 measured); all other frames <1 KiB. Wrapper-owned signing hash glue erases nonce scratch; upstream unchanged. No probe in release media; [contracts and evidence](docs/subsystems/crypto.md). |
 | `make test-random-host` / `make test-getrandom` | SSH Phase 1: actual HMAC-SHA-256 DRBG/service ASan/UBSan, NIST CAVP and independent Python vectors, bounded stalled/absent/stuck source, argument/pointer/output invariants, exhaustion and eight-thread distinctness. Disk-free BIOS/UEFI × SMP=1/4/8 hardware-present/absent plus RDRAND-only SMP=4; ordinary unpinned Ring 3 workers. See [random service contract and evidence](docs/roadmap/ssh-phase1-random.md). QEMU does not assess physical source quality. |
@@ -380,6 +381,15 @@ FortressOS/
 ## 7. How to Add
 
 ### 7.1 A syscall
+
+Additive private host-key storage ABI: `SYS_HOSTKEY = 79`, `(op, buffer, bytes)`;
+both operations require effective UID 0 plus CAP_SYS_ADMIN. READ requires a
+writable 1024-byte buffer and returns length; PUBLISH consumes 1..1023 opaque
+bytes. Invalid op/size precedes EPERM, EFAULT, absent installed-root EOPNOTSUPP,
+then allocation/backend errors. No arbitrary paths, replacement or live fallback.
+Consumers must validate the bounded container in userspace before using it;
+the kernel does not implement crypto or assert SSH readiness. See `hostkey_abi.h`
+and the [Phase 3 design](docs/plans/SSH_PHASE3_HOST_IDENTITY.md).
 
 Additive descriptor metadata ABI: `SYS_FSTAT = 78`, `(fd, writable_stat_ext_v1_t_pointer)`;
 returns zero or `EBADF` before `EFAULT` before `EIO`. Fixed 40-byte v1 output

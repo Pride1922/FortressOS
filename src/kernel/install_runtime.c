@@ -5,6 +5,7 @@
 #include "install_fat.h"
 #include "root_boot.h"
 #include "accounts.h"
+#include "hostkey_abi.h"
 #include "heap.h"
 #include "string.h"
 #include "../../user/tools/userdb.h"
@@ -27,6 +28,7 @@ typedef struct {
     block_dev_t partition;
     uint32_t log_warnings;
     char log_copy[INSTALL_LOG_BYTES];
+    char hostkey[HOSTKEY_FILE_MAX];size_t hostkey_size;
 } runtime_t;
 
 static bool add(char *out,size_t cap,size_t *at,const char *s) {
@@ -147,19 +149,33 @@ static int provision(void *ctx) {
     if (!r) r=accounts_provision_detached(fs,bytes,sizes);
     if (!r) r=root_file(fs,"fortress-install.v1",w->root_record,w->root_size);
     if (!r) r=root_file(fs,"hostname",w->hostname,strlen(w->hostname));
+    if (!r && w->hostkey_size) r=ext4_hostkey_publish(fs,w->hostkey,w->hostkey_size);
     if (!r && write_install_log(w,fs,false)) w->log_warnings|=INSTALL_STATUS_ROOT_LOG_WARNING;
     int frozen=ext4_freeze_and_sync(fs);if (!r) r=frozen;
     int discarded=ext4_discard_prepared_root(fs);if (!r) r=discarded;
+    /* Validate authoritative host bytes on a fresh detached mount after
+     * freeze/discard. This is independent of the write-side metadata cache. */
+    if (!r && w->hostkey_size) {
+        fs=NULL;r=ext4_prepare_installer_root(&w->partition,true,&fs,NULL);
+        if (!r) {
+            char *check=kcalloc(1,HOSTKEY_FILE_MAX);size_t n=0;
+            r=check ? ext4_hostkey_read(fs,check,HOSTKEY_FILE_MAX,&n) : -VFS_ENOMEM;
+            if (!r && (n!=w->hostkey_size || memcmp(check,w->hostkey,n))) r=-VFS_EIO;
+            if (check) {db_wipe(check,HOSTKEY_FILE_MAX);kfree(check);}
+            int frozen_again=ext4_freeze_and_sync(fs);if (!r) r=frozen_again;
+            int released=ext4_discard_prepared_root(fs);if (!r) r=released;
+        }
+    }
     return r;
 }
 static int personalize(runtime_t *w,const install_deploy_v1_t *req) {
     const char *username=req->version>=2 ? ((const install_deploy_v2_t *)req)->username : "operator";
     if (!install_username_valid(username)) return -VFS_EINVAL;
     memcpy(w->username,username,strlen(username)+1);
-    const char *hostname=req->version==3 ? ((const install_deploy_v3_t *)req)->hostname : "fortress";
+    const char *hostname=req->version>=3 ? ((const install_deploy_v3_t *)req)->hostname : "fortress";
     if (!install_hostname_valid(hostname)) return -VFS_EINVAL;
     size_t hn=strlen(hostname);memcpy(w->hostname,hostname,hn);w->hostname[hn]='\n';w->hostname[hn+1]=0;
-    if (req->version==3) {
+    if (req->version>=3) {
         if (w->identity.sector_count<INSTALL_MIN_SECTORS) return -VFS_EINVAL;
         w->plan.root_sectors=w->identity.sector_count-INSTALL_ROOT_LBA-33;
         if (w->plan.root_sectors/8>INSTALL_ROOT_MAX_BLOCKS) return -VFS_EFBIG;
@@ -231,6 +247,13 @@ int install_runtime_deploy(const boot_info_t *boot,const install_backend_t *back
     if (!boot || !boot->installer_payload_valid || !backend || !id || !req || !status) return -VFS_EINVAL;
     runtime_t *w=kcalloc(1,sizeof(*w));if (!w) return -VFS_ENOMEM;
     w->boot=boot;w->backend=backend;w->identity=*id;
+    if (req->version==4 && req->size==sizeof(install_deploy_v4_t)) {
+        const install_deploy_v4_t *v=(const void *)req;
+        if (v->reserved || v->hostkey_bytes>=HOSTKEY_FILE_MAX || (!v->hostkey != !v->hostkey_bytes)) {db_wipe(w,sizeof(*w));kfree(w);return -VFS_EINVAL;}
+        w->hostkey_size=v->hostkey_bytes;
+        if (w->hostkey_size) memcpy(w->hostkey,(const void *)(uintptr_t)v->hostkey,w->hostkey_size);
+    }
+    if (!w->hostkey_size) w->log_warnings|=INSTALL_STATUS_HOSTKEY_WARNING;
     install_source_t source={.context=w,.read=source_read};
     int r=install_payload_validate((void *)boot->installer_payload_vaddr[4],256,&source,w->copy.data);
     if (!r) r=install_fat_kernel_matches((void *)boot->installer_payload_vaddr[0],INSTALL_ESP_BYTES,
@@ -261,6 +284,7 @@ done:
         w->archive=NULL;w->esp=NULL;
         db_wipe(w->shadow,sizeof(w->shadow));db_wipe(w->recovery,sizeof(w->recovery));
         db_wipe(w->binding.hash,sizeof(w->binding.hash));
+        db_wipe(w->hostkey,sizeof(w->hostkey));
         status->complete=0;status->error=r ? r : -VFS_EIO;
         return status->error;
     }

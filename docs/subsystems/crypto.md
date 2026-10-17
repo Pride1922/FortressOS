@@ -124,6 +124,15 @@ candidate failures are retained rather than relabeled as passing attempts.
 
 ## Security claim boundary
 
+Phase 3 host-identity integration is tracked in the
+[host-key report](../roadmap/ssh-phase3-hostkeys.md). The crypto archive includes
+a bounded OpenSSH Ed25519 container codec; it remains userspace-only. The kernel
+stores opaque bytes under a fixed privileged installed-root interface, while
+the provisioning command validates key consistency and exports public identity.
+Provisioning does not enable an SSH daemon or extend the primitive library's
+security claims. The pinned OpenSSH format references are inspection inputs,
+not imported implementation code.
+
 Upstream supplies constant-time secret operations; FortressOS does not
 independently re-verify that claim. A bounded source and optimized-code review
 checks integration and scalar compiler output; tests/timing are not proofs.

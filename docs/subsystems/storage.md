@@ -109,6 +109,14 @@ Evidence and scope are in the memory investigation report.
 
 ## Descriptor metadata (SYS_FSTAT, syscall 78)
 
+Host identity now uses a separate fixed installed-root backend and private
+`SYS_HOSTKEY` 79 interface; this does not change FSTAT or general VFS open/rename
+semantics. Retained single-basename traversal, first-visible 0600 creation,
+no-replace publication and supported mount barriers are specified in the
+[Phase 3 design](../plans/SSH_PHASE3_HOST_IDENTITY.md), with actual-code
+sector-atomic fault/recovery scope in the [host-key report](../roadmap/ssh-phase3-hostkeys.md).
+No kernel crypto, hot mount, physical write admission or SSH enablement is added.
+
 `SYS_FSTAT(fd, out)` returns the metadata of the VFS node referenced by the fd,
 not the path. This avoids the path re-lookup TOCTOU window: the fd retains the
 opened object even if its name is renamed or replaced. When a filesystem permits

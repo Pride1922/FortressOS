@@ -3,11 +3,16 @@
 #include "terminal.h"
 #include "install_abi.h"
 #include "account_abi.h"
+#include "ssh_hostkey.h"
 
 static install_identity_v1_t identity;
 static install_identity_v1_t disks[8];
 static install_deploy_v1_t request;
-static install_deploy_v3_t named_request;
+static install_deploy_v4_t named_request;
+#ifndef INSTALLER_PREVIEW
+static ssh_hostkey_workspace hostkey_workspace;
+static char hostkey_container[SSH_HOSTKEY_MAX];
+#endif
 static install_status_v1_t status;
 static void say(const char *s) {(void)tool_write("install",s,tool_length(s));}
 static void clear_screen(void) {say("\033[2J\033[H");}
@@ -271,6 +276,7 @@ static void log_notice(uint32_t warnings) {
     if (log_failed || (warnings&INSTALL_STATUS_USB_LOG_WARNING)) say("Warning: the USB log could not be saved. Installation can continue.\n");
     else say("USB log: /fortress-install.log on the FORTRESSLOG volume.\n");
     if (warnings&INSTALL_STATUS_ROOT_LOG_WARNING) say("Warning: the laptop log could not be saved.\n");
+    if (warnings&INSTALL_STATUS_HOSTKEY_WARNING) say("SSH host identity unavailable. SSH remains disabled; provision it explicitly after installation.\n");
 }
 static void failure_screen(unsigned step,const char *action,long call,unsigned stage,int error,bool may_have_written) {
     failure_reported=true;log_event(INSTALL_LOG_FAILED,stage,error,call);
@@ -294,7 +300,7 @@ int install_main(int argc,char **argv) {
     (void)argc;(void)argv;
     terminal_attrs_t saved,attrs;bool changed=false;int result=1;int32_t fd=-1;char choice[129]={0};
     request=(install_deploy_v1_t){.size=sizeof(request),.version=1,.fd=-1,.flags=INSTALL_DRY_RUN};
-    named_request=(install_deploy_v3_t){0};
+    named_request=(install_deploy_v4_t){0};
     status=(install_status_v1_t){0};uint32_t index=0,count=0,layout=0;bool selected=false;go_back=false;
 #ifdef INSTALLER_PREVIEW
     say("FortressOS installer interface PREVIEW\nInstallation is disabled in this image.\nSynthetic target only; use example passphrases.\n\n");
@@ -434,9 +440,21 @@ recovery_step:;
     long acquired=control(INSTALL_ACQUIRE,&target,sizeof(target),&fd,sizeof(fd));
     if (acquired) {failure_screen(5,"The selected disk could not be opened safely.",acquired,1,0,false);goto done;}
     request.fd=fd;request.flags=0;
-    request.size=sizeof(named_request);request.version=3;named_request.base=request;
+    request.size=sizeof(named_request);request.version=4;named_request.base=request;
+#ifndef INSTALLER_PREVIEW
+    /* Generate only on the target after explicit confirmation and successful
+     * exclusive lease acquisition. Persistence waits for detached root prep.
+     * Entropy failure never supplies fallback bytes or claims SSH readiness. */
+    size_t hostkey_size=0;
+    if (!ssh_hostkey_generate(hostkey_container,sizeof(hostkey_container),&hostkey_size,&hostkey_workspace)) {
+        named_request.hostkey=(uintptr_t)hostkey_container;named_request.hostkey_bytes=(uint32_t)hostkey_size;
+    }
+#endif
     screen(5,"Installing FortressOS");say("Installing; keep power and installer media connected.\n\n");
     long deployed=control(INSTALL_DEPLOY,&named_request,sizeof(named_request),&status,sizeof(status));
+#ifndef INSTALLER_PREVIEW
+    db_wipe(hostkey_container,sizeof(hostkey_container));db_wipe(&hostkey_workspace,sizeof(hostkey_workspace));
+#endif
     if (deployed || !status.complete || status.error) {
         /* A zero call with incomplete status is still failure, never success. */
         failure_screen(5,"Installing FortressOS failed.",deployed,status.stage,status.error,true);
@@ -453,6 +471,9 @@ recovery_step:;
         (void)tool_syscall(SYS_REBOOT,1,0,0);
     }
 done:
+#ifndef INSTALLER_PREVIEW
+    db_wipe(hostkey_container,sizeof(hostkey_container));db_wipe(&hostkey_workspace,sizeof(hostkey_workspace));
+#endif
     if (changed && result && !failure_reported) log_event(INSTALL_LOG_CANCELLED,screen_step ? screen_step-1 : 0,0,0);
     if (fd>=0) (void)control(INSTALL_RELEASE,&fd,4,NULL,0);
     db_wipe(choice,sizeof(choice));db_wipe(&request,sizeof(request));db_wipe(&named_request,sizeof(named_request));

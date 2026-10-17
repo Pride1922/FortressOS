@@ -1,0 +1,22 @@
+{
+  "baseline": "OpenSSH portable V_10_2_P1",
+  "purpose": "format inspection only; no OpenSSH source imported",
+  "files": {
+    "PROTOCOL.key": {
+      "url": "https://raw.githubusercontent.com/openssh/openssh-portable/V_10_2_P1/PROTOCOL.key",
+      "sha256": "8479c767aeb256e4b2465d23f96dd98998d4210f12c0c9b41bd0a6f1f2e6f17c"
+    },
+    "sshkey.c": {
+      "url": "https://raw.githubusercontent.com/openssh/openssh-portable/V_10_2_P1/sshkey.c",
+      "sha256": "9a2b81372e68ec9fe2f1a34af0e962cd485055e26577de563d354f9729c40dcd"
+    },
+    "ssh-ed25519.c": {
+      "url": "https://raw.githubusercontent.com/openssh/openssh-portable/V_10_2_P1/ssh-ed25519.c",
+      "sha256": "562309b650021af57c29027afd894ba633cf5ba14acc055fb3bf3ffaf34163b5"
+    },
+    "cipher.c": {
+      "url": "https://raw.githubusercontent.com/openssh/openssh-portable/V_10_2_P1/cipher.c",
+      "sha256": "5ebe1dce5a3ae309b3eb3c46b5ed48b1eb352a263536d4031febd902945ef1e6"
+    }
+  }
+}

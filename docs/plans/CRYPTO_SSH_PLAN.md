@@ -1,6 +1,7 @@
 # Crypto library, SSH server and host identity
 
-2026-10-16. **PLANNED — no implementation or acceptance claimed.**
+Updated 2026-10-17. **Phases 1–2 complete; Phase 3 host identity implemented
+and verified within the evidence below. SSH service phases remain planned.**
 Tracks [crypto #50](https://github.com/Pride1922/FortressOS/issues/50),
 [SSH server #51](https://github.com/Pride1922/FortressOS/issues/51) and
 [host keys #52](https://github.com/Pride1922/FortressOS/issues/52).
@@ -178,6 +179,15 @@ compiler flags, dependency identity and external-review scope. Passing vectors
 does not by itself qualify TLS, signed packages or secure boot integrations.
 
 ### Phase 3 — persistent host identity (#52)
+
+**Host-key implementation verified (2026-10-17; bounded scope):** [host identity design and resolved
+storage interface](SSH_PHASE3_HOST_IDENTITY.md), based on handoff `d67ccf0`.
+Bounded OpenSSH codec, root-only installed-root publication/load, explicit
+provision/export command and installer v4 handoff are implemented. Host codec
+and 595 mounted sector-atomic recovery cases pass, as do 18 installed BIOS/UEFI
+guest boots at SMP=1/4/8. [Evidence and remaining boundaries](../roadmap/ssh-phase3-hostkeys.md).
+Rotation requires a separate replacement design; daemon lifecycle, actual
+installer guest provisioning and physical acceptance are not claimed. SSH remains disabled.
 
 Generate a unique Ed25519 key on the target during authorized installation,
 after the detached root is prepared. Never embed host private keys in build

@@ -70,6 +70,13 @@ int ext4_root_lock_accounts(ext4_mount_t *,vfs_node_t *nodes[4]);
 int ext4_root_account_io(ext4_mount_t *,account_io_t *);
 int ext4_root_account_headroom(ext4_mount_t *);
 int ext4_sync_installed_root(bool *handled);
+/* Narrow host-identity storage adapter. Installed-root handle is boot-lifetime;
+ * no new mount/publication. Detached installer callers supply their own fs.
+ * Key bytes are opaque; crypto validation belongs to the privileged caller.
+ * No replacement, rotation, enablement or physical write admission is added. */
+ext4_mount_t *ext4_hostkey_installed(void);
+int ext4_hostkey_read(ext4_mount_t *,char *,size_t,size_t *);
+int ext4_hostkey_publish(ext4_mount_t *,const char *,size_t);
 int ext4_freeze_installed_root(bool *handled);
 /* After successful freeze: excludes all filesystem/raw reads, then invokes the
  * polling controller stop under the same exclusion. No reopen in this boot. */

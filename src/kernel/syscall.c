@@ -31,6 +31,7 @@ static bool syscall_actor(creds_t *out);
 #include "usb_mount.h"
 #include "installed_root.h"
 #include "accounts.h"
+#include "hostkey.h"
 #include "random.h"
 #include "install_control.h"
 #include "xhci.h"
@@ -1482,6 +1483,11 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         case SYS_STAT:
             result = sys_stat(frame->rdi, frame->rsi);
             break;
+        case SYS_HOSTKEY: {
+            creds_t actor;
+            result=syscall_actor(&actor) ? hostkey_control(frame->rdi,frame->rsi,frame->rdx,&actor) : SYSCALL_ESRCH;
+            break;
+        }
         case SYS_FSTAT:
             result = sys_fstat(frame->rdi,frame->rsi);
             break;

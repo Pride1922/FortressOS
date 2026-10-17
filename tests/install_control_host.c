@@ -63,6 +63,14 @@ static int device_write(void *ctx,uint64_t lba,uint32_t n,const void *data) {
 }
 static int device_flush(void *ctx) {(void)ctx;flushes++;return fail_flush ? -VFS_EIO : 0;}
 static install_backend_t b={.identity=identity,.read=device_read,.write=device_write,.flush=device_flush};
+static unsigned deployments;
+static int deploy_v4(void *ctx,const install_deploy_v1_t *req,install_status_v1_t *status) {
+    (void)ctx;const install_deploy_v4_t *v=(const void *)req;
+    assert(req->size==sizeof(*v) && req->version==4 && !req->flags);
+    assert(!strcmp(v->username,"operator") && !strcmp(v->hostname,"ssh-test"));
+    assert(v->hostkey_bytes==4 && !memcmp((const void *)(uintptr_t)v->hostkey,"key\n",4));
+    deployments++;status->complete=1;return 0;
+}
 static install_identity_v1_t indexed[2];
 static unsigned selected_index;
 static int indexed_enum(void *ctx,unsigned i,install_identity_v1_t *id) {
@@ -162,6 +170,25 @@ int main(void) {
     fd=acquire();fd_close_cloexec(&process);assert(!install_control_owned() && !process.fd_table[fd]);
     fd=acquire();fd_close_all(&process);assert(!install_control_owned() && !allocations);
     assert(release(fd)==SYSCALL_EBADF);puts("PASS installer control: ABI, exclusions, stale identity, failures, non-inherited/dup/CLOEXEC/exit leases");
+    /* Actual v4 dispatcher handoff and bounds; backend crypto/EXT4 work is
+     * independently exercised by the runtime and host-key mounted tests. */
+    b.deploy=deploy_v4;install_control_boot(&b,true);fd=acquire();
+    install_deploy_v4_t v4={.base={.size=sizeof(v4),.version=4,.fd=fd},.username="operator",.hostname="ssh-test",
+        .hostkey=(uintptr_t)"key\n",.hostkey_bytes=4};
+    install_status_v1_t status={.size=sizeof(status),.version=1};
+    assert(!install_control(INSTALL_DEPLOY,(uintptr_t)&v4,sizeof(v4),(uintptr_t)&status,sizeof(status),&root));
+    assert(deployments==1 && status.complete);
+    v4.hostkey=1;assert(install_control(INSTALL_DEPLOY,(uintptr_t)&v4,sizeof(v4),(uintptr_t)&status,sizeof(status),&root)==SYSCALL_EFAULT);
+    v4.hostkey=(uintptr_t)"key\n";v4.hostkey_bytes=1024;
+    assert(install_control(INSTALL_DEPLOY,(uintptr_t)&v4,sizeof(v4),(uintptr_t)&status,sizeof(status),&root)==SYSCALL_EINVAL);
+    v4.hostkey_bytes=4;v4.reserved=1;
+    assert(install_control(INSTALL_DEPLOY,(uintptr_t)&v4,sizeof(v4),(uintptr_t)&status,sizeof(status),&root)==SYSCALL_EINVAL);
+    v4.reserved=0;v4.hostkey=0;
+    assert(install_control(INSTALL_DEPLOY,(uintptr_t)&v4,sizeof(v4),(uintptr_t)&status,sizeof(status),&root)==SYSCALL_EINVAL);
+    v4.hostkey=(uintptr_t)"key\n";v4.base.flags=INSTALL_DRY_RUN;v4.base.fd=-1;
+    assert(install_control(INSTALL_DEPLOY,(uintptr_t)&v4,sizeof(v4),(uintptr_t)&status,sizeof(status),&root)==SYSCALL_EINVAL);
+    assert(deployments==1 && !release(fd));b.deploy=NULL;
+    puts("PASS installer v4 control: exact host-key handoff, pointer/size/reserved/pair/dry-run rejection");
     indexed[0]=hardware;indexed[1]=hardware;indexed[1].serial[0]='2';install_identity_digest(&indexed[1]);
     b.enumerate=indexed_enum;b.select=indexed_select;install_control_boot(&b,true);
     index=1;assert(install_control(INSTALL_ENUM,(uintptr_t)&index,4,(uintptr_t)&out,sizeof(out),&root)==1);

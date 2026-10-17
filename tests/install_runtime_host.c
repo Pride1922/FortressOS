@@ -59,18 +59,29 @@ int main(int argc,char **argv) {
         memset(g,i+1,16);g[7]=0x40;g[8]=0x80;
     }
     memset(request.install_id,0x17,16);
-    install_deploy_v3_t named={.base=request};
+    install_deploy_v4_t named={.base=request};
     if (argc>=5) {named.base.size=argc>=6 ? sizeof(named) : sizeof(install_deploy_v2_t);named.base.version=argc>=6 ? 3 : 2;snprintf(named.username,sizeof(named.username),"%s",argv[4]);}
     if (argc>=6) snprintf(named.hostname,sizeof(named.hostname),"%s",argv[5]);
+    char hostkey[1024];size_t hostkey_size=0;
+    if (getenv("SSH_HOSTKEY_FIXTURE")) {
+        FILE *key=fopen(getenv("SSH_HOSTKEY_FIXTURE"),"rb");assert(key);
+        hostkey_size=fread(hostkey,1,sizeof(hostkey),key);fclose(key);assert(hostkey_size && hostkey_size<1024 && argc>=6);
+        named.base.size=sizeof(named);named.base.version=4;named.hostkey=(uintptr_t)hostkey;named.hostkey_bytes=(uint32_t)hostkey_size;
+    }
     int r=install_runtime_deploy(&boot,&backend,&target_identity,argc>=5 ? &named.base : &request,&status);
     if (r) fprintf(stderr,"runtime error %d stage %u reads %u writes %u flushes %u\n",r,status.stage,target_reads,target_writes,target_flushes);
     assert(!r && status.complete && status.stage==INSTALL_STAGE_COMPLETE);
+    if (hostkey_size) assert(!(status.reserved&INSTALL_STATUS_HOSTKEY_WARNING));
     assert(g_vfs_root==root && !enabled && !storage.context && !ext4_storage_owned() && live==baseline_live);
     /* Remount authoritative installed bytes after both log refreshes. */
     block_dev_t part={.sector_size=512,.sector_count=argc>=6 ? target_identity.sector_count-INSTALL_ROOT_LBA-33 : 524288,
         .read_sector=permission_read,.write_sector=permission_write,.flush=permission_flush};
     ext4_mount_t *fs=NULL;assert(!ext4_prepare_installer_root(&part,true,&fs,NULL));
     creds_t admin;creds_init_root(&admin);
+    if (hostkey_size) {
+        char check[1024];size_t n=0;assert(!ext4_hostkey_read(fs,check,sizeof(check),&n));
+        assert(n==hostkey_size && !memcmp(check,hostkey,n));memset(hostkey,0,sizeof(hostkey));memset(check,0,sizeof(check));
+    }
     creds_t ordinary={.uid=1000,.euid=1000,.suid=1000,.gid=1000,.egid=1000,.sgid=1000};
     const char *private_paths[]={"/var","/var/log","/var/log/fortress-install.log"};
     for (unsigned i=0;i<3;i++) {

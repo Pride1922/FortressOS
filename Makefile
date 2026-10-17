@@ -798,6 +798,7 @@ test-random-host:
 test-getrandom: $(BOOTABLE_ISO)
 	@python3 scripts/test_getrandom.py
 $(INITRAMFS_TAR): $(LOGIN_ELFS) stage-user-database scripts/stage_user_database.py src/lib/crypto/LICENCE.md
+$(INITRAMFS_TAR): $(BUILD_DIR)/ssh-keygen.elf
 
 $(BUILD_DIR)/tool-common.o: user/tools/common.c user/tools/common.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
@@ -1108,6 +1109,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@$(foreach tool,$(USER_STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@cp -f $(BUILD_DIR)/getrandom-probe.elf $(BUILD_DIR)/initramfs/bin/getrandom-probe
 	@cp -f src/lib/crypto/LICENCE.md $(BUILD_DIR)/initramfs/docs/monocypher-licence.txt
+	@mkdir -p $(BUILD_DIR)/initramfs/sbin
+	@cp -f $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/initramfs/sbin/ssh-keygen
 	@if [ "$(CRYPTO_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/crypto-probe.elf $(BUILD_DIR)/initramfs/bin/crypto-probe; else rm -f $(BUILD_DIR)/initramfs/bin/crypto-probe; fi
 	@if [ "$(FSTAT_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/fstat-probe.elf $(BUILD_DIR)/initramfs/bin/fstat-probe; else rm -f $(BUILD_DIR)/initramfs/bin/fstat-probe; fi
 	@$(foreach tool,$(SBIN_STREAM_TOOLS) disk,cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
@@ -1924,10 +1927,10 @@ installer-image: bin/fortress.elf bin/initramfs.tar build/tool-install.elf limin
 	@python3 scripts/create_installer_media.py
 
 # Installer program is staged only by the separate media builder.
-build/tool-install.elf: user/tools/install.c src/include/install_abi.h src/include/terminal.h build/tool-userdb.o build/tool-common.o build/tool-digest.o user/tools/start.asm user/shell.ld
+build/tool-install.elf: user/tools/install.c src/include/install_abi.h src/include/terminal.h src/include/ssh_hostkey.h $(CRYPTO_LIB) build/tool-userdb.o build/tool-common.o build/tool-digest.o user/tools/start.asm user/shell.ld
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c user/tools/install.c -o build/tool-install.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=install_main user/tools/start.asm -o build/tool-install-start.o
-	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld build/tool-install-start.o build/tool-install.o build/tool-userdb.o build/tool-digest.o build/tool-common.o -o $@
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld build/tool-install-start.o build/tool-install.o build/tool-userdb.o build/tool-common.o $(CRYPTO_LIB) -o $@
 
 build/tool-install-inspect.elf: user/tools/install_inspect.c src/include/install_abi.h build/tool-common.o user/tools/start.asm user/shell.ld
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -c $< -o build/tool-install-inspect.o
