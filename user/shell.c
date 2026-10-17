@@ -680,6 +680,14 @@ static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
 }
 
 static void execute_parse_tree(parse_tree_t *tree, const char *cmd_text) {
+    /* A child such as sudo shell may reboot without ever returning here.
+     * Flush before launch, while HOME still belongs to the calling shell. */
+    for (int i = 0; i < tree->cmd_count; i++) {
+        if (!is_parent_builtin(tree->cmds[i].argc, tree->cmds[i].argv)) {
+            history_flush_pending();
+            break;
+        }
+    }
     last_status = execute_command_list_job(tree, (int)last_status,
                                            execute_single_command, cmd_text);
 }

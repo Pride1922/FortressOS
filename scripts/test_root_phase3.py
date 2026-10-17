@@ -68,10 +68,19 @@ def session(boot,operator,send,wait,command,prompt,transcript):
         operator=NEW
         interactive('sudo useradd phase3user 1100',[('sudo password: ',operator),('New password (12..128 characters): ',USER),('Confirm new password: ',USER)],'Account created')
         interactive('sudo hostname phase3-machine',[('sudo password: ',operator)],'')
-        interactive('sudo shell',[('sudo password: ',operator)],'')
+        interactive('sudo /bin/shell',[('sudo password: ',operator)],'')
+        # The parent is still waiting: its launcher entry must already be on
+        # disk, because this nested shell can reboot without returning to it.
+        command('cat /home/operator/.fortress-history','sudo /bin/shell')
         command('mkdir /etc/network','')
         command('echo address=10.0.2.15/24 > /etc/network/network.conf','')
         command('echo nameserver 10.0.2.3 > /etc/resolv.conf','')
+        command('exit','')
+        command('id','uid=1000 gid=1000')
+        interactive('sudo !!',[('sudo password: ',operator)],'uid=0 gid=0')
+        command('sudo','usage: sudo command [args] | sudo -s')
+        interactive('sudo -s',[('sudo password: ',operator)],'')
+        command('id','uid=0 gid=0')
         command('exit','')
         command('ifup --dry-run','valid (dry-run)')
         command('echo phase3-history-proof','phase3-history-proof');command('history save','History saved')

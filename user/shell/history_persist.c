@@ -236,10 +236,15 @@ void history_autoflush_maybe(void) {
     if (s_history_cmd_counter < HISTORY_AUTOFLUSH_INTERVAL) return;
 
     s_history_cmd_counter = 0;
-    if (!s_history_dirty) return;
+    history_flush_pending();
+}
+
+void history_flush_pending(void) {
+    if (!s_history_dirty || call(SYS_TERMCTL, TERM_ISATTY, 0, 0) != 1) return;
 
     if (history_save()) {
         s_history_dirty = false;
+        s_history_cmd_counter = 0;
     } else {
         if (!s_history_warned) {
             puts("history: auto-save failed\n");

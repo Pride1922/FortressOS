@@ -140,6 +140,10 @@ FortressOS partitions system utilities into standard user executables (`/bin`) a
 - **Environment Default:** The interactive shell initializes `PATH=/bin:/sbin`.
 - **Fallback Resolution:** If `PATH` is unset or empty, binary resolution falls back to `/bin:/sbin` for program execution and the `type` builtin.
 - **Tab Completion:** Interactive tab completion scans both `/bin` and `/sbin` directories without requiring full path qualification.
+- Tokens containing `/` use directory completion even in command position:
+  `/sb<Tab>` becomes `/sbin/`, `/sbin/reb<Tab>` becomes `/sbin/reboot `,
+  and `./to<Tab>` can complete a relative command path. Actual completion code
+  is covered by `scripts/test_shell_host.py` under ASan/UBSan (2026-10-17).
 
 ### Administrative Tools (`/sbin`)
 The following 8 tools are located in `/sbin/` on the live initramfs image:
@@ -156,6 +160,20 @@ When a bare (non-path) command is executed via `/bin/sudo <cmd>`:
 1. `sudo` tests `/sbin/<cmd>` via `SYS_STAT` first. If present and executable, it executes `/sbin/<cmd>`.
 2. Otherwise, it executes `/bin/<cmd>`.
 3. The elevated execution environment explicitly sets `PATH=/bin:/sbin`.
+4. With no arguments, `sudo` prints usage. `sudo -s` runs `/bin/shell` using
+   the same authorization and authentication path. `exit` returns to the
+   calling user shell. Other sudo options are not implemented.
+5. A whole interactive input line `sudo !!` expands the last history entry,
+   displays the expansion, and stores the expanded command. The bounded
+   shorthand accepts surrounding spaces/tabs; quoted or escaped `!!` stays
+   literal. Empty history and oversized expansions are rejected.
+
+Interactive history is flushed before executing a command list containing an
+external command (2026-10-17). This saves the user's `sudo /bin/shell` entry
+before the parent waits, so rebooting from the nested root shell cannot lose
+that entry. Root commands still use `/root/.fortress-history`; ordinary builtin
+commands retain the five-command autosave interval. Failed saves keep pending
+history dirty and report the existing once-per-session warning.
 ## Network SMP Phase 3 rollout (2026-10-16)
 
 Ordinary VFS children now start on the caller CPU with affinity -1 and all-CPU

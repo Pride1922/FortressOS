@@ -1836,6 +1836,15 @@ command's exit status. For bare command names, `sudo` probes `/sbin/<cmd>` first
 falling back to `/bin/<cmd>`; use an absolute path for other locations. There is no
 authentication cache.
 
+With no arguments, `sudo` prints usage. `sudo -s` opens `/bin/shell` as root;
+use `exit` to return to your user shell. In the interactive shell, `sudo !!`
+expands the previous history command, displays the expanded command, and runs
+it through sudo.
+For example, `id` followed by `sudo !!` runs `sudo id`. The expanded command
+is saved in history. Quoted `sudo '!!'` stays literal; missing history or an
+oversized expansion produces an error. This bounded shorthand applies only
+to a whole input line consisting of `sudo !!`, with optional whitespace.
+
 Examples: `sudo id`, `sudo cat /etc/shadow`, `sudo ifup /etc/network.conf`, `sudo poweroff`.
 Plain `cat /etc/shadow` is denied. USB filesystem mounts ignore set-ID bits.
 

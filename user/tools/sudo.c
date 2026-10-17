@@ -26,7 +26,10 @@ static bool password_line(int tty,char out[DB_PASSWORD_MAX+1]) {
 }
 int sudo_main(int argc,char **argv,const char *const *envp) {
     uint32_t uid,euid,suid;
-    if (argc<2) return tool_error("sudo","usage: sudo command [args]",0);
+    char *shell_argv[]={"sudo","/bin/shell",NULL};
+    if (argc==2 && tool_equal(argv[1],"-s")) {argv=shell_argv;argc=2;}
+    else if (argc<2 || argv[1][0]=='-')
+        return tool_error("sudo","usage: sudo command [args] | sudo -s",0);
     if (tool_syscall(SYS_GETRESUID,(uintptr_t)&uid,(uintptr_t)&euid,(uintptr_t)&suid)<0 ||
         euid!=0 || (uid && !user_entry_secure(envp)) || !db_load(&database,true))
         return tool_error("sudo","privileged installation required",0);

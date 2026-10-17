@@ -157,7 +157,12 @@ int shell_do_completion(line_editor_t *e) {
 
     cand_clear();
 
-    if (is_cmd_name) {
+    bool has_slash = false;
+    for (size_t i = 0; i < prefix_len; i++) {
+        if (comp_prefix[i] == '/') has_slash = true;
+    }
+
+    if (is_cmd_name && !has_slash) {
         /* Complete builtins */
         for (size_t i = 0; i < builtin_count(); i++) {
             const char *name = builtin_name(i);
@@ -181,10 +186,10 @@ int shell_do_completion(line_editor_t *e) {
     } else {
         bool only_dirs = str_equal(comp_cmd_name, "cd");
 
-        if (str_equal(comp_cmd_name, "layout")) {
+        if (!has_slash && str_equal(comp_cmd_name, "layout")) {
             if (str_starts_with("us", comp_prefix)) cand_add("us");
             if (str_starts_with("azerty", comp_prefix)) cand_add("azerty");
-        } else if (str_equal(comp_cmd_name, "help") || str_equal(comp_cmd_name, "type") || str_equal(comp_cmd_name, "command")) {
+        } else if (!has_slash && (str_equal(comp_cmd_name, "help") || str_equal(comp_cmd_name, "type") || str_equal(comp_cmd_name, "command"))) {
             for (size_t i = 0; i < builtin_count(); i++) {
                 const char *name = builtin_name(i);
                 if (str_starts_with(name, comp_prefix)) cand_add(name);

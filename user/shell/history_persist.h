@@ -10,6 +10,8 @@ bool history_load(void);
 
 void history_mark_dirty(void);
 void history_autoflush_maybe(void);
+/* Save pending interactive history before a child can block or reboot us. */
+void history_flush_pending(void);
 
 bool history_is_dirty(void);
 uint32_t history_get_counter(void);

@@ -3,11 +3,13 @@
 #include "terminal.h"
 #include "complete.h"
 #include "history_persist.h"
+#include "history_expand.h"
 #include "jobs.h"
 #include "../tools/userdb.h"
 #include "install_abi.h"
 
 static line_editor_t edit;
+static char expanded_history[LINE_CAP];
 static terminal_info_t term;
 static char input[1];
 static size_t input_pos, input_len;
@@ -312,6 +314,17 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
             if (result == EDIT_CANCEL) { out[0] = 0; return true; }
             for (size_t i = 0; i <= edit.len; i++) out[i] = edit.text[i];
             if (!continuation) {
+                size_t count=history_count();
+                int expansion=history_expand_sudo(out,count ? history_get(count-1) : NULL,
+                                                 expanded_history,sizeof(expanded_history));
+                if (expansion<0) {
+                    ui_puts(expansion==-1 ? "shell: no previous command\n" : "shell: previous command is too long to elevate\n");
+                    out[0]=0;return true;
+                }
+                if (expansion==1) {
+                    size_t i=0;do {out[i]=expanded_history[i];} while (expanded_history[i++]);
+                    ui_puts(out);ui_puts("\n");
+                }
                 history_add(out);
                 history_mark_dirty();
             }

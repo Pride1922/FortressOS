@@ -188,6 +188,27 @@ int main(void) {
     assert(history_get_counter() == 0);
     printf("  [PASS] Script/pipe mode bypasses auto-flush entirely\n");
 
+    /* Child launch must not wait for the five-command interval, and a failed
+     * flush must remain retryable. Script callers still never auto-save. */
+    history_flush_pending();
+    assert(s_mock_save_calls == saves_before);
+    s_mock_isatty = 1;
+    history_flush_pending();
+    assert(s_mock_save_calls == saves_before + 1);
+    assert(!history_is_dirty());
+    assert(history_get_counter() == 0);
+    history_flush_pending();
+    assert(s_mock_save_calls == saves_before + 1);
+    history_mark_dirty();
+    s_mock_save_result = false;
+    history_flush_pending();
+    assert(history_is_dirty());
+    s_mock_save_result = true;
+    history_flush_pending();
+    assert(!history_is_dirty());
+    assert(s_mock_save_calls == saves_before + 3);
+    printf("  [PASS] Pre-child flush saves immediately, skips clean/script state and retries failure\n");
+
     printf(">>> ALL PERSISTENT HISTORY AUTO-FLUSH HOST TESTS PASSED (100%%%%) <<<\n");
     return 0;
 }

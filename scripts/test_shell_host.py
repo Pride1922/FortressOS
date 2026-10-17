@@ -7,6 +7,11 @@ repo = Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix="fortress-shell-host-") as tmp:
     exe = str(Path(tmp) / "shell")
     subprocess.run(["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+                    "-fsanitize=address,undefined", "-no-pie", "-Isrc/include", "-Iuser/shell",
+                    "tests/history_expand_host.c", "user/shell/history_expand.c", "-o", exe],
+                   cwd=repo, check=True)
+    subprocess.run([exe], check=True)
+    subprocess.run(["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
                     "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
                     "-Isrc/include", "-Isrc/fs", "-Iuser/shell", "tests/shell_host.c",
                     "user/shell/lineedit.c", "user/shell/lexer.c", "user/shell/parser.c",
@@ -36,4 +41,12 @@ with tempfile.TemporaryDirectory(prefix="fortress-shell-host-") as tmp:
                     "user/shell/lineedit.c",
                     "-o", hist_exe], cwd=repo, check=True)
     subprocess.run([hist_exe], check=True)
+
+    subprocess.run(["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+                    "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie",
+                    "-Isrc/include", "-Isrc/fs", "-Iuser/shell",
+                    "tests/shell_completion_host.c", "user/shell/complete.c",
+                    "user/shell/builtins.c", "user/shell/lineedit.c", "-o", exe],
+                   cwd=repo, check=True)
+    subprocess.run([exe], check=True)
 
