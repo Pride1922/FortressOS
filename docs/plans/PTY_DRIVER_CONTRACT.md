@@ -1,6 +1,6 @@
 # FortressOS — PTY Subsystem Contract Specification
 
-**Status:** Proposed Architecture & Verification Contract (Phase 6 Prerequisite)  
+**Status:** Pinned Architecture & Verification Contract (Phase 6 Prerequisite)  
 **Authors:** FortressOS Core Team  
 **Date:** 2026-10-17  
 **References:** [`PROTECTED.md`](../../PROTECTED.md), [`docs/plans/CRYPTO_SSH_PLAN.md`](CRYPTO_SSH_PLAN.md), [`docs/plans/SSH_PHASE0_CONTRACTS.md`](SSH_PHASE0_CONTRACTS.md)
@@ -9,17 +9,17 @@
 
 ## 1. Overview & Purpose
 
-FortressOS currently has a single global `/dev/tty` character node backed by the physical keyboard/UART driver (`src/drivers/input.c`) and single-console job control (`g_terminal.controlling_sid`).
+FortressOS currently has a single global `/dev/tty` character node backed by physical keyboard/UART drivers (`src/drivers/input.c`) and single-console job control (`g_terminal.controlling_sid`).
 
 Interactive remote SSH sessions (RFC 4254) require per-session terminal isolation:
 1. **Independent Terminal Instances:** Input/output streams from remote clients must not cross into the local console or other SSH sessions.
 2. **Standard Terminal Semantics:** Interactive programs (`/bin/nano`, `/bin/sh`) require `isatty(fd) == 1`, window size (`cols`, `rows`), and signal delivery (Ctrl+C &rarr; `SIGINT` to the session's foreground process group).
-3. **Non-Blocking Draining:** The session bridge worker requires non-blocking drain capabilities (`EAGAIN` when empty) to interleave socket and terminal I/O without deadlock.
+3. **Non-Blocking Draining:** The session bridge worker requires non-blocking drain capabilities (`EAGAIN` when empty, partial short-writes on full) to interleave socket and terminal I/O without deadlock.
 4. **Multi-CPU Correctness:** PTY operations must be safe to call from any CPU (BSP or AP), unlike `SYS_INPUT_READ` which is restricted to the BSP.
 
 ---
 
-## 2. PTY Topology & Lifecycle
+## 2. PTY Topology & Data Structures
 
 ```
  +-------------------------------------------------------------------+
@@ -45,109 +45,143 @@ Interactive remote SSH sessions (RFC 4254) require per-session terminal isolatio
  |                      +----------v----------+                      |
  |                      |        pty_t        |                      |
  |                      |  (in-kernel state)  |                      |
- |                      | - in_buffer (ring)  |                      |
- |                      | - out_buffer (ring) |                      |
- |                      | - termios / winsize |                      |
- |                      | - sid / fg_pgid     |                      |
+ |                      | - in_buffer (4 KiB) |                      |
+ |                      | - out_buffer(16 KiB)|                      |
+ |                      | - attrs (termios)   |                      |
+ |                      | - winsize (cols/rows|                      |
+ |                      | - controlling_sid   |                      |
+ |                      | - fg_pgid           |                      |
  |                      | - rank-2 spinlock   |                      |
  |                      +---------------------+                      |
  +-------------------------------------------------------------------+
 ```
 
-### 2.1 Syscall Allocation & Creation
-
-A new syscall `SYS_OPENPT` (or `SYS_PTY_OPEN`) creates a connected PTY pair:
-```c
-int64_t sys_openpt(int flags);
-/* Returns master_fd on success, negative error on failure */
-```
-Alternatively, an atomic pair creation syscall:
+### 2.1 Syscall: `SYS_PTY_PAIR`
 ```c
 int64_t sys_pty_pair(uintptr_t u_fds /* int fds[2]: master, slave */, int flags);
 ```
-- **File Descriptors:** Two file descriptors are allocated:
-  - `master_fd`: Held by the privileged or session bridge process (`sshd`).
-  - `slave_fd`: Passed to `SYS_SPAWN_EXT` actions as stdin (0), stdout (1), and stderr (2) of the spawned shell.
-- **Flags:** `VFS_O_NONBLOCK` may be passed to create the master endpoint in non-blocking mode, or toggled via `SYS_FCNTL(fd, F_SETFL, O_NONBLOCK)`.
+- **Atomic Creation:** Allocates both `master_fd` and `slave_fd` atomically without requiring dynamic `/dev/pts` directory nodes.
+- **Node Differentiation:** Master and slave nodes use function pointer discrimination:
+  - `is_pty_master(node)`: `node->read == pty_master_read`
+  - `is_pty_slave(node)`: `node->read == pty_slave_read`
+- **Flags:** `flags & VFS_O_NONBLOCK` applies directly to `master_fd`'s `file->flags`.
 
 ---
 
-## 3. Read/Write Semantics & Edge Cases
+## 3. Session & Job Control Ownership (Pinned Rules)
 
-Each PTY pair contains two circular ring buffers (e.g. 4 KiB each):
-- **Master &rarr; Slave Ring (`in_buffer`):** Keystrokes/data from SSH client &rarr; shell stdin.
-- **Slave &rarr; Master Ring (`out_buffer`):** Output from shell stdout/stderr &rarr; SSH client.
+### 3.1 Session Creation: `SPAWN_SETSID`
+- `SPAWN_V2_FLAGS` in [`src/include/syscall_abi.h`](../../src/include/syscall_abi.h) is extended with:
+  ```c
+  #define SPAWN_SETSID 4u
+  ```
+- When `SPAWN_SETSID` is set:
+  - Child becomes a new session leader: `sid = child_pid`.
+  - Child becomes a new process group leader: `pgid = child_pid`.
+  - Child has no controlling terminal until bound.
 
-### 3.1 PTY Master Read Semantics (`master_fd`)
-- **Data Available:** Copies up to `count` bytes from `out_buffer` to caller buffer. Returns number of bytes transferred (> 0).
-- **Buffer Empty & Slave Open:**
-  - If `master_fd` has `O_NONBLOCK` set: Returns immediately with `-SYSCALL_EAGAIN`.
-  - If `master_fd` is blocking: Blocks until slave writes data or closes.
-- **Slave Closed (All slave descriptors closed):**
-  - If `out_buffer` has remaining unread data: Returns buffered data.
-  - Once `out_buffer` is empty: Returns `0` (**EOF**).
+### 3.2 Binding Controlling Terminal
+- The parent bridge calls:
+  ```c
+  sys_termattr(master_fd, PTY_SET_SESSION, &child_pid, sizeof(uint64_t));
+  ```
+- **Validation:**
+  - `child_pid` must exist and caller must be its parent (or have `CAP_SYS_ADMIN`).
+  - Sets `pty->controlling_sid = child_pid` and `pty->fg_pgid = child_pid` under `pty->lock`.
 
-### 3.2 PTY Master Write Semantics (`master_fd`)
-- **Space Available:** Writes up to `count` bytes into `in_buffer`. Returns number of bytes transferred. Wakes any blocking slave readers.
-- **Buffer Full & Slave Open:**
-  - If non-blocking: Returns `-SYSCALL_EAGAIN` (or short-write).
-  - If blocking: Waits for slave to read.
-- **Slave Closed:**
-  - Returns `-SYSCALL_EIO` (or sends `SIGPIPE` / returns `-SYSCALL_EPIPE`).
-
-### 3.3 PTY Slave Read Semantics (`slave_fd`)
-- **Data Available:** Copies data from `in_buffer`.
-- **Buffer Empty & Master Open:**
-  - Blocks on `sched_wait_until` until master writes data or closes.
-- **Master Closed (Master descriptor closed / SSH disconnect):**
-  - If `in_buffer` is empty: Returns `0` (**EOF**).
-  - Also delivers `SIGHUP` to the session's foreground process group.
-
-### 3.4 PTY Slave Write Semantics (`slave_fd`)
-- **Space Available:** Writes into `out_buffer`. Wakes master readers.
-- **Buffer Full & Master Open:**
-  - Blocks on `sched_wait_until` until master reads space.
-- **Master Closed:**
-  - Returns `-SYSCALL_EIO` or `-SYSCALL_EPIPE` (delivers `SIGPIPE` to writer).
+### 3.3 `SYS_TCGETPGRP` / `SYS_TCSETPGRP` on PTY Slaves
+- **`SYS_TCGETPGRP(slave_fd)`:**
+  - Validates `caller->sid == pty->controlling_sid`. Returns `(int64_t)pty->fg_pgid`.
+- **`SYS_TCSETPGRP(slave_fd, pgid)`:**
+  - Validates `caller->sid == pty->controlling_sid`.
+  - Validates `pgid` is an active process group belonging to `pty->controlling_sid` (via `process_group_acquire(pty->controlling_sid, pgid, &ref)`).
+  - Updates `pty->fg_pgid = pgid` under `pty->lock`.
+  - Any attempt by an outside session to alter `pgid` returns `-SYSCALL_ENOTTY`.
 
 ---
 
-## 4. Terminal Identity & Control Semantics
+## 4. Signal Delivery Target & Timing (Pinned Rules)
 
-### 4.1 `isatty` Support
-- **Current Behavior:** `sys_termctl(TERM_ISATTY)` returns `1` only if `file->node == vfs_get_terminal_node()`.
-- **Contract Extension:** `sys_termctl(TERM_ISATTY)` returns `1` if `file->node == vfs_get_terminal_node()` **OR** `file->node->type == VFS_STREAM && file->node->fs_private_is_pty_slave`.
-- **Result:** `/bin/nano`, `/bin/sh`, and other userland utilities correctly detect standard input/output as an interactive terminal.
-
-### 4.2 Terminal Attributes & Echo
-- Each `pty_t` maintains its own `terminal_attrs_t`:
-  - `ISIG`: When enabled, ASCII `0x03` (Ctrl+C) generates `SIGINT` to the PTY's `fg_pgid`; `0x1a` (Ctrl+Z) generates `SIGTSTP`.
-  - `ECHO`: When enabled, bytes written to master are echoed into the slave's output buffer unless raw mode is requested.
-  - `ICANON`: Canonical (line-buffered) vs. raw mode.
-
-### 4.3 Window Size (`cols`, `rows`)
-- The master can update window dimensions via `SYS_TERMCTL(TERM_SET_WINSIZE)`:
-  - Updates `cols` and `rows` in `pty_t`.
-  - Sends `SIGWINCH` to the PTY's foreground process group (`fg_pgid`).
+1. **Keystroke Signals (`VINTR` / `VSUSP`):**
+   - When ASCII `0x03` (Ctrl+C) or `0x1a` (Ctrl+Z) is received on master and `ISIG` is active:
+   - Target: `pty->fg_pgid` (**foreground process group only**).
+   - Snapshot `fg_pgid` under `pty->lock`, release `pty->lock`, deliver signal via `process_signal_send_kernel(0, (int64_t)fg_pgid, sig)`.
+2. **Master Disconnect (`SIGHUP`):**
+   - When `master_fd` is closed:
+   - Target: `pty->controlling_sid` (**entire session**).
+   - Delivered **immediately** upon master close, terminating background and stopped processes in the session (unless immune via `SIG_IGN`).
+3. **Slave EOF Timing:**
+   - Slave `read()` continues to drain any bytes remaining in `in_buffer`.
+   - Only once `in_buffer` is completely empty does slave read return `0` (**EOF**).
 
 ---
 
-## 5. Kernel Invariants & Lock Hierarchy
+## 5. Driver Buffer & Line-Discipline Echo Rules
 
-To comply with [`PROTECTED.md`](../../PROTECTED.md) §L1–L4 and SMP rules:
-1. **Lock Rank:** Each PTY pair has a private `spinlock_t lock`. The lock is Rank 2 (Resource Lock), identical to pipe locks.
-2. **IRQ Safety:** All PTY lock acquisitions must use `spin_lock_irqsave` / `spin_unlock_irqrestore`.
-3. **No Lock Nesting:** The PTY lock must never be acquired while holding any scheduler lock (Rank 0 or 1).
-4. **Multi-CPU Isolation:** PTY locks are strictly per-instance. Thread execution on CPU $N$ accessing PTY $A$ will never contend with CPU $M$ accessing PTY $B$ or the console.
-5. **Memory Reclamation:** The underlying `pty_t` structure is ref-counted: it is freed only when both master and slave `vfs_node_t` reference counts reach zero.
+### 5.1 Buffer Capacities
+- **Input Buffer (`in_buffer`):** **4 KiB** ring buffer (keystrokes / client stdin &rarr; slave).
+- **Output Buffer (`out_buffer`):** **16 KiB** ring buffer (slave stdout/stderr &rarr; client). Ample headroom for full-screen curses/nano redraws.
+
+### 5.2 Line-Discipline Echo
+- Echo is performed by the driver in master write:
+  - If `pty->attrs.echo` is set and canonical mode is active (`ICANON`), printable characters written to master are copied into `out_buffer` immediately.
+  - Default attributes at creation: `ICANON | ECHO | ISIG` enabled.
+  - When an application (e.g. `/bin/nano`) disables `ECHO` / enables raw mode via `SYS_TERMATTR(slave_fd, TERM_SET, &attrs)`, driver echo is suppressed (0 bytes copied to `out_buffer`). Keystrokes pass solely to `in_buffer`.
 
 ---
 
-## 6. Synergistic Syscall Extensions
+## 6. Read/Write Semantics & Short-Write Rules
 
-To enable non-blocking drain without inventing new unreviewed polling subsystems:
-1. **`SYS_FCNTL` `F_SETFL` / `F_GETFL`:**
-   - Support `F_SETFL` with `VFS_O_NONBLOCK` (flag `0x0800` / bitmask).
-   - Toggles `file->flags & VFS_O_NONBLOCK`.
-2. **`vfs_read` Non-Blocking Propagation:**
-   - Pass `file->flags` into stream read callbacks, or allow `read` to check if `VFS_O_NONBLOCK` is active on the file. If active and buffer is empty, return `-VFS_EAGAIN`.
+### 6.1 Master Read (`master_fd`)
+- **Data in `out_buffer`:** Returns `n = min(count, available)` bytes (> 0).
+- **`out_buffer` Empty & Slave Open:**
+  - If `file->flags & VFS_O_NONBLOCK`: returns immediately with `-SYSCALL_EAGAIN`.
+  - If blocking: waits via `sched_wait_until`.
+- **Slave Closed:** Returns remaining buffered data; once empty, returns `0` (**EOF**).
+
+### 6.2 Master Write (`master_fd`)
+- **Space in `in_buffer`:**
+  - Non-blocking write is **strictly short-write**: transfers `n = min(count, space)` bytes (> 0) and returns `n`.
+  - If `space == 0`: returns `-SYSCALL_EAGAIN`.
+- **Slave Closed:** Returns `-SYSCALL_EIO`.
+
+### 6.3 Slave Read & Write (`slave_fd`)
+- **Read:** Blocks until data in `in_buffer`. Returns `0` (**EOF**) once master is closed and buffer is empty.
+- **Write:** Writes to `out_buffer`. If full, blocks until master reads. Returns `-SYSCALL_EIO` if master closed.
+
+---
+
+## 7. Window Dimensions & Terminal Identity
+
+### 7.1 Window Dimensions (`SYS_TERMATTR`)
+- Window dimensions are managed via `SYS_TERMATTR(fd, op, ptr, sizeof(winsize_t))`:
+  - `TERM_SET_WINSIZE`: Can be called by master **before** or after child spawn. Sets `pty->cols` and `pty->rows`. If `pty->fg_pgid` is non-zero, delivers `SIGWINCH` to `pty->fg_pgid`.
+  - `TERM_GET_WINSIZE`: Called by slave (or nano) to query current viewport dimensions.
+
+### 7.2 Terminal Identity (`isatty`)
+- In [`src/kernel/syscall.c`](../../src/kernel/syscall.c), `sys_termctl(TERM_ISATTY, fd, 0)` evaluates:
+  ```c
+  return (file->node == vfs_get_terminal_node() ||
+          file->node->read == pty_slave_read ||
+          file->node->read == pty_master_read) ? 1 : 0;
+  ```
+- Both slave and master return `1` (true). `/bin/nano` correctly recognizes the terminal.
+
+---
+
+## 8. Non-Blocking Control: `SYS_FCNTL` `F_GETFL` & `F_SETFL`
+
+- [`sys_fcntl`](../../src/kernel/syscall.c) is extended with:
+  - `F_GETFL` (cmd 3): Returns `file->flags`.
+  - `F_SETFL` (cmd 4): Supports toggling `VFS_O_NONBLOCK` (`0x0800`).
+- **Single Source of Truth:** `file->flags & VFS_O_NONBLOCK` is authoritative for both open-time initialization and subsequent fcntl modifications.
+
+---
+
+## 9. Kernel Invariants & Lock Hierarchy
+
+- **Rank 2 Lock:** Each `pty_t` has a private `spinlock_t lock` (Rank 2 Resource Lock, identical to pipes).
+- **IRQ Safety:** All acquisitions use `spin_lock_irqsave` / `spin_unlock_irqrestore`.
+- **No Lock Nesting:** The PTY lock is never held while acquiring any scheduler or process lock. Signals are dispatched after releasing `pty->lock`.
+- **Multi-CPU Safe:** Independent instances across CPUs. PTY operations on CPU $A$ never contend with PTY operations on CPU $B$.
+- **Ref-Counting & Cleanup:** `pty_t` is ref-counted by master and slave `vfs_node_t` descriptors. When both reach zero, buffer storage and `pty_t` are freed to heap.
