@@ -118,6 +118,10 @@ int auth_build_banner(const char *message, sshbuf_t *out_msg) {
     return 0;
 }
 
+static uint8_t s_auth_req_buf[1024];
+static uint8_t s_auth_resp_buf[512];
+static uint8_t s_auth_signed_data[512];
+
 int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len,
                          sshbuf_t *out_reply) {
     if (!ctx || !payload || len == 0 || !out_reply) return SSH_ERR_INVALID_ARG;
@@ -183,25 +187,23 @@ int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len
         }
 
         /* Forward to monitor via IPC */
-        uint8_t req_buf[256];
         size_t off = 0;
         uint32_t u_len = (uint32_t)user_len;
-        memcpy(req_buf + off, &u_len, 4); off += 4;
-        memcpy(req_buf + off, username, u_len); off += u_len;
+        memcpy(s_auth_req_buf + off, &u_len, 4); off += 4;
+        memcpy(s_auth_req_buf + off, username, u_len); off += u_len;
         uint32_t p_len = (uint32_t)pass_len;
-        memcpy(req_buf + off, &p_len, 4); off += 4;
-        memcpy(req_buf + off, pass_ptr, p_len); off += p_len;
+        memcpy(s_auth_req_buf + off, &p_len, 4); off += 4;
+        memcpy(s_auth_req_buf + off, pass_ptr, p_len); off += p_len;
 
         if (monitor_send_msg(ctx->mon_out_fd, MONITOR_REQ_AUTH_PASSWORD,
-                             ctx->session_idx, req_buf, (uint16_t)off) < 0) {
-            crypto_wipe(req_buf, sizeof(req_buf));
+                             ctx->session_idx, s_auth_req_buf, (uint16_t)off) < 0) {
+            crypto_wipe(s_auth_req_buf, sizeof(s_auth_req_buf));
             return SSH_ERR_INVALID_FORMAT;
         }
-        crypto_wipe(req_buf, sizeof(req_buf));
+        crypto_wipe(s_auth_req_buf, sizeof(s_auth_req_buf));
 
         monitor_hdr_t resp_hdr;
-        uint8_t resp_buf[512];
-        if (monitor_recv_msg(ctx->mon_in_fd, &resp_hdr, resp_buf, sizeof(resp_buf)) < 0) {
+        if (monitor_recv_msg(ctx->mon_in_fd, &resp_hdr, s_auth_resp_buf, sizeof(s_auth_resp_buf)) < 0) {
             return SSH_ERR_INVALID_FORMAT;
         }
 
@@ -210,8 +212,8 @@ int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len
             return build_auth_failure(out_reply);
         }
 
-        uint32_t status = ((uint32_t)resp_buf[0]) | ((uint32_t)resp_buf[1] << 8) |
-                          ((uint32_t)resp_buf[2] << 16) | ((uint32_t)resp_buf[3] << 24);
+        uint32_t status = ((uint32_t)s_auth_resp_buf[0]) | ((uint32_t)s_auth_resp_buf[1] << 8) |
+                          ((uint32_t)s_auth_resp_buf[2] << 16) | ((uint32_t)s_auth_resp_buf[3] << 24);
 
         if (status == MONITOR_STATUS_OK) {
             ctx->state = SSH_AUTH_STATE_SUCCESS;
@@ -219,12 +221,12 @@ int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len
             safe_strcpy(ctx->username, username, sizeof(ctx->username));
             if (resp_hdr.payload_len >= 4 + 4 + 4 + 2 + 64 + 128 + 128) {
                 size_t roff = 4;
-                memcpy(&ctx->uid, resp_buf + roff, 4); roff += 4;
-                memcpy(&ctx->gid, resp_buf + roff, 4); roff += 4;
-                memcpy(&ctx->ngroups, resp_buf + roff, 2); roff += 2;
-                memcpy(ctx->groups, resp_buf + roff, 64); roff += 64;
-                memcpy(ctx->home, resp_buf + roff, 128); roff += 128;
-                memcpy(ctx->shell, resp_buf + roff, 128); roff += 128;
+                memcpy(&ctx->uid, s_auth_resp_buf + roff, 4); roff += 4;
+                memcpy(&ctx->gid, s_auth_resp_buf + roff, 4); roff += 4;
+                memcpy(&ctx->ngroups, s_auth_resp_buf + roff, 2); roff += 2;
+                memcpy(ctx->groups, s_auth_resp_buf + roff, 64); roff += 64;
+                memcpy(ctx->home, s_auth_resp_buf + roff, 128); roff += 128;
+                memcpy(ctx->shell, s_auth_resp_buf + roff, 128); roff += 128;
             }
             return build_auth_success(out_reply);
         } else {
@@ -271,30 +273,28 @@ int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len
 
         /* Probe check: client asks if key is acceptable */
         if (!has_sig) {
-            uint8_t req_buf[256];
             size_t off = 0;
             uint32_t u_len = (uint32_t)user_len;
-            memcpy(req_buf + off, &u_len, 4); off += 4;
-            memcpy(req_buf + off, username, u_len); off += u_len;
-            req_buf[off++] = 1; /* check_only = 1 */
-            memcpy(req_buf + off, pubkey, 32); off += 32;
-            memset(req_buf + off, 0, 64); off += 64; /* empty signature */
+            memcpy(s_auth_req_buf + off, &u_len, 4); off += 4;
+            memcpy(s_auth_req_buf + off, username, u_len); off += u_len;
+            s_auth_req_buf[off++] = 1; /* check_only = 1 */
+            memcpy(s_auth_req_buf + off, pubkey, 32); off += 32;
+            memset(s_auth_req_buf + off, 0, 64); off += 64; /* empty signature */
             uint16_t zero_data_len = 0;
-            memcpy(req_buf + off, &zero_data_len, 2); off += 2;
+            memcpy(s_auth_req_buf + off, &zero_data_len, 2); off += 2;
 
             if (monitor_send_msg(ctx->mon_out_fd, MONITOR_REQ_AUTH_PUBKEY,
-                                 ctx->session_idx, req_buf, (uint16_t)off) < 0) {
+                                 ctx->session_idx, s_auth_req_buf, (uint16_t)off) < 0) {
                 return SSH_ERR_INVALID_FORMAT;
             }
 
             monitor_hdr_t resp_hdr;
-            uint8_t resp_buf[64];
-            if (monitor_recv_msg(ctx->mon_in_fd, &resp_hdr, resp_buf, sizeof(resp_buf)) < 0) {
+            if (monitor_recv_msg(ctx->mon_in_fd, &resp_hdr, s_auth_resp_buf, sizeof(s_auth_resp_buf)) < 0) {
                 return SSH_ERR_INVALID_FORMAT;
             }
 
-            uint32_t status = ((uint32_t)resp_buf[0]) | ((uint32_t)resp_buf[1] << 8) |
-                              ((uint32_t)resp_buf[2] << 16) | ((uint32_t)resp_buf[3] << 24);
+            uint32_t status = ((uint32_t)s_auth_resp_buf[0]) | ((uint32_t)s_auth_resp_buf[1] << 8) |
+                              ((uint32_t)s_auth_resp_buf[2] << 16) | ((uint32_t)s_auth_resp_buf[3] << 24);
 
             if (status == MONITOR_STATUS_PK_OK) {
                 /* Emit SSH_MSG_USERAUTH_PK_OK (60) */
@@ -330,41 +330,38 @@ int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len
         }
 
         /* Construct RFC 4252 signed data bound to session_id */
-        uint8_t signed_data[512];
         size_t signed_data_len = 0;
         if (auth_build_signed_data(ctx->session_id, username, "ssh-connection", "ssh-ed25519",
                                    pk_blob, pk_blob_len,
-                                   signed_data, sizeof(signed_data), &signed_data_len) != 0) {
+                                   s_auth_signed_data, sizeof(s_auth_signed_data), &signed_data_len) != 0) {
             ctx->attempts++;
             return build_auth_failure(out_reply);
         }
 
         /* Send to monitor for verification and credential retrieval */
-        uint8_t req_buf[1024];
         size_t off = 0;
         uint32_t u_len = (uint32_t)user_len;
-        memcpy(req_buf + off, &u_len, 4); off += 4;
-        memcpy(req_buf + off, username, u_len); off += u_len;
-        req_buf[off++] = 0; /* check_only = 0 */
-        memcpy(req_buf + off, pubkey, 32); off += 32;
-        memcpy(req_buf + off, raw_sig, 64); off += 64;
+        memcpy(s_auth_req_buf + off, &u_len, 4); off += 4;
+        memcpy(s_auth_req_buf + off, username, u_len); off += u_len;
+        s_auth_req_buf[off++] = 0; /* check_only = 0 */
+        memcpy(s_auth_req_buf + off, pubkey, 32); off += 32;
+        memcpy(s_auth_req_buf + off, raw_sig, 64); off += 64;
         uint16_t sd_len = (uint16_t)signed_data_len;
-        memcpy(req_buf + off, &sd_len, 2); off += 2;
-        memcpy(req_buf + off, signed_data, signed_data_len); off += signed_data_len;
+        memcpy(s_auth_req_buf + off, &sd_len, 2); off += 2;
+        memcpy(s_auth_req_buf + off, s_auth_signed_data, signed_data_len); off += signed_data_len;
 
         if (monitor_send_msg(ctx->mon_out_fd, MONITOR_REQ_AUTH_PUBKEY,
-                             ctx->session_idx, req_buf, (uint16_t)off) < 0) {
+                             ctx->session_idx, s_auth_req_buf, (uint16_t)off) < 0) {
             return SSH_ERR_INVALID_FORMAT;
         }
 
         monitor_hdr_t resp_hdr;
-        uint8_t resp_buf[512];
-        if (monitor_recv_msg(ctx->mon_in_fd, &resp_hdr, resp_buf, sizeof(resp_buf)) < 0) {
+        if (monitor_recv_msg(ctx->mon_in_fd, &resp_hdr, s_auth_resp_buf, sizeof(s_auth_resp_buf)) < 0) {
             return SSH_ERR_INVALID_FORMAT;
         }
 
-        uint32_t status = ((uint32_t)resp_buf[0]) | ((uint32_t)resp_buf[1] << 8) |
-                          ((uint32_t)resp_buf[2] << 16) | ((uint32_t)resp_buf[3] << 24);
+        uint32_t status = ((uint32_t)s_auth_resp_buf[0]) | ((uint32_t)s_auth_resp_buf[1] << 8) |
+                          ((uint32_t)s_auth_resp_buf[2] << 16) | ((uint32_t)s_auth_resp_buf[3] << 24);
 
         if (status == MONITOR_STATUS_OK) {
             ctx->state = SSH_AUTH_STATE_SUCCESS;
@@ -372,12 +369,12 @@ int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len
             safe_strcpy(ctx->username, username, sizeof(ctx->username));
             if (resp_hdr.payload_len >= 4 + 4 + 4 + 2 + 64 + 128 + 128) {
                 size_t roff = 4;
-                memcpy(&ctx->uid, resp_buf + roff, 4); roff += 4;
-                memcpy(&ctx->gid, resp_buf + roff, 4); roff += 4;
-                memcpy(&ctx->ngroups, resp_buf + roff, 2); roff += 2;
-                memcpy(ctx->groups, resp_buf + roff, 64); roff += 64;
-                memcpy(ctx->home, resp_buf + roff, 128); roff += 128;
-                memcpy(ctx->shell, resp_buf + roff, 128); roff += 128;
+                memcpy(&ctx->uid, s_auth_resp_buf + roff, 4); roff += 4;
+                memcpy(&ctx->gid, s_auth_resp_buf + roff, 4); roff += 4;
+                memcpy(&ctx->ngroups, s_auth_resp_buf + roff, 2); roff += 2;
+                memcpy(ctx->groups, s_auth_resp_buf + roff, 64); roff += 64;
+                memcpy(ctx->home, s_auth_resp_buf + roff, 128); roff += 128;
+                memcpy(ctx->shell, s_auth_resp_buf + roff, 128); roff += 128;
             }
             return build_auth_success(out_reply);
         } else {

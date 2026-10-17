@@ -90,18 +90,19 @@ int monitor_send_msg(int fd, uint8_t msg_type, uint8_t session_id,
     if (payload_len > MONITOR_MAX_PAYLOAD) return -1;
     if (payload_len > 0 && !payload) return -1;
 
-    monitor_hdr_t hdr;
-    hdr.magic = MONITOR_MAGIC;
-    hdr.msg_type = msg_type;
-    hdr.session_id = session_id;
-    hdr.payload_len = payload_len;
-    hdr.reserved = 0;
+    static uint8_t s_send_buf[sizeof(monitor_hdr_t) + MONITOR_MAX_PAYLOAD];
+    monitor_hdr_t *hdr = (monitor_hdr_t *)s_send_buf;
+    hdr->magic = MONITOR_MAGIC;
+    hdr->msg_type = msg_type;
+    hdr->session_id = session_id;
+    hdr->payload_len = payload_len;
+    hdr->reserved = 0;
 
-    if (write_all(fd, &hdr, sizeof(hdr)) < 0) return -1;
     if (payload_len > 0) {
-        if (write_all(fd, payload, payload_len) < 0) return -1;
+        memcpy(s_send_buf + sizeof(monitor_hdr_t), payload, payload_len);
     }
-    return 0;
+
+    return write_all(fd, s_send_buf, sizeof(monitor_hdr_t) + payload_len);
 }
 
 int monitor_recv_msg(int fd, monitor_hdr_t *out_hdr,
@@ -116,7 +117,25 @@ int monitor_recv_msg(int fd, monitor_hdr_t *out_hdr,
 
     if (hdr.payload_len > 0) {
         if (!payload_buf) return -1;
-        if (read_all(fd, payload_buf, hdr.payload_len) < 0) return -1;
+        uint8_t *p = (uint8_t *)payload_buf;
+        size_t rem = hdr.payload_len;
+        while (rem > 0) {
+#ifdef CRYPTO_HOST_TEST
+            ssize_t n = read(fd, p, rem);
+#else
+            long n = mon_syscall(SYS_READ, fd, (uintptr_t)p, rem);
+#endif
+            if (n < 0) {
+#ifndef CRYPTO_HOST_TEST
+                struct { int64_t sec; int64_t nsec; } ts = { 0, 1000000 };
+                mon_syscall(SYS_NANOSLEEP, (uintptr_t)&ts, 0, 0);
+#endif
+                continue;
+            }
+            if (n == 0) return -1;
+            p += n;
+            rem -= (size_t)n;
+        }
     }
 
     *out_hdr = hdr;
@@ -279,7 +298,7 @@ int monitor_check_authorized_keys(const char *home_dir, uint32_t expected_uid,
 
     int fd = open(file_path, O_RDONLY);
     if (fd < 0) return -1;
-    char content[8193];
+    static char content[8193];
     ssize_t n = read(fd, content, sizeof(content) - 1);
     close(fd);
     if (n < 0) return -1;
@@ -301,7 +320,7 @@ int monitor_check_authorized_keys(const char *home_dir, uint32_t expected_uid,
 
     long fd = mon_syscall(SYS_OPEN, (uintptr_t)file_path, VFS_O_RDONLY, 0);
     if (fd < 0) return -1;
-    char content[8193];
+    static char content[8193];
     long n = mon_syscall(SYS_READ, fd, (uintptr_t)content, sizeof(content) - 1);
     mon_syscall(SYS_CLOSE, fd, 0, 0);
     if (n < 0) return -1;

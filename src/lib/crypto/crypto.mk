@@ -7,7 +7,7 @@ CRYPTO_UNITS := hash curve aead entropy
 CRYPTO_API += ssh_hostkey_encode ssh_hostkey_decode ssh_hostkey_generate ssh_hostkey_public ssh_hostkey_fingerprint
 CRYPTO_UNITS += ssh_hostkey
 CRYPTO_OBJS := $(addprefix $(CRYPTO_BUILD)/,$(addsuffix .o,$(CRYPTO_UNITS))) $(CRYPTO_BUILD)/monocypher.o $(CRYPTO_BUILD)/ed25519.o $(CRYPTO_BUILD)/digest.o
-CRYPTO_FLAGS := $(CFLAGS) -Os -fno-pie -fno-builtin -ffunction-sections -fdata-sections -fstack-usage -fno-asynchronous-unwind-tables -I$(CRYPTO_DIR)/upstream/src
+CRYPTO_FLAGS := $(CFLAGS) -D__FORTRESS__ -Os -fno-pie -fno-builtin -ffunction-sections -fdata-sections -fstack-usage -fno-asynchronous-unwind-tables -I$(CRYPTO_DIR)/upstream/src
 
 all: $(CRYPTO_LIB)
 all: $(BUILD_DIR)/ssh-keygen.elf
@@ -87,6 +87,11 @@ test-ssh-hostkeys-installer-host: all test-ssh-hostkeys-host
 .PHONY: test-ssh-hostkeys
 test-ssh-hostkeys: all
 	@python3 scripts/test_ssh_hostkeys.py
+
+.PHONY: test-ssh
+test-ssh: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
+	@python3 scripts/test_ssh.py
+
 test-crypto:
 	@python3 scripts/test_crypto.py
 

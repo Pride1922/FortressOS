@@ -335,7 +335,14 @@ static void accept_step(handoff_token_t t) {
                     spin_unlock_irqrestore(&lock,f); pending=true;
                     sched_wake_all(handoff_channel(t));
                 }
-            } else if (result==SYSCALL_EAGAIN) pending=true;
+            } else if (result==SYSCALL_EAGAIN) {
+                if (v->nonblocking) {
+                    result=SYSCALL_EAGAIN;
+                    pending=false;
+                } else {
+                    pending=true;
+                }
+            }
         }
     }
     if (!pending) {

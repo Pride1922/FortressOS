@@ -262,6 +262,15 @@ static int64_t sys_input_read(uintptr_t ptr, size_t count, int64_t timeout) {
     if (count > MAX_SYSCALL_WRITE_LEN || timeout < -1 || timeout > 1000) return SYSCALL_EINVAL;
     if (!count) return 0;
     if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, count, true)) return SYSCALL_EFAULT;
+
+    tcb_t *curr = thread_current();
+    if (curr) {
+        file_t *f0 = fd_get(curr, 0);
+        if (f0 && f0->node && is_pty_slave(f0->node)) {
+            return pty_slave_input_read(f0->node, (void *)ptr, count, timeout);
+        }
+    }
+
     return input_read_timeout((void *)ptr, count, timeout);
 }
 
@@ -756,6 +765,30 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
     }
     if (!fd_avail) {
         return SYSCALL_EMFILE;
+    }
+
+    if (strcmp(kpath, "/dev/tty") == 0) {
+        file_t *f = fd_get(curr, 0);
+        if (!f || !f->node || !is_pty_slave(f->node)) f = fd_get(curr, 1);
+        if (!f || !f->node || !is_pty_slave(f->node)) f = fd_get(curr, 2);
+        if (f && f->node && is_pty_slave(f->node)) {
+            file_t *file = (file_t *)kmalloc(sizeof(file_t));
+            if (!file) return SYSCALL_ENOMEM;
+            file->node = f->node;
+            file->offset = 0;
+            file->flags = flags & ~VFS_O_CLOEXEC;
+            file->ref_count = 1;
+            file->exclusive_owner = false;
+            int fd = fd_alloc(curr, file);
+            if (fd < 0) {
+                kfree(file);
+                return SYSCALL_EMFILE;
+            }
+            if (flags & VFS_O_CLOEXEC) {
+                curr->fd_flags[fd] |= FD_FLAG_CLOEXEC;
+            }
+            return (int64_t)fd;
+        }
     }
 
     int vfs_err = 0;

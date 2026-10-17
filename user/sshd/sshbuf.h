@@ -3,6 +3,10 @@
 
 #include "types.h"
 
+void *ssh_alloc(size_t s);
+void ssh_free(void *p);
+void *ssh_realloc(void *p, size_t s);
+
 #define SSHBUF_MAX_ALLOC (64 * 1024)
 #define SSHBUF_DEFAULT_CAP (4096)
 

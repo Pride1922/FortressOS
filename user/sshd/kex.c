@@ -5,9 +5,11 @@
 
 #ifdef CRYPTO_HOST_TEST
 #include <stdlib.h>
+#define kex_alloc(s) malloc(s)
+#define kex_free(p) free(p)
 #else
-static void *malloc(size_t s) { (void)s; return NULL; }
-static void free(void *p) { (void)p; }
+#define kex_alloc(s) ssh_alloc(s)
+#define kex_free(p) ssh_free(p)
 #endif
 
 void kex_init(ssh_kex_ctx *ctx) {
@@ -24,11 +26,11 @@ void kex_cleanup(ssh_kex_ctx *ctx) {
     crypto_wipe(ctx->key_s2c, sizeof(ctx->key_s2c));
     crypto_wipe(ctx->hash, sizeof(ctx->hash));
     if (ctx->client_kexinit) {
-        free(ctx->client_kexinit);
+        kex_free(ctx->client_kexinit);
         ctx->client_kexinit = NULL;
     }
     if (ctx->server_kexinit) {
-        free(ctx->server_kexinit);
+        kex_free(ctx->server_kexinit);
         ctx->server_kexinit = NULL;
     }
     memset(ctx, 0, sizeof(*ctx));
@@ -44,11 +46,11 @@ void kex_reset_for_rekey(ssh_kex_ctx *ctx) {
     crypto_wipe(ctx->client_pub, sizeof(ctx->client_pub));
     crypto_wipe(ctx->server_pub, sizeof(ctx->server_pub));
     if (ctx->client_kexinit) {
-        free(ctx->client_kexinit);
+        kex_free(ctx->client_kexinit);
         ctx->client_kexinit = NULL;
     }
     if (ctx->server_kexinit) {
-        free(ctx->server_kexinit);
+        kex_free(ctx->server_kexinit);
         ctx->server_kexinit = NULL;
     }
     ctx->client_kexinit_len = 0;
@@ -107,8 +109,8 @@ int kex_build_kexinit(ssh_kex_ctx *ctx, const uint8_t cookie[16], sshbuf_t *out_
 
     /* Save a copy for exchange hash H */
     size_t kexinit_len = out_payload->size - start_off;
-    if (ctx->server_kexinit) free(ctx->server_kexinit);
-    ctx->server_kexinit = (uint8_t *)malloc(kexinit_len);
+    if (ctx->server_kexinit) kex_free(ctx->server_kexinit);
+    ctx->server_kexinit = (uint8_t *)kex_alloc(kexinit_len);
     if (!ctx->server_kexinit) return SSH_ERR_NO_MEM;
     memcpy(ctx->server_kexinit, out_payload->data + start_off, kexinit_len);
     ctx->server_kexinit_len = kexinit_len;
@@ -183,8 +185,8 @@ int kex_parse_kexinit(ssh_kex_ctx *ctx, const uint8_t *payload, size_t len) {
     }
 
     /* Save a copy of client kexinit for exchange hash H */
-    if (ctx->client_kexinit) free(ctx->client_kexinit);
-    ctx->client_kexinit = (uint8_t *)malloc(len);
+    if (ctx->client_kexinit) kex_free(ctx->client_kexinit);
+    ctx->client_kexinit = (uint8_t *)kex_alloc(len);
     if (!ctx->client_kexinit) return SSH_ERR_NO_MEM;
     memcpy(ctx->client_kexinit, payload, len);
     ctx->client_kexinit_len = len;

@@ -1,6 +1,6 @@
 # Secure Shell Subsystem (SSH) — Architecture, Daemon Lifecycle & Configuration Specification
 
-**Status:** COMPLETE (Phases 0–7) — Interoperability & Acceptance (Phase 8) in progress.
+**Status:** COMPLETE (Phases 0–8; multi-firmware QEMU acceptance 100% PASS across BIOS & UEFI; bare-metal Dell Latitude 5590 verification ready).
 
 This document serves as the comprehensive architectural specification, contract reference, and configuration schema for the FortressOS SSH subsystem.
 
@@ -125,8 +125,28 @@ On receiving `SIGTERM` or `SIGINT`, the monitor executes a bounded 7-step teardo
 
 | Makefile Target | Test Scope | Verification Tooling |
 | :--- | :--- | :--- |
+| `make test-ssh` | Phase 8 SSH end-to-end multi-firmware acceptance suite under QEMU (`scripts/test_ssh.py`): automated validation across BIOS and UEFI firmware at SMP=1 with authentic Linux OpenSSH client (`ssh`, `ssh-keyscan`). Covers all 8 acceptance gates. | Multi-firmware QEMU + OpenSSH |
 | `make test-ssh-transport-host` | RFC 4253 packet framing, ChaCha20-Poly1305 AEAD, Curve25519-SHA256 KEX, strict prefix truncation, live OpenSSH client oracle | ASan/UBSan |
 | `make test-ssh-auth-host` | RFC 4252 user authentication, monitor IPC, shadow password constant-time dummy path, Ed25519 pubkey verification, `~/.ssh/authorized_keys` permission checks | ASan/UBSan |
 | `make test-ssh-channel-host` | RFC 4254 channel state machine, 64 KiB window credits, `WINDOW_ADJUST`, EOF/close interleavings | ASan/UBSan |
 | `make test-ssh-pty-host` | Kernel PTY driver bridge (`SYS_PTY_PAIR` 80), duplex short writes, window resize (`SIGWINCH`), staged session zero-race binding | ASan/UBSan |
 | `make test-ssh-daemon-host` | Configuration schema & strict parser, precedence hierarchy, boot readiness gate sequence, global admission cap & disconnect packet, 5s bounded teardown | ASan/UBSan |
+
+---
+
+## 7. Multi-Firmware Acceptance Verification Evidence (Phase 8)
+
+The end-to-end integration test (`make test-ssh` / `scripts/test_ssh.py`) was verified on 2026-10-17 with 100% PASS across BIOS and UEFI firmware on disposable storage with e1000 networking.
+
+### 7.1 Acceptance Matrix & Gate Verification
+
+| Gate | Acceptance Requirement | Test Oracle & Evidence | BIOS Result | UEFI Result |
+| :--- | :--- | :--- | :--- | :--- |
+| **Gate 1** | Boot Readiness Gate & Service Launch | Pinned 7-step sequence (`sshd_readiness.c`) loaded via live media config `/mnt/.fortress/sshd.conf`. Emits `Listening on port 22 (SSH-2.0-FortressSSH_0.1)`. | **PASS** | **PASS** |
+| **Gate 2** | Host Key Fingerprint Match | `ssh-keyscan -t ed25519 -p <port> 127.0.0.1` scanned public key. `ssh-keygen -lf` SHA-256 fingerprint verified byte-for-byte against the provisioned NVMe host key. | **PASS** | **PASS** |
+| **Gate 3** | Ed25519 Public Key Authentication | Authentic OpenSSH client key authentication against `~/.ssh/authorized_keys` (0700 dir, 0600 file). Non-interactive command execution `whoami; id; hostname` confirmed `operator`, `uid=1000`, `gid=1000`, groups=[1000, 10, 44, 104]. | **PASS** | **PASS** |
+| **Gate 4** | Remote Root Login Rejection | Authentic OpenSSH client connection with `root@127.0.0.1` rejected with `Permission denied` via constant-time dummy password/pubkey verification path. | **PASS** | **PASS** |
+| **Gate 5** | Password Authentication | Authentic OpenSSH client authentication via `SSH_ASKPASS` using `operator:ssh-acceptance-pass` verified through `userdb_t` `/etc/shadow` SHA-256 hash. | **PASS** | **PASS** |
+| **Gate 6** | Interactive PTY Session & Terminal Control | Interactive pseudoterminal session (`ssh -tt`) with in-kernel PTY driver, line-discipline echo, `/dev/tty` handoff in shell pipeline, command typing, and exit. | **PASS** | **PASS** |
+| **Gate 7** | Global 2-Session Concurrency Cap | Two active background sessions opened; 3rd concurrent connection accepted and immediately rejected pre-spawn with unencrypted wire RFC 4253 `SSH_MSG_DISCONNECT` (reason 11 `SSH_DISCONNECT_BY_APPLICATION`). Zero leaked workers or descriptors. | **PASS** | **PASS** |
+| **Gate 8** | Clean 5s Bounded Daemon Teardown | `SIGTERM` sent to daemon. Monitor stopped accepting connections, propagated `SIGTERM` to workers, workers triggered `SIGHUP` to controlling sessions via PTY master close, and daemon exited cleanly within 5s with `Daemon shut down cleanly.`. | **PASS** | **PASS** |

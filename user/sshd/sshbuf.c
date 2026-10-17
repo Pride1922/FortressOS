@@ -4,11 +4,80 @@
 
 #ifdef CRYPTO_HOST_TEST
 #include <stdlib.h>
+void *ssh_alloc(size_t s) { return malloc(s); }
+void ssh_free(void *p) { free(p); }
+void *ssh_realloc(void *p, size_t s) { return realloc(p, s); }
 #else
-/* In freestanding mode, malloc/free are not linked; callers must use sshbuf_init_fixed or sshbuf_init_from */
-static void *malloc(size_t s) { (void)s; return NULL; }
-static void *realloc(void *p, size_t s) { (void)p; (void)s; return NULL; }
-static void free(void *p) { (void)p; }
+#define SSH_POOL_SIZE (256 * 1024)
+static uint8_t s_pool[SSH_POOL_SIZE] __attribute__((aligned(16)));
+
+typedef struct block_hdr {
+    size_t size;
+    int used;
+    struct block_hdr *next;
+} block_hdr_t;
+
+static block_hdr_t *s_first_block = NULL;
+
+static void pool_init(void) {
+    if (s_first_block) return;
+    s_first_block = (block_hdr_t *)s_pool;
+    s_first_block->size = SSH_POOL_SIZE - sizeof(block_hdr_t);
+    s_first_block->used = 0;
+    s_first_block->next = NULL;
+}
+
+void *ssh_alloc(size_t s) {
+    if (s == 0) return NULL;
+    pool_init();
+    s = (s + 15) & ~15ULL;
+    block_hdr_t *curr = s_first_block;
+    while (curr) {
+        if (!curr->used && curr->size >= s) {
+            if (curr->size >= s + sizeof(block_hdr_t) + 32) {
+                block_hdr_t *next = (block_hdr_t *)((uint8_t *)curr + sizeof(block_hdr_t) + s);
+                next->size = curr->size - s - sizeof(block_hdr_t);
+                next->used = 0;
+                next->next = curr->next;
+                curr->next = next;
+                curr->size = s;
+            }
+            curr->used = 1;
+            return (void *)((uint8_t *)curr + sizeof(block_hdr_t));
+        }
+        curr = curr->next;
+    }
+    return NULL;
+}
+
+void ssh_free(void *p) {
+    if (!p) return;
+    pool_init();
+    if ((uint8_t *)p < s_pool || (uint8_t *)p >= s_pool + SSH_POOL_SIZE) return;
+    block_hdr_t *hdr = (block_hdr_t *)((uint8_t *)p - sizeof(block_hdr_t));
+    hdr->used = 0;
+    block_hdr_t *curr = s_first_block;
+    while (curr && curr->next) {
+        if (!curr->used && !curr->next->used) {
+            curr->size += sizeof(block_hdr_t) + curr->next->size;
+            curr->next = curr->next->next;
+        } else {
+            curr = curr->next;
+        }
+    }
+}
+
+void *ssh_realloc(void *p, size_t s) {
+    if (!p) return ssh_alloc(s);
+    if (s == 0) { ssh_free(p); return NULL; }
+    block_hdr_t *hdr = (block_hdr_t *)((uint8_t *)p - sizeof(block_hdr_t));
+    if (hdr->size >= s) return p;
+    void *np = ssh_alloc(s);
+    if (!np) return NULL;
+    memcpy(np, p, hdr->size < s ? hdr->size : s);
+    ssh_free(p);
+    return np;
+}
 #endif
 
 int sshbuf_init(sshbuf_t *buf, size_t initial_alloc, size_t max_size) {
@@ -18,7 +87,7 @@ int sshbuf_init(sshbuf_t *buf, size_t initial_alloc, size_t max_size) {
     if (initial_alloc == 0) initial_alloc = SSHBUF_DEFAULT_CAP;
     if (initial_alloc > max_size) initial_alloc = max_size;
 
-    buf->data = (uint8_t *)malloc(initial_alloc);
+    buf->data = (uint8_t *)ssh_alloc(initial_alloc);
     if (!buf->data) return SSH_ERR_NO_MEM;
     buf->alloc = initial_alloc;
     buf->max_size = max_size;
@@ -54,7 +123,7 @@ void sshbuf_free(sshbuf_t *buf) {
     if (!buf) return;
     if (buf->dynamic && buf->data) {
         crypto_wipe(buf->data, buf->alloc);
-        free(buf->data);
+        ssh_free(buf->data);
     }
     memset(buf, 0, sizeof(*buf));
 }
@@ -120,7 +189,7 @@ static int sshbuf_reserve(sshbuf_t *buf, size_t needed) {
     }
     if (new_alloc < target) return SSH_ERR_BUFFER_TOO_SMALL;
 
-    uint8_t *new_data = (uint8_t *)realloc(buf->data, new_alloc);
+    uint8_t *new_data = (uint8_t *)ssh_realloc(buf->data, new_alloc);
     if (!new_data) return SSH_ERR_NO_MEM;
     buf->data = new_data;
     buf->alloc = new_alloc;

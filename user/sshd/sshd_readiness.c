@@ -76,11 +76,14 @@ void sshd_format_bind_error(char *dst, size_t cap, uint32_t ip, uint16_t port) {
 
 static int default_load_host_key(uint8_t out_secret[64], uint8_t out_public[32]) {
 #ifndef CRYPTO_HOST_TEST
-    char key_buf[HOSTKEY_FILE_MAX];
+    static char key_buf[HOSTKEY_FILE_MAX];
     long len = SSHD_SYSCALL(SYS_HOSTKEY, HOSTKEY_READ, (uintptr_t)key_buf, sizeof(key_buf), 0, 0, 0);
     if (len <= 0) {
-        /* Fallback: attempt to read /etc/ssh/ssh_host_ed25519_key */
+        /* Fallback: attempt to read /etc/ssh/ssh_host_ed25519_key or /mnt/.fortress/ssh_host_ed25519_key */
         long fd = SSHD_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/ssh/ssh_host_ed25519_key", VFS_O_RDONLY | VFS_O_CLOEXEC, 0, 0, 0, 0);
+        if (fd < 0) {
+            fd = SSHD_SYSCALL(SYS_OPEN, (uintptr_t)"/mnt/.fortress/ssh_host_ed25519_key", VFS_O_RDONLY | VFS_O_CLOEXEC, 0, 0, 0, 0);
+        }
         if (fd >= 0) {
             len = SSHD_SYSCALL(SYS_READ, (uintptr_t)fd, (uintptr_t)key_buf, sizeof(key_buf) - 1, 0, 0, 0);
             (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
@@ -91,7 +94,7 @@ static int default_load_host_key(uint8_t out_secret[64], uint8_t out_public[32])
     if ((size_t)len >= sizeof(key_buf)) len = sizeof(key_buf) - 1;
     key_buf[len] = '\0';
 
-    ssh_hostkey_workspace ws;
+    static ssh_hostkey_workspace ws;
     int r = ssh_hostkey_decode(key_buf, (size_t)len, out_secret, &ws);
     if (r != 0) return -1;
 
@@ -100,6 +103,18 @@ static int default_load_host_key(uint8_t out_secret[64], uint8_t out_public[32])
     return 0;
 #else
     (void)out_secret; (void)out_public;
+    return -1;
+#endif
+}
+
+int sshd_read_host_public_key(uint8_t out_public[32]) {
+#ifndef CRYPTO_HOST_TEST
+    static uint8_t s_sec[64];
+    int r = default_load_host_key(s_sec, out_public);
+    crypto_wipe(s_sec, sizeof(s_sec));
+    return r;
+#else
+    (void)out_public;
     return -1;
 #endif
 }
@@ -156,8 +171,9 @@ int sshd_check_readiness(const char *cfg_path, const sshd_readiness_ops_t *ops,
     if (out_sock_fd) *out_sock_fd = -1;
 
     /* Step 1: Verify installed root vs. live media & Read config */
-    sshd_config_t cfg;
-    char cfg_err[128] = {0};
+    static sshd_config_t cfg;
+    static char cfg_err[128];
+    memset(cfg_err, 0, sizeof(cfg_err));
     int cfg_rc;
     if (ops && ops->load_config) {
         cfg_rc = ops->load_config(cfg_path, &cfg, cfg_err, sizeof(cfg_err));
@@ -183,8 +199,8 @@ int sshd_check_readiness(const char *cfg_path, const sshd_readiness_ops_t *ops,
     }
 
     /* Step 2: Load host key via SYS_HOSTKEY -> fail = "host key unavailable/corrupt" */
-    uint8_t host_secret[64];
-    uint8_t host_public[32];
+    static uint8_t host_secret[64];
+    static uint8_t host_public[32];
     int hk_rc;
     if (ops && ops->load_host_key) {
         hk_rc = ops->load_host_key(host_secret, host_public);
@@ -203,13 +219,14 @@ int sshd_check_readiness(const char *cfg_path, const sshd_readiness_ops_t *ops,
     }
 
     /* Step 3: Load account database (userdb_t) -> fail = "account database unavailable" */
-    userdb_t db;
+    static userdb_t s_check_db;
+    userdb_t *db_ptr = out_db ? out_db : &s_check_db;
     bool db_ok;
     if (ops && ops->load_userdb) {
-        db_ok = ops->load_userdb(&db, true);
+        db_ok = ops->load_userdb(db_ptr, true);
     } else {
 #ifndef CRYPTO_HOST_TEST
-        db_ok = db_load(&db, true);
+        db_ok = db_load(db_ptr, true);
 #else
         db_ok = false;
 #endif
@@ -223,10 +240,10 @@ int sshd_check_readiness(const char *cfg_path, const sshd_readiness_ops_t *ops,
         crypto_wipe(host_secret, sizeof(host_secret));
         return 1;
     }
-    if (out_db) *out_db = db;
+    if (out_db && out_db != db_ptr) *out_db = *db_ptr;
 
     /* Step 4: Verify SYS_GETRANDOM succeeds -> fail = "strong randomness unavailable" (fails closed) */
-    uint8_t probe_rnd[16];
+    static uint8_t probe_rnd[16];
     long rnd_rc;
     if (ops && ops->getrandom) {
         rnd_rc = ops->getrandom(probe_rnd, sizeof(probe_rnd));
@@ -251,7 +268,8 @@ int sshd_check_readiness(const char *cfg_path, const sshd_readiness_ops_t *ops,
 
     /* Step 5: Bind port 22 -> fail = "bind failed on <addr>:<port>" */
     long sock_fd = -1;
-    char bind_err[128] = {0};
+    static char bind_err[128];
+    memset(bind_err, 0, sizeof(bind_err));
     if (ops && ops->bind_socket) {
         sock_fd = ops->bind_socket(cfg.listen_address, cfg.port, bind_err, sizeof(bind_err));
     } else {

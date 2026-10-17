@@ -20,7 +20,7 @@ typedef struct {
     bool pty_allocated;
 } pty_bridge_t;
 
-#ifndef __FORTRESS__
+#ifdef CRYPTO_HOST_TEST
 typedef long (*pty_bridge_syscall_fn)(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
                                       uintptr_t d, uintptr_t e, uintptr_t f);
 void pty_bridge_set_syscall_hook(pty_bridge_syscall_fn fn);

@@ -173,14 +173,17 @@ int ssh_transport_send_packet(ssh_transport_t *t, uint8_t type, const uint8_t *p
     if (!t || !out_wire || (!payload && payload_len > 0)) return SSH_ERR_INVALID_ARG;
     if (t->state == TRANSPORT_STATE_ERROR) return t->last_error;
 
-    /* Padding calculation: RFC 4253 §6 (multiple of 8, at least 4 bytes) */
-    size_t unpadded = 4 + 1 + 1 + payload_len;
+    /* Padding calculation:
+     * Unencrypted (RFC 4253 §6): total packet including 4-byte length must be multiple of 8.
+     * ChaCha20-Poly1305 (PROTOCOL.chacha20poly1305): packet_len itself must be multiple of 8.
+     */
+    size_t unpadded = (t->out_cipher.active ? 0 : 4) + 1 + 1 + payload_len;
     size_t pad = 8 - (unpadded % 8);
     if (pad < 4) pad += 8;
 
     uint32_t packet_len = (uint32_t)(1 + 1 + payload_len + pad);
 
-    uint8_t plain[SSH_MAX_PACKET_LEN + 32];
+    static uint8_t plain[SSH_MAX_PACKET_LEN + 32];
     plain[0] = (uint8_t)pad;
     plain[1] = type;
     if (payload_len > 0) {
@@ -199,7 +202,7 @@ int ssh_transport_send_packet(ssh_transport_t *t, uint8_t type, const uint8_t *p
         return SSH_ERR_SUCCESS;
     } else {
         uint8_t enc_length[4];
-        uint8_t enc_body[SSH_MAX_PACKET_LEN + 32];
+        static uint8_t enc_body[SSH_MAX_PACKET_LEN + 32];
         uint8_t tag[16];
 
         int r = ssh_cipher_encrypt_packet(&t->out_cipher, plain, packet_len,
@@ -234,9 +237,9 @@ int ssh_transport_apply_newkeys(ssh_transport_t *t, bool is_rekey) {
         t->in_cipher.seq = saved_in_seq;
         t->out_cipher.seq = saved_out_seq;
     } else {
-        if (t->strict_kex) {
-            ssh_cipher_reset_seq(&t->in_cipher);
-            ssh_cipher_reset_seq(&t->out_cipher);
+        if (!t->strict_kex) {
+            t->in_cipher.seq = saved_in_seq;
+            t->out_cipher.seq = saved_out_seq;
         }
         t->initial_kex_done = true;
     }

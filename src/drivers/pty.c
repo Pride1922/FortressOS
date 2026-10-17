@@ -4,6 +4,9 @@
 #include "thread.h"
 #include "process_table.h"
 #include "signal_abi.h"
+#include "syscall_abi.h"
+#include "time.h"
+#include "apic.h"
 
 /* Scheduler predicates under rank 1: atomic load only */
 static bool pty_in_ready(void *arg) {
@@ -127,6 +130,7 @@ void pty_close_endpoint(vfs_node_t *node) {
     sched_wake_all(&p->in_space_bytes);
     sched_wake_all(&p->out_data_bytes);
     sched_wake_all(&p->out_space_bytes);
+    sched_wake_all((void *)time_get_sleep_channel());
 
     /* Deliver SIGHUP to the entire session if master closed */
     if (csid != 0) {
@@ -270,6 +274,7 @@ int64_t pty_master_write(vfs_node_t *node, uint64_t *flags_ptr, bool append, con
         spin_unlock_irqrestore(&p->lock, irq);
 
         sched_wake_all(&p->in_data_bytes);
+        sched_wake_all((void *)time_get_sleep_channel());
         if (did_echo) sched_wake_all(&p->out_data_bytes);
 
         if (sig_fg != 0 && sig_type != 0) {
@@ -493,4 +498,79 @@ int64_t pty_get_termattr(vfs_node_t *node, terminal_attrs_t *attrs) {
     *attrs = p->attrs;
     spin_unlock_irqrestore(&p->lock, irq);
     return SYSCALL_SUCCESS;
+}
+
+typedef struct {
+    pty_t *p;
+    uint64_t deadline;
+    bool timed;
+} pty_input_wait_t;
+
+static bool pty_input_ready(void *arg) {
+    pty_input_wait_t *w = arg;
+    if (__atomic_load_n(&w->p->in_data_bytes, __ATOMIC_ACQUIRE) > 0) return true;
+    if (!__atomic_load_n(&w->p->master_open, __ATOMIC_ACQUIRE)) return true;
+    if (w->timed && apic_timer_get_bsp_ticks() >= w->deadline) return true;
+    return false;
+}
+
+int64_t pty_slave_input_read(vfs_node_t *node, void *buf, size_t count, int64_t timeout_ms) {
+    if (!node || !node->fs_private || !buf || count == 0) return 0;
+    pty_t *p = node->fs_private;
+
+    uint64_t hz = apic_timer_get_frequency();
+    if (!hz) hz = 100;
+    uint64_t ticks_to_wait = 0;
+    if (timeout_ms > 0) {
+        ticks_to_wait = ((uint64_t)timeout_ms * hz + 999) / 1000;
+    }
+    uint64_t start_ticks = apic_timer_get_bsp_ticks();
+    uint64_t deadline = start_ticks + ticks_to_wait;
+
+    pty_input_wait_t wait_arg = {
+        .p = p,
+        .deadline = deadline,
+        .timed = (timeout_ms >= 0)
+    };
+
+    for (;;) {
+        if (process_signal_interrupt()) return SYSCALL_EINTR;
+
+        uint64_t irq = spin_lock_irqsave(&p->lock);
+        if (p->in_count > 0) {
+            size_t n = count < p->in_count ? count : p->in_count;
+            size_t first = PTY_IN_CAPACITY - p->in_tail;
+            if (first > n) first = n;
+            memcpy(buf, p->in_buf + p->in_tail, first);
+            memcpy((uint8_t *)buf + first, p->in_buf, n - first);
+
+            p->in_tail = (p->in_tail + n) % PTY_IN_CAPACITY;
+            p->in_count -= n;
+
+            __atomic_store_n(&p->in_data_bytes, (uint32_t)p->in_count, __ATOMIC_RELEASE);
+            __atomic_store_n(&p->in_space_bytes, (uint32_t)(PTY_IN_CAPACITY - p->in_count), __ATOMIC_RELEASE);
+            spin_unlock_irqrestore(&p->lock, irq);
+
+            sched_wake_all(&p->in_space_bytes);
+            return (int64_t)n;
+        }
+
+        if (!__atomic_load_n(&p->master_open, __ATOMIC_ACQUIRE)) {
+            spin_unlock_irqrestore(&p->lock, irq);
+            return 0; /* EOF */
+        }
+
+        if (timeout_ms == 0) {
+            spin_unlock_irqrestore(&p->lock, irq);
+            return 0; /* Immediate timeout */
+        }
+
+        if (timeout_ms > 0 && apic_timer_get_bsp_ticks() >= deadline) {
+            spin_unlock_irqrestore(&p->lock, irq);
+            return 0; /* Bounded timeout */
+        }
+
+        spin_unlock_irqrestore(&p->lock, irq);
+        sched_wait_until(time_get_sleep_channel(), pty_input_ready, &wait_arg);
+    }
 }

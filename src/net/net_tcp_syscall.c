@@ -14,7 +14,8 @@ static bool range(uintptr_t p, size_t n, bool write) {
     return !n || vmm_validate_user_range(vmm_get_active_pml4_virt(),p,n,write);
 }
 static int64_t accept_outputs(const interrupt_frame_t *f) {
-    if (!!f->rsi!=!!f->rdx || (f->r10 && f->r10!=NET_SOCK_CLOEXEC)) return SYSCALL_EINVAL;
+    uint64_t allowed = NET_SOCK_CLOEXEC | NET_SOCK_NONBLOCK;
+    if (!!f->rsi!=!!f->rdx || (f->r10 && (f->r10 & ~allowed))) return SYSCALL_EINVAL;
     if (!f->rsi) return 0;
     if (!range(f->rsi,16,true) || !range(f->rdx,4,true)) return SYSCALL_EFAULT;
     uint32_t size; memcpy(&size,(const void *)f->rdx,4);
@@ -26,7 +27,8 @@ static int64_t accept_socket(tcb_t *caller, file_t *listener, interrupt_frame_t 
     if (!net_tcp_listener(slot)) return SYSCALL_EINVAL;
     int64_t rc=accept_outputs(f); if (rc) return rc;
     if (!net_socket_available()) return SYSCALL_EIO;
-    rc=net_udp_begin(NET_OWNER_TCP_ACCEPT,listener,NULL,0,false);
+    bool nb = (f->r10 & NET_SOCK_NONBLOCK) != 0;
+    rc=net_udp_begin(NET_OWNER_TCP_ACCEPT,listener,NULL,0,nb);
     if (rc) return rc;
     handoff_token_t t=caller->handoff.token;
     int fd=-1; bool decision=false;
@@ -75,7 +77,8 @@ static int64_t accept_socket(tcb_t *caller, file_t *listener, interrupt_frame_t 
             if (accepted) fd=fd_alloc(caller,accepted);
             int64_t error=accepted && fd<0 ? SYSCALL_EMFILE : 0;
             if (fd>=0) {
-                if (f->r10==NET_SOCK_CLOEXEC) caller->fd_flags[fd]=FD_FLAG_CLOEXEC;
+                if (f->r10 & NET_SOCK_CLOEXEC) caller->fd_flags[fd]=FD_FLAG_CLOEXEC;
+                if (f->r10 & NET_SOCK_NONBLOCK) accepted->flags |= VFS_O_NONBLOCK;
             }
             /* Owner tests common-handle capacity before allocation/fd errors.
              * The provisional fd and a checked rollback ref precede adoption. */

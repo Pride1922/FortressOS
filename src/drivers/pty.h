@@ -57,6 +57,7 @@ int64_t pty_master_read(vfs_node_t *node, uint64_t flags, void *buf, size_t coun
 int64_t pty_master_write(vfs_node_t *node, uint64_t *flags, bool append, const void *buf, size_t count);
 int64_t pty_slave_read(vfs_node_t *node, uint64_t flags, void *buf, size_t count);
 int64_t pty_slave_write(vfs_node_t *node, uint64_t *flags, bool append, const void *buf, size_t count);
+int64_t pty_slave_input_read(vfs_node_t *node, void *buf, size_t count, int64_t timeout_ms);
 
 int64_t pty_set_session(vfs_node_t *master_node, uint64_t child_pid);
 int64_t pty_tcgetpgrp(vfs_node_t *slave_node, int64_t *out_pgid);

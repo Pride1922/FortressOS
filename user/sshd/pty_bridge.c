@@ -2,7 +2,7 @@
 #include "vfs.h"
 #include "string.h"
 
-#ifndef __FORTRESS__
+#ifdef CRYPTO_HOST_TEST
 static pty_bridge_syscall_fn g_syscall_hook = NULL;
 
 void pty_bridge_set_syscall_hook(pty_bridge_syscall_fn fn) {
@@ -140,16 +140,6 @@ int pty_bridge_step(pty_bridge_t *b, ssh_channel_mgr_t *mgr,
         long w = do_syscall(SYS_WRITE, (uintptr_t)b->master_fd, (uintptr_t)in_ptr, in_len, 0, 0, 0);
         if (w > 0) {
             sshbuf_consume(&c->in_data, (size_t)w);
-            c->local_window += (uint32_t)w;
-            if (c->local_window >= SSH_CHANNEL_MIN_WINDOW_ADJUST) {
-                uint32_t adjust = SSH_CHANNEL_DEFAULT_WINDOW - c->local_window;
-                if (adjust > 0) {
-                    c->local_window += adjust;
-                    (void)sshbuf_put_u8(out_packets, SSH_MSG_CHANNEL_WINDOW_ADJUST);
-                    (void)sshbuf_put_u32(out_packets, c->remote_id);
-                    (void)sshbuf_put_u32(out_packets, adjust);
-                }
-            }
             if (out_active) *out_active = true;
         }
     }
@@ -157,17 +147,17 @@ int pty_bridge_step(pty_bridge_t *b, ssh_channel_mgr_t *mgr,
     /* 3. Outbound PTY master -> network channel */
     if (b->master_fd >= 0 && (c->state == SSH_CHANNEL_STATE_OPEN || c->state == SSH_CHANNEL_STATE_EOF_REMOTE)) {
         if (c->remote_window > 0) {
-            uint8_t read_buf[4096];
-            size_t max_read = sizeof(read_buf);
+            static uint8_t s_pty_read_buf[4096];
+            size_t max_read = sizeof(s_pty_read_buf);
             if (max_read > c->remote_window) max_read = c->remote_window;
             if (max_read > c->remote_maxpacket) max_read = c->remote_maxpacket;
 
-            long r = do_syscall(SYS_READ, (uintptr_t)b->master_fd, (uintptr_t)read_buf, max_read, 0, 0, 0);
+            long r = do_syscall(SYS_READ, (uintptr_t)b->master_fd, (uintptr_t)s_pty_read_buf, max_read, 0, 0, 0);
             if (r > 0) {
-                channel_send_data(mgr, b->channel_id, read_buf, (size_t)r, out_packets);
+                channel_send_data(mgr, b->channel_id, s_pty_read_buf, (size_t)r, out_packets);
                 if (out_active) *out_active = true;
-            } else if (r == 0) {
-                /* EOF on master read: slave closed and all buffered output drained */
+            } else if (r == 0 || (b->child_exited && r < 0)) {
+                /* EOF on master read or child exited: slave closed and all buffered output drained */
                 channel_send_eof(mgr, b->channel_id, out_packets);
                 channel_send_close(mgr, b->channel_id, out_packets);
                 if (out_active) *out_active = true;

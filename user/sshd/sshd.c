@@ -27,7 +27,7 @@
 #ifndef SSHD_SYSCALL
 static inline long sshd_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
                                 uintptr_t d, uintptr_t e, uintptr_t f) {
-#ifdef __FORTRESS__
+#ifndef CRYPTO_HOST_TEST
     register uintptr_t r10 __asm__("r10") = d;
     register uintptr_t r8  __asm__("r8")  = e;
     register uintptr_t r9  __asm__("r9")  = f;
@@ -45,11 +45,15 @@ static inline long sshd_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
 static void sshd_write_err(const char *msg) {
     size_t len = 0; while (msg && msg[len]) len++;
     if (len > 0) {
+        (void)SSHD_SYSCALL(SYS_WRITE, 1, (uintptr_t)"[sshd] ", 7, 0, 0, 0);
+        (void)SSHD_SYSCALL(SYS_WRITE, 1, (uintptr_t)msg, len, 0, 0, 0);
+        (void)SSHD_SYSCALL(SYS_WRITE, 1, (uintptr_t)"\n", 1, 0, 0, 0);
         (void)SSHD_SYSCALL(SYS_WRITE, 2, (uintptr_t)"[sshd] ", 7, 0, 0, 0);
         (void)SSHD_SYSCALL(SYS_WRITE, 2, (uintptr_t)msg, len, 0, 0, 0);
         (void)SSHD_SYSCALL(SYS_WRITE, 2, (uintptr_t)"\n", 1, 0, 0, 0);
     }
 }
+
 
 static volatile int g_terminate = 0;
 static void on_sigterm(int sig) {
@@ -71,39 +75,104 @@ static int sys_close_wrapper(int fd) {
 
 
 
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static void send_channel_replies(ssh_transport_t *transport, int client_fd, sshbuf_t *chan_reply) {
+    while (sshbuf_len(chan_reply) > 0) {
+        uint8_t rtype = 0;
+        if (sshbuf_get_u8(chan_reply, &rtype) != 0) break;
+
+        size_t plen = 0;
+        size_t rem = sshbuf_len(chan_reply);
+        const uint8_t *p = sshbuf_ptr(chan_reply);
+
+        if (rtype == SSH_MSG_CHANNEL_EOF || rtype == SSH_MSG_CHANNEL_CLOSE ||
+            rtype == SSH_MSG_CHANNEL_SUCCESS || rtype == SSH_MSG_CHANNEL_FAILURE) {
+            plen = 4;
+        } else if (rtype == SSH_MSG_CHANNEL_WINDOW_ADJUST) {
+            plen = 8;
+        } else if (rtype == SSH_MSG_CHANNEL_OPEN_CONFIRMATION) {
+            plen = 16;
+        } else if (rtype == SSH_MSG_REQUEST_FAILURE) {
+            plen = 0;
+        } else if (rtype == SSH_MSG_CHANNEL_DATA) {
+            if (rem >= 8) {
+                uint32_t dlen = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) | ((uint32_t)p[6] << 8) | p[7];
+                plen = 4 + 4 + dlen;
+            } else {
+                plen = rem;
+            }
+        } else if (rtype == SSH_MSG_CHANNEL_EXTENDED_DATA) {
+            if (rem >= 12) {
+                uint32_t dlen = ((uint32_t)p[8] << 24) | ((uint32_t)p[9] << 16) | ((uint32_t)p[10] << 8) | p[11];
+                plen = 4 + 4 + 4 + dlen;
+            } else {
+                plen = rem;
+            }
+        } else if (rtype == SSH_MSG_CHANNEL_REQUEST) {
+            if (rem >= 8) {
+                uint32_t nlen = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) | ((uint32_t)p[6] << 8) | p[7];
+                plen = 4 + 4 + nlen + 1 + 4;
+            } else {
+                plen = rem;
+            }
+        } else {
+            plen = rem;
+        }
+
+        if (plen > rem) plen = rem;
+
+        sshbuf_t out_wire;
+        sshbuf_init(&out_wire, 512, 4096);
+        (void)ssh_transport_send_packet(transport, rtype, p, plen, &out_wire);
+        (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)sshbuf_ptr(&out_wire), sshbuf_len(&out_wire), 0, 0, 0);
+        sshbuf_free(&out_wire);
+
+        (void)sshbuf_consume(chan_reply, plen);
+    }
+}
+
 /* Worker Process: runs the connection protocol under dropped capabilities */
-static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon_out_fd) {
+static __attribute__((noinline)) int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon_out_fd, const char *pub_hex) {
+    (void)session_id;
     /* Setup signal handlers so SIGTERM breaks worker poll loop and runs clean pty_bridge_cleanup() */
     signal_action_t sa = { .handler = (uintptr_t)on_sigterm, .mask = 0, .flags = 0, .reserved = 0 };
     (void)SSHD_SYSCALL(SYS_SIGACTION, SIGTERM, (uintptr_t)&sa, 0, 0, 0, 0);
     (void)SSHD_SYSCALL(SYS_SIGACTION, SIGINT, (uintptr_t)&sa, 0, 0, 0, 0);
 
-    /* Step 1: Drop all capabilities immediately */
-    (void)SSHD_SYSCALL(SYS_CAPSET, 0, 0, 0, 0, 0, 0);
+    /* Step 1: Drop capabilities down to CAP_SETUID | CAP_SETGID */
+    (void)SSHD_SYSCALL(SYS_CAPSET, (1ULL << 4) | (1ULL << 5), 0, 0, 0, 0, 0);
 
     /* Step 2: Initialize protocol state */
-    ssh_transport_t transport;
+    static ssh_transport_t transport;
     if (ssh_transport_init(&transport) != 0) return 1;
 
-    ssh_channel_mgr_t chan_mgr;
+    static ssh_channel_mgr_t chan_mgr;
     channel_mgr_init(&chan_mgr);
 
-    pty_bridge_t bridge;
+    static pty_bridge_t bridge;
     pty_bridge_init(&bridge, 0, 80, 24);
 
     /* Step 3: Identification exchange */
     /* Send server version */
-    (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)SSHD_SERVER_VERSION, strlen(SSHD_SERVER_VERSION), 0, 0, 0);
+    long send_ver_rc = SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)SSHD_SERVER_VERSION, strlen(SSHD_SERVER_VERSION), 0, 0, 0);
+    if (send_ver_rc < 0) return 1;
 
     /* Read client version */
-    char client_ver[256];
+    static char client_ver[256];
     size_t cv_len = 0;
     while (cv_len + 1 < sizeof(client_ver)) {
-        char ch = 0;
-        long n = SSHD_SYSCALL(SYS_RECV, (uintptr_t)client_fd, (uintptr_t)&ch, 1, 0, 0, 0);
+        static char s_ch;
+        s_ch = 0;
+        long n = SSHD_SYSCALL(SYS_RECV, (uintptr_t)client_fd, (uintptr_t)&s_ch, 1, 0, 0, 0);
         if (n <= 0) break;
-        client_ver[cv_len++] = ch;
-        if (ch == '\n') break;
+        client_ver[cv_len++] = s_ch;
+        if (s_ch == '\n') break;
     }
     client_ver[cv_len] = '\0';
     while (cv_len > 0 && (client_ver[cv_len - 1] == '\r' || client_ver[cv_len - 1] == '\n')) {
@@ -111,8 +180,8 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
     }
 
     /* Step 4: KEXINIT exchange */
-    uint8_t cookie[16];
-    (void)SSHD_SYSCALL(SYS_GETRANDOM, (uintptr_t)cookie, sizeof(cookie), 0, 0, 0, 0);
+    static uint8_t cookie[16];
+    if (SSHD_SYSCALL(SYS_GETRANDOM, (uintptr_t)cookie, sizeof(cookie), 0, 0, 0, 0) != sizeof(cookie)) return 1;
 
     sshbuf_t kexinit_wire;
     if (sshbuf_init(&kexinit_wire, 512, 4096) != 0) return 1;
@@ -121,9 +190,21 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
     sshbuf_free(&kexinit_wire);
 
     /* Read client KEXINIT & KEX_ECDH_INIT */
-    uint8_t rx_buf[4096];
+    static uint8_t rx_buf[4096];
     bool kex_complete = false;
     uint8_t host_pub[32];
+    memset(host_pub, 0, sizeof(host_pub));
+    if (pub_hex && strlen(pub_hex) >= 64) {
+        for (int k = 0; k < 32; k++) {
+            int hi = hex_nibble(pub_hex[k * 2]);
+            int lo = hex_nibble(pub_hex[k * 2 + 1]);
+            if (hi >= 0 && lo >= 0) {
+                host_pub[k] = (uint8_t)((hi << 4) | lo);
+            }
+        }
+    } else {
+        (void)sshd_read_host_public_key(host_pub);
+    }
     uint8_t host_sig[64];
     bool host_sig_obtained = false;
 
@@ -140,7 +221,10 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
             if (r != 0) break;
 
             if (ptype == SSH_MSG_KEXINIT) {
-                (void)kex_parse_kexinit(&transport.kex, payload, plen);
+                int prc = kex_parse_kexinit(&transport.kex, payload, plen);
+                if (prc == 0) {
+                    transport.strict_kex = transport.kex.strict_kex;
+                }
             } else if (ptype == SSH_MSG_KEX_ECDH_INIT) {
                 /* Ephemeral Curve25519 Key Exchange */
                 (void)kex_start_ecdh(&transport.kex);
@@ -151,12 +235,14 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
                 /* Request signature from monitor via IPC */
                 (void)monitor_send_msg(mon_out_fd, MONITOR_REQ_SIGN_HASH, (uint8_t)session_id, ex_hash, 32);
                 monitor_hdr_t resp_hdr;
-                uint8_t resp_payload[MONITOR_MAX_PAYLOAD];
-                if (monitor_recv_msg(mon_in_fd, &resp_hdr, resp_payload, sizeof(resp_payload)) == 0 &&
-                    resp_hdr.msg_type == MONITOR_RESP_SIGN_HASH && resp_hdr.payload_len >= 96) {
-                    memcpy(host_pub, resp_payload, 32);
-                    memcpy(host_sig, resp_payload + 32, 64);
-                    host_sig_obtained = true;
+                static uint8_t s_worker_resp_payload[MONITOR_MAX_PAYLOAD];
+                int mon_rc = monitor_recv_msg(mon_in_fd, &resp_hdr, s_worker_resp_payload, sizeof(s_worker_resp_payload));
+                if (mon_rc == 0 && resp_hdr.msg_type == MONITOR_RESP_SIGN_HASH && resp_hdr.payload_len >= 68) {
+                    uint32_t status = *(uint32_t *)s_worker_resp_payload;
+                    if (status == MONITOR_STATUS_OK) {
+                        memcpy(host_sig, s_worker_resp_payload + 4, 64);
+                        host_sig_obtained = true;
+                    }
                 }
 
                 if (host_sig_obtained) {
@@ -166,11 +252,7 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
                     sshbuf_t reply_wire;
                     sshbuf_init(&reply_wire, 512, 4096);
                     (void)ssh_transport_send_packet(&transport, SSH_MSG_KEX_ECDH_REPLY,
-                                                   sshbuf_ptr(&ecdh_reply), sshbuf_len(&ecdh_reply), &reply_wire);
-                    (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)sshbuf_ptr(&reply_wire), sshbuf_len(&reply_wire), 0, 0, 0);
-
-                    /* Send NEWKEYS */
-                    sshbuf_reset(&reply_wire);
+                                                   sshbuf_ptr(&ecdh_reply) + 1, sshbuf_len(&ecdh_reply) - 1, &reply_wire);
                     (void)ssh_transport_send_packet(&transport, SSH_MSG_NEWKEYS, NULL, 0, &reply_wire);
                     (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)sshbuf_ptr(&reply_wire), sshbuf_len(&reply_wire), 0, 0, 0);
 
@@ -191,7 +273,7 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
     }
 
     /* Step 5: SSH User Authentication Protocol */
-    ssh_auth_ctx_t auth_ctx;
+    static ssh_auth_ctx_t auth_ctx;
     auth_init(&auth_ctx, transport.kex.session_id, (uint8_t)session_id, mon_in_fd, mon_out_fd);
 
     bool authenticated = false;
@@ -226,7 +308,7 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
                 sshbuf_t out_wire;
                 sshbuf_init(&out_wire, 256, 4096);
                 (void)ssh_transport_send_packet(&transport, resp_type,
-                                               sshbuf_ptr(&auth_reply) + 1, sshbuf_len(&auth_reply) - 1,
+                                               sshbuf_ptr(&auth_reply), sshbuf_len(&auth_reply),
                                                &out_wire);
                 (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)sshbuf_ptr(&out_wire), sshbuf_len(&out_wire), 0, 0, 0);
                 sshbuf_free(&out_wire);
@@ -242,10 +324,17 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
         return 1;
     }
 
+    /* Transition worker credentials to authenticated user */
+    (void)SSHD_SYSCALL(SYS_SETGROUPS, auth_ctx.ngroups, (uintptr_t)auth_ctx.groups, 0, 0, 0, 0);
+    (void)SSHD_SYSCALL(SYS_SETRESGID, auth_ctx.gid, auth_ctx.gid, auth_ctx.gid, 0, 0, 0);
+    (void)SSHD_SYSCALL(SYS_SETRESUID, auth_ctx.uid, auth_ctx.uid, auth_ctx.uid, 0, 0, 0);
+    (void)SSHD_SYSCALL(SYS_CAPSET, 0, 0, 0, 0, 0, 0);
+
     /* Step 6: Session Channels, PTY allocation, and Interactive Duplex Loop */
     sshbuf_t chan_reply;
     sshbuf_init(&chan_reply, 512, 16384);
     bool shell_spawned = false;
+    int exit_drain_ticks = 0;
 
     for (;;) {
         if (g_terminate) break;
@@ -270,15 +359,49 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
                     (void)pty_bridge_set_winsize(&bridge, (uint16_t)c->pty_params.cols, (uint16_t)c->pty_params.rows);
                 }
 
-                /* Check if shell request was received */
-                if (c && c->shell_requested && !shell_spawned) {
+                /* Check if shell or exec request was received */
+                if (c && (c->shell_requested || c->exec_requested) && !shell_spawned) {
                     (void)pty_bridge_open(&bridge);
                     (void)pty_bridge_set_winsize(&bridge, (uint16_t)c->pty_params.cols, (uint16_t)c->pty_params.rows);
 
+                    static char s_env_home[144];
+                    static char s_env_user[48];
+                    static char s_env_logname[48];
+                    static char s_env_shell[144];
+
+                    size_t k = 0;
+                    while (k < 5 && "HOME="[k]) { s_env_home[k] = "HOME="[k]; k++; }
+                    for (size_t i = 0; auth_ctx.home[i] && k + 1 < sizeof(s_env_home); i++) s_env_home[k++] = auth_ctx.home[i];
+                    s_env_home[k] = '\0';
+
+                    k = 0;
+                    while (k < 5 && "USER="[k]) { s_env_user[k] = "USER="[k]; k++; }
+                    for (size_t i = 0; auth_ctx.username[i] && k + 1 < sizeof(s_env_user); i++) s_env_user[k++] = auth_ctx.username[i];
+                    s_env_user[k] = '\0';
+
+                    k = 0;
+                    while (k < 8 && "LOGNAME="[k]) { s_env_logname[k] = "LOGNAME="[k]; k++; }
+                    for (size_t i = 0; auth_ctx.username[i] && k + 1 < sizeof(s_env_logname); i++) s_env_logname[k++] = auth_ctx.username[i];
+                    s_env_logname[k] = '\0';
+
+                    k = 0;
+                    while (k < 6 && "SHELL="[k]) { s_env_shell[k] = "SHELL="[k]; k++; }
+                    for (size_t i = 0; auth_ctx.shell[i] && k + 1 < sizeof(s_env_shell); i++) s_env_shell[k++] = auth_ctx.shell[i];
+                    s_env_shell[k] = '\0';
+
                     char *shell_argv[] = { (char *)auth_ctx.shell, NULL };
-                    char *shell_envp[] = { "TERM=xterm-256color", NULL };
-                    (void)pty_bridge_spawn(&bridge, auth_ctx.shell, shell_argv, shell_envp, auth_ctx.home);
+                    const char *shell_envp[] = {
+                        s_env_home, s_env_user, s_env_logname, s_env_shell,
+                        "PATH=/bin:/sbin", "TERM=xterm-256color", NULL
+                    };
+                    (void)pty_bridge_spawn(&bridge, auth_ctx.shell, shell_argv, (char **)shell_envp, auth_ctx.home);
                     shell_spawned = true;
+
+                    if (c->exec_requested) {
+                        size_t clen = strlen(c->exec_cmd);
+                        (void)sshbuf_put_raw(&c->in_data, (const uint8_t *)c->exec_cmd, clen);
+                        (void)sshbuf_put_raw(&c->in_data, (const uint8_t *)"\nexit\n", 6);
+                    }
 
                     /* Close monitor IPC pipes now that session shell is spawned */
                     (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)mon_in_fd, 0, 0, 0, 0, 0);
@@ -289,18 +412,7 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
 
                 /* Transmit any channel replies */
                 if (sshbuf_len(&chan_reply) > 0) {
-                    while (sshbuf_len(&chan_reply) > 0) {
-                        uint8_t rtype = 0;
-                        (void)sshbuf_get_u8(&chan_reply, &rtype);
-                        sshbuf_t out_wire;
-                        sshbuf_init(&out_wire, 512, 4096);
-                        (void)ssh_transport_send_packet(&transport, rtype,
-                                                       sshbuf_ptr(&chan_reply) + 1, sshbuf_len(&chan_reply) - 1,
-                                                       &out_wire);
-                        (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)sshbuf_ptr(&out_wire), sshbuf_len(&out_wire), 0, 0, 0);
-                        sshbuf_free(&out_wire);
-                        break;
-                    }
+                    send_channel_replies(&transport, client_fd, &chan_reply);
                 }
             }
         } else if (n == 0) {
@@ -315,23 +427,18 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
             (void)pty_bridge_step(&bridge, &chan_mgr, &chan_reply, &pty_active);
 
             if (sshbuf_len(&chan_reply) > 0) {
-                while (sshbuf_len(&chan_reply) > 0) {
-                    uint8_t rtype = 0;
-                    (void)sshbuf_get_u8(&chan_reply, &rtype);
-                    sshbuf_t out_wire;
-                    sshbuf_init(&out_wire, 512, 4096);
-                    (void)ssh_transport_send_packet(&transport, rtype,
-                                                   sshbuf_ptr(&chan_reply) + 1, sshbuf_len(&chan_reply) - 1,
-                                                   &out_wire);
-                    (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)sshbuf_ptr(&out_wire), sshbuf_len(&out_wire), 0, 0, 0);
-                    sshbuf_free(&out_wire);
-                    break;
-                }
+                send_channel_replies(&transport, client_fd, &chan_reply);
             }
 
-            if (bridge.child_exited) {
-                /* Shell process has completed */
+            ssh_channel_t *ch0 = channel_lookup_local(&chan_mgr, 0);
+            if (!ch0 || ch0->state == SSH_CHANNEL_STATE_CLOSED) {
                 break;
+            }
+            if (bridge.child_exited) {
+                exit_drain_ticks++;
+                if (exit_drain_ticks > 15) {
+                    break;
+                }
             }
         }
 
@@ -359,7 +466,7 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
 static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_secret[64],
                                  const userdb_t *db, long sock_fd) {
     (void)cfg;
-    monitor_ctx_t mon_ctx;
+    static monitor_ctx_t mon_ctx;
     monitor_init(&mon_ctx, host_secret);
 
     /* Use prepared user database */
@@ -375,7 +482,7 @@ static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_se
 
     sshd_write_err("Listening on port 22 (SSH-2.0-FortressSSH_0.1)");
 
-    sshd_worker_slot_t slots[SSHD_MAX_CONCURRENT_SESSIONS];
+    static sshd_worker_slot_t slots[SSHD_MAX_CONCURRENT_SESSIONS];
     memset(slots, 0, sizeof(slots));
 
     while (!g_terminate) {
@@ -390,7 +497,8 @@ static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_se
                     (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)slots[i].p_mon_out, 0, 0, 0, 0, 0);
                     slots[i].p_mon_in = -1;
                     slots[i].p_mon_out = -1;
-                    mon_ctx.conns[i].active = false;
+                    memset(&mon_ctx.conns[i], 0, sizeof(mon_ctx.conns[i]));
+                    mon_ctx.conns[i].session_id = (uint8_t)i;
                 }
             }
         }
@@ -399,22 +507,20 @@ static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_se
         for (int i = 0; i < SSHD_MAX_CONCURRENT_SESSIONS; i++) {
             if (slots[i].active && slots[i].p_mon_in >= 0) {
                 monitor_hdr_t req_hdr;
-                uint8_t req_payload[MONITOR_MAX_PAYLOAD];
-                if (monitor_recv_msg(slots[i].p_mon_in, &req_hdr, req_payload, sizeof(req_payload)) == 0) {
+                static uint8_t s_req_payload[MONITOR_MAX_PAYLOAD];
+                if (monitor_recv_msg(slots[i].p_mon_in, &req_hdr, s_req_payload, sizeof(s_req_payload)) == 0) {
                     uint8_t resp_type = 0;
-                    uint8_t resp_payload[MONITOR_MAX_PAYLOAD];
+                    static uint8_t s_resp_payload[MONITOR_MAX_PAYLOAD];
                     uint16_t resp_len = 0;
-                    (void)monitor_handle_request(&mon_ctx, &req_hdr, req_payload,
-                                                &resp_type, resp_payload, &resp_len, sizeof(resp_payload));
-                    (void)monitor_send_msg(slots[i].p_mon_out, resp_type, req_hdr.session_id, resp_payload, resp_len);
+                    (void)monitor_handle_request(&mon_ctx, &req_hdr, s_req_payload,
+                                                &resp_type, s_resp_payload, &resp_len, sizeof(s_resp_payload));
+                    (void)monitor_send_msg(slots[i].p_mon_out, resp_type, req_hdr.session_id, s_resp_payload, resp_len);
                 }
             }
         }
 
-        /* 3. Accept incoming TCP connection */
-        net_sockaddr_in_t peer;
-        uint32_t peer_len = sizeof(peer);
-        long client_fd = SSHD_SYSCALL(SYS_ACCEPT, (uintptr_t)sock_fd, (uintptr_t)&peer, (uintptr_t)&peer_len, 0, 0, 0);
+        /* 3. Accept incoming TCP connection (non-blocking) */
+        long client_fd = SSHD_SYSCALL(SYS_ACCEPT, (uintptr_t)sock_fd, 0, 0, NET_SOCK_NONBLOCK, 0, 0);
         if (client_fd >= 0) {
             /* Enforce global admission cap before worker spawn */
             int free_slot = sshd_admission_find_slot(slots);
@@ -425,6 +531,10 @@ static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_se
                 sshd_reject_connection_capacity(client_fd, SSHD_SERVER_VERSION);
                 continue;
             }
+
+            memset(&mon_ctx.conns[free_slot], 0, sizeof(mon_ctx.conns[free_slot]));
+            mon_ctx.conns[free_slot].session_id = (uint8_t)free_slot;
+            mon_ctx.conns[free_slot].active = true;
 
             /* Create IPC pipes connecting monitor and worker */
             int p_worker_to_mon[2];
@@ -438,33 +548,41 @@ static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_se
             /* Set monitor's read endpoint non-blocking */
             (void)SSHD_SYSCALL(SYS_FCNTL, (uintptr_t)p_worker_to_mon[0], F_SETFL, VFS_O_NONBLOCK, 0, 0, 0);
 
-            /* Prepare worker spawn arguments: /sbin/sshd --worker <slot> */
-            char slot_str[4];
-            slot_str[0] = (char)('0' + free_slot);
-            slot_str[1] = '\0';
-            const char *worker_argv[] = { "/sbin/sshd", "--worker", slot_str, NULL };
+            /* Prepare worker spawn arguments: /sbin/sshd --worker <slot> <pub_hex> */
+            static char s_host_pub_hex[65];
+            static const char hex_chars[] = "0123456789abcdef";
+            for (int k = 0; k < 32; k++) {
+                s_host_pub_hex[k * 2]     = hex_chars[(mon_ctx.host_public[k] >> 4) & 0x0f];
+                s_host_pub_hex[k * 2 + 1] = hex_chars[mon_ctx.host_public[k] & 0x0f];
+            }
+            s_host_pub_hex[64] = '\0';
+
+            static char s_slot_str[4];
+            s_slot_str[0] = (char)('0' + free_slot);
+            s_slot_str[1] = '\0';
+            static const char *s_worker_argv[] = { "/sbin/sshd", "--worker", s_slot_str, s_host_pub_hex, NULL };
 
             /* Map descriptors into worker child:
              * fd 3 = client_fd
              * fd 4 = p_mon_to_worker[0] (worker reads monitor replies)
              * fd 5 = p_worker_to_mon[1] (worker writes requests to monitor)
              */
-            spawn_fd_action_t actions[3];
-            memset(actions, 0, sizeof(actions));
-            actions[0] = (spawn_fd_action_t){ .type = SPAWN_FD_ACTION_DUP2, .dst_fd = 3, .src_fd = (int32_t)client_fd };
-            actions[1] = (spawn_fd_action_t){ .type = SPAWN_FD_ACTION_DUP2, .dst_fd = 4, .src_fd = (int32_t)p_mon_to_worker[0] };
-            actions[2] = (spawn_fd_action_t){ .type = SPAWN_FD_ACTION_DUP2, .dst_fd = 5, .src_fd = (int32_t)p_worker_to_mon[1] };
+            static spawn_fd_action_t s_actions[3];
+            memset(s_actions, 0, sizeof(s_actions));
+            s_actions[0] = (spawn_fd_action_t){ .type = SPAWN_FD_ACTION_DUP2, .dst_fd = 3, .src_fd = (int32_t)client_fd };
+            s_actions[1] = (spawn_fd_action_t){ .type = SPAWN_FD_ACTION_DUP2, .dst_fd = 4, .src_fd = (int32_t)p_mon_to_worker[0] };
+            s_actions[2] = (spawn_fd_action_t){ .type = SPAWN_FD_ACTION_DUP2, .dst_fd = 5, .src_fd = (int32_t)p_worker_to_mon[1] };
 
-            spawn_opts_t opts;
-            memset(&opts, 0, sizeof(opts));
-            opts.size = sizeof(opts);
-            opts.version = 2;
-            opts.flags = SPAWN_SETPGROUP;
-            opts.argv = (uint64_t)(uintptr_t)worker_argv;
-            opts.fd_actions = (uint64_t)(uintptr_t)actions;
-            opts.action_count = 3;
+            static spawn_opts_t s_opts;
+            memset(&s_opts, 0, sizeof(s_opts));
+            s_opts.size = sizeof(s_opts);
+            s_opts.version = 2;
+            s_opts.flags = SPAWN_SETPGROUP;
+            s_opts.argv = (uint64_t)(uintptr_t)s_worker_argv;
+            s_opts.fd_actions = (uint64_t)(uintptr_t)s_actions;
+            s_opts.action_count = 3;
 
-            long worker_pid = SSHD_SYSCALL(SYS_SPAWN_EXT, (uintptr_t)"/sbin/sshd", (uintptr_t)&opts, sizeof(opts), 0, 0, 0);
+            long worker_pid = SSHD_SYSCALL(SYS_SPAWN_EXT, (uintptr_t)"/sbin/sshd", (uintptr_t)&s_opts, sizeof(s_opts), 0, 0, 0);
             if (worker_pid > 0) {
                 slots[free_slot].active = true;
                 slots[free_slot].pid = worker_pid;
@@ -501,7 +619,8 @@ int sshd_main(int argc, char **argv) {
     if (argc >= 3 && argv && strcmp(argv[1], "--worker") == 0) {
         int sid = argv[2][0] - '0';
         if (sid < 0 || sid > 1) sid = 0;
-        return sshd_worker_run(sid, 3, 4, 5);
+        const char *pub_hex = (argc >= 4) ? argv[3] : NULL;
+        return sshd_worker_run(sid, 3, 4, 5, pub_hex);
     }
 
     /* Monitor mode: execute pinned boot readiness gate sequence */
@@ -514,14 +633,15 @@ int sshd_main(int argc, char **argv) {
         }
     }
 
-    sshd_config_t cfg;
-    uint8_t host_secret[64];
-    userdb_t db;
+    static sshd_config_t cfg;
+    static uint8_t s_main_host_secret[64];
+    static userdb_t db;
     long sock_fd = -1;
-    char diag[256] = {0};
+    static char diag[256];
+    memset(diag, 0, sizeof(diag));
     bool is_disabled = false;
 
-    int rc = sshd_check_readiness(cfg_path, NULL, &cfg, host_secret, &db, &sock_fd,
+    int rc = sshd_check_readiness(cfg_path, NULL, &cfg, s_main_host_secret, &db, &sock_fd,
                                   diag, sizeof(diag), &is_disabled);
 
     if (is_disabled) {
@@ -534,7 +654,7 @@ int sshd_main(int argc, char **argv) {
         return 1;
     }
 
-    int run_rc = sshd_monitor_run_loop(&cfg, host_secret, &db, sock_fd);
-    crypto_wipe(host_secret, sizeof(host_secret));
+    int run_rc = sshd_monitor_run_loop(&cfg, s_main_host_secret, &db, sock_fd);
+    crypto_wipe(s_main_host_secret, sizeof(s_main_host_secret));
     return run_rc;
 }

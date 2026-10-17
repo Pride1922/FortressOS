@@ -6,6 +6,7 @@
 #define NET_SOCK_STREAM 1u
 #define NET_SHUT_WR 1u
 #define NET_SOCK_CLOEXEC 0x80000u
+#define NET_SOCK_NONBLOCK 0x800u
 #define NET_MSG_DONTWAIT 0x40u
 #define NET_SOCKET_MAX 16u
 #define NET_SOCKET_RX_MAX 4u

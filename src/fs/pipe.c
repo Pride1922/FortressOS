@@ -64,7 +64,7 @@ static void profile_transfer(pipe_t *p, bool write, size_t n, size_t before) {
 }
 
 static int64_t pipe_read(vfs_node_t *node, uint64_t offset, void *buf, size_t count) {
-    (void)offset;
+    uint64_t stream_flags = offset;
     if (!count) return 0;
     pipe_t *p = node->fs_private;
     for (;;) {
@@ -89,6 +89,10 @@ static int64_t pipe_read(vfs_node_t *node, uint64_t offset, void *buf, size_t co
             spin_unlock_irqrestore(&p->lock, flags);
             return 0;
         }
+        if (stream_flags & VFS_O_NONBLOCK) {
+            spin_unlock_irqrestore(&p->lock, flags);
+            return -VFS_EAGAIN;
+        }
         if (p->profile_enabled) profile_add(p, &p->profile.read_waits, 1);
         spin_unlock_irqrestore(&p->lock, flags);
         sched_wait_until(&p->data_bytes, pipe_read_ready, p);
@@ -97,7 +101,8 @@ static int64_t pipe_read(vfs_node_t *node, uint64_t offset, void *buf, size_t co
 
 static int64_t pipe_write(vfs_node_t *node, uint64_t *offset, bool append,
                           const void *buf, size_t count) {
-    (void)offset; (void)append;
+    (void)append;
+    uint64_t stream_flags = offset ? *offset : 0;
     if (!count) return 0;
     pipe_t *p = node->fs_private;
     for (;;) {
@@ -122,6 +127,10 @@ static int64_t pipe_write(vfs_node_t *node, uint64_t *offset, bool append,
             spin_unlock_irqrestore(&p->lock, flags);
             sched_wake_all(&p->data_bytes);
             return (int64_t)n;
+        }
+        if (stream_flags & VFS_O_NONBLOCK) {
+            spin_unlock_irqrestore(&p->lock, flags);
+            return -VFS_EAGAIN;
         }
         pipe_wait_write_t wait = {p, count <= PIPE_BUF ? count : 1};
         if (p->profile_enabled) profile_add(p, &p->profile.write_waits, 1);

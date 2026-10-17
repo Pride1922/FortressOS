@@ -336,13 +336,13 @@ int sshd_config_load_from_paths(const char *installed_path, const char *live_pat
     if (!out_cfg) return -1;
     sshd_config_init_defaults(out_cfg);
 
-    char buf[SSHD_MAX_CONFIG_FILE_SIZE];
+    static char s_cfg_buf[SSHD_MAX_CONFIG_FILE_SIZE];
     long nread = -1;
     const char *loaded_path = NULL;
 
     /* Rule 1: Installed root is authoritative (/etc/ssh/sshd_config) */
     if (installed_path) {
-        nread = read_file_contents(installed_path, buf, sizeof(buf));
+        nread = read_file_contents(installed_path, s_cfg_buf, sizeof(s_cfg_buf));
         if (nread >= 0) {
             loaded_path = installed_path;
         }
@@ -350,7 +350,7 @@ int sshd_config_load_from_paths(const char *installed_path, const char *live_pat
 
     /* Rule 2: Live media fallback (/mnt/.fortress/sshd.conf) */
     if (nread < 0 && live_path) {
-        nread = read_file_contents(live_path, buf, sizeof(buf));
+        nread = read_file_contents(live_path, s_cfg_buf, sizeof(s_cfg_buf));
         if (nread >= 0) {
             loaded_path = live_path;
         }
@@ -365,7 +365,7 @@ int sshd_config_load_from_paths(const char *installed_path, const char *live_pat
         return -1;
     }
 
-    return sshd_config_parse_buffer(buf, (size_t)nread, out_cfg, err_msg, err_cap);
+    return sshd_config_parse_buffer(s_cfg_buf, (size_t)nread, out_cfg, err_msg, err_cap);
 }
 
 int sshd_config_load(const char *path, sshd_config_t *out_cfg,
@@ -374,8 +374,8 @@ int sshd_config_load(const char *path, sshd_config_t *out_cfg,
     sshd_config_init_defaults(out_cfg);
 
     if (path) {
-        char buf[SSHD_MAX_CONFIG_FILE_SIZE];
-        long nread = read_file_contents(path, buf, sizeof(buf));
+        static char s_single_buf[SSHD_MAX_CONFIG_FILE_SIZE];
+        long nread = read_file_contents(path, s_single_buf, sizeof(s_single_buf));
         if (nread < 0) {
             out_cfg->enabled = false;
             if (err_msg && err_cap > 0) {
@@ -385,7 +385,7 @@ int sshd_config_load(const char *path, sshd_config_t *out_cfg,
             }
             return -1;
         }
-        return sshd_config_parse_buffer(buf, (size_t)nread, out_cfg, err_msg, err_cap);
+        return sshd_config_parse_buffer(s_single_buf, (size_t)nread, out_cfg, err_msg, err_cap);
     }
 
     return sshd_config_load_from_paths(SSHD_INSTALLED_CONFIG_PATH, SSHD_LIVE_CONFIG_PATH,

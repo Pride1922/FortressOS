@@ -40,4 +40,7 @@ int sshd_check_readiness(const char *cfg_path, const sshd_readiness_ops_t *ops,
 /* Helper to format "bind failed on <addr>:<port>" */
 void sshd_format_bind_error(char *dst, size_t cap, uint32_t ip, uint16_t port);
 
+/* Helper to read only the public host key (usable by unprivileged worker) */
+int sshd_read_host_public_key(uint8_t out_public[32]);
+
 #endif /* USER_SSHD_READINESS_H */

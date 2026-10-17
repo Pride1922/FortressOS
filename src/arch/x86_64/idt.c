@@ -306,6 +306,8 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         serial_print_dec(frame->vector);
         serial_puts(")\n       RIP:         ");
         serial_print_hex(frame->rip);
+        serial_puts("\n       RSP:         ");
+        serial_print_hex(frame->rsp);
         serial_puts("\n       Error Code:  ");
         serial_print_hex(frame->error_code);
         serial_puts("\n");
