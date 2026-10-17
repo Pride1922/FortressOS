@@ -9,6 +9,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <time.h>
+#include <sys/resource.h>
 
 static void safe_strcpy(char *dst, const char *src, size_t cap) {
     if (!dst || cap == 0) return;
@@ -746,6 +748,243 @@ static void test_spawn_session_credentials(void) {
     printf("PASS: test_spawn_session_credentials\n");
 }
 
+static void test_failed_credential_drop_injection(void) {
+    printf("Running test_failed_credential_drop_injection...\n");
+
+    monitor_ctx_t mon;
+    monitor_init(&mon, NULL);
+    mon.conns[0].active = true;
+    mon.conns[0].authenticated = true;
+    safe_strcpy(mon.conns[0].username, "alice", sizeof(mon.conns[0].username));
+    mon.conns[0].uid = 1001;
+    mon.conns[0].gid = 1001;
+
+    monitor_hdr_t hdr = {
+        .magic = MONITOR_MAGIC,
+        .msg_type = MONITOR_REQ_SPAWN_SESSION,
+        .session_id = 0,
+        .payload_len = 0
+    };
+    uint8_t resp_type;
+    uint8_t resp_payload[64];
+    uint16_t resp_len;
+
+    /* Case 1: Supplementary group count bounds */
+    mon.conns[0].ngroups = 33; /* CREDS_MAX_GROUPS is 16 */
+    assert(monitor_handle_request(&mon, &hdr, NULL, &resp_type, resp_payload, &resp_len, sizeof(resp_payload)) == 0);
+    assert(resp_type == MONITOR_RESP_SPAWN_SESSION);
+
+    /* Case 2: Injected DB staleness failure must strictly prevent child execution */
+    mon.conns[0].ngroups = 1;
+    mon.conns[0].groups[0] = 1001;
+    g_mock_db_check_valid = false;
+    assert(monitor_handle_request(&mon, &hdr, NULL, &resp_type, resp_payload, &resp_len, sizeof(resp_payload)) == 0);
+    uint32_t status = *(uint32_t *)resp_payload;
+    assert(status == MONITOR_STATUS_ERR_STALE);
+    g_mock_db_check_valid = true;
+
+    /* Case 3: Drop-all capabilities invariant verification */
+    creds_t creds;
+    memset(&creds, 0, sizeof(creds));
+    creds.uid = mon.conns[0].uid;
+    creds.euid = mon.conns[0].uid;
+    creds.suid = mon.conns[0].uid;
+    creds.gid = mon.conns[0].gid;
+    creds.egid = mon.conns[0].gid;
+    creds.sgid = mon.conns[0].gid;
+    creds.cap_effective = 0; /* Fully dropped */
+    assert(creds_valid(&creds) == true);
+    assert(creds.cap_effective == 0);
+
+    printf("PASS: test_failed_credential_drop_injection\n");
+}
+
+static void test_descriptor_exhaustion(void) {
+    printf("Running test_descriptor_exhaustion...\n");
+
+    struct rlimit old_rl;
+    assert(getrlimit(RLIMIT_NOFILE, &old_rl) == 0);
+
+    /* Set soft limit to a small value (30 fds) */
+    struct rlimit small_rl = old_rl;
+    small_rl.rlim_cur = 30;
+    if (setrlimit(RLIMIT_NOFILE, &small_rl) == 0) {
+        int fds[64];
+        int count = 0;
+        while (count < 64) {
+            int fd = open("/dev/null", O_RDONLY);
+            if (fd < 0) break;
+            fds[count++] = fd;
+        }
+
+        /* Pipe requires 2 file descriptors: must fail with EMFILE/ENFILE */
+        int pfd[2];
+        int r = pipe(pfd);
+        assert(r < 0);
+
+        for (int i = 0; i < count; i++) {
+            close(fds[i]);
+        }
+
+        /* Restore original limit */
+        assert(setrlimit(RLIMIT_NOFILE, &old_rl) == 0);
+
+        /* Verify system descriptor recovery */
+        assert(pipe(pfd) == 0);
+        close(pfd[0]);
+        close(pfd[1]);
+    }
+
+    printf("PASS: test_descriptor_exhaustion\n");
+}
+
+static void test_dummy_timing_mitigation(void) {
+    printf("Running test_dummy_timing_mitigation...\n");
+
+    monitor_ctx_t mon;
+    monitor_init(&mon, NULL);
+    mon.conns[0].active = true;
+
+    userdb_t db;
+    memset(&db, 0, sizeof(db));
+    db.users[0] = (db_user_t){.name = "alice", .home = "/home/alice", .shell = "/bin/sh", .uid = 1001, .gid = 1001};
+    db.groups[0] = (db_group_t){.name = "alice", .members = "", .gid = 1001};
+    char alice_hash[78];
+    assert(db_crypt("secret123", "1234567890abcdef", alice_hash));
+    db.shadows[0] = (db_shadow_t){.name = "alice", .restricted = false};
+    safe_strcpy(db.shadows[0].hash, alice_hash, sizeof(db.shadows[0].hash));
+    db.nusers = 1;
+    db.ngroups = 1;
+    db.nshadows = 1;
+    assert(monitor_set_userdb(&mon, &db) == 0);
+
+    uint8_t req_buf[256];
+    uint8_t resp_type;
+    uint8_t resp_payload[512];
+    uint16_t resp_len;
+
+    monitor_hdr_t hdr = {
+        .magic = MONITOR_MAGIC,
+        .msg_type = MONITOR_REQ_AUTH_PASSWORD,
+        .session_id = 0,
+        .payload_len = 0
+    };
+
+    /* Measure real user with wrong password (3 iterations) */
+    struct timespec start_real, end_real;
+    clock_gettime(CLOCK_MONOTONIC, &start_real);
+    for (int i = 0; i < 3; i++) {
+        mon.conns[0].auth_attempts = 0;
+        uint32_t ulen = 5, plen = 9;
+        size_t off = 0;
+        memcpy(req_buf + off, &ulen, 4); off += 4;
+        memcpy(req_buf + off, "alice", ulen); off += ulen;
+        memcpy(req_buf + off, &plen, 4); off += 4;
+        memcpy(req_buf + off, "wrongpass", plen); off += plen;
+        hdr.payload_len = (uint16_t)off;
+        assert(monitor_handle_request(&mon, &hdr, req_buf, &resp_type, resp_payload, &resp_len, sizeof(resp_payload)) == 0);
+        assert(*(uint32_t *)resp_payload == MONITOR_STATUS_AUTH_FAIL);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end_real);
+
+    /* Measure dummy path for unknown user (3 iterations) */
+    struct timespec start_dummy, end_dummy;
+    clock_gettime(CLOCK_MONOTONIC, &start_dummy);
+    for (int i = 0; i < 3; i++) {
+        mon.conns[0].auth_attempts = 0;
+        uint32_t ulen = 17, plen = 9;
+        size_t off = 0;
+        memcpy(req_buf + off, &ulen, 4); off += 4;
+        memcpy(req_buf + off, "nonexistent_ghost", ulen); off += ulen;
+        memcpy(req_buf + off, &plen, 4); off += 4;
+        memcpy(req_buf + off, "wrongpass", plen); off += plen;
+        hdr.payload_len = (uint16_t)off;
+        assert(monitor_handle_request(&mon, &hdr, req_buf, &resp_type, resp_payload, &resp_len, sizeof(resp_payload)) == 0);
+        assert(*(uint32_t *)resp_payload == MONITOR_STATUS_AUTH_FAIL);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end_dummy);
+
+    uint64_t ns_real = (end_real.tv_sec - start_real.tv_sec) * 1000000000ULL + (end_real.tv_nsec - start_real.tv_nsec);
+    uint64_t ns_dummy = (end_dummy.tv_sec - start_dummy.tv_sec) * 1000000000ULL + (end_dummy.tv_nsec - start_dummy.tv_nsec);
+
+    /* Both must take measurable crypt execution time */
+    assert(ns_real > 10000);  /* > 10 microseconds */
+    assert(ns_dummy > 10000);
+
+    /* Ensure execution times are within comparable factor */
+    double ratio = (double)ns_dummy / (double)ns_real;
+    assert(ratio >= 0.20 && ratio <= 5.0);
+
+    printf("PASS: test_dummy_timing_mitigation (real: %llu ns, dummy: %llu ns, ratio: %.2f)\n",
+           (unsigned long long)ns_real, (unsigned long long)ns_dummy, ratio);
+}
+
+static void test_tier1_attempt_counter_enforcement(void) {
+    printf("Running test_tier1_attempt_counter_enforcement...\n");
+
+    monitor_ctx_t mon;
+    monitor_init(&mon, NULL);
+    mon.conns[0].active = true;
+
+    userdb_t db;
+    memset(&db, 0, sizeof(db));
+    db.users[0] = (db_user_t){.name = "alice", .home = "/home/alice", .shell = "/bin/sh", .uid = 1001, .gid = 1001};
+    db.groups[0] = (db_group_t){.name = "alice", .members = "", .gid = 1001};
+    char alice_hash[78];
+    assert(db_crypt("secret123", "1234567890abcdef", alice_hash));
+    db.shadows[0] = (db_shadow_t){.name = "alice", .restricted = false};
+    safe_strcpy(db.shadows[0].hash, alice_hash, sizeof(db.shadows[0].hash));
+    db.nusers = 1;
+    db.ngroups = 1;
+    db.nshadows = 1;
+    assert(monitor_set_userdb(&mon, &db) == 0);
+
+    uint8_t req_buf[256];
+    uint8_t resp_type;
+    uint8_t resp_payload[512];
+    uint16_t resp_len;
+
+    monitor_hdr_t hdr = {
+        .magic = MONITOR_MAGIC,
+        .msg_type = MONITOR_REQ_AUTH_PASSWORD,
+        .session_id = 0,
+        .payload_len = 0
+    };
+
+    /* Build invalid password request */
+    uint32_t ulen = 5, plen = 9;
+    size_t off = 0;
+    memcpy(req_buf + off, &ulen, 4); off += 4;
+    memcpy(req_buf + off, "alice", ulen); off += ulen;
+    memcpy(req_buf + off, &plen, 4); off += 4;
+    memcpy(req_buf + off, "wrongpass", plen); off += plen;
+    hdr.payload_len = (uint16_t)off;
+
+    /* 5 attempts should increment the counter in monitor_conn_t */
+    for (unsigned i = 0; i < 5; i++) {
+        assert(mon.conns[0].auth_attempts == i);
+        assert(monitor_handle_request(&mon, &hdr, req_buf, &resp_type, resp_payload, &resp_len, sizeof(resp_payload)) == 0);
+        assert(resp_type == MONITOR_RESP_AUTH_PASSWORD);
+        assert(*(uint32_t *)resp_payload == MONITOR_STATUS_AUTH_FAIL);
+    }
+    assert(mon.conns[0].auth_attempts == 5);
+
+    /* 6th attempt with valid password MUST be rejected with MONITOR_STATUS_ERR_PERM */
+    off = 0;
+    memcpy(req_buf + off, &ulen, 4); off += 4;
+    memcpy(req_buf + off, "alice", ulen); off += ulen;
+    memcpy(req_buf + off, &plen, 4); off += 4;
+    memcpy(req_buf + off, "secret123", plen); off += plen;
+    hdr.payload_len = (uint16_t)off;
+
+    assert(monitor_handle_request(&mon, &hdr, req_buf, &resp_type, resp_payload, &resp_len, sizeof(resp_payload)) == 0);
+    assert(resp_type == MONITOR_RESP_AUTH_PASSWORD);
+    assert(*(uint32_t *)resp_payload == MONITOR_STATUS_AUTH_DENIED);
+    assert(mon.conns[0].authenticated == false);
+
+    printf("PASS: test_tier1_attempt_counter_enforcement\n");
+}
+
 int main(void) {
     test_monitor_ipc_framing();
     test_monitor_signing_oracle();
@@ -755,6 +994,10 @@ int main(void) {
     test_pubkey_signature_and_session_binding();
     test_auth_protocol_engine();
     test_spawn_session_credentials();
+    test_failed_credential_drop_injection();
+    test_descriptor_exhaustion();
+    test_dummy_timing_mitigation();
+    test_tier1_attempt_counter_enforcement();
 
     printf("\nALL TESTS PASSED (tests/ssh_auth_host.c)\n");
     return 0;

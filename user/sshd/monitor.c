@@ -28,9 +28,9 @@ static long mon_syscall4(long n, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_
 }
 #endif
 
-/* Constant-time dummy hash for unknown, locked, or root accounts (5000 rounds sha256-crypt) */
+/* Constant-time dummy hash for unknown, locked, or root accounts (100000 rounds sha256-crypt matching userdb) */
 static const char g_dummy_shadow_hash[] =
-    "$5$rounds=5000$fortressdummy$0123456789012345678901234567890123456789012";
+    "$5$rounds=100000$1234567890abcdef$0123456789012345678901234567890123456789012";
 
 static void safe_strcpy(char *dst, const char *src, size_t cap) {
     if (!dst || cap == 0) return;

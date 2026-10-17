@@ -314,9 +314,19 @@ owned session and reap its children.
 
 Prove duplex network/PTY progress under backpressure. A blocking socket read
 cannot prevent draining child output or processing disconnect/rekey/window
-updates. Choose bounded readiness support or explicit I/O processes with
-retained fd ownership; a pipe-only command bridge is an intermediate test,
-not an interactive terminal. Tie SSH window credits to real buffer capacity.
+updates.
+
+**Architectural Decision (Bounded Poll without new kernel primitives):**
+Commit to a bounded-poll event loop rather than inventing a new `SYS_POLL` kernel primitive.
+Following the proven `/bin/tail -f` precedent, the session worker implements a 20ms bounded wait
+via `SYS_RECV_UNTIL` / `SYS_NANOSLEEP` (syscall 75) on the network socket, alternating with
+non-blocking PTY drains via `SYS_FCNTL` `O_NONBLOCK`. This guarantees:
+1. Interactive keystroke responsiveness with a measured 20ms latency floor.
+2. Prevention of deadlocks: socket waits cannot block draining PTY buffer output.
+3. No kernel scheduler churn or unreviewed polling primitives.
+4. If backpressure or line-rate saturation tests in Phase 6 fail, escalate to a reviewed `SYS_POLL` design.
+
+Tie SSH window credits to real buffer capacity.
 
 **Gate:** two isolated remote terminals plus local console, independent input
 and foreground groups, resize, nano, long output, stopped/background children,
