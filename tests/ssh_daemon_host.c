@@ -6,6 +6,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <unistd.h>
 
 #ifndef CRYPTO_HOST_TEST
 #define CRYPTO_HOST_TEST
@@ -121,9 +122,73 @@ static void test_daemon_admission_limits(void) {
     printf("PASS: test_daemon_admission_limits\n");
 }
 
+static void test_config_path_precedence(void) {
+    printf("Running test_config_path_precedence...\n");
+
+    const char *tmp_installed = "/tmp/test_installed_sshd_config";
+    const char *tmp_live = "/tmp/test_live_sshd_conf";
+    const char *tmp_nonexistent_inst = "/tmp/nonexistent_installed_sshd_config";
+    const char *tmp_nonexistent_live = "/tmp/nonexistent_live_sshd_conf";
+
+    unlink(tmp_installed);
+    unlink(tmp_live);
+    unlink(tmp_nonexistent_inst);
+    unlink(tmp_nonexistent_live);
+
+    /* Write installed root config: Port 2201 */
+    FILE *f_inst = fopen(tmp_installed, "w");
+    assert(f_inst != NULL);
+    fputs("Port 2201\nEnabled yes\n", f_inst);
+    fclose(f_inst);
+
+    /* Write live media fallback config: Port 2202 */
+    FILE *f_live = fopen(tmp_live, "w");
+    assert(f_live != NULL);
+    fputs("Port 2202\nEnabled yes\n", f_live);
+    fclose(f_live);
+
+    sshd_config_t cfg;
+    char err_buf[256] = {0};
+
+    /* Case 1: Both exist -> Installed root is authoritative (/etc/ssh/sshd_config) */
+    assert(sshd_config_load_from_paths(tmp_installed, tmp_live, &cfg, err_buf, sizeof(err_buf)) == 0);
+    assert(cfg.enabled == true);
+    assert(cfg.port == 2201);
+
+    /* Case 2: Only live media exists -> Fallback loaded (/mnt/.fortress/sshd.conf) */
+    memset(&cfg, 0, sizeof(cfg));
+    err_buf[0] = '\0';
+    assert(sshd_config_load_from_paths(tmp_nonexistent_inst, tmp_live, &cfg, err_buf, sizeof(err_buf)) == 0);
+    assert(cfg.enabled == true);
+    assert(cfg.port == 2202);
+
+    /* Case 3: Neither exists -> SSH disabled, refuse to start with clear diagnostic */
+    memset(&cfg, 0, sizeof(cfg));
+    err_buf[0] = '\0';
+    int rc = sshd_config_load_from_paths(tmp_nonexistent_inst, tmp_nonexistent_live, &cfg, err_buf, sizeof(err_buf));
+    assert(rc == -1);
+    assert(cfg.enabled == false);
+    assert(strstr(err_buf, "SSH disabled: no configuration file found") != NULL);
+
+    /* Case 4: Explicit CLI path nonexistent -> Refuses to start with diagnostic */
+    memset(&cfg, 0, sizeof(cfg));
+    err_buf[0] = '\0';
+    rc = sshd_config_load(tmp_nonexistent_inst, &cfg, err_buf, sizeof(err_buf));
+    assert(rc == -1);
+    assert(cfg.enabled == false);
+    assert(strstr(err_buf, "SSH disabled: configuration file not found") != NULL);
+
+    /* Cleanup temporary files */
+    unlink(tmp_installed);
+    unlink(tmp_live);
+
+    printf("PASS: test_config_path_precedence\n");
+}
+
 int main(void) {
     printf("Starting SSH Daemon Lifecycle & Deployment test suite...\n");
     test_config_defaults_and_parsing();
+    test_config_path_precedence();
     test_daemon_admission_limits();
 
     printf("\nALL TESTS PASSED (tests/ssh_daemon_host.c)\n");

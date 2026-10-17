@@ -204,49 +204,91 @@ int sshd_config_parse_buffer(const char *buf, size_t len, sshd_config_t *out_cfg
     return 0;
 }
 
+static long read_file_contents(const char *path, char *buf, size_t max_len) {
+    if (!path || !buf || max_len == 0) return -1;
+#ifndef CRYPTO_HOST_TEST
+    long fd = SSHD_SYSCALL(SYS_OPEN, (uintptr_t)path, VFS_O_RDONLY | VFS_O_CLOEXEC, 0, 0, 0, 0);
+    if (fd < 0) return -1;
+    long nread = SSHD_SYSCALL(SYS_READ, (uintptr_t)fd, (uintptr_t)buf, max_len - 1, 0, 0, 0);
+    (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
+    if (nread >= 0) {
+        buf[nread] = '\0';
+    }
+    return nread;
+#else
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    ssize_t nread = read(fd, buf, max_len - 1);
+    close(fd);
+    if (nread >= 0) {
+        buf[nread] = '\0';
+    }
+    return (long)nread;
+#endif
+}
+
+/* Precedence rules:
+ * 1. Installed root: installed_path (SSHD_INSTALLED_CONFIG_PATH = /etc/ssh/sshd_config) [authoritative].
+ * 2. Live media:     live_path (SSHD_LIVE_CONFIG_PATH = /mnt/.fortress/sshd.conf) [fallback, non-persistent].
+ * 3. No file:        SSH disabled, refuse to start with clear diagnostic.
+ */
+int sshd_config_load_from_paths(const char *installed_path, const char *live_path,
+                                sshd_config_t *out_cfg, char *err_msg, size_t err_cap) {
+    if (!out_cfg) return -1;
+    sshd_config_init_defaults(out_cfg);
+
+    char buf[SSHD_MAX_CONFIG_FILE_SIZE];
+    long nread = -1;
+    const char *loaded_path = NULL;
+
+    /* Rule 1: Installed root is authoritative (/etc/ssh/sshd_config) */
+    if (installed_path) {
+        nread = read_file_contents(installed_path, buf, sizeof(buf));
+        if (nread >= 0) {
+            loaded_path = installed_path;
+        }
+    }
+
+    /* Rule 2: Live media fallback (/mnt/.fortress/sshd.conf) */
+    if (nread < 0 && live_path) {
+        nread = read_file_contents(live_path, buf, sizeof(buf));
+        if (nread >= 0) {
+            loaded_path = live_path;
+        }
+    }
+
+    /* Rule 3: No file found -> SSH disabled, refuse to start with clear diagnostic */
+    if (nread < 0 || !loaded_path) {
+        out_cfg->enabled = false;
+        if (err_msg && err_cap > 0) {
+            cfg_copy(err_msg, "SSH disabled: no configuration file found (/etc/ssh/sshd_config or /mnt/.fortress/sshd.conf)", err_cap);
+        }
+        return -1;
+    }
+
+    return sshd_config_parse_buffer(buf, (size_t)nread, out_cfg, err_msg, err_cap);
+}
+
 int sshd_config_load(const char *path, sshd_config_t *out_cfg,
                      char *err_msg, size_t err_cap) {
     if (!out_cfg) return -1;
     sshd_config_init_defaults(out_cfg);
 
-    const char *try_paths[] = {
-        path,
-        SSHD_DEFAULT_CONFIG_PATH,
-        SSHD_INSTALLED_CONFIG_PATH
-    };
-
-    char buf[SSHD_MAX_CONFIG_FILE_SIZE];
-    long nread = -1;
-
-    for (size_t i = 0; i < sizeof(try_paths) / sizeof(try_paths[0]); i++) {
-        if (!try_paths[i]) continue;
-#ifndef CRYPTO_HOST_TEST
-        long fd = SSHD_SYSCALL(SYS_OPEN, (uintptr_t)try_paths[i], VFS_O_RDONLY | VFS_O_CLOEXEC, 0, 0, 0, 0);
-        if (fd >= 0) {
-            nread = SSHD_SYSCALL(SYS_READ, (uintptr_t)fd, (uintptr_t)buf, sizeof(buf) - 1, 0, 0, 0);
-            SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
-            if (nread > 0) {
-                buf[nread] = '\0';
-                break;
+    if (path) {
+        char buf[SSHD_MAX_CONFIG_FILE_SIZE];
+        long nread = read_file_contents(path, buf, sizeof(buf));
+        if (nread < 0) {
+            out_cfg->enabled = false;
+            if (err_msg && err_cap > 0) {
+                cfg_copy(err_msg, "SSH disabled: configuration file not found: ", err_cap);
+                size_t cur = strlen(err_msg);
+                cfg_copy(err_msg + cur, path, err_cap - cur);
             }
+            return -1;
         }
-#else
-        int fd = open(try_paths[i], O_RDONLY);
-        if (fd >= 0) {
-            nread = (long)read(fd, buf, sizeof(buf) - 1);
-            close(fd);
-            if (nread > 0) {
-                buf[nread] = '\0';
-                break;
-            }
-        }
-#endif
+        return sshd_config_parse_buffer(buf, (size_t)nread, out_cfg, err_msg, err_cap);
     }
 
-    if (nread <= 0) {
-        /* Default configuration remains active */
-        return 0;
-    }
-
-    return sshd_config_parse_buffer(buf, (size_t)nread, out_cfg, err_msg, err_cap);
+    return sshd_config_load_from_paths(SSHD_INSTALLED_CONFIG_PATH, SSHD_LIVE_CONFIG_PATH,
+                                       out_cfg, err_msg, err_cap);
 }
