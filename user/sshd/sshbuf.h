@@ -11,6 +11,9 @@
 #define SSH_ERR_NO_MEM          -2
 #define SSH_ERR_BUFFER_TOO_SMALL -3
 #define SSH_ERR_INVALID_FORMAT  -4
+#define SSH_ERR_AGAIN           -5
+#define SSH_ERR_DISCONNECT      -6
+#define SSH_ERR_PROTOCOL_VIOLATION -7
 
 typedef struct {
     uint8_t *data;
@@ -32,6 +35,7 @@ size_t sshbuf_len(const sshbuf_t *buf);
 size_t sshbuf_size(const sshbuf_t *buf);
 const uint8_t *sshbuf_ptr(const sshbuf_t *buf);
 int sshbuf_consume(sshbuf_t *buf, size_t len);
+int sshbuf_compact(sshbuf_t *buf);
 
 int sshbuf_put_u8(sshbuf_t *buf, uint8_t val);
 int sshbuf_put_u32(sshbuf_t *buf, uint32_t val);

@@ -225,10 +225,17 @@ metadata and unchanged templates/non-targets. No host secret in logs/artifacts.
 
 **COMPLETE (2026-10-17):** Verified via `make test-ssh-transport-host` under ASan/UBSan.
 Includes bounded identification exchange (`SSH-2.0-FortressSSH_0.1`), binary packet protocol
-(RFC 4253), dynamic buffer primitives (`sshbuf_t`), ChaCha20-Poly1305 packet AEAD with 4-byte
-length encryption and Poly1305 tag verification, Curve25519-SHA256 key exchange (RFC 8731),
-transcript exchange hash computation, host Ed25519 signature verification, SSH key derivation (RFC 4253 §7.2),
-and strict KEX packet ordering.
+(RFC 4253), dynamic buffer primitives (`sshbuf_t`), stream framing and TCP split/coalesce handling
+(`user/sshd/transport.c`), ChaCha20-Poly1305 packet AEAD with 4-byte length encryption and
+Poly1305 tag verification, Curve25519-SHA256 key exchange (RFC 8731), transcript exchange hash
+computation, host Ed25519 signature verification, SSH key derivation (RFC 4253 §7.2), and
+strict KEX packet ordering.
+All adversarial gates fully closed:
+- Forced rekeying post-NEWKEYS (retains original session ID, calculates fresh exchange hash H, derives new cipher keys, and preserves monotonic sequence numbers per RFC 4253 §9 & OpenSSH strict KEX).
+- Malformed packet rejection (tampered Poly1305 MAC tag, invalid lengths <5 or >35000, invalid padding <4 or >packet_len, out-of-order state transitions, tampered host signature).
+- Strict KEX prefix truncation termination (rejects pre-KEX injected packets such as `SSH_MSG_IGNORE`, `SSH_MSG_DEBUG`, `SSH_MSG_SERVICE_REQUEST` with fatal protocol violation error).
+- Real TCP stream splitting (1-byte chunk fragmentation, boundary splits) and packet coalescing (back-to-back delivery).
+- Authentic OpenSSH 9.6 transcript ground-truth vector matching byte-for-byte on exchange hash H, plus live OpenSSH client interoperability oracle.
 
 Implement bounded identification/KEXINIT parsing, negotiated profile, transcript
 hash, host signature, key derivation, NEWKEYS and authenticated packet records.

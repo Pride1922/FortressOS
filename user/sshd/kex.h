@@ -42,6 +42,7 @@ typedef struct {
 
 void kex_init(ssh_kex_ctx *ctx);
 void kex_cleanup(ssh_kex_ctx *ctx);
+void kex_reset_for_rekey(ssh_kex_ctx *ctx);
 
 int kex_build_kexinit(ssh_kex_ctx *ctx, const uint8_t cookie[16], sshbuf_t *out_payload);
 int kex_parse_kexinit(ssh_kex_ctx *ctx, const uint8_t *payload, size_t len);

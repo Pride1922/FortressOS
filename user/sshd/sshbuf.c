@@ -86,6 +86,19 @@ int sshbuf_consume(sshbuf_t *buf, size_t len) {
     return SSH_ERR_SUCCESS;
 }
 
+int sshbuf_compact(sshbuf_t *buf) {
+    if (!buf) return SSH_ERR_INVALID_ARG;
+    if (buf->read_only) return SSH_ERR_INVALID_ARG;
+    if (buf->off == 0) return SSH_ERR_SUCCESS;
+    size_t rem = buf->size - buf->off;
+    if (rem > 0) {
+        memmove(buf->data, buf->data + buf->off, rem);
+    }
+    buf->off = 0;
+    buf->size = rem;
+    return SSH_ERR_SUCCESS;
+}
+
 static int sshbuf_reserve(sshbuf_t *buf, size_t needed) {
     if (!buf) return SSH_ERR_INVALID_ARG;
     if (buf->read_only) return SSH_ERR_INVALID_ARG;

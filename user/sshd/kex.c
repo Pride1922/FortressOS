@@ -34,6 +34,29 @@ void kex_cleanup(ssh_kex_ctx *ctx) {
     memset(ctx, 0, sizeof(*ctx));
 }
 
+void kex_reset_for_rekey(ssh_kex_ctx *ctx) {
+    if (!ctx) return;
+    crypto_wipe(ctx->server_priv, sizeof(ctx->server_priv));
+    crypto_wipe(ctx->shared_secret, sizeof(ctx->shared_secret));
+    crypto_wipe(ctx->key_c2s, sizeof(ctx->key_c2s));
+    crypto_wipe(ctx->key_s2c, sizeof(ctx->key_s2c));
+    crypto_wipe(ctx->hash, sizeof(ctx->hash));
+    crypto_wipe(ctx->client_pub, sizeof(ctx->client_pub));
+    crypto_wipe(ctx->server_pub, sizeof(ctx->server_pub));
+    if (ctx->client_kexinit) {
+        free(ctx->client_kexinit);
+        ctx->client_kexinit = NULL;
+    }
+    if (ctx->server_kexinit) {
+        free(ctx->server_kexinit);
+        ctx->server_kexinit = NULL;
+    }
+    ctx->client_kexinit_len = 0;
+    ctx->server_kexinit_len = 0;
+    ctx->state = KEX_STATE_INIT;
+    /* ctx->session_id, ctx->session_id_set, ctx->strict_kex are retained */
+}
+
 int kex_build_kexinit(ssh_kex_ctx *ctx, const uint8_t cookie[16], sshbuf_t *out_payload) {
     if (!ctx || !cookie || !out_payload) return SSH_ERR_INVALID_ARG;
 
