@@ -39,6 +39,7 @@ return FortressOS `SYSCALL_EINVAL` before publication. Actual keygen propagates
 | Primitive | Public functions | Source / limits |
 | --- | --- | --- |
 | SHA-256 | `crypto_sha256`, `crypto_sha256_init/update/final` | existing digest codec, unchanged |
+| BLAKE2s | `crypto_blake2s`, `crypto_blake2s_init/update/final` | RFC7693 sequential hashing/MAC, output 1–32 bytes, optional key 0–32 bytes, zero allocation |
 | SHA-512 | `crypto_sha512`, `crypto_sha512_init/update/final` | optional Monocypher module |
 | HMAC-SHA-256 | `crypto_hmac_sha256` | RFC2104 over existing streaming SHA-256, keys >64 bytes hashed first |
 | HKDF-SHA-256 | `crypto_hkdf_extract`, `crypto_hkdf_expand`, `crypto_hkdf` | RFC5869 Extract-and-Expand KDF over HMAC-SHA-256, max OKM 8,160 bytes (255×32), zero allocation, fail-closed erasure |
@@ -147,3 +148,42 @@ The library is a set of primitives, **not TLS, signed packages or secure boot**.
 Passing vectors does not qualify any of those integrations. It also is not SSH:
 RFC8439 AEAD is different from OpenSSH's packet construction. Phase 3 is not
 started; `SYS_FSTAT` and host-key publication remain separate work.
+
+## BLAKE2s addition (2026-10-17)
+
+`src/lib/crypto/blake2s.c` implements sequential RFC 7693 BLAKE2s in freestanding
+C11. The output length is included in initialization (short digests are not
+truncated 32-byte digests). Keyed mode absorbs a zero-padded 64-byte key block;
+the last block stays buffered until finalization, including keyed empty input.
+No salt, personalization or tree hashing is exposed. This supplies a primitive
+for future WireGuard work; no WireGuard protocol or networking change is included.
+
+The one-shot API takes `(out, out_len, in, in_len, key, key_len)`. All four calls
+return zero on success or `SYSCALL_EINVAL` for invalid lengths, NULL with nonzero
+length, address wrap, unsupported overlap, inactive context or cumulative length
+overflow. Accessible memory is a caller obligation. Input/context and writable
+output/input overlaps are rejected before mutation. Failed calls preserve output
+and context. Successful finalization wipes the entire context, including the
+buffer; compression wipes message/work words using the existing `crypto_wipe()`.
+Abandoned contexts must be explicitly wiped. Total absorbed bytes, including
+any padded key block, use the existing conservative `CRYPTO_MAX_INPUT` ceiling.
+
+Verification: `make test-crypto-blake2s-host` passes with GCC ASan/UBSan and leak
+detection enabled. The actual production implementation passes RFC 7693 Appendix
+B's abc digest, all 256 pinned official keyed BLAKE2 vectors (every two-way split),
+and 1,056 deterministic Python hashlib oracle cases spanning every digest length
+1–32 and key length 0–32, empty input and block boundaries through 4,097 bytes.
+All cases exercise one-shot and nine streaming chunk sizes. Negative tests cover
+bounds, NULL, wrap, overlap, cumulative overflow, repeated final/update after
+final, output canaries and byte-for-byte error preservation. A wipe observer
+checks each explicit wipe and tests check the entire finalized context is zero.
+These host checks establish functional and memory-safety evidence for the tested
+cases, not a proof of security or complete register erasure. Official fixture
+identity/provenance is in `tests/vectors/README.md`; tests need no network access.
+The existing `make test-crypto-host` regression also passes: sanitizer vectors,
+96 independent differential cases, unchanged upstream identity, freestanding
+archive build and scalar/stack audits. BLAKE2s's largest individual release
+frame is 208 bytes (one-shot); compression uses 176 bounded bytes, below the
+existing 1 KiB ceiling. Regression evidence remains at
+`.codex-remote-attachments/crypto-phase2-resolved/host.log` and `stack.json`.
+SSH and ChaCha20 implementation sources are unchanged.

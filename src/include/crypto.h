@@ -3,6 +3,8 @@
 #include "types.h"
 #include "../../user/tools/digest.h"
 
+#define CRYPTO_BLAKE2S_MAX_OUT 32
+#define CRYPTO_BLAKE2S_MAX_KEY 32
 #define CRYPTO_SHA256_LEN 32
 #define CRYPTO_SHA512_LEN 64
 #define CRYPTO_HMAC_SHA256_LEN 32
@@ -34,6 +36,24 @@ typedef struct {
     uint64_t bytes;
     bool active;
 } crypto_sha512_ctx;
+/* BLAKE2s sequential mode. Output size is a parameter, not truncation.
+ * Same range/alias/lifecycle rules as SHA contexts above. Total absorbed bytes
+ * (including the padded 64-byte key block) are capped at CRYPTO_MAX_INPUT.
+ * Invalid calls return SYSCALL_EINVAL and preserve context/output; successful
+ * final wipes the entire context. Reinitialize after final or explicitly wipe
+ * an abandoned context. No salt, personalization or tree mode. */
+typedef struct {
+    uint32_t h[8];
+    uint64_t bytes; /* compressed bytes; excludes buffered data */
+    uint8_t buffer[64];
+    size_t used;
+    size_t out_len;
+    bool active;
+} crypto_blake2s_ctx;
+int crypto_blake2s(uint8_t *out,size_t out_len,const void *in,size_t in_len,const void *key,size_t key_len);
+int crypto_blake2s_init(crypto_blake2s_ctx *ctx,size_t out_len,const void *key,size_t key_len);
+int crypto_blake2s_update(crypto_blake2s_ctx *ctx,const void *in,size_t in_len);
+int crypto_blake2s_final(crypto_blake2s_ctx *ctx,uint8_t *out);
 void crypto_wipe(void *secret, size_t size);
 int crypto_verify32(const uint8_t a[32], const uint8_t b[32]);
 int crypto_sha256_init(crypto_sha256_ctx *ctx);

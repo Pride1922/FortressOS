@@ -4,7 +4,8 @@ CRYPTO_BUILD := $(BUILD_DIR)/crypto
 CRYPTO_LIB := $(CRYPTO_BUILD)/libfortresscrypto.a
 CRYPTO_API := crypto_wipe crypto_verify32 crypto_sha256_init crypto_sha256_update crypto_sha256_final crypto_sha256 crypto_sha512_init crypto_sha512_update crypto_sha512_final crypto_sha512 crypto_hmac_sha256 crypto_ed25519_from_seed crypto_ed25519_keygen crypto_ed25519_sign crypto_ed25519_verify crypto_x25519_from_seed crypto_x25519_keygen crypto_x25519 crypto_aead_lock crypto_aead_unlock
 CRYPTO_API += crypto_hkdf_extract crypto_hkdf_expand crypto_hkdf
-CRYPTO_UNITS := hash curve aead entropy
+CRYPTO_API += crypto_blake2s crypto_blake2s_init crypto_blake2s_update crypto_blake2s_final
+CRYPTO_UNITS := hash curve aead entropy blake2s
 CRYPTO_API += ssh_hostkey_encode ssh_hostkey_decode ssh_hostkey_generate ssh_hostkey_public ssh_hostkey_fingerprint
 CRYPTO_UNITS += ssh_hostkey
 CRYPTO_OBJS := $(addprefix $(CRYPTO_BUILD)/,$(addsuffix .o,$(CRYPTO_UNITS))) $(CRYPTO_BUILD)/monocypher.o $(CRYPTO_BUILD)/ed25519.o $(CRYPTO_BUILD)/digest.o
@@ -105,3 +106,7 @@ $(BUILD_DIR)/crypto-probe.elf: tests/crypto_probe.c tests/crypto_vectors.h $(CRY
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack --gc-sections -T user/shell.ld $(CRYPTO_BUILD)/probe-start.o $(CRYPTO_BUILD)/probe.o $(CRYPTO_LIB) $(BUILD_DIR)/tool-common.o -o $@
 
 -include $(wildcard $(CRYPTO_BUILD)/*.d)
+
+.PHONY: test-crypto-blake2s-host
+test-crypto-blake2s-host:
+	@python3 scripts/test_crypto_blake2s_host.py
