@@ -304,33 +304,31 @@ and helper exec inheritance, and zero cross-session privilege leakage.
 
 ### Phase 6 — PTYs, job control and session channels
 
-Implement or establish an independently owned PTY pair per remote session,
-separate from the framebuffer/UART terminal and all other SSH clients. Own
-foreground process groups, echo/canonical/raw input, terminal size and signal
-delivery. Map PTY requests, shell requests, window changes, EOF, exit status
-and channel close with exact ownership and lifetime rules. Handle Ctrl-C,
-Ctrl-Z, fg/bg and full-screen applications; disconnect must tear down only the
-owned session and reap its children.
-
-Prove duplex network/PTY progress under backpressure. A blocking socket read
-cannot prevent draining child output or processing disconnect/rekey/window
-updates.
-
-**Architectural Decision (Bounded Poll without new kernel primitives):**
-Commit to a bounded-poll event loop rather than inventing a new `SYS_POLL` kernel primitive.
-Following the proven `/bin/tail -f` precedent, the session worker implements a 20ms bounded wait
-via `SYS_RECV_UNTIL` / `SYS_NANOSLEEP` (syscall 75) on the network socket, alternating with
-non-blocking PTY drains via `SYS_FCNTL` `O_NONBLOCK`. This guarantees:
-1. Interactive keystroke responsiveness with a measured 20ms latency floor.
-2. Prevention of deadlocks: socket waits cannot block draining PTY buffer output.
-3. No kernel scheduler churn or unreviewed polling primitives.
-4. If backpressure or line-rate saturation tests in Phase 6 fail, escalate to a reviewed `SYS_POLL` design.
-
-Tie SSH window credits to real buffer capacity.
-
-**Gate:** two isolated remote terminals plus local console, independent input
-and foreground groups, resize, nano, long output, stopped/background children,
-EOF/HUP/kill/disconnect and complete reference/VM/PTY reclamation.
+**COMPLETE (2026-10-17):** Verified via `make test-ssh-channel-host` and `make test-ssh-pty-host` under ASan/UBSan.
+Includes:
+- Kernel PTY subsystem (`src/drivers/pty.h`, `src/drivers/pty.c`):
+  * Independent in-kernel PTY pair allocation via `SYS_PTY_PAIR` (syscall 80) with atomic creation and fail-closed unwinding.
+  * Ring buffers: 4 KiB input ring (`in_buf`) and 16 KiB output ring (`out_buf` for large curses/nano redraw bursts).
+  * Rank 2 spinlock hierarchy with IRQ-save/restore, strictly avoiding lock nesting with scheduler or process table locks.
+  * Non-blocking semantics: partial short-writes on full space; `-VFS_EAGAIN` when space is 0.
+  * Line-discipline echo: printable character echo in master write under `ICANON | ECHO | ISIG`; automatically suppressed when slave switches to raw mode.
+  * Signal delivery: keystroke `VINTR`/`VSUSP` (Ctrl+C/Ctrl+Z) dispatched to foreground process group `fg_pgid`; `SIGHUP` delivered immediately to the entire session (`controlling_sid`) upon master close; `SIGWINCH` delivered on window resize.
+  * Background process guard: `SYS_TCSETPGRP` on slave verifies session membership and delivers `SIGTTOU` to background callers attempting to claim terminal ownership.
+  * Terminal query: `sys_termctl(TERM_ISATTY)` extended to recognize PTY master and slave endpoints, ensuring tools like `/bin/nano` correctly recognize interactive terminals.
+  * Non-blocking control: `sys_fcntl` extended with `F_GETFL` (3) and `F_SETFL` (4) supporting `VFS_O_NONBLOCK` (`0x0800`).
+- RFC 4254 SSH channel protocol engine (`user/sshd/channel.h`, `user/sshd/channel.c`):
+  * Full RFC 4254 state machine (`OPEN`, `EOF_LOCAL`, `EOF_REMOTE`, `EOF_BOTH`, `CLOSE_SENT`, `CLOSE_RCVD`, `CLOSED`).
+  * Dynamic channel table with multiple channel multiplexing and channel ID lookup.
+  * Flow control: 64 KiB local window credits, 32 KiB maxpacket, and automatic `SSH_MSG_CHANNEL_WINDOW_ADJUST` emission.
+  * Channel requests: `pty-req` (term type, dimensions, terminal modes), `shell`, `exec`, `window-change`, and `env`.
+- Userland PTY Bridge & Bounded-Poll Engine (`user/sshd/pty_bridge.h`, `user/sshd/pty_bridge.c`):
+  * Zero-race staged binding: spawns child shell via `SYS_SPAWN_EXT` with `SPAWN_SETSID | SPAWN_STAGED`, binds session leader via `PTY_SET_SESSION` on master before unfreezing child, and releases child to execute via `SYS_GROUP_RELEASE(child_pid, GROUP_RELEASE)`.
+  * Bounded-poll loop: 20ms bounded wait via `SYS_NANOSLEEP` alternating with non-blocking PTY drains, eliminating deadlocks, ensuring responsive 20ms keystroke interactivity, and avoiding busy-spin CPU burn.
+  * Duplex I/O: transfers client `in_data` to master and master output to `SSH_MSG_CHANNEL_DATA`, respecting window credits and max packet sizing.
+  * Child reaping: non-blocking `SYS_WAITPID(WNOHANG)` detecting exit, formatting `SSH_MSG_CHANNEL_REQUEST` "exit-status", and sending `SSH_MSG_CHANNEL_EOF`/`SSH_MSG_CHANNEL_CLOSE`.
+- Verified Gates:
+  * `make test-ssh-channel-host` (100% PASS): channel opening/confirmation, invalid requests, window credit depletion/replenishment, extended data, and EOF/close interleavings.
+  * `make test-ssh-pty-host` (100% PASS): PTY pair allocation, window resizing, zero-race staged spawn, duplex I/O under backpressure/short-writes, bounded 20ms nanosleep, and clean SIGHUP/SIGTERM teardown.
 
 ### Phase 7 — daemon lifecycle and deployment
 

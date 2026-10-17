@@ -96,6 +96,8 @@ int64_t process_signal_send_creds(uint64_t caller,int64_t selector,uint64_t sig)
 static inline int64_t process_signal_send_kernel(uint64_t c,int64_t p,uint64_t s) {
     return process_signal_send(c,p,s);
 }
+int64_t process_signal_send_session(uint64_t sid, uint64_t sig);
+int64_t process_signal_send_group(uint64_t pgid, uint64_t sig);
 int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t *act, signal_action_t *old);
 int64_t process_signal_mask(uint64_t pid, uint64_t how, const uint64_t *mask, uint64_t *old);
 unsigned process_signal_take(uint64_t pid);

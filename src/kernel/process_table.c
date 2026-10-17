@@ -341,7 +341,10 @@ int process_record_begin(uint64_t pid, uint64_t parent, bool waitable,
     if (!p || (waitable && !ch)) goto out;
     uint64_t sid = par ? par->sid : pid;
     uint64_t group = par ? par->pgid : pid;
-    if (flags & SPAWN_SETPGROUP) {
+    if (flags & SPAWN_SETSID) {
+        sid = pid;
+        group = pid;
+    } else if (flags & SPAWN_SETPGROUP) {
         group = pgid ? pgid : pid;
         if (group != pid && !group_exists(group, sid)) { error = SYSCALL_EPERM; goto out; }
     }
@@ -700,6 +703,44 @@ int64_t process_signal_send(uint64_t caller,int64_t selector,uint64_t sig) {
 }
 int64_t process_signal_send_creds(uint64_t caller,int64_t selector,uint64_t sig) {
     return signal_send_common(caller,selector,sig,true);
+}
+int64_t process_signal_send_session(uint64_t sid, uint64_t sig) {
+    if (!sid || !sig || sig > 31 || !(SIGNAL_SUPPORTED & SIGNAL_BIT(sig))) return SYSCALL_EINVAL;
+    uint64_t irq = spin_lock_irqsave(&g_process_lock);
+    int result = SYSCALL_ESRCH;
+    uint64_t woken[PROCESS_CAPACITY];
+    unsigned woken_count = 0;
+    for (unsigned i = 0; i < PROCESS_CAPACITY; i++) {
+        process_record_t *p = &processes[i];
+        if (!p->used || p->exited || !p->signals || p->sid != sid) continue;
+        result = 0;
+        signal_publish(p, sig);
+        if (woken_count < PROCESS_CAPACITY) woken[woken_count++] = p->pid;
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    for (unsigned i = 0; i < woken_count; ++i) {
+        thread_wake_for_signal(woken[i]);
+    }
+    return result;
+}
+int64_t process_signal_send_group(uint64_t pgid, uint64_t sig) {
+    if (!pgid || !sig || sig > 31 || !(SIGNAL_SUPPORTED & SIGNAL_BIT(sig))) return SYSCALL_EINVAL;
+    uint64_t irq = spin_lock_irqsave(&g_process_lock);
+    int result = SYSCALL_ESRCH;
+    uint64_t woken[PROCESS_CAPACITY];
+    unsigned woken_count = 0;
+    for (unsigned i = 0; i < PROCESS_CAPACITY; i++) {
+        process_record_t *p = &processes[i];
+        if (!p->used || p->exited || !p->signals || p->pgid != pgid) continue;
+        result = 0;
+        signal_publish(p, sig);
+        if (woken_count < PROCESS_CAPACITY) woken[woken_count++] = p->pid;
+    }
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    for (unsigned i = 0; i < woken_count; ++i) {
+        thread_wake_for_signal(woken[i]);
+    }
+    return result;
 }
 int64_t process_signal_action(uint64_t pid, uint64_t sig, const signal_action_t *act, signal_action_t *old) {
     if (!sig || sig>31 || !(SIGNAL_SUPPORTED & SIGNAL_BIT(sig))) return SYSCALL_EINVAL;

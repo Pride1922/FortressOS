@@ -85,6 +85,7 @@
 #define SYS_GETRANDOM     77 /* (void *buf, size_t len, uint64_t flags=0) -> len/-errno */
 #define SYS_FSTAT         78 /* (fd, stat_ext_v1_t *out) -> 0/-errno; fixed 40-byte v1 output */
 #define SYS_HOSTKEY       79 /* root-only fixed installed-root storage; hostkey_abi.h */
+#define SYS_PTY_PAIR      80 /* (int fds[2], uint32_t flags) -> 0 or -errno */
 #define MAX_GETRANDOM_LEN 256u
 
 /* Clock identifiers */
@@ -149,7 +150,8 @@ _Static_assert(offsetof(stat_ext_v1_t,file_size)==8, "stat_ext v1 offset");
 #define GROUP_CANCEL  1
 #define SPAWN_SETPGROUP 1u /* v2: reserved2=0 creates group, >0 joins group */
 #define SPAWN_STAGED    2u /* v2: fully construct but do not schedule */
-#define SPAWN_V2_FLAGS (SPAWN_SETPGROUP | SPAWN_STAGED)
+#define SPAWN_SETSID    4u /* v2: create a new session and process group (sid=pid, pgid=pid) */
+#define SPAWN_V2_FLAGS (SPAWN_SETPGROUP | SPAWN_STAGED | SPAWN_SETSID)
 #ifndef WNOHANG
 #define WNOHANG    1u
 #define WUNTRACED  2u
@@ -167,6 +169,8 @@ _Static_assert(offsetof(stat_ext_v1_t,file_size)==8, "stat_ext v1 offset");
 #define F_DUPFD         0
 #define F_GETFD         1
 #define F_SETFD         2
+#define F_GETFL         3
+#define F_SETFL         4
 #define F_DUPFD_CLOEXEC 1030
 #define FD_CLOEXEC      1
 

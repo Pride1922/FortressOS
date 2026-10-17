@@ -54,6 +54,10 @@ test-ssh-auth-host:
 test-ssh-channel-host:
 	@python3 scripts/test_ssh_channel_host.py
 
+.PHONY: test-ssh-pty-host
+test-ssh-pty-host:
+	@python3 scripts/test_ssh_pty_host.py
+
 .PHONY: test-ssh-hostkeys-storage-host
 test-ssh-hostkeys-storage-host: test-ssh-hostkeys-host
 	@python3 scripts/test_ssh_hostkey_storage.py

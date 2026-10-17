@@ -25,6 +25,20 @@ _Static_assert(sizeof(terminal_info_t) == 32, "terminal ABI size");
  * ignored on SET, so a GET snapshot can be modified and passed back to SET.
  * Control events flush queued ordinary input; output is never flushed. */
 #define TERM_ISIG 1u
+#define TERM_ECHO 2u
+#define TERM_ICANON 4u
+#define TERM_SET_WINSIZE 3
+#define TERM_GET_WINSIZE 4
+#define PTY_SET_SESSION  5
+
+typedef struct {
+    uint16_t ws_row;
+    uint16_t ws_col;
+    uint16_t ws_xpixel;
+    uint16_t ws_ypixel;
+} winsize_t;
+_Static_assert(sizeof(winsize_t) == 8, "winsize ABI size");
+
 typedef struct {
     uint32_t version, input_flags;
     uint8_t vintr, vsusp, reserved[6];

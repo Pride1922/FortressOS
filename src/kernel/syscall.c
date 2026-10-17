@@ -37,6 +37,7 @@ static bool syscall_actor(creds_t *out);
 #include "xhci.h"
 #include "dmesg.h"
 #include "terminal.h"
+#include "pty.h"
 #include "console.h"
 #include "smp.h"
 #include "apic.h"
@@ -231,7 +232,7 @@ static int64_t sys_termctl(uint64_t op, uintptr_t ptr, size_t size) {
         if (fd < 0 || fd >= MAX_PROCESS_FDS) return SYSCALL_EBADF;
         file_t *file = fd_get(t, fd);
         if (!file) return SYSCALL_EBADF;
-        return (file->node == vfs_get_terminal_node()) ? 1 : 0;
+        return (file->node == vfs_get_terminal_node() || is_pty_slave(file->node) || is_pty_master(file->node)) ? 1 : 0;
     }
     if (size != sizeof(terminal_info_t) || op > TERM_SET) return SYSCALL_EINVAL;
     if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, size, true)) return SYSCALL_EFAULT;
@@ -265,6 +266,53 @@ static int64_t sys_input_read(uintptr_t ptr, size_t count, int64_t timeout) {
 }
 
 static int64_t sys_termattr(uint64_t fd, uint64_t op, uintptr_t ptr, size_t size) {
+    tcb_t *curr = thread_current();
+    if (!curr) return SYSCALL_EBADF;
+    if (fd >= MAX_PROCESS_FDS) return SYSCALL_EBADF;
+    file_t *file = fd_get(curr, (int)fd);
+    if (!file) return SYSCALL_EBADF;
+
+    if (file->node && (is_pty_slave(file->node) || is_pty_master(file->node))) {
+        if (op == TERM_SET_WINSIZE) {
+            if (size != sizeof(winsize_t)) return SYSCALL_EINVAL;
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, size, false)) return SYSCALL_EFAULT;
+            winsize_t ws;
+            memcpy(&ws, (const void *)ptr, sizeof(ws));
+            return pty_set_winsize(file->node, ws.ws_col, ws.ws_row);
+        }
+        if (op == TERM_GET_WINSIZE) {
+            if (size != sizeof(winsize_t)) return SYSCALL_EINVAL;
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, size, true)) return SYSCALL_EFAULT;
+            winsize_t ws = {0};
+            int64_t r = pty_get_winsize(file->node, &ws.ws_col, &ws.ws_row);
+            if (!r) memcpy((void *)ptr, &ws, sizeof(ws));
+            return r;
+        }
+        if (op == PTY_SET_SESSION) {
+            if (!is_pty_master(file->node)) return SYSCALL_EINVAL;
+            if (size != sizeof(uint64_t)) return SYSCALL_EINVAL;
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, size, false)) return SYSCALL_EFAULT;
+            uint64_t child_pid = *(const uint64_t *)ptr;
+            return pty_set_session(file->node, child_pid);
+        }
+        if (op == TERM_GET) {
+            if (size != sizeof(terminal_attrs_t)) return SYSCALL_EINVAL;
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, size, true)) return SYSCALL_EFAULT;
+            terminal_attrs_t attrs = {0};
+            int64_t r = pty_get_termattr(file->node, &attrs);
+            if (!r) memcpy((void *)ptr, &attrs, sizeof(attrs));
+            return r;
+        }
+        if (op == TERM_SET) {
+            if (size != sizeof(terminal_attrs_t)) return SYSCALL_EINVAL;
+            if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), ptr, size, false)) return SYSCALL_EFAULT;
+            terminal_attrs_t attrs;
+            memcpy(&attrs, (const void *)ptr, sizeof(attrs));
+            return pty_set_termattr(file->node, &attrs);
+        }
+        return SYSCALL_EINVAL;
+    }
+
     if (size!=sizeof(terminal_attrs_t) || op>TERM_SET) return SYSCALL_EINVAL;
     if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),ptr,size,op==TERM_GET))
         return SYSCALL_EFAULT;
@@ -793,6 +841,52 @@ static int64_t sys_pipe(uintptr_t user_pipefd, uint32_t flags) {
     return SYSCALL_SUCCESS;
 }
 
+static int64_t sys_pty_pair(uintptr_t user_fds, uint32_t flags) {
+    const size_t bytes = sizeof(int) * 2;
+    if (user_fds < 0x1000 || user_fds > 0x0000800000000000ULL - bytes ||
+        !vmm_validate_user_range(vmm_get_active_pml4_virt(), user_fds, bytes, true))
+        return SYSCALL_EFAULT;
+    if (flags & ~(uint32_t)(VFS_O_CLOEXEC | VFS_O_NONBLOCK)) return SYSCALL_EINVAL;
+    tcb_t *curr = thread_current();
+    if (!curr) return SYSCALL_EBADF;
+    unsigned available = 0;
+    for (int i = 0; i < MAX_PROCESS_FDS; i++)
+        if (!curr->fd_table[i]) available++;
+    if (available < 2) return SYSCALL_EMFILE;
+
+    vfs_node_t *mn = NULL, *sn = NULL;
+    int err = pty_create(&mn, &sn);
+    if (err) return syscall_from_vfs_error(err);
+
+    file_t *mf = kmalloc(sizeof(*mf));
+    file_t *sf = kmalloc(sizeof(*sf));
+    if (!mf || !sf) {
+        if (mf) kfree(mf);
+        if (sf) kfree(sf);
+        pty_close_endpoint(mn);
+        pty_close_endpoint(sn);
+        return SYSCALL_ENOMEM;
+    }
+    *mf = (file_t){ .node = mn, .flags = VFS_O_RDWR | (flags & VFS_O_NONBLOCK), .ref_count = 1 };
+    *sf = (file_t){ .node = sn, .flags = VFS_O_RDWR, .ref_count = 1 };
+
+    int mfd = fd_alloc(curr, mf);
+    int sfd = mfd < 0 ? -1 : fd_alloc(curr, sf);
+    if (sfd < 0) {
+        if (mfd >= 0) fd_free(curr, mfd);
+        else vfs_close(mf);
+        vfs_close(sf);
+        return SYSCALL_EMFILE;
+    }
+    if (flags & VFS_O_CLOEXEC) {
+        curr->fd_flags[mfd] = FD_FLAG_CLOEXEC;
+        curr->fd_flags[sfd] = FD_FLAG_CLOEXEC;
+    }
+    int fds[2] = {mfd, sfd};
+    memcpy((void *)user_fds, fds, sizeof(fds));
+    return SYSCALL_SUCCESS;
+}
+
 static int64_t sys_close(int fd) {
     if (fd < 0 || fd >= MAX_PROCESS_FDS) {
         return SYSCALL_EBADF;
@@ -846,6 +940,15 @@ static int64_t sys_fcntl(int fd, int cmd, uint64_t arg) {
                 return SYSCALL_EINVAL;
             }
             curr->fd_flags[fd] = (uint8_t)arg;
+            return SYSCALL_SUCCESS;
+
+        case F_GETFL:
+            return (int64_t)curr->fd_table[fd]->flags;
+
+        case F_SETFL:
+            if (curr->fd_table[fd]->exclusive_owner) return SYSCALL_EPERM;
+            curr->fd_table[fd]->flags = (curr->fd_table[fd]->flags & ~VFS_O_NONBLOCK) |
+                                        ((uint32_t)arg & VFS_O_NONBLOCK);
             return SYSCALL_SUCCESS;
 
         case F_DUPFD:
@@ -1398,12 +1501,23 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         case SYS_TERMCTL:
             result = sys_termctl(frame->rdi, frame->rsi, frame->rdx);
             break;
-        case SYS_TCSETPGRP:
-            result=input_tcsetpgrp(frame->rdi,frame->rsi);
+        case SYS_TCSETPGRP: {
+            tcb_t *curr = thread_current();
+            file_t *f = curr && frame->rdi < MAX_PROCESS_FDS ? fd_get(curr, (int)frame->rdi) : NULL;
+            if (f && is_pty_slave(f->node)) result = pty_tcsetpgrp(f->node, frame->rsi);
+            else result = input_tcsetpgrp(frame->rdi, frame->rsi);
             break;
-        case SYS_TCGETPGRP:
-            result=input_tcgetpgrp(frame->rdi);
+        }
+        case SYS_TCGETPGRP: {
+            tcb_t *curr = thread_current();
+            file_t *f = curr && frame->rdi < MAX_PROCESS_FDS ? fd_get(curr, (int)frame->rdi) : NULL;
+            if (f && is_pty_slave(f->node)) {
+                int64_t pgid = 0;
+                int64_t r = pty_tcgetpgrp(f->node, &pgid);
+                result = r ? r : pgid;
+            } else result = input_tcgetpgrp(frame->rdi);
             break;
+        }
         case SYS_TERMATTR:
             result=sys_termattr(frame->rdi,frame->rsi,frame->rdx,frame->r10);
             break;
@@ -1750,6 +1864,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_PIPE:
             result = sys_pipe(frame->rdi, (uint32_t)frame->rsi);
+            break;
+
+        case SYS_PTY_PAIR:
+            result = sys_pty_pair(frame->rdi, (uint32_t)frame->rsi);
             break;
 
         case SYS_MOUNTINFO:

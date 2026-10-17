@@ -1067,7 +1067,7 @@ int64_t vfs_read(file_t *file, void *buf, size_t count) {
     }
 
     if (file->node->is_stream) {
-        return file->node->read ? file->node->read(file->node, 0, buf, count) : -VFS_EBADF;
+        return file->node->read ? file->node->read(file->node, (uint64_t)file->flags, buf, count) : -VFS_EBADF;
     }
 
     if (file->node->read_offset)
@@ -1127,8 +1127,8 @@ int64_t vfs_write(file_t *file, const void *buf, size_t count) {
 
     if (file->node->write) {
         if (file->node->is_stream) {
-            uint64_t stream_off = 0;
-            return file->node->write(file->node, &stream_off, false, buf, count);
+            uint64_t stream_flags = (uint64_t)file->flags;
+            return file->node->write(file->node, &stream_flags, false, buf, count);
         }
         bool append = (file->flags & VFS_O_APPEND) != 0;
         if (file->node->serializes_write_offset) {
