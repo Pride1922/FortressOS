@@ -403,6 +403,29 @@ def run_ssh_qemu(firmware="bios", smp=1):
             assert "password_auth_success" in pass_res.stdout, f"Missing password auth success marker: {pass_res.stdout}"
             print("  [PASS] OpenSSH client authenticated successfully via password.", flush=True)
 
+            # PuTTY pipelines NEWKEYS and the encrypted ssh-userauth request.
+            # This used to strand the request in the worker's receive buffer.
+            plink = os.environ.get("PLINK") or shutil.which("plink")
+            if plink:
+                password_file = tmp_dir / "plink-password"
+                password_file.write_text(TEST_PASSWORD + "\n")
+                password_file.chmod(0o600)
+                try:
+                    plink_res = subprocess.run([
+                        str(plink), "-v", "-ssh", "-batch", "-noagent", "-x", "-a", "-T",
+                        "-hostkey", expected_host_fp, "-pwfile", str(password_file),
+                        "-P", str(host_port), "operator@127.0.0.1",
+                        "echo putty_auth_success"
+                    ], capture_output=True, text=True, timeout=20)
+                    assert plink_res.returncode == 0, (
+                        f"PuTTY failed: {plink_res.stdout}\n{plink_res.stderr}")
+                    assert "putty_auth_success" in plink_res.stdout, plink_res.stdout
+                    print("  [PASS] PuTTY password authentication and remote command (pinned host key).", flush=True)
+                finally:
+                    password_file.unlink(missing_ok=True)
+            else:
+                print("  [SKIP] PuTTY interop: install plink or set PLINK to its executable.", flush=True)
+
             # 7. Gate: Interactive PTY Terminal Session
             print("  [9] Testing interactive PTY session duplex I/O...", flush=True)
             pty_cmd = [

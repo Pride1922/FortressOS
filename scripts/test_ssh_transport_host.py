@@ -51,6 +51,15 @@ def main():
 
     print("PASS: SSH transport engine, sshbuf, chacha20-poly1305, and KEX gates verified under ASan/UBSan")
 
+    # Include the actual daemon receive helper; discard unrelated daemon entry
+    # points so this adapter only mocks the socket syscall, not packet handling.
+    worker_exe = BUILD / 'worker-receive-test'
+    run(common + flags + ['-Iuser/tools', '-Isrc/fs',
+        '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections',
+        'tests/ssh_worker_receive_host.c', *sshd_units, 'user/sshd/auth.c',
+        *crypto_wrappers, 'src/lib/root_digest.c', *objs, '-o', worker_exe])
+    run([worker_exe])
+
     # Run live OpenSSH client interoperability test if ssh is installed
     test_live_openssh_interop()
 

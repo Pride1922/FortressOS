@@ -56,6 +56,25 @@ static void sshd_write_err(const char *msg) {
 
 
 static volatile int g_terminate = 0;
+
+/* Drain buffered packets before reading again: NEWKEYS and the first encrypted
+ * service request can arrive in the same TCP read (for example from PuTTY). */
+static int sshd_receive_packet(ssh_transport_t *transport, int client_fd,
+                               uint8_t *rx_buf, size_t rx_cap, uint8_t *ptype,
+                               const uint8_t **payload, size_t *plen) {
+    while (!g_terminate) {
+        int rc = ssh_transport_get_packet(transport, ptype, payload, plen);
+        if (rc != SSH_ERR_AGAIN) return rc;
+
+        long n = SSHD_SYSCALL(SYS_RECV, (uintptr_t)client_fd,
+                              (uintptr_t)rx_buf, rx_cap, 0, 0, 0);
+        if (n <= 0) return SSH_ERR_DISCONNECT;
+        rc = ssh_transport_feed_input(transport, rx_buf, (size_t)n);
+        if (rc != SSH_ERR_SUCCESS) return rc;
+    }
+    return SSH_ERR_DISCONNECT;
+}
+
 static void on_sigterm(int sig) {
     (void)sig;
     g_terminate = 1;
@@ -281,40 +300,35 @@ static __attribute__((noinline)) int sshd_worker_run(int session_id, int client_
     sshbuf_init(&auth_reply, 256, 4096);
 
     while (!authenticated && !g_terminate) {
-        long n = SSHD_SYSCALL(SYS_RECV, (uintptr_t)client_fd, (uintptr_t)rx_buf, sizeof(rx_buf), 0, 0, 0);
-        if (n <= 0) break;
-        (void)ssh_transport_feed_input(&transport, rx_buf, (size_t)n);
+        uint8_t ptype = 0;
+        const uint8_t *payload = NULL;
+        size_t plen = 0;
+        int r = sshd_receive_packet(&transport, client_fd, rx_buf, sizeof(rx_buf),
+                                    &ptype, &payload, &plen);
+        if (r != 0) break;
 
-        for (;;) {
-            uint8_t ptype = 0;
-            const uint8_t *payload = NULL;
-            size_t plen = 0;
-            int r = ssh_transport_get_packet(&transport, &ptype, &payload, &plen);
-            if (r != 0) break;
-
-            sshbuf_reset(&auth_reply);
-            if (ptype == SSH_MSG_SERVICE_REQUEST) {
-                (void)auth_process_service_request(&auth_ctx, payload, plen, &auth_reply);
-            } else if (ptype == SSH_MSG_USERAUTH_REQUEST) {
-                (void)auth_process_request(&auth_ctx, payload, plen, &auth_reply);
-                if (auth_ctx.authenticated) {
-                    authenticated = true;
-                }
+        sshbuf_reset(&auth_reply);
+        if (ptype == SSH_MSG_SERVICE_REQUEST) {
+            (void)auth_process_service_request(&auth_ctx, payload, plen, &auth_reply);
+        } else if (ptype == SSH_MSG_USERAUTH_REQUEST) {
+            (void)auth_process_request(&auth_ctx, payload, plen, &auth_reply);
+            if (auth_ctx.authenticated) {
+                authenticated = true;
             }
-
-            if (sshbuf_len(&auth_reply) > 0) {
-                uint8_t resp_type = 0;
-                (void)sshbuf_get_u8(&auth_reply, &resp_type);
-                sshbuf_t out_wire;
-                sshbuf_init(&out_wire, 256, 4096);
-                (void)ssh_transport_send_packet(&transport, resp_type,
-                                               sshbuf_ptr(&auth_reply), sshbuf_len(&auth_reply),
-                                               &out_wire);
-                (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)sshbuf_ptr(&out_wire), sshbuf_len(&out_wire), 0, 0, 0);
-                sshbuf_free(&out_wire);
-            }
-            if (authenticated) break;
         }
+
+        if (sshbuf_len(&auth_reply) > 0) {
+            uint8_t resp_type = 0;
+            (void)sshbuf_get_u8(&auth_reply, &resp_type);
+            sshbuf_t out_wire;
+            sshbuf_init(&out_wire, 256, 4096);
+            (void)ssh_transport_send_packet(&transport, resp_type,
+                                           sshbuf_ptr(&auth_reply), sshbuf_len(&auth_reply),
+                                           &out_wire);
+            (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)sshbuf_ptr(&out_wire), sshbuf_len(&out_wire), 0, 0, 0);
+            sshbuf_free(&out_wire);
+        }
+        if (authenticated) break;
     }
     sshbuf_free(&auth_reply);
 

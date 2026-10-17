@@ -4,6 +4,11 @@
 
 This document serves as the comprehensive architectural specification, contract reference, and configuration schema for the FortressOS SSH subsystem.
 
+The authentication receive path drains packets buffered alongside NEWKEYS before
+reading again, fixing PuTTY's pre-password stall. Actual-worker sanitizer coverage
+and BIOS/UEFI OpenSSH plus PuTTY acceptance are recorded in the
+[PuTTY interoperability evidence](../roadmap/ssh-putty-interop.md).
+
 ---
 
 ## 1. Overview & Security Architecture
