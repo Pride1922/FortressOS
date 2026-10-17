@@ -31,6 +31,7 @@ static bool syscall_actor(creds_t *out);
 #include "usb_mount.h"
 #include "installed_root.h"
 #include "accounts.h"
+#include "random.h"
 #include "install_control.h"
 #include "xhci.h"
 #include "dmesg.h"
@@ -1444,6 +1445,9 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             result=current && syscall_actor(&actor) ? accounts_control(frame->rdi,frame->rsi,frame->rdx,&actor,current->tid) : SYSCALL_ESRCH;
             break;
         }
+        case SYS_GETRANDOM:
+            result=random_user(frame->rdi,frame->rsi,frame->rdx);
+            break;
         case SYS_INSTALLSEED: {
             creds_t actor;
             result=syscall_actor(&actor) ? accounts_seed(frame->rdi,frame->rsi,&actor) : SYSCALL_ESRCH;

@@ -93,6 +93,8 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-crypto-host` / `make test-crypto` | Phase 2 candidate: Monocypher 4.0.3 + unchanged existing SHA-256, actual-code RFC vectors/negative cases/wipe hooks under ASan/UBSan, independent differential tests; isolated disk-free BIOS/UEFI SMP=1 present/absent entropy. Functional tests pass; host stack gate deliberately fails the unapproved >1 KiB verifier frame. No probe in release media; [status, inherited wipe finding and evidence](docs/subsystems/crypto.md). |
+| `make test-random-host` / `make test-getrandom` | SSH Phase 1: actual HMAC-SHA-256 DRBG/service ASan/UBSan, NIST CAVP and independent Python vectors, bounded stalled/absent/stuck source, argument/pointer/output invariants, exhaustion and eight-thread distinctness. Disk-free BIOS/UEFI × SMP=1/4/8 hardware-present/absent plus RDRAND-only SMP=4; ordinary unpinned Ring 3 workers. See [random service contract and evidence](docs/roadmap/ssh-phase1-random.md). QEMU does not assess physical source quality. |
 | `make test-root-phase4-host` / `make test-root-phase4 INSTALLER_MEDIA=...` | Phase 4 installer host gates and BIOS/UEFI 70/70 install/boot/recovery/exclusion/timeout cases pass at 384/512 MiB with blank raw USB targets, unchanged sources/non-targets/live media and Linux audits. BIOS USB uses xHCI; UEFI uses EHCI due the xHCI preboot fixture stall. Dell interface-only preview passes. Physical write access remains disabled; [contracts](docs/plans/PERSISTENT_ROOT_PHASE4.md), [evidence](docs/roadmap/persistent-root-phase4.md), [Phase 5 identity-only preparation](docs/plans/PERSISTENT_ROOT_PHASE5.md). |
 | `make test-account-redo-host` / `make test-accounts-persistent-host` / `make test-accounts-persistent` | Phase 3 actual redo engine and EXT4/account-service sanitizers: 2586 byte-engine interruption/corruption cases; 860 mounted flush-cut restarts at 512/4096 sectors, write/flush/OOM/ENOSPC, writer ownership/death, shadow secrecy and stale decisions. Complete gate 966/966 PASS, including 94 BIOS/UEFI cases at SMP=1/4/8 with password/account/home/configuration/history persistence, authenticated recovery, live absent/unusable storage and unchanged live image hashes. Disposable NVMe only; no account-specific sector-tear, Ring 3 AP update, installer or physical claim. [Contracts](docs/plans/PERSISTENT_ROOT_PHASE3.md), [evidence](docs/roadmap/persistent-root-phase3.md). |
 | `make test-root-phase1-host` / `make test-root-phase1` | Persistent executable snapshots and boot-only root plumbing: actual EXT4/VFS/ELF sanitizer adapters (512/4096 sectors); isolated BIOS/UEFI NVMe-only frozen-root fixtures at SMP=1/4/8, login/shell/sudo, short-read/OOM adapters, pinned saturation, 1100-node churn and 100 supervisor spawn/exit cycles with reclamation checks. Readonly account consumers and temporary runtime homes remain intact; no production installed-root/installer/physical claim. [Evidence](docs/roadmap/persistent-root-phase1.md). |
@@ -377,6 +379,14 @@ FortressOS/
 ## 7. How to Add
 
 ### 7.1 A syscall
+
+Additive randomness ABI: `SYS_GETRANDOM = 77`, `(writable_buffer, length, flags)`;
+length 1–256, flags must be zero, no capability required. Returns exact length,
+`EINVAL` before `EFAULT` before source `EIO`; DRBG exhaustion is `EAGAIN`.
+No partial output, sleeps or weak fallback. See `random.h` and the Phase 1 report.
+Its private `random_lock` is ordinary Rank 1, disjoint from every other lock;
+only bounded hardware instructions and DRBG work execute under it. User copies
+and diagnostic output occur outside exclusion. No scheduling or I/O under it.
 
 Canonical examples: `SYS_STAT` in [syscall.c](src/kernel/syscall.c); blocking `SYS_READ` in [input.c](src/drivers/input.c).
 

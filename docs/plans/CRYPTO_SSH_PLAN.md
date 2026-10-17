@@ -118,6 +118,14 @@ network data, usernames, public keys, terminal requests and file paths as hostil
 
 ### Phase 1 — secure randomness prerequisite
 
+**COMPLETE (2026-10-17):** actual-code host sanitizers/vectors/concurrency and
+14/14 disk-free BIOS/UEFI boots pass; no physical entropy assessment claimed.
+Implementation: `SYS_GETRANDOM` 77 and independent global HMAC-SHA-256 DRBG.
+The explicit Phase 1 request supersedes Phase 0's provisional SHA-512,
+continue-after-reseed-failure and nonzero-flags proposals. Fresh hardware reseed
+is mandatory before every request; failures latch unavailable until reboot.
+Contract, acceptance status and exact evidence: [Phase 1 report](../roadmap/ssh-phase1-random.md).
+
 Design a bounded strong-random service with explicit readiness and error
 behavior, reviewed hardware-source policy and a vetted DRBG/reseed design.
 Document hardware-source trust and limits; instruction success alone is not
@@ -137,6 +145,12 @@ failure; BIOS/UEFI SMP=1/4/8 readiness/lifecycle tests. QEMU entropy does not
 establish physical source quality.
 
 ### Phase 2 — cryptographic library (#50)
+
+Implementation and functional gates are present (2026-10-17), but **Phase 2 is
+not yet complete**: unchanged Monocypher 4.0.3's verifier exceeds the requested
+<1 KiB per-function stack bound (1,104 bytes measured), and upstream optional
+signing hash scratch lacks an explicit wipe. No exception/patch is silently
+assumed. See [crypto integration status and evidence](../subsystems/crypto.md).
 
 Provide streaming SHA-256/SHA-512, HMAC-SHA-256, Ed25519 key generation/sign/
 verify, X25519, ChaCha20, Poly1305 and RFC 8439 AEAD through small checked APIs.

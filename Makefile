@@ -156,7 +156,7 @@ BOOTABLE_IMG := $(BIN_DIR)/fortress.img
 
 
 # Source files
-C_SRCS   := $(shell find $(SRC_DIR) -type f -name '*.c')
+C_SRCS   := $(filter-out src/lib/crypto/%,$(shell find $(SRC_DIR) -type f -name '*.c'))
 ASM_SRCS := $(shell find $(SRC_DIR) -type f -name '*.asm')
 
 # Object files
@@ -213,6 +213,7 @@ test-root-phase2:
 .PHONY: all clean distclean run run-bios run-img run-img-bios run-img-usb debug limine-setup ovmf-setup iso img nvme-disk nvme-gpt-disk nvme-raw-disk
 
 all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
+include src/lib/crypto/crypto.mk
 
 # C_SRCS/OBJS above automatically include src/fs/pipe.c.
 .PHONY: test-s8-process-host test-s8-process
@@ -775,7 +776,27 @@ CHECKSUM_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(CHECKSUM_TOOL
 USER_TAR_ELF := $(BUILD_DIR)/tool-tar.elf
 USER_TRACEROUTE_ELF := $(BUILD_DIR)/traceroute.elf
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
-$(INITRAMFS_TAR): $(LOGIN_ELFS) stage-user-database scripts/stage_user_database.py
+ifeq ($(CRYPTO_TEST_PROBE),1)
+$(INITRAMFS_TAR): $(BUILD_DIR)/crypto-probe.elf
+endif
+
+$(BUILD_DIR)/getrandom-probe.elf: user/tools/getrandom-probe.c user/tools/common.h src/include/syscall_abi.h $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $(BUILD_DIR)/getrandom-probe.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=getrandom_probe_main user/tools/start.asm -o $(BUILD_DIR)/getrandom-probe-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/getrandom-probe-start.o $(BUILD_DIR)/getrandom-probe.o $(BUILD_DIR)/tool-common.o -o $@
+
+$(INITRAMFS_TAR): $(BUILD_DIR)/getrandom-probe.elf
+
+.PHONY: test-random-host test-getrandom
+test-random-host:
+	@mkdir -p build
+	@gcc -std=c11 -Wall -Wextra -Werror -O1 -g -no-pie -DTEST_SMP_MEMORY -DRANDOM_HOST_TEST -pthread -fsanitize=address,undefined -Isrc/include -Isrc/mm -Isrc/lib tests/random_host.c src/lib/hmac_drbg.c src/lib/root_digest.c -o build/random_host
+	@build/random_host
+	@python3 scripts/test_random_reference.py
+
+test-getrandom: $(BOOTABLE_ISO)
+	@python3 scripts/test_getrandom.py
+$(INITRAMFS_TAR): $(LOGIN_ELFS) stage-user-database scripts/stage_user_database.py src/lib/crypto/LICENCE.md
 
 $(BUILD_DIR)/tool-common.o: user/tools/common.c user/tools/common.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
@@ -1084,6 +1105,9 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
 	@cp -f $(USER_NANO_ELF) $(BUILD_DIR)/initramfs/bin/nano
 	@$(foreach tool,$(USER_STREAM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
+	@cp -f $(BUILD_DIR)/getrandom-probe.elf $(BUILD_DIR)/initramfs/bin/getrandom-probe
+	@cp -f src/lib/crypto/LICENCE.md $(BUILD_DIR)/initramfs/docs/monocypher-licence.txt
+	@if [ "$(CRYPTO_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/crypto-probe.elf $(BUILD_DIR)/initramfs/bin/crypto-probe; else rm -f $(BUILD_DIR)/initramfs/bin/crypto-probe; fi
 	@$(foreach tool,$(SBIN_STREAM_TOOLS) disk,cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
 	@cp -f $(USER_DISK_ELF) $(BUILD_DIR)/initramfs/bin/df
 	@cp -f $(USER_DISK_ELF) $(BUILD_DIR)/initramfs/bin/disk

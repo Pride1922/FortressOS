@@ -1838,3 +1838,11 @@ authentication cache.
 
 Examples: `sudo id`, `sudo cat /etc/shadow`, `sudo ifup /etc/network.conf`, `sudo poweroff`.
 Plain `cat /etc/shadow` is denied. USB filesystem mounts ignore set-ID bits.
+
+## Randomness diagnostic
+
+`/bin/getrandom-probe [--worker|--workers|--unavailable]` checks the public
+`SYS_GETRANDOM` ABI. Default prints two fresh 32-byte samples after checking
+the 256-byte limit and invalid buffers. `--workers` spawns eight ordinary
+unpinned workers and checks their exits; `--unavailable` expects fail-closed
+hardware absence. Samples are public diagnostic output, never key material.

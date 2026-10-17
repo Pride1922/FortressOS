@@ -59,6 +59,10 @@ static void sha_block(digest_t *ctx) {
     }
     ctx->state[0]+=a; ctx->state[1]+=b; ctx->state[2]+=c; ctx->state[3]+=d;
     ctx->state[4]+=e; ctx->state[5]+=f; ctx->state[6]+=g; ctx->state[7]+=h;
+    /* SHA-256 now also conditions secret DRBG material. Do not retain its
+     * expanded message schedule in stack memory after compression. */
+    volatile uint32_t *wipe=w;
+    for (unsigned i=0;i<64;i++) wipe[i]=0;
 }
 static void compress(digest_t *ctx) {
     if (ctx->kind == DIGEST_MD5) md5_block(ctx); else sha_block(ctx);

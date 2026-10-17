@@ -8,6 +8,7 @@
 #include "pmm.h"
 #include "string.h"
 #include "boot_info.h"
+#include "random.h"
 #include "vmm.h"
 #include "heap.h"
 #include "pic.h"
@@ -5900,6 +5901,9 @@ pf_boot_guard_done:
     }
     rtc_init(century_reg);
     time_init();
+    random_init(&boot_info, time_get_epoch_seconds());
+    serial_puts(random_ready() ? "[RANDOM] hardware-seeded HMAC-DRBG ready\n" :
+                               "[RANDOM] unavailable; strong randomness fails closed\n");
 
     /* =========================================================================
      * Phase 6 (Checkpoint 1): Cooperative Multitasking Suite

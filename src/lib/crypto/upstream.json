@@ -1,0 +1,15 @@
+{
+  "version": "4.0.3",
+  "archive_url": "https://monocypher.org/download/monocypher-4.0.3.tar.gz",
+  "archive_sha256": "8cc9bc341a66249016db9bd70e9142d8d0aef9945973744b1ac05dbc55d8ee66",
+  "files": {
+    "src/lib/crypto/upstream/src/monocypher.c": "57eb914fc88136119bd41655cccb8c250048bf54d470540625186f8ab16f64be",
+    "src/lib/crypto/upstream/src/monocypher.h": "c494da712122da7ff679fdcf318a5317e84972b6c950fe9d896212947797facd",
+    "src/lib/crypto/upstream/src/optional/monocypher-ed25519.c": "60fce3578fb00b00da96490653d993c4cb427b1e1be38183285c66e04d22cc18",
+    "src/lib/crypto/upstream/src/optional/monocypher-ed25519.h": "abc4fad381879f5c29176ebe014b9189956b3dfe0a3e36459b6990bc57212380",
+    "src/lib/crypto/LICENCE.md": "5f8360e4c06ddcc584bdb4b210c6af824c4bb301e6a9a521869b6d90795ca4b3",
+    "src/lib/crypto/upstream/README.md": "b487940302e1aec09753b8e7c9ea7f199dc7abe134d3a653148a0294e73c143f"
+  },
+  "commit": "ab2b16dd619ad5f6979a4fbe69cfa324a6fcc35f",
+  "license_choice": "BSD-2-Clause (verbatim dual license retained)"
+}

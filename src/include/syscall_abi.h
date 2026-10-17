@@ -82,6 +82,8 @@
 #define SYS_CLOCK_GETTIME 74 /* (uint32_t clk_id, timespec_t *ts) -> 0/-errno */
 #define SYS_NANOSLEEP     75 /* (const timespec_t *req, timespec_t *rem) -> 0/-errno */
 #define SYS_TIMES         76 /* (int64_t pid, tms_t *buf) -> 0/-errno */
+#define SYS_GETRANDOM     77 /* (void *buf, size_t len, uint64_t flags=0) -> len/-errno */
+#define MAX_GETRANDOM_LEN 256u
 
 /* Clock identifiers */
 #define CLOCK_REALTIME           0

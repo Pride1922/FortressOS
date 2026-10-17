@@ -12,3 +12,4 @@ This directory holds the per-subsystem architecture annexes, status logs, hardwa
 | **Shell & Userland** | Shell S0–S9 (pipes, signals, jobs, variables, builtins, `/bin/top`, `/bin/ps`, `/bin/sysinfo`), input/layout | [`shell.md`](shell.md) |
 | **Multi-Core (SMP)** | Distributed scheduler, work-stealing, IPI shootdown, per-CPU state, concurrent PMM/VMM safety | [`smp.md`](smp.md) |
 | **Platform & Power** | ACPI S5 shutdown/reset, PCI ECAM, LAPIC NMI transitions, boot console diagnostics | [`platform.md`](platform.md) |
+| **Cryptography** | Phase 2 primitive library candidate; RFC/guest functional gates pass, strict stack and upstream temporary-erasure decisions pending | [`crypto.md`](crypto.md) |
