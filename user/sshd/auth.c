@@ -245,14 +245,14 @@ int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len
         size_t algo_len = 0;
         if (sshbuf_get_string_ptr(&in, &algo_ptr, &algo_len) != 0) return SSH_ERR_INVALID_FORMAT;
         if (algo_len != 11 || memcmp(algo_ptr, "ssh-ed25519", 11) != 0) {
-            ctx->attempts++;
+            if (has_sig) ctx->attempts++;
             return build_auth_failure(out_reply);
         }
 
         const uint8_t *pk_blob = NULL;
         size_t pk_blob_len = 0;
         if (sshbuf_get_string_ptr(&in, &pk_blob, &pk_blob_len) != 0 || pk_blob_len != 51) {
-            ctx->attempts++;
+            if (has_sig) ctx->attempts++;
             return build_auth_failure(out_reply);
         }
 
@@ -260,16 +260,17 @@ int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len
         uint32_t len1 = ((uint32_t)pk_blob[0] << 24) | ((uint32_t)pk_blob[1] << 16) |
                         ((uint32_t)pk_blob[2] << 8) | pk_blob[3];
         if (len1 != 11 || memcmp(pk_blob + 4, "ssh-ed25519", 11) != 0) {
-            ctx->attempts++;
+            if (has_sig) ctx->attempts++;
             return build_auth_failure(out_reply);
         }
         uint32_t len2 = ((uint32_t)pk_blob[15] << 24) | ((uint32_t)pk_blob[16] << 16) |
                         ((uint32_t)pk_blob[17] << 8) | pk_blob[18];
         if (len2 != 32) {
-            ctx->attempts++;
+            if (has_sig) ctx->attempts++;
             return build_auth_failure(out_reply);
         }
         const uint8_t *pubkey = pk_blob + 19;
+
 
         /* Probe check: client asks if key is acceptable */
         if (!has_sig) {
@@ -385,6 +386,5 @@ int auth_process_request(ssh_auth_ctx_t *ctx, const uint8_t *payload, size_t len
     }
 
     /* Unsupported method */
-    ctx->attempts++;
     return build_auth_failure(out_reply);
 }
