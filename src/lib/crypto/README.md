@@ -46,13 +46,13 @@ output on failure. X25519 rejects zero DH output. Ed25519 verification adds
 canonical y encodings and low-order A/R rejection before the upstream cofactored
 RFC8032 equation. Full prime-subgroup membership validation is not claimed.
 
-The strict per-function stack gate is currently **pending the requested limit
-decision**: GCC reports 1,104 bytes for unchanged upstream
-`mono_crypto_eddsa_check_equation`, exceeding the requested <1,024-byte limit.
-All other reachable frames are below 1 KiB. A conservative generated call-graph
-sum is 1,880 bytes at `crypto_ed25519_verify` (library only, excluding caller and
-OS syscall/interrupt stacks). `test-crypto-host` deliberately fails this gate
-until the requirement is resolved; passing vectors do not override it.
+On 2026-10-17 the user explicitly authorized a verifier-only stack exception:
+GCC reports 1,104 bytes for unchanged `mono_crypto_eddsa_check_equation`,
+checked against a 1,280-byte ceiling. All other reachable frames must remain
+strictly below 1 KiB. The passing host gate enforces both rules. Conservative
+generated call-graph sums are 1,848 bytes for `crypto_ed25519_verify` and 1,272
+bytes for `crypto_ed25519_sign` (library only, excluding application and OS
+syscall/interrupt stacks). Cumulative use is distinct from per-function frames.
 
 Security properties are upstream claims, not independently re-proved/audited by
 FortressOS. Source and optimized scalar code receive a bounded integration review;
@@ -65,12 +65,18 @@ residue, physical RAM erasure and malicious callers in the same address space
 are not solved by this library. Caller owns output key lifetimes and nonce
 uniqueness. Wrappers wipe owned RAM scratch; upstream owns its internal wiping.
 Source-review finding: optional upstream `hash_reduce()` does not explicitly
-wipe its local 64-byte `hash` after scalar reduction. During signing this holds
-the nonce hash before reduction. Wrapping the high-level signer cannot erase
-that callee's scratch. The vendor code is retained unchanged as requested;
-wrapper wipe-hook tests do not establish complete upstream-stack erasure.
-This finding must be resolved or explicitly accepted before claiming that all
-secret temporary state is wiped. No silent upstream patch is applied.
+wipe its local 64-byte hash, which holds the nonce precursor during signing.
+The user authorized wrapper-owned signing hash glue on 2026-10-17. `curve.c`
+now owns the RFC8032 section 5.1.6 hash/reduction/signature sequence, following
+the upstream optional signer's sequence under the included BSD-2-Clause license.
+It uses unmodified Monocypher SHA-512, scalar trimming/reduction, scalarbase
+and multiply-add primitives, with no new curve arithmetic. Owned hash buffers,
+SHA context, expanded secret/prefix, nonce/challenge scalars and staged signature
+are explicitly wiped. Verification reuses the erasing hash helper and upstream
+check equation. The partial-link audit rejects retention of the old high-level
+signer/checker or unwiped hash helper. Tests assert signing scratch wipes and
+exact RFC/differential output. This resolves the identified nonce-hash buffer
+gap without claiming complete compiler-register or upstream-stack erasure.
 
 Tests: `make test-crypto-host`, `make test-crypto`. The latter builds an isolated
 source copy and test-only `/bin/crypto-probe`; normal release initramfs/ISO/IMG

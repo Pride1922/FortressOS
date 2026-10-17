@@ -6,11 +6,11 @@
 #include "syscall_abi.h"
 #include "crypto_vectors.h"
 
-static size_t wipes,seed_wipes,entropy_calls;
+static size_t wipes,seed_wipes,entropy_calls,hash_wipes;
 static int64_t entropy_result=32;
 void crypto_test_wiped(const void *p,size_t n) {
     for(size_t i=0;i<n;i++) assert(!((const uint8_t *)p)[i]);
-    wipes++; if(n==32) seed_wipes++;
+    wipes++; if(n==32) seed_wipes++; if(n==64) hash_wipes++;
 }
 int64_t crypto_test_getrandom(void *out,size_t n,uint64_t flags) {
     assert(n==32 && !flags); entropy_calls++;
@@ -67,7 +67,10 @@ static void ed_vectors_test(void) {
         uint8_t pk[32],sk[64],sig[64],bad[64],msg[1024];
         assert(!crypto_ed25519_from_seed(v->seed,pk,sk));assert(!memcmp(pk,v->pk,32));
         assert(!memcmp(sk,v->seed,32));assert(!memcmp(sk+32,pk,32));
+        size_t before_hash=hash_wipes;
         assert(!crypto_ed25519_sign(sig,sk,v->msg,v->n));assert(!memcmp(sig,v->sig,64));
+        /* Two hash/reduction buffers, expanded scalar/prefix and staged result. */
+        assert(hash_wipes>=before_hash+4);
         assert(!crypto_ed25519_verify(sig,pk,v->msg,v->n));
         for(unsigned j=0;j<64;j++) {
             memcpy(bad,sig,64); bad[j]^=1; assert(crypto_ed25519_verify(bad,pk,v->msg,v->n)<0);

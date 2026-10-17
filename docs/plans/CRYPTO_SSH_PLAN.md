@@ -146,11 +146,16 @@ establish physical source quality.
 
 ### Phase 2 — cryptographic library (#50)
 
-Implementation and functional gates are present (2026-10-17), but **Phase 2 is
-not yet complete**: unchanged Monocypher 4.0.3's verifier exceeds the requested
-<1 KiB per-function stack bound (1,104 bytes measured), and upstream optional
-signing hash scratch lacks an explicit wipe. No exception/patch is silently
-assumed. See [crypto integration status and evidence](../subsystems/crypto.md).
+**COMPLETE (2026-10-17, with explicitly approved verifier stack exception):**
+actual-code ASan/UBSan RFC/negative/wipe gates, 96 independent differential
+cases, the approved stack audit and four BIOS/UEFI ready/absent guest boots pass.
+
+The user authorized the unchanged Monocypher verifier's measured stack exception
+(1,104 bytes, 1,280-byte ceiling) and wrapper-owned signing hash glue on
+2026-10-17. All other frames remain below 1 KiB. The new glue erases the nonce
+hash and secret scratch while using unmodified upstream scalar/SHA-512
+primitives; no vendor patch or new curve arithmetic. See
+[crypto integration status and evidence](../subsystems/crypto.md).
 
 Provide streaming SHA-256/SHA-512, HMAC-SHA-256, Ed25519 key generation/sign/
 verify, X25519, ChaCha20, Poly1305 and RFC 8439 AEAD through small checked APIs.

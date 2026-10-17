@@ -1,15 +1,23 @@
 # Cryptographic primitives — SSH Phase 2 / #50
 
-Implementation and functional tests are present. **Closure is pending the strict
-stack-limit decision**: unchanged Monocypher's verifier has a measured 1,104-byte
-frame, over the task's <1 KiB bound. It was proposed to allow only this verifier
-exception with a 1,280-byte ceiling; that exception is not yet authorized.
-The automated host target intentionally reports failure for this limit.
-An additional source-review finding remains: upstream optional `hash_reduce()`
-does not explicitly erase its 64-byte local hash, including the signing nonce
-hash before scalar reduction. High-level wrappers cannot erase callee scratch.
-The vendor source is unpatched; wipe observers cover wrapper-owned storage,
-not complete upstream-stack erasure. A full temporary-erasure claim is withheld.
+**COMPLETE — 2026-10-17**, under the explicitly approved verifier stack exception.
+
+The user authorized the measured verifier exception and wrapper-owned signing
+hash glue on 2026-10-17. The unchanged upstream verifier's 1,104-byte frame is
+checked against a specific 1,280-byte ceiling; every other reachable frame keeps
+the strict <1 KiB limit. The host gate now passes these explicit requirements.
+The conservative library call-chain bound is 1,848 bytes for verification and
+1,272 bytes for signing, excluding the application and kernel stacks.
+
+The upstream optional `hash_reduce()` does not explicitly erase its 64-byte
+hash, including the signing nonce precursor. Instead of modifying upstream,
+FortressOS now owns the RFC8032 signing hash/reduction sequence and erases those
+buffers, the expanded scalar/prefix, nonce scalar and staged signature. Curve,
+scalar reduction, scalar multiplication and SHA-512 primitives remain unmodified
+Monocypher. Verification shares the erasing hash helper. The partial-link audit
+rejects a release library retaining the old high-level signer/checker or unwiped
+hash helper. Wipe observers establish erasure of owned buffers; complete
+upstream-stack/register erasure is not claimed.
 
 ## Dependency and interfaces
 
@@ -78,7 +86,8 @@ Evidence root: `.codex-remote-attachments/crypto-phase2/`.
   `archive-git-comparison.json` records exact release-vs-Git reconciliation.
 - `stack.json`: reachable per-function `.su` reports, bounded outgoing argument
   stack areas, conservative direct call/tailcall graph sums. Only the unmodified
-  verifier exceeds 1 KiB. `library.disassembly.txt` records supported GCC scalar
+  verifier exceeds 1 KiB, within the user-authorized 1,280-byte exception.
+  `library.disassembly.txt` records supported GCC scalar
   optimized instructions. No dynamic/unbounded stack, SIMD, writable global or
   allocation is part of the public archive. Unused upstream algorithms are
   removed by the partial linker.
@@ -97,6 +106,21 @@ Evidence root: `.codex-remote-attachments/crypto-phase2/`.
   Existing digest/DRBG/installer-seed/TCP/time/syscall sources are byte-identical
   to `before.json`. No protected production code or existing SHA-256 is changed
   by Phase 2.
+
+The original candidate evidence above remains in `crypto-phase2/`, including
+the former strict stack failure. Resolution evidence is retained separately in
+`.codex-remote-attachments/crypto-phase2-resolved/`: `host.log` contains the
+passing sanitizer/RFC/negative suite, explicit signing-buffer wipe assertions
+and 96 independent differential cases; `stack.json` records the exception,
+measured frames and call-chain bounds with zero violations. The audit confirms
+the old upstream signing/hash path is absent from the reachable library.
+`regression-host.log` records current time, credential-syscall and randomness
+host regression passes. `qemu.log` records the new **4/4** BIOS/UEFI ready/absent
+boots from `crypto-qemu-20261017-072451`, including RFC signatures from the new
+glue, fresh random keygen, fail-closed keygen, getrandom and sha256sum checks.
+`release.json` records final upstream/source identities and release exclusions;
+`release-build.log` records the final ISO/IMG/static-library build. The original
+candidate failures are retained rather than relabeled as passing attempts.
 
 ## Security claim boundary
 

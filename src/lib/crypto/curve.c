@@ -10,9 +10,38 @@ int crypto_ed25519_keygen(uint8_t pk[32],uint8_t sk[64]) {
     if(!r) r=crypto_ed25519_from_seed(seed,pk,sk);
     crypto_wipe(seed,sizeof(seed)); return r;
 }
+/* RFC8032 section 5.1.6 hash/reduction glue. Unlike upstream's optional
+ * hash_reduce(), this owns and explicitly erases the 64-byte hash, including
+ * the nonce precursor. SHA-512 and every scalar/curve operation remain the
+ * unmodified Monocypher primitives. Inputs/lengths are checked by the caller. */
+static void ed_hash_reduce(uint8_t out[32],const uint8_t *a,size_t an,
+                           const uint8_t *b,size_t bn,const uint8_t *c,size_t cn) {
+    mono_crypto_sha512_ctx ctx;
+    uint8_t hash[64];
+    mono_crypto_sha512_init(&ctx);
+    mono_crypto_sha512_update(&ctx,a,an);
+    mono_crypto_sha512_update(&ctx,b,bn);
+    mono_crypto_sha512_update(&ctx,c,cn);
+    mono_crypto_sha512_final(&ctx,hash);
+    mono_crypto_eddsa_reduce(out,hash);
+    crypto_wipe(hash,sizeof(hash));
+    crypto_wipe(&ctx,sizeof(ctx));
+}
 int crypto_ed25519_sign(uint8_t sig[64],const uint8_t sk[64],const uint8_t *msg,size_t n) {
     if(!cr_output(sig,64,sk,64) || !cr_output(sig,64,msg,n)) return SYSCALL_EINVAL;
-    mono_crypto_ed25519_sign(sig,sk,msg,n); return 0;
+    uint8_t expanded[64],r[32],h[32],encoded_r[32],result[64];
+    mono_crypto_sha512(expanded,sk,32);
+    mono_crypto_eddsa_trim_scalar(expanded,expanded);
+    ed_hash_reduce(r,expanded+32,32,msg,n,NULL,0);
+    mono_crypto_eddsa_scalarbase(encoded_r,r);
+    ed_hash_reduce(h,encoded_r,32,sk+32,32,msg,n);
+    memcpy(result,encoded_r,32);
+    mono_crypto_eddsa_mul_add(result+32,h,expanded,r);
+    memcpy(sig,result,64);
+    crypto_wipe(expanded,sizeof(expanded));
+    crypto_wipe(r,sizeof(r)); crypto_wipe(h,sizeof(h));
+    crypto_wipe(encoded_r,sizeof(encoded_r)); crypto_wipe(result,sizeof(result));
+    return 0;
 }
 /* Enforce canonical field encoding in the public verification path. The
  * upstream cofactored RFC8032 equation accepts noncanonical encodings; do not
@@ -41,7 +70,10 @@ static bool valid_point(const uint8_t p[32]) {
 int crypto_ed25519_verify(const uint8_t sig[64],const uint8_t pk[32],const uint8_t *msg,size_t n) {
     if(!cr_range(sig,64) || !cr_range(pk,32) || !cr_range(msg,n)) return SYSCALL_EINVAL;
     if(!valid_point(pk) || !valid_point(sig)) return SYSCALL_EINVAL;
-    return mono_crypto_ed25519_check(sig,pk,msg,n);
+    uint8_t h[32];
+    ed_hash_reduce(h,sig,32,pk,32,msg,n);
+    int r=mono_crypto_eddsa_check_equation(sig,pk,h);
+    crypto_wipe(h,sizeof(h)); return r;
 }
 int crypto_x25519_from_seed(const uint8_t seed[32],uint8_t sk[32],uint8_t pk[32]) {
     if(!cr_output(sk,32,seed,32) || !cr_output(pk,32,seed,32) || cr_overlap(pk,32,sk,32)) return SYSCALL_EINVAL;

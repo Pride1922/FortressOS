@@ -106,3 +106,33 @@ passes all eight block/inode/sector cases under ASan/UBSan. Stale per-write
 allocation-fault assumptions were replaced with allocation-free cached-write
 checks and a real truncate-workspace OOM check; kernel ext2 code is unchanged.
 Evidence and scope are in the memory investigation report.
+
+## Descriptor metadata (SYS_FSTAT, syscall 78)
+
+`SYS_FSTAT(fd, out)` returns the metadata of the VFS node referenced by the fd,
+not the path. This avoids the path re-lookup TOCTOU window: the fd retains the
+opened object even if its name is renamed or replaced. When a filesystem permits
+unlinking an open object, the descriptor remains valid after unlink until closed.
+The runfs implementation is covered by host and guest tests; legacy ext2 still
+rejects unlinking an open object. This syscall does not change backend unlink policy.
+
+The user-approved ABI reuses the existing 40-byte `stat_ext_v1_t`, including
+64-bit file size, type, mode, uid/gid, mount flags, size/version and zero reserved.
+Neither this layout nor legacy 16-byte `vfs_stat_t` contains timestamps; none are
+added. SYS_STAT remains path-based with its original 16-byte output; SYS_STAT_EXT
+remains path-based with its original extended output. New code validating an
+opened file's type/ownership/mode should use SYS_FSTAT. Metadata is current at the
+snapshot, rather than frozen at open; concurrent metadata changes remain possible.
+Ancestor validation and durable host-key publication still need their own design.
+
+All node types are accepted; callers decide which type is appropriate. The handler
+checks the caller's own fd, validates the entire writable 40-byte destination,
+retains the file, snapshots through the existing coherent metadata callback,
+copies only on success and releases the temporary reference. It preserves offsets
+and adds no lock class or allocation. Existing filesystem metadata callbacks may
+perform bounded I/O under their existing exclusion. Failures leave output untouched:
+`EBADF` precedes `EFAULT`, which precedes metadata/retention `EIO`.
+
+`make test-fstat-host` and `make test-fstat` cover the contract; `/bin/fstat-probe`
+is packaged only with explicit `FSTAT_TEST_PROBE=1` in isolated test media.
+See [implementation and evidence](../roadmap/fstat.md).

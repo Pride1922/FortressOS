@@ -93,7 +93,8 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
-| `make test-crypto-host` / `make test-crypto` | Phase 2 candidate: Monocypher 4.0.3 + unchanged existing SHA-256, actual-code RFC vectors/negative cases/wipe hooks under ASan/UBSan, independent differential tests; isolated disk-free BIOS/UEFI SMP=1 present/absent entropy. Functional tests pass; host stack gate deliberately fails the unapproved >1 KiB verifier frame. No probe in release media; [status, inherited wipe finding and evidence](docs/subsystems/crypto.md). |
+| `make test-fstat-host` / `make test-fstat` | Actual SYS_FSTAT/VFS/runfs ASan/UBSan and isolated BIOS/UEFI × SMP=1/4/8; retained-object rename/replacement/unlink, descriptor/pointer errors, directory/pipe types, ordinary workers and path-stat/ls regression. Test probe excluded from release media. [Contract and evidence](docs/roadmap/fstat.md). |
+| `make test-crypto-host` / `make test-crypto` | Phase 2 COMPLETE: Monocypher 4.0.3 + unchanged existing SHA-256, actual-code RFC/negative/wipe ASan/UBSan and 96 independent differential cases; disk-free BIOS/UEFI SMP=1 ready/absent 4/4 PASS. User-approved verifier-only 1,280-byte frame ceiling (1,104 measured); all other frames <1 KiB. Wrapper-owned signing hash glue erases nonce scratch; upstream unchanged. No probe in release media; [contracts and evidence](docs/subsystems/crypto.md). |
 | `make test-random-host` / `make test-getrandom` | SSH Phase 1: actual HMAC-SHA-256 DRBG/service ASan/UBSan, NIST CAVP and independent Python vectors, bounded stalled/absent/stuck source, argument/pointer/output invariants, exhaustion and eight-thread distinctness. Disk-free BIOS/UEFI × SMP=1/4/8 hardware-present/absent plus RDRAND-only SMP=4; ordinary unpinned Ring 3 workers. See [random service contract and evidence](docs/roadmap/ssh-phase1-random.md). QEMU does not assess physical source quality. |
 | `make test-root-phase4-host` / `make test-root-phase4 INSTALLER_MEDIA=...` | Phase 4 installer host gates and BIOS/UEFI 70/70 install/boot/recovery/exclusion/timeout cases pass at 384/512 MiB with blank raw USB targets, unchanged sources/non-targets/live media and Linux audits. BIOS USB uses xHCI; UEFI uses EHCI due the xHCI preboot fixture stall. Dell interface-only preview passes. Physical write access remains disabled; [contracts](docs/plans/PERSISTENT_ROOT_PHASE4.md), [evidence](docs/roadmap/persistent-root-phase4.md), [Phase 5 identity-only preparation](docs/plans/PERSISTENT_ROOT_PHASE5.md). |
 | `make test-account-redo-host` / `make test-accounts-persistent-host` / `make test-accounts-persistent` | Phase 3 actual redo engine and EXT4/account-service sanitizers: 2586 byte-engine interruption/corruption cases; 860 mounted flush-cut restarts at 512/4096 sectors, write/flush/OOM/ENOSPC, writer ownership/death, shadow secrecy and stale decisions. Complete gate 966/966 PASS, including 94 BIOS/UEFI cases at SMP=1/4/8 with password/account/home/configuration/history persistence, authenticated recovery, live absent/unusable storage and unchanged live image hashes. Disposable NVMe only; no account-specific sector-tear, Ring 3 AP update, installer or physical claim. [Contracts](docs/plans/PERSISTENT_ROOT_PHASE3.md), [evidence](docs/roadmap/persistent-root-phase3.md). |
@@ -379,6 +380,14 @@ FortressOS/
 ## 7. How to Add
 
 ### 7.1 A syscall
+
+Additive descriptor metadata ABI: `SYS_FSTAT = 78`, `(fd, writable_stat_ext_v1_t_pointer)`;
+returns zero or `EBADF` before `EFAULT` before `EIO`. Fixed 40-byte v1 output
+uses the existing extended layout (size/version, file_size, type, mode, uid,
+gid, mnt_flags, zero reserved); no timestamps. All node types are accepted.
+It snapshots the retained opened object through `vfs_metadata`, without path
+lookup, new locks or handler allocations. SYS_STAT and both layouts are unchanged.
+See [storage contract](docs/subsystems/storage.md) and [evidence](docs/roadmap/fstat.md).
 
 Additive randomness ABI: `SYS_GETRANDOM = 77`, `(writable_buffer, length, flags)`;
 length 1–256, flags must be zero, no capability required. Returns exact length,

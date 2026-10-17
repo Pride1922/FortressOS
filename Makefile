@@ -776,6 +776,7 @@ CHECKSUM_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(CHECKSUM_TOOL
 USER_TAR_ELF := $(BUILD_DIR)/tool-tar.elf
 USER_TRACEROUTE_ELF := $(BUILD_DIR)/traceroute.elf
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
+include scripts/fstat.mk
 ifeq ($(CRYPTO_TEST_PROBE),1)
 $(INITRAMFS_TAR): $(BUILD_DIR)/crypto-probe.elf
 endif
@@ -1108,6 +1109,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(BUILD_DIR)/getrandom-probe.elf $(BUILD_DIR)/initramfs/bin/getrandom-probe
 	@cp -f src/lib/crypto/LICENCE.md $(BUILD_DIR)/initramfs/docs/monocypher-licence.txt
 	@if [ "$(CRYPTO_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/crypto-probe.elf $(BUILD_DIR)/initramfs/bin/crypto-probe; else rm -f $(BUILD_DIR)/initramfs/bin/crypto-probe; fi
+	@if [ "$(FSTAT_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/fstat-probe.elf $(BUILD_DIR)/initramfs/bin/fstat-probe; else rm -f $(BUILD_DIR)/initramfs/bin/fstat-probe; fi
 	@$(foreach tool,$(SBIN_STREAM_TOOLS) disk,cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
 	@cp -f $(USER_DISK_ELF) $(BUILD_DIR)/initramfs/bin/df
 	@cp -f $(USER_DISK_ELF) $(BUILD_DIR)/initramfs/bin/disk

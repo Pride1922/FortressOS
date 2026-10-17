@@ -970,6 +970,28 @@ static int64_t sys_stat_ext(uintptr_t path,uintptr_t output,uint64_t size,uint64
     return 0;
 }
 
+/* Metadata belongs to the opened object, never a fresh lookup of node->path.
+ * Own-table fd_get is borrowed until signal/wait; retain for the complete
+ * snapshot/copy. No new lock or allocation, and no descriptor-position change. */
+static int64_t sys_fstat(uint64_t fd,uintptr_t output) {
+    if (fd>=MAX_PROCESS_FDS) return SYSCALL_EBADF;
+    tcb_t *self=thread_current();
+    file_t *file=self ? fd_get(self,(int)fd) : NULL;
+    if (!file) return SYSCALL_EBADF;
+    if (!vmm_validate_user_range(vmm_get_active_pml4_virt(),output,sizeof(stat_ext_v1_t),true))
+        return SYSCALL_EFAULT;
+    if (!vfs_file_get(file)) return SYSCALL_EIO;
+    vfs_metadata_t meta={0};
+    int r=file->node ? vfs_metadata(file->node,&meta) : -VFS_EIO;
+    if (!r) {
+        stat_ext_v1_t value={.size=sizeof(value),.version=1,.file_size=meta.size,
+            .type=meta.type,.mode=meta.mode,.uid=meta.uid,.gid=meta.gid,.mnt_flags=meta.mnt_flags};
+        memcpy((void *)output,&value,sizeof(value));
+    }
+    vfs_close(file);
+    return r ? SYSCALL_EIO : 0;
+}
+
 #include "permissions_syscalls.inc"
 
 static int64_t sys_dmesg(uintptr_t user_buf, uint64_t cap) {
@@ -1459,6 +1481,9 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_STAT:
             result = sys_stat(frame->rdi, frame->rsi);
+            break;
+        case SYS_FSTAT:
+            result = sys_fstat(frame->rdi,frame->rsi);
             break;
 
         case SYS_READDIR:

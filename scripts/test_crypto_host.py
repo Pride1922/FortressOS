@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 ROOT=Path(__file__).resolve().parent.parent
-EVIDENCE=ROOT/'.codex-remote-attachments/crypto-phase2'
+EVIDENCE=ROOT/'.codex-remote-attachments/crypto-phase2-resolved'
 BUILD=ROOT/'build/crypto-host'
 def run(cmd,log):
     print('+ '+' '.join(map(str,cmd)),file=log,flush=True)
@@ -62,6 +62,11 @@ def audit_stack():
                 assert kind in ('static','dynamic,bounded'),line
                 frames[base]=max(frames.get(base,0),int(n))
     large={p:n for p,n in frames.items() if n>=1024}
+    # Explicit user authorization, 2026-10-17: unchanged upstream verifier only.
+    # All other reachable frames retain the strict <1 KiB requirement.
+    exceptions={'mono_crypto_eddsa_check_equation':1280}
+    violations={p:n for p,n in frames.items()
+                if (n>exceptions[p] if p in exceptions else n>=1024)}
     disassembly=subprocess.check_output(['objdump','-dr',str(lib)],text=True)
     graph={};current=None;call=False
     for line in disassembly.splitlines():
@@ -84,12 +89,16 @@ def audit_stack():
         assert name not in path,('recursive crypto call graph',path,name)
         return frames.get(name,0)+max([depth(n,path+(name,)) for n in graph.get(name,()) if n in frames] or [0])
     depths={n:depth(n) for n in frames if n.startswith('crypto_')}
-    report={'frames':frames,'over_1k':large,'conservative_call_chain_bytes':depths,
-            'status':'pending requested stack exception' if large else 'PASS'}
+    report={'frames':frames,'over_1k':large,'authorized_frame_ceilings':exceptions,
+            'conservative_call_chain_bytes':depths,'violations':violations,
+            'status':'FAIL' if violations else 'PASS'}
     (EVIDENCE/'stack.json').write_text(json.dumps(report,indent=2))
     # Record machine code for source/optimized-path review. This is supporting
     # inspection, not a proof of constant-time execution or compiler validation.
     (EVIDENCE/'library.disassembly.txt').write_text(disassembly)
-    assert not large,f'User stack-limit decision required: {large}; see stack.json'
+    assert not violations,f'Crypto frame ceiling exceeded: {violations}; see stack.json'
+    assert 'mono_crypto_ed25519_sign' not in names and 'mono_crypto_ed25519_check' not in names
+    assert not any(n.startswith('hash_reduce') or n.startswith('ed25519_dom_sign') for n in names), \
+        'Unwiped upstream signing hash helper must not be reachable'
 
 if __name__=='__main__':main()
