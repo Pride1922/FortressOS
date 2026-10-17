@@ -120,7 +120,7 @@ sign/verify self-check. Own and wipe seed, secret, signatures, decoded/private
 serialization, hash contexts and all failure scratch. Keep bulk buffers off
 the stack; preserve the existing verifier-only stack exception.
 
-## Proposed storage transaction
+## Original storage proposal (superseded by implemented decisions above)
 
 Prefer a narrow installed-root host-identity service over introducing a broad
 openat/fsync family solely for this task. Proposed operations are status/public
@@ -210,3 +210,56 @@ secret logs or retained secret-bearing disk artifacts. Retained evidence records
 public fingerprints, metadata, counts and results. Deterministic published test
 vectors may be retained and must be clearly distinguished from provisioned keys.
 No network listener or physical write is needed for this review or codec gate.
+
+## Rotation and incomplete-provisioning recovery review (2026-10-17)
+
+Neither operation is implemented or enabled by this review. The existing
+no-replace backend cannot provide atomic rotation, and ordinary pathname unlink
+cannot establish that the object removed is the retained staging object.
+Adding a delete-then-create command would violate preservation of the old valid
+identity. No syscall number or operation value is reserved here.
+
+Rotation needs all of the following before implementation:
+
+1. An explicit root/CAP_SYS_ADMIN request carrying the expected old public
+   fingerprint. Refuse invalid/unsafe old keys, stale expectations, missing
+   entropy, pending recovery and concurrent provisioning. A broken key is not
+   permission to regenerate it.
+2. A proven stopped daemon and drained monitor/signing references. There is
+   currently no daemon lifecycle with which to establish this condition; a
+   missing pidfile or a process-name check is insufficient.
+3. A new filesystem transaction which compares the retained old inode and
+   parent/mount identity and replaces the canonical entry with the fully
+   validated, durably staged new inode in one journal commit. Existing rename
+   explicitly refuses replacement. Old-inode orphan/reclamation and rollback
+   must be audited together; no new lock rank or nested rank-1 lock is implied.
+4. A successful publication barrier and independent private/public/metadata
+   readback before returning the new public fingerprint. A failed barrier
+   reports uncertainty, never successful rotation or a deletion rollback.
+   Recovery may find either complete identity; a stale retry must compare the
+   current fingerprint again. Journal copies preclude secure-erasure claims.
+5. Actual-code fault tests at every mutation/barrier and concurrent-creator,
+   stale-expectation, retained-old-reader, ENOSPC/OOM, reboot and OpenSSH
+   changed-key tests. Physical and daemon-restart acceptance remain separate.
+
+Incomplete provisioning has three distinct cases. A valid canonical identity
+is preserved regardless of residue. Missing canonical plus residue is diagnosed
+as incomplete, never automatically promoted or regenerated. Invalid canonical
+is diagnosed as corrupt and preserved for explicit administrative recovery.
+None of these conditions authorizes deleting an arbitrary reserved-name file.
+
+A future cleanup interface must retain the exact staging object, validate the
+ancestor chain and mount, and compare object identity under filesystem exclusion
+in the unlink transaction. A pathname, mode/UID check, or byte hash alone is not
+an object-identity or provenance proof. After reboot, current in-memory ownership
+is gone: a durable service-owned receipt tied to filesystem identity, inode
+generation and transaction identity would need its own bounded journal/crash
+design. No such receipt exists today. Until it is reviewed and tested, cleanup
+and promotion stay unsupported; no automatic rm, temporary-name reuse or boot
+repair is added. Existing canonical loading must still validate the complete
+container and metadata and must never interpret residue as readiness.
+
+Issue #52 therefore stays open for explicit rotation/recovery contracts and
+their implementation/acceptance, the future daemon/monitor restart boundary,
+and agreed physical host-identity provisioning/persistence acceptance. Passing
+the automated installer and ABI gates does not close those separate claims.

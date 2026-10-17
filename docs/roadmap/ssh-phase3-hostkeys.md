@@ -112,6 +112,27 @@ remain unchanged throughout each campaign. Evidence:
 - `build/ssh-hostkeys-qemu/gate-ikvty3v4/manifest.json`: SMP=4/8, 12/12 boots PASS.
 - `build/ssh-hostkeys-qemu/gate-5dsaqf5g/`: interrupted first harness attempt;
   an expected diagnostic string was corrected. It is not passing evidence.
+- `build/ssh-hostkey-acceptance/gate-qgdbxyro/manifest.json`: real Ring 3 installer
+  v4 provisioning and acceptance across BIOS & UEFI under three hardware profiles
+  (`ready`, `absent`, `stall`). **18/18 boots PASS**:
+  - `ready`: BIOS and UEFI installations received distinct identities (`SHA256:D5dwVwyatpWdLRvauNUAjYYfavPqYl/7QAQoLAbLxdI`
+    and `SHA256:0cwCcxzyMPR9ooVhmOxpe/8F+K4Blv1QVbpom7ljg8E`), both verified across 3 reboots;
+    `--provision` confirmed idempotent preservation of the existing key; offline
+    `debugfs` audit confirmed exact directory (0700) and canonical key (0600 root:root)
+    metadata, and OpenSSH `ssh-keygen -y -f` / `ssh-keygen -lf` exact fingerprint match.
+  - `absent` (`random_hw_features` returns 0) and `stall` (`random_hw_word` returns false):
+    installation completed cleanly with `INSTALL_STATUS_HOSTKEY_WARNING` emitted
+    ("SSH host identity unavailable. SSH remains disabled; provision it explicitly after installation."),
+    while neither canonical key `/etc/ssh/ssh_host_ed25519_key` nor staging residue
+    `.fortress-hostkey.pending` was published or left on disk. Subsequent
+    `/sbin/ssh-keygen --provision` cleanly refused generation ("strong random/key generation failed", exit 1).
+  - Ring 3 `SYS_HOSTKEY` (syscall 79) boundary probe (`tests/hostkey_probe.c`):
+    argument bounds and precedence, unprivileged caller rejection (EPERM), privileged
+    bad-pointer/read-only buffer rejection (EFAULT), partial-page crossing into
+    an unmapped page (`EFAULT` with zero pre-fault corruption), failure-output
+    buffer preservation, and capability-drop denial via `SYS_CAPSET(0)`.
+  - Immutable media and release exclusions: release ELF/tar/ISO/IMG hashes
+    remained unchanged throughout; `hostkey-probe` is excluded from release media.
 - `build/ssh-hostkeys-host/result.json`, `storage-result.json`, and
   `kernel-stack.json`: codec, 595 storage cases and frame measurements. New
   kernel helpers are <=160 bytes per frame. The existing installer-control
@@ -130,3 +151,22 @@ contains public fingerprints, diagnostics, argv and results only. Deterministic
 published fixture seeds are explicitly labelled and may be retained by host
 tests. No real user password, private key log, physical write, listener,
 daemon lifecycle, rotation or remote-login acceptance is claimed.
+
+## Remaining requirements for issue #52 closure
+
+Automated host identity provisioning, persistence, and boundary gates pass. Issue #52
+remains open pending the following separate milestones:
+
+1. **Atomic key rotation & incomplete-provisioning recovery transactions**:
+   The current backend only supports first-time publication and explicit no-replacement.
+   Rotation requires atomic inode replacement in one journal commit, comparing expected
+   old fingerprints under filesystem exclusion, with rollback auditing and no journaled
+   secret copies. Residue cleanup requires durable service receipts and proven
+   object-identity provenance. Both operations currently remain unsupported and disabled.
+2. **Daemon lifecycle & process monitoring boundary**:
+   Proving that no running daemon holds open descriptors or monitor signing references
+   to the active host key before rotation or unmount.
+3. **Physical bare-metal acceptance**:
+   Physical installer provisioning and persistence acceptance on hardware (e.g. Dell Latitude 5590)
+   with physical write gates explicitly evaluated.
+

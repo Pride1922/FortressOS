@@ -333,9 +333,9 @@ def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=No
                 assert all(fixture.digest(p)==value for p,value in untouched.items())
                 manifest['cases'].append({'installer_rejection':reject,'firmware':firmware,'result':'PASS'})
                 return None
-            wait('Installation complete.',start,5400)
+            wait('press Enter to restart.',start,5400)
             if usb_logging and ui_capture:
-                wait('press Enter to restart.',start);capture_screen('logging-result.png')
+                capture_screen('logging-result.png')
             assert 'Installation failed at stage' not in text()
             assert all(secret.encode() not in transcript for secret in (operator,recovery))
             manifest['cases'].append({'install':firmware,'capacity_mib':capacity,'zero_write_preconfirmation':True,'no_echo':True,'result':'PASS'})
