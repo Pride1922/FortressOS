@@ -711,10 +711,22 @@ void shell_main(int argc,char **argv,const char *const *envp) {
     if (!user_entry_secure(envp) && !vars_import(envp)) {puts("shell: invalid entry environment\n");return;}
     alias_init();
     (void)history_load();
+    int term_fd = shell_get_terminal_fd();
+    puts_fd(term_fd, "\033[2J\033[H");
 
-    puts_fd(shell_get_terminal_fd(), "\033[2J\033[H");
-
-    /* Install flag-only SIGCHLD handler for job notification. */
+    /* Display /etc/motd or fallback OS banner */
+    long motd_fd = call(SYS_OPEN, (uintptr_t)"/etc/motd", VFS_O_RDONLY | VFS_O_CLOEXEC, 0);
+    if (motd_fd >= 0) {
+        char motd_buf[512];
+        long n;
+        while ((n = call(SYS_READ, (uintptr_t)motd_fd, (uintptr_t)motd_buf, sizeof(motd_buf))) > 0) {
+            write_bytes_fd(term_fd, motd_buf, (size_t)n);
+        }
+        (void)call(SYS_CLOSE, (uintptr_t)motd_fd, 0, 0);
+        puts_fd(term_fd, "\n");
+    } else {
+        puts_fd(term_fd, "========================================================\n  Welcome to FortressOS (x86_64 SMP)\n  \"Security through Isolation and Elegance\"\n========================================================\n\n");
+    }
     signal_action_t chld_action = { .handler = (uintptr_t)prompt_sigchld };
     (void)call(SYS_SIGACTION, SIGCHLD, (uintptr_t)&chld_action, 0);
 

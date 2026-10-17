@@ -1299,7 +1299,7 @@ int dhcpc_main(int argc, char **argv) {
 
     if (ifget.link_state != NET_IF_LINK_UP) {
         if (boot_mode) {
-            print_out("eth0: link waiting / no DHCP response; continuing in background\n");
+            write_file("/run/dhcpc.log", "eth0: link waiting / no DHCP response; continuing in background\n", 64);
             spawn_daemon();
             return 0;
         }
@@ -1320,7 +1320,7 @@ int dhcpc_main(int argc, char **argv) {
 
     if (hret != 0) {
         if (boot_mode) {
-            print_out("eth0: no DHCP response; continuing in background\n");
+            write_file("/run/dhcpc.log", "eth0: no DHCP response; continuing in background\n", 50);
             spawn_daemon();
             return 0;
         }
@@ -1376,7 +1376,7 @@ int dhcpc_main(int argc, char **argv) {
             append_ip(msg, sizeof(msg), &pos, offer.dns_servers[0]);
         }
         append_str(msg, sizeof(msg), &pos, "\n");
-        print_out(msg);
+        write_file("/run/dhcpc.log", msg, pos);
 
         spawn_daemon();
         return 0;

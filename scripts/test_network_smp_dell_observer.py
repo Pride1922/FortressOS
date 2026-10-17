@@ -83,7 +83,7 @@ def guest(delivery,out,firmware,cpus,raw,http_port,manifest):
                 boot=text();fault_baseline=boot.count('[PROCESS FAULT]')
                 assert fault_baseline==1 and '(faulty_user)' in boot and '[PASS] Fault isolation verified' in boot
                 send('operator');wait(prompt)
-                assert 'DHCP lease acquired 10.0.2.15/24' in text()
+                command('cat /run/dhcpc.lease','IP=10.0.2.15')
                 assert ('Single-CPU system confirmed' if cpus==1 else f'All {cpus} CPU(s) accounted for') in text()
                 command('net-cpu-probe cpu-invalid','OBSERVER bounds PASS')
                 # Verify exact functional output before background UART writers

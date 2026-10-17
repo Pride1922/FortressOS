@@ -140,10 +140,10 @@ def run_session(mode, iso, tmp):
             wait_for_prompt()
             print(f"[{mode}] Shell ready after automated boot")
 
-            boot_log = get_text()
-            assert "DHCP lease acquired 10.0.2.15/24" in boot_log or "acquired lease 10.0.2.15/24" in boot_log, \
-                f"Boot DHCP announcement missing: {boot_log[:1000]}"
-            print(f"[{mode}] Case 1 (boot-time automatic DHCP): PASS")
+            out = run_command("cat /run/dhcpc.log")
+            assert "DHCP lease acquired 10.0.2.15/24" in out or "acquired lease 10.0.2.15/24" in out, \
+                f"Boot DHCP log missing: {out}"
+            print(f"[{mode}] Case 1 (boot-time automatic DHCP in /run/dhcpc.log): PASS")
 
             # 2. Check lease file and daemon pid
             out = run_command("cat /run/dhcpc.pid")
