@@ -29,6 +29,16 @@ static long mon_syscall4(long n, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_
 }
 #endif
 
+#ifndef CRYPTO_HOST_TEST
+bool creds_valid(const creds_t *v) {
+    if (!v || v->ngroups > CREDS_MAX_GROUPS || v->reserved ||
+        (v->umask & ~0777U) || (v->cap_effective & ~CAP_ALL)) return false;
+    for (unsigned i = v->ngroups; i < CREDS_MAX_GROUPS; ++i)
+        if (v->groups[i]) return false;
+    return true;
+}
+#endif
+
 /* Constant-time dummy hash for unknown, locked, or root accounts (100000 rounds sha256-crypt matching userdb) */
 static const char g_dummy_shadow_hash[] =
     "$5$rounds=100000$1234567890abcdef$0123456789012345678901234567890123456789012";

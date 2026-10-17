@@ -12,6 +12,7 @@
 #define CRYPTO_HOST_TEST
 #endif
 #include "user/sshd/sshd_config.h"
+#include "user/sshd/sshd_readiness.h"
 #include "user/sshd/monitor.h"
 #include "src/include/syscall_abi.h"
 
@@ -185,10 +186,172 @@ static void test_config_path_precedence(void) {
     printf("PASS: test_config_path_precedence\n");
 }
 
+static int mock_cfg_ok = 1;
+static int mock_cfg_enabled = 1;
+static int mock_host_key_ok = 1;
+static bool mock_userdb_ok = true;
+static long mock_random_res = 16;
+static long mock_bind_res = 42;
+static int mock_listen_res = 0;
+
+static int mock_load_config(const char *path, sshd_config_t *cfg, char *err_msg, size_t err_cap) {
+    (void)path;
+    if (!mock_cfg_ok) {
+        if (err_msg && err_cap > 0) {
+            snprintf(err_msg, err_cap, "SSH disabled: no configuration file found (/etc/ssh/sshd_config or /mnt/.fortress/sshd.conf)");
+        }
+        return -1;
+    }
+    sshd_config_init_defaults(cfg);
+    cfg->enabled = (mock_cfg_enabled != 0);
+    cfg->port = 22;
+    cfg->listen_address = 0;
+    return 0;
+}
+
+static int mock_load_host_key(uint8_t out_secret[64], uint8_t out_public[32]) {
+    if (!mock_host_key_ok) return -1;
+    memset(out_secret, 0xaa, 64);
+    memset(out_public, 0xbb, 32);
+    return 0;
+}
+
+static bool mock_load_userdb(userdb_t *db, bool shadow) {
+    (void)shadow;
+    if (!mock_userdb_ok) return false;
+    memset(db, 0, sizeof(*db));
+    return true;
+}
+
+static long mock_getrandom(void *buf, size_t len) {
+    if (mock_random_res != (long)len) return mock_random_res;
+    memset(buf, 0x42, len);
+    return (long)len;
+}
+
+static long mock_bind_socket(uint32_t listen_addr, uint16_t port, char *err_msg, size_t err_cap) {
+    if (mock_bind_res < 0) {
+        if (err_msg && err_cap > 0) {
+            sshd_format_bind_error(err_msg, err_cap, listen_addr, port);
+        }
+        return -1;
+    }
+    return mock_bind_res;
+}
+
+static int mock_listen_socket(long sock_fd) {
+    (void)sock_fd;
+    return mock_listen_res;
+}
+
+static void test_boot_readiness_gate_sequence(void) {
+    printf("Running test_boot_readiness_gate_sequence...\n");
+
+    sshd_readiness_ops_t ops = {
+        .load_config = mock_load_config,
+        .load_host_key = mock_load_host_key,
+        .load_userdb = mock_load_userdb,
+        .getrandom = mock_getrandom,
+        .bind_socket = mock_bind_socket,
+        .listen_socket = mock_listen_socket,
+    };
+
+    sshd_config_t cfg;
+    uint8_t secret[64];
+    userdb_t db;
+    long sock_fd = -1;
+    char diag[256] = {0};
+    bool is_disabled = false;
+
+    /* Gate 1: Config missing -> fails closed with distinct diagnostic */
+    mock_cfg_ok = 0;
+    diag[0] = '\0';
+    int rc = sshd_check_readiness(NULL, &ops, &cfg, secret, &db, &sock_fd, diag, sizeof(diag), &is_disabled);
+    assert(rc != 0);
+    assert(is_disabled == false);
+    assert(strstr(diag, "SSH disabled: no configuration file found") != NULL);
+
+    /* Gate 2: Config found with Enabled no -> exits cleanly (rc == 0, is_disabled == true) */
+    mock_cfg_ok = 1;
+    mock_cfg_enabled = 0;
+    diag[0] = '\0';
+    is_disabled = false;
+    rc = sshd_check_readiness(NULL, &ops, &cfg, secret, &db, &sock_fd, diag, sizeof(diag), &is_disabled);
+    assert(rc == 0);
+    assert(is_disabled == true);
+    assert(strcmp(diag, "Service disabled in configuration.") == 0);
+
+    /* Gate 3: Load host key via SYS_HOSTKEY -> fail = "host key unavailable/corrupt" */
+    mock_cfg_enabled = 1;
+    mock_host_key_ok = 0;
+    diag[0] = '\0';
+    is_disabled = false;
+    rc = sshd_check_readiness(NULL, &ops, &cfg, secret, &db, &sock_fd, diag, sizeof(diag), &is_disabled);
+    assert(rc != 0);
+    assert(is_disabled == false);
+    assert(strcmp(diag, "host key unavailable/corrupt") == 0);
+
+    /* Gate 4: Load account database (userdb_t) -> fail = "account database unavailable" */
+    mock_host_key_ok = 1;
+    mock_userdb_ok = false;
+    diag[0] = '\0';
+    rc = sshd_check_readiness(NULL, &ops, &cfg, secret, &db, &sock_fd, diag, sizeof(diag), &is_disabled);
+    assert(rc != 0);
+    assert(is_disabled == false);
+    assert(strcmp(diag, "account database unavailable") == 0);
+
+    /* Gate 5: Verify SYS_GETRANDOM succeeds -> fail = "strong randomness unavailable" (fails closed) */
+    mock_userdb_ok = true;
+    mock_random_res = -1; /* Total failure */
+    diag[0] = '\0';
+    rc = sshd_check_readiness(NULL, &ops, &cfg, secret, &db, &sock_fd, diag, sizeof(diag), &is_disabled);
+    assert(rc != 0);
+    assert(is_disabled == false);
+    assert(strcmp(diag, "strong randomness unavailable") == 0);
+
+    mock_random_res = 8; /* Short/partial read (must also be rejected without weaker fallback!) */
+    diag[0] = '\0';
+    rc = sshd_check_readiness(NULL, &ops, &cfg, secret, &db, &sock_fd, diag, sizeof(diag), &is_disabled);
+    assert(rc != 0);
+    assert(strcmp(diag, "strong randomness unavailable") == 0);
+
+    /* Gate 6: Bind port 22 -> fail = "bind failed on <addr>:<port>" */
+    mock_random_res = 16;
+    mock_bind_res = -1;
+    diag[0] = '\0';
+    rc = sshd_check_readiness(NULL, &ops, &cfg, secret, &db, &sock_fd, diag, sizeof(diag), &is_disabled);
+    assert(rc != 0);
+    assert(is_disabled == false);
+    assert(strcmp(diag, "bind failed on 0.0.0.0:22") == 0);
+
+    /* Gate 7: Complete readiness success -> Enter accept loop */
+    mock_bind_res = 42;
+    mock_listen_res = 0;
+    diag[0] = '\0';
+    sock_fd = -1;
+    rc = sshd_check_readiness(NULL, &ops, &cfg, secret, &db, &sock_fd, diag, sizeof(diag), &is_disabled);
+    assert(rc == 0);
+    assert(is_disabled == false);
+    assert(sock_fd == 42);
+    assert(cfg.port == 22);
+
+    /* Test helper: sshd_format_bind_error with custom address and port */
+    char bind_str[64];
+    sshd_format_bind_error(bind_str, sizeof(bind_str), 0, 22);
+    assert(strcmp(bind_str, "bind failed on 0.0.0.0:22") == 0);
+
+    uint32_t custom_ip = (192) | (168 << 8) | (10 << 16) | (5 << 24);
+    sshd_format_bind_error(bind_str, sizeof(bind_str), custom_ip, 2222);
+    assert(strcmp(bind_str, "bind failed on 192.168.10.5:2222") == 0);
+
+    printf("PASS: test_boot_readiness_gate_sequence\n");
+}
+
 int main(void) {
     printf("Starting SSH Daemon Lifecycle & Deployment test suite...\n");
     test_config_defaults_and_parsing();
     test_config_path_precedence();
+    test_boot_readiness_gate_sequence();
     test_daemon_admission_limits();
 
     printf("\nALL TESTS PASSED (tests/ssh_daemon_host.c)\n");

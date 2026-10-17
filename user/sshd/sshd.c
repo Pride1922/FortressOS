@@ -17,6 +17,7 @@
 #include "channel.h"
 #include "pty_bridge.h"
 #include "sshd_config.h"
+#include "sshd_readiness.h"
 
 #define SSHD_SERVER_VERSION "SSH-2.0-FortressSSH_0.1\r\n"
 #define SSHD_SERVER_VERSION_TRIM "SSH-2.0-FortressSSH_0.1"
@@ -54,31 +55,7 @@ static void on_sigterm(int sig) {
     g_terminate = 1;
 }
 
-/* Load host Ed25519 private key from kernel storage or disk */
-static int load_host_key(uint8_t out_secret[64], uint8_t out_public[32]) {
-    char key_buf[HOSTKEY_FILE_MAX];
-    long len = SSHD_SYSCALL(SYS_HOSTKEY, HOSTKEY_READ, (uintptr_t)key_buf, sizeof(key_buf), 0, 0, 0);
-    if (len <= 0) {
-        /* Fallback: attempt to read /etc/ssh/ssh_host_ed25519_key */
-        long fd = SSHD_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/ssh/ssh_host_ed25519_key", VFS_O_RDONLY | VFS_O_CLOEXEC, 0, 0, 0, 0);
-        if (fd >= 0) {
-            len = SSHD_SYSCALL(SYS_READ, (uintptr_t)fd, (uintptr_t)key_buf, sizeof(key_buf) - 1, 0, 0, 0);
-            (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
-        }
-    }
 
-    if (len <= 0) return -1;
-    if ((size_t)len >= sizeof(key_buf)) len = sizeof(key_buf) - 1;
-    key_buf[len] = '\0';
-
-    ssh_hostkey_workspace ws;
-    int r = ssh_hostkey_decode(key_buf, (size_t)len, out_secret, &ws);
-    if (r != 0) return -1;
-
-    memcpy(out_public, out_secret + 32, 32);
-    crypto_wipe(&ws, sizeof(ws));
-    return 0;
-}
 
 /* Worker Process: runs the connection protocol under dropped capabilities */
 static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon_out_fd) {
@@ -360,58 +337,22 @@ static int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon
 }
 
 /* Privileged Monitor Daemon: listens on port 22 and coordinates workers */
-static int sshd_monitor_run(const sshd_config_t *cfg) {
-    if (!cfg->enabled) {
-        sshd_write_err("Service disabled in configuration.");
-        return 0;
-    }
-
-    uint8_t host_secret[64];
-    uint8_t host_public[32];
-    if (load_host_key(host_secret, host_public) != 0) {
-        sshd_write_err("Host key unprovisioned or invalid; SSH daemon disabled.");
-        return 1;
-    }
-
+static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_secret[64],
+                                 const userdb_t *db, long sock_fd) {
+    (void)cfg;
     monitor_ctx_t mon_ctx;
     monitor_init(&mon_ctx, host_secret);
-    crypto_wipe(host_secret, sizeof(host_secret));
 
-    /* Load system user database */
-    (void)db_load(&mon_ctx.db, true);
-    mon_ctx.db_loaded = true;
+    /* Use prepared user database */
+    if (db) {
+        mon_ctx.db = *db;
+        mon_ctx.db_loaded = true;
+    }
 
     /* Setup signal handlers for clean shutdown */
     signal_action_t sa = { .handler = (uintptr_t)on_sigterm, .mask = 0, .flags = 0, .reserved = 0 };
     (void)SSHD_SYSCALL(SYS_SIGACTION, SIGTERM, (uintptr_t)&sa, 0, 0, 0, 0);
     (void)SSHD_SYSCALL(SYS_SIGACTION, SIGINT, (uintptr_t)&sa, 0, 0, 0, 0);
-
-    /* Open listening socket on configured port */
-    long sock_fd = SSHD_SYSCALL(SYS_SOCKET, NET_AF_INET, NET_SOCK_STREAM | NET_SOCK_CLOEXEC, 0, 0, 0, 0);
-    if (sock_fd < 0) {
-        sshd_write_err("Failed to allocate TCP socket.");
-        return 1;
-    }
-
-    net_sockaddr_in_t sin;
-    memset(&sin, 0, sizeof(sin));
-    sin.family = NET_AF_INET;
-    sin.port = ((cfg->port & 0xff) << 8) | ((cfg->port >> 8) & 0xff); /* htons */
-    sin.address = cfg->listen_address;
-
-    long err = SSHD_SYSCALL(SYS_BIND, (uintptr_t)sock_fd, (uintptr_t)&sin, sizeof(sin), 0, 0, 0);
-    if (err != 0) {
-        sshd_write_err("Failed to bind to port 22.");
-        (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)sock_fd, 0, 0, 0, 0, 0);
-        return 1;
-    }
-
-    err = SSHD_SYSCALL(SYS_LISTEN, (uintptr_t)sock_fd, 2, 0, 0, 0, 0);
-    if (err != 0) {
-        sshd_write_err("Failed to listen on TCP socket.");
-        (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)sock_fd, 0, 0, 0, 0, 0);
-        return 1;
-    }
 
     sshd_write_err("Listening on port 22 (SSH-2.0-FortressSSH_0.1)");
 
@@ -560,11 +501,8 @@ int sshd_main(int argc, char **argv) {
         return sshd_worker_run(sid, 3, 4, 5);
     }
 
-    /* Monitor mode: parse configuration */
-    sshd_config_t cfg;
-    char err_buf[128] = {0};
+    /* Monitor mode: execute pinned boot readiness gate sequence */
     const char *cfg_path = NULL;
-
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-f") == 0 && i + 1 < argc) {
             cfg_path = argv[++i];
@@ -573,10 +511,27 @@ int sshd_main(int argc, char **argv) {
         }
     }
 
-    if (sshd_config_load(cfg_path, &cfg, err_buf, sizeof(err_buf)) != 0) {
-        sshd_write_err(err_buf[0] ? err_buf : "Error loading configuration");
+    sshd_config_t cfg;
+    uint8_t host_secret[64];
+    userdb_t db;
+    long sock_fd = -1;
+    char diag[256] = {0};
+    bool is_disabled = false;
+
+    int rc = sshd_check_readiness(cfg_path, NULL, &cfg, host_secret, &db, &sock_fd,
+                                  diag, sizeof(diag), &is_disabled);
+
+    if (is_disabled) {
+        sshd_write_err(diag[0] ? diag : "Service disabled in configuration.");
+        return 0;
+    }
+
+    if (rc != 0) {
+        sshd_write_err(diag[0] ? diag : "SSH daemon boot readiness check failed.");
         return 1;
     }
 
-    return sshd_monitor_run(&cfg);
+    int run_rc = sshd_monitor_run_loop(&cfg, host_secret, &db, sock_fd);
+    crypto_wipe(host_secret, sizeof(host_secret));
+    return run_rc;
 }

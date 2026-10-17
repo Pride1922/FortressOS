@@ -26,9 +26,9 @@ $(SSHD_BUILD)/%.o: $(SSHD_DIR)/%.c
 	@mkdir -p $(SSHD_BUILD)
 	@$(CC) $(CRYPTO_FLAGS) -Iuser/sshd -Iuser/tools -c $< -o $@
 
-$(BUILD_DIR)/sshd.elf: $(SSHD_OBJS) $(CRYPTO_LIB) $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+$(BUILD_DIR)/sshd.elf: $(SSHD_OBJS) $(CRYPTO_LIB) $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
 	@$(AS) -f elf64 -DTOOL_ENTRY=sshd_main user/tools/start.asm -o $(SSHD_BUILD)/sshd-start.o
-	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack --gc-sections -T user/shell.ld $(SSHD_BUILD)/sshd-start.o $(SSHD_OBJS) $(CRYPTO_LIB) $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-common.o -o $@
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack --gc-sections -T user/shell.ld $(SSHD_BUILD)/sshd-start.o $(SSHD_OBJS) $(CRYPTO_LIB) $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o -o $@
 $(CRYPTO_BUILD)/%.o: $(CRYPTO_DIR)/%.c src/include/crypto.h src/include/ssh_hostkey.h $(CRYPTO_DIR)/internal.h $(CRYPTO_DIR)/namespace.h $(CRYPTO_DIR)/namespace_end.h
 	@mkdir -p $(CRYPTO_BUILD)
 	@$(CC) $(CRYPTO_FLAGS) -c $< -o $@
