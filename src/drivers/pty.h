@@ -28,6 +28,7 @@ typedef struct {
     size_t  out_count;
     uint32_t out_data_bytes;
     uint32_t out_space_bytes;
+    uint8_t last_slave_out_char;
 
     /* Terminal settings & dimensions */
     terminal_attrs_t attrs;

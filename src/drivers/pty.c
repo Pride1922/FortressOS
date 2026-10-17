@@ -254,10 +254,12 @@ int64_t pty_master_write(vfs_node_t *node, uint64_t *flags_ptr, bool append, con
                             p->out_head = (p->out_head + 1) % PTY_OUT_CAPACITY;
                             p->out_count++;
                         }
+                        p->last_slave_out_char = '\n';
                     } else if (ch >= 0x20 || ch == '\t' || ch == '\n' || ch == 0x7f) {
                         p->out_buf[p->out_head] = ch;
                         p->out_head = (p->out_head + 1) % PTY_OUT_CAPACITY;
                         p->out_count++;
+                        p->last_slave_out_char = ch;
                     }
                     did_echo = true;
                 }
@@ -345,34 +347,48 @@ int64_t pty_slave_write(vfs_node_t *node, uint64_t *flags_ptr, bool append, cons
             return -VFS_EIO;
         }
 
-        size_t space = PTY_OUT_CAPACITY - p->out_count;
-        if (space == 0) {
-            if (flags & VFS_O_NONBLOCK) {
-                spin_unlock_irqrestore(&p->lock, irq);
-                return -VFS_EAGAIN;
+        size_t consumed = 0;
+        while (consumed < count) {
+            uint8_t ch = src[consumed];
+            bool needs_cr = (ch == '\n' && p->last_slave_out_char != '\r');
+            size_t needed = needs_cr ? 2 : 1;
+
+            if (p->out_count + needed > PTY_OUT_CAPACITY) {
+                break;
             }
-            spin_unlock_irqrestore(&p->lock, irq);
-            sched_wait_until(&p->out_space_bytes, pty_out_space_ready, p);
-            continue;
+
+            if (needs_cr) {
+                p->out_buf[p->out_head] = '\r';
+                p->out_head = (p->out_head + 1) % PTY_OUT_CAPACITY;
+                p->out_count++;
+            }
+            p->out_buf[p->out_head] = ch;
+            p->out_head = (p->out_head + 1) % PTY_OUT_CAPACITY;
+            p->out_count++;
+
+            p->last_slave_out_char = ch;
+            consumed++;
         }
 
-        size_t to_write = count < space ? count : space;
-        size_t first = PTY_OUT_CAPACITY - p->out_head;
-        if (first > to_write) first = to_write;
-        memcpy(p->out_buf + p->out_head, src, first);
-        memcpy(p->out_buf, src + first, to_write - first);
+        if (consumed > 0) {
+            __atomic_store_n(&p->out_data_bytes, (uint32_t)p->out_count, __ATOMIC_RELEASE);
+            __atomic_store_n(&p->out_space_bytes, (uint32_t)(PTY_OUT_CAPACITY - p->out_count), __ATOMIC_RELEASE);
+            spin_unlock_irqrestore(&p->lock, irq);
 
-        p->out_head = (p->out_head + to_write) % PTY_OUT_CAPACITY;
-        p->out_count += to_write;
+            sched_wake_all(&p->out_data_bytes);
+            return (int64_t)consumed;
+        }
 
-        __atomic_store_n(&p->out_data_bytes, (uint32_t)p->out_count, __ATOMIC_RELEASE);
-        __atomic_store_n(&p->out_space_bytes, (uint32_t)(PTY_OUT_CAPACITY - p->out_count), __ATOMIC_RELEASE);
+        if (flags & VFS_O_NONBLOCK) {
+            spin_unlock_irqrestore(&p->lock, irq);
+            return -VFS_EAGAIN;
+        }
+
         spin_unlock_irqrestore(&p->lock, irq);
-
-        sched_wake_all(&p->out_data_bytes);
-        return (int64_t)to_write;
+        sched_wait_until(&p->out_space_bytes, pty_out_space_ready, p);
     }
 }
+
 
 int64_t pty_set_session(vfs_node_t *master_node, uint64_t child_pid) {
     if (!is_pty_master(master_node) || !child_pid) return SYSCALL_EINVAL;
