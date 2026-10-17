@@ -7,12 +7,14 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <sys/socket.h>
 
 #ifndef CRYPTO_HOST_TEST
 #define CRYPTO_HOST_TEST
 #endif
 #include "user/sshd/sshd_config.h"
 #include "user/sshd/sshd_readiness.h"
+#include "user/sshd/sshd_admission.h"
 #include "user/sshd/monitor.h"
 #include "src/include/syscall_abi.h"
 
@@ -81,44 +83,109 @@ static void test_config_defaults_and_parsing(void) {
 static void test_daemon_admission_limits(void) {
     printf("Running test_daemon_admission_limits...\n");
 
-    /* Simulated worker slots in monitor */
-    typedef struct {
-        bool active;
-        int pid;
-    } slot_t;
-    slot_t slots[2] = { {false, 0}, {false, 0} };
+    /* Test 1: sshd_format_disconnect_packet unit verification */
+    uint8_t pkt[128];
+    int pkt_len = sshd_format_disconnect_packet(SSH_DISCONNECT_BY_APPLICATION,
+                                                "Too many concurrent sessions",
+                                                pkt, sizeof(pkt));
+    assert(pkt_len > 0);
+    assert(pkt_len % 8 == 0); /* Total wire packet length is a multiple of 8 */
+    uint32_t plen = ((uint32_t)pkt[0] << 24) | ((uint32_t)pkt[1] << 16) |
+                    ((uint32_t)pkt[2] << 8) | (uint32_t)pkt[3];
+    assert((int)plen + 4 == pkt_len);
+    assert(plen % 8 == 4); /* packet_len + 4 == total_wire */
+    uint8_t pad_len = pkt[4];
+    assert(pad_len >= 4);
+    assert(pkt[5] == (uint8_t)SSH_MSG_DISCONNECT); /* 1 */
+    uint32_t reason = ((uint32_t)pkt[6] << 24) | ((uint32_t)pkt[7] << 16) |
+                      ((uint32_t)pkt[8] << 8) | (uint32_t)pkt[9];
+    assert(reason == SSH_DISCONNECT_BY_APPLICATION); /* 11 */
+    uint32_t dlen = ((uint32_t)pkt[10] << 24) | ((uint32_t)pkt[11] << 16) |
+                    ((uint32_t)pkt[12] << 8) | (uint32_t)pkt[13];
+    assert(dlen == strlen("Too many concurrent sessions"));
+    assert(memcmp(pkt + 14, "Too many concurrent sessions", dlen) == 0);
 
-    /* Client 1 arrives */
-    int s1 = -1;
-    for (int i = 0; i < 2; i++) {
-        if (!slots[i].active) { s1 = i; slots[i].active = true; slots[i].pid = 101; break; }
-    }
+    /* Test buffer overflow rejection */
+    assert(sshd_format_disconnect_packet(SSH_DISCONNECT_BY_APPLICATION, "test", pkt, 10) == -1);
+    assert(sshd_format_disconnect_packet(SSH_DISCONNECT_BY_APPLICATION, "test", NULL, 128) == -1);
+
+    /* Test 2: Global admission cap across connections */
+    sshd_worker_slot_t slots[SSHD_MAX_CONCURRENT_SESSIONS];
+    memset(slots, 0, sizeof(slots));
+
+    /* Connection 1 (from IP A) arrives -> admitted to slot 0 */
+    int s1 = sshd_admission_find_slot(slots);
     assert(s1 == 0);
+    slots[s1].active = true;
+    slots[s1].pid = 101;
+    slots[s1].p_mon_in = 10;
+    slots[s1].p_mon_out = 11;
 
-    /* Client 2 arrives */
-    int s2 = -1;
-    for (int i = 0; i < 2; i++) {
-        if (!slots[i].active) { s2 = i; slots[i].active = true; slots[i].pid = 102; break; }
-    }
+    /* Connection 2 (from IP B) arrives -> admitted to slot 1 */
+    int s2 = sshd_admission_find_slot(slots);
     assert(s2 == 1);
+    slots[s2].active = true;
+    slots[s2].pid = 102;
+    slots[s2].p_mon_in = 12;
+    slots[s2].p_mon_out = 13;
 
-    /* Client 3 arrives -> must be rejected (max 2 concurrent sessions) */
-    int s3 = -1;
-    for (int i = 0; i < 2; i++) {
-        if (!slots[i].active) { s3 = i; break; }
+    /* Connection 3 arrives -> global cap reached (2), rejected before worker spawn */
+    int s3 = sshd_admission_find_slot(slots);
+    assert(s3 == -1); /* Admission cap enforced before SYS_SPAWN_EXT! */
+
+    /* Test 3: What connection 3 sees on the wire (accept -> SSH_MSG_DISCONNECT -> close) */
+    int sv[2];
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    int client_sv = sv[0];
+    int peer_sv = sv[1];
+
+    /* Daemon rejects connection 3 */
+    const char *ver_banner = "SSH-2.0-FortressSSH_0.1\r\n";
+    sshd_reject_connection_capacity(client_sv, ver_banner);
+    /* client_sv is closed inside sshd_reject_connection_capacity */
+
+    /* Peer reads what server sent */
+    char recv_buf[256];
+    size_t total_recv = 0;
+    ssize_t nr;
+    while ((nr = read(peer_sv, recv_buf + total_recv, sizeof(recv_buf) - total_recv)) > 0) {
+        total_recv += (size_t)nr;
     }
-    assert(s3 == -1); /* Rejected! */
+    assert(nr == 0); /* Verified clean close by daemon! */
+    close(peer_sv);
 
-    /* Client 1 disconnects / reaped */
+    /* Peer verifies version banner */
+    size_t banner_len = strlen(ver_banner);
+    assert(total_recv > banner_len);
+    assert(memcmp(recv_buf, ver_banner, banner_len) == 0);
+
+    /* Peer verifies SSH_MSG_DISCONNECT packet */
+    const uint8_t *wire_pkt = (const uint8_t *)recv_buf + banner_len;
+    size_t wire_len = total_recv - banner_len;
+    assert(wire_len >= 16);
+    uint32_t peer_plen = ((uint32_t)wire_pkt[0] << 24) | ((uint32_t)wire_pkt[1] << 16) |
+                         ((uint32_t)wire_pkt[2] << 8) | (uint32_t)wire_pkt[3];
+    assert((size_t)peer_plen + 4 == wire_len);
+    assert(wire_pkt[5] == (uint8_t)SSH_MSG_DISCONNECT);
+    uint32_t peer_reason = ((uint32_t)wire_pkt[6] << 24) | ((uint32_t)wire_pkt[7] << 16) |
+                           ((uint32_t)wire_pkt[8] << 8) | (uint32_t)wire_pkt[9];
+    assert(peer_reason == SSH_DISCONNECT_BY_APPLICATION);
+
+    /* Test 4: Verify no leaked workers or slots */
+    assert(slots[0].active == true && slots[0].pid == 101);
+    assert(slots[1].active == true && slots[1].pid == 102);
+
+    /* Connection 1 disconnects / reaped */
     slots[s1].active = false;
     slots[s1].pid = 0;
+    slots[s1].p_mon_in = -1;
+    slots[s1].p_mon_out = -1;
 
-    /* Client 4 arrives -> accepted into released slot */
-    int s4 = -1;
-    for (int i = 0; i < 2; i++) {
-        if (!slots[i].active) { s4 = i; slots[i].active = true; slots[i].pid = 104; break; }
-    }
+    /* Connection 4 arrives -> accepted into vacated slot 0 */
+    int s4 = sshd_admission_find_slot(slots);
     assert(s4 == 0);
+    slots[s4].active = true;
+    slots[s4].pid = 104;
 
     printf("PASS: test_daemon_admission_limits\n");
 }

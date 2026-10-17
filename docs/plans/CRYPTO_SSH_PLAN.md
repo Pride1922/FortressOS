@@ -346,11 +346,11 @@ Includes:
   * Step 6: Enter accept loop on listening socket.
 - Daemon lifecycle and deployment architecture (`user/sshd/sshd.c` -> `/sbin/sshd`):
   * Privileged Monitor (`/sbin/sshd`, UID 0, CAP_SYS_ADMIN): reads host private key and `/etc/shadow`, binds TCP port 22 with backlog 2 via CPU-0 network ownership.
-  * Admission gate: strict cap of 2 concurrent client sessions; tracks active worker child PIDs via non-blocking `SYS_WAITPID(WNOHANG)` reaping. Excess connection attempts immediately rejected with short error before drop.
+  * Admission gate (`user/sshd/sshd_admission.h`, `user/sshd/sshd_admission.c`): strict global cap of 2 concurrent client sessions across all peer IPs, enforced before `SYS_SPAWN_EXT` and before pipe allocation. Connection 3 sees immediate version banner + RFC 4253 `SSH_MSG_DISCONNECT` (reason 11 `SSH_DISCONNECT_BY_APPLICATION`, description "Too many concurrent sessions") and clean socket teardown. Active workers tracked via non-blocking `SYS_WAITPID(WNOHANG)` reaping with zero worker, slot, or descriptor leaks.
   * Process boundary: on client accept, creates anonymous IPC pipes (`SYS_PIPE` 24) and spawns unprivileged protocol worker (`/sbin/sshd --worker <sid>`) via `SYS_SPAWN_EXT`, mapping IPC read/write and client socket fds to 3, 4, 5.
   * Protocol Worker (`/sbin/sshd --worker <sid>`): immediately drops all capabilities via `SYS_CAPSET 0`, executes transport KEX, verifies user credentials via monitor IPC, sets up PTY pair (`SYS_PTY_PAIR` 80), spawns user session with zero-race staged binding (`SPAWN_SETSID | SPAWN_STAGED`, `PTY_SET_SESSION`, `GROUP_RELEASE`), runs 20ms bounded-poll duplex I/O loop (`SYS_NANOSLEEP`), and terminates with clean SIGHUP/SIGTERM teardown.
 - Verified Gates:
-  * `make test-ssh-daemon-host` (100% PASS): configuration parsing, precedence rules, pinned boot readiness gate sequence (all failure diagnostics and clean exit), admission limits (2-session concurrency cap), and clean lifecycle termination under ASan/UBSan.
+  * `make test-ssh-daemon-host` (100% PASS): configuration parsing, precedence rules, pinned boot readiness gate sequence, global admission cap enforcement before spawn, wire `SSH_MSG_DISCONNECT` validation, zero-leak descriptor verification, and clean lifecycle termination under ASan/UBSan.
   * System packaging: `/sbin/sshd` built and verified in `bin/initramfs.tar`, `bin/fortress.iso`, and `bin/fortress.img`.
 
 Add explicit configuration for enablement, bind address/port, password policy

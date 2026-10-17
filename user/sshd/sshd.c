@@ -18,6 +18,7 @@
 #include "pty_bridge.h"
 #include "sshd_config.h"
 #include "sshd_readiness.h"
+#include "sshd_admission.h"
 
 #define SSHD_SERVER_VERSION "SSH-2.0-FortressSSH_0.1\r\n"
 #define SSHD_SERVER_VERSION_TRIM "SSH-2.0-FortressSSH_0.1"
@@ -356,19 +357,12 @@ static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_se
 
     sshd_write_err("Listening on port 22 (SSH-2.0-FortressSSH_0.1)");
 
-    typedef struct {
-        bool active;
-        int64_t pid;
-        int p_mon_in;   /* Monitor reads worker requests */
-        int p_mon_out;  /* Monitor sends replies */
-    } worker_slot_t;
-
-    worker_slot_t slots[2];
+    sshd_worker_slot_t slots[SSHD_MAX_CONCURRENT_SESSIONS];
     memset(slots, 0, sizeof(slots));
 
     while (!g_terminate) {
         /* 1. Reap terminated workers */
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < SSHD_MAX_CONCURRENT_SESSIONS; i++) {
             if (slots[i].active) {
                 uint64_t status = 0;
                 long w = SSHD_SYSCALL(SYS_WAITPID, (uintptr_t)slots[i].pid, (uintptr_t)&status, WNOHANG, 0, 0, 0);
@@ -384,7 +378,7 @@ static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_se
         }
 
         /* 2. Service pending IPC requests from active workers */
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < SSHD_MAX_CONCURRENT_SESSIONS; i++) {
             if (slots[i].active && slots[i].p_mon_in >= 0) {
                 monitor_hdr_t req_hdr;
                 uint8_t req_payload[MONITOR_MAX_PAYLOAD];
@@ -404,19 +398,13 @@ static int sshd_monitor_run_loop(const sshd_config_t *cfg, const uint8_t host_se
         uint32_t peer_len = sizeof(peer);
         long client_fd = SSHD_SYSCALL(SYS_ACCEPT, (uintptr_t)sock_fd, (uintptr_t)&peer, (uintptr_t)&peer_len, 0, 0, 0);
         if (client_fd >= 0) {
-            /* Find available slot */
-            int free_slot = -1;
-            for (int i = 0; i < 2; i++) {
-                if (!slots[i].active) {
-                    free_slot = i;
-                    break;
-                }
-            }
+            /* Enforce global admission cap before worker spawn */
+            int free_slot = sshd_admission_find_slot(slots);
 
             if (free_slot < 0) {
-                /* Exceeded max concurrent sessions (2) */
+                /* Exceeded max concurrent sessions (2 globally across all IPs) */
                 sshd_write_err("Connection rejected: max concurrent sessions reached.");
-                (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)client_fd, 0, 0, 0, 0, 0);
+                sshd_reject_connection_capacity(client_fd, SSHD_SERVER_VERSION);
                 continue;
             }
 
