@@ -685,17 +685,21 @@ $(BUILD_DIR)/dhcp_probe.o: user/tools/dhcp-probe.c user/dhcp_codec.h src/include
 $(USER_DHCP_PROBE_ELF): $(BUILD_DIR)/dhcp_probe.o $(BUILD_DIR)/dhcp_codec.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=dhcp_probe_main user/tools/start.asm -o $(BUILD_DIR)/dhcp_probe_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcp_probe_start.o $(BUILD_DIR)/dhcp_probe.o $(BUILD_DIR)/dhcp_codec.o -o $@
-$(BUILD_DIR)/dhcpc.o: user/dhcpc.c user/dhcp_codec.h user/resolv_conf.h user/machine_config.h user/netconf.h src/include/types.h src/include/syscall_abi.h src/include/socket_abi.h src/include/netctl_abi.h src/include/account_abi.h
+$(BUILD_DIR)/timeline_log.o: user/timeline_log.c user/timeline_log.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
-$(USER_DHCPC_ELF): $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Iuser -Iuser/tools -c $< -o $@
+
+$(BUILD_DIR)/dhcpc.o: user/dhcpc.c user/timeline_log.h user/dhcp_codec.h user/resolv_conf.h user/machine_config.h user/netconf.h src/include/types.h src/include/syscall_abi.h src/include/socket_abi.h src/include/netctl_abi.h src/include/account_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Iuser -Iuser/tools -c $< -o $@
+$(USER_DHCPC_ELF): $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=dhcpc_main user/tools/start.asm -o $(BUILD_DIR)/dhcpc_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcpc_start.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcpc_start.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o -o $@
 # Ring 3 has a one-page user stack. Bound individual frames as well as auditing
 # the nested call chain; host sanitizer stacks cannot establish this property.
 $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/service_cli.o: CFLAGS += -Wframe-larger-than=1024
 
-$(BUILD_DIR)/watchtower_service.o: user/watchtower/watchtower_service.c user/watchtower/watchtower.h src/include/types.h
+$(BUILD_DIR)/watchtower_service.o: user/watchtower/watchtower_service.c user/watchtower/watchtower.h user/watchtower/watchtower_config.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
 $(BUILD_DIR)/watchtower_config.o: user/watchtower/watchtower_config.c user/watchtower/watchtower_config.h user/watchtower/watchtower.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
@@ -752,7 +756,7 @@ $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 SBIN_STREAM_TOOLS := shutdown reboot poweroff lockstat
-USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free which env date sleep time gzip gunzip kill
+USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free which env date sleep time gzip gunzip kill logger
 $(BUILD_DIR)/tool-gunzip.o: CFLAGS += -DGUNZIP_STANDALONE
 STREAM_TOOLS := $(USER_STREAM_TOOLS) $(SBIN_STREAM_TOOLS)
 SBIN_LOGIN_TOOLS := useradd
@@ -849,6 +853,17 @@ $(BUILD_DIR)/tool-common.o: user/tools/common.c user/tools/common.h src/include/
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
 
 $(BUILD_DIR)/shell-jobctl.o $(BUILD_DIR)/tool-kill.o: user/kill_cli.h
+$(BUILD_DIR)/tool-logger.o: user/tools/logger.h
+$(BUILD_DIR)/tool-boot_snapshot.o: user/tools/boot_snapshot.h
+
+USER_BOOT_SNAPSHOT_ELF := $(BUILD_DIR)/boot-snapshot.elf
+$(BUILD_DIR)/tool-boot_snapshot.o: user/tools/boot_snapshot.c user/tools/boot_snapshot.h user/tools/common.h user/permissions_cli.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Isrc/fs -Iuser/tools -c $< -o $@
+
+$(USER_BOOT_SNAPSHOT_ELF): $(BUILD_DIR)/tool-boot_snapshot.o user/tools/start.asm user/shell.ld $(BUILD_DIR)/tool-common.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=boot_snapshot_main user/tools/start.asm -o $(BUILD_DIR)/tool-boot_snapshot-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-boot_snapshot-start.o $(BUILD_DIR)/tool-boot_snapshot.o $(BUILD_DIR)/tool-common.o -o $@
 
 $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .o,$(STREAM_TOOLS))): $(BUILD_DIR)/tool-%.o: user/tools/%.c user/tools/common.h user/permissions_cli.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
@@ -928,6 +943,22 @@ test-kill-host:
 test-gzip-host:
 	@mkdir -p $(BUILD_DIR)
 	@gcc -std=c11 -Wall -Wextra -Werror -Wframe-larger-than=1024 -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/gzip_host.c user/tools/common.c user/tools/digest.c user/tools/gzip.c user/tools/gunzip.c -o $(BUILD_DIR)/gzip_host && $(BUILD_DIR)/gzip_host
+
+.PHONY: test-logger-host
+test-logger-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -DPERMISSIONS_CLI_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools -Iuser tests/logger_host.c user/tools/common.c user/tools/logger.c -o $(BUILD_DIR)/logger_host && $(BUILD_DIR)/logger_host
+
+.PHONY: test-timeline-log-host
+test-timeline-log-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTIMELINE_LOG_HOST_TEST -Isrc/include -Isrc/fs -Iuser tests/timeline_log_host.c user/timeline_log.c -o $(BUILD_DIR)/timeline_log_host && $(BUILD_DIR)/timeline_log_host
+
+.PHONY: test-boot-snapshot-host
+test-boot-snapshot-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -DPERMISSIONS_CLI_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools -Iuser tests/boot_snapshot_host.c user/tools/common.c user/tools/boot_snapshot.c -o $(BUILD_DIR)/boot_snapshot_host && $(BUILD_DIR)/boot_snapshot_host
+
 
 .PHONY: test-free-host test-free
 test-free-host:
@@ -1136,7 +1167,7 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf COMMANDS.md Makefile scripts/create_initramfs.py
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -1149,6 +1180,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_PS_ELF) $(BUILD_DIR)/initramfs/bin/ps
 	@cp -f $(USER_SYSINFO_ELF) $(BUILD_DIR)/initramfs/bin/sysinfo
 	@cp -f $(USER_DMESG_ELF) $(BUILD_DIR)/initramfs/bin/dmesg
+	@cp -f $(USER_BOOT_SNAPSHOT_ELF) $(BUILD_DIR)/initramfs/bin/boot-snapshot
 	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/sbin/ifconfig
 	@cp -f $(USER_IFUP_ELF) $(BUILD_DIR)/initramfs/sbin/ifup
 	@cp -f $(USER_DHCPC_ELF) $(BUILD_DIR)/initramfs/sbin/dhcpc
@@ -1195,11 +1227,12 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@mkdir -p $(BUILD_DIR)/initramfs/etc/ssh
 	@printf "Enabled yes\nPort 22\nListenAddress 0.0.0.0\nPermitRootLogin no\nPasswordAuthentication yes\nPubkeyAuthentication yes\nMaxSessions 2\nMaxAuthTries 5\nLoginGraceTime 60\n" > $(BUILD_DIR)/initramfs/etc/ssh/sshd_config
 	@mkdir -p $(BUILD_DIR)/initramfs/etc/watchtower
+	@printf "Exec=/bin/boot-snapshot\nOrder=01\nType=simple\nRestart=no\n" > $(BUILD_DIR)/initramfs/etc/watchtower/boot-log.service
 	@printf "Exec=/sbin/dhcpc -f\nOrder=10\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStart=5\nTimeoutStop=5\nReadiness=file:/run/dhcpc.lease\n" > $(BUILD_DIR)/initramfs/etc/watchtower/dhcpc.service
 	@printf "Exec=/sbin/sshd -D\nOrder=20\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStart=5\nTimeoutStop=10\nReadiness=file:/run/watchtower/sshd.ready\n" > $(BUILD_DIR)/initramfs/etc/watchtower/sshd.service
 	@printf "Exec=/sbin/crond -f\nOrder=30\nType=simple\nRestart=on-failure\nTimeoutStop=2\n" > $(BUILD_DIR)/initramfs/etc/watchtower/crond.service
-	@printf "# /etc/crontab - FortressOS crond configuration\n# <interval_minutes> <absolute_command_path> [args...]\n" > $(BUILD_DIR)/initramfs/etc/crontab
-	@printf "/var/log/watchtower/watchtower.log {\n    size 10M\n    rotate 4\n    compress\n    missingok\n}\n" > $(BUILD_DIR)/initramfs/etc/logrotate.conf
+	@printf "# /etc/crontab - FortressOS crond configuration\n# <interval_minutes> <absolute_command_path> [args...]\n60 /sbin/logrotate --skip-if-locked /etc/logrotate.conf\n" > $(BUILD_DIR)/initramfs/etc/crontab
+	@printf "/var/log/messages {\n    size 10M\n    rotate 4\n    compress\n    missingok\n}\n" > $(BUILD_DIR)/initramfs/etc/logrotate.conf
 	@echo "  [TAR] Generating USTAR archive $@"
 	@python3 scripts/create_initramfs.py $(BUILD_DIR)/initramfs $(INITRAMFS_TAR)
 
@@ -2086,6 +2119,10 @@ test-nano-ssh: $(BOOTABLE_ISO)
 test-watchtower-boot: $(BOOTABLE_ISO)
 	python3 scripts/test_watchtower_boot.py
 
+.PHONY: test-watchtower-lifecycle
+test-watchtower-lifecycle: $(BOOTABLE_ISO)
+	python3 scripts/test_watchtower_lifecycle.py
+
 .PHONY: test-watchtower-config-host
 test-watchtower-config-host:
 	@mkdir -p $(BUILD_DIR)
@@ -2095,7 +2132,7 @@ test-watchtower-config-host:
 .PHONY: test-watchtower-ctl-host
 test-watchtower-ctl-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser/watchtower user/watchtower/watchtower_service.c user/watchtower/watchtower_ctl.c tests/watchtower_ctl_host.c -o $(BUILD_DIR)/watchtower_ctl_host
+	@$(CC) -O1 -g -fsanitize=address,undefined -DWATCHTOWER_HOST_TEST -Wall -Wextra -Werror -Isrc/include -Isrc/fs -Iuser/watchtower user/watchtower/watchtower_service.c user/watchtower/watchtower_config.c user/watchtower/watchtower_ctl.c tests/watchtower_ctl_host.c -o $(BUILD_DIR)/watchtower_ctl_host
 	@$(BUILD_DIR)/watchtower_ctl_host
 
 .PHONY: test-watchtower-phase5-host
@@ -2107,7 +2144,7 @@ test-watchtower-phase5-host:
 .PHONY: test-watchtower-host
 test-watchtower-host: test-watchtower-config-host test-watchtower-ctl-host test-watchtower-phase5-host
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser user/watchtower/watchtower_service.c tests/watchtower_host.c -o $(BUILD_DIR)/watchtower_host
+	@$(CC) -O1 -g -fsanitize=address,undefined -DWATCHTOWER_HOST_TEST -Wall -Wextra -Werror -Isrc/include -Isrc/fs -Iuser -Iuser/watchtower user/watchtower/watchtower_service.c user/watchtower/watchtower_config.c tests/watchtower_host.c -o $(BUILD_DIR)/watchtower_host
 	@$(BUILD_DIR)/watchtower_host
 
 .PHONY: test-crond-host

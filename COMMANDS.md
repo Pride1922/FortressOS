@@ -61,11 +61,33 @@ Scripting is integrated into main; release media has not been rebuilt for this i
 
 ---
 
+### Service management
+
+Watchtower supervises the registered dhcpc, sshd and crond services.
+
+```sh
+service list
+service status sshd
+service check sshd
+sudo service start sshd
+sudo service stop sshd
+sudo service restart sshd
+```
+
+Use the registered name, without `.service`. Changes are asynchronous; query
+status/readiness after starting. `restart` uses loaded configuration and does
+not reload files. `service --help` lists the supported commands. Do not start
+a second Watchtower instance. See the [user and developer guide](docs/subsystems/watchtower.md)
+for live SSH setup, logging, timeouts, configuration and how to register a new
+daemon; creating an arbitrary `.service` file alone does not register it.
+
 ## 2. Quick Reference Index
 
 | Command | Type | Category | Summary |
 |:---|:---|:---|:---|
 | [`help`](#help) | Builtin (child-safe) | Shell | Show help overview or help for a specific command |
+| [`service`](#service-management) | `/bin/service` | Services | List, inspect, check, start, stop and restart registered services |
+| [`watchtower`](docs/subsystems/watchtower.md) | `/sbin/watchtower` | Services | Supervisor; see the user/developer guide before starting manually |
 | [`clear`](#clear) | Builtin (child-safe) | Shell | Clear the screen and move the cursor home |
 | [`cd`](#cd) | Builtin | Navigation | Change working directory |
 | [`pwd`](#pwd) | Builtin (child-safe) | Navigation | Print working directory |
@@ -127,6 +149,8 @@ Scripting is integrated into main; release media has not been rebuilt for this i
 | [`sleep`](#sleep) | Binary (`/bin/sleep`) | Time / Process | Delay execution for specified duration via `SYS_NANOSLEEP` |
 | [`gzip`](#gzip) | Binary (`/bin/gzip`) | Stream Tool / Compression | Bounded DEFLATE (RFC 1951) and gzip (RFC 1952) compression |
 | [`gunzip`](#gunzip) | Binary (`/bin/gunzip`) | Stream Tool / Compression | Bounded DEFLATE (RFC 1951) and gzip (RFC 1952) decompression |
+| [`logger`](#logger) | Binary (`/bin/logger`) | Stream Tool / Logging | Log messages to the system audit timeline (`/var/log/messages`) |
+| [`boot-snapshot`](#boot-snapshot) | Binary (`/bin/boot-snapshot`) | System / Logging | Persist kernel boot log snapshot to `/var/log/boot.log` (or `/run/boot.log`) |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
 | [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display OS identity, CPU, memory/heap, tasks, and storage summary |
@@ -1435,6 +1459,37 @@ gzip -d file.txt.gz       # Decompresses file.txt.gz -> file.txt
 ```sh
 gunzip file.txt.gz        # Restores file.txt and unlinks file.txt.gz
 gunzip -c archive.tar.gz | tar -tf -
+```
+
+---
+
+### `logger`
+**Syntax:** `logger [-t tag] [message...]`  
+**Path:** `/bin/logger`  
+**Description:** Records events to the FortressOS system audit timeline (`/var/log/messages`, with fallback to `/run/messages` on `ENOENT`/`EROFS`). Supports command-line positional arguments joined with spaces, or reads line-by-line from standard input when positional arguments are omitted. Emits structured timestamped entries bounded to $\le 512$ bytes per record with a single atomic `SYS_WRITE` call with `VFS_O_APPEND`. Enforces untrusted validation (rejecting world-writable or non-root owned log directories/files and symlinks via `SYS_LSTAT`), and sanitizes control characters and high bytes to mitigate log injection and terminal manipulation attacks.
+* **Options:**
+  - `-t tag`: Specify message tag prefix (default: `logger`).
+  - `--help`, `-h`: Display usage summary and exit.
+* **Format:**
+  - Standard UTC (when system clock is in 2026–2100): `[YYYY-MM-DD HH:MM:SS UTC] <tag>: <message>\n`
+  - Monotonic uptime fallback (when clock uninitialized or out of bounds): `[   12.345s UPTIME] <tag>: <message>\n`
+* **Examples:**
+```sh
+logger -t auth "User operator authenticated successfully"
+dmesg | grep NET | logger -t kernel
+echo "Manual service trigger" | logger -t admin
+```
+
+### `boot-snapshot`
+**Syntax:** `boot-snapshot [-h|--help]`  
+**Path:** `/bin/boot-snapshot`  
+**Description:** Persists a forensic snapshot of the kernel ring buffer (`SYS_DMESG`) into `/var/log/boot.log` (or `/run/boot.log` in ephemeral memory). Before taking a new snapshot, pre-rotates any existing `/var/log/boot.log` to `/var/log/boot.log.prev`. Managed exclusively by the startup service `/etc/watchtower/boot-log.service` (`Order=01`, `Type=simple`, `Restart=no`).  
+* **Options:**
+  - `-h`, `--help`: Display usage summary.
+* **Examples:**
+```sh
+boot-snapshot
+sudo boot-snapshot
 ```
 
 ---

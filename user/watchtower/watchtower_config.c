@@ -385,7 +385,8 @@ int watchtower_config_parse_service(const char *buf, size_t len, const char *svc
                 cfg_format_err(err_msg, err_cap, "duplicate directive", key, line_num);
                 return -1;
             }
-            if (cfg_strcasecmp(val, "never")) {
+            if (cfg_strcasecmp(val, "never") || cfg_strcasecmp(val, "no") ||
+                cfg_strcasecmp(val, "false") || cfg_strcasecmp(val, "off")) {
                 out_svc->restart_policy = RESTART_NEVER;
             } else if (cfg_strcasecmp(val, "on-failure") || cfg_strcasecmp(val, "on_failure")) {
                 out_svc->restart_policy = RESTART_ON_FAILURE;

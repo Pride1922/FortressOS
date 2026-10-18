@@ -285,6 +285,25 @@ static void test_reject_invalid_new_directives(void) {
     printf("PASS: test_reject_invalid_new_directives\n");
 }
 
+static void test_parse_boot_log_service(void) {
+    printf("[TEST] test_parse_boot_log_service...\n");
+    const char *cfg =
+        "Exec=/bin/boot-snapshot\n"
+        "Order=01\n"
+        "Type=simple\n"
+        "Restart=no\n";
+    service_t svc;
+    char err[256];
+    int r = watchtower_config_parse_service(cfg, strlen(cfg), "boot-log", &svc, err, sizeof(err));
+    assert(r == 0);
+    assert(strcmp(svc.name, "boot-log") == 0);
+    assert(strcmp(svc.exec_path, "/bin/boot-snapshot") == 0);
+    assert(svc.order == 1);
+    assert(svc.type == SVC_TYPE_SIMPLE);
+    assert(svc.restart_policy == RESTART_NEVER);
+    printf("PASS: test_parse_boot_log_service\n");
+}
+
 int main(void) {
     printf("===================================================\n");
     printf("Watchtower Phase 2 Configuration Test Suite (ASan)\n");
@@ -301,7 +320,8 @@ int main(void) {
     test_precedence_and_file_loading();
     test_parse_new_directives();
     test_reject_invalid_new_directives();
+    test_parse_boot_log_service();
 
-    printf("\nALL 11 PHASE 2 WATCHTOWER CONFIG TESTS PASSED!\n");
+    printf("\nALL 12 PHASE 2 WATCHTOWER CONFIG TESTS PASSED!\n");
     return 0;
 }
