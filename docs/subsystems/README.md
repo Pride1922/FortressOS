@@ -14,3 +14,4 @@ This directory holds the per-subsystem architecture annexes, status logs, hardwa
 | **Platform & Power** | ACPI S5 shutdown/reset, PCI ECAM, LAPIC NMI transitions, boot console diagnostics | [`platform.md`](platform.md) |
 | **Cryptography** | Phase 2 complete with approved verifier stack exception; RFC/negative/wipe/differential and BIOS/UEFI gates pass; wrapper-owned signing hash glue, unchanged upstream | [`crypto.md`](crypto.md) |
 | **SSH** | Phases 0–7 complete; privilege-separated `/sbin/sshd`, strict config schema, boot readiness gate, global 2-session cap, PTY duplex bridge, and 5s bounded teardown | [`ssh.md`](ssh.md) |
+| **Tools & Compression** | Bounded DEFLATE/gzip (RFC 1951 / RFC 1952), `/bin/gzip` and `/bin/gunzip`, 32 KiB sliding window, zip-bomb mitigation (100MB cap), zero dynamic allocation in decompression | [`tools.md`](tools.md) |

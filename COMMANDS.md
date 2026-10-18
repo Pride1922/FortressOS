@@ -94,6 +94,8 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`date`](#date) | Binary (`/bin/date`) | Time / System | Display or format system date and time via `SYS_CLOCK_GETTIME` |
 | [`sleep`](#sleep) | Binary (`/bin/sleep`) | Time / Process | Delay execution for specified duration via `SYS_NANOSLEEP` |
+| [`gzip`](#gzip) | Binary (`/bin/gzip`) | Stream Tool / Compression | Bounded DEFLATE (RFC 1951) and gzip (RFC 1952) compression |
+| [`gunzip`](#gunzip) | Binary (`/bin/gunzip`) | Stream Tool / Compression | Bounded DEFLATE (RFC 1951) and gzip (RFC 1952) decompression |
 | [`ps`](#ps) | Binary (`/bin/ps`) | Introspection | Snapshot active process table |
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
 | [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display OS identity, CPU, memory/heap, tasks, and storage summary |
@@ -1351,6 +1353,47 @@ time sleep 1
 time -p sleep 1
 time sha256sum /bin/shell
 time -p -- which date
+```
+
+---
+
+### `gzip`
+**Syntax:** `gzip [-c] [-d] [-f] [-k] [-1..-9] [--help] [FILE...]`  
+**Path:** `/bin/gzip`  
+**Description:** Compresses files using standard DEFLATE (RFC 1951) and wraps them in a gzip container (RFC 1952) with an IEEE 802.3 CRC-32 checksum and uncompressed ISIZE trailer. Employs a streaming LZ77 match finder with a fixed 32 KiB sliding window and precomputed Fixed Huffman coding. Memory allocation is entirely static (zero dynamic heap allocations), and stack usage is bounded to <= 400 bytes.
+* **Options:**
+  - `-c`, `--stdout`: Write compressed stream to standard output; keep original files unchanged.
+  - `-d`, `--decompress`, `--uncompress`: Decompress files instead of compressing.
+  - `-f`, `--force`: Force overwrite of output files if they already exist.
+  - `-k`, `--keep`: Keep (do not delete) original input files upon successful completion.
+  - `-1` .. `-9`: Accepted compression presets.
+  - `-h`, `--help`: Display usage summary and exit.
+  - `--`: Treat all remaining arguments as filenames.
+* **Behavior:**
+  - With no `FILE`, or when `FILE` is `-`, reads from standard input and writes to standard output.
+  - When compressing a named file, creates `FILE.gz` and unlinks `FILE` unless `-k` or `-c` is passed.
+* **Examples:**
+```sh
+gzip -k file.txt          # Compresses file.txt -> file.txt.gz, keeps file.txt
+cat file.txt | gzip -c > file.txt.gz
+gzip -d file.txt.gz       # Decompresses file.txt.gz -> file.txt
+```
+
+---
+
+### `gunzip`
+**Syntax:** `gunzip [-c] [-f] [-k] [--help] [FILE...]`  
+**Path:** `/bin/gunzip`  
+**Description:** Decompresses gzip (RFC 1952) archives formatted with DEFLATE (RFC 1951). Full support for Stored (`BTYPE 00`), Fixed Huffman (`BTYPE 01`), and Dynamic Huffman (`BTYPE 10`) compressed blocks. Enforces strict decompression bomb (zip bomb) mitigation with an unconditional 100 MB output cap (`GZIP_MAX_OUTPUT`). Validates trailer CRC-32 and ISIZE against computed values, cleanly cleaning up partial output and returning non-zero upon corruption or truncation.
+* **Options:**
+  - `-c`, `--stdout`: Write decompressed stream to standard output; keep original `.gz` files.
+  - `-f`, `--force`: Force overwrite of destination files if they already exist.
+  - `-k`, `--keep`: Keep original `.gz` input files upon success.
+  - `-h`, `--help`: Display usage summary and exit.
+* **Examples:**
+```sh
+gunzip file.txt.gz        # Restores file.txt and unlinks file.txt.gz
+gunzip -c archive.tar.gz | tar -tf -
 ```
 
 ---

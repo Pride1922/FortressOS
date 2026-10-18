@@ -710,7 +710,8 @@ $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 SBIN_STREAM_TOOLS := shutdown reboot poweroff lockstat
-USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free which env date sleep time
+USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free which env date sleep time gzip gunzip
+$(BUILD_DIR)/tool-gunzip.o: CFLAGS += -DGUNZIP_STANDALONE
 STREAM_TOOLS := $(USER_STREAM_TOOLS) $(SBIN_STREAM_TOOLS)
 SBIN_LOGIN_TOOLS := useradd
 USER_LOGIN_TOOLS := login whoami sudo recovery passwd
@@ -871,6 +872,11 @@ test-awk-host:
 
 test-awk: $(BOOTABLE_ISO) test-awk-host
 	@python3 scripts/test_awk.py
+
+.PHONY: test-gzip-host
+test-gzip-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -Wframe-larger-than=1024 -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/gzip_host.c user/tools/common.c user/tools/digest.c user/tools/gzip.c user/tools/gunzip.c -o $(BUILD_DIR)/gzip_host && $(BUILD_DIR)/gzip_host
 
 .PHONY: test-free-host test-free
 test-free-host:
