@@ -1,6 +1,6 @@
 # Watchtower Service Supervisor & Service Control CLI — Architectural Plan
 
-**Status:** PHASES 0–5 COMPLETE (2026-10-18); host ASan/UBSan 36/36 PASS; freestanding `watchtower.elf` (75K) and `service.elf` (22K) built; ready for QEMU & bare-metal verification  
+**Status:** PHASES 0–5 IMPLEMENTED (2026-10-18); host ASan/UBSan 36/36 PASS. Dell boot exposed user-stack overflow; corrected source and replacement image pass four BIOS/UEFI × SMP=1/4 boot/CLI smoke checks. Bounded Dell startup/control retest passes; full lifecycle acceptance remains pending. See the stack correction below.
 **Date:** 2026-10-18  
 **Scope:** Service supervisor (`/sbin/watchtower`), control CLI (`/bin/service`), service configuration (`/etc/watchtower/`), process tracking, readiness verification, bounded recovery, logging, log rotation, and shutdown lifecycle.  
 **Target Services:** Initial: DHCP Client (`/sbin/dhcpc`) and SSH Daemon (`/sbin/sshd`). Future: Fortress Security Manager (`/sbin/fortressd`), Cron Daemon (`/sbin/crond`), System Logger (`/sbin/syslogd`).
@@ -312,3 +312,43 @@ To guarantee zero-data-loss shutdown from both local consoles and remote SSH ses
 * Hot-reload of supervisor without restart.
 * Linux cgroups or resource containerization.
 * Network-accessible remote service management.
+
+## Dell boot stack correction — 2026-10-18
+
+The first Dell boot of the merged checkpoint faulted PID 94 `/sbin/watchtower`
+at RIP `0x4030ca`, the stack-probing instruction in `watchtower_main`'s
+prologue. GCC reported a 20,896-byte main frame. The ELF loader currently maps
+one 4 KiB user stack page; the 16 KiB kernel thread stack does not extend it.
+Host sanitizer tests did not expose this Ring 3 limit, and prior scripting
+acceptance did not assert supervisor survival.
+
+Moved startup service records, request/response buffers, and pipe-drain bulk
+scratch into process-owned static storage. The supervisor is single-threaded;
+signal handlers only set flags. Sorting swaps records bytewise instead of
+allocating a full temporary service on the stack. The one-shot service CLI
+also owns its wire buffers in static storage. No stack mapping, ABI or entry
+contract was changed.
+
+Measured freestanding frames before/after: main 20,896 -> 592 bytes; pipe drain
+4,272 -> 176; service sort 4,984 -> 8; CLI 4,664 -> 88. All five Watchtower/CLI
+object builds now reject individual frames over 1,024 bytes; nested calls still
+require review against the one-page stack.
+
+`make build/watchtower.elf test-watchtower-host` passes all 36 host sanitizer
+checks. `make` rebuilds and verifies the live IMG/ISO. The new
+`python3 scripts/test_watchtower_boot.py` passes BIOS/UEFI at SMP=1/4: real live
+boot, supervisor registration, repeated privileged service-list requests, pipe
+draining and a responsive shell. Early intentional kernel fault-isolation
+self-tests are distinguished from actual Watchtower/service/crond faults.
+Fixtures attach only a read-only ISO, disposable OVMF variables and QEMU user
+networking; no data disks or private keys are created. These are smoke checks,
+not complete restart/shutdown/service correctness acceptance.
+
+Replacement `bin/fortress.img` SHA-256:
+`b7c818279315f5b7187ca73961bed589024c720ae1c9abd8a8526df88b5e8dd5`.
+Subsequent Dell live-USB retest reached the shell and returned service status;
+SSH setup followed by `service restart sshd` restored MobaXterm/PuTTY login.
+This confirms bounded startup/control recovery after the stack correction.
+Initial SSH failures exhausted three retries before live password/host-key
+provisioning; they do not establish a transport regression. Complete service
+restart, shutdown/reboot, readiness and failure-policy acceptance remains open.

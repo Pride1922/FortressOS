@@ -1,6 +1,6 @@
 # Shell scripting — issue #14
 
-**Status:** PHASES A–D AND UNTIL INTEGRATED INTO MAIN (2026-10-18). See [evidence and delivery limits](../roadmap/shell-scripting.md). Release media has not been rebuilt for this integration.
+**Status:** PHASES A–D AND UNTIL INTEGRATED INTO MAIN (2026-10-18). See [evidence and delivery limits](../roadmap/shell-scripting.md). Rebuilt live media passed the bounded Dell console/SSH smoke test (2026-10-18); this is acceptance of the documented subset.
 
 **Date:** 2026-10-18
 **First delivery:** explicit `sh file [args...]` and `sh -c command [name [args...]]`.

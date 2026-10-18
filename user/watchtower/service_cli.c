@@ -139,7 +139,9 @@ int service_main(int argc, char **argv) {
     }
 
     /* Build request string */
-    char req[WATCHTOWER_CTL_MAX_REQ];
+    /* The CLI runs once per process; these bounded wire buffers must not
+     * consume the one-page Ring 3 stack. */
+    static char req[WATCHTOWER_CTL_MAX_REQ];
     size_t rlen = 0;
     for (size_t i = 0; action[i]; i++) req[rlen++] = action[i];
     if (svc_name[0]) {
@@ -185,7 +187,7 @@ int service_main(int argc, char **argv) {
     sys_call(SYS_KILL, (uintptr_t)pid, SIGHUP, 0, 0, 0, 0);
 
     /* Wait for response (up to 2000 ms) */
-    char res[WATCHTOWER_CTL_MAX_RES];
+    static char res[WATCHTOWER_CTL_MAX_RES];
     long res_read = -1;
     int wait_tries = 200; /* 200 * 10ms = 2.0s */
 

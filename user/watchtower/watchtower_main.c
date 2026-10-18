@@ -381,7 +381,9 @@ static void wt_log_event(const char *msg) {
 
 static void wt_drain_pipes(watchtower_table_t *tbl) {
     if (!tbl) return;
-    char chunk[4096];
+    /* Single supervisor loop; signals only set flags. Keep bulk pipe scratch
+     * off the one-page Ring 3 stack. No nested drain invocation is allowed. */
+    static char chunk[4096];
     char log_path[128];
 
     for (size_t i = 0; i < tbl->count; i++) {
@@ -457,7 +459,8 @@ int watchtower_main(int argc, char **argv) {
 
     /* Register Services: configuration files checked first with built-in fallbacks */
     char err[256];
-    service_t dhcp;
+    /* Startup records outlive no call but are too large for the user stack. */
+    static service_t dhcp;
     int r_dhcp = watchtower_config_load_service(
         "/etc/watchtower/dhcpc.service",
         "/mnt/.fortress/watchtower/dhcpc.service",
@@ -465,7 +468,7 @@ int watchtower_main(int argc, char **argv) {
     if (r_dhcp == 0) {
         watchtower_table_add_service(&table, &dhcp);
     } else if (wt_file_exists("/sbin/dhcpc")) {
-        service_t def_dhcp = {
+        static service_t def_dhcp = {
             .order = 10,
             .enabled = true,
             .readiness_mode = READINESS_FILE,
@@ -490,7 +493,7 @@ int watchtower_main(int argc, char **argv) {
         watchtower_table_add_service(&table, &def_dhcp);
     }
 
-    service_t ssh;
+    static service_t ssh;
     int r_ssh = watchtower_config_load_service(
         "/etc/watchtower/sshd.service",
         "/mnt/.fortress/watchtower/sshd.service",
@@ -498,7 +501,7 @@ int watchtower_main(int argc, char **argv) {
     if (r_ssh == 0) {
         watchtower_table_add_service(&table, &ssh);
     } else if (wt_file_exists("/sbin/sshd")) {
-        service_t def_ssh = {
+        static service_t def_ssh = {
             .order = 20,
             .enabled = true,
             .readiness_mode = READINESS_FILE,
@@ -523,7 +526,7 @@ int watchtower_main(int argc, char **argv) {
         watchtower_table_add_service(&table, &def_ssh);
     }
 
-    service_t crond_svc;
+    static service_t crond_svc;
     int r_crond = watchtower_config_load_service(
         "/etc/watchtower/crond.service",
         "/mnt/.fortress/watchtower/crond.service",
@@ -531,7 +534,7 @@ int watchtower_main(int argc, char **argv) {
     if (r_crond == 0) {
         watchtower_table_add_service(&table, &crond_svc);
     } else if (wt_file_exists("/sbin/crond")) {
-        service_t def_crond = {
+        static service_t def_crond = {
             .order = 30,
             .enabled = true,
             .readiness_mode = READINESS_NONE,
@@ -608,14 +611,14 @@ int watchtower_main(int argc, char **argv) {
             uint32_t caller_uid = (sret == 0) ? st.uid : 0;
             uint32_t caller_gid = (sret == 0) ? st.gid : 0;
 
-            char req_buf[WATCHTOWER_CTL_MAX_REQ];
+            static char req_buf[WATCHTOWER_CTL_MAX_REQ];
             long n = sys_call(SYS_READ, (uintptr_t)req_fd, (uintptr_t)req_buf, sizeof(req_buf) - 1, 0, 0, 0);
             (void)sys_call(SYS_CLOSE, (uintptr_t)req_fd, 0, 0, 0, 0, 0);
             (void)sys_call(SYS_UNLINK, (uintptr_t)WATCHTOWER_CTL_REQ_FILE, 0, 0, 0, 0, 0);
 
             if (n > 0) {
                 req_buf[n] = '\0';
-                char res_buf[WATCHTOWER_CTL_MAX_RES];
+                static char res_buf[WATCHTOWER_CTL_MAX_RES];
                 watchtower_ctl_process_request(&table, req_buf, caller_uid, caller_gid,
                                                res_buf, sizeof(res_buf), &ops);
                 long res_fd = sys_call(SYS_OPEN, (uintptr_t)WATCHTOWER_CTL_RES_FILE,

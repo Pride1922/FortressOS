@@ -691,6 +691,10 @@ $(BUILD_DIR)/dhcpc.o: user/dhcpc.c user/dhcp_codec.h user/resolv_conf.h user/mac
 $(USER_DHCPC_ELF): $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=dhcpc_main user/tools/start.asm -o $(BUILD_DIR)/dhcpc_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcpc_start.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o -o $@
+# Ring 3 has a one-page user stack. Bound individual frames as well as auditing
+# the nested call chain; host sanitizer stacks cannot establish this property.
+$(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/service_cli.o: CFLAGS += -Wframe-larger-than=1024
+
 $(BUILD_DIR)/watchtower_service.o: user/watchtower/watchtower_service.c user/watchtower/watchtower.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
@@ -2077,6 +2081,10 @@ test-sshd-sudo: $(BOOTABLE_ISO)
 test-nano-ssh: $(BOOTABLE_ISO)
 	python3 scripts/test_nano_ssh.py bios
 	python3 scripts/test_nano_ssh.py uefi
+
+.PHONY: test-watchtower-boot
+test-watchtower-boot: $(BOOTABLE_ISO)
+	python3 scripts/test_watchtower_boot.py
 
 .PHONY: test-watchtower-config-host
 test-watchtower-config-host:

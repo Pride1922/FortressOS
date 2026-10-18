@@ -302,3 +302,34 @@ remain unchanged. Merged shell SHA-256:
 README and current scripting status now reflect this checkpoint. No release image
 was rebuilt. Physical scripting and full supervised-service lifecycle acceptance
 remain separate.
+
+
+## Dell live-USB physical smoke — 2026-10-18
+
+User-confirmed on the Dell live USB with the Watchtower stack-corrected image:
+`bin/fortress.img` SHA-256
+`b7c818279315f5b7187ca73961bed589024c720ae1c9abd8a8526df88b5e8dd5`.
+The shell binary is the merged `1daf1f24937dd77fa2717abd8e967df9094ced14811f43b25e7e6c0920e128c7`.
+
+Local console Step 2 passed by user report. SSH screenshots establish:
+argument/shift output `ARGS:check:2:first` and `SHIFT:1:second`; a changing
+until condition emitted `UNTIL_ONCE`; a real sourced RAM file printed
+`INNER:check:1:sample`, `SOURCE:7:changed`, `CALLER:1:original`, then `/`,
+without the post-return `BAD`. This verifies the exercised variable/cwd sharing,
+return status and explicit argument restoration on physical hardware.
+
+Repeated Ctrl+C tests returned promptly; the screenshot records `CANCEL:130`.
+The initial concern about slow cancellation was withdrawn after three or four
+responsive repetitions. No cancellation defect is confirmed. Screenshots also
+show hidden sudo input, successful root `id`, rejected authentication followed
+by a successful retry, dmesg output returning to the prompt, and clean MobaXterm
+session termination on `exit`. The user explicitly confirmed reconnect works
+and text typed on the Dell keyboard stays local to the Dell screen. MobaXterm
+and PuTTY login both work after live password/key setup and restarting sshd.
+
+Evidence is limited to these interactive live-media smoke checks and the
+previous automated subset gates. It does not claim exhaustive language
+conformance, installed-root/persistence acceptance, all eight physical source
+levels, or full Watchtower service restart/shutdown/reboot behavior. Test files
+were in `/run/user/1000`; passwords and private keys are not retained as evidence.
+No more manual scripting smoke checks are required for this bounded delivery.

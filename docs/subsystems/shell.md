@@ -11,7 +11,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 quoted `"$@"`, `shift`, `if`/`elif`/`else`, `while`/`until`, `for`, loop transfers and
 `test`/`[`, plus `source`/`.` and `return` with eight bounded source levels.
 Host sanitizer checks and 364 disk-free BIOS/UEFI cases pass (91 cases per
-firmware/CPU combination at SMP=1/4). Release media has not been rebuilt for this integration. Functions and substitutions remain later work.
+firmware/CPU combination at SMP=1/4). The rebuilt live USB passed the bounded Dell console/SSH smoke test on 2026-10-18; see the physical evidence below. Functions and substitutions remain later work.
 See [scripting evidence and usage](../roadmap/shell-scripting.md)
 and [the staged plan](../plans/SHELL_SCRIPTING_PLAN.md).
 

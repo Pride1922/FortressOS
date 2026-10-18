@@ -65,7 +65,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Deterministic Cryptography:** SHA-256 boot-secret ISN generation with hardware entropy harvesting.
 
 ### 💻 Userland & Shell
-- **Scripting:** Explicit `sh file` / `sh -c`, positional arguments, conditions, while/until/for loops, bounded source/return and `test`/`[`. Host sanitizers and disk-free BIOS/UEFI checks pass; physical scripting acceptance remains pending. See [scripting evidence](docs/roadmap/shell-scripting.md).
+- **Scripting:** Explicit `sh file` / `sh -c`, positional arguments, conditions, while/until/for loops, bounded source/return and `test`/`[`. Host sanitizers and disk-free BIOS/UEFI checks pass; bounded Dell console/SSH scripting smoke acceptance is user-confirmed. See [scripting evidence](docs/roadmap/shell-scripting.md).
 - **Interactive Shell:** Modular Ring 3 command shell supporting job control (`&`, `jobs`, `fg`, `kill`), pipelines (`|`), input/output redirection (`>`, `<`), and background redraw.
 - **Visual Editor:** Ring 3 visual text editor (`/bin/nano` v2.1) with Pike VM regex search, syntax highlighting, and buffer editing.
 - **System Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`, `/sbin/dhcpc`, `/bin/dhcp-probe`), and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `sed`, `awk`, `wc`, `xxd`).
@@ -109,8 +109,8 @@ shell is checked across BIOS/UEFI at SMP=1/4 using disposable, disk-free fixture
 The supported shell subset and acceptance limits are recorded in
 [the scripting evidence](docs/roadmap/shell-scripting.md).
 
-Next: supervised service lifecycle acceptance and physical console/SSH scripting
-checks. Release media has not been rebuilt for this checkpoint. Functions, case,
+Next: supervised service lifecycle acceptance. Rebuilt live media passed the
+Dell console/SSH scripting smoke test on 2026-10-18. Functions, case,
 read and larger shell-language extensions remain separate work.
 
 ### Downstream Roadmap

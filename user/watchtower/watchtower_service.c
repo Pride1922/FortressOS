@@ -59,9 +59,13 @@ void watchtower_table_sort_by_order(watchtower_table_t *tbl) {
     for (size_t i = 0; i < tbl->count - 1; i++) {
         for (size_t j = 0; j < tbl->count - i - 1; j++) {
             if (tbl->services[j].order > tbl->services[j + 1].order) {
-                service_t tmp = tbl->services[j];
-                tbl->services[j] = tbl->services[j + 1];
-                tbl->services[j + 1] = tmp;
+                /* A service record exceeds the entire Ring 3 stack. Swap
+                 * bytes in place instead of allocating a temporary record. */
+                uint8_t *left=(uint8_t *)&tbl->services[j];
+                uint8_t *right=(uint8_t *)&tbl->services[j+1];
+                for(size_t k=0;k<sizeof(service_t);k++) {
+                    uint8_t byte=left[k];left[k]=right[k];right[k]=byte;
+                }
             }
         }
     }
