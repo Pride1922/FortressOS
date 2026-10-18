@@ -1,6 +1,7 @@
 #include "monitor.h"
 #include "crypto.h"
 #include "string.h"
+#include "timeline_log.h"
 
 #ifdef CRYPTO_HOST_TEST
 #include <sys/types.h>
@@ -456,6 +457,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
 
         /* Enforce attempt cap: max 5 attempts */
         if (conn->auth_attempts >= 5) {
+            timeline_log("sshd", "Connection closed for %s: maximum authentication attempts exceeded", username);
             crypto_wipe(password, sizeof(password));
             uint32_t status = MONITOR_STATUS_AUTH_DENIED;
             memcpy(resp_payload, &status, sizeof(status));
@@ -465,6 +467,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
 
         /* Root remote login rejection with dummy hash verification */
         if (strcmp(username, "root") == 0) {
+            timeline_log("sshd", "Failed password for root (remote root login rejected)");
             db_verify(password, g_dummy_shadow_hash);
             crypto_wipe(password, sizeof(password));
             conn->auth_attempts++;
@@ -476,6 +479,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
 
         /* Empty password rejection with dummy verification */
         if (pass_len == 0 || password[0] == '\0') {
+            timeline_log("sshd", "Failed password for %s (empty password)", username);
             db_verify("dummy", g_dummy_shadow_hash);
             crypto_wipe(password, sizeof(password));
             conn->auth_attempts++;
@@ -496,6 +500,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
 
         /* Unknown, locked, or restricted accounts execute constant-time dummy verification */
         if (!u || !s || s->restricted || !s->hash[0] || s->hash[0] == '!' || s->hash[0] == '*') {
+            timeline_log("sshd", "Failed password for %s", username);
             db_verify(password, g_dummy_shadow_hash);
             crypto_wipe(password, sizeof(password));
             conn->auth_attempts++;
@@ -510,6 +515,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
         crypto_wipe(password, sizeof(password));
 
         if (!ok) {
+            timeline_log("sshd", "Failed password for %s", username);
             conn->auth_attempts++;
             uint32_t status = MONITOR_STATUS_AUTH_FAIL;
             memcpy(resp_payload, &status, sizeof(status));
@@ -518,6 +524,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
         }
 
         /* Authentication successful: load session credentials */
+        timeline_log("sshd", "Accepted password for %s (uid=%u)", u->name, (unsigned)u->uid);
         conn->authenticated = true;
         safe_strcpy(conn->username, u->name, sizeof(conn->username));
         conn->uid = u->uid;
@@ -590,6 +597,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
         *resp_type = MONITOR_RESP_AUTH_PUBKEY;
 
         if (conn->auth_attempts >= 5) {
+            timeline_log("sshd", "Connection closed for %s: maximum authentication attempts exceeded", username);
             uint32_t status = MONITOR_STATUS_AUTH_DENIED;
             memcpy(resp_payload, &status, sizeof(status));
             *resp_payload_len = sizeof(status);
@@ -597,6 +605,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
         }
 
         if (strcmp(username, "root") == 0) {
+            timeline_log("sshd", "Failed publickey for root (remote root login rejected)");
             if (!check_only) conn->auth_attempts++;
             uint32_t status = MONITOR_STATUS_AUTH_FAIL;
             memcpy(resp_payload, &status, sizeof(status));
@@ -611,7 +620,10 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
 
         const db_user_t *u = db_user_name(&ctx->db, username);
         if (!u) {
-            if (!check_only) conn->auth_attempts++;
+            if (!check_only) {
+                timeline_log("sshd", "Failed publickey for %s (user not found)", username);
+                conn->auth_attempts++;
+            }
             uint32_t status = MONITOR_STATUS_AUTH_FAIL;
             memcpy(resp_payload, &status, sizeof(status));
             *resp_payload_len = sizeof(status);
@@ -620,7 +632,10 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
 
         /* Check authorized_keys file */
         if (monitor_check_authorized_keys(u->home, u->uid, pubkey) != 0) {
-            if (!check_only) conn->auth_attempts++;
+            if (!check_only) {
+                timeline_log("sshd", "Failed publickey for %s (key not authorized)", username);
+                conn->auth_attempts++;
+            }
             uint32_t status = MONITOR_STATUS_AUTH_FAIL;
             memcpy(resp_payload, &status, sizeof(status));
             *resp_payload_len = sizeof(status);
@@ -637,6 +652,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
 
         /* Verify Ed25519 signature over RFC 4252 signed_data */
         if (crypto_ed25519_verify(sig, pubkey, signed_data, signed_data_len) != 0) {
+            timeline_log("sshd", "Failed publickey for %s (invalid signature)", username);
             conn->auth_attempts++;
             uint32_t status = MONITOR_STATUS_AUTH_FAIL;
             memcpy(resp_payload, &status, sizeof(status));
@@ -645,6 +661,7 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
         }
 
         /* Signature valid: record session authentication */
+        timeline_log("sshd", "Accepted publickey for %s (uid=%u)", u->name, (unsigned)u->uid);
         conn->authenticated = true;
         safe_strcpy(conn->username, u->name, sizeof(conn->username));
         conn->uid = u->uid;

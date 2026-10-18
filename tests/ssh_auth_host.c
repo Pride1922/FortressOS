@@ -26,6 +26,8 @@ static void safe_strcpy(char *dst, const char *src, size_t cap) {
 #include "user/sshd/ssh_packet.h"
 #include "src/include/crypto.h"
 #include "user/tools/userdb.h"
+#include "syscall_abi.h"
+#include "vfs.h"
 
 static bool g_mock_db_check_valid = true;
 bool db_check(void) { return g_mock_db_check_valid; }
@@ -45,6 +47,56 @@ int64_t crypto_test_getrandom(void *p, size_t n, uint64_t flags) {
 
 void crypto_test_wiped(const void *p, size_t n) {
     (void)p; (void)n;
+}
+
+static char g_mock_timeline_buf[4096];
+static size_t g_mock_timeline_len = 0;
+
+long timeline_test_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
+    (void)d;
+    if (nr == SYS_CLOCK_GETTIME) {
+        timespec_t *ts = (timespec_t *)b;
+        if (ts) {
+            ts->tv_sec = 1792139445; /* 2026-10-16 08:30:45 UTC */
+            ts->tv_nsec = 0;
+        }
+        return 0;
+    }
+    if (nr == SYS_STAT_EXT) {
+        stat_ext_v1_t *st = (stat_ext_v1_t *)b;
+        if (st) {
+            memset(st, 0, sizeof(*st));
+            st->type = VFS_DIRECTORY;
+            st->mode = VFS_S_IFDIR | 0755;
+            st->uid = 0;
+        }
+        return 0;
+    }
+    if (nr == SYS_LSTAT) {
+        return SYSCALL_ENOENT;
+    }
+    if (nr == SYS_OPEN) {
+        return 99;
+    }
+    if (nr == SYS_FCHMOD || nr == SYS_CLOSE) {
+        return 0;
+    }
+    if (nr == SYS_WRITE) {
+        int fd = (int)a;
+        const char *buf = (const char *)b;
+        size_t len = (size_t)c;
+        if (fd == 99) {
+            for (size_t i = 0; i < len; i++) {
+                if (g_mock_timeline_len + 1 < sizeof(g_mock_timeline_buf)) {
+                    g_mock_timeline_buf[g_mock_timeline_len++] = buf[i];
+                }
+            }
+            g_mock_timeline_buf[g_mock_timeline_len] = '\0';
+            return (long)len;
+        }
+        return (long)len;
+    }
+    return 0;
 }
 
 static void test_monitor_ipc_framing(void) {
@@ -985,6 +1037,17 @@ static void test_tier1_attempt_counter_enforcement(void) {
     printf("PASS: test_tier1_attempt_counter_enforcement\n");
 }
 
+static void test_monitor_timeline_audit(void) {
+    printf("Running test_monitor_timeline_audit...\n");
+    assert(g_mock_timeline_len > 0);
+    assert(strstr(g_mock_timeline_buf, "sshd: Accepted password for alice") != NULL);
+    assert(strstr(g_mock_timeline_buf, "sshd: Failed password for alice") != NULL);
+    assert(strstr(g_mock_timeline_buf, "sshd: Failed password for root") != NULL);
+    assert(strstr(g_mock_timeline_buf, "sshd: Accepted publickey for alice") != NULL);
+    assert(strstr(g_mock_timeline_buf, "sshd: Failed publickey for alice") != NULL);
+    printf("PASS: test_monitor_timeline_audit\n");
+}
+
 int main(void) {
     test_monitor_ipc_framing();
     test_monitor_signing_oracle();
@@ -998,6 +1061,7 @@ int main(void) {
     test_descriptor_exhaustion();
     test_dummy_timing_mitigation();
     test_tier1_attempt_counter_enforcement();
+    test_monitor_timeline_audit();
 
     printf("\nALL TESTS PASSED (tests/ssh_auth_host.c)\n");
     return 0;

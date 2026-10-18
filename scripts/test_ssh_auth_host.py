@@ -14,7 +14,7 @@ def main():
     BUILD.mkdir(parents=True, exist_ok=True)
     common = [
         'gcc', '-std=c11', '-Wall', '-Wextra', '-Werror',
-        '-Isrc/include', '-Isrc/lib/crypto/upstream/src', '-Iuser/tools', '-Iuser/sshd', '-I.',
+        '-Isrc/include', '-Isrc/lib/crypto/upstream/src', '-Iuser/tools', '-Iuser/sshd', '-Isrc/fs', '-I.',
         '-DCRYPTO_HOST_TEST'
     ]
     crypto_wrappers = [f'src/lib/crypto/{x}.c' for x in ('hash', 'curve', 'aead', 'entropy', 'ssh_hostkey')]
@@ -27,7 +27,8 @@ def main():
         'user/sshd/cipher.c',
         'user/sshd/kex.c',
         'user/sshd/monitor.c',
-        'user/sshd/auth.c'
+        'user/sshd/auth.c',
+        'user/timeline_log.c'
     ]
     tool_units = [
         'user/tools/userdb.c',

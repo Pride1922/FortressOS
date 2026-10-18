@@ -6,6 +6,7 @@
 #include "dhcp_codec.h"
 #include "netconf.h"
 #include "signal_abi.h"
+#include "timeline_log.h"
 
 #ifndef NET_IF_LINK_UP
 #define NET_IF_LINK_UP NET_IF_LINK_ONLINE
@@ -94,6 +95,16 @@ static void append_ip(char *buf, size_t cap, size_t *pos, uint32_t ip_net_order)
         if (i > 0) append_str(buf, cap, pos, ".");
         append_u32(buf, cap, pos, b[i]);
     }
+}
+
+static void dhcpc_log_lease(const char *action, const dhcp_offer_t *offer) {
+    if (!offer) return;
+    const uint8_t *b = (const uint8_t *)&offer->yiaddr;
+    const uint8_t *r = (const uint8_t *)&offer->router;
+    timeline_log("dhcpc", "Lease %s: IP %u.%u.%u.%u/%u, router %u.%u.%u.%u, lease %us",
+                 action,
+                 b[0], b[1], b[2], b[3], (unsigned)offer->prefix,
+                 r[0], r[1], r[2], r[3], (unsigned)offer->lease_time);
 }
 
 static inline uint16_t dhcpc_htons(uint16_t v) {
@@ -1090,6 +1101,7 @@ static int dhcpc_daemon_main(void) {
                     save_network_conf(current_offer.yiaddr, current_offer.prefix, current_offer.router,
                                       current_offer.dns_servers, current_offer.dns_count);
                     sys_call(SYS_SYNC, 0, 0, 0, 0, 0, 0);
+                    dhcpc_log_lease("bound", &current_offer);
 
                     t_ack = get_monotonic_sec();
                     t_renew = t_ack + current_offer.t1;
@@ -1142,6 +1154,7 @@ static int dhcpc_daemon_main(void) {
                     current_offer = ack;
                     int64_t epoch = get_realtime_epoch();
                     save_dhcpc_lease(&current_offer, epoch);
+                    dhcpc_log_lease("rebound", &current_offer);
                     t_ack = get_monotonic_sec();
                     t_renew = t_ack + current_offer.t1;
                     t_rebind = t_ack + current_offer.t2;
@@ -1162,6 +1175,7 @@ static int dhcpc_daemon_main(void) {
                     current_offer = ack;
                     int64_t epoch = get_realtime_epoch();
                     save_dhcpc_lease(&current_offer, epoch);
+                    dhcpc_log_lease("renewed", &current_offer);
                     t_ack = get_monotonic_sec();
                     t_renew = t_ack + current_offer.t1;
                     t_rebind = t_ack + current_offer.t2;
@@ -1190,6 +1204,7 @@ static int dhcpc_daemon_main(void) {
                     current_offer = ack;
                     int64_t epoch = get_realtime_epoch();
                     save_dhcpc_lease(&current_offer, epoch);
+                    dhcpc_log_lease("rebound (T2)", &current_offer);
                     t_ack = get_monotonic_sec();
                     t_renew = t_ack + current_offer.t1;
                     t_rebind = t_ack + current_offer.t2;
@@ -1359,6 +1374,7 @@ int dhcpc_main(int argc, char **argv) {
                       offer.dns_servers, offer.dns_count);
 
     sys_call(SYS_SYNC, 0, 0, 0, 0, 0, 0);
+    dhcpc_log_lease("bound", &offer);
 
     /* Output announcement */
     char msg[256];
