@@ -523,6 +523,37 @@ int watchtower_main(int argc, char **argv) {
         watchtower_table_add_service(&table, &def_ssh);
     }
 
+    service_t crond_svc;
+    int r_crond = watchtower_config_load_service(
+        "/etc/watchtower/crond.service",
+        "/mnt/.fortress/watchtower/crond.service",
+        "crond", &crond_svc, err, sizeof(err));
+    if (r_crond == 0) {
+        watchtower_table_add_service(&table, &crond_svc);
+    } else if (wt_file_exists("/sbin/crond")) {
+        service_t def_crond = {
+            .order = 30,
+            .enabled = true,
+            .readiness_mode = READINESS_NONE,
+            .restart_policy = RESTART_ON_FAILURE,
+            .restart_limit = 3,
+            .restart_delay_sec = 5,
+            .timeout_start_sec = 5,
+            .timeout_stop_sec = 2
+        };
+        for (size_t i = 0; i < sizeof(def_crond.name); i++) def_crond.name[i] = 0;
+        for (size_t i = 0; i < sizeof(def_crond.exec_path); i++) def_crond.exec_path[i] = 0;
+        for (size_t i = 0; i < sizeof(def_crond.ready_path); i++) def_crond.ready_path[i] = 0;
+        const char *name = "crond";
+        for (size_t i = 0; name[i]; i++) def_crond.name[i] = name[i];
+        const char *path = "/sbin/crond";
+        for (size_t i = 0; path[i]; i++) def_crond.exec_path[i] = path[i];
+        const char *arg0 = "-f";
+        for (size_t i = 0; arg0[i]; i++) def_crond.args[0][i] = arg0[i];
+        def_crond.argc = 1;
+        watchtower_table_add_service(&table, &def_crond);
+    }
+
     /* Initial boot start in Order sequence */
     uint64_t now = wt_monotonic_sec();
     for (size_t i = 0; i < table.count; i++) {
