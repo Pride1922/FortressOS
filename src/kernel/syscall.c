@@ -1658,6 +1658,7 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 #endif
 
         case SYS_STAT:
+        case SYS_LSTAT:
             result = sys_stat(frame->rdi, frame->rsi);
             break;
         case SYS_HOSTKEY: {

@@ -86,6 +86,7 @@
 #define SYS_FSTAT         78 /* (fd, stat_ext_v1_t *out) -> 0/-errno; fixed 40-byte v1 output */
 #define SYS_HOSTKEY       79 /* root-only fixed installed-root storage; hostkey_abi.h */
 #define SYS_PTY_PAIR      80 /* (int fds[2], uint32_t flags) -> 0 or -errno */
+#define SYS_LSTAT         81 /* (path, vfs_stat_t *out) -> 0/-errno */
 #define MAX_GETRANDOM_LEN 256u
 
 /* Clock identifiers */

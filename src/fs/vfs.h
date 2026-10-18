@@ -51,6 +51,7 @@ typedef enum {
 #define VFS_S_IFCHR 0020000u
 #define VFS_S_IFBLK 0060000u
 #define VFS_S_IFIFO 0010000u
+#define VFS_S_IFLNK 0120000u
 #define VFS_MNT_RDONLY 1u
 #define VFS_MNT_NOSUID 2u
 #define VFS_MNT_NODEV  4u
