@@ -625,6 +625,8 @@ USER_WGET_ELF := $(BUILD_DIR)/wget.elf
 USER_DOWNLOAD_ELF := $(BUILD_DIR)/download.elf
 USER_DHCP_PROBE_ELF := $(BUILD_DIR)/dhcp-probe.elf
 USER_DHCPC_ELF := $(BUILD_DIR)/dhcpc.elf
+USER_WATCHTOWER_ELF := $(BUILD_DIR)/watchtower.elf
+USER_SERVICE_ELF := $(BUILD_DIR)/service.elf
 DNS_OBJECTS := $(BUILD_DIR)/dns.o $(BUILD_DIR)/dns_codec.o
 $(DNS_OBJECTS): $(BUILD_DIR)/%.o: user/%.c user/dns.h user/dns_codec.h src/include/syscall_abi.h src/include/socket_abi.h
 	@mkdir -p $(BUILD_DIR)
@@ -686,6 +688,27 @@ $(BUILD_DIR)/dhcpc.o: user/dhcpc.c user/dhcp_codec.h user/resolv_conf.h user/mac
 $(USER_DHCPC_ELF): $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=dhcpc_main user/tools/start.asm -o $(BUILD_DIR)/dhcpc_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcpc_start.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o -o $@
+$(BUILD_DIR)/watchtower_service.o: user/watchtower/watchtower_service.c user/watchtower/watchtower.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
+$(BUILD_DIR)/watchtower_config.o: user/watchtower/watchtower_config.c user/watchtower/watchtower_config.h user/watchtower/watchtower.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
+$(BUILD_DIR)/watchtower_ctl.o: user/watchtower/watchtower_ctl.c user/watchtower/watchtower_ctl.h user/watchtower/watchtower.h src/include/types.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
+$(BUILD_DIR)/watchtower_main.o: user/watchtower/watchtower_main.c user/watchtower/watchtower.h user/watchtower/watchtower_config.h user/watchtower/watchtower_ctl.h src/include/types.h src/include/syscall_abi.h src/include/signal_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
+$(USER_WATCHTOWER_ELF): $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=watchtower_main user/tools/start.asm -o $(BUILD_DIR)/watchtower_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/watchtower_start.o $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o -o $@
+$(BUILD_DIR)/service_cli.o: user/watchtower/service_cli.c user/watchtower/watchtower.h user/watchtower/watchtower_ctl.h src/include/types.h src/include/syscall_abi.h src/include/signal_abi.h src/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
+$(USER_SERVICE_ELF): $(BUILD_DIR)/service_cli.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=service_main user/tools/start.asm -o $(BUILD_DIR)/service_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/service_start.o $< -o $@
 $(BUILD_DIR)/tcpserve.o: user/tcpserve.c user/udp_common.h src/include/socket_abi.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -c $< -o $@
@@ -1094,7 +1117,7 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf COMMANDS.md Makefile scripts/create_initramfs.py
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_SERVICE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -1109,6 +1132,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/sbin/ifconfig
 	@cp -f $(USER_IFUP_ELF) $(BUILD_DIR)/initramfs/sbin/ifup
 	@cp -f $(USER_DHCPC_ELF) $(BUILD_DIR)/initramfs/sbin/dhcpc
+	@cp -f $(USER_WATCHTOWER_ELF) $(BUILD_DIR)/initramfs/sbin/watchtower
+	@cp -f $(USER_SERVICE_ELF) $(BUILD_DIR)/initramfs/bin/service
 	@cp -f $(USER_PING_ELF) $(BUILD_DIR)/initramfs/bin/ping
 	@cp -f $(USER_PING_PROBE_ELF) $(BUILD_DIR)/initramfs/bin/net-ping-probe
 	@cp -f $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/initramfs/bin/udptest
@@ -1147,6 +1172,9 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@printf "# Fortress Network Configuration\naddress 10.0.2.15/24\ngateway 10.0.2.2\ndns 10.0.2.3\n" > $(BUILD_DIR)/initramfs/etc/network/network.conf
 	@mkdir -p $(BUILD_DIR)/initramfs/etc/ssh
 	@printf "Enabled yes\nPort 22\nListenAddress 0.0.0.0\nPermitRootLogin no\nPasswordAuthentication yes\nPubkeyAuthentication yes\nMaxSessions 2\nMaxAuthTries 5\nLoginGraceTime 60\n" > $(BUILD_DIR)/initramfs/etc/ssh/sshd_config
+	@mkdir -p $(BUILD_DIR)/initramfs/etc/watchtower
+	@printf "Exec=/sbin/dhcpc -f\nOrder=10\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStart=5\nTimeoutStop=5\nReadiness=file:/run/dhcpc.lease\n" > $(BUILD_DIR)/initramfs/etc/watchtower/dhcpc.service
+	@printf "Exec=/sbin/sshd -D\nOrder=20\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStart=5\nTimeoutStop=10\nReadiness=file:/run/watchtower/sshd.ready\n" > $(BUILD_DIR)/initramfs/etc/watchtower/sshd.service
 	@echo "  [TAR] Generating USTAR archive $@"
 	@python3 scripts/create_initramfs.py $(BUILD_DIR)/initramfs $(INITRAMFS_TAR)
 
@@ -2027,3 +2055,30 @@ test-sshd-sudo: $(BOOTABLE_ISO)
 test-nano-ssh: $(BOOTABLE_ISO)
 	python3 scripts/test_nano_ssh.py bios
 	python3 scripts/test_nano_ssh.py uefi
+
+.PHONY: test-watchtower-config-host
+test-watchtower-config-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -DWATCHTOWER_HOST_TEST -Wall -Wextra -Werror -Isrc/include -Isrc/fs -Iuser/watchtower user/watchtower/watchtower_config.c tests/watchtower_config_host.c -o $(BUILD_DIR)/watchtower_config_host
+	@$(BUILD_DIR)/watchtower_config_host
+
+.PHONY: test-watchtower-ctl-host
+test-watchtower-ctl-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser/watchtower user/watchtower/watchtower_service.c user/watchtower/watchtower_ctl.c tests/watchtower_ctl_host.c -o $(BUILD_DIR)/watchtower_ctl_host
+	@$(BUILD_DIR)/watchtower_ctl_host
+
+.PHONY: test-watchtower-phase5-host
+test-watchtower-phase5-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Isrc/fs -Iuser tests/watchtower_phase5_host.c -o $(BUILD_DIR)/watchtower_phase5_host
+	@$(BUILD_DIR)/watchtower_phase5_host
+
+.PHONY: test-watchtower-host
+test-watchtower-host: test-watchtower-config-host test-watchtower-ctl-host test-watchtower-phase5-host
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include -Iuser user/watchtower/watchtower_service.c tests/watchtower_host.c -o $(BUILD_DIR)/watchtower_host
+	@$(BUILD_DIR)/watchtower_host
+
+
+

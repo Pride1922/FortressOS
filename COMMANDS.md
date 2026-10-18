@@ -100,6 +100,8 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`top`](#top) | Binary (`/bin/top`) | Introspection | Real-time interactive CPU & process monitor |
 | [`sysinfo`](#sysinfo) | Binary (`/bin/sysinfo`) | Introspection | Display OS identity, CPU, memory/heap, tasks, and storage summary |
 | [`free`](#free) | Binary (`/bin/free`) | Introspection | Display free and used memory summary from SYS_SYSINFO |
+| [`service`](#service) | Binary (`/bin/service`) | System / Services | Query and control background services (list, status, start, stop, restart, check) |
+| [`watchtower`](#watchtower) | Binary (`/sbin/watchtower`) | System / Services | Background service supervisor daemon |
 | [`ifconfig`](#ifconfig) | Binary (`/sbin/ifconfig`) | Networking | Query network interface status and packet counters |
 | [`ifup`](#ifup) | Binary (`/sbin/ifup`) | Networking | Configure network interface statically or via config file |
 | [`dhcpc`](#dhcpc) | Binary (`/sbin/dhcpc`) | Networking | Acquire dynamic IPv4 lease and configure network interface |
@@ -1531,6 +1533,37 @@ Sample output (`free`):
 Mem:           2.0Gi        24Mi       1.9Gi          0B          0B       1.9Gi
 Swap:             0B          0B          0B
 ```
+
+---
+
+### `service`
+**Syntax:** `service <command> [service_name]`  
+**Path:** `/bin/service`  
+**Description:** Queries and controls background services managed by the Watchtower supervisor (`/sbin/watchtower`).
+* **Commands:**
+  - `list`: Display tabular overview of all configured services (Name, State, PID, Order, Enabled, Restart policy).
+  - `status <name>`: Show detailed service status including PID, readiness state, executable, order, credentials, restart policy, failure counts, and dropped output ledger.
+  - `start <name>`: Start a stopped or failed service (requires `root` or `wheel` group).
+  - `stop <name>`: Gracefully terminate a running service via SIGTERM, escalating to SIGKILL on timeout (requires `root` or `wheel` group).
+  - `restart <name>`: Stop and immediately restart a service (requires `root` or `wheel` group).
+  - `check <name>`: Check whether the service's configured readiness condition is satisfied.
+* **IPC Protocol:** Communicates with the supervisor via transactional request/response files in `/run/watchtower/` guarded by a mutual exclusion lock and bounded timeouts.
+
+**Examples:**
+```sh
+service list
+service status dhcpc
+service check sshd
+service restart dhcpc
+service stop sshd
+```
+
+---
+
+### `watchtower`
+**Syntax:** `watchtower`  
+**Path:** `/sbin/watchtower`  
+**Description:** Lightweight system service supervisor daemon that starts, monitors, and stops background services reliably with explicit ordering, bounded restart backoffs, readiness gates, and clean reverse-order teardown.
 
 ---
 

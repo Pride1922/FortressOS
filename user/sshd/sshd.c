@@ -479,6 +479,40 @@ static __attribute__((noinline)) int sshd_worker_run(int session_id, int client_
     }
 
 session_cleanup:
+    /* Transmit RFC 4253 SSH_MSG_DISCONNECT packet before socket close */
+    if (client_fd >= 0 && transport.state == TRANSPORT_STATE_ACTIVE) {
+        uint8_t dc_payload[64];
+        uint32_t reason = 11; /* SSH_DISCONNECT_BY_APPLICATION */
+        const char *reason_desc = "System going down";
+        size_t rlen = strlen(reason_desc);
+        dc_payload[0] = (uint8_t)((reason >> 24) & 0xff);
+        dc_payload[1] = (uint8_t)((reason >> 16) & 0xff);
+        dc_payload[2] = (uint8_t)((reason >> 8) & 0xff);
+        dc_payload[3] = (uint8_t)(reason & 0xff);
+        dc_payload[4] = (uint8_t)((rlen >> 24) & 0xff);
+        dc_payload[5] = (uint8_t)((rlen >> 16) & 0xff);
+        dc_payload[6] = (uint8_t)((rlen >> 8) & 0xff);
+        dc_payload[7] = (uint8_t)(rlen & 0xff);
+        for (size_t k = 0; k < rlen; k++) dc_payload[8 + k] = (uint8_t)reason_desc[k];
+        size_t off = 8 + rlen;
+        dc_payload[off++] = 0; dc_payload[off++] = 0; dc_payload[off++] = 0; dc_payload[off++] = 0; /* lang = "" */
+
+        sshbuf_t out_wire;
+        if (sshbuf_init(&out_wire, 256, 512) == SSH_ERR_SUCCESS) {
+            if (ssh_transport_send_packet(&transport, SSH_MSG_DISCONNECT, dc_payload, off, &out_wire) == SSH_ERR_SUCCESS) {
+                size_t w_off = 0, wire_len = sshbuf_len(&out_wire);
+                while (w_off < wire_len) {
+                    long n = SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd,
+                                          (uintptr_t)(sshbuf_ptr(&out_wire) + w_off), wire_len - w_off, 0, 0, 0);
+                    if (n <= 0) break;
+                    w_off += (size_t)n;
+                }
+            }
+            sshbuf_free(&out_wire);
+        }
+        (void)SSHD_SYSCALL(SYS_SHUTDOWN, (uintptr_t)client_fd, 1 /* SHUT_WR */, 0, 0, 0, 0);
+    }
+
     /* Teardown */
     sshbuf_free(&chan_reply);
     pty_bridge_cleanup(&bridge);
@@ -656,9 +690,12 @@ int sshd_main(int argc, char **argv) {
 
     /* Monitor mode: execute pinned boot readiness gate sequence */
     const char *cfg_path = NULL;
+    bool foreground = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-f") == 0 && i + 1 < argc) {
             cfg_path = argv[++i];
+        } else if (strcmp(argv[i], "-D") == 0) {
+            foreground = true;
         } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             /* Handled below */
         }
@@ -685,7 +722,19 @@ int sshd_main(int argc, char **argv) {
         return 1;
     }
 
+    if (foreground) {
+        long rfd = SSHD_SYSCALL(SYS_OPEN, (uintptr_t)"/run/watchtower/sshd.ready",
+                                VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0644, 0, 0, 0);
+        if (rfd >= 0) {
+            (void)SSHD_SYSCALL(SYS_CLOSE, (uintptr_t)rfd, 0, 0, 0, 0, 0);
+        }
+    }
+
     int run_rc = sshd_monitor_run_loop(&cfg, s_main_host_secret, &db, sock_fd);
     crypto_wipe(s_main_host_secret, sizeof(s_main_host_secret));
+
+    if (foreground) {
+        (void)SSHD_SYSCALL(SYS_UNLINK, (uintptr_t)"/run/watchtower/sshd.ready", 0, 0, 0, 0, 0);
+    }
     return run_rc;
 }

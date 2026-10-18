@@ -1249,7 +1249,8 @@ int dhcpc_main(int argc, char **argv) {
             dry_run = true;
         } else if (str_equals(argv[i], "--boot") || str_equals(argv[i], "-b")) {
             boot_mode = true;
-        } else if (str_equals(argv[i], "--daemon") || str_equals(argv[i], "-d")) {
+        } else if (str_equals(argv[i], "--daemon") || str_equals(argv[i], "-d") ||
+                   str_equals(argv[i], "--foreground") || str_equals(argv[i], "-f")) {
             daemon_mode = true;
         } else if (str_equals(argv[i], "--status") || str_equals(argv[i], "-s")) {
             status_mode = true;

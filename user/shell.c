@@ -19,6 +19,8 @@
 #include "shell/pipeline.h"
 #include "shell/jobs.h"
 #include "shell/jobctl.h"
+#define shutdown_coord_syscall call
+#include "tools/shutdown_coord.h"
 
 static char cmd_buf[LINE_CAP * 2];
 static char line_input[LINE_CAP];
@@ -473,14 +475,14 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     if (b == CMD_REBOOT) {
         puts("Restarting system...\n");
         (void)history_save();
-        long r = call(SYS_REBOOT, 1, 0, 0);
+        long r = shutdown_coordinate_and_reboot(1);
         if (r < 0) { puts_err("reboot: "); file_error_err(r); return 1; }
         return 0;
     }
     if (b == CMD_SHUTDOWN || b == CMD_POWEROFF) {
         puts("Shutting down system...\n");
         (void)history_save();
-        long r = call(SYS_REBOOT, 2, 0, 0);
+        long r = shutdown_coordinate_and_reboot(2);
         if (r < 0) { puts_err("shutdown: "); file_error_err(r); return 1; }
         return 0;
     }
