@@ -90,12 +90,12 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 | **Userland & Shell** | **COMPLETE** | Ring 3 shell, job control, pipelines, `/bin/nano`, `/bin/free`, full stream suite. |
 | **Persistent Root & Installer** | **COMPLETE** | Phases 0–4 complete. Dell spare-drive install & persistent boot verified on bare metal. |
 | **Network SMP (CPU-0 Handoff)**| **COMPLETE through Phase 4** | Cross-core control, UDP/DNS, TCP streams/listeners, and ordinary unpinned children. Bounded Dell physical acceptance; Phase 5 throughput redesign deferred. |
-| **µSSH** | **COMPLETE through Phase 8** | BIOS/UEFI automated acceptance; laptop MobaXterm login, interactive commands, `top` and sudo user-confirmed. Physical lifecycle/entropy limits remain documented. |
+| **SSH** | **COMPLETE through Phase 8** | BIOS/UEFI automated acceptance; laptop MobaXterm login, interactive commands, `top` and sudo user-confirmed. Physical lifecycle/entropy limits remain documented. |
 | **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, background lease renewal, gzip/gunzip; verification scope recorded in subsystem guides. |
 | **Watchtower Service Supervisor** | **IN PROGRESS** | Configuration, control CLI and supervisor core implemented; logging, boot integration and QEMU service regressions are next. |
 
 ### Recently Finished (2026-10-18)
-- **µSSH delivery:** Transport, authentication, host identity, PTY sessions and daemon lifecycle, plus the MobaXterm pre-password stall correction and laptop login verification.
+- **SSH delivery:** Transport, authentication, host identity, PTY sessions and daemon lifecycle, plus the MobaXterm pre-password stall correction and laptop login verification.
 - **Live-session access:** Explicit RAM-only host-key and operator-password setup, with disk-free BIOS/UEFI OpenSSH login acceptance.
 - **Usability fixes:** Remote sudo password echo, console/SSH isolation, large-output handling, PID-based session recovery, and command completion after `sudo`.
 - **Committed follow-ups:** Eight-character account-tool password minimum and one-Enter single-line bracketed paste. These two changes are not in the last flashed image and have not been retested.
