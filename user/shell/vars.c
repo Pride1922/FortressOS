@@ -1,5 +1,38 @@
 #include "vars.h"
 #include "io.h"
+static char positional_bytes[MAX_TOTAL_ARGS_LEN];
+static const char *positional[32];
+static unsigned positional_count;
+bool vars_positionals(const char *name,int count,char **args) {
+    if(count<0 || count>31 || !name) return false;
+    size_t total=0;
+    for(int i=0;i<=count;i++) {
+        const char *s=i ? (args ? args[i-1] : NULL) : name;
+        if(!s) return false;
+        size_t n=0;while(s[n]) n++;
+        if(n+1>sizeof(positional_bytes)-total) return false;
+        total+=n+1;
+    }
+    size_t used=0;
+    for(int i=0;i<=count;i++) {
+        const char *s=i ? args[i-1] : name;size_t n=0;
+        if(!s) return false;
+        while(s[n]) n++;
+        if(n+1>sizeof(positional_bytes)-used) return false;
+        positional[i]=positional_bytes+used;
+        for(size_t j=0;j<=n;j++) positional_bytes[used++]=s[j];
+    }
+    positional_count=(unsigned)count;return true;
+}
+const char *vars_positional(unsigned index) {
+    return index<=positional_count && positional[index] ? positional[index] : "";
+}
+unsigned vars_positional_count(void) {return positional_count;}
+int vars_shift(unsigned count) {
+    if(count>positional_count) return 1;
+    for(unsigned i=1;i<=positional_count-count;i++) positional[i]=positional[i+count];
+    positional_count-=count;return 0;
+}
 
 static shell_var_t g_vars[MAX_VARS];
 

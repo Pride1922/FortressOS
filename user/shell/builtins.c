@@ -32,6 +32,7 @@ static const struct {
     {"shutdown", "Power off system",                                       CMD_SHUTDOWN, false},
     {"poweroff", "Alias for shutdown",                                     CMD_POWEROFF, false},
     {"exit",     "Exit shell [status]",                                    CMD_EXIT,     false},
+    {"shift",    "Shift positional arguments [count]",                     CMD_SHIFT,    false},
     {"dmesg",    "Print/save kernel log [-n N | tail [N]] [path]",         CMD_DMESG,    true},
     {"history",  "History [-c | clear | save | load]",                         CMD_HISTORY,  false},
     {"prompt",   "Configure prompt format [default | cwd | <template>]",  CMD_PROMPT,   false},

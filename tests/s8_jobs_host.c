@@ -97,6 +97,7 @@ static long spawn_fail_err = SYSCALL_ENOENT;
 static int handoff_fails = 0;
 static int next_pid = 1000;
 static int spawn_count = 0;
+static bool script_spawn;
 
 /* Scripted waitpid reports. Each entry is returned once; selector <0 = group. */
 typedef struct { long pid; uint64_t status; } report_t;
@@ -124,7 +125,8 @@ long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
         spawn_opts_t *o = (spawn_opts_t *)b;
         assert(o->size == sizeof(*o));
         assert(o->version == 2);
-        assert(o->flags == (SPAWN_SETPGROUP | SPAWN_STAGED));
+        assert(o->flags == (SPAWN_SETPGROUP | (script_spawn ? 0 : SPAWN_STAGED)));
+        if(script_spawn) assert(o->reserved2==SHELL_PGID);
         int idx = spawn_count++;
         ev(EV_SPAWN_STAGED, idx);
         if (idx == spawn_fail_at) return spawn_fail_err;
@@ -197,6 +199,7 @@ static void reset(void) {
     wait_requires_resume=false; kill_selector=kill_signal=0;
     mock_attrs=(terminal_attrs_t){.version=1,.input_flags=TERM_ISIG,.vintr=3,.vsusp=26};
     jobs_init();
+    script_spawn=false;pipeline_set_interactive(true);pipeline_set_cancel_flag(NULL);
 }
 
 /* ---- simple exec callback ---- */
@@ -525,6 +528,19 @@ static void test_fg_shared_controller(void) {
     puts("PASS fg: shared handoff/attrs/CONT/wait/reclaim, error and signal status\n");
 }
 
+static void test_noninteractive_launch(void) {
+    reset();script_spawn=true;pipeline_set_interactive(false);
+    parse_tree_t t;assert(parser_parse("a | b",&t)==PARSE_OK);
+    push_report(1000,0);push_report(1001,7<<8);
+    assert(execute_command_list_job(&t,0,single,"a | b")==7);
+    assert(!ev_count(EV_GROUP_RELEASE) && !ev_count(EV_TCSETPGRP_JOB) && !ev_count(EV_TCSETPGRP_SHELL));
+    reset();script_spawn=true;pipeline_set_interactive(false);spawn_fail_at=1;
+    assert(parser_parse("a | b",&t)==PARSE_OK);
+    assert(execute_command_list_job(&t,0,single,"a | b")!=0);
+    assert(kill_selector==1000 && kill_signal==SIGKILL && !ev_count(EV_GROUP_CANCEL));
+    puts("PASS script launch: inherited group, no staged release/terminal handoff, failed pipeline kills owned PID\n");
+    reset();
+}
 int main(void) {
     test_parser_amp();
     test_job_table();
@@ -543,6 +559,7 @@ int main(void) {
     test_prompt_reap();
     test_jobctl();
     test_fg_shared_controller();
+    test_noninteractive_launch();
     puts("PASS s8-jobs-host: parser, job table, state machine, launch order, mask, unwinding\n");
     return 0;
 }

@@ -2,6 +2,8 @@
 #define SHELL_PIPELINE_H
 #include "parser.h"
 #include "syscall_abi.h"
+void pipeline_set_interactive(bool enabled);
+void pipeline_set_cancel_flag(volatile unsigned *flag);
 
 /* Single command callback retains its existing negation semantics.
  * Static preparation storage: shell execution is deliberately non-reentrant.

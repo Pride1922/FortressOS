@@ -28,6 +28,7 @@ enum builtin {
     CMD_SHUTDOWN,
     CMD_POWEROFF,
     CMD_EXIT,
+    CMD_SHIFT,
     CMD_DMESG,
     CMD_HISTORY,
     CMD_PROMPT,

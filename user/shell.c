@@ -19,6 +19,7 @@
 #include "shell/pipeline.h"
 #include "shell/jobs.h"
 #include "shell/jobctl.h"
+#include "shell/script.h"
 
 static char cmd_buf[LINE_CAP * 2];
 static char line_input[LINE_CAP];
@@ -50,19 +51,6 @@ static void update_cwd(void) {
         current_cwd[1] = '\0';
     }
 }
-
-static int parse_int(const char *s) {
-    if (!s) return 0;
-    int sign = 1;
-    if (*s == '-') { sign = -1; s++; }
-    int val = 0;
-    while (*s >= '0' && *s <= '9') {
-        val = val * 10 + (*s - '0');
-        s++;
-    }
-    return sign * val;
-}
-
 
 static int spawn_program(const char *path, const char **argv, const spawn_fd_action_t *actions, uint32_t action_count) {
     (void)vars_build_envp(s_env_strings, s_envp_ptrs);
@@ -175,6 +163,18 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
     if (argc == 0 || !argv || !argv[0] || !argv[0][0]) return 0;
 
     const char *cmd = argv[0];
+    if(equal(cmd,"shift")) {
+        unsigned n=1;
+        if(argc>2) return 2;
+        if(argc==2) {
+            n=0;if(!argv[1][0]) return 2;
+            for(const char *p=argv[1];*p;p++) {
+                if(*p<'0' || *p>'9' || n>31) return 2;
+                n=n*10+(unsigned)(*p-'0');
+            }
+        }
+        return vars_shift(n);
+    }
     enum builtin b = builtin_find(cmd);
 
     if (b == CMD_JOBS || b == CMD_FG || b == CMD_BG || b == CMD_KILL)
@@ -225,8 +225,16 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         return builtin_exec(argc, (const char *const *)argv, &ctx);
     }
     if (b == CMD_EXIT) {
-        int code = (argc > 1) ? parse_int(argv[1]) : (int)last_status;
-        (void)history_save();
+        unsigned code=(unsigned)last_status & 255u;
+        if(argc>2) {puts_err("exit: too many arguments\n");return 2;}
+        if(argc==2) {
+            code=0;if(!argv[1][0]) return 2;
+            for(const char *p=argv[1];*p;p++) {
+                if(*p<'0' || *p>'9' || code>255u/10u) {puts_err("exit: expected 0..255\n");return 2;}
+                code=code*10+(unsigned)(*p-'0');if(code>255) return 2;
+            }
+        }
+        if(!shell_script_mode) (void)history_save();
         jobs_shutdown();
         call(SYS_EXIT, (uintptr_t)code, 0, 0);
         return code;
@@ -556,6 +564,7 @@ static bool is_parent_builtin(int argc, char **argv) {
         idx++;
     }
     if (idx >= argc) return true;
+    if(equal(argv[idx],"shift")) return true;
     enum builtin b = builtin_find(argv[idx]);
     if (b == CMD_UNKNOWN || b == CMD_RUN) return false;
     return true;
@@ -589,9 +598,9 @@ static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
             s_val_cmd.negate = false;
             s_val_cmd.next_op = CMD_OP_NONE;
 
-            expand_command(&s_val_cmd, curr_status, &s_exp_val);
+            if(expand_command_checked(&s_val_cmd, curr_status, &s_exp_val)) return 1;
             const char *final_val = s_exp_val.argc > 0 ? s_exp_val.argv[0] : "";
-            vars_set(assign_name, final_val, false);
+            if(vars_set(assign_name, final_val, false)) return 1;
         }
         curr_status = 0;
     } else {
@@ -611,9 +620,9 @@ static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
                 s_val_cmd.negate = false;
                 s_val_cmd.next_op = CMD_OP_NONE;
 
-                expand_command(&s_val_cmd, curr_status, &s_exp_val);
+                if(expand_command_checked(&s_val_cmd, curr_status, &s_exp_val)) {vars_scope_end(&s_local_scope);return 1;}
                 const char *final_val = s_exp_val.argc > 0 ? s_exp_val.argv[0] : "";
-                vars_scope_set(&s_local_scope, assign_name, final_val);
+                if(vars_scope_set(&s_local_scope, assign_name, final_val)) {vars_scope_end(&s_local_scope);return 1;}
             }
         }
 
@@ -629,7 +638,10 @@ static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
         s_sub_cmd.argv[s_sub_cmd.argc] = NULL;
         s_sub_cmd.quote_flags[s_sub_cmd.argc] = NULL;
 
-        expand_command(&s_sub_cmd, curr_status, &s_expanded_cmd);
+        if(expand_command_checked(&s_sub_cmd, curr_status, &s_expanded_cmd)) {
+            if(assign_count) vars_scope_end(&s_local_scope);
+            return 1;
+        }
 
         if (is_parent_builtin(s_expanded_cmd.argc, s_expanded_cmd.argv)) {
             if (cmd->redir_count > 0) {
@@ -682,7 +694,7 @@ static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
 static void execute_parse_tree(parse_tree_t *tree, const char *cmd_text) {
     /* A child such as sudo shell may reboot without ever returning here.
      * Flush before launch, while HOME still belongs to the calling shell. */
-    for (int i = 0; i < tree->cmd_count; i++) {
+    for (int i = 0; !shell_script_mode && i < tree->cmd_count; i++) {
         if (!is_parent_builtin(tree->cmds[i].argc, tree->cmds[i].argv)) {
             history_flush_pending();
             break;
@@ -692,8 +704,65 @@ static void execute_parse_tree(parse_tree_t *tree, const char *cmd_text) {
                                            execute_single_command, cmd_text);
 }
 
-void shell_main(int argc,char **argv,const char *const *envp) {
-    (void)argc;(void)argv;
+static int script_eval(const char *text) {
+    enum parse_result pr=parser_parse(text,&parse_tree);
+    if(pr==PARSE_INCOMPLETE) return -1;
+    if(pr==PARSE_SYNTAX_ERROR) return -2;
+    if(pr==PARSE_OK) {
+        const char *reserved[]={"if","then","elif","else","fi","for","while","until","do","done","case","esac","function",NULL};
+        for(int c=0;c<parse_tree.cmd_count;c++) {
+            parse_cmd_t *cmd=&parse_tree.cmds[c];
+            if(!cmd->argc || cmd->has_quotes[0]) continue;
+            for(unsigned r=0;reserved[r];r++) if(equal(cmd->argv[0],reserved[r])) {
+                puts_err("sh: compound syntax is not implemented yet\n");return -2;
+            }
+        }
+        execute_parse_tree(&parse_tree,text);
+    }
+    return (int)last_status;
+}
+static void script_signal(unsigned sig) {script_interrupted=sig;}
+static int script_entry(int argc,char **argv,const char *const *envp) {
+    int index=1,fd=0,count=0;const char *text=NULL,*name="sh";char **args=NULL;
+    bool opened=false;
+    if(index<argc && equal(argv[index],"-c")) {
+        if(++index>=argc) {puts_err("sh: -c needs command text\n");return 2;}
+        text=argv[index++];
+        if(index<argc) name=argv[index++];
+    } else {
+        if(index<argc && equal(argv[index],"--")) index++;
+        else if(index<argc && argv[index][0]=='-') {puts_err("sh: unsupported option\n");return 2;}
+        if(index<argc) {
+            name=argv[index++];fd=(int)call(SYS_OPEN,(uintptr_t)name,VFS_O_RDONLY|VFS_O_CLOEXEC,0);
+            if(fd<0) {puts_err("sh: cannot open script\n");return 2;}
+            stat_ext_v1_t st={0};
+            if(call(SYS_FSTAT,fd,(uintptr_t)&st,0)<0 || st.type!=VFS_FILE) {
+                call(SYS_CLOSE,fd,0,0);puts_err("sh: expected regular script file\n");return 2;
+            }
+            opened=true;
+        }
+    }
+    count=argc-index;args=argv+index;
+    if(!vars_positionals(name,count,args)) {if(opened) call(SYS_CLOSE,fd,0,0);return 2;}
+    vars_init();
+    if(!user_entry_secure(envp) && !vars_import(envp)) {if(opened) call(SYS_CLOSE,fd,0,0);return 2;}
+    update_cwd();jobs_init();pipeline_set_interactive(false);pipeline_set_cancel_flag(&script_interrupted);
+    signal_action_t action={.handler=(uintptr_t)script_signal};
+    if(call(SYS_SIGACTION,SIGINT,(uintptr_t)&action,0)<0 ||
+       call(SYS_SIGACTION,SIGTERM,(uintptr_t)&action,0)<0 ||
+       call(SYS_SIGACTION,SIGHUP,(uintptr_t)&action,0)<0) {
+        if(opened) call(SYS_CLOSE,fd,0,0);
+        return 2;
+    }
+    action.handler=(uintptr_t)prompt_sigchld;
+    if(call(SYS_SIGACTION,SIGCHLD,(uintptr_t)&action,0)<0) {if(opened) call(SYS_CLOSE,fd,0,0);return 2;}
+    int status=script_run(fd,text,name,script_eval);
+    if(opened && call(SYS_CLOSE,fd,0,0)<0) status=2;
+    jobs_shutdown();return status;
+}
+int shell_main(int argc,char **argv,const char *const *envp) {
+    shell_script_mode=argc>1 || call(SYS_TERMCTL,TERM_ISATTY,0,0)!=1;
+    if(shell_script_mode) return script_entry(argc,argv,envp);
     if (call(SYS_READ, 0, 0, 1) != -2 || call(SYS_READ, 0, (uintptr_t)"readonly", 1) != -2 ||
         call(SYS_READ, 0, 0, 0) != 0 ||
         call(SYS_INPUT_READ, 0, 1, 0) != -2 ||
@@ -702,13 +771,14 @@ void shell_main(int argc,char **argv,const char *const *envp) {
         call(SYS_INPUT_READ, 0, 0, 0) != 0 ||
         call(SYS_TERMCTL, 0, 0, 32) != -2) {
         puts("[FAIL] stdin validation\n");
-        return;
+        return 1;
     }
 
     update_cwd();
     shell_ui_init();
     vars_init();
-    if (!user_entry_secure(envp) && !vars_import(envp)) {puts("shell: invalid entry environment\n");return;}
+    if (!user_entry_secure(envp) && !vars_import(envp)) {puts("shell: invalid entry environment\n");return 1;}
+    (void)vars_positionals(argc && argv ? argv[0] : "sh",0,NULL);
     alias_init();
     (void)history_load();
     int term_fd = shell_get_terminal_fd();
@@ -738,7 +808,7 @@ void shell_main(int argc,char **argv,const char *const *envp) {
         jobs_gc();
 
         shell_set_prompt_state(last_status, current_cwd);
-        if (!shell_read_line(line_input, false)) { jobs_shutdown(); return; }
+        if (!shell_read_line(line_input, false)) { jobs_shutdown(); return (int)last_status; }
         if (!line_input[0]) continue;
 
         size_t cmd_len = 0;
@@ -753,7 +823,7 @@ void shell_main(int argc,char **argv,const char *const *envp) {
             (void)alias_expand_line(cmd_buf, s_alias_line, sizeof(s_alias_line));
             enum parse_result pr = parser_parse(s_alias_line, &parse_tree);
             if (pr == PARSE_INCOMPLETE) {
-                if (!shell_read_line(line_input, true)) { jobs_shutdown(); return; }
+                if (!shell_read_line(line_input, true)) { jobs_shutdown(); return (int)last_status; }
                 if (!line_input[0]) {
                     /* Ctrl+C during continuation cancels input */
                     cmd_buf[0] = '\0';

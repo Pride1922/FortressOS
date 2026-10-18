@@ -6,6 +6,14 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-18: scripting Phases A–B are implemented in an isolated worktree:
+`sh file`, `sh -c`, nonterminal stdin, real exit statuses, positional arguments,
+quoted `"$@"` and `shift`. Host sanitizer checks and 108 disk-free BIOS/UEFI
+cases pass (27 cases per firmware/CPU combination at SMP=1/4). This is not
+merged into the main checkout or included in its USB image. Conditions, loops
+and source remain later phases. See [scripting evidence and usage](../roadmap/shell-scripting.md)
+and [the staged plan](../plans/SHELL_SCRIPTING_PLAN.md).
+
 2026-10-18: command completion recognizes the executable operand of `sudo`
 and `sudo -b`, including `/bin/sudo`. It searches `/bin` and `/sbin` there,
 keeps pathname completion for later arguments, and does not suggest shell-only

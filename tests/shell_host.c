@@ -655,5 +655,40 @@ int main(void) {
 
     puts("PASS shell redirections: spawn actions, parent save/apply/restore, open/dup/close, lexical order, target expansion, ambiguous rejection");
     test_pipelines();
+    char *parameters[]={"a b","","last"};
+    assert(vars_positionals("script",3,parameters));
+    assert(parser_parse("echo \"$0\" \"$#\" \"$@\"",&ptree)==PARSE_OK);
+    static expanded_cmd_t positional_result;
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(positional_result.argc==6);
+    assert(!strcmp(positional_result.argv[1],"script"));
+    assert(!strcmp(positional_result.argv[2],"3"));
+    assert(!strcmp(positional_result.argv[3],"a b"));
+    assert(!strcmp(positional_result.argv[4],""));
+    assert(!strcmp(positional_result.argv[5],"last"));
+    assert(parser_parse("echo \"pre$@post\"",&ptree)==PARSE_OK);
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(positional_result.argc==4 && !strcmp(positional_result.argv[1],"prea b") &&
+           !strcmp(positional_result.argv[2],"") && !strcmp(positional_result.argv[3],"lastpost"));
+    assert(vars_shift(4)!=0 && vars_positional_count()==3);
+    assert(!vars_shift(2) && !strcmp(vars_positional(1),"last"));
+    assert(!vars_shift(1));
+    assert(parser_parse("echo \"$@\" \"$1\"",&ptree)==PARSE_OK);
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(positional_result.argc==2 && !strcmp(positional_result.argv[1],""));
+    assert(parser_parse("echo \"\\$1\"",&ptree)==PARSE_OK);
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(!strcmp(positional_result.argv[1],"$1"));
+    char *many[]={"1","2","3","4","5","6","7","8","9","10","11"};
+    assert(vars_positionals("many",11,many));
+    assert(parser_parse("echo ${10} ${11} ${#} \"${@}\"",&ptree)==PARSE_OK);
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(positional_result.argc==15 && !strcmp(positional_result.argv[1],"10") &&
+           !strcmp(positional_result.argv[2],"11") && !strcmp(positional_result.argv[3],"11"));
+    static char huge[1100];memset(huge,'x',sizeof(huge)-1);char *bad[]={huge};
+    assert(!vars_positionals("bad",1,bad) && vars_positional_count()==11 && !strcmp(vars_positional(1),"1"));
+    assert(parser_parse("echo ${bad:-fallback}",&ptree)==PARSE_OK);
+    assert(expand_command_checked(&ptree.cmds[0],0,&positional_result)!=0 && positional_result.argc==0);
+    puts("PASS script positional expansion: quoted cardinality, empty/spaced args, prefix/suffix, shift bounds and escaped dollar");
     return 0;
 }

@@ -28,6 +28,10 @@ typedef struct {
 } local_var_scope_t;
 
 void vars_init(void);
+bool vars_positionals(const char *name,int count,char **args);
+const char *vars_positional(unsigned index);
+unsigned vars_positional_count(void);
+int vars_shift(unsigned count);
 /* Import the loader-bounded entry environment after defaults, before history
  * or command execution. Invalid/oversize entries fail without truncation. */
 bool vars_import(const char *const *envp);

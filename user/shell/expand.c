@@ -5,6 +5,8 @@
 #include "io.h"
 
 #define QUOTE_EXPANDED_UNQUOTED 4
+#define POSITIONAL_BOUNDARY 5
+#define POSITIONAL_EMPTY 6
 
 typedef struct {
     char *expand_pool;
@@ -353,7 +355,55 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                 }
 
                 /* Variable name: $VAR or ${VAR} */
+                bool special_braced=word[i]=='{' && (word[i+1]=='@' || word[i+1]=='#') && word[i+2]=='}';
+                if(special_braced) i++;
+                if(word[i]=='@' || word[i]=='#' || (word[i]>='0' && word[i]<='9')) {
+                    char special=word[i++];
+                    if(special_braced) i++;
+                    if(special=='@') {
+                        unsigned count=vars_positional_count();
+                        for(unsigned p=1;p<=count;p++) {
+                            if(p>1) {
+                                if(exp_len+1>=ctx->exp_cap) {ctx->overflow=true;break;}
+                                ctx->exp_flags[exp_len]=qf==QUOTE_DOUBLE ? POSITIONAL_BOUNDARY : QUOTE_EXPANDED_UNQUOTED;
+                                ctx->exp_chars[exp_len++]=' ';
+                            }
+                            const char *v=vars_positional(p);
+                            if(!*v && qf==QUOTE_DOUBLE) {
+                                if(exp_len+1>=ctx->exp_cap) {ctx->overflow=true;break;}
+                                ctx->exp_flags[exp_len]=POSITIONAL_EMPTY;ctx->exp_chars[exp_len++]=' ';
+                            }
+                            while(*v && exp_len+1<ctx->exp_cap) {
+                                ctx->exp_flags[exp_len]=qf==QUOTE_DOUBLE ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
+                                ctx->exp_chars[exp_len++]=*v++;
+                            }
+                            if(*v) ctx->overflow=true;
+                        }
+                        if(!count && i==(special_braced ? 4u : 2u) && !word[i]) has_quotes=false;
+                    } else {
+                        char number[4];const char *v;
+                        if(special=='#') {
+                            unsigned n=vars_positional_count();unsigned k=0;
+                            if(n>=10) number[k++]=(char)('0'+n/10);
+                            number[k++]=(char)('0'+n%10);number[k]=0;v=number;
+                        } else v=vars_positional((unsigned)(special-'0'));
+                        while(*v && exp_len+1<ctx->exp_cap) {
+                            ctx->exp_flags[exp_len]=qf==QUOTE_DOUBLE ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
+                            ctx->exp_chars[exp_len++]=*v++;
+                        }
+                        if(*v) ctx->overflow=true;
+                    }
+                    continue;
+                }
+                if(!word[i]) {
+                    if(exp_len+1<ctx->exp_cap) {ctx->exp_flags[exp_len]=qf;ctx->exp_chars[exp_len++]='$';}
+                    else ctx->overflow=true;
+                    continue;
+                }
+                if(word[i]!='{' && !((word[i]>='a' && word[i]<='z') ||
+                    (word[i]>='A' && word[i]<='Z') || word[i]=='_')) {ctx->overflow=true;break;}
                 bool braced = false;
+                bool closed=false;
                 if (word[i] == '{') {
                     braced = true;
                     i++;
@@ -365,6 +415,7 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                     char c = word[i];
                     if (braced && c == '}') {
                         i++;
+                        closed=true;
                         break;
                     }
                     if (!braced && !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -377,8 +428,18 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                     i++;
                 }
                 var_name[vn_len] = '\0';
+                if(braced && (!closed || !vn_len)) {ctx->overflow=true;break;}
 
                 const char *val = vars_get(var_name);
+                if(braced && vn_len && var_name[0]>='0' && var_name[0]<='9') {
+                    unsigned index=0;
+                    for(size_t k=0;k<vn_len;k++) {
+                        if(var_name[k]<'0' || var_name[k]>'9' || index>31) {ctx->overflow=true;break;}
+                        index=index*10+(unsigned)(var_name[k]-'0');
+                    }
+                    if(index>31) ctx->overflow=true;
+                    val=vars_positional(index);
+                } else if(!vars_is_valid_name(var_name)) {ctx->overflow=true;break;}
                 if (val) {
                     while (*val && exp_len + 1 < ctx->exp_cap) {
                         ctx->exp_flags[exp_len] = (qf == QUOTE_DOUBLE) ? QUOTE_DOUBLE : QUOTE_EXPANDED_UNQUOTED;
@@ -419,19 +480,22 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
         bool in_word = false;
 
         for (size_t k = 0; k < exp_len; k++) {
-            if (ctx->exp_flags[k] == QUOTE_EXPANDED_UNQUOTED && is_whitespace(ctx->exp_chars[k])) {
+            if (ctx->exp_flags[k]==POSITIONAL_BOUNDARY ||
+                (ctx->exp_flags[k] == QUOTE_EXPANDED_UNQUOTED && is_whitespace(ctx->exp_chars[k]))) {
                 if (in_word) {
                     size_t wlen = k - cur_start;
                     if (ctx->split_count < ctx->max_split_words &&
                         ctx->expand_pool_used + wlen + 1 + wlen + 1 <= ctx->expand_pool_cap) {
                         char *dest = &ctx->expand_pool[ctx->expand_pool_used];
                         uint8_t *qdest = (uint8_t *)&ctx->expand_pool[ctx->expand_pool_used + wlen + 1];
+                        size_t written=0;
                         for (size_t j = 0; j < wlen; j++) {
-                            dest[j] = ctx->exp_chars[cur_start + j];
-                            qdest[j] = ctx->exp_flags[cur_start + j];
+                            if(ctx->exp_flags[cur_start+j]==POSITIONAL_EMPTY) continue;
+                            dest[written] = ctx->exp_chars[cur_start + j];
+                            qdest[written++] = ctx->exp_flags[cur_start + j];
                         }
-                        dest[wlen] = '\0';
-                        qdest[wlen] = 0;
+                        dest[written] = '\0';
+                        qdest[written] = 0;
                         ctx->expand_pool_used += (wlen + 1) * 2;
 
                         ctx->split_words[ctx->split_count] = dest;
@@ -455,12 +519,14 @@ static int expand_command_ctx(expand_ctx_t *ctx, const parse_cmd_t *in_cmd, int6
                 ctx->expand_pool_used + wlen + 1 + wlen + 1 <= ctx->expand_pool_cap) {
                 char *dest = &ctx->expand_pool[ctx->expand_pool_used];
                 uint8_t *qdest = (uint8_t *)&ctx->expand_pool[ctx->expand_pool_used + wlen + 1];
+                size_t written=0;
                 for (size_t j = 0; j < wlen; j++) {
-                    dest[j] = ctx->exp_chars[cur_start + j];
-                    qdest[j] = ctx->exp_flags[cur_start + j];
+                    if(ctx->exp_flags[cur_start+j]==POSITIONAL_EMPTY) continue;
+                    dest[written] = ctx->exp_chars[cur_start + j];
+                    qdest[written++] = ctx->exp_flags[cur_start + j];
                 }
-                dest[wlen] = '\0';
-                qdest[wlen] = 0;
+                dest[written] = '\0';
+                qdest[written] = 0;
                 ctx->expand_pool_used += (wlen + 1) * 2;
 
                 ctx->split_words[ctx->split_count] = dest;

@@ -256,7 +256,7 @@ enum token_type lexer_next(lexer_t *lex, token_t *tok) {
                     else if (esc == 't') out_c = '\t';
                     /* other escapes \", \\, \$, etc. are literal */
                     if (lex->word_len + 1 < sizeof(lex->word_buf)) {
-                        lex->quote_flags[lex->word_len] = QUOTE_DOUBLE;
+                        lex->quote_flags[lex->word_len] = esc=='$' ? QUOTE_ESCAPED : QUOTE_DOUBLE;
                         lex->word_buf[lex->word_len++] = out_c;
                     }
                     continue;

@@ -5,6 +5,8 @@
 static job_t table[MAX_JOBS];
 static int next_job_id = 1;
 static int selection[MAX_JOBS];
+static bool quiet_jobs;
+void jobs_set_quiet(bool quiet) {quiet_jobs=quiet;}
 
 void jobs_init(void) {
     for (int i = 0; i < MAX_JOBS; i++) {
@@ -198,6 +200,10 @@ static bool reap_children(bool at_prompt) {
 
         /* Only print notifications for background jobs. */
         if (job->foreground) continue;
+        if(quiet_jobs) {
+            if(job->state==JOB_STATE_DONE) table[slot].notified=true;
+            continue;
+        }
 
         if (job->state != JOB_STATE_DONE && job->state != JOB_STATE_STOPPED)
             continue;
@@ -222,6 +228,7 @@ bool jobs_reap_prompt(void) {
 }
 
 void jobs_print_launch(int slot) {
+    if(quiet_jobs) return;
     if (slot < 0 || slot >= MAX_JOBS || !table[slot].in_use) return;
     const job_t *job = &table[slot];
     puts("[");
@@ -311,6 +318,37 @@ static bool live_jobs(void) {
     return false;
 }
 void jobs_shutdown(void) {
+    if(quiet_jobs) {
+        /* Script children share its foreground group. Signal only owned PIDs,
+         * never the whole group (which includes this interpreter). */
+        for(int i=0;i<jobs_max();i++) {
+            const job_t *j=jobs_get(i);if(!j->in_use) continue;
+            for(int m=0;m<j->member_count;m++) if(j->members[m].state!=JOB_MEM_DONE) {
+                (void)call(SYS_KILL,j->members[m].pid,SIGHUP,0);
+                (void)call(SYS_KILL,j->members[m].pid,SIGCONT,0);
+            }
+        }
+        const timespec_t pause={.tv_sec=0,.tv_nsec=100000000};
+        for(unsigned round=0;round<10 && live_jobs();round++) {
+            jobs_reap_children();
+            if(live_jobs()) (void)call(SYS_NANOSLEEP,(uintptr_t)&pause,0,0);
+        }
+        for(int i=0;i<jobs_max();i++) {
+            const job_t *j=jobs_get(i);
+            if(!j->in_use) continue;
+            for(int m=0;m<j->member_count;m++) if(j->members[m].state!=JOB_MEM_DONE)
+                (void)call(SYS_KILL,j->members[m].pid,SIGKILL,0);
+        }
+        for(int i=0;i<jobs_max();i++) {
+            const job_t *j=jobs_get(i);if(!j->in_use) continue;
+            for(int m=0;m<j->member_count;m++) {
+                uint64_t status;long r;
+                do {r=call(SYS_WAITPID,j->members[m].pid,(uintptr_t)&status,0);} while(r==SYSCALL_EINTR);
+            }
+            jobs_free(i);
+        }
+        return;
+    }
     for (int i=0; i<jobs_max(); ++i) {
         const job_t *j=jobs_get(i);
         if (!j->in_use || j->state==JOB_STATE_DONE) continue;
