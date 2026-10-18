@@ -2,128 +2,228 @@
 
 ## 1. Executive Summary
 
-FortressOS logging is structured into three decoupled layers ("The Three Pillars") that separate raw kernel diagnostics, daemon output streaming, and high-level system event auditing. This architecture ensures zero blast radius: logging failures or storage exhaustion never block critical system daemons, require no heavyweight syslog IPC daemons or sockets, and maintain bounded, deterministic execution.
+FortressOS logging is structured into three decoupled layers ("The Three Pillars") that separate raw kernel diagnostics, daemon output streaming, and high-level administrative audit events. 
+
+This architecture balances deterministic, bounded execution with pragmatic Unix lifecycle semantics. Rather than embedding heavyweight syslog daemons or complex socket IPC, FortressOS leverages direct filesystem operations, pipe redirection in the service supervisor, and bounded single-append writes.
 
 ```
-+-------------------------------------------------------------------------------+
-|                               THREE PILLARS OF LOGGING                        |
-+-------------------------------------------------------------------------------+
-| Pillar 1: Kernel Boot Dump    | Pillar 2: Service Capture     | Pillar 3: Global Timeline     |
-| Destination: /var/log/boot.log| Destination: /var/log/watchtower/ Destination: /var/log/messages|
-| Producer: /bin/dmesg          | Producer: Watchtower Pipes    | Producer: /bin/logger & Daemons|
-| Lifecycle: Early boot service | Lifecycle: Supervised runtime | Lifecycle: Event-driven audit  |
-+-------------------------------------------------------------------------------+
++-----------------------------------------------------------------------------------------+
+|                                  THREE PILLARS OF LOGGING                               |
++-----------------------------------------------------------------------------------------+
+| Pillar 1: Kernel Boot Dump      | Pillar 2: Service Capture       | Pillar 3: Global Timeline   |
+| Destination: /var/log/boot.log  | Destination: /var/log/watchtower/ Destination: /var/log/messages|
+| Producer: /bin/dmesg            | Producer: Watchtower Pipes      | Producer: /bin/logger &     |
+| Owner: Startup service alone    | Owner: Watchtower supervisor    |           In-daemon helper  |
+| Lifecycle: Early boot snapshot  | Lifecycle: Supervised runtime   | Owner: /sbin/logrotate      |
++-----------------------------------------------------------------------------------------+
 ```
 
 ---
 
-## 2. Architectural Pillars
+## 2. Blocking Policy & Failure Domain Decisions
+
+A fundamental architectural trade-off exists between strict process isolation and synchronous storage reliability:
+
+1. **Daemon Stderr/Stdout Pipes (Pillar 2)**:
+   - **Current Reality**: Watchtower sets only the *read* end of child pipes (`pipe_fds[0]`) to `VFS_O_NONBLOCK`. The *write* end (`pipe_fds[1]`, inherited as child stdout/stderr) is **blocking**.
+   - **Policy Decision (Best-Effort Synchronous Logging)**:
+     - Under ordinary workloads, Watchtower drains child pipes on each iteration of its supervisory loop.
+     - If child output exceeds pipe capacity (4–16 KiB) while Watchtower is executing filesystem writes or slow gzip operations, the producing daemon will block on `write(2, ...)` until the pipe is drained.
+     - Setting child write ends non-blocking would require all daemons to implement partial-write buffering, `EAGAIN` handling, and non-blocking retry loops.
+     - **Architectural Guarantee**: Logging provides *best-effort synchronous capture with explicit backpressure*. To mitigate supervisor latency, Watchtower prioritizes pipe draining before disk syncs and must not block the supervisor loop on child compression.
+
+2. **Audit Event Timeline (Pillar 3)**:
+   - Timeline logging performs synchronous file append operations.
+   - Daemons use an **in-process C helper function** (`timeline_log()`), never fork/exec-ing `/bin/logger` on critical authentication or lease renewal paths.
+   - In-daemon logging returns `-1` on failure; it **never terminates, crashes, or stalls the daemon**. Diagnostic reporting of logging failures is strictly rate-limited to avoid flooding or blocking the stderr capture pipe.
+
+---
+
+## 3. Detailed Architectural Pillars
 
 ### Pillar 1: Kernel Boot Dump (`/var/log/boot.log`)
-- **Purpose**: Persist an uncorrupted snapshot of early hardware initialization (PCIe, ACPI, PMM/VMM, NVMe, USB, network link) before daemon activity overwrites the fixed-capacity kernel circular ring buffer.
-- **Mechanism**: Executed via `/bin/dmesg /var/log/boot.log`.
-- **Forensic Retention**: Before overwriting `/var/log/boot.log`, the previous boot snapshot is rotated to `/var/log/boot.log.prev` to preserve diagnostic records across crash or reboot cycles.
-- **Supervisor Integration**: Configured as an early supervisor service (`Order=01`, `Type=simple`, `Restart=no`). The kernel does not execute userspace tools directly during `kmain`.
+- **Purpose**: Persist a forensic snapshot of early hardware initialization (PCIe, ACPI, PMM/VMM, NVMe, USB, network link) before daemon runtime activity overwrites the fixed-capacity kernel circular ring buffer.
+- **Scope & Limitations**: Captures the *retained* kernel buffer at snapshot time; messages dropped prior to ring expansion or during very early boot are not recoverable.
+- **Single-Owner Retention**:
+   - **Startup ALONE owns boot-log retention**. External tools (`logrotate`) must **not** manage or rotate `/var/log/boot.log`.
+   - Before taking a new snapshot, the existing `/var/log/boot.log` is rotated to `/var/log/boot.log.prev`.
+   - If `/var/log` is unavailable or read-only (Live media), write to `/run/boot.log` (subject to runfs 4 KiB limits) or skip persistent storage.
+- **Execution Mechanism**:
+   - Configured in Watchtower as `/etc/watchtower/boot-log.service`:
+     ```ini
+     Exec=/bin/boot-snapshot
+     Order=01
+     Type=simple
+     Restart=no
+     ```
+   - Note on ordering: `Order=01` orders launch sequence; it does not block subsequent service launches until completion under `Type=simple`.
 
 ### Pillar 2: Service Capture (`/var/log/watchtower/<service>.log`)
-- **Purpose**: Aggregate stdout and stderr from supervised background daemons (`sshd`, `dhcpc`, `crond`) without embedding custom logging IPC or wire protocols into daemon code.
-- **Mechanism**: Watchtower creates anonymous pipe pairs (`SYS_PIPE`), redirects child stdout/stderr (fds 1 and 2) to the write end via `SPAWN_FD_ACTION_DUP2`, and sets the read end non-blocking (`VFS_O_NONBLOCK`).
-- **Backpressure & Draining**: Pipe buffers are bounded (4–16 KiB). Supervisor event loop drains child pipes prior to heavy operations to minimize writer stalls. Append failures increment `dropped_bytes` counters rather than blocking.
-- **Ownership**: Watchtower is the **sole owner** of `/var/log/watchtower/*.log` rotation. External tools must not compete for these files.
+- **Purpose**: Capture background daemon stdout and stderr without embedding custom logging protocols or IPC code into daemon binaries.
+- **Single Ownership**:
+   - **Watchtower is the sole owner** of `/var/log/watchtower/*.log`.
+   - External `/sbin/logrotate` is explicitly barred from managing Watchtower logs to eliminate competing rotation operations.
+- **Descriptor Reopen Protocol**:
+   - Watchtower holds an open write descriptor (`wt_log_fd`, dup'd to fd 2) for its own log.
+   - Upon internal log rotation (`watchtower.log -> watchtower.log.1`), Watchtower must explicitly close and reopen `/var/log/watchtower/watchtower.log` so subsequent writes do not continue into the renamed archive.
 
 ### Pillar 3: Global Audit Timeline (`/var/log/messages`)
-- **Purpose**: Chronological, human-readable audit trail of significant administrative and lifecycle events (user login, privilege elevation, network configuration, supervisor actions).
-- **Mechanism**: Written via `/bin/logger` CLI / pipeline tool and shared in-daemon append routines.
-- **Access Control & Permissions**: File mode `0640` (`root:wheel`). Unprivileged processes cannot directly append to or truncate the audit log.
-- **Privilege Separation**: In privilege-separated daemons (such as `sshd`), audit messages are emitted solely by the privileged monitor process (`uid=0`), never by unprivileged session workers.
+- **Purpose**: Sequential, human-readable audit trail of significant administrative events (logins, privilege drops, lease changes, daemon startup/shutdown).
+- **Dual Producers**:
+   - **/bin/logger CLI**: Standalone tool for shell scripts, administrative commands, and piped streams (`dmesg | grep NET | logger -t kernel`). Exits 1 on failure.
+   - **In-Daemon C Helper (`timeline_log`)**: In-process direct append for `sshd` privileged monitor and `dhcpc`. Returns failure code on error; never exits daemon.
+- **Permissions & Security**:
+   - File mode `0640` (`root:wheel`).
+   - Unprivileged processes cannot directly append to or truncate the audit log.
+   - In privilege-separated daemons (`sshd`), audit messages are emitted solely by the privileged monitor process (`uid=0`), never by unprivileged session workers.
+   - Safe destination validation: Rejects world-writable directories and symlink targets.
 
 ---
 
-## 3. Core Technical Invariants & Failure-Handling
+## 4. Technical Invariants & Concurrency Hardening
 
-### 3.1 Append Atomicity & Short-Write Semantics
-- **Single `SYS_WRITE` Call**: Every record is fully formatted in a static/stack buffer (`<= 512` bytes) and emitted in a single `write()` call using `VFS_O_APPEND`.
-- **Filesystem Guarantee**: Ext2 and runfs serialize authoritative EOF pointer adjustment and cluster allocation under filesystem exclusion (`ext2_lock`). Records under cluster size do not interleave.
+### 4.1 Append Serialization & Short-Write Semantics
+- **Filesystem Guarantee**:
+  - `Ext2` and `runfs` serialize authoritative EOF selection and writes under filesystem exclusion (`ext2_lock` and `run_lock`).
+  - Records do not interleave on successful append writes. Timeline order represents write-lock acquisition order, not strict global clock chronology across multi-core CPUs.
+- **Single `SYS_WRITE` Call**:
+  - Formatted in a static/stack buffer bounded to `<= 512` bytes:
+    `[YYYY-MM-DD HH:MM:SS UTC] tag: message\n`
+  - Issued via exactly one `SYS_WRITE` call with `VFS_O_APPEND`.
 - **Short-Write Policy**:
-  - If `write()` returns `< 0` (e.g. `ENOSPC`, `EROFS`, `EIO`): Log diagnostic to stderr and exit 1.
-  - If `0 <= written < len`: Storage exhausted mid-record. **Do not retry the remaining fragment** (retrying against an append file can interleave with concurrent writers). **Do not replay the full record to fallback** (produces duplicate prefixes). Mark failure, report truncation to stderr, and exit 1.
+  - `written == len`: Success.
+  - `written < 0`: Fail closed, report error, return/exit nonzero.
+  - `0 <= written < len`: Storage exhausted mid-write (`ENOSPC`). **Do not retry the fragment** (retrying against an append file can interleave with concurrent writers). **Do not replay full record to fallback** (produces duplicate prefixes). Fail closed, log truncation notice to stderr, and return/exit nonzero.
 
-### 3.2 Safe Fallback Destination Hierarchy
-- **Runtime Fallback**:
-  1. Primary: `/var/log/messages` (writable persistent root).
-  2. Fallback: `/run/messages` (RAM-backed `runfs`). Used automatically if `/var/log` is read-only (Live ISO/USB media) or missing.
-- **Policy Boundary**: Do **not** silently fall back to persistent storage paths (`/mnt/.fortress/...`). Mount targets and storage persistence require explicit configuration and permission enforcement.
+### 4.2 RAM Fallback & `runfs` Capacity Policy
+- **Runfs Reality**: [`src/fs/runfs.c#L7`](file:///c:/Sources/FortressOS/src/fs/runfs.c#L7) enforces `RUNFS_BYTES = 4096u` per file and 64 total nodes across the filesystem.
+- **Policy**:
+  - `/run/messages` holds at most 4 KiB (~8 to 10 maximum-sized 512B records).
+  - `/run/messages` is strictly an emergency ephemeral buffer for early boot or live read-only media.
+  - When 4 KiB is reached, subsequent appends return `ENOSPC`/`EFBIG`.
+  - Failures to append to `/run/messages` drop records and report dropped count; `runfs` is not enlarged globally.
+- **Fallback by Error Class**:
+  - `ENOENT` / `EROFS` on primary `/var/log/messages`: Fall back to `/run/messages`.
+  - `EACCES` / `EPERM`: Fail closed immediately; do **not** fall back (prevents bypassing permission boundaries).
+  - No silent fallback to `/mnt/.fortress/...`.
 
-### 3.3 Log Injection & Input Sanitization
-- Unsanitized inputs (usernames, command arguments, network identifiers) could inject spoofed log lines via carriage returns or newlines.
-- All strings processed by `/bin/logger` or daemon loggers must be strictly sanitized:
-  - `\n` and `\r` are replaced with space or escape sequence `\n`.
-  - Non-printable ASCII bytes (`< 0x20` or `>= 0x7f`) are escaped as `\xHH`.
-  - Record length is hard-capped at 512 bytes including timestamp and newline.
+### 4.3 Logrotate Active-File Concurrency Fix
+- **The Race Window**:
+  - Renaming `active -> active.1` leaves the active path momentarily absent until recreation.
+  - Recreating with `VFS_O_TRUNC` after compression will wipe out any records written by loggers that opened the file during the compression delay.
+- **Hardened Rotation Protocol**:
+  1. Rename `active -> active.1`.
+  2. **Immediately** recreate `active` using `open(active, VFS_O_CREAT | VFS_O_WRONLY, orig_mode & 07777)` and close it *before* spawning `/bin/gzip`.
+  3. Because `VFS_O_EXCL` is not defined in FortressOS VFS, `logrotate` inspects descriptor and file metadata; if another writer already created the path, `logrotate` does not truncate it.
+  4. Run `/sbin/logrotate` under single-instance exclusion (via crond serialized scheduling or lockfile).
+  5. Writers opening per-record (`open -> write -> close`) acquire the new file descriptor immediately after step 2.
 
-### 3.4 Timestamping Invariants
+### 4.4 Timestamp Formatting & Edge Cases
 - Timestamps are retrieved via `SYS_CLOCK_GETTIME` with `CLOCK_REALTIME`.
-- **Calendar Time**: Converted to UTC datetime using deterministic leap-year arithmetic:
-  `[YYYY-MM-DD HH:MM:SS UTC] <tag>: <message>`
-- **Monotonic Fallback**: If RTC/calendar time is uninitialized (epoch year < 2026), format monotonic uptime explicitly to avoid deceptive `1970-01-01` stamps:
-  `[   12.345s UPTIME] <tag>: <message>`
-
-### 3.5 Rotation Concurrency & Ownership
-- **Watchtower Logs**: Managed exclusively by Watchtower internal rotation (1 MiB threshold, 3 generations). Excluded from `/etc/logrotate.conf`.
-- **Global & Boot Logs**: Managed by `/sbin/logrotate` via `/etc/crontab`.
-- **Elimination of the Rotation Race Window**:
-  - When rotating `active -> active.1`, `logrotate` must recreate the active path **immediately after renaming**, *before* executing `/bin/gzip`.
-  - The recreation must use `VFS_O_CREAT | VFS_O_EXCL` so that concurrent writers opening between rename and create do not have their newly appended records truncated by `O_TRUNC`.
+- **Formatting**:
+  - Valid UTC date: `[YYYY-MM-DD HH:MM:SS UTC] <tag>: <message>`
+- **Edge Cases**:
+  - Clock syscall failure or epoch year < 2026: Format monotonic uptime explicitly:
+    `[   12.345s UPTIME] <tag>: <message>`
+  - Implausible future year (> 2100): Treat as invalid clock and fall back to monotonic uptime.
+  - Long input lines: Hard-truncated to 512 bytes with `...` indicator.
+  - Unterminated input: Stdin lines lacking a trailing newline are explicitly appended with `\n`.
+  - Log sanitization: All characters `< 0x20` and `>= 0x7f` are escaped as `\xHH` (or `\r`/`\n` replaced with space) to prevent log injection / ANSI terminal manipulation attacks.
 
 ---
 
-## 4. Phased Implementation Roadmap
+## 5. Staged Implementation Plan
 
-### Phase 1: `/bin/logger` Utility & Host Test Suite
+```
++-----------------------------------------------------------------------------------------+
+| Phase 0: Prerequisite Fixes & Policies                                                 |
+| - Concurrency fix in logrotate (immediate active recreate, no post-gzip O_TRUNC)        |
+| - Watchtower descriptor reopen protocol after internal rotation                        |
+| - Runfs 4 KiB capacity policy documentation                                             |
++-----------------------------------------------------------------------------------------+
+                                           |
+                                           v
++-----------------------------------------------------------------------------------------+
+| Phase 1: /bin/logger CLI & Streaming Tool                                               |
+| - user/tools/logger.c: args + stdin stream, sanitization, UTC/uptime formatting         |
+| - tests/logger_host.c: ASan/UBSan unit test suite (make test-logger-host)               |
+| - Makefile: package /bin/logger into initramfs                                          |
++-----------------------------------------------------------------------------------------+
+                                           |
+                                           v
++-----------------------------------------------------------------------------------------+
+| Phase 2: In-Process Daemon Logging Helper & Wiring                                      |
+| - Shared timeline_log() helper avoiding process launch overhead                         |
+| - Wire sshd privileged monitor (auth success/failure)                                   |
+| - Wire dhcpc (lease bound/renewed)                                                      |
++-----------------------------------------------------------------------------------------+
+                                           |
+                                           v
++-----------------------------------------------------------------------------------------+
+| Phase 3: Boot Snapshot Service & Crontab Scheduling                                     |
+| - boot-snapshot utility: pre-rotate boot.log -> boot.log.prev, then dmesg               |
+| - /etc/watchtower/boot-log.service (Order=01, Type=simple, Restart=no)                 |
+| - /etc/crontab: schedule logrotate for /var/log/messages only                           |
++-----------------------------------------------------------------------------------------+
+                                           |
+                                           v
++-----------------------------------------------------------------------------------------+
+| Phase 4: Multi-Firmware Verification & Host Integration                                 |
+| - Host tests: pipe saturation, runfs exhaustion, concurrent rotation races              |
+| - BIOS & UEFI QEMU acceptance: crash preservation, active rotation load, reboot forensic|
++-----------------------------------------------------------------------------------------+
+```
+
+### Phase 0: Prerequisite Fixes & Policies
+- Update `user/logrotate/logrotate.c`:
+  - Move active file recreation to immediately after `rename()`, prior to `/bin/gzip`.
+  - Remove `O_TRUNC` from recreation step.
+- Update `user/watchtower/watchtower_main.c`:
+  - Reopen `wt_log_fd` after `wt_rotate_log()`.
+- Explicitly reserve `/var/log/watchtower/*.log` for Watchtower internal rotation.
+
+### Phase 1: `/bin/logger` CLI & Streaming Tool
 - Implement `user/tools/logger.c` and `user/tools/logger.h`:
-  - CLI syntax: `/bin/logger [-t tag] [message...]`
-  - Stdin streaming mode when no message arguments are provided.
-  - Strict input sanitization (control characters and newlines escaped).
-  - Single atomic `SYS_WRITE` buffer (`<= 512` bytes).
-  - UTC timestamp formatter with monotonic uptime fallback.
-  - Destination fallback (`/var/log/messages` -> `/run/messages`).
-- Host test suite in `tests/logger_host.c`:
-  - Unit tests under ASan/UBSan (`make test-logger-host`).
-  - Covers CLI options, tag formatting, stdin pipe processing, sanitization, bounds truncation, and destination fallback.
-- Makefile integration: compile `tool-logger.elf` and package `/bin/logger` into `initramfs.tar`.
+  - Arguments: `/bin/logger [-t tag] [message...]`
+  - Streaming: Reads stdin when no positional message is provided.
+  - Sanitization: Replaces `\r`/`\n` and escapes control bytes.
+  - Buffering: Single stack buffer `<= 512` bytes, single `SYS_WRITE`.
+  - Output: `[YYYY-MM-DD HH:MM:SS UTC] tag: message\n` (uptime fallback).
+  - Destination: `/var/log/messages` (fallback `/run/messages` on `ENOENT`/`EROFS`).
+  - Error: Exits 1 on failure.
+- Unit test suite: `tests/logger_host.c` (`make test-logger-host`).
+- Package `/bin/logger` into `initramfs.tar`.
 
-### Phase 2: Logrotate Concurrency Fix & Reopen Safety
-- Hardening `user/logrotate/logrotate.c`:
-  - Recreate active file immediately after rename before gzip invocation.
-  - Protect against concurrent writer truncation.
-- Update `/etc/logrotate.conf` to target `/var/log/messages` and `/var/log/boot.log` only (explicit paths, no conflicting Watchtower service wildcards).
-- Schedule rotation in `/etc/crontab` (`60 /sbin/logrotate /etc/logrotate.conf`).
+### Phase 2: In-Process Daemon Logging Helper & Wiring
+- Implement shared in-process helper `timeline_log(const char *tag, const char *fmt, ...)`:
+  - Formats in-memory without spawning a child process.
+  - Appends to `/var/log/messages`.
+  - Non-fatal: Returns -1 on failure, never exits the host daemon.
+  - Rate-limited diagnostics to stderr.
+- Wire into `user/sshd/monitor.c` (privileged monitor authentication events).
+- Wire into `user/dhcpc.c` (lease bound/renewal events).
 
-### Phase 3: Watchtower Boot Snapshot Service (`boot-log.service`)
-- Add boot snapshot service `/etc/watchtower/boot-log.service`:
+### Phase 3: Boot Snapshot Service & Crontab Scheduling
+- Implement boot snapshot helper `user/tools/boot_snapshot.c`:
+  - Rotates `/var/log/boot.log` to `/var/log/boot.log.prev`.
+  - Dumps current kernel ring buffer via `sys_call(SYS_DMESG)`.
+- Configure `/etc/watchtower/boot-log.service`:
   ```ini
-  Exec=/bin/dmesg /var/log/boot.log
+  Exec=/bin/boot-snapshot
   Order=01
   Type=simple
   Restart=no
   ```
-- Implement pre-rotation (`/var/log/boot.log` -> `/var/log/boot.log.prev`) to preserve previous boot diagnostics.
-- Update Watchtower supervisor tests to verify oneshot execution under `Type=simple`.
+- Deploy `/etc/crontab` schedule for `/sbin/logrotate /etc/logrotate.conf`.
+- Configure `/etc/logrotate.conf` to rotate `/var/log/messages` only.
 
-### Phase 4: Daemon Event Logging Wiring
-- **SSHD**:
-  - Add structured logging calls in privileged monitor (`user/sshd/monitor.c`):
-    - `logger -t sshd "Accepted publickey for <user> from <ip>"`
-    - `logger -t sshd "Failed publickey for <user> from <ip>"`
-- **DHCPC**:
-  - Add lease event logging in `user/dhcpc.c`:
-    - `logger -t dhcpc "Bound lease <ip> via <gateway>"`
-    - `logger -t dhcpc "Renewed lease <ip>"`
-
-### Phase 5: Verification & Multi-Firmware Acceptance
-- Host unit & integration test suites (`test-logger-host`, `test-logrotate-host`, `test-watchtower-host`).
-- BIOS and UEFI QEMU acceptance:
-  - Concurrent loggers running under multi-core SMP.
-  - Boot dump presence and persistence across reboot cycles.
-  - Active logrotate shifts under concurrent logging load.
-  - Storage exhaustion handling on full and read-only media.
+### Phase 4: Multi-Firmware Verification & Host Integration
+- Host test coverage:
+  - Pipe saturation backpressure.
+  - Runfs 4 KiB exhaustion handling.
+  - Concurrent logger writes during active logrotate shifts.
+  - Escaping and input sanitization boundaries.
+- Multi-firmware QEMU testing (BIOS & UEFI):
+  - Verification of `/var/log/boot.log` and `/var/log/boot.log.prev` across reboot cycles.
+  - Concurrency test with multi-core Ring 3 processes writing to `/var/log/messages`.
+  - Storage failure injection (full disk and read-only media).
