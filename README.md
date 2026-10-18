@@ -53,7 +53,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Hardware Drivers:** Intel e1000, e1000e, and physical Intel I219-LM (autonomous PHY renegotiation, cold-plug and flap recovery).
 - **Cross-Core Networking:** Application calls from any CPU route through the CPU-0 protocol owner. Phases 0–4 are complete through bounded Dell physical acceptance; throughput redesign remains deferred. See [network SMP evidence](docs/roadmap/network-smp-phase4.md).
 
-### 🔐 Native SSH (µSSH)
+### 🔐 Native SSH (SSH)
 - **Secure Transport:** Ed25519 host identities, Curve25519 key exchange, and ChaCha20-Poly1305 encryption, with password and Ed25519 public-key authentication.
 - **Interactive Sessions:** Privilege-separated monitor/workers, PTYs, terminal resizing, session limits, and bounded teardown; automated OpenSSH acceptance under BIOS and UEFI.
 - **Client Compatibility:** PowerShell OpenSSH works, and MobaXterm 25.3 login, `top`, ordinary commands, and sudo are user-confirmed on the laptop.
