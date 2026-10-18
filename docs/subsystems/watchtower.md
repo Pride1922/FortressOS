@@ -7,21 +7,17 @@ in [the lifecycle report](../roadmap/watchtower-lifecycle.md).
 
 ## Current implementation limits
 
-- The supervisor explicitly registers **dhcpc, sshd and crond** in
-  `user/watchtower/watchtower_main.c`. It does **not** scan directories for
-  arbitrary `.service` files. Adding a new service currently requires a source
-  registration and rebuilt media, as well as its configuration file.
+- The supervisor discovers up to 16 `.service` files from `/etc/watchtower`.
+  When that directory has no service definitions, it scans
+  `/mnt/.fortress/watchtower`. Invalid definitions are skipped; they do not
+  acquire built-in defaults. No C registration is needed for a new service.
 - Configuration is loaded when Watchtower starts. `service restart` restarts
   the process using the already-loaded configuration; it does not reload files.
   There are no `enable`, `disable`, `reload` or `daemon-reload` commands.
-- `User` and `Group` are parsed and displayed, but the current spawn adapter
-  does **not** apply them as credential changes. Services inherit supervisor
-  credentials. A daemon requiring privilege separation must implement its own
-  credential/capability drop; these directives do not establish isolation.
-- The config loader rejects invalid files, but the existing three startup
-  registration blocks choose built-in defaults on any load failure. An invalid
-  file therefore does **not** guarantee the service stays disabled. This is a
-  mismatch with the plan's fail-closed startup intent and remains follow-up work.
+- `User` and `Group` are enforced on every launch, including restarts. Names
+  and decimal IDs must resolve to existing account/group records. Lookup,
+  generation-check, credential, pipe or spawn failure leaves the service failed
+  without a child or readiness claim. See [service identities](#service-identities).
 - Control-mailbox concurrency/stale-lock robustness and forking-service edge
   cases remain outside the completed lifecycle acceptance. Operate one service
   command at a time. Do not start a second Watchtower instance.
@@ -170,7 +166,7 @@ for new daemons until the forking edge cases are covered.
 
 ### 2. Supply configuration
 
-Example **for a daemon you implement and register**, not an already-installed
+Example **for a daemon you implement and package**, not an already-installed
 `metricsd` command:
 
 ```ini
@@ -179,6 +175,8 @@ Type=simple
 Order=40
 Enabled=yes
 WorkingDirectory=/run
+User=operator
+Group=operator
 Environment=PATH=/bin:/sbin
 Restart=on-failure
 RestartLimit=3
@@ -203,7 +201,7 @@ rejected. Do not add systemd directives such as `ExecStart` or section headers.
 | `PIDFile` | Unspecified | Absolute path; needed for practical forking tracking |
 | `Environment` | None | Repeatable `NAME=value`, up to 16 total entries including EnvironmentFile |
 | `EnvironmentFile` | None | Absolute path; loaded once at startup; missing/unreadable file is a loader error |
-| `User`, `Group` | `root`, `root` | Parsed labels only; currently no credential enforcement |
+| `User`, `Group` | `root`, `root` | Existing account/group names or decimal IDs; applied before the child can run |
 | `Restart` | `on-failure` | `never`, `on-failure`, `always` |
 | `RestartLimit` | `3` | 1..100 retries within the 60-second counter window |
 | `RestartDelay` | `5` | Parser accepts 0..3600 seconds; registration currently replaces 0 with 5 |
@@ -221,37 +219,53 @@ Spawn ABI budgets still apply independently: argv strings together must fit
 1024 bytes, and environment strings together must fit another 1024 bytes,
 including NUL terminators. A definition can parse yet exceed a spawn budget.
 
-For a registered name the loader tries `/etc/watchtower/<name>.service` first,
-then `/mnt/.fortress/watchtower/<name>.service` when the first load reports no
-readable file (currently includes absence and open/read failures). A parse or
-EnvironmentFile error stops fallback within the loader.
-The shipped live image already has `/etc` definitions, so dropping another
-definition into `/mnt` does **not** override those. See the startup-fallback
-limitation above for invalid/missing definitions of the existing three services.
+Discovery treats a directory containing `.service` files as authoritative even
+if every definition is invalid. Per-name loading tries `/etc/watchtower` first;
+a parse or EnvironmentFile error rejects that definition without fallback.
+An absent/unreadable file permits the corresponding live-media path. The shipped
+live image includes `/etc` definitions, so `/mnt` definitions do not override it.
 
-### 3. Register it explicitly
+### Service identities
 
-Add a registration in `watchtower_main` beside dhcpc/sshd/crond, before the
-initial boot-start loop. Keep the temporary service record static:
+Set both directives for an unprivileged service, for example `User=operator`
+and `Group=operator`. The existing defaults remain `root:root`: omitting `Group`
+does not select the account's primary group. Prefer a dedicated service account
+when deployed; `operator` retains its account database supplementary memberships.
+Numeric IDs must also exist in the database; anonymous numeric identities are
+rejected. Password hashes and login authentication are not used for service
+launches, so a locked account can still be a service identity.
 
-```c
-static service_t metrics;
-if (watchtower_config_load_service(
-        "/etc/watchtower/metricsd.service",
-        "/mnt/.fortress/watchtower/metricsd.service",
-        "metricsd", &metrics, err, sizeof(err)) == 0) {
-    if (watchtower_table_add_service(&table, &metrics) < 0)
-        wt_log_event("[watchtower] metricsd registration failed\n");
-} else {
-    wt_log_event("[watchtower] metricsd configuration unavailable or invalid\n");
-}
-```
+Every start takes a fresh public account snapshot and checks its generation.
+The configured group replaces the account's primary group; supplementary groups
+come from that account's database memberships, with duplicates removed. No
+supervisor supplementary groups or saved root IDs survive a non-root launch.
+All three UID fields and all three GID fields are set before the child is
+published, with zero capabilities for nonzero UID. UID zero retains only the
+supervisor's current capabilities; this path never replenishes them. Set-id
+bits on the initial executable do not override the requested identity.
 
-This pattern skips a new service on load failure rather than silently starting
-defaults. It is an integration example, not a change already made to Watchtower.
-Name, executable and definition paths must agree. Review whether its `Order`
-and timeout fit dependencies and shutdown budgets; ordering is not a dependency
-graph or proof that earlier services are ready.
+The kernel uses the target identity for executable, cwd and OPEN-action access.
+Inherited descriptors above stderr survive only when explicitly mapped by fd
+actions; stdout/stderr go to the
+service pipe and stdin is `/dev/null`. The default cwd is `/`. An explicit
+WorkingDirectory must be searchable by the service identity. These are process
+credential boundaries, not a sandbox: ordinary later set-id program execution
+and explicitly granted account memberships retain their existing OS semantics.
+
+Account generation is rechecked immediately before the spawn syscall using the
+same snapshot/check model as other account consumers. This is not an atomic
+account-update/spawn transaction, nor does editing accounts revoke credentials
+of an already-running service. Configuration files are still loaded once;
+restarting refreshes account resolution, not service definitions.
+
+### 3. Discover the definition
+
+Place `<name>.service` in the selected configuration directory and include it
+in the installed/live payload. Watchtower discovers it at supervisor startup;
+there is no source registration list or automatic live directory reload.
+Review its `Order` and teardown budgets: ordering is not a dependency graph or
+proof that earlier services are ready. Invalid definitions stay absent; an
+unresolvable identity leaves a discovered service in `failed` state on start.
 
 ### 4. Package it and verify
 
@@ -266,6 +280,7 @@ After changes, verify:
 
 ```sh
 make test-watchtower-host
+make test-watchtower-identity
 make test-watchtower-boot
 make test-watchtower-lifecycle
 ```
@@ -274,7 +289,9 @@ The integration targets build their ISO prerequisite; physical USB image builds
 remain a separate requested action. Extend host tests for the new service's
 parser/behavior and real-guest tests for its readiness, stop, crash, restart and
 output paths. Existing lifecycle coverage primarily exercises crond and sshd;
-it is not automatic acceptance of a newly registered daemon.
+it is not automatic acceptance of a newly added daemon. The identity target
+uses the existing `bin/initramfs.tar` as a read-only base and creates a temporary
+ISO; it never rebuilds the USB image or includes its probe in release media.
 
 On the rebuilt system, use `service list`, `service status metricsd` and
 `service check metricsd`. Confirm graceful stop, recovery after a crash, retry

@@ -187,7 +187,7 @@ On receiving `SIGTERM` or `SIGINT`, the monitor executes a bounded 7-step teardo
 1. Signal handler flags `g_terminate = 1`.
 2. Immediate closure of the TCP listening socket (`sock_fd`), preventing new connections.
 3. Send `SIGTERM` to each active worker PID.
-4. Each worker receives `SIGTERM`, breaks out of its duplex poll loop, and invokes `pty_bridge_cleanup()`.
+4. Each worker finishes any encoded channel frame across interrupted/short sends, then sends the encrypted RFC disconnect before `pty_bridge_cleanup()`. A permanent send/encoding failure invalidates the stream and suppresses a further encrypted packet; the monitor remains the five-second outer bound. See [send-interruption correction](../roadmap/ssh-shutdown-send.md).
 5. `pty_bridge_cleanup()` closes the PTY master descriptor (`master_fd`), which triggers the kernel PTY driver to deliver `SIGHUP` to the session leader's `controlling_sid`.
 6. Monitor waits bounded (up to 5000ms / 5s) for workers to exit, polling `SYS_WAITPID(..., WNOHANG)` in 50ms intervals.
 7. If any worker process remains alive after 5s, the monitor escalates to `SIGKILL` on the worker PID, reaps it, closes monitor IPC pipes, and exits 0 cleanly with `[sshd] Daemon shut down cleanly.`.
@@ -204,6 +204,7 @@ On receiving `SIGTERM` or `SIGINT`, the monitor executes a bounded 7-step teardo
 | `make test-ssh-channel-host` | RFC 4254 channel state machine, 64 KiB window credits, `WINDOW_ADJUST`, EOF/close interleavings | ASan/UBSan |
 | `make test-ssh-pty-host` | Kernel PTY driver bridge (`SYS_PTY_PAIR` 80), duplex short writes, window resize (`SIGWINCH`), staged session zero-race binding | ASan/UBSan |
 | `make test-ssh-daemon-host` | Configuration schema & strict parser, precedence hierarchy, boot readiness gate sequence, global admission cap & disconnect packet, 5s bounded teardown | ASan/UBSan |
+| `make test-ssh-shutdown` | Real supervised SSH stop/restart/reconnect and remote shutdown/reboot under BIOS/UEFI × SMP=1/4; temporary ISO, no data disks, unchanged release images | QEMU + OpenSSH |
 
 ---
 

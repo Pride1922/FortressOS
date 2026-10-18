@@ -44,6 +44,8 @@ bool creds_valid(const creds_t *value);
  * Successful outputs have zero reserved/unused group storage. Ordinary
  * inheritance never replenishes capabilities, including for UID zero. */
 int creds_inherit(const creds_t *old, creds_t *out);
+int creds_service_identity(const creds_t *old, uint32_t uid, uint32_t gid,
+                           const uint32_t *groups, size_t count, creds_t *out);
 int creds_setresuid(const creds_t *old, creds_id_change_t real,
                     creds_id_change_t effective, creds_id_change_t saved, creds_t *out);
 int creds_setresgid(const creds_t *old, creds_id_change_t real,

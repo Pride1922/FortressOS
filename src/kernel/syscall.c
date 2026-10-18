@@ -555,22 +555,27 @@ static int64_t sys_spawn(uintptr_t user_path, uintptr_t user_argv) {
 }
 
 static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint64_t user_opts_size) {
-    if (user_opts_size != sizeof(spawn_opts_t)) {
+    if (user_opts_size != sizeof(spawn_opts_t) && user_opts_size != sizeof(spawn_opts_v3_t)) {
         return SYSCALL_EINVAL;
     }
 
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
-    if (!vmm_validate_user_range(active_pml4, user_opts_ptr, sizeof(spawn_opts_t), false)) {
+    if (!vmm_validate_user_range(active_pml4, user_opts_ptr, user_opts_size, false)) {
         return SYSCALL_EFAULT;
     }
 
     spawn_opts_t opts;
     memcpy(&opts, (const void *)user_opts_ptr, sizeof(spawn_opts_t));
 
-    if (opts.size != sizeof(spawn_opts_t) || (opts.version != 1 && opts.version != 2) ||
+    spawn_identity_t identity;
+    bool explicit_identity=user_opts_size==sizeof(spawn_opts_v3_t);
+    if (explicit_identity) memcpy(&identity,(const void *)(user_opts_ptr+sizeof(opts)),sizeof(identity));
+
+    if (opts.size != user_opts_size ||
+        (explicit_identity ? opts.version != 3 : (opts.version != 1 && opts.version != 2)) ||
         opts.reserved0 != 0 || opts.reserved1 != 0 ||
         (opts.version == 1 && (opts.flags || opts.reserved2)) ||
-        (opts.version == 2 && ((opts.flags & ~SPAWN_V2_FLAGS) ||
+        (opts.version >= 2 && ((opts.flags & ~SPAWN_V2_FLAGS) ||
          (!(opts.flags & SPAWN_SETPGROUP) && opts.reserved2) || opts.reserved2 > 0x7fffffffffffffffULL))) {
         return SYSCALL_EINVAL;
     }
@@ -728,8 +733,9 @@ static int64_t sys_spawn_ext(uintptr_t user_path, uintptr_t user_opts_ptr, uint6
     }
 
     int64_t pid = 0;
-    int64_t result = process_spawn_from_vfs_group(path, argc, kargv, envc, opts.envp ? kenvp : NULL, kcwd,
-                                               opts.action_count, opts.action_count ? kactions : NULL, opts.flags, opts.reserved2, &pid);
+    int64_t result = process_spawn_from_vfs_identity(path, argc, kargv, envc, opts.envp ? kenvp : NULL, kcwd,
+                         opts.action_count, opts.action_count ? kactions : NULL, opts.flags, opts.reserved2,
+                         explicit_identity ? &identity : NULL, &pid);
     kfree(args_buf);
     if (env_buf) kfree(env_buf);
     if (action_paths) kfree(action_paths);

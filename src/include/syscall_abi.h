@@ -26,7 +26,7 @@
 #define SYS_INPUT_READ 17
 #define SYS_GETCWD     18 /* (char *buf, uint64_t size) -> bytes written */
 #define SYS_CHDIR      19 /* (const char *path) -> 0 */
-#define SYS_SPAWN_EXT  20 /* (const char *path, const spawn_opts_t *opts, uint64_t opts_size) -> child PID */
+#define SYS_SPAWN_EXT  20 /* (path, spawn_opts_t v1/v2 or spawn_opts_v3_t, size) -> child PID */
 #define SYS_DUP2       21 /* (int oldfd, int newfd) -> newfd or -errno */
 #define SYS_DUP        22 /* (int oldfd) -> lowest available fd or -errno */
 #define SYS_FCNTL      23 /* (int fd, int cmd, uint64_t arg) -> result or -errno */
@@ -219,6 +219,21 @@ typedef struct {
 } spawn_opts_t;
 
 _Static_assert(sizeof(spawn_opts_t) == 64, "spawn_opts_t must be exactly 64 bytes");
+
+/* Explicit child identity, installed before publication. Requires CAP_SETUID
+ * and CAP_SETGID, even for an unchanged identity. No set-id image elevation:
+ * nonzero UID gets zero capabilities; UID zero inherits (never gains) caps.
+ * v1/v2 remain exactly 64 bytes. All unused groups/reserved fields are zero. */
+typedef struct {
+    uint32_t uid, gid, ngroups, reserved;
+    uint32_t groups[16];
+} spawn_identity_t;
+typedef struct {
+    spawn_opts_t base; /* size=144, version=3; v2 flags/pgid semantics */
+    spawn_identity_t identity;
+} spawn_opts_v3_t;
+_Static_assert(sizeof(spawn_identity_t) == 80, "spawn identity ABI");
+_Static_assert(sizeof(spawn_opts_v3_t) == 144, "spawn v3 ABI");
 
 #define PROC_STATE_FREE    0
 #define PROC_STATE_RUNNING 1

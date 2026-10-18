@@ -34,6 +34,7 @@ typedef struct {
     char last_stderr[256];
     int invalid_config_count;
     int empty_dir_warning_count;
+    bool reject_identity;
 } mock_sys_t;
 
 static mock_sys_t g_mock;
@@ -56,7 +57,11 @@ static void host_str_copy(char *dst, const char *src, size_t cap) {
     dst[i] = '\0';
 }
 
-static int64_t mock_spawn(const char *path, const char *const argv[]) {
+static int64_t mock_spawn(const service_t *svc, const char *const argv[],
+                           const char *const envp[], const char *cwd, int *pipe_fd) {
+    const char *path=svc->exec_path;
+    (void)envp;(void)cwd;*pipe_fd=-1;
+    if (g_mock.reject_identity) return -1;
     (void)argv;
     if (g_mock.proc_count >= MOCK_MAX_PIDS) return -1;
     if (strcmp(path, "/bin/fail_to_spawn") == 0) return -1;
@@ -160,7 +165,7 @@ static void mock_log_stderr(const char *msg) {
 }
 
 static const watchtower_sys_ops_t g_mock_ops = {
-    .spawn = mock_spawn,
+    .spawn_service = mock_spawn,
     .kill = mock_kill,
     .file_exists = mock_file_exists,
     .monotonic_sec = mock_monotonic_sec,
@@ -888,6 +893,20 @@ static void test_fallback_to_live_media(void) {
     printf("PASS: test_fallback_to_live_media\n");
 }
 
+static void test_identity_failure_is_closed(void) {
+    mock_reset();
+    static watchtower_table_t table;
+    service_t service={.name="identity",.exec_path="/bin/service-probe"};
+    watchtower_table_init(&table);assert(!watchtower_table_add_service(&table,&service));
+    g_mock.reject_identity=true;
+    assert(watchtower_start_service(&table,0,1000,&g_mock_ops)==-3);
+    assert(!g_mock.proc_count && !table.services[0].pid && !table.services[0].ready_verified);
+    assert(table.services[0].state==SVC_STATE_FAILED);
+    watchtower_sys_ops_t missing=g_mock_ops;missing.spawn_service=NULL;
+    assert(watchtower_start_service(&table,0,1001,&missing)==-3 && !g_mock.proc_count);
+    assert(strstr(g_mock.last_stderr,"identity"));
+    puts("PASS: identity failure and missing enforcing adapter never launch or claim readiness");
+}
 int main(void) {
     printf("===================================================\n");
     printf("Watchtower Service Supervisor Test Suite (ASan)\n");
@@ -917,7 +936,8 @@ int main(void) {
     test_missing_and_empty_directory();
     test_bounded_16_services_limit();
     test_fallback_to_live_media();
+    test_identity_failure_is_closed();
 
-    printf("\nALL 18 WATCHTOWER SERVICE, DISCOVERY & RECOVERY TESTS PASSED!\n");
+    printf("\nALL 19 WATCHTOWER SERVICE, DISCOVERY & RECOVERY TESTS PASSED!\n");
     return 0;
 }

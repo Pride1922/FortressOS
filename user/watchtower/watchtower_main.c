@@ -5,6 +5,7 @@
 #include "watchtower.h"
 #include "watchtower_config.h"
 #include "watchtower_ctl.h"
+#include "watchtower_identity.h"
 
 #define WT_LOG_MAX_SIZE_DISK (1024 * 1024) /* 1 MiB */
 #define WT_LOG_MAX_SIZE_RAM  2048          /* 2 KiB */
@@ -87,23 +88,29 @@ static int64_t wt_spawn(const char *path, const char *const argv[]) {
     return (int64_t)pid;
 }
 
-static int64_t wt_spawn_with_pipe(const char *path, const char *const argv[],
+static int64_t wt_spawn_service(const service_t *svc, const char *const argv[],
                                   const char *const envp[], const char *cwd,
                                   int *out_pipe_fd) {
-    if (!path || !argv || !out_pipe_fd) return -1;
+    if (!svc || !argv || !out_pipe_fd) return -1;
     *out_pipe_fd = -1;
+    spawn_opts_v3_t launch={0};
+    if (!watchtower_prepare_identity(svc->user,svc->group,&launch.identity))
+        return -1;
 
     int pipe_fds[2] = {-1, -1};
     long ret = sys_call(SYS_PIPE, (uintptr_t)pipe_fds, 0, 0, 0, 0, 0);
     if (ret != 0) {
-        /* Fall back to regular spawn without pipe if pipe creation fails */
-        return wt_spawn(path, argv);
+        return -1; /* Never bypass identity, environment or cwd on pipe failure. */
     }
 
     /* Set read end non-blocking so supervisor never stalls */
-    sys_call(SYS_FCNTL, (uintptr_t)pipe_fds[0], F_SETFL, VFS_O_NONBLOCK, 0, 0, 0);
+    if (sys_call(SYS_FCNTL, (uintptr_t)pipe_fds[0], F_SETFL, VFS_O_NONBLOCK, 0, 0, 0)<0) {
+        sys_call(SYS_CLOSE, (uintptr_t)pipe_fds[0], 0, 0, 0, 0, 0);
+        sys_call(SYS_CLOSE, (uintptr_t)pipe_fds[1], 0, 0, 0, 0, 0);
+        return -1;
+    }
 
-    spawn_fd_action_t actions[4];
+    spawn_fd_action_t actions[5];
     for (size_t i = 0; i < sizeof(actions); i++) ((uint8_t *)actions)[i] = 0;
     size_t act_count = 0;
 
@@ -130,19 +137,25 @@ static int64_t wt_spawn_with_pipe(const char *path, const char *const argv[],
         actions[act_count].dst_fd = pipe_fds[1];
         act_count++;
     }
+    /* Services cannot consume the supervisor's console input. */
+    actions[act_count].type = SPAWN_FD_ACTION_OPEN;
+    actions[act_count].dst_fd = 0;
+    actions[act_count].path = (uintptr_t)"/dev/null";
+    actions[act_count].flags = VFS_O_RDONLY;
+    act_count++;
 
-    spawn_opts_t opts;
-    for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
-    opts.size = sizeof(opts);
-    opts.version = 2;
-    opts.flags = SPAWN_SETPGROUP;
-    opts.argv = (uint64_t)argv;
-    opts.envp = (uint64_t)envp;
-    if (cwd && cwd[0]) opts.cwd = (uint64_t)cwd;
-    opts.fd_actions = (uint64_t)actions;
-    opts.action_count = (uint32_t)act_count;
+    launch.base.size = sizeof(launch);
+    launch.base.version = 3;
+    launch.base.flags = SPAWN_SETPGROUP;
+    launch.base.argv = (uint64_t)argv;
+    launch.base.envp = (uint64_t)envp;
+    launch.base.cwd = (uint64_t)(cwd && cwd[0] ? cwd : "/");
+    launch.base.fd_actions = (uint64_t)actions;
+    launch.base.action_count = (uint32_t)act_count;
 
-    long pid = sys_call(SYS_SPAWN_EXT, (uintptr_t)path, (uintptr_t)&opts, sizeof(opts), 0, 0, 0);
+    /* Revalidate the account generation immediately before the spawn call. */
+    long pid = db_check() ? sys_call(SYS_SPAWN_EXT, (uintptr_t)svc->exec_path,
+                                      (uintptr_t)&launch, sizeof(launch), 0, 0, 0) : -1;
 
     /* Close write end in parent */
     sys_call(SYS_CLOSE, (uintptr_t)pipe_fds[1], 0, 0, 0, 0, 0);
@@ -577,8 +590,7 @@ int watchtower_main(int argc, char **argv) {
     wt_log_event("[watchtower] Starting service supervisor...\n");
 
     static const watchtower_sys_ops_t ops = {
-        .spawn = wt_spawn,
-        .spawn_with_pipe = wt_spawn_with_pipe,
+        .spawn_service = wt_spawn_service,
         .kill = wt_kill,
         .file_exists = wt_file_exists,
         .monotonic_sec = wt_monotonic_sec,

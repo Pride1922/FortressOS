@@ -94,7 +94,7 @@ service_t *watchtower_find_service_by_pid(watchtower_table_t *tbl, int64_t pid) 
 }
 
 int watchtower_start_service(watchtower_table_t *tbl, size_t idx, uint64_t now_sec, const watchtower_sys_ops_t *ops) {
-    if (!tbl || idx >= tbl->count || !ops || !ops->spawn) return -1;
+    if (!tbl || idx >= tbl->count || !ops) return -1;
     service_t *svc = &tbl->services[idx];
 
     /* Prevent duplicate starts */
@@ -123,16 +123,19 @@ int watchtower_start_service(watchtower_table_t *tbl, size_t idx, uint64_t now_s
 
     int pipe_fd = -1;
     int64_t pid;
-    if (ops->spawn_with_pipe) {
-        pid = ops->spawn_with_pipe(svc->exec_path, argv, envp, cwd, &pipe_fd);
-    } else {
-        pid = ops->spawn(svc->exec_path, argv);
-    }
+    pid = ops->spawn_service ? ops->spawn_service(svc, argv, envp, cwd, &pipe_fd) : -1;
     if (pid <= 0) {
         svc->state = SVC_STATE_FAILED;
         svc->pid = 0;
         svc->initial_pid = 0;
         svc->pipe_fd = -1;
+        svc->ready_verified = false;
+        if (ops->log_stderr) {
+            char message[128]="[watchtower] service identity/spawn rejected: ";
+            size_t n=sizeof("[watchtower] service identity/spawn rejected: ")-1;
+            for (size_t i=0;svc->name[i] && n+2<sizeof(message);i++) message[n++]=svc->name[i];
+            message[n++]='\n';message[n]=0;ops->log_stderr(message);
+        }
         return -3; /* Spawn failed */
     }
 

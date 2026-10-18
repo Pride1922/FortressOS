@@ -2124,6 +2124,15 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
                                    int envc, const char *const envp[], const char *cwd,
                                    int action_count, const spawn_kaction_t *actions,
                                    uint32_t spawn_flags, uint64_t pgid, int64_t *out_pid) {
+    return process_spawn_from_vfs_identity(path, argc, argv, envc, envp, cwd,
+                         action_count, actions, spawn_flags, pgid, NULL, out_pid);
+}
+
+int64_t process_spawn_from_vfs_identity(const char *path, int argc, const char *const argv[],
+                                   int envc, const char *const envp[], const char *cwd,
+                                   int action_count, const spawn_kaction_t *actions,
+                                   uint32_t spawn_flags, uint64_t pgid, const spawn_identity_t *identity,
+                                   int64_t *out_pid) {
     if (!path || !*path || !out_pid) return SYSCALL_EINVAL;
     int64_t result = SYSCALL_ENOMEM;
     uint64_t pid = 0;
@@ -2153,6 +2162,18 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
             !process_record_publish_creds(curr->tid,&actor,&dropped)) { result=SYSCALL_EINVAL;goto out; }
         actor=dropped;
     }
+    if (identity) {
+        if (identity->reserved || identity->ngroups > CREDS_MAX_GROUPS) {
+            result=SYSCALL_EINVAL;goto out;
+        }
+        for (unsigned i=identity->ngroups;i<CREDS_MAX_GROUPS;i++)
+            if (identity->groups[i]) { result=SYSCALL_EINVAL;goto out; }
+        creds_t target;
+        int ce=creds_service_identity(&actor,identity->uid,identity->gid,
+                                     identity->groups,identity->ngroups,&target);
+        if (ce) { result=ce==CREDS_EPERM ? SYSCALL_EPERM : SYSCALL_EINVAL;goto out; }
+        actor=target;
+    }
     char canonical_cwd[VFS_MAX_PATH];
     if (cwd && cwd[0]) {
         vfs_node_t *directory = vfs_lookup_creds(cwd, &actor, &err);
@@ -2177,7 +2198,9 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
     size_t size=image_metadata.size;
     const void *image=buffer;
     creds_t exec_creds;
-    bool secure=spawn_credentials(&actor,&image_metadata,&exec_creds);
+    bool secure;
+    if (identity) { exec_creds=actor;secure=true; }
+    else secure=spawn_credentials(&actor,&image_metadata,&exec_creds);
     size_t target_cpu = cpu_current()->id;
     /* Ordinary children start locally and are eligible for work stealing.
      * Network calls from every CPU use the registered CPU-0 owner. Explicit

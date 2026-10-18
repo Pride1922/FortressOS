@@ -30,7 +30,10 @@ static void mock_reset(void) {
     g_mock.next_pid = 200;
 }
 
-static int64_t mock_spawn(const char *path, const char *const argv[]) {
+static int64_t mock_spawn(const service_t *svc, const char *const argv[],
+                           const char *const envp[], const char *cwd, int *pipe_fd) {
+    const char *path=svc->exec_path;
+    (void)envp;(void)cwd;*pipe_fd=-1;
     (void)argv;
     if (g_mock.proc_count >= MOCK_MAX_PIDS) return -1;
     int idx = g_mock.proc_count++;
@@ -65,7 +68,7 @@ static uint64_t mock_monotonic_sec(void) {
 }
 
 static const watchtower_sys_ops_t g_mock_ops = {
-    .spawn = mock_spawn,
+    .spawn_service = mock_spawn,
     .kill = mock_kill,
     .file_exists = mock_file_exists,
     .monotonic_sec = mock_monotonic_sec

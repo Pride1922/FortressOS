@@ -398,6 +398,17 @@ FortressOS/
 
 ### 7.1 A syscall
 
+Additive explicit child-identity spawn: `SYS_SPAWN_EXT` v3 uses a 144-byte
+`spawn_opts_v3_t` (64-byte base plus inline UID/GID/group set). V1/v2 stay
+64 bytes. Both CAP_SETUID and CAP_SETGID are required; all child IDs are set
+before publication, nonzero UID gets zero caps, UID zero never replenishes
+caps, and initial image set-id bits cannot override the selection. Target
+credentials govern executable/cwd/OPEN actions. See
+[Watchtower credential contract and evidence](docs/roadmap/watchtower-credentials.md).
+`make test-watchtower-identity-host` covers resolver/value failure boundaries;
+`make test-watchtower-identity` uses temporary disk-free BIOS/UEFI SMP=1/4 ISO
+fixtures, an existing read-only base archive, and a release-excluded Ring 3 probe.
+
 Additive private host-key storage ABI: `SYS_HOSTKEY = 79`, `(op, buffer, bytes)`;
 both operations require effective UID 0 plus CAP_SYS_ADMIN. READ requires a
 writable 1024-byte buffer and returns length; PUBLISH consumes 1..1023 opaque

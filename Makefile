@@ -708,12 +708,15 @@ $(BUILD_DIR)/watchtower_config.o: user/watchtower/watchtower_config.c user/watch
 $(BUILD_DIR)/watchtower_ctl.o: user/watchtower/watchtower_ctl.c user/watchtower/watchtower_ctl.h user/watchtower/watchtower.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
-$(BUILD_DIR)/watchtower_main.o: user/watchtower/watchtower_main.c user/watchtower/watchtower.h user/watchtower/watchtower_config.h user/watchtower/watchtower_ctl.h src/include/types.h src/include/syscall_abi.h src/include/signal_abi.h src/fs/vfs.h
+$(BUILD_DIR)/watchtower_main.o: user/watchtower/watchtower_main.c user/watchtower/watchtower.h user/watchtower/watchtower_config.h user/watchtower/watchtower_ctl.h user/watchtower/watchtower_identity.h user/tools/userdb.h src/include/types.h src/include/syscall_abi.h src/include/signal_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
-$(USER_WATCHTOWER_ELF): $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o user/tools/start.asm user/shell.ld
+$(BUILD_DIR)/watchtower_identity.o: user/watchtower/watchtower_identity.c user/watchtower/watchtower_identity.h user/watchtower/watchtower.h user/tools/userdb.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Wframe-larger-than=1024 -Isrc/include -Iuser/watchtower -c $< -o $@
+$(USER_WATCHTOWER_ELF): $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/watchtower_identity.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=watchtower_main user/tools/start.asm -o $(BUILD_DIR)/watchtower_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/watchtower_start.o $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/watchtower_start.o $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/watchtower_identity.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o -o $@
 $(BUILD_DIR)/service_cli.o: user/watchtower/service_cli.c user/watchtower/watchtower.h user/watchtower/watchtower_ctl.h src/include/types.h src/include/syscall_abi.h src/include/signal_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@
@@ -2142,10 +2145,29 @@ test-watchtower-phase5-host:
 	@$(BUILD_DIR)/watchtower_phase5_host
 
 .PHONY: test-watchtower-host
-test-watchtower-host: test-watchtower-config-host test-watchtower-ctl-host test-watchtower-phase5-host
+test-watchtower-host: test-watchtower-config-host test-watchtower-ctl-host test-watchtower-phase5-host test-watchtower-identity-host
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O1 -g -fsanitize=address,undefined -DWATCHTOWER_HOST_TEST -Wall -Wextra -Werror -Isrc/include -Isrc/fs -Iuser -Iuser/watchtower user/watchtower/watchtower_service.c user/watchtower/watchtower_config.c tests/watchtower_host.c -o $(BUILD_DIR)/watchtower_host
 	@$(BUILD_DIR)/watchtower_host
+
+.PHONY: test-watchtower-identity-host
+test-watchtower-identity-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -no-pie -Wall -Wextra -Werror -Isrc/include tests/watchtower_identity_host.c user/watchtower/watchtower_identity.c user/tools/userdb.c user/tools/digest.c src/kernel/creds.c -o $(BUILD_DIR)/watchtower_identity_host
+	@$(BUILD_DIR)/watchtower_identity_host
+
+$(BUILD_DIR)/watchtower-identity-probe.elf: tests/watchtower_identity_probe.c src/include/syscall_abi.h $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -Wframe-larger-than=1024 -Isrc/include -Isrc/fs -Iuser/tools -c $< -o $(BUILD_DIR)/watchtower-identity-probe.o
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=identity_probe_main user/tools/start.asm -o $(BUILD_DIR)/watchtower-identity-start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/watchtower-identity-start.o $(BUILD_DIR)/watchtower-identity-probe.o $(BUILD_DIR)/tool-common.o -o $@
+
+.PHONY: test-watchtower-identity
+test-watchtower-identity: $(KERNEL_ELF) $(USER_WATCHTOWER_ELF) $(BUILD_DIR)/watchtower-identity-probe.elf
+	python3 scripts/test_watchtower_identity.py
+
+.PHONY: test-ssh-shutdown
+test-ssh-shutdown: $(KERNEL_ELF) $(USER_WATCHTOWER_ELF) $(BUILD_DIR)/watchtower-identity-probe.elf $(BUILD_DIR)/sshd.elf
+	python3 scripts/test_watchtower_lifecycle.py --staged
 
 .PHONY: test-crond-host
 test-crond-host:

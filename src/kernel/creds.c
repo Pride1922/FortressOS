@@ -15,6 +15,21 @@ int creds_inherit(const creds_t *old, creds_t *out) {
     *out = *old;
     return CREDS_OK;
 }
+int creds_service_identity(const creds_t *old, uint32_t uid, uint32_t gid,
+                           const uint32_t *groups, size_t count, creds_t *out) {
+    if (!out || !creds_valid(old) || count > CREDS_MAX_GROUPS || (count && !groups))
+        return CREDS_EINVAL;
+    if ((old->cap_effective & (CAP_SETUID | CAP_SETGID)) != (CAP_SETUID | CAP_SETGID))
+        return CREDS_EPERM;
+    creds_t next = *old;
+    next.uid = next.euid = next.suid = uid;
+    next.gid = next.egid = next.sgid = gid;
+    next.ngroups = (uint16_t)count;
+    for (unsigned i = 0; i < CREDS_MAX_GROUPS; i++) next.groups[i] = i < count ? groups[i] : 0;
+    if (uid) next.cap_effective = 0;
+    *out = next;
+    return CREDS_OK;
+}
 static bool allowed(creds_id_change_t change, uint32_t r, uint32_t e, uint32_t s) {
     return change.keep || change.value == r || change.value == e || change.value == s;
 }

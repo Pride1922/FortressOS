@@ -92,8 +92,8 @@ typedef struct {
 
 /* System operations abstraction for testing and kernel syscalls */
 typedef struct {
-    int64_t (*spawn)(const char *path, const char *const argv[]);
-    int64_t (*spawn_with_pipe)(const char *path, const char *const argv[],
+    /* Must resolve and enforce svc identity, or fail without launching. */
+    int64_t (*spawn_service)(const service_t *svc, const char *const argv[],
                                const char *const envp[], const char *cwd,
                                int *out_pipe_fd);
     int (*kill)(int64_t pid, int sig);

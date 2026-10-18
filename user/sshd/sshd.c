@@ -57,6 +57,37 @@ static void sshd_write_err(const char *msg) {
 
 static volatile int g_terminate = 0;
 
+/* Encryption has already consumed a sequence number. Complete these exact
+ * bytes even if shutdown interrupted SEND; never append another packet after
+ * a failed/partial frame. The monitor still bounds worker teardown at 5s. */
+static int sshd_send_wire(ssh_transport_t *transport,int fd,const sshbuf_t *wire) {
+    size_t off=0,len=sshbuf_len(wire);
+    unsigned interruptions=0;
+    while (off<len) {
+        long n=SSHD_SYSCALL(SYS_SEND,(uintptr_t)fd,
+                           (uintptr_t)(sshbuf_ptr(wire)+off),len-off,0,0,0);
+        if (n==SYSCALL_EINTR && interruptions++<16) continue;
+        if (n<=0 || (size_t)n>len-off) {
+            transport->state=TRANSPORT_STATE_ERROR;
+            transport->last_error=SSH_ERR_DISCONNECT;
+            return SSH_ERR_DISCONNECT;
+        }
+        off+=(size_t)n;
+    }
+    return SSH_ERR_SUCCESS;
+}
+
+static void sshd_send_disconnect(ssh_transport_t *transport,int fd) {
+    if (fd<0 || transport->state!=TRANSPORT_STATE_ACTIVE) return;
+    static const uint8_t payload[]={0,0,0,11, 0,0,0,17,
+        'S','y','s','t','e','m',' ','g','o','i','n','g',' ','d','o','w','n', 0,0,0,0};
+    sshbuf_t wire;
+    if (sshbuf_init(&wire,256,512)!=SSH_ERR_SUCCESS) return;
+    if (ssh_transport_send_packet(transport,SSH_MSG_DISCONNECT,payload,sizeof(payload),&wire)==SSH_ERR_SUCCESS)
+        (void)sshd_send_wire(transport,fd,&wire);
+    sshbuf_free(&wire);
+}
+
 /* Drain buffered packets before reading again: NEWKEYS and the first encrypted
  * service request can arrive in the same TCP read (for example from PuTTY). */
 static int sshd_receive_packet(ssh_transport_t *transport, int client_fd,
@@ -153,19 +184,14 @@ static int send_channel_replies(ssh_transport_t *transport, int client_fd, sshbu
         if (rc != SSH_ERR_SUCCESS) return rc;
         rc = ssh_transport_send_packet(transport, rtype, p, plen, &out_wire);
         if (rc == SSH_ERR_SUCCESS) {
-            size_t off = 0, wire_len = sshbuf_len(&out_wire);
-            while (off < wire_len) {
-                long n = SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd,
-                                      (uintptr_t)(sshbuf_ptr(&out_wire) + off), wire_len - off, 0, 0, 0);
-                if (n <= 0 || (size_t)n > wire_len - off) {
-                    rc = SSH_ERR_DISCONNECT;
-                    break;
-                }
-                off += (size_t)n;
-            }
+            rc = sshd_send_wire(transport,client_fd,&out_wire);
         }
         sshbuf_free(&out_wire);
-        if (rc != SSH_ERR_SUCCESS) return rc;
+        if (rc != SSH_ERR_SUCCESS) {
+            transport->state=TRANSPORT_STATE_ERROR;
+            transport->last_error=rc;
+            return rc;
+        }
 
         (void)sshbuf_consume(chan_reply, plen);
     }
@@ -480,36 +506,8 @@ static __attribute__((noinline)) int sshd_worker_run(int session_id, int client_
 
 session_cleanup:
     /* Transmit RFC 4253 SSH_MSG_DISCONNECT packet before socket close */
-    if (client_fd >= 0 && transport.state == TRANSPORT_STATE_ACTIVE) {
-        uint8_t dc_payload[64];
-        uint32_t reason = 11; /* SSH_DISCONNECT_BY_APPLICATION */
-        const char *reason_desc = "System going down";
-        size_t rlen = strlen(reason_desc);
-        dc_payload[0] = (uint8_t)((reason >> 24) & 0xff);
-        dc_payload[1] = (uint8_t)((reason >> 16) & 0xff);
-        dc_payload[2] = (uint8_t)((reason >> 8) & 0xff);
-        dc_payload[3] = (uint8_t)(reason & 0xff);
-        dc_payload[4] = (uint8_t)((rlen >> 24) & 0xff);
-        dc_payload[5] = (uint8_t)((rlen >> 16) & 0xff);
-        dc_payload[6] = (uint8_t)((rlen >> 8) & 0xff);
-        dc_payload[7] = (uint8_t)(rlen & 0xff);
-        for (size_t k = 0; k < rlen; k++) dc_payload[8 + k] = (uint8_t)reason_desc[k];
-        size_t off = 8 + rlen;
-        dc_payload[off++] = 0; dc_payload[off++] = 0; dc_payload[off++] = 0; dc_payload[off++] = 0; /* lang = "" */
-
-        sshbuf_t out_wire;
-        if (sshbuf_init(&out_wire, 256, 512) == SSH_ERR_SUCCESS) {
-            if (ssh_transport_send_packet(&transport, SSH_MSG_DISCONNECT, dc_payload, off, &out_wire) == SSH_ERR_SUCCESS) {
-                size_t w_off = 0, wire_len = sshbuf_len(&out_wire);
-                while (w_off < wire_len) {
-                    long n = SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd,
-                                          (uintptr_t)(sshbuf_ptr(&out_wire) + w_off), wire_len - w_off, 0, 0, 0);
-                    if (n <= 0) break;
-                    w_off += (size_t)n;
-                }
-            }
-            sshbuf_free(&out_wire);
-        }
+    if (client_fd >= 0) {
+        sshd_send_disconnect(&transport,client_fd);
         (void)SSHD_SYSCALL(SYS_SHUTDOWN, (uintptr_t)client_fd, 1 /* SHUT_WR */, 0, 0, 0, 0);
     }
 

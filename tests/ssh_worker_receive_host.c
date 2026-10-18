@@ -17,6 +17,8 @@ static sshbuf_t sent_wire;
 static size_t send_limit;
 static bool fail_send;
 static long send_failure;
+static size_t interrupt_after=SIZE_MAX;
+static unsigned interrupts_left;
 
 static long socket_syscall(long nr, uintptr_t fd, uintptr_t buf, uintptr_t cap,
                             uintptr_t d, uintptr_t e, uintptr_t f) {
@@ -24,7 +26,12 @@ static long socket_syscall(long nr, uintptr_t fd, uintptr_t buf, uintptr_t cap,
     if (nr == SYS_SEND) {
         assert(fd == 7);
         if (fail_send) return send_failure;
+        if (interrupts_left && sshbuf_len(&sent_wire)>=interrupt_after) {
+            interrupts_left--;g_terminate=1;return SYSCALL_EINTR;
+        }
         size_t n = send_limit && send_limit < cap ? send_limit : cap;
+        if (interrupts_left && sshbuf_len(&sent_wire)<interrupt_after &&
+            n>interrupt_after-sshbuf_len(&sent_wire)) n=interrupt_after-sshbuf_len(&sent_wire);
         assert(sshbuf_put_raw(&sent_wire, (const void *)buf, n) == 0);
         return (long)n;
     }
@@ -104,17 +111,57 @@ static void test_large_channel_reply(size_t limit) {
     assert(memcmp(payload+9, data, sizeof(data)) == 0);
     assert(sshbuf_len(&reply) == 0);
     for (unsigned failure=0;failure<2;failure++) {
+        sender.state=TRANSPORT_STATE_ACTIVE;
         assert(sshbuf_put_u8(&reply, SSH_MSG_CHANNEL_EOF) == 0);
         assert(sshbuf_put_u32(&reply, 0) == 0);
         fail_send=true;send_failure=failure ? -1 : 0;
         assert(send_channel_replies(&sender, 7, &reply) == SSH_ERR_DISCONNECT);
+        assert(sender.state==TRANSPORT_STATE_ERROR);
+        size_t before=sshbuf_len(&sent_wire);
+        sshd_send_disconnect(&sender,7);
+        assert(sshbuf_len(&sent_wire)==before); /* No packet after a broken frame. */
         fail_send=false;sshbuf_reset(&reply);
     }
     sshbuf_free(&reply);sshbuf_free(&sent_wire);
     ssh_transport_cleanup(&sender);ssh_transport_cleanup(&receiver);
 }
 
+static void test_shutdown_during_packet(size_t prefix,unsigned interruptions) {
+    static ssh_transport_t sender,receiver;
+    static uint8_t data[4096];uint8_t key[64];memset(key,0x3c,sizeof(key));
+    assert(!ssh_transport_init(&sender) && !ssh_transport_init(&receiver));
+    ssh_cipher_init(&sender.out_cipher,key);ssh_cipher_init(&receiver.in_cipher,key);
+    sender.state=TRANSPORT_STATE_ACTIVE;
+    sshbuf_t reply;
+    assert(!sshbuf_init(&reply,512,16384) && !sshbuf_init(&sent_wire,512,16384));
+    assert(!sshbuf_put_u8(&reply,SSH_MSG_CHANNEL_DATA) && !sshbuf_put_u32(&reply,0));
+    assert(!sshbuf_put_string(&reply,data,sizeof(data)));
+    send_limit=137;interrupt_after=prefix;interrupts_left=interruptions;g_terminate=0;
+    int rc=send_channel_replies(&sender,7,&reply);
+    if (interruptions>16) {
+        assert(rc==SSH_ERR_DISCONNECT && sender.state==TRANSPORT_STATE_ERROR);
+        size_t before=sshbuf_len(&sent_wire);sshd_send_disconnect(&sender,7);
+        assert(sshbuf_len(&sent_wire)==before);
+    } else {
+        assert(!rc && g_terminate && !interrupts_left);
+        sshd_send_disconnect(&sender,7);
+        assert(!ssh_transport_feed_input(&receiver,sshbuf_ptr(&sent_wire),sshbuf_len(&sent_wire)));
+        uint8_t type;const uint8_t *payload;size_t len;
+        assert(!ssh_transport_get_packet(&receiver,&type,&payload,&len) && type==SSH_MSG_CHANNEL_DATA);
+        assert(len==sizeof(data)+9 && !memcmp(payload+9,data,sizeof(data)));
+        assert(!ssh_transport_get_packet(&receiver,&type,&payload,&len) && type==SSH_MSG_DISCONNECT);
+        assert(len==30 && !memcmp(payload+9,"System going down",17));
+    }
+    interrupts_left=0;interrupt_after=SIZE_MAX;g_terminate=0;
+    sshbuf_free(&reply);sshbuf_free(&sent_wire);
+    ssh_transport_cleanup(&sender);ssh_transport_cleanup(&receiver);
+}
+
 int main(void) {
+    const size_t cuts[]={0,1,4,137,4095,4096,4120};
+    for (unsigned i=0;i<sizeof(cuts)/sizeof(cuts[0]);i++) test_shutdown_during_packet(cuts[i],1);
+    test_shutdown_during_packet(4,16);test_shutdown_during_packet(4,17);
+    puts("PASS: shutdown EINTR at packet boundaries preserves encrypted DATA + DISCONNECT; retry exhaustion sends no corrupt tail");
     test_large_channel_reply(0);
     test_large_channel_reply(137);
     puts("PASS: 4096-byte encrypted channel reply, short sends, zero progress and socket failure");

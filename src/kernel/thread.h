@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "signal_state.h"
 #include "creds.h"
+#include "syscall_abi.h"
 #include "idt.h"
 #include "spawn_profile_abi.h"
 #include "wait_profile.h"
@@ -232,6 +233,13 @@ int64_t process_spawn_from_vfs_group(const char *path, int argc, const char *con
                                    int action_count, const spawn_kaction_t *actions,
                                    uint32_t flags, uint64_t pgid, int64_t *out_pid);
 int64_t process_waitpid(int64_t selector, uint64_t *status, uint32_t options, bool legacy);
+/* Optional copied identity; authority checked before any image/cwd access.
+ * Child credentials remain private until the existing binding/commit path. */
+int64_t process_spawn_from_vfs_identity(const char *path, int argc, const char *const argv[],
+                                   int envc, const char *const envp[], const char *cwd,
+                                   int action_count, const spawn_kaction_t *actions,
+                                   uint32_t flags, uint64_t pgid, const spawn_identity_t *identity,
+                                   int64_t *out_pid);
 int64_t process_setpgid(uint64_t pid, uint64_t pgid);
 int64_t process_getpgrp(void);
 int64_t process_group_release(uint64_t pgid, uint32_t action);

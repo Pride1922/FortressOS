@@ -5,7 +5,7 @@ Keys/passwords live only in disposable guest RAM; no secret-bearing disks/logs.
 Existing release ISO is read-only. No physical devices are attached.
 """
 from pathlib import Path
-import argparse,hashlib,os,re,selectors,shutil,socket,subprocess,tempfile,time
+import argparse,contextlib,hashlib,os,re,selectors,shutil,socket,subprocess,tempfile,time
 
 ROOT=Path(__file__).resolve().parent.parent
 PASSWORD='Lifecycle8492'
@@ -174,11 +174,21 @@ def case(firmware,smp):
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--firmware',nargs='+',choices=['bios','uefi'],default=['bios','uefi'])
-    parser.add_argument('--smp',type=int,nargs='+',choices=[1,4],default=[1,4]);args=parser.parse_args()
+    parser.add_argument('--smp',type=int,nargs='+',choices=[1,4],default=[1,4])
+    parser.add_argument('--staged',action='store_true',help='temporary ISO with rebuilt kernel/Watchtower/sshd; preserve release images')
+    args=parser.parse_args()
     inputs=[ROOT/'bin/fortress.img',ROOT/'bin/fortress.iso',ROOT/'bin/initramfs.tar']
     digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
     before={str(p):digest(p) for p in inputs}
-    for firmware in args.firmware:
-        for smp in args.smp:case(firmware,smp)
-    assert before=={str(p):digest(p) for p in inputs},'release inputs changed'
+    with contextlib.ExitStack() as stack:
+        if args.staged:
+            from test_watchtower_identity import fixture
+            tmp=Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='fortress-ssh-shutdown-')))
+            fixture(tmp,ssh_daemon=ROOT/'build/sshd.elf')
+            ROOT=tmp
+        for firmware in args.firmware:
+            for smp in args.smp:case(firmware,smp)
+    after={str(p):digest(p) for p in inputs}
+    changed=[f'{path}: {before[path]} -> {after[path]}' for path in before if before[path]!=after[path]]
+    assert not changed,'release inputs changed: '+'; '.join(changed)
     print('PASS release-image preservation; no secret-bearing guest storage retained',flush=True)
