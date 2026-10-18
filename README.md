@@ -51,7 +51,13 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Custom Stack:** From-scratch implementations of Ethernet II, ARP, IPv4, ICMP, UDP, and TCP (with RFC 1071 checksums and Reno congestion control).
 - **Userspace DNS & DHCP:** Native stub resolver, `/bin/nslookup` with UDP-to-TCP fallback, and RFC 2131 DHCP client (`/sbin/dhcpc`) for dynamic lease acquisition.
 - **Hardware Drivers:** Intel e1000, e1000e, and physical Intel I219-LM (autonomous PHY renegotiation, cold-plug and flap recovery).
-- **Performance:** Bare-metal network throughput matches Linux Mint on identical hardware.
+- **Cross-Core Networking:** Application calls from any CPU route through the CPU-0 protocol owner. Phases 0–4 are complete through bounded Dell physical acceptance; throughput redesign remains deferred. See [network SMP evidence](docs/roadmap/network-smp-phase4.md).
+
+### 🔐 Native SSH (µSSH)
+- **Secure Transport:** Ed25519 host identities, Curve25519 key exchange, and ChaCha20-Poly1305 encryption, with password and Ed25519 public-key authentication.
+- **Interactive Sessions:** Privilege-separated monitor/workers, PTYs, terminal resizing, session limits, and bounded teardown; automated OpenSSH acceptance under BIOS and UEFI.
+- **Client Compatibility:** PowerShell OpenSSH works, and MobaXterm 25.3 login, `top`, ordinary commands, and sudo are user-confirmed on the laptop.
+- **Live USB Setup:** Explicit temporary host keys and an operator password in RAM, discarded on reboot. SSH requires explicit startup. See the [SSH guide](docs/subsystems/ssh.md) for commands and verification limits.
 
 ### 🛡️ Permissions & Security
 - **Unix DAC:** Traditional UID, GID, and standard Unix file permission bits (`rwxrwxrwx`).
@@ -62,6 +68,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Interactive Shell:** Modular Ring 3 command shell supporting job control (`&`, `jobs`, `fg`, `kill`), pipelines (`|`), input/output redirection (`>`, `<`), and background redraw.
 - **Visual Editor:** Ring 3 visual text editor (`/bin/nano` v2.1) with Pike VM regex search, syntax highlighting, and buffer editing.
 - **System Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`, `/sbin/dhcpc`, `/bin/dhcp-probe`), and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `sed`, `awk`, `wc`, `xxd`).
+- **Time & Compression:** Native clock/date/sleep/time tools, DHCP v2 background renewal, and interoperable gzip/gunzip utilities.
 
 ### 💿 Persistent Root & NVMe Installer
 - **Text-Mode Installer:** Complete installer (`/sbin/install`) providing automated GPT disk partitioning, ext4 root deployment, and configuration.
@@ -82,23 +89,27 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 | **Permissions & Security** | **COMPLETE** | Unix DAC, UID/GID, sudo, setuid, and capability policies. Dell verified. |
 | **Userland & Shell** | **COMPLETE** | Ring 3 shell, job control, pipelines, `/bin/nano`, `/bin/free`, full stream suite. |
 | **Persistent Root & Installer** | **COMPLETE** | Phases 0–4 complete. Dell spare-drive install & persistent boot verified on bare metal. |
-| **Network SMP (CPU-0 Handoff)**| **IN PROGRESS** | **Phase 2B COMPLETE** (UDP/DNS cross-core handoff, 12/12 QEMU PASS). Phase 2C (TCP) next. |
+| **Network SMP (CPU-0 Handoff)**| **COMPLETE through Phase 4** | Cross-core control, UDP/DNS, TCP streams/listeners, and ordinary unpinned children. Bounded Dell physical acceptance; Phase 5 throughput redesign deferred. |
+| **µSSH** | **COMPLETE through Phase 8** | BIOS/UEFI automated acceptance; laptop MobaXterm login, interactive commands, `top` and sudo user-confirmed. Physical lifecycle/entropy limits remain documented. |
+| **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, background lease renewal, gzip/gunzip; verification scope recorded in subsystem guides. |
+| **Watchtower Service Supervisor** | **IN PROGRESS** | Configuration, control CLI and supervisor core implemented; logging, boot integration and QEMU service regressions are next. |
 
-### Active Focus: Network SMP Handoff
-We are actively transitioning the networking subsystem to support safe cross-core execution from any application CPU while keeping NIC I/O and protocol state serialized by the CPU-0 network worker:
-- **Phase 2A (Control Plane):** `IFGET`, `IFSET`, ICMP ping, and traceroute from any CPU — **COMPLETE**
-- **Phase 2B (UDP & DNS):** UDP socket create, bind, send, receive, and userspace DNS routing from any CPU — **COMPLETE** (12/12 boots PASS on e1000e, 4/4 boots PASS on e1000)
-- **Phase 2C (TCP Streams):** Cross-core TCP client, `SYS_CONNECT`, and stream I/O — **NEXT**
-- **Phase 2D (TCP Listener & Lifecycle):** Cross-core `SYS_LISTEN`, `SYS_ACCEPT`, and connection handover
-- **Phase 3 (Production Spawn):** Re-enable unpinned process scheduling across all cores
+### Recently Finished (2026-10-18)
+- **µSSH delivery:** Transport, authentication, host identity, PTY sessions and daemon lifecycle, plus the MobaXterm pre-password stall correction and laptop login verification.
+- **Live-session access:** Explicit RAM-only host-key and operator-password setup, with disk-free BIOS/UEFI OpenSSH login acceptance.
+- **Usability fixes:** Remote sudo password echo, console/SSH isolation, large-output handling, PID-based session recovery, and command completion after `sudo`.
+- **Committed follow-ups:** Eight-character account-tool password minimum and one-Enter single-line bracketed paste. These two changes are not in the last flashed image and have not been retested.
+
+### Active Focus: Watchtower Service Supervision
+Watchtower adds `/sbin/watchtower` and a `/bin/service` CLI to manage background services, initially DHCP and SSH. Configuration, service controls, readiness tracking, bounded restart policies and shutdown state handling are implemented in the current development work. The working plan reports 27/27 host sanitizer checks passing; integration acceptance is still pending.
+
+Next: service logging, boot integration, BIOS/UEFI QEMU acceptance, and DHCP/SSH lifecycle regressions under supervision. Watchtower remains work in progress, separate from the committed SSH delivery.
 
 ### Downstream Roadmap
-- Time subsystem (`SYS_NANOSLEEP`, high-resolution timers, wall-clock time)
-- DHCP Client v2 (background lease renewal daemon, RFC 2131 T1/T2 timers, boot-time auto-acquisition via Time subsystem)
 - Native package manager
-- SSH daemon
-- Cross-core IPC pipes and message queues
+- Broader cross-core IPC and message queues
 - Userland multithreading (`pthreads`)
+- Deferred network throughput redesign
 
 ---
 
@@ -168,7 +179,7 @@ sudo dd if=bin/fortress.img of=/dev/sdX bs=4M status=progress conv=fdatasync
 > [!WARNING]
 > Ensure `/dev/sdX` is the correct target drive. All existing data on the device will be overwritten.
 
-The image contains a FAT32 EFI system partition (Limine, kernel, initramfs) and a 64 MiB ext2 data partition (read-only by default; writable when booted with `usb_data_mode=rw`).
+The default image contains a FAT32 EFI system partition (Limine, kernel, initramfs) and a 64 MiB ext4 data partition (read-only by default; writable when booted with `usb_data_mode=rw`).
 
 ---
 
@@ -187,6 +198,7 @@ src/
 user/
 ├── shell/           Interactive shell engine (line editing, job control, history, UI)
 ├── nano/            Ring 3 visual text editor (nano v2.1, Pike VM regex, nanorc)
+├── sshd/            Native SSH transport, authentication, channels and daemon
 ├── tools/           Core utilities: disk, stream tools (grep, sed, awk, sort, uniq, wc), useradd, tar
 └── *.c              Freestanding binaries: init, ping, udptest, nc, tcpserve, wget, top, ps
 
