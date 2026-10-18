@@ -1331,9 +1331,15 @@ test-default-ext4-image: $(BOOTABLE_IMG)
 	@python3 scripts/test_default_ext4_image.py --firmware bios --cpus 8 --output $(BUILD_DIR)/default-ext4-bios-$(shell date +%s)
 	@python3 scripts/test_default_ext4_image.py --firmware uefi --cpus 8 --output $(BUILD_DIR)/default-ext4-uefi-$(shell date +%s)
 
+.PHONY: test-combined-installer test-combined-image
+test-combined-installer: $(BOOTABLE_IMG)
+	@python3 scripts/test_combined_installer.py
+
+test-combined-image: test-default-ext4-image test-combined-installer
+
 img: $(BOOTABLE_IMG)
 
-$(BOOTABLE_IMG): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf scripts/create_boot_img.py scripts/initialize_ext4_journal.py limine-setup $(BOOTABLE_ISO)
+$(BOOTABLE_IMG): $(KERNEL_ELF) $(INITRAMFS_TAR) build/tool-install-multi.elf limine.conf scripts/create_boot_img.py scripts/create_combined_media.py scripts/create_installer_media.py scripts/create_installer_payload.py scripts/installer_log_volume.py scripts/initialize_ext4_journal.py limine-setup $(BOOTABLE_ISO)
 	@mkdir -p $(BIN_DIR)
 	@echo "--> Creating bootable raw disk image with scripts/create_boot_img.py..."
 	@python3 scripts/create_boot_img.py $@ --iso-root $(ISO_ROOT) --limine-dir $(LIMINE_DIR)
@@ -2038,7 +2044,12 @@ installer: installer-image
 installer-image: bin/fortress.elf bin/initramfs.tar build/tool-install.elf limine-setup
 	@python3 scripts/create_installer_media.py
 
-# Installer program is staged only by the separate media builder.
+# Installer programs are staged by installer/combined packaging, not the base archive.
+build/tool-install-multi.elf: user/tools/install.c src/include/install_abi.h src/include/terminal.h src/include/ssh_hostkey.h $(CRYPTO_LIB) build/tool-userdb.o build/tool-common.o build/tool-digest.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -DINSTALLER_MULTI -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c user/tools/install.c -o build/tool-install-multi.o
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=install_main user/tools/start.asm -o build/tool-install-multi-start.o
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld build/tool-install-multi-start.o build/tool-install-multi.o build/tool-userdb.o build/tool-common.o $(CRYPTO_LIB) -o $@
+
 build/tool-install.elf: user/tools/install.c src/include/install_abi.h src/include/terminal.h src/include/ssh_hostkey.h $(CRYPTO_LIB) build/tool-userdb.o build/tool-common.o build/tool-digest.o user/tools/start.asm user/shell.ld
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c user/tools/install.c -o build/tool-install.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=install_main user/tools/start.asm -o build/tool-install-start.o

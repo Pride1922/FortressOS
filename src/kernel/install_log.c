@@ -102,9 +102,12 @@ bool install_log_bind(block_dev_t *d,const boot_info_t *b) {
     if (memcmp(expected,fixed_metadata,32)) return usb_failure(reason,0,false);
     /* Validate both GPT copies at the image-declared boundary, also on larger
      * flashed sticks. No GPT repair, degraded fallback or registry publication. */
-    uint64_t last=528u*2048u-1;uint8_t primary[512];
+    uint64_t last;uint8_t primary[512];
     reason="reading the primary USB partition header failed";
     if (!block_read_sector(d,1,primary)) return usb_failure(reason,0,false);
+    last=le64(primary+32);
+    bool combined=last==592u*2048u-1;
+    if ((!combined && last!=528u*2048u-1) || last>=d->sector_count) return usb_failure(reason,0,false);
     reason="primary USB partition header or boot-source identity does not match the installer image";
     uint32_t sum=le32(primary+16);memset(primary+16,0,4);
     if (memcmp(primary,"EFI PART",8) || le32(primary+8)!=0x10000 || le32(primary+12)!=92 || le32(primary+20) || crc(primary,92)!=sum ||
@@ -120,7 +123,15 @@ bool install_log_bind(block_dev_t *d,const boot_info_t *b) {
         if (le64(e+32)!=starts[i] || le64(e+40)!=starts[i]+counts[i]-1 || le64(e+48)) return usb_failure(reason,0,false);
         bool nonzero=false;for (unsigned j=0;j<16;j++) if (e[j]) nonzero=true;if (!nonzero) return usb_failure(reason,0,false);
     }
-    for (size_t i=384;i<sizeof(array);i++) if (array[i]) return usb_failure(reason,0,false);
+    if (combined) {
+        static const uint8_t linux_type[16]={0xaf,0x3d,0xc6,0x0f,0x83,0x84,0x72,0x47,0x8e,0x79,0x3d,0x69,0xd8,0x47,0x7d,0xe4};
+        const uint8_t *e=array+384;bool nonzero=false;
+        for (unsigned j=0;j<16;j++) if (e[16+j]) nonzero=true;
+        if (memcmp(e,linux_type,16) || !nonzero || le64(e+32)!=522u*2048u ||
+            le64(e+40)!=586u*2048u-1 || le64(e+48)) return usb_failure(reason,0,false);
+        for (unsigned i=0;i<3;i++) if (!memcmp(e+16,array+i*128+16,16)) return usb_failure(reason,0,false);
+    }
+    for (size_t i=combined ? 512:384;i<sizeof(array);i++) if (array[i]) return usb_failure(reason,0,false);
     reason="reading the image-boundary backup USB partition header failed";
     if (!block_read_sector(d,last,scratch)) return usb_failure(reason,0,false);
     reason="backup USB partition header does not match the original image (the flashing tool may have relocated or changed GPT)";

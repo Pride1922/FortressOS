@@ -15,10 +15,12 @@ def sha(path):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--media',type=Path,required=True);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--media',type=Path,required=True)
+    parser.add_argument('--image-name',default='fortress-installer-multi.img');args=parser.parse_args()
+    assert Path(args.image_name).name==args.image_name
     out=Path(tempfile.mkdtemp(prefix='logging-',dir=ROOT/'build/root-phase4'))
     manifest={'result':'FAIL','scope':'actual log slot; regular files only; no USB hardware claim','commands':[]}
-    source=args.media/'fortress-installer-multi.img';original=sha(source)
+    source=args.media/args.image_name;original=sha(source)
     def run(cmd):
         command=list(map(str,cmd));manifest['commands'].append(command)
         with (out/'host.log').open('ab') as log:subprocess.run(command,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=120)

@@ -33,10 +33,13 @@ def regular(path):
     assert not path.is_symlink() and stat.S_ISREG(path.stat().st_mode), path
 
 
-def build(templates, kernel, bootstrap, installer, preview=False, inspect=False, bound_digest=None, multi=True):
+def build(templates, kernel, bootstrap, installer, preview=False, inspect=False, bound_digest=None, multi=True,
+          combined=False, publish=True):
     assert not (preview and inspect)
     if preview or inspect or bound_digest:
         multi = False
+    assert not combined or multi
+    live_guid=uuid.uuid4() if combined else None
     if multi:
         kernel_bytes = kernel.read_bytes()
         assert b"NVMe disk selection installer ready" in kernel_bytes or b"Installer disposable backend ready" in kernel_bytes
@@ -68,7 +71,7 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
     if inspect:
         assert b'NVMe identity-only inspection ready' in kernel.read_bytes()
         assert b'Actual hardware identity; no synthetic target.' in installer.read_bytes()
-    stem = 'fortress-nvme-inspect' if inspect else 'fortress-installer-preview' if preview else 'fortress-installer'
+    stem = 'fortress' if combined else 'fortress-nvme-inspect' if inspect else 'fortress-installer-preview' if preview else 'fortress-installer'
     media_mib = 64 if interface_only else 512
     normal = {str(p): digest(p) for p in (ROOT/'bin/fortress.iso', ROOT/'bin/fortress.img') if p.exists()}
     out = Path(tempfile.mkdtemp(prefix='media-', dir=ROOT/'build/root-phase4'))
@@ -112,14 +115,20 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
                 for name, role in zip(ROLES, ('esp', 'root', 'bios', 'mbr', 'manifest')):
                     text += f'    module_path: boot():/payload/{name}\n    module_cmdline: role=install-{role}\n'
             return text
-        config = 'timeout: 5\n' + (entry('FortressOS NVMe inspection - installation disabled', 'installer', False) if inspect else entry('FortressOS installer PREVIEW - installation disabled', 'installer', False) if preview else entry('FortressOS Installer', 'installer', True) + entry('FortressOS Live Rescue', 'live', False))
+        if combined:
+            live=entry('FortressOS (Live USB)','live',False).replace('boot_mode=live\n',
+                f'boot_mode=live usb_data=PARTUUID={str(live_guid).upper()} usb_data_mode=rw\n')
+            config='timeout: 5\n'+live+entry('FortressOS (Installer)','installer',True)
+        else:
+            config = 'timeout: 5\n' + (entry('FortressOS NVMe inspection - installation disabled', 'installer', False) if inspect else entry('FortressOS installer PREVIEW - installation disabled', 'installer', False) if preview else entry('FortressOS Installer', 'installer', True) + entry('FortressOS Live Rescue', 'live', False))
         for name in ('limine.conf', 'boot/limine.conf', 'boot/limine/limine.conf', 'EFI/BOOT/limine.conf'):
             (tree/name).write_text(config)
         iso = out/(stem+'.iso')
-        run(['xorriso', '-as', 'mkisofs', '-b', 'boot/limine/limine-bios-cd.bin', '-no-emul-boot',
-             '-boot-load-size', '4', '-boot-info-table', '--efi-boot', 'boot/limine/limine-uefi-cd.bin',
-             '-efi-boot-part', '--efi-boot-image', '--protective-msdos-label', tree, '-o', iso])
-        run([ROOT/'limine/limine', 'bios-install', iso])
+        if not combined:
+            run(['xorriso', '-as', 'mkisofs', '-b', 'boot/limine/limine-bios-cd.bin', '-no-emul-boot',
+                 '-boot-load-size', '4', '-boot-info-table', '--efi-boot', 'boot/limine/limine-uefi-cd.bin',
+                 '-efi-boot-part', '--efi-boot-image', '--protective-msdos-label', tree, '-o', iso])
+            run([ROOT/'limine/limine', 'bios-install', iso])
         # Independent 512MiB FAT32 media volume; payload files do not fit the
         # installed target's 64MiB ESP. Dedicated BIOS slot preserves GPT arrays.
         esp = out/'media-esp.img'
@@ -136,7 +145,7 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
             stream.seek(fi*512); info = stream.read(512)
             stream.seek((backup+fi)*512); stream.write(info)
         run(['fsck.fat', '-n', esp])
-        sectors = (media_mib+8+(8 if multi else 0))*2048; entries = bytearray(16384)
+        sectors = (media_mib+8+(8 if multi else 0)+(64 if combined else 0))*2048; entries = bytearray(16384)
         volumes = [
             ('c12a7328-f81f-11d2-ba4b-00a0c93ec93b', 4096, media_mib*2048, 'Installer media'),
             ('21686148-6449-6e6f-744e-656564454649', 2048, 2048, 'BIOS boot')]
@@ -147,9 +156,15 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
             extracted=out/'audit-fortress-install.log'
             run(['mcopy','-i',log_image,'::fortress-install.log',extracted])
             assert extracted.stat().st_size==log_volume.FILE_BYTES
+        if combined:
+            from create_boot_img import create_data_partition
+            live_image=out/'live-data.ext4';create_data_partition(live_image,'ext4')
+            live_start=(media_mib+2+8)*2048
+            volumes.append(('0fc63daf-8483-4772-8e79-3d69d8477de4',live_start,64*2048,'Live USB data'))
         for i, (kind, start, count, label) in enumerate(volumes):
             struct.pack_into('<16s16sQQQ72s', entries, i*128, uuid.UUID(kind).bytes_le,
-                uuid.uuid4().bytes_le, start, start+count-1, 0, label.encode('utf-16le').ljust(72, b'\0'))
+                (live_guid if combined and i==len(volumes)-1 else uuid.uuid4()).bytes_le,
+                start, start+count-1, 0, label.encode('utf-16le').ljust(72, b'\0'))
         disk_guid = uuid.uuid4()
         def header(at, other, array):
             data = bytearray(struct.pack('<8sIIIIQQQQ16sQIII', b'EFI PART', 0x10000, 92, 0, 0,
@@ -168,6 +183,9 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
             if multi:
                 stream.seek(514*1024**2)
                 with log_image.open('rb') as source:shutil.copyfileobj(source,stream,1024**2)
+            if combined:
+                stream.seek(live_start*512)
+                with live_image.open('rb') as source:shutil.copyfileobj(source,stream,1024**2)
         run([ROOT/'limine/limine', 'bios-install', image, '2'])
         with image.open('rb') as stream:
             for at in (1, sectors-1):
@@ -187,9 +205,14 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
             assert digest(extracted) == digest(path)
         assert all(digest(Path(p)) == value for p,value in hashes.items())
         assert all(digest(Path(p)) == value for p,value in normal.items())
-        manifest['artifacts'] = {p.name: {'bytes':p.stat().st_size,'sha256':digest(p)} for p in (iso,image)}
+        artifacts=(image,) if combined else (iso,image)
+        manifest['artifacts'] = {p.name: {'bytes':p.stat().st_size,'sha256':digest(p)} for p in artifacts}
         manifest['media_disk_guid'] = str(disk_guid); manifest['result'] = 'PASS'
         if multi:manifest['usb_log']={'volume_lba':514*2048,'data_lba':log_volume.DATA_LBA,'file_bytes':log_volume.FILE_BYTES,'metadata_sha256':log_hash,'path':'/fortress-install.log'}
+        if combined:
+            manifest['live_data']={'partuuid':str(live_guid),'lba':live_start,'sectors':64*2048}
+            manifest['boot_choices']=['FortressOS (Live USB)','FortressOS (Installer)']
+        if not publish:return out
         # Publish only complete audited regular files; symlink destinations reject.
         for path in (iso,image):
             destination = ROOT/'bin'/path.name

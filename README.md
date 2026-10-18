@@ -72,7 +72,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Time & Compression:** Native clock/date/sleep/time tools, DHCP v2 background renewal, and interoperable gzip/gunzip utilities.
 
 ### 💿 Persistent Root & NVMe Installer
-- **Text-Mode Installer:** Complete installer (`/sbin/install`) providing automated GPT disk partitioning, ext4 root deployment, and configuration.
+- **Text-Mode Installer:** Complete installer (`/bin/install`) providing automated GPT disk partitioning, ext4 root deployment, and configuration.
 - **Persistent Root:** Bootable persistent root partition, user account creation, machine hostname configuration, authenticated recovery, and clean shutdown.
 - **Hardware Acceptance:** Fully tested, confirmed, and physically accepted on bare-metal Dell Latitude hardware.
 
@@ -155,15 +155,22 @@ cd FortressOS
 make
 ```
 
-The build system produces two primary deliverables:
-1. **Live USB Media** (`bin/fortress.img` raw disk image and `bin/fortress.iso`):
-   ```bash
-   make live        # or simply `make`
-   ```
-2. **Full Installer Media** (`bin/fortress-installer.img` and `bin/fortress-installer.iso`):
-   ```bash
-   make installer   # universal installer with NVMe disk inventory and account setup
-   ```
+The main USB deliverable is **one raw image, `bin/fortress.img`**, with exactly
+two boot choices:
+
+1. **FortressOS (Live USB)** — interactive login, temporary runtime logs and
+   writable persistent USB storage at `/mnt`.
+2. **FortressOS (Installer)** — the full NVMe installer, including its deployment
+   payload and explicit disk selection/confirmation.
+
+Build it with `make img` or `make`. The combined image is 592 MiB because it
+includes the installation payload, boot files, installer log slot and a separate
+64 MiB live-data filesystem. `bin/fortress.iso` remains available for live QEMU
+development; it is not the combined USB deliverable. The separate `make installer`
+workbench remains available for specialized installer tests.
+
+See [combined image verification](docs/roadmap/combined-usb-image.md) for the
+BIOS/UEFI checks and their limits.
 
 ---
 
@@ -187,14 +194,11 @@ gdb bin/fortress.elf -ex "target remote :1234" -ex "break _start" -ex "continue"
 
 ### Flashing to a Physical USB Drive
 
-You can flash either the Live USB image (`bin/fortress.img`) or Full Installer image (`bin/fortress-installer.img`) directly to a physical USB flash drive (using Rufus on Windows or dd on Linux) to boot on bare metal:
+Flash **`bin/fortress.img`** to the USB drive (using raw/DD mode in Rufus on
+Windows or `dd` on Linux). The same stick offers both Live USB and Installer:
 
 ```bash
-# Flash Live USB:
 sudo dd if=bin/fortress.img of=/dev/sdX bs=4M status=progress conv=fdatasync
-
-# Flash Full Installer:
-sudo dd if=bin/fortress-installer.img of=/dev/sdX bs=4M status=progress conv=fdatasync
 ```
 
 > [!WARNING]

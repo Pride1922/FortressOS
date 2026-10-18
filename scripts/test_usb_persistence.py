@@ -20,6 +20,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+import struct
+import uuid
 
 REPO = Path(__file__).resolve().parent.parent
 CODE = Path('/usr/share/OVMF/OVMF_CODE_4M.fd')
@@ -61,10 +63,26 @@ def send_command(qmp, child, log_path, cmd, expect=None, timeout=15):
     return ""
 
 
+def persistent_partition(img_path):
+    with img_path.open('rb') as stream:
+        stream.seek(512);header=stream.read(512)
+        assert header[:8]==b'EFI PART'
+        at,count,stride=struct.unpack_from('<QII',header,72)
+        assert count<=128 and stride==128
+        stream.seek(at*512);entries=stream.read(count*stride)
+    matches=[]
+    for i in range(count):
+        e=struct.unpack_from('<16s16sQQQ72s',entries,i*stride)
+        if e[0]==uuid.UUID('0fc63daf-8483-4772-8e79-3d69d8477de4').bytes_le:
+            matches.append((i+1,e[2],e[3]-e[2]+1))
+    assert len(matches)==1
+    return matches[0]
+
 def check_offline_ext2(img_path: Path) -> None:
-    """Extracts partition 2 slice (64 MiB starting at sector 133120) and runs e2fsck -fn."""
-    ext2_offset = 133120 * 512
-    ext2_size = 131072 * 512
+    """Locate the live data partition by GPT type and run independent fsck."""
+    _,start,sectors=persistent_partition(img_path)
+    ext2_offset = start * 512
+    ext2_size = sectors * 512
     with tempfile.NamedTemporaryFile(prefix="fortress-e2fsck-", suffix=".ext2") as tmp:
         with open(img_path, "rb") as f:
             f.seek(ext2_offset)
@@ -143,12 +161,16 @@ def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
                 qmp = QMP(Path(tmp) / 'qmp')
                 # Wait for interactive shell prompt
                 deadline = time.monotonic() + (600 if memory_churn else 90)
+                sent_login = False
                 while time.monotonic() < deadline:
                     assert child.poll() is None, f"QEMU crashed during startup: {stderr_path.read_text()}"
                     time.sleep(0.5)
                     if log_path.exists():
                         output = log_path.read_text(errors='replace')
-                        if 'FortressOS shell (Ring 3)' in output and 'fortress:/ $ ' in output:
+                        if not sent_login and 'FortressOS login: ' in output:
+                            qmp_type_string(qmp, 'operqtor\n')
+                            sent_login = True
+                        if '$ ' in output:
                             break
                 else:
                     raise AssertionError(f'{round_name}: shell prompt not reached within timeout')
@@ -157,7 +179,8 @@ def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
                 output = log_path.read_text(errors='replace')
                 mode = 'read-write' if writable else 'read-only'
                 stage = '9G.4' if writable else '9G.3'
-                assert f'[USB {stage}] PASS: Mounted sdap2 {mode} at /mnt' in output, f"{mode} mount failed in {round_name}"
+                partition=persistent_partition(img_path)[0]
+                assert f'[USB {stage}] PASS: Mounted sdap{partition} {mode} at /mnt' in output, f"{mode} mount failed in {round_name}"
                 if writable:
                     assert '[USB 9G.4] Flush preflight passed' in output, f"Flush preflight missing in {round_name}"
 
@@ -165,7 +188,7 @@ def run_qemu_session(firmware: str, img_path: Path, log_path: Path,
                 # QMP qcodes below describe a US physical keyboard. Select it
                 # explicitly; the shipped default may be AZERTY.
                 # Default is Belgian AZERTY: physical Q produces logical A.
-                reply = send_command(qmp, child, log_path, 'lqyout us\n', 'fortress:/ $ ')
+                reply = send_command(qmp, child, log_path, 'lqyout us\n', '$ ')
                 assert 'Keyboard layout set to US QWERTY.' in reply
                 action_cb(qmp, child, log_path)
 
@@ -207,7 +230,7 @@ def test_read_only_mode(firmware: str):
             assert 'Buffer preserved in memory only' in reply
             reply = send_command(qmp, child, log_path, 'p\n', 'edit> ')
             assert 'test' in reply
-            send_command(qmp, child, log_path, 'q\n', 'fortress:/ $ ')
+            send_command(qmp, child, log_path, 'q\n', '$ ')
             send_command(qmp, child, log_path, 'cat /mnt/dell.txt\n', 'cannot open /mnt/dell.txt')
             send_command(qmp, child, log_path, 'shutdown\n')
 
@@ -248,7 +271,7 @@ def test_firmware_persistence(firmware: str):
             send_command(qmp, child, log_path, 'Phase 9G.4 persistence round 1 line 2\n', '> ')
             send_command(qmp, child, log_path, '.\n', 'edit> ')
             send_command(qmp, child, log_path, 'w\n', 'Saved')
-            send_command(qmp, child, log_path, 'q\n', 'fortress:/ $ ')
+            send_command(qmp, child, log_path, 'q\n', '$ ')
             send_command(qmp, child, log_path, 'cat /mnt/persist.txt\n', 'Phase 9G.4 persistence round 1 line 2')
             send_command(qmp, child, log_path, 'ls /mnt\n', 'persist.txt')
             send_command(qmp, child, log_path, 'shutdown\n', None)
@@ -277,7 +300,7 @@ def test_firmware_persistence(firmware: str):
             send_command(qmp, child, log_path, 'Overwritten truncated content in round 2\n', '> ')
             send_command(qmp, child, log_path, '.\n', 'edit> ')
             send_command(qmp, child, log_path, 'w\n', 'Saved')
-            send_command(qmp, child, log_path, 'q\n', 'fortress:/ $ ')
+            send_command(qmp, child, log_path, 'q\n', '$ ')
             send_command(qmp, child, log_path, 'cat /mnt/persist.txt\n', 'Overwritten truncated content in round 2')
 
             send_command(qmp, child, log_path, 'edit /mnt/second.txt\n', 'edit> ')
@@ -285,7 +308,7 @@ def test_firmware_persistence(firmware: str):
             send_command(qmp, child, log_path, 'Second persistent file\n', '> ')
             send_command(qmp, child, log_path, '.\n', 'edit> ')
             send_command(qmp, child, log_path, 'w\n', 'Saved')
-            send_command(qmp, child, log_path, 'q\n', 'fortress:/ $ ')
+            send_command(qmp, child, log_path, 'q\n', '$ ')
             send_command(qmp, child, log_path, 'ls /mnt\n', 'second.txt')
             send_command(qmp, child, log_path, 'shutdown\n', None)
 
@@ -306,7 +329,7 @@ def test_firmware_persistence(firmware: str):
         def action_boot3(qmp, child, log_path):
             send_command(qmp, child, log_path, 'cat /mnt/persist.txt\n', 'Overwritten truncated content in round 2')
             send_command(qmp, child, log_path, 'cat /mnt/second.txt\n', 'Second persistent file')
-            send_command(qmp, child, log_path, 'rm /mnt/second.txt\n', 'fortress:/ $ ')
+            send_command(qmp, child, log_path, 'rm /mnt/second.txt\n', '$ ')
             send_command(qmp, child, log_path, 'cat /mnt/second.txt\n', 'cannot open /mnt/second.txt')
             send_command(qmp, child, log_path, 'shutdown\n', None)
 

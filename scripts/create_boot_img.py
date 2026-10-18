@@ -186,6 +186,7 @@ def create_data_partition(ext2_path: Path, filesystem="ext4"):
                 cmd_mke2fs[cmd_mke2fs.index("-O")+1] += ",has_journal"
                 cmd_mke2fs[1:1] = ["-J", "size=4"]
         subprocess.run(cmd_mke2fs, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        subprocess.run(["debugfs", "-w", "-R", "set_inode_field <2> mode 040777", str(ext2_path)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if filesystem == "ext4":
             from initialize_ext4_journal import initialize
             initialize(ext2_path)
@@ -357,29 +358,12 @@ def build_bootable_img(output_img: Path, iso_root: Path, limine_dir: Path,
             "wallpaper: boot():/boot/splash.png\n"
             "wallpaper_style: centered\n"
             "backdrop: 1A1B26\n\n"
-            f"/FortressOS (Persistent Storage: PARTUUID={part2_guid_str})\n"
+            "/FortressOS (Live USB)\n"
             "    protocol: limine\n"
             "    kernel_path: boot():/boot/fortress.elf\n"
             "    module_path: boot():/boot/initramfs.tar\n"
-            f"    kernel_cmdline: usb_data=PARTUUID={part2_guid_str} usb_data_mode=rw\n\n"
-            f"/FortressOS (Recovery: Read-only, PARTUUID={part2_guid_str})\n"
-            "    protocol: limine\n"
-            "    kernel_path: boot():/boot/fortress.elf\n"
-            "    module_path: boot():/boot/initramfs.tar\n"
-            f"    kernel_cmdline: usb_data=PARTUUID={part2_guid_str} usb_data_mode=ro\n\n"
-            f"/FortressOS (Verbose Debug)\n"
-            "    protocol: limine\n"
-            "    kernel_path: boot():/boot/fortress.elf\n"
-            "    module_path: boot():/boot/initramfs.tar\n"
-            f"    kernel_cmdline: usb_data=PARTUUID={part2_guid_str} usb_data_mode=rw verbose net=dhcp\n"
-            
+            f"    kernel_cmdline: boot_mode=live usb_data=PARTUUID={part2_guid_str} usb_data_mode=rw\n"
         )
-        if filesystem == "ext4":
-            conf_content = conf_content.replace("/FortressOS (", "/FortressOS EXT4 Journaled (")
-        elif filesystem == "ext4-nojournal":
-            conf_content = conf_content.replace("/FortressOS (", "/FortressOS EXT4 E4-A TEST - NO JOURNAL (")
-        else:
-            conf_content = conf_content.replace("/FortressOS (", "/FortressOS LEGACY EXT2 (")
         custom_limine_conf.write_text(conf_content)
 
         print(f"  [IMG] Data partition PARTUUID: {part2_guid_str}")
@@ -589,11 +573,25 @@ def main():
                         help="default: journaled EXT4; ext2 is an explicit legacy fixture; ext4-nojournal is E4-A")
     parser.add_argument("--verify", action="store_true",
                         help="Verify an existing image rather than generating one")
+    parser.add_argument("--with-installer",action="store_true",
+                        help="Build combined live/installer media (automatic for bin/fortress.img)")
 
     args = parser.parse_args()
 
     out_path = Path(args.output)
+    if not args.verify and (args.with_installer or
+        (args.filesystem=='ext4' and out_path.resolve()==Path('bin/fortress.img').resolve())):
+        if args.filesystem!='ext4':parser.error('Combined media requires journaled ext4 live storage')
+        from create_combined_media import create
+        create(out_path,args.kernel.resolve(),args.initramfs.resolve(),Path('build/tool-install-multi.elf').resolve())
+        return
     if args.verify:
+        with out_path.open('rb') as stream:
+            stream.seek(1024+384);combined=stream.read(16)!=bytes(16)
+        if combined:
+            from create_combined_media import verify
+            verify(out_path.resolve());print('PASS: combined live/installer image, menu, payload hashes and live filesystem')
+            return
         success = verify_image(out_path)
         sys.exit(0 if success else 1)
 
