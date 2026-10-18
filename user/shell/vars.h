@@ -27,6 +27,12 @@ typedef struct {
     int count;
 } local_var_scope_t;
 
+typedef struct {
+    char bytes[1024];
+    unsigned offsets[32],count;
+} positional_snapshot_t;
+void vars_save_positionals(positional_snapshot_t *saved);
+void vars_restore_positionals(const positional_snapshot_t *saved);
 void vars_init(void);
 bool vars_positionals(const char *name,int count,char **args);
 const char *vars_positional(unsigned index);

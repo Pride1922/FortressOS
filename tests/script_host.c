@@ -21,6 +21,7 @@ static int evaluate(const char *text) {
     enum parse_result r=parser_parse(text,&tree);
     if(r==PARSE_INCOMPLETE) return -1;
     if(r==PARSE_SYNTAX_ERROR) return -2;
+    if(strlen(text)>4096) return -2;
     if(r==PARSE_EMPTY) return 0;
     evaluated++;memcpy(last,text,strlen(text)+1);return 7;
 }
@@ -43,6 +44,25 @@ int main(void) {
     assert(script_run(9,NULL,"file",evaluate)==7 && evaluated==1);
     fail_read=true;assert(script_run(9,NULL,"io",evaluate)==2);
     script_interrupted=SIGTERM;assert(script_run(0,"echo no","cancel",evaluate)==128+SIGTERM);
+    static script_reader_t first,second;
+    script_interrupted=0;fail_read=false;script_reader_init(&first);script_reader_init(&second);
+    input=(const unsigned char *)"echo first\r\necho next";input_size=strlen((const char *)input);input_pos=0;
+    assert(script_reader_next(&first,9,"first",evaluate)==1 && !strcmp(last,"echo first"));
+    size_t saved_pos=input_pos;
+    input=(const unsigned char *)"echo 'second\nline'\n";input_size=strlen((const char *)input);input_pos=0;
+    assert(script_reader_next(&second,9,"second",evaluate)==1 && strstr(last,"second\nline"));
+    assert(!strcmp(first.unit,"echo first"));
+    input=(const unsigned char *)"echo first\r\necho next";input_size=strlen((const char *)input);input_pos=saved_pos;
+    assert(script_reader_next(&first,9,"first",evaluate)==1 && !strcmp(last,"echo next"));
+    assert(script_reader_next(&first,9,"first",evaluate)==0);
+    script_reader_init(&first);input=(const unsigned char *)"echo 'incomplete";input_size=strlen((const char *)input);input_pos=0;
+    assert(script_reader_next(&first,9,"bad",evaluate)==-2);
+    script_reader_init(&first);input=nul;input_size=sizeof(nul);input_pos=0;
+    assert(script_reader_next(&first,9,"nul",evaluate)==-2);
+    script_reader_init(&first);fail_read=true;
+    assert(script_reader_next(&first,9,"io",evaluate)==-2);fail_read=false;
+    script_reader_init(&first);script_interrupted=SIGTERM;
+    assert(script_reader_next(&first,9,"signal",evaluate)==-2);script_interrupted=0;
     puts("PASS actual script reader: CRLF, continuation, multiline quote, incomplete EOF, syntax stop, overflow, NUL, read failure, cancellation");
     return 0;
 }

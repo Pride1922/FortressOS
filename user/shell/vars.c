@@ -3,6 +3,8 @@
 static char positional_bytes[MAX_TOTAL_ARGS_LEN];
 static const char *positional[32];
 static unsigned positional_count;
+_Static_assert(sizeof(positional_bytes)==sizeof(((positional_snapshot_t *)0)->bytes),
+               "positional snapshot must match the public argument byte budget");
 bool vars_positionals(const char *name,int count,char **args) {
     if(count<0 || count>31 || !name) return false;
     size_t total=0;
@@ -34,6 +36,21 @@ int vars_shift(unsigned count) {
     positional_count-=count;return 0;
 }
 
+void vars_save_positionals(positional_snapshot_t *saved) {
+    unsigned used=0;saved->count=positional_count;
+    for(unsigned i=0;i<=positional_count;i++) {
+        const char *s=vars_positional(i);saved->offsets[i]=used;
+        do {saved->bytes[used++]=*s;} while(*s++);
+    }
+}
+void vars_restore_positionals(const positional_snapshot_t *saved) {
+    positional_count=saved->count;
+    for(unsigned i=0;i<=saved->count;i++) {
+        unsigned at=saved->offsets[i];const char *s=saved->bytes+at;
+        positional[i]=positional_bytes+at;
+        do {positional_bytes[at++]=*s;} while(*s++);
+    }
+}
 static shell_var_t g_vars[MAX_VARS];
 
 static size_t str_len(const char *s) {
@@ -145,6 +162,7 @@ const char *vars_get(const char *name) {
 }
 
 int vars_set(const char *name, const char *value, bool exported) {
+    if(!value || str_len(value)>=MAX_VAR_VAL) return -1;
     if (!vars_is_valid_name(name)) return -1;
     if (str_len(name) >= MAX_VAR_NAME) return -1;
 

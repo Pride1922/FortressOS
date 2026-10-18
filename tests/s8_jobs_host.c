@@ -13,6 +13,7 @@
 
 #include "parser.h"
 #include "pipeline.h"
+#include "control.h"
 #include "program.h"
 #include "jobs.h"
 #include "jobctl.h"
@@ -205,6 +206,26 @@ static void reset(void) {
 /* ---- simple exec callback ---- */
 static int single(parse_cmd_t *cmd, int status) {
     (void)cmd; (void)status; return 0;
+}
+static unsigned source_stop,resume_hits;
+static int yielding_single(parse_cmd_t *cmd,int status) {
+    if(!strcmp(cmd->argv[0],"source")) {source_stop=CONTROL_SOURCE_PENDING;return 0;}
+    assert(!strcmp(cmd->argv[0],"after"));resume_hits++;return status;
+}
+static void test_source_cursor(void) {
+    static parse_tree_t caller;
+    pipeline_cursor_t cursor={0};
+    reset();pipeline_set_stop_flag(&source_stop);source_stop=resume_hits=0;
+    assert(parser_parse("source file && after || after",&caller)==PARSE_OK);
+    assert(execute_command_list_resume(&caller,0,yielding_single,"source",&cursor)==CONTROL_YIELD);
+    assert(cursor.waiting && !resume_hits);
+    source_stop=0;
+    assert(execute_command_list_resume(&caller,7,yielding_single,"source",&cursor)==7);
+    assert(!cursor.waiting && resume_hits==1);
+    assert(execute_command_list_resume(&caller,0,yielding_single,"source",&cursor)==CONTROL_YIELD);
+    source_stop=CONTROL_RETURN_PENDING;
+    assert(execute_command_list_resume(&caller,9,yielding_single,"source",&cursor)==9 && !cursor.waiting);
+    pipeline_set_stop_flag(NULL);source_stop=0;
 }
 
 /* ================= TESTS ================= */
@@ -560,6 +581,7 @@ int main(void) {
     test_jobctl();
     test_fg_shared_controller();
     test_noninteractive_launch();
+    test_source_cursor();
     puts("PASS s8-jobs-host: parser, job table, state machine, launch order, mask, unwinding\n");
     return 0;
 }

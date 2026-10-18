@@ -2034,8 +2034,10 @@ test-shell-scripting-host:
 	python3 scripts/test_shell_host.py
 	python3 scripts/test_pipeline_host.py
 	python3 scripts/test_s8_jobs_host.py
+	python3 scripts/test_builtin_exec_host.py
+	python3 scripts/test_runner_host.py
 
 # Read-only base media inputs; only disposable test ISOs are generated.
 SCRIPT_BASE ?= $(CURDIR)
-test-shell-scripting: $(USER_SHELL_ELF)
+test-shell-scripting: $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF)
 	python3 scripts/test_shell_scripting.py --base "$(SCRIPT_BASE)"

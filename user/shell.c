@@ -20,24 +20,41 @@
 #include "shell/jobs.h"
 #include "shell/jobctl.h"
 #include "shell/script.h"
+#include "shell/control.h"
 
-static char cmd_buf[LINE_CAP * 2];
+static char cmd_buf[CONTROL_SOURCE_CAP];
 static char line_input[LINE_CAP];
-static parse_tree_t parse_tree;
+typedef struct {
+    parse_tree_t tree;
+    local_var_scope_t local;
+    redir_scope_t redirs;
+    pipeline_cursor_t cursor;
+    script_reader_t reader;
+    positional_snapshot_t parameters;
+    char path[VFS_MAX_PATH];
+    int fd,result,initial_status;
+    bool supplied,returning,deferred_assign,deferred_redir,deferred_negate;
+} source_context_t;
+static source_context_t sources[CONTROL_MAX_SOURCES+1];
+static unsigned source_depth;
+static int entry_script_fd=-1;
+#define parse_tree (sources[source_depth].tree)
+#define s_local_scope (sources[source_depth].local)
+#define s_parent_scope (sources[source_depth].redirs)
+static int source_request(int argc,char **argv);
+static int source_return(int argc,char **argv);
 static int64_t last_status = 0;
 static char current_cwd[VFS_MAX_PATH] = "/";
 static char oldpwd[VFS_MAX_PATH] = "";
-static local_var_scope_t s_local_scope;
 static expanded_cmd_t s_expanded_cmd;
 static char s_env_strings[32][MAX_VAR_NAME + MAX_VAR_VAL + 2];
 static const char *s_envp_ptrs[33];
-static char s_alias_line[LINE_CAP * 2];
+static char s_alias_line[CONTROL_SOURCE_CAP];
 static parse_cmd_t s_val_cmd;
 static parse_cmd_t s_sub_cmd;
 static expanded_cmd_t s_exp_val;
 static spawn_fd_action_t s_spawn_actions[MAX_SPAWN_ACTIONS];
 static char s_spawn_target_paths[MAX_SPAWN_ACTIONS][VFS_MAX_PATH];
-static redir_scope_t s_parent_scope;
 
 /* Flag-only SIGCHLD handler — sets a scalar flag; the main loop drains
  * the record table via jobs_reap_children(). Never prints or reaps here. */
@@ -176,6 +193,7 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         return vars_shift(n);
     }
     enum builtin b = builtin_find(cmd);
+    if(b==CMD_BREAK || b==CMD_CONTINUE) return control_request(b==CMD_CONTINUE,argc,argv);
 
     if (b == CMD_JOBS || b == CMD_FG || b == CMD_BG || b == CMD_KILL)
         return jobctl_exec(argc,(const char *const *)argv);
@@ -217,13 +235,15 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         if (argc < 2) return 0;
         return execute_simple_command(argc - 1, argv + 1, actions, action_count);
     }
-    if (b == CMD_TRUE || b == CMD_FALSE || b == CMD_ECHO || b == CMD_PRINTF || b == CMD_ENV ||
+    if (b == CMD_TEST || b == CMD_TRUE || b == CMD_FALSE || b == CMD_ECHO || b == CMD_PRINTF || b == CMD_ENV ||
         b == CMD_VERSION || b == CMD_CLEAR || b == CMD_LS || b == CMD_VIEW) {
         /* Shared handlers: route through builtin_exec for byte-identical output. */
         (void)vars_build_envp(s_env_strings, s_envp_ptrs);
         builtin_ctx_t ctx = builtin_ctx_from_envp(s_envp_ptrs);
         return builtin_exec(argc, (const char *const *)argv, &ctx);
     }
+    if (b == CMD_SOURCE) return source_request(argc,argv);
+    if (b == CMD_RETURN) return source_return(argc,argv);
     if (b == CMD_EXIT) {
         unsigned code=(unsigned)last_status & 255u;
         if(argc>2) {puts_err("exit: too many arguments\n");return 2;}
@@ -570,6 +590,30 @@ static bool is_parent_builtin(int argc, char **argv) {
     return true;
 }
 
+static bool script_descriptor(int fd) {
+    if(fd<0) return false;
+    if(fd==entry_script_fd) return true;
+    for(unsigned d=0;d<=source_depth;d++) {
+        if(d && fd==sources[d].fd) return true;
+        if(d<source_depth && sources[d].deferred_redir)
+            for(int j=0;j<sources[d].redirs.count;j++)
+                if(fd==sources[d].redirs.saved[j].saved_fd) return true;
+    }
+    return false;
+}
+static bool script_redirections_valid(const parse_cmd_t *cmd) {
+    /* Reader and suspended-redirection descriptors are interpreter-owned.
+     * Reject explicit attempts to overwrite them instead of corrupting a
+     * caller's continuation. Ordinary stdin/stdout/stderr remain available. */
+    for(int i=0;i<cmd->redir_count;i++) {
+        const redir_t *r=&cmd->redirs[i];
+        bool reserved=script_descriptor(r->redir_fd);
+        if(r->redir_op==REDIR_DUP_IN || r->redir_op==REDIR_DUP_OUT)
+            reserved=reserved || script_descriptor(r->redir_dup_fd);
+        if(reserved) {puts_err("sh: descriptor reserved by script context\n");return false;}
+    }
+    return true;
+}
 static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
     last_status = curr_status;
     /* Check for leading assignments: NAME=val */
@@ -653,7 +697,8 @@ static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
                     } else {
                         curr_status = 0;
                     }
-                    redir_restore_parent(&s_parent_scope);
+                    if(control_stop==CONTROL_SOURCE_PENDING) sources[source_depth].deferred_redir=true;
+                    else redir_restore_parent(&s_parent_scope);
                 }
             } else {
                 if (s_expanded_cmd.argc > 0) {
@@ -679,6 +724,11 @@ static int execute_single_command(parse_cmd_t *cmd, int curr_status) {
             }
         }
 
+        if(control_stop==CONTROL_SOURCE_PENDING) {
+            sources[source_depth].deferred_assign=assign_count>0;
+            sources[source_depth].deferred_negate=cmd->negate;
+            return 0;
+        }
         if (assign_count > 0) {
             vars_scope_end(&s_local_scope);
         }
@@ -700,28 +750,131 @@ static void execute_parse_tree(parse_tree_t *tree, const char *cmd_text) {
             break;
         }
     }
-    last_status = execute_command_list_job(tree, (int)last_status,
-                                           execute_single_command, cmd_text);
+    last_status = execute_command_list_resume(tree, (int)last_status,
+                     execute_single_command, cmd_text,&sources[source_depth].cursor);
 }
 
-static int script_eval(const char *text) {
-    enum parse_result pr=parser_parse(text,&parse_tree);
-    if(pr==PARSE_INCOMPLETE) return -1;
-    if(pr==PARSE_SYNTAX_ERROR) return -2;
-    if(pr==PARSE_OK) {
-        const char *reserved[]={"if","then","elif","else","fi","for","while","until","do","done","case","esac","function",NULL};
-        for(int c=0;c<parse_tree.cmd_count;c++) {
-            parse_cmd_t *cmd=&parse_tree.cmds[c];
-            if(!cmd->argc || cmd->has_quotes[0]) continue;
-            for(unsigned r=0;reserved[r];r++) if(equal(cmd->argv[0],reserved[r])) {
-                puts_err("sh: compound syntax is not implemented yet\n");return -2;
-            }
-        }
-        execute_parse_tree(&parse_tree,text);
+static int control_simple(const char *text,int status) {
+    last_status=status;
+    if(!sources[source_depth].cursor.waiting) {
+        enum parse_result pr=parser_parse(text,&parse_tree);
+        if(pr!=PARSE_OK && pr!=PARSE_EMPTY) return 2;
+        if(pr==PARSE_EMPTY) return 0;
     }
+    /* Include pipeline stages: duplicating a reader in a child could advance
+     * the caller's shared file offset even though CLOEXEC closes the original. */
+    for(int i=0;i<parse_tree.cmd_count;i++)
+        if(!script_redirections_valid(&parse_tree.cmds[i])) return 2;
+    execute_parse_tree(&parse_tree,text);
+    if(last_status==128+SIGINT && pipeline_last_signal()==SIGINT) script_interrupted=SIGINT;
     return (int)last_status;
 }
+static int source_request(int argc,char **argv) {
+    if(argc<2) {puts_err("source: expected file [args]\n");return 2;}
+    if(source_depth==CONTROL_MAX_SOURCES) {puts_err("source: nesting exceeds eight\n");return 2;}
+    source_context_t *next=&sources[source_depth+1];
+    size_t n=length(argv[1]);
+    if(!n || n>=sizeof(next->path)) {puts_err("source: invalid path\n");return 2;}
+    for(size_t i=0;i<=n;i++) next->path[i]=argv[1][i];
+    int fd=(int)call(SYS_OPEN,(uintptr_t)next->path,VFS_O_RDONLY|VFS_O_CLOEXEC,0);
+    if(fd<0) {puts_err("source: cannot open file\n");return 1;}
+    stat_ext_v1_t st={0};
+    if(call(SYS_FSTAT,fd,(uintptr_t)&st,0)<0 || st.type!=VFS_FILE) {
+        call(SYS_CLOSE,fd,0,0);puts_err("source: expected regular file\n");return 1;
+    }
+    long reader=call(SYS_FCNTL,fd,F_DUPFD_CLOEXEC,20);
+    call(SYS_CLOSE,fd,0,0);
+    if(reader<0) {puts_err("source: no reader descriptor available\n");return 1;}
+    fd=(int)reader;
+    next->supplied=argc>2;
+    if(next->supplied) {
+        vars_save_positionals(&next->parameters);
+        if(!vars_positionals(next->parameters.bytes,argc-2,argv+2)) {
+            call(SYS_CLOSE,fd,0,0);puts_err("source: argument budget exceeded\n");return 2;
+        }
+    }
+    next->fd=fd;next->result=0;next->initial_status=(int)last_status;next->returning=false;
+    next->cursor=(pipeline_cursor_t){0};
+    next->deferred_assign=next->deferred_redir=next->deferred_negate=false;
+    script_reader_init(&next->reader);
+    control_stop=CONTROL_SOURCE_PENDING;return 0;
+}
+static int source_return(int argc,char **argv) {
+    if(!source_depth) {puts_err("return: outside sourced file\n");return 2;}
+    if(argc>2) {puts_err("return: expected status 0..255\n");return 2;}
+    unsigned status=(unsigned)last_status & 255u;
+    if(argc==2) {
+        status=0;if(!argv[1][0]) return 2;
+        for(const char *p=argv[1];*p;p++) {
+            if(*p<'0' || *p>'9' || status>25) {puts_err("return: expected status 0..255\n");return 2;}
+            status=status*10+(unsigned)(*p-'0');if(status>255) return 2;
+        }
+    }
+    sources[source_depth].returning=true;
+    sources[source_depth].result=(int)status;
+    control_stop=CONTROL_RETURN_PENDING;return (int)status;
+}
+static int source_finish(int status) {
+    source_context_t *child=&sources[source_depth];
+    if(call(SYS_CLOSE,child->fd,0,0)<0) status=2;
+    if(child->supplied) vars_restore_positionals(&child->parameters);
+    source_depth--;control_select(source_depth);
+    source_context_t *parent=&sources[source_depth];
+    if(parent->deferred_redir) redir_restore_parent(&parent->redirs);
+    if(parent->deferred_assign) vars_scope_end(&parent->local);
+    if(parent->deferred_negate) status=status==0 ? 1 : 0;
+    parent->deferred_assign=parent->deferred_redir=parent->deferred_negate=false;
+    return status;
+}
 static void script_signal(unsigned sig) {script_interrupted=sig;}
+static int run_control(void) {
+    signal_action_t saved,action={.handler=(uintptr_t)script_signal};bool changed=false;
+    if(!shell_script_mode) {
+        script_interrupted=0;
+        if(call(SYS_SIGACTION,SIGINT,(uintptr_t)&action,(uintptr_t)&saved)<0) return 2;
+        changed=true;
+    }
+    pipeline_set_stop_flag(&control_stop);pipeline_set_cancel_flag(&script_interrupted);
+    int r=(int)last_status;bool input=false;
+    /* Source calls yield through the complete executor stack. This single
+     * driver owns all readers and continuations, independent of source depth. */
+    for(;;) {
+        if(input) {
+            source_context_t *ctx=&sources[source_depth];
+            int next=script_reader_next(&ctx->reader,ctx->fd,ctx->path,control_compile);
+            if(next<=0) {
+                r=next<0 ? (script_interrupted ? 128+(int)script_interrupted : 2) : ctx->result;
+                r=source_finish(r);input=false;continue;
+            }
+            /* Comments/blank lines do not change $? before the first command,
+             * nor do they count as a command result for an otherwise empty file. */
+            if(control_empty()) continue;
+            input=false;
+        }
+        r=control_execute(r,control_simple,&script_interrupted);
+        if(r==CONTROL_YIELD) {
+            source_depth++;control_select(source_depth);input=true;
+            r=sources[source_depth].initial_status;continue;
+        }
+        if(!source_depth) break;
+        /* return is a transfer: its explicit status survives a local ! prefix.
+         * A source command's caller may still negate the completed source. */
+        if(sources[source_depth].returning && !script_interrupted) r=sources[source_depth].result;
+        else sources[source_depth].result=r;
+        if(sources[source_depth].returning || script_interrupted) {
+            r=source_finish(r);input=false;
+        } else input=true;
+    }
+    sources[0].cursor=(pipeline_cursor_t){0};
+    if(changed && call(SYS_SIGACTION,SIGINT,(uintptr_t)&saved,0)<0) r=2;
+    return r;
+}
+static int script_eval(const char *text) {
+    int r=control_compile(text);
+    if(r==-2) {puts_err("sh: ");puts_err(control_error());puts_err("\n");}
+    if(r) return r;
+    last_status=run_control();return (int)last_status;
+}
 static int script_entry(int argc,char **argv,const char *const *envp) {
     int index=1,fd=0,count=0;const char *text=NULL,*name="sh";char **args=NULL;
     bool opened=false;
@@ -739,6 +892,10 @@ static int script_entry(int argc,char **argv,const char *const *envp) {
             if(call(SYS_FSTAT,fd,(uintptr_t)&st,0)<0 || st.type!=VFS_FILE) {
                 call(SYS_CLOSE,fd,0,0);puts_err("sh: expected regular script file\n");return 2;
             }
+            long reader=call(SYS_FCNTL,fd,F_DUPFD_CLOEXEC,20);
+            call(SYS_CLOSE,fd,0,0);
+            if(reader<0) {puts_err("sh: no reader descriptor available\n");return 2;}
+            fd=(int)reader;entry_script_fd=fd;
             opened=true;
         }
     }
@@ -821,8 +978,8 @@ int shell_main(int argc,char **argv,const char *const *envp) {
         /* Loop for continuation prompt if input is incomplete */
         for (;;) {
             (void)alias_expand_line(cmd_buf, s_alias_line, sizeof(s_alias_line));
-            enum parse_result pr = parser_parse(s_alias_line, &parse_tree);
-            if (pr == PARSE_INCOMPLETE) {
+            int pr = control_compile(s_alias_line);
+            if (pr == -1) {
                 if (!shell_read_line(line_input, true)) { jobs_shutdown(); return (int)last_status; }
                 if (!line_input[0]) {
                     /* Ctrl+C during continuation cancels input */
@@ -830,18 +987,15 @@ int shell_main(int argc,char **argv,const char *const *envp) {
                     break;
                 }
                 if (cmd_len + 1 + length(line_input) < sizeof(cmd_buf)) {
-                    if (parse_tree.status == LEX_INCOMPLETE_BACKSLASH && cmd_len > 0 && cmd_buf[cmd_len - 1] == '\\') {
-                        cmd_buf[cmd_len - 1] = ' ';
-                    } else if (parse_tree.status != LEX_INCOMPLETE_OP) {
-                        cmd_buf[cmd_len++] = '\n';
-                    } else {
-                        cmd_buf[cmd_len++] = ' ';
-                    }
+                    cmd_buf[cmd_len++] = '\n';
                     size_t k = 0;
                     while (line_input[k]) {
                         cmd_buf[cmd_len++] = line_input[k++];
                     }
                     cmd_buf[cmd_len] = '\0';
+                } else {
+                    puts_err("sh: compound unit exceeds 16 KiB\n");
+                    cmd_buf[0]=0;last_status=2;break;
                 }
                 continue;
             }
@@ -851,16 +1005,16 @@ int shell_main(int argc,char **argv,const char *const *envp) {
         if (!cmd_buf[0]) continue;
 
         (void)alias_expand_line(cmd_buf, s_alias_line, sizeof(s_alias_line));
-        enum parse_result pr = parser_parse(s_alias_line, &parse_tree);
-        if (pr == PARSE_SYNTAX_ERROR) {
-            puts(parse_tree.error_msg ? parse_tree.error_msg : "syntax error");
+        int pr = control_compile(s_alias_line);
+        if (pr == -2) {
+            puts(control_error());
             puts("\n");
             last_status = 2;
             history_autoflush_maybe();
             continue;
         }
-        if (pr == PARSE_OK) {
-            execute_parse_tree(&parse_tree, cmd_buf);
+        if (pr == 0) {
+            last_status=run_control();
         }
 
         /* Drain any reports generated during execution. */

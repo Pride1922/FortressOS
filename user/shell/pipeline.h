@@ -4,9 +4,20 @@
 #include "syscall_abi.h"
 void pipeline_set_interactive(bool enabled);
 void pipeline_set_cancel_flag(volatile unsigned *flag);
+void pipeline_set_stop_flag(unsigned *flag);
+unsigned pipeline_last_signal(void);
+
+typedef struct {
+    int first;
+    enum cmd_op incoming;
+    bool waiting;
+} pipeline_cursor_t;
+int execute_command_list_resume(parse_tree_t *tree,int status,
+    int (*single)(parse_cmd_t *,int),const char *text,pipeline_cursor_t *cursor);
 
 /* Single command callback retains its existing negation semantics.
- * Static preparation storage: shell execution is deliberately non-reentrant.
+ * Preparation scratch is not reentrant. A source yield unwinds completely
+ * before reuse; the caller owns its AST and command-list cursor.
  * Blocking pipe peers must run on the BSP until S7 Phase 6. */
 int execute_command_list(parse_tree_t *tree, int status,
                          int (*single)(parse_cmd_t *, int));

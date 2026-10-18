@@ -28,6 +28,34 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 * **External Binaries**: Standalone ELF executables stored in `/bin/` on the initial RAM filesystem (`initramfs.tar`). When an unknown command name without a slash is entered, the shell automatically searches `/bin/` (or the directories specified in `$PATH`).
 * **Filesystem Paths**: The root filesystem (`/`) is an in-memory TarFS archive (read-only). Writable and persistent files live under `/mnt` (the mounted ext2 storage partition on NVMe or USB).
 
+### Shell scripts
+
+The scripting worktree adds `sh file [args...]`, `sh -c command [name [args...]]`
+and command input from nonterminal stdin. It supports variables, `$?`, `$0`,
+positional arguments, `$#`, quoted `"$@"`, `shift [count]`, existing simple
+pipelines/redirections, `if`/`elif`/`else`, `while`, `for`, and
+`break [levels]` / `continue [levels]`, `source file [args...]` / `. file [args...]`,
+and `return [status]` inside sourced files.
+
+```sh
+sh -c 'for item in one "two words"; do echo "$item"; done'
+sh -c 'if [ -d /mnt ]; then echo "Mount path exists"; fi'
+```
+
+`test` and `[` support fixed-arity string, file and signed-integer predicates;
+`[` requires a closing `]`. Expression errors return 2, false returns 1, and
+true returns 0. Use ordinary `&&`/`||` command lists for boolean composition.
+Source shares variables/cwd, preserves `$0`, restores explicitly supplied
+arguments afterward, and supports eight nested files. Without source arguments,
+`shift` changes the caller’s parameters. `return` accepts 0..255 (default `$?`);
+using it outside a sourced file is an error. Source paths are opened as given,
+relative to cwd when needed; PATH lookup is not performed. Source/return are
+parent-only and cannot run as pipeline stages or background commands.
+Functions, arithmetic and substitutions are not implemented. Compounds
+must be separated by newlines/semicolons and cannot themselves be pipeline
+stages or carry trailing redirections. See [the scripting guide and bounds](docs/roadmap/shell-scripting.md).
+This feature is isolated from the main checkout and is not in its last USB image.
+
 ---
 
 ## 2. Quick Reference Index

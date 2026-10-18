@@ -1,4 +1,5 @@
 #include "pipeline.h"
+#include "control.h"
 #include "program.h"
 #include "expand.h"
 #include "vars.h"
@@ -10,6 +11,9 @@
 #define RUNNER_PATH "/bin/sh-builtin"
 static bool interactive=true;
 static volatile unsigned *cancel_flag;
+static unsigned *stop_flag,last_signal;
+void pipeline_set_stop_flag(unsigned *flag) {stop_flag=flag;}
+unsigned pipeline_last_signal(void) {return last_signal;}
 void pipeline_set_cancel_flag(volatile unsigned *flag) {cancel_flag=flag;}
 void pipeline_set_interactive(bool enabled) {
     interactive=enabled;program_set_job_control(enabled);jobs_set_quiet(!enabled);
@@ -302,6 +306,7 @@ int pipeline_foreground(int slot, bool staged, uint64_t old_mask) {
     bool saved=false, handed=false;
     int result=1;
     s_fg_signaled=false;
+    last_signal=0;
     jobs_set_foreground(slot,true);
     long err=0;
     if(interactive) {
@@ -362,7 +367,7 @@ reclaim:
     }
     if (err<0 && staged) jobs_free(slot);
     else if (job->state==JOB_STATE_DONE) {
-        s_fg_signaled=jobs_term_signal(slot)!=0;
+        last_signal=jobs_term_signal(slot);s_fg_signaled=last_signal!=0;
         if (s_fg_signaled && interactive) jobs_print_state(slot,false);
         jobs_free(slot);
     } else {
@@ -515,14 +520,15 @@ static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
     return pipeline_foreground(slot, true, old_mask);
 }
 
-int execute_command_list_job(parse_tree_t *tree, int status,
+int execute_command_list_resume(parse_tree_t *tree, int status,
                              int (*single)(parse_cmd_t *, int),
-                             const char *cmd_text) {
+                             const char *cmd_text,pipeline_cursor_t *cursor) {
     bool background = tree->background;
-    enum cmd_op incoming = CMD_OP_NONE;
+    enum cmd_op incoming = cursor->waiting ? cursor->incoming : CMD_OP_NONE;
 
-    for (int first = 0; first < tree->cmd_count;) {
-        if(cancel_flag && *cancel_flag) return 128+(int)*cancel_flag;
+    for (int first = cursor->waiting ? cursor->first : 0; first < tree->cmd_count;) {
+        if(cancel_flag && *cancel_flag) {cursor->waiting=false;return 128+(int)*cancel_flag;}
+        if(stop_flag && *stop_flag) {cursor->waiting=false;return status;}
         int last = first;
         while (last + 1 < tree->cmd_count && tree->cmds[last].next_op == CMD_OP_PIPE) last++;
 
@@ -555,8 +561,19 @@ int execute_command_list_job(parse_tree_t *tree, int status,
             }
         }
         incoming = tree->cmds[last].next_op;
+        if(stop_flag && *stop_flag==CONTROL_SOURCE_PENDING) {
+            cursor->first=last+1;cursor->incoming=incoming;cursor->waiting=true;
+            return CONTROL_YIELD;
+        }
         if (incoming == CMD_OP_BG) incoming = CMD_OP_NONE;  /* BG terminates */
         first = last + 1;
     }
+    cursor->waiting=false;
     return status;
+}
+
+int execute_command_list_job(parse_tree_t *tree,int status,
+    int (*single)(parse_cmd_t *,int),const char *text) {
+    pipeline_cursor_t cursor={0};
+    return execute_command_list_resume(tree,status,single,text,&cursor);
 }

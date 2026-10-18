@@ -8,6 +8,11 @@ with tempfile.TemporaryDirectory(prefix="fortress-shell-host-") as tmp:
     exe = str(Path(tmp) / "shell")
     subprocess.run(["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
                     "-fsanitize=address,undefined", "-no-pie", "-Isrc/include", "-Isrc/fs", "-Iuser/shell",
+                    "tests/control_host.c", "user/shell/control.c", "user/shell/vars.c", "user/shell/expand.c",
+                    "user/shell/lexer.c", "user/shell/parser.c", "-o", exe], cwd=repo,check=True)
+    subprocess.run([exe],check=True)
+    subprocess.run(["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
+                    "-fsanitize=address,undefined", "-no-pie", "-Isrc/include", "-Isrc/fs", "-Iuser/shell",
                     "tests/script_host.c", "user/shell/script.c", "user/shell/lexer.c", "user/shell/parser.c",
                     "-o", exe], cwd=repo, check=True)
     subprocess.run([exe],check=True)
