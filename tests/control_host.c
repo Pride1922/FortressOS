@@ -66,6 +66,17 @@ int main(void) {
     assert(run("if false; then record BAD; elif true; then record GOOD; else record BAD; fi")==0);
     assert(count==1 && !strcmp(records[0],"GOOD"));
     count=0;assert(run("if false; then record BAD; fi")==0 && !count);
+    count=0;assert(run("until true; do record BAD; done")==0 && !count);
+    assert(!vars_set("FINISHED","no",false));
+    assert(run("until test $FINISHED = yes; do record ONCE; setvar FINISHED yes; done")==0 && count==1);
+    assert(!strcmp(records[0],"ONCE"));
+    count=0;assert(run("until false; do for z in a b; do record INNER; break 2; done; record BAD; done")==0 && count==1);
+    count=0;assert(run("for z in a b; do until false; do record INNER; continue 2; done; record BAD; done")==0 && count==2);
+    count=0;assert(control_compile("until true; do record BAD")==-1 && !count);
+    assert(control_compile("until true; record BAD; done")==-2 && !count);
+    assert(control_compile("true && until true; do record BAD; done")==-2);
+    assert(run("until false; do interrupt; done")==130);interrupted=0;
+    count=0;
     assert(run("if true; then false; fi")==1);
     count=0;assert(run("for x in a 'b c' ''; do record \"$x\"; done")==0 && count==3);
     assert(!strcmp(records[1],"b c") && !strcmp(records[2],""));

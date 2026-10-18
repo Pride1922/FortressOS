@@ -46,6 +46,7 @@ def fixture(base,tmp):
         'examples/source-reader-pipe.sh':b'cat <&20 | cat\necho READER_PIPE_CODE:$?\n',
         'examples/source-bare-return.sh':b'# preserve incoming status\n\nreturn\n',
         'examples/source-comments.sh':b'# only comments\n\n',
+        'examples/until-source.sh':b'until false; do . /examples/return-default.sh; echo UNTIL_SOURCE:$?; break; done\n',
         'examples/conditions.sh':b'if false; then\necho WRONG\nelif test 3 -gt 2; then\necho BRANCH_OK\nelse\necho WRONG\nfi\n',
         'examples/loops.sh':b'for x in a "b c" ""; do\nprintf "FOR:<%s>\\n" "$x"\ndone\nX=go\nwhile [ "$X" = go ]; do\necho WHILE_ONCE\nX=stop\ndone\n',
         'examples/badcompound.sh':b'if true; then\necho COMPOUND_SHOULD_NOT_RUN\nelse else\nfi\n',
@@ -123,7 +124,13 @@ def boot(iso,tmp,firmware,smp):
         command("sh -c 'shift 2; echo SHIFT_CODE:$?' custom one",['SHIFT_CODE:1'])
         command("sh -c 'echo ${10}:${#}' custom a b c d e f g h i ten",['ten:10'])
         command("sh -c 'echo ${bad:-default}'; echo CODE:$?",['Expansion exceeds shell limits','CODE:1'])
-        command("sh -c 'until true; do echo BAD; done'; echo CODE:$?",['unsupported control keyword','CODE:2'])
+        command("sh -c 'case value in x; echo BAD; esac'; echo CODE:$?",['unsupported control keyword','CODE:2'])
+        command("sh -c 'until true; do echo WRONG; done; echo UNTIL_EMPTY:$?'",['UNTIL_EMPTY:0'],['WRONG'])
+        command("sh -c 'DONE=no; until [ \"$DONE\" = yes ]; do echo UNTIL_ONCE; DONE=yes; done'",['UNTIL_ONCE'])
+        command("sh -c 'for x in a b; do until false; do echo UNTIL:$x; continue 2; done; done'",['UNTIL:a','UNTIL:b'])
+        command("sh /examples/until-source.sh",['UNTIL_SOURCE:1'])
+        command("sh -c 'until true; echo WRONG; done'; echo UNTIL_SYNTAX:$?",['UNTIL_SYNTAX:2'],['WRONG'])
+        command("until false; do echo INTERACTIVE_UNTIL; break; done",['INTERACTIVE_UNTIL'])
         command("sh -c 'echo MISSING:$1'",['MISSING:'])
         command("sh -c 'echo \"${@}\"' custom 'space value'",['space value'])
         command("sh /examples/concurrent.sh",['NESTED','CONCURRENT_DONE'],['Unable to load','foreground wait failed'])
@@ -198,6 +205,12 @@ def boot(iso,tmp,firmware,smp):
             for key,_ in sel.select(.1):data.extend(key.fileobj.read1(65536))
         send('\x03');wait(lambda s:s.endswith('$ '),start,15);count+=1
         command('echo LOOP_CANCEL:$?',['LOOP_CANCEL:130'])
+        start=len(data);send('until false; do true; done\n')
+        deadline=time.monotonic()+.5
+        while time.monotonic()<deadline:
+            for key,_ in sel.select(.1):data.extend(key.fileobj.read1(65536))
+        send('\x03');wait(lambda s:s.endswith('$ '),start,15);count+=1
+        command('echo UNTIL_CANCEL:$?',['UNTIL_CANCEL:130'])
         command('echo INTERACTIVE_OK',['INTERACTIVE_OK'])
         print(f'PASS {firmware} SMP={smp}: {count} scripting/interactive cases (disk-free)',flush=True)
         return {'firmware':firmware,'smp':smp,'cases':count,'status':'PASS'}

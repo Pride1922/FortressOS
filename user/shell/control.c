@@ -4,7 +4,7 @@
 #include "vars.h"
 #include "io.h"
 
-enum operation { SIMPLE,JUMP,BRANCH,ZERO,WHILE_ENTER,FOR_ENTER,FOR_NEXT,SAVE_RESULT,LOOP_EXIT };
+enum operation { SIMPLE,JUMP,BRANCH,BRANCH_SUCCESS,ZERO,WHILE_ENTER,FOR_ENTER,FOR_NEXT,SAVE_RESULT,LOOP_EXIT };
 typedef struct { unsigned start,end;enum token_type type;char word[MAX_VAR_NAME];bool quoted,operand; } ctok;
 typedef struct { enum operation op;unsigned start,length;int target,next;char name[MAX_VAR_NAME];bool implicit; } instruction;
 typedef struct {
@@ -94,7 +94,7 @@ static bool conditional(unsigned nesting) {
         return true;
     }
 }
-static bool loop(bool for_loop,unsigned nesting) {
+static bool loop(bool for_loop,bool until_loop,unsigned nesting) {
     pos++;
     int enter=emit(for_loop ? FOR_ENTER : WHILE_ENTER);if(enter<0) return false;
     int condition=(int)ncode,branch=-1;
@@ -119,7 +119,7 @@ static bool loop(bool for_loop,unsigned nesting) {
         condition=emit(FOR_NEXT);if(condition<0) return false;
     } else {
         if(!list(STOP_DO,nesting+1) || !expect("do")) return false;
-        branch=emit(BRANCH);if(branch<0) return false;
+        branch=emit(until_loop ? BRANCH_SUCCESS : BRANCH);if(branch<0) return false;
     }
     code[enter].next=condition;
     if(!list(STOP_DONE,nesting+1) || !expect("done")) return false;
@@ -139,20 +139,20 @@ static bool list(unsigned stop,unsigned nesting) {
         if(eof()) return stop ? incomplete() : true;
         if(stopped(stop)) return any ? true : bad("empty condition or body");
         any=true;
-        if(word("if") || word("while") || word("for")) {
-            bool ok=word("if") ? conditional(nesting) : loop(word("for"),nesting);
+        if(word("if") || word("while") || word("until") || word("for")) {
+            bool ok=word("if") ? conditional(nesting) : loop(word("for"),word("until"),nesting);
             if(!ok) return false;
             if(!eof() && tokens[pos].type!=TOK_SEMI) return bad("expected separator after compound command");
             continue;
         }
         if(word("then") || word("elif") || word("else") || word("fi") || word("do") || word("done") ||
-           word("until") || word("case") || word("esac") || word("function")) return bad("unexpected or unsupported control keyword");
+           word("case") || word("esac") || word("function")) return bad("unexpected or unsupported control keyword");
         unsigned start=tokens[pos].start;
         unsigned first=pos;
         while(!eof() && tokens[pos].type!=TOK_SEMI) {
             if(pos>first && (tokens[pos-1].type==TOK_AND || tokens[pos-1].type==TOK_OR ||
                 tokens[pos-1].type==TOK_PIPE || tokens[pos-1].type==TOK_BANG) &&
-                (word("if") || word("for") || word("while")))
+                (word("if") || word("for") || word("while") || word("until")))
                 return bad("compound commands after list operators are not supported");
             pos++;
         }
@@ -244,6 +244,7 @@ int control_execute(int status,int (*simple)(const char *,int),volatile unsigned
             }
         } else if(op->op==JUMP) pc=(unsigned)op->target;
         else if(op->op==BRANCH) {if(status) pc=(unsigned)op->target;}
+        else if(op->op==BRANCH_SUCCESS) {if(!status) pc=(unsigned)op->target;}
         else if(op->op==ZERO) status=0;
         else if(op->op==WHILE_ENTER || op->op==FOR_ENTER) {
             if(depth==CONTROL_MAX_DEPTH) {status=2;break;}

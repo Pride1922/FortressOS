@@ -167,7 +167,7 @@ separate. Phase D follows below.
 ## Phase D follow-up — source and return
 
 2026-10-18. Implemented and verified in the same isolated worktree. A–B remain
-committed as `1978c58`; C and D are uncommitted. No main-checkout integration,
+committed as `1978c58`; C and D were subsequently committed as `41ef112`. No main-checkout integration,
 push, release image rebuild, or physical acceptance is claimed.
 
 `source file [args...]` and `. file [args...]` read a regular file in the current
@@ -251,3 +251,32 @@ Remaining: merge/reconcile with the current main checkout, explicit physical
 console/SSH scripting acceptance, and any later language designs (functions,
 substitutions, subshells, here-documents, traps, arithmetic and direct text
 execution). Issue #14 must retain these subset and delivery boundaries.
+
+## Follow-up — until loops
+
+2026-10-18. Added after the C–D commit `41ef112` and delivered in the subsequent
+`until` commit. `until condition; do body; done` evaluates the condition before
+each iteration, runs the body on nonzero status, and stops on success (zero).
+It uses the existing while-loop frame and an inverted condition branch,
+including last-body status (zero for no iterations), nested break/continue,
+source suspension/resumption and signal checks. The existing eight-level
+control nesting, source/input/token/instruction/value bounds are unchanged.
+Compounds still require newline/semicolon separation; unsupported attachments
+after list operators, pipelines or compound redirections remain rejected.
+
+`make build/shell.elf build/sh-builtin.elf test-shell-scripting-host` passes.
+Actual-code sanitizer additions cover zero iterations, a changing condition,
+nested break/continue, incomplete/malformed input, unsupported list attachments
+and cancellation. The guest runner adds real interactive and script `until`,
+source in its body, multi-level continue, syntax-before-effects, and Ctrl+C
+with status 130. An initial guest test had overescaped quotes and consequently
+kept its condition false; that fixture was corrected before final acceptance.
+
+Final `python3 scripts/test_shell_scripting.py --base /mnt/c/Sources/FortressOS`:
+**364/364 PASS**, BIOS/UEFI × SMP=1/4, 91 cases each. This supersedes the Phase D
+JSON report with the expanded regression matrix. Final shell SHA-256:
+`8c8e40730bfd92f6bffba0f3e06bde044514d437d7e71d42a4f32fb5e851c8d3`.
+Disk-free temporary fixtures and unchanged primary release-input hashes retain
+the same evidence boundary; no merge, push, release-image rebuild or physical
+acceptance. `case`, functions, `read` and the other larger language features
+still need their own bounded designs.

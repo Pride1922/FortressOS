@@ -144,7 +144,12 @@ limit for intentional loops: honor signals between iterations and while waiting
 for children, and ensure Ctrl+C stops the foreground script cleanly.
 
 **Deliverable:** scripts can branch, retry with an explicit sleep, and iterate
-over fixed argument lists. Functions, `case`, `until` and arithmetic remain later work.
+over fixed argument lists. Functions, `case` and arithmetic remain later work.
+The subsequent `until` increment reuses the while-loop compiler/runtime, with
+the condition exit branch inverted: the body runs on a nonzero condition status
+and stops on zero. It retains the same nesting/size limits, body status,
+break/continue, source suspension and cancellation behavior. See follow-up
+evidence in the scripting roadmap.
 
 ## 5. Phase D — source and later language features
 

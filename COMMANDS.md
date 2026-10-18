@@ -33,9 +33,12 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 The scripting worktree adds `sh file [args...]`, `sh -c command [name [args...]]`
 and command input from nonterminal stdin. It supports variables, `$?`, `$0`,
 positional arguments, `$#`, quoted `"$@"`, `shift [count]`, existing simple
-pipelines/redirections, `if`/`elif`/`else`, `while`, `for`, and
+pipelines/redirections, `if`/`elif`/`else`, `while`, `until`, `for`, and
 `break [levels]` / `continue [levels]`, `source file [args...]` / `. file [args...]`,
 and `return [status]` inside sourced files.
+`until condition; do commands; done` runs its body while the condition fails,
+and stops when the condition succeeds. It shares the existing loop bounds,
+break/continue handling and cancellation behavior.
 
 ```sh
 sh -c 'for item in one "two words"; do echo "$item"; done'
