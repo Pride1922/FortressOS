@@ -97,6 +97,9 @@ their provisioned accounts and host identity; `--live` is not their setup path.
 
 Supervisor diagnostics and each service's stdout/stderr are captured separately:
 
+Watchtower startup, shutdown and warning messages go only to its log; they are
+not printed over the local login or shell prompt.
+
 | Boot/storage mode | Supervisor log | Example service log |
 | --- | --- | --- |
 | Writable installed logging directory | `/var/log/watchtower/watchtower.log` | `/var/log/watchtower/sshd.log` |

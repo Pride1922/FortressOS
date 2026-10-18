@@ -58,12 +58,7 @@ static void wt_strlcat(char *dst, const char *src, size_t dst_size) {
     dst[dlen + i] = '\0';
 }
 
-static void wt_print(const char *s) {
-    size_t len = wt_strlen(s);
-    if (len > 0) {
-        (void)sys_call(SYS_WRITE, 1, (uintptr_t)s, len, 0, 0, 0);
-    }
-}
+static void wt_log_event(const char *msg);
 
 static bool wt_file_exists(const char *path) {
     if (!path || !path[0]) return false;
@@ -202,9 +197,7 @@ static int wt_list_dir(const char *path, char names[][64], uint32_t max_entries)
 
 static void wt_log_stderr(const char *msg) {
     if (!msg) return;
-    size_t len = 0;
-    while (msg[len]) len++;
-    (void)sys_call(SYS_WRITE, 2, (uintptr_t)msg, len, 0, 0, 0);
+    wt_log_event(msg);
 }
 
 static int wt_kill(int64_t pid, int sig) {
@@ -490,8 +483,7 @@ static void wt_append_log(const char *path, const char *data, size_t len, uint64
 }
 
 static void wt_log_event(const char *msg) {
-    wt_print(msg);
-
+    /* Background diagnostics belong in the log, never over the login prompt. */
     char path[128];
     path[0] = '\0';
     wt_strlcpy(path, g_log_dir, sizeof(path));
