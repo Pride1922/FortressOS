@@ -6,7 +6,8 @@
 #include "watchtower_config.h"
 #include "watchtower_ctl.h"
 
-#define WT_LOG_MAX_SIZE (1024 * 1024) /* 1 MiB */
+#define WT_LOG_MAX_SIZE_DISK (1024 * 1024) /* 1 MiB */
+#define WT_LOG_MAX_SIZE_RAM  2048          /* 2 KiB */
 
 static long sys_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
                      uintptr_t d, uintptr_t e, uintptr_t f) {
@@ -22,6 +23,16 @@ static size_t wt_strlen(const char *s) {
     size_t n = 0;
     while (s && s[n]) n++;
     return n;
+}
+
+static bool wt_streq(const char *a, const char *b) {
+    if (!a || !b) return false;
+    while (*a && *b) {
+        if (*a != *b) return false;
+        a++;
+        b++;
+    }
+    return *a == *b;
 }
 
 static void wt_strlcpy(char *dst, const char *src, size_t dst_size) {
@@ -170,6 +181,19 @@ static int64_t wt_read_pid_file(const char *path) {
     return (val > 0) ? val : -1;
 }
 
+static int wt_list_dir(const char *path, char names[][64], uint32_t max_entries) {
+    if (!path || !names || max_entries == 0) return -1;
+    long r = sys_call(SYS_LIST_DIR, (uintptr_t)path, (uintptr_t)names, (uint64_t)max_entries, 0, 0, 0);
+    return (int)r;
+}
+
+static void wt_log_stderr(const char *msg) {
+    if (!msg) return;
+    size_t len = 0;
+    while (msg[len]) len++;
+    (void)sys_call(SYS_WRITE, 2, (uintptr_t)msg, len, 0, 0, 0);
+}
+
 static int wt_kill(int64_t pid, int sig) {
     if (pid <= 0) return -1;
     /* First attempt to signal the entire process group (-pid) */
@@ -257,6 +281,13 @@ static void wt_write_pid_file(void) {
 
 /* Logging and Rotation Subsystem */
 static char g_log_dir[64] = "/run/watchtower";
+static bool g_log_is_ram = true;
+static int64_t wt_compress_pid = 0;
+static char wt_compress_archive[128];
+static char wt_compress_gz[128];
+static char wt_compress_base[128];
+static uint64_t wt_compress_start_sec = 0;
+static bool wt_compress_killed = false;
 
 static void wt_init_log_dir(void) {
     (void)sys_call(SYS_MKDIR, (uintptr_t)"/var/log", 0755, 0, 0, 0, 0);
@@ -269,13 +300,91 @@ static void wt_init_log_dir(void) {
         (void)sys_call(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
         (void)sys_call(SYS_UNLINK, (uintptr_t)probe, 0, 0, 0, 0, 0);
         wt_strlcpy(g_log_dir, "/var/log/watchtower", sizeof(g_log_dir));
+        g_log_is_ram = false;
     } else {
         (void)sys_call(SYS_MKDIR, (uintptr_t)"/run/watchtower", 0755, 0, 0, 0, 0);
         wt_strlcpy(g_log_dir, "/run/watchtower", sizeof(g_log_dir));
+        g_log_is_ram = true;
+    }
+}
+
+static void wt_reopen_stderr_if_watchtower_log(const char *log_path) {
+    char wt_err_log[128];
+    wt_err_log[0] = '\0';
+    wt_strlcpy(wt_err_log, g_log_dir, sizeof(wt_err_log));
+    wt_strlcat(wt_err_log, "/watchtower.log", sizeof(wt_err_log));
+    if (wt_streq(log_path, wt_err_log)) {
+        long new_fd = sys_call(SYS_OPEN, (uintptr_t)log_path,
+                               VFS_O_CREAT | VFS_O_WRONLY | VFS_O_APPEND, 0644, 0, 0, 0);
+        if (new_fd >= 0) {
+            (void)sys_call(SYS_DUP2, (uintptr_t)new_fd, 2, 0, 0, 0, 0);
+            (void)sys_call(SYS_CLOSE, (uintptr_t)new_fd, 0, 0, 0, 0, 0);
+        }
+    }
+}
+
+static void wt_check_compression(uint64_t now) {
+    if (wt_compress_pid <= 0) return;
+
+    uint64_t st = 0;
+    long ret = sys_call(SYS_WAITPID, (uintptr_t)wt_compress_pid, (uintptr_t)&st, WNOHANG, 0, 0, 0);
+    if (ret == wt_compress_pid) {
+        /* Child finished */
+        int exit_code = (int)((st >> 8) & 0xff);
+        if (wt_compress_killed || exit_code != 0) {
+            /* If killed or error, unlink partial .gz if any */
+            (void)sys_call(SYS_UNLINK, (uintptr_t)wt_compress_gz, 0, 0, 0, 0, 0);
+        }
+        wt_compress_pid = 0;
+        wt_compress_archive[0] = '\0';
+        wt_compress_gz[0] = '\0';
+        wt_compress_base[0] = '\0';
+        wt_compress_killed = false;
+    } else if (ret <= 0) {
+        /* Still running: check 5-second timeout */
+        if (!wt_compress_killed && now >= wt_compress_start_sec + 5) {
+            (void)sys_call(SYS_KILL, (uintptr_t)wt_compress_pid, SIGKILL, 0, 0, 0, 0);
+            wt_compress_killed = true;
+            /* Do not unlink partial output until waitpid reaps the confirmed dead child */
+        }
     }
 }
 
 static void wt_rotate_log(const char *log_path) {
+    if (!log_path || !log_path[0]) return;
+
+    if (g_log_is_ram) {
+        /* RAM fallback adaptation: retain 2 uncompressed generations of 2 KiB */
+        char p1[128], p2[128];
+        p2[0] = '\0';
+        wt_strlcpy(p2, log_path, sizeof(p2));
+        wt_strlcat(p2, ".2", sizeof(p2));
+
+        p1[0] = '\0';
+        wt_strlcpy(p1, log_path, sizeof(p1));
+        wt_strlcat(p1, ".1", sizeof(p1));
+
+        /* 1. Unlink oldest: .2 */
+        (void)sys_call(SYS_UNLINK, (uintptr_t)p2, 0, 0, 0, 0, 0);
+
+        /* 2. Shift .1 -> .2 */
+        (void)sys_call(SYS_RENAME, (uintptr_t)p1, (uintptr_t)p2, 0, 0, 0, 0);
+
+        /* 3. Shift active -> .1 */
+        (void)sys_call(SYS_RENAME, (uintptr_t)log_path, (uintptr_t)p1, 0, 0, 0, 0);
+
+        /* Descriptor reopen protocol: immediately recreate active and dup2 to fd 2 */
+        wt_reopen_stderr_if_watchtower_log(log_path);
+        return;
+    }
+
+    /* Disk mode:
+     * While wt_compress_pid > 0, supervisor ticks must not initiate new compression jobs
+     * and must not shift, rename, or unlink wt_compress_archive. */
+    if (wt_compress_pid > 0 && wt_streq(log_path, wt_compress_base)) {
+        return;
+    }
+
     char p1[128], p1_gz[128], p2_gz[128], p3_gz[128];
 
     p3_gz[0] = '\0';
@@ -306,13 +415,20 @@ static void wt_rotate_log(const char *log_path) {
     /* 4. Shift .log -> .1 */
     (void)sys_call(SYS_RENAME, (uintptr_t)log_path, (uintptr_t)p1, 0, 0, 0, 0);
 
-    /* 5. Spawn /bin/gzip -f <p1> if /bin/gzip exists */
-    if (wt_file_exists("/bin/gzip")) {
+    /* Descriptor reopen protocol: immediately recreate active and dup2 to fd 2 */
+    wt_reopen_stderr_if_watchtower_log(log_path);
+
+    /* 5. Spawn /bin/gzip -f <p1> asynchronously if no compression is active and /bin/gzip exists */
+    if (wt_compress_pid == 0 && wt_file_exists("/bin/gzip")) {
         const char *argv[] = {"/bin/gzip", "-f", p1, NULL};
         int64_t gpid = wt_spawn("/bin/gzip", argv);
         if (gpid > 0) {
-            uint64_t st = 0;
-            (void)sys_call(SYS_WAITPID, (uintptr_t)gpid, (uintptr_t)&st, 0, 0, 0, 0);
+            wt_compress_pid = gpid;
+            wt_compress_start_sec = wt_monotonic_sec();
+            wt_compress_killed = false;
+            wt_strlcpy(wt_compress_archive, p1, sizeof(wt_compress_archive));
+            wt_strlcpy(wt_compress_gz, p1_gz, sizeof(wt_compress_gz));
+            wt_strlcpy(wt_compress_base, log_path, sizeof(wt_compress_base));
         }
     }
 }
@@ -320,11 +436,26 @@ static void wt_rotate_log(const char *log_path) {
 static void wt_append_log(const char *path, const char *data, size_t len, uint64_t *dropped_bytes) {
     if (!path || !data || len == 0) return;
 
+    uint64_t max_size = g_log_is_ram ? WT_LOG_MAX_SIZE_RAM : WT_LOG_MAX_SIZE_DISK;
+
     vfs_stat_t st;
     for (size_t i = 0; i < sizeof(st); i++) ((uint8_t *)&st)[i] = 0;
     long sret = sys_call(SYS_STAT, (uintptr_t)path, (uintptr_t)&st, 0, 0, 0, 0);
-    if (sret == 0 && st.size >= WT_LOG_MAX_SIZE) {
+    if (sret == 0 && st.size >= max_size) {
         wt_rotate_log(path);
+        st.size = 0;
+    }
+
+    /* RAM log adaptation: truncate oversized incoming chunk to fit available headroom (2048 - current_size) */
+    if (g_log_is_ram) {
+        uint64_t current_size = (sret == 0) ? st.size : 0;
+        uint64_t headroom = (current_size < WT_LOG_MAX_SIZE_RAM) ? (WT_LOG_MAX_SIZE_RAM - current_size) : 0;
+        if (len > headroom) {
+            size_t discarded = len - (size_t)headroom;
+            if (dropped_bytes) *dropped_bytes += discarded;
+            len = (size_t)headroom;
+            if (len == 0) return;
+        }
     }
 
     long fd = sys_call(SYS_OPEN, (uintptr_t)path,
@@ -390,7 +521,8 @@ static void wt_drain_pipes(watchtower_table_t *tbl) {
         service_t *svc = &tbl->services[i];
         if (svc->pipe_fd < 0) continue;
 
-        for (;;) {
+        /* Bounded budget: max 4 iterations of 4 KiB chunks per tick per service */
+        for (int iter = 0; iter < 4; iter++) {
             long n = sys_call(SYS_READ, (uintptr_t)svc->pipe_fd,
                               (uintptr_t)chunk, sizeof(chunk), 0, 0, 0);
             if (n > 0) {
@@ -451,111 +583,19 @@ int watchtower_main(int argc, char **argv) {
         .file_exists = wt_file_exists,
         .monotonic_sec = wt_monotonic_sec,
         .is_alive = wt_is_alive,
-        .read_pid_file = wt_read_pid_file
+        .read_pid_file = wt_read_pid_file,
+        .list_dir = wt_list_dir,
+        .log_stderr = wt_log_stderr
     };
 
     static watchtower_table_t table;
     watchtower_table_init(&table);
 
-    /* Register Services: configuration files checked first with built-in fallbacks */
-    char err[256];
-    /* Startup records outlive no call but are too large for the user stack. */
-    static service_t dhcp;
-    int r_dhcp = watchtower_config_load_service(
-        "/etc/watchtower/dhcpc.service",
-        "/mnt/.fortress/watchtower/dhcpc.service",
-        "dhcpc", &dhcp, err, sizeof(err));
-    if (r_dhcp == 0) {
-        watchtower_table_add_service(&table, &dhcp);
-    } else if (wt_file_exists("/sbin/dhcpc")) {
-        static service_t def_dhcp = {
-            .order = 10,
-            .enabled = true,
-            .readiness_mode = READINESS_FILE,
-            .restart_policy = RESTART_ON_FAILURE,
-            .restart_limit = 3,
-            .restart_delay_sec = 5,
-            .timeout_start_sec = 5,
-            .timeout_stop_sec = 5
-        };
-        for (size_t i = 0; i < sizeof(def_dhcp.name); i++) def_dhcp.name[i] = 0;
-        for (size_t i = 0; i < sizeof(def_dhcp.exec_path); i++) def_dhcp.exec_path[i] = 0;
-        for (size_t i = 0; i < sizeof(def_dhcp.ready_path); i++) def_dhcp.ready_path[i] = 0;
-        const char *name = "dhcpc";
-        for (size_t i = 0; name[i]; i++) def_dhcp.name[i] = name[i];
-        const char *path = "/sbin/dhcpc";
-        for (size_t i = 0; path[i]; i++) def_dhcp.exec_path[i] = path[i];
-        const char *ready = "/run/dhcpc.lease";
-        for (size_t i = 0; ready[i]; i++) def_dhcp.ready_path[i] = ready[i];
-        const char *arg0 = "-f";
-        for (size_t i = 0; arg0[i]; i++) def_dhcp.args[0][i] = arg0[i];
-        def_dhcp.argc = 1;
-        watchtower_table_add_service(&table, &def_dhcp);
-    }
-
-    static service_t ssh;
-    int r_ssh = watchtower_config_load_service(
-        "/etc/watchtower/sshd.service",
-        "/mnt/.fortress/watchtower/sshd.service",
-        "sshd", &ssh, err, sizeof(err));
-    if (r_ssh == 0) {
-        watchtower_table_add_service(&table, &ssh);
-    } else if (wt_file_exists("/sbin/sshd")) {
-        static service_t def_ssh = {
-            .order = 20,
-            .enabled = true,
-            .readiness_mode = READINESS_FILE,
-            .restart_policy = RESTART_ON_FAILURE,
-            .restart_limit = 3,
-            .restart_delay_sec = 5,
-            .timeout_start_sec = 5,
-            .timeout_stop_sec = 10
-        };
-        for (size_t i = 0; i < sizeof(def_ssh.name); i++) def_ssh.name[i] = 0;
-        for (size_t i = 0; i < sizeof(def_ssh.exec_path); i++) def_ssh.exec_path[i] = 0;
-        for (size_t i = 0; i < sizeof(def_ssh.ready_path); i++) def_ssh.ready_path[i] = 0;
-        const char *name = "sshd";
-        for (size_t i = 0; name[i]; i++) def_ssh.name[i] = name[i];
-        const char *path = "/sbin/sshd";
-        for (size_t i = 0; path[i]; i++) def_ssh.exec_path[i] = path[i];
-        const char *ready = "/run/watchtower/sshd.ready";
-        for (size_t i = 0; ready[i]; i++) def_ssh.ready_path[i] = ready[i];
-        const char *arg0 = "-D";
-        for (size_t i = 0; arg0[i]; i++) def_ssh.args[0][i] = arg0[i];
-        def_ssh.argc = 1;
-        watchtower_table_add_service(&table, &def_ssh);
-    }
-
-    static service_t crond_svc;
-    int r_crond = watchtower_config_load_service(
-        "/etc/watchtower/crond.service",
-        "/mnt/.fortress/watchtower/crond.service",
-        "crond", &crond_svc, err, sizeof(err));
-    if (r_crond == 0) {
-        watchtower_table_add_service(&table, &crond_svc);
-    } else if (wt_file_exists("/sbin/crond")) {
-        static service_t def_crond = {
-            .order = 30,
-            .enabled = true,
-            .readiness_mode = READINESS_NONE,
-            .restart_policy = RESTART_ON_FAILURE,
-            .restart_limit = 3,
-            .restart_delay_sec = 5,
-            .timeout_start_sec = 5,
-            .timeout_stop_sec = 2
-        };
-        for (size_t i = 0; i < sizeof(def_crond.name); i++) def_crond.name[i] = 0;
-        for (size_t i = 0; i < sizeof(def_crond.exec_path); i++) def_crond.exec_path[i] = 0;
-        for (size_t i = 0; i < sizeof(def_crond.ready_path); i++) def_crond.ready_path[i] = 0;
-        const char *name = "crond";
-        for (size_t i = 0; name[i]; i++) def_crond.name[i] = name[i];
-        const char *path = "/sbin/crond";
-        for (size_t i = 0; path[i]; i++) def_crond.exec_path[i] = path[i];
-        const char *arg0 = "-f";
-        for (size_t i = 0; arg0[i]; i++) def_crond.args[0][i] = arg0[i];
-        def_crond.argc = 1;
-        watchtower_table_add_service(&table, &def_crond);
-    }
+    /* Dynamically discover and register services with fail-closed configuration */
+    watchtower_discover_services(&table,
+                                 WATCHTOWER_INSTALLED_SERVICE_DIR,
+                                 WATCHTOWER_LIVE_SERVICE_DIR,
+                                 &ops);
 
     /* Initial boot start in Order sequence */
     uint64_t now = wt_monotonic_sec();
@@ -576,6 +616,9 @@ int watchtower_main(int argc, char **argv) {
     /* Main Supervisor Event Loop */
     while (!g_term_requested || !watchtower_all_stopped(&table)) {
         now = wt_monotonic_sec();
+
+        /* Check asynchronous compression status */
+        wt_check_compression(now);
 
         /* Drain service pipe buffers */
         wt_drain_pipes(&table);
@@ -640,6 +683,15 @@ int watchtower_main(int argc, char **argv) {
             (void)sys_call(SYS_CLOSE, (uintptr_t)table.services[i].pipe_fd, 0, 0, 0, 0, 0);
             table.services[i].pipe_fd = -1;
         }
+    }
+
+    /* Clean up any active compression child on exit */
+    if (wt_compress_pid > 0) {
+        (void)sys_call(SYS_KILL, (uintptr_t)wt_compress_pid, SIGKILL, 0, 0, 0, 0);
+        uint64_t st = 0;
+        (void)sys_call(SYS_WAITPID, (uintptr_t)wt_compress_pid, (uintptr_t)&st, 0, 0, 0, 0);
+        (void)sys_call(SYS_UNLINK, (uintptr_t)wt_compress_gz, 0, 0, 0, 0, 0);
+        wt_compress_pid = 0;
     }
 
     wt_log_event("[watchtower] All services stopped cleanly. Exiting.\n");

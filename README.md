@@ -93,7 +93,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 | **Network SMP (CPU-0 Handoff)**| **COMPLETE through Phase 4** | Cross-core control, UDP/DNS, TCP streams/listeners, and ordinary unpinned children. Bounded Dell physical acceptance; Phase 5 throughput redesign deferred. |
 | **SSH** | **COMPLETE through Phase 8** | BIOS/UEFI automated acceptance; laptop MobaXterm login, interactive commands, `top` and sudo user-confirmed. Physical lifecycle/entropy limits remain documented. |
 | **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, background lease renewal, gzip/gunzip; verification scope recorded in subsystem guides. |
-| **Watchtower Service Supervisor** | **IMPLEMENTED; ACCEPTANCE PENDING** | Phases 0–5, logging, boot integration and shutdown coordination; 36 host sanitizer checks pass. Full supervised lifecycle QEMU/physical acceptance remains separate. |
+| **Watchtower Service Supervisor** | **IMPLEMENTED; BOUNDED LIFECYCLE VERIFIED** | Phases 0–5; 36 host sanitizer checks and four BIOS/UEFI service/SSH/power scenarios pass. Dell shutdown/reboot user-confirmed; wider robustness remains open. [Evidence and limits](docs/roadmap/watchtower-lifecycle.md). |
 | **Crond & Logrotate** | **IMPLEMENTED; HOST VERIFIED** | Minimal interval scheduler and bounded log rotation; 14 crond and 9 logrotate host checks pass. Physical/service integration acceptance remains separate. |
 
 ### Recently Finished (2026-10-18)
@@ -103,13 +103,18 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Committed follow-ups:** Eight-character account-tool password minimum and one-Enter single-line bracketed paste. These two changes are not in the last flashed image and have not been retested.
 
 ### Current checkpoint: scripting and service tools
+
+Watchtower operations and developer service registration are documented in the
+[service guide](docs/subsystems/watchtower.md), with a
+[command quick reference](COMMANDS.md#service-management).
+
 Shell scripting through bounded source/return and until loops is integrated with
 Watchtower, crond and logrotate. Combined host sanitizer checks pass; the merged
 shell is checked across BIOS/UEFI at SMP=1/4 using disposable, disk-free fixtures.
 The supported shell subset and acceptance limits are recorded in
 [the scripting evidence](docs/roadmap/shell-scripting.md).
 
-Next: supervised service lifecycle acceptance. Rebuilt live media passed the
+Next: wider service robustness. Dell shutdown/reboot are user-confirmed; rebuilt live media passed the
 Dell console/SSH scripting smoke test on 2026-10-18. Functions, case,
 read and larger shell-language extensions remain separate work.
 

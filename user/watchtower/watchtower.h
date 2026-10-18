@@ -101,6 +101,8 @@ typedef struct {
     uint64_t (*monotonic_sec)(void);
     bool (*is_alive)(int64_t pid);
     int64_t (*read_pid_file)(const char *path);
+    int (*list_dir)(const char *path, char names[][64], uint32_t max_entries);
+    void (*log_stderr)(const char *msg);
 } watchtower_sys_ops_t;
 
 /* Core Service Table APIs */
@@ -109,6 +111,12 @@ int watchtower_table_add_service(watchtower_table_t *tbl, const service_t *svc);
 void watchtower_table_sort_by_order(watchtower_table_t *tbl);
 service_t *watchtower_find_service(watchtower_table_t *tbl, const char *name);
 service_t *watchtower_find_service_by_pid(watchtower_table_t *tbl, int64_t pid);
+
+/* Dynamic Service Discovery */
+int watchtower_discover_services(watchtower_table_t *tbl,
+                                 const char *installed_dir,
+                                 const char *live_dir,
+                                 const watchtower_sys_ops_t *ops);
 
 /* Service Lifecycle State Transitions */
 int watchtower_start_service(watchtower_table_t *tbl, size_t idx, uint64_t now_sec, const watchtower_sys_ops_t *ops);

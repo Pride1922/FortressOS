@@ -1,6 +1,13 @@
 # Watchtower Service Supervisor & Service Control CLI — Architectural Plan
 
-**Status:** PHASES 0–5 IMPLEMENTED (2026-10-18); host ASan/UBSan 36/36 PASS. Dell boot exposed user-stack overflow; corrected source and replacement image pass four BIOS/UEFI × SMP=1/4 boot/CLI smoke checks. Bounded Dell startup/control retest passes; full lifecycle acceptance remains pending. See the stack correction below.
+For operating commands and adding a service, read the
+[user/developer implementation guide](../subsystems/watchtower.md). This plan
+includes design intent that is not fully implemented: directory discovery,
+credential directives, supervisor recovery and control-mailbox guarantees must
+not be inferred from the design prose. The implementation guide lists current
+behavior and known gaps.
+
+**Status:** PHASES 0–5 IMPLEMENTED (2026-10-18); host ASan/UBSan 36/36 PASS. Stack-corrected media pass four BIOS/UEFI × SMP=1/4 boot/CLI checks and four real service/SSH/power lifecycle scenarios. Bounded Dell startup/control and shutdown/reboot are user-confirmed; wider robustness acceptance remains open. See [lifecycle evidence and limits](../roadmap/watchtower-lifecycle.md) and the stack correction below.
 **Date:** 2026-10-18  
 **Scope:** Service supervisor (`/sbin/watchtower`), control CLI (`/bin/service`), service configuration (`/etc/watchtower/`), process tracking, readiness verification, bounded recovery, logging, log rotation, and shutdown lifecycle.  
 **Target Services:** Initial: DHCP Client (`/sbin/dhcpc`) and SSH Daemon (`/sbin/sshd`). Future: Fortress Security Manager (`/sbin/fortressd`), Cron Daemon (`/sbin/crond`), System Logger (`/sbin/syslogd`).

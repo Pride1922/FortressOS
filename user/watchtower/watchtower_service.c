@@ -1,4 +1,5 @@
 #include "watchtower.h"
+#include "watchtower_config.h"
 
 #ifndef WIFEXITED
 #define WIFEXITED(s) (((s) & 0x7f) == 0)
@@ -385,3 +386,144 @@ const char *watchtower_state_name(service_state_t state) {
         default:                 return "unknown";
     }
 }
+
+static void wt_emit_stderr(const watchtower_sys_ops_t *ops, const char *msg) {
+    if (ops && ops->log_stderr && msg) {
+        ops->log_stderr(msg);
+    }
+}
+
+static void wt_emit_invalid_config(const watchtower_sys_ops_t *ops, const char *name) {
+    char buf[128];
+    const char *prefix = "[watchtower] invalid service config: ";
+    size_t pos = 0;
+    while (prefix[pos] && pos + 1 < sizeof(buf)) {
+        buf[pos] = prefix[pos];
+        pos++;
+    }
+    size_t i = 0;
+    if (name) {
+        while (name[i] && pos + 2 < sizeof(buf)) {
+            buf[pos++] = name[i++];
+        }
+    }
+    buf[pos++] = '\n';
+    buf[pos] = '\0';
+    wt_emit_stderr(ops, buf);
+}
+
+static void wt_join_path(char *dst, size_t cap, const char *dir, const char *file) {
+    if (!dst || cap == 0) return;
+    dst[0] = '\0';
+    size_t pos = 0;
+    if (dir) {
+        while (dir[pos] && pos + 1 < cap) {
+            dst[pos] = dir[pos];
+            pos++;
+        }
+    }
+    if (pos > 0 && dst[pos - 1] != '/' && pos + 1 < cap) {
+        dst[pos++] = '/';
+    }
+    if (file) {
+        size_t j = 0;
+        while (file[j] && pos + 1 < cap) {
+            dst[pos++] = file[j++];
+        }
+    }
+    dst[pos] = '\0';
+}
+
+static int wt_memcmp(const void *s1, const void *s2, size_t n) {
+    const uint8_t *p1 = (const uint8_t *)s1;
+    const uint8_t *p2 = (const uint8_t *)s2;
+    for (size_t i = 0; i < n; i++) {
+        if (p1[i] != p2[i]) return (int)p1[i] - (int)p2[i];
+    }
+    return 0;
+}
+
+int watchtower_discover_services(watchtower_table_t *tbl,
+                                 const char *installed_dir,
+                                 const char *live_dir,
+                                 const watchtower_sys_ops_t *ops) {
+    if (!tbl) return -1;
+
+    static char names[WATCHTOWER_MAX_SERVICES][64];
+    static service_t discovered_svc;
+    char err[256];
+
+    const char *dirs[2] = { installed_dir, live_dir };
+
+    for (int d = 0; d < 2; d++) {
+        const char *dir = dirs[d];
+        if (!dir || !ops || !ops->list_dir) continue;
+
+        for (size_t i = 0; i < WATCHTOWER_MAX_SERVICES; i++) {
+            for (size_t j = 0; j < 64; j++) names[i][j] = '\0';
+        }
+
+        int count = ops->list_dir(dir, names, WATCHTOWER_MAX_SERVICES);
+        if (count <= 0) continue;
+
+        int services_in_dir = 0;
+        for (int i = 0; i < count && i < (int)WATCHTOWER_MAX_SERVICES; i++) {
+            size_t len = 0;
+            while (names[i][len] != '\0' && len < 64) len++;
+            if (len <= 8) continue;
+            if (wt_memcmp(names[i] + len - 8, ".service", 8) != 0) continue;
+
+            services_in_dir++;
+
+            size_t name_len = len - 8;
+            if (name_len >= WATCHTOWER_MAX_NAME_LEN) {
+                wt_emit_invalid_config(ops, names[i]);
+                continue;
+            }
+
+            char svc_name[WATCHTOWER_MAX_NAME_LEN];
+            for (size_t k = 0; k < name_len; k++) svc_name[k] = names[i][k];
+            svc_name[name_len] = '\0';
+
+            char inst_path[WATCHTOWER_MAX_PATH_LEN];
+            char live_path[WATCHTOWER_MAX_PATH_LEN];
+            inst_path[0] = '\0';
+            live_path[0] = '\0';
+            if (installed_dir) {
+                wt_join_path(inst_path, sizeof(inst_path), installed_dir, names[i]);
+            }
+            if (live_dir) {
+                wt_join_path(live_path, sizeof(live_path), live_dir, names[i]);
+            }
+
+            for (size_t b = 0; b < sizeof(service_t); b++) {
+                ((uint8_t *)&discovered_svc)[b] = 0;
+            }
+
+            int rc = watchtower_config_load_service(
+                inst_path[0] ? inst_path : NULL,
+                live_path[0] ? live_path : NULL,
+                svc_name, &discovered_svc, err, sizeof(err));
+
+            if (rc == 0) {
+                watchtower_table_add_service(tbl, &discovered_svc);
+            } else {
+                wt_emit_invalid_config(ops, svc_name);
+            }
+        }
+
+        /* If we found and processed any .service files (valid or invalid) in installed_dir,
+         * installed_dir was active; do not fall back to live_dir. */
+        if (services_in_dir > 0) {
+            break;
+        }
+    }
+
+    if (tbl->count == 0) {
+        wt_emit_stderr(ops, "[watchtower] warning: no service configurations found\n");
+    }
+
+    watchtower_table_sort_by_order(tbl);
+    return (int)tbl->count;
+}
+

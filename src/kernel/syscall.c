@@ -1237,6 +1237,77 @@ static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
     return syscall_from_vfs_error(res);
 }
 
+static int64_t sys_list_dir(uintptr_t user_path, uintptr_t user_names, uint64_t max_entries) {
+    if (max_entries == 0) return 0;
+    if (max_entries > 16) max_entries = 16;
+
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    char raw_path[VFS_MAX_PATH];
+    int err = copy_user_string(active_pml4, user_path, raw_path, sizeof(raw_path));
+    if (err != SYSCALL_SUCCESS) {
+        return err;
+    }
+
+    tcb_t *curr = thread_current();
+    if (!curr) {
+        return SYSCALL_EBADF;
+    }
+
+    char kpath[VFS_MAX_PATH];
+    err = resolve_path(curr, raw_path, kpath, sizeof(kpath));
+    if (err != SYSCALL_SUCCESS) {
+        return err;
+    }
+
+    size_t out_bytes = max_entries * VFS_MAX_NAME; /* 64 bytes per entry */
+    if (!vmm_validate_user_range(active_pml4, user_names, out_bytes, true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    creds_t actor;
+    if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+
+    int open_err = 0;
+    file_t *file = vfs_open_creds(kpath, VFS_O_RDONLY, &actor, &open_err);
+    if (!file) {
+        return syscall_from_vfs_error(open_err);
+    }
+
+    if (file->node->type != VFS_DIRECTORY) {
+        vfs_close(file);
+        return SYSCALL_ENOTDIR;
+    }
+
+    uint64_t count = 0;
+    char (*names_buf)[VFS_MAX_NAME] = (char (*)[VFS_MAX_NAME])user_names;
+
+    while (count < max_entries) {
+        vfs_dirent_t dent;
+        int r = vfs_readdir_file(file, &dent);
+        if (r == 0) {
+            /* EOF */
+            break;
+        }
+        if (r < 0) {
+            vfs_close(file);
+            return syscall_from_vfs_error(r);
+        }
+        /* Filter out "." and ".." */
+        if ((dent.name[0] == '.' && dent.name[1] == '\0') ||
+            (dent.name[0] == '.' && dent.name[1] == '.' && dent.name[2] == '\0')) {
+            continue;
+        }
+        memset(names_buf[count], 0, VFS_MAX_NAME);
+        for (size_t i = 0; i < VFS_MAX_NAME - 1 && dent.name[i] != '\0'; i++) {
+            names_buf[count][i] = dent.name[i];
+        }
+        count++;
+    }
+
+    vfs_close(file);
+    return (int64_t)count;
+}
+
 static int64_t sys_reboot(uint64_t cmd) {
     if (cmd!=REBOOT_CMD_RESTART && cmd!=REBOOT_CMD_POWEROFF) return SYSCALL_EINVAL;
     creds_t actor;
@@ -1672,6 +1743,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_READDIR:
             result = sys_readdir((int)frame->rdi, frame->rsi);
+            break;
+
+        case SYS_LIST_DIR:
+            result = sys_list_dir(frame->rdi, frame->rsi, frame->rdx);
             break;
 
         case SYS_REBOOT:

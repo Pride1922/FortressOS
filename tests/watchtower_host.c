@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <unistd.h>
 #include "../user/watchtower/watchtower.h"
 
 /* Mock System State */
@@ -15,6 +16,12 @@ typedef struct {
 } mock_proc_t;
 
 typedef struct {
+    char path[128];
+    char entries[32][64];
+    int count;
+} mock_dir_t;
+
+typedef struct {
     uint64_t current_time_sec;
     mock_proc_t procs[MOCK_MAX_PIDS];
     int proc_count;
@@ -22,6 +29,11 @@ typedef struct {
     char mock_files[16][128];
     int file_count;
     int64_t mock_pid_file_val;
+    mock_dir_t dirs[4];
+    int dir_count;
+    char last_stderr[256];
+    int invalid_config_count;
+    int empty_dir_warning_count;
 } mock_sys_t;
 
 static mock_sys_t g_mock;
@@ -96,13 +108,66 @@ static int64_t mock_read_pid_file(const char *path) {
     return g_mock.mock_pid_file_val;
 }
 
+static void mock_add_dir(const char *path) {
+    if (g_mock.dir_count < 4) {
+        mock_dir_t *d = &g_mock.dirs[g_mock.dir_count++];
+        host_str_copy(d->path, path, sizeof(d->path));
+        d->count = 0;
+    }
+}
+
+static void mock_add_dir_entry(const char *dir_path, const char *entry_name) {
+    for (int i = 0; i < g_mock.dir_count; i++) {
+        if (strcmp(g_mock.dirs[i].path, dir_path) == 0) {
+            mock_dir_t *d = &g_mock.dirs[i];
+            if (d->count < 32) {
+                host_str_copy(d->entries[d->count++], entry_name, 64);
+            }
+            return;
+        }
+    }
+    if (g_mock.dir_count < 4) {
+        mock_dir_t *d = &g_mock.dirs[g_mock.dir_count++];
+        host_str_copy(d->path, dir_path, sizeof(d->path));
+        host_str_copy(d->entries[d->count++], entry_name, 64);
+    }
+}
+
+static int mock_list_dir(const char *path, char names[][64], uint32_t max_entries) {
+    for (int i = 0; i < g_mock.dir_count; i++) {
+        if (strcmp(g_mock.dirs[i].path, path) == 0) {
+            mock_dir_t *d = &g_mock.dirs[i];
+            uint32_t to_copy = (uint32_t)d->count;
+            if (to_copy > max_entries) to_copy = max_entries;
+            for (uint32_t j = 0; j < to_copy; j++) {
+                host_str_copy(names[j], d->entries[j], 64);
+            }
+            return (int)to_copy;
+        }
+    }
+    return -1;
+}
+
+static void mock_log_stderr(const char *msg) {
+    if (!msg) return;
+    host_str_copy(g_mock.last_stderr, msg, sizeof(g_mock.last_stderr));
+    if (strstr(msg, "invalid service config")) {
+        g_mock.invalid_config_count++;
+    }
+    if (strstr(msg, "no service configurations found")) {
+        g_mock.empty_dir_warning_count++;
+    }
+}
+
 static const watchtower_sys_ops_t g_mock_ops = {
     .spawn = mock_spawn,
     .kill = mock_kill,
     .file_exists = mock_file_exists,
     .monotonic_sec = mock_monotonic_sec,
     .is_alive = mock_is_alive,
-    .read_pid_file = mock_read_pid_file
+    .read_pid_file = mock_read_pid_file,
+    .list_dir = mock_list_dir,
+    .log_stderr = mock_log_stderr
 };
 
 /* --- TESTS --- */
@@ -629,6 +694,200 @@ static void test_type_forking_lifecycle(void) {
     printf("PASS: test_type_forking_lifecycle\n");
 }
 
+static void write_temp_file(const char *dir, const char *name, const char *content) {
+    char full[256];
+    snprintf(full, sizeof(full), "%s/%s", dir, name);
+    FILE *f = fopen(full, "w");
+    assert(f != NULL);
+    fputs(content, f);
+    fclose(f);
+}
+
+static void test_dynamic_discovery_basic(void) {
+    printf("[TEST] test_dynamic_discovery_basic...\n");
+    mock_reset();
+
+    char temp_dir[] = "/tmp/wt_test_basic_XXXXXX";
+    assert(mkdtemp(temp_dir) != NULL);
+
+    write_temp_file(temp_dir, "dhcpc.service",
+        "Exec=/sbin/dhcpc -f\nOrder=10\nReadiness=file:/run/dhcpc.lease\n");
+    write_temp_file(temp_dir, "sshd.service",
+        "Exec=/sbin/sshd -D\nOrder=20\nReadiness=file:/run/watchtower/sshd.ready\n");
+    write_temp_file(temp_dir, "crond.service",
+        "Exec=/sbin/crond -f\nOrder=30\n");
+    write_temp_file(temp_dir, "ntpd.service",
+        "Exec=/sbin/ntpd -n\nOrder=15\n");
+    write_temp_file(temp_dir, "notes.txt",
+        "This is not a service file\n");
+
+    mock_add_dir_entry(temp_dir, "notes.txt");
+    mock_add_dir_entry(temp_dir, "crond.service");
+    mock_add_dir_entry(temp_dir, "dhcpc.service");
+    mock_add_dir_entry(temp_dir, "sshd.service");
+    mock_add_dir_entry(temp_dir, "ntpd.service");
+
+    watchtower_table_t tbl;
+    watchtower_table_init(&tbl);
+    int rc = watchtower_discover_services(&tbl, temp_dir, NULL, &g_mock_ops);
+    assert(rc == 4);
+    assert(tbl.count == 4);
+
+    /* Verify sorted order: 10, 15, 20, 30 */
+    assert(strcmp(tbl.services[0].name, "dhcpc") == 0);
+    assert(tbl.services[0].order == 10);
+    assert(strcmp(tbl.services[1].name, "ntpd") == 0);
+    assert(tbl.services[1].order == 15);
+    assert(strcmp(tbl.services[2].name, "sshd") == 0);
+    assert(tbl.services[2].order == 20);
+    assert(strcmp(tbl.services[3].name, "crond") == 0);
+    assert(tbl.services[3].order == 30);
+
+    /* Cleanup */
+    char full[256];
+    const char *files[] = {"dhcpc.service", "sshd.service", "crond.service", "ntpd.service", "notes.txt"};
+    for (size_t i = 0; i < 5; i++) {
+        snprintf(full, sizeof(full), "%s/%s", temp_dir, files[i]);
+        unlink(full);
+    }
+    rmdir(temp_dir);
+
+    printf("PASS: test_dynamic_discovery_basic\n");
+}
+
+static void test_malformed_service_skip_fail_closed(void) {
+    printf("[TEST] test_malformed_service_skip_fail_closed...\n");
+    mock_reset();
+
+    char temp_dir[] = "/tmp/wt_test_mal_XXXXXX";
+    assert(mkdtemp(temp_dir) != NULL);
+
+    write_temp_file(temp_dir, "dhcpc.service",
+        "Exec=/sbin/dhcpc -f\nOrder=10\n");
+    /* Corrupted: missing Exec */
+    write_temp_file(temp_dir, "sshd.service",
+        "Order=20\nRestart=on-failure\n");
+
+    mock_add_dir_entry(temp_dir, "dhcpc.service");
+    mock_add_dir_entry(temp_dir, "sshd.service");
+
+    watchtower_table_t tbl;
+    watchtower_table_init(&tbl);
+    int rc = watchtower_discover_services(&tbl, temp_dir, NULL, &g_mock_ops);
+
+    /* sshd must be skipped (fail-closed) */
+    assert(rc == 1);
+    assert(tbl.count == 1);
+    assert(strcmp(tbl.services[0].name, "dhcpc") == 0);
+    assert(watchtower_find_service(&tbl, "sshd") == NULL);
+    assert(g_mock.invalid_config_count == 1);
+    assert(strstr(g_mock.last_stderr, "[watchtower] invalid service config: sshd") != NULL);
+
+    char full[256];
+    snprintf(full, sizeof(full), "%s/dhcpc.service", temp_dir);
+    unlink(full);
+    snprintf(full, sizeof(full), "%s/sshd.service", temp_dir);
+    unlink(full);
+    rmdir(temp_dir);
+
+    printf("PASS: test_malformed_service_skip_fail_closed\n");
+}
+
+static void test_missing_and_empty_directory(void) {
+    printf("[TEST] test_missing_and_empty_directory...\n");
+    mock_reset();
+
+    char temp_dir[] = "/tmp/wt_test_empty_XXXXXX";
+    assert(mkdtemp(temp_dir) != NULL);
+
+    mock_add_dir(temp_dir); /* 0 entries */
+
+    watchtower_table_t tbl;
+    watchtower_table_init(&tbl);
+    int rc = watchtower_discover_services(&tbl, temp_dir, NULL, &g_mock_ops);
+    assert(rc == 0);
+    assert(tbl.count == 0);
+    assert(g_mock.empty_dir_warning_count == 1);
+    assert(strstr(g_mock.last_stderr, "[watchtower] warning: no service configurations found") != NULL);
+
+    rmdir(temp_dir);
+
+    /* Also verify missing directory handling */
+    mock_reset();
+    watchtower_table_init(&tbl);
+    rc = watchtower_discover_services(&tbl, "/nonexistent/dir", NULL, &g_mock_ops);
+    assert(rc == 0);
+    assert(tbl.count == 0);
+    assert(g_mock.empty_dir_warning_count == 1);
+
+    printf("PASS: test_missing_and_empty_directory\n");
+}
+
+static void test_bounded_16_services_limit(void) {
+    printf("[TEST] test_bounded_16_services_limit...\n");
+    mock_reset();
+
+    char temp_dir[] = "/tmp/wt_test_bound_XXXXXX";
+    assert(mkdtemp(temp_dir) != NULL);
+
+    char sname[32];
+    for (int i = 0; i < 18; i++) {
+        snprintf(sname, sizeof(sname), "svc%02d.service", i + 1);
+        char content[64];
+        snprintf(content, sizeof(content), "Exec=/bin/echo %d\nOrder=%d\n", i + 1, i + 1);
+        write_temp_file(temp_dir, sname, content);
+        mock_add_dir_entry(temp_dir, sname);
+    }
+
+    watchtower_table_t tbl;
+    watchtower_table_init(&tbl);
+    int rc = watchtower_discover_services(&tbl, temp_dir, NULL, &g_mock_ops);
+    assert(rc == 16);
+    assert(tbl.count == 16);
+
+    char full[256];
+    for (int i = 0; i < 18; i++) {
+        snprintf(sname, sizeof(sname), "svc%02d.service", i + 1);
+        snprintf(full, sizeof(full), "%s/%s", temp_dir, sname);
+        unlink(full);
+    }
+    rmdir(temp_dir);
+
+    printf("PASS: test_bounded_16_services_limit\n");
+}
+
+static void test_fallback_to_live_media(void) {
+    printf("[TEST] test_fallback_to_live_media...\n");
+    mock_reset();
+
+    char temp_dir[] = "/tmp/wt_test_live_XXXXXX";
+    assert(mkdtemp(temp_dir) != NULL);
+
+    write_temp_file(temp_dir, "dhcpc.service", "Exec=/sbin/dhcpc -f\nOrder=10\n");
+    write_temp_file(temp_dir, "sshd.service", "Exec=/sbin/sshd -D\nOrder=20\n");
+
+    mock_add_dir_entry(temp_dir, "dhcpc.service");
+    mock_add_dir_entry(temp_dir, "sshd.service");
+
+    watchtower_table_t tbl;
+    watchtower_table_init(&tbl);
+    /* Installed dir is nonexistent, live dir is temp_dir */
+    int rc = watchtower_discover_services(&tbl, "/nonexistent/etc/watchtower", temp_dir, &g_mock_ops);
+    assert(rc == 2);
+    assert(tbl.count == 2);
+    assert(watchtower_find_service(&tbl, "dhcpc") != NULL);
+    assert(watchtower_find_service(&tbl, "sshd") != NULL);
+
+    char full[256];
+    snprintf(full, sizeof(full), "%s/dhcpc.service", temp_dir);
+    unlink(full);
+    snprintf(full, sizeof(full), "%s/sshd.service", temp_dir);
+    unlink(full);
+    rmdir(temp_dir);
+
+    printf("PASS: test_fallback_to_live_media\n");
+}
+
 int main(void) {
     printf("===================================================\n");
     printf("Watchtower Service Supervisor Test Suite (ASan)\n");
@@ -652,6 +911,13 @@ int main(void) {
     /* Type=forking tests */
     test_type_forking_lifecycle();
 
-    printf("\nALL 13 WATCHTOWER SERVICE & RECOVERY TESTS PASSED!\n");
+    /* Dynamic Service Discovery & Fail-Closed Registration tests */
+    test_dynamic_discovery_basic();
+    test_malformed_service_skip_fail_closed();
+    test_missing_and_empty_directory();
+    test_bounded_16_services_limit();
+    test_fallback_to_live_media();
+
+    printf("\nALL 18 WATCHTOWER SERVICE, DISCOVERY & RECOVERY TESTS PASSED!\n");
     return 0;
 }
