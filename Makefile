@@ -210,9 +210,10 @@ test-root-phase2-host:
 	@python3 scripts/test_root_phase2.py --host-only
 test-root-phase2:
 	@python3 scripts/test_root_phase2.py
-.PHONY: all clean distclean run run-bios run-img run-img-bios run-img-usb debug limine-setup ovmf-setup iso img nvme-disk nvme-gpt-disk nvme-raw-disk
+.PHONY: all live clean distclean run run-bios run-img run-img-bios run-img-usb debug limine-setup ovmf-setup iso img nvme-disk nvme-gpt-disk nvme-raw-disk
 
 all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
+live: all
 include src/lib/crypto/crypto.mk
 
 # C_SRCS/OBJS above automatically include src/fs/pipe.c.
@@ -1971,8 +1972,9 @@ test-root-phase1-host: $(KERNEL_ELF) $(INITRAMFS_TAR)
 test-root-phase1: $(KERNEL_ELF) $(INITRAMFS_TAR)
 	@python3 scripts/test_root_phase1.py
 
-.PHONY: installer-image
-# Separate workbench artifacts; preserve normal live media.
+.PHONY: installer-image installer
+installer: installer-image
+# Full installer image (bin/fortress-installer.img, bin/fortress-installer.iso)
 installer-image: bin/fortress.elf bin/initramfs.tar build/tool-install.elf limine-setup
 	@python3 scripts/create_installer_media.py
 

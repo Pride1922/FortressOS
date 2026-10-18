@@ -142,11 +142,15 @@ cd FortressOS
 make
 ```
 
-The build produces:
-- `bin/fortress.elf` — The kernel binary
-- `bin/initramfs.tar` — Initial RAM filesystem containing userland tools
-- `bin/fortress.iso` — Bootable hybrid ISO (UEFI + BIOS)
-- `bin/fortress.img` — Bootable raw GPT disk image
+The build system produces two primary deliverables:
+1. **Live USB Media** (`bin/fortress.img` raw disk image and `bin/fortress.iso`):
+   ```bash
+   make live        # or simply `make`
+   ```
+2. **Full Installer Media** (`bin/fortress-installer.img` and `bin/fortress-installer.iso`):
+   ```bash
+   make installer   # universal installer with NVMe disk inventory and account setup
+   ```
 
 ---
 
@@ -170,10 +174,14 @@ gdb bin/fortress.elf -ex "target remote :1234" -ex "break _start" -ex "continue"
 
 ### Flashing to a Physical USB Drive
 
-You can flash the raw disk image directly to a physical USB flash drive to boot on bare metal:
+You can flash either the Live USB image (`bin/fortress.img`) or Full Installer image (`bin/fortress-installer.img`) directly to a physical USB flash drive (using Rufus on Windows or dd on Linux) to boot on bare metal:
 
 ```bash
+# Flash Live USB:
 sudo dd if=bin/fortress.img of=/dev/sdX bs=4M status=progress conv=fdatasync
+
+# Flash Full Installer:
+sudo dd if=bin/fortress-installer.img of=/dev/sdX bs=4M status=progress conv=fdatasync
 ```
 
 > [!WARNING]

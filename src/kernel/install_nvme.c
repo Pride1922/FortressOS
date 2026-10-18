@@ -195,7 +195,7 @@ bool install_nvme_physical_boot(const boot_info_t *info) {
     return physical_boot_expected(info,install_physical_digest);
 }
 #endif
-#ifdef INSTALLER_MULTI
+#if defined(INSTALLER_MULTI) || (!defined(INSTALLER_PHYSICAL) && !defined(TEST_INSTALLER_INSPECT))
 static install_identity_v1_t multi_ids[8],multi_raw[8];
 static unsigned multi_count,multi_selected;
 static uint8_t multi_summary[8][32];

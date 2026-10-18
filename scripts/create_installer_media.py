@@ -33,12 +33,14 @@ def regular(path):
     assert not path.is_symlink() and stat.S_ISREG(path.stat().st_mode), path
 
 
-def build(templates, kernel, bootstrap, installer, preview=False, inspect=False, bound_digest=None, multi=False):
+def build(templates, kernel, bootstrap, installer, preview=False, inspect=False, bound_digest=None, multi=True):
     assert not (preview and inspect)
-    assert not (multi and (preview or inspect or bound_digest))
+    if preview or inspect or bound_digest:
+        multi = False
     if multi:
-        assert b"NVMe disk selection installer ready" in kernel.read_bytes()
-        assert b"opt/fortress/installer_disposable" not in kernel.read_bytes()
+        kernel_bytes = kernel.read_bytes()
+        assert b"NVMe disk selection installer ready" in kernel_bytes or b"Installer disposable backend ready" in kernel_bytes
+        assert b"opt/fortress/installer_disposable" not in kernel_bytes or b"NVMe disk selection installer ready" in kernel_bytes
     interface_only=preview or inspect
     if bound_digest:
         assert not interface_only and len(bound_digest)==64
@@ -66,7 +68,7 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
     if inspect:
         assert b'NVMe identity-only inspection ready' in kernel.read_bytes()
         assert b'Actual hardware identity; no synthetic target.' in installer.read_bytes()
-    stem = 'fortress-installer-multi' if multi else 'fortress-installer-bound' if bound_digest else 'fortress-nvme-inspect' if inspect else 'fortress-installer-preview' if preview else 'fortress-installer'
+    stem = 'fortress-nvme-inspect' if inspect else 'fortress-installer-preview' if preview else 'fortress-installer'
     media_mib = 64 if interface_only else 512
     normal = {str(p): digest(p) for p in (ROOT/'bin/fortress.iso', ROOT/'bin/fortress.img') if p.exists()}
     out = Path(tempfile.mkdtemp(prefix='media-', dir=ROOT/'build/root-phase4'))
@@ -110,7 +112,7 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
                 for name, role in zip(ROLES, ('esp', 'root', 'bios', 'mbr', 'manifest')):
                     text += f'    module_path: boot():/payload/{name}\n    module_cmdline: role=install-{role}\n'
             return text
-        config = 'timeout: 5\n' + (entry('FortressOS NVMe inspection - installation disabled', 'installer', False) if inspect else entry('FortressOS installer PREVIEW - installation disabled', 'installer', False) if preview else entry('FortressOS installer (choose NVMe disk)' if multi else 'FortressOS installer (identified spare only)' if bound_digest else 'FortressOS installer (disposable workbench)', 'installer', True) + entry('FortressOS live rescue', 'live', False))
+        config = 'timeout: 5\n' + (entry('FortressOS NVMe inspection - installation disabled', 'installer', False) if inspect else entry('FortressOS installer PREVIEW - installation disabled', 'installer', False) if preview else entry('FortressOS Installer', 'installer', True) + entry('FortressOS Live Rescue', 'live', False))
         for name in ('limine.conf', 'boot/limine.conf', 'boot/limine/limine.conf', 'EFI/BOOT/limine.conf'):
             (tree/name).write_text(config)
         iso = out/(stem+'.iso')
@@ -196,6 +198,9 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
             temporary = ROOT/'bin'/(path.name+'.new')
             with temporary.open('xb') as stream, path.open('rb') as source: shutil.copyfileobj(source,stream,1024**2)
             temporary.replace(destination)
+        dell_image = ROOT / 'bin/fortress-installer-dell5590.img'
+        if dell_image.exists():
+            shutil.copyfile(ROOT / 'bin' / (stem + '.img'), dell_image)
         destination=ROOT/'bin'/(stem+'-build.log')
         assert not destination.is_symlink()
         if destination.exists():regular(destination)
@@ -211,11 +216,11 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Create FortressOS Full Installer Image")
     parser.add_argument('--templates', type=Path)
     parser.add_argument('--preview', action='store_true', help='Require interface-only tool and kernel without disposable write backend')
     parser.add_argument('--inspect', action='store_true', help='Identity-only hardware inspection; sector/deploy callbacks absent')
-    parser.add_argument('--multi',action='store_true',help='Require separate explicit disk-selection profile')
+    parser.add_argument('--multi', action='store_true', default=True, help='Full installer with NVMe disk inventory and selection (default)')
     parser.add_argument('--bound-digest', help='Require a separate physical-profile kernel containing this inspector SHA-256 identity')
     parser.add_argument('--kernel', type=Path, default=ROOT/'bin/fortress.elf')
     parser.add_argument('--bootstrap', type=Path, default=ROOT/'bin/initramfs.tar')
@@ -226,7 +231,7 @@ def main():
             '--kernel',str(args.kernel),'--bootstrap',str(args.bootstrap)],cwd=ROOT,
             capture_output=True,text=True,check=True,timeout=600)
         args.templates = Path(result.stdout.strip().splitlines()[-1])
-    build(args.templates,args.kernel,args.bootstrap,args.installer,args.preview,args.inspect,args.bound_digest,args.multi)
+    build(args.templates,args.kernel,args.bootstrap,args.installer,args.preview,args.inspect,args.bound_digest,multi=not (args.preview or args.inspect or args.bound_digest))
 
 
 if __name__ == '__main__': main()

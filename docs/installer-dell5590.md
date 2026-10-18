@@ -13,7 +13,7 @@ The image accepts only inspector digest
 1. Keep the spare fitted in the Dell and the original OS drive removed. Connect
    the Dell to mains power.
 2. On Windows, open Rufus. Select the USB stick under **Device** and select
-   `C:\Sources\FortressOS\bin\fortress-installer-dell5590.img` under **SELECT**.
+   `C:\Sources\FortressOS\bin\fortress-installer.img` under **SELECT**.
    If the picker hides it, change the file filter to show all files.
 3. Click **START** and allow Rufus to overwrite that USB stick. This is a raw
    `.img`, which Rufus writes in DD mode. Preserve its partition table; do not

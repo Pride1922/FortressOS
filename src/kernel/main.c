@@ -6651,7 +6651,7 @@ pf_boot_guard_done:
         console_puts(install_nvme_physical_boot(&boot_info) ? "Drive-bound physical installer ready\n" : "Bound installer target unavailable\n");
     }
 #endif
-#ifdef INSTALLER_MULTI
+#if defined(INSTALLER_MULTI) || (!defined(INSTALLER_PHYSICAL) && !defined(TEST_INSTALLER_INSPECT) && !defined(TEST_INSTALLER))
     if (g_installer_boot) {
         extern bool install_nvme_multi_boot(const boot_info_t *);
         extern void install_log_boot_usb(const boot_info_t *);
