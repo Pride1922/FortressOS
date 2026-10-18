@@ -13,10 +13,21 @@ static const uint8_t *pending;
 static size_t pending_len;
 static unsigned reads;
 static long empty_result;
+static sshbuf_t sent_wire;
+static size_t send_limit;
+static bool fail_send;
+static long send_failure;
 
 static long socket_syscall(long nr, uintptr_t fd, uintptr_t buf, uintptr_t cap,
                             uintptr_t d, uintptr_t e, uintptr_t f) {
     (void)d; (void)e; (void)f;
+    if (nr == SYS_SEND) {
+        assert(fd == 7);
+        if (fail_send) return send_failure;
+        size_t n = send_limit && send_limit < cap ? send_limit : cap;
+        assert(sshbuf_put_raw(&sent_wire, (const void *)buf, n) == 0);
+        return (long)n;
+    }
     assert(nr == SYS_RECV && fd == 7);
     reads++;
     if (!pending_len) return empty_result;
@@ -69,7 +80,44 @@ static void test_transition(size_t prefix, const sshbuf_t *wire,
     ssh_transport_cleanup(&server);
 }
 
+static void test_large_channel_reply(size_t limit) {
+    static ssh_transport_t sender, receiver;
+    static uint8_t data[4096];
+    uint8_t key[64];
+    memset(data, 'D', sizeof(data));memset(key, 0x6b, sizeof(key));
+    assert(ssh_transport_init(&sender) == 0);
+    assert(ssh_transport_init(&receiver) == 0);
+    ssh_cipher_init(&sender.out_cipher, key);
+    ssh_cipher_init(&receiver.in_cipher, key);
+    sshbuf_t reply;
+    assert(sshbuf_init(&reply, 512, 16384) == 0);
+    assert(sshbuf_init(&sent_wire, 512, 16384) == 0);
+    assert(sshbuf_put_u8(&reply, SSH_MSG_CHANNEL_DATA) == 0);
+    assert(sshbuf_put_u32(&reply, 0) == 0);
+    assert(sshbuf_put_string(&reply, data, sizeof(data)) == 0);
+    send_limit=limit;
+    assert(send_channel_replies(&sender, 7, &reply) == 0);
+    assert(ssh_transport_feed_input(&receiver, sshbuf_ptr(&sent_wire), sshbuf_len(&sent_wire)) == 0);
+    uint8_t type;const uint8_t *payload;size_t len;
+    assert(ssh_transport_get_packet(&receiver, &type, &payload, &len) == 0);
+    assert(type == SSH_MSG_CHANNEL_DATA && len == sizeof(data)+9);
+    assert(memcmp(payload+9, data, sizeof(data)) == 0);
+    assert(sshbuf_len(&reply) == 0);
+    for (unsigned failure=0;failure<2;failure++) {
+        assert(sshbuf_put_u8(&reply, SSH_MSG_CHANNEL_EOF) == 0);
+        assert(sshbuf_put_u32(&reply, 0) == 0);
+        fail_send=true;send_failure=failure ? -1 : 0;
+        assert(send_channel_replies(&sender, 7, &reply) == SSH_ERR_DISCONNECT);
+        fail_send=false;sshbuf_reset(&reply);
+    }
+    sshbuf_free(&reply);sshbuf_free(&sent_wire);
+    ssh_transport_cleanup(&sender);ssh_transport_cleanup(&receiver);
+}
+
 int main(void) {
+    test_large_channel_reply(0);
+    test_large_channel_reply(137);
+    puts("PASS: 4096-byte encrypted channel reply, short sends, zero progress and socket failure");
     static ssh_transport_t client, server;
     uint8_t key[64];
     memset(key, 0x5a, sizeof(key));

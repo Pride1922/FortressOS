@@ -14,8 +14,8 @@ typedef struct {
     uint32_t mode;
     uint32_t cols; /* serial/plain configured width, 20..512; 0 selects 80 */
     uint32_t rows;
-    uint64_t dropped;
-    uint64_t generation; /* kernel output interrupted terminal display */
+    uint64_t dropped; /* physical input drops; PTYs use backpressure and return 0 */
+    uint64_t generation; /* physical display interruptions; currently 0 for PTYs */
 } terminal_info_t;
 _Static_assert(sizeof(terminal_info_t) == 32, "terminal ABI size");
 /* Shared input settings, separate from per-process output routing above.

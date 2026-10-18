@@ -247,6 +247,19 @@ static int64_t sys_termctl(uint64_t op, uintptr_t ptr, size_t size) {
         t->terminal_mode = info->mode;
         t->terminal_cols = info->cols;
     }
+    /* Match /dev/tty's PTY selection. Console redraw/drop counters belong to
+     * the physical endpoint: exposing them here makes local typing redraw
+     * every SSH prompt. PTY input is backpressured, not dropped, and currently
+     * has no asynchronous display-generation counter. */
+    for (int fd = 0; fd < MAX_PROCESS_FDS; fd++) {
+        file_t *file = fd_get(t, fd);
+        if (!file || !file->node || !is_pty_slave(file->node)) continue;
+        uint16_t pty_cols, pty_rows;
+        int64_t rc = pty_get_winsize(file->node, &pty_cols, &pty_rows);
+        if (rc != 0) return rc;
+        *info = (terminal_info_t){1, t->terminal_mode, pty_cols, pty_rows, 0, 0};
+        return 0;
+    }
     uint64_t cols = 80, rows = 25;
     if (console_is_initialized()) console_get_dimensions(&cols, &rows);
     if (t->terminal_mode != TERM_LOCAL && serial_is_available()) {

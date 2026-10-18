@@ -6,6 +6,11 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+SSH prompt editing suppresses PTY echo while the editor renders input, then
+restores the terminal settings before executing commands. Bracketed paste
+preserves command newlines, displays them as `\n` for review, and retains the
+two-Enter confirmation. See [SSH paste/echo evidence](../roadmap/ssh-paste-echo.md).
+
 2026-10-13 installer follow-up: the interactive prompt now displays the effective
 account, persistent computer name and current directory, for example
 `fabio@dell-5590:/home/fabio$ `. Root uses `#`. Invalid/missing hostnames fall

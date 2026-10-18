@@ -38,6 +38,7 @@ ISO = REPO / "bin" / "fortress.iso"
 NVME_SRC = REPO / "build" / "nvme_gpt.img"
 
 TEST_PASSWORD = "ssh-acceptance-pass"
+SSH_BULK_CONTENT = b"SSH_BULK_0123456789abcdef\n" * 4096
 
 
 def find_free_port():
@@ -63,6 +64,7 @@ def create_nvme_fixture(dest_img: Path, pubkey_line: str):
         (root / "nested").mkdir()
         (root / "nested" / "note.txt").write_text("Nested ext2 directory works.\n")
         (root / "large.bin").write_bytes(bytes((i * 17 + 3) & 255 for i in range(400000)))
+        (root / "ssh-output.txt").write_bytes(SSH_BULK_CONTENT)
         with (root / "sparse.bin").open("wb") as sparse:
             sparse.seek(20000)
             sparse.write(b"END")
@@ -187,6 +189,113 @@ def run_ssh_client_cmd(port, key_file, user, command, timeout=15):
         err = e.stderr if e.stderr else ""
         if isinstance(err, bytes): err = err.decode(errors="replace")
         return -1, "", f"TIMEOUT: {err}"
+
+
+def test_ssh_editor(port, key_file, known_hosts, console_cmd):
+    """Real remote PTY: bracketed paste, echo ownership and nested shells."""
+    client_errors = tempfile.TemporaryFile()
+    client = subprocess.Popen([
+        "ssh", "-vvv", "-tt", "-o", "StrictHostKeyChecking=yes",
+        "-o", f"UserKnownHostsFile={known_hosts}", "-o", "BatchMode=yes",
+        "-i", str(key_file), "-p", str(port), "operator@127.0.0.1"
+    ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=client_errors)
+
+    def send(data):
+        client.stdin.write(data)
+        client.stdin.flush()
+
+    def read_until(predicate, timeout=15):
+        data = b""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([client.stdout], [], [], .1)
+            if ready:
+                chunk = os.read(client.stdout.fileno(), 65536)
+                assert chunk, f"SSH editor closed unexpectedly: {data!r}"
+                data += chunk
+            if predicate(data):
+                # Include the tail of this redraw, without consuming later input.
+                while select.select([client.stdout], [], [], .2)[0]:
+                    chunk = os.read(client.stdout.fileno(), 65536)
+                    if not chunk: break
+                    data += chunk
+                return data
+        client_errors.seek(0)
+        diagnostics = client_errors.read()[-5000:].decode(errors="replace")
+        raise AssertionError(f"SSH editor timeout after {len(data)} bytes: {data[-2000:]!r}\n{diagnostics}")
+
+    def prompt(data):
+        clean = re.sub(rb"\x1b\[[0-9;?]*[ -/]*[@-~]", b"", data).replace(b"\r", b"")
+        return clean.endswith(b"$ ")
+
+    def paste_check():
+        send(b"\x1b[200~echo PASTE_ONE\r\necho PASTE_TWO\x1b[201~")
+        review = read_until(lambda b: b"echo PASTE_ONE\\necho PASTE_TWO" in b)
+        assert b"[paste: Enter twice]" in review, review
+        assert b"[200~" not in review and b"[201~" not in review, review
+        assert b"\r\nPASTE_ONE\r\n" not in review, review
+        send(b"\r")
+        first_enter = read_until(lambda b: b"echo PASTE_ONE\\necho PASTE_TWO" in b)
+        assert b"\r\nPASTE_ONE\r\n" not in first_enter, first_enter
+        send(b"\r")
+        result = read_until(prompt)
+        assert b"\r\nPASTE_ONE\r\nPASTE_TWO\r\n" in result, result
+        assert b"\r\n\r\nPASTE_ONE" not in result, result
+        assert b"unexpected operand" not in result, result
+
+    try:
+        read_until(prompt)
+        # Console redraw notifications must never become SSH newlines. Check
+        # both an idle prompt and an unsubmitted draft, using the real UART shell.
+        for draft in (b"", b"echo SSH_DRAFT_INTACT"):
+            if draft:
+                send(draft)
+                read_until(lambda b: draft in b)
+            console_cmd("echo LOCAL_CONSOLE_ONLY")
+            ready, _, _ = select.select([client.stdout], [], [], 1.0)
+            unexpected = os.read(client.stdout.fileno(), 65536) if ready else b""
+            assert not unexpected, f"Local console activity redrew the SSH prompt: {unexpected!r}"
+            if draft:
+                send(b"\r")
+                result = read_until(prompt)
+                assert b"\r\nSSH_DRAFT_INTACT\r\n" in result, result
+        print("  [PASS] Local console output leaves idle SSH prompt and unsubmitted draft untouched.", flush=True)
+        paste_check()
+        send(b"sudo /bin/shell\r")
+        read_until(lambda b: b"sudo password: " in b)
+        wrong_password = b"wrong-echo-probe-password"
+        send(wrong_password + b"\r")
+        failed_auth = read_until(prompt)
+        assert wrong_password not in failed_auth, "Failed sudo password was echoed in SSH output"
+        assert b"authentication failed" in failed_auth
+        send(b"sudo /bin/shell\r")
+        read_until(lambda b: b"sudo password: " in b)
+        send(TEST_PASSWORD.encode() + b"\r")
+        auth_output = read_until(lambda b: b"root@fortress:" in b and b"# " in b)
+        assert TEST_PASSWORD.encode() not in auth_output, "Successful sudo password was echoed in SSH output"
+        print("  [PASS] Failed and successful sudo passwords absent from SSH output.", flush=True)
+        for command in (b"dmesg", b"/bin/dmesg"):
+            send(command + b"; echo SSH_DMESG_DONE\r")
+            logs = read_until(lambda b: b"\r\nSSH_DMESG_DONE\r\n" in b, timeout=30)
+            assert b"[NET]" in logs, "dmesg did not return kernel network logs"
+        send(b"cat /mnt/ssh-output.txt; echo SSH_BULK_DONE\r")
+        bulk = read_until(lambda b: b"\r\nSSH_BULK_DONE\r\n" in b, timeout=45)
+        assert SSH_BULK_CONTENT.replace(b"\n", b"\r\n") in bulk, "SSH bulk output was truncated or corrupted"
+        print(f"  [PASS] Root builtin/standalone dmesg and exact {len(SSH_BULK_CONTENT)//1024} KiB PTY output complete; session remains usable.", flush=True)
+        send(b"exit\r")
+        read_until(prompt)
+        paste_check()
+        send(b"exit\r")
+        client.wait(timeout=10)
+        assert client.returncode == 0
+        print("  [PASS] SSH paste retains CRLF command boundaries, requires review, has no raw echo/extra blank line, and survives sudo shell exit.", flush=True)
+    finally:
+        if client.poll() is None:
+            client.kill()
+        client.wait(timeout=5)
+        client.stdin.close()
+        client.stdout.close()
+        client_errors.close()
 
 
 def run_ssh_qemu(firmware="bios", smp=1):
@@ -527,6 +636,8 @@ def run_ssh_qemu(firmware="bios", smp=1):
             pty_proc.wait(timeout=10)
             assert b"PTY_DUPLEX_OK" in pty_buf, f"Missing PTY echo in output: {pty_buf.decode(errors='replace')}"
             print("  [PASS] Interactive PTY session verified with terminal echo and job execution.", flush=True)
+
+            test_ssh_editor(host_port, client_key, scan_file, exec_cmd)
 
             # 8. Gate: Global 2-Session Admission Cap & Pre-Spawn Disconnect
             print("  [10] Testing global 2-session concurrency cap...", flush=True)

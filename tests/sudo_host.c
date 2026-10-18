@@ -7,6 +7,9 @@ static bool authorized=true,empty=true,verify_ok=true,transition_fail;
 static unsigned transitions,spawns,reads,closes;
 static const char *input;static char output[2048];static size_t written;
 static bool generation_current=true;
+static terminal_attrs_t tty_attrs={.version=1,.input_flags=TERM_ECHO|TERM_ICANON|TERM_ISIG};
+static int attr_fail_op=-1;
+static unsigned attr_sets;
 bool db_check(void) {return generation_current;}
 bool db_load(userdb_t *out,bool shadow) {
     assert(shadow);memset(out,0,sizeof(*out));out->nusers=2;out->ngroups=2;out->nshadows=1;
@@ -24,7 +27,10 @@ long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
     if (nr==SYS_OPEN) {assert(!strcmp((char *)a,"/dev/tty"));return 7;}
     if (nr==SYS_TERMCTL) {assert(a==TERM_ISATTY && b==7);return 1;}
     if (nr==SYS_READ) {assert(a==7);reads++;if (!*input) return SYSCALL_EINTR;*(char *)b=*input++;return 1;}
-    if (nr==SYS_WRITE) {assert(written+c<sizeof(output));memcpy(output+written,(void *)b,c);written+=c;return c;}
+    if (nr==SYS_WRITE) {
+        if (c==15 && !memcmp((void *)b,"sudo password: ",15)) assert(!(tty_attrs.input_flags&TERM_ECHO));
+        assert(written+c<sizeof(output));memcpy(output+written,(void *)b,c);written+=c;output[written]=0;return c;
+    }
     if (nr==SYS_CLOSE) {assert(a==7);closes++;return 0;}
     if (nr==SYS_SETGROUPS) {transitions++;assert(a==1 && *(uint32_t *)b==0);return 0;}
     if (nr==SYS_SPAWN_EXT) {
@@ -37,6 +43,13 @@ long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
     assert(!"unexpected syscall");return -1;
 }
 long permission_call4(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d) {
+    if (nr==SYS_TERMATTR) {
+        assert(a==7 && d==sizeof(tty_attrs));
+        if ((int)b==attr_fail_op) return SYSCALL_EIO;
+        if (b==TERM_GET) *(terminal_attrs_t *)c=tty_attrs;
+        else {assert(b==TERM_SET);tty_attrs=*(terminal_attrs_t *)c;attr_sets++;}
+        return 0;
+    }
     assert(nr==SYS_SETRESGID || nr==SYS_SETRESUID);assert(!a && !b && !c && !d);
     transitions++;return transition_fail ? SYSCALL_EPERM:0;
 }
@@ -49,6 +62,16 @@ int main(void) {
     assert(sudo_main(2,args,(const char *const *)e)==1 && !transitions && !spawns);generation_current=true;
     authorized=false;transitions=spawns=0;assert(sudo_main(2,args,(const char *const *)e)==1 && !transitions && !spawns);
     authorized=true;empty=false;assert(sudo_main(2,args,(const char *const *)e)==1 && !transitions && !spawns);
+    assert(attr_sets==2 && tty_attrs.input_flags==(TERM_ECHO|TERM_ICANON|TERM_ISIG));
+    unsigned old_reads=reads;
+    for (int op=TERM_GET;op<=TERM_SET;op++) {
+        attr_fail_op=op;written=0;
+        assert(sudo_main(2,args,(const char *const *)e)==1 && reads==old_reads && !spawns);
+        assert(!strstr(output,"sudo password: "));
+    }
+    attr_fail_op=-1;input="";
+    assert(sudo_main(2,args,(const char *const *)e)==1 && !spawns);
+    assert(tty_attrs.input_flags==(TERM_ECHO|TERM_ICANON|TERM_ISIG));
     empty=true;transition_fail=true;assert(sudo_main(2,args,(const char *const *)e)==1 && !spawns);
     char password[DB_PASSWORD_MAX+1]={0};input="secret\n";written=0;
     assert(password_line(7,password) && !strcmp(password,"secret") && !written);

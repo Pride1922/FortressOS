@@ -27,10 +27,15 @@ static bool pty_out_ready(void *arg) {
            !__atomic_load_n(&p->slave_open, __ATOMIC_ACQUIRE);
 }
 
+typedef struct {
+    pty_t *p;
+    uint32_t needed;
+} pty_out_wait_t;
+
 static bool pty_out_space_ready(void *arg) {
-    pty_t *p = arg;
-    return __atomic_load_n(&p->out_space_bytes, __ATOMIC_ACQUIRE) > 0 ||
-           !__atomic_load_n(&p->master_open, __ATOMIC_ACQUIRE);
+    pty_out_wait_t *w = arg;
+    return __atomic_load_n(&w->p->out_space_bytes, __ATOMIC_ACQUIRE) >= w->needed ||
+           !__atomic_load_n(&w->p->master_open, __ATOMIC_ACQUIRE);
 }
 
 bool is_pty_master(const vfs_node_t *node) {
@@ -432,8 +437,12 @@ int64_t pty_slave_write(vfs_node_t *node, uint64_t *flags_ptr, bool append, cons
             return -VFS_EAGAIN;
         }
 
+        /* A newline may need two slots for CRLF. Waiting for just one slot
+         * would return immediately forever with IRQs masked at syscall entry,
+         * preventing the master from draining a nearly full output ring. */
+        pty_out_wait_t wait = {p, src[0] == '\n' && p->last_slave_out_char != '\r' ? 2u : 1u};
         spin_unlock_irqrestore(&p->lock, irq);
-        sched_wait_until(&p->out_space_bytes, pty_out_space_ready, p);
+        sched_wait_until(&p->out_space_bytes, pty_out_space_ready, &wait);
     }
 }
 

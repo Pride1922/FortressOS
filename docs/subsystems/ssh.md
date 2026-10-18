@@ -9,6 +9,17 @@ reading again, fixing PuTTY's pre-password stall. Actual-worker sanitizer covera
 and BIOS/UEFI OpenSSH plus PuTTY acceptance are recorded in the
 [PuTTY interoperability evidence](../roadmap/ssh-putty-interop.md).
 
+PTY terminal queries use their own dimensions and do not expose the laptop's
+console redraw or input-drop counters. Local console activity therefore cannot
+trigger a remote prompt newline. See [console isolation evidence](../roadmap/ssh-console-isolation.md).
+
+Sudo explicitly disables PTY echo before displaying its password prompt and
+restores the saved settings afterward. See [password echo correction](../roadmap/ssh-sudo-password-echo.md).
+
+Large terminal output reserves SSH framing overhead, drains short sends, and
+waits for enough PTY space for CRLF expansion. BIOS/UEFI `dmesg` and 104 KiB
+transfer acceptance is recorded in [large-output evidence](../roadmap/ssh-large-output.md).
+
 ---
 
 ## 1. Overview & Security Architecture

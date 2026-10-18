@@ -52,9 +52,19 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
             const char *warning="WARNING: live-media sudo authentication is passwordless.\n";
             tool_syscall(SYS_WRITE,tty,(uintptr_t)warning,tool_length(warning));ok=true;
         } else {
-            const char *prompt="sudo password: ";tool_syscall(SYS_WRITE,tty,(uintptr_t)prompt,tool_length(prompt));
-            ok=password_line(tty,password) && db_verify(password,shadow->hash);
-            tool_syscall(SYS_WRITE,tty,(uintptr_t)"\n",1);
+            terminal_attrs_t saved,hidden;
+            ok=false;
+            if (permission_call4(SYS_TERMATTR,tty,TERM_GET,(uintptr_t)&saved,sizeof(saved))==0) {
+                hidden=saved;hidden.input_flags &= ~TERM_ECHO;
+                /* Disable echo before publishing the prompt. If this fails,
+                 * do not request or consume a password on an unsafe terminal. */
+                if (permission_call4(SYS_TERMATTR,tty,TERM_SET,(uintptr_t)&hidden,sizeof(hidden))==0) {
+                    const char *prompt="sudo password: ";tool_syscall(SYS_WRITE,tty,(uintptr_t)prompt,tool_length(prompt));
+                    ok=password_line(tty,password) && db_verify(password,shadow->hash);
+                    if (permission_call4(SYS_TERMATTR,tty,TERM_SET,(uintptr_t)&saved,sizeof(saved))!=0) ok=false;
+                    tool_syscall(SYS_WRITE,tty,(uintptr_t)"\n",1);
+                }
+            }
         }
         db_wipe(password,sizeof(password));tool_syscall(SYS_CLOSE,tty,0,0);
         if (!ok) {db_wipe(&database,sizeof(database));return tool_error("sudo","authentication failed",0);}

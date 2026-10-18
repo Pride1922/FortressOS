@@ -9,7 +9,7 @@ typedef struct {
     char text[LINE_CAP], draft[LINE_CAP], saved[LINE_CAP], kill[LINE_CAP], query[LINE_CAP];
     size_t len, cursor, view, draft_cursor, saved_cursor, query_len;
     size_t history_pos, search_pos;
-    bool search, search_failed, blocked, paste, review;
+    bool search, search_failed, blocked, paste, review, paste_cr;
     char escape[16];
     unsigned escape_len;
 } line_editor_t;

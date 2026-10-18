@@ -88,7 +88,7 @@ enum edit_result lineedit_byte(line_editor_t *e,unsigned char c) {
         if(e->escape_len==2 && (c=='[' || c=='O')) return EDIT_NONE;
         if(e->escape_len==2 || (c>=0x40 && c<=0x7e)) {
             e->escape_len=0;
-            if(same(e->escape,"\033[200~")) { e->paste=true; return EDIT_NONE; }
+            if(same(e->escape,"\033[200~")) { e->paste=true; e->paste_cr=false; return EDIT_NONE; }
             if(same(e->escape,"\033[201~")) { e->paste=false; e->review=true; return EDIT_CHANGED; }
             if(e->paste) return EDIT_NONE;
             if(same(e->escape,"\033[3~")) return key(e,'X');
@@ -102,8 +102,13 @@ enum edit_result lineedit_byte(line_editor_t *e,unsigned char c) {
     }
     if(c==27) { e->escape[0]=27; e->escape[1]=0; e->escape_len=1; return EDIT_NONE; }
     if(e->paste) {
-        if(c=='\n' || c=='\r' || c=='\t') c=' ';
-        if(c>=32 && c<127) insert(e,(char)c);
+        /* Keep command boundaries, folding Windows CRLF into one newline.
+         * Newlines remain inert until the existing paste review is accepted. */
+        if(c=='\n' && e->paste_cr) { e->paste_cr=false; return EDIT_NONE; }
+        e->paste_cr=(c=='\r');
+        if(c=='\r') c='\n';
+        if(c=='\t') c=' ';
+        if(c=='\n' || (c>=32 && c<127)) insert(e,(char)c);
         return EDIT_CHANGED;
     }
     if(e->search) {

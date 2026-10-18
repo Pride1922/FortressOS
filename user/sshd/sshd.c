@@ -101,7 +101,7 @@ static int hex_nibble(char c) {
     return -1;
 }
 
-static void send_channel_replies(ssh_transport_t *transport, int client_fd, sshbuf_t *chan_reply) {
+static int send_channel_replies(ssh_transport_t *transport, int client_fd, sshbuf_t *chan_reply) {
     while (sshbuf_len(chan_reply) > 0) {
         uint8_t rtype = 0;
         if (sshbuf_get_u8(chan_reply, &rtype) != 0) break;
@@ -144,16 +144,32 @@ static void send_channel_replies(ssh_transport_t *transport, int client_fd, sshb
             plen = rem;
         }
 
-        if (plen > rem) plen = rem;
+        if (plen > rem) return SSH_ERR_INVALID_FORMAT;
 
         sshbuf_t out_wire;
-        sshbuf_init(&out_wire, 512, 4096);
-        (void)ssh_transport_send_packet(transport, rtype, p, plen, &out_wire);
-        (void)SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd, (uintptr_t)sshbuf_ptr(&out_wire), sshbuf_len(&out_wire), 0, 0, 0);
+        /* PTY data alone can be 4096 bytes. Include channel framing, packet
+         * padding, the encrypted length and the authentication tag. */
+        int rc = sshbuf_init(&out_wire, 512, SSH_MAX_PACKET_LEN + 4 + SSH_POLY1305_TAG_LEN);
+        if (rc != SSH_ERR_SUCCESS) return rc;
+        rc = ssh_transport_send_packet(transport, rtype, p, plen, &out_wire);
+        if (rc == SSH_ERR_SUCCESS) {
+            size_t off = 0, wire_len = sshbuf_len(&out_wire);
+            while (off < wire_len) {
+                long n = SSHD_SYSCALL(SYS_SEND, (uintptr_t)client_fd,
+                                      (uintptr_t)(sshbuf_ptr(&out_wire) + off), wire_len - off, 0, 0, 0);
+                if (n <= 0 || (size_t)n > wire_len - off) {
+                    rc = SSH_ERR_DISCONNECT;
+                    break;
+                }
+                off += (size_t)n;
+            }
+        }
         sshbuf_free(&out_wire);
+        if (rc != SSH_ERR_SUCCESS) return rc;
 
         (void)sshbuf_consume(chan_reply, plen);
     }
+    return SSH_ERR_SUCCESS;
 }
 
 /* Worker Process: runs the connection protocol under dropped capabilities */
@@ -426,7 +442,7 @@ static __attribute__((noinline)) int sshd_worker_run(int session_id, int client_
 
                 /* Transmit any channel replies */
                 if (sshbuf_len(&chan_reply) > 0) {
-                    send_channel_replies(&transport, client_fd, &chan_reply);
+                    if (send_channel_replies(&transport, client_fd, &chan_reply) != 0) goto session_cleanup;
                 }
             }
         } else if (n == 0) {
@@ -441,7 +457,7 @@ static __attribute__((noinline)) int sshd_worker_run(int session_id, int client_
             (void)pty_bridge_step(&bridge, &chan_mgr, &chan_reply, &pty_active);
 
             if (sshbuf_len(&chan_reply) > 0) {
-                send_channel_replies(&transport, client_fd, &chan_reply);
+                if (send_channel_replies(&transport, client_fd, &chan_reply) != 0) goto session_cleanup;
             }
 
             ssh_channel_t *ch0 = channel_lookup_local(&chan_mgr, 0);
@@ -462,6 +478,7 @@ static __attribute__((noinline)) int sshd_worker_run(int session_id, int client_
         }
     }
 
+session_cleanup:
     /* Teardown */
     sshbuf_free(&chan_reply);
     pty_bridge_cleanup(&bridge);

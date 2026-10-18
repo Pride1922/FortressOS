@@ -181,9 +181,13 @@ int main(void) {
     assert(lineedit_byte(&e,'\n')==EDIT_ACCEPT);
     lineedit_init(&e); feed("draft\022first\033"); lineedit_timeout(&e); assert(!strcmp(e.text,"draft"));
     lineedit_init(&e); feed("\033[200~echo a\necho b\033[201~");
-    assert(!strcmp(e.text,"echo a echo b") && e.review);
+    assert(!strcmp(e.text,"echo a\necho b") && e.review);
     assert(lineedit_byte(&e,'\n')==EDIT_CHANGED);
     assert(lineedit_byte(&e,'\n')==EDIT_ACCEPT);
+    lineedit_init(&e); feed("\033[200~whoami\r\nid\rhostname\npwd\033[201~");
+    assert(!strcmp(e.text,"whoami\nid\nhostname\npwd") && e.review);
+    assert(lineedit_byte(&e,'\r')==EDIT_CHANGED);
+    assert(lineedit_byte(&e,'\r')==EDIT_ACCEPT);
     lineedit_init(&e);
     for(unsigned i=0;i<LINE_CAP+20;i++) lineedit_byte(&e,'x');
     assert(e.len==LINE_CAP-1 && e.blocked);

@@ -179,6 +179,23 @@ void shell_history(const char *arg) {
     }
 }
 
+static size_t edit_columns(size_t from, size_t to) {
+    size_t cols=0;
+    for (size_t i=from;i<to;i++) cols+=edit.text[i]=='\n' ? 2 : 1;
+    return cols;
+}
+
+static void paint_text(size_t from, size_t count) {
+    size_t end=from+count;
+    while (from<end) {
+        size_t next=from;
+        while (next<end && edit.text[next]!='\n') next++;
+        if (next>from) ui_write_bytes(edit.text+from,next-from);
+        if (next<end) { ui_puts("\\n");next++; }
+        from=next;
+    }
+}
+
 static void paint(void) {
     size_t width = term.cols > 20 ? term.cols : 20;
     char prompt_buf[384];
@@ -224,22 +241,27 @@ static void paint(void) {
     if (plen + 3 >= width) { prompt = g_ui_euid == 0 ? "# " : "$ "; plen = length(prompt); }
     size_t room = width - plen - 2;
     if (edit.cursor < edit.view) edit.view = edit.cursor;
-    if (edit.cursor >= edit.view + room) edit.view = edit.cursor - room + 1;
+    while (edit.view<edit.cursor && edit_columns(edit.view,edit.cursor)>=room) edit.view++;
     if (edit.view > edit.len) edit.view = edit.len;
-    size_t n = edit.len - edit.view; if (n > room) n = room;
+    size_t n=0, drawn=0;
+    while (edit.view+n<edit.len) {
+        size_t cols=edit.text[edit.view+n]=='\n' ? 2 : 1;
+        if (drawn+cols>room) break;
+        drawn+=cols;n++;
+    }
 
     if (term.mode == TERM_PLAIN) {
-        ui_puts("\n"); ui_puts(prompt); ui_write_bytes(edit.text, edit.len);
+        ui_puts("\n"); ui_puts(prompt); paint_text(0, edit.len);
         (void)call(SYS_TERMCTL, TERM_GET, (uintptr_t)&term, sizeof(term));
         return;
     }
     ui_puts("\r\033[?25l"); ui_puts(prompt);
-    ui_write_bytes(edit.text + edit.view, n);
-    ui_puts("\033[K\r\033["); ui_put_dec(plen + edit.cursor - edit.view); ui_puts("C\033[?25h");
+    paint_text(edit.view, n);
+    ui_puts("\033[K\r\033["); ui_put_dec(plen + edit_columns(edit.view,edit.cursor)); ui_puts("C\033[?25h");
     (void)call(SYS_TERMCTL, TERM_GET, (uintptr_t)&term, sizeof(term));
 }
 
-bool shell_read_line(char out[LINE_CAP], bool continuation) {
+static bool shell_edit_line(char out[LINE_CAP], bool continuation) {
     prompt_interrupt=0;
     g_ui_continuation = continuation;
     lineedit_init(&edit);
@@ -338,4 +360,30 @@ bool shell_read_line(char out[LINE_CAP], bool continuation) {
         }
         else if (result != EDIT_NONE) paint();
     }
+}
+
+/* The line editor renders input itself. Preserve job settings while suppressing
+ * PTY line-discipline echo at the prompt, including nested sudo shells. */
+#ifdef SHELL_TERMATTR_HOST_TEST
+extern long shell_termattr_call(long, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+#define ui_call4 shell_termattr_call
+#else
+static long ui_call4(long nr, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
+    register uintptr_t r10 __asm__("r10")=d;
+    __asm__ volatile("syscall" : "+a"(nr) : "D"(a), "S"(b), "d"(c), "r"(r10) : "rcx", "r11", "memory", "cc");
+    return nr;
+}
+#endif
+
+bool shell_read_line(char out[LINE_CAP], bool continuation) {
+    terminal_attrs_t saved, editing;
+    bool changed=false;
+    if (ui_call4(SYS_TERMATTR,g_term_fd,TERM_GET,(uintptr_t)&saved,sizeof(saved))==0) {
+        editing=saved;
+        editing.input_flags &= ~TERM_ECHO;
+        changed=ui_call4(SYS_TERMATTR,g_term_fd,TERM_SET,(uintptr_t)&editing,sizeof(editing))==0;
+    }
+    bool result=shell_edit_line(out,continuation);
+    if (changed) (void)ui_call4(SYS_TERMATTR,g_term_fd,TERM_SET,(uintptr_t)&saved,sizeof(saved));
+    return result;
 }

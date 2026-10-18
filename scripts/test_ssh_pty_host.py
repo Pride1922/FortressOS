@@ -39,5 +39,12 @@ def main():
 
     print("PASS: SSH PTY bridge and terminal control verified under ASan/UBSan")
 
+    kernel_exe = BUILD / 'pty-output-test'
+    run(common + flags + ['-pthread', '-DTEST_SMP_MEMORY',
+        '-Isrc/kernel', '-Isrc/drivers', '-Isrc/arch/x86_64', '-Isrc/mm',
+        '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections',
+        'tests/pty_output_host.c', '-o', kernel_exe])
+    run([kernel_exe])
+
 if __name__ == '__main__':
     main()
