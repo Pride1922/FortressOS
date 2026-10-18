@@ -124,7 +124,7 @@ long call(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
         spawn_opts_t *o = (spawn_opts_t *)b;
         assert(o->size == sizeof(*o));
         assert(o->version == 2);
-        assert(o->flags == SPAWN_V2_FLAGS);
+        assert(o->flags == (SPAWN_SETPGROUP | SPAWN_STAGED));
         int idx = spawn_count++;
         ev(EV_SPAWN_STAGED, idx);
         if (idx == spawn_fail_at) return spawn_fail_err;
@@ -468,6 +468,18 @@ static void test_jobctl(void) {
     kill[2]="999999"; assert(jobctl_exec(3,kill)==1);
     kill[2]="SIGTERM"; assert(!jobctl_exec(3,kill) && kill_signal==SIGTERM);
     assert(!jobctl_exec(2,kill) && kill_signal==SIGTERM);
+    const char *pid_kill[]={"kill","8123"};
+    assert(!jobctl_exec(2,pid_kill) && kill_selector==8123 && kill_signal==SIGTERM);
+    const char *force[]={"kill","-9","8123"};
+    assert(!jobctl_exec(3,force) && kill_selector==8123 && kill_signal==SIGKILL);
+    const char *named[]={"kill","-s","SIGTERM","8123"};
+    assert(!jobctl_exec(4,named) && kill_selector==8123 && kill_signal==SIGTERM);
+    const char *invalid_pids[]={"0","-1","9223372036854775808","999999999999999999999999","abc"};
+    for (unsigned i=0;i<sizeof(invalid_pids)/sizeof(invalid_pids[0]);i++) {
+        int before=ev_count(EV_KILL);
+        const char *bad_pid[]={"kill",invalid_pids[i]};
+        assert(jobctl_exec(2,bad_pid)==1 && ev_count(EV_KILL)==before);
+    }
     assert(!builtin_is_child_safe("jobs") && !builtin_is_child_safe("fg") &&
            !builtin_is_child_safe("bg") && !builtin_is_child_safe("kill"));
     jobs_free(a); assert(jobs_resolve(NULL)==b && jobs_resolve("%1")==-1);

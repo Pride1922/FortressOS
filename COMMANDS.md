@@ -74,7 +74,7 @@ FortressOS executes user programs in **Ring 3** with hardware memory protection,
 | [`jobs`](#jobs) | Builtin | Job Control | List active background and stopped jobs |
 | [`fg`](#fg) | Builtin | Job Control | Bring background or stopped job to foreground |
 | [`bg`](#bg) | Builtin | Job Control | Resume stopped job in the background |
-| [`kill`](#kill) | Builtin | Job Control | Send signal to job or process group |
+| [`kill`](#kill) | Builtin and binary (`/bin/kill`) | Job Control | Signal a positive PID or an owned shell job |
 | [`version`](#version) | Builtin (child-safe) | System | Print FortressOS version and build information |
 | [`cat`](#cat) | Binary (`/bin/cat`) | Stream Tool | Concatenate and print files with exact byte fidelity |
 | [`head`](#head) | Binary (`/bin/head`) | Stream Tool | Output first part of files (lines or bytes) |
@@ -710,9 +710,9 @@ bg %1
 ---
 
 ### `kill`
-**Syntax:** `kill [%n] [signal]`  
+**Syntax:** `kill PID|%job [SIGNAL]` or `kill -SIGNAL PID|%job` or `kill -s SIGNAL PID|%job`
 **Child-Safe in Pipelines:** No  
-**Description:** Sends a signal to a job specified by job number (`%n`) or process group.
+**Description:** Sends a signal to a positive PID, or to an owned job's process group using `%n`. The standalone `/bin/kill` accepts positive PIDs and can be invoked by `sudo`; shell job targets require the builtin. PID 0 and negative PID targets are rejected.
 * Supported signal names: `HUP`, `INT`, `KILL`, `PIPE`, `TERM`, `CHLD`, `CONT`, `STOP`, `TSTP`, `TTIN`, `TTOU` (or numeric equivalent 1..31).
 * If signal is omitted, defaults to `TERM` (`SIGTERM`).  
 **Examples:**
@@ -721,7 +721,15 @@ kill %1
 kill %1 STOP
 kill %1 CONT
 kill %1 KILL
+ps -o pid,ppid,name
+kill 123
+sudo kill -9 123
 ```
+
+Replace `123` with the intended PID. For SSH recovery, identify a child worker
+whose PPID is the SSH daemon's PID; terminate that worker to release the session
+slot while retaining the listening daemon. `jobs` lists only the current shell's
+jobs and must be run directly, not as `sudo jobs`.
 
 #### Background Output and Automatic Prompt Redraw
 When a background job (such as `wget &` or background workers writing to `/dev/tty`) produces output while the shell is waiting for user input at the prompt:

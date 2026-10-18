@@ -710,7 +710,7 @@ $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 SBIN_STREAM_TOOLS := shutdown reboot poweroff lockstat
-USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free which env date sleep time gzip gunzip
+USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free which env date sleep time gzip gunzip kill
 $(BUILD_DIR)/tool-gunzip.o: CFLAGS += -DGUNZIP_STANDALONE
 STREAM_TOOLS := $(USER_STREAM_TOOLS) $(SBIN_STREAM_TOOLS)
 SBIN_LOGIN_TOOLS := useradd
@@ -806,6 +806,8 @@ $(BUILD_DIR)/tool-common.o: user/tools/common.c user/tools/common.h src/include/
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
 
+$(BUILD_DIR)/shell-jobctl.o $(BUILD_DIR)/tool-kill.o: user/kill_cli.h
+
 $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .o,$(STREAM_TOOLS))): $(BUILD_DIR)/tool-%.o: user/tools/%.c user/tools/common.h user/permissions_cli.h src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
@@ -872,6 +874,13 @@ test-awk-host:
 
 test-awk: $(BOOTABLE_ISO) test-awk-host
 	@python3 scripts/test_awk.py
+
+.PHONY: test-kill-host
+test-kill-host:
+	@python3 scripts/test_s8_jobs_host.py
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -I. tests/kill_host.c user/tools/kill.c user/tools/common.c -o $(BUILD_DIR)/kill-host
+	@$(BUILD_DIR)/kill-host
 
 .PHONY: test-gzip-host
 test-gzip-host:

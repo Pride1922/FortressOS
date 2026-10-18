@@ -6,6 +6,10 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+`kill` accepts positive PIDs as well as `%job` targets, and `/bin/kill` provides
+the PID form for `sudo kill PID` or `sudo kill -9 PID`. `jobs` remains a parent
+shell builtin that lists only that shell's jobs. See [PID recovery evidence](../roadmap/ssh-pid-recovery.md).
+
 SSH prompt editing suppresses PTY echo while the editor renders input, then
 restores the terminal settings before executing commands. Bracketed paste
 preserves command newlines, displays them as `\n` for review, and retains the

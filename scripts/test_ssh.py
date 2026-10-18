@@ -298,6 +298,55 @@ def test_ssh_editor(port, key_file, known_hosts, console_cmd):
         client_errors.close()
 
 
+def test_ssh_session_recovery(port, key_file, console_cmd):
+    """Recover two silent pre-auth workers using the laptop console's PID kill."""
+    def ssh_pids():
+        listing=console_cmd("ps -o pid,ppid,name")
+        rows=re.findall(r"(?m)^\s*(\d+)\s+(\d+)\s+(?:/sbin/)?sshd\s*$", listing)
+        return {int(pid):int(ppid) for pid,ppid in rows}
+
+    def daemon_only():
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            pids=ssh_pids()
+            if len(pids)==1: return pids
+            time.sleep(.1)
+        raise AssertionError(f"Unexpected SSH worker leak: {pids}")
+
+    jobs_output=console_cmd("jobs")
+    assert "Unknown command" not in jobs_output and "not found" not in jobs_output
+    baseline=daemon_only()
+    daemon=next(iter(baseline))
+    rc,out,err=run_ssh_client_cmd(port,key_file,"operator",f"kill {daemon}; echo KILL_AUTH_STATUS=$?")
+    assert "permission denied" in out+err and "KILL_AUTH_STATUS=1" in out, "Unprivileged SSH user could signal root daemon"
+    assert daemon_only()==baseline
+    sockets=[]
+    try:
+        for _ in range(2):
+            peer=socket.create_connection(("127.0.0.1",port), timeout=5)
+            sockets.append(peer)
+            assert peer.recv(256).startswith(b"SSH-2.0-"), "Missing pre-auth banner"
+        pids=ssh_pids()
+        workers=sorted(pid for pid,parent in pids.items() if parent==daemon)
+        assert len(workers)==2, pids
+        # TERM the first worker; force-kill the second through the standalone
+        # executable so sudo can invoke it without shell job-table access.
+        for command in (f"kill {workers[0]}", f"sudo kill -9 {workers[1]}"):
+            output=console_cmd(command+"; echo KILL_STATUS=$?")
+            assert "KILL_STATUS=0" in output, output
+        for peer in sockets:
+            try:
+                while peer.recv(4096): pass
+            except ConnectionResetError:
+                pass
+        assert daemon_only()==baseline, "SSH monitor changed during worker recovery"
+        rc,out,err=run_ssh_client_cmd(port,key_file,"operator","echo SSH_RECOVERED")
+        assert rc==0 and "SSH_RECOVERED" in out, err
+        print("  [PASS] jobs builtin available; local PID TERM and sudo kill -9 clear two silent SSH workers, retain daemon and allow reconnection.",flush=True)
+    finally:
+        for peer in sockets: peer.close()
+
+
 def run_ssh_qemu(firmware="bios", smp=1):
     print(f"\n========================================================", flush=True)
     print(f" FortressOS Phase 8 SSH Acceptance ({firmware.upper()}, SMP={smp})", flush=True)
@@ -638,6 +687,7 @@ def run_ssh_qemu(firmware="bios", smp=1):
             print("  [PASS] Interactive PTY session verified with terminal echo and job execution.", flush=True)
 
             test_ssh_editor(host_port, client_key, scan_file, exec_cmd)
+            test_ssh_session_recovery(host_port, client_key, exec_cmd)
 
             # 8. Gate: Global 2-Session Admission Cap & Pre-Spawn Disconnect
             print("  [10] Testing global 2-session concurrency cap...", flush=True)

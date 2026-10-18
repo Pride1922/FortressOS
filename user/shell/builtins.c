@@ -45,7 +45,7 @@ static const struct {
     {"jobs", "List owned jobs", CMD_JOBS, false},
     {"fg", "Foreground job [%n | %+ | %-] (default %+)", CMD_FG, false},
     {"bg", "Resume job in background [%n | %+ | %-]", CMD_BG, false},
-    {"kill", "Signal job: kill %n [signal name or number] (default TERM)", CMD_KILL, false},
+    {"kill", "Signal PID or job: kill PID|%n [SIGNAL] or kill -SIGNAL PID|%n (default TERM)", CMD_KILL, false},
     {"version",  "Print FortressOS version and build info",                CMD_VERSION,  true},
 };
 
