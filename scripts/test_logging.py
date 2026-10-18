@@ -116,23 +116,25 @@ def test_logging_acceptance(firmware, smp, tmp):
         
         # Verify /run/boot.log was created by boot-log.service on boot
         boot_log_check = g.command('ls -l /run/boot.log')
-        assert '/run/boot.log' in boot_log_check, f"Missing /run/boot.log: {boot_log_check}"
+        assert 'boot.log' in boot_log_check and ' 0 boot.log' not in boot_log_check, \
+            f"Missing or empty /run/boot.log: {boot_log_check}"
 
-        # Check content contains kernel messages
-        boot_log_head = g.command('cat /run/boot.log | head -n 10')
-        assert len(boot_log_head.strip()) > 0, "Empty /run/boot.log"
-        # Check for kernel messages or tags
-        assert any(k in boot_log_head for k in ('[KERNEL]', 'FortressOS', 'Limine', 'CPU', 'VMM', 'PMM', 'boot')), \
+        # Check content contains kernel messages (accessible by operator via root:wheel)
+        boot_log_head = g.command('head -n 10 /run/boot.log')
+        assert 'permission denied' not in boot_log_head.lower(), f"Permission denied on boot.log: {boot_log_head}"
+        assert any(k in boot_log_head for k in ('[KERNEL]', 'FORTRESS', 'FortressOS', 'Limine', 'CPU', 'Framebuffer')), \
             f"Expected kernel diagnostic markers in boot.log, got: {boot_log_head}"
 
         # Test pre-rotation by triggering /bin/boot-snapshot again
         snap_out = g.command('sudo /bin/boot-snapshot')
         boot_prev_check = g.command('ls -l /run/boot.log.prev')
-        assert '/run/boot.log.prev' in boot_prev_check, f"Pre-rotation failed, missing boot.log.prev: {boot_prev_check}"
+        assert 'boot.log.prev' in boot_prev_check and ' 0 boot.log.prev' not in boot_prev_check, \
+            f"Pre-rotation failed, missing or empty boot.log.prev: {boot_prev_check}"
 
         # Verify active boot.log still exists and is populated
         boot_log_check2 = g.command('ls -l /run/boot.log')
-        assert '/run/boot.log' in boot_log_check2, f"Active boot.log missing after pre-rotation: {boot_log_check2}"
+        assert 'boot.log' in boot_log_check2 and ' 0 boot.log' not in boot_log_check2, \
+            f"Active boot.log missing or empty after pre-rotation: {boot_log_check2}"
         print(f"[{firmware} SMP={smp}] PASS: Pillar 1 boot snapshot & pre-rotation verified", flush=True)
 
         # =====================================================================

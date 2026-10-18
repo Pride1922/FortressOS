@@ -110,14 +110,17 @@ static int do_snapshot(const char *active_path, const char *prev_path, bool is_f
     }
 
     tool_syscall(SYS_FCHMOD, fd, 0640, 0);
+    permission_call4(SYS_CHOWN, (uintptr_t)active_path, 0, 10, 0);
 
-    /* 3. Write dmesg contents */
+    /* 3. Write dmesg contents in bounded chunks (max 4096) */
     size_t written = 0;
     while (written < dmesg_len) {
-        long w = tool_syscall(SYS_WRITE, fd, (uintptr_t)(dmesg_data + written), dmesg_len - written);
+        size_t chunk = dmesg_len - written;
+        if (chunk > 4096) chunk = 4096;
+        long w = tool_syscall(SYS_WRITE, fd, (uintptr_t)(dmesg_data + written), chunk);
         if (w < 0) {
             /* If writing to runfs and capacity reached, clamp gracefully */
-            if (is_fallback && (w == SYSCALL_ENOSPC || w == -VFS_ENOSPC)) {
+            if (is_fallback && (w == SYSCALL_ENOSPC || w == -VFS_ENOSPC || w == -VFS_EFBIG)) {
                 break;
             }
             tool_sys_error("boot-snapshot", "cannot write to boot log", active_path, w);
