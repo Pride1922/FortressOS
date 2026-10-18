@@ -1190,8 +1190,18 @@ int exec_dmesg(int argc, const char *const *argv) {
 
 /* ---------- public dispatch ----------------------------------------------- */
 
+/* Kept header-only so standalone builtin runners share the exact test grammar. */
+#include "test_expr.h"
 int builtin_exec(int argc, const char *const *argv, const builtin_ctx_t *ctx) {
     if (argc <= 0 || !argv || !argv[0] || !argv[0][0]) return 2;
+    enum builtin kind=builtin_find(argv[0]);
+    if(kind==CMD_TRUE) return 0;
+    if(kind==CMD_FALSE) return 1;
+    if(kind==CMD_TEST) {
+        int r=shell_test(argc,argv);
+        if(r==2) write_err("test: invalid expression\n");
+        return r;
+    }
 
     /* Reject non-allowlist commands (unknown or forbidden) */
     if (!builtin_is_child_safe(argv[0])) return 2;

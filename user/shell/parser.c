@@ -1,6 +1,11 @@
 #include "parser.h"
 
 static lexer_t parse_lex;
+static enum token_type next_operand(token_t *tok) {
+    enum token_type type;
+    do {type=lexer_next(&parse_lex,tok);} while(type==TOK_SEMI && tok->value[0]=='\n');
+    return type;
+}
 
 enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
     if (!src || !tree) return PARSE_EMPTY;
@@ -76,7 +81,7 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
                 }
 
                 if (r->redir_op == REDIR_IN || r->redir_op == REDIR_OUT || r->redir_op == REDIR_APP) {
-                    type = lexer_next(&parse_lex, &tok);
+                    type = next_operand(&tok);
                     if (type == TOK_EOF) {
                         tree->status = LEX_INCOMPLETE_OP;
                         return PARSE_INCOMPLETE;
@@ -105,7 +110,7 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
                     r->has_quotes = tok.has_quotes;
                 } else if (r->redir_op == REDIR_DUP_OUT || r->redir_op == REDIR_DUP_IN) {
                     if (r->redir_dup_fd < 0) {
-                        type = lexer_next(&parse_lex, &tok);
+                        type = next_operand(&tok);
                         if (type == TOK_EOF) {
                             tree->status = LEX_INCOMPLETE_OP;
                             return PARSE_INCOMPLETE;
@@ -175,7 +180,8 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
 
         if (type == TOK_PIPE) {
             cmd->next_op = CMD_OP_PIPE;
-            type = lexer_next(&parse_lex, &tok);
+            type = next_operand(&tok);
+            if(type==TOK_EOF) {tree->status=LEX_INCOMPLETE_OP;return PARSE_INCOMPLETE;}
             if (type != TOK_WORD && type != TOK_REDIR && type != TOK_BANG) {
                 tree->error_msg = "syntax error: expected command after '|'";
                 return PARSE_SYNTAX_ERROR;
@@ -185,14 +191,14 @@ enum parse_result parser_parse(const char *src, parse_tree_t *tree) {
             type = lexer_next(&parse_lex, &tok);
         } else if (type == TOK_AND) {
             cmd->next_op = CMD_OP_AND;
-            type = lexer_next(&parse_lex, &tok);
+            type = next_operand(&tok);
             if (type == TOK_EOF) {
                 tree->status = LEX_INCOMPLETE_OP;
                 return PARSE_INCOMPLETE;
             }
         } else if (type == TOK_OR) {
             cmd->next_op = CMD_OP_OR;
-            type = lexer_next(&parse_lex, &tok);
+            type = next_operand(&tok);
             if (type == TOK_EOF) {
                 tree->status = LEX_INCOMPLETE_OP;
                 return PARSE_INCOMPLETE;

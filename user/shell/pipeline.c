@@ -1,12 +1,23 @@
 #include "pipeline.h"
+#include "control.h"
 #include "program.h"
 #include "expand.h"
 #include "vars.h"
 #include "redir.h"
 #include "builtins.h"
 #include "terminal.h"
+#include "jobs.h"
 
 #define RUNNER_PATH "/bin/sh-builtin"
+static bool interactive=true;
+static volatile unsigned *cancel_flag;
+static unsigned *stop_flag,last_signal;
+void pipeline_set_stop_flag(unsigned *flag) {stop_flag=flag;}
+unsigned pipeline_last_signal(void) {return last_signal;}
+void pipeline_set_cancel_flag(volatile unsigned *flag) {cancel_flag=flag;}
+void pipeline_set_interactive(bool enabled) {
+    interactive=enabled;program_set_job_control(enabled);jobs_set_quiet(!enabled);
+}
 
 typedef struct {
     char args[MAX_TOTAL_ARGS_LEN];
@@ -291,22 +302,26 @@ int pipeline_foreground(int slot, bool staged, uint64_t old_mask) {
     const job_t *job=jobs_get(slot);
     if (!job || !job->in_use) return 1;
     long pgid=job->pgid;
-    int fd=shell_get_terminal_fd();
+    int fd=interactive ? shell_get_terminal_fd() : -1;
     bool saved=false, handed=false;
     int result=1;
     s_fg_signaled=false;
+    last_signal=0;
     jobs_set_foreground(slot,true);
-    long err=call4(SYS_TERMATTR,fd,TERM_GET,(uintptr_t)&s_saved_attrs,sizeof(s_saved_attrs));
-    if (err<0) goto failed;
-    saved=true;
-    err=call(SYS_TCSETPGRP,fd,(uintptr_t)pgid,0);
-    if (err<0) goto failed;
-    handed=true;
+    long err=0;
+    if(interactive) {
+        err=call4(SYS_TERMATTR,fd,TERM_GET,(uintptr_t)&s_saved_attrs,sizeof(s_saved_attrs));
+        if (err<0) goto failed;
+        saved=true;
+        err=call(SYS_TCSETPGRP,fd,(uintptr_t)pgid,0);
+        if (err<0) goto failed;
+        handed=true;
+    }
     if (!staged && job->attrs_valid) {
         err=call4(SYS_TERMATTR,fd,TERM_SET,(uintptr_t)&job->attrs,sizeof(job->attrs));
         if (err<0) goto failed;
     }
-    if (staged) err=call(SYS_GROUP_RELEASE,(uintptr_t)pgid,GROUP_RELEASE,0);
+    if (staged) err=interactive ? call(SYS_GROUP_RELEASE,(uintptr_t)pgid,GROUP_RELEASE,0) : 0;
     else {
         bool stopped=false;
         for (int i=0;i<job->member_count;++i)
@@ -317,11 +332,15 @@ int pipeline_foreground(int slot, bool staged, uint64_t old_mask) {
     if (err<0) goto failed;
     if (staged) (void)call(SYS_SIGPROCMASK,SIG_SETMASK,(uintptr_t)&old_mask,0);
     for (;;) {
+        if(cancel_flag && *cancel_flag) {
+            for(int m=0;m<job->member_count;m++) if(job->members[m].state!=JOB_MEM_DONE)
+                (void)call(SYS_KILL,job->members[m].pid,SIGKILL,0);
+        }
         /* CHLD for another job can interrupt the group wait. Drain all durable
          * reports in main context, including foreground reports, before sleeping. */
         jobs_reap_children();
         jobs_gc();
-        if (job->state==JOB_STATE_DONE) { result=job->last_status; break; }
+        if (job->state==JOB_STATE_DONE) { result=cancel_flag && *cancel_flag ? 128+(int)*cancel_flag : job->last_status; break; }
         if (job->state==JOB_STATE_STOPPED) { result=128+(int)jobs_stop_signal(slot); break; }
         uint64_t ws=0;
         long pid=call(SYS_WAITPID,(uintptr_t)-pgid,(uintptr_t)&ws,WUNTRACED|WCONTINUED);
@@ -329,14 +348,14 @@ int pipeline_foreground(int slot, bool staged, uint64_t old_mask) {
         if (pid<0) { puts_err("fortress: foreground wait failed\n"); result=1; break; }
         if (pid>0) jobs_update_member(pid,ws);
     }
-    if (job->state==JOB_STATE_STOPPED &&
+    if (interactive && job->state==JOB_STATE_STOPPED &&
         call4(SYS_TERMATTR,fd,TERM_GET,(uintptr_t)&s_job_attrs,sizeof(s_job_attrs))==0)
         jobs_save_attrs(slot,&s_job_attrs);
     goto reclaim;
 failed:
     puts_err("fortress: terminal handoff failed\n");
     if (staged) {
-        (void)call(SYS_GROUP_RELEASE,(uintptr_t)pgid,GROUP_CANCEL,0);
+        if(interactive) (void)call(SYS_GROUP_RELEASE,(uintptr_t)pgid,GROUP_CANCEL,0);
         (void)call(SYS_SIGPROCMASK,SIG_SETMASK,(uintptr_t)&old_mask,0);
     }
 reclaim:
@@ -348,12 +367,12 @@ reclaim:
     }
     if (err<0 && staged) jobs_free(slot);
     else if (job->state==JOB_STATE_DONE) {
-        s_fg_signaled=jobs_term_signal(slot)!=0;
-        if (s_fg_signaled) jobs_print_state(slot,false);
+        last_signal=jobs_term_signal(slot);s_fg_signaled=last_signal!=0;
+        if (s_fg_signaled && interactive) jobs_print_state(slot,false);
         jobs_free(slot);
     } else {
         jobs_set_foreground(slot,false);
-        if (job->state==JOB_STATE_STOPPED) jobs_print_state(slot,false);
+        if (job->state==JOB_STATE_STOPPED && interactive) jobs_print_state(slot,false);
     }
     jobs_reap_children(); jobs_gc();
     return result;
@@ -381,9 +400,9 @@ int pipeline_run_program(const char *path, const char *const *argv,
         (void)call(SYS_SIGPROCMASK,SIG_SETMASK,(uintptr_t)&old,0);
         jobs_free(slot); return program_error(pid);
     }
-    jobs_set_pgid(slot,pid); jobs_add_member(slot,pid);
+    jobs_set_pgid(slot,interactive ? pid : call(SYS_GETPGRP,0,0,0)); jobs_add_member(slot,pid);
     int result=pipeline_foreground(slot,true,old);
-    if (result && !s_fg_signaled && !jobs_get(slot)->in_use) {
+    if (interactive && result && !s_fg_signaled && !jobs_get(slot)->in_use) {
         puts("[PROCESS] Exit status "); put_dec((size_t)result); puts("\n");
     }
     return result;
@@ -463,7 +482,7 @@ static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
             }
             break;
         }
-        if (i == 0) pgid = stage->pid;  /* First child's PID = new group's PGID */
+        if (i == 0) pgid = interactive ? stage->pid : call(SYS_GETPGRP,0,0,0);
         jobs_add_member(slot, stage->pid);
     }
 
@@ -472,7 +491,14 @@ static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
 
     /* 6. Handle launch failure: cancel all staged members. */
     if (result) {
-        if (pgid > 0) {
+        if (!interactive) {
+            const job_t *job=jobs_get(slot);
+            for(int m=0;m<job->member_count;m++) (void)call(SYS_KILL,job->members[m].pid,SIGKILL,0);
+            for(int m=0;m<job->member_count;m++) {
+                uint64_t status;long r;
+                do {r=call(SYS_WAITPID,job->members[m].pid,(uintptr_t)&status,0);} while(r==SYSCALL_EINTR);
+            }
+        } else if (pgid > 0) {
             (void)call(SYS_GROUP_RELEASE, (uintptr_t)pgid, GROUP_CANCEL, 0);
 
         }
@@ -485,7 +511,7 @@ static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
 
     if (background) {
         /* 7a. Background: release gate, unblock SIGCHLD, print [N] PID. */
-        (void)call(SYS_GROUP_RELEASE, (uintptr_t)pgid, GROUP_RELEASE, 0);
+        if(interactive) (void)call(SYS_GROUP_RELEASE, (uintptr_t)pgid, GROUP_RELEASE, 0);
         (void)call(SYS_SIGPROCMASK, SIG_SETMASK, (uintptr_t)&old_mask, 0);
         jobs_print_launch(slot);
         return 0;
@@ -494,13 +520,15 @@ static int execute_pipeline_job(parse_tree_t *tree, int first, int count,
     return pipeline_foreground(slot, true, old_mask);
 }
 
-int execute_command_list_job(parse_tree_t *tree, int status,
+int execute_command_list_resume(parse_tree_t *tree, int status,
                              int (*single)(parse_cmd_t *, int),
-                             const char *cmd_text) {
+                             const char *cmd_text,pipeline_cursor_t *cursor) {
     bool background = tree->background;
-    enum cmd_op incoming = CMD_OP_NONE;
+    enum cmd_op incoming = cursor->waiting ? cursor->incoming : CMD_OP_NONE;
 
-    for (int first = 0; first < tree->cmd_count;) {
+    for (int first = cursor->waiting ? cursor->first : 0; first < tree->cmd_count;) {
+        if(cancel_flag && *cancel_flag) {cursor->waiting=false;return 128+(int)*cancel_flag;}
+        if(stop_flag && *stop_flag) {cursor->waiting=false;return status;}
         int last = first;
         while (last + 1 < tree->cmd_count && tree->cmds[last].next_op == CMD_OP_PIPE) last++;
 
@@ -533,8 +561,19 @@ int execute_command_list_job(parse_tree_t *tree, int status,
             }
         }
         incoming = tree->cmds[last].next_op;
+        if(stop_flag && *stop_flag==CONTROL_SOURCE_PENDING) {
+            cursor->first=last+1;cursor->incoming=incoming;cursor->waiting=true;
+            return CONTROL_YIELD;
+        }
         if (incoming == CMD_OP_BG) incoming = CMD_OP_NONE;  /* BG terminates */
         first = last + 1;
     }
+    cursor->waiting=false;
     return status;
+}
+
+int execute_command_list_job(parse_tree_t *tree,int status,
+    int (*single)(parse_cmd_t *,int),const char *text) {
+    pipeline_cursor_t cursor={0};
+    return execute_command_list_resume(tree,status,single,text,&cursor);
 }

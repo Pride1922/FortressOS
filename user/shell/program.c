@@ -1,5 +1,7 @@
 #include "program.h"
 #include "vars.h"
+static bool job_control=true;
+void program_set_job_control(bool enabled) {job_control=enabled;}
 
 long program_launch(const char *path, const char *const *argv,
                     const char *const *envp, const spawn_fd_action_t *actions,
@@ -48,12 +50,12 @@ long program_launch_job(const char *path, const char *const *argv,
     spawn_opts_t opts = {0};
     opts.size = sizeof(opts);
     opts.version = 2;
-    opts.flags = SPAWN_SETPGROUP | SPAWN_STAGED;
+    opts.flags = SPAWN_SETPGROUP | (job_control ? SPAWN_STAGED : 0);
     opts.argv = (uintptr_t)argv;
     opts.envp = (uintptr_t)envp;
     opts.fd_actions = action_count ? (uintptr_t)actions : 0;
     opts.action_count = action_count;
-    opts.reserved2 = (uint64_t)pgid;
+    opts.reserved2 = (uint64_t)(!job_control ? call(SYS_GETPGRP,0,0,0) : pgid);
     return call(SYS_SPAWN_EXT, (uintptr_t)path, (uintptr_t)&opts, sizeof(opts));
 }
 

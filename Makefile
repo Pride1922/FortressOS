@@ -1021,7 +1021,7 @@ $(BUILD_DIR)/shell-%.o: user/shell/%.c $(SHELL_HEADERS)
 $(USER_SHELL_ELF): $(SHELL_OBJECTS) $(SHELL_HEADERS) $(USER_DIR)/shell.c $(USER_DIR)/shell_start.asm $(USER_DIR)/shell.ld src/fs/vfs.h src/include/types.h src/kernel/syscall.h src/arch/x86_64/idt.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $(USER_DIR)/shell.c -o $(BUILD_DIR)/shell.o
-	@$(AS) -f elf64 $(USER_DIR)/shell_start.asm -o $(BUILD_DIR)/shell_start.o
+	@$(AS) -f elf64 -DSHELL_RETURN_STATUS $(USER_DIR)/shell_start.asm -o $(BUILD_DIR)/shell_start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/shell_start.o $(BUILD_DIR)/shell.o $(SHELL_OBJECTS) -o $@
 
 # Runner ELF for /bin/sh-builtin: links builtin_exec, builtins, io (no UI/history/alias/editor).
@@ -1136,6 +1136,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
+	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/sh
 	@$(foreach tool,$(USER_LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
 	@$(foreach tool,$(SBIN_LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
 	@cp -f $(USER_SH_BUILTIN_ELF) $(BUILD_DIR)/initramfs/bin/sh-builtin
@@ -2116,3 +2117,15 @@ test-logrotate-host:
 
 
 
+.PHONY: test-shell-scripting-host test-shell-scripting
+test-shell-scripting-host:
+	python3 scripts/test_shell_host.py
+	python3 scripts/test_pipeline_host.py
+	python3 scripts/test_s8_jobs_host.py
+	python3 scripts/test_builtin_exec_host.py
+	python3 scripts/test_runner_host.py
+
+# Read-only base media inputs; only disposable test ISOs are generated.
+SCRIPT_BASE ?= $(CURDIR)
+test-shell-scripting: $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF)
+	python3 scripts/test_shell_scripting.py --base "$(SCRIPT_BASE)"

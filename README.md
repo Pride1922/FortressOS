@@ -65,6 +65,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Deterministic Cryptography:** SHA-256 boot-secret ISN generation with hardware entropy harvesting.
 
 ### 💻 Userland & Shell
+- **Scripting:** Explicit `sh file` / `sh -c`, positional arguments, conditions, while/until/for loops, bounded source/return and `test`/`[`. Host sanitizers and disk-free BIOS/UEFI checks pass; physical scripting acceptance remains pending. See [scripting evidence](docs/roadmap/shell-scripting.md).
 - **Interactive Shell:** Modular Ring 3 command shell supporting job control (`&`, `jobs`, `fg`, `kill`), pipelines (`|`), input/output redirection (`>`, `<`), and background redraw.
 - **Visual Editor:** Ring 3 visual text editor (`/bin/nano` v2.1) with Pike VM regex search, syntax highlighting, and buffer editing.
 - **System Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`, `/sbin/dhcpc`, `/bin/dhcp-probe`), and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `sed`, `awk`, `wc`, `xxd`).
@@ -92,7 +93,8 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 | **Network SMP (CPU-0 Handoff)**| **COMPLETE through Phase 4** | Cross-core control, UDP/DNS, TCP streams/listeners, and ordinary unpinned children. Bounded Dell physical acceptance; Phase 5 throughput redesign deferred. |
 | **SSH** | **COMPLETE through Phase 8** | BIOS/UEFI automated acceptance; laptop MobaXterm login, interactive commands, `top` and sudo user-confirmed. Physical lifecycle/entropy limits remain documented. |
 | **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, background lease renewal, gzip/gunzip; verification scope recorded in subsystem guides. |
-| **Watchtower Service Supervisor** | **IN PROGRESS** | Configuration, control CLI and supervisor core implemented; logging, boot integration and QEMU service regressions are next. |
+| **Watchtower Service Supervisor** | **IMPLEMENTED; ACCEPTANCE PENDING** | Phases 0–5, logging, boot integration and shutdown coordination; 36 host sanitizer checks pass. Full supervised lifecycle QEMU/physical acceptance remains separate. |
+| **Crond & Logrotate** | **IMPLEMENTED; HOST VERIFIED** | Minimal interval scheduler and bounded log rotation; 14 crond and 9 logrotate host checks pass. Physical/service integration acceptance remains separate. |
 
 ### Recently Finished (2026-10-18)
 - **SSH delivery:** Transport, authentication, host identity, PTY sessions and daemon lifecycle, plus the MobaXterm pre-password stall correction and laptop login verification.
@@ -100,10 +102,16 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Usability fixes:** Remote sudo password echo, console/SSH isolation, large-output handling, PID-based session recovery, and command completion after `sudo`.
 - **Committed follow-ups:** Eight-character account-tool password minimum and one-Enter single-line bracketed paste. These two changes are not in the last flashed image and have not been retested.
 
-### Active Focus: Watchtower Service Supervision
-Watchtower adds `/sbin/watchtower` and a `/bin/service` CLI to manage background services, initially DHCP and SSH. Configuration, service controls, readiness tracking, bounded restart policies and shutdown state handling are implemented in the current development work. The working plan reports 27/27 host sanitizer checks passing; integration acceptance is still pending.
+### Current checkpoint: scripting and service tools
+Shell scripting through bounded source/return and until loops is integrated with
+Watchtower, crond and logrotate. Combined host sanitizer checks pass; the merged
+shell is checked across BIOS/UEFI at SMP=1/4 using disposable, disk-free fixtures.
+The supported shell subset and acceptance limits are recorded in
+[the scripting evidence](docs/roadmap/shell-scripting.md).
 
-Next: service logging, boot integration, BIOS/UEFI QEMU acceptance, and DHCP/SSH lifecycle regressions under supervision. Watchtower remains work in progress, separate from the committed SSH delivery.
+Next: supervised service lifecycle acceptance and physical console/SSH scripting
+checks. Release media has not been rebuilt for this checkpoint. Functions, case,
+read and larger shell-language extensions remain separate work.
 
 ### Downstream Roadmap
 - Native package manager

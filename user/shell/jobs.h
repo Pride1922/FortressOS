@@ -11,6 +11,7 @@
 #define MAX_JOBS        8
 #define MAX_JOB_MEMBERS 8
 #define MAX_JOB_CMD_LEN 80
+void jobs_set_quiet(bool quiet);
 
 /* Per-member state machine: RUNNING → STOPPED or DONE; STOPPED → RUNNING or DONE. */
 typedef enum {

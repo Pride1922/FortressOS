@@ -1,7 +1,8 @@
 # Shell scripting — issue #14
 
-**Status:** PLANNED; no implementation or new acceptance claimed.  
-**Date:** 2026-10-18  
+**Status:** PHASES A–D AND UNTIL INTEGRATED INTO MAIN (2026-10-18). See [evidence and delivery limits](../roadmap/shell-scripting.md). Release media has not been rebuilt for this integration.
+
+**Date:** 2026-10-18
 **First delivery:** explicit `sh file [args...]` and `sh -c command [name [args...]]`.
 
 This plan refines the scripting increments in [SHELL_DESIGN.md](SHELL_DESIGN.md#s9--scripting-in-useful-increments).
@@ -115,6 +116,15 @@ echo "ping status: $?"
 
 ## 4. Phase C — conditions and loops
 
+Implemented with an explicit 16 KiB source-unit ceiling, 1024 tokens, 256
+instructions, nesting depth eight, and at most 4096 bytes of expanded for-list
+storage per loop frame. Runtime interpretation is iterative; only the compiler
+uses depth-bounded recursion. Each simple command still has the 4096-byte limit.
+Compounds are separated by semicolons/newlines; compound pipeline stages,
+`&&`/`||` attachments to compounds, compound redirection and asynchronous
+compounds are rejected. Simple commands/pipelines inside conditions and bodies
+retain their existing operators. Supported in script and interactive modes.
+
 Add `if/then/elif/else/fi`, `while/do/done`, `for/in/do/done`, `break`,
 `continue`, and a bounded `test` / `[` builtin. Reserved words are recognized
 only in grammar positions; quoted text and arguments remain ordinary words.
@@ -134,9 +144,22 @@ limit for intentional loops: honor signals between iterations and while waiting
 for children, and ensure Ctrl+C stops the foreground script cleanly.
 
 **Deliverable:** scripts can branch, retry with an explicit sleep, and iterate
-over fixed argument lists. Functions, `case`, `until` and arithmetic remain later work.
+over fixed argument lists. Functions, `case` and arithmetic remain later work.
+The subsequent `until` increment reuses the while-loop compiler/runtime, with
+the condition exit branch inverted: the body runs on a nonzero condition status
+and stops on zero. It retains the same nesting/size limits, body status,
+break/continue, source suspension and cancellation behavior. See follow-up
+evidence in the scripting roadmap.
 
 ## 5. Phase D — source and later language features
+
+Implemented with an iterative source driver and nine stable BSS slots (caller
+plus eight sourced files). Source yields unwind the C executor stack before
+another file runs. Caller ASTs, command-list cursors, loop PCs, temporary
+assignments and redirection saves remain owned by their original slots. The
+compiler alone retains depth-bounded recursion. No recursive runtime execution
+is introduced. See the Phase D evidence and semantics in the roadmap.
+
 
 Add `source`/`.` and `return` only after scoped execution contexts can preserve
 input state, positional parameters and caller control flow across nested loads.
@@ -162,8 +185,8 @@ strict Exec argv schema; this work does not introduce shell evaluation there.
 - Preserve the 64-variable table and 255-byte value limit. Reject oversize values.
 - At most 31 positional arguments initially, checked against the real spawn ABI
   including interpreter argv. Store their bounded bytes in owned static storage.
-- Phase C: compound nesting at most eight and bounded structural storage with
-  an explicit byte ceiling chosen and documented before implementation.
+- Phase C: compound nesting at most eight; source 16 KiB, tokens 1024,
+  instructions 256, eight loop frames with 4096 bytes of for-list values each.
 - Use BSS for large parser/input contexts; no large arrays or recursive C
   interpreter frames on the user stack. No new dynamic allocation is required.
 - Diagnostics identify the input name and 1-based line/column for lexical/syntax
@@ -188,6 +211,7 @@ shell test runner; add a scripting runner only where guest orchestration differs
 | Phase A | File, stdin and `-c`; LF/CRLF; short reads/read errors; comments/quotes; incomplete EOF; no UI/history side effects; returned status visible to caller |
 | Phase B | Empty/spaced/quoted args, `$0`, `$#`, `$?`, quoted `$@` cardinality, shift bounds; environment and argument overflow rejection |
 | Phase C | Nested branches/loops, condition statuses, per-iteration expansion, syntax rejection before compound side effects, Ctrl+C and child cleanup |
+| Phase D | Nested source depth eight; caller lists/loops survive; shared vars/cwd; explicit argument restoration; shared no-argument shifts; early return; fd/redirection/error/cancellation cleanup |
 | Regression | Interactive prompt/edit/history, sudo, redirection, pipelines, foreground/background jobs, ordinary unpinned execution |
 | Isolation | No descriptor/child leaks; no script fd inherited; stdin remains usable by child commands; no writes to non-target media |
 | Later physical check | Explicit laptop script over console and SSH; cancellation returns control cleanly. QEMU cannot establish physical behavior |
@@ -198,5 +222,6 @@ without stating its supported subset and the remaining language phases.
 ## 8. Recommended delivery order
 
 Implement A, then B, review the resulting command/input/status contracts, then
-implement C. Phase D is independently scheduled. No image build, deployment,
-implementation, commit or GitHub issue change is implied by this planning task.
+implement C. Phase D is independently scheduled. Source implementation was
+subsequently authorized for A–B in a separate worktree. Release image builds,
+commits and GitHub issue updates remain separate.

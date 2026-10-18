@@ -111,7 +111,7 @@ int redir_build_spawn_actions(const redir_t *redirs, int redir_count, int64_t la
 
 static char s_parent_target[VFS_MAX_PATH];
 
-static int save_descriptor(int fd, redir_scope_t *scope) {
+static int save_descriptor(int fd, redir_scope_t *scope, uint32_t mentioned) {
     if (!scope || fd < 0 || fd >= 32) return -1;
     for (int i = 0; i < scope->count; i++) {
         if (scope->saved[i].orig_fd == fd) {
@@ -124,6 +124,14 @@ static int save_descriptor(int fd, redir_scope_t *scope) {
     }
 
     long saved = call(SYS_FCNTL, (uintptr_t)fd, F_DUPFD_CLOEXEC, 20);
+    /* A later redirection must not overwrite this saved copy or observe a
+     * descriptor that was originally closed. Skip every fd mentioned by the
+     * complete command, including duplication operands. */
+    while(saved>=0 && (mentioned & (1u<<(unsigned)saved))) {
+        call(SYS_CLOSE,(uintptr_t)saved,0,0);
+        if(saved==31) {saved=SYSCALL_EMFILE;break;}
+        saved=call(SYS_FCNTL,(uintptr_t)fd,F_DUPFD_CLOEXEC,(uintptr_t)saved+1);
+    }
     if (saved >= 0) {
         scope->saved[scope->count].orig_fd = fd;
         scope->saved[scope->count].saved_fd = (int)saved;
@@ -166,6 +174,14 @@ int redir_apply_parent(const redir_t *redirs, int redir_count, int64_t last_stat
         return -1;
     }
 
+    uint32_t mentioned=0;
+    for(int i=0;i<redir_count;i++) {
+        int target=redirs[i].redir_fd,operand=redirs[i].redir_dup_fd;
+        if(target>=0 && target<32) mentioned|=1u<<(unsigned)target;
+        if((redirs[i].redir_op==REDIR_DUP_IN || redirs[i].redir_op==REDIR_DUP_OUT) && operand>=0 && operand<32)
+            mentioned|=1u<<(unsigned)operand;
+    }
+
     for (int i = 0; i < redir_count; i++) {
         const redir_t *r = &redirs[i];
         if (r->redir_fd < 0 || r->redir_fd >= 32) {
@@ -174,7 +190,7 @@ int redir_apply_parent(const redir_t *redirs, int redir_count, int64_t last_stat
             return -1;
         }
 
-        if (save_descriptor(r->redir_fd, scope) != 0) {
+        if (save_descriptor(r->redir_fd, scope, mentioned) != 0) {
             redir_restore_parent(scope);
             return -1;
         }

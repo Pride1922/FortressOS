@@ -137,10 +137,13 @@ static void test_pipelines(void) {
     };
     for (size_t k = 0; k < sizeof(chains) / sizeof(chains[0]); k++)
         assert(parser_parse(chains[k], &tree) == PARSE_OK && tree.cmd_count == 16);
-    static const char *bad[] = {"| a", "a |", "a | | b", "a | ; b", "a | && b",
-                               "a | || b", "a ||| b", "a |\nb", "a | # empty"};
+    static const char *bad[] = {"| a", "a | | b", "a | ; b", "a | && b",
+                               "a | || b", "a ||| b"};
     for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++)
         assert(parser_parse(bad[k], &tree) == PARSE_SYNTAX_ERROR);
+    assert(parser_parse("a |",&tree)==PARSE_INCOMPLETE);
+    assert(parser_parse("a | # empty",&tree)==PARSE_INCOMPLETE);
+    assert(parser_parse("a |\nb",&tree)==PARSE_OK && tree.cmd_count==2);
     static const char *quoted[] = {"echo \"a|b\"", "echo 'a|b'", "echo a\\|b"};
     static const uint8_t flags[] = {QUOTE_DOUBLE, QUOTE_SINGLE, QUOTE_ESCAPED};
     for (size_t k = 0; k < sizeof(quoted) / sizeof(quoted[0]); k++) {
@@ -629,6 +632,20 @@ int main(void) {
     }
     assert(parent_scope.count == 0);
 
+    /* A mentioned high fd cannot collide with an interpreter saved copy. */
+    mock_reset_fds();
+    assert(parser_parse("echo hello > out.txt 20>&-",&ptree)==PARSE_OK);
+    assert(!redir_apply_parent(ptree.cmds[0].redirs,ptree.cmds[0].redir_count,0,&parent_scope));
+    assert(parent_scope.saved[0].saved_fd>20 && s_mock_fds[20]==-1);
+    redir_restore_parent(&parent_scope);
+    assert(s_mock_fds[1]==2);
+    for(int k=20;k<32;k++) assert(s_mock_fds[k]==-1);
+    mock_reset_fds();
+    assert(parser_parse("echo hello > out.txt 2>&20",&ptree)==PARSE_OK);
+    assert(redir_apply_parent(ptree.cmds[0].redirs,ptree.cmds[0].redir_count,0,&parent_scope)!=0);
+    assert(s_mock_fds[1]==2 && s_mock_fds[2]==3);
+    for(int k=20;k<32;k++) assert(s_mock_fds[k]==-1);
+
     /* 2. Parent redirection of originally unopened descriptor */
     mock_reset_fds();
     s_mock_fds[5] = -1;
@@ -655,5 +672,47 @@ int main(void) {
 
     puts("PASS shell redirections: spawn actions, parent save/apply/restore, open/dup/close, lexical order, target expansion, ambiguous rejection");
     test_pipelines();
+    char *parameters[]={"a b","","last"};
+    assert(vars_positionals("script",3,parameters));
+    assert(parser_parse("echo \"$0\" \"$#\" \"$@\"",&ptree)==PARSE_OK);
+    static expanded_cmd_t positional_result;
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(positional_result.argc==6);
+    assert(!strcmp(positional_result.argv[1],"script"));
+    assert(!strcmp(positional_result.argv[2],"3"));
+    assert(!strcmp(positional_result.argv[3],"a b"));
+    assert(!strcmp(positional_result.argv[4],""));
+    assert(!strcmp(positional_result.argv[5],"last"));
+    assert(parser_parse("echo \"pre$@post\"",&ptree)==PARSE_OK);
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(positional_result.argc==4 && !strcmp(positional_result.argv[1],"prea b") &&
+           !strcmp(positional_result.argv[2],"") && !strcmp(positional_result.argv[3],"lastpost"));
+    assert(vars_shift(4)!=0 && vars_positional_count()==3);
+    assert(!vars_shift(2) && !strcmp(vars_positional(1),"last"));
+    static positional_snapshot_t saved_parameters;
+    vars_save_positionals(&saved_parameters);
+    assert(vars_positionals(saved_parameters.bytes,3,parameters));
+    assert(!vars_shift(1));
+    vars_restore_positionals(&saved_parameters);
+    assert(vars_positional_count()==1 && !strcmp(vars_positional(0),"script") &&
+           !strcmp(vars_positional(1),"last"));
+    assert(!vars_shift(1));
+    assert(parser_parse("echo \"$@\" \"$1\"",&ptree)==PARSE_OK);
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(positional_result.argc==2 && !strcmp(positional_result.argv[1],""));
+    assert(parser_parse("echo \"\\$1\"",&ptree)==PARSE_OK);
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(!strcmp(positional_result.argv[1],"$1"));
+    char *many[]={"1","2","3","4","5","6","7","8","9","10","11"};
+    assert(vars_positionals("many",11,many));
+    assert(parser_parse("echo ${10} ${11} ${#} \"${@}\"",&ptree)==PARSE_OK);
+    assert(!expand_command_checked(&ptree.cmds[0],0,&positional_result));
+    assert(positional_result.argc==15 && !strcmp(positional_result.argv[1],"10") &&
+           !strcmp(positional_result.argv[2],"11") && !strcmp(positional_result.argv[3],"11"));
+    static char huge[1100];memset(huge,'x',sizeof(huge)-1);char *bad[]={huge};
+    assert(!vars_positionals("bad",1,bad) && vars_positional_count()==11 && !strcmp(vars_positional(1),"1"));
+    assert(parser_parse("echo ${bad:-fallback}",&ptree)==PARSE_OK);
+    assert(expand_command_checked(&ptree.cmds[0],0,&positional_result)!=0 && positional_result.argc==0);
+    puts("PASS script positional expansion: quoted cardinality, empty/spaced args, prefix/suffix, shift bounds and escaped dollar");
     return 0;
 }
