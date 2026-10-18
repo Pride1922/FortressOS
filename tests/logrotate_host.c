@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <errno.h>
 #include "vfs.h"
 #include "../user/logrotate/logrotate.h"
 
@@ -57,6 +58,7 @@ typedef struct {
     bool fail_gzip_spawn;
     int gzip_exit_code;
     int gzip_call_count;
+    bool lock_collision;
 } mock_env_t;
 
 static mock_env_t g_mock;
@@ -250,6 +252,26 @@ static void mock_ops_log_err(const char *msg) {
     }
 }
 
+static int mock_ops_mkdir(const char *path, uint32_t mode) {
+    if (g_mock.lock_collision && strcmp(path, LOGROTATE_LOCK_DIR) == 0) {
+        return -15;
+    }
+    mock_file_t *f = mock_find_file(path);
+    if (f) return -15;
+    mock_add_file(path, 0, S_IFDIR | mode, NULL);
+    return 0;
+}
+
+static int64_t mock_ops_getpid(void) {
+    return 1234;
+}
+
+static int mock_ops_kill(int64_t pid, int sig) {
+    (void)pid;
+    (void)sig;
+    return 0;
+}
+
 static logrotate_ops_t g_mock_ops = {
     .lstat = mock_ops_lstat,
     .stat = mock_ops_stat,
@@ -262,7 +284,10 @@ static logrotate_ops_t g_mock_ops = {
     .spawn = mock_ops_spawn,
     .waitpid = mock_ops_waitpid,
     .sleep_ms = mock_ops_sleep_ms,
-    .log_err = mock_ops_log_err
+    .log_err = mock_ops_log_err,
+    .mkdir = mock_ops_mkdir,
+    .getpid = mock_ops_getpid,
+    .kill = mock_ops_kill
 };
 
 /* =========================================================================
@@ -274,7 +299,7 @@ static void test_rotate_mock_11mb_with_size_10m(void) {
     mock_reset();
 
     const char *cfg_content =
-        "/var/log/watchtower/watchtower.log {\n"
+        "/var/log/messages {\n"
         "    size 10M\n"
         "    rotate 4\n"
         "    compress\n"
@@ -284,18 +309,30 @@ static void test_rotate_mock_11mb_with_size_10m(void) {
     mock_add_file("/etc/logrotate.conf", 0, S_IFREG | 0644, cfg_content);
     /* Active file size: 11 MB = 11 * 1024 * 1024 = 11534336 bytes */
     uint64_t size_11m = 11ULL * 1024ULL * 1024ULL;
-    mock_add_file("/var/log/watchtower/watchtower.log", size_11m, S_IFREG | 0640, NULL);
+    mock_add_file("/var/log/messages", size_11m, S_IFREG | 0640, NULL);
 
     char *argv[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
     int rc = logrotate_run_with_ops(2, argv, &g_mock_ops);
     assert(rc == 0);
 
-    /* Verify file.1.gz exists and active file exists and is empty */
-    assert(mock_has_file("/var/log/watchtower/watchtower.log.1.gz"));
-    assert(!mock_has_file("/var/log/watchtower/watchtower.log.1")); /* Deleted by gzip */
-    assert(mock_has_file("/var/log/watchtower/watchtower.log"));
-    assert(mock_file_size("/var/log/watchtower/watchtower.log") == 0);
-    assert((mock_file_mode("/var/log/watchtower/watchtower.log") & 07777) == 0640);
+    /* Under delaycompress: file.1 is retained UNCOMPRESSED in first cycle */
+    assert(mock_has_file("/var/log/messages.1"));
+    assert(!mock_has_file("/var/log/messages.1.gz"));
+    assert(mock_has_file("/var/log/messages"));
+    assert(mock_file_size("/var/log/messages") == 0);
+    assert((mock_file_mode("/var/log/messages") & 07777) == 0640);
+
+    /* Second cycle: refill active, now messages.1 shifts to messages.2 and compresses to messages.2.gz */
+    mock_file_t *f = mock_find_file("/var/log/messages");
+    assert(f != NULL);
+    f->size = size_11m;
+    int rc2 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+    assert(rc2 == 0);
+    assert(mock_has_file("/var/log/messages.2.gz"));
+    assert(!mock_has_file("/var/log/messages.2"));
+    assert(mock_has_file("/var/log/messages.1"));
+    assert(!mock_has_file("/var/log/messages.1.gz"));
+    assert(mock_file_size("/var/log/messages") == 0);
 
     printf("PASS: test_rotate_mock_11mb_with_size_10m\n");
 }
@@ -330,10 +367,11 @@ static void test_run_5_times_rotate_4_archives_deleted(void) {
         assert(rc == 0);
     }
 
-    /* After 5 rotations with rotate 4:
-     * Only 4 archives should exist (.1.gz, .2.gz, .3.gz, .4.gz).
-     * .5.gz must NOT exist! */
-    assert(mock_has_file("/var/log/test.log.1.gz"));
+    /* After 5 rotations with rotate 4 under delaycompress:
+     * .1 is uncompressed (from run 5).
+     * .2.gz, .3.gz, .4.gz are compressed.
+     * .5.gz and .5 must NOT exist! */
+    assert(mock_has_file("/var/log/test.log.1"));
     assert(mock_has_file("/var/log/test.log.2.gz"));
     assert(mock_has_file("/var/log/test.log.3.gz"));
     assert(mock_has_file("/var/log/test.log.4.gz"));
@@ -527,14 +565,16 @@ static void test_force_flag_and_size_threshold(void) {
     char *argv_normal[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
     int rc1 = logrotate_run_with_ops(2, argv_normal, &g_mock_ops);
     assert(rc1 == 0);
+    assert(!mock_has_file("/var/log/test.log.1"));
     assert(!mock_has_file("/var/log/test.log.1.gz"));
     assert(mock_file_size("/var/log/test.log") == 5ULL * 1024ULL * 1024ULL);
 
-    /* Run with -f: should rotate despite size <= limit */
+    /* Run with -f: should rotate despite size <= limit (delaycompress leaves .1 uncompressed) */
     char *argv_force[] = {"/sbin/logrotate", "-f", "/etc/logrotate.conf", NULL};
     int rc2 = logrotate_run_with_ops(3, argv_force, &g_mock_ops);
     assert(rc2 == 0);
-    assert(mock_has_file("/var/log/test.log.1.gz"));
+    assert(mock_has_file("/var/log/test.log.1"));
+    assert(!mock_has_file("/var/log/test.log.1.gz"));
     assert(mock_file_size("/var/log/test.log") == 0);
 
     printf("PASS: test_force_flag_and_size_threshold\n");
@@ -563,7 +603,7 @@ static void test_uncompressed_and_compression_failure(void) {
         assert(mock_file_size("/var/log/uncomp.log") == 0);
     }
 
-    /* 2. Compression failure fallback */
+    /* 2. Compression failure fallback under delaycompress */
     {
         mock_reset();
         const char *cfg =
@@ -575,17 +615,24 @@ static void test_uncompressed_and_compression_failure(void) {
         mock_add_file("/etc/logrotate.conf", 0, S_IFREG | 0644, cfg);
         mock_add_file("/var/log/comp_fail.log", 2ULL * 1024ULL * 1024ULL, S_IFREG | 0644, NULL);
 
-        /* Make gzip spawn fail */
+        char *argv[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
+        /* Cycle 1: active -> .1 uncompressed */
+        int rc1 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc1 == 0);
+        assert(mock_has_file("/var/log/comp_fail.log.1"));
+
+        /* Cycle 2: refill active; make gzip spawn fail during .1 -> .2 compression */
+        mock_find_file("/var/log/comp_fail.log")->size = 2ULL * 1024ULL * 1024ULL;
         g_mock.fail_gzip_spawn = true;
 
-        char *argv[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
-        int rc = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        int rc2 = logrotate_run_with_ops(2, argv, &g_mock_ops);
         /* Rotation succeeds with warning */
-        assert(rc == 0);
+        assert(rc2 == 0);
 
-        /* .1 remains uncompressed */
+        /* .2 remains uncompressed */
+        assert(mock_has_file("/var/log/comp_fail.log.2"));
+        assert(!mock_has_file("/var/log/comp_fail.log.2.gz"));
         assert(mock_has_file("/var/log/comp_fail.log.1"));
-        assert(!mock_has_file("/var/log/comp_fail.log.1.gz"));
         assert(mock_file_size("/var/log/comp_fail.log") == 0);
         assert(strstr(g_mock.stderr_buf, "warning: left archive uncompressed") != NULL);
     }
@@ -642,18 +689,38 @@ static int real_ops_rename(const char *oldpath, const char *newpath) {
     return rename(oldpath, newpath);
 }
 
+static char g_real_lock_dir[LOGROTATE_MAX_PATH] = "/tmp/fortress_logrotate_test_lock";
+static char g_real_lock_pid[LOGROTATE_MAX_PATH] = "/tmp/fortress_logrotate_test_lock/pid";
+
+static int real_ops_mkdir(const char *path, uint32_t mode) {
+    const char *target = path;
+    if (strcmp(path, LOGROTATE_LOCK_DIR) == 0) target = g_real_lock_dir;
+    if (mkdir(target, (mode_t)mode) == 0) return 0;
+    if (errno == EEXIST) return -15;
+    return -1;
+}
+
 static int real_ops_unlink(const char *path) {
-    return unlink(path);
+    const char *target = path;
+    if (strcmp(path, LOGROTATE_LOCK_DIR) == 0) target = g_real_lock_dir;
+    else if (strcmp(path, LOGROTATE_LOCK_PID) == 0) target = g_real_lock_pid;
+    if (unlink(target) == 0) return 0;
+    if (errno == EISDIR || errno == EPERM) {
+        return rmdir(target);
+    }
+    return -1;
 }
 
 static int real_ops_open(const char *path, int flags, uint32_t mode) {
+    const char *target = path;
+    if (strcmp(path, LOGROTATE_LOCK_PID) == 0) target = g_real_lock_pid;
     int posix_flags = 0;
     if ((flags & (VFS_O_RDWR | VFS_O_WRONLY)) == VFS_O_WRONLY) posix_flags |= O_WRONLY;
     else if ((flags & (VFS_O_RDWR | VFS_O_WRONLY)) == VFS_O_RDWR) posix_flags |= O_RDWR;
     else posix_flags |= O_RDONLY;
     if (flags & VFS_O_CREAT) posix_flags |= O_CREAT;
     if (flags & VFS_O_TRUNC) posix_flags |= O_TRUNC;
-    return open(path, posix_flags, (mode_t)mode);
+    return open(target, posix_flags, (mode_t)mode);
 }
 
 static int real_ops_close(int fd) {
@@ -691,6 +758,14 @@ static void real_ops_sleep_ms(uint32_t ms) {
     usleep(ms * 1000);
 }
 
+static int64_t real_ops_getpid(void) {
+    return (int64_t)getpid();
+}
+
+static int real_ops_kill(int64_t pid, int sig) {
+    return kill((pid_t)pid, sig);
+}
+
 static char g_real_stderr[4096];
 static size_t g_real_stderr_len = 0;
 
@@ -716,7 +791,10 @@ static logrotate_ops_t g_real_ops = {
     .spawn = real_ops_spawn,
     .waitpid = real_ops_waitpid,
     .sleep_ms = real_ops_sleep_ms,
-    .log_err = real_ops_log_err
+    .log_err = real_ops_log_err,
+    .mkdir = real_ops_mkdir,
+    .getpid = real_ops_getpid,
+    .kill = real_ops_kill
 };
 
 static void test_real_posix_filesystem(void) {
@@ -767,7 +845,7 @@ static void test_real_posix_filesystem(void) {
     assert(rc_sym != 0); /* Symlink rejected! */
     assert(strstr(g_real_stderr, "symlink") != NULL);
 
-    /* Test 2b: Real rotation and compression of 11MB file with size 10M */
+    /* Test 2b: Real rotation and delaycompress of 11MB file with size 10M */
     char real_cfg_content[512];
     snprintf(real_cfg_content, sizeof(real_cfg_content),
              "%s {\n size 10M\n rotate 4\n compress\n missingok\n}\n", log_path);
@@ -777,28 +855,383 @@ static void test_real_posix_filesystem(void) {
     assert(wr == (ssize_t)strlen(real_cfg_content));
     close(cfd);
 
+    /* Cycle 1: test.log -> test.log.1 (uncompressed under delaycompress) */
     char *argv_real[] = {"/sbin/logrotate", cfg_path, NULL};
-    int rc_rot = logrotate_run_with_ops(2, argv_real, &g_real_ops);
-    assert(rc_rot == 0);
+    int rc_rot1 = logrotate_run_with_ops(2, argv_real, &g_real_ops);
+    assert(rc_rot1 == 0);
 
-    /* Verify file.1.gz exists and test.log is empty with mode 0640 */
+    char p1_raw[LOGROTATE_MAX_PATH + 16];
     char p1_gz[LOGROTATE_MAX_PATH + 16];
+    char p2_gz[LOGROTATE_MAX_PATH + 16];
+    snprintf(p1_raw, sizeof(p1_raw), "%s.1", log_path);
     snprintf(p1_gz, sizeof(p1_gz), "%s.1.gz", log_path);
-    assert(stat(p1_gz, &pst) == 0);
-    assert(pst.st_size > 0);
+    snprintf(p2_gz, sizeof(p2_gz), "%s.2.gz", log_path);
 
+    assert(stat(p1_raw, &pst) == 0);
+    assert(stat(p1_gz, &pst) != 0); /* Must be uncompressed in cycle 1! */
     assert(stat(log_path, &pst) == 0);
     assert(pst.st_size == 0);
     assert((pst.st_mode & 0777) == 0640);
 
+    /* Cycle 2: Refill test.log and rotate again -> test.log.1 shifts to test.log.2 and compresses to test.log.2.gz */
+    fd = open(log_path, O_WRONLY | O_TRUNC);
+    assert(fd >= 0);
+    off = lseek(fd, 11 * 1024 * 1024 - 1, SEEK_SET);
+    assert(off == 11 * 1024 * 1024 - 1);
+    w = write(fd, "\0", 1);
+    assert(w == 1);
+    close(fd);
+
+    int rc_rot2 = logrotate_run_with_ops(2, argv_real, &g_real_ops);
+    assert(rc_rot2 == 0);
+
+    assert(stat(p2_gz, &pst) == 0);
+    assert(pst.st_size > 0);
+    assert(stat(p1_raw, &pst) == 0);
+    assert(stat(p1_gz, &pst) != 0);
+    assert(stat(log_path, &pst) == 0);
+    assert(pst.st_size == 0);
+
     /* Clean up files */
-    unlink(p1_gz);
+    unlink(p2_gz);
+    unlink(p1_raw);
     unlink(sym_path);
     unlink(log_path);
     unlink(cfg_path);
     rmdir(dir);
 
     printf("PASS: test_real_posix_filesystem\n");
+}
+
+static void test_delaycompress_lifecycle(void) {
+    printf("[TEST] test_delaycompress_lifecycle...\n");
+    mock_reset();
+
+    const char *cfg =
+        "/var/log/messages {\n"
+        "    size 10M\n"
+        "    rotate 4\n"
+        "    compress\n"
+        "}\n";
+    mock_add_file("/etc/logrotate.conf", 0, S_IFREG | 0644, cfg);
+    uint64_t sz = 11ULL * 1024ULL * 1024ULL;
+
+    char *argv[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
+
+    /* Cycle 1: active -> .1 (uncompressed) */
+    mock_add_file("/var/log/messages", sz, S_IFREG | 0640, NULL);
+    int rc1 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+    assert(rc1 == 0);
+    assert(mock_has_file("/var/log/messages.1"));
+    assert(!mock_has_file("/var/log/messages.1.gz"));
+    assert(mock_has_file("/var/log/messages"));
+    assert(mock_file_size("/var/log/messages") == 0);
+
+    /* Cycle 2: .1 -> .2 -> .2.gz; active -> .1 */
+    mock_file_t *f = mock_find_file("/var/log/messages");
+    assert(f != NULL);
+    f->size = sz;
+    int rc2 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+    assert(rc2 == 0);
+    assert(mock_has_file("/var/log/messages.2.gz"));
+    assert(!mock_has_file("/var/log/messages.2"));
+    assert(mock_has_file("/var/log/messages.1"));
+    assert(!mock_has_file("/var/log/messages.1.gz"));
+    assert(mock_file_size("/var/log/messages") == 0);
+
+    /* Cycle 3: .2.gz -> .3.gz; .1 -> .2 -> .2.gz; active -> .1 */
+    f = mock_find_file("/var/log/messages");
+    assert(f != NULL);
+    f->size = sz;
+    int rc3 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+    assert(rc3 == 0);
+    assert(mock_has_file("/var/log/messages.3.gz"));
+    assert(mock_has_file("/var/log/messages.2.gz"));
+    assert(mock_has_file("/var/log/messages.1"));
+    assert(!mock_has_file("/var/log/messages.1.gz"));
+
+    /* Cycle 4: .3.gz -> .4.gz; .2.gz -> .3.gz; .1 -> .2 -> .2.gz; active -> .1 */
+    f = mock_find_file("/var/log/messages");
+    assert(f != NULL);
+    f->size = sz;
+    int rc4 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+    assert(rc4 == 0);
+    assert(mock_has_file("/var/log/messages.4.gz"));
+    assert(mock_has_file("/var/log/messages.3.gz"));
+    assert(mock_has_file("/var/log/messages.2.gz"));
+    assert(mock_has_file("/var/log/messages.1"));
+
+    /* Cycle 5: oldest .4.gz unlinked, shifted */
+    f = mock_find_file("/var/log/messages");
+    assert(f != NULL);
+    f->size = sz;
+    int rc5 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+    assert(rc5 == 0);
+    assert(!mock_has_file("/var/log/messages.5.gz"));
+    assert(!mock_has_file("/var/log/messages.5"));
+    assert(mock_has_file("/var/log/messages.4.gz"));
+    assert(mock_has_file("/var/log/messages.3.gz"));
+    assert(mock_has_file("/var/log/messages.2.gz"));
+    assert(mock_has_file("/var/log/messages.1"));
+
+    printf("PASS: test_delaycompress_lifecycle\n");
+}
+
+static void test_boundary_rotate_0_1_and_uncompressed(void) {
+    printf("[TEST] test_boundary_rotate_0_1_and_uncompressed...\n");
+
+    /* Subtest A: rotate 0 clears active file with mode preserved, no archives created */
+    {
+        mock_reset();
+        const char *cfg =
+            "/var/log/rot0.log {\n"
+            "    size 1M\n"
+            "    rotate 0\n"
+            "}\n";
+        mock_add_file("/etc/logrotate.conf", 0, S_IFREG | 0640, cfg);
+        mock_add_file("/var/log/rot0.log", 2ULL * 1024ULL * 1024ULL, S_IFREG | 0640, NULL);
+
+        char *argv[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
+        int rc = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc == 0);
+        assert(mock_has_file("/var/log/rot0.log"));
+        assert(mock_file_size("/var/log/rot0.log") == 0);
+        assert((mock_file_mode("/var/log/rot0.log") & 07777) == 0640);
+        assert(!mock_has_file("/var/log/rot0.log.1"));
+        assert(!mock_has_file("/var/log/rot0.log.1.gz"));
+    }
+
+    /* Subtest B: rotate 1 retains active.1 UNCOMPRESSED even if compress specified */
+    {
+        mock_reset();
+        const char *cfg =
+            "/var/log/rot1.log {\n"
+            "    size 1M\n"
+            "    rotate 1\n"
+            "    compress\n"
+            "}\n";
+        mock_add_file("/etc/logrotate.conf", 0, S_IFREG | 0644, cfg);
+        mock_add_file("/var/log/rot1.log", 2ULL * 1024ULL * 1024ULL, S_IFREG | 0640, NULL);
+
+        char *argv[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
+        int rc = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc == 0);
+        assert(mock_has_file("/var/log/rot1.log.1"));
+        assert(!mock_has_file("/var/log/rot1.log.1.gz")); /* Must remain uncompressed! */
+        assert(mock_has_file("/var/log/rot1.log"));
+        assert(mock_file_size("/var/log/rot1.log") == 0);
+
+        /* Rotate a second time: old .1 unlinked, new active -> .1 uncompressed */
+        mock_file_t *f = mock_find_file("/var/log/rot1.log");
+        assert(f != NULL);
+        f->size = 2ULL * 1024ULL * 1024ULL;
+        int rc2 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc2 == 0);
+        assert(mock_has_file("/var/log/rot1.log.1"));
+        assert(!mock_has_file("/var/log/rot1.log.1.gz"));
+        assert(!mock_has_file("/var/log/rot1.log.2"));
+    }
+
+    /* Subtest C: rotate 2 without compress shifts uncompressed */
+    {
+        mock_reset();
+        const char *cfg =
+            "/var/log/uncomp.log {\n"
+            "    size 1M\n"
+            "    rotate 2\n"
+            "}\n";
+        mock_add_file("/etc/logrotate.conf", 0, S_IFREG | 0644, cfg);
+        mock_add_file("/var/log/uncomp.log", 2ULL * 1024ULL * 1024ULL, S_IFREG | 0644, NULL);
+
+        char *argv[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
+        int rc = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc == 0);
+        assert(mock_has_file("/var/log/uncomp.log.1"));
+        assert(!mock_has_file("/var/log/uncomp.log.1.gz"));
+
+        mock_file_t *f = mock_find_file("/var/log/uncomp.log");
+        f->size = 2ULL * 1024ULL * 1024ULL;
+        int rc2 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc2 == 0);
+        assert(mock_has_file("/var/log/uncomp.log.2"));
+        assert(!mock_has_file("/var/log/uncomp.log.2.gz"));
+        assert(mock_has_file("/var/log/uncomp.log.1"));
+    }
+
+    printf("PASS: test_boundary_rotate_0_1_and_uncompressed\n");
+}
+
+static void test_atomic_mkdir_lock_collision_and_skip_if_locked(void) {
+    printf("[TEST] test_atomic_mkdir_lock_collision_and_skip_if_locked...\n");
+
+    /* Scenario A: Clean run creates lock, records PID, and cleans up cleanly on exit */
+    {
+        mock_reset();
+        const char *cfg =
+            "/var/log/messages {\n"
+            "    size 10M\n"
+            "    rotate 2\n"
+            "    missingok\n"
+            "}\n";
+        mock_add_file("/etc/logrotate.conf", 0, S_IFREG | 0644, cfg);
+
+        char *argv[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
+        int rc = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc == 0);
+        /* Lock directory and PID must be cleanly released */
+        assert(!mock_has_file(LOGROTATE_LOCK_PID));
+        assert(!mock_has_file(LOGROTATE_LOCK_DIR));
+    }
+
+    /* Scenario B: Collision when lock already held */
+    {
+        mock_reset();
+        const char *cfg =
+            "/var/log/messages {\n"
+            "    size 10M\n"
+            "    rotate 2\n"
+            "    missingok\n"
+            "}\n";
+        mock_add_file("/etc/logrotate.conf", 0, S_IFREG | 0644, cfg);
+
+        /* Pre-populate lock directory and PID file with PID 9999 */
+        mock_add_file(LOGROTATE_LOCK_DIR, 0, S_IFDIR | 0700, NULL);
+        mock_add_file(LOGROTATE_LOCK_PID, 0, S_IFREG | 0644, "9999\n");
+
+        /* B1: Direct invocation without --skip-if-locked: exits 1 */
+        char *argv1[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
+        int rc1 = logrotate_run_with_ops(2, argv1, &g_mock_ops);
+        assert(rc1 == 1);
+        assert(strstr(g_mock.stderr_buf, "locked by /run/logrotate.lock (pid 9999); skipping") != NULL);
+        /* Lock must NOT be unlinked on collision */
+        assert(mock_has_file(LOGROTATE_LOCK_DIR));
+        assert(mock_has_file(LOGROTATE_LOCK_PID));
+
+        /* B2: Cron invocation with --skip-if-locked: exits 0 */
+        g_mock.stderr_len = 0;
+        g_mock.stderr_buf[0] = '\0';
+        char *argv2[] = {"/sbin/logrotate", "--skip-if-locked", "/etc/logrotate.conf", NULL};
+        int rc2 = logrotate_run_with_ops(3, argv2, &g_mock_ops);
+        assert(rc2 == 0);
+        assert(strstr(g_mock.stderr_buf, "locked by /run/logrotate.lock (pid 9999); skipping") != NULL);
+        assert(mock_has_file(LOGROTATE_LOCK_DIR));
+        assert(mock_has_file(LOGROTATE_LOCK_PID));
+    }
+
+    printf("PASS: test_atomic_mkdir_lock_collision_and_skip_if_locked\n");
+}
+
+static void test_writer_interleaving_residual_risk(void) {
+    printf("[TEST] test_writer_interleaving_residual_risk...\n");
+    mock_reset();
+
+    const char *cfg =
+        "/var/log/messages {\n"
+        "    size 10M\n"
+        "    rotate 4\n"
+        "    compress\n"
+        "}\n";
+    mock_add_file("/etc/logrotate.conf", 0, S_IFREG | 0644, cfg);
+    mock_add_file("/var/log/messages", 11ULL * 1024ULL * 1024ULL, S_IFREG | 0640, "initial log data\n");
+
+    /* Scenario A: Writer opens file, write is paused across 1 rotation */
+    int writer_fd = mock_ops_open("/var/log/messages", VFS_O_WRONLY | VFS_O_APPEND, 0640);
+    assert(writer_fd > 0);
+
+    /* Logrotate runs cycle 1: messages -> messages.1 (uncompressed), active recreated */
+    char *argv[] = {"/sbin/logrotate", "/etc/logrotate.conf", NULL};
+    int rc1 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+    assert(rc1 == 0);
+    assert(mock_has_file("/var/log/messages.1"));
+    assert(!mock_has_file("/var/log/messages.1.gz"));
+
+    /* Writer resumes and writes through its open descriptor */
+    const char *delayed_record = "delayed writer record\n";
+    int64_t wn = mock_ops_write(writer_fd, delayed_record, strlen(delayed_record));
+    assert(wn == (int64_t)strlen(delayed_record));
+    mock_ops_close(writer_fd);
+
+    /* Because messages.1 was NOT compressed during this cycle, the write succeeded into messages.1 */
+    mock_file_t *f1 = mock_find_file("/var/log/messages.1");
+    assert(f1 != NULL);
+    assert(strstr(f1->content, "delayed writer record") != NULL);
+
+    /* Scenario B: Residual Risk Assertion for writer paused across >= 2 rotations */
+    int delayed_fd = mock_ops_open("/var/log/messages", VFS_O_WRONLY | VFS_O_APPEND, 0640);
+    assert(delayed_fd > 0);
+    mock_ops_write(delayed_fd, "pre-rotation write\n", 19);
+
+    /* Rotation 1: shifts to .1 */
+    mock_find_file("/var/log/messages")->size = 11ULL * 1024ULL * 1024ULL;
+    int r1 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+    assert(r1 == 0);
+
+    /* Rotation 2: shifts .1 -> .2 and compresses to .2.gz */
+    mock_find_file("/var/log/messages")->size = 11ULL * 1024ULL * 1024ULL;
+    int r2 = logrotate_run_with_ops(2, argv, &g_mock_ops);
+    assert(r2 == 0);
+    assert(mock_has_file("/var/log/messages.2.gz"));
+    assert(!mock_has_file("/var/log/messages.2")); /* unlinked after compression */
+
+    /* Now delayed writer wakes up after 2 full cycles */
+    mock_ops_write(delayed_fd, "late write after 2 cycles\n", 26);
+    mock_ops_close(delayed_fd);
+
+    /* The compressed archive exists intact */
+    assert(mock_has_file("/var/log/messages.2.gz"));
+
+    printf("PASS: test_writer_interleaving_residual_risk\n");
+}
+
+static void test_reserved_path_rejection(void) {
+    printf("[TEST] test_reserved_path_rejection...\n");
+
+    /* Subtest A: Reject /var/log/watchtower/ */
+    {
+        mock_reset();
+        const char *cfg =
+            "/var/log/watchtower/watchtower.log {\n"
+            "    size 10M\n"
+            "    rotate 4\n"
+            "}\n";
+        mock_add_file("/etc/bad.conf", 0, S_IFREG | 0644, cfg);
+        char *argv[] = {"/sbin/logrotate", "/etc/bad.conf", NULL};
+        int rc = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc != 0);
+        assert(strstr(g_mock.stderr_buf, "reserved for watchtower internal rotation") != NULL);
+    }
+
+    /* Subtest B: Reject /run/watchtower/ */
+    {
+        mock_reset();
+        const char *cfg =
+            "/run/watchtower/dhcpc.log {\n"
+            "    size 10M\n"
+            "    rotate 4\n"
+            "}\n";
+        mock_add_file("/etc/bad.conf", 0, S_IFREG | 0644, cfg);
+        char *argv[] = {"/sbin/logrotate", "/etc/bad.conf", NULL};
+        int rc = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc != 0);
+        assert(strstr(g_mock.stderr_buf, "reserved for watchtower internal rotation") != NULL);
+    }
+
+    /* Subtest C: Reject /var/log/boot.log */
+    {
+        mock_reset();
+        const char *cfg =
+            "/var/log/boot.log {\n"
+            "    size 10M\n"
+            "    rotate 4\n"
+            "}\n";
+        mock_add_file("/etc/bad.conf", 0, S_IFREG | 0644, cfg);
+        char *argv[] = {"/sbin/logrotate", "/etc/bad.conf", NULL};
+        int rc = logrotate_run_with_ops(2, argv, &g_mock_ops);
+        assert(rc != 0);
+        assert(strstr(g_mock.stderr_buf, "reserved for boot-log retention") != NULL);
+    }
+
+    printf("PASS: test_reserved_path_rejection\n");
 }
 
 int main(void) {
@@ -815,8 +1248,13 @@ int main(void) {
     test_uncompressed_and_compression_failure();
     test_config_fallback_path();
     test_real_posix_filesystem();
+    test_delaycompress_lifecycle();
+    test_boundary_rotate_0_1_and_uncompressed();
+    test_atomic_mkdir_lock_collision_and_skip_if_locked();
+    test_writer_interleaving_residual_risk();
+    test_reserved_path_rejection();
 
-    printf("\nALL 9 LOGROTATE HOST TESTS PASSED!\n");
+    printf("\nALL 14 LOGROTATE HOST TESTS PASSED!\n");
     return 0;
 }
 

@@ -11,6 +11,8 @@
 
 #define LOGROTATE_CONFIG_PRIMARY    "/etc/logrotate.conf"
 #define LOGROTATE_CONFIG_FALLBACK   "/mnt/.fortress/logrotate.conf"
+#define LOGROTATE_LOCK_DIR          "/run/logrotate.lock"
+#define LOGROTATE_LOCK_PID          "/run/logrotate.lock/pid"
 
 #ifndef S_IFMT
 #define S_IFMT   0170000u
@@ -57,6 +59,9 @@ typedef struct {
     int64_t (*waitpid)(int64_t pid, uint64_t *status, int options);
     void (*sleep_ms)(uint32_t ms);
     void (*log_err)(const char *msg);
+    int (*mkdir)(const char *path, uint32_t mode);
+    int64_t (*getpid)(void);
+    int (*kill)(int64_t pid, int sig);
 } logrotate_ops_t;
 
 void logrotate_config_init(logrotate_config_t *cfg);

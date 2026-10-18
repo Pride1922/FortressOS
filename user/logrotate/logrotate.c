@@ -1,3 +1,39 @@
+/*
+ * FortressOS /sbin/logrotate
+ *
+ * Implements bounded log rotation per LOGGING_FOUNDATION_PLAN.md:
+ *
+ * 1. Atomic Single-Instance Exclusion (SYS_MKDIR):
+ *    Exclusion is enforced using atomic directory creation:
+ *    sys_call(SYS_MKDIR, "/run/logrotate.lock", 0700).
+ *    If the directory already exists, acquisition fails closed on SYSCALL_EEXIST (-15).
+ *    Scheduled crond invocations pass --skip-if-locked and exit cleanly (0). Direct CLI
+ *    invocations without the flag exit 1 with diagnostic warning. The lock directory
+ *    records its owner PID in /run/logrotate.lock/pid and is cleanly removed on exit.
+ *    Because /run is an ephemeral in-memory filesystem (runfs), abandoned locks are
+ *    automatically cleared on system reboot.
+ *
+ * 2. Delaycompress Protocol & Residual Writer Risk:
+ *    Rotating shifts the active file to file.1 and leaves file.1 UNCOMPRESSED.
+ *    Compression is deferred to the subsequent cycle when file.1 shifts to file.2 and
+ *    is compressed into file.2.gz.
+ *    Residual Risk & Bounded Guarantee: FortressOS does not implement mandatory
+ *    byte-range locking. Delaycompress provides best-effort protection against transient
+ *    writer preemption: writers completing an append within one rotation cycle write
+ *    safely to file.1. If a writer is suspended across >= 2 full rotation cycles, its
+ *    write will append to file.2 or an unlinked vnode. Loss-free archival is guaranteed
+ *    for writers that complete within one rotation cycle.
+ *
+ * 3. Immediate Active Recreate:
+ *    Active files are immediately recreated with VFS_O_CREAT | VFS_O_WRONLY (no O_TRUNC)
+ *    so concurrent writers do not lose data or encounter missing path errors.
+ *
+ * 4. Subsystem Isolation:
+ *    /var/log/watchtower/ and /run/watchtower/ are reserved for Watchtower internal
+ *    rotation and barred from external logrotate management.
+ *    /var/log/boot.log and /run/boot.log are reserved for boot snapshot services alone.
+ */
+
 #include "logrotate.h"
 #include "syscall_abi.h"
 #include "signal_abi.h"
@@ -25,6 +61,16 @@ static bool lr_streq(const char *a, const char *b) {
         b++;
     }
     return *a == *b;
+}
+
+static bool lr_starts_with(const char *str, const char *prefix) {
+    if (!str || !prefix) return false;
+    while (*prefix) {
+        if (*str != *prefix) return false;
+        str++;
+        prefix++;
+    }
+    return true;
 }
 
 static void lr_strlcpy(char *dst, const char *src, size_t cap) {
@@ -182,6 +228,18 @@ int logrotate_parse_config(const char *buf, size_t len, logrotate_config_t *cfg,
                 lr_format_err(err_msg, err_cap, "path must be absolute", line_num);
                 return -1;
             }
+
+            /* Subsystem Isolation: Bar paths reserved for Watchtower or Boot Snapshot */
+            if (lr_starts_with(path_token, "/var/log/watchtower/") ||
+                lr_starts_with(path_token, "/run/watchtower/")) {
+                lr_format_err(err_msg, err_cap, "path is reserved for watchtower internal rotation", line_num);
+                return -1;
+            }
+            if (lr_streq(path_token, "/var/log/boot.log") || lr_streq(path_token, "/run/boot.log")) {
+                lr_format_err(err_msg, err_cap, "path is reserved for boot-log retention", line_num);
+                return -1;
+            }
+
             if (cfg->count >= LOGROTATE_MAX_ENTRIES) {
                 lr_format_err(err_msg, err_cap, "exceeded max 10 entries", line_num);
                 return -1;
@@ -455,54 +513,40 @@ int logrotate_rotate_entry(const logrotate_entry_t *entry, bool force,
 
     uint32_t N = entry->rotate;
     uint32_t orig_mode = st.mode;
+    uint32_t perm = orig_mode & 07777;
+    if (perm == 0) perm = 0640;
 
+    /* 1. Handle rotate 0: unlink active and recreate empty with original mode */
     if (N == 0) {
         (void)ops->unlink(entry->path);
-    } else {
-        /* 1. Unlink oldest: .N.gz and .N */
+        int fd = ops->open(entry->path, VFS_O_CREAT | VFS_O_WRONLY, perm);
+        if (fd >= 0) {
+            ops->close(fd);
+        } else {
+            if (ops->log_err) {
+                ops->log_err("logrotate: error: failed to recreate active file: ");
+                ops->log_err(entry->path);
+                ops->log_err("\n");
+            }
+            return -1;
+        }
+        return 0;
+    }
+
+    /* 2. Handle rotate 1:
+     * Unlink oldest archive (.1.gz and .1).
+     * Rename active -> .1.
+     * Immediately recreate active (no O_TRUNC).
+     * Retain .1 uncompressed even if compress configured (to preserve writer grace period). */
+    if (N == 1) {
         char oldest_gz[LOGROTATE_MAX_PATH + 32];
         char oldest_raw[LOGROTATE_MAX_PATH + 32];
-        lr_format_archive_path(oldest_gz, sizeof(oldest_gz), entry->path, N, ".gz");
-        lr_format_archive_path(oldest_raw, sizeof(oldest_raw), entry->path, N, "");
+        lr_format_archive_path(oldest_gz, sizeof(oldest_gz), entry->path, 1, ".gz");
+        lr_format_archive_path(oldest_raw, sizeof(oldest_raw), entry->path, 1, "");
         (void)ops->unlink(oldest_gz);
         (void)ops->unlink(oldest_raw);
 
-        /* 2. Shift archives: (N - 1) down to 1 */
-        for (int i = (int)N - 1; i >= 1; i--) {
-            char src_gz[LOGROTATE_MAX_PATH + 32];
-            char dst_gz[LOGROTATE_MAX_PATH + 32];
-            lr_format_archive_path(src_gz, sizeof(src_gz), entry->path, (uint32_t)i, ".gz");
-            lr_format_archive_path(dst_gz, sizeof(dst_gz), entry->path, (uint32_t)(i + 1), ".gz");
-
-            logrotate_stat_t probe_st;
-            if (ops->lstat(src_gz, &probe_st) == 0) {
-                int r = ops->rename(src_gz, dst_gz);
-                if (r < 0 && ops->log_err) {
-                    ops->log_err("logrotate: error: failed to rename archive: ");
-                    ops->log_err(src_gz);
-                    ops->log_err("\n");
-                }
-            }
-
-            char src_raw[LOGROTATE_MAX_PATH + 32];
-            char dst_raw[LOGROTATE_MAX_PATH + 32];
-            lr_format_archive_path(src_raw, sizeof(src_raw), entry->path, (uint32_t)i, "");
-            lr_format_archive_path(dst_raw, sizeof(dst_raw), entry->path, (uint32_t)(i + 1), "");
-
-            if (ops->lstat(src_raw, &probe_st) == 0) {
-                int r = ops->rename(src_raw, dst_raw);
-                if (r < 0 && ops->log_err) {
-                    ops->log_err("logrotate: error: failed to rename archive: ");
-                    ops->log_err(src_raw);
-                    ops->log_err("\n");
-                }
-            }
-        }
-
-        /* 3. Rename active file to file.1 */
-        char p1[LOGROTATE_MAX_PATH + 32];
-        lr_format_archive_path(p1, sizeof(p1), entry->path, 1, "");
-        int r = ops->rename(entry->path, p1);
+        int r = ops->rename(entry->path, oldest_raw);
         if (r < 0) {
             if (ops->log_err) {
                 ops->log_err("logrotate: error: failed to rename active file: ");
@@ -512,11 +556,67 @@ int logrotate_rotate_entry(const logrotate_entry_t *entry, bool force,
             return -1;
         }
 
-        /* 4. Compress if requested */
-        if (entry->compress) {
+        int fd = ops->open(entry->path, VFS_O_CREAT | VFS_O_WRONLY, perm);
+        if (fd >= 0) {
+            ops->close(fd);
+        } else {
+            if (ops->log_err) {
+                ops->log_err("logrotate: error: failed to recreate active file: ");
+                ops->log_err(entry->path);
+                ops->log_err("\n");
+            }
+            return -1;
+        }
+        return 0;
+    }
+
+    /* 3. General Case: rotate >= 2 with compress (Delaycompress) */
+    if (entry->compress) {
+        /* Step 4a: Unlink oldest (.N.gz and .N) */
+        char oldest_gz[LOGROTATE_MAX_PATH + 32];
+        char oldest_raw[LOGROTATE_MAX_PATH + 32];
+        lr_format_archive_path(oldest_gz, sizeof(oldest_gz), entry->path, N, ".gz");
+        lr_format_archive_path(oldest_raw, sizeof(oldest_raw), entry->path, N, "");
+        (void)ops->unlink(oldest_gz);
+        (void)ops->unlink(oldest_raw);
+
+        /* Step 4b: Shift older compressed archives (N - 1 down to 2) */
+        for (int i = (int)N - 1; i >= 2; i--) {
+            char src_gz[LOGROTATE_MAX_PATH + 32];
+            char dst_gz[LOGROTATE_MAX_PATH + 32];
+            lr_format_archive_path(src_gz, sizeof(src_gz), entry->path, (uint32_t)i, ".gz");
+            lr_format_archive_path(dst_gz, sizeof(dst_gz), entry->path, (uint32_t)(i + 1), ".gz");
+
+            logrotate_stat_t probe_st;
+            if (ops->lstat(src_gz, &probe_st) == 0) {
+                (void)ops->rename(src_gz, dst_gz);
+            }
+
+            char src_raw[LOGROTATE_MAX_PATH + 32];
+            char dst_raw[LOGROTATE_MAX_PATH + 32];
+            lr_format_archive_path(src_raw, sizeof(src_raw), entry->path, (uint32_t)i, "");
+            lr_format_archive_path(dst_raw, sizeof(dst_raw), entry->path, (uint32_t)(i + 1), "");
+
+            if (ops->lstat(src_raw, &probe_st) == 0) {
+                (void)ops->rename(src_raw, dst_raw);
+            }
+        }
+
+        /* Step 4c: Shift and compress previous shift (active.1 -> active.2 -> active.2.gz) */
+        char p1[LOGROTATE_MAX_PATH + 32];
+        char p2[LOGROTATE_MAX_PATH + 32];
+        char p1_gz[LOGROTATE_MAX_PATH + 32];
+        lr_format_archive_path(p1, sizeof(p1), entry->path, 1, "");
+        lr_format_archive_path(p2, sizeof(p2), entry->path, 2, "");
+        lr_format_archive_path(p1_gz, sizeof(p1_gz), entry->path, 1, ".gz");
+
+        logrotate_stat_t probe_st;
+        if (ops->lstat(p1, &probe_st) == 0) {
+            (void)ops->rename(p1, p2);
+
             bool compress_ok = false;
             if (ops->spawn && ops->waitpid) {
-                const char *gzip_argv[] = {"/bin/gzip", "-f", p1, NULL};
+                const char *gzip_argv[] = {"/bin/gzip", "-f", p2, NULL};
                 int64_t pid = ops->spawn("/bin/gzip", gzip_argv);
                 if (pid > 0) {
                     int elapsed_ms = 0;
@@ -537,62 +637,134 @@ int logrotate_rotate_entry(const logrotate_entry_t *entry, bool force,
                         }
                         elapsed_ms += 50;
                     }
-                    if (!compress_ok && elapsed_ms >= LOGROTATE_GZIP_TIMEOUT_MS && ops->log_err) {
-                        ops->log_err("logrotate: error: /bin/gzip timed out\n");
+                    if (!compress_ok && elapsed_ms >= LOGROTATE_GZIP_TIMEOUT_MS) {
+                        if (ops->kill) ops->kill(pid, SIGKILL);
+                        (void)ops->waitpid(pid, &status, 0);
+                        if (ops->log_err) {
+                            ops->log_err("logrotate: error: /bin/gzip timed out\n");
+                        }
                     }
                 } else if (ops->log_err) {
                     ops->log_err("logrotate: error: failed to spawn /bin/gzip\n");
                 }
-            } else if (ops->log_err) {
-                ops->log_err("logrotate: error: spawn/waitpid unavailable for compression\n");
             }
-
             if (!compress_ok && ops->log_err) {
                 ops->log_err("logrotate: warning: left archive uncompressed: ");
-                ops->log_err(p1);
+                ops->log_err(p2);
                 ops->log_err("\n");
             }
+        } else if (ops->lstat(p1_gz, &probe_st) == 0) {
+            char p2_gz[LOGROTATE_MAX_PATH + 32];
+            lr_format_archive_path(p2_gz, sizeof(p2_gz), entry->path, 2, ".gz");
+            (void)ops->rename(p1_gz, p2_gz);
         }
+
+        /* Step 4d: Shift active file to active.1 */
+        int r = ops->rename(entry->path, p1);
+        if (r < 0) {
+            if (ops->log_err) {
+                ops->log_err("logrotate: error: failed to rename active file: ");
+                ops->log_err(entry->path);
+                ops->log_err("\n");
+            }
+            return -1;
+        }
+
+        /* Step 4e: Immediately recreate active file (no O_TRUNC) */
+        int fd = ops->open(entry->path, VFS_O_CREAT | VFS_O_WRONLY, perm);
+        if (fd >= 0) {
+            ops->close(fd);
+        } else {
+            if (ops->log_err) {
+                ops->log_err("logrotate: error: failed to recreate active file: ");
+                ops->log_err(entry->path);
+                ops->log_err("\n");
+            }
+            return -1;
+        }
+
+        /* Step 4f: active.1 remains uncompressed */
+        return 0;
     }
 
-    /* 5. Recreate active file (empty) with original permissions */
-    uint32_t perm = orig_mode & 07777;
-    if (perm == 0) perm = 0644;
-    int fd = ops->open(entry->path, VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, perm);
-    if (fd >= 0) {
-        ops->close(fd);
-    } else {
-        if (ops->log_err) {
-            ops->log_err("logrotate: error: failed to recreate active file: ");
-            ops->log_err(entry->path);
-            ops->log_err("\n");
-        }
-        return -1;
-    }
+    /* 4. General Case: rotate >= 2 without compress */
+    {
+        char oldest_gz[LOGROTATE_MAX_PATH + 32];
+        char oldest_raw[LOGROTATE_MAX_PATH + 32];
+        lr_format_archive_path(oldest_gz, sizeof(oldest_gz), entry->path, N, ".gz");
+        lr_format_archive_path(oldest_raw, sizeof(oldest_raw), entry->path, N, "");
+        (void)ops->unlink(oldest_gz);
+        (void)ops->unlink(oldest_raw);
 
-    return 0;
+        for (int i = (int)N - 1; i >= 1; i--) {
+            char src_gz[LOGROTATE_MAX_PATH + 32];
+            char dst_gz[LOGROTATE_MAX_PATH + 32];
+            lr_format_archive_path(src_gz, sizeof(src_gz), entry->path, (uint32_t)i, ".gz");
+            lr_format_archive_path(dst_gz, sizeof(dst_gz), entry->path, (uint32_t)(i + 1), ".gz");
+            logrotate_stat_t probe_st;
+            if (ops->lstat(src_gz, &probe_st) == 0) {
+                (void)ops->rename(src_gz, dst_gz);
+            }
+
+            char src_raw[LOGROTATE_MAX_PATH + 32];
+            char dst_raw[LOGROTATE_MAX_PATH + 32];
+            lr_format_archive_path(src_raw, sizeof(src_raw), entry->path, (uint32_t)i, "");
+            lr_format_archive_path(dst_raw, sizeof(dst_raw), entry->path, (uint32_t)(i + 1), "");
+            if (ops->lstat(src_raw, &probe_st) == 0) {
+                (void)ops->rename(src_raw, dst_raw);
+            }
+        }
+
+        char p1[LOGROTATE_MAX_PATH + 32];
+        lr_format_archive_path(p1, sizeof(p1), entry->path, 1, "");
+        int r = ops->rename(entry->path, p1);
+        if (r < 0) {
+            if (ops->log_err) {
+                ops->log_err("logrotate: error: failed to rename active file: ");
+                ops->log_err(entry->path);
+                ops->log_err("\n");
+            }
+            return -1;
+        }
+
+        int fd = ops->open(entry->path, VFS_O_CREAT | VFS_O_WRONLY, perm);
+        if (fd >= 0) {
+            ops->close(fd);
+        } else {
+            if (ops->log_err) {
+                ops->log_err("logrotate: error: failed to recreate active file: ");
+                ops->log_err(entry->path);
+                ops->log_err("\n");
+            }
+            return -1;
+        }
+        return 0;
+    }
 }
 
 int logrotate_run_with_ops(int argc, char **argv, const logrotate_ops_t *ops) {
     if (!ops) return 1;
 
     bool force = false;
+    bool skip_if_locked = false;
     const char *config_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (lr_streq(arg, "-f") || lr_streq(arg, "--force")) {
             force = true;
+        } else if (lr_streq(arg, "--skip-if-locked")) {
+            skip_if_locked = true;
         } else if (lr_streq(arg, "-h") || lr_streq(arg, "--help")) {
             if (ops->log_err) {
-                ops->log_err("usage: logrotate [-f|--force] [<config_file>]\n");
+                ops->log_err("usage: logrotate [-f|--force] [--skip-if-locked] [<config_file>]\n");
             }
             return 0;
         } else if (arg[0] == '-') {
             if (ops->log_err) {
                 ops->log_err("logrotate: unknown option: ");
                 ops->log_err(arg);
-                ops->log_err("\nusage: logrotate [-f|--force] [<config_file>]\n");
+                ops->log_err("\nusage: logrotate [-f|--force] [--skip-if-locked] [<config_file>]\n");
             }
             return 1;
         } else {
@@ -603,6 +775,74 @@ int logrotate_run_with_ops(int argc, char **argv, const logrotate_ops_t *ops) {
                 return 1;
             }
             config_path = arg;
+        }
+    }
+
+    /* 1. Acquire Exclusion via atomic SYS_MKDIR */
+    bool lock_acquired = false;
+    if (ops->mkdir) {
+        int mret = ops->mkdir(LOGROTATE_LOCK_DIR, 0700);
+        if (mret != 0) {
+            if (mret == -15 || mret == -SYSCALL_EEXIST) {
+                /* Collision: read existing owner PID if present */
+                int pfd = ops->open ? ops->open(LOGROTATE_LOCK_PID, VFS_O_RDONLY, 0) : -1;
+                int64_t held_pid = -1;
+                if (pfd >= 0) {
+                    char pbuf[32];
+                    int64_t pn = ops->read ? ops->read(pfd, pbuf, sizeof(pbuf) - 1) : -1;
+                    if (ops->close) ops->close(pfd);
+                    if (pn > 0) {
+                        pbuf[pn] = '\0';
+                        size_t pi = 0;
+                        while (pi < (size_t)pn && lr_isblank(pbuf[pi])) pi++;
+                        if (pi < (size_t)pn && lr_isdigit(pbuf[pi])) {
+                            int64_t val = 0;
+                            while (pi < (size_t)pn && lr_isdigit(pbuf[pi])) {
+                                val = val * 10 + (pbuf[pi] - '0');
+                                pi++;
+                            }
+                            held_pid = val;
+                        }
+                    }
+                }
+
+                if (ops->log_err) {
+                    char lmsg[128];
+                    lmsg[0] = '\0';
+                    lr_strlcat(lmsg, "logrotate: locked by ", sizeof(lmsg));
+                    lr_strlcat(lmsg, LOGROTATE_LOCK_DIR, sizeof(lmsg));
+                    lr_strlcat(lmsg, " (pid ", sizeof(lmsg));
+                    if (held_pid > 0) {
+                        lr_append_u64(lmsg, (uint64_t)held_pid, sizeof(lmsg));
+                    } else {
+                        lr_strlcat(lmsg, "unknown", sizeof(lmsg));
+                    }
+                    lr_strlcat(lmsg, "); skipping\n", sizeof(lmsg));
+                    ops->log_err(lmsg);
+                }
+
+                return skip_if_locked ? 0 : 1;
+            } else {
+                if (ops->log_err) {
+                    ops->log_err("logrotate: failed to acquire lock directory\n");
+                }
+                return 1;
+            }
+        }
+        lock_acquired = true;
+
+        /* Write PID file */
+        if (ops->open && ops->write && ops->close) {
+            int pfd = ops->open(LOGROTATE_LOCK_PID, VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0644);
+            if (pfd >= 0) {
+                int64_t my_pid = ops->getpid ? ops->getpid() : 0;
+                char pbuf[32];
+                pbuf[0] = '\0';
+                lr_append_u64(pbuf, (uint64_t)my_pid, sizeof(pbuf));
+                lr_strlcat(pbuf, "\n", sizeof(pbuf));
+                ops->write(pfd, pbuf, lr_strlen(pbuf));
+                ops->close(pfd);
+            }
         }
     }
 
@@ -618,6 +858,10 @@ int logrotate_run_with_ops(int argc, char **argv, const logrotate_ops_t *ops) {
                 ops->log_err(err_msg[0] ? err_msg : "logrotate: failed to load config");
                 ops->log_err("\n");
             }
+            if (lock_acquired && ops->unlink) {
+                ops->unlink(LOGROTATE_LOCK_PID);
+                ops->unlink(LOGROTATE_LOCK_DIR);
+            }
             return 1;
         }
     } else {
@@ -632,6 +876,10 @@ int logrotate_run_with_ops(int argc, char **argv, const logrotate_ops_t *ops) {
                     ops->log_err(err_msg[0] ? err_msg : "logrotate: cannot open config file (tried primary and fallback)");
                     ops->log_err("\n");
                 }
+                if (lock_acquired && ops->unlink) {
+                    ops->unlink(LOGROTATE_LOCK_PID);
+                    ops->unlink(LOGROTATE_LOCK_DIR);
+                }
                 return 1;
             }
         }
@@ -643,6 +891,12 @@ int logrotate_run_with_ops(int argc, char **argv, const logrotate_ops_t *ops) {
         if (r != 0) {
             overall_status = 1;
         }
+    }
+
+    /* Release exclusion */
+    if (lock_acquired && ops->unlink) {
+        ops->unlink(LOGROTATE_LOCK_PID);
+        ops->unlink(LOGROTATE_LOCK_DIR);
     }
 
     return overall_status;
@@ -750,6 +1004,26 @@ static void prod_log_err(const char *msg) {
     }
 }
 
+static int prod_mkdir(const char *path, uint32_t mode) {
+    if (!path) return -1;
+    long ret = sys_call(SYS_MKDIR, (uintptr_t)path, (uintptr_t)mode, 0, 0, 0, 0);
+    return (int)ret;
+}
+
+static int64_t prod_getpid(void) {
+    proc_info_t pi;
+    for (size_t i = 0; i < sizeof(pi); i++) ((uint8_t *)&pi)[i] = 0;
+    long ret = sys_call(SYS_PROCINFO, PROC_INFO_SELF, (uintptr_t)&pi, 0, 0, 0, 0);
+    if (ret < 0) return 1;
+    return (int64_t)pi.pid;
+}
+
+static int prod_kill(int64_t pid, int sig) {
+    if (pid <= 0) return -1;
+    long ret = sys_call(SYS_KILL, (uintptr_t)pid, (uintptr_t)sig, 0, 0, 0, 0);
+    return (int)ret;
+}
+
 int logrotate_main(int argc, char **argv) {
     static logrotate_ops_t ops;
     ops.lstat = prod_lstat;
@@ -764,6 +1038,9 @@ int logrotate_main(int argc, char **argv) {
     ops.waitpid = prod_waitpid;
     ops.sleep_ms = prod_sleep_ms;
     ops.log_err = prod_log_err;
+    ops.mkdir = prod_mkdir;
+    ops.getpid = prod_getpid;
+    ops.kill = prod_kill;
 
     return logrotate_run_with_ops(argc, argv, &ops);
 }

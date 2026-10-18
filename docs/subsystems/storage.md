@@ -144,3 +144,32 @@ perform bounded I/O under their existing exclusion. Failures leave output untouc
 `make test-fstat-host` and `make test-fstat` cover the contract; `/bin/fstat-probe`
 is packaged only with explicit `FSTAT_TEST_PROBE=1` in isolated test media.
 See [implementation and evidence](../roadmap/fstat.md).
+
+## Runfs Capacity & RAM Logging Policy
+
+`runfs` (`src/fs/runfs.c`) provides bounded in-memory storage for `/run` and `/tmp`.
+Key architectural parameters and policy guarantees include:
+
+1. **Fixed Capacity Limits**:
+   - `RUNFS_BYTES = 4096u`: Every vnode has a fixed 4 KiB pool buffer. Writes exceeding
+     4 KiB fail closed with `ENOSPC`/`EFBIG`.
+   - `RUNFS_NODES = 64u`: Bounded global node pool. Allocation beyond 64 nodes fails.
+
+2. **RAM Logging Constraints**:
+   - `/run/messages` and `/run/watchtower/*.log` are strictly ephemeral fallback buffers
+     for early boot or live read-only media.
+   - When active logging falls back to `/run/watchtower`, Watchtower adapts the rotation
+     threshold from 1 MiB down to 2 KiB (`WT_LOG_MAX_SIZE_RAM = 2048`).
+   - RAM log retention is capped at 2 generations of uncompressed 2 KiB archives (`.1`, `.2`),
+     guaranteeing total retained log content per service does not exceed 6 KiB.
+   - In-memory `/bin/gzip` execution is suppressed on RAM logs to avoid process churn
+     and header/trailer overhead on small 2 KiB buffers.
+   - Incoming pipe drain chunks check headroom against the 2 KiB ceiling; chunks exceeding
+     headroom are truncated, and discarded bytes increment `service->dropped_bytes`.
+
+3. **Atomic Mutual Exclusion in Ephemeral Storage**:
+   - Atomic directory creation via `SYS_MKDIR` (`/run/logrotate.lock`, mode `0700`) enforces
+     single-instance execution without advisory lock files or racy `O_CREAT` files.
+   - Being memory-backed, `/run` automatically cleans any abandoned lock directories across
+     reboots, eliminating persistent stale locks from power loss or panics.
+

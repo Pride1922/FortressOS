@@ -3,6 +3,26 @@
 #include "string.h"
 #include "heap.h"
 
+/*
+ * RUNFS Capacity and Ephemeral State Policy:
+ * RUNFS enforces a hard, fixed capacity ceiling of RUNFS_BYTES = 4096u (4 KiB)
+ * per vnode, and RUNFS_NODES = 64u total nodes across the entire filesystem.
+ *
+ * This memory-backed filesystem provides ephemeral storage for early boot and
+ * live read-only media (/run, /run/user, /run/watchtower).
+ *
+ * Logging Subsystem Policy (LOGGING_FOUNDATION_PLAN Section 4.2 & 4.3.5):
+ * - Files in /run (e.g., /run/messages, /run/watchtower/<service>.log) are strictly
+ *   emergency fallback buffers.
+ * - Single-append writes cannot exceed available node headroom; writes exceeding
+ *   4096 bytes fail closed with ENOSPC/EFBIG.
+ * - Watchtower RAM logging adapts active file rotation to 2 KiB (WT_LOG_MAX_SIZE_RAM = 2048)
+ *   and retains at most 2 uncompressed generations (.1, .2) of <= 2 KiB, guaranteeing
+ *   total retained log content per service does not exceed 6 KiB. Incoming pipe chunks
+ *   are truncated to available headroom, accounting discarded bytes to dropped_bytes.
+ * - Log rotation lockdir (/run/logrotate.lock) is ephemeral and automatically cleared
+ *   on reboot without persistent stale-lock leaks.
+ */
 #define RUNFS_NODES 64u
 #define RUNFS_BYTES 4096u
 typedef struct { vfs_node_t node; uint32_t refs; bool used,removed,legacy; uint8_t data[RUNFS_BYTES]; } run_node_t;
