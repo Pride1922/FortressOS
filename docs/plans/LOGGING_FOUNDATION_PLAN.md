@@ -115,25 +115,103 @@ A fundamental architectural trade-off exists between strict process isolation an
   - No silent fallback to `/mnt/.fortress/...`.
 
 ### 4.3 Logrotate Concurrency, Delaycompress, & Atomic Exclusion
-- **The Writer vs Compressor Race**:
-  - In a concurrent system, a writer (`logger` or daemon) may open `messages` with `VFS_O_APPEND` just before `logrotate` shifts the file (`messages -> messages.1`).
-  - The writer still holds a valid open file descriptor pointing to the vnode now named `messages.1`.
-  - If `logrotate` immediately compresses `messages.1` with `/bin/gzip`, any writes in-flight or delayed by scheduler preemption will append data to `messages.1` *while* gzip is reading or unlinking it, resulting in truncated records or gzip corruption.
-- **The Delaycompress Protocol**:
-  - To eliminate the compression race without complex kernel file locking:
-    1. Unlink oldest retained archive (`.N.gz`).
-    2. Shift compressed archives: `.N-1.gz -> .N.gz` down to `.2.gz -> .3.gz`.
-    3. Compress the previous cycle's uncompressed shift: `messages.1 -> messages.2.gz` via `/bin/gzip -f messages.2` (after renaming `.1 -> .2`).
-    4. Rename active file: `messages -> messages.1`.
-    5. **Immediately recreate active file**: `open(path, VFS_O_CREAT | VFS_O_WRONLY, orig_mode & 07777)` (without `VFS_O_TRUNC`) and close.
-    6. `messages.1` remains **uncompressed** for the duration of the current cycle. Any delayed writes from pre-existing open file descriptors complete safely into `messages.1`.
-    7. On the *subsequent* rotation cycle, all pre-existing writers have long since closed their descriptors, allowing safe compression into `.2.gz`.
-- **Atomic Exclusion**:
-  - Multiple concurrent `logrotate` instances (e.g. manual CLI invocation while `crond` triggers scheduled rotation) must not interleave.
-  - Exclusion is enforced via an atomic lockfile `/run/logrotate.pid`:
-    - Open with `VFS_O_CREAT | VFS_O_WRONLY` and inspect PID, or fail if locked.
-    - If stale PID is detected (process not alive via `kill(pid, 0)`), break lock cleanly.
-    - Release lockfile upon exit.
+
+#### 4.3.1 The Delaycompress Protocol & Residual Writer Risk
+- **Mechanism**:
+  - Rotating shifts the active file to `messages.1` and leaves `messages.1` **uncompressed**.
+  - Compression is deferred to the subsequent cycle when `messages.1` is shifted to `messages.2` and compressed into `messages.2.gz`.
+- **Residual Risk & Bounded Reality**:
+  - Delaycompress drastically narrows the open-descriptor race compared to immediate compression, but **it does not theoretically eliminate it**:
+    - If a writer process opens `messages` with `VFS_O_APPEND`, gets preempted/suspended by the scheduler (or paused across two rapid manual rotations), and only executes its `SYS_WRITE` after two full rotation cycles, it will append data to `messages.2` while `/bin/gzip` is reading or replacing it.
+  - **Explicit Guarantee**: Delayed compression is a **best-effort protection** against transient writer preemption. FortressOS does not implement whole-file advisory or mandatory byte-range locking. Loss-free archival is guaranteed only for writers that complete their single-record append within one rotation cycle.
+  - A dedicated host test (`tests/logrotate_host.c`) verifies writer interleaving: a paused writer holding an open descriptor across one rotation appends safely to `messages.1`, and a writer held across two rotations is asserted under best-effort residual risk behavior.
+
+#### 4.3.2 Atomic Single-Instance Exclusion (`SYS_MKDIR`)
+- **The Problem with Ordinary Files**:
+  - In FortressOS VFS, `SYS_OPEN` with `VFS_O_CREAT` does not support `O_EXCL`. Two processes attempting to open a lockfile simultaneously can both succeed, leading to corrupt or concurrent rotation shifts.
+- **Atomic Exclusion Mechanism**:
+  - Exclusion is enforced using **atomic directory creation via `SYS_MKDIR`**:
+    - `sys_call(SYS_MKDIR, "/run/logrotate.lock", 0700)` maps to `vfs_create_common(..., VFS_DIRECTORY, ...)` which executes under filesystem spinlock (`run_lock` or `ext2_lock`).
+    - If the directory already exists, `SYS_MKDIR` returns the userspace ABI error `SYSCALL_EEXIST` (`-15`).
+  - **Ownership & PID Tracking**:
+    - Upon successful directory creation, `logrotate` writes its PID to `/run/logrotate.lock/pid`.
+  - **Stale Lock Policy (Fail-Closed, No Automatic Removal, Explicit CLI Switch)**:
+    - Automatic stale-lock removal introduces destructive races: if two recovering processes observe a dead PID, or if a creator process is delayed between `mkdir` and writing its PID, an aggressive recoverer can remove a newly acquired lock owned by a live process.
+    - **Contract**: Acquisition fails closed on `SYSCALL_EEXIST` (`-15`). `logrotate` prints a diagnostic warning to stderr (`"logrotate: locked by /run/logrotate.lock (pid %ld); skipping\n"`).
+    - **Explicit Mode Switch (`--skip-if-locked`)**:
+      - Because an executable cannot reliably infer whether it was invoked interactively or by `crond`:
+        - Scheduled cron jobs invoke `/sbin/logrotate --skip-if-locked /etc/logrotate.conf`. When `--skip-if-locked` is passed and `SYS_MKDIR` returns `SYSCALL_EEXIST`, `logrotate` exits `0` (clean skip without supervisor/cron failure).
+        - Direct administrative invocations (omitting `--skip-if-locked`) exit nonzero (`1`) on lock collision.
+    - **No automatic deletion**: Because `/run` is an ephemeral in-memory filesystem (`runfs`), abandoned locks from unhandled system panics are automatically cleared on reboot. Explicit administrative recovery is performed by manually removing `/run/logrotate.lock` via `/bin/rm -rf` or shell.
+  - **Clean Release**:
+    - On exit (normal completion or error), the lock creator unlinks `/run/logrotate.lock/pid` and removes `/run/logrotate.lock` with `SYS_UNLINK`.
+
+#### 4.3.3 Exact Rotation Sequencing & Boundary Conditions
+The rotation engine supports all valid configuration combinations (`rotate 0`, `rotate 1`, `rotate >= 2`, with or without `compress`).
+
+**Recreation Timing & Active Path Availability**:
+- Between `rename(active, active.1)` and `open(active, O_CREAT)`, the active path is not present in directory lookups.
+- However, FortressOS writers (`logger` or daemons) open the audit file with `VFS_O_CREAT | VFS_O_WRONLY | VFS_O_APPEND`. If a writer initiates an append during this brief window, its `open` simply recreates the active file directly and appends successfully, without requiring assistance from `logrotate`.
+- If creation fails because the filesystem is read-only (`EROFS`) or the parent directory is missing (`ENOENT`), the writer falls back to `/run/messages`. If storage is exhausted (`ENOSPC`), the write fails closed and does **not** fall back (as defined in Section 4.1).
+
+**Step Sequence by Archive Count & Mode**:
+1. **Acquire Exclusion**: Atomically create `/run/logrotate.lock`. On `SYSCALL_EEXIST`, exit 0 if `--skip-if-locked`, else exit 1.
+2. **Handle `rotate 0`**:
+   - If `entry->rotate == 0`:
+     - Truncate or unlink `active`.
+     - Recreate `active` (empty) with `orig_mode & 07777`.
+     - Release lock and return 0.
+3. **Handle `rotate 1`**:
+   - Unlink oldest archive (`active.1.gz` and `active.1`).
+   - Rename active file: `active -> active.1`.
+   - **Immediately recreate active file**: Open `active` with `VFS_O_CREAT | VFS_O_WRONLY` (`orig_mode & 07777`, **no** `O_TRUNC`) and close.
+   - **Compression Policy for `rotate 1`**:
+     - Immediate compression on `rotate 1` would eliminate the one-cycle grace period and reintroduce the writer-vs-compressor race on `active.1`.
+     - Therefore, `active.1` is retained **uncompressed** even if `compress` is configured, guaranteeing that in-flight open descriptors write safely without corrupting a concurrent gzip process.
+     - Release lock and return 0.
+4. **General Case (`rotate >= 2`) with `compress` (Delaycompress)**:
+   - **Step 4a (Unlink Oldest)**: Unlink `active.N.gz` and `active.N`.
+   - **Step 4b (Shift Older Compressed Archives)**:
+     - For `i = N - 1` down to `2`: rename `active.i.gz -> active.(i+1).gz` and `active.i -> active.(i+1)`.
+   - **Step 4c (Shift and Compress Previous Shift)**:
+     - If `active.1` exists:
+       - Rename `active.1 -> active.2`.
+       - Spawn `/bin/gzip -f active.2` (bounded timeout, e.g. 5 seconds).
+       - Wait for exit. On timeout, send `SIGKILL`, await confirmed child exit via `waitpid`, and leave `active.2` uncompressed.
+   - **Step 4d (Shift Active File)**:
+     - Rename `active -> active.1`.
+   - **Step 4e (Recreate Active File)**:
+     - Open `active` with `VFS_O_CREAT | VFS_O_WRONLY` (`orig_mode & 07777`, **no** `O_TRUNC`) and close.
+   - **Step 4f**: `active.1` remains uncompressed during this cycle.
+5. **General Case (`rotate >= 2`) without `compress`**:
+   - Unlink `active.N`.
+   - Shift archives uncompressed: `active.i -> active.(i+1)` for `i = N - 1` down to `1`.
+   - Rename `active -> active.1`.
+   - Recreate `active` with `orig_mode & 07777` and close.
+6. **Release Exclusion**: Remove `/run/logrotate.lock/pid` and `/run/logrotate.lock`.
+
+#### 4.3.4 Asynchronous Compression in Watchtower
+- **Confirmed Exit Before Cleanup or Reuse**:
+  - Watchtower tracks `wt_compress_pid` and `wt_compress_archive`.
+  - While `wt_compress_pid > 0`, supervisor rotation ticks **must not initiate new compression jobs**, and must not shift, rename, or unlink `wt_compress_archive`.
+  - On each supervisor tick, check child exit via `sys_call(SYS_WAITPID, wt_compress_pid, &status, WNOHANG)`.
+  - **Timeout Handling**:
+    - If elapsed time exceeds 5 seconds, send `sys_call(SYS_KILL, wt_compress_pid, SIGKILL)`.
+    - **Do NOT immediately unlink output paths**: The child process may still be executing syscalls until scheduled. Keep the compression slot reserved.
+    - Only after `SYS_WAITPID` subsequently reaps the dead child PID and confirms process exit does Watchtower unlink the partial `.gz` file, mark the archive uncompressed, and clear `wt_compress_pid = 0`.
+- **Capacity & Concurrency Cap**:
+  - Exactly **one** asynchronous compression child is permitted across the entire supervisor at any time.
+
+#### 4.3.5 Consistent RAM Log Retention & Runfs Safeguards
+- **Consistent 2 KiB Threshold**:
+  - In `runfs`, each vnode reserves a fixed 4 KiB pool entry (`RUNFS_BYTES = 4096u`) regardless of file length.
+  - To prevent individual log files from exhausting node capacity or triggering `ENOSPC` during drain appends:
+    - The active log file rotation threshold is strictly set to **2 KiB** (`WT_LOG_MAX_SIZE_RAM = 2048`).
+    - Incoming pipe drain chunks check remaining headroom against this 2 KiB ceiling: `2048 - current_size`. If a chunk exceeds remaining headroom, it is truncated to fit, and discarded bytes are explicitly added to `service->dropped_bytes`.
+  - **Uncompressed RAM Retention**:
+    - Archives in `/run/watchtower/` are retained **uncompressed** (`watchtower.log.1`, `watchtower.log.2`).
+    - Gzip stream headers (10 bytes), block dynamic trees, and deflate trailers on small 2 KiB buffers introduce overhead without substantial compression benefit, and spawn unnecessary processes in ephemeral memory.
+    - Retention in RAM is capped at **2 generations of 2 KiB**, guaranteeing that total **retained log content** for a service log never exceeds `6 KiB` (active + 2 generations × <= 2 KiB content), avoiding file capacity exhaustion.
 
 ### 4.4 Timestamp Formatting & Edge Cases
 - Timestamps are retrieved via `SYS_CLOCK_GETTIME` with `CLOCK_REALTIME`.
@@ -193,18 +271,27 @@ A fundamental architectural trade-off exists between strict process isolation an
 
 ### Phase 0: Prerequisite Fixes & Policies
 - Update `user/logrotate/logrotate.c`:
-  - Adopt `delaycompress` rotation flow:
-    - Shift compressed archives `.N-1.gz -> .N.gz` down to `.2.gz -> .3.gz`.
-    - Shift `.1 -> .2` and compress `.2 -> .2.gz`.
-    - Rename active `messages -> messages.1`.
-    - **Immediately** recreate active file (`VFS_O_CREAT | VFS_O_WRONLY`, original mode, no `O_TRUNC`) before any compression.
-    - Leave `messages.1` uncompressed to allow in-flight open descriptors to write safely without data loss or compression race.
-  - Add atomic exclusion via `/run/logrotate.pid` to prevent concurrent CLI and crond runs.
-  - Update `tests/logrotate_host.c` to assert `delaycompress` behavior and lockfile exclusion.
+  - Adopt exact rotation sequences for `rotate 0`, `rotate 1`, and `rotate >= 2` with/without `compress`:
+    1. Acquire exclusion via atomic `SYS_MKDIR("/run/logrotate.lock", 0700)`. Fail closed on `SYSCALL_EEXIST` (`-15`). If `--skip-if-locked` is specified, exit 0; otherwise exit 1. No racy automatic stale deletion.
+    2. Handle archive shifting per boundary rules (`rotate 0` clears active; `rotate 1` shifts active -> .1 uncompressed; `rotate >= 2` shifts archives).
+    3. Under `delaycompress`: compress previous shift `.2 -> .2.gz` and wait for confirmed child exit before rotating active.
+    4. Rename active `messages -> messages.1`.
+    5. **Immediately** recreate active file (`VFS_O_CREAT | VFS_O_WRONLY`, original mode, no `O_TRUNC`) before releasing exclusion.
+    6. Cleanly release exclusion directory.
+  - Document residual risk for writers held across >= 2 rotations.
+  - Update `tests/logrotate_host.c`:
+    - Assert `delaycompress` behavior (active -> .1 uncompressed, .2 compressed to .2.gz).
+    - Assert boundary conditions: `rotate 0`, `rotate 1` (uncompressed retention), and uncompressed rotation.
+    - Assert atomic `SYS_MKDIR` lockdir collision (`SYSCALL_EEXIST`), PID recording, `--skip-if-locked` exit 0 vs CLI exit 1, and clean release.
+    - Assert writer paused across 1 rotation (survives cleanly in .1) vs writer paused across 2 rotations (residual risk behavior).
 - Update `user/watchtower/watchtower_main.c`:
   - After `wt_rotate_log()`, open new active log file and call `SYS_DUP2(new_fd, 2)` so supervisor diagnostics and panics direct to the new log.
-  - Run log compression asynchronously (track child PID, non-blocking waitpid reaping) to prevent supervisor blocking.
-  - Adapt rotation threshold from 1 MiB to 2 KiB when running from `/run/watchtower/` (`runfs`).
+  - Run log compression asynchronously:
+    - Track `wt_compress_pid` and `wt_compress_archive`.
+    - Prevent concurrent compression jobs or shifts on conflicting paths.
+    - On timeout (5s), send `SIGKILL` but await confirmed child exit via `SYS_WAITPID` before unlinking partial `.gz` output and releasing the slot.
+  - Pipe drain bounded budget (max 4 iterations of 4 KiB chunks per tick).
+  - RAM log adaptation: Retain 2 uncompressed generations of 2 KiB in `/run/watchtower/` (avoid gzip expansion over 4 KiB), and truncate oversized incoming chunks to fit available node capacity, accounting discarded bytes to `dropped_bytes`.
 - Explicitly reserve `/var/log/watchtower/*.log` for Watchtower internal rotation.
 
 ### Phase 1: `/bin/logger` CLI & Streaming Tool
