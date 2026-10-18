@@ -35,6 +35,12 @@ def main():
             exe=BUILD/'hostkey-test'
             run(common+flags+['tests/ssh_hostkey_host.c',*wrappers,'src/lib/root_digest.c',*objs,'-o',exe])
             run([exe])
+            live=BUILD/'live-key-test'
+            run(common+flags+['-DTOOL_HOST_TEST','-Iuser/tools','-Isrc/fs','-I.',
+                '-ffunction-sections','-fdata-sections','-Wl,--gc-sections',
+                'tests/ssh_live_key_host.c','user/tools/common.c',*wrappers,
+                'src/lib/root_digest.c',*objs,'-o',live])
+            run([live])
         else:
             run(common+flags+['-shared','tests/crypto_diff_shim.c',*wrappers,'src/lib/root_digest.c',*objs,'-o',BUILD/'codec.so'])
     lib=C.CDLL(str(BUILD/'codec.so'))

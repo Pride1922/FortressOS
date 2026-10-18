@@ -24,6 +24,12 @@ static inline long sshd_readiness_syscall(long nr, uintptr_t a, uintptr_t b, uin
 }
 #define SSHD_SYSCALL sshd_readiness_syscall
 #endif
+#include "../ssh_live_key.h"
+#if !defined(CRYPTO_HOST_TEST) || defined(SSHD_READINESS_IO_TEST)
+static long live_key_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
+    return SSHD_SYSCALL(nr,a,b,c,0,0,0);
+}
+#endif
 
 static void readiness_copy(char *dst, const char *src, size_t cap) {
     if (!dst || cap == 0) return;
@@ -75,10 +81,12 @@ void sshd_format_bind_error(char *dst, size_t cap, uint32_t ip, uint16_t port) {
 }
 
 static int default_load_host_key(uint8_t out_secret[64], uint8_t out_public[32]) {
-#ifndef CRYPTO_HOST_TEST
+#if !defined(CRYPTO_HOST_TEST) || defined(SSHD_READINESS_IO_TEST)
     static char key_buf[HOSTKEY_FILE_MAX];
     long len = SSHD_SYSCALL(SYS_HOSTKEY, HOSTKEY_READ, (uintptr_t)key_buf, sizeof(key_buf), 0, 0, 0);
-    if (len <= 0) {
+    if (len == SYSCALL_EOPNOTSUPP) {
+        len=ssh_live_read(live_key_call,SSH_LIVE_KEY,key_buf);
+        if (len!=SYSCALL_ENOENT) goto decoded;
         /* Fallback: attempt to read /etc/ssh/ssh_host_ed25519_key or /mnt/.fortress/ssh_host_ed25519_key */
         long fd = SSHD_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/ssh/ssh_host_ed25519_key", VFS_O_RDONLY | VFS_O_CLOEXEC, 0, 0, 0, 0);
         if (fd < 0) {
@@ -90,16 +98,18 @@ static int default_load_host_key(uint8_t out_secret[64], uint8_t out_public[32])
         }
     }
 
-    if (len <= 0) return -1;
+decoded:
+    if (len <= 0) {crypto_wipe(key_buf,sizeof(key_buf));return -1;}
     if ((size_t)len >= sizeof(key_buf)) len = sizeof(key_buf) - 1;
     key_buf[len] = '\0';
 
     static ssh_hostkey_workspace ws;
     int r = ssh_hostkey_decode(key_buf, (size_t)len, out_secret, &ws);
+    crypto_wipe(key_buf,sizeof(key_buf));
+    crypto_wipe(&ws,sizeof(ws));
     if (r != 0) return -1;
 
     memcpy(out_public, out_secret + 32, 32);
-    crypto_wipe(&ws, sizeof(ws));
     return 0;
 #else
     (void)out_secret; (void)out_public;

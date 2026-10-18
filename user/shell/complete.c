@@ -140,6 +140,7 @@ int shell_do_completion(line_editor_t *e) {
 
     /* Find the active command name if completing arguments */
     comp_cmd_name[0] = '\0';
+    bool sudo_command = false;
     if (!is_cmd_name) {
         size_t cs = cmd_scan;
         while (cs > 0 && e->text[cs - 1] != ';' && e->text[cs - 1] != '&' &&
@@ -153,6 +154,18 @@ int shell_do_completion(line_editor_t *e) {
         if (cn_len >= sizeof(comp_cmd_name)) cn_len = sizeof(comp_cmd_name) - 1;
         for (size_t i = 0; i < cn_len; i++) comp_cmd_name[i] = e->text[cs + i];
         comp_cmd_name[cn_len] = '\0';
+        /* sudo executes a program, so its first operand (also after -b)
+         * needs command-name completion rather than cwd file completion. */
+        if (str_equal(comp_cmd_name,"sudo") || str_equal(comp_cmd_name,"/bin/sudo")) {
+            size_t arg=ce;
+            while (arg<start && (e->text[arg]==' ' || e->text[arg]=='\t')) arg++;
+            if (arg+2<start && e->text[arg]=='-' && e->text[arg+1]=='b' &&
+                (e->text[arg+2]==' ' || e->text[arg+2]=='\t')) {
+                arg+=2;
+                while (arg<start && (e->text[arg]==' ' || e->text[arg]=='\t')) arg++;
+            }
+            sudo_command=(arg==start);
+        }
     }
 
     cand_clear();
@@ -162,9 +175,9 @@ int shell_do_completion(line_editor_t *e) {
         if (comp_prefix[i] == '/') has_slash = true;
     }
 
-    if (is_cmd_name && !has_slash) {
+    if ((is_cmd_name || sudo_command) && !has_slash) {
         /* Complete builtins */
-        for (size_t i = 0; i < builtin_count(); i++) {
+        for (size_t i = 0; !sudo_command && i < builtin_count(); i++) {
             const char *name = builtin_name(i);
             if (str_starts_with(name, comp_prefix)) {
                 cand_add(name);

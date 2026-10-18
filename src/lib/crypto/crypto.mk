@@ -14,7 +14,7 @@ CRYPTO_FLAGS := $(CFLAGS) -D__FORTRESS__ -Os -fno-pie -fno-builtin -ffunction-se
 all: $(CRYPTO_LIB)
 all: $(BUILD_DIR)/ssh-keygen.elf
 all: $(BUILD_DIR)/sshd.elf
-$(BUILD_DIR)/ssh-keygen.elf: user/tools/ssh_keygen.c src/include/ssh_hostkey.h src/include/hostkey_abi.h $(CRYPTO_LIB) $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+$(BUILD_DIR)/ssh-keygen.elf: user/tools/ssh_keygen.c user/ssh_live_key.h src/include/ssh_hostkey.h src/include/hostkey_abi.h $(CRYPTO_LIB) $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
 	@$(CC) $(CRYPTO_FLAGS) -Iuser/tools -c $< -o $(CRYPTO_BUILD)/ssh-keygen.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=ssh_keygen_main user/tools/start.asm -o $(CRYPTO_BUILD)/ssh-keygen-start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack --gc-sections -T user/shell.ld $(CRYPTO_BUILD)/ssh-keygen-start.o $(CRYPTO_BUILD)/ssh-keygen.o $(CRYPTO_LIB) $(BUILD_DIR)/tool-common.o -o $@
@@ -23,6 +23,7 @@ SSHD_DIR := user/sshd
 SSHD_BUILD := $(BUILD_DIR)/sshd
 SSHD_SRCS := $(wildcard $(SSHD_DIR)/*.c)
 SSHD_OBJS := $(patsubst $(SSHD_DIR)/%.c,$(SSHD_BUILD)/%.o,$(SSHD_SRCS))
+$(SSHD_BUILD)/sshd_readiness.o: user/ssh_live_key.h
 
 $(SSHD_BUILD)/%.o: $(SSHD_DIR)/%.c
 	@mkdir -p $(SSHD_BUILD)

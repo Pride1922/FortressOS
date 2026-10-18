@@ -6,6 +6,13 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-18: command completion recognizes the executable operand of `sudo`
+and `sudo -b`, including `/bin/sudo`. It searches `/bin` and `/sbin` there,
+keeps pathname completion for later arguments, and does not suggest shell-only
+builtins as sudo executables. Actual completion ASan/UBSan coverage in
+`python3 scripts/test_shell_host.py` and a full image build pass; laptop retest
+is pending.
+
 `kill` accepts positive PIDs as well as `%job` targets, and `/bin/kill` provides
 the PID form for `sudo kill PID` or `sudo kill -9 PID`. `jobs` remains a parent
 shell builtin that lists only that shell's jobs. See [PID recovery evidence](../roadmap/ssh-pid-recovery.md).

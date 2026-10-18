@@ -2,6 +2,7 @@
 #include "userdb.h"
 #include "../permissions_cli.h"
 #include "account_abi.h"
+#include "live_password.h"
 static char data[DB_FILE_MAX+1];
 static char snapshot[3][DB_FILE_MAX];
 static uint64_t loaded_generation;
@@ -49,6 +50,6 @@ bool db_load(userdb_t *out,bool shadow) {
             (i==0 ? db_passwd(&next,data,n) : i==1 ? db_group(&next,data,n) : db_shadow(&next,data,n));
         db_wipe(data,sizeof(data));if (!ok) {db_wipe(&next,sizeof(next));return false;}
     }
-    if (shadow && !db_validate(&next)) {db_wipe(&next,sizeof(next));return false;}
+    if (shadow && (!db_validate(&next) || !live_password_apply(&next))) {db_wipe(&next,sizeof(next));return false;}
     *out=next;db_wipe(&next,sizeof(next));return true;
 }

@@ -569,9 +569,16 @@ def run_ssh_qemu(firmware="bios", smp=1):
                 password_file.write_text(TEST_PASSWORD + "\n")
                 password_file.chmod(0o600)
                 try:
+                    password_path = str(password_file)
+                    if str(plink).lower().endswith(".exe") and sys.platform != "win32":
+                        # Run the authentic Windows client from WSL, retaining
+                        # fixture-only credentials in the temporary directory.
+                        password_path = subprocess.run(
+                            ["wslpath", "-w", str(password_file)],
+                            capture_output=True, text=True, check=True).stdout.strip()
                     plink_res = subprocess.run([
                         str(plink), "-v", "-ssh", "-batch", "-noagent", "-x", "-a", "-T",
-                        "-hostkey", expected_host_fp, "-pwfile", str(password_file),
+                        "-hostkey", expected_host_fp, "-pwfile", password_path,
                         "-P", str(host_port), "operator@127.0.0.1",
                         "echo putty_auth_success"
                     ], capture_output=True, text=True, timeout=20)

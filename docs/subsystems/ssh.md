@@ -24,6 +24,42 @@ transfer acceptance is recorded in [large-output evidence](../roadmap/ssh-large-
 
 ## 1. Overview & Security Architecture
 
+On a clean live USB, explicitly provision a temporary host identity first:
+
+```sh
+sudo /bin/passwd --live operator
+sudo /sbin/ssh-keygen --live
+sudo -b /sbin/sshd
+```
+
+`passwd --live operator` sets a password of 12..128 characters, with hidden
+input and confirmation, for this boot only. The salted SHA-256-crypt hash stays
+in root-only RAM files under `/run/live-password`; it is consulted by SSH,
+login and sudo only when the installed account service is unsupported.
+Setup is allowed once per boot; reboot to discard or replace it. Incomplete
+publication fails closed and requires reboot. Installed databases never use
+this overlay. After setup, sudo also asks for the new password.
+`scripts/test_live_password.py` boots disk-free BIOS and UEFI guests and checks
+password setup, hidden input, sudo reload, runtime host-key setup, successful
+OpenSSH password login and wrong-password rejection. Test passwords and runtime
+keys are not retained in evidence or release images.
+
+`--live` requires root and CAP_SYS_ADMIN and is rejected on installed roots.
+It uses strong randomness and stores the private key only in RAM at
+`/run/ssh/ssh_host_ed25519_key` (root:root 0600, directory 0700). The printed
+fingerprint identifies this boot; reboot discards the identity. Repeating the
+command reuses a valid existing key. `--live --fingerprint` and `--live --public`
+only query it. Provisioning does not enable SSH or change its configuration.
+An interrupted or unsafe runtime identity fails closed and requires reboot;
+there is no replacement or automatic recovery operation. Installed host-key
+read failures never authorize a live-key fallback.
+
+The live provisioner and actual readiness loader have syscall-adapter ASan/UBSan
+coverage in `make test-ssh-hostkeys-host`, including short I/O, permission checks,
+entropy failure, incomplete publication, key reuse and secret-buffer wipes.
+Live provisioning on physical hardware remains to be verified with an updated
+image; these checks do not establish physical entropy quality.
+
 To start SSH from an ordinary local user shell, use `sudo -b /sbin/sshd`.
 Sudo authenticates in the foreground and starts sshd in its own session, so
 leaving an intermediate root shell does not terminate it. `sudo /sbin/sshd`
