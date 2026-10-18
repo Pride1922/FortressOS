@@ -89,7 +89,13 @@ enum edit_result lineedit_byte(line_editor_t *e,unsigned char c) {
         if(e->escape_len==2 || (c>=0x40 && c<=0x7e)) {
             e->escape_len=0;
             if(same(e->escape,"\033[200~")) { e->paste=true; e->paste_cr=false; return EDIT_NONE; }
-            if(same(e->escape,"\033[201~")) { e->paste=false; e->review=true; return EDIT_CHANGED; }
+            if(same(e->escape,"\033[201~")) {
+                e->paste=false;
+                /* Only embedded command boundaries need the extra Enter.
+                 * Preserve any review already required by an earlier paste. */
+                for(size_t i=0;i<e->len;i++) if(e->text[i]=='\n') { e->review=true; break; }
+                return EDIT_CHANGED;
+            }
             if(e->paste) return EDIT_NONE;
             if(same(e->escape,"\033[3~")) return key(e,'X');
             if(same(e->escape,"\033[1~") || same(e->escape,"\033[7~")) return key(e,'H');

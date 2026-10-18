@@ -32,9 +32,9 @@ static bool account_line(char out[129]) {
 static bool account_password(char hash[78]) {
     char first[129]={0},second[129]={0},salt[17]={0};uint8_t seed[16]={0};bool ok=false;
     if (tool_syscall(SYS_TERMCTL,TERM_ISATTY,0,0)!=1) goto done;
-    const char prompt[]="New password (12..128 characters): ";
+    const char prompt[]="New password (8..128 characters): ";
     tool_write("accounts",prompt,sizeof(prompt)-1);
-    if (!account_line(first) || tool_length(first)<12) goto done;
+    if (!account_line(first) || tool_length(first)<8) goto done;
     tool_write("accounts","Confirm new password: ",22);
     if (!account_line(second) || !tool_equal(first,second)) goto done;
     if (tool_syscall(SYS_INSTALLSEED,(uintptr_t)seed,sizeof(seed),0)) goto done;

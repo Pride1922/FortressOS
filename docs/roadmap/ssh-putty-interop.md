@@ -40,7 +40,31 @@ file, generated private keys and disposable NVMe/ISO fixtures are deleted by
 the runner, including on failure. Client binaries are ignored build tools,
 not release contents.
 
-The updated daemon has not yet been deployed to the user's physical target,
-and MobaXterm's graphical session still needs a retest there. These tests do
-not establish a new pre-authentication timeout or change daemon enablement,
-authentication policy, host-key storage, or physical-write gates.
+## Physical follow-up (2026-10-18)
+
+The user flashed the updated live USB and confirmed that MobaXterm 25.3's
+graphical SSH session now connects on the laptop. With an explicitly configured
+temporary live password, `whoami` returns `operator`, `top` displays live process
+information, and sudo works. This is user-reported physical acceptance of those
+specific interactions, not a complete physical regression or lifecycle audit.
+The dmesg screenshot shows output and the paste review prompt; it does not prove
+every dmesg scenario completed. No password or private key is retained here.
+
+The live setup commands and RAM-only identity/password boundaries are documented
+in [the SSH subsystem guide](../subsystems/ssh.md). Disk-free BIOS/UEFI acceptance
+in `scripts/test_live_password.py` verified hidden password input, sudo reload,
+runtime host-key provisioning, OpenSSH login and wrong-password rejection before
+the later password-minimum adjustment. Windows Plink 0.85 acceptance logs are in
+ignored `build/putty-interop/windows-putty85-bios.log` and
+`build/putty-interop/windows-putty85-uefi.log`.
+
+Two subsequent usability changes remain untested on hardware and absent from the
+last USB image: an eight-character minimum for account-tool passwords and
+one-Enter submission of single-line bracketed pastes. The password binary was
+compiled; the updated eight-character acceptance case has not been run. At the
+user's request, no additional tests or image rebuild were performed for these
+follow-ups. Multiline paste review remains required.
+
+These observations do not establish physical entropy quality, a new idle or
+pre-authentication timeout, complete daemon-lifecycle acceptance, or installed
+host-key rotation/recovery acceptance. Physical-write gates remain unchanged.

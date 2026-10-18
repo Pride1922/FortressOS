@@ -17,7 +17,7 @@ def case(firmware):
                    '-drive',f'if=pflash,format=raw,unit=1,file={var}']
         p=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
         sel=selectors.DefaultSelector();sel.register(p.stdout,selectors.EVENT_READ);data=bytearray()
-        password='Temporary-Test-8492'
+        password='Test8492'
         def send(s):p.stdin.write((s+'\n').encode());p.stdin.flush()
         def wait(needle,start=0,timeout=100):
             end=time.monotonic()+timeout
@@ -30,7 +30,7 @@ def case(firmware):
         try:
             wait('FortressOS login: ');send('operator');wait('$ ')
             start=len(data);send('sudo /bin/passwd --live operator')
-            wait('New password (12..128 characters): ',start);send(password)
+            wait('New password (8..128 characters): ',start);send(password)
             wait('Confirm new password: ',start);send(password)
             wait('Temporary operator password set',start)
             assert password.encode() not in data,'password echoed on serial'

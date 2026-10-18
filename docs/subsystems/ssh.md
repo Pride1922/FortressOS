@@ -1,6 +1,6 @@
 # Secure Shell Subsystem (SSH) — Architecture, Daemon Lifecycle & Configuration Specification
 
-**Status:** COMPLETE (Phases 0–8; multi-firmware QEMU acceptance 100% PASS across BIOS & UEFI; bare-metal Dell Latitude 5590 verification ready).
+**Status:** COMPLETE through Phases 0–8 multi-firmware QEMU acceptance. User-confirmed laptop MobaXterm login, interactive commands, `top` and sudo pass (2026-10-18); physical lifecycle and entropy boundaries remain separately qualified.
 
 This document serves as the comprehensive architectural specification, contract reference, and configuration schema for the FortressOS SSH subsystem.
 
@@ -32,7 +32,7 @@ sudo /sbin/ssh-keygen --live
 sudo -b /sbin/sshd
 ```
 
-`passwd --live operator` sets a password of 12..128 characters, with hidden
+`passwd --live operator` sets a password of 8..128 characters, with hidden
 input and confirmation, for this boot only. The salted SHA-256-crypt hash stays
 in root-only RAM files under `/run/live-password`; it is consulted by SSH,
 login and sudo only when the installed account service is unsupported.
@@ -43,6 +43,11 @@ this overlay. After setup, sudo also asks for the new password.
 password setup, hidden input, sudo reload, runtime host-key setup, successful
 OpenSSH password login and wrong-password rejection. Test passwords and runtime
 keys are not retained in evidence or release images.
+
+The eight-character minimum and single-line paste convenience follow-ups are
+source changes after the last flashed image; they have not been retested. The
+previous image requires at least 12 password characters. See the
+[physical follow-up and verification limits](../roadmap/ssh-putty-interop.md#physical-follow-up-2026-10-18).
 
 `--live` requires root and CAP_SYS_ADMIN and is rejected on installed roots.
 It uses strong randomness and stores the private key only in RAM at

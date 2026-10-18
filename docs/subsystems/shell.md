@@ -19,8 +19,10 @@ shell builtin that lists only that shell's jobs. See [PID recovery evidence](../
 
 SSH prompt editing suppresses PTY echo while the editor renders input, then
 restores the terminal settings before executing commands. Bracketed paste
-preserves command newlines, displays them as `\n` for review, and retains the
-two-Enter confirmation. See [SSH paste/echo evidence](../roadmap/ssh-paste-echo.md).
+preserves command newlines and displays them as `\n` for review. Single-line
+bracketed pastes use one Enter; multiline pastes retain two-Enter confirmation.
+This follow-up has not been tested or included in a rebuilt image yet.
+See [SSH paste/echo evidence](../roadmap/ssh-paste-echo.md) for earlier validation.
 
 2026-10-13 installer follow-up: the interactive prompt now displays the effective
 account, persistent computer name and current directory, for example
