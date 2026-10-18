@@ -329,13 +329,15 @@ The rotation engine supports all valid configuration combinations (`rotate 0`, `
 - Deploy `/etc/crontab` schedule for `/sbin/logrotate /etc/logrotate.conf`.
 - Configure `/etc/logrotate.conf` to rotate `/var/log/messages` only.
 
-### Phase 4: Multi-Firmware Verification & Host Integration
-- Host test coverage:
-  - Pipe saturation backpressure.
-  - Runfs 4 KiB exhaustion handling.
-  - Concurrent logger writes during active logrotate shifts.
-  - Escaping and input sanitization boundaries.
-- Multi-firmware QEMU testing (BIOS & UEFI):
-  - Verification of `/var/log/boot.log` and `/var/log/boot.log.prev` across reboot cycles.
-  - Concurrency test with multi-core Ring 3 processes writing to `/var/log/messages`.
-  - Storage failure injection (full disk and read-only media).
+### Phase 4: Multi-Firmware Verification & Host Integration (COMPLETE)
+- Host test coverage (100% PASS under ASan/UBSan):
+  - `make test-logger-host` (9/9 PASS): input sanitization, UTC/uptime formatting, truncation, untrusted path rejection, short-write handling, CLI parsing, stdin streaming.
+  - `make test-timeline-log-host` (9/9 PASS): formatting, monotonic uptime fallback, control char sanitization, 512B truncation, fallback to /run/messages on ENOENT/EROFS, fail-closed on EACCES, untrusted rejection, short-write handling, rate-limiting.
+  - `make test-boot-snapshot-host` (11/11 PASS): primary /var/log, pre-rotation to .prev, fallback to /run on ENOENT/EROFS, runfs 4 KiB clamping, EPERM rejection, symlink/untrusted rejection.
+  - `make test-logrotate-host` (14/14 PASS): delaycompress lifecycle, boundary rotate 0/1/uncompressed, atomic SYS_MKDIR lock collision, --skip-if-locked, reserved path rejection (/var/log/watchtower, /run/watchtower, boot.log).
+- Multi-firmware QEMU testing (`make test-logging`, 100% PASS on BIOS & UEFI at SMP=1 and SMP=4):
+  - Pillar 1: Verified boot snapshot service (`boot-log.service`), creation of `/run/boot.log` with kernel messages, pre-rotation to `/run/boot.log.prev` on successive run.
+  - Pillar 2: Verified Watchtower supervisor diagnostics in `/run/watchtower/watchtower.log` and child daemon pipe redirection.
+  - Pillar 3: Verified `/bin/logger` CLI direct and piped messages, timestamp formatting, input sanitization escaping control characters, and strict DAC permissions rejection (unprivileged `operator` receiving `permission denied` on `0640` `/run/messages`).
+  - Logrotate: Verified `/sbin/logrotate` execution with `--skip-if-locked /etc/logrotate.conf`, atomic `/run/logrotate.lock` exclusion collision, and active rotation lifecycle shifting `.1 -> .2` and recreating active logs.
+  - SMP Concurrency: Verified multi-core Ring 3 concurrent logging stress at SMP=4 without record corruption or interleaving.

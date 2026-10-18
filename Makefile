@@ -2159,6 +2159,10 @@ test-logrotate-host:
 	@$(CC) -O1 -g -fsanitize=address,undefined -DLOGROTATE_HOST_TEST -Wall -Wextra -Werror -Isrc/include -Isrc/fs -Iuser/logrotate user/logrotate/logrotate.c tests/logrotate_host.c -o $(BUILD_DIR)/logrotate_host
 	@$(BUILD_DIR)/logrotate_host
 
+.PHONY: test-logging
+test-logging: $(BOOTABLE_ISO) test-logger-host test-timeline-log-host test-boot-snapshot-host test-logrotate-host
+	python3 scripts/test_logging.py
+
 
 
 
