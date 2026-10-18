@@ -156,7 +156,7 @@ BOOTABLE_IMG := $(BIN_DIR)/fortress.img
 
 
 # Source files
-C_SRCS   := $(filter-out src/lib/crypto/%,$(shell find $(SRC_DIR) -type f -name '*.c'))
+C_SRCS   := $(filter-out src/lib/crypto/% src/lib/tls/%,$(shell find $(SRC_DIR) -type f -name '*.c'))
 ASM_SRCS := $(shell find $(SRC_DIR) -type f -name '*.asm')
 
 # Object files
@@ -215,6 +215,7 @@ test-root-phase2:
 all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 live: all
 include src/lib/crypto/crypto.mk
+include src/lib/tls/tls.mk
 
 # C_SRCS/OBJS above automatically include src/fs/pipe.c.
 .PHONY: test-s8-process-host test-s8-process
@@ -692,9 +693,9 @@ $(BUILD_DIR)/timeline_log.o: user/timeline_log.c user/timeline_log.h src/include
 $(BUILD_DIR)/dhcpc.o: user/dhcpc.c user/timeline_log.h user/dhcp_codec.h user/resolv_conf.h user/machine_config.h user/netconf.h src/include/types.h src/include/syscall_abi.h src/include/socket_abi.h src/include/netctl_abi.h src/include/account_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Iuser -Iuser/tools -c $< -o $@
-$(USER_DHCPC_ELF): $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o user/tools/start.asm user/shell.ld
+$(USER_DHCPC_ELF): $(BUILD_DIR)/timezone.o $(BUILD_DIR)/timezone_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=dhcpc_main user/tools/start.asm -o $(BUILD_DIR)/dhcpc_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcpc_start.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcpc_start.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o $(BUILD_DIR)/timezone.o $(BUILD_DIR)/timezone_io.o $(BUILD_DIR)/tool-common.o -o $@
 # Ring 3 has a one-page user stack. Bound individual frames as well as auditing
 # the nested call chain; host sanitizer stacks cannot establish this property.
 $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/service_cli.o: CFLAGS += -Wframe-larger-than=1024
@@ -827,6 +828,7 @@ USER_TAR_ELF := $(BUILD_DIR)/tool-tar.elf
 USER_TRACEROUTE_ELF := $(BUILD_DIR)/traceroute.elf
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
 include scripts/fstat.mk
+include scripts/vfs_flags.mk
 include scripts/hostkey_acceptance.mk
 ifeq ($(CRYPTO_TEST_PROBE),1)
 $(INITRAMFS_TAR): $(BUILD_DIR)/crypto-probe.elf
@@ -874,7 +876,7 @@ $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .o,$(STREAM_TOOLS))): $(BUILD_DIR)/to
 
 $(STREAM_TOOL_ELFS): $(BUILD_DIR)/tool-%.elf: $(BUILD_DIR)/tool-%.o user/tools/start.asm user/shell.ld $(BUILD_DIR)/tool-common.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
-	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-common.o -o $@
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-common.o $(TIME_EXTRA) -o $@
 
 $(USER_DISK_ELF): user/tools/disk.c $(BUILD_DIR)/tool-diskbench.elf $(BUILD_DIR)/tool-diskbench.o user/tools/common.h user/tools/start.asm user/shell.ld $(BUILD_DIR)/tool-common.o src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-disk.o
@@ -950,7 +952,7 @@ test-gzip-host:
 .PHONY: test-logger-host
 test-logger-host:
 	@mkdir -p $(BUILD_DIR)
-	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -DPERMISSIONS_CLI_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools -Iuser tests/logger_host.c user/tools/common.c user/tools/logger.c -o $(BUILD_DIR)/logger_host && $(BUILD_DIR)/logger_host
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -DPERMISSIONS_CLI_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools -Iuser tests/logger_host.c user/tools/common.c user/tools/logger.c user/timezone.c -o $(BUILD_DIR)/logger_host && $(BUILD_DIR)/logger_host
 
 .PHONY: test-timeline-log-host
 test-timeline-log-host:
@@ -978,7 +980,7 @@ test-time-host:
 
 test-date-sleep-host:
 	@mkdir -p $(BUILD_DIR)
-	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/date_sleep_host.c user/tools/common.c user/tools/date.c user/tools/sleep.c -o $(BUILD_DIR)/date_sleep_host && $(BUILD_DIR)/date_sleep_host
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/date_sleep_host.c user/tools/common.c user/tools/date.c user/tools/sleep.c user/timezone.c user/tools/timezone_io.c -o $(BUILD_DIR)/date_sleep_host && $(BUILD_DIR)/date_sleep_host
 
 test-time-cmd-host:
 	@mkdir -p $(BUILD_DIR)
@@ -1170,7 +1172,7 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf COMMANDS.md Makefile scripts/create_initramfs.py
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -1186,6 +1188,10 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_BOOT_SNAPSHOT_ELF) $(BUILD_DIR)/initramfs/bin/boot-snapshot
 	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/sbin/ifconfig
 	@cp -f $(USER_IFUP_ELF) $(BUILD_DIR)/initramfs/sbin/ifup
+	@cp -f $(BUILD_DIR)/ntpd.elf $(BUILD_DIR)/initramfs/sbin/ntpd
+	@python3 scripts/build_zoneinfo.py $(BUILD_DIR)/zoneinfo
+	@python3 scripts/build_zoneinfo.py --pack $(BUILD_DIR)/zoneinfo $(BUILD_DIR)/initramfs/usr/share/zoneinfo.tzdb
+	@cp -f $(BUILD_DIR)/zoneinfo/LICENSE $(BUILD_DIR)/initramfs/docs/tzdata-licence.txt
 	@cp -f $(USER_DHCPC_ELF) $(BUILD_DIR)/initramfs/sbin/dhcpc
 	@cp -f $(USER_WATCHTOWER_ELF) $(BUILD_DIR)/initramfs/sbin/watchtower
 	@cp -f $(USER_SERVICE_ELF) $(BUILD_DIR)/initramfs/bin/service
@@ -1234,6 +1240,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@printf "Exec=/sbin/dhcpc -f\nOrder=10\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStart=5\nTimeoutStop=5\nReadiness=file:/run/dhcpc.lease\n" > $(BUILD_DIR)/initramfs/etc/watchtower/dhcpc.service
 	@printf "Exec=/sbin/sshd -D\nOrder=20\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStart=5\nTimeoutStop=10\nReadiness=file:/run/watchtower/sshd.ready\n" > $(BUILD_DIR)/initramfs/etc/watchtower/sshd.service
 	@printf "Exec=/sbin/crond -f\nOrder=30\nType=simple\nRestart=on-failure\nTimeoutStop=2\n" > $(BUILD_DIR)/initramfs/etc/watchtower/crond.service
+	@printf "Exec=/sbin/ntpd -f pool.ntp.org\nOrder=15\nEnabled=no\nRestart=on-failure\nTimeoutStop=2\n" > $(BUILD_DIR)/initramfs/etc/watchtower/ntpd.service
 	@printf "# /etc/crontab - FortressOS crond configuration\n# <interval_minutes> <absolute_command_path> [args...]\n60 /sbin/logrotate --skip-if-locked /etc/logrotate.conf\n" > $(BUILD_DIR)/initramfs/etc/crontab
 	@printf "/var/log/messages {\n    size 10M\n    rotate 4\n    compress\n    missingok\n}\n" > $(BUILD_DIR)/initramfs/etc/logrotate.conf
 	@echo "  [TAR] Generating USTAR archive $@"
@@ -2211,3 +2218,45 @@ test-shell-scripting-host:
 SCRIPT_BASE ?= $(CURDIR)
 test-shell-scripting: $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF)
 	python3 scripts/test_shell_scripting.py --base "$(SCRIPT_BASE)"
+
+# UTC/local calendar support; logs retain UTC independent of TZ.
+$(BUILD_DIR)/tool-date.o $(BUILD_DIR)/tool-logger.o $(BUILD_DIR)/dhcpc.o: user/timezone.h
+$(BUILD_DIR)/timezone.o: user/timezone.c user/timezone.h
+	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -Wframe-larger-than=1024 -c $< -o $@
+$(BUILD_DIR)/timezone_io.o: user/tools/timezone_io.c user/timezone.h user/tools/common.h
+	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -Wframe-larger-than=1024 -c $< -o $@
+$(BUILD_DIR)/tool-date.elf: TIME_EXTRA = $(BUILD_DIR)/timezone.o $(BUILD_DIR)/timezone_io.o
+$(BUILD_DIR)/tool-date.elf: $(BUILD_DIR)/timezone.o $(BUILD_DIR)/timezone_io.o
+$(BUILD_DIR)/tool-logger.elf: TIME_EXTRA = $(BUILD_DIR)/timezone.o
+$(BUILD_DIR)/tool-logger.elf: $(BUILD_DIR)/timezone.o
+$(BUILD_DIR)/ntp.o: user/ntp.c user/ntp.h
+	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -c $< -o $@
+$(BUILD_DIR)/ntpd.o: user/ntpd.c user/ntp.h user/dns.h user/udp_common.h
+	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -Wframe-larger-than=1024 -c $< -o $@
+$(BUILD_DIR)/ntpd.elf: $(BUILD_DIR)/ntpd.o $(BUILD_DIR)/ntp.o $(DNS_OBJECTS) user/tools/start.asm user/shell.ld
+	@$(AS) -f elf64 -DTOOL_ENTRY=ntpd_main user/tools/start.asm -o $(BUILD_DIR)/ntpd_start.o
+	@$(LD) -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/ntpd_start.o $(BUILD_DIR)/ntpd.o $(BUILD_DIR)/ntp.o $(DNS_OBJECTS) -o $@
+
+.PHONY: test-timezone-host
+test-timezone-host: test-date-sleep-host test-logger-host test-time-host
+	@python3 scripts/test_timezone_host.py
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -Isrc/include tests/timezone_host.c user/timezone.c user/ntp.c -o $(BUILD_DIR)/timezone_host
+	@$(BUILD_DIR)/timezone_host
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -ffunction-sections -fdata-sections -Wl,--gc-sections -pthread -Isrc/include -Isrc/drivers -Isrc/arch/x86_64 -Isrc/mm -Isrc/kernel -Isrc/fs tests/timekeeper_host.c -o $(BUILD_DIR)/timekeeper_host
+	@$(BUILD_DIR)/timekeeper_host
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -ffunction-sections -fdata-sections -Wl,--gc-sections -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser tests/dhcp_timezone_host.c user/timezone.c user/tools/timezone_io.c user/dhcp_codec.c -o $(BUILD_DIR)/dhcp_timezone_host
+	@$(BUILD_DIR)/dhcp_timezone_host
+
+$(BUILD_DIR)/time-clock-probe.elf: tests/time_clock_probe.c user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fstack-usage -Wframe-larger-than=1024 -c $< -o $(BUILD_DIR)/time-clock-probe.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=time_clock_probe_main user/tools/start.asm -o $(BUILD_DIR)/time-clock-probe-start.o
+	@$(LD) -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/time-clock-probe-start.o $(BUILD_DIR)/time-clock-probe.o -o $@
+
+.PHONY: test-timezone
+test-timezone: test-timezone-host test-dhcpc-host test-dhcpc-v2-host $(BUILD_DIR)/time-clock-probe.elf $(BUILD_DIR)/tool-date.elf $(BUILD_DIR)/tool-logger.elf $(BUILD_DIR)/ntpd.elf $(BUILD_DIR)/ntpd-test.elf $(USER_DHCPC_ELF) $(KERNEL_ELF)
+	@python3 scripts/test_timezone.py
+
+$(BUILD_DIR)/ntpd-test.elf: user/ntpd.c user/ntp.h $(BUILD_DIR)/ntp.o $(DNS_OBJECTS) user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -DTEST_NTP_PORT=43123 -Wframe-larger-than=1024 -c $< -o $(BUILD_DIR)/ntpd-test.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=ntpd_main user/tools/start.asm -o $(BUILD_DIR)/ntpd-test-start.o
+	@$(LD) -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/ntpd-test-start.o $(BUILD_DIR)/ntpd-test.o $(BUILD_DIR)/ntp.o $(DNS_OBJECTS) -o $@

@@ -4,6 +4,7 @@
 #include "netctl_abi.h"
 #include "vfs.h"
 #include "dhcp_codec.h"
+#include "timezone.h"
 #include "netconf.h"
 #include "signal_abi.h"
 #include "timeline_log.h"
@@ -12,6 +13,7 @@
 #define NET_IF_LINK_UP NET_IF_LINK_ONLINE
 #endif
 
+#ifndef DHCPC_TEST_CALL
 static long sys_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
                      uintptr_t d, uintptr_t e, uintptr_t f) {
     register uintptr_t r10 __asm__("r10") = d;
@@ -21,6 +23,9 @@ static long sys_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
                      "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory", "cc");
     return nr;
 }
+#else
+#define sys_call DHCPC_TEST_CALL
+#endif
 
 #define RESOLV_SYSCALL(nr, a, b, c) sys_call(nr, a, b, c, 0, 0, 0)
 #include "resolv_conf.h"
@@ -221,8 +226,11 @@ static bool save_network_conf(uint32_t ip, uint8_t prefix, uint32_t gateway,
     return true;
 }
 
+static void save_timezone(const dhcp_offer_t *offer);
+
 static bool save_dhcpc_lease(const dhcp_offer_t *offer, int64_t acquired_epoch) {
-    char buf[512];
+    save_timezone(offer);
+    static char buf[512];
     size_t pos = 0;
     append_str(buf, sizeof(buf), &pos, "IP=");
     append_ip(buf, sizeof(buf), &pos, offer->yiaddr);
@@ -345,23 +353,51 @@ static bool extract_val_ip(const char *buf, const char *key, uint32_t *out_ip) {
 
 static bool extract_val_u32(const char *buf, const char *key, uint32_t *out_val) {
     char tmp[32];
-    if (!extract_val_str(buf, key, tmp, sizeof(tmp))) return false;
+    if (!extract_val_str(buf, key, tmp, sizeof(tmp)))
+        return false;
     return parse_u32(tmp, out_val);
+}
+
+static void save_timezone(const dhcp_offer_t *offer) {
+    const char *value = NULL;
+    tz_result_t parsed;
+    if (offer->timezone_iana[0] && tz_name(offer->timezone_iana) &&
+        tz_spec(offer->timezone_iana, get_realtime_epoch(), &parsed))
+        value = offer->timezone_iana;
+    else if (offer->timezone_posix[0] &&
+             tz_posix(offer->timezone_posix, get_realtime_epoch(), &parsed))
+        value = offer->timezone_posix;
+    if (value) {
+        size_t len = 0;
+        while (value[len])
+            ++len;
+        bool published = false;
+        if (write_file("/run/timezone.new", value, len))
+            published = sys_call(SYS_RENAME, (uintptr_t) "/run/timezone.new",
+                                 (uintptr_t) "/run/timezone", 0, 0, 0, 0) == 0;
+        if (!published)
+            delete_file("/run/timezone");
+        delete_file("/run/timezone.new");
+    } else
+        delete_file("/run/timezone");
 }
 
 static bool apply_interface(const dhcp_offer_t *offer) {
     netctl_ifset_t req;
-    for (size_t i = 0; i < sizeof(req); i++) ((uint8_t *)&req)[i] = 0;
+    for (size_t i = 0; i < sizeof(req); i++)
+        ((uint8_t *)&req)[i] = 0;
     req.struct_version = 1;
     req.local_ipv4 = offer->yiaddr;
     req.netmask_ipv4 = offer->subnet_mask ? offer->subnet_mask : dhcpc_htonl(0xffffff00u);
     req.gateway_ipv4 = offer->router;
 
     long ret = sys_call(SYS_NETCTL, NETCTL_IFSET, (uintptr_t)&req, sizeof(req), 0, 0, 0);
+    if(ret==0)save_timezone(offer);
     return ret == 0;
 }
 
 static void flush_interface(void) {
+    delete_file("/run/timezone");
     netctl_ifset_t req;
     for (size_t i = 0; i < sizeof(req); i++) ((uint8_t *)&req)[i] = 0;
     req.struct_version = 1;
@@ -470,7 +506,7 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
     uint32_t xid = (uint32_t)(info.uptime_ticks ^ 0x44484350);
     if (!xid) xid = 0x12345678;
 
-    uint8_t tx_buf[DHCP_MAX_PACKET_LEN];
+    static uint8_t tx_buf[DHCP_MAX_PACKET_LEN];
     size_t tx_len = 0;
     if (dhcp_encode_discover(tx_buf, sizeof(tx_buf), xid, mac, &tx_len) != 0) {
         sys_call(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
@@ -486,10 +522,10 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
 
     /* Wait for DHCPOFFER */
     uint64_t deadline = get_monotonic_sec() + timeout_sec;
-    uint8_t rx_buf[DHCP_MAX_PACKET_LEN];
+    static uint8_t rx_buf[DHCP_MAX_PACKET_LEN];
     net_sockaddr_in_t src_addr;
     uint32_t src_len = sizeof(src_addr);
-    dhcp_offer_t offer;
+    static dhcp_offer_t offer;
     bool got_offer = false;
 
     while (get_monotonic_sec() <= deadline && !g_term_requested) {
@@ -535,7 +571,7 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
 
     /* Wait for DHCPACK */
     deadline = get_monotonic_sec() + timeout_sec;
-    dhcp_offer_t ack;
+    static dhcp_offer_t ack;
     bool got_ack = false;
 
     while (get_monotonic_sec() <= deadline && !g_term_requested) {
@@ -559,6 +595,7 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
                     }
                     if (ack.lease_time) offer.lease_time = ack.lease_time;
                     if (ack.t1) offer.t1 = ack.t1;
+                    for(size_t tz_i=0;tz_i<128;tz_i++){offer.timezone_iana[tz_i]=ack.timezone_iana[tz_i];offer.timezone_posix[tz_i]=ack.timezone_posix[tz_i];}
                     if (ack.t2) offer.t2 = ack.t2;
                     break;
                 } else if (ack.msg_type == DHCP_MSG_NAK) {
@@ -610,7 +647,7 @@ static int dhcp_do_renew(const dhcp_offer_t *offer, const uint8_t mac[6], uint64
     sys_call(SYS_SYSINFO, (uintptr_t)&info, 0, 0, 0, 0, 0);
     uint32_t xid = (uint32_t)(info.uptime_ticks ^ 0x52454e57); /* 'RENW' */
 
-    uint8_t tx[DHCP_MAX_PACKET_LEN];
+    static uint8_t tx[DHCP_MAX_PACKET_LEN];
     size_t tx_len = 0;
     if (dhcp_encode_request_renew(tx, sizeof(tx), xid, mac, offer->yiaddr, &tx_len) != 0) {
         sys_call(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
@@ -623,10 +660,10 @@ static int dhcp_do_renew(const dhcp_offer_t *offer, const uint8_t mac[6], uint64
     }
 
     uint64_t deadline = get_monotonic_sec() + timeout_sec;
-    uint8_t rx[DHCP_MAX_PACKET_LEN];
+    static uint8_t rx[DHCP_MAX_PACKET_LEN];
     net_sockaddr_in_t src;
     uint32_t srclen = sizeof(src);
-    dhcp_offer_t ack;
+    static dhcp_offer_t ack;
 
     while (get_monotonic_sec() <= deadline && !g_term_requested) {
         for (size_t i = 0; i < sizeof(src); i++) ((uint8_t *)&src)[i] = 0;
@@ -649,6 +686,7 @@ static int dhcp_do_renew(const dhcp_offer_t *offer, const uint8_t mac[6], uint64
                         if (ack.lease_time) out_ack->lease_time = ack.lease_time;
                         if (ack.t1) out_ack->t1 = ack.t1;
                         if (ack.t2) out_ack->t2 = ack.t2;
+                        for(size_t tz_i=0;tz_i<128;tz_i++){out_ack->timezone_iana[tz_i]=ack.timezone_iana[tz_i];out_ack->timezone_posix[tz_i]=ack.timezone_posix[tz_i];}
                         dhcpc_apply_random_jitter(out_ack);
                     }
                     return 0;
@@ -691,7 +729,7 @@ static int dhcp_do_rebind(const dhcp_offer_t *offer, const uint8_t mac[6], uint6
     sys_call(SYS_SYSINFO, (uintptr_t)&info, 0, 0, 0, 0, 0);
     uint32_t xid = (uint32_t)(info.uptime_ticks ^ 0x52424e44); /* 'RBND' */
 
-    uint8_t tx[DHCP_MAX_PACKET_LEN];
+    static uint8_t tx[DHCP_MAX_PACKET_LEN];
     size_t tx_len = 0;
     if (dhcp_encode_request_rebind(tx, sizeof(tx), xid, mac, offer->yiaddr, &tx_len) != 0) {
         sys_call(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
@@ -704,10 +742,10 @@ static int dhcp_do_rebind(const dhcp_offer_t *offer, const uint8_t mac[6], uint6
     }
 
     uint64_t deadline = get_monotonic_sec() + timeout_sec;
-    uint8_t rx[DHCP_MAX_PACKET_LEN];
+    static uint8_t rx[DHCP_MAX_PACKET_LEN];
     net_sockaddr_in_t src;
     uint32_t srclen = sizeof(src);
-    dhcp_offer_t ack;
+    static dhcp_offer_t ack;
 
     while (get_monotonic_sec() <= deadline && !g_term_requested) {
         for (size_t i = 0; i < sizeof(src); i++) ((uint8_t *)&src)[i] = 0;
@@ -730,6 +768,7 @@ static int dhcp_do_rebind(const dhcp_offer_t *offer, const uint8_t mac[6], uint6
                         if (ack.lease_time) out_ack->lease_time = ack.lease_time;
                         if (ack.t1) out_ack->t1 = ack.t1;
                         if (ack.t2) out_ack->t2 = ack.t2;
+                        for(size_t tz_i=0;tz_i<128;tz_i++){out_ack->timezone_iana[tz_i]=ack.timezone_iana[tz_i];out_ack->timezone_posix[tz_i]=ack.timezone_posix[tz_i];}
                         dhcpc_apply_random_jitter(out_ack);
                     }
                     return 0;
@@ -772,7 +811,7 @@ static int dhcp_do_reboot(const dhcp_offer_t *offer, const uint8_t mac[6], uint6
     sys_call(SYS_SYSINFO, (uintptr_t)&info, 0, 0, 0, 0, 0);
     uint32_t xid = (uint32_t)(info.uptime_ticks ^ 0x494e4954); /* 'INIT' */
 
-    uint8_t tx[DHCP_MAX_PACKET_LEN];
+    static uint8_t tx[DHCP_MAX_PACKET_LEN];
     size_t tx_len = 0;
     if (dhcp_encode_request_reboot(tx, sizeof(tx), xid, mac, offer->yiaddr, &tx_len) != 0) {
         sys_call(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
@@ -785,10 +824,10 @@ static int dhcp_do_reboot(const dhcp_offer_t *offer, const uint8_t mac[6], uint6
     }
 
     uint64_t deadline = get_monotonic_sec() + timeout_sec;
-    uint8_t rx[DHCP_MAX_PACKET_LEN];
+    static uint8_t rx[DHCP_MAX_PACKET_LEN];
     net_sockaddr_in_t src;
     uint32_t srclen = sizeof(src);
-    dhcp_offer_t ack;
+    static dhcp_offer_t ack;
 
     while (get_monotonic_sec() <= deadline && !g_term_requested) {
         for (size_t i = 0; i < sizeof(src); i++) ((uint8_t *)&src)[i] = 0;
@@ -811,6 +850,7 @@ static int dhcp_do_reboot(const dhcp_offer_t *offer, const uint8_t mac[6], uint6
                         if (ack.lease_time) out_ack->lease_time = ack.lease_time;
                         if (ack.t1) out_ack->t1 = ack.t1;
                         if (ack.t2) out_ack->t2 = ack.t2;
+                        for(size_t tz_i=0;tz_i<128;tz_i++){out_ack->timezone_iana[tz_i]=ack.timezone_iana[tz_i];out_ack->timezone_posix[tz_i]=ack.timezone_posix[tz_i];}
                         dhcpc_apply_random_jitter(out_ack);
                     }
                     return 0;
@@ -845,7 +885,7 @@ static void dhcp_do_release(const dhcp_offer_t *offer, const uint8_t mac[6]) {
         srv_addr.port = dhcpc_htons(DHCP_PORT_SERVER);
         srv_addr.address = offer->server_ip;
 
-        uint8_t tx[DHCP_MAX_PACKET_LEN];
+        static uint8_t tx[DHCP_MAX_PACKET_LEN];
         size_t tx_len = 0;
         if (dhcp_encode_release(tx, sizeof(tx), 0x52454c53, mac, offer->yiaddr, offer->server_ip, &tx_len) == 0) {
             sys_call(SYS_SENDTO, (uintptr_t)fd, (uintptr_t)tx, tx_len, 0,
@@ -856,7 +896,7 @@ static void dhcp_do_release(const dhcp_offer_t *offer, const uint8_t mac[6]) {
 }
 
 static int show_status(void) {
-    char lease_buf[512];
+    static char lease_buf[512];
     long n = read_file("/run/dhcpc.lease", lease_buf, sizeof(lease_buf));
     if (n <= 0) {
         print_err("dhcpc: no active lease found (/run/dhcpc.lease missing)\n");
@@ -956,10 +996,10 @@ static int do_release_command(void) {
         return 0;
     }
 
-    char lease_buf[512];
+    static char lease_buf[512];
     long n = read_file("/run/dhcpc.lease", lease_buf, sizeof(lease_buf));
     if (n > 0) {
-        dhcp_offer_t off;
+        static dhcp_offer_t off;
         for (size_t i = 0; i < sizeof(off); i++) ((uint8_t *)&off)[i] = 0;
         extract_val_ip(lease_buf, "IP", &off.yiaddr);
         extract_val_ip(lease_buf, "SERVER", &off.server_ip);
@@ -1023,7 +1063,7 @@ static int dhcpc_daemon_main(void) {
     } daemon_state_t;
 
     daemon_state_t state = STATE_INIT;
-    dhcp_offer_t current_offer;
+    static dhcp_offer_t current_offer;
     for (size_t i = 0; i < sizeof(current_offer); i++) ((uint8_t *)&current_offer)[i] = 0;
 
     uint64_t t_ack = 0;
@@ -1031,7 +1071,7 @@ static int dhcpc_daemon_main(void) {
     uint64_t t_rebind = 0;
     uint64_t t_expire = 0;
 
-    char lease_buf[512];
+    static char lease_buf[512];
     if (read_file("/run/dhcpc.lease", lease_buf, sizeof(lease_buf)) > 0) {
         if (extract_val_ip(lease_buf, "IP", &current_offer.yiaddr) &&
             extract_val_ip(lease_buf, "SERVER", &current_offer.server_ip)) {
@@ -1091,7 +1131,7 @@ static int dhcpc_daemon_main(void) {
                     break;
                 }
 
-                dhcp_offer_t offer;
+                static dhcp_offer_t offer;
                 if (dhcp_do_handshake(ifget.mac, 3, false, &offer) == 0) {
                     current_offer = offer;
                     apply_interface(&current_offer);
@@ -1148,7 +1188,7 @@ static int dhcpc_daemon_main(void) {
             }
 
             case STATE_INIT_REBOOT: {
-                dhcp_offer_t ack;
+                static dhcp_offer_t ack;
                 int r = dhcp_do_reboot(&current_offer, ifget.mac, 3, &ack);
                 if (r == 0) {
                     current_offer = ack;
@@ -1169,7 +1209,7 @@ static int dhcpc_daemon_main(void) {
             }
 
             case STATE_RENEWING: {
-                dhcp_offer_t ack;
+                static dhcp_offer_t ack;
                 int r = dhcp_do_renew(&current_offer, ifget.mac, 3, &ack);
                 if (r == 0) {
                     current_offer = ack;
@@ -1198,7 +1238,7 @@ static int dhcpc_daemon_main(void) {
             }
 
             case STATE_REBINDING: {
-                dhcp_offer_t ack;
+                static dhcp_offer_t ack;
                 int r = dhcp_do_rebind(&current_offer, ifget.mac, 3, &ack);
                 if (r == 0) {
                     current_offer = ack;
@@ -1331,7 +1371,7 @@ int dhcpc_main(int argc, char **argv) {
 
     /* Fast probe / handshake */
     uint64_t timeout_sec = boot_mode ? 3 : 5;
-    dhcp_offer_t offer;
+    static dhcp_offer_t offer;
     int hret = dhcp_do_handshake(ifget.mac, timeout_sec, dry_run, &offer);
 
     if (hret != 0) {

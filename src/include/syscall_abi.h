@@ -88,6 +88,7 @@
 #define SYS_PTY_PAIR      80 /* (int fds[2], uint32_t flags) -> 0 or -errno */
 #define SYS_LSTAT         81 /* (path, vfs_stat_t *out) -> 0/-errno */
 #define SYS_LIST_DIR      82 /* (const char *path, char names[][64], uint64_t max_entries) -> count/-errno */
+#define SYS_CLOCK_SETTIME 83 /* (CLOCK_REALTIME, const timespec_t *); CAP_SYS_ADMIN; 1970..2100 */
 #define MAX_GETRANDOM_LEN 256u
 
 /* Clock identifiers */
@@ -428,6 +429,7 @@ _Static_assert(__builtin_offsetof(block_info_t, part_index) == 188, "block_info_
 #define SYSCALL_ETIMEDOUT -30
 #define SYSCALL_EISCONN -31
 #define SYSCALL_EACCES        (-32)
+#define SYSCALL_ELOOP         (-33)
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

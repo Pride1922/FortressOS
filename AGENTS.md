@@ -98,6 +98,7 @@ From PowerShell: `wsl -d Ubuntu-24.04 -- make` (workspace is the current directo
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-tls-host` | Phase TLS-1 BearSSL 0.6 platform integration and verification under ASan/UBSan: static memory allocations (`sizeof(fortress_tls_t) = 40,136` B, zero heap allocations), Gate G1 stack frame invariant ($\le 1024$ bytes; authorized `br_rsa_i31_public` $\le 2400$ bytes measured at 2,272 bytes; `ec_prime_i31` $\le 1280$ bytes), reachable client profile text footprint measured at ~78 KiB (80,650 bytes, well below 140 KiB ceiling), strict AEAD suites (ChaCha20-Poly1305 and AES-GCM; CBC, static RSA, and 3DES omitted), platform callbacks (`tls_clock_hook` rejecting epoch < 2026-01-01, `tls_rand_hook` reading `SYS_GETRANDOM` with fail-closed $\ge 32$B check, `tls_send_hook`/`tls_recv_hook` dispatching `SYS_SEND_UNTIL`/`SYS_RECV_UNTIL` with non-restarting deadlines and mapping `-ETIMEDOUT` to `TLS_ERR_TIMEOUT`), RSA $\ge 2048$-bit modulus constraint enforcement, and authenticated `close_notify` teardown commit condition. 100% PASS (2026-10-18). |
 | `make test-combined-image` | Canonical `bin/fortress.img` has exactly Live USB / Installer choices. BIOS/UEFI SMP=8 live persistence with independent fsck; BIOS/UEFI SMP=1 full installer UI, NVMe selection and payload dry-run. Only disposable regular-file USB/NVMe targets; no installation or new physical acceptance claim. [Packaging and evidence](docs/roadmap/combined-usb-image.md). |
 | `make test-kill-host` | Actual shell job control and `/bin/kill` under ASan/UBSan: positive PID and `%job` signal routing, syntax/bounds, no signals on invalid input, permission and missing-process errors. Real BIOS/UEFI SSH worker termination and reconnection run in `scripts/test_ssh.py`; see [PID recovery](docs/roadmap/ssh-pid-recovery.md). |
 | `make test-ssh` | Phase 8 SSH end-to-end multi-firmware acceptance suite under QEMU (`scripts/test_ssh.py`): automated validation across BIOS and UEFI firmware at SMP=1 with authentic Linux OpenSSH client (`ssh`, `ssh-keyscan`). Covers all 8 acceptance gates: (1) boot readiness gate & live media config load (`/mnt/.fortress/sshd.conf`), (2) Ed25519 host key fingerprint verification via `ssh-keyscan`, (3) authentic OpenSSH client Ed25519 pubkey authentication with full credential drop to `operator` (`uid=1000`, `gid=1000`, groups=[1000, 10, 44, 104]), (4) remote root login rejection (`PermitRootLogin no`, constant-time dummy path), (5) shadow password authentication (`operator` via `userdb_t`), (6) interactive PTY duplex I/O, terminal typing, echo, and job execution with in-kernel PTY driver and `/dev/tty` handoff, (7) global 2-session concurrency limit & wire RFC 4253 `SSH_MSG_DISCONNECT` pre-spawn rejection, and (8) clean 5s bounded daemon teardown on `SIGTERM` with `SIGHUP` session propagation and zero leaked workers. 100% PASS on both BIOS and UEFI (2026-10-17). |
@@ -398,6 +399,12 @@ FortressOS/
 ## 7. How to Add
 
 ### 7.1 A syscall
+
+Additive UTC correction ABI: `SYS_CLOCK_SETTIME=83`, `(CLOCK_REALTIME,
+const timespec_t *)`; CAP_SYS_ADMIN required. Atomic realtime correction only,
+Unix seconds 1970–2100, validated input pointer and nanoseconds. Monotonic,
+sleep, CPU accounting and RTC remain independent. See the
+[time guide](docs/subsystems/time.md) and [evidence](docs/roadmap/time-timezone-ntp.md).
 
 Additive explicit child-identity spawn: `SYS_SPAWN_EXT` v3 uses a 144-byte
 `spawn_opts_v3_t` (64-byte base plus inline UID/GID/group set). V1/v2 stay

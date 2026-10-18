@@ -79,10 +79,12 @@ int dhcp_encode_discover(uint8_t *buf, size_t max_len, uint32_t xid, const uint8
 
     /* Option 55: Parameter Request List (1=Subnet Mask, 3=Router, 6=DNS) */
     buf[pos++] = DHCP_OPT_PARAM_REQ_LIST;
-    buf[pos++] = 3;
+    buf[pos++] = 5;
     buf[pos++] = DHCP_OPT_SUBNET_MASK;
     buf[pos++] = DHCP_OPT_ROUTER;
     buf[pos++] = DHCP_OPT_DNS;
+    buf[pos++] = DHCP_OPT_TZ_POSIX;
+    buf[pos++] = DHCP_OPT_TZ_IANA;
 
     /* Option 255: End */
     buf[pos++] = DHCP_OPT_END;
@@ -143,10 +145,12 @@ int dhcp_encode_request(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_
 
     /* Option 55: Parameter Request List (1=Subnet Mask, 3=Router, 6=DNS) */
     buf[pos++] = DHCP_OPT_PARAM_REQ_LIST;
-    buf[pos++] = 3;
+    buf[pos++] = 5;
     buf[pos++] = DHCP_OPT_SUBNET_MASK;
     buf[pos++] = DHCP_OPT_ROUTER;
     buf[pos++] = DHCP_OPT_DNS;
+    buf[pos++] = DHCP_OPT_TZ_POSIX;
+    buf[pos++] = DHCP_OPT_TZ_IANA;
 
     /* Option 255: End */
     buf[pos++] = DHCP_OPT_END;
@@ -193,10 +197,12 @@ int dhcp_encode_request_renew(uint8_t *buf, size_t max_len, uint32_t xid, const 
 
     /* Option 55: Parameter Request List (1=Subnet Mask, 3=Router, 6=DNS) */
     buf[pos++] = DHCP_OPT_PARAM_REQ_LIST;
-    buf[pos++] = 3;
+    buf[pos++] = 5;
     buf[pos++] = DHCP_OPT_SUBNET_MASK;
     buf[pos++] = DHCP_OPT_ROUTER;
     buf[pos++] = DHCP_OPT_DNS;
+    buf[pos++] = DHCP_OPT_TZ_POSIX;
+    buf[pos++] = DHCP_OPT_TZ_IANA;
 
     /* Option 255: End */
     buf[pos++] = DHCP_OPT_END;
@@ -241,10 +247,12 @@ int dhcp_encode_request_rebind(uint8_t *buf, size_t max_len, uint32_t xid, const
 
     /* Option 55: Parameter Request List */
     buf[pos++] = DHCP_OPT_PARAM_REQ_LIST;
-    buf[pos++] = 3;
+    buf[pos++] = 5;
     buf[pos++] = DHCP_OPT_SUBNET_MASK;
     buf[pos++] = DHCP_OPT_ROUTER;
     buf[pos++] = DHCP_OPT_DNS;
+    buf[pos++] = DHCP_OPT_TZ_POSIX;
+    buf[pos++] = DHCP_OPT_TZ_IANA;
 
     /* Option 255: End */
     buf[pos++] = DHCP_OPT_END;
@@ -295,10 +303,12 @@ int dhcp_encode_request_reboot(uint8_t *buf, size_t max_len, uint32_t xid, const
 
     /* Option 55: Parameter Request List */
     buf[pos++] = DHCP_OPT_PARAM_REQ_LIST;
-    buf[pos++] = 3;
+    buf[pos++] = 5;
     buf[pos++] = DHCP_OPT_SUBNET_MASK;
     buf[pos++] = DHCP_OPT_ROUTER;
     buf[pos++] = DHCP_OPT_DNS;
+    buf[pos++] = DHCP_OPT_TZ_POSIX;
+    buf[pos++] = DHCP_OPT_TZ_IANA;
 
     /* Option 255: End */
     buf[pos++] = DHCP_OPT_END;
@@ -382,7 +392,15 @@ int dhcp_decode_reply(const uint8_t *buf, size_t len, uint32_t expected_xid, con
         uint8_t opt_len = buf[pos++];
         if (pos + opt_len > len) return -8; /* Truncated option data */
 
-        if (opt == DHCP_OPT_MSG_TYPE && opt_len == 1) {
+        if (opt == DHCP_OPT_TZ_POSIX || opt == DHCP_OPT_TZ_IANA) {
+            char *dst=opt==DHCP_OPT_TZ_POSIX?out->timezone_posix:out->timezone_iana;
+            /* Optional discovery must never reject an otherwise valid lease. */
+            if(opt_len && opt_len<128) {
+                bool valid=true;
+                for(unsigned i=0;i<opt_len;i++)if(buf[pos+i]<33||buf[pos+i]>126)valid=false;
+                if(valid){dhcp_memcpy(dst,buf+pos,opt_len);dst[opt_len]=0;}
+            }
+        } else if (opt == DHCP_OPT_MSG_TYPE && opt_len == 1) {
             out->msg_type = buf[pos];
         } else if (opt == DHCP_OPT_SUBNET_MASK && opt_len == 4) {
             dhcp_memcpy(&out->subnet_mask, buf + pos, 4);

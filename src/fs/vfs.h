@@ -15,6 +15,8 @@
 #define VFS_O_RDWR    2
 #define VFS_O_ACCMODE 3
 #define VFS_O_CREAT   0x40
+#define VFS_O_EXCL    0x80
+#define VFS_O_NOFOLLOW 0x100
 #define VFS_O_TRUNC   0x200
 #define VFS_O_APPEND   0x400
 #define VFS_O_NONBLOCK 0x800
@@ -37,6 +39,7 @@
 #define VFS_EROFS        30
 #define VFS_EPIPE        32
 #define VFS_ENOTEMPTY    39
+#define VFS_ELOOP        40
 #define VFS_EOPNOTSUPP   95
 
 typedef enum {

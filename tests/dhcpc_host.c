@@ -26,9 +26,10 @@ int main(void) {
     /* Verify options in DISCOVER */
     assert(wire[240] == DHCP_OPT_MSG_TYPE && wire[241] == 1 && wire[242] == DHCP_MSG_DISCOVER);
     assert(wire[243] == DHCP_OPT_CLIENT_ID && wire[244] == 7 && wire[245] == 1 && memcmp(wire + 246, mac, 6) == 0);
-    assert(wire[252] == DHCP_OPT_PARAM_REQ_LIST && wire[253] == 3);
+    assert(wire[252] == DHCP_OPT_PARAM_REQ_LIST && wire[253] == 5);
     assert(wire[254] == DHCP_OPT_SUBNET_MASK && wire[255] == DHCP_OPT_ROUTER && wire[256] == DHCP_OPT_DNS);
-    assert(wire[257] == DHCP_OPT_END);
+    assert(wire[257] == DHCP_OPT_TZ_POSIX && wire[258] == DHCP_OPT_TZ_IANA);
+    assert(wire[259] == DHCP_OPT_END);
 
     /* 2. REQUEST encoding */
     uint32_t req_ip = 0x0f02000a; /* 10.0.2.15 in net order */
@@ -115,6 +116,17 @@ int main(void) {
     assert(dhcp_mask_to_prefix(0x80ffffff) == 25); /* 255.255.255.128 */
     assert(dhcp_mask_to_prefix(0x00000000) == 24); /* fallback to 24 */
 
-    puts("DHCP codec ASan/UBSan PASS: encode discover/request, decode offer/ack, options, bounds and corruption resilience");
+    memset(offer_pkt+DHCP_OPTIONS_OFFSET,0,sizeof(offer_pkt)-DHCP_OPTIONS_OFFSET);
+    p=DHCP_OPTIONS_OFFSET;
+    offer_pkt[p++]=DHCP_OPT_MSG_TYPE;offer_pkt[p++]=1;offer_pkt[p++]=DHCP_MSG_ACK;
+    offer_pkt[p++]=DHCP_OPT_TZ_IANA;offer_pkt[p++]=15;
+    memcpy(offer_pkt+p,"Europe/Brussels",15);p+=15;
+    offer_pkt[p++]=DHCP_OPT_TZ_POSIX;offer_pkt[p++]=5;
+    memcpy(offer_pkt+p,"UTC-2",5);p+=5;offer_pkt[p++]=DHCP_OPT_END;
+    assert(dhcp_decode_reply(offer_pkt,p,xid,mac,&offer)==0);
+    assert(!strcmp(offer.timezone_iana,"Europe/Brussels")&&!strcmp(offer.timezone_posix,"UTC-2"));
+    offer_pkt[DHCP_OPTIONS_OFFSET+5]='\n';
+    assert(dhcp_decode_reply(offer_pkt,p,xid,mac,&offer)==0&&offer.timezone_iana[0]==0);
+    puts("DHCP codec ASan/UBSan PASS: encoding, decoding, bounds and RFC 4833 timezone discovery");
     return 0;
 }

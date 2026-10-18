@@ -63,6 +63,8 @@
 #define DHCP_OPT_RENEWAL_TIME    58
 #define DHCP_OPT_REBINDING_TIME  59
 #define DHCP_OPT_CLIENT_ID       61
+#define DHCP_OPT_TZ_POSIX        100
+#define DHCP_OPT_TZ_IANA         101
 #define DHCP_OPT_END             255
 
 #define DHCP_MSG_DISCOVER 1
@@ -117,6 +119,8 @@ typedef struct {
     uint32_t lease_time;
     uint32_t t1;
     uint32_t t2;
+    char timezone_posix[128];
+    char timezone_iana[128];
 } dhcp_offer_t;
 
 int dhcp_encode_discover(uint8_t *buf, size_t max_len, uint32_t xid, const uint8_t mac[6], size_t *out_len);

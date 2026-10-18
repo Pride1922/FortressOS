@@ -53,7 +53,8 @@ int main(void) {
     uint8_t opt_len = 0;
     assert(find_option(wire, wire_len, DHCP_OPT_MSG_TYPE, &val, &opt_len) && opt_len == 1 && *val == DHCP_MSG_REQUEST);
     assert(find_option(wire, wire_len, DHCP_OPT_CLIENT_ID, &val, &opt_len) && opt_len == 7 && val[0] == 1 && memcmp(val + 1, mac, 6) == 0);
-    assert(find_option(wire, wire_len, DHCP_OPT_PARAM_REQ_LIST, &val, &opt_len) && opt_len == 3);
+    assert(find_option(wire, wire_len, DHCP_OPT_PARAM_REQ_LIST, &val, &opt_len) && opt_len == 5);
+    assert(val[3]==DHCP_OPT_TZ_POSIX&&val[4]==DHCP_OPT_TZ_IANA);
 
     /* MUST NOT include Option 50 (requested IP) or Option 54 (server ID) in renewal */
     assert(!find_option(wire, wire_len, DHCP_OPT_REQUESTED_IP, NULL, NULL));

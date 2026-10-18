@@ -146,6 +146,7 @@ daemon; creating an arbitrary `.service` file alone does not register it.
 | [`df`](#df) | Binary (`/bin/df`) / Alias | Storage Tool | Display filesystem disk space and inode usage (alias for `disk usage`) |
 | [`nano`](#nano) | Binary (`/bin/nano`) | Editor | Full-screen interactive visual text editor |
 | [`date`](#date) | Binary (`/bin/date`) | Time / System | Display or format system date and time via `SYS_CLOCK_GETTIME` |
+| [`ntpd`](#ntpd) | Binary (`/sbin/ntpd`) | Time / Networking | Opt-in SNTP UTC synchronization, standalone or supervised |
 | [`sleep`](#sleep) | Binary (`/bin/sleep`) | Time / Process | Delay execution for specified duration via `SYS_NANOSLEEP` |
 | [`gzip`](#gzip) | Binary (`/bin/gzip`) | Stream Tool / Compression | Bounded DEFLATE (RFC 1951) and gzip (RFC 1952) compression |
 | [`gunzip`](#gunzip) | Binary (`/bin/gunzip`) | Stream Tool / Compression | Bounded DEFLATE (RFC 1951) and gzip (RFC 1952) decompression |
@@ -1342,23 +1343,35 @@ nano
 ---
 
 ### `date`
-**Syntax:** `date [-u|--utc] [-I|--iso-8601] [-R|--rfc-2822] [+FORMAT] [--help]`  
-**Path:** `/bin/date`  
-**Description:** Queries kernel wall-clock time via `SYS_CLOCK_GETTIME` (`CLOCK_REALTIME`, syscall 74) and outputs the current date and time in UTC. Supports default POSIX format (`Fri Oct 16 06:56:49 UTC 2026`), ISO-8601 format (`2026-10-16T06:56:49Z`), RFC-2822 format (`Fri, 16 Oct 2026 06:56:49 +0000`), and custom format tokens (including `+%s` for Unix epoch seconds, `+%Y-%m-%d`, `+%H:%M:%S`). Sub-second interpolation is driven by hardware TSC calibration against the APIC timer and PC/AT CMOS RTC.
-* **Options:**
-  - `-u`, `--utc`: Explicitly output time in Coordinated Universal Time (default).
-  - `-I`, `--iso-8601`: Output date and time in ISO-8601 format (`YYYY-MM-DDTHH:MM:SSZ`).
-  - `-R`, `--rfc-2822`: Output date and time in RFC-2822 format (`Day, DD Mon YYYY HH:MM:SS +0000`).
-  - `+FORMAT`: Custom format string supporting `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%s`, `%a`, `%b`, `%%`, `%t`, `%n`.
-  - `--help`, `-h`: Display command usage summary and exit.
-**Examples:**
+**Syntax:** `date [-u|--utc] [-I|--iso-8601] [-R|--rfc-2822] [+%s] [--help]`
+**Path:** `/bin/date`
+**Description:** Displays the kernel's UTC realtime using `TZ`, then `/etc/timezone`, then opted-in DHCP discovery, otherwise UTC. Supports IANA daylight-saving rules, POSIX TZ strings and signed fixed offsets. `-u` forces UTC; `+%s` always prints the original UTC epoch. `-I` includes `Z` or a numeric offset; `-R` prints an RFC 2822 date. Other custom format strings are unsupported.
+
 ```sh
-date
-date -I
-date -R
+date -u -I
+TZ=Europe/Brussels date -I
+TZ=+05:45 date -I
 date +%s
-date +"Today is %Y-%m-%d, time: %H:%M:%S"
 ```
+
+See the [time configuration guide](docs/subsystems/time.md) for persistent settings, POSIX sign conventions and DHCP opt-in.
+
+---
+
+### `ntpd`
+**Syntax:** `ntpd --once SERVER` or `ntpd -f SERVER`
+**Path:** `/sbin/ntpd`
+**Description:** Synchronizes UTC through a bounded SNTP exchange over UDP 123. SERVER is an IPv4 address or DNS name. Requires CAP_SYS_ADMIN (normally `sudo`). Invalid replies and timeouts leave the clock unchanged. Foreground mode resynchronizes hourly and responds to SIGTERM/SIGINT; Watchtower captures its logs. The packaged `ntpd` service is disabled by default. This client does not provide NTS authentication, slewing or RTC writes.
+
+```sh
+sudo /sbin/ntpd --once pool.ntp.org
+sudo service start ntpd
+sudo service status ntpd
+sudo cat /run/watchtower/ntpd.log
+sudo service stop ntpd
+```
+
+See the [time configuration guide](docs/subsystems/time.md) before enabling automatic synchronization.
 
 ---
 
@@ -1714,7 +1727,8 @@ ifup /etc/network.conf
 * Transmits `DHCPREQUEST` and awaits `DHCPACK` confirmation.
 * Applies IP, subnet mask, and default gateway to the kernel network stack via `SYS_NETCTL` (`NETCTL_IFSET`).
 * Durably saves DNS server addresses to `resolv.conf` (via `resolv_conf_path()`) and network configuration to `/etc/network/network.conf` on persistent/installed systems (and `/mnt/.fortress/network.conf` if present).
-* Limitation (v1): One-shot client using bounded busy-wait; no background renewal daemon. The acquired lease lasts until reboot. Requires `sudo` (privileged port 68 and interface configuration). Version 2 (background lease renewal, RFC 2131 T1/T2 timers, and boot-time auto-acquisition) depends on the Time Subsystem and `SYS_NANOSLEEP`.
+* The v2 daemon handles renewal, rebinding and expiry using monotonic timers and `SYS_NANOSLEEP`. Requires `sudo` for port 68 and interface configuration.
+* Requests timezone options 100/101 and records validated discovery in `/run/timezone`. Explicit `TZ` and `/etc/timezone` take precedence; automatic adoption requires `/etc/timezone.dhcp`. See the [time guide](docs/subsystems/time.md).
 
 **Options:**
 * `-n`, `--dry-run`: Perform full DHCP handshake (DISCOVER/OFFER/REQUEST/ACK) and display acquired parameters without modifying network interface or writing files.

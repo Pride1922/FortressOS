@@ -864,7 +864,11 @@ static file_t *open_common(const char *path, int flags, const creds_t *actor, bo
     if (access_mode > 2) {
         return NULL;
     }
-    if (flags & ~(VFS_O_RDONLY | VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_TRUNC | VFS_O_APPEND | VFS_O_CLOEXEC)) {
+    if (flags & ~(VFS_O_RDONLY | VFS_O_WRONLY | VFS_O_RDWR | VFS_O_CREAT | VFS_O_EXCL | VFS_O_NOFOLLOW | VFS_O_TRUNC | VFS_O_APPEND | VFS_O_CLOEXEC)) {
+        return NULL;
+    }
+    /* VFS_O_EXCL is only valid in combination with VFS_O_CREAT */
+    if ((flags & VFS_O_EXCL) && !(flags & VFS_O_CREAT)) {
         return NULL;
     }
     /* This ABI requires a writable handle for truncation. Reject before
@@ -890,6 +894,11 @@ static file_t *open_common(const char *path, int flags, const creds_t *actor, bo
             } else node = vfs_create_ref(path, VFS_FILE, &create_err);
             bool own_creation=node!=NULL;
             if (!node && create_err==-VFS_EEXIST) {
+                if (flags & VFS_O_EXCL) {
+                    kfree(file);
+                    if (err_out) *err_out = -VFS_EEXIST;
+                    return NULL;
+                }
                 node=lookup_common(path,actor,&create_err);
             }
             if (!node) {
@@ -901,6 +910,27 @@ static file_t *open_common(const char *path, int flags, const creds_t *actor, bo
         } else {
             kfree(file);
             if (err_out) *err_out = lookup_error;
+            return NULL;
+        }
+    } else {
+        if ((flags & (VFS_O_CREAT | VFS_O_EXCL)) == (VFS_O_CREAT | VFS_O_EXCL)) {
+            vfs_node_put(node);
+            kfree(file);
+            if (err_out) *err_out = -VFS_EEXIST;
+            return NULL;
+        }
+    }
+
+    if (flags & VFS_O_NOFOLLOW) {
+        vfs_metadata_t meta;
+        uint32_t check_mode = node->mode;
+        if (vfs_metadata(node, &meta) == 0) {
+            check_mode = meta.mode;
+        }
+        if ((check_mode & VFS_S_IFMT) == VFS_S_IFLNK) {
+            vfs_node_put(node);
+            kfree(file);
+            if (err_out) *err_out = -VFS_ELOOP;
             return NULL;
         }
     }

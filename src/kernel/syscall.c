@@ -166,6 +166,7 @@ int64_t syscall_from_vfs_error(int64_t vfs_err) {
         case -VFS_ENOSPC:      return SYSCALL_ENOSPC;      /* -13 */
         case -VFS_EROFS:       return SYSCALL_EROFS;       /* -11 */
         case -VFS_ENOTEMPTY:   return SYSCALL_ENOTEMPTY;   /* -19 */
+        case -VFS_ELOOP:       return SYSCALL_ELOOP;       /* -33 */
         case -VFS_EOPNOTSUPP:  return SYSCALL_EOPNOTSUPP;  /* -14 */
         case -7:               return SYSCALL_EISDIR;      /* -7 */
         case -VFS_ENOTDIR:    return SYSCALL_ENOTDIR;
@@ -2065,6 +2066,19 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
         }
 
+        case SYS_CLOCK_SETTIME: {
+            creds_t actor;
+            if (!syscall_actor(&actor)) { result=SYSCALL_ESRCH; break; }
+            if (permission_capability(&actor,CAP_SYS_ADMIN)) { result=SYSCALL_EPERM; break; }
+            if (frame->rdi!=CLOCK_REALTIME) { result=SYSCALL_EINVAL; break; }
+            if (!frame->rsi || !vmm_validate_user_range(vmm_get_active_pml4_virt(),frame->rsi,sizeof(timespec_t),false)) {
+                result=SYSCALL_EFAULT; break;
+            }
+            timespec_t ts;
+            memcpy(&ts,(const void *)frame->rsi,sizeof(ts));
+            result=time_set_realtime(&ts);
+            break;
+        }
         case SYS_CLOCK_GETTIME: {
             uint32_t clk_id = (uint32_t)frame->rdi;
             uintptr_t user_ts = frame->rsi;

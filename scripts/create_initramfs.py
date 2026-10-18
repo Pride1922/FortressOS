@@ -11,4 +11,5 @@ def metadata(member):
  if member.name in ('bin/sudo','bin/passwd'):member.mode=0o4755
  return member
 with tarfile.open(target,'w',format=tarfile.USTAR_FORMAT) as archive:
- for name in ('bin','sbin','etc','docs'):archive.add(source/name,arcname=name,filter=metadata)
+ for name in ('bin','sbin','etc','docs','usr'):
+  if (source/name).is_dir():archive.add(source/name,arcname=name,filter=metadata)

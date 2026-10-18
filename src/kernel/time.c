@@ -17,6 +17,9 @@ typedef struct {
 } kernel_timekeeper_t;
 
 static kernel_timekeeper_t g_timekeeper;
+/* A single atomic correction publishes a coherent wall-clock update on SMP.
+ * Boot origins/calibration never change; monotonic and sleep are independent. */
+static int64_t g_realtime_correction_ns;
 static const int g_sleep_channel = 0x51EE9; /* "SLEEP" */
 
 const void *time_get_sleep_channel(void) {
@@ -29,6 +32,7 @@ void time_timer_tick(void) {
 
 void time_init(void) {
     memset(&g_timekeeper, 0, sizeof(g_timekeeper));
+    __atomic_store_n(&g_realtime_correction_ns,0,__ATOMIC_RELAXED);
 
     /* Read wall-clock calendar from CMOS RTC */
     rtc_datetime_t dt;
@@ -83,8 +87,8 @@ void time_init(void) {
     serial_puts(g_timekeeper.tsc_valid ? " (TSC-interpolated)\n" : " (tick-fallback)\n");
 }
 
-int time_get_timespec(uint32_t clk_id, timespec_t *ts) {
-    if (!ts) return -SYSCALL_EFAULT;
+static int time_get_uncorrected(uint32_t clk_id, timespec_t *ts) {
+    if (!ts) return SYSCALL_EFAULT;
 
     if (!g_timekeeper.initialized) {
         ts->tv_sec = 0;
@@ -152,8 +156,43 @@ int time_get_timespec(uint32_t clk_id, timespec_t *ts) {
     }
 
     default:
-        return -SYSCALL_EINVAL;
+        return SYSCALL_EINVAL;
     }
+}
+
+int time_get_timespec(uint32_t clk_id, timespec_t *ts) {
+    int r = time_get_uncorrected(clk_id, ts);
+    if (!r && (clk_id == CLOCK_REALTIME || clk_id == CLOCK_REALTIME_COARSE)) {
+        int64_t correction = __atomic_load_n(&g_realtime_correction_ns, __ATOMIC_ACQUIRE);
+        ts->tv_sec += correction / 1000000000LL;
+        ts->tv_nsec += correction % 1000000000LL;
+        if (ts->tv_nsec < 0) {
+            --ts->tv_sec;
+            ts->tv_nsec += 1000000000LL;
+        }
+        if (ts->tv_nsec >= 1000000000LL) {
+            ++ts->tv_sec;
+            ts->tv_nsec -= 1000000000LL;
+        }
+    }
+    return r;
+}
+
+int time_set_realtime(const timespec_t *ts) {
+    /* Bounded NTP era policy: Unix epoch through 2100-12-31. No RTC writes. */
+    if (!ts || ts->tv_sec < 0 || ts->tv_sec > 4133980799LL || ts->tv_nsec < 0 ||
+        ts->tv_nsec >= 1000000000LL)
+        return SYSCALL_EINVAL;
+    timespec_t raw;
+    int r = time_get_uncorrected(CLOCK_REALTIME, &raw);
+    if (r)
+        return r;
+    int64_t delta = ts->tv_sec - raw.tv_sec;
+    if (delta < -9000000000LL || delta > 9000000000LL)
+        return SYSCALL_EINVAL;
+    int64_t ns = delta * 1000000000LL + ts->tv_nsec - raw.tv_nsec;
+    __atomic_store_n(&g_realtime_correction_ns, ns, __ATOMIC_RELEASE);
+    return 0;
 }
 
 uint64_t time_get_epoch_seconds(void) {

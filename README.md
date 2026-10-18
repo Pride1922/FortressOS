@@ -93,6 +93,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 | **Network SMP (CPU-0 Handoff)**| **COMPLETE through Phase 4** | Cross-core control, UDP/DNS, TCP streams/listeners, and ordinary unpinned children. Bounded Dell physical acceptance; Phase 5 throughput redesign deferred. |
 | **SSH** | **COMPLETE through Phase 8** | BIOS/UEFI automated acceptance; laptop MobaXterm login, interactive commands, `top` and sudo user-confirmed. Physical lifecycle/entropy limits remain documented. |
 | **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, background lease renewal, gzip/gunzip; verification scope recorded in subsystem guides. |
+| **Timezones & SNTP** | **IMPLEMENTED; AUTOMATED ACCEPTANCE PASS** | IANA/DST, TZ/fixed offsets, opt-in DHCP timezone discovery and disabled-by-default NTP service; host sanitizers and BIOS/UEFI SMP=1/4 pass. [Guide and limits](docs/subsystems/time.md). |
 | **Watchtower Service Supervisor** | **IMPLEMENTED; BOUNDED LIFECYCLE VERIFIED** | Phases 0–5; 36 host sanitizer checks and four BIOS/UEFI service/SSH/power scenarios pass. Dell shutdown/reboot user-confirmed; wider robustness remains open. [Evidence and limits](docs/roadmap/watchtower-lifecycle.md). |
 | **Crond & Logrotate** | **IMPLEMENTED; HOST VERIFIED** | Minimal interval scheduler and bounded log rotation; 14 crond and 9 logrotate host checks pass. Physical/service integration acceptance remains separate. |
 

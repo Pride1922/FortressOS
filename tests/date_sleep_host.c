@@ -3,7 +3,7 @@
 #include <string.h>
 #include "common.h"
 
-extern int date_main(int argc, char **argv);
+extern int date_main(int argc, char **argv, const char *const *envp);
 extern int sleep_main(int argc, char **argv);
 
 static timespec_t mock_realtime;
@@ -17,9 +17,27 @@ static char mock_stdout[4096];
 static size_t mock_stdout_len = 0;
 static char mock_stderr[4096];
 static size_t mock_stderr_len = 0;
+static const char *mock_zonefile,*mock_dhcpzone;
+static bool mock_dhcp_optin;
+static const char *read_data;
+static size_t read_position;
 
 long tool_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c) {
     (void)c;
+    if(nr==SYS_OPEN) {
+        const char *path=(const char *)a;
+        read_data=NULL;read_position=0;
+        if(!strcmp(path,"/etc/timezone"))read_data=mock_zonefile;
+        if(!strcmp(path,"/run/timezone"))read_data=mock_dhcpzone;
+        if(!strcmp(path,"/etc/timezone.dhcp")&&mock_dhcp_optin)read_data="";
+        return read_data?3:SYSCALL_ENOENT;
+    }
+    if(nr==SYS_READ) {
+        assert(a==3&&read_data);size_t left=strlen(read_data)-read_position;
+        size_t count=left<c?left:c;if(count>3)count=3; /* force short reads */
+        memcpy((void *)b,read_data+read_position,count);read_position+=count;return count;
+    }
+    if(nr==SYS_CLOSE)return 0;
     if (nr == SYS_CLOCK_GETTIME) {
         if (mock_clock_ret < 0) return mock_clock_ret;
         if (a == CLOCK_REALTIME) {
@@ -79,43 +97,75 @@ static void test_date_tool(void) {
     /* 1. Default date output */
     reset_buffers();
     char *argv_default[] = {"date", NULL};
-    int ret = date_main(1, argv_default);
+    int ret = date_main(1, argv_default, NULL);
     assert(ret == 0);
     assert(strcmp(mock_stdout, "Fri Oct 16 08:30:45 UTC 2026\n") == 0);
 
     /* 2. ISO-8601 mode */
     reset_buffers();
     char *argv_iso[] = {"date", "-I", NULL};
-    ret = date_main(2, argv_iso);
+    ret = date_main(2, argv_iso, NULL);
     assert(ret == 0);
     assert(strcmp(mock_stdout, "2026-10-16T08:30:45Z\n") == 0);
 
     /* 3. RFC-2822 mode */
     reset_buffers();
     char *argv_rfc[] = {"date", "-R", NULL};
-    ret = date_main(2, argv_rfc);
+    ret = date_main(2, argv_rfc, NULL);
     assert(ret == 0);
     assert(strcmp(mock_stdout, "Fri, 16 Oct 2026 08:30:45 +0000\n") == 0);
 
     /* 4. Seconds since epoch (+%s) */
     reset_buffers();
     char *argv_epoch[] = {"date", "+%s", NULL};
-    ret = date_main(2, argv_epoch);
+    ret = date_main(2, argv_epoch, NULL);
     assert(ret == 0);
     assert(strcmp(mock_stdout, "1792139445\n") == 0);
 
     /* 5. Help */
     reset_buffers();
     char *argv_help[] = {"date", "--help", NULL};
-    ret = date_main(2, argv_help);
+    ret = date_main(2, argv_help, NULL);
     assert(ret == 0);
     assert(strstr(mock_stdout, "usage: date") != NULL);
 
     /* 6. Invalid option */
     reset_buffers();
     char *argv_bad[] = {"date", "--bogus", NULL};
-    ret = date_main(2, argv_bad);
+    ret = date_main(2, argv_bad, NULL);
     assert(ret != 0);
+
+    const char *east[]={"TZ=+05:45",NULL};
+    reset_buffers();assert(date_main(2,argv_iso,east)==0);
+    assert(!strcmp(mock_stdout,"2026-10-16T14:15:45+05:45\n"));
+    const char *west[]={"TZ=UTC5",NULL};
+    reset_buffers();assert(date_main(2,argv_rfc,west)==0);
+    assert(!strcmp(mock_stdout,"Fri, 16 Oct 2026 03:30:45 -0500\n"));
+    mock_zonefile="+02:00\n";mock_dhcpzone="-03:00";mock_dhcp_optin=true;
+    reset_buffers();assert(date_main(2,argv_iso,NULL)==0);
+    assert(!strcmp(mock_stdout,"2026-10-16T10:30:45+02:00\n"));
+    reset_buffers();assert(date_main(2,argv_iso,west)==0);
+    assert(!strcmp(mock_stdout,"2026-10-16T03:30:45-05:00\n"));
+    mock_zonefile=NULL;
+    reset_buffers();assert(date_main(2,argv_iso,NULL)==0);
+    assert(!strcmp(mock_stdout,"2026-10-16T05:30:45-03:00\n"));
+    mock_dhcp_optin=false;
+    reset_buffers();assert(date_main(2,argv_iso,NULL)==0);
+    assert(!strcmp(mock_stdout,"2026-10-16T08:30:45Z\n"));
+    mock_zonefile="../../etc/shadow";
+    reset_buffers();assert(date_main(2,argv_iso,NULL)!=0&&mock_stdout_len==0);
+    char *forceutc[]={"date","-I","-u",NULL};
+    reset_buffers();assert(date_main(3,forceutc,NULL)==0);
+    assert(!strcmp(mock_stdout,"2026-10-16T08:30:45Z\n"));
+    reset_buffers();assert(date_main(2,argv_epoch,NULL)==0);
+    assert(!strcmp(mock_stdout,"1792139445\n"));
+    mock_zonefile=NULL;mock_dhcpzone=NULL;
+    mock_realtime.tv_sec=0;
+    reset_buffers();assert(date_main(2,argv_iso,west)==0);
+    assert(!strcmp(mock_stdout,"1969-12-31T19:00:00-05:00\n"));
+    mock_realtime.tv_sec=-1;
+    reset_buffers();assert(date_main(2,argv_epoch,NULL)==0);
+    assert(!strcmp(mock_stdout,"-1\n"));
 
     printf("  [PASS] date tool verified.\n");
 }

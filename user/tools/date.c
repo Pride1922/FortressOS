@@ -1,4 +1,5 @@
 #include "common.h"
+#include "../timezone.h"
 
 static const char *s_weekdays[7] = {
     "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
@@ -8,48 +9,6 @@ static const char *s_months[12] = {
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 };
-
-static inline bool is_leap_year(uint32_t year) {
-    return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
-}
-
-static void epoch_to_datetime(uint64_t epoch, uint32_t *out_year, uint8_t *out_month,
-                             uint8_t *out_day, uint8_t *out_hour, uint8_t *out_min,
-                             uint8_t *out_sec, uint8_t *out_wday) {
-    uint64_t days = epoch / 86400ULL;
-    uint32_t sec_in_day = (uint32_t)(epoch % 86400ULL);
-
-    *out_hour = (uint8_t)(sec_in_day / 3600);
-    *out_min  = (uint8_t)((sec_in_day % 3600) / 60);
-    *out_sec  = (uint8_t)(sec_in_day % 60);
-    *out_wday = (uint8_t)((days + 4) % 7); /* 1970-01-01 was Thursday = 4 */
-
-    uint32_t year = 1970;
-    for (;;) {
-        uint32_t diy = is_leap_year(year) ? 366 : 365;
-        if (days < diy) break;
-        days -= diy;
-        year++;
-    }
-    *out_year = year;
-
-    static const uint8_t days_in_months[12] = {
-        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
-    };
-
-    uint8_t month = 1;
-    for (int m = 0; m < 12; m++) {
-        uint32_t dim = days_in_months[m];
-        if (m == 1 && is_leap_year(year)) dim = 29;
-        if (days < dim) {
-            month = (uint8_t)(m + 1);
-            break;
-        }
-        days -= dim;
-    }
-    *out_month = month;
-    *out_day   = (uint8_t)(days + 1);
-}
 
 static void append_two_digits(char *buf, size_t *pos, uint32_t val) {
     buf[(*pos)++] = (char)('0' + ((val / 10) % 10));
@@ -69,7 +28,8 @@ static void append_str(char *buf, size_t *pos, const char *s) {
     }
 }
 
-int date_main(int argc, char **argv) {
+int date_main(int argc, char **argv, const char *const *envp) {
+    bool utc=false;
     bool iso8601 = false;
     bool rfc2822 = false;
     bool print_epoch = false;
@@ -78,7 +38,7 @@ int date_main(int argc, char **argv) {
         if (tool_equal(argv[i], "--help") || tool_equal(argv[i], "-h")) {
             const char *help =
                 "usage: date [-u|--utc] [-I|--iso-8601] [-R|--rfc-2822] [+%s] [--help]\n"
-                "Display current date and time.\n"
+                "Display current date and time (TZ, /etc/timezone, or UTC).\n"
                 "\n"
                 "Options:\n"
                 "  -u, --utc, --universal  print Universal Coordinated Time (UTC)\n"
@@ -89,7 +49,7 @@ int date_main(int argc, char **argv) {
             return tool_write("date", help, tool_length(help));
         } else if (tool_equal(argv[i], "-u") || tool_equal(argv[i], "--utc") ||
                    tool_equal(argv[i], "--universal")) {
-            /* FortressOS currently operates in UTC */
+            utc=true;
         } else if (tool_equal(argv[i], "-I") || tool_equal(argv[i], "--iso-8601")) {
             iso8601 = true;
         } else if (tool_equal(argv[i], "-R") || tool_equal(argv[i], "--rfc-2822")) {
@@ -109,14 +69,44 @@ int date_main(int argc, char **argv) {
 
     if (print_epoch) {
         char buf[32];
-        size_t len = tool_format_u64(buf, (uint64_t)ts.tv_sec);
+        size_t len=0;
+        uint64_t magnitude=(uint64_t)ts.tv_sec;
+        if(ts.tv_sec<0){buf[len++]='-';magnitude=(uint64_t)(-(ts.tv_sec+1))+1;}
+        len += tool_format_u64(buf+len, magnitude);
         buf[len++] = '\n';
         return tool_write("date", buf, len);
     }
 
     uint32_t year = 0;
     uint8_t month = 0, day = 0, hour = 0, min = 0, sec = 0, wday = 0;
-    epoch_to_datetime((uint64_t)ts.tv_sec, &year, &month, &day, &hour, &min, &sec, &wday);
+    tz_result_t zone = {.abbreviation = "UTC"};
+    if (!utc && !tz_resolve(envp, ts.tv_sec, &zone))
+        return tool_error("date", "invalid or unavailable timezone", NULL);
+    tz_calendar_t cal;
+    if (ts.tv_sec < -62167125600LL || ts.tv_sec > 253402207199LL ||
+        !tz_calendar(ts.tv_sec + zone.offset, &cal))
+        return tool_error("date", "date outside supported calendar", NULL);
+    year = cal.year;
+    month = cal.month;
+    day = cal.day;
+    hour = cal.hour;
+    min = cal.minute;
+    sec = cal.second;
+    wday = cal.weekday;
+    char numeric[16];
+    size_t np = 0;
+    int off = zone.offset;
+    numeric[np++] = off < 0 ? '-' : '+';
+    if (off < 0)
+        off = -off;
+    append_two_digits(numeric, &np, off / 3600);
+    numeric[np++] = ':';
+    append_two_digits(numeric, &np, off / 60 % 60);
+    if(off%60) {
+        if(rfc2822&&!iso8601)return tool_error("date","RFC 2822 cannot represent a sub-minute zone offset",NULL);
+        numeric[np++]=':';append_two_digits(numeric,&np,off%60);
+    }
+    numeric[np] = 0;
 
     char out[128];
     size_t pos = 0;
@@ -134,7 +124,7 @@ int date_main(int argc, char **argv) {
         append_two_digits(out, &pos, min);
         out[pos++] = ':';
         append_two_digits(out, &pos, sec);
-        out[pos++] = 'Z';
+        if(!zone.offset)out[pos++]='Z';else append_str(out,&pos,numeric);
         out[pos++] = '\n';
     } else if (rfc2822) {
         /* Day, DD Mon YYYY HH:MM:SS +0000 */
@@ -151,7 +141,7 @@ int date_main(int argc, char **argv) {
         append_two_digits(out, &pos, min);
         out[pos++] = ':';
         append_two_digits(out, &pos, sec);
-        append_str(out, &pos, " +0000\n");
+        out[pos++]=' ';for(size_t i=0;i<np;i++)if(numeric[i]!=':')out[pos++]=numeric[i];out[pos++]='\n';
     } else {
         /* Standard: Day Mon DD HH:MM:SS UTC YYYY */
         append_str(out, &pos, s_weekdays[wday]);
@@ -170,7 +160,9 @@ int date_main(int argc, char **argv) {
         append_two_digits(out, &pos, min);
         out[pos++] = ':';
         append_two_digits(out, &pos, sec);
-        append_str(out, &pos, " UTC ");
+        out[pos++]=' ';append_str(out,&pos,zone.abbreviation);
+        if(zone.offset && zone.abbreviation[0]=='U' && zone.abbreviation[1]=='T' && zone.abbreviation[2]=='C')append_str(out,&pos,numeric);
+        out[pos++]=' ';
         append_four_digits(out, &pos, year);
         out[pos++] = '\n';
     }

@@ -6,6 +6,8 @@
 
 /* Initialize kernel timekeeping from CMOS RTC and calibrated TSC */
 void time_init(void);
+/* Caller enforces CAP_SYS_ADMIN; atomic wall-clock correction, no RTC writes. */
+int time_set_realtime(const timespec_t *ts);
 
 /* Query kernel clock. Supports CLOCK_REALTIME and CLOCK_MONOTONIC.
  * Returns 0 on success, or -SYSCALL_EINVAL for unsupported clock IDs. */

@@ -1,55 +1,28 @@
 #include "logger.h"
+#include "../timezone.h"
 #include "common.h"
 #include "../permissions_cli.h"
 #include "vfs.h"
 
 static const char s_hex_digits[] = "0123456789abcdef";
 
-static inline bool is_leap_year(uint32_t year) {
-    return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
-}
-
-static bool epoch_to_datetime(uint64_t epoch, uint32_t *out_year, uint8_t *out_month,
-                             uint8_t *out_day, uint8_t *out_hour, uint8_t *out_min,
-                             uint8_t *out_sec) {
-    uint64_t days = epoch / 86400ULL;
-    uint32_t sec_in_day = (uint32_t)(epoch % 86400ULL);
-
-    *out_hour = (uint8_t)(sec_in_day / 3600);
-    *out_min  = (uint8_t)((sec_in_day % 3600) / 60);
-    *out_sec  = (uint8_t)(sec_in_day % 60);
-
-    uint32_t year = 1970;
-    for (;;) {
-        uint32_t diy = is_leap_year(year) ? 366 : 365;
-        if (days < diy) break;
-        days -= diy;
-        year++;
-        if (year > 2200) return false;
-    }
-    *out_year = year;
-
-    static const uint8_t days_in_months[12] = {
-        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
-    };
-
-    uint8_t month = 1;
-    for (int m = 0; m < 12; m++) {
-        uint32_t dim = days_in_months[m];
-        if (m == 1 && is_leap_year(year)) dim = 29;
-        if (days < dim) {
-            month = (uint8_t)(m + 1);
-            break;
-        }
-        days -= dim;
-    }
-    *out_month = month;
-    *out_day   = (uint8_t)(days + 1);
+static bool epoch_to_datetime(uint64_t epoch, uint32_t *year, uint8_t *month, uint8_t *day,
+                              uint8_t *hour, uint8_t *minute, uint8_t *second) {
+    tz_calendar_t c;
+    if (epoch > 253402300799ULL || !tz_calendar((int64_t)epoch, &c))
+        return false;
+    *year = c.year;
+    *month = c.month;
+    *day = c.day;
+    *hour = c.hour;
+    *minute = c.minute;
+    *second = c.second;
     return true;
 }
 
 size_t logger_sanitize(char *dst, size_t cap, const char *src, size_t src_len) {
-    if (!dst || cap == 0) return 0;
+    if (!dst || cap == 0)
+        return 0;
     size_t out_pos = 0;
 
     for (size_t i = 0; i < src_len && src; i++) {
