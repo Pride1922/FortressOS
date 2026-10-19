@@ -21,7 +21,11 @@
 #include "ext4_host/spinlock.h"
 #define HOST_SPINLOCK_H
 #include "ext4_fault_disk.h"
+#ifdef TEST_EXT4_ATOMIC_COUNTERS
+static _Atomic size_t live,reads,allocations;
+#else
 static size_t live,reads,allocations;
+#endif
 static long fail_read=-1,fail_alloc=-1;
 void *kmalloc(size_t n) { allocations++;if (!fail_alloc) return NULL;if (fail_alloc>0) fail_alloc--;void *p=malloc(n);if (p) live++;return p; }
 void *kmalloc_large(size_t n) {return kmalloc(n);}

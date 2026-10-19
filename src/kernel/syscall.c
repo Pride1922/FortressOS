@@ -1381,7 +1381,7 @@ static int64_t sys_unlink(uintptr_t user_path) {
     return SYSCALL_SUCCESS;
 }
 
-static int64_t sys_rename(uintptr_t user_oldpath, uintptr_t user_newpath) {
+static int64_t sys_rename_paths(uintptr_t user_oldpath, uintptr_t user_newpath,bool replace) {
     uint64_t *active_pml4 = vmm_get_active_pml4_virt();
     char raw_old[VFS_MAX_PATH];
     int err = copy_user_string(active_pml4, user_oldpath, raw_old, sizeof(raw_old));
@@ -1402,7 +1402,7 @@ static int64_t sys_rename(uintptr_t user_oldpath, uintptr_t user_newpath) {
 
     creds_t actor;
     if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
-    int res = vfs_rename_creds(koldpath, knewpath, &actor);
+    int res = replace ? vfs_replace_creds(koldpath,knewpath,&actor) : vfs_rename_creds(koldpath, knewpath, &actor);
     if (res < 0) return syscall_from_vfs_error(res);
     return SYSCALL_SUCCESS;
 }
@@ -1773,7 +1773,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
 
         case SYS_RENAME:
-            result = sys_rename(frame->rdi, frame->rsi);
+            result = sys_rename_paths(frame->rdi, frame->rsi,false);
+            break;
+        case SYS_RENAME_REPLACE:
+            result = frame->rdx ? SYSCALL_EINVAL : sys_rename_paths(frame->rdi,frame->rsi,true);
             break;
 
         case SYS_SYNC:

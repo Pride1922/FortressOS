@@ -1032,6 +1032,32 @@ int vfs_mkdir_creds(const char *path,uint32_t mode,const creds_t *actor) {
 int vfs_unlink(const char *path) { return unlink_common(path,NULL); }
 int vfs_unlink_creds(const char *path,const creds_t *actor) { return actor ? unlink_common(path,actor) : -VFS_EINVAL; }
 int vfs_rename(const char *a,const char *b) { return rename_common(a,b,NULL); }
+static int replace_common(const char *a,const char *b,const creds_t *actor) {
+    char old[VFS_MAX_PATH],dest[VFS_MAX_PATH];
+    if(vfs_join_path("/",a,old,sizeof(old)) || vfs_join_path("/",b,dest,sizeof(dest)))return -VFS_EINVAL;
+    if(!strcmp(old,"/") || !strcmp(dest,"/"))return -VFS_EPERM;
+    if(old[strlen(old)-1]=='/' || dest[strlen(dest)-1]=='/')return -VFS_ENOTDIR;
+    char *x=old,*y=dest;
+    for(char *p=old;*p;p++)if(*p=='/')x=p;
+    for(char *p=dest;*p;p++)if(*p=='/')y=p;
+    const char *name=x+1,*next=y+1;
+    if(strlen(name)>=VFS_MAX_NAME || strlen(next)>=VFS_MAX_NAME)return -VFS_EINVAL;
+    if(x!=old)*x=0;
+    if(y!=dest)*y=0;
+    int error=0;vfs_node_t *p=lookup_common(x==old ? "/" : old,actor,&error);
+    if(!p)return error;
+    vfs_node_t *q=lookup_common(y==dest ? "/" : dest,actor,&error);
+    if(!q) {vfs_node_put(p);return error;}
+    if(p->type!=VFS_DIRECTORY || q->type!=VFS_DIRECTORY)error=-VFS_ENOTDIR;
+    else if(boot_route(p,name)||boot_route(q,next))error=-VFS_EPERM;
+    else if(!p->replace || p->replace!=q->replace)error=-VFS_EOPNOTSUPP;
+    else error=p->replace(p,name,q,next,actor);
+    vfs_node_put(q);vfs_node_put(p);return error;
+}
+int vfs_replace(const char *a,const char *b) {return replace_common(a,b,NULL);}
+int vfs_replace_creds(const char *a,const char *b,const creds_t *actor) {
+    return actor ? replace_common(a,b,actor) : -VFS_EINVAL;
+}
 int vfs_rename_creds(const char *a,const char *b,const creds_t *actor) { return actor ? rename_common(a,b,actor) : -VFS_EINVAL; }
 static int vfs_immutable_setattr(vfs_node_t *n,bool chown,uint32_t mode,
                                  creds_id_change_t uid,creds_id_change_t gid,const creds_t *actor) {

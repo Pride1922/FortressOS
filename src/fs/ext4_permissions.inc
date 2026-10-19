@@ -7,8 +7,9 @@ static vfs_metadata_t e4_value(const e4_inode_t *in) {
 }
 static int e4_access_locked(vfs_node_t *node,unsigned mask,const creds_t *actor) {
     e4_node_t *n=(e4_node_t *)node;e4_inode_t in;int r=0;
+    if (n->inode.fs->namespace_uncertain) return -VFS_EIO;
     if (n->inode.fs->journal_mounted) {
-        if (n->removed) return -VFS_ENOENT;
+        if (n->removed) return n->replaced ? -VFS_EAGAIN : -VFS_ENOENT;
         r=e4_journal_refresh(node);in=n->inode;
     } else r=e4_inode(n->inode.fs,n->inode.ino,&in);
     if (r) return r;

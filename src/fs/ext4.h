@@ -37,6 +37,13 @@ bool ext4_storage_owned(void);
  * unlocked thread/boot context. Failed admission writes nothing and publishes
  * nothing. Dirty/recovery-needed volumes reject; RO never replays a journal. */
 typedef struct ext4_mount ext4_mount_t;
+/* SYS_RENAME_REPLACE is additive: existing singly-linked regular files on a
+ * healthy journaled mount, closed source; both names, links and victim orphan
+ * intent activate together. Victim reclamation is deferred to close/sync.
+ * Uncertain activation I/O taints and blocks new namespace/open/EXEC admission
+ * until reboot recovery; validated retained regular-file reads remain allowed.
+ * An open racing replacement may return EAGAIN for a retired destination
+ * dentry; callers retry pathname admission. Existing rename stays no-replace. */
 /* Geometry admission is bounded to 1 TiB, 8192 groups and 1,048,576 inodes.
  * Journal ownership auditing uses bounded bulk heap buffers; admission fails
  * cleanly on memory exhaustion, with no reduced validation or write fallback. */

@@ -6,7 +6,8 @@ contract was changed. Findings below distinguish code defects, missing APIs,
 intentional profile limits and unmeasured performance/physical questions.
 
 Follow-up: creation/write timestamp encoding is now corrected and verified in
-[EH-1A](ext4-timestamps.md). The findings below retain the original pre-fix
+[EH-1A](ext4-timestamps.md); additive one-file replacement is implemented with
+[EH-2 automated evidence](ext4-atomic-replace.md). The findings below retain the original pre-fix
 assessment; broader timestamp policy and later prerequisites remain open.
 
 ## What should be retained

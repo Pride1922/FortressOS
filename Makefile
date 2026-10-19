@@ -828,6 +828,7 @@ USER_TAR_ELF := $(BUILD_DIR)/tool-tar.elf
 USER_TRACEROUTE_ELF := $(BUILD_DIR)/traceroute.elf
 INITRAMFS_TAR := $(BIN_DIR)/initramfs.tar
 include scripts/fstat.mk
+include scripts/replace.mk
 include scripts/vfs_flags.mk
 include scripts/hostkey_acceptance.mk
 ifeq ($(CRYPTO_TEST_PROBE),1)
@@ -1220,6 +1221,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/initramfs/sbin/sshd
 	@if [ "$(CRYPTO_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/crypto-probe.elf $(BUILD_DIR)/initramfs/bin/crypto-probe; else rm -f $(BUILD_DIR)/initramfs/bin/crypto-probe; fi
 	@if [ "$(FSTAT_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/fstat-probe.elf $(BUILD_DIR)/initramfs/bin/fstat-probe; else rm -f $(BUILD_DIR)/initramfs/bin/fstat-probe; fi
+	@if [ "$(REPLACE_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/replace-probe.elf $(BUILD_DIR)/initramfs/bin/replace-probe; else rm -f $(BUILD_DIR)/initramfs/bin/replace-probe; fi
 	@if [ "$(HOSTKEY_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/hostkey-probe.elf $(BUILD_DIR)/initramfs/bin/hostkey-probe; else rm -f $(BUILD_DIR)/initramfs/bin/hostkey-probe; fi
 	@$(foreach tool,$(SBIN_STREAM_TOOLS) disk,cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
 	@cp -f $(USER_DISK_ELF) $(BUILD_DIR)/initramfs/bin/df
@@ -2273,3 +2275,15 @@ test-ext4-time-host:
 	mkdir -p build
 	$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_time_host.c tests/ext4_time_clock.c tests/ext4_fault_disk.c -o build/ext4_time_host
 	python3 scripts/test_ext4_time_host.py
+
+.PHONY: test-ext4-replace-host
+test-ext4-replace-host:
+	@mkdir -p build
+	$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_replace_host.c tests/ext4_fault_disk.c src/fs/permission_values.c src/kernel/creds.c -o build/ext4_replace_host
+	python3 scripts/test_ext4_replace_host.py
+
+.PHONY: test-ext4-replace-fault-host
+test-ext4-replace-fault-host:
+	@mkdir -p build
+	$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_replace_fault_host.c tests/ext4_time_clock.c tests/ext4_fault_disk.c src/fs/permission_values.c src/kernel/creds.c -o build/ext4_replace_fault_host
+	python3 scripts/test_ext4_replace_fault_host.py

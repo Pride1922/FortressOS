@@ -3,6 +3,11 @@
 **Status:** DESIGN PROPOSAL, 2026-10-19. No implementation, package repository,
 signing service or production update acceptance is claimed.
 
+Prerequisite update: [EXT4 EH-2](../roadmap/ext4-atomic-replace.md) delivers the
+additive one-file replacement primitive in automated scope. Package framing,
+signature policy, transaction locking/recovery and package-manager phases are
+still unimplemented; this prerequisite does not close PKG-0 or enable updates.
+
 ## 1. Goal and delivery boundary
 
 Install FortressOS on the laptop, connect over SSH, install a tool and upgrade it

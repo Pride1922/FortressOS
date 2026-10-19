@@ -16,7 +16,10 @@ corrects creation/write timestamp encoding and the 1 KiB group ownership bitmap
 alignment. Six block/sector profiles pass actual-code sanitizers and 54 Linux
 fsck/payload audits, including mounted failure preservation. No new physical or
 firmware acceptance. [EH-2 replacement design](../plans/EXT4_ATOMIC_REPLACE_DESIGN.md)
-is reviewed; its runtime implementation remains open.
+is now [implemented in automated scope](../roadmap/ext4-atomic-replace.md):
+SYS_RENAME_REPLACE 84, one activation transaction with deferred orphan cleanup,
+retained file objects, explicit uncertain-namespace fencing, and release-excluded
+Ring 3 BIOS/UEFI SMP=1/4 acceptance. No physical or multi-file atomicity claim.
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |

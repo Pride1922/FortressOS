@@ -10,7 +10,8 @@ static int e4_rw_workspace(ext4_mount_t *fs) {
 static int e4_state_account(vfs_node_t *node,bool account) {
     if (!node || !node->fs_private) return -VFS_EINVAL;
     e4_node_t *n=(e4_node_t *)node;
-    if (n->removed && !(n->opens && e4_mounted_orphan(n->inode.fs,n->inode.ino))) return -VFS_ENOENT;
+    if (n->removed && !(n->opens && e4_mounted_orphan(n->inode.fs,n->inode.ino)))
+        return n->replaced ? -VFS_EAGAIN : -VFS_ENOENT;
     ext4_mount_t *fs=n->inode.fs;
     if (fs->engine && fs->engine->tainted) return -VFS_EIO;
     if (!account && e4_account_inode(fs,n->inode.ino)) return -VFS_EROFS;
@@ -23,7 +24,8 @@ static int e4_can_write(vfs_node_t *node) {
 }
 static int e4_open(vfs_node_t *node) {
     uint64_t f=spin_lock_irqsave(&e4_lock); e4_node_t *n=(e4_node_t *)node;
-    int r=n->removed ? -VFS_ENOENT : n->opens==UINT32_MAX ? -VFS_EFBIG : 0;
+    int r=n->inode.fs->namespace_uncertain ? -VFS_EIO : n->removed ?
+        (n->replaced ? -VFS_EAGAIN : -VFS_ENOENT) : n->opens==UINT32_MAX ? -VFS_EFBIG : 0;
     if (!r) n->opens++;
     spin_unlock_irqrestore(&e4_lock,f); return r;
 }

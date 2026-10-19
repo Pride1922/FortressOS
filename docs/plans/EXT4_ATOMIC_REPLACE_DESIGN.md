@@ -1,14 +1,14 @@
 # EH-2: atomic regular-file replacement — implementation review
 
-2026-10-19. **Initial design reviewed; runtime implementation not started.**
+2026-10-19. **Implemented; automated acceptance recorded separately.**
 This refines [EH-2](EXT4_HARDENING_PLAN.md) from the current implementation.
-It does not claim crash acceptance or package-manager readiness.
+See [EH-2 results and limits](../roadmap/ext4-atomic-replace.md). This does not
+establish physical power-loss acceptance or package-manager readiness.
 
 ## Decision and initial scope
 
-Add a dedicated `SYS_RENAME_REPLACE(oldpath, newpath, flags=0)` operation,
-with a new number assigned from the ABI at implementation time. Do not reinterpret
-unused registers of the existing two-argument `SYS_RENAME` call. Existing rename
+The dedicated `SYS_RENAME_REPLACE=84 (oldpath, newpath, flags=0)` operation leaves
+the existing two-argument `SYS_RENAME` call unchanged. Existing rename
 continues to return EEXIST on ext4 replacement.
 
 The first replacement operation requires **both names to exist**, referring to
@@ -23,17 +23,21 @@ there must be no generic unlink-then-rename fallback.
 Same path succeeds only after source resolution, regular-file/type, filesystem
 and permission admission. Distinct names resolving to the same inode reject as
 unsupported until hard links are supported. Trailing slashes reject ENOTDIR.
-Unknown flags reject EINVAL. RO/frozen mounts retain EROFS and uncertain/tainted
-mounts EIO. Preserve existing path bounds, boot-route protection, immutable
+Unknown flags reject EINVAL. Frozen eligible mounts return EROFS; read-only and
+nonjournaled backends remain unsupported. Uncertain/tainted admitted mounts
+return EIO. Preserve existing path bounds, boot-route protection, immutable
 account names/inodes and DAC/sticky-directory policy on both parents/victims.
 
-An explicit credential-aware VFS operation and backend callback are required.
+The explicit credential-aware VFS operation and backend callback are implemented.
 Retain both resolved parent nodes across dispatch. The backend revalidates names,
 inode generations, mount identity, state and credentials under the existing
 rank-1 `e4_lock`; earlier path resolution alone is not mutation authorization.
-No new lock or lock-order change is needed. The syscall copies and validates
-both bounded user paths before entering filesystem exclusion. Error ordering
-and exact user-pointer cases must be frozen with the ABI implementation tests.
+No new lock or lock-order change is needed. The syscall rejects nonzero flags
+with EINVAL first, copies/validates the old path then the new path, resolves both
+against cwd and snapshots credentials before entering VFS. Each string is bounded
+to 256 bytes including NUL; invalid/unmapped/canonical-range pointers give EFAULT,
+and a readable unterminated 256-byte string gives EINVAL. Input strings may be
+read-only. This operation has no user output buffer.
 
 ## Source preparation and observable semantics
 
@@ -54,9 +58,9 @@ final owner/mode. Existing executable snapshots are copied
 bytes and remain valid independently of inode reclamation.
 
 The operation consumes the source name on successful replacement. Creation time
-and content mtime of the source survive activation. Replacement ctime/parent
-timestamp policy must be stated and tested when implemented; do not let a
-directory helper's incidental extent rebuild determine that policy.
+and content mtime of the source survive activation. Source/victim ctime and both
+parent ctime/mtime are explicitly updated from kernel UTC seconds with the EH-1A
+codec. An unrepresentable short-extra timestamp rejects before I/O.
 
 ## One activation transaction
 
@@ -83,10 +87,15 @@ same-block source/destination edits must preserve each other's changes. Never
 make a second namespace commit to work around this constraint.
 
 Only after activation commit/checkpoint succeeds: register the in-memory orphan,
-detach the old cached destination name, mark its node removed, move the cached
-source node to the destination, and refresh affected parents, all before releasing
-exclusion. Reuse/preflight existing cached nodes; no fallible allocation is
-permitted between durable activation and hierarchy publication. Retained victim
+detach the old cached destination name and mark its node removed. Retire the
+cached source entry too, and publish a fresh preallocated destination node before
+releasing exclusion. This prevents an already-resolved staging-name lookup from
+completing a new writer open after activation. Source retirement returns ENOENT;
+an already-resolved destination retired by replacement returns EAGAIN, so callers
+retry pathname admission rather than infer that the destination was absent.
+Parent sizes/mappings are unchanged; timestamp fields are not cached, so there
+is no fallible parent refresh after commit. No fallible allocation is permitted
+between durable activation and hierarchy publication. Retained victim
 nodes must remain alive through existing VFS references and open-file counts.
 
 ## Failure outcomes and cleanup
@@ -104,7 +113,7 @@ when the journal commit may already be durable. Therefore:
 Never run fallible orphan reclamation before publishing a successful activation,
 and never return a cleanup failure as if replacement did not occur. An internal
 activation outcome must distinguish a completed replacement from later cleanup.
-**Open policy gate before mounted implementation:** current taint rejects
+**Resolved admission policy:** prior taint rejected
 mutations, while `e4_read_locked`, `e4_journal_refresh` and the EXEC permission
 path do not universally reject tainted reads. AGENTS.md §7.4 explicitly preserves
 read capability after taint. Thus cache invalidation/taint alone does not prove
@@ -112,15 +121,15 @@ that a failed multi-directory checkpoint cannot expose a partially checkpointed
 namespace. Do not claim this behavior already exists or silently disable all
 reads to solve it.
 
-Proposed resolution for review: record namespace uncertainty specifically after
-replacement I/O failure, reject new path admission/readdir/exec on that mount
-until recovery, and preserve validated retained regular-file descriptor reads.
+The implementation records namespace uncertainty specifically after
+replacement I/O failure, rejects new path admission/readdir/exec on that mount
+until recovery, and preserves validated retained regular-file descriptor reads.
 The activation transaction never changes either file's extent mapping or data.
-Retained descriptor handling must still validate inode identity/generation and
-cope with a victim whose zero-link intent is not yet registered in memory.
-Review this narrower admission contract against existing taint/read guarantees
-before changing runtime behavior. An alternative would require a correctly
-retained journal overlay for reads, which is substantially larger scope.
+Retained victim descriptor reads use the pre-activation validated inode snapshot
+and check its inode generation, even if a partially checkpointed zero-link intent
+has not been registered in memory. Other retained files keep their existing read
+path. Ordinary tainted-read behavior outside replacement is unchanged. The user
+authorized resolving this admission contract and implementing EH-2 in this chat.
 
 Pinned victims survive until final close. Unpinned victims use the existing
 bounded right-edge orphan cleanup after activation, with retries via sync/freeze

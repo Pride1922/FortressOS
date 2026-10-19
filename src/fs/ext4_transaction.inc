@@ -93,7 +93,7 @@ int ext4_engine_transaction_revoke(ext4_engine_t *e,uint32_t block) {
     if (e->revoke_count==e->credits.revokes) return e->error=-VFS_EFBIG;
     e->revokes[e->revoke_count++]=block;return 0;
 }
-static int e4_transaction_commit(ext4_engine_t *e) {
+static int e4_transaction_commit_ordered(ext4_engine_t *e,bool source_barrier) {
     e4_engine_owner(e);if (e->tainted) return -VFS_EIO;
     if (!e->ready) return -VFS_EINVAL;
     int r=e->error;if (r) return r;
@@ -108,6 +108,9 @@ static int e4_transaction_commit(ext4_engine_t *e) {
     }
     for (unsigned i=0;!r && i<e->revoke_count;i++) r=jbd2_writer_revoke(e->writer,e->revokes[i]);
     if (r) { e->error=r;return r; } /* Abort required, no publication or taint. */
+    if(source_barrier && !block_flush(e->fs->dev)) {
+        e->tainted=true;e4_cache_drop(e->fs,true);return -VFS_EIO;
+    }
     e4_cache_drop(e->fs,false);
     r=jbd2_writer_commit(e->writer);
 #ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
@@ -128,6 +131,9 @@ static int e4_transaction_commit(ext4_engine_t *e) {
     for (unsigned i=0;i<e->images;i++)
         if (!e->image[i].ordered) e4_cache_committed(e->fs,e->image[i].block,e->image[i].bytes);
     return 0;
+}
+static int e4_transaction_commit(ext4_engine_t *e) {
+    return e4_transaction_commit_ordered(e,false);
 }
 /* Phase 8.2 needs consistent allocation ownership, unlike recovery bootstrap.
  * No recovery or RECOVER activation is implicit in file admission. */

@@ -89,6 +89,7 @@
 #define SYS_LSTAT         81 /* (path, vfs_stat_t *out) -> 0/-errno */
 #define SYS_LIST_DIR      82 /* (const char *path, char names[][64], uint64_t max_entries) -> count/-errno */
 #define SYS_CLOCK_SETTIME 83 /* (CLOCK_REALTIME, const timespec_t *); CAP_SYS_ADMIN; 1970..2100 */
+#define SYS_RENAME_REPLACE 84 /* (oldpath, newpath, flags=0); existing regular files, journaled EXT4 */
 #define MAX_GETRANDOM_LEN 256u
 
 /* Clock identifiers */

@@ -124,7 +124,12 @@ static bool e4_mounted_orphan(ext4_mount_t *fs,uint32_t ino) {
 }
 static int e4_journal_refresh(vfs_node_t *node) {
     e4_node_t *n=(e4_node_t *)node;ext4_mount_t *fs=n->inode.fs;e4_inode_t in;
-    if (n->removed && (!n->opens || !e4_mounted_orphan(fs,n->inode.ino))) return -VFS_ENOENT;
+    if (fs->namespace_uncertain && n->opens && n->inode.ino==fs->uncertain_victim.ino) {
+        if (n->inode.generation!=fs->uncertain_victim.generation) return -VFS_EIO;
+        n->inode=fs->uncertain_victim;return 0;
+    }
+    if (n->removed && (!n->opens || !e4_mounted_orphan(fs,n->inode.ino)))
+        return n->replaced ? -VFS_EAGAIN : -VFS_ENOENT;
     fs->orphan_access=n->removed ? n->inode.ino : 0;int r=e4_inode(fs,n->inode.ino,&in);fs->orphan_access=0;
     if (!r && in.generation!=n->inode.generation) r=-VFS_EIO;
     if (!r) { n->inode=in;node->size=in.size;node->mode=in.full_mode;node->uid=in.uid;node->gid=in.gid; }return r;

@@ -401,6 +401,17 @@ FortressOS/
 
 ### 7.1 A syscall
 
+Additive existing-file activation: `SYS_RENAME_REPLACE=84`, `(oldpath,newpath,flags=0)`;
+only closed-source, singly linked regular files on one healthy journaled EXT4
+mount, both names existing. Old SYS_RENAME stays no-replace. Backend revalidates
+DAC/sticky/account policy under existing filesystem exclusion; one activation
+transaction includes victim orphan intent, with reclamation deferred. A retired
+destination lookup may return EAGAIN for a fresh pathname attempt. Uncertain
+replacement I/O fences new namespace/open/EXEC admission until recovery while
+preserving validated retained regular-file reads; other tainted-read policy is
+unchanged. [Contract](docs/plans/EXT4_ATOMIC_REPLACE_DESIGN.md),
+[automated scope and limits](docs/roadmap/ext4-atomic-replace.md).
+
 Additive UTC correction ABI: `SYS_CLOCK_SETTIME=83`, `(CLOCK_REALTIME,
 const timespec_t *)`; CAP_SYS_ADMIN required. Atomic realtime correction only,
 Unix seconds 1970–2100, validated input pointer and nanoseconds. Monotonic,

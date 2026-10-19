@@ -89,6 +89,9 @@ typedef struct vfs_node {
     struct vfs_node *(*create)(struct vfs_node *dir, const char *name, vfs_node_type_t type);
     int (*unlink)(struct vfs_node *dir, const char *name);
     int (*rename)(struct vfs_node *old_dir, const char *old_name, struct vfs_node *new_dir, const char *new_name);
+    /* Atomic existing-file replacement, backend owns exclusion/publication.
+     * No generic remove/rename fallback. NULL actor is trusted kernel context. */
+    int (*replace)(struct vfs_node *,const char *,struct vfs_node *,const char *,const creds_t *);
     int (*truncate)(struct vfs_node *node, uint64_t new_size);
     int (*readdir)(struct vfs_node *, uint64_t, void *);
     int (*can_write)(struct vfs_node *node);
@@ -192,6 +195,8 @@ int         vfs_get_last_create_error(void);
 int         vfs_mkdir(const char *path, uint32_t mode);
 int         vfs_unlink(const char *path);
 int         vfs_rename(const char *oldpath, const char *newpath);
+int vfs_replace(const char *,const char *);
+int vfs_replace_creds(const char *,const char *,const creds_t *);
 int         vfs_truncate(vfs_node_t *node, uint64_t new_size);
 file_t     *vfs_open(const char *path, int flags);
 file_t     *vfs_open_ext(const char *path, int flags, int *err_out);
