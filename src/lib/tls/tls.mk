@@ -3,13 +3,14 @@ TLS_DIR := src/lib/tls
 TLS_BUILD := $(BUILD_DIR)/tls
 TLS_LIB := $(TLS_BUILD)/libfortresstls.a
 
-TLS_API := fortress_tls_client_init fortress_tls_connect fortress_tls_read fortress_tls_write fortress_tls_flush fortress_tls_close fortress_tls_strerror tls_clock_hook tls_rand_hook tls_send_hook tls_recv_hook fortress_tls_set_syscall_hook
+TLS_API := fortress_tls_client_init fortress_tls_connect fortress_tls_read fortress_tls_write fortress_tls_flush fortress_tls_close fortress_tls_strerror tls_clock_hook tls_rand_hook tls_send_hook tls_recv_hook fortress_tls_set_syscall_hook fortress_tls_load_anchors fortress_tls_parse_anchors
 
 TLS_INCS := -Isrc/include -I$(TLS_DIR)/bearssl/inc -I$(TLS_DIR)/bearssl/src
 TLS_FLAGS := $(CFLAGS) -D__FORTRESS__ -DBR_USE_UNIX_TIME=0 -DBR_USE_URANDOM=0 -Os -fno-pie -fno-builtin -ffunction-sections -fdata-sections -fstack-usage -fno-asynchronous-unwind-tables $(TLS_INCS)
 
 TLS_SRCS := \
 	$(TLS_DIR)/fortress_tls.c \
+	$(TLS_DIR)/anchor_parser.c \
 	$(TLS_DIR)/bearssl/src/settings.c \
 	$(TLS_DIR)/bearssl/src/ssl/ssl_engine.c \
 	$(TLS_DIR)/bearssl/src/ssl/ssl_client.c \
@@ -110,3 +111,7 @@ $(TLS_LIB): $(TLS_OBJS)
 .PHONY: test-tls-host
 test-tls-host:
 	@python3 scripts/test_tls_host.py
+
+.PHONY: test-tls-anchor-host
+test-tls-anchor-host:
+	@python3 scripts/test_tls_anchor_host.py

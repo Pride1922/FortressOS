@@ -5,10 +5,13 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #endif
 
 #include "tls.h"
+#include "tls_internal.h"
 #include "syscall_abi.h"
 
 #if !defined(TEST_HOST)
@@ -23,8 +26,8 @@ void fortress_tls_set_syscall_hook(tls_syscall_fn hook) {
     s_syscall_hook = hook;
 }
 
-static long tls_syscall_dispatch(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
-                                 uintptr_t d, uintptr_t e, uintptr_t f) {
+long tls_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
+                 uintptr_t d, uintptr_t e, uintptr_t f) {
     if (s_syscall_hook) {
         return s_syscall_hook(nr, a, b, c, d, e, f);
     }
@@ -62,6 +65,24 @@ static long tls_syscall_dispatch(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
         ssize_t n = recv(fd, buf, cap, 0);
         if (n < 0) return -errno;
         return (long)n;
+    } else if (nr == SYS_OPEN) {
+        const char *pathname = (const char *)a;
+        int flags = (int)b;
+        mode_t mode = (mode_t)c;
+        int hfd = open(pathname, flags, mode);
+        if (hfd < 0) return -errno;
+        return hfd;
+    } else if (nr == SYS_READ) {
+        int hfd = (int)a;
+        void *buf = (void *)b;
+        size_t count = (size_t)c;
+        ssize_t n = read(hfd, buf, count);
+        if (n < 0) return -errno;
+        return (long)n;
+    } else if (nr == SYS_CLOSE) {
+        int hfd = (int)a;
+        if (close(hfd) < 0) return -errno;
+        return 0;
     }
     return -38; /* -ENOSYS */
 #else
@@ -84,7 +105,7 @@ int tls_clock_hook(uint32_t *days_out, uint32_t *seconds_out) {
     timespec_t ts;
     ts.tv_sec = 0;
     ts.tv_nsec = 0;
-    long ret = tls_syscall_dispatch(SYS_CLOCK_GETTIME, CLOCK_REALTIME, (uintptr_t)&ts, 0, 0, 0, 0);
+    long ret = tls_syscall(SYS_CLOCK_GETTIME, CLOCK_REALTIME, (uintptr_t)&ts, 0, 0, 0, 0);
     if (ret != 0) {
         return TLS_ERR_CLOCK_UNSYNCHRONIZED;
     }
@@ -102,7 +123,7 @@ int tls_rand_hook(void *buf, size_t len) {
     if (!buf || len < 32) {
         return TLS_ERR_INVALID_PARAM;
     }
-    long ret = tls_syscall_dispatch(SYS_GETRANDOM, (uintptr_t)buf, len, 0, 0, 0, 0);
+    long ret = tls_syscall(SYS_GETRANDOM, (uintptr_t)buf, len, 0, 0, 0, 0);
     if (ret < (long)len) {
         return TLS_ERR_ENTROPY_FAILURE;
     }
@@ -118,7 +139,7 @@ int tls_send_hook(void *ctx_ptr, const unsigned char *buf, size_t len) {
     if (len == 0) {
         return 0;
     }
-    long ret = tls_syscall_dispatch(SYS_SEND_UNTIL, ctx->fd, (uintptr_t)buf, len, 0, ctx->current_deadline, 0);
+    long ret = tls_syscall(SYS_SEND_UNTIL, ctx->fd, (uintptr_t)buf, len, 0, ctx->current_deadline, 0);
     if (ret > 0) {
         return (int)ret;
     }
@@ -139,7 +160,7 @@ int tls_recv_hook(void *ctx_ptr, unsigned char *buf, size_t len) {
     if (len == 0) {
         return 0;
     }
-    long ret = tls_syscall_dispatch(SYS_RECV_UNTIL, ctx->fd, (uintptr_t)buf, len, 0, ctx->current_deadline, 0);
+    long ret = tls_syscall(SYS_RECV_UNTIL, ctx->fd, (uintptr_t)buf, len, 0, ctx->current_deadline, 0);
     if (ret > 0) {
         return (int)ret;
     }
@@ -500,6 +521,11 @@ const char *fortress_tls_strerror(int err) {
         case TLS_ERR_NOT_READY: return "TLS engine not initialized or ready";
         case TLS_ERR_ANCHOR_INVALID: return "trust anchors invalid or not configured";
         case TLS_ERR_RSA_KEY_TOO_SMALL: return "RSA key smaller than 2048 bits rejected";
+        case TLS_ERR_ANCHOR_FILE: return "trust anchor file missing or unreadable";
+        case TLS_ERR_ANCHOR_MAGIC: return "invalid trust anchor file magic or version";
+        case TLS_ERR_ANCHOR_FORMAT: return "malformed trust anchor descriptor or offset";
+        case TLS_ERR_ANCHOR_BOUNDS: return "trust anchor count or file size exceeds bounds";
+        case TLS_ERR_ANCHOR_KEY: return "insecure or invalid public key in trust anchor";
 
         /* BearSSL Protocol and Cryptographic Error Codes */
         case BR_ERR_BAD_STATE: return "invalid SSL engine state";

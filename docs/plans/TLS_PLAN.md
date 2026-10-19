@@ -360,10 +360,16 @@ The authoritative VFS header is [`src/fs/vfs.h`](file:///C:/Sources/FortressOS/s
   - [x] `src/lib/tls/tls.mk` wired into `Makefile` (`$(TLS_LIB)` target `build/tls/libfortresstls.a` builds cleanly with freestanding flags).
 
 ### Phase TLS-2: Trust Store & Anchor Compiler
-- Author `scripts/build_trust_anchors.py` to parse Mozilla CA bundle.
-- Include ISRG Root X1, X2, YR, YE.
-- Output binary bundle `/etc/ssl/certs/anchors.v1` and initramfs PEM `/etc/ssl/certs/ca-certificates.crt`.
-- Implement runtime anchor parser in `src/lib/tls/anchor_parser.c` adhering strictly to §4.2 bounds.
+- [x] Author `scripts/build_trust_anchors.py` to parse Mozilla CA bundle.
+- [x] Include ISRG Root X1, X2, YR, YE.
+- [x] Output binary bundle `/etc/ssl/certs/anchors.v1` and initramfs PEM `/etc/ssl/certs/ca-certificates.crt`, with pinned SHA-256 in `assets/ssl/ca-certificates.sha256`.
+- [x] Implement runtime anchor parser and single-descriptor loader in `src/lib/tls/anchor_parser.c` adhering strictly to §4.2 bounds.
+- [x] Gate G1 stack and memory invariants verified:
+  - [x] Stack frames $\le 1024$ bytes (measured maximum 112 bytes for `fortress_tls_parse_anchors`).
+  - [x] Memory usage strictly bound in static BSS (`fortress_trust_store_t` 276 KiB, zero heap allocations).
+- [x] Build and test targets:
+  - [x] `make test-tls-anchor-host` (100% PASS under ASan/UBSan).
+  - [x] Initramfs integration in `Makefile` and `bin/initramfs.tar` staging `/etc/ssl/certs/anchors.v1` and `/etc/ssl/certs/ca-certificates.crt`.
 
 ### Phase TLS-3: Scripted TCP Proxy & Deterministic Adversarial Gates
 - Author scripted Python TCP proxy / server fixture (`scripts/test_tls_fixture.py`) capable of raw byte-level TLS manipulation:

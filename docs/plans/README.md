@@ -6,6 +6,7 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
+| [PACKAGE_MANAGER_PLAN.md](PACKAGE_MANAGER_PLAN.md) | Signed offline/HTTPS application packages, crash-safe installed-root transactions, and separately gated base/service updates over SSH. | **DESIGN PROPOSAL** (2026-10-19); TLS-2 underway; implementation not started |
 | [TLS_PLAN.md](TLS_PLAN.md) | TLS/HTTPS foundation: BearSSL integration, platform hooks, Mozilla CA trust store, and `/bin/wget` HTTPS support. | **PROPOSED** (2026-10-18) |
 | [LOGGING_FOUNDATION_PLAN.md](LOGGING_FOUNDATION_PLAN.md) | Three Pillars logging foundation: kernel boot snapshot, Watchtower service capture, global timeline `/bin/logger`, concurrency hardening, and logrotate integration. | **PLANNED** (2026-10-18) |
 | [SHELL_SCRIPTING_PLAN.md](SHELL_SCRIPTING_PLAN.md) | Issue #14: script files, `-c`, positional arguments, conditions, while/until/for loops and bounded source/return. | **PHASES A–D AND UNTIL INTEGRATED INTO MAIN** (2026-10-18); host and disk-free BIOS/UEFI acceptance (364 cases); later language features remain deferred |
