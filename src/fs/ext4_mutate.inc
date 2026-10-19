@@ -260,9 +260,12 @@ static void e4_rebuild(ext4_engine_t *e,e4_inode_t *in,uint8_t *raw) {
     for (unsigned i=0;i<e->old_count;i++) if (!e4_release(e,e->old_nodes[i],1)) return;
     e4_p32(raw+28,(uint32_t)blocks*(fs->bs/512)); e4_p16(raw+116,0);
     e4_p32(raw+4,(uint32_t)in->size); e4_p32(raw+108,(uint32_t)(in->size>>32));
-    uint32_t now=(uint32_t)time_get_epoch_seconds();
+    uint64_t now=time_get_epoch_seconds();
     if (!now) now=1726500000;
-    e4_p32(raw+12,now); e4_p32(raw+16,now);
+    if (now>INT64_MAX || !ext4_inode_time_set(raw,EXT4_CTIME,(int64_t)now,0) ||
+        !ext4_inode_time_set(raw,EXT4_MTIME,(int64_t)now,0)) {
+        e->error=-VFS_EOPNOTSUPP;return;
+    }
     e4_inode_sum(fs,in->ino,raw);
 }
 static int e4_change(ext4_engine_t *e,uint32_t ino,uint32_t logical,uint32_t count,bool trim) {
@@ -482,10 +485,16 @@ static int e4_reserve_inode_unlocked(ext4_engine_t *e,bool directory,uint32_t *i
             if (generation==UINT32_MAX) { e->error=-VFS_EFBIG; goto end; }
             memset(raw,0,256); e4_p16(raw,directory ? VFS_S_IFDIR|0755 : VFS_S_IFREG|0644);
             e4_p32(raw+100,generation+1); e4_p32(raw+32,0x80000);
-            uint32_t now=(uint32_t)time_get_epoch_seconds();
+            uint64_t now=time_get_epoch_seconds();
             if (!now) now=1726500000;
-            e4_p32(raw+8,now); e4_p32(raw+12,now); e4_p32(raw+16,now); e4_p32(raw+148,now);
-            e4_p16(raw+128,32); e4_header(raw+40,0,4,0); e4_inode_sum(e->fs,n,raw);
+            e4_p16(raw+128,32);
+            if (now>INT64_MAX || !ext4_inode_time_set(raw,EXT4_ATIME,(int64_t)now,0) ||
+                !ext4_inode_time_set(raw,EXT4_CTIME,(int64_t)now,0) ||
+                !ext4_inode_time_set(raw,EXT4_MTIME,(int64_t)now,0) ||
+                !ext4_inode_time_set(raw,EXT4_CRTIME,(int64_t)now,0)) {
+                e->error=-VFS_EOPNOTSUPP;goto end;
+            }
+            e4_header(raw+40,0,4,0); e4_inode_sum(e->fs,n,raw);
             e4_set_bit(map,bit,true); if (!e4_account(e,g,true,-1)) goto end;
             uint8_t *d=e4_descriptor(e,g);
             if (directory) {

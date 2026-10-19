@@ -2267,3 +2267,9 @@ $(BUILD_DIR)/ntpd-test.elf: user/ntpd.c user/ntp.h $(BUILD_DIR)/ntp.o $(DNS_OBJE
 	@$(CC) $(CFLAGS) -Os -fno-pie -DTEST_NTP_PORT=43123 -Wframe-larger-than=1024 -c $< -o $(BUILD_DIR)/ntpd-test.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=ntpd_main user/tools/start.asm -o $(BUILD_DIR)/ntpd-test-start.o
 	@$(LD) -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/ntpd-test-start.o $(BUILD_DIR)/ntpd-test.o $(BUILD_DIR)/ntp.o $(DNS_OBJECTS) -o $@
+
+.PHONY: test-ext4-time-host
+test-ext4-time-host:
+	mkdir -p build
+	$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_time_host.c tests/ext4_time_clock.c tests/ext4_fault_disk.c -o build/ext4_time_host
+	python3 scripts/test_ext4_time_host.py

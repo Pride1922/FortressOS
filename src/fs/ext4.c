@@ -8,6 +8,7 @@
 #include "string.h"
 #include "spinlock.h"
 #include "ext4_engine.h"
+#include "ext4_time.h"
 
 #if defined(HOST_TEST) || defined(__linux__)
 __attribute__((weak)) uint64_t time_get_epoch_seconds(void) { return 1726500000; }

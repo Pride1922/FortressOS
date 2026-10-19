@@ -172,7 +172,12 @@ static int e4_orphan_validate(ext4_engine_t *e) {
         unsigned free=0;
         for (uint32_t byte=0;byte<count/8;byte++) {
             uint8_t value=fs->scratch[byte];
-            if (value!=owned[start/8+byte]) {r=-VFS_EIO;goto done;}
+            /* Group bitmap bit zero is absolute block 'start'. For 1 KiB
+             * filesystems s_first_data_block is one, not byte-aligned. */
+            size_t index=start/8+byte;unsigned shift=start%8;
+            uint8_t expected=owned[index]>>shift;
+            if (shift) expected|=(uint8_t)(owned[index+1]<<(8-shift));
+            if (value!=expected) {r=-VFS_EIO;goto done;}
             for (unsigned bit=0;bit<8;bit++) free+=!(value&(1u<<bit));
         }
         for (uint32_t bit=count-count%8;bit<count;bit++) {
