@@ -289,39 +289,45 @@ int elf_load_executable_profile(const void *image, size_t image_size, elf_loaded
     }
     total_pages++;
 
-    /* 6. User Stack Allocation */
-    phase_begin = spawn_profile_clock(profile);
-    uintptr_t stack_phys = (spawn_get_fault_type() == SPAWN_FAULT_USER_STACK_PMM)
-        ? (spawn_record_fault_hit(), 0)
-        : pmm_alloc_page();
-    SPAWN_ADD(profile, elf[SE_ALLOC], phase_begin);
-    if (stack_phys == 0) {
-        vmm_destroy_pml4(pml4_phys, true);
-        return ELF_ERR_NOMEM;
-    }
-    phase_begin = spawn_profile_clock(profile);
-    uint8_t *stack_virt = (uint8_t *)vmm_phys_to_virt(stack_phys);
-    elf_page_init(stack_virt, img_bytes, 0, 0);
+    /* 6. User Stack Allocation (16 KiB across USER_STACK_PAGES) */
+    for (size_t pidx = 0; pidx < USER_STACK_PAGES; pidx++) {
+        uintptr_t page_virt = USER_STACK_TOP_VIRT - (pidx + 1) * PAGE_SIZE;
+        phase_begin = spawn_profile_clock(profile);
+        uintptr_t stack_phys = (spawn_get_fault_type() == SPAWN_FAULT_USER_STACK_PMM)
+            ? (spawn_record_fault_hit(), 0)
+            : pmm_alloc_page();
+        SPAWN_ADD(profile, elf[SE_ALLOC], phase_begin);
+        if (stack_phys == 0) {
+            vmm_destroy_pml4(pml4_phys, true);
+            return ELF_ERR_NOMEM;
+        }
+        phase_begin = spawn_profile_clock(profile);
+        uint8_t *stack_virt = (uint8_t *)vmm_phys_to_virt(stack_phys);
+        elf_page_init(stack_virt, img_bytes, 0, 0);
 
-    SPAWN_ADD(profile, elf[SE_COPY], phase_begin);
-    phase_begin = spawn_profile_clock(profile);
-    int stack_map_res = (spawn_get_fault_type() == SPAWN_FAULT_USER_STACK_MAP)
-        ? (spawn_record_fault_hit(), VMM_ERR_NOMEM)
-        : vmm_map_page(pml4_virt, USER_STACK_PAGE_VIRT, stack_phys,
-                       PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
-    SPAWN_ADD(profile, elf[SE_MAP], phase_begin);
-    if (stack_map_res != VMM_OK) {
-        pmm_free_page(stack_phys);
-        vmm_destroy_pml4(pml4_phys, true);
-        return ELF_ERR_NOMEM;
+        SPAWN_ADD(profile, elf[SE_COPY], phase_begin);
+        phase_begin = spawn_profile_clock(profile);
+        int stack_map_res = (spawn_get_fault_type() == SPAWN_FAULT_USER_STACK_MAP)
+            ? (spawn_record_fault_hit(), VMM_ERR_NOMEM)
+            : vmm_map_page(pml4_virt, page_virt, stack_phys,
+                           PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX);
+        SPAWN_ADD(profile, elf[SE_MAP], phase_begin);
+        if (stack_map_res != VMM_OK) {
+            pmm_free_page(stack_phys);
+            vmm_destroy_pml4(pml4_phys, true);
+            return ELF_ERR_NOMEM;
+        }
+        total_pages++;
+
+        if (page_virt == USER_STACK_PAGE_VIRT) {
+            out_proc->stack_phys = stack_phys;
+        }
     }
-    total_pages++;
 
     /* 7. Success: Publish output descriptor */
     out_proc->pml4_phys      = pml4_phys;
     out_proc->entry_point    = ehdr->e_entry;
     out_proc->user_stack_top = USER_STACK_TOP_VIRT;
-    out_proc->stack_phys     = stack_phys;
     out_proc->total_pages    = total_pages;
 
     return ELF_OK;

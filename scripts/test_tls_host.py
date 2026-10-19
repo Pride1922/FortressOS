@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-BUILD_DIR = os.path.join(REPO_ROOT, "build", "tls")
+BUILD_DIR = os.path.join(REPO_ROOT, "build", "tls_host")
 OBJ_DIR = os.path.join(BUILD_DIR, "obj")
 BIN_OUT = os.path.join(BUILD_DIR, "tls_unit_host")
 LIB_OUT = os.path.join(BUILD_DIR, "libfortresstls.a")

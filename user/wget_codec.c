@@ -75,9 +75,10 @@ int wget_parse_url(const char *raw_url, wget_url_t *out_url) {
 
     /* Check scheme */
     if (wget_strncasecmp(p, "https://", 8) == 0) {
-        return WGET_ERR_HTTPS;
-    }
-    if (wget_strncasecmp(p, "http://", 7) == 0) {
+        out_url->is_https = true;
+        p += 8;
+    } else if (wget_strncasecmp(p, "http://", 7) == 0) {
+        out_url->is_https = false;
         p += 7;
     } else {
         /* Check if there's any other scheme "xyz://" */
@@ -92,6 +93,7 @@ int wget_parse_url(const char *raw_url, wget_url_t *out_url) {
             return WGET_ERR_UNSUPPORTED_SCHEME;
         }
         /* No scheme prefix: assume http:// */
+        out_url->is_https = false;
     }
 
     /* Skip optional userinfo: user:pass@ */
@@ -120,8 +122,8 @@ int wget_parse_url(const char *raw_url, wget_url_t *out_url) {
     wget_memcpy(out_url->host, host_start, host_len);
     out_url->host[host_len] = '\0';
 
-    /* Parse port if present */
-    uint16_t port = 80;
+    /* Parse port if present (defaults: 443 for HTTPS, 80 for HTTP) */
+    uint16_t port = out_url->is_https ? 443 : 80;
     if (*p == ':') {
         p++;
         unsigned num = 0;
@@ -251,6 +253,14 @@ int wget_parse_response_headers(const uint8_t *buf, size_t header_len, wget_resp
                 out_resp->content_length = cl;
             }
         }
+        /* Check for Transfer-Encoding: */
+        else if (cur_len >= 18 && wget_strncasecmp(p, "Transfer-Encoding:", 18) == 0) {
+            const char *val = p + 18;
+            while (val < line_end && (*val == ' ' || *val == '\t')) val++;
+            if (wget_strncasecmp(val, "chunked", 7) == 0) {
+                out_resp->is_chunked = true;
+            }
+        }
         /* Check for Location: */
         else if (cur_len >= 9 && wget_strncasecmp(p, "Location:", 9) == 0) {
             const char *val = p + 9;
@@ -271,32 +281,217 @@ int wget_parse_response_headers(const uint8_t *buf, size_t header_len, wget_resp
     return WGET_OK;
 }
 
+void wget_chunked_decoder_init(wget_chunked_decoder_t *dec) {
+    if (!dec) return;
+    dec->state = WGET_CHUNK_STATE_SIZE;
+    dec->chunk_remaining = 0;
+    dec->has_size = false;
+    dec->complete = false;
+}
+
+int wget_decode_chunked(wget_chunked_decoder_t *dec,
+                        const uint8_t *in, size_t in_len, size_t *in_consumed,
+                        uint8_t *out, size_t out_cap, size_t *out_written)
+{
+    if (!dec || !in || !in_consumed || !out || !out_written) {
+        return WGET_ERR_MALFORMED_CHUNK;
+    }
+    *in_consumed = 0;
+    *out_written = 0;
+
+    size_t in_idx = 0;
+    size_t out_idx = 0;
+
+    while (in_idx < in_len && !dec->complete) {
+        switch (dec->state) {
+            case WGET_CHUNK_STATE_SIZE: {
+                uint8_t b = in[in_idx++];
+                if ((b >= '0' && b <= '9')) {
+                    dec->chunk_remaining = (dec->chunk_remaining << 4) | (uint64_t)(b - '0');
+                    dec->has_size = true;
+                } else if (b >= 'a' && b <= 'f') {
+                    dec->chunk_remaining = (dec->chunk_remaining << 4) | (uint64_t)(b - 'a' + 10);
+                    dec->has_size = true;
+                } else if (b >= 'A' && b <= 'F') {
+                    dec->chunk_remaining = (dec->chunk_remaining << 4) | (uint64_t)(b - 'A' + 10);
+                    dec->has_size = true;
+                } else if (b == ';') {
+                    if (!dec->has_size) return WGET_ERR_MALFORMED_CHUNK;
+                    dec->state = WGET_CHUNK_STATE_EXT;
+                } else if (b == '\r') {
+                    if (!dec->has_size) return WGET_ERR_MALFORMED_CHUNK;
+                    if (in_idx < in_len) {
+                        if (in[in_idx++] != '\n') return WGET_ERR_MALFORMED_CHUNK;
+                        if (dec->chunk_remaining == 0) {
+                            dec->state = WGET_CHUNK_STATE_TRAILER;
+                        } else {
+                            dec->state = WGET_CHUNK_STATE_DATA;
+                        }
+                    } else {
+                        in_idx--;
+                        goto need_more;
+                    }
+                } else if (b == '\n') {
+                    if (!dec->has_size) return WGET_ERR_MALFORMED_CHUNK;
+                    if (dec->chunk_remaining == 0) {
+                        dec->state = WGET_CHUNK_STATE_TRAILER;
+                    } else {
+                        dec->state = WGET_CHUNK_STATE_DATA;
+                    }
+                } else {
+                    return WGET_ERR_MALFORMED_CHUNK;
+                }
+                break;
+            }
+            case WGET_CHUNK_STATE_EXT: {
+                uint8_t b = in[in_idx++];
+                if (b == '\r') {
+                    if (in_idx < in_len) {
+                        if (in[in_idx++] != '\n') return WGET_ERR_MALFORMED_CHUNK;
+                        if (dec->chunk_remaining == 0) {
+                            dec->state = WGET_CHUNK_STATE_TRAILER;
+                        } else {
+                            dec->state = WGET_CHUNK_STATE_DATA;
+                        }
+                    } else {
+                        in_idx--;
+                        goto need_more;
+                    }
+                } else if (b == '\n') {
+                    if (dec->chunk_remaining == 0) {
+                        dec->state = WGET_CHUNK_STATE_TRAILER;
+                    } else {
+                        dec->state = WGET_CHUNK_STATE_DATA;
+                    }
+                }
+                break;
+            }
+            case WGET_CHUNK_STATE_DATA: {
+                if (dec->chunk_remaining > 0) {
+                    if (out_idx >= out_cap) {
+                        goto done;
+                    }
+                    size_t avail_in = in_len - in_idx;
+                    size_t avail_out = out_cap - out_idx;
+                    size_t take = dec->chunk_remaining;
+                    if (take > avail_in) take = avail_in;
+                    if (take > avail_out) take = avail_out;
+                    wget_memcpy(out + out_idx, in + in_idx, take);
+                    out_idx += take;
+                    in_idx += take;
+                    dec->chunk_remaining -= take;
+                }
+                if (dec->chunk_remaining == 0) {
+                    dec->state = WGET_CHUNK_STATE_CRLF;
+                }
+                break;
+            }
+            case WGET_CHUNK_STATE_CRLF: {
+                uint8_t b = in[in_idx++];
+                if (b == '\r') {
+                    if (in_idx < in_len) {
+                        if (in[in_idx++] != '\n') return WGET_ERR_MALFORMED_CHUNK;
+                        dec->state = WGET_CHUNK_STATE_SIZE;
+                        dec->chunk_remaining = 0;
+                        dec->has_size = false;
+                    } else {
+                        in_idx--;
+                        goto need_more;
+                    }
+                } else if (b == '\n') {
+                    dec->state = WGET_CHUNK_STATE_SIZE;
+                    dec->chunk_remaining = 0;
+                    dec->has_size = false;
+                } else {
+                    return WGET_ERR_MALFORMED_CHUNK;
+                }
+                break;
+            }
+            case WGET_CHUNK_STATE_TRAILER: {
+                uint8_t b = in[in_idx++];
+                if (b == '\r') {
+                    if (in_idx < in_len) {
+                        if (in[in_idx++] != '\n') return WGET_ERR_MALFORMED_CHUNK;
+                        dec->state = WGET_CHUNK_STATE_DONE;
+                        dec->complete = true;
+                    } else {
+                        in_idx--;
+                        goto need_more;
+                    }
+                } else if (b == '\n') {
+                    dec->state = WGET_CHUNK_STATE_DONE;
+                    dec->complete = true;
+                } else {
+                    while (in_idx < in_len && in[in_idx] != '\n') {
+                        in_idx++;
+                    }
+                    if (in_idx < in_len && in[in_idx] == '\n') {
+                        in_idx++;
+                    }
+                }
+                break;
+            }
+            case WGET_CHUNK_STATE_DONE: {
+                dec->complete = true;
+                goto done;
+            }
+        }
+    }
+
+need_more:
+done:
+    *in_consumed = in_idx;
+    *out_written = out_idx;
+    if (dec->complete) return WGET_OK;
+    return WGET_NEED_MORE_DATA;
+}
+
+int wget_validate_content_length(uint64_t expected, uint64_t actual, bool eof_reached) {
+    if (actual > expected) {
+        return WGET_ERR_TRUNCATED;
+    }
+    if (eof_reached) {
+        if (actual < expected) {
+            return WGET_ERR_TRUNCATED;
+        }
+        return WGET_OK;
+    }
+    return (actual == expected) ? WGET_OK : WGET_NEED_MORE_DATA;
+}
+
 int wget_resolve_redirect(const wget_url_t *current_url, const char *location, wget_url_t *out_url) {
     if (!current_url || !location || !out_url) return WGET_ERR_INVALID_URL;
 
     /* Scheme check */
     if (wget_strncasecmp(location, "https://", 8) == 0) {
-        return WGET_ERR_HTTPS;
+        return wget_parse_url(location, out_url);
     }
     if (wget_strncasecmp(location, "http://", 7) == 0) {
+        /* Downgrade check: HTTPS to HTTP is strictly forbidden */
+        if (current_url->is_https) {
+            return WGET_ERR_DOWNGRADE;
+        }
         return wget_parse_url(location, out_url);
     }
     if (wget_strncasecmp(location, "//", 2) == 0) {
-        /* Scheme-relative URL: default to http: */
+        /* Scheme-relative URL: preserve scheme */
         static char s_redirect_full[WGET_MAX_URL_LEN];
         size_t loc_len = wget_strlen(location);
-        if (5 + loc_len >= sizeof(s_redirect_full)) return WGET_ERR_URL_TOO_LONG;
-        wget_memcpy(s_redirect_full, "http:", 5);
-        wget_memcpy(s_redirect_full + 5, location, loc_len);
-        s_redirect_full[5 + loc_len] = '\0';
+        const char *prefix = current_url->is_https ? "https:" : "http:";
+        size_t pref_len = wget_strlen(prefix);
+        if (pref_len + loc_len >= sizeof(s_redirect_full)) return WGET_ERR_URL_TOO_LONG;
+        wget_memcpy(s_redirect_full, prefix, pref_len);
+        wget_memcpy(s_redirect_full + pref_len, location, loc_len);
+        s_redirect_full[pref_len + loc_len] = '\0';
         return wget_parse_url(s_redirect_full, out_url);
     }
 
-    /* Relative URL */
+    /* Relative URL: preserve is_https and port */
     wget_memset(out_url, 0, sizeof(*out_url));
+    out_url->is_https = current_url->is_https;
+    out_url->port = current_url->port;
     size_t host_len = wget_strlen(current_url->host);
     wget_memcpy(out_url->host, current_url->host, host_len + 1);
-    out_url->port = current_url->port;
 
     if (location[0] == '/') {
         /* Absolute path on same server */
@@ -331,7 +526,7 @@ const char *wget_strerror(int err) {
     switch (err) {
         case WGET_OK: return "success";
         case WGET_ERR_INVALID_URL: return "invalid URL";
-        case WGET_ERR_HTTPS: return "HTTPS (TLS) is not supported yet; please use plain HTTP (http://...)";
+        case WGET_ERR_HTTPS: return "HTTPS (TLS) configuration error";
         case WGET_ERR_UNSUPPORTED_SCHEME: return "unsupported URL scheme";
         case WGET_ERR_URL_TOO_LONG: return "URL exceeds 1024 bytes limit";
         case WGET_ERR_HOST_TOO_LONG: return "hostname exceeds 255 bytes limit";
@@ -341,6 +536,9 @@ const char *wget_strerror(int err) {
         case WGET_NEED_MORE_DATA: return "need more data";
         case WGET_ERR_MALFORMED_HEADER: return "malformed HTTP response header";
         case WGET_ERR_REDIRECT_OVERFLOW: return "too many redirects (exceeded 5 hops)";
+        case WGET_ERR_MALFORMED_CHUNK: return "malformed chunked transfer encoding framing";
+        case WGET_ERR_TRUNCATED: return "content truncated before expected length";
+        case WGET_ERR_DOWNGRADE: return "security error: HTTPS to HTTP downgrade redirect rejected";
         default: return "unknown error";
     }
 }

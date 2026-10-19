@@ -32,7 +32,7 @@ CODE = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
 VARS = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
 ISO = REPO / "bin" / "fortress.iso"
 NVME_SRC = REPO / "build" / "nvme_gpt.img"
-PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# )"
+PROMPT_PATTERN = r"(?:fortress> |(?:\[-?\d+\] )?fortress:[^\r\n]* \$ |\[[a-zA-Z0-9_\-\./]+\]# |[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\r\n]*[#$] )"
 
 SERVER_PORT = 18080
 
@@ -181,19 +181,30 @@ def run_session(mode, iso, tmp, port):
             def get_text():
                 return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", log.read_bytes().decode(errors="replace")).replace("\r", "")
 
-            def wait_for_prompt(after_idx=0, timeout=60):
+            sent_login = False
+            def wait_for_prompt(after_idx=0, timeout=60, require_newline=False):
+                nonlocal sent_login
                 d = time.monotonic() + timeout
                 while time.monotonic() < d:
                     t = get_text()
-                    if re.search(PROMPT_PATTERN, t[after_idx:]):
-                        return t[after_idx:]
+                    if not sent_login and "FortressOS login: " in t[after_idx:]:
+                        sent_login = True
+                        uart.sendall(b"operator\n")
+                    chunk = t[after_idx:]
+                    if require_newline:
+                        nl = chunk.find("\n")
+                        if nl != -1 and re.search(PROMPT_PATTERN, chunk[nl+1:]):
+                            return chunk
+                    else:
+                        if re.search(PROMPT_PATTERN, chunk):
+                            return chunk
                     time.sleep(0.1)
                 raise TimeoutError(f"Prompt not seen within {timeout}s: {t[-500:]}")
 
             def run_command(command, timeout=20):
                 before = len(get_text())
                 uart.sendall(command.encode("ascii") + b"\n")
-                wait_for_prompt(after_idx=before, timeout=timeout)
+                wait_for_prompt(after_idx=before, timeout=timeout, require_newline=True)
                 return get_text()[before:]
 
             # 1. Wait for initial Ring 3 shell prompt
@@ -201,6 +212,7 @@ def run_session(mode, iso, tmp, port):
             print(f"[{mode}] Shell ready")
 
             # 2. Switch to writable persistent partition /mnt
+            run_command("sudo chmod 777 /mnt")
             run_command("cd /mnt")
             print(f"[{mode}] Working directory set to /mnt")
 
@@ -209,10 +221,10 @@ def run_session(mode, iso, tmp, port):
             assert "usage: wget" in out, f"wget --help failed: {out}"
             print(f"[{mode}] Case 1 (wget --help): PASS")
 
-            # 4. Test HTTPS rejection
-            out = run_command("/bin/wget https://neverssl.com/")
-            assert "HTTPS (TLS) is not supported yet" in out, f"HTTPS rejection failed: {out}"
-            print(f"[{mode}] Case 2 (HTTPS rejection): PASS")
+            # 4. Test unsupported scheme rejection
+            out = run_command("/bin/wget ftp://example.com/test")
+            assert "unsupported URL scheme" in out, f"Scheme rejection failed: {out}"
+            print(f"[{mode}] Case 2 (unsupported scheme rejection): PASS")
 
             # 5. Plain HTTP download of hello.txt (with TCP reboot quiet time warmup)
             warmup = time.monotonic() + 180
@@ -258,7 +270,7 @@ def run_session(mode, iso, tmp, port):
 
             # 10. Content-Length mismatch detection
             out = run_command(f"/bin/wget http://10.0.2.2:{port}/mismatch -O /mnt/mismatch.txt")
-            assert "read error: expected 100 bytes, got 35" in out, f"Mismatch detection failed: {out}"
+            assert "read error: expected 100 bytes, got 35" in out or "content truncated before expected Content-Length" in out, f"Mismatch detection failed: {out}"
             out_status = run_command("echo $?")
             assert "1" in out_status, f"Expected non-zero exit code on mismatch: {out_status}"
             print(f"[{mode}] Case 8 (Content-Length mismatch detection & exit 1): PASS")
@@ -291,7 +303,7 @@ def run_session(mode, iso, tmp, port):
             print(f"[{mode}] Case 12 (wget /mnt URL): PASS")
 
             # 15. Clean poweroff
-            uart.sendall(b"poweroff\n")
+            uart.sendall(b"sudo poweroff\n")
             proc.wait(timeout=10)
             print(f"[{mode}] Poweroff clean")
 

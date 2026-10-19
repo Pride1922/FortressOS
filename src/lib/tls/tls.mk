@@ -97,7 +97,11 @@ TLS_SRCS := \
 	$(TLS_DIR)/bearssl/src/codec/enc64be.c \
 	$(TLS_DIR)/bearssl/src/codec/enc32le.c
 
-TLS_OBJS := $(patsubst $(TLS_DIR)/%.c,$(TLS_BUILD)/obj/%.o,$(TLS_SRCS))
+TLS_OBJS := $(patsubst $(TLS_DIR)/%.c,$(TLS_BUILD)/obj/%.o,$(TLS_SRCS)) $(TLS_BUILD)/obj/string.o
+
+$(TLS_BUILD)/obj/string.o: src/lib/string.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(TLS_FLAGS) -c $< -o $@
 
 $(TLS_BUILD)/obj/%.o: $(TLS_DIR)/%.c
 	@mkdir -p $(dir $@)
@@ -108,10 +112,29 @@ $(TLS_LIB): $(TLS_OBJS)
 	@rm -f $@
 	@ar rcs $@ $(TLS_OBJS)
 
-.PHONY: test-tls-host
-test-tls-host:
+.PHONY: test-tls-unit-host
+test-tls-unit-host:
 	@python3 scripts/test_tls_host.py
 
 .PHONY: test-tls-anchor-host
 test-tls-anchor-host:
 	@python3 scripts/test_tls_anchor_host.py
+
+.PHONY: test-tls-fixture-host
+test-tls-fixture-host:
+	@python3 scripts/test_tls_fixture.py
+
+.PHONY: test-tls-wget-host
+test-tls-wget-host: test-tls-unit-host
+	@python3 scripts/test_wget_https.py
+
+.PHONY: test-tls-host
+test-tls-host: test-tls-unit-host test-tls-fixture-host test-tls-wget-host
+
+.PHONY: test-tls-all
+test-tls-all: test-tls-unit-host test-tls-anchor-host test-tls-fixture-host test-tls-wget-host
+
+.PHONY: test-tls-qemu
+test-tls-qemu: $(BOOTABLE_ISO)
+	@python3 scripts/test_tls_qemu.py
+

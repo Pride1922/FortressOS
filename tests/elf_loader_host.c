@@ -59,11 +59,11 @@ int main(void) {
     elf_loaded_process_t output;
     alloc_budget=map_budget=100;
     assert(elf_load_executable(image,16384,&output)==ELF_OK);
-    assert(mapped==6 && allocated==7 && output.total_pages==6);
+    assert(mapped==9 && allocated==10 && output.total_pages==9);
     for (size_t i=0;i<mapped;i++) {
         uint8_t *data=(void *)leaves[i].phys;
         uint64_t flags=PTE_PRESENT|PTE_USER;
-        if (leaves[i].va==0x500000 || leaves[i].va==USER_STACK_PAGE_VIRT) flags|=PTE_WRITABLE|PTE_NX;
+        if (leaves[i].va==0x500000 || (leaves[i].va >= USER_STACK_BOTTOM_VIRT && leaves[i].va < USER_STACK_TOP_VIRT)) flags|=PTE_WRITABLE|PTE_NX;
         assert(leaves[i].flags==flags);
         for (size_t j=0;j<4096;j++) {
             uintptr_t va=leaves[i].va+j;
@@ -76,7 +76,7 @@ int main(void) {
         }
     }
     vmm_destroy_pml4(output.pml4_phys,true);
-    for (int mode=0;mode<2;mode++) for (int budget=0;budget<(mode ? 6 : 7);budget++) {
+    for (int mode=0;mode<2;mode++) for (int budget=0;budget<(mode ? 9 : 10);budget++) {
         alloc_budget=mode ? 100 : budget; map_budget=mode ? budget : 100;
         memset(&output,0xa5,sizeof(output));
         assert(elf_load_executable(image,16384,&output)==ELF_ERR_NOMEM);

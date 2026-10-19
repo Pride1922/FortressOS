@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #endif
 
@@ -55,6 +56,26 @@ long tls_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
         int fd = (int)a;
         const void *buf = (const void *)b;
         size_t len = (size_t)c;
+        uint64_t deadline = (uint64_t)e;
+        if (deadline > 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t now_ms = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
+            if (now_ms >= deadline) {
+                return -110; /* -ETIMEDOUT */
+            }
+            int timeout_ms = (int)(deadline - now_ms);
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLOUT;
+            int pr = poll(&pfd, 1, timeout_ms);
+            if (pr == 0) {
+                return -110; /* -ETIMEDOUT */
+            }
+            if (pr < 0) {
+                return -errno;
+            }
+        }
         ssize_t n = send(fd, buf, len, 0);
         if (n < 0) return -errno;
         return (long)n;
@@ -62,6 +83,26 @@ long tls_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
         int fd = (int)a;
         void *buf = (void *)b;
         size_t cap = (size_t)c;
+        uint64_t deadline = (uint64_t)e;
+        if (deadline > 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t now_ms = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
+            if (now_ms >= deadline) {
+                return -110; /* -ETIMEDOUT */
+            }
+            int timeout_ms = (int)(deadline - now_ms);
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLIN;
+            int pr = poll(&pfd, 1, timeout_ms);
+            if (pr == 0) {
+                return -110; /* -ETIMEDOUT */
+            }
+            if (pr < 0) {
+                return -errno;
+            }
+        }
         ssize_t n = recv(fd, buf, cap, 0);
         if (n < 0) return -errno;
         return (long)n;
@@ -391,6 +432,10 @@ int fortress_tls_read(fortress_tls_t *ctx,
     int rlen = br_sslio_read(&ctx->ioc, buf, len);
     if (rlen < 0) {
         ctx->br_last_error = br_ssl_engine_last_error(&ctx->sc.eng);
+        unsigned state = br_ssl_engine_current_state(&ctx->sc.eng);
+        if ((state & BR_SSL_CLOSED) != 0 && ctx->br_last_error == BR_ERR_OK) {
+            return 0;
+        }
         if (ctx->last_error == TLS_SUCCESS) {
             ctx->last_error = ctx->peer_closed ? TLS_ERR_PEER_CLOSED : TLS_ERR_IO;
         }
@@ -580,6 +625,7 @@ const char *fortress_tls_strerror(int err) {
         case BR_ERR_X509_BAD_SIGNATURE: return "certificate signature verification failed";
         case BR_ERR_X509_TIME_UNKNOWN: return "validation time unknown";
         case BR_ERR_X509_EXPIRED: return "certificate expired or not yet valid";
+        case BR_ERR_X509_BAD_SERVER_NAME: return "server certificate does not match requested hostname";
         case BR_ERR_X509_NOT_TRUSTED: return "certificate chain not trusted by any root anchor";
 
         default: return "unknown TLS error";

@@ -23,12 +23,16 @@ enum {
     WGET_NEED_MORE_DATA = -9,
     WGET_ERR_MALFORMED_HEADER = -10,
     WGET_ERR_REDIRECT_OVERFLOW = -11,
+    WGET_ERR_MALFORMED_CHUNK = -12,
+    WGET_ERR_TRUNCATED = -13,
+    WGET_ERR_DOWNGRADE = -14,
 };
 
 typedef struct {
     char raw_url[WGET_MAX_URL_LEN];
     char host[WGET_MAX_HOST_LEN];
     uint16_t port;
+    bool is_https;
     char path[WGET_MAX_URL_LEN];
     char filename[WGET_MAX_FILENAME_LEN];
 } wget_url_t;
@@ -38,9 +42,34 @@ typedef struct {
     char status_text[64];
     bool has_content_length;
     uint64_t content_length;
+    bool is_chunked;
     char location[WGET_MAX_LOCATION_LEN];
     size_t header_len; /* Byte offset where body starts */
 } wget_response_t;
+
+typedef enum {
+    WGET_CHUNK_STATE_SIZE = 0,
+    WGET_CHUNK_STATE_EXT = 1,
+    WGET_CHUNK_STATE_DATA = 2,
+    WGET_CHUNK_STATE_CRLF = 3,
+    WGET_CHUNK_STATE_TRAILER = 4,
+    WGET_CHUNK_STATE_DONE = 5
+} wget_chunk_state_t;
+
+typedef struct {
+    wget_chunk_state_t state;
+    uint64_t chunk_remaining;
+    bool has_size;
+    bool complete;
+} wget_chunked_decoder_t;
+
+void wget_chunked_decoder_init(wget_chunked_decoder_t *dec);
+
+int wget_decode_chunked(wget_chunked_decoder_t *dec,
+                        const uint8_t *in, size_t in_len, size_t *in_consumed,
+                        uint8_t *out, size_t out_cap, size_t *out_written);
+
+int wget_validate_content_length(uint64_t expected, uint64_t actual, bool eof_reached);
 
 /* Parse raw URL into host, port, path, and default filename.
  * Returns WGET_OK on success, or WGET_ERR_* on failure. */

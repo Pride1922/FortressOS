@@ -665,18 +665,20 @@ $(USER_NC_ELF): $(BUILD_DIR)/nc.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/too
 $(BUILD_DIR)/wget_codec.o: user/wget_codec.c user/wget_codec.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
-$(BUILD_DIR)/wget.o: user/wget.c user/wget_codec.h user/dns.h user/dns_codec.h user/udp_common.h user/netconf.h src/include/socket_abi.h src/include/syscall_abi.h src/fs/vfs.h
+$(BUILD_DIR)/wget.o: user/wget.c user/wget_codec.h user/dns.h user/dns_codec.h user/udp_common.h user/netconf.h src/include/socket_abi.h src/include/syscall_abi.h src/fs/vfs.h src/include/tls.h $(TLS_LIB)
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
-$(USER_WGET_ELF): $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Isrc/lib/tls/bearssl/inc -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(USER_WGET_ELF): $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o $(TLS_LIB) user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=wget_main user/tools/start.asm -o $(BUILD_DIR)/wget_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/wget_start.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/wget_start.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o $(TLS_LIB) -o $@
+	@strip --strip-debug $@
 $(BUILD_DIR)/download.o: user/download.c user/wget.h user/udp_common.h src/include/syscall_abi.h src/include/socket_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
-$(USER_DOWNLOAD_ELF): $(BUILD_DIR)/download.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
+$(USER_DOWNLOAD_ELF): $(BUILD_DIR)/download.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o $(TLS_LIB) user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=download_main user/tools/start.asm -o $(BUILD_DIR)/download_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/download_start.o $(BUILD_DIR)/download.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/download_start.o $(BUILD_DIR)/download.o $(BUILD_DIR)/wget.o $(BUILD_DIR)/wget_codec.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o $(TLS_LIB) -o $@
+	@strip --strip-debug $@
 $(BUILD_DIR)/dhcp_codec.o: user/dhcp_codec.c user/dhcp_codec.h src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
@@ -1607,13 +1609,16 @@ test-ext4-format-host:
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -Itests/pipe_host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/ext4_format_host.c -o $(BUILD_DIR)/ext4_format_host
 	@python3 scripts/test_ext4_format_host.py
 
-.PHONY: test-wget-host test-wget
+.PHONY: test-wget-host test-wget test-wget-https-host
 test-wget-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -Isrc/include user/wget_codec.c tests/wget_host.c -o $(BUILD_DIR)/wget_host
 	@$(BUILD_DIR)/wget_host
 
-test-wget: $(BOOTABLE_ISO) $(NVME_GPT_IMG) test-wget-host
+test-wget-https-host: test-tls-unit-host
+	@python3 scripts/test_wget_https.py
+
+test-wget: $(BOOTABLE_ISO) $(NVME_GPT_IMG) test-wget-host test-wget-https-host
 	@python3 scripts/test_wget.py
 
 .PHONY: test-dhcpc-host test-dhcpc-v2-host test-dhcp-probe

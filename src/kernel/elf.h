@@ -98,12 +98,17 @@ typedef struct {
 #define MAX_ELF_PHNUM          16
 #define MAX_ELF_PAGES          1024  /* Max 4 MiB total memory mapped per process */
 #define USER_SPACE_LIMIT       0x0000800000000000ULL /* Lower 128 TiB canonical */
-#define USER_STACK_PAGE_VIRT   0x00007FFFF0000000ULL
+
+/* User Stack Layout (16 KiB total stack: 4 mapped pages, 1 unmapped guard page) */
+#define USER_STACK_PAGES       4ULL
+#define USER_STACK_SIZE        (USER_STACK_PAGES * 4096ULL)
 #define USER_STACK_TOP_VIRT    0x00007FFFF0001000ULL
-#define USER_STACK_GUARD_VIRT  0x00007FFFEFFFF000ULL
+#define USER_STACK_PAGE_VIRT   0x00007FFFF0000000ULL  /* Top page where initial argv/envp reside */
+#define USER_STACK_BOTTOM_VIRT (USER_STACK_TOP_VIRT - USER_STACK_SIZE) /* 0x00007FFFEFFFD000ULL */
+#define USER_STACK_GUARD_VIRT  (USER_STACK_BOTTOM_VIRT - 4096ULL)     /* 0x00007FFFEFFFC000ULL */
 
 /* Restorer page: loader-owned, present/user/RX, immediately below the guard. */
-#define USER_SIGRESTORER_VIRT  0x00007FFFEFFFE000ULL  /* 4 KiB, read-only/executable */
+#define USER_SIGRESTORER_VIRT  (USER_STACK_GUARD_VIRT - 4096ULL)      /* 0x00007FFFEFFFB000ULL */
 #define USER_SIGRESTORER_SIZE  4096ULL
 
 /* Spawn vector limits come from syscall_abi.h; preserve the stack floor. */

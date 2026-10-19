@@ -50,8 +50,19 @@ static void test_url_parser(void) {
     assert(strcmp(url.path, "/status") == 0);
     assert(strcmp(url.filename, "status") == 0);
 
-    /* 7. HTTPS rejection */
-    assert(wget_parse_url("https://secure.example.com/index.html", &url) == WGET_ERR_HTTPS);
+    /* 7. HTTPS URL parsing */
+    assert(wget_parse_url("https://secure.example.com/index.html", &url) == WGET_OK);
+    assert(url.is_https == true);
+    assert(strcmp(url.host, "secure.example.com") == 0);
+    assert(url.port == 443);
+    assert(strcmp(url.path, "/index.html") == 0);
+    assert(strcmp(url.filename, "index.html") == 0);
+
+    /* 7b. HTTPS URL with custom port */
+    assert(wget_parse_url("https://secure.example.com:8443/api/v1", &url) == WGET_OK);
+    assert(url.is_https == true);
+    assert(url.port == 8443);
+    assert(strcmp(url.path, "/api/v1") == 0);
 
     /* 8. Unsupported scheme rejection */
     assert(wget_parse_url("ftp://files.example.com/file", &url) == WGET_ERR_UNSUPPORTED_SCHEME);
@@ -195,10 +206,96 @@ static void test_redirect_resolver(void) {
     assert(strcmp(target.path, "/assets/logo.png") == 0);
     assert(strcmp(target.filename, "logo.png") == 0);
 
-    /* 5. HTTPS redirect rejection */
-    assert(wget_resolve_redirect(&cur, "https://example.com/secure", &target) == WGET_ERR_HTTPS);
+    /* 5. HTTP to HTTPS upgrade redirect */
+    assert(wget_resolve_redirect(&cur, "https://example.com/secure", &target) == WGET_OK);
+    assert(target.is_https == true);
+    assert(target.port == 443);
+    assert(strcmp(target.path, "/secure") == 0);
+
+    /* 6. HTTPS to HTTPS redirect */
+    wget_url_t cur_https;
+    assert(wget_parse_url("https://secure.example.com/start", &cur_https) == WGET_OK);
+    assert(wget_resolve_redirect(&cur_https, "https://secure.example.com/done", &target) == WGET_OK);
+    assert(target.is_https == true);
+    assert(target.port == 443);
+
+    /* 7. HTTPS to HTTP downgrade rejection */
+    assert(wget_resolve_redirect(&cur_https, "http://insecure.example.com/drop", &target) == WGET_ERR_DOWNGRADE);
+
+    /* 8. Scheme-relative on HTTPS preserves HTTPS */
+    assert(wget_resolve_redirect(&cur_https, "//cdn.example.com/lib.js", &target) == WGET_OK);
+    assert(target.is_https == true);
+    assert(target.port == 443);
+    assert(strcmp(target.host, "cdn.example.com") == 0);
 
     printf("  -> Redirect Resolver: PASS\n");
+}
+
+static void test_chunked_decoder(void) {
+    printf("[TEST] Chunked Transfer Encoding Decoder...\n");
+    wget_chunked_decoder_t dec;
+    wget_chunked_decoder_init(&dec);
+
+    /* 1. Valid single chunk and terminal chunk */
+    const char *c1 = "5\r\nHello\r\n0\r\n\r\n";
+    uint8_t out[128];
+    size_t in_c = 0, out_w = 0;
+    int res = wget_decode_chunked(&dec, (const uint8_t *)c1, strlen(c1), &in_c, out, sizeof(out), &out_w);
+    assert(res == WGET_OK);
+    assert(dec.complete == true);
+    assert(out_w == 5);
+    assert(memcmp(out, "Hello", 5) == 0);
+
+    /* 2. Multiple chunks */
+    wget_chunked_decoder_init(&dec);
+    const char *c2 = "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
+    res = wget_decode_chunked(&dec, (const uint8_t *)c2, strlen(c2), &in_c, out, sizeof(out), &out_w);
+    assert(res == WGET_OK);
+    assert(dec.complete == true);
+    assert(out_w == 9);
+    assert(memcmp(out, "Wikipedia", 9) == 0);
+
+    /* 3. Malformed chunk size (non-hex) */
+    wget_chunked_decoder_init(&dec);
+    const char *bad_chunk = "ZZZZ\r\nBadData\r\n0\r\n\r\n";
+    res = wget_decode_chunked(&dec, (const uint8_t *)bad_chunk, strlen(bad_chunk), &in_c, out, sizeof(out), &out_w);
+    assert(res == WGET_ERR_MALFORMED_CHUNK);
+
+    /* 4. Missing CRLF after chunk data */
+    wget_chunked_decoder_init(&dec);
+    const char *bad_crlf = "4\r\nWikiX5\r\npedia\r\n";
+    res = wget_decode_chunked(&dec, (const uint8_t *)bad_crlf, strlen(bad_crlf), &in_c, out, sizeof(out), &out_w);
+    assert(res == WGET_ERR_MALFORMED_CHUNK);
+
+    /* 5. Incomplete chunk stream (need more data) */
+    wget_chunked_decoder_init(&dec);
+    const char *inc = "5\r\nHel";
+    res = wget_decode_chunked(&dec, (const uint8_t *)inc, strlen(inc), &in_c, out, sizeof(out), &out_w);
+    assert(res == WGET_NEED_MORE_DATA);
+    assert(dec.complete == false);
+    assert(out_w == 3);
+
+    printf("  -> Chunked Decoder: PASS\n");
+}
+
+static void test_content_length_validator(void) {
+    printf("[TEST] Content-Length Validator...\n");
+
+    /* 1. Exact match */
+    assert(wget_validate_content_length(100, 100, true) == WGET_OK);
+    assert(wget_validate_content_length(100, 100, false) == WGET_OK);
+
+    /* 2. In progress */
+    assert(wget_validate_content_length(100, 50, false) == WGET_NEED_MORE_DATA);
+
+    /* 3. Premature EOF / Truncation */
+    assert(wget_validate_content_length(100, 50, true) == WGET_ERR_TRUNCATED);
+    assert(wget_validate_content_length(100, 0, true) == WGET_ERR_TRUNCATED);
+
+    /* 4. Overflow */
+    assert(wget_validate_content_length(100, 101, false) == WGET_ERR_TRUNCATED);
+
+    printf("  -> Content-Length Validator: PASS\n");
 }
 
 int main(void) {
@@ -210,6 +307,8 @@ int main(void) {
     test_header_delimiter();
     test_response_parser();
     test_redirect_resolver();
+    test_chunked_decoder();
+    test_content_length_validator();
 
     printf("\n>>> ALL WGET HOST TESTS PASSED (100%%) <<<\n");
     return 0;
