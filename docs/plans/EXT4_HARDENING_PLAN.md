@@ -1,7 +1,14 @@
 # EXT4 hardening for installed systems and package updates
 
-**Status:** PLANNED, 2026-10-19. User authorized starting this work independently
+**Status:** EH-1A complete in host scope; EH-2 design reviewed, 2026-10-19. User authorized starting this work independently
 of TLS/HTTPS delivery. Implementation status and evidence must remain explicit.
+
+Plan committed as `e34e628`. Timestamp implementation and bounded host
+results are committed as `ce529c9` and recorded in
+[EH-1A evidence](../roadmap/ext4-timestamps.md).
+All six block/sector profiles and mounted short-extra-area failure preservation
+pass; the 1 KiB ownership comparison defect is corrected. No later runtime phase
+is implemented; broader timestamp policy remains EH-1B.
 
 ## Objective
 
@@ -103,6 +110,10 @@ stat ABI, `touch` implementation or universal atime feature.
 Choose an additive operation after reviewing VFS, inode retention and the
 filesystem's transaction boundary. Initial scope is regular files only on one
 eligible journaled filesystem. Retain existing no-replace rename behavior.
+
+The [EH-2 implementation review](EXT4_ATOMIC_REPLACE_DESIGN.md) selects an
+additive operation requiring an existing destination, with atomic activation
+separate from deferred orphan cleanup. Runtime replacement remains unimplemented.
 
 One bounded metadata transaction must account for source removal, destination
 replacement, directory checksums, inode link counts, overwritten-file orphan

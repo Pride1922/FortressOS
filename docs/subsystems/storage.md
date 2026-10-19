@@ -11,6 +11,13 @@ identifies timestamp encoding defects, atomic replacement and durability API
 work, recovery headroom, scaling/latency measurements and documentation gaps.
 Source/evidence review only; no new implementation or physical acceptance.
 
+2026-10-19 follow-up: [EH-1A host verification](../roadmap/ext4-timestamps.md)
+corrects creation/write timestamp encoding and the 1 KiB group ownership bitmap
+alignment. Six block/sector profiles pass actual-code sanitizers and 54 Linux
+fsck/payload audits, including mounted failure preservation. No new physical or
+firmware acceptance. [EH-2 replacement design](../plans/EXT4_ATOMIC_REPLACE_DESIGN.md)
+is reviewed; its runtime implementation remains open.
+
 | Subsystem | Status | Detail |
 | --- | --- | --- |
 | **Persistent root Phase 4** | **COMPLETE — DISPOSABLE** (2026-10-12) | Runtime deployment/text installer/separate media: host gates and 70/70 BIOS/UEFI installation, boot, recovery, exclusion and timeout cases pass, including blank USB-source targets and 384/512 MiB capacities. UEFI USB uses EHCI; QEMU xHCI preboot remains a fixture limitation. Dell interface-only preview passes. Physical write access remains disabled; [Phase 5 preparation](../plans/PERSISTENT_ROOT_PHASE5.md). [Contracts](../plans/PERSISTENT_ROOT_PHASE4.md), [evidence](../roadmap/persistent-root-phase4.md). |
