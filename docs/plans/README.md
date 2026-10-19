@@ -6,6 +6,7 @@ This directory archives architecture designs and staged implementation plans. Fo
 
 | Document | Scope | Status |
 | --- | --- | --- |
+| [EXT4_HARDENING_PLAN.md](EXT4_HARDENING_PLAN.md) | Installed-system/package prerequisites: timestamp correctness, atomic replacement, durability/headroom, scale and measured latency. | **PLANNED** (2026-10-19); EH-1A starts here, separately from TLS delivery |
 | [PACKAGE_MANAGER_PLAN.md](PACKAGE_MANAGER_PLAN.md) | Signed offline/HTTPS application packages, crash-safe installed-root transactions, and separately gated base/service updates over SSH. | **DESIGN PROPOSAL** (2026-10-19); TLS-2 underway; implementation not started |
 | [TLS_PLAN.md](TLS_PLAN.md) | TLS/HTTPS foundation: BearSSL integration, platform hooks, Mozilla CA trust store, and `/bin/wget` HTTPS support. | **PROPOSED** (2026-10-18) |
 | [LOGGING_FOUNDATION_PLAN.md](LOGGING_FOUNDATION_PLAN.md) | Three Pillars logging foundation: kernel boot snapshot, Watchtower service capture, global timeline `/bin/logger`, concurrency hardening, and logrotate integration. | **PLANNED** (2026-10-18) |
