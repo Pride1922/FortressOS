@@ -294,20 +294,40 @@ int crond_load_config(const char *primary_path, const char *fallback_path,
     } else if (fallback_path && ops->read_file(fallback_path, s_crontab_buf, sizeof(s_crontab_buf), &file_len) == 0) {
         /* Fallback successfully read */
     } else {
-        if (err_msg && err_cap > 0) {
-            crond_strlcpy(err_msg, "crond: no crontab file found (/etc/crontab or /mnt/.fortress/crontab)", err_cap);
+        /* Both missing: handle gracefully per requirements */
+        const char *create_path = primary_path ? primary_path : CROND_CONFIG_PRIMARY;
+        static const char default_crontab[] =
+            "# /etc/crontab - FortressOS crond configuration\n"
+            "# <interval_minutes> <absolute_command_path> [args...]\n"
+            "60 /sbin/logrotate --skip-if-locked /etc/logrotate.conf\n";
+        size_t dlen = sizeof(default_crontab) - 1;
+
+        if (ops->write_file && ops->write_file(create_path, default_crontab, dlen) == 0) {
+            if (ops->log_err) {
+                ops->log_err("crond: created default /etc/crontab\n");
+            }
+            return crond_parse_config(default_crontab, dlen, table, err_msg, err_cap);
+        } else {
+            /* Root is read-only or write failed */
+            if (ops->log_err) {
+                ops->log_err("crond: no crontab found; running idle\n");
+            }
+            crond_table_init(table);
+            return 0;
         }
-        if (ops->log_err) {
-            ops->log_err("crond: no crontab file found (/etc/crontab or /mnt/.fortress/crontab)\n");
-        }
-        return -1;
     }
 
     int ret = crond_parse_config(s_crontab_buf, file_len, table, err_msg, err_cap);
     if (ret != 0) {
-        if (ops->log_err && err_msg && err_msg[0]) {
-            ops->log_err(err_msg);
-            ops->log_err("\n");
+        if (ops->log_err) {
+            char lbuf[256];
+            lbuf[0] = '\0';
+            crond_append(lbuf, "crond: invalid config: ", sizeof(lbuf));
+            if (err_msg && err_msg[0]) {
+                crond_append(lbuf, err_msg, sizeof(lbuf));
+            }
+            crond_append(lbuf, "\n", sizeof(lbuf));
+            ops->log_err(lbuf);
         }
         return -1;
     }
@@ -489,6 +509,17 @@ static int crond_prod_read_file(const char *path, char *buf, size_t buf_cap, siz
     return 0;
 }
 
+static int crond_prod_write_file(const char *path, const char *buf, size_t len) {
+    if (!path || !buf) return -1;
+    long fd = sys_call(SYS_OPEN, (uintptr_t)path,
+                       VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0644, 0, 0, 0);
+    if (fd < 0) return -1;
+    long n = sys_call(SYS_WRITE, (uintptr_t)fd, (uintptr_t)buf, len, 0, 0, 0);
+    (void)sys_call(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
+    if (n < (long)len) return -1;
+    return 0;
+}
+
 static void crond_prod_reap_zombies(void) {
     for (;;) {
         uint64_t status = 0;
@@ -533,6 +564,7 @@ int crond_main(int argc, char **argv) {
     ops.sleep_sec = crond_prod_sleep_sec;
     ops.log_err = crond_prod_log_err;
     ops.read_file = crond_prod_read_file;
+    ops.write_file = crond_prod_write_file;
     ops.reap_zombies = crond_prod_reap_zombies;
 
     return crond_run_with_ops(argc, argv, &ops, &g_prod_crond_stop);

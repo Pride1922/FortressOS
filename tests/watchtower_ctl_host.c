@@ -3,6 +3,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include "../user/watchtower/watchtower.h"
 #include "../user/watchtower/watchtower_ctl.h"
 
@@ -152,6 +155,8 @@ static void test_ctl_status_command(void) {
     assert(strstr(res, "Identity: root:root") != NULL);
     assert(strstr(res, "Restart Policy: on-failure (restarts: 0/3)") != NULL);
     assert(strstr(res, "Dropped Output: 0 bytes") != NULL);
+    assert(strstr(res, "LogFile: ") != NULL);
+    assert(strstr(res, "Recent Log: ") != NULL);
 
     /* Status of non-existent service */
     r = watchtower_ctl_process_request(&tbl, "STATUS nonexistent", 1000, 1000, res, sizeof(res), &g_mock_ops);
@@ -248,7 +253,7 @@ static void test_ctl_start_stop_restart_lifecycle(void) {
     assert(tbl.services[0].state == SVC_STATE_STOPPING);
 
     /* Child exits cleanly */
-    watchtower_handle_child_exit(&tbl, pid, 0, 2001);
+    watchtower_handle_child_exit(&tbl, pid, 0, 2001, &g_mock_ops);
     /* Advance time to trigger restart */
     watchtower_tick(&tbl, 2002, &g_mock_ops);
     assert(tbl.services[0].state == SVC_STATE_RUNNING);
@@ -259,7 +264,7 @@ static void test_ctl_start_stop_restart_lifecycle(void) {
     assert(strstr(res, "OK stopping service 'dhcpc'") != NULL);
 
     /* Child exits */
-    watchtower_handle_child_exit(&tbl, tbl.services[0].pid, 0, 2003);
+    watchtower_handle_child_exit(&tbl, tbl.services[0].pid, 0, 2003, &g_mock_ops);
     assert(tbl.services[0].state == SVC_STATE_STOPPED);
 
     /* 5. Stopping already stopped service returns OK */
@@ -295,6 +300,132 @@ static void test_ctl_unknown_and_malformed(void) {
     printf("PASS: test_ctl_unknown_and_malformed\n");
 }
 
+static void write_test_file(const char *path, const char *content) {
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    assert(fd >= 0);
+    assert(write(fd, content, strlen(content)) == (ssize_t)strlen(content));
+    close(fd);
+}
+
+static void test_ctl_enable_disable(void) {
+    printf("[TEST] test_ctl_enable_disable...\n");
+    mock_reset();
+    watchtower_table_t tbl;
+    setup_test_table(&tbl);
+
+    char dir[] = "/tmp/wt_ctl_dir_XXXXXX";
+    assert(mkdtemp(dir) != NULL);
+    watchtower_ctl_set_dirs(dir, NULL);
+
+    char svc_path[256];
+    snprintf(svc_path, sizeof(svc_path), "%s/sshd.service", dir);
+    write_test_file(svc_path, "[Service]\nExec = /sbin/sshd -D\nOrder = 20\nEnabled = yes\nUser = sshd\nGroup = sshd\n");
+
+    char res[WATCHTOWER_CTL_MAX_RES];
+
+    /* 1. Unprivileged user (UID 1000, GID 1000) tries DISABLE -> rejected */
+    int r = watchtower_ctl_process_request(&tbl, "DISABLE sshd", 1000, 1000, res, sizeof(res), &g_mock_ops);
+    assert(r == -1);
+    assert(strstr(res, "ERR permission denied") != NULL);
+    assert(tbl.services[1].enabled == true);
+
+    /* 2. Wheel user (UID 1000, GID 10) runs DISABLE sshd -> OK */
+    r = watchtower_ctl_process_request(&tbl, "DISABLE sshd", 1000, 10, res, sizeof(res), &g_mock_ops);
+    assert(r == 0);
+    assert(strstr(res, "OK service 'sshd' disabled") != NULL);
+    assert(tbl.services[1].enabled == false);
+
+    /* Verify service list shows 'disabled' state for stopped+disabled service */
+    r = watchtower_ctl_process_request(&tbl, "LIST", 1000, 1000, res, sizeof(res), &g_mock_ops);
+    assert(r == 0);
+    assert(strstr(res, "sshd         disabled   -       20     no       on-failure") != NULL);
+
+    /* 3. Root user (UID 0, GID 0) runs ENABLE sshd -> OK */
+    r = watchtower_ctl_process_request(&tbl, "ENABLE sshd", 0, 0, res, sizeof(res), &g_mock_ops);
+    assert(r == 0);
+    assert(strstr(res, "OK service 'sshd' enabled") != NULL);
+    assert(tbl.services[1].enabled == true);
+
+    /* Verify service list now shows 'stopped' state and Enabled 'yes' */
+    r = watchtower_ctl_process_request(&tbl, "LIST", 1000, 1000, res, sizeof(res), &g_mock_ops);
+    assert(r == 0);
+    assert(strstr(res, "sshd         stopped    -       20     yes      on-failure") != NULL);
+
+    /* 4. Missing service file fails */
+    r = watchtower_ctl_process_request(&tbl, "ENABLE no_file", 0, 0, res, sizeof(res), &g_mock_ops);
+    assert(r == -1);
+    assert(strstr(res, "ERR") != NULL);
+
+    unlink(svc_path);
+    rmdir(dir);
+    watchtower_ctl_set_dirs(NULL, NULL);
+    printf("PASS: test_ctl_enable_disable\n");
+}
+
+static void test_ctl_reload(void) {
+    printf("[TEST] test_ctl_reload...\n");
+    mock_reset();
+    watchtower_table_t tbl;
+    setup_test_table(&tbl);
+
+    char dir[] = "/tmp/wt_ctl_rel_XXXXXX";
+    assert(mkdtemp(dir) != NULL);
+    watchtower_ctl_set_dirs(dir, NULL);
+
+    char svc_path[256];
+    snprintf(svc_path, sizeof(svc_path), "%s/dhcpc.service", dir);
+    write_test_file(svc_path, "[Service]\nExec = /sbin/dhcpc -f\nOrder = 10\nTimeoutStop = 5\n");
+
+    /* Start dhcpc in table */
+    watchtower_start_service(&tbl, 0, 2000, &g_mock_ops);
+    assert(tbl.services[0].state == SVC_STATE_RUNNING);
+    int64_t initial_pid = tbl.services[0].pid;
+    assert(initial_pid > 0);
+    assert(tbl.services[0].timeout_stop_sec == 5);
+
+    char res[WATCHTOWER_CTL_MAX_RES];
+
+    /* 1. Unprivileged user tries RELOAD -> rejected */
+    int r = watchtower_ctl_process_request(&tbl, "RELOAD dhcpc", 1000, 1000, res, sizeof(res), &g_mock_ops);
+    assert(r == -1);
+    assert(strstr(res, "ERR permission denied") != NULL);
+
+    /* 2. Update service file on disk with new TimeoutStop and arguments */
+    write_test_file(svc_path, "[Service]\nExec = /sbin/dhcpc -f -v\nOrder = 10\nTimeoutStop = 15\n");
+
+    /* 3. Privileged user runs RELOAD */
+    r = watchtower_ctl_process_request(&tbl, "RELOAD dhcpc", 0, 0, res, sizeof(res), &g_mock_ops);
+    assert(r == 0);
+    assert(strstr(res, "OK service 'dhcpc' reloaded") != NULL);
+
+    /* Verify PID is UNCHANGED and still running, but TimeoutStop and args updated */
+    assert(tbl.services[0].pid == initial_pid);
+    assert(tbl.services[0].state == SVC_STATE_RUNNING);
+    assert(tbl.services[0].timeout_stop_sec == 15);
+    assert(tbl.services[0].argc == 2);
+    assert(strcmp(tbl.services[0].args[1], "-v") == 0);
+
+    /* 4. Invalid service file -> rejected, old configuration preserved */
+    write_test_file(svc_path, "[Service]\nExec = /sbin/dhcpc -f\nInvalidDirective = 999\n");
+    r = watchtower_ctl_process_request(&tbl, "RELOAD dhcpc", 0, 0, res, sizeof(res), &g_mock_ops);
+    assert(r == -1);
+    assert(strstr(res, "ERR") != NULL);
+    assert(tbl.services[0].pid == initial_pid);
+    assert(tbl.services[0].timeout_stop_sec == 15); /* Still 15 */
+
+    /* 5. Service file deleted -> removed from in-memory table */
+    unlink(svc_path);
+    r = watchtower_ctl_process_request(&tbl, "RELOAD dhcpc", 0, 0, res, sizeof(res), &g_mock_ops);
+    assert(r == 0);
+    assert(strstr(res, "OK service 'dhcpc' removed") != NULL);
+    assert(watchtower_find_service(&tbl, "dhcpc") == NULL);
+    assert(tbl.count == 1); /* Only sshd remains */
+
+    rmdir(dir);
+    watchtower_ctl_set_dirs(NULL, NULL);
+    printf("PASS: test_ctl_reload\n");
+}
+
 int main(void) {
     printf("===================================================\n");
     printf("Watchtower Phase 3 Control CLI Test Suite (ASan)\n");
@@ -306,7 +437,9 @@ int main(void) {
     test_ctl_authorization_enforcement();
     test_ctl_start_stop_restart_lifecycle();
     test_ctl_unknown_and_malformed();
+    test_ctl_enable_disable();
+    test_ctl_reload();
 
-    printf("\nALL 6 PHASE 3 WATCHTOWER CTL TESTS PASSED!\n");
+    printf("\nALL 8 PHASE 3 WATCHTOWER CTL TESTS PASSED!\n");
     return 0;
 }

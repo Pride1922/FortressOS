@@ -564,6 +564,7 @@ int watchtower_main(int argc, char **argv) {
     /* Ensure /run/watchtower directory exists and initialize logging directory */
     sys_call(SYS_MKDIR, (uintptr_t)WATCHTOWER_RUN_DIR, 0755, 0, 0, 0, 0);
     wt_init_log_dir();
+    watchtower_ctl_set_log_dir(g_log_dir);
     wt_write_pid_file();
     wt_setup_signals();
 
@@ -632,7 +633,7 @@ int watchtower_main(int argc, char **argv) {
             uint64_t status = 0;
             long pid = sys_call(SYS_WAITPID, (uintptr_t)-1, (uintptr_t)&status, WNOHANG, 0, 0, 0);
             if (pid <= 0) break;
-            watchtower_handle_child_exit(&table, (int64_t)pid, (int)status, now);
+            watchtower_handle_child_exit(&table, (int64_t)pid, (int)status, now, &ops);
         }
 
         /* Drain after reaping to catch last output before process demise */

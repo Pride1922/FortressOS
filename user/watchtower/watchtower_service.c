@@ -55,6 +55,23 @@ int watchtower_table_add_service(watchtower_table_t *tbl, const service_t *svc) 
     return 0;
 }
 
+int watchtower_table_remove_service(watchtower_table_t *tbl, const char *name) {
+    if (!tbl || !name) return -1;
+    for (size_t i = 0; i < tbl->count; i++) {
+        if (str_equals(tbl->services[i].name, name)) {
+            for (size_t j = i; j + 1 < tbl->count; j++) {
+                tbl->services[j] = tbl->services[j + 1];
+            }
+            for (size_t k = 0; k < sizeof(service_t); k++) {
+                ((uint8_t *)&tbl->services[tbl->count - 1])[k] = 0;
+            }
+            tbl->count--;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 void watchtower_table_sort_by_order(watchtower_table_t *tbl) {
     if (!tbl || tbl->count <= 1) return;
     for (size_t i = 0; i < tbl->count - 1; i++) {
@@ -210,7 +227,37 @@ int watchtower_restart_service(watchtower_table_t *tbl, size_t idx, uint64_t now
     return watchtower_start_service(tbl, idx, now_sec, ops);
 }
 
-void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int status, uint64_t now_sec) {
+static void svc_append(char *dst, const char *src, size_t cap) {
+    if (!dst || cap == 0) return;
+    size_t len = 0;
+    while (dst[len] && len < cap) len++;
+    size_t i = 0;
+    while (src && src[i] && len + 1 < cap) {
+        dst[len++] = src[i++];
+    }
+    dst[len] = '\0';
+}
+
+static void svc_append_u64(char *dst, uint64_t val, size_t cap) {
+    char tmp[32];
+    int idx = 0;
+    if (val == 0) {
+        tmp[idx++] = '0';
+    } else {
+        while (val > 0) {
+            tmp[idx++] = (char)('0' + (val % 10));
+            val /= 10;
+        }
+    }
+    char rev[32];
+    for (int i = 0; i < idx; i++) {
+        rev[i] = tmp[idx - 1 - i];
+    }
+    rev[idx] = '\0';
+    svc_append(dst, rev, cap);
+}
+
+void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int status, uint64_t now_sec, const watchtower_sys_ops_t *ops) {
     if (!tbl || pid <= 0) return;
     service_t *svc = watchtower_find_service_by_pid(tbl, pid);
     if (!svc) return;
@@ -222,6 +269,18 @@ void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int stat
         if (exit_code != 0) {
             svc->last_exit_code = exit_code;
             svc->state = SVC_STATE_FAILED;
+            if (ops && ops->log_stderr) {
+                char msg[256];
+                msg[0] = '\0';
+                svc_append(msg, "[watchtower] service '", sizeof(msg));
+                svc_append(msg, svc->name, sizeof(msg));
+                svc_append(msg, "' (pid ", sizeof(msg));
+                svc_append_u64(msg, (uint64_t)pid, sizeof(msg));
+                svc_append(msg, ") exited with code ", sizeof(msg));
+                svc_append_u64(msg, (uint64_t)exit_code, sizeof(msg));
+                svc_append(msg, "\n", sizeof(msg));
+                ops->log_stderr(msg);
+            }
             return;
         }
         /* Launcher exited 0: keep waiting in STARTING state; tick will discover daemon PID */
@@ -251,6 +310,21 @@ void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int stat
 
     /* Unexpected termination handling */
     bool is_failure = (svc->last_exit_code != 0 || svc->last_term_sig != 0);
+
+    int code_or_sig = svc->last_term_sig ? svc->last_term_sig : svc->last_exit_code;
+    if (ops && ops->log_stderr) {
+        char msg[256];
+        msg[0] = '\0';
+        svc_append(msg, "[watchtower] service '", sizeof(msg));
+        svc_append(msg, svc->name, sizeof(msg));
+        svc_append(msg, "' (pid ", sizeof(msg));
+        svc_append_u64(msg, (uint64_t)pid, sizeof(msg));
+        svc_append(msg, ") exited with code ", sizeof(msg));
+        svc_append_u64(msg, (uint64_t)code_or_sig, sizeof(msg));
+        svc_append(msg, "\n", sizeof(msg));
+        ops->log_stderr(msg);
+    }
+
     bool should_restart = false;
 
     if (svc->restart_policy == RESTART_ALWAYS) {
@@ -274,10 +348,38 @@ void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int stat
         svc->restart_count++;
         svc->state = SVC_STATE_STARTING;
         svc->next_restart_sec = now_sec + svc->restart_delay_sec;
+
+        if (ops && ops->log_stderr) {
+            char msg[256];
+            msg[0] = '\0';
+            svc_append(msg, "[watchtower] service '", sizeof(msg));
+            svc_append(msg, svc->name, sizeof(msg));
+            svc_append(msg, "' restarting in ", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_delay_sec, sizeof(msg));
+            svc_append(msg, "s (attempt ", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_count, sizeof(msg));
+            svc_append(msg, "/", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
+            svc_append(msg, ")\n", sizeof(msg));
+            ops->log_stderr(msg);
+        }
     } else {
         /* Crash loop threshold exceeded: freeze in FAILED */
         svc->state = SVC_STATE_FAILED;
         svc->next_restart_sec = 0;
+
+        if (ops && ops->log_stderr) {
+            char msg[256];
+            msg[0] = '\0';
+            svc_append(msg, "[watchtower] service '", sizeof(msg));
+            svc_append(msg, svc->name, sizeof(msg));
+            svc_append(msg, "' restart limit reached (", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
+            svc_append(msg, "/", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
+            svc_append(msg, "), marking FAILED\n", sizeof(msg));
+            ops->log_stderr(msg);
+        }
     }
 }
 
@@ -315,7 +417,7 @@ void watchtower_tick(watchtower_table_t *tbl, uint64_t now_sec, const watchtower
         /* Check liveness for Type=forking daemon while RUNNING */
         if (svc->type == SVC_TYPE_FORKING && svc->state == SVC_STATE_RUNNING && svc->pid > 0 && ops->is_alive) {
             if (!ops->is_alive(svc->pid)) {
-                watchtower_handle_child_exit(tbl, svc->pid, 1 /* synthetic failure */, now_sec);
+                watchtower_handle_child_exit(tbl, svc->pid, 1 /* synthetic failure */, now_sec, ops);
                 continue;
             }
         }

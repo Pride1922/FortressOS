@@ -304,6 +304,75 @@ static void test_parse_boot_log_service(void) {
     printf("PASS: test_parse_boot_log_service\n");
 }
 
+static void test_config_set_enabled(void) {
+    printf("[TEST] test_config_set_enabled...\n");
+    char path[] = "/tmp/wt_cfg_enable_test_XXXXXX";
+    int fd = mkstemp(path);
+    assert(fd >= 0);
+
+    const char *initial =
+        "[Service]\n"
+        "Exec = /sbin/sshd -D\n"
+        "Order = 20\n"
+        "Enabled = yes\n"
+        "User = sshd\n";
+    assert(write(fd, initial, strlen(initial)) == (ssize_t)strlen(initial));
+    close(fd);
+
+    char err[256];
+
+    /* 1. Disable the service */
+    int r = watchtower_config_set_enabled(path, NULL, false, err, sizeof(err));
+    assert(r == 0);
+
+    /* Verify file on disk now has Enabled=no */
+    service_t svc;
+    r = watchtower_config_load_file(path, "sshd", &svc, err, sizeof(err));
+    assert(r == 0);
+    assert(svc.enabled == false);
+    assert(svc.order == 20);
+    assert(strcmp(svc.exec_path, "/sbin/sshd") == 0);
+    assert(strcmp(svc.user, "sshd") == 0);
+
+    /* 2. Re-enable the service */
+    r = watchtower_config_set_enabled(path, NULL, true, err, sizeof(err));
+    assert(r == 0);
+
+    r = watchtower_config_load_file(path, "sshd", &svc, err, sizeof(err));
+    assert(r == 0);
+    assert(svc.enabled == true);
+    assert(svc.order == 20);
+
+    unlink(path);
+
+    /* 3. Test appending Enabled when directive was absent */
+    char path2[] = "/tmp/wt_cfg_no_en_XXXXXX";
+    fd = mkstemp(path2);
+    assert(fd >= 0);
+    const char *no_en =
+        "[Service]\n"
+        "Exec = /sbin/dhcpc -f\n";
+    assert(write(fd, no_en, strlen(no_en)) == (ssize_t)strlen(no_en));
+    close(fd);
+
+    r = watchtower_config_set_enabled(path2, NULL, false, err, sizeof(err));
+    assert(r == 0);
+
+    r = watchtower_config_load_file(path2, "dhcpc", &svc, err, sizeof(err));
+    assert(r == 0);
+    assert(svc.enabled == false);
+    assert(strcmp(svc.exec_path, "/sbin/dhcpc") == 0);
+
+    unlink(path2);
+
+    /* 4. Missing file fails with clear error */
+    r = watchtower_config_set_enabled("/tmp/wt_nonexistent_service.service", NULL, false, err, sizeof(err));
+    assert(r != 0);
+    assert(strstr(err, "not found") != NULL);
+
+    printf("PASS: test_config_set_enabled\n");
+}
+
 int main(void) {
     printf("===================================================\n");
     printf("Watchtower Phase 2 Configuration Test Suite (ASan)\n");
@@ -321,7 +390,8 @@ int main(void) {
     test_parse_new_directives();
     test_reject_invalid_new_directives();
     test_parse_boot_log_service();
+    test_config_set_enabled();
 
-    printf("\nALL 12 PHASE 2 WATCHTOWER CONFIG TESTS PASSED!\n");
+    printf("\nALL 13 PHASE 2 WATCHTOWER CONFIG TESTS PASSED!\n");
     return 0;
 }

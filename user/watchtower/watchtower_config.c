@@ -3,6 +3,7 @@
 #include "vfs.h"
 
 #ifdef WATCHTOWER_HOST_TEST
+#include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
 #endif
@@ -24,6 +25,12 @@ static inline long wt_config_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_
 }
 #define WT_SYSCALL wt_config_syscall
 #endif
+
+static size_t cfg_strlen(const char *s) {
+    size_t n = 0;
+    while (s && s[n]) n++;
+    return n;
+}
 
 static bool cfg_streq(const char *a, const char *b) {
     if (!a || !b) return false;
@@ -663,4 +670,173 @@ int watchtower_config_load_service(const char *installed_path, const char *live_
         cfg_append(err_msg, "'", err_cap);
     }
     return -1;
+}
+
+static bool is_enabled_line(const char *line, size_t len) {
+    size_t i = 0;
+    while (i < len && cfg_isspace(line[i])) i++;
+    const char *key = "enabled";
+    size_t k = 0;
+    while (i < len && key[k]) {
+        char c = (line[i] >= 'A' && line[i] <= 'Z') ? (char)(line[i] + 32) : line[i];
+        if (c != key[k]) return false;
+        i++;
+        k++;
+    }
+    if (key[k] != '\0') return false;
+    while (i < len && cfg_isspace(line[i])) i++;
+    if (i < len && line[i] == '=') return true;
+    return false;
+}
+
+int watchtower_config_set_enabled(const char *installed_path, const char *live_path,
+                                  bool enabled, char *err_msg, size_t err_cap) {
+    static char in_buf[WATCHTOWER_MAX_CONFIG_SIZE];
+    long nread = -1;
+    const char *target_path = NULL;
+
+    if (installed_path) {
+        nread = read_file_to_buf(installed_path, in_buf, sizeof(in_buf));
+        if (nread >= 0) {
+            target_path = installed_path;
+        }
+    }
+    if (nread < 0 && live_path) {
+        nread = read_file_to_buf(live_path, in_buf, sizeof(in_buf));
+        if (nread >= 0) {
+            target_path = live_path;
+        }
+    }
+    if (!target_path || nread < 0) {
+        if (err_msg && err_cap > 0) {
+            err_msg[0] = '\0';
+            cfg_append(err_msg, "watchtower: configuration file not found", err_cap);
+        }
+        return -1;
+    }
+
+    static char out_buf[WATCHTOWER_MAX_CONFIG_SIZE + 64];
+    size_t out_len = 0;
+    bool has_enabled = false;
+    size_t pos = 0;
+
+    while (pos < (size_t)nread) {
+        size_t line_start = pos;
+        while (pos < (size_t)nread && in_buf[pos] != '\n') pos++;
+        size_t line_end = pos;
+        if (pos < (size_t)nread && in_buf[pos] == '\n') pos++;
+
+        const char *line = &in_buf[line_start];
+        size_t line_len = line_end - line_start;
+
+        if (is_enabled_line(line, line_len)) {
+            const char *replacement = enabled ? "Enabled=yes\n" : "Enabled=no\n";
+            size_t rlen = cfg_strlen(replacement);
+            if (out_len + rlen >= sizeof(out_buf) - 1) {
+                if (err_msg && err_cap > 0) {
+                    err_msg[0] = '\0';
+                    cfg_append(err_msg, "watchtower: configuration exceeds maximum size", err_cap);
+                }
+                return -1;
+            }
+            for (size_t k = 0; k < rlen; k++) out_buf[out_len++] = replacement[k];
+            has_enabled = true;
+        } else {
+            size_t copy_len = (line_end < (size_t)nread && in_buf[line_end] == '\n') ? (line_len + 1) : line_len;
+            if (out_len + copy_len >= sizeof(out_buf) - 1) {
+                if (err_msg && err_cap > 0) {
+                    err_msg[0] = '\0';
+                    cfg_append(err_msg, "watchtower: configuration exceeds maximum size", err_cap);
+                }
+                return -1;
+            }
+            for (size_t k = 0; k < copy_len; k++) out_buf[out_len++] = line[k];
+        }
+    }
+
+    if (!has_enabled) {
+        if (out_len > 0 && out_buf[out_len - 1] != '\n') {
+            if (out_len + 1 < sizeof(out_buf) - 1) {
+                out_buf[out_len++] = '\n';
+            }
+        }
+        const char *to_add = enabled ? "Enabled=yes\n" : "Enabled=no\n";
+        size_t alen = cfg_strlen(to_add);
+        if (out_len + alen >= sizeof(out_buf) - 1) {
+            if (err_msg && err_cap > 0) {
+                err_msg[0] = '\0';
+                cfg_append(err_msg, "watchtower: configuration exceeds maximum size", err_cap);
+            }
+            return -1;
+        }
+        for (size_t k = 0; k < alen; k++) out_buf[out_len++] = to_add[k];
+    }
+    out_buf[out_len] = '\0';
+
+    char tmp_path[WATCHTOWER_MAX_PATH_LEN + 16];
+    tmp_path[0] = '\0';
+    cfg_copy(tmp_path, target_path, sizeof(tmp_path));
+    cfg_append(tmp_path, ".tmp", sizeof(tmp_path));
+
+#ifdef WATCHTOWER_HOST_TEST
+    int fd = open(tmp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) {
+        if (err_msg && err_cap > 0) {
+            err_msg[0] = '\0';
+            cfg_append(err_msg, "watchtower: cannot create temporary file", err_cap);
+        }
+        return -1;
+    }
+    ssize_t wr = write(fd, out_buf, out_len);
+    close(fd);
+    if (wr < 0 || (size_t)wr != out_len) {
+        unlink(tmp_path);
+        if (err_msg && err_cap > 0) {
+            err_msg[0] = '\0';
+            cfg_append(err_msg, "watchtower: failed to write temporary file", err_cap);
+        }
+        return -1;
+    }
+    if (rename(tmp_path, target_path) != 0) {
+        unlink(tmp_path);
+        if (err_msg && err_cap > 0) {
+            err_msg[0] = '\0';
+            cfg_append(err_msg, "watchtower: failed to rename temporary file", err_cap);
+        }
+        return -1;
+    }
+    return 0;
+#else
+    long fd = WT_SYSCALL(SYS_OPEN, (uintptr_t)tmp_path, VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0644, 0, 0, 0);
+    if (fd < 0) {
+        if (err_msg && err_cap > 0) {
+            err_msg[0] = '\0';
+            cfg_append(err_msg, "watchtower: cannot create temporary file", err_cap);
+        }
+        return -1;
+    }
+    long wr = WT_SYSCALL(SYS_WRITE, (uintptr_t)fd, (uintptr_t)out_buf, out_len, 0, 0, 0);
+    (void)WT_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
+    if (wr < 0 || (size_t)wr != out_len) {
+        (void)WT_SYSCALL(SYS_UNLINK, (uintptr_t)tmp_path, 0, 0, 0, 0, 0);
+        if (err_msg && err_cap > 0) {
+            err_msg[0] = '\0';
+            cfg_append(err_msg, "watchtower: failed to write temporary file", err_cap);
+        }
+        return -1;
+    }
+    long ren_r = WT_SYSCALL(SYS_RENAME_REPLACE, (uintptr_t)tmp_path, (uintptr_t)target_path, 0, 0, 0, 0);
+    if (ren_r < 0) {
+        ren_r = WT_SYSCALL(SYS_RENAME, (uintptr_t)tmp_path, (uintptr_t)target_path, 0, 0, 0, 0);
+    }
+    if (ren_r < 0) {
+        (void)WT_SYSCALL(SYS_UNLINK, (uintptr_t)tmp_path, 0, 0, 0, 0, 0);
+        if (err_msg && err_cap > 0) {
+            err_msg[0] = '\0';
+            cfg_append(err_msg, "watchtower: failed to atomic replace service file", err_cap);
+        }
+        return -1;
+    }
+    return 0;
+#endif
 }

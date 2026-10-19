@@ -55,6 +55,22 @@ def main():
         (tree/'etc/passwd').write_text('root:x:0:0::/root:/bin/shell\noperator:x:1000:1000::/home/operator:/bin/shell\n')
         (tree/'etc/group').write_text('root:x:0:\noperator:x:1000:\nwheel:x:10:operator\n')
         (tree/'etc/shadow').write_text('root:!:::::::\noperator:!:::::::\n')
+        if not (tree/'etc/crontab').is_file():
+            (tree/'etc/crontab').write_text('# /etc/crontab - FortressOS crond configuration\n# <interval_minutes> <absolute_command_path> [args...]\n60 /sbin/logrotate --skip-if-locked /etc/logrotate.conf\n')
+        metadata['etc/crontab'] = (0o644, 0, 0)
+        (tree/'etc/watchtower').mkdir(parents=True, exist_ok=True)
+        default_services = {
+            'boot-log.service': 'Exec=/bin/boot-snapshot\nOrder=01\nType=simple\nRestart=no\n',
+            'dhcpc.service': 'Exec=/sbin/dhcpc -f\nOrder=10\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=5\n',
+            'ntpd.service': 'Exec=/sbin/ntpd -f pool.ntp.org\nOrder=15\nEnabled=yes\nRestart=on-failure\nTimeoutStop=2\n',
+            'sshd.service': 'Exec=/sbin/sshd -D\nOrder=20\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStart=5\nTimeoutStop=10\nReadiness=file:/run/watchtower/sshd.ready\n',
+            'crond.service': 'Exec=/sbin/crond -f\nOrder=30\nType=simple\nRestart=on-failure\nTimeoutStop=2\n',
+        }
+        for svc_file, svc_content in default_services.items():
+            target_svc = tree / 'etc/watchtower' / svc_file
+            if not target_svc.is_file():
+                target_svc.write_text(svc_content)
+            metadata['etc/watchtower/' + svc_file] = (0o644, 0, 0)
         metadata.update({'tmp':(0o1777,0,0),'root':(0o700,0,0),'home/operator':(0o700,1000,1000),
                          'etc/passwd':(0o644,0,0),'etc/group':(0o644,0,0),'etc/shadow':(0o600,0,0)})
         root=out/'root.img'

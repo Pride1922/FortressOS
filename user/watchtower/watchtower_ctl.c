@@ -1,4 +1,44 @@
 #include "watchtower_ctl.h"
+#include "watchtower_config.h"
+#include "syscall_abi.h"
+#include "vfs.h"
+
+#ifdef WATCHTOWER_HOST_TEST
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+#ifndef WT_CTL_SYSCALL
+static inline long wt_ctl_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
+                                  uintptr_t d, uintptr_t e, uintptr_t f) {
+#ifndef WATCHTOWER_HOST_TEST
+    register uintptr_t r10 __asm__("r10") = d;
+    register uintptr_t r8  __asm__("r8")  = e;
+    register uintptr_t r9  __asm__("r9")  = f;
+    __asm__ volatile("syscall" : "+a"(nr) : "D"(a), "S"(b), "d"(c),
+                     "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory", "cc");
+    return nr;
+#else
+    (void)nr; (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
+    return -1;
+#endif
+}
+#define WT_CTL_SYSCALL wt_ctl_syscall
+#endif
+
+static const char *g_watchtower_installed_dir = NULL;
+static const char *g_watchtower_live_dir = NULL;
+static const char *g_watchtower_log_dir = NULL;
+
+void watchtower_ctl_set_dirs(const char *installed_dir, const char *live_dir) {
+    g_watchtower_installed_dir = installed_dir;
+    g_watchtower_live_dir = live_dir;
+}
+
+void watchtower_ctl_set_log_dir(const char *log_dir) {
+    g_watchtower_log_dir = log_dir;
+}
 
 static void ctl_append(char *dst, const char *src, size_t cap) {
     if (!dst || cap == 0) return;
@@ -9,6 +49,20 @@ static void ctl_append(char *dst, const char *src, size_t cap) {
         dst[len++] = src[i++];
     }
     dst[len] = '\0';
+}
+
+static void ctl_join_service_path(char *dst, size_t cap, const char *dir, const char *svc_name) {
+    if (!dst || cap == 0) return;
+    dst[0] = '\0';
+    ctl_append(dst, dir, cap);
+    size_t len = 0;
+    while (dst[len]) len++;
+    if (len > 0 && dst[len - 1] != '/' && len + 1 < cap) {
+        dst[len++] = '/';
+        dst[len] = '\0';
+    }
+    ctl_append(dst, svc_name, cap);
+    ctl_append(dst, ".service", cap);
 }
 
 static void ctl_append_u64(char *dst, uint64_t val, size_t cap) {
@@ -53,6 +107,103 @@ static bool ctl_strcasecmp(const char *s1, const char *s2) {
 
 static bool ctl_isspace(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static void ctl_append_log_tail(char *res, size_t res_cap, const char *svc_name) {
+    if (!res || res_cap == 0 || !svc_name) return;
+
+    char log_path[128];
+    log_path[0] = '\0';
+
+    if (g_watchtower_log_dir && g_watchtower_log_dir[0]) {
+        ctl_append(log_path, g_watchtower_log_dir, sizeof(log_path));
+        ctl_append(log_path, "/", sizeof(log_path));
+        ctl_append(log_path, svc_name, sizeof(log_path));
+        ctl_append(log_path, ".log", sizeof(log_path));
+    } else {
+        /* Auto-probe: prefer /var/log/watchtower, fallback /run/watchtower */
+        ctl_append(log_path, "/var/log/watchtower/", sizeof(log_path));
+        ctl_append(log_path, svc_name, sizeof(log_path));
+        ctl_append(log_path, ".log", sizeof(log_path));
+#ifdef WATCHTOWER_HOST_TEST
+        int probe_fd = open(log_path, O_RDONLY);
+        if (probe_fd >= 0) {
+            close(probe_fd);
+        } else {
+            log_path[0] = '\0';
+            ctl_append(log_path, "/run/watchtower/", sizeof(log_path));
+            ctl_append(log_path, svc_name, sizeof(log_path));
+            ctl_append(log_path, ".log", sizeof(log_path));
+        }
+#else
+        long probe_fd = WT_CTL_SYSCALL(SYS_OPEN, (uintptr_t)log_path, VFS_O_RDONLY, 0, 0, 0, 0);
+        if (probe_fd >= 0) {
+            (void)WT_CTL_SYSCALL(SYS_CLOSE, (uintptr_t)probe_fd, 0, 0, 0, 0, 0);
+        } else {
+            log_path[0] = '\0';
+            ctl_append(log_path, "/run/watchtower/", sizeof(log_path));
+            ctl_append(log_path, svc_name, sizeof(log_path));
+            ctl_append(log_path, ".log", sizeof(log_path));
+        }
+#endif
+    }
+
+    ctl_append(res, "LogFile: ", res_cap);
+    ctl_append(res, log_path, res_cap);
+    ctl_append(res, "\n", res_cap);
+
+    static char s_log_buf[2048];
+    long n = -1;
+#ifdef WATCHTOWER_HOST_TEST
+    int fd = open(log_path, O_RDONLY);
+    if (fd >= 0) {
+        ssize_t rd = read(fd, s_log_buf, sizeof(s_log_buf) - 1);
+        close(fd);
+        if (rd >= 0) n = (long)rd;
+    }
+#else
+    long fd = WT_CTL_SYSCALL(SYS_OPEN, (uintptr_t)log_path, VFS_O_RDONLY, 0, 0, 0, 0);
+    if (fd >= 0) {
+        long rd = WT_CTL_SYSCALL(SYS_READ, (uintptr_t)fd, (uintptr_t)s_log_buf, sizeof(s_log_buf) - 1, 0, 0, 0);
+        (void)WT_CTL_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
+        if (rd >= 0) n = rd;
+    }
+#endif
+
+    if (n <= 0) {
+        ctl_append(res, "Recent Log: (empty)\n", res_cap);
+        return;
+    }
+
+    s_log_buf[n] = '\0';
+
+    /* Count backwards from the end to find the start of the last up to 5 lines */
+    size_t pos = (size_t)n;
+    if (pos > 0 && s_log_buf[pos - 1] == '\n') {
+        pos--;
+    }
+    size_t lines_found = 0;
+    while (pos > 0) {
+        if (s_log_buf[pos - 1] == '\n') {
+            lines_found++;
+            if (lines_found >= 5) break;
+        }
+        pos--;
+    }
+
+    ctl_append(res, "Recent Log:\n", res_cap);
+    size_t p = pos;
+    while (p < (size_t)n) {
+        ctl_append(res, "  ", res_cap);
+        while (p < (size_t)n && s_log_buf[p] != '\n') {
+            char ch[2] = { s_log_buf[p++], '\0' };
+            ctl_append(res, ch, res_cap);
+        }
+        ctl_append(res, "\n", res_cap);
+        if (p < (size_t)n && s_log_buf[p] == '\n') {
+            p++;
+        }
+    }
 }
 
 int watchtower_ctl_process_request(watchtower_table_t *tbl, const char *req,
@@ -107,7 +258,8 @@ int watchtower_ctl_process_request(watchtower_table_t *tbl, const char *req,
             ctl_append(res, svc->name, res_cap);
             ctl_pad(res, row_start + 13, res_cap);
 
-            ctl_append(res, watchtower_state_name(svc->state), res_cap);
+            const char *st_name = (svc->state == SVC_STATE_STOPPED && !svc->enabled) ? "disabled" : watchtower_state_name(svc->state);
+            ctl_append(res, st_name, res_cap);
             ctl_pad(res, row_start + 24, res_cap);
 
             if (svc->pid > 0) {
@@ -239,6 +391,8 @@ int watchtower_ctl_process_request(watchtower_table_t *tbl, const char *req,
         ctl_append(res, "\nDropped Output: ", res_cap);
         ctl_append_u64(res, svc->dropped_bytes, res_cap);
         ctl_append(res, " bytes\n", res_cap);
+
+        ctl_append_log_tail(res, res_cap, svc->name);
         return 0;
     }
 
@@ -405,6 +559,160 @@ int watchtower_ctl_process_request(watchtower_table_t *tbl, const char *req,
             ctl_append(res, "'\n", res_cap);
             return -1;
         }
+    }
+
+    /* Command: ENABLE <name> */
+    if (ctl_strcasecmp(cmd, "ENABLE")) {
+        if (!is_privileged) {
+            ctl_append(res, "ERR permission denied: root or wheel required\n", res_cap);
+            return -1;
+        }
+        if (!operand[0]) {
+            ctl_append(res, "ERR missing service name for enable\n", res_cap);
+            return -1;
+        }
+        const char *inst_dir = g_watchtower_installed_dir ? g_watchtower_installed_dir : WATCHTOWER_INSTALLED_SERVICE_DIR;
+        const char *live_dir = g_watchtower_live_dir ? g_watchtower_live_dir : WATCHTOWER_LIVE_SERVICE_DIR;
+        char inst_path[WATCHTOWER_MAX_PATH_LEN];
+        char live_path[WATCHTOWER_MAX_PATH_LEN];
+        ctl_join_service_path(inst_path, sizeof(inst_path), inst_dir, operand);
+        ctl_join_service_path(live_path, sizeof(live_path), live_dir, operand);
+
+        char err[128];
+        err[0] = '\0';
+        int r = watchtower_config_set_enabled(inst_path, live_path, true, err, sizeof(err));
+        if (r != 0) {
+            ctl_append(res, "ERR ", res_cap);
+            ctl_append(res, err[0] ? err : "failed to enable service", res_cap);
+            ctl_append(res, "\n", res_cap);
+            return -1;
+        }
+        service_t *svc = watchtower_find_service(tbl, operand);
+        if (svc) {
+            svc->enabled = true;
+        }
+        ctl_append(res, "OK service '", res_cap);
+        ctl_append(res, operand, res_cap);
+        ctl_append(res, "' enabled\n", res_cap);
+        return 0;
+    }
+
+    /* Command: DISABLE <name> */
+    if (ctl_strcasecmp(cmd, "DISABLE")) {
+        if (!is_privileged) {
+            ctl_append(res, "ERR permission denied: root or wheel required\n", res_cap);
+            return -1;
+        }
+        if (!operand[0]) {
+            ctl_append(res, "ERR missing service name for disable\n", res_cap);
+            return -1;
+        }
+        const char *inst_dir = g_watchtower_installed_dir ? g_watchtower_installed_dir : WATCHTOWER_INSTALLED_SERVICE_DIR;
+        const char *live_dir = g_watchtower_live_dir ? g_watchtower_live_dir : WATCHTOWER_LIVE_SERVICE_DIR;
+        char inst_path[WATCHTOWER_MAX_PATH_LEN];
+        char live_path[WATCHTOWER_MAX_PATH_LEN];
+        ctl_join_service_path(inst_path, sizeof(inst_path), inst_dir, operand);
+        ctl_join_service_path(live_path, sizeof(live_path), live_dir, operand);
+
+        char err[128];
+        err[0] = '\0';
+        int r = watchtower_config_set_enabled(inst_path, live_path, false, err, sizeof(err));
+        if (r != 0) {
+            ctl_append(res, "ERR ", res_cap);
+            ctl_append(res, err[0] ? err : "failed to disable service", res_cap);
+            ctl_append(res, "\n", res_cap);
+            return -1;
+        }
+        service_t *svc = watchtower_find_service(tbl, operand);
+        if (svc) {
+            svc->enabled = false;
+        }
+        ctl_append(res, "OK service '", res_cap);
+        ctl_append(res, operand, res_cap);
+        ctl_append(res, "' disabled\n", res_cap);
+        return 0;
+    }
+
+    /* Command: RELOAD <name> */
+    if (ctl_strcasecmp(cmd, "RELOAD")) {
+        if (!is_privileged) {
+            ctl_append(res, "ERR permission denied: root or wheel required\n", res_cap);
+            return -1;
+        }
+        if (!operand[0]) {
+            ctl_append(res, "ERR missing service name for reload\n", res_cap);
+            return -1;
+        }
+        service_t *svc = watchtower_find_service(tbl, operand);
+        if (!svc) {
+            ctl_append(res, "ERR service '", res_cap);
+            ctl_append(res, operand, res_cap);
+            ctl_append(res, "' not found\n", res_cap);
+            return -1;
+        }
+        const char *inst_dir = g_watchtower_installed_dir ? g_watchtower_installed_dir : WATCHTOWER_INSTALLED_SERVICE_DIR;
+        const char *live_dir = g_watchtower_live_dir ? g_watchtower_live_dir : WATCHTOWER_LIVE_SERVICE_DIR;
+        char inst_path[WATCHTOWER_MAX_PATH_LEN];
+        char live_path[WATCHTOWER_MAX_PATH_LEN];
+        ctl_join_service_path(inst_path, sizeof(inst_path), inst_dir, operand);
+        ctl_join_service_path(live_path, sizeof(live_path), live_dir, operand);
+
+        static service_t new_svc;
+        char err[256];
+        err[0] = '\0';
+
+        int r_inst = -2;
+        if (inst_path[0]) {
+            r_inst = watchtower_config_load_file(inst_path, operand, &new_svc, err, sizeof(err));
+        }
+        int r_live = -2;
+        if (r_inst == -2 && live_path[0]) {
+            r_live = watchtower_config_load_file(live_path, operand, &new_svc, err, sizeof(err));
+        }
+
+        /* If file was deleted in both installed and live directories: remove entry */
+        if (r_inst == -2 && (r_live == -2 || !live_path[0])) {
+            watchtower_table_remove_service(tbl, operand);
+            ctl_append(res, "OK service '", res_cap);
+            ctl_append(res, operand, res_cap);
+            ctl_append(res, "' removed (file deleted)\n", res_cap);
+            return 0;
+        }
+
+        /* If file has a syntax error (r == -1): reject with error, keep old entry */
+        if (r_inst == -1 || (r_inst == -2 && r_live == -1)) {
+            ctl_append(res, "ERR ", res_cap);
+            ctl_append(res, err[0] ? err : "invalid service configuration", res_cap);
+            ctl_append(res, "\n", res_cap);
+            return -1;
+        }
+
+        /* Valid configuration loaded into new_svc! Preserve runtime fields */
+        new_svc.state = svc->state;
+        new_svc.pid = svc->pid;
+        new_svc.initial_pid = svc->initial_pid;
+        new_svc.start_time_sec = svc->start_time_sec;
+        new_svc.exit_time_sec = svc->exit_time_sec;
+        new_svc.last_exit_code = svc->last_exit_code;
+        new_svc.last_term_sig = svc->last_term_sig;
+        new_svc.restart_count = svc->restart_count;
+        new_svc.restart_window_start_sec = svc->restart_window_start_sec;
+        new_svc.next_restart_sec = svc->next_restart_sec;
+        new_svc.ready_verified = svc->ready_verified;
+        new_svc.manual_stop = svc->manual_stop;
+        new_svc.dropped_bytes = svc->dropped_bytes;
+        new_svc.pipe_fd = svc->pipe_fd;
+
+        int old_order = svc->order;
+        *svc = new_svc;
+        if (svc->order != old_order) {
+            watchtower_table_sort_by_order(tbl);
+        }
+
+        ctl_append(res, "OK service '", res_cap);
+        ctl_append(res, operand, res_cap);
+        ctl_append(res, "' reloaded\n", res_cap);
+        return 0;
     }
 
     /* Unknown Command */

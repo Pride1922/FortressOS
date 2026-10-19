@@ -142,6 +142,26 @@ static bool write_file(const char *path, const char *data, size_t len) {
     return off == len;
 }
 
+static void dhcpc_write_boot_log(const dhcp_offer_t *offer) {
+    if (!offer) return;
+    char msg[256];
+    size_t pos = 0;
+    append_str(msg, sizeof(msg), &pos, "eth0: DHCP lease acquired ");
+    append_ip(msg, sizeof(msg), &pos, offer->yiaddr);
+    append_str(msg, sizeof(msg), &pos, "/");
+    append_u32(msg, sizeof(msg), &pos, offer->prefix);
+    if (offer->router) {
+        append_str(msg, sizeof(msg), &pos, ", gateway ");
+        append_ip(msg, sizeof(msg), &pos, offer->router);
+    }
+    if (offer->dns_count > 0) {
+        append_str(msg, sizeof(msg), &pos, ", DNS ");
+        append_ip(msg, sizeof(msg), &pos, offer->dns_servers[0]);
+    }
+    append_str(msg, sizeof(msg), &pos, "\n");
+    write_file("/run/dhcpc.log", msg, pos);
+}
+
 static long read_file(const char *path, char *buf, size_t cap) {
     long fd = sys_call(SYS_OPEN, (uintptr_t)path, VFS_O_RDONLY | VFS_O_CLOEXEC, 0, 0, 0, 0);
     if (fd < 0) return -1;
@@ -1099,7 +1119,11 @@ static int dhcpc_daemon_main(void) {
             t_renew = t_ack + current_offer.t1;
             t_rebind = t_ack + current_offer.t2;
             t_expire = t_ack + current_offer.lease_time;
-            state = STATE_BOUND;
+            if (ifget.link_state == NET_IF_LINK_UP) {
+                state = STATE_BOUND;
+            } else {
+                state = STATE_DISCONNECTED;
+            }
         }
     }
 
@@ -1125,8 +1149,8 @@ static int dhcpc_daemon_main(void) {
             case STATE_INIT: {
                 for (size_t i = 0; i < sizeof(ifget); i++) ((uint8_t *)&ifget)[i] = 0;
                 ifget.struct_version = 1;
-                sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0);
-                if (ifget.link_state != NET_IF_LINK_UP) {
+                long r_if = sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0);
+                if (r_if != 0 || ifget.link_state != NET_IF_LINK_UP) {
                     sleep_sec(2);
                     break;
                 }
@@ -1142,6 +1166,7 @@ static int dhcpc_daemon_main(void) {
                                       current_offer.dns_servers, current_offer.dns_count);
                     sys_call(SYS_SYNC, 0, 0, 0, 0, 0, 0);
                     dhcpc_log_lease("bound", &current_offer);
+                    dhcpc_write_boot_log(&current_offer);
 
                     t_ack = get_monotonic_sec();
                     t_renew = t_ack + current_offer.t1;
@@ -1149,7 +1174,7 @@ static int dhcpc_daemon_main(void) {
                     t_expire = t_ack + current_offer.lease_time;
                     state = STATE_BOUND;
                 } else {
-                    sleep_sec(4);
+                    sleep_sec(2);
                 }
                 break;
             }
@@ -1157,8 +1182,8 @@ static int dhcpc_daemon_main(void) {
             case STATE_BOUND: {
                 for (size_t i = 0; i < sizeof(ifget); i++) ((uint8_t *)&ifget)[i] = 0;
                 ifget.struct_version = 1;
-                sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0);
-                if (ifget.link_state == NET_IF_LINK_DOWN || ifget.link_state == NET_IF_LINK_WAITING) {
+                long r_if = sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0);
+                if (r_if != 0 || ifget.link_state != NET_IF_LINK_UP) {
                     state = STATE_DISCONNECTED;
                     break;
                 }
@@ -1170,7 +1195,7 @@ static int dhcpc_daemon_main(void) {
                 }
 
                 uint64_t delta = t_renew - now;
-                uint64_t chunk = delta > 10 ? 10 : delta;
+                uint64_t chunk = delta > 2 ? 2 : delta;
                 if (chunk == 0) chunk = 1;
                 sleep_sec(chunk);
                 break;
@@ -1180,9 +1205,13 @@ static int dhcpc_daemon_main(void) {
                 sleep_sec(1);
                 for (size_t i = 0; i < sizeof(ifget); i++) ((uint8_t *)&ifget)[i] = 0;
                 ifget.struct_version = 1;
-                sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0);
-                if (ifget.link_state == NET_IF_LINK_UP) {
-                    state = STATE_INIT_REBOOT;
+                long r_if = sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0);
+                if (r_if == 0 && ifget.link_state == NET_IF_LINK_UP) {
+                    if (current_offer.yiaddr && current_offer.server_ip) {
+                        state = STATE_INIT_REBOOT;
+                    } else {
+                        state = STATE_INIT;
+                    }
                 }
                 break;
             }
@@ -1195,6 +1224,7 @@ static int dhcpc_daemon_main(void) {
                     int64_t epoch = get_realtime_epoch();
                     save_dhcpc_lease(&current_offer, epoch);
                     dhcpc_log_lease("rebound", &current_offer);
+                    dhcpc_write_boot_log(&current_offer);
                     t_ack = get_monotonic_sec();
                     t_renew = t_ack + current_offer.t1;
                     t_rebind = t_ack + current_offer.t2;

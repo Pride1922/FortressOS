@@ -108,6 +108,7 @@ typedef struct {
 /* Core Service Table APIs */
 void watchtower_table_init(watchtower_table_t *tbl);
 int watchtower_table_add_service(watchtower_table_t *tbl, const service_t *svc);
+int watchtower_table_remove_service(watchtower_table_t *tbl, const char *name);
 void watchtower_table_sort_by_order(watchtower_table_t *tbl);
 service_t *watchtower_find_service(watchtower_table_t *tbl, const char *name);
 service_t *watchtower_find_service_by_pid(watchtower_table_t *tbl, int64_t pid);
@@ -122,7 +123,7 @@ int watchtower_discover_services(watchtower_table_t *tbl,
 int watchtower_start_service(watchtower_table_t *tbl, size_t idx, uint64_t now_sec, const watchtower_sys_ops_t *ops);
 int watchtower_stop_service(watchtower_table_t *tbl, size_t idx, uint64_t now_sec, const watchtower_sys_ops_t *ops);
 int watchtower_restart_service(watchtower_table_t *tbl, size_t idx, uint64_t now_sec, const watchtower_sys_ops_t *ops);
-void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int status, uint64_t now_sec);
+void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int status, uint64_t now_sec, const watchtower_sys_ops_t *ops);
 
 /* Periodic Tick: checks readiness, stopping timeouts, pending restarts */
 void watchtower_tick(watchtower_table_t *tbl, uint64_t now_sec, const watchtower_sys_ops_t *ops);

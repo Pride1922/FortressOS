@@ -25,4 +25,9 @@ int watchtower_config_load_service(const char *installed_path, const char *live_
                                    const char *svc_name, service_t *out_svc,
                                    char *err_msg, size_t err_cap);
 
+/* Atomically update or insert Enabled=yes/no in the service configuration file.
+ * Returns 0 on success, negative error code on failure. */
+int watchtower_config_set_enabled(const char *installed_path, const char *live_path,
+                                  bool enabled, char *err_msg, size_t err_cap);
+
 #endif /* USER_WATCHTOWER_CONFIG_H */

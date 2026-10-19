@@ -306,7 +306,7 @@ static void test_readiness_timeout_failure(void) {
     assert(g_mock.procs[0].last_signal == 15);
 
     /* Child process terminates */
-    watchtower_handle_child_exit(&tbl, pid, 0, 1006);
+    watchtower_handle_child_exit(&tbl, pid, 0, 1006, &g_mock_ops);
     assert(tbl.services[0].state == SVC_STATE_STOPPED);
     assert(tbl.services[0].pid == 0);
 
@@ -334,11 +334,12 @@ static void test_crash_restart_and_limit_enforcement(void) {
     assert(tbl.services[0].pid == 100);
 
     /* Crash #1 at t=1001s with exit code 1 */
-    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001);
+    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001, &g_mock_ops);
     assert(tbl.services[0].pid == 0);
     assert(tbl.services[0].last_exit_code == 1);
     assert(tbl.services[0].restart_count == 1);
     assert(tbl.services[0].next_restart_sec == 1003); /* 1001 + 2s */
+    assert(strstr(g_mock.last_stderr, "restarting in 2s (attempt 1/3)") != NULL);
 
     /* Tick at 1002s: still in backoff */
     watchtower_tick(&tbl, 1002, &g_mock_ops);
@@ -350,7 +351,7 @@ static void test_crash_restart_and_limit_enforcement(void) {
     assert(tbl.services[0].state == SVC_STATE_RUNNING);
 
     /* Crash #2 at t=1004s */
-    watchtower_handle_child_exit(&tbl, 101, (1 << 8), 1004);
+    watchtower_handle_child_exit(&tbl, 101, (1 << 8), 1004, &g_mock_ops);
     assert(tbl.services[0].restart_count == 2);
     assert(tbl.services[0].next_restart_sec == 1006);
 
@@ -359,7 +360,7 @@ static void test_crash_restart_and_limit_enforcement(void) {
     assert(tbl.services[0].pid == 102);
 
     /* Crash #3 at t=1007s */
-    watchtower_handle_child_exit(&tbl, 102, (1 << 8), 1007);
+    watchtower_handle_child_exit(&tbl, 102, (1 << 8), 1007, &g_mock_ops);
     assert(tbl.services[0].restart_count == 3);
     assert(tbl.services[0].next_restart_sec == 1009);
 
@@ -368,10 +369,11 @@ static void test_crash_restart_and_limit_enforcement(void) {
     assert(tbl.services[0].pid == 103);
 
     /* Crash #4 at t=1010s: exceeds limit of 3! */
-    watchtower_handle_child_exit(&tbl, 103, (1 << 8), 1010);
+    watchtower_handle_child_exit(&tbl, 103, (1 << 8), 1010, &g_mock_ops);
     assert(tbl.services[0].state == SVC_STATE_FAILED);
     assert(tbl.services[0].next_restart_sec == 0);
     assert(tbl.services[0].pid == 0);
+    assert(strstr(g_mock.last_stderr, "restart limit reached (3/3), marking FAILED") != NULL);
 
     /* Subsequent ticks at t=1015s do NOT restart */
     watchtower_tick(&tbl, 1015, &g_mock_ops);
@@ -413,7 +415,7 @@ static void test_explicit_stop_and_timeout_escalation(void) {
     assert(g_mock.procs[0].last_signal == 9); /* SIGKILL */
 
     /* Process killed */
-    watchtower_handle_child_exit(&tbl, pid, 9, 1011);
+    watchtower_handle_child_exit(&tbl, pid, 9, 1011, &g_mock_ops);
     assert(tbl.services[0].state == SVC_STATE_STOPPED);
     assert(tbl.services[0].pid == 0);
     assert(tbl.services[0].next_restart_sec == 0); /* Suppressed by manual stop */
@@ -445,8 +447,8 @@ static void test_reverse_order_system_shutdown(void) {
     assert(tbl.services[0].state == SVC_STATE_STOPPING);
 
     /* Children exit */
-    watchtower_handle_child_exit(&tbl, 101, 0, 1006);
-    watchtower_handle_child_exit(&tbl, 100, 0, 1007);
+    watchtower_handle_child_exit(&tbl, 101, 0, 1006, &g_mock_ops);
+    watchtower_handle_child_exit(&tbl, 100, 0, 1007, &g_mock_ops);
     assert(watchtower_all_stopped(&tbl));
 
     printf("PASS: test_reverse_order_system_shutdown\n");
@@ -468,10 +470,12 @@ static void test_supervisor_isolation_on_service_failure(void) {
 
     /* Faulty service crashes with SEGV (signal 11) */
     int64_t faulty_pid = tbl.services[1].pid;
-    watchtower_handle_child_exit(&tbl, faulty_pid, 11, 1001);
+    watchtower_handle_child_exit(&tbl, faulty_pid, 11, 1001, &g_mock_ops);
 
     /* Faulty is FAILED, but healthy is completely unharmed */
     assert(tbl.services[1].state == SVC_STATE_FAILED);
+    assert(strstr(g_mock.last_stderr, "service 'faulty'") != NULL);
+    assert(strstr(g_mock.last_stderr, "exited with code 11") != NULL);
     assert(tbl.services[0].state == SVC_STATE_RUNNING);
     assert(tbl.services[0].pid > 0);
 
@@ -500,7 +504,7 @@ static void test_crash_window_reset_after_60s(void) {
     assert(watchtower_start_service(&tbl, 0, 1000, &g_mock_ops) == 0);
 
     /* Crash #1 at t=1001s */
-    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001);
+    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001, &g_mock_ops);
     assert(tbl.services[0].restart_count == 1);
     watchtower_tick(&tbl, 1003, &g_mock_ops);
     assert(tbl.services[0].pid == 101);
@@ -509,7 +513,7 @@ static void test_crash_window_reset_after_60s(void) {
     uint64_t later = 1001 + 65;
 
     /* Crash #2 occurs at t=1066s (after the 60s window expired!) */
-    watchtower_handle_child_exit(&tbl, 101, (1 << 8), later);
+    watchtower_handle_child_exit(&tbl, 101, (1 << 8), later, &g_mock_ops);
     /* The window reset! restart_count should be 1, NOT 2 or hitting limit */
     assert(tbl.services[0].restart_count == 1);
     assert(tbl.services[0].state == SVC_STATE_STARTING);
@@ -540,7 +544,7 @@ static void test_explicit_stop_during_restart_delay(void) {
     assert(watchtower_start_service(&tbl, 0, 1000, &g_mock_ops) == 0);
 
     /* Crash at t=1001s, next_restart_sec is 1011s */
-    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001);
+    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001, &g_mock_ops);
     assert(tbl.services[0].pid == 0);
     assert(tbl.services[0].state == SVC_STATE_STARTING);
     assert(tbl.services[0].next_restart_sec == 1011);
@@ -576,7 +580,7 @@ static void test_explicit_restart_clears_counter(void) {
     assert(watchtower_start_service(&tbl, 0, 1000, &g_mock_ops) == 0);
 
     /* Crash #1 */
-    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001);
+    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001, &g_mock_ops);
     assert(tbl.services[0].restart_count == 1);
     watchtower_tick(&tbl, 1002, &g_mock_ops);
     assert(tbl.services[0].pid == 101);
@@ -584,7 +588,7 @@ static void test_explicit_restart_clears_counter(void) {
     /* Explicit restart */
     assert(watchtower_restart_service(&tbl, 0, 1003, &g_mock_ops) == 0);
     /* Handled exit of stopping service */
-    watchtower_handle_child_exit(&tbl, 101, 0, 1004);
+    watchtower_handle_child_exit(&tbl, 101, 0, 1004, &g_mock_ops);
     watchtower_tick(&tbl, 1004, &g_mock_ops);
 
     /* Restart count must be reset to 0 */
@@ -612,7 +616,7 @@ static void test_shutdown_with_mixed_states(void) {
     assert(watchtower_start_service(&tbl, 2, 1000, &g_mock_ops) == 0);
 
     /* s2 crashes and enters restart delay */
-    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001);
+    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001, &g_mock_ops);
     assert(tbl.services[1].next_restart_sec == 1006);
 
     /* Initiate system shutdown */
@@ -627,7 +631,7 @@ static void test_shutdown_with_mixed_states(void) {
     assert(tbl.services[2].state == SVC_STATE_STOPPING);
 
     /* s3 reaped */
-    watchtower_handle_child_exit(&tbl, 101, 0, 1003);
+    watchtower_handle_child_exit(&tbl, 101, 0, 1003, &g_mock_ops);
     assert(tbl.services[2].state == SVC_STATE_STOPPED);
 
     /* All stopped */
@@ -663,7 +667,7 @@ static void test_type_forking_lifecycle(void) {
     assert(tbl.services[0].state == SVC_STATE_STARTING);
 
     /* 2. Launcher exits 0 (clean double-fork) */
-    watchtower_handle_child_exit(&tbl, 100, 0, 1001);
+    watchtower_handle_child_exit(&tbl, 100, 0, 1001, &g_mock_ops);
     assert(tbl.services[0].initial_pid == 0);
     assert(tbl.services[0].state == SVC_STATE_STARTING); /* Waiting for daemon PID */
 
@@ -693,7 +697,7 @@ static void test_type_forking_lifecycle(void) {
     assert(watchtower_table_add_service(&tbl, &s) == 0);
     assert(watchtower_start_service(&tbl, 0, 1000, &g_mock_ops) == 0);
     /* Launcher exits with error 1 */
-    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001);
+    watchtower_handle_child_exit(&tbl, 100, (1 << 8), 1001, &g_mock_ops);
     assert(tbl.services[0].state == SVC_STATE_FAILED);
 
     printf("PASS: test_type_forking_lifecycle\n");
@@ -907,6 +911,64 @@ static void test_identity_failure_is_closed(void) {
     assert(strstr(g_mock.last_stderr,"identity"));
     puts("PASS: identity failure and missing enforcing adapter never launch or claim readiness");
 }
+
+static void test_boot_disabled_services_not_started(void) {
+    printf("[TEST] test_boot_disabled_services_not_started...\n");
+    mock_reset();
+    watchtower_table_t tbl;
+    watchtower_table_init(&tbl);
+
+    service_t s_enabled = {
+        .name = "dhcpc",
+        .exec_path = "/sbin/dhcpc",
+        .order = 10,
+        .enabled = true,
+        .readiness_mode = READINESS_NONE,
+        .restart_policy = RESTART_ON_FAILURE,
+        .restart_limit = 3
+    };
+    host_str_copy(s_enabled.user, "root", sizeof(s_enabled.user));
+    host_str_copy(s_enabled.group, "root", sizeof(s_enabled.group));
+
+    service_t s_disabled = {
+        .name = "ntpd",
+        .exec_path = "/sbin/ntpd",
+        .order = 15,
+        .enabled = false,
+        .readiness_mode = READINESS_NONE,
+        .restart_policy = RESTART_ON_FAILURE,
+        .restart_limit = 3
+    };
+    host_str_copy(s_disabled.user, "root", sizeof(s_disabled.user));
+    host_str_copy(s_disabled.group, "root", sizeof(s_disabled.group));
+
+    assert(watchtower_table_add_service(&tbl, &s_enabled) == 0);
+    assert(watchtower_table_add_service(&tbl, &s_disabled) == 0);
+
+    /* Emulate boot startup sequence: only start if enabled */
+    uint64_t now = 1000;
+    for (size_t i = 0; i < tbl.count; i++) {
+        if (tbl.services[i].enabled) {
+            watchtower_start_service(&tbl, i, now, &g_mock_ops);
+        }
+    }
+
+    /* dhcpc is enabled -> started and running */
+    assert(tbl.services[0].state == SVC_STATE_RUNNING);
+    assert(tbl.services[0].pid > 0);
+
+    /* ntpd is disabled -> NOT started, remains STOPPED */
+    assert(tbl.services[1].state == SVC_STATE_STOPPED);
+    assert(tbl.services[1].pid == 0);
+
+    /* Manual start still works for disabled service */
+    assert(watchtower_start_service(&tbl, 1, now, &g_mock_ops) == 0);
+    assert(tbl.services[1].state == SVC_STATE_RUNNING);
+    assert(tbl.services[1].pid > 0);
+
+    printf("PASS: test_boot_disabled_services_not_started\n");
+}
+
 int main(void) {
     printf("===================================================\n");
     printf("Watchtower Service Supervisor Test Suite (ASan)\n");
@@ -937,7 +999,8 @@ int main(void) {
     test_bounded_16_services_limit();
     test_fallback_to_live_media();
     test_identity_failure_is_closed();
+    test_boot_disabled_services_not_started();
 
-    printf("\nALL 19 WATCHTOWER SERVICE, DISCOVERY & RECOVERY TESTS PASSED!\n");
+    printf("\nALL 20 WATCHTOWER SERVICE, DISCOVERY & RECOVERY TESTS PASSED!\n");
     return 0;
 }

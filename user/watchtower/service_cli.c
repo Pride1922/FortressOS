@@ -84,6 +84,9 @@ static void cli_usage(void) {
                   "  start <name>     Start a service (requires root or wheel)\n"
                   "  stop <name>      Stop a service (requires root or wheel)\n"
                   "  restart <name>   Restart a service (requires root or wheel)\n"
+                  "  reload <name>    Reload service configuration (requires root or wheel)\n"
+                  "  enable <name>    Enable service on boot (requires root or wheel)\n"
+                  "  disable <name>   Disable service on boot (requires root or wheel)\n"
                   "  check <name>     Check readiness of a service\n");
 }
 
@@ -107,9 +110,13 @@ int service_main(int argc, char **argv) {
     bool is_start = cli_strcasecmp(action, "start");
     bool is_stop = cli_strcasecmp(action, "stop");
     bool is_restart = cli_strcasecmp(action, "restart");
+    bool is_reload = cli_strcasecmp(action, "reload");
+    bool is_enable = cli_strcasecmp(action, "enable");
+    bool is_disable = cli_strcasecmp(action, "disable");
     bool is_check = cli_strcasecmp(action, "check");
 
-    if (!is_list && !is_status && !is_start && !is_stop && !is_restart && !is_check) {
+    if (!is_list && !is_status && !is_start && !is_stop && !is_restart &&
+        !is_reload && !is_enable && !is_disable && !is_check) {
         cli_print_err("service: unknown command '");
         cli_print_err(action);
         cli_print_err("'\n");

@@ -62,6 +62,7 @@ typedef struct {
 
     char fallback_file_content[CROND_CONFIG_MAX_SIZE];
     bool fallback_file_exists;
+    bool root_readonly;
 } mock_env_t;
 
 static mock_env_t g_mock;
@@ -135,6 +136,19 @@ static int mock_read_file(const char *path, char *buf, size_t buf_cap, size_t *o
     return -1;
 }
 
+static int mock_write_file(const char *path, const char *buf, size_t len) {
+    if (!path || !buf) return -1;
+    if (g_mock.root_readonly) return -1;
+    if (strcmp(path, CROND_CONFIG_PRIMARY) == 0) {
+        if (len >= sizeof(g_mock.primary_file_content)) return -1;
+        memcpy(g_mock.primary_file_content, buf, len);
+        g_mock.primary_file_content[len] = '\0';
+        g_mock.primary_file_exists = true;
+        return 0;
+    }
+    return -1;
+}
+
 static void mock_reap_zombies(void) {
     g_mock.reap_call_count++;
 }
@@ -145,6 +159,7 @@ static const crond_ops_t g_ops = {
     .sleep_sec = mock_sleep_sec,
     .log_err = mock_log_err,
     .read_file = mock_read_file,
+    .write_file = mock_write_file,
     .reap_zombies = mock_reap_zombies
 };
 
@@ -346,17 +361,32 @@ static void test_config_load_precedence_and_fallback(void) {
     assert(tbl.task_count == 1);
     assert(strcmp(tbl.tasks[0].exec_path, "/bin/fallback") == 0);
 
-    /* Case 3: Both missing -> fail closed (returns -1) */
+    /* Case 3: Both missing, writable root -> auto-create default /etc/crontab */
     g_mock.fallback_file_exists = false;
+    g_mock.root_readonly = false;
     r = crond_load_config(CROND_CONFIG_PRIMARY, CROND_CONFIG_FALLBACK, &tbl, err, sizeof(err), &g_ops);
-    assert(r != 0);
-    assert(strstr(g_mock.last_log, "no crontab file found") != NULL);
+    assert(r == 0);
+    assert(tbl.task_count == 1);
+    assert(strcmp(tbl.tasks[0].exec_path, "/sbin/logrotate") == 0);
+    assert(strstr(g_mock.last_log, "created default /etc/crontab") != NULL);
+
+    /* Case 3b: Both missing, read-only root -> run idle with 0 tasks (never exit 1) */
+    mock_reset();
+    g_mock.primary_file_exists = false;
+    g_mock.fallback_file_exists = false;
+    g_mock.root_readonly = true;
+    r = crond_load_config(CROND_CONFIG_PRIMARY, CROND_CONFIG_FALLBACK, &tbl, err, sizeof(err), &g_ops);
+    assert(r == 0);
+    assert(tbl.task_count == 0);
+    assert(strstr(g_mock.last_log, "no crontab found; running idle") != NULL);
 
     /* Case 4: Primary has syntax error -> fail closed (returns -1) */
+    mock_reset();
     g_mock.primary_file_exists = true;
     host_str_copy(g_mock.primary_file_content, "bad_interval /bin/echo\n", sizeof(g_mock.primary_file_content));
     r = crond_load_config(CROND_CONFIG_PRIMARY, CROND_CONFIG_FALLBACK, &tbl, err, sizeof(err), &g_ops);
     assert(r != 0);
+    assert(strstr(g_mock.last_log, "invalid config") != NULL);
 
     printf("PASS: test_config_load_precedence_and_fallback\n");
 }

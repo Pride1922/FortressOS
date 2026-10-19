@@ -34,6 +34,7 @@ typedef struct {
     void (*sleep_sec)(uint32_t sec);
     void (*log_err)(const char *msg);
     int (*read_file)(const char *path, char *buf, size_t buf_cap, size_t *out_len);
+    int (*write_file)(const char *path, const char *buf, size_t len);
     void (*reap_zombies)(void);
 } crond_ops_t;
 

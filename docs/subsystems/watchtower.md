@@ -11,9 +11,15 @@ in [the lifecycle report](../roadmap/watchtower-lifecycle.md).
   When that directory has no service definitions, it scans
   `/mnt/.fortress/watchtower`. Invalid definitions are skipped; they do not
   acquire built-in defaults. No C registration is needed for a new service.
-- Configuration is loaded when Watchtower starts. `service restart` restarts
-  the process using the already-loaded configuration; it does not reload files.
-  There are no `enable`, `disable`, `reload` or `daemon-reload` commands.
+- Boot autostart honors `Enabled=yes` / `Enabled=no`. Disabled services appear
+  in `service list` as `DISABLED` / `Enabled=no` and are not started during
+  boot discovery, but can still be started manually with `sudo service start`.
+- `service enable <name>` and `service disable <name>` update the `.service`
+  file on disk using atomic replacement (`SYS_RENAME_REPLACE`) without restarting
+  the service or Watchtower.
+- `service reload <name>` re-reads `/etc/watchtower/<name>.service` into memory
+  without restarting running worker processes (PIDs remain unchanged until
+  `service restart`). If the file was removed, reload removes the in-memory entry.
 - `User` and `Group` are enforced on every launch, including restarts. Names
   and decimal IDs must resolve to existing account/group records. Lookup,
   generation-check, credential, pipe or spawn failure leaves the service failed
@@ -29,12 +35,15 @@ Use names such as `sshd`, not the executable path or `sshd.service`.
 | Command | Purpose |
 | --- | --- |
 | `service --help` | Show supported command syntax |
-| `service list` | List registered services, state, PID, boot order and policy |
-| `service status sshd` | Show state, readiness, executable, restart count, last exit and dropped output |
+| `service list` | List registered services, state, PID, boot order, policy, and enabled status |
+| `service status sshd` | Show state, readiness, executable, restart count, last exit, log path and recent log tail |
 | `service check sshd` | Query readiness; this does not start or repair the service |
 | `sudo service start sshd` | Start a stopped/failed service |
 | `sudo service stop sshd` | Request graceful termination, with bounded escalation |
 | `sudo service restart sshd` | Reset restart counters and stop/start using loaded configuration |
+| `sudo service enable sshd` | Configure service to autostart at boot (`Enabled=yes` in `.service` file) |
+| `sudo service disable sshd` | Disable service autostart at boot (`Enabled=no` in `.service` file) |
+| `sudo service reload sshd` | Reload in-memory service configuration from disk without killing running process |
 
 The control protocol permits read queries without mutation privileges. Mutating
 requests require root or the primary request-file group ID 10; supplementary
@@ -97,8 +106,14 @@ their provisioned accounts and host identity; `--live` is not their setup path.
 
 Supervisor diagnostics and each service's stdout/stderr are captured separately:
 
-Watchtower startup, shutdown and warning messages go only to its log; they are
-not printed over the local login or shell prompt.
+Watchtower startup, shutdown, child exit, restart, and warning messages go to its log; they are
+not printed over the local login or shell prompt:
+- Child exits: `[watchtower] service '<name>' (pid <pid>) exited with code <code|signal>`
+- Restart backoff: `[watchtower] service '<name>' restarting in <delay>s (attempt <count>/<limit>)`
+- Retry exhaustion: `[watchtower] service '<name>' restart limit reached (<limit>/<limit>), marking FAILED`
+
+`service status <name>` prints `LogFile: <path>` and appends the last 5 lines of the service log
+under `Recent Log:` when the service is stopped or failed.
 
 | Boot/storage mode | Supervisor log | Example service log |
 | --- | --- | --- |
