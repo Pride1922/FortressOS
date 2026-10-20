@@ -37,14 +37,16 @@ bool ext4_storage_owned(void);
  * unlocked thread/boot context. Failed admission writes nothing and publishes
  * nothing. Dirty/recovery-needed volumes reject; RO never replays a journal. */
 typedef struct ext4_mount ext4_mount_t;
-#ifdef FORTRESS_EXT4_STAGE_TEST
-/* Disposable prototype only, not a production syscall/API. */
-#define EXT4_STAGE_TEST_WRITE 0x7e40u
-#define EXT4_STAGE_TEST_SYNC  0x7e41u
-#define EXT4_STAGE_TEST_MAX (128u*1024u)
-int64_t ext4_stage_test_write(file_t *,const void *,size_t,uint64_t,const creds_t *);
-int ext4_stage_test_sync(file_t *);
-#endif
+/* SYS_STAGE_WRITE (85) / SYS_FSYNC (86): synchronous planned append batch (<=32 blocks)
+ * and scoped ext4 sync. Bounded snapshot buffer; no deferred writeback. */
+#define EXT4_STAGE_MAX (128u*1024u)
+int64_t ext4_stage_write(file_t *file,const void *bytes,size_t count,uint64_t expected,const creds_t *actor);
+int ext4_stage_sync(file_t *file);
+#define EXT4_STAGE_TEST_MAX EXT4_STAGE_MAX
+#define EXT4_STAGE_TEST_WRITE SYS_STAGE_WRITE
+#define EXT4_STAGE_TEST_SYNC  SYS_FSYNC
+#define ext4_stage_test_write ext4_stage_write
+#define ext4_stage_test_sync  ext4_stage_sync
 /* SYS_RENAME_REPLACE is additive: existing singly-linked regular files on a
  * healthy journaled mount, closed source; both names, links and victim orphan
  * intent activate together. Victim reclamation is deferred to close/sync.

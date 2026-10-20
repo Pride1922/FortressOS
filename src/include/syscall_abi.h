@@ -90,6 +90,8 @@
 #define SYS_LIST_DIR      82 /* (const char *path, char names[][64], uint64_t max_entries) -> count/-errno */
 #define SYS_CLOCK_SETTIME 83 /* (CLOCK_REALTIME, const timespec_t *); CAP_SYS_ADMIN; 1970..2100 */
 #define SYS_RENAME_REPLACE 84 /* (oldpath, newpath, flags=0); existing regular files, journaled EXT4 */
+#define SYS_STAGE_WRITE   85 /* (int fd, const void *buf, size_t count, uint64_t expected_eof, uint64_t flags=0) -> written/-errno */
+#define SYS_FSYNC         86 /* (int fd) -> 0/-errno; journaled ext4 flush */
 #define MAX_GETRANDOM_LEN 256u
 
 /* Clock identifiers */

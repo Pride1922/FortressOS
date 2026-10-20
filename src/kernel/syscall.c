@@ -1147,9 +1147,7 @@ static int64_t sys_stat_ext(uintptr_t path,uintptr_t output,uint64_t size,uint64
 /* Metadata belongs to the opened object, never a fresh lookup of node->path.
  * Own-table fd_get is borrowed until signal/wait; retain for the complete
  * snapshot/copy. No new lock or allocation, and no descriptor-position change. */
-#ifdef FORTRESS_EXT4_STAGE_TEST
 #include "ext4_stage_test.inc"
-#endif
 static int64_t sys_fstat(uint64_t fd,uintptr_t output) {
     if (fd>=MAX_PROCESS_FDS) return SYSCALL_EBADF;
     tcb_t *self=thread_current();
@@ -1751,14 +1749,12 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
         case SYS_FSTAT:
             result = sys_fstat(frame->rdi,frame->rsi);
             break;
-#ifdef FORTRESS_EXT4_STAGE_TEST
-        case EXT4_STAGE_TEST_WRITE:
+        case SYS_STAGE_WRITE:
             result=sys_stage_test_write(frame->rdi,frame->rsi,frame->rdx,frame->r10,frame->r8);
             break;
-        case EXT4_STAGE_TEST_SYNC:
+        case SYS_FSYNC:
             result=sys_stage_test_sync(frame->rdi);
             break;
-#endif
 
         case SYS_READDIR:
             result = sys_readdir((int)frame->rdi, frame->rsi);

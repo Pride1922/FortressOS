@@ -1,10 +1,11 @@
-# Bounded synchronous staging batches — review proposal
+# Bounded synchronous staging batches — production design
 
-2026-10-20. **Production API proposal; no production API number allocated.**
-The user authorized a release-excluded prototype of this contract. Its bounded
-implementation, verification and remaining rollout gates are tracked in the
-[prototype evidence](../roadmap/ext4-stage-prototype.md). No production ABI,
-deferred writeback or protected locking redesign is delivered.
+2026-10-20. **Production API allocated: SYS_STAGE_WRITE (85) and SYS_FSYNC (86).**
+Following benchmark verification across 16 vs 32 blocks (3.8–4.1× duration speedup,
+8× barrier reduction with minimal incremental p95 penalty over 16 blocks), the
+user authorized shipping the 32-block (128 KiB) maximum batch ceiling into the
+production kernel and system ABI. Verified multi-firmware QEMU and ASan/UBSan
+matrix tracked in [the prototype and rollout evidence](../roadmap/ext4-stage-prototype.md).
 Based on the [initial EH-5 baseline](../roadmap/ext4-latency.md), the
 [durability/health contract](EXT4_DURABILITY_HEALTH_DESIGN.md), and the
 [descriptor-sync review](EXT4_SYNC_LATENCY_REVIEW.md). EH-1B stays open.
@@ -51,10 +52,10 @@ transaction can worsen one caller's stall even while total staging accelerates.
 If responsiveness fails, do not keep increasing the batch or claim fsync fixes
 it: reject rollout and review ownership/IRQ exclusion separately.
 
-## Proposed batch interface and admission
+## Batch interface and admission
 
-Working name: `SYS_STAGE_WRITE(fd, buffer, length, expected_eof, flags=0)`.
-The name is provisional; allocate a number only after ABI review. Existing
+Production syscall: `SYS_STAGE_WRITE(fd, buffer, length, expected_eof, flags=0)` (syscall 85)
+along with scoped mount drain `SYS_FSYNC(fd)` (syscall 86). Existing
 syscalls and structures retain their numbers/layouts and behavior.
 
 - Require a live writable regular-file descriptor, a healthy journaled ext4

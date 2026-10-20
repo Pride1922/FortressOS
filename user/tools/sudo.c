@@ -35,7 +35,16 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
     else if (argc<2 || argv[1][0]=='-')
         return tool_error("sudo","usage: sudo command [args] | sudo -s | sudo -b command [args]",0);
     if (tool_syscall(SYS_GETRESUID,(uintptr_t)&uid,(uintptr_t)&euid,(uintptr_t)&suid)<0 ||
-        euid!=0 || (uid && !user_entry_secure(envp)) || !db_load(&database,true))
+        euid!=0 || (uid && !user_entry_secure(envp)))
+        return tool_error("sudo","privileged installation required",0);
+    bool loaded = false;
+    for (int attempts = 0; attempts < 20; attempts++) {
+        if (db_load(&database, true)) { loaded = true; break; }
+        if (!db_busy()) break;
+        timespec_t req = { .tv_sec = 0, .tv_nsec = 25000000L };
+        (void)tool_syscall(SYS_NANOSLEEP, (uintptr_t)&req, 0, 0);
+    }
+    if (!loaded)
         return tool_error("sudo","privileged installation required",0);
     const db_user_t *u=db_user_id(&database,uid),*root=db_user_id(&database,0);
     const db_shadow_t *shadow=u ? db_shadow_name(&database,u->name) : NULL;

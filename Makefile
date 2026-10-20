@@ -976,7 +976,7 @@ test-free-host:
 test-free: $(BOOTABLE_ISO) test-free-host
 	@python3 scripts/test_free.py
 
-.PHONY: test-time-host test-date-sleep-host test-time-cmd-host test-time test-time-cmd
+.PHONY: test-time-host test-date-sleep-host test-date-host test-time-cmd-host test-time test-time-cmd
 test-time-host:
 	@mkdir -p $(BUILD_DIR)
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DHOST_TEST -Isrc/include -Isrc/drivers src/drivers/rtc.c tests/time_host.c -o $(BUILD_DIR)/time_host && $(BUILD_DIR)/time_host
@@ -984,6 +984,11 @@ test-time-host:
 test-date-sleep-host:
 	@mkdir -p $(BUILD_DIR)
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/date_sleep_host.c user/tools/common.c user/tools/date.c user/tools/sleep.c user/timezone.c user/tools/timezone_io.c -o $(BUILD_DIR)/date_sleep_host && $(BUILD_DIR)/date_sleep_host
+
+test-date-host:
+	@mkdir -p $(BUILD_DIR)
+	@test -d $(BUILD_DIR)/zoneinfo || python3 scripts/build_zoneinfo.py $(BUILD_DIR)/zoneinfo
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/date_host.c user/tools/common.c user/tools/date.c user/timezone.c user/tools/timezone_io.c -o $(BUILD_DIR)/date_host && $(BUILD_DIR)/date_host
 
 test-time-cmd-host:
 	@mkdir -p $(BUILD_DIR)
@@ -2253,7 +2258,7 @@ $(BUILD_DIR)/ntpd.elf: $(BUILD_DIR)/ntpd.o $(BUILD_DIR)/ntp.o $(DNS_OBJECTS) use
 	@$(LD) -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/ntpd_start.o $(BUILD_DIR)/ntpd.o $(BUILD_DIR)/ntp.o $(DNS_OBJECTS) -o $@
 
 .PHONY: test-timezone-host
-test-timezone-host: test-date-sleep-host test-logger-host test-time-host
+test-timezone-host: test-date-sleep-host test-date-host test-logger-host test-time-host
 	@python3 scripts/test_timezone_host.py
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -Isrc/include tests/timezone_host.c user/timezone.c user/ntp.c -o $(BUILD_DIR)/timezone_host
 	@$(BUILD_DIR)/timezone_host
@@ -2311,10 +2316,19 @@ test-ext4-latency-host:
 test-ext4-latency:
 	python3 scripts/test_ext4_latency.py
 
-.PHONY: test-ext4-stage-host test-ext4-stage
+.PHONY: test-ext4-stage-host test-ext4-stage test-ssh-stage-sla test-ext4-pkg-scale
 test-ext4-stage-host:
 	python3 scripts/test_ext4_stage_host.py
 	python3 scripts/test_ext4_stage_syscall_host.py
 
 test-ext4-stage:
 	python3 scripts/test_ext4_latency.py --stage
+
+test-ssh-stage-sla:
+	python3 scripts/test_ssh_stage_sla.py --firmware bios --smp 4
+	python3 scripts/test_ssh_stage_sla.py --firmware uefi --smp 4
+
+test-ext4-pkg-scale:
+	python3 scripts/test_ext4_pkg_scale.py --firmware all --smp all
+
+

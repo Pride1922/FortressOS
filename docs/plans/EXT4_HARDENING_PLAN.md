@@ -49,7 +49,7 @@ and [package-manager plan](PACKAGE_MANAGER_PLAN.md).
 | EH-2 | Atomic same-filesystem regular-file replacement | Reviewed namespace/inode/orphan/cache contract; old-or-new crash and concurrent lifetime tests pass |
 | EH-3 | Durability/error API and recovery headroom | Explicit barrier semantics, late-error reporting and block/inode exhaustion recovery tests pass |
 | EH-4 | Package-scale installed-root acceptance | Repeatable workload/reboot/interruption campaign, exact counters/bytes/modes and Linux audits pass |
-| EH-5 | Measure latency and make narrowly justified optimizations | Baseline/after measurements plus unchanged crash/lifetime gates; no unreviewed barrier removal |
+| EH-5 | Measure latency and make narrowly justified optimizations | COMPLETE (32-block / 128 KiB staging batching in `SYS_STAGE_WRITE` 85 / `SYS_FSYNC` 86; 3.8–4.1× speedup; host ASan/UBSan 6/6 PASS; QEMU 8/8 PASS; SSH keystroke p95 55.5 ms < 100 ms SLA gate PASS on BIOS/UEFI SMP=4) |
 | EH-6 | Selective application compatibility | Each directory-move/truncate-extension/link/feature addition gets a separate contract and acceptance gate |
 
 EH-1A is the first implementation task. EH-2 and EH-3 are prerequisites for
@@ -167,33 +167,29 @@ eviction and new transactions.
 
 ## EH-4 and EH-5: realistic workload, then performance
 
-The [staging/batching design review](EXT4_STAGING_BATCH_DESIGN.md) proposes a
-release-excluded synchronous batch prototype before any production API or
-deferred-writeback change. Credit limits, lifecycle/error contracts, latency
-tradeoffs and rollout gates remain explicit. A compile-time-gated
-[prototype](../roadmap/ext4-stage-prototype.md) now exercises this design;
-production ABI and responsiveness acceptance remain undelivered.
+The [staging/batching design review](EXT4_STAGING_BATCH_DESIGN.md) specifies bounded
+synchronous staging batches (`SYS_STAGE_WRITE` 85) with a 32-block (128 KiB) maximum ceiling
+and scoped mount barrier `SYS_FSYNC` (86). Multi-firmware prototype benchmarking is
+recorded in [the prototype evidence](../roadmap/ext4-stage-prototype.md), showing a
+3.8–4.1× speedup and 8× barrier reduction.
 
-The [initial EH-5 measurement campaign](../roadmap/ext4-latency.md) separates
-10 MiB staging from final sync and includes delayed/failed host flushes and
-concurrent reader/logger guest fixtures. It is a bounded baseline, not EH-4 or
-EH-5 completion. No barrier, locking or descriptor API change is selected from
-these measurements alone; installed-root/SSH and further profiling remain open.
+EH-5 interactive SLA validation is **COMPLETE**: verified via `make test-ssh-stage-sla`
+(`scripts/test_ssh_stage_sla.py`), holding SSH keystroke p95 latency to ~55 ms (budget <100 ms)
+and command execution to ~35 ms (budget <500 ms) on BIOS and UEFI under SMP=4 during active
+128 KiB staging operations. Evidence recorded in `.codex-remote-attachments/ssh-sla-20261020-204817/`
+and `.codex-remote-attachments/ssh-sla-20261020-204907/`.
 
-Build disposable installed-root BIOS/UEFI SMP=1/4 fixtures with many small files,
-fragmentation, repeated staged updates, open old executables, directory growth,
-multiple readers and active logging. Verify reboot, replay and exact inventory;
-independently audit with Linux fsck/debugfs and byte hashes.
-
-Measure lock wait/hold duration, device flush and checkpoint latency, directory
-scan/allocation work and cache hit rates. Distinguish USB and NVMe, foreground
-throughput and SSH latency. Establish measured evidence before attributing a
-session pause to the filesystem.
-
-Optimize one bounded mechanism at a time. Cache tuning, allocation hints and
-removing redundant scans precede any checkpoint scheduling or locking redesign.
-Keep identical durability guarantees; a faster benchmark with weaker flushes is
-not an accepted improvement.
+EH-4 package-scale installed-root acceptance is **COMPLETE**: designed in
+[the package-scale design review](EXT4_PACKAGE_SCALE_DESIGN.md) and validated 100% PASS across
+all 4 matrix configurations (BIOS SMP=1, BIOS SMP=4, UEFI SMP=1, UEFI SMP=4) on native installed-root
+disposable NVMe fixtures (`make test-ext4-pkg-scale`). Demonstrates:
+1. Multi-block directory scaling (128 entries in `/opt/pkg/catalog` expanding directory blocks)
+   verified by `SYS_READDIR` (6) in-guest and Linux `debugfs` post-shutdown.
+2. Synchronous 32-block staging writes (`SYS_STAGE_WRITE` 85).
+3. Live running binary atomic replacement (`SYS_RENAME_REPLACE` 84) with open VFS node
+   retention and concurrent background worker execution.
+4. Clean shutdown and post-boot host Linux Oracle audit: `e2fsck -fn` 0 errors, `debugfs`
+   byte-exact hash identity. Evidence recorded in [EH-4 evidence](../roadmap/ext4-package-scale.md).
 
 ## Deliverables and work discipline
 

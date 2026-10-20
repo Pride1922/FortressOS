@@ -915,9 +915,7 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 #include "ext4_hostkey.inc"
 #endif
 #include "ext4_accounts.inc"
-#ifdef FORTRESS_EXT4_STAGE_TEST
 #include "ext4_stage_test.inc"
-#endif
 
 static size_t e4_profile_text(char *out,size_t cap,size_t n,const char *text) {
     while (*text) { if (n<cap) out[n++]=*text; text++; } return n;
