@@ -342,12 +342,22 @@ typedef enum {
 
 #define MOUNT_FLAGS_RO  0u
 #define MOUNT_FLAGS_RW  1u
+/* Additive health bits, independent of nominal RW policy. Counters on a
+ * tainted mount are the last committed snapshot, not recovered free space. */
+#define MOUNT_FLAGS_TAINTED             2u
+#define MOUNT_FLAGS_NAMESPACE_UNCERTAIN 4u
+#define MOUNT_FLAGS_CLEANUP_PENDING     8u
+#define MOUNT_FLAGS_CLEANUP_ERROR      16u
+/* Stop mutation retries. TAINTED/NAMESPACE_UNCERTAIN require reboot recovery;
+ * otherwise attempt one explicit drain and requery. Healthy pinned orphans
+ * alone do not set this bit. Snapshot only: admission rechecks under exclusion. */
+#define MOUNT_FLAGS_RECOVERY_REQUIRED  32u
 
 typedef struct {
     char           source[32];
     char           mount_path[256];
     uint32_t       fs_type;         /* vfs_fs_type_t */
-    uint32_t       flags;           /* MOUNT_FLAGS_RO / MOUNT_FLAGS_RW */
+    uint32_t       flags;           /* MOUNT_FLAGS_* policy and health bits */
     uint64_t       total_blocks;
     uint64_t       free_blocks;
     uint64_t       total_inodes;

@@ -163,8 +163,21 @@ static void e4_jclose(vfs_node_t *node) {
     spin_debug_assert_unheld();uint64_t flags=spin_lock_irqsave(&e4_lock);e4_node_t *file=(e4_node_t *)node;
     if (file->opens) file->opens--;
     ext4_mount_t *fs=file->inode.fs;
-    if (!fs->frozen && !fs->engine->tainted && !file->opens && e4_mounted_orphan(fs,file->inode.ino))
-        (void)e4_orphan_cleanup(fs->engine,file->inode.ino,false);
+    if (!fs->frozen && !fs->engine->tainted && !file->opens && e4_mounted_orphan(fs,file->inode.ino)) {
+        int r;
+#ifdef FORTRESS_EXT4_HEALTH_TEST
+        /* Only compiled into the isolated health-probe kernel. No new ABI,
+         * device fault, recovery admission or production filename behavior. */
+        if (!fs->health_test_failed && !strcmp(node->name,"health-recovery")) {
+            fs->health_test_failed=true;r=-VFS_ENOMEM;
+        } else
+#endif
+        r=e4_orphan_cleanup(fs->engine,file->inode.ino,false);
+        if (r) {
+            if (!fs->cleanup_error) fs->cleanup_error=r;
+            fs->engine->orphan_recovery_required=true;
+        }
+    }
     /* close callback has no error result. A durable failed-cleanup intent stays
      * registered; sync/shutdown returns its retry or taint error. */
     spin_unlock_irqrestore(&e4_lock,flags);
@@ -193,7 +206,11 @@ static vfs_node_t *e4_jcreate_account(vfs_node_t *parent,const char *name,vfs_no
     ext4_mount_t *fs=((e4_inode_t *)parent->fs_private)->fs;uint32_t ino=0;
     if (!r && (strlen(parent->path)+strlen(name)+1>=VFS_MAX_PATH || !e4_cache_room(fs))) r=-VFS_EFBIG;
     if (!r) {node=kcalloc(1,sizeof(*node));if (!node) r=-VFS_ENOMEM;}
-    if (!r) r=ext4_engine_namespace_create_attrs(fs->engine,((e4_inode_t *)parent->fs_private)->ino,name,type==VFS_DIRECTORY,attrs,&ino);
+    if (!r) {
+        fs->account_allocation=account;
+        r=ext4_engine_namespace_create_attrs(fs->engine,((e4_inode_t *)parent->fs_private)->ino,name,type==VFS_DIRECTORY,attrs,&ino);
+        fs->account_allocation=false;
+    }
     e4_inode_t in;
     if (!r) {
         r=e4_inode(fs,ino,&in);
@@ -300,8 +317,12 @@ static int e4_jrename_account(vfs_node_t *old,const char *name,vfs_node_t *dest,
     if (!r && !victim_scanned) {r=e4_scan(dest->fs_private,next,0,NULL,&victim);if (r>=0) r=0;}
     if (!r && !account && victim && e4_account_inode(fs,victim)) r=-VFS_EROFS;
     if (!r && old==dest && !strcmp(name,next)) goto done;
-    if (!r) r=ext4_engine_namespace_rename(fs->engine,((e4_inode_t *)old->fs_private)->ino,name,
-                                         ((e4_inode_t *)dest->fs_private)->ino,next);
+    if (!r) {
+        fs->account_allocation=account;
+        r=ext4_engine_namespace_rename(fs->engine,((e4_inode_t *)old->fs_private)->ino,name,
+                                     ((e4_inode_t *)dest->fs_private)->ino,next);
+        fs->account_allocation=false;
+    }
     if (!r) {
         if (account && ((e4_inode_t *)dest->fs_private)->ino==fs->account_inodes[0]) {
             const char *names[3]={"passwd","group","shadow"};
@@ -335,6 +356,9 @@ static int e4_journal_drain(ext4_mount_t *fs,bool finish) {
     if (!block_flush(fs->dev)) { e4_jtaint(fs);return -VFS_EIO; }
     /* Sync retains dirty+RECOVER and live pins. Clean marker is a final bounded
      * journal transaction only AFTER all work/checkpoints and this barrier. */
+    /* Report a lost close error once even if this retry reclaimed everything.
+     * Do not mark clean on that call; shutdown/freeze can explicitly retry. */
+    if (fs->cleanup_error) {int error=fs->cleanup_error;fs->cleanup_error=0;return error;}
     return finish ? e4_journal_mark(e,true) : 0;
 }
 int ext4_sync_journal_fixture(void) {

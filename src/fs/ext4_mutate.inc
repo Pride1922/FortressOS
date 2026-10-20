@@ -134,6 +134,13 @@ static bool e4_account(ext4_engine_t *e,uint32_t group,bool inode,int delta) {
     unsigned offset=inode ? 14 : 12, total=inode ? 16 : 12;
     int64_t n=(int64_t)e4_u16(d+offset)+delta, sum=(int64_t)e4_u32(sb+total)+delta;
     if (n<0 || n>UINT16_MAX || sum<0 || sum>UINT32_MAX) { e->error=-VFS_EIO; return false; }
+    /* Enforce against the staged superblock on EVERY allocation, including
+     * extent nodes and directory growth. Root/capabilities do not bypass this.
+     * Account recovery alone owns the fixed-role bypass under e4_lock. */
+    if (delta<0 && e->fs->trusted_root && e->fs->accounts_mutable && !e->fs->account_allocation &&
+        (uint64_t)sum < (inode ? EXT4_ACCOUNT_RESERVE_INODES : (EXT4_ACCOUNT_RESERVE_BYTES+e->fs->bs-1)/e->fs->bs)) {
+        e->error=-VFS_ENOSPC;return false;
+    }
     e4_p16(d+offset,(uint16_t)n); e4_p32(sb+total,(uint32_t)sum); return true;
 }
 static uint32_t e4_allocate(ext4_engine_t *e) {

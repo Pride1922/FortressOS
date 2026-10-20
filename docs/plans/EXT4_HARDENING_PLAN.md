@@ -9,7 +9,11 @@ results are committed as `ce529c9` and recorded in
 All six block/sector profiles and mounted short-extra-area failure preservation
 pass; the 1 KiB ownership comparison defect is corrected. EH-2 now implements
 additive one-file replacement; see [results and limits](../roadmap/ext4-atomic-replace.md).
-Broader timestamp policy remains EH-1B; EH-3 and later work remain open.
+Broader timestamp policy remains EH-1B. EH-3 durability/health/headroom has bounded
+host/QEMU acceptance (2026-10-20), with a qualified concurrent-work preservation
+guard on the broad account regression; see the [reviewed contract](EXT4_DURABILITY_HEALTH_DESIGN.md)
+and [results and limitations](../roadmap/ext4-durability-health.md). Later phases
+remain open.
 
 ## Objective
 
@@ -133,6 +137,17 @@ Do not infer a multi-file/base-system atomic update from this primitive.
 
 ## EH-3: durability, health and space
 
+The [EH-3 implementation review](EXT4_DURABILITY_HEALTH_DESIGN.md) retains
+SYS_SYNC as the coarse barrier, defers descriptor sync after review, adds health
+bits without changing mount-info layout, preserves close-cleanup errors through
+sync, and enforces the installed account block/inode floor. Package reservations
+remain a separate admission gate; free counters are not reservations. See
+[automated evidence and exact scope](../roadmap/ext4-durability-health.md).
+The [recovery-required follow-up](../roadmap/ext4-recovery-required.md) adds the
+explicit stop-retry bit and bounded caller rules. Descriptor scope and latency
+are reviewed separately in [the synchronization review](EXT4_SYNC_LATENCY_REVIEW.md);
+no barrier removal or lock redesign is implied by a future fsync syscall.
+
 Document existing synchronous mutation and global `SYS_SYNC` guarantees and fix
 stale comments. Review descriptor-level file/directory synchronization separately;
 an initial coarse implementation may reuse global barriers, with honest cost and
@@ -151,6 +166,19 @@ short writes and exact reclamation. Protect pending recovery material from cache
 eviction and new transactions.
 
 ## EH-4 and EH-5: realistic workload, then performance
+
+The [staging/batching design review](EXT4_STAGING_BATCH_DESIGN.md) proposes a
+release-excluded synchronous batch prototype before any production API or
+deferred-writeback change. Credit limits, lifecycle/error contracts, latency
+tradeoffs and rollout gates remain explicit. A compile-time-gated
+[prototype](../roadmap/ext4-stage-prototype.md) now exercises this design;
+production ABI and responsiveness acceptance remain undelivered.
+
+The [initial EH-5 measurement campaign](../roadmap/ext4-latency.md) separates
+10 MiB staging from final sync and includes delayed/failed host flushes and
+concurrent reader/logger guest fixtures. It is a bounded baseline, not EH-4 or
+EH-5 completion. No barrier, locking or descriptor API change is selected from
+these measurements alone; installed-root/SSH and further profiling remain open.
 
 Build disposable installed-root BIOS/UEFI SMP=1/4 fixtures with many small files,
 fragmentation, repeated staged updates, open old executables, directory growth,

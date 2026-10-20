@@ -531,6 +531,11 @@ int main(void) {
         assert(strstr(stdout_buf, "0fc63daf-8483-4772-8e79-3d69d8477de4 (Linux filesystem data)") != NULL);
         assert(strstr(stdout_buf, "Mount point:") != NULL);
         assert(strstr(stdout_buf, "/mnt (ext2, read-write)") != NULL);
+        mock_mounts[0].fs_type=VFS_FS_EXT4;
+        mock_mounts[0].flags |= MOUNT_FLAGS_RECOVERY_REQUIRED;
+        stdout_len=0;stdout_buf[0]=0;
+        assert(disk_main(3,argv)==0);
+        assert(strstr(stdout_buf,"recovery required (stop mutation retries)")!=NULL);
         printf("[disk_host] Test 12: disk info <device> passed\n");
     }
 

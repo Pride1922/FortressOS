@@ -11,9 +11,9 @@ import tempfile
 from create_ext4_fixtures import ROOT,run
 from test_jbd2_replay_host import FEATURES,blocks,be,put,seal,sbseal
 
-def fixture(directory,bs,inodes=512):
+def fixture(directory,bs,inodes=512,size_mib=32):
     image=directory/f'base-{bs}.img'
-    with image.open('xb') as stream:stream.truncate(32*1024*1024)
+    with image.open('xb') as stream:stream.truncate(size_mib*1024*1024)
     run(['mke2fs','-q','-t','ext4','-b',str(bs),'-I','256','-O',FEATURES,
          '-E','lazy_itable_init=0','-m','0','-g','4096','-N',str(inodes),'-J','size=4',str(image)])
     seed=directory/f'seed-{bs}.bin';seed.write_bytes(b'O'*(3*bs))

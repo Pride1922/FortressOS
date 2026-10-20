@@ -46,7 +46,9 @@ static int e4_ac_write(void *context,unsigned role,const void *bytes,size_t leng
     uint64_t flags=spin_lock_irqsave(&e4_lock);
     r=e4_state_account(n,true);e4_node_t *file=(e4_node_t *)n;uint64_t offset=0;
     if (!r) {
+        file->inode.fs->account_allocation=true;
         int64_t count=e4_file_write_actor(file->inode.fs->engine,file->inode.ino,&offset,false,bytes,length,NULL);
+        file->inode.fs->account_allocation=false;
         r=count<0 ? (int)count : (size_t)count!=length ? -VFS_EIO : 0;
         if (!r && e4_journal_refresh(n)) {e4_jtaint(file->inode.fs);r=-VFS_EIO;}
     }
@@ -82,8 +84,8 @@ int ext4_root_account_io(ext4_mount_t *fs,account_io_t *io) {
 }
 int ext4_root_account_headroom(ext4_mount_t *fs) {
     if (!fs || !fs->trusted_root) return -VFS_EINVAL;
-    uint64_t flags=spin_lock_irqsave(&e4_lock);uint8_t value[4];
+    uint64_t flags=spin_lock_irqsave(&e4_lock);uint8_t value[8];
     int r=fs->engine->tainted || fs->quiesced ? -VFS_EIO : fs->frozen ? -VFS_EROFS :
-        !e4_bytes(fs,1036,value,sizeof(value)) ? -VFS_EIO : (uint64_t)e4_u32(value)*fs->bs<256u*1024 ? -VFS_ENOSPC : 0;
+        !e4_bytes(fs,1036,value,sizeof(value)) ? -VFS_EIO : ((uint64_t)e4_u32(value)*fs->bs<EXT4_ACCOUNT_RESERVE_BYTES || e4_u32(value+4)<EXT4_ACCOUNT_RESERVE_INODES) ? -VFS_ENOSPC : 0;
     spin_unlock_irqrestore(&e4_lock,flags);return r;
 }

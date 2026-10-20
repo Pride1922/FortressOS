@@ -37,6 +37,14 @@ bool ext4_storage_owned(void);
  * unlocked thread/boot context. Failed admission writes nothing and publishes
  * nothing. Dirty/recovery-needed volumes reject; RO never replays a journal. */
 typedef struct ext4_mount ext4_mount_t;
+#ifdef FORTRESS_EXT4_STAGE_TEST
+/* Disposable prototype only, not a production syscall/API. */
+#define EXT4_STAGE_TEST_WRITE 0x7e40u
+#define EXT4_STAGE_TEST_SYNC  0x7e41u
+#define EXT4_STAGE_TEST_MAX (128u*1024u)
+int64_t ext4_stage_test_write(file_t *,const void *,size_t,uint64_t,const creds_t *);
+int ext4_stage_test_sync(file_t *);
+#endif
 /* SYS_RENAME_REPLACE is additive: existing singly-linked regular files on a
  * healthy journaled mount, closed source; both names, links and victim orphan
  * intent activate together. Victim reclamation is deferred to close/sync.
@@ -75,6 +83,10 @@ int ext4_root_lock_accounts(ext4_mount_t *,vfs_node_t *nodes[4]);
  * immutability only inside each filesystem operation, with no global bypass.
  * Caller serializes readers/writers and supplies database validation callback. */
 int ext4_root_account_io(ext4_mount_t *,account_io_t *);
+/* Installed-root ordinary allocation floor once account setup completes.
+ * Only fixed-role account I/O may consume it; not a package reservation. */
+#define EXT4_ACCOUNT_RESERVE_BYTES (256u*1024u)
+#define EXT4_ACCOUNT_RESERVE_INODES 16u
 int ext4_root_account_headroom(ext4_mount_t *);
 int ext4_sync_installed_root(bool *handled);
 /* Narrow host-identity storage adapter. Installed-root handle is boot-lifetime;
@@ -116,8 +128,10 @@ int ext4_mount_journal_fixture_diagnose(block_dev_t *partition,const char *path,
 int ext4_sync_journal_fixture(void);
 int ext4_freeze_journal_fixture(void);
 
-/* Mid-session: commit/checkpoint (when journaled), then device barrier.
- * Does not freeze or mark clean. Failed barrier taints the mount. */
+/* Mid-session: retry eligible orphan cleanup, then device barrier. Mutations
+ * already commit/checkpoint synchronously. Pinned orphans may remain. Reports
+ * a saved close-cleanup error once even after successful retry. Does not freeze
+ * or mark clean. Uncertain I/O permanently taints until restart recovery. */
 int ext4_sync(ext4_mount_t *mount);
 
 /* Bounded diagnostic snapshot; unlocked thread context, no media I/O. */
@@ -130,8 +144,8 @@ size_t ext4_io_profile_format(char *out,size_t capacity);
 int ext4_freeze_and_sync(ext4_mount_t *mount);
 
 /* Phase-6 exclusive recovery workbench: derive internal journal identity/map
- * from disk, analyze without writes or VFS publication. Production mounts still
- * reject journals. Caller exclusively owns disposable/eligible partition;
+ * from disk, analyze without writes or VFS publication. Production RW mounts
+ * use the separate explicitly admitted lifecycle. Caller exclusively owns the partition;
  * jbd2_replay requires explicit admission and does not clear ext4 RECOVER. */
 int ext4_journal_analyze(block_dev_t *partition,jbd2_plan_t **out,
                          jbd2_report_t *report);

@@ -537,6 +537,11 @@ static int disk_info(const char *target, bool comparison) {
             out_str(fs_type_str(m->fs_type));
             out_str(", ");
             out_str((m->flags & MOUNT_FLAGS_RW) ? "read-write" : "read-only");
+            if (m->flags & MOUNT_FLAGS_TAINTED) out_str(", tainted (restart recovery required)");
+            if (m->flags & MOUNT_FLAGS_NAMESPACE_UNCERTAIN) out_str(", namespace uncertain");
+            if (m->flags & MOUNT_FLAGS_RECOVERY_REQUIRED) out_str(", recovery required (stop mutation retries)");
+            if (m->flags & MOUNT_FLAGS_CLEANUP_PENDING) out_str(", cleanup pending");
+            if (m->flags & MOUNT_FLAGS_CLEANUP_ERROR) out_str(", cleanup error (run sync)");
             out_str(")\n");
         } else {
             out_str("—\n");

@@ -2310,3 +2310,11 @@ test-ext4-latency-host:
 
 test-ext4-latency:
 	python3 scripts/test_ext4_latency.py
+
+.PHONY: test-ext4-stage-host test-ext4-stage
+test-ext4-stage-host:
+	python3 scripts/test_ext4_stage_host.py
+	python3 scripts/test_ext4_stage_syscall_host.py
+
+test-ext4-stage:
+	python3 scripts/test_ext4_latency.py --stage

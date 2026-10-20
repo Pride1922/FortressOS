@@ -49,6 +49,11 @@ struct ext4_mount {
     bool trusted_root, detached;
     bool installer_owned;
     bool accounts_mutable;
+    bool account_allocation; /* Only fixed-role account callbacks under e4_lock. */
+    int cleanup_error; /* Close has no return channel; acknowledged by sync. */
+#ifdef FORTRESS_EXT4_HEALTH_TEST
+    bool health_test_failed; /* Disposable probe only: one pre-I/O cleanup denial. */
+#endif
     uint32_t account_inodes[4]; /* Phase2 immutable directory + complete DB set. */
     uint32_t orphan_access; /* Exclusive 8.4 workbench, one validated orphan. */
     uint32_t journal_ino;
@@ -910,6 +915,9 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 #include "ext4_hostkey.inc"
 #endif
 #include "ext4_accounts.inc"
+#ifdef FORTRESS_EXT4_STAGE_TEST
+#include "ext4_stage_test.inc"
+#endif
 
 static size_t e4_profile_text(char *out,size_t cap,size_t n,const char *text) {
     while (*text) { if (n<cap) out[n++]=*text; text++; } return n;
@@ -977,6 +985,13 @@ bool ext4_get_mount_info(const void *vfs_node, mount_info_t *out) {
     }
     out->fs_type = VFS_FS_EXT4;
     out->flags = (fs->engine && !fs->frozen) ? MOUNT_FLAGS_RW : MOUNT_FLAGS_RO;
+    if (fs->engine && fs->engine->tainted) out->flags |= MOUNT_FLAGS_TAINTED;
+    if (fs->namespace_uncertain) out->flags |= MOUNT_FLAGS_NAMESPACE_UNCERTAIN;
+    if (fs->engine && fs->engine->orphan_count) out->flags |= MOUNT_FLAGS_CLEANUP_PENDING;
+    if (fs->cleanup_error) out->flags |= MOUNT_FLAGS_CLEANUP_ERROR;
+    if (fs->namespace_uncertain || (fs->engine &&
+        (fs->engine->tainted || fs->engine->orphan_recovery_required)))
+        out->flags |= MOUNT_FLAGS_RECOVERY_REQUIRED;
     out->block_size = fs->bs;
     out->total_blocks = fs->blocks;
     out->total_inodes = fs->inodes;

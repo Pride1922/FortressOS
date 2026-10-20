@@ -8,11 +8,20 @@ typedef struct { pthread_mutex_t mutex; unsigned rank; } spinlock_t;
 #define SPINLOCK_RANKED(r,n) {PTHREAD_MUTEX_INITIALIZER,(r)}
 static _Thread_local unsigned ext4_host_lock_depth;
 static inline uint64_t spin_lock_irqsave(spinlock_t *lock) {
+#ifdef EXT4_HOST_LATENCY
+    uint64_t before=ext4_latency_now();
+#endif
     assert(!ext4_host_lock_depth); assert(!pthread_mutex_lock(&lock->mutex));
+#ifdef EXT4_HOST_LATENCY
+    ext4_latency_acquired(before);
+#endif
     ext4_host_lock_depth=1; return 0;
 }
 static inline void spin_unlock_irqrestore(spinlock_t *lock,uint64_t flags) {
     (void)flags; assert(ext4_host_lock_depth==1); ext4_host_lock_depth=0;
+#ifdef EXT4_HOST_LATENCY
+    ext4_latency_releasing();
+#endif
     assert(!pthread_mutex_unlock(&lock->mutex));
 }
 static inline void spin_debug_assert_unheld(void) { assert(!ext4_host_lock_depth); }

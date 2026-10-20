@@ -90,6 +90,11 @@ filesystem failure.
 
 ## Remaining scope
 
+2026-10-20 follow-up: EH-3 durability, health reporting and account allocation
+headroom implementation/verification is tracked in
+[EH-3 evidence](ext4-durability-health.md). The EH-2 results below remain their
+original bounded scope; EH-1B stays separately open.
+
 This is one-file activation, not multi-file package atomicity. Package recovery,
 locking, signatures, reservations, active services and base-system updates remain
 their planned phases. EH-1B broader timestamp policy, EH-3 durability/health APIs
