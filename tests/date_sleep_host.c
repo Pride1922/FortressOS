@@ -127,7 +127,7 @@ static void test_date_tool(void) {
     char *argv_help[] = {"date", "--help", NULL};
     ret = date_main(2, argv_help, NULL);
     assert(ret == 0);
-    assert(strstr(mock_stdout, "usage: date") != NULL);
+    assert(strstr(mock_stdout, "Usage: date") != NULL);
 
     /* 6. Invalid option */
     reset_buffers();

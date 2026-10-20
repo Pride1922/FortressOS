@@ -89,6 +89,40 @@ static int read_setting(const char *path) {
     setting[used] = 0;
     return 1;
 }
+
+/* Return absent=0, complete=1, error=-1 for /etc/localtime (binary TZif or text). */
+static int read_localtime(int64_t s, tz_result_t *out) {
+    long fd = tool_syscall(SYS_OPEN, (uintptr_t)"/etc/localtime", VFS_O_RDONLY | VFS_O_CLOEXEC, 0);
+    if (fd < 0)
+        return (fd == SYSCALL_ENOENT || fd == SYSCALL_ENOSYS) ? 0 : -1;
+    size_t used = 0;
+    long n = 0;
+    while (used < sizeof(tz_bytes)) {
+        n = tool_syscall(SYS_READ, fd, (uintptr_t)(tz_bytes + used), sizeof(tz_bytes) - used);
+        if (n <= 0)
+            break;
+        used += (size_t)n;
+    }
+    tool_syscall(SYS_CLOSE, fd, 0, 0);
+    if (n < 0 || used == 0)
+        return -1;
+    if (used >= 4 && tz_bytes[0] == 'T' && tz_bytes[1] == 'Z' && tz_bytes[2] == 'i' && tz_bytes[3] == 'f') {
+        return tz_tzif(tz_bytes, used, s, out) ? 1 : -1;
+    }
+    for (size_t i = 0; i < used; i++) {
+        if (!tz_bytes[i])
+            return -1;
+    }
+    while (used && (tz_bytes[used - 1] == '\n' || tz_bytes[used - 1] == '\r'))
+        --used;
+    if (used >= sizeof(setting))
+        return -1;
+    for (size_t i = 0; i < used; i++)
+        setting[i] = (char)tz_bytes[i];
+    setting[used] = '\0';
+    return tz_spec(setting, s, out) ? 1 : -1;
+}
+
 bool tz_resolve(const char *const *envp, int64_t s, tz_result_t *out) {
     const char *spec = NULL;
     bool discovered = false;
@@ -107,6 +141,11 @@ bool tz_resolve(const char *const *envp, int64_t s, tz_result_t *out) {
         if (r)
             spec = setting;
         else {
+            int rl = read_localtime(s, out);
+            if (rl > 0)
+                return true;
+            if (rl < 0)
+                return false;
             long fd = tool_syscall(SYS_OPEN, (uintptr_t) "/etc/timezone.dhcp",
                                    VFS_O_RDONLY | VFS_O_CLOEXEC, 0);
             if (fd >= 0) {
@@ -151,6 +190,30 @@ bool tz_spec(const char *spec, int64_t s, tz_result_t *out) {
         path[at++] = *spec++;
     path[at] = 0;
     long fd = tool_syscall(SYS_OPEN, (uintptr_t)path, VFS_O_RDONLY | VFS_O_CLOEXEC, 0);
+    if (fd < 0) {
+        at = 0;
+        base = "/etc/zoneinfo/";
+        while (*base)
+            path[at++] = *base++;
+        const char *p = name;
+        while (*p)
+            path[at++] = *p++;
+        path[at] = 0;
+        fd = tool_syscall(SYS_OPEN, (uintptr_t)path, VFS_O_RDONLY | VFS_O_CLOEXEC, 0);
+    }
+#ifdef TOOL_HOST_TEST
+    if (fd < 0) {
+        at = 0;
+        base = "build/zoneinfo/";
+        while (*base)
+            path[at++] = *base++;
+        const char *p = name;
+        while (*p)
+            path[at++] = *p++;
+        path[at] = 0;
+        fd = tool_syscall(SYS_OPEN, (uintptr_t)path, VFS_O_RDONLY | VFS_O_CLOEXEC, 0);
+    }
+#endif
     if (fd < 0)
         return fd == SYSCALL_ENOENT ? packed(name, s, out) : false;
     size_t used = 0;

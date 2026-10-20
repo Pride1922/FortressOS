@@ -398,6 +398,37 @@ static void save_timezone(const dhcp_offer_t *offer) {
         if (!published)
             delete_file("/run/timezone");
         delete_file("/run/timezone.new");
+
+        /* If /etc/timezone does not exist or /etc/timezone.dhcp exists, write /etc/timezone */
+        long chk = sys_call(SYS_OPEN, (uintptr_t)"/etc/timezone", VFS_O_RDONLY, 0, 0, 0, 0);
+        bool should_write = false;
+        if (chk < 0) {
+            should_write = true;
+        } else {
+            sys_call(SYS_CLOSE, chk, 0, 0, 0, 0, 0);
+            long dhcp_opt = sys_call(SYS_OPEN, (uintptr_t)"/etc/timezone.dhcp", VFS_O_RDONLY, 0, 0, 0, 0);
+            if (dhcp_opt >= 0) {
+                sys_call(SYS_CLOSE, dhcp_opt, 0, 0, 0, 0, 0);
+                should_write = true;
+            }
+        }
+        if (should_write) {
+            char tz_buf[160];
+            if (len + 1 < sizeof(tz_buf)) {
+                for (size_t i = 0; i < len; i++)
+                    tz_buf[i] = value[i];
+                tz_buf[len] = '\n';
+                if (write_file("/etc/timezone.new", tz_buf, len + 1)) {
+                    long ren = sys_call(SYS_RENAME_REPLACE, (uintptr_t)"/etc/timezone.new",
+                                        (uintptr_t)"/etc/timezone", 0, 0, 0, 0);
+                    if (ren < 0) {
+                        sys_call(SYS_RENAME, (uintptr_t)"/etc/timezone.new",
+                                 (uintptr_t)"/etc/timezone", 0, 0, 0, 0);
+                    }
+                }
+                delete_file("/etc/timezone.new");
+            }
+        }
     } else
         delete_file("/run/timezone");
 }

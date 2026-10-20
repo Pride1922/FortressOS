@@ -101,6 +101,12 @@ static long mocked(long nr, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, 
             pending_len = 0;
             return 4;
         }
+        if (!strcmp(path, "/etc/timezone.new")) {
+            return 5;
+        }
+        if (!strcmp(path, "/etc/timezone") || !strcmp(path, "/etc/timezone.dhcp")) {
+            return SYSCALL_ENOENT;
+        }
         return SYSCALL_ENOENT;
     }
     if (nr == SYS_READ) {
@@ -115,7 +121,7 @@ static long mocked(long nr, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, 
         return count;
     }
     if (nr == SYS_WRITE) {
-        if (a == 1 || a == 2)
+        if (a == 1 || a == 2 || a == 5)
             return c;
         assert(a == 4);
         if (write_failure)
@@ -129,7 +135,11 @@ static long mocked(long nr, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, 
     }
     if (nr == SYS_CLOSE)
         return 0;
+    if (nr == SYS_RENAME_REPLACE)
+        return SYSCALL_ENOSYS;
     if (nr == SYS_RENAME) {
+        if (!strcmp((const char *)a, "/etc/timezone.new") && !strcmp((const char *)b, "/etc/timezone"))
+            return 0;
         assert(!strcmp((const char *)a, "/run/timezone.new") &&
                !strcmp((const char *)b, "/run/timezone"));
         if (rename_failure)
@@ -141,6 +151,8 @@ static long mocked(long nr, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, 
     if (nr == SYS_UNLINK) {
         if (!strcmp((const char *)a, "/run/timezone"))
             published[0] = 0;
+        else if (!strcmp((const char *)a, "/etc/timezone.new") || !strcmp((const char *)a, "/etc/timezone"))
+            ;
         else {
             assert(!strcmp((const char *)a, "/run/timezone.new"));
             pending[0] = 0;
