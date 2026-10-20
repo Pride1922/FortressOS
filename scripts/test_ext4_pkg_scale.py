@@ -76,7 +76,7 @@ def build_pkg_probe(build_dir: Path) -> Path:
     return out_elf
 
 
-def prepare_installed_gpt_disk(out: Path, probe_elf: Path) -> tuple[Path, uuid.UUID]:
+def prepare_installed_gpt_disk(out: Path, probe_elf: Path, probe_name: str = "pkg-probe") -> tuple[Path, uuid.UUID]:
     """Assembles a bootable installed NVMe GPT disk fixture with /bin/pkg-probe."""
     stage = out / "tree"
     stage.mkdir(parents=True, exist_ok=True)
@@ -105,8 +105,9 @@ def prepare_installed_gpt_disk(out: Path, probe_elf: Path) -> tuple[Path, uuid.U
     (stage / "etc/shadow").write_text(f"root:!:::::::\noperator:{h}:::::::\n")
 
     # Install probe to /bin/pkg-probe
-    shutil.copyfile(probe_elf, stage / "bin/pkg-probe")
-    attrs["/bin/pkg-probe"] = (0o755, 0, 0)
+    assert probe_name in ("pkg-probe", "dir-rename-probe")
+    shutil.copyfile(probe_elf, stage / "bin" / probe_name)
+    attrs["/bin/" + probe_name] = (0o755, 0, 0)
 
     attrs.update({
         "/etc/shadow": (0o600, 0, 0),

@@ -19,9 +19,13 @@ bool ext4_storage_owned(void);
  * extent depth <=2, 4096 extent/node traversal budget, 64 metadata/data images
  * per operation. Excess credits fail before writes. RW has immediate allocation
  * and synchronous barriers, with no journal or crash-consistency guarantee.
- * create/mkdir, unlink/rmdir, regular-file rename without replacement, and
- * truncate-to-zero are supported. Directory rename and active-target deletion
- * return EOPNOTSUPP; replacement returns EEXIST without removing either name.
+ * create/mkdir, unlink/rmdir, trusted no-replace file/directory rename, and
+ * truncate-to-zero are supported. Actor mutation still requires journaled E4-B;
+ * active-target deletion returns EOPNOTSUPP. Replacement returns EEXIST.
+ * Journaled directory relocation atomically changes parent entries/links and ..;
+ * cached subtree publication follows durability. Cold path preflight is bounded
+ * to 4096 entries/directory blocks and VFS_MAX_PATH (excess returns EFBIG).
+ * Process cwd strings are not rebased. See EXT4_DIRECTORY_RENAME_DESIGN.md.
  * RW owns an eight-block clean metadata cache under the filesystem lock.
  * The mounted device requires exclusive write ownership; external/raw changes
  * require remount. Cache hits retain all metadata checksum/structure checks.

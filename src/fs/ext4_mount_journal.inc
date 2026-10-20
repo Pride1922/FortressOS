@@ -286,6 +286,7 @@ static int e4_junlink(vfs_node_t *parent,const char *name) {
 }
 static int e4_jrename_account(vfs_node_t *old,const char *name,vfs_node_t *dest,const char *next,bool require_directory,const creds_t *actor,bool account) {
     if (!e4_namespace_name(name) || !e4_namespace_name(next)) return -VFS_EINVAL;
+    e4_move_cache_t *publication=NULL;
     uint64_t flags=spin_lock_irqsave(&e4_lock);int r=e4_state_account(old,account || e4_account_directory(old));
     if (!r) r=e4_state_account(dest,account || e4_account_directory(dest));
     if (!r && !account && (e4_account_name(old,name) || e4_account_name(dest,next))) r=-VFS_EROFS;
@@ -297,7 +298,11 @@ static int e4_jrename_account(vfs_node_t *old,const char *name,vfs_node_t *dest,
     if (!r && !account && e4_account_inode(fs,source)) r=-VFS_EROFS;
     uint32_t victim=0;bool victim_scanned=false;
     if (!r && require_directory && in.mode!=VFS_S_IFDIR) r=-VFS_ENOTDIR;
+    if(!r && in.mode==VFS_S_IFDIR && account)r=-VFS_EOPNOTSUPP;
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
+    if(!r && actor && in.mode==VFS_S_IFDIR && old!=dest) {
+        vfs_metadata_t value=e4_value(&in);r=permission_access_value(&value,VFS_MAY_WRITE,actor);
+    }
     if (!r && actor) {
         r=e4_access_locked(old,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
         if (!r) r=e4_access_locked(dest,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
@@ -317,6 +322,9 @@ static int e4_jrename_account(vfs_node_t *old,const char *name,vfs_node_t *dest,
     if (!r && !victim_scanned) {r=e4_scan(dest->fs_private,next,0,NULL,&victim);if (r>=0) r=0;}
     if (!r && !account && victim && e4_account_inode(fs,victim)) r=-VFS_EROFS;
     if (!r && old==dest && !strcmp(name,next)) goto done;
+    if(!r&&in.mode==VFS_S_IFDIR)r=e4_move_ancestry(fs,source,((e4_inode_t *)dest->fs_private)->ino);
+    if(!r&&victim)r=-VFS_EEXIST;
+    if(!r)r=e4_move_cache_prepare(fs,old,name,dest,next,source,in.mode==VFS_S_IFDIR,&publication);
     if (!r) {
         fs->account_allocation=account;
         r=ext4_engine_namespace_rename(fs->engine,((e4_inode_t *)old->fs_private)->ino,name,
@@ -328,17 +336,12 @@ static int e4_jrename_account(vfs_node_t *old,const char *name,vfs_node_t *dest,
             const char *names[3]={"passwd","group","shadow"};
             for (unsigned i=0;i<3;i++) if (!strcmp(next,names[i])) fs->account_inodes[i+1]=source;
         }
-        vfs_node_t **link=&old->children;
-        while (*link && strcmp((*link)->name,name)) link=&(*link)->next;
-        if (*link) {
-            vfs_node_t *node=*link;*link=node->next;node->next=dest->children;dest->children=node;node->parent=dest;
-            memcpy(node->name,next,strlen(next)+1);size_t length=strlen(dest->path);
-            memcpy(node->path,dest->path,length);node->path[length]='/';memcpy(node->path+length+1,next,strlen(next)+1);
-        }
-        if (e4_journal_refresh(old) || (dest!=old && e4_journal_refresh(dest))) { e4_jtaint(fs);r=-VFS_EIO; }
+        if (e4_journal_refresh(old) || (dest!=old && e4_journal_refresh(dest))) {
+            e4_jtaint(fs);if(in.mode==VFS_S_IFDIR)fs->namespace_uncertain=true;r=-VFS_EIO;
+        } else e4_move_cache_publish(fs,old,dest,next,publication);
     }
 done:
-    spin_unlock_irqrestore(&e4_lock,flags);return r;
+    spin_unlock_irqrestore(&e4_lock,flags);kfree(publication);return r;
 }
 static int e4_jrename_common(vfs_node_t *o,const char *n,vfs_node_t *d,const char *s,bool r,const creds_t *c) {
     return e4_jrename_account(o,n,d,s,r,c,false);

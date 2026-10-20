@@ -136,9 +136,37 @@ int ext4_engine_namespace_remove(ext4_engine_t *e,uint32_t parent,const char *na
 done:
     return e4_namespace_end(e,r);
 }
-int ext4_engine_namespace_rename(ext4_engine_t *e,uint32_t old_parent,const char *old_name,uint32_t new_parent,const char *new_name) {
-    if (!e4_namespace_name(old_name) || !e4_namespace_name(new_name)) return -VFS_EINVAL;
-    int r=e4_namespace_begin(e);if (r) return r;
+static int e4_move_ancestry(ext4_mount_t *fs,uint32_t source,uint32_t parent) {
+    for(unsigned depth=0;depth<E4_MAP_MAX;depth++) {
+        if(parent==source)return -VFS_EINVAL;
+        e4_inode_t in;uint32_t self=0,up=0;vfs_dirent_t entry;
+        int r=e4_inode(fs,parent,&in);if(r)return r;
+        if(in.mode!=VFS_S_IFDIR)return -VFS_EIO;
+        r=e4_scan(&in,".",0,&entry,&self);if(r<0)return r;
+        if(self!=parent||entry.type!=VFS_DIRECTORY)return -VFS_EIO;
+        r=e4_scan(&in,"..",0,&entry,&up);if(r<0)return r;
+        if(!up||entry.type!=VFS_DIRECTORY)return -VFS_EIO;
+        if(parent==2)return up==2?0:-VFS_EIO;
+        if(up==parent)return -VFS_EIO;
+        parent=up;
+    }
+    return -VFS_EFBIG;
+}
+static int e4_move_dotdot(ext4_engine_t *e,e4_inode_t *in,uint32_t old,uint32_t next) {
+    uint32_t up=0,physical=0;int r=e4_scan(in,"..",0,NULL,&up);if(r<0)return r;
+    if(up!=old)return -VFS_EIO;
+    r=e4_dir_block(in,0,&physical);if(r)return r;
+    uint8_t *b=e4_stage(e,physical,E4_REFERENCE);if(!b)return e->error;
+    for(unsigned at=0;at<in->fs->bs-12;at+=e4_u16(b+at+4)) {
+        if(e4_u32(b+at)==old && b[at+6]==2 && b[at+8]=='.' && b[at+9]=='.') {
+            e4_p32(b+at,next);e4_dir_sum(in,b);return 0;
+        }
+    }
+    return -VFS_EIO;
+}
+static int e4_rename_plan(ext4_engine_t *e,uint32_t old_parent,const char *old_name,
+                           uint32_t new_parent,const char *new_name,bool *directory) {
+    int r;
     e4_inode_t old,dest,in;uint32_t ino=0,existing=0;
     r=e4_namespace_parent(e,old_parent,&old);if (r) goto done;
     r=e4_namespace_parent(e,new_parent,&dest);if (r) goto done;
@@ -146,15 +174,43 @@ int ext4_engine_namespace_rename(ext4_engine_t *e,uint32_t old_parent,const char
     if (!ino) { r=-VFS_ENOENT;goto done; }
     if (ino<11 || ino==e->fs->journal_ino) { r=-VFS_EOPNOTSUPP;goto done; }
     r=e4_inode(e->fs,ino,&in);if (r) goto done;
-    if (in.mode!=0x8000) { r=-VFS_EOPNOTSUPP;goto done; }
+    *directory=in.mode==VFS_S_IFDIR;
+    if (in.mode!=VFS_S_IFREG && !*directory) { r=-VFS_EOPNOTSUPP;goto done; }
     if (old_parent==new_parent && !strcmp(old_name,new_name)) {
-        ext4_engine_abort(e);e->file_planning=false;e4_semantic_invalidate(e);return 0;
+        return 0;
     }
+    if(*directory){r=e4_move_ancestry(e->fs,ino,new_parent);if(r)goto done;}
     r=e4_scan(&dest,new_name,0,NULL,&existing);if (r<0) goto done;
     if (existing) { r=-VFS_EEXIST;goto done; }
+    if(*directory) {
+        r=e4_namespace_parent(e,ino,&in);if(r)goto done;
+        uint32_t up=0;r=e4_scan(&in,"..",0,NULL,&up);if(r<0)goto done;
+        if(up!=old_parent){r=-VFS_EIO;goto done;}
+    }
     uint8_t *raw;r=e4_load_plan(e,ino,&in,&raw);if (r) goto done;
-    r=e4_dir_edit(e,&dest,new_name,ino,1);
+    if(*directory && old_parent!=new_parent) {
+        uint8_t *a=e4_inode_image(e,old_parent),*b=e4_inode_image(e,new_parent);
+        if(!a||!b){r=e->error;goto done;}
+        if(e4_u16(a+26)<3){r=-VFS_EIO;goto done;}
+        if(e4_u16(b+26)==UINT16_MAX){r=-VFS_EFBIG;goto done;}
+        e4_p16(a+26,e4_u16(a+26)-1);e4_p16(b+26,e4_u16(b+26)+1);
+        e4_inode_sum(e->fs,old_parent,a);e4_inode_sum(e->fs,new_parent,b);
+        r=e4_move_dotdot(e,&in,old_parent,new_parent);if(r)goto done;
+    }
+    r=e4_dir_edit(e,&dest,new_name,ino,*directory?2:1);
     if (!r) r=e4_dir_edit(e,&old,old_name,0,0);
+
 done:
-    return e4_namespace_end(e,r);
+    return r;
+}
+int ext4_engine_namespace_rename(ext4_engine_t *e,uint32_t old_parent,const char *old_name,uint32_t new_parent,const char *new_name) {
+    if (!e4_namespace_name(old_name) || !e4_namespace_name(new_name)) return -VFS_EINVAL;
+    int r=e4_namespace_begin(e);if(r)return r;bool directory=false;
+    r=e4_rename_plan(e,old_parent,old_name,new_parent,new_name,&directory);
+    if(!r&&old_parent==new_parent&&!strcmp(old_name,new_name)) {
+        ext4_engine_abort(e);e->file_planning=false;e4_semantic_invalidate(e);return 0;
+    }
+    r=e4_namespace_end(e,r);
+    if(r&&directory&&e->tainted)e->fs->namespace_uncertain=true;
+    return r;
 }

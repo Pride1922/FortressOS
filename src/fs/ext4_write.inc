@@ -1,4 +1,6 @@
 /* E4-A synchronous VFS mutations. Included after the bounded engine. */
+static int e4_move_ancestry(ext4_mount_t *,uint32_t,uint32_t);
+static int e4_rename_plan(ext4_engine_t *,uint32_t,const char *,uint32_t,const char *,bool *);
 static int e4_rw_workspace(ext4_mount_t *fs) {
     ext4_engine_t *e=kcalloc(1,sizeof(*e));
     e4_map_t *map=kmalloc(sizeof(*map)+E4_MAP_MAX*sizeof(e4_extent_t));
@@ -338,6 +340,7 @@ done:
 }
 static int e4_rename(vfs_node_t *old_dir,const char *old_name,vfs_node_t *new_dir,const char *new_name) {
     if (!e4_name(old_name) || !e4_name(new_name)) return -VFS_EINVAL;
+    e4_move_cache_t *publication=NULL;bool directory=false;
     uint64_t f=spin_lock_irqsave(&e4_lock); int r=e4_state(old_dir); if (r) goto done;
     r=e4_state(new_dir); if (r) goto done;
     e4_inode_t *old=old_dir->fs_private,*dest=new_dir->fs_private;
@@ -347,34 +350,24 @@ static int e4_rename(vfs_node_t *old_dir,const char *old_name,vfs_node_t *new_di
     if (!ino) { r=-VFS_ENOENT; goto done; }
     if (old_dir==new_dir && !strcmp(old_name,new_name)) { r=0; goto done; }
     e4_inode_t in; r=e4_inode(old->fs,ino,&in); if (r) goto done;
-    /* Directory moves need descendant-path and parent-link publication; defer
-     * them rather than publishing an incomplete VFS subtree move. */
-    if (in.mode!=0x8000) { r=-VFS_EOPNOTSUPP; goto done; }
+    directory=in.mode==VFS_S_IFDIR;
     if (strlen(new_dir->path)+1+strlen(new_name)>=VFS_MAX_PATH) { r=-VFS_EFBIG; goto done; }
     dest->map=NULL; r=e4_scan(dest,new_name,0,NULL,&existing); if (r<0) goto done;
+    if(directory){r=e4_move_ancestry(old->fs,ino,dest->ino);if(r)goto done;}
     if (existing) { r=-VFS_EEXIST; goto done; }
+    r=e4_move_cache_prepare(old->fs,old_dir,old_name,new_dir,new_name,ino,directory,&publication);if(r)goto done;
     r=e4_plan_begin(e); if (r) goto done;
-    uint8_t *inode_raw; r=e4_load_plan(e,ino,&in,&inode_raw);
-    if (r) { e->ready=false; goto done; }
-    r=e4_dir_edit(e,dest,new_name,ino,1); if (!r) r=e4_dir_edit(e,old,old_name,0,0);
+    r=e4_rename_plan(e,old->ino,old_name,dest->ino,new_name,&directory);
     if (!r) r=e4_publish(e); else e->ready=false;
-    if (!r) r=e4_refresh(old_dir);
-    if (!r && old_dir!=new_dir) r=e4_refresh(new_dir);
-    if (!r) for (unsigned i=0;i<old->fs->nodes;i++) {
-        e4_node_t *n=old->fs->cached[i];
-        if (n->removed || n->inode.ino!=ino) continue;
-        vfs_node_t **link=&old_dir->children;
-        while (*link && *link!=&n->node) link=&(*link)->next;
-        if (*link) *link=n->node.next;
-        n->node.next=new_dir->children; new_dir->children=&n->node; n->node.parent=new_dir;
-        memcpy(n->node.name,new_name,strlen(new_name)+1);
-        size_t plen=strlen(new_dir->path);
-        memcpy(n->node.path,new_dir->path,plen); n->node.path[plen]='/';
-        memcpy(n->node.path+plen+1,new_name,strlen(new_name)+1);
-        break;
+    if (!r) {
+        r=e4_refresh(old_dir);
+        if (!r && old_dir!=new_dir) r=e4_refresh(new_dir);
+        if(r&&directory){e->tainted=true;e4_cache_drop(old->fs,true);}
     }
+    if(!r)e4_move_cache_publish(old->fs,old_dir,new_dir,new_name,publication);
+    if(r&&directory&&e->tainted)old->fs->namespace_uncertain=true;
 done:
-    spin_unlock_irqrestore(&e4_lock,f); return r;
+    spin_unlock_irqrestore(&e4_lock,f);kfree(publication);return r;
 }
 int ext4_sync(ext4_mount_t *fs) {
     spin_debug_assert_unheld(); uint64_t f=spin_lock_irqsave(&e4_lock);

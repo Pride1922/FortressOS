@@ -2324,6 +2324,13 @@ test-ext4-stage-host:
 test-ext4-stage:
 	python3 scripts/test_ext4_latency.py --stage
 
+.PHONY: test-ext4-mv-host test-ext4-mv
+test-ext4-mv-host:
+	python3 scripts/test_ext4_mv_host.py
+
+test-ext4-mv:
+	python3 scripts/test_ext4_mv.py
+
 test-ssh-stage-sla:
 	python3 scripts/test_ssh_stage_sla.py --firmware bios --smp 4
 	python3 scripts/test_ssh_stage_sla.py --firmware uefi --smp 4

@@ -50,7 +50,7 @@ and [package-manager plan](PACKAGE_MANAGER_PLAN.md).
 | EH-3 | Durability/error API and recovery headroom | Explicit barrier semantics, late-error reporting and block/inode exhaustion recovery tests pass |
 | EH-4 | Package-scale installed-root acceptance | Repeatable workload/reboot/interruption campaign, exact counters/bytes/modes and Linux audits pass |
 | EH-5 | Measure latency and make narrowly justified optimizations | COMPLETE (32-block / 128 KiB staging batching in `SYS_STAGE_WRITE` 85 / `SYS_FSYNC` 86; 3.8â€“4.1Ã— speedup; host ASan/UBSan 6/6 PASS; QEMU 8/8 PASS; SSH keystroke p95 55.5 ms < 100 ms SLA gate PASS on BIOS/UEFI SMP=4) |
-| EH-6 | Selective application compatibility | Each directory-move/truncate-extension/link/feature addition gets a separate contract and acceptance gate |
+| EH-6 | Selective application compatibility | Directory relocation COMPLETE: host 6/6 journaled + 3/3 trusted fallback; 2280 callback cuts; installed BIOS/UEFI × SMP=1/4 8/8 boots and 8/8 Linux audits PASS. Other features retain separate contracts/gates; [evidence](../roadmap/ext4-directory-rename.md) |
 
 EH-1A is the first implementation task. EH-2 and EH-3 are prerequisites for
 package-manager target mutation; host package producers/verifiers can proceed
@@ -190,6 +190,20 @@ disposable NVMe fixtures (`make test-ext4-pkg-scale`). Demonstrates:
    retention and concurrent background worker execution.
 4. Clean shutdown and post-boot host Linux Oracle audit: `e2fsck -fn` 0 errors, `debugfs`
    byte-exact hash identity. Evidence recorded in [EH-4 evidence](../roadmap/ext4-package-scale.md).
+
+## EH-6: directory rename and subtree relocation
+
+The first selective compatibility addition extends existing no-replace SYS_RENAME
+and `/bin/mv` to directory trees. [Design](EXT4_DIRECTORY_RENAME_DESIGN.md) covers
+same-parent entry changes, cross-parent link counts and `..`, cycle rejection,
+preflight path bounds and allocation-free cached subtree publication. No syscall
+or existing ABI changes. Directory replacement and other EH-6 features remain
+separate work; EH-1B remains open.
+
+Run `make test-ext4-mv-host` and `make test-ext4-mv`; the latter builds a private
+kernel/initramfs and tests installed disposable NVMe under BIOS/UEFI × SMP=1/4,
+with shutdown/reboot and independent Linux audits. Exact results and limitations
+are recorded in [the EH-6 evidence](../roadmap/ext4-directory-rename.md).
 
 ## Deliverables and work discipline
 
