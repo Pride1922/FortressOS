@@ -471,8 +471,8 @@ static __attribute__((noinline)) int sshd_worker_run(int session_id, int client_
                     if (send_channel_replies(&transport, client_fd, &chan_reply) != 0) goto session_cleanup;
                 }
             }
-        } else if (n == 0) {
-            /* Client TCP EOF */
+        } else if (n == 0 || (n < 0 && n != SYSCALL_EAGAIN && n != -11)) {
+            /* Client TCP EOF or broken link / error */
             break;
         }
 
