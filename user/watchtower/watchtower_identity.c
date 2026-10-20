@@ -1,4 +1,28 @@
 #include "watchtower_identity.h"
+
+static void id_sleep_5ms(void) {
+#ifndef WATCHTOWER_HOST_TEST
+#ifndef __linux__
+    timespec_t ts = { .tv_sec = 0, .tv_nsec = 5000000 };
+    long ret;
+    __asm__ volatile (
+        "movq %1, %%rax\n"
+        "movq %2, %%rdi\n"
+        "movq %3, %%rsi\n"
+        "movq %4, %%rdx\n"
+        "movq %5, %%r10\n"
+        "movq %6, %%r8\n"
+        "movq %7, %%r9\n"
+        "syscall\n"
+        "movq %%rax, %0\n"
+        : "=r"(ret)
+        : "g"((long)SYS_NANOSLEEP), "g"((uintptr_t)&ts), "g"(0UL), "g"(0UL), "g"(0UL), "g"(0UL), "g"(0UL)
+        : "rcx", "r11", "memory", "rax", "rdi", "rsi", "rdx", "r10", "r8", "r9"
+    );
+    (void)ret;
+#endif
+#endif
+}
 static bool equal(const char *a,const char *b) {
     while (*a && *a==*b) {a++;b++;} return *a==*b;
 }
@@ -47,7 +71,32 @@ bool watchtower_resolve_identity(const userdb_t *db,const char *user,
 bool watchtower_prepare_identity(const char *user,const char *group,spawn_identity_t *out) {
     static userdb_t db;
     spawn_identity_t next;
-    if (!out || !db_load(&db,false) || !watchtower_resolve_identity(&db,user,group,&next) || !db_check())
+    if (!out || !user || !*user || !group || !*group) return false;
+
+    bool loaded = false;
+    for (int retry = 0; retry < 10; retry++) {
+        if (db_load(&db, false)) {
+            loaded = true;
+            break;
+        }
+        if (!db_busy()) break;
+        id_sleep_5ms();
+    }
+    if (!loaded) return false;
+
+    if (!watchtower_resolve_identity(&db, user, group, &next))
         return false;
-    *out=next;return true;
+
+    bool check_ok = false;
+    for (int retry = 0; retry < 10; retry++) {
+        if (db_check()) {
+            check_ok = true;
+            break;
+        }
+        id_sleep_5ms();
+    }
+    if (!check_ok) return false;
+
+    *out = next;
+    return true;
 }

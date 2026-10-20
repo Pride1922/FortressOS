@@ -83,6 +83,13 @@ static int64_t wt_spawn(const char *path, const char *const argv[]) {
     return (int64_t)pid;
 }
 
+static void wt_sleep_ms(uint32_t ms) {
+    timespec_t ts;
+    ts.tv_sec = (int64_t)(ms / 1000);
+    ts.tv_nsec = (int64_t)((ms % 1000) * 1000000ULL);
+    (void)sys_call(SYS_NANOSLEEP, (uintptr_t)&ts, 0, 0, 0, 0, 0);
+}
+
 static int64_t wt_spawn_service(const service_t *svc, const char *const argv[],
                                   const char *const envp[], const char *cwd,
                                   int *out_pipe_fd) {
@@ -148,8 +155,17 @@ static int64_t wt_spawn_service(const service_t *svc, const char *const argv[],
     launch.base.fd_actions = (uint64_t)actions;
     launch.base.action_count = (uint32_t)act_count;
 
-    /* Revalidate the account generation immediately before the spawn call. */
-    long pid = db_check() ? sys_call(SYS_SPAWN_EXT, (uintptr_t)svc->exec_path,
+    /* Revalidate the account generation immediately before the spawn call.
+     * Retry with backoff if another process is concurrently accessing the account database. */
+    bool check_ok = false;
+    for (int retry = 0; retry < 10; retry++) {
+        if (db_check()) {
+            check_ok = true;
+            break;
+        }
+        wt_sleep_ms(5);
+    }
+    long pid = check_ok ? sys_call(SYS_SPAWN_EXT, (uintptr_t)svc->exec_path,
                                       (uintptr_t)&launch, sizeof(launch), 0, 0, 0) : -1;
 
     /* Close write end in parent */
@@ -215,13 +231,6 @@ static uint64_t wt_monotonic_sec(void) {
     long ret = sys_call(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (uintptr_t)&ts, 0, 0, 0, 0);
     if (ret != 0) return 0;
     return (uint64_t)ts.tv_sec;
-}
-
-static void wt_sleep_ms(uint32_t ms) {
-    timespec_t ts;
-    ts.tv_sec = (int64_t)(ms / 1000);
-    ts.tv_nsec = (int64_t)((ms % 1000) * 1000000ULL);
-    (void)sys_call(SYS_NANOSLEEP, (uintptr_t)&ts, 0, 0, 0, 0, 0);
 }
 
 static volatile int g_term_requested = 0;

@@ -5,8 +5,28 @@
 #include "creds.h"
 static userdb_t db;
 static bool load_ok=true,check_ok=true;
-bool db_load(userdb_t *out,bool shadow) {assert(!shadow);if (!load_ok) return false;*out=db;return true;}
-bool db_check(void) {return check_ok;}
+static bool busy_val=false;
+static int busy_countdown=0,check_countdown=0;
+bool db_busy(void) {return busy_val;}
+bool db_load(userdb_t *out,bool shadow) {
+    assert(!shadow);
+    if (busy_countdown > 0) {
+        busy_countdown--;
+        busy_val = true;
+        return false;
+    }
+    busy_val = false;
+    if (!load_ok) return false;
+    *out=db;
+    return true;
+}
+bool db_check(void) {
+    if (check_countdown > 0) {
+        check_countdown--;
+        return false;
+    }
+    return check_ok;
+}
 static void reject(const char *user,const char *group) {
     spawn_identity_t out;memset(&out,0xa5,sizeof(out));spawn_identity_t before=out;
     assert(!watchtower_resolve_identity(&db,user,group,&out));
@@ -25,6 +45,14 @@ int main(void) {
     load_ok=true;check_ok=false;assert(!watchtower_prepare_identity("root","root",&out));
     assert(!memcmp(&out,&saved,sizeof(out)));check_ok=true;
     assert(watchtower_prepare_identity("root","root",&out) && !out.uid);
+    /* Contention retry resilience */
+    busy_countdown = 3;
+    assert(watchtower_prepare_identity("root","root",&out) && !out.uid);
+    assert(busy_countdown == 0);
+
+    check_countdown = 3;
+    assert(watchtower_prepare_identity("root","root",&out) && !out.uid);
+    assert(check_countdown == 0);
     assert(watchtower_resolve_identity(&db,"operator","operator",&out));
     assert(out.uid==1000 && out.gid==1000 && out.ngroups==3);
     assert(out.groups[0]==1000 && out.groups[1]==10 && out.groups[2]==44);

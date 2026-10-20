@@ -969,6 +969,63 @@ static void test_boot_disabled_services_not_started(void) {
     printf("PASS: test_boot_disabled_services_not_started\n");
 }
 
+static void test_spawn_failure_restart_and_limit(void) {
+    printf("[TEST] test_spawn_failure_restart_and_limit...\n");
+    mock_reset();
+    watchtower_table_t tbl;
+    watchtower_table_init(&tbl);
+
+    service_t s = {
+        .name = "crond",
+        .exec_path = "/bin/fail_to_spawn",
+        .order = 30,
+        .enabled = true,
+        .readiness_mode = READINESS_NONE,
+        .restart_policy = RESTART_ON_FAILURE,
+        .restart_limit = 3,
+        .restart_delay_sec = 2
+    };
+    watchtower_table_add_service(&tbl, &s);
+
+    /* Initial start at t=1000s fails spawn */
+    assert(watchtower_start_service(&tbl, 0, 1000, &g_mock_ops) == -3);
+    assert(tbl.services[0].pid == 0);
+    assert(tbl.services[0].restart_count == 1);
+    assert(tbl.services[0].next_restart_sec == 1002);
+    assert(tbl.services[0].state == SVC_STATE_STARTING);
+    assert(strstr(g_mock.last_stderr, "restarting in 2s (attempt 1/3)") != NULL);
+
+    /* Tick at 1001s: still in backoff */
+    watchtower_tick(&tbl, 1001, &g_mock_ops);
+    assert(tbl.services[0].pid == 0);
+    assert(tbl.services[0].restart_count == 1);
+
+    /* Tick at 1002s: restart attempt #2 fails spawn */
+    watchtower_tick(&tbl, 1002, &g_mock_ops);
+    assert(tbl.services[0].pid == 0);
+    assert(tbl.services[0].restart_count == 2);
+    assert(tbl.services[0].next_restart_sec == 1004);
+    assert(tbl.services[0].state == SVC_STATE_STARTING);
+    assert(strstr(g_mock.last_stderr, "restarting in 2s (attempt 2/3)") != NULL);
+
+    /* Tick at 1004s: restart attempt #3 fails spawn */
+    watchtower_tick(&tbl, 1004, &g_mock_ops);
+    assert(tbl.services[0].pid == 0);
+    assert(tbl.services[0].restart_count == 3);
+    assert(tbl.services[0].next_restart_sec == 1006);
+    assert(tbl.services[0].state == SVC_STATE_STARTING);
+    assert(strstr(g_mock.last_stderr, "restarting in 2s (attempt 3/3)") != NULL);
+
+    /* Tick at 1006s: attempt #4 exceeds limit of 3 -> marks FAILED */
+    watchtower_tick(&tbl, 1006, &g_mock_ops);
+    assert(tbl.services[0].pid == 0);
+    assert(tbl.services[0].state == SVC_STATE_FAILED);
+    assert(tbl.services[0].next_restart_sec == 0);
+    assert(strstr(g_mock.last_stderr, "restart limit reached (3/3), marking FAILED") != NULL);
+
+    printf("PASS: test_spawn_failure_restart_and_limit\n");
+}
+
 int main(void) {
     printf("===================================================\n");
     printf("Watchtower Service Supervisor Test Suite (ASan)\n");
@@ -1000,7 +1057,8 @@ int main(void) {
     test_fallback_to_live_media();
     test_identity_failure_is_closed();
     test_boot_disabled_services_not_started();
+    test_spawn_failure_restart_and_limit();
 
-    printf("\nALL 20 WATCHTOWER SERVICE, DISCOVERY & RECOVERY TESTS PASSED!\n");
+    printf("\nALL 21 WATCHTOWER SERVICE, DISCOVERY & RECOVERY TESTS PASSED!\n");
     return 0;
 }

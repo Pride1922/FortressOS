@@ -110,6 +110,82 @@ service_t *watchtower_find_service_by_pid(watchtower_table_t *tbl, int64_t pid) 
     return NULL;
 }
 
+static void svc_append(char *dst, const char *src, size_t cap) {
+    if (!dst || cap == 0) return;
+    size_t len = 0;
+    while (dst[len] && len < cap) len++;
+    size_t i = 0;
+    while (src && src[i] && len + 1 < cap) {
+        dst[len++] = src[i++];
+    }
+    dst[len] = '\0';
+}
+
+static void svc_append_u64(char *dst, uint64_t val, size_t cap) {
+    char tmp[32];
+    int idx = 0;
+    if (val == 0) {
+        tmp[idx++] = '0';
+    } else {
+        while (val > 0) {
+            tmp[idx++] = (char)('0' + (val % 10));
+            val /= 10;
+        }
+    }
+    char rev[32];
+    for (int i = 0; i < idx; i++) {
+        rev[i] = tmp[idx - 1 - i];
+    }
+    rev[idx] = '\0';
+    svc_append(dst, rev, cap);
+}
+
+static void svc_schedule_restart_or_fail(service_t *svc, uint64_t now_sec, const watchtower_sys_ops_t *ops) {
+    /* Reset restart counter window if 60s passed */
+    if (svc->restart_window_start_sec == 0 || now_sec >= svc->restart_window_start_sec + 60) {
+        svc->restart_window_start_sec = now_sec;
+        svc->restart_count = 0;
+    }
+
+    if (svc->restart_count < svc->restart_limit) {
+        svc->restart_count++;
+        svc->state = SVC_STATE_STARTING;
+        svc->next_restart_sec = now_sec + svc->restart_delay_sec;
+
+        if (ops && ops->log_stderr) {
+            char msg[256];
+            msg[0] = '\0';
+            svc_append(msg, "[watchtower] service '", sizeof(msg));
+            svc_append(msg, svc->name, sizeof(msg));
+            svc_append(msg, "' restarting in ", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_delay_sec, sizeof(msg));
+            svc_append(msg, "s (attempt ", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_count, sizeof(msg));
+            svc_append(msg, "/", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
+            svc_append(msg, ")\n", sizeof(msg));
+            ops->log_stderr(msg);
+        }
+    } else {
+        /* Crash loop threshold exceeded: freeze in FAILED */
+        svc->state = SVC_STATE_FAILED;
+        svc->next_restart_sec = 0;
+
+        if (ops && ops->log_stderr) {
+            char msg[256];
+            msg[0] = '\0';
+            svc_append(msg, "[watchtower] service '", sizeof(msg));
+            svc_append(msg, svc->name, sizeof(msg));
+            svc_append(msg, "' restart limit reached (", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
+            svc_append(msg, "/", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
+            svc_append(msg, "), marking FAILED\n", sizeof(msg));
+            ops->log_stderr(msg);
+        }
+    }
+}
+
 int watchtower_start_service(watchtower_table_t *tbl, size_t idx, uint64_t now_sec, const watchtower_sys_ops_t *ops) {
     if (!tbl || idx >= tbl->count || !ops) return -1;
     service_t *svc = &tbl->services[idx];
@@ -142,7 +218,6 @@ int watchtower_start_service(watchtower_table_t *tbl, size_t idx, uint64_t now_s
     int64_t pid;
     pid = ops->spawn_service ? ops->spawn_service(svc, argv, envp, cwd, &pipe_fd) : -1;
     if (pid <= 0) {
-        svc->state = SVC_STATE_FAILED;
         svc->pid = 0;
         svc->initial_pid = 0;
         svc->pipe_fd = -1;
@@ -152,6 +227,11 @@ int watchtower_start_service(watchtower_table_t *tbl, size_t idx, uint64_t now_s
             size_t n=sizeof("[watchtower] service identity/spawn rejected: ")-1;
             for (size_t i=0;svc->name[i] && n+2<sizeof(message);i++) message[n++]=svc->name[i];
             message[n++]='\n';message[n]=0;ops->log_stderr(message);
+        }
+        if (svc->restart_policy == RESTART_ALWAYS || svc->restart_policy == RESTART_ON_FAILURE) {
+            svc_schedule_restart_or_fail(svc, now_sec, ops);
+        } else {
+            svc->state = SVC_STATE_FAILED;
         }
         return -3; /* Spawn failed */
     }
@@ -225,36 +305,6 @@ int watchtower_restart_service(watchtower_table_t *tbl, size_t idx, uint64_t now
     }
 
     return watchtower_start_service(tbl, idx, now_sec, ops);
-}
-
-static void svc_append(char *dst, const char *src, size_t cap) {
-    if (!dst || cap == 0) return;
-    size_t len = 0;
-    while (dst[len] && len < cap) len++;
-    size_t i = 0;
-    while (src && src[i] && len + 1 < cap) {
-        dst[len++] = src[i++];
-    }
-    dst[len] = '\0';
-}
-
-static void svc_append_u64(char *dst, uint64_t val, size_t cap) {
-    char tmp[32];
-    int idx = 0;
-    if (val == 0) {
-        tmp[idx++] = '0';
-    } else {
-        while (val > 0) {
-            tmp[idx++] = (char)('0' + (val % 10));
-            val /= 10;
-        }
-    }
-    char rev[32];
-    for (int i = 0; i < idx; i++) {
-        rev[i] = tmp[idx - 1 - i];
-    }
-    rev[idx] = '\0';
-    svc_append(dst, rev, cap);
 }
 
 void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int status, uint64_t now_sec, const watchtower_sys_ops_t *ops) {
@@ -338,49 +388,7 @@ void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int stat
         return;
     }
 
-    /* Reset restart counter window if 60s passed */
-    if (svc->restart_window_start_sec == 0 || now_sec >= svc->restart_window_start_sec + 60) {
-        svc->restart_window_start_sec = now_sec;
-        svc->restart_count = 0;
-    }
-
-    if (svc->restart_count < svc->restart_limit) {
-        svc->restart_count++;
-        svc->state = SVC_STATE_STARTING;
-        svc->next_restart_sec = now_sec + svc->restart_delay_sec;
-
-        if (ops && ops->log_stderr) {
-            char msg[256];
-            msg[0] = '\0';
-            svc_append(msg, "[watchtower] service '", sizeof(msg));
-            svc_append(msg, svc->name, sizeof(msg));
-            svc_append(msg, "' restarting in ", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_delay_sec, sizeof(msg));
-            svc_append(msg, "s (attempt ", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_count, sizeof(msg));
-            svc_append(msg, "/", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
-            svc_append(msg, ")\n", sizeof(msg));
-            ops->log_stderr(msg);
-        }
-    } else {
-        /* Crash loop threshold exceeded: freeze in FAILED */
-        svc->state = SVC_STATE_FAILED;
-        svc->next_restart_sec = 0;
-
-        if (ops && ops->log_stderr) {
-            char msg[256];
-            msg[0] = '\0';
-            svc_append(msg, "[watchtower] service '", sizeof(msg));
-            svc_append(msg, svc->name, sizeof(msg));
-            svc_append(msg, "' restart limit reached (", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
-            svc_append(msg, "/", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
-            svc_append(msg, "), marking FAILED\n", sizeof(msg));
-            ops->log_stderr(msg);
-        }
-    }
+    svc_schedule_restart_or_fail(svc, now_sec, ops);
 }
 
 void watchtower_tick(watchtower_table_t *tbl, uint64_t now_sec, const watchtower_sys_ops_t *ops) {
