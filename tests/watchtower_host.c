@@ -32,6 +32,8 @@ typedef struct {
     mock_dir_t dirs[4];
     int dir_count;
     char last_stderr[256];
+    char last_service_log[256];
+    char last_spawn_fail[256];
     int invalid_config_count;
     int empty_dir_warning_count;
     bool reject_identity;
@@ -64,7 +66,7 @@ static int64_t mock_spawn(const service_t *svc, const char *const argv[],
     if (g_mock.reject_identity) return -1;
     (void)argv;
     if (g_mock.proc_count >= MOCK_MAX_PIDS) return -1;
-    if (strcmp(path, "/bin/fail_to_spawn") == 0) return -1;
+    if (strcmp(path, "/bin/fail_to_spawn") == 0) return -5; /* SYSCALL_ENOENT */
 
     int idx = g_mock.proc_count++;
     g_mock.procs[idx].pid = g_mock.next_pid++;
@@ -156,12 +158,21 @@ static int mock_list_dir(const char *path, char names[][64], uint32_t max_entrie
 static void mock_log_stderr(const char *msg) {
     if (!msg) return;
     host_str_copy(g_mock.last_stderr, msg, sizeof(g_mock.last_stderr));
+    if (strstr(msg, "spawn failed:")) {
+        host_str_copy(g_mock.last_spawn_fail, msg, sizeof(g_mock.last_spawn_fail));
+    }
     if (strstr(msg, "invalid service config")) {
         g_mock.invalid_config_count++;
     }
     if (strstr(msg, "no service configurations found")) {
         g_mock.empty_dir_warning_count++;
     }
+}
+
+static void mock_log_service(const char *svc_name, const char *msg) {
+    (void)svc_name;
+    if (!msg) return;
+    host_str_copy(g_mock.last_service_log, msg, sizeof(g_mock.last_service_log));
 }
 
 static const watchtower_sys_ops_t g_mock_ops = {
@@ -172,7 +183,8 @@ static const watchtower_sys_ops_t g_mock_ops = {
     .is_alive = mock_is_alive,
     .read_pid_file = mock_read_pid_file,
     .list_dir = mock_list_dir,
-    .log_stderr = mock_log_stderr
+    .log_stderr = mock_log_stderr,
+    .log_service = mock_log_service
 };
 
 /* --- TESTS --- */
@@ -993,7 +1005,9 @@ static void test_spawn_failure_restart_and_limit(void) {
     assert(tbl.services[0].restart_count == 1);
     assert(tbl.services[0].next_restart_sec == 1002);
     assert(tbl.services[0].state == SVC_STATE_STARTING);
+    assert(strstr(g_mock.last_spawn_fail, "spawn failed: crond (rc=-5, ENOENT: executable not found, path=/bin/fail_to_spawn)") != NULL);
     assert(strstr(g_mock.last_stderr, "restarting in 2s (attempt 1/3)") != NULL);
+    assert(strstr(g_mock.last_service_log, "restarting in 2s (attempt 1/3)") != NULL);
 
     /* Tick at 1001s: still in backoff */
     watchtower_tick(&tbl, 1001, &g_mock_ops);

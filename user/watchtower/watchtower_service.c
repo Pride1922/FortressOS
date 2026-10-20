@@ -1,5 +1,6 @@
 #include "watchtower.h"
 #include "watchtower_config.h"
+#include "syscall_abi.h"
 
 #ifndef WIFEXITED
 #define WIFEXITED(s) (((s) & 0x7f) == 0)
@@ -140,6 +141,46 @@ static void svc_append_u64(char *dst, uint64_t val, size_t cap) {
     svc_append(dst, rev, cap);
 }
 
+static void svc_append_i64(char *dst, int64_t val, size_t cap) {
+    if (val < 0) {
+        svc_append(dst, "-", cap);
+        uint64_t u = (uint64_t)(-(val + 1)) + 1;
+        svc_append_u64(dst, u, cap);
+    } else {
+        svc_append_u64(dst, (uint64_t)val, cap);
+    }
+}
+
+static const char *svc_errstr(int64_t rc) {
+    switch (rc) {
+        case SYSCALL_EINVAL:     return "EINVAL: invalid arguments or options";
+        case SYSCALL_EFAULT:     return "EFAULT: bad address";
+        case SYSCALL_EBADF:      return "EBADF: bad file descriptor";
+        case SYSCALL_ENOSYS:     return "ENOSYS: syscall not implemented";
+        case SYSCALL_ENOENT:     return "ENOENT: executable not found";
+        case SYSCALL_EMFILE:     return "EMFILE: too many open files";
+        case SYSCALL_EIO:        return "EIO: I/O error";
+        case SYSCALL_ENOMEM:     return "ENOMEM: out of memory";
+        case SYSCALL_ENOEXEC:    return "ENOEXEC: invalid executable format";
+        case SYSCALL_E2BIG:      return "E2BIG: argument list too long";
+        case SYSCALL_EAGAIN:     return "EAGAIN: resource temporarily unavailable";
+        case SYSCALL_EPERM:      return "EPERM: operation not permitted";
+        case SYSCALL_EACCES:     return "EACCES: permission denied or invalid identity";
+        case SYSCALL_ELOOP:      return "ELOOP: too many symlinks";
+        default:                 return "unknown error";
+    }
+}
+
+static void wt_emit_service_msg(const watchtower_sys_ops_t *ops, const char *svc_name, const char *msg) {
+    if (!ops || !msg) return;
+    if (ops->log_stderr) {
+        ops->log_stderr(msg);
+    }
+    if (ops->log_service && svc_name) {
+        ops->log_service(svc_name, msg);
+    }
+}
+
 static void svc_schedule_restart_or_fail(service_t *svc, uint64_t now_sec, const watchtower_sys_ops_t *ops) {
     /* Reset restart counter window if 60s passed */
     if (svc->restart_window_start_sec == 0 || now_sec >= svc->restart_window_start_sec + 60) {
@@ -152,37 +193,33 @@ static void svc_schedule_restart_or_fail(service_t *svc, uint64_t now_sec, const
         svc->state = SVC_STATE_STARTING;
         svc->next_restart_sec = now_sec + svc->restart_delay_sec;
 
-        if (ops && ops->log_stderr) {
-            char msg[256];
-            msg[0] = '\0';
-            svc_append(msg, "[watchtower] service '", sizeof(msg));
-            svc_append(msg, svc->name, sizeof(msg));
-            svc_append(msg, "' restarting in ", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_delay_sec, sizeof(msg));
-            svc_append(msg, "s (attempt ", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_count, sizeof(msg));
-            svc_append(msg, "/", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
-            svc_append(msg, ")\n", sizeof(msg));
-            ops->log_stderr(msg);
-        }
+        char msg[256];
+        msg[0] = '\0';
+        svc_append(msg, "[watchtower] service '", sizeof(msg));
+        svc_append(msg, svc->name, sizeof(msg));
+        svc_append(msg, "' restarting in ", sizeof(msg));
+        svc_append_u64(msg, (uint64_t)svc->restart_delay_sec, sizeof(msg));
+        svc_append(msg, "s (attempt ", sizeof(msg));
+        svc_append_u64(msg, (uint64_t)svc->restart_count, sizeof(msg));
+        svc_append(msg, "/", sizeof(msg));
+        svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
+        svc_append(msg, ")\n", sizeof(msg));
+        wt_emit_service_msg(ops, svc->name, msg);
     } else {
         /* Crash loop threshold exceeded: freeze in FAILED */
         svc->state = SVC_STATE_FAILED;
         svc->next_restart_sec = 0;
 
-        if (ops && ops->log_stderr) {
-            char msg[256];
-            msg[0] = '\0';
-            svc_append(msg, "[watchtower] service '", sizeof(msg));
-            svc_append(msg, svc->name, sizeof(msg));
-            svc_append(msg, "' restart limit reached (", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
-            svc_append(msg, "/", sizeof(msg));
-            svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
-            svc_append(msg, "), marking FAILED\n", sizeof(msg));
-            ops->log_stderr(msg);
-        }
+        char msg[256];
+        msg[0] = '\0';
+        svc_append(msg, "[watchtower] service '", sizeof(msg));
+        svc_append(msg, svc->name, sizeof(msg));
+        svc_append(msg, "' restart limit reached (", sizeof(msg));
+        svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
+        svc_append(msg, "/", sizeof(msg));
+        svc_append_u64(msg, (uint64_t)svc->restart_limit, sizeof(msg));
+        svc_append(msg, "), marking FAILED\n", sizeof(msg));
+        wt_emit_service_msg(ops, svc->name, msg);
     }
 }
 
@@ -222,12 +259,20 @@ int watchtower_start_service(watchtower_table_t *tbl, size_t idx, uint64_t now_s
         svc->initial_pid = 0;
         svc->pipe_fd = -1;
         svc->ready_verified = false;
-        if (ops->log_stderr) {
-            char message[128]="[watchtower] service identity/spawn rejected: ";
-            size_t n=sizeof("[watchtower] service identity/spawn rejected: ")-1;
-            for (size_t i=0;svc->name[i] && n+2<sizeof(message);i++) message[n++]=svc->name[i];
-            message[n++]='\n';message[n]=0;ops->log_stderr(message);
-        }
+
+        char message[256];
+        message[0] = '\0';
+        svc_append(message, "[watchtower] spawn failed: ", sizeof(message));
+        svc_append(message, svc->name, sizeof(message));
+        svc_append(message, " (rc=", sizeof(message));
+        svc_append_i64(message, pid, sizeof(message));
+        svc_append(message, ", ", sizeof(message));
+        svc_append(message, svc_errstr(pid), sizeof(message));
+        svc_append(message, ", path=", sizeof(message));
+        svc_append(message, svc->exec_path, sizeof(message));
+        svc_append(message, ")\n", sizeof(message));
+        wt_emit_service_msg(ops, svc->name, message);
+
         if (svc->restart_policy == RESTART_ALWAYS || svc->restart_policy == RESTART_ON_FAILURE) {
             svc_schedule_restart_or_fail(svc, now_sec, ops);
         } else {
@@ -319,18 +364,16 @@ void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int stat
         if (exit_code != 0) {
             svc->last_exit_code = exit_code;
             svc->state = SVC_STATE_FAILED;
-            if (ops && ops->log_stderr) {
-                char msg[256];
-                msg[0] = '\0';
-                svc_append(msg, "[watchtower] service '", sizeof(msg));
-                svc_append(msg, svc->name, sizeof(msg));
-                svc_append(msg, "' (pid ", sizeof(msg));
-                svc_append_u64(msg, (uint64_t)pid, sizeof(msg));
-                svc_append(msg, ") exited with code ", sizeof(msg));
-                svc_append_u64(msg, (uint64_t)exit_code, sizeof(msg));
-                svc_append(msg, "\n", sizeof(msg));
-                ops->log_stderr(msg);
-            }
+            char msg[256];
+            msg[0] = '\0';
+            svc_append(msg, "[watchtower] service '", sizeof(msg));
+            svc_append(msg, svc->name, sizeof(msg));
+            svc_append(msg, "' (pid ", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)pid, sizeof(msg));
+            svc_append(msg, ") exited with code ", sizeof(msg));
+            svc_append_u64(msg, (uint64_t)exit_code, sizeof(msg));
+            svc_append(msg, "\n", sizeof(msg));
+            wt_emit_service_msg(ops, svc->name, msg);
             return;
         }
         /* Launcher exited 0: keep waiting in STARTING state; tick will discover daemon PID */
@@ -362,18 +405,16 @@ void watchtower_handle_child_exit(watchtower_table_t *tbl, int64_t pid, int stat
     bool is_failure = (svc->last_exit_code != 0 || svc->last_term_sig != 0);
 
     int code_or_sig = svc->last_term_sig ? svc->last_term_sig : svc->last_exit_code;
-    if (ops && ops->log_stderr) {
-        char msg[256];
-        msg[0] = '\0';
-        svc_append(msg, "[watchtower] service '", sizeof(msg));
-        svc_append(msg, svc->name, sizeof(msg));
-        svc_append(msg, "' (pid ", sizeof(msg));
-        svc_append_u64(msg, (uint64_t)pid, sizeof(msg));
-        svc_append(msg, ") exited with code ", sizeof(msg));
-        svc_append_u64(msg, (uint64_t)code_or_sig, sizeof(msg));
-        svc_append(msg, "\n", sizeof(msg));
-        ops->log_stderr(msg);
-    }
+    char msg[256];
+    msg[0] = '\0';
+    svc_append(msg, "[watchtower] service '", sizeof(msg));
+    svc_append(msg, svc->name, sizeof(msg));
+    svc_append(msg, "' (pid ", sizeof(msg));
+    svc_append_u64(msg, (uint64_t)pid, sizeof(msg));
+    svc_append(msg, ") exited with code ", sizeof(msg));
+    svc_append_u64(msg, (uint64_t)code_or_sig, sizeof(msg));
+    svc_append(msg, "\n", sizeof(msg));
+    wt_emit_service_msg(ops, svc->name, msg);
 
     bool should_restart = false;
 

@@ -103,6 +103,7 @@ typedef struct {
     int64_t (*read_pid_file)(const char *path);
     int (*list_dir)(const char *path, char names[][64], uint32_t max_entries);
     void (*log_stderr)(const char *msg);
+    void (*log_service)(const char *svc_name, const char *msg);
 } watchtower_sys_ops_t;
 
 /* Core Service Table APIs */

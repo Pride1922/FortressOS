@@ -93,23 +93,24 @@ static void wt_sleep_ms(uint32_t ms) {
 static int64_t wt_spawn_service(const service_t *svc, const char *const argv[],
                                   const char *const envp[], const char *cwd,
                                   int *out_pipe_fd) {
-    if (!svc || !argv || !out_pipe_fd) return -1;
+    if (!svc || !argv || !out_pipe_fd) return SYSCALL_EINVAL;
     *out_pipe_fd = -1;
     spawn_opts_v3_t launch={0};
     if (!watchtower_prepare_identity(svc->user,svc->group,&launch.identity))
-        return -1;
+        return SYSCALL_EACCES;
 
     int pipe_fds[2] = {-1, -1};
     long ret = sys_call(SYS_PIPE, (uintptr_t)pipe_fds, 0, 0, 0, 0, 0);
     if (ret != 0) {
-        return -1; /* Never bypass identity, environment or cwd on pipe failure. */
+        return ret < 0 ? (int64_t)ret : SYSCALL_EMFILE; /* Never bypass identity, environment or cwd on pipe failure. */
     }
 
     /* Set read end non-blocking so supervisor never stalls */
-    if (sys_call(SYS_FCNTL, (uintptr_t)pipe_fds[0], F_SETFL, VFS_O_NONBLOCK, 0, 0, 0)<0) {
+    long fret = sys_call(SYS_FCNTL, (uintptr_t)pipe_fds[0], F_SETFL, VFS_O_NONBLOCK, 0, 0, 0);
+    if (fret < 0) {
         sys_call(SYS_CLOSE, (uintptr_t)pipe_fds[0], 0, 0, 0, 0, 0);
         sys_call(SYS_CLOSE, (uintptr_t)pipe_fds[1], 0, 0, 0, 0, 0);
-        return -1;
+        return (int64_t)fret;
     }
 
     spawn_fd_action_t actions[5];
@@ -165,15 +166,20 @@ static int64_t wt_spawn_service(const service_t *svc, const char *const argv[],
         }
         wt_sleep_ms(5);
     }
-    long pid = check_ok ? sys_call(SYS_SPAWN_EXT, (uintptr_t)svc->exec_path,
-                                      (uintptr_t)&launch, sizeof(launch), 0, 0, 0) : -1;
+    if (!check_ok) {
+        sys_call(SYS_CLOSE, (uintptr_t)pipe_fds[0], 0, 0, 0, 0, 0);
+        sys_call(SYS_CLOSE, (uintptr_t)pipe_fds[1], 0, 0, 0, 0, 0);
+        return SYSCALL_EPERM;
+    }
+    long pid = sys_call(SYS_SPAWN_EXT, (uintptr_t)svc->exec_path,
+                        (uintptr_t)&launch, sizeof(launch), 0, 0, 0);
 
     /* Close write end in parent */
     sys_call(SYS_CLOSE, (uintptr_t)pipe_fds[1], 0, 0, 0, 0, 0);
 
     if (pid <= 0) {
         sys_call(SYS_CLOSE, (uintptr_t)pipe_fds[0], 0, 0, 0, 0, 0);
-        return -1;
+        return pid < 0 ? (int64_t)pid : SYSCALL_EINVAL;
     }
 
     *out_pipe_fd = pipe_fds[0];
@@ -491,20 +497,92 @@ static void wt_append_log(const char *path, const char *data, size_t len, uint64
     }
 }
 
-static void wt_log_event(const char *msg) {
-    /* Background diagnostics belong in the log, never over the login prompt. */
-    char path[128];
-    path[0] = '\0';
-    wt_strlcpy(path, g_log_dir, sizeof(path));
-    wt_strlcat(path, "/watchtower.log", sizeof(path));
+static inline bool wt_is_leap_year(uint32_t year) {
+    return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+}
 
-    uint64_t sec = wt_monotonic_sec();
-    char line[512];
-    size_t pos = 0;
-    line[pos++] = '[';
+static bool wt_epoch_to_datetime(uint64_t epoch, uint32_t *out_year, uint8_t *out_month,
+                                 uint8_t *out_day, uint8_t *out_hour, uint8_t *out_min,
+                                 uint8_t *out_sec) {
+    uint64_t days = epoch / 86400ULL;
+    uint32_t sec_in_day = (uint32_t)(epoch % 86400ULL);
+
+    *out_hour = (uint8_t)(sec_in_day / 3600);
+    *out_min  = (uint8_t)((sec_in_day % 3600) / 60);
+    *out_sec  = (uint8_t)(sec_in_day % 60);
+
+    uint32_t year = 1970;
+    for (;;) {
+        uint32_t diy = wt_is_leap_year(year) ? 366 : 365;
+        if (days < diy) break;
+        days -= diy;
+        year++;
+        if (year > 2200) return false;
+    }
+    *out_year = year;
+
+    static const uint8_t days_in_months[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+
+    uint8_t month = 1;
+    for (int m = 0; m < 12; m++) {
+        uint32_t dim = days_in_months[m];
+        if (m == 1 && wt_is_leap_year(year)) dim = 29;
+        if (days < dim) {
+            month = (uint8_t)(m + 1);
+            break;
+        }
+        days -= dim;
+    }
+    *out_month = month;
+    *out_day   = (uint8_t)(days + 1);
+    return true;
+}
+
+static void wt_format_timestamp(char *buf, size_t cap) {
+    if (!buf || cap < 32) return;
+    timespec_t ts_real = {0, 0};
+    long r = sys_call(SYS_CLOCK_GETTIME, CLOCK_REALTIME, (uintptr_t)&ts_real, 0, 0, 0, 0);
+    uint32_t year = 0;
+    uint8_t month = 0, day = 0, hour = 0, min = 0, sec = 0;
+    if (r == 0 && ts_real.tv_sec > 0 &&
+        wt_epoch_to_datetime((uint64_t)ts_real.tv_sec, &year, &month, &day, &hour, &min, &sec) &&
+        year >= 2026 && year <= 2100) {
+        size_t p = 0;
+        buf[p++] = '[';
+        buf[p++] = (char)('0' + (year / 1000) % 10);
+        buf[p++] = (char)('0' + (year / 100) % 10);
+        buf[p++] = (char)('0' + (year / 10) % 10);
+        buf[p++] = (char)('0' + (year % 10));
+        buf[p++] = '-';
+        buf[p++] = (char)('0' + (month / 10) % 10);
+        buf[p++] = (char)('0' + (month % 10));
+        buf[p++] = '-';
+        buf[p++] = (char)('0' + (day / 10) % 10);
+        buf[p++] = (char)('0' + (day % 10));
+        buf[p++] = 'T';
+        buf[p++] = (char)('0' + (hour / 10) % 10);
+        buf[p++] = (char)('0' + (hour % 10));
+        buf[p++] = ':';
+        buf[p++] = (char)('0' + (min / 10) % 10);
+        buf[p++] = (char)('0' + (min % 10));
+        buf[p++] = ':';
+        buf[p++] = (char)('0' + (sec / 10) % 10);
+        buf[p++] = (char)('0' + (sec % 10));
+        buf[p++] = 'Z';
+        buf[p++] = ']';
+        buf[p++] = ' ';
+        buf[p] = '\0';
+        return;
+    }
+
+    uint64_t sec_mono = wt_monotonic_sec();
+    size_t p = 0;
+    buf[p++] = '[';
     char num[32];
     size_t nlen = 0;
-    uint64_t tmp = sec;
+    uint64_t tmp = sec_mono;
     if (tmp == 0) num[nlen++] = '0';
     else {
         while (tmp > 0) {
@@ -512,9 +590,55 @@ static void wt_log_event(const char *msg) {
             tmp /= 10;
         }
     }
-    for (size_t i = 0; i < nlen; i++) line[pos++] = num[nlen - 1 - i];
-    line[pos++] = ']';
-    line[pos++] = ' ';
+    for (size_t i = 0; i < nlen; i++) buf[p++] = num[nlen - 1 - i];
+    buf[p++] = ']';
+    buf[p++] = ' ';
+    buf[p] = '\0';
+}
+
+static void wt_log_event(const char *msg) {
+    /* Background diagnostics belong in the log, never over the login prompt. */
+    char path[128];
+    path[0] = '\0';
+    wt_strlcpy(path, g_log_dir, sizeof(path));
+    wt_strlcat(path, "/watchtower.log", sizeof(path));
+
+    char prefix[32];
+    wt_format_timestamp(prefix, sizeof(prefix));
+
+    char line[512];
+    size_t pos = 0;
+    size_t plen = wt_strlen(prefix);
+    for (size_t i = 0; i < plen && pos + 2 < sizeof(line); i++) {
+        line[pos++] = prefix[i];
+    }
+    size_t mlen = wt_strlen(msg);
+    for (size_t i = 0; i < mlen && pos + 2 < sizeof(line); i++) {
+        line[pos++] = msg[i];
+    }
+    line[pos] = '\0';
+
+    wt_append_log(path, line, pos, NULL);
+}
+
+static void wt_log_service(const char *svc_name, const char *msg) {
+    if (!svc_name || !msg) return;
+    char path[128];
+    path[0] = '\0';
+    wt_strlcpy(path, g_log_dir, sizeof(path));
+    wt_strlcat(path, "/", sizeof(path));
+    wt_strlcat(path, svc_name, sizeof(path));
+    wt_strlcat(path, ".log", sizeof(path));
+
+    char prefix[32];
+    wt_format_timestamp(prefix, sizeof(prefix));
+
+    char line[512];
+    size_t pos = 0;
+    size_t plen = wt_strlen(prefix);
+    for (size_t i = 0; i < plen && pos + 2 < sizeof(line); i++) {
+        line[pos++] = prefix[i];
+    }
     size_t mlen = wt_strlen(msg);
     for (size_t i = 0; i < mlen && pos + 2 < sizeof(line); i++) {
         line[pos++] = msg[i];
@@ -599,7 +723,8 @@ int watchtower_main(int argc, char **argv) {
         .is_alive = wt_is_alive,
         .read_pid_file = wt_read_pid_file,
         .list_dir = wt_list_dir,
-        .log_stderr = wt_log_stderr
+        .log_stderr = wt_log_stderr,
+        .log_service = wt_log_service
     };
 
     static watchtower_table_t table;
