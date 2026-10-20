@@ -66,12 +66,12 @@ Scripting is integrated into main; release media has not been rebuilt for this i
 Watchtower supervises the registered dhcpc, sshd and crond services.
 
 ```sh
-service list
-service status sshd
-service check sshd
-sudo service start sshd
-sudo service stop sshd
-sudo service restart sshd
+service list              # or: watchtower list
+service status sshd       # or: watchtower status sshd
+service check sshd        # or: watchtower check sshd
+sudo service start sshd   # or: sudo watchtower start sshd
+sudo service stop sshd    # or: sudo watchtower stop sshd
+sudo service restart sshd # or: sudo watchtower restart sshd
 ```
 
 Use the registered name, without `.service`. Changes are asynchronous; query
@@ -86,8 +86,8 @@ daemon; creating an arbitrary `.service` file alone does not register it.
 | Command | Type | Category | Summary |
 |:---|:---|:---|:---|
 | [`help`](#help) | Builtin (child-safe) | Shell | Show help overview or help for a specific command |
-| [`service`](#service-management) | `/bin/service` | Services | List, inspect, check, start, stop and restart registered services |
-| [`watchtower`](docs/subsystems/watchtower.md) | `/sbin/watchtower` | Services | Supervisor; see the user/developer guide before starting manually |
+| [`service`](#service-management) | `/bin/service` | Services | List, inspect, check, start, stop and restart registered services (also available as `watchtower`) |
+| [`watchtower`](docs/subsystems/watchtower.md) | `/sbin/watchtower`, `/bin/watchtower` | Services | Daemon (`/sbin/watchtower`) and CLI controller (`/bin/watchtower`) |
 | [`clear`](#clear) | Builtin (child-safe) | Shell | Clear the screen and move the cursor home |
 | [`cd`](#cd) | Builtin | Navigation | Change working directory |
 | [`pwd`](#pwd) | Builtin (child-safe) | Navigation | Print working directory |
@@ -1660,9 +1660,9 @@ service stop sshd
 ---
 
 ### `watchtower`
-**Syntax:** `watchtower`  
-**Path:** `/sbin/watchtower`  
-**Description:** Lightweight system service supervisor daemon that starts, monitors, and stops background services reliably with explicit ordering, bounded restart backoffs, readiness gates, and clean reverse-order teardown.
+**Syntax:** `watchtower <command> [service_name]` (CLI) or `/sbin/watchtower` (Daemon)  
+**Path:** `/bin/watchtower`, `/sbin/watchtower`  
+**Description:** Background service supervisor daemon (`/sbin/watchtower`) and CLI controller (`/bin/watchtower`, identical twin to [`service`](#service)). Commands match `service` (`list`, `status`, `start`, `stop`, `restart`, `reload`, `enable`, `disable`, `check`).
 
 ---
 

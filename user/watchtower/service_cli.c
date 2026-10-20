@@ -76,8 +76,19 @@ static int64_t cli_get_supervisor_pid(void) {
     return pid > 0 ? pid : -1;
 }
 
-static void cli_usage(void) {
-    cli_print_err("usage: service <command> [service_name]\n\n"
+static const char *cli_prog_name(const char *arg0) {
+    if (!arg0 || !arg0[0]) return "service";
+    const char *last = arg0;
+    for (const char *p = arg0; *p; p++) {
+        if (*p == '/') last = p + 1;
+    }
+    return last[0] ? last : "service";
+}
+
+static void cli_usage(const char *prog) {
+    cli_print_err("usage: ");
+    cli_print_err(prog);
+    cli_print_err(" <command> [service_name]\n\n"
                   "Commands:\n"
                   "  list             List all configured services and status\n"
                   "  status <name>    Show detailed status of a service\n"
@@ -91,14 +102,15 @@ static void cli_usage(void) {
 }
 
 int service_main(int argc, char **argv) {
+    const char *prog = cli_prog_name(argv && argc > 0 ? argv[0] : NULL);
     if (argc < 2) {
-        cli_usage();
+        cli_usage(prog);
         return 1;
     }
 
     const char *action = argv[1];
     if (cli_strcasecmp(action, "--help") || cli_strcasecmp(action, "-h") || cli_strcasecmp(action, "help")) {
-        cli_usage();
+        cli_usage(prog);
         return 0;
     }
 
@@ -117,15 +129,17 @@ int service_main(int argc, char **argv) {
 
     if (!is_list && !is_status && !is_start && !is_stop && !is_restart &&
         !is_reload && !is_enable && !is_disable && !is_check) {
-        cli_print_err("service: unknown command '");
+        cli_print_err(prog);
+        cli_print_err(": unknown command '");
         cli_print_err(action);
         cli_print_err("'\n");
-        cli_usage();
+        cli_usage(prog);
         return 1;
     }
 
     if (!is_list && !svc_name[0]) {
-        cli_print_err("service: missing service name for '");
+        cli_print_err(prog);
+        cli_print_err(": missing service name for '");
         cli_print_err(action);
         cli_print_err("'\n");
         return 1;
@@ -134,14 +148,16 @@ int service_main(int argc, char **argv) {
     /* Check supervisor status */
     int64_t pid = cli_get_supervisor_pid();
     if (pid <= 0) {
-        cli_print_err("service: watchtower supervisor is not running\n");
+        cli_print_err(prog);
+        cli_print_err(": watchtower supervisor is not running\n");
         return 2;
     }
 
     /* Verify PID is alive via signal 0 */
     long alive = sys_call(SYS_KILL, (uintptr_t)pid, 0, 0, 0, 0, 0);
     if (alive < 0) {
-        cli_print_err("service: watchtower supervisor is not running (stale pid)\n");
+        cli_print_err(prog);
+        cli_print_err(": watchtower supervisor is not running (stale pid)\n");
         return 2;
     }
 
@@ -174,7 +190,8 @@ int service_main(int argc, char **argv) {
         cli_sleep_ms(10);
     }
     if (lock_fd < 0) {
-        cli_print_err("service: control channel busy (could not acquire lock)\n");
+        cli_print_err(prog);
+        cli_print_err(": control channel busy (could not acquire lock)\n");
         return 2;
     }
     (void)sys_call(SYS_CLOSE, (uintptr_t)lock_fd, 0, 0, 0, 0, 0);
@@ -184,7 +201,8 @@ int service_main(int argc, char **argv) {
                            VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0600, 0, 0, 0);
     if (req_fd < 0) {
         sys_call(SYS_UNLINK, (uintptr_t)WATCHTOWER_CTL_LOCK_FILE, 0, 0, 0, 0, 0);
-        cli_print_err("service: failed to create request file\n");
+        cli_print_err(prog);
+        cli_print_err(": failed to create request file\n");
         return 2;
     }
     (void)sys_call(SYS_WRITE, (uintptr_t)req_fd, (uintptr_t)req, rlen, 0, 0, 0);
@@ -217,7 +235,8 @@ int service_main(int argc, char **argv) {
 
     if (res_read < 0) {
         sys_call(SYS_UNLINK, (uintptr_t)WATCHTOWER_CTL_REQ_FILE, 0, 0, 0, 0, 0);
-        cli_print_err("service: supervisor request timed out (no response in 2s)\n");
+        cli_print_err(prog);
+        cli_print_err(": supervisor request timed out (no response in 2s)\n");
         return 2;
     }
 

@@ -1198,6 +1198,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DHCPC_ELF) $(BUILD_DIR)/initramfs/sbin/dhcpc
 	@cp -f $(USER_WATCHTOWER_ELF) $(BUILD_DIR)/initramfs/sbin/watchtower
 	@cp -f $(USER_SERVICE_ELF) $(BUILD_DIR)/initramfs/bin/service
+	@cp -f $(USER_SERVICE_ELF) $(BUILD_DIR)/initramfs/bin/watchtower
 	@cp -f $(USER_CROND_ELF) $(BUILD_DIR)/initramfs/sbin/crond
 	@cp -f $(USER_LOGROTATE_ELF) $(BUILD_DIR)/initramfs/sbin/logrotate
 	@cp -f $(USER_PING_ELF) $(BUILD_DIR)/initramfs/bin/ping
@@ -2302,3 +2303,10 @@ test-ext4-health-host:
 .PHONY: test-ext4-health
 test-ext4-health:
 	python3 scripts/test_ext4_health.py
+
+.PHONY: test-ext4-latency-host test-ext4-latency
+test-ext4-latency-host:
+	python3 scripts/test_ext4_latency_host.py
+
+test-ext4-latency:
+	python3 scripts/test_ext4_latency.py
