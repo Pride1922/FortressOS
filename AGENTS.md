@@ -41,7 +41,7 @@ Detailed subsystem status logs, hardware observations, and scope boundaries live
 | Memory investigation | COMPLETE | [docs/roadmap/memory-investigation.md](docs/roadmap/memory-investigation.md) |
 | VFS node lifetime | COMPLETE | [docs/subsystems/storage.md](docs/subsystems/storage.md) |
 | Installer (Phases 0–4) | COMPLETE through Phase 4 (disposable acceptance) | [docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md](docs/plans/PERSISTENT_ROOT_INSTALLER_PLAN.md) |
-| SSH (Phases 0–8) | COMPLETE through Phase 8 multi-firmware acceptance (Privilege-separated monitor & worker, strict config schema & precedence, pinned boot readiness gate, global 2-session cap with RFC 4253 disconnect, in-kernel PTY duplex bridge with /dev/tty handoff, authentic OpenSSH client key/password auth, 5s bounded teardown, 100% PASS on BIOS & UEFI under QEMU) | [docs/subsystems/ssh.md](docs/subsystems/ssh.md) |
+| SSH (Phases 0–8) | COMPLETE through Phase 8 multi-firmware acceptance (Privilege-separated monitor & worker, strict config schema & precedence, pinned boot readiness gate with offline boot link-wait resilience, global 2-session cap with RFC 4253 disconnect, in-kernel PTY duplex bridge with /dev/tty handoff, authentic OpenSSH client key/password auth, 5s bounded teardown, 100% PASS on BIOS & UEFI under QEMU) | [docs/subsystems/ssh.md](docs/subsystems/ssh.md) |
 | Tools & Compression | COMPLETE (RFC 1951 DEFLATE & RFC 1952 gzip in /bin/gzip and /bin/gunzip; 32 KiB sliding window, zip-bomb mitigation with 100MB output cap, zero dynamic allocation in decompression, stack frames <= 400B, full DEFLATE dynamic/fixed/stored decompression, Linux gzip interop in both directions, 1MB SHA-256 match, 100% ASan/UBSan PASS) | [docs/subsystems/tools.md](docs/subsystems/tools.md) |
 | Watchtower (Phases 0–5) | COMPLETE (Phases 0–5; /sbin/watchtower supervisor, /bin/service control CLI supporting list/status/check/start/stop/restart/enable/disable/reload; strict /etc/watchtower/*.service schema with Type=simple/forking, Environment, WorkingDirectory, PIDFile; atomic SYS_RENAME_REPLACE enable/disable; dynamic service discovery via SYS_LIST_DIR (syscall 82) with fail-closed registration and zero hardcoded defaults; non-blocking child pipe redirection, supervisor exit/restart/limit logging, status log tailing, crond auto-creation resilience, log rotation via /bin/gzip, Stage 1 CAP_SYS_BOOT shutdown coordinator, SSH wire disconnect & TCP close guarantee, 100% ASan/UBSan 47/47 PASS, multi-firmware BIOS/UEFI QEMU 4/4 PASS, Dell physical acceptance ready) | [docs/plans/WATCHTOWER_PLAN.md](docs/plans/WATCHTOWER_PLAN.md) |
 | Logging Foundation (Phases 0–4) | COMPLETE (Phases 0–4; Three Pillars architecture: Pillar 1 /bin/boot-snapshot & /etc/watchtower/boot-log.service with pre-rotation; Pillar 2 Watchtower pipe capture, stderr redirection, async gzip, and 2 KiB RAM threshold; Pillar 3 /bin/logger CLI, shared timeline_log() daemon helper in sshd/dhcpc, and /etc/crontab scheduled /sbin/logrotate --skip-if-locked /etc/logrotate.conf for /var/log/messages alone with atomic SYS_MKDIR exclusion and delaycompress; 100% ASan/UBSan PASS; multi-firmware BIOS/UEFI QEMU acceptance suite `make test-logging` 100% PASS across SMP=1 and SMP=4; Dell physical acceptance ready) | [docs/plans/LOGGING_FOUNDATION_PLAN.md](docs/plans/LOGGING_FOUNDATION_PLAN.md) |
@@ -494,6 +494,16 @@ Canonical examples: [block.c](src/drivers/block.c), [nvme.c](src/drivers/nvme.c)
 ### 7.4 A VFS node or file operation
 
 Canonical examples: [vfs.c](src/fs/vfs.c), [tarfs.c](src/fs/tarfs.c), [ext2.c](src/fs/ext2.c), mount policy in [usb_mount.c](src/fs/usb_mount.c).
+
+EH-3: journaled ext4 mutations checkpoint synchronously; SYS_SYNC drains eligible
+orphans and barriers storage without freezing/marking clean. Void close cleanup
+failures persist through sync and fence new mutations until drain. SYS_MOUNTINFO
+health bits are independent of nominal RW policy; `disk info` displays them.
+Initialized installed account roots preserve 256 KiB and 16 inodes from ordinary
+allocation; only fixed-role account I/O may consume that floor under ext4
+exclusion. This is not a package reservation. Preserve the scoped bypass and
+staged allocator check. [Contract](docs/plans/EXT4_DURABILITY_HEALTH_DESIGN.md),
+[evidence and limits](docs/roadmap/ext4-durability-health.md). EH-1B remains open.
 
 1. Read `vfs.h`/filesystem headers: shared `vfs_node_t` differs from `file_t` with its own open offset/reference count.
 2. Define backing-store lifetime, node ownership and supported operations. ext2 read-only mounts persist for boot lifetime; writable mounts must be explicitly opted in, tainted on unrecoverable I/O or flush failure, and frozen by clean shutdown before the backing device is released.

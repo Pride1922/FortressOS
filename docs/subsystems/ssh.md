@@ -171,6 +171,9 @@ The privileged monitor executes an explicit, pinned 7-step readiness sequence be
 7. **Enter Accept Loop**:
    - Log `[sshd] Listening on port 22 (SSH-2.0-FortressSSH_0.1)`.
 
+> [!NOTE]
+> **Offline Boot Resilience**: If `sshd -D` starts when the network link is offline (e.g. boot with no Ethernet cable connected), socket bind/listen fails with `EIO`. In daemon mode, `sshd` does not exit 1 or enter a crash-loop; it logs `sshd: network offline; waiting for network link carrier...` and polls link carrier every 2 seconds via `SYS_NANOSLEEP`. As soon as the Ethernet cable is connected and carrier transitions to UP, `sshd` binds port 22, listens, logs `sshd: network link online; bound port 22`, and enters the accept loop. Service definitions omit a hard 5-second `TimeoutStart` to permit cable connection at any time after boot.
+
 ---
 
 ## 4. Admission Control & Capacity Limits

@@ -699,6 +699,10 @@ int sshd_main(int argc, char **argv) {
         }
     }
 
+    signal_action_t sa = { .handler = (uintptr_t)on_sigterm, .mask = 0, .flags = 0, .reserved = 0 };
+    (void)SSHD_SYSCALL(SYS_SIGACTION, SIGTERM, (uintptr_t)&sa, 0, 0, 0, 0);
+    (void)SSHD_SYSCALL(SYS_SIGACTION, SIGINT, (uintptr_t)&sa, 0, 0, 0, 0);
+
     static sshd_config_t cfg;
     static uint8_t s_main_host_secret[64];
     static userdb_t db;
@@ -716,8 +720,39 @@ int sshd_main(int argc, char **argv) {
     }
 
     if (rc != 0) {
-        sshd_write_err(diag[0] ? diag : "SSH daemon boot readiness check failed.");
-        return 1;
+        if (foreground && (strstr(diag, "bind failed") != NULL ||
+                           strstr(diag, "listen") != NULL ||
+                           strstr(diag, "Failed to listen") != NULL)) {
+            sshd_write_err("sshd: network offline; waiting for network link carrier...");
+            while (rc != 0 && !g_terminate) {
+                pty_bridge_sleep_bounded(2000);
+                if (g_terminate) {
+                    return 0;
+                }
+                memset(diag, 0, sizeof(diag));
+                rc = sshd_check_readiness(cfg_path, NULL, &cfg, s_main_host_secret, &db, &sock_fd,
+                                          diag, sizeof(diag), &is_disabled);
+                if (is_disabled) {
+                    sshd_write_err(diag[0] ? diag : "Service disabled in configuration.");
+                    return 0;
+                }
+                if (rc != 0 && !(strstr(diag, "bind failed") != NULL ||
+                                 strstr(diag, "listen") != NULL ||
+                                 strstr(diag, "Failed to listen") != NULL)) {
+                    sshd_write_err(diag[0] ? diag : "SSH daemon boot readiness check failed.");
+                    return 1;
+                }
+            }
+            if (g_terminate) {
+                return 0;
+            }
+            if (rc == 0) {
+                sshd_write_err("sshd: network link online; bound port 22");
+            }
+        } else {
+            sshd_write_err(diag[0] ? diag : "SSH daemon boot readiness check failed.");
+            return 1;
+        }
     }
 
     if (foreground) {
