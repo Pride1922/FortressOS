@@ -1392,6 +1392,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 		cp -f build/ssl/certs/anchors.v1 $(BUILD_DIR)/initramfs/etc/ssl/certs/anchors.v1; \
 		if [ -f build/ssl/certs/ca-certificates.crt ]; then cp -f build/ssl/certs/ca-certificates.crt $(BUILD_DIR)/initramfs/etc/ssl/certs/ca-certificates.crt; fi; \
 	fi
+	@rm -rf $(BUILD_DIR)/initramfs/lib/firmware
 	@mkdir -p $(BUILD_DIR)/initramfs/lib/firmware
 	@python3 scripts/strip_firmware.py assets/firmware/iwlwifi-8265-36.ucode $(BUILD_DIR)/initramfs/lib/firmware/iwlwifi-8265-36.ucode.gz
 	@echo "  [TAR] Generating USTAR archive $@"

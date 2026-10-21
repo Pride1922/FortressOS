@@ -94,6 +94,7 @@ static bool ensure_firmware_loaded(void) {
         }
     }
 
+    write_str(2, "[wifi] Error: could not load /lib/firmware/iwlwifi-8265-36.ucode.gz\n");
     return false;
 }
 
