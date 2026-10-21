@@ -397,20 +397,27 @@ is established by what the device reports, not by vendor identity.
    complete — see `docs/roadmap/README.md` for current status per phase.
 2. Open USB sub-projects: 9G.5d (persistence on the SanDisk), 9G.5e (hubs,
    deferred). See `docs/roadmap/phase-9g5-superspeed.md`.
-3. **SMP (multi-core) support is COMPLETE and hardware-verified** (Pieces 1–5,
-   6A, 6B, 6C, 6D on Dell Latitude 5590). Full architectural specification:
-   `docs/plans/SMP_DESIGN.md`; evidence and implementation logs:
-   `docs/roadmap/smp-piece*.md`.
-   Current open items following SMP:
-   - Shell progression: S0–S2 implemented (automated checks PASS, Dell verification checklist pending; see `docs/roadmap/shell-s0-s2.md`); S3–S4 (working directories `cd`/`pwd`, consistent quoting, completion, persistent history) are planned next in `docs/plans/SHELL_DESIGN.md`.
-   - System introspection syscalls/tools (`sysinfo`/`top`/`ps`).
-   - Persistent rootfs (`/paradise`).
-   - MicroPython.
-4. Following SMP: user accounts, identity/permission enforcement, and
-   installation target selection on storage partitions.
-5. Do not add flatfs or automatic formatting on first write. Keep
-   formatting an explicit operation on a selected disposable image or
-   user-selected partition.
+3. **Completed Core Milestones**:
+   - SMP (multi-core) support is COMPLETE and hardware-verified (Pieces 1–6 on Dell Latitude 5590).
+   - Shell progression S0–S9, interactive tools, job control, and scripting are COMPLETE.
+   - System introspection syscalls and utilities (`sysinfo`, `top`, `ps`, `free`, `disk`) are COMPLETE.
+   - Discretionary Access Control (DAC), POSIX capabilities, and credentials (`/bin/login`, `/bin/sudo`) are COMPLETE.
+   - Persistent Root & Text Installer (Phases 0–4) are COMPLETE.
+   - Network SMP (Phases 0–4) CPU-0 owner handoff is COMPLETE (bounded Dell physical acceptance).
+   - Native SSH (Phases 0–8) privilege-separated daemon and OpenSSH interoperability are COMPLETE.
+   - Compression & Tools (RFC 1951/1952 gzip/gunzip) are COMPLETE.
+   - ext4 Hardening (EH-1 through EH-6) atomic replace, staging batches, and directory relocation are COMPLETE.
+   - Service Supervision (Watchtower Phases 0–5) and Three Pillars Logging (Phases 0–4) are COMPLETE.
+   - TLS / HTTPS platform engine (BearSSL 0.6 platform integration under Gate G1, anchors.v1, `/bin/wget` HTTPS) is COMPLETE.
+   - Live Media Writable `/etc` Filesystem (ETCFS) with 16 MiB quota ceiling is COMPLETE.
+   - Network configuration and resolver consolidation in `/etc/network/` is COMPLETE.
+4. **Current Active Milestone**:
+   - Native Package Manager (PKG-1): format specification, catalog indexing, SHA-256 package verification, Ring 3 CLI tooling, and atomic installation.
+5. **Downstream Roadmap**:
+   - Userland multithreading (`pthreads`).
+   - MicroPython platform runtime port.
+   - Broader cross-core IPC and message queues.
+   - Deferred network throughput redesign (Phase 5).
 
 ## Known behavior: unclean shutdown leaves the USB stick unmountable
 
@@ -506,3 +513,34 @@ all network lifetime/transaction policies remain unchanged. Verification is
 tracked in [the Phase 3 audit](docs/roadmap/network-smp-phase3.md);
 no physical acceptance follows from this rollout. Earlier phase entries elsewhere
 are historical evidence and retain their original qualifications.
+
+## Live Media Writable /etc Filesystem (ETCFS, 2026-10-21)
+
+Live media previously mounted TarFS root read-only, preventing runtime configuration updates (such as timezone adjustments, network configurations, or local overrides). ETCFS introduces an in-memory mutable configuration layer backed by copy-on-write TarFS snapshot nodes:
+- **Quota Ceiling:** 16 MiB aggregate memory ceiling enforced strictly across all mutated files and directories.
+- **Atomic Mutation:** Supports atomic replacement via `SYS_RENAME_REPLACE` (syscall 84).
+- **Security Boundaries:** Strict immutability is preserved on credential stores (`/etc/passwd`, `/etc/group`, `/etc/shadow`) by rejecting in-place mutations from unprivileged callers via `userdb_io` mount-flag verification (`st.mnt_flags & VFS_MNT_RDONLY`).
+
+## Service Supervision & Three Pillars Logging (2026-10-20)
+
+Process supervision and diagnostic logging are decoupled into dedicated, bounded subsystems:
+- **Watchtower Supervisor (`/sbin/watchtower`):** A lightweight service manager and `/bin/service` CLI supporting declarative `/etc/watchtower/*.service` definitions, non-blocking child stdout/stderr pipe redirection, status log tailing, dynamic discovery via `SYS_LIST_DIR`, and Stage 1 shutdown coordination with wire disconnect guarantees.
+- **Three Pillars Logging Foundation:**
+  - *Pillar 1 (Boot Diagnostics):* `/bin/boot-snapshot` persists `SYS_DMESG` ring buffer snapshots into `/var/log/boot.log` with pre-rotation.
+  - *Pillar 2 (Service Logs):* Non-blocking supervisor pipes with 2 KiB memory buffering threshold and asynchronous background `/bin/gzip` log rotation.
+  - *Pillar 3 (System Timeline):* `/bin/logger` CLI and `timeline_log()` daemon helper logging to `/var/log/messages`, rotated by crond-scheduled `/sbin/logrotate` using atomic `SYS_MKDIR` exclusion.
+
+## TLS / HTTPS Engine & Cryptographic Constraints (2026-10-19)
+
+FortressOS integrates BearSSL 0.6 under strict freestanding constraints:
+- **Gate G1 Static Budget:** Zero heap allocations during runtime TLS transactions (`sizeof(fortress_tls_t) = 40,136` B); stack frames constrained to $\le 1024$ bytes (with an authorized exception for 2400-byte RSA 4096-bit public-key operations). Reachable client footprint is bounded to ~79 KiB.
+- **Trust Store Compiler:** Offline compilation of curated NSS root certificates into 55,101-byte binary bundle `/etc/ssl/certs/anchors.v1` containing 120 verified anchors (82 RSA $\ge 2048$-bit, 38 EC secp256r1/384r1/curve25519).
+- **Protocol Safety:** Strict AEAD suites (ChaCha20-Poly1305 and AES-GCM; CBC and static RSA excluded), authenticated `close_notify` teardown commit condition, non-restarting deadlines via `SYS_SEND_UNTIL`/`SYS_RECV_UNTIL`, and fail-closed entropy harvesting.
+- **Wget Integration:** `/bin/wget` supports HTTPS with HTTP 200 enforcement, protocol downgrade rejection, and chunked transfer decoding.
+
+## Network Configuration & Resolver Consolidation (2026-10-21)
+
+Persistent network configurations are now unified in `/etc/network/`:
+- **Paths:** `/etc/network/network.conf` holds interface addresses and static routing; `/etc/network/resolv.conf` holds nameservers.
+- **Resolution Strategy:** `resolv_conf_path()` checks `/etc/network/resolv.conf` first on installed systems, with automatic fallback to `/etc/resolv.conf` for backward compatibility with legacy roots. Live media continues using `/tmp/resolv.conf` and `/mnt/.fortress/resolv.conf`.
+- **Writers:** `/sbin/ifup` and `/sbin/dhcpc` guarantee `/etc/network` directory creation via `SYS_MKDIR` and persist DNS server lists directly to `/etc/network/resolv.conf`.

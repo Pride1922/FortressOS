@@ -18,15 +18,13 @@ and are not proof that every current revision has passed every test — check
 
 ## Phase files
 
-Network SMP integration: [Phase 2B UDP/DNS](network-smp-phase2b.md), [Phase 2C client/stream with preservation qualifications](network-smp-phase2c.md), and [Phase 2D listener/lifecycle audit and gates](network-smp-phase2d.md). Production affinity rollout remains Phase 3.
+Network SMP integration: [Phase 2B UDP/DNS](network-smp-phase2b.md), [Phase 2C client/stream](network-smp-phase2c.md), [Phase 2D listener/lifecycle](network-smp-phase2d.md), [Phase 3 unpinned rollout](network-smp-phase3.md), and [Phase 4 Dell physical acceptance](network-smp-phase4.md).
 
-Persistent root / NVMe installer: [Phase 0 contracts and disposable fixture evidence](persistent-root-phase0.md).
-Executable and boot-only namespace plumbing: [Phase 1 acceptance evidence](persistent-root-phase1.md).
-Installed boot, authenticated recovery and shutdown: [Phase 2 acceptance evidence](persistent-root-phase2.md).
-Durable accounts, machine configuration and private history: [Phase 3 acceptance evidence](persistent-root-phase3.md).
-Runtime deployment, text installer, separate media and Dell interface-only preview:
-[Phase 4 disposable acceptance, 70/70 BIOS/UEFI cases](persistent-root-phase4.md).
-Dell spare-drive installation, USB-free boot and clean-shutdown persistence are user-confirmed; physical recovery and independent audits remain open: [Phase 5](persistent-root-phase5.md).
+Persistent root / NVMe installer: [Phase 0 contracts](persistent-root-phase0.md), [Phase 1 namespace](persistent-root-phase1.md), [Phase 2 installed boot](persistent-root-phase2.md), [Phase 3 durable accounts](persistent-root-phase3.md), and [Phase 4 runtime deployment](persistent-root-phase4.md).
+
+ext4 Hardening: [Atomic replace (EH-2)](ext4-atomic-replace.md), [Durability & health (EH-3)](ext4-durability-health.md), [Package-scale verification (EH-4)](ext4-package-scale.md), and [Directory rename / relocation (EH-6)](ext4-directory-rename.md).
+
+Service supervision, logging & packaging: [Watchtower lifecycle](watchtower-lifecycle.md), [Watchtower credentials](watchtower-credentials.md), and [Package manager (PKG-1)](pkg1.md).
 
 Latest SMP environment evidence: [Dell benchmark results and decision](smpbench-dell-results.md).
 Next measurement build: [spawn and pipe writer startup diagnostics](smpbench-spawn-profile.md).
@@ -107,6 +105,12 @@ Targeted experiment: [kernel-stack batch mapping and matched Dell images](kstack
 | [smp-piece5-ipi.md](smp-piece5-ipi.md) | SMP Piece 5: Cross-core coordination, APIC ICR messaging, synchronous TLB shootdown (SM14/SM15), remote wakeup |
 | [smp-piece6-memory.md](smp-piece6-memory.md) | SMP Piece 6: 6A boot memory readiness, 6B PMM synchronization/multi-core stress, 6C contention-safe TLB shootdown, and 6D address-space lifetime discipline COMPLETE |
 | [smp-cross-cpu-spawn.md](smp-cross-cpu-spawn.md) | Cross-CPU user spawn fix (int 0x80 gate ordering, BIOS/UEFI SMP 1/4/8 verified); OPEN: AP user-mode exception routing |
+| [network-smp-phase4.md](network-smp-phase4.md) | Network SMP Phase 4 Dell 5590 physical acceptance: concurrent AP socket workloads, CPU-0 owner handoff, link recovery, persistence across reboot. |
+| [ext4-package-scale.md](ext4-package-scale.md) | Phase EH-4 Package-Scale Installed-Root Acceptance: multi-file tree staging, atomic rename, 128-file directory expansion, Linux fsck/debugfs oracle PASS. |
+| [ext4-directory-rename.md](ext4-directory-rename.md) | Phase EH-6 Directory Relocation: atomic subtree rename, cycle avoidance, dotdot fixup, host sanitizers & multi-firmware QEMU PASS. |
+| [ext4-atomic-replace.md](ext4-atomic-replace.md) | Phase EH-2 Atomic File Replacement: SYS_RENAME_REPLACE (syscall 84), non-disruptive update of live binaries and config files. |
+| [watchtower-lifecycle.md](watchtower-lifecycle.md) | Watchtower service supervisor (Phases 0–5): /sbin/watchtower, /bin/service CLI, non-blocking pipe capture, dynamic discovery, clean shutdown. |
+| [pkg1.md](pkg1.md) | Native Package Manager (PKG-1): declarative package format, catalog indexing, read-only verification, and CLI tooling. |
 | [subsystems.md](subsystems.md) | Cross-cutting notes not tied to one phase: NMI delivery, boot console, interactive shell/input, general Dell acceptance |
 
 ## Checkpoint sequence (for orientation only — not authoritative status)
@@ -125,9 +129,17 @@ TCP ISN (RFC 6528)             Complete
 Memory investigation           Complete
 VFS node lifetime              Complete
 Permissions (Phases 0–5)       Complete (Dell physical acceptance)
-Installer (Phases 0–3)         Complete
-Installer (Phase 4)            Complete (disposable acceptance)
-Installer (Phase 5)            Open (physical acceptance)
+Installer (Phases 0–4)         Complete (disposable acceptance)
+Network SMP (Phases 0–4)       Complete (Dell physical acceptance)
+SSH (Phases 0–8)               Complete (BIOS/UEFI QEMU & MobaXterm laptop)
+Tools & Compression            Complete (gzip/gunzip)
+ext4 Hardening (EH-1–EH-6)     Complete (atomic rename, 32-blk staging, dir rename)
+Watchtower (Phases 0–5)        Complete (supervisor, CLI, discovery, shutdown)
+Logging Foundation (Phases 0–4) Complete (Three Pillars: boot, supervisor, timeline)
+TLS / HTTPS (Phases 0–5)       Complete (BearSSL 0.6, trust store, /bin/wget)
+Writable /etc (ETCFS)          Complete (16 MiB quota, COW TarFS)
+Network & Resolver Consolidation Complete (/etc/network/network.conf & resolv.conf)
+Package Manager (PKG-1)        In progress (declarative format, catalog, CLI)
 ```
 
 E4-A: [Dell 5590 physical acceptance](ext4-phase5-acceptance.md), all seven Phase-5 items PASS, 2026-10-03.

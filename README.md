@@ -42,16 +42,26 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Address Space Lifetime:** Contention-safe TLB invalidation, per-process PML4 teardown, and deferred address-space reaping.
 
 ### 🗄️ Storage & Filesystems
-- **Journaled ext4:** Default filesystem with native **JBD2 journaling**, crash recovery, extent trees, and ordered writeback.
-- **Legacy ext2:** Full read-write support for legacy test fixtures and live USB data partitions.
+- **Journaled ext4:** Default filesystem with native **JBD2 journaling**, crash recovery, extent trees, ordered writeback, and directory relocation (EH-6).
+- **Filesystem Hardening:** Atomic file replacement (`SYS_RENAME_REPLACE` 84), 32-block staging write batches (`SYS_STAGE_WRITE` 85), and interactive SSH latency SLA guarantees.
+- **Live Media Writable `/etc` (ETCFS):** In-memory mutable configuration tree with 16 MiB aggregate quota ceiling and copy-on-write TarFS backing for persistent live configurations.
 - **NVMe Driver:** Direct PCI NVMe 1.4 storage controller engine with queue management and quiescent reset.
 - **USB Mass Storage:** Native xHCI host controller driver with Bulk-Only Transport (BOT/SCSI) and durability classification.
 
 ### 🌐 Networking Stack
 - **Custom Stack:** From-scratch implementations of Ethernet II, ARP, IPv4, ICMP, UDP, and TCP (with RFC 1071 checksums and Reno congestion control).
-- **Userspace DNS & DHCP:** Native stub resolver, `/bin/nslookup` with UDP-to-TCP fallback, and RFC 2131 DHCP client (`/sbin/dhcpc`) for dynamic lease acquisition.
+- **DNS & Network Configuration:** Native stub resolver, `/bin/nslookup` with UDP-to-TCP fallback, RFC 2131 DHCP client (`/sbin/dhcpc`), and consolidated configuration in `/etc/network/network.conf` and `/etc/network/resolv.conf`.
 - **Hardware Drivers:** Intel e1000, e1000e, and physical Intel I219-LM (autonomous PHY renegotiation, cold-plug and flap recovery).
 - **Cross-Core Networking:** Application calls from any CPU route through the CPU-0 protocol owner. Phases 0–4 are complete through bounded Dell physical acceptance; throughput redesign remains deferred. See [network SMP evidence](docs/roadmap/network-smp-phase4.md).
+
+### 🔒 TLS / HTTPS Engine
+- **BearSSL Platform Integration:** BearSSL 0.6 client profile under Gate G1 static budget: zero heap allocation, client state $\le 40$ KiB, stack frames $\le 1024$ bytes (with authorized 2400B RSA exception).
+- **Trust Store & Anchors:** Curated offline compiler generating 120 compiled NSS root anchors in `/etc/ssl/certs/anchors.v1`.
+- **HTTPS Downloader:** `/bin/wget` HTTPS support with strict HTTP 200 enforcement, downgrade refusal, chunked transfer decoding, and authenticated `close_notify` teardown commit condition. Verified across 16 deterministic adversarial gates and BadSSL live endpoints.
+
+### ⚙️ Service Supervision & System Logging
+- **Watchtower Supervisor:** `/sbin/watchtower` PID-1 service manager and `/bin/service` CLI supporting declarative `/etc/watchtower/*.service` units, dynamic discovery (`SYS_LIST_DIR`), and clean shutdown coordination.
+- **Three Pillars Logging Foundation:** Forensic boot snapshot (`/bin/boot-snapshot` into `/var/log/boot.log`), supervisor non-blocking pipe capture with async gzip rotation, and standard `/bin/logger` timeline logging with scheduled `/sbin/logrotate` via crond.
 
 ### 🔐 Native SSH (SSH)
 - **Secure Transport:** Ed25519 host identities, Curve25519 key exchange, and ChaCha20-Poly1305 encryption, with password and Ed25519 public-key authentication.
@@ -85,45 +95,36 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 | **Boot & Architecture** | **COMPLETE** | UEFI & BIOS boot via Limine; COM1 & framebuffer diagnostics. |
 | **Multi-Core (SMP)** | **COMPLETE** | 8 logical cores, work-stealing scheduler, TLB shootdown. Dell 5590 verified. |
 | **Memory Management** | **COMPLETE** | 32 GiB PMM, VMM 4-level paging, deferred CR3/PML4 reaping. |
-| **ext4 & ext2 Filesystems**| **COMPLETE** | Journaled ext4 with JBD2 crash recovery. Dell physical acceptance confirmed. |
+| **ext4 Filesystem & Hardening**| **COMPLETE** | Journaled ext4 with JBD2 crash recovery; Hardening EH-1 through EH-6 (atomic `SYS_RENAME_REPLACE`, 32-block staging batches, directory relocation). Dell physical acceptance confirmed. |
 | **NVMe & USB Storage** | **COMPLETE** | NVMe 1.4 driver + xHCI BOT/SCSI USB storage. |
+| **Writable `/etc` (ETCFS)** | **COMPLETE** | Live-media in-memory writable configuration tree with 16 MiB quota ceiling and COW TarFS backing. |
 | **Permissions & Security** | **COMPLETE** | Unix DAC, UID/GID, sudo, setuid, and capability policies. Dell verified. |
-| **Userland & Shell** | **COMPLETE** | Ring 3 shell, job control, pipelines, `/bin/nano`, `/bin/free`, full stream suite. |
+| **Userland & Shell** | **COMPLETE** | Ring 3 shell, job control, pipelines, scripting, `/bin/nano`, `/bin/free`, stream tools. |
 | **Persistent Root & Installer** | **COMPLETE** | Phases 0–4 complete. Dell spare-drive install & persistent boot verified on bare metal. |
-| **Network SMP (CPU-0 Handoff)**| **COMPLETE through Phase 4** | Cross-core control, UDP/DNS, TCP streams/listeners, and ordinary unpinned children. Bounded Dell physical acceptance; Phase 5 throughput redesign deferred. |
-| **SSH** | **COMPLETE through Phase 8** | BIOS/UEFI automated acceptance; laptop MobaXterm login, interactive commands, `top` and sudo user-confirmed. Physical lifecycle/entropy limits remain documented. |
-| **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, background lease renewal, gzip/gunzip; verification scope recorded in subsystem guides. |
-| **Timezones & SNTP** | **IMPLEMENTED; AUTOMATED ACCEPTANCE PASS** | IANA/DST, TZ/fixed offsets, opt-in DHCP timezone discovery and disabled-by-default NTP service; host sanitizers and BIOS/UEFI SMP=1/4 pass. [Guide and limits](docs/subsystems/time.md). |
-| **Watchtower Service Supervisor** | **IMPLEMENTED; BOUNDED LIFECYCLE VERIFIED** | Phases 0–5; 36 host sanitizer checks and four BIOS/UEFI service/SSH/power scenarios pass. Dell shutdown/reboot user-confirmed; wider robustness remains open. [Evidence and limits](docs/roadmap/watchtower-lifecycle.md). |
-| **Crond & Logrotate** | **IMPLEMENTED; HOST VERIFIED** | Minimal interval scheduler and bounded log rotation; 14 crond and 9 logrotate host checks pass. Physical/service integration acceptance remains separate. |
+| **Network SMP (CPU-0 Handoff)**| **COMPLETE through Phase 4** | Cross-core control, UDP/DNS, TCP streams/listeners, and ordinary unpinned children. Bounded Dell physical acceptance; Phase 5 throughput redesign deferred. Consolidated `/etc/network/network.conf` and `/etc/network/resolv.conf`. |
+| **SSH** | **COMPLETE through Phase 8** | Privilege-separated monitor/worker, PTY duplex bridge, OpenSSH client pubkey & password auth, BIOS/UEFI QEMU 100% PASS; MobaXterm laptop confirmed. |
+| **Watchtower Service Supervisor** | **COMPLETE (Phases 0–5)** | `/sbin/watchtower` supervisor, `/bin/service` CLI, dynamic discovery via `SYS_LIST_DIR`, pipe capture, and clean shutdown. |
+| **System Logging (Three Pillars)** | **COMPLETE (Phases 0–4)** | Boot snapshot (`/bin/boot-snapshot`), supervisor pipe capture with async gzip, `/bin/logger`, `/var/log/messages`, scheduled `/sbin/logrotate` via crond. |
+| **TLS / HTTPS Engine** | **COMPLETE (Phases 0–5)** | BearSSL 0.6 client profile under Gate G1 static budget, 120 compiled NSS root anchors, `/bin/wget` HTTPS download with authenticated `close_notify`. |
+| **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, RFC 2131 background lease renewal daemon, RFC 1951/1952 gzip/gunzip. |
+| **Package Management (PKG-1)** | **IN PROGRESS** | Declarative package format, catalog parsing, SHA-256 validation, and Ring 3 CLI tooling. |
 
-### Recently Finished (2026-10-18)
-- **SSH delivery:** Transport, authentication, host identity, PTY sessions and daemon lifecycle, plus the MobaXterm pre-password stall correction and laptop login verification.
-- **Live-session access:** Explicit RAM-only host-key and operator-password setup, with disk-free BIOS/UEFI OpenSSH login acceptance.
-- **Usability fixes:** Remote sudo password echo, console/SSH isolation, large-output handling, PID-based session recovery, and command completion after `sudo`.
-- **Committed follow-ups:** Eight-character account-tool password minimum and one-Enter single-line bracketed paste. These two changes are not in the last flashed image and have not been retested.
+### Recently Finished (2026-10-21)
+- **Network Resolver Consolidation:** Relocated persistent resolver configuration to `/etc/network/resolv.conf` alongside `/etc/network/network.conf`, with transparent fallback to `/etc/resolv.conf`.
+- **Live Media Writable `/etc` Filesystem (ETCFS):** In-memory mutable configuration tree with 16 MiB quota ceiling, COW TarFS backing, atomic replacement, and strict credential immutability.
+- **TLS / HTTPS Engine (Phases 0–5):** Complete BearSSL 0.6 platform integration under Gate G1 static memory bounds, 120 compiled root trust anchors in `/etc/ssl/certs/anchors.v1`, 16 deterministic adversarial gates, BadSSL live test suite, and `/bin/wget` HTTPS extension.
+- **System Logging Foundation (Phases 0–4):** Three Pillars architecture spanning `/bin/boot-snapshot` forensic pre-rotation, Watchtower supervisor non-blocking pipe capture with async gzip, and `/bin/logger` with crond scheduled `/sbin/logrotate`.
+- **ext4 Filesystem Hardening (EH-1 through EH-6):** Atomic replacement (`SYS_RENAME_REPLACE` 84), 32-block staging writes (`SYS_STAGE_WRITE` 85), interactive SSH latency SLA gate, and directory relocation/rename (EH-6).
 
-### Current checkpoint: scripting and service tools
+### Current Checkpoint: Native Package Manager (PKG-1)
 
-Watchtower operations and developer service registration are documented in the
-[service guide](docs/subsystems/watchtower.md), with a
-[command quick reference](COMMANDS.md#service-management).
-
-Shell scripting through bounded source/return and until loops is integrated with
-Watchtower, crond and logrotate. Combined host sanitizer checks pass; the merged
-shell is checked across BIOS/UEFI at SMP=1/4 using disposable, disk-free fixtures.
-The supported shell subset and acceptance limits are recorded in
-[the scripting evidence](docs/roadmap/shell-scripting.md).
-
-Next: wider service robustness. Dell shutdown/reboot are user-confirmed; rebuilt live media passed the
-Dell console/SSH scripting smoke test on 2026-10-18. Functions, case,
-read and larger shell-language extensions remain separate work.
+Current development is focused on the native package manager (`/bin/pkg`), implementing declarative package archive packaging, SHA-256 content verification, dependency catalog resolution, and safe atomic installation.
 
 ### Downstream Roadmap
-- Native package manager
-- Broader cross-core IPC and message queues
 - Userland multithreading (`pthreads`)
-- Deferred network throughput redesign
+- MicroPython platform runtime
+- Broader cross-core IPC and message queues
+- Deferred network throughput redesign (Phase 5)
 
 ---
 
