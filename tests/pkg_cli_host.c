@@ -13,7 +13,7 @@ static uint64_t le(const uint8_t *p,unsigned n) {
 }
 long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
     if(nr==SYS_OPEN) {
-        assert(b==(VFS_O_RDONLY|VFS_O_NOFOLLOW|VFS_O_NONBLOCK) && !c);
+        assert(b==(VFS_O_RDONLY|VFS_O_NOFOLLOW) && !c);
         int i=tool_equal((const char *)a,"artifact")?0:tool_equal((const char *)a,"catalog")?1:-1;
         if(i<0) return SYSCALL_ENOENT;
         assert(!opened[i]);opened[i]=1;offsets[i]=0;opens++;return i+3;

@@ -958,6 +958,15 @@ test-pkg-format-host:
 test-pkg-cli-host: test-pkg-catalog-host
 	@python3 scripts/test_pkg_cli_host.py
 
+# Private copied-workspace BIOS/UEFI x SMP=1/4; no data disk or release integration.
+.PHONY: test-pkg-cli-qemu
+test-pkg-cli-qemu:
+	@python3 scripts/test_pkg_cli_qemu.py
+
+.PHONY: test-pkg-stack-qemu
+test-pkg-stack-qemu:
+	@python3 scripts/test_pkg_stack_qemu.py
+
 test-pkg-catalog-host: test-pkg-verify-host
 	@python3 scripts/test_pkg_catalog_host.py
 

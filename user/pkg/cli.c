@@ -27,7 +27,9 @@ static int hex_hash(const char *s,uint8_t out[32]) {
 static int open_regular(const char *path,uint64_t cap,uint64_t *size) {
     size_t len=0; while(len<256 && path[len]) len++;
     if(!len || len==256) return -1;
-    long fd=tool_syscall(SYS_OPEN,(uintptr_t)path,VFS_O_RDONLY|VFS_O_NOFOLLOW|VFS_O_NONBLOCK,0);
+    /* Ordinary SYS_OPEN does not accept O_NONBLOCK; it is a PTY/fcntl
+     * facility. Retain and check the opened object before issuing any read. */
+    long fd=tool_syscall(SYS_OPEN,(uintptr_t)path,VFS_O_RDONLY|VFS_O_NOFOLLOW,0);
     if(fd<0) return -1;
     stat_ext_v1_t st={0};
     if(tool_syscall(SYS_FSTAT,(uintptr_t)fd,(uintptr_t)&st,0)<0 ||

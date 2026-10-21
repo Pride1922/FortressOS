@@ -69,7 +69,9 @@ Uses unchanged Fortress `crypto_ed25519_verify` / SHA-256 and pinned Monocypher
 4.0.3. No new primitive or upstream changes. The established upstream verifier
 1,280-byte frame exception and stack qualification in
 [crypto.md](../subsystems/crypto.md) remain; package-local frames keep <=1024.
-No Ring 3 complete-call-chain stack or production cryptographic audit is claimed.
+Private Ring 3 call-chain/argument/signal measurements now pass in the bounded
+fixtures recorded in [pkg1.md](../roadmap/pkg1.md); this does not establish a
+universal worst-case bound or a production cryptographic audit.
 
 Production input decisions remain: signing custodians/fingerprints, root-role
 thresholds and separate catalog delegation, platform provisioning, expiry

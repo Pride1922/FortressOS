@@ -17,6 +17,15 @@ added to default initramfs or release media. `pkg inspect ARTIFACT BYTES SHA256`
 checks integrity only. `pkg verify CATALOG PACKAGE ARTIFACT` requires policy
 supplied by trusted embedding and kernel UTC; default `pkg_main` has no policy
 and rejects it. No CLI key bypass, install/remove command or mutable state.
+Private disk-free BIOS/UEFI x SMP=1/4 CLI execution now passes in the recorded
+fixture scope. Ordinary opens use O_RDONLY | O_NOFOLLOW: SYS_OPEN rejects
+O_NONBLOCK, which is supported separately for PTYs/fcntl. See the roadmap for
+the fixed mock/API mismatch, retained failures and concurrent-media qualification.
+Private BIOS/UEFI x SMP=1/4 nested-stack, maximum-loader-argument/environment
+and single-signal margin fixtures now pass; exact measurements and qualifications
+are in the roadmap. These are bounded fixture measurements, not a universal
+worst-case proof or installation admission.
+
 Lease/reservation/durable-state review is now concrete in
 [PKG2_TRANSACTION_REVIEW.md](PKG2_TRANSACTION_REVIEW.md), including the unresolved
 cross-boot recovery-space problem. It does not authorize kernel changes.
