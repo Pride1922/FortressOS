@@ -577,20 +577,42 @@ static void wt_format_timestamp(char *buf, size_t cap) {
         return;
     }
 
-    uint64_t sec_mono = wt_monotonic_sec();
+    timespec_t ts_mono = {0, 0};
+    (void)sys_call(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (uintptr_t)&ts_mono, 0, 0, 0, 0);
+    uint64_t s = ts_mono.tv_sec >= 0 ? (uint64_t)ts_mono.tv_sec : 0;
+    uint64_t ns = ts_mono.tv_nsec >= 0 ? (uint64_t)ts_mono.tv_nsec : 0;
+    uint64_t ms = (ns / 1000000ULL) % 1000ULL;
+
+    char s_digits[32];
+    size_t s_len = 0;
+    uint64_t s_val = s;
+    do {
+        s_digits[s_len++] = (char)('0' + (s_val % 10));
+        s_val /= 10;
+    } while (s_val > 0);
+    for (size_t i = 0; i < s_len / 2; i++) {
+        char tmp_c = s_digits[i];
+        s_digits[i] = s_digits[s_len - 1 - i];
+        s_digits[s_len - 1 - i] = tmp_c;
+    }
+
+    size_t pad = (s_len < 5) ? (5 - s_len) : 0;
     size_t p = 0;
     buf[p++] = '[';
-    char num[32];
-    size_t nlen = 0;
-    uint64_t tmp = sec_mono;
-    if (tmp == 0) num[nlen++] = '0';
-    else {
-        while (tmp > 0) {
-            num[nlen++] = (char)('0' + (tmp % 10));
-            tmp /= 10;
-        }
-    }
-    for (size_t i = 0; i < nlen; i++) buf[p++] = num[nlen - 1 - i];
+    for (size_t i = 0; i < pad; i++) buf[p++] = ' ';
+    for (size_t i = 0; i < s_len; i++) buf[p++] = s_digits[i];
+    buf[p++] = '.';
+    buf[p++] = (char)('0' + (ms / 100) % 10);
+    buf[p++] = (char)('0' + (ms / 10) % 10);
+    buf[p++] = (char)('0' + (ms % 10));
+    buf[p++] = 's';
+    buf[p++] = ' ';
+    buf[p++] = 'U';
+    buf[p++] = 'P';
+    buf[p++] = 'T';
+    buf[p++] = 'I';
+    buf[p++] = 'M';
+    buf[p++] = 'E';
     buf[p++] = ']';
     buf[p++] = ' ';
     buf[p] = '\0';

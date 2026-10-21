@@ -168,8 +168,8 @@ def test_logging_acceptance(firmware, smp, tmp):
         assert 'sec_test: Control char test: safe text' in msg_content, \
             f"Missing sec_test record in messages:\n{msg_content}"
 
-        # Verify timestamp format (UTC or UPTIME)
-        assert re.search(r'\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]|\[\s*\d+\.\d+s UPTIME\]', msg_content), \
+        # Verify timestamp format (RFC 3339, UTC or UPTIME)
+        assert re.search(r'\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:Z| UTC)\]|\[\s*\d+\.\d+s UPTIME\]', msg_content), \
             f"Timestamp format invalid in messages:\n{msg_content}"
 
         # Verify permissions: 0640 (-rw-r-----)

@@ -142,7 +142,7 @@ static size_t format_prefix(char *buf, size_t cap, int64_t real_sec, int64_t mon
         buf[p++] = '-';
         buf[p++] = (char)('0' + (day / 10) % 10);
         buf[p++] = (char)('0' + (day % 10));
-        buf[p++] = ' ';
+        buf[p++] = 'T';
         buf[p++] = (char)('0' + (hour / 10) % 10);
         buf[p++] = (char)('0' + (hour % 10));
         buf[p++] = ':';
@@ -151,10 +151,7 @@ static size_t format_prefix(char *buf, size_t cap, int64_t real_sec, int64_t mon
         buf[p++] = ':';
         buf[p++] = (char)('0' + (sec / 10) % 10);
         buf[p++] = (char)('0' + (sec % 10));
-        buf[p++] = ' ';
-        buf[p++] = 'U';
-        buf[p++] = 'T';
-        buf[p++] = 'C';
+        buf[p++] = 'Z';
         buf[p++] = ']';
         buf[p++] = ' ';
         buf[p] = '\0';

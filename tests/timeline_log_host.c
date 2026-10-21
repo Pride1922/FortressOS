@@ -267,7 +267,7 @@ static void test_formatting(void) {
                           "alice", 1000, 0xabcd, "10.0.2.15");
     assert(rc == 0);
     assert(s_log_len > 0);
-    assert(strstr(s_log_buf, "[2026-10-16 08:30:45 UTC] test: User alice (uid=1000, hex=0xabcd) authenticated from 10.0.2.15\n") != NULL);
+    assert(strstr(s_log_buf, "[2026-10-16T08:30:45Z] test: User alice (uid=1000, hex=0xabcd) authenticated from 10.0.2.15\n") != NULL);
     assert(s_closed_count == 1);
     assert(s_closed_fds[0] == 10);
     assert(s_last_fchmod_fd == 10);
