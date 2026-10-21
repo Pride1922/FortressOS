@@ -215,3 +215,70 @@ Remaining blocker is an actual EXT4 account resource envelope and approval of
 the explicit changed headroom semantics, not an unknown account redo algorithm.
 No grant implementation, production trust, install/remove/update, release build,
 physical writes, commits or pushes were added by this review.
+
+## First actual EXT4 resource observations
+
+2026-10-21 follow-up, after the user authorized committing the checkpoint and
+continuing. The prior protocol/review checkpoint is commit `73c96f5`.
+Added `tests/pkg_account_ext4_host.c` and isolated runner
+`scripts/test_pkg_account_ext4_host.py`. Neither changes production code.
+
+Executed `wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_account_ext4_host.py`:
+**20/20 profiles PASS under ASan/UBSan**, with Linux `e2fsck -fn`, exact canonical
+and unrelated sentinel bytes, and canonical root ownership/0644/0644/0600 mode
+assertions. Evidence:
+`.codex-remote-attachments/pkg-account-ext4-20261021-120122/`.
+Each image is a private 32 MiB regular file; no kernel, release-media or firmware
+build. Retained copied sources and per-profile logs/images/dumps accompany the
+manifest. Source preservation PASS for its explicit inventory, empty changes.
+Shared release-media preservation is not measured by this host-only gate.
+
+Six block/sector geometries (1/2/4 KiB blocks x 512/4096-byte sectors) each run:
+small root-only coherent database; 8 KiB synthetic data for each canonical role;
+three such updates while retaining all nine prior canonical descriptors. All
+fixtures start with small canonical files, 80 unrelated `/etc` fillers and missing
+`/var/lib/fortress/accounts` ancestors, so setup directory creation is included.
+The byte/pin profiles replace userdb admission with a length-only validator;
+they measure real fixed-role backend/redo behavior at its byte cap, not valid
+maximum account-service requests or an ACCOUNT_BEGIN/UPDATE acceptance test.
+
+Observed maximum **committed free-count deltas** below the pre-setup baseline:
+
+| Profile | 1 KiB blocks | 2 KiB blocks | 4 KiB blocks | Inodes |
+| --- | ---: | ---: | ---: | ---: |
+| Small coherent update | 8 | 8 | 8 | 8 |
+| Synthetic 8 KiB update | 50 | 26 | 14 | 8 |
+| Three updates with retained descriptors | 100 | 52 | 28 | 16 |
+
+Results are identical for both sector sizes. Sampling follows each write,
+remove, rename and sync callback, plus setup. It includes committed filesystem
+metadata effects but cannot observe temporary gross allocation demand inside
+one planner transaction that also frees blocks. Thus these are measured deltas,
+not sufficient admission budgets. One no-pending recovery follows each update;
+the host probe checks every final role and checks old descriptor bytes before
+close. Nine pinned orphans persist until close; close/sync reclaims all nine.
+
+Two additional 4 KiB-block profiles (both sector sizes) really fill an ordinary
+file in batches, then one block at a time, until ENOSPC. They assert free blocks
+equal exactly the 64-block/256 KiB account floor. Fixed-role synthetic account
+publication still succeeds and reaches 53 free blocks: an 11-block delta below
+that floor, with five additional inodes. These deltas use the **post-fill,
+post-setup baseline** and are not comparable to the table's baseline. Linux
+audits pass. This is observed ordinary-floor bypass, not enforcement of a package
+grant. No forged superblock count or lowered reserve is used to reach exhaustion.
+
+Retained first campaign `pkg-account-ext4-20261021-115927/` passes 18/18 profiles
+before adding floor cases, old-descriptor byte assertions and explicit Linux
+ownership/mode assertions. It captures Linux metadata but does not assert it;
+the expanded 120122 campaign does. No failed/partial run occurred in this actual
+EXT4 continuation; the earlier protocol-model assertion failure remains retained.
+
+This advances the actual EXT4 gate, but does not choose numeric A/H. Missing:
+adversarial fragmentation/extent rebuild demand, precisely saturated directory
+slack, inode-only exhaustion, heap/cache/orphan/journal capacity, cut/replay tests
+with account pending and future package grant together, and race admission.
+Host callbacks use stdio/fflush, not physical-device persistence; no power-loss,
+hardware timing, mounted package-grant or BIOS/UEFI acceptance is claimed.
+An 80-file parent is a concrete fixture, not worst-case directory proof.
+Installation and production trust remain disabled; no kernel/account ABI,
+boot ordering or scoped bypass behavior changed.

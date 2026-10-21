@@ -586,3 +586,45 @@ cuts and repeat recovery), followed by reviewed grant/headroom and boot contract
 Those new mounted/BIOS/UEFI/Linux-oracle campaigns are NOT RUN here. Installation
 and production trust remain disabled. Only a private host probe was built;
 no release-media build, physical write, commit or push.
+
+## Committed checkpoint and first actual EXT4 account budget matrix
+
+2026-10-21. User authorized commit and continuation. Committed the existing PKG
+fixtures/design checkpoint as `73c96f5` (`test(pkg): isolate argument limits and
+review recovery space`), leaving unrelated work untouched; no push. Continued
+with the isolated actual EXT4 host probe and runner described in
+[account compatibility follow-up](../plans/PKG2_ACCOUNT_COMPATIBILITY.md#first-actual-ext4-resource-observations).
+
+Executed `wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_account_ext4_host.py`:
+**20/20 PASS**, ASan/UBSan, Linux e2fsck, exact canonical/sentinel bytes and
+asserted ownership/modes. Evidence:
+`.codex-remote-attachments/pkg-account-ext4-20261021-120122/`.
+Block sizes 1/2/4 KiB x sectors 512/4096, each with small coherent data,
+synthetic three-file 8 KiB cap and three updates retaining nine descriptors.
+Missing account directory setup and 80 unrelated `/etc` entries are present.
+Two further 4 KiB-block tests exhaust real ordinary allocations at the account
+floor; account publication succeeds 11 blocks below it. This directly verifies
+that the existing fixed-role bypass would defeat an ordinary-only package floor.
+
+Committed free-count deltas (1/2/4 KiB blocks): small 8/8/8 blocks and 8 inodes;
+byte-cap 50/26/14 blocks and 8 inodes; retained descriptors 100/52/28 blocks and
+16 inodes. Nine old account orphans retain exact old bytes, then close/sync
+reclaims all nine. Counts sample callback boundaries; transient gross planner
+allocation and arbitrary fragmentation are not bounded by these figures.
+Byte-cap profiles use synthetic validation, not maximum valid userdb/service
+requests. The floor tests reset their baseline after setup/fill (11 blocks,
+5 inodes), unlike the other profiles' pre-setup baseline.
+
+First actual-EXT4 campaign `pkg-account-ext4-20261021-115927/` is retained as an
+18/18 pass; expanded run adds floor cases, descriptor byte checks and Linux
+ownership/mode assertions. No new failed actual-EXT4 run. Earlier protocol-model
+failure remains retained, not reclassified. Source inventory preservation and
+`git diff --check` PASS. No shared-media hash, boot, package-grant, physical or
+power-loss acceptance claim. Images are disposable regular host files, not disks.
+
+Remaining before choosing A/H: planner gross demand, fragmentation, exact parent
+slack limits, inode-only and bounded-pool exhaustion, write/flush/replay cuts and
+concurrency with grant accounting. Production trust and installation remain
+disabled; no production code, boot/lock/account contract or raw-write gate changed.
+Only private host test binaries/images were built; no release-media build or
+physical write. Commits are authorized for these PKG checkpoints; no push.
