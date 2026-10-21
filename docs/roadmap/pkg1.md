@@ -681,3 +681,52 @@ physical write or push. Numeric account/package headroom remains unfrozen pendin
 gross layout bounds, ownership diffs, exhaustive replay/allocation faults and
 future combined grant/race acceptance. These are test-only checkpoint changes;
 committing does not approve those protected runtime changes.
+
+## Conditional one-pass gross allocation bounds
+
+2026-10-21, continuation from `b283f7e`. Added
+[PKG2_ALLOCATION_BOUNDS.md](../plans/PKG2_ALLOCATION_BOUNDS.md) and
+`scripts/test_pkg_account_bounds.py`. No production source or admission change.
+Source-derived account update bounds are 220/80/35 filesystem blocks at 1/2/4
+KiB (220/160/140 KiB), plus seven new inodes. Pending recovery's analytic
+one-pass bound is 117/42/18 blocks, plus three new inodes. These exclude setup
+directory creation and require existing dense, bounded parent maps with no
+allocations beyond EOF; every capacity/ownership/pool check remains separate.
+
+Derivation counts six full-size new files, one intent and all eleven possible
+directory insertions. Each insertion pays for a new data block and worst-case
+new extent tree, without credit for old frees. Dense <=1 MiB parent maps have
+maximum rebuilt trees of 14/4/1 blocks. The existing account floor exceeds these
+one-pass raw-space demands. This does not establish restart-invariant headroom
+or authorize ordinary/package allocation to consume the account budget.
+
+Executed:
+
+```
+wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_account_bounds.py .codex-remote-attachments/pkg-account-ext4-20261021-121959
+```
+
+**26/26 PASS**, ASan/UBSan and Linux e2fsck, with an observer added only to the
+copied filesystem allocation accounting. Every actual redo update stays below
+the source-derived gross block bound and seven new inodes, including each of
+three updates with retained descriptors. Arithmetic enumerates all 1,792 dense
+directory extent counts. Existing small/byte/pin/directory and fragmentation
+fixtures are observed; maximum-sized adversarial parent maps are not all
+instantiated. Synthetic byte inputs retain their prior admission qualification.
+
+Evidence: `.codex-remote-attachments/pkg-account-bounds-20261021-124437/`, with
+derived source hashes, per-profile allocation logs and retained images. Its
+input is the prior retained workspace; a separate end-of-review hash comparison
+checks the original inventoried sources against the current checkout. This is
+not an inventory of newly added docs/runner or a shared-media preservation gate.
+Opt-in `test-pkg-account-bounds-host` accepts PKG_ACCOUNT_CAMPAIGN explicitly;
+it builds from that retained campaign, not implicitly from a different checkout.
+
+No new failed/partial campaign; preceding failure evidence remains intact.
+`git diff --check` and target dry-run pass. Next: pure remaining-account-budget
+and layout model across interrupted/replayed states, or proof of stable namespace
+slots, followed by actual-code differential admission tests. Keep 256 KiB/16
+inodes unchanged; no guessed larger reserve or production A/H freeze is justified
+yet. Installation, production trust, package grants, boot integration and physical
+acceptance remain disabled/unimplemented; no release-media build, physical write
+or push. User-authorized commits cover the test/design checkpoint only.

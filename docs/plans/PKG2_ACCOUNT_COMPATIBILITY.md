@@ -7,6 +7,10 @@ Extends [recovery-space review](PKG2_RECOVERY_SPACE_REVIEW.md) and
 
 ## Proposed compatibility rule
 
+Follow-up: [allocation bounds and eligibility](PKG2_ALLOCATION_BOUNDS.md) derives
+one-pass gross block/inode bounds, validates them with private allocation hooks,
+and separates them from the still-unproved restart-invariant account envelope.
+
 Accounts have priority over **new package admission and subsequent package
 work**, while an already durable package grant must remain protected. These
 requirements coexist only with independently admitted account headroom. Never

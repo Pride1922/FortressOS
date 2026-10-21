@@ -959,6 +959,11 @@ test-pkg-format-host:
 test-pkg-account-ext4-host: scripts/test_pkg_account_ext4_host.py tests/pkg_account_ext4_host.c
 	@python3 scripts/test_pkg_account_ext4_host.py
 
+.PHONY: test-pkg-account-bounds-host
+test-pkg-account-bounds-host: scripts/test_pkg_account_bounds.py
+	@test -n "$(PKG_ACCOUNT_CAMPAIGN)"
+	@python3 scripts/test_pkg_account_bounds.py "$(PKG_ACCOUNT_CAMPAIGN)"
+
 test-pkg-cli-host: test-pkg-catalog-host
 	@python3 scripts/test_pkg_cli_host.py
 
