@@ -15,6 +15,20 @@ int pg_decode(const uint8_t *wire, size_t length, pg_view *out);
 /* Canonicalize a validated wire record into a separate exact-size buffer. */
 int pg_encode(const uint8_t *wire, size_t length, uint8_t *out, size_t capacity);
 
+/* Caller-supplied trusted expectations, NOT derived from the supplied records.
+ * UUID order: filesystem, partition, installation, repository, enrollment.
+ * Locators: ledger, ownership table, transaction directory. This private gate
+ * checks record consistency, not actual inode/map ownership or boot authority. */
+typedef struct {
+    uint8_t uuid[5][16], profile[32], marker_sha256[32];
+    uint64_t epoch;
+    uint32_t inode[3], generation[3];
+} pg_binding;
+int pg_validate_set(const uint8_t *marker, size_t marker_length,
+                    const uint8_t *ledger, size_t ledger_length,
+                    const uint8_t *ownership, size_t ownership_length,
+                    const pg_binding *expected, pg_view *out);
+
 typedef struct {
     uint64_t free[2], remaining[2], charged[2], total[2];
     uint64_t capacity[2], baseline[2], reserve[2], sequence;

@@ -64,6 +64,73 @@ int pg_encode(const uint8_t *p, size_t n, uint8_t *out, size_t cap) {
     for (size_t i = 0; i < 1024; ++i) out[i] = p[i];
     return 0;
 }
+static int hashed(const uint8_t *p, size_t n, const uint8_t expected[32]) {
+    digest_t ctx;
+    uint8_t h[32];
+    digest_init(&ctx,DIGEST_SHA256);
+    if (!digest_update(&ctx,p,n)) return 0;
+    digest_final(&ctx,h);
+    return equal(h,expected,32);
+}
+int pg_validate_set(const uint8_t *m, size_t mn, const uint8_t *l, size_t ln,
+                    const uint8_t *t, size_t tn, const pg_binding *e, pg_view *out) {
+    static const uint8_t mm[16]="FORT-PKG-ENR-v1", tm[16]="FORT-PKG-OWN-v1";
+    pg_view v;
+    uint64_t charged[2]={0,0};
+    unsigned previous=0;
+    if (!m || !l || !t || !e || !out || mn!=512 || tn!=8192 ||
+        pg_decode(l,ln,&v) || !equal(m,mm,16) || le(m+16,4)!=512 ||
+        le(m+20,2)!=1 || le(m+22,2) || !e->epoch || le(m+24,8)!=e->epoch ||
+        !zero(m+176,304) || le(m+168,4)!=2 || le(m+172,4)!=1 ||
+        !hashed(m,480,m+480) || !hashed(m,512,e->marker_sha256)) return -1;
+    for (unsigned i=0;i<5;++i)
+        if (zero(e->uuid[i],16) || !equal(m+32+16*i,e->uuid[i],16)) return -1;
+    if (zero(e->profile,32) || !equal(m+112,e->profile,32)) return -1;
+    for (unsigned i=0;i<3;++i) {
+        if (!e->inode[i] || !e->generation[i] ||
+            le(m+144+8*i,4)!=e->inode[i] || le(m+148+8*i,4)!=e->generation[i]) return -1;
+        for (unsigned j=0;j<i;++j) if (e->inode[j]==e->inode[i]) return -1;
+    }
+    if (v.epoch!=e->epoch || !equal(l+56,e->uuid[4],16) ||
+        !equal(l+72,e->uuid[0],16) || !equal(l+88,e->uuid[3],16) ||
+        !equal(l+104,e->profile,32) || le(l+352,4)!=e->inode[2] ||
+        le(l+356,4)!=e->generation[2] || !equal(t,tm,16) ||
+        le(t+16,4)!=8192 || le(t+20,2)!=1 || le(t+22,2)>64 ||
+        le(t+24,8)!=e->epoch || !equal(t+32,l+40,16) ||
+        le(t+48,8)!=v.sequence || !equal(t+56,e->uuid[4],16) ||
+        !equal(t+72,e->uuid[0],16) || !equal(t+88,e->uuid[3],16) ||
+        !equal(t+104,e->profile,32) || !zero(t+136,120) ||
+        !zero(t+4352,3808) || !hashed(t,8160,t+8160) ||
+        !hashed(t,8192,l+264)) return -1;
+    unsigned count=(unsigned)le(t+22,2);
+    if (v.phase==PG_IDLE && count) return -1;
+    for (unsigned i=0;i<64;++i) {
+        const uint8_t *p=t+256+64*i;
+        if (i>=count) { if (!zero(p,64)) return -1; continue; }
+        unsigned role=(unsigned)le(p,2), cls=(unsigned)le(p+2,2);
+        /* Private role profile: 1..16 payload,17 activation,18 next state,
+         * 19 intent,20 documentation;21..36 old inventory victims. */
+        if (role<=previous || role>36 || cls<1 || cls>3 ||
+            !le(p+4,4) || !le(p+8,4) || !equal(p+16,l+40,16) ||
+            !zero(p+56,8)) return -1;
+        previous=role;
+        if (cls==3) {
+            if (!zero(p+12,4) || !zero(p+32,24)) return -1;
+        } else if ((cls==1 && role>20) || (cls==2 && role<=20) ||
+                   (le(p+12,4)!=1 && le(p+12,4)!=2) || le(p+48,8)!=1) return -1;
+        for (unsigned j=0;j<3;++j) if (le(p+4,4)==e->inode[j]) return -1;
+        for (unsigned j=0;j<i;++j)
+            if (le(p+4,4)==le(t+256+64*j+4,4)) return -1;
+        if (cls==1) for (unsigned d=0;d<2;++d) {
+            uint64_t n=le(p+40+8*d,8);
+            if (n>UINT64_MAX-charged[d]) return -1;
+            charged[d]+=n;
+        }
+    }
+    if (charged[0]!=v.charged[0] || charged[1]!=v.charged[1]) return -1;
+    *out=v;
+    return 0;
+}
 int pg_budget_valid(const pg_budget *b) {
     if (!b || !b->sequence) return 0;
     for (unsigned i = 0; i < 2; ++i) {

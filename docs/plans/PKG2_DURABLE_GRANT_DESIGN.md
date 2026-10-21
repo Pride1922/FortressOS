@@ -273,8 +273,8 @@ The two-dimensional planner preflights charge/refund/transfer/release/baseline
 free/ordinary allocation, capacity and recovery floor, including partial-dimension
 failure. The caller must establish actual maps, typed ownership, phase authority,
 remaining recovery work and unpinned reclamation separately. This adapter does
-not implement marker/table parsing, identity cross-binding, namespace lookup,
-signatures, filesystem exclusion or allocation. A valid checksum or budget never
+now also implements the private record cross-binding described below, but not
+namespace lookup, signatures, filesystem exclusion or allocation. A valid checksum or budget never
 establishes authority to mount or mutate. There is no production linkage.
 
 Run in WSL: `make -f tests/pkg_grant_candidate.mk test-pkg-grant-candidate`.
@@ -286,3 +286,39 @@ mock restarts select whole in-memory budgets before/after commit. Neither check
 implements or verifies a real journal, device flush, allocator or atomic commit.
 Next integration must test ownership-table/bitmap/ledger coupling in actual JBD2
 transactions; these passing mocks cannot substitute for those cut tests.
+
+## Private marker and ownership cross-binding checkpoint
+
+`pg_validate_set` accepts exact 512/1024/8192-byte records plus independently
+supplied expectations: the five UUIDs, enrollment epoch, resource-profile hash,
+complete 512-byte marker hash, and inode/generation pairs for ledger, table and
+transaction slot. Expectations are a separate caller input; deriving them from
+untrusted records does not establish authority. No production caller supplies
+them today. Marker self-hash and external full-record pin are distinct checks.
+
+The gate checks canonical marker structure, expected identities and nonaliasing
+fixed locators; ledger identity/epoch/slot; table header transaction, sequence,
+identity and profile; table self-hash and complete-table ledger hash; sorted
+unique roles and inode identities; zero padding/unused slots; and overflow-safe
+charged block/inode sums matching the ledger. It publishes the ledger view only
+after the whole set validates; every failure preserves output.
+
+Private role profile 1 narrows the candidate's representation: roles 1–16 are
+payloads, 17 activation, 18 next state, 19 intent, 20 documentation, 21–36 old
+inventory victims. The first group permits CHARGED or RETIRED; victims permit
+BASELINE_VICTIM or RETIRED. Other roles reject. This is a test candidate, not a
+production layout promise for all packages. CHARGED/BASELINE_VICTIM require one
+inode and exactly one flag (linked=1 or orphan=2). RETIRED requires zero flags,
+size and allocation counts, while retaining role/inode/generation/transaction
+identity. IDLE requires an empty ownership table. Reserved entry bytes are zero.
+Baseline victims do not contribute to charged totals; tombstones cannot refund.
+
+This verifies record claims, not actual inode metadata, extent ownership or
+bitmap counts. In particular it cannot detect a nonzero entry generation that
+disagrees with a real inode, overlapping real extents, a false linked/orphan
+claim, stale complete-filesystem rollback or a false trusted context. Those need
+an actual-code filesystem adapter and authenticated enrollment/mount integration.
+No signature, catalog-expiry decision or namespace mutation is performed here.
+The narrower private role profile and retained-inode tombstone policy require
+review before any disk ABI is frozen. Real JBD2 ledger/table/bitmap cut tests
+remain next; record consistency does not prove crash atomicity.

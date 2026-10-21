@@ -989,3 +989,46 @@ physical writes remain disabled.
 Next: private marker/ownership-table validation and identity/role cross-binding,
 then a reviewed actual-JBD2 adapter for atomic ledger/table/bitmap cut tests.
 Production mount integration remains later work.
+
+## 2026-10-21 — private marker/ownership record cross-validation
+
+Added `pg_validate_set` to the private candidate adapter. It checks marker
+structure and separate expected identity/hash/locator bindings; ledger/table
+transaction, epoch and sequence; complete table hash; unique typed roles/inodes;
+fixed-metadata aliases; class/flag/tombstone rules; padding and unused slots; and
+overflow-safe charged totals. Failure leaves output unchanged. Independent
+expectations are an API precondition, not a newly implemented boot trust source.
+The private role profile and its narrower accepted layouts are documented in
+[the candidate design](../plans/PKG2_DURABLE_GRANT_DESIGN.md).
+
+Invocation: `wsl -d Ubuntu-24.04 -- make -f tests/pkg_grant_candidate.mk
+test-pkg-grant-candidate` (one command). Final evidence
+`.codex-remote-attachments/pkg-grant-codec-20261021-172044-337449/`:
+ASan/UBSan **PASS**, 4101 record sets (8 valid, 4093 refused), including every
+reserved table-header/tail byte and every unused slot, rehashed semantic defects,
+cross-record mismatches, external UUID/profile/epoch/hash/inode/generation
+mismatches, aliasing, invalid classes/flags/roles, charged-sum overflow and
+independent exact-length failures. Existing 1638 ledger fixtures, 1025 byte-tear
+positions, 132132 accepted / 1117068 rejected arithmetic plans and 528528 mock
+restart selections also **PASS**. Freestanding adapter-only compile **PASS**:
+new set validator frame 208 B, hash helper 208 B; whole adapter maximum frame
+336 B. These are individual frames, not cumulative stack measurements.
+
+Retained attempts: `171942-331145` FAIL on the valid orphan-flag fixture: Python
+wrote an eight-byte value into a four-byte flags field and damaged its UUID.
+Corrected the fixture width; `171959-795697` PASS (110 sets) before expanded
+padding/null-input/context-generation coverage. All attempts/logs remain.
+
+Listed source/AGENTS/README hashes match across the final run; snapshots and exact
+commands/stdout/stderr are retained. This scoped source check is separate from
+boot acceptance and does not establish whole-repository or media preservation.
+No new boot/Ring 3/JBD2/physical acceptance, release-media build or production
+mount/allocator integration occurred. Actual inode generations, extent overlaps,
+allocation bitmaps and linked/orphan provenance are not established by record
+bytes. Whole-filesystem rollback and independently trusted selector construction
+remain outside this adapter. All installation, production trust provisioning,
+push and physical-write restrictions remain in force.
+
+Next: private actual-filesystem identity/map/ownership refinement, followed by
+real JBD2 ledger/table/bitmap atomic-accounting cut tests. Keep production mount
+admission and installation disabled through those gates.

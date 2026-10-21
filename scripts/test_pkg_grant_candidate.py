@@ -5,6 +5,7 @@ import json
 import pathlib
 import struct
 import subprocess
+from pkg_grant_set_vectors import generate
 
 
 def main():
@@ -13,7 +14,7 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     sources = ['tests/pkg_grant_candidate.c', 'tests/pkg_grant_candidate.h',
                'tests/pkg_grant_candidate_host.c', 'scripts/test_pkg_grant_candidate.py',
-               'tests/pkg_grant_candidate.mk', 'user/tools/digest.c',
+               'tests/pkg_grant_candidate.mk', 'scripts/pkg_grant_set_vectors.py', 'user/tools/digest.c',
                'user/tools/digest.h', 'src/include/types.h', 'AGENTS.md', 'README.md']
     def inventory():
         return {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in sources}
@@ -71,6 +72,7 @@ def main():
         b=fixture(phase); b[offset]^=1
         if phase>=2: b[offset:offset+32]=bytes(32)
         save('bad-phase-%d-%d'%(phase,offset),seal(b))
+    record_sets=generate(out,fixture,seal,put)
     flags=['gcc','-std=c11','-Wall','-Wextra','-Werror','-g','-O1',
            '-I.','-Isrc/include','-Iuser/tools','-ffunction-sections','-fdata-sections']
     commands=[]
@@ -87,6 +89,7 @@ def main():
             '-Wl,--gc-sections','tests/pkg_grant_candidate.c',
             'tests/pkg_grant_candidate_host.c','user/tools/digest.c','-o',exe], 'compile')
         print(run([exe,*vectors],'host'),end='')
+        print(run([exe,'--sets',*record_sets],'sets'),end='')
         run(flags+['-ffreestanding','-fno-builtin','-mno-red-zone','-mno-sse',
             '-mno-mmx','-msoft-float','-fstack-usage','-Wframe-larger-than=1024',
             '-c','tests/pkg_grant_candidate.c','-o',str(out/'candidate.o')], 'object')
@@ -94,7 +97,8 @@ def main():
         after=inventory()
         (out/'manifest.json').write_text(json.dumps({'before':before,'after':after,
             'changed':[p for p in before if before[p]!=after[p]],'commands':commands,
-            'vectors':len(vectors),'scope':'private C codec and arithmetic; byte-tear detection and mock before/after commit snapshots only; no JBD2, filesystem, boot, Ring3 or media acceptance'},indent=2)+'\n')
+            'vectors':len(vectors),'record_sets':len(record_sets),
+            'scope':'private C record cross-binding and arithmetic; byte-tear detection and mock before/after commit snapshots only; no JBD2, filesystem, boot, Ring3 or media acceptance'},indent=2)+'\n')
     assert before==after
     print('Evidence:',out)
 
