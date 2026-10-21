@@ -628,3 +628,56 @@ concurrency with grant accounting. Production trust and installation remain
 disabled; no production code, boot/lock/account contract or raw-write gate changed.
 Only private host test binaries/images were built; no release-media build or
 physical write. Commits are authorized for these PKG checkpoints; no push.
+
+## Extended EXT4 limits, publication and recovery interruption gates
+
+2026-10-21. Continued from `56efd47`. Exact fixtures, failure models and limits
+are in [the account compatibility review](../plans/PKG2_ACCOUNT_COMPATIBILITY.md#extended-limits-and-interrupted-account-recovery).
+Executed:
+
+```
+wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_account_ext4_host.py
+wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_account_recovery_cuts.py .codex-remote-attachments/pkg-account-ext4-20261021-121959
+git diff --check
+```
+
+**463/463 primary cases PASS**, ASan/UBSan: 33 profiles plus 430 publication
+flush cuts (215 x device sectors 512/4096). Evidence:
+`.codex-remote-attachments/pkg-account-ext4-20261021-121959/`.
+**344/344 recovery-interruption cases PASS**, ASan/UBSan: 172 account-recovery
+flush cuts x both sector sizes, from a Linux-verified pending intent. Evidence:
+`.codex-remote-attachments/pkg-account-recovery-20261021-122349/`.
+Every interrupted case receives two fresh clean remount/recovery passes, each
+audited with Linux e2fsck and exact account bytes (1,548 passes total). Publication
+cuts permit complete old/new sets, reject mixtures; recovery cuts require new.
+Successful transient images are hashed then removed after both audits; exact
+byte dumps/logs, seeds and ordinary-profile images remain. Failed paths retain
+their current images. No new failed/partial campaign; older failures stay retained.
+
+Added real fragmented depth-1 extent overwrite planning at 1 KiB, forced `/etc`
+block growth across all six geometries, inode-only exhaustion, selected heap
+failure, journal-capacity denial, a full 64-orphan table and 1,024 pinned cache
+nodes. Resource denials assert zero device writes and retry after restoration.
+Cache legacy pins, heap failure and journal-capacity shortening are explicit
+private host conditions; no production limit or gate was changed. New images
+use 2,048 inodes for capacity cases. Ordinary profile audits also assert sentinel
+bytes and canonical ownership/modes; cut audits do not claim full unrelated
+metadata/allocation-set comparison.
+
+The host failure model refuses the selected flush and subsequent writes; accepted
+writes may persist when closing the stdio image. Fresh mounts execute actual
+JBD2 replay/account redo. This is not a physical loss, sector tear, exhaustive
+persistence/reordering model, failure during initial journal replay, kernel boot
+or package-grant test. Recovery cuts interrupt account redo after root preparation.
+Synthetic 8 KiB role data does not prove maximum valid account-service requests.
+
+Primary inventoried-source preservation PASS (empty changes); the separately
+derived recovery fixture records its source hash. The new recovery runner,
+documentation and opt-in Makefile target are intentional additions outside the
+completed original inventory. No shared-media hash or whole-repository PASS is
+claimed. No production code/ABI, lock, boot, allocator or bypass changed.
+Installation and production trust remain disabled; no release-media build,
+physical write or push. Numeric account/package headroom remains unfrozen pending
+gross layout bounds, ownership diffs, exhaustive replay/allocation faults and
+future combined grant/race acceptance. These are test-only checkpoint changes;
+committing does not approve those protected runtime changes.

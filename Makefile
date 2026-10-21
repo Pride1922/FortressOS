@@ -955,6 +955,10 @@ test-pkg-format-host:
 .PHONY: test-pkg-verify-host
 .PHONY: test-pkg-catalog-host
 .PHONY: test-pkg-cli-host
+.PHONY: test-pkg-account-ext4-host
+test-pkg-account-ext4-host: scripts/test_pkg_account_ext4_host.py tests/pkg_account_ext4_host.c
+	@python3 scripts/test_pkg_account_ext4_host.py
+
 test-pkg-cli-host: test-pkg-catalog-host
 	@python3 scripts/test_pkg_cli_host.py
 

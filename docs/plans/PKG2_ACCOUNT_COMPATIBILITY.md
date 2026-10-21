@@ -282,3 +282,95 @@ hardware timing, mounted package-grant or BIOS/UEFI acceptance is claimed.
 An 80-file parent is a concrete fixture, not worst-case directory proof.
 Installation and production trust remain disabled; no kernel/account ABI,
 boot ordering or scoped bypass behavior changed.
+
+## Extended limits and interrupted account recovery
+
+2026-10-21, continuation from `56efd47`. Added resource/fragmentation and
+flush-failure cases to the same private actual-code runner, plus
+`scripts/test_pkg_account_recovery_cuts.py`. No production source change.
+
+Invocations:
+
+```
+wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_account_ext4_host.py
+wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_account_recovery_cuts.py .codex-remote-attachments/pkg-account-ext4-20261021-121959
+```
+
+Evidence campaigns are `pkg-account-ext4-20261021-121959` and
+`pkg-account-recovery-20261021-122349` under `.codex-remote-attachments/`.
+The first extends baseline fixtures to 2,048 inodes, leaving room for real cache
+and inode exhaustion. The second copies that campaign's source workspace and
+adds a narrowly asserted test-only hook immediately before account redo recovery;
+its derived C source/hash is retained. It changes no production recovery code.
+
+Results and scope:
+
+| Gate | Cases / observations |
+| --- | --- |
+| Ordinary resource profiles | 33 profiles: previous 20 plus directory growth across all six geometries, two 1 KiB-block fragmentation profiles, two combined heap/journal/orphan profiles, two inode-only profiles, and one pinned-cache profile |
+| Interrupted publication | 215 actual update flush boundaries x two device sector sizes = 430 cases; two independent clean remount/recovery passes per case |
+| Interrupted account recovery | 172 recovery flush boundaries x two sector sizes = 344 cases; two independent clean remount/recovery passes after each interruption |
+
+All use ASan/UBSan. Linux e2fsck and exact old/new canonical bytes are checked
+after **each** of the 1,548 clean recovery passes; update-cut cases reject a mixed
+old/new account set. Recovery-cut cases start from a pending intent verified by
+Linux `debugfs` after update flush 60 and require the complete new byte set.
+Ordinary profiles retain the prior sentinel/ownership/mode checks; cut campaigns
+check filesystem consistency and account bytes, not all unrelated metadata.
+Successful transient cut images are hashed then removed only after both audits;
+logs and exact byte dumps remain. Seed/measured and ordinary-profile images are
+retained. Failure paths retain their current image. This is not a full allocation
+bitmap differential oracle or sector-tear campaign.
+
+The fragmentation probe creates eight nonadjacent 1 KiB extents with real
+separator allocations and asserts depth 1. Planning an existing-data overwrite
+then stages at least two E4_NEW-role images (data and new extent metadata) while
+recording old tree frees. The plan is aborted, not published. This demonstrates
+temporary tree-allocation demand, rather than interpreting net free counts as
+gross demand. It is a shared filesystem planner proof, not a fragmented account
+file publication or a bound over every accepted extent topology.
+
+Directory profiles create real names until `/etc` grows by exactly one block,
+then perform redo. They prove growth in each geometry, not protection of future
+account directory slots against an arbitrary competing writer.
+
+At 4 KiB blocks, both sector profiles test: first host heap allocation failure
+on account staging (ENOMEM); a privately shortened journal capacity view
+(ENOSPC); and 64 real open/unlinked files filling the orphan table (EFBIG on
+canonical removal). Each denial asserts zero device writes, restores/releases
+the fixture condition and proceeds with successful redo. These are selected
+resource boundaries, not exhaustive failure at every heap allocation.
+
+Inode-only tests really allocate empty ordinary files until the 16-inode floor,
+assert over 1,024 free blocks remain, then successfully perform fixed-role redo.
+The cache test creates actual legacy entries to fill all 1,024 cached nodes,
+marks the remaining fixture nodes as legacy-pinned, checks staging EFBIG with
+zero writes, releases those private legacy flags and verifies retry succeeds.
+No production pool size, floor or bypass is relaxed.
+
+Failure model: the chosen flush returns failure, subsequent writes/flushes are
+refused, and the process closes its private stdio file before fresh remount.
+Already accepted writes may all persist. This exercises an allowed uncertain
+I/O outcome with real JBD2 replay and account redo; it does not emulate physical
+power loss, all cache persistence subsets, reordered/torn sectors, faults during
+initial journal replay, or a kernel reboot. Recovery interruption is specifically
+**account redo after mount preparation**, followed by fresh journal replay.
+Both protocols still use synthetic 8 KiB validation for byte-cap tests.
+
+Final results: **463/463 primary cases PASS** (33 resource profiles + 430
+publication cuts), **344/344 recovery-interruption cases PASS**, and
+`git diff --check` PASS. No failed or partial campaign occurred in this
+continuation; earlier failures remain retained with their original status.
+Primary manifest source_preservation=PASS with an empty change list for its
+inventoried C/header/include/Python sources. The recovery runner is a deliberate
+new source file added after that inventory began; its derived source is recorded
+in its own campaign. No whole-repository or shared-media hash PASS is claimed.
+Added opt-in `make test-pkg-account-ext4-host` for the primary gate; the recovery
+gate takes the retained primary campaign path as shown above. Documentation and
+Makefile edits following the gate are intentional. No release media was built.
+
+These gates do not freeze numeric A/H or enable a grant. Remaining proof includes
+full gross planner bounds over accepted account layouts, allocation ownership
+differentials, exhaustive allocation/replay fault coverage, namespace/admission
+races and combined account/package pending once the grant contract is approved.
+No package grant exists to test yet. Boot/physical acceptance remains NOT RUN.

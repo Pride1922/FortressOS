@@ -45,7 +45,7 @@ def main():
         for bs in (1024, 2048, 4096):
             folder = out/str(bs)
             folder.mkdir()
-            base = fixture(folder, bs, inodes=512)
+            base = fixture(folder, bs, inodes=2048)
             seed = folder/'seed.txt'
             commands = ['mkdir /etc', 'mkdir /var', 'mkdir /root', 'set_inode_field /root mode 040700']
             for name, data, mode in [('passwd', b'root:x:0:0:root:/root:/bin/shell\n', '0100644'),
@@ -62,11 +62,14 @@ def main():
             run(['e2fsck', '-fn', str(base)], folder/'fixture.log')
             original = sha(base)
             for sector in (512, 4096):
-                for kind in ('small', 'bytes', 'pins') + (('floor',) if bs == 4096 else ()):
+                kinds = ('small', 'bytes', 'pins', 'directory')
+                if bs == 1024: kinds += ('fragment',)
+                if bs == 4096: kinds += ('floor', 'resources', 'inode') + (('cache',) if sector == 512 else ())
+                for kind in kinds:
                     name = f'{bs}-{sector}-{kind}'
                     image = folder/(name+'.img')
                     shutil.copyfile(base, image)
-                    run([str(work/'probe'), str(image), str(sector), kind], out/(name+'.log'))
+                    output = run([str(work/'probe'), str(image), str(sector), kind], out/(name+'.log'))
                     run(['e2fsck', '-fn', str(image)], out/(name+'-linux.log'))
                     for role, data in [('passwd', b'root:x:0:0:root:/root:/bin/shell\n'),
                                        ('group', b'root:x:0:\n'), ('shadow', b'root:!:::::::\n'),
@@ -84,13 +87,38 @@ def main():
                     manifest['cases'].append({'name': name, 'result': 'PASS', 'image_sha256': sha(image)})
                     assert sha(base) == original
                     print('PASS', name, flush=True)
+                    if bs == 4096 and kind == 'bytes':
+                        boundaries = int(re.search(r'UPDATE_FLUSHES=(\d+)', output)[1])
+                        for boundary in range(1, boundaries+1):
+                            cut_name = f'{bs}-{sector}-cut-{boundary}'
+                            cut_image = folder/(cut_name+'.img')
+                            shutil.copyfile(base, cut_image)
+                            run([str(work/'probe'), str(cut_image), str(sector), f'cut={boundary}'], out/(cut_name+'.log'))
+                            for attempt in (1, 2):
+                                run([str(work/'probe'), str(cut_image), str(sector), 'recover'], out/(cut_name+'.log'))
+                                run(['e2fsck', '-fn', str(cut_image)], out/(cut_name+'-linux.log'))
+                                recovered = []
+                                for index, role in enumerate(('passwd', 'group', 'shadow')):
+                                    target = folder/(cut_name+f'-{attempt}-{role}.dump')
+                                    run(['debugfs', '-R', f'dump /etc/{role} {target}', str(cut_image)], out/(cut_name+'-linux.log'))
+                                    data = target.read_bytes()
+                                    old = [b'root:x:0:0:root:/root:/bin/shell\n', b'root:x:0:\n', b'root:!:::::::\n'][index]
+                                    assert data in (old, bytes([65+index])*8192), (cut_name, role)
+                                    recovered.append(data == old)
+                                assert len(set(recovered)) == 1, (cut_name, 'mixed account set')
+                            manifest['cases'].append({'name': cut_name, 'result': 'PASS', 'recoveries': 2,
+                                                       'image_sha256': sha(cut_image)})
+                            # Only successful, exclusively owned regular fixture files are removed.
+                            assert cut_image.is_file() and cut_image.resolve().is_relative_to(out.resolve())
+                            cut_image.unlink()
+                        print('PASS all flush cuts:', bs, sector, boundaries, flush=True)
         manifest['result'] = 'PASS'
     finally:
         manifest['changed_sources'] = [p for p, h in before.items() if sha(ROOT/p) != h]
         manifest['source_preservation'] = 'FAIL' if manifest['changed_sources'] else 'PASS'
         (out/'manifest.json').write_text(json.dumps(manifest, indent=2))
     assert manifest['source_preservation'] == 'PASS'
-    print(f'PASS {len(manifest["cases"])}/20 actual EXT4 profiles; evidence:', out)
+    print(f'PASS {len(manifest["cases"])} actual EXT4 cases; evidence:', out)
 
 
 if __name__ == '__main__':
