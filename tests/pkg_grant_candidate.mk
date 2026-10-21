@@ -13,3 +13,7 @@ test-pkg-grant-fs-negative:
 
 test-pkg-grant-fs-recovery:
 	python3 scripts/test_pkg_grant_fs_recovery.py
+
+.PHONY: test-pkg-grant-lifecycle
+test-pkg-grant-lifecycle:
+	python3 scripts/test_pkg_grant_lifecycle.py

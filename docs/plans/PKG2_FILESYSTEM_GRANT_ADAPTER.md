@@ -107,3 +107,7 @@ credit-exhaustion refusal and authenticated pending recovery. These precede
 protected mount integration and private Ring 3 acceptance. Installation,
 production trust provisioning, release builds, pushes and physical writes stay
 disabled.
+
+The later [private lifecycle overlay](PKG2_GRANT_LIFECYCLE_ADAPTER.md) exercises
+inode debit/refund and pinned-orphan cleanup on one file. General extent-tree,
+multi-batch, mixed-owner and production admission gates remain open.

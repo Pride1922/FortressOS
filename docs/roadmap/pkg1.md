@@ -1104,3 +1104,76 @@ concurrent ordinary/account writers, namespace capacity and authenticated pendin
 recovery still need acceptance before protected mount integration. No new Ring 3,
 BIOS/UEFI, SMP, installation, production trust/provisioning, release-media build,
 push or physical-write acceptance is claimed or enabled.
+
+## 2026-10-21 — inode grants, pins and orphan reclamation (private overlay)
+
+[Lifecycle adapter and limits](../plans/PKG2_GRANT_LIFECYCLE_ADAPTER.md).
+The actual namespace planner allocates the target inode and atomically charges
+it with grant/table metadata. Actual writes charge a data block; unlink retains
+both charges while pinned. A duplicated VFS file reference delays final close.
+Original bytes remain readable after unlink. Actual orphan steps refund only
+reclaimed blocks, then the released inode, with RETIRED provenance and generation
+retained. Repeated recovery after completion produces no write/flush callback.
+
+Integration is deliberately test-only: a copied workspace renames the original
+semantic commit so a private wrapper can add record images, and calls an explicit
+engine-based reconstruction validator before constructor orphan cleanup. The
+two exact overlays and original/modified hashes are in each manifest. Shared
+production filesystem sources and boot behavior are unchanged. Grant-aware
+read-only preview before replay, trusted enrollment and production policy are
+still unimplemented; the private reconstruction hook runs after replay/activation.
+
+Invocation: WSL `make -f tests/pkg_grant_candidate.mk test-pkg-grant-lifecycle`;
+retained campaigns used `python3 scripts/test_pkg_grant_lifecycle.py --block N`
+to cover the same matrix in separate copied workspaces.
+
+| Block / sector bytes | Callback cuts | Retained campaign |
+| --- | ---: | --- |
+| 1024 / 512 | 3568 | `pkg-grant-lifecycle-20261021-175934` |
+| 1024 / 4096 | 1928 | same |
+| 2048 / 512 | 5312 | `pkg-grant-lifecycle-20261021-180313` |
+| 2048 / 4096 | 1544 | same |
+| 4096 / 512 | 8800 | `pkg-grant-lifecycle-20261021-180336-111592` |
+| 4096 / 4096 | 1352 | same |
+
+Actual C ASan/UBSan runtime checks **6/6 PASS**, **22504 cuts / 45008 complete
+mount/recovery cycles**. By operation: create 3544, pinned unlink 3816, final close
+6952, constructor orphan recovery 8192 cuts. Every write/flush callback is cut
+before/after under cached/all/alternating/inverse persistence. Each case injects
+one failure followed by two complete mounts; this is not an exhaustive sequence
+of repeated recovery failures or arbitrary sector tearing. The stdout `commits`
+metric counts acknowledged returns, not all possibly durable uncertain commits.
+
+Linux **12/12 e2fsck audits PASS**. A separate read-only debugfs oracle on those
+12 retained snapshots verifies free target-inode bit, retained generation, zero
+links/blocks, absent name, empty orphan head, record hashes and full escrow refund.
+These independent byte/metadata checks cover selected snapshots, not every cut.
+Exact logs, generated C, copied sources, overlays, binaries and oracles remain
+under `.codex-remote-attachments/<campaign>/`.
+
+**Preservation is separate:** all compiled workspace copies stayed byte-identical
+during their runs. The 1 KiB repository-input guard passes. The 2/4 KiB original
+guards FAIL because concurrent `console.h`/`input.h` edits added unused mouse/input
+function declarations. Separate retained rebuilds before/after substituting just
+those declarations compare every SHF_ALLOC ELF section except build ID; matches
+qualify those header changes, not the whole current checkout. Original failures
+remain in manifests. Other concurrent USB, input/console and nano edits are
+outside this acceptance scope and were neither staged nor reverted.
+
+Retained attempts: `175736` strict compile FAIL on harness indentation; `175814`
+ASan/UBSan FAIL because the early helper incorrectly staged through unpublished
+`fs->engine`. Corrected it to use the constructor's explicit engine, without
+faking flags or publishing a root. A parallel 4 KiB launch collided with the
+second-resolution `180313` directory and refused before copying/compiling; the
+2 KiB workspace was not overwritten. Collision evidence is retained there and
+run names now use microseconds. No attempt was removed.
+
+Limits: one tagged regular data file and one-block allocation, no unrelated
+orphan/ordinary/account writer, extent-tree positive case or multi-batch reclaim.
+Refund restores G, not ordinary headroom: fixtures remain RESERVED with T=(8,1).
+Clearing tombstones, releasing unused escrow to IDLE and new-writer admission
+remain next protocol gates, followed by competing-allocation/resource admission.
+Host resets reuse a synthetic external identity context, not fresh trusted boot.
+No Ring 3, BIOS/UEFI, SMP/IRQ, physical, installation, production trust/provisioning,
+release-media build or push was performed or enabled. AGENTS.md/README.md and all
+concurrent work remain preserved.

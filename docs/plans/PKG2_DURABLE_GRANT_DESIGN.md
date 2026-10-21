@@ -328,3 +328,7 @@ adds actual inode/map/ownership refinement and bounded block charge/refund and
 replay cut tests. Its backup-identity geometry requirement and narrow linked-file
 scope are explicit; full grant, inode/orphan and production mount integration
 remain later gates.
+
+The [private inode/orphan lifecycle workbench](PKG2_GRANT_LIFECYCLE_ADAPTER.md)
+now tests debit/refund through copied semantic-commit and pre-cleanup hooks. It
+does not release unused escrow to IDLE or implement production mount admission.
