@@ -19,4 +19,5 @@ int64_t input_read_timeout(void *buffer, size_t count, int64_t timeout_ms);
 void input_timer_tick(uint32_t hz);
 uint64_t input_dropped(void);
 void input_inject_scancodes(const uint8_t *scancodes, size_t count);
+void input_inject_bytes(const char *bytes, size_t count);
 #endif

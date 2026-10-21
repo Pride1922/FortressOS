@@ -17,6 +17,14 @@
   - Pike VM regex search & replace (`.` , `*`, `+`, `[...]`, `^`, `$`).
   - Multi-buffer support (`Alt+<` / `Alt+>`, `Ctrl+X` buffer close).
   - Nanorc configuration parser (`/etc/nanorc`, tab size, auto-indent, soft wrap).
+- **Phase 4 (v2.2 Mouse Support & Extended Terminal Integration):**
+  - Standard Unix SGR 1006 Extended Mouse Tracking mode (`\e[?1000h\e[?1006h` on startup, `\e[?1000l\e[?1006l` on exit).
+  - Direct click-to-position: Viewport mouse clicks translate visual 1-based text grid coordinates to buffer row (`cy`) and character column (`cx`), handling line numbers gutter and tab expansion stops (`nano_render_to_col`).
+  - Smooth scroll wheel navigation: Wheel up/down smoothly scrolls the viewport (3 lines per tick) with bounded cursor repositioning.
+  - Interactive shortcut legend bar: Clicking footer legend items directly dispatches editor actions (`^O Save`, `^X Exit`, `^W WhereIs`, `^R Replace`, `^G GotoLine`, `^Z Undo`, `^Y Redo`).
+  - Kernel console & input bridge: Console tracks mouse reporting via ANSI private mode (`?1000h` / `?1006h`), safely suppressing unrequested escape sequences at the shell prompt and formatting xHCI USB HID mouse events via `input_inject_bytes()`.
+  - Seamless remote parity: Identical SGR 1006 wire protocol operates natively across local framebuffer console and remote SSH PTY sessions.
+  - Verification: 100% PASS on host test suite under ASan/UBSan (`make test-nano-host`), QEMU acceptance suite across BIOS & UEFI 13 stages (`make test-nano`), and OpenSSH client sessions (`make test-nano-ssh`).
 
 ## Known Limitations
 

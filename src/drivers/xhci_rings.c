@@ -220,20 +220,42 @@ spinlock_t g_xhci_cmd_lock  = SPINLOCK_RANKED(2, "xhci_cmd");
 static xhci_mailbox_t        s_mailboxes[XHCI_MAX_SLOTS][XHCI_MAX_DCIS];
 static xhci_mailbox_t        s_cmd_mailbox;
 static xhci_hid_report_fifo_t s_hid_fifo;
+static xhci_hid_mouse_fifo_t  s_hid_mouse_fifo;
 static uint32_t              s_port_change_events = 0;
 static volatile uint32_t     s_hid_reports_pending = 0;
+static volatile uint32_t     s_hid_mouse_reports_pending = 0;
 
-static uint8_t         s_hid_slot_id = 0;
-static uint8_t         s_hid_dci = 0;
-static const uint8_t  *s_hid_report_virt = NULL;
+#define XHCI_MAX_HID_ENDPOINTS 8
+
+typedef enum {
+    XHCI_HID_TYPE_NONE = 0,
+    XHCI_HID_TYPE_KEYBOARD = 1,
+    XHCI_HID_TYPE_MOUSE = 2,
+} xhci_hid_type_t;
+
+typedef struct {
+    bool active;
+    uint8_t slot_id;
+    uint8_t dci;
+    xhci_hid_type_t type;
+    const uint8_t *report_virt;
+} xhci_hid_ep_t;
+
+static xhci_hid_ep_t         s_hid_endpoints[XHCI_MAX_HID_ENDPOINTS];
+static uint8_t               s_hid_slot_id = 0;
+static uint8_t               s_hid_dci = 0;
+static const uint8_t        *s_hid_report_virt = NULL;
 
 void xhci_rings_reset_mailboxes(void) {
     uint64_t flags = spin_lock_irqsave(&g_xhci_ring_lock);
     memset(s_mailboxes, 0, sizeof(s_mailboxes));
     memset(&s_cmd_mailbox, 0, sizeof(s_cmd_mailbox));
     memset(&s_hid_fifo, 0, sizeof(s_hid_fifo));
+    memset(&s_hid_mouse_fifo, 0, sizeof(s_hid_mouse_fifo));
+    memset(s_hid_endpoints, 0, sizeof(s_hid_endpoints));
     s_port_change_events = 0;
     s_hid_reports_pending = 0;
+    s_hid_mouse_reports_pending = 0;
     s_hid_slot_id = 0;
     s_hid_dci = 0;
     s_hid_report_virt = NULL;
@@ -246,6 +268,46 @@ void xhci_hid_register_endpoint(uint8_t slot_id, uint8_t dci, uintptr_t report_b
     s_hid_slot_id = slot_id;
     s_hid_dci = dci;
     s_hid_report_virt = report_buf_virt;
+    int free_idx = -1;
+    for (int i = 0; i < XHCI_MAX_HID_ENDPOINTS; i++) {
+        if (s_hid_endpoints[i].active && s_hid_endpoints[i].slot_id == slot_id && s_hid_endpoints[i].dci == dci) {
+            free_idx = i;
+            break;
+        }
+        if (!s_hid_endpoints[i].active && free_idx < 0) {
+            free_idx = i;
+        }
+    }
+    if (free_idx >= 0) {
+        s_hid_endpoints[free_idx].active = true;
+        s_hid_endpoints[free_idx].slot_id = slot_id;
+        s_hid_endpoints[free_idx].dci = dci;
+        s_hid_endpoints[free_idx].type = XHCI_HID_TYPE_KEYBOARD;
+        s_hid_endpoints[free_idx].report_virt = report_buf_virt;
+    }
+    spin_unlock_irqrestore(&g_xhci_ring_lock, flags);
+}
+
+void xhci_hid_register_mouse_endpoint(uint8_t slot_id, uint8_t dci, uintptr_t report_buf_phys, const uint8_t *report_buf_virt) {
+    (void)report_buf_phys;
+    uint64_t flags = spin_lock_irqsave(&g_xhci_ring_lock);
+    int free_idx = -1;
+    for (int i = 0; i < XHCI_MAX_HID_ENDPOINTS; i++) {
+        if (s_hid_endpoints[i].active && s_hid_endpoints[i].slot_id == slot_id && s_hid_endpoints[i].dci == dci) {
+            free_idx = i;
+            break;
+        }
+        if (!s_hid_endpoints[i].active && free_idx < 0) {
+            free_idx = i;
+        }
+    }
+    if (free_idx >= 0) {
+        s_hid_endpoints[free_idx].active = true;
+        s_hid_endpoints[free_idx].slot_id = slot_id;
+        s_hid_endpoints[free_idx].dci = dci;
+        s_hid_endpoints[free_idx].type = XHCI_HID_TYPE_MOUSE;
+        s_hid_endpoints[free_idx].report_virt = report_buf_virt;
+    }
     spin_unlock_irqrestore(&g_xhci_ring_lock, flags);
 }
 
@@ -297,22 +359,64 @@ void xhci_event_ring_pump(const xhci_rings_io_t *io, xhci_dma_buffers_t *dma) {
         } else if (trb_type == XHCI_TRB_TYPE_PORT_STATUS_EVENT) {
             s_port_change_events++;
         } else if (trb_type == XHCI_TRB_TYPE_TRANSFER_EVENT) {
-            if (s_hid_slot_id && ev_slot == s_hid_slot_id && ev_dci == s_hid_dci && s_hid_report_virt) {
+            xhci_hid_ep_t *hid_ep = NULL;
+            for (int i = 0; i < XHCI_MAX_HID_ENDPOINTS; i++) {
+                if (s_hid_endpoints[i].active &&
+                    s_hid_endpoints[i].slot_id == ev_slot &&
+                    s_hid_endpoints[i].dci == ev_dci) {
+                    hid_ep = &s_hid_endpoints[i];
+                    break;
+                }
+            }
+            if (!hid_ep && s_hid_slot_id && ev_slot == s_hid_slot_id && ev_dci == s_hid_dci && s_hid_report_virt) {
+                static xhci_hid_ep_t legacy_ep;
+                legacy_ep.active = true;
+                legacy_ep.slot_id = s_hid_slot_id;
+                legacy_ep.dci = s_hid_dci;
+                legacy_ep.type = XHCI_HID_TYPE_KEYBOARD;
+                legacy_ep.report_virt = s_hid_report_virt;
+                hid_ep = &legacy_ep;
+            }
+
+            if (hid_ep && hid_ep->report_virt) {
                 if (comp_code == XHCI_COMP_SUCCESS || comp_code == XHCI_COMP_SHORT_PACKET) {
-                    xhci_clflush_range(s_hid_report_virt, 8);
+                    xhci_clflush_range(hid_ep->report_virt, 8);
                     __asm__ volatile("mfence" ::: "memory");
-                    if (s_hid_fifo.count == XHCI_HID_FIFO_CAP) {
-                        /* Circular buffer overflow: drop oldest entry so newest key state always lands */
-                        s_hid_fifo.head = (s_hid_fifo.head + 1) % XHCI_HID_FIFO_CAP;
-                        s_hid_fifo.count--;
-                        s_hid_fifo.drops++;
+                    if (hid_ep->type == XHCI_HID_TYPE_KEYBOARD) {
+                        if (s_hid_fifo.count == XHCI_HID_FIFO_CAP) {
+                            /* Circular buffer overflow: drop oldest entry so newest key state always lands */
+                            s_hid_fifo.head = (s_hid_fifo.head + 1) % XHCI_HID_FIFO_CAP;
+                            s_hid_fifo.count--;
+                            s_hid_fifo.drops++;
+                        }
+                        for (int b = 0; b < 8; ++b) {
+                            s_hid_fifo.reports[s_hid_fifo.tail][b] = hid_ep->report_virt[b];
+                        }
+                        s_hid_fifo.tail = (s_hid_fifo.tail + 1) % XHCI_HID_FIFO_CAP;
+                        s_hid_fifo.count++;
+                        __atomic_fetch_add(&s_hid_reports_pending, 1, __ATOMIC_RELEASE);
+                    } else if (hid_ep->type == XHCI_HID_TYPE_MOUSE) {
+                        if (s_hid_mouse_fifo.count == XHCI_HID_FIFO_CAP) {
+                            /* Circular buffer overflow: drop oldest entry */
+                            s_hid_mouse_fifo.head = (s_hid_mouse_fifo.head + 1) % XHCI_HID_FIFO_CAP;
+                            s_hid_mouse_fifo.count--;
+                            s_hid_mouse_fifo.drops++;
+                        }
+                        uint8_t tlen = 8;
+                        if (residual < 8) {
+                            tlen = (uint8_t)(8 - residual);
+                        }
+                        if (tlen < 3) tlen = 3;
+                        for (int b = 0; b < 8; ++b) {
+                            s_hid_mouse_fifo.reports[s_hid_mouse_fifo.tail][b] = hid_ep->report_virt[b];
+                        }
+                        s_hid_mouse_fifo.lens[s_hid_mouse_fifo.tail] = tlen;
+                        s_hid_mouse_fifo.slot_ids[s_hid_mouse_fifo.tail] = ev_slot;
+                        s_hid_mouse_fifo.dcis[s_hid_mouse_fifo.tail] = ev_dci;
+                        s_hid_mouse_fifo.tail = (s_hid_mouse_fifo.tail + 1) % XHCI_HID_FIFO_CAP;
+                        s_hid_mouse_fifo.count++;
+                        __atomic_fetch_add(&s_hid_mouse_reports_pending, 1, __ATOMIC_RELEASE);
                     }
-                    for (int b = 0; b < 8; ++b) {
-                        s_hid_fifo.reports[s_hid_fifo.tail][b] = s_hid_report_virt[b];
-                    }
-                    s_hid_fifo.tail = (s_hid_fifo.tail + 1) % XHCI_HID_FIFO_CAP;
-                    s_hid_fifo.count++;
-                    __atomic_fetch_add(&s_hid_reports_pending, 1, __ATOMIC_RELEASE);
                 }
             } else if (ev_slot < XHCI_MAX_SLOTS && ev_dci < XHCI_MAX_DCIS) {
                 xhci_mailbox_t *mb = &s_mailboxes[ev_slot][ev_dci];
@@ -426,8 +530,37 @@ bool xhci_hid_fifo_pop(uint8_t out_report[8]) {
     return true;
 }
 
+bool xhci_hid_mouse_fifo_pop(uint8_t out_report[8], uint8_t *out_len, uint8_t *out_slot, uint8_t *out_dci) {
+    if (!out_report) return false;
+    uint64_t flags = spin_lock_irqsave(&g_xhci_ring_lock);
+    if (s_hid_mouse_fifo.count == 0) {
+        spin_unlock_irqrestore(&g_xhci_ring_lock, flags);
+        return false;
+    }
+
+    for (int b = 0; b < 8; ++b) {
+        out_report[b] = s_hid_mouse_fifo.reports[s_hid_mouse_fifo.head][b];
+    }
+    if (out_len) *out_len = s_hid_mouse_fifo.lens[s_hid_mouse_fifo.head];
+    if (out_slot) *out_slot = s_hid_mouse_fifo.slot_ids[s_hid_mouse_fifo.head];
+    if (out_dci) *out_dci = s_hid_mouse_fifo.dcis[s_hid_mouse_fifo.head];
+
+    s_hid_mouse_fifo.head = (s_hid_mouse_fifo.head + 1) % XHCI_HID_FIFO_CAP;
+    s_hid_mouse_fifo.count--;
+
+    if (__atomic_load_n(&s_hid_mouse_reports_pending, __ATOMIC_RELAXED) > 0) {
+        __atomic_fetch_sub(&s_hid_mouse_reports_pending, 1, __ATOMIC_RELEASE);
+    }
+    spin_unlock_irqrestore(&g_xhci_ring_lock, flags);
+    return true;
+}
+
 uint32_t xhci_hid_reports_pending(void) {
     return __atomic_load_n(&s_hid_reports_pending, __ATOMIC_ACQUIRE);
+}
+
+uint32_t xhci_hid_mouse_reports_pending(void) {
+    return __atomic_load_n(&s_hid_mouse_reports_pending, __ATOMIC_ACQUIRE);
 }
 
 uint32_t xhci_port_change_count(void) {
@@ -455,6 +588,13 @@ uint32_t xhci_cmd_mbox_drop_count(void) {
 uint32_t xhci_hid_fifo_drop_count(void) {
     uint64_t flags = spin_lock_irqsave(&g_xhci_ring_lock);
     uint32_t d = s_hid_fifo.drops;
+    spin_unlock_irqrestore(&g_xhci_ring_lock, flags);
+    return d;
+}
+
+uint32_t xhci_hid_mouse_fifo_drop_count(void) {
+    uint64_t flags = spin_lock_irqsave(&g_xhci_ring_lock);
+    uint32_t d = s_hid_mouse_fifo.drops;
     spin_unlock_irqrestore(&g_xhci_ring_lock, flags);
     return d;
 }

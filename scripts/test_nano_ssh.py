@@ -67,8 +67,21 @@ try:
     wait(lambda s:s.endswith('FortressOS login: '));send('operator')
     wait(lambda s:s.endswith('Password: '));send(fixture.TEST_PASSWORD)
     wait(lambda s:s.endswith('$ '))
-    start=len(data);send('sudo -b /sbin/sshd');wait(lambda s:s.endswith('sudo password: '),start);send(fixture.TEST_PASSWORD)
-    wait(lambda s:'Listening on port 22' in s,start,30)
+
+    import socket
+    def is_port_listening(p):
+        try:
+            with socket.create_connection(('127.0.0.1', p), timeout=0.5):
+                return True
+        except Exception:
+            return False
+
+    if not is_port_listening(port):
+        start=len(data);send('sudo -b /sbin/sshd');wait(lambda s:s.endswith('sudo password: '),start);send(fixture.TEST_PASSWORD)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not is_port_listening(port):
+            time.sleep(0.5)
+        assert is_port_listening(port), "sshd failed to listen on port"
     master,slave=pty.openpty();tty.setraw(slave)
     fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',30,100,0,0))
     def setup_client():

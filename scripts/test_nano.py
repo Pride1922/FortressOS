@@ -467,6 +467,73 @@ def run_session(mode, iso, tmp):
             wait_for_prompt(prompt_start, timeout=15)
             print(f"[{mode}] [Stage 12] PASS: /etc/nanorc configuration and regex search verified", flush=True)
 
+            # -------------------------------------------------------------
+            # Stage 13: Mouse Support (SGR 1006 Click, Scroll & Shortcut Bar)
+            # -------------------------------------------------------------
+            print(f"[{mode}] [Stage 13] Testing Mouse Support (SGR 1006 Click, Scroll & Shortcut Bar)...", flush=True)
+            exec_cmd("rm -f /mnt/nanorc")
+            exec_cmd("echo 'First line has plenty of characters to click on' > /mnt/mouse_test.txt")
+            exec_cmd("echo 'Second line is also filled with text here' >> /mnt/mouse_test.txt")
+            exec_cmd("echo 'Third line for scrolling test' >> /mnt/mouse_test.txt")
+            exec_cmd("echo 'Fourth line down here' >> /mnt/mouse_test.txt")
+            exec_cmd("echo 'Fifth line at the bottom' >> /mnt/mouse_test.txt")
+
+            raw_start = len(get_raw())
+            send_raw(b"/bin/nano -l /mnt/mouse_test.txt\n")
+            # Verify nano emits SGR mouse enable sequences on startup
+            wait_for_raw_pattern("[?1000h", raw_start, timeout=15)
+            wait_for_raw_pattern("[?1006h", raw_start, timeout=10)
+            wait_for_raw_pattern("^O Save", raw_start, timeout=10)
+
+            # 1. Click at text viewport: col 16, row 2 (line 1, gutter is 6 chars, so cx = 16 - 7 = 9 -> col 10)
+            send_raw(b"\x1b[<0;16;2M\x1b[<0;16;2m")
+            time.sleep(0.1)
+
+            # Query position via Ctrl+C (0x03)
+            send_raw(b"\x03")
+            wait_for_raw_pattern("col 10/", raw_start, timeout=10)
+
+            # 2. Click on line 2 (row 3), col 20 -> line 2, col 14
+            send_raw(b"\x1b[<0;20;3M\x1b[<0;20;3m")
+            time.sleep(0.1)
+            send_raw(b"\x03")
+            wait_for_raw_pattern("line 2/6", raw_start, timeout=10)
+
+            # 3. Scroll wheel down (button 65) -> scrolls down 3 lines to line 4
+            send_raw(b"\x1b[<65;10;5M")
+            time.sleep(0.1)
+            send_raw(b"\x03")
+            wait_for_raw_pattern("line 4/6", raw_start, timeout=10)
+
+            # 4. Type text to mark buffer modified
+            send_raw(b"CLICK_TEST_")
+            time.sleep(0.1)
+
+            # Dynamically determine legend row from frame output
+            frame = get_raw()[raw_start:]
+            hdr_pos = frame.rfind("FortressOS Nano")
+            leg_pos = frame.find("^O Save", hdr_pos)
+            legend_row = 1 + frame[hdr_pos:leg_pos].count("\r\n")
+
+            # 5. Click on Shortcut Legend bar to trigger Exit (^X Exit at row legend_row, col 12)
+            send_raw(f"\x1b[<0;12;{legend_row}M\x1b[<0;12;{legend_row}m".encode())
+
+            # Buffer was modified, so nano should display the save prompt
+            wait_for_raw_pattern("Save modified buffer", raw_start, timeout=10)
+
+            # Answer 'N' to discard and return to shell prompt
+            prompt_start = len(get_text())
+            send_raw(b"N")
+            wait_for_prompt(prompt_start, timeout=15)
+
+            # Clean up test file
+            exec_cmd("rm -f /mnt/mouse_test.txt")
+
+            # Verify nano cleanly emitted SGR mouse disable sequence on exit
+            assert "[?1000l" in get_raw()[raw_start:], "Missing mouse disable escape sequence on exit"
+            assert "[?1006l" in get_raw()[raw_start:], "Missing SGR disable escape sequence on exit"
+            print(f"[{mode}] [Stage 13] PASS: SGR 1006 click, scroll, and shortcut bar actions verified", flush=True)
+
             print(f"[{mode}] ALL NANO INTEGRATION TESTS PASSED!", flush=True)
 
         finally:

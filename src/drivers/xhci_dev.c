@@ -515,6 +515,9 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
             if (if_class == 0x03 && if_subclass == 0x01 && if_proto == 0x01) { /* HID Boot Keyboard */
                 device->is_hid_keyboard = true;
                 device->hid_if_num = if_num;
+            } else if (if_class == 0x03 && if_subclass == 0x01 && if_proto == 0x02 && !device->is_hid_keyboard) { /* HID Boot Mouse */
+                device->is_hid_mouse = true;
+                device->hid_if_num = if_num;
             }
         } else if (found_bot_if && type == USB_DESC_ENDPOINT && len >= 7) {
             uint8_t ep_addr   = full_cfg[off + 2];
@@ -542,11 +545,11 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
                     device->bulk_out_max_burst = max_burst;
                 }
             }
-        } else if (device->is_hid_keyboard && type == USB_DESC_ENDPOINT && len >= 7) {
+        } else if ((device->is_hid_keyboard || device->is_hid_mouse) && type == USB_DESC_ENDPOINT && len >= 7) {
             uint8_t ep_addr   = full_cfg[off + 2];
             uint8_t ep_attr   = full_cfg[off + 3] & 0x03;
             uint16_t max_packet = full_cfg[off + 4] | ((uint16_t)full_cfg[off + 5] << 8);
-            if (ep_attr == 3 && (ep_addr & 0x80)) { /* Interrupt IN */
+            if (ep_attr == 3 && (ep_addr & 0x80) && !device->int_in_ep) { /* Interrupt IN */
                 device->int_in_ep = ep_addr;
                 device->int_in_max_packet = max_packet;
                 device->int_in_interval = full_cfg[off + 6];
@@ -593,7 +596,7 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
         off += len;
     }
 
-    if (!device->is_hub && !device->is_hid_keyboard && (!device->bulk_in_ep || !device->bulk_out_ep)) {
+    if (!device->is_hub && !device->is_hid_keyboard && !device->is_hid_mouse && (!device->bulk_in_ep || !device->bulk_out_ep)) {
         device->error_msg = "Device is not a supported BOT Mass Storage device";
         xhci_trb_t dis_cmd = {0};
         dis_cmd.control = (XHCI_TRB_TYPE_DISABLE_SLOT_CMD << 10) | ((uint32_t)slot_id << 24);

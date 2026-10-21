@@ -493,6 +493,11 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                         continue;
                     }
 
+                    if (dev_ok && bot_dev.is_hid_mouse) {
+                        usb_hid_configure_mouse(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &bot_dev);
+                        continue;
+                    }
+
                     if (dev_ok && bot_dev.is_hub) {
                         xhci_device_topology_t root_hub = {
                             .slot_id = bot_dev.slot_id,

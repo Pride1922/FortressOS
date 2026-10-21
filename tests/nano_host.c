@@ -788,6 +788,199 @@ static void test_phase3_input_parsing(void) {
     assert(nano_parse_input(&inp, '>', &out_char) == KEY_ALT_NEXT_BUF);
 }
 
+static void test_phase4_mouse_support(void) {
+    printf("[TEST] test_phase4_mouse_support...\n");
+    nano_input_state_t inp;
+    char out_char = 0;
+    nano_input_reset(&inp);
+
+    /* 1. SGR 1006 Parser Tests */
+    /* Feed \x1b[<0;25;12M (Left button press at col 25, row 12) */
+    const char *seq1 = "\x1b[<0;25;12M";
+    nano_key_t k = KEY_NONE;
+    for (size_t i = 0; seq1[i]; i++) {
+        k = nano_parse_input(&inp, (unsigned char)seq1[i], &out_char);
+    }
+    assert(k == KEY_MOUSE);
+    assert(inp.last_mouse.button == 0);
+    assert(!inp.last_mouse.release);
+    assert(inp.last_mouse.x == 25);
+    assert(inp.last_mouse.y == 12);
+
+    /* Feed \x1b[<0;25;12m (Left button release at col 25, row 12) */
+    const char *seq2 = "\x1b[<0;25;12m";
+    for (size_t i = 0; seq2[i]; i++) {
+        k = nano_parse_input(&inp, (unsigned char)seq2[i], &out_char);
+    }
+    assert(k == KEY_MOUSE);
+    assert(inp.last_mouse.button == 0);
+    assert(inp.last_mouse.release);
+    assert(inp.last_mouse.x == 25);
+    assert(inp.last_mouse.y == 12);
+
+    /* Feed \x1b[<64;10;5M (Scroll wheel UP) */
+    const char *seq_up = "\x1b[<64;10;5M";
+    for (size_t i = 0; seq_up[i]; i++) {
+        k = nano_parse_input(&inp, (unsigned char)seq_up[i], &out_char);
+    }
+    assert(k == KEY_MOUSE);
+    assert(inp.last_mouse.button == 64);
+    assert(!inp.last_mouse.release);
+
+    /* Feed \x1b[<65;10;5M (Scroll wheel DOWN) */
+    const char *seq_down = "\x1b[<65;10;5M";
+    for (size_t i = 0; seq_down[i]; i++) {
+        k = nano_parse_input(&inp, (unsigned char)seq_down[i], &out_char);
+    }
+    assert(k == KEY_MOUSE);
+    assert(inp.last_mouse.button == 65);
+    assert(!inp.last_mouse.release);
+
+    /* 2. Visual to Buffer Column Translation (nano_render_to_col) */
+    nano_state_t st;
+    memset(&st, 0, sizeof(st));
+    st.tab_size = 8;
+
+    const char *line_plain = "Hello World";
+    assert(nano_render_to_col(&st, line_plain, 11, 0) == 0);
+    assert(nano_render_to_col(&st, line_plain, 11, 4) == 4);
+    assert(nano_render_to_col(&st, line_plain, 11, 11) == 11);
+    assert(nano_render_to_col(&st, line_plain, 11, 50) == 11); /* Clamped to line length */
+
+    /* "a\tb" -> 'a' at 0, tab expands 1..7, 'b' at 8 */
+    const char *line_tab = "a\tb";
+    assert(nano_render_to_col(&st, line_tab, 3, 0) == 0); /* 'a' */
+    assert(nano_render_to_col(&st, line_tab, 3, 1) == 1); /* tab */
+    assert(nano_render_to_col(&st, line_tab, 3, 7) == 1); /* tab */
+    assert(nano_render_to_col(&st, line_tab, 3, 8) == 2); /* 'b' */
+    assert(nano_render_to_col(&st, line_tab, 3, 9) == 3); /* end */
+
+    /* 3. Mouse Click & Navigation Handling (nano_handle_mouse) */
+    char pool[NANO_POOL_SIZE];
+    nano_init(&st, pool);
+    st.screen_rows = 10;
+    st.screen_cols = 40;
+
+    const char *sample = "Line zero\nLine one is longer\nLine two\nLine three\nLine four\nLine five\nLine six\nLine seven\nLine eight\nLine nine";
+    assert(nano_load_buffer(&st, pool, sample, strlen(sample)));
+    st.screen_rows = 10;
+    st.screen_cols = 40;
+
+    bool full_redraw = false;
+    bool cursor_redraw = false;
+
+    /* Click in text editing area: row 2 (first file line, cy=0), col 5 (cx=4) */
+    nano_mouse_event_t ev = { .button = 0, .release = false, .x = 5, .y = 2 };
+    nano_key_t act = nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw);
+    assert(act == KEY_NONE);
+    assert(st.cy == 0);
+    assert(st.cx == 4);
+    assert(cursor_redraw);
+
+    /* Click on row 4 (third file line, cy=2), col 7 (cx=6) */
+    cursor_redraw = false;
+    ev.x = 7;
+    ev.y = 4;
+    act = nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw);
+    assert(act == KEY_NONE);
+    assert(st.cy == 2);
+    assert(st.cx == 6);
+    assert(cursor_redraw);
+
+    /* Click below file end: row 8 when row_offset=0 and viewport only has lines 0..6 */
+    ev.x = 10;
+    ev.y = 7; /* row 7 = line 5 "Line five" */
+    act = nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw);
+    assert(act == KEY_NONE);
+    assert(st.cy == 5);
+
+    /* Test gutter offset translation */
+    st.show_line_numbers = true;
+    size_t gut = nano_gutter_width(&st);
+    assert(gut > 0);
+
+    /* Click inside gutter (col <= 1 + gut) -> jumps to start of line cx=0 */
+    ev.x = 2;
+    ev.y = 3; /* line 1 */
+    act = nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw);
+    assert(act == KEY_NONE);
+    assert(st.cy == 1);
+    assert(st.cx == 0);
+
+    /* Click in text past gutter (col = 1 + gut + 4) -> cx = 4 */
+    ev.x = 1 + gut + 4;
+    ev.y = 3;
+    act = nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw);
+    assert(act == KEY_NONE);
+    assert(st.cy == 1);
+    assert(st.cx == 4);
+
+    /* 4. Scroll Wheel Viewport Navigation */
+    st.show_line_numbers = false;
+    st.row_offset = 0;
+    st.cy = 0;
+    st.cx = 0;
+
+    /* Scroll down 3 lines */
+    full_redraw = false;
+    ev.button = 65; /* Wheel Down */
+    ev.release = false;
+    act = nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw);
+    assert(act == KEY_NONE);
+    assert(st.row_offset == 3);
+    assert(st.cy == 3); /* Cursor adjusted into visible range */
+    assert(full_redraw);
+
+    /* Scroll down another 3 lines */
+    full_redraw = false;
+    act = nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw);
+    assert(act == KEY_NONE);
+    assert(st.row_offset == 6);
+    assert(st.cy == 6);
+    assert(full_redraw);
+
+    /* Scroll up 3 lines */
+    full_redraw = false;
+    ev.button = 64; /* Wheel Up */
+    act = nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw);
+    assert(act == KEY_NONE);
+    assert(st.row_offset == 3);
+    assert(full_redraw);
+
+    /* 5. Shortcut Legend Bar Clicks (Row = screen_rows = 10) */
+    ev.button = 0;
+    ev.release = false;
+    ev.y = 10;
+
+    /* Col 4 -> ^O Save */
+    ev.x = 4;
+    assert(nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw) == KEY_CTRL_O);
+
+    /* Col 12 -> ^X Exit */
+    ev.x = 12;
+    assert(nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw) == KEY_CTRL_X);
+
+    /* Col 22 -> ^W WhereIs */
+    ev.x = 22;
+    assert(nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw) == KEY_CTRL_W);
+
+    /* Col 33 -> ^R Replace */
+    ev.x = 33;
+    assert(nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw) == KEY_CTRL_R);
+
+    /* Col 45 -> ^G GotoLine */
+    ev.x = 45;
+    assert(nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw) == KEY_CTRL_G);
+
+    /* Col 55 -> ^Z Undo */
+    ev.x = 55;
+    assert(nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw) == KEY_CTRL_Z);
+
+    /* Col 65 -> ^Y Redo */
+    ev.x = 65;
+    assert(nano_handle_mouse(&st, pool, &ev, &full_redraw, &cursor_redraw) == KEY_CTRL_Y);
+}
+
 int main(void) {
     printf("=== Starting FortressOS Nano Host Tests ===\n");
     test_init_and_empty();
@@ -813,6 +1006,7 @@ int main(void) {
     test_phase3_case_sensitivity();
     test_phase3_tab_options();
     test_phase3_input_parsing();
+    test_phase4_mouse_support();
     printf("=== ALL NANO HOST TESTS PASSED (100%%) ===\n");
     return 0;
 }

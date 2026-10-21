@@ -80,6 +80,7 @@ typedef enum {
     KEY_CTRL_C,
     KEY_WORD_LEFT,
     KEY_WORD_RIGHT,
+    KEY_MOUSE,
     KEY_ALT_D,
     KEY_ALT_N,
     KEY_ALT_U,
@@ -90,8 +91,16 @@ typedef enum {
 } nano_key_t;
 
 typedef struct {
-    char     escape[16];
-    uint8_t  escape_len;
+    uint8_t  button;   /* 0: Left, 1: Middle, 2: Right, 64: Wheel Up, 65: Wheel Down */
+    bool     release;  /* true if released ('m'), false if pressed ('M') */
+    size_t   x;        /* 1-based screen column */
+    size_t   y;        /* 1-based screen row */
+} nano_mouse_event_t;
+
+typedef struct {
+    char               escape[32];
+    uint8_t            escape_len;
+    nano_mouse_event_t last_mouse;
 } nano_input_state_t;
 
 typedef enum {
@@ -165,6 +174,7 @@ void nano_init(nano_state_t *s, char *pool);
 bool nano_load_buffer(nano_state_t *s, char *pool, const char *data, size_t size);
 uint16_t nano_calc_render_len(const nano_state_t *s, const char *chars, size_t len);
 size_t nano_col_to_render(const nano_state_t *s, const char *chars, size_t len, size_t col);
+size_t nano_render_to_col(const nano_state_t *s, const char *chars, size_t len, size_t render_col);
 size_t nano_gutter_width(const nano_state_t *s);
 
 bool nano_insert_char(nano_state_t *s, char *pool, char c);
@@ -183,6 +193,7 @@ void nano_page_down(nano_state_t *s, const char *pool);
 void nano_word_left(nano_state_t *s, const char *pool);
 void nano_word_right(nano_state_t *s, const char *pool);
 void nano_go_to_line(nano_state_t *s, size_t target_row, size_t target_col);
+nano_key_t nano_handle_mouse(nano_state_t *s, const char *pool, const nano_mouse_event_t *ev, bool *out_full_redraw, bool *out_cursor_redraw);
 
 bool nano_cut_line(nano_state_t *s, char *pool);
 bool nano_uncut_line(nano_state_t *s, char *pool);

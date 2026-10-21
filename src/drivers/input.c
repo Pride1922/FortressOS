@@ -442,6 +442,15 @@ void input_inject_scancodes(const uint8_t *scancodes, size_t count) {
 #endif
 }
 
+void input_inject_bytes(const char *bytes, size_t count) {
+#ifndef INPUT_HOST_TEST
+    if (!bytes || !count) return;
+    ingress(bytes, count);
+#else
+    (void)bytes; (void)count;
+#endif
+}
+
 static bool keyboard_init(const acpi_madt_info_t *madt, uint8_t apic_id) {
     uint8_t config, set;
     if (!kbc_write(KBC_STATUS, 0xad) || !kbc_write(KBC_STATUS, 0xa7)) return false;

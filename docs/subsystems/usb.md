@@ -8,6 +8,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
+| **Phase 9G.8 USB HID Boot Protocol Mouse** | **COMPLETE** (2026-10-21) | USB Boot Protocol mouse driver (`hid_mouse.h`, `usb_hid.c`). Subclass 1, Protocol 2 discovery and endpoint setup (`xhci_dev.c`), unified event ring pump demuxing (`xhci_rings.c`), lock-free circular FIFO with drop-oldest overflow protection, relative delta motion (`dx`, `dy`, optional `dz` wheel) decoding, edge transition detection (`pressed`, `released` bitmasks), bounding box clamping, and integration with dock/hub topologies. 100% PASS on host ASan/UBSan & TSan suites (`make test-hub-host`, `make test-hub-host-tsan`) and multi-firmware BIOS & UEFI QEMU suite (`make test-usb-mouse`). |
 | **Phase 9G.7 USB Hubs & Dell WD19S Dock Topology** | **COMPLETE** (2026-10-21) | USB 2.0 and SuperSpeed Hub driver (`xhci_hub.c`). Route String computation across multi-tier topologies, Transaction Translator (TT) inheritance in Slot Context DW2 (`MTT=0`), downstream port power (`PORT_POWER`) and power-good delays, downstream port status detection and reset, per-slot Output Context and EP0 ring allocation, recursive child enumeration. Dell WD19S multi-tier dock topology compatible. Host tests 100% PASS under ASan/UBSan/TSan, BIOS/UEFI QEMU downstream device acceptance 100% PASS (`make test-usb-hub`). |
 | **Phase 9G.6 USB HID Boot Protocol Keyboard** | **COMPLETE** (2026-10-21) | USB Boot Protocol keyboard driver (`usb_hid.c`). Single-dispatcher event ring pump (`xhci_rings.c`), diff-based HID Usage to PS/2 Set 1 scancode translator feeding `keyboard_decode_bytes()`. AZERTY and US keyboard parity, AltGr/GUI modifier support, Phantom rollover rejection, zero lock rank inversions (Rank 2 leaf ring lock, worker runs in thread context sleeping on APIC timer tick channel). Host tests 100% PASS, BIOS/UEFI QEMU interactive acceptance 100% PASS (`make test-usb-hid`). |
 | **Phase 9G.5b SuperSpeed enumeration & BOT transport** | **COMPLETE** (2026-09-20) | SuperSpeed (USB 3.x) mass storage works end-to-end on physical hardware (Dell 5590 + SanDisk USB 3.2 Gen 1, port and multi-controller variants). Full detail and evidence: [`docs/roadmap/phase-9g5-superspeed.md`](../roadmap/phase-9g5-superspeed.md). |
@@ -32,8 +33,9 @@ Dell manual retest PASS: 6–7 seconds/MiB, 16 MiB in 1m52s, matching hashes, re
 
 - Multi-tier USB 2.0 and SuperSpeed Hubs are SUPPORTED via `xhci_hub.c` (including Dell WD19S dock topology). SuperSpeedPlus (10 Gbps) verification and streams remain deferred.
 - USB HID Boot Protocol Keyboards are SUPPORTED via `usb_hid.c`.
+- USB HID Boot Protocol Mice are SUPPORTED via `hid_mouse.h` and `usb_hid.c`.
 - No hot-plug runtime reconnection or dynamic removal recovery beyond safe failure.
-- No UAS, mice, audio or other non-keyboard HID classes.
+- No UAS, audio or other non-boot HID classes.
 - No USB power management, suspend or resume.
 - No multiple-LUN support: access LUN 0 only.
 - No recovery/re-enumeration after a runtime host-controller reset. Initial reset and bounded BOT transport recovery are still required; controller failure leaves storage unavailable until reboot, with DMA safely contained.
@@ -102,7 +104,8 @@ These are measurements for 9G.1/9G.2 (flush capability for 9G.4), not assumed ha
 
 | Target | Scope / evidence |
 | --- | --- |
-| `make test-hub-host` / `make test-hub-host-tsan` | Host ASan/UBSan and ThreadSanitizer verification suite (`tests/hub_host.c`): 11 tests for Route String, TT inheritance, DW0..DW3 layout, Interval, diff boot keyboard decoder, modifier tracking, rollover rejection, self-correction, PS/2 parity, real kernel demux & ERDP/EHB, and real kernel concurrency stress with zero drops. |
+| `make test-hub-host` / `make test-hub-host-tsan` | Host ASan/UBSan and ThreadSanitizer verification suite (`tests/hub_host.c`): 16 tests for Route String, TT inheritance, DW0..DW3 layout, Interval, diff boot keyboard decoder, modifier tracking, rollover rejection, self-correction, PS/2 parity, Boot Mouse report decoder (buttons, dx, dy, dz wheel), bounding box clamping, real kernel event ring demuxing into mouse FIFO, circular FIFO overflow drop-oldest, interleaved keyboard & mouse demuxing without crosstalk, real kernel demux & ERDP/EHB, and real kernel concurrency stress (5 concurrent threads: producer, BOT worker, CMD worker, Keyboard worker, Mouse worker) with zero drops. |
+| `make test-usb-mouse` | QEMU BIOS & UEFI automated acceptance suite for USB HID boot mouse (`scripts/test_usb_mouse.py`): direct root port under BIOS and downstream dock/hub topology under UEFI, relative motion (dx, dy), button clicks and release, live reports and events verified in kernel log. |
 | `make test-usb-hid` | QEMU BIOS & UEFI automated acceptance suite for USB HID boot keyboard (`scripts/test_usb_hid.py`): operator login, AZERTY/US typing, layout switching. |
 | `make test-usb-hub` | QEMU BIOS & UEFI automated acceptance suite for USB Hubs and downstream devices (`scripts/test_usb_hub.py`): hub power/scan/reset, Slot 2 child keyboard login, typing, layout switching. |
 | `make test-usb-discovery` | 9G.1a BIOS/UEFI PCI discovery with/without xHCI, shell startup without NVMe; ISO boot only, no data disk. No USB transfers or persistence claimed. |

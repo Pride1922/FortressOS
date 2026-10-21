@@ -37,7 +37,7 @@ static spinlock_t   g_console_lock = SPINLOCK_RANKED(5, "console");
 static uint64_t display_generation;
 static unsigned escape_state, escape_count, param_count;
 static unsigned params[4];
-static bool private_sequence, cursor_visible;
+static bool private_sequence, cursor_visible, s_mouse_reporting;
 static void terminal_cursor(bool show);
 
 static bool g_console_quiet = false;
@@ -288,6 +288,9 @@ static void terminal_csi(char final) {
     if (!cols || !rows) return;
     if (private_sequence) {
         if (params[0] == 25 && (final == 'h' || final == 'l')) cursor_visible = final == 'h';
+        if ((params[0] == 1000 || params[0] == 1006) && (final == 'h' || final == 'l')) {
+            s_mouse_reporting = (final == 'h');
+        }
         return;
     }
     switch (final) {
@@ -378,4 +381,8 @@ void console_get_dimensions(uint64_t *out_cols, uint64_t *out_rows) {
 void console_get_cursor(uint64_t *out_col, uint64_t *out_row) {
     if (out_col) *out_col = g_console.cursor_col;
     if (out_row) *out_row = g_console.cursor_row;
+}
+
+bool console_is_mouse_reporting(void) {
+    return s_mouse_reporting;
 }

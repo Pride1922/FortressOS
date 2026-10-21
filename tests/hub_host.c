@@ -12,6 +12,7 @@
 #include "xhci_rings.h"
 #include "xhci_hub.h"
 #include "hid_kbd.h"
+#include "hid_mouse.h"
 #include "keyboard.h"
 
 uint64_t spin_lock_irqsave(spinlock_t *l) {
@@ -608,6 +609,340 @@ static void test_real_kernel_dispatcher_single_thread(void) {
 }
 
 /* ============================================================================
+ * 5B. USB HID Boot Mouse Decoder, Clamping, Demux, and FIFOs
+ * ============================================================================ */
+
+typedef struct {
+    uint32_t call_count;
+    hid_mouse_event_t last_event;
+} test_mouse_sink_t;
+
+static void test_mouse_sink_cb(const hid_mouse_event_t *ev, void *ctx) {
+    test_mouse_sink_t *s = (test_mouse_sink_t *)ctx;
+    s->call_count++;
+    s->last_event = *ev;
+}
+
+static void test_boot_mouse_report_basic(void) {
+    printf("[TEST] Testing USB HID Boot Mouse report decoder & edge transitions...\n");
+
+    hid_mouse_state_t state = {0};
+    test_mouse_sink_t sink = {0};
+
+    /* 1. Left button press (report: btn=1, dx=10, dy=-5) */
+    uint8_t rep1[4] = {HID_MOUSE_BTN_LEFT, 10, -5, 0};
+    hid_mouse_process_report(rep1, 4, &state, test_mouse_sink_cb, &sink);
+
+    assert(sink.call_count == 1);
+    assert(sink.last_event.buttons == HID_MOUSE_BTN_LEFT);
+    assert(sink.last_event.pressed == HID_MOUSE_BTN_LEFT);
+    assert(sink.last_event.released == 0);
+    assert(sink.last_event.dx == 10);
+    assert(sink.last_event.dy == -5);
+    assert(sink.last_event.dz == 0);
+    assert(state.x == 10);
+    assert(state.y == -5);
+    assert(state.buttons == HID_MOUSE_BTN_LEFT);
+
+    /* 2. Add Right button press while moving (report: btn=3 (L+R), dx=-2, dy=4, dz=1) */
+    uint8_t rep2[4] = {HID_MOUSE_BTN_LEFT | HID_MOUSE_BTN_RIGHT, -2, 4, 1};
+    hid_mouse_process_report(rep2, 4, &state, test_mouse_sink_cb, &sink);
+
+    assert(sink.call_count == 2);
+    assert(sink.last_event.buttons == (HID_MOUSE_BTN_LEFT | HID_MOUSE_BTN_RIGHT));
+    assert(sink.last_event.pressed == HID_MOUSE_BTN_RIGHT);
+    assert(sink.last_event.released == 0);
+    assert(sink.last_event.dx == -2);
+    assert(sink.last_event.dy == 4);
+    assert(sink.last_event.dz == 1);
+    assert(state.x == 8);
+    assert(state.y == -1);
+
+    /* 3. Release Left button (report: btn=2 (R only), dx=0, dy=0, dz=0) */
+    uint8_t rep3[4] = {HID_MOUSE_BTN_RIGHT, 0, 0, 0};
+    hid_mouse_process_report(rep3, 4, &state, test_mouse_sink_cb, &sink);
+
+    assert(sink.call_count == 3);
+    assert(sink.last_event.buttons == HID_MOUSE_BTN_RIGHT);
+    assert(sink.last_event.pressed == 0);
+    assert(sink.last_event.released == HID_MOUSE_BTN_LEFT);
+    assert(state.buttons == HID_MOUSE_BTN_RIGHT);
+
+    /* 4. Release all buttons without motion */
+    uint8_t rep4[3] = {0, 0, 0};
+    hid_mouse_process_report(rep4, 3, &state, test_mouse_sink_cb, &sink);
+
+    assert(sink.call_count == 4);
+    assert(sink.last_event.buttons == 0);
+    assert(sink.last_event.pressed == 0);
+    assert(sink.last_event.released == HID_MOUSE_BTN_RIGHT);
+    assert(state.buttons == 0);
+
+    /* 5. Zero-delta report with unchanged buttons produces NO event */
+    uint8_t rep5[3] = {0, 0, 0};
+    hid_mouse_process_report(rep5, 3, &state, test_mouse_sink_cb, &sink);
+    assert(sink.call_count == 4); /* Unchanged */
+
+    printf("  [PASS] Boot Mouse button edges, deltas, and wheel decoded successfully\n");
+}
+
+static void test_boot_mouse_clamping(void) {
+    printf("[TEST] Testing USB HID Boot Mouse bounding box clamping...\n");
+
+    hid_mouse_state_t state = {
+        .x = 100,
+        .y = 100,
+        .max_x = 1024,
+        .max_y = 768,
+    };
+
+    /* Negative overflow -> clamped to 0 */
+    uint8_t rep1[3] = {0, -128, -128};
+    hid_mouse_process_report(rep1, 3, &state, NULL, NULL);
+    assert(state.x == 0);
+    assert(state.y == 0);
+
+    /* Move back into bounds */
+    uint8_t rep2[3] = {0, 50, 60};
+    hid_mouse_process_report(rep2, 3, &state, NULL, NULL);
+    assert(state.x == 50);
+    assert(state.y == 60);
+
+    /* Positive overflow -> clamped to max_x, max_y */
+    for (int i = 0; i < 15; ++i) {
+        uint8_t rep_big[3] = {0, 100, 100};
+        hid_mouse_process_report(rep_big, 3, &state, NULL, NULL);
+    }
+    assert(state.x == 1024);
+    assert(state.y == 768);
+
+    printf("  [PASS] Bounding box clamping (0,0 to max_x,max_y) verified\n");
+}
+
+static void test_boot_mouse_demux_and_fifo(void) {
+    printf("[TEST] Testing xHCI Event Ring pump demuxing to HID Mouse FIFO...\n");
+
+    mock_xhci_hw_t hw;
+    memset(&hw, 0, sizeof(hw));
+    hw.regs[0x18 / 4] = 0x1000;
+
+    xhci_trb_t cmd_ring[XHCI_RING_TRB_COUNT];
+    xhci_trb_t event_ring[XHCI_RING_TRB_COUNT];
+    xhci_erst_entry_t erst[1];
+    memset(cmd_ring, 0, sizeof(cmd_ring));
+    memset(event_ring, 0, sizeof(event_ring));
+
+    xhci_dma_buffers_t dma = {
+        .cmd_ring_virt = cmd_ring,
+        .event_ring_virt = event_ring,
+        .erst_virt = erst,
+        .cmd_ring_phys = 0x100000,
+        .event_ring_phys = 0x200000,
+        .erst_phys = 0x300000,
+        .event_dequeue_idx = 0,
+        .event_cycle = 1,
+    };
+
+    xhci_rings_io_t io = {
+        .mmio_ctx = &hw,
+        .mmio_size = sizeof(hw.regs),
+        .read32 = real_test_mock_read32,
+        .write32 = real_test_mock_write32,
+        .delay_us = real_test_mock_delay_us,
+        .delay_ms = real_test_mock_delay_ms,
+    };
+
+    xhci_rings_reset_mailboxes();
+
+    uint8_t mouse_buf[8] = {HID_MOUSE_BTN_LEFT, 25, (uint8_t)-10, 2, 0, 0, 0, 0};
+    xhci_hid_register_mouse_endpoint(4, 3, 0x4000, mouse_buf);
+
+    /* Transfer Event on Slot 4, DCI 3 with residual = 4 (transferred 4 bytes) */
+    event_ring[0].parameter_low = 0x4000;
+    event_ring[0].parameter_high = 0;
+    event_ring[0].status = (XHCI_COMP_SUCCESS << 24) | 4; /* residual = 4 */
+    event_ring[0].control = (XHCI_TRB_TYPE_TRANSFER_EVENT << 10) | (3u << 16) | (4u << 24) | XHCI_TRB_C;
+
+    xhci_event_ring_pump(&io, &dma);
+
+    assert(xhci_hid_mouse_reports_pending() == 1);
+    assert(xhci_hid_reports_pending() == 0); /* Keyboard FIFO empty */
+
+    uint8_t popped_report[8] = {0};
+    uint8_t popped_len = 0;
+    uint8_t popped_slot = 0;
+    uint8_t popped_dci = 0;
+    bool ok = xhci_hid_mouse_fifo_pop(popped_report, &popped_len, &popped_slot, &popped_dci);
+
+    assert(ok);
+    assert(popped_len == 4);
+    assert(popped_slot == 4);
+    assert(popped_dci == 3);
+    assert(popped_report[0] == HID_MOUSE_BTN_LEFT);
+    assert((int8_t)popped_report[1] == 25);
+    assert((int8_t)popped_report[2] == -10);
+    assert((int8_t)popped_report[3] == 2);
+    assert(xhci_hid_mouse_reports_pending() == 0);
+
+    printf("  [PASS] Real event ring pump demuxed mouse report into mouse FIFO with exact length & endpoint metadata\n");
+}
+
+static void test_boot_mouse_fifo_overflow(void) {
+    printf("[TEST] Testing HID Mouse FIFO circular drop-oldest behavior on overflow...\n");
+
+    mock_xhci_hw_t hw;
+    memset(&hw, 0, sizeof(hw));
+    hw.regs[0x18 / 4] = 0x1000;
+
+    xhci_trb_t cmd_ring[XHCI_RING_TRB_COUNT];
+    xhci_trb_t event_ring[XHCI_RING_TRB_COUNT];
+    xhci_erst_entry_t erst[1];
+    memset(cmd_ring, 0, sizeof(cmd_ring));
+    memset(event_ring, 0, sizeof(event_ring));
+
+    xhci_dma_buffers_t dma = {
+        .cmd_ring_virt = cmd_ring,
+        .event_ring_virt = event_ring,
+        .erst_virt = erst,
+        .cmd_ring_phys = 0x100000,
+        .event_ring_phys = 0x200000,
+        .erst_phys = 0x300000,
+        .event_dequeue_idx = 0,
+        .event_cycle = 1,
+    };
+
+    xhci_rings_io_t io = {
+        .mmio_ctx = &hw,
+        .mmio_size = sizeof(hw.regs),
+        .read32 = real_test_mock_read32,
+        .write32 = real_test_mock_write32,
+        .delay_us = real_test_mock_delay_us,
+        .delay_ms = real_test_mock_delay_ms,
+    };
+
+    xhci_rings_reset_mailboxes();
+
+    uint8_t mouse_buf[8] = {0};
+    xhci_hid_register_mouse_endpoint(4, 3, 0x4000, mouse_buf);
+
+    /* Push 40 reports through the event ring (capacity is 32) */
+    for (uint32_t i = 0; i < 40; ++i) {
+        mouse_buf[0] = (uint8_t)i;
+        mouse_buf[1] = (uint8_t)(i * 2);
+        event_ring[0].parameter_low = 0x4000;
+        event_ring[0].parameter_high = 0;
+        event_ring[0].status = (XHCI_COMP_SUCCESS << 24) | 4;
+        event_ring[0].control = (XHCI_TRB_TYPE_TRANSFER_EVENT << 10) | (3u << 16) | (4u << 24) | (dma.event_cycle ? XHCI_TRB_C : 0);
+
+        xhci_event_ring_pump(&io, &dma);
+        dma.event_dequeue_idx = 0; /* Reset for single slot test loop */
+    }
+
+    assert(xhci_hid_mouse_fifo_drop_count() == 8);
+
+    /* The oldest remaining report in FIFO should be report #8 */
+    uint8_t out[8];
+    uint8_t len, slot, dci;
+    bool pop_ok = xhci_hid_mouse_fifo_pop(out, &len, &slot, &dci);
+    assert(pop_ok);
+    assert(out[0] == 8);
+
+    printf("  [PASS] FIFO overflow drops oldest entries (drops=8) and keeps newest entries intact\n");
+}
+
+static void test_concurrent_keyboard_and_mouse(void) {
+    printf("[TEST] Testing interleaved Keyboard & Mouse events demuxing without crosstalk...\n");
+
+    mock_xhci_hw_t hw;
+    memset(&hw, 0, sizeof(hw));
+    hw.regs[0x18 / 4] = 0x1000;
+
+    xhci_trb_t cmd_ring[XHCI_RING_TRB_COUNT];
+    xhci_trb_t event_ring[XHCI_RING_TRB_COUNT];
+    xhci_erst_entry_t erst[1];
+    memset(cmd_ring, 0, sizeof(cmd_ring));
+    memset(event_ring, 0, sizeof(event_ring));
+
+    xhci_dma_buffers_t dma = {
+        .cmd_ring_virt = cmd_ring,
+        .event_ring_virt = event_ring,
+        .erst_virt = erst,
+        .cmd_ring_phys = 0x100000,
+        .event_ring_phys = 0x200000,
+        .erst_phys = 0x300000,
+        .event_dequeue_idx = 0,
+        .event_cycle = 1,
+    };
+
+    xhci_rings_io_t io = {
+        .mmio_ctx = &hw,
+        .mmio_size = sizeof(hw.regs),
+        .read32 = real_test_mock_read32,
+        .write32 = real_test_mock_write32,
+        .delay_us = real_test_mock_delay_us,
+        .delay_ms = real_test_mock_delay_ms,
+    };
+
+    xhci_rings_reset_mailboxes();
+
+    uint8_t kbd_buf[8] = {0};
+    uint8_t mouse_buf[8] = {0};
+
+    xhci_hid_register_endpoint(3, 3, 0x3000, kbd_buf);
+    xhci_hid_register_mouse_endpoint(4, 3, 0x4000, mouse_buf);
+
+    /* Interleave 10 keyboard events and 10 mouse events */
+    for (int i = 0; i < 10; ++i) {
+        /* Keyboard event */
+        kbd_buf[0] = 0;
+        kbd_buf[2] = 0x04 + i; /* key 'a' + i */
+        event_ring[0].parameter_low = 0x3000;
+        event_ring[0].parameter_high = 0;
+        event_ring[0].status = (XHCI_COMP_SUCCESS << 24);
+        event_ring[0].control = (XHCI_TRB_TYPE_TRANSFER_EVENT << 10) | (3u << 16) | (3u << 24) | (dma.event_cycle ? XHCI_TRB_C : 0);
+        xhci_event_ring_pump(&io, &dma);
+        dma.event_dequeue_idx = 0;
+
+        /* Mouse event */
+        mouse_buf[0] = (i % 2 == 0) ? HID_MOUSE_BTN_LEFT : HID_MOUSE_BTN_RIGHT;
+        mouse_buf[1] = (int8_t)(i + 1);
+        mouse_buf[2] = (int8_t)(-i - 1);
+        event_ring[0].parameter_low = 0x4000;
+        event_ring[0].parameter_high = 0;
+        event_ring[0].status = (XHCI_COMP_SUCCESS << 24) | 4;
+        event_ring[0].control = (XHCI_TRB_TYPE_TRANSFER_EVENT << 10) | (3u << 16) | (4u << 24) | (dma.event_cycle ? XHCI_TRB_C : 0);
+        xhci_event_ring_pump(&io, &dma);
+        dma.event_dequeue_idx = 0;
+    }
+
+    assert(xhci_hid_reports_pending() == 10);
+    assert(xhci_hid_mouse_reports_pending() == 10);
+
+    /* Drain keyboard reports */
+    for (int i = 0; i < 10; ++i) {
+        uint8_t krep[8] = {0};
+        assert(xhci_hid_fifo_pop(krep));
+        assert(krep[2] == 0x04 + i);
+    }
+    assert(xhci_hid_reports_pending() == 0);
+
+    /* Drain mouse reports */
+    for (int i = 0; i < 10; ++i) {
+        uint8_t mrep[8] = {0};
+        uint8_t len = 0, slot = 0, dci = 0;
+        assert(xhci_hid_mouse_fifo_pop(mrep, &len, &slot, &dci));
+        assert(slot == 4);
+        assert(dci == 3);
+        assert(mrep[0] == ((i % 2 == 0) ? HID_MOUSE_BTN_LEFT : HID_MOUSE_BTN_RIGHT));
+        assert((int8_t)mrep[1] == (int8_t)(i + 1));
+        assert((int8_t)mrep[2] == (int8_t)(-i - 1));
+    }
+    assert(xhci_hid_mouse_reports_pending() == 0);
+
+    printf("  [PASS] 10 Keyboard and 10 Mouse reports cleanly routed without cross-talk\n");
+}
+
+/* ============================================================================
  * 6. Real Kernel Concurrency, ERDP Wrapping, Fault Timing & TSan Multi-Core
  * ============================================================================ */
 
@@ -622,6 +957,7 @@ typedef struct {
     xhci_dma_buffers_t *dma;
     xhci_rings_io_t    *io;
     uint8_t            *kbd_buf;
+    uint8_t            *mouse_buf;
     uint32_t            total_events;
 
     _Atomic int         done;
@@ -634,6 +970,7 @@ typedef struct {
     _Atomic uint32_t    bot_consumed_cnt;
     _Atomic uint32_t    cmd_consumed_cnt;
     _Atomic uint32_t    hid_consumed_cnt;
+    _Atomic uint32_t    mouse_consumed_cnt;
     _Atomic uint32_t    stall_detected_cnt;
 } stress_ctx_t;
 
@@ -651,7 +988,7 @@ static void *stress_producer_thread(void *arg) {
         }
 
         xhci_trb_t *t = &dma->event_ring_virt[cur_enq];
-        uint32_t sel = i % 4;
+        uint32_t sel = i % 5;
 
         if (sel == 0) {
             /* Flow control: BOT in-flight requests bounded to 8 (mailbox depth is 32) */
@@ -676,7 +1013,7 @@ static void *stress_producer_thread(void *arg) {
         } else if (sel == 1) {
             /* HID Keyboard transfer event on Slot 3, DCI 3 */
             uint64_t flags = spin_lock_irqsave(&g_xhci_ring_lock);
-            if (i >= ctx->total_events - 4) {
+            if (i >= ctx->total_events - 5) {
                 /* Final release report: all keys up */
                 memset(ctx->kbd_buf, 0, 8);
             } else {
@@ -692,6 +1029,21 @@ static void *stress_producer_thread(void *arg) {
                             (ctx->enq_cycle ? XHCI_TRB_C : 0);
             __atomic_store_n(&t->control, ctrl, __ATOMIC_RELEASE);
         } else if (sel == 2) {
+            /* HID Mouse transfer event on Slot 4, DCI 3 */
+            uint64_t flags = spin_lock_irqsave(&g_xhci_ring_lock);
+            ctx->mouse_buf[0] = (uint8_t)(i % 4);
+            ctx->mouse_buf[1] = (int8_t)(i % 20);
+            ctx->mouse_buf[2] = (int8_t)(-(i % 20));
+            ctx->mouse_buf[3] = (int8_t)(i % 3);
+            spin_unlock_irqrestore(&g_xhci_ring_lock, flags);
+
+            t->parameter_low = 0x40000000u + i;
+            t->parameter_high = 0;
+            t->status = (XHCI_COMP_SUCCESS << 24) | 4;
+            uint32_t ctrl = (XHCI_TRB_TYPE_TRANSFER_EVENT << 10) | (3u << 16) | (4u << 24) |
+                            (ctx->enq_cycle ? XHCI_TRB_C : 0);
+            __atomic_store_n(&t->control, ctrl, __ATOMIC_RELEASE);
+        } else if (sel == 3) {
             /* Flow control: Command completions serialized (bounded to 4) */
             while (atomic_load_explicit(&ctx->produced_cmd_cnt, memory_order_relaxed) -
                    atomic_load_explicit(&ctx->cmd_consumed_cnt, memory_order_relaxed) >= 4) {
@@ -840,6 +1192,49 @@ static void *stress_hid_worker_thread(void *arg) {
     return NULL;
 }
 
+static void *stress_mouse_worker_thread(void *arg) {
+    stress_ctx_t *ctx = arg;
+    hid_mouse_state_t state = {0};
+
+    while (!atomic_load_explicit(&ctx->done, memory_order_acquire)) {
+        uint64_t flags = spin_lock_irqsave(&g_xhci_ring_lock);
+        xhci_event_ring_pump(ctx->io, ctx->dma);
+        spin_unlock_irqrestore(&g_xhci_ring_lock, flags);
+
+        uint8_t rep[8];
+        uint8_t len = 0, slot = 0, dci = 0;
+        while (xhci_hid_mouse_fifo_pop(rep, &len, &slot, &dci)) {
+            atomic_fetch_add_explicit(&ctx->mouse_consumed_cnt, 1, memory_order_relaxed);
+            hid_mouse_process_report(rep, len ? len : 4, &state, NULL, NULL);
+        }
+        sched_yield();
+    }
+
+    /* Final drain */
+    for (int attempts = 0; attempts < 50000; ++attempts) {
+        uint64_t flags = spin_lock_irqsave(&g_xhci_ring_lock);
+        xhci_event_ring_pump(ctx->io, ctx->dma);
+        spin_unlock_irqrestore(&g_xhci_ring_lock, flags);
+
+        uint8_t rep[8];
+        uint8_t len = 0, slot = 0, dci = 0;
+        bool got = false;
+        while (xhci_hid_mouse_fifo_pop(rep, &len, &slot, &dci)) {
+            atomic_fetch_add_explicit(&ctx->mouse_consumed_cnt, 1, memory_order_relaxed);
+            hid_mouse_process_report(rep, len ? len : 4, &state, NULL, NULL);
+            got = true;
+        }
+
+        if (!got &&
+            atomic_load_explicit(&ctx->enq_idx, memory_order_acquire) ==
+            atomic_load_explicit((_Atomic uint32_t *)&ctx->dma->event_dequeue_idx, memory_order_acquire)) {
+            break;
+        }
+        sched_yield();
+    }
+    return NULL;
+}
+
 static void run_real_kernel_stress_step(uint32_t total_events) {
     mock_xhci_hw_t hw;
     memset(&hw, 0, sizeof(hw));
@@ -872,13 +1267,16 @@ static void run_real_kernel_stress_step(uint32_t total_events) {
     };
 
     uint8_t kbd_buf[8] = {0};
+    uint8_t mouse_buf[8] = {0};
     xhci_hid_register_endpoint(3, 3, 0x3000, kbd_buf);
+    xhci_hid_register_mouse_endpoint(4, 3, 0x4000, mouse_buf);
 
     stress_ctx_t ctx = {
         .hw = &hw,
         .dma = &dma,
         .io = &io,
         .kbd_buf = kbd_buf,
+        .mouse_buf = mouse_buf,
         .total_events = total_events,
         .done = 0,
         .enq_idx = 0,
@@ -889,36 +1287,41 @@ static void run_real_kernel_stress_step(uint32_t total_events) {
         .bot_consumed_cnt = 0,
         .cmd_consumed_cnt = 0,
         .hid_consumed_cnt = 0,
+        .mouse_consumed_cnt = 0,
         .stall_detected_cnt = 0,
     };
 
-    pthread_t prod_th, bot_th, cmd_th, hid_th;
+    pthread_t prod_th, bot_th, cmd_th, hid_th, mouse_th;
     pthread_create(&prod_th, NULL, stress_producer_thread, &ctx);
     pthread_create(&bot_th, NULL, stress_bot_thread, &ctx);
     pthread_create(&cmd_th, NULL, stress_cmd_thread, &ctx);
     pthread_create(&hid_th, NULL, stress_hid_worker_thread, &ctx);
+    pthread_create(&mouse_th, NULL, stress_mouse_worker_thread, &ctx);
 
     pthread_join(prod_th, NULL);
     pthread_join(bot_th, NULL);
     pthread_join(cmd_th, NULL);
     pthread_join(hid_th, NULL);
+    pthread_join(mouse_th, NULL);
 
     uint32_t prod = atomic_load_explicit(&ctx.produced_cnt, memory_order_relaxed);
     uint32_t bot = atomic_load_explicit(&ctx.bot_consumed_cnt, memory_order_relaxed);
     uint32_t cmd = atomic_load_explicit(&ctx.cmd_consumed_cnt, memory_order_relaxed);
     uint32_t hid = atomic_load_explicit(&ctx.hid_consumed_cnt, memory_order_relaxed);
+    uint32_t mouse_cnt = atomic_load_explicit(&ctx.mouse_consumed_cnt, memory_order_relaxed);
     uint32_t port = xhci_port_change_count();
     uint32_t stalls = atomic_load_explicit(&ctx.stall_detected_cnt, memory_order_relaxed);
 
     uint32_t bot_drops = xhci_mbox_drop_count(2, 3);
     uint32_t cmd_drops = xhci_cmd_mbox_drop_count();
     uint32_t hid_drops = xhci_hid_fifo_drop_count();
+    uint32_t mouse_drops = xhci_hid_mouse_fifo_drop_count();
 
     uint32_t erdp_writes = atomic_load_explicit(&hw.erdp_writes, memory_order_relaxed);
     uint32_t ehb_viol = atomic_load_explicit(&hw.erdp_ehb_violations, memory_order_relaxed);
 
-    printf("  [STATS: %u events] Produced=%u, BOT=%u (drops=%u), CMD=%u (drops=%u), HID=%u (drops=%u), Port=%u, Stalls=%u, ERDP_writes=%u\n",
-           total_events, prod, bot, bot_drops, cmd, cmd_drops, hid, hid_drops, port, stalls, erdp_writes);
+    printf("  [STATS: %u events] Produced=%u, BOT=%u (drops=%u), CMD=%u (drops=%u), Keyboard=%u (drops=%u), Mouse=%u (drops=%u), Port=%u, Stalls=%u, ERDP_writes=%u\n",
+           total_events, prod, bot, bot_drops, cmd, cmd_drops, hid, hid_drops, mouse_cnt, mouse_drops, port, stalls, erdp_writes);
     fflush(stdout);
 
     /* HARD INVARIANTS */
@@ -959,6 +1362,11 @@ int main(void) {
     test_phantom_rollover_rejection();
     test_self_correcting_dropped_report();
     test_layout_parity_belgian_azerty();
+    test_boot_mouse_report_basic();
+    test_boot_mouse_clamping();
+    test_boot_mouse_demux_and_fifo();
+    test_boot_mouse_fifo_overflow();
+    test_concurrent_keyboard_and_mouse();
     test_real_kernel_dispatcher_single_thread();
     test_real_kernel_concurrency_stress();
 

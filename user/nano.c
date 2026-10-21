@@ -445,6 +445,9 @@ int nano_main(int argc, char **argv) {
         (void)sys_termattr(0, TERM_SET, &raw_attrs);
     }
 
+    /* Enable SGR 1006 extended mouse reporting */
+    (void)write_all(1, "\x1b[?1000h\x1b[?1006h", 16);
+
     signal_action_t sig_ign = { .handler = SIG_IGN, .mask = 0, .flags = 0, .reserved = 0 };
     (void)sys_sigaction(SIGINT, &sig_ign, 0);
     /* Dimensions are polled below; window-change must not terminate nano. */
@@ -647,6 +650,15 @@ int nano_main(int argc, char **argv) {
                 s_state.status_msg[0] = '\0';
                 s_status_transient = false;
                 need_full_redraw = true;
+            }
+
+            if (key == KEY_MOUSE) {
+                nano_key_t action = nano_handle_mouse(&s_state, s_text_pool, &s_input_state.last_mouse,
+                                                      &need_full_redraw, &need_cursor_redraw);
+                if (action == KEY_NONE) {
+                    continue;
+                }
+                key = action;
             }
 
             size_t prev_row_off = s_state.row_offset;
@@ -1099,6 +1111,8 @@ int nano_main(int argc, char **argv) {
     }
 
 cleanup_exit:
+    /* Disable mouse reporting */
+    (void)write_all(1, "\x1b[?1000l\x1b[?1006l", 16);
     if (s_attrs_saved) {
         (void)sys_termattr(0, TERM_SET, &s_orig_attrs);
     }

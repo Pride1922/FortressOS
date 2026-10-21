@@ -600,7 +600,7 @@ test-usb-persistence: $(BOOTABLE_IMG)
 	@python3 scripts/test_usb_mount_host.py
 	@python3 scripts/test_usb_persistence.py
 
-.PHONY: test-hub-host test-hub-host-tsan test-usb-hid test-usb-hub
+.PHONY: test-hub-host test-hub-host-tsan test-usb-hid test-usb-hub test-usb-mouse
 test-hub-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -Isrc/include -Isrc/drivers -Isrc/kernel -Isrc/arch/x86_64 -Isrc/fs tests/hub_host.c src/drivers/xhci_rings.c src/drivers/keyboard.c -o $(BUILD_DIR)/hub_host
@@ -616,6 +616,9 @@ test-usb-hid: $(BOOTABLE_ISO)
 
 test-usb-hub: $(BOOTABLE_ISO)
 	@python3 scripts/test_usb_hub.py
+
+test-usb-mouse: $(BOOTABLE_ISO)
+	@python3 scripts/test_usb_mouse.py
 
 
 

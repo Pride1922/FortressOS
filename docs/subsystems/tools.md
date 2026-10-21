@@ -63,3 +63,25 @@ The suite is verified via `make test-gzip-host` under GCC with `-fsanitize=addre
 | `test_zip_bomb` | 105 MB zero stream compressed into ~100 KB: verified decompressor stops at 100 MB cap, unlinks partial file, and exits non-zero without crash or OOM. | PASS |
 | `test_corrupted_inputs` | Truncated streams, corrupted magic numbers (`0x1F 0x8B`), invalid compression method, reserved header flags, corrupted CRC32, and corrupted ISIZE trailers all reject with distinct errors. | PASS |
 | `test_cli_flags` | `-c` stdout writing, `-k` original preservation, default source deletion, `-f` overwrite guard, and `-d` decompression mode. | PASS |
+
+---
+
+## 4. Visual Text Editor (`/bin/nano`)
+
+`/bin/nano` is a standalone, bounded in-terminal visual text editor executed in Ring 3 with zero heap allocations (pure static BSS allocation model, 256 KiB pool size, max 4096 rows).
+
+### Mouse Support Architecture (Phase 4 / v2.2)
+- **Standard SGR 1006 Extended Mouse Mode**:
+  - Emits `\x1b[?1000h\x1b[?1006h` on initialization; restores terminal via `\x1b[?1000l\x1b[?1006l` on exit.
+  - SGR framing format: `\x1b[<B;X;YM` (press) and `\x1b[<B;X;Ym` (release).
+- **Interactive Editing Operations**:
+  - **Click-to-Position**: Viewport clicks convert 1-based screen coordinates $(X, Y)$ to file row `cy` and character column `cx` via `nano_render_to_col()`, correctly subtracting line number gutter width (`digits + 3`) and expanding tab stops (8 columns).
+  - **Scroll Wheel**: Smooth 3-line viewport scrolling per wheel tick (wheel up button 64, wheel down button 65) with bounded cursor repositioning.
+  - **Shortcut Legend Bar**: Clicks on row $H$ directly dispatch editor actions (`^O Save`, `^X Exit`, `^W WhereIs`, `^R Replace`, `^G GotoLine`, `^Z Undo`, `^Y Redo`).
+- **Terminal & Shell Isolation**:
+  - Kernel console (`g_console`) monitors ANSI private modes `?1000h`/`?1006h`.
+  - Mouse events from xHCI USB HID boot mice are only encoded and injected (`input_inject_bytes()`) when an application explicitly requests mouse tracking, preventing raw escape characters at the `fortress>` shell prompt.
+- **Verification Matrix**:
+  - `make test-nano-host`: 100% PASS under ASan/UBSan (unit tests for SGR parsing, tab column translation, coordinate clamping, scroll wheel, and shortcut legend dispatches).
+  - `make test-nano`: 100% PASS across BIOS and UEFI 13 integration stages (`scripts/test_nano.py`), verifying live SGR mouse clicks, viewport scrolling, and shortcut bar exit.
+  - `make test-nano-ssh`: 100% PASS across BIOS and UEFI OpenSSH client sessions.

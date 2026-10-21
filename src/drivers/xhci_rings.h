@@ -65,6 +65,17 @@ typedef struct {
     uint32_t drops;
 } xhci_hid_report_fifo_t;
 
+typedef struct {
+    uint8_t  reports[XHCI_HID_FIFO_CAP][8];
+    uint8_t  lens[XHCI_HID_FIFO_CAP];
+    uint8_t  slot_ids[XHCI_HID_FIFO_CAP];
+    uint8_t  dcis[XHCI_HID_FIFO_CAP];
+    uint32_t head;
+    uint32_t tail;
+    uint32_t count;
+    uint32_t drops;
+} xhci_hid_mouse_fifo_t;
+
 /* Serializes xHCI Interrupter 0 event ring draining across CPUs (Rank 2 leaf lock) */
 extern spinlock_t g_xhci_ring_lock;
 
@@ -116,14 +127,29 @@ bool xhci_mbox_wait_command(const xhci_rings_io_t *io,
 void xhci_hid_register_endpoint(uint8_t slot_id, uint8_t dci, uintptr_t report_buf_phys, const uint8_t *report_buf_virt);
 
 /*
+ * Registers an active HID mouse Interrupt-IN endpoint so the pump can route reports.
+ */
+void xhci_hid_register_mouse_endpoint(uint8_t slot_id, uint8_t dci, uintptr_t report_buf_phys, const uint8_t *report_buf_virt);
+
+/*
  * Pops an 8-byte boot keyboard report from the lock-free FIFO. Returns true on success.
  */
 bool xhci_hid_fifo_pop(uint8_t out_report[8]);
 
 /*
+ * Pops a boot mouse report from the mouse FIFO. Returns true on success.
+ */
+bool xhci_hid_mouse_fifo_pop(uint8_t out_report[8], uint8_t *out_len, uint8_t *out_slot, uint8_t *out_dci);
+
+/*
  * Atomic report pending counter.
  */
 uint32_t xhci_hid_reports_pending(void);
+
+/*
+ * Atomic mouse report pending counter.
+ */
+uint32_t xhci_hid_mouse_reports_pending(void);
 
 /*
  * Cumulative port-status-change event counter.
@@ -141,5 +167,6 @@ void xhci_rings_reset_mailboxes(void);
 uint32_t xhci_mbox_drop_count(uint8_t slot_id, uint8_t dci);
 uint32_t xhci_cmd_mbox_drop_count(void);
 uint32_t xhci_hid_fifo_drop_count(void);
+uint32_t xhci_hid_mouse_fifo_drop_count(void);
 
 #endif /* FORTRESS_XHCI_RINGS_H */

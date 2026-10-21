@@ -166,6 +166,20 @@ size_t nano_col_to_render(const nano_state_t *s, const char *chars, size_t len, 
     return rx;
 }
 
+size_t nano_render_to_col(const nano_state_t *s, const char *chars, size_t len, size_t render_col) {
+    if (!chars || len == 0 || render_col == 0) return 0;
+    size_t tab_stop = (s && s->tab_size >= 1 && s->tab_size <= 16) ? s->tab_size : NANO_TAB_STOP;
+    size_t rx = 0;
+    for (size_t i = 0; i < len; i++) {
+        size_t next_rx = rx + (chars[i] == '\t' ? (tab_stop - (rx % tab_stop)) : 1);
+        if (render_col < next_rx) {
+            return i;
+        }
+        rx = next_rx;
+    }
+    return len;
+}
+
 bool nano_load_buffer(nano_state_t *s, char *pool, const char *data, size_t size) {
     if (!s || !pool) return false;
     if (size > NANO_POOL_SIZE) return false;
@@ -566,6 +580,114 @@ void nano_go_to_line(nano_state_t *s, size_t target_row, size_t target_col) {
 
     size_t page = (s->screen_rows >= 4) ? (s->screen_rows - 3) : 1;
     s->row_offset = (s->cy > page / 2) ? (s->cy - page / 2) : 0;
+}
+
+nano_key_t nano_handle_mouse(nano_state_t *s,
+                             const char *pool,
+                             const nano_mouse_event_t *ev,
+                             bool *out_full_redraw,
+                             bool *out_cursor_redraw) {
+    if (!s || !ev) return KEY_NONE;
+
+    /* 1. Scroll Wheel Events */
+    if (ev->button == 64) {
+        /* Wheel UP -> Scroll viewport up 3 lines */
+        if (s->row_offset >= 3) {
+            s->row_offset -= 3;
+        } else {
+            s->row_offset = 0;
+        }
+        uint32_t rows = s->screen_rows ? s->screen_rows : 25;
+        uint32_t text_rows = (rows >= 4) ? (rows - 3) : 1;
+        if (s->cy >= s->row_offset + text_rows) {
+            s->cy = s->row_offset + text_rows - 1;
+            if (s->cx > s->rows[s->cy].length) s->cx = s->rows[s->cy].length;
+        }
+        if (out_full_redraw) *out_full_redraw = true;
+        return KEY_NONE;
+    }
+    if (ev->button == 65) {
+        /* Wheel DOWN -> Scroll viewport down 3 lines */
+        if (s->row_offset + 3 < s->num_rows) {
+            s->row_offset += 3;
+        }
+        if (s->cy < s->row_offset) {
+            s->cy = s->row_offset;
+            if (s->cx > s->rows[s->cy].length) s->cx = s->rows[s->cy].length;
+        }
+        if (out_full_redraw) *out_full_redraw = true;
+        return KEY_NONE;
+    }
+
+    /* 2. Ignore button release events ('m') */
+    if (ev->release) {
+        return KEY_NONE;
+    }
+
+    /* 3. Left button click ('M' with button == 0) */
+    if (ev->button == 0) {
+        uint32_t rows = s->screen_rows ? s->screen_rows : 25;
+        size_t x = ev->x;
+        size_t y = ev->y;
+
+        /* Row 1: Header (ignore) */
+        if (y <= 1) {
+            return KEY_NONE;
+        }
+
+        /* Editing area: rows 2 .. rows - 2 */
+        if (rows >= 4 && y >= 2 && y <= rows - 2) {
+            size_t target_row = s->row_offset + (y - 2);
+            if (target_row < s->num_rows) {
+                s->cy = target_row;
+                size_t gutter = nano_gutter_width(s);
+                if (x <= 1 + gutter) {
+                    s->cx = 0;
+                } else {
+                    size_t target_rx = (x - (1 + gutter)) + s->col_offset;
+                    const char *line_chars = pool ? (pool + s->rows[s->cy].offset) : NULL;
+                    s->cx = nano_render_to_col(s, line_chars, s->rows[s->cy].length, target_rx);
+                }
+            } else {
+                s->cy = s->num_rows > 0 ? (s->num_rows - 1) : 0;
+                s->cx = s->num_rows > 0 ? s->rows[s->cy].length : 0;
+            }
+
+            size_t old_row_offset = s->row_offset;
+            size_t old_col_offset = s->col_offset;
+            nano_update_viewport(s, pool);
+            if (s->row_offset != old_row_offset || s->col_offset != old_col_offset) {
+                if (out_full_redraw) *out_full_redraw = true;
+            } else {
+                if (out_cursor_redraw) *out_cursor_redraw = true;
+            }
+            return KEY_NONE;
+        }
+
+        /* Row rows - 1: Status message bar */
+        if (rows >= 2 && y == rows - 1) {
+            if (s->status_msg[0]) {
+                s->status_msg[0] = '\0';
+                if (out_full_redraw) *out_full_redraw = true;
+            }
+            return KEY_NONE;
+        }
+
+        /* Row rows: Shortcut legend bar */
+        if (y >= rows) {
+            /* Legend: "^O Save  ^X Exit  ^W WhereIs  ^R Replace  ^G GotoLine  ^Z Undo  ^Y Redo" */
+            if (x >= 1 && x <= 8) return KEY_CTRL_O;
+            if (x >= 9 && x <= 17) return KEY_CTRL_X;
+            if (x >= 18 && x <= 28) return KEY_CTRL_W;
+            if (x >= 29 && x <= 39) return KEY_CTRL_R;
+            if (x >= 40 && x <= 51) return KEY_CTRL_G;
+            if (x >= 52 && x <= 60) return KEY_CTRL_Z;
+            if (x >= 61 && x <= 70) return KEY_CTRL_Y;
+            return KEY_NONE;
+        }
+    }
+
+    return KEY_NONE;
 }
 
 bool nano_cut_line(nano_state_t *s, char *pool) {
@@ -1444,6 +1566,35 @@ nano_key_t nano_parse_input(nano_input_state_t *inp, unsigned char c, char *out_
                 else if (esc[2] == '1' && esc[3] == ';' && esc[4] == '5' && esc[5] == 'C') k = KEY_WORD_RIGHT;
                 else if (esc[2] == '5' && esc[3] == 'D') k = KEY_WORD_LEFT;
                 else if (esc[2] == '5' && esc[3] == 'C') k = KEY_WORD_RIGHT;
+                else if (esc[2] == '<') {
+                    /* SGR 1006 mouse: ESC [ < btn ; col ; row (M|m) */
+                    size_t idx = 3;
+                    uint32_t btn = 0;
+                    while (esc[idx] >= '0' && esc[idx] <= '9') {
+                        btn = btn * 10 + (uint32_t)(esc[idx] - '0');
+                        idx++;
+                    }
+                    if (esc[idx] == ';') idx++;
+                    uint32_t col = 0;
+                    while (esc[idx] >= '0' && esc[idx] <= '9') {
+                        col = col * 10 + (uint32_t)(esc[idx] - '0');
+                        idx++;
+                    }
+                    if (esc[idx] == ';') idx++;
+                    uint32_t row = 0;
+                    while (esc[idx] >= '0' && esc[idx] <= '9') {
+                        row = row * 10 + (uint32_t)(esc[idx] - '0');
+                        idx++;
+                    }
+                    char final_char = esc[idx];
+                    if (final_char == 'M' || final_char == 'm') {
+                        inp->last_mouse.button = (uint8_t)btn;
+                        inp->last_mouse.release = (final_char == 'm');
+                        inp->last_mouse.x = col;
+                        inp->last_mouse.y = row;
+                        k = KEY_MOUSE;
+                    }
+                }
             } else if (inp->escape_len == 2) {
                 if (esc[1] == 'd' || esc[1] == 'D') k = KEY_ALT_D;
                 else if (esc[1] == 'n' || esc[1] == 'N') k = KEY_ALT_N;
