@@ -167,6 +167,8 @@ the model's full allocation-peak refinement or all admitted profiles.
 Choose and review one of: an admission profile proven to retain publication
 capacity under all allowed restarts/writers, or a separately reviewed persistent
 namespace/capacity mechanism. Holding more raw free blocks alone is insufficient.
+The [six-record candidate](PKG2_NAMESPACE_ADMISSION.md) now supplies one
+conservative `/etc` profile; the full production namespace contract remains open.
 
 A future validator must derive U and namespace shape from validated retained
 objects, reject malformed/foreign aliases, and prove its remaining-step cost

@@ -820,3 +820,44 @@ planners/pools and replay. Production cleanup order, reservation floors, mount
 admission and boot routing are unchanged. No installation, production trust,
 release media, physical write or push; prior private Ring 3 matrix acceptance
 and its preservation checks are not rerun or broadened by this host gate.
+
+## Conservative restart-safe `/etc` admission candidate (2026-10-21)
+
+[Profile, proof and limitations](../plans/PKG2_NAMESPACE_ADMISSION.md): six exact
+24-byte records, free or owned by the six fixed account names, plus constrained
+smaller records/immutable slack. The count includes occupied account records;
+it is not six free records reacquired on reboot. Create/delete/rename preserve
+the physical records, and either insertion has at most five occupied records.
+No directory growth or cleanup-order change is needed under this narrow profile.
+
+Finite pure-model campaign `pkg-namespace-admission-20261021-134420`: 216 profiles,
+1,033,089 summed state instances PASS. All 54 six-record profiles preserve
+admission at every explored state and have no blocked forward step. Seven
+negative controls pass. The remaining 162 smaller profiles reject conservatively;
+some would complete, but 36/18/18 three/four/five-record profiles contain blocked
+states. Six is sufficient, not a universal necessity or a guessed resource floor.
+
+Actual-code campaign `pkg-namespace-admission-ext4-20261021-134539`: 24/24 states
+PASS under ASan/UBSan and Linux fsck/debugfs, across three block sizes and two
+sector sizes. Each pair executes the same two durable interruptions as the
+retained failure witness, then completes recovery and passes a fresh repeat.
+All 48 before/after structural observations accept; all three initial seeds
+pass Linux, and original rejected three-record seeds remain unchanged.
+Readback checks canonical/staging bytes, metadata and unrelated sentinel;
+completed states have neither pending intent nor publication temporaries.
+
+Gate-source preservation comparisons pass; prior source inventory is verified
+in the copied workspace before compilation. These are host/source observations,
+not whole-checkout/media preservation or fresh BIOS/UEFI/SMP acceptance.
+No failed/partial run occurred in this continuation; previous retained failures
+remain qualified. Opt-in targets `test-pkg-namespace-admission` and
+`test-pkg-namespace-admission-ext4 PKG_NAMESPACE_CAMPAIGN=...` dry-run correctly.
+
+This is a conservative test specification, not a production admission scanner.
+Normal compact directories can reject. Authenticated ownership/alias validation,
+private staging-parent capacity, persistent exclusion of other namespace writers,
+grant/resource integration and mount failure routing remain open. The foreign-
+writer negative control explicitly invalidates admission when it steals a bin.
+Next gate addresses those private-parent and fence prerequisites. Installation,
+production trust, provisioning, release media, physical writes and pushes remain
+disabled; concurrent USB work is preserved separately.

@@ -965,6 +965,14 @@ test-pkg-account-replay-model: scripts/test_pkg_account_replay_model.py tests/pk
 	@python3 scripts/test_pkg_account_replay_model.py
 
 .PHONY: test-pkg-account-namespace-host
+.PHONY: test-pkg-namespace-admission test-pkg-namespace-admission-ext4
+test-pkg-namespace-admission: scripts/test_pkg_namespace_admission.py tests/pkg_namespace_admission.py tests/pkg_account_replay_model.py
+	@python3 scripts/test_pkg_namespace_admission.py
+
+test-pkg-namespace-admission-ext4: scripts/test_pkg_namespace_admission_ext4.py tests/pkg_namespace_admission.py
+	@test -n "$(PKG_NAMESPACE_CAMPAIGN)"
+	@python3 scripts/test_pkg_namespace_admission_ext4.py "$(PKG_NAMESPACE_CAMPAIGN)"
+
 test-pkg-account-namespace-host: scripts/test_pkg_account_namespace.py tests/pkg_account_namespace_host.c
 	@python3 scripts/test_pkg_account_namespace.py
 

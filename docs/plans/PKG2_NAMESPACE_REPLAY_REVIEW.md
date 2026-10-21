@@ -133,6 +133,11 @@ geometry, ownership and all allowed competing writers. A one-pass dry run is
 insufficient. The dynamic remaining-resource model also needs refinement to
 actual planner peaks, pools and journal recovery.
 
+The subsequent [six-record admission candidate](PKG2_NAMESPACE_ADMISSION.md)
+provides a restrictive `/etc` profile with an inductive capacity argument and
+finite restart exploration. It does not yet implement mount admission, private
+staging-directory admission or durable writer fencing.
+
 Cleaning all publication temporaries before restarting publication is a
 candidate protocol change to review, not an implemented remedy or a proof of
 general progress. It must preserve authoritative stages/pending, classify
