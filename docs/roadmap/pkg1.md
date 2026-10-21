@@ -783,3 +783,40 @@ must derive state from validated retained ownership, never reset a constant
 grant or add allocated stage bytes to free credit. Protected runtime changes
 remain subject to review. `git diff --check` and target dry-run pass; no release
 build, physical write, production trust, installation or push.
+
+## Actual namespace replay witness (2026-10-21)
+
+[Review and exact evidence](../plans/PKG2_NAMESPACE_REPLAY_REVIEW.md): private
+campaign `pkg-account-namespace-20261021-132851` passes 30/30 actual EXT4/JBD2/
+redo terminal states under ASan/UBSan and Linux fsck/debugfs. Six combinations
+(1/2/4 KiB blocks x 512/4096-byte sectors) each cover an uninterrupted success,
+two durable empty-temporary interruptions and two fresh blocked remounts.
+Each blocked remount's same-mount retry performs zero writes (12/12 retries).
+
+The model's saved witness is now observed at the unchanged real 1 MiB directory
+limit. After two interruptions, empty group/shadow publication files leave zero
+suitable slots for passwd publication. Recovery returns EFBIG while preserving
+the pending record, all stages and mixed canonical bytes. Free block/inode
+counts are 27045/996, 13514/996 and 6750/1764 at 1/2/4 KiB respectively, in both
+sector modes. More raw headroom cannot fix this namespace constraint.
+
+Read-only observation passes 30/30 directory-checksum/slot/bitmap snapshots.
+UNINIT bitmap reserved allocations are counted from group descriptors and their
+physical bit positions are explicitly not enumerated. This is not complete
+exclusive-ownership attribution or a proof of the model's allocation peaks.
+Primary source inventory comparison passes; observer input-image hashes remain
+unchanged. Whole repository/media preservation and boot acceptance are separate.
+
+Retained attempts: `132404` invalid eight-byte free-record seed rejected by
+Linux; `132531` stopped during slow stdio-read control; `132703` successful
+uninterrupted control followed by sentinel mode expectation failure. Separate
+qualification files preserve their original logs/status. The first allocation
+observer also failed on UNINIT bitmap handling; original source/reason and the
+corrected passing observer remain in the accepted campaign.
+
+Next: specify and prove restart-safe namespace admission or review a persistent
+capacity mechanism, then refine remaining resource costs against actual
+planners/pools and replay. Production cleanup order, reservation floors, mount
+admission and boot routing are unchanged. No installation, production trust,
+release media, physical write or push; prior private Ring 3 matrix acceptance
+and its preservation checks are not rerun or broadened by this host gate.

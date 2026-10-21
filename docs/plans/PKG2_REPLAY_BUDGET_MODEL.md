@@ -138,7 +138,8 @@ A saved mixed-layout witness (1 KiB, one directory block, no growth) has:
 The witness is recorded as program-counter steps and role states in
 `blocked_witness`. "No growth" is a model namespace limit, not a modified EXT4
 limit. A full real directory or protected admission growth budget could impose
-such a constraint; this exact witness still needs actual EXT4 reproduction.
+such a constraint. Subsequent [actual EXT4 reproduction](PKG2_NAMESPACE_REPLAY_REVIEW.md)
+confirms this witness at the unchanged 1 MiB limit in all six block/sector pairs.
 The counterexample does not authorize changing account redo cleanup order.
 
 ## Retained qualifications
@@ -159,9 +160,10 @@ separate evidence, not a proof that this abstract transition graph refines EXT4.
 
 ## Concrete next gate
 
-Reproduce the saved two-interruption namespace witness using the actual mounted
-account backend and inspect exact allocation/slot ownership after each remount.
-Then compare the actual replay states and allocation peaks with this model.
+The saved two-interruption namespace witness now reproduces using the actual
+mounted account backend, with slot/bitmap snapshots and Linux byte/metadata
+audits after each remount. This confirms the selected namespace trace, not
+the model's full allocation-peak refinement or all admitted profiles.
 Choose and review one of: an admission profile proven to retain publication
 capacity under all allowed restarts/writers, or a separately reviewed persistent
 namespace/capacity mechanism. Holding more raw free blocks alone is insufficient.

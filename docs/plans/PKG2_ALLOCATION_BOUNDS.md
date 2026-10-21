@@ -161,6 +161,9 @@ or directory growth; those consume part of an earlier promise. Boot orphan
 reclamation drops unlinked old generations but does not shrink grown directories
 or reset consumed space. Exact slot reuse under repeated interrupted publication
 needs proof; arbitrary interleaved `/etc` writers invalidate assumed slack.
+The selected replay-slot failure now [reproduces on actual EXT4](PKG2_NAMESPACE_REPLAY_REVIEW.md)
+at the real 1 MiB limit in six block/sector pairs despite ample free blocks and
+inodes. One-pass successful controls do not establish restart-safe capacity.
 
 Next specification should bind an independently protected account envelope to
 the actual durable role/layout state and remaining publication steps. Prove
