@@ -187,7 +187,7 @@ bool iwlwifi_init_hw(void) {
     /* Retrieve permanent MAC or set fallback */
     uint32_t mac_low = iwl_read32(CSR_EEPROM_REG);
     uint32_t mac_high = iwl_read32(CSR_OTP_GP_REG);
-    if ((mac_low | mac_high) != 0) {
+    if ((mac_low | mac_high) != 0 && mac_low != 0xFFFFFFFF) {
         s_iwl_dev.mac_addr[0] = mac_low & 0xFF;
         s_iwl_dev.mac_addr[1] = (mac_low >> 8) & 0xFF;
         s_iwl_dev.mac_addr[2] = (mac_low >> 16) & 0xFF;
@@ -207,15 +207,16 @@ bool iwlwifi_init_hw(void) {
     s_iwl_dev.current_channel = 1;
     s_iwl_dev.initialized = true;
 
-    /* Register with Wi-Fi manager */
-    wlan_mgr_init(&s_iwlwifi_hw_ops);
-
     spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
+
+    /* Register with Wi-Fi manager outside driver lock to prevent recursive self-deadlock */
+    wlan_mgr_init(&s_iwlwifi_hw_ops);
     return true;
 }
 
 int iwlwifi_send_raw(const void *buf, size_t len) {
     if (!buf || len == 0 || len > 2048) return -1;
+    if (!s_iwl_dev.initialized || !s_iwl_dev.firmware_alive) return -1;
     uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
 
     /* Post into Tx ring */
@@ -241,6 +242,7 @@ int iwlwifi_send_raw(const void *buf, size_t len) {
 }
 
 pbuf_t *iwlwifi_poll_raw(void) {
+    if (!s_iwl_dev.initialized || !s_iwl_dev.firmware_alive) return NULL;
     uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
     if (s_iwl_dev.rx_head == s_iwl_dev.rx_tail) {
         spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
