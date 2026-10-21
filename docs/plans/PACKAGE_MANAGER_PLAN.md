@@ -1,12 +1,19 @@
 # FortressOS package manager
 
-**Status:** DESIGN PROPOSAL, 2026-10-19. No implementation, package repository,
+**Status:** PKG-1 design and structural parser work, 2026-10-21. See
+[PKG-1 design](PKG1_DESIGN.md) for the current candidate format, storage review,
+transaction/recovery table, blockers and acceptance plan. Envelope/identity/manifest
+and read-only artifact integrity validation are implemented, with candidate
+signed-catalog verification against caller-supplied test policy. No production
+trust provisioning, package repository, installer,
 signing service or production update acceptance is claimed.
 
-Prerequisite update: [EXT4 EH-2](../roadmap/ext4-atomic-replace.md) delivers the
-additive one-file replacement primitive in automated scope. Package framing,
-signature policy, transaction locking/recovery and package-manager phases are
-still unimplemented; this prerequisite does not close PKG-0 or enable updates.
+Prerequisites now include [EH-2 replacement](../roadmap/ext4-atomic-replace.md),
+[85/86 staging and sync](../roadmap/ext4-stage-prototype.md),
+[EH-4 installed workload](../roadmap/ext4-package-scale.md) and
+[EH-6 relocation](../roadmap/ext4-directory-rename.md), committed through
+`199b575`. These do not establish package-wide atomicity, exclusivity or space
+reservation. PKG-1 does not enable updates. EH-1B remains separately open.
 
 ## 1. Goal and delivery boundary
 
@@ -16,8 +23,8 @@ userland through the same verified release pipeline.
 
 The foundations exist: persistent journaled root, owned executable snapshots,
 Unix permissions, Ed25519/SHA-256, bounded archive/compression tools, networking,
-SSH and Watchtower. HTTPS is **not yet an accepted prerequisite**: TLS-2 is in
-progress; the TLS plan still has trust-store, adversarial, wget and firmware gates.
+SSH and Watchtower. TLS phases 0–5 have automated acceptance in their recorded
+scope; HTTPS transport is independent of signed package authorization.
 
 Deliver in two useful milestones:
 
@@ -68,20 +75,21 @@ until real SSH disconnect/signal acceptance demonstrates that behavior.
 
 | Existing contract | Consequence |
 | --- | --- |
-| EXT4 advertises `rename_no_replace=true` (`src/fs/ext4.c`) | Existing `SYS_RENAME` cannot safely replace an installed executable in one namespace operation. Unlink-then-rename is not an acceptable runtime update primitive. |
+| Existing `SYS_RENAME` is no-replace; additive `SYS_RENAME_REPLACE=84` exists | Use 84 for an existing regular-file destination, no-replace rename for first publication; never unlink-then-rename. EH-6 directory relocation cannot replace a live tree. |
 | EXT4 ordered journaling protects metadata; overwriting visible file data is not promised atomic | Never truncate or rewrite the live executable in place. Stage new bytes, make them durable, then publish. |
-| `SYS_SYNC` calls `storage_sync_all()` | A global barrier exists, despite the older `/mnt`-only ABI comment. Per-file fsync is not currently an API; every error must propagate and barrier behavior must be audited for installed root. |
+| `SYS_SYNC` calls `storage_sync_all()`; `SYS_FSYNC=86` selects a retained descriptor's ext4 mount | Neither freezes competing writers; 86 is mount synchronization rather than isolated file-only writeback. Propagate every barrier error. `SYS_STAGE_WRITE=85` supplies bounded synchronous append batches. |
 | `vfs_exec_image` captures owned bytes and admission metadata | A running program need not execute newly replaced bytes, but retained descriptors, inode lifetime, set-ID admission and concurrent spawn still require replacement tests. |
 | VFS executable snapshots and ELF mapped image have separate 4 MiB bounds | A package builder must enforce both. A small ELF file can still exceed the mapped-memory bound through BSS. |
 | Account files have a dedicated fixed-role recovery protocol | Package contents cannot write passwd/group/shadow, account redo, host identities or their reserved paths. |
 | Watchtower loads definitions at supervisor startup | `service restart` does not discover changed service files. Installing a new daemon is not equivalent to registering it at runtime. |
 | No general package ABI compatibility identifier is established | Define a trustworthy running-platform identity before accepting remotely built binaries. An editable version string alone is insufficient. |
 
-PKG-0 must review an **additive atomic replacement API**: same mounted filesystem,
+EH-2 delivered the reviewed **additive atomic replacement API**: same mounted filesystem,
 regular files only, permission checked, immutable/protected paths honored, retained
 opens preserved, ordered data-before-publication and bounded journal credits.
 It must not change existing no-replace rename semantics or add a raw-write bypass.
-Choose the exact API/number only after VFS/EXT4 lifetime and crash review.
+The chosen API is 84; its precise contract and evidence supersede the earlier
+proposal below. No new replacement API is needed for PKG-1.
 
 This plan does not authorize implementation changes to protected boot ordering,
 locking or root ownership. Base recovery integration is a separate reviewed gate.
@@ -122,7 +130,8 @@ tables must also be accounted for. Streaming does not make nested buffers free.
 Compile with stack-usage output and a per-frame ceiling, inspect the deepest
 parser/decompressor/hash/syscall chain, and exercise it in real Ring 3. Keep ample
 room for entry arguments, return frames and signal delivery within the existing
-4 KiB stack. Host ASan/UBSan cannot prove that user-stack budget.
+16 KiB mapped user stack (the argument-table budget occupies the top 4 KiB).
+Host ASan/UBSan cannot prove that user-stack budget.
 
 **C. Boot identity is necessary for persistent owner records, but insufficient
 for safe stale-lock takeover.**
@@ -220,7 +229,7 @@ Initial proposed hard limits, to be validated against fixtures before freezing:
 | Root metadata / transaction record | 8 KiB / 16 KiB |
 
 No payload-sized allocation or user-stack buffer. Stream through small fixed
-buffers; keep parser tables in bounded BSS/context storage. Preserve the 4 KiB
+buffers; keep parser tables in bounded BSS/context storage. Preserve the 16 KiB
 Ring 3 stack and independently check nested call chains, not just single frames.
 These limits are manager limits, not changes to global gzip, VFS or loader limits.
 
@@ -296,7 +305,8 @@ No file may be claimed by two packages, and base/unmanaged files are not silentl
 adopted. The installer must seed the immutable base ownership/platform descriptor
 so a fresh system is not misidentified as wholly unmanaged.
 
-Acquire one manager lock using exclusive creation and an identity/token protocol.
+Acquire one manager writer lease under a separately reviewed lifetime protocol.
+Exclusive file creation alone does not establish safe stale-owner takeover.
 A PID alone is not proof of ownership after reuse or reboot. Never delete a lock
 just because a timeout passed. Reader commands may inspect the last committed
 snapshot and report pending work; writer recovery is exclusive. Freeze the
@@ -382,15 +392,16 @@ base-platform epoch independent of display version and build provenance.
 | --- | --- | --- |
 | PKG-0 | Freeze wire formats, trust/rotation policy, running-platform identity, ownership rules, writer identity, replacement and barrier contracts; host package/catalog producer | Design review resolves prerequisites; malformed/golden vectors independent of client; no live updates |
 | PKG-1 | Strict parsers, signature verification, pure revision-state logic, read-only CLI and signed offline bundle verification | Actual-code ASan/UBSan, independent crypto oracle; no persistent trust-state or package mutation yet |
-| PKG-2 | Additive atomic regular-file replacement, optional single-command install/remove/upgrade, durable intent and recovery, installer state/PATH integration | Mounted EXT4 interruption/fault campaign and BIOS/UEFI installed-root reboot audit; base files unchanged |
+| PKG-2 | Consume existing 84/85/86, optional single-command install/remove/upgrade, durable intent and recovery, installer state/PATH integration after lease/reservation review | Mounted EXT4 interruption/fault campaign and BIOS/UEFI installed-root reboot audit; base files unchanged |
 | PKG-3 | Verified HTTPS catalog/artifact fetch, search/refresh/install/upgrade UX, bounded cache and deadline behavior | TLS-3/4/5 accepted; hostile repository/transport tests and real guest download-to-install oracle |
 | PKG-4 | Base compatibility bundles, boot recovery/activation review, configuration preservation and service/SSH integration | Separate protected-contract approval, coherent old/new boot and zero mixed-base execution acceptance |
 | PKG-5 | Dell installed-system acceptance and operational release process | User installs through SSH, upgrades/removes a tool, checks persistence; later base update/reboot preserves identity and recovery |
 
 Proposed test families: `test-pkg-host`, `test-pkg-storage-host`, `test-pkg`,
-`test-pkg-repository`, and a separately gated physical checklist. These targets do
-not exist yet. PKG-0/1 can proceed while TLS-2 continues; PKG-3 cannot claim HTTPS
-readiness based on TLS-2 trust-store compilation alone.
+`test-pkg-repository`, and a separately gated physical checklist. These targets
+do not exist yet apart from the scoped `test-pkg-format-host` structural gate.
+PKG-3 must still prove the complete package authorization/download/install chain;
+prior TLS acceptance alone is insufficient.
 
 Required negatives include: bad/unknown/duplicate signatures, wrong repository,
 old root/catalog/build, expired metadata, same revision with different content,
@@ -417,6 +428,6 @@ No forced physical power cuts without a separately agreed disposable procedure.
 - [TUF specification](https://theupdateframework.github.io/specification/v1.0.36/)
   for the update threat model; this design does not claim protocol conformance.
 
-Recommended next implementation task: **PKG-0 format/transaction review**, then
-the host producer and verifier. Do not begin by copying downloaded executables
+Current task: **PKG-1 format/transaction review** in [PKG1_DESIGN.md](PKG1_DESIGN.md),
+then the host producer and verifier after resolving its decisions. Do not copy downloaded executables
 over `/bin` on the laptop.

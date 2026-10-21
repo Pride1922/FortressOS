@@ -941,6 +941,34 @@ test-awk: $(BOOTABLE_ISO) test-awk-host
 	@python3 scripts/test_awk.py
 
 .PHONY: test-kill-host
+.PHONY: test-pkg-format-host
+test-pkg-format-host:
+	@mkdir -p $(BUILD_DIR)/pkg-format
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -I. tests/pkg_format_host.c user/pkg/format.c -o $(BUILD_DIR)/pkg-format/host
+	@$(BUILD_DIR)/pkg-format/host
+	@python3 scripts/pkg_manifest_vectors.py
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -I. tests/pkg_manifest_host.c user/pkg/format.c user/pkg/manifest.c -o $(BUILD_DIR)/pkg-format/manifest-host
+	@$(BUILD_DIR)/pkg-format/manifest-host
+	@gcc -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-builtin -mno-red-zone -mno-sse -mno-mmx -msoft-float -fstack-usage -Wframe-larger-than=1024 -c user/pkg/manifest.c -o $(BUILD_DIR)/pkg-format/manifest.o
+	@gcc -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-builtin -mno-red-zone -mno-sse -mno-mmx -msoft-float -fstack-usage -Wframe-larger-than=1024 -c user/pkg/format.c -o $(BUILD_DIR)/pkg-format/format.o
+
+.PHONY: test-pkg-verify-host
+.PHONY: test-pkg-catalog-host
+.PHONY: test-pkg-cli-host
+test-pkg-cli-host: test-pkg-catalog-host
+	@python3 scripts/test_pkg_cli_host.py
+
+test-pkg-catalog-host: test-pkg-verify-host
+	@python3 scripts/test_pkg_catalog_host.py
+
+test-pkg-verify-host: test-pkg-format-host
+	@python3 scripts/pkg_artifact_vectors.py
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -fsanitize=address,undefined -fno-omit-frame-pointer -I. -Isrc/include -Isrc/fs -Isrc/kernel -Iuser/tools tests/pkg_verify_host.c user/pkg/format.c user/pkg/manifest.c user/pkg/verify.c user/tools/digest.c user/tools/gzip.c -o $(BUILD_DIR)/pkg-format/verify-host
+	@timeout 60s $(BUILD_DIR)/pkg-format/verify-host
+	@gcc -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-builtin -mno-red-zone -mno-sse -mno-mmx -msoft-float -fstack-usage -Wframe-larger-than=1024 -Isrc/include -Isrc/fs -Isrc/kernel -c user/pkg/verify.c -o $(BUILD_DIR)/pkg-format/verify.o
+	@gcc -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-builtin -mno-red-zone -mno-sse -mno-mmx -msoft-float -fstack-usage -Wframe-larger-than=1024 -Isrc/include -Isrc/fs -Iuser/tools -c user/tools/gzip.c -o $(BUILD_DIR)/pkg-format/gzip.o
+	@gcc -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-builtin -mno-red-zone -mno-sse -mno-mmx -msoft-float -fstack-usage -Wframe-larger-than=1024 -Isrc/include -c user/tools/digest.c -o $(BUILD_DIR)/pkg-format/digest.o
+
 test-kill-host:
 	@python3 scripts/test_s8_jobs_host.py
 	@mkdir -p $(BUILD_DIR)

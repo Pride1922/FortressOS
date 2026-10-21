@@ -35,5 +35,11 @@ uint32_t gzip_crc32(uint32_t init, const void *buf, size_t len);
 int gzip_main_internal(int argc, char **argv, bool default_decompress);
 int gzip_main(int argc, char **argv);
 int gunzip_main(int argc, char **argv);
+/* Serialized, non-reentrant read-only decoder adapter. Callbacks return a
+ * positive prefix, zero EOF (read only), or negative error. No CLI/file actions.
+ * Shares the existing static decoder workspace; caller must exclude CLI use. */
+typedef long (*gzip_read_fn)(void *, void *, size_t);
+typedef long (*gzip_write_fn)(void *, const void *, size_t);
+int gzip_decode_callbacks(gzip_read_fn read, gzip_write_fn write, void *context);
 
 #endif /* FORTRESS_GZIP_H */

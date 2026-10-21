@@ -1,6 +1,11 @@
 #include "common.h"
 #include "gzip.h"
 
+static gzip_read_fn callback_read;
+static gzip_write_fn callback_write;
+static void *callback_context;
+static bool callback_failed;
+
 /* =========================================================================
  * Static Storage (Zero dynamic allocation, BSS-allocated)
  * ========================================================================= */
@@ -90,8 +95,12 @@ static long tool_write_all(int fd, const void *buf, size_t count) {
     const uint8_t *p = (const uint8_t *)buf;
     size_t rem = count;
     while (rem > 0) {
-        long n = tool_syscall(SYS_WRITE, (uintptr_t)fd, (uintptr_t)p, rem);
-        if (n <= 0) return -1;
+        long n = callback_write ? callback_write(callback_context,p,rem) :
+            tool_syscall(SYS_WRITE, (uintptr_t)fd, (uintptr_t)p, rem);
+        if (n<=0 || (size_t)n>rem) {
+            if (callback_write) callback_failed=true;
+            return -1;
+        }
         p += (size_t)n;
         rem -= (size_t)n;
     }
@@ -266,7 +275,12 @@ static void decomp_bit_init(void) {
 static bool decomp_refill(int in_fd) {
     while (s_decomp_bits_left <= 56) {
         if (s_decomp_in_pos >= s_decomp_in_len) {
-            long n = tool_syscall(SYS_READ, (uintptr_t)in_fd, (uintptr_t)s_decomp_in_buf, sizeof(s_decomp_in_buf));
+            long n = callback_read ? callback_read(callback_context,s_decomp_in_buf,sizeof(s_decomp_in_buf)) :
+                tool_syscall(SYS_READ, (uintptr_t)in_fd, (uintptr_t)s_decomp_in_buf, sizeof(s_decomp_in_buf));
+            if (callback_read && (n<0 || (size_t)n>sizeof(s_decomp_in_buf))) {
+                callback_failed=true;
+                return false;
+            }
             if (n <= 0) {
                 s_decomp_in_eof = true;
                 return (s_decomp_bits_left > 0);
@@ -287,12 +301,12 @@ static inline uint32_t decomp_get_bits(int in_fd, unsigned n, bool *ok) {
         return 0;
     }
     while (s_decomp_bits_left < n) {
-        if (!decomp_refill(in_fd)) {
-            if (s_decomp_bits_left < n) {
-                *ok = false;
-                return 0;
-            }
-            break;
+        /* EOF can leave a positive number of bits smaller than the request.
+         * Refill reports those residual bits, but cannot make progress. */
+        (void)decomp_refill(in_fd);
+        if (s_decomp_bits_left < n) {
+            *ok = false;
+            return 0;
         }
     }
     uint32_t val = (uint32_t)(s_decomp_bit_buf & ((1ULL << n) - 1));
@@ -602,6 +616,16 @@ static int decompress_stream(int in_fd, int out_fd) {
 /* =========================================================================
  * Compression Engine (RFC 1951 DEFLATE + RFC 1952 GZIP)
  * ========================================================================= */
+
+int gzip_decode_callbacks(gzip_read_fn read, gzip_write_fn write, void *context) {
+    if (!read || !write || callback_read) return GZIP_ERR_IO;
+    callback_read=read; callback_write=write; callback_context=context;
+    callback_failed=false;
+    int result=decompress_stream(0,1);
+    if (callback_failed) result=GZIP_ERR_IO;
+    callback_read=NULL; callback_write=NULL; callback_context=NULL;
+    return result;
+}
 
 static void comp_bit_init(void) {
     s_comp_out_pos = 0;

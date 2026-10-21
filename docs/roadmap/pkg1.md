@@ -1,0 +1,239 @@
+# PKG-1 design and structural validation checkpoint
+
+2026-10-21. [Design and pending decisions](../plans/PKG1_DESIGN.md).
+
+Reviewed initial HEAD `199b575` and preserved unrelated logging/Watchtower work.
+During this task HEAD advanced concurrently to `67947b2` (logging timestamp
+commit); this task made no commit and did not restore those files. New work is
+limited to package design, a pure envelope/identity validator, host tests and its
+Makefile target. No production runtime integration or extraction is enabled.
+
+Executed from PowerShell in C:\Sources\FortressOS:
+
+```
+wsl -d Ubuntu-24.04 -- make test-pkg-format-host
+git diff --check
+```
+
+Both PASS. Actual validator code built with GCC C11 strict warnings under
+ASan/UBSan and ran: valid minimal envelope, every short header length, oversized
+header, magic/version/header-size/flags/reserved rejection, zero/max/+1 manifest
+and payload limits, uint64 maximum lengths, NULL arguments, unchanged output on
+failure, malformed/maximum identity components. Sanitizers reported no errors.
+Separate freestanding/no-red-zone/no-SIMD compilation passed. GCC stack-usage
+records in `build/pkg-format/format.su`: parser 88 bytes, identity 48, le64 32,
+le32 24. These are compiler-reported local usage, not Ring 3 full-chain proof.
+
+No gzip/USTAR, ELF, signature, trust-floor, state database, lease,
+reservation or recovery implementation is claimed. Candidate manifest/catalog
+formats need independent vectors before freezing. This gate does not prove
+arbitrary stream parsing or package authenticity. Installed NVMe BIOS/UEFI,
+interruption/recovery and Linux audits are NOT RUN for PKG-1: there is no target
+mutation component to exercise yet. Their concrete future matrix is in the
+design; existing EH storage evidence does not count as a PKG pass.
+
+No release image, physical disk writes, commit or push. ABI, account recovery
+floor, locks, boot ordering and physical-write gates are unchanged. EH-1B remains
+separate. Writer lifetime, competing allocation reservation, trusted platform
+identity/provisioning, signing custodians/expiry and recovery integration remain
+explicit input/review gates before enabling installation.
+
+## Continuation: bounded manifest parser
+
+The user's continuation authorizes progressing independent validation work;
+signing/provisioning and kernel lease/reservation decisions remain unresolved.
+Added `user/pkg/manifest.c`, borrowed-view API in `format.h`, independent Python
+wire producer `scripts/pkg_manifest_vectors.py` and sanitizer host harness.
+Parsing performs a validation pass before publishing output, with caller-owned
+immutable input, no allocation, I/O or large output temporary on the stack.
+Failure preserves the entire output. Successful views borrow the input lifetime.
+
+Re-ran `wsl -d Ubuntu-24.04 -- make test-pkg-format-host`: envelope PASS and
+**234 independent manifest vectors PASS**, plus 10,000 deterministic random
+malformed-input stress iterations under ASan/UBSan. Stress is memory-safety and
+output-preservation coverage, not an independent validity oracle. Python vectors
+cover every truncation of a valid two-record manifest, bad magic/version/count,
+range/zero-build/platform-ID/text failures, paths, duplicate/order/ancestor
+conflicts, role/mode/reserved errors, executable size and 16/+1 file limits,
+expanded tar framing budget and uint64 maximum size rejection. Accepted views
+also verify package/build/base fields, first-file mode/hash and computed archive
+length. Strict freestanding compilation PASS; largest compiler-reported local
+frame is `parse` at 576 bytes, entry 48, helpers <=64. No Ring 3 stack claim.
+
+Format reconciliation: relative paths now cap at 100 bytes, matching USTAR's
+name field while prefix fields are forbidden; exact 100 and 101 byte vectors
+pass/reject respectively. Zero platform ID rejects. Files cannot be ancestors
+of other listed files, including when a lexicographically intervening sibling
+separates the ancestor/child records. Candidate grammar is documented, not a
+release compatibility promise. No hashes/signatures/payload/ELF verification or
+destination/base ownership checks are implemented by these syntax parsers.
+
+## Read-only complete-artifact verification
+
+Added `user/pkg/verify.h` / `verify.c`, `scripts/pkg_artifact_vectors.py`,
+`tests/pkg_verify_host.c` and `make test-pkg-verify-host`. Existing SHA-256 and
+gzip code are reused through an additive serialized gzip callback adapter.
+Invalid callback I/O is latched as failure. No extraction/file-writing interface;
+the host syscall stub asserts on any unexpected CLI syscall.
+
+Executed:
+
+```
+wsl -d Ubuntu-24.04 -- make test-pkg-verify-host
+wsl -d Ubuntu-24.04 -- timeout 60s make test-gzip-host
+git diff --check
+```
+
+PASS: envelope/identity checks, 234 manifest vectors, 10,000 malformed manifest
+stress iterations; **82 artifact vectors x four fragmentation patterns** (1,
+17, 4096 bytes and deterministic varying prefixes), **490 bytewise truncations
+and 491 injected read-error positions**, bad external hash and overreporting
+callback. ASan/UBSan clean. Gzip regression PASS including Linux interoperability
+and existing 100 MiB bomb-cap tests.
+
+Artifact cases include stored/fixed/dynamic DEFLATE, 32 DEFLATE mutations with
+Python gzip oracle, CRC/ISIZE, flags, concatenated members/suffix, truncation,
+reserved blocks, expansion overrun, tar hash/checksum/padding/path/type/link/
+prefix/uname/end-marker errors and outer hash/length failures. Malformed inner
+fixtures have recomputed outer hashes so tests reach inner validation. ELF
+negatives cover BSS over mapped limit, W^X, entry, zero/upper-half/congruence/
+reserved-page addresses, dynamic/interpreter/TLS segments, program-header count/
+offset, file bounds, overlap and short files. Exact 4 MiB mapped memory accepts;
++1 rejects. ELF is not executed.
+
+Python standard-library tarfile independently inspects fixture names and exact
+executable bytes; gzip independently expands the archive. Two producer calls
+compare byte-for-byte in the same Python/zlib environment. Synthetic unsigned
+fixture `build/pkg-format/fixture.fpk` SHA-256:
+`db2ac351543a6f7afc6203c3d72b3478985b0d418c7677c754acd59c501a750b`.
+Case labels/expectations are in `build/pkg-format/artifact-vectors.json`, with
+binary vectors alongside. This is a fixture builder, not a release packager,
+signer or cross-toolchain reproducibility claim.
+
+Retained failure: the first artifact run hung in existing gzip `decomp_get_bits`
+when EOF left positive residual bits fewer than requested. Refill could not
+progress. That process was terminated. The fix rejects insufficient bits
+immediately; the final bytewise truncation/read-fault campaign passes under a
+60-second timeout. Earlier partial run is not PASS. No fixture contract was
+relaxed to avoid the failure.
+
+Freestanding verifier/gzip/digest builds with no red zone/SIMD and 1024-byte frame
+warning-as-error PASS. Maximum verifier local frame 168 bytes; gzip decoder 256
+(whole module maximum 480); SHA block 376; manifest 576. Context 19,808 bytes must
+reside outside user stack. Gzip uses its existing static workspace, serialized
+only. Local figures do not prove nested Ring 3/signal stack safety. The loader
+maps 16 KiB user stack, with argument-table budget in top 4 KiB; earlier package
+plan total-stack wording was corrected.
+
+Integrity success is not signature authentication, platform/base compatibility,
+destination ownership or install authorization. Signing/trust floors, catalog,
+live CLI, Ring 3, extraction/mutation, installed NVMe, Linux filesystem audits
+and recovery acceptance remain NOT RUN or unimplemented. Host tar/gzip checks
+do not substitute for later filesystem audits. No release image, commit, push
+or physical writes. Concurrent AGENTS.md encoding edits appeared and were left
+untouched. HEAD remains `67947b2`; EH-1B stays separate.
+
+## Candidate signed-catalog verification
+
+Added `user/pkg/catalog.h` / `catalog.c`, independent Python/OpenSSL signed
+vectors, sanitizer harness and isolated build runner. Candidate wire/policy and
+limitations: [PKG1_CATALOG_DESIGN.md](../plans/PKG1_CATALOG_DESIGN.md).
+No production signing keys are generated or selected. The three deterministic
+test seeds/public keys are deliberately public fixtures. No signing API or
+private-key operation is added to the client.
+
+Executed `wsl -d Ubuntu-24.04 -- make test-pkg-catalog-host`: PASS, including
+the existing format/artifact dependency gates, **40 catalog vectors, all 345
+truncation prefixes and six catalog-to-artifact checks**, ASan/UBSan clean.
+The six composition checks cover valid 2-of-3/3-of-3 catalogs, identical current
+revision, artifact build/name mismatch and wrong artifact digest. Catalog cases
+include threshold failure, invalid policy/keys, duplicate/unknown signers,
+tampered/bad signatures, signature order, wrong repository/root/role, expiry/
+future issue/invalid clock, revision rollback, same-revision different object,
+reserved/extra bytes, entry/name/build/length policy, 256-entry boundary and
+257-entry rejection. Rejection preserves catalog output; composed artifact
+failure clears the verification flag.
+
+Python cryptography 41.0.7 independently signs/verifies canonical message bytes;
+actual Fortress crypto wrappers and namespaced pinned Monocypher sources verify
+them in C. Objects compile only in `build/pkg-format`; shared crypto library,
+boot/kernel/image targets and upstream sources are untouched. Runner bounds each
+subprocess at 60 seconds. Case expectations/public keys/catalog identity are
+recorded in `build/pkg-format/catalog-vectors.json`, binary vectors adjacent.
+Freestanding catalog compile with <=1024-byte frame gate PASS: verifier local
+224 bytes, composition 160, lookup 80, helpers <=64. This is not a full Ring 3
+call-chain proof; the existing documented upstream verifier frame exception
+remains unchanged. Crypto primitives were reused, not modified.
+
+This advances authentication only against the supplied pinned catalog-role
+policy. It does not implement root delegation/rotation, key provisioning,
+trusted time acquisition, durable revision publication, installed build floors,
+platform identity/base compatibility, downloads, installation, lease/reservation
+or recovery. Higher-revision acceptance in memory never implies a persisted
+floor. All target mutation remains disabled. No release image, physical writes,
+commit or push. Concurrent unrelated AGENTS.md edits remain untouched.
+
+## Read-only CLI and transaction-contract review
+
+2026-10-21. Initial HEAD for this continuation is `e360429`; the concurrent ETCFS
+implementation/AGENTS changes were committed independently and preserved.
+Reviewed current headers, verifier/control flow and filesystem account floor.
+Added actual freestanding `user/pkg/cli.c` / `cli.h`, mock syscall tests,
+isolated CLI build runner and `test-pkg-cli-host`. No default build/image rule
+installs the CLI. Existing kernel ABI and storage behavior remain unchanged.
+
+Commands:
+
+```
+pkg --help
+pkg inspect ARTIFACT BYTES SHA256
+pkg verify CATALOG PACKAGE ARTIFACT
+```
+
+Inspect requires caller-supplied decimal exact length and lowercase SHA-256;
+output explicitly states signatures are not checked. Verify requires an embedded
+policy, replaces its clock snapshot with SYS_CLOCK_GETTIME UTC and rejects missing
+or invalid time. Default `pkg_main` supplies no policy and fails closed rather
+than trusting command-line keys, environment data or test keys. Authenticates
+catalog and finds package before opening artifact. It reports supplied catalog
+policy verification, not running-platform compatibility or installation approval.
+Future production provisioning remains separate. Both paths open O_RDONLY with
+O_NOFOLLOW/O_NONBLOCK, require retained-descriptor FSTAT regular-file type and
+bounds, accept fragmented reads, close descriptors on every branch and suppress
+success on verification/close/output failures. Writes are only to stdout/stderr.
+
+Executed `wsl -d Ubuntu-24.04 -- make test-pkg-cli-host`: PASS, including prior
+format/artifact/catalog dependency gates. Actual CLI/core/crypto code under
+ASan/UBSan with **mocked syscalls** checks help/usage, integrity and supplied-policy
+success, missing policy, bad signature/artifact, read errors, close failure,
+nonregular metadata, invalid clock, overflow length, short hash, unsupported
+install and failed output. Mock transport returns 5-byte reads and 7-byte writes,
+asserts read-only open flags, permits no file-write operation and checks zero
+leaked descriptors after each invocation. This is not kernel syscall acceptance.
+
+Private freestanding build/link PASS: `build/pkg-cli/pkg.elf`, 43,520 bytes,
+89 mapped pages, no unresolved symbols or W+X segment, no dynamic/interpreter
+segment. ELF SHA-256:
+`d7d1d8cf10272c055ccf37da215b6b8f61953753cdb874b9d57abfa1efbc40ac`.
+Caller-owned context/catalog buffers live in BSS. Runner compiles package frames
+with <=1024-byte ceiling, records `.su` files and asserts exact source hashes
+unchanged during the gate in `build/pkg-cli/manifest.json`. Crypto upstream is
+unchanged and retains its previously documented verifier frame exception.
+Private ELF is not packaged or executed: **Ring 3 and BIOS/UEFI are NOT RUN**.
+No full nested-stack/signal or target usability claim.
+
+Added [transaction review](../plans/PKG2_TRANSACTION_REVIEW.md): owner-lifetime,
+nontransferable lease-bound session dispatch, fd/reaper/exclusion requirements,
+allocation ledger/account priority, candidate durable record header/inventory
+layout and interruption acceptance matrix. It identifies a blocking gap:
+volatile reservations do not survive death/reboot. Manual recovery plus a
+package-only lease cannot guarantee free space before competing logs allocate.
+Durable mount-admitted reservation or proved allocation-free post-intent recovery
+needs separate review. No kernel implementation, syscall number or protected
+boot/lock/ownership contract change was made. Pending-state safe failure is not
+an unconditional recovery-progress guarantee.
+
+Remaining: provisioned trust/platform identity, durable floors/inventory/intent,
+final pending grammar, session/reservation APIs, kernel implementation and
+actual installed NVMe interruption/recovery plus Linux audits. No release image,
+commit, push, physical writes or EH-1B timestamp policy changes.
