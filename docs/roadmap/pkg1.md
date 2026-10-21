@@ -948,3 +948,44 @@ namespace failures remain recorded above.
 Next: review the candidate contract and implement a private actual-code ledger
 codec/planner adapter with malformed-record and atomic accounting cut tests,
 before considering protected mount hooks. Installation remains disabled.
+
+## 2026-10-21 — private candidate ledger codec and accounting adapter
+
+Implemented `tests/pkg_grant_candidate.{h,c}` and its standalone host gate, with
+no production callers/build linkage or mount changes. Exact-length decoding,
+hash/phase/reserved-field checks and canonical wire copying preserve outputs on
+failure. Accounting checks block and inode dimensions together, sequence overflow,
+actual-free conservation and escrow/floor preservation. Provenance and authority
+remain caller preconditions; marker/table parsing and actual filesystem journal
+integration remain unimplemented.
+
+Invocation: `wsl -d Ubuntu-24.04 -- make -f tests/pkg_grant_candidate.mk
+test-pkg-grant-candidate` (one command). Final evidence
+`.codex-remote-attachments/pkg-grant-codec-20261021-170458-298231/`:
+ASan/UBSan **PASS**, 1638 independent Python-generated wire fixtures, 1025
+byte-tear positions, 132132 accepted and 1117068 rejected arithmetic plans,
+528528 mock complete before/after restart selections. Accepted/rejected plans
+cover both ordinary-allocation headroom and reserve-boundary refusal. Block-side
+success followed by inode refusal preserves the entire output. Freestanding
+adapter-only compilation **PASS**, maximum measured frame 336 B (not cumulative
+call-stack depth). Exact command/output/fixture/source-hash manifests retained.
+
+Retained attempts: `170305-032066` compile FAIL because the project string header
+does not declare `strrchr`; harness changed to an explicit path scan.
+`170316-950150` PASS preceded additional positive ordinary-allocation headroom,
+charged-ledger and unknown-profile coverage. No attempts were removed.
+`170346-278211` also PASS; final `170458-298231` repeats it after enlarging the
+two restart fixture read buffers to accommodate the loader's 1025-byte bound,
+including a possible oversized input. Generated restart fixtures remain 1024 B.
+
+Listed input/source/AGENTS/README hashes match across each run. Concurrent work
+was neither staged nor reverted; concurrent repository commits are independent
+of this scoped hash check. No whole-repository or media preservation claim is
+made. No boot, Ring 3 or real JBD2/flush-cut acceptance was run. The codec checks
+ledger structure only; budget snapshots assume atomic commit and do not prove it.
+Installation, production trust/provisioning, release-media builds, pushes and
+physical writes remain disabled.
+
+Next: private marker/ownership-table validation and identity/role cross-binding,
+then a reviewed actual-JBD2 adapter for atomic ledger/table/bitmap cut tests.
+Production mount integration remains later work.

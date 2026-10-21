@@ -256,3 +256,33 @@ and account evidence remains separate. Future acceptance must cut every real
 write/flush and recovery boundary, reboot twice, exercise competing allocation
 and retained handles, and audit Linux ownership/fsck/bytes across BIOS/UEFI ×
 SMP=1/4. Boot results and source/media preservation must be reported separately.
+
+## Private ledger adapter checkpoint
+
+`tests/pkg_grant_candidate.{h,c}` implements the candidate ledger's exact-size
+little-endian structural decoding, SHA-256 check, reserved-byte and phase-field
+checks, conservation and failure-preserving outputs. Its encoder validates and
+copies an already canonical wire record; it is not a native-object serializer.
+Only candidate account profile 1 is recognized. Sequence UINT64_MAX remains
+readable, but a mutating arithmetic plan refuses it. RESERVED permits neither
+completed steps nor a final next-state generation. PENDING/RETIRING require the
+next generation to equal old+1 without overflow. These are private candidate
+restrictions, not a frozen on-disk ABI.
+
+The two-dimensional planner preflights charge/refund/transfer/release/baseline
+free/ordinary allocation, capacity and recovery floor, including partial-dimension
+failure. The caller must establish actual maps, typed ownership, phase authority,
+remaining recovery work and unpinned reclamation separately. This adapter does
+not implement marker/table parsing, identity cross-binding, namespace lookup,
+signatures, filesystem exclusion or allocation. A valid checksum or budget never
+establishes authority to mount or mutate. There is no production linkage.
+
+Run in WSL: `make -f tests/pkg_grant_candidate.mk test-pkg-grant-candidate`.
+The standalone makefile intentionally avoids the concurrently edited release
+Makefile. The runner generates independent Python wire fixtures, builds the C
+adapter under ASan/UBSan and compiles that adapter alone with freestanding flags.
+Byte-tear checks reject mixed records unless bytes equal a whole valid outcome;
+mock restarts select whole in-memory budgets before/after commit. Neither check
+implements or verifies a real journal, device flush, allocator or atomic commit.
+Next integration must test ownership-table/bitmap/ledger coupling in actual JBD2
+transactions; these passing mocks cannot substitute for those cut tests.
