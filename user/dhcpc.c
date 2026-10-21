@@ -217,8 +217,10 @@ static bool save_resolv_conf(const uint32_t *servers, int count) {
         append_ip(buf, sizeof(buf), &pos, servers[i]);
         append_str(buf, sizeof(buf), &pos, "\n");
     }
-    const char *target = resolv_conf_path();
+    sys_call(SYS_MKDIR, (uintptr_t)"/etc/network", 0755, 0, 0, 0, 0);
     write_file("/run/resolv.conf", buf, pos);
+    write_file("/etc/network/resolv.conf", buf, pos);
+    const char *target = resolv_conf_path();
     return write_file(target, buf, pos);
 }
 

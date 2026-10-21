@@ -38,7 +38,7 @@ static long mock_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,ui
     if(nr==SYS_ACCOUNTCTL) return s_installed ? 0 : SYSCALL_EOPNOTSUPP;
     if(nr==SYS_OPEN) {
         const char *path = (const char *)a;
-        if(s_mock_resolv && (s_installed ? !strcmp(path,"/etc/resolv.conf") :
+        if(s_mock_resolv && (s_installed ? (!strcmp(path,"/etc/network/resolv.conf") || !strcmp(path,"/etc/resolv.conf")) :
             (!strcmp(path,"/tmp/resolv.conf") || !strcmp(path,"/mnt/.fortress/resolv.conf")))) {
             s_mock_resolv_pos = 0;
             return 25;

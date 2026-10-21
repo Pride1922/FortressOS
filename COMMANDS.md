@@ -1683,7 +1683,7 @@ Output includes:
 * `RX/TX`: Packet counters
 
 The DNS list is read from the same `resolv.conf` the resolver uses via `resolv_conf_path()`.
-Path is provisional: `/tmp/resolv.conf` or `/mnt/.fortress/resolv.conf`, depending on which exists. After the installer lands, this will move to `/etc/resolv.conf`.  
+Path order: `/etc/network/resolv.conf` on installed systems (with `/etc/resolv.conf` fallback); `/tmp/resolv.conf` or `/mnt/.fortress/resolv.conf` on live media.  
 **Examples:**
 ```sh
 ifconfig
@@ -1701,7 +1701,7 @@ ifconfig
 * Can load configuration from a file (defaults to `/mnt/.fortress/network.conf` or `/etc/network.conf`).
 * Accepts CIDR notation (`10.0.2.15/24 10.0.2.2 [dns1] [dns2]`) or dotted-decimal notation (`10.0.2.15 255.255.255.0 10.0.2.2 [dns1] [dns2]`).
 * Validates IP formatting, unicast ranges, netmask bounds, and gateway subnet reachability before applying.
-* When optional positional DNS servers are provided (`dns1`, `dns2`), writes them to `/tmp/resolv.conf` (or `/mnt/.fortress/resolv.conf` if `/mnt` is writable) formatted as `nameserver <ip>`.
+* When optional positional DNS servers are provided (`dns1`, `dns2`), writes them to `/etc/network/resolv.conf` on installed systems (or `/tmp/resolv.conf` / `/mnt/.fortress/resolv.conf` on live media) formatted as `nameserver <ip>`.
 * Automatically syncs DNS server definitions to `/mnt/.fortress/network.conf`.  
 **Options:**
 * `-n`, `--dry-run`: Parse and validate the network configuration without applying changes to the kernel.

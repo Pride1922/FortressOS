@@ -168,7 +168,7 @@ static long mock_ifconfig_syscall(long nr, uintptr_t a, uintptr_t b, uintptr_t c
             s_mock_file_pos = 0;
             return 3;
         }
-        if (!strcmp(path, "/tmp/resolv.conf") || !strcmp(path, "/mnt/.fortress/resolv.conf") || !strcmp(path, "/etc/resolv.conf")) {
+        if (!strcmp(path, "/tmp/resolv.conf") || !strcmp(path, "/mnt/.fortress/resolv.conf") || !strcmp(path, "/etc/network/resolv.conf") || !strcmp(path, "/etc/resolv.conf")) {
             if (b == 0) {
                 if (s_captured_resolv_len > 0) {
                     s_captured_resolv_read_pos = 0;
@@ -712,7 +712,7 @@ int main(void) {
     const char *saved = "address 192.168.0.222/24\ngateway 192.168.0.1\ndns 1.1.1.1\ndns2 8.8.8.8\n";
     assert(!strcmp(s_saved_network, saved));
     assert(s_syncs == 1 && s_file_closes == 1);
-    assert(!strcmp(resolv_conf_path(), "/etc/resolv.conf"));
+    assert(!strcmp(resolv_conf_path(), "/etc/network/resolv.conf"));
     assert(netconf_read_dns(NULL, &dns_ip) == 0 && dns_ip == htonl(0x01010101));
     s_captured_resolv_len = 0;
     assert(ifup_main(1, file_argv) == 0);

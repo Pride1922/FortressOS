@@ -72,7 +72,7 @@ again, preserving the existing network syscall admission guard; explicit
 benchmark workers retain their requested CPU. Installed `ifup` saves applied
 settings to `/etc/network/network.conf`, checks write/close/sync, and reads that
 file by default on later invocations. Both DNS servers round-trip through
-`dns`/`dns2` and `/etc/resolv.conf`. Live defaults retain their existing paths.
+`dns`/`dns2` and `/etc/network/resolv.conf` (with `/etc/resolv.conf` fallback). Live defaults retain their existing paths.
 See [scope and validation](../roadmap/net-installed-ifup.md).
 
 2026-10-04 prompt redraw note: The shell now redraws after background output.

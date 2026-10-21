@@ -118,7 +118,8 @@ static bool ifup_write_resolv_conf(const uint32_t *servers, int count) {
         ifup_append_str(buf, sizeof(buf), &pos, "\n");
     }
 
-    const char *target = resolv_conf_path();
+    const char *target = machine_installed(resolv_machine_call) ? "/etc/network/resolv.conf" : resolv_conf_path();
+    IFUP_SYSCALL(SYS_MKDIR, (uintptr_t)"/etc/network", 0755, 0);
     return ifup_write_to_file(target, buf, pos);
 }
 

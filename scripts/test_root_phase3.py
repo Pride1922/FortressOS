@@ -74,7 +74,7 @@ def session(boot,operator,send,wait,command,prompt,transcript):
         command('cat /home/operator/.fortress-history','sudo /bin/shell')
         command('mkdir /etc/network','')
         command('echo address=10.0.2.15/24 > /etc/network/network.conf','')
-        command('echo nameserver 10.0.2.3 > /etc/resolv.conf','')
+        command('echo nameserver 10.0.2.3 > /etc/network/resolv.conf','')
         command('exit','')
         command('id','uid=1000 gid=1000')
         interactive('sudo !!',[('sudo password: ',operator)],'uid=0 gid=0')
@@ -87,7 +87,7 @@ def session(boot,operator,send,wait,command,prompt,transcript):
     else:
         command('hostname','phase3-machine')
         command('ifup --dry-run','valid (dry-run)')
-        command('cat /etc/resolv.conf','nameserver 10.0.2.3')
+        command('cat /etc/network/resolv.conf','nameserver 10.0.2.3')
         command('cat .fortress-history','phase3-history-proof')
         # Independent login proves persisted account/password/home ownership.
         start=len(transcript);send('exit');wait(lambda t:'FortressOS login: ' in t,start)
@@ -103,7 +103,7 @@ def audit(out,label,root):
         target=out/(label+'-'+name);gate.fixture.run(['debugfs','-R',f'dump {path} {target}',str(root)],log);return target.read_bytes()
     assert dump('/etc/hostname','hostname')==b'phase3-machine\n'
     assert dump('/etc/network/network.conf','network.conf')==b'address=10.0.2.15/24\n'
-    assert dump('/etc/resolv.conf','resolv.conf')==b'nameserver 10.0.2.3\n'
+    assert dump('/etc/network/resolv.conf','resolv.conf')==b'nameserver 10.0.2.3\n'
     assert b'phase3user:x:1100:1100::/home/phase3user:/bin/shell\n' in dump('/etc/passwd','passwd')
     shadow=dump('/etc/shadow','shadow');assert shadow.startswith(b'root:!:::::::\n') and b'phase3user:$5$rounds=100000$' in shadow
     for name,password in [('operator',NEW),('phase3user',USER)]:

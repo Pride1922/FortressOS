@@ -26,11 +26,26 @@ static inline long resolv_machine_call(long nr,uintptr_t a,uintptr_t b,uintptr_t
     return RESOLV_SYSCALL(nr,a,b,c);
 }
 /* Returns the resolv.conf path to read/write.
- * Order: /tmp/resolv.conf if it exists,
+ * Order: /etc/network/resolv.conf if installed (with /etc/resolv.conf fallback),
+ *        else /tmp/resolv.conf if it exists,
  *        else /mnt/.fortress/resolv.conf if it exists,
  *        else /tmp/resolv.conf (default write target). */
 static inline const char *resolv_conf_path(void) {
-    if (machine_installed(resolv_machine_call)) return "/etc/resolv.conf";
+    if (machine_installed(resolv_machine_call)) {
+        static const char path_net[] = "/etc/network/resolv.conf";
+        static const char path_legacy[] = "/etc/resolv.conf";
+        long fd = RESOLV_SYSCALL(SYS_OPEN, (uintptr_t)path_net, 0, 0);
+        if (fd >= 0) {
+            RESOLV_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
+            return path_net;
+        }
+        fd = RESOLV_SYSCALL(SYS_OPEN, (uintptr_t)path_legacy, 0, 0);
+        if (fd >= 0) {
+            RESOLV_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
+            return path_legacy;
+        }
+        return path_net;
+    }
     static const char path_tmp[] = "/tmp/resolv.conf";
     static const char path_mnt[] = "/mnt/.fortress/resolv.conf";
 

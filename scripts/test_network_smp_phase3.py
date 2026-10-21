@@ -425,7 +425,7 @@ def boot(out,disk,firmware,cpus,restart,password,nic,port,qmp_directory=None,rel
     assert live and int(live[-1],16)==0,live
     root=out/(label+'.root.img'); baseline.extract_root(disk,root)
     baseline.fixture.run(['e2fsck','-fn',str(root)],out/(label+'.fsck.log'))
-    for path,expected in (('/etc/network/network.conf',config.encode()),('/etc/resolv.conf',b'nameserver 1.1.1.1\nnameserver 8.8.8.8\n')):
+    for path,expected in (('/etc/network/network.conf',config.encode()),('/etc/network/resolv.conf',b'nameserver 1.1.1.1\nnameserver 8.8.8.8\n')):
         target=out/(label+'.'+Path(path).name)
         baseline.fixture.run(['debugfs','-R',f'dump {path} {target}',str(root)],out/(label+'.audit.log'))
         assert target.read_bytes()==expected

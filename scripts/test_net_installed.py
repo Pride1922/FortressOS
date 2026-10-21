@@ -175,7 +175,7 @@ def boot(out, disk, firmware, cpus, restart, password, peer_port):
     root = out / (label + '.root.img'); extract_root(disk, root)
     fixture.run(['e2fsck', '-fn', str(root)], out / (label + '.fsck.log'))
     for path, expected in [('/etc/network/network.conf', config.encode()),
-                           ('/etc/resolv.conf', b'nameserver 1.1.1.1\nnameserver 8.8.8.8\n')]:
+                           ('/etc/network/resolv.conf', b'nameserver 1.1.1.1\nnameserver 8.8.8.8\n')]:
         target = out / (label + '.' + Path(path).name)
         fixture.run(['debugfs', '-R', f'dump {path} {target}', str(root)], out / (label + '.audit.log'))
         assert target.read_bytes() == expected, path
