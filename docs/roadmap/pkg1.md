@@ -1251,3 +1251,103 @@ Original fixture images also retain their pre-run hashes. These are host image
 and source checks, not release-media or boot acceptance. Full logs, exact commands,
 generated C, copied sources, overlay hashes, binaries and selected snapshots are
 retained in the campaign directories. Aggregate manifest: `pkg-grant-idle-summary-20261021-183956/manifest.json`.
+
+
+## 2026-10-21 private competing allocations and fresh reservation admission
+
+Implemented `tests/pkg_grant_compete.inc` and the standalone
+`test-pkg-grant-compete` copied-source gate. No production filesystem/allocator
+source, mount policy, installation path or syscall is changed. A generated
+translation unit retains the existing lifecycle and IDLE helpers and wraps only
+its semantic commit dispatch. Exact generated source and the two production-copy
+overlays remain in each campaign workspace/manifest.
+
+Ordinary real create/write plans must preserve staged F minus durable G above
+max(the existing numeric A0, synthetic R_test) for both blocks and inodes. The
+private predicate enforces the A0 minimum internally. Tagged plans still use the
+actual inode/bitmap lifecycle wrapper to debit/refund G in the same journal
+transaction as allocation changes. Ordinary success leaves ledger/table unchanged.
+The fixture reaches exact effective block and inode limits, rejects +1 before
+writes with unchanged write offset/create output, then still creates/writes a
+tagged object using its escrow. Pinned unlink keeps the grant and blocks another
+admission. Actual last-close refund followed by IDLE release lets ordinary create
+and write spend previously escrowed space. An ordinary write winning before a
+fresh admission causes that admission to refuse based on freshly read F.
+
+Fresh admission checks canonical IDLE, full actual ownership, expected sequence,
+empty transaction directory, absent pending.v1, nonzero synthetic transaction ID,
+and healthy/idle engine state. Exact headroom equality admits; +1 required floor
+in either dimension refuses without writes. RESERVED and its new transaction/plan,
+paired sequence and (8,1) empty grant are one actual JBD2 metadata transaction.
+Stale/duplicate/zero-ID and pending-record requests refuse without writes. The
+fixed installed-state and authorization identities remain synthetic fixture
+context; there is no signature/catalog revalidation or task-owned session here.
+
+The fault campaign cuts every admission write/flush callback, before/after, with
+cached/all/alternating/inverse persistence. Two complete mounts independently
+observe coherent IDLE or RESERVED and the matching sequence/transaction, without
+completing IDLE between those two observations. Physical free block/inode counts
+must remain unchanged for normal admission and after every cut/recovery. After
+the campaign an old outcome is explicitly admitted, then a second tagged inode
+create/reclaim/release cycle returns to IDLE. Linux e2fsck and debugfs audit
+selected RESERVED/IDLE snapshots, record hashes/crossbinding, empty ownership
+entries, absent tagged name and exactly three blocks of original competitor C
+bytes. Those independent audits do not inspect each transient cut image.
+
+Preservation is a separate gate from runtime acceptance; there is no boot
+acceptance claim. Each final campaign retains original fixture hashes, copied
+compiled-input hashes and a repository compiled-input guard. Serialized host
+calls exercise actual filesystem exclusion, not parallel process/SMP races.
+Sector callbacks are atomic, replay is not interrupted again, and ordinary
+competitor allocations themselves are not fault-injected in this campaign.
+Elevated R_test tests effective headroom without physical near-full fragmentation,
+parent expansion or positive external extent-tree allocation. Account BEGIN,
+UPDATE/redo/bypass paths and actual numeric R_acc bounds remain unimplemented.
+Writer admission here is durable reservation admission; task-retained exclusive
+sessions, cancellation/in-flight ownership and capability checks remain open.
+
+Retained preliminary evidence:
+- `pkg-grant-compete-20261021-184317-818722`: C ASan/UBSan PASS for 440 cuts;
+  Python Linux-byte oracle FAIL expected four blocks although only three writes
+  succeeded. The dump has the correct 3072 bytes. Corrected expectation to three;
+  pending/zero-ID checks were also added before final fixtures. This attempt is
+  excluded from acceptance totals; its manifest remains INCOMPLETE and records
+  the changed private test input.
+- `pkg-grant-compete-20261021-184414-942773` and
+  `pkg-grant-compete-20261021-184438-397789`: 1/2 KiB runtime, Linux and source
+  preservation PASS before the later exact-admission-boundary strengthening.
+- `pkg-grant-compete-20261021-184448-579162`: 4 KiB runtime and Linux PASS,
+  original repository compiled-input guard FAIL because I strengthened
+  `tests/pkg_grant_compete.inc` while it ran. Copied inputs stayed unchanged;
+  the failure is retained. The strengthened final matrix is reported separately.
+
+Next gates: actual account-planner recovery bound and bypass enforcement,
+process-owned writer lifetime, then grant-aware validation before the first
+replay write and authenticated boot enrollment. This work enables neither
+production integration nor installation/trust provisioning. No release-media
+build, push, physical write, BIOS/UEFI or Ring 3 run was performed. All concurrent
+work, including AGENTS.md and README.md, is preserved.
+
+
+Final strengthened actual-code ASan/UBSan matrix **6/6 PASS**, **2456 admission
+callback cuts / 4912 complete recovery mount cycles**, **12/12 Linux e2fsck and
+selected record/competitor byte audits PASS**:
+
+| Block / sector bytes | Cuts | Campaign |
+| --- | ---: | --- |
+| 1024 / 512 | 440 | `pkg-grant-compete-20261021-184731-744714` |
+| 1024 / 4096 | 240 | same |
+| 2048 / 512 | 584 | `pkg-grant-compete-20261021-184755-993280` |
+| 2048 / 4096 | 176 | same |
+| 4096 / 512 | 872 | `pkg-grant-compete-20261021-184806-143258` |
+| 4096 / 4096 | 144 | same |
+
+Invocations: WSL `python3 scripts/test_pkg_grant_compete.py --block N` for each
+of 1024/2048/4096, equivalent to the standalone Make target's complete matrix.
+The final runs include exact-equality admission success and +1 refusal in each
+dimension, the internal max(A0,R_test) predicate, and unchanged physical free
+counts through every recovery. **Preservation separately PASS:** all three final
+manifests report no changed copied compiled inputs and no changed repository
+compiled inputs; their private test include hashes agree. Original fixture image
+hashes also match. No new boot or release-media preservation claim is made.
+Aggregate evidence: `pkg-grant-compete-summary-20261021-185143/manifest.json`.

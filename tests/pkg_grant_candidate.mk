@@ -21,3 +21,7 @@ test-pkg-grant-lifecycle:
 .PHONY: test-pkg-grant-idle
 test-pkg-grant-idle:
 	python3 scripts/test_pkg_grant_idle.py
+
+.PHONY: test-pkg-grant-compete
+test-pkg-grant-compete:
+	python3 scripts/test_pkg_grant_compete.py

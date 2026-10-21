@@ -123,3 +123,67 @@ The earlier post-replay reconstruction, synthetic identity, single-object,
 serialized host-call and atomic-sector limitations remain.
 
 Run `make -f tests/pkg_grant_candidate.mk test-pkg-grant-idle` in WSL.
+
+
+## Private competing plans and fresh admission
+
+`tests/pkg_grant_compete.inc` adds a test-only outer semantic-commit wrapper in
+another generated host translation unit. The existing lifecycle wrapper remains
+responsible for tagged inode/bitmap/ledger coupling. For explicitly selected
+ordinary operations the outer wrapper reads the durable grant and checks both
+staged superblock free counts minus remaining escrow against a private floor
+before calling the original journal writer. The real planner includes all its
+allocations, including any parent/extent metadata, in those counters. Ordinary
+success does not alter package records or sequence. Tagged plans preserve F-G;
+the lifecycle wrapper independently checks their exact staged resource delta.
+
+The fixture floor defaults numerically to the existing 256 KiB/16 inode floor.
+The predicate always uses max(A0,R_test), even if its private floor input is
+smaller than A0. Boundary fixtures raise R_test using the actual free counts: a
+fresh admission at exact equality succeeds; +1 in either dimension refuses.
+A separate reservation leaves one ordinary credit in each dimension. This is not a bound for
+actual account recovery. The account bypass/BEGIN/UPDATE/redo paths are NOT
+intercepted or certified. No trusted-root flags or production account state are
+faked to make the private test eligible. There is no production allocator hook.
+
+Fresh admission validates canonical IDLE and actual ownership, an empty complete
+transaction directory, absent `pending.v1`, no orphans or uncertain/busy writer,
+an expected sequence and nonzero synthetic transaction tag. It re-reads actual
+free resources under filesystem exclusion and admits a fixed (8 blocks,1 inode)
+grant only when its remaining budget fits above the private floor. One actual
+JBD2 transaction records RESERVED, the new transaction/plan, paired sequence and
+empty ownership table. The unchanged state/authorization/enrollment context is
+retained from the validated synthetic fixture; no signatures or current trust
+policy are evaluated. Checksums and a sequence comparison are not authorization.
+A repeated/stale request cannot acquire a non-IDLE slot. Uncertain commit errors
+retain the normal engine fence; recovery can observe whole IDLE or RESERVED.
+
+These are serialized competing requests under the real filesystem lock, not
+parallel process/SMP scheduling. The test has no task-retained session, owner
+capability, descriptor lifetime, cryptographic UUID allocator or arbitrary
+package plan admission. A "fresh writer" here means a fresh durable reservation
+and a second tagged create/reclaim cycle; production writer ownership is open.
+General ordinary namespace protection is a separate contract, not supplied by
+this arithmetic hook.
+
+Acceptance checks ordinary block and inode success at the exact effective floor,
++1 rejection with unchanged offset/output and no writes, tagged create/write at
+that floor, pinned cleanup blocking admission, consumption after IDLE release,
+and an ordinary allocation winning before admission and making admission refuse.
+Pending, zero-tag and stale/duplicate requests refuse without writes. Each real
+admission write/flush callback is cut before/after under four persistence models,
+followed by two full mounts which independently observe coherent old/new states.
+Unlike the IDLE campaign, the first cut-recovery mount does not complete an old
+outcome. A final recovered old state is explicitly admitted only after the cut
+loop, followed by a second tagged inode cycle and release to IDLE. Linux audits
+selected RESERVED/IDLE images and competitor bytes, not every transient cut.
+The competing ordinary allocations themselves are not fault-injected here.
+Elevated R_test exercises effective-headroom boundaries without filling the
+physical image: this does not cover low-space fragmentation, directory growth
+or positive external extent-tree allocation at the boundary.
+
+Run `make -f tests/pkg_grant_candidate.mk test-pkg-grant-compete` in WSL.
+Production integration, installation, production trust provisioning, release
+builds, pushes and physical writes remain disabled. Grant-aware pre-replay
+validation, actual account planner bounds and process-owned writer sessions
+remain separate gates.

@@ -330,5 +330,7 @@ scope are explicit; full grant, inode/orphan and production mount integration
 remain later gates.
 
 The [private inode/orphan lifecycle workbench](PKG2_GRANT_LIFECYCLE_ADAPTER.md)
-now tests debit/refund through copied semantic-commit and pre-cleanup hooks. It
-does not release unused escrow to IDLE or implement production mount admission.
+now tests debit/refund, pre-intent release to IDLE, competing ordinary planner
+checks and fresh durable reservation admission through copied hooks. Those private
+serialized fixtures do not implement account recovery bounds, task-owned writer
+sessions, trusted enrollment or production mount admission.
