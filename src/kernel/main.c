@@ -6580,7 +6580,7 @@ pf_boot_guard_done:
     xhci_boot_probe(&boot_info);
     net_boot_probe();
     if (iwlwifi_probe()) {
-        iwlwifi_init_hw();
+        serial_puts("[IWL] Intel wireless adapter detected\n");
     }
     e1000_raw_selftest(boot_info.cmdline);
     net_start(boot_info.cmdline, sizeof(boot_info.cmdline));

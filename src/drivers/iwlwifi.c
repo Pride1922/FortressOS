@@ -113,9 +113,19 @@ bool iwlwifi_init_hw(void) {
     pci_write_config16(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus,
                        s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND, cmd);
 
-    /* Map BAR0 MMIO */
+    /* Map BAR0 MMIO (16 KiB window) */
     uint64_t bar0 = s_iwl_dev.pci.bar[0];
-    s_iwl_dev.mmio_base = vmm_get_hhdm_offset() + bar0;
+    if (bar0 == 0) {
+        spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
+        return false;
+    }
+    uint64_t *pml4 = vmm_get_kernel_pml4_virt();
+    for (uint32_t offset = 0; offset < 0x4000; offset += 4096) {
+        uintptr_t va = IWLWIFI_MMIO_VIRT + offset;
+        uintptr_t pa = bar0 + offset;
+        vmm_map_page(pml4, va, pa, PTE_PRESENT | PTE_WRITABLE | PTE_PCD | PTE_PWT | PTE_NX);
+    }
+    s_iwl_dev.mmio_base = IWLWIFI_MMIO_VIRT;
 #endif
 
     /* Reset hardware */

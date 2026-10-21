@@ -127,6 +127,9 @@ typedef struct {
     spinlock_t   lock;
 } iwlwifi_state_t;
 
+/* Virtual MMIO mapping base */
+#define IWLWIFI_MMIO_VIRT               0xFFFFFFFFE3000000ULL
+
 /* Public API */
 bool iwlwifi_probe(void);
 bool iwlwifi_is_supported_device(uint16_t vendor, uint16_t device);

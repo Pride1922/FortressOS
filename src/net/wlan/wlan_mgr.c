@@ -1,5 +1,6 @@
 #include "wlan_mgr.h"
 #include "spinlock.h"
+#include "iwlwifi.h"
 #include <string.h>
 
 #define WLAN_RX_RING_SIZE 16
@@ -81,7 +82,14 @@ void wlan_mgr_init(const wlan_hw_ops_t *ops) {
     spin_unlock_irqrestore(&s_wlan_lock, irq);
 }
 
+static void wlan_ensure_hardware(void) {
+    if (!s_hw_ops && iwlwifi_is_detected()) {
+        iwlwifi_init_hw();
+    }
+}
+
 net_dev_t *wlan_get_net_device(void) {
+    wlan_ensure_hardware();
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
     net_dev_t *dev = (s_hw_ops != NULL) ? &s_wlan_net_dev : NULL;
     spin_unlock_irqrestore(&s_wlan_lock, irq);
@@ -90,6 +98,7 @@ net_dev_t *wlan_get_net_device(void) {
 
 int wlan_mgr_scan(wifi_scan_result_t *out_result) {
     if (!out_result) return -1;
+    wlan_ensure_hardware();
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
 
     /* Send Probe Request if driver operational */
@@ -130,6 +139,7 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     if (ssid_len == 0 || ssid_len > IEEE80211_SSID_MAX_LEN) return -1;
     if (pass_len < 8 || pass_len > 64) return -1;
 
+    wlan_ensure_hardware();
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
     memset(s_target_ssid, 0, sizeof(s_target_ssid));
     memcpy(s_target_ssid, ssid, ssid_len);
@@ -200,6 +210,7 @@ int wlan_mgr_disconnect(void) {
 
 int wlan_mgr_status(wifi_status_t *out_status) {
     if (!out_status) return -1;
+    wlan_ensure_hardware();
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
 
     memset(out_status, 0, sizeof(*out_status));
