@@ -9,6 +9,7 @@ void serial_print_dec(uint64_t n) {(void)n;}
 void serial_print_hex(uint64_t n) {(void)n;}
 void serial_putc(char c) {(void)c;}
 void vfs_init(void) {publications++;}
+int etcfs_init(vfs_node_t *root) {(void)root;return 0;}
 vfs_node_t *vfs_create_node(const char *p,vfs_node_type_t t,uint64_t n,const void *d) {
     (void)p;(void)t;(void)n;(void)d;assert(0);return NULL;
 }

@@ -1,4 +1,5 @@
 #include "tarfs.h"
+#include "etcfs.h"
 #include "string.h"
 #include "serial.h"
 
@@ -245,5 +246,6 @@ int tarfs_init(const void *archive_data, size_t archive_size) {
     serial_puts("[ OK ] TarFS initialized: ");
     serial_print_dec(files_loaded);
     serial_puts(" files mounted into VFS\n");
+    etcfs_init(NULL);
     return 0;
 }

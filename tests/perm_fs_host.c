@@ -36,6 +36,7 @@ bool ext2_device_read_sector(block_dev_t *d,uint64_t l,void *b) {
 #include "../src/fs/runfs.c"
 #include "../src/fs/devfs.c"
 #include "../src/fs/vfs.c"
+#include "../src/fs/etcfs.c"
 #include "../src/fs/tarfs.c"
 static void check(const char *path,uint32_t mode,uint32_t uid,uint32_t gid) {
  int e;vfs_node_t *n=vfs_lookup_ref(path,&e);assert(n && !e);

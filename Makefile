@@ -1980,6 +1980,14 @@ test-perm-runfs-host:
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/perm_runfs_enforcement_host.c src/fs/permission_values.c src/kernel/creds.c -o $(BUILD_DIR)/perm_runfs_enforcement_host
 	@$(BUILD_DIR)/perm_runfs_enforcement_host
 
+test-etcfs-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/etcfs_host.c src/kernel/creds.c -o $(BUILD_DIR)/etcfs_host
+	@$(BUILD_DIR)/etcfs_host
+
+test-etcfs-live: bin/fortress.iso
+	@python3 scripts/test_etcfs_live.py
+
 test-perm-admission-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/perm_admission_host.c -o $(BUILD_DIR)/perm_admission_host
