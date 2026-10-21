@@ -17,6 +17,9 @@
 #define SYS_WIFI_CMD_STATUS        4u
 #define WIFI_CMD_STATUS            SYS_WIFI_CMD_STATUS
 
+#define SYS_WIFI_CMD_LOAD_FW       5u
+#define WIFI_CMD_LOAD_FW           SYS_WIFI_CMD_LOAD_FW
+
 #define WIFI_MAX_SCAN_ENTRIES      16u
 #define WIFI_SSID_MAX_LEN          32u
 #define WIFI_PASSPHRASE_MAX_LEN    64u

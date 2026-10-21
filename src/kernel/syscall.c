@@ -9,6 +9,7 @@ static bool syscall_actor(creds_t *out);
 #include "../net/net_tcp_syscall.h"
 #include "../net/wlan/wlan_mgr.h"
 #include "wifi_abi.h"
+#include "../drivers/iwlwifi.h"
 #include "percpu.h"
 #include "process_table.h"
 #include "input.h"
@@ -1247,6 +1248,12 @@ static int64_t sys_wifi(uint64_t cmd, uintptr_t arg, size_t size) {
         if (rc != 0) return SYSCALL_EIO;
         memcpy((void *)arg, &st, sizeof(st));
         return 0;
+    }
+    if (cmd == SYS_WIFI_CMD_LOAD_FW) {
+        if (size == 0 || size > 4 * 1024 * 1024) return SYSCALL_EINVAL;
+        if (!vmm_validate_user_range(pml4, arg, size, false)) return SYSCALL_EFAULT;
+        bool ok = iwlwifi_load_firmware((const void *)arg, size);
+        return ok ? 0 : SYSCALL_EIO;
     }
     return SYSCALL_EINVAL;
 }

@@ -20,6 +20,11 @@ static uint8_t s_rx_ring_mem[IWL_RX_RING_SIZE * sizeof(iwl_rx_desc_t)] __attribu
 static pbuf_t  s_rx_pbufs[IWL_RX_RING_SIZE];
 static uint8_t s_rx_buffers[IWL_RX_RING_SIZE][2048] __attribute__((aligned(64)));
 
+#ifndef IWLWIFI_HOST_TEST
+static uintptr_t s_fw_chunk_phys = 0;
+static uint8_t  *s_fw_chunk_virt = NULL;
+#endif
+
 static inline uint32_t iwl_read32(uint32_t reg) {
     if (!s_iwl_dev.mmio_base) return 0;
     return *(volatile uint32_t *)(s_iwl_dev.mmio_base + reg);
@@ -29,6 +34,81 @@ static inline void iwl_write32(uint32_t reg, uint32_t val) {
     if (!s_iwl_dev.mmio_base) return;
     *(volatile uint32_t *)(s_iwl_dev.mmio_base + reg) = val;
 }
+
+#ifndef IWLWIFI_HOST_TEST
+static void iwl_write_prph(uint32_t addr, uint32_t val) {
+    iwl_write32(HBUS_TARG_PRPH_WADDR, ((addr & 0x000FFFFF) | (3 << 24)));
+    iwl_write32(HBUS_TARG_PRPH_WDAT, val);
+}
+
+static uint32_t __attribute__((unused)) iwl_read_prph(uint32_t addr) {
+    iwl_write32(HBUS_TARG_PRPH_RADDR, ((addr & 0x000FFFFF) | (3 << 24)));
+    return iwl_read32(HBUS_TARG_PRPH_RDAT);
+}
+
+static bool iwl_nic_lock(void) {
+    if (!s_iwl_dev.mmio_base) return false;
+    iwl_write32(CSR_GP_CNTRL, iwl_read32(CSR_GP_CNTRL) | CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
+    for (int i = 0; i < 50000; i++) {
+        uint32_t val = iwl_read32(CSR_GP_CNTRL);
+        if ((val & CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY) && !(val & CSR_GP_CNTRL_REG_FLAG_GOING_TO_SLEEP)) {
+            return true;
+        }
+        __asm__ volatile("pause" ::: "memory");
+    }
+    return false;
+}
+
+static void iwl_nic_unlock(void) {
+    if (!s_iwl_dev.mmio_base) return;
+    iwl_write32(CSR_GP_CNTRL, iwl_read32(CSR_GP_CNTRL) & ~CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
+}
+
+static bool iwl_load_chunk(uint32_t dst_addr, const uint8_t *chunk, uint32_t len) {
+    if (!s_fw_chunk_phys || !s_fw_chunk_virt) return false;
+    if (len > 4096) len = 4096;
+    memcpy(s_fw_chunk_virt, chunk, len);
+
+    if (!iwl_nic_lock()) return false;
+
+    iwl_write32(FH_TCSR_CHNL_TX_CONFIG_REG(IWL_FH_SRVC_CHNL), 0);
+    iwl_write32(FH_SRVC_CHNL_SRAM_ADDR_REG(IWL_FH_SRVC_CHNL), dst_addr);
+    iwl_write32(FH_TFDIB_CTRL0_REG(IWL_FH_SRVC_CHNL), (uint32_t)(s_fw_chunk_phys & 0xFFFFFFFF));
+    iwl_write32(FH_TFDIB_CTRL1_REG(IWL_FH_SRVC_CHNL), (((uint32_t)(s_fw_chunk_phys >> 32)) << 24) | len);
+    iwl_write32(FH_TCSR_CHNL_TX_BUF_STS_REG(IWL_FH_SRVC_CHNL), (1 << 20) | (1 << 12) | 3);
+    iwl_write32(FH_TCSR_CHNL_TX_CONFIG_REG(IWL_FH_SRVC_CHNL),
+                FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_ENABLE |
+                FH_TCSR_TX_CONFIG_REG_VAL_DMA_CREDIT_DISABLE |
+                FH_TCSR_TX_CONFIG_REG_VAL_CIRQ_HOST_ENDTFD);
+
+    iwl_nic_unlock();
+
+    /* Poll for completion (CSR_INT_BIT_FH_TX) */
+    for (int i = 0; i < 100000; i++) {
+        uint32_t intr = iwl_read32(CSR_INT);
+        if (intr & CSR_INT_BIT_FH_TX) {
+            iwl_write32(CSR_FH_INT_STATUS, 0xFFFFFFFF);
+            iwl_write32(CSR_INT, CSR_INT_BIT_FH_TX);
+            return true;
+        }
+        __asm__ volatile("pause" ::: "memory");
+    }
+    return false;
+}
+
+static bool iwl_load_section(uint32_t dst_addr, const uint8_t *data, uint32_t byte_cnt) {
+    uint32_t offset = 0;
+    while (offset < byte_cnt) {
+        uint32_t chunk_len = byte_cnt - offset;
+        if (chunk_len > 4096) chunk_len = 4096;
+        if (!iwl_load_chunk(dst_addr + offset, data + offset, chunk_len)) {
+            return false;
+        }
+        offset += chunk_len;
+    }
+    return true;
+}
+#endif
 
 bool iwlwifi_is_supported_device(uint16_t vendor, uint16_t device) {
     if (vendor != IWL_PCI_VENDOR_ID) return false;
@@ -97,7 +177,125 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
         ptr += step;
         rem -= step;
     }
-    return tlv_count > 0;
+    if (tlv_count == 0) return false;
+
+#ifndef IWLWIFI_HOST_TEST
+    if (!s_iwl_dev.detected || !s_iwl_dev.mmio_base) return true;
+
+    /* Allocate DMA chunk buffer if not yet initialized */
+    if (!s_fw_chunk_phys) {
+        s_fw_chunk_phys = pmm_alloc_page();
+        if (s_fw_chunk_phys) {
+            s_fw_chunk_virt = (uint8_t *)vmm_phys_to_virt(s_fw_chunk_phys);
+        }
+    }
+    if (!s_fw_chunk_phys || !s_fw_chunk_virt) {
+        serial_puts("[IWL] PMM allocation for FW DMA failed\n");
+        return false;
+    }
+
+    /* 1. Power up and activate device clock */
+    iwl_write32(CSR_GP_CNTRL, iwl_read32(CSR_GP_CNTRL) | CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
+    for (int i = 0; i < 50000; i++) {
+        if (iwl_read32(CSR_GP_CNTRL) & CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY) break;
+        __asm__ volatile("pause" ::: "memory");
+    }
+
+    /* Clear RFKILL and legacy interrupts */
+    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x06);
+    iwl_write32(CSR_INT, 0xFFFFFFFF);
+
+    /* 2. Release internal CPU from reset */
+    if (iwl_nic_lock()) {
+        iwl_write_prph(IWL_RELEASE_CPU_RESET, IWL_RELEASE_CPU_RESET_BIT);
+        iwl_nic_unlock();
+    }
+
+    /* 3. Stream SEC_INIT (TLV 20) CPU1 and CPU2 sections */
+    ptr = (const uint8_t *)fw_data + sizeof(iwl_ucode_header_t);
+    rem = fw_len - sizeof(iwl_ucode_header_t);
+
+    int cpu_phase = 1;
+    uint32_t sec_num = 1;
+
+    while (rem >= sizeof(iwl_ucode_tlv_t)) {
+        const iwl_ucode_tlv_t *tlv = (const iwl_ucode_tlv_t *)ptr;
+        size_t step = sizeof(iwl_ucode_tlv_t) + ((tlv->length + 3) & ~3);
+        if (step > rem) break;
+
+        if (tlv->type == IWL_UCODE_TLV_SEC_INIT && tlv->length >= 4) {
+            const uint8_t *payload = ptr + sizeof(iwl_ucode_tlv_t);
+            uint32_t dst_addr = *(const uint32_t *)payload;
+            const uint8_t *data = payload + 4;
+            uint32_t dlen = tlv->length - 4;
+
+            if (dst_addr == IWL_CPU1_CPU2_SEPARATOR_SECTION) {
+                /* Finalize CPU1 */
+                if (iwl_nic_lock()) {
+                    iwl_write32(FH_UCODE_LOAD_STATUS, 0x0000FFFF);
+                    iwl_nic_unlock();
+                }
+                cpu_phase = 2;
+                sec_num = 1;
+            } else if (dst_addr == IWL_PAGING_SEPARATOR_SECTION) {
+                /* End of non-paged CPU2 sections */
+                break;
+            } else if (dlen > 0) {
+                if (!iwl_load_section(dst_addr, data, dlen)) {
+                    serial_puts("[IWL] Failed to stream firmware chunk\n");
+                    return false;
+                }
+                if (iwl_nic_lock()) {
+                    uint32_t shift = (cpu_phase == 1) ? 0 : 16;
+                    uint32_t val = iwl_read32(FH_UCODE_LOAD_STATUS);
+                    val |= (sec_num << shift);
+                    iwl_write32(FH_UCODE_LOAD_STATUS, val);
+                    sec_num = (sec_num << 1) | 1;
+                    iwl_nic_unlock();
+                }
+            }
+        }
+
+        ptr += step;
+        rem -= step;
+    }
+
+    /* Finalize CPU2 */
+    if (iwl_nic_lock()) {
+        iwl_write32(FH_UCODE_LOAD_STATUS, 0xFFFFFFFF);
+        iwl_nic_unlock();
+    }
+
+    /* 4. Release processor from reset */
+    iwl_write32(CSR_RESET, 0);
+
+    /* 5. Wait for ALIVE */
+    bool alive = false;
+    for (int i = 0; i < 100000; i++) {
+        uint32_t intr = iwl_read32(CSR_INT);
+        if (intr & CSR_INT_BIT_ALIVE) {
+            alive = true;
+            iwl_write32(CSR_INT, CSR_INT_BIT_ALIVE);
+            break;
+        }
+        __asm__ volatile("pause" ::: "memory");
+    }
+
+    if (alive) {
+        s_iwl_dev.firmware_alive = true;
+        serial_puts("[IWL] Firmware ALIVE signaled! Radio operational.\n");
+    } else {
+        /* Fail closed: without ALIVE the TX path must stay disabled so no
+         * descriptors are posted to an unbooted DMA engine. */
+        s_iwl_dev.firmware_alive = false;
+        serial_puts("[IWL] Firmware ALIVE timeout; radio remains disabled.\n");
+        return false;
+    }
+#else
+    s_iwl_dev.firmware_alive = true;
+#endif
+
+    return true;
 }
 
 bool iwlwifi_map_mmio(void) {

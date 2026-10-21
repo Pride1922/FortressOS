@@ -1284,8 +1284,8 @@ $(BUILD_DIR)/wifi_start.o: $(USER_DIR)/tools/start.asm
 	@mkdir -p $(BUILD_DIR)
 	@$(AS) -f elf64 -DTOOL_ENTRY=wifi_main $< -o $@
 
-$(USER_WIFI_ELF): $(BUILD_DIR)/wifi_start.o $(BUILD_DIR)/wifi.o $(USER_DIR)/shell.ld
-	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/wifi_start.o $(BUILD_DIR)/wifi.o -o $@
+$(USER_WIFI_ELF): $(BUILD_DIR)/wifi_start.o $(BUILD_DIR)/wifi.o $(BUILD_DIR)/tool-gzip.o $(BUILD_DIR)/tool-common.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/wifi_start.o $(BUILD_DIR)/wifi.o $(BUILD_DIR)/tool-gzip.o $(BUILD_DIR)/tool-common.o -o $@
 
 $(BUILD_DIR)/top.o: $(USER_DIR)/top.c src/include/types.h src/include/syscall_abi.h src/include/terminal.h
 	@mkdir -p $(BUILD_DIR)
@@ -1392,6 +1392,8 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 		cp -f build/ssl/certs/anchors.v1 $(BUILD_DIR)/initramfs/etc/ssl/certs/anchors.v1; \
 		if [ -f build/ssl/certs/ca-certificates.crt ]; then cp -f build/ssl/certs/ca-certificates.crt $(BUILD_DIR)/initramfs/etc/ssl/certs/ca-certificates.crt; fi; \
 	fi
+	@mkdir -p $(BUILD_DIR)/initramfs/lib/firmware
+	@python3 scripts/strip_firmware.py assets/firmware/iwlwifi-8265-36.ucode $(BUILD_DIR)/initramfs/lib/firmware/iwlwifi-8265-36.ucode.gz
 	@echo "  [TAR] Generating USTAR archive $@"
 	@python3 scripts/create_initramfs.py $(BUILD_DIR)/initramfs $(INITRAMFS_TAR)
 

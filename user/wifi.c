@@ -2,6 +2,10 @@
 #include "syscall_abi.h"
 #include "wifi_abi.h"
 
+typedef long (*gzip_read_fn)(void *, void *, size_t);
+typedef long (*gzip_write_fn)(void *, const void *, size_t);
+int gzip_decode_callbacks(gzip_read_fn read, gzip_write_fn write, void *context);
+
 #ifndef WIFI_SYSCALL
 static long sys_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
                      uintptr_t d, uintptr_t e, uintptr_t f) {
@@ -16,6 +20,82 @@ static long sys_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
 #endif
 
 static char s_out[1024];
+
+static bool write_str(int fd, const char *str);
+
+static uint8_t s_fw_decomp_buf[2000000];
+static size_t  s_fw_decomp_pos = 0;
+static bool    s_fw_loaded = false;
+
+static long fw_read_cb(void *ctx, void *buf, size_t count) {
+    int fd = (int)(intptr_t)ctx;
+    long r = WIFI_SYSCALL(SYS_READ, fd, buf, count);
+    return r;
+}
+
+static long fw_write_cb(void *ctx, const void *buf, size_t count) {
+    (void)ctx;
+    if (s_fw_decomp_pos + count > sizeof(s_fw_decomp_buf)) {
+        return -1;
+    }
+    const uint8_t *src = (const uint8_t *)buf;
+    for (size_t i = 0; i < count; i++) {
+        s_fw_decomp_buf[s_fw_decomp_pos + i] = src[i];
+    }
+    s_fw_decomp_pos += count;
+    return (long)count;
+}
+
+static bool ensure_firmware_loaded(void) {
+    if (s_fw_loaded) return true;
+
+    wifi_status_t st;
+    if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
+        if (st.link_online || st.state != WIFI_STATUS_IDLE) {
+            s_fw_loaded = true;
+            return true;
+        }
+    }
+
+    /* Try compressed firmware */
+    int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/lib/firmware/iwlwifi-8265-36.ucode.gz", 0, 0);
+    if (fd >= 0) {
+        write_str(1, "[wifi] Loading Intel Wireless firmware (/lib/firmware/iwlwifi-8265-36.ucode.gz)...\n");
+        s_fw_decomp_pos = 0;
+        int gz_rc = gzip_decode_callbacks(fw_read_cb, fw_write_cb, (void *)(intptr_t)fd);
+        WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+        if (gz_rc == 0 && s_fw_decomp_pos > 0) {
+            long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_LOAD_FW, s_fw_decomp_buf, s_fw_decomp_pos);
+            if (rc == 0) {
+                write_str(1, "[wifi] Microcode loaded successfully.\n");
+                s_fw_loaded = true;
+                return true;
+            } else {
+                write_str(2, "[wifi] Hardware bootstrap returned error.\n");
+            }
+        } else {
+            write_str(2, "[wifi] Failed to decompress firmware.\n");
+        }
+    }
+
+    /* Fallback to uncompressed firmware */
+    fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/lib/firmware/iwlwifi-8265-36.ucode", 0, 0);
+    if (fd >= 0) {
+        write_str(1, "[wifi] Loading uncompressed firmware (/lib/firmware/iwlwifi-8265-36.ucode)...\n");
+        long rd = WIFI_SYSCALL(SYS_READ, fd, s_fw_decomp_buf, sizeof(s_fw_decomp_buf));
+        WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+        if (rd > 0) {
+            long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_LOAD_FW, s_fw_decomp_buf, (size_t)rd);
+            if (rc == 0) {
+                write_str(1, "[wifi] Microcode loaded successfully.\n");
+                s_fw_loaded = true;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
 
 static size_t mystrlen(const char *s) {
     size_t len = 0;
@@ -105,6 +185,12 @@ static const char *state_to_str(uint32_t st) {
 }
 
 static int do_scan(void) {
+    ensure_firmware_loaded();
+
+    /* Trigger probe and brief listen period for nearby AP beacons */
+    timespec_t ts = { .tv_sec = 0, .tv_nsec = 300000000 }; /* 300ms */
+    WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
+
     wifi_scan_result_t res;
     res.count = 0;
     res.max_entries = WIFI_MAX_SCAN_ENTRIES;
@@ -195,6 +281,8 @@ static int do_connect(const char *ssid, const char *passphrase) {
         return 1;
     }
 
+    ensure_firmware_loaded();
+
     wifi_connect_req_t req;
     for (size_t i = 0; i < sizeof(req.ssid); i++) req.ssid[i] = 0;
     for (size_t i = 0; i < sizeof(req.passphrase); i++) req.passphrase[i] = 0;
@@ -263,6 +351,8 @@ int wifi_main(int argc, char **argv) {
         return do_scan();
     } else if (streq(argv[1], "status")) {
         return do_status();
+    } else if (streq(argv[1], "load-fw") || streq(argv[1], "init")) {
+        return ensure_firmware_loaded() ? 0 : 1;
     } else if (streq(argv[1], "disconnect")) {
         return do_disconnect();
     } else if (streq(argv[1], "connect")) {

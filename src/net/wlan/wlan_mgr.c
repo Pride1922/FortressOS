@@ -99,6 +99,18 @@ net_dev_t *wlan_get_net_device(void) {
 int wlan_mgr_scan(wifi_scan_result_t *out_result) {
     if (!out_result) return -1;
     wlan_ensure_hardware();
+
+    /* Drain pending hardware RX packets into scan table before acquiring lock */
+    if (s_hw_ops && s_hw_ops->poll_raw_80211) {
+        pbuf_t *p;
+        while ((p = s_hw_ops->poll_raw_80211()) != NULL) {
+            wlan_mgr_rx_raw_80211(p->payload, p->length, -60);
+            if (s_hw_ops->recycle_raw_80211) {
+                s_hw_ops->recycle_raw_80211(p);
+            }
+        }
+    }
+
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
 
     /* Send Probe Request if driver operational */
