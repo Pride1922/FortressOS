@@ -100,12 +100,12 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
     return tlv_count > 0;
 }
 
-bool iwlwifi_init_hw(void) {
-    if (!s_iwl_dev.detected) return false;
-
-    uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
-
+bool iwlwifi_map_mmio(void) {
 #ifndef IWLWIFI_HOST_TEST
+    if (!s_iwl_dev.detected) return false;
+    uint64_t bar0 = s_iwl_dev.pci.bar[0];
+    if (bar0 == 0) return false;
+
     /* Enable PCI bus master and memory space */
     uint16_t cmd = pci_read_config16(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus,
                                      s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND);
@@ -113,12 +113,7 @@ bool iwlwifi_init_hw(void) {
     pci_write_config16(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus,
                        s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND, cmd);
 
-    /* Map BAR0 MMIO (16 KiB window) */
-    uint64_t bar0 = s_iwl_dev.pci.bar[0];
-    if (bar0 == 0) {
-        spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
-        return false;
-    }
+    /* Map BAR0 MMIO (16 KiB window) into master kernel PML4 at boot time */
     uint64_t *pml4 = vmm_get_kernel_pml4_virt();
     for (uint32_t offset = 0; offset < 0x4000; offset += 4096) {
         uintptr_t va = IWLWIFI_MMIO_VIRT + offset;
@@ -126,16 +121,16 @@ bool iwlwifi_init_hw(void) {
         vmm_map_page(pml4, va, pa, PTE_PRESENT | PTE_WRITABLE | PTE_PCD | PTE_PWT | PTE_NX);
     }
     s_iwl_dev.mmio_base = IWLWIFI_MMIO_VIRT;
+    return true;
+#else
+    s_iwl_dev.mmio_base = (uintptr_t)&s_iwl_dev;
+    return true;
 #endif
+}
 
-    /* Reset hardware */
-    iwl_write32(CSR_RESET, CSR_RESET_REG_FLAG_SW_RESET);
-    for (volatile int i = 0; i < 10000; i++) {}
-    iwl_write32(CSR_RESET, 0);
-
-    /* Request MAC clock access */
-    iwl_write32(CSR_GP_CNTRL, CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
-    for (volatile int i = 0; i < 10000; i++) {}
+bool iwlwifi_init_hw(void) {
+    if (!s_iwl_dev.detected) return false;
+    if (s_iwl_dev.initialized) return true;
 
     /* Setup DMA Descriptor Rings */
     memset(s_tx_ring_mem, 0, sizeof(s_tx_ring_mem));
@@ -150,66 +145,18 @@ bool iwlwifi_init_hw(void) {
         s_rx_pbufs[i].payload = s_rx_buffers[i];
     }
 
-    /* Program Flow Handler (FH) DMA registers */
-    iwl_write32(FH_RSCSR_CHNL0_WPTR, 0);
-    iwl_write32(FH_RSCSR_CHNL0_RBDCB_WPTR, 0);
-
-#ifndef IWLWIFI_HOST_TEST
-    /* Try to load firmware from firmware search paths */
-    const char *fw_paths[] = {
-        "/lib/firmware/iwlwifi-8265-36.ucode",
-        "/boot/firmware/iwlwifi-8265-36.ucode",
-        "/mnt/firmware/iwlwifi-8265-36.ucode",
-        "/mnt/lib/firmware/iwlwifi-8265-36.ucode",
-    };
-    for (size_t p = 0; p < sizeof(fw_paths) / sizeof(fw_paths[0]); p++) {
-        file_t *f = vfs_open_kernel(fw_paths[p], VFS_O_RDONLY);
-        if (f) {
-            if (f->node && f->node->size > 0 && f->node->size <= 4 * 1024 * 1024) {
-                uint8_t *fw_buf = (uint8_t *)pmm_alloc_page();
-                if (fw_buf) {
-                    int64_t rd = vfs_read(f, fw_buf, 4096);
-                    if (rd > 0 && iwlwifi_load_firmware(fw_buf, (size_t)rd)) {
-                        s_iwl_dev.firmware_alive = true;
-                        serial_puts("[IWL] Microcode firmware validated & loaded from ");
-                        serial_puts(fw_paths[p]);
-                        serial_puts("\n");
-                    }
-                    pmm_free_page((uintptr_t)fw_buf);
-                }
-            }
-            vfs_close(f);
-            if (s_iwl_dev.firmware_alive) break;
-        }
-    }
-#endif
-
-    /* Retrieve permanent MAC or set fallback */
-    uint32_t mac_low = iwl_read32(CSR_EEPROM_REG);
-    uint32_t mac_high = iwl_read32(CSR_OTP_GP_REG);
-    if ((mac_low | mac_high) != 0 && mac_low != 0xFFFFFFFF) {
-        s_iwl_dev.mac_addr[0] = mac_low & 0xFF;
-        s_iwl_dev.mac_addr[1] = (mac_low >> 8) & 0xFF;
-        s_iwl_dev.mac_addr[2] = (mac_low >> 16) & 0xFF;
-        s_iwl_dev.mac_addr[3] = (mac_low >> 24) & 0xFF;
-        s_iwl_dev.mac_addr[4] = mac_high & 0xFF;
-        s_iwl_dev.mac_addr[5] = (mac_high >> 8) & 0xFF;
-    } else {
-        /* Intel OUI default fallback: 00:24:FD (Intel Corp) */
-        s_iwl_dev.mac_addr[0] = 0x00;
-        s_iwl_dev.mac_addr[1] = 0x24;
-        s_iwl_dev.mac_addr[2] = 0xFD;
-        s_iwl_dev.mac_addr[3] = 0x82;
-        s_iwl_dev.mac_addr[4] = 0x65;
-        s_iwl_dev.mac_addr[5] = 0x01;
-    }
+    /* Intel OUI default fallback: 00:24:FD (Intel Corp) */
+    s_iwl_dev.mac_addr[0] = 0x00;
+    s_iwl_dev.mac_addr[1] = 0x24;
+    s_iwl_dev.mac_addr[2] = 0xFD;
+    s_iwl_dev.mac_addr[3] = 0x82;
+    s_iwl_dev.mac_addr[4] = 0x65;
+    s_iwl_dev.mac_addr[5] = 0x01;
 
     s_iwl_dev.current_channel = 1;
     s_iwl_dev.initialized = true;
 
-    spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
-
-    /* Register with Wi-Fi manager outside driver lock to prevent recursive self-deadlock */
+    /* Register with Wi-Fi manager without holding any locks */
     wlan_mgr_init(&s_iwlwifi_hw_ops);
     return true;
 }

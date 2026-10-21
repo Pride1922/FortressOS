@@ -132,6 +132,7 @@ typedef struct {
 
 /* Public API */
 bool iwlwifi_probe(void);
+bool iwlwifi_map_mmio(void);
 bool iwlwifi_is_supported_device(uint16_t vendor, uint16_t device);
 bool iwlwifi_init_hw(void);
 bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len);
