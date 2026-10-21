@@ -1032,3 +1032,75 @@ push and physical-write restrictions remain in force.
 Next: private actual-filesystem identity/map/ownership refinement, followed by
 real JBD2 ledger/table/bitmap atomic-accounting cut tests. Keep production mount
 admission and installation disabled through those gates.
+
+## 2026-10-21 — actual filesystem refinement and real JBD2 interruption
+
+Added a [private EXT4/JBD2 adapter](../plans/PKG2_FILESYSTEM_GRANT_ADAPTER.md):
+checksum-checked actual inode generations, modes/owners/links, initialized dense
+maps, allocation counts and whole-filesystem ownership/bitmap auditing refine
+the marker/ledger/table claims. One linked charged payload is supported; other
+layouts refuse. Real block allocation/truncate planners stage grant records as
+journal metadata in the same transaction as inode/bitmap/counter changes.
+Production sources, mount paths and allocator policy are unchanged.
+
+Standalone WSL invocations use `make -f tests/pkg_grant_candidate.mk` followed by
+`test-pkg-grant-fs`, `test-pkg-grant-fs-negative` or
+`test-pkg-grant-fs-recovery`. Exact commands/binaries/logs/images/manifests remain
+under `.codex-remote-attachments/`:
+
+| Campaign | Actual host result | Separate Linux/source evidence |
+| --- | --- | --- |
+| `pkg-grant-fs-20261021-172846` | 6/6 geometries; 6864 operation write/flush cuts, two mount cycles per cut; charge/refund coupled accounting PASS under ASan/UBSan | 18 clean e2fsck snapshots; 18 independent debugfs byte/metadata oracles PASS; original broad source guard FAIL on concurrent USB/HID changes, compiled-dependency reconciliation unchanged |
+| `pkg-grant-fs-negative-20261021-174323` | Final 6/6 geometries, 108 zero-write refusals plus 2 single-group eligibility refusals PASS under ASan/UBSan | 6 clean restored-image Linux audits; captured compiled inputs unchanged |
+| `pkg-grant-fs-recovery-20261021-174333` | Final 6/6 eligible geometries; 2816 actual replay write/flush cuts, two exact committed-state checks per cut PASS under ASan/UBSan | 12 clean e2fsck snapshots; 12 independent debugfs byte/metadata oracles PASS; captured inputs unchanged |
+
+Geometry is 1/2/4 KiB filesystem blocks × 512/4096-byte sectors, not firmware or
+SMP. Four persistence modes × cut-before/after each callback apply to both
+operation and replay campaigns. No sector tearing or physical persistence is
+claimed. Operation tests admit valid coupled old/new states; replay tests demand
+the exact committed sequence and grant totals. Selected Linux snapshots verify
+payload bytes, hashes, generations, ownership, modes, sizes and block counts;
+Linux does not inspect every transient cut image. Primary operation cuts precede
+the later private eligibility/headroom additions; final refusal and replay suites
+exercise those additions without changing the transaction planner/commit path.
+
+Negative checks include stale claimed/actual generations, false size/allocation
+counts, wrong owner/mode/link count, cross-inode extent alias, a bitmap-freed
+referenced block with repaired checksums/counters, unsupported orphan/victim
+claims, heap/read errors, damaged backup identities and UINT64_MAX escrow.
+Output preservation and zero further write/flush callbacks are asserted after
+fixture preparation/injection. Corrupt actual inode/bitmap cases modify only
+private host-memory images, restored before the final Linux audit.
+
+**Retained real failure and restriction:** `pkg-grant-fs-recovery-20261021-173724`
+passed four profiles then failed on a 16 MiB single-group 4 KiB/512-byte fixture.
+`174103` reproduced charge replay failure at persistence=all, cut-before 27,
+constructor `journal-source`, EIO; failing image retained. Partial superblock
+checkpoint cannot bootstrap without the existing group-1 backup identity. The
+private grant profile now refuses single-group roots and validates group-1 SB/GDT
+backup identities before preparation; final 4 KiB replay fixtures have two groups.
+This exclusion is tested, not a production recovery fix. The original failure
+remains open for that excluded geometry. Future package admission must enforce
+the restriction or separately review support. Production mount behavior remains
+unchanged.
+
+Other retained attempts: `pkg-grant-fs-20261021-172832` compile FAIL (host
+permissions test macro missing); `pkg-grant-fs-negative-20261021-173305` fixture
+FAIL (baseline-class mutation omitted inode-total adjustment); `173359` passed
+90 runtime refusals/Linux but broad preservation guard failed on unrelated USB
+edits; `pkg-grant-fs-recovery-20261021-173704` fixture FAIL (4 MiB journal too large
+for an 8 MiB filesystem). No failing attempt was removed. Review also fixed
+overflow in the new private headroom comparison, covered by the final refusals.
+
+Broad source guard failures remain distinct from actual-code test outcomes.
+Separate compiler-dependency reconciliation shows the concurrent USB changes
+were outside these probes; prior immutable source snapshots are retained. This
+is neither a whole-repository preservation claim nor release-media/boot evidence.
+Concurrent USB/mouse work, AGENTS.md and README.md were not staged or reverted.
+
+Limits/next: inode allocation/free is fixture setup (inode stays charged); atomic
+inode grant spend/refund, external-tree positive cases, orphan/pinned reclamation,
+concurrent ordinary/account writers, namespace capacity and authenticated pending
+recovery still need acceptance before protected mount integration. No new Ring 3,
+BIOS/UEFI, SMP, installation, production trust/provisioning, release-media build,
+push or physical-write acceptance is claimed or enabled.

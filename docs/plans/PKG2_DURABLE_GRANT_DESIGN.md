@@ -322,3 +322,9 @@ No signature, catalog-expiry decision or namespace mutation is performed here.
 The narrower private role profile and retained-inode tombstone policy require
 review before any disk ABI is frozen. Real JBD2 ledger/table/bitmap cut tests
 remain next; record consistency does not prove crash atomicity.
+
+The subsequent [private filesystem/journal adapter](PKG2_FILESYSTEM_GRANT_ADAPTER.md)
+adds actual inode/map/ownership refinement and bounded block charge/refund and
+replay cut tests. Its backup-identity geometry requirement and narrow linked-file
+scope are explicit; full grant, inode/orphan and production mount integration
+remain later gates.
