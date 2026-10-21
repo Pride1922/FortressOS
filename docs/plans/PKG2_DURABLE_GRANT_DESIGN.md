@@ -334,3 +334,10 @@ now tests debit/refund, pre-intent release to IDLE, competing ordinary planner
 checks and fresh durable reservation admission through copied hooks. Those private
 serialized fixtures do not implement account recovery bounds, task-owned writer
 sessions, trusted enrollment or production mount admission.
+
+
+The subsequent [private account capacity and owner candidate](PKG2_ACCOUNT_CAPACITY_OWNER.md)
+refines the fenced, unpinned account profile with a role-capacity potential and
+actual-planner checks, plus an independently tested process-owned value arena.
+It does not integrate account-service BEGIN/UPDATE, persistent grant records or
+kernel process/descriptor hooks, and does not freeze a production R_acc bound.

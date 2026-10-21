@@ -1351,3 +1351,86 @@ manifests report no changed copied compiled inputs and no changed repository
 compiled inputs; their private test include hashes agree. Original fixture image
 hashes also match. No new boot or release-media preservation claim is made.
 Aggregate evidence: `pkg-grant-compete-summary-20261021-185143/manifest.json`.
+
+
+## 2026-10-21 private account capacity and process-owner lifetime
+
+Implemented the conditional account-role capacity certificate and a separate
+process-owned value arena. Exact derivation, APIs and limits are in
+[the capacity/owner plan](../plans/PKG2_ACCOUNT_CAPACITY_OWNER.md). Production
+account service, process/descriptor lifecycle and boot code are unchanged.
+
+For a fenced, dense, unpinned account namespace, C is (83,11), (38,11), (20,11)
+blocks/inodes for 1/2/4 KiB blocks; R_acc=C minus actual allocated role maps and
+inodes. Empty creates consume an inode. Actual staged free-counter deltas update
+the private tracker at semantic commit, while callback-end role scans independently
+recompute it. Exact F-G=R_acc admits; +1 escrow in either dimension refuses before
+writes. Retained account readers refuse without publishing an output. This is a
+source-derived profile bound with actual planner refinement, not a general bound
+for account pins, arbitrary namespace growth, semantic authorization or concurrent
+writers. The capacity tests use maximum-byte synthetic records and volatile G;
+they do not call ACCOUNT_BEGIN/UPDATE or an enrolled persistent package ledger.
+
+Final actual EXT4/account redo ASan/UBSan matrix: **18/18 completed cases PASS**
+across 1/2/4 KiB blocks × 512/4096-byte sectors × recover/update/interrupt modes.
+The interrupted durable empty group-publication create is followed by two fresh
+host-process recoveries: **30 runtime invocations**, **762 acknowledged
+semantic commits**, **1836 successful capacity snapshots**. Commit counters
+count successful returns, not every possibly durable uncertain outcome. Linux
+**18/18 e2fsck and final byte audits PASS**; independent read-only debugfs capacity
+oracles **18/18 PASS**, checking actual i_blocks, final roles, orphan head and
+unchanged F-R_acc between input and completed output. The latter checks the test
+escrow potential across recovery without claiming a durable ledger integration.
+
+| Block bytes | Pending-recovery initial R (blocks,inodes) | Final canonical R | Campaign |
+| --- | --- | --- | --- |
+| 1024 | (41,3) | (59,8) | `pkg-account-capacity-20261021-191835-971677` |
+| 2048 | (16,3) | (26,8) | `pkg-account-capacity-20261021-191845-933321` |
+| 4096 | (8,3) | (14,8) | `pkg-account-capacity-20261021-191856-158449` |
+
+Each campaign covers both sector sizes and all three modes. Invocations:
+WSL `python3 scripts/test_pkg_account_capacity.py --block N`; independent oracle:
+`python3 scripts/pkg_account_capacity_oracle.py <campaign>`. Fixtures are copied
+from the hash-verified prior `pkg-namespace-kernel-20261021-140820` snapshots;
+originals are unchanged. Future capacity runner invocations also call the oracle.
+No new write/flush/sector-cut or BIOS/UEFI acceptance is asserted for this step.
+
+Writer candidate: `pkg-writer-lifetime-20261021-191757-340892` **ASan/UBSan PASS**,
+128 threaded exit/in-flight/drop/exec cycles (258 actual registry owner births,
+including the same-numeric-PID stale-key check). Actual process records and
+credential publication are used; owner objects are a separate bounded private
+arena, not retained TCBs. Child-context misuse, stale session/completion, deferred
+slot reuse, privilege-drop denial with cleanup allowed, and durable-IDLE=false
+admission refusal pass. Host barriers retain work through registry exit/forget;
+last completion drops the old session reference. Registry APIs are never called
+under the owner guard. Durable IDLE and birth/death/exec notifications are host
+adapters; no real filesystem operation or FD lifecycle is integrated into this
+test. TSan, IRQ/SMP scheduling, task-exit hook ordering and atomic birth
+publication remain separate acceptance requirements.
+
+**Source preservation is separate:** all four final manifests report unchanged
+compiled workspace copies and unchanged repository compiled inputs. Other
+concurrent AGENTS.md, network, USB, RTL8153 and WLAN work stays unstaged by this
+checkpoint. No whole-checkout/boot/release-media preservation claim is substituted
+for these compiled-input guards. Aggregate manifest:
+`pkg-capacity-owner-summary-20261021-192607/manifest.json`.
+
+Retained attempts:
+- `pkg-writer-lifetime-20261021-191621-962678` INCOMPLETE/host assertion FAIL:
+  incorrectly treated process_record_exit's waitable-child result as success.
+  Corrected the test to verify the actual post-exit registry state; runtime
+  assertion/log and original copied source remain.
+- `pkg-account-capacity-20261021-191355-128236`, `191707-106315` and
+  `191717-353220`: INCOMPLETE, explicitly terminated owned probes while they
+  redundantly repeated the expensive whole-filesystem ownership audit at every
+  callback. Their manifests retain changed private-input guards after the
+  correction; copied inputs stayed unchanged. The final test relies on the
+  constructor's existing global audit, then repeats the relevant role/map and
+  namespace certificate. No aborted run is credited or deleted.
+
+Next: privately couple this certificate to account-service BEGIN/UPDATE/recovery
+and the durable grant, enforce reader exclusion, and connect the owner arena to
+trusted birth/abort/exit/reaper and actual grant operations. Account initialization,
+pre-replay grant-aware validation and authenticated boot enrollment remain open.
+Production integration, installation, trust provisioning, release-media builds,
+pushes and physical writes remain disabled.

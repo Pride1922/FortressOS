@@ -25,3 +25,10 @@ test-pkg-grant-idle:
 .PHONY: test-pkg-grant-compete
 test-pkg-grant-compete:
 	python3 scripts/test_pkg_grant_compete.py
+
+.PHONY: test-pkg-account-capacity test-pkg-writer-lifetime
+test-pkg-account-capacity:
+	python3 scripts/test_pkg_account_capacity.py
+
+test-pkg-writer-lifetime:
+	python3 scripts/test_pkg_writer_lifetime.py
