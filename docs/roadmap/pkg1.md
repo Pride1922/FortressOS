@@ -1434,3 +1434,116 @@ trusted birth/abort/exit/reaper and actual grant operations. Account initializat
 pre-replay grant-aware validation and authenticated boot enrollment remain open.
 Production integration, installation, trust provisioning, release-media builds,
 pushes and physical writes remain disabled.
+
+
+## 2026-10-21 private account-service, durable-grant and lifecycle coupling
+
+Added a copied-source integrated harness; exact architecture and exclusions are
+in [the private integration plan](../plans/PKG2_PRIVATE_SERVICE_INTEGRATION.md).
+No shared production C/header or build path is changed by this checkpoint.
+
+Actual `accounts_prepare`, ACCOUNT_BEGIN/UPDATE/FINISH and coherent userdb parsing
+now run together with actual candidate grant records, JBD2 allocation/cleanup,
+and the capacity certificate in the private translation unit. Headroom uses G
+from validated marker/ledger/table records. Existing account readers deny BEGIN;
+a successful lease rejects subsequent role-reader opens under actual filesystem
+exclusion. A corrupt grant makes UPDATE return the real syscall EIO without
+storage writes or account generation change. Valid account updates preserve the
+package ledger byte-for-byte, including charged ownership and remaining escrow.
+
+Private callbacks are placed after the copied registry's lock release on commit,
+abort, accounted exit and forget. A reserved mapping entry handles detach during
+birth registration without nesting locks or retaining a TCB pointer. The runner
+extracts actual thread.c FD bodies and syscall.c error mapping, compiles the real
+TCB layout, and guards both full source inputs as well as extracted hashes. Real
+exclusive-owner dup/dup2 refusal, clone exclusion, CLOEXEC close and descriptor
+teardown are used. No new public descriptor or syscall ABI is introduced.
+
+After successful durable acquisition the test admits a second operation, executes
+actual accounted process exit and real descriptor close, then lets that retained
+operation create/write a tagged object and complete. The old owner references
+reach zero while disk state remains RESERVED with T=(8,1), G=(7,0), Q=(1,1).
+A fresh writer is refused by that actual disk state. Account operations and
+recovery retain this grant. Trusted package cleanup refunds actual storage,
+clears ownership and reaches IDLE; a fresh acquisition then succeeds. Its real
+CLOEXEC close cancels volatile ownership while preserving the new reservation
+until explicit cleanup. Published-process abort and reaper forget callbacks also
+execute in the harness.
+
+The account UPDATE interruption is the existing durable empty group-publication
+create callback boundary, not an arbitrary sector/journal cut. Two subsequent
+fresh processes load retained synthetic expectation context from a separate
+artifact file, validate fixed inode/map identities, recover with the actual
+account service, retain the grant on the first run and clean it on the second.
+The host range/VMM/current-thread and IRQ/scheduler behavior remain adapters.
+There is no execution of Ring 3, runqueues, CR3/stack destruction, guest exec,
+parallel ordinary writers or production enrollment. The generic constructor still
+runs replay before private grant validation: no pre-replay boot policy is claimed.
+Global test lane selection/trusted cleanup require serialized host ownership and
+are not a production concurrent mutation dispatcher. FD allocation failure after
+reservation conservatively retains disk evidence; those unwind branches are
+reviewed rather than fault-injected here.
+
+Selected retained-payload audit: `pkg-service-integration-20261021-194247-951528/
+retained-payload-audit/manifest.json` PASS. Two extra actual 4096/512 runs retain
+both the interrupted and first-recovery images. Linux e2fsck passes on each;
+debugfs verifies all 4096 tagged payload bytes remain P, the grant remains
+(8,1,7,0,1,1), the charged row remains present, ledger/table hashes match, and the
+complete package records are byte-identical across account recovery. This is a
+selected geometry audit, not an all-cut or all-geometry payload claim.
+
+Retained earlier attempts:
+- `pkg-service-integration-20261021-193741-422537`: strict compile FAIL. The
+  generated prefix initialized host feature macros too late, combined host and
+  actual TCB headers, and left the reconstruction helper unused. Corrected the
+  private generated translation unit to use early POSIX macros, the actual TCB,
+  and explicit pre-account-recovery grant reconstruction. Original logs/copies
+  remain; no production header was changed to satisfy the harness.
+- `pkg-service-integration-20261021-193929-833737`: C assertion FAIL opening
+  the tagged file; the inherited lifecycle path still used /mnt/pkg although
+  the detached fixture root uses /pkg. Corrected the private path/context and
+  added fixed-record inode-generation/map checks. Failure and source remain.
+- `pkg-service-integration-20261021-194105-135795`: all four 1 KiB runtime/final
+  Linux cases PASS, but original repository compiled-input guard FAIL because
+  I added the final parent-callback identity guard in the private reader hook
+  while it ran. Copied inputs stayed unchanged; this run is excluded from final
+  accepted source-preservation totals.
+- `pkg-service-integration-20261021-200637-129285`: incomplete initialization
+  directory without a completion manifest; retained and credited with no result.
+
+Installation, production integration/trust provisioning, release-media builds,
+pushes and physical disk writes remain disabled. Concurrent networking/USB/WLAN
+work and its commits remain preserved. Source/preservation results are separate
+from runtime and Linux results; no boot acceptance is asserted.
+
+
+Final accepted integrated ASan/UBSan results: **12/12 cases PASS** across all six
+block/sector geometries, **24 fresh host-process runtime invocations**,
+**990 acknowledged account-capacity semantic commits**, **12/12 final Linux
+e2fsck/canonical byte/IDLE-record audits PASS**. The selected retained-payload
+campaign adds two runtime invocations and two Linux/payload/RESERVED-record
+audits, reported separately above rather than counted twice in the matrix.
+
+| Block bytes | Sector bytes | Cases | Accepted campaign |
+| --- | --- | --- | --- |
+| 1024 | 512/4096 | normal + interrupt/recover each | `pkg-service-integration-20261021-214810-290131` |
+| 2048 | 512/4096 | same | `pkg-service-integration-20261021-194237-729483` |
+| 4096 | 512/4096 | same | `pkg-service-integration-20261021-194247-951528` |
+
+Invocations: WSL `python3 scripts/test_pkg_service_integration.py --block N` for
+1024/2048/4096 (equivalent to standalone `test-pkg-service-integration`). Each
+normal mode is one process; each interrupted mode is followed by `resume-keep`
+and `resume-clean`. Exact generated C, overlays, extracted FD bytes, binaries,
+logs, copied sources, expectation-context files and image/record dumps remain
+in each campaign. **Preservation separately PASS:** all three final compiled
+workspace-copy and repository-input guards report no changes, including the
+full `thread.c` and `syscall.c` inputs used for extraction. Private integration
+include hashes agree across campaigns. The original fixture image hashes match.
+Concurrent source/worktree changes and commits are outside these per-campaign
+claims and remain preserved. Aggregate evidence and retained driver:
+`pkg-service-integration-summary-20261021-215518/manifest.json`.
+
+Next private gates are grant-aware read-only validation before the first replay
+write, per-operation mutation context for competing kernel callers, and eventual
+Ring 3/scheduler lifecycle acceptance. This checkpoint does not enable production
+integration or installation.

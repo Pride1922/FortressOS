@@ -116,3 +116,10 @@ targets in `tests/pkg_grant_candidate.mk`. Evidence, failures and source
 preservation qualifications are recorded in the PKG-1 roadmap. All installation,
 production trust provisioning, release-media builds, pushes and physical writes
 remain disabled.
+
+
+The subsequent [private integrated service workbench](PKG2_PRIVATE_SERVICE_INTEGRATION.md)
+connects these candidates to actual account-service admission/recovery, durable
+grant records, copied registry call sites and extracted kernel FD helpers.
+It remains outside production builds and retains the documented host/concurrency,
+trusted enrollment and pre-replay admission limitations.

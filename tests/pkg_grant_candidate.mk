@@ -32,3 +32,7 @@ test-pkg-account-capacity:
 
 test-pkg-writer-lifetime:
 	python3 scripts/test_pkg_writer_lifetime.py
+
+.PHONY: test-pkg-service-integration
+test-pkg-service-integration:
+	python3 scripts/test_pkg_service_integration.py
