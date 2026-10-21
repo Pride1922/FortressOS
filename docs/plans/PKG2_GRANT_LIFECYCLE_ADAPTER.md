@@ -60,8 +60,8 @@ States exercised:
    entry retains role/inode/generation but has zero size/allocations/flags.
 
 Refund restores escrow, not ordinary free headroom. These fixtures remain
-RESERVED with T=(8,1); clearing tombstones, releasing unused escrow and publishing
-IDLE/new-writer admission are later protocol work.
+RESERVED with T=(8,1) at the refund checkpoint. The private pre-intent release
+step below now clears that reservation to IDLE; new-writer admission remains open.
 
 Reconstruction distinguishes linked, orphan, absent and retired states using
 actual directory references, chain membership, inode bitmap/generation and map
@@ -94,3 +94,32 @@ Run `make -f tests/pkg_grant_candidate.mk test-pkg-grant-lifecycle` in WSL.
 Exact results, retained failures and source-preservation qualifications are in
 [the roadmap](../roadmap/pkg1.md). Installation, production trust provisioning,
 release builds, pushes and physical writes remain disabled.
+
+## Private pre-intent release to IDLE
+
+`tests/pkg_grant_idle.inc` reuses the copied-source lifecycle hooks. Under the
+existing filesystem exclusion it validates the full record set, actual ownership,
+retired inode generation/free bit and the entire transaction directory. Charged
+objects, pinned orphans, any child name, unhealthy/busy engines, unsupported phases
+and sequence exhaustion refuse before writes. Only RESERVED pre-intent abort is
+supported; this does not finish a PENDING/RETIRING installation.
+
+One real JBD2 metadata transaction increments the paired sequence, clears all
+ownership entries and transaction identifiers, zeros T/G/Q and plan/operation,
+and copies the unchanged old state hash/generation into the IDLE current state.
+Marker and enrollment binding remain. Physical allocation/free counters do not
+change: releasing escrow changes reservation accounting, not filesystem allocation.
+No ordinary allocator or competing writer consumes the released headroom yet.
+Repeated IDLE release validates and returns without writes or sequence change.
+
+The separate idle campaign tests both never-used reservations and refunded retired
+objects, every release write/flush callback before/after with four persistence
+patterns, then two mounts per cut. A coherent RESERVED outcome is explicitly
+finished on the first mount; a coherent IDLE outcome is idempotent. Thus the second
+mount tests completed IDLE persistence, not two independently observed original
+cut outcomes. Linux audits and record-hash checks cover selected completed
+snapshots. Replay itself is not interrupted a second time in this campaign.
+The earlier post-replay reconstruction, synthetic identity, single-object,
+serialized host-call and atomic-sector limitations remain.
+
+Run `make -f tests/pkg_grant_candidate.mk test-pkg-grant-idle` in WSL.

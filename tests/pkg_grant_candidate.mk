@@ -17,3 +17,7 @@ test-pkg-grant-fs-recovery:
 .PHONY: test-pkg-grant-lifecycle
 test-pkg-grant-lifecycle:
 	python3 scripts/test_pkg_grant_lifecycle.py
+
+.PHONY: test-pkg-grant-idle
+test-pkg-grant-idle:
+	python3 scripts/test_pkg_grant_idle.py

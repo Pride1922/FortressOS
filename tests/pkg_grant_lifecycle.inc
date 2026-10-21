@@ -59,7 +59,9 @@ static int life_validate(ext4_engine_t *e,pg_view *out){
         }
         life_target=ino;
     }
-    if(v.charged[0]!=qb||v.charged[1]!=qi||v.total[0]!=8||v.total[1]!=1)return -1;
+    if(v.charged[0]!=qb||v.charged[1]!=qi)return -1;
+    if(v.phase==PG_IDLE){if(count||v.total[0]||v.total[1])return -1;}
+    else if(v.total[0]!=8||v.total[1]!=1)return -1;
     *out=v;return 0;
 }
 static int pg_life_reconstruct(struct ext4_engine *e){

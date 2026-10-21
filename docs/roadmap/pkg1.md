@@ -1177,3 +1177,77 @@ Host resets reuse a synthetic external identity context, not fresh trusted boot.
 No Ring 3, BIOS/UEFI, SMP/IRQ, physical, installation, production trust/provisioning,
 release-media build or push was performed or enabled. AGENTS.md/README.md and all
 concurrent work remain preserved.
+
+
+## 2026-10-21 private unused-escrow release to IDLE
+
+The private pre-intent abort now publishes IDLE in one actual JBD2 metadata
+transaction. It clears the ownership table (including retired entries), paired
+transaction identities, total/remaining/charged budget, operation and plan; it
+increments the paired sequence and preserves the unchanged installed-state
+hash/generation and enrollment bindings. Free block/inode counts stay unchanged.
+A repeated IDLE release performs no write/flush or sequence increment.
+
+This is a copied-workspace host adapter, not a production package release API.
+The shared lifecycle reconstruction validator now accepts canonical zero-budget
+IDLE as well as its existing fixed RESERVED profile. Production sources, mount
+ordering, trust provisioning, installation and ordinary/account allocator behavior
+are unchanged. Linked/pinned objects and sequence exhaustion are tested to refuse
+before writes. Release also checks the entire directory for unexpected children;
+that additional untracked-child branch is reviewed, not separately fault-injected.
+The transition supports only pre-intent RESERVED abort, not post-install RETIRING.
+
+Invocation: WSL `python3 scripts/test_pkg_grant_idle.py --block N` for each of
+1024/2048/4096 (equivalent to the standalone `test-pkg-grant-idle` target).
+Each profile covers an unused reservation and a real create/write/pinned-unlink/
+last-close refund followed by release. Every release write/flush callback is cut
+before/after under cached/all/alternating/inverse persistence. Two mounts follow
+each cut: the first validates old RESERVED or new IDLE and explicitly finishes an
+old outcome; the second verifies completed IDLE. Every mount checks unchanged
+actual free counters. This does not interrupt replay again or prove arbitrary
+chains of recovery failures. Sector callbacks remain atomic; identity expectations
+are synthetic and retained across host resets. No boot, BIOS/UEFI, Ring 3, SMP,
+IRQ or physical acceptance is claimed.
+
+Selected completed images are checked with Linux e2fsck and independent debugfs
+record dumps: ledger/table self hashes, cross hash, paired sequence, zero budgets,
+transaction IDs, cleared ownership entries, equal old/current state identity and
+absent payload name. Those Linux audits do not cover every transient cut image.
+
+The preliminary `pkg-grant-idle-20261021-183244-212328` run passed runtime checks
+but its repository compiled-input guard FAIL is retained: `tests/pkg_grant_idle.inc`
+changed while I added sequence-exhaustion coverage. Its copied inputs stayed
+unchanged. It is excluded from final acceptance totals; the final 1 KiB rerun
+uses `pkg-grant-idle-20261021-183425-353224`. No failure was deleted.
+
+The pure codec/budget regression also PASS:
+`pkg-grant-codec-20261021-183453-055848` reports 1638 vectors, 1025 byte cuts,
+132132 accepted / 1117068 rejected arithmetic plans, 528528 mock restart
+selections and 4101 record sets (8 accepted / 4093 rejected). These remain pure
+value/mock checks, separate from the actual-JBD2 interruption campaign.
+
+Next: competing-allocation/resource admission and a fresh writer after IDLE,
+then grant-aware validation before the first replay write and trusted boot
+integration. Installation, production trust provisioning, release-media builds,
+pushes and physical disk writes remain disabled. Concurrent USB/nano work was
+committed separately by its owner as `399cf94` during this turn and is preserved.
+
+
+Final actual-code ASan/UBSan results **6/6 PASS**, **4912 callback cuts / 9824
+mount cycles**, **12/12 Linux e2fsck and selected record audits PASS**:
+
+| Block / sector bytes | Cuts | Campaign |
+| --- | ---: | --- |
+| 1024 / 512 | 880 | `pkg-grant-idle-20261021-183425-353224` |
+| 1024 / 4096 | 480 | same |
+| 2048 / 512 | 1168 | `pkg-grant-idle-20261021-183324-222424` |
+| 2048 / 4096 | 352 | same |
+| 4096 / 512 | 1744 | `pkg-grant-idle-20261021-183338-310485` |
+| 4096 / 4096 | 288 | same |
+
+**Preservation is separate from runtime acceptance:** all three final manifests
+report unchanged copied compiled inputs and unchanged repository compiled inputs.
+Original fixture images also retain their pre-run hashes. These are host image
+and source checks, not release-media or boot acceptance. Full logs, exact commands,
+generated C, copied sources, overlay hashes, binaries and selected snapshots are
+retained in the campaign directories. Aggregate manifest: `pkg-grant-idle-summary-20261021-183956/manifest.json`.
