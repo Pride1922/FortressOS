@@ -1,7 +1,20 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
+#include "spinlock.h"
+#include "xhci_rings.h"
 #include "xhci_bot.h"
+
+uint64_t spin_lock_irqsave(spinlock_t *l) {
+    assert(!pthread_mutex_lock(&l->mutex));
+    return 0;
+}
+
+void spin_unlock_irqrestore(spinlock_t *l, uint64_t flags) {
+    (void)flags;
+    assert(!pthread_mutex_unlock(&l->mutex));
+}
 
 enum mock_bot_fault {
     BOT_FAULT_NONE,
@@ -337,6 +350,7 @@ static bool mock_delay_us(void *ctx,unsigned us) {
 }
 
 static void init_mock_hw(mock_bot_hw_t *m, enum mock_bot_fault fault) {
+    xhci_rings_reset_mailboxes();
     memset(m, 0, sizeof(*m));
     m->fault = fault;
     memset(m->bounce_guard, 0xa5, sizeof(m->bounce_guard));

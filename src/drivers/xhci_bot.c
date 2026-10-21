@@ -1,4 +1,5 @@
 #include "xhci_bot.h"
+#include "xhci_rings.h"
 #include "string.h"
 #if __STDC_HOSTED__
 /* Host unit-test build: provide a silent stub for serial output. */
@@ -30,23 +31,17 @@ static inline uint32_t bswap32(uint32_t val) {
            ((val << 24) & 0xff000000u);
 }
 
-/* Preserve the polled/IRQ-off contract and protocol budget: 10 us polling
- * during the first 2 ms, then the existing 1 ms fallback. */
-static bool bot_poll_delay(const xhci_rings_io_t *io,unsigned *elapsed_us) {
-    unsigned step=io->delay_us && *elapsed_us<2000 ? 10 : 1000;
-    *elapsed_us+=step;
-    return step==10 ? io->delay_us(io->mmio_ctx,step) : io->delay_ms(io->mmio_ctx);
-}
 /* Helper to send command TRB to Command Ring and wait for completion */
 static bool send_command(const xhci_rings_io_t *io,
                          xhci_dma_buffers_t *ring_dma,
                          xhci_trb_t cmd_trb,
                          xhci_trb_t *out_comp_event) {
     uint32_t dboff = io->read32(io->mmio_ctx, 0x14);
-    uint32_t rtsoff = io->read32(io->mmio_ctx, 0x18);
-    uint32_t intr0 = rtsoff + 0x20;
 
+    uint64_t cmd_flags = spin_lock_irqsave(&g_xhci_cmd_lock);
     uint32_t enq_idx = ring_dma->cmd_enqueue_idx;
+    uintptr_t submitted_phys = ring_dma->cmd_ring_phys + enq_idx * sizeof(xhci_trb_t);
+
     cmd_trb.control &= ~XHCI_TRB_C;
     if (ring_dma->cmd_cycle) cmd_trb.control |= XHCI_TRB_C;
     ring_dma->cmd_ring_virt[enq_idx] = cmd_trb;
@@ -64,35 +59,13 @@ static bool send_command(const xhci_rings_io_t *io,
 
     __asm__ volatile("mfence" ::: "memory");
     io->write32(io->mmio_ctx, dboff + 0, 0);
+    spin_unlock_irqrestore(&g_xhci_cmd_lock, cmd_flags);
 
-    for (unsigned elapsed_us = 0; elapsed_us <= 500000;) {
-        for (unsigned drained = 0; drained < XHCI_RING_TRB_COUNT; ++drained) {
-            volatile const xhci_trb_t *event = &ring_dma->event_ring_virt[ring_dma->event_dequeue_idx];
-            __asm__ volatile("" ::: "memory");
-            uint32_t c_bit = event->control & XHCI_TRB_C;
-            if (c_bit != (ring_dma->event_cycle ? XHCI_TRB_C : 0)) break;
-
-            uint32_t trb_type = (event->control & XHCI_TRB_TYPE_MASK) >> XHCI_TRB_TYPE_SHIFT;
-            uint32_t comp_code = (event->status >> 24) & 0xff;
-            xhci_trb_t snapshot = *event;
-
-            ring_dma->event_dequeue_idx = (ring_dma->event_dequeue_idx + 1) % XHCI_RING_TRB_COUNT;
-            if (ring_dma->event_dequeue_idx == 0) ring_dma->event_cycle ^= 1;
-            uint64_t new_erdp = ring_dma->event_ring_phys + (ring_dma->event_dequeue_idx * sizeof(xhci_trb_t));
-            io->write32(io->mmio_ctx, intr0 + 0x18, ((uint32_t)new_erdp & ~0xfu) | (1u << 3));
-            io->write32(io->mmio_ctx, intr0 + 0x1c, (uint32_t)(new_erdp >> 32));
-
-            if (trb_type == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-                uint64_t ptr = ((uint64_t)snapshot.parameter_high << 32) | snapshot.parameter_low;
-                if (out_comp_event) *out_comp_event = snapshot;
-                return ptr == ring_dma->cmd_ring_phys + enq_idx * sizeof(xhci_trb_t) &&
-                       (snapshot.control >> 24) == (cmd_trb.control >> 24) &&
-                       comp_code == XHCI_COMP_SUCCESS;
-            }
-        }
-        if (!bot_poll_delay(io,&elapsed_us)) return false;
-    }
-    return false;
+    xhci_trb_t comp = {0};
+    if (!xhci_mbox_wait_command(io, ring_dma, submitted_phys, &comp, 500000)) return false;
+    if (out_comp_event) *out_comp_event = comp;
+    if ((cmd_trb.control >> 24) && ((comp.control >> 24) != (cmd_trb.control >> 24))) return false;
+    return true;
 }
 
 /* Helper to wait for a Transfer Event on a specific endpoint */
@@ -103,41 +76,7 @@ static bool wait_transfer_event(const xhci_rings_io_t *io,
                                 uintptr_t submitted_phys,
                                 uint32_t *out_residual, uint8_t *out_code,
                                 unsigned timeout_us) {
-    if (out_code) *out_code = 0;
-    uint32_t rtsoff = io->read32(io->mmio_ctx, 0x18);
-    uint32_t intr0 = rtsoff + 0x20;
-
-    for (unsigned elapsed_us = 0; elapsed_us <= timeout_us;) {
-        for (unsigned drained = 0; drained < XHCI_RING_TRB_COUNT; ++drained) {
-            volatile const xhci_trb_t *event = &ring_dma->event_ring_virt[ring_dma->event_dequeue_idx];
-            __asm__ volatile("" ::: "memory");
-            uint32_t c_bit = event->control & XHCI_TRB_C;
-            if (c_bit != (ring_dma->event_cycle ? XHCI_TRB_C : 0)) break;
-
-            uint32_t trb_type = (event->control & XHCI_TRB_TYPE_MASK) >> XHCI_TRB_TYPE_SHIFT;
-            uint32_t comp_code = (event->status >> 24) & 0xff;
-            uint8_t ev_slot = (event->control >> 24) & 0xff;
-            uint8_t ev_dci  = (event->control >> 16) & 0x1f;
-            uint64_t completed_phys = ((uint64_t)event->parameter_high << 32) | event->parameter_low;
-            uint32_t residual = event->status & 0xffffff;
-            bool event_data = (event->control & (1u << 2)) != 0;
-
-            ring_dma->event_dequeue_idx = (ring_dma->event_dequeue_idx + 1) % XHCI_RING_TRB_COUNT;
-            if (ring_dma->event_dequeue_idx == 0) ring_dma->event_cycle ^= 1;
-            uint64_t new_erdp = ring_dma->event_ring_phys + (ring_dma->event_dequeue_idx * sizeof(xhci_trb_t));
-            io->write32(io->mmio_ctx, intr0 + 0x18, ((uint32_t)new_erdp & ~0xfu) | (1u << 3));
-            io->write32(io->mmio_ctx, intr0 + 0x1c, (uint32_t)(new_erdp >> 32));
-
-            if (trb_type == XHCI_TRB_TYPE_TRANSFER_EVENT && ev_slot == slot_id && ev_dci == dci) {
-                if (event_data || completed_phys != submitted_phys) return false;
-                if (out_code) *out_code = (uint8_t)comp_code;
-                if (out_residual) *out_residual = residual;
-                return comp_code == XHCI_COMP_SUCCESS || comp_code == XHCI_COMP_SHORT_PACKET;
-            }
-        }
-        if (!bot_poll_delay(io,&elapsed_us)) return false;
-    }
-    return false;
+    return xhci_mbox_wait_transfer(io, ring_dma, slot_id, dci, submitted_phys, out_residual, out_code, timeout_us);
 }
 
 /* Submit a Normal TRB on an endpoint ring and ring its doorbell */

@@ -125,12 +125,16 @@ def run(firmware, present, mode='discovery'):
                 if mode in ('reset', 'rings', 'ports', 'descriptors', 'block', 'mount'):
                     qmp = QMP(Path(tmp) / 'qmp')
                 deadline = time.monotonic() + 90
+                sent_login = False
                 while time.monotonic() < deadline:
                     assert child.poll() is None
                     time.sleep(0.5)
                     if log.exists():
                         output = log.read_text(errors='replace')
-                        if 'FortressOS shell (Ring 3)' in output and 'fortress:/ $ ' in output:
+                        if qmp is not None and not sent_login and 'FortressOS login: ' in output:
+                            qmp_type_string(qmp, 'operqtor\n')
+                            sent_login = True
+                        if '$ ' in output and sent_login:
                             break
                 else:
                     raise AssertionError(f'{name}: shell prompt not reached within timeout')
@@ -140,7 +144,7 @@ def run(firmware, present, mode='discovery'):
                     deadline = time.monotonic() + 10
                     while time.monotonic() < deadline:
                         reply = log.read_text(errors='replace')[start:]
-                        if 'Keyboard layout set to US QWERTY.' in reply and 'fortress:/ $ ' in reply:
+                        if 'Keyboard layout set to US QWERTY.' in reply and '$ ' in reply:
                             break
                         assert child.poll() is None
                         time.sleep(0.05)
@@ -191,7 +195,7 @@ def run(firmware, present, mode='discovery'):
                     deadline = time.monotonic() + 10
                     while time.monotonic() < deadline:
                         reply = log.read_text(errors='replace')[start:].replace('\r', '')
-                        if '\nresetok\n' in reply and 'fortress:/ $ ' in reply:
+                        if '\nresetok\n' in reply and '$ ' in reply:
                             break
                         assert child.poll() is None
                         time.sleep(0.05)
@@ -212,7 +216,7 @@ def run(firmware, present, mode='discovery'):
                         deadline = time.monotonic() + 15
                         while time.monotonic() < deadline:
                             reply = log.read_text(errors='replace')[start:].replace('\r', '')
-                            if 'README.txt' in reply and 'fortress:/ $ ' in reply:
+                            if 'README.txt' in reply and '$ ' in reply:
                                 break
                             assert child.poll() is None
                             time.sleep(0.05)
@@ -225,7 +229,7 @@ def run(firmware, present, mode='discovery'):
                         deadline = time.monotonic() + 15
                         while time.monotonic() < deadline:
                             reply = log.read_text(errors='replace')[start:].replace('\r', '')
-                            if 'FortressOS Persistent Storage' in reply and 'fortress:/ $ ' in reply:
+                            if 'FortressOS Persistent Storage' in reply and '$ ' in reply:
                                 break
                             assert child.poll() is None
                             time.sleep(0.05)
@@ -238,7 +242,7 @@ def run(firmware, present, mode='discovery'):
                         deadline = time.monotonic() + 10
                         while time.monotonic() < deadline:
                             reply = log.read_text(errors='replace')[start:].replace('\r', '')
-                            if '\nabsentok\n' in reply and 'fortress:/ $ ' in reply:
+                            if '\nabsentok\n' in reply and '$ ' in reply:
                                 break
                             assert child.poll() is None
                             time.sleep(0.05)

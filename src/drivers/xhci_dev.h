@@ -55,7 +55,7 @@ typedef struct {
 } __attribute__((packed)) usb_device_descriptor_t;
 
 /* Validated BOT Mass Storage Device information passed to 9G.2 */
-typedef struct {
+typedef struct xhci_bot_device {
     uint8_t  slot_id;
     uint8_t  port_num;
     uint8_t  speed;
@@ -72,6 +72,14 @@ typedef struct {
     uint32_t ep0_enqueue_idx;
     uint8_t ep0_cycle;
     bool     is_valid_bot_storage;
+    bool     is_hub;
+    uint8_t  hub_num_ports;
+    bool     is_hid_keyboard;
+    bool     is_hid_mouse;
+    uint8_t  int_in_ep;
+    uint16_t int_in_max_packet;
+    uint8_t  int_in_interval;
+    uint8_t  hid_if_num;
     const char *error_msg;
 
     /* Diagnostics for hardware bring-up and troubleshooting */
@@ -93,7 +101,7 @@ typedef struct {
 } xhci_bot_device_t;
 
 /* Dynamic memory allocated for device management */
-typedef struct {
+typedef struct xhci_dev_dma {
     uintptr_t dcbaa_phys;
     uint64_t *dcbaa_virt;
 
@@ -111,12 +119,20 @@ typedef struct {
     uintptr_t ep0_ring_phys;
     xhci_trb_t *ep0_ring_virt;
 
+    uintptr_t slots_output_ctx_phys[XHCI_MAX_SLOTS];
+    uint32_t *slots_output_ctx_virt[XHCI_MAX_SLOTS];
+
+    uintptr_t slots_ep0_ring_phys[XHCI_MAX_SLOTS];
+    xhci_trb_t *slots_ep0_ring_virt[XHCI_MAX_SLOTS];
+
     uintptr_t bounce_buf_phys;
     uint8_t  *bounce_buf_virt;
     uint32_t bounce_buf_size; /* Zero retains 4 KiB for legacy adapters. */
     uintptr_t bounce_allocation_phys; /* Includes alignment padding. */
     uint32_t bounce_allocation_pages;
 } xhci_dev_dma_t;
+
+#include "xhci_hub.h"
 
 /* Layout only: seven page-aligned frames contain an aligned 16KiB run.
  * Reject overflow and controllers unable to address the whole usable region. */
@@ -143,5 +159,28 @@ bool xhci_enumerate_device(const xhci_rings_io_t *io,
                            uint8_t port_num,
                            uint8_t port_speed,
                            xhci_bot_device_t *device);
+
+bool xhci_enumerate_device_topo(const xhci_rings_io_t *io,
+                                xhci_dma_buffers_t *ring_dma,
+                                const xhci_dev_dma_t *dev_dma,
+                                const xhci_device_topology_t *topo,
+                                xhci_bot_device_t *device);
+
+/* Execute a command on the xHCI command ring and wait for completion */
+bool xhci_dev_send_command(const xhci_rings_io_t *io,
+                           xhci_dma_buffers_t *dma,
+                           xhci_trb_t trb,
+                           xhci_trb_t *out_event);
+
+/* Execute a USB Control Transfer on Endpoint 0 for a given slot */
+bool xhci_dev_control_transfer(const xhci_rings_io_t *io,
+                               xhci_dma_buffers_t *ring_dma,
+                               const xhci_dev_dma_t *dev_dma,
+                               uint8_t slot_id,
+                               usb_setup_pkt_t setup,
+                               void *data_buf,
+                               uint16_t length,
+                               bool dir_in,
+                               xhci_bot_device_t *device);
 
 #endif

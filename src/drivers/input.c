@@ -427,6 +427,21 @@ static void keyboard_irq(interrupt_frame_t *frame) {
     }
     /* Dispatcher owns EOI. No allocations, logging or switching in this ISR. */
 }
+void input_inject_scancodes(const uint8_t *scancodes, size_t count) {
+#ifndef INPUT_HOST_TEST
+    if (!scancodes || !count) return;
+    for (size_t i = 0; i < count; i++) {
+        char bytes[4];
+        size_t n = keyboard_decode_bytes(&g_keyboard, scancodes[i], bytes);
+        if (n > 0) {
+            ingress(bytes, n);
+        }
+    }
+#else
+    (void)scancodes; (void)count;
+#endif
+}
+
 static bool keyboard_init(const acpi_madt_info_t *madt, uint8_t apic_id) {
     uint8_t config, set;
     if (!kbc_write(KBC_STATUS, 0xad) || !kbc_write(KBC_STATUS, 0xa7)) return false;

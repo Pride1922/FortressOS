@@ -4,6 +4,8 @@
 #include "xhci_ports.h"
 #include "xhci_dev.h"
 #include "xhci_bot.h"
+#include "usb_hid.h"
+#include "xhci_hub.h"
 #include "gpt.h"
 #include "pci.h"
 #include "vmm.h"
@@ -282,6 +284,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
     uint32_t hcs1 = mmio_read((void *)probe_virt, 0x04);
     uint32_t hcs2 = mmio_read((void *)probe_virt, 0x08);
     uint32_t max_slots = hcs1 & 0xff;
+    if (max_slots > XHCI_MAX_SLOTS) max_slots = XHCI_MAX_SLOTS;
     uint32_t sp_count = (((hcs2 >> 16) & 0x3e0) | ((hcs2 >> 27) & 0x1f));
     if (sp_count > 128) sp_count = 128;
 
@@ -396,6 +399,11 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
         .delay_us = delay_us,
     };
 
+    ctl->rings_io = rings_io;
+    ctl->dma = dma;
+    ctl->dev_dma = dev_dma;
+    s_active_usb_controller = ctl;
+
     /* Enable bus mastering for DMA transfers */
     command_write(&d, disabled | PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER);
     if ((uint16_t)config_read(&d, PCI_REG_COMMAND) !=
@@ -406,14 +414,14 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
     }
 
     /* Verify rings (starts controller and verifies No-Op command) */
-    bool rings_ok = xhci_verify_rings(&rings_io, &dma, &ctl->dump_record);
+    bool rings_ok = xhci_verify_rings(&ctl->rings_io, &ctl->dma, &ctl->dump_record);
 
     if (rings_ok) {
         serial_puts("[USB 9G.1c] PASS: No-Op command completed; Command Completion Event received\n");
 
         /* Phase 9G.1d: Root Port Discovery & Reset */
         xhci_port_report_t port_report;
-        if (xhci_discover_and_reset_ports(&rings_io, &dma, &port_report)) {
+        if (xhci_discover_and_reset_ports(&ctl->rings_io, &ctl->dma, &port_report)) {
             serial_puts("[USB 9G.1d] Root ports: total=");
             serial_print_hex(port_report.total_ports);
             serial_puts(" usb2=");
@@ -464,7 +472,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                     const xhci_port_info_t *pi = &port_report.ports[p - 1];
                     if (!pi->connected || !pi->enabled) continue;
                     if (pi->speed != XHCI_SPEED_HIGH && pi->speed != XHCI_SPEED_FULL &&
-                        pi->speed != XHCI_SPEED_SUPER) continue;
+                        pi->speed != XHCI_SPEED_SUPER && pi->speed != XHCI_SPEED_LOW) continue;
                     serial_puts("[USB 9G.1e] DEBUG port=");
                     serial_print_hex(p);
                     serial_puts(" pi_speed=");
@@ -475,12 +483,31 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
 
                     serial_puts("[USB 9G.1e] Probing Port ");
                     serial_print_hex(p);
-                    serial_puts(" for BOT Mass Storage...\n");
+                    serial_puts(" for USB devices...\n");
 
-                    bool dev_ok = xhci_enumerate_device(&rings_io, &dma, &dev_dma,
+                    bool dev_ok = xhci_enumerate_device(&ctl->rings_io, &ctl->dma, &ctl->dev_dma,
                                                         (uint8_t)p, pi->speed, &bot_dev);
 
-                    if (dev_ok && bot_dev.is_valid_bot_storage) {
+                    if (dev_ok && bot_dev.is_hid_keyboard) {
+                        usb_hid_configure_keyboard(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &bot_dev);
+                        continue;
+                    }
+
+                    if (dev_ok && bot_dev.is_hub) {
+                        xhci_device_topology_t root_hub = {
+                            .slot_id = bot_dev.slot_id,
+                            .root_port = (uint8_t)p,
+                            .speed = pi->speed,
+                            .is_hub = true,
+                            .is_hs_hub = (pi->speed == XHCI_SPEED_HIGH),
+                            .tier = 0,
+                            .route_string = 0,
+                        };
+                        xhci_hub_configure_and_enumerate(&ctl->rings_io, &ctl->dma, &ctl->dev_dma,
+                                                         &root_hub, bot_dev.slot_id, &bot_dev, &found_storage);
+                    }
+
+                    if (found_storage || (dev_ok && bot_dev.is_valid_bot_storage)) {
                         found_storage = true;
                         serial_puts("[USB 9G.1e] PASS: Device addressed on Slot ");
                         serial_print_hex(bot_dev.slot_id);
@@ -517,7 +544,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                         serial_print_hex(bot_dev.bulk_out_max_packet);
                         serial_puts(")\n[USB 9G.1e] PASS: BOT Mass Storage device configured and ready for 9G.2 block I/O\n");
 
-                        if (s_active_usb_controller) {
+                        if (s_usb_storage_ready) {
                             serial_puts("[USB 9G.2] Mass-storage device found on controller ");
                             serial_print_dec(controller_index + 1);
                             serial_puts(", but only one active device is supported\n");
@@ -532,7 +559,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                         ctl->bot_rings.bulk_out_ring_phys = bulk_out_phys;
                         ctl->bot_rings.bulk_out_ring_virt = (xhci_trb_t *)vmm_phys_to_virt(bulk_out_phys);
 
-                        if (xhci_configure_bulk_endpoints(&rings_io, &dma, &dev_dma, &bot_dev, &ctl->bot_rings)) {
+                        if (xhci_configure_bulk_endpoints(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &bot_dev, &ctl->bot_rings)) {
                             serial_puts("[USB 9G.2] Bulk endpoints configured (In=0x");
                             serial_print_hex(ctl->bot_rings.in_dci);
                             serial_puts(" Out=0x");
@@ -540,7 +567,7 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                             serial_puts(")\n");
 
                             scsi_inquiry_data_t inq = {0};
-                            if (xhci_scsi_inquiry(&rings_io, &dma, &dev_dma, &ctl->bot_rings, &inq)) {
+                            if (xhci_scsi_inquiry(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings, &inq)) {
                                 serial_puts("[USB 9G.2] SCSI INQUIRY: Vendor=\"");
                                 serial_puts(ctl->bot_rings.vendor);
                                 serial_puts("\" Product=\"");
@@ -558,11 +585,11 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                                 serial_puts("\n");
                             }
 
-                            xhci_scsi_test_unit_ready(&rings_io, &dma, &dev_dma, &ctl->bot_rings);
+                            xhci_scsi_test_unit_ready(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings);
 
                             uint64_t sectors = 0;
                             uint32_t sector_size = 0;
-                            if (xhci_scsi_read_capacity(&rings_io, &dma, &dev_dma, &ctl->bot_rings, &sectors, &sector_size)) {
+                            if (xhci_scsi_read_capacity(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &ctl->bot_rings, &sectors, &sector_size)) {
                                 serial_puts("[USB 9G.2] SCSI Capacity: LBA count=");
                                 serial_print_hex((uint32_t)(sectors >> 32));
                                 serial_print_hex((uint32_t)sectors);
@@ -570,10 +597,6 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
                                 serial_print_dec(sector_size);
                                 serial_puts(" bytes\n");
 
-                                ctl->rings_io = rings_io;
-                                ctl->dma = dma;
-                                ctl->dev_dma = dev_dma;
-                                s_active_usb_controller = ctl;
                                 s_usb_storage_ready = true;
 
                                 if (installer_log_only) {
@@ -668,8 +691,8 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
             serial_puts("[USB 9G.1d] Port discovery failed\n");
         }
 
-        if (*out_registered_storage) {
-            /* Keep xHCI controller and DMA active for runtime block device I/O */
+        if (*out_registered_storage || usb_hid_is_active()) {
+            /* Keep xHCI controller and DMA active for runtime block device I/O or keyboard */
             return;
         }
 

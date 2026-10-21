@@ -2,6 +2,11 @@
 #include <string.h>
 #include "serial.h"
 
+#ifndef XHCI_DEV_HOST_TEST
+#include "pmm.h"
+#include "vmm.h"
+#endif
+
 #define XHCI_TRB_TYPE_SETUP_STAGE          2u
 #define XHCI_TRB_TYPE_DATA_STAGE           3u
 #define XHCI_TRB_TYPE_STATUS_STAGE         4u
@@ -16,68 +21,46 @@ static bool fits(const xhci_rings_io_t *io, uint32_t off, uint32_t len) {
     return !(off & 3) && off <= io->mmio_size && len <= io->mmio_size - off;
 }
 
-static uint32_t s_ep0_idx = 0;
-static uint32_t s_ep0_cycle = 1;
+static uint32_t s_ep0_idx[XHCI_MAX_SLOTS];
+static uint32_t s_ep0_cycle[XHCI_MAX_SLOTS];
+static bool     s_ep0_tracking_init = false;
 
-/* Submit command to Command Ring and wait for Command Completion Event */
-static bool send_command(const xhci_rings_io_t *io,
-                         xhci_dma_buffers_t *dma,
-                         xhci_trb_t trb,
-                         xhci_trb_t *out_event) {
-    uint32_t dboff = io->read32(io->mmio_ctx, 0x14);
-    uint32_t rtsoff = io->read32(io->mmio_ctx, 0x18);
-    uint32_t intr0 = rtsoff + 0x20;
-
-    /* Write command TRB */
-    uint32_t idx = dma->cmd_enqueue_idx;
-    trb.control = (trb.control & ~XHCI_TRB_C) | (dma->cmd_cycle ? XHCI_TRB_C : 0);
-    dma->cmd_ring_virt[idx] = trb;
-    __asm__ volatile("" ::: "memory");
-
-    uint64_t submitted_cmd_phys = dma->cmd_ring_phys + idx * sizeof(xhci_trb_t);
-
-    /* Advance enqueue index (Link TRB at index 255) */
-    dma->cmd_enqueue_idx++;
-    if (dma->cmd_enqueue_idx == XHCI_RING_TRB_COUNT - 1) {
-        dma->cmd_enqueue_idx = 0;
-        dma->cmd_cycle ^= 1;
-    }
-
-    /* Ring Doorbell 0 */
-    io->write32(io->mmio_ctx, dboff + 0, 0);
-
-    /* Poll Event Ring */
-    for (unsigned ms = 0; ms <= 500; ++ms) {
-        while (1) {
-            volatile const xhci_trb_t *event = &dma->event_ring_virt[dma->event_dequeue_idx];
-            __asm__ volatile("" ::: "memory");
-            uint32_t c_bit = event->control & XHCI_TRB_C;
-            if (c_bit != (dma->event_cycle ? XHCI_TRB_C : 0)) {
-                break;
-            }
-
-            uint32_t trb_type = (event->control & XHCI_TRB_TYPE_MASK) >> XHCI_TRB_TYPE_SHIFT;
-            uint32_t comp_code = (event->status >> 24) & 0xff;
-            uint64_t cmd_ptr = ((uint64_t)event->parameter_high << 32) | event->parameter_low;
-            xhci_trb_t snapshot = *event;
-
-            /* Advance dequeue pointer and acknowledge to hardware via ERDP */
-            dma->event_dequeue_idx = (dma->event_dequeue_idx + 1) % XHCI_RING_TRB_COUNT;
-            if (dma->event_dequeue_idx == 0) dma->event_cycle ^= 1;
-            uint64_t new_erdp = dma->event_ring_phys + (dma->event_dequeue_idx * sizeof(xhci_trb_t));
-            io->write32(io->mmio_ctx, intr0 + 0x18, ((uint32_t)new_erdp & ~0xfu) | (1u << 3));
-            io->write32(io->mmio_ctx, intr0 + 0x1c, (uint32_t)(new_erdp >> 32));
-
-            if (trb_type == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-                if (out_event) *out_event = snapshot;
-                return (cmd_ptr == submitted_cmd_phys && comp_code == XHCI_COMP_SUCCESS);
-            } else if (trb_type == XHCI_TRB_TYPE_PORT_STATUS_EVENT) {
-                continue;
-            }
+static inline void init_ep0_tracking(void) {
+    if (!s_ep0_tracking_init) {
+        for (uint32_t i = 0; i < XHCI_MAX_SLOTS; i++) {
+            s_ep0_idx[i] = 0;
+            s_ep0_cycle[i] = 1;
         }
-        if (!io->delay_ms(io->mmio_ctx)) return false;
+        s_ep0_tracking_init = true;
     }
-    return false;
+}
+
+static inline uintptr_t get_output_ctx_phys(const xhci_dev_dma_t *dma, uint8_t slot_id) {
+    if (slot_id < XHCI_MAX_SLOTS && dma->slots_output_ctx_phys[slot_id]) {
+        return dma->slots_output_ctx_phys[slot_id];
+    }
+    return dma->output_ctx_phys;
+}
+
+static inline uint32_t *get_output_ctx_virt(const xhci_dev_dma_t *dma, uint8_t slot_id) {
+    if (slot_id < XHCI_MAX_SLOTS && dma->slots_output_ctx_virt[slot_id]) {
+        return dma->slots_output_ctx_virt[slot_id];
+    }
+    return dma->output_ctx_virt;
+}
+
+static inline uintptr_t get_ep0_ring_phys(const xhci_dev_dma_t *dma, uint8_t slot_id) {
+    if (slot_id < XHCI_MAX_SLOTS && dma->slots_ep0_ring_phys[slot_id]) {
+        return dma->slots_ep0_ring_phys[slot_id];
+    }
+    return dma->ep0_ring_phys;
+}
+
+static inline xhci_trb_t *get_ep0_ring_virt(const xhci_dev_dma_t *dma, uint8_t slot_id) {
+    if (slot_id < XHCI_MAX_SLOTS && dma->slots_ep0_ring_virt[slot_id]) {
+        return dma->slots_ep0_ring_virt[slot_id];
+    }
+    return dma->ep0_ring_virt;
 }
 
 static inline void xhci_clflush_range(const void *p, size_t len) {
@@ -93,6 +76,39 @@ static inline void xhci_clflush_range(const void *p, size_t len) {
 #endif
 }
 
+/* Submit command to Command Ring and wait for Command Completion Event */
+static bool send_command(const xhci_rings_io_t *io,
+                         xhci_dma_buffers_t *dma,
+                         xhci_trb_t trb,
+                         xhci_trb_t *out_event) {
+    uint32_t dboff = io->read32(io->mmio_ctx, 0x14);
+
+    uint64_t cmd_flags = spin_lock_irqsave(&g_xhci_cmd_lock);
+    uint32_t idx = dma->cmd_enqueue_idx;
+    trb.control = (trb.control & ~XHCI_TRB_C) | (dma->cmd_cycle ? XHCI_TRB_C : 0);
+    dma->cmd_ring_virt[idx] = trb;
+    xhci_clflush_range(&dma->cmd_ring_virt[idx], sizeof(xhci_trb_t));
+    __asm__ volatile("mfence" ::: "memory");
+
+    uint64_t submitted_cmd_phys = dma->cmd_ring_phys + idx * sizeof(xhci_trb_t);
+
+    /* Advance enqueue index (Link TRB at index 255) */
+    dma->cmd_enqueue_idx++;
+    if (dma->cmd_enqueue_idx == XHCI_RING_TRB_COUNT - 1) {
+        dma->cmd_ring_virt[XHCI_RING_TRB_COUNT - 1].control =
+            (XHCI_TRB_TYPE_LINK << 10) | XHCI_TRB_TC | (dma->cmd_cycle ? XHCI_TRB_C : 0);
+        xhci_clflush_range(&dma->cmd_ring_virt[XHCI_RING_TRB_COUNT - 1], sizeof(xhci_trb_t));
+        dma->cmd_enqueue_idx = 0;
+        dma->cmd_cycle ^= 1;
+    }
+
+    __asm__ volatile("mfence" ::: "memory");
+    io->write32(io->mmio_ctx, dboff + 0, 0);
+    spin_unlock_irqrestore(&g_xhci_cmd_lock, cmd_flags);
+
+    return xhci_mbox_wait_command(io, dma, submitted_cmd_phys, out_event, 500000);
+}
+
 /* Execute USB Control Transfer on Endpoint 0 */
 static bool control_transfer(const xhci_rings_io_t *io,
                              xhci_dma_buffers_t *ring_dma,
@@ -104,8 +120,6 @@ static bool control_transfer(const xhci_rings_io_t *io,
                              bool dir_in,
                              xhci_bot_device_t *device) {
     uint32_t dboff = io->read32(io->mmio_ctx, 0x14);
-    uint32_t rtsoff = io->read32(io->mmio_ctx, 0x18);
-    uint32_t intr0 = rtsoff + 0x20;
 
     /* Copy outgoing data if OUT transfer; pre-fill sentinel 0xAA if IN transfer */
     if (!dir_in && length > 0 && data_buf) {
@@ -116,9 +130,14 @@ static bool control_transfer(const xhci_rings_io_t *io,
         xhci_clflush_range(dev_dma->bounce_buf_virt, length);
     }
 
-    if (s_ep0_idx >= XHCI_RING_TRB_COUNT - 4) {
-        s_ep0_idx = 0;
-        s_ep0_cycle ^= 1;
+    init_ep0_tracking();
+    uint8_t slot_idx = (slot_id < XHCI_MAX_SLOTS) ? slot_id : 0;
+    uintptr_t ep0_phys = get_ep0_ring_phys(dev_dma, slot_id);
+    xhci_trb_t *ep0_virt = get_ep0_ring_virt(dev_dma, slot_id);
+
+    if (s_ep0_idx[slot_idx] >= XHCI_RING_TRB_COUNT - 4) {
+        s_ep0_idx[slot_idx] = 0;
+        s_ep0_cycle[slot_idx] ^= 1;
     }
 
     /* 1. Setup Stage TRB: TD Size = 1 if Data Stage follows, 0 if no data */
@@ -127,8 +146,8 @@ static bool control_transfer(const xhci_rings_io_t *io,
     memcpy(&setup_trb.parameter_low, &setup, 8);
     setup_trb.status = 8 | ((length > 0 ? 1u : 0u) << 17);
     /* TRT is at bits 17:16 of control; bit 6 is IDT (Immediate Data); bit 5 (IOC) is 0 */
-    setup_trb.control = (XHCI_TRB_TYPE_SETUP_STAGE << 10) | (trt << 16) | (1u << 6) /* IDT */ | (s_ep0_cycle ? 1u : 0);
-    dev_dma->ep0_ring_virt[s_ep0_idx++] = setup_trb;
+    setup_trb.control = (XHCI_TRB_TYPE_SETUP_STAGE << 10) | (trt << 16) | (1u << 6) /* IDT */ | (s_ep0_cycle[slot_idx] ? 1u : 0);
+    ep0_virt[s_ep0_idx[slot_idx]++] = setup_trb;
 
     /* 2. Data Stage TRB (if length > 0) */
     if (length > 0) {
@@ -136,98 +155,77 @@ static bool control_transfer(const xhci_rings_io_t *io,
         data_trb.parameter_low = (uint32_t)dev_dma->bounce_buf_phys;
         data_trb.parameter_high = (uint32_t)(dev_dma->bounce_buf_phys >> 32);
         data_trb.status = length;
-        data_trb.control = (XHCI_TRB_TYPE_DATA_STAGE << 10) | (dir_in ? (1u << 16) : 0) | (s_ep0_cycle ? 1u : 0);
-        dev_dma->ep0_ring_virt[s_ep0_idx++] = data_trb;
+        data_trb.control = (XHCI_TRB_TYPE_DATA_STAGE << 10) | (dir_in ? (1u << 16) : 0) | (s_ep0_cycle[slot_idx] ? 1u : 0);
+        ep0_virt[s_ep0_idx[slot_idx]++] = data_trb;
     }
 
     /* 3. Status Stage TRB */
-    uintptr_t status_trb_phys = dev_dma->ep0_ring_phys + (s_ep0_idx * sizeof(xhci_trb_t));
+    uintptr_t status_trb_phys = ep0_phys + (s_ep0_idx[slot_idx] * sizeof(xhci_trb_t));
     if (device) {
         device->expected_status_trb=status_trb_phys;
         device->last_comp_code=0;device->last_residual=0;device->last_trb_param=0;
         device->control_wait_ms=0;device->control_failure=1;
     }
     xhci_trb_t status_trb = {0};
-    status_trb.control = (XHCI_TRB_TYPE_STATUS_STAGE << 10) | (dir_in ? 0 : (1u << 16)) | (1u << 5) /* IOC */ | (s_ep0_cycle ? 1u : 0);
-    dev_dma->ep0_ring_virt[s_ep0_idx++] = status_trb;
+    status_trb.control = (XHCI_TRB_TYPE_STATUS_STAGE << 10) | (dir_in ? 0 : (1u << 16)) | (1u << 5) /* IOC */ | (s_ep0_cycle[slot_idx] ? 1u : 0);
+    ep0_virt[s_ep0_idx[slot_idx]++] = status_trb;
 
     /* Flush newly written TRBs from CPU cache */
     uint32_t num_trbs = (length > 0) ? 3 : 2;
-    xhci_clflush_range(&dev_dma->ep0_ring_virt[s_ep0_idx - num_trbs], num_trbs * sizeof(xhci_trb_t));
+    xhci_clflush_range(&ep0_virt[s_ep0_idx[slot_idx] - num_trbs], num_trbs * sizeof(xhci_trb_t));
 
     __asm__ volatile("mfence" ::: "memory");
 
     /* Ring Doorbell for Slot ID, Target = 1 */
     io->write32(io->mmio_ctx, dboff + slot_id * 4, 1);
 
-    /* Poll Event Ring for Transfer Event */
-    for (unsigned ms = 0; ms <= 500; ++ms) {
-        if (device) device->control_wait_ms=(uint16_t)ms;
-        for (unsigned drained=0; drained<XHCI_RING_TRB_COUNT; ++drained) {
-            volatile const xhci_trb_t *event = &ring_dma->event_ring_virt[ring_dma->event_dequeue_idx];
-            __asm__ volatile("" ::: "memory");
-            uint32_t c_bit = event->control & XHCI_TRB_C;
-            if (c_bit != (ring_dma->event_cycle ? XHCI_TRB_C : 0)) break;
-
-            uint32_t trb_type = (event->control & XHCI_TRB_TYPE_MASK) >> XHCI_TRB_TYPE_SHIFT;
-            uint32_t comp_code = (event->status >> 24) & 0xff;
-            /* ERDP releases this slot to hardware. Never reread it afterward. */
-            xhci_trb_t snapshot = *event;
-
-            ring_dma->event_dequeue_idx = (ring_dma->event_dequeue_idx + 1) % XHCI_RING_TRB_COUNT;
-            if (ring_dma->event_dequeue_idx == 0) ring_dma->event_cycle ^= 1;
-            uint64_t new_erdp = ring_dma->event_ring_phys + (ring_dma->event_dequeue_idx * sizeof(xhci_trb_t));
-            io->write32(io->mmio_ctx, intr0 + 0x18, ((uint32_t)new_erdp & ~0xfu) | (1u << 3));
-            io->write32(io->mmio_ctx, intr0 + 0x1c, (uint32_t)(new_erdp >> 32));
-
-            if (trb_type == XHCI_TRB_TYPE_TRANSFER_EVENT) {
-                if ((snapshot.control >> 24) != slot_id ||
-                    ((snapshot.control >> 16) & 0x1f) != 1) continue;
-                uint64_t trb_ptr = ((uint64_t)snapshot.parameter_high << 32) | snapshot.parameter_low;
-                if (device) {
-                    device->last_comp_code = comp_code;
-                    device->last_residual = snapshot.status & 0xffffff;
-                    device->last_trb_param = trb_ptr;
-                }
-                if (comp_code != XHCI_COMP_SUCCESS && comp_code != XHCI_COMP_SHORT_PACKET) {
-                    if (device) device->control_failure=3;
-                    return false;
-                }
-                /* If this transfer event was for an earlier TRB (e.g. Setup Stage), keep polling for Status Stage */
-                if (snapshot.control & (1u << 2)) {
-                    if (device) device->control_failure=4;
-                    return false;
-                }
-                if (trb_ptr != status_trb_phys) {
-                    continue;
-                }
-                if (dir_in && length > 0 && data_buf) {
-                    xhci_clflush_range(dev_dma->bounce_buf_virt, length);
-                    __asm__ volatile("mfence" ::: "memory");
-                    memcpy(data_buf, dev_dma->bounce_buf_virt, length);
-                }
-                if (device) device->control_failure=0;
-                return true;
-            } else if (trb_type == XHCI_TRB_TYPE_PORT_STATUS_EVENT) {
-                continue;
-            }
-        }
-        if (!io->delay_ms(io->mmio_ctx)) {
-            if (device) device->control_failure=2;
-            return false;
-        }
+    uint32_t residual = 0;
+    uint8_t comp_code = 0;
+    bool ok = xhci_mbox_wait_transfer(io, ring_dma, slot_id, 1, status_trb_phys, &residual, &comp_code, 500000);
+    if (device) {
+        device->last_comp_code = comp_code;
+        device->last_residual = residual;
+        device->last_trb_param = status_trb_phys;
+        device->control_failure = ok ? 0 : 3;
     }
-    return false;
+    if (!ok) return false;
+
+    if (dir_in && length > 0 && data_buf) {
+        xhci_clflush_range(dev_dma->bounce_buf_virt, length);
+        __asm__ volatile("mfence" ::: "memory");
+        memcpy(data_buf, dev_dma->bounce_buf_virt, length);
+    }
+    return true;
 }
 
-bool xhci_enumerate_device(const xhci_rings_io_t *io,
-                           xhci_dma_buffers_t *ring_dma,
-                           const xhci_dev_dma_t *dev_dma,
-                           uint8_t port_num,
-                           uint8_t port_speed,
-                           xhci_bot_device_t *device) {
+bool xhci_dev_send_command(const xhci_rings_io_t *io,
+                           xhci_dma_buffers_t *dma,
+                           xhci_trb_t trb,
+                           xhci_trb_t *out_event) {
+    return send_command(io, dma, trb, out_event);
+}
+
+bool xhci_dev_control_transfer(const xhci_rings_io_t *io,
+                               xhci_dma_buffers_t *ring_dma,
+                               const xhci_dev_dma_t *dev_dma,
+                               uint8_t slot_id,
+                               usb_setup_pkt_t setup,
+                               void *data_buf,
+                               uint16_t length,
+                               bool dir_in,
+                               xhci_bot_device_t *device) {
+    return control_transfer(io, ring_dma, dev_dma, slot_id, setup, data_buf, length, dir_in, device);
+}
+
+bool xhci_enumerate_device_topo(const xhci_rings_io_t *io,
+                                xhci_dma_buffers_t *ring_dma,
+                                const xhci_dev_dma_t *dev_dma,
+                                const xhci_device_topology_t *topo,
+                                xhci_bot_device_t *device) {
     if (!device) return false;
     *device = (xhci_bot_device_t){0};
+    uint8_t port_num = topo ? topo->root_port : 0;
+    uint8_t port_speed = topo ? topo->speed : 0;
     device->port_num = port_num;
     device->speed = port_speed;
 
@@ -242,17 +240,6 @@ bool xhci_enumerate_device(const xhci_rings_io_t *io,
 
     uint32_t ctx_shift = (hcc1 & (1 << 2)) ? 6 : 5; /* 64-byte vs 32-byte contexts */
     uint32_t ctx_dwords = 1u << (ctx_shift - 2);
-
-    /* Reset EP0 ring local tracking */
-    s_ep0_idx = 0;
-    s_ep0_cycle = 1;
-
-    /* Setup EP0 Ring Link TRB at index 255 */
-    memset(dev_dma->ep0_ring_virt, 0, 4096);
-    dev_dma->ep0_ring_virt[XHCI_RING_TRB_COUNT - 1].parameter_low = (uint32_t)dev_dma->ep0_ring_phys;
-    dev_dma->ep0_ring_virt[XHCI_RING_TRB_COUNT - 1].parameter_high = (uint32_t)(dev_dma->ep0_ring_phys >> 32);
-    dev_dma->ep0_ring_virt[XHCI_RING_TRB_COUNT - 1].control =
-        (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_TC | XHCI_TRB_C;
 
     /* 1. Enable Slot Command */
     device->step = 1;
@@ -271,15 +258,49 @@ bool xhci_enumerate_device(const xhci_rings_io_t *io,
         return false;
     }
     uint8_t slot_id = (comp_event.control >> 24) & 0xff;
-    if (!slot_id || slot_id > max_slots) {
+    if (!slot_id || slot_id > max_slots || slot_id >= XHCI_MAX_SLOTS) {
         device->error_msg = "Invalid Slot ID returned";
         return false;
     }
     device->slot_id = slot_id;
 
+    init_ep0_tracking();
+
+#ifndef XHCI_DEV_HOST_TEST
+    if (slot_id > 1 && !dev_dma->slots_output_ctx_phys[slot_id]) {
+        uintptr_t out_phys = pmm_alloc_page();
+        uintptr_t ep0_phys = pmm_alloc_page();
+        if (!out_phys || !ep0_phys) {
+            if (out_phys) pmm_free_page(out_phys);
+            if (ep0_phys) pmm_free_page(ep0_phys);
+            device->error_msg = "OOM allocating slot contexts";
+            return false;
+        }
+        ((xhci_dev_dma_t *)dev_dma)->slots_output_ctx_phys[slot_id] = out_phys;
+        ((xhci_dev_dma_t *)dev_dma)->slots_output_ctx_virt[slot_id] = (uint32_t *)vmm_phys_to_virt(out_phys);
+        ((xhci_dev_dma_t *)dev_dma)->slots_ep0_ring_phys[slot_id] = ep0_phys;
+        ((xhci_dev_dma_t *)dev_dma)->slots_ep0_ring_virt[slot_id] = (xhci_trb_t *)vmm_phys_to_virt(ep0_phys);
+    }
+#endif
+
+    uintptr_t slot_out_phys = get_output_ctx_phys(dev_dma, slot_id);
+    uint32_t *slot_out_virt = get_output_ctx_virt(dev_dma, slot_id);
+    uintptr_t slot_ep0_phys = get_ep0_ring_phys(dev_dma, slot_id);
+    xhci_trb_t *slot_ep0_virt = get_ep0_ring_virt(dev_dma, slot_id);
+
+    s_ep0_idx[slot_id] = 0;
+    s_ep0_cycle[slot_id] = 1;
+
+    /* Setup EP0 Ring Link TRB at index 255 */
+    memset(slot_ep0_virt, 0, 4096);
+    slot_ep0_virt[XHCI_RING_TRB_COUNT - 1].parameter_low = (uint32_t)slot_ep0_phys;
+    slot_ep0_virt[XHCI_RING_TRB_COUNT - 1].parameter_high = (uint32_t)(slot_ep0_phys >> 32);
+    slot_ep0_virt[XHCI_RING_TRB_COUNT - 1].control =
+        (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_TC | XHCI_TRB_C;
+
     /* Register Output Context in DCBAA for this slot */
-    memset(dev_dma->output_ctx_virt, 0, 4096);
-    dev_dma->dcbaa_virt[slot_id] = dev_dma->output_ctx_phys;
+    memset(slot_out_virt, 0, 4096);
+    dev_dma->dcbaa_virt[slot_id] = slot_out_phys;
     __asm__ volatile("" ::: "memory");
 
     /* 2. Setup Input Context for Address Device */
@@ -291,14 +312,15 @@ bool xhci_enumerate_device(const xhci_rings_io_t *io,
 
     ctrl_ctx[1] = (1u << 0) | (1u << 1); /* Add Slot Context & EP0 Context */
 
-    /* Slot Context: Context Entries = 1, Speed = port_speed */
-    slot_ctx[0] = ((uint32_t)port_speed << 20) | (1u << 27);
-    slot_ctx[1] = (uint32_t)port_num << 16;
+    /* Slot Context: Context Entries = 1, Speed, Route String, TT fields */
+    if (topo) {
+        xhci_hub_populate_slot_context(slot_ctx, topo, 1, 0);
+    } else {
+        slot_ctx[0] = ((uint32_t)port_speed << 20) | (1u << 27);
+        slot_ctx[1] = (uint32_t)port_num << 16;
+    }
 
-    /* EP0 Context: Control Endpoint, CErr = 3, MaxPacketSize based on speed.
-    * SuperSpeed always uses 512; USB 2.0 High-Speed uses 64; Full/Low-Speed
-    * use 8 (the initial packet size, later raised via Evaluate Context if
-    * the device reports a larger bMaxPacketSize0). */
+    /* EP0 Context: Control Endpoint, CErr = 3, MaxPacketSize based on speed. */
     uint16_t initial_max;
     if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
         initial_max = 512;
@@ -307,10 +329,13 @@ bool xhci_enumerate_device(const xhci_rings_io_t *io,
     } else {
         initial_max = 8;
     }
-ep0_ctx[1] = (3u << 1) /* CErr */ | (4u << 3) /* Control */ | ((uint32_t)initial_max << 16);
-ep0_ctx[2] = ((uint32_t)dev_dma->ep0_ring_phys & ~0x3fu) | 1u; /* DCS = 1 */
-ep0_ctx[3] = (uint32_t)(dev_dma->ep0_ring_phys >> 32);
-ep0_ctx[4] = 8; /* Average TRB length */
+    ep0_ctx[1] = (3u << 1) /* CErr */ | (4u << 3) /* Control */ | ((uint32_t)initial_max << 16);
+    ep0_ctx[2] = ((uint32_t)slot_ep0_phys & ~0x3fu) | 1u; /* DCS = 1 */
+    ep0_ctx[3] = (uint32_t)(slot_ep0_phys >> 32);
+    ep0_ctx[4] = 8; /* Average TRB length */
+
+    xhci_clflush_range(dev_dma->input_ctx_virt, 4096);
+    __asm__ volatile("mfence" ::: "memory");
 
     /* Issue Address Device Command */
     xhci_trb_t addr_cmd = {0};
@@ -319,6 +344,17 @@ ep0_ctx[4] = 8; /* Average TRB length */
     addr_cmd.control = (XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD << 10) | ((uint32_t)slot_id << 24);
 
     if (!send_command(io, ring_dma, addr_cmd, &comp_event)) {
+        serial_puts("[USB DEV] Address Device failed: code=");
+        serial_print_hex((comp_event.status >> 24) & 0xff);
+        serial_puts(" slot_id=");
+        serial_print_hex(slot_id);
+        serial_puts(" DW0=");
+        serial_print_hex(slot_ctx[0]);
+        serial_puts(" DW1=");
+        serial_print_hex(slot_ctx[1]);
+        serial_puts(" DW2=");
+        serial_print_hex(slot_ctx[2]);
+        serial_puts("\n");
         device->error_msg = "Address Device failed";
         return false;
     }
@@ -327,8 +363,8 @@ ep0_ctx[4] = 8; /* Average TRB length */
     for (int i = 0; i < 20; ++i) io->delay_ms(io->mmio_ctx);
 
     /* Read Slot State and EP0 State from Output Context */
-    device->slot_state = (uint8_t)((dev_dma->output_ctx_virt[3] >> 27) & 0x1f);
-    device->ep0_state = (uint8_t)(dev_dma->output_ctx_virt[1 * ctx_dwords] & 0x7);
+    device->slot_state = (uint8_t)((slot_out_virt[3] >> 27) & 0x1f);
+    device->ep0_state = (uint8_t)(slot_out_virt[1 * ctx_dwords] & 0x7);
 
     /* 3. Read Device Descriptor (18 bytes for High-Speed, or first 8 bytes if Full-Speed) */
     device->step = 3;
@@ -462,18 +498,23 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
         if (!len || off + len > total_len) break;
 
         if (type == USB_DESC_INTERFACE && len >= 9) {
+            uint8_t if_num      = full_cfg[off + 2];
             uint8_t if_class    = full_cfg[off + 5];
             uint8_t if_subclass = full_cfg[off + 6];
             uint8_t if_proto    = full_cfg[off + 7];
             device->if_class    = if_class;
             device->if_subclass = if_subclass;
             device->if_proto    = if_proto;
-            if (if_class == USB_CLASS_MASS_STORAGE &&
-                if_subclass == USB_SUBCLASS_SCSI &&
-                if_proto == USB_PROTOCOL_BOT) {
-                found_bot_if = true;
-            } else {
-                found_bot_if = false;
+
+            found_bot_if = (if_class == USB_CLASS_MASS_STORAGE &&
+                            if_subclass == USB_SUBCLASS_SCSI &&
+                            if_proto == USB_PROTOCOL_BOT);
+            if (if_class == 0x09) { /* Hub */
+                device->is_hub = true;
+            }
+            if (if_class == 0x03 && if_subclass == 0x01 && if_proto == 0x01) { /* HID Boot Keyboard */
+                device->is_hid_keyboard = true;
+                device->hid_if_num = if_num;
             }
         } else if (found_bot_if && type == USB_DESC_ENDPOINT && len >= 7) {
             uint8_t ep_addr   = full_cfg[off + 2];
@@ -500,6 +541,15 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
                 } else {
                     device->bulk_out_max_burst = max_burst;
                 }
+            }
+        } else if (device->is_hid_keyboard && type == USB_DESC_ENDPOINT && len >= 7) {
+            uint8_t ep_addr   = full_cfg[off + 2];
+            uint8_t ep_attr   = full_cfg[off + 3] & 0x03;
+            uint16_t max_packet = full_cfg[off + 4] | ((uint16_t)full_cfg[off + 5] << 8);
+            if (ep_attr == 3 && (ep_addr & 0x80)) { /* Interrupt IN */
+                device->int_in_ep = ep_addr;
+                device->int_in_max_packet = max_packet;
+                device->int_in_interval = full_cfg[off + 6];
             }
         }
         /* Every descriptor advances the walk, including configuration,
@@ -543,7 +593,7 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
         off += len;
     }
 
-    if (!device->bulk_in_ep || !device->bulk_out_ep) {
+    if (!device->is_hub && !device->is_hid_keyboard && (!device->bulk_in_ep || !device->bulk_out_ep)) {
         device->error_msg = "Device is not a supported BOT Mass Storage device";
         xhci_trb_t dis_cmd = {0};
         dis_cmd.control = (XHCI_TRB_TYPE_DISABLE_SLOT_CMD << 10) | ((uint32_t)slot_id << 24);
@@ -569,8 +619,25 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
         return false;
     }
 
-    device->is_valid_bot_storage = true;
-    device->ep0_enqueue_idx = s_ep0_idx;
-    device->ep0_cycle = (uint8_t)s_ep0_cycle;
+    if (device->bulk_in_ep && device->bulk_out_ep) {
+        device->is_valid_bot_storage = true;
+    }
+    device->ep0_enqueue_idx = s_ep0_idx[slot_id];
+    device->ep0_cycle = (uint8_t)s_ep0_cycle[slot_id];
     return true;
+}
+
+bool xhci_enumerate_device(const xhci_rings_io_t *io,
+                           xhci_dma_buffers_t *ring_dma,
+                           const xhci_dev_dma_t *dev_dma,
+                           uint8_t port_num,
+                           uint8_t port_speed,
+                           xhci_bot_device_t *device) {
+    xhci_device_topology_t root_topo = {
+        .root_port = port_num,
+        .speed = port_speed,
+        .tier = 0,
+        .route_string = 0,
+    };
+    return xhci_enumerate_device_topo(io, ring_dma, dev_dma, &root_topo, device);
 }

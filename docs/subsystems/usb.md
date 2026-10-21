@@ -8,6 +8,8 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
+| **Phase 9G.7 USB Hubs & Dell WD19S Dock Topology** | **COMPLETE** (2026-10-21) | USB 2.0 and SuperSpeed Hub driver (`xhci_hub.c`). Route String computation across multi-tier topologies, Transaction Translator (TT) inheritance in Slot Context DW2 (`MTT=0`), downstream port power (`PORT_POWER`) and power-good delays, downstream port status detection and reset, per-slot Output Context and EP0 ring allocation, recursive child enumeration. Dell WD19S multi-tier dock topology compatible. Host tests 100% PASS under ASan/UBSan/TSan, BIOS/UEFI QEMU downstream device acceptance 100% PASS (`make test-usb-hub`). |
+| **Phase 9G.6 USB HID Boot Protocol Keyboard** | **COMPLETE** (2026-10-21) | USB Boot Protocol keyboard driver (`usb_hid.c`). Single-dispatcher event ring pump (`xhci_rings.c`), diff-based HID Usage to PS/2 Set 1 scancode translator feeding `keyboard_decode_bytes()`. AZERTY and US keyboard parity, AltGr/GUI modifier support, Phantom rollover rejection, zero lock rank inversions (Rank 2 leaf ring lock, worker runs in thread context sleeping on APIC timer tick channel). Host tests 100% PASS, BIOS/UEFI QEMU interactive acceptance 100% PASS (`make test-usb-hid`). |
 | **Phase 9G.5b SuperSpeed enumeration & BOT transport** | **COMPLETE** (2026-09-20) | SuperSpeed (USB 3.x) mass storage works end-to-end on physical hardware (Dell 5590 + SanDisk USB 3.2 Gen 1, port and multi-controller variants). Full detail and evidence: [`docs/roadmap/phase-9g5-superspeed.md`](../roadmap/phase-9g5-superspeed.md). |
 | **Phase 9G.1 xHCI Controller & Enumeration** | **COMPLETE** (2026-09-19) | PCI discovery, MMIO/reset, Command/Event rings, root ports, device addressing & configuration; verified on QEMU and bare-metal Dell 5590. Full detail: [`docs/roadmap/phase-9g1-xhci-enumeration.md`](../roadmap/phase-9g1-xhci-enumeration.md). |
 | **Phase 9G.2 Read-only USB block device** | **COMPLETE** (2026-09-19) | Bulk-Only Transport, SCSI engine, block device registration, GPT partition parsing; verified on QEMU and bare-metal Dell 5590. Full detail: [`docs/roadmap/phase-9g2-usb-block.md`](../roadmap/phase-9g2-usb-block.md). |
@@ -28,10 +30,10 @@ tests, EXT4 BIOS/UEFI SMP=1/4 persistence and ext2 USB persistence regressions
 PASS. Existing durability, locking and quarantine contracts remain intact;
 Dell manual retest PASS: 6–7 seconds/MiB, 16 MiB in 1m52s, matching hashes, reboot persistence, responsive quiet background commands and clean Linux Mint fsck (exit 0). See [performance evidence](../roadmap/ext4-usb-performance.md).
 
-- No USB 3.x hub support (SuperSpeed devices on root ports work; devices behind a SuperSpeed hub do not). No SuperSpeedPlus (10 Gbps) verification. No streams.
-- No external USB hubs; xHCI root-port management remains required.
-- No hot-plug enumeration, reconnection or removal recovery beyond safe failure.
-- No UAS, USB keyboards, mice, audio or other non-mass-storage classes.
+- Multi-tier USB 2.0 and SuperSpeed Hubs are SUPPORTED via `xhci_hub.c` (including Dell WD19S dock topology). SuperSpeedPlus (10 Gbps) verification and streams remain deferred.
+- USB HID Boot Protocol Keyboards are SUPPORTED via `usb_hid.c`.
+- No hot-plug runtime reconnection or dynamic removal recovery beyond safe failure.
+- No UAS, mice, audio or other non-keyboard HID classes.
 - No USB power management, suspend or resume.
 - No multiple-LUN support: access LUN 0 only.
 - No recovery/re-enumeration after a runtime host-controller reset. Initial reset and bounded BOT transport recovery are still required; controller failure leaves storage unavailable until reboot, with DMA safely contained.
@@ -100,6 +102,9 @@ These are measurements for 9G.1/9G.2 (flush capability for 9G.4), not assumed ha
 
 | Target | Scope / evidence |
 | --- | --- |
+| `make test-hub-host` / `make test-hub-host-tsan` | Host ASan/UBSan and ThreadSanitizer verification suite (`tests/hub_host.c`): 11 tests for Route String, TT inheritance, DW0..DW3 layout, Interval, diff boot keyboard decoder, modifier tracking, rollover rejection, self-correction, PS/2 parity, real kernel demux & ERDP/EHB, and real kernel concurrency stress with zero drops. |
+| `make test-usb-hid` | QEMU BIOS & UEFI automated acceptance suite for USB HID boot keyboard (`scripts/test_usb_hid.py`): operator login, AZERTY/US typing, layout switching. |
+| `make test-usb-hub` | QEMU BIOS & UEFI automated acceptance suite for USB Hubs and downstream devices (`scripts/test_usb_hub.py`): hub power/scan/reset, Slot 2 child keyboard login, typing, layout switching. |
 | `make test-usb-discovery` | 9G.1a BIOS/UEFI PCI discovery with/without xHCI, shell startup without NVMe; ISO boot only, no data disk. No USB transfers or persistence claimed. |
 | `make test-usb-descriptors` | 9G.1e host ASan/UBSan + QEMU BIOS/UEFI descriptor parsing, BOT class validation, device configuration |
 | `make test-usb-block` | 9G.2 BOT host tests + QEMU sector read/GPT registration, no NVMe fixture |
