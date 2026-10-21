@@ -86,6 +86,7 @@ def case(out,work,firmware,smp,checks):
                     # or a transient redraw that happens to end in '$ '.
                     output=re.compile(r'(?m)^(?:pkg: |Read-only verification\. )?'+re.escape(marker))
                     return wait(lambda s:output.search(s[pos:]) and PROMPT.search(s[pos:]))[pos:]
+                stack_checks = {}
                 for cmd, expected in checks:
                     s=command(cmd, expected)
                     assert expected in s,s
@@ -96,8 +97,28 @@ def case(out,work,firmware,smp,checks):
                     if 'OK;' not in expected and 'policy verified;' not in expected and expected != 'STACK PASS':
                         assert 'integrity OK;' not in s and 'catalog policy verified;' not in s,s
                     assert 'FAULT' not in s and 'PANIC' not in s,s
+                    if expected == 'STACK PASS':
+                        metrics = re.findall(r'(?m)^STACK ([a-z_]+)=(\d+)\s*$', s)
+                        values = {}
+                        for key, value in metrics: values.setdefault(key, []).append(int(value))
+                        for vector in ('argv', 'env'):
+                            assert values.get(vector+'_bytes') == [1024], values
+                            for limit in ('count', 'string', 'total'):
+                                assert values.get('reject_'+vector+'_'+limit) == [1], values
+                        instrumented = cmd == '/bin/pkg-stack'
+                        assert len(values.get('sampled_margin', [])) == (2 if instrumented else 1), values
+                        assert len(values.get('nested_margin', [])) == 1, values
+                        assert values.get('signals', [])[:1] == [0], values
+                        if instrumented:
+                            assert len(values.get('signal_watermark_margin', [])) == 1, values
+                            assert len(values.get('handler_margin', [])) == 1, values
+                            assert len(values['signals']) == 2 and values['signals'][1] > 0, values
+                        for key, entries in values.items():
+                            if 'margin' in key: assert all(4096 <= n < 16384 for n in entries), values
+                        stack_checks[cmd] = values
                 uart.sendall(b'sudo shutdown\n');p.wait(timeout=20);assert p.returncode==0
                 result={'case':dest.name,'status':'PASS'}
+                result['stack_checks'] = stack_checks
                 result['stack_metrics'] = re.findall(r'(?m)^STACK ([a-z_]+)=(\d+)\s*$', text())
                 (dest/'result.json').write_text(json.dumps(result));print(json.dumps(result),flush=True)
                 return result

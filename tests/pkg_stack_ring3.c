@@ -12,6 +12,21 @@ static char strings[32][257];
 static char *args[34], *env[34];
 static char *verify_args[]={"pkg","verify","/docs/catalog","demo","/docs/fixture.fpk"};
 static char *bad_args[]={"pkg","verify","/docs/bad-catalog","demo","/docs/fixture.fpk"};
+/* Bits name independent limit violations, including NUL in every byte count. */
+static unsigned shape(char **v,unsigned count_limit,size_t string_limit,size_t total_limit) {
+    unsigned count=0,mask=0;size_t total=0;
+    while(count<34 && v[count]) {
+        size_t n=tool_length(v[count++])+1;
+        total+=n;if(n>string_limit) mask|=2;
+    }
+    if(count>count_limit) mask|=1;
+    if(total>total_limit) mask|=4;
+    return mask;
+}
+static void small_vectors(void) {
+    for(unsigned i=0;i<34;i++) args[i]=env[i]=0;
+    args[0]=env[0]="";
+}
 static inline __attribute__((always_inline)) long raw(long n,uintptr_t a,uintptr_t b,uintptr_t c) {
     __asm__ volatile("syscall":"+a"(n):"D"(a),"S"(b),"d"(c):"rcx","r11","memory","cc");
     return n;
@@ -53,26 +68,36 @@ int pkg_stack_main(int argc,char **argv,char **envp) {
         long pid=raw(SYS_SPAWN_EXT,(uintptr_t)STACK_SELF,(uintptr_t)&opts,sizeof(opts));
         int64_t status=-1;
         if(pid<0 || raw(SYS_WAIT,pid,(uintptr_t)&status,0) || status) return 1;
-        /* Check independent aggregate, single-string and vector-count limits. */
-        strings[31][31]='a';strings[31][32]=0;
-        if(raw(SYS_SPAWN_EXT,(uintptr_t)STACK_SELF,(uintptr_t)&opts,sizeof(opts))!=SYSCALL_E2BIG) return 1;
-        args[31]="";
-        if(raw(SYS_SPAWN_EXT,(uintptr_t)STACK_SELF,(uintptr_t)&opts,sizeof(opts))!=SYSCALL_E2BIG) return 1;
-        strings[31][31]=0;args[31]=strings[31];
-        strings[0][255]='a';strings[0][256]=0;
-        if(raw(SYS_SPAWN_EXT,(uintptr_t)STACK_SELF,(uintptr_t)&opts,sizeof(opts))!=SYSCALL_E2BIG) return 1;
-        args[0]="";
-        if(raw(SYS_SPAWN_EXT,(uintptr_t)STACK_SELF,(uintptr_t)&opts,sizeof(opts))!=SYSCALL_E2BIG) return 1;
-        strings[0][255]=0;args[0]=strings[0];
-        args[32]="";
-        if(raw(SYS_SPAWN_EXT,(uintptr_t)STACK_SELF,(uintptr_t)&opts,sizeof(opts))!=SYSCALL_E2BIG) return 1;
-        args[32]=0;env[32]="";
-        if(raw(SYS_SPAWN_EXT,(uintptr_t)STACK_SELF,(uintptr_t)&opts,sizeof(opts))!=SYSCALL_E2BIG) return 1;
+        for(unsigned vector=0;vector<2;vector++) for(unsigned kind=0;kind<3;kind++) {
+            small_vectors();char **v=vector?env:args;
+            /* count: 33 x 1; string: 1 x 257; aggregate: 4 x 256 + 1. */
+            if(kind==0) for(unsigned i=0;i<33;i++) v[i]="";
+            if(kind==1) {
+                for(unsigned j=0;j<256;j++) strings[0][j]='a';
+                strings[0][256]=0;v[0]=strings[0];
+            }
+            if(kind==2) {
+                strings[0][255]=0;
+                for(unsigned i=0;i<4;i++) v[i]=strings[0];
+                v[4]="";
+            }
+            if(shape(args,MAX_SPAWN_ARGS,MAX_ARG_STRLEN,MAX_TOTAL_ARGS_LEN)!=(vector?0:1U<<kind) ||
+               shape(env,MAX_SPAWN_ENVP,MAX_ENV_STRLEN,MAX_TOTAL_ENVP_LEN)!=(vector?1U<<kind:0)) return 1;
+            long rejected=raw(SYS_SPAWN_EXT,(uintptr_t)STACK_SELF,(uintptr_t)&opts,sizeof(opts));
+            if(rejected!=SYSCALL_E2BIG) {
+                if(rejected>0) {raw(SYS_KILL,rejected,SIGKILL,0);raw(SYS_WAIT,rejected,(uintptr_t)&status,0);}
+                return 1;
+            }
+            static const char *labels[2][3]={{"STACK reject_argv_count=","STACK reject_argv_string=","STACK reject_argv_total="},
+                {"STACK reject_env_count=","STACK reject_env_string=","STACK reject_env_total="}};
+            number(labels[vector][kind],1);
+        }
         tool_write("stack","STACK PASS\n",11);return 0;
     }
     size_t bytes=0,ebytes=0;unsigned ec=0;
-    for(unsigned i=0;i<32;i++) bytes+=tool_length(argv[i])+1;
-    while(envp[ec]) {ebytes+=tool_length(envp[ec])+1;ec++;}
+    for(unsigned i=0;i<32;i++) {size_t n=tool_length(argv[i])+1;if(n>256) return 1;bytes+=n;}
+    if(argv[32]) return 1;
+    while(ec<=32 && envp[ec]) {size_t n=tool_length(envp[ec])+1;if(n>256) return 1;ebytes+=n;ec++;}
     if(bytes!=1024 || ebytes!=1024 || ec!=32) return 1;
     proc_info_t info;
     if(raw(SYS_PROCINFO,PROC_INFO_SELF,(uintptr_t)&info,0)!=1) return 1;
@@ -110,7 +135,7 @@ int pkg_stack_main(int argc,char **argv,char **envp) {
         number("STACK signals=",signals);
         if(mode==2) number("STACK handler_margin=",signal_low-USER_STACK_BOTTOM_VIRT);
         if(ok || bad!=1 || failed || margin<4096 || low<USER_STACK_BOTTOM_VIRT+4096 ||
-           (mode==2 && (!signals || signal_low>=low))) return 1;
+           (mode==2 && (!signals || signal_low>=low || signal_low<USER_STACK_BOTTOM_VIRT+4096))) return 1;
     }
     return 0;
 }

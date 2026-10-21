@@ -423,3 +423,166 @@ durable floors, writer lease/reservation, transaction/recovery and installed
 NVMe acceptance remain disabled or unimplemented. No release-media build,
 physical disk write, commit or push was performed. Existing concurrent work was
 preserved; no physical acceptance or filesystem-recovery claim is added.
+
+## Isolated maximum-vector rejection and stack review
+
+2026-10-21. Continued the checkpoint at HEAD
+`a6cdffa0af271d5547f4321dfd0c68eb484d73e3`; prior concurrent work, including
+AGENTS.md and README.md, was already present and was left intact. Reviewed the
+completed `pkg-cli-qemu-20261021-102106` summary, preservation manifest, probe,
+build recipe, harness and actual spawn-vector/signal-frame implementation.
+Its four boot passes and separate preservation passes remain valid in their
+documented scope; overlapping rejection limits were a coverage limitation.
+
+Replaced those rejection fixtures with six independent cases, each checking
+both vectors' count/string/total violation masks before SYS_SPAWN_EXT:
+
+| Limit tested, separately for argv and envp | Tested vector including NUL | Other vector |
+| --- | --- | --- |
+| Count +1 | 33 empty strings: 33 bytes, maximum string 1 byte | One empty string |
+| Individual string +1 | One string: 257 bytes total | One empty string |
+| Aggregate bytes +1 | Five strings: 256 + 256 + 256 + 256 + 1 = 1,025 bytes | One empty string |
+
+Each case requires E2BIG; unexpected successful children are killed/reaped before
+failure. The existing accepted child still retains 32 argv and 32 envp entries,
+1,024 bytes each, with 256-byte individual strings. Child checks now bound each
+string, check the argv terminator and bound envp traversal. The wrapper invokes
+the real CLI using five supported arguments while the maximum loader footprint
+remains resident; this does not claim that pkg accepts 32 CLI arguments.
+
+Review fixes: the supplied-test-policy wrapper was previously linked without
+instrumentation, leaving a gap in the claimed C call-chain sampling. It is now
+compiled with -finstrument-functions for the instrumented probe (48-byte .su
+frame). Hook and handler remain deliberately uninstrumented; handler .su frame
+is 520 bytes. Added an explicit >=4,096-byte handler-RSP floor. The harness now
+requires all six individual rejection markers and complete per-command metrics,
+checks margin ranges and signal counts, and records metrics separately for each
+probe in result.json. Prior combined stack_metrics remain available.
+
+Executed `wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_stack_qemu.py` and
+`git diff --check`: PASS. Evidence is
+`.codex-remote-attachments/pkg-cli-qemu-20261021-105323/`, including retained
+copied sources, build.log, private media/ELFs/.su, per-boot argv/UART/results,
+summary.json and manifest.json. Copied-workspace ASan/UBSan gates PASS:
+envelope/identity, 234 manifests, 82 artifacts x4 fragmentation, 490 truncations,
+491 read failures, 40 catalogs, 345 catalog truncations, six composed artifact
+checks, and CLI mocked-syscall success/failure/cleanup checks. Private strict
+freestanding builds and package-local <=1,024-byte frame gates PASS; upstream
+crypto and its existing frame exception are unchanged.
+
+**Boot acceptance PASS: BIOS/UEFI x SMP=1/4, 4/4.** Every boot passes the ten
+ordinary CLI cases and both stack commands with expected exit statuses, six
+isolated E2BIG cases per probe (48 across the matrix), and clean shutdown.
+All four boots have identical margins above USER_STACK_BOTTOM_VIRT:
+
+| Measurement | Bytes remaining |
+| --- | ---: |
+| Plain nested untouched-prefix watermark | 11,224 |
+| Plain wrapper-only sampled RSP (not nested RSP) | 13,600 |
+| Instrumented nested watermark and sampled RSP | 11,112 |
+| Instrumented signal watermark and handler RSP | 10,360 |
+
+Each instrumented boot completes 35 signal deliveries/returns during new sampled
+lows. The successful original and dynamic/fixed/stored artifact verifications
+and bad-signature rejection remain correct. The changed code shape and added
+wrapper instrumentation change margins and delivery count relative to 102106;
+these are measurements of these exact ELFs, not a stack regression comparison.
+
+**Preservation PASS separately:** manifest source_preservation=PASS and
+media_preservation=PASS, empty source/media change lists, HEAD unchanged. This
+covers the runner's inventoried src/user/tests/scripts/Makefile bytes and
+pre-existing shared bin files, not all repository files. This roadmap addition
+follows the completed check. No shared release media was built or restored.
+
+No new failed or partial campaign in this continuation. Earlier 101621/101855
+harness failures and all earlier failures remain retained, with their original
+qualifications above; nothing is reclassified as a full pass. Function-entry
+sampling does not sample every instruction or assembly helper; watermarking
+observes writes rather than untouched allocated frame bytes. Instrumentation
+changes frame/code shape. Synthetic payloads/branches and one 512-byte handler
+do not prove arbitrary adversarial-input maxima, reentrant verification,
+nested signals, other toolchains or installed-root/filesystem recovery.
+Only public fixture keys are used. Installation and production trust provisioning
+remain disabled; no kernel behavior, release integration, physical disk write,
+commit, push or physical acceptance was added.
+
+## Recovery-space design audit
+
+2026-10-21. Added [PKG2_RECOVERY_SPACE_REVIEW.md](../plans/PKG2_RECOVERY_SPACE_REVIEW.md)
+and linked it from the transaction review. Static audit at HEAD `a6cdffa` traces
+mounted rename/replace, directory insertion, file extent rebuilding, orphan
+cleanup, journal staging, ordinary/account allocation checks and detached-root
+account preparation. Existing uncommitted stack fixtures and documentation were
+preserved; AGENTS.md and README.md were not edited.
+
+Finding: the current complete protocol cannot claim allocation-free post-intent
+recovery. Absent-name publication may grow the destination directory; file
+rewrites/reconstruction can allocate external extent nodes even with existing
+data blocks. Existing-file replacement and right-edge orphan cleanup avoid
+filesystem allocation but still need volatile cache/heap/journal/orphan resources.
+Historical EH-2 zero-free-block evidence supports those narrower operations.
+
+Recommendation: develop a persistent mount-admitted recovery grant plus prepared
+publication objects. Atomic grant spending with allocation, admission before
+allocating account preparation, protected namespace/record identity and account
+priority are required design gates. Existing account callbacks bypass the ordinary
+floor, so adding only an ordinary package floor cannot promise progress. No
+account behavior, boot ordering, allocator, syscall or package operation changed.
+Authorization expiry during pending recovery is a separate liveness policy gap.
+
+The review records three analytic counterexamples, compares a narrower
+allocation-free alternative, gives candidate ledger/lifetime rules, and specifies
+host reproductions, write/flush/replay cuts, competing logs/accounts, resource
+exhaustion and private installed-root/Linux-oracle acceptance. These campaigns
+are **NOT RUN**; counterexamples are source deductions, not observed failures.
+Earlier stack matrix passes and retained failures above remain separate evidence.
+
+Validation: `git diff --check` PASS; audited source hashes unchanged during review.
+Inventory/status evidence:
+`.codex-remote-attachments/pkg-recovery-space-review-20261021/manifest.json`.
+No new boot acceptance or shared-media preservation measurement is claimed by
+this documentation-only audit. Installation/production trust remain disabled.
+No build, release-media change, physical write, commit or push was performed.
+
+## Account recovery compatibility candidate and protocol experiment
+
+2026-10-21. Added [PKG2_ACCOUNT_COMPATIBILITY.md](../plans/PKG2_ACCOUNT_COMPATIBILITY.md)
+and linked both earlier transaction/recovery-space reviews. Traced the actual
+account redo engine, service admission/repeated UPDATEs, scoped EXT4 callbacks,
+headroom check, namespace publication and orphan retention. No production source,
+account ABI, authentication, boot or allocator behavior changed. Earlier
+uncommitted stack fixtures/docs and unrelated AGENTS.md/README.md are preserved.
+
+Candidate: accounts take priority over new package admission/work, with independent
+account headroom outside durable package G. Ordinary allocations preserve H+G;
+package spending preserves H+G_after; fixed-role accounts can consume H but must
+preserve G. Effective account headroom is F-G, not raw F. This is an explicit
+proposed compatibility refinement requiring approval and actual EXT4 bounds;
+it is not silently implemented. Package-free roots retain existing behavior.
+No unlimited live-update/pin or unconditional low-memory progress promise.
+
+Executed `wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_account_budget_host.py`:
+ASan/UBSan PASS. Evidence `pkg-account-budget-20261021-115220` under
+`.codex-remote-attachments/` retains copied sources, probe, log and source manifest.
+Actual account_redo.c with synthetic maximum-byte inputs and modelled file/data
+accounting covers 1/2/4 KiB block sizes. A complete update makes seven writes,
+peaks at eight named objects / 57,504 payload bytes, or 57/29/15 data blocks.
+Each pending recovery attempt recreates three publication files even when
+canonical bytes match; final no-pending replay writes none. A separate live pin
+model across 20 updates retains 60 old objects, peaks at 67 total objects and
+529/265/133 data blocks. It does not emulate EXT4 metadata, real descriptors,
+orphan limits, valid userdb parsing or package grants; no mounted/boot acceptance
+or universal account reserve size follows from these figures.
+
+Retained failure `pkg-account-budget-20261021-115200`: incorrect test expectation
+of 65 peak objects omitted retired generations during publication; corrected to
+67. Log/copied fixture preserved; manifest INCOMPLETE, not PASS. No production
+limit or protocol was changed to pass. The successful run's source preservation
+check and `git diff --check` PASS; no shared-media hash or boot claim is added.
+
+Next gate is an isolated actual EXT4 account resource envelope (fragmentation,
+directory growth, independent block/inode/pool exhaustion, retained generations,
+cuts and repeat recovery), followed by reviewed grant/headroom and boot contracts.
+Those new mounted/BIOS/UEFI/Linux-oracle campaigns are NOT RUN here. Installation
+and production trust remain disabled. Only a private host probe was built;
+no release-media build, physical write, commit or push.

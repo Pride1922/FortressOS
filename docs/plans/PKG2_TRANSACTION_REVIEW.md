@@ -54,6 +54,10 @@ authorization. No hidden account bypass or ambient reservation on all root I/O.
 
 ## Allocation reservation and account priority
 
+See [account recovery compatibility](PKG2_ACCOUNT_COMPATIBILITY.md) for the
+source trace, isolated protocol measurements and proposed independent-headroom
+rules. Existing raw-free preflight and scoped bypass do not yet enforce them.
+
 Existing `ext4_mutate.inc` checks the ordinary account floor under filesystem
 exclusion; `ext4_root_account_headroom` reports that floor independently.
 Preserve at least ceil(256 KiB / block size) free blocks and 16 free inodes.
@@ -85,6 +89,12 @@ new allocator exception must never be inserted into account recovery to solve a
 package liveness problem.
 
 ### Critical cross-boot limit
+
+The [source-backed recovery-space review](PKG2_RECOVERY_SPACE_REVIEW.md)
+finds concrete post-intent directory/extent allocation paths, compares both
+directions and recommends developing a persistent mount-admitted grant with
+prepared publication objects. Account-priority compatibility and atomic durable
+spending remain blockers; this recommendation authorizes no kernel changes.
 
 A volatile lease/reservation cannot protect free space after owner death/reboot.
 Releasing the grant and letting logs consume it can strand a valid pending

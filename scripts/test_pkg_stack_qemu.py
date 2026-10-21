@@ -29,6 +29,8 @@ def prepare(work, log, stage):
              '-mno-sse', '-mno-mmx', '-msoft-float', '-ffunction-sections',
              '-fdata-sections', '-fstack-usage', *INCLUDES]
     objects = []
+    fixture.run(flags+['-Wframe-larger-than=1024', '-finstrument-functions', '-c',
+                      'build/pkg-cli/test-policy.c', '-o', str(build/'policy.o')], work, log)
     for i, src in enumerate(SOURCES+['src/lib/string.c']+VENDORS):
         obj = build/f'unit-{i}.o'
         extra = ['-include', 'src/lib/crypto/namespace.h'] if src in VENDORS else []
@@ -42,7 +44,7 @@ def prepare(work, log, stage):
                  '-o', str(build/'start.o')], work, log)
     fixture.run(['ld', '-nostdlib', '-static', '-z', 'noexecstack', '--gc-sections', '-T',
                  'user/shell.ld', str(build/'start.o'), str(build/'probe.o'),
-                 'build/pkg-cli/test-policy.o', *objects, '-o', str(build/'probe.elf')], work, log)
+                 str(build/'policy.o'), *objects, '-o', str(build/'probe.elf')], work, log)
     import shutil
     shutil.copyfile(build/'probe.elf', stage/'bin/pkg-stack')
     fixture.run(flags+['-Wframe-larger-than=1024', '-DSTACK_PLAIN',
