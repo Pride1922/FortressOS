@@ -13,7 +13,13 @@ static ext4_mount_t *mounted;
 static account_io_t backend;
 static account_workspace_t workspace;
 static unsigned interrupt_role=ACCOUNT_ROLE_COUNT,writes_seen,interrupted;
+#ifdef TEST_PKG_NAMESPACE_ADMISSION
+static bool ns_deny_reads;
+#endif
 static bool rd(block_dev_t *d,uint64_t l,void *p) {
+#ifdef TEST_PKG_NAMESPACE_ADMISSION
+    if (ns_deny_reads) return false;
+#endif
     if(l>=d->sector_count)return false;
     memcpy(p,disk_bytes+l*d->sector_size,d->sector_size);return true;
 }
@@ -38,6 +44,9 @@ static int write_role(void *p,unsigned role,const void *data,size_t length) {
     assert(!backend.sync(p));interrupted++;
     printf("INTERRUPT durable_empty_role=%u\n",role);return -VFS_EIO;
 }
+#ifdef TEST_PKG_NAMESPACE_ADMISSION
+#include "pkg_namespace_kernel_host.inc"
+#endif
 int main(int argc,char **argv) {
     assert(argc==4);unsigned sector=(unsigned)strtoul(argv[2],NULL,10);
     image=fopen(argv[1],"r+b");assert(image && !fseeko(image,0,SEEK_END));
@@ -46,8 +55,19 @@ int main(int argc,char **argv) {
     assert(fread(disk_bytes,1,bytes,image)==bytes);
     block_dev_t dev={.sector_size=sector,.sector_count=bytes/sector,.read_sector=rd,.write_sector=wr,.flush=flush};
     vfs_init();assert(!ext4_prepare_root(&dev,true,&mounted));
-    assert(!ext4_root_account_io(mounted,&backend));account_io_t io=backend;
+#ifdef TEST_PKG_NAMESPACE_ADMISSION
+    bool namespace_only_test=!strcmp(argv[3],"reject") || !strcmp(argv[3],"oom") || !strcmp(argv[3],"read-error");
+    if (!namespace_only_test) {assert(!ext4_root_account_io(mounted,&backend));}
+#else
+    assert(!ext4_root_account_io(mounted,&backend));
+#endif
+    account_io_t io=backend;
     io.write=write_role;io.validate=valid;
+#ifdef TEST_PKG_NAMESPACE_ADMISSION
+    if (ns_kernel_test(argv[3])) {
+        assert(!ext4_freeze_and_sync(mounted));assert(!fclose(image));free(disk_bytes);return 0;
+    }
+#endif
     unsigned char sb[1024];assert(e4_bytes(mounted,1024,sb,sizeof(sb)));
     assert((uint64_t)e4_u32(sb+12)*mounted->bs>262144 && e4_u32(sb+16)>16);
     printf("HEADROOM blocks=%u inodes=%u block_size=%u\n",e4_u32(sb+12),e4_u32(sb+16),mounted->bs);
@@ -55,11 +75,20 @@ int main(int argc,char **argv) {
     if(!strcmp(argv[3],"shadow"))interrupt_role=ACCOUNT_TEMP_SHADOW;
     if(!strcmp(argv[3],"group"))interrupt_role=ACCOUNT_TEMP_GROUP;
     int result;
+#ifdef TEST_PKG_NAMESPACE_ADMISSION
+    unsigned recovery_start=writes_seen;
+#endif
     if(update) {
         assert(!account_redo_recover(&io,&workspace));
         for(unsigned i=0;i<3;i++){workspace.lengths[i]=8192;memset(workspace.files[i],'A'+i,8192);}
         result=account_redo_update(&io,&workspace,1);
     } else result=account_redo_recover(&io,&workspace);
+#ifdef TEST_PKG_NAMESPACE_ADMISSION
+    if(!strcmp(argv[3],"bad-intent")) {
+        assert(result==-VFS_EINVAL && writes_seen==recovery_start);
+        puts("SEMANTIC REJECT PASS corrupt intent rejected by redo after structural fencing; writes=0");
+    } else
+#endif
     if(interrupt_role<ACCOUNT_ROLE_COUNT){assert(interrupted==1 && result==-VFS_EIO);}
     else if(!strcmp(argv[3],"blocked")) {
         assert(result==-VFS_EFBIG);assert(!backend.sync(backend.context));

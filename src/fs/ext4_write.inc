@@ -16,6 +16,9 @@ static int e4_state_account(vfs_node_t *node,bool account) {
         return n->replaced ? -VFS_EAGAIN : -VFS_ENOENT;
     ext4_mount_t *fs=n->inode.fs;
     if (fs->engine && fs->engine->tainted) return -VFS_EIO;
+    if (!account && fs->account_namespace_fenced && (e4_ns_parent(fs,n->inode.ino) ||
+        (n->inode.ino!=2 && node->parent && node->parent->fs_private &&
+         e4_ns_parent(fs,((e4_inode_t *)node->parent->fs_private)->ino)))) return -VFS_EROFS;
     if (!account && e4_account_inode(fs,n->inode.ino)) return -VFS_EROFS;
     return !fs->engine || fs->frozen ? -VFS_EROFS : 0;
 }
@@ -190,7 +193,9 @@ static void e4_dir_entry(uint8_t *b,uint32_t ino,unsigned len,const char *name,u
  * the same plan as the initialized directory block. */
 static int e4_dir_edit(ext4_engine_t *e,e4_inode_t *in,const char *name,uint32_t ino,unsigned type) {
     ext4_mount_t *fs=e->fs; in->map=NULL;
+    if (e4_ns_parent(fs,in->ino) && !fs->account_namespace_operation) return e->error=-VFS_EROFS;
     uint32_t found; int r=e4_scan(in,name,0,NULL,&found); if (r<0) return e->error=r;
+    if (found && e4_ns_anchor(fs,found)) return e->error=-VFS_EROFS;
     if (ino && found) return e->error=-VFS_EEXIST;
     if (!ino && !found) return e->error=-VFS_ENOENT;
     unsigned need=(8+(unsigned)strlen(name)+3)&~3u;

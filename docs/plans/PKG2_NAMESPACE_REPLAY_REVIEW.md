@@ -135,8 +135,9 @@ actual planner peaks, pools and journal recovery.
 
 The subsequent [six-record admission candidate](PKG2_NAMESPACE_ADMISSION.md)
 provides a restrictive `/etc` profile with an inductive capacity argument and
-finite restart exploration. It does not yet implement mount admission, private
-staging-directory admission or durable writer fencing.
+finite restart exploration. An [opt-in implementation](PKG2_NAMESPACE_KERNEL.md)
+now scans both parents and holds a mount-lifetime fence; production admission,
+durable grant/marker reconstruction and boot integration remain absent.
 
 Cleaning all publication temporaries before restarting publication is a
 candidate protocol change to review, not an implemented remedy or a proof of

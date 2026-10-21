@@ -94,6 +94,18 @@ int ext4_root_account_io(ext4_mount_t *,account_io_t *);
 #define EXT4_ACCOUNT_RESERVE_BYTES (256u*1024u)
 #define EXT4_ACCOUNT_RESERVE_INODES 16u
 int ext4_root_account_headroom(ext4_mount_t *);
+/* Opt-in structural namespace admission, detached trusted journal root only.
+ * Read-only validation followed atomically by a mount-lifetime fence; no disk
+ * marker, package grant, database authentication or production caller. Caller
+ * must separately validate canonical/pending/staging coherence before any
+ * authentication/publication, and re-admit on every remount BEFORE publication.
+ * Requires >=6 exact /etc slots and >=5 private account-directory slots.
+ * Ordinary namespace mutations in either parent, ancestor relocation/metadata
+ * changes and ordinary writes to their cached children are excluded. Fixed-role
+ * account callbacks retain access. No unfence operation; discard ends ownership.
+ * Zeroed report on failure. No directory creation, relayout or device writes. */
+typedef struct { uint32_t slots[2],present_roles; } ext4_account_namespace_report_t;
+int ext4_root_account_namespace_admit(ext4_mount_t *,ext4_account_namespace_report_t *);
 int ext4_sync_installed_root(bool *handled);
 /* Narrow host-identity storage adapter. Installed-root handle is boot-lifetime;
  * no new mount/publication. Detached installer callers supply their own fs.

@@ -208,7 +208,9 @@ static vfs_node_t *e4_jcreate_account(vfs_node_t *parent,const char *name,vfs_no
     if (!r) {node=kcalloc(1,sizeof(*node));if (!node) r=-VFS_ENOMEM;}
     if (!r) {
         fs->account_allocation=account;
+        fs->account_namespace_operation=account;
         r=ext4_engine_namespace_create_attrs(fs->engine,((e4_inode_t *)parent->fs_private)->ino,name,type==VFS_DIRECTORY,attrs,&ino);
+        fs->account_namespace_operation=false;
         fs->account_allocation=false;
     }
     e4_inode_t in;
@@ -247,6 +249,7 @@ static int e4_junlink_account(vfs_node_t *parent,const char *name,bool require_d
     if (!r) { r=e4_journal_refresh(parent);if (!r) r=e4_scan(parent->fs_private,name,0,NULL,&ino); }
     if (r>=0 && !ino) r=-VFS_ENOENT;
     if (r>=0) r=e4_inode(fs,ino,&in);
+    if (!r && e4_ns_anchor(fs,ino)) r=-VFS_EROFS;
     if (!r && !account && e4_account_inode(fs,ino)) r=-VFS_EROFS;
     if (!r && require_directory && in.mode!=VFS_S_IFDIR) r=-VFS_ENOTDIR;
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
@@ -261,7 +264,11 @@ static int e4_junlink_account(vfs_node_t *parent,const char *name,bool require_d
     (void)actor;
 #endif
     bool attempted=!r;
-    if (!r) r=ext4_engine_namespace_remove(fs->engine,((e4_inode_t *)parent->fs_private)->ino,name,in.mode==0x4000);
+    if (!r) {
+        fs->account_namespace_operation=account;
+        r=ext4_engine_namespace_remove(fs->engine,((e4_inode_t *)parent->fs_private)->ino,name,in.mode==0x4000);
+        fs->account_namespace_operation=false;
+    }
     /* Cleanup can fail after the durable name removal. Retire the cached name
      * on success or a still-registered orphan; do not expose a stale dentry. */
     if (!r || (attempted && ino && e4_orphan_index(fs->engine,ino)>=0)) {
@@ -296,6 +303,7 @@ static int e4_jrename_account(vfs_node_t *old,const char *name,vfs_node_t *dest,
     uint32_t source=0;e4_inode_t in;
     if (!r) {r=e4_journal_refresh(old);if (!r) r=e4_scan(old->fs_private,name,0,NULL,&source);if (r>=0) r=source ? e4_inode(fs,source,&in) : -VFS_ENOENT;}
     if (!r && !account && e4_account_inode(fs,source)) r=-VFS_EROFS;
+    if (!r && e4_ns_anchor(fs,source)) r=-VFS_EROFS;
     uint32_t victim=0;bool victim_scanned=false;
     if (!r && require_directory && in.mode!=VFS_S_IFDIR) r=-VFS_ENOTDIR;
     if(!r && in.mode==VFS_S_IFDIR && account)r=-VFS_EOPNOTSUPP;
@@ -321,14 +329,17 @@ static int e4_jrename_account(vfs_node_t *old,const char *name,vfs_node_t *dest,
 #endif
     if (!r && !victim_scanned) {r=e4_scan(dest->fs_private,next,0,NULL,&victim);if (r>=0) r=0;}
     if (!r && !account && victim && e4_account_inode(fs,victim)) r=-VFS_EROFS;
+    if (!r && victim && e4_ns_anchor(fs,victim)) r=-VFS_EROFS;
     if (!r && old==dest && !strcmp(name,next)) goto done;
     if(!r&&in.mode==VFS_S_IFDIR)r=e4_move_ancestry(fs,source,((e4_inode_t *)dest->fs_private)->ino);
     if(!r&&victim)r=-VFS_EEXIST;
     if(!r)r=e4_move_cache_prepare(fs,old,name,dest,next,source,in.mode==VFS_S_IFDIR,&publication);
     if (!r) {
         fs->account_allocation=account;
+        fs->account_namespace_operation=account;
         r=ext4_engine_namespace_rename(fs->engine,((e4_inode_t *)old->fs_private)->ino,name,
                                      ((e4_inode_t *)dest->fs_private)->ino,next);
+        fs->account_namespace_operation=false;
         fs->account_allocation=false;
     }
     if (!r) {

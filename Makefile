@@ -965,6 +965,18 @@ test-pkg-account-replay-model: scripts/test_pkg_account_replay_model.py tests/pk
 	@python3 scripts/test_pkg_account_replay_model.py
 
 .PHONY: test-pkg-account-namespace-host
+.PHONY: test-pkg-namespace-kernel test-pkg-namespace-kernel-regression test-pkg-private-namespace
+test-pkg-private-namespace: scripts/test_pkg_private_namespace.py
+	@python3 scripts/test_pkg_private_namespace.py
+
+test-pkg-namespace-kernel: scripts/test_pkg_namespace_kernel.py tests/pkg_namespace_kernel_host.inc src/fs/ext4_account_namespace.inc
+	@test -n "$(PKG_NAMESPACE_CAMPAIGN)"
+	@python3 scripts/test_pkg_namespace_kernel.py "$(PKG_NAMESPACE_CAMPAIGN)"
+
+test-pkg-namespace-kernel-regression: scripts/test_pkg_namespace_kernel_regression.py
+	@test -n "$(PKG_NAMESPACE_KERNEL_CAMPAIGN)"
+	@python3 scripts/test_pkg_namespace_kernel_regression.py "$(PKG_NAMESPACE_KERNEL_CAMPAIGN)"
+
 .PHONY: test-pkg-namespace-admission test-pkg-namespace-admission-ext4
 test-pkg-namespace-admission: scripts/test_pkg_namespace_admission.py tests/pkg_namespace_admission.py tests/pkg_account_replay_model.py
 	@python3 scripts/test_pkg_namespace_admission.py

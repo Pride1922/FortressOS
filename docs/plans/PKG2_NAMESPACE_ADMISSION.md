@@ -1,8 +1,9 @@
 # PKG-2 restart-safe namespace admission candidate
 
 Status: sufficient, deliberately restrictive `/etc` profile and host test
-specification. No production scanner, persistent grant, writer fence, root
-provisioning, account protocol change or boot integration is implemented.
+specification, now backed by an [opt-in EXT4 scanner and mount-lifetime fence](PKG2_NAMESPACE_KERNEL.md).
+No production caller, persistent grant, root provisioning, account protocol
+change or boot integration is implemented.
 
 This addresses the [observed two-interruption failure](PKG2_NAMESPACE_REPLAY_REVIEW.md).
 It does not authorize mutation or replace block/inode/pool admission. A normal
@@ -81,15 +82,17 @@ by this conservative classifier. Other five-record layouts demonstrably block.
 
 The argument excludes every other creator, unlinker, renamer and directory
 layout mutator in the protected parent, including privileged writers and package
-operations. A future implementation must enforce that boundary from admission
-through intent retirement, across owner death and remount. Checking once then
+operations. The opt-in implementation now holds that boundary for a mount's
+lifetime, independently of owner death. Future production integration must
+re-establish it on remount before publication and bind it to grant ownership.
+Checking once then
 allowing an unrelated writer to consume a record invalidates the proof.
 Filesystem exclusion for one operation does not establish a durable fence.
 
-The accounts private staging directory is a separate namespace. Its creation,
-stage and intent/pending names, metadata, aliases and capacity also require a
-reviewed admission argument. The current finite model holds that directory
-fixed, and the actual fixtures have ample capacity there. This `/etc` result is
+The accounts private staging directory is a separate namespace. The original
+finite model holds it fixed. The [subsequent implementation](PKG2_NAMESPACE_KERNEL.md)
+adds its five-record profile and a separate finite geometry check; it does not
+create or provision that directory during admission. This `/etc` result is
 not a complete account/package namespace admission contract. Package inventory,
 grant and transaction parents require their own proof and fencing.
 
@@ -152,9 +155,10 @@ There were no failed/partial campaigns in this continuation; prior namespace
 fixture/observer failures remain retained under their original qualifications.
 `git diff --check` and both opt-in target dry-runs pass.
 
-Next gate: private staging-parent capacity and role/alias validation, followed
-by a concrete durable writer-fence contract and remaining-resource refinement.
+The subsequent implementation supplies private-parent structural validation
+and an opt-in mount-lifetime fence. Durable package marker/grant ownership,
+remaining-resource refinement and production failure routing remain open.
 The structural predicate must not be connected to a writable production mount
-until those dependencies and failure routing are reviewed. Installation,
+until those dependencies are reviewed. Installation,
 production trust provisioning and grants remain disabled. No release build,
 physical write, push or fresh Ring 3 boot acceptance accompanies these host tests.

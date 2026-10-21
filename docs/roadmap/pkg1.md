@@ -861,3 +861,52 @@ writer negative control explicitly invalidates admission when it steals a bin.
 Next gate addresses those private-parent and fence prerequisites. Installation,
 production trust, provisioning, release media, physical writes and pushes remain
 disabled; concurrent USB work is preserved separately.
+
+## Opt-in namespace scanner and mount-lifetime fence (2026-10-21)
+
+[Implementation, lifecycle and exact evidence](../plans/PKG2_NAMESPACE_KERNEL.md).
+Added `ext4_root_account_namespace_admit()` without any production caller. It
+validates the actual six-record `/etc` and five-record private account parent,
+role metadata/link counts/aliases and root/ancestor identities under existing
+filesystem exclusion, then atomically arms both fences. Admission does not
+write, create or relayout directories. No package grant or disk marker exists.
+
+The fence blocks ordinary creators, unlinkers, renamers, replacements and child
+data/metadata writers, plus ancestor relocation and metadata changes. Fixed-role
+account callbacks use a separate scoped namespace-operation flag; the allocator
+bypass/floor policy is unchanged. The fence has no process-owner release or
+unfence operation. It survives account writer exit for this mount, but a future
+production caller must explicitly re-admit on every remount before publication.
+Existing roots without opt-in retain their behavior; boot/installer code is unchanged.
+
+Primary `pkg-namespace-kernel-20261021-140820`: **72/72 states PASS**, actual
+EXT4/JBD2/redo ASan/UBSan + Linux fsck/debugfs, three block sizes x two sector
+sizes. Includes 24 interrupted/completed redo states, 42 zero-write API refusals
+and six legacy no-opt-in controls. Every admitted process checks root-actor
+fence denials, unrelated `/var` progress, idempotence, taint-latched fencing and
+published-root refusal. Host scanner frame maximum 640 B; source inventory
+comparison passes with no changed inventoried sources.
+
+Supplement `pkg-namespace-regression-20261021-142535`: **6/6 profiles PASS**:
+actual legacy account service x2, corrupt-intent/retained-foreign-handle/pthread
+writer overlap x2 and ownership denials x2. Actual redo unit suite 2586 cases /
+49 operation boundaries PASS; freestanding EXT4 object compile PASS, new scanner
+frame maximum 272 B. Neither object compilation nor host pthread tests establishes
+new boot/SMP/IRQ acceptance. The corrupt record remains semantically rejected
+despite structural admission, with detached root and zero redo writes.
+
+Private-parent geometry model `pkg-private-namespace-20261021-141816`: **6141
+shapes / 58017 edges PASS**, including rename with source still present and the
+four-slot negative. Its C references are not executed by the Python model.
+
+Retained attempts: `140235` interrupted after allocator-bypass scope review;
+`140456` FAIL in bad-mode harness setup before the scanner. Final code separates
+namespace authorization from allocation policy and negative cases skip setup.
+Original logs/status and qualifications remain. Source inventories and private
+image preservation are distinct from whole-repository/media or boot acceptance.
+
+Next: durable package marker/grant/resource admission and reviewed mount failure
+routing, then production re-admission integration. Structural capacity alone is
+not database authentication, guaranteed I/O progress or permission to install.
+Installation, production trust/provisioning and grants remain disabled. No release
+media, physical writes or pushes; concurrent USB changes are left separate.

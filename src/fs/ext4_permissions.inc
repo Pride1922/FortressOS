@@ -49,6 +49,7 @@ static int e4_setattr_actor(vfs_node_t *node,bool chown,uint32_t mode,
     uint64_t irq=spin_lock_irqsave(&e4_lock);
     e4_node_t *n=(e4_node_t *)node;ext4_mount_t *fs=n->inode.fs;
     int r=e4_state(node);
+    if (!r && e4_ns_anchor(fs,n->inode.ino)) r=-VFS_EROFS;
     if (!r && !fs->journal_mounted) r=-VFS_EOPNOTSUPP;
     if (!r) r=e4_journal_refresh(node);
     vfs_metadata_t next;

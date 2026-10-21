@@ -50,6 +50,9 @@ struct ext4_mount {
     bool installer_owned;
     bool accounts_mutable;
     bool account_allocation; /* Only fixed-role account callbacks under e4_lock. */
+    bool account_namespace_fenced; /* Explicit detached-root opt-in; mount lifetime. */
+    bool account_namespace_operation; /* Fixed-role namespace operation under e4_lock. */
+    uint32_t account_namespace_anchors[5]; /* /etc, /var, /var/lib, fortress, accounts */
     int cleanup_error; /* Close has no return channel; acknowledged by sync. */
 #ifdef FORTRESS_EXT4_HEALTH_TEST
     bool health_test_failed; /* Disposable probe only: one pre-I/O cleanup denial. */
@@ -91,6 +94,17 @@ int ext4_test_arm_commit_pause(ext4_mount_t *mount,void (*pause)(void)) {
 }
 #endif
 static ext4_mount_t *e4_active;
+static bool e4_ns_parent(const ext4_mount_t *fs,uint32_t ino) {
+    return fs->account_namespace_fenced &&
+        (ino==fs->account_namespace_anchors[0] || ino==fs->account_namespace_anchors[4]);
+}
+static bool e4_ns_anchor(const ext4_mount_t *fs,uint32_t ino) {
+    if (fs->account_namespace_fenced) {
+        if (ino==2) return true;
+        for (unsigned i=0;i<5;i++) if (ino==fs->account_namespace_anchors[i]) return true;
+    }
+    return false;
+}
 static bool e4_account_inode(const ext4_mount_t *fs,uint32_t ino) {
     for (unsigned i=0;i<4;i++) if (fs->account_inodes[i]==ino) return true;
     return false;
@@ -916,6 +930,7 @@ int ext4_mount_rw(block_dev_t *dev,const char *path,ext4_mount_t **out) {
 #include "ext4_hostkey.inc"
 #endif
 #include "ext4_accounts.inc"
+#include "ext4_account_namespace.inc"
 #include "ext4_stage_test.inc"
 
 static size_t e4_profile_text(char *out,size_t cap,size_t n,const char *text) {

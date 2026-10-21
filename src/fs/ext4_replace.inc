@@ -3,6 +3,7 @@
 static int e4_replace_entry(ext4_engine_t *e,e4_inode_t *dir,const char *name,
                             uint32_t expected,uint32_t next) {
     ext4_mount_t *fs=e->fs;uint32_t found=0;dir->map=NULL;
+    if (e4_ns_parent(fs,dir->ino) || e4_ns_anchor(fs,expected)) return -VFS_EROFS;
     int r=e4_scan(dir,name,0,NULL,&found);if(r<0)return r;
     if(found!=expected)return -VFS_EIO;
     for(uint32_t l=0;l<dir->size/fs->bs;l++) {
