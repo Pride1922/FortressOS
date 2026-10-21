@@ -960,6 +960,10 @@ test-pkg-account-ext4-host: scripts/test_pkg_account_ext4_host.py tests/pkg_acco
 	@python3 scripts/test_pkg_account_ext4_host.py
 
 .PHONY: test-pkg-account-bounds-host
+.PHONY: test-pkg-account-replay-model
+test-pkg-account-replay-model: scripts/test_pkg_account_replay_model.py tests/pkg_account_replay_model.py
+	@python3 scripts/test_pkg_account_replay_model.py
+
 test-pkg-account-bounds-host: scripts/test_pkg_account_bounds.py
 	@test -n "$(PKG_ACCOUNT_CAMPAIGN)"
 	@python3 scripts/test_pkg_account_bounds.py "$(PKG_ACCOUNT_CAMPAIGN)"

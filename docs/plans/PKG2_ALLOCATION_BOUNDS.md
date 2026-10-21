@@ -150,6 +150,11 @@ full userdb/service admission as documented there.
 
 ## What is still needed for a durable reservation
 
+Follow-up: [finite replay-budget model](PKG2_REPLAY_BUDGET_MODEL.md) now gives
+`remaining = future_peak - allocated`, tests separate package-grant protection,
+and records a restart-specific directory-slot counterexample. Its finite
+results do not establish actual-code refinement or universal headroom.
+
 Do not multiply U by an unbounded retry count, or treat R as a fresh reserve
 available on every reboot. A cut can retain new canonical bytes, partial files
 or directory growth; those consume part of an earlier promise. Boot orphan

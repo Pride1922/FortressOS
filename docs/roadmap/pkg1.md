@@ -730,3 +730,56 @@ inodes unchanged; no guessed larger reserve or production A/H freeze is justifie
 yet. Installation, production trust, package grants, boot integration and physical
 acceptance remain disabled/unimplemented; no release-media build, physical write
 or push. User-authorized commits cover the test/design checkpoint only.
+
+## Finite remaining-budget and namespace replay model
+
+2026-10-21, continued from `7797f0e`. Added
+[PKG2_REPLAY_BUDGET_MODEL.md](../plans/PKG2_REPLAY_BUDGET_MODEL.md), a pure Python
+state explorer, copied-source evidence runner and opt-in
+`make test-pkg-account-replay-model`. No production behavior changed.
+
+Executed `wsl -d Ubuntu-24.04 -- python3 scripts/test_pkg_account_replay_model.py`.
+Final campaign: `.codex-remote-attachments/pkg-account-model-20261021-130646/`.
+**PASS: 324 profiles, 1,165,689 state instances, 2,324,700 edges**, two negative
+arithmetic controls, explicit source-preservation PASS and unchanged inventories.
+The finite family spans 1/2/4 KiB blocks, three slot layouts, 1/4/5 initial
+directory blocks, zero/one growth block and six canonical-position permutations.
+Publication order is unchanged. 216 profiles admit; 108 correctly reject.
+
+Model rule: `remaining = worst future allocation peak - already allocated`.
+Allocated stages, persistent directory growth and retired objects stay charged;
+rename moves one owned object, and verified unpinned orphan reclaim credits its
+resources exactly once. A fixed independent package grant remains protected in
+both block and inode dimensions at every transition and transient peak. No grant
+is actually provisioned or enforced in the kernel by this experiment.
+
+Found and retained an important namespace counterexample: complete two roles,
+leave a later empty publication temporary, restart and leave another later
+temporary, then restart at the first role. Suitable slots can all be occupied
+when no growth remains; enough raw free space cannot guarantee recovery. Saved
+program-counter traces identify the blocked create and durable role state.
+Mixed layouts can finish uninterrupted yet reject restart-safe admission.
+This is an abstract counterexample requiring actual mounted-backend reproduction;
+it does not change cleanup order or demonstrate a new observed kernel failure.
+
+Earlier raw PASS `pkg-account-model-20261021-125919` is explicitly disqualified
+as valid-layout evidence because its seed could end with an invalid four-byte
+directory record. It had already completed before an attempted interrupt;
+original output remains unchanged, with separate qualification.json. Corrected
+`130047` passes valid-seed checks; `130304` adds counterexample traces; final
+`130646` additionally asserts the uninterrupted-versus-restart distinction.
+No rejected profile is reclassified as an admitted one to obtain a green gate.
+
+This is a finite model, not actual C execution, ASan/UBSan, Linux-oracle,
+firmware, physical or universal-proof acceptance. It omits live pins, arbitrary
+writers, real allocation groups and bounded pools, journal sectors, malformed
+records and actual account/package concurrency. Peak remaining headroom in the
+admitted finite family is 53/23/11 blocks plus three inodes; those figures do not
+replace the source-derived U/R bounds or freeze production headroom.
+
+Next gate: reproduce the saved two-interruption slot witness in actual EXT4 and
+refine a restart-safe namespace/remaining-budget admission profile. Admission
+must derive state from validated retained ownership, never reset a constant
+grant or add allocated stage bytes to free credit. Protected runtime changes
+remain subject to review. `git diff --check` and target dry-run pass; no release
+build, physical write, production trust, installation or push.
