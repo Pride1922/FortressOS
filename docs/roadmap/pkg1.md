@@ -910,3 +910,41 @@ routing, then production re-admission integration. Structural capacity alone is
 not database authentication, guaranteed I/O progress or permission to install.
 Installation, production trust/provisioning and grants remain disabled. No release
 media, physical writes or pushes; concurrent USB changes are left separate.
+
+## 2026-10-21 — durable grant and mount-admission candidate
+
+[Candidate design](../plans/PKG2_DURABLE_GRANT_DESIGN.md) now specifies explicit
+enrollment/boot authority, fixed marker/ledger/ownership records, resource
+conservation, transaction phases and failure routing. Durable grants survive
+owner death; actual tagged reclamation refunds once, baseline frees do not refund,
+and publication transfers ownership without inventing free resources. Missing or
+corrupt required metadata never falls back to a zero grant or writable legacy root.
+
+Review found two integration blockers: account allocator bypass must explicitly
+preserve package escrow, and reconstruction must precede current constructor
+orphan cleanup as well as `accounts_prepare`. A new internal preview validator is
+needed; the existing detached-root public namespace API cannot run that early.
+The `/var` 0700 versus namespace-profile 0755 mismatch remains an explicit
+enrollment refusal, with no automatic permission change. Boot selector authority,
+production bounds and recovery capability expiry/revocation remain review gates.
+
+Private `pkg-grant-design-20261021-164510`: finite Python model **PASS**, 4900
+states / 21456 edges / 42912 complete before-or-after restart selections; nine
+independent block/inode boundary cases; ten mount-policy cases; 40320 permutations
+with exactly one satisfying the prescribed serial order; eleven negative controls
+detected. Restart selections assume atomic journal outcomes: they do not test real
+writes/flushes. Order enumeration checks the specified policy, not actual boot
+control flow. No production quota, binary parser, C/JBD2 integration, Ring 3,
+SMP or boot acceptance follows. All retained run output and the source snapshot
+are under `.codex-remote-attachments/pkg-grant-design-20261021-164510/`.
+
+The listed source/AGENTS/README hashes match across model execution; this is
+separate from boot acceptance and is not a whole-repository/media preservation
+claim. Concurrent USB/HID work remains untouched. No kernel or release-media
+build, installation, production trust provisioning, push or physical write was
+performed. No failed model run occurred in this checkpoint; earlier retained
+namespace failures remain recorded above.
+
+Next: review the candidate contract and implement a private actual-code ledger
+codec/planner adapter with malformed-record and atomic accounting cut tests,
+before considering protected mount hooks. Installation remains disabled.

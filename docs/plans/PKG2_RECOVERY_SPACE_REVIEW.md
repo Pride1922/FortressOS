@@ -171,6 +171,10 @@ Roots with no package metadata must retain current behavior; distinguish absence
 from unreadable, malformed or partially provisioned metadata using a reviewed
 provisioning marker/format, not a permissive missing-file fallback.
 
+Follow-up: [durable grant and mount-admission candidate](PKG2_DURABLE_GRANT_DESIGN.md)
+specifies candidate encoding, provenance, atomic accounting and early mount
+ordering. Numeric planner bounds and production integration remain unresolved.
+
 ## Acceptance gates and sequence
 
 All gates below are **NOT RUN**; this is a specification for subsequent work.

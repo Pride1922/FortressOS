@@ -6,6 +6,12 @@ this document. Builds on [PKG-1](PKG1_DESIGN.md) and existing EH-2/3/5/6 contrac
 Target mutation remains disabled until the decisions and acceptance gates below
 are resolved. Account recovery remains a separate fixed-role protocol.
 
+The later [durable grant and mount-admission candidate](PKG2_DURABLE_GRANT_DESIGN.md)
+refines reservation lifetime: once a grant is durable, even pre-intent owner death
+retains it until durable cleanup. The volatile close rule below applies only to
+reservations that have never been durably enrolled. Its fixed slot and proposed
+mount sequence remain design candidates, not implemented package APIs.
+
 ## One writer with lifetime ownership
 
 Recommend a kernel-owned package session handle, effective UID 0 and existing
