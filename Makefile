@@ -600,7 +600,31 @@ test-usb-persistence: $(BOOTABLE_IMG)
 	@python3 scripts/test_usb_mount_host.py
 	@python3 scripts/test_usb_persistence.py
 
-.PHONY: test-hub-host test-hub-host-tsan test-usb-hid test-usb-hub test-usb-mouse
+.PHONY: test-hub-host test-hub-host-tsan test-usb-hid test-usb-hub test-usb-mouse test-rtl8153-host test-wlan-crypto-host test-wlan-mac-host test-wlan-wpa2-host test-wifi-host
+test-wifi-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwlwifi.c -o $(BUILD_DIR)/wifi_host
+	@$(BUILD_DIR)/wifi_host
+test-wlan-wpa2-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/net/wlan tests/wlan_wpa2_host.c src/net/wlan/wlan_crypto.c src/net/wlan/wlan_wpa2.c -o $(BUILD_DIR)/wlan_wpa2_host
+	@$(BUILD_DIR)/wlan_wpa2_host
+
+test-wlan-mac-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/net/wlan tests/wlan_mac_host.c src/net/wlan/net_80211.c -o $(BUILD_DIR)/wlan_mac_host
+	@$(BUILD_DIR)/wlan_mac_host
+
+test-wlan-crypto-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/net/wlan tests/wlan_crypto_host.c src/net/wlan/wlan_crypto.c -o $(BUILD_DIR)/wlan_crypto_host
+	@$(BUILD_DIR)/wlan_crypto_host
+
+test-rtl8153-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DRTL8153_HOST_TEST -Isrc/include -Isrc/drivers -Isrc/kernel -Isrc/arch/x86_64 tests/rtl8153_host.c src/drivers/rtl8153.c -o $(BUILD_DIR)/rtl8153_host
+	@$(BUILD_DIR)/rtl8153_host
+
 test-hub-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -Isrc/include -Isrc/drivers -Isrc/kernel -Isrc/arch/x86_64 -Isrc/fs tests/hub_host.c src/drivers/xhci_rings.c src/drivers/keyboard.c -o $(BUILD_DIR)/hub_host
@@ -634,6 +658,7 @@ USER_SYSINFO_ELF := $(BUILD_DIR)/sysinfo.elf
 USER_DMESG_ELF := $(BUILD_DIR)/dmesg.elf
 USER_IFCONFIG_ELF := $(BUILD_DIR)/ifconfig.elf
 USER_IFUP_ELF := $(BUILD_DIR)/ifup.elf
+USER_WIFI_ELF := $(BUILD_DIR)/wifi.elf
 USER_PING_ELF := $(BUILD_DIR)/ping.elf
 USER_PING_PROBE_ELF := $(BUILD_DIR)/net_ping_probe.elf
 USER_UDP_ELFS := $(BUILD_DIR)/udptest.elf $(BUILD_DIR)/net_udp_probe.elf
@@ -1251,6 +1276,17 @@ $(BUILD_DIR)/ifup_start.o: $(USER_DIR)/tools/start.asm
 $(USER_IFUP_ELF): $(BUILD_DIR)/ifup_start.o $(BUILD_DIR)/ifup.o $(BUILD_DIR)/netconf.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/ifup_start.o $(BUILD_DIR)/ifup.o $(BUILD_DIR)/netconf.o -o $@
 
+$(BUILD_DIR)/wifi.o: $(USER_DIR)/wifi.c src/include/types.h src/include/syscall_abi.h src/include/wifi_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -I$(USER_DIR) -Isrc/include -c $< -o $@
+
+$(BUILD_DIR)/wifi_start.o: $(USER_DIR)/tools/start.asm
+	@mkdir -p $(BUILD_DIR)
+	@$(AS) -f elf64 -DTOOL_ENTRY=wifi_main $< -o $@
+
+$(USER_WIFI_ELF): $(BUILD_DIR)/wifi_start.o $(BUILD_DIR)/wifi.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/wifi_start.o $(BUILD_DIR)/wifi.o -o $@
+
 $(BUILD_DIR)/top.o: $(USER_DIR)/top.c src/include/types.h src/include/syscall_abi.h src/include/terminal.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
@@ -1274,7 +1310,7 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -1290,6 +1326,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_BOOT_SNAPSHOT_ELF) $(BUILD_DIR)/initramfs/bin/boot-snapshot
 	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/sbin/ifconfig
 	@cp -f $(USER_IFUP_ELF) $(BUILD_DIR)/initramfs/sbin/ifup
+	@cp -f $(USER_WIFI_ELF) $(BUILD_DIR)/initramfs/bin/wifi
 	@cp -f $(BUILD_DIR)/ntpd.elf $(BUILD_DIR)/initramfs/sbin/ntpd
 	@python3 scripts/build_zoneinfo.py $(BUILD_DIR)/zoneinfo
 	@python3 scripts/build_zoneinfo.py --pack $(BUILD_DIR)/zoneinfo $(BUILD_DIR)/initramfs/usr/share/zoneinfo.tzdb
@@ -1337,6 +1374,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@rm -f $(BUILD_DIR)/initramfs/etc/network.conf
 	@mkdir -p $(BUILD_DIR)/initramfs/etc/network
 	@printf "# Fortress Network Configuration\naddress 10.0.2.15/24\ngateway 10.0.2.2\ndns 10.0.2.3\n" > $(BUILD_DIR)/initramfs/etc/network/network.conf
+	@printf "[wifi]\nenabled=true\nauto_connect=true\nssid=\"FortressSecure\"\npsk=\"SuperSecretKey2026\"\nkey_mgmt=WPA2-PSK\n" > $(BUILD_DIR)/initramfs/etc/network/wifi.conf
 	@mkdir -p $(BUILD_DIR)/initramfs/etc/ssh
 	@printf "Enabled yes\nPort 22\nListenAddress 0.0.0.0\nPermitRootLogin no\nPasswordAuthentication yes\nPubkeyAuthentication yes\nMaxSessions 2\nMaxAuthTries 5\nLoginGraceTime 60\n" > $(BUILD_DIR)/initramfs/etc/ssh/sshd_config
 	@mkdir -p $(BUILD_DIR)/initramfs/etc/watchtower
@@ -1418,10 +1456,12 @@ iso: $(BOOTABLE_ISO)
 $(BOOTABLE_ISO): $(KERNEL_ELF) $(INITRAMFS_TAR) limine.conf limine-setup
 	@echo "--> Preparing ISO filesystem hierarchy..."
 	@mkdir -p $(ISO_ROOT)/boot/limine
+	@mkdir -p $(ISO_ROOT)/boot/firmware
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
 	@cp -f $(KERNEL_ELF) $(ISO_ROOT)/boot/fortress.elf
 	@cp -f $(INITRAMFS_TAR) $(ISO_ROOT)/boot/initramfs.tar
 	@cp -f $(INITRAMFS_TAR) $(ISO_ROOT)/initramfs.tar
+	@if [ -f "assets/firmware/iwlwifi-8265-36.ucode" ]; then cp -f assets/firmware/iwlwifi-8265-36.ucode $(ISO_ROOT)/boot/firmware/; fi
 	@cp -f limine.conf $(ISO_ROOT)/boot/limine/limine.conf
 	@cp -f limine.conf $(ISO_ROOT)/boot/limine.conf
 	@if [ -f "assets/splash.png" ]; then \

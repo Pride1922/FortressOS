@@ -491,6 +491,11 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
     /* 7. Parse interfaces and endpoints */
     device->step = 7;
     bool found_bot_if = false;
+    bool is_realtek_nic = ((device->vendor_id == 0x0BDA &&
+                            (device->product_id == 0x8153 || device->product_id == 0x8152 ||
+                             device->product_id == 0x8151 || device->product_id == 0x8156)) ||
+                           (device->vendor_id == 0x413C &&
+                            (device->product_id == 0xB06E || device->product_id == 0xB06F)));
     uint16_t off = 0;
     while (off + 2 <= total_len) {
         uint8_t len = full_cfg[off];
@@ -519,7 +524,7 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
                 device->is_hid_mouse = true;
                 device->hid_if_num = if_num;
             }
-        } else if (found_bot_if && type == USB_DESC_ENDPOINT && len >= 7) {
+        } else if ((found_bot_if || is_realtek_nic) && type == USB_DESC_ENDPOINT && len >= 7) {
             uint8_t ep_addr   = full_cfg[off + 2];
             uint8_t ep_attr   = full_cfg[off + 3] & 0x03;
             uint16_t max_packet = full_cfg[off + 4] | ((uint16_t)full_cfg[off + 5] << 8);
@@ -531,6 +536,9 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
                 } else {
                     device->bulk_out_ep = ep_addr;
                     device->bulk_out_max_packet = max_packet;
+                }
+                if (is_realtek_nic && device->bulk_in_ep && device->bulk_out_ep) {
+                    device->is_rtl8153 = true;
                 }
             }
 
@@ -596,7 +604,7 @@ if (port_speed == XHCI_SPEED_SUPER || port_speed == XHCI_SPEED_SUPER_PLUS) {
         off += len;
     }
 
-    if (!device->is_hub && !device->is_hid_keyboard && !device->is_hid_mouse && (!device->bulk_in_ep || !device->bulk_out_ep)) {
+    if (!device->is_hub && !device->is_hid_keyboard && !device->is_hid_mouse && !device->is_rtl8153 && (!device->bulk_in_ep || !device->bulk_out_ep)) {
         device->error_msg = "Device is not a supported BOT Mass Storage device";
         xhci_trb_t dis_cmd = {0};
         dis_cmd.control = (XHCI_TRB_TYPE_DISABLE_SLOT_CMD << 10) | ((uint32_t)slot_id << 24);

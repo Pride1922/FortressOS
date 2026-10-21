@@ -318,6 +318,10 @@ static void e1000_publish_interface(void) {
     s_net_dev.send_packet = e1000_send_raw;
     s_net_dev.poll_rx = e1000_poll_rx;
     s_net_dev.recycle_rx = e1000_recycle_rx;
+    s_net_dev.service_link = e1000_service_link;
+    s_net_dev.network_online = e1000_network_online;
+    s_net_dev.link_state_abi = e1000_link_state_abi;
+    s_net_dev.get_stats = e1000_get_stats;
     s_net_dev.priv = &s_e1000_dev;
 }
 

@@ -76,6 +76,7 @@ typedef struct xhci_bot_device {
     uint8_t  hub_num_ports;
     bool     is_hid_keyboard;
     bool     is_hid_mouse;
+    bool     is_rtl8153;
     uint8_t  int_in_ep;
     uint16_t int_in_max_packet;
     uint8_t  int_in_interval;

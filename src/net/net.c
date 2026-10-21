@@ -5,6 +5,8 @@
 #include "apic.h"
 #include "thread.h"
 #include "e1000.h"
+#include "rtl8153.h"
+#include "wlan/wlan_mgr.h"
 #include "serial.h"
 #include "net_ipv4.h"
 #include "net_ping.h"
@@ -207,6 +209,30 @@ void net_timer_tick(void) {
         sched_wake_all(&handoff_admission_channel);
     }
 }
+static inline bool net_dev_is_online(net_dev_t *dev) {
+    if (!dev) return false;
+    if (dev->network_online) return dev->network_online(dev);
+    return (dev->flags & (NET_UP | NET_RUNNING)) == (NET_UP | NET_RUNNING);
+}
+
+static inline bool net_dev_service_link(net_dev_t *dev, uint64_t now, uint64_t freq) {
+    if (!dev) return false;
+    if (dev->service_link) return dev->service_link(dev, now, freq);
+    return (dev->flags & (NET_UP | NET_RUNNING)) == (NET_UP | NET_RUNNING);
+}
+
+static inline uint32_t net_dev_link_state(const net_dev_t *dev) {
+    if (!dev) return NET_IF_LINK_UNINITIALIZED;
+    if (dev->link_state_abi) return dev->link_state_abi(dev);
+    return (dev->flags & NET_RUNNING) ? NET_IF_LINK_ONLINE : NET_IF_LINK_DOWN;
+}
+
+static inline void net_dev_get_stats(const net_dev_t *dev, uint64_t *rx, uint64_t *tx) {
+    if (!dev) { if (rx) *rx = 0; if (tx) *tx = 0; return; }
+    if (dev->get_stats) dev->get_stats(dev, rx, tx);
+    else { if (rx) *rx = 0; if (tx) *tx = 0; }
+}
+
 void net_worker_main(void *arg) {
     (void)arg;
     net_control_register_owner();
@@ -217,7 +243,7 @@ void net_worker_main(void *arg) {
     serial_raw_puts(poll_hz ? "[NET CLOCK] invariant TSC boot-calibrated Hz=" :
         "[NET CLOCK] high-resolution clock unavailable; timer sleep fallback Hz=");
     serial_raw_print_hex(poll_hz); serial_raw_puts("\n");
-    bool was_online=e1000_network_online(s_if);
+    bool was_online=net_dev_is_online(s_if);
     if (s_config.test_icmp) {
         s_probe=(net_ping_v1_t){.version=1,.destination=s_config.gateway,.timeout_seconds=1,.sequence=1};
         s_probe_pending=net_ping_submit(&s_probe,&s_probe_token)==0;
@@ -234,7 +260,7 @@ void net_worker_main(void *arg) {
         unsigned probe=__atomic_exchange_n(&s_ap_probe_result,0,__ATOMIC_ACQ_REL);
         if (probe) serial_puts(probe==1 ? "[NET 5] AP TCP listener dispatch rejection PASS\n" :
             "[NET 5] AP TCP listener dispatch rejection FAIL\n");
-        bool online=e1000_service_link(s_if,apic_timer_get_bsp_ticks(),apic_timer_get_frequency());
+        bool online=net_dev_service_link(s_if,apic_timer_get_bsp_ticks(),apic_timer_get_frequency());
         if (!online && was_online) arp_cache_init(&s_arp_cache);
         was_online=online;
         unsigned count=0;
@@ -257,11 +283,11 @@ void net_worker_main(void *arg) {
         net_ping_worker_tick(apic_timer_get_bsp_ticks());
         /* Includes requests published while cold-waiting, not only a falling
          * edge. Never restart protocol tables or erase endpoint generations. */
-        if (!e1000_network_online(s_if)) net_ipv4_link_down();
-        net_socket_worker_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
-        net_tcp_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
+        if (!net_dev_is_online(s_if)) net_ipv4_link_down();
+        net_socket_worker_tick(apic_timer_get_bsp_ticks(),net_dev_is_online(s_if));
+        net_tcp_tick(apic_timer_get_bsp_ticks(),net_dev_is_online(s_if));
         net_ipv4_tick(apic_timer_get_bsp_ticks());
-        net_socket_worker_tick(apic_timer_get_bsp_ticks(),e1000_network_online(s_if));
+        net_socket_worker_tick(apic_timer_get_bsp_ticks(),net_dev_is_online(s_if));
         net_ping_worker_tick(apic_timer_get_bsp_ticks());
         if (s_probe_pending && net_ping_ready(&s_probe_token)) {
             int64_t ret=net_ping_collect(s_probe_token,&s_probe);
@@ -351,7 +377,9 @@ void net_start(const char *cmdline, size_t len) {
         serial_puts("[NET 3] Network disabled by cmdline (net=none/off)\n");
         return;
     }
-    net_dev_t *dev=e1000_get_net_device();
+    net_dev_t *dev=rtl8153_get_net_device();
+    if (!dev) dev=e1000_get_net_device();
+    if (!dev) dev=wlan_get_net_device();
     if (!dev || s_config.test_rings) return; /* Raw selftest remains sole RX owner. */
     net_init(dev,&s_config);
     if (!thread_create_on_cpu(0,"net_worker",net_worker_main,NULL)) {
@@ -363,7 +391,7 @@ void net_start(const char *cmdline, size_t len) {
     net_control_start();
     net_socket_enable();
     /* Publish cold-offline before userspace can create a socket. */
-    if (!e1000_network_online(dev))
+    if (!net_dev_is_online(dev))
         net_socket_worker_tick(apic_timer_get_bsp_ticks(),false);
     /* Explicit disposable-test opt-in. Direct dispatch from an AP kernel
      * thread tests context rejection, not a Ring 3 AP entry transition. */
@@ -397,8 +425,8 @@ int net_get_ifconfig(netctl_ifget_t *out) {
     out->struct_version = 1;
     memcpy(out->mac, s_if->mac_addr, 6);
     out->mtu = s_if->mtu;
-    out->link_state = e1000_link_state_abi(s_if);
-    e1000_get_stats(s_if, &out->rx_packets, &out->tx_packets);
+    out->link_state = net_dev_link_state(s_if);
+    net_dev_get_stats(s_if, &out->rx_packets, &out->tx_packets);
 
     uint64_t irq = spin_lock_irqsave(&g_net_stack_lock);
     out->local_ipv4 = s_config.local_ip;
@@ -422,7 +450,7 @@ int net_validate_ifset(const netctl_ifset_t *set, net_config_t *out_cfg) {
         if (set->netmask_ipv4 != 0 || set->gateway_ipv4 != 0) {
             return SYSCALL_EINVAL;
         }
-        if (!s_if || e1000_link_state_abi(s_if) != NET_IF_LINK_ONLINE) {
+        if (!s_if || net_dev_link_state(s_if) != NET_IF_LINK_ONLINE) {
             return SYSCALL_EIO;
         }
         memset(out_cfg, 0, sizeof(*out_cfg));
@@ -475,7 +503,7 @@ int net_validate_ifset(const netctl_ifset_t *set, net_config_t *out_cfg) {
     }
 
     /* 5. Device and link state check: any state other than ONLINE returns EIO */
-    if (!s_if || e1000_link_state_abi(s_if) != NET_IF_LINK_ONLINE) {
+    if (!s_if || net_dev_link_state(s_if) != NET_IF_LINK_ONLINE) {
         return SYSCALL_EIO;
     }
 

@@ -5,6 +5,7 @@
 #include "xhci_dev.h"
 #include "xhci_bot.h"
 #include "usb_hid.h"
+#include "rtl8153.h"
 #include "xhci_hub.h"
 #include "gpt.h"
 #include "pci.h"
@@ -495,6 +496,11 @@ static void xhci_init_one_controller(xhci_controller_t *ctl,
 
                     if (dev_ok && bot_dev.is_hid_mouse) {
                         usb_hid_configure_mouse(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &bot_dev);
+                        continue;
+                    }
+
+                    if (dev_ok && bot_dev.is_rtl8153) {
+                        rtl8153_configure_device(&ctl->rings_io, &ctl->dma, &ctl->dev_dma, &bot_dev);
                         continue;
                     }
 

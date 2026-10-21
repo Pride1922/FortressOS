@@ -42,6 +42,7 @@
 #include "power.h"
 #include "logo.h"
 #include "e1000.h"
+#include "iwlwifi.h"
 #include "../net/net.h"
 
 extern uint8_t __text_start[];
@@ -6578,6 +6579,9 @@ pf_boot_guard_done:
     pci_report_xhci();
     xhci_boot_probe(&boot_info);
     net_boot_probe();
+    if (iwlwifi_probe()) {
+        iwlwifi_init_hw();
+    }
     e1000_raw_selftest(boot_info.cmdline);
     net_start(boot_info.cmdline, sizeof(boot_info.cmdline));
     boot_status("Mounting persistent storage (/mnt)...");

@@ -79,6 +79,10 @@ typedef struct net_dev {
      * Callbacks require unlocked thread context. */
     pbuf_t   *(*poll_rx)(struct net_dev *dev);
     void      (*recycle_rx)(struct net_dev *dev, pbuf_t *packet);
+    bool      (*service_link)(struct net_dev *dev, uint64_t now, uint64_t tick_hz);
+    bool      (*network_online)(struct net_dev *dev);
+    uint32_t  (*link_state_abi)(const struct net_dev *dev);
+    void      (*get_stats)(const struct net_dev *dev, uint64_t *rx_packets, uint64_t *tx_packets);
     void       *priv;                    /* Controller-specific private state */
 } net_dev_t;
 

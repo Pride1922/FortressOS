@@ -92,6 +92,7 @@
 #define SYS_RENAME_REPLACE 84 /* (oldpath, newpath, flags=0); existing regular files, journaled EXT4 */
 #define SYS_STAGE_WRITE   85 /* (int fd, const void *buf, size_t count, uint64_t expected_eof, uint64_t flags=0) -> written/-errno */
 #define SYS_FSYNC         86 /* (int fd) -> 0/-errno; journaled ext4 flush */
+#define SYS_WIFI          87 /* (uint64_t cmd, void *arg, size_t size); wifi_abi.h */
 #define MAX_GETRANDOM_LEN 256u
 
 /* Clock identifiers */

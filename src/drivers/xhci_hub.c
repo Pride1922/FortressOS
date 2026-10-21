@@ -1,6 +1,7 @@
 #include "xhci_hub.h"
 #include "xhci_dev.h"
 #include "usb_hid.h"
+#include "rtl8153.h"
 #include "serial.h"
 #include <string.h>
 
@@ -222,6 +223,8 @@ bool xhci_hub_configure_and_enumerate(const xhci_rings_io_t *io,
             usb_hid_configure_keyboard(io, ring_dma, (xhci_dev_dma_t *)dev_dma, &child_dev);
         } else if (child_dev.is_hid_mouse) {
             usb_hid_configure_mouse(io, ring_dma, (xhci_dev_dma_t *)dev_dma, &child_dev);
+        } else if (child_dev.is_rtl8153) {
+            rtl8153_configure_device(io, ring_dma, (xhci_dev_dma_t *)dev_dma, &child_dev);
         } else if (child_dev.is_hub) {
             xhci_device_topology_t nested_hub = child_topo;
             nested_hub.slot_id = child_dev.slot_id;

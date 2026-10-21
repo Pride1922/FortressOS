@@ -1,0 +1,280 @@
+#include "types.h"
+#include "syscall_abi.h"
+#include "wifi_abi.h"
+
+#ifndef WIFI_SYSCALL
+static long sys_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
+                     uintptr_t d, uintptr_t e, uintptr_t f) {
+    register uintptr_t r10 __asm__("r10") = d;
+    register uintptr_t r8  __asm__("r8")  = e;
+    register uintptr_t r9  __asm__("r9")  = f;
+    __asm__ volatile("syscall" : "+a"(nr) : "D"(a), "S"(b), "d"(c),
+                     "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory", "cc");
+    return nr;
+}
+#define WIFI_SYSCALL(nr, a, b, c) sys_call((nr), (uintptr_t)(a), (uintptr_t)(b), (uintptr_t)(c), 0, 0, 0)
+#endif
+
+static char s_out[1024];
+
+static size_t mystrlen(const char *s) {
+    size_t len = 0;
+    while (s && s[len]) len++;
+    return len;
+}
+
+static bool write_str(int fd, const char *str) {
+    size_t len = mystrlen(str);
+    while (len > 0) {
+        long w = WIFI_SYSCALL(SYS_WRITE, fd, str, len);
+        if (w <= 0) return false;
+        str += w;
+        len -= (size_t)w;
+    }
+    return true;
+}
+
+static void append_str(char *buf, size_t *pos, const char *s) {
+    while (*s && *pos < sizeof(s_out) - 1) {
+        buf[(*pos)++] = *s++;
+    }
+}
+
+static void append_int(char *buf, size_t *pos, int val) {
+    char tmp[16];
+    size_t i = 0;
+    bool neg = false;
+    if (val < 0) {
+        neg = true;
+        val = -val;
+    }
+    if (val == 0) {
+        tmp[i++] = '0';
+    } else {
+        while (val > 0) {
+            tmp[i++] = (char)('0' + (val % 10));
+            val /= 10;
+        }
+    }
+    if (neg && *pos < sizeof(s_out) - 1) buf[(*pos)++] = '-';
+    while (i > 0 && *pos < sizeof(s_out) - 1) {
+        buf[(*pos)++] = tmp[--i];
+    }
+}
+
+static void append_hex_byte(char *buf, size_t *pos, uint8_t byte) {
+    const char hex[] = "0123456789abcdef";
+    if (*pos < sizeof(s_out) - 2) {
+        buf[(*pos)++] = hex[(byte >> 4) & 0x0f];
+        buf[(*pos)++] = hex[byte & 0x0f];
+    }
+}
+
+static void append_mac(char *buf, size_t *pos, const uint8_t mac[6]) {
+    for (int i = 0; i < 6; i++) {
+        if (i > 0 && *pos < sizeof(s_out) - 1) buf[(*pos)++] = ':';
+        append_hex_byte(buf, pos, mac[i]);
+    }
+}
+
+static void append_pad(char *buf, size_t *pos, size_t target_col) {
+    while (*pos < target_col && *pos < sizeof(s_out) - 1) {
+        buf[(*pos)++] = ' ';
+    }
+}
+
+static int streq(const char *a, const char *b) {
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
+static const char *state_to_str(uint32_t st) {
+    switch (st) {
+        case WIFI_STATUS_IDLE: return "IDLE";
+        case WIFI_STATUS_SCANNING: return "SCANNING";
+        case WIFI_STATUS_AUTHENTICATING: return "AUTHENTICATING";
+        case WIFI_STATUS_ASSOCIATING: return "ASSOCIATING";
+        case WIFI_STATUS_HANDSHAKE: return "4-WAY HANDSHAKE";
+        case WIFI_STATUS_CONNECTED: return "CONNECTED";
+        case WIFI_STATUS_FAILED: return "FAILED";
+        default: return "UNKNOWN";
+    }
+}
+
+static int do_scan(void) {
+    wifi_scan_result_t res;
+    res.count = 0;
+    res.max_entries = WIFI_MAX_SCAN_ENTRIES;
+
+    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &res, sizeof(res));
+    if (rc != 0) {
+        write_str(2, "wifi: scan failed (error ");
+        size_t p = 0;
+        append_int(s_out, &p, (int)rc);
+        s_out[p++] = ')'; s_out[p++] = '\n'; s_out[p] = '\0';
+        write_str(2, s_out);
+        return 1;
+    }
+
+    if (res.count == 0) {
+        write_str(1, "No wireless networks found in cache (probe sent).\n");
+        return 0;
+    }
+
+    write_str(1, "BSSID              CHAN  RSSI   SEC       SSID\n");
+    write_str(1, "-----------------  ----  -----  --------  --------------------------------\n");
+
+    for (uint32_t i = 0; i < res.count; i++) {
+        const wifi_scan_entry_t *e = &res.entries[i];
+        size_t pos = 0;
+
+        /* BSSID */
+        append_mac(s_out, &pos, e->bssid);
+        append_pad(s_out, &pos, 19);
+
+        /* Channel */
+        append_int(s_out, &pos, e->channel);
+        append_pad(s_out, &pos, 25);
+
+        /* RSSI */
+        append_int(s_out, &pos, e->rssi);
+        append_pad(s_out, &pos, 32);
+
+        /* Security */
+        append_str(s_out, &pos, e->security == WIFI_SEC_WPA2_PSK ? "WPA2-PSK" : "OPEN");
+        append_pad(s_out, &pos, 42);
+
+        /* SSID */
+        append_str(s_out, &pos, e->ssid);
+        s_out[pos++] = '\n';
+        s_out[pos] = '\0';
+
+        write_str(1, s_out);
+    }
+    return 0;
+}
+
+static int do_status(void) {
+    wifi_status_t st;
+    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st));
+    if (rc != 0) {
+        write_str(2, "wifi: failed to get status\n");
+        return 1;
+    }
+
+    size_t pos = 0;
+    append_str(s_out, &pos, "Interface: wlan0 (");
+    append_mac(s_out, &pos, st.mac);
+    append_str(s_out, &pos, ")\nStatus: ");
+    append_str(s_out, &pos, state_to_str(st.state));
+    append_str(s_out, &pos, "\n");
+
+    if (st.state != WIFI_STATUS_IDLE) {
+        append_str(s_out, &pos, "SSID: \"");
+        append_str(s_out, &pos, st.ssid);
+        append_str(s_out, &pos, "\"\nBSSID: ");
+        append_mac(s_out, &pos, st.bssid);
+        append_str(s_out, &pos, "\nChannel: ");
+        append_int(s_out, &pos, st.channel);
+        append_str(s_out, &pos, "\nRSSI: ");
+        append_int(s_out, &pos, st.rssi);
+        append_str(s_out, &pos, " dBm\nLink: ");
+        append_str(s_out, &pos, st.link_online ? "ONLINE\n" : "CONNECTING / DOWN\n");
+    }
+    s_out[pos] = '\0';
+    write_str(1, s_out);
+    return 0;
+}
+
+static int do_connect(const char *ssid, const char *passphrase) {
+    if (!ssid || !passphrase) {
+        write_str(2, "wifi connect: requires <SSID> and <passphrase>\n");
+        return 1;
+    }
+
+    wifi_connect_req_t req;
+    for (size_t i = 0; i < sizeof(req.ssid); i++) req.ssid[i] = 0;
+    for (size_t i = 0; i < sizeof(req.passphrase); i++) req.passphrase[i] = 0;
+    for (size_t i = 0; i < 6; i++) req.bssid[i] = 0;
+
+    size_t s_len = mystrlen(ssid);
+    if (s_len > WIFI_SSID_MAX_LEN) s_len = WIFI_SSID_MAX_LEN;
+    for (size_t i = 0; i < s_len; i++) req.ssid[i] = ssid[i];
+
+    size_t p_len = mystrlen(passphrase);
+    if (p_len > WIFI_PASSPHRASE_MAX_LEN) p_len = WIFI_PASSPHRASE_MAX_LEN;
+    for (size_t i = 0; i < p_len; i++) req.passphrase[i] = passphrase[i];
+
+    write_str(1, "Connecting to \"");
+    write_str(1, ssid);
+    write_str(1, "\"...\n");
+
+    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_CONNECT, &req, sizeof(req));
+    if (rc != 0) {
+        write_str(2, "wifi: connection request failed\n");
+        return 1;
+    }
+
+    /* Wait briefly and verify status */
+    for (int wait = 0; wait < 15; wait++) {
+        timespec_t ts = { .tv_sec = 0, .tv_nsec = 200000000 }; /* 200ms */
+        WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
+
+        wifi_status_t st;
+        if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
+            if (st.link_online && st.state == WIFI_STATUS_CONNECTED) {
+                write_str(1, "Connected to \"");
+                write_str(1, ssid);
+                write_str(1, "\" (WPA2-PSK). Link is ONLINE.\n");
+                return 0;
+            }
+        }
+    }
+
+    write_str(1, "Association started in background. Check status with 'wifi status'.\n");
+    return 0;
+}
+
+static int do_disconnect(void) {
+    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_DISCONNECT, 0, 0);
+    if (rc != 0) {
+        write_str(2, "wifi: disconnect failed\n");
+        return 1;
+    }
+    write_str(1, "Disconnected from wireless network.\n");
+    return 0;
+}
+
+int wifi_main(int argc, char **argv) {
+    if (argc < 2) {
+        write_str(1, "Usage: wifi <command> [arguments]\n");
+        write_str(1, "Commands:\n");
+        write_str(1, "  scan                  Scan for nearby wireless networks\n");
+        write_str(1, "  connect <SSID> <PSK>  Connect to WPA2-PSK network\n");
+        write_str(1, "  disconnect            Disconnect from wireless network\n");
+        write_str(1, "  status                Display wireless connection status\n");
+        return 1;
+    }
+
+    if (streq(argv[1], "scan")) {
+        return do_scan();
+    } else if (streq(argv[1], "status")) {
+        return do_status();
+    } else if (streq(argv[1], "disconnect")) {
+        return do_disconnect();
+    } else if (streq(argv[1], "connect")) {
+        if (argc < 4) {
+            write_str(2, "Usage: wifi connect <SSID> <passphrase>\n");
+            return 1;
+        }
+        return do_connect(argv[2], argv[3]);
+    } else {
+        write_str(2, "wifi: unknown command '");
+        write_str(2, argv[1]);
+        write_str(2, "'. Run 'wifi' without arguments for help.\n");
+        return 1;
+    }
+}

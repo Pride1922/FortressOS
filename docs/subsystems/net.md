@@ -4,6 +4,14 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-21 USB Ethernet (Realtek RTL8153 / RTL8152):
+Native Realtek RTL8153 USB 3.0 Gigabit Ethernet driver under xHCI is COMPLETE and verified.
+- **Hardware Architecture & OCP Primitives:** Vendor-specific control transfers on EP0 (`bRequest 0x05`, `MCU_TYPE_PLA 0x0100`, `MCU_TYPE_USB 0x0000`), permanent hardware MAC address retrieval from `PLA_IDR` (`0xC000`) with fallback to `PLA_BACKUP` (`0xD000`), and soft reset via `PLA_CR` (`CR_RST`).
+- **Framing & Invariants:** Transmit packets prepended with 8-byte `rtl8153_tx_desc_t` (`opts1 = len | TX_FS | TX_LS`); receive packets parsed via 24-byte `rtl8153_rx_desc_t` with hardware CRC stripping and 8-byte alignment; zero dynamic allocation in packet paths (bounded static buffer pool).
+- **Dell WD19S Dock Topology & Hub Integration:** Downstream enumeration behind multi-tier USB hubs and docks preserves Route String and Transaction Translator (TT) in Slot Context DW2 (`MTT=0`), allowing plug-and-play operation of the Dell WD19S dock internal NIC (`0BDA:8153`).
+- **Uniform `net_dev_t` Polymorphism:** Polymorphic link monitoring (`service_link`, `network_online`), ABI link state (`link_state_abi`), and statistics (`get_stats`) allow transparent coexistence and primary binding with PCI `e1000`, powering `/sbin/ifconfig`, `/sbin/dhcpc`, `/bin/ping`, TCP/UDP sockets, and BearSSL HTTPS over USB Ethernet without upper-layer modifications.
+- **Verification:** 100% PASS on host verification suite (`make test-rtl8153-host`) under ASan/UBSan testing device identification, OCP registers, MAC fallback, TX framing, RX CRC stripping, and link state rate-limiting; full kernel and image build (`bin/fortress.elf`, `bin/fortress.img`) generated and Dell Latitude 5590 bare-metal acceptance ready.
+
 2026-10-19 TLS 1.2 / HTTPS Client Foundation (Phases TLS-0 through TLS-5):
 Outbound HTTPS client capabilities in `/bin/wget` using BearSSL 0.6 are COMPLETE and verified.
 - **Phase TLS-1 (BearSSL Platform Integration):** Freestanding client profile with static context allocations (`sizeof(fortress_tls_t) = 40,136` B, zero dynamic heap allocations), Gate G1 stack budget ($\le 1024$ bytes per frame, authorized RSA exception $\le 2400$ bytes measured at 2272 bytes), strict AEAD suites (ChaCha20-Poly1305, AES-GCM), non-restarting deadlines via `SYS_SEND_UNTIL`/`SYS_RECV_UNTIL`, and clock/entropy hooks (`SYS_CLOCK_GETTIME`, `SYS_GETRANDOM`).
