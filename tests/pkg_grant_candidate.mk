@@ -74,3 +74,17 @@ test-pkg-cancel-recovery-tsan:
 
 test-pkg-call-kernel:
 	python3 scripts/test_pkg_call_kernel.py
+
+.PHONY: test-pkg-account-cancel test-pkg-account-cancel-tsan test-pkg-kernel-fs
+test-pkg-account-cancel:
+	python3 scripts/test_pkg_cancel_recovery.py --account
+
+test-pkg-account-cancel-tsan:
+	python3 scripts/test_pkg_cancel_recovery.py --account --block 4096 --tsan
+
+test-pkg-kernel-fs:
+	python3 scripts/test_pkg_call_kernel.py --filesystem
+
+.PHONY: test-pkg-account-cancel-all-files
+test-pkg-account-cancel-all-files:
+	python3 scripts/test_pkg_cancel_recovery.py --account-all-files --block 4096

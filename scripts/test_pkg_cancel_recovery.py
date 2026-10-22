@@ -14,7 +14,8 @@ ROOT=pathlib.Path(__file__).resolve().parent.parent
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--block',type=int,choices=(1024,2048,4096));parser.add_argument('--tsan',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--block',type=int,choices=(1024,2048,4096));parser.add_argument('--tsan',action='store_true');parser.add_argument('--account',action='store_true');parser.add_argument('--account-all-files',action='store_true');args=parser.parse_args()
+    if args.account_all_files:assert args.block==4096 and not args.tsan;args.account=True
     b=subprocess.run([sys.executable,'scripts/test_pkg_service_integration.py','--build-only','--pre-replay'],cwd=ROOT,capture_output=True,text=True,timeout=180)
     assert not b.returncode,(b.stdout,b.stderr);out=pathlib.Path(re.search(r'Evidence: (.+)',b.stdout)[1]).resolve()
     assert out.parent==(ROOT/'.codex-remote-attachments').resolve();work=out/'workspace';base=json.loads((out/'manifest.json').read_text())
@@ -41,11 +42,31 @@ def main():
             'if(!cancel_preview_permit(engine))return -VFS_EIO;')
     replace('tests/pkg_account_preview.inc','engine->orphan_count||engine->orphan_recovery_required',
             '!cancel_preview_permit(engine)')
+    if args.account:
+        replace('tests/pkg_cancel_recovery.inc','int main(int argc,char **argv){','int cancel_fixture_main(int argc,char **argv){')
+        replace('tests/integration.c','#include "pkg_cancel_recovery.inc"','#include "pkg_cancel_recovery.inc"\n#include "pkg_account_cancel.inc"')
+        replace('tests/integration.c','static int cancel_dispatch(struct ext4_engine *);',
+                'static int cancel_dispatch(struct ext4_engine *);\nstatic int account_cancel_after(int,unsigned);\nstatic int account_cancel_sync(void *);')
+        p='tests/pkg_mutation_integration.inc'
+        replace(p,'mutation_call *call=mutation_current;\n    if(context!=mounted',
+                'mutation_call *call=mutation_current;\n    if(pc_cancelled(thread_current()))return -VFS_EINTR;\n    if(context!=mounted')
+        for signature,expression in (
+            ('static int mutation_account_write(void *p,unsigned role,const void *bytes,size_t n){','backend.write(p,role,bytes,n)'),
+            ('static int mutation_account_remove(void *p,unsigned role){','backend.remove(p,role)'),
+            ('static int mutation_account_rename(void *p,unsigned from,unsigned to){','backend.rename(p,from,to)')):
+            old=function((work/p).read_text(),signature)
+            replace(p,old,signature+'unsigned before=writes_seen;int r=mutation_headroom(p);return account_cancel_after(r?r:mutation_after('+expression+'),before);}')
+        replace(p,'io->write=mutation_account_write;', 'io->sync=account_cancel_sync;io->write=mutation_account_write;')
+        if args.account_all_files:
+            replace('tests/pkg_account_cancel.inc','int main(int argc,char **argv){','int account_variant_previous_main(int argc,char **argv){')
+            replace('tests/integration.c','#include "pkg_account_cancel.inc"','#include "pkg_account_cancel.inc"\n#include "pkg_account_variant.inc"')
     command=base['compile_command'];command.insert(1,'-DTEST_EXT4_ATOMIC_COUNTERS')
     if args.tsan:command=[c for c in command if c!='-fsanitize=address,undefined'];command.insert(1,'-fsanitize=thread')
-    m={'result':'INCOMPLETE','kind':'private-cancel-recovery','sanitizer':'TSan' if args.tsan else 'ASan/UBSan',
+    m={'result':'INCOMPLETE','kind':'private-account-cancel-recovery' if args.account else 'private-cancel-recovery','sanitizer':'TSan' if args.tsan else 'ASan/UBSan',
        'sources':base['sources'],'overlays':overlays,'cases':[],'commands':[],
        'scope':'semantic-boundary cancellation, fresh-process grant/capacity preview and ordinary orphan recovery; no sector-cut/account-orphan/kernel-boot acceptance'}
+    if args.account_all_files:m['kind']='private-account-all-files-cancel-recovery'
+    if args.account:m['scope']='completed mutating account callback cuts, actual account service and fresh-process grant/capacity preflight; no interruption inside account callbacks, account-orphan admission, sector-cut or kernel-account-update acceptance'
     def run(cmd,label):
         m['commands'].append(cmd);r=subprocess.run(cmd,cwd=work,text=True,capture_output=True,timeout=600)
         (out/(label+'.log')).write_text(r.stdout+r.stderr);assert not r.returncode,(label,r.returncode,r.stdout[-1200:],r.stderr[-2200:]);return r.stdout+r.stderr
@@ -54,11 +75,14 @@ def main():
         return run((['setarch','x86_64','-R'] if args.tsan else [])+cmd,label)
     def clone(source,target):
         shutil.copyfile(source,target);shutil.copyfile(str(source)+'.ctx',str(target)+'.ctx')
-    def audit(path,bs,ss,op,label):
+    def audit(path,bs,ss,op,label,forward=False):
         run(['e2fsck','-fn',str(path)],label+'-linux')
-        for name,expected in (('/pkg/transaction.v1/unit',b'K'*(3*bs)),('/etc/passwd',b'root:x:0:0:root:/root:/bin/shell\n'),('/etc/group',b'root:x:0:\n'),('/etc/shadow',b'root:!:::::::\n')):
+        for name,expected in (('/pkg/transaction.v1/unit',b'K'*(3*bs)),('/etc/passwd',b'root:x:0:0:root2:/root:/bin/shell\n' if forward else b'root:x:0:0:root:/root:/bin/shell\n'),('/etc/group',b'root:x:0:root\n' if forward and args.account_all_files else b'root:x:0:\n'),('/etc/shadow',b'root:*:::::::\n' if forward and args.account_all_files else b'root:!:::::::\n')):
             dump=out/(label+'-'+name.rsplit('/',1)[-1]+'.dump');run(['debugfs','-R',f'dump {name} {dump}',str(path)],dump.stem);assert dump.read_bytes()==expected,(name,dump.read_bytes()[:100])
-        if op=='truncate':
+        if args.account:
+            for name in ('/etc/passwd.publish','/etc/group.publish','/etc/shadow.publish','/var/lib/fortress/accounts/passwd.new','/var/lib/fortress/accounts/group.new','/var/lib/fortress/accounts/shadow.new','/var/lib/fortress/accounts/intent.tmp','/var/lib/fortress/accounts/pending'):
+                assert 'File not found' in run(['debugfs','-R','stat '+name,str(path)],label+'-absent-'+name.rsplit('/',1)[-1])
+        elif op=='truncate':
             dump=out/(label+'-empty.dump');run(['debugfs','-R',f'dump /work/a/recover {dump}',str(path)],dump.stem);assert dump.read_bytes()==b''
         else:assert 'File not found' in run(['debugfs','-R','stat /work/a/recover',str(path)],label+'-absent')
     try:
@@ -66,19 +90,21 @@ def main():
         m['compiled_inputs']={p:sha(work/p) for p in sorted(names)};run(command,'cancel-compile')
         previous=ROOT/'.codex-remote-attachments/pkg-namespace-kernel-20261021-140820';prior=json.loads((previous/'manifest.json').read_text());assert prior['result']=='PASS'
         for bs in ((args.block,) if args.block else (1024,2048,4096)):
-            for ss in (512,4096):
+            for ss in ((512,) if args.account_all_files else (512,4096)):
                 source=previous/f'{bs}-{ss}-oom.img';original=sha(source);assert next(c['image_sha256'] for c in prior['cases'] if c['name']==source.stem)==original
                 seed=out/f'{bs}-{ss}-seed.img';shutil.copyfile(source,seed);probe(seed,ss,'seed',seed.stem)
-                for op in ('truncate','unlink'):
+                for op in (('account',) if args.account else ('truncate','unlink')):
                     normal=out/f'{bs}-{ss}-{op}-normal.img';clone(seed,normal);text=probe(normal,ss,op,normal.stem)
-                    total=int(re.search(r'commits=(\d+) interrupted=0',text)[1]);assert total>=4;audit(normal,bs,ss,op,normal.stem)
-                    for cut in range(1,total):
+                    total=int(re.search(r'callbacks=(\d+) interrupted=0' if args.account else r'commits=(\d+) interrupted=0',text)[1]);assert total>=4;audit(normal,bs,ss,op,normal.stem,args.account)
+                    cuts=(3,7,8,10,11,13,14,15,18) if args.account_all_files else range(1,total+1 if args.account else total)
+                    for cut in cuts:
                         name=f'{bs}-{ss}-{op}-{cut}';target=out/(name+'.img');clone(seed,target)
-                        probe(target,ss,f'{op}={cut}',name+'-cut');before=sha(target)
+                        interrupted=probe(target,ss,f'{op}={cut}',name+'-cut');before=sha(target)
+                        forward=bool(int(re.search(r'forward=(\d)',interrupted)[1])) if args.account else False
                         probe(target,ss,'reject',name+'-reject');assert sha(target)==before
-                        for attempt in (1,2):probe(target,ss,'recover',name+f'-recover{attempt}');audit(target,bs,ss,op,name+f'-audit{attempt}')
-                        m['cases'].append(dict(block=bs,sector=ss,operation=op,cut=cut,total=total,result='PASS'))
-                    print(dict(block=bs,sector=ss,operation=op,cuts=total-1,result='PASS'),flush=True)
+                        for attempt in (1,2):probe(target,ss,'recover',name+f'-recover{attempt}');audit(target,bs,ss,op,name+f'-audit{attempt}',forward)
+                        m['cases'].append(dict(block=bs,sector=ss,operation=op,cut=cut,total=total,forward=forward,result='PASS'))
+                    print(dict(block=bs,sector=ss,operation=op,cuts=len(cuts),result='PASS'),flush=True)
                 assert sha(source)==original
         m['result']='PASS'
     finally:

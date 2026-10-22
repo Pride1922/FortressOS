@@ -1,5 +1,9 @@
 # Private cancellation recovery and real kernel lifecycle validation
 
+Continuation: the checkpoint below was committed as `a12970e`. See
+[account cancellation and combined kernel tests](PKG2_ACCOUNT_CANCEL_KERNEL_FS.md)
+for the subsequent private work and its narrower acceptance boundaries.
+
 2026-10-22. Extends [retained calls](PKG2_RETAINED_CALL.md). Production integration,
 installation and production trust provisioning remain disabled. Changes remain
 uncommitted. Host recovery and disk-free kernel lifecycle results are separate

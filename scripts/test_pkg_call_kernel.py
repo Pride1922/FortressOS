@@ -1,5 +1,6 @@
 """Private disk-free kernel signal/exit/reaper binding validation, BIOS/UEFI."""
 import datetime
+import argparse
 import hashlib
 import io
 import json
@@ -20,12 +21,13 @@ ROOT=pathlib.Path(__file__).resolve().parent.parent
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 
 
-def case(out,work,iso,fw,smp):
+def case(out,work,iso,fw,smp,filesystem=False):
     dest=out/f'{fw}-{smp}';dest.mkdir()
     with tempfile.TemporaryDirectory(prefix='fortress-call-') as tmp:
-        sock=pathlib.Path(tmp)/'uart'
+        sock=pathlib.Path(tmp)/'uart';qmp_path=pathlib.Path(tmp)/'qmp'
         cmd=['qemu-system-x86_64','-M','q35','-accel','tcg','-cpu','max','-m','512M','-smp',str(smp),'-display','none','-net','none','-no-reboot',
              '-boot','d','-cdrom',str(iso),'-chardev',f'socket,id=uart,path={sock},server=on,wait=off,logfile={dest/"serial.log"}','-serial','chardev:uart']
+        if filesystem:cmd+=['-qmp',f'unix:{qmp_path},server=on,wait=off']
         if fw=='uefi':
             shutil.copyfile(VARS,dest/'vars.fd');cmd+=['-drive',f'if=pflash,format=raw,unit=0,readonly=on,file={CODE}','-drive',f'if=pflash,format=raw,unit=1,file={dest/"vars.fd"}']
         assert not any(c in cmd for c in ('-hda','-hdb','-blockdev','-readconfig'))
@@ -41,6 +43,7 @@ def case(out,work,iso,fw,smp):
                 end=time.monotonic()+seconds
                 while time.monotonic()<end:
                     s=text()
+                    assert '[FATAL]' not in s and '[PANIC]' not in s,s[-3500:]
                     if test(s):return s
                     assert p.poll() is None,('QEMU exit',p.returncode,s[-2500:]);time.sleep(.05)
                 raise AssertionError('timeout '+text()[-3500:])
@@ -59,13 +62,37 @@ def case(out,work,iso,fw,smp):
                 drainer=threading.Thread(target=drain,daemon=True);drainer.start()
                 wait(lambda s:'FortressOS login: ' in s or PROMPT.search(s))
                 if not PROMPT.search(text()):uart.sendall(b'operator\n')
-                wait(lambda s:PROMPT.search(s));start=len(text());uart.sendall(b'/bin/pkg-call-kernel\n')
-                result=wait(lambda s:('CALL KERNEL PASS children=33 exits=30 reaped=33 rounds=3' in s[start:] or 'CALL KERNEL FAIL' in s[start:]) and PROMPT.search(s[start:]))[start:]
+                wait(lambda s:PROMPT.search(s));start=len(text());uart.sendall(b'sudo /bin/pkg-call-kernel\n' if filesystem else b'/bin/pkg-call-kernel\n')
+                marker='KERNEL FS PASS children=8 exits=7 reaped=8 cancelled=8 Q=8,1 G=0,0' if filesystem else 'CALL KERNEL PASS children=33 exits=30 reaped=33 rounds=3'
+                result=wait(lambda s:(marker in s[start:] or 'KERNEL FAIL' in s[start:] or 'KERNEL FS FAIL' in s[start:]) and PROMPT.search(s[start:]),240)[start:]
                 assert 'CALL KERNEL FAIL' not in result and 'FAULT' not in result and 'PANIC' not in result,result
-                mask=int(re.search(r'(?m)^CALL KERNEL CPU_MASK=(\d+)',result)[1]);assert mask and (smp==1 or mask&~1),mask
+                snapshot=None
+                if filesystem:
+                    snapshot=re.search(r'KERNEL FS SNAPSHOT address=(0x[0-9A-Fa-f]+) bytes=(\d+) commits=(\d+) writes=(\d+) flushes=(\d+) cpus=(\d+) tlb=(\d+)',result)
+                    assert snapshot,result;mask=int(snapshot[6]);assert int(snapshot[2])==33554432 and int(snapshot[3])==9
+                else:mask=int(re.search(r'(?m)^CALL KERNEL CPU_MASK=(\d+)',result)[1])
+                assert mask and (smp==1 or mask&~1),mask
                 start=len(text());uart.sendall(b'echo CALL_RC=$?\n');wait(lambda s:re.search(r'(?m)^CALL_RC=0\s*$',s[start:]) and PROMPT.search(s[start:]))
+                if filesystem:
+                    exported=dest/'kernel-final.img'
+                    with socket.socket(socket.AF_UNIX) as q:
+                        q.connect(str(qmp_path));q.settimeout(30);f=q.makefile('rwb',buffering=0);json.loads(f.readline())
+                        def command(value):
+                            f.write((json.dumps(value)+'\n').encode())
+                            while True:
+                                reply=json.loads(f.readline())
+                                assert 'error' not in reply,reply
+                                if 'return' in reply:return reply['return']
+                        command({'execute':'qmp_capabilities'})
+                        response=command({'execute':'human-monitor-command','arguments':{'command-line':f'memsave {snapshot[1]} {snapshot[2]} "{exported}"'}})
+                        assert not response,response
+                    assert exported.stat().st_size==33554432
+                    from pkg_kernel_fs_oracle import audit
+                    audit(exported,dest)
                 uart.sendall(b'sudo shutdown\n');p.wait(timeout=25);assert p.returncode==0
-                r=dict(firmware=fw,smp=smp,result='PASS',children=33,exit_cleanups=30,reaped=33,binding_cpu_mask=mask);(dest/'result.json').write_text(json.dumps(r,indent=2));print(r,flush=True);return r
+                r=dict(firmware=fw,smp=smp,result='PASS',children=8 if filesystem else 33,exit_cleanups=7 if filesystem else 30,reaped=8 if filesystem else 33,binding_cpu_mask=mask)
+                if filesystem:r.update(exported_image_sha256=sha(exported),semantic_commits=int(snapshot[3]),writes=int(snapshot[4]),flushes=int(snapshot[5]),polled_tlb_services=int(snapshot[7]))
+                (dest/'result.json').write_text(json.dumps(r,indent=2));print(r,flush=True);return r
             except BaseException as e:(dest/'failure.txt').write_text(repr(e));raise
             finally:
                 stop.set();uart.close()
@@ -77,7 +104,8 @@ def case(out,work,iso,fw,smp):
 
 
 def main():
-    out=ROOT/'.codex-remote-attachments'/('pkg-call-kernel-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'));work=out/'workspace';out.mkdir(parents=True)
+    parser=argparse.ArgumentParser();parser.add_argument('--filesystem',action='store_true');args=parser.parse_args()
+    out=ROOT/'.codex-remote-attachments'/(('pkg-kernel-fs-' if args.filesystem else 'pkg-call-kernel-')+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'));work=out/'workspace';out.mkdir(parents=True)
     media={str(p.relative_to(ROOT)):sha(p) for p in (ROOT/'bin').glob('*') if p.is_file()}
     sources={str(p.relative_to(ROOT)):sha(p) for folder in ('src','user','tests','scripts') for p in (ROOT/folder).rglob('*') if p.is_file() and p.suffix in ('.c','.h','.inc','.py','.asm') and '__pycache__' not in p.parts}
     sources['Makefile']=sha(ROOT/'Makefile')
@@ -99,21 +127,31 @@ def main():
     needle='        case SYS_SIGRETURN:'
     replace('src/kernel/syscall.c',needle,'        case 200: result=call_kernel_test(frame->rdi,frame->rsi);break;\n\n'+needle)
     (work/'src/kernel/pkg_call_private.c').write_bytes((work/'tests/pkg_call_kernel.inc').read_bytes())
+    if args.filesystem:
+        from pkg_kernel_fs_overlay import overlay
+        overlay(work,replace)
     with (work/'Makefile').open('a') as f:f.write('\nCFLAGS += -Itests\n')
     m={'result':'INCOMPLETE','sources':sources,'shared_media':media,'overlays':overlays,'cases':[],
        'scope':'private copied kernel and syscall 200, disk-free actual Ring 3 signals/exit/reaper; no filesystem recovery/production/release-media acceptance'}
+    if args.filesystem:m['scope']='private copied kernel, actual retained package calls and EXT4/JBD2 on RAM device; read-only memory export and Linux oracle; no hardware durability or production integration'
     def run(cmd,label,timeout=600):
         r=subprocess.run(cmd,cwd=work,text=True,capture_output=True,timeout=timeout);(out/(label+'.log')).write_text(r.stdout+r.stderr);assert not r.returncode,(label,r.stdout[-1000:],r.stderr[-2500:])
     try:
         run(['make','-j8','bin/fortress.elf'],'kernel-build')
         flags=['gcc','-Os','-Wall','-Wextra','-Werror','-ffreestanding','-fno-builtin','-fno-pie','-fno-stack-protector','-mno-red-zone','-mno-sse','-mno-mmx','-msoft-float','-Wframe-larger-than=1024','-Isrc/include']
-        run(flags+['-c','tests/pkg_call_ring3.c','-o','build/pkg-call.o'],'user-compile')
+        run(flags+['-c','tests/pkg_kernel_fs_ring3.c' if args.filesystem else 'tests/pkg_call_ring3.c','-o','build/pkg-call.o'],'user-compile')
         run(['nasm','-f','elf64','-DTOOL_ENTRY=pkg_call_main','user/tools/start.asm','-o','build/pkg-call-start.o'],'user-start')
         run(['ld','-nostdlib','-static','-z','noexecstack','-T','user/shell.ld','build/pkg-call-start.o','build/pkg-call.o','-o','build/pkg-call.elf'],'user-link')
         template=ROOT/'bin/initramfs.tar';m['initramfs_template_sha256']=sha(template)
         with tarfile.open(template) as src,tarfile.open(out/'initramfs.tar','w',format=tarfile.USTAR_FORMAT) as dst:
             for member in src.getmembers():dst.addfile(member,src.extractfile(member) if member.isfile() else None)
             dst.add(work/'build/pkg-call.elf',arcname='bin/pkg-call-kernel')
+            if args.filesystem:
+                fixture=ROOT/'.codex-remote-attachments/pkg-service-integration-20261022-175656-260545/4096-512-normal.img'
+                prior=json.loads((fixture.parent/'manifest.json').read_text());assert prior['result']=='PASS'
+                context=pathlib.Path(str(fixture)+'.ctx');assert context.is_file()
+                m['fixture']={'path':str(fixture.relative_to(ROOT)),'sha256':sha(fixture),'context_sha256':sha(context)}
+                dst.add(fixture,arcname='pkg-kernel.fixture');dst.add(context,arcname='pkg-kernel.context')
         iso_root=out/'fixture-root';(iso_root/'boot/limine').mkdir(parents=True);(iso_root/'EFI/BOOT').mkdir(parents=True)
         shutil.copyfile(work/'bin/fortress.elf',iso_root/'boot/fortress.elf');shutil.copyfile(out/'initramfs.tar',iso_root/'boot/initramfs.tar')
         for name in ('limine-bios.sys','limine-bios-cd.bin','limine-uefi-cd.bin'):shutil.copyfile(work/'limine'/name,iso_root/'boot/limine'/name)
@@ -125,7 +163,7 @@ def main():
         run([str(work/'limine/limine'),'bios-install',str(iso)],'private-bios-install')
         m['compiled_inputs']={p:sha(work/p) for p in sources if (work/p).exists()};m['private_iso_sha256']=sha(iso)
         for fw in ('bios','uefi'):
-            for smp in (1,4):m['cases'].append(case(out,work,iso,fw,smp))
+            for smp in (1,4):m['cases'].append(case(out,work,iso,fw,smp,args.filesystem))
         m['result']='PASS'
     finally:
         m['changed_compiled_copies']=[p for p,h in m.get('compiled_inputs',{}).items() if sha(work/p)!=h]

@@ -2159,3 +2159,185 @@ origin, full pending/state/trust admission, low-space recovery and charged-orpha
 recovery remain open. Concurrent work, including trust-asset edits, is preserved.
 No production source integration, installation, production trust provisioning,
 release-media build, commit, push or physical disk write was performed.
+
+### Account callback cancellation and combined kernel grant/filesystem tests (2026-10-22)
+
+The previous checkpoint is committed as `a12970e`. Implemented the subsequent
+[private workbench](../plans/PKG2_ACCOUNT_CANCEL_KERNEL_FS.md); these new changes
+remain uncommitted. Production integration, installation and production trust
+provisioning remain disabled.
+
+Actual account-service BEGIN/UPDATE/FINISH and redo run with the existing durable
+package grant T=(8,1), G=(5,0), Q=(3,1). The fixture measures **18 completed
+mutating callbacks** per uninterrupted update. Cancellation after each such
+callback causes the subsequent mutating callback or sync to return EINTR before
+more device writes. Actual failed UPDATE disables service; CHECK returns EAGAIN
+while its writer remains. Every call unwinds its retained binding/admission.
+
+Run in WSL: `python3 scripts/test_pkg_cancel_recovery.py --account --block N`;
+the TSan run adds `--tsan` and retains per-process `setarch x86_64 -R`.
+
+| Sanitizer | Block size | Sector sizes | Campaign |
+| --- | --- | --- | --- |
+| ASan/UBSan | 4096 | 512/4096 | `pkg-mutation-context-20261022-200327-032594` |
+| ASan/UBSan | 1024 | 512/4096 | `pkg-mutation-context-20261022-200922-858274` |
+| ASan/UBSan | 2048 | 512/4096 | `pkg-mutation-context-20261022-200922-858762` |
+| TSan | 4096 | 512/4096 | `pkg-mutation-context-20261022-201439-673911` |
+
+**144 cancellation cuts, 144 wrong-marker zero-write/flush rejections and 288
+fresh-process recoveries PASS.** The rejection retains the whole-image hash.
+Every successful restart uses actual constructor allocation/reference auditing,
+grant/namespace/identity validation and the account-capacity certificate before
+replay/activation writes. The first four callback cuts per geometry precede
+durable pending publication and recover the old accounts; the other fourteen
+recover the complete new accounts. That is **32 old-set and 112 new-set cuts**.
+Stages/intent persist when required; fresh account-service recovery performs
+the real cleanup and is repeated in a second process.
+
+**592 host probe process invocations** comprise eight seed preparations, eight normal
+measurements and four processes per cut (cancellation, rejection, two recoveries).
+**296 Linux fsck/exact-content audits PASS**: eight normal outputs and two per
+cut. Independent additional checks cover **152 distinct final images** (eight
+normal outputs and 144 recovered cuts): ledger/table self-hashes and linkage,
+exact T/G/Q, tagged inode/generation/mode/root ownership/link count/actual i_blocks,
+exact package payload, canonical account modes/owners/links, and the unrelated
+70-block file's complete unchanged contents. Those read-only checks preserve
+the image hashes. TSan is newly run only for 4 KiB blocks and this account
+campaign is sequential; it does not establish concurrent account writers.
+
+These are completed-callback cuts. Each callback finishes its bounded actual
+orphan protocol before cancellation; interruption inside an account callback,
+unknown/account orphan admission, sector/commit-record/checkpoint/flush cuts and
+uncertain device completion remain excluded. Expected identities still use a
+trusted private sidecar, not authenticated durable enrollment. The root-only
+account text is coherent service input, not the separate maximum-byte synthetic
+capacity profile. The passwd GECOS field changes to `root2`; group/shadow content
+is unchanged, although the real transaction restages/removes/publishes all three
+roles. Simultaneous content changes in all databases and broader account layouts
+are not covered here. Regular-file fflush acknowledgements are the host barrier
+model; no physical power-loss claim follows.
+The raw campaign manifests retain the earlier generic `scope` sentence naming
+ordinary-orphan recovery. Their account `kind`, exact overlays, case modes and
+compiled source establish the callback scope described here; those campaigns
+do not claim account-orphan admission. The runner's description is corrected for
+future account campaigns without rewriting the retained evidence.
+
+Review found that identical group/shadow bytes in the geometry matrix could not
+detect mixed old/new contents in those roles. Added the actual-service
+`--account-all-files --block 4096` variant, campaign
+`pkg-mutation-context-20261022-205843-113958` (ASan/UBSan, 4 KiB blocks/512-byte
+sectors). All three coherent root databases change: passwd GECOS becomes `root2`,
+group adds explicit `root` membership, and shadow changes its locked marker from
+`!` to `*`. Every recovery must produce byte-exact old or new values in all roles.
+Selected cuts **3/7/8/10/11/13/14/15/18** cover pre-intent staging, each canonical
+remove/publication, pending retirement and final staging cleanup. **Nine cuts,
+nine zero-write rejections, eighteen fresh recoveries, nineteen Linux audits and
+ten independent final-image grant/noninterference audits PASS**. One cut recovers
+old bytes; eight recover all-new bytes. This is a focused vector, not another
+full geometry matrix or broader account-layout acceptance.
+
+**Aggregate host totals: 153 cuts, 153 zero-write/flush rejections, 306 fresh
+recoveries, 630 probe process invocations, 315 Linux audits and 162 independent final-image
+grant/noninterference audits PASS.** Old/new results total 33/120 cuts.
+
+**Combined real-kernel acceptance:** WSL
+`python3 scripts/test_pkg_call_kernel.py --filesystem`, campaign
+`pkg-kernel-fs-20261022-203440-956971`, **BIOS/UEFI x SMP=1/4: 4/4 PASS**.
+The kernel builds only in the copied workspace; one private Ring 3 probe and a
+copy of the retained 32 MiB IDLE fixture/context enter its independently assembled
+test ISO. QEMU has optical media and paired disposable OVMF vars only: no network,
+data disk or physical target. All per-boot argv are retained and checked.
+The combined kernel filesystem geometry is 4 KiB blocks with 512-byte sectors
+only; the host geometry matrix is a separate claim.
+
+Actual privileged registry identity and durable IDLE authorize volatile writer
+acquisition and the existing real grant reservation planner. A loader-mapped BSS
+RAM device runs the actual detached EXT4 constructor, pre-replay grant/capacity
+checks and real EXT4/JBD2 writes. The fixture creates one charged inode and eight
+children append one block each, including a four-writer phase. SIGKILL, SIGTERM,
+STOP/CONT then TERM and caught SIGINT stop each next real planned write with
+EINTR and zero additional writes by that operation. Counter sampling and the
+denied write occur under the same filesystem exclusion, so another writer cannot
+invalidate the measurement. Caught delivery follows binding unwind; actual
+default exit and reaper hooks clear/drain the other bindings.
+
+**32 children/reaps, 28 exit-hook cleanups, 32 cancelled next writes and 36
+tagged semantic commits PASS** across the four boots. The 36 count includes four
+inode creates plus 32 appends; four durable reservation commits and lifecycle
+activation/freeze are separate. Final G=(0,0), Q=(8,1), T=(8,1), still RESERVED.
+Closing/detaching all volatile writer references does not clear the grant; a new
+begin refuses the non-IDLE state. Every round requires zero bindings/admissions.
+Recorded CPU masks demonstrate bound execution on an AP in both SMP=4 boots.
+Exact masks are 1 in both SMP=1 boots and 15 in both SMP=4 boots. Polled TLB
+acknowledgements are 0/222 for BIOS SMP=1/4 and 0/221 for UEFI SMP=1/4. Each
+boot observes 1792 RAM-sector writes and 70 fixture flush acknowledgements;
+these are device-callback counts, not physical durability measurements.
+Shell exit status is checked independently; every accepted VM shuts down cleanly.
+
+The constructor audits global ownership while unpublished/exclusive. Reservation
+rechecks actual roles/inodes/maps under filesystem exclusion without repeating
+the quadratic audit there. Final verification freezes the backing, opens a fresh
+naturally unpublished engine under retained exclusive device ownership, and runs
+the full global audit with zero additional device writes/flushes. No mounted
+ownership/trust flag is altered to bypass its lock contract. Four read-only QEMU
+virtual-memory exports independently pass Linux fsck, exact package/account bytes,
+record hashes and inode/generation/mode/root ownership/link/allocation checks;
+export hashes remain unchanged by those checks.
+
+The trusted private dispatcher supplies the coordinator's retained writer values
+to child calls. This is not a production user lease/FD ABI or acceptance of
+per-caller package authorization, descriptor nontransferability, automatic writer
+owner-death/exec session retirement or kernel account-service updates. RAM
+barriers are fixture acknowledgements, not controller ordering or reboot/power
+durability. No production mount, complete package pending/state/trust protocol,
+charged-orphan recovery, low-space progress or installation acceptance follows.
+
+**Preservation is separate from boot/runtime acceptance.** Final host compiled
+copies and current compiled repository inputs match. The kernel campaign's
+source-copy/repository and shared-media guards pass separately at campaign completion. The aggregate
+also reconstructs exact private generated helpers, reverses recorded overlays
+against current source, and validates the actual compiler dependency closure,
+assembler/linker inputs, fixture/context and private ISO hashes. Shared release
+media are unchanged; there is no whole-working-tree immutability claim.
+The subsequent all-files host option and manifest-description correction change
+`scripts/test_pkg_cancel_recovery.py`;
+that later change is outside all **274 actual kernel dependency inputs**. Its old
+and current hashes are retained explicitly. No later kernel compiled input changed
+and the boot results are not conflated with that host-harness inventory change.
+Exact totals and the independent record/noninterference oracle are retained in
+`.codex-remote-attachments/pkg-account-kernel-summary-20261022/manifest.json`,
+`validate.py` and `grant-oracle/`. Python compilation, standalone Make target
+expansion and current `git diff --check` pass.
+
+Retained preliminary kernel campaigns, excluded from final totals:
+
+- `pkg-kernel-fs-20261022-200838-999903`: private overlay forward declarations
+  were missing/incorrect; strict build rejected them. No boot acceptance.
+- `pkg-kernel-fs-20261022-200955-720560`: the copied grant validator lacked the
+  repository-root include path. Strict build rejected it; no boot acceptance.
+- `pkg-kernel-fs-20261022-201112-173672`: BIOS/SMP=1 passed its then-current
+  fixture; BIOS/SMP=4 halted on a real TLB shootdown ACK timeout and the runner
+  was interrupted after retaining the fatal log. Not current-source acceptance.
+- `pkg-kernel-fs-20261022-201608-634858`: loader-mapped backing avoided runtime
+  allocation of that backing, but BIOS/SMP=4 still hit the ACK timeout. This
+  does not establish an allocator defect. Review found duplicate full ownership
+  audits under IRQ-disabled filesystem exclusion in the private workbench.
+- `pkg-kernel-fs-20261022-202104-298329`: attempting the final audit on the live
+  mounted engine without its lock correctly triggered the real ownership
+  assertion. The final fixture uses a separate naturally unpublished audit
+  engine over frozen backing; it does not disable lock assertions or fake flags.
+- `pkg-kernel-fs-20261022-202457-518109` still retained a BIOS/SMP=4 TLB timeout.
+  Removing duplicate locked audits did not fully solve mailbox progress.
+- `pkg-kernel-fs-20261022-203059-563667` added phase markers and localized the
+  timeout to the long constructor, before namespace admission or any package
+  writer. Syscall IF remained masked even when no lock was held. The final RAM
+  adapter services the existing lockless TLB polling protocol at every sector/
+  flush callback, records serviced acknowledgements, and changes no production
+  timeout, interrupt window or lock assertion.
+
+Next design/integration work includes authenticated enrollment/orphan provenance,
+complete pending/state/trust admission, account interruption inside callbacks,
+charged-orphan and low-space recovery, actual per-caller lease/lifecycle binding
+and broader end-to-end acceptance. Concurrent work remains preserved. No release
+media target, installation, production trust provisioning, commit, push or
+physical disk write was performed in this continuation.
