@@ -96,6 +96,14 @@ on the first run, and explicitly clean it on the second. The original generic
 constructor still replays before private grant validation; no grant-aware
 pre-replay admission or trusted boot selector is implemented here.
 
+2026-10-22 continuation: the opt-in `--pre-replay` copied-source overlay now
+validates grants in constructor preview before replay. See
+[the preview candidate](PKG2_GRANT_PREREPLAY.md) for its exact profile and remaining
+account-capacity/selector boundaries. The original invocation without that flag
+retains the historical ordering described above.
+The subsequent [account-capacity preview](PKG2_ACCOUNT_PREVIEW.md) also certifies
+the account namespace and C-A bound at that boundary, before replay writes.
+
 Host VMM range checks, current-thread selection, mutex/IRQ behavior and lifecycle
 invocation are adapters. Registry and extracted FD functions execute, but the
 scheduler, CR3/stack destruction, real Ring 3 syscalls and guest exec/spawn do not.

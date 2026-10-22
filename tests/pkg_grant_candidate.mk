@@ -36,3 +36,41 @@ test-pkg-writer-lifetime:
 .PHONY: test-pkg-service-integration
 test-pkg-service-integration:
 	python3 scripts/test_pkg_service_integration.py
+
+.PHONY: test-pkg-grant-prereplay
+test-pkg-grant-prereplay:
+	python3 scripts/test_pkg_grant_prereplay.py
+
+.PHONY: test-pkg-service-prereplay
+test-pkg-service-prereplay:
+	python3 scripts/test_pkg_service_integration.py --pre-replay
+
+.PHONY: test-pkg-mutation-admission test-pkg-mutation-context test-pkg-mutation-context-tsan
+test-pkg-mutation-admission:
+	python3 scripts/test_pkg_mutation_admission.py
+
+test-pkg-mutation-context:
+	python3 scripts/test_pkg_mutation_context.py
+
+test-pkg-mutation-context-tsan:
+	python3 scripts/test_pkg_mutation_context.py --tsan
+
+.PHONY: test-pkg-call-binding test-pkg-call-namespace test-pkg-call-namespace-tsan
+test-pkg-call-binding:
+	python3 scripts/test_pkg_call_binding.py
+
+test-pkg-call-namespace:
+	python3 scripts/test_pkg_mutation_context.py --binding
+
+test-pkg-call-namespace-tsan:
+	python3 scripts/test_pkg_mutation_context.py --binding --tsan
+
+.PHONY: test-pkg-cancel-recovery test-pkg-cancel-recovery-tsan test-pkg-call-kernel
+test-pkg-cancel-recovery:
+	python3 scripts/test_pkg_cancel_recovery.py
+
+test-pkg-cancel-recovery-tsan:
+	python3 scripts/test_pkg_cancel_recovery.py --block 4096 --tsan
+
+test-pkg-call-kernel:
+	python3 scripts/test_pkg_call_kernel.py

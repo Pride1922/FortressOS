@@ -139,17 +139,103 @@ static void integration_publish(void){
     for(unsigned i=0;i<4;i++){int error;nodes[i]=e4_ac_lookup(mounted,names[i],&error);assert(nodes[i]);}
     assert(!ext4_root_lock_accounts(mounted,nodes));for(unsigned i=0;i<4;i++)vfs_node_put(nodes[i]);assert(!ext4_publish_root(mounted));
 }
+#include "pkg_account_preview.inc"
+static uint64_t integration_pre_capacity[2];
+static unsigned integration_capacity_calls;
+static bool integration_capacity_oom;
+/* Constructor-owned preview: no FS lock or publication, matching JBD2 preview. */
+static int integration_pre_validate(ext4_engine_t *engine){
+    spin_debug_assert_unheld();integration_pre_calls++;
+    /* Generic orphan cleanup is not yet coupled to grant refunds here. */
+    if(engine->orphan_count||engine->orphan_recovery_required)return -VFS_EIO;
+    ext4_mount_t *fs=engine->fs;uint64_t allocated;pg_view view;
+    for(unsigned i=0;i<3;i++)if(object(fs,ids[i],i?binding.generation[i-1]:marker_generation,
+        i==0?512:i==1?1024:8192,false,true,&allocated))return -VFS_EIO;
+    if(object(fs,ids[3],binding.generation[2],fs->bs,true,true,&allocated)||life_validate(engine,&view))return -VFS_EIO;
+    if(view.phase!=PG_IDLE&&view.phase!=PG_RESERVED)return -VFS_EIO;
+    /* Identity alone is insufficient: the fixed namespace must name those objects. */
+    e4_inode_t root,pkg;uint32_t pkg_ino=0,named=0;
+    if(e4_inode(fs,2,&root)||e4_scan(&root,"pkg",0,NULL,&pkg_ino)<0||!pkg_ino||e4_inode(fs,pkg_ino,&pkg))return -VFS_EIO;
+    if(pkg.full_mode!=(0x4000|0700)||pkg.uid||pkg.gid)return -VFS_EIO;
+    const char *names[]={"enrollment.v1","grant.v1","ownership.v1","transaction.v1"};
+    for(unsigned i=0;i<4;i++)if(e4_scan(&pkg,names[i],0,NULL,&named)<0||named!=ids[i])return -VFS_EIO;
+    uint8_t sb[1024];if(!e4_bytes(fs,1024,sb,sizeof sb)||memcmp(sb+104,binding.uuid[0],16))return -VFS_EIO;
+    integration_capacity_calls++;
+    uint64_t required[2]={UINT64_MAX,UINT64_MAX};
+    if(integration_capacity_oom)fail_alloc=0;
+    int r=capacity_preview(engine,required);if(integration_capacity_oom)fail_alloc=-1;
+    if(r){assert(required[0]==UINT64_MAX&&required[1]==UINT64_MAX);return r;}
+    uint64_t free[2]={e4_u32(sb+12),e4_u32(sb+16)};
+    r=capacity_preview_budget(fs,free,view.remaining,required);if(r)return r;
+    assert(!fs->account_namespace_fenced&&!fs->engine&&!fs->journal_mounted);
+    memcpy(integration_pre_capacity,required,sizeof required);return 0;
+}
 int main(int argc,char **argv){
+    (void)integration_pre_validate;
     assert(argc==4);setvbuf(stdout,NULL,_IONBF,0);unsigned sector=(unsigned)strtoul(argv[2],NULL,10);
     image=fopen(argv[1],"r+b");assert(image&&!fseeko(image,0,SEEK_END));size_t bytes=ftello(image);
     disk_bytes=malloc(bytes);assert(disk_bytes&&!fseeko(image,0,SEEK_SET)&&fread(disk_bytes,1,bytes,image)==bytes);
     block_dev_t dev={.sector_size=sector,.sector_count=bytes/sector,.read_sector=rd,.write_sector=wr,.flush=flush};
-    vfs_init();assert(!ext4_prepare_root(&dev,true,&mounted));ext4_account_namespace_report_t report;
-    assert(!ext4_root_account_io(mounted,&backend));assert(!ext4_root_account_namespace_admit(mounted,&report));
-    life_path="/pkg/transaction.v1/unit";
     bool resume=!strncmp(argv[3],"resume",6);char context[1024];assert(snprintf(context,sizeof context,"%s.ctx",argv[1])>0);
+    if(resume){FILE *c=fopen(context,"rb");assert(c&&fread(&binding,sizeof binding,1,c)==1&&fread(ids,sizeof ids,1,c)==1&&fread(&marker_generation,sizeof marker_generation,1,c)==1);assert(!fclose(c));integration_pre_required=true;}
+    bool reject=!strcmp(argv[3],"resume-reject");if(reject)binding.marker_sha256[0]^=1;
+    bool capacity_reject=!strcmp(argv[3],"resume-capacity-reject");
+    integration_capacity_oom=!strcmp(argv[3],"resume-capacity-oom");
+    vfs_init();
+    bool pending_check=!strcmp(argv[3],"resume-capacity-pending-check");
+    if(pending_check){
+        jbd2_plan_t *plan=NULL;jbd2_report_t report;
+        assert(!ext4_journal_analyze(&dev,&plan,&report)&&report.transactions==1&&report.images);
+        assert(!writes_seen&&!integration_flushes);jbd2_release(plan);
+        printf("PASS pending account journal transactions=1 images=%u\n",report.images);
+    }
+    const char *prepare_stage=NULL;
+    int prepared=ext4_prepare_root_diagnose(&dev,true,&mounted,&prepare_stage);
+    if(reject){assert(prepared==-VFS_EIO&&!mounted&&!writes_seen&&!integration_flushes&&integration_pre_calls==1&&!e4_engine_busy);
+        assert(!fclose(image));free(disk_bytes);printf("PASS pre-replay rejection zero-writes\n");return 0;}
+    if(capacity_reject||integration_capacity_oom){
+        fprintf(stderr,"capacity rejection error=%d stage=%s grant-calls=%u capacity-calls=%u writes=%u flushes=%u\n",
+            prepared,prepare_stage?prepare_stage:"unknown",integration_pre_calls,integration_capacity_calls,writes_seen,integration_flushes);
+        assert(prepared==(integration_capacity_oom?-VFS_ENOMEM:-VFS_EACCES)&&!mounted&&!writes_seen&&!integration_flushes&&
+               integration_pre_calls==1&&integration_capacity_calls==1&&!e4_engine_busy);
+        assert(!fclose(image));free(disk_bytes);printf("PASS capacity preview rejection zero-write-flush\n");return 0;
+    }
+    assert(!prepared);ext4_account_namespace_report_t report;
+    if(integration_pre_calls){
+        assert(integration_capacity_calls==1&&!ext4_root_account_namespace_admit(mounted,&report));
+        uint64_t required[2];assert(!capacity_snapshot(required)&&!memcmp(required,integration_pre_capacity,sizeof required));
+        unsigned before=writes_seen,flushes=integration_flushes;
+        capacity_preview_boundaries(mounted,required);assert(before==writes_seen&&flushes==integration_flushes);
+        printf("PASS preview-capacity R=%llu,%llu mounted-equal arithmetic=5\n",(unsigned long long)required[0],(unsigned long long)required[1]);
+    }
+    if(!strcmp(argv[3],"resume-probe")||pending_check){
+        assert(integration_pre_calls==1);uint64_t flags=spin_lock_irqsave(&e4_lock);pg_view view;
+        assert(!life_validate(mounted->engine,&view)&&view.phase==PG_IDLE);spin_unlock_irqrestore(&e4_lock,flags);
+        assert(!ext4_freeze_and_sync(mounted));assert(!fclose(image));free(disk_bytes);
+        printf("PASS pre-replay IDLE restart\n");return 0;
+    }
+    assert(!ext4_root_account_io(mounted,&backend));assert(!ext4_root_account_namespace_admit(mounted,&report));
+    if(!strcmp(argv[3],"resume-capacity-inject-oversize")){
+        /* Explicit invalid-policy fixture, using the real write planner so
+         * namespace slots, inode identity and checksums stay otherwise valid. */
+        int error;vfs_node_t *node=e4_ac_lookup(mounted,"/etc/passwd",&error);assert(node);
+        char *bytes=malloc(ACCOUNT_FILE_MAX+1);assert(bytes);memset(bytes,'X',ACCOUNT_FILE_MAX+1);
+        uint64_t flags=spin_lock_irqsave(&e4_lock),offset=0;
+        mounted->account_allocation=true;
+        int64_t wrote=e4_file_write_actor(mounted->engine,((e4_node_t *)node)->inode.ino,&offset,false,bytes,ACCOUNT_FILE_MAX+1,NULL);
+        mounted->account_allocation=false;spin_unlock_irqrestore(&e4_lock,flags);
+        assert(wrote==ACCOUNT_FILE_MAX+1);free(bytes);vfs_node_put(node);
+        assert(!ext4_freeze_and_sync(mounted));assert(!fclose(image));free(disk_bytes);
+        printf("PASS actual-planner oversized account fixture\n");return 0;
+    }
+    if(!strcmp(argv[3],"resume-capacity-pending")){
+        integration_pending_cut=true;
+        assert(backend.write(backend.context,ACCOUNT_TEMP_GROUP,"X",1)==-VFS_EIO&&!integration_pending_cut);
+        assert(!fclose(image));free(disk_bytes);
+        printf("PASS durable uncheckpointed account empty-create\n");return 0;
+    }
+    life_path="/pkg/transaction.v1/unit";
     if(!resume){integration_seed();FILE *c=fopen(context,"wb");assert(c);assert(fwrite(&binding,sizeof binding,1,c)==1&&fwrite(ids,sizeof ids,1,c)==1&&fwrite(&marker_generation,sizeof marker_generation,1,c)==1);assert(!fclose(c));}
-    else {FILE *c=fopen(context,"rb");assert(c&&fread(&binding,sizeof binding,1,c)==1&&fread(ids,sizeof ids,1,c)==1&&fread(&marker_generation,sizeof marker_generation,1,c)==1);assert(!fclose(c));}
     uint64_t allocated;uint64_t fixed_lock=spin_lock_irqsave(&e4_lock);
     for(unsigned i=0;i<3;i++)assert(!object(mounted,ids[i],i?binding.generation[i-1]:marker_generation,i==0?512:i==1?1024:8192,false,true,&allocated));
     assert(!object(mounted,ids[3],binding.generation[2],mounted->bs,true,true,&allocated));spin_unlock_irqrestore(&e4_lock,fixed_lock);

@@ -1547,3 +1547,615 @@ Next private gates are grant-aware read-only validation before the first replay
 write, per-operation mutation context for competing kernel callers, and eventual
 Ring 3/scheduler lifecycle acceptance. This checkpoint does not enable production
 integration or installation.
+
+## 2026-10-22 — Private grant-aware preview before replay
+
+Implemented the copied-source constructor gate described in
+[PKG2_GRANT_PREREPLAY.md](../plans/PKG2_GRANT_PREREPLAY.md). The new standalone
+runner inserts a grant check after the existing read-only filesystem preview,
+before `jbd2_replay`, activation, orphan cleanup or publication. It passes the
+explicit preview engine without fabricating `fs->engine`, trust or mount flags.
+Exclusive preview reads run unlocked, as required by the actual JBD2 preview API;
+checks against published mounts retain filesystem exclusion. The repository's
+production EXT4/JBD2 sources are unchanged.
+
+`python3 scripts/test_pkg_grant_prereplay.py` (WSL Ubuntu-24.04), accepted campaign
+`.codex-remote-attachments/pkg-grant-prereplay-20261022-172038/manifest.json`:
+
+| Block bytes | Sector bytes | Replay cuts | Restart mounts | Zero-write rejections | Linux audits |
+| --- | --- | --- | --- | --- | --- |
+| 1024 | 512 | 480 | 960 | 14 | 2 |
+| 1024 | 4096 | 256 | 512 | 14 | 2 |
+| 2048 | 512 | 672 | 1344 | 14 | 2 |
+| 2048 | 4096 | 192 | 384 | 14 | 2 |
+| 4096 | 512 | 1056 | 2112 | 14 | 2 |
+| 4096 | 4096 | 160 | 320 | 14 | 2 |
+
+**6/6 geometries, 2,816 cuts, 5,632 restart mounts, 84 rejection cases,
+12 explicit valid pending-transaction mounts and 12 Linux e2fsck audits PASS**
+under ASan/UBSan. Rejections comprise six grant-preview failures and one earlier
+filesystem-preview failure for each charge/refund/geometry. External marker hash,
+filesystem UUID, ledger inode generation, marker inode generation and profile
+mismatch each fail the grant check. A modified on-disk marker hash also fails
+there; a raw inode-owner byte alteration without resealing its inode checksum is
+correctly rejected by the earlier generic filesystem preview. That last case
+proves checksum rejection, not a grant-specific ownership decision. Every rejection
+asserts zero write/flush callbacks, unchanged fixture bytes, no mount publication
+and released constructor ownership. Wrong external expectations are restored only
+in the test context; corrupted target fixtures are discarded, never repaired by
+admission.
+
+Real charge/refund transactions are interrupted after durable commit and before
+checkpoint. Their preview must validate the journal-updated ledger/table, inode
+and allocation state while home images can be older. Subsequent replay cuts use
+all four existing persistence modes, before/after callback failure and two restart
+mounts per cut. Runtime checks assert exact sequence and G/Q outcomes. Linux
+checks here are `e2fsck -fn`; this runner does not claim an independent Linux
+byte oracle for every intermediate cut. No account, IDLE or charged-orphan cut
+sweep follows from this one-linked-payload RESERVED profile.
+
+**Preservation separately PASS:** compiled copied inputs and recorded repository
+inputs, including AGENTS.md and README.md, unchanged through the accepted run;
+source fixture image hashes unchanged. This is host recovery acceptance, not boot
+or release-media acceptance.
+
+Retained preliminary runs:
+
+- `pkg-grant-prereplay-20261022-171502`: assertion requiring filesystem exclusion
+  in the newly added post-mount positive validator. Fixed that published-mount
+  call to take the lock.
+- `pkg-grant-prereplay-20261022-171552`: the first correction also locked preview;
+  actual `jbd2_preview_read_sector` requires unlocked exclusive construction.
+  A GDB trace identified that distinct contract. Preview now stays unlocked.
+- `pkg-grant-prereplay-20261022-171701`: initial five-negative 1 KiB/512 and
+  1 KiB/4096 gate PASS (736 cuts), superseded by the expanded full campaign.
+- `pkg-grant-prereplay-20261022-171859`: test expected a corrupted inode checksum
+  to reach the grant stage. The generic preview rejected it earlier; corrected
+  the stage/call-count expectation and retained the failed run.
+
+The service runner additionally supports `--pre-replay`: its external expectation
+context is read before root preparation, and the copied constructor checks fixed
+record ownership/maps, namespace bindings, lifecycle grant coherence and the
+ordinary account floor. Wrong-marker admission is exercised in a separate process
+before actual account recovery, with unchanged image hashes required. Baseline
+synthetic enrollment remains a separate known-unenrolled setup path.
+
+Open boundaries: account-capacity certification itself still occurs after replay,
+although before account recovery; authenticated enrollment/boot selection, IDLE
+restart and charged-orphan admission coverage, per-operation concurrent dispatch,
+and Ring 3/scheduler lifecycle acceptance remain open. Installation, production
+integration/trust provisioning, release-media builds, pushes and physical disk
+writes remain disabled.
+
+Integrated preview review also added an explicit comparison of the actual
+filesystem UUID with the external binding, and a fail-closed refusal when the
+constructor reports pending orphan cleanup: this service overlay does not yet
+couple generic constructor orphan reclamation to grant refunds. That refusal
+branch is reviewed, not injected by this campaign. Fresh-process IDLE preview
+acceptance and a zero-flush assertion on wrong-marker rejection were added.
+
+Superseded service campaigns are retained, separately from final acceptance:
+`pkg-service-integration-20261022-171957-927766` (initial 1 KiB runtime and guards
+PASS), `...-172136-473851` (initial 4 KiB runtime and guards PASS), and
+`...-172136-471509` (initial 2 KiB runtime/Linux cases PASS but repository-input
+preservation FAIL for this task's subsequent `pkg_service_integration.inc`
+changes). The latter manifest's inherited `result=PASS` denotes runtime; its
+nonempty changed-input list and nonzero runner exit disqualify it as a preserved
+acceptance run. No guard failure is silently converted to a pass.
+`...-172711-104473`, `...-172731-984369` and `...-172731-984528` were explicitly
+interrupted after adding the final orphan refusal. Their manifests are INCOMPLETE,
+with own source changes recorded; partial runtime cases are not included in the
+final totals. No physical or production state was involved.
+
+These host-only runners build no kernel, initramfs or release medium. Their
+preservation claims cover the recorded source inputs and disposable source
+fixtures; no before/after release-media hash audit was run for this step. They
+therefore establish neither new boot acceptance nor a new release-media
+preservation result. No production storage path or physical disk was exercised.
+
+Final integrated pre-replay acceptance (`python3
+scripts/test_pkg_service_integration.py --pre-replay --block N` in WSL):
+
+| Block bytes | Sectors | Final accepted campaign |
+| --- | --- | --- |
+| 1024 | 512/4096 | `pkg-service-integration-20261022-172949-433946` |
+| 2048 | 512/4096 | `pkg-service-integration-20261022-172949-433697` |
+| 4096 | 512/4096 | `pkg-service-integration-20261022-172949-436321` |
+
+**12/12 normal/interrupted service cases PASS**, including **36 fresh host-process
+invocations**, **six IDLE preview restarts**, **six wrong-marker admissions with
+zero writes AND zero flushes**, **990 acknowledged account-capacity semantic
+commits**, and **12 Linux e2fsck/canonical-account-byte/IDLE-record audits PASS**.
+The six rejection invocations preserve complete image hashes. Actual package
+record inode/generation/maps, filesystem UUID, fixed names, grant G/Q coherence
+and the ordinary floor are checked before replay on the restart paths. No service
+runtime or Linux result is counted as boot acceptance. The orphan-refusal branch
+remains reviewed rather than injected; these fixtures have no pending orphans.
+
+**Final integrated preservation separately PASS:** all three compiled-copy and
+repository compiled-input guards are empty; source fixture hashes are unchanged.
+The flush instrumentation is present in the retained generated C; its generator
+also requires exactly one matching source function before replacement. That added
+fail-fast generator assertion changes no generated C or runtime behavior.
+Standalone make targets `test-pkg-grant-prereplay` and
+`test-pkg-service-prereplay` are available through `tests/pkg_grant_candidate.mk`;
+`make -n` confirmed their commands, and both Python drivers passed `py_compile`.
+`git diff --check` passed. No release build or media test was run.
+
+Aggregate evidence, checked source/include identity, totals and retained validator:
+`.codex-remote-attachments/pkg-grant-prereplay-summary-20261022/manifest.json` and
+`validate.py`. These totals exclude all superseded/incomplete campaigns above.
+Next: move the actual conditional account-capacity/namespace certificate into
+read-only preview, then implement per-operation concurrent mutation admission and
+actual Ring 3/scheduler lifecycle acceptance. Authenticated enrollment and complete
+pending/state/trust/retirement admission remain separate, disabled production work.
+
+## 2026-10-22 — Account-capacity certificate before replay writes
+
+Implemented [the private account preview candidate](../plans/PKG2_ACCOUNT_PREVIEW.md).
+The mounted snapshot and constructor preview now share `capacity_certificate`,
+which derives C-A from the actual fixed role set and dense initialized inode
+maps, including extent-tree blocks and empty allocated inodes. The preview builds
+its own root/ancestor/role/slot certificate using the existing internal namespace
+validators. It neither fabricates trusted/detached/mounted flags nor installs
+`fs->engine`, namespace anchors or fences. The constructor still owns the preview
+exclusively and reads it unlocked; the mounted wrapper retains filesystem
+exclusion, reader refusal and its real namespace fence.
+
+`integration_pre_validate` now derives R_acc in that read-only view before
+`jbd2_replay`, activation or other target writes. Its output is published only on
+success and compared with the actual mounted certificate after replay. Admission
+uses actual preview F and durable G, checking F-G>=max(A0,R_acc) in both dimensions.
+The earlier private constructor's A0 floor is retained; since A0 exceeds C on the
+current geometries, this step adds structural certification before writes rather
+than tightening the numerical threshold. Low-space recovery below A0 even when
+R_acc fits remains outside this private admission profile; production account
+priority remains a review decision, not a new guarantee.
+
+New rejection fixtures exercise wrong canonical mode, an 8193-byte canonical
+file and actual certificate workspace OOM after successful grant checks. The mode
+and size fixtures pass Linux fsck before admission. The oversized file is an
+explicit invalid-policy fixture grown through the real write planner on the
+existing inode with a test-only account allocation bypass. No target repair,
+trusted flags, forged allocation counters or legitimate account operation is
+claimed for fixture generation. Rejection requires the capacity hook, exact
+EACCES/ENOMEM, unchanged result output, zero target writes/flushes, no publication,
+released constructor ownership and an unchanged complete image hash.
+
+Five local arithmetic cases per successful certificate test exact equality,
++1 grant and F<G independently in both dimensions. The other dimension remains
+at its valid boundary. They use the real derived R and the same budget predicate,
+but local F/G inputs: these are not near-full filesystem admission tests.
+
+The new pending-journal fixture uses actual ACCOUNT_TEMP_GROUP (role 7,
+`/etc/group.publish`), with a copied-source failure after successful JBD2 commit
+and before checkpoint. A fresh process verifies one committed nonempty journal,
+then passes the constructor preview/replay path. Required blocks stay unchanged
+and required inodes drop by one, matching the durable empty create rather than
+stale home state. Mounted rederivation must agree. Linux fsck, size=0,
+i_blocks=0, links=1 and an independent C-A calculation from canonical i_blocks
+corroborate the replayed certificate. This is one selected commit boundary,
+not an all-write/flush interruption campaign or an allocating-data journal sweep.
+
+Retained preliminary campaigns (none counted in final acceptance):
+
+- `pkg-service-integration-20261022-174900-981386`: an initial debugfs remove/write
+  oversized-file fixture changed the certified directory record geometry. It
+  correctly reached capacity preview and rejected EINVAL with zero writes, but
+  failed the fixture's expected EACCES assertion. Replaced that fixture with an
+  actual-planner grow preserving inode/namespace identity and geometry.
+- `pkg-service-integration-20261022-175154-782720` and
+  `...-175415-868900`: the actual committed-journal preview produced the correct
+  R inode delta; the independent oracle mistakenly queried `group.new` instead
+  of role 7's `group.publish`, causing a missing-stat parsing failure. Corrected
+  the path. Their manifests remain INCOMPLETE; manual diagnostic invocations on
+  the retained copies are not acceptance cases.
+
+The service runner now records new negative/pending results explicitly and marks
+any compiled-input guard failure `FAIL_PRESERVATION`, rather than leaving a runtime
+PASS label when preservation fails. The final positive/negative runs and Linux
+results are reported separately from source preservation and from earlier boot
+acceptance. No boot, release-media, production integration or physical disk work
+is performed by this host-only step.
+
+Mounted-path maximum-byte regression:
+`python3 scripts/test_pkg_account_capacity.py` in WSL,
+`pkg-account-capacity-20261022-175729-270434`: **18/18 recover/update/interrupt cases,
+30 fresh-process invocations, 18 Linux fsck/exact 8192-byte account-file audits
+and 18 independent Linux capacity-potential oracles PASS** across 1/2/4 KiB
+blocks x 512/4096 sectors. Compiled-copy and repository compiled-input guards
+PASS separately. Its broader repository inventory records concurrent
+`src/drivers/iwlwifi.c` changes; those are outside the compiled input set and were
+preserved. Other concurrent Wi-Fi and trust-asset edits remain untouched.
+
+Final service/capacity-preview acceptance, WSL
+`python3 scripts/test_pkg_service_integration.py --pre-replay --block N`:
+
+| Block bytes | Sectors | Final accepted campaign | Canonical R | Empty-create replay R |
+| --- | --- | --- | --- | --- |
+| 1024 | 512/4096 | `pkg-service-integration-20261022-175656-257212` | (80,8) | (80,7) |
+| 2048 | 512/4096 | `pkg-service-integration-20261022-175656-256194` | (35,8) | (35,7) |
+| 4096 | 512/4096 | `pkg-service-integration-20261022-175656-260545` | (17,8) | (17,7) |
+
+**12/12 normal/interrupted service cases PASS**, plus the separately recorded
+capacity-preview checks: **72 fresh-process invocations total**, **36 exact
+preview/mounted certificate comparisons**, **180 local arithmetic boundary cases**,
+**18 capacity-specific zero-write/zero-flush rejections**, **six committed account
+journal preview/replay checks with independent Linux C-A corroboration**, and
+**990 acknowledged account-capacity semantic commits**. The six existing
+wrong-marker zero-write/flush rejections remain separate from those 18 new
+capacity-specific cases. **30 Linux fsck audits PASS**: 12 normal/recovered
+account images, 12 invalid-account-policy fixtures, six empty-create replay images.
+Normal/recovered images also pass exact canonical account bytes and final IDLE
+package-record checks; invalid-policy fixtures are never auto-repaired.
+
+**Preservation separately PASS:** all three final service copied compiled-input
+and repository compiled-input guards are empty, and original fixture hashes stay
+unchanged. The mounted maximum-byte regression adds **762 acknowledged commits
+and 1,836 snapshots** in its 30 runs; its 18 Linux audits and 18 independent
+capacity oracles are separate from the 30 service/preview Linux audits above.
+The shared certificate source hashes match the final checked repository files.
+Python compilation and `git diff --check` pass. Concurrent source/asset changes
+outside these compiled input sets remain preserved and are not claimed unchanged.
+
+Aggregate exact totals, source identity checks and retained validator:
+`.codex-remote-attachments/pkg-account-preview-summary-20261022/manifest.json`
+and `validate.py`. All preliminary failures above are excluded. The earlier
+2,816-cut grant replay campaign is historical evidence, not rerun or counted as
+a new capacity-cut campaign here. No kernel/release-media build, before/after
+media hash audit, boot test, production trust provisioning, push or physical disk
+write was performed. Changes remain private and uncommitted.
+
+Next private implementation work: per-operation mutation context and concurrent
+caller admission. Production integration still needs low-space account-priority
+policy, authenticated enrollment, complete pending/state/trust admission and
+actual Ring 3/scheduler lifecycle acceptance. The retained A0 floor, selected
+empty-create interruption boundary and absent charged-orphan recovery remain
+explicit limits of this checkpoint.
+
+
+### Private per-operation context and concurrent admission (2026-10-22)
+
+Implemented [the private mutation-context candidate](../plans/PKG2_MUTATION_CONTEXT.md)
+in test-only sources. An eight-slot generation arena pins immutable mount/kind
+views, retains process-owned package operations and reserves one admission for
+account priority. Pending account work blocks new pins/admissions while existing
+pins drain. Each filesystem call owns its certificate workspace and account
+capacity/grant snapshot; the copied dispatcher no longer classifies concurrent
+work through the historical global lane switches. Actual filesystem transactions
+remain serialized under the existing filesystem lock. No arena/process lock is
+held across filesystem work.
+
+The host delivery adapter uses TLS, not a production TCB binding. Coverage is one
+prepared ordinary file, one tagged package file and real account control/backend
+callbacks. Initial enrollment and writer acquisition remain trusted quiescent
+setup. Neither arbitrary namespace mutation nor concurrent writer acquisition is
+admitted by this checkpoint. Actual account credentials/token/service-generation
+validation remains in account control; the internal account issuer is trusted.
+
+Accepted standalone admission campaign:
+`pkg-mutation-admission-20261022-183929-379884`, WSL
+`python3 scripts/test_pkg_mutation_admission.py`: **128 rounds with four
+simultaneously pinned workers under ASan/UBSan, and another 128 rounds under
+TSan, PASS**. Checks include account priority/cancellation, the reserved eighth
+slot, stale generations, wrong mounts, quiescent reconfiguration, failed package
+admission reference cleanup, actual process-registry owner death and complete
+volatile-reference drain. The standalone durable-IDLE input is mocked; actual
+grant state is checked separately by the filesystem campaigns below.
+
+Filesystem invocations: `python3 scripts/test_pkg_mutation_context.py --block N`
+and `python3 scripts/test_pkg_mutation_context.py --tsan` in WSL.
+
+| Sanitizer | Blocks | Sectors | Accepted campaign |
+| --- | --- | --- | --- |
+| ASan/UBSan | 1024 | 512/4096 | `pkg-mutation-context-20261022-183805-040493` |
+| ASan/UBSan | 2048 | 512/4096 | `pkg-mutation-context-20261022-183805-035477` |
+| ASan/UBSan | 4096 | 512/4096 | `pkg-mutation-context-20261022-183521-513945` |
+| TSan | 1024/2048/4096 | 512/4096 | `pkg-mutation-context-20261022-183805-035880` |
+
+**Six ASan/UBSan and six TSan actual-code filesystem cases PASS**, each with
+four simultaneously pinned writers (two package, two ordinary), queued account
+priority and actual account begin/update/finish. A real update pauses after a
+successful staging callback with no filesystem lock held: fresh ordinary,
+package and account admissions and new canonical readers reject EAGAIN. Cross-kind
+account control, absent context and cross-target writes reject before device
+writes. Seven additional blocks after two charged package blocks exceed the
+eight-block grant while fitting the backend's 32 KiB bound; rejection is EFBIG
+with zero device writes. This is a backend test, not a SYS_WRITE boundary claim.
+
+An already admitted package operation completes after actual accounted process
+exit and descriptor close detach its owner; new operations reject EACCES and all
+volatile references drain. The durable RESERVED grant remains intentionally
+retained, T=(8,1), G=(5,0), Q=(3,1); fresh writer acquisition is rejected. This
+workload does not retire the package or return it to IDLE.
+
+**Independent Linux results: 12 clean e2fsck audits and 12 exact payload/account/
+grant audits PASS.** Package blocks contain P/Q in either serialized order then
+Z; ordinary blocks contain N/O in either order. Canonical account bytes, ledger
+self-hash, ownership-table hash and exact final T/G/Q are checked independently
+after each process exits. These do not constitute a new interruption sweep.
+
+**Preservation separately PASS:** copied compiled dependencies and repository
+compiled inputs remain byte-identical in all accepted campaigns; original
+namespace fixture hashes remain unchanged. The aggregate validator rechecks
+source identities against the current checkout, sanitizer geometry coverage and
+exact totals in
+`.codex-remote-attachments/pkg-mutation-summary-20261022/validate.py` and
+`manifest.json`. Python compilation, standalone Make target expansion and
+`git diff --check` pass. Concurrent work is preserved; broader repository/media
+immutability is not inferred from compiled-input guards.
+
+Retained preliminary campaigns, excluded from all accepted totals:
+
+- `pkg-mutation-admission-20261022-182252-342657`: strict compile rejected
+  misleading indentation in the new admission source; split the statements and
+  retain explicit writer-release error handling.
+- `pkg-mutation-admission-20261022-182835-154466`: ASan/UBSan runtime passed;
+  bare TSan exited 66 before running tests with `unexpected memory mapping`.
+  The same binary subsequently passed with per-process `setarch x86_64 -R`.
+  Final TSan runners use that setting; no global ASLR setting changed.
+- `pkg-mutation-context-20261022-183011-930756`: strict compile found an unused
+  historical capacity dispatcher after replacing it. Keep an explicit reference
+  to the compiled baseline helper without dispatching to it or disabling warnings.
+- `pkg-mutation-context-20261022-183242-811524`: overspend fixture attempted
+  package admission while account priority was pending. Correct EAGAIN triggered
+  the fixture assertion. Move the overspend check after the queued account call
+  drains so it actually reaches grant spending. No budget behavior was relaxed.
+
+These preliminary manifests remain INCOMPLETE; the earlier successful admission
+campaign `pkg-mutation-admission-20261022-183242-733340` is superseded by the final
+runner/preservation-label run, not double-counted.
+
+Remaining work includes retained kernel call/TCB binding and cancellation,
+general namespace operation coverage, authenticated enrollment and complete
+pending/state/trust admission. Account priority here prevents new contenders;
+it does not solve a permanently pinned caller, heap/device/journal liveness,
+near-full recovery policy or charged-orphan recovery. No new Ring 3, scheduler,
+IRQ/SMP, boot or media acceptance is claimed. No kernel/release-media build,
+before/after media hash audit, production integration, installation, production
+trust provisioning, commit, push or physical disk write was performed. All
+changes remain uncommitted.
+
+
+### Private retained TCB call, cancellation and namespace coverage (2026-10-22)
+
+Implemented the [retained-call candidate](../plans/PKG2_RETAINED_CALL.md) in
+test-only sources and exact copied-source overlays. Production `thread.h` and
+filesystem code remain unchanged. The copied TCB owns a retained admission and
+kernel context; remote cancellation uses PID values and never a remote TCB
+pointer. Host TLS supplies only `thread_current()`. Queued account priority is
+owned before pinning and released on owner acknowledgement or entry-workspace
+OOM. Duplicate/current-task/dead-identity checks, rejection of already pinned
+transfer and a post-registration liveness check fence binding creation.
+
+An atomic cancellation/commit gate executes under filesystem exclusion without
+taking a binding lock. Cancellation before commit returns EINTR with no device
+writes. A commit that acquired the gate first may finish; the next commit rejects.
+No record or TCB context is freed during a commit. The copied actual registry's
+abort/forget/accounted-exit notifications run after unlocking and publish
+cancellation. Owner unwind clears the TCB binding and drains retained admission
+and package references. This is a private cooperative acknowledgement protocol;
+production scheduler/thread-exit/reaper/exec and signal-delivery wiring is not
+claimed complete.
+
+Current-source standalone campaigns, WSL:
+
+- `python3 scripts/test_pkg_call_binding.py`,
+  `pkg-call-binding-20261022-190245-207768`: **128 rounds under ASan/UBSan and
+  128 under TSan PASS**. Covers owned queued-account cancellation on actual
+  accounted exit, cancellation before and during held commit, rejection of end
+  during commit, copied foreign-task binding, nested/pinned-transfer rejection,
+  stale admission keys and complete arena drainage. During-commit ordering is a
+  pthread/atomic protocol test, not an interrupted filesystem I/O test.
+- `python3 scripts/test_pkg_mutation_admission.py`,
+  `pkg-mutation-admission-20261022-190245-202959`: **128 four-worker rounds per
+  sanitizer PASS**, the existing admission/reference/priority regression after
+  adding the checked unpinned `pm_describe` snapshot.
+
+Current-source filesystem acceptance uses
+`python3 scripts/test_pkg_mutation_context.py --binding` and
+`python3 scripts/test_pkg_mutation_context.py --binding --tsan`:
+`pkg-mutation-context-20261022-190245-276736` and
+`pkg-mutation-context-20261022-190245-276889` (the manifests identify sanitizer).
+**Six ASan/UBSan and six TSan cases PASS**, each covering 1/2/4 KiB blocks x
+512/4096-byte sectors. TSan uses per-process `setarch x86_64 -R`, as in the
+previous checkpoint, without changing global ASLR settings.
+
+Every case retains the prior four-writer package/ordinary and real account
+begin/update/finish workload, account priority, paused-account reader exclusion
+and admitted package completion after owner exit. It adds actual credentialed
+VFS create, mkdir, write, truncate-to-zero, file rename, directory relocation,
+unlink and rmdir in a prepared sandbox. Two more simultaneously pinned namespace
+callers create/write separate files with account priority queued. This is a
+second concurrent phase, not six simultaneous filesystem writers. **22 namespace
+semantic commits per case, 264 total**, are acknowledged separately from the
+earlier account/package commits.
+
+Real create/mkdir and package-write planners reject cancellation before commit
+with EINTR and zero device writes. Actual accounted exit cancels an owned ordinary
+create; the owner unwinds before its test TCB disappears. Workspace OOM releases
+queued account priority. Destination collision rejects EEXIST without writes;
+missing context, account/package paths and dot-component escapes reject without
+writes. These finite trusted routes validate actual parent ancestry/mount
+identity and retain sandbox nodes. They are not a generic untrusted pathname
+confinement API; outside sandbox relocation, symlinks, hard-links and external
+imports are excluded.
+
+Truncate exposed a private coverage defect: blanket rejection of every orphan
+blocked real cleanup. The overlay now accepts only one transient ordinary orphan
+matching the current operation's real captured inode/generation. Account anchors
+and role inodes, package records, the charged file and unrelated orphan identities
+remain rejected. The shared certificate and production orphan code are unchanged.
+Fresh R/G budget checks still enforce F-G >= max(A0,R) under filesystem exclusion.
+
+**Independent Linux results: 12 clean e2fsck audits and 12 exact namespace,
+ordinary/package payload, canonical-account and grant audits PASS.** New final
+files `/work/b/kept`, `/work/a/parallel0` and `/work/b/parallel1` contain exactly
+`namespace-data\n`. Renamed/removed/cancelled and forbidden names are absent.
+The package remains intentionally RESERVED at T=(8,1), G=(5,0), Q=(3,1), with
+validated ownership-table and ledger hashes; no new IDLE retirement is claimed.
+
+**Preservation separately PASS:** final copied compiled dependencies and repository
+compiled inputs remain unchanged, and original fixture hashes are retained.
+The aggregate validator rechecks current source identities, six geometries per
+sanitizer, namespace commit counts and exact totals:
+`.codex-remote-attachments/pkg-retained-call-summary-20261022/validate.py` and
+`manifest.json`. Python compilation, standalone Make target expansion and
+`git diff --check` pass. Concurrent Wi-Fi/trust-asset work was preserved; the
+compiled-input guard is not a whole-repository or media immutability claim.
+
+Retained preliminary evidence, excluded from final totals:
+
+- `pkg-mutation-context-20261022-185246-365525`: the first namespace assertion
+  lacked operation diagnostics; retained copy shows a runtime assertion, manifest
+  INCOMPLETE. Added precise operation/path/result reporting.
+- `pkg-mutation-context-20261022-185528-583312`: actual truncate returned EIO
+  because the private certificate rejected its transient orphan. This also
+  records `FAIL_PRESERVATION` for integration-source changes while the diagnostic
+  run was active. Runtime failure and preservation failure remain distinct.
+- `pkg-mutation-context-20261022-185818-225055`: both 4 KiB cases passed before
+  the final already-pinned transfer guard was added. Superseded, not counted.
+- `pkg-mutation-context-20261022-190028-050078`, `...-053605` and `...-050205`:
+  runtime/oracle results belong to their frozen preliminary copies. Their final
+  `FAIL_PRESERVATION` labels retain the later `pm_describe` source/header change;
+  none contributes to current-source acceptance.
+- Earlier binding campaigns `pkg-call-binding-20261022-185100-438650`,
+  `...-185509-125092`, `...-190027-998282`, and admission regression
+  `pkg-mutation-admission-20261022-190027-985127` passed their then-current tests
+  but precede final queued/pinned-transfer regression coverage. Superseded and
+  not double-counted.
+
+Remaining work: cancellation/recovery at actual durable multi-commit boundaries,
+full private kernel signal/scheduler/teardown delivery and broader adversarial
+namespace admission. A permanently stalled caller/device cannot be forcibly
+freed; cancellation after an earlier durable intent can require restart/recovery.
+Authenticated enrollment, complete pending/state/trust admission, low-space
+recovery policy and charged-orphan recovery remain open. No new Ring 3,
+scheduler/IRQ/SMP, boot or media acceptance is claimed. Production integration,
+installation and production trust provisioning remain disabled. No release-media
+build, media hash audit, commit, push or physical disk write was performed.
+Changes remain uncommitted.
+
+
+### Cancellation recovery and real kernel lifecycle validation (2026-10-22)
+
+Implemented [the private cancellation/recovery workbench](../plans/PKG2_CANCEL_RECOVERY.md).
+The candidate gains an atomic current-owned cancellation publication. Exact
+copied-source overlays exercise VFS operations after durable progress, then
+validate and recover the retained ordinary orphan in independent processes.
+Production integration, installation and production trust provisioning stay off;
+all changes remain uncommitted.
+
+Host acceptance, WSL `python3 scripts/test_pkg_cancel_recovery.py --block N`:
+
+| Sanitizer | Blocks | Sectors | Accepted campaign |
+| --- | --- | --- | --- |
+| ASan/UBSan | 1024 | 512/4096 | `pkg-mutation-context-20261022-192331-077428` |
+| ASan/UBSan | 2048 | 512/4096 | `pkg-mutation-context-20261022-192331-079317` |
+| ASan/UBSan | 4096 | 512/4096 | `pkg-mutation-context-20261022-192331-108476` |
+| TSan | 4096 | 512/4096 | `pkg-mutation-context-20261022-192331-164998` |
+
+TSan invocation adds `--tsan`; only its 4 KiB geometries are newly covered here,
+with the established per-process `setarch x86_64 -R` setting. Each geometry
+measures real 70-block truncate and unlink: five acknowledged semantic commits
+(intent, three reclamation batches, chain removal). Cancellation after commits
+1/2/3/4 must stop the next semantic commit with EINTR and no subsequent device
+writes, retain one actual ordinary orphan and drain all call references.
+
+**48 ASan/UBSan and 16 TSan cancellation boundaries PASS: 64 total.** Each gets
+a wrong-generation pre-replay rejection with unchanged image hash and zero
+writes/flushes, then **two fresh-process recoveries: 128 total**. Every restart
+runs the actual allocation/reference audit, grant/namespace/ownership preflight
+and account-capacity certificate before replay or cleanup writes. Only the known
+ordinary inode/generation is admitted; fixed package records and the charged
+file remain excluded. Expected ordinary origin comes from a trusted fixture
+sidecar captured before cancellation, not authenticated production enrollment.
+Linked shrink intents must retain their sandbox name; deleted intents must not.
+
+**280 fresh host process invocations** include eight seed preparations, sixteen
+uninterrupted measurements, 64 cancellation processes, 64 identity rejections and
+128 recovery processes. **144 Linux fsck/exact-content audits PASS:** sixteen
+normal outcomes and two audits per recovered cut. Account bytes stay unchanged,
+the package contains exactly three K blocks, and the ordinary name is either an
+empty file after truncate or absent after unlink. A separate independent Linux
+oracle checks **80 final images** (64 recovered cuts and sixteen measurements):
+exact T=(8,1), G=(5,0), Q=(3,1), ledger/table hashes, and actual tagged inode
+identity, generation, root ownership, mode, links, size and i_blocks. Those image
+hashes remain unchanged by the oracle. No grant retirement to IDLE occurs.
+
+These are successful semantic/checkpoint-boundary interruptions, not cuts within
+sector writes, commit records, checkpoint or flush. Host fflush acknowledges the
+fixture's barrier model; no physical power-loss durability follows. No account
+transaction/orphan cancellation or general unknown-orphan policy is accepted.
+
+**Separate actual kernel acceptance:**
+`python3 scripts/test_pkg_call_kernel.py`,
+`pkg-call-kernel-20261022-192112-235513`: **BIOS/UEFI x SMP=1/4, 4/4 private
+disk-free boots PASS**. The actual kernel is built only in its copied workspace;
+the private test ISO is assembled independently from the copied kernel and a
+copy of the existing initramfs with one test program. No release ISO/raw-image
+target is built. QEMU has only optical media and, for UEFI, paired pflash code/
+disposable vars. No network or data disk is attached.
+
+The Ring 3 program exercises actual signal publication, interrupt observation,
+SIGSTOP/CONT parking/resume, caught SIGINT handler/signal return, default
+SIGTERM/SIGKILL termination, `process_exit`, `thread_exit`, context switch and
+`sched_reap_dead`. Per boot, three rounds require **33 children/reaps and 30
+exit-hook binding cleanups**. The caught-handler cases unwind before handler
+delivery. Queued account exit releases priority; self SIGKILL while the commit
+gate is held cannot free it until the gate is released. Four simultaneous bound
+continuations are killed and drained. Exit cleanup precedes descriptor/CR3
+teardown, and the actual reaper asserts clear bindings before resource release
+and counts after `kfree(dead)`. Subsequent rounds prove reuse.
+
+**Kernel totals: 132 children/reaps and 120 exit-hook cleanups PASS**, with zero
+remaining bindings/admissions each round. Observed bound CPU masks are **1 for
+both SMP=1 boots and 15 for both SMP=4 boots**, proving execution on CPUs 0-3.
+Shell exit status is checked independently of the PASS marker; every VM shuts
+down cleanly. This kernel fixture has no package filesystem/grant I/O; its held
+commit is an atomic protocol exercise. It does not establish combined kernel
+grant/filesystem cancellation, package lease teardown, exec replacement, complete
+PMM balance or production integration.
+
+**Preservation is separate from boot acceptance.** The kernel campaign's copied
+source, repository inventory and recorded shared-media guards PASS at completion.
+The aggregate also derives the actual kernel compiler dependency closure from
+its retained dependency files and reconciles it with current sources, private
+derived translation unit, assembler/linker inputs and unchanged private ISO.
+A later host recovery validator edit is outside that kernel compiled closure;
+it is recorded explicitly rather than hidden or counted as a boot failure.
+The shared root ELF has no private call-test symbols. Host compiled-copy and
+repository compiled-input guards PASS in all final recovery campaigns, and
+original fixture hashes remain unchanged. Recorded shared media hashes still
+match. These are not whole-repository immutability or physical-media claims.
+
+Current-source regressions also PASS: binding campaign
+`pkg-call-binding-20261022-192641-851216` and admission campaign
+`pkg-mutation-admission-20261022-192641-841434`, each **128 rounds per sanitizer**.
+The admission regression uses four concurrent workers. Python compilation,
+standalone Make target expansion and `git diff --check` pass. Exact totals,
+current-source reconciliation and the independent record/inode oracle are kept
+in `.codex-remote-attachments/pkg-cancel-summary-20261022/manifest.json`,
+`validate.py` and `record-oracle/`.
+
+Retained preliminary recovery campaigns, excluded from final totals:
+
+- `pkg-mutation-context-20261022-191538-523677`: strict compile rejected use of
+  undeclared `strchr` because the project string interface does not expose it;
+  replaced it with a simple mode-string scan. No runtime acceptance.
+- `pkg-mutation-context-20261022-191659-961885`: the resumed process had not
+  reacquired its retained sandbox node references, so the namespace wrapper
+  rejected the normal operation. Restore owned real sandbox references before
+  resumed VFS operations; no path policy was relaxed.
+- `pkg-mutation-context-20261022-191944-366492`: four truncate cuts passed, then
+  deleted-orphan preview rejected at `grant-preview`. Its absent-name check
+  expected ENOENT, but the internal directory scanner returns 0 with inode=0.
+  Corrected that expectation; no inode, allocation counter or trust flag was
+  fabricated. The manifest remains INCOMPLETE with those four partial cases.
+
+Next private work: account transaction cancellation/recovery and combined real
+kernel grant/filesystem lifecycle acceptance. Authenticated enrollment/orphan
+origin, full pending/state/trust admission, low-space recovery and charged-orphan
+recovery remain open. Concurrent work, including trust-asset edits, is preserved.
+No production source integration, installation, production trust provisioning,
+release-media build, commit, push or physical disk write was performed.

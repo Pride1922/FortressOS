@@ -19,8 +19,11 @@ def function(source,signature):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--block',type=int,choices=(1024,2048,4096));args=parser.parse_args()
-    out=ROOT/'.codex-remote-attachments'/('pkg-service-integration-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
+    parser=argparse.ArgumentParser();parser.add_argument('--block',type=int,choices=(1024,2048,4096))
+    parser.add_argument('--pre-replay',action='store_true')
+    parser.add_argument('--build-only',action='store_true');args=parser.parse_args()
+    prefix='pkg-mutation-context-' if args.build_only else 'pkg-service-integration-'
+    out=ROOT/'.codex-remote-attachments'/(prefix+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
     work=out/'workspace';work.mkdir(parents=True)
     sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
     sources={}
@@ -34,6 +37,11 @@ def main():
         p=work/name;s=p.read_text();assert s.count(before)==1,(name,before)
         p.write_text(s.replace(before,after));overlays.append(dict(file=name,before=before,after=after,sha256=sha(p)))
     replace('src/fs/ext4_transaction.inc','static int e4_semantic_commit(ext4_engine_t *e) {','static int pg_life_core_commit(ext4_engine_t *e) {')
+    if args.pre_replay:
+        replace('src/fs/ext4_mount_journal.inc','    e4_engine_dispose(engine);engine=NULL;',
+                '    if(integration_pre_required){e4_mount_stage(stage,"grant-preview");r=integration_pre_validate(engine);if(r)goto fail;}\n    e4_engine_dispose(engine);engine=NULL;')
+        replace('src/fs/ext4_transaction.inc','    if (!r) r=jbd2_writer_checkpoint(e->writer);',
+                '    if(!r&&integration_pending_cut){integration_pending_cut=false;r=-VFS_EIO;}\n    if (!r) r=jbd2_writer_checkpoint(e->writer);')
     replace('src/fs/ext4_write.inc','    if (!r) n->opens++;','    if(!r && pg_integration_pin_deny(node))r=-VFS_EAGAIN;\n    if (!r) n->opens++;')
     replace('src/fs/ext4_permissions.inc','    if (!r && node->open) n->opens++;','    if(!r && pg_integration_pin_deny(node))r=-VFS_EAGAIN;\n    if (!r && node->open) n->opens++;')
     replace('src/kernel/accounts.c','int r=ext4_root_account_headroom(storage.context);','int r=pg_integration_headroom(storage.context);')
@@ -51,6 +59,9 @@ def main():
     base=(work/'tests/pkg_grant_fs_host.c').read_text().replace('int main(int argc,char **argv){','int pg_previous_main(int argc,char **argv){')
     base=base.replace('/mnt/pkg','/pkg')
     ns=(work/'tests/pkg_account_namespace_host.c').read_text();ns=ns[ns.index('static FILE *image;'):ns.index('int main(int argc,char **argv) {')]
+    assert ns.count('static bool flush(block_dev_t *d) {(void)d;return !fflush(image);}')==1
+    ns=ns.replace('static bool flush(block_dev_t *d) {(void)d;return !fflush(image);}',
+                  'static bool flush(block_dev_t *d) {(void)d;integration_flushes++;return !fflush(image);}')
     # Generate an explicit detached fixture initializer from the previous exact
     # record encoding, without fake trusted flags or temporary root publication.
     wire=base[base.index('    marker_ino=ids[0];'):base.index('    e4_p16(table+256,1);')]
@@ -75,6 +86,11 @@ static int e4_semantic_commit(struct ext4_engine *);
 static bool pg_integration_pin_deny(struct vfs_node *);
 static int pg_integration_headroom(void *);
 static int pg_integration_storage(void *,account_io_t *);
+static bool integration_pre_required;
+static unsigned integration_pre_calls;
+static unsigned integration_flushes;
+static bool integration_pending_cut;
+static int integration_pre_validate(struct ext4_engine *);
 '''
     generated=work/'tests/integration.c'
     generated.write_text(prefix+base+'''
@@ -116,8 +132,11 @@ static uint64_t integration_compete_floor[2];
 #include "pkg_service_integration.inc"
 ''')
     manifest={'result':'INCOMPLETE','sources':sources,'overlays':overlays,'cases':[],
+              'capacity_preview_negatives':[],
+              'capacity_pending_replays':[],
               'fd_functions':signatures,'extracted_fd_sha256':sha(out/'extracted-fd-functions.c'),
               'error_bridge_sha256':hashlib.sha256(bridge.encode()).hexdigest(),
+              'pre_replay':args.pre_replay,
               'scope':'private copied account/registry/open hooks, actual FD function extraction; synthetic enrollment, host VMM/memory/device; no production integration/boot/installation'}
     def run(cmd,label,timeout=1200):
         r=subprocess.run(cmd,cwd=work,text=True,capture_output=True,timeout=timeout)
@@ -133,7 +152,10 @@ static uint64_t integration_compete_floor[2];
         names={str((work/p).resolve().relative_to(work)) for p in deps.replace('\\\n',' ').split() if not p.endswith(':')}
         names.update(('src/kernel/thread.c','src/kernel/syscall.c'))
         manifest['compiled_inputs']={p:sha(work/p) for p in sorted(names)}
+        manifest['compile_command']=flags+units+['-o',str(out/'probe')]
         run(flags+units+['-o',str(out/'probe')],'compile')
+        if args.build_only:
+            manifest['result']='BUILD_ONLY';print('Evidence:',out);return
         previous=ROOT/'.codex-remote-attachments/pkg-namespace-kernel-20261021-140820'
         prior=json.loads((previous/'manifest.json').read_text());assert prior['result']=='PASS'
         expected=(b'root:x:0:0:root2:/root:/bin/shell\n',b'root:x:0:\n',b'root:!:::::::\n')
@@ -144,7 +166,48 @@ static uint64_t integration_compete_floor[2];
                 for mode in ('normal','interrupt'):
                     dst=out/f'{bs}-{ss}-{mode}.img';shutil.copyfile(src,dst)
                     run([str(out/'probe'),str(dst),str(ss),mode],f'{bs}-{ss}-{mode}')
+                    if args.pre_replay and mode=='normal':
+                        run([str(out/'probe'),str(dst),str(ss),'resume-probe'],f'{bs}-{ss}-idle-probe')
+                        pending=out/f'{bs}-{ss}-capacity-pending.img';shutil.copyfile(dst,pending)
+                        shutil.copyfile(str(dst)+'.ctx',str(pending)+'.ctx')
+                        first=run([str(out/'probe'),str(pending),str(ss),'resume-capacity-pending'],pending.stem+'-commit')
+                        second=run([str(out/'probe'),str(pending),str(ss),'resume-capacity-pending-check'],pending.stem+'-replay')
+                        required=lambda text:tuple(map(int,re.search(r'preview-capacity R=(\d+),(\d+)',text).groups()))
+                        old,new=required(first),required(second);assert new==(old[0],old[1]-1)
+                        run(['e2fsck','-fn',str(pending)],pending.stem+'-linux')
+                        stat=run(['debugfs','-R','stat /etc/group.publish',str(pending)],pending.stem+'-stat')
+                        assert int(re.search(r'Size:\s*(\d+)',stat)[1])==0
+                        assert int(re.search(r'Blockcount:\s*(\d+)',stat)[1])==0
+                        assert int(re.search(r'Links:\s*(\d+)',stat)[1])==1
+                        occupied=0
+                        for name in ('passwd','group','shadow'):
+                            stat=run(['debugfs','-R',f'stat /etc/{name}',str(pending)],pending.stem+'-'+name+'-stat')
+                            sectors=int(re.search(r'Blockcount:\s*(\d+)',stat)[1]);assert sectors%(bs//512)==0
+                            occupied+=sectors//(bs//512)
+                        d=(8192+bs-1)//bs;c=9*(d+(1 if d>4 else 0))+2
+                        assert new==(c-occupied,11-4)
+                        manifest['capacity_pending_replays'].append(dict(block=bs,sector=ss,initial_R=old,replayed_R=new,result='PASS'))
+                        before=sha(dst)
+                        run([str(out/'probe'),str(dst),str(ss),'resume-capacity-oom'],f'{bs}-{ss}-capacity-oom')
+                        assert sha(dst)==before
+                        manifest['capacity_preview_negatives'].append(dict(block=bs,sector=ss,kind='workspace-oom',result='PASS'))
+                        for kind in ('mode','oversize'):
+                            bad=out/f'{bs}-{ss}-capacity-{kind}.img';shutil.copyfile(dst,bad)
+                            shutil.copyfile(str(dst)+'.ctx',str(bad)+'.ctx')
+                            if kind=='mode':
+                                run(['debugfs','-w','-R','set_inode_field /etc/passwd mode 0100600',str(bad)],bad.stem+'-inject')
+                            else:
+                                run([str(out/'probe'),str(bad),str(ss),'resume-capacity-inject-oversize'],bad.stem+'-inject')
+                            run(['e2fsck','-fn',str(bad)],bad.stem+'-linux')
+                            before=sha(bad)
+                            run([str(out/'probe'),str(bad),str(ss),'resume-capacity-reject'],bad.stem)
+                            assert sha(bad)==before
+                            manifest['capacity_preview_negatives'].append(dict(block=bs,sector=ss,kind=kind,result='PASS'))
                     if mode=='interrupt':
+                        if args.pre_replay:
+                            before=sha(dst)
+                            run([str(out/'probe'),str(dst),str(ss),'resume-reject'],f'{bs}-{ss}-resume-reject')
+                            assert sha(dst)==before
                         for res in ('resume-keep','resume-clean'):
                             run([str(out/'probe'),str(dst),str(ss),res],f'{bs}-{ss}-{res}')
                     run(['e2fsck','-fn',str(dst)],f'{bs}-{ss}-{mode}-linux')
@@ -163,6 +226,8 @@ static uint64_t integration_compete_floor[2];
     finally:
         manifest['changed_compiled_copies']=[p for p,h in manifest.get('compiled_inputs',{}).items() if sha(work/p)!=h]
         manifest['changed_compiled_repository_sources']=[p for p in manifest.get('compiled_inputs',{}) if p in sources and sha(ROOT/p)!=sources[p]]
+        if manifest['changed_compiled_copies'] or manifest['changed_compiled_repository_sources']:
+            manifest['result']='FAIL_PRESERVATION'
         (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     assert not manifest['changed_compiled_copies'] and not manifest['changed_compiled_repository_sources']
     print('Evidence:',out)

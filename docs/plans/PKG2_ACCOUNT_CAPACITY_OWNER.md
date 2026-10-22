@@ -1,5 +1,9 @@
 # PKG-2 private account capacity and owner lifetime
 
+2026-10-22 continuation: [account-capacity preview](PKG2_ACCOUNT_PREVIEW.md) shares
+the role/map calculation with read-only constructor preview before replay. The
+original campaign and pre-replay limitation described below remain historical.
+
 2026-10-21. Private candidates only. No production account, process, descriptor,
 allocator, boot or installation integration. Complements the
 [durable grant design](PKG2_DURABLE_GRANT_DESIGN.md) and

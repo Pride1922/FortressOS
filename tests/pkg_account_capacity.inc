@@ -2,39 +2,44 @@
 static bool capacity_active;
 static uint64_t capacity_left[2],capacity_escrow[2];
 static unsigned capacity_commits,capacity_checks;
-static int capacity_snapshot(uint64_t out[2]){
-    ext4_mount_t *fs=mounted;
-    e4_ns_workspace_t *w=kcalloc(1,sizeof(*w));if(!w)return -VFS_ENOMEM;
-    uint64_t lock=spin_lock_irqsave(&e4_lock);int r=-VFS_EINVAL;
-    if(!fs->account_namespace_fenced||fs->engine->tainted||fs->engine->ready||
-       fs->engine->orphan_count||fs->engine->orphan_recovery_required)goto done;
-    memcpy(w->anchors,fs->account_namespace_anchors,sizeof w->anchors);
+/* Caller owns exclusion: mounted snapshot takes e4_lock; constructor preview
+ * is unpublished and exclusively owned, with unlocked JBD2 preview reads. */
+static int capacity_certificate(ext4_mount_t *fs,e4_ns_workspace_t *w,uint64_t out[2]){
     /* The constructor's full ownership audit precedes this private exclusive
      * workbench. Re-run the role/map certificate, not a quadratic global audit,
      * at each callback; all intervening mutations are the actual account code. */
-    if(e4_ns_directory(fs,w,0,2)||
-       e4_ns_directory(fs,w,1,w->anchors[3]))goto done;
+    int r=e4_ns_directory(fs,w,0,2);if(r)return r;
+    r=e4_ns_directory(fs,w,1,w->anchors[3]);if(r)return r;
     uint64_t d=(ACCOUNT_FILE_MAX+fs->bs-1)/fs->bs,t=d>4?1:0;
     uint64_t left[2]={9*(d+t)+2,ACCOUNT_ROLE_COUNT};
     for(unsigned role=0;role<ACCOUNT_ROLE_COUNT;role++)if(w->roles[role]){
         uint32_t ino=w->roles[role];e4_inode_t in;
-        for(unsigned i=0;i<fs->nodes;i++)if(fs->cached[i]->inode.ino==ino&&fs->cached[i]->opens){r=-VFS_EAGAIN;goto done;}
-        if(e4_inode(fs,ino,&in))goto done;
-        fs->rw_ino=0;if(e4_mapping(&in))goto done;
+        for(unsigned i=0;i<fs->nodes;i++)if(fs->cached[i]->inode.ino==ino&&fs->cached[i]->opens)return -VFS_EAGAIN;
+        r=e4_inode(fs,ino,&in);if(r)return r;
+        fs->rw_ino=0;r=e4_mapping(&in);if(r)return r;
         uint64_t blocks=0,logical=0;
         for(unsigned i=0;i<in.map->count;i++){
             e4_extent_t x=in.map->entries[i];
-            if(x.unwritten||x.logical!=logical)goto done;
+            if(x.unwritten||x.logical!=logical)return -VFS_EINVAL;
             logical+=x.len;
         }
-        if(logical!=(in.size+fs->bs-1)/fs->bs)goto done;
+        if(logical!=(in.size+fs->bs-1)/fs->bs)return -VFS_EINVAL;
         for(unsigned i=0;i<fs->physical_count;i++)blocks+=fs->physical[i].len;
         uint64_t max=role>=ACCOUNT_INTENT_TEMP?1:d+t;
-        if(blocks>max||blocks>left[0]||!left[1])goto done;
+        if(blocks>max||blocks>left[0]||!left[1])return -VFS_EINVAL;
         left[0]-=blocks;left[1]--;
     }
-    memcpy(out,left,sizeof left);r=0;capacity_checks++;
-done:
+    memcpy(out,left,sizeof left);return 0;
+}
+static int capacity_snapshot(uint64_t out[2]){
+    ext4_mount_t *fs=mounted;
+    e4_ns_workspace_t *w=kcalloc(1,sizeof(*w));if(!w)return -VFS_ENOMEM;
+    uint64_t lock=spin_lock_irqsave(&e4_lock);int r=-VFS_EINVAL;
+    if(fs->account_namespace_fenced&&!fs->engine->tainted&&!fs->engine->ready&&
+       !fs->engine->orphan_count&&!fs->engine->orphan_recovery_required){
+        memcpy(w->anchors,fs->account_namespace_anchors,sizeof w->anchors);
+        r=capacity_certificate(fs,w,out);if(!r)capacity_checks++;
+    }
     spin_unlock_irqrestore(&e4_lock,lock);kfree(w);return r;
 }
 static int capacity_admit(void){
