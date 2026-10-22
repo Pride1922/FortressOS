@@ -79,6 +79,9 @@ static uint32_t __attribute__((unused)) iwl_read_prph(uint32_t addr) {
 static bool iwl_nic_lock(void) {
     if (!s_iwl_dev.mmio_base) return false;
     iwl_write32(CSR_GP_CNTRL, iwl_read32(CSR_GP_CNTRL) | CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
+    for (int k = 0; k < 200; k++) {
+        __asm__ volatile("pause" ::: "memory");
+    }
     for (int i = 0; i < 200; i++) {
         for (int j = 0; j < 500; j++) {
             uint32_t val = iwl_read32(CSR_GP_CNTRL);
@@ -95,6 +98,12 @@ static bool iwl_nic_lock(void) {
 static void iwl_nic_unlock(void) {
     if (!s_iwl_dev.mmio_base) return;
     iwl_write32(CSR_GP_CNTRL, iwl_read32(CSR_GP_CNTRL) & ~CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
+}
+
+static uint32_t iwl_fh_cbbc_queue_reg(uint32_t chnl) {
+    if (chnl < 16) return 0x19D0u + 4u * chnl;
+    if (chnl < 20) return 0x1BF0u + 4u * (chnl - 16u);
+    return 0x1B20u + 4u * (chnl - 20u);
 }
 
 static bool iwl_prepare_card_hw(void) {
@@ -148,8 +157,13 @@ static bool iwl_setup_rx_dma(void) {
 
     if (!iwl_nic_lock()) return false;
 
-    /* Reset and configure Legacy RX DMA Channel 0 */
+    /* Stop Legacy RX DMA Channel 0 and wait for idle */
     iwl_write32(FH_MEM_RCSR_CHNL0_CONFIG_REG, 0);
+    for (int i = 0; i < 200; i++) {
+        if (iwl_read32(0x1C44u) & (1u << 24)) break;
+        __asm__ volatile("pause" ::: "memory");
+    }
+
     iwl_write32(FH_MEM_RCSR_CHNL0_RBDCB_WPTR, 0);
     iwl_write32(FH_MEM_RCSR_CHNL0_FLUSH_RB_REQ, 0);
     iwl_write32(FH_RSCSR_CHNL0_RDPTR, 0);
@@ -163,9 +177,13 @@ static bool iwl_setup_rx_dma(void) {
                 (0x11u << 4) | /* RX_RB_TIMEOUT */
                 (8u << 20));   /* RBDCB_SIZE_LOG = 8 (256 entries) */
 
-    /* Configure Keep-Warm page and deactivate TX scheduler during boot */
+    /* Configure Keep-Warm page, TX CBBC queues, and deactivate TX scheduler during boot */
     iwl_write_prph(0xa02c10, 0); /* IWM_SCD_TXFACT */
     iwl_write32(FH_KW_MEM_ADDR_REG, (uint32_t)(s_kw_phys >> 4));
+    for (uint32_t qid = 0; qid < 31; qid++) {
+        iwl_write32(iwl_fh_cbbc_queue_reg(qid), (uint32_t)((s_rx_desc_phys + 2560) >> 8));
+    }
+    iwl_write_prph(0xa02da8, iwl_read_prph(0xa02da8) | (1u << 18) | (1u << 0)); /* SCD_GP_CTRL */
 
     iwl_nic_unlock();
 
@@ -180,13 +198,21 @@ static bool iwl_load_chunk(uint32_t dst_addr, const uint8_t *chunk, uint32_t len
     if (len > 4096) len = 4096;
     memcpy(s_fw_chunk_virt, chunk, len);
 
+    bool ext_addr = (dst_addr >= IWL_FW_MEM_EXTENDED_START && dst_addr <= IWL_FW_MEM_EXTENDED_END);
+    if (ext_addr) {
+        if (!iwl_nic_lock()) return false;
+        iwl_write_prph(IWL_LMPM_CHICK, iwl_read_prph(IWL_LMPM_CHICK) | IWL_LMPM_CHICK_EXTENDED_ADDR_SPACE);
+        iwl_nic_unlock();
+    }
+
     if (!iwl_nic_lock()) return false;
 
     iwl_write32(FH_TCSR_CHNL_TX_CONFIG_REG(IWL_FH_SRVC_CHNL), 0);
     iwl_write32(FH_SRVC_CHNL_SRAM_ADDR_REG(IWL_FH_SRVC_CHNL), dst_addr);
-    iwl_write32(FH_TFDIB_CTRL0_REG(IWL_FH_SRVC_CHNL), (uint32_t)(s_fw_chunk_phys & 0xFFFFFFFF));
-    iwl_write32(FH_TFDIB_CTRL1_REG(IWL_FH_SRVC_CHNL), (((uint32_t)(s_fw_chunk_phys >> 32)) << 24) | len);
-    iwl_write32(FH_TCSR_CHNL_TX_BUF_STS_REG(IWL_FH_SRVC_CHNL), (1 << 20) | (1 << 12) | 3);
+    iwl_write32(FH_TFDIB_CTRL0_REG(IWL_FH_SRVC_CHNL), (uint32_t)(s_fw_chunk_phys & 0xFFFFFFFFu));
+    iwl_write32(FH_TFDIB_CTRL1_REG(IWL_FH_SRVC_CHNL),
+                (((uint32_t)((s_fw_chunk_phys >> 32) & 0xFu)) << 28) | len);
+    iwl_write32(FH_TCSR_CHNL_TX_BUF_STS_REG(IWL_FH_SRVC_CHNL), (1u << 20) | (1u << 12) | 3u);
     iwl_write32(FH_TCSR_CHNL_TX_CONFIG_REG(IWL_FH_SRVC_CHNL),
                 FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_ENABLE |
                 FH_TCSR_TX_CONFIG_REG_VAL_DMA_CREDIT_DISABLE |
@@ -195,20 +221,30 @@ static bool iwl_load_chunk(uint32_t dst_addr, const uint8_t *chunk, uint32_t len
     iwl_nic_unlock();
 
     /* Poll for completion (CSR_INT_BIT_FH_TX or CSR_FH_INT_STATUS TX bits) up to 500ms */
+    bool ok = false;
     for (int ms = 0; ms < 500; ms++) {
         for (int j = 0; j < 200; j++) {
             uint32_t intr = iwl_read32(CSR_INT);
             uint32_t fh_intr = iwl_read32(CSR_FH_INT_STATUS);
             if ((intr & CSR_INT_BIT_FH_TX) || (fh_intr & 0x00030003u)) {
-                iwl_write32(CSR_FH_INT_STATUS, 0xFFFFFFFF);
+                iwl_write32(CSR_FH_INT_STATUS, 0xFFFFFFFFu);
                 iwl_write32(CSR_INT, CSR_INT_BIT_FH_TX);
-                return true;
+                ok = true;
+                break;
             }
             __asm__ volatile("pause" ::: "memory");
         }
+        if (ok) break;
         iwl_delay_ms(1);
     }
-    return false;
+
+    if (ext_addr) {
+        if (iwl_nic_lock()) {
+            iwl_write_prph(IWL_LMPM_CHICK, iwl_read_prph(IWL_LMPM_CHICK) & ~IWL_LMPM_CHICK_EXTENDED_ADDR_SPACE);
+            iwl_nic_unlock();
+        }
+    }
+    return ok;
 }
 
 static bool iwl_load_section(uint32_t dst_addr, const uint8_t *data, uint32_t byte_cnt) {
@@ -309,27 +345,40 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
         return false;
     }
 
-    /* 1. Prepare card hardware and activate device clock */
+    /* 1. Prepare card hardware, perform software reset, and run APM init */
     if (!iwl_prepare_card_hw()) {
         serial_puts("[IWL] WARN: iwl_prepare_card_hw NIC_READY not asserted, continuing\n");
     }
+    iwl_write32(CSR_RESET, CSR_RESET_REG_FLAG_SW_RESET);
+    iwl_delay_ms(5);
+    iwl_prepare_card_hw();
+
+    iwl_write32(CSR_GIO_CHICKEN_BITS, iwl_read32(CSR_GIO_CHICKEN_BITS) | CSR_GIO_CHICKEN_BITS_L1A_NO_L0S_RX);
+    iwl_write32(CSR_DBG_HPET_MEM_REG, iwl_read32(CSR_DBG_HPET_MEM_REG) | CSR_DBG_HPET_MEM_REG_VAL);
+    iwl_write32(CSR_HW_IF_CONFIG_REG, iwl_read32(CSR_HW_IF_CONFIG_REG) | CSR_HW_IF_CONFIG_REG_BIT_HAP_WAKE_L1A);
+    iwl_write32(CSR_GIO_REG, iwl_read32(CSR_GIO_REG) | CSR_GIO_REG_VAL_L0S_DISABLED);
+
     iwl_write32(CSR_GP_CNTRL, iwl_read32(CSR_GP_CNTRL) | CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
     for (int i = 0; i < 200; i++) {
         if (iwl_read32(CSR_GP_CNTRL) & CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY) break;
         iwl_delay_ms(1);
     }
-
-    /* Clear RFKILL and legacy interrupts; enable status bits in CSR_INT_MASK */
-    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x06);
-    iwl_write32(CSR_FH_INT_STATUS, 0xFFFFFFFF);
-    iwl_write32(CSR_INT, 0xFFFFFFFF);
-    iwl_write32(CSR_INT_MASK, CSR_INT_BIT_FH_TX | CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX);
+    /* Wait 1ms for BISR shift completion on Family 8000 */
+    iwl_delay_ms(1);
 
     /* Initialize Legacy RX DMA ring and Keep-Warm page before microcode boot */
     if (!iwl_setup_rx_dma()) {
         serial_puts("[IWL] Failed to configure RX DMA ring\n");
         return false;
     }
+
+    /* Clear RFKILL and legacy interrupts; enable FH_TX interrupt for firmware loading */
+    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x06u);
+    iwl_write32(CSR_FH_INT_STATUS, 0xFFFFFFFFu);
+    iwl_write32(CSR_INT, 0xFFFFFFFFu);
+    iwl_write32(CSR_INT_MASK, CSR_INT_BIT_FH_TX);
+    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x02u);
+    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x02u);
 
     /* 2. Release internal CPU from reset */
     if (iwl_nic_lock()) {
@@ -362,7 +411,7 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
             if (dst_addr == IWL_CPU1_CPU2_SEPARATOR_SECTION) {
                 /* Finalize CPU1 */
                 if (iwl_nic_lock()) {
-                    iwl_write32(FH_UCODE_LOAD_STATUS, 0x0000FFFF);
+                    iwl_write32(FH_UCODE_LOAD_STATUS, 0x0000FFFFu);
                     iwl_nic_unlock();
                 }
                 cpu_phase = 2;
@@ -399,16 +448,16 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
 
     /* Finalize CPU2 */
     if (iwl_nic_lock()) {
-        iwl_write32(FH_UCODE_LOAD_STATUS, 0xFFFFFFFF);
+        iwl_write32(FH_UCODE_LOAD_STATUS, 0xFFFFFFFFu);
         iwl_nic_unlock();
     }
 
+    /* Enable ALIVE and RX interrupts for microcode boot notification */
+    iwl_write32(CSR_INT_MASK, CSR_INT_BIT_FH_TX | CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX);
+
     serial_puts("[IWL] Streamed ");
     serial_print_dec(loaded_sections);
-    serial_puts(" SEC_INIT sections; releasing CSR_RESET...\n");
-
-    /* 4. Release processor from reset */
-    iwl_write32(CSR_RESET, 0);
+    serial_puts(" SEC_INIT sections; waiting for ALIVE...\n");
 
     /* 5. Wait up to 1000ms for ALIVE interrupt or RX RB0 completion */
     bool alive = false;
