@@ -106,6 +106,94 @@ static uint32_t iwl_fh_cbbc_queue_reg(uint32_t chnl) {
     return 0x1B20u + 4u * (chnl - 20u);
 }
 
+static void iwl_enable_pci_and_bridges(void) {
+    uint16_t seg = s_iwl_dev.pci.segment;
+    uint8_t target_bus = s_iwl_dev.pci.bus;
+
+    /* Ensure any parent PCI-to-PCI bridge decoding target_bus has Bus Master & Mem Space enabled */
+    if (target_bus > 0) {
+        for (uint16_t bus = 0; bus < target_bus; bus++) {
+            for (uint8_t dev = 0; dev < 32; dev++) {
+                uint16_t vid = pci_read_config16(seg, (uint8_t)bus, dev, 0, PCI_REG_VENDOR_ID);
+                if (vid == 0xFFFF || vid == 0x0000) continue;
+                uint8_t hdr0 = pci_read_config8(seg, (uint8_t)bus, dev, 0, PCI_REG_HEADER_TYPE);
+                uint8_t max_fn = (hdr0 & PCI_HEADER_TYPE_MULTIFN) ? 8 : 1;
+                for (uint8_t fn = 0; fn < max_fn; fn++) {
+                    if (fn > 0) {
+                        uint16_t fvid = pci_read_config16(seg, (uint8_t)bus, dev, fn, PCI_REG_VENDOR_ID);
+                        if (fvid == 0xFFFF || fvid == 0x0000) continue;
+                    }
+                    uint8_t hdr = pci_read_config8(seg, (uint8_t)bus, dev, fn, PCI_REG_HEADER_TYPE);
+                    if ((hdr & 0x7Fu) != PCI_HEADER_TYPE_BRIDGE) continue;
+                    uint32_t buses = pci_read_config32(seg, (uint8_t)bus, dev, fn, 0x18);
+                    uint8_t sec_bus = (uint8_t)((buses >> 8) & 0xFFu);
+                    uint8_t sub_bus = (uint8_t)((buses >> 16) & 0xFFu);
+                    if (sec_bus > 0 && target_bus >= sec_bus && target_bus <= sub_bus) {
+                        uint16_t bcmd = pci_read_config16(seg, (uint8_t)bus, dev, fn, PCI_REG_COMMAND);
+                        if ((bcmd & (PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER)) !=
+                            (PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER)) {
+                            bcmd |= (PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER);
+                            pci_write_config16(seg, (uint8_t)bus, dev, fn, PCI_REG_COMMAND, bcmd);
+                        }
+                        /* Clear sticky primary and secondary status error bits on bridge */
+                        pci_write_config16(seg, (uint8_t)bus, dev, fn, PCI_REG_STATUS, 0xF900u);
+                        pci_write_config16(seg, (uint8_t)bus, dev, fn, 0x1E, 0xF900u);
+                    }
+                }
+            }
+        }
+    }
+
+    /* Disable PCI RETRY_TIMEOUT register (0x41) per OpenBSD iwm / Linux iwlwifi */
+    uint32_t reg40 = pci_read_config32(seg, s_iwl_dev.pci.bus, s_iwl_dev.pci.device, s_iwl_dev.pci.function, 0x40);
+    if (reg40 & 0x0000FF00u) {
+        pci_write_config32(seg, s_iwl_dev.pci.bus, s_iwl_dev.pci.device, s_iwl_dev.pci.function, 0x40, reg40 & ~0x0000FF00u);
+    }
+
+    /* Enable Memory Space & Bus Master and clear PCI_COMMAND_INT_DISABLE (hardware bug workaround) */
+    uint16_t cmd = pci_read_config16(seg, s_iwl_dev.pci.bus, s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND);
+    cmd |= (PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER);
+    cmd &= (uint16_t)~PCI_COMMAND_INT_DISABLE;
+    pci_write_config16(seg, s_iwl_dev.pci.bus, s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND, cmd);
+
+    /* Clear sticky PCI status error bits (Master Abort, Target Abort, Parity) */
+    pci_write_config16(seg, s_iwl_dev.pci.bus, s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_STATUS, 0xF900u);
+}
+
+static bool iwl_alloc_dma_buffers(void) {
+    if (!s_fw_chunk_phys) {
+        s_fw_chunk_phys = pmm_alloc_page();
+        if (s_fw_chunk_phys) {
+            s_fw_chunk_virt = (uint8_t *)vmm_phys_to_virt(s_fw_chunk_phys);
+            memset(s_fw_chunk_virt, 0, 4096);
+        }
+    }
+    if (!s_kw_phys) {
+        s_kw_phys = pmm_alloc_page();
+        if (s_kw_phys) {
+            memset(vmm_phys_to_virt(s_kw_phys), 0, 4096);
+        }
+    }
+    if (!s_rx_desc_phys) {
+        s_rx_desc_phys = pmm_alloc_page();
+        if (s_rx_desc_phys) {
+            s_rx_desc_virt = (uint32_t *)vmm_phys_to_virt(s_rx_desc_phys);
+            memset(s_rx_desc_virt, 0, 4096);
+        }
+    }
+    if (!s_fw_chunk_phys || !s_kw_phys || !s_rx_desc_phys) return false;
+
+    for (uint32_t i = 0; i < IWL_HW_RX_BUFS; i++) {
+        if (!s_rx_buf_phys[i]) {
+            s_rx_buf_phys[i] = pmm_alloc_page();
+            if (!s_rx_buf_phys[i]) return false;
+            s_rx_buf_virt[i] = (uint8_t *)vmm_phys_to_virt(s_rx_buf_phys[i]);
+            memset(s_rx_buf_virt[i], 0, 4096);
+        }
+    }
+    return true;
+}
+
 static bool iwl_prepare_card_hw(void) {
     for (int tries = 0; tries < 5; tries++) {
         iwl_write32(CSR_HW_IF_CONFIG_REG, iwl_read32(CSR_HW_IF_CONFIG_REG) | CSR_HW_IF_CONFIG_REG_BIT_NIC_READY);
@@ -122,28 +210,71 @@ static bool iwl_prepare_card_hw(void) {
     return false;
 }
 
+static bool iwl_apm_init(void) {
+    iwl_write32(CSR_GIO_CHICKEN_BITS, iwl_read32(CSR_GIO_CHICKEN_BITS) | CSR_GIO_CHICKEN_BITS_L1A_NO_L0S_RX);
+    iwl_write32(CSR_DBG_HPET_MEM_REG, iwl_read32(CSR_DBG_HPET_MEM_REG) | CSR_DBG_HPET_MEM_REG_VAL);
+    iwl_write32(CSR_HW_IF_CONFIG_REG, iwl_read32(CSR_HW_IF_CONFIG_REG) | CSR_HW_IF_CONFIG_REG_BIT_HAP_WAKE_L1A);
+    iwl_write32(CSR_GIO_REG, iwl_read32(CSR_GIO_REG) | CSR_GIO_REG_VAL_L0S_DISABLED);
+
+    iwl_write32(CSR_GP_CNTRL, iwl_read32(CSR_GP_CNTRL) | CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
+    bool clock_ready = false;
+    for (int i = 0; i < 200; i++) {
+        if (iwl_read32(CSR_GP_CNTRL) & CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY) {
+            clock_ready = true;
+            break;
+        }
+        iwl_delay_ms(1);
+    }
+    if (!clock_ready) return false;
+
+    /* Enable WFPM peripheral access on Family 8000 and wait for BISR shift */
+    if (iwl_nic_lock()) {
+        iwl_write_prph(IWL_WFPM_CTRL_REG, iwl_read_prph(IWL_WFPM_CTRL_REG) | IWL_ENABLE_WFPM);
+        iwl_write_prph(IWL_WFPM_GP2, 0x01010101u);
+        iwl_nic_unlock();
+    }
+    iwl_delay_ms(1);
+    return true;
+}
+
+static void iwl_nic_config(uint32_t fw_phy_config) {
+    uint32_t hw_rev = iwl_read32(CSR_HW_REV);
+    /* Family 8000 hw_rev step format adjustment */
+    hw_rev = (hw_rev & 0xFFF0u) | ((((hw_rev << 2) & 0xCu) >> 2) << 2);
+    if (iwl_nic_lock()) {
+        uint32_t hw_step = iwl_read_prph(IWL_WFPM_CTRL_REG);
+        hw_step |= IWL_ENABLE_WFPM;
+        iwl_write_prph(IWL_WFPM_CTRL_REG, hw_step);
+        hw_step = (iwl_read_prph(IWL_AUX_MISC_REG) >> 24) & 0xFu;
+        if (hw_step == 0x3u) {
+            hw_rev = (hw_rev & 0xFFFFFFF3u) | (2u << 2); /* SILICON_C_STEP */
+        }
+        iwl_nic_unlock();
+    }
+
+    uint32_t reg_val = 0;
+    uint8_t mac_step = (uint8_t)((hw_rev & 0x0Cu) >> 2);
+    uint8_t mac_dash = (uint8_t)(hw_rev & 0x03u);
+    uint8_t radio_type = (uint8_t)((fw_phy_config >> 0) & 0x3u);
+    uint8_t radio_step = (uint8_t)((fw_phy_config >> 2) & 0x3u);
+    uint8_t radio_dash = (uint8_t)((fw_phy_config >> 4) & 0x3u);
+
+    reg_val |= ((uint32_t)mac_dash << 0) |
+               ((uint32_t)mac_step << 2) |
+               ((uint32_t)radio_type << 10) |
+               ((uint32_t)radio_dash << 12) |
+               ((uint32_t)radio_step << 14);
+
+    uint32_t mask = 0x0000FFFFu; /* MAC_DASH|MAC_STEP|BOARD_VER|MAC_SI|RADIO_SI|PHY_TYPE|PHY_DASH|PHY_STEP */
+    uint32_t val = iwl_read32(CSR_HW_IF_CONFIG_REG);
+    val = (val & ~mask) | reg_val;
+    iwl_write32(CSR_HW_IF_CONFIG_REG, val);
+}
+
 static bool iwl_setup_rx_dma(void) {
-    if (!s_kw_phys) {
-        s_kw_phys = pmm_alloc_page();
-        if (s_kw_phys) {
-            memset(vmm_phys_to_virt(s_kw_phys), 0, 4096);
-        }
-    }
-    if (!s_rx_desc_phys) {
-        s_rx_desc_phys = pmm_alloc_page();
-        if (s_rx_desc_phys) {
-            s_rx_desc_virt = (uint32_t *)vmm_phys_to_virt(s_rx_desc_phys);
-            memset(s_rx_desc_virt, 0, 4096);
-        }
-    }
-    if (!s_kw_phys || !s_rx_desc_phys) return false;
+    if (!iwl_alloc_dma_buffers()) return false;
 
     for (uint32_t i = 0; i < IWL_HW_RX_BUFS; i++) {
-        if (!s_rx_buf_phys[i]) {
-            s_rx_buf_phys[i] = pmm_alloc_page();
-            if (!s_rx_buf_phys[i]) return false;
-            s_rx_buf_virt[i] = (uint8_t *)vmm_phys_to_virt(s_rx_buf_phys[i]);
-        }
         memset(s_rx_buf_virt[i], 0, 4096);
     }
 
@@ -156,6 +287,15 @@ static bool iwl_setup_rx_dma(void) {
     s_hw_rx_read_idx = 0;
 
     if (!iwl_nic_lock()) return false;
+
+    /* Stop all TX DMA channels 0..7 and Service Channel 9, clear sticky FH TX errors and load status */
+    iwl_write_prph(0xa02c10, 0); /* IWM_SCD_TXFACT */
+    for (uint32_t chnl = 0; chnl < 8; chnl++) {
+        iwl_write32(FH_TCSR_CHNL_TX_CONFIG_REG(chnl), 0);
+    }
+    iwl_write32(FH_TCSR_CHNL_TX_CONFIG_REG(IWL_FH_SRVC_CHNL), 0);
+    iwl_write32(FH_TSSR_TX_ERROR_REG, 0xFFFFFFFFu);
+    iwl_write32(FH_UCODE_LOAD_STATUS, 0);
 
     /* Stop Legacy RX DMA Channel 0 and wait for idle */
     iwl_write32(FH_MEM_RCSR_CHNL0_CONFIG_REG, 0);
@@ -177,8 +317,12 @@ static bool iwl_setup_rx_dma(void) {
                 (0x11u << 4) | /* RX_RB_TIMEOUT */
                 (8u << 20));   /* RBDCB_SIZE_LOG = 8 (256 entries) */
 
-    /* Configure Keep-Warm page, TX CBBC queues, and deactivate TX scheduler during boot */
-    iwl_write_prph(0xa02c10, 0); /* IWM_SCD_TXFACT */
+    /* Write 8-bit CSR_INT_COALESCING (do not overwrite byte 1 CSR_INT_PERIODIC_REG) */
+    if (s_iwl_dev.mmio_base) {
+        *(volatile uint8_t *)(s_iwl_dev.mmio_base + CSR_INT_COALESCING) = 0x40u;
+    }
+
+    /* Configure Keep-Warm page, TX CBBC queues, and SCD_GP_CTRL */
     iwl_write32(FH_KW_MEM_ADDR_REG, (uint32_t)(s_kw_phys >> 4));
     for (uint32_t qid = 0; qid < 31; qid++) {
         iwl_write32(iwl_fh_cbbc_queue_reg(qid), (uint32_t)((s_rx_desc_phys + 2560) >> 8));
@@ -197,6 +341,7 @@ static bool iwl_load_chunk(uint32_t dst_addr, const uint8_t *chunk, uint32_t len
     if (!s_fw_chunk_phys || !s_fw_chunk_virt) return false;
     if (len > 4096) len = 4096;
     memcpy(s_fw_chunk_virt, chunk, len);
+    __asm__ volatile("mfence" ::: "memory");
 
     bool ext_addr = (dst_addr >= IWL_FW_MEM_EXTENDED_START && dst_addr <= IWL_FW_MEM_EXTENDED_END);
     if (ext_addr) {
@@ -230,6 +375,10 @@ static bool iwl_load_chunk(uint32_t dst_addr, const uint8_t *chunk, uint32_t len
                 iwl_write32(CSR_FH_INT_STATUS, 0xFFFFFFFFu);
                 iwl_write32(CSR_INT, CSR_INT_BIT_FH_TX);
                 ok = true;
+                break;
+            }
+            if ((intr & (CSR_INT_BIT_HW_ERR | CSR_INT_BIT_SW_ERR)) || (fh_intr & 0x80000000u)) {
+                ms = 500;
                 break;
             }
             __asm__ volatile("pause" ::: "memory");
@@ -319,9 +468,13 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
     size_t rem = fw_len - sizeof(iwl_ucode_header_t);
 
     uint32_t tlv_count = 0;
+    uint32_t fw_phy_config = 0;
     while (rem >= sizeof(iwl_ucode_tlv_t)) {
         const iwl_ucode_tlv_t *tlv = (const iwl_ucode_tlv_t *)ptr;
         if (tlv->length > rem - sizeof(iwl_ucode_tlv_t)) break;
+        if (tlv->type == IWL_UCODE_TLV_PHY_SKU && tlv->length == 4) {
+            fw_phy_config = *(const uint32_t *)(ptr + sizeof(iwl_ucode_tlv_t));
+        }
         tlv_count++;
         size_t step = sizeof(iwl_ucode_tlv_t) + ((tlv->length + 3) & ~3);
         if (step > rem) break;
@@ -333,38 +486,29 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
 #ifndef IWLWIFI_HOST_TEST
     if (!s_iwl_dev.detected || !s_iwl_dev.mmio_base) return true;
 
-    /* Allocate DMA chunk buffer if not yet initialized */
-    if (!s_fw_chunk_phys) {
-        s_fw_chunk_phys = pmm_alloc_page();
-        if (s_fw_chunk_phys) {
-            s_fw_chunk_virt = (uint8_t *)vmm_phys_to_virt(s_fw_chunk_phys);
-        }
-    }
-    if (!s_fw_chunk_phys || !s_fw_chunk_virt) {
+    /* Ensure PCI endpoint and any parent PCIe Root Port bridge have Bus Master enabled */
+    iwl_enable_pci_and_bridges();
+
+    /* Ensure DMA buffers are allocated */
+    if (!iwl_alloc_dma_buffers()) {
         serial_puts("[IWL] PMM allocation for FW DMA failed\n");
         return false;
     }
 
-    /* 1. Prepare card hardware, perform software reset, and run APM init */
+    /* 1. iwm_start_hw + iwm_nic_init sequence: prepare card HW, SW reset, APM init, NIC config, RX/TX DMA */
     if (!iwl_prepare_card_hw()) {
         serial_puts("[IWL] WARN: iwl_prepare_card_hw NIC_READY not asserted, continuing\n");
     }
     iwl_write32(CSR_RESET, CSR_RESET_REG_FLAG_SW_RESET);
     iwl_delay_ms(5);
-    iwl_prepare_card_hw();
 
-    iwl_write32(CSR_GIO_CHICKEN_BITS, iwl_read32(CSR_GIO_CHICKEN_BITS) | CSR_GIO_CHICKEN_BITS_L1A_NO_L0S_RX);
-    iwl_write32(CSR_DBG_HPET_MEM_REG, iwl_read32(CSR_DBG_HPET_MEM_REG) | CSR_DBG_HPET_MEM_REG_VAL);
-    iwl_write32(CSR_HW_IF_CONFIG_REG, iwl_read32(CSR_HW_IF_CONFIG_REG) | CSR_HW_IF_CONFIG_REG_BIT_HAP_WAKE_L1A);
-    iwl_write32(CSR_GIO_REG, iwl_read32(CSR_GIO_REG) | CSR_GIO_REG_VAL_L0S_DISABLED);
-
-    iwl_write32(CSR_GP_CNTRL, iwl_read32(CSR_GP_CNTRL) | CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
-    for (int i = 0; i < 200; i++) {
-        if (iwl_read32(CSR_GP_CNTRL) & CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY) break;
-        iwl_delay_ms(1);
+    if (!iwl_apm_init()) {
+        serial_puts("[IWL] WARN: iwl_apm_init MAC_CLOCK_READY timeout\n");
     }
-    /* Wait 1ms for BISR shift completion on Family 8000 */
-    iwl_delay_ms(1);
+
+    iwl_write32(CSR_INT, 0xFFFFFFFFu);
+    iwl_apm_init();
+    iwl_nic_config(fw_phy_config);
 
     /* Initialize Legacy RX DMA ring and Keep-Warm page before microcode boot */
     if (!iwl_setup_rx_dma()) {
@@ -380,6 +524,8 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
     iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x02u);
     iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x02u);
 
+    uint32_t int_pre_cpu = iwl_read32(CSR_INT);
+
     /* 2. Release internal CPU from reset */
     if (iwl_nic_lock()) {
         iwl_write_prph(IWL_RELEASE_CPU_RESET, IWL_RELEASE_CPU_RESET_BIT);
@@ -388,6 +534,23 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
         serial_puts("[IWL] Failed to acquire NIC lock for CPU reset release\n");
         return false;
     }
+
+    uint32_t int_post_cpu = iwl_read32(CSR_INT);
+    uint32_t pci_cmd_sts = pci_read_config32(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus,
+                                             s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND);
+    serial_puts("[IWL] Pre-DMA BDF=");
+    pci_print_bdf(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus, s_iwl_dev.pci.device, s_iwl_dev.pci.function);
+    serial_puts(" PCI_CS=");
+    serial_print_hex(pci_cmd_sts);
+    serial_puts(" HW_IF=");
+    serial_print_hex(iwl_read32(CSR_HW_IF_CONFIG_REG));
+    serial_puts(" INT_PRE=");
+    serial_print_hex(int_pre_cpu);
+    serial_puts(" INT_POST=");
+    serial_print_hex(int_post_cpu);
+    serial_puts(" DMA_PA=");
+    serial_print_hex(s_fw_chunk_phys);
+    serial_puts("\n");
 
     /* 3. Stream SEC_INIT (TLV 20) CPU1 and CPU2 sections */
     ptr = (const uint8_t *)fw_data + sizeof(iwl_ucode_header_t);
@@ -421,12 +584,32 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
                 break;
             } else if (dlen > 0) {
                 if (!iwl_load_section(dst_addr, data, dlen)) {
+                    uint32_t err_pci_cs = pci_read_config32(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus,
+                                                            s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND);
+                    uint32_t sb1 = 0, sb2 = 0;
+                    if (iwl_nic_lock()) {
+                        sb1 = iwl_read_prph(IWL_SB_CPU_1_STATUS);
+                        sb2 = iwl_read_prph(IWL_SB_CPU_2_STATUS);
+                        iwl_nic_unlock();
+                    }
                     serial_puts("[IWL] Failed to stream firmware chunk at dst=");
                     serial_print_hex(dst_addr);
                     serial_puts(" CSR_INT=");
                     serial_print_hex(iwl_read32(CSR_INT));
                     serial_puts(" FH_INT=");
                     serial_print_hex(iwl_read32(CSR_FH_INT_STATUS));
+                    serial_puts(" PCI_CS=");
+                    serial_print_hex(err_pci_cs);
+                    serial_puts(" TX_STS=");
+                    serial_print_hex(iwl_read32(FH_TSSR_TX_STATUS_REG));
+                    serial_puts(" TX_ERR=");
+                    serial_print_hex(iwl_read32(FH_TSSR_TX_ERROR_REG));
+                    serial_puts(" BUF_STS=");
+                    serial_print_hex(iwl_read32(FH_TCSR_CHNL_TX_BUF_STS_REG(IWL_FH_SRVC_CHNL)));
+                    serial_puts(" SB1=");
+                    serial_print_hex(sb1);
+                    serial_puts(" SB2=");
+                    serial_print_hex(sb2);
                     serial_puts("\n");
                     return false;
                 }
@@ -496,6 +679,7 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
         return false;
     }
 #else
+    (void)fw_phy_config;
     s_iwl_dev.firmware_alive = true;
 #endif
 
@@ -508,12 +692,11 @@ bool iwlwifi_map_mmio(void) {
     uint64_t bar0 = s_iwl_dev.pci.bar[0];
     if (bar0 == 0) return false;
 
-    /* Enable PCI bus master and memory space */
-    uint16_t cmd = pci_read_config16(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus,
-                                     s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND);
-    cmd |= (PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER);
-    pci_write_config16(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus,
-                       s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND, cmd);
+    /* Enable PCI bus master and memory space on endpoint and any parent PCIe bridge */
+    iwl_enable_pci_and_bridges();
+
+    /* Pre-allocate low-memory DMA buffers at boot time */
+    (void)iwl_alloc_dma_buffers();
 
     /* Map BAR0 MMIO (16 KiB window) into master kernel PML4 at boot time */
     uint64_t *pml4 = vmm_get_kernel_pml4_virt();

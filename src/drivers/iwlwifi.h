@@ -23,12 +23,14 @@
 
 /* Core CSR Registers */
 #define CSR_HW_IF_CONFIG_REG            0x000
+#define CSR_INT_COALESCING              0x004
 #define CSR_INT                         0x008
 #define CSR_INT_MASK                    0x00C
 #define CSR_FH_INT_STATUS               0x010
 #define CSR_GPIO_IN                     0x018
 #define CSR_RESET                       0x020
 #define CSR_GP_CNTRL                    0x024
+#define CSR_HW_REV                      0x028
 #define CSR_UCODE_DRV_GP1_CLR           0x05C
 #define CSR_EEPROM_REG                  0x02C
 #define CSR_OTP_GP_REG                  0x034
@@ -46,7 +48,9 @@
 
 /* Interrupt bits */
 #define CSR_INT_BIT_ALIVE               (1u << 0)
+#define CSR_INT_BIT_SW_ERR              (1u << 25)
 #define CSR_INT_BIT_FH_TX               (1u << 27)
+#define CSR_INT_BIT_HW_ERR              (1u << 29)
 #define CSR_INT_BIT_FH_RX               (1u << 31)
 
 /* Peripheral register access (HBUS PRPH) */
@@ -58,6 +62,12 @@
 /* Microcode Control & Flow Handler (Family 8000) */
 #define IWL_RELEASE_CPU_RESET           0x300C
 #define IWL_RELEASE_CPU_RESET_BIT       0x01000000
+#define IWL_WFPM_CTRL_REG               0xA03030u
+#define IWL_ENABLE_WFPM                 0x80000000u
+#define IWL_WFPM_GP2                    0xA030B4u
+#define IWL_AUX_MISC_REG                0xA200B0u
+#define IWL_SB_CPU_1_STATUS             0xA01E30u
+#define IWL_SB_CPU_2_STATUS             0xA01E34u
 
 #define IWL_FH_SRVC_CHNL                9
 #define FH_SRVC_CHNL_SRAM_ADDR_REG(c)   (0x19C8 + (((c) - 9) * 0x4))
@@ -65,6 +75,8 @@
 #define FH_TFDIB_CTRL1_REG(c)           (0x1900 + (8 * (c)) + 4)
 #define FH_TCSR_CHNL_TX_CONFIG_REG(c)   (0x1D00 + ((c) * 0x20))
 #define FH_TCSR_CHNL_TX_BUF_STS_REG(c)  (0x1D00 + ((c) * 0x20) + 8)
+#define FH_TSSR_TX_STATUS_REG           0x1EB0
+#define FH_TSSR_TX_ERROR_REG            0x1EB8
 #define FH_UCODE_LOAD_STATUS            0x1AF0
 
 #define FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_ENABLE    0x80000000u
@@ -104,6 +116,7 @@
 #define IWL_UCODE_TLV_SEC_RT            19
 #define IWL_UCODE_TLV_SEC_INIT          20
 #define IWL_UCODE_TLV_SEC_WOWLAN        21
+#define IWL_UCODE_TLV_PHY_SKU           23
 
 #define IWL_CPU1_CPU2_SEPARATOR_SECTION 0xFFFFCCCC
 #define IWL_PAGING_SEPARATOR_SECTION    0xAAAABBBB
