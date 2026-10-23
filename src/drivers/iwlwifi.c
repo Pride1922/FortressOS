@@ -2042,7 +2042,7 @@ int iwlwifi_send_raw(const void *buf, size_t len) {
     uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
 
 #ifndef IWLWIFI_HOST_TEST
-    if (s_iwl_dev.mvm_initialized && s_txq5_tfd_ring_virt && s_txq5_buf_virt && s_sched_virt) {
+    if (s_iwl_dev.mvm_initialized && s_sta_active && s_txq5_tfd_ring_virt && s_txq5_buf_virt && s_sched_virt) {
         const uint8_t *frame = (const uint8_t *)buf;
         uint16_t fc = (uint16_t)(frame[0] | ((uint16_t)frame[1] << 8));
         uint8_t type    = (uint8_t)((fc >> 2) & 0x03u);
