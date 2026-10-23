@@ -619,8 +619,8 @@ static void iwl_drain_rx_ring(void) {
                 if (grp == 0 && code == IWL_HCMD_ALIVE) {
                     if (payload_len >= 2) {
                         s_alive_status = *(const uint16_t *)(pkt->data + 0);
-                        if (payload_len >= 48) {
-                            s_sched_base = *(const uint32_t *)(pkt->data + 44);
+                        if (payload_len >= 44) {
+                            s_sched_base = *(const uint32_t *)(pkt->data + 40);
                         }
                         s_alive_received = true;
                     }
@@ -676,11 +676,22 @@ static void iwl_drain_rx_ring(void) {
                            wide_id == IWL_WIDE_ID(IWL_LONG_GROUP, IWL_SCAN_COMPLETE_UMAC) ||
                            (grp == 0 && code == IWL_SCAN_COMPLETE_UMAC)) {
                     s_scan_complete = true;
+                } else if (grp == 0 && code == 0x02 /* IWM_REPLY_ERROR */) {
+                    serial_puts("[IWL] FW REPLY_ERROR payload_len=");
+                    serial_print_dec(payload_len);
+                    if (payload_len >= 8) {
+                        serial_puts(" err_type=");
+                        serial_print_hex(*(const uint32_t *)(pkt->data + 0));
+                        serial_puts(" cmd_id=");
+                        serial_print_hex(pkt->data[4]);
+                    }
+                    serial_puts("\n");
                 }
 
-                /* Match synchronous host command response on Queue 0 */
-                if ((pkt->hdr.qid & 0x7Fu) == 0 && pkt->hdr.idx == s_pending_cmd_idx) {
-                    s_cmd_failed = (pkt->hdr.flags & 0x40u) != 0;
+                /* Match synchronous host command response on Queue 0 (bit 7 of qid is 0 for command acks) */
+                if (pkt->hdr.qid == 0 && pkt->hdr.idx == s_pending_cmd_idx &&
+                    !(grp == 0 && code == IWL_HCMD_ALIVE)) {
+                    s_cmd_failed = (grp == 0 && (pkt->hdr.flags & 0x40u) != 0);
                     uint32_t copy_len = (payload_len < sizeof(s_cmd_resp_buf)) ? payload_len : sizeof(s_cmd_resp_buf);
                     if (copy_len > 0) {
                         memcpy(s_cmd_resp_buf, pkt->data, copy_len);
@@ -711,15 +722,13 @@ static bool iwl_post_alive(void) {
     if (s_sched_base == 0) {
         s_sched_base = base;
     }
-    iwl_nic_unlock();
 
-    /* Clear TX scheduler context, status, and translation tables in SRAM */
+    /* Clear TX scheduler context, status, and translation tables in SRAM while holding NIC lock */
     uint32_t nwords = (IWL_SCD_TRANS_TBL_MEM_UPPER_BOUND - IWL_SCD_CONTEXT_MEM_LOWER_BOUND) / 4u;
+    iwl_write32(HBUS_TARG_MEM_WADDR, s_sched_base + IWL_SCD_CONTEXT_MEM_LOWER_BOUND);
     for (uint32_t i = 0; i < nwords; i++) {
-        iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_MEM_LOWER_BOUND + i * 4u, 0);
+        iwl_write32(HBUS_TARG_MEM_WDAT, 0);
     }
-
-    if (!iwl_nic_lock()) return false;
 
     /* Set physical address of TX scheduler Byte Count tables (1KB aligned) */
     iwl_write_prph(IWL_SCD_DRAM_BASE_ADDR, (uint32_t)(s_sched_phys >> 10));
@@ -819,7 +828,12 @@ static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bo
     __asm__ volatile("mfence" ::: "memory");
 
     /* Kick Command Queue 0 write pointer */
-    iwl_write32(HBUS_TARG_WRPTR, (0u << 8) | (uint32_t)s_cmd_idx);
+    if (iwl_nic_lock()) {
+        iwl_write32(HBUS_TARG_WRPTR, (0u << 8) | (uint32_t)s_cmd_idx);
+        iwl_nic_unlock();
+    } else {
+        iwl_write32(HBUS_TARG_WRPTR, (0u << 8) | (uint32_t)s_cmd_idx);
+    }
 
     if (!wait_resp) {
         iwl_delay_ms(2);
@@ -838,6 +852,20 @@ static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bo
         }
         iwl_delay_ms(1);
     }
+
+    serial_puts("[IWL] HCMD timeout: grp=");
+    serial_print_hex(group_id);
+    serial_puts(" op=");
+    serial_print_hex(opcode);
+    serial_puts(" idx=");
+    serial_print_dec(idx);
+    serial_puts(" sched_base=");
+    serial_print_hex(s_sched_base);
+    serial_puts(" CSR_INT=");
+    serial_print_hex(iwl_read32(CSR_INT));
+    serial_puts(" FH_INT=");
+    serial_print_hex(iwl_read32(CSR_FH_INT_STATUS));
+    serial_puts("\n");
 
     s_pending_cmd_idx = 0xFF;
     return false;
