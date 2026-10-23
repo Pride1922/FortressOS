@@ -146,9 +146,13 @@ int wpa2_sm_rx_eapol(wpa2_sm_t *sm,
         if (replay < sm->last_replay_counter) return -1; /* Replay attack */
 
         /* Verify Message 3 MIC */
+        size_t eapol_total_len = sizeof(eapol_hdr_t) + wlan_ntohs(hdr->length);
+        if (eapol_total_len < min_len || eapol_total_len > len) {
+            eapol_total_len = len;
+        }
         uint8_t frame_copy[512];
-        if (len > sizeof(frame_copy)) return -1;
-        memcpy(frame_copy, eapol_frame, len);
+        if (eapol_total_len > sizeof(frame_copy)) return -1;
+        memcpy(frame_copy, eapol_frame, eapol_total_len);
 
         eapol_key_desc_t *copy_kd = (eapol_key_desc_t *)(frame_copy + sizeof(eapol_hdr_t));
         uint8_t rx_mic[16];
@@ -156,7 +160,7 @@ int wpa2_sm_rx_eapol(wpa2_sm_t *sm,
         memset(copy_kd->key_mic, 0, 16);
 
         uint8_t computed_mic[WLAN_SHA1_DIGEST_SIZE];
-        wlan_hmac_sha1(sm->kck, WLAN_KCK_LEN, frame_copy, len, computed_mic);
+        wlan_hmac_sha1(sm->kck, WLAN_KCK_LEN, frame_copy, eapol_total_len, computed_mic);
 
         /* Constant-time comparison */
         uint8_t diff = 0;

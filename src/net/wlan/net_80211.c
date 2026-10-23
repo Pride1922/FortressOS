@@ -75,8 +75,8 @@ size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
     size_t ssid_len = ssid ? strlen(ssid) : 0;
     if (ssid_len > IEEE80211_SSID_MAX_LEN) ssid_len = IEEE80211_SSID_MAX_LEN;
 
-    /* Fixed body (4) + SSID IE (2 + ssid_len) + Rates IE (6) + RSN IE (22) */
-    size_t total_len = sizeof(ieee80211_hdr_t) + 4 + (2 + ssid_len) + 6 + 22;
+    /* Fixed body (4) + SSID IE (2 + ssid_len) + Rates IE (10) + Ext Rates IE (6) + RSN IE (22) + WMM IE (9) */
+    size_t total_len = sizeof(ieee80211_hdr_t) + 4 + (2 + ssid_len) + 10 + 6 + 22 + 9;
     if (!buf || max_len < total_len) return 0;
 
     ieee80211_hdr_t *hdr = (ieee80211_hdr_t *)buf;
@@ -89,10 +89,10 @@ size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
 
     uint8_t *body = buf + sizeof(ieee80211_hdr_t);
 
-    /* Capabilities: ESS (0x0001) | Short Preamble (0x0020) | Privacy (0x0010) = 0x0031 */
-    body[0] = 0x31; body[1] = 0x00;
-    /* Listen Interval: 5 */
-    body[2] = 0x05; body[3] = 0x00;
+    /* Capabilities: ESS (0x0001) | Privacy (0x0010) | Short Preamble (0x0020) | Short Slot (0x0400) = 0x0431 */
+    body[0] = 0x31; body[1] = 0x04;
+    /* Listen Interval: 10 */
+    body[2] = 0x0A; body[3] = 0x00;
 
     uint8_t *ie = body + 4;
 
@@ -104,12 +104,18 @@ size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
         ie += ssid_len;
     }
 
-    /* 2. Rates IE */
+    /* 2. Supported Rates IE (1, 2, 5.5, 11, 6, 9, 12, 18 Mbps) */
     *ie++ = IEEE80211_IE_RATES;
-    *ie++ = 4;
+    *ie++ = 8;
     *ie++ = 0x82; *ie++ = 0x84; *ie++ = 0x8B; *ie++ = 0x96;
+    *ie++ = 0x8C; *ie++ = 0x12; *ie++ = 0x98; *ie++ = 0x24;
 
-    /* 3. WPA2 RSN Information Element (22 bytes) */
+    /* 3. Extended Supported Rates IE (24, 36, 48, 54 Mbps) */
+    *ie++ = IEEE80211_IE_EXT_RATES;
+    *ie++ = 4;
+    *ie++ = 0xB0; *ie++ = 0x48; *ie++ = 0x60; *ie++ = 0x6C;
+
+    /* 4. WPA2 RSN Information Element (22 bytes) */
     *ie++ = IEEE80211_IE_RSN;
     *ie++ = 20; /* Length of RSN IE */
     *ie++ = 0x01; *ie++ = 0x00; /* Version 1 */
@@ -125,6 +131,15 @@ size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
     *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC; *ie++ = 0x02;
     /* RSN Capabilities */
     *ie++ = 0x00; *ie++ = 0x00;
+
+    /* 5. WMM / QoS Information Element (9 bytes) */
+    *ie++ = IEEE80211_IE_VENDOR;
+    *ie++ = 7;
+    *ie++ = 0x00; *ie++ = 0x50; *ie++ = 0xF2; /* Microsoft OUI */
+    *ie++ = 0x02; /* WMM Type */
+    *ie++ = 0x00; /* WMM Information Subtype */
+    *ie++ = 0x01; /* Version 1 */
+    *ie++ = 0x00; /* QoS Info */
 
     return (size_t)(ie - buf);
 }

@@ -36,15 +36,19 @@ static uintptr_t         s_rx_buf_phys[IWL_HW_RX_BUFS];
 static uint8_t          *s_rx_buf_virt[IWL_HW_RX_BUFS];
 static uint16_t          s_hw_rx_read_idx = 0;
 
-/* TX Scheduler & Command Queue DMA Buffers */
-static uintptr_t         s_sched_phys         = 0;
-static iwl_scd_bc_tbl_t *s_sched_virt         = NULL;
-static uintptr_t         s_tfd_ring_phys      = 0;
-static iwl_tfd_t        *s_tfd_ring_virt      = NULL;
-static uintptr_t         s_aux_tfd_ring_phys  = 0;
-static iwl_tfd_t        *s_aux_tfd_ring_virt  = NULL;
-static uintptr_t         s_cmd_buf_phys       = 0;
-static uint8_t          *s_cmd_buf_virt       = NULL;
+/* TX Scheduler, Command Queue 0, AUX Queue 1, and Data/Mgmt Queue 5 DMA Buffers */
+static uintptr_t         s_sched_phys          = 0;
+static iwl_scd_bc_tbl_t *s_sched_virt          = NULL;
+static uintptr_t         s_tfd_ring_phys       = 0;
+static iwl_tfd_t        *s_tfd_ring_virt       = NULL;
+static uintptr_t         s_aux_tfd_ring_phys   = 0;
+static iwl_tfd_t        *s_aux_tfd_ring_virt   = NULL;
+static uintptr_t         s_txq5_tfd_ring_phys  = 0;
+static iwl_tfd_t        *s_txq5_tfd_ring_virt  = NULL;
+static uintptr_t         s_cmd_buf_phys        = 0;
+static uint8_t          *s_cmd_buf_virt        = NULL;
+static uintptr_t         s_txq5_buf_phys       = 0;
+static uint8_t          *s_txq5_buf_virt       = NULL;
 
 /* CPU2 Firmware Paging DMA Buffers (1 CSS 4KB + up to 8x 32KB blocks) */
 static uintptr_t         s_paging_css_phys    = 0;
@@ -73,6 +77,7 @@ static uint32_t           s_n_scan_channels = 40;
 static uint8_t            s_valid_tx_ant = 3;
 static uint8_t            s_valid_rx_ant = 3;
 static uint8_t            s_cmd_idx = 0;
+static uint8_t            s_txq5_idx = 0;
 static uint8_t            s_pending_cmd_idx = 0xFF;
 static bool               s_cmd_done = false;
 static bool               s_cmd_failed = false;
@@ -81,6 +86,14 @@ static bool               s_alive_received = false;
 static uint16_t           s_alive_status = 0;
 static bool               s_init_complete_received = false;
 static bool               s_scan_complete = false;
+static bool               s_te_started = false;
+static bool               s_mac_active = false;
+static bool               s_binding_active = false;
+static bool               s_sta_active = false;
+static bool               s_is_associated = false;
+static uint8_t            s_assoc_bssid[6];
+static uint16_t           s_assoc_bi = 100;
+static uint16_t           s_assoc_aid = 0;
 static uint32_t           s_last_err_intr = 0;
 static uint16_t           s_last_rx_wide_id = 0;
 static uint8_t            s_phy_db_scratch[4096];
@@ -283,11 +296,25 @@ static bool iwl_alloc_dma_buffers(void) {
             memset(s_aux_tfd_ring_virt, 0, 8 * 4096);
         }
     }
+    if (!s_txq5_tfd_ring_phys) {
+        s_txq5_tfd_ring_phys = pmm_alloc_pages(8); /* 32 KiB for 256 * 128B TFDs (Queue 5) */
+        if (s_txq5_tfd_ring_phys) {
+            s_txq5_tfd_ring_virt = (iwl_tfd_t *)vmm_phys_to_virt(s_txq5_tfd_ring_phys);
+            memset(s_txq5_tfd_ring_virt, 0, 8 * 4096);
+        }
+    }
     if (!s_cmd_buf_phys) {
         s_cmd_buf_phys = pmm_alloc_pages(16); /* 64 KiB: 16 slots * 4096B contiguous command buffers */
         if (s_cmd_buf_phys) {
             s_cmd_buf_virt = (uint8_t *)vmm_phys_to_virt(s_cmd_buf_phys);
             memset(s_cmd_buf_virt, 0, 16 * 4096);
+        }
+    }
+    if (!s_txq5_buf_phys) {
+        s_txq5_buf_phys = pmm_alloc_pages(16); /* 64 KiB: 32 slots * 2048B TX frame buffers */
+        if (s_txq5_buf_phys) {
+            s_txq5_buf_virt = (uint8_t *)vmm_phys_to_virt(s_txq5_buf_phys);
+            memset(s_txq5_buf_virt, 0, 16 * 4096);
         }
     }
     if (!s_paging_css_phys) {
@@ -308,7 +335,8 @@ static bool iwl_alloc_dma_buffers(void) {
 
     if (!s_fw_chunk_phys || !s_kw_phys || !s_rx_desc_phys ||
         !s_sched_phys || !s_tfd_ring_phys || !s_aux_tfd_ring_phys ||
-        !s_cmd_buf_phys || !s_paging_css_phys) {
+        !s_txq5_tfd_ring_phys || !s_cmd_buf_phys || !s_txq5_buf_phys ||
+        !s_paging_css_phys) {
         return false;
     }
 
@@ -431,7 +459,10 @@ static bool iwl_setup_rx_dma(void) {
     memset(s_sched_virt, 0, 5 * 4096);
     memset(s_tfd_ring_virt, 0, 8 * 4096);
     memset(s_aux_tfd_ring_virt, 0, 8 * 4096);
+    memset(s_txq5_tfd_ring_virt, 0, 8 * 4096);
     memset(s_cmd_buf_virt, 0, 16 * 4096);
+    memset(s_txq5_buf_virt, 0, 16 * 4096);
+    s_txq5_idx = 0;
 
     /* Populate 256-entry RX descriptor table wrapping our 32 4-KiB pages */
     for (uint32_t i = 0; i < 256; i++) {
@@ -482,7 +513,11 @@ static bool iwl_setup_rx_dma(void) {
     iwl_write32(iwl_fh_cbbc_queue_reg(0), (uint32_t)(s_tfd_ring_phys >> 8));
     iwl_write32(iwl_fh_cbbc_queue_reg(1), (uint32_t)(s_aux_tfd_ring_phys >> 8));
     for (uint32_t qid = 2; qid < IWL_MAX_QUEUES; qid++) {
-        iwl_write32(iwl_fh_cbbc_queue_reg(qid), (uint32_t)((s_rx_desc_phys + 2560) >> 8));
+        if (qid == 5) {
+            iwl_write32(iwl_fh_cbbc_queue_reg(5), (uint32_t)(s_txq5_tfd_ring_phys >> 8));
+        } else {
+            iwl_write32(iwl_fh_cbbc_queue_reg(qid), (uint32_t)((s_rx_desc_phys + 2560) >> 8));
+        }
     }
     iwl_write_prph(IWL_SCD_GP_CTRL, iwl_read_prph(IWL_SCD_GP_CTRL) | (1u << 18) | (1u << 0));
 
@@ -681,6 +716,23 @@ static void iwl_drain_rx_ring(void) {
                            wide_id == IWL_WIDE_ID(IWL_LONG_GROUP, IWL_SCAN_COMPLETE_UMAC) ||
                            (grp == 0 && code == IWL_SCAN_COMPLETE_UMAC)) {
                     s_scan_complete = true;
+                } else if (grp == 0 && code == IWL_HCMD_TIME_EVENT_NOTIF) {
+                    if (payload_len >= 24) {
+                        uint32_t action = *(const uint32_t *)(pkt->data + 16);
+                        uint32_t status = *(const uint32_t *)(pkt->data + 20);
+                        if ((action & 1u) && status != 0) {
+                            s_te_started = true;
+                        }
+                    }
+                } else if (grp == 0 && code == IWL_HCMD_TX) {
+                    if (payload_len >= 38) {
+                        uint8_t tx_status = pkt->data[36];
+                        if (tx_status != 0x01u && tx_status != 0x02u) {
+                            serial_puts("[IWL] TX_RESP non-ok status=");
+                            serial_print_hex(tx_status);
+                            serial_puts("\n");
+                        }
+                    }
                 } else if (grp == 0 && code == 0x02 /* IWM_REPLY_ERROR */) {
                     serial_puts("[IWL] FW REPLY_ERROR payload_len=");
                     serial_print_dec(payload_len);
@@ -1058,50 +1110,169 @@ static bool iwl_config_umac_scan(void) {
                             buf, cmd_len, true);
 }
 
-static void iwl_setup_default_mac_and_binding(void) {
-    /* 1. Add MAC Context 0 (BSS_STA) with beacon reception enabled */
+static bool iwl_send_mac_context_cmd(uint32_t action, bool is_assoc, uint16_t assoc_id) {
     iwl_mac_ctx_cmd_t mac_cmd;
     memset(&mac_cmd, 0, sizeof(mac_cmd));
     mac_cmd.id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
-    mac_cmd.action       = IWL_FW_CTXT_ACTION_ADD;
+    mac_cmd.action       = action;
     mac_cmd.mac_type     = IWL_FW_MAC_TYPE_BSS_STA;
     mac_cmd.tsf_id       = 0;
     memcpy(mac_cmd.node_addr, s_iwl_dev.mac_addr, 6);
-    memset(mac_cmd.bssid_addr, 0xFF, 6);
-    mac_cmd.cck_rates    = 0x0Fu;
-    mac_cmd.ofdm_rates   = 0x15u;
+    memcpy(mac_cmd.bssid_addr, s_assoc_bssid, 6);
+    mac_cmd.cck_rates    = (s_iwl_dev.current_channel <= 14) ? 0x0Fu : 0;
+    mac_cmd.ofdm_rates   = 0xFFu;
+    mac_cmd.short_slot   = 1u; /* IWM_MAC_FLG_SHORT_SLOT */
     mac_cmd.filter_flags = IWL_MAC_FILTER_ACCEPT_GRP | IWL_MAC_FILTER_IN_BEACON;
-    for (int ac = 0; ac < 4; ac++) {
-        mac_cmd.ac[ac].cw_min     = 15;
-        mac_cmd.ac[ac].cw_max     = 1023;
-        mac_cmd.ac[ac].aifsn      = 3;
-        mac_cmd.ac[ac].fifos_mask = (uint8_t)(1u << ac);
-        mac_cmd.ac[ac].edca_txop  = 0;
-    }
-    (void)iwl_send_cmd_pdu(IWL_HCMD_MAC_CONTEXT, &mac_cmd, sizeof(mac_cmd), true);
+    mac_cmd.qos_flags    = 1u; /* IWM_MAC_QOS_FLG_UPDATE_EDCA */
 
-    /* 2. Bind MAC Context 0 to PHY Context 0 */
+    /* EDCA AC parameters indexed by TX FIFO: 0=BK, 1=BE, 2=VI, 3=VO */
+    static const uint16_t cw_min[4] = { 15, 15, 7, 3 };
+    static const uint16_t cw_max[4] = { 1023, 1023, 15, 7 };
+    static const uint8_t  aifsn[4]  = { 7, 3, 2, 2 };
+    static const uint16_t txop[4]   = { 0, 0, 3008, 1504 };
+    for (int f = 0; f < 4; f++) {
+        mac_cmd.ac[f].cw_min     = cw_min[f];
+        mac_cmd.ac[f].cw_max     = cw_max[f];
+        mac_cmd.ac[f].aifsn      = aifsn[f];
+        mac_cmd.ac[f].fifos_mask = (uint8_t)(1u << f);
+        mac_cmd.ac[f].edca_txop  = txop[f];
+    }
+
+    uint32_t bi = (s_assoc_bi >= 20) ? s_assoc_bi : 100u;
+    mac_cmd.sta.is_assoc       = is_assoc ? 1u : 0u;
+    mac_cmd.sta.bi             = bi;
+    mac_cmd.sta.bi_reciprocal  = 0xFFFFFFFFu / bi;
+    mac_cmd.sta.dtim_interval  = bi;
+    mac_cmd.sta.dtim_reciprocal = 0xFFFFFFFFu / bi;
+    mac_cmd.sta.listen_interval = 10u;
+    mac_cmd.sta.assoc_id       = assoc_id;
+
+    return iwl_send_cmd_pdu(IWL_HCMD_MAC_CONTEXT, &mac_cmd, sizeof(mac_cmd), true);
+}
+
+static bool iwl_send_binding_context_cmd(uint32_t action) {
     iwl_binding_cmd_v1_t bind_cmd;
     memset(&bind_cmd, 0, sizeof(bind_cmd));
     bind_cmd.id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
-    bind_cmd.action       = IWL_FW_CTXT_ACTION_ADD;
+    bind_cmd.action       = action;
     bind_cmd.macs[0]      = IWL_FW_CMD_ID_AND_COLOR(0, 0);
     bind_cmd.macs[1]      = 0xFFFFFFFFu;
     bind_cmd.macs[2]      = 0xFFFFFFFFu;
     bind_cmd.phy          = IWL_FW_CMD_ID_AND_COLOR(0, 0);
-    (void)iwl_send_cmd_pdu(IWL_HCMD_BINDING_CONTEXT, &bind_cmd, sizeof(bind_cmd), true);
+    return iwl_send_cmd_pdu(IWL_HCMD_BINDING_CONTEXT, &bind_cmd, sizeof(bind_cmd), true);
+}
 
-    /* 3. Set Time Quota for Binding 0 */
+static bool iwl_send_add_sta_cmd(bool update, uint16_t assoc_id) {
+    iwl_add_sta_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.add_modify        = update ? 1u : 0u;
+    cmd.sta_id            = IWL_STATION_ID;
+    cmd.station_type      = IWL_STA_LINK;
+    cmd.mac_id_n_color    = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+    if (!update) {
+        memcpy(cmd.addr, s_assoc_bssid, 6);
+    } else {
+        cmd.modify_mask = (1u << 7) | (1u << 4); /* IWM_STA_MODIFY_QUEUES | IWM_STA_MODIFY_TID_DISABLE_TX */
+    }
+    cmd.assoc_id          = assoc_id;
+    cmd.tfd_queue_msk     = (1u << 5) | (1u << 6) | (1u << 7) | (1u << 8);
+    cmd.tid_disable_tx    = 0xFFFFu;
+    cmd.station_flags_msk = (3u << 6) | (3u << 8); /* FAT_EN_MSK | MIMO_EN_MSK */
+    return iwl_send_cmd_pdu(IWL_HCMD_ADD_STA, &cmd, sizeof(cmd), true);
+}
+
+static bool iwl_send_lq_cmd(uint8_t channel) {
+    iwl_lq_cmd_t lq;
+    memset(&lq, 0, sizeof(lq));
+    lq.sta_id                = IWL_STATION_ID;
+    lq.single_stream_ant_msk = (s_valid_tx_ant & 1u) ? 1u : 2u;
+    lq.dual_stream_ant_msk   = (s_valid_tx_ant & 3u) ? (s_valid_tx_ant & 3u) : 1u;
+    lq.agg_time_limit        = 4000;
+    lq.agg_disable_start_th  = 3;
+    lq.agg_frame_cnt_limit   = 0x3Fu;
+
+    uint32_t ant_msk = ((uint32_t)lq.single_stream_ant_msk) << 14;
+    static const uint8_t ofdm_plcp[8] = { 3, 1, 11, 9, 7, 5, 15, 13 }; /* 54,48,36,24,18,12,9,6 Mbps */
+    for (int i = 0; i < 16; i++) {
+        if (i < 8) {
+            lq.rs_table[i] = ant_msk | ofdm_plcp[i];
+        } else if (channel <= 14) {
+            static const uint8_t cck_plcp[4] = { 110, 55, 20, 10 }; /* 11, 5.5, 2, 1 Mbps */
+            uint8_t plcp = (i - 8 < 4) ? cck_plcp[i - 8] : 10u;
+            lq.rs_table[i] = ant_msk | (1u << 9) /* CCK */ | plcp;
+        } else {
+            lq.rs_table[i] = ant_msk | 13u; /* 6 Mbps OFDM */
+        }
+    }
+    return iwl_send_cmd_pdu(IWL_HCMD_LQ, &lq, sizeof(lq), true);
+}
+
+static bool iwl_send_time_quota_cmd(bool running) {
     iwl_time_quota_cmd_t quota_cmd;
     memset(&quota_cmd, 0, sizeof(quota_cmd));
-    quota_cmd.quotas[0].id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
-    quota_cmd.quotas[0].quota        = 128;
-    quota_cmd.quotas[0].max_duration = 0;
-    quota_cmd.quotas[0].low_latency  = 0;
+    if (running) {
+        quota_cmd.quotas[0].id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+        quota_cmd.quotas[0].quota        = 128;
+        quota_cmd.quotas[0].max_duration = 0;
+        quota_cmd.quotas[0].low_latency  = 0;
+    } else {
+        quota_cmd.quotas[0].id_and_color = 0xFFFFFFFFu;
+    }
     for (int i = 1; i < 4; i++) {
         quota_cmd.quotas[i].id_and_color = 0xFFFFFFFFu;
     }
-    (void)iwl_send_cmd_pdu(IWL_HCMD_TIME_QUOTA, &quota_cmd, sizeof(quota_cmd), true);
+    return iwl_send_cmd_pdu(IWL_HCMD_TIME_QUOTA, &quota_cmd, sizeof(quota_cmd), true);
+}
+
+static bool iwl_send_mcast_filter_cmd(void) {
+    iwl_mcast_filter_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.filter_own = 1;
+    cmd.port_id    = 0;
+    cmd.count      = 0;
+    cmd.pass_all   = 1;
+    memcpy(cmd.bssid, s_assoc_bssid, 6);
+    return iwl_send_cmd_pdu(IWL_HCMD_MCAST_FILTER, &cmd, sizeof(cmd), true);
+}
+
+static bool iwl_send_mac_power_cmd(void) {
+    iwl_mac_power_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.id_and_color       = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+    cmd.flags              = 0; /* Keep radio continuously awake during active session */
+    cmd.keep_alive_seconds = 25;
+    return iwl_send_cmd_pdu(IWL_HCMD_MAC_PM_POWER_TABLE, &cmd, sizeof(cmd), true);
+}
+
+static bool iwl_protect_session(uint32_t duration_tu, uint32_t max_delay_tu) {
+    iwl_time_event_cmd_t te;
+    memset(&te, 0, sizeof(te));
+    te.id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+    te.action       = IWL_FW_CTXT_ACTION_ADD;
+    te.id           = 0; /* IWM_TE_BSS_STA_AGGRESSIVE_ASSOC */
+    te.apply_time   = 0;
+    te.max_delay    = max_delay_tu;
+    te.depends_on   = 0;
+    te.interval     = 1;
+    te.duration     = duration_tu;
+    te.repeat       = 1;
+    te.max_frags    = 0; /* IWM_TE_V2_FRAG_NONE */
+    te.policy       = (1u << 0) | /* HOST_EVENT_START */
+                      (1u << 1) | /* HOST_EVENT_END */
+                      (1u << 11); /* START_IMMEDIATELY */
+
+    s_te_started = false;
+    if (!iwl_send_cmd_pdu(IWL_HCMD_TIME_EVENT, &te, sizeof(te), true)) {
+        return false;
+    }
+
+    /* Wait up to 30ms for the firmware to notify that the Time Event has started on-channel */
+    for (int ms = 0; ms < 30; ms++) {
+        iwl_drain_rx_ring();
+        if (s_te_started) break;
+        iwl_delay_ms(1);
+    }
+    return true;
 }
 
 /* Boot either SEC_INIT (20) or SEC_RT (19), run post_alive, and configure CPU2 paging */
@@ -1295,6 +1466,9 @@ static const wlan_hw_ops_t s_iwlwifi_hw_ops = {
     .get_mac = iwlwifi_get_mac,
     .set_channel = iwlwifi_set_channel,
     .start_scan = iwlwifi_start_scan,
+    .prepare_auth = iwlwifi_prepare_auth,
+    .set_associated = iwlwifi_set_associated,
+    .deauth = iwlwifi_deauth,
     .send_raw_80211 = iwlwifi_send_raw,
     .poll_raw_80211 = iwlwifi_poll_raw,
     .recycle_raw_80211 = iwlwifi_recycle_raw,
@@ -1484,7 +1658,6 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
     /* Disable hardware beacon filtering so all beacons reach the host */
     uint8_t bf_cmd[44] = {0};
     (void)iwl_send_cmd_pdu(IWL_HCMD_BEACON_FILTERING, bf_cmd, sizeof(bf_cmd), true);
-    (void)iwl_setup_default_mac_and_binding;
 
     if (s_last_err_intr != 0) {
         serial_puts("[IWL] Firmware reported error interrupt during SEC_RT init\n");
@@ -1512,10 +1685,147 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
     return true;
 }
 
+int iwlwifi_deauth(void) {
+#ifndef IWLWIFI_HOST_TEST
+    if (!s_iwl_dev.initialized || !s_iwl_dev.firmware_alive || !s_iwl_dev.mvm_initialized) {
+        return 0;
+    }
+
+    if (s_is_associated) {
+        (void)iwl_send_sf_config(IWL_SF_INIT_OFF);
+        (void)iwl_send_time_quota_cmd(false);
+        s_is_associated = false;
+    }
+
+    if (s_sta_active) {
+        iwl_tx_path_flush_cmd_t flush_cmd = {
+            .sta_id   = IWL_STATION_ID,
+            .tid_mask = 0xFFFFu,
+            .reserved = 0,
+        };
+        (void)iwl_send_cmd_pdu(IWL_HCMD_TXPATH_FLUSH, &flush_cmd, sizeof(flush_cmd), true);
+
+        iwl_rm_sta_cmd_t rm_cmd = { .sta_id = IWL_STATION_ID, .reserved = {0, 0, 0} };
+        (void)iwl_send_cmd_pdu(IWL_HCMD_REMOVE_STA, &rm_cmd, sizeof(rm_cmd), true);
+        s_sta_active = false;
+    }
+
+    if (s_binding_active) {
+        (void)iwl_send_binding_context_cmd(IWL_FW_CTXT_ACTION_REMOVE);
+        s_binding_active = false;
+    }
+
+    if (s_mac_active) {
+        (void)iwl_send_mac_context_cmd(IWL_FW_CTXT_ACTION_REMOVE, false, 0);
+        s_mac_active = false;
+    }
+#endif
+    return 0;
+}
+
+int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beacon_interval) {
+#ifndef IWLWIFI_HOST_TEST
+    if (!bssid || !s_iwl_dev.initialized || !s_iwl_dev.firmware_alive || !s_iwl_dev.mvm_initialized) {
+        return -1;
+    }
+
+    /* Tear down any previous station/binding/MAC context before starting new authentication */
+    (void)iwlwifi_deauth();
+
+    s_iwl_dev.current_channel = (channel > 0) ? channel : 1;
+    memcpy(s_assoc_bssid, bssid, 6);
+    s_assoc_bi  = (beacon_interval >= 20) ? beacon_interval : 100;
+    s_assoc_aid = 0;
+
+    /* 1. Tune PHY Context 0 to target channel */
+    if (!iwl_send_phy_context_cmd(0, IWL_FW_CTXT_ACTION_MODIFY, s_iwl_dev.current_channel)) {
+        serial_puts("[IWL] WARN: prepare_auth PHY_CONTEXT modify failed\n");
+    }
+
+    /* 2. Add MAC Context 0 (BSS_STA, unassociated) */
+    if (iwl_send_mac_context_cmd(IWL_FW_CTXT_ACTION_ADD, false, 0)) {
+        s_mac_active = true;
+    } else {
+        serial_puts("[IWL] WARN: prepare_auth MAC_CONTEXT add failed\n");
+    }
+
+    /* 3. Bind MAC Context 0 to PHY Context 0 */
+    if (iwl_send_binding_context_cmd(IWL_FW_CTXT_ACTION_ADD)) {
+        s_binding_active = true;
+    } else {
+        serial_puts("[IWL] WARN: prepare_auth BINDING_CONTEXT add failed\n");
+    }
+
+    /* 4. Add Station 0 (Target AP BSSID) on DQA queues 5..8 */
+    if (iwl_send_add_sta_cmd(false, 0)) {
+        s_sta_active = true;
+    } else {
+        serial_puts("[IWL] WARN: prepare_auth ADD_STA failed\n");
+    }
+
+    /* 5. Configure Link Quality rate table for Station 0 */
+    (void)iwl_send_lq_cmd(s_iwl_dev.current_channel);
+
+    /* 6. Schedule Session Protection Time Event (600 TU) so radio stays on-channel for Auth/Assoc/EAPOL */
+    (void)iwl_protect_session(600, 50);
+
+    serial_puts("[IWL] Prepared MVM auth context on channel ");
+    serial_print_dec(s_iwl_dev.current_channel);
+    serial_puts("\n");
+    return 0;
+#else
+    (void)channel;
+    (void)bssid;
+    (void)beacon_interval;
+    return 0;
+#endif
+}
+
+int iwlwifi_set_associated(uint16_t assoc_id, uint16_t beacon_interval) {
+#ifndef IWLWIFI_HOST_TEST
+    if (!s_iwl_dev.initialized || !s_iwl_dev.firmware_alive || !s_iwl_dev.mvm_initialized) {
+        return -1;
+    }
+
+    s_assoc_aid = (assoc_id > 0) ? (assoc_id & 0x3FFFu) : 1;
+    if (beacon_interval >= 20) {
+        s_assoc_bi = beacon_interval;
+    }
+
+    /* 1. Update Station 0 with assigned AID */
+    (void)iwl_send_add_sta_cmd(true, s_assoc_aid);
+
+    /* 2. Modify MAC Context 0 with is_assoc = 1 and assoc_id */
+    (void)iwl_send_mac_context_cmd(IWL_FW_CTXT_ACTION_MODIFY, true, s_assoc_aid);
+
+    /* 3. Enable full Smart FIFO, Multicast reception, MAC power, Time Quota, and LQ rates */
+    (void)iwl_send_sf_config(IWL_SF_FULL_ON);
+    (void)iwl_send_mcast_filter_cmd();
+    (void)iwl_send_mac_power_cmd();
+    (void)iwl_send_time_quota_cmd(true);
+    (void)iwl_send_lq_cmd(s_iwl_dev.current_channel);
+
+    s_is_associated = true;
+    serial_puts("[IWL] MVM associated (AID=");
+    serial_print_dec(s_assoc_aid);
+    serial_puts(")\n");
+    return 0;
+#else
+    (void)assoc_id;
+    (void)beacon_interval;
+    return 0;
+#endif
+}
+
 int iwlwifi_start_scan(const char *ssid) {
 #ifndef IWLWIFI_HOST_TEST
     if (!s_iwl_dev.initialized || !s_iwl_dev.firmware_alive || !s_iwl_dev.mvm_initialized) {
         return -1;
+    }
+
+    /* If a previous unassociated auth context is lingering, release it before UMAC scan */
+    if (!s_is_associated && (s_mac_active || s_binding_active || s_sta_active)) {
+        (void)iwlwifi_deauth();
     }
 
     memset(s_scan_cmd_buf, 0, sizeof(s_scan_cmd_buf));
@@ -1694,24 +2004,137 @@ bool iwlwifi_init_hw(void) {
 }
 
 int iwlwifi_send_raw(const void *buf, size_t len) {
-    if (!buf || len == 0 || len > 2048) return -1;
+    if (!buf || len < 24 || len > 1900) return -1;
     if (!s_iwl_dev.initialized || !s_iwl_dev.firmware_alive) return -1;
     uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
 
-    /* Post into Tx ring */
-    uint32_t next = (s_iwl_dev.tx_head + 1) % IWL_TX_RING_SIZE;
-    if (next == s_iwl_dev.tx_tail) {
-        spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
-        return -1; /* Ring full */
+#ifndef IWLWIFI_HOST_TEST
+    if (s_iwl_dev.mvm_initialized && s_txq5_tfd_ring_virt && s_txq5_buf_virt && s_sched_virt) {
+        const uint8_t *frame = (const uint8_t *)buf;
+        uint16_t fc = (uint16_t)(frame[0] | ((uint16_t)frame[1] << 8));
+        uint8_t type    = (uint8_t)((fc >> 2) & 0x03u);
+        uint8_t subtype = (uint8_t)((fc >> 4) & 0x0Fu);
+        bool is_qos     = (type == 0x02u /* DATA */ && subtype == 0x08u /* QOS_DATA */);
+        uint16_t hdrlen = is_qos ? 26u : 24u;
+        if (len < hdrlen) {
+            spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
+            return -1;
+        }
+        uint16_t pad = (hdrlen & 3u) ? (uint16_t)(4u - (hdrlen & 3u)) : 0u;
+        uint16_t body_len = (uint16_t)(len - hdrlen);
+
+        uint8_t idx = s_txq5_idx;
+        uint32_t b_slot = idx & 31u;
+        uint8_t *slot_virt = s_txq5_buf_virt + b_slot * 2048u;
+        uintptr_t slot_phys = s_txq5_buf_phys + b_slot * 2048u;
+
+        memset(slot_virt, 0, 2048);
+
+        /* 1. Build 4-byte Command Header at offset 0 */
+        iwl_cmd_header_t *hdr = (iwl_cmd_header_t *)slot_virt;
+        hdr->code  = IWL_HCMD_TX;
+        hdr->flags = 0;
+        hdr->idx   = idx;
+        hdr->qid   = 5; /* IWM_DQA_MIN_MGMT_QUEUE */
+
+        /* 2. Build 56-byte iwl_tx_cmd_t at offset 4 */
+        iwl_tx_cmd_t *tx = (iwl_tx_cmd_t *)(slot_virt + sizeof(iwl_cmd_header_t));
+        tx->len = (uint16_t)len;
+        tx->offload_assist = (pad > 0) ? (1u << 13) /* IWM_TX_CMD_OFFLD_PAD */ : 0u;
+
+        uint32_t tx_flags = (1u << 12); /* IWM_TX_CMD_FLG_BT_DIS */
+        if ((frame[4] & 0x01u) == 0) {
+            tx_flags |= (1u << 3);      /* IWM_TX_CMD_FLG_ACK for unicast */
+        }
+        if (!is_qos) {
+            tx_flags |= (1u << 13);     /* IWM_TX_CMD_FLG_SEQ_CTL for non-QoS */
+        }
+        if (pad > 0) {
+            tx_flags |= (1u << 20);     /* IWM_TX_CMD_FLG_MH_PAD */
+        }
+        tx->tx_flags = tx_flags;
+
+        uint32_t ant_msk = ((s_valid_tx_ant & 1u) ? 1u : 2u) << 14;
+        if (type != 0x02u && s_iwl_dev.current_channel <= 14) {
+            /* 2.4 GHz Management frame: 1 Mbps CCK (PLCP 10) */
+            tx->rate_n_flags = ant_msk | (1u << 9) /* CCK */ | 10u;
+        } else {
+            /* 5 GHz Management or 2.4/5 GHz Data/EAPOL: 6 Mbps OFDM (PLCP 13) */
+            tx->rate_n_flags = ant_msk | 13u;
+        }
+
+        tx->sta_id             = IWL_STATION_ID;
+        tx->sec_ctl            = 0; /* Software AES-CCMP already applied */
+        tx->initial_rate_index = 0;
+        tx->life_time          = 0xFFFFFFFFu;
+
+        uintptr_t scratch_pa = slot_phys + sizeof(iwl_cmd_header_t) + 8u;
+        tx->dram_lsb_ptr     = (uint32_t)(scratch_pa & 0xFFFFFFFFu);
+        tx->dram_msb_ptr     = (uint8_t)((scratch_pa >> 32) & 0xFu);
+        tx->rts_retry_limit  = 3;
+        tx->data_retry_limit = (type == 0x00u /* MGMT */) ? 3 : 15;
+        tx->tid_tspec        = (type == 0x02u /* DATA */) ? 0 /* NON_QOS */ : 8 /* MAX_TID */;
+        tx->pm_frame_timeout = (type == 0x00u /* MGMT */) ? ((subtype == 0x00u /* ASSOC_REQ */) ? 3 : 2) : 0;
+
+        /* 3. Copy 802.11 MAC header immediately after iwl_tx_cmd_t (offset 60) + pad */
+        memcpy(slot_virt + sizeof(iwl_cmd_header_t) + sizeof(iwl_tx_cmd_t), frame, hdrlen);
+
+        /* 4. Copy frame payload to offset 128 */
+        if (body_len > 0) {
+            memcpy(slot_virt + 128u, frame + hdrlen, body_len);
+        }
+
+        /* 5. Populate TFD on Queue 5 with TB0 (16B), TB1 (rest of cmd + hdr + pad), and TB2 (payload) */
+        iwl_tfd_t *tfd = &s_txq5_tfd_ring_virt[idx];
+        memset(tfd, 0, sizeof(*tfd));
+        uint16_t tb1_len = (uint16_t)(sizeof(iwl_cmd_header_t) + sizeof(iwl_tx_cmd_t) + hdrlen + pad - 16u);
+        tfd->tbs[0].lo       = (uint32_t)(slot_phys & 0xFFFFFFFFu);
+        tfd->tbs[0].hi_n_len = (uint16_t)(((slot_phys >> 32) & 0xFu) | (16u << 4));
+        tfd->tbs[1].lo       = (uint32_t)((slot_phys + 16u) & 0xFFFFFFFFu);
+        tfd->tbs[1].hi_n_len = (uint16_t)((((slot_phys + 16u) >> 32) & 0xFu) | ((uint32_t)tb1_len << 4));
+        if (body_len > 0) {
+            uintptr_t body_pa    = slot_phys + 128u;
+            tfd->tbs[2].lo       = (uint32_t)(body_pa & 0xFFFFFFFFu);
+            tfd->tbs[2].hi_n_len = (uint16_t)(((body_pa >> 32) & 0xFu) | ((uint32_t)body_len << 4));
+            tfd->num_tbs         = 3;
+        } else {
+            tfd->num_tbs         = 2;
+        }
+
+        /* 6. Update TX Scheduler Byte-Count Table for Queue 5, Station 0 */
+        uint16_t bc_len = (uint16_t)(len + 8u); /* + CRC (4) + Delimiter (4) */
+        if (s_tlv_flags & IWL_UCODE_TLV_FLAGS_DW_BC_TABLE) {
+            bc_len = (uint16_t)((bc_len + 3u) / 4u);
+        }
+        uint16_t bc_val = (uint16_t)(((uint16_t)IWL_STATION_ID << 12) | (bc_len & 0x0FFFu));
+        s_sched_virt[5].tfd_offset[idx] = bc_val;
+        if (idx < IWL_TFD_QUEUE_SIZE_BC_DUP) {
+            s_sched_virt[5].tfd_offset[IWL_TFD_QUEUE_SIZE_MAX + idx] = bc_val;
+        }
+
+        s_txq5_idx = (uint8_t)((idx + 1u) & 0xFFu);
+        __asm__ volatile("mfence" ::: "memory");
+
+        /* 7. Ring Queue 5 Doorbell */
+        if (iwl_nic_lock()) {
+            iwl_write32(HBUS_TARG_WRPTR, (5u << 8) | (uint32_t)s_txq5_idx);
+            iwl_nic_unlock();
+        } else {
+            iwl_write32(HBUS_TARG_WRPTR, (5u << 8) | (uint32_t)s_txq5_idx);
+        }
     }
+#endif
 
-    iwl_tx_desc_t *desc = (iwl_tx_desc_t *)s_tx_ring_mem + s_iwl_dev.tx_head;
-    desc->buf_low = (uint32_t)(uintptr_t)buf;
-    desc->buf_high = (uint32_t)(((uint64_t)(uintptr_t)buf) >> 32);
-    desc->len = (uint16_t)len;
-    desc->flags = 1; /* Valid */
-
-    s_iwl_dev.tx_head = next;
+    /* Also record in software ring for host unit test inspection */
+    uint32_t next = (s_iwl_dev.tx_head + 1) % IWL_TX_RING_SIZE;
+    if (next != s_iwl_dev.tx_tail) {
+        iwl_tx_desc_t *desc = (iwl_tx_desc_t *)s_tx_ring_mem + s_iwl_dev.tx_head;
+        desc->buf_low = (uint32_t)(uintptr_t)buf;
+        desc->buf_high = (uint32_t)(((uint64_t)(uintptr_t)buf) >> 32);
+        desc->len = (uint16_t)len;
+        desc->flags = 1; /* Valid */
+        s_iwl_dev.tx_head = next;
+    }
 
     spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
     return 0;

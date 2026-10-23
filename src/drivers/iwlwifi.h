@@ -237,10 +237,13 @@ typedef struct {
 #define IWL_HCMD_REMOVE_STA             0x19
 #define IWL_HCMD_TX                     0x1C
 #define IWL_HCMD_SCD_QUEUE_CFG          0x1D
+#define IWL_HCMD_TXPATH_FLUSH           0x1E
 #define IWL_HCMD_MAC_CONTEXT            0x28
 #define IWL_HCMD_TIME_EVENT             0x29
+#define IWL_HCMD_TIME_EVENT_NOTIF       0x2A
 #define IWL_HCMD_BINDING_CONTEXT        0x2B
 #define IWL_HCMD_TIME_QUOTA             0x2C
+#define IWL_HCMD_LQ                     0x4E
 #define IWL_HCMD_SCAN_OFFLOAD_REQ       0x51
 #define IWL_HCMD_PHY_CFG                0x6A
 #define IWL_CALIB_RES_NOTIF_PHY_DB      0x6B
@@ -255,6 +258,7 @@ typedef struct {
 #define IWL_HCMD_RX_PHY                 0xC0
 #define IWL_HCMD_RX_MPDU                0xC1
 #define IWL_HCMD_MCC_UPDATE             0xC8
+#define IWL_HCMD_MCAST_FILTER           0xD0
 #define IWL_HCMD_SF_CFG                 0xD1
 #define IWL_HCMD_BEACON_FILTERING       0xD2
 
@@ -642,6 +646,122 @@ typedef struct {
     uint16_t frame_time;
 } __attribute__((packed)) iwl_rx_phy_info_t;
 
+/* TX Command (0x1C - 56 bytes) */
+typedef struct {
+    uint16_t len;
+    uint16_t offload_assist;
+    uint32_t tx_flags;
+    struct {
+        uint8_t  try_cnt;
+        uint8_t  btkill_cnt;
+        uint16_t reserved;
+    } __attribute__((packed)) scratch;
+    uint32_t rate_n_flags;
+    uint8_t  sta_id;
+    uint8_t  sec_ctl;
+    uint8_t  initial_rate_index;
+    uint8_t  reserved2;
+    uint8_t  key[16];
+    uint32_t reserved3;
+    uint32_t life_time;
+    uint32_t dram_lsb_ptr;
+    uint8_t  dram_msb_ptr;
+    uint8_t  rts_retry_limit;
+    uint8_t  data_retry_limit;
+    uint8_t  tid_tspec;
+    uint16_t pm_frame_timeout;
+    uint16_t reserved4;
+} __attribute__((packed)) iwl_tx_cmd_t;
+
+_Static_assert(sizeof(iwl_tx_cmd_t) == 56, "iwl_tx_cmd_t must be 56 bytes");
+
+/* Time Event Command v2 (0x29 - 36 bytes) */
+typedef struct {
+    uint32_t id_and_color;
+    uint32_t action;
+    uint32_t id;
+    uint32_t apply_time;
+    uint32_t max_delay;
+    uint32_t depends_on;
+    uint32_t interval;
+    uint32_t duration;
+    uint8_t  repeat;
+    uint8_t  max_frags;
+    uint16_t policy;
+} __attribute__((packed)) iwl_time_event_cmd_t;
+
+_Static_assert(sizeof(iwl_time_event_cmd_t) == 36, "iwl_time_event_cmd_t must be 36 bytes");
+
+/* Link Quality Command (0x4E - 88 bytes) */
+typedef struct {
+    uint8_t  sta_id;
+    uint8_t  reserved1;
+    uint16_t control;
+    uint8_t  flags;
+    uint8_t  mimo_delim;
+    uint8_t  single_stream_ant_msk;
+    uint8_t  dual_stream_ant_msk;
+    uint8_t  initial_rate_index[4];
+    uint16_t agg_time_limit;
+    uint8_t  agg_disable_start_th;
+    uint8_t  agg_frame_cnt_limit;
+    uint32_t reserved2;
+    uint32_t rs_table[16];
+    uint32_t bf_params;
+} __attribute__((packed)) iwl_lq_cmd_t;
+
+_Static_assert(sizeof(iwl_lq_cmd_t) == 88, "iwl_lq_cmd_t must be 88 bytes");
+
+/* MAC Power Command (0xA9 - 36 bytes) */
+typedef struct {
+    uint32_t id_and_color;
+    uint16_t flags;
+    uint16_t keep_alive_seconds;
+    uint32_t rx_data_timeout;
+    uint32_t tx_data_timeout;
+    uint32_t rx_data_timeout_uapsd;
+    uint32_t tx_data_timeout_uapsd;
+    uint8_t  lprx_rssi_threshold;
+    uint8_t  skip_dtim_periods;
+    uint16_t snooze_interval;
+    uint16_t snooze_window;
+    uint8_t  snooze_step;
+    uint8_t  qndp_tid;
+    uint8_t  uapsd_ac_flags;
+    uint8_t  uapsd_max_sp;
+    uint8_t  heavy_tx_thld_packets;
+    uint8_t  heavy_rx_thld_packets;
+    uint8_t  heavy_tx_thld_percentage;
+    uint8_t  heavy_rx_thld_percentage;
+    uint8_t  limited_ps_threshold;
+    uint8_t  reserved[1];
+} __attribute__((packed)) iwl_mac_power_cmd_t;
+
+/* Multicast Filter Command (0xD0 - 12 bytes) */
+typedef struct {
+    uint8_t filter_own;
+    uint8_t port_id;
+    uint8_t count;
+    uint8_t pass_all;
+    uint8_t bssid[6];
+    uint8_t reserved[2];
+} __attribute__((packed)) iwl_mcast_filter_cmd_t;
+
+_Static_assert(sizeof(iwl_mcast_filter_cmd_t) == 12, "iwl_mcast_filter_cmd_t must be 12 bytes");
+
+/* Remove Station Command (0x19 - 4 bytes) */
+typedef struct {
+    uint8_t sta_id;
+    uint8_t reserved[3];
+} __attribute__((packed)) iwl_rm_sta_cmd_t;
+
+/* TX Path Flush Command (0x1E - 8 bytes) */
+typedef struct {
+    uint32_t sta_id;
+    uint16_t tid_mask;
+    uint16_t reserved;
+} __attribute__((packed)) iwl_tx_path_flush_cmd_t;
+
 /* pbuf->flags metadata encoding for RSSI and Channel from 0xC0 */
 #define IWL_PBUF_META_VALID             (1u << 23)
 #define IWL_PBUF_PACK_META(rssi, chan)  (IWL_PBUF_META_VALID | (((uint32_t)(uint8_t)(rssi)) << 24) | (((uint32_t)((chan) & 0x7Fu)) << 16))
@@ -679,6 +799,9 @@ bool iwlwifi_is_supported_device(uint16_t vendor, uint16_t device);
 bool iwlwifi_init_hw(void);
 bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len);
 int  iwlwifi_start_scan(const char *ssid);
+int  iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beacon_interval);
+int  iwlwifi_set_associated(uint16_t assoc_id, uint16_t beacon_interval);
+int  iwlwifi_deauth(void);
 int  iwlwifi_send_raw(const void *buf, size_t len);
 pbuf_t *iwlwifi_poll_raw(void);
 void iwlwifi_recycle_raw(pbuf_t *p);

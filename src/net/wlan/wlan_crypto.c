@@ -743,11 +743,12 @@ int wlan_ccmp_encrypt_frame(const uint8_t tk[16],
     ccmp_hdr[7] = (uint8_t)((pn >> 40) & 0xFF);
 
     uint8_t aad[32];
-    uint16_t masked_fc = (fc & ~(0x0800 | 0x1000 | 0x2000)) | 0x4000;
+    uint16_t fc_mask = 0x0070u | 0x0800u | 0x1000u | 0x2000u | (is_qos ? 0x8000u : 0u);
+    uint16_t masked_fc = (fc & ~fc_mask) | 0x4000u;
     aad[0] = (uint8_t)(masked_fc & 0xFF);
     aad[1] = (uint8_t)((masked_fc >> 8) & 0xFF);
     memcpy(aad + 2, hdr + 4, 18);
-    uint16_t sc = (hdr[22] | ((uint16_t)hdr[23] << 8)) & 0xFFF0;
+    uint16_t sc = (hdr[22] | ((uint16_t)hdr[23] << 8)) & 0x000Fu;
     aad[20] = (uint8_t)(sc & 0xFF);
     aad[21] = (uint8_t)((sc >> 8) & 0xFF);
     size_t aad_len = 22;
@@ -796,11 +797,12 @@ int wlan_ccmp_decrypt_frame(const uint8_t tk[16],
     if (pn <= *rx_pn) return -2;
 
     uint8_t aad[32];
-    uint16_t masked_fc = (fc & ~(0x0800 | 0x1000 | 0x2000)) | 0x4000;
+    uint16_t fc_mask = 0x0070u | 0x0800u | 0x1000u | 0x2000u | (is_qos ? 0x8000u : 0u);
+    uint16_t masked_fc = (fc & ~fc_mask) | 0x4000u;
     aad[0] = (uint8_t)(masked_fc & 0xFF);
     aad[1] = (uint8_t)((masked_fc >> 8) & 0xFF);
     memcpy(aad + 2, hdr + 4, 18);
-    uint16_t sc = (hdr[22] | ((uint16_t)hdr[23] << 8)) & 0xFFF0;
+    uint16_t sc = (hdr[22] | ((uint16_t)hdr[23] << 8)) & 0x000Fu;
     aad[20] = (uint8_t)(sc & 0xFF);
     aad[21] = (uint8_t)((sc >> 8) & 0xFF);
     size_t aad_len = 22;

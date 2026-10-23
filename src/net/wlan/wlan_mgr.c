@@ -22,7 +22,9 @@ static char                 s_target_ssid[IEEE80211_SSID_MAX_LEN + 1];
 static uint8_t              s_target_pmk[WLAN_PMK_LEN];
 static uint8_t              s_current_channel = 1;
 static int8_t               s_current_rssi = -60;
+static uint16_t             s_target_beacon_int = 100;
 static uint16_t             s_seq_num = 0;
+static uint64_t             s_gtk_rx_pn = 0;
 
 static wlan_state_t         s_wlan_state = WLAN_STATE_IDLE;
 static wlan_bss_table_t     s_bss_table;
@@ -105,16 +107,7 @@ net_dev_t *wlan_get_net_device(void) {
     return dev;
 }
 
-int wlan_mgr_scan(wifi_scan_result_t *out_result) {
-    if (!out_result) return -1;
-    wlan_ensure_hardware();
-
-    /* Trigger hardware multi-channel scan if supported by driver */
-    if (s_hw_ops && s_hw_ops->start_scan) {
-        s_hw_ops->start_scan("");
-    }
-
-    /* Drain pending hardware RX packets into scan table before acquiring lock */
+static void wlan_drain_hw_rx(void) {
     if (s_hw_ops && s_hw_ops->poll_raw_80211) {
         pbuf_t *p;
         while ((p = s_hw_ops->poll_raw_80211()) != NULL) {
@@ -125,6 +118,19 @@ int wlan_mgr_scan(wifi_scan_result_t *out_result) {
             }
         }
     }
+}
+
+int wlan_mgr_scan(wifi_scan_result_t *out_result) {
+    if (!out_result) return -1;
+    wlan_ensure_hardware();
+
+    /* Trigger hardware multi-channel scan if supported by driver */
+    if (s_hw_ops && s_hw_ops->start_scan) {
+        s_hw_ops->start_scan("");
+    }
+
+    /* Drain pending hardware RX packets into scan table before acquiring lock */
+    wlan_drain_hw_rx();
 
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
 
@@ -167,6 +173,8 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     if (pass_len < 8 || pass_len > 64) return -1;
 
     wlan_ensure_hardware();
+    wlan_drain_hw_rx();
+
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
     memset(s_target_ssid, 0, sizeof(s_target_ssid));
     memcpy(s_target_ssid, ssid, ssid_len);
@@ -175,6 +183,12 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     bool found_bssid = false;
     if (bssid && (bssid[0] | bssid[1] | bssid[2] | bssid[3] | bssid[4] | bssid[5])) {
         memcpy(s_target_bssid, bssid, 6);
+        const wlan_bss_entry_t *entry = wlan_bss_table_find(&s_bss_table, ssid);
+        if (entry) {
+            s_current_channel = entry->channel;
+            s_current_rssi = entry->rssi;
+            s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
+        }
         found_bssid = true;
     } else {
         const wlan_bss_entry_t *entry = wlan_bss_table_find(&s_bss_table, ssid);
@@ -182,6 +196,23 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
             memcpy(s_target_bssid, entry->bssid, 6);
             s_current_channel = entry->channel;
             s_current_rssi = entry->rssi;
+            s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
+            found_bssid = true;
+        }
+    }
+
+    /* If not in scan cache yet and hardware supports UMAC scan, perform a directed scan first */
+    if (!found_bssid && s_hw_ops && s_hw_ops->start_scan) {
+        spin_unlock_irqrestore(&s_wlan_lock, irq);
+        s_hw_ops->start_scan(ssid);
+        wlan_drain_hw_rx();
+        irq = spin_lock_irqsave(&s_wlan_lock);
+        const wlan_bss_entry_t *entry = wlan_bss_table_find(&s_bss_table, ssid);
+        if (entry) {
+            memcpy(s_target_bssid, entry->bssid, 6);
+            s_current_channel = entry->channel;
+            s_current_rssi = entry->rssi;
+            s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
             found_bssid = true;
         }
     }
@@ -200,11 +231,23 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     /* Derive PMK: PBKDF2-HMAC-SHA1(passphrase, ssid, 4096, 256 bits) */
     wlan_pbkdf2_sha1(passphrase, (const uint8_t *)ssid, ssid_len, 4096, s_target_pmk, WLAN_PMK_LEN);
 
+    uint8_t target_chan = s_current_channel;
+    uint8_t target_bssid_copy[6];
+    memcpy(target_bssid_copy, s_target_bssid, 6);
+    uint16_t target_bi = s_target_beacon_int;
+
     /* Transition state to AUTHENTICATING */
     s_wlan_state = WLAN_STATE_AUTHENTICATING;
     s_wlan_net_dev.flags &= ~NET_RUNNING;
+    spin_unlock_irqrestore(&s_wlan_lock, irq);
+
+    /* Configure MVM PHY/MAC/Binding/Station context and session protection Time Event */
+    if (s_hw_ops && s_hw_ops->prepare_auth) {
+        s_hw_ops->prepare_auth(target_chan, target_bssid_copy, target_bi);
+    }
 
     /* Build and send Open System Authentication Request (Seq 1) */
+    irq = spin_lock_irqsave(&s_wlan_lock);
     if (s_hw_ops && s_hw_ops->send_raw_80211) {
         uint8_t auth_buf[64];
         size_t auth_len = net_80211_build_auth_req(auth_buf, sizeof(auth_buf), s_local_mac, s_target_bssid);
@@ -212,14 +255,47 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
             s_hw_ops->send_raw_80211(auth_buf, auth_len);
         }
     }
-
     spin_unlock_irqrestore(&s_wlan_lock, irq);
+
+    /* On real hardware, actively pump the RX ring inside the active Time Event window
+     * so Auth Resp -> Assoc Req -> Assoc Resp -> 4-Way EAPOL Handshake complete in real time */
+    if (s_hw_ops && s_hw_ops->prepare_auth && s_hw_ops->poll_raw_80211) {
+        for (uint32_t step = 0; step < 300000u; step++) {
+            wlan_drain_hw_rx();
+
+            irq = spin_lock_irqsave(&s_wlan_lock);
+            wlan_state_t st = s_wlan_state;
+            bool done = (st == WLAN_STATE_CONNECTED && wpa2_sm_is_authorized(&s_wpa2_sm)) ||
+                        (st == WLAN_STATE_IDLE);
+            if (!done && (step == 80000u || step == 160000u)) {
+                /* Retry Auth Req or Assoc Req if response was dropped on air */
+                if (st == WLAN_STATE_AUTHENTICATING && s_hw_ops->send_raw_80211) {
+                    uint8_t auth_buf[64];
+                    size_t auth_len = net_80211_build_auth_req(auth_buf, sizeof(auth_buf), s_local_mac, s_target_bssid);
+                    if (auth_len > 0) s_hw_ops->send_raw_80211(auth_buf, auth_len);
+                } else if (st == WLAN_STATE_ASSOCIATING && s_hw_ops->send_raw_80211) {
+                    uint8_t assoc_buf[256];
+                    size_t assoc_len = net_80211_build_assoc_req(assoc_buf, sizeof(assoc_buf),
+                                                                s_local_mac, s_target_bssid, s_target_ssid);
+                    if (assoc_len > 0) s_hw_ops->send_raw_80211(assoc_buf, assoc_len);
+                }
+            }
+            spin_unlock_irqrestore(&s_wlan_lock, irq);
+
+            if (done) break;
+            for (int p = 0; p < 200; p++) {
+                __asm__ volatile("pause" ::: "memory");
+            }
+        }
+    }
+
     return 0;
 }
 
 int wlan_mgr_disconnect(void) {
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
-    if (s_wlan_state != WLAN_STATE_IDLE) {
+    bool was_active = (s_wlan_state != WLAN_STATE_IDLE);
+    if (was_active) {
         if (s_hw_ops && s_hw_ops->send_raw_80211) {
             uint8_t deauth_buf[64];
             size_t deauth_len = net_80211_build_deauth(deauth_buf, sizeof(deauth_buf),
@@ -230,14 +306,20 @@ int wlan_mgr_disconnect(void) {
         s_wlan_net_dev.flags &= ~NET_RUNNING;
         memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
         memset(s_target_pmk, 0, sizeof(s_target_pmk));
+        s_gtk_rx_pn = 0;
     }
     spin_unlock_irqrestore(&s_wlan_lock, irq);
+
+    if (was_active && s_hw_ops && s_hw_ops->deauth) {
+        s_hw_ops->deauth();
+    }
     return 0;
 }
 
 int wlan_mgr_status(wifi_status_t *out_status) {
     if (!out_status) return -1;
     wlan_ensure_hardware();
+    wlan_drain_hw_rx();
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
 
     memset(out_status, 0, sizeof(*out_status));
@@ -302,10 +384,18 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 memcmp(hdr->addr2, s_target_bssid, 6) == 0 &&
                 len >= 24 + 6) {
                 uint16_t status = frame[26] | ((uint16_t)frame[27] << 8);
+                uint16_t aid    = (uint16_t)((frame[28] | ((uint16_t)frame[29] << 8)) & 0x3FFFu);
                 if (status == 0) {
                     /* Assoc Success -> Transition to 4-WAY HANDSHAKE */
                     s_wlan_state = WLAN_STATE_4WAY_HANDSHAKE;
+                    s_gtk_rx_pn  = 0;
                     wpa2_sm_init(&s_wpa2_sm, s_local_mac, s_target_bssid, s_target_pmk);
+                    uint16_t bi = s_target_beacon_int;
+                    spin_unlock_irqrestore(&s_wlan_lock, irq);
+                    if (s_hw_ops && s_hw_ops->set_associated) {
+                        s_hw_ops->set_associated(aid, bi);
+                    }
+                    return 0;
                 }
             }
         } else if (subtype == IEEE80211_SUBTYPE_DEAUTH || subtype == IEEE80211_SUBTYPE_DISASSOC) {
@@ -370,15 +460,20 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
 
         /* 4. Encrypted Data Frame (AES-128-CCMP) */
         if ((hdr->frame_control & IEEE80211_FCTL_PROTECTED) &&
-            wpa2_sm_is_authorized(&s_wpa2_sm)) {
+            wpa2_sm_is_authorized(&s_wpa2_sm) &&
+            memcmp(hdr->addr2, s_target_bssid, 6) == 0) {
             
             uint8_t unenc_frame[1600];
             size_t unenc_len = sizeof(unenc_frame);
 
+            bool is_group = (hdr->addr1[0] & 0x01u) != 0;
+            const uint8_t *dec_key = is_group ? s_wpa2_sm.gtk : s_wpa2_sm.tk;
+            uint64_t *pn_tracker   = is_group ? &s_gtk_rx_pn : &s_wpa2_sm.rx_pn;
+
             /* Decrypt CCMP */
-            int dec_rc = wlan_ccmp_decrypt_frame(s_wpa2_sm.tk, frame, len,
+            int dec_rc = wlan_ccmp_decrypt_frame(dec_key, frame, len,
                                                  unenc_frame, &unenc_len,
-                                                 &s_wpa2_sm.rx_pn);
+                                                 pn_tracker);
             if (dec_rc == 0 && unenc_len > 0) {
                 if (s_rx_count < WLAN_RX_RING_SIZE) {
                     wlan_rx_slot_t *slot = &s_rx_slots[s_rx_head];
