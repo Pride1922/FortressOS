@@ -88,3 +88,31 @@ test-pkg-kernel-fs:
 .PHONY: test-pkg-account-cancel-all-files
 test-pkg-account-cancel-all-files:
 	python3 scripts/test_pkg_cancel_recovery.py --account-all-files --block 4096
+
+.PHONY: test-pkg-account-mid-cancel
+test-pkg-account-mid-cancel:
+	python3 scripts/test_pkg_cancel_recovery.py --account-mid
+
+.PHONY: test-pkg-enrollment
+test-pkg-enrollment:
+	python3 scripts/test_pkg_enrollment.py
+
+.PHONY: test-pkg-account-durable
+test-pkg-account-durable:
+	python3 scripts/test_pkg_account_durable.py
+
+.PHONY: test-pkg-account-service-durable
+test-pkg-account-service-durable:
+	python3 scripts/test_pkg_account_service_durable.py
+
+.PHONY: test-pkg-mount-admission
+test-pkg-mount-admission:
+	python3 scripts/test_pkg_mount_admission.py
+
+.PHONY: test-pkg-mount-low-space
+test-pkg-mount-low-space:
+	python3 scripts/test_pkg_mount_admission.py --low-space
+
+.PHONY: test-pkg-mount-physical-low-space
+test-pkg-mount-physical-low-space:
+	python3 scripts/test_pkg_mount_admission.py --physical-low-space

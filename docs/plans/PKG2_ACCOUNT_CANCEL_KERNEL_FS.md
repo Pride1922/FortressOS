@@ -1,5 +1,9 @@
 # Private account cancellation and combined kernel grant/filesystem validation
 
+Continuation: [mid-callback account-orphan recovery](PKG2_ACCOUNT_ORPHAN_RECOVERY.md)
+adds a private trusted-origin admission workbench. The results and exclusions
+below describe the earlier completed-callback campaign.
+
 2026-10-22. Extends [cancellation recovery](PKG2_CANCEL_RECOVERY.md). All hooks
 remain in copied sources or private tests. Production integration, installation
 and production trust provisioning remain disabled.
@@ -102,3 +106,8 @@ recorded independently. Exact results and retained failures belong in the roadma
 Standalone targets in `tests/pkg_grant_candidate.mk`: `test-pkg-account-cancel`,
 `test-pkg-account-cancel-tsan`, `test-pkg-account-cancel-all-files`,
 `test-pkg-kernel-fs` (BIOS/UEFI x SMP=1/4).
+
+The subsequent host-only [durable account-service/redo layer](PKG2_ACCOUNT_SERVICE_DURABLE.md)
+binds the actual account service to paired generation/provenance records. Its
+acceptance is separate from this kernel campaign; production integration and
+installation remain disabled.

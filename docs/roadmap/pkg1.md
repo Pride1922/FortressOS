@@ -2341,3 +2341,652 @@ charged-orphan and low-space recovery, actual per-caller lease/lifecycle binding
 and broader end-to-end acceptance. Concurrent work remains preserved. No release
 media target, installation, production trust provisioning, commit, push or
 physical disk write was performed in this continuation.
+
+### Private mid-callback account-orphan recovery (2026-10-23)
+
+Continuation of `2e911f9`; this continuation remains uncommitted. Contract and
+scope: [account-orphan recovery](../plans/PKG2_ACCOUNT_ORPHAN_RECOVERY.md).
+Production integration, installation and production trust provisioning remain
+disabled. No release-media target, push or physical/raw disk write was used.
+
+The private constructor now admits a bounded account orphan only against a
+trusted fixture origin captured while the actual fixed-role name was still
+linked. UUID, parent/role, inode/generation, root owner/group, exact mode, size,
+zero links, role vacancy, original logical/physical extent prefix and remaining
+physical allocation/i_blocks must agree. Package identities and the actual
+charged inode are excluded. The complete constructor allocation/reference audit
+still precedes this policy and replay. No mounted/trust flags, allocation
+counters or account identities are fabricated. Unknown origins remain rejected.
+
+Capacity is `R=C-A_linked-A_orphan`, counting actual remaining orphan data/tree
+blocks and its still-allocated inode. It changes only with actual allocation
+counter deltas. Each stranded callback independently compares this certificate
+with its retained per-call tracker. Fresh constructor cleanup must increase R
+by exactly the blocks/inode actually reclaimed. An orphan with zero data still
+occupies one inode. Grant records remain RESERVED T=(8,1), G=(5,0), Q=(3,1).
+
+Every new account file is a coherent, distinct, exactly 8192-byte root-only
+database with parser-valid comment padding. This tests maximum file bytes and
+multi-block account reclaim, not broader account layouts. Actual semantic
+commits are counted, rather than assumed from callback or byte counts.
+
+ASan/UBSan invocations (WSL Ubuntu-24.04):
+
+```
+python3 scripts/test_pkg_cancel_recovery.py --account-mid --block 4096 --local-images --jobs 8
+python3 scripts/test_pkg_cancel_recovery.py --account-mid --block 1024 --local-images --jobs 8
+python3 scripts/test_pkg_cancel_recovery.py --account-mid --block 2048 --local-images --jobs 8
+```
+
+| Block / sector bytes | UPDATE cuts | Additional redo cancellations | UPDATE orphan states | Zero-write/flush rejections | Linux audits | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 1024 / 512 | 39 | 36 | 14 | 133 | 155 | PASS |
+| 1024 / 4096 | 39 | 36 | 14 | 133 | 155 | PASS |
+| 2048 / 512 | 39 | 36 | 14 | 133 | 155 | PASS |
+| 2048 / 4096 | 39 | 36 | 14 | 133 | 155 | PASS |
+| 4096 / 512 | 39 | 36 | 14 | 133 | 155 | PASS |
+| 4096 / 4096 | 39 | 36 | 14 | 133 | 155 | PASS |
+
+The six geometries cover **234 UPDATE cuts**, **216 additional actual redo
+cancellations**, **924 fresh recovery processes**, **798 zero-write/flush
+rejections**, **930 Linux audits**, **468 independently audited final images**
+and **2196 C probe invocations**. Twelve further redo attempts correctly observe
+zero remaining semantic commits after constructor cleanup; they are recorded
+as no-ops and excluded from cancellation totals. No work is invented to make
+such a test appear interrupted. Two fresh recoveries follow each initial cut
+and each repeated-cancellation case. The final UPDATE cut has no repeat branch;
+its unused cloned retry image is excluded from audited-image totals.
+
+Marker/identity/generation, missing origin, invalid role, wrong parent/UUID and
+allocation-proof negatives reject before writes/flushes. Directed disposable
+copies change actual orphan UID, GID and mode through Linux debugfs and must
+also reject before writes/flushes. The ordinary package-identity mismatch does
+not alone prove the charged-inode guard. A separate fixture starts from actual
+UPDATE cut 26, with canonical shadow vacant, and constructs an allocated
+charged orphan with matching expected inode/generation, valid allocation and
+resealed grant/table hashes. Complete ownership preview succeeds; the explicit
+charged-identity branch rejects with zero writes/flushes and unchanged image.
+A debugger trace confirms that branch; the debugger run is diagnostic, not an
+additional sanitizer or recovery acceptance run.
+
+Focused 4 KiB / 512-byte-sector recovery uses the same compiled candidate and
+the exact checked-in transport/Linux oracle functions, retained in
+`.codex-remote-attachments/pkg-account-orphan-summary-20261023/focused-recovery.py`.
+It cancels every measured recovery commit from three genuine UPDATE checkpoints:
+
+| Initial UPDATE cut / retained role | Recovery cuts | Orphan states | Fresh recoveries | Linux audits | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 8 / intent.tmp | 12 | 8 | 24 | 25 | PASS |
+| 17 / group.publish | 34 | 17 | 68 | 69 | PASS |
+| 23 / shadow.publish | 35 | 18 | 70 | 71 | PASS |
+
+This adds **81 cancellations**, **162 fresh recoveries**, **167 zero-write/flush
+rejections**, **165 Linux audits**, **84 independent final images** and **416 C
+probe invocations**. Reused allocation holes fragment the inline publish-file
+extents: group/shadow recovery requires 34/35 commits, not the initially assumed
+33/33. Actual partial right-edge states retain one of two originally allocated
+data blocks; both capacity conservation and later recovery pass. Across the
+matrix and focused campaign, all **11 fixed roles** have directly observed
+account-orphan admission/recovery coverage. Roles 7/8/9 have focused 4 KiB/512
+coverage; this is not all-role coverage at every geometry or an external extent
+tree acceptance claim.
+
+Feature totals, excluding preliminary/debug runs and the older callback-only
+regression: **531 injected cancellations**, **1086 fresh recoveries**, **966
+zero-write/flush rejections** (including the separate charged-orphan negative),
+**1095 Linux audits** and **552 independently audited final images**. The
+directed charged fixture has one setup probe and one accepted negative probe;
+with those, the feature uses **2614 completed C probe invocations**.
+
+Independent Linux e2fsck/debugfs checks complete old/new account bytes and
+root ownership/modes/links; absent intent/staging/publish roles; unchanged package
+and unrelated 70-block file bytes; ledger/table self-hashes and linkage; exact
+T/G/Q, transaction/sequence, and actual charged inode/generation/size/allocation.
+Every audit preserves its whole-image hash. EINTR permits no device writes after
+cancellation, owner unwind drains all PC/PM bindings/pins and account
+authentication remains disabled until actual redo recovery succeeds.
+
+The prior all-three-database completed-callback regression also passes separately:
+`python3 scripts/test_pkg_cancel_recovery.py --account-all-files --block 4096`,
+9 cuts, 18 fresh recoveries, 19 Linux audits and 38 C probes. It is excluded from
+the feature totals above. No new TSan, kernel signal/scheduler, Ring 3 or boot
+acceptance is claimed. The previous combined kernel BIOS/UEFI campaign remains
+separate historical evidence.
+
+**Preservation is separate from runtime acceptance.** Final compiled copies and
+current compiled repository inputs match. Source fixtures retain their accepted
+hashes; parallel cases use distinct images/processes and immutable seeds.
+`--local-images` uses disposable Linux regular files and copies back completed or
+partial image/sidecar artifacts even on failure. It does not test concurrent
+writers on one mount. Shared `bin/` media hashes/key set match the retained
+pre-task baseline. Concurrent AGENTS.md, README.md and the existing dirty SSL
+hash file are preserved. No whole-working-tree immutability claim is made.
+
+Accepted primary campaigns:
+
+- `pkg-mutation-context-20261023-073659-492097` (4 KiB, both sector sizes).
+- `pkg-mutation-context-20261023-073709-760472` (1 KiB, both sector sizes).
+- `pkg-mutation-context-20261023-073720-034473` (2 KiB, both sector sizes).
+- `pkg-account-orphan-summary-20261023/focused-recovery-v2` (focused redo).
+- `pkg-account-orphan-summary-20261023/charged-negative-v4` (directed refusal).
+- `pkg-mutation-context-20261023-072106-648795` (separate callback regression).
+
+Aggregate exact hashes, counters, source guards and retained diagnostic artifacts
+are in `.codex-remote-attachments/pkg-account-orphan-summary-20261023/manifest.json`
+and `validate.py`.
+
+Retained preliminary results, excluded from acceptance totals:
+
+- `pkg-mutation-context-20261023-071009-302965`: strict compilation found use of
+  strchr without a project declaration; replaced with an explicit character scan.
+- `071122-994477`, `071434-058810`, `071456-283529`, `071506-186944` (same prefix):
+  interrupted while strengthening the map witness, maximum-byte input and
+  zero-work recovery handling; the captured source-preservation failures remain.
+- `071919-047269`, `071929-262240`, `071939-516627`, `072328-173728`,
+  `072338-337586`, `072348-670723` (same prefix): interrupted when switching
+  regular-file transport and independent-case parallelism. Partial results are
+  retained and are not final matrix acceptance.
+- `pkg-account-orphan-debug-20261023`: targeted debugging and an O1/O2 timing
+  comparison, excluded from acceptance. Ownership auditing dominated CPU time;
+  changing optimization did not materially improve it. Final campaigns retain
+  all audits and the original sanitizer compilation profile.
+- `charged-negative`: a synthetic orphan incorrectly retained clean lifecycle
+  markers; the constructor correctly refused before package preflight. The final
+  fixture uses a real interrupted checkpoint and dirty/RECOVER state.
+- `charged-negative-v2`: narrower successful directed refusal before the vacant
+  role refinement; excluded in favor of v4.
+- `charged-negative-v3`: the helper checked only debugfs stdout for a missing
+  pathname, but the diagnostic was on stderr. Original logs remain; v4 checks
+  combined output.
+- `focused-recovery`: 12 pre-intent recovery cuts passed, then the baseline's
+  actual 34 commits rejected a guessed 33-commit expectation. The final helper
+  enumerates measured commits and retains the original failed assertion.
+
+The origin sidecar is trusted native host fixture state, **not authenticated
+durable production provenance**. Adopting such a witness from untrusted input
+would be unsafe. Unknown, multiple, linked or package-charged orphans remain outside
+admission. Cancellation inside constructor cleanup, sector/flush interruption,
+uncertain I/O, external extent trees, full account layouts and physical durability
+remain separate work; these fixtures do not exercise near-full recovery progress.
+Production integration, installation, trust provisioning,
+release builds, pushes and physical writes remain disabled.
+
+### Enrollment and durable provenance design checkpoint (2026-10-23)
+
+[Contract and implementation gates](../plans/PKG2_ENROLLMENT_PROVENANCE.md).
+Reviewed the current sidecar candidate against actual fixed-role remove and
+traditional orphan-chain paths. The sidecar is written after cancellation unwind
+and does not establish abrupt-loss provenance. Signed immutable enrollment and
+kernel-controlled mutable provenance are distinct authority boundaries; checksums
+are not authentication against offline rewriting.
+
+The proposed first profile uses one preallocated protected provenance slot:
+activation must share the unlink/orphan-insertion commit; retirement must share
+the inode-free/orphan-detachment commit. Partial reclamation retains the original
+witness. A durable account-operation generation and its atomic advancement are
+newly explicit prerequisites; process IDs and package transaction IDs cannot
+stand in for them. Canonical codecs, signature verification, durable planner
+hooks and actual JBD2 interruption tests remain implementation gates. This is
+a design checkpoint, not completion of remaining work area 1.
+
+No runtime code, fixture authority or previous acceptance evidence changed.
+No new host recovery, kernel, Ring 3, boot, media or physical acceptance is claimed.
+Production integration, installation, production trust provisioning, release-media
+builds, pushes and physical disk writes remain disabled. Changes are uncommitted.
+
+### Private enrollment signature and provenance codec gate (2026-10-23)
+
+Implemented the first gate of the enrollment/provenance design in private
+`tests/pkg_enrollment_candidate.{h,c}`, with the checked-in C harness and
+`scripts/test_pkg_enrollment.py`. Exact candidate wire layout, API ownership,
+authority boundary and limitations: [codec contract](../plans/PKG2_ENROLLMENT_CODEC.md).
+No production source, boot parser, installation or trust provisioning changed.
+
+Accepted invocation (WSL Ubuntu-24.04):
+`make -f tests/pkg_grant_candidate.mk test-pkg-enrollment`.
+Evidence: `.codex-remote-attachments/pkg-enrollment-20261023-071457-970929/`.
+Manifest SHA-256:
+`db18345dada8a958891572196b93f103b100fb5d88a6a8ccdea222395b3e31d2`.
+Probe SHA-256:
+`906d7778f0eec097a98cdbda33a82719ac076a6504bca4ac216f9599a6d00bf0`.
+Independent vectors SHA-256:
+`b6e17d341f1d935bdc93958f9aca735766443c4f9531ca01bf4ec9783adb87bf`.
+
+ASan/UBSan and strict warnings: PASS, 64 enrollment cases, 83 origin cases,
+3680 truncation rejections and 3680 single-byte mutation rejections. Python
+struct/hashlib and cryptography/OpenSSL independently produce and sign fixtures;
+actual unchanged Fortress SHA-256/Ed25519 verifies them. Signed malformed
+structures are re-signed and re-pinned; malformed origin records are resealed.
+Separate bad-signature/unknown-signer/threshold/pin cases isolate authentication.
+The maximum eight-signature/eight-key acceptance, +1 key-count and +1 maximum
+wire-length rejections are explicit. All eleven origin roles have positive
+1/2/4 KiB profiles. Zero-size allocated files, fragmented data and one metadata
+block budget are represented; this is not an actual extent-tree validation test.
+Failures preserve writable output; origin canonical re-encoding is byte-exact.
+
+Freestanding GCC -O2 compilation with <=1024-byte candidate frame gate: PASS.
+Measured static frames: descriptor 136, signature gate 176, origin decode 208,
+origin encode 128, extent helper 8 bytes. This excludes upstream crypto frames
+and does not establish a full Ring 3 or kernel call-chain bound.
+
+Input/concurrent-work and existing canonical shared-media hash guards: PASS.
+Copied-source preservation: PASS. These are separate preservation results, not
+boot or media acceptance. No QEMU, release-media build or physical device access.
+
+Retained preliminary evidence, excluded from final acceptance counts:
+
+- `pkg-enrollment-20261023-070950-517025`: FAIL at isolated compilation because
+  the runner lacked the upstream Monocypher include path. Fixed in the runner.
+  Python domain padding was also corrected by review before the next run;
+  this first run never reached runtime vectors.
+- `pkg-enrollment-20261023-071106-342757`: FAIL at origin case 36: the negative
+  fixture wrote the existing UUID byte back unchanged. Corrected the value and
+  added an explicit no-op mutation guard; no candidate relaxation was required.
+- `pkg-enrollment-20261023-071314-858804`: PASS (60 enrollment/83 origin cases,
+  same truncation/mutation totals), superseded by the final maximum-signer and
+  maximum-length expansion and copied-source artifact guards.
+
+This completes only the private read-only codec/signature gate. The externally
+supplied policy and immutable verified-view lifetime remain caller contracts.
+The codec does not compare actual filesystem identities/bitmaps, enforce the
+namespace fence, validate live pending/trust phase coherence or authenticate
+arbitrary mutable/offline rewrites. Independent durable sequence/account-generation
+storage is not implemented. Atomic slot activation with unlink, retirement with
+inode free, JBD2 cuts and recovery without an origin sidecar remain next.
+The prior sidecar recovery evidence is unchanged and no new filesystem recovery,
+Ring 3, kernel, boot, hardware or production acceptance is claimed. Production
+integration, installation, production trust provisioning, release-media builds,
+pushes and physical disk writes remain disabled. Changes remain uncommitted.
+
+
+### Private durable account-generation and atomic JBD2 origin pair (2026-10-23)
+
+**Runtime PASS; shared-media preservation FAIL, retained separately. This is not
+a clean all-gates PASS or new boot acceptance.**
+
+[Storage contract and limitations](../plans/PKG2_ACCOUNT_DURABLE.md).
+Implemented `tests/pkg_account_durable.inc` and
+`scripts/test_pkg_account_durable.py`, with the standalone private make target
+`test-pkg-account-durable`. Production sources remain unedited by this task;
+exact copied-source hooks join the actual EXT4 unlink/orphan cleanup planners
+and pre-replay constructor preview. No fabricated mount/trust/ownership flags.
+
+A preallocated generation record supplies the expected account-operation
+generation and slot sequence to the origin decoder. BEGIN advances generation
+and rebinds EMPTY atomically. Unlink activates the original inode/map witness
+with the directory removal, zero-link inode and orphan insertion. Partial
+reclamation preserves ACTIVE. Final inode free/orphan detachment clears the
+slot with the generation record's sequence/digest update. END publishes IDLE
+only after EMPTY and no orphan. Both records are JBD2 metadata images in the
+same semantic commit, with bounded pre-I/O credit checks and no split fallback.
+
+The fixture exports actual filesystem UUID/geometry and sixteen real inode,
+generation and map locators, then signs enrollment externally with deterministic
+public test keys through Python cryptography/OpenSSL. Each fresh process uses
+the private enrollment verifier and an independent descriptor pin. No `.origin`
+sidecar is generated, loaded or used as orphan authority. Mutable checksums
+remain corruption detection under exclusive test-dispatch ownership, not
+authentication of arbitrary offline changes or complete-root rollback.
+
+Exact accepted runtime invocations in WSL Ubuntu-24.04 (independent campaigns):
+
+```
+python3 scripts/test_pkg_account_durable.py --block 1024 --jobs 8
+python3 scripts/test_pkg_account_durable.py --block 2048 --jobs 8
+python3 scripts/test_pkg_account_durable.py --block 4096 --jobs 8
+```
+
+Each process owns a distinct RAM fault disk. Eight persistence/before-after
+profiles per geometry cover cached, all, alternating and inverse sector
+persistence. Their actual event counts match for BEGIN, pinned unlink,
+last-close cleanup, constructor recovery and END. Sector callbacks are atomic;
+no actual hardware or torn-sector claim follows.
+
+| Block bytes | Sector bytes | Injected cuts | In-process restart passes | Committed preview newer than home |
+| --- | --- | --- | --- | --- |
+| 1024 | 512 | 2056 | 4112 | 392 |
+| 1024 | 4096 | 1192 | 2384 | 216 |
+| 2048 | 512 | 3784 | 7568 | 744 |
+| 2048 | 4096 | 1192 | 2384 | 216 |
+| 4096 | 512 | 7240 | 14480 | 1448 |
+| 4096 | 4096 | 1192 | 2384 | 216 |
+
+Total **16,656 cuts**, **33,312 in-process restart passes**, and **3,232** preview
+observations newer than the home generation block. Every cut has two actual
+constructor/recovery passes; the second preserves pair sequence/generation.
+These are host object teardowns/reopens, not 33,312 fresh OS processes.
+Separately **24 fresh-process recoveries** start from ACTIVE and partially
+reclaimed snapshots and recover each twice without an origin sidecar.
+
+**432 zero-I/O rejections**: 90 constructor negatives plus 342 direct primitive
+guards. Resealed negatives isolate generation/sequence binding, unknown roles,
+inode/parent/map mismatches, missing origin, ACTIVE/IDLE incoherence, EMPTY with
+an orphan, reserved data, overflow/near-overflow and actual marker digest.
+Constructor rejection requires `account-provenance-preview`, no published mount,
+released constructor ownership, zero writes/flushes and unchanged image bytes.
+Direct tests refuse ordinary overwrites/unlinks of the two records, competing
+BEGIN and END while ACTIVE. Six live counter-boundary cases complete the last
+admitted operation, then refuse the next BEGIN with EFBIG and no I/O. Counter
+exhaustion is terminal admission failure; no counter reset/repair is implemented.
+
+ASan/UBSan and strict -Wall/-Wextra/-Werror: PASS for all runtime cases.
+Independent Linux checking: **54 audits** (42 campaign audits plus 12 supplementary
+identity/profile audits). e2fsck is read-only; debugfs reads verify exact Python
+wire bytes for the pair, inode/generation/root ownership/mode/block count,
+absent synthetic shadow and unchanged unrelated payload. All 48 retained profile
+final images are either independently audited or byte-identical to an audited
+image. Linux does not audit every cut. Image hashes are unchanged by each audit.
+No new TSan, freestanding/kernel frame or full call-chain acceptance is claimed
+for these host-only storage hooks.
+
+Aggregate reconciliation and supplementary Linux oracle:
+`.codex-remote-attachments/pkg-account-durable-summary-20261023/`.
+Aggregate manifest SHA-256:
+`abaac9a41f40b0a19e02b3475db08fa662d50e2f2329300121abca4cc3ade70d`.
+It reports `runtime_status=PASS` and `media_guard_status=FAIL_RETAINED`, records
+each raw manifest/hash without modification, and verifies all copied compiled
+dependencies plus **47 shared compiled source inputs** against the current tree.
+
+Raw campaign evidence under `.codex-remote-attachments/`:
+
+- `pkg-account-durable-20261023-082546-041238`: raw **FAIL**; manifest SHA-256
+  `8eac8f3f08e796c5aee5d7930fc66d1b0508fada4b8021c4c7741a3ac3bed25d`; probe SHA-256
+  `0f91e61053eb897728f39564a07b98ecb1d5afbd7a2960b68f1a109c0c5f22e3`.
+- `pkg-account-durable-20261023-082546-053606`: raw **FAIL**; manifest SHA-256
+  `870421c6ac924da99d3dafcca650fde4a15a47899530539b9204af35174791c3`; probe SHA-256
+  `335b93f9394f18b34fc722cbbeb5499f9a61559f71e6d485e1bdd1078b9e8b51`.
+- `pkg-account-durable-20261023-082528-088173`: raw **FAIL**; manifest SHA-256
+  `24985645d5a5b177b2beccdc308cab169865d92f8d5b99bfbb34562b76665353`; probe SHA-256
+  `d65559aa858e06610345f2847c5fae965b9cdcd458c9d6bca6b90ced23304739`.
+
+The three raw statuses remain **FAIL** because their canonical output guards
+changed: `bin/fortress.elf`, `bin/initramfs.tar`, `bin/fortress.iso` and
+`bin/fortress.img`. Concurrent changes also appeared in `src/drivers/iwlwifi.h`,
+`src/net/wlan/net_80211.c`, `src/net/wlan/wlan_mgr.c` and
+`src/net/wlan/wlan_mgr.h`; none is a compiled dependency of this gate. No copied
+input or compiled repository dependency changed. AGENTS.md, README.md and the
+preexisting dirty SSL digest asset retain their guarded hashes. This separates
+qualified source preservation, failed shared-media preservation and runtime
+evidence. No canonical-media preservation/exclusion acceptance is claimed.
+This task's build/fixture/audit commands target only private copied-source
+workspaces and disposable regular files; it executed no release build, push,
+installation, production trust provisioning or physical disk write. Concurrent
+source/output changes were left intact rather than restored or incorporated.
+
+Retained preliminary evidence, excluded from the totals above:
+
+- `pkg-account-durable-20261023-080918-844872`: FAIL, isolated harness compilation
+  lacked TEST_PERMISSIONS_ENFORCEMENT required by existing stage-write code.
+  Fixed the private generated harness configuration; no production source edit.
+- `pkg-account-durable-20261023-081119-184443`: stopped while switching the full
+  sequential cut sweep to independent profile processes. Raw FAIL also retains
+  the unrelated concurrent iwlwifi header preservation failure. Partial images
+  remain; no completion claim.
+- `pkg-account-durable-20261023-082124-005456`: INCOMPLETE, stopped before final
+  acceptance to add the mounted counter-exhaustion boundary test. Partial logs
+  and ACTIVE/partial images remain. Final campaigns use the same frozen final
+  candidate and include that directed boundary case.
+
+The scope is one synthetic canonical shadow removal, pre-intent phase, <=8192
+bytes. Its S-filled payload is not a valid account database. This durable
+operation generation does not replace credential snapshot/authentication
+generation. Actual account-service BEGIN/UPDATE/FINISH and redo-phase coupling,
+all-role recovery, pending/state/trust admission, complete ordinary namespace
+fencing, allocation/pool/credit exhaustion injection, low-space progress,
+charged-orphan refunds, uncertain/torn I/O, kernel lifecycle/signal/scheduler
+coupling and physical durability remain open. The earlier sidecar campaign is
+unchanged. No new Ring 3, QEMU, boot, release-media or physical acceptance.
+Production integration and installation remain disabled. Changes are uncommitted.
+
+
+### Private durable account-service and redo integration (2026-10-23)
+
+Implemented the [private service layer](../plans/PKG2_ACCOUNT_SERVICE_DURABLE.md)
+using copied-source overlays only. Actual account BEGIN/UPDATE/FINISH, detached
+namespace admission and redo now join the generation/origin pair. Version 2 keeps
+credential generation separate from operation generation, persists the complete
+planned intent and old database hashes before staging, and couples pending
+publication/removal to the appropriate JBD2 phase update. Actual orphan cleanup
+covers all eleven fixed roles. Admission stays disabled after cancellation or
+process abandonment until fresh validation/recovery closes the durable operation.
+Production integration and installation remain disabled; changes are uncommitted.
+
+Runtime results under ASan/UBSan and strict compiler warnings:
+
+| Campaign | Exact coverage | Result |
+| --- | --- | --- |
+| Service matrix | 1/2/4 KiB x sectors 512/4096; 42 UPDATE commits each; 252 UPDATE cuts and 252 first-recovery-commit cuts | PASS |
+| Directed redo | 4 KiB x sectors 512/4096; UPDATE seeds 9/18/24 retain intent.tmp/group.publish/shadow.publish; 15/37/38 recovery commits per sector size, 180 cuts total | PASS |
+| Pending-publication I/O | 4 KiB x sectors 512/4096; 141/22 callbacks respectively; cached/all/alternating/inverse persistence x before/after = 8 profiles; 1304 callback cuts | PASS |
+| Preview rejection | 10 variants x 2 sector sizes; resealed credential/target/phase/baseline-length mismatch, pending/issued-generation mismatch, staging/canonical hash changes and missing staging | 20/20, zero writes/flushes, input unchanged, constructor owner released |
+| Linux audits | 510 primary + 360 directed redo + 2608 pending-publication images | 3478 PASS |
+
+All eleven ACTIVE origin roles 0..10 were observed. Primary recovery used 1014
+fresh processes (762 successes, 252 intentionally interrupted); directed redo
+used 546 (366 successes, 180 intentionally interrupted); power-cut recovery used
+2608 successful fresh processes. Thus 4168 recovery calls include 432 deliberate
+recovery cancellations. There were 1742 zero-commit second/idempotent recoveries.
+No native origin sidecar supplied provenance. Actual service checks reject
+unprivileged BEGIN, competing writer admission, stale authentication generations
+and ordinary account-file opens while a writer owns the operation. After cuts,
+process-exit retirement performs no I/O and does not re-enable authentication.
+Constructor orphan cleanup precedes arming the service redo counter and is not
+included in its measured semantic-commit count.
+
+Independent Python/debugfs checks validate all 510 retained primary IDLE pairs:
+matching state/origin seals, pair hash, sequence and operation generation 2;
+credential generation 2; cleared target/intent/origin payload; and exact canonical
+bytes, baseline lengths and hashes. They comprise 108 complete old triples and
+402 complete new triples. The runner's additional independent pair assertions
+were added after the OS run; retained audit.py rechecked all 510 existing dumps
+without executing the OS again. Supplemental power/redo cuts use Linux fsck and
+the probe's exact old/new-family checks, not the complete independent dump audit.
+
+Accepted runtime artifacts (each raw manifest is PASS):
+
+- `.codex-remote-attachments/pkg-account-service-durable-20261023-104155-938986/`: manifest SHA-256 `901b46b50433f650f95fd64d8b021807eabb2259065b632444cb3281d5541908`; probe `cad634f5121f84ce6afb2f267d38ecb78ac04fca1e8ab67be611faf71b0b8601`.
+- `.codex-remote-attachments/pkg-account-service-power-20261023-124218-946584/`: manifest SHA-256 `5871db7d2c20b8f4c08fb3c3df50146f4bbe35cbfd1a07f25c250c6a3d9380e6`; probe `0a7cc6ffcdc7ba820394c197639b2f6ee8e31b662ef89b1b93fad3ff60e380f1`.
+- `.codex-remote-attachments/pkg-account-service-redo-20261023-125034-865464/`: manifest SHA-256 `eb216ffbb78d487afc22fbfe48bea552d00ef1798dabd67fd0f270625a8a819d`.
+
+Aggregate proof: `.codex-remote-attachments/pkg-account-service-summary-20261023/`
+contains audit.py/audit.json, finalize.py and manifest.json. Runtime is PASS;
+**aggregate status is FAIL_PRESERVATION_RUNTIME_PASS**, retained unchanged as a
+preservation failure. The primary matrix's own preservation gate passed for all
+94 compiled dependencies, all copied inputs and its contemporaneous shared-media
+snapshot. AGENTS.md, README.md and the already-dirty SSL asset remain identical
+at final capture. Later shared bin/fortress.elf, bin/fortress.img,
+bin/fortress.iso and bin/initramfs.tar hashes differ from that snapshot. Before
+and after hashes are retained in the aggregate. This task invoked no shared or
+release-media build and did not restore those concurrently changed artifacts.
+Uncompiled concurrent wireless changes and this task's authorized runner auditor
+cleanup are listed separately in the primary manifest; they did not alter the
+compiled probe inputs. Boot acceptance is NOT_RUN, independent of preservation.
+
+Retained unsuccessful attempts:
+
+- `pkg-account-service-durable-20261023-103203-005291`: ambiguous overlay counter
+  replacement. No executable; reconstructed tool-exception note is labelled as
+  such, not presented as an original runtime log.
+- `...-103241-014645`: incorrect replacement anchor; same no-executable scope.
+- `...-103316-293533`: strict compile failure from early POSIX macro ordering and
+  copied hook indentation; corrected and rerun.
+- `...-103641-866895`: 1024/512 UPDATE cut 13 plus recovery cut 1 exposed a valid
+  absent-canonical/absent-TEMP state. Preview incorrectly demanded a linked TEMP;
+  it now accepts absence only with the complete bound coherent stage triple.
+- `...-103932-461038`: UPDATE cut 42 plus recovery cut 1 exposed success/auth
+  enablement after the final IDLE cancellation. The adapter now returns EINTR;
+  the original missing-interrupted-output failure, logs and images remain.
+
+Limits and next work: this remains a private root-only account fixture. Other
+PKG grant/trust/state resources and profile-policy hashes are synthetic. No
+migration from generation-record v1, complete production pending/state/trust
+admission, low-space/credit/pool exhaustion, charged-orphan refunds or uncertain/
+torn-I/O retry acceptance is established. Power cuts cover pending publication,
+not every service transaction; directed later-recovery enumeration is 4 KiB
+only. Semantic cancellation is a host boundary injection, not real kernel
+signals/scheduler teardown; VMM checks are host stubs. There is no new Ring 3,
+QEMU, boot, release-media, installation or physical acceptance, no production
+trust provisioning, no commit/push and no physical device write.
+
+
+Later closeout observation, after the aggregate snapshot above: concurrent HEAD
+advanced to `426a8be554b6fd4f486d7e6d557854b6af416b63`. The SSL checksum asset then
+changed from `b7ed287241d30835dc5dd516c899948697e1d2eaa1f4c9a8784728ea5691e5b6`
+to `f3ae0338a86c073a0988e566b7021cf2f70e2555194c5907f53aebb28d88b25d`.
+The strict final assertion failed and final-checks.json retains
+`FAIL_CONCURRENT_GUARD_CHANGE`; AGENTS.md and README.md still match their initial
+hashes. The earlier aggregate snapshot and all raw runtime manifests remain
+unchanged. This task did not restore the asset or invoke git commit/push; PKG
+changes remain dirty/untracked. This is an additional preservation qualification,
+not a runtime or boot result.
+
+
+### Private pending/state/trust admission with native durable grants (2026-10-23)
+
+Implemented the [bounded mount profile](../plans/PKG2_MOUNT_PENDING_TRUST.md) in
+`tests/pkg_mount_candidate.{h,c}`, `tests/pkg_mount_admission.inc` and exact
+copied-source overlays. The constructor validates actual marker/grant/ownership,
+state, trust, immutable intent and object identities in its read-only JBD2 view
+before replay writes or account recovery. Existing signed-catalog and complete
+FPK/manifest/ELF verification establish archive, command, build, platform/base and
+executable identity. Expected catalog keys/root/revision/hash/time remain external
+policy, not disk-derived authority. The descriptor pins real fixed inode/maps.
+
+Account generation-record v3 binds full grant/trust/state/intent hashes, grant
+sequence and transaction UUID. Account mutations preserve that exact durable
+snapshot. A typed sequence transaction journals ledger, ownership sequence and
+both account records together, without allocating or changing G/Q. Ownership Q
+is checked against actual inode generations, modes, links, dense allocations and
+Linux Blockcount; effective free resources exclude G. Ordinary writes to package
+record data and protected inode slots refuse before commit. General privileged
+namespace dispatch, grant issuance/refunds and production integration remain
+outside this private candidate.
+
+The install-only profile accepts empty state generation 1 and one installed demo
+generation 2. Both active and consumed-source predecessor hashes must match the
+canonical initial state for the pinned repository/trust snapshot. PENDING admits
+old state with absent/new command, or exact new state/new command. RETIRING keeps
+the immutable capability under retired.v1; it does not erase authorization before
+cleanup. All required archive/activation/next-state/intent roles and actual
+ownership identities remain checked. Unknown operations/step bits, paths, flags,
+unsupported ownership classes, missing evidence or contradictory state refuse.
+Existing recovery may finish the exact admitted intent after catalog expiry;
+a new RESERVED admission must meet current validity. No root rotation is added.
+
+Final runtime matrix under ASan/UBSan and strict compiler warnings:
+
+| Filesystem block | Sector sizes | Phase/publication states | Selected account cuts | Grant callback count (512/4096) | Directed grant I/O cuts | Zero-I/O rejects | Linux audits |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1024 | 512,4096 | 14 | 56 | 63 / 34 | 48 | 238 | 236 |
+| 2048 | 512,4096 | 14 | 56 | 89 / 26 | 48 | 238 | 236 |
+| 4096 | 512,4096 | 14 | 56 | 141 / 22 | 48 | 238 | 236 |
+
+All 42 phase/publication cases PASS. UPDATE commit counts are measured per
+layout: all fourteen 1 KiB layouts use 42; 2 KiB uses 42 for its four IDLE
+layouts and 41 for the ten active layouts; 4 KiB uses 42 for its two empty-IDLE
+layouts and 41 for the remaining twelve. Cuts are 1, 13, 29 and the measured last
+commit, not an assumed universal 42. Every cut recovers in two fresh processes.
+The 144 grant I/O cases select first/middle/last callbacks under cached/all/
+alternating/inverse persistence, before and after each selected callback. This
+is a directed sample, not an exhaustive callback sweep.
+
+The 714 read-only refusals include independent policy/root/floor/hash/key/base/
+platform/clock mismatches; resealed account/grant snapshots and false ownership
+allocation/generation/orphan claims; wrong operations/steps; pending generation,
+transaction, trust, state and time; invalid publication history and IDLE command/
+archive identities. Six fully hash-pinned forged catalogs still fail signature
+verification. Six valid signed two-file artifacts reject this one-file profile
+and clear their verification bit. Six consumed-source foreign-genesis fixtures
+reject before replay. Each refusal requires zero underlying writes/flushes,
+unchanged image bytes, no published mount and released constructor ownership.
+There are also 630 ordinary record-write refusals without I/O or mount taint.
+
+There are 42 committed-uncheckpointed previews whose grant sequence is newer
+than home, followed by actual replay/recovery. An additional 42 fresh processes
+reopen their recovered images: zero semantic commits and byte-identical grant,
+ownership, state, trust, account-generation and origin record sets. Across the
+matrix and supplement: 786 successful fresh `recover` process calls, 396
+idempotent second recoveries, and 750 Linux audits (708 matrix + 42 supplement).
+The Linux oracle checks record seals and cross-hashes, sequence, T=G+Q, exact
+state/trust fixture bytes, actual inode generation/owner/mode/links/size and
+allocated-sector counts. No origin sidecar supplies provenance.
+
+The pure validator's original 1056-byte frame failed the strict ceiling. Policy
+and canonical-initial-state scratch now belong to the caller workspace. Current
+freestanding stack usage is 816 bytes, dynamic/bounded; <=1024 frame gate passes
+for all three builds. This does not establish a full kernel call-chain bound.
+
+Final runtime artifacts (all raw manifests retain FAIL for shared-media guards;
+all runtime cases and private/compiled-input guards PASS):
+
+- `.codex-remote-attachments/pkg-mount-admission-20261023-123852-363077/`: manifest `a015648ddf873281abb5dbbb6f7547170cdac6e3adc5d5220619af1171456171`; probe `950be31f77d65f87d5fb2a5d46566ce7d4ffbcd1188335188cac525b5d00707b`.
+- `.codex-remote-attachments/pkg-mount-admission-20261023-123852-363184/`: manifest `998fe9d15a3cd73b87be977c6f73be103ec654160dfbe73ee11eccd3e93e1159`; probe `d48b45bca6e4ccbb5832376ca6c3c96cdd6833215979c57221028eb00d367826`.
+- `.codex-remote-attachments/pkg-mount-admission-20261023-123852-363078/`: manifest `467a02fc0591d0f1c4fe46e5e1263ccf91cddbcd6b6fa4e9ae469b1e9db5cd90`; probe `3f0cc9332c5e9356ddbe2e513c087148b5d0bafb7fae7d65ec7e34cf96834f69`.
+- `.codex-remote-attachments/pkg-mount-repeat-20261023-144735-942793/`: manifest `5799f15b088e7e350efef1e81b48a552c22856ba8e24effa83007e84c9f381f6`, 42/42 repeat recoveries PASS.
+
+Aggregate: `.codex-remote-attachments/pkg-mount-summary-20261023/manifest.json`,
+with finalize.py, attempts.json and append proof. Status is deliberately
+**FAIL_PRESERVATION_RUNTIME_PASS**. Each final build preserves all 112 compiled
+input paths, all copied inputs and 102 normalized repository dependencies.
+AGENTS.md, README.md and the already-dirty SSL asset match their initial hashes
+at aggregate capture. Shared bin/fortress.elf, fortress.img, fortress.iso and
+initramfs.tar changed concurrently; before/after hashes and original FAIL results
+remain. This task built only private host probes and did not restore shared
+artifacts. Concurrent uncompiled iwlwifi.c changes are retained separately. HEAD
+advancement is observed, not a commit by this task. No new boot/media acceptance.
+
+Retained findings and unsuccessful/superseded attempts:
+
+- `pkg-mount-admission-20261023-115629-049621`: strict indentation compile failure;
+  `...-115815-784982`: missing host-only tool_syscall trap at link; both corrected.
+  An earlier Python overlay indentation/import failure occurred before any
+  evidence directory; the summary labels its reconstructed exception note.
+- `...-120147-041283`: fourteen smoke cases passed, shared-media preservation
+  failed. `...-120605-627224`: fourteen cases and initial negatives passed, then
+  compiled repository source changed during review; the guard FAIL is retained.
+- The three `...-121254-*` attempts failed compiling an unavailable strchr helper.
+  It was replaced by the existing bounded-scan pattern. No runtime acceptance.
+- `...-121555-149514` and `...-121555-149533`: hard-coded UPDATE cut 42 failed
+  because those layouts have 41 actual commits. Measurement now selects the
+  layout's real last commit. The 1 KiB `...-121555-149646` and `...-121913-*`
+  checkpoints remain historical, not final-source acceptance.
+- `pkg-mount-unsupported-20261023-142602-831681`: valid signed unsupported archive
+  reproduced stale verified=1 on profile rejection. Fixed by clearing success
+  on every rejection after artifact verification, with result output preserved.
+- `pkg-mount-unsupported-20261023-143317-715116`: actual unexpected acceptance of
+  a consumed-source foreign predecessor. Fixed by canonical generation-1 lineage
+  and generation-2 installed-state checks. Its initial generic manifest scope
+  text was inaccurate; a separate scope-correction.json records the one-file
+  foreign-genesis case without rewriting the original manifest.
+- The three `...-122637-*` runtime PASS checkpoints predate the lineage fix and
+  are superseded. The three `...-123532-*` host campaigns were deliberately
+  interrupted for final review hardening; their INCOMPLETE results remain.
+  These host SIGINTs are not kernel signal/teardown acceptance.
+- Final `...-123852-*` runs preserve their raw shared-media FAILs; no rerun was
+  used to erase them. attempts.json indexes all 21 matrix attempts and hashes.
+  The stack failure and corrected output are retained separately under
+  `.codex-remote-attachments/pkg-mount-frame-20261023/`.
+
+Scope limits: one application/install, fixed trust policy, root-only host account
+fixture and initialized native grants. No general inventory/migration, root
+rotation, production boot selector, production trust provisioning, runtime grant
+issuance, charged-orphan refund/release, minimum-space progress, torn-sector or
+uncertain-I/O retry acceptance. The conservative account floor can refuse valid
+near-full roots; low-space liveness remains open. Existing Ring 3/QEMU/physical
+claims are unchanged; this task adds none. Production integration and installation
+remain disabled. All PKG changes are uncommitted; no commit/push, release-media
+build or physical-device write was performed by this task. Next work is low-space
+recovery and correctly charged orphan cleanup, then actual kernel teardown tests.
+
+
+### Private low-space recovery and charged-orphan refunds (2026-10-23)
+
+[Contracts, exact evidence and retained failures](../plans/PKG2_LOW_SPACE_REFUNDS.md). The private mount/account BEGIN gate now uses actual remaining fixed-role capacity, including account orphan allocations, outside durable package escrow. Only fixed-role account allocation may consume that capacity; competing ordinary block/inode allocations reject before I/O. An isolated old-code reproduction retained the reserve-stealing defect (ordinary creation succeeded with 125 private-model I/O events), which the new probes detect.
+
+Final effective-space and physical-exhaustion matrices each pass 42 states across 1/2/4 KiB blocks × 512/4096-byte sectors. Together: 624 interruption cases (two fresh-process recoveries each), 1,548 pre-replay zero-I/O refusals, 720 ordinary competing-allocation zero-I/O refusals and 1,458 Linux audits. Actual initial F-G equals remaining account capacity of 80/35/17 blocks and eight inodes. Account-orphan frees restore R; they do not refund package G.
+
+The charged lifecycle workbench now derives refunds from equal observed free-counter increases and owned-allocation decreases, preserving T=G+Q in actual JBD2 commits. It passes 10,152 exhaustive 4 KiB I/O cuts and 576 selected cuts across all six geometries, each followed by two actual constructor restarts; 16 retained-output Linux audits pass. The charged target is one inline one-block inode; multi-file/fragmented/deep-tree cleanup is not established. Arithmetic checks accept 28 valid reclaim observations and reject 2,132 mismatches; repeated observations grant no extra credit.
+
+Shared media, AGENTS.md, README.md, SSL checksum asset and compiled inputs are preserved in the final campaigns. Earlier compile, wiring, BEGIN-headroom and preservation failures, old-context reproductions and superseded PASS checkpoints remain recorded. No new Ring 3, boot, SMP, scheduler or physical acceptance is claimed; no release-media build, installation, production trust provisioning, push or physical-device write was performed. The user subsequently authorized a local PKG checkpoint commit.
+
+Still open: authenticated retirement capability and atomic package-refund/account-generation integration. The signed pending/trust mount profile still refuses package-charged orphans and retains archive/state/intent evidence; the refund lifecycle is a separate private grant profile. Production integration and installation remain disabled.

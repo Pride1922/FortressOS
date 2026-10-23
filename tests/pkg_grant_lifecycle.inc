@@ -85,10 +85,28 @@ static int e4_semantic_commit(struct ext4_engine *e){
     /* This bounded profile permits no unrelated parent growth/allocation. */
     if((int64_t)e4_u32(next+12)-(int64_t)e4_u32(sb+12)!=(int64_t)before.charged[0]-(int64_t)qb ||
        (int64_t)e4_u32(next+16)-(int64_t)e4_u32(sb+16)!=(int64_t)before.charged[1]-(int64_t)qi)return -VFS_EINVAL;
+    pg_budget budget={.sequence=before.sequence},refund;
+    for(unsigned i=0;i<2;i++){
+        budget.free[i]=e4_u32(sb+12+4*i);budget.remaining[i]=before.remaining[i];
+        budget.charged[i]=before.charged[i];budget.total[i]=before.total[i];
+        /* Capacity is the actual filesystem counter domain; baseline includes
+         * all non-package allocation, including filesystem metadata. */
+        budget.capacity[i]=i?fs->inodes:fs->blocks;
+        if(budget.free[i]>budget.capacity[i]||budget.charged[i]>budget.capacity[i]-budget.free[i])return -VFS_EIO;
+        budget.baseline[i]=budget.capacity[i]-budget.free[i]-budget.charged[i];
+    }
+    uint64_t observed[2]={e4_u32(next+12),e4_u32(next+16)},owned[2]={qb,qi};
+    if(qb<=before.charged[0]&&qi<=before.charged[1]){
+        if(pg_reclaim(&budget,observed,owned,&refund))return -VFS_EINVAL;
+    }else{
+        if(qb<before.charged[0]||qi<before.charged[1])return -VFS_EINVAL;
+        uint64_t charge[2]={qb-before.charged[0],qi-before.charged[1]};
+        if(pg_plan(&budget,PG_CHARGE,charge,&refund))return -VFS_EINVAL;
+    }
     uint32_t generation=e4_u32(raw+100);unsigned links=e4_u16(raw+26);
     if(allocated&&(links>1||e4_u16(raw)!=(0x8000|0600)))return -VFS_EINVAL;
     p64(ledger+24,before.sequence+1);p64(table+48,before.sequence+1);
-    p64(ledger+312,8-qb);p64(ledger+320,1-qi);p64(ledger+328,qb);p64(ledger+336,qi);
+    p64(ledger+312,refund.remaining[0]);p64(ledger+320,refund.remaining[1]);p64(ledger+328,qb);p64(ledger+336,qi);
     e4_p16(table+22,1);memset(table+256,0,64);e4_p16(table+256,1);e4_p16(table+258,allocated?1:3);
     e4_p32(table+260,ino);e4_p32(table+264,generation);memcpy(table+272,ledger+40,16);
     if(allocated){e4_p32(table+268,links?1:2);p64(table+288,e4_u32(raw+4)|(uint64_t)e4_u32(raw+108)<<32);p64(table+296,qb);p64(table+304,1);}

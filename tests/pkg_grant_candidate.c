@@ -177,3 +177,16 @@ int pg_plan(const pg_budget *b, unsigned op, const uint64_t d[2], pg_budget *out
     *out = v;
     return 0;
 }
+int pg_reclaim(const pg_budget *b,const uint64_t f[2],const uint64_t q[2],pg_budget *out) {
+    uint64_t amount[2];pg_budget next;
+    if (!out || !f || !q || !pg_budget_valid(b) || b->sequence==UINT64_MAX) return -1;
+    for (unsigned i=0;i<2;i++) {
+        if (q[i]>b->charged[i] || f[i]<b->free[i] ||
+            b->charged[i]-q[i]!=f[i]-b->free[i]) return -1;
+        amount[i]=b->charged[i]-q[i];
+    }
+    if (amount[0] || amount[1]) {
+        if (pg_plan(b,PG_REFUND,amount,&next)) return -1;
+    } else { next=*b;next.sequence++; }
+    *out=next;return 0;
+}

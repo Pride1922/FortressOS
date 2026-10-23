@@ -13,7 +13,7 @@ ROOT=pathlib.Path(__file__).resolve().parent.parent
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--block',type=int,choices=(1024,2048,4096));args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--block',type=int,choices=(1024,2048,4096));parser.add_argument('--selected-cuts',action='store_true');args=parser.parse_args()
     out=ROOT/'.codex-remote-attachments'/('pkg-grant-lifecycle-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
     work=out/'workspace';work.mkdir(parents=True,exist_ok=False)
     sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
@@ -38,7 +38,15 @@ def main():
     generated.write_text('struct ext4_engine;\nstatic int pg_life_reconstruct(struct ext4_engine *);\nstatic int e4_semantic_commit(struct ext4_engine *);\n'+
         source.replace('int main(int argc,char **argv){','int pg_previous_main(int argc,char **argv){')+
         '\n#include "pkg_grant_lifecycle.inc"\n')
-    manifest={'result':'INCOMPLETE','sources':sources,'private_overlay':overlay,'cases':[],'commands':[],
+    if args.selected_cuts:
+        p=work/'tests/pkg_grant_lifecycle.inc';text=p.read_text()
+        needle='for(size_t cut=0;cut<total;cut++){'
+        assert text.count(needle)==1
+        text=text.replace(needle,needle+'\n            if(cut!=0&&cut!=total/2&&cut!=total-1)continue;')
+        assert text.count('for(unsigned op=0;op<4;op++){')==1 and text.count('op,total,total*8);')==1
+        text=text.replace('for(unsigned op=0;op<4;op++){','for(unsigned op=0;op<4;op++){unsigned start_cuts=cuts;')
+        p.write_text(text.replace('op,total,total*8);','op,total,(size_t)(cuts-start_cuts));'))
+    manifest={'result':'INCOMPLETE','sources':sources,'private_overlay':overlay,'cases':[],'commands':[], 'cut_selection':'first/middle/last' if args.selected_cuts else 'all',
         'scope':'private copied-source semantic-commit and pre-cleanup reconstruction hooks; actual EXT4/VFS/JBD2; no production hooks, trusted boot, Ring3, SMP or physical acceptance'}
     def run(cmd,label,timeout=180):
         manifest['commands'].append(cmd)

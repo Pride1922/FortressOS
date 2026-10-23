@@ -39,4 +39,10 @@ enum { PG_CHARGE, PG_REFUND, PG_TRANSFER, PG_RELEASE, PG_BASE_FREE, PG_ORDINARY 
 int pg_budget_valid(const pg_budget *b);
 int pg_plan(const pg_budget *before, unsigned operation,
             const uint64_t amount[2], pg_budget *out);
+/* Private reclaim preflight: observed free counters and remaining ownership
+ * must show the same physical release in EACH dimension. Unlink/pin death
+ * alone is a zero refund. Caller proves inode identity, maps and bitmap frees,
+ * then journals records with those frees; failure preserves out. */
+int pg_reclaim(const pg_budget *before, const uint64_t observed_free[2],
+               const uint64_t owned_after[2], pg_budget *out);
 #endif

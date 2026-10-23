@@ -1,10 +1,34 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "pkg_grant_candidate.h"
 
 static unsigned long plans, rejected, cuts, vectors;
+static void reclaim(void) {
+    pg_budget b={.sequence=7,.capacity={20,12},.free={8,5},
+        .charged={6,3},.remaining={4,2},.total={10,5},
+        .baseline={6,4},.reserve={4,3}};
+    unsigned accepted=0,refused=0;
+    for(unsigned fb=7;fb<=15;fb++)for(unsigned fi=4;fi<=9;fi++)
+    for(unsigned qb=0;qb<=7;qb++)for(unsigned qi=0;qi<=4;qi++){
+        uint64_t f[2]={fb,fi},q[2]={qb,qi};pg_budget out,sentinel;
+        memset(&sentinel,0xa5,sizeof sentinel);out=sentinel;
+        bool ok=fb>=8&&fi>=5&&qb<=6&&qi<=3&&fb-8==6-qb&&fi-5==3-qi;
+        int r=pg_reclaim(&b,f,q,&out);assert((r==0)==ok);
+        if(r){assert(!memcmp(&out,&sentinel,sizeof out));refused++;}
+        else {assert(pg_budget_valid(&out)&&out.sequence==8);
+            assert(out.total[0]==10&&out.total[1]==5);
+            assert(out.free[0]-out.remaining[0]==4&&out.free[1]-out.remaining[1]==3);
+            /* Repeating the same observed state gives no additional refund. */
+            pg_budget again;assert(!pg_reclaim(&out,f,q,&again));
+            assert(!memcmp(again.remaining,out.remaining,sizeof out.remaining));accepted++;}
+    }
+    uint64_t f[2]={8,5},q[2]={6,3};pg_budget out=b;b.sequence=UINT64_MAX;
+    assert(pg_reclaim(&b,f,q,&out)&&out.sequence==7);
+    printf("PASS reclaim accepted=%u rejected=%u physical-delta-and-repeat\n",accepted,refused);
+}
 static void accounting(void) {
     for (unsigned cap=1; cap<=10; ++cap)
     for (unsigned f=0; f<=cap; ++f)
@@ -105,6 +129,7 @@ static int sets(int argc,char **argv) {
     return 0;
 }
 int main(int argc,char **argv) {
+    reclaim();
     uint8_t wire[1025], before[1025], after[1025], mixed[1024], encoded[1024];
     pg_view v, sentinel;
     assert(argc>=3);
