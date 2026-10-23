@@ -372,14 +372,15 @@ typedef struct {
 
 /* SCD Queue Config Command (0x1D) */
 typedef struct {
+    uint8_t  token;
+    uint8_t  sta_id;
     uint8_t  tid;
     uint8_t  scd_queue;
     uint8_t  enable;
-    uint8_t  sta_id;
-    uint8_t  tx_fifo;
     uint8_t  aggregate;
+    uint8_t  tx_fifo;
+    uint8_t  window;
     uint16_t ssn;
-    uint16_t window;
     uint16_t reserved;
 } __attribute__((packed)) iwl_scd_txq_cfg_cmd_t;
 

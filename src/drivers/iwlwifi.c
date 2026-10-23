@@ -1113,6 +1113,8 @@ static bool iwl_boot_ucode_image(const void *fw_data, size_t fw_len,
     s_sched_base     = 0;
     s_num_paging_blk = 0;
     s_last_blk_pages = 0;
+    s_last_err_intr  = 0;
+    s_last_rx_wide_id = 0;
 
     if (!iwl_prepare_card_hw()) {
         serial_puts("[IWL] WARN: iwl_prepare_card_hw NIC_READY not asserted, continuing\n");
@@ -1473,16 +1475,23 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
         serial_puts("[IWL] WARN: iwl_config_umac_scan failed\n");
     }
 
-    /* Enable default management/data queues 5..8 */
+    /* Enable default management/data queues 5..8 (IWM_TID_NON_QOS = 0) */
     static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
     for (uint8_t ac = 0; ac < 4; ac++) {
-        (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 8);
+        (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 0);
     }
 
     /* Disable hardware beacon filtering so all beacons reach the host */
     uint8_t bf_cmd[44] = {0};
     (void)iwl_send_cmd_pdu(IWL_HCMD_BEACON_FILTERING, bf_cmd, sizeof(bf_cmd), true);
     (void)iwl_setup_default_mac_and_binding;
+
+    if (s_last_err_intr != 0) {
+        serial_puts("[IWL] Firmware reported error interrupt during SEC_RT init\n");
+        s_iwl_dev.firmware_alive  = false;
+        s_iwl_dev.mvm_initialized = false;
+        return false;
+    }
 
     s_iwl_dev.firmware_alive  = true;
     s_iwl_dev.mvm_initialized = true;
