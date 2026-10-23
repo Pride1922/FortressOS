@@ -44,7 +44,7 @@ def main():
     life=life.replace('assert(!life_validate(fs->engine,&v)&&events==d->events);','assert(!life_validate(fs->engine,&v)&&!rt_check(fs->engine)&&events==d->events);')
     life=life.replace('memcpy(linked,d.stable,size);assert(vfs_file_get(held));','rt_setup(fs);life_check(fs);memcpy(linked,d.stable,size);assert(vfs_file_get(held));')
     life=life.replace('for(unsigned op=0;op<4;op++){','for(unsigned op=1;op<4;op++){')
-    
+
     assert life.count('rt_setup(fs);life_check(fs);')==1 and life.count('!rt_check(fs->engine)')==1
     life=life.replace('for(unsigned pass=0;pass<2;pass++){', 'uint64_t first_account=0;for(unsigned pass=0;pass<2;pass++){')
     life=life.replace('assert(!ext4_freeze_and_sync(fs));\n            }cuts++;','assert(!ext4_freeze_and_sync(fs));if(!pass)first_account=rt_account_sequence();else assert(first_account==rt_account_sequence());\n            }cuts++;')

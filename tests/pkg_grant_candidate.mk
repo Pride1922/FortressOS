@@ -132,3 +132,7 @@ test-pkg-retirement-auth:
 .PHONY: test-pkg-retirement-acceptance
 test-pkg-retirement-acceptance:
 	python3 scripts/test_pkg_retirement_integrated.py
+
+.PHONY: test-pkg-retirement-idle
+test-pkg-retirement-idle:
+	python3 scripts/test_pkg_retirement_idle.py

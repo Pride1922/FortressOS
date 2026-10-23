@@ -145,3 +145,12 @@ The explicit exhaustive geometry command is:
 
 Production integration, installation, production trust provisioning, release-media
 builds, pushes and physical-device writes remain disabled. Changes are uncommitted.
+
+
+## Subsequent lifecycle completion (2026-10-23)
+
+This preceding tested milestone is committed locally as add8a21. The subsequent
+[private retirement-to-IDLE lifecycle](PKG2_RETIREMENT_IDLE.md) is now accepted,
+including remaining temporary cleanup, executable baseline transfer, escrow
+release, record clearing and fresh account-writer admission. Its new changes
+remain uncommitted; production integration and installation remain disabled.
