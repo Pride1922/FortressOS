@@ -1142,7 +1142,7 @@ static bool iwl_send_mac_context_cmd(uint32_t action, bool is_assoc, uint16_t as
     memcpy(mac_cmd.node_addr, s_iwl_dev.mac_addr, 6);
     memcpy(mac_cmd.bssid_addr, s_assoc_bssid, 6);
     mac_cmd.cck_rates    = (s_iwl_dev.current_channel <= 14) ? 0x0Fu : 0;
-    mac_cmd.ofdm_rates   = 0xFFu;
+    mac_cmd.ofdm_rates   = (s_iwl_dev.current_channel <= 14) ? 0x15u : 0xFFu;
     mac_cmd.short_slot   = 1u; /* IWM_MAC_FLG_SHORT_SLOT */
     mac_cmd.filter_flags = IWL_MAC_FILTER_ACCEPT_GRP | IWL_MAC_FILTER_IN_BEACON;
     mac_cmd.qos_flags    = 1u; /* IWM_MAC_QOS_FLG_UPDATE_EDCA */
@@ -1161,13 +1161,14 @@ static bool iwl_send_mac_context_cmd(uint32_t action, bool is_assoc, uint16_t as
     }
 
     uint32_t bi = (s_assoc_bi >= 20) ? s_assoc_bi : 100u;
-    mac_cmd.sta.is_assoc       = is_assoc ? 1u : 0u;
-    mac_cmd.sta.bi             = bi;
-    mac_cmd.sta.bi_reciprocal  = 0xFFFFFFFFu / bi;
-    mac_cmd.sta.dtim_interval  = bi;
-    mac_cmd.sta.dtim_reciprocal = 0xFFFFFFFFu / bi;
+    uint32_t dtim = bi * 2u; /* Must satisfy dtim_interval > bi to prevent firmware assertion */
+    mac_cmd.sta.is_assoc        = is_assoc ? 1u : 0u;
+    mac_cmd.sta.bi              = bi;
+    mac_cmd.sta.bi_reciprocal   = (1u << 22) / bi;
+    mac_cmd.sta.dtim_interval   = dtim;
+    mac_cmd.sta.dtim_reciprocal = (1u << 22) / dtim;
     mac_cmd.sta.listen_interval = 10u;
-    mac_cmd.sta.assoc_id       = assoc_id;
+    mac_cmd.sta.assoc_id        = assoc_id;
 
     return iwl_send_cmd_pdu(IWL_HCMD_MAC_CONTEXT, &mac_cmd, sizeof(mac_cmd), true);
 }
