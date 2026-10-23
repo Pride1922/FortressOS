@@ -385,10 +385,6 @@ static void iwl_read_hw_mac(void) {
                        m[3] == 0xFF && m[4] == 0xFF && m[5] == 0xFF);
     if (non_zero && not_bcast && !(m[0] & 0x01u)) {
         memcpy(s_iwl_dev.mac_addr, m, 6);
-        net_dev_t *ndev = wlan_get_net_device();
-        if (ndev) {
-            memcpy(ndev->mac_addr, m, 6);
-        }
     }
 }
 
@@ -1639,14 +1635,6 @@ bool iwlwifi_init_hw(void) {
     s_iwl_dev.mac_addr[3] = 0x82;
     s_iwl_dev.mac_addr[4] = 0x65;
     s_iwl_dev.mac_addr[5] = 0x01;
-
-#ifndef IWLWIFI_HOST_TEST
-    if (s_iwl_dev.mmio_base) {
-        if (iwl_prepare_card_hw() && iwl_apm_init()) {
-            iwl_read_hw_mac();
-        }
-    }
-#endif
 
     s_iwl_dev.current_channel = 1;
     s_iwl_dev.initialized = true;

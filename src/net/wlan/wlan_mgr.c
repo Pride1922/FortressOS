@@ -87,10 +87,13 @@ static void wlan_ensure_hardware(void) {
         iwlwifi_init_hw();
     }
     if (s_hw_ops && s_hw_ops->get_mac) {
-        uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
-        s_hw_ops->get_mac(s_local_mac);
-        memcpy(s_wlan_net_dev.mac_addr, s_local_mac, 6);
-        spin_unlock_irqrestore(&s_wlan_lock, irq);
+        uint8_t mac[6];
+        if (s_hw_ops->get_mac(mac) == 0) {
+            uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
+            memcpy(s_local_mac, mac, 6);
+            memcpy(s_wlan_net_dev.mac_addr, mac, 6);
+            spin_unlock_irqrestore(&s_wlan_lock, irq);
+        }
     }
 }
 
