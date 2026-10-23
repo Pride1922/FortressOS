@@ -136,3 +136,7 @@ test-pkg-retirement-acceptance:
 .PHONY: test-pkg-retirement-idle
 test-pkg-retirement-idle:
 	python3 scripts/test_pkg_retirement_idle.py
+
+.PHONY: test-pkg-cli-transaction
+test-pkg-cli-transaction:
+	python3 scripts/test_pkg_cli_transaction.py
