@@ -287,6 +287,8 @@ bool net_80211_parse_beacon_or_probe(const uint8_t *frame, size_t len,
             out_bss->ssid_len = clen;
         } else if (ie_id == IEEE80211_IE_DS_PARAM && ie_len >= 1) {
             out_bss->channel = data[0];
+        } else if (ie_id == 61 /* HT Operation IE */ && ie_len >= 1 && out_bss->channel == 0) {
+            out_bss->channel = data[0];
         } else if (ie_id == IEEE80211_IE_RSN && ie_len >= 14) {
             /* Check if AES-CCMP (00-0F-AC:4) and PSK (00-0F-AC:2) are supported */
             out_bss->has_wpa2_psk = true;

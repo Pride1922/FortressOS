@@ -21,15 +21,80 @@ static pbuf_t  s_rx_pbufs[IWL_RX_RING_SIZE];
 static uint8_t s_rx_buffers[IWL_RX_RING_SIZE][2048] __attribute__((aligned(64)));
 
 #ifndef IWLWIFI_HOST_TEST
-#define IWL_HW_RX_BUFS 16
-static uintptr_t s_fw_chunk_phys = 0;
-static uint8_t  *s_fw_chunk_virt = NULL;
-static uintptr_t s_kw_phys       = 0;
-static uintptr_t s_rx_desc_phys  = 0;
-static uint32_t *s_rx_desc_virt  = NULL;
-static uintptr_t s_rx_buf_phys[IWL_HW_RX_BUFS];
-static uint8_t  *s_rx_buf_virt[IWL_HW_RX_BUFS];
-static uint16_t  s_hw_rx_read_idx = 0;
+#define IWL_HW_RX_BUFS          32
+#define IWL_CMD_SLOTS           16
+#define IWL_CMD_SLOT_SIZE       2048
+#define IWL_MAX_PHY_DB_CHUNKS   24
+#define IWL_PHY_DB_POOL_SIZE    16384
+
+static uintptr_t         s_fw_chunk_phys = 0;
+static uint8_t          *s_fw_chunk_virt = NULL;
+static uintptr_t         s_kw_phys       = 0;
+static uintptr_t         s_rx_desc_phys  = 0;
+static uint32_t         *s_rx_desc_virt  = NULL;
+static uintptr_t         s_rx_buf_phys[IWL_HW_RX_BUFS];
+static uint8_t          *s_rx_buf_virt[IWL_HW_RX_BUFS];
+static uint16_t          s_hw_rx_read_idx = 0;
+
+/* TX Scheduler & Command Queue DMA Buffers */
+static uintptr_t         s_sched_phys         = 0;
+static iwl_scd_bc_tbl_t *s_sched_virt         = NULL;
+static uintptr_t         s_tfd_ring_phys      = 0;
+static iwl_tfd_t        *s_tfd_ring_virt      = NULL;
+static uintptr_t         s_aux_tfd_ring_phys  = 0;
+static iwl_tfd_t        *s_aux_tfd_ring_virt  = NULL;
+static uintptr_t         s_cmd_buf_phys       = 0;
+static uint8_t          *s_cmd_buf_virt       = NULL;
+
+/* CPU2 Firmware Paging DMA Buffers (1 CSS 4KB + up to 8x 32KB blocks) */
+static uintptr_t         s_paging_css_phys    = 0;
+static uint8_t          *s_paging_css_virt    = NULL;
+static uintptr_t         s_paging_blk_phys[IWL_MAX_PAGING_DATA_BLOCKS];
+static uint8_t          *s_paging_blk_virt[IWL_MAX_PAGING_DATA_BLOCKS];
+static uint32_t          s_num_paging_blk     = 0;
+static uint32_t          s_last_blk_pages     = 0;
+
+/* Calibration PHY_DB Storage (populated by SEC_INIT 0x6B, replayed to SEC_RT 0x6C) */
+typedef struct {
+    uint16_t type;
+    uint16_t length;
+    uint32_t offset;
+} iwl_phy_db_chunk_t;
+
+static iwl_phy_db_chunk_t s_phy_db_chunks[IWL_MAX_PHY_DB_CHUNKS];
+static uint32_t           s_phy_db_count = 0;
+static uint8_t            s_phy_db_pool[IWL_PHY_DB_POOL_SIZE];
+static uint32_t           s_phy_db_pool_used = 0;
+
+/* Runtime MVM State */
+static uint32_t           s_sched_base = 0;
+static uint32_t           s_tlv_flags  = IWL_UCODE_TLV_FLAGS_DW_BC_TABLE;
+static uint32_t           s_n_scan_channels = 40;
+static uint8_t            s_valid_tx_ant = 3;
+static uint8_t            s_valid_rx_ant = 3;
+static uint8_t            s_cmd_idx = 0;
+static uint8_t            s_pending_cmd_idx = 0xFF;
+static bool               s_cmd_done = false;
+static bool               s_cmd_failed = false;
+static uint8_t            s_cmd_resp_buf[64];
+static bool               s_alive_received = false;
+static uint16_t           s_alive_status = 0;
+static bool               s_init_complete_received = false;
+static bool               s_scan_complete = false;
+static uint32_t           s_scan_uid = 0;
+
+/* Last RX PHY Info (0xC0) */
+static iwl_rx_phy_info_t  s_last_phy_info;
+static int8_t             s_last_rx_rssi = -60;
+static uint8_t            s_last_rx_chan = 1;
+
+/* Scan channels: 2.4 GHz (1..13) + 5 GHz UNII-1/2/3 */
+static const uint8_t s_scan_channels[] = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+    36, 40, 44, 48, 52, 56, 60, 64,
+    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140,
+    149, 153, 157, 161, 165
+};
 #endif
 
 static inline uint32_t iwl_read32(uint32_t reg) {
@@ -67,13 +132,18 @@ static bool iwl_delay_ms(unsigned ms) {
 }
 
 static void iwl_write_prph(uint32_t addr, uint32_t val) {
-    iwl_write32(HBUS_TARG_PRPH_WADDR, ((addr & 0x000FFFFF) | (3 << 24)));
+    iwl_write32(HBUS_TARG_PRPH_WADDR, ((addr & 0x000FFFFFu) | (3u << 24)));
     iwl_write32(HBUS_TARG_PRPH_WDAT, val);
 }
 
-static uint32_t __attribute__((unused)) iwl_read_prph(uint32_t addr) {
-    iwl_write32(HBUS_TARG_PRPH_RADDR, ((addr & 0x000FFFFF) | (3 << 24)));
+static uint32_t iwl_read_prph(uint32_t addr) {
+    iwl_write32(HBUS_TARG_PRPH_RADDR, ((addr & 0x000FFFFFu) | (3u << 24)));
     return iwl_read32(HBUS_TARG_PRPH_RDAT);
+}
+
+static void iwl_write_mem32(uint32_t addr, uint32_t val) {
+    iwl_write32(HBUS_TARG_MEM_WADDR, addr);
+    iwl_write32(HBUS_TARG_MEM_WDAT, val);
 }
 
 static bool iwl_nic_lock(void) {
@@ -104,6 +174,16 @@ static uint32_t iwl_fh_cbbc_queue_reg(uint32_t chnl) {
     if (chnl < 16) return 0x19D0u + 4u * chnl;
     if (chnl < 20) return 0x1BF0u + 4u * (chnl - 16u);
     return 0x1B20u + 4u * (chnl - 20u);
+}
+
+static uint32_t iwl_scd_queue_rdptr_reg(uint32_t chnl) {
+    if (chnl < 20) return IWL_SCD_BASE + 0x68u + chnl * 4u;
+    return IWL_SCD_BASE + 0x2B4u + chnl * 4u;
+}
+
+static uint32_t iwl_scd_queue_status_bits_reg(uint32_t chnl) {
+    if (chnl < 20) return IWL_SCD_BASE + 0x10Cu + chnl * 4u;
+    return IWL_SCD_BASE + 0x334u + chnl * 4u;
 }
 
 static void iwl_enable_pci_and_bridges(void) {
@@ -181,7 +261,55 @@ static bool iwl_alloc_dma_buffers(void) {
             memset(s_rx_desc_virt, 0, 4096);
         }
     }
-    if (!s_fw_chunk_phys || !s_kw_phys || !s_rx_desc_phys) return false;
+    if (!s_sched_phys) {
+        s_sched_phys = pmm_alloc_pages(5); /* 20 KiB for 31 * 640B Byte Count tables */
+        if (s_sched_phys) {
+            s_sched_virt = (iwl_scd_bc_tbl_t *)vmm_phys_to_virt(s_sched_phys);
+            memset(s_sched_virt, 0, 5 * 4096);
+        }
+    }
+    if (!s_tfd_ring_phys) {
+        s_tfd_ring_phys = pmm_alloc_pages(8); /* 32 KiB for 256 * 128B TFDs (Queue 0) */
+        if (s_tfd_ring_phys) {
+            s_tfd_ring_virt = (iwl_tfd_t *)vmm_phys_to_virt(s_tfd_ring_phys);
+            memset(s_tfd_ring_virt, 0, 8 * 4096);
+        }
+    }
+    if (!s_aux_tfd_ring_phys) {
+        s_aux_tfd_ring_phys = pmm_alloc_pages(8); /* 32 KiB for 256 * 128B TFDs (Queue 1) */
+        if (s_aux_tfd_ring_phys) {
+            s_aux_tfd_ring_virt = (iwl_tfd_t *)vmm_phys_to_virt(s_aux_tfd_ring_phys);
+            memset(s_aux_tfd_ring_virt, 0, 8 * 4096);
+        }
+    }
+    if (!s_cmd_buf_phys) {
+        s_cmd_buf_phys = pmm_alloc_pages(8); /* 32 KiB: 16 slots * 2048B contiguous command buffers */
+        if (s_cmd_buf_phys) {
+            s_cmd_buf_virt = (uint8_t *)vmm_phys_to_virt(s_cmd_buf_phys);
+            memset(s_cmd_buf_virt, 0, 8 * 4096);
+        }
+    }
+    if (!s_paging_css_phys) {
+        s_paging_css_phys = pmm_alloc_page();
+        if (s_paging_css_phys) {
+            s_paging_css_virt = (uint8_t *)vmm_phys_to_virt(s_paging_css_phys);
+            memset(s_paging_css_virt, 0, 4096);
+        }
+    }
+    for (uint32_t i = 0; i < IWL_MAX_PAGING_DATA_BLOCKS; i++) {
+        if (!s_paging_blk_phys[i]) {
+            s_paging_blk_phys[i] = pmm_alloc_pages(8); /* 32 KiB per paging block */
+            if (!s_paging_blk_phys[i]) return false;
+            s_paging_blk_virt[i] = (uint8_t *)vmm_phys_to_virt(s_paging_blk_phys[i]);
+            memset(s_paging_blk_virt[i], 0, 8 * 4096);
+        }
+    }
+
+    if (!s_fw_chunk_phys || !s_kw_phys || !s_rx_desc_phys ||
+        !s_sched_phys || !s_tfd_ring_phys || !s_aux_tfd_ring_phys ||
+        !s_cmd_buf_phys || !s_paging_css_phys) {
+        return false;
+    }
 
     for (uint32_t i = 0; i < IWL_HW_RX_BUFS; i++) {
         if (!s_rx_buf_phys[i]) {
@@ -237,9 +365,35 @@ static bool iwl_apm_init(void) {
     return true;
 }
 
+static void iwl_read_hw_mac(void) {
+    if (!s_iwl_dev.mmio_base) return;
+    if (!iwl_nic_lock()) return;
+    uint32_t mac0 = iwl_read_prph(IWL_WFMP_MAC_ADDR_0);
+    uint32_t mac1 = iwl_read_prph(IWL_WFMP_MAC_ADDR_1);
+    iwl_nic_unlock();
+
+    uint8_t m[6];
+    m[0] = (uint8_t)((mac0 >> 24) & 0xFFu);
+    m[1] = (uint8_t)((mac0 >> 16) & 0xFFu);
+    m[2] = (uint8_t)((mac0 >>  8) & 0xFFu);
+    m[3] = (uint8_t)((mac0 >>  0) & 0xFFu);
+    m[4] = (uint8_t)((mac1 >>  8) & 0xFFu);
+    m[5] = (uint8_t)((mac1 >>  0) & 0xFFu);
+
+    bool non_zero = (m[0] | m[1] | m[2] | m[3] | m[4] | m[5]) != 0;
+    bool not_bcast = !(m[0] == 0xFF && m[1] == 0xFF && m[2] == 0xFF &&
+                       m[3] == 0xFF && m[4] == 0xFF && m[5] == 0xFF);
+    if (non_zero && not_bcast && !(m[0] & 0x01u)) {
+        memcpy(s_iwl_dev.mac_addr, m, 6);
+        net_dev_t *ndev = wlan_get_net_device();
+        if (ndev) {
+            memcpy(ndev->mac_addr, m, 6);
+        }
+    }
+}
+
 static void iwl_nic_config(uint32_t fw_phy_config) {
     uint32_t hw_rev = iwl_read32(CSR_HW_REV);
-    /* Family 8000 hw_rev step format adjustment */
     hw_rev = (hw_rev & 0xFFF0u) | ((((hw_rev << 2) & 0xCu) >> 2) << 2);
     if (iwl_nic_lock()) {
         uint32_t hw_step = iwl_read_prph(IWL_WFPM_CTRL_REG);
@@ -265,7 +419,7 @@ static void iwl_nic_config(uint32_t fw_phy_config) {
                ((uint32_t)radio_dash << 12) |
                ((uint32_t)radio_step << 14);
 
-    uint32_t mask = 0x0000FFFFu; /* MAC_DASH|MAC_STEP|BOARD_VER|MAC_SI|RADIO_SI|PHY_TYPE|PHY_DASH|PHY_STEP */
+    uint32_t mask = 0x0000FFFFu;
     uint32_t val = iwl_read32(CSR_HW_IF_CONFIG_REG);
     val = (val & ~mask) | reg_val;
     iwl_write32(CSR_HW_IF_CONFIG_REG, val);
@@ -277,19 +431,23 @@ static bool iwl_setup_rx_dma(void) {
     for (uint32_t i = 0; i < IWL_HW_RX_BUFS; i++) {
         memset(s_rx_buf_virt[i], 0, 4096);
     }
+    memset(s_sched_virt, 0, 5 * 4096);
+    memset(s_tfd_ring_virt, 0, 8 * 4096);
+    memset(s_aux_tfd_ring_virt, 0, 8 * 4096);
+    memset(s_cmd_buf_virt, 0, 8 * 4096);
 
-    /* Populate 256-entry RX descriptor table wrapping our 16 4-KiB pages */
+    /* Populate 256-entry RX descriptor table wrapping our 32 4-KiB pages */
     for (uint32_t i = 0; i < 256; i++) {
         s_rx_desc_virt[i] = (uint32_t)(s_rx_buf_phys[i % IWL_HW_RX_BUFS] >> 8);
     }
     /* Clear rb_status at offset 2048 of s_rx_desc_virt */
-    memset((uint8_t *)s_rx_desc_virt + 2048, 0, 64);
+    memset((uint8_t *)s_rx_desc_virt + 2048, 0, 512);
     s_hw_rx_read_idx = 0;
 
     if (!iwl_nic_lock()) return false;
 
     /* Stop all TX DMA channels 0..7 and Service Channel 9, clear sticky FH TX errors and load status */
-    iwl_write_prph(0xa02c10, 0); /* IWM_SCD_TXFACT */
+    iwl_write_prph(IWL_SCD_TXFACT, 0);
     for (uint32_t chnl = 0; chnl < 8; chnl++) {
         iwl_write32(FH_TCSR_CHNL_TX_CONFIG_REG(chnl), 0);
     }
@@ -324,16 +482,18 @@ static bool iwl_setup_rx_dma(void) {
 
     /* Configure Keep-Warm page, TX CBBC queues, and SCD_GP_CTRL */
     iwl_write32(FH_KW_MEM_ADDR_REG, (uint32_t)(s_kw_phys >> 4));
-    for (uint32_t qid = 0; qid < 31; qid++) {
+    iwl_write32(iwl_fh_cbbc_queue_reg(0), (uint32_t)(s_tfd_ring_phys >> 8));
+    iwl_write32(iwl_fh_cbbc_queue_reg(1), (uint32_t)(s_aux_tfd_ring_phys >> 8));
+    for (uint32_t qid = 2; qid < IWL_MAX_QUEUES; qid++) {
         iwl_write32(iwl_fh_cbbc_queue_reg(qid), (uint32_t)((s_rx_desc_phys + 2560) >> 8));
     }
-    iwl_write_prph(0xa02da8, iwl_read_prph(0xa02da8) | (1u << 18) | (1u << 0)); /* SCD_GP_CTRL */
+    iwl_write_prph(IWL_SCD_GP_CTRL, iwl_read_prph(IWL_SCD_GP_CTRL) | (1u << 18) | (1u << 0));
 
     iwl_nic_unlock();
 
     iwl_write32(CSR_MAC_SHADOW_REG_CTRL, iwl_read32(CSR_MAC_SHADOW_REG_CTRL) | 0x800FFFFFu);
-    /* Post initial 8 RX buffers */
-    iwl_write32(FH_RSCSR_CHNL0_WPTR, 8);
+    /* Post initial 24 RX buffers */
+    iwl_write32(FH_RSCSR_CHNL0_WPTR, 24);
     return true;
 }
 
@@ -365,7 +525,6 @@ static bool iwl_load_chunk(uint32_t dst_addr, const uint8_t *chunk, uint32_t len
 
     iwl_nic_unlock();
 
-    /* Poll for completion (CSR_INT_BIT_FH_TX or CSR_FH_INT_STATUS TX bits) up to 500ms */
     bool ok = false;
     for (int ms = 0; ms < 500; ms++) {
         for (int j = 0; j < 200; j++) {
@@ -408,6 +567,672 @@ static bool iwl_load_section(uint32_t dst_addr, const uint8_t *data, uint32_t by
     }
     return true;
 }
+
+/* Compute dBm RSSI from iwl_rx_phy_info_t non_cfg_phy[1] energy byte */
+static int8_t iwl_extract_rssi(const iwl_rx_phy_info_t *phy) {
+    uint32_t val = phy->non_cfg_phy[1];
+    int ea = (int)(val & 0xFFu);
+    int eb = (int)((val >> 8) & 0xFFu);
+    int ec = (int)((val >> 16) & 0xFFu);
+    int best = -100;
+    if (ea > 0 && -ea > best) best = -ea;
+    if (eb > 0 && -eb > best) best = -eb;
+    if (ec > 0 && -ec > best) best = -ec;
+    if (best == -100) best = -65;
+    if (best < -100) best = -100;
+    if (best > -10)  best = -10;
+    return (int8_t)best;
+}
+
+/* Drain completed RX RBs and demux notifications, command responses, and 802.11 MPDUs */
+static void iwl_drain_rx_ring(void) {
+    if (!s_rx_desc_virt) return;
+
+    uint32_t intr = iwl_read32(CSR_INT);
+    uint32_t fh_intr = iwl_read32(CSR_FH_INT_STATUS);
+    if (intr) iwl_write32(CSR_INT, intr);
+    if (fh_intr) iwl_write32(CSR_FH_INT_STATUS, fh_intr);
+
+    volatile uint16_t *rb_stts = (volatile uint16_t *)((uint8_t *)s_rx_desc_virt + 2048);
+    uint16_t closed_rb = (*rb_stts) & 0x0FFFu;
+
+    while ((s_hw_rx_read_idx & 0x0FFFu) != closed_rb) {
+        uint32_t buf_slot = s_hw_rx_read_idx % IWL_HW_RX_BUFS;
+        uint8_t *rb = s_rx_buf_virt[buf_slot];
+
+        if (rb) {
+            uint32_t offset = 0;
+            while (offset + sizeof(iwl_rx_packet_t) < 4096u) {
+                const iwl_rx_packet_t *pkt = (const iwl_rx_packet_t *)(rb + offset);
+                if (pkt->len_n_flags == IWL_FH_RSCSR_FRAME_INVALID) break;
+                if (pkt->hdr.qid == 0 && pkt->hdr.idx == 0 &&
+                    pkt->hdr.code == 0 && pkt->hdr.flags == 0) {
+                    break;
+                }
+
+                uint32_t pkt_len = pkt->len_n_flags & IWL_FH_RSCSR_FRAME_SIZE_MSK;
+                if (pkt_len < sizeof(iwl_cmd_header_t) || (4u + pkt_len) > (4096u - offset)) {
+                    break;
+                }
+
+                uint32_t payload_len = pkt_len - sizeof(iwl_cmd_header_t);
+                uint8_t  code = pkt->hdr.code;
+                uint8_t  grp  = pkt->hdr.flags;
+                uint16_t wide_id = IWL_WIDE_ID(grp, code);
+
+                if (grp == 0 && code == IWL_HCMD_ALIVE) {
+                    if (payload_len >= 2) {
+                        s_alive_status = *(const uint16_t *)(pkt->data + 0);
+                        if (payload_len >= 48) {
+                            s_sched_base = *(const uint32_t *)(pkt->data + 44);
+                        }
+                        s_alive_received = true;
+                    }
+                } else if (grp == 0 && code == IWL_CALIB_RES_NOTIF_PHY_DB) {
+                    if (payload_len >= 4 && s_phy_db_count < IWL_MAX_PHY_DB_CHUNKS) {
+                        uint16_t db_type = *(const uint16_t *)(pkt->data + 0);
+                        uint16_t db_len  = *(const uint16_t *)(pkt->data + 2);
+                        if ((uint32_t)(4u + db_len) <= payload_len &&
+                            s_phy_db_pool_used + db_len <= IWL_PHY_DB_POOL_SIZE) {
+                            iwl_phy_db_chunk_t *c = &s_phy_db_chunks[s_phy_db_count++];
+                            c->type = db_type;
+                            c->length = db_len;
+                            c->offset = s_phy_db_pool_used;
+                            if (db_len > 0) {
+                                memcpy(s_phy_db_pool + s_phy_db_pool_used, pkt->data + 4, db_len);
+                                s_phy_db_pool_used += db_len;
+                            }
+                        }
+                    }
+                } else if (grp == 0 && code == IWL_INIT_COMPLETE_NOTIF) {
+                    s_init_complete_received = true;
+                } else if (grp == 0 && code == IWL_HCMD_RX_PHY) {
+                    if (payload_len >= sizeof(iwl_rx_phy_info_t)) {
+                        memcpy(&s_last_phy_info, pkt->data, sizeof(iwl_rx_phy_info_t));
+                        if (s_last_phy_info.channel > 0 && s_last_phy_info.channel < 200) {
+                            s_last_rx_chan = (uint8_t)s_last_phy_info.channel;
+                        }
+                        s_last_rx_rssi = iwl_extract_rssi(&s_last_phy_info);
+                    }
+                } else if (grp == 0 && code == IWL_HCMD_RX_MPDU) {
+                    if (payload_len >= 4) {
+                        uint16_t mpdu_len = *(const uint16_t *)(pkt->data + 0);
+                        if (mpdu_len >= 24 && mpdu_len <= 2036 &&
+                            (uint32_t)(4u + mpdu_len + 4u) <= payload_len) {
+                            uint32_t rx_status = *(const uint32_t *)(pkt->data + 4 + mpdu_len);
+                            /* Verify CRC_OK (bit 0) and OVERRUN_OK (bit 1) */
+                            if ((rx_status & 0x03u) == 0x03u) {
+                                uint32_t next_rx = (s_iwl_dev.rx_head + 1) % IWL_RX_RING_SIZE;
+                                if (next_rx != s_iwl_dev.rx_tail) {
+                                    pbuf_t *dst = &s_rx_pbufs[s_iwl_dev.rx_head];
+                                    pbuf_init(dst);
+                                    dst->payload = s_rx_buffers[s_iwl_dev.rx_head];
+                                    memcpy(dst->payload, pkt->data + 4, mpdu_len);
+                                    dst->length = mpdu_len;
+                                    dst->total_len = mpdu_len;
+                                    dst->flags = IWL_PBUF_PACK_META(s_last_rx_rssi, s_last_rx_chan);
+                                    s_iwl_dev.rx_head = next_rx;
+                                }
+                            }
+                        }
+                    }
+                } else if ((grp == 0 && code == IWL_SCAN_ITER_COMPLETE_UMAC) ||
+                           wide_id == IWL_WIDE_ID(IWL_LONG_GROUP, IWL_SCAN_COMPLETE_UMAC) ||
+                           (grp == 0 && code == IWL_SCAN_COMPLETE_UMAC)) {
+                    s_scan_complete = true;
+                }
+
+                /* Match synchronous host command response on Queue 0 */
+                if ((pkt->hdr.qid & 0x7Fu) == 0 && pkt->hdr.idx == s_pending_cmd_idx) {
+                    s_cmd_failed = (pkt->hdr.flags & 0x40u) != 0;
+                    uint32_t copy_len = (payload_len < sizeof(s_cmd_resp_buf)) ? payload_len : sizeof(s_cmd_resp_buf);
+                    if (copy_len > 0) {
+                        memcpy(s_cmd_resp_buf, pkt->data, copy_len);
+                    }
+                    s_cmd_done = true;
+                }
+
+                offset += (4u + pkt_len + (IWL_FH_RSCSR_FRAME_ALIGN - 1u)) & ~(IWL_FH_RSCSR_FRAME_ALIGN - 1u);
+            }
+
+            /* Clear RB before recycling so stale packets are never re-parsed on ring wrap */
+            memset(rb, 0, 4096);
+        }
+
+        s_rx_desc_virt[s_hw_rx_read_idx & 0xFFu] = (uint32_t)(s_rx_buf_phys[buf_slot] >> 8);
+        s_hw_rx_read_idx = (s_hw_rx_read_idx + 1) & 0x0FFFu;
+        uint32_t wptr = ((uint32_t)s_hw_rx_read_idx + 24u) & ~7u;
+        iwl_write32(FH_RSCSR_CHNL0_WPTR, wptr & 0xFFu);
+
+        closed_rb = (*rb_stts) & 0x0FFFu;
+    }
+}
+
+/* Initialize TX Scheduler and enable Command Queue 0 after ALIVE */
+static bool iwl_post_alive(void) {
+    if (!iwl_nic_lock()) return false;
+    uint32_t base = iwl_read_prph(IWL_SCD_SRAM_BASE_ADDR);
+    if (s_sched_base == 0) {
+        s_sched_base = base;
+    }
+    iwl_nic_unlock();
+
+    /* Clear TX scheduler context, status, and translation tables in SRAM */
+    uint32_t nwords = (IWL_SCD_TRANS_TBL_MEM_UPPER_BOUND - IWL_SCD_CONTEXT_MEM_LOWER_BOUND) / 4u;
+    for (uint32_t i = 0; i < nwords; i++) {
+        iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_MEM_LOWER_BOUND + i * 4u, 0);
+    }
+
+    if (!iwl_nic_lock()) return false;
+
+    /* Set physical address of TX scheduler Byte Count tables (1KB aligned) */
+    iwl_write_prph(IWL_SCD_DRAM_BASE_ADDR, (uint32_t)(s_sched_phys >> 10));
+    iwl_write_prph(IWL_SCD_CHAINEXT_EN, 0);
+
+    /* Enable Command Queue (qid = 0, fifo = 7 [IWM_TX_FIFO_CMD]) */
+    iwl_write32(HBUS_TARG_WRPTR, (0u << 8) | 0u);
+    iwl_write_prph(iwl_scd_queue_status_bits_reg(0), (0u << 3) | (1u << 19));
+    iwl_write_prph(IWL_SCD_AGGR_SEL, iwl_read_prph(IWL_SCD_AGGR_SEL) & ~(1u << 0));
+    iwl_write_prph(iwl_scd_queue_rdptr_reg(0), 0);
+
+    iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(0), 0);
+    iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(0) + 4u,
+                    (64u << 0) | (64u << 16));
+
+    iwl_write_prph(iwl_scd_queue_status_bits_reg(0),
+                   (1u << 3) | (7u << 0) | (1u << 4) | 0x017F0000u);
+    iwl_write_prph(IWL_SCD_EN_CTRL, iwl_read_prph(IWL_SCD_EN_CTRL) | (1u << 0));
+
+    /* Activate TX scheduler */
+    iwl_write_prph(IWL_SCD_TXFACT, 0xFFu);
+
+    /* Enable FH TX DMA channels 0..7 with credit enable */
+    for (uint32_t chnl = 0; chnl < 8; chnl++) {
+        iwl_write32(FH_TCSR_CHNL_TX_CONFIG_REG(chnl),
+                    FH_TCSR_TX_CONFIG_REG_VAL_DMA_CHNL_ENABLE |
+                    FH_TCSR_TX_CONFIG_REG_VAL_DMA_CREDIT_ENABLE);
+    }
+
+    iwl_write32(FH_TX_CHICKEN_BITS_REG, iwl_read32(FH_TX_CHICKEN_BITS_REG) | 2u);
+    iwl_nic_unlock();
+
+    s_cmd_idx = 0;
+    return true;
+}
+
+/* Send a Host Command on Command Queue 0 and optionally wait for completion */
+static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bool wait_resp) {
+    uint8_t idx = s_cmd_idx;
+    uint32_t slot = idx & (IWL_CMD_SLOTS - 1u);
+    uint8_t *buf_virt = s_cmd_buf_virt + slot * IWL_CMD_SLOT_SIZE;
+    uintptr_t buf_phys = s_cmd_buf_phys + slot * IWL_CMD_SLOT_SIZE;
+
+    uint8_t group_id = (uint8_t)((cmd_id >> 8) & 0xFFu);
+    uint8_t opcode   = (uint8_t)(cmd_id & 0xFFu);
+    uint8_t ver      = (uint8_t)((cmd_id >> 16) & 0xFFu);
+
+    uint16_t hdr_len = (group_id != 0) ? sizeof(iwl_cmd_header_wide_t) : sizeof(iwl_cmd_header_t);
+    if ((uint32_t)hdr_len + len > IWL_CMD_SLOT_SIZE) return false;
+
+    memset(buf_virt, 0, IWL_CMD_SLOT_SIZE);
+    if (group_id != 0) {
+        iwl_cmd_header_wide_t *whdr = (iwl_cmd_header_wide_t *)buf_virt;
+        whdr->opcode   = opcode;
+        whdr->group_id = group_id;
+        whdr->idx      = idx;
+        whdr->qid      = 0;
+        whdr->length   = len;
+        whdr->reserved = 0;
+        whdr->version  = ver;
+    } else {
+        iwl_cmd_header_t *hdr = (iwl_cmd_header_t *)buf_virt;
+        hdr->code  = opcode;
+        hdr->flags = 0;
+        hdr->idx   = idx;
+        hdr->qid   = 0;
+    }
+
+    if (len > 0 && data) {
+        memcpy(buf_virt + hdr_len, data, len);
+    }
+
+    uint16_t total_len = hdr_len + len;
+    iwl_tfd_t *tfd = &s_tfd_ring_virt[idx];
+    memset(tfd, 0, sizeof(*tfd));
+    tfd->num_tbs = 1;
+    tfd->tbs[0].lo = (uint32_t)(buf_phys & 0xFFFFFFFFu);
+    tfd->tbs[0].hi_n_len = (uint16_t)(((buf_phys >> 32) & 0xFu) | ((uint32_t)total_len << 4));
+
+    /* Update Byte Count table for Queue 0 (per OpenBSD iwm_update_sched(sc, 0, idx, 0, 0)) */
+    uint16_t bc_len = 8;
+    if (s_tlv_flags & IWL_UCODE_TLV_FLAGS_DW_BC_TABLE) {
+        bc_len = (bc_len + 3u) / 4u;
+    }
+    uint16_t bc_val = (0u << 12) | bc_len;
+    s_sched_virt[0].tfd_offset[idx] = bc_val;
+    if (idx < IWL_TFD_QUEUE_SIZE_BC_DUP) {
+        s_sched_virt[0].tfd_offset[IWL_TFD_QUEUE_SIZE_MAX + idx] = bc_val;
+    }
+
+    s_pending_cmd_idx = idx;
+    s_cmd_done = false;
+    s_cmd_failed = false;
+    memset(s_cmd_resp_buf, 0, sizeof(s_cmd_resp_buf));
+
+    s_cmd_idx = (uint8_t)((idx + 1u) & 0xFFu);
+    __asm__ volatile("mfence" ::: "memory");
+
+    /* Kick Command Queue 0 write pointer */
+    iwl_write32(HBUS_TARG_WRPTR, (0u << 8) | (uint32_t)s_cmd_idx);
+
+    if (!wait_resp) {
+        iwl_delay_ms(2);
+        iwl_drain_rx_ring();
+        return true;
+    }
+
+    for (int ms = 0; ms < 1000; ms++) {
+        for (int j = 0; j < 50; j++) {
+            iwl_drain_rx_ring();
+            if (s_cmd_done) {
+                s_pending_cmd_idx = 0xFF;
+                return !s_cmd_failed;
+            }
+            __asm__ volatile("pause" ::: "memory");
+        }
+        iwl_delay_ms(1);
+    }
+
+    s_pending_cmd_idx = 0xFF;
+    return false;
+}
+
+static bool iwl_send_paging_cmd(void) {
+    if (s_num_paging_blk == 0) return true;
+
+    iwl_fw_paging_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.flags = IWL_PAGING_CMD_IS_SECURED |
+                IWL_PAGING_CMD_IS_ENABLED |
+                (s_last_blk_pages & 0xFFu);
+    cmd.block_size = 15; /* 2^15 = 32 KiB */
+    cmd.block_num  = s_num_paging_blk;
+
+    cmd.device_phy_addr[0] = (uint32_t)(s_paging_css_phys >> 12);
+    for (uint32_t i = 0; i < s_num_paging_blk; i++) {
+        cmd.device_phy_addr[i + 1] = (uint32_t)(s_paging_blk_phys[i] >> 12);
+    }
+
+    return iwl_send_cmd_pdu(IWL_CMD_ID(IWL_FW_PAGING_BLOCK_CMD, IWL_LONG_GROUP, 0),
+                            &cmd, sizeof(cmd), true);
+}
+
+static bool iwl_send_sf_config(uint32_t state) {
+    static const uint32_t full_def[IWL_SF_NUM_SCENARIO][IWL_SF_NUM_TIMEOUT_TYPES] = {
+        { 400, 160 }, { 400, 160 }, { 400, 160 }, { 400, 160 }, { 400, 160 }
+    };
+    iwl_sf_cfg_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.state = state;
+    cmd.watermark[IWL_SF_LONG_DELAY_ON] = 4096;
+    cmd.watermark[IWL_SF_FULL_ON]       = 8192;
+    for (int i = 0; i < IWL_SF_NUM_SCENARIO; i++) {
+        for (int j = 0; j < IWL_SF_NUM_TIMEOUT_TYPES; j++) {
+            cmd.long_delay_timeouts[i][j] = 1000000u;
+            cmd.full_on_timeouts[i][j]    = full_def[i][j];
+        }
+    }
+    return iwl_send_cmd_pdu(IWL_HCMD_SF_CFG, &cmd, sizeof(cmd), false);
+}
+
+static bool iwl_send_tx_ant_cfg(uint8_t valid_ant) {
+    iwl_tx_ant_cfg_cmd_t cmd = { .valid = valid_ant };
+    return iwl_send_cmd_pdu(IWL_HCMD_TX_ANT_CFG, &cmd, sizeof(cmd), true);
+}
+
+static bool iwl_send_phy_cfg(uint32_t phy_cfg, uint32_t flow_trig, uint32_t event_trig) {
+    iwl_phy_cfg_cmd_t cmd = {
+        .phy_cfg       = phy_cfg,
+        .flow_trigger  = flow_trig,
+        .event_trigger = event_trig,
+    };
+    return iwl_send_cmd_pdu(IWL_HCMD_PHY_CFG, &cmd, sizeof(cmd), true);
+}
+
+static bool iwl_send_phy_db_section(uint16_t type, uint16_t length, const uint8_t *data) {
+    uint8_t Scratch[1600];
+    if ((uint32_t)sizeof(iwl_phy_db_cmd_t) + length > sizeof(Scratch)) return false;
+    iwl_phy_db_cmd_t *hdr = (iwl_phy_db_cmd_t *)Scratch;
+    hdr->type   = type;
+    hdr->length = length;
+    if (length > 0 && data) {
+        memcpy(Scratch + sizeof(iwl_phy_db_cmd_t), data, length);
+    }
+    bool ok = iwl_send_cmd_pdu(IWL_HCMD_PHY_DB, Scratch, (uint16_t)(sizeof(iwl_phy_db_cmd_t) + length), false);
+    iwl_delay_ms(1);
+    return ok;
+}
+
+static bool iwl_send_all_phy_db(void) {
+    const uint16_t order[4] = { 1 /* CFG */, 2 /* CALIB_NCH */, 4 /* PAPD */, 5 /* TXP */ };
+    for (int t = 0; t < 4; t++) {
+        uint16_t target_type = order[t];
+        for (uint32_t i = 0; i < s_phy_db_count; i++) {
+            if (s_phy_db_chunks[i].type == target_type && s_phy_db_chunks[i].length > 0) {
+                if (!iwl_send_phy_db_section(target_type,
+                                             s_phy_db_chunks[i].length,
+                                             s_phy_db_pool + s_phy_db_chunks[i].offset)) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static bool iwl_enable_txq(uint8_t sta_id, uint8_t qid, uint8_t fifo, uint8_t tid) {
+    if (iwl_nic_lock()) {
+        iwl_write32(HBUS_TARG_WRPTR, ((uint32_t)qid << 8) | 0u);
+        iwl_nic_unlock();
+    }
+    iwl_scd_txq_cfg_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.tid       = tid;
+    cmd.scd_queue = qid;
+    cmd.enable    = 1;
+    cmd.sta_id    = sta_id;
+    cmd.tx_fifo   = fifo;
+    cmd.aggregate = 0;
+    cmd.ssn       = 0;
+    cmd.window    = 64;
+    return iwl_send_cmd_pdu(IWL_HCMD_SCD_QUEUE_CFG, &cmd, sizeof(cmd), true);
+}
+
+static bool iwl_add_aux_sta(void) {
+    /* Enable Queue 1 (IWM_DQA_AUX_QUEUE) on FIFO 5 (IWM_TX_FIFO_MCAST), TID 8 (MAX_TID) */
+    if (!iwl_enable_txq(IWL_AUX_STA_ID, 1, 5, 8)) {
+        return false;
+    }
+
+    iwl_add_sta_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.sta_id         = IWL_AUX_STA_ID;
+    cmd.station_type   = IWL_STA_AUX_ACTIVITY;
+    cmd.mac_id_n_color = IWL_FW_CMD_ID_AND_COLOR(IWL_MAC_INDEX_AUX, 0);
+    cmd.tfd_queue_msk  = (1u << 1);
+    cmd.tid_disable_tx = 0xFFFFu;
+
+    return iwl_send_cmd_pdu(IWL_HCMD_ADD_STA, &cmd, sizeof(cmd), true);
+}
+
+static bool iwl_send_phy_context_cmd(uint32_t id, uint32_t action, uint8_t channel) {
+    iwl_phy_context_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.id_and_color = IWL_FW_CMD_ID_AND_COLOR(id, 0);
+    cmd.action       = action;
+    cmd.apply_time   = 0;
+    cmd.ci.band      = (channel <= 14) ? IWL_PHY_BAND_24 : IWL_PHY_BAND_5;
+    cmd.ci.channel   = channel;
+    cmd.ci.width     = 0; /* 20 MHz */
+    cmd.ci.ctrl_pos  = 0;
+    cmd.txchain_info = s_valid_tx_ant;
+    cmd.rxchain_info = ((uint32_t)s_valid_rx_ant << 1) | (1u << 10) | (1u << 12);
+
+    return iwl_send_cmd_pdu(IWL_HCMD_PHY_CONTEXT, &cmd, sizeof(cmd), true);
+}
+
+static bool iwl_config_umac_scan(void) {
+    uint8_t buf[128];
+    memset(buf, 0, sizeof(buf));
+    iwl_scan_config_t *cfg = (iwl_scan_config_t *)buf;
+
+    uint32_t rates = 0x0FFFu; /* All 12 CCK + OFDM basic/supported rates */
+    cfg->tx_chains          = s_valid_tx_ant;
+    cfg->rx_chains          = s_valid_rx_ant;
+    cfg->legacy_rates       = rates | (rates << 16);
+    cfg->out_of_channel_time = 0;
+    cfg->suspend_time       = 0;
+    cfg->dwell_active       = 10;
+    cfg->dwell_passive      = 110;
+    cfg->dwell_fragmented   = 44;
+    cfg->dwell_extended     = 90;
+    memcpy(cfg->mac_addr, s_iwl_dev.mac_addr, 6);
+    cfg->bcast_sta_id       = IWL_AUX_STA_ID;
+    cfg->channel_flags      = 0;
+
+    uint32_t nchan = sizeof(s_scan_channels);
+    if (nchan > s_n_scan_channels) nchan = s_n_scan_channels;
+    for (uint32_t i = 0; i < nchan; i++) {
+        cfg->channel_array[i] = s_scan_channels[i];
+    }
+
+    cfg->flags = (1u << 0)  | /* ACTIVATE */
+                 (1u << 3)  | /* ALLOW_CHUB_REQS */
+                 (1u << 8)  | /* SET_TX_CHAINS */
+                 (1u << 9)  | /* SET_RX_CHAINS */
+                 (1u << 10) | /* SET_AUX_STA_ID */
+                 (1u << 11) | /* SET_ALL_TIMES */
+                 (1u << 13) | /* SET_CHANNEL_FLAGS */
+                 (1u << 14) | /* SET_LEGACY_RATES */
+                 (1u << 15) | /* SET_MAC_ADDR */
+                 (1u << 17) | /* CLEAR_FRAGMENTED */
+                 (nchan << 26);
+
+    uint16_t cmd_len = (uint16_t)(sizeof(iwl_scan_config_t) + s_n_scan_channels);
+    return iwl_send_cmd_pdu(IWL_CMD_ID(IWL_SCAN_CFG_CMD, IWL_LONG_GROUP, 0),
+                            buf, cmd_len, true);
+}
+
+static void iwl_setup_default_mac_and_binding(void) {
+    /* 1. Add MAC Context 0 (BSS_STA) with beacon reception enabled */
+    iwl_mac_ctx_cmd_t mac_cmd;
+    memset(&mac_cmd, 0, sizeof(mac_cmd));
+    mac_cmd.id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+    mac_cmd.action       = IWL_FW_CTXT_ACTION_ADD;
+    mac_cmd.mac_type     = IWL_FW_MAC_TYPE_BSS_STA;
+    mac_cmd.tsf_id       = 0;
+    memcpy(mac_cmd.node_addr, s_iwl_dev.mac_addr, 6);
+    memset(mac_cmd.bssid_addr, 0xFF, 6);
+    mac_cmd.cck_rates    = 0x0Fu;
+    mac_cmd.ofdm_rates   = 0x15u;
+    mac_cmd.filter_flags = IWL_MAC_FILTER_ACCEPT_GRP | IWL_MAC_FILTER_IN_BEACON;
+    for (int ac = 0; ac < 4; ac++) {
+        mac_cmd.ac[ac].cw_min     = 15;
+        mac_cmd.ac[ac].cw_max     = 1023;
+        mac_cmd.ac[ac].aifsn      = 3;
+        mac_cmd.ac[ac].fifos_mask = (uint8_t)(1u << ac);
+        mac_cmd.ac[ac].edca_txop  = 0;
+    }
+    (void)iwl_send_cmd_pdu(IWL_HCMD_MAC_CONTEXT, &mac_cmd, sizeof(mac_cmd), true);
+
+    /* 2. Bind MAC Context 0 to PHY Context 0 */
+    iwl_binding_cmd_v1_t bind_cmd;
+    memset(&bind_cmd, 0, sizeof(bind_cmd));
+    bind_cmd.id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+    bind_cmd.action       = IWL_FW_CTXT_ACTION_ADD;
+    bind_cmd.macs[0]      = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+    bind_cmd.macs[1]      = 0xFFFFFFFFu;
+    bind_cmd.macs[2]      = 0xFFFFFFFFu;
+    bind_cmd.phy          = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+    (void)iwl_send_cmd_pdu(IWL_HCMD_BINDING_CONTEXT, &bind_cmd, sizeof(bind_cmd), true);
+
+    /* 3. Set Time Quota for Binding 0 */
+    iwl_time_quota_cmd_t quota_cmd;
+    memset(&quota_cmd, 0, sizeof(quota_cmd));
+    quota_cmd.quotas[0].id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+    quota_cmd.quotas[0].quota        = 128;
+    quota_cmd.quotas[0].max_duration = 0;
+    quota_cmd.quotas[0].low_latency  = 0;
+    for (int i = 1; i < 4; i++) {
+        quota_cmd.quotas[i].id_and_color = 0xFFFFFFFFu;
+    }
+    (void)iwl_send_cmd_pdu(IWL_HCMD_TIME_QUOTA, &quota_cmd, sizeof(quota_cmd), true);
+}
+
+/* Boot either SEC_INIT (20) or SEC_RT (19), run post_alive, and configure CPU2 paging */
+static bool iwl_boot_ucode_image(const void *fw_data, size_t fw_len,
+                                 uint32_t target_sec_tlv, uint32_t fw_phy_config,
+                                 uint32_t paging_mem_size) {
+    s_alive_received = false;
+    s_alive_status   = 0;
+    s_sched_base     = 0;
+    s_num_paging_blk = 0;
+    s_last_blk_pages = 0;
+
+    if (!iwl_prepare_card_hw()) {
+        serial_puts("[IWL] WARN: iwl_prepare_card_hw NIC_READY not asserted, continuing\n");
+    }
+    iwl_write32(CSR_RESET, CSR_RESET_REG_FLAG_SW_RESET);
+    iwl_delay_ms(5);
+
+    (void)iwl_apm_init();
+    iwl_write32(CSR_INT, 0xFFFFFFFFu);
+    (void)iwl_apm_init();
+    iwl_nic_config(fw_phy_config);
+
+    if (!iwl_setup_rx_dma()) {
+        serial_puts("[IWL] Failed to configure RX DMA ring\n");
+        return false;
+    }
+
+    /* Clear RFKILL and legacy interrupts; enable FH_TX interrupt for firmware loading */
+    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x06u);
+    iwl_write32(CSR_FH_INT_STATUS, 0xFFFFFFFFu);
+    iwl_write32(CSR_INT, 0xFFFFFFFFu);
+    iwl_write32(CSR_INT_MASK, CSR_INT_BIT_FH_TX);
+    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x02u);
+    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x02u);
+
+    /* Release internal CPU from reset */
+    if (iwl_nic_lock()) {
+        iwl_write_prph(IWL_RELEASE_CPU_RESET, IWL_RELEASE_CPU_RESET_BIT);
+        iwl_nic_unlock();
+    } else {
+        serial_puts("[IWL] Failed to acquire NIC lock for CPU reset release\n");
+        return false;
+    }
+
+    /* Stream CPU1 and CPU2 non-paged sections, and copy CPU2 paging sections to DRAM */
+    const uint8_t *ptr = (const uint8_t *)fw_data + sizeof(iwl_ucode_header_t);
+    size_t rem = fw_len - sizeof(iwl_ucode_header_t);
+
+    int cpu_phase = 1;
+    uint32_t sec_num = 1;
+    uint32_t loaded_sections = 0;
+    int paging_phase = 0; /* 0 = normal, 1 = CSS, 2 = Paging Data */
+
+    while (rem >= sizeof(iwl_ucode_tlv_t)) {
+        const iwl_ucode_tlv_t *tlv = (const iwl_ucode_tlv_t *)ptr;
+        size_t step = sizeof(iwl_ucode_tlv_t) + ((tlv->length + 3u) & ~3u);
+        if (step > rem) break;
+
+        if (tlv->type == target_sec_tlv && tlv->length >= 4) {
+            const uint8_t *payload = ptr + sizeof(iwl_ucode_tlv_t);
+            uint32_t dst_addr = *(const uint32_t *)payload;
+            const uint8_t *data = payload + 4;
+            uint32_t dlen = tlv->length - 4;
+
+            if (paging_phase == 0) {
+                if (dst_addr == IWL_CPU1_CPU2_SEPARATOR_SECTION) {
+                    if (iwl_nic_lock()) {
+                        iwl_write32(FH_UCODE_LOAD_STATUS, 0x0000FFFFu);
+                        iwl_nic_unlock();
+                    }
+                    cpu_phase = 2;
+                    sec_num = 1;
+                } else if (dst_addr == IWL_PAGING_SEPARATOR_SECTION) {
+                    paging_phase = 1;
+                } else if (dlen > 0) {
+                    if (!iwl_load_section(dst_addr, data, dlen)) {
+                        serial_puts("[IWL] Failed to stream firmware chunk at dst=");
+                        serial_print_hex(dst_addr);
+                        serial_puts("\n");
+                        return false;
+                    }
+                    if (iwl_nic_lock()) {
+                        uint32_t shift = (cpu_phase == 1) ? 0 : 16;
+                        uint32_t val = iwl_read32(FH_UCODE_LOAD_STATUS);
+                        val |= (sec_num << shift);
+                        iwl_write32(FH_UCODE_LOAD_STATUS, val);
+                        sec_num = (sec_num << 1) | 1;
+                        iwl_nic_unlock();
+                    }
+                    loaded_sections++;
+                }
+            } else if (paging_phase == 1) {
+                /* Copy CPU2 Paging CSS block (4 KiB) */
+                memset(s_paging_css_virt, 0, 4096);
+                uint32_t clen = (dlen > 4096u) ? 4096u : dlen;
+                if (clen > 0) memcpy(s_paging_css_virt, data, clen);
+                paging_phase = 2;
+            } else if (paging_phase == 2) {
+                /* Copy CPU2 Paging Data into 32 KiB blocks */
+                uint32_t psize = (paging_mem_size > 0) ? paging_mem_size : dlen;
+                uint32_t num_pages = (psize + 4095u) / 4096u;
+                if (num_pages > IWL_MAX_PAGING_DATA_BLOCKS * 8u) {
+                    num_pages = IWL_MAX_PAGING_DATA_BLOCKS * 8u;
+                }
+                s_num_paging_blk = (num_pages > 0) ? (((num_pages - 1u) / 8u) + 1u) : 0;
+                s_last_blk_pages = (s_num_paging_blk > 0) ? (num_pages - 8u * (s_num_paging_blk - 1u)) : 0;
+
+                uint32_t off = 0;
+                for (uint32_t b = 0; b < s_num_paging_blk; b++) {
+                    memset(s_paging_blk_virt[b], 0, 32768);
+                    if (off < dlen) {
+                        uint32_t b_len = (b + 1 < s_num_paging_blk) ? 32768u : (s_last_blk_pages * 4096u);
+                        if (off + b_len > dlen) b_len = dlen - off;
+                        memcpy(s_paging_blk_virt[b], data + off, b_len);
+                        off += 32768u;
+                    }
+                }
+                paging_phase = 3;
+            }
+        }
+
+        ptr += step;
+        rem -= step;
+    }
+
+    /* Finalize CPU2 */
+    if (iwl_nic_lock()) {
+        iwl_write32(FH_UCODE_LOAD_STATUS, 0xFFFFFFFFu);
+        iwl_nic_unlock();
+    }
+
+    iwl_write32(CSR_INT_MASK, CSR_INI_SET_MASK);
+
+    serial_puts("[IWL] Streamed ");
+    serial_print_dec(loaded_sections);
+    serial_puts(target_sec_tlv == IWL_UCODE_TLV_SEC_INIT ? " SEC_INIT" : " SEC_RT");
+    serial_puts(" sections; waiting for ALIVE...\n");
+
+    for (int ms = 0; ms < 1500; ms++) {
+        iwl_drain_rx_ring();
+        if (s_alive_received) break;
+        iwl_delay_ms(1);
+    }
+
+    if (!s_alive_received || s_alive_status != 0xCAFEu) {
+        serial_puts("[IWL] Firmware ALIVE timeout/bad status; status=");
+        serial_print_hex(s_alive_status);
+        serial_puts(" CSR_INT=");
+        serial_print_hex(iwl_read32(CSR_INT));
+        serial_puts("\n");
+        return false;
+    }
+
+    if (!iwl_post_alive()) {
+        serial_puts("[IWL] iwl_post_alive failed\n");
+        return false;
+    }
+
+    if (!iwl_send_paging_cmd()) {
+        serial_puts("[IWL] iwl_send_paging_cmd failed\n");
+        return false;
+    }
+
+    return true;
+}
 #endif
 
 bool iwlwifi_is_supported_device(uint16_t vendor, uint16_t device) {
@@ -432,6 +1257,7 @@ static const wlan_hw_ops_t s_iwlwifi_hw_ops = {
     .name = "iwlwifi",
     .get_mac = iwlwifi_get_mac,
     .set_channel = iwlwifi_set_channel,
+    .start_scan = iwlwifi_start_scan,
     .send_raw_80211 = iwlwifi_send_raw,
     .poll_raw_80211 = iwlwifi_poll_raw,
     .recycle_raw_80211 = iwlwifi_recycle_raw,
@@ -467,16 +1293,42 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
     const uint8_t *ptr = (const uint8_t *)fw_data + sizeof(iwl_ucode_header_t);
     size_t rem = fw_len - sizeof(iwl_ucode_header_t);
 
-    uint32_t tlv_count = 0;
-    uint32_t fw_phy_config = 0;
+    uint32_t tlv_count        = 0;
+    uint32_t fw_phy_config    = 0;
+    uint32_t tlv_flags        = IWL_UCODE_TLV_FLAGS_DW_BC_TABLE;
+    uint32_t n_scan_chans     = 40;
+    uint32_t paging_mem_size  = 0;
+    uint32_t calib_init_flow  = 0;
+    uint32_t calib_init_event = 0;
+    uint32_t calib_rt_flow    = 0;
+    uint32_t calib_rt_event   = 0;
+
     while (rem >= sizeof(iwl_ucode_tlv_t)) {
         const iwl_ucode_tlv_t *tlv = (const iwl_ucode_tlv_t *)ptr;
         if (tlv->length > rem - sizeof(iwl_ucode_tlv_t)) break;
-        if (tlv->type == IWL_UCODE_TLV_PHY_SKU && tlv->length == 4) {
-            fw_phy_config = *(const uint32_t *)(ptr + sizeof(iwl_ucode_tlv_t));
+        const uint8_t *val_ptr = ptr + sizeof(iwl_ucode_tlv_t);
+
+        if (tlv->type == IWL_UCODE_TLV_FLAGS && tlv->length >= 4) {
+            tlv_flags = *(const uint32_t *)val_ptr;
+        } else if (tlv->type == IWL_UCODE_TLV_PHY_SKU && tlv->length == 4) {
+            fw_phy_config = *(const uint32_t *)val_ptr;
+        } else if (tlv->type == IWL_UCODE_TLV_N_SCAN_CHANNELS && tlv->length == 4) {
+            n_scan_chans = *(const uint32_t *)val_ptr;
+        } else if (tlv->type == IWL_UCODE_TLV_PAGING && tlv->length == 4) {
+            paging_mem_size = *(const uint32_t *)val_ptr;
+        } else if (tlv->type == IWL_UCODE_TLV_DEF_CALIB && tlv->length >= sizeof(iwl_tlv_calib_ctrl_t)) {
+            const iwl_tlv_calib_ctrl_t *cal = (const iwl_tlv_calib_ctrl_t *)val_ptr;
+            if (cal->ucode_type == 1) { /* IWM_UCODE_TYPE_INIT */
+                calib_init_flow  = cal->flow_trigger;
+                calib_init_event = cal->event_trigger;
+            } else if (cal->ucode_type == 0) { /* IWM_UCODE_TYPE_REGULAR */
+                calib_rt_flow    = cal->flow_trigger;
+                calib_rt_event   = cal->event_trigger;
+            }
         }
+
         tlv_count++;
-        size_t step = sizeof(iwl_ucode_tlv_t) + ((tlv->length + 3) & ~3);
+        size_t step = sizeof(iwl_ucode_tlv_t) + ((tlv->length + 3u) & ~3u);
         if (step > rem) break;
         ptr += step;
         rem -= step;
@@ -486,204 +1338,254 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
 #ifndef IWLWIFI_HOST_TEST
     if (!s_iwl_dev.detected || !s_iwl_dev.mmio_base) return true;
 
-    /* Ensure PCI endpoint and any parent PCIe Root Port bridge have Bus Master enabled */
-    iwl_enable_pci_and_bridges();
+    /* If runtime MVM firmware is already initialized and alive, do not reset or re-upload */
+    if (s_iwl_dev.mvm_initialized && s_iwl_dev.firmware_alive) {
+        return true;
+    }
 
-    /* Ensure DMA buffers are allocated */
+    iwl_enable_pci_and_bridges();
     if (!iwl_alloc_dma_buffers()) {
         serial_puts("[IWL] PMM allocation for FW DMA failed\n");
         return false;
     }
 
-    /* 1. iwm_start_hw + iwm_nic_init sequence: prepare card HW, SW reset, APM init, NIC config, RX/TX DMA */
-    if (!iwl_prepare_card_hw()) {
-        serial_puts("[IWL] WARN: iwl_prepare_card_hw NIC_READY not asserted, continuing\n");
-    }
-    iwl_write32(CSR_RESET, CSR_RESET_REG_FLAG_SW_RESET);
-    iwl_delay_ms(5);
+    s_tlv_flags = tlv_flags;
+    s_n_scan_channels = (n_scan_chans > 0 && n_scan_chans <= 52) ? n_scan_chans : 40;
+    s_valid_tx_ant = (uint8_t)((fw_phy_config >> 16) & 0xFu);
+    s_valid_rx_ant = (uint8_t)((fw_phy_config >> 20) & 0xFu);
+    if (s_valid_tx_ant == 0) s_valid_tx_ant = 3;
+    if (s_valid_rx_ant == 0) s_valid_rx_ant = 3;
 
-    if (!iwl_apm_init()) {
-        serial_puts("[IWL] WARN: iwl_apm_init MAC_CLOCK_READY timeout\n");
-    }
+    /* ========================================================================
+     * Stage 1: Boot SEC_INIT (TLV 20), read HW MAC, and collect PHY_DB calib
+     * ======================================================================== */
+    s_phy_db_count = 0;
+    s_phy_db_pool_used = 0;
+    s_init_complete_received = false;
 
-    iwl_write32(CSR_INT, 0xFFFFFFFFu);
-    iwl_apm_init();
-    iwl_nic_config(fw_phy_config);
-
-    /* Initialize Legacy RX DMA ring and Keep-Warm page before microcode boot */
-    if (!iwl_setup_rx_dma()) {
-        serial_puts("[IWL] Failed to configure RX DMA ring\n");
+    if (!iwl_boot_ucode_image(fw_data, fw_len, IWL_UCODE_TLV_SEC_INIT, fw_phy_config, paging_mem_size)) {
+        s_iwl_dev.firmware_alive = false;
         return false;
     }
 
-    /* Clear RFKILL and legacy interrupts; enable FH_TX interrupt for firmware loading */
-    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x06u);
-    iwl_write32(CSR_FH_INT_STATUS, 0xFFFFFFFFu);
-    iwl_write32(CSR_INT, 0xFFFFFFFFu);
-    iwl_write32(CSR_INT_MASK, CSR_INT_BIT_FH_TX);
-    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x02u);
-    iwl_write32(CSR_UCODE_DRV_GP1_CLR, 0x02u);
+    iwl_read_hw_mac();
 
-    uint32_t int_pre_cpu = iwl_read32(CSR_INT);
-
-    /* 2. Release internal CPU from reset */
-    if (iwl_nic_lock()) {
-        iwl_write_prph(IWL_RELEASE_CPU_RESET, IWL_RELEASE_CPU_RESET_BIT);
-        iwl_nic_unlock();
-    } else {
-        serial_puts("[IWL] Failed to acquire NIC lock for CPU reset release\n");
+    (void)iwl_send_sf_config(IWL_SF_INIT_OFF);
+    (void)iwl_send_tx_ant_cfg(s_valid_tx_ant);
+    if (!iwl_send_phy_cfg(fw_phy_config, calib_init_flow, calib_init_event)) {
+        serial_puts("[IWL] SEC_INIT PHY_CFG failed\n");
         return false;
     }
 
-    uint32_t int_post_cpu = iwl_read32(CSR_INT);
-    uint32_t pci_cmd_sts = pci_read_config32(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus,
-                                             s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND);
-    serial_puts("[IWL] Pre-DMA BDF=");
-    pci_print_bdf(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus, s_iwl_dev.pci.device, s_iwl_dev.pci.function);
-    serial_puts(" PCI_CS=");
-    serial_print_hex(pci_cmd_sts);
-    serial_puts(" HW_IF=");
-    serial_print_hex(iwl_read32(CSR_HW_IF_CONFIG_REG));
-    serial_puts(" INT_PRE=");
-    serial_print_hex(int_pre_cpu);
-    serial_puts(" INT_POST=");
-    serial_print_hex(int_post_cpu);
-    serial_puts(" DMA_PA=");
-    serial_print_hex(s_fw_chunk_phys);
-    serial_puts("\n");
-
-    /* 3. Stream SEC_INIT (TLV 20) CPU1 and CPU2 sections */
-    ptr = (const uint8_t *)fw_data + sizeof(iwl_ucode_header_t);
-    rem = fw_len - sizeof(iwl_ucode_header_t);
-
-    int cpu_phase = 1;
-    uint32_t sec_num = 1;
-    uint32_t loaded_sections = 0;
-
-    while (rem >= sizeof(iwl_ucode_tlv_t)) {
-        const iwl_ucode_tlv_t *tlv = (const iwl_ucode_tlv_t *)ptr;
-        size_t step = sizeof(iwl_ucode_tlv_t) + ((tlv->length + 3) & ~3);
-        if (step > rem) break;
-
-        if (tlv->type == IWL_UCODE_TLV_SEC_INIT && tlv->length >= 4) {
-            const uint8_t *payload = ptr + sizeof(iwl_ucode_tlv_t);
-            uint32_t dst_addr = *(const uint32_t *)payload;
-            const uint8_t *data = payload + 4;
-            uint32_t dlen = tlv->length - 4;
-
-            if (dst_addr == IWL_CPU1_CPU2_SEPARATOR_SECTION) {
-                /* Finalize CPU1 */
-                if (iwl_nic_lock()) {
-                    iwl_write32(FH_UCODE_LOAD_STATUS, 0x0000FFFFu);
-                    iwl_nic_unlock();
-                }
-                cpu_phase = 2;
-                sec_num = 1;
-            } else if (dst_addr == IWL_PAGING_SEPARATOR_SECTION) {
-                /* End of non-paged CPU2 sections */
-                break;
-            } else if (dlen > 0) {
-                if (!iwl_load_section(dst_addr, data, dlen)) {
-                    uint32_t err_pci_cs = pci_read_config32(s_iwl_dev.pci.segment, s_iwl_dev.pci.bus,
-                                                            s_iwl_dev.pci.device, s_iwl_dev.pci.function, PCI_REG_COMMAND);
-                    uint32_t sb1 = 0, sb2 = 0;
-                    if (iwl_nic_lock()) {
-                        sb1 = iwl_read_prph(IWL_SB_CPU_1_STATUS);
-                        sb2 = iwl_read_prph(IWL_SB_CPU_2_STATUS);
-                        iwl_nic_unlock();
-                    }
-                    serial_puts("[IWL] Failed to stream firmware chunk at dst=");
-                    serial_print_hex(dst_addr);
-                    serial_puts(" CSR_INT=");
-                    serial_print_hex(iwl_read32(CSR_INT));
-                    serial_puts(" FH_INT=");
-                    serial_print_hex(iwl_read32(CSR_FH_INT_STATUS));
-                    serial_puts(" PCI_CS=");
-                    serial_print_hex(err_pci_cs);
-                    serial_puts(" TX_STS=");
-                    serial_print_hex(iwl_read32(FH_TSSR_TX_STATUS_REG));
-                    serial_puts(" TX_ERR=");
-                    serial_print_hex(iwl_read32(FH_TSSR_TX_ERROR_REG));
-                    serial_puts(" BUF_STS=");
-                    serial_print_hex(iwl_read32(FH_TCSR_CHNL_TX_BUF_STS_REG(IWL_FH_SRVC_CHNL)));
-                    serial_puts(" SB1=");
-                    serial_print_hex(sb1);
-                    serial_puts(" SB2=");
-                    serial_print_hex(sb2);
-                    serial_puts("\n");
-                    return false;
-                }
-                if (iwl_nic_lock()) {
-                    uint32_t shift = (cpu_phase == 1) ? 0 : 16;
-                    uint32_t val = iwl_read32(FH_UCODE_LOAD_STATUS);
-                    val |= (sec_num << shift);
-                    iwl_write32(FH_UCODE_LOAD_STATUS, val);
-                    sec_num = (sec_num << 1) | 1;
-                    iwl_nic_unlock();
-                }
-                loaded_sections++;
-            }
-        }
-
-        ptr += step;
-        rem -= step;
-    }
-
-    /* Finalize CPU2 */
-    if (iwl_nic_lock()) {
-        iwl_write32(FH_UCODE_LOAD_STATUS, 0xFFFFFFFFu);
-        iwl_nic_unlock();
-    }
-
-    /* Enable ALIVE and RX interrupts for microcode boot notification */
-    iwl_write32(CSR_INT_MASK, CSR_INT_BIT_FH_TX | CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX);
-
-    serial_puts("[IWL] Streamed ");
-    serial_print_dec(loaded_sections);
-    serial_puts(" SEC_INIT sections; waiting for ALIVE...\n");
-
-    /* 5. Wait up to 1000ms for ALIVE interrupt or RX RB0 completion */
-    bool alive = false;
-    volatile uint16_t *rb_stts = (volatile uint16_t *)((uint8_t *)s_rx_desc_virt + 2048);
-    for (int ms = 0; ms < 1000; ms++) {
-        uint32_t intr = iwl_read32(CSR_INT);
-        uint32_t fh_intr = iwl_read32(CSR_FH_INT_STATUS);
-        uint16_t closed_rb = (*rb_stts) & 0x0FFFu;
-        if ((intr & (CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX)) || (fh_intr & 0x00000001u) || closed_rb > 0) {
-            alive = true;
-            iwl_write32(CSR_INT, intr);
-            iwl_write32(CSR_FH_INT_STATUS, fh_intr);
-            break;
-        }
+    /* Wait up to 2500ms for PHY_DB calibration chunks (0x6B) and INIT_COMPLETE (0x04) */
+    for (int ms = 0; ms < 2500; ms++) {
+        iwl_drain_rx_ring();
+        if (s_init_complete_received && s_phy_db_count >= 2) break;
         iwl_delay_ms(1);
     }
 
-    if (alive) {
-        s_iwl_dev.firmware_alive = true;
-        serial_puts("[IWL] Firmware ALIVE signaled! CSR_INT=");
-        serial_print_hex(iwl_read32(CSR_INT));
-        serial_puts(" closed_rb=");
-        serial_print_dec((*rb_stts) & 0x0FFFu);
-        serial_puts("\n");
-    } else {
-        /* Fail closed: without ALIVE the TX path must stay disabled so no
-         * descriptors are posted to an unbooted DMA engine. */
+    serial_puts("[IWL] SEC_INIT calibration done: phy_db_chunks=");
+    serial_print_dec(s_phy_db_count);
+    serial_puts(" bytes=");
+    serial_print_dec(s_phy_db_pool_used);
+    serial_puts("\n");
+
+    /* ========================================================================
+     * Stage 2: Reset and boot SEC_RT (TLV 19) Runtime Microcode
+     * ======================================================================== */
+    if (!iwl_boot_ucode_image(fw_data, fw_len, IWL_UCODE_TLV_SEC_RT, fw_phy_config, paging_mem_size)) {
         s_iwl_dev.firmware_alive = false;
-        serial_puts("[IWL] Firmware ALIVE timeout; CSR_INT=");
-        serial_print_hex(iwl_read32(CSR_INT));
-        serial_puts(" FH_INT=");
-        serial_print_hex(iwl_read32(CSR_FH_INT_STATUS));
-        serial_puts(" GP_CNTRL=");
-        serial_print_hex(iwl_read32(CSR_GP_CNTRL));
-        serial_puts("\n");
         return false;
     }
+
+    /* Configure runtime radio, PHY DB, BT coex, DQA, AUX STA, PHY contexts, and UMAC scan */
+    (void)iwl_send_tx_ant_cfg(s_valid_tx_ant);
+    (void)iwl_send_all_phy_db();
+    if (!iwl_send_phy_cfg(fw_phy_config, calib_rt_flow, calib_rt_event)) {
+        serial_puts("[IWL] SEC_RT PHY_CFG failed\n");
+        return false;
+    }
+
+    iwl_bt_coex_cmd_t bt_cmd = { .mode = 3, .enabled_modules = (1u << 4) };
+    (void)iwl_send_cmd_pdu(IWL_HCMD_BT_CONFIG, &bt_cmd, sizeof(bt_cmd), true);
+
+    iwl_dqa_enable_cmd_t dqa_cmd = { .cmd_queue = 0 };
+    (void)iwl_send_cmd_pdu(IWL_CMD_ID(IWL_DQA_ENABLE_CMD, IWL_DATA_PATH_GROUP, 0),
+                           &dqa_cmd, sizeof(dqa_cmd), true);
+
+    if (!iwl_add_aux_sta()) {
+        serial_puts("[IWL] WARN: iwl_add_aux_sta returned error\n");
+    }
+
+    for (uint32_t i = 0; i < 3; i++) {
+        (void)iwl_send_phy_context_cmd(i, IWL_FW_CTXT_ACTION_ADD, 1);
+    }
+
+    uint8_t temp_ths[20] = {0};
+    (void)iwl_send_cmd_pdu(IWL_CMD_ID(IWL_TEMP_REPORT_THS_CMD, IWL_PHY_OPS_GROUP, 0),
+                           temp_ths, sizeof(temp_ths), true);
+
+    iwl_device_power_cmd_t pwr_cmd = { .flags = 1, .reserved = 0 };
+    (void)iwl_send_cmd_pdu(IWL_HCMD_POWER_TABLE, &pwr_cmd, sizeof(pwr_cmd), true);
+
+    iwl_mcc_update_cmd_t mcc_cmd;
+    memset(&mcc_cmd, 0, sizeof(mcc_cmd));
+    mcc_cmd.mcc = (uint16_t)(('Z' << 8) | 'Z');
+    mcc_cmd.source_id = 0;
+    (void)iwl_send_cmd_pdu(IWL_HCMD_MCC_UPDATE, &mcc_cmd, sizeof(mcc_cmd), true);
+
+    if (!iwl_config_umac_scan()) {
+        serial_puts("[IWL] WARN: iwl_config_umac_scan failed\n");
+    }
+
+    /* Enable default management/data queues 5..8 */
+    static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
+    for (uint8_t ac = 0; ac < 4; ac++) {
+        (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 8);
+    }
+
+    /* Disable hardware beacon filtering so all beacons reach the host */
+    uint8_t bf_cmd[44] = {0};
+    (void)iwl_send_cmd_pdu(IWL_HCMD_BEACON_FILTERING, bf_cmd, sizeof(bf_cmd), true);
+
+    /* Add default MAC Context 0 and Binding Context 0 */
+    iwl_setup_default_mac_and_binding();
+
+    s_iwl_dev.firmware_alive  = true;
+    s_iwl_dev.mvm_initialized = true;
+    serial_puts("[IWL] SEC_RT MVM radio & scan pipeline initialized!\n");
 #else
     (void)fw_phy_config;
-    s_iwl_dev.firmware_alive = true;
+    (void)tlv_flags;
+    (void)n_scan_chans;
+    (void)paging_mem_size;
+    (void)calib_init_flow;
+    (void)calib_init_event;
+    (void)calib_rt_flow;
+    (void)calib_rt_event;
+    s_iwl_dev.firmware_alive  = true;
+    s_iwl_dev.mvm_initialized = true;
 #endif
 
     return true;
+}
+
+int iwlwifi_start_scan(const char *ssid) {
+#ifndef IWLWIFI_HOST_TEST
+    if (!s_iwl_dev.initialized || !s_iwl_dev.firmware_alive || !s_iwl_dev.mvm_initialized) {
+        return -1;
+    }
+
+    uint8_t cmd_buf[1800];
+    memset(cmd_buf, 0, sizeof(cmd_buf));
+
+    iwl_scan_req_umac_v7_t *req = (iwl_scan_req_umac_v7_t *)cmd_buf;
+    size_t ssid_len = ssid ? strlen(ssid) : 0;
+    if (ssid_len > 32) ssid_len = 32;
+
+    req->flags                       = 0;
+    req->uid                         = ++s_scan_uid;
+    req->ooc_priority                = 2; /* IWM_SCAN_PRIORITY_HIGH */
+    req->general_flags               = (1u << 2)  | /* PASS_ALL */
+                                       (1u << 5)  | /* ITER_COMPLETE */
+                                       (1u << 13) | /* ADAPTIVE_DWELL */
+                                       ((ssid_len > 0) ? (1u << 4) /* PRE_CONNECT */ : (1u << 3) /* PASSIVE */);
+    req->scan_start_mac_id           = 0;
+    req->active_dwell                = 10;
+    req->passive_dwell               = 110;
+    req->fragmented_dwell            = 44;
+    req->adwell_default_n_aps        = 2;
+    req->adwell_default_n_aps_social = 10;
+    req->adwell_max_budget           = 300;
+    req->max_out_time[0]             = 0;
+    req->suspend_time[0]             = 0;
+    req->scan_priority               = 2; /* HIGH */
+
+    uint32_t nchan = sizeof(s_scan_channels);
+    if (nchan > s_n_scan_channels) nchan = s_n_scan_channels;
+    req->channel.flags = 0;
+    req->channel.count = (uint8_t)nchan;
+
+    iwl_scan_channel_cfg_umac_t *chans = (iwl_scan_channel_cfg_umac_t *)(cmd_buf + sizeof(iwl_scan_req_umac_v7_t));
+    for (uint32_t i = 0; i < nchan; i++) {
+        chans[i].flags         = (ssid_len > 0) ? (1u << 0) : 0;
+        chans[i].channel_num   = s_scan_channels[i];
+        chans[i].iter_count    = 1;
+        chans[i].iter_interval = 0;
+    }
+
+    /* Tail v1 starts after s_n_scan_channels channel slots */
+    iwl_scan_req_umac_tail_v1_t *tail = (iwl_scan_req_umac_tail_v1_t *)
+        (cmd_buf + sizeof(iwl_scan_req_umac_v7_t) + sizeof(iwl_scan_channel_cfg_umac_t) * s_n_scan_channels);
+
+    tail->schedule[0].interval   = 0;
+    tail->schedule[0].iter_count = 1;
+    tail->delay                  = 0;
+
+    /* Populate Probe Request template in tail->preq */
+    uint8_t *p = tail->preq.buf;
+    /* 802.11 Mgmt Probe Request Header (24 bytes) */
+    p[0] = 0x40; p[1] = 0x00; /* FC: Probe Request */
+    p[2] = 0x00; p[3] = 0x00; /* Duration */
+    memset(p + 4, 0xFF, 6);   /* Addr1: Broadcast */
+    memcpy(p + 10, s_iwl_dev.mac_addr, 6); /* Addr2: SA */
+    memset(p + 16, 0xFF, 6);  /* Addr3: Broadcast BSSID */
+    p[22] = 0x00; p[23] = 0x00;
+    /* Wildcard SSID IE (2 bytes) */
+    p[24] = 0x00; p[25] = 0x00;
+    tail->preq.mac_header.offset = 0;
+    tail->preq.mac_header.len    = 26;
+
+    /* 2.4 GHz band IEs: Supported Rates (1,2,5.5,11,6,9,12,18) + Extended Rates (24,36,48,54) + DS Param Set */
+    uint8_t *b24 = p + 26;
+    b24[0] = 1;  b24[1] = 8;
+    b24[2] = 0x82; b24[3] = 0x84; b24[4] = 0x8B; b24[5] = 0x96;
+    b24[6] = 0x0C; b24[7] = 0x12; b24[8] = 0x18; b24[9] = 0x24;
+    b24[10] = 50; b24[11] = 4;
+    b24[12] = 0x30; b24[13] = 0x48; b24[14] = 0x60; b24[15] = 0x6C;
+    b24[16] = 3;  b24[17] = 1;  b24[18] = 0; /* DS Param Set IE */
+    tail->preq.band_data[0].offset = 26;
+    tail->preq.band_data[0].len    = 19;
+
+    /* 5 GHz band IEs: Supported Rates (6,9,12,18,24,36,48,54) */
+    uint8_t *b5 = b24 + 19;
+    b5[0] = 1; b5[1] = 8;
+    b5[2] = 0x8C; b5[3] = 0x12; b5[4] = 0x98; b5[5] = 0x24;
+    b5[6] = 0xB0; b5[7] = 0x48; b5[8] = 0x60; b5[9] = 0x6C;
+    tail->preq.band_data[1].offset = 26 + 19;
+    tail->preq.band_data[1].len    = 10;
+
+    if (ssid_len > 0) {
+        tail->direct_scan[0].id  = 0;
+        tail->direct_scan[0].len = (uint8_t)ssid_len;
+        memcpy(tail->direct_scan[0].ssid, ssid, ssid_len);
+    }
+
+    uint16_t total_cmd_len = (uint16_t)(sizeof(iwl_scan_req_umac_v7_t) +
+                                        sizeof(iwl_scan_channel_cfg_umac_t) * s_n_scan_channels +
+                                        sizeof(iwl_scan_req_umac_tail_v1_t));
+
+    s_scan_complete = false;
+    if (!iwl_send_cmd_pdu(IWL_CMD_ID(IWL_SCAN_REQ_UMAC, IWL_LONG_GROUP, 0),
+                          cmd_buf, total_cmd_len, true)) {
+        serial_puts("[IWL] WARN: SCAN_REQ_UMAC command failed\n");
+        return -1;
+    }
+
+    /* Poll RX ring across multi-channel dwell window up to 1800ms or until SCAN_COMPLETE */
+    for (int ms = 0; ms < 1800; ms++) {
+        uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
+        iwl_drain_rx_ring();
+        bool done = s_scan_complete;
+        spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
+        if (done) break;
+        iwl_delay_ms(1);
+    }
+    return 0;
+#else
+    (void)ssid;
+    return 0;
+#endif
 }
 
 bool iwlwifi_map_mmio(void) {
@@ -738,6 +1640,14 @@ bool iwlwifi_init_hw(void) {
     s_iwl_dev.mac_addr[4] = 0x65;
     s_iwl_dev.mac_addr[5] = 0x01;
 
+#ifndef IWLWIFI_HOST_TEST
+    if (s_iwl_dev.mmio_base) {
+        if (iwl_prepare_card_hw() && iwl_apm_init()) {
+            iwl_read_hw_mac();
+        }
+    }
+#endif
+
     s_iwl_dev.current_channel = 1;
     s_iwl_dev.initialized = true;
 
@@ -766,9 +1676,6 @@ int iwlwifi_send_raw(const void *buf, size_t len) {
 
     s_iwl_dev.tx_head = next;
 
-    /* Ring doorbell */
-    iwl_write32(FH_TCSR_CHNL_TX_CONFIG_REG(0), s_iwl_dev.tx_head);
-
     spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
     return 0;
 }
@@ -778,33 +1685,7 @@ pbuf_t *iwlwifi_poll_raw(void) {
     uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
 
 #ifndef IWLWIFI_HOST_TEST
-    if (s_rx_desc_virt) {
-        volatile uint16_t *rb_stts = (volatile uint16_t *)((uint8_t *)s_rx_desc_virt + 2048);
-        uint16_t closed_rb = (*rb_stts) & 0x0FFFu;
-        while ((s_hw_rx_read_idx & 0x0FFFu) != closed_rb) {
-            uint8_t *rb = s_rx_buf_virt[s_hw_rx_read_idx % IWL_HW_RX_BUFS];
-            s_hw_rx_read_idx = (s_hw_rx_read_idx + 1) & 0x0FFFu;
-            iwl_write32(FH_RSCSR_CHNL0_WPTR, ((s_hw_rx_read_idx + 8) & ~7u) & 0xFFu);
-            if (rb) {
-                uint8_t pkt_code = rb[4];
-                if (pkt_code == 0xC1u) { /* IWM_REPLY_RX_MPDU_CMD */
-                    uint16_t mpdu_len = *(const uint16_t *)(rb + 8);
-                    if (mpdu_len > 0 && mpdu_len <= 2036) {
-                        uint32_t next_rx = (s_iwl_dev.rx_head + 1) % IWL_RX_RING_SIZE;
-                        if (next_rx != s_iwl_dev.rx_tail) {
-                            pbuf_t *dst = &s_rx_pbufs[s_iwl_dev.rx_head];
-                            pbuf_init(dst);
-                            dst->payload = s_rx_buffers[s_iwl_dev.rx_head];
-                            memcpy(dst->payload, rb + 12, mpdu_len);
-                            dst->length = mpdu_len;
-                            dst->total_len = mpdu_len;
-                            s_iwl_dev.rx_head = next_rx;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    iwl_drain_rx_ring();
 #endif
 
     if (s_iwl_dev.rx_head == s_iwl_dev.rx_tail) {
@@ -826,6 +1707,11 @@ int iwlwifi_set_channel(uint8_t channel) {
     uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
     s_iwl_dev.current_channel = channel;
     spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
+#ifndef IWLWIFI_HOST_TEST
+    if (s_iwl_dev.mvm_initialized && channel > 0) {
+        (void)iwl_send_phy_context_cmd(0, IWL_FW_CTXT_ACTION_MODIFY, channel);
+    }
+#endif
     return 0;
 }
 

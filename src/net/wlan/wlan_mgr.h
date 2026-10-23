@@ -13,6 +13,7 @@ typedef struct wlan_hw_ops {
     const char *name;
     int    (*get_mac)(uint8_t mac[6]);
     int    (*set_channel)(uint8_t channel);
+    int    (*start_scan)(const char *ssid);
     int    (*send_raw_80211)(const void *buf, size_t len);
     pbuf_t *(*poll_raw_80211)(void);
     void   (*recycle_raw_80211)(pbuf_t *packet);

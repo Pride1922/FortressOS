@@ -86,6 +86,12 @@ static void wlan_ensure_hardware(void) {
     if (!s_hw_ops && iwlwifi_is_detected()) {
         iwlwifi_init_hw();
     }
+    if (s_hw_ops && s_hw_ops->get_mac) {
+        uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
+        s_hw_ops->get_mac(s_local_mac);
+        memcpy(s_wlan_net_dev.mac_addr, s_local_mac, 6);
+        spin_unlock_irqrestore(&s_wlan_lock, irq);
+    }
 }
 
 net_dev_t *wlan_get_net_device(void) {
@@ -100,11 +106,17 @@ int wlan_mgr_scan(wifi_scan_result_t *out_result) {
     if (!out_result) return -1;
     wlan_ensure_hardware();
 
+    /* Trigger hardware multi-channel scan if supported by driver */
+    if (s_hw_ops && s_hw_ops->start_scan) {
+        s_hw_ops->start_scan("");
+    }
+
     /* Drain pending hardware RX packets into scan table before acquiring lock */
     if (s_hw_ops && s_hw_ops->poll_raw_80211) {
         pbuf_t *p;
         while ((p = s_hw_ops->poll_raw_80211()) != NULL) {
-            wlan_mgr_rx_raw_80211(p->payload, p->length, -60);
+            int8_t rssi = (p->flags & IWL_PBUF_META_VALID) ? IWL_PBUF_GET_RSSI(p->flags) : -60;
+            wlan_mgr_rx_raw_80211(p->payload, p->length, rssi);
             if (s_hw_ops->recycle_raw_80211) {
                 s_hw_ops->recycle_raw_80211(p);
             }
@@ -459,7 +471,8 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
     if (s_hw_ops && s_hw_ops->poll_raw_80211) {
         pbuf_t *p;
         while ((p = s_hw_ops->poll_raw_80211()) != NULL) {
-            wlan_mgr_rx_raw_80211(p->payload, p->length, -60);
+            int8_t rssi = (p->flags & IWL_PBUF_META_VALID) ? IWL_PBUF_GET_RSSI(p->flags) : -60;
+            wlan_mgr_rx_raw_80211(p->payload, p->length, rssi);
             if (s_hw_ops->recycle_raw_80211) {
                 s_hw_ops->recycle_raw_80211(p);
             }
