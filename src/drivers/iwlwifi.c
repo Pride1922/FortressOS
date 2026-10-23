@@ -818,7 +818,8 @@ static bool iwl_post_alive(void) {
     iwl_write32(FH_TX_CHICKEN_BITS_REG, iwl_read32(FH_TX_CHICKEN_BITS_REG) | 2u);
     iwl_nic_unlock();
 
-    s_cmd_idx = 0;
+    s_cmd_idx  = 0;
+    s_txq5_idx = 0;
     return true;
 }
 
@@ -1020,7 +1021,19 @@ static bool iwl_send_all_phy_db(void) {
 static bool iwl_enable_txq(uint8_t sta_id, uint8_t qid, uint8_t fifo, uint8_t tid) {
     if (iwl_nic_lock()) {
         iwl_write32(HBUS_TARG_WRPTR, ((uint32_t)qid << 8) | 0u);
+        iwl_write_prph(iwl_scd_queue_rdptr_reg(qid), 0);
+        iwl_write_prph(IWL_SCD_AGGR_SEL, iwl_read_prph(IWL_SCD_AGGR_SEL) & ~(1u << qid));
+
+        iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(qid), 0);
+        iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(qid) + 4u,
+                        (64u << 0) | (64u << 16));
+
+        iwl_write_prph(iwl_scd_queue_status_bits_reg(qid),
+                       (1u << 3) | (((uint32_t)fifo & 7u) << 0) | (1u << 4) | 0x017F0000u);
         iwl_nic_unlock();
+    }
+    if (qid == 5) {
+        s_txq5_idx = 0;
     }
     iwl_scd_txq_cfg_cmd_t cmd;
     memset(&cmd, 0, sizeof(cmd));
@@ -1049,7 +1062,17 @@ static bool iwl_add_aux_sta(void) {
     cmd.tfd_queue_msk  = (1u << 1);
     cmd.tid_disable_tx = 0xFFFFu;
 
-    return iwl_send_cmd_pdu(IWL_HCMD_ADD_STA, &cmd, sizeof(cmd), true);
+    if (!iwl_send_cmd_pdu(IWL_HCMD_ADD_STA, &cmd, sizeof(cmd), true)) {
+        return false;
+    }
+    uint32_t status = *(const uint32_t *)s_cmd_resp_buf;
+    if ((status & 0xFFu) != 1u /* ADD_STA_SUCCESS */) {
+        serial_puts("[IWL] AUX ADD_STA status=");
+        serial_print_hex(status);
+        serial_puts("\n");
+        return false;
+    }
+    return true;
 }
 
 static bool iwl_send_phy_context_cmd(uint32_t id, uint32_t action, uint8_t channel) {
@@ -1178,7 +1201,17 @@ static bool iwl_send_add_sta_cmd(bool update, uint16_t assoc_id) {
     cmd.tfd_queue_msk     = (1u << 5) | (1u << 6) | (1u << 7) | (1u << 8);
     cmd.tid_disable_tx    = 0xFFFFu;
     cmd.station_flags_msk = (3u << 6) | (3u << 8); /* FAT_EN_MSK | MIMO_EN_MSK */
-    return iwl_send_cmd_pdu(IWL_HCMD_ADD_STA, &cmd, sizeof(cmd), true);
+    if (!iwl_send_cmd_pdu(IWL_HCMD_ADD_STA, &cmd, sizeof(cmd), true)) {
+        return false;
+    }
+    uint32_t status = *(const uint32_t *)s_cmd_resp_buf;
+    if ((status & 0xFFu) != 1u /* ADD_STA_SUCCESS */) {
+        serial_puts("[IWL] STA 0 ADD_STA status=");
+        serial_print_hex(status);
+        serial_puts("\n");
+        return false;
+    }
+    return true;
 }
 
 static bool iwl_send_lq_cmd(uint8_t channel) {
@@ -1756,18 +1789,23 @@ int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beaco
         serial_puts("[IWL] WARN: prepare_auth BINDING_CONTEXT add failed\n");
     }
 
-    /* 4. Add Station 0 (Target AP BSSID) on DQA queues 5..8 */
+    /* 4. Add Station 0 (Target AP BSSID) and enable DQA queues 5..8 */
     if (iwl_send_add_sta_cmd(false, 0)) {
         s_sta_active = true;
     } else {
         serial_puts("[IWL] WARN: prepare_auth ADD_STA failed\n");
     }
 
+    static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
+    for (uint8_t ac = 0; ac < 4; ac++) {
+        (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 0);
+    }
+
     /* 5. Configure Link Quality rate table for Station 0 */
     (void)iwl_send_lq_cmd(s_iwl_dev.current_channel);
 
-    /* 6. Schedule Session Protection Time Event (600 TU) so radio stays on-channel for Auth/Assoc/EAPOL */
-    (void)iwl_protect_session(600, 50);
+    /* 6. Schedule Session Protection Time Event (1500 TU) so radio stays on-channel for Auth/Assoc/EAPOL */
+    (void)iwl_protect_session(1500, 100);
 
     serial_puts("[IWL] Prepared MVM auth context on channel ");
     serial_print_dec(s_iwl_dev.current_channel);

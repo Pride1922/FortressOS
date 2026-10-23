@@ -260,14 +260,14 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     /* On real hardware, actively pump the RX ring inside the active Time Event window
      * so Auth Resp -> Assoc Req -> Assoc Resp -> 4-Way EAPOL Handshake complete in real time */
     if (s_hw_ops && s_hw_ops->prepare_auth && s_hw_ops->poll_raw_80211) {
-        for (uint32_t step = 0; step < 300000u; step++) {
+        for (uint32_t step = 0; step < 600000u; step++) {
             wlan_drain_hw_rx();
 
             irq = spin_lock_irqsave(&s_wlan_lock);
             wlan_state_t st = s_wlan_state;
             bool done = (st == WLAN_STATE_CONNECTED && wpa2_sm_is_authorized(&s_wpa2_sm)) ||
                         (st == WLAN_STATE_IDLE);
-            if (!done && (step == 80000u || step == 160000u)) {
+            if (!done && (step == 150000u || step == 300000u || step == 450000u)) {
                 /* Retry Auth Req or Assoc Req if response was dropped on air */
                 if (st == WLAN_STATE_AUTHENTICATING && s_hw_ops->send_raw_80211) {
                     uint8_t auth_buf[64];
@@ -283,7 +283,7 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
             spin_unlock_irqrestore(&s_wlan_lock, irq);
 
             if (done) break;
-            for (int p = 0; p < 200; p++) {
+            for (int p = 0; p < 500; p++) {
                 __asm__ volatile("pause" ::: "memory");
             }
         }

@@ -307,12 +307,9 @@ static int do_connect(const char *ssid, const char *passphrase) {
         return 1;
     }
 
-    /* Wait briefly and verify status */
-    for (int wait = 0; wait < 15; wait++) {
-        timespec_t ts = { .tv_sec = 0, .tv_nsec = 200000000 }; /* 200ms */
-        WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
-
-        wifi_status_t st;
+    /* Wait up to 6 seconds and pump RX via WIFI_CMD_STATUS until 4-way handshake completes */
+    wifi_status_t st;
+    for (int wait = 0; wait < 60; wait++) {
         if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
             if (st.link_online && st.state == WIFI_STATUS_CONNECTED) {
                 write_str(1, "Connected to \"");
@@ -321,9 +318,17 @@ static int do_connect(const char *ssid, const char *passphrase) {
                 return 0;
             }
         }
+        timespec_t ts = { .tv_sec = 0, .tv_nsec = 100000000 }; /* 100ms */
+        WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
     }
 
-    write_str(1, "Association started in background. Check status with 'wifi status'.\n");
+    if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
+        write_str(1, "Connection in progress (current stage: ");
+        write_str(1, state_to_str(st.state));
+        write_str(1, "). Check 'sudo wifi status'.\n");
+    } else {
+        write_str(1, "Association started in background. Check status with 'wifi status'.\n");
+    }
     return 0;
 }
 
