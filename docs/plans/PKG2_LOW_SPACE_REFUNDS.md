@@ -126,3 +126,14 @@ Final standalone codec run: `pkg-grant-codec-20261023-153537-150909`. `make -n` 
 - Earlier selected lifecycle logs printed the number of candidate boundaries in their per-operation lines. Their final total 96 per geometry was correct; the final selected overlay reports actual executed counts. Those raw reports remain retained.
 
 All final compiled repository inputs and copied inputs were preserved. AGENTS.md, README.md, SSL checksum asset and all four shared kernel/initramfs/ISO/raw-image guards match their task-entry hashes. This preservation PASS does not change earlier historical media FAILs. Runtime, Linux audits and source/media preservation are distinct from boot acceptance: no boot was run here. Verification completed before the user-authorized local checkpoint commit; production integration, installation and production trust provisioning remain disabled. No release-media build, push or physical-device write was performed.
+
+
+Continuation: [private retirement-ledger codec and accounting model](PKG2_RETIREMENT_LEDGER_CODEC.md) now checks the five-record candidate before mount integration. It adds no actual JBD2 executor or authenticated retirement-capability parser.
+
+
+## Combined private integration acceptance (2026-10-23)
+
+The subsequent bounded private milestone is now closed. See
+[final acceptance, exact evidence and limits](PKG2_PRIVATE_RETIREMENT_ACCEPTANCE.md).
+This supersedes the private-integration next-step statement above only; it does
+not enable production integration, installation or trust provisioning.

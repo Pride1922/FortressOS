@@ -116,3 +116,19 @@ test-pkg-mount-low-space:
 .PHONY: test-pkg-mount-physical-low-space
 test-pkg-mount-physical-low-space:
 	python3 scripts/test_pkg_mount_admission.py --physical-low-space
+
+.PHONY: test-pkg-retirement-codec
+test-pkg-retirement-codec:
+	python3 scripts/test_pkg_retirement.py
+
+.PHONY: test-pkg-retirement-journal
+test-pkg-retirement-journal:
+	python3 scripts/test_pkg_retirement_journal.py --selected-cuts
+
+.PHONY: test-pkg-retirement-auth
+test-pkg-retirement-auth:
+	python3 scripts/test_pkg_retirement_auth.py
+
+.PHONY: test-pkg-retirement-acceptance
+test-pkg-retirement-acceptance:
+	python3 scripts/test_pkg_retirement_integrated.py

@@ -2990,3 +2990,41 @@ The charged lifecycle workbench now derives refunds from equal observed free-cou
 Shared media, AGENTS.md, README.md, SSL checksum asset and compiled inputs are preserved in the final campaigns. Earlier compile, wiring, BEGIN-headroom and preservation failures, old-context reproductions and superseded PASS checkpoints remain recorded. No new Ring 3, boot, SMP, scheduler or physical acceptance is claimed; no release-media build, installation, production trust provisioning, push or physical-device write was performed. The user subsequently authorized a local PKG checkpoint commit.
 
 Still open: authenticated retirement capability and atomic package-refund/account-generation integration. The signed pending/trust mount profile still refuses package-charged orphans and retains archive/state/intent evidence; the refund lifecycle is a separate private grant profile. Production integration and installation remain disabled.
+
+
+### Private retirement ledger codec and atomic-accounting model (2026-10-23)
+
+[Format, exact results, retained failures and limits](../plans/PKG2_RETIREMENT_LEDGER_CODEC.md). The separate private 1024-byte retirement ledger binds the selected charged object, full native grant/ownership hashes, account sequence and credential generation. Independently retained transaction/capability/profile/trust/state/intent/object pins prevent those expectations from being selected by rewritten records. Account version 4 hashes the ledger and canonical empty origin slot; existing version-3 mount parsing is unchanged. No mount integration or production caller was added.
+
+The pure transition gate advances the five mutable records together in its accepted accounting generation, preserves T and F-G, and refunds only equal observed physical-free and owned-allocation changes. Unlink refunds nothing; blocks and final inode retire separately. Credential/other-object changes, regrowth, release/transfer, stale generations and repeated credit refuse. Actual allocation provenance and authenticated retirement authority are still required from a future trusted caller.
+
+ASan/UBSan PASS: 1,507 record-set cases, 39 accounting transitions, 128 mixed-generation selections, 3,780 codec refusals, and 12,288 one-bit integrity probes (one per byte across five records). Only complete old/new sets validate; four mock stale-publication attempts reject and four exact replays grant no credit. Freestanding frames are <=1024 bytes. The initial nine-versus-ten scanf-conversion failure and superseded PASS/probe-label checkpoints remain recorded.
+
+Atomic publication/CAS is a serialized host model, not a real journal or concurrency result. Next: actual private JBD2 five-record commits with audited physical frees, authenticated retirement provenance and interruption tests before mount integration. AGENTS.md, README.md, compiled sources and shared media are preserved; no new boot, Ring 3, filesystem, scheduler or physical acceptance is claimed. Changes remain uncommitted; production integration, installation, trust provisioning, release-media builds, pushes and physical-device writes remain disabled.
+
+
+### Private five-record retirement JBD2 coupling (2026-10-23)
+
+[Implementation, exact evidence, retained failures and limits](../plans/PKG2_RETIREMENT_JBD2.md). The copied-source adapter stages grant, ownership table, retirement ledger, account-generation v4 and origin slot with the actual EXT4/JBD2 namespace retirement and physical refunds. It audits inode identities, ownership, maps, bitmaps and free counters. Unlink refunds nothing; data and final inode retire separately. Repeated recovery adds no credit or account generation.
+
+ASan/UBSan PASS: 432 selected interruptions across six block/sector geometries plus 1384 exhaustive interruptions for 4 KiB blocks/sectors; 3632 constructor restarts and 14 retained-output Linux audits. Maximum staged images 18/14/12 for 1/2/4 KiB blocks (limit 64). Every tested restart validates complete records and actual allocations; Linux audits cover retained outputs, not every cut. Initial compile and preservation failures remain retained and excluded from final counts.
+
+The private hook runs after replay and before cleanup; it is not pre-replay mount admission. Synthetic trusted fixture pins/locators survive in the host process. Authenticated retirement authority, account database coherence, fresh-process policy reconstruction and general victim layouts remain open. Next: authenticated retirement provenance and private pending/trust/account-service binding before mount integration. Source and shared-media preservation pass separately; no new boot, Ring 3, SMP, scheduler or physical acceptance is claimed. Changes remain uncommitted; production integration, installation, trust provisioning, release-media builds, pushes and physical-device writes remain disabled.
+
+
+### Authenticated private retirement provenance (2026-10-23)
+
+[Authority, format, exact evidence and retained findings](../plans/PKG2_RETIREMENT_PROVENANCE.md). The new private recovery gate independently verifies enrollment, catalog and retirement-role Ed25519 signatures. Its exact signed certificate binds the original grant/table, selected archive inode/generation, retained artifact/executable/intent/trust/state, profiles and account lineage. Current refunds must reconstruct the signed baseline; independent policy cannot be chosen by the mutable records.
+
+ASan/UBSan PASS: 506 cases (10 accepted, 496 refused), including historical exact recovery after expiry, eight-of-eight signing, forged signatures with coherent pins, invalid extras after quorum, all reserved certificate bytes, mixed generations and coherent account/ownership substitutions. Failure preserves output and clears verified status. Strict freestanding frames are <=1024 bytes for the new module. Retained old-context reproductions exposed hidden logical-size changes and folded unlink/data-refund generations; both were fixed and regression-tested. Compile/link failures and superseded PASS evidence remain indexed.
+
+This is a pure gate with no filesystem or mount caller, durable certificate publisher or production signer. Next: durable certificate/evidence storage and authenticated binding in the private JBD2 adapter, including actual allocation and interruption tests, before mount integration. Source/shared-media preservation passes separately; no new boot, Ring 3, kernel teardown, SMP or physical acceptance is claimed. Changes remain uncommitted. Production integration, installation, trust provisioning, release-media builds, pushes and physical-device writes remain disabled.
+
+
+### Combined private authenticated retirement acceptance (2026-10-23)
+
+[Final review, exact results, retained failures and boundaries](../plans/PKG2_PRIVATE_RETIREMENT_ACCEPTANCE.md). The agreed three-part private milestone is closed: durable signed certificate/evidence storage, authenticated read-only journal-preview admission with actual account-service recovery, and combined interruption/refusal acceptance. All integration remains in copied private workbenches; production sources are unchanged. A real reserve-stealing allocation defect was reproduced and fixed with planned block/inode admission floors.
+
+Strict GCC/ASan/UBSan PASS: six block/sector geometries with 576 selected faults, plus 1,616 exhaustive 4 KiB/4 KiB faults. The 4,384 fresh-process checks comprise 3,964 authenticated admission/recovery checks and 420 correct unpublished-state refusals; a further 385 explicit zero-I/O adversarial refusals pass. Linux audits: 35 full retained-output allocation/record audits and seven pressure fsck-only audits. Final manifests and independent source/copy/shared-media hashes pass preservation separately. All raw failures remain retained.
+
+This closes the bounded single-archive retirement integration profile. Roles 17-19 and remaining escrow stay retained; general retirement completion, escrow release/IDLE and production installation are outside this acceptance. No boot, Ring 3, SMP, scheduler/signal teardown or physical acceptance is claimed. Changes remain uncommitted. Production integration, installation, trust provisioning, release-media builds, pushes and physical-device writes remain disabled.
