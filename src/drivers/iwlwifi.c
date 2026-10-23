@@ -23,9 +23,9 @@ static uint8_t s_rx_buffers[IWL_RX_RING_SIZE][2048] __attribute__((aligned(64)))
 #ifndef IWLWIFI_HOST_TEST
 #define IWL_HW_RX_BUFS          32
 #define IWL_CMD_SLOTS           16
-#define IWL_CMD_SLOT_SIZE       2048
+#define IWL_CMD_SLOT_SIZE       4096
 #define IWL_MAX_PHY_DB_CHUNKS   24
-#define IWL_PHY_DB_POOL_SIZE    16384
+#define IWL_PHY_DB_POOL_SIZE    32768
 
 static uintptr_t         s_fw_chunk_phys = 0;
 static uint8_t          *s_fw_chunk_virt = NULL;
@@ -81,19 +81,20 @@ static bool               s_alive_received = false;
 static uint16_t           s_alive_status = 0;
 static bool               s_init_complete_received = false;
 static bool               s_scan_complete = false;
-static uint32_t           s_scan_uid = 0;
+static uint32_t           s_last_err_intr = 0;
+static uint16_t           s_last_rx_wide_id = 0;
+static uint8_t            s_phy_db_scratch[4096];
+static uint8_t            s_scan_cmd_buf[2048];
 
 /* Last RX PHY Info (0xC0) */
 static iwl_rx_phy_info_t  s_last_phy_info;
 static int8_t             s_last_rx_rssi = -60;
 static uint8_t            s_last_rx_chan = 1;
 
-/* Scan channels: 2.4 GHz (1..13) + 5 GHz UNII-1/2/3 */
+/* Scan channels: 2.4 GHz (1..13) + 5 GHz UNII-1 (36..48) */
 static const uint8_t s_scan_channels[] = {
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
-    36, 40, 44, 48, 52, 56, 60, 64,
-    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140,
-    149, 153, 157, 161, 165
+    36, 40, 44, 48
 };
 #endif
 
@@ -283,10 +284,10 @@ static bool iwl_alloc_dma_buffers(void) {
         }
     }
     if (!s_cmd_buf_phys) {
-        s_cmd_buf_phys = pmm_alloc_pages(8); /* 32 KiB: 16 slots * 2048B contiguous command buffers */
+        s_cmd_buf_phys = pmm_alloc_pages(16); /* 64 KiB: 16 slots * 4096B contiguous command buffers */
         if (s_cmd_buf_phys) {
             s_cmd_buf_virt = (uint8_t *)vmm_phys_to_virt(s_cmd_buf_phys);
-            memset(s_cmd_buf_virt, 0, 8 * 4096);
+            memset(s_cmd_buf_virt, 0, 16 * 4096);
         }
     }
     if (!s_paging_css_phys) {
@@ -430,7 +431,7 @@ static bool iwl_setup_rx_dma(void) {
     memset(s_sched_virt, 0, 5 * 4096);
     memset(s_tfd_ring_virt, 0, 8 * 4096);
     memset(s_aux_tfd_ring_virt, 0, 8 * 4096);
-    memset(s_cmd_buf_virt, 0, 8 * 4096);
+    memset(s_cmd_buf_virt, 0, 16 * 4096);
 
     /* Populate 256-entry RX descriptor table wrapping our 32 4-KiB pages */
     for (uint32_t i = 0; i < 256; i++) {
@@ -586,6 +587,9 @@ static void iwl_drain_rx_ring(void) {
 
     uint32_t intr = iwl_read32(CSR_INT);
     uint32_t fh_intr = iwl_read32(CSR_FH_INT_STATUS);
+    if (intr & (CSR_INT_BIT_HW_ERR | CSR_INT_BIT_SW_ERR)) {
+        s_last_err_intr = intr;
+    }
     if (intr) iwl_write32(CSR_INT, intr);
     if (fh_intr) iwl_write32(CSR_FH_INT_STATUS, fh_intr);
 
@@ -615,6 +619,7 @@ static void iwl_drain_rx_ring(void) {
                 uint8_t  code = pkt->hdr.code;
                 uint8_t  grp  = pkt->hdr.flags;
                 uint16_t wide_id = IWL_WIDE_ID(grp, code);
+                s_last_rx_wide_id = wide_id;
 
                 if (grp == 0 && code == IWL_HCMD_ALIVE) {
                     if (payload_len >= 2) {
@@ -836,6 +841,7 @@ static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bo
     }
 
     if (!wait_resp) {
+        s_pending_cmd_idx = 0xFF;
         iwl_delay_ms(2);
         iwl_drain_rx_ring();
         return true;
@@ -859,12 +865,10 @@ static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bo
     serial_print_hex(opcode);
     serial_puts(" idx=");
     serial_print_dec(idx);
-    serial_puts(" sched_base=");
-    serial_print_hex(s_sched_base);
-    serial_puts(" CSR_INT=");
-    serial_print_hex(iwl_read32(CSR_INT));
-    serial_puts(" FH_INT=");
-    serial_print_hex(iwl_read32(CSR_FH_INT_STATUS));
+    serial_puts(" err_int=");
+    serial_print_hex(s_last_err_intr);
+    serial_puts(" last_rx=");
+    serial_print_hex(s_last_rx_wide_id);
     serial_puts("\n");
 
     s_pending_cmd_idx = 0xFF;
@@ -924,15 +928,22 @@ static bool iwl_send_phy_cfg(uint32_t phy_cfg, uint32_t flow_trig, uint32_t even
 }
 
 static bool iwl_send_phy_db_section(uint16_t type, uint16_t length, const uint8_t *data) {
-    uint8_t Scratch[1600];
-    if ((uint32_t)sizeof(iwl_phy_db_cmd_t) + length > sizeof(Scratch)) return false;
-    iwl_phy_db_cmd_t *hdr = (iwl_phy_db_cmd_t *)Scratch;
+    if ((uint32_t)sizeof(iwl_phy_db_cmd_t) + length > sizeof(s_phy_db_scratch)) {
+        serial_puts("[IWL] PHY_DB section too large: type=");
+        serial_print_dec(type);
+        serial_puts(" len=");
+        serial_print_dec(length);
+        serial_puts("\n");
+        return false;
+    }
+    iwl_phy_db_cmd_t *hdr = (iwl_phy_db_cmd_t *)s_phy_db_scratch;
     hdr->type   = type;
     hdr->length = length;
     if (length > 0 && data) {
-        memcpy(Scratch + sizeof(iwl_phy_db_cmd_t), data, length);
+        memcpy(s_phy_db_scratch + sizeof(iwl_phy_db_cmd_t), data, length);
     }
-    bool ok = iwl_send_cmd_pdu(IWL_HCMD_PHY_DB, Scratch, (uint16_t)(sizeof(iwl_phy_db_cmd_t) + length), false);
+    bool ok = iwl_send_cmd_pdu(IWL_HCMD_PHY_DB, s_phy_db_scratch,
+                               (uint16_t)(sizeof(iwl_phy_db_cmd_t) + length), false);
     iwl_delay_ms(1);
     return ok;
 }
@@ -1471,9 +1482,7 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
     /* Disable hardware beacon filtering so all beacons reach the host */
     uint8_t bf_cmd[44] = {0};
     (void)iwl_send_cmd_pdu(IWL_HCMD_BEACON_FILTERING, bf_cmd, sizeof(bf_cmd), true);
-
-    /* Add default MAC Context 0 and Binding Context 0 */
-    iwl_setup_default_mac_and_binding();
+    (void)iwl_setup_default_mac_and_binding;
 
     s_iwl_dev.firmware_alive  = true;
     s_iwl_dev.mvm_initialized = true;
@@ -1500,18 +1509,18 @@ int iwlwifi_start_scan(const char *ssid) {
         return -1;
     }
 
-    uint8_t cmd_buf[1800];
-    memset(cmd_buf, 0, sizeof(cmd_buf));
+    memset(s_scan_cmd_buf, 0, sizeof(s_scan_cmd_buf));
 
-    iwl_scan_req_umac_v7_t *req = (iwl_scan_req_umac_v7_t *)cmd_buf;
+    iwl_scan_req_umac_v7_t *req = (iwl_scan_req_umac_v7_t *)s_scan_cmd_buf;
     size_t ssid_len = ssid ? strlen(ssid) : 0;
     if (ssid_len > 32) ssid_len = 32;
 
     req->flags                       = 0;
-    req->uid                         = ++s_scan_uid;
+    req->uid                         = 0;
     req->ooc_priority                = 2; /* IWM_SCAN_PRIORITY_HIGH */
     req->general_flags               = (1u << 2)  | /* PASS_ALL */
                                        (1u << 5)  | /* ITER_COMPLETE */
+                                       (1u << 8)  | /* RRM_ENABLED (DS_PARAM + WFA_TPC) */
                                        (1u << 13) | /* ADAPTIVE_DWELL */
                                        ((ssid_len > 0) ? (1u << 4) /* PRE_CONNECT */ : (1u << 3) /* PASSIVE */);
     req->scan_start_mac_id           = 0;
@@ -1520,7 +1529,7 @@ int iwlwifi_start_scan(const char *ssid) {
     req->fragmented_dwell            = 44;
     req->adwell_default_n_aps        = 2;
     req->adwell_default_n_aps_social = 10;
-    req->adwell_max_budget           = 300;
+    req->adwell_max_budget           = (ssid_len > 0) ? 100 : 300;
     req->max_out_time[0]             = 0;
     req->suspend_time[0]             = 0;
     req->scan_priority               = 2; /* HIGH */
@@ -1530,7 +1539,7 @@ int iwlwifi_start_scan(const char *ssid) {
     req->channel.flags = 0;
     req->channel.count = (uint8_t)nchan;
 
-    iwl_scan_channel_cfg_umac_t *chans = (iwl_scan_channel_cfg_umac_t *)(cmd_buf + sizeof(iwl_scan_req_umac_v7_t));
+    iwl_scan_channel_cfg_umac_t *chans = (iwl_scan_channel_cfg_umac_t *)(s_scan_cmd_buf + sizeof(iwl_scan_req_umac_v7_t));
     for (uint32_t i = 0; i < nchan; i++) {
         chans[i].flags         = (ssid_len > 0) ? (1u << 0) : 0;
         chans[i].channel_num   = s_scan_channels[i];
@@ -1540,7 +1549,7 @@ int iwlwifi_start_scan(const char *ssid) {
 
     /* Tail v1 starts after s_n_scan_channels channel slots */
     iwl_scan_req_umac_tail_v1_t *tail = (iwl_scan_req_umac_tail_v1_t *)
-        (cmd_buf + sizeof(iwl_scan_req_umac_v7_t) + sizeof(iwl_scan_channel_cfg_umac_t) * s_n_scan_channels);
+        (s_scan_cmd_buf + sizeof(iwl_scan_req_umac_v7_t) + sizeof(iwl_scan_channel_cfg_umac_t) * s_n_scan_channels);
 
     tail->schedule[0].interval   = 0;
     tail->schedule[0].iter_count = 1;
@@ -1579,6 +1588,9 @@ int iwlwifi_start_scan(const char *ssid) {
     tail->preq.band_data[1].offset = 26 + 19;
     tail->preq.band_data[1].len    = 10;
 
+    tail->preq.common_data.offset  = 26 + 19 + 10;
+    tail->preq.common_data.len     = 0;
+
     if (ssid_len > 0) {
         tail->direct_scan[0].id  = 0;
         tail->direct_scan[0].len = (uint8_t)ssid_len;
@@ -1591,7 +1603,7 @@ int iwlwifi_start_scan(const char *ssid) {
 
     s_scan_complete = false;
     if (!iwl_send_cmd_pdu(IWL_CMD_ID(IWL_SCAN_REQ_UMAC, IWL_LONG_GROUP, 0),
-                          cmd_buf, total_cmd_len, true)) {
+                          s_scan_cmd_buf, total_cmd_len, true)) {
         serial_puts("[IWL] WARN: SCAN_REQ_UMAC command failed\n");
         return -1;
     }
