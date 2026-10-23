@@ -727,11 +727,9 @@ static void iwl_drain_rx_ring(void) {
                 } else if (grp == 0 && code == IWL_HCMD_TX) {
                     if (payload_len >= 38) {
                         uint8_t tx_status = pkt->data[36];
-                        if (tx_status != 0x01u && tx_status != 0x02u) {
-                            serial_puts("[IWL] TX_RESP non-ok status=");
-                            serial_print_hex(tx_status);
-                            serial_puts("\n");
-                        }
+                        serial_puts("[IWL] TX_RESP status=");
+                        serial_print_hex(tx_status);
+                        serial_puts("\n");
                     }
                 } else if (grp == 0 && code == 0x02 /* IWM_REPLY_ERROR */) {
                     serial_puts("[IWL] FW REPLY_ERROR payload_len=");
@@ -1021,15 +1019,6 @@ static bool iwl_send_all_phy_db(void) {
 static bool iwl_enable_txq(uint8_t sta_id, uint8_t qid, uint8_t fifo, uint8_t tid) {
     if (iwl_nic_lock()) {
         iwl_write32(HBUS_TARG_WRPTR, ((uint32_t)qid << 8) | 0u);
-        iwl_write_prph(iwl_scd_queue_rdptr_reg(qid), 0);
-        iwl_write_prph(IWL_SCD_AGGR_SEL, iwl_read_prph(IWL_SCD_AGGR_SEL) & ~(1u << qid));
-
-        iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(qid), 0);
-        iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(qid) + 4u,
-                        (64u << 0) | (64u << 16));
-
-        iwl_write_prph(iwl_scd_queue_status_bits_reg(qid),
-                       (1u << 3) | (((uint32_t)fifo & 7u) << 0) | (1u << 4) | 0x017F0000u);
         iwl_nic_unlock();
     }
     if (qid == 5) {
@@ -1045,7 +1034,17 @@ static bool iwl_enable_txq(uint8_t sta_id, uint8_t qid, uint8_t fifo, uint8_t ti
     cmd.aggregate = 0;
     cmd.ssn       = 0;
     cmd.window    = 64;
-    return iwl_send_cmd_pdu(IWL_HCMD_SCD_QUEUE_CFG, &cmd, sizeof(cmd), true);
+    bool ok = iwl_send_cmd_pdu(IWL_HCMD_SCD_QUEUE_CFG, &cmd, sizeof(cmd), true);
+    if (ok && qid == 5 && iwl_nic_lock()) {
+        iwl_write_prph(iwl_scd_queue_rdptr_reg(5), 0);
+        iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(5), 0);
+        iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(5) + 4u,
+                        (64u << 0) | (64u << 16));
+        iwl_write_prph(iwl_scd_queue_status_bits_reg(5),
+                       (1u << 3) | (((uint32_t)fifo & 7u) << 0) | (1u << 4) | 0x017F0000u);
+        iwl_nic_unlock();
+    }
+    return ok;
 }
 
 static bool iwl_add_aux_sta(void) {
@@ -1789,13 +1788,14 @@ int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beaco
         serial_puts("[IWL] WARN: prepare_auth BINDING_CONTEXT add failed\n");
     }
 
-    /* 4. Add Station 0 (Target AP BSSID) and enable DQA queues 5..8 */
+    /* 4. Add Station 0 (Target AP BSSID) on DQA queues 5..8 */
     if (iwl_send_add_sta_cmd(false, 0)) {
         s_sta_active = true;
     } else {
         serial_puts("[IWL] WARN: prepare_auth ADD_STA failed\n");
     }
 
+    /* Bind DQA queues 5..8 to Station 0 now that Station 0 exists in firmware */
     static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
     for (uint8_t ac = 0; ac < 4; ac++) {
         (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 0);

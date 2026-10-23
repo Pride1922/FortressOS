@@ -390,7 +390,7 @@ typedef struct {
 
 _Static_assert(sizeof(iwl_scd_txq_cfg_cmd_t) == 12, "iwl_scd_txq_cfg_cmd_t must be 12 bytes");
 
-/* Add Station Command v10 (0x18 - 68 bytes) */
+/* Add Station Command v10 (0x18 - 48 bytes) */
 #define IWL_STATION_ID                  0
 #define IWL_AUX_STA_ID                  1
 #define IWL_STA_LINK                    0
@@ -420,10 +420,9 @@ typedef struct {
     uint16_t rx_ba_window;
     uint8_t  sp_length;
     uint8_t  uapsd_acs;
-    uint8_t  pad[20];
 } __attribute__((packed)) iwl_add_sta_cmd_t;
 
-_Static_assert(sizeof(iwl_add_sta_cmd_t) == 68, "iwl_add_sta_cmd_t must be 68 bytes");
+_Static_assert(sizeof(iwl_add_sta_cmd_t) == 48, "iwl_add_sta_cmd_t must be 48 bytes");
 
 /* PHY Context Command (0x08 - 40 bytes) */
 #define IWL_FW_CTXT_ACTION_ADD          1
