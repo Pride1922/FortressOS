@@ -501,9 +501,11 @@ typedef struct {
     iwl_ac_qos_t ac[5];
     union {
         iwl_mac_data_sta_t sta;
-        uint8_t            raw[44];
+        uint8_t            raw[48];
     };
 } __attribute__((packed)) iwl_mac_ctx_cmd_t;
+
+_Static_assert(sizeof(iwl_mac_ctx_cmd_t) == 148, "iwl_mac_ctx_cmd_t must be 148 bytes");
 
 /* Binding Context Command v1 (0x2B - 24 bytes) */
 typedef struct {

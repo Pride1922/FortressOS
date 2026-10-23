@@ -712,8 +712,7 @@ static void iwl_drain_rx_ring(void) {
                             }
                         }
                     }
-                } else if ((grp == 0 && code == IWL_SCAN_ITER_COMPLETE_UMAC) ||
-                           wide_id == IWL_WIDE_ID(IWL_LONG_GROUP, IWL_SCAN_COMPLETE_UMAC) ||
+                } else if (wide_id == IWL_WIDE_ID(IWL_LONG_GROUP, IWL_SCAN_COMPLETE_UMAC) ||
                            (grp == 0 && code == IWL_SCAN_COMPLETE_UMAC)) {
                     s_scan_complete = true;
                 } else if (grp == 0 && code == IWL_HCMD_TIME_EVENT_NOTIF) {
@@ -1143,25 +1142,36 @@ static bool iwl_send_mac_context_cmd(uint32_t action, bool is_assoc, uint16_t as
     memcpy(mac_cmd.bssid_addr, s_assoc_bssid, 6);
     mac_cmd.cck_rates    = (s_iwl_dev.current_channel <= 14) ? 0x0Fu : 0;
     mac_cmd.ofdm_rates   = (s_iwl_dev.current_channel <= 14) ? 0x15u : 0xFFu;
-    mac_cmd.filter_flags = IWL_MAC_FILTER_ACCEPT_GRP | IWL_MAC_FILTER_IN_BEACON;
-    for (int ac = 0; ac < 4; ac++) {
-        mac_cmd.ac[ac].cw_min     = 15;
-        mac_cmd.ac[ac].cw_max     = 1023;
-        mac_cmd.ac[ac].aifsn      = 3;
-        mac_cmd.ac[ac].fifos_mask = (uint8_t)(1u << ac);
-        mac_cmd.ac[ac].edca_txop  = 0;
+    mac_cmd.short_slot   = (1u << 4); /* IWM_MAC_FLG_SHORT_SLOT (0x10) */
+    mac_cmd.filter_flags = IWL_MAC_FILTER_ACCEPT_GRP | (is_assoc ? 0u : IWL_MAC_FILTER_IN_BEACON);
+    mac_cmd.qos_flags    = (1u << 0); /* IWM_MAC_QOS_FLG_UPDATE_EDCA */
+
+    /* EDCA AC parameters indexed by TX FIFO: 0=BK, 1=BE, 2=VI, 3=VO */
+    static const uint16_t cw_min[4] = { 15, 15, 7, 3 };
+    static const uint16_t cw_max[4] = { 1023, 1023, 15, 7 };
+    static const uint8_t  aifsn[4]  = { 7, 3, 2, 2 };
+    static const uint16_t txop[4]   = { 0, 0, 3008, 1504 };
+    for (int f = 0; f < 4; f++) {
+        mac_cmd.ac[f].cw_min     = cw_min[f];
+        mac_cmd.ac[f].cw_max     = cw_max[f];
+        mac_cmd.ac[f].aifsn      = aifsn[f];
+        mac_cmd.ac[f].fifos_mask = (uint8_t)(1u << f);
+        mac_cmd.ac[f].edca_txop  = txop[f];
     }
 
     if (is_assoc) {
         uint32_t bi = (s_assoc_bi >= 20) ? s_assoc_bi : 100u;
-        uint32_t dtim = bi * 2u;
-        mac_cmd.sta.is_assoc        = 1u;
-        mac_cmd.sta.bi              = bi;
-        mac_cmd.sta.bi_reciprocal   = (1u << 22) / bi;
-        mac_cmd.sta.dtim_interval   = dtim;
-        mac_cmd.sta.dtim_reciprocal = (1u << 22) / dtim;
-        mac_cmd.sta.listen_interval = 10u;
-        mac_cmd.sta.assoc_id        = assoc_id;
+        uint32_t dtim_off = bi * 1024u;
+        mac_cmd.sta.is_assoc                 = 1u;
+        mac_cmd.sta.dtim_time                = s_last_phy_info.system_timestamp + dtim_off;
+        mac_cmd.sta.dtim_tsf                 = s_last_phy_info.timestamp + (uint64_t)dtim_off;
+        mac_cmd.sta.bi                       = bi;
+        mac_cmd.sta.bi_reciprocal            = 0xFFFFFFFFu / bi;
+        mac_cmd.sta.dtim_interval            = bi;
+        mac_cmd.sta.dtim_reciprocal          = 0xFFFFFFFFu / bi;
+        mac_cmd.sta.listen_interval          = 10u;
+        mac_cmd.sta.assoc_id                 = assoc_id;
+        mac_cmd.sta.assoc_beacon_arrive_time = s_last_phy_info.system_timestamp;
     }
 
     return iwl_send_cmd_pdu(IWL_HCMD_MAC_CONTEXT, &mac_cmd, sizeof(mac_cmd), true);
@@ -1189,7 +1199,7 @@ static bool iwl_send_add_sta_cmd(bool update, uint16_t assoc_id) {
     if (!update) {
         memcpy(cmd.addr, s_assoc_bssid, 6);
     } else {
-        cmd.modify_mask = (1u << 7) | (1u << 4); /* IWM_STA_MODIFY_QUEUES | IWM_STA_MODIFY_TID_DISABLE_TX */
+        cmd.modify_mask = (1u << 7) | (1u << 1); /* IWM_STA_MODIFY_QUEUES | IWM_STA_MODIFY_TID_DISABLE_TX */
     }
     cmd.assoc_id          = assoc_id;
     cmd.tfd_queue_msk     = (1u << 5) | (1u << 6) | (1u << 7) | (1u << 8);
