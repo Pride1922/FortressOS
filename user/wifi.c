@@ -1053,7 +1053,7 @@ static bool looks_like_ip(const char *s) {
 }
 
 int wifi_main(int argc, char **argv) {
-    if (argc < 2) {
+    if (argc < 2 || streq(argv[1], "--help") || streq(argv[1], "-h") || streq(argv[1], "help")) {
         write_str(1, "Usage: wifi <command> [arguments]\n");
         write_str(1, "Commands:\n");
         write_str(1, "  scan                               Scan for nearby wireless networks\n");
@@ -1068,7 +1068,7 @@ int wifi_main(int argc, char **argv) {
         write_str(1, "  forget [SSID]                      Remove saved network from /etc/network/wlan.conf\n");
         write_str(1, "  auto                               Auto-connect to best saved wireless network\n");
         write_str(1, "  disconnect                         Disconnect from wireless network\n");
-        return 1;
+        return (argc < 2) ? 1 : 0;
     }
 
     if (streq(argv[1], "scan")) {
