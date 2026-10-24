@@ -426,6 +426,9 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                                        s_wlan_state == WLAN_STATE_ASSOCIATING ||
                                        s_wlan_state == WLAN_STATE_4WAY_HANDSHAKE);
                 s_wlan_state = was_connecting ? WLAN_STATE_FAILED : WLAN_STATE_IDLE;
+                if (was_connecting) {
+                    s_has_cached_pmk = false;
+                }
                 s_wlan_net_dev.flags &= ~NET_RUNNING;
                 memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
                 memset(s_target_pmk, 0, sizeof(s_target_pmk));
@@ -486,6 +489,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
                     memset(s_target_pmk, 0, sizeof(s_target_pmk));
                     s_gtk_rx_pn = 0;
+                    s_has_cached_pmk = false;
                     spin_unlock_irqrestore(&s_wlan_lock, irq);
                     if (s_hw_ops && s_hw_ops->deauth) {
                         s_hw_ops->deauth();
@@ -663,6 +667,7 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
             s_wlan_state = WLAN_STATE_FAILED;
             s_wlan_net_dev.flags &= ~NET_RUNNING;
             memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+            s_has_cached_pmk = false;
             needs_deauth = true;
         } else if (retry_due) {
             if (st == WLAN_STATE_AUTHENTICATING && s_hw_ops && s_hw_ops->send_raw_80211) {
