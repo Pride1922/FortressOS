@@ -217,6 +217,12 @@ static uint64_t get_monotonic_sec(void) {
     return (uint64_t)ts.tv_sec;
 }
 
+static uint64_t get_monotonic_ms(void) {
+    timespec_t ts = {0, 0};
+    sys_call(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, (uintptr_t)&ts, 0, 0, 0, 0);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
+}
+
 static int64_t get_realtime_epoch(void) {
     timespec_t ts = {0, 0};
     long r = sys_call(SYS_CLOCK_GETTIME, CLOCK_REALTIME, (uintptr_t)&ts, 0, 0, 0, 0);
@@ -606,6 +612,7 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
 
     /* Wait for DHCPOFFER */
     uint64_t deadline = get_monotonic_sec() + timeout_sec;
+    uint64_t next_retransmit = get_monotonic_ms() + 1000;
     static uint8_t rx_buf[DHCP_MAX_PACKET_LEN];
     net_sockaddr_in_t src_addr;
     uint32_t src_len = sizeof(src_addr);
@@ -623,6 +630,11 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
                 got_offer = true;
                 break;
             }
+        }
+        if (get_monotonic_ms() >= next_retransmit) {
+            (void)sys_call(SYS_SENDTO, (uintptr_t)fd, (uintptr_t)tx_buf, tx_len, 0,
+                           (uintptr_t)&bcast_addr, sizeof(bcast_addr));
+            next_retransmit = get_monotonic_ms() + 1000;
         }
         sleep_ms(50);
     }
@@ -655,6 +667,7 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
 
     /* Wait for DHCPACK */
     deadline = get_monotonic_sec() + timeout_sec;
+    next_retransmit = get_monotonic_ms() + 1000;
     static dhcp_offer_t ack;
     bool got_ack = false;
 
@@ -687,6 +700,11 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
                     return 1;
                 }
             }
+        }
+        if (get_monotonic_ms() >= next_retransmit) {
+            (void)sys_call(SYS_SENDTO, (uintptr_t)fd, (uintptr_t)tx_buf, tx_len, 0,
+                           (uintptr_t)&bcast_addr, sizeof(bcast_addr));
+            next_retransmit = get_monotonic_ms() + 1000;
         }
         sleep_ms(50);
     }

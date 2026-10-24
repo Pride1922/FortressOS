@@ -600,10 +600,18 @@ test-usb-persistence: $(BOOTABLE_IMG)
 	@python3 scripts/test_usb_mount_host.py
 	@python3 scripts/test_usb_persistence.py
 
-.PHONY: test-hub-host test-hub-host-tsan test-usb-hid test-usb-hub test-usb-mouse test-rtl8153-host test-wlan-crypto-host test-wlan-mac-host test-wlan-wpa2-host test-wifi-host
+.PHONY: test-hub-host test-hub-host-tsan test-usb-hid test-usb-hub test-usb-mouse test-rtl8153-host test-wlan-crypto-host test-wlan-mac-host test-wlan-wpa2-host test-wifi-host test-wifi-fault-host test-wifi-stack
+WIFI_STACK_BUDGET ?= 1024
+WIFI_STACK_SRCS := src/net/wlan/wlan_mgr.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_crypto.c src/drivers/iwlwifi.c src/drivers/iwl_health.c
+test-wifi-stack:
+	@python3 scripts/check_wifi_stack.py $(WIFI_STACK_BUDGET) $(CC) $(BUILD_DIR)/stackgate $(CFLAGS) -- $(WIFI_STACK_SRCS)
+test-wifi-fault-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_fault_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwl_health.c -o $(BUILD_DIR)/wifi_fault_host
+	@$(BUILD_DIR)/wifi_fault_host
 test-wifi-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwlwifi.c -o $(BUILD_DIR)/wifi_host
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwlwifi.c src/drivers/iwl_health.c -o $(BUILD_DIR)/wifi_host
 	@$(BUILD_DIR)/wifi_host
 test-wlan-wpa2-host:
 	@mkdir -p $(BUILD_DIR)

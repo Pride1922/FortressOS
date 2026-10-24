@@ -25,6 +25,11 @@ static char                 s_cached_pass[65];
 static uint8_t              s_cached_pmk[WLAN_PMK_LEN];
 static bool                 s_has_cached_pmk = false;
 
+static char                 s_pending_ssid[IEEE80211_SSID_MAX_LEN + 1];
+static char                 s_pending_pass[65];
+static uint8_t              s_pending_pmk[WLAN_PMK_LEN];
+static bool                 s_has_pending_pmk = false;
+
 static uint64_t             s_conn_start_time = 0;
 static uint64_t             s_conn_last_retry_time = 0;
 static uint32_t             s_conn_retry_count = 0;
@@ -71,6 +76,8 @@ void wlan_mgr_init(const wlan_hw_ops_t *ops) {
     memset(s_cached_pass, 0, sizeof(s_cached_pass));
     memset(s_cached_pmk, 0, sizeof(s_cached_pmk));
     s_has_cached_pmk = false;
+    memset(s_pending_pmk, 0, sizeof(s_pending_pmk));
+    s_has_pending_pmk = false;
     s_conn_start_time = 0;
     s_conn_last_retry_time = 0;
     s_conn_retry_count = 0;
@@ -213,6 +220,21 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     wlan_drain_hw_rx();
 
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
+
+    /* If previously active, transmit deauth leaving BSS to clean air state */
+    if (s_wlan_state != WLAN_STATE_IDLE && s_wlan_state != WLAN_STATE_FAILED) {
+        if (s_hw_ops && s_hw_ops->send_raw_80211) {
+            uint8_t deauth_buf[64];
+            size_t deauth_len = net_80211_build_deauth(deauth_buf, sizeof(deauth_buf),
+                                                      s_local_mac, s_target_bssid, 3 /* Deauth leaving */);
+            if (deauth_len > 0) s_hw_ops->send_raw_80211(deauth_buf, deauth_len);
+        }
+    }
+
+    /* Unconditionally wipe any stale WPA2 session authorization */
+    memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+    s_gtk_rx_pn = 0;
+
     memset(s_target_ssid, 0, sizeof(s_target_ssid));
     memcpy(s_target_ssid, ssid, ssid_len);
 
@@ -270,16 +292,17 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
         strcmp(s_cached_ssid, ssid) == 0 &&
         strcmp(s_cached_pass, passphrase) == 0) {
         memcpy(s_target_pmk, s_cached_pmk, WLAN_PMK_LEN);
+        s_has_pending_pmk = false;
     } else {
         wlan_pbkdf2_sha1(passphrase, (const uint8_t *)ssid, ssid_len, 4096, s_target_pmk, WLAN_PMK_LEN);
-        memcpy(s_cached_pmk, s_target_pmk, WLAN_PMK_LEN);
+        memcpy(s_pending_pmk, s_target_pmk, WLAN_PMK_LEN);
         size_t sl = ssid_len < IEEE80211_SSID_MAX_LEN ? ssid_len : IEEE80211_SSID_MAX_LEN;
-        memcpy(s_cached_ssid, ssid, sl);
-        s_cached_ssid[sl] = '\0';
+        memcpy(s_pending_ssid, ssid, sl);
+        s_pending_ssid[sl] = '\0';
         size_t pl = pass_len < 64 ? pass_len : 64;
-        memcpy(s_cached_pass, passphrase, pl);
-        s_cached_pass[pl] = '\0';
-        s_has_cached_pmk = true;
+        memcpy(s_pending_pass, passphrase, pl);
+        s_pending_pass[pl] = '\0';
+        s_has_pending_pmk = true;
     }
 
     uint8_t target_chan = s_current_channel;
@@ -298,7 +321,15 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
 
     /* Configure MVM PHY/MAC/Binding/Station context and session protection Time Event */
     if (s_hw_ops && s_hw_ops->prepare_auth) {
-        s_hw_ops->prepare_auth(target_chan, target_bssid_copy, target_bi);
+        if (s_hw_ops->prepare_auth(target_chan, target_bssid_copy, target_bi) < 0) {
+            /* Hardware refused (e.g. firmware DEAD): fail closed instead of timing out */
+            irq = spin_lock_irqsave(&s_wlan_lock);
+            s_wlan_state = WLAN_STATE_FAILED;
+            s_wlan_net_dev.flags &= ~NET_RUNNING;
+            memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+            spin_unlock_irqrestore(&s_wlan_lock, irq);
+            return -3;
+        }
     }
 
     /* Build and send Open System Authentication Request (Seq 1) */
@@ -312,8 +343,19 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     }
     spin_unlock_irqrestore(&s_wlan_lock, irq);
 
-    /* Non-blocking asynchronous connect: frame reception, retries, and timeouts
-     * progress autonomously in wlan_mgr_rx_raw_80211 and wlan_service_link */
+    /* Synchronous real-time RX pump (restored from 34ffbea): the firmware only stays
+     * on-channel for the session-protection Time Event window, so Auth/Assoc/EAPOL M1-M3
+     * must be serviced immediately. Bounded; exits as soon as the link settles. Retries
+     * and the overall timeout continue autonomously in wlan_service_link. */
+    for (uint32_t step = 0; step < 600000u; step++) {
+        wlan_drain_hw_rx();
+        irq = spin_lock_irqsave(&s_wlan_lock);
+        wlan_state_t st = s_wlan_state;
+        spin_unlock_irqrestore(&s_wlan_lock, irq);
+        if (st == WLAN_STATE_CONNECTED || st == WLAN_STATE_FAILED || st == WLAN_STATE_IDLE) {
+            break;
+        }
+    }
     return 0;
 }
 
@@ -332,6 +374,8 @@ int wlan_mgr_disconnect(void) {
         memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
         memset(s_target_pmk, 0, sizeof(s_target_pmk));
         s_gtk_rx_pn = 0;
+        s_has_cached_pmk = false;
+        s_has_pending_pmk = false;
     }
     spin_unlock_irqrestore(&s_wlan_lock, irq);
 
@@ -436,6 +480,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 s_wlan_state = was_connecting ? WLAN_STATE_FAILED : WLAN_STATE_IDLE;
                 if (was_connecting) {
                     s_has_cached_pmk = false;
+                    s_has_pending_pmk = false;
                 }
                 s_wlan_net_dev.flags &= ~NET_RUNNING;
                 memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
@@ -470,6 +515,11 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
             if (snap->dsap == 0xAA && snap->ssap == 0xAA && snap->control == 0x03 &&
                 snap->oui[0] == 0 && snap->oui[1] == 0 && snap->oui[2] == 0 &&
                 snap->ethertype == __builtin_bswap16(EAPOL_ETHER_TYPE)) {
+
+                if (s_wlan_state != WLAN_STATE_4WAY_HANDSHAKE && s_wlan_state != WLAN_STATE_CONNECTED) {
+                    spin_unlock_irqrestore(&s_wlan_lock, irq);
+                    return 0;
+                }
                 
                 uint8_t resp_eapol[512];
                 int resp_len = wpa2_sm_rx_eapol(&s_wpa2_sm, payload + 8, payload_len - 8,
@@ -496,6 +546,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     memset(s_target_pmk, 0, sizeof(s_target_pmk));
                     s_gtk_rx_pn = 0;
                     s_has_cached_pmk = false;
+                    s_has_pending_pmk = false;
                     spin_unlock_irqrestore(&s_wlan_lock, irq);
                     if (s_hw_ops && s_hw_ops->deauth) {
                         s_hw_ops->deauth();
@@ -506,6 +557,13 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 if (wpa2_sm_is_authorized(&s_wpa2_sm)) {
                     s_wlan_state = WLAN_STATE_CONNECTED;
                     s_wlan_net_dev.flags |= NET_RUNNING;
+                    if (s_has_pending_pmk) {
+                        memcpy(s_cached_pmk, s_pending_pmk, WLAN_PMK_LEN);
+                        memcpy(s_cached_ssid, s_pending_ssid, sizeof(s_cached_ssid));
+                        memcpy(s_cached_pass, s_pending_pass, sizeof(s_cached_pass));
+                        s_has_cached_pmk = true;
+                        s_has_pending_pmk = false;
+                    }
                 }
 
                 spin_unlock_irqrestore(&s_wlan_lock, irq);
@@ -672,6 +730,7 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
             s_wlan_net_dev.flags &= ~NET_RUNNING;
             memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
             s_has_cached_pmk = false;
+            s_has_pending_pmk = false;
             needs_deauth = true;
         } else if (retry_due) {
             if (st == WLAN_STATE_AUTHENTICATING && s_hw_ops && s_hw_ops->send_raw_80211) {

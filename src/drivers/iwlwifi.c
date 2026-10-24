@@ -1,4 +1,5 @@
 #include "iwlwifi.h"
+#include "iwl_health.h"
 #include "../net/wlan/wlan_mgr.h"
 #include "serial.h"
 #include "vfs.h"
@@ -13,6 +14,8 @@
 static iwlwifi_state_t s_iwl_dev = {
     .lock = SPINLOCK_RANKED(2, "iwlwifi_ring"),
 };
+
+static iwl_health_t s_health;   /* zero state == IWL_HEALTH_OK */
 
 static uint8_t s_tx_ring_mem[IWL_TX_RING_SIZE * sizeof(iwl_tx_desc_t)] __attribute__((aligned(4096)));
 static uint8_t s_rx_ring_mem[IWL_RX_RING_SIZE * sizeof(iwl_rx_desc_t)] __attribute__((aligned(4096)));
@@ -624,6 +627,7 @@ static void iwl_drain_rx_ring(void) {
     uint32_t fh_intr = iwl_read32(CSR_FH_INT_STATUS);
     if (intr & (CSR_INT_BIT_HW_ERR | CSR_INT_BIT_SW_ERR)) {
         s_last_err_intr = intr;
+        iwl_health_on_fw_error(&s_health, intr);
     }
     if (intr) iwl_write32(CSR_INT, intr);
     if (fh_intr) iwl_write32(CSR_FH_INT_STATUS, fh_intr);
@@ -722,6 +726,8 @@ static void iwl_drain_rx_ring(void) {
                         uint32_t status = *(const uint32_t *)(pkt->data + 20);
                         if ((action & 1u) && status != 0) {
                             s_te_started = true;
+                        } else if (!(action & 1u)) {
+                            s_te_started = false;
                         }
                     }
                 } else if (grp == 0 && code == 0x02 /* IWM_REPLY_ERROR */) {
@@ -816,6 +822,12 @@ static bool iwl_post_alive(void) {
 
 /* Send a Host Command on Command Queue 0 and optionally wait for completion */
 static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bool wait_resp) {
+    /* Fail fast (and visibly) once firmware is declared DEAD instead of stalling 1 s per command */
+    if (!iwl_health_cmd_allowed(&s_health)) {
+        s_pending_cmd_idx = 0xFF;
+        return false;
+    }
+
     uint8_t idx = s_cmd_idx;
     uint32_t slot = idx & (IWL_CMD_SLOTS - 1u);
     uint8_t *buf_virt = s_cmd_buf_virt + slot * IWL_CMD_SLOT_SIZE;
@@ -907,6 +919,7 @@ static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bo
                     serial_print_hex(opcode);
                     serial_puts("\n");
                 }
+                iwl_health_on_cmd_result(&s_health, failed ? IWL_CMD_REJECTED : IWL_CMD_OK);
                 return !failed;
             }
             __asm__ volatile("pause" ::: "memory");
@@ -926,6 +939,10 @@ static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bo
     serial_print_hex(s_last_rx_wide_id);
     serial_puts("\n");
 
+    iwl_health_on_cmd_result(&s_health, IWL_CMD_TIMEOUT);
+    if (s_health.state == IWL_HEALTH_DEAD) {
+        serial_puts("[IWL] ERROR: firmware unresponsive, declared DEAD (reboot required)\n");
+    }
     s_pending_cmd_idx = 0xFF;
     return false;
 }
@@ -1344,6 +1361,7 @@ static bool iwl_boot_ucode_image(const void *fw_data, size_t fw_len,
     s_num_paging_blk = 0;
     s_last_blk_pages = 0;
     s_last_err_intr  = 0;
+    iwl_health_init(&s_health);
     s_last_rx_wide_id = 0;
 
     if (!iwl_prepare_card_hw()) {
@@ -1534,7 +1552,8 @@ static const wlan_hw_ops_t s_iwlwifi_hw_ops = {
 
 bool iwlwifi_probe(void) {
 #ifndef IWLWIFI_HOST_TEST
-    pci_device_t pci_devs[MAX_PCI_DEVICES];
+    /* Static: a MAX_PCI_DEVICES array cost ~5.6 KiB of kernel stack. Probe runs once, serialized, at boot. */
+    static pci_device_t pci_devs[MAX_PCI_DEVICES];
     size_t count = pci_scan_all(pci_devs, MAX_PCI_DEVICES);
     for (size_t i = 0; i < count; i++) {
         if (iwlwifi_is_supported_device(pci_devs[i].vendor_id, pci_devs[i].device_id)) {
@@ -1742,54 +1761,26 @@ int iwlwifi_deauth(void) {
         return 0;
     }
 
-    /* 1. Stop Time Event session protection if active */
-    if (s_te_started) {
-        iwl_time_event_cmd_t te;
-        memset(&te, 0, sizeof(te));
-        te.id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
-        te.action       = IWL_FW_CTXT_ACTION_REMOVE;
-        te.id           = 0;
-        (void)iwl_send_cmd_pdu(IWL_HCMD_TIME_EVENT, &te, sizeof(te), false);
-        s_te_started = false;
-    }
+    s_te_started = false;
+    s_is_associated = false;
 
-    /* 2. Association teardown */
-    if (s_is_associated) {
-        (void)iwl_send_sf_config(IWL_SF_INIT_OFF);
-        (void)iwl_send_time_quota_cmd(false);
-        (void)iwl_send_mac_power_cmd(false);
-        s_is_associated = false;
-    }
-
-    /* 3. Station teardown: flush TX paths before removing Station 0 */
+    /* 1. Station teardown: flush TX paths before removing Station 0 */
     if (s_sta_active) {
         iwl_tx_path_flush_cmd_t flush_cmd = {
-            .sta_id   = IWL_STATION_ID,
-            .tid_mask = 0xFFFFu,
-            .reserved = 0,
+            .queues_ctl = (1u << 5) | (1u << 6) | (1u << 7) | (1u << 8),
+            .flush_ctl  = (1u << 1), /* DUMP_TX_FIFO_FLUSH */
+            .reserved   = 0,
         };
         (void)iwl_send_cmd_pdu(IWL_HCMD_TXPATH_FLUSH, &flush_cmd, sizeof(flush_cmd), true);
-
-        s_txq5_idx = 0;
-        if (s_txq5_tfd_ring_virt) {
-            memset(s_txq5_tfd_ring_virt, 0, sizeof(iwl_tfd_t) * IWL_TX_RING_SIZE);
-        }
 
         iwl_rm_sta_cmd_t rm_cmd = { .sta_id = IWL_STATION_ID, .reserved = {0, 0, 0} };
         (void)iwl_send_cmd_pdu(IWL_HCMD_REMOVE_STA, &rm_cmd, sizeof(rm_cmd), true);
         s_sta_active = false;
     }
 
-    /* 4. Binding teardown */
-    if (s_binding_active) {
-        (void)iwl_send_binding_context_cmd(IWL_FW_CTXT_ACTION_REMOVE);
-        s_binding_active = false;
-    }
-
-    /* 5. MAC context teardown */
+    /* 2. Update MAC Context 0 to unassociated (preserve permanent virtual interface MAC context) */
     if (s_mac_active) {
-        (void)iwl_send_mac_context_cmd(IWL_FW_CTXT_ACTION_REMOVE, false, 0);
-        s_mac_active = false;
+        (void)iwl_send_mac_context_cmd(IWL_FW_CTXT_ACTION_MODIFY, false, 0);
     }
 #endif
     return 0;
@@ -1801,8 +1792,24 @@ int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beaco
         return -1;
     }
 
-    /* Tear down any previous station/binding/MAC context before starting new authentication */
-    (void)iwlwifi_deauth();
+    bool reset_tracking = false;
+    if (!iwl_health_begin_recovery(&s_health, &reset_tracking)) {
+        serial_puts("[IWL] ERROR: prepare_auth refused, firmware DEAD (reboot required)\n");
+        return -1;
+    }
+    if (reset_tracking) {
+        /* Firmware reported an error: its MVM objects are in an unknown state, so drop host
+         * bookkeeping and rebuild everything. */
+        serial_puts("[IWL] Recovering from firmware error, rebuilding MVM contexts\n");
+        s_te_started     = false;
+        s_is_associated  = false;
+        s_sta_active     = false;
+        s_binding_active = false;
+        s_mac_active     = false;
+    } else {
+        /* Tear down any previous station/association before starting new authentication */
+        (void)iwlwifi_deauth();
+    }
     s_last_err_intr = 0;
 
     s_iwl_dev.current_channel = (channel > 0) ? channel : 1;
@@ -1815,23 +1822,32 @@ int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beaco
         serial_puts("[IWL] WARN: prepare_auth PHY_CONTEXT modify failed\n");
     }
 
-    /* 2. Add MAC Context 0 (BSS_STA, unassociated) */
-    if (iwl_send_mac_context_cmd(IWL_FW_CTXT_ACTION_ADD, false, 0)) {
-        s_mac_active = true;
+    /* 2. Configure MAC Context 0 (BSS_STA, unassociated).
+     * Permanent virtual interface: ADD on first connection, MODIFY on subsequent connections. */
+    if (!s_mac_active) {
+        if (iwl_send_mac_context_cmd(IWL_FW_CTXT_ACTION_ADD, false, 0)) {
+            s_mac_active = true;
+        } else {
+            serial_puts("[IWL] WARN: prepare_auth MAC_CONTEXT add failed\n");
+        }
     } else {
-        serial_puts("[IWL] WARN: prepare_auth MAC_CONTEXT add failed\n");
+        if (!iwl_send_mac_context_cmd(IWL_FW_CTXT_ACTION_MODIFY, false, 0)) {
+            serial_puts("[IWL] WARN: prepare_auth MAC_CONTEXT modify failed\n");
+        }
     }
 
-    /* 3. Bind MAC Context 0 to PHY Context 0 */
-    if (iwl_send_binding_context_cmd(IWL_FW_CTXT_ACTION_ADD)) {
-        s_binding_active = true;
-    } else {
-        serial_puts("[IWL] WARN: prepare_auth BINDING_CONTEXT add failed\n");
+    /* 3. Bind MAC Context 0 to PHY Context 0 (if not already bound) */
+    if (!s_binding_active) {
+        if (iwl_send_binding_context_cmd(IWL_FW_CTXT_ACTION_ADD)) {
+            s_binding_active = true;
+        } else {
+            serial_puts("[IWL] WARN: prepare_auth BINDING_CONTEXT add failed\n");
+        }
     }
 
-    /* Proactively ensure Station 0 is cleared in firmware before ADD_STA */
-    iwl_rm_sta_cmd_t clean_rm = { .sta_id = IWL_STATION_ID, .reserved = {0, 0, 0} };
-    (void)iwl_send_cmd_pdu(IWL_HCMD_REMOVE_STA, &clean_rm, sizeof(clean_rm), false);
+    /* Station 0 is removed by iwlwifi_deauth() only when s_sta_active (it exists in firmware).
+     * Never send REMOVE_STA for a station the firmware does not have: on the Dell 5590 (8265,
+     * fw v36) that raises SW_ERR (CSR_INT 0x2000000) and the following ADD_STA times out. */
     s_sta_active = false;
 
     /* 4. Add Station 0 (Target AP BSSID) on DQA queues 5..8 */
@@ -1841,13 +1857,7 @@ int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beaco
         serial_puts("[IWL] WARN: prepare_auth ADD_STA failed\n");
     }
 
-    /* Bind DQA queues 5..8 to Station 0 now that Station 0 exists in firmware */
-    static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
-    for (uint8_t ac = 0; ac < 4; ac++) {
-        (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 0);
-    }
-
-    /* 6. Configure Link Quality rate table for Station 0 */
+    /* 5. Configure Link Quality rate table for Station 0 */
     (void)iwl_send_lq_cmd(s_iwl_dev.current_channel);
 
     /* 6. Schedule Session Protection Time Event (1500 TU) so radio stays on-channel for Auth/Assoc/EAPOL */
@@ -2260,6 +2270,13 @@ int iwlwifi_get_mac(uint8_t mac[6]) {
     memcpy(mac, s_iwl_dev.mac_addr, 6);
     spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
     return 0;
+}
+
+void iwlwifi_get_health(iwl_health_t *out) {
+    if (!out) return;
+    uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
+    *out = s_health;
+    spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
 }
 
 bool iwlwifi_is_detected(void) {

@@ -7,6 +7,7 @@
 #include "spinlock.h"
 #include "pci.h"
 #include "net.h"
+#include "iwl_health.h"
 
 #define IWL_PCI_VENDOR_ID               0x8086
 
@@ -759,8 +760,8 @@ typedef struct {
 
 /* TX Path Flush Command (0x1E - 8 bytes) */
 typedef struct {
-    uint32_t sta_id;
-    uint16_t tid_mask;
+    uint32_t queues_ctl;
+    uint16_t flush_ctl;
     uint16_t reserved;
 } __attribute__((packed)) iwl_tx_path_flush_cmd_t;
 
@@ -810,5 +811,6 @@ void iwlwifi_recycle_raw(pbuf_t *p);
 int  iwlwifi_set_channel(uint8_t channel);
 int  iwlwifi_get_mac(uint8_t mac[6]);
 bool iwlwifi_is_detected(void);
+void iwlwifi_get_health(iwl_health_t *out);
 
 #endif /* FORTRESS_IWLWIFI_H */

@@ -51,7 +51,7 @@ void wpa2_sm_init(wpa2_sm_t *sm,
 }
 
 bool wpa2_sm_is_authorized(const wpa2_sm_t *sm) {
-    return sm && sm->active && sm->port_authorized;
+    return sm && sm->active && sm->port_authorized && sm->handshake_step == 4;
 }
 
 /* Pseudo-random generation for SNonce */

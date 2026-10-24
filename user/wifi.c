@@ -338,8 +338,11 @@ static int do_connect(const char *ssid, const char *passphrase) {
                 write_str(1, ssid);
                 write_str(1, "\" (WPA2-PSK). Link is ONLINE.\n");
 
+                timespec_t ts_settle = { .tv_sec = 0, .tv_nsec = 250000000 }; /* 250ms AP bridge port settling delay */
+                (void)WIFI_SYSCALL(SYS_NANOSLEEP, &ts_settle, 0, 0);
+
                 write_str(1, "Configuring IP address via DHCP...\n");
-                const char *const dhcp_argv[] = { "/sbin/dhcpc", "-b", NULL };
+                const char *const dhcp_argv[] = { "/sbin/dhcpc", NULL };
                 spawn_opts_t opts;
                 for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
                 opts.size = sizeof(opts);
@@ -363,14 +366,11 @@ static int do_connect(const char *ssid, const char *passphrase) {
     }
 
     if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
-        if (st.state == WIFI_STATUS_FAILED || st.state == WIFI_STATUS_IDLE) {
+        if (st.state != WIFI_STATUS_CONNECTED) {
             write_str(2, "wifi: connection failed (authentication rejected or timeout)\n");
             (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_DISCONNECT, 0, 0);
             return 1;
         }
-        write_str(1, "Connection in progress (current stage: ");
-        write_str(1, state_to_str(st.state));
-        write_str(1, "). Check 'wifi status'.\n");
     } else {
         write_str(2, "wifi: connection timed out\n");
         (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_DISCONNECT, 0, 0);
