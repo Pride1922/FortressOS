@@ -31,9 +31,11 @@ These results do not complete production root publication or package mutation.
 3. Native status/acquire/recover/release now pass on that private initial-IDLE
    root and the completed sequence-2 demo endpoint, including fresh-boot
    filesystem journal recovery. Bounded non-IDLE package recovery is now
-   implemented; account updates remain unsupported. Repeat owner/credentials,
-   signal/reaper and uncertain-I/O acceptance for that integration. Existing
-   finite-demo lifecycle evidence remains separately scoped.
+   implemented; account updates remain unsupported. Native owner/credential,
+   signal/reaper, copyout and acknowledgement-loss cases now pass for the staged
+   pending profile, together with a detached VFS root and package-gated isolated
+   actual account reader. See [native lifecycle/account gate](PKG2_NATIVE_LIFECYCLE_ACCOUNT_GATE.md).
+   The running installed-root/public authentication handoff remains open.
 4. Implement the bounded executable/document install and remove paths, immutable
    typed install/remove plans, generalized reservation/escrow beyond the accepted
    recovery profile, trust-floor publication, generalized
@@ -55,6 +57,7 @@ Accepted evidence and qualifications:
 - [Private native boot admission](PKG2_NATIVE_BOOT_ADMISSION.md).
 - [Baseline/current separation and endpoint admission](PKG2_CURRENT_STATE_ADMISSION.md).
 - [Pending recovery, reservations and durable ownership](PKG2_PENDING_RECOVERY.md).
+- [Native lifecycle and detached account gate](PKG2_NATIVE_LIFECYCLE_ACCOUNT_GATE.md).
 
 Installation, production trust provisioning, release-media builds, pushes and
 physical-device writes remain disabled. Host/QEMU evidence cannot establish

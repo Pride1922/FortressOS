@@ -12,7 +12,8 @@ def overlay(work,replace):
     # Superseded by exact variable-name refinement in pn_names.
     text=(work/path).read_text();replace(path,function(text,'static int jb_reserved_names('),'')
     replace(path,'    if(!r)r=jb_reserved_names(fs);','')
-    replace(path,'if(engine->orphan_count || engine->orphan_recovery_required)','if(engine->tainted || engine->orphan_count || engine->orphan_recovery_required)')
+    replace(path,'if(engine->orphan_count || engine->orphan_recovery_required)',
+            'if(engine->tainted)return -VFS_EIO;\n    if(engine->orphan_count || engine->orphan_recovery_required)')
     replace(path,'    if(!r && ps_validate(jb_selector,jb_selector_n,jb_bundle,jb_bundle_n,&jb_policy,&jb_workspace,&jb_result))r=-VFS_EACCES;',
             '    if(!r)r=pn_load(fs);\n    if(!r)jb_result=pn_workspace.baseline_result;')
     replace(path,'    memcpy(&jb_policy,(const void *)b->pkg_policy_vaddr,sizeof jb_policy);',
