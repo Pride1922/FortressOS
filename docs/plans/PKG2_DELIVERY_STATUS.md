@@ -15,16 +15,18 @@ These results do not complete native enrolled-root admission or package mutation
    are now implemented and host-accepted for the fresh fixed fixture profile.
    See [signed root records](PKG2_SIGNED_ROOT_RECORDS.md). This does not complete
    native boot enrollment or production provisioning.
-2. Deliver independent TEST selector/policy boot modules, measure actual kernel
-   and bootstrap bytes without a hash cycle, and authenticate the selected GPT
-   root in the projected-journal preview before any recovery writes. Validate
-   namespace contents, lineage, ownership, capacity and rollback floors before
-   account-service authentication or root publication. Refuse partial/foreign/
-   unreadable enrollment; establish incompatible-kernel exclusion.
-3. Integrate native status/acquire/recover/release with that admitted root and
-   its lifecycle fences. Repeat owner, credentials, signal/reaper and fresh-boot
-   recovery acceptance against enrolled fixtures. The accepted private demo
-   backend is evidence for its documented profile, not this integration.
+2. Private separate TEST-module delivery, actual kernel/bootstrap measurement,
+   projected initial-IDLE validation and authenticated journal replay are now
+   native-accepted on disposable fixtures. See [native boot admission](PKG2_NATIVE_BOOT_ADMISSION.md).
+   Before production publication, complete mutable-current-state lineage,
+   resource/capacity fences, account-service gating and incompatible-kernel
+   exclusion. The immutable selector currently pins a genesis bundle; it must
+   not be reused unchanged to authenticate later mutable records.
+3. Native status/acquire/recover/release now pass on that private initial-IDLE
+   root, including fresh-boot filesystem journal recovery. Extend admission and
+   recovery to non-IDLE package/account states, and repeat owner/credentials,
+   signal/reaper and uncertain-I/O acceptance for that integration. Existing
+   finite-demo lifecycle evidence remains separately scoped.
 4. Implement the bounded executable/document install and remove paths, immutable
    typed plans, complete reservation/escrow, trust-floor publication, generalized
    completion evidence and ownership-safe removal. CLI mutation remains disabled.
@@ -42,6 +44,7 @@ Accepted evidence and qualifications:
 - [Actual filesystem geometry](PKG2_ENROLLMENT_GEOMETRY.md).
 - [Actual filesystem identities](PKG2_ENROLLMENT_IDENTITIES.md).
 - [Signed actual-root records](PKG2_SIGNED_ROOT_RECORDS.md).
+- [Private native boot admission](PKG2_NATIVE_BOOT_ADMISSION.md).
 
 Installation, production trust provisioning, release-media builds, pushes and
 physical-device writes remain disabled. Host/QEMU evidence cannot establish

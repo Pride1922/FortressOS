@@ -165,3 +165,7 @@ test-pkg-enroll-identity:
 .PHONY: test-pkg-enroll-records
 test-pkg-enroll-records:
 	python3 scripts/test_pkg_enroll_records.py
+
+.PHONY: test-pkg-boot-admission
+test-pkg-boot-admission:
+	python3 scripts/test_pkg_boot_admission.py
