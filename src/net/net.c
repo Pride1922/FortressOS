@@ -267,6 +267,12 @@ static bool net_service_active_interface(uint64_t now, uint64_t freq) {
         serial_puts(" to ");
         serial_puts(target->name);
         serial_puts("\n");
+
+        /* If switching to a wired interface, disconnect wlan to save power and avoid dual leases */
+        if (target != cand_wlan && s_if == cand_wlan) {
+            (void)wlan_mgr_disconnect();
+        }
+
         s_if = target;
         net_ipv4_set_dev(target);
         net_socket_set_dev(target);

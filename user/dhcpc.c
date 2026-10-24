@@ -1301,6 +1301,20 @@ static int dhcpc_daemon_main(void) {
                     break;
                 }
 
+                /* Check if active network interface changed (e.g. cable plugged in or unplugged) */
+                bool mac_match = (s_bound_mac[0] == ifget.mac[0] &&
+                                  s_bound_mac[1] == ifget.mac[1] &&
+                                  s_bound_mac[2] == ifget.mac[2] &&
+                                  s_bound_mac[3] == ifget.mac[3] &&
+                                  s_bound_mac[4] == ifget.mac[4] &&
+                                  s_bound_mac[5] == ifget.mac[5]);
+                if (!mac_match) {
+                    flush_interface();
+                    delete_file("/run/dhcpc.lease");
+                    state = STATE_INIT;
+                    break;
+                }
+
                 uint64_t now = get_monotonic_sec();
                 if (now >= t_renew) {
                     state = STATE_RENEWING;
@@ -1308,7 +1322,7 @@ static int dhcpc_daemon_main(void) {
                 }
 
                 uint64_t delta = t_renew - now;
-                uint64_t chunk = delta > 2 ? 2 : delta;
+                uint64_t chunk = delta > 1 ? 1 : delta;
                 if (chunk == 0) chunk = 1;
                 sleep_sec(chunk);
                 break;
@@ -1335,7 +1349,50 @@ static int dhcpc_daemon_main(void) {
                     } else {
                         state = STATE_INIT;
                     }
+                    break;
                 }
+
+#ifdef SYS_WIFI
+                /* If no link is up, attempt Wi-Fi auto-connect to saved networks every 5 seconds */
+                static uint64_t s_last_wifi_auto_sec = 0;
+                uint64_t now_discon = get_monotonic_sec();
+                if (now_discon >= s_last_wifi_auto_sec + 5) {
+                    s_last_wifi_auto_sec = now_discon;
+                    wifi_status_t wst;
+                    for (size_t wi = 0; wi < sizeof(wst); wi++) ((uint8_t *)&wst)[wi] = 0;
+                    if (sys_call(SYS_WIFI, SYS_WIFI_CMD_STATUS, (uintptr_t)&wst, sizeof(wst), 0, 0, 0) == 0) {
+                        if (wst.state == WIFI_STATUS_IDLE) {
+                            spawn_fd_action_t wact[3];
+                            for (size_t k = 0; k < 3; k++) {
+                                for (size_t b = 0; b < sizeof(spawn_fd_action_t); b++) ((uint8_t *)&wact[k])[b] = 0;
+                            }
+                            wact[0].type = SPAWN_FD_ACTION_OPEN;
+                            wact[0].dst_fd = 0;
+                            wact[0].path = (uint64_t)"/dev/null";
+                            wact[0].flags = VFS_O_RDONLY;
+                            wact[1].type = SPAWN_FD_ACTION_OPEN;
+                            wact[1].dst_fd = 1;
+                            wact[1].path = (uint64_t)"/run/wifi-auto.log";
+                            wact[1].flags = VFS_O_WRONLY | VFS_O_CREAT | VFS_O_TRUNC;
+                            wact[1].mode = 0644;
+                            wact[2].type = SPAWN_FD_ACTION_DUP2;
+                            wact[2].src_fd = 1;
+                            wact[2].dst_fd = 2;
+
+                            const char *const wargv[] = {"/bin/wifi", "auto", NULL};
+                            spawn_opts_t wopts;
+                            for (size_t j = 0; j < sizeof(wopts); j++) ((uint8_t *)&wopts)[j] = 0;
+                            wopts.size = sizeof(wopts);
+                            wopts.version = 2;
+                            wopts.flags = SPAWN_SETPGROUP;
+                            wopts.argv = (uint64_t)wargv;
+                            wopts.fd_actions = (uint64_t)wact;
+                            wopts.action_count = 3;
+                            (void)sys_call(SYS_SPAWN_EXT, (uintptr_t)"/bin/wifi", (uintptr_t)&wopts, sizeof(wopts), 0, 0, 0);
+                        }
+                    }
+                }
+#endif
                 break;
             }
 
