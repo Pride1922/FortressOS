@@ -225,7 +225,24 @@ static void test_bss_table(void) {
     found = wlan_bss_table_find(&table, "NonExistent");
     assert(found == NULL);
 
-    printf("[TEST 4] PASS: BSS scan table operations verified.\n");
+    /* Multi-BSSID test: add second AP with same SSID "HomeWiFi" but stronger RSSI */
+    wlan_bss_entry_t b3 = {
+        .bssid = {0x00, 0x11, 0x22, 0x33, 0x44, 0x99},
+        .ssid = "HomeWiFi",
+        .channel = 36,
+        .rssi = -30, /* Stronger than b1 (-42) */
+        .has_wpa2_psk = true,
+    };
+    assert(wlan_bss_table_update(&table, &b3));
+    assert(table.count == 3);
+
+    found = wlan_bss_table_find(&table, "HomeWiFi");
+    assert(found != NULL);
+    assert(found->channel == 36);
+    assert(found->rssi == -30);
+    assert(memcmp(found->bssid, b3.bssid, 6) == 0);
+
+    printf("[TEST 4] PASS: BSS scan table operations and multi-BSSID best-RSSI verified.\n");
 }
 
 int main(void) {

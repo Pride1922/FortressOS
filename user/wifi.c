@@ -524,12 +524,13 @@ static int do_save(const char *ssid, const char *passphrase) {
     content[pos++] = '\n';
     content[pos] = '\0';
 
-    /* Write to /etc/network/wlan.conf using O_WRONLY | O_CREAT | O_TRUNC (0x241) */
-    fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0x241, 0644);
+    /* Write to /etc/network/wlan.conf with strict 0600 root permissions (O_WRONLY | O_CREAT | O_TRUNC = 0x241) */
+    fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0x241, 0600);
     if (fd < 0) {
         write_str(2, "wifi save: failed to open /etc/network/wlan.conf for writing\n");
         return 1;
     }
+    (void)WIFI_SYSCALL(SYS_FCHMOD, fd, 0600, 0);
     long wr = WIFI_SYSCALL(SYS_WRITE, fd, content, pos);
     WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
 

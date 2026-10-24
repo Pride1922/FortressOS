@@ -361,10 +361,13 @@ bool wlan_bss_table_update(wlan_bss_table_t *table, const wlan_bss_entry_t *bss)
 
 const wlan_bss_entry_t *wlan_bss_table_find(const wlan_bss_table_t *table, const char *ssid) {
     if (!table || !ssid) return NULL;
+    const wlan_bss_entry_t *best = NULL;
     for (uint32_t i = 0; i < table->count; i++) {
         if (strcmp(table->entries[i].ssid, ssid) == 0) {
-            return &table->entries[i];
+            if (!best || table->entries[i].rssi > best->rssi) {
+                best = &table->entries[i];
+            }
         }
     }
-    return NULL;
+    return best;
 }

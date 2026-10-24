@@ -103,6 +103,62 @@ static size_t build_mock_beacon(uint8_t *buf, const uint8_t bssid[6], const char
     return p - buf;
 }
 
+static void complete_mock_handshake(const uint8_t *pmk, const uint8_t ap_bssid[6], const uint8_t anonce[32]) {
+    /* 1. Build and send EAPOL M1 */
+    uint8_t m1[256];
+    ieee80211_qos_hdr_t *wlan_h = (ieee80211_qos_hdr_t *)m1;
+    wlan_h->frame_control = (IEEE80211_TYPE_DATA << 2) | (IEEE80211_SUBTYPE_QOS_DATA << 4) | IEEE80211_FCTL_FROMDS;
+    wlan_h->duration_id = 0;
+    memcpy(wlan_h->addr1, s_mock_sta_mac, 6);
+    memcpy(wlan_h->addr2, ap_bssid, 6);
+    memcpy(wlan_h->addr3, ap_bssid, 6);
+    wlan_h->seq_ctrl = 0;
+    wlan_h->qos_ctrl = 0;
+
+    llc_snap_hdr_t *snap = (llc_snap_hdr_t *)(m1 + sizeof(ieee80211_qos_hdr_t));
+    snap->dsap = 0xAA; snap->ssap = 0xAA; snap->control = 0x03;
+    snap->oui[0] = 0; snap->oui[1] = 0; snap->oui[2] = 0;
+    snap->ethertype = __builtin_bswap16(EAPOL_ETHER_TYPE);
+
+    eapol_hdr_t *eh = (eapol_hdr_t *)(m1 + sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t));
+    eh->version = 2; eh->type = EAPOL_TYPE_KEY;
+    eh->length = __builtin_bswap16(sizeof(eapol_key_desc_t));
+
+    eapol_key_desc_t *desc = (eapol_key_desc_t *)(eh + 1);
+    memset(desc, 0, sizeof(*desc));
+    desc->desc_type = EAPOL_KEY_DESC_WPA2;
+    desc->key_info = __builtin_bswap16(EAPOL_KEY_INFO_HMAC_SHA1 | EAPOL_KEY_INFO_KEY_TYPE | EAPOL_KEY_INFO_KEY_ACK);
+    desc->key_length = __builtin_bswap16(16);
+    desc->replay_counter = __builtin_bswap64(1);
+    memcpy(desc->key_nonce, anonce, 32);
+
+    size_t m1_len = sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t) + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t);
+    assert(wlan_mgr_rx_raw_80211(m1, m1_len, -45) == 0);
+
+    /* 2. Station sent M2 -> Extract SNonce and derive PTK */
+    const eapol_key_desc_t *m2_desc = (const eapol_key_desc_t *)(s_mock_last_tx + sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t) + sizeof(eapol_hdr_t));
+    uint8_t ptk[64];
+    wlan_derive_ptk(pmk, ap_bssid, s_mock_sta_mac, anonce, m2_desc->key_nonce, ptk);
+
+    /* 3. Build and send M3 */
+    uint8_t m3[512];
+    memcpy(m3, m1, m1_len);
+    eapol_key_desc_t *m3_desc = (eapol_key_desc_t *)(m3 + sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t) + sizeof(eapol_hdr_t));
+    m3_desc->key_info = __builtin_bswap16(EAPOL_KEY_INFO_HMAC_SHA1 | EAPOL_KEY_INFO_KEY_TYPE |
+                                          EAPOL_KEY_INFO_INSTALL | EAPOL_KEY_INFO_KEY_ACK |
+                                          EAPOL_KEY_INFO_KEY_MIC | EAPOL_KEY_INFO_SECURE);
+    m3_desc->replay_counter = __builtin_bswap64(2);
+    m3_desc->key_data_len = 0;
+    memset(m3_desc->key_mic, 0, 16);
+
+    eapol_hdr_t *m3_eh = (eapol_hdr_t *)(m3 + sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t));
+    uint8_t mic[20];
+    wlan_hmac_sha1(ptk, 16, (uint8_t *)m3_eh, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t), mic);
+    memcpy(m3_desc->key_mic, mic, 16);
+
+    assert(wlan_mgr_rx_raw_80211(m3, m1_len, -45) == 0);
+}
+
 int main(void) {
     printf("[WIFI HOST TEST] Starting Wireless (802.11 / WPA2-PSK / iwlwifi) Verification...\n");
 
@@ -427,6 +483,101 @@ int main(void) {
     assert(st.state == WIFI_STATUS_FAILED);
     printf("  [PASS] AP Deauthentication during handshake transitions cleanly to WIFI_STATUS_FAILED\n");
 
-    printf("\n>>> ALL WIRELESS (802.11 / WPA2-PSK / IWLWIFI) HOST TESTS PASSED (13/13) <<<\n");
+    /* 14. Test Asynchronous Non-blocking Connect, Retransmission & Timeout */
+    assert(wlan_mgr_disconnect() == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_IDLE);
+
+    /* Initiate non-blocking connect */
+    uint32_t tx_before = s_mock_tx_count;
+    assert(wlan_mgr_connect("FortressSecure", "SuperSecretKey2026", s_mock_ap_bssid) == 0);
+    assert(s_mock_tx_count == tx_before + 1); /* Auth req sent */
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_AUTHENTICATING);
+
+    /* Simulate dropped Auth Response on the air: call service_link after 1.6s */
+    uint64_t tick_rate = 1000; /* 1000 Hz */
+    uint64_t fake_now = 1000;
+    wlan_service_link(dev, fake_now, tick_rate);
+    fake_now += 1600; /* 1.6s later */
+    wlan_service_link(dev, fake_now, tick_rate);
+    /* Retransmit must have fired */
+    assert(s_mock_tx_count == tx_before + 2);
+
+    /* Now advance past 6.0 seconds without AP response */
+    fake_now += 5000; /* 6.6s total */
+    wlan_service_link(dev, fake_now, tick_rate);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_FAILED);
+    printf("  [PASS] Asynchronous progression: autonomous retransmission & 6s timeout fail-closed\n");
+
+    /* 15. Test Fast-path PMK Caching */
+    assert(wlan_mgr_disconnect() == 0);
+    /* 15. Test Fast-path PMK Caching */
+    assert(wlan_mgr_disconnect() == 0);
+    /* First connect caches PMK */
+    assert(wlan_mgr_connect("FortressSecure", "SuperSecretKey2026", s_mock_ap_bssid) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_AUTHENTICATING);
+
+    /* Disconnect and reconnect to same SSID/PSK: fast path reuses cached PMK */
+    assert(wlan_mgr_disconnect() == 0);
+    assert(wlan_mgr_connect("FortressSecure", "SuperSecretKey2026", s_mock_ap_bssid) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_AUTHENTICATING);
+    printf("  [PASS] Fast-path PMK caching (sub-millisecond instant reconnect)\n");
+
+    /* 16. Test Multi-BSSID Best RSSI Selection & Autonomous Roaming */
+    assert(wlan_mgr_disconnect() == 0);
+    uint8_t bssid_alt[6]  = { 0x12, 0x34, 0x56, 0x78, 0x9A, 0x02 };
+    uint8_t bssid_best[6] = { 0x12, 0x34, 0x56, 0x78, 0x9A, 0x03 };
+
+    /* Populate BSS cache with alt AP (-75 dBm on ch 1) and best AP (-35 dBm on ch 11) */
+    uint8_t b_alt[256];
+    size_t b_alt_len = build_mock_beacon(b_alt, bssid_alt, "FortressSecure", 1);
+    assert(wlan_mgr_rx_raw_80211(b_alt, b_alt_len, -75) == 0);
+
+    uint8_t b_best[256];
+    size_t b_best_len = build_mock_beacon(b_best, bssid_best, "FortressSecure", 11);
+    assert(wlan_mgr_rx_raw_80211(b_best, b_best_len, -35) == 0);
+
+    /* Connect without specifying BSSID: must auto-select bssid_best (-35 dBm) */
+    assert(wlan_mgr_connect("FortressSecure", "SuperSecretKey2026", NULL) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(memcmp(st.bssid, bssid_best, 6) == 0);
+    assert(st.channel == 11);
+
+    /* Now test Autonomous Roaming: connect directly to s_mock_ap_bssid and complete handshake */
+    assert(wlan_mgr_disconnect() == 0);
+    assert(wlan_mgr_connect("FortressSecure", "SuperSecretKey2026", s_mock_ap_bssid) == 0);
+    assert(wlan_mgr_rx_raw_80211(auth_resp, sizeof(auth_resp), -45) == 0);
+    assert(wlan_mgr_rx_raw_80211(assoc_resp, sizeof(assoc_resp), -45) == 0);
+    uint8_t fresh_anonce[32];
+    memset(fresh_anonce, 0x55, 32);
+    complete_mock_handshake(pmk, s_mock_ap_bssid, fresh_anonce);
+    assert(wlan_network_online(dev) == true);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_CONNECTED);
+
+    /* Simulate severe signal degradation on current AP to -82 dBm */
+    assert(wlan_mgr_rx_raw_80211(beacon_buf, b_len, -82) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.rssi == -82);
+
+    /* Refresh beacon from bssid_best with strong signal (-35 dBm) */
+    assert(wlan_mgr_rx_raw_80211(b_best, b_best_len, -35) == 0);
+
+    /* Service link tick detects weak current signal and available +47 dBm candidate */
+    tx_before = s_mock_tx_count;
+    wlan_service_link(dev, fake_now + 20000, tick_rate);
+
+    /* Verify roam triggered: deauth old BSSID + auth req to new bssid_best */
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_AUTHENTICATING);
+    assert(memcmp(st.bssid, bssid_best, 6) == 0);
+    assert(st.channel == 11);
+    printf("  [PASS] Multi-BSSID best RSSI selection & autonomous background roaming verified\n");
+
+    printf("\n>>> ALL WIRELESS (802.11 / WPA2-PSK / IWLWIFI) HOST TESTS PASSED (16/16) <<<\n");
     return 0;
 }

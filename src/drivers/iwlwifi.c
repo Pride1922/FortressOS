@@ -1275,12 +1275,19 @@ static bool iwl_send_mcast_filter_cmd(void) {
     return iwl_send_cmd_pdu(IWL_HCMD_MCAST_FILTER, &cmd, sizeof(cmd), true);
 }
 
-static bool iwl_send_mac_power_cmd(void) {
+static bool iwl_send_mac_power_cmd(bool power_save) {
     iwl_mac_power_cmd_t cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.id_and_color       = IWL_FW_CMD_ID_AND_COLOR(0, 0);
-    cmd.flags              = 0; /* Keep radio continuously awake during active session */
     cmd.keep_alive_seconds = 25;
+    if (power_save) {
+        cmd.flags              = 1;     /* Enable power save */
+        cmd.rx_data_timeout    = 10000; /* 10 ms idle timeout */
+        cmd.tx_data_timeout    = 10000;
+        cmd.skip_dtim_periods  = 1;     /* Listen to every 2nd DTIM beacon */
+    } else {
+        cmd.flags              = 0;     /* Keep radio continuously awake */
+    }
     return iwl_send_cmd_pdu(IWL_HCMD_MAC_PM_POWER_TABLE, &cmd, sizeof(cmd), true);
 }
 
@@ -1734,6 +1741,7 @@ int iwlwifi_deauth(void) {
     if (s_is_associated) {
         (void)iwl_send_sf_config(IWL_SF_INIT_OFF);
         (void)iwl_send_time_quota_cmd(false);
+        (void)iwl_send_mac_power_cmd(false);
         s_is_associated = false;
     }
 
@@ -1843,7 +1851,7 @@ int iwlwifi_set_associated(uint16_t assoc_id, uint16_t beacon_interval) {
     /* 3. Enable full Smart FIFO, Multicast reception, MAC power, Time Quota, and LQ rates */
     (void)iwl_send_sf_config(IWL_SF_FULL_ON);
     (void)iwl_send_mcast_filter_cmd();
-    (void)iwl_send_mac_power_cmd();
+    (void)iwl_send_mac_power_cmd(true);
     (void)iwl_send_time_quota_cmd(true);
     (void)iwl_send_lq_cmd(s_iwl_dev.current_channel);
 
