@@ -149,3 +149,7 @@ package-state/layout bounds retain their separately scoped earlier evidence.
 Read-only Linux checks can warn that journal recovery is skipped; they establish
 structural/oracle acceptance, not a clean-bit or physical durability claim.
 No physical-device acceptance is inferred from host models or QEMU.
+
+Subsequent checkpoint: [running-root handoff](PKG2_RUNNING_ROOT_HANDOFF.md)
+completes actual publication and global account/login switching for the private
+profile. The detached-only limits above describe this earlier campaign.

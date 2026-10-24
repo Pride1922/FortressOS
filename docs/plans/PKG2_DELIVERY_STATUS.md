@@ -35,7 +35,11 @@ These results do not complete production root publication or package mutation.
    signal/reaper, copyout and acknowledgement-loss cases now pass for the staged
    pending profile, together with a detached VFS root and package-gated isolated
    actual account reader. See [native lifecycle/account gate](PKG2_NATIVE_LIFECYCLE_ACCOUNT_GATE.md).
-   The running installed-root/public authentication handoff remains open.
+   The running installed-root/account handoff now also passes in the accepted
+   private profile: actual EXT4 root publication, global SYS_ACCOUNTCTL,
+   installed login/sudo, persistence, clean shutdown and quiesce. See
+   [running-root handoff](PKG2_RUNNING_ROOT_HANDOFF.md). Item 1 is complete for
+   this bounded TEST profile; production trust/enablement remains separate.
 4. Implement the bounded executable/document install and remove paths, immutable
    typed install/remove plans, generalized reservation/escrow beyond the accepted
    recovery profile, trust-floor publication, generalized
@@ -58,6 +62,7 @@ Accepted evidence and qualifications:
 - [Baseline/current separation and endpoint admission](PKG2_CURRENT_STATE_ADMISSION.md).
 - [Pending recovery, reservations and durable ownership](PKG2_PENDING_RECOVERY.md).
 - [Native lifecycle and detached account gate](PKG2_NATIVE_LIFECYCLE_ACCOUNT_GATE.md).
+- [Running enrolled root and live account service](PKG2_RUNNING_ROOT_HANDOFF.md).
 
 Installation, production trust provisioning, release-media builds, pushes and
 physical-device writes remain disabled. Host/QEMU evidence cannot establish
