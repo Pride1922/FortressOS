@@ -100,7 +100,7 @@ def main():
                 fields=line.split('\t')
                 if len(fields)<2:continue
                 name=fields[0].split(':')[-1]
-                if name not in symbols or (p.name=='ext4.su' and not name.startswith(('jb_','identity','identities','export_bundle'))):continue
+                if name not in symbols or (p.name=='ext4.su' and not name.startswith(('jb_','pn_','e4_semantic_commit','current_read_file','identity','identities','export_bundle'))):continue
                 limit=1280 if name=='mono_crypto_eddsa_check_equation' else 1024
                 assert int(fields[1])<=limit,(name,fields[1],limit);frames.append({'function':name,'bytes':int(fields[1]),'limit':limit})
         m['linked_private_frames']=frames

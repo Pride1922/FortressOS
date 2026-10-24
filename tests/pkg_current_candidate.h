@@ -24,4 +24,7 @@ typedef struct {
  * Current bytes are not compared to the immutable genesis bundle hash. Actual
  * file identities/maps/modes/namespaces remain a filesystem adapter obligation. */
 int pc_validate(const pc_input *,pc_workspace *,pc_result *);
+/* Canonical bounded bundle framing. Parts are scratch views, valid on success
+ * only; caller retains immutable bytes and a disjoint eight-element array. */
+int pc_bundle_open(ps_blob,ps_blob parts[8]);
 #endif

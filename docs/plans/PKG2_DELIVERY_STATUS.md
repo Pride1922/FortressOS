@@ -6,7 +6,9 @@ The package feature is not ready for production enablement. Private status and
 recover have host and native Ring 3 evidence for the finite demo profile;
 selector authentication has host evidence. Actual filesystem geometry and
 identity checks are now implemented and accepted on disposable host fixtures.
-These results do not complete native enrolled-root admission or package mutation.
+The bounded pending recovery profile now also authenticates native enrolled
+fixtures and journals recovery with durable reservation/ownership updates.
+These results do not complete production root publication or package mutation.
 
 ## Remaining implementation, in dependency order
 
@@ -22,16 +24,19 @@ These results do not complete native enrolled-root admission or package mutation
    resource/capacity fences, account-service gating and incompatible-kernel
    exclusion. A separate reader now authenticates one completed mutable IDLE
    demo endpoint against the immutable genesis bundle and external floors;
-   see [current-state admission](PKG2_CURRENT_STATE_ADMISSION.md). Pending and
-   broader mutable histories remain unsupported.
+   see [current-state admission](PKG2_CURRENT_STATE_ADMISSION.md). Bounded RESERVED,
+   PENDING and RETIRING recovery, actual reservation fences and final executable
+   ownership transfer are implemented in the private detached profile; see
+   [pending recovery](PKG2_PENDING_RECOVERY.md). Broader histories remain unsupported.
 3. Native status/acquire/recover/release now pass on that private initial-IDLE
    root and the completed sequence-2 demo endpoint, including fresh-boot
-   filesystem journal recovery. Extend admission and recovery to non-IDLE
-   package/account states, and repeat owner/credentials,
+   filesystem journal recovery. Bounded non-IDLE package recovery is now
+   implemented; account updates remain unsupported. Repeat owner/credentials,
    signal/reaper and uncertain-I/O acceptance for that integration. Existing
    finite-demo lifecycle evidence remains separately scoped.
 4. Implement the bounded executable/document install and remove paths, immutable
-   typed plans, complete reservation/escrow, trust-floor publication, generalized
+   typed install/remove plans, generalized reservation/escrow beyond the accepted
+   recovery profile, trust-floor publication, generalized
    completion evidence and ownership-safe removal. CLI mutation remains disabled.
 5. Run integrated BIOS/UEFI x SMP=1/4 interruption and repeat-recovery campaigns,
    independent Linux audits, concurrency/open-executable/low-space cases and
@@ -49,6 +54,7 @@ Accepted evidence and qualifications:
 - [Signed actual-root records](PKG2_SIGNED_ROOT_RECORDS.md).
 - [Private native boot admission](PKG2_NATIVE_BOOT_ADMISSION.md).
 - [Baseline/current separation and endpoint admission](PKG2_CURRENT_STATE_ADMISSION.md).
+- [Pending recovery, reservations and durable ownership](PKG2_PENDING_RECOVERY.md).
 
 Installation, production trust provisioning, release-media builds, pushes and
 physical-device writes remain disabled. Host/QEMU evidence cannot establish

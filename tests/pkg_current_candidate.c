@@ -17,6 +17,10 @@ static int pc_unpack(ps_blob b,ps_blob parts[8]){
     }
     return at==b.n?0:-1;
 }
+int pc_bundle_open(ps_blob b,ps_blob parts[8]){
+    if(!pc_range(b.p,b.n) || !pc_apart(parts,8*sizeof(*parts),b.p,b.n))return -1;
+    return pc_unpack(b,parts);
+}
 static bool pc_same_except(const uint8_t *a,const uint8_t *b,size_t n,unsigned kind){
     for(size_t i=0;i<n;i++){
         bool allowed=kind==0 ? (i>=24&&i<32)||(i>=168&&i<232)||(i>=264&&i<296)||(i>=360&&i<376)||i>=992 :
