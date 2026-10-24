@@ -20,11 +20,14 @@ These results do not complete native enrolled-root admission or package mutation
    native-accepted on disposable fixtures. See [native boot admission](PKG2_NATIVE_BOOT_ADMISSION.md).
    Before production publication, complete mutable-current-state lineage,
    resource/capacity fences, account-service gating and incompatible-kernel
-   exclusion. The immutable selector currently pins a genesis bundle; it must
-   not be reused unchanged to authenticate later mutable records.
+   exclusion. A separate reader now authenticates one completed mutable IDLE
+   demo endpoint against the immutable genesis bundle and external floors;
+   see [current-state admission](PKG2_CURRENT_STATE_ADMISSION.md). Pending and
+   broader mutable histories remain unsupported.
 3. Native status/acquire/recover/release now pass on that private initial-IDLE
-   root, including fresh-boot filesystem journal recovery. Extend admission and
-   recovery to non-IDLE package/account states, and repeat owner/credentials,
+   root and the completed sequence-2 demo endpoint, including fresh-boot
+   filesystem journal recovery. Extend admission and recovery to non-IDLE
+   package/account states, and repeat owner/credentials,
    signal/reaper and uncertain-I/O acceptance for that integration. Existing
    finite-demo lifecycle evidence remains separately scoped.
 4. Implement the bounded executable/document install and remove paths, immutable
@@ -45,6 +48,7 @@ Accepted evidence and qualifications:
 - [Actual filesystem identities](PKG2_ENROLLMENT_IDENTITIES.md).
 - [Signed actual-root records](PKG2_SIGNED_ROOT_RECORDS.md).
 - [Private native boot admission](PKG2_NATIVE_BOOT_ADMISSION.md).
+- [Baseline/current separation and endpoint admission](PKG2_CURRENT_STATE_ADMISSION.md).
 
 Installation, production trust provisioning, release-media builds, pushes and
 physical-device writes remain disabled. Host/QEMU evidence cannot establish

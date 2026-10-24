@@ -35,7 +35,7 @@ def header(domain,size=1024,version=1):
 def signed(body,rolekeys):
     return bytes(body)+b''.join(i+s for i,s in sorted((H(PUB(k)),k.sign(bytes(body))) for k in rolekeys[:2]))
 
-def build(image,out,seed_roles,kernel,bootstrap,now=1792843200):
+def build(image,out,seed_roles,kernel,bootstrap,now=1792843200,artifact=None):
     """Prepare records only. Does not publish selector or mutate image."""
     out=pathlib.Path(out);out.mkdir(mode=0o700)
     if len(kernel)!=32 or len(bootstrap)!=32 or not any(kernel) or not any(bootstrap):raise ValueError('measurement hashes required')
@@ -50,7 +50,8 @@ def build(image,out,seed_roles,kernel,bootstrap,now=1792843200):
         'roles':{name:{'threshold':2,'keys':[PUB(k).hex() for k in group]} for name,group in zip(('selector','enrollment','catalog'),rolekeys)}}
     root_bytes=json.dumps(root,sort_keys=True,separators=(',',':')).encode()
     # Catalog authorizes a future demo artifact; the genesis inventory is empty.
-    entry=bytes([4])+b'demo'.ljust(32,b'\0')+struct.pack('<QQ',1,128)+H(b'TEST future demo artifact')
+    if artifact is not None and not 128<=len(artifact)<=8192:raise ValueError('bounded TEST artifact required')
+    entry=bytes([4])+b'demo'.ljust(32,b'\0')+struct.pack('<QQ',1,len(artifact) if artifact is not None else 128)+(H(artifact) if artifact is not None else H(b'TEST future demo artifact'))
     catalog=signed(struct.pack('<16s16sQQQQHHI',b'FORT-PKG-CAT-v1\0',ids[3],3,7,now-2,now+86400,1,2,0)+entry,rolekeys[2])
     trust=header('FORT-PKG-TR-v1');struct.pack_into('<QQQ',trust,24,3,7,now-1)
     trust[48:64]=ids[3];trust[64:96]=H(catalog);struct.pack_into('<I',trust,96,len(catalog));trust[256:256+len(catalog)]=catalog;trust=sealed(trust)

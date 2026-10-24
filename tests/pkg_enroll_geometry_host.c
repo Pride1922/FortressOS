@@ -129,7 +129,10 @@ static int export_bundle(ext4_mount_t *fs,const char *path,const uint8_t *witnes
     }
     free(b);return r;
 }
-int main(int argc,char **argv) {
+#ifndef PKG_GEOMETRY_MAIN
+#define PKG_GEOMETRY_MAIN main
+#endif
+int PKG_GEOMETRY_MAIN(int argc,char **argv) {
     assert(argc>=3 && argc<=5);size_t n;uint8_t *initial=load(argv[1],&n);
     size_t witness_n=0;uint8_t *witness=argc>=4?load(argv[3],&witness_n):NULL;
     ext4_fault_disk_t d={.stable=initial,.volatile_bytes=initial,.bytes=n,.cut=-1};

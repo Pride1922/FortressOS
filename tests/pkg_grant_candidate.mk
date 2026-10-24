@@ -169,3 +169,9 @@ test-pkg-enroll-records:
 .PHONY: test-pkg-boot-admission
 test-pkg-boot-admission:
 	python3 scripts/test_pkg_boot_admission.py
+
+.PHONY: test-pkg-current test-pkg-current-boot
+test-pkg-current:
+	python3 scripts/test_pkg_current.py
+test-pkg-current-boot:
+	python3 scripts/test_pkg_current_boot.py

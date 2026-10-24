@@ -8,8 +8,9 @@ from test_getrandom import CODE,VARS,PROMPT
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 H=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 CONCURRENT_WLAN={'src/net/wlan/net_80211.c','src/net/wlan/wlan_mgr.c','tests/wifi_host.c','tests/wlan_mac_host.c','user/wifi.c'}
+extra_cases=None
 
-def boot(out,work,iso,source,firmware,smp,label,refused=False,expected=None):
+def boot(out,work,iso,source,firmware,smp,label,refused=False,expected=None,sequence=1):
     dest=out/label;dest.mkdir();disk=dest/'enrolled.img';shutil.copyfile(source,disk);initial=H(disk)
     assert disk.is_file() and not disk.is_symlink() and disk.stat().st_size==64*1024*1024 and disk.resolve().parent==dest.resolve()
     with tempfile.TemporaryDirectory(prefix='fortress-pkgboot-') as tmp:
@@ -46,7 +47,7 @@ def boot(out,work,iso,source,firmware,smp,label,refused=False,expected=None):
                     except OSError:return
             drainer=threading.Thread(target=drain,daemon=True);drainer.start()
             wait(lambda s:'FortressOS login: ' in s or PROMPT.search(s))
-            s=text();assert ('PKGBOOT REFUSED' if refused else 'PKGBOOT ADMITTED IDLE=1 detached') in s,s[-4000:]
+            s=text();assert ('PKGBOOT REFUSED' if refused else f'PKGBOOT ADMITTED IDLE={sequence} detached') in s,s[-4000:]
             if refused:assert re.search(r'PKGBOOT REFUSED[^\n]*writes=0 flushes=0',s)
             else:assert 'PKGBOOT PROJECTED AUTHENTICATED before-writes=0' in s
             if not PROMPT.search(s):uart.sendall(b'operator\n')
@@ -59,7 +60,7 @@ def boot(out,work,iso,source,firmware,smp,label,refused=False,expected=None):
             if not refused:
                 root=dest/'root-after.img';root.write_bytes(disk.read_bytes()[2048*512:(2048+65536)*512])
                 r=subprocess.run(['e2fsck','-fn',str(root)],capture_output=True,text=True);(dest/'linux-fsck.log').write_text(r.stdout+r.stderr);assert not r.returncode,r.stdout+r.stderr
-            result={'firmware':firmware,'smp':smp,'refused':refused,'boot_runtime':'PASS','whole_disk_unchanged':H(disk)==initial,'disk_sha256':H(disk),'writes':writes,'flushes':flushes,'replay_oracle_match':bool(expected)}
+            result={'firmware':firmware,'smp':smp,'refused':refused,'boot_runtime':'PASS','sequence':sequence,'whole_disk_unchanged':H(disk)==initial,'disk_sha256':H(disk),'writes':writes,'flushes':flushes,'replay_oracle_match':bool(expected)}
             (dest/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(label,'PASS',flush=True);return result
         finally:
             stop.set();uart.close()
@@ -175,6 +176,8 @@ def main():
                     run(['debugfs','-w','-R',f'write {payload} {path}',str(root)],'prepare-'+name)
                     target=out/(name+'.img');target.write_bytes(gpt(root.read_bytes()))
                     m['cases'].append(boot(out,work,valid,target,'bios',1,name,True));save()
+            if not args.smoke and extra_cases:
+                for value in extra_cases(out,work,valid,source,prepared,run):m['cases'].append(value);save()
             m['boot_runtime']='PASS'
     except BaseException as e:m['error']=repr(e);m['boot_runtime']='FAIL';raise
     finally:
