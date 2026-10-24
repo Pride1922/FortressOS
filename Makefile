@@ -748,9 +748,9 @@ $(BUILD_DIR)/timeline_log.o: user/timeline_log.c user/timeline_log.h src/include
 $(BUILD_DIR)/dhcpc.o: user/dhcpc.c user/timeline_log.h user/dhcp_codec.h user/resolv_conf.h user/machine_config.h user/netconf.h src/include/types.h src/include/syscall_abi.h src/include/socket_abi.h src/include/netctl_abi.h src/include/account_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Iuser -Iuser/tools -c $< -o $@
-$(USER_DHCPC_ELF): $(BUILD_DIR)/timezone.o $(BUILD_DIR)/timezone_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o user/tools/start.asm user/shell.ld
+$(USER_DHCPC_ELF): $(BUILD_DIR)/timezone.o $(BUILD_DIR)/timezone_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=dhcpc_main user/tools/start.asm -o $(BUILD_DIR)/dhcpc_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcpc_start.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o $(BUILD_DIR)/timezone.o $(BUILD_DIR)/timezone_io.o $(BUILD_DIR)/tool-common.o -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/dhcpc_start.o $(BUILD_DIR)/dhcpc.o $(BUILD_DIR)/dhcp_codec.o $(BUILD_DIR)/timeline_log.o $(BUILD_DIR)/timezone.o $(BUILD_DIR)/timezone_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/netconf.o -o $@
 # Ring 3 has a one-page user stack. Bound individual frames as well as auditing
 # the nested call chain; host sanitizer stacks cannot establish this property.
 $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/service_cli.o: CFLAGS += -Wframe-larger-than=1024

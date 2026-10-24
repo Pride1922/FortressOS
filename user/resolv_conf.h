@@ -26,42 +26,37 @@ static inline long resolv_machine_call(long nr,uintptr_t a,uintptr_t b,uintptr_t
     return RESOLV_SYSCALL(nr,a,b,c);
 }
 /* Returns the resolv.conf path to read/write.
- * Order: /etc/network/resolv.conf if installed (with /etc/resolv.conf fallback),
+ * Order: /etc/network/resolv.conf (primary on installed and ETCFS live),
+ *        else /etc/resolv.conf if it exists,
  *        else /tmp/resolv.conf if it exists,
  *        else /mnt/.fortress/resolv.conf if it exists,
- *        else /tmp/resolv.conf (default write target). */
+ *        else /etc/network/resolv.conf (standard default write target). */
 static inline const char *resolv_conf_path(void) {
-    if (machine_installed(resolv_machine_call)) {
-        static const char path_net[] = "/etc/network/resolv.conf";
-        static const char path_legacy[] = "/etc/resolv.conf";
-        long fd = RESOLV_SYSCALL(SYS_OPEN, (uintptr_t)path_net, 0, 0);
-        if (fd >= 0) {
-            RESOLV_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
-            return path_net;
-        }
-        fd = RESOLV_SYSCALL(SYS_OPEN, (uintptr_t)path_legacy, 0, 0);
-        if (fd >= 0) {
-            RESOLV_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
-            return path_legacy;
-        }
+    static const char path_net[] = "/etc/network/resolv.conf";
+    long fd = RESOLV_SYSCALL(SYS_OPEN, (uintptr_t)path_net, 0, 0);
+    if (fd >= 0) {
+        RESOLV_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
         return path_net;
     }
+    static const char path_legacy[] = "/etc/resolv.conf";
+    fd = RESOLV_SYSCALL(SYS_OPEN, (uintptr_t)path_legacy, 0, 0);
+    if (fd >= 0) {
+        RESOLV_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
+        return path_legacy;
+    }
     static const char path_tmp[] = "/tmp/resolv.conf";
-    static const char path_mnt[] = "/mnt/.fortress/resolv.conf";
-
-    long fd = RESOLV_SYSCALL(SYS_OPEN, (uintptr_t)path_tmp, 0, 0);
+    fd = RESOLV_SYSCALL(SYS_OPEN, (uintptr_t)path_tmp, 0, 0);
     if (fd >= 0) {
         RESOLV_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
         return path_tmp;
     }
-
+    static const char path_mnt[] = "/mnt/.fortress/resolv.conf";
     fd = RESOLV_SYSCALL(SYS_OPEN, (uintptr_t)path_mnt, 0, 0);
     if (fd >= 0) {
         RESOLV_SYSCALL(SYS_CLOSE, (uintptr_t)fd, 0, 0);
         return path_mnt;
     }
-
-    return path_tmp;
+    return path_net;
 }
 
 #endif /* USER_RESOLV_CONF_H */

@@ -118,9 +118,14 @@ static bool ifup_write_resolv_conf(const uint32_t *servers, int count) {
         ifup_append_str(buf, sizeof(buf), &pos, "\n");
     }
 
-    const char *target = machine_installed(resolv_machine_call) ? "/etc/network/resolv.conf" : resolv_conf_path();
     IFUP_SYSCALL(SYS_MKDIR, (uintptr_t)"/etc/network", 0755, 0);
-    return ifup_write_to_file(target, buf, pos);
+    ifup_write_to_file("/etc/network/resolv.conf", buf, pos);
+    ifup_write_to_file("/run/resolv.conf", buf, pos);
+    const char *target = resolv_conf_path();
+    if (target && !ifup_str_equals(target, "/etc/network/resolv.conf")) {
+        ifup_write_to_file(target, buf, pos);
+    }
+    return true;
 }
 
 static bool ifup_save_config(const netctl_ifset_t *req, uint8_t prefix,
@@ -143,14 +148,15 @@ static bool ifup_save_config(const netctl_ifset_t *req, uint8_t prefix,
 }
 
 static void ifup_usage(void) {
-    ifup_print_err("usage: ifup [--dry-run] [config-file]\n"
-                   "       ifup [--dry-run] <ip>/<prefix> [gateway] [dns1] [dns2]\n"
-                   "       ifup [--dry-run] <ip> <netmask> [gateway] [dns1] [dns2]\n"
+    ifup_print_err("usage: ifup [--dry-run] [--no-save] [config-file]\n"
+                   "       ifup [--dry-run] [--no-save] <ip>/<prefix> [gateway] [dns1] [dns2]\n"
+                   "       ifup [--dry-run] [--no-save] <ip> <netmask> [gateway] [dns1] [dns2]\n"
                    "Installed systems save to /etc/network/network.conf; use sudo.\n");
 }
 
 int ifup_main(int argc, char **argv) {
     bool dry_run = false;
+    bool no_save = false;
     const char *args[6];
     int arg_count = 0;
 
@@ -160,6 +166,8 @@ int ifup_main(int argc, char **argv) {
             return 0;
         } else if (ifup_str_equals(argv[i], "--dry-run") || ifup_str_equals(argv[i], "-n")) {
             dry_run = true;
+        } else if (ifup_str_equals(argv[i], "--no-save")) {
+            no_save = true;
         } else {
             if (arg_count < 6) {
                 args[arg_count++] = argv[i];
@@ -315,7 +323,7 @@ int ifup_main(int argc, char **argv) {
         ifup_print_err("ifup: interface applied, but DNS configuration could not be saved\n");
         return 1;
     }
-    if (installed && (!ifup_save_config(&req, prefix, dns_servers, dns_count) ||
+    if (installed && !no_save && (!ifup_save_config(&req, prefix, dns_servers, dns_count) ||
                        IFUP_SYSCALL(SYS_SYNC, 0, 0, 0) != 0)) {
         ifup_print_err("ifup: interface applied, but /etc/network/network.conf was not durably saved\n");
         return 1;

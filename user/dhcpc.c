@@ -263,6 +263,15 @@ static bool save_resolv_conf(const uint32_t *servers, int count) {
 
 static bool save_network_conf(uint32_t ip, uint8_t prefix, uint32_t gateway,
                               const uint32_t *servers, int count) {
+    /* If installed network.conf has mode static, do not overwrite it with DHCP lease */
+    static netconf_t existing_conf;
+    static char existing_err[128];
+    existing_err[0] = '\0';
+    if (netconf_parse_file(NETCONF_INSTALLED_PATH, "dhcpc", false, &existing_conf, existing_err, sizeof(existing_err)) == 0 &&
+        existing_conf.has_address && existing_conf.mode == NETCONF_MODE_STATIC) {
+        return true;
+    }
+
     char buf[256];
     size_t pos = 0;
     append_str(buf, sizeof(buf), &pos, "address ");
@@ -1267,6 +1276,49 @@ static int dhcpc_daemon_main(void) {
                     break;
                 }
 
+                /* Check if Wi-Fi configured static IP */
+                char st_buf[256];
+                if (read_file("/run/wifi-static.configured", st_buf, sizeof(st_buf)) > 0) {
+                    for (int m = 0; m < 6; m++) s_bound_mac[m] = ifget.mac[m];
+                    state = STATE_BOUND;
+                    t_ack = get_monotonic_sec();
+                    t_renew = UINT64_MAX;
+                    t_rebind = UINT64_MAX;
+                    t_expire = UINT64_MAX;
+                    sleep_sec(2);
+                    break;
+                }
+
+                /* Check if wired interface has static configuration in /etc/network/network.conf */
+                static netconf_t wconf;
+                static char werr[128];
+                werr[0] = '\0';
+                if (netconf_parse_file(NETCONF_INSTALLED_PATH, "dhcpc", false, &wconf, werr, sizeof(werr)) == 0 &&
+                    wconf.has_address && wconf.mode == NETCONF_MODE_STATIC) {
+                    netctl_ifset_t set_req;
+                    for (size_t s = 0; s < sizeof(set_req); s++) ((uint8_t *)&set_req)[s] = 0;
+                    set_req.struct_version = 1;
+                    set_req.local_ipv4 = wconf.address;
+                    set_req.netmask_ipv4 = wconf.netmask;
+                    set_req.gateway_ipv4 = wconf.gateway;
+                    long r_set = sys_call(SYS_NETCTL, NETCTL_IFSET, (uintptr_t)&set_req, sizeof(set_req), 0, 0, 0);
+                    if (r_set == 0) {
+                        uint32_t dns_list[2];
+                        int dns_cnt = 0;
+                        if (wconf.has_dns && wconf.dns) dns_list[dns_cnt++] = wconf.dns;
+                        if (wconf.has_dns2 && wconf.dns2) dns_list[dns_cnt++] = wconf.dns2;
+                        save_resolv_conf(dns_list, dns_cnt);
+                        for (int m = 0; m < 6; m++) s_bound_mac[m] = ifget.mac[m];
+                        state = STATE_BOUND;
+                        t_ack = get_monotonic_sec();
+                        t_renew = UINT64_MAX;
+                        t_rebind = UINT64_MAX;
+                        t_expire = UINT64_MAX;
+                        sleep_sec(2);
+                        break;
+                    }
+                }
+
                 static dhcp_offer_t offer;
                 if (dhcp_do_handshake(ifget.mac, 3, false, &offer) == 0) {
                     current_offer = offer;
@@ -1297,6 +1349,7 @@ static int dhcpc_daemon_main(void) {
                 ifget.struct_version = 1;
                 long r_if = sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0);
                 if (r_if != 0 || ifget.link_state != NET_IF_LINK_UP) {
+                    delete_file("/run/wifi-static.configured");
                     state = STATE_DISCONNECTED;
                     break;
                 }
@@ -1311,6 +1364,7 @@ static int dhcpc_daemon_main(void) {
                 if (!mac_match) {
                     flush_interface();
                     delete_file("/run/dhcpc.lease");
+                    delete_file("/run/wifi-static.configured");
                     state = STATE_INIT;
                     break;
                 }
@@ -1343,6 +1397,7 @@ static int dhcpc_daemon_main(void) {
                     if (!mac_match) {
                         flush_interface();
                         delete_file("/run/dhcpc.lease");
+                        delete_file("/run/wifi-static.configured");
                         state = STATE_INIT;
                     } else if (current_offer.yiaddr && current_offer.server_ip) {
                         state = STATE_INIT_REBOOT;

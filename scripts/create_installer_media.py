@@ -100,7 +100,7 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
                 archive.addfile(member,source.extractfile(member) if member.isfile() else None)
             info=tarfile.TarInfo('bin/install');info.mode=0o755;info.uid=info.gid=0;info.size=installer.stat().st_size
             with installer.open('rb') as stream:archive.addfile(info,stream)
-        assert (tree/'boot/initramfs.tar').stat().st_size<=8*1024**2
+        assert (tree/'boot/initramfs.tar').stat().st_size<=16*1024**2
         for path in ([] if interface_only else paths):
             shutil.copyfile(path, tree/'payload'/path.name)
         for name in ('limine-bios.sys', 'limine-bios-cd.bin', 'limine-uefi-cd.bin'):

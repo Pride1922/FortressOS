@@ -8,6 +8,12 @@
 #define NETCONF_MAX_FILE_SIZE 4096
 #define NETCONF_MAX_LINE_LEN  256
 
+typedef enum {
+    NETCONF_MODE_UNSPECIFIED = 0,
+    NETCONF_MODE_STATIC,
+    NETCONF_MODE_DHCP
+} netconf_mode_t;
+
 typedef struct {
     uint32_t address;      /* be32 */
     uint8_t  prefix;       /* 1..30 */
@@ -15,10 +21,12 @@ typedef struct {
     uint32_t gateway;      /* be32 (0 if none) */
     uint32_t dns;          /* be32 (0 if none) */
     uint32_t dns2;         /* Optional second resolver, be32. */
+    netconf_mode_t mode;   /* NETCONF_MODE_STATIC, NETCONF_MODE_DHCP */
     bool has_address;
     bool has_gateway;
     bool has_dns;
     bool has_dns2;
+    bool has_mode;
 } netconf_t;
 
 /* Parse an IPv4 dotted-decimal string into network byte order. Returns 0 on success, -1 on error. */

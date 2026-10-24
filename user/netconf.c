@@ -312,6 +312,14 @@ int netconf_parse_buffer(const char *buf, size_t len, const char *source_name,
                 return -1;
             }
             *present = true;
+        } else if (str_eq(key, "mode")) {
+            if (str_eq(val, "static")) {
+                out_conf->mode = NETCONF_MODE_STATIC;
+                out_conf->has_mode = true;
+            } else if (str_eq(val, "dhcp")) {
+                out_conf->mode = NETCONF_MODE_DHCP;
+                out_conf->has_mode = true;
+            }
         } else {
             if (verbose_warnings) {
                 char w[256];

@@ -290,14 +290,441 @@ static int do_disconnect(void) {
         write_str(2, "wifi: disconnect failed\n");
         return 1;
     }
+    (void)WIFI_SYSCALL(SYS_UNLINK, (uintptr_t)"/run/wifi-static.configured", 0, 0);
     write_str(1, "Disconnected from wireless network.\n");
     return 0;
 }
 
-static int do_connect(const char *ssid, const char *passphrase) {
+#define MAX_SAVED_NETWORKS 16
+
+typedef struct {
+    char ssid[WIFI_SSID_MAX_LEN + 1];
+    char psk[WIFI_PASSPHRASE_MAX_LEN + 1];
+    char address[32];   /* e.g. "192.168.1.150/24" (empty = DHCP) */
+    char gateway[16];   /* e.g. "192.168.1.1" */
+    char dns[16];       /* e.g. "1.1.1.1" */
+} saved_net_t;
+
+static saved_net_t s_saved_nets[MAX_SAVED_NETWORKS];
+static int         s_saved_count = 0;
+
+static void commit_current_network(char *cur_ssid, char *cur_psk,
+                                   char *cur_addr, char *cur_gw, char *cur_dns) {
+    if (!cur_ssid[0] || !cur_psk[0] || s_saved_count >= MAX_SAVED_NETWORKS) return;
+    saved_net_t *n = &s_saved_nets[s_saved_count++];
+    for (size_t i = 0; i < sizeof(n->ssid); i++) n->ssid[i] = 0;
+    for (size_t i = 0; i < sizeof(n->psk); i++) n->psk[i] = 0;
+    for (size_t i = 0; i < sizeof(n->address); i++) n->address[i] = 0;
+    for (size_t i = 0; i < sizeof(n->gateway); i++) n->gateway[i] = 0;
+    for (size_t i = 0; i < sizeof(n->dns); i++) n->dns[i] = 0;
+
+    for (size_t i = 0; cur_ssid[i] && i < WIFI_SSID_MAX_LEN; i++) n->ssid[i] = cur_ssid[i];
+    for (size_t i = 0; cur_psk[i] && i < WIFI_PASSPHRASE_MAX_LEN; i++) n->psk[i] = cur_psk[i];
+    for (size_t i = 0; cur_addr[i] && i < sizeof(n->address) - 1; i++) n->address[i] = cur_addr[i];
+    for (size_t i = 0; cur_gw[i] && i < sizeof(n->gateway) - 1; i++) n->gateway[i] = cur_gw[i];
+    for (size_t i = 0; cur_dns[i] && i < sizeof(n->dns) - 1; i++) n->dns[i] = cur_dns[i];
+
+    cur_ssid[0] = '\0';
+    cur_psk[0] = '\0';
+    cur_addr[0] = '\0';
+    cur_gw[0] = '\0';
+    cur_dns[0] = '\0';
+}
+
+static int load_saved_networks(void) {
+    s_saved_count = 0;
+    int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0, 0);
+    if (fd < 0) {
+        fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wifi.conf", 0, 0);
+    }
+    if (fd < 0) return 0;
+
+    static char buf[2048];
+    long rd = WIFI_SYSCALL(SYS_READ, fd, buf, sizeof(buf) - 1);
+    WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+    if (rd <= 0) return 0;
+    buf[rd] = '\0';
+
+    char *line = buf;
+    char cur_ssid[WIFI_SSID_MAX_LEN + 1] = {0};
+    char cur_psk[WIFI_PASSPHRASE_MAX_LEN + 1] = {0};
+    char cur_addr[32] = {0};
+    char cur_gw[16] = {0};
+    char cur_dns[16] = {0};
+
+    while (*line && s_saved_count < MAX_SAVED_NETWORKS) {
+        while (*line == ' ' || *line == '\t' || *line == '\r' || *line == '\n') line++;
+        if (!*line) break;
+        char *line_end = line;
+        while (*line_end && *line_end != '\n' && *line_end != '\r') line_end++;
+        char saved_ch = *line_end;
+        *line_end = '\0';
+
+        if (*line != '#') {
+            if (line[0] == '[' && line[1] == 'n' && line[2] == 'e' && line[3] == 't') {
+                commit_current_network(cur_ssid, cur_psk, cur_addr, cur_gw, cur_dns);
+            } else if (line[0] == 's' && line[1] == 's' && line[2] == 'i' && line[3] == 'd' && line[4] == '=') {
+                commit_current_network(cur_ssid, cur_psk, cur_addr, cur_gw, cur_dns);
+                const char *val = line + 5;
+                if (*val == '"') {
+                    val++;
+                    size_t k = 0;
+                    while (*val && *val != '"' && k < WIFI_SSID_MAX_LEN) cur_ssid[k++] = *val++;
+                    cur_ssid[k] = '\0';
+                } else {
+                    size_t k = 0;
+                    while (*val && *val != ' ' && *val != '\t' && k < WIFI_SSID_MAX_LEN) cur_ssid[k++] = *val++;
+                    cur_ssid[k] = '\0';
+                }
+            } else if (line[0] == 'p' && line[1] == 's' && line[2] == 'k' && line[3] == '=') {
+                const char *val = line + 4;
+                if (*val == '"') {
+                    val++;
+                    size_t k = 0;
+                    while (*val && *val != '"' && k < WIFI_PASSPHRASE_MAX_LEN) cur_psk[k++] = *val++;
+                    cur_psk[k] = '\0';
+                } else {
+                    size_t k = 0;
+                    while (*val && *val != ' ' && *val != '\t' && k < WIFI_PASSPHRASE_MAX_LEN) cur_psk[k++] = *val++;
+                    cur_psk[k] = '\0';
+                }
+            } else if ((line[0] == 'a' && line[1] == 'd' && line[2] == 'd' && line[3] == 'r') ||
+                       (line[0] == 'i' && line[1] == 'p' && line[2] == '=')) {
+                const char *val = (line[0] == 'i') ? line + 3 : line + 8;
+                if (*val == '"') {
+                    val++;
+                    size_t k = 0;
+                    while (*val && *val != '"' && k < sizeof(cur_addr) - 1) cur_addr[k++] = *val++;
+                    cur_addr[k] = '\0';
+                } else {
+                    size_t k = 0;
+                    while (*val && *val != ' ' && *val != '\t' && k < sizeof(cur_addr) - 1) cur_addr[k++] = *val++;
+                    cur_addr[k] = '\0';
+                }
+            } else if ((line[0] == 'g' && line[1] == 'a' && line[2] == 't' && line[3] == 'e') ||
+                       (line[0] == 'g' && line[1] == 'w' && line[2] == '=')) {
+                const char *val = (line[1] == 'w') ? line + 3 : line + 8;
+                if (*val == '"') {
+                    val++;
+                    size_t k = 0;
+                    while (*val && *val != '"' && k < sizeof(cur_gw) - 1) cur_gw[k++] = *val++;
+                    cur_gw[k] = '\0';
+                } else {
+                    size_t k = 0;
+                    while (*val && *val != ' ' && *val != '\t' && k < sizeof(cur_gw) - 1) cur_gw[k++] = *val++;
+                    cur_gw[k] = '\0';
+                }
+            } else if (line[0] == 'd' && line[1] == 'n' && line[2] == 's' && line[3] == '=') {
+                const char *val = line + 4;
+                if (*val == '"') {
+                    val++;
+                    size_t k = 0;
+                    while (*val && *val != '"' && k < sizeof(cur_dns) - 1) cur_dns[k++] = *val++;
+                    cur_dns[k] = '\0';
+                } else {
+                    size_t k = 0;
+                    while (*val && *val != ' ' && *val != '\t' && k < sizeof(cur_dns) - 1) cur_dns[k++] = *val++;
+                    cur_dns[k] = '\0';
+                }
+            } else if (line[0] == 'n' && line[1] == 'e' && line[2] == 't' && line[3] == 'w' &&
+                       line[4] == 'o' && line[5] == 'r' && line[6] == 'k' && line[7] == '=') {
+                /* Format: network=SSID:PSK[:ADDR[:GW[:DNS]]] */
+                commit_current_network(cur_ssid, cur_psk, cur_addr, cur_gw, cur_dns);
+                const char *p = line + 8;
+                size_t k = 0;
+                while (*p && *p != ':' && k < WIFI_SSID_MAX_LEN) cur_ssid[k++] = *p++;
+                cur_ssid[k] = '\0';
+                if (*p == ':') p++;
+                size_t m = 0;
+                while (*p && *p != ':' && m < WIFI_PASSPHRASE_MAX_LEN) cur_psk[m++] = *p++;
+                cur_psk[m] = '\0';
+                if (*p == ':') {
+                    p++;
+                    size_t a = 0;
+                    while (*p && *p != ':' && a < sizeof(cur_addr) - 1) cur_addr[a++] = *p++;
+                    cur_addr[a] = '\0';
+                    if (*p == ':') {
+                        p++;
+                        size_t g = 0;
+                        while (*p && *p != ':' && g < sizeof(cur_gw) - 1) cur_gw[g++] = *p++;
+                        cur_gw[g] = '\0';
+                        if (*p == ':') {
+                            p++;
+                            size_t d = 0;
+                            while (*p && *p != ':' && *p != ' ' && d < sizeof(cur_dns) - 1) cur_dns[d++] = *p++;
+                            cur_dns[d] = '\0';
+                        }
+                    }
+                }
+                commit_current_network(cur_ssid, cur_psk, cur_addr, cur_gw, cur_dns);
+            }
+        }
+
+        if (saved_ch == '\0') break;
+        line = line_end + 1;
+    }
+
+    commit_current_network(cur_ssid, cur_psk, cur_addr, cur_gw, cur_dns);
+    return s_saved_count;
+}
+
+static bool save_all_networks(void) {
+    (void)WIFI_SYSCALL(SYS_MKDIR, (uintptr_t)"/etc/network", 0755, 0);
+
+    static char content[2048];
+    size_t pos = 0;
+    const char *hdr = "# /etc/network/wlan.conf - FortressOS Wireless Configuration\n\n";
+    while (*hdr) content[pos++] = *hdr++;
+
+    for (int i = 0; i < s_saved_count; i++) {
+        saved_net_t *n = &s_saved_nets[i];
+        const char *sec = "[network]\nssid=\"";
+        while (*sec && pos < sizeof(content) - 1) content[pos++] = *sec++;
+        for (size_t k = 0; n->ssid[k] && pos < sizeof(content) - 1; k++) content[pos++] = n->ssid[k];
+        const char *p1 = "\"\npsk=\"";
+        while (*p1 && pos < sizeof(content) - 1) content[pos++] = *p1++;
+        for (size_t k = 0; n->psk[k] && pos < sizeof(content) - 1; k++) content[pos++] = n->psk[k];
+        content[pos++] = '"';
+        content[pos++] = '\n';
+
+        if (n->address[0]) {
+            const char *a = "address=\"";
+            while (*a && pos < sizeof(content) - 1) content[pos++] = *a++;
+            for (size_t k = 0; n->address[k] && pos < sizeof(content) - 1; k++) content[pos++] = n->address[k];
+            content[pos++] = '"';
+            content[pos++] = '\n';
+
+            if (n->gateway[0]) {
+                const char *g = "gateway=\"";
+                while (*g && pos < sizeof(content) - 1) content[pos++] = *g++;
+                for (size_t k = 0; n->gateway[k] && pos < sizeof(content) - 1; k++) content[pos++] = n->gateway[k];
+                content[pos++] = '"';
+                content[pos++] = '\n';
+            }
+            if (n->dns[0]) {
+                const char *d = "dns=\"";
+                while (*d && pos < sizeof(content) - 1) content[pos++] = *d++;
+                for (size_t k = 0; n->dns[k] && pos < sizeof(content) - 1; k++) content[pos++] = n->dns[k];
+                content[pos++] = '"';
+                content[pos++] = '\n';
+            }
+        }
+        content[pos++] = '\n';
+    }
+    content[pos] = '\0';
+
+    int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0x241, 0600);
+    if (fd < 0) return false;
+    (void)WIFI_SYSCALL(SYS_FCHMOD, fd, 0600, 0);
+    long wr = WIFI_SYSCALL(SYS_WRITE, fd, content, pos);
+    WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+    return wr > 0;
+}
+
+static int do_list(void) {
+    int count = load_saved_networks();
+    if (count == 0) {
+        write_str(1, "No saved wireless networks found in /etc/network/wlan.conf.\n");
+        return 0;
+    }
+
+    write_str(1, "SSID                             MODE    IP ADDRESS       GATEWAY         DNS\n");
+    write_str(1, "-------------------------------- ------  ---------------  --------------  --------------\n");
+
+    for (int i = 0; i < count; i++) {
+        saved_net_t *n = &s_saved_nets[i];
+        size_t pos = 0;
+        append_str(s_out, &pos, n->ssid);
+        append_pad(s_out, &pos, 33);
+
+        if (n->address[0]) {
+            append_str(s_out, &pos, "STATIC  ");
+            append_str(s_out, &pos, n->address);
+            append_pad(s_out, &pos, 58);
+            append_str(s_out, &pos, n->gateway[0] ? n->gateway : "-");
+            append_pad(s_out, &pos, 74);
+            append_str(s_out, &pos, n->dns[0] ? n->dns : "-");
+        } else {
+            append_str(s_out, &pos, "DHCP    -                -               -");
+        }
+        s_out[pos++] = '\n';
+        s_out[pos] = '\0';
+        write_str(1, s_out);
+    }
+    return 0;
+}
+
+static int do_save(const char *ssid, const char *passphrase,
+                   const char *address, const char *gateway, const char *dns) {
     if (!ssid || !passphrase) {
-        write_str(2, "wifi connect: requires <SSID> and <passphrase>\n");
+        write_str(2, "Usage: wifi save <SSID> <passphrase> [--static <IP/prefix> [gateway] [dns]]\n");
         return 1;
+    }
+    size_t slen = mystrlen(ssid);
+    size_t plen = mystrlen(passphrase);
+    if (slen == 0 || slen > WIFI_SSID_MAX_LEN || plen < 8 || plen > WIFI_PASSPHRASE_MAX_LEN) {
+        write_str(2, "wifi save: invalid SSID or passphrase length (8-63 chars)\n");
+        return 1;
+    }
+
+    load_saved_networks();
+
+    int existing_idx = -1;
+    for (int i = 0; i < s_saved_count; i++) {
+        if (streq(s_saved_nets[i].ssid, ssid)) {
+            existing_idx = i;
+            break;
+        }
+    }
+
+    int idx = (existing_idx >= 0) ? existing_idx : s_saved_count;
+    if (existing_idx < 0) {
+        if (s_saved_count >= MAX_SAVED_NETWORKS) {
+            write_str(2, "wifi save: maximum number of saved networks reached\n");
+            return 1;
+        }
+        s_saved_count++;
+    }
+
+    saved_net_t *n = &s_saved_nets[idx];
+    for (size_t i = 0; i < sizeof(n->ssid); i++) n->ssid[i] = 0;
+    for (size_t i = 0; i < sizeof(n->psk); i++) n->psk[i] = 0;
+    for (size_t i = 0; i < sizeof(n->address); i++) n->address[i] = 0;
+    for (size_t i = 0; i < sizeof(n->gateway); i++) n->gateway[i] = 0;
+    for (size_t i = 0; i < sizeof(n->dns); i++) n->dns[i] = 0;
+
+    for (size_t i = 0; i < slen; i++) n->ssid[i] = ssid[i];
+    for (size_t i = 0; i < plen; i++) n->psk[i] = passphrase[i];
+    if (address) {
+        for (size_t i = 0; address[i] && i < sizeof(n->address) - 1; i++) n->address[i] = address[i];
+    }
+    if (gateway) {
+        for (size_t i = 0; gateway[i] && i < sizeof(n->gateway) - 1; i++) n->gateway[i] = gateway[i];
+    }
+    if (dns) {
+        for (size_t i = 0; dns[i] && i < sizeof(n->dns) - 1; i++) n->dns[i] = dns[i];
+    }
+
+    if (save_all_networks()) {
+        write_str(1, "Saved wireless network \"");
+        write_str(1, ssid);
+        write_str(1, "\"");
+        if (n->address[0]) {
+            write_str(1, " (static IP: ");
+            write_str(1, n->address);
+            write_str(1, ")");
+        } else {
+            write_str(1, " (mode: DHCP)");
+        }
+        write_str(1, " to /etc/network/wlan.conf\n");
+        return 0;
+    } else {
+        write_str(2, "wifi save: write error\n");
+        return 1;
+    }
+}
+
+static int do_static(const char *ssid, const char *address, const char *gateway, const char *dns) {
+    if (!ssid) {
+        write_str(2, "Usage: wifi static <SSID> <IP/prefix> [gateway] [dns]\n"
+                     "       wifi static <SSID> dhcp\n");
+        return 1;
+    }
+
+    load_saved_networks();
+
+    int existing_idx = -1;
+    for (int i = 0; i < s_saved_count; i++) {
+        if (streq(s_saved_nets[i].ssid, ssid)) {
+            existing_idx = i;
+            break;
+        }
+    }
+
+    if (existing_idx < 0) {
+        write_str(2, "wifi static: network \"");
+        write_str(2, ssid);
+        write_str(2, "\" not found in /etc/network/wlan.conf. Save it first with 'wifi save'.\n");
+        return 1;
+    }
+
+    saved_net_t *n = &s_saved_nets[existing_idx];
+    if (!address || streq(address, "dhcp") || streq(address, "auto") || streq(address, "none")) {
+        for (size_t i = 0; i < sizeof(n->address); i++) n->address[i] = 0;
+        for (size_t i = 0; i < sizeof(n->gateway); i++) n->gateway[i] = 0;
+        for (size_t i = 0; i < sizeof(n->dns); i++) n->dns[i] = 0;
+
+        if (save_all_networks()) {
+            write_str(1, "Network \"");
+            write_str(1, ssid);
+            write_str(1, "\" reverted to DHCP.\n");
+            return 0;
+        } else {
+            write_str(2, "wifi static: write error\n");
+            return 1;
+        }
+    }
+
+    for (size_t i = 0; i < sizeof(n->address); i++) n->address[i] = 0;
+    for (size_t i = 0; i < sizeof(n->gateway); i++) n->gateway[i] = 0;
+    for (size_t i = 0; i < sizeof(n->dns); i++) n->dns[i] = 0;
+
+    for (size_t i = 0; address[i] && i < sizeof(n->address) - 1; i++) n->address[i] = address[i];
+    if (gateway) {
+        for (size_t i = 0; gateway[i] && i < sizeof(n->gateway) - 1; i++) n->gateway[i] = gateway[i];
+    }
+    if (dns) {
+        for (size_t i = 0; dns[i] && i < sizeof(n->dns) - 1; i++) n->dns[i] = dns[i];
+    }
+
+    if (save_all_networks()) {
+        write_str(1, "Network \"");
+        write_str(1, ssid);
+        write_str(1, "\" updated to static IP ");
+        write_str(1, n->address);
+        write_str(1, ".\n");
+        return 0;
+    } else {
+        write_str(2, "wifi static: write error\n");
+        return 1;
+    }
+}
+
+static int do_connect(const char *ssid, const char *passphrase,
+                      const char *static_addr, const char *static_gw, const char *static_dns) {
+    if (!ssid) {
+        write_str(2, "wifi connect: requires <SSID> [passphrase]\n");
+        return 1;
+    }
+
+    load_saved_networks();
+
+    const char *actual_psk = passphrase;
+    const char *actual_addr = static_addr;
+    const char *actual_gw = static_gw;
+    const char *actual_dns = static_dns;
+
+    int saved_idx = -1;
+    for (int i = 0; i < s_saved_count; i++) {
+        if (streq(s_saved_nets[i].ssid, ssid)) {
+            saved_idx = i;
+            break;
+        }
+    }
+
+    if (!actual_psk && saved_idx >= 0) {
+        actual_psk = s_saved_nets[saved_idx].psk;
+    }
+
+    if (!actual_psk) {
+        write_str(2, "wifi connect: network not saved and no passphrase provided\n");
+        return 1;
+    }
+
+    if (!actual_addr && saved_idx >= 0 && s_saved_nets[saved_idx].address[0]) {
+        actual_addr = s_saved_nets[saved_idx].address;
+        if (!actual_gw && s_saved_nets[saved_idx].gateway[0]) actual_gw = s_saved_nets[saved_idx].gateway;
+        if (!actual_dns && s_saved_nets[saved_idx].dns[0]) actual_dns = s_saved_nets[saved_idx].dns;
     }
 
     ensure_firmware_loaded();
@@ -311,9 +738,9 @@ static int do_connect(const char *ssid, const char *passphrase) {
     if (s_len > WIFI_SSID_MAX_LEN) s_len = WIFI_SSID_MAX_LEN;
     for (size_t i = 0; i < s_len; i++) req.ssid[i] = ssid[i];
 
-    size_t p_len = mystrlen(passphrase);
+    size_t p_len = mystrlen(actual_psk);
     if (p_len > WIFI_PASSPHRASE_MAX_LEN) p_len = WIFI_PASSPHRASE_MAX_LEN;
-    for (size_t i = 0; i < p_len; i++) req.passphrase[i] = passphrase[i];
+    for (size_t i = 0; i < p_len; i++) req.passphrase[i] = actual_psk[i];
 
     write_str(1, "Connecting to \"");
     write_str(1, ssid);
@@ -341,22 +768,68 @@ static int do_connect(const char *ssid, const char *passphrase) {
                 timespec_t ts_settle = { .tv_sec = 0, .tv_nsec = 250000000 }; /* 250ms AP bridge port settling delay */
                 (void)WIFI_SYSCALL(SYS_NANOSLEEP, &ts_settle, 0, 0);
 
-                write_str(1, "Configuring IP address via DHCP...\n");
-                const char *const dhcp_argv[] = { "/sbin/dhcpc", NULL };
-                spawn_opts_t opts;
-                for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
-                opts.size = sizeof(opts);
-                opts.version = 1;
-                opts.argv = (uint64_t)dhcp_argv;
-                long pid = WIFI_SYSCALL(SYS_SPAWN_EXT, (uintptr_t)"/sbin/dhcpc", (uintptr_t)&opts, sizeof(opts));
-                if (pid > 0) {
-                    uint64_t status = 0;
-                    long waited;
-                    do {
-                        waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
-                    } while (waited == -4 /* EINTR */);
+                if (actual_addr && actual_addr[0]) {
+                    write_str(1, "Configuring static IP address ");
+                    write_str(1, actual_addr);
+                    write_str(1, "...\n");
+
+                    const char *argv_ifup[7];
+                    int argc_ifup = 0;
+                    argv_ifup[argc_ifup++] = "/sbin/ifup";
+                    argv_ifup[argc_ifup++] = "--no-save";
+                    argv_ifup[argc_ifup++] = actual_addr;
+                    if (actual_gw && actual_gw[0]) argv_ifup[argc_ifup++] = actual_gw;
+                    if (actual_dns && actual_dns[0]) argv_ifup[argc_ifup++] = actual_dns;
+                    argv_ifup[argc_ifup] = NULL;
+
+                    spawn_opts_t opts;
+                    for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
+                    opts.size = sizeof(opts);
+                    opts.version = 1;
+                    opts.argv = (uint64_t)argv_ifup;
+                    long pid = WIFI_SYSCALL(SYS_SPAWN_EXT, (uintptr_t)"/sbin/ifup", (uintptr_t)&opts, sizeof(opts));
+                    if (pid > 0) {
+                        uint64_t status = 0;
+                        long waited;
+                        do {
+                            waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
+                        } while (waited == -4 /* EINTR */);
+                    }
+
+                    /* Write /run/wifi-static.configured */
+                    static char st_buf[256];
+                    size_t st_pos = 0;
+                    append_str(st_buf, &st_pos, "IP=");
+                    append_str(st_buf, &st_pos, actual_addr);
+                    append_str(st_buf, &st_pos, "\nGATEWAY=");
+                    append_str(st_buf, &st_pos, actual_gw ? actual_gw : "");
+                    append_str(st_buf, &st_pos, "\nDNS=");
+                    append_str(st_buf, &st_pos, actual_dns ? actual_dns : "");
+                    append_str(st_buf, &st_pos, "\n");
+                    int sfd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/run/wifi-static.configured", 0x241, 0644);
+                    if (sfd >= 0) {
+                        WIFI_SYSCALL(SYS_WRITE, sfd, st_buf, st_pos);
+                        WIFI_SYSCALL(SYS_CLOSE, sfd, 0, 0);
+                    }
                 } else {
-                    write_str(2, "wifi: failed to spawn /sbin/dhcpc\n");
+                    (void)WIFI_SYSCALL(SYS_UNLINK, (uintptr_t)"/run/wifi-static.configured", 0, 0);
+                    write_str(1, "Configuring IP address via DHCP...\n");
+                    const char *const dhcp_argv[] = { "/sbin/dhcpc", NULL };
+                    spawn_opts_t opts;
+                    for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
+                    opts.size = sizeof(opts);
+                    opts.version = 1;
+                    opts.argv = (uint64_t)dhcp_argv;
+                    long pid = WIFI_SYSCALL(SYS_SPAWN_EXT, (uintptr_t)"/sbin/dhcpc", (uintptr_t)&opts, sizeof(opts));
+                    if (pid > 0) {
+                        uint64_t status = 0;
+                        long waited;
+                        do {
+                            waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
+                        } while (waited == -4 /* EINTR */);
+                    } else {
+                        write_str(2, "wifi: failed to spawn /sbin/dhcpc\n");
+                    }
                 }
                 return 0;
             }
@@ -377,172 +850,6 @@ static int do_connect(const char *ssid, const char *passphrase) {
         return 1;
     }
     return 0;
-}
-
-#define MAX_SAVED_NETWORKS 8
-
-typedef struct {
-    char ssid[WIFI_SSID_MAX_LEN + 1];
-    char psk[WIFI_PASSPHRASE_MAX_LEN + 1];
-} saved_net_t;
-
-static saved_net_t s_saved_nets[MAX_SAVED_NETWORKS];
-static int         s_saved_count = 0;
-
-static int load_saved_networks(void) {
-    s_saved_count = 0;
-    int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0, 0);
-    if (fd < 0) {
-        fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wifi.conf", 0, 0);
-    }
-    if (fd < 0) return 0;
-
-    char buf[1024];
-    long rd = WIFI_SYSCALL(SYS_READ, fd, buf, sizeof(buf) - 1);
-    WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
-    if (rd <= 0) return 0;
-    buf[rd] = '\0';
-
-    char *line = buf;
-    char cur_ssid[WIFI_SSID_MAX_LEN + 1] = {0};
-
-    while (*line && s_saved_count < MAX_SAVED_NETWORKS) {
-        while (*line == ' ' || *line == '\t' || *line == '\r' || *line == '\n') line++;
-        if (!*line) break;
-        char *line_end = line;
-        while (*line_end && *line_end != '\n' && *line_end != '\r') line_end++;
-        char saved_ch = *line_end;
-        *line_end = '\0';
-
-        if (*line != '#') {
-            if (line[0] == 's' && line[1] == 's' && line[2] == 'i' && line[3] == 'd' && line[4] == '=') {
-                const char *val = line + 5;
-                if (*val == '"') {
-                    val++;
-                    size_t k = 0;
-                    while (*val && *val != '"' && k < WIFI_SSID_MAX_LEN) cur_ssid[k++] = *val++;
-                    cur_ssid[k] = '\0';
-                } else {
-                    size_t k = 0;
-                    while (*val && *val != ' ' && *val != '\t' && k < WIFI_SSID_MAX_LEN) cur_ssid[k++] = *val++;
-                    cur_ssid[k] = '\0';
-                }
-            } else if (line[0] == 'p' && line[1] == 's' && line[2] == 'k' && line[3] == '=') {
-                const char *val = line + 4;
-                char cur_psk[WIFI_PASSPHRASE_MAX_LEN + 1] = {0};
-                if (*val == '"') {
-                    val++;
-                    size_t k = 0;
-                    while (*val && *val != '"' && k < WIFI_PASSPHRASE_MAX_LEN) cur_psk[k++] = *val++;
-                    cur_psk[k] = '\0';
-                } else {
-                    size_t k = 0;
-                    while (*val && *val != ' ' && *val != '\t' && k < WIFI_PASSPHRASE_MAX_LEN) cur_psk[k++] = *val++;
-                    cur_psk[k] = '\0';
-                }
-                if (cur_ssid[0] && cur_psk[0] && s_saved_count < MAX_SAVED_NETWORKS) {
-                    size_t i = 0;
-                    while (cur_ssid[i] && i < WIFI_SSID_MAX_LEN) {
-                        s_saved_nets[s_saved_count].ssid[i] = cur_ssid[i];
-                        i++;
-                    }
-                    s_saved_nets[s_saved_count].ssid[i] = '\0';
-
-                    size_t j = 0;
-                    while (cur_psk[j] && j < WIFI_PASSPHRASE_MAX_LEN) {
-                        s_saved_nets[s_saved_count].psk[j] = cur_psk[j];
-                        j++;
-                    }
-                    s_saved_nets[s_saved_count].psk[j] = '\0';
-                    s_saved_count++;
-                    cur_ssid[0] = '\0';
-                }
-            } else if (line[0] == 'n' && line[1] == 'e' && line[2] == 't' && line[3] == 'w' &&
-                       line[4] == 'o' && line[5] == 'r' && line[6] == 'k' && line[7] == '=') {
-                /* Format: network=SSID:PSK */
-                const char *p = line + 8;
-                char s_buf[WIFI_SSID_MAX_LEN + 1] = {0};
-                char p_buf[WIFI_PASSPHRASE_MAX_LEN + 1] = {0};
-                size_t k = 0;
-                while (*p && *p != ':' && k < WIFI_SSID_MAX_LEN) s_buf[k++] = *p++;
-                s_buf[k] = '\0';
-                if (*p == ':') p++;
-                size_t m = 0;
-                while (*p && m < WIFI_PASSPHRASE_MAX_LEN) p_buf[m++] = *p++;
-                p_buf[m] = '\0';
-                if (s_buf[0] && p_buf[0] && s_saved_count < MAX_SAVED_NETWORKS) {
-                    for (size_t x = 0; x <= k; x++) s_saved_nets[s_saved_count].ssid[x] = s_buf[x];
-                    for (size_t x = 0; x <= m; x++) s_saved_nets[s_saved_count].psk[x] = p_buf[x];
-                    s_saved_count++;
-                }
-            }
-        }
-
-        if (saved_ch == '\0') break;
-        line = line_end + 1;
-    }
-
-    return s_saved_count;
-}
-
-static int do_save(const char *ssid, const char *passphrase) {
-    if (!ssid || !passphrase) {
-        write_str(2, "Usage: wifi save <SSID> <passphrase>\n");
-        return 1;
-    }
-    size_t slen = mystrlen(ssid);
-    size_t plen = mystrlen(passphrase);
-    if (slen == 0 || slen > WIFI_SSID_MAX_LEN || plen < 8 || plen > WIFI_PASSPHRASE_MAX_LEN) {
-        write_str(2, "wifi save: invalid SSID or passphrase length (8-63 chars)\n");
-        return 1;
-    }
-
-    (void)WIFI_SYSCALL(SYS_MKDIR, (uintptr_t)"/etc/network", 0755, 0);
-
-    /* Read existing file or create new */
-    char content[1024];
-    size_t pos = 0;
-
-    int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0, 0);
-    if (fd >= 0) {
-        long rd = WIFI_SYSCALL(SYS_READ, fd, content, sizeof(content) - 256);
-        WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
-        if (rd > 0) pos = (size_t)rd;
-    } else {
-        const char *hdr = "# /etc/network/wlan.conf - FortressOS Wireless Configuration\n";
-        while (*hdr) content[pos++] = *hdr++;
-    }
-
-    if (pos > 0 && content[pos - 1] != '\n') content[pos++] = '\n';
-
-    /* Append network=SSID:PSK */
-    const char *pfx = "network=";
-    while (*pfx) content[pos++] = *pfx++;
-    for (size_t i = 0; i < slen; i++) content[pos++] = ssid[i];
-    content[pos++] = ':';
-    for (size_t i = 0; i < plen; i++) content[pos++] = passphrase[i];
-    content[pos++] = '\n';
-    content[pos] = '\0';
-
-    /* Write to /etc/network/wlan.conf with strict 0600 root permissions (O_WRONLY | O_CREAT | O_TRUNC = 0x241) */
-    fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0x241, 0600);
-    if (fd < 0) {
-        write_str(2, "wifi save: failed to open /etc/network/wlan.conf for writing\n");
-        return 1;
-    }
-    (void)WIFI_SYSCALL(SYS_FCHMOD, fd, 0600, 0);
-    long wr = WIFI_SYSCALL(SYS_WRITE, fd, content, pos);
-    WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
-
-    if (wr > 0) {
-        write_str(1, "Saved wireless network \"");
-        write_str(1, ssid);
-        write_str(1, "\" to /etc/network/wlan.conf\n");
-        return 0;
-    } else {
-        write_str(2, "wifi save: write error\n");
-        return 1;
-    }
 }
 
 static int do_auto(void) {
@@ -599,7 +906,10 @@ static int do_auto(void) {
         write_str(1, " dBm)...\n");
 
         return do_connect(s_saved_nets[best_saved_idx].ssid,
-                          s_saved_nets[best_saved_idx].psk);
+                          s_saved_nets[best_saved_idx].psk,
+                          s_saved_nets[best_saved_idx].address,
+                          s_saved_nets[best_saved_idx].gateway,
+                          s_saved_nets[best_saved_idx].dns);
     } else {
         write_str(1, "[wifi] Auto-connect: none of the saved networks are in range.\n");
         return 0;
@@ -610,12 +920,15 @@ int wifi_main(int argc, char **argv) {
     if (argc < 2) {
         write_str(1, "Usage: wifi <command> [arguments]\n");
         write_str(1, "Commands:\n");
-        write_str(1, "  scan                  Scan for nearby wireless networks\n");
-        write_str(1, "  connect <SSID> <PSK>  Connect to WPA2-PSK network\n");
-        write_str(1, "  save <SSID> <PSK>     Save network credentials to /etc/network/wlan.conf\n");
-        write_str(1, "  auto                  Auto-connect to best saved wireless network\n");
-        write_str(1, "  disconnect            Disconnect from wireless network\n");
-        write_str(1, "  status                Display wireless connection status\n");
+        write_str(1, "  scan                               Scan for nearby wireless networks\n");
+        write_str(1, "  list                               List saved wireless networks\n");
+        write_str(1, "  status                             Display wireless connection status\n");
+        write_str(1, "  connect <SSID> [PSK] [--static ..] Connect to wireless network\n");
+        write_str(1, "  save <SSID> <PSK> [--static ...]   Save network to /etc/network/wlan.conf\n");
+        write_str(1, "  static <SSID> <IP/pfx> [GW] [DNS]  Set or update static IP for network\n");
+        write_str(1, "  static <SSID> dhcp                 Revert network to DHCP\n");
+        write_str(1, "  auto                               Auto-connect to best saved wireless network\n");
+        write_str(1, "  disconnect                         Disconnect from wireless network\n");
         return 1;
     }
 
@@ -623,6 +936,8 @@ int wifi_main(int argc, char **argv) {
         return do_scan();
     } else if (streq(argv[1], "status")) {
         return do_status();
+    } else if (streq(argv[1], "list")) {
+        return do_list();
     } else if (streq(argv[1], "load-fw") || streq(argv[1], "init")) {
         return ensure_firmware_loaded() ? 0 : 1;
     } else if (streq(argv[1], "disconnect")) {
@@ -631,16 +946,56 @@ int wifi_main(int argc, char **argv) {
         return do_auto();
     } else if (streq(argv[1], "save")) {
         if (argc < 4) {
-            write_str(2, "Usage: wifi save <SSID> <passphrase>\n");
+            write_str(2, "Usage: wifi save <SSID> <passphrase> [--static <IP/prefix> [gateway] [dns]]\n");
             return 1;
         }
-        return do_save(argv[2], argv[3]);
+        const char *ssid = argv[2];
+        const char *psk = argv[3];
+        const char *addr = NULL;
+        const char *gw = NULL;
+        const char *dns = NULL;
+        for (int i = 4; i < argc; i++) {
+            if (streq(argv[i], "--static") && i + 1 < argc) {
+                addr = argv[++i];
+                if (i + 1 < argc && argv[i + 1][0] != '-') gw = argv[++i];
+                if (i + 1 < argc && argv[i + 1][0] != '-') dns = argv[++i];
+            }
+        }
+        return do_save(ssid, psk, addr, gw, dns);
+    } else if (streq(argv[1], "static")) {
+        if (argc < 3) {
+            write_str(2, "Usage: wifi static <SSID> <IP/prefix> [gateway] [dns]\n"
+                         "       wifi static <SSID> dhcp\n");
+            return 1;
+        }
+        const char *ssid = argv[2];
+        const char *addr = (argc >= 4) ? argv[3] : "dhcp";
+        const char *gw = (argc >= 5) ? argv[4] : NULL;
+        const char *dns = (argc >= 6) ? argv[5] : NULL;
+        return do_static(ssid, addr, gw, dns);
     } else if (streq(argv[1], "connect")) {
-        if (argc < 4) {
-            write_str(2, "Usage: wifi connect <SSID> <passphrase>\n");
+        if (argc < 3) {
+            write_str(2, "Usage: wifi connect <SSID> [passphrase] [--static <IP/prefix> [gateway] [dns]]\n");
             return 1;
         }
-        return do_connect(argv[2], argv[3]);
+        const char *ssid = argv[2];
+        const char *psk = NULL;
+        const char *addr = NULL;
+        const char *gw = NULL;
+        const char *dns = NULL;
+        int arg_idx = 3;
+        if (arg_idx < argc && !streq(argv[arg_idx], "--static")) {
+            psk = argv[arg_idx++];
+        }
+        while (arg_idx < argc) {
+            if (streq(argv[arg_idx], "--static") && arg_idx + 1 < argc) {
+                addr = argv[++arg_idx];
+                if (arg_idx + 1 < argc && argv[arg_idx + 1][0] != '-') gw = argv[++arg_idx];
+                if (arg_idx + 1 < argc && argv[arg_idx + 1][0] != '-') dns = argv[++arg_idx];
+            }
+            arg_idx++;
+        }
+        return do_connect(ssid, psk, addr, gw, dns);
     } else {
         write_str(2, "wifi: unknown command '");
         write_str(2, argv[1]);
