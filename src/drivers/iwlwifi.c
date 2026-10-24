@@ -1019,34 +1019,6 @@ static bool iwl_send_all_phy_db(void) {
     return true;
 }
 
-static bool iwl_disable_txq(uint8_t sta_id, uint8_t qid, uint8_t fifo) {
-    if (qid == 5) {
-        if (iwl_nic_lock()) {
-            iwl_write_prph(iwl_scd_queue_status_bits_reg(5), 0);
-            iwl_write_prph(iwl_scd_queue_rdptr_reg(5), 0);
-            iwl_write32(HBUS_TARG_WRPTR, (5u << 8) | 0u);
-            if (s_sched_base != 0) {
-                iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(5), 0);
-                iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(5) + 4u, 0);
-            }
-            iwl_nic_unlock();
-        }
-        s_txq5_idx = 0;
-        if (s_txq5_tfd_ring_virt) {
-            memset(s_txq5_tfd_ring_virt, 0, sizeof(iwl_tfd_t) * IWL_TX_RING_SIZE);
-        }
-        if (s_sched_virt) {
-            memset(&s_sched_virt[5], 0, sizeof(s_sched_virt[5]));
-        }
-    }
-    iwl_scd_txq_cfg_cmd_t cmd;
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.scd_queue = qid;
-    cmd.enable    = 0;
-    cmd.sta_id    = sta_id;
-    cmd.tx_fifo   = fifo;
-    return iwl_send_cmd_pdu(IWL_HCMD_SCD_QUEUE_CFG, &cmd, sizeof(cmd), false);
-}
 
 static bool iwl_enable_txq(uint8_t sta_id, uint8_t qid, uint8_t fifo, uint8_t tid) {
     if (qid == 5) {
@@ -1066,6 +1038,11 @@ static bool iwl_enable_txq(uint8_t sta_id, uint8_t qid, uint8_t fifo, uint8_t ti
         }
         if (s_sched_virt) {
             memset(&s_sched_virt[5], 0, sizeof(s_sched_virt[5]));
+        }
+    } else {
+        if (iwl_nic_lock()) {
+            iwl_write32(HBUS_TARG_WRPTR, ((uint32_t)qid << 8) | 0u);
+            iwl_nic_unlock();
         }
     }
     iwl_scd_txq_cfg_cmd_t cmd;
@@ -1734,6 +1711,12 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
         serial_puts("[IWL] WARN: iwl_config_umac_scan failed\n");
     }
 
+    /* Enable default management/data queues 5..8 (IWM_TID_NON_QOS = 0) */
+    static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
+    for (uint8_t ac = 0; ac < 4; ac++) {
+        (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 0);
+    }
+
     /* Disable hardware beacon filtering so all beacons reach the host */
     uint8_t bf_cmd[44] = {0};
     (void)iwl_send_cmd_pdu(IWL_HCMD_BEACON_FILTERING, bf_cmd, sizeof(bf_cmd), true);
@@ -1797,7 +1780,7 @@ int iwlwifi_deauth(void) {
         s_is_associated = false;
     }
 
-    /* 3. Station teardown: flush TX paths and disable SCD queues before removing Station 0 */
+    /* 3. Station teardown: flush TX paths before removing Station 0 */
     if (s_sta_active) {
         iwl_tx_path_flush_cmd_t flush_cmd = {
             .sta_id   = IWL_STATION_ID,
@@ -1806,9 +1789,9 @@ int iwlwifi_deauth(void) {
         };
         (void)iwl_send_cmd_pdu(IWL_HCMD_TXPATH_FLUSH, &flush_cmd, sizeof(flush_cmd), true);
 
-        static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
-        for (uint8_t ac = 0; ac < 4; ac++) {
-            (void)iwl_disable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac]);
+        s_txq5_idx = 0;
+        if (s_txq5_tfd_ring_virt) {
+            memset(s_txq5_tfd_ring_virt, 0, sizeof(iwl_tfd_t) * IWL_TX_RING_SIZE);
         }
 
         iwl_rm_sta_cmd_t rm_cmd = { .sta_id = IWL_STATION_ID, .reserved = {0, 0, 0} };
