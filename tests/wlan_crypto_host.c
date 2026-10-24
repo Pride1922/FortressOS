@@ -190,10 +190,9 @@ static void test_ccmp_roundtrip_and_tampering(void) {
     };
     uint64_t pn = 0x000000000001ULL;
 
-    /* Mock 802.11 AAD header (24 bytes) */
-    uint8_t aad[24] = {
+    /* Mock 802.11 AAD header (22 bytes, Duration excluded per IEEE 802.11) */
+    uint8_t aad[22] = {
         0x08, 0x41,                         /* Frame Control (Data, ToDS, Protected) */
-        0x3A, 0x01,                         /* Duration */
         0x00, 0x14, 0x6C, 0x7E, 0x40, 0x80, /* A1: BSSID/AP */
         0x00, 0x0F, 0xB5, 0x32, 0x88, 0x6E, /* A2: Station MAC */
         0x00, 0x14, 0x6C, 0x7E, 0x40, 0x80, /* A3: DA */
@@ -227,9 +226,9 @@ static void test_ccmp_roundtrip_and_tampering(void) {
     assert(wlan_ccmp_decrypt(tk, pn, aad, sizeof(aad), tampered_cipher, 80, mic, decrypted) == -1);
 
     /* Adversarial Gate 2: Tampered AAD (e.g. spoofed Station MAC) */
-    uint8_t tampered_aad[24];
-    memcpy(tampered_aad, aad, 24);
-    tampered_aad[11] ^= 0x02;
+    uint8_t tampered_aad[22];
+    memcpy(tampered_aad, aad, 22);
+    tampered_aad[9] ^= 0x02;
     assert(wlan_ccmp_decrypt(tk, pn, tampered_aad, sizeof(aad), cipher, 80, mic, decrypted) == -1);
 
     /* Adversarial Gate 3: Tampered MIC */

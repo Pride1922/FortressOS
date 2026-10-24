@@ -717,7 +717,7 @@ int watchtower_main(int argc, char **argv) {
     (void)argv;
 
     /* Ensure /run/watchtower directory exists and initialize logging directory */
-    sys_call(SYS_MKDIR, (uintptr_t)WATCHTOWER_RUN_DIR, 0755, 0, 0, 0, 0);
+    sys_call(SYS_MKDIR, (uintptr_t)WATCHTOWER_RUN_DIR, 0777, 0, 0, 0, 0);
     wt_init_log_dir();
     watchtower_ctl_set_log_dir(g_log_dir);
     wt_write_pid_file();

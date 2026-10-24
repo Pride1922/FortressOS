@@ -155,7 +155,7 @@ int service_main(int argc, char **argv) {
 
     /* Verify PID is alive via signal 0 */
     long alive = sys_call(SYS_KILL, (uintptr_t)pid, 0, 0, 0, 0, 0);
-    if (alive < 0) {
+    if (alive < 0 && alive != SYSCALL_EPERM && alive != SYSCALL_EACCES) {
         cli_print_err(prog);
         cli_print_err(": watchtower supervisor is not running (stale pid)\n");
         return 2;
@@ -185,7 +185,7 @@ int service_main(int argc, char **argv) {
             continue;
         }
         lock_fd = sys_call(SYS_OPEN, (uintptr_t)WATCHTOWER_CTL_LOCK_FILE,
-                           VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0600, 0, 0, 0);
+                           VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0666, 0, 0, 0);
         if (lock_fd >= 0) break;
         cli_sleep_ms(10);
     }
@@ -198,7 +198,7 @@ int service_main(int argc, char **argv) {
 
     /* Write request */
     long req_fd = sys_call(SYS_OPEN, (uintptr_t)WATCHTOWER_CTL_REQ_FILE,
-                           VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0600, 0, 0, 0);
+                           VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0666, 0, 0, 0);
     if (req_fd < 0) {
         sys_call(SYS_UNLINK, (uintptr_t)WATCHTOWER_CTL_LOCK_FILE, 0, 0, 0, 0, 0);
         cli_print_err(prog);

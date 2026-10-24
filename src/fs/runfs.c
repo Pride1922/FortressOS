@@ -189,7 +189,10 @@ void runfs_init(vfs_node_t *root) {
     vfs_create_attrs_t tmp={.mode=01777};
     run_setup(&run_pool[0],root,"run",VFS_DIRECTORY,NULL);run_pool[0].legacy=true;
     run_setup(&run_pool[1],root,"tmp",VFS_DIRECTORY,&tmp);run_pool[1].legacy=true;
+    vfs_create_attrs_t wt={.mode=01777};
     run_setup(&run_pool[2],&run_pool[0].node,"user",VFS_DIRECTORY,NULL);run_pool[2].legacy=true;
+    run_setup(&run_pool[3],&run_pool[0].node,"watchtower",VFS_DIRECTORY,&wt);run_pool[3].legacy=true;
+    run_pool[2].node.next=&run_pool[3].node;
     run_pool[0].node.children=&run_pool[2].node;
     run_pool[1].node.next=root->children;root->children=&run_pool[1].node;
     run_pool[0].node.next=root->children;root->children=&run_pool[0].node;

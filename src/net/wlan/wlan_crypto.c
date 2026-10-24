@@ -484,9 +484,12 @@ int wlan_ccmp_encrypt(const uint8_t tk[16],
 
     /* Construct Nonce (13 bytes): Priority (1 byte) || A2 (6 bytes) || PN (6 bytes) */
     uint8_t nonce[13] = {0};
-    if (aad && aad_len >= 16) {
-        /* Address 2 is at offset 10 of 802.11 header */
-        memcpy(nonce + 1, aad + 10, 6);
+    if (aad && aad_len >= 24) {
+        nonce[0] = (uint8_t)(aad[22] & 0x0Fu);
+    }
+    if (aad && aad_len >= 14) {
+        /* Address 2 is at offset 8 of IEEE 802.11 AAD (FC: 2B, A1: 6B, A2: 6B) */
+        memcpy(nonce + 1, aad + 8, 6);
     }
     nonce[7]  = (uint8_t)(pn >> 40);
     nonce[8]  = (uint8_t)(pn >> 32);
@@ -602,8 +605,12 @@ int wlan_ccmp_decrypt(const uint8_t tk[16],
 
     /* Construct Nonce */
     uint8_t nonce[13] = {0};
-    if (aad && aad_len >= 16) {
-        memcpy(nonce + 1, aad + 10, 6);
+    if (aad && aad_len >= 24) {
+        nonce[0] = (uint8_t)(aad[22] & 0x0Fu);
+    }
+    if (aad && aad_len >= 14) {
+        /* Address 2 is at offset 8 of IEEE 802.11 AAD (FC: 2B, A1: 6B, A2: 6B) */
+        memcpy(nonce + 1, aad + 8, 6);
     }
     nonce[7]  = (uint8_t)(pn >> 40);
     nonce[8]  = (uint8_t)(pn >> 32);
