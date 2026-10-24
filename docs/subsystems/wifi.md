@@ -82,24 +82,37 @@ Upon entering `WLAN_STATE_CONNECTED`, the Intel iwlwifi driver configures the fi
 - `rx_data_timeout = 10000` / `tx_data_timeout = 10000`: 10 ms idle wake windows.
 - Transitions back to continuous awake (`flags = 0`) during deauthentication or directed active scanning.
 
-### Hardened Credential Storage
-`/etc/network/wlan.conf` stores saved wireless networks in `network=SSID:PSK` format. Saved files are created with strict mode `0600` (read/write only by root) via `SYS_OPEN` and `SYS_FCHMOD`, preventing unprivileged users from reading stored network passphrases.
+### Hardened Credential & Profile Storage
+`/etc/network/wlan.conf` stores saved wireless networks in either INI block format or inline `network=SSID:PSK[:ADDR[:GW[:DNS]]]` format. Saved files are created with strict mode `0600` (read/write only by root) via `SYS_OPEN` and `SYS_FCHMOD`, preventing unprivileged users from reading stored network passphrases.
+
+Each saved network profile supports independent IP configuration:
+- **Default (DHCP)**: If no static address is specified, the system defaults to DHCP via `/sbin/dhcpc`.
+- **Static IP**: If an address is configured (e.g. `192.168.1.150/24`), `wifi` configures the link statically via `/sbin/ifup --no-save` upon connection and writes the DNS servers to `/etc/network/resolv.conf`.
 
 ---
 
 ## 4. Userland Tooling (`/bin/wifi`)
 
 ```bash
-wifi scan                # Scans all 802.11 channels with an animated progress bar
-wifi connect <SSID> <key># Connects asynchronously, polls status, and spawns /sbin/dhcpc
-wifi disconnect          # Disconnects and releases hardware station context
-wifi status              # Displays wlan0 MAC, BSSID, channel, RSSI, and link state
-wifi save <SSID> <key>   # Persists network credentials to /etc/network/wlan.conf (0600)
-wifi auto                # Scans range and auto-connects to best saved network by RSSI
+wifi scan                                   # Scans all 802.11 channels with an animated progress bar
+wifi list                                   # Displays table of saved networks, IP mode, address, gateway, DNS
+wifi connect <SSID> [PSK] [--static ..]     # Connects to network (auto-applies saved profile or CLI static flags)
+wifi save <SSID> <PSK> [--static <IP/pfx>]  # Persists network credentials & IP config to /etc/network/wlan.conf (0600)
+wifi static <SSID> <IP/pfx> [GW] [DNS]      # Sets or updates static IP on a saved network profile
+wifi static <SSID> dhcp                     # Reverts a saved network profile back to DHCP
+wifi auto                                   # Auto-connects to best saved network by RSSI and applies its IP config
+wifi disconnect                             # Disconnects and releases hardware station context
+wifi status                                 # Displays wlan0 MAC, BSSID, channel, RSSI, and link state
 ```
 
-### Automatic DHCP Integration
-Upon successful 4-way handshake completion (`WIFI_STATUS_CONNECTED`), `wifi connect` and `wifi auto` immediately spawn `/sbin/dhcpc` to acquire an IPv4 lease via zero-touch autoconfiguration.
+### Seamless Ethernet / Wi-Fi Handover Architecture
+1. **Cable Insertion (Wired Link UP)**:
+   - Kernel prioritizes wired interfaces (`rtl8153` > `e1000` > `wlan0`).
+   - Upon wired link online, `net_service_active_interface` automatically triggers `wlan_mgr_disconnect()`, sending an 802.11 Deauth to the AP and putting the Wi-Fi radio to idle sleep.
+   - Background `/sbin/dhcpc` daemon detects MAC change, flushes old leases, checks `/etc/network/network.conf` for wired static IP (or requests a fresh wired DHCP lease), and writes `/etc/network/resolv.conf`.
+2. **Cable Removal (Wired Link DOWN)**:
+   - When the Ethernet cable is unplugged, `/sbin/dhcpc` detects carrier loss, enters `STATE_DISCONNECTED`, and periodically invokes `/bin/wifi auto`.
+   - `wifi auto` scans range, selects the saved network with the strongest RSSI, executes the 4-way WPA2 handshake, and configures either static IP or DHCP based on that network's saved profile.
 
 ---
 

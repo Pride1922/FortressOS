@@ -4,6 +4,13 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-24 Ethernet / Wi-Fi Seamless Handover & Per-Network Static IP Support:
+- **Seamless Carrier Switching:** Kernel priority chain (`rtl8153` > `e1000` > `wlan0`) with automatic radio deauth and idle power-down on wired link up. Background `/sbin/dhcpc` daemon detects MAC changes within 1s, flushes old leases, and transitions state machines cleanly.
+- **Wired Carrier Loss Auto-Reconnect:** Carrier loss on wired interfaces triggers background Wi-Fi auto-scanning and connection to the best saved network by RSSI.
+- **Per-Network Static / DHCP Support:** `/etc/network/wlan.conf` (0600) profiles support independent static IP (`address=`, `gateway=`, `dns=`) or default DHCP.
+- **DNS Contract:** Primary resolver path is `/etc/network/resolv.conf` across both installed systems and live ETCFS media.
+- **CLI Management:** `/bin/wifi` supports `list`, `save [--static]`, `static`, and `connect [--static]`. `/sbin/ifup` supports `--no-save` flag for ephemeral link binding without overwriting wired configuration.
+
 2026-10-21 USB Ethernet (Realtek RTL8153 / RTL8152):
 Native Realtek RTL8153 USB 3.0 Gigabit Ethernet driver under xHCI is COMPLETE and verified.
 - **Hardware Architecture & OCP Primitives:** Vendor-specific control transfers on EP0 (`bRequest 0x05`, `MCU_TYPE_PLA 0x0100`, `MCU_TYPE_USB 0x0000`), permanent hardware MAC address retrieval from `PLA_IDR` (`0xC000`) with fallback to `PLA_BACKUP` (`0xD000`), and soft reset via `PLA_CR` (`CR_RST`).
