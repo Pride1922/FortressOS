@@ -624,6 +624,56 @@ static int do_save(const char *ssid, const char *passphrase,
     }
 }
 
+static int do_forget(const char *ssid) {
+    if (!ssid || !ssid[0]) {
+        write_str(2, "Usage: wifi forget <SSID>\n");
+        return 1;
+    }
+
+    load_saved_networks();
+
+    int existing_idx = -1;
+    for (int i = 0; i < s_saved_count; i++) {
+        if (streq(s_saved_nets[i].ssid, ssid)) {
+            existing_idx = i;
+            break;
+        }
+    }
+
+    if (existing_idx < 0) {
+        write_str(2, "wifi forget: network \"");
+        write_str(2, ssid);
+        write_str(2, "\" not found in /etc/network/wlan.conf\n");
+        return 1;
+    }
+
+    /* Shift remaining networks down */
+    for (int i = existing_idx; i < s_saved_count - 1; i++) {
+        s_saved_nets[i] = s_saved_nets[i + 1];
+    }
+    s_saved_count--;
+
+    if (!save_all_networks()) {
+        write_str(2, "wifi forget: write error\n");
+        return 1;
+    }
+
+    write_str(1, "Forgot wireless network \"");
+    write_str(1, ssid);
+    write_str(1, "\" from /etc/network/wlan.conf.\n");
+
+    /* If currently connected to this network, disconnect and clean up */
+    wifi_status_t cur_st;
+    if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &cur_st, sizeof(cur_st)) == 0 &&
+        cur_st.state == WIFI_STATUS_CONNECTED && streq(cur_st.ssid, ssid)) {
+        write_str(1, "Disconnecting from forgotten network...\n");
+        (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_DISCONNECT, 0, 0);
+        (void)WIFI_SYSCALL(SYS_UNLINK, (uintptr_t)"/run/wifi-static.configured", 0, 0);
+    }
+
+    return 0;
+}
+
 static int do_static(const char *ssid, const char *address, const char *gateway, const char *dns) {
     if (!ssid) {
         write_str(2, "Usage: wifi static <SSID> <IP/prefix> [gateway] [dns]\n"
@@ -1015,6 +1065,7 @@ int wifi_main(int argc, char **argv) {
         write_str(1, "  static dhcp                        Revert current Wi-Fi connection to DHCP\n");
         write_str(1, "  static <SSID> dhcp                 Revert specific saved network to DHCP\n");
         write_str(1, "  save <SSID> <PSK> [--static ...]   Save network to /etc/network/wlan.conf\n");
+        write_str(1, "  forget [SSID]                      Remove saved network from /etc/network/wlan.conf\n");
         write_str(1, "  auto                               Auto-connect to best saved wireless network\n");
         write_str(1, "  disconnect                         Disconnect from wireless network\n");
         return 1;
@@ -1050,6 +1101,29 @@ int wifi_main(int argc, char **argv) {
             }
         }
         return do_save(ssid, psk, addr, gw, dns);
+    } else if (streq(argv[1], "forget") || streq(argv[1], "remove") || streq(argv[1], "delete")) {
+        const char *ssid = NULL;
+        static char s_cur_connected_ssid[WIFI_SSID_MAX_LEN + 1];
+        if (argc >= 3) {
+            ssid = argv[2];
+        } else {
+            /* If no SSID provided, target current connected network */
+            wifi_status_t cur_st;
+            if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &cur_st, sizeof(cur_st)) == 0 &&
+                cur_st.state == WIFI_STATUS_CONNECTED && cur_st.ssid[0]) {
+                size_t k = 0;
+                while (cur_st.ssid[k] && k < WIFI_SSID_MAX_LEN) {
+                    s_cur_connected_ssid[k] = cur_st.ssid[k];
+                    k++;
+                }
+                s_cur_connected_ssid[k] = '\0';
+                ssid = s_cur_connected_ssid;
+            } else {
+                write_str(2, "Usage: wifi forget <SSID>          (or 'wifi forget' while connected)\n");
+                return 1;
+            }
+        }
+        return do_forget(ssid);
     } else if (streq(argv[1], "static")) {
         if (argc < 3) {
             write_str(2, "Usage: wifi static <IP/prefix> [gateway] [dns]       (applies to current network)\n"

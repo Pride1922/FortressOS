@@ -98,6 +98,7 @@ wifi scan                                   # Scans all 802.11 channels with an 
 wifi list                                   # Displays table of saved networks, IP mode, address, gateway, DNS
 wifi connect <SSID> [PSK] [--static ..]     # Connects to network (auto-applies saved profile or CLI static flags)
 wifi save <SSID> <PSK> [--static <IP/pfx>]  # Persists network credentials & IP config to /etc/network/wlan.conf (0600)
+wifi forget [SSID]                          # Removes saved network profile (or currently active network)
 wifi static <SSID> <IP/pfx> [GW] [DNS]      # Sets or updates static IP on a saved network profile
 wifi static <SSID> dhcp                     # Reverts a saved network profile back to DHCP
 wifi auto                                   # Auto-connects to best saved network by RSSI and applies its IP config

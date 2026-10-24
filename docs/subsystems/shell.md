@@ -184,7 +184,7 @@ The following 9 tools are located in `/sbin/` on the live initramfs image:
 - `lockstat`: Kernel spinlock contention and hold-time diagnostic monitor.
 
 ### Networking & Wireless Tools (`/bin`)
-- `wifi`: IEEE 802.11 wireless control CLI (`scan`, `list`, `connect`, `save`, `static`, `auto`, `disconnect`, `status`).
+- `wifi`: IEEE 802.11 wireless control CLI (`scan`, `list`, `connect`, `save`, `forget`, `static`, `auto`, `disconnect`, `status`).
 - `ping`: ICMP echo probe and RTT measurement.
 - `nslookup`: Domain name resolution client.
 - `nc`: Netcat TCP stream client and listener.
