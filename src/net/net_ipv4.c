@@ -64,6 +64,9 @@ void net_ipv4_set_config(uint32_t local_ip, uint8_t prefix, uint32_t gateway) {
     s_cfg.prefix = prefix;
     s_cfg.gateway = gateway;
 }
+void net_ipv4_set_dev(net_dev_t *dev) {
+    s_dev = dev;
+}
 bool net_ipv4_idle(void) {
     if (s_ping_waiting || s_trace_active) return false;
     if (!net_tcp_idle()) return false;

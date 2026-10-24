@@ -321,6 +321,9 @@ void net_tcp_init(net_dev_t *dev, const net_config_t *cfg) {
 void net_tcp_set_local_ip(uint32_t new_ip) {
     local_ip = new_ip;
 }
+void net_tcp_set_dev(net_dev_t *dev) {
+    device = dev;
+}
 int64_t net_tcp_create(unsigned slot) {
     net_control_assert_owner();
     if (slot>=NET_SOCKET_MAX || !device) return SYSCALL_EIO;

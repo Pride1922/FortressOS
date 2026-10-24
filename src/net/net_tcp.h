@@ -12,6 +12,7 @@ typedef struct { unsigned slot; uint64_t generation, event, deadline_ticks, cloc
  * Protocol input/tick/idle are sole-worker APIs; close is AP-safe publication. */
 void net_tcp_init(net_dev_t *dev, const net_config_t *cfg);
 void net_tcp_set_local_ip(uint32_t new_ip);
+void net_tcp_set_dev(net_dev_t *dev);
 int64_t net_tcp_create(unsigned slot);
 void net_tcp_close(unsigned slot); /* AP-safe publication, no protocol work. */
 #define NET_TCP_BACKLOG_MAX 4U

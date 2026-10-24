@@ -94,6 +94,10 @@ void net_socket_enable(void) {
 void net_socket_set_local(uint32_t local_ip) {
     s_local = local_ip;
 }
+void net_socket_set_dev(net_dev_t *dev) {
+    s_mtu = dev ? dev->mtu : 0;
+    net_tcp_set_dev(dev);
+}
 bool net_socket_available(void) {
     return __atomic_load_n(&s_enabled,__ATOMIC_ACQUIRE) &&
         __atomic_load_n(&s_online,__ATOMIC_ACQUIRE) && apic_timer_get_frequency()!=0;

@@ -233,6 +233,63 @@ static inline void net_dev_get_stats(const net_dev_t *dev, uint64_t *rx, uint64_
     else { if (rx) *rx = 0; if (tx) *tx = 0; }
 }
 
+#ifndef TEST_SMP_MEMORY
+static bool net_service_active_interface(uint64_t now, uint64_t freq) {
+    bool online = s_if ? net_dev_service_link(s_if, now, freq) : false;
+
+    net_dev_t *cand_usb = rtl8153_get_net_device();
+    net_dev_t *cand_eth = e1000_get_net_device();
+    net_dev_t *cand_wlan = wlan_get_net_device();
+
+    bool usb_online = (cand_usb && cand_usb != s_if) ? net_dev_service_link(cand_usb, now, freq) :
+                      (cand_usb && cand_usb == s_if ? online : false);
+    bool eth_online = (cand_eth && cand_eth != s_if) ? net_dev_service_link(cand_eth, now, freq) :
+                      (cand_eth && cand_eth == s_if ? online : false);
+    bool wlan_online = (cand_wlan && cand_wlan != s_if) ? net_dev_service_link(cand_wlan, now, freq) :
+                       (cand_wlan && cand_wlan == s_if ? online : false);
+
+    net_dev_t *target = s_if;
+    if (usb_online) {
+        target = cand_usb;
+    } else if (eth_online) {
+        target = cand_eth;
+    } else if (wlan_online) {
+        target = cand_wlan;
+    } else if (!online) {
+        if (cand_eth) target = cand_eth;
+        else if (cand_usb) target = cand_usb;
+        else if (cand_wlan) target = cand_wlan;
+    }
+
+    if (target && target != s_if) {
+        serial_puts("[NET] Active interface switched from ");
+        serial_puts(s_if ? s_if->name : "none");
+        serial_puts(" to ");
+        serial_puts(target->name);
+        serial_puts("\n");
+        s_if = target;
+        net_ipv4_set_dev(target);
+        net_socket_set_dev(target);
+        arp_cache_init(&s_arp_cache);
+        if (s_config.is_dhcp && !s_config.is_static) {
+            s_config.local_ip = 0;
+            s_config.gateway = 0;
+            s_config.prefix = 0;
+            net_ipv4_set_config(0, 0, 0);
+            net_socket_set_local(0);
+            net_tcp_set_local_ip(0);
+        }
+        online = net_dev_is_online(s_if);
+    }
+
+    return online;
+}
+#else
+static inline bool net_service_active_interface(uint64_t now, uint64_t freq) {
+    return s_if ? net_dev_service_link(s_if, now, freq) : false;
+}
+#endif
+
 void net_worker_main(void *arg) {
     (void)arg;
     net_control_register_owner();
@@ -260,7 +317,7 @@ void net_worker_main(void *arg) {
         unsigned probe=__atomic_exchange_n(&s_ap_probe_result,0,__ATOMIC_ACQ_REL);
         if (probe) serial_puts(probe==1 ? "[NET 5] AP TCP listener dispatch rejection PASS\n" :
             "[NET 5] AP TCP listener dispatch rejection FAIL\n");
-        bool online=net_dev_service_link(s_if,apic_timer_get_bsp_ticks(),apic_timer_get_frequency());
+        bool online=net_service_active_interface(apic_timer_get_bsp_ticks(),apic_timer_get_frequency());
         if (!online && was_online) arp_cache_init(&s_arp_cache);
         was_online=online;
         unsigned count=0;
@@ -377,9 +434,13 @@ void net_start(const char *cmdline, size_t len) {
         serial_puts("[NET 3] Network disabled by cmdline (net=none/off)\n");
         return;
     }
+#ifndef TEST_SMP_MEMORY
     net_dev_t *dev=rtl8153_get_net_device();
     if (!dev) dev=e1000_get_net_device();
     if (!dev) dev=wlan_get_net_device();
+#else
+    net_dev_t *dev=NULL;
+#endif
     if (!dev || s_config.test_rings) return; /* Raw selftest remains sole RX owner. */
     net_init(dev,&s_config);
     if (!thread_create_on_cpu(0,"net_worker",net_worker_main,NULL)) {

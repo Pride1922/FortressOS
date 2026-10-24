@@ -7,6 +7,7 @@ typedef struct { unsigned slot; uint64_t token; bool receive; } net_socket_wait_
 void net_socket_init(net_dev_t *dev, const net_config_t *cfg);
 void net_socket_enable(void);
 void net_socket_set_local(uint32_t local_ip);
+void net_socket_set_dev(net_dev_t *dev);
 bool net_socket_available(void);
 int64_t net_socket_create(file_t **out);
 /* Client constructor split: caller allocation, owner endpoint activation.

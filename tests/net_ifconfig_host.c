@@ -270,6 +270,10 @@ int main(void) {
     dev.mac_addr[5] = 0x80;
     dev.mtu = 1500;
     dev.send_packet = mock_send;
+    dev.link_state_abi = e1000_link_state_abi;
+    dev.get_stats = e1000_get_stats;
+    dev.service_link = e1000_service_link;
+    dev.network_online = e1000_network_online;
 
     net_config_t cfg = {
         .local_ip = htonl(0xc0a800a8),  /* 192.168.0.168 */

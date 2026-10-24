@@ -1,6 +1,7 @@
 #include "types.h"
 #include "syscall_abi.h"
 #include "netctl_abi.h"
+#include "wifi_abi.h"
 
 static netctl_ifget_t s_req;
 static char s_buf[512];
@@ -162,7 +163,20 @@ int ifconfig_main(int argc, char **argv) {
     }
 
     size_t pos = 0;
-    append_str(s_buf, &pos, "eth0  HWaddr ");
+    const char *ifname = "eth0";
+#ifdef SYS_WIFI
+    wifi_status_t wst;
+    if (IFCONFIG_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, (uintptr_t)&wst, sizeof(wst)) == 0) {
+        if ((wst.mac[0] | wst.mac[1] | wst.mac[2] | wst.mac[3] | wst.mac[4] | wst.mac[5]) != 0 &&
+            wst.mac[0] == s_req.mac[0] && wst.mac[1] == s_req.mac[1] &&
+            wst.mac[2] == s_req.mac[2] && wst.mac[3] == s_req.mac[3] &&
+            wst.mac[4] == s_req.mac[4] && wst.mac[5] == s_req.mac[5]) {
+            ifname = "wlan0";
+        }
+    }
+#endif
+    append_str(s_buf, &pos, ifname);
+    append_str(s_buf, &pos, "  HWaddr ");
     append_mac(s_buf, &pos, s_req.mac);
     append_str(s_buf, &pos, "\n");
 
