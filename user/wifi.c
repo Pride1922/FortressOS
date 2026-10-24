@@ -339,7 +339,7 @@ static int do_connect(const char *ssid, const char *passphrase) {
                 write_str(1, "\" (WPA2-PSK). Link is ONLINE.\n");
 
                 write_str(1, "Configuring IP address via DHCP...\n");
-                const char *const dhcp_argv[] = { "/sbin/dhcpc", NULL };
+                const char *const dhcp_argv[] = { "/sbin/dhcpc", "-b", NULL };
                 spawn_opts_t opts;
                 for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
                 opts.size = sizeof(opts);

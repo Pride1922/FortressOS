@@ -902,11 +902,12 @@ static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bo
             spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
             if (done) {
                 s_pending_cmd_idx = 0xFF;
+                if (failed) {
+                    serial_puts("[IWL] HCMD failed status: op=");
+                    serial_print_hex(opcode);
+                    serial_puts("\n");
+                }
                 return !failed;
-            }
-            if (s_last_err_intr & (CSR_INT_BIT_HW_ERR | CSR_INT_BIT_SW_ERR)) {
-                s_pending_cmd_idx = 0xFF;
-                return false;
             }
             __asm__ volatile("pause" ::: "memory");
         }
@@ -1021,28 +1022,17 @@ static bool iwl_send_all_phy_db(void) {
 
 
 static bool iwl_enable_txq(uint8_t sta_id, uint8_t qid, uint8_t fifo, uint8_t tid) {
+    if (iwl_nic_lock()) {
+        iwl_write32(HBUS_TARG_WRPTR, ((uint32_t)qid << 8) | 0u);
+        iwl_nic_unlock();
+    }
     if (qid == 5) {
-        if (iwl_nic_lock()) {
-            iwl_write_prph(iwl_scd_queue_status_bits_reg(5), 0);
-            iwl_write_prph(iwl_scd_queue_rdptr_reg(5), 0);
-            iwl_write32(HBUS_TARG_WRPTR, (5u << 8) | 0u);
-            if (s_sched_base != 0) {
-                iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(5), 0);
-                iwl_write_mem32(s_sched_base + IWL_SCD_CONTEXT_QUEUE_OFFSET(5) + 4u, 0);
-            }
-            iwl_nic_unlock();
-        }
         s_txq5_idx = 0;
         if (s_txq5_tfd_ring_virt) {
             memset(s_txq5_tfd_ring_virt, 0, sizeof(iwl_tfd_t) * IWL_TX_RING_SIZE);
         }
         if (s_sched_virt) {
             memset(&s_sched_virt[5], 0, sizeof(s_sched_virt[5]));
-        }
-    } else {
-        if (iwl_nic_lock()) {
-            iwl_write32(HBUS_TARG_WRPTR, ((uint32_t)qid << 8) | 0u);
-            iwl_nic_unlock();
         }
     }
     iwl_scd_txq_cfg_cmd_t cmd;
@@ -1752,15 +1742,6 @@ int iwlwifi_deauth(void) {
         return 0;
     }
 
-    if (s_last_err_intr & (CSR_INT_BIT_HW_ERR | CSR_INT_BIT_SW_ERR)) {
-        s_is_associated = false;
-        s_sta_active = false;
-        s_binding_active = false;
-        s_mac_active = false;
-        s_te_started = false;
-        return 0;
-    }
-
     /* 1. Stop Time Event session protection if active */
     if (s_te_started) {
         iwl_time_event_cmd_t te;
@@ -1822,6 +1803,7 @@ int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beaco
 
     /* Tear down any previous station/binding/MAC context before starting new authentication */
     (void)iwlwifi_deauth();
+    s_last_err_intr = 0;
 
     s_iwl_dev.current_channel = (channel > 0) ? channel : 1;
     memcpy(s_assoc_bssid, bssid, 6);
@@ -1846,6 +1828,11 @@ int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beaco
     } else {
         serial_puts("[IWL] WARN: prepare_auth BINDING_CONTEXT add failed\n");
     }
+
+    /* Proactively ensure Station 0 is cleared in firmware before ADD_STA */
+    iwl_rm_sta_cmd_t clean_rm = { .sta_id = IWL_STATION_ID, .reserved = {0, 0, 0} };
+    (void)iwl_send_cmd_pdu(IWL_HCMD_REMOVE_STA, &clean_rm, sizeof(clean_rm), false);
+    s_sta_active = false;
 
     /* 4. Add Station 0 (Target AP BSSID) on DQA queues 5..8 */
     if (iwl_send_add_sta_cmd(false, 0)) {

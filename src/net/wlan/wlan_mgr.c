@@ -50,6 +50,13 @@ static uint32_t             s_rx_head = 0;
 static uint32_t             s_rx_tail = 0;
 static uint32_t             s_rx_count = 0;
 
+/* Staging buffers protected by s_wlan_lock to preserve kernel thread stack */
+static uint8_t              s_tx_wlan_plain[1600];
+static uint8_t              s_tx_wlan_cipher[1650];
+static uint8_t              s_rx_unenc_frame[1600];
+static uint8_t              s_tx_eapol_eth[512 + 14];
+static uint8_t              s_tx_eapol_wlan[1024];
+
 void wlan_mgr_init(const wlan_hw_ops_t *ops) {
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
     s_hw_ops = ops;
@@ -469,19 +476,17 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                                                 resp_eapol, sizeof(resp_eapol));
                 if (resp_len > 0) {
                     /* Encapsulate response EAPOL frame into 802.11 QoS Data frame and transmit */
-                    uint8_t eth_eapol[512 + 14];
-                    memcpy(eth_eapol, s_target_bssid, 6);
-                    memcpy(eth_eapol + 6, s_local_mac, 6);
-                    eth_eapol[12] = (EAPOL_ETHER_TYPE >> 8) & 0xFF;
-                    eth_eapol[13] = EAPOL_ETHER_TYPE & 0xFF;
-                    memcpy(eth_eapol + 14, resp_eapol, (size_t)resp_len);
+                    memcpy(s_tx_eapol_eth, s_target_bssid, 6);
+                    memcpy(s_tx_eapol_eth + 6, s_local_mac, 6);
+                    s_tx_eapol_eth[12] = (EAPOL_ETHER_TYPE >> 8) & 0xFF;
+                    s_tx_eapol_eth[13] = EAPOL_ETHER_TYPE & 0xFF;
+                    memcpy(s_tx_eapol_eth + 14, resp_eapol, (size_t)resp_len);
 
-                    uint8_t tx_wlan[1024];
-                    int tx_len = net_80211_encapsulate(eth_eapol, 14 + (size_t)resp_len,
+                    int tx_len = net_80211_encapsulate(s_tx_eapol_eth, 14 + (size_t)resp_len,
                                                       s_target_bssid, s_local_mac,
-                                                      s_seq_num++, tx_wlan, sizeof(tx_wlan));
+                                                      s_seq_num++, s_tx_eapol_wlan, sizeof(s_tx_eapol_wlan));
                     if (tx_len > 0 && s_hw_ops && s_hw_ops->send_raw_80211) {
-                        s_hw_ops->send_raw_80211(tx_wlan, (size_t)tx_len);
+                        s_hw_ops->send_raw_80211(s_tx_eapol_wlan, (size_t)tx_len);
                     }
                 } else if (resp_len < 0 && s_wpa2_sm.handshake_step >= 2) {
                     /* EAPOL rejection (e.g. Message 3 MIC failure) -> fail authentication cleanly */
@@ -513,8 +518,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
             wpa2_sm_is_authorized(&s_wpa2_sm) &&
             memcmp(hdr->addr2, s_target_bssid, 6) == 0) {
             
-            uint8_t unenc_frame[1600];
-            size_t unenc_len = sizeof(unenc_frame);
+            size_t unenc_len = sizeof(s_rx_unenc_frame);
 
             bool is_group = (hdr->addr1[0] & 0x01u) != 0;
             const uint8_t *dec_key = is_group ? s_wpa2_sm.gtk : s_wpa2_sm.tk;
@@ -522,12 +526,12 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
 
             /* Decrypt CCMP */
             int dec_rc = wlan_ccmp_decrypt_frame(dec_key, frame, len,
-                                                 unenc_frame, &unenc_len,
+                                                 s_rx_unenc_frame, &unenc_len,
                                                  pn_tracker);
             if (dec_rc == 0 && unenc_len > 0) {
                 if (s_rx_count < WLAN_RX_RING_SIZE) {
                     wlan_rx_slot_t *slot = &s_rx_slots[s_rx_head];
-                    int eth_len = net_80211_decapsulate(unenc_frame, unenc_len,
+                    int eth_len = net_80211_decapsulate(s_rx_unenc_frame, unenc_len,
                                                         slot->data, sizeof(slot->data));
                     if (eth_len > 0) {
                         slot->pbuf.payload = slot->data;
@@ -558,21 +562,19 @@ int wlan_send_packet(net_dev_t *dev, const void *buf, size_t len) {
     }
 
     /* 1. Encapsulate 802.3 Ethernet frame into 802.11 QoS Data Frame with LLC/SNAP */
-    uint8_t wlan_plain[1600];
     int wlan_plain_len = net_80211_encapsulate((const uint8_t *)buf, len,
                                               s_target_bssid, s_local_mac,
-                                              s_seq_num++, wlan_plain, sizeof(wlan_plain));
+                                              s_seq_num++, s_tx_wlan_plain, sizeof(s_tx_wlan_plain));
     if (wlan_plain_len <= 0) {
         spin_unlock_irqrestore(&s_wlan_lock, irq);
         return -1;
     }
 
     /* 2. Encrypt with AES-128-CCMP */
-    uint8_t wlan_cipher[1650];
-    size_t cipher_len = sizeof(wlan_cipher);
+    size_t cipher_len = sizeof(s_tx_wlan_cipher);
     int enc_rc = wlan_ccmp_encrypt_frame(s_wpa2_sm.tk, ++s_wpa2_sm.tx_pn,
-                                         wlan_plain, (size_t)wlan_plain_len,
-                                         wlan_cipher, &cipher_len);
+                                         s_tx_wlan_plain, (size_t)wlan_plain_len,
+                                         s_tx_wlan_cipher, &cipher_len);
     if (enc_rc != 0) {
         spin_unlock_irqrestore(&s_wlan_lock, irq);
         return -1;
@@ -581,7 +583,7 @@ int wlan_send_packet(net_dev_t *dev, const void *buf, size_t len) {
     /* 3. Transmit via hardware driver */
     int tx_res = -1;
     if (s_hw_ops && s_hw_ops->send_raw_80211) {
-        tx_res = s_hw_ops->send_raw_80211(wlan_cipher, cipher_len);
+        tx_res = s_hw_ops->send_raw_80211(s_tx_wlan_cipher, cipher_len);
         if (tx_res == 0) s_stats_tx_packets++;
     }
 
