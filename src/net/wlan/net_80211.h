@@ -102,6 +102,7 @@ typedef enum {
     WLAN_STATE_ASSOCIATING,
     WLAN_STATE_4WAY_HANDSHAKE,
     WLAN_STATE_CONNECTED,
+    WLAN_STATE_FAILED,
 } wlan_state_t;
 
 /* Frame Encoders */

@@ -377,6 +377,56 @@ int main(void) {
     assert(st.state == WIFI_STATUS_IDLE);
     printf("  [PASS] Deauthentication and clean disconnect\n");
 
-    printf("\n>>> ALL WIRELESS (802.11 / WPA2-PSK / IWLWIFI) HOST TESTS PASSED (12/12) <<<\n");
+    /* 13. Test Bad Passphrase & Handshake Failure Handling */
+    /* Attempt connect with wrong passphrase */
+    assert(wlan_mgr_connect("FortressSecure", "CompletelyWrongPassword123", s_mock_ap_bssid) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_AUTHENTICATING);
+
+    /* Simulate Auth Response */
+    rx_rc = wlan_mgr_rx_raw_80211(auth_resp, sizeof(auth_resp), -40);
+    assert(rx_rc == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_ASSOCIATING);
+
+    /* Simulate Assoc Response */
+    rx_rc = wlan_mgr_rx_raw_80211(assoc_resp, sizeof(assoc_resp), -40);
+    assert(rx_rc == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_HANDSHAKE);
+
+    /* Simulate EAPOL Message 1 */
+    rx_rc = wlan_mgr_rx_raw_80211(m1_frame, m1_len, -45);
+    assert(rx_rc == 0);
+
+    /* AP sends Message 3 computed with real PSK (mismatches client's bad PSK MIC) */
+    rx_rc = wlan_mgr_rx_raw_80211(m3_frame, m3_len, -45);
+    assert(rx_rc == 0);
+
+    /* Client must immediately transition to FAILED without panicking or hanging */
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_FAILED);
+    assert(wlan_network_online(dev) == false);
+    assert(wlan_link_state_abi(dev) == NET_IF_LINK_DOWN);
+    printf("  [PASS] Invalid passphrase / Message 3 MIC mismatch fail-closed to WIFI_STATUS_FAILED\n");
+
+    /* Also verify AP Deauthentication frame during handshake marks FAILED */
+    assert(wlan_mgr_connect("FortressSecure", "AnotherWrongPassword", s_mock_ap_bssid) == 0);
+    assert(wlan_mgr_rx_raw_80211(auth_resp, sizeof(auth_resp), -40) == 0);
+    assert(wlan_mgr_rx_raw_80211(assoc_resp, sizeof(assoc_resp), -40) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_HANDSHAKE);
+
+    /* Simulate AP Deauth */
+    uint8_t deauth_frame[32];
+    size_t deauth_len = net_80211_build_deauth(deauth_frame, sizeof(deauth_frame), s_mock_ap_bssid, s_mock_sta_mac, 14);
+    assert(deauth_len > 0);
+    rx_rc = wlan_mgr_rx_raw_80211(deauth_frame, deauth_len, -40);
+    assert(rx_rc == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_FAILED);
+    printf("  [PASS] AP Deauthentication during handshake transitions cleanly to WIFI_STATUS_FAILED\n");
+
+    printf("\n>>> ALL WIRELESS (802.11 / WPA2-PSK / IWLWIFI) HOST TESTS PASSED (13/13) <<<\n");
     return 0;
 }

@@ -886,16 +886,26 @@ static bool iwl_send_cmd_pdu(uint32_t cmd_id, const void *data, uint16_t len, bo
     if (!wait_resp) {
         s_pending_cmd_idx = 0xFF;
         iwl_delay_ms(2);
+        uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
         iwl_drain_rx_ring();
+        spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
         return true;
     }
 
     for (int ms = 0; ms < 1000; ms++) {
         for (int j = 0; j < 50; j++) {
+            uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
             iwl_drain_rx_ring();
-            if (s_cmd_done) {
+            bool done = s_cmd_done;
+            bool failed = s_cmd_failed;
+            spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
+            if (done) {
                 s_pending_cmd_idx = 0xFF;
-                return !s_cmd_failed;
+                return !failed;
+            }
+            if (s_last_err_intr & (CSR_INT_BIT_HW_ERR | CSR_INT_BIT_SW_ERR)) {
+                s_pending_cmd_idx = 0xFF;
+                return false;
             }
             __asm__ volatile("pause" ::: "memory");
         }
@@ -1438,11 +1448,7 @@ static bool iwl_boot_ucode_image(const void *fw_data, size_t fw_len,
     }
 
     iwl_write32(CSR_INT_MASK, CSR_INI_SET_MASK);
-
-    serial_puts("[IWL] Streamed ");
-    serial_print_dec(loaded_sections);
-    serial_puts(target_sec_tlv == IWL_UCODE_TLV_SEC_INIT ? " SEC_INIT" : " SEC_RT");
-    serial_puts(" sections; waiting for ALIVE...\n");
+    (void)loaded_sections;
 
     for (int ms = 0; ms < 1500; ms++) {
         iwl_drain_rx_ring();
@@ -1491,6 +1497,8 @@ bool iwlwifi_is_supported_device(uint16_t vendor, uint16_t device) {
     }
 }
 
+bool iwlwifi_is_scan_complete(void);
+
 static const wlan_hw_ops_t s_iwlwifi_hw_ops = {
     .name = "iwlwifi",
     .get_mac = iwlwifi_get_mac,
@@ -1502,6 +1510,7 @@ static const wlan_hw_ops_t s_iwlwifi_hw_ops = {
     .send_raw_80211 = iwlwifi_send_raw,
     .poll_raw_80211 = iwlwifi_poll_raw,
     .recycle_raw_80211 = iwlwifi_recycle_raw,
+    .is_scan_complete = iwlwifi_is_scan_complete,
 };
 
 bool iwlwifi_probe(void) {
@@ -1625,12 +1634,6 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
         iwl_delay_ms(1);
     }
 
-    serial_puts("[IWL] SEC_INIT calibration done: phy_db_chunks=");
-    serial_print_dec(s_phy_db_count);
-    serial_puts(" bytes=");
-    serial_print_dec(s_phy_db_pool_used);
-    serial_puts("\n");
-
     /* ========================================================================
      * Stage 2: Reset and boot SEC_RT (TLV 19) Runtime Microcode
      * ======================================================================== */
@@ -1698,7 +1701,6 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
 
     s_iwl_dev.firmware_alive  = true;
     s_iwl_dev.mvm_initialized = true;
-    serial_puts("[IWL] SEC_RT MVM radio & scan pipeline initialized!\n");
 #else
     (void)fw_phy_config;
     (void)tlv_flags;
@@ -1718,6 +1720,14 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
 int iwlwifi_deauth(void) {
 #ifndef IWLWIFI_HOST_TEST
     if (!s_iwl_dev.initialized || !s_iwl_dev.firmware_alive || !s_iwl_dev.mvm_initialized) {
+        return 0;
+    }
+
+    if (s_last_err_intr & (CSR_INT_BIT_HW_ERR | CSR_INT_BIT_SW_ERR)) {
+        s_is_associated = false;
+        s_sta_active = false;
+        s_binding_active = false;
+        s_mac_active = false;
         return 0;
     }
 
@@ -1804,10 +1814,6 @@ int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beaco
 
     /* 6. Schedule Session Protection Time Event (1500 TU) so radio stays on-channel for Auth/Assoc/EAPOL */
     (void)iwl_protect_session(1500, 100);
-
-    serial_puts("[IWL] Prepared MVM auth context on channel ");
-    serial_print_dec(s_iwl_dev.current_channel);
-    serial_puts("\n");
     return 0;
 #else
     (void)channel;
@@ -1842,9 +1848,6 @@ int iwlwifi_set_associated(uint16_t assoc_id, uint16_t beacon_interval) {
     (void)iwl_send_lq_cmd(s_iwl_dev.current_channel);
 
     s_is_associated = true;
-    serial_puts("[IWL] MVM associated (AID=");
-    serial_print_dec(s_assoc_aid);
-    serial_puts(")\n");
     return 0;
 #else
     (void)assoc_id;
@@ -1963,21 +1966,21 @@ int iwlwifi_start_scan(const char *ssid) {
         return -1;
     }
 
-    /* Poll RX ring across multi-channel dwell window up to 1800ms or until SCAN_COMPLETE */
-    for (int ms = 0; ms < 1800; ms++) {
-        uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
-        iwl_drain_rx_ring();
-        bool done = s_scan_complete;
-        spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
-        if (done) break;
-        iwl_delay_ms(1);
-    }
     return 0;
+}
+
+bool iwlwifi_is_scan_complete(void) {
+    return s_scan_complete;
+}
 #else
     (void)ssid;
     return 0;
-#endif
 }
+
+bool iwlwifi_is_scan_complete(void) {
+    return true;
+}
+#endif
 
 bool iwlwifi_map_mmio(void) {
 #ifndef IWLWIFI_HOST_TEST

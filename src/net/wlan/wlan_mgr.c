@@ -124,23 +124,34 @@ int wlan_mgr_scan(wifi_scan_result_t *out_result) {
     if (!out_result) return -1;
     wlan_ensure_hardware();
 
-    /* Trigger hardware multi-channel scan if supported by driver */
-    if (s_hw_ops && s_hw_ops->start_scan) {
-        s_hw_ops->start_scan("");
+    if (out_result->max_entries == 0) {
+        /* Asynchronously trigger multi-channel scan */
+        uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
+        if (s_wlan_state == WLAN_STATE_IDLE || s_wlan_state == WLAN_STATE_FAILED) {
+            s_wlan_state = WLAN_STATE_SCANNING;
+        }
+        spin_unlock_irqrestore(&s_wlan_lock, irq);
+
+        if (s_hw_ops && s_hw_ops->start_scan) {
+            s_hw_ops->start_scan("");
+        }
+        if (s_hw_ops && s_hw_ops->send_raw_80211) {
+            uint8_t probe_buf[128];
+            size_t probe_len = net_80211_build_probe_req(probe_buf, sizeof(probe_buf), s_local_mac, "");
+            if (probe_len > 0) {
+                s_hw_ops->send_raw_80211(probe_buf, probe_len);
+            }
+        }
+        out_result->count = 0;
+        return 0;
     }
 
     /* Drain pending hardware RX packets into scan table before acquiring lock */
     wlan_drain_hw_rx();
 
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
-
-    /* Send Probe Request if driver operational */
-    if (s_hw_ops && s_hw_ops->send_raw_80211) {
-        uint8_t probe_buf[128];
-        size_t probe_len = net_80211_build_probe_req(probe_buf, sizeof(probe_buf), s_local_mac, "");
-        if (probe_len > 0) {
-            s_hw_ops->send_raw_80211(probe_buf, probe_len);
-        }
+    if (s_wlan_state == WLAN_STATE_SCANNING) {
+        s_wlan_state = WLAN_STATE_IDLE;
     }
 
     /* Populate entries from scan table */
@@ -260,14 +271,15 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     /* On real hardware, actively pump the RX ring inside the active Time Event window
      * so Auth Resp -> Assoc Req -> Assoc Resp -> 4-Way EAPOL Handshake complete in real time */
     if (s_hw_ops && s_hw_ops->prepare_auth && s_hw_ops->poll_raw_80211) {
-        for (uint32_t step = 0; step < 600000u; step++) {
+        for (uint32_t step = 0; step < 200000u; step++) {
             wlan_drain_hw_rx();
 
             irq = spin_lock_irqsave(&s_wlan_lock);
             wlan_state_t st = s_wlan_state;
             bool done = (st == WLAN_STATE_CONNECTED && wpa2_sm_is_authorized(&s_wpa2_sm)) ||
+                        (st == WLAN_STATE_FAILED) ||
                         (st == WLAN_STATE_IDLE);
-            if (!done && (step == 150000u || step == 300000u || step == 450000u)) {
+            if (!done && (step == 50000u || step == 100000u || step == 150000u)) {
                 /* Retry Auth Req or Assoc Req if response was dropped on air */
                 if (st == WLAN_STATE_AUTHENTICATING && s_hw_ops->send_raw_80211) {
                     uint8_t auth_buf[64];
@@ -283,9 +295,29 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
             spin_unlock_irqrestore(&s_wlan_lock, irq);
 
             if (done) break;
-            for (int p = 0; p < 500; p++) {
+            for (int p = 0; p < 200; p++) {
                 __asm__ volatile("pause" ::: "memory");
             }
+        }
+
+        uint64_t final_irq = spin_lock_irqsave(&s_wlan_lock);
+        wlan_state_t final_st = s_wlan_state;
+        if (final_st == WLAN_STATE_AUTHENTICATING || final_st == WLAN_STATE_ASSOCIATING ||
+            final_st == WLAN_STATE_4WAY_HANDSHAKE) {
+            s_wlan_state = WLAN_STATE_FAILED;
+            s_wlan_net_dev.flags &= ~NET_RUNNING;
+            memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+            final_st = WLAN_STATE_FAILED;
+            spin_unlock_irqrestore(&s_wlan_lock, final_irq);
+            if (s_hw_ops && s_hw_ops->deauth) {
+                s_hw_ops->deauth();
+            }
+        } else {
+            spin_unlock_irqrestore(&s_wlan_lock, final_irq);
+        }
+
+        if (final_st == WLAN_STATE_FAILED) {
+            return -3;
         }
     }
 
@@ -321,6 +353,12 @@ int wlan_mgr_status(wifi_status_t *out_status) {
     wlan_ensure_hardware();
     wlan_drain_hw_rx();
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
+
+    if (s_wlan_state == WLAN_STATE_SCANNING) {
+        if (s_hw_ops && s_hw_ops->is_scan_complete && s_hw_ops->is_scan_complete()) {
+            s_wlan_state = WLAN_STATE_IDLE;
+        }
+    }
 
     memset(out_status, 0, sizeof(*out_status));
     out_status->state = (uint32_t)s_wlan_state;
@@ -400,8 +438,19 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
             }
         } else if (subtype == IEEE80211_SUBTYPE_DEAUTH || subtype == IEEE80211_SUBTYPE_DISASSOC) {
             if (memcmp(hdr->addr2, s_target_bssid, 6) == 0) {
-                s_wlan_state = WLAN_STATE_IDLE;
+                bool was_connecting = (s_wlan_state == WLAN_STATE_AUTHENTICATING ||
+                                       s_wlan_state == WLAN_STATE_ASSOCIATING ||
+                                       s_wlan_state == WLAN_STATE_4WAY_HANDSHAKE);
+                s_wlan_state = was_connecting ? WLAN_STATE_FAILED : WLAN_STATE_IDLE;
                 s_wlan_net_dev.flags &= ~NET_RUNNING;
+                memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+                memset(s_target_pmk, 0, sizeof(s_target_pmk));
+                s_gtk_rx_pn = 0;
+                spin_unlock_irqrestore(&s_wlan_lock, irq);
+                if (s_hw_ops && s_hw_ops->deauth) {
+                    s_hw_ops->deauth();
+                }
+                return 0;
             }
         }
         spin_unlock_irqrestore(&s_wlan_lock, irq);
@@ -446,6 +495,18 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     if (tx_len > 0 && s_hw_ops && s_hw_ops->send_raw_80211) {
                         s_hw_ops->send_raw_80211(tx_wlan, (size_t)tx_len);
                     }
+                } else if (resp_len < 0 && s_wpa2_sm.handshake_step >= 2) {
+                    /* EAPOL rejection (e.g. Message 3 MIC failure) -> fail authentication cleanly */
+                    s_wlan_state = WLAN_STATE_FAILED;
+                    s_wlan_net_dev.flags &= ~NET_RUNNING;
+                    memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+                    memset(s_target_pmk, 0, sizeof(s_target_pmk));
+                    s_gtk_rx_pn = 0;
+                    spin_unlock_irqrestore(&s_wlan_lock, irq);
+                    if (s_hw_ops && s_hw_ops->deauth) {
+                        s_hw_ops->deauth();
+                    }
+                    return 0;
                 }
 
                 if (wpa2_sm_is_authorized(&s_wpa2_sm)) {
@@ -593,7 +654,7 @@ uint32_t wlan_link_state_abi(const net_dev_t *dev) {
     uint32_t abi_state = NET_IF_LINK_DOWN;
     if (s_wlan_state == WLAN_STATE_CONNECTED && wpa2_sm_is_authorized(&s_wpa2_sm)) {
         abi_state = NET_IF_LINK_ONLINE;
-    } else if (s_wlan_state != WLAN_STATE_IDLE) {
+    } else if (s_wlan_state != WLAN_STATE_IDLE && s_wlan_state != WLAN_STATE_FAILED) {
         abi_state = NET_IF_LINK_WAITING;
     }
     spin_unlock_irqrestore(&s_wlan_lock, irq);

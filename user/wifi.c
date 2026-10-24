@@ -60,14 +60,12 @@ static bool ensure_firmware_loaded(void) {
     /* Try compressed firmware */
     int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/lib/firmware/iwlwifi-8265-36.ucode.gz", 0, 0);
     if (fd >= 0) {
-        write_str(1, "[wifi] Loading Intel Wireless firmware (/lib/firmware/iwlwifi-8265-36.ucode.gz)...\n");
         s_fw_decomp_pos = 0;
         int gz_rc = gzip_decode_callbacks(fw_read_cb, fw_write_cb, (void *)(intptr_t)fd);
         WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
         if (gz_rc == 0 && s_fw_decomp_pos > 0) {
             long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_LOAD_FW, s_fw_decomp_buf, s_fw_decomp_pos);
             if (rc == 0) {
-                write_str(1, "[wifi] Microcode loaded successfully.\n");
                 s_fw_loaded = true;
                 return true;
             } else {
@@ -81,13 +79,11 @@ static bool ensure_firmware_loaded(void) {
     /* Fallback to uncompressed firmware */
     fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/lib/firmware/iwlwifi-8265-36.ucode", 0, 0);
     if (fd >= 0) {
-        write_str(1, "[wifi] Loading uncompressed firmware (/lib/firmware/iwlwifi-8265-36.ucode)...\n");
         long rd = WIFI_SYSCALL(SYS_READ, fd, s_fw_decomp_buf, sizeof(s_fw_decomp_buf));
         WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
         if (rd > 0) {
             long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_LOAD_FW, s_fw_decomp_buf, (size_t)rd);
             if (rc == 0) {
-                write_str(1, "[wifi] Microcode loaded successfully.\n");
                 s_fw_loaded = true;
                 return true;
             }
@@ -188,9 +184,25 @@ static const char *state_to_str(uint32_t st) {
 static int do_scan(void) {
     ensure_firmware_loaded();
 
-    /* Trigger probe and brief listen period for nearby AP beacons */
-    timespec_t ts = { .tv_sec = 0, .tv_nsec = 300000000 }; /* 300ms */
-    WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
+    /* 1. Asynchronously kick hardware multi-channel scan */
+    wifi_scan_result_t trigger_res = { .count = 0, .max_entries = 0 };
+    (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &trigger_res, sizeof(trigger_res));
+
+    /* 2. Show animated progress bar while hardware dwells across channels (1.2s) */
+    const char *bars[] = {
+        "Scanning [==        ]",
+        "Scanning [====      ]",
+        "Scanning [======    ]",
+        "Scanning [========  ]",
+        "Scanning [==========]",
+    };
+    for (int i = 0; i < 5; i++) {
+        write_str(1, "\r");
+        write_str(1, bars[i]);
+        timespec_t ts = { .tv_sec = 0, .tv_nsec = 240000000 }; /* 240ms * 5 = 1.2s */
+        WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
+    }
+    write_str(1, "\r                     \r"); /* Clear progress bar */
 
     wifi_scan_result_t res;
     res.count = 0;
@@ -198,16 +210,12 @@ static int do_scan(void) {
 
     long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &res, sizeof(res));
     if (rc != 0) {
-        write_str(2, "wifi: scan failed (error ");
-        size_t p = 0;
-        append_int(s_out, &p, (int)rc);
-        s_out[p++] = ')'; s_out[p++] = '\n'; s_out[p] = '\0';
-        write_str(2, s_out);
+        write_str(2, "wifi: scan failed\n");
         return 1;
     }
 
     if (res.count == 0) {
-        write_str(1, "No wireless networks found in cache (probe sent).\n");
+        write_str(1, "No wireless networks found in range.\n");
         return 0;
     }
 
@@ -276,6 +284,16 @@ static int do_status(void) {
     return 0;
 }
 
+static int do_disconnect(void) {
+    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_DISCONNECT, 0, 0);
+    if (rc != 0) {
+        write_str(2, "wifi: disconnect failed\n");
+        return 1;
+    }
+    write_str(1, "Disconnected from wireless network.\n");
+    return 0;
+}
+
 static int do_connect(const char *ssid, const char *passphrase) {
     if (!ssid || !passphrase) {
         write_str(2, "wifi connect: requires <SSID> and <passphrase>\n");
@@ -303,7 +321,7 @@ static int do_connect(const char *ssid, const char *passphrase) {
 
     long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_CONNECT, &req, sizeof(req));
     if (rc != 0) {
-        write_str(2, "wifi: connection request failed\n");
+        write_str(2, "wifi: connection failed (authentication rejected or invalid passphrase)\n");
         return 1;
     }
 
@@ -311,6 +329,10 @@ static int do_connect(const char *ssid, const char *passphrase) {
     wifi_status_t st;
     for (int wait = 0; wait < 60; wait++) {
         if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
+            if (st.state == WIFI_STATUS_FAILED) {
+                write_str(2, "wifi: connection failed (authentication rejected or invalid passphrase)\n");
+                return 1;
+            }
             if (st.link_online && st.state == WIFI_STATUS_CONNECTED) {
                 write_str(1, "Connected to \"");
                 write_str(1, ssid);
@@ -341,23 +363,246 @@ static int do_connect(const char *ssid, const char *passphrase) {
     }
 
     if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
+        if (st.state == WIFI_STATUS_FAILED || st.state == WIFI_STATUS_IDLE) {
+            write_str(2, "wifi: connection failed (authentication rejected or timeout)\n");
+            (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_DISCONNECT, 0, 0);
+            return 1;
+        }
         write_str(1, "Connection in progress (current stage: ");
         write_str(1, state_to_str(st.state));
         write_str(1, "). Check 'wifi status'.\n");
     } else {
-        write_str(1, "Association started in background. Check status with 'wifi status'.\n");
+        write_str(2, "wifi: connection timed out\n");
+        (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_DISCONNECT, 0, 0);
+        return 1;
     }
     return 0;
 }
 
-static int do_disconnect(void) {
-    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_DISCONNECT, 0, 0);
-    if (rc != 0) {
-        write_str(2, "wifi: disconnect failed\n");
+#define MAX_SAVED_NETWORKS 8
+
+typedef struct {
+    char ssid[WIFI_SSID_MAX_LEN + 1];
+    char psk[WIFI_PASSPHRASE_MAX_LEN + 1];
+} saved_net_t;
+
+static saved_net_t s_saved_nets[MAX_SAVED_NETWORKS];
+static int         s_saved_count = 0;
+
+static int load_saved_networks(void) {
+    s_saved_count = 0;
+    int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0, 0);
+    if (fd < 0) {
+        fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wifi.conf", 0, 0);
+    }
+    if (fd < 0) return 0;
+
+    char buf[1024];
+    long rd = WIFI_SYSCALL(SYS_READ, fd, buf, sizeof(buf) - 1);
+    WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+    if (rd <= 0) return 0;
+    buf[rd] = '\0';
+
+    char *line = buf;
+    char cur_ssid[WIFI_SSID_MAX_LEN + 1] = {0};
+
+    while (*line && s_saved_count < MAX_SAVED_NETWORKS) {
+        while (*line == ' ' || *line == '\t' || *line == '\r' || *line == '\n') line++;
+        if (!*line) break;
+        char *line_end = line;
+        while (*line_end && *line_end != '\n' && *line_end != '\r') line_end++;
+        char saved_ch = *line_end;
+        *line_end = '\0';
+
+        if (*line != '#') {
+            if (line[0] == 's' && line[1] == 's' && line[2] == 'i' && line[3] == 'd' && line[4] == '=') {
+                const char *val = line + 5;
+                if (*val == '"') {
+                    val++;
+                    size_t k = 0;
+                    while (*val && *val != '"' && k < WIFI_SSID_MAX_LEN) cur_ssid[k++] = *val++;
+                    cur_ssid[k] = '\0';
+                } else {
+                    size_t k = 0;
+                    while (*val && *val != ' ' && *val != '\t' && k < WIFI_SSID_MAX_LEN) cur_ssid[k++] = *val++;
+                    cur_ssid[k] = '\0';
+                }
+            } else if (line[0] == 'p' && line[1] == 's' && line[2] == 'k' && line[3] == '=') {
+                const char *val = line + 4;
+                char cur_psk[WIFI_PASSPHRASE_MAX_LEN + 1] = {0};
+                if (*val == '"') {
+                    val++;
+                    size_t k = 0;
+                    while (*val && *val != '"' && k < WIFI_PASSPHRASE_MAX_LEN) cur_psk[k++] = *val++;
+                    cur_psk[k] = '\0';
+                } else {
+                    size_t k = 0;
+                    while (*val && *val != ' ' && *val != '\t' && k < WIFI_PASSPHRASE_MAX_LEN) cur_psk[k++] = *val++;
+                    cur_psk[k] = '\0';
+                }
+                if (cur_ssid[0] && cur_psk[0] && s_saved_count < MAX_SAVED_NETWORKS) {
+                    size_t i = 0;
+                    while (cur_ssid[i] && i < WIFI_SSID_MAX_LEN) {
+                        s_saved_nets[s_saved_count].ssid[i] = cur_ssid[i];
+                        i++;
+                    }
+                    s_saved_nets[s_saved_count].ssid[i] = '\0';
+
+                    size_t j = 0;
+                    while (cur_psk[j] && j < WIFI_PASSPHRASE_MAX_LEN) {
+                        s_saved_nets[s_saved_count].psk[j] = cur_psk[j];
+                        j++;
+                    }
+                    s_saved_nets[s_saved_count].psk[j] = '\0';
+                    s_saved_count++;
+                    cur_ssid[0] = '\0';
+                }
+            } else if (line[0] == 'n' && line[1] == 'e' && line[2] == 't' && line[3] == 'w' &&
+                       line[4] == 'o' && line[5] == 'r' && line[6] == 'k' && line[7] == '=') {
+                /* Format: network=SSID:PSK */
+                const char *p = line + 8;
+                char s_buf[WIFI_SSID_MAX_LEN + 1] = {0};
+                char p_buf[WIFI_PASSPHRASE_MAX_LEN + 1] = {0};
+                size_t k = 0;
+                while (*p && *p != ':' && k < WIFI_SSID_MAX_LEN) s_buf[k++] = *p++;
+                s_buf[k] = '\0';
+                if (*p == ':') p++;
+                size_t m = 0;
+                while (*p && m < WIFI_PASSPHRASE_MAX_LEN) p_buf[m++] = *p++;
+                p_buf[m] = '\0';
+                if (s_buf[0] && p_buf[0] && s_saved_count < MAX_SAVED_NETWORKS) {
+                    for (size_t x = 0; x <= k; x++) s_saved_nets[s_saved_count].ssid[x] = s_buf[x];
+                    for (size_t x = 0; x <= m; x++) s_saved_nets[s_saved_count].psk[x] = p_buf[x];
+                    s_saved_count++;
+                }
+            }
+        }
+
+        if (saved_ch == '\0') break;
+        line = line_end + 1;
+    }
+
+    return s_saved_count;
+}
+
+static int do_save(const char *ssid, const char *passphrase) {
+    if (!ssid || !passphrase) {
+        write_str(2, "Usage: wifi save <SSID> <passphrase>\n");
         return 1;
     }
-    write_str(1, "Disconnected from wireless network.\n");
-    return 0;
+    size_t slen = mystrlen(ssid);
+    size_t plen = mystrlen(passphrase);
+    if (slen == 0 || slen > WIFI_SSID_MAX_LEN || plen < 8 || plen > WIFI_PASSPHRASE_MAX_LEN) {
+        write_str(2, "wifi save: invalid SSID or passphrase length (8-63 chars)\n");
+        return 1;
+    }
+
+    (void)WIFI_SYSCALL(SYS_MKDIR, (uintptr_t)"/etc/network", 0755, 0);
+
+    /* Read existing file or create new */
+    char content[1024];
+    size_t pos = 0;
+
+    int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0, 0);
+    if (fd >= 0) {
+        long rd = WIFI_SYSCALL(SYS_READ, fd, content, sizeof(content) - 256);
+        WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+        if (rd > 0) pos = (size_t)rd;
+    } else {
+        const char *hdr = "# /etc/network/wlan.conf - FortressOS Wireless Configuration\n";
+        while (*hdr) content[pos++] = *hdr++;
+    }
+
+    if (pos > 0 && content[pos - 1] != '\n') content[pos++] = '\n';
+
+    /* Append network=SSID:PSK */
+    const char *pfx = "network=";
+    while (*pfx) content[pos++] = *pfx++;
+    for (size_t i = 0; i < slen; i++) content[pos++] = ssid[i];
+    content[pos++] = ':';
+    for (size_t i = 0; i < plen; i++) content[pos++] = passphrase[i];
+    content[pos++] = '\n';
+    content[pos] = '\0';
+
+    /* Write to /etc/network/wlan.conf using O_WRONLY | O_CREAT | O_TRUNC (0x241) */
+    fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0x241, 0644);
+    if (fd < 0) {
+        write_str(2, "wifi save: failed to open /etc/network/wlan.conf for writing\n");
+        return 1;
+    }
+    long wr = WIFI_SYSCALL(SYS_WRITE, fd, content, pos);
+    WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+
+    if (wr > 0) {
+        write_str(1, "Saved wireless network \"");
+        write_str(1, ssid);
+        write_str(1, "\" to /etc/network/wlan.conf\n");
+        return 0;
+    } else {
+        write_str(2, "wifi save: write error\n");
+        return 1;
+    }
+}
+
+static int do_auto(void) {
+    if (!ensure_firmware_loaded()) {
+        return 0;
+    }
+
+    int count = load_saved_networks();
+    if (count <= 0) {
+        return 0; /* No saved networks configured */
+    }
+
+    /* Perform scan to see which saved networks are in range */
+    wifi_scan_result_t res;
+    res.count = 0;
+    res.max_entries = WIFI_MAX_SCAN_ENTRIES;
+
+    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &res, sizeof(res));
+    if (rc != 0 || res.count == 0) {
+        /* Probe sent; sleep briefly and re-query */
+        timespec_t ts = { .tv_sec = 0, .tv_nsec = 500000000 }; /* 500ms */
+        WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
+        rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &res, sizeof(res));
+    }
+
+    if (rc != 0 || res.count == 0) {
+        write_str(1, "[wifi] Auto-connect: no networks detected in range.\n");
+        return 0;
+    }
+
+    /* Find visible saved network with highest RSSI */
+    int best_saved_idx = -1;
+    int8_t best_rssi = -128;
+
+    for (int s = 0; s < count; s++) {
+        for (uint32_t v = 0; v < res.count; v++) {
+            if (streq(s_saved_nets[s].ssid, res.entries[v].ssid)) {
+                if (res.entries[v].rssi > best_rssi) {
+                    best_rssi = res.entries[v].rssi;
+                    best_saved_idx = s;
+                }
+            }
+        }
+    }
+
+    if (best_saved_idx >= 0) {
+        write_str(1, "[wifi] Auto-connecting to saved network \"");
+        write_str(1, s_saved_nets[best_saved_idx].ssid);
+        write_str(1, "\" (signal: ");
+        size_t p = 0;
+        append_int(s_out, &p, (int)best_rssi);
+        s_out[p] = '\0';
+        write_str(1, s_out);
+        write_str(1, " dBm)...\n");
+
+        return do_connect(s_saved_nets[best_saved_idx].ssid,
+                          s_saved_nets[best_saved_idx].psk);
+    } else {
+        write_str(1, "[wifi] Auto-connect: none of the saved networks are in range.\n");
+        return 0;
+    }
 }
 
 int wifi_main(int argc, char **argv) {
@@ -366,6 +611,8 @@ int wifi_main(int argc, char **argv) {
         write_str(1, "Commands:\n");
         write_str(1, "  scan                  Scan for nearby wireless networks\n");
         write_str(1, "  connect <SSID> <PSK>  Connect to WPA2-PSK network\n");
+        write_str(1, "  save <SSID> <PSK>     Save network credentials to /etc/network/wlan.conf\n");
+        write_str(1, "  auto                  Auto-connect to best saved wireless network\n");
         write_str(1, "  disconnect            Disconnect from wireless network\n");
         write_str(1, "  status                Display wireless connection status\n");
         return 1;
@@ -379,6 +626,14 @@ int wifi_main(int argc, char **argv) {
         return ensure_firmware_loaded() ? 0 : 1;
     } else if (streq(argv[1], "disconnect")) {
         return do_disconnect();
+    } else if (streq(argv[1], "auto")) {
+        return do_auto();
+    } else if (streq(argv[1], "save")) {
+        if (argc < 4) {
+            write_str(2, "Usage: wifi save <SSID> <passphrase>\n");
+            return 1;
+        }
+        return do_save(argv[2], argv[3]);
     } else if (streq(argv[1], "connect")) {
         if (argc < 4) {
             write_str(2, "Usage: wifi connect <SSID> <passphrase>\n");
