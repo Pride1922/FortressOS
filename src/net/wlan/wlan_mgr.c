@@ -128,7 +128,8 @@ net_dev_t *wlan_get_net_device(void) {
 static void wlan_drain_hw_rx(void) {
     if (s_hw_ops && s_hw_ops->poll_raw_80211) {
         pbuf_t *p;
-        while ((p = s_hw_ops->poll_raw_80211()) != NULL) {
+        int budget = 64;
+        while (budget-- > 0 && (p = s_hw_ops->poll_raw_80211()) != NULL) {
             int8_t rssi = (p->flags & IWL_PBUF_META_VALID) ? IWL_PBUF_GET_RSSI(p->flags) : -60;
             wlan_mgr_rx_raw_80211(p->payload, p->length, rssi);
             if (s_hw_ops->recycle_raw_80211) {
@@ -613,10 +614,11 @@ void wlan_recycle_rx(net_dev_t *dev, pbuf_t *packet) {
 }
 
 bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
-    /* 1. Poll raw packets from hardware driver */
+    /* 1. Poll raw packets from hardware driver with bounded budget (up to 64 packets per tick) */
     if (s_hw_ops && s_hw_ops->poll_raw_80211) {
         pbuf_t *p;
-        while ((p = s_hw_ops->poll_raw_80211()) != NULL) {
+        int budget = 64;
+        while (budget-- > 0 && (p = s_hw_ops->poll_raw_80211()) != NULL) {
             int8_t rssi = (p->flags & IWL_PBUF_META_VALID) ? IWL_PBUF_GET_RSSI(p->flags) : -60;
             wlan_mgr_rx_raw_80211(p->payload, p->length, rssi);
             if (s_hw_ops->recycle_raw_80211) {

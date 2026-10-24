@@ -1252,6 +1252,7 @@ static bool iwl_send_add_sta_cmd(bool update, uint16_t assoc_id) {
     cmd.tid_disable_tx    = 0xFFFFu;
     cmd.station_flags_msk = (3u << 6) | (3u << 8); /* FAT_EN_MSK | MIMO_EN_MSK */
     if (!iwl_send_cmd_pdu(IWL_HCMD_ADD_STA, &cmd, sizeof(cmd), true)) {
+        serial_puts("[IWL] ADD_STA HCMD rejected or timeout\n");
         return false;
     }
     uint32_t status = *(const uint32_t *)s_cmd_resp_buf;
@@ -1732,6 +1733,12 @@ bool iwlwifi_load_firmware(const void *fw_data, size_t fw_len) {
         serial_puts("[IWL] WARN: iwl_config_umac_scan failed\n");
     }
 
+    /* Enable default management/data queues 5..8 (IWM_TID_NON_QOS = 0) */
+    static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
+    for (uint8_t ac = 0; ac < 4; ac++) {
+        (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 0);
+    }
+
     /* Disable hardware beacon filtering so all beacons reach the host */
     uint8_t bf_cmd[44] = {0};
     (void)iwl_send_cmd_pdu(IWL_HCMD_BEACON_FILTERING, bf_cmd, sizeof(bf_cmd), true);
@@ -1862,20 +1869,20 @@ int iwlwifi_prepare_auth(uint8_t channel, const uint8_t bssid[6], uint16_t beaco
         serial_puts("[IWL] WARN: prepare_auth BINDING_CONTEXT add failed\n");
     }
 
-    /* 4. Add Station 0 (Target AP BSSID) on DQA queues 5..8 */
+    /* 4. Enable DQA queues 5..8 before adding Station 0 with tfd_queue_msk */
+    static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
+    for (uint8_t ac = 0; ac < 4; ac++) {
+        (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 0);
+    }
+
+    /* 5. Add Station 0 (Target AP BSSID) on DQA queues 5..8 */
     if (iwl_send_add_sta_cmd(false, 0)) {
         s_sta_active = true;
     } else {
         serial_puts("[IWL] WARN: prepare_auth ADD_STA failed\n");
     }
 
-    /* Bind DQA queues 5..8 to Station 0 now that Station 0 exists in firmware */
-    static const uint8_t ac_to_fifo[4] = { 1, 0, 2, 3 };
-    for (uint8_t ac = 0; ac < 4; ac++) {
-        (void)iwl_enable_txq(IWL_STATION_ID, (uint8_t)(5u + ac), ac_to_fifo[ac], 0);
-    }
-
-    /* 5. Configure Link Quality rate table for Station 0 */
+    /* 6. Configure Link Quality rate table for Station 0 */
     (void)iwl_send_lq_cmd(s_iwl_dev.current_channel);
 
     /* 6. Schedule Session Protection Time Event (1500 TU) so radio stays on-channel for Auth/Assoc/EAPOL */
@@ -2250,7 +2257,9 @@ pbuf_t *iwlwifi_poll_raw(void) {
     uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
 
 #ifndef IWLWIFI_HOST_TEST
-    iwl_drain_rx_ring();
+    if (s_iwl_dev.rx_head == s_iwl_dev.rx_tail) {
+        iwl_drain_rx_ring();
+    }
 #endif
 
     if (s_iwl_dev.rx_head == s_iwl_dev.rx_tail) {
