@@ -173,14 +173,22 @@ FortressOS partitions system utilities into standard user executables (`/bin`) a
   is covered by `scripts/test_shell_host.py` under ASan/UBSan (2026-10-17).
 
 ### Administrative Tools (`/sbin`)
-The following 8 tools are located in `/sbin/` on the live initramfs image:
+The following 9 tools are located in `/sbin/` on the live initramfs image:
 - `ifconfig`: Network interface status, addressing, and packet counters.
 - `ifup`: Network interface addressing and configuration (static and file-based).
+- `dhcpc`: Dynamic Host Configuration Protocol daemon (RFC 2131 renewal and carrier handoff).
 - `reboot`: Clean shutdown and system reboot.
 - `shutdown` / `poweroff`: Clean shutdown and ACPI poweroff.
 - `useradd`: Persistent account provisioning and home directory creation.
 - `disk`: Storage block device and filesystem usage tool.
 - `lockstat`: Kernel spinlock contention and hold-time diagnostic monitor.
+
+### Networking & Wireless Tools (`/bin`)
+- `wifi`: IEEE 802.11 wireless control CLI (`scan`, `list`, `connect`, `save`, `static`, `auto`, `disconnect`, `status`).
+- `ping`: ICMP echo probe and RTT measurement.
+- `nslookup`: Domain name resolution client.
+- `nc`: Netcat TCP stream client and listener.
+- `wget` / `download`: HTTP/HTTPS client with TLS 1.2 BearSSL engine.
 
 ### Privilege Elevation Resolution (`/bin/sudo`)
 When a bare (non-path) command is executed via `/bin/sudo <cmd>`:
