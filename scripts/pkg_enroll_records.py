@@ -35,10 +35,11 @@ def header(domain,size=1024,version=1):
 def signed(body,rolekeys):
     return bytes(body)+b''.join(i+s for i,s in sorted((H(PUB(k)),k.sign(bytes(body))) for k in rolekeys[:2]))
 
-def build(image,out,seed_roles,kernel,bootstrap,now=1792843200,artifact=None):
+def build(image,out,seed_roles,kernel,bootstrap,now=1792843200,artifact=None,root_version=3,catalog_revision=7):
     """Prepare records only. Does not publish selector or mutate image."""
     out=pathlib.Path(out);out.mkdir(mode=0o700)
     if len(kernel)!=32 or len(bootstrap)!=32 or not any(kernel) or not any(bootstrap):raise ValueError('measurement hashes required')
+    if not 1<=root_version<2**64-1 or not 1<=catalog_revision<2**64-1:raise ValueError('bounded trust versions required')
     rolekeys=[keys(seed_roles[role]) for role in ('selector','enrollment','catalog')]
     if len({PUB(k) for group in rolekeys for k in group})!=9:raise ValueError('disjoint TEST roles required')
     witness,audit=inventory(image);rows=[witness[32+i*128:32+(i+1)*128] for i in range(20)]
@@ -46,14 +47,14 @@ def build(image,out,seed_roles,kernel,bootstrap,now=1792843200,artifact=None):
          bytes([4])*16,uuid.UUID('72345678-1234-4567-89ab-123456789abc').bytes]
     epoch=5;profile=H(b'Fortress bounded mount profile v1');account_profile=H(b'Fortress TEST root-only accounts v1')
     platform=bytes(range(32));base=2
-    root={'profile':'fortress-pkg2-test-only-v1','version':3,'repository':ids[3].hex(),
+    root={'profile':'fortress-pkg2-test-only-v1','version':root_version,'repository':ids[3].hex(),
         'roles':{name:{'threshold':2,'keys':[PUB(k).hex() for k in group]} for name,group in zip(('selector','enrollment','catalog'),rolekeys)}}
     root_bytes=json.dumps(root,sort_keys=True,separators=(',',':')).encode()
     # Catalog authorizes a future demo artifact; the genesis inventory is empty.
     if artifact is not None and not 128<=len(artifact)<=8192:raise ValueError('bounded TEST artifact required')
     entry=bytes([4])+b'demo'.ljust(32,b'\0')+struct.pack('<QQ',1,len(artifact) if artifact is not None else 128)+(H(artifact) if artifact is not None else H(b'TEST future demo artifact'))
-    catalog=signed(struct.pack('<16s16sQQQQHHI',b'FORT-PKG-CAT-v1\0',ids[3],3,7,now-2,now+86400,1,2,0)+entry,rolekeys[2])
-    trust=header('FORT-PKG-TR-v1');struct.pack_into('<QQQ',trust,24,3,7,now-1)
+    catalog=signed(struct.pack('<16s16sQQQQHHI',b'FORT-PKG-CAT-v1\0',ids[3],root_version,catalog_revision,now-2,now+86400,1,2,0)+entry,rolekeys[2])
+    trust=header('FORT-PKG-TR-v1');struct.pack_into('<QQQ',trust,24,root_version,catalog_revision,now-1)
     trust[48:64]=ids[3];trust[64:96]=H(catalog);struct.pack_into('<I',trust,96,len(catalog));trust[256:256+len(catalog)]=catalog;trust=sealed(trust)
     state=header('FORT-PKG-ST-v1');struct.pack_into('<Q',state,24,1);state[32:48]=ids[3];state[48:80]=H(trust);state=sealed(state)
     marker=header('FORT-PKG-ENR-v1',512);struct.pack_into('<Q',marker,24,epoch);marker[32:112]=b''.join(ids);marker[112:144]=profile
@@ -64,7 +65,7 @@ def build(image,out,seed_roles,kernel,bootstrap,now=1792843200,artifact=None):
     grant=header('FORT-PKG-GRT-v1');struct.pack_into('<QQ',grant,24,1,epoch)
     grant[56:104]=ids[4]+ids[0]+ids[3];grant[104:136]=profile;grant[168:232]=H(state)*2
     grant[232:264]=H(trust);grant[264:296]=H(owners);struct.pack_into('<I',grant,344,1)
-    grant[352:360]=rows[3][4:12];struct.pack_into('<4Q',grant,360,1,1,3,7);grant=sealed(grant)
+    grant[352:360]=rows[3][4:12];struct.pack_into('<4Q',grant,360,1,1,root_version,catalog_revision);grant=sealed(grant)
     origin=header('FORT-ACC-ORG-v1');struct.pack_into('<QQQ',origin,24,1,epoch,1)
     origin[48:80]=ids[4]+ids[0];origin[80:112]=account_profile;origin=sealed(origin)
     account=header('FORT-ACC-GEN-v1',version=3);struct.pack_into('<QQQ',account,24,1,1,epoch)
@@ -81,14 +82,14 @@ def build(image,out,seed_roles,kernel,bootstrap,now=1792843200,artifact=None):
     for name,data in zip(NAMES,parts):p=out/name;p.write_bytes(data);p.chmod(0o600)
     spec={'profile':'fortress-pkg2-test-only-v1','epoch':epoch,'issued':now-1,'expires':now+86400,
           'uuid':[x.hex() for x in ids],'resource_profile':profile.hex(),'platform':platform.hex(),
-          'kernel':kernel.hex(),'bootstrap':bootstrap.hex(),'root_hash':H(root_bytes).hex(),'root_version':3,
-          'catalog_hash':H(catalog).hex(),'catalog_revision':7,'base_version':base,
+          'kernel':kernel.hex(),'bootstrap':bootstrap.hex(),'root_hash':H(root_bytes).hex(),'root_version':root_version,
+          'catalog_hash':H(catalog).hex(),'catalog_revision':catalog_revision,'base_version':base,
           'selector_id':H(b'fresh TEST enrollment selector')[:16].hex(),
           'records':{name:str(out/name) for name in NAMES}}
     sp=out/'spec.json';sp.write_text(json.dumps(spec,indent=2)+'\n')
     selector,bundle,producer_audit=prepare(sp,seed_roles['selector'][:2])
     policy=b''.join(b''.join(PUB(k) for k in group).ljust(256,b'\0') for group in rolekeys)
-    policy+=struct.pack('<6I',3,2,3,2,3,2)+b''.join(ids)+profile+platform+kernel+bootstrap+H(root_bytes)+H(catalog)+H(selector)+struct.pack('<5Q',now,epoch,3,7,base)
+    policy+=struct.pack('<6I',3,2,3,2,3,2)+b''.join(ids)+profile+platform+kernel+bootstrap+H(root_bytes)+H(catalog)+H(selector)+struct.pack('<5Q',now,epoch,root_version,catalog_revision,base)
     assert len(policy)==1136
     return dict(parts=parts,witness=witness,identities=audit,selector=selector,bundle=bundle,
                 policy=policy,audit=producer_audit,root_authority=root_bytes)

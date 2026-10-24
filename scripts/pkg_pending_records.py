@@ -20,7 +20,7 @@ def observation(image,path,role):
     assert blocks==(size+BS-1)//BS and struct.unpack_from('<I',raw,28)[0]==blocks*8
     return struct.pack('<8IQQ',role,ino,gen,mode&0o7777,uid,gid,links,count,size,blocks)+H(body[:size])+b''.join(ext).ljust(64,b'\0')
 
-def prepare(image,out,roles,kernel,bootstrap,phase=2,published=False,installed=False):
+def prepare(image,out,roles,kernel,bootstrap,phase=2,published=False,installed=False,root_version=3,catalog_revision=7):
     out.mkdir();inputs=out/'payloads';vectors(inputs);artifact=(inputs/'artifact.fpk').read_bytes();exe=(inputs/'executable.bin').read_bytes()
     commands=[f'write {inputs/"artifact.fpk"} /pkg/artifact.fpk','set_inode_field /pkg/artifact.fpk mode 0100600','set_inode_field /pkg/artifact.fpk generation 900']
     for role,path in PATHS.items():
@@ -30,12 +30,12 @@ def prepare(image,out,roles,kernel,bootstrap,phase=2,published=False,installed=F
         if role in (18,19):source.write_bytes(b'P'*1024)
         commands += [f'write {source} {path}',f'set_inode_field {path} mode {"0100755" if role==17 else "0100600"}',f'set_inode_field {path} generation {900+role}']
     script=out/'seed.commands';script.write_text('\n'.join(commands)+'\n');(out/'seed.log').write_text(command(['debugfs','-w','-f',str(script),str(image)]))
-    baseline=build(image,out/'records',roles,kernel,bootstrap,artifact=artifact)
+    baseline=build(image,out/'records',roles,kernel,bootstrap,artifact=artifact,root_version=root_version,catalog_revision=catalog_revision)
     parts=list(baseline['parts']);target=advance(baseline,artifact,exe)[0][6];txn=bytes([0xa1])*16
     plan=H(H(target)+H(artifact)+parts[2][104:136]);intent=header('FORT-PKG-PN-v1');struct.pack_into('<H',intent,22,1)
     intent[24:72]=txn+parts[2][56:72]+parts[2][88:104]
     intent[72:232]=H(parts[6])+H(target)+H(parts[7])+H(artifact)+plan
-    struct.pack_into('<7Q',intent,232,1,2,3,7,1792843200,len(artifact),1);intent[288]=4;intent[289:293]=b'demo';intent[328:360]=H(exe);struct.pack_into('<Q',intent,360,len(exe));intent=sealed(intent)
+    struct.pack_into('<7Q',intent,232,1,2,root_version,catalog_revision,1792843200,len(artifact),1);intent[288]=4;intent[289:293]=b'demo';intent[328:360]=H(exe);struct.pack_into('<Q',intent,360,len(exe));intent=sealed(intent)
     # Replace preallocated transient contents without changing maps.
     for role,body in ((18,target),(19,intent)):
         if role==19 and phase==1:continue
