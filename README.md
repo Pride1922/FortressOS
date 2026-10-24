@@ -51,8 +51,14 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 ### 🌐 Networking Stack
 - **Custom Stack:** From-scratch implementations of Ethernet II, ARP, IPv4, ICMP, UDP, and TCP (with RFC 1071 checksums and Reno congestion control).
 - **DNS & Network Configuration:** Native stub resolver, `/bin/nslookup` with UDP-to-TCP fallback, RFC 2131 DHCP client (`/sbin/dhcpc`), and consolidated configuration in `/etc/network/network.conf` and `/etc/network/resolv.conf`.
-- **Hardware Drivers:** Intel e1000, e1000e, and physical Intel I219-LM (autonomous PHY renegotiation, cold-plug and flap recovery).
+- **Hardware Drivers:** Intel e1000, e1000e, physical Intel I219-LM (autonomous PHY renegotiation, cold-plug and flap recovery), and Realtek RTL8153 USB 3.0 Gigabit Ethernet.
 - **Cross-Core Networking:** Application calls from any CPU route through the CPU-0 protocol owner. Phases 0–4 are complete through bounded Dell physical acceptance; throughput redesign remains deferred. See [network SMP evidence](docs/roadmap/network-smp-phase4.md).
+
+### 📶 Wireless & Wi-Fi Subsystem (802.11 / WPA2-PSK / iwlwifi)
+- **802.11 MAC Engine & Bridging:** Full IEEE 802.11 management frame parsing/generation, LLC/SNAP encapsulation/decapsulation bridging to standard Ethernet 802.3, and BSS scan table.
+- **WPA2-PSK 4-Way Handshake:** Hardware-accelerated and software fallback PBKDF2-HMAC-SHA1 (4096 rounds), IEEE 802.11i PRF-512 PTK derivation, NIST AES Key Wrap (RFC 3394), AES-128-CCMP frame encryption/decryption, and monotonic 48-bit Packet Number (PN) replay attack protection.
+- **Intel iwlwifi Driver:** Native PCI driver supporting Intel Dual Band Wireless-AC 8265 (Dell Latitude 5590) and Intel Wi-Fi 6E AX211 (Dell Latitude 5530), official Intel microcode loading (`iwlwifi-8265-36.ucode.gz`), and DTIM power management (10ms idle sleep windows).
+- **Architectural Transformation:** Non-blocking asynchronous connection state machine (zero kernel spinning), autonomous background frame retransmission & 6s fail-closed timeout, fast-path PMK caching (sub-millisecond reconnect), multi-BSSID best-signal selection, autonomous roaming ($\ge +15\text{ dBm}$ delta threshold), hardened root credential storage (`/etc/network/wlan.conf` mode 0600), and `/bin/wifi` CLI with animated scan progress bar. See the [Wireless guide](docs/subsystems/wifi.md).
 
 ### 🔒 TLS / HTTPS Engine
 - **BearSSL Platform Integration:** BearSSL 0.6 client profile under Gate G1 static budget: zero heap allocation, client state $\le 40$ KiB, stack frames $\le 1024$ bytes (with authorized 2400B RSA exception).
@@ -102,6 +108,7 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 | **Userland & Shell** | **COMPLETE** | Ring 3 shell, job control, pipelines, scripting, `/bin/nano`, `/bin/free`, stream tools. |
 | **Persistent Root & Installer** | **COMPLETE** | Phases 0–4 complete. Dell spare-drive install & persistent boot verified on bare metal. |
 | **Network SMP (CPU-0 Handoff)**| **COMPLETE through Phase 4** | Cross-core control, UDP/DNS, TCP streams/listeners, and ordinary unpinned children. Bounded Dell physical acceptance; Phase 5 throughput redesign deferred. Consolidated `/etc/network/network.conf` and `/etc/network/resolv.conf`. |
+| **Wireless & Wi-Fi (802.11 / WPA2-PSK / iwlwifi)** | **COMPLETE (Phases 0–4 + Transformation)** | IEEE 802.11 MAC engine, LLC/SNAP bridging, WPA2-PSK 4-way handshake, AES-128-CCMP, Intel AC 8265 & AX 211 driver, async non-blocking connect, multi-BSSID best-signal selection, autonomous roaming, PMK caching, DTIM power management, and `/etc/network/wlan.conf` mode 0600 root credential store. 16/16 host tests PASS. |
 | **SSH** | **COMPLETE through Phase 8** | Privilege-separated monitor/worker, PTY duplex bridge, OpenSSH client pubkey & password auth, BIOS/UEFI QEMU 100% PASS; MobaXterm laptop confirmed. |
 | **Watchtower Service Supervisor** | **COMPLETE (Phases 0–5)** | `/sbin/watchtower` supervisor, `/bin/service` CLI, dynamic discovery via `SYS_LIST_DIR`, pipe capture, and clean shutdown. |
 | **System Logging (Three Pillars)** | **COMPLETE (Phases 0–4)** | Boot snapshot (`/bin/boot-snapshot`), supervisor pipe capture with async gzip, `/bin/logger`, `/var/log/messages`, scheduled `/sbin/logrotate` via crond. |
@@ -109,7 +116,8 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 | **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, RFC 2131 background lease renewal daemon, RFC 1951/1952 gzip/gunzip. |
 | **Package Management (PKG-1)** | **IN PROGRESS** | Declarative package format, catalog parsing, SHA-256 validation, and Ring 3 CLI tooling. |
 
-### Recently Finished (2026-10-21)
+### Recently Finished (2026-10-24)
+- **Wireless Subsystem Architectural Transformation:** Non-blocking asynchronous Wi-Fi connection state machine with autonomous background progression, 6s fail-closed timeout, multi-BSSID best-signal auto-selection, autonomous background roaming ($\ge +15\text{ dBm}$ delta threshold), fast-path PMK caching (sub-millisecond instant reconnect), DTIM power management, hardened `/etc/network/wlan.conf` mode 0600 storage, zero-touch DHCP autoconfiguration, and animated scan progress bar.
 - **Network Resolver Consolidation:** Relocated persistent resolver configuration to `/etc/network/resolv.conf` alongside `/etc/network/network.conf`, with transparent fallback to `/etc/resolv.conf`.
 - **Live Media Writable `/etc` Filesystem (ETCFS):** In-memory mutable configuration tree with 16 MiB quota ceiling, COW TarFS backing, atomic replacement, and strict credential immutability.
 - **TLS / HTTPS Engine (Phases 0–5):** Complete BearSSL 0.6 platform integration under Gate G1 static memory bounds, 120 compiled root trust anchors in `/etc/ssl/certs/anchors.v1`, 16 deterministic adversarial gates, BadSSL live test suite, and `/bin/wget` HTTPS extension.

@@ -26,6 +26,8 @@ ext4 Hardening: [Atomic replace (EH-2)](ext4-atomic-replace.md), [Durability & h
 
 Service supervision, logging & packaging: [Watchtower lifecycle](watchtower-lifecycle.md), [Watchtower credentials](watchtower-credentials.md), and [Package manager (PKG-1)](pkg1.md).
 
+Wireless & networking: [Wi-Fi architectural transformation](wifi-transformation.md), [Runtime network configuration (NET-3)](net-config.md), and [Link recovery](net-link-recovery.md).
+
 Latest SMP environment evidence: [Dell benchmark results and decision](smpbench-dell-results.md).
 Next measurement build: [spawn and pipe writer startup diagnostics](smpbench-spawn-profile.md).
 Physical subphase findings: [Dell spawn and pipe startup results](smpbench-spawn-dell-results.md).
