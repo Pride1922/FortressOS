@@ -8,6 +8,7 @@
 #include "netconf.h"
 #include "signal_abi.h"
 #include "timeline_log.h"
+#include "wifi_abi.h"
 
 #ifndef NET_IF_LINK_UP
 #define NET_IF_LINK_UP NET_IF_LINK_ONLINE
@@ -142,11 +143,41 @@ static bool write_file(const char *path, const char *data, size_t len) {
     return off == len;
 }
 
+static const char *get_ifname(const uint8_t *mac) {
+#ifdef SYS_WIFI
+    uint8_t target_mac[6];
+    if (mac) {
+        for (int m = 0; m < 6; m++) target_mac[m] = mac[m];
+    } else {
+        netctl_ifget_t ifget;
+        for (size_t i = 0; i < sizeof(ifget); i++) ((uint8_t *)&ifget)[i] = 0;
+        ifget.struct_version = 1;
+        if (sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0) != 0) {
+            return "eth0";
+        }
+        for (int m = 0; m < 6; m++) target_mac[m] = ifget.mac[m];
+    }
+    wifi_status_t wst;
+    for (size_t i = 0; i < sizeof(wst); i++) ((uint8_t *)&wst)[i] = 0;
+    if (sys_call(SYS_WIFI, SYS_WIFI_CMD_STATUS, (uintptr_t)&wst, sizeof(wst), 0, 0, 0) == 0) {
+        if ((wst.mac[0] | wst.mac[1] | wst.mac[2] | wst.mac[3] | wst.mac[4] | wst.mac[5]) != 0 &&
+            wst.mac[0] == target_mac[0] && wst.mac[1] == target_mac[1] &&
+            wst.mac[2] == target_mac[2] && wst.mac[3] == target_mac[3] &&
+            wst.mac[4] == target_mac[4] && wst.mac[5] == target_mac[5]) {
+            return "wlan0";
+        }
+    }
+#endif
+    return "eth0";
+}
+
 static void dhcpc_write_boot_log(const dhcp_offer_t *offer) {
     if (!offer) return;
     char msg[256];
     size_t pos = 0;
-    append_str(msg, sizeof(msg), &pos, "eth0: DHCP lease acquired ");
+    const char *ifname = get_ifname(NULL);
+    append_str(msg, sizeof(msg), &pos, ifname);
+    append_str(msg, sizeof(msg), &pos, ": DHCP lease acquired ");
     append_ip(msg, sizeof(msg), &pos, offer->yiaddr);
     append_str(msg, sizeof(msg), &pos, "/");
     append_u32(msg, sizeof(msg), &pos, offer->prefix);
@@ -1119,6 +1150,7 @@ static int dhcpc_daemon_main(void) {
     static dhcp_offer_t current_offer;
     for (size_t i = 0; i < sizeof(current_offer); i++) ((uint8_t *)&current_offer)[i] = 0;
 
+    static uint8_t s_bound_mac[6];
     uint64_t t_ack = 0;
     uint64_t t_renew = 0;
     uint64_t t_rebind = 0;
@@ -1153,6 +1185,7 @@ static int dhcpc_daemon_main(void) {
             t_rebind = t_ack + current_offer.t2;
             t_expire = t_ack + current_offer.lease_time;
             if (ifget.link_state == NET_IF_LINK_UP) {
+                for (int m = 0; m < 6; m++) s_bound_mac[m] = ifget.mac[m];
                 state = STATE_BOUND;
             } else {
                 state = STATE_DISCONNECTED;
@@ -1173,8 +1206,36 @@ static int dhcpc_daemon_main(void) {
 
         if (g_renew_requested) {
             g_renew_requested = 0;
+            if (read_file("/run/dhcpc.lease", lease_buf, sizeof(lease_buf)) > 0) {
+                if (extract_val_ip(lease_buf, "IP", &current_offer.yiaddr) &&
+                    extract_val_ip(lease_buf, "SERVER", &current_offer.server_ip)) {
+                    extract_val_ip(lease_buf, "NETMASK", &current_offer.subnet_mask);
+                    extract_val_ip(lease_buf, "GATEWAY", &current_offer.router);
+                    uint32_t dns1 = 0, dns2 = 0;
+                    current_offer.dns_count = 0;
+                    if (extract_val_ip(lease_buf, "DNS1", &dns1)) current_offer.dns_servers[current_offer.dns_count++] = dns1;
+                    if (extract_val_ip(lease_buf, "DNS2", &dns2)) current_offer.dns_servers[current_offer.dns_count++] = dns2;
+                    uint32_t lt = 86400, t1 = 43200, t2 = 75600;
+                    extract_val_u32(lease_buf, "LEASE_TIME", &lt);
+                    extract_val_u32(lease_buf, "T1", &t1);
+                    extract_val_u32(lease_buf, "T2", &t2);
+                    current_offer.lease_time = lt;
+                    current_offer.t1 = t1;
+                    current_offer.t2 = t2;
+                    current_offer.prefix = dhcp_mask_to_prefix(current_offer.subnet_mask);
+                    t_ack = get_monotonic_sec();
+                    t_renew = t_ack + current_offer.t1;
+                    t_rebind = t_ack + current_offer.t2;
+                    t_expire = t_ack + current_offer.lease_time;
+                    for (int m = 0; m < 6; m++) s_bound_mac[m] = ifget.mac[m];
+                    state = STATE_BOUND;
+                    continue;
+                }
+            }
             if (state == STATE_BOUND) {
                 state = STATE_RENEWING;
+            } else {
+                state = STATE_INIT;
             }
         }
 
@@ -1205,6 +1266,7 @@ static int dhcpc_daemon_main(void) {
                     t_renew = t_ack + current_offer.t1;
                     t_rebind = t_ack + current_offer.t2;
                     t_expire = t_ack + current_offer.lease_time;
+                    for (int m = 0; m < 6; m++) s_bound_mac[m] = ifget.mac[m];
                     state = STATE_BOUND;
                 } else {
                     sleep_sec(2);
@@ -1240,7 +1302,17 @@ static int dhcpc_daemon_main(void) {
                 ifget.struct_version = 1;
                 long r_if = sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0);
                 if (r_if == 0 && ifget.link_state == NET_IF_LINK_UP) {
-                    if (current_offer.yiaddr && current_offer.server_ip) {
+                    bool mac_match = (s_bound_mac[0] == ifget.mac[0] &&
+                                      s_bound_mac[1] == ifget.mac[1] &&
+                                      s_bound_mac[2] == ifget.mac[2] &&
+                                      s_bound_mac[3] == ifget.mac[3] &&
+                                      s_bound_mac[4] == ifget.mac[4] &&
+                                      s_bound_mac[5] == ifget.mac[5]);
+                    if (!mac_match) {
+                        flush_interface();
+                        delete_file("/run/dhcpc.lease");
+                        state = STATE_INIT;
+                    } else if (current_offer.yiaddr && current_offer.server_ip) {
                         state = STATE_INIT_REBOOT;
                     } else {
                         state = STATE_INIT;
@@ -1262,6 +1334,7 @@ static int dhcpc_daemon_main(void) {
                     t_renew = t_ack + current_offer.t1;
                     t_rebind = t_ack + current_offer.t2;
                     t_expire = t_ack + current_offer.lease_time;
+                    for (int m = 0; m < 6; m++) s_bound_mac[m] = ifget.mac[m];
                     state = STATE_BOUND;
                 } else {
                     flush_interface();
@@ -1418,7 +1491,11 @@ int dhcpc_main(int argc, char **argv) {
 
     if (ifget.link_state != NET_IF_LINK_UP) {
         if (boot_mode) {
-            write_file("/run/dhcpc.log", "eth0: link waiting / no DHCP response; continuing in background\n", 64);
+            const char *ifname = get_ifname(ifget.mac);
+            char logmsg[96]; size_t lpos = 0;
+            append_str(logmsg, sizeof(logmsg), &lpos, ifname);
+            append_str(logmsg, sizeof(logmsg), &lpos, ": link waiting / no DHCP response; continuing in background\n");
+            write_file("/run/dhcpc.log", logmsg, lpos);
             spawn_daemon();
             return 0;
         }
@@ -1439,7 +1516,11 @@ int dhcpc_main(int argc, char **argv) {
 
     if (hret != 0) {
         if (boot_mode) {
-            write_file("/run/dhcpc.log", "eth0: no DHCP response; continuing in background\n", 50);
+            const char *ifname = get_ifname(ifget.mac);
+            char logmsg[80]; size_t lpos = 0;
+            append_str(logmsg, sizeof(logmsg), &lpos, ifname);
+            append_str(logmsg, sizeof(logmsg), &lpos, ": no DHCP response; continuing in background\n");
+            write_file("/run/dhcpc.log", logmsg, lpos);
             spawn_daemon();
             return 0;
         }
@@ -1448,10 +1529,12 @@ int dhcpc_main(int argc, char **argv) {
     }
 
     /* Dry run reporting */
+    const char *ifname = get_ifname(ifget.mac);
     if (dry_run) {
         char msg[256];
         size_t pos = 0;
-        append_str(msg, sizeof(msg), &pos, "eth0: address ");
+        append_str(msg, sizeof(msg), &pos, ifname);
+        append_str(msg, sizeof(msg), &pos, ": address ");
         append_ip(msg, sizeof(msg), &pos, offer.yiaddr);
         append_str(msg, sizeof(msg), &pos, "/");
         append_u32(msg, sizeof(msg), &pos, offer.prefix);
@@ -1483,7 +1566,8 @@ int dhcpc_main(int argc, char **argv) {
     char msg[256];
     size_t pos = 0;
     if (boot_mode) {
-        append_str(msg, sizeof(msg), &pos, "eth0: DHCP lease acquired ");
+        append_str(msg, sizeof(msg), &pos, ifname);
+        append_str(msg, sizeof(msg), &pos, ": DHCP lease acquired ");
         append_ip(msg, sizeof(msg), &pos, offer.yiaddr);
         append_str(msg, sizeof(msg), &pos, "/");
         append_u32(msg, sizeof(msg), &pos, offer.prefix);
@@ -1501,7 +1585,8 @@ int dhcpc_main(int argc, char **argv) {
         spawn_daemon();
         return 0;
     } else {
-        append_str(msg, sizeof(msg), &pos, "eth0: acquired lease ");
+        append_str(msg, sizeof(msg), &pos, ifname);
+        append_str(msg, sizeof(msg), &pos, ": acquired lease ");
         append_ip(msg, sizeof(msg), &pos, offer.yiaddr);
         append_str(msg, sizeof(msg), &pos, "/");
         append_u32(msg, sizeof(msg), &pos, offer.prefix);

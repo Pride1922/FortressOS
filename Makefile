@@ -762,9 +762,9 @@ $(BUILD_DIR)/watchtower_main.o: user/watchtower/watchtower_main.c user/watchtowe
 $(BUILD_DIR)/watchtower_identity.o: user/watchtower/watchtower_identity.c user/watchtower/watchtower_identity.h user/watchtower/watchtower.h user/tools/userdb.h src/include/syscall_abi.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Wframe-larger-than=1024 -Isrc/include -Iuser/watchtower -c $< -o $@
-$(USER_WATCHTOWER_ELF): $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/watchtower_identity.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/tools/start.asm user/shell.ld
+$(USER_WATCHTOWER_ELF): $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/watchtower_identity.o $(BUILD_DIR)/service_cli.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=watchtower_main user/tools/start.asm -o $(BUILD_DIR)/watchtower_start.o
-	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/watchtower_start.o $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/watchtower_identity.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o -o $@
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/watchtower_start.o $(BUILD_DIR)/watchtower_service.o $(BUILD_DIR)/watchtower_config.o $(BUILD_DIR)/watchtower_ctl.o $(BUILD_DIR)/watchtower_main.o $(BUILD_DIR)/watchtower_identity.o $(BUILD_DIR)/service_cli.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-common.o $(BUILD_DIR)/tool-digest.o -o $@
 $(BUILD_DIR)/service_cli.o: user/watchtower/service_cli.c user/watchtower/watchtower.h user/watchtower/watchtower_ctl.h src/include/types.h src/include/syscall_abi.h src/include/signal_abi.h src/fs/vfs.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Isrc/include -Iuser/watchtower -c $< -o $@

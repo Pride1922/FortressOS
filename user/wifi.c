@@ -315,6 +315,24 @@ static int do_connect(const char *ssid, const char *passphrase) {
                 write_str(1, "Connected to \"");
                 write_str(1, ssid);
                 write_str(1, "\" (WPA2-PSK). Link is ONLINE.\n");
+
+                write_str(1, "Configuring IP address via DHCP...\n");
+                const char *const dhcp_argv[] = { "/sbin/dhcpc", NULL };
+                spawn_opts_t opts;
+                for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
+                opts.size = sizeof(opts);
+                opts.version = 1;
+                opts.argv = (uint64_t)dhcp_argv;
+                long pid = WIFI_SYSCALL(SYS_SPAWN_EXT, (uintptr_t)"/sbin/dhcpc", (uintptr_t)&opts, sizeof(opts));
+                if (pid > 0) {
+                    uint64_t status = 0;
+                    long waited;
+                    do {
+                        waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
+                    } while (waited == -4 /* EINTR */);
+                } else {
+                    write_str(2, "wifi: failed to spawn /sbin/dhcpc\n");
+                }
                 return 0;
             }
         }
@@ -325,7 +343,7 @@ static int do_connect(const char *ssid, const char *passphrase) {
     if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
         write_str(1, "Connection in progress (current stage: ");
         write_str(1, state_to_str(st.state));
-        write_str(1, "). Check 'sudo wifi status'.\n");
+        write_str(1, "). Check 'wifi status'.\n");
     } else {
         write_str(1, "Association started in background. Check status with 'wifi status'.\n");
     }

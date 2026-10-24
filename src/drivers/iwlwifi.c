@@ -723,13 +723,6 @@ static void iwl_drain_rx_ring(void) {
                             s_te_started = true;
                         }
                     }
-                } else if (grp == 0 && code == IWL_HCMD_TX) {
-                    if (payload_len >= 38) {
-                        uint8_t tx_status = pkt->data[36];
-                        serial_puts("[IWL] TX_RESP status=");
-                        serial_print_hex(tx_status);
-                        serial_puts("\n");
-                    }
                 } else if (grp == 0 && code == 0x02 /* IWM_REPLY_ERROR */) {
                     serial_puts("[IWL] FW REPLY_ERROR payload_len=");
                     serial_print_dec(payload_len);

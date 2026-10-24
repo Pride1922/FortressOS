@@ -712,9 +712,40 @@ static void wt_drain_pipes(watchtower_table_t *tbl) {
     }
 }
 
+int service_main(int argc, char **argv);
+
 int watchtower_main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
+    /* If arguments are provided (e.g. 'watchtower list', 'watchtower status <name>', etc.) */
+    if (argc > 1) {
+        if (wt_streq(argv[1], "--daemon") || wt_streq(argv[1], "-d")) {
+            /* Fall through to run supervisor daemon */
+        } else {
+            return service_main(argc, argv);
+        }
+    }
+
+    /* If no arguments provided, check if a supervisor is already running */
+    long pfd = sys_call(SYS_OPEN, (uintptr_t)WATCHTOWER_PID_FILE, VFS_O_RDONLY, 0, 0, 0, 0);
+    if (pfd >= 0) {
+        char pbuf[32];
+        long pn = sys_call(SYS_READ, (uintptr_t)pfd, (uintptr_t)pbuf, sizeof(pbuf) - 1, 0, 0, 0);
+        (void)sys_call(SYS_CLOSE, (uintptr_t)pfd, 0, 0, 0, 0, 0);
+        if (pn > 0) {
+            pbuf[pn] = '\0';
+            int64_t pid = 0;
+            for (int i = 0; i < pn; i++) {
+                if (pbuf[i] >= '0' && pbuf[i] <= '9') pid = pid * 10 + (pbuf[i] - '0');
+                else break;
+            }
+            if (pid > 0) {
+                long alive = sys_call(SYS_KILL, (uintptr_t)pid, 0, 0, 0, 0, 0);
+                if (alive == 0 || alive == SYSCALL_EPERM || alive == SYSCALL_EACCES) {
+                    /* Supervisor is already running! Print CLI usage */
+                    return service_main(argc, argv);
+                }
+            }
+        }
+    }
 
     /* Ensure /run/watchtower directory exists and initialize logging directory */
     sys_call(SYS_MKDIR, (uintptr_t)WATCHTOWER_RUN_DIR, 0777, 0, 0, 0, 0);
@@ -825,8 +856,9 @@ int watchtower_main(int argc, char **argv) {
                 static char res_buf[WATCHTOWER_CTL_MAX_RES];
                 watchtower_ctl_process_request(&table, req_buf, caller_uid, caller_gid,
                                                res_buf, sizeof(res_buf), &ops);
+                (void)sys_call(SYS_UNLINK, (uintptr_t)WATCHTOWER_CTL_RES_FILE, 0, 0, 0, 0, 0);
                 long res_fd = sys_call(SYS_OPEN, (uintptr_t)WATCHTOWER_CTL_RES_FILE,
-                                       VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0644, 0, 0, 0);
+                                       VFS_O_CREAT | VFS_O_WRONLY | VFS_O_TRUNC, 0666, 0, 0, 0);
                 if (res_fd >= 0) {
                     (void)sys_call(SYS_WRITE, (uintptr_t)res_fd, (uintptr_t)res_buf, wt_strlen(res_buf), 0, 0, 0);
                     (void)sys_call(SYS_CLOSE, (uintptr_t)res_fd, 0, 0, 0, 0, 0);
