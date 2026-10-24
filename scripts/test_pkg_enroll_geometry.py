@@ -26,7 +26,7 @@ def main():
         flags=['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-DFORTRESS_DAC_ENFORCED','-fsanitize=address,undefined',
           '-fno-omit-frame-pointer','-no-pie','-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-pthread','-Itests/ext4_host','-Itests/host',
           '-Isrc/include','-Isrc/fs','-Isrc/drivers','-Isrc/mm','-Isrc/lib']
-        units=['tests/pkg_enroll_geometry_host.c','tests/ext4_fault_disk.c','src/fs/permission_values.c','src/kernel/creds.c','src/lib/account_redo.c']
+        units=['tests/pkg_enroll_geometry_host.c','tests/ext4_fault_disk.c','src/fs/permission_values.c','src/kernel/creds.c','src/lib/account_redo.c','user/tools/digest.c']
         deps=run(flags+['-MM',*units],'dependencies',ROOT)
         names={os.path.normpath(p) for p in deps.replace('\\\n',' ').split() if not p.endswith(':')}
         for name in names:

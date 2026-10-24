@@ -161,3 +161,7 @@ test-pkg-enroll-geometry:
 .PHONY: test-pkg-enroll-identity
 test-pkg-enroll-identity:
 	python3 scripts/test_pkg_enroll_geometry.py --identities
+
+.PHONY: test-pkg-enroll-records
+test-pkg-enroll-records:
+	python3 scripts/test_pkg_enroll_records.py

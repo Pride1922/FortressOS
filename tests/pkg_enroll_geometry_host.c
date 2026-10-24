@@ -8,6 +8,7 @@
 #undef gpt_get_partition
 #include "../src/fs/gpt.c"
 #include "../src/lib/crc32.c"
+#include "../user/tools/digest.h"
 void serial_print_dec(uint64_t n) {(void)n;}
 void serial_print_hex(uint64_t n) {(void)n;}
 bool block_register_dev(block_dev_t *d) {(void)d;return true;}
@@ -67,9 +68,70 @@ static int identities(ext4_mount_t *fs,const uint8_t *wire,size_t n) {
     }
     return 0;
 }
+static int export_bundle(ext4_mount_t *fs,const char *path,const uint8_t *witness) {
+    static const char *names[]={"/pkg/descriptor.v2","/pkg/enrollment.v1","/pkg/grant.v1",
+        "/pkg/ownership.v1","/pkg/account-generation.v1","/pkg/origin.v1","/pkg/state.v1","/pkg/trust.v1"};
+    static const unsigned sizes[]={2656,512,1024,8192,1024,1024,1024,1024};
+    uint8_t *b=calloc(1,32768);assert(b);memcpy(b,"FORT-PKG-BND-v1\0",16);
+    e4_p16(b+20,1);e4_p16(b+22,8);size_t at=96;int r=0;
+    for(unsigned i=0;i<8 && !r;i++) {
+        e4_inode_t in;r=identity_path(fs,names[i],&in);
+        if(!r && (in.mode!=VFS_S_IFREG || in.size!=sizes[i]))r=-VFS_EINVAL;
+        if(!r)r=e4_mapping(&in);
+        size_t copied=0;
+        for(unsigned j=0;!r && j<in.map->count;j++) {
+            e4_extent_t x=in.map->entries[j];size_t take=(size_t)x.len*fs->bs;
+            if(take>in.size-copied)take=(size_t)in.size-copied;
+            if(x.unwritten || (uint64_t)x.logical*fs->bs!=copied ||
+                !e4_bytes(fs,(uint64_t)x.physical*fs->bs,b+at+copied,take))r=-VFS_EIO;
+            copied+=take;
+        }
+        if(!r && copied!=sizes[i])r=-VFS_EIO;
+        if(!r) {e4_p32(b+32+8*i,sizes[i]);e4_p16(b+36+8*i,i+1);at+=copied;}
+    }
+    if(!r) {
+        uint8_t geometry[1024];
+        if(!witness || memcmp(b+96,"FORT-PKG-ENR-v2\0",16) || e4_u32(b+112)!=2656 ||
+            e4_u16(b+116)!=2 || e4_u16(b+118)!=2 || e4_u32(b+128)!=2 ||
+            memcmp(b+96+416,witness+32,16*128) ||
+            !e4_bytes(fs,1024,geometry,sizeof(geometry)) || memcmp(geometry+104,b+96+40,16) ||
+            e4_u32(geometry)!=e4_u32(b+96+352) || e4_u32(geometry+4)!=e4_u32(b+96+344) ||
+            e4_u32(b+96+348) || e4_u32(b+96+36)!=fs->bs)r=-VFS_EINVAL;
+    }
+    if(!r) {
+        const uint8_t *account=b+96+2656+512+1024+8192;
+        static const char *credentials[]={"/etc/passwd","/etc/group","/etc/shadow"};
+        uint8_t *scratch=malloc(8192);assert(scratch);
+        for(unsigned i=0;i<3 && !r;i++) {
+            e4_inode_t in;r=identity_path(fs,credentials[i],&in);
+            if(!r && (in.mode!=VFS_S_IFREG || !in.size || in.size>8192 || in.size!=e4_u32(account+424+4*i)))r=-VFS_EINVAL;
+            if(!r)r=e4_mapping(&in);
+            size_t copied=0;
+            for(unsigned j=0;!r && j<in.map->count;j++) {
+                e4_extent_t x=in.map->entries[j];size_t take=(size_t)x.len*fs->bs;
+                if(take>in.size-copied)take=(size_t)in.size-copied;
+                if(x.unwritten || (uint64_t)x.logical*fs->bs!=copied ||
+                    !e4_bytes(fs,(uint64_t)x.physical*fs->bs,scratch+copied,take))r=-VFS_EIO;
+                copied+=take;
+            }
+            if(!r) {
+                digest_t d;uint8_t hash[32];digest_init(&d,DIGEST_SHA256);
+                if(copied!=in.size || !digest_update(&d,scratch,copied))r=-VFS_EIO;
+                else {digest_final(&d,hash);if(memcmp(hash,account+328+32*i,32))r=-VFS_EINVAL;}
+            }
+        }
+        free(scratch);
+    }
+    if(!r) {
+        e4_p32(b+16,(uint32_t)at);FILE *f=fopen(path,"wbx");
+        if(!f)r=-VFS_EIO;
+        else {if(fwrite(b,1,at,f)!=at)r=-VFS_EIO;if(fclose(f))r=-VFS_EIO;}
+    }
+    free(b);return r;
+}
 int main(int argc,char **argv) {
-    assert(argc==3 || argc==4);size_t n;uint8_t *initial=load(argv[1],&n);
-    size_t witness_n=0;uint8_t *witness=argc==4?load(argv[3],&witness_n):NULL;
+    assert(argc>=3 && argc<=5);size_t n;uint8_t *initial=load(argv[1],&n);
+    size_t witness_n=0;uint8_t *witness=argc>=4?load(argv[3],&witness_n):NULL;
     ext4_fault_disk_t d={.stable=initial,.volatile_bytes=initial,.bytes=n,.cut=-1};
     block_dev_t disk={.sector_size=512,.sector_count=n/512,.read_sector=ext4_fault_read,
         .write_sector=denied_write,.flush=denied_flush,.priv=&d};
@@ -95,6 +157,7 @@ int main(int argc,char **argv) {
             if (!r) r=e4_ns_directory(fs,w,1,w->anchors[3]);
             if (!r && w->report.present_roles!=7) r=-VFS_EINVAL;
             if (!r && witness) r=identities(fs,witness,witness_n);
+            if (!r && argc==5) r=export_bundle(fs,argv[4],witness);
             slots[0]=w->report.slots[0];slots[1]=w->report.slots[1];
             assert(!fs->account_namespace_fenced && !fs->journal_mounted && !e4_active);
             kfree(w);ext4_engine_close(e);

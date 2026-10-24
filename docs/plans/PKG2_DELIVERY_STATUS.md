@@ -10,10 +10,11 @@ These results do not complete native enrolled-root admission or package mutation
 
 ## Remaining implementation, in dependency order
 
-1. Construct canonical initial IDLE records and the signed descriptor from the
-   actual protected inode generations/maps and credential hashes. Read the
-   records back through an independent native filesystem adapter before
-   committing the TEST selector. Exercise incomplete/mixed publication cuts.
+1. Canonical initial IDLE records, actual protected inode maps/credential
+   hashes, independent native-code readback and TEST selector publication cuts
+   are now implemented and host-accepted for the fresh fixed fixture profile.
+   See [signed root records](PKG2_SIGNED_ROOT_RECORDS.md). This does not complete
+   native boot enrollment or production provisioning.
 2. Deliver independent TEST selector/policy boot modules, measure actual kernel
    and bootstrap bytes without a hash cycle, and authenticate the selected GPT
    root in the projected-journal preview before any recovery writes. Validate
@@ -40,6 +41,7 @@ Accepted evidence and qualifications:
 - [TEST selector and artifact publication](PKG2_TEST_ENROLLMENT_SELECTOR.md).
 - [Actual filesystem geometry](PKG2_ENROLLMENT_GEOMETRY.md).
 - [Actual filesystem identities](PKG2_ENROLLMENT_IDENTITIES.md).
+- [Signed actual-root records](PKG2_SIGNED_ROOT_RECORDS.md).
 
 Installation, production trust provisioning, release-media builds, pushes and
 physical-device writes remain disabled. Host/QEMU evidence cannot establish
