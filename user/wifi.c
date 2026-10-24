@@ -642,10 +642,17 @@ static int do_static(const char *ssid, const char *address, const char *gateway,
     }
 
     if (existing_idx < 0) {
-        write_str(2, "wifi static: network \"");
-        write_str(2, ssid);
-        write_str(2, "\" not found in /etc/network/wlan.conf. Save it first with 'wifi save'.\n");
-        return 1;
+        /* If SSID not saved yet, create new entry */
+        if (s_saved_count < MAX_SAVED_NETWORKS) {
+            existing_idx = s_saved_count++;
+            for (size_t i = 0; i < sizeof(s_saved_nets[existing_idx].ssid); i++) s_saved_nets[existing_idx].ssid[i] = 0;
+            for (size_t i = 0; ssid[i] && i < WIFI_SSID_MAX_LEN; i++) s_saved_nets[existing_idx].ssid[i] = ssid[i];
+        } else {
+            write_str(2, "wifi static: network \"");
+            write_str(2, ssid);
+            write_str(2, "\" not found and saved network capacity reached.\n");
+            return 1;
+        }
     }
 
     saved_net_t *n = &s_saved_nets[existing_idx];
@@ -680,9 +687,76 @@ static int do_static(const char *ssid, const char *address, const char *gateway,
     if (save_all_networks()) {
         write_str(1, "Network \"");
         write_str(1, ssid);
-        write_str(1, "\" updated to static IP ");
-        write_str(1, n->address);
-        write_str(1, ".\n");
+        if (n->address[0]) {
+            write_str(1, "\" saved with static IP ");
+            write_str(1, n->address);
+            write_str(1, ".\n");
+        } else {
+            write_str(1, "\" reverted to DHCP.\n");
+        }
+
+        /* If currently connected to this network, apply changes immediately on the live link */
+        wifi_status_t cur_st;
+        if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &cur_st, sizeof(cur_st)) == 0 &&
+            cur_st.state == WIFI_STATUS_CONNECTED && streq(cur_st.ssid, ssid)) {
+            if (n->address[0]) {
+                write_str(1, "Applying static IP address to wlan0...\n");
+                const char *argv_ifup[7];
+                int argc_ifup = 0;
+                argv_ifup[argc_ifup++] = "/sbin/ifup";
+                argv_ifup[argc_ifup++] = "--no-save";
+                argv_ifup[argc_ifup++] = n->address;
+                if (n->gateway[0]) argv_ifup[argc_ifup++] = n->gateway;
+                if (n->dns[0]) argv_ifup[argc_ifup++] = n->dns;
+                argv_ifup[argc_ifup] = NULL;
+
+                spawn_opts_t opts;
+                for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
+                opts.size = sizeof(opts);
+                opts.version = 1;
+                opts.argv = (uint64_t)argv_ifup;
+                long pid = WIFI_SYSCALL(SYS_SPAWN_EXT, (uintptr_t)"/sbin/ifup", (uintptr_t)&opts, sizeof(opts));
+                if (pid > 0) {
+                    uint64_t status = 0;
+                    long waited;
+                    do {
+                        waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
+                    } while (waited == -4 /* EINTR */);
+                }
+
+                static char st_buf[256];
+                size_t st_pos = 0;
+                append_str(st_buf, &st_pos, "IP=");
+                append_str(st_buf, &st_pos, n->address);
+                append_str(st_buf, &st_pos, "\nGATEWAY=");
+                append_str(st_buf, &st_pos, n->gateway);
+                append_str(st_buf, &st_pos, "\nDNS=");
+                append_str(st_buf, &st_pos, n->dns);
+                append_str(st_buf, &st_pos, "\n");
+                int sfd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/run/wifi-static.configured", 0x241, 0644);
+                if (sfd >= 0) {
+                    WIFI_SYSCALL(SYS_WRITE, sfd, st_buf, st_pos);
+                    WIFI_SYSCALL(SYS_CLOSE, sfd, 0, 0);
+                }
+            } else {
+                (void)WIFI_SYSCALL(SYS_UNLINK, (uintptr_t)"/run/wifi-static.configured", 0, 0);
+                write_str(1, "Requesting DHCP lease on wlan0...\n");
+                const char *const dhcp_argv[] = { "/sbin/dhcpc", NULL };
+                spawn_opts_t opts;
+                for (size_t i = 0; i < sizeof(opts); i++) ((uint8_t *)&opts)[i] = 0;
+                opts.size = sizeof(opts);
+                opts.version = 1;
+                opts.argv = (uint64_t)dhcp_argv;
+                long pid = WIFI_SYSCALL(SYS_SPAWN_EXT, (uintptr_t)"/sbin/dhcpc", (uintptr_t)&opts, sizeof(opts));
+                if (pid > 0) {
+                    uint64_t status = 0;
+                    long waited;
+                    do {
+                        waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
+                    } while (waited == -4 /* EINTR */);
+                }
+            }
+        }
         return 0;
     } else {
         write_str(2, "wifi static: write error\n");
@@ -831,6 +905,8 @@ static int do_connect(const char *ssid, const char *passphrase,
                         write_str(2, "wifi: failed to spawn /sbin/dhcpc\n");
                     }
                 }
+                /* Auto-save network profile permanently so on reboot it connects automatically */
+                do_save(ssid, actual_psk, actual_addr, actual_gw, actual_dns);
                 return 0;
             }
         }
@@ -916,6 +992,16 @@ static int do_auto(void) {
     }
 }
 
+static bool looks_like_ip(const char *s) {
+    if (!s) return false;
+    bool has_dot = false;
+    for (size_t i = 0; s[i]; i++) {
+        if (s[i] == '.') has_dot = true;
+        if (s[i] == '/') return true;
+    }
+    return has_dot && (s[0] >= '0' && s[0] <= '9');
+}
+
 int wifi_main(int argc, char **argv) {
     if (argc < 2) {
         write_str(1, "Usage: wifi <command> [arguments]\n");
@@ -923,10 +1009,12 @@ int wifi_main(int argc, char **argv) {
         write_str(1, "  scan                               Scan for nearby wireless networks\n");
         write_str(1, "  list                               List saved wireless networks\n");
         write_str(1, "  status                             Display wireless connection status\n");
-        write_str(1, "  connect <SSID> [PSK] [--static ..] Connect to wireless network\n");
+        write_str(1, "  connect <SSID> [PSK] [--static ..] Connect to network (auto-saves profile)\n");
+        write_str(1, "  static <IP/pfx> [GW] [DNS]         Set static IP on current Wi-Fi connection\n");
+        write_str(1, "  static <SSID> <IP/pfx> [GW] [DNS]  Set static IP for a specific saved network\n");
+        write_str(1, "  static dhcp                        Revert current Wi-Fi connection to DHCP\n");
+        write_str(1, "  static <SSID> dhcp                 Revert specific saved network to DHCP\n");
         write_str(1, "  save <SSID> <PSK> [--static ...]   Save network to /etc/network/wlan.conf\n");
-        write_str(1, "  static <SSID> <IP/pfx> [GW] [DNS]  Set or update static IP for network\n");
-        write_str(1, "  static <SSID> dhcp                 Revert network to DHCP\n");
         write_str(1, "  auto                               Auto-connect to best saved wireless network\n");
         write_str(1, "  disconnect                         Disconnect from wireless network\n");
         return 1;
@@ -964,14 +1052,46 @@ int wifi_main(int argc, char **argv) {
         return do_save(ssid, psk, addr, gw, dns);
     } else if (streq(argv[1], "static")) {
         if (argc < 3) {
-            write_str(2, "Usage: wifi static <SSID> <IP/prefix> [gateway] [dns]\n"
+            write_str(2, "Usage: wifi static <IP/prefix> [gateway] [dns]       (applies to current network)\n"
+                         "       wifi static <SSID> <IP/prefix> [gateway] [dns]\n"
+                         "       wifi static dhcp                             (reverts current network to DHCP)\n"
                          "       wifi static <SSID> dhcp\n");
             return 1;
         }
-        const char *ssid = argv[2];
-        const char *addr = (argc >= 4) ? argv[3] : "dhcp";
-        const char *gw = (argc >= 5) ? argv[4] : NULL;
-        const char *dns = (argc >= 6) ? argv[5] : NULL;
+
+        const char *ssid = NULL;
+        const char *addr = NULL;
+        const char *gw = NULL;
+        const char *dns = NULL;
+
+        static char s_cur_connected_ssid[WIFI_SSID_MAX_LEN + 1];
+        if (looks_like_ip(argv[2]) || streq(argv[2], "dhcp")) {
+            /* Target current connected network */
+            wifi_status_t cur_st;
+            if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &cur_st, sizeof(cur_st)) == 0 &&
+                cur_st.state == WIFI_STATUS_CONNECTED && cur_st.ssid[0]) {
+                size_t k = 0;
+                while (cur_st.ssid[k] && k < WIFI_SSID_MAX_LEN) {
+                    s_cur_connected_ssid[k] = cur_st.ssid[k];
+                    k++;
+                }
+                s_cur_connected_ssid[k] = '\0';
+                ssid = s_cur_connected_ssid;
+                addr = argv[2];
+                gw = (argc >= 4) ? argv[3] : NULL;
+                dns = (argc >= 5) ? argv[4] : NULL;
+            } else {
+                write_str(2, "wifi static: not currently connected to Wi-Fi. Please specify SSID:\n"
+                             "Usage: wifi static <SSID> <IP/prefix> [gateway] [dns]\n");
+                return 1;
+            }
+        } else {
+            ssid = argv[2];
+            addr = (argc >= 4) ? argv[3] : "dhcp";
+            gw = (argc >= 5) ? argv[4] : NULL;
+            dns = (argc >= 6) ? argv[5] : NULL;
+        }
+
         return do_static(ssid, addr, gw, dns);
     } else if (streq(argv[1], "connect")) {
         if (argc < 3) {
