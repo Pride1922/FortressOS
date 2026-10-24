@@ -39,6 +39,7 @@ bool pw_register(uint64_t pid,pw_key *out){
     }
 done:spin_unlock_irqrestore(&guard,lock);return ok;
 }
+bool pw_authorized(pw_key k){return privileged(k);}
 bool pw_begin(pw_key k,bool idle,uint64_t *out){
     if(!out||!idle||!privileged(k))return false;
     uint64_t lock=spin_lock_irqsave(&guard);pw_owner *o=find(k);bool ok=false;

@@ -140,3 +140,20 @@ test-pkg-retirement-idle:
 .PHONY: test-pkg-cli-transaction
 test-pkg-cli-transaction:
 	python3 scripts/test_pkg_cli_transaction.py
+
+# Private copied kernel, BIOS/UEFI x SMP=1/4. Each boot gets only its own
+# disposable regular-file NVMe image; no release media or physical devices.
+.PHONY: test-pkg-gate1-kernel test-pkg-gate1-backend-host
+test-pkg-gate1-kernel:
+	python3 scripts/test_pkg_gate1_kernel.py --nvme --negatives
+
+test-pkg-gate1-backend-host:
+	python3 scripts/test_pkg_writer_lifetime.py --backend
+
+.PHONY: test-pkg-selector
+test-pkg-selector:
+	python3 scripts/test_pkg_selector.py
+
+.PHONY: test-pkg-enroll-geometry
+test-pkg-enroll-geometry:
+	python3 scripts/test_pkg_enroll_geometry.py

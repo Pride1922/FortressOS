@@ -12,8 +12,8 @@ ROOT=pathlib.Path(__file__).resolve().parent.parent
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.parse_args()
-    out=ROOT/'.codex-remote-attachments'/('pkg-writer-lifetime-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
+    parser=argparse.ArgumentParser();parser.add_argument('--backend',action='store_true');args=parser.parse_args()
+    out=ROOT/'.codex-remote-attachments'/(('pkg-backend-' if args.backend else 'pkg-writer-lifetime-')+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
     work=out/'workspace';work.mkdir(parents=True,exist_ok=False)
     sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
     sources={}
@@ -36,14 +36,23 @@ def main():
                '-no-pie','-pthread','-D_XOPEN_SOURCE=700','-DTEST_SMP_MEMORY',
                '-Itests/ext4_host','-Itests','-Isrc/include','-Isrc/kernel']
         units=['tests/pkg_writer_lifetime_host.c','tests/pkg_writer_candidate.c','src/kernel/process_table.c','src/kernel/creds.c']
+        if args.backend:
+            flags+=['-I.','-Isrc/fs']
+            units[0]='tests/pkg_backend_host.c';units.append('tests/pkg_backend_candidate.c')
         dep=run(flags+['-MM','-MT','probe',*units],'dependencies')
         dependencies={str((work/p).resolve().relative_to(work)) for p in dep.replace('\\\n',' ').split() if not p.endswith(':')}
         manifest['compiled_inputs']={p:sha(work/p) for p in sorted(dependencies)}
         run(flags+units+['-o',str(out/'probe')],'compile')
+        if args.backend:
+            manifest['scope']='private value backend and actual process registry; host lifecycle notifications, mocked storage; no syscall, TCB, mount or boot acceptance'
+            free=['gcc','-std=c11','-Os','-Wall','-Wextra','-Werror','-ffreestanding','-fno-builtin','-fPIE','-fno-stack-protector','-mno-red-zone','-mno-sse','-mno-mmx','-msoft-float','-fstack-usage','-Wframe-larger-than=1024','-Itests','-I.','-Isrc/include','-Isrc/kernel','-Isrc/fs']
+            run(free+['-c','tests/pkg_backend_candidate.c','-o',str(out/'backend-free.o')],'freestanding-backend')
         result=run([str(out/'probe')],'runtime')
-        assert 'PASS writer lifetimes=128' in result
+        assert ('PASS backend lifetimes=128' if args.backend else 'PASS writer lifetimes=128') in result
         manifest['cases'].append({'lifetimes':128,'result':'PASS'})
         manifest['result']='PASS'
+    except Exception as error:
+        manifest['result']='FAIL';manifest['error']=repr(error);raise
     finally:
         manifest['changed_compiled_copies']=[p for p,h in manifest.get('compiled_inputs',{}).items() if sha(work/p)!=h]
         manifest['changed_repository_sources']=[p for p,h in sources.items() if sha(ROOT/p)!=h]

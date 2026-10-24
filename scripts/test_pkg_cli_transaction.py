@@ -15,9 +15,9 @@ H=lambda b:hashlib.sha256(b).digest()
 def put(b,o,v,f='Q'):struct.pack_into('<'+f,b,o,v)
 def seal(b):b[-32:]=H(b[:-32])
 def main():
- parser=argparse.ArgumentParser();parser.add_argument('--block',type=int,choices=(1024,2048,4096));parser.add_argument('--sector',type=int,choices=(512,4096));parser.add_argument('--smoke',action='store_true');parser.add_argument('--exhaustive',action='store_true');parser.add_argument('--jobs',type=int,default=4);args=parser.parse_args()
+ parser=argparse.ArgumentParser();parser.add_argument('--kernel-backend',action='store_true');parser.add_argument('--block',type=int,choices=(1024,2048,4096));parser.add_argument('--sector',type=int,choices=(512,4096));parser.add_argument('--smoke',action='store_true');parser.add_argument('--exhaustive',action='store_true');parser.add_argument('--jobs',type=int,default=4);args=parser.parse_args()
  assert not args.exhaustive or (args.block and args.sector),'name the exhaustive geometry explicitly'
- out=ROOT/'.codex-remote-attachments'/('pkg-cli-transaction-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'));work=out/'workspace';work.mkdir(parents=True)
+ out=ROOT/'.codex-remote-attachments'/(('pkg-kernel-backend-host-' if args.kernel_backend else 'pkg-cli-transaction-')+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'));work=out/'workspace';work.mkdir(parents=True)
  sha=lambda p:H(p.read_bytes()).hex();sources={}
  for folder in ('src','tests','user','scripts'):
   for p in (ROOT/folder).rglob('*'):
@@ -25,6 +25,7 @@ def main():
     name=str(p.relative_to(ROOT));sources[name]=sha(p);dst=work/name;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,dst)
  guards={str(p.relative_to(ROOT)):sha(p) for p in [ROOT/'AGENTS.md',ROOT/'README.md',ROOT/'assets/ssl/ca-certificates.sha256',*(p for p in (ROOT/'bin').iterdir() if p.name in ('fortress.elf','initramfs.tar','fortress.iso','fortress.img'))]}
  manifest=dict(status='INCOMPLETE',sources=sources,guards=guards,overlay=[],commands=[],cases=[],scope='private CLI status/recover to actual EXT4/JBD2 engine; stdout transport mocked; no production, installation, boot or physical acceptance')
+ manifest['private_value_backend']=args.kernel_backend
  (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
  def replace(name,before,after):
   p=work/name;text=p.read_text();assert text.count(before)==1,(name,before,text.count(before));p.write_text(text.replace(before,after));manifest['overlay'].append(dict(path=name,before=before,after=after))
@@ -34,6 +35,10 @@ def main():
  context=dict(work=work,replace=replace,function=function,apply=apply,apply_mount=apply_mount)
  exec(compile(textwrap.dedent(source[start:end]),'private-existing-mount-overlay','exec'),context)
  generated=context['generated'];apply_retirement(work,replace,generated)
+ if args.kernel_backend:
+  replace('tests/pkg_private_status_recover.inc','static int qt_status(','static int pb_engine_status(')
+  replace('tests/pkg_private_status_recover.inc','static int qt_recover(','static int pb_engine_recover(')
+  replace('tests/pkg_cli_transaction.inc','#include "pkg_private_status_recover.inc"','#include "pkg_private_status_recover.inc"\n#include "pkg_backend_fs.inc"')
  env=dict(os.environ);inputs=out/'fixture-inputs';extra=vectors(inputs);env.update(PKG_MOUNT_INPUT=str(inputs),PKG_MOUNT_PHASE='3',PKG_MOUNT_PUBLICATION='2')
  def run(cmd,label,timeout=180):
   started=time.monotonic();manifest['commands'].append(cmd);r=subprocess.run(cmd,cwd=work,text=True,capture_output=True,timeout=timeout,env=env)
@@ -45,6 +50,7 @@ def main():
   for tag,path in (('mono','src/lib/crypto/upstream/src/monocypher.c'),('ed','src/lib/crypto/upstream/src/optional/monocypher-ed25519.c')):
    obj=str(out/(tag+'.o'));run(flags+['-include','src/lib/crypto/namespace.h','-c',path,'-o',obj],'compile-'+tag);objects.append(obj)
   units=['tests/account-service-durable.c','tests/pkg_enrollment_candidate.c','tests/ext4_fault_disk.c','src/fs/permission_values.c','src/kernel/creds.c','user/tools/digest.c','src/lib/crypto/hash.c','src/lib/crypto/curve.c','src/lib/account_redo.c','user/tools/userdb.c','tests/pkg_mount_candidate.c','tests/pkg_grant_candidate.c','tests/pkg_retirement_candidate.c','tests/pkg_retirement_auth.c','user/pkg/catalog.c','user/pkg/verify.c','user/pkg/format.c','user/pkg/manifest.c','user/tools/gzip.c','user/tools/common.c','user/pkg/cli.c','user/pkg/transaction_cli.c']
+  if args.kernel_backend:units+=['tests/pkg_backend_candidate.c','tests/pkg_writer_candidate.c','src/kernel/process_table.c']
   (work/'build/pkg-format').mkdir(parents=True,exist_ok=True)
   run(['python3','scripts/pkg_artifact_vectors.py'],'artifact-vectors')
   run(['python3','scripts/pkg_catalog_vectors.py'],'catalog-vectors')
