@@ -1,12 +1,13 @@
 """Disposable actual-code geometry gate before signed native enrollment."""
-import datetime, hashlib, json, os, pathlib, shutil, struct, subprocess, tempfile
+import argparse, datetime, hashlib, json, os, pathlib, shutil, struct, subprocess, tempfile
 from pkg_enroll_fixture import create, gpt, command, inode, blocks, directory
 
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 H=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 
 def main():
-    out=ROOT/'.codex-remote-attachments'/('pkg-enroll-geometry-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
+    parser=argparse.ArgumentParser();parser.add_argument('--identities',action='store_true');args=parser.parse_args()
+    out=ROOT/'.codex-remote-attachments'/(('pkg-enroll-identity-' if args.identities else 'pkg-enroll-geometry-')+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
     out.mkdir();work=out/'workspace';work.mkdir()
     m={'result':'INCOMPLETE','commands':[],'cases':[],
        'scope':'host structural read-only GPT/EXT4/JBD2/account-slot preview; no signed enrollment, mount publication, kernel boot or physical acceptance'}
@@ -37,7 +38,7 @@ def main():
         # POSIX scratch avoids depending on DrvFS mode propagation.
         with tempfile.TemporaryDirectory(prefix='fortress-pkg-geometry-') as temp:
             temp=pathlib.Path(temp)
-            base=temp/'base';base.mkdir();image,disk=create(base)
+            base=temp/'base';base.mkdir();image,disk=create(base,identities=args.identities)
             raw=image.read_bytes();diskraw=disk.read_bytes()
             run(['e2fsck','-fn',str(image)],'linux-fsck-initial')
             for path in ('/etc','/var/lib/fortress/accounts',*('/pkg/'+n for n in ('enrollment.v1','ownership.v1','descriptor.v2'))):
@@ -80,6 +81,27 @@ def main():
                 assert data[69632*512:(69632+4096)*512]==diskraw[69632*512:(69632+4096)*512]
                 m['cases'].append({'name':label,'expected':expected,'sha256':before,
                     'whole_image_unchanged':True,'sentinel_unchanged':True,'diagnostic':result.strip()})
+            if args.identities:
+                from pkg_enroll_identity import inventory
+                witness,audit=inventory(image);wf=out/'identities.bin';wf.write_bytes(witness)
+                (out/'identities.json').write_text(json.dumps(audit,indent=2)+'\n')
+                canonical=out/'canonical.img';before=H(canonical)
+                def identity_case(label,data,expected):
+                    p=out/(label+'.witness');p.write_bytes(data);p_before=H(p)
+                    result=run([str(binary),str(canonical),expected,str(p)],label)
+                    assert H(p)==p_before and H(canonical)==before
+                    m['cases'].append({'name':label,'expected':expected,'witness_sha256':p_before,
+                        'whole_image_unchanged':True,'diagnostic':result.strip()})
+                identity_case('all-20-identities',witness,'accept')
+                for i in range(20):
+                    for field,off in (('generation',8),('physical-map',48)):
+                        bad=bytearray(witness);bad[32+128*i+off]^=1
+                        identity_case(f'identity-{i+1}-{field}',bad,'refuse')
+                for label,off in (('length',16),('version',20),('count',22),('reserved',24),
+                                  ('role',32),('mode',44),('size',48),('extent-tail',136)):
+                    bad=bytearray(witness);bad[off]^=1;identity_case('identity-header-'+label,bad,'refuse')
+                m['identity_inventory']={'rows':20,'nonzero_generations':True,
+                    'wire_sha256':H(wf),'authenticated':False}
             (out/'root.img').write_bytes(raw)
             for path in ('/etc/passwd','/etc/group','/etc/shadow'):
                 from pkg_enroll_fixture import FILES

@@ -18,8 +18,58 @@ static bool denied_write(block_dev_t *d,uint64_t l,const void *b) {
 static bool denied_flush(block_dev_t *d) {
     ((ext4_fault_disk_t *)d->priv)->flushes++;return false;
 }
+static int identity_path(ext4_mount_t *fs,const char *path,e4_inode_t *out) {
+    uint32_t ino=2;int r=0;
+    while (*path) {
+        if (*path=='/') {path++;continue;}
+        char name[64];unsigned n=0;
+        while (*path && *path!='/') {if(n==sizeof(name)-1)return -VFS_EINVAL;name[n++]=*path++;}
+        name[n]=0;e4_inode_t parent;r=e4_inode(fs,ino,&parent);if(r)return r;
+        uint32_t found=0;r=e4_scan(&parent,name,0,NULL,&found);
+        if(r<0)return r;
+        if(!found)return -VFS_ENOENT;
+        ino=found;
+    }
+    return e4_inode(fs,ino,out);
+}
+static int identities(ext4_mount_t *fs,const uint8_t *wire,size_t n) {
+    static const char *paths[]={"/pkg/enrollment.v1","/pkg/grant.v1","/pkg/ownership.v1",
+        "/pkg/transaction.v1","/pkg/origin.v1","/pkg/account-generation.v1","/pkg/state.v1",
+        "/pkg/trust.v1","/pkg","/etc","/var","/var/lib","/var/lib/fortress",
+        "/var/lib/fortress/accounts","/usr/bin","/usr/share/pkg","/pkg/descriptor.v2",
+        "/etc/passwd","/etc/group","/etc/shadow"};
+    if(n!=32+20*128 || memcmp(wire,"FORT-PKG-MAP-v1\0",16) || e4_u32(wire+16)!=n ||
+        e4_u16(wire+20)!=1 || e4_u16(wire+22)!=20)return -VFS_EINVAL;
+    for(unsigned i=24;i<32;i++)if(wire[i])return -VFS_EINVAL;
+    for(unsigned i=0;i<20;i++) {
+        const uint8_t *p=wire+32+128*i;e4_inode_t in;int r=identity_path(fs,paths[i],&in);
+        if(r)return r;
+        unsigned kind=in.mode==VFS_S_IFDIR?2:in.mode==VFS_S_IFREG?1:0;
+        uint64_t size=(uint64_t)e4_u32(p+16)|((uint64_t)e4_u32(p+20)<<32);
+        uint64_t expected=(uint64_t)e4_u32(p+24)|((uint64_t)e4_u32(p+28)<<32);
+        if(e4_u16(p)!=i+1 || e4_u16(p+2)!=kind || !kind || in.ino!=e4_u32(p+4) ||
+            !in.generation || in.generation!=e4_u32(p+8) || (in.full_mode&07777)!=e4_u32(p+12) ||
+            in.uid || in.gid || in.size!=size || e4_u16(in.extent+6))return -VFS_EINVAL;
+        for(unsigned k=34;k<40;k++)if(p[k])return -VFS_EINVAL;
+        for(unsigned k=104;k<128;k++)if(p[k])return -VFS_EINVAL;
+        r=e4_mapping(&in);if(r)return r;
+        if(!in.map->count || in.map->count>4 || in.map->count!=e4_u16(p+32))return -VFS_EINVAL;
+        uint64_t count=0;
+        for(unsigned j=0;j<4;j++) {
+            const uint8_t *x=p+40+16*j;
+            if(j>=in.map->count) {for(unsigned k=0;k<16;k++)if(x[k])return -VFS_EINVAL;continue;}
+            e4_extent_t actual=in.map->entries[j];
+            if(actual.unwritten || actual.logical!=count || actual.logical!=e4_u32(x) ||
+                actual.len!=e4_u32(x+4) || actual.physical!=e4_u32(x+8) || e4_u32(x+12))return -VFS_EINVAL;
+            count+=actual.len;
+        }
+        if(count!=expected || count!=(in.size+fs->bs-1)/fs->bs)return -VFS_EINVAL;
+    }
+    return 0;
+}
 int main(int argc,char **argv) {
-    assert(argc==3);size_t n;uint8_t *initial=load(argv[1],&n);
+    assert(argc==3 || argc==4);size_t n;uint8_t *initial=load(argv[1],&n);
+    size_t witness_n=0;uint8_t *witness=argc==4?load(argv[3],&witness_n):NULL;
     ext4_fault_disk_t d={.stable=initial,.volatile_bytes=initial,.bytes=n,.cut=-1};
     block_dev_t disk={.sector_size=512,.sector_count=n/512,.read_sector=ext4_fault_read,
         .write_sector=denied_write,.flush=denied_flush,.priv=&d};
@@ -44,6 +94,7 @@ int main(int argc,char **argv) {
             if (!r) r=e4_ns_directory(fs,w,0,2);
             if (!r) r=e4_ns_directory(fs,w,1,w->anchors[3]);
             if (!r && w->report.present_roles!=7) r=-VFS_EINVAL;
+            if (!r && witness) r=identities(fs,witness,witness_n);
             slots[0]=w->report.slots[0];slots[1]=w->report.slots[1];
             assert(!fs->account_namespace_fenced && !fs->journal_mounted && !e4_active);
             kfree(w);ext4_engine_close(e);
@@ -53,5 +104,5 @@ int main(int argc,char **argv) {
     bool accept=!strcmp(argv[2],"accept");assert(accept ? !r : r!=0);
     printf("PASS structural-preview expected=%s result=%d slots=%u,%u writes=%zu flushes=%zu policy=%u\n",
         argv[2],r,slots[0],slots[1],d.writes,d.flushes,(unsigned)policy);
-    free(initial);return 0;
+    free(witness);free(initial);return 0;
 }

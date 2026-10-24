@@ -157,3 +157,7 @@ test-pkg-selector:
 .PHONY: test-pkg-enroll-geometry
 test-pkg-enroll-geometry:
 	python3 scripts/test_pkg_enroll_geometry.py
+
+.PHONY: test-pkg-enroll-identity
+test-pkg-enroll-identity:
+	python3 scripts/test_pkg_enroll_geometry.py --identities

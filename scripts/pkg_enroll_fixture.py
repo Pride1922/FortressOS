@@ -37,7 +37,6 @@ def directory(data,ino,parent,entries,slots,physical):
     while at<BS-12:entry(0,'',0,16 if (BS-12-at)%12 else 12)
     assert at==BS-12
     struct.pack_into('<H',b,BS-8,12);b[BS-5]=0xde
-    # mke2fs/debugfs generation remains zero for this geometry-only fixture.
     ipg=struct.unpack_from('<I',data,1064)[0];g,index=divmod(ino-1,ipg)
     table=struct.unpack_from('<I',data,BS+g*32+8)[0]
     generation=struct.unpack_from('<I',data,table*BS+index*256+100)[0]
@@ -66,7 +65,7 @@ def gpt(root):
     d[69632*512:(69632+4096)*512]=b'UNRELATED-TEST!!'*(4096*512//16)
     return d
 
-def create(out,slot_layout=True):
+def create(out,slot_layout=True,identities=False):
     out=pathlib.Path(out);assert out.is_dir() and not out.is_symlink()
     tree=out/'tree';tree.mkdir(mode=0o700)
     dirs={'etc':0o755,'var':0o755,'var/lib':0o755,'var/lib/fortress':0o755,
@@ -85,9 +84,12 @@ def create(out,slot_layout=True):
          '-U',str(FS),'-d',str(tree),str(image)])
     # Host UID must not become target authority. debugfs reseals inode checksums.
     paths=['/']+['/'+p for p in dirs]+list(FILES)+['/pkg/'+p for p in SIZES]
+    path_ids={p:inode(image,p) for p in paths}
+    dir_maps={p:blocks(image,p) for p in ['/']+['/'+p for p in dirs]}
     commands=out/'prepare.commands'
-    commands.write_text(''.join(f'set_inode_field {p} uid 0\nset_inode_field {p} gid 0\n' for p in paths)+
-                        'set_inode_field / mode 040755\njournal_open -c -v 3\njournal_close\n')
+    commands.write_text(''.join(f'set_inode_field <{path_ids[p]}> uid 0\nset_inode_field <{path_ids[p]}> gid 0\n'+
+                        (f'set_inode_field <{path_ids[p]}> generation {100+i}\n' if identities else '') for i,p in enumerate(paths))+
+                        'set_inode_field <2> mode 040755\njournal_open -c -v 3\njournal_close\n')
     log+=command(['debugfs','-w','-f',str(commands),str(image)])
     data=bytearray(image.read_bytes());jino=struct.unpack_from('<I',data,1248)[0]
     jmap=blocks(image,f'<{jino}>');start=jmap[0]*BS;journal=bytearray(data[start:start+BS])
@@ -96,11 +98,23 @@ def create(out,slot_layout=True):
     head=bytearray(journal[:1024]);seal(head,252,0xffffffff);journal[:1024]=head
     data[start:start+BS]=journal
     struct.pack_into('<I',data,1120,0x42);struct.pack_into('<H',data,1082,1);sbseal(data)
+    if identities:
+        # Changing generation changes directory checksum seeds too. debugfs
+        # updates inode checksums but does not reseal these directory blocks.
+        for path in ['/']+['/'+p for p in dirs]:
+            ino=path_ids[path];ipg=struct.unpack_from('<I',data,1064)[0]
+            g,index=divmod(ino-1,ipg);table=struct.unpack_from('<I',data,BS+g*32+8)[0]
+            generation=struct.unpack_from('<I',data,table*BS+index*256+100)[0]
+            seed=crc(crc(0xffffffff,data[1128:1144]),struct.pack('<II',ino,generation))
+            for physical in dir_maps[path]:
+                start=physical*BS;b=data[start:start+BS]
+                assert b[-12:-4]==b'\0\0\0\0\x0c\0\0\xde'
+                struct.pack_into('<I',data,start+BS-4,crc(seed,b[:-12]))
     if slot_layout:
-        for path,parent,entries,slots in (('/etc','/',[(inode(image,p),p.rsplit('/',1)[1]) for p in FILES],6),
+        for path,parent,entries,slots in (('/etc','/',[(path_ids[p],p.rsplit('/',1)[1]) for p in FILES],6),
                                          ('/var/lib/fortress/accounts','/var/lib/fortress',[],5)):
-            mapping=blocks(image,path);assert len(mapping)==1
-            directory(data,inode(image,path),inode(image,parent),entries,slots,mapping[0])
+            mapping=dir_maps[path];assert len(mapping)==1
+            directory(data,path_ids[path],path_ids[parent],entries,slots,mapping[0])
     image.write_bytes(data)
     disk=out/'disk.img'
     with disk.open('xb') as f:f.write(gpt(data))
