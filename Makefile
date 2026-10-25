@@ -995,6 +995,10 @@ test-awk: $(BOOTABLE_ISO) test-awk-host
 
 .PHONY: test-kill-host
 .PHONY: test-pkg-format-host
+.PHONY: test-pkg-plan-host
+test-pkg-plan-host: scripts/test_pkg_plan.py tests/pkg_plan_candidate.c tests/pkg_plan_candidate.h tests/pkg_plan_host.c
+	@python3 scripts/test_pkg_plan.py
+
 test-pkg-format-host:
 	@mkdir -p $(BUILD_DIR)/pkg-format
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -I. tests/pkg_format_host.c user/pkg/format.c -o $(BUILD_DIR)/pkg-format/host
