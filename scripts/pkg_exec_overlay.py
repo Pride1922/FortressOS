@@ -7,11 +7,25 @@ def overlay(work,replace):
     result=base(work,replace)
     for p,data in original.items():p.write_bytes(data)
     executor(work,replace)
+    # Diagnostics remain in the copied TEST kernel; validation is unchanged.
+    with (work/'src/fs/pkg_executor_forward.inc').open('a') as f:
+        f.write('\n#include "serial.h"\nstatic int mx_reject(int code,unsigned line){serial_puts("PKGEXEC REJECT line=");serial_print_dec(line);serial_puts("\\n");return code;}\n#define PX_REJECT(code) mx_reject((code),__LINE__)\n')
+    hostkey=(work/'src/fs/ext4_hostkey.inc').read_text()
+    start=hostkey.index('int ext4_hostkey_read(');end=hostkey.index('int ext4_hostkey_publish(',start)
+    original_read=hostkey[start:end];diagnostic_read=original_read
+    for stage,before in (
+        ('parents','    int r=scratch ? e4_hostkey_parents(fs,false,nodes) : -VFS_ENOMEM;'),
+        ('lookup','    if(!r) {key=e4_hostkey_lookup(nodes[2],HOSTKEY_NAME,&r);if(!key && !r) r=-VFS_EIO;}'),
+        ('bytes','    if(!r) r=e4_hostkey_bytes(fs,key,scratch,HOSTKEY_FILE_MAX,&n);'),
+        ('sync','    if(!r) r=ext4_sync(fs);')):
+        assert diagnostic_read.count(before)==1
+        diagnostic_read=diagnostic_read.replace(before,before+'\n    if(r){serial_puts("PKGEXEC HOSTKEY '+stage+' error=");serial_print_dec(-r);serial_puts("\\n");}')
+    replace('src/fs/ext4_hostkey.inc',original_read,diagnostic_read)
     replace('src/fs/ext4_transaction.inc','static int px_core_commit(ext4_engine_t *e) {','static int mx_raw_commit(ext4_engine_t *e) {')
-    with (work/'tests/pkg_install_forward.inc').open('a') as f:f.write('\nstatic int px_core_commit(ext4_engine_t *);\n')
+    with (work/'src/fs/pkg_executor_forward.inc').open('a') as f:f.write('\nstatic int px_core_commit(ext4_engine_t *);\n')
     with (work/'src/fs/ext4.c').open('a') as f:f.write('\n#include "../../tests/pkg_exec_kernel.inc"\n')
     replace('src/kernel/boot_info.c','boot_mode=pkg-test-v1','boot_mode=pkg-exec-v1')
-    replace('src/kernel/boot_info.c','m->size==1136','m->size>=960 && m->size<=32768')
+    replace('src/kernel/boot_info.c','m->size==1136','m->size>=1088 && m->size<=32768')
     replace('src/kernel/root_boot.c','pkg-test-v1','pkg-exec-v1')
     replace('src/kernel/main.c','    g_installed_boot=installed_root_requested(&boot_info);','    bool mx_requested=!strcmp(boot_info.cmdline,"boot_mode=pkg-exec-v1");\n    g_installed_boot=mx_requested || installed_root_requested(&boot_info);')
     replace('src/kernel/main.c','opt/fortress/pkg_boot_read_error','opt/fortress/pkg_exec_cut')
@@ -24,9 +38,6 @@ def overlay(work,replace):
     replace('src/kernel/syscall.c','        case 201:result=gk_test(frame->rdi);break;','        case 201:result=gk_test(frame->rdi);break;\n        case 203:result=mx_transport(frame->rdi,frame->rsi,frame->rdx);break;')
     # Owner registration is still the established generation arena. Drain occurs
     # before lifecycle disposal; no owner key is inherited by a spawned TCB.
-    replace('src/kernel/thread.c','void fd_close_cloexec(tcb_t *proc) {','void fd_close_cloexec(tcb_t *proc) {\n    extern void mx_exec_owner(tcb_t *);mx_exec_owner(proc);')
-    with (work/'src/kernel/pkg_boot_private.c').open('a') as f:f.write('\nbool mx_copy_fault(void){return __atomic_exchange_n(&gk_fail_copyout,0,__ATOMIC_ACQ_REL)!=0;}\nvoid mx_exec_owner(tcb_t *t){if(t&&t->pkg_owner.generation)gk_check(pw_exec(gk_key(t)));}\n')
-    for unit,path in [('plan','tests/pkg_plan_candidate.c')]:
-        (work/f'src/kernel/pkgexec_{unit}.c').write_text(f'#include "../../{path}"\n')
+    with (work/'src/kernel/pkg_boot_private.c').open('a') as f:f.write('\nbool mx_copy_fault(void){return __atomic_exchange_n(&gk_fail_copyout,0,__ATOMIC_ACQ_REL)!=0;}\n')
     (work/'tests/pkg_boot_ring3.c').write_text((work/'tests/pkg_exec_ring3.c').read_text())
     return result

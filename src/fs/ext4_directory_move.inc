@@ -67,7 +67,11 @@ static int e4_move_tree_check(ext4_mount_t *fs,uint32_t ino,uint32_t parent,unsi
 static int e4_move_cache_prepare(ext4_mount_t *fs,vfs_node_t *old,const char *name,
                                  vfs_node_t *dest,const char *next,uint32_t ino,
                                  bool directory,e4_move_cache_t **out) {
+#if FORTRESS_PKG_ENGINE
+    *out=NULL;e4_move_cache_t *p=px_publication_new();if(!p)return -VFS_ENOMEM;
+#else
     *out=NULL;e4_move_cache_t *p=kcalloc(1,sizeof(*p));if(!p)return -VFS_ENOMEM;
+#endif
     int r=e4_move_path(p->old_path,old,name);if(!r)r=e4_move_path(p->new_path,dest,next);
     if(r)goto fail;
     for(vfs_node_t *n=old->children;n;n=n->next)if(!strcmp(n->name,name)) {
@@ -88,7 +92,11 @@ static int e4_move_cache_prepare(ext4_mount_t *fs,vfs_node_t *old,const char *na
     }
     *out=p;return 0;
 fail:
+#if FORTRESS_PKG_ENGINE
+    px_publication_drop(p);return r;
+#else
     kfree(p);return r;
+#endif
 }
 static void e4_move_cache_publish(ext4_mount_t *fs,vfs_node_t *old,vfs_node_t *dest,
                                  const char *name,e4_move_cache_t *p) {

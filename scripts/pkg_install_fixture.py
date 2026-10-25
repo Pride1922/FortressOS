@@ -5,11 +5,12 @@ from pkg_enroll_records import H,PUB,signed
 from pkg_pending_records import observation
 from pkg_artifact_vectors import elf,tar_header,pack
 from pkg_manifest_vectors import text
-def fixture(out,signers,record_key,docs=15,large=False,low_space=False,package="toolbox",command_name="hello"):
+def fixture(out,signers,record_key,docs=15,large=False,low_space=False,package="toolbox",command_name="hello",executable=None):
     for name in (package,command_name):
         assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*",name) and len(name)<=32
     out=pathlib.Path(out);out.mkdir();image,_=create(out,identities=True)
-    executable=elf()+(bytes(4*1024*1024-121) if large else b'')
+    executable=elf() if executable is None else executable
+    executable=executable+(bytes(4*1024*1024-len(executable)) if large else b'')
     members=[('bin/'+command_name,executable,0o755,1)]+[(f'doc/shared/{i:02}/a/b/c/readme' if not large else f'doc/{i:02}/readme',b'documentation\n'*(i+1),0o644,2) for i in range(docs)]
     manifest=struct.pack('<4sHHQQQ',b'FMN1',1,len(members),73,1,3)+bytes(range(32))+text(package)+text(command_name)+text('73')+text('executor fixture');tar=b''
     for path,data,mode,role in members:manifest+=struct.pack('<BBHQ',role,0,mode,len(data))+H(data)+text(path);tar+=tar_header(path,data,mode)+data+bytes((-len(data))%512)

@@ -3,8 +3,8 @@
 #include "transaction_cli.h"
 /* Private trusted embedding. A source registry resolves the copied package
  * name; callers cannot supply paths, devices, policy or keys. One callback owns
- * its durable result, even when subsequent output fails. Default pkg_main does
- * not link this frontend or a mutation backend. */
+ * its durable result, even when subsequent output fails. Normal /bin/pkg binds
+ * the versioned kernel transport; the kernel decides enrollment/admission. */
 typedef struct {
     pkg_transaction_backend transactions;
     int (*mutate)(void *,bool remove,const char *package,size_t length);

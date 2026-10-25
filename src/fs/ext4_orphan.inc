@@ -26,6 +26,9 @@ static int e4_orphan_load(ext4_engine_t *e,uint32_t ino,e4_inode_t *in,uint8_t *
 }
 static int e4_orphan_add(ext4_engine_t *e,uint32_t ino,uint8_t *raw) {
     if (e4_orphan_index(e,ino)>=0) return -VFS_EAGAIN;
+#if FORTRESS_PKG_ENGINE
+    if(!px_orphan_room(e))return -VFS_EAGAIN;
+#endif
     if (e->orphan_count==64) return -VFS_EFBIG;
     if (e4_u32(raw+20)) return -VFS_EIO;
     uint8_t *sb=e4_super(e);if (!sb) return e->error;
@@ -254,6 +257,9 @@ static int e4_orphan_detach(ext4_engine_t *e,uint32_t ino,uint8_t *raw) {
 }
 static int e4_orphan_cleanup(ext4_engine_t *e,uint32_t ino,bool trim_pinned) {
     for (;;) {
+#if FORTRESS_PKG_ENGINE
+        if(px_orphan_pause(e))return -VFS_EAGAIN;
+#endif
         int r=e4_orphan_begin(e);if (r) return r;
         e4_inode_t in;uint8_t *raw;r=e4_orphan_load(e,ino,&in,&raw);
         if (r) return e4_namespace_end(e,r);

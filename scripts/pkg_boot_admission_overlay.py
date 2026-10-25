@@ -19,7 +19,7 @@ def overlay(work,replace):
     capture=(work/'tests/pkg_boot_modules.inc').read_text()
     replace('src/kernel/boot_info.c','    root_boot_config_t root=root_boot_parse(',capture+'\n    root_boot_config_t root=root_boot_parse(')
     replace('src/kernel/thread.h','    handoff_registration_t handoff;',
-            '    handoff_registration_t handoff;\n    struct {uint64_t generation;uint32_t slot;} pkg_owner;\n    bool pkg_tracked;')
+            '    handoff_registration_t handoff;\n    bool pkg_tracked;')
     replace('src/kernel/thread.c','#include "thread.h"','#include "thread.h"\nvoid gk_owner_exit(tcb_t *);\nvoid gk_owner_reap(tcb_t *);')
     for sig in ('void process_exit(uint64_t exit_code) {','void thread_exit(void) {'):
         replace('src/kernel/thread.c',sig,sig+'\n    gk_owner_exit(thread_current());')
@@ -29,7 +29,7 @@ def overlay(work,replace):
     replace('src/kernel/main.c','    bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);',
             '    extern void jb_boot(const boot_info_t *,bool,bool);jb_boot(&boot_info,qemu_fw_cfg_has_key("opt/fortress/pkg_boot_nvme"),qemu_fw_cfg_has_key("opt/fortress/pkg_boot_read_error"));\n    bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);')
     (work/'src/kernel/pkg_boot_private.c').write_text('#include "../../tests/pkg_gate1_kernel.inc"\n')
-    for unit in ('pkg_backend_candidate','pkg_writer_candidate','pkg_enrollment_candidate','pkg_mount_candidate','pkg_grant_candidate','pkg_selector_candidate'):
+    for unit in ('pkg_enrollment_candidate','pkg_mount_candidate','pkg_grant_candidate','pkg_selector_candidate'):
         (work/'src/kernel'/('pkgboot_'+unit+'.c')).write_text('#include "../../tests/'+unit+'.c"\n')
     for unit in ('catalog','verify','format','manifest'):
         (work/'src/kernel'/('pkgboot_'+unit+'.c')).write_text('#include "../../user/pkg/'+unit+'.c"\n')

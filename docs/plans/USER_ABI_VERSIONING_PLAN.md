@@ -17,9 +17,9 @@ All evolution strictly coordinates with permissions and credential contracts (Is
 
 ## 2. System Call Table Audit & Numbering Policy
 
-### 2.1 Syscall Allocation Map (Syscalls 0 through 94)
+### 2.1 Syscall Allocation Map (Syscalls 0 through 95)
 
-The active system call table in [`src/include/syscall_abi.h`](file:///c:/Sources/FortressOS/src/include/syscall_abi.h) contains 95 allocated system call numbers spanning 0 to 94:
+The active system call table in [`src/include/syscall_abi.h`](file:///c:/Sources/FortressOS/src/include/syscall_abi.h) contains 96 allocated system call numbers spanning 0 to 95:
 
 | Number | Identifier | Signature / Purpose | Specification Header |
 |---|---|---|---|
@@ -118,15 +118,16 @@ The active system call table in [`src/include/syscall_abi.h`](file:///c:/Sources
 | 92 | `SYS_THREAD_SELF` | `() -> tid` | `syscall_abi.h` |
 | 93 | `SYS_THREAD_YIELD`| `() -> 0` | `syscall_abi.h` |
 | 94 | `SYS_FUTEX` | `(uint32_t *uaddr, int op, uint32_t val, const timespec_t *timeout) -> 0/-errno` | `syscall_abi.h` |
+| 95 | `SYS_PKGCTL` | `(pkg_request_v1 *, pkg_result_v1 *, size=64) -> 0/-errno` | `pkg_abi.h` |
 
 ### 2.2 Syscall Allocation Rules
 
 1. **High-Water Mark & Next Available**:
    ```c
-   #define SYSCALL_MAX        94
-   #define SYSCALL_NEXT_AVAIL 95
+   #define SYSCALL_MAX        95
+   #define SYSCALL_NEXT_AVAIL 96
    ```
-2. **Contiguous Allocation**: New system call numbers MUST be allocated monotonically starting from `SYSCALL_NEXT_AVAIL` (95).
+2. **Contiguous Allocation**: New system call numbers MUST be allocated monotonically starting from `SYSCALL_NEXT_AVAIL` (96).
 3. **No Collision or Slot Reuse**: Numbers 71, 72, 73 were previously defined across `install_abi.h` and `account_abi.h`. They are now explicitly documented in `syscall_abi.h` with `#ifndef` guards, preventing accidental reallocation collisions.
 4. **Fail-Closed on Unassigned Syscalls**: Any syscall invocation with `RAX > SYSCALL_MAX` or unregistered syscall numbers triggers `default: result = SYSCALL_ENOSYS; break;` in `src/kernel/syscall.c`, cleanly returning `-4` without side effects.
 

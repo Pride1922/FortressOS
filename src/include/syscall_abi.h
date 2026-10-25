@@ -111,8 +111,9 @@
 #define SYS_FUTEX         94 /* (uint32_t *uaddr, int op, uint32_t val, const timespec_t *timeout) -> 0/-errno */
 
 /* Syscall Allocation High-Water Mark and Next Available Slot */
-#define SYSCALL_MAX        94
-#define SYSCALL_NEXT_AVAIL 95
+#define SYS_PKGCTL         95 /* (pkg_request_v1 *, pkg_result_v1 *, size=64); pkg_abi.h */
+#define SYSCALL_MAX        95
+#define SYSCALL_NEXT_AVAIL 96
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1

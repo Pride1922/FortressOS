@@ -215,6 +215,8 @@ test-root-phase2:
 all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 live: all
 include src/lib/crypto/crypto.mk
+include user/pkg/pkg.mk
+$(BUILD_DIR)/kernel/pkg_service.o $(BUILD_DIR)/kernel/pkg_owner.o $(BUILD_DIR)/kernel/pkg_backend.o $(BUILD_DIR)/fs/pkg_plan.o: CFLAGS += -Os -fstack-usage -Wframe-larger-than=1024
 include src/lib/tls/tls.mk
 
 # C_SRCS/OBJS above automatically include src/fs/pipe.c.
@@ -1412,9 +1414,11 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
+$(INITRAMFS_TAR): $(USER_PKG_ELF)
 $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_PTHREAD_TEST_ELF) $(USER_CRASH_TEST_ELF) $(USER_TELNET_ELF) $(USER_SSH_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
+	@cp -f $(USER_PKG_ELF) $(BUILD_DIR)/initramfs/bin/pkg
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/sh
 	@$(foreach tool,$(USER_LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
@@ -2635,6 +2639,14 @@ test-abi-version-host: tests/abi_versioning_host.c
 # Private copied kernel and regular-file fixtures; never rebuild release media.
 .PHONY: test-pkg-exec-boot
 .PHONY: test-pkg-exec-cli-host
+.PHONY: test-pkg-system-host test-pkg-system-interactive
+test-pkg-system-host:
+	python3 scripts/test_pkg_system_host.py
+
+test-pkg-system-interactive:
+	@python3 -c "import tarfile; t=tarfile.open('bin/initramfs.tar'); assert t.getmember('bin/pkg').isfile(), 'Build normal components in an isolated workspace first'"
+	python3 scripts/test_pkg_system_interactive.py
+
 test-pkg-exec-cli-host:
 	python3 scripts/test_pkg_exec_cli.py
 

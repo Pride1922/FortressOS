@@ -478,12 +478,13 @@ static void test_syscall_table_audit(void) {
     assert(SYS_THREAD_SELF == 92);
     assert(SYS_THREAD_YIELD == 93);
     assert(SYS_FUTEX == 94);
+    assert(SYS_PKGCTL == 95);
 
     /* Assert High-Water Mark and Next Available Syscall Slot */
-    _Static_assert(SYSCALL_MAX == 94, "SYSCALL_MAX must be 94");
-    _Static_assert(SYSCALL_NEXT_AVAIL == 95, "SYSCALL_NEXT_AVAIL must be 95");
+    _Static_assert(SYSCALL_MAX == 95, "SYSCALL_MAX must be 95");
+    _Static_assert(SYSCALL_NEXT_AVAIL == 96, "SYSCALL_NEXT_AVAIL must be 96");
 
-    puts("PASS test_syscall_table_audit: 95/95 syscall entries audited and contiguous allocation slot 95 confirmed");
+    puts("PASS test_syscall_table_audit: 96/96 syscall entries audited and contiguous allocation slot 96 confirmed");
 }
 
 static void test_pattern_a_stat_ext(void) {

@@ -107,7 +107,7 @@ static bool gk_boundary(void);
     replace('src/fs/ext4.c','#include "ext4.h"','#include "ext4.h"\nstruct ext4_engine;\n'+pre)
     with (work/'src/fs/ext4.c').open('a') as f:f.write('\n#include "../../tests/pkg_gate1_engine_generated.inc"\n#include "../../tests/pkg_gate1_storage.inc"\n')
     replace('src/kernel/thread.h','    handoff_registration_t handoff;',
-            '    handoff_registration_t handoff;\n    struct {uint64_t generation;uint32_t slot;} pkg_owner;\n    bool pkg_tracked;')
+            '    handoff_registration_t handoff;\n    bool pkg_tracked;')
     replace('src/kernel/thread.c','#include "thread.h"','#include "thread.h"\nvoid gk_owner_exit(tcb_t *);\nvoid gk_owner_reap(tcb_t *);')
     for sig in ('void process_exit(uint64_t exit_code) {','void thread_exit(void) {'):
         replace('src/kernel/thread.c',sig,sig+'\n    gk_owner_exit(thread_current());')
@@ -118,7 +118,7 @@ static bool gk_boundary(void);
     replace('src/kernel/main.c','    bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);',
             '    extern void gk_fixture_boot(bool,bool);gk_fixture_boot(qemu_fw_cfg_has_key("opt/fortress/pkg_gate1_nvme"),qemu_fw_cfg_has_key("opt/fortress/pkg_gate1_read_error"));\n    bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);')
     (work/'src/kernel/pkg_gate1_private.c').write_text('#include "../../tests/pkg_gate1_kernel.inc"\n')
-    units=['pkg_backend_candidate','pkg_writer_candidate','pkg_enrollment_candidate','pkg_mount_candidate','pkg_grant_candidate','pkg_retirement_candidate','pkg_retirement_auth']
+    units=['pkg_enrollment_candidate','pkg_mount_candidate','pkg_grant_candidate','pkg_retirement_candidate','pkg_retirement_auth']
     for unit in units:(work/'src/kernel'/('gate1_'+unit+'.c')).write_text('#include "../../tests/'+unit+'.c"\n')
     for unit in ('catalog','verify','format','manifest'):
         (work/'src/kernel'/('gate1_'+unit+'.c')).write_text('#include "../../user/pkg/'+unit+'.c"\n')

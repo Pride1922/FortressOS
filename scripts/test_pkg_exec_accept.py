@@ -29,15 +29,23 @@ def main():
         run([str(work/'limine/limine'),'bios-install',str(output)],label+'-bios-install')
     try:
         stale=[p for p,h in previous['sources'].items() if not (test.ROOT/p).is_file() or test.base.H(test.ROOT/p)!=h]
-        m['stale_build_sources']=stale;assert not stale,stale
+        m['stale_build_sources']=stale
+        # Only this uncompiled host controller may differ from the build.
+        # Guest sources, fixture producers and overlays remain exact matches.
+        assert set(stale)<={'scripts/test_pkg_exec_accept.py'},stale
         assert test.base.H(test.ROOT/'Makefile')==previous['guards']['Makefile']
         expected_kernel=previous.get('kernel_sha256',previous.get('measurements',{}).get('kernel'))
         expected_bootstrap=previous.get('bootstrap_sha256',previous.get('measurements',{}).get('bootstrap'))
         assert expected_kernel and test.base.H(work/'bin/fortress.elf')==expected_kernel
         assert expected_bootstrap and test.base.H(prior/'bootstrap.tar')==expected_bootstrap
         m['matched_build_sources']=len(previous['sources'])
-        m['source_commit']=command(['git','rev-parse','HEAD']).strip()
-        m['source_status']=command(['git','status','--short'])
+        git=['git'];link=test.ROOT/'.git'
+        if link.is_file():
+            target=link.read_text().strip().removeprefix('gitdir: ')
+            if len(target)>2 and target[1]==':':
+                git+=['--git-dir',command(['wslpath','-u',target]).strip(),'--work-tree',str(test.ROOT)]
+        m['source_commit']=command(git+['rev-parse','HEAD']).strip()
+        m['source_status']=command(git+['status','--short'])
         save()
         with tempfile.TemporaryDirectory(prefix='fortress-pkgexec-accept-key-') as temp:
             temp=pathlib.Path(temp);import os
@@ -69,13 +77,13 @@ def main():
                 foreign=out/(label+'.root');shutil.copyfile(root,foreign);payload=out/(label+'.bytes');payload.write_bytes(elf());commands=out/(label+'.commands');commands.write_text(f'write {payload} {path}\nset_inode_field {path} mode 0100755\nset_inode_field {path} uid 0\nset_inode_field {path} gid 0\n')
                 run(['debugfs','-w','-f',str(commands),str(foreign)],label+'-seed');run(['e2fsck','-fn',str(foreign)],label+'-fsck');target=out/(label+'.img');target.write_bytes(gpt(foreign.read_bytes()));m['cases'].append(test.boot(out,work,iso,target,'bios',1,label,key,True));save()
             for label in ('damaged-source-catalog','source-identity-mismatch'):
-                policy=bytearray(prepared['policy']);an,cn=struct.unpack_from('<II',policy,952)
-                catalog=bytearray(policy[960+an:]);assert len(catalog)==cn
+                policy=bytearray(prepared['policy']);an,cn=struct.unpack_from('<II',policy,1080)
+                catalog=bytearray(policy[1088+an:]);assert len(catalog)==cn
                 if label=='damaged-source-catalog':catalog[-1]^=1
                 else:
                     body=bytearray(catalog[:153]);body[72]=9;body[73:105]=b'other-kit'.ljust(32,b'\0')
                     catalog=signed(body,keys(roles['catalog']))
-                policy[960+an:]=catalog;policy[304:336]=H(catalog)
+                policy[1088+an:]=catalog;policy[304:336]=H(catalog)
                 selector=bytearray(prepared['selector'][:576]);selector[80:112]=H(policy)
                 variant=out/('media-'+label);shutil.copytree(media,variant)
                 (variant/'boot/policy.bin').write_bytes(policy)

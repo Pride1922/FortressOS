@@ -1,4 +1,5 @@
 #include "poll.h"
+#include "pkg_service.h"
 #include "syscall.h"
 #include "permissions.h"
 static bool syscall_actor(creds_t *out);
@@ -2277,6 +2278,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             }
             break;
         }
+
+        case SYS_PKGCTL:
+            result=pkg_service_control(frame->rdi,frame->rsi,frame->rdx);
+            break;
 
         case SYS_SIGRETURN:
             result = sys_sigreturn(frame, &return_disposition);

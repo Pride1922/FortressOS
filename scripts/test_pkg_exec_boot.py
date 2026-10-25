@@ -5,11 +5,13 @@ import test_pkg_boot_admission as base
 from pkg_exec_overlay import overlay
 from pkg_install_fixture import fixture
 from pkg_enroll_records import keys,PUB,H,signed
-from pkg_enroll_fixture import command,gpt
+from pkg_enroll_fixture import command,gpt,FILES
 from test_getrandom import CODE,VARS
 ROOT=base.ROOT
 KEY=None
 BOOTSTRAP=None
+PROGRAM=None
+BASE_PATHS=('/bin/pkg-boot','/bin/shell','/bin/sudo','/bin/login','/etc/passwd','/etc/group','/etc/shadow','/bin/pkg','/sbin/sshd','/etc/ssh/sshd_config','/etc/ssh/ssh_host_ed25519_key')
 
 def canonical_account_stage(image):
     # Test the authenticated-lineage refusal, not merely malformed dir slots.
@@ -29,37 +31,58 @@ def cli_objects(run):
     return objects
 
 def build(image,out,roles,kernel,bootstrap):
-    out.mkdir();seed=fixture(out/'executor',keys(roles['catalog']),KEY,15,False,package='field-kit',command_name='field-tool')
-    commands=out/'base.commands';paths=['/bin/pkg-boot','/bin/shell','/bin/sudo','/bin/login','/etc/passwd','/etc/group','/etc/shadow'];expected=b''
+    out.mkdir();seed=fixture(out/'executor',keys(roles['catalog']),KEY,15,False,package='field-kit',command_name='field-tool',executable=PROGRAM)
+    # SSH host identity is an independent ephemeral TEST key, not a package
+    # signing key or the external local-MAC key. It belongs to this fixture.
+    with tempfile.TemporaryDirectory(prefix='fortress-pkgexec-ssh-') as temp:
+        ssh_key=pathlib.Path(temp)/'hostkey'
+        command(['ssh-keygen','-q','-t','ed25519','-N','','-C','pkg-system-test','-f',str(ssh_key)])
+        ssh_bytes=ssh_key.read_bytes()
+        ssh_public=ssh_key.with_suffix('.pub').read_bytes()
+    (out/'ssh-host.pub').write_bytes(ssh_public)
+    commands=out/'base.commands';paths=BASE_PATHS;expected=b''
     with tarfile.open(BOOTSTRAP) as archive:
-        lines=['mkdir /bin','set_inode_field /bin mode 040755']
+        lines=['mkdir /bin','set_inode_field /bin mode 040755','mkdir /sbin','mkdir /etc/ssh','set_inode_field /etc/ssh mode 040700']
         for i,path in enumerate(paths):
-            if i<4:
+            if i<4 or path in ('/bin/pkg','/sbin/sshd'):
                 data=archive.extractfile(path[1:]).read();source=out/('base-'+str(i));source.write_bytes(data);lines += [f'write {source} {path}',f'set_inode_field {path} mode {"0104755" if i==2 else "0100755"}',f'set_inode_field {path} uid 0',f'set_inode_field {path} gid 0']
-            else:data=({'/etc/passwd':b'root:x:0:0:root:/root:/bin/shell\n','/etc/group':b'root:x:0:\n','/etc/shadow':b'root:!:::::::\n'})[path]
+            else:
+                data=FILES[path] if path in FILES else (b'Enabled yes\nPort 22\nListenAddress 0.0.0.0\nPermitRootLogin no\nPasswordAuthentication yes\nPubkeyAuthentication no\nMaxSessions 2\nMaxAuthTries 5\nLoginGraceTime 60\n' if path.endswith('sshd_config') else ssh_bytes)
+                if path not in FILES:
+                    source=out/('base-'+str(i));source.write_bytes(data);source.chmod(0o600);lines.append(f'write {source} {path}')
             expected+=H(data)
         for path,mode in [('/root','040700'),('/etc','040755'),('/var','040755'),('/var/lib','040755'),('/var/lib/fortress','040755'),('/var/lib/fortress/accounts','040700')]:lines.append(f'set_inode_field {path} mode {mode}')
-        for path in paths[4:]:lines.append(f'set_inode_field {path} mode {"0100600" if path.endswith("shadow") else "0100644"}')
-    commands.write_text('\n'.join(lines)+'\n');(out/'base.log').write_text(command(['debugfs','-w','-f',str(commands),str(seed)]));image.write_bytes(seed.read_bytes())
+        for path in [p for p in paths[4:] if p.startswith('/etc/')]:lines.append(f'set_inode_field {path} mode {"0100600" if path.endswith("shadow") or path.startswith("/etc/ssh/") else "0100644"}')
+    commands.write_text('\n'.join(lines)+'\n');(out/'base.log').write_text(command(['debugfs','-w','-f',str(commands),str(seed)]))
+    # debugfs mkdir may consume a reserved account slot. Restore the explicit
+    # account layout, retaining the new SSH directory as an ordinary entry.
+    from pkg_enroll_fixture import directory,inode
+    from test_jbd2_replay_host import blocks
+    raw=bytearray(seed.read_bytes());mapping=blocks(seed,'/etc');assert len(mapping)==1
+    entries=[(inode(seed,path),path.rsplit('/',1)[1]) for path in FILES]
+    entries.append((inode(seed,'/etc/ssh'),'ssh',2))
+    directory(raw,inode(seed,'/etc'),2,entries,6,mapping[0]);seed.write_bytes(raw);image.write_bytes(raw)
     artifact=(out/'executor/artifact').read_bytes();catalog=(out/'executor/catalog').read_bytes();selector_keys=keys(roles['selector'])
     policy=(out/'executor/policy').read_bytes()+(out/'executor/config').read_bytes()+b''.join(PUB(k) for k in selector_keys)+expected+struct.pack('<II',len(artifact),len(catalog))+artifact+catalog
     assert len(policy)<=32768
-    body=bytearray(576);body[:16]=b'FORT-PKG-EXEC-B1';body[16:48]=kernel;body[48:80]=bootstrap;body[80:112]=H(policy);body[112:144]=H(KEY)
+    body=bytearray(576);body[:16]=b'FORT-PKG-EXEC-B2';body[16:48]=kernel;body[48:80]=bootstrap;body[80:112]=H(policy);body[112:144]=H(KEY)
     return {'selector':signed(body,selector_keys),'policy':policy,'identities':[]}
 
 def boot(out,work,iso,source,fw,smp,label,key_file,refused=False,cut=False):
     dest=out/label;dest.mkdir();disk=dest/'disk.img';shutil.copyfile(source,disk);initial=disk.read_bytes();assert disk.is_file() and not disk.is_symlink() and len(initial)==64*1024*1024
     with tempfile.TemporaryDirectory(prefix='fortress-pkgexec-uart-') as temp:
+        active_disk=pathlib.Path(temp)/'disk.img';shutil.copyfile(disk,active_disk)
+        assert active_disk.is_file() and not active_disk.is_symlink() and active_disk.stat().st_size==len(initial)
         # The probe is autonomous. File capture avoids socket backpressure;
         # a bounded UART transmit timeout can otherwise disable guest output.
-        argv=['qemu-system-x86_64','-M','q35','-accel','tcg','-cpu','max','-m','512M','-smp',str(smp),'-display','none','-net','none','-no-reboot','-boot','d','-rtc','base=2026-10-25T12:00:00','-cdrom',str(iso),'-serial',f'file:{dest/"serial.log"}','-drive',f'if=none,format=raw,id=exec,file={disk}','-device','nvme,drive=exec,serial=FORTRESS-PKG-EXEC','-fw_cfg','name=opt/fortress/pkg_boot_nvme,string=private-regular-file-only','-fw_cfg',f'name=opt/fortress/pkg_exec_key,file={key_file}']
+        argv=['qemu-system-x86_64','-M','q35','-accel','tcg','-cpu','max','-m','512M','-smp',str(smp),'-display','none','-net','none','-no-reboot','-boot','d','-rtc','base=2026-10-25T12:00:00','-cdrom',str(iso),'-serial',f'file:{dest/"serial.log"}','-drive',f'if=none,format=raw,id=exec,file={active_disk}','-device','nvme,drive=exec,serial=FORTRESS-PKG-EXEC','-fw_cfg','name=opt/fortress/pkg_boot_nvme,string=private-regular-file-only','-fw_cfg',f'name=opt/fortress/pkg_exec_key,file={key_file}']
         if fw=='uefi':
             shutil.copyfile(VARS,dest/'vars.fd');argv+=['-drive',f'if=pflash,format=raw,unit=0,readonly=on,file={CODE}','-drive',f'if=pflash,format=raw,unit=1,file={dest/"vars.fd"}']
         if cut:argv+=['-fw_cfg','name=opt/fortress/pkg_exec_cut,string=durable-commit-reset']
         qmp_path=pathlib.Path(temp)/'qmp';argv+=['-qmp',f'unix:{qmp_path},server=on,wait=off','-d','guest_errors','-D',str(dest/'qemu-debug.log')]
         assert not any(x in argv for x in ('-hda','-hdb','-blockdev','-readconfig'))
         for i,arg in enumerate(argv):
-            if arg=='-drive':assert argv[i+1]==f'if=none,format=raw,id=exec,file={disk}' or argv[i+1].startswith('if=pflash,format=raw,unit=')
+            if arg=='-drive':assert argv[i+1]==f'if=none,format=raw,id=exec,file={active_disk}' or argv[i+1].startswith('if=pflash,format=raw,unit=')
         (dest/'argv.json').write_text(json.dumps(argv,indent=2)+'\n')
         with (dest/'stderr.log').open('w') as err:p=subprocess.Popen(argv,cwd=work,stderr=err,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
         qmp=socket.socket(socket.AF_UNIX);events=bytearray()
@@ -82,6 +105,9 @@ def boot(out,work,iso,source,fw,smp,label,key_file,refused=False,cut=False):
             else:raise AssertionError('timeout '+text[-6000:])
             text=(dest/'serial.log').read_text(errors='replace') if (dest/'serial.log').exists() else ''
             assert not any(x in text for x in ('[PANIC]','[FATAL]','RING3 FAIL','CPU EXCEPTION KERNEL PANIC')),text[-6000:]
+            # Stop writers before retaining the complete test disk.
+            if refused and p.poll() is None:p.terminate();p.wait(timeout=5)
+            shutil.copyfile(active_disk,disk)
             if cut:
                 assert 'PKGEXEC CUT durable-COMMIT' in text
             elif refused:
@@ -101,9 +127,9 @@ def boot(out,work,iso,source,fw,smp,label,key_file,refused=False,cut=False):
                 assert hmac.compare_digest(record[8160:],hmac.new(KEY,record[:8160],hashlib.sha256).digest())
                 assert struct.unpack_from('<QQQ',record,40)==(73,3,7) and struct.unpack_from('<7I',record,64)==(0,1,0,65535,65535,0,0)
                 assert not any(record[96:112]+record[144:256])
-                for i,path in enumerate(('/bin/pkg-boot','/bin/shell','/bin/sudo','/bin/login','/etc/passwd','/etc/group','/etc/shadow')):
+                for i,path in enumerate(BASE_PATHS):
                     assert observation(root,path,i)[48:80]==policy[728+32*i:760+32*i]
-                (dest/'oracle.json').write_text(json.dumps({'result':'PASS','sequence':struct.unpack_from('<Q',record,24)[0],'generation':struct.unpack_from('<Q',record,32)[0],'build_floor':73,'root_floor':3,'catalog_floor':7,'members':16,'base_hashes_preserved':7},indent=2)+'\n')
+                (dest/'oracle.json').write_text(json.dumps({'result':'PASS','sequence':struct.unpack_from('<Q',record,24)[0],'generation':struct.unpack_from('<Q',record,32)[0],'build_floor':73,'root_floor':3,'catalog_floor':7,'members':16,'base_hashes_preserved':len(BASE_PATHS)},indent=2)+'\n')
             result={'firmware':fw,'smp':smp,'refused':refused,'reset_at_commit':cut,'boot_runtime':'CUT' if cut else 'PASS','qmp_guest_shutdown':not cut and not refused,'disk_sha256':H(disk.read_bytes()).hex()};(dest/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(label,result['boot_runtime'],flush=True);return result
         finally:
             try:events.extend(qmp.recv(65536))
@@ -113,6 +139,7 @@ def boot(out,work,iso,source,fw,smp,label,key_file,refused=False,cut=False):
                 p.terminate()
                 try:p.wait(timeout=5)
                 except subprocess.TimeoutExpired:p.kill();p.wait(timeout=5)
+            shutil.copyfile(active_disk,disk)
             (dest/'process.json').write_text(json.dumps({'observed_returncode':observed,'cleanup_returncode':p.returncode,'intentional_cut':cut},indent=2)+'\n')
 
 def main():
@@ -139,7 +166,7 @@ def main():
         # Producer temporary inputs are removed by the base runner; reconstruct
         # expected profile directly from its signed manifest recipe.
         from pkg_artifact_vectors import elf
-        items=[{'path':'/usr/bin/field-tool','sha256':H(elf()).hex()}]+[{'path':f'/usr/share/pkg/field-kit/73/doc/shared/{i:02}/a/b/c/readme','sha256':H(b'documentation\n'*(i+1)).hex()} for i in range(15)]
+        items=[{'path':'/usr/bin/field-tool','sha256':H(elf() if PROGRAM is None else PROGRAM).hex()}]+[{'path':f'/usr/share/pkg/field-kit/73/doc/shared/{i:02}/a/b/c/readme','sha256':H(b'documentation\n'*(i+1)).hex()} for i in range(15)]
         (out/'expected.json').write_text(json.dumps(items,indent=2)+'\n')
         assert all(KEY not in (out/p).read_bytes() for p in ('valid.iso','policy.bin','selector.bin','bootstrap.tar'))
         manifest=json.loads((out/'manifest.json').read_text());results=[]

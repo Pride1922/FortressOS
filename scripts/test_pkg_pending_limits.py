@@ -17,7 +17,7 @@ def main():
         shutil.copytree(prior/'workspace',work)
         # Keep the saved private EXT4 overlay, but compile the current recovery
         # implementation and tests rather than silently testing an old copy.
-        for name in ('tests/pkg_pending_fs.inc','tests/pkg_pending_candidate.c','tests/pkg_pending_candidate.h','tests/pkg_writer_candidate.c','tests/pkg_writer_candidate.h'):
+        for name in ('tests/pkg_pending_fs.inc','tests/pkg_pending_candidate.c','tests/pkg_pending_candidate.h','tests/pkg_writer_candidate.c','tests/pkg_writer_candidate.h','src/kernel/pkg_owner.c','src/kernel/pkg_owner.h'):
             shutil.copyfile(ROOT/name,work/name)
         shutil.copyfile(ROOT/'tests/pkg_pending_limits.inc',work/'tests/pkg_pending_limits.inc')
         host=(ROOT/'tests/pkg_pending_fs_host.c').read_text();host=host.replace('int main(int argc,char **argv){','#include "pkg_pending_limits.inc"\nint main(int argc,char **argv){')

@@ -74,6 +74,9 @@ int ext4_engine_namespace_create_attrs(ext4_engine_t *e,uint32_t parent,const ch
         e4_p16(praw+26,(uint16_t)(e4_u16(praw+26)+1));e4_inode_sum(e->fs,parent,praw);
     }
     e4_inode_sum(e->fs,ino,raw);
+#if FORTRESS_PKG_ENGINE
+    px_created_inode=ino;
+#endif
     r=e4_dir_edit(e,&dir,name,ino,directory ? 2 : 1);
     e->inode_delta=0;e->reserve_ino=0;
 done:

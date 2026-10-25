@@ -205,7 +205,11 @@ static vfs_node_t *e4_jcreate_account(vfs_node_t *parent,const char *name,vfs_no
 #endif
     ext4_mount_t *fs=((e4_inode_t *)parent->fs_private)->fs;uint32_t ino=0;
     if (!r && (strlen(parent->path)+strlen(name)+1>=VFS_MAX_PATH || !e4_cache_room(fs))) r=-VFS_EFBIG;
+#if FORTRESS_PKG_ENGINE
+    if (!r) {node=px_node_new(fs);if (!node) r=-VFS_ENOMEM;}
+#else
     if (!r) {node=kcalloc(1,sizeof(*node));if (!node) r=-VFS_ENOMEM;}
+#endif
     if (!r) {
         fs->account_allocation=account;
         fs->account_namespace_operation=account;
@@ -227,7 +231,11 @@ static vfs_node_t *e4_jcreate_account(vfs_node_t *parent,const char *name,vfs_no
     }
     spin_unlock_irqrestore(&e4_lock,flags);
     if (error) *error=r;
+#if FORTRESS_PKG_ENGINE
+    if (r) { px_node_drop(node);vfs_set_last_create_error(r);return NULL; }return &node->node;
+#else
     if (r) { kfree(node);vfs_set_last_create_error(r);return NULL; }return &node->node;
+#endif
 }
 static vfs_node_t *e4_jcreate_common(vfs_node_t *p,const char *n,vfs_node_type_t t,int *e,bool o,const vfs_create_attrs_t *a,const creds_t *c) {
     return e4_jcreate_account(p,n,t,e,o,a,c,false);
@@ -352,7 +360,11 @@ static int e4_jrename_account(vfs_node_t *old,const char *name,vfs_node_t *dest,
         } else e4_move_cache_publish(fs,old,dest,next,publication);
     }
 done:
+#if FORTRESS_PKG_ENGINE
+    spin_unlock_irqrestore(&e4_lock,flags);px_publication_drop(publication);return r;
+#else
     spin_unlock_irqrestore(&e4_lock,flags);kfree(publication);return r;
+#endif
 }
 static int e4_jrename_common(vfs_node_t *o,const char *n,vfs_node_t *d,const char *s,bool r,const creds_t *c) {
     return e4_jrename_account(o,n,d,s,r,c,false);

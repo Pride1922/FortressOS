@@ -6,6 +6,7 @@
 #include "percpu.h"
 #include "string.h"
 #include "pkg_backend_candidate.h"
+#include "pkg_service.h"
 const pkg_transaction_backend *gk_backend(void);
 bool gk_root_admitted(void);
 int64_t gk_storage_test(uint64_t);
@@ -15,7 +16,7 @@ static void gk_check(bool ok){if(!ok)__builtin_trap();}
 static pw_key gk_key(tcb_t *t){return (pw_key){.generation=t->pkg_owner.generation,.slot=t->pkg_owner.slot};}
 void gk_owner_exit(tcb_t *t){
  spin_debug_assert_unheld();if(!t||!t->pkg_owner.generation)return;
- pw_key key=gk_key(t);gk_check(pw_detach(key));gk_check(!pw_references(key));t->pkg_owner.generation=0;t->pkg_owner.slot=0;
+ pkg_owner_exit(t);
  __atomic_add_fetch(&gk_exits,1,__ATOMIC_RELEASE);
 }
 void gk_owner_reap(tcb_t *t){

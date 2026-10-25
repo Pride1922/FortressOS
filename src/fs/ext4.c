@@ -1,5 +1,6 @@
 /* E4-A: bounded extent-backed reads and synchronous non-journaled writes. */
 #include "ext4.h"
+#include "pkg_engine_config.h"
 #include "vfs.h"
 #if defined(FORTRESS_DAC_ENFORCED) || defined(TEST_PERMISSIONS_ENFORCEMENT)
 #include "permission_values.h"
@@ -80,6 +81,10 @@ struct ext4_mount {
     unsigned pending_count, physical_count, visits, map_entries;
     e4_map_t *maps;
 };
+#if FORTRESS_PKG_ENGINE
+
+#include "pkg_executor_forward.inc"
+#endif
 static spinlock_t e4_lock = SPINLOCK_RANKED(1, "ext4");
 #ifdef FORTRESS_EXT4_COMMIT_PAUSE_TEST
 static ext4_mount_t *e4_pause_mount;
@@ -582,7 +587,11 @@ static bool e4_cache_remove(ext4_mount_t *fs,e4_node_t *node) {
     while (*link && *link!=&node->node) link=&(*link)->next;
     if (*link) *link=node->node.next;
     fs->cached[at]=fs->cached[--fs->nodes];fs->cached[fs->nodes]=NULL;
+#if FORTRESS_PKG_ENGINE
+    px_node_drop(node);return true;
+#else
     kfree(node);return true;
+#endif
 }
 static void e4_collect_removed(e4_node_t *node) {
     ext4_mount_t *fs=node->inode.fs;
@@ -593,6 +602,9 @@ static void e4_collect_removed(e4_node_t *node) {
     }
 }
 static bool e4_cache_room(ext4_mount_t *fs) {
+#if FORTRESS_PKG_ENGINE
+    if(!px_cache_room(fs))return false;
+#endif
     if (fs->nodes<E4_NODES) return true;
     for (unsigned i=1;i<fs->nodes;i++)
         if (e4_cache_remove(fs,fs->cached[i])) return true;
@@ -730,7 +742,11 @@ static vfs_node_t *e4_lookup_common(vfs_node_t *parent,const char *name,int *err
         for (vfs_node_t *p=parent->children;p;p=p->next) if (!strcmp(p->name,name)) { result=p; break; }
         size_t plen=!strcmp(parent->path,"/") ? 0 : strlen(parent->path), nl=strlen(name);
         if (!result && plen+1+nl<VFS_MAX_PATH && e4_cache_room(fs)) {
+#if FORTRESS_PKG_ENGINE
+            e4_node_t *n=px_node_new(fs);
+#else
             e4_node_t *n=kcalloc(1,sizeof(*n));
+#endif
             status=-VFS_ENOMEM;
             if (n) {
                 memcpy(n->node.name,name,nl+1); memcpy(n->node.path,parent->path,plen);
@@ -760,7 +776,11 @@ static vfs_node_t *e4_lookup_ref(vfs_node_t *parent,const char *name,int *error)
 }
 static void e4_discard(ext4_mount_t *fs) {
     if (!fs) return;
+#if FORTRESS_PKG_ENGINE
+    for (unsigned i=0;i<fs->nodes;i++) px_node_drop(fs->cached[i]);
+#else
     for (unsigned i=0;i<fs->nodes;i++) kfree(fs->cached[i]);
+#endif
     while (fs->maps) { e4_map_t *map=fs->maps; fs->maps=map->next; kfree(map); }
     kfree(fs->journal_reserved);kfree(fs->rw_map); kfree(fs->engine); kfree(fs->reserved); kfree(fs->gd); kfree(fs);
 }
@@ -1025,3 +1045,7 @@ bool ext4_get_mount_info(const void *vfs_node, mount_info_t *out) {
     return true;
 }
 
+#if FORTRESS_PKG_ENGINE
+
+#include "pkg_executor.inc"
+#endif

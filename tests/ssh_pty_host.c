@@ -238,6 +238,7 @@ static void test_pty_bridge_open_and_winsize(void) {
     assert(g_k.master_open == true);
     assert(g_k.slave_open == true);
     assert(g_k.master_flags & VFS_O_NONBLOCK);
+    assert(g_k.master_flags & VFS_O_CLOEXEC);
     assert(g_k.winsize.ws_col == 120);
     assert(g_k.winsize.ws_row == 40);
 

@@ -10,18 +10,20 @@
 #include "vmm.h"
 #include "accounts.h"
 #include "pkg_exec_wire.h"
+#include "pkg_service.h"
+static bool mx_publish_service(void);
 static bool mx_published,mx_boot_authority,mx_storage_authority,mx_cut;
 static uint64_t mx_writes,mx_flushes,mx_identity=1;
 static block_dev_t mx_disk;
 static unsigned mx_pause,mx_waiting;
 static unsigned mx_backend_busy;
 static uint64_t mx_wait_pid;
-static const char *mx_base_paths[]={"/bin/pkg-boot","/bin/shell","/bin/sudo","/bin/login","/etc/passwd","/etc/group","/etc/shadow"};
-static uint32_t mx_base_inodes[8];
+static const char *mx_base_paths[]={"/bin/pkg-boot","/bin/shell","/bin/sudo","/bin/login","/etc/passwd","/etc/group","/etc/shadow","/bin/pkg","/sbin/sshd","/etc/ssh/sshd_config","/etc/ssh/ssh_host_ed25519_key"};
+static uint32_t mx_base_inodes[13];
 static uint8_t mx_io[4096];
 static px_policy mx_policy;
 static int px_core_commit(ext4_engine_t *e){
-    if(__atomic_load_n(&mx_published,__ATOMIC_ACQUIRE)&&px&&px->fs==e->fs)for(unsigned i=0;i<8;i++){int r=px_protect(e,mx_base_inodes[i]);if(r)return r;}
+    if(__atomic_load_n(&mx_published,__ATOMIC_ACQUIRE)&&px&&px->fs==e->fs)for(unsigned i=0;i<13;i++){int r=px_protect(e,mx_base_inodes[i]);if(r)return r;}
     return mx_raw_commit(e);
 }
 static void mx_outw(uint16_t port,uint16_t value){__asm__ volatile("outw %0,%1"::"a"(value),"Nd"(port):"memory");}
@@ -52,10 +54,11 @@ static bool mx_authorized(void){
     return !process_signal_interrupt()&&pw_recovery_step((pw_key){t->pkg_owner.generation,t->pkg_owner.slot});
 }
 static int mx_measure_base(ext4_mount_t *fs,const uint8_t *expected){
-    for(unsigned i=0;i<8;i++){
-        e4_inode_t in;int r=px_lookup(fs,i==7?"/bin":mx_base_paths[i],&in);if(r)return r;
-        if(in.uid||in.gid||(in.full_mode&07777)!=(i==2?04755:i==6?0600:i==4||i==5?0644:0755)||in.mode!=(i==7?VFS_S_IFDIR:VFS_S_IFREG))return -VFS_EACCES;
-        mx_base_inodes[i]=in.ino;if(i==7)continue;
+    for(unsigned i=0;i<13;i++){
+        e4_inode_t in;int r=px_lookup(fs,i==11?"/bin":i==12?"/sbin":mx_base_paths[i],&in);if(r)return r;
+        static const uint16_t modes[]={0755,0755,04755,0755,0644,0644,0600,0755,0755,0600,0600,0755,0755};
+        if(in.uid||in.gid||(in.full_mode&07777)!=modes[i]||in.mode!=(i>=11?VFS_S_IFDIR:VFS_S_IFREG))return -VFS_EACCES;
+        mx_base_inodes[i]=in.ino;if(i>=11)continue;
         r=e4_mapping(&in);if(r)return r;crypto_sha256_ctx hash;crypto_sha256_init(&hash);
         for(uint64_t at=0;at<in.size;){size_t n=in.size-at;if(n>sizeof mx_io)n=sizeof mx_io;
             uint32_t physical=0;r=e4_dir_block(&in,(uint32_t)(at/4096),&physical);if(r)return r;
@@ -78,8 +81,11 @@ static int mx_exact(ext4_mount_t *fs,const char *path,uint32_t parent,const char
     }return -VFS_EACCES;
 }
 static int mx_namespace(ext4_mount_t *fs){
-    static const char *const bin[]={"pkg-boot","shell","sudo","login"};static const uint32_t files[]={VFS_FILE,VFS_FILE,VFS_FILE,VFS_FILE};
-    int r=mx_exact(fs,"/bin",2,bin,mx_base_inodes,files,4);if(r)return r;
+    static const char *const bin[]={"pkg-boot","shell","sudo","login","pkg"};static const uint32_t files[]={VFS_FILE,VFS_FILE,VFS_FILE,VFS_FILE,VFS_FILE};
+    uint32_t bin_ids[]={mx_base_inodes[0],mx_base_inodes[1],mx_base_inodes[2],mx_base_inodes[3],mx_base_inodes[7]};
+    int r=mx_exact(fs,"/bin",2,bin,bin_ids,files,5);if(r)return r;
+    const char *daemon="sshd";uint32_t daemon_id=mx_base_inodes[8],daemon_type=VFS_FILE;
+    r=mx_exact(fs,"/sbin",2,&daemon,&daemon_id,&daemon_type,1);if(r)return r;
     char command[33],package[33];memcpy(command,px->shape.command,px->shape.command_length);command[px->shape.command_length]=0;memcpy(package,px->shape.package,px->shape.package_length);package[px->shape.package_length]=0;
     const char *name=command;unsigned executable=px_member(16);uint32_t id=px->state.files[executable].inode,type=VFS_FILE;
     r=mx_exact(fs,"/usr/bin",px->policy.anchors[6].inode,&name,&id,&type,(px->state.published&(1u<<executable))?1:0);if(r)return r;
@@ -95,9 +101,11 @@ static int mx_namespace(ext4_mount_t *fs){
 static int mx_admit_engine(ext4_engine_t *e,const uint8_t *base){
     e->fs->rw_map=kmalloc(sizeof(e4_map_t)+E4_MAP_MAX*sizeof(e4_extent_t));if(!e->fs->rw_map)return -VFS_ENOMEM;
     e->fs->engine=e;px->fs=e->fs;int r=px_validate(e->fs);if(!r&&px->state.phase)r=px_rederive(px->state.operation,true);
+    const char *detail="ledger";
     /* This fixture's account lineage is immutable. Foreign redo must not be
      * admitted and then consumed by accounts_prepare after base measurement. */
     if(!r){
+        detail="account-lineage";
         e4_ns_workspace_t *w=kcalloc(1,sizeof *w);if(!w)return -VFS_ENOMEM;
         r=e4_ns_child(e->fs,2,"etc",0755,&w->anchors[0]);
         if(!r)r=e4_ns_child(e->fs,2,"var",0755,&w->anchors[1]);
@@ -109,17 +117,18 @@ static int mx_admit_engine(ext4_engine_t *e,const uint8_t *base){
         if(!r&&w->report.present_roles!=7)r=-VFS_EACCES;
         kfree(w);
     }
-    if(!r)r=mx_measure_base(e->fs,base);
-    if(!r)r=mx_namespace(e->fs);
+    if(!r){detail="base-files";r=mx_measure_base(e->fs,base);}
+    if(!r){detail="namespace";r=mx_namespace(e->fs);}
+    if(r){serial_puts("PKGEXEC ADMISSION DETAIL ");serial_puts(detail);serial_puts("\n");}
     return r;
 }
 bool mx_ready(void){return __atomic_load_n(&mx_published,__ATOMIC_ACQUIRE);}
 void jb_boot(const boot_info_t *b,bool selected,bool read_fault){
     mx_cut=read_fault;int r=-VFS_EACCES;const char *stage="modules";jbd2_plan_t *journal=NULL;ext4_engine_t *e=NULL;
-    if(!selected||strcmp(b->cmdline,"boot_mode=pkg-exec-v1")||!b->pkg_modules_valid||b->pkg_selector_size!=768||b->pkg_policy_size<960)goto fail;
+    if(!selected||strcmp(b->cmdline,"boot_mode=pkg-exec-v1")||!b->pkg_modules_valid||b->pkg_selector_size!=768||b->pkg_policy_size<1088)goto fail;
     if(!b->kernel_file_vaddr||!b->kernel_file_size||b->kernel_file_size>32u*1024*1024||!b->has_initramfs||!b->initramfs_vaddr||b->initramfs_size>8u*1024*1024)goto fail;
     const uint8_t *policy=(void *)b->pkg_policy_vaddr,*selector=(void *)b->pkg_selector_vaddr;size_t policy_n=b->pkg_policy_size;uint8_t sum[32];
-    stage="measurements";if(memcmp(selector,"FORT-PKG-EXEC-B1",16))goto fail;
+    stage="measurements";if(memcmp(selector,"FORT-PKG-EXEC-B2",16))goto fail;
     crypto_sha256(policy,policy_n,sum);if(memcmp(sum,selector+80,32))goto fail;
     crypto_sha256((void *)b->kernel_file_vaddr,b->kernel_file_size,sum);if(memcmp(sum,selector+16,32))goto fail;
     crypto_sha256((void *)b->initramfs_vaddr,b->initramfs_size,sum);if(memcmp(sum,selector+48,32))goto fail;
@@ -132,15 +141,15 @@ void jb_boot(const boot_info_t *b,bool selected,bool read_fault){
     crypto_sha256(mx_policy.record_key,32,sum);if(memcmp(sum,selector+112,32))goto fail;
     memcpy(&mx_policy.catalog,policy,336);mx_policy.catalog.now=time_get_epoch_seconds();const uint8_t *cfg=policy+336;
     memcpy(mx_policy.filesystem,cfg,16);memcpy(mx_policy.layout,cfg+184,32);memcpy(mx_policy.minimum_hash,cfg+152,32);mx_policy.minimum_sequence=px_get(cfg+144,8);
-    for(unsigned i=0;i<8;i++)mx_policy.anchors[i]=(px_anchor){px_get(cfg+16+16*i,4),px_get(cfg+20+16*i,4),px_get(cfg+24+16*i,8)};
-    static fpk_span names[]={{(void *)"shell",5},{(void *)"sudo",4},{(void *)"pkg",3},{(void *)"pkg-boot",8},{(void *)"login",5}};
-    mx_policy.resources=(pi_resources){.block_size=4096,.journal_images=64,.orphan_slots=16,.memory_bytes=32*1024*1024,.base=2,.base_names=names,.base_count=5,.capacity={px_get(cfg+216,8),px_get(cfg+224,8)}};
+    for(unsigned i=0;i<sizeof mx_policy.anchors/sizeof mx_policy.anchors[0];i++)mx_policy.anchors[i]=(px_anchor){px_get(cfg+16+16*i,4),px_get(cfg+20+16*i,4),px_get(cfg+24+16*i,8)};
+    static fpk_span names[]={{(void *)"shell",5},{(void *)"sudo",4},{(void *)"pkg",3},{(void *)"pkg-boot",8},{(void *)"login",5},{(void *)"sshd",4}};
+    mx_policy.resources=(pi_resources){.block_size=4096,.journal_images=64,.orphan_slots=16,.memory_bytes=32*1024*1024,.base=2,.base_names=names,.base_count=6,.capacity={px_get(cfg+216,8),px_get(cfg+224,8)}};
     for(unsigned i=0;i<32;i++)mx_policy.resources.platform[i]=i;
     mx_policy.current_actor=mx_actor;mx_policy.authorized=mx_authorized;
-    size_t an=px_get(policy+952,4),cn=px_get(policy+956,4);if(an>policy_n-960||cn!=policy_n-960-an)goto fail;
+    size_t an=px_get(policy+1080,4),cn=px_get(policy+1084,4);if(an>policy_n-1088||cn!=policy_n-1088-an)goto fail;
     stage="signed-source";fpk_catalog source;
-    if(fpk_catalog_verify(policy+960+an,cn,&mx_policy.catalog,&source)||source.count!=1)goto fail;
-    r=px_prepare(&mx_policy,policy+960,an,policy+960+an,cn,source.entries+1,source.entries[0],true);crypto_wipe(mx_policy.record_key,32);if(r)goto fail;
+    if(fpk_catalog_verify(policy+1088+an,cn,&mx_policy.catalog,&source)||source.count!=1)goto fail;
+    r=px_prepare(&mx_policy,policy+1088,an,policy+1088+an,cn,source.entries+1,source.entries[0],true);crypto_wipe(mx_policy.record_key,32);if(r)goto fail;
     stage="device";if(!nvme_init()||!nvme_has_unique_namespace()||nvme_get_sector_size()!=512||nvme_get_sector_count()!=131072)goto fail;
     mx_disk=(block_dev_t){.sector_size=512,.sector_count=131072,.read_sector=mx_read,.write_sector=mx_write,.flush=mx_flush};
     gpt_policy_result_t gp;if(!gpt_parse_ex(&mx_disk,&gp)||gp!=GPT_POLICY_PRIMARY_CONSISTENT||gpt_get_partition_count()!=2)goto fail;
@@ -154,11 +163,20 @@ void jb_boot(const boot_info_t *b,bool selected,bool read_fault){
     stage="replay";mx_storage_authority=true;r=jbd2_replay(journal,true);if(r)goto fail;jbd2_release(journal);journal=NULL;
     r=e4_open_journal_orphans_owned(&part->block_dev,true,&e,false,true);if(!r)r=mx_admit_engine(e,policy+728);if(r)goto fail;
     stage="root";r=vfs_boot_begin_root_preparation();if(r)goto fail;e4_node_t *root=kcalloc(1,sizeof *root);if(!root){r=-VFS_ENOMEM;goto fail;}
-    e4_inode_t in;r=e4_inode(e->fs,2,&in);if(r){kfree(root);goto fail;}px_copy(root->node.name,"/");px_copy(root->node.path,"/");e4_setup(root,&in);e->fs->cached[e->fs->nodes++]=root;e->fs->journal_mounted=true;e->fs->detached=true;e->fs->trusted_root=true;
+    e4_inode_t in;r=e4_inode(e->fs,2,&in);if(r){kfree(root);goto fail;}
+    /* Match the normal prepared-root constructor: setup selects retained
+     * lookup/get/put callbacks from these mount flags. Publication stays last. */
+    e->fs->journal_mounted=true;e->fs->detached=true;e->fs->trusted_root=true;
+    px_copy(root->node.name,"/");px_copy(root->node.path,"/");e4_setup(root,&in);e->fs->cached[e->fs->nodes++]=root;
     mx_boot_authority=true;r=px_control(0);mx_boot_authority=false;if(r)goto fail;
     {uint64_t flags=spin_lock_irqsave(&e4_lock);r=e->dirty?0:e4_journal_mark(e,false);spin_unlock_irqrestore(&e4_lock,flags);}if(r)goto fail;
     ext4_account_namespace_report_t report;r=ext4_root_account_namespace_admit(e->fs,&report);if(!r)r=accounts_prepare(e->fs);if(!r)r=ext4_publish_root(e->fs);if(r)goto fail;
-    __atomic_store_n(&mx_published,true,__ATOMIC_RELEASE);serial_puts("PKGEXEC PUBLISHED installed-root real-account-service\n");return;
+    __atomic_store_n(&mx_published,true,__ATOMIC_RELEASE);
+    if(!mx_publish_service()){
+        serial_puts("PKGEXEC REFUSED service-publication no-fallback\n");
+        for(;;)__asm__ volatile("cli; hlt");
+    }
+    serial_puts("PKGEXEC PUBLISHED installed-root real-account-service\n");return;
 fail:
     mx_boot_authority=mx_storage_authority=false;crypto_wipe(mx_policy.record_key,32);if(e){ext4_engine_close(e);if(px)px->fs=NULL;}if(journal)jbd2_release(journal);px_destroy();
     serial_puts("PKGEXEC REFUSED stage=");serial_puts(stage);serial_puts(" error=");serial_print_dec(-r);serial_puts(" writes=");serial_print_dec(mx_writes);serial_puts(" flushes=");serial_print_dec(mx_flushes);serial_puts("\n");
@@ -173,9 +191,24 @@ static int mx_snapshot(void *context,pkg_transaction_status *out){
 }
 static int mx_status(void *context,pkg_transaction_status *out){if(!mx_enter())return -VFS_EAGAIN;int r=mx_snapshot(context,out);mx_leave();return r;}
 static int mx_recover(void *context,pkg_transaction_status *out){if(context!=&mx_identity||!mx_ready())return -VFS_EROFS;if(!mx_enter())return -VFS_EAGAIN;int r=px_control(0);if(!r)r=mx_snapshot(context,out);mx_leave();return r;}
+static int mx_mutate_backend(void *context,bool remove,const uint8_t name[32],pkg_transaction_status *out){
+    if(context!=&mx_identity||!mx_ready())return -VFS_EROFS;
+    if(memcmp(name,px->shape.package,32))return -VFS_EACCES;
+    if(!mx_enter())return -VFS_EAGAIN;
+    uint64_t now=time_get_epoch_seconds();
+    int r=now<px_get(px->catalog+48,8)||now>=px_get(px->catalog+56,8)?-VFS_EACCES:0;
+    if(!r)r=px_control(remove?PI_REMOVE:PI_INSTALL);
+    if(!r)r=mx_snapshot(context,out);
+    mx_leave();return r;
+}
+static bool mx_publish_service(void){
+    static const pkg_kernel_backend backend={
+        .transactions={&mx_identity,mx_status,mx_recover},
+        .admitted=mx_ready,.mutate=mx_mutate_backend};
+    return pkg_service_bind(&backend);
+}
 const pkg_transaction_backend *gk_backend(void){static const pkg_transaction_backend backend={&mx_identity,mx_status,mx_recover};return &backend;}
 bool gk_root_admitted(void){return mx_ready();}
-void mx_exec_owner(tcb_t *);
 int64_t gk_storage_test(uint64_t op){
     if(op==30){__atomic_store_n(&mx_waiting,0,__ATOMIC_RELEASE);__atomic_store_n(&mx_pause,PX_COMMIT,__ATOMIC_RELEASE);return 0;}
     if(op==31)return __atomic_load_n(&mx_waiting,__ATOMIC_ACQUIRE);
@@ -187,7 +220,7 @@ int64_t gk_storage_test(uint64_t op){
         next=old;next.cap_effective&=~CAP_SYS_ADMIN;if(!process_record_publish_creds(pid,&old,&next))return -VFS_EAGAIN;
         __atomic_store_n(&mx_pause,0,__ATOMIC_RELEASE);sched_wake_all(&mx_pause);return 0;
     }
-    if(op==35){mx_exec_owner(NULL);return 0;}
+    if(op==35){pkg_owner_exec(NULL);return 0;}
     return op==13?(int64_t)__atomic_load_n(&mx_writes,__ATOMIC_RELAXED):op==14?(int64_t)__atomic_load_n(&mx_flushes,__ATOMIC_RELAXED):-VFS_EINVAL;
 }
 bool mx_copy_fault(void);
@@ -203,9 +236,9 @@ int64_t mx_transport(uintptr_t input,uintptr_t output,uint64_t size){
     if(!pw_enter((pw_key){t->pkg_owner.generation,t->pkg_owner.slot},q.session,&operation))return SYSCALL_EACCES;
     /* The immutable catalog was authenticated at boot. Do not reuse that boot
      * clock snapshot to authorize a new install/remove after its interval. */
-    bool entered=mx_enter();uint64_t now=time_get_epoch_seconds();int r=!entered?-VFS_EAGAIN:now<px_get(px->catalog+48,8)||now>=px_get(px->catalog+56,8)?-VFS_EACCES:0;
-    if(!r)r=px_control(q.operation);
-    pkg_transaction_status status;if(!r)r=mx_snapshot(&mx_identity,&status);if(!pw_complete(operation))r=-VFS_EIO;if(entered)mx_leave();if(r)return syscall_from_vfs_error(r);
+    pkg_transaction_status status;int r=mx_mutate_backend(&mx_identity,q.operation==PI_REMOVE,(void *)q.package,&status);
+    if(!pw_complete(operation))r=-VFS_EIO;
+    if(r)return syscall_from_vfs_error(r);
     pb_result result={.size=80,.version=1,.phase=status.phase,.session=q.session,.sequence=status.sequence,.account_sequence=status.account_sequence,.credential_generation=status.credential_generation};
     for(unsigned i=0;i<2;i++){result.remaining[i]=status.remaining[i];result.charged[i]=status.charged[i];}
     if(mx_copy_fault())return SYSCALL_EFAULT;

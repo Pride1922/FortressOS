@@ -32,8 +32,12 @@ def directory(data,ino,parent,entries,slots,physical):
         name=name.encode();struct.pack_into('<IHBB',b,at,number,n,len(name),kind)
         b[at+8:at+8+len(name)]=name;at+=n
     entry(ino,'.',2,12);entry(parent,'..',2,12)
-    for number,name in entries:entry(number,name,1,24)
-    for _ in range(slots-len(entries)):entry(0,'',0,24)
+    occupied=0
+    for item in entries:
+        number,name=item[:2];kind=item[2] if len(item)==3 else 1
+        entry(number,name,kind,24 if kind==1 else (8+len(name)+3)&~3)
+        occupied+=kind==1
+    for _ in range(slots-occupied):entry(0,'',0,24)
     while at<BS-12:entry(0,'',0,16 if (BS-12-at)%12 else 12)
     assert at==BS-12
     struct.pack_into('<H',b,BS-8,12);b[BS-5]=0xde

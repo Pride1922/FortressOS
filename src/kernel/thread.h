@@ -2,6 +2,7 @@
 #define FORTRESS_THREAD_H
 
 #include "types.h"
+#include "pkg_owner.h"
 #include "spinlock.h"
 #include "signal_state.h"
 #include "creds.h"
@@ -127,6 +128,7 @@ typedef struct tcb {
     /* Self-owned value registration; owner never retains a TCB pointer.
      * Exit abandons unlocked before fd/CR3 teardown; reaper is idempotent. */
     handoff_registration_t handoff;
+    pw_key pkg_owner; /* Current TCB binding, never inherited or stored in user memory. */
 } tcb_t;
 
 #define CPU_MASK_ALL (~0ULL)

@@ -42,7 +42,9 @@ void pty_bridge_init(pty_bridge_t *b, uint32_t channel_id, uint16_t cols, uint16
 int pty_bridge_open(pty_bridge_t *b) {
     if (!b) return -1;
     int fds[2] = { -1, -1 };
-    long r = do_syscall(SYS_PTY_PAIR, (uintptr_t)fds, VFS_O_NONBLOCK, 0, 0, 0, 0);
+    /* Only the duplicated slave stdio may reach the shell. An inherited
+     * master prevents the worker's close from delivering session SIGHUP. */
+    long r = do_syscall(SYS_PTY_PAIR, (uintptr_t)fds, VFS_O_NONBLOCK | VFS_O_CLOEXEC, 0, 0, 0, 0);
     if (r < 0) return (int)r;
 
     b->master_fd = fds[0];

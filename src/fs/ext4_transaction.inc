@@ -188,7 +188,11 @@ int ext4_engine_open_journal_files(block_dev_t *dev,bool admitted,ext4_engine_t 
 /* Complete a sealed semantic operation as one bounded journal transaction.
  * Every released block is revoked; no staged home image may overlap a revoke.
  * The tail barrier retires this transaction before a subsequent allocator. */
+#if FORTRESS_PKG_ENGINE
+static int px_core_commit(ext4_engine_t *e) {
+#else
 static int e4_semantic_commit(ext4_engine_t *e) {
+#endif
     int r=e4_plan_end(e);if (r) return r;
     e4_seal(e);if (e->error) return e->error;
     jbd2_credits_t credits={0};e->revoke_count=0;

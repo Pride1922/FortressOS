@@ -1,4 +1,5 @@
 #include "thread.h"
+#include "pkg_service.h"
 #include "spawn_security.h"
 #include "process_table.h"
 #include "percpu.h"
@@ -442,6 +443,7 @@ void sched_reap_dead(void) {
         while (dead) {
             tcb_t *next = dead->next;
             handoff_abandon(&dead->handoff);
+            pkg_owner_reap(dead);
 
             /* Invariant 1: The executing thread must never be the dead thread */
             if (dead == g_current_thread) {
@@ -1109,6 +1111,7 @@ bool thread_get_cpu_times(uint64_t pid, uint64_t *utime, uint64_t *stime) {
 }
 
 void thread_exit(void) {
+    pkg_owner_exit(thread_current());
     handoff_abandon(&thread_current()->handoff);
     uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
     (void)rflags;
@@ -2495,6 +2498,7 @@ void fd_clone_table(tcb_t *parent, tcb_t *child) {
 }
 
 void fd_close_cloexec(tcb_t *proc) {
+    pkg_owner_exec(proc);
     spin_debug_assert_unheld();
     struct file **table = proc->process ? proc->process->fd_table : proc->fd_table;
     uint32_t *flags = proc->process ? proc->process->fd_flags : proc->fd_flags;
@@ -2633,6 +2637,7 @@ void fd_close_all(tcb_t *proc) {
 }
 
 void process_exit(uint64_t exit_code) {
+    pkg_owner_exit(thread_current());
     handoff_abandon(&thread_current()->handoff);
     /* Do not allow a woken parent to run/reap before thread_exit detaches us. */
     __asm__ volatile("cli" ::: "memory");

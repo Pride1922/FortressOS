@@ -201,6 +201,12 @@ static int send_channel_replies(ssh_transport_t *transport, int client_fd, sshbu
 /* Worker Process: runs the connection protocol under dropped capabilities */
 static __attribute__((noinline)) int sshd_worker_run(int session_id, int client_fd, int mon_in_fd, int mon_out_fd, const char *pub_hex) {
     (void)session_id;
+    /* These descriptors were explicitly transferred to the worker. They
+     * remain private when it later starts an authenticated shell. */
+    if (SSHD_SYSCALL(SYS_FCNTL, (uintptr_t)client_fd, F_SETFD, FD_CLOEXEC, 0, 0, 0) < 0 ||
+        SSHD_SYSCALL(SYS_FCNTL, (uintptr_t)mon_in_fd, F_SETFD, FD_CLOEXEC, 0, 0, 0) < 0 ||
+        SSHD_SYSCALL(SYS_FCNTL, (uintptr_t)mon_out_fd, F_SETFD, FD_CLOEXEC, 0, 0, 0) < 0)
+        return 1;
     /* Setup signal handlers so SIGTERM breaks worker poll loop and runs clean pty_bridge_cleanup() */
     signal_action_t sa = { .handler = (uintptr_t)on_sigterm, .mask = 0, .flags = 0, .reserved = 0 };
     (void)SSHD_SYSCALL(SYS_SIGACTION, SIGTERM, (uintptr_t)&sa, 0, 0, 0, 0);

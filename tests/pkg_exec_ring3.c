@@ -17,7 +17,7 @@ static int cli_mutate(void *context,bool remove,const char *name,size_t n){
 }
 static int cli_run(char *verb,uint64_t session){pkg_mutation_backend b={.transactions={.context=&session},.mutate=cli_mutate};char *args[]={"pkg",verb,"field-kit"};return pkg_mutation_cli(3,args,NULL,&b);}
 static void cli_command(const char *verb,const char *name,uint64_t expected){
-    const char *args[]={"/bin/pkg-boot","--pkg",verb,name,0};
+    const char *args[]={"/bin/pkg",verb,name,0};
     spawn_opts_t opts={.size=64,.version=2,.argv=(uintptr_t)args};
     long child=raw(SYS_SPAWN_EXT,(uintptr_t)args[0],(uintptr_t)&opts,64);check(child>0);
     uint64_t status;check(raw(SYS_WAITPID,child,(uintptr_t)&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==expected);
@@ -29,6 +29,15 @@ static void wait_ready(void){for(unsigned i=0;i<3000;i++){if(raw(201,31,0,0)==1)
 static void mark(const char *s){unsigned n=0;while(s[n])n++;check(raw(SYS_WRITE,1,(uintptr_t)s,n)==n);}
 int pkg_call_main(int argc,char **argv){
     pb_result r;
+    if(argc>1&&equal(argv[1],"--hostkey")){
+        static char key[1024];long n=raw(SYS_HOSTKEY,0,(uintptr_t)key,sizeof key);
+        for(unsigned i=0;i<sizeof key;i++)((volatile char *)key)[i]=0;
+        return n>0?0:n<0?(int)-n:255;
+    }
+    if(argc>1&&equal(argv[1],"--poweroff")){raw(SYS_REBOOT,REBOOT_CMD_POWEROFF,0,0);return 1;}
+    if(argc>1&&equal(argv[1],"--pause"))return raw(201,30,0,0)?1:0;
+    if(argc>1&&equal(argv[1],"--release"))return raw(201,32,0,0)?1:0;
+    if(argc>1&&equal(argv[1],"--waiting"))return raw(201,31,0,0)==1?0:1;
     if(argc>1&&equal(argv[1],"--pkg"))return pkg_private_cli(argc-1,argv+1);
     if(argc>1&&!equal(argv[1],"--installed")){
         if(equal(argv[1],"misuse")){check(mutate(1,1,&r)==SYSCALL_EACCES);check(call(PB_ACQUIRE,0,&r)<0);return 0;}

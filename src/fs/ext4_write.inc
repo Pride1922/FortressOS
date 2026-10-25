@@ -372,7 +372,11 @@ static int e4_rename(vfs_node_t *old_dir,const char *old_name,vfs_node_t *new_di
     if(!r)e4_move_cache_publish(old->fs,old_dir,new_dir,new_name,publication);
     if(r&&directory&&e->tainted)old->fs->namespace_uncertain=true;
 done:
+#if FORTRESS_PKG_ENGINE
+    spin_unlock_irqrestore(&e4_lock,f);px_publication_drop(publication);return r;
+#else
     spin_unlock_irqrestore(&e4_lock,f);kfree(publication);return r;
+#endif
 }
 int ext4_sync(ext4_mount_t *fs) {
     spin_debug_assert_unheld(); uint64_t f=spin_lock_irqsave(&e4_lock);
