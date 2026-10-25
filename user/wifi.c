@@ -23,6 +23,13 @@ static char s_out[1024];
 
 static bool write_str(int fd, const char *str);
 
+static bool is_privileged(void) {
+    uint32_t r = 0, e = 0, s = 0;
+    long rc = WIFI_SYSCALL(SYS_GETRESUID, (uintptr_t)&r, (uintptr_t)&e, (uintptr_t)&s);
+    if (rc != 0) return false;
+    return e == 0;
+}
+
 static uint8_t s_fw_decomp_buf[2000000];
 static size_t  s_fw_decomp_pos = 0;
 static bool    s_fw_loaded = false;
@@ -619,7 +626,7 @@ static int do_save(const char *ssid, const char *passphrase,
         write_str(1, " to /etc/network/wlan.conf\n");
         return 0;
     } else {
-        write_str(2, "wifi save: write error\n");
+        write_str(2, "wifi save: failed to write /etc/network/wlan.conf (permission denied or write error)\n");
         return 1;
     }
 }
@@ -918,6 +925,13 @@ static int do_connect(const char *ssid, const char *passphrase,
                         do {
                             waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
                         } while (waited == -4 /* EINTR */);
+                        if (status != 0) {
+                            write_str(2, "wifi: ifup failed to configure static IP\n");
+                            return 1;
+                        }
+                    } else {
+                        write_str(2, "wifi: failed to spawn /sbin/ifup\n");
+                        return 1;
                     }
 
                     /* Write /run/wifi-static.configured */
@@ -951,12 +965,19 @@ static int do_connect(const char *ssid, const char *passphrase,
                         do {
                             waited = WIFI_SYSCALL(SYS_WAIT, (uintptr_t)pid, (uintptr_t)&status, 0);
                         } while (waited == -4 /* EINTR */);
+                        if (status != 0) {
+                            write_str(2, "wifi: failed to configure IP address via DHCP\n");
+                            return 1;
+                        }
                     } else {
                         write_str(2, "wifi: failed to spawn /sbin/dhcpc\n");
+                        return 1;
                     }
                 }
                 /* Auto-save network profile permanently so on reboot it connects automatically */
-                do_save(ssid, actual_psk, actual_addr, actual_gw, actual_dns);
+                if (do_save(ssid, actual_psk, actual_addr, actual_gw, actual_dns) != 0) {
+                    write_str(2, "wifi: warning: connected, but failed to save profile to /etc/network/wlan.conf\n");
+                }
                 return 0;
             }
         }
@@ -1076,14 +1097,34 @@ int wifi_main(int argc, char **argv) {
     } else if (streq(argv[1], "status")) {
         return do_status();
     } else if (streq(argv[1], "list")) {
+        if (!is_privileged()) {
+            write_str(2, "wifi list: permission denied; root access required (use sudo wifi list)\n");
+            return 1;
+        }
         return do_list();
     } else if (streq(argv[1], "load-fw") || streq(argv[1], "init")) {
+        if (!is_privileged()) {
+            write_str(2, "wifi init: permission denied; root access required (use sudo wifi init)\n");
+            return 1;
+        }
         return ensure_firmware_loaded() ? 0 : 1;
     } else if (streq(argv[1], "disconnect")) {
+        if (!is_privileged()) {
+            write_str(2, "wifi disconnect: permission denied; root access required (use sudo wifi disconnect)\n");
+            return 1;
+        }
         return do_disconnect();
     } else if (streq(argv[1], "auto")) {
+        if (!is_privileged()) {
+            write_str(2, "wifi auto: permission denied; root access required (use sudo wifi auto)\n");
+            return 1;
+        }
         return do_auto();
     } else if (streq(argv[1], "save")) {
+        if (!is_privileged()) {
+            write_str(2, "wifi save: permission denied; root access required (use sudo wifi save ...)\n");
+            return 1;
+        }
         if (argc < 4) {
             write_str(2, "Usage: wifi save <SSID> <passphrase> [--static <IP/prefix> [gateway] [dns]]\n");
             return 1;
@@ -1102,6 +1143,10 @@ int wifi_main(int argc, char **argv) {
         }
         return do_save(ssid, psk, addr, gw, dns);
     } else if (streq(argv[1], "forget") || streq(argv[1], "remove") || streq(argv[1], "delete")) {
+        if (!is_privileged()) {
+            write_str(2, "wifi forget: permission denied; root access required (use sudo wifi forget ...)\n");
+            return 1;
+        }
         const char *ssid = NULL;
         static char s_cur_connected_ssid[WIFI_SSID_MAX_LEN + 1];
         if (argc >= 3) {
@@ -1125,6 +1170,10 @@ int wifi_main(int argc, char **argv) {
         }
         return do_forget(ssid);
     } else if (streq(argv[1], "static")) {
+        if (!is_privileged()) {
+            write_str(2, "wifi static: permission denied; root access required (use sudo wifi static ...)\n");
+            return 1;
+        }
         if (argc < 3) {
             write_str(2, "Usage: wifi static <IP/prefix> [gateway] [dns]       (applies to current network)\n"
                          "       wifi static <SSID> <IP/prefix> [gateway] [dns]\n"
@@ -1168,6 +1217,10 @@ int wifi_main(int argc, char **argv) {
 
         return do_static(ssid, addr, gw, dns);
     } else if (streq(argv[1], "connect")) {
+        if (!is_privileged()) {
+            write_str(2, "wifi connect: permission denied; root access required (use sudo wifi connect ...)\n");
+            return 1;
+        }
         if (argc < 3) {
             write_str(2, "Usage: wifi connect <SSID> [passphrase] [--static <IP/prefix> [gateway] [dns]]\n");
             return 1;

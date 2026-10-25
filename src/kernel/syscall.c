@@ -1,4 +1,5 @@
 #include "poll.h"
+#include "boot_info.h"
 #include "pkg_service.h"
 #include "syscall.h"
 #include "permissions.h"
@@ -1235,6 +1236,11 @@ static int64_t sys_net_ifset(uintptr_t user_config, uint64_t size) {
 
 static int64_t sys_wifi(uint64_t cmd, uintptr_t arg, size_t size) {
     uint64_t *pml4 = vmm_get_active_pml4_virt();
+    if (cmd == SYS_WIFI_CMD_CONNECT || cmd == SYS_WIFI_CMD_DISCONNECT || cmd == SYS_WIFI_CMD_LOAD_FW) {
+        creds_t actor;
+        if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
+        if (permission_capability(&actor, CAP_SYS_ADMIN)) return SYSCALL_EPERM;
+    }
     if (cmd == SYS_WIFI_CMD_SCAN) {
         if (size != sizeof(wifi_scan_result_t)) return SYSCALL_EINVAL;
         if (!vmm_validate_user_range(pml4, arg, size, true)) return SYSCALL_EFAULT;
@@ -1693,6 +1699,56 @@ static int64_t sys_lockstat(uintptr_t user_buf, uint64_t cap) {
         return SYSCALL_EFAULT;
     }
     return (int64_t)lockstat_dump((char *)user_buf, (size_t)cap);
+}
+
+static int64_t sys_fbinfo(uintptr_t user_info_ptr, uintptr_t req_vaddr) {
+    const boot_info_t *boot_info = boot_info_get();
+    if (!boot_info || !boot_info->has_framebuffer || !boot_info->fb_address) {
+        return SYSCALL_ENODEV;
+    }
+    if (boot_info->fb_bpp != 32 || boot_info->fb_width == 0 || boot_info->fb_height == 0) {
+        return SYSCALL_EIO;
+    }
+
+    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(active_pml4, user_info_ptr, sizeof(fb_info_v1_t), true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    uintptr_t fb_virt = boot_info->fb_address;
+    uintptr_t fb_phys = fb_virt - boot_info->hhdm_offset;
+    size_t fb_size = (boot_info->fb_pitch * boot_info->fb_height + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    uintptr_t map_vaddr = req_vaddr ? req_vaddr : 0x6000000000ULL;
+    if ((map_vaddr % PAGE_SIZE) != 0 || map_vaddr < 0x1000000ULL ||
+        map_vaddr + fb_size >= 0x800000000000ULL || map_vaddr + fb_size < map_vaddr) {
+        return SYSCALL_EINVAL;
+    }
+
+    for (size_t offset = 0; offset < fb_size; offset += PAGE_SIZE) {
+        uintptr_t va = map_vaddr + offset;
+        uintptr_t pa = fb_phys + offset;
+        if (!vmm_is_mapped(active_pml4, va)) {
+            int err = vmm_map_page(active_pml4, va, pa, PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX | PTE_PCD);
+            if (err != VMM_OK) {
+                return SYSCALL_ENOMEM;
+            }
+        }
+    }
+
+    fb_info_v1_t info;
+    memset(&info, 0, sizeof(info));
+    info.version = 1;
+    info.width = (uint32_t)boot_info->fb_width;
+    info.height = (uint32_t)boot_info->fb_height;
+    info.pitch = (uint32_t)boot_info->fb_pitch;
+    info.bpp = (uint32_t)boot_info->fb_bpp;
+    info.reserved = 0;
+    info.fb_user_vaddr = map_vaddr;
+    info.fb_size = fb_size;
+
+    memcpy((void *)user_info_ptr, &info, sizeof(info));
+    return SYSCALL_SUCCESS;
 }
 
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
@@ -2281,6 +2337,10 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
 
         case SYS_PKGCTL:
             result=pkg_service_control(frame->rdi,frame->rsi,frame->rdx);
+            break;
+
+        case SYS_FBINFO:
+            result = sys_fbinfo(frame->rdi, frame->rsi);
             break;
 
         case SYS_SIGRETURN:
