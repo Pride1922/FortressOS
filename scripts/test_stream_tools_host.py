@@ -159,6 +159,16 @@ if __name__ == "__main__":
             ], cwd=REPO, check=True)
             subprocess.run([str(tail_follow_exe)], check=True, timeout=30)
 
+            base64_exe = Path(tmp) / "base64_host"
+            subprocess.run([
+                "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g", "-no-pie",
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-DTOOL_HOST_TEST",
+                "-Isrc/include", "-Isrc/fs", "-Iuser/tools",
+                "tests/base64_host.c", "user/tools/common.c", "user/tools/base64.c",
+                "-o", str(base64_exe)
+            ], cwd=REPO, check=True)
+            subprocess.run([str(base64_exe)], check=True, timeout=30)
+
 
 
 

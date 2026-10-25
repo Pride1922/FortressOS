@@ -823,7 +823,7 @@ $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 SBIN_STREAM_TOOLS := shutdown reboot poweroff lockstat
-USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown mkdir rm mv cp touch hostname free which env date sleep time gzip gunzip kill logger
+USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown mkdir rm mv cp touch hostname free which env date sleep time gzip gunzip kill logger base64
 $(BUILD_DIR)/tool-gunzip.o: CFLAGS += -DGUNZIP_STANDALONE
 STREAM_TOOLS := $(USER_STREAM_TOOLS) $(SBIN_STREAM_TOOLS)
 SBIN_LOGIN_TOOLS := useradd addgroup delgroup adduser deluser usermod
@@ -994,6 +994,14 @@ test-checksum: $(BOOTABLE_ISO) test-checksum-host
 
 test-stream-tools-host:
 	@python3 scripts/test_stream_tools_host.py
+
+.PHONY: test-base64-host test-base64
+test-base64-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTOOL_HOST_TEST -Isrc/include -Isrc/fs -Iuser/tools tests/base64_host.c user/tools/common.c user/tools/base64.c -o $(BUILD_DIR)/base64_host && $(BUILD_DIR)/base64_host
+
+test-base64: $(BOOTABLE_ISO) test-base64-host
+	@python3 scripts/test_base64_qemu.py
 
 .PHONY: test-sed-host test-sed
 test-sed-host:

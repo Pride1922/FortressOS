@@ -85,3 +85,25 @@ The suite is verified via `make test-gzip-host` under GCC with `-fsanitize=addre
   - `make test-nano-host`: 100% PASS under ASan/UBSan (unit tests for SGR parsing, tab column translation, coordinate clamping, scroll wheel, and shortcut legend dispatches).
   - `make test-nano`: 100% PASS across BIOS and UEFI 13 integration stages (`scripts/test_nano.py`), verifying live SGR mouse clicks, viewport scrolling, and shortcut bar exit.
   - `make test-nano-ssh`: 100% PASS across BIOS and UEFI OpenSSH client sessions.
+
+---
+
+## 5. Base64 Codec Utility (`/bin/base64`)
+
+`/bin/base64` implements RFC 4648 Base64 encoding and decoding for arbitrary-length files and pipelines with stream buffers.
+
+### Architecture & Key Contracts
+- **Streaming Pipeline**: Operates over fixed 4096-byte input and output buffers in static BSS storage (`TOOL_BUFFER_SIZE = 4096`), carrying over partial quanta across read boundaries with zero heap memory allocation (`malloc`/`free` omitted).
+- **Gate G1 Stack Budget**: Strict stack bounds (`-fstack-usage` measured $\le 112$ bytes, well below the 1024-byte ceiling).
+- **RFC 4648 Alphabet & Padding**:
+  - Canonical alphabet `[A-Za-z0-9+/]` with `=` padding.
+  - Strict padding verification: rejects non-zero unused padding bits (`Zh==`).
+- **CLI Options**:
+  - `-d`, `--decode`: Decode base64 stream to raw binary bytes.
+  - `-i`, `--ignore-garbage`: When decoding, ignore non-alphabet characters (garbage tolerance). Without `-i`, unknown characters (except newlines `\r`/`\n`) cause immediate failure with `base64: invalid input` and exit 1.
+  - `-w COLS`, `--wrap=COLS`: Wrap encoded lines after `COLS` characters (default 76; `0` disables wrapping).
+  - `-h`, `--help`: Usage help.
+- **Verification Matrix**:
+  - `make test-base64-host`: 100% PASS under ASan/UBSan (RFC 4648 vectors, line wrapping, binary roundtrip, chunk boundary stress, whitespace tolerance, garbage rejection/-i flag, malformed input rejection, CLI options).
+  - `make test-stream-tools-host`: 100% PASS across all stream tools.
+  - `make test-base64`: 100% PASS on QEMU integration suite (`scripts/test_base64_qemu.py`), validating live pipeline encoding, decoding, round-trip, error handling, and clean poweroff.
