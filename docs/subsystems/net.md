@@ -4,6 +4,14 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-25 Tiny HTTP Server (`/bin/httpd`, Issue #43):
+Single-threaded static file web server demonstrating non-blocking socket multiplexing via `SYS_POLL` (Syscall 88) is COMPLETE and verified.
+- **Architecture & Gate G1 Discipline:** Single-threaded event-driven event loop multiplexing up to 8 concurrent client connections (`HTTPD_MAX_CLIENTS = 8`) and the non-blocking listening socket via `poll()` (`user/poll.h`). Zero dynamic heap allocations; all state arrays and scratch buffers reside in static BSS; function stack frames strictly adhere to Gate G1 ceiling ($\le 1024$ bytes; maximum measured frame 160 bytes in `httpd_run`).
+- **HTTP/1.0 & HTTP/1.1 Engine:** Supports `GET` and `HEAD` methods; returns `200 OK`, `400 Bad Request` (header overflow), `403 Forbidden` (path traversal mitigation), `404 Not Found`, `405 Method Not Allowed`, and `503 Service Unavailable` (client capacity saturation).
+- **Path Sanitization & Security:** Strict directory traversal mitigation rejecting `..` segments, double slashes, and null bytes before document root resolution.
+- **MIME Type Mapping:** Automatic Content-Type detection based on file extension (`.html`, `.txt`, `.c`, `.h`, `.log`, `.md`, `.conf`, `.css`, `.js`, `.json`, `.png`, `.jpg`, `.gif`, `.svg`, `.ico`, defaulting to `application/octet-stream`).
+- **Verification:** 100% PASS on host test suite under ASan/UBSan (`make test-httpd-host`) and multi-firmware QEMU acceptance suite (`make test-httpd`) across BIOS and UEFI validating daemon startup, host port forwarding, GET /motd, HEAD /motd, 404 handling, path traversal 403 blocking, 405 Method Not Allowed, and 10 sequential client multiplexing iterations with zero leaks. See [`docs/plans/TINY_HTTP_SERVER_PLAN.md`](../plans/TINY_HTTP_SERVER_PLAN.md).
+
 2026-10-24 Ethernet / Wi-Fi Seamless Handover & Per-Network Static IP Support:
 - **Seamless Carrier Switching:** Kernel priority chain (`rtl8153` > `e1000` > `wlan0`) with automatic radio deauth and idle power-down on wired link up. Background `/sbin/dhcpc` daemon detects MAC changes within 1s, flushes old leases, and transitions state machines cleanly.
 - **Wired Carrier Loss Auto-Reconnect:** Carrier loss on wired interfaces triggers background Wi-Fi auto-scanning and connection to the best saved network by RSSI.
