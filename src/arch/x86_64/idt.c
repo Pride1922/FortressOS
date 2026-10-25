@@ -4,6 +4,7 @@
 #include "percpu.h"
 #include "gdt.h"
 #include "time.h"
+#include "crash_dump.h"
 
 extern void idtr_load(idt_ptr_t *ptr);
 extern uint8_t isr_stub_table[];
@@ -251,22 +252,6 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         return;
     }
 
-    /* APs unexpected exception isolation: keep unexpected faults out of BSP test hooks. */
-    if (cpu->id != 0) {
-        cpu->fault_vector = frame->vector;
-        cpu->fault_error = frame->error_code;
-        cpu->fault_rip = frame->rip;
-        for (;;) __asm__ volatile("cli; hlt");
-    }
-
-    /* Breakpoint Trap (#BP, vector 3) is a non-fatal debugging trap */
-    if (frame->vector == 3) {
-        serial_puts("[TRAP] Exception 0x03 (Breakpoint Trap) at RIP: ");
-        serial_print_hex(frame->rip);
-        serial_puts(" - Resuming execution\n");
-        return;
-    }
-
     /* Expected Page Fault handler for VMM validation */
     if (frame->vector == 14 && g_expect_page_fault) {
         uint64_t cr2;
@@ -287,44 +272,30 @@ void isr_exception_handler(interrupt_frame_t *frame) {
         return;
     }
 
-    /* User-Space Exception Handling (CPL 3): fault isolation without kernel panic */
-    if ((frame->cs & 3) == 3) {
-        tcb_t *curr = thread_current();
-
-        serial_puts("\n[PROCESS FAULT] User Process Exception in Ring 3!\n");
-        serial_puts("       PID:         ");
-        serial_print_dec(curr ? curr->tid : 0);
-        serial_puts(" (");
-        if (curr) serial_puts(curr->name);
-        serial_puts(")\n       Exception:   ");
-        if (frame->vector < 32) {
-            serial_puts(exception_messages[frame->vector]);
-        } else {
-            serial_puts("Unknown");
-        }
-        serial_puts(" (Vector ");
-        serial_print_dec(frame->vector);
-        serial_puts(")\n       RIP:         ");
+    /* Breakpoint Trap (#BP, vector 3) is a non-fatal debugging trap in Ring 0 */
+    if (frame->vector == 3 && (frame->cs & 3) == 0) {
+        serial_puts("[TRAP] Exception 0x03 (Breakpoint Trap) at RIP: ");
         serial_print_hex(frame->rip);
-        serial_puts("\n       RSP:         ");
-        serial_print_hex(frame->rsp);
-        serial_puts("\n       Error Code:  ");
-        serial_print_hex(frame->error_code);
-        serial_puts("\n");
+        serial_puts(" - Resuming execution\n");
+        return;
+    }
 
-        if (frame->vector == 14) {
-            uint64_t cr2;
-            __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
-            serial_puts("       Linear (CR2):");
-            serial_print_hex(cr2);
-            serial_puts("\n");
+    /* User-Space Exception Handling (CPL 3): fault isolation, signal delivery, or bounded crash core dump */
+    if ((frame->cs & 3) == 3) {
+        unsigned sig = crash_dump_vector_to_signal(frame->vector);
+        if (thread_dispatch_exception_signal(frame, sig)) {
+            return;
         }
+        crash_dump_user(frame);
+        return;
+    }
 
-        serial_puts("       Action: Terminating faulting user process; kernel remains operational.\n");
-
-        /* Clean termination: 128 + vector (e.g. 142 for #PF) */
-        process_exit(128 + frame->vector);
-        for (;;) { __asm__ volatile("cli; hlt"); }
+    /* APs unexpected exception isolation: keep unexpected faults out of BSP test hooks. */
+    if (cpu->id != 0) {
+        cpu->fault_vector = frame->vector;
+        cpu->fault_error = frame->error_code;
+        cpu->fault_rip = frame->rip;
+        for (;;) __asm__ volatile("cli; hlt");
     }
 
     /* Fatal Exception Panic - raw UART output to avoid lockups under g_console_lock */

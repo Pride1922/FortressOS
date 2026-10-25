@@ -3082,6 +3082,29 @@ retry:
     /* On success the interrupt frame has been redirected to the handler. */
 }
 
+bool thread_dispatch_exception_signal(interrupt_frame_t *frame, unsigned sig) {
+    if (!frame || (frame->cs & 3) != 3 || !sig || sig > 31) return false;
+    tcb_t *t = thread_current();
+    if (!t || !t->is_user || !t->pml4_virt) return false;
+
+    signal_action_t action;
+    if (!process_signal_get_action(t->tid, sig, &action)) {
+        return false;
+    }
+
+    if (action.handler <= SIG_IGN) {
+        return false;
+    }
+
+    uint64_t old_mask = t->signals.blocked_mask;
+    if (old_mask & SIGNAL_BIT(sig)) {
+        /* Recursive fault / signal masked: synchronous hardware fault falls back to core dump */
+        return false;
+    }
+
+    return signal_deliver_handler(frame, sig, &action, old_mask);
+}
+
 /*
  * SYS_SIGRETURN implementation (syscall 32).
  * Called from syscall_dispatch with the interrupt frame.

@@ -797,6 +797,21 @@ uint64_t process_signal_handler(uint64_t pid, uint64_t sig) {
     spin_unlock_irqrestore(&g_process_lock,irq);
     return h;
 }
+bool process_signal_get_action(uint64_t pid, uint64_t sig, signal_action_t *out_action) {
+    if (!sig || sig>31 || !out_action) return false;
+    uint64_t irq=spin_lock_irqsave(&g_process_lock);
+    process_record_t *p=find(pid);
+    bool found=false;
+    if (p && !p->exited && p->signals) {
+        out_action->handler  = p->signals->action_handlers[sig];
+        out_action->mask     = p->signals->action_masks[sig];
+        out_action->flags    = p->signals->action_flags[sig];
+        out_action->reserved = 0;
+        found = true;
+    }
+    spin_unlock_irqrestore(&g_process_lock,irq);
+    return found;
+}
 /* Take a pending deliverable signal and snapshot its action atomically.
  * Returns the signal number, or 0 if nothing deliverable.
  * On success, clears the pending bit and fills *out_action. */

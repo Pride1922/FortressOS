@@ -109,6 +109,7 @@ bool process_record_exit_signal(uint64_t pid, uint64_t code, unsigned signal);
 unsigned process_signal_take_action(uint64_t pid, signal_action_t *out_action,
                                     uint64_t *out_old_mask);
 uint64_t process_signal_handler(uint64_t pid, uint64_t sig);
+bool     process_signal_get_action(uint64_t pid, uint64_t sig, signal_action_t *out_action);
 /* Push/pop active frame entries under the process lock. */
 int  process_signal_push_frame(uint64_t pid, uintptr_t frame_addr, uint64_t *out_generation);
 int  process_signal_pop_frame(uint64_t pid, uint64_t expected_generation);

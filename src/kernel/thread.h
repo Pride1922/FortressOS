@@ -177,6 +177,7 @@ bool process_signal_pending(void);
 bool process_signal_interrupt(void);
 void process_signal_check(void);
 void process_signal_user_return(interrupt_frame_t *frame);
+bool thread_dispatch_exception_signal(interrupt_frame_t *frame, unsigned sig);
 /* SYS_SIGRETURN: validates and restores context from v1 signal frame.
  * Sets *return_disposition = 1 (RETURN_SIGRETURN) on success. */
 int64_t sys_sigreturn(interrupt_frame_t *frame, int *return_disposition);

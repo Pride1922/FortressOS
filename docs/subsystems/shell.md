@@ -226,3 +226,13 @@ all network lifetime/transaction policies remain unchanged. Verification is
 tracked in [the Phase 3 audit](../roadmap/network-smp-phase3.md);
 no physical acceptance follows from this rollout. Earlier phase entries elsewhere
 are historical evidence and retain their original qualifications.
+
+## User-Space Crash Dumps (Issue #39)
+
+When unhandled CPU exceptions (#PF, #DE, #UD, #GP, #NP, #SS, #MF, #XM) occur in user mode (CPL 3), the kernel generates a bounded, non-allocating crash core dump (`src/kernel/crash_dump.c`, `src/kernel/crash_dump.h`):
+- **Full Architectural State**: Captures all 16 general-purpose registers (RAX..R15), RIP, RSP, RFLAGS (with decoded condition flags CF, PF, AF, ZF, SF, TF, IF, DF, OF), CS, SS, CR2 (for page faults), and decoded page fault error bits.
+- **Safe Memory Windows**: Safely inspects the 16 bytes at RIP and top 16 QWORDs at RSP with page table validation (`vmm_validate_user_range`), avoiding secondary kernel faults.
+- **Dual Output**: Direct unbuffered COM1 serial UART output and persistent append to the kernel `dmesg` ring buffer.
+- **SMP Core Isolation**: Checks `(frame->cs & 3) == 3` before non-BSP AP halts, allowing user threads to fault and cleanly exit across all CPU cores without freezing APs.
+- **Signal Integration**: Maps unhandled faults to canonical POSIX signals and exits with code `128 + sig` (139 for SIGSEGV, 136 for SIGFPE, 132 for SIGILL, 135 for SIGBUS). Dispatches custom `sigaction` handlers when registered, falling back to crash dumps on recursive handler faults.
+- **Verification**: Validated via host unit test `make test-crash-dump-host` and multi-firmware QEMU acceptance suite `make test-crash-dump` across BIOS and UEFI with SMP=1 and SMP=4 using `/bin/crash-test`. See [`USER_SPACE_CRASH_DUMPS_PLAN.md`](../plans/USER_SPACE_CRASH_DUMPS_PLAN.md).

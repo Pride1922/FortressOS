@@ -2059,6 +2059,23 @@ These standalone binaries in `/bin/` verify kernel invariants, subsystem contrac
 
 ---
 
+### `pthread-test`
+**Path:** `/bin/pthread-test`  
+**Description:** Concurrency verification test fixture validating userland threads (`<pthread.h>`, Issue #12) across mutex serialization, condition variables, barriers, and `pthread_once` single-execution guarantees under Gate G1 stack constraints ($\le 1024$ B).
+
+---
+
+### `crash-test`
+**Path:** `/bin/crash-test`  
+**Description:** Diagnostic test fixture for validating user-space crash core dumps and exception signal delivery (Issue #39).
+* `crash-test null`: Triggers a NULL pointer dereference (`#PF` / `SIGSEGV`), verifying register dump, fault address (CR2), and POSIX exit status 139.
+* `crash-test divzero`: Triggers integer division by zero (`#DE` / `SIGFPE`), verifying architectural dump and POSIX exit status 136.
+* `crash-test illegal`: Triggers an invalid opcode (`#UD` / `SIGILL` via `ud2`), verifying POSIX exit status 132.
+* `crash-test handler`: Installs a custom `sigaction` handler for `SIGSEGV` and verifies fault interception, stack frame delivery, and successful recovery (exit 0).
+* `crash-test recfault`: Installs a custom signal handler that itself triggers a secondary fault, verifying recursive fault detection and fallback to the kernel crash core dumper.
+
+---
+
 ### `init`
 **Path:** `/bin/init`  
 **Description:** Kernel user initialization binary. Executes Ring 3 bootstrap verification suites and worker self-tests before launching the interactive shell.

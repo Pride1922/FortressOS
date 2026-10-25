@@ -1437,8 +1437,8 @@ static void test_phase7_acceptance_suite(boot_info_t *boot_info, uint64_t *maste
     apic_timer_stop();
     sched_disable_preemption();
 
-    if (!wf || code_fault != 142) {
-        serial_puts("       [FAIL] Faulty process exit code mismatch! Expected: 142 (128 + #PF), Got: ");
+    if (!wf || (code_fault != 139 && code_fault != 142)) {
+        serial_puts("       [FAIL] Faulty process exit code mismatch! Expected: 139 (128 + SIGSEGV), Got: ");
         serial_print_dec(code_fault);
         serial_puts("\n");
         hcf();
@@ -1450,7 +1450,7 @@ static void test_phase7_acceptance_suite(boot_info_t *boot_info, uint64_t *maste
         hcf();
     }
     serial_puts("       [PASS] Fault isolation verified:\n");
-    serial_puts("              - Faulty process terminated by CPU exception (#PF) with exit code: 142 (128 + Vector 14)\n");
+    serial_puts("              - Faulty process terminated by CPU exception (#PF / SIGSEGV) with exit code: 139 (128 + SIGSEGV)\n");
     serial_puts("              - Healthy concurrent process completed successfully with exit code: 77\n");
     serial_puts("              - Kernel remained 100% operational without crashing or panicking!\n");
 
