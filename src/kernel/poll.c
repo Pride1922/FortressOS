@@ -10,6 +10,7 @@
 #include "pipe.h"
 #include "pty.h"
 #include "net_socket.h"
+#include "input.h"
 
 static _Atomic uint64_t g_poll_wake_seq = 1;
 
@@ -58,6 +59,10 @@ static int poll_scan(tcb_t *curr, struct pollfd *k_fds, uint64_t nfds) {
             r = pty_poll(f->node, k_fds[i].events);
         } else if (net_socket_file(f)) {
             r = net_socket_poll(f, k_fds[i].events);
+        } else if (is_terminal_node(f->node)) {
+            r = 0;
+            if (k_fds[i].events & POLLOUT) r |= POLLOUT;
+            if ((k_fds[i].events & POLLIN) && input_has_data()) r |= POLLIN;
         } else {
             /* Regular files, directories, devfs nodes are always immediately ready */
             r = (k_fds[i].events & (POLLIN | POLLOUT));

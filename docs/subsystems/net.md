@@ -4,6 +4,14 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-25 Telnet Client (`/bin/telnet`, Issue #41):
+Minimal line-mode Telnet client for TCP verification with RFC 854 option negotiation, NVT ASCII formatting, interactive escape prompt `^]`, and non-blocking I/O multiplexing via `SYS_POLL` (Syscall 88) is COMPLETE and verified.
+- **Protocol & RFC 854 Engine:** Deterministic state machine parsing `IAC` (`0xFF`) command sequences; handles option negotiation requests (`DO`/`DONT`/`WILL`/`WONT`) refusing unsupported subnegotiations and acknowledging SGA (`TELOPT_SGA`); swallows `IAC SB ... IAC SE` subnegotiation payloads; escapes literal `0xFF` bytes (`IAC IAC`).
+- **NVT ASCII Translation:** Bidirectional line-mode conversions translating local newline `\n` to NVT `\r\n` (CRLF) on transmit, and collapsing incoming `\r\n` and `\r\0` (CR NUL) to `\n` on receive.
+- **Interactive Escape Prompt:** Standard Telnet escape character `^]` (`0x1D` / ASCII 29) opens interactive `telnet> ` prompt supporting `close`, `quit`, `status`, and `help`.
+- **True Bidirectional Readiness Multiplexing:** Together with terminal readiness poll support (`is_terminal_node` + `input_has_data()` in `src/kernel/poll.c`), `SYS_POLL` concurrently multiplexes interactive stdin and the TCP stream without false-readiness blocking.
+- **Verification:** 100% PASS on host test suite under ASan/UBSan (`make test-telnet-host`) and multi-firmware QEMU acceptance suite (`make test-telnet`) across BIOS and UEFI validating remote connection, welcome banner reception, RFC 854 option negotiation, escape prompt commands (`status`, `quit`), and clean poweroff. See [`docs/plans/TELNET_CLIENT_PLAN.md`](../plans/TELNET_CLIENT_PLAN.md).
+
 2026-10-25 Tiny HTTP Server (`/bin/httpd`, Issue #43):
 Single-threaded static file web server demonstrating non-blocking socket multiplexing via `SYS_POLL` (Syscall 88) is COMPLETE and verified.
 - **Architecture & Gate G1 Discipline:** Single-threaded event-driven event loop multiplexing up to 8 concurrent client connections (`HTTPD_MAX_CLIENTS = 8`) and the non-blocking listening socket via `poll()` (`user/poll.h`). Zero dynamic heap allocations; all state arrays and scratch buffers reside in static BSS; function stack frames strictly adhere to Gate G1 ceiling ($\le 1024$ bytes; maximum measured frame 160 bytes in `httpd_run`).

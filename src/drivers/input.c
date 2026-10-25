@@ -12,6 +12,8 @@
 #include "vfs.h"
 #include "spinlock.h"
 
+extern void poll_wake_notify(void);
+
 #define KBD_VECTOR 0x31
 #define UART_VECTOR 0x34
 #define KBC_DATA 0x60
@@ -78,6 +80,7 @@ static void ingress(const char *bytes, size_t count) {
     if (!sig) {
         (void)input_buffer_sequence(&g_input, bytes, count);
         terminal_unlock(flags);
+        poll_wake_notify();
         return;
     }
     g_input.head = g_input.count = 0; /* flush ordinary input, including on overflow */
@@ -298,7 +301,10 @@ void input_timer_tick(uint32_t hz) {
     if (wake_input) pending_wake = false;
     terminal_unlock(flags);
     if (wake_term) sched_wake_all(&g_terminal);
-    if (wake_input) sched_wake_all(&g_input);
+    if (wake_input) {
+        sched_wake_all(&g_input);
+        poll_wake_notify();
+    }
 }
 
 /* Ingress/ticks stay on BSP; readers on every CPU use terminal exclusion. */
@@ -511,5 +517,9 @@ bool input_init(const acpi_madt_info_t *madt) {
                           "[WARN] PS/2 keyboard unavailable\n");
     serial_puts(uart ? "[INPUT] COM1 RX IRQ4 ready\n" : "[INPUT] COM1 RX unavailable\n");
     return g_input_ready;
+}
+
+bool input_has_data(void) {
+    return __atomic_load_n(&read_ready, __ATOMIC_ACQUIRE);
 }
 #endif

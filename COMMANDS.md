@@ -1832,6 +1832,54 @@ echo "server-ready" | nc -l 7777
 
 ---
 
+### `telnet`
+**Syntax:**
+* Connect: `telnet [options] <IPv4|hostname> [port]`
+* Connect with DNS override: `telnet -s <dns-server-ip> <hostname> [port]`
+* Connect with escape character: `telnet -e <char> <host> [port]`
+* Help: `telnet -h` or `telnet --help`  
+**Path:** `/bin/telnet`  
+**Description:** Minimal line-mode Telnet client for TCP verification and interactive terminal sessions.
+* **Protocol & Options:** Implements RFC 854 option negotiation engine, acknowledging Suppress Go Ahead (`TELOPT_SGA`) and refusing unsupported options/subnegotiations (`IAC SB ... IAC SE`).
+* **NVT Translations:** Translates local newline `\n` to NVT `\r\n` (CRLF) on transmit, and collapses incoming `\r\n` and `\r\0` (CR NUL) to `\n` on receive.
+* **Interactive Escape Prompt:** Standard escape character `^]` (`0x1D` / ASCII 29) opens the `telnet> ` command prompt:
+  * `close` or `quit`: disconnects TCP socket and terminates telnet.
+  * `status`: displays connection state, peer IP, port, and escape character.
+  * `help` or `?`: lists available commands.
+  * `<Enter>`: resumes the active session.
+* **Examples:**
+```sh
+# Connect to standard telnet service on port 23
+telnet 192.168.1.100
+
+# Connect to custom HTTP or echo port
+telnet 10.0.2.2 8080
+
+# Connect with explicit DNS server override
+telnet -s 1.1.1.1 example.com 23
+```
+
+---
+
+### `httpd` (Tiny HTTP Server)
+**Syntax:** `httpd [-p port] [-d docroot] [-v] [-h]`  
+**Path:** `/bin/httpd`  
+**Description:** Single-threaded static file web server demonstrating non-blocking socket multiplexing via `SYS_POLL`.
+* **Port & Docroot:** Defaults to port `8080` and docroot `.`.
+* **HTTP Support:** Supports `GET` and `HEAD` methods; returns standard status codes (`200 OK`, `400 Bad Request`, `403 Forbidden`, `404 Not Found`, `405 Method Not Allowed`, `503 Service Unavailable`).
+* **Security:** Rejects path traversal (`..` segments, null bytes) with `403 Forbidden`.
+* **MIME Mapping:** Extension-based MIME mapping (`.html`, `.txt`, `.css`, `.js`, `.json`, `.png`, `.jpg`, etc.).
+* **Examples:**
+```sh
+# Serve current directory on port 8080
+httpd
+
+# Serve /etc on port 80 in background
+httpd -p 80 -d /etc &
+```
+
+---
+
 ### `traceroute`
 
 **Syntax:** `traceroute [-m 1..30] [-q 1..3] [-W 1..5] IPV4`

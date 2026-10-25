@@ -211,6 +211,7 @@ int         vfs_readdir(vfs_node_t *dir, uint64_t index, vfs_dirent_t *out_diren
 /* Descriptor admission survives mode changes. Advances offset only on success;
  * retains filesystem errors. No fresh pathname/DAC decision. */
 int         vfs_readdir_file(file_t *file, vfs_dirent_t *out_dirent);
+bool        is_terminal_node(const vfs_node_t *node);
 vfs_node_t *vfs_get_terminal_node(void);
 file_t     *vfs_open_terminal(int flags);
 

@@ -121,6 +121,10 @@ vfs_node_t *vfs_get_terminal_node(void) {
     return &g_terminal_node;
 }
 
+bool is_terminal_node(const vfs_node_t *node) {
+    return node && (node == &g_terminal_node || node->read == terminal_read);
+}
+
 file_t *vfs_open_terminal(int flags) {
     file_t *file = (file_t *)kmalloc(sizeof(file_t));
     if (!file) return NULL;

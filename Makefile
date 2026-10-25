@@ -690,6 +690,7 @@ USER_DHCP_PROBE_ELF := $(BUILD_DIR)/dhcp-probe.elf
 USER_DHCPC_ELF := $(BUILD_DIR)/dhcpc.elf
 USER_WATCHTOWER_ELF := $(BUILD_DIR)/watchtower.elf
 USER_HTTPD_ELF := $(BUILD_DIR)/httpd.elf
+USER_TELNET_ELF := $(BUILD_DIR)/telnet.elf
 USER_SERVICE_ELF := $(BUILD_DIR)/service.elf
 USER_CROND_ELF := $(BUILD_DIR)/crond.elf
 USER_LOGROTATE_ELF := $(BUILD_DIR)/logrotate.elf
@@ -747,6 +748,14 @@ $(BUILD_DIR)/httpd.o: user/httpd.c user/poll.h user/udp_common.h src/include/soc
 $(USER_HTTPD_ELF): $(BUILD_DIR)/httpd.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=httpd_main user/tools/start.asm -o $(BUILD_DIR)/httpd_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/httpd_start.o $(BUILD_DIR)/httpd.o -o $@
+	@strip --strip-debug $@
+
+$(BUILD_DIR)/telnet.o: user/telnet.c user/poll.h user/udp_common.h user/dns.h user/netconf.h src/include/socket_abi.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+$(USER_TELNET_ELF): $(BUILD_DIR)/telnet.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=telnet_main user/tools/start.asm -o $(BUILD_DIR)/telnet_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/telnet_start.o $(BUILD_DIR)/telnet.o $(DNS_OBJECTS) $(BUILD_DIR)/netconf.o -o $@
 	@strip --strip-debug $@
 
 $(BUILD_DIR)/dhcp_codec.o: user/dhcp_codec.c user/dhcp_codec.h src/include/types.h
@@ -1019,6 +1028,14 @@ test-httpd-host:
 
 test-httpd: $(BOOTABLE_ISO) test-httpd-host
 	@python3 scripts/test_httpd.py
+
+.PHONY: test-telnet-host test-telnet
+test-telnet-host:
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -DTEST_HOST -Isrc/include -Isrc/fs -Iuser tests/telnet_host.c user/dns.c user/dns_codec.c user/netconf.c -o $(BUILD_DIR)/telnet_host && $(BUILD_DIR)/telnet_host
+
+test-telnet: $(BOOTABLE_ISO) test-telnet-host
+	@python3 scripts/test_telnet.py
 
 .PHONY: test-sed-host test-sed
 test-sed-host:
@@ -1365,7 +1382,7 @@ $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shel
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_TELNET_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -1404,6 +1421,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_TCPDEADLINE_ELF) $(BUILD_DIR)/initramfs/bin/tcpdeadline
 	@cp -f $(USER_WGET_ELF) $(BUILD_DIR)/initramfs/bin/wget
 	@cp -f $(USER_HTTPD_ELF) $(BUILD_DIR)/initramfs/bin/httpd
+	@cp -f $(USER_TELNET_ELF) $(BUILD_DIR)/initramfs/bin/telnet
 	@cp -f $(USER_DOWNLOAD_ELF) $(BUILD_DIR)/initramfs/bin/download
 	@cp -f $(USER_DHCP_PROBE_ELF) $(BUILD_DIR)/initramfs/bin/dhcp-probe
 	@cp -f $(USER_TOP_ELF) $(BUILD_DIR)/initramfs/bin/top
