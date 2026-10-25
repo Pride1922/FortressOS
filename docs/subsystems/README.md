@@ -8,7 +8,7 @@ This directory holds the per-subsystem architecture annexes, status logs, hardwa
 | --- | --- | --- |
 | **Networking** | Intel e1000/e1000e/I219-LM, DMA rings, Ethernet/ARP/IPv4/ICMP, Phase 5a BSP-only UDP sockets verified; 5590 UDP user-reported PASS; capture audit pending, ICMP 4b accepted | [`net.md`](net.md) |
 | **USB** | xHCI controller, BOT mass storage, durability classification, explicit mount opt-in, Phase 9G handoff | [`usb.md`](usb.md) |
-| **Storage & RAM** | ext2 writable/read-only mounts, GPT partitioning, NVMe exclusions, 32 GiB RAM / two-stage PMM | [`storage.md`](storage.md) |
+| **Storage & RAM** | ext2 writable/read-only mounts, ext4 support profile (Issue #40: feature flags, bounds, JBD2 contracts), GPT partitioning, NVMe exclusions, 32 GiB RAM / two-stage PMM | [`storage.md`](storage.md), [`ext4-profile.md`](ext4-profile.md) |
 | **Shell & Userland** | Shell S0–S9 (pipes, signals, jobs, variables, builtins, `/bin/top`, `/bin/ps`, `/bin/sysinfo`), input/layout | [`shell.md`](shell.md) |
 | **Watchtower & Services** | User commands, configuration reference, developer registration/packaging, readiness, logs and implementation limits | [`watchtower.md`](watchtower.md) |
 | **Multi-Core (SMP)** | Distributed scheduler, work-stealing, IPI shootdown, per-CPU state, concurrent PMM/VMM safety | [`smp.md`](smp.md) |

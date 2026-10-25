@@ -59,6 +59,28 @@ used ext2; they do not establish journaled EXT4 performance. The Phase-5
   - The cap depends on the filesystem block size: `max_size = (12 + block_size / 4) * block_size`. For 1 KiB block filesystems, the maximum write size is 268 KiB (274,432 bytes); for 2 KiB, 1 MiB; for 4 KiB, 4 MiB. Standard 1 KiB filesystems start data at block 1 (`src/fs/ext2.c:1641`).
   - This limit accommodates disposable QEMU test fixtures, legacy ext2 image compatibility, and boot-time `/mnt` persistence. Large files and enterprise workloads are targeted by the ext4 journaled driver (`ext4_mount_rw`).
 
+### ext4 Subsystem Support Profile (Issue #40)
+
+FortressOS provides an intentional, bounded, secure subset of ext4 tailored for reliable system persistence, immutable system roots, and package updates. For the comprehensive technical specification, see [`ext4-profile.md`](ext4-profile.md).
+
+- **Superblock Feature Flag Admission**:
+  - `s_feature_compat`: Exactly `0x00000004` (`EXT4_FEATURE_COMPAT_HAS_JOURNAL`) in journaled mode; `0x0` in non-journaled E4-A mode. All other compat flags fail closed with `-VFS_EOPNOTSUPP`.
+  - `s_feature_incompat`: Exactly `0x00000042` (`FILETYPE | EXTENTS`), with `0x0004` (`RECOVER`) permitted during mount replay. Unsupported flags (`64BIT`, `MMP`, `FLEX_BG`, `EA_INODE`, `DIRDATA`, `CSUM_SEED`, `LARGEDIR`, `INLINE_DATA`, `ENCRYPT`) fail closed.
+  - `s_feature_ro_compat`: Exactly `0x00000403` (`SPARSE_SUPER | LARGE_FILE | METADATA_CSUM`). Unsupported flags (`HUGE_FILE`, `GDT_CSUM`, `DIR_NLINK`, `EXTRA_ISIZE`, `HAS_SNAPSHOT`, `QUOTA`, `BIGALLOC`, `READONLY`, `PROJECT`, `ORPHAN_FILE`) fail closed.
+- **Structural Bounds & Capacities**:
+  - Max volume size: **1 TiB**; Max block groups: **8,192**; Max inodes: **1,048,576**; Inode size: **256 B** with **32 B extra_isize** (supporting nanosecond timestamps up to year 2446 under EH-1A).
+  - Extent trees: Depth $\le 2$ with 4 extents in inode body; traversal budget capped at 4,096 entries per operation.
+  - Caching & Staging: 1,024 cached VFS nodes with LRU eviction; 8 clean metadata cache blocks under filesystem lock; 32 blocks (128 KiB, `EXT4_STAGE_MAX`) maximum staging write batch.
+- **JBD2 Journaling & Durability Contracts**:
+  - Mode: `data=ordered` (payload blocks written and barrier-flushed to home targets before metadata commits).
+  - Features: JBD2 V2 superblock with `CSUM_V3` (CRC32c) and `REVOKE` support. Transaction budget: $\le 64$ combined metadata/data images and $\le 64$ revokes.
+  - Lifecycle: Synchronous commit and checkpoint on every mutation syscall (`SYS_STAGE_WRITE` 85, `SYS_FSYNC` 86, `SYS_RENAME_REPLACE` 84).
+- **Orphan Inode Lifecycle**:
+  - Traditional singly-linked orphan chain anchored at `s_last_orphan` (capped at 64 entries).
+  - Open unlinked files and truncations publish orphan intent atomically within the unlinking/truncation transaction; physical block and inode reclamation is deferred to final close or completed during boot mount recovery.
+- **Taint Protocol**:
+  - Any sector I/O failure, flush barrier failure, or checksum mismatch permanently sets `fs->engine->tainted = true`, immediately denies all further writes (`-VFS_EIO`), clears the clean superblock marker, and freezes the filesystem into read-only degraded mode until offline recovery.
+
 
 ### GPT Partitioning and Disk Layout
 
