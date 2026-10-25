@@ -1,3 +1,4 @@
+#include "poll.h"
 #include "syscall.h"
 #include "permissions.h"
 static bool syscall_actor(creds_t *out);
@@ -1806,6 +1807,9 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
         case SYS_WIFI:
             result = sys_wifi(frame->rdi, frame->rsi, frame->rdx);
+            break;
+        case SYS_POLL:
+            result = sys_poll(frame->rdi, frame->rsi, (int64_t)frame->rdx);
             break;
 
         case SYS_READDIR:

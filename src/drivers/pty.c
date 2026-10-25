@@ -647,3 +647,45 @@ int64_t pty_slave_input_read(vfs_node_t *node, void *buf, size_t count, int64_t 
         sched_wait_until(time_get_sleep_channel(), pty_input_ready, &wait_arg);
     }
 }
+
+short pty_poll(vfs_node_t *node, short events) {
+    if (!node || !node->fs_private) return POLLNVAL;
+    pty_t *p = (pty_t *)node->fs_private;
+    uint64_t irq = spin_lock_irqsave(&p->lock);
+    short revents = 0;
+    if (is_pty_slave(node)) {
+        if ((events & POLLIN) && p->in_count > 0) {
+            revents |= POLLIN;
+        }
+        if (!__atomic_load_n(&p->master_open, __ATOMIC_ACQUIRE)) {
+            revents |= POLLHUP;
+            if (p->in_count > 0) revents |= POLLIN;
+        }
+        if (events & POLLOUT) {
+            if (!__atomic_load_n(&p->master_open, __ATOMIC_ACQUIRE)) {
+                revents |= POLLERR;
+            } else if ((PTY_OUT_CAPACITY - p->out_count) > 0) {
+                revents |= POLLOUT;
+            }
+        }
+    } else if (is_pty_master(node)) {
+        if ((events & POLLIN) && p->out_count > 0) {
+            revents |= POLLIN;
+        }
+        if (!__atomic_load_n(&p->slave_open, __ATOMIC_ACQUIRE)) {
+            revents |= POLLHUP;
+            if (p->out_count > 0) revents |= POLLIN;
+        }
+        if (events & POLLOUT) {
+            if (!__atomic_load_n(&p->slave_open, __ATOMIC_ACQUIRE)) {
+                revents |= POLLERR;
+            } else if ((PTY_IN_CAPACITY - p->in_count) > 0) {
+                revents |= POLLOUT;
+            }
+        }
+    } else {
+        revents = POLLNVAL;
+    }
+    spin_unlock_irqrestore(&p->lock, irq);
+    return revents;
+}

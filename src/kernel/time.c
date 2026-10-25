@@ -1,3 +1,4 @@
+#include "poll.h"
 #include "time.h"
 #include "rtc.h"
 #include "serial.h"
@@ -27,7 +28,7 @@ const void *time_get_sleep_channel(void) {
 }
 
 void time_timer_tick(void) {
-    sched_wake_all(&g_sleep_channel);
+    poll_wake_notify();
 }
 
 void time_init(void) {

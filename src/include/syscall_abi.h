@@ -93,7 +93,23 @@
 #define SYS_STAGE_WRITE   85 /* (int fd, const void *buf, size_t count, uint64_t expected_eof, uint64_t flags=0) -> written/-errno */
 #define SYS_FSYNC         86 /* (int fd) -> 0/-errno; journaled ext4 flush */
 #define SYS_WIFI          87 /* (uint64_t cmd, void *arg, size_t size); wifi_abi.h */
+#define SYS_POLL          88 /* (struct pollfd *fds, uint64_t nfds, int64_t timeout_ms) -> count/-errno */
 #define MAX_GETRANDOM_LEN 256u
+
+/* I/O Multiplexing (SYS_POLL) */
+typedef struct pollfd {
+    int   fd;       /* File descriptor */
+    short events;   /* Requested events bitmask */
+    short revents;  /* Returned events bitmask */
+} pollfd_t;
+_Static_assert(sizeof(struct pollfd) == 8, "pollfd size");
+
+#define POLLIN   0x0001 /* Ready to read */
+#define POLLPRI  0x0002 /* Exceptional condition (out-of-band) */
+#define POLLOUT  0x0004 /* Ready to write without blocking */
+#define POLLERR  0x0008 /* Error condition */
+#define POLLHUP  0x0010 /* Hang up / peer closed connection */
+#define POLLNVAL 0x0020 /* Invalid request: fd not open */
 
 /* Clock identifiers */
 #define CLOCK_REALTIME           0

@@ -36,5 +36,7 @@ typedef struct pipe {
 int pipe_create(vfs_node_t **out_read_node, vfs_node_t **out_write_node);
 void pipe_close_endpoint(vfs_node_t *node);
 int pipe_profile(vfs_node_t *node, uint64_t action, pipe_io_profile_t *out);
+bool is_pipe_node(const vfs_node_t *node);
+short pipe_poll(vfs_node_t *node, short events);
 
 #endif

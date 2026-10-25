@@ -1,3 +1,4 @@
+#include "time.h"
 #include "net_tcp.h"
 #include "net.h"
 #include "net_control.h"
@@ -680,7 +681,7 @@ void net_tcp_tick(uint64_t ticks, bool online) {
         deadline_expire(e);
         bool wake=e->wake; e->wake=false;
         spin_unlock_irqrestore(&lock,flags); irq_restore(outer);
-        if (wake) sched_wake_all(&e->channel);
+        if (wake) { sched_wake_all(&e->channel); sched_wake_all((void *)time_get_sleep_channel()); }
     }
     /* Sweep every active/orphan block even when RX batches are full. One local
      * TX action per block per pass; no retained packet actions through ARP. */
@@ -733,4 +734,46 @@ bool net_tcp_receiving(void) {
              pool.blocks[i].state==TCP_FIN_WAIT_1 ||
              pool.blocks[i].state==TCP_FIN_WAIT_2)) return true;
     return false;
+}
+
+short net_tcp_poll(unsigned slot, short events) {
+    if (slot >= NET_SOCKET_MAX) return POLLNVAL;
+    uint64_t flags = spin_lock_irqsave(&lock);
+    endpoint_t *e = &endpoints[slot];
+    if (!e->used || e->detach || !__atomic_load_n(&e->generation, __ATOMIC_ACQUIRE)) {
+        spin_unlock_irqrestore(&lock, flags);
+        return POLLNVAL;
+    }
+    short revents = 0;
+    if (e->error) {
+        revents |= POLLERR;
+    }
+    if (e->listening) {
+        if (events & POLLIN) {
+            for (unsigned j = 0; j < e->backlog; ++j) {
+                if (e->pending[j].block >= 0) {
+                    revents |= POLLIN;
+                    break;
+                }
+            }
+        }
+    } else {
+        tcp_conn_t *c = connection(e);
+        if (c) {
+            if (c->state == TCP_CLOSED || c->state == TCP_CLOSE_WAIT || c->state == TCP_TIME_WAIT) {
+                revents |= POLLHUP;
+                if (c->rx_count > 0) revents |= POLLIN;
+            } else if (c->state == TCP_ESTABLISHED) {
+                if ((events & POLLIN) && (c->rx_count > 0 || c->eof)) {
+                    revents |= POLLIN;
+                    if (c->eof) revents |= POLLHUP;
+                }
+                if ((events & POLLOUT) && !c->want_fin && c->tx_count < TCP_TXBUF_MAX) {
+                    revents |= POLLOUT;
+                }
+            }
+        }
+    }
+    spin_unlock_irqrestore(&lock, flags);
+    return revents;
 }

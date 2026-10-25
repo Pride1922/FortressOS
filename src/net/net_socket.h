@@ -43,4 +43,5 @@ void net_socket_retain(const net_socket_wait_t *wait,uint64_t deadline);
 void net_socket_input(uint32_t source, uint16_t sport, uint16_t dport,
                        const uint8_t *data, size_t len);
 void net_socket_worker_tick(uint64_t now, bool online);
+short net_socket_poll(file_t *file, short events);
 #endif

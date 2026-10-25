@@ -46,4 +46,5 @@ bool net_tcp_idle(void);
  * send half-close while the peer response is still arriving. */
 bool net_tcp_receiving(void);
 bool net_tcp_isn_crypto_guaranteed(void);
+short net_tcp_poll(unsigned slot, short events);
 #endif

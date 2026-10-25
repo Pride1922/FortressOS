@@ -3,8 +3,6 @@
 #include "dns.h"
 #include "netconf.h"
 
-/* Finite serial request/response: consume stdin, half-close, drain response.
- * A peer must consume the request before sending a large response. */
 #ifndef NC_CALL
 #define NC_CALL udp_call
 #endif
@@ -16,20 +14,6 @@
 static uint8_t buffer[4096];
 static dns_context_t dns_context;
 static dns_result_t dns_result;
-
-static bool copy(long source, long destination) {
-    for (;;) {
-        long count=NC_CALL(SYS_READ,source,(uintptr_t)buffer,sizeof(buffer),0,0,0);
-        if (count<0 || (size_t)count>sizeof(buffer)) return false;
-        if (!count) return true;
-        size_t at=0;
-        while (at<(size_t)count) {
-            long sent=NC_CALL(SYS_WRITE,destination,(uintptr_t)(buffer+at),(size_t)count-at,0,0,0);
-            if (sent<=0 || (size_t)sent>(size_t)count-at) return false;
-            at+=(size_t)sent;
-        }
-    }
-}
 
 static void message(const char *text) {
     size_t left=udp_length(text);
@@ -59,6 +43,67 @@ static void print_usage(void) {
             "     A peer that sends a large response before consuming the whole request\n"
             "     can deadlock the serial nc; use small finite requests or a cooperating peer.\n"
             "  4. No Application Timeout: nc blocks until connection closure or RST.\n");
+}
+
+static bool pump(long sock, bool skip_stdin) {
+    struct pollfd pfd[2];
+    pfd[0].fd = skip_stdin ? -1 : 0;
+    pfd[0].events = POLLIN;
+    pfd[0].revents = 0;
+
+    pfd[1].fd = sock;
+    pfd[1].events = POLLIN;
+    pfd[1].revents = 0;
+
+    if (skip_stdin) {
+        if (NC_CALL(SYS_SHUTDOWN, sock, NET_SHUT_WR, 0, 0, 0, 0)) return false;
+    }
+
+    bool stdin_eof = skip_stdin;
+    bool sock_eof = false;
+
+    while (!sock_eof) {
+        pfd[0].revents = 0;
+        pfd[1].revents = 0;
+        long nready = NC_CALL(SYS_POLL, (uintptr_t)pfd, 2, -1, 0, 0, 0);
+        if (nready < 0) return false;
+        if (nready == 0) continue;
+
+        /* 1. Stdin has data to send to socket */
+        if (!stdin_eof && (pfd[0].revents & (POLLIN | POLLHUP | POLLERR))) {
+            long count = NC_CALL(SYS_READ, 0, (uintptr_t)buffer, sizeof(buffer), 0, 0, 0);
+            if (count < 0) return false;
+            if (count == 0) {
+                stdin_eof = true;
+                pfd[0].fd = -1;
+                if (NC_CALL(SYS_SHUTDOWN, sock, NET_SHUT_WR, 0, 0, 0, 0)) return false;
+            } else {
+                size_t at = 0;
+                while (at < (size_t)count) {
+                    long sent = NC_CALL(SYS_WRITE, sock, (uintptr_t)(buffer + at), (size_t)count - at, 0, 0, 0);
+                    if (sent <= 0 || (size_t)sent > (size_t)count - at) return false;
+                    at += (size_t)sent;
+                }
+            }
+        }
+
+        /* 2. Socket has data to receive and write to stdout */
+        if (pfd[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+            long count = NC_CALL(SYS_READ, sock, (uintptr_t)buffer, sizeof(buffer), 0, 0, 0);
+            if (count < 0) return false;
+            if (count == 0) {
+                sock_eof = true;
+                break;
+            }
+            size_t at = 0;
+            while (at < (size_t)count) {
+                long sent = NC_CALL(SYS_WRITE, 1, (uintptr_t)(buffer + at), (size_t)count - at, 0, 0, 0);
+                if (sent <= 0 || (size_t)sent > (size_t)count - at) return false;
+                at += (size_t)sent;
+            }
+        }
+    }
+    return true;
 }
 
 int nc_main(int argc, char **argv) {
@@ -109,9 +154,9 @@ int nc_main(int argc, char **argv) {
         NC_CALL(SYS_CLOSE,listener,0,0,0,0,0); listener=-1;
         if (fd<0) goto failure;
     } else if (NC_CALL(SYS_CONNECT,fd,(uintptr_t)&address,sizeof(address),0,0,0)) goto failure;
-    if (!skip_stdin && (!copy(0,fd) || NC_CALL(SYS_SHUTDOWN,fd,NET_SHUT_WR,0,0,0,0))) goto failure;
-    if (skip_stdin && NC_CALL(SYS_SHUTDOWN,fd,NET_SHUT_WR,0,0,0,0)) goto failure;
-    if (!copy(fd,1)) goto failure;
+
+    if (!pump(fd, skip_stdin)) goto failure;
+
     NC_CALL(SYS_CLOSE,fd,0,0,0,0,0);
     return 0;
 failure:

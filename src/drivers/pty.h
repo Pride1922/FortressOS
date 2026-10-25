@@ -70,5 +70,6 @@ int64_t pty_set_winsize(vfs_node_t *node, uint16_t cols, uint16_t rows);
 int64_t pty_get_winsize(vfs_node_t *node, uint16_t *cols, uint16_t *rows);
 int64_t pty_set_termattr(vfs_node_t *node, const terminal_attrs_t *attrs);
 int64_t pty_get_termattr(vfs_node_t *node, terminal_attrs_t *attrs);
+short pty_poll(vfs_node_t *node, short events);
 
 #endif /* FORTRESS_PTY_H */

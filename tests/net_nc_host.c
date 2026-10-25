@@ -19,6 +19,27 @@ static long mock_call(long nr,uintptr_t a,uintptr_t b,uintptr_t c,uintptr_t d,ui
         return (long)c;
     }
     if (nr==failed_call) return error_value;
+    if (nr==SYS_POLL) {
+        struct pollfd *pfd = (struct pollfd *)a;
+        uint64_t nfds = b;
+        int ready = 0;
+        for (uint64_t i = 0; i < nfds; ++i) {
+            pfd[i].revents = 0;
+            if (pfd[i].fd == 0) {
+                if (in_at < in_size) { pfd[i].revents |= POLLIN; ready++; }
+                else { pfd[i].revents |= POLLHUP; ready++; }
+            } else if (pfd[i].fd == (listening ? 11 : 10)) {
+                if (shutdowns == 0) {
+                    /* In this test fixture, mock peer only responds after write shutdown */
+                } else if (reply_at < sizeof(reply)) {
+                    pfd[i].revents |= POLLIN; ready++;
+                } else {
+                    pfd[i].revents |= POLLHUP; ready++;
+                }
+            }
+        }
+        return ready;
+    }
     if (nr==SYS_TERMCTL) {
         assert(a==TERM_ISATTY && b==0 && c==0 && d==0); ++tty_queries;
         return tty_stdin ? 1 : 0;

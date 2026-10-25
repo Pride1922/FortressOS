@@ -643,6 +643,14 @@ test-hub-host-tsan:
 	@$(CC) -std=c11 -O1 -g -fsanitize=thread -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -Isrc/include -Isrc/drivers -Isrc/kernel -Isrc/arch/x86_64 -Isrc/fs tests/hub_host.c src/drivers/xhci_rings.c src/drivers/keyboard.c -o $(BUILD_DIR)/hub_host_tsan
 	@timeout 120 setarch x86_64 -R env TSAN_OPTIONS="halt_on_error=1 second_deadlock_stack=1" $(BUILD_DIR)/hub_host_tsan
 
+test-poll-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/kernel tests/poll_host.c -o $(BUILD_DIR)/poll_host
+	@$(BUILD_DIR)/poll_host
+
+test-poll-nc: $(BOOTABLE_ISO)
+	@python3 scripts/test_poll_nc.py
+
 test-usb-hid: $(BOOTABLE_ISO)
 	@python3 scripts/test_usb_hid.py
 

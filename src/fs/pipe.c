@@ -1,3 +1,5 @@
+#include "syscall_abi.h"
+#include "time.h"
 #include "pipe.h"
 #include "heap.h"
 #include "pmm.h"
@@ -82,7 +84,7 @@ static int64_t pipe_read(vfs_node_t *node, uint64_t offset, void *buf, size_t co
             profile_transfer(p, false, n, before);
             pipe_publish(p);
             spin_unlock_irqrestore(&p->lock, flags);
-            sched_wake_all(&p->space_bytes);
+            sched_wake_all(&p->space_bytes); sched_wake_all((void *)time_get_sleep_channel());
             return (int64_t)n;
         }
         if (!__atomic_load_n(&p->writers, __ATOMIC_ACQUIRE)) {
@@ -125,7 +127,7 @@ static int64_t pipe_write(vfs_node_t *node, uint64_t *offset, bool append,
             profile_transfer(p, true, n, before);
             pipe_publish(p);
             spin_unlock_irqrestore(&p->lock, flags);
-            sched_wake_all(&p->data_bytes);
+            sched_wake_all(&p->data_bytes); sched_wake_all((void *)time_get_sleep_channel());
             return (int64_t)n;
         }
         if (stream_flags & VFS_O_NONBLOCK) {
@@ -206,12 +208,41 @@ void pipe_close_endpoint(vfs_node_t *node) {
     node->fs_private = NULL;
     spin_unlock_irqrestore(&p->lock, flags);
     /* Retain this endpoint's lifetime reference until the wake completes. */
-    sched_wake_all(&p->data_bytes);
-    sched_wake_all(&p->space_bytes);
+    sched_wake_all(&p->data_bytes); sched_wake_all((void *)time_get_sleep_channel());
+    sched_wake_all(&p->space_bytes); sched_wake_all((void *)time_get_sleep_channel());
     if (__atomic_sub_fetch(&p->active_endpoints, 1, __ATOMIC_ACQ_REL) == 0) {
         pmm_free_pages(p->buffer_phys, 16);
         kfree(p->read_node);
         kfree(p->write_node);
         kfree(p);
     }
+}
+
+bool is_pipe_node(const vfs_node_t *node) {
+    return node && (node->read == pipe_read || node->write == pipe_write);
+}
+
+short pipe_poll(vfs_node_t *node, short events) {
+    if (!node || !node->fs_private) return POLLNVAL;
+    pipe_t *p = (pipe_t *)node->fs_private;
+    uint64_t flags = spin_lock_irqsave(&p->lock);
+    short revents = 0;
+    if (node == p->read_node) {
+        if ((events & POLLIN) && p->count > 0) {
+            revents |= POLLIN;
+        }
+        if (__atomic_load_n(&p->writers, __ATOMIC_ACQUIRE) == 0) {
+            revents |= POLLHUP;
+            if (p->count > 0) revents |= POLLIN;
+        }
+    }
+    if (node == p->write_node) {
+        if (__atomic_load_n(&p->readers, __ATOMIC_ACQUIRE) == 0) {
+            revents |= POLLERR;
+        } else if ((events & POLLOUT) && (PIPE_CAPACITY - p->count) > 0) {
+            revents |= POLLOUT;
+        }
+    }
+    spin_unlock_irqrestore(&p->lock, flags);
+    return revents;
 }

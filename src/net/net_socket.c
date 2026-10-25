@@ -1,3 +1,4 @@
+#include "time.h"
 #include "net_socket.h"
 #include "net_ipv4.h"
 #include "syscall_abi.h"
@@ -360,7 +361,7 @@ void net_socket_worker_tick(uint64_t now, bool online) {
             irq=spin_lock_irqsave(&s_lock);
             s->detaching=false; s->used=false;
             spin_unlock_irqrestore(&s_lock,irq);
-            sched_wake_all(&s->channel); continue;
+            sched_wake_all(&s->channel); sched_wake_all((void *)time_get_sleep_channel()); continue;
         }
         if (s->tx.token && !s->tx.retained && now>=s->tx.expire) { invalidate(&s->tx); wake=true; }
         if (s->receive.token && !s->receive.retained && now>=s->receive.expire) { invalidate(&s->receive); wake=true; }
@@ -396,7 +397,31 @@ void net_socket_worker_tick(uint64_t now, bool online) {
             spin_unlock_irqrestore(&s_lock,irq);
         }
         /* Static address; also wakes stale continuations after AP final-close. */
-        if (wake) sched_wake_all(&s->channel);
+        if (wake) { sched_wake_all(&s->channel); sched_wake_all((void *)time_get_sleep_channel()); }
     }
     s_cursor=(s_cursor+1)%NET_SOCKET_MAX;
+}
+
+short net_socket_poll(file_t *file, short events) {
+    if (!file || !net_socket_file(file)) return POLLNVAL;
+    if (net_socket_stream(file)) {
+        return net_tcp_poll(net_socket_index(file), events);
+    }
+    unsigned slot = net_socket_index(file);
+    if (slot >= NET_SOCKET_MAX) return POLLNVAL;
+    uint64_t flags = spin_lock_irqsave(&s_lock);
+    socket_t *s = &s_slots[slot];
+    if (!s->used || s->detaching) {
+        spin_unlock_irqrestore(&s_lock, flags);
+        return POLLNVAL;
+    }
+    short revents = 0;
+    if ((events & POLLIN) && s->count > 0) {
+        revents |= POLLIN;
+    }
+    if (events & POLLOUT) {
+        revents |= POLLOUT;
+    }
+    spin_unlock_irqrestore(&s_lock, flags);
+    return revents;
 }
