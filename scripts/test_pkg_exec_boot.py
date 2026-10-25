@@ -21,14 +21,15 @@ def canonical_account_stage(image):
 def cli_objects(run):
     from test_pkg_cli_host import SOURCES,VENDORS,INCLUDES
     objects=[]
-    for i,path in enumerate(SOURCES+['user/pkg/transaction_cli.c','user/pkg/mutation_cli.c','src/lib/string.c']+VENDORS):
-        obj=f'build/exec-cli-{i}.o';flags=['gcc','-std=c11','-Os','-Wall','-Wextra','-Werror','-ffreestanding','-fno-builtin','-fno-pie','-fno-stack-protector','-mno-red-zone','-mno-sse','-mno-mmx','-msoft-float','-ffunction-sections','-fdata-sections',*INCLUDES]
+    for i,path in enumerate(SOURCES+['user/pkg/transaction_cli.c','user/pkg/mutation_cli.c','tests/pkg_exec_cli.c','src/lib/string.c']+VENDORS):
+        obj=f'build/exec-cli-{i}.o';flags=['gcc','-fstack-usage','-Itests','-std=c11','-Os','-Wall','-Wextra','-Werror','-ffreestanding','-fno-builtin','-fno-pie','-fno-stack-protector','-mno-red-zone','-mno-sse','-mno-mmx','-msoft-float','-ffunction-sections','-fdata-sections',*INCLUDES]
+        if path=='tests/pkg_exec_cli.c':flags+=['-Wframe-larger-than=1024']
         if path in VENDORS:flags+=['-include','src/lib/crypto/namespace.h']
         run(flags+['-c',path,'-o',obj],f'cli-{i}');objects.append(obj)
     return objects
 
 def build(image,out,roles,kernel,bootstrap):
-    out.mkdir();seed=fixture(out/'executor',keys(roles['catalog']),KEY,15,False)
+    out.mkdir();seed=fixture(out/'executor',keys(roles['catalog']),KEY,15,False,package='field-kit',command_name='field-tool')
     commands=out/'base.commands';paths=['/bin/pkg-boot','/bin/shell','/bin/sudo','/bin/login','/etc/passwd','/etc/group','/etc/shadow'];expected=b''
     with tarfile.open(BOOTSTRAP) as archive:
         lines=['mkdir /bin','set_inode_field /bin mode 040755']
@@ -49,7 +50,9 @@ def build(image,out,roles,kernel,bootstrap):
 def boot(out,work,iso,source,fw,smp,label,key_file,refused=False,cut=False):
     dest=out/label;dest.mkdir();disk=dest/'disk.img';shutil.copyfile(source,disk);initial=disk.read_bytes();assert disk.is_file() and not disk.is_symlink() and len(initial)==64*1024*1024
     with tempfile.TemporaryDirectory(prefix='fortress-pkgexec-uart-') as temp:
-        uartpath=pathlib.Path(temp)/'uart';argv=['qemu-system-x86_64','-M','q35','-accel','tcg','-cpu','max','-m','512M','-smp',str(smp),'-display','none','-net','none','-no-reboot','-boot','d','-rtc','base=2026-10-25T12:00:00','-cdrom',str(iso),'-chardev',f'socket,id=uart,path={uartpath},server=on,wait=off,logfile={dest/"serial.log"}','-serial','chardev:uart','-drive',f'if=none,format=raw,id=exec,file={disk}','-device','nvme,drive=exec,serial=FORTRESS-PKG-EXEC','-fw_cfg','name=opt/fortress/pkg_boot_nvme,string=private-regular-file-only','-fw_cfg',f'name=opt/fortress/pkg_exec_key,file={key_file}']
+        # The probe is autonomous. File capture avoids socket backpressure;
+        # a bounded UART transmit timeout can otherwise disable guest output.
+        argv=['qemu-system-x86_64','-M','q35','-accel','tcg','-cpu','max','-m','512M','-smp',str(smp),'-display','none','-net','none','-no-reboot','-boot','d','-rtc','base=2026-10-25T12:00:00','-cdrom',str(iso),'-serial',f'file:{dest/"serial.log"}','-drive',f'if=none,format=raw,id=exec,file={disk}','-device','nvme,drive=exec,serial=FORTRESS-PKG-EXEC','-fw_cfg','name=opt/fortress/pkg_boot_nvme,string=private-regular-file-only','-fw_cfg',f'name=opt/fortress/pkg_exec_key,file={key_file}']
         if fw=='uefi':
             shutil.copyfile(VARS,dest/'vars.fd');argv+=['-drive',f'if=pflash,format=raw,unit=0,readonly=on,file={CODE}','-drive',f'if=pflash,format=raw,unit=1,file={dest/"vars.fd"}']
         if cut:argv+=['-fw_cfg','name=opt/fortress/pkg_exec_cut,string=durable-commit-reset']
@@ -59,20 +62,16 @@ def boot(out,work,iso,source,fw,smp,label,key_file,refused=False,cut=False):
             if arg=='-drive':assert argv[i+1]==f'if=none,format=raw,id=exec,file={disk}' or argv[i+1].startswith('if=pflash,format=raw,unit=')
         (dest/'argv.json').write_text(json.dumps(argv,indent=2)+'\n')
         with (dest/'stderr.log').open('w') as err:p=subprocess.Popen(argv,cwd=work,stderr=err,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
-        uart=socket.socket(socket.AF_UNIX);qmp=socket.socket(socket.AF_UNIX);events=bytearray()
+        qmp=socket.socket(socket.AF_UNIX);events=bytearray()
         try:
             limit=time.monotonic()+10
-            while True:
-                try:uart.connect(str(uartpath));break
-                except (FileNotFoundError,ConnectionRefusedError):assert time.monotonic()<limit;time.sleep(.1)
             while True:
                 try:qmp.connect(str(qmp_path));break
                 except (FileNotFoundError,ConnectionRefusedError):assert time.monotonic()<limit;time.sleep(.1)
             qmp.sendall(b'{"execute":"qmp_capabilities"}\n');qmp.setblocking(False)
-            uart.settimeout(.2);limit=time.monotonic()+300
+            limit=time.monotonic()+300
             while time.monotonic()<limit:
-                try:uart.recv(65536)
-                except socket.timeout:pass
+                time.sleep(.05)
                 try:events.extend(qmp.recv(65536))
                 except BlockingIOError:pass
                 text=(dest/'serial.log').read_text(errors='replace') if (dest/'serial.log').exists() else ''
@@ -81,12 +80,14 @@ def boot(out,work,iso,source,fw,smp,label,key_file,refused=False,cut=False):
                 if refused and 'PKGEXEC HALTED no-fallback' in text:break
                 if p.poll() is not None:break
             else:raise AssertionError('timeout '+text[-6000:])
+            text=(dest/'serial.log').read_text(errors='replace') if (dest/'serial.log').exists() else ''
+            assert not any(x in text for x in ('[PANIC]','[FATAL]','RING3 FAIL','CPU EXCEPTION KERNEL PANIC')),text[-6000:]
             if cut:
                 assert 'PKGEXEC CUT durable-COMMIT' in text
             elif refused:
                 assert 'PKGEXEC REFUSED' in text and 'writes=0 flushes=0' in text and disk.read_bytes()==initial
             else:
-                assert p.poll()==0 and 'PKGEXEC RING3 PASS' in text and 'PKGEXEC PUBLISHED installed-root real-account-service' in text,(p.poll(),text[-6000:])
+                assert p.poll()==0 and 'PKGEXEC RING3 PASS' in text and 'PKGEXEC private command sessions PASS' in text and 'PKGEXEC PUBLISHED installed-root real-account-service' in text,(p.poll(),text[-6000:])
                 try:events.extend(qmp.recv(65536))
                 except (BlockingIOError,OSError):pass
                 assert any(e.get('event')=='SHUTDOWN' and e.get('data',{}).get('reason')=='guest-shutdown' for e in (json.loads(line) for line in events.splitlines())),events.decode(errors='replace')
@@ -107,7 +108,7 @@ def boot(out,work,iso,source,fw,smp,label,key_file,refused=False,cut=False):
         finally:
             try:events.extend(qmp.recv(65536))
             except (BlockingIOError,OSError):pass
-            (dest/'qmp.log').write_bytes(events);observed=p.poll();uart.close();qmp.close()
+            (dest/'qmp.log').write_bytes(events);observed=p.poll();qmp.close()
             if p.poll() is None:
                 p.terminate()
                 try:p.wait(timeout=5)
@@ -116,7 +117,7 @@ def boot(out,work,iso,source,fw,smp,label,key_file,refused=False,cut=False):
 
 def main():
     global KEY,BOOTSTRAP
-    parser=argparse.ArgumentParser();parser.add_argument('--smoke',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--smoke',action='store_true');parser.add_argument('--build-only',action='store_true');args=parser.parse_args()
     source=inspect.getsource(base.main).replace('def main():','def build_main():').replace("'pkg-boot-admission-'","'pkg-exec-boot-'").replace('boot_mode=pkg-test-v1','boot_mode=pkg-exec-v1')
     source=source.replace("    assert m['preservation']!='FAIL'",'    # Preserve the failure independently; runtime cases remain useful.')
     source=source.replace("        run(['ld','-nostdlib','-static','-z','noexecstack','-T','user/shell.ld','build/pkgboot-start.o','build/pkgboot.o','-o','build/pkgboot.elf'],'probe-link')","        objects=cli_objects(run)\n        run(['ld','-nostdlib','-static','-z','noexecstack','--gc-sections','-T','user/shell.ld','build/pkgboot-start.o','build/pkgboot.o',*objects,'-o','build/pkgboot.elf'],'probe-link')")
@@ -138,12 +139,16 @@ def main():
         # Producer temporary inputs are removed by the base runner; reconstruct
         # expected profile directly from its signed manifest recipe.
         from pkg_artifact_vectors import elf
-        items=[{'path':'/usr/bin/hello','sha256':H(elf()).hex()}]+[{'path':f'/usr/share/pkg/toolbox/73/doc/shared/{i:02}/a/b/c/readme','sha256':H(b'documentation\n'*(i+1)).hex()} for i in range(15)]
+        items=[{'path':'/usr/bin/field-tool','sha256':H(elf()).hex()}]+[{'path':f'/usr/share/pkg/field-kit/73/doc/shared/{i:02}/a/b/c/readme','sha256':H(b'documentation\n'*(i+1)).hex()} for i in range(15)]
         (out/'expected.json').write_text(json.dumps(items,indent=2)+'\n')
         assert all(KEY not in (out/p).read_bytes() for p in ('valid.iso','policy.bin','selector.bin','bootstrap.tar'))
         manifest=json.loads((out/'manifest.json').read_text());results=[]
         frames={line.split('\t')[0]:int(line.split('\t')[1]) for line in (work/'build/fs/ext4.su').read_text().splitlines() if any(':'+p in line for p in ('px_','mx_','jb_boot'))}
         manifest['executor_frames']=frames;assert frames and max(frames.values())<=1024,frames
+        if args.build_only:
+            manifest['boot_runtime']='NOT RUN'
+            (out/'exec-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+            print(out,'BUILD ONLY',manifest['preservation'],flush=True);return
         try:
             def pair(config):
                 fw,smp=config;label=f'{fw}-{smp}';cut_label=label+'-cut'
@@ -164,5 +169,5 @@ def main():
             manifest['boot_runtime']='PASS'
         except BaseException as e:manifest['boot_runtime']='FAIL';manifest['error']=repr(e);raise
         finally:
-            manifest['cases']=results;manifest['changed_sources']=[p for p,h in manifest['sources'].items() if base.H(ROOT/p)!=h];manifest['preservation']='FAIL' if manifest['changed_sources'] else manifest['preservation'];(out/'exec-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n');print(out,manifest['boot_runtime'],manifest['preservation'],flush=True)
+            manifest['cases']=results;manifest['changed_sources']=[p for p,h in manifest['sources'].items() if base.H(ROOT/p)!=h];manifest['changed_guards']=[p for p,h in manifest['guards'].items() if not (ROOT/p).is_file() or base.H(ROOT/p)!=h];manifest['changed_copies']=[p for p,h in manifest['compiled_inputs'].items() if not (work/p).is_file() or base.H(work/p)!=h];manifest['preservation']='FAIL' if manifest['changed_sources'] or manifest['changed_guards'] or manifest['changed_copies'] else manifest['preservation'];(out/'exec-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n');print(out,manifest['boot_runtime'],manifest['preservation'],flush=True)
 if __name__=='__main__':main()

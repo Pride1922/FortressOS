@@ -2634,6 +2634,10 @@ test-abi-version-host: tests/abi_versioning_host.c
 
 # Private copied kernel and regular-file fixtures; never rebuild release media.
 .PHONY: test-pkg-exec-boot
-test-pkg-exec-boot: scripts/test_pkg_exec_boot.py scripts/pkg_exec_overlay.py scripts/pkg_install_overlay.py tests/pkg_exec_kernel.inc tests/pkg_exec_ring3.c tests/pkg_exec_wire.h tests/pkg_install_fs.inc tests/pkg_plan_candidate.c user/pkg/mutation_cli.c
+.PHONY: test-pkg-exec-cli-host
+test-pkg-exec-cli-host:
+	python3 scripts/test_pkg_exec_cli.py
+
+test-pkg-exec-boot: scripts/test_pkg_exec_boot.py scripts/pkg_exec_overlay.py scripts/pkg_install_overlay.py tests/pkg_exec_kernel.inc tests/pkg_exec_ring3.c tests/pkg_exec_wire.h tests/pkg_exec_cli.c tests/pkg_exec_cli.h tests/pkg_install_fs.inc tests/pkg_plan_candidate.c user/pkg/mutation_cli.c
 	@python3 -c "from pathlib import Path; assert Path('bin/initramfs.tar').is_file(), 'An existing read-only bootstrap is required; no release build is performed'"
 	python3 scripts/test_pkg_exec_boot.py

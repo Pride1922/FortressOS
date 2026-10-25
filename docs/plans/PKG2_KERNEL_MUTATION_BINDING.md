@@ -46,10 +46,19 @@ Private syscall 200 retains the existing status/acquire/recover/release protocol
 Private syscall 203 consumes an exact 64-byte v1 request and writes an 80-byte
 result. Requests contain operation, session and inline package name, with zero
 reserved fields. No user pointers, source buffers, policy/key options, device
-selectors or block maps persist. The trusted registry currently contains one
-slot, `toolbox`; the generic executor and CLI parser remain bounded as before.
+selectors or block maps persist. The private source contains exactly one
+authenticated catalog entry. Boot derives its package name from that entry and
+binds it to the verified artifact; no demo name selects the source. Requests
+use canonical 1–32 byte identities and must match the prepared package exactly.
 Both input and writable output ranges are checked before copying or storage.
 Operation 1 installs and operation 2 removes the registered package.
+
+The copied private command entry `/bin/pkg-boot --pkg VERB [PACKAGE]` supplies
+the real syscall callbacks to `pkg_mutation_cli`. Status is read-only;
+install/remove/recover acquire a fresh owner session lazily and release it after
+the command, including result/output failures. It never retries a mutation or
+recovery after a lost result. This entry is linked only into the private probe;
+the default `/bin/pkg` and production dispatch remain disabled for mutation.
 
 The existing `gk_transport` registers the current TCB's generation-backed
 `pw_key`. ACQUIRE requires effective UID zero and CAP_SYS_ADMIN. `pw_enter`
@@ -89,6 +98,8 @@ requires a valid TCB; Ring 3 fault control checks the defensive hook alone.
 
 Exact frozen inputs, completed cases, retained failures and preservation
 qualifications are recorded in the [acceptance audit](../roadmap/pkg-kernel-mutation-acceptance.md).
+The subsequent current-kernel and general private CLI/source batch is recorded
+in [its separate audit](../roadmap/pkg-private-cli-source-acceptance.md).
 
 `scripts/test_pkg_exec_boot.py` builds only in a retained private source copy.
 The Ring 3 probe calls the actual `pkg_mutation_cli` install/remove paths through

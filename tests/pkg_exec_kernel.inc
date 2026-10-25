@@ -138,7 +138,9 @@ void jb_boot(const boot_info_t *b,bool selected,bool read_fault){
     for(unsigned i=0;i<32;i++)mx_policy.resources.platform[i]=i;
     mx_policy.current_actor=mx_actor;mx_policy.authorized=mx_authorized;
     size_t an=px_get(policy+952,4),cn=px_get(policy+956,4);if(an>policy_n-960||cn!=policy_n-960-an)goto fail;
-    stage="signed-source";r=px_prepare(&mx_policy,policy+960,an,policy+960+an,cn,(void *)"toolbox",7,true);crypto_wipe(mx_policy.record_key,32);if(r)goto fail;
+    stage="signed-source";fpk_catalog source;
+    if(fpk_catalog_verify(policy+960+an,cn,&mx_policy.catalog,&source)||source.count!=1)goto fail;
+    r=px_prepare(&mx_policy,policy+960,an,policy+960+an,cn,source.entries+1,source.entries[0],true);crypto_wipe(mx_policy.record_key,32);if(r)goto fail;
     stage="device";if(!nvme_init()||!nvme_has_unique_namespace()||nvme_get_sector_size()!=512||nvme_get_sector_count()!=131072)goto fail;
     mx_disk=(block_dev_t){.sector_size=512,.sector_count=131072,.read_sector=mx_read,.write_sector=mx_write,.flush=mx_flush};
     gpt_policy_result_t gp;if(!gpt_parse_ex(&mx_disk,&gp)||gp!=GPT_POLICY_PRIMARY_CONSISTENT||gpt_get_partition_count()!=2)goto fail;
@@ -193,8 +195,10 @@ int64_t mx_transport(uintptr_t input,uintptr_t output,uint64_t size){
     if(size!=64)return SYSCALL_EINVAL;
     tcb_t *t=thread_current();uint64_t *pml4=vmm_get_active_pml4_virt();
     if(!t||!t->is_user||!vmm_validate_user_range(pml4,input,64,false)||!vmm_validate_user_range(pml4,output,80,true))return SYSCALL_EFAULT;
-    mx_request q;memcpy(&q,(void *)input,64);if(q.size!=64||q.version!=1||q.reserved||q.reserved64||(q.operation!=PI_INSTALL&&q.operation!=PI_REMOVE)||memcmp(q.package,"toolbox",8)||!px_zero(q.package+8,24))return SYSCALL_EINVAL;
-    if(!mx_ready()||!t->pkg_owner.generation)return SYSCALL_EACCES;
+    mx_request q;memcpy(&q,(void *)input,64);if(q.size!=64||q.version!=1||q.reserved||q.reserved64||(q.operation!=PI_INSTALL&&q.operation!=PI_REMOVE))return SYSCALL_EINVAL;
+    size_t name_n=0;while(name_n<32&&q.package[name_n])name_n++;
+    if(!fpk_identity_valid((void *)q.package,name_n)||!px_zero(q.package+name_n,32-name_n))return SYSCALL_EINVAL;
+    if(!mx_ready()||!t->pkg_owner.generation||memcmp(q.package,px->shape.package,32))return SYSCALL_EACCES;
     pw_key operation;
     if(!pw_enter((pw_key){t->pkg_owner.generation,t->pkg_owner.slot},q.session,&operation))return SYSCALL_EACCES;
     /* The immutable catalog was authenticated at boot. Do not reuse that boot
@@ -203,6 +207,7 @@ int64_t mx_transport(uintptr_t input,uintptr_t output,uint64_t size){
     if(!r)r=px_control(q.operation);
     pkg_transaction_status status;if(!r)r=mx_snapshot(&mx_identity,&status);if(!pw_complete(operation))r=-VFS_EIO;if(entered)mx_leave();if(r)return syscall_from_vfs_error(r);
     pb_result result={.size=80,.version=1,.phase=status.phase,.session=q.session,.sequence=status.sequence,.account_sequence=status.account_sequence,.credential_generation=status.credential_generation};
+    for(unsigned i=0;i<2;i++){result.remaining[i]=status.remaining[i];result.charged[i]=status.charged[i];}
     if(mx_copy_fault())return SYSCALL_EFAULT;
     memcpy((void *)output,&result,80);return 0;
 }
