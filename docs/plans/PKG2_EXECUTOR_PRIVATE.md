@@ -70,8 +70,8 @@ an independent Python content/metadata/ledger oracle check completed outputs.
 
 These tests do not establish boot acceptance, actual scheduler teardown, native
 account-service concurrency, physical power-loss safety or production key
-custody. The new executor still requires integration with the retained kernel
-owner/request path and installed-root admission, followed by the Gate 4 Ring 3
-BIOS/UEFI campaign. Existing status/recover boot evidence does not cover this
-new mutation executor. Public mutation commands must remain disabled pending
-that integration and acceptance review.
+custody. The [private kernel binding](PKG2_KERNEL_MUTATION_BINDING.md) adds the
+retained owner/request path, installed-root admission and a bounded Ring 3
+BIOS/UEFI campaign. Its evidence is separate from this host checkpoint and the
+earlier status/recover boots. Broader Gate 4 campaigns and production review
+remain; public mutation commands stay disabled.
