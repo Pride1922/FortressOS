@@ -1236,11 +1236,6 @@ static int64_t sys_net_ifset(uintptr_t user_config, uint64_t size) {
 
 static int64_t sys_wifi(uint64_t cmd, uintptr_t arg, size_t size) {
     uint64_t *pml4 = vmm_get_active_pml4_virt();
-    if (cmd == SYS_WIFI_CMD_CONNECT || cmd == SYS_WIFI_CMD_DISCONNECT || cmd == SYS_WIFI_CMD_LOAD_FW) {
-        creds_t actor;
-        if (!syscall_actor(&actor)) return SYSCALL_ESRCH;
-        if (permission_capability(&actor, CAP_SYS_ADMIN)) return SYSCALL_EPERM;
-    }
     if (cmd == SYS_WIFI_CMD_SCAN) {
         if (size != sizeof(wifi_scan_result_t)) return SYSCALL_EINVAL;
         if (!vmm_validate_user_range(pml4, arg, size, true)) return SYSCALL_EFAULT;

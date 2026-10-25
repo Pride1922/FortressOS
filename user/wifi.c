@@ -23,12 +23,6 @@ static char s_out[1024];
 
 static bool write_str(int fd, const char *str);
 
-static bool is_privileged(void) {
-    uint32_t r = 0, e = 0, s = 0;
-    long rc = WIFI_SYSCALL(SYS_GETRESUID, (uintptr_t)&r, (uintptr_t)&e, (uintptr_t)&s);
-    if (rc != 0) return false;
-    return e == 0;
-}
 
 static uint8_t s_fw_decomp_buf[2000000];
 static size_t  s_fw_decomp_pos = 0;
@@ -1097,34 +1091,14 @@ int wifi_main(int argc, char **argv) {
     } else if (streq(argv[1], "status")) {
         return do_status();
     } else if (streq(argv[1], "list")) {
-        if (!is_privileged()) {
-            write_str(2, "wifi list: permission denied; root access required (use sudo wifi list)\n");
-            return 1;
-        }
         return do_list();
     } else if (streq(argv[1], "load-fw") || streq(argv[1], "init")) {
-        if (!is_privileged()) {
-            write_str(2, "wifi init: permission denied; root access required (use sudo wifi init)\n");
-            return 1;
-        }
         return ensure_firmware_loaded() ? 0 : 1;
     } else if (streq(argv[1], "disconnect")) {
-        if (!is_privileged()) {
-            write_str(2, "wifi disconnect: permission denied; root access required (use sudo wifi disconnect)\n");
-            return 1;
-        }
         return do_disconnect();
     } else if (streq(argv[1], "auto")) {
-        if (!is_privileged()) {
-            write_str(2, "wifi auto: permission denied; root access required (use sudo wifi auto)\n");
-            return 1;
-        }
         return do_auto();
     } else if (streq(argv[1], "save")) {
-        if (!is_privileged()) {
-            write_str(2, "wifi save: permission denied; root access required (use sudo wifi save ...)\n");
-            return 1;
-        }
         if (argc < 4) {
             write_str(2, "Usage: wifi save <SSID> <passphrase> [--static <IP/prefix> [gateway] [dns]]\n");
             return 1;
@@ -1143,10 +1117,6 @@ int wifi_main(int argc, char **argv) {
         }
         return do_save(ssid, psk, addr, gw, dns);
     } else if (streq(argv[1], "forget") || streq(argv[1], "remove") || streq(argv[1], "delete")) {
-        if (!is_privileged()) {
-            write_str(2, "wifi forget: permission denied; root access required (use sudo wifi forget ...)\n");
-            return 1;
-        }
         const char *ssid = NULL;
         static char s_cur_connected_ssid[WIFI_SSID_MAX_LEN + 1];
         if (argc >= 3) {
@@ -1170,10 +1140,6 @@ int wifi_main(int argc, char **argv) {
         }
         return do_forget(ssid);
     } else if (streq(argv[1], "static")) {
-        if (!is_privileged()) {
-            write_str(2, "wifi static: permission denied; root access required (use sudo wifi static ...)\n");
-            return 1;
-        }
         if (argc < 3) {
             write_str(2, "Usage: wifi static <IP/prefix> [gateway] [dns]       (applies to current network)\n"
                          "       wifi static <SSID> <IP/prefix> [gateway] [dns]\n"
@@ -1217,10 +1183,6 @@ int wifi_main(int argc, char **argv) {
 
         return do_static(ssid, addr, gw, dns);
     } else if (streq(argv[1], "connect")) {
-        if (!is_privileged()) {
-            write_str(2, "wifi connect: permission denied; root access required (use sudo wifi connect ...)\n");
-            return 1;
-        }
         if (argc < 3) {
             write_str(2, "Usage: wifi connect <SSID> [passphrase] [--static <IP/prefix> [gateway] [dns]]\n");
             return 1;
