@@ -118,6 +118,17 @@ FortressOS implements an in-tree, freestanding SSHv2 daemon (`/sbin/sshd`) compl
 +---------------------------------------+   +---------------------------------------+
 ```
 
+### 1.1 Scope Boundaries & Non-Goals
+
+FortressOS maintains strict boundary discipline regarding SSH capabilities:
+- **SSH Client (`/bin/ssh`)**: **Explicitly out of scope** ([Issue #61](https://github.com/Pride1922/FortressOS/issues/61)). FortressOS implements an inbound SSH server daemon (`/sbin/sshd`) to allow administrative remote access into FortressOS nodes from standard external clients (OpenSSH, PuTTY, MobaXterm). Outbound SSH client capabilities (terminal client, `known_hosts` trust store, outbound key negotiation, ssh-agent client integration) are deliberately excluded to maintain freestanding simplicity, minimal attack surface, and low footprint. For outbound remote terminal verification and interactive network access, FortressOS provides `/bin/telnet` and `/bin/nc`.
+- **SFTP / SCP Subsystem**: Out of scope. Remote file transfers should use HTTP/HTTPS via `/bin/wget` or block/filesystem mechanisms.
+- **Agent Forwarding & TCP Port Forwarding**: Explicitly rejected at the RFC 4254 channel request layer to preserve process isolation and network owner boundaries.
+- **Compression (zlib)**: Out of scope (`none` only) to protect the static memory budget and eliminate compression-related attack surfaces.
+- **X11 Forwarding**: Explicitly rejected at the channel request layer.
+- **SSH Certificates**: Out of scope (raw Ed25519 host and user authentication keys only).
+- **Remote Root Login**: Strictly forbidden by policy (`PermitRootLogin no`).
+
 ---
 
 ## 2. Configuration Schema (`sshd_config`)

@@ -16,7 +16,9 @@ credentials. Preserve CPU-0 network ownership and the existing permission,
 account-generation, descriptor, scheduler and installed-root contracts.
 
 The first release supports IPv4 TCP, one session channel per connection and
-two simultaneous SSH connections. No SFTP/SCP subsystem, agent/TCP forwarding,
+two simultaneous SSH connections. An outbound SSH client (`/bin/ssh`) is
+explicitly out of scope ([Issue #61](https://github.com/Pride1922/FortressOS/issues/61));
+FortressOS implements an inbound server daemon only. No SFTP/SCP subsystem, agent/TCP forwarding,
 compression, X11, certificates or root remote login. These are explicit request
 failures, not silently accepted features. SSH remains disabled by default until
 provisioning and acceptance pass; enabling it is a separate persistent setting.
