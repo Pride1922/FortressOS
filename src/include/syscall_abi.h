@@ -79,6 +79,15 @@
 #define SYS_SETGROUPS     68 /* (count <= 16, const uint32 *groups) */
 #define SYS_CAPSET        69 /* (uint64 mask): drop-only, rejects undefined bits */
 #define SYS_CAPGET        70 /* () -> effective defined-bit mask */
+#ifndef SYS_INSTALLCTL
+#define SYS_INSTALLCTL    71 /* (uint32_t cmd, void *arg, size_t size); install_abi.h */
+#endif
+#ifndef SYS_ACCOUNTCTL
+#define SYS_ACCOUNTCTL    72 /* (uint32_t cmd, void *arg, size_t size); account_abi.h */
+#endif
+#ifndef SYS_INSTALLSEED
+#define SYS_INSTALLSEED   73 /* (uint32_t cmd, void *arg, size_t size); account_abi.h */
+#endif
 #define SYS_CLOCK_GETTIME 74 /* (uint32_t clk_id, timespec_t *ts) -> 0/-errno */
 #define SYS_NANOSLEEP     75 /* (const timespec_t *req, timespec_t *rem) -> 0/-errno */
 #define SYS_TIMES         76 /* (int64_t pid, tms_t *buf) -> 0/-errno */
@@ -100,6 +109,10 @@
 #define SYS_THREAD_SELF   92 /* () -> tid */
 #define SYS_THREAD_YIELD  93 /* () -> 0 */
 #define SYS_FUTEX         94 /* (uint32_t *uaddr, int op, uint32_t val, const timespec_t *timeout) -> 0/-errno */
+
+/* Syscall Allocation High-Water Mark and Next Available Slot */
+#define SYSCALL_MAX        94
+#define SYSCALL_NEXT_AVAIL 95
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
@@ -183,7 +196,15 @@ typedef struct {
     uint32_t type, mode, uid, gid, mnt_flags, reserved;
 } stat_ext_v1_t;
 _Static_assert(sizeof(stat_ext_v1_t)==40, "stat_ext v1 size");
-_Static_assert(offsetof(stat_ext_v1_t,file_size)==8, "stat_ext v1 offset");
+_Static_assert(offsetof(stat_ext_v1_t,size)==0, "stat_ext v1 size offset");
+_Static_assert(offsetof(stat_ext_v1_t,version)==4, "stat_ext v1 version offset");
+_Static_assert(offsetof(stat_ext_v1_t,file_size)==8, "stat_ext v1 file_size offset");
+_Static_assert(offsetof(stat_ext_v1_t,type)==16, "stat_ext v1 type offset");
+_Static_assert(offsetof(stat_ext_v1_t,mode)==20, "stat_ext v1 mode offset");
+_Static_assert(offsetof(stat_ext_v1_t,uid)==24, "stat_ext v1 uid offset");
+_Static_assert(offsetof(stat_ext_v1_t,gid)==28, "stat_ext v1 gid offset");
+_Static_assert(offsetof(stat_ext_v1_t,mnt_flags)==32, "stat_ext v1 mnt_flags offset");
+_Static_assert(offsetof(stat_ext_v1_t,reserved)==36, "stat_ext v1 reserved offset");
 #define PROC_INFO_MAX     64
 #define GROUP_RELEASE 0
 #define GROUP_CANCEL  1
@@ -240,6 +261,13 @@ typedef struct {
 } spawn_fd_action_t;
 
 _Static_assert(sizeof(spawn_fd_action_t) == 32, "spawn_fd_action_t must be exactly 32 bytes");
+_Static_assert(offsetof(spawn_fd_action_t, type) == 0, "spawn_fd_action_t.type offset");
+_Static_assert(offsetof(spawn_fd_action_t, dst_fd) == 4, "spawn_fd_action_t.dst_fd offset");
+_Static_assert(offsetof(spawn_fd_action_t, src_fd) == 8, "spawn_fd_action_t.src_fd offset");
+_Static_assert(offsetof(spawn_fd_action_t, flags) == 12, "spawn_fd_action_t.flags offset");
+_Static_assert(offsetof(spawn_fd_action_t, mode) == 16, "spawn_fd_action_t.mode offset");
+_Static_assert(offsetof(spawn_fd_action_t, reserved) == 20, "spawn_fd_action_t.reserved offset");
+_Static_assert(offsetof(spawn_fd_action_t, path) == 24, "spawn_fd_action_t.path offset");
 
 typedef struct {
     uint32_t size;          /* sizeof(spawn_opts_t) = 64 */
@@ -256,6 +284,17 @@ typedef struct {
 } spawn_opts_t;
 
 _Static_assert(sizeof(spawn_opts_t) == 64, "spawn_opts_t must be exactly 64 bytes");
+_Static_assert(offsetof(spawn_opts_t, size) == 0, "spawn_opts_t.size offset");
+_Static_assert(offsetof(spawn_opts_t, version) == 4, "spawn_opts_t.version offset");
+_Static_assert(offsetof(spawn_opts_t, flags) == 8, "spawn_opts_t.flags offset");
+_Static_assert(offsetof(spawn_opts_t, reserved0) == 12, "spawn_opts_t.reserved0 offset");
+_Static_assert(offsetof(spawn_opts_t, argv) == 16, "spawn_opts_t.argv offset");
+_Static_assert(offsetof(spawn_opts_t, envp) == 24, "spawn_opts_t.envp offset");
+_Static_assert(offsetof(spawn_opts_t, cwd) == 32, "spawn_opts_t.cwd offset");
+_Static_assert(offsetof(spawn_opts_t, fd_actions) == 40, "spawn_opts_t.fd_actions offset");
+_Static_assert(offsetof(spawn_opts_t, action_count) == 48, "spawn_opts_t.action_count offset");
+_Static_assert(offsetof(spawn_opts_t, reserved1) == 52, "spawn_opts_t.reserved1 offset");
+_Static_assert(offsetof(spawn_opts_t, reserved2) == 56, "spawn_opts_t.reserved2 offset");
 
 /* Explicit child identity, installed before publication. Requires CAP_SETUID
  * and CAP_SETGID, even for an unchanged identity. No set-id image elevation:
@@ -270,7 +309,15 @@ typedef struct {
     spawn_identity_t identity;
 } spawn_opts_v3_t;
 _Static_assert(sizeof(spawn_identity_t) == 80, "spawn identity ABI");
+_Static_assert(offsetof(spawn_identity_t, uid) == 0, "spawn_identity_t.uid offset");
+_Static_assert(offsetof(spawn_identity_t, gid) == 4, "spawn_identity_t.gid offset");
+_Static_assert(offsetof(spawn_identity_t, ngroups) == 8, "spawn_identity_t.ngroups offset");
+_Static_assert(offsetof(spawn_identity_t, reserved) == 12, "spawn_identity_t.reserved offset");
+_Static_assert(offsetof(spawn_identity_t, groups) == 16, "spawn_identity_t.groups offset");
+
 _Static_assert(sizeof(spawn_opts_v3_t) == 144, "spawn v3 ABI");
+_Static_assert(offsetof(spawn_opts_v3_t, base) == 0, "spawn_opts_v3_t.base offset");
+_Static_assert(offsetof(spawn_opts_v3_t, identity) == 64, "spawn_opts_v3_t.identity offset");
 
 #define PROC_STATE_FREE    0
 #define PROC_STATE_RUNNING 1

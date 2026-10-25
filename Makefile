@@ -2626,6 +2626,12 @@ test-crash-dump-host: tests/crash_dump_host.c
 test-crash-dump: $(BOOTABLE_ISO)
 	@python3 scripts/test_crash_dump.py
 
+.PHONY: test-abi-version-host
+test-abi-version-host: tests/abi_versioning_host.c
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -no-pie -I. -Isrc/include -Isrc/kernel -Isrc/fs tests/abi_versioning_host.c -o $(BUILD_DIR)/test-abi-version-host
+	@$(BUILD_DIR)/test-abi-version-host
+
 # Private copied kernel and regular-file fixtures; never rebuild release media.
 .PHONY: test-pkg-exec-boot
 test-pkg-exec-boot: scripts/test_pkg_exec_boot.py scripts/pkg_exec_overlay.py scripts/pkg_install_overlay.py tests/pkg_exec_kernel.inc tests/pkg_exec_ring3.c tests/pkg_exec_wire.h tests/pkg_install_fs.inc tests/pkg_plan_candidate.c user/pkg/mutation_cli.c
