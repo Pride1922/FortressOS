@@ -118,10 +118,10 @@ FortressOS implements an in-tree, freestanding SSHv2 daemon (`/sbin/sshd`) compl
 +---------------------------------------+   +---------------------------------------+
 ```
 
-### 1.1 Scope Boundaries & Non-Goals
+### 1.1 Scope Boundaries & Supported Capabilities
 
 FortressOS maintains strict boundary discipline regarding SSH capabilities:
-- **SSH Client (`/bin/ssh`)**: **Explicitly out of scope** ([Issue #61](https://github.com/Pride1922/FortressOS/issues/61)). FortressOS implements an inbound SSH server daemon (`/sbin/sshd`) to allow administrative remote access into FortressOS nodes from standard external clients (OpenSSH, PuTTY, MobaXterm). Outbound SSH client capabilities (terminal client, `known_hosts` trust store, outbound key negotiation, ssh-agent client integration) are deliberately excluded to maintain freestanding simplicity, minimal attack surface, and low footprint. For outbound remote terminal verification and interactive network access, FortressOS provides `/bin/telnet` and `/bin/nc`.
+- **SSH Client (`/bin/ssh`)**: **COMPLETE** ([Issue #61](https://github.com/Pride1922/FortressOS/issues/61)). FortressOS implements a freestanding, lightweight SSHv2 client (`/bin/ssh`) complying with RFC 4251, RFC 4252, RFC 4253, RFC 4254, and RFC 8731. It supports Curve25519-SHA256 key exchange with OpenSSH strict KEX extension (`kex-strict-c-v00@openssh.com`), Ed25519 host key authentication, ChaCha20-Poly1305 AEAD authenticated symmetric encryption, password authentication with terminal echo suppression (`TERM_ECHO` off via `SYS_TERMATTR`), non-blocking duplex I/O multiplexing via `SYS_POLL` (Syscall 88), interactive PTY sessions, and non-interactive `exec` command execution. Stack usage is strictly bounded ($\le 592$ B across all functions, adhering to Gate G1 $\le 1024$ B limit).
 - **SFTP / SCP Subsystem**: Out of scope. Remote file transfers should use HTTP/HTTPS via `/bin/wget` or block/filesystem mechanisms.
 - **Agent Forwarding & TCP Port Forwarding**: Explicitly rejected at the RFC 4254 channel request layer to preserve process isolation and network owner boundaries.
 - **Compression (zlib)**: Out of scope (`none` only) to protect the static memory budget and eliminate compression-related attack surfaces.

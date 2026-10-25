@@ -1861,6 +1861,39 @@ telnet -s 1.1.1.1 example.com 23
 
 ---
 
+### `ssh` (Secure Shell Client)
+**Syntax:**
+* Interactive: `ssh [options] [user@]host`
+* Non-interactive command: `ssh [options] [user@]host <command ...>`
+* Options:
+  * `-p <port>`: Connect to specified port (default: 22)
+  * `-l <user>`: Remote username (default: `operator`)
+  * `-P <password>`: Supply password directly (overrides interactive prompt)
+  * `-s <dns-server-ip>`: Override DNS server IPv4 address for host resolution
+  * `-h`, `--help`: Display usage help
+**Path:** `/bin/ssh`  
+**Description:** Freestanding SSHv2 client conforming to RFC 4251, RFC 4252, RFC 4253, RFC 4254, and RFC 8731.
+* **Cryptography & KEX:** Ephemeral `curve25519-sha256` key exchange with OpenSSH strict KEX extension (`kex-strict-c-v00@openssh.com`), Ed25519 host key authentication, and `chacha20-poly1305@openssh.com` AEAD authenticated symmetric encryption.
+* **Authentication:** RFC 4252 password authentication with automatic terminal echo suppression (`TERM_ECHO` off via `SYS_TERMATTR`).
+* **Multiplexing Loop:** Non-blocking duplex multiplexing via `SYS_POLL` (Syscall 88) across stdin and remote socket with flow-control window replenishment.
+* **Memory & Security:** Zero dynamic heap allocation, bounded static BSS streaming buffers, and complete cryptographic context wiping (`crypto_wipe`) upon disconnection.
+* **Examples:**
+```sh
+# Connect interactively to remote host (prompts for password)
+ssh operator@192.168.1.50
+
+# Connect to custom port with explicit username
+ssh -p 2222 -l alice 10.0.2.2
+
+# Run non-interactive remote command
+ssh operator@192.168.1.50 "whoami; uname -a"
+
+# Scriptable execution with password argument
+ssh -P hunter2 -p 22 operator@127.0.0.1 whoami
+```
+
+---
+
 ### `httpd` (Tiny HTTP Server)
 **Syntax:** `httpd [-p port] [-d docroot] [-v] [-h]`  
 **Path:** `/bin/httpd`  
