@@ -281,8 +281,121 @@ static bool build_tmp_path(const char *dir, const char *base, const char *rand_h
     return true;
 }
 
+/* Progress bar state */
+static uint64_t s_last_progress_bytes = 0;
+static unsigned s_last_progress_pct = 101;
+static unsigned s_progress_spin = 0;
+
+static void render_progress(uint64_t current, uint64_t total, bool has_total, bool finish, bool quiet) {
+    if (quiet) return;
+
+    if (finish) {
+        if (s_last_progress_pct != 101) {
+            message("\n");
+            s_last_progress_pct = 101;
+        }
+        return;
+    }
+
+    unsigned pct = 0;
+    if (has_total && total > 0) {
+        pct = (unsigned)((current * 100) / total);
+        if (pct > 100) pct = 100;
+        if (s_last_progress_pct != 101 && pct == s_last_progress_pct &&
+            (current >= s_last_progress_bytes && current - s_last_progress_bytes < 16384)) {
+            return;
+        }
+    } else {
+        if (s_last_progress_pct != 101 &&
+            (current >= s_last_progress_bytes && current - s_last_progress_bytes < 16384)) {
+            return;
+        }
+    }
+
+    s_last_progress_bytes = current;
+    s_last_progress_pct = has_total ? pct : 0;
+
+    char buf[128];
+    size_t pos = 0;
+    buf[pos++] = '\r';
+
+    if (has_total && total > 0) {
+        buf[pos++] = '[';
+        int bar_width = 30;
+        int filled = (int)((current * (uint64_t)bar_width) / total);
+        if (filled > bar_width) filled = bar_width;
+        for (int i = 0; i < filled; i++) {
+            if (i == filled - 1 && filled < bar_width) {
+                buf[pos++] = '>';
+            } else {
+                buf[pos++] = '=';
+            }
+        }
+        for (int i = filled; i < bar_width; i++) {
+            buf[pos++] = ' ';
+        }
+        buf[pos++] = ']';
+        buf[pos++] = ' ';
+
+        if (pct < 10) { buf[pos++] = ' '; buf[pos++] = ' '; }
+        else if (pct < 100) { buf[pos++] = ' '; }
+        char pstr[8];
+        int plen = 0;
+        unsigned tp = pct;
+        if (tp == 0) pstr[plen++] = '0';
+        else {
+            char tbuf[8]; int tlen = 0;
+            while (tp > 0) { tbuf[tlen++] = (char)('0' + (tp % 10)); tp /= 10; }
+            while (tlen > 0) pstr[plen++] = tbuf[--tlen];
+        }
+        for (int i = 0; i < plen; i++) buf[pos++] = pstr[i];
+        buf[pos++] = '%';
+        buf[pos++] = ' ';
+
+        char cstr[32]; int clen = 0;
+        uint64_t tc = current;
+        if (tc == 0) cstr[clen++] = '0';
+        else {
+            char tbuf[32]; int tlen = 0;
+            while (tc > 0) { tbuf[tlen++] = (char)('0' + (tc % 10)); tc /= 10; }
+            while (tlen > 0) cstr[clen++] = tbuf[--tlen];
+        }
+        for (int i = 0; i < clen; i++) buf[pos++] = cstr[i];
+        buf[pos++] = '/';
+        char totstr[32]; int totlen = 0;
+        uint64_t tt = total;
+        if (tt == 0) totstr[totlen++] = '0';
+        else {
+            char tbuf[32]; int tlen = 0;
+            while (tt > 0) { tbuf[tlen++] = (char)('0' + (tt % 10)); tt /= 10; }
+            while (tlen > 0) totstr[totlen++] = tbuf[--tlen];
+        }
+        for (int i = 0; i < totlen; i++) buf[pos++] = totstr[i];
+    } else {
+        const char *spinner[] = {"[<=>   ]", "[ <= > ]", "[  <=> ]", "[   <=>]"};
+        const char *sp = spinner[s_progress_spin++ % 4];
+        while (*sp) buf[pos++] = *sp++;
+        buf[pos++] = ' ';
+        char cstr[32]; int clen = 0;
+        uint64_t tc = current;
+        if (tc == 0) cstr[clen++] = '0';
+        else {
+            char tbuf[32]; int tlen = 0;
+            while (tc > 0) { tbuf[tlen++] = (char)('0' + (tc % 10)); tc /= 10; }
+            while (tlen > 0) cstr[clen++] = tbuf[--tlen];
+        }
+        for (int i = 0; i < clen; i++) buf[pos++] = cstr[i];
+        const char *suf = " bytes";
+        while (*suf) buf[pos++] = *suf++;
+    }
+
+    buf[pos] = '\0';
+    message(buf);
+}
+
 static bool stream_chunk_bytes(long out_fd, const uint8_t *in, size_t in_len,
-                               uint64_t *total_received, uint64_t *cumulative_bytes)
+                               uint64_t *total_received, uint64_t *cumulative_bytes,
+                               bool quiet)
 {
     size_t in_consumed = 0;
     while (in_consumed < in_len && !s_chunk_dec.complete) {
@@ -306,6 +419,7 @@ static bool stream_chunk_bytes(long out_fd, const uint8_t *in, size_t in_len,
                 body_write_error(*total_received);
                 return false;
             }
+            render_progress(*total_received, 0, false, false, quiet);
         }
         in_consumed += chunk_consumed;
         if (dres == WGET_NEED_MORE_DATA && chunk_consumed == 0) {
@@ -709,8 +823,9 @@ redirect_loop:
         message("\n");
     }
 
-    /* 6. Handle Redirects (301, 302, 307, 308) */
+    /* 6. Handle Redirects (301, 302, 303, 307, 308) */
     if (s_response.status_code == 301 || s_response.status_code == 302 ||
+        s_response.status_code == 303 ||
         s_response.status_code == 307 || s_response.status_code == 308) {
         if (s_response.location[0] == '\0') {
             message("wget: redirect status received without Location header\n");
@@ -778,16 +893,20 @@ redirect_loop:
 
     /* 8. Stream Response Body */
     uint64_t total_received = 0;
+    s_last_progress_bytes = 0;
+    s_last_progress_pct = 101;
+    s_progress_spin = 0;
     if (s_response.is_chunked) {
         wget_chunked_decoder_init(&s_chunk_dec);
     }
+    render_progress(0, s_response.content_length, s_response.has_content_length, false, quiet);
 
     /* Process initial body bytes already read into s_header_buf */
     size_t initial_body_bytes = (total_hdr_read > header_len) ? (total_hdr_read - header_len) : 0;
     if (initial_body_bytes > 0) {
         if (s_response.is_chunked) {
             if (!stream_chunk_bytes(out_fd, s_header_buf + header_len, initial_body_bytes,
-                                   &total_received, &cumulative_payload)) {
+                                   &total_received, &cumulative_payload, quiet)) {
                 goto failure;
             }
         } else {
@@ -801,6 +920,7 @@ redirect_loop:
                 body_write_error(total_received);
                 goto failure;
             }
+            render_progress(total_received, s_response.content_length, s_response.has_content_length, false, quiet);
         }
     }
 
@@ -846,7 +966,7 @@ redirect_loop:
         }
 
         if (s_response.is_chunked) {
-            if (!stream_chunk_bytes(out_fd, s_io_buf, (size_t)n, &total_received, &cumulative_payload)) {
+            if (!stream_chunk_bytes(out_fd, s_io_buf, (size_t)n, &total_received, &cumulative_payload, quiet)) {
                 goto failure;
             }
         } else {
@@ -860,8 +980,12 @@ redirect_loop:
                 body_write_error(total_received);
                 goto failure;
             }
+            render_progress(total_received, s_response.content_length, s_response.has_content_length, false, quiet);
         }
     }
+
+    render_progress(total_received, s_response.content_length, s_response.has_content_length, false, quiet);
+    render_progress(total_received, s_response.content_length, s_response.has_content_length, true, quiet);
 
     /* 9. Content-Length and Framing Verification (§5.2) */
     if (s_response.has_content_length) {
@@ -926,6 +1050,7 @@ redirect_loop:
     return 0;
 
 failure:
+    render_progress(0, 0, false, true, quiet);
     if (sock >= 0) {
         WGET_CALL(SYS_CLOSE, sock, 0, 0, 0, 0, 0);
         sock = -1;

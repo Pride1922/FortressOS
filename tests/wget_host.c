@@ -228,6 +228,16 @@ static void test_redirect_resolver(void) {
     assert(target.port == 443);
     assert(strcmp(target.host, "cdn.example.com") == 0);
 
+    /* 9. Relative redirect with dot segments */
+    wget_url_t cur_dir;
+    assert(wget_parse_url("http://example.com/a/b/c.html", &cur_dir) == WGET_OK);
+    assert(wget_resolve_redirect(&cur_dir, "../d.html", &target) == WGET_OK);
+    assert(strcmp(target.path, "/a/d.html") == 0);
+    assert(strcmp(target.filename, "d.html") == 0);
+
+    assert(wget_resolve_redirect(&cur_dir, "./e.html", &target) == WGET_OK);
+    assert(strcmp(target.path, "/a/b/e.html") == 0);
+
     printf("  -> Redirect Resolver: PASS\n");
 }
 
@@ -274,6 +284,30 @@ static void test_chunked_decoder(void) {
     assert(res == WGET_NEED_MORE_DATA);
     assert(dec.complete == false);
     assert(out_w == 3);
+
+    /* 6. Chunk size integer overflow rejection */
+    wget_chunked_decoder_init(&dec);
+    const char *overflow_chunk = "10000000000000000\r\nOverflow\r\n0\r\n\r\n";
+    res = wget_decode_chunked(&dec, (const uint8_t *)overflow_chunk, strlen(overflow_chunk), &in_c, out, sizeof(out), &out_w);
+    assert(res == WGET_ERR_MALFORMED_CHUNK);
+
+    /* 7. Excessively long chunk extension rejection */
+    wget_chunked_decoder_init(&dec);
+    char long_ext[1100];
+    memcpy(long_ext, "5;ext=", 6);
+    memset(long_ext + 6, 'x', 1050);
+    memcpy(long_ext + 1056, "\r\nHello\r\n0\r\n\r\n", 15);
+    res = wget_decode_chunked(&dec, (const uint8_t *)long_ext, 1071, &in_c, out, sizeof(out), &out_w);
+    assert(res == WGET_ERR_MALFORMED_CHUNK);
+
+    /* 8. Chunked trailer header line */
+    wget_chunked_decoder_init(&dec);
+    const char *trailer_chunk = "5\r\nWorld\r\n0\r\nExpires: Wed\r\n\r\n";
+    res = wget_decode_chunked(&dec, (const uint8_t *)trailer_chunk, strlen(trailer_chunk), &in_c, out, sizeof(out), &out_w);
+    assert(res == WGET_OK);
+    assert(dec.complete == true);
+    assert(out_w == 5);
+    assert(memcmp(out, "World", 5) == 0);
 
     printf("  -> Chunked Decoder: PASS\n");
 }

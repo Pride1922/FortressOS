@@ -97,11 +97,12 @@
 #define MAX_GETRANDOM_LEN 256u
 
 /* I/O Multiplexing (SYS_POLL) */
-typedef struct pollfd {
+#if !defined(_SYS_POLL_H) && !defined(_POLL_H) && !defined(POLLIN)
+struct pollfd {
     int   fd;       /* File descriptor */
     short events;   /* Requested events bitmask */
     short revents;  /* Returned events bitmask */
-} pollfd_t;
+};
 _Static_assert(sizeof(struct pollfd) == 8, "pollfd size");
 
 #define POLLIN   0x0001 /* Ready to read */
@@ -110,6 +111,12 @@ _Static_assert(sizeof(struct pollfd) == 8, "pollfd size");
 #define POLLERR  0x0008 /* Error condition */
 #define POLLHUP  0x0010 /* Hang up / peer closed connection */
 #define POLLNVAL 0x0020 /* Invalid request: fd not open */
+#endif
+
+#ifndef _POLLFD_T_DEFINED
+#define _POLLFD_T_DEFINED
+typedef struct pollfd pollfd_t;
+#endif
 
 /* Clock identifiers */
 #define CLOCK_REALTIME           0

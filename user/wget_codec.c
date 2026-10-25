@@ -1,5 +1,34 @@
 #include "wget_codec.h"
 
+static void wget_normalize_path(char *path) {
+    if (!path || path[0] != '/') return;
+    char temp[WGET_MAX_URL_LEN];
+    size_t r = 0, w = 0;
+    while (path[r]) {
+        if (path[r] == '/' && path[r+1] == '.' && (path[r+2] == '/' || path[r+2] == '\0')) {
+            r += 2;
+        } else if (path[r] == '/' && path[r+1] == '.' && path[r+2] == '.' && (path[r+3] == '/' || path[r+3] == '\0')) {
+            r += 3;
+            if (w > 0) {
+                while (w > 0 && temp[w-1] != '/') w--;
+                if (w > 1) w--;
+            }
+        } else {
+            if (w < sizeof(temp) - 1) {
+                temp[w++] = path[r++];
+            } else {
+                r++;
+            }
+        }
+    }
+    if (w == 0) temp[w++] = '/';
+    temp[w] = '\0';
+    size_t i = 0;
+    for (; i < w; i++) path[i] = temp[i];
+    path[i] = '\0';
+}
+
+
 /* Freestanding helper functions */
 static size_t wget_strlen(const char *s) {
     size_t len = 0;
@@ -285,8 +314,10 @@ void wget_chunked_decoder_init(wget_chunked_decoder_t *dec) {
     if (!dec) return;
     dec->state = WGET_CHUNK_STATE_SIZE;
     dec->chunk_remaining = 0;
+    dec->ext_bytes = 0;
     dec->has_size = false;
     dec->complete = false;
+    dec->trailer_crlf = false;
 }
 
 int wget_decode_chunked(wget_chunked_decoder_t *dec,
@@ -306,18 +337,28 @@ int wget_decode_chunked(wget_chunked_decoder_t *dec,
         switch (dec->state) {
             case WGET_CHUNK_STATE_SIZE: {
                 uint8_t b = in[in_idx++];
+                uint64_t digit = 0;
+                bool is_hex = false;
                 if ((b >= '0' && b <= '9')) {
-                    dec->chunk_remaining = (dec->chunk_remaining << 4) | (uint64_t)(b - '0');
-                    dec->has_size = true;
+                    digit = (uint64_t)(b - '0');
+                    is_hex = true;
                 } else if (b >= 'a' && b <= 'f') {
-                    dec->chunk_remaining = (dec->chunk_remaining << 4) | (uint64_t)(b - 'a' + 10);
-                    dec->has_size = true;
+                    digit = (uint64_t)(b - 'a' + 10);
+                    is_hex = true;
                 } else if (b >= 'A' && b <= 'F') {
-                    dec->chunk_remaining = (dec->chunk_remaining << 4) | (uint64_t)(b - 'A' + 10);
+                    digit = (uint64_t)(b - 'A' + 10);
+                    is_hex = true;
+                }
+                if (is_hex) {
+                    if (dec->chunk_remaining > (UINT64_MAX >> 4)) {
+                        return WGET_ERR_MALFORMED_CHUNK;
+                    }
+                    dec->chunk_remaining = (dec->chunk_remaining << 4) | digit;
                     dec->has_size = true;
                 } else if (b == ';') {
                     if (!dec->has_size) return WGET_ERR_MALFORMED_CHUNK;
                     dec->state = WGET_CHUNK_STATE_EXT;
+                    dec->ext_bytes = 0;
                 } else if (b == '\r') {
                     if (!dec->has_size) return WGET_ERR_MALFORMED_CHUNK;
                     if (in_idx < in_len) {
@@ -345,6 +386,9 @@ int wget_decode_chunked(wget_chunked_decoder_t *dec,
             }
             case WGET_CHUNK_STATE_EXT: {
                 uint8_t b = in[in_idx++];
+                if (++dec->ext_bytes > 1024) {
+                    return WGET_ERR_MALFORMED_CHUNK;
+                }
                 if (b == '\r') {
                     if (in_idx < in_len) {
                         if (in[in_idx++] != '\n') return WGET_ERR_MALFORMED_CHUNK;
@@ -518,6 +562,7 @@ int wget_resolve_redirect(const wget_url_t *current_url, const char *location, w
         out_url->path[dir_len + loc_len] = '\0';
     }
 
+    wget_normalize_path(out_url->path);
     derive_filename(out_url->path, out_url->filename, sizeof(out_url->filename));
     return WGET_OK;
 }

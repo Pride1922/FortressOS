@@ -59,8 +59,10 @@ typedef enum {
 typedef struct {
     wget_chunk_state_t state;
     uint64_t chunk_remaining;
+    size_t ext_bytes;
     bool has_size;
     bool complete;
+    bool trailer_crlf;
 } wget_chunked_decoder_t;
 
 void wget_chunked_decoder_init(wget_chunked_decoder_t *dec);
