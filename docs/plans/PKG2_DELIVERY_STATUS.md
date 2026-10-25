@@ -1,5 +1,24 @@
 # Package delivery status
 
+## Current checkpoint: 2026-10-25
+
+`0b23223` accepts bounded private install/remove/recover through real kernel
+owners and fresh command sessions: eight normal BIOS/UEFI/SMP boots, four COMMIT
+cuts and six refusals, with runtime and preservation PASS. Exact results and
+remaining limits are in [the current audit](../roadmap/pkg-private-cli-source-acceptance.md).
+Default package mutation is still disabled; the implementation is not yet
+integrated into ordinary builds or accepted on physical hardware.
+
+The user has set **Fortress 1.0** as the integrated release target containing
+the recent work and package management, and selected the Dell 5590 spare NVMe
+for the first hardware trial. The shared tree is unfrozen. Follow the
+[system integration and hardware plan](FORTRESS_1_0_INTEGRATION.md): normal
+modules, interactive disposable acceptance, hardware admission/enrollment,
+read-only device inspection, then an identified bounded trial and release
+acceptance. This direction is not a claim that production gates are complete.
+
+## 2026-10-24 checkpoint (historical)
+
 2026-10-24. Tracking only; the original production integration plan is preserved.
 
 The package feature is not ready for production enablement. Private status and
