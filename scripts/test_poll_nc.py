@@ -117,9 +117,11 @@ def test_firmware(firmware, smp):
 
 def main():
     test_firmware('bios', 1)
+    test_firmware('bios', 4)
     test_firmware('uefi', 1)
+    test_firmware('uefi', 4)
     print("\n========================================================")
-    print("ALL READINESS PRIMITIVE & NC ACCEPTANCE TESTS PASSED (2/2)!")
+    print("ALL READINESS PRIMITIVE & NC ACCEPTANCE TESTS PASSED (4/4)!")
     print("========================================================\n")
 
 
