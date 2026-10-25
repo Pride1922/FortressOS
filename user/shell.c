@@ -504,6 +504,20 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         puts("Restarting system...\n");
         (void)history_save();
         long r = shutdown_coordinate_and_reboot(1);
+        if (r == -1 || r == -SYSCALL_EPERM) {
+            const char *argv[] = {"/sbin/reboot", NULL};
+            spawn_opts_t opts = {.size = sizeof(opts), .version = 1, .argv = (uintptr_t)argv};
+            long pid = call(SYS_SPAWN_EXT, (uintptr_t)"/sbin/reboot", (uintptr_t)&opts, sizeof(opts));
+            if (pid < 0) {
+                argv[0] = "/bin/reboot";
+                pid = call(SYS_SPAWN_EXT, (uintptr_t)"/bin/reboot", (uintptr_t)&opts, sizeof(opts));
+            }
+            if (pid >= 0) {
+                uint64_t status = 0;
+                call(SYS_WAIT, pid, (uintptr_t)&status, 0);
+                return (int)status;
+            }
+        }
         if (r < 0) { puts_err("reboot: "); file_error_err(r); return 1; }
         return 0;
     }
@@ -511,6 +525,20 @@ static int execute_simple_command(int argc, char **argv, const spawn_fd_action_t
         puts("Shutting down system...\n");
         (void)history_save();
         long r = shutdown_coordinate_and_reboot(2);
+        if (r == -1 || r == -SYSCALL_EPERM) {
+            const char *argv[] = {"/sbin/shutdown", NULL};
+            spawn_opts_t opts = {.size = sizeof(opts), .version = 1, .argv = (uintptr_t)argv};
+            long pid = call(SYS_SPAWN_EXT, (uintptr_t)"/sbin/shutdown", (uintptr_t)&opts, sizeof(opts));
+            if (pid < 0) {
+                argv[0] = "/bin/shutdown";
+                pid = call(SYS_SPAWN_EXT, (uintptr_t)"/bin/shutdown", (uintptr_t)&opts, sizeof(opts));
+            }
+            if (pid >= 0) {
+                uint64_t status = 0;
+                call(SYS_WAIT, pid, (uintptr_t)&status, 0);
+                return (int)status;
+            }
+        }
         if (r < 0) { puts_err("shutdown: "); file_error_err(r); return 1; }
         return 0;
     }

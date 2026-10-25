@@ -498,8 +498,9 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
         const db_user_t *u = db_user_name(&ctx->db, username);
         const db_shadow_t *s = db_shadow_name(&ctx->db, username);
 
-        /* Unknown, locked, or restricted accounts execute constant-time dummy verification */
-        if (!u || !s || s->restricted || !s->hash[0] || s->hash[0] == '!' || s->hash[0] == '*') {
+        /* Unknown, locked, restricted, or nologin accounts execute constant-time dummy verification */
+        if (!u || !s || s->restricted || !s->hash[0] || s->hash[0] == '!' || s->hash[0] == '*' ||
+            strcmp(u->shell, "/bin/nologin") == 0) {
             timeline_log("sshd", "Failed password for %s", username);
             db_verify(password, g_dummy_shadow_hash);
             crypto_wipe(password, sizeof(password));
@@ -619,9 +620,9 @@ int monitor_handle_request(monitor_ctx_t *ctx, const monitor_hdr_t *hdr,
         }
 
         const db_user_t *u = db_user_name(&ctx->db, username);
-        if (!u) {
+        if (!u || strcmp(u->shell, "/bin/nologin") == 0) {
             if (!check_only) {
-                timeline_log("sshd", "Failed publickey for %s (user not found)", username);
+                timeline_log("sshd", "Failed publickey for %s (user not found or account disabled)", username);
                 conn->auth_attempts++;
             }
             uint32_t status = MONITOR_STATUS_AUTH_FAIL;

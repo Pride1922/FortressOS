@@ -815,11 +815,11 @@ $(BUILD_DIR)/net/net_socket.o $(BUILD_DIR)/net/net_socket_syscall.o $(BUILD_DIR)
 USER_TOP_ELF := $(BUILD_DIR)/top.elf
 USER_NANO_ELF := $(BUILD_DIR)/nano.elf
 SBIN_STREAM_TOOLS := shutdown reboot poweroff lockstat
-USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown id mkdir rm mv cp touch hostname free which env date sleep time gzip gunzip kill logger
+USER_STREAM_TOOLS := cat head tail wc grep uniq xxd sort diff patch sed awk diskbench smpbench chmod chown mkdir rm mv cp touch hostname free which env date sleep time gzip gunzip kill logger
 $(BUILD_DIR)/tool-gunzip.o: CFLAGS += -DGUNZIP_STANDALONE
 STREAM_TOOLS := $(USER_STREAM_TOOLS) $(SBIN_STREAM_TOOLS)
-SBIN_LOGIN_TOOLS := useradd
-USER_LOGIN_TOOLS := login whoami sudo recovery passwd
+SBIN_LOGIN_TOOLS := useradd addgroup delgroup adduser deluser usermod
+USER_LOGIN_TOOLS := login whoami sudo recovery passwd su groups nologin id
 LOGIN_TOOLS := $(USER_LOGIN_TOOLS) $(SBIN_LOGIN_TOOLS)
 LOGIN_ELFS := $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .elf,$(LOGIN_TOOLS)))
 
@@ -860,6 +860,7 @@ $(LOGIN_ELFS): $(BUILD_DIR)/tool-%.elf: user/tools/%.c user/tools/userdb.h user/
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-$*.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-userdb.o $(BUILD_DIR)/tool-userdb_io.o $(BUILD_DIR)/tool-digest.o $(BUILD_DIR)/tool-common.o -o $@
+	@strip --strip-debug $@
 
 .PHONY: stage-user-database test-perm-db-host test-login
 stage-user-database:
@@ -867,6 +868,14 @@ stage-user-database:
 
 test-perm-db-host:
 	@python3 scripts/test_user_database_host.py
+
+.PHONY: test-usermgmt-host test-usermgmt-qemu
+test-usermgmt-host:
+	@gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g -Isrc/include -Iuser/tools tests/usermgmt_host.c user/tools/userdb.c user/tools/digest.c -o $(BUILD_DIR)/test-usermgmt-host
+	@$(BUILD_DIR)/test-usermgmt-host
+
+test-usermgmt-qemu: $(BOOTABLE_ISO)
+	@python3 scripts/test_usermgmt.py
 
 test-login:
 	@python3 scripts/test_login.py
@@ -933,6 +942,7 @@ $(addprefix $(BUILD_DIR)/tool-,$(addsuffix .o,$(STREAM_TOOLS))): $(BUILD_DIR)/to
 $(STREAM_TOOL_ELFS): $(BUILD_DIR)/tool-%.elf: $(BUILD_DIR)/tool-%.o user/tools/start.asm user/shell.ld $(BUILD_DIR)/tool-common.o
 	@$(AS) -f elf64 -DTOOL_ENTRY=$*_main user/tools/start.asm -o $(BUILD_DIR)/tool-$*-start.o
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/tool-$*-start.o $(BUILD_DIR)/tool-$*.o $(BUILD_DIR)/tool-common.o $(TIME_EXTRA) -o $@
+	@strip --strip-debug $@
 
 $(USER_DISK_ELF): user/tools/disk.c $(BUILD_DIR)/tool-diskbench.elf $(BUILD_DIR)/tool-diskbench.o user/tools/common.h user/tools/start.asm user/shell.ld $(BUILD_DIR)/tool-common.o src/include/types.h src/include/syscall_abi.h src/fs/vfs.h
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $(BUILD_DIR)/tool-disk.o
@@ -1375,6 +1385,9 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@if [ "$(REPLACE_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/replace-probe.elf $(BUILD_DIR)/initramfs/bin/replace-probe; else rm -f $(BUILD_DIR)/initramfs/bin/replace-probe; fi
 	@if [ "$(HOSTKEY_TEST_PROBE)" = 1 ]; then cp -f $(BUILD_DIR)/hostkey-probe.elf $(BUILD_DIR)/initramfs/bin/hostkey-probe; else rm -f $(BUILD_DIR)/initramfs/bin/hostkey-probe; fi
 	@$(foreach tool,$(SBIN_STREAM_TOOLS) disk,cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/sbin/$(tool);)
+	@cp -f $(BUILD_DIR)/tool-shutdown.elf $(BUILD_DIR)/initramfs/bin/shutdown
+	@cp -f $(BUILD_DIR)/tool-reboot.elf $(BUILD_DIR)/initramfs/bin/reboot
+	@cp -f $(BUILD_DIR)/tool-poweroff.elf $(BUILD_DIR)/initramfs/bin/poweroff
 	@cp -f $(USER_DISK_ELF) $(BUILD_DIR)/initramfs/bin/df
 	@cp -f $(USER_DISK_ELF) $(BUILD_DIR)/initramfs/bin/disk
 	@$(foreach tool,$(CHECKSUM_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)
@@ -2190,11 +2203,15 @@ test-perm-device-host:
 	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm tests/perm_device_host.c tests/ext4_fault_disk.c -o $(BUILD_DIR)/perm_device_host
 	@$(BUILD_DIR)/perm_device_host $(PERM_DEVICE_FIXTURE)
 
-.PHONY: test-perm-spawn-host test-sudo
+.PHONY: test-perm-spawn-host test-sudo test-su-host
 .PHONY: test-perm-phase5-host
 test-perm-phase5-host:
 	@python3 scripts/test_perm_phase5_host.py
-test-perm-spawn-host:
+test-su-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -Isrc/include -Isrc/fs -Iuser/tools -DTOOL_HOST_TEST tests/su_host.c user/tools/common.c user/tools/userdb.c user/tools/digest.c -lcrypt -o $(BUILD_DIR)/su_host
+	@$(BUILD_DIR)/su_host
+test-perm-spawn-host: test-su-host
 	@python3 scripts/test_perm_spawn_host.py
 test-sudo:
 	@python3 scripts/test_sudo.py

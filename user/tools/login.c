@@ -75,7 +75,7 @@ int login_main(int argc,char **argv) {
         /* Never let configured UID zero log in on this live-media policy. */
         bool empty=u && s && !*s->hash && u->uid!=0 && !s->restricted;
         if (!empty) {say("Password: ");valid=line(password,sizeof(password),false) && valid;}
-        bool ok=valid && u && s && u->uid!=0 && !s->restricted && db_verify(password,s->hash);
+        bool ok=valid && u && s && u->uid!=0 && !s->restricted && !tool_equal(u->shell,"/bin/nologin") && db_verify(password,s->hash);
         db_wipe(password,sizeof(password));
         if (!ok) {delay();say("Login incorrect\n");continue;}
         if (!db_check()) {say("Accounts changed; retry login\n");continue;}

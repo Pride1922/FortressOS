@@ -3,12 +3,12 @@
 #include "live_password.h"
 int passwd_main(int argc,char **argv,const char *const *envp) {
     uint32_t uid,euid,suid;int result=1;char hash[78]={0};static char replacement[DB_FILE_MAX];
-    if (argc==3 && tool_equal(argv[1],"--live") && tool_equal(argv[2],"operator")) {
+    if (argc==3 && tool_equal(argv[1],"--live") && (tool_equal(argv[2],"fortress") || tool_equal(argv[2],"operator"))) {
         account_request_t req={.size=sizeof(req),.version=1};
-        if (tool_syscall(SYS_GETRESUID,(uintptr_t)&uid,(uintptr_t)&euid,(uintptr_t)&suid) || euid || (uid && uid!=1000) ||
+        if (tool_syscall(SYS_GETRESUID,(uintptr_t)&uid,(uintptr_t)&euid,(uintptr_t)&suid) || euid || (uid && uid!=1000 && uid!=1001) ||
             (uid && !user_entry_secure(envp)) ||
             tool_syscall(SYS_ACCOUNTCTL,ACCOUNT_STATUS,(uintptr_t)&req,sizeof(req))!=SYSCALL_EOPNOTSUPP ||
-            !db_load(&account_db,true) || !db_user_name(&account_db,"operator")) goto done;
+            !db_load(&account_db,true) || !db_user_name(&account_db,argv[2])) goto done;
         terminal_attrs_t saved,hidden;
         if (permission_call4(SYS_TERMATTR,0,TERM_GET,(uintptr_t)&saved,sizeof(saved))) goto done;
         hidden=saved;hidden.input_flags &= ~TERM_ECHO;
@@ -16,11 +16,14 @@ int passwd_main(int argc,char **argv,const char *const *envp) {
         bool ok=account_password(hash);
         if (permission_call4(SYS_TERMATTR,0,TERM_SET,(uintptr_t)&saved,sizeof(saved))) ok=false;
         if (!ok || !live_password_publish(hash)) goto done;
-        const char message[]="Temporary operator password set; discarded on reboot\n";
+        const char message[]="Temporary password set; discarded on reboot\n";
         tool_write("passwd",message,sizeof(message)-1);result=0;goto done;
     }
     if (argc>2 || tool_syscall(SYS_GETRESUID,(uintptr_t)&uid,(uintptr_t)&euid,(uintptr_t)&suid) ||
         euid || (uid && !user_entry_secure(envp)) || !account_snapshot()) goto done;
+    if (argc==2 && tool_equal(argv[1],"root")) {
+        return tool_error("passwd","cannot modify password for root",0);
+    }
     const db_user_t *u=argc==2 ? db_user_name(&account_db,argv[1]) : db_user_id(&account_db,uid);
     if (!u || !u->uid || (uid && uid!=u->uid)) goto done;
     if (uid) {

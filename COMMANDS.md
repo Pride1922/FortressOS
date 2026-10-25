@@ -170,7 +170,15 @@ daemon; creating an arbitrary `.service` file alone does not register it.
 | [`download`](#download) | Binary (`/bin/download`) | Networking | Simple file downloader (`download [dest] <URL>`) |
 | [`md5sum` / `sha256sum`](#md5sum--sha256sum) | Binaries (`/bin/md5sum`, `/bin/sha256sum`) | Files | Stream digests and verify manifests |
 | [`sudo`](#permissions-and-sudo) | Binary (`/bin/sudo`) [setuid root] | System / Security | Execute command with superuser (root) privileges |
+| [`su`](#su) | Binary (`/bin/su`) [setuid root] | System / Security | Switch user identity or launch shell as another user |
 | [`passwd`](#passwd) | Binary (`/bin/passwd`) [setuid root] | System / Security | Update login password for self or user |
+| [`adduser`](#adduser) | Binary (`/sbin/adduser`) | System / Accounts | Interactive user creation with GECOS, home directory, and wheel delegation |
+| [`deluser`](#deluser) | Binary (`/sbin/deluser`) | System / Accounts | Delete user account and optionally remove home directory |
+| [`addgroup`](#addgroup) | Binary (`/sbin/addgroup`) | System / Accounts | Create a new user or system group |
+| [`delgroup`](#delgroup) | Binary (`/sbin/delgroup`) | System / Accounts | Delete group with primary GID protection |
+| [`usermod`](#usermod) | Binary (`/sbin/usermod`) | System / Accounts | Modify user account (groups, shell, GECOS, lock/unlock) |
+| [`groups`](#groups) | Binary (`/bin/groups`) | System / Identity | Display group memberships for self or specified user |
+| [`nologin`](#nologin) | Binary (`/bin/nologin`) | System / Security | Reject login politely for disabled or service accounts |
 | [`useradd`](#useradd) | Binary (`/sbin/useradd`) | System / Accounts | Provision persistent user account and create home directory |
 | [`lockstat`](#lockstat) | Binary (`/sbin/lockstat`) | Diagnostic | Display kernel spinlock contention and hold-time metrics |
 | [`hello`](#hello) | Binary (`/bin/hello`) | Diagnostic | Test ELF binary with argument echoing and `--spin` |
@@ -2007,6 +2015,31 @@ The FortressOS Ring 3 shell includes a powerful interactive line editor with his
 
 ---
 *Documented for FortressOS x86_64 SMP.*
+### `su`
+**Syntax:** `su [-] [-l] [-c command] [username]`  
+**Path:** `/bin/su` [setuid root]  
+**Child-Safe in Pipelines:** No  
+**Description:** Switches current user identity to `username` (defaults to `root` if omitted).
+* When run as `root` (UID 0), no password is required.
+* When run as an unprivileged user (UID != 0), prompts for the target user's password with terminal echo disabled. If the target account is passwordless (e.g. live `fortress` user), allows switching directly. Locked accounts (`!`) are rejected.
+* Supports `-`, `-l`, or `--login` to simulate a login environment (clearing caller environment and setting `HOME`, `USER`, `LOGNAME`, `SHELL`, `PATH=/bin:/sbin`, `TERM=fortress`, and switching working directory to target home).
+* Supports `-c "command"` to execute a command under the target identity and exit with the command's status.
+* Drops all supplementary groups and transitions UID/GID to the target user.
+
+**Examples:**
+```sh
+# Switch to root (prompts for root password if set)
+su
+
+# Switch to fortress user as a login shell
+su - fortress
+
+# Run a single command as another user
+su fortress -c "whoami"
+```
+
+---
+
 ## Permissions and sudo
 
 Live media logs in as `operator` with a visible passwordless warning and a
@@ -2019,6 +2052,11 @@ hash can require a password for both login and sudo.
 command's exit status. For bare command names, `sudo` probes `/sbin/<cmd>` first,
 falling back to `/bin/<cmd>`; use an absolute path for other locations. There is no
 authentication cache.
+
+Unprivileged users (`operator`) can directly execute `shutdown`, `reboot`, and `poweroff`
+from the shell prompt or command line without needing `sudo`. `/bin/shutdown`, `/bin/reboot`,
+and `/bin/poweroff` (and their `/sbin` counterparts) are setuid-root binaries that coordinate
+cleanly with Watchtower to stop services before quiescing storage and halting or restarting.
 
 With no arguments, `sudo` prints usage. `sudo -s` opens `/bin/shell` as root;
 use `exit` to return to your user shell. In the interactive shell, `sudo !!`

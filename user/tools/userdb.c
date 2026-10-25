@@ -55,6 +55,7 @@ static bool parse(userdb_t *out,const char *bytes,size_t size,unsigned kind) {
             db_user_t u={0};
             if (!equal(fields[1],"x") || !decimal(fields[2],&u.uid) || !decimal(fields[3],&u.gid) ||
                 !path(fields[5]) || !path(fields[6]) || !copy(u.name,sizeof(u.name),fields[0]) ||
+                !copy(u.gecos,sizeof(u.gecos),fields[4]) ||
                 !copy(u.home,sizeof(u.home),fields[5]) || !copy(u.shell,sizeof(u.shell),fields[6])) return false;
             for (unsigned i=0;i<count;i++) if (equal(next.users[i].name,u.name) || next.users[i].uid==u.uid) return false;
             next.users[count]=u;
@@ -89,11 +90,48 @@ bool db_shadow(userdb_t *d,const char *s,size_t n) {return parse(d,s,n,2);}
 const db_user_t *db_user_name(const userdb_t *d,const char *s) {for (unsigned i=0;i<d->nusers;i++) if (equal(d->users[i].name,s)) return &d->users[i];return 0;}
 const db_user_t *db_user_id(const userdb_t *d,uint32_t id) {for (unsigned i=0;i<d->nusers;i++) if (d->users[i].uid==id) return &d->users[i];return 0;}
 const db_group_t *db_group_id(const userdb_t *d,uint32_t id) {for (unsigned i=0;i<d->ngroups;i++) if (d->groups[i].gid==id) return &d->groups[i];return 0;}
+const db_group_t *db_group_name(const userdb_t *d,const char *s) {for (unsigned i=0;i<d->ngroups;i++) if (equal(d->groups[i].name,s)) return &d->groups[i];return 0;}
 const db_shadow_t *db_shadow_name(const userdb_t *d,const char *s) {for (unsigned i=0;i<d->nshadows;i++) if (equal(d->shadows[i].name,s)) return &d->shadows[i];return 0;}
 static bool member(const char *list,const char *who) {
     while (*list) {const char *start=list;while (*list && *list!=',') list++;
         size_t n=list-start;if (n==length(who)) {size_t i=0;while (i<n && start[i]==who[i]) i++;if (i==n) return true;}
         if (*list) list++;}return false;
+}
+bool db_group_has_member(const db_group_t *g,const char *who) {
+    return (g && who) ? member(g->members,who) : false;
+}
+bool db_group_add_member(char *members,size_t cap,const char *who) {
+    if (!members || !who || !*who) return false;
+    if (member(members,who)) return true;
+    size_t ml=length(members),wl=length(who);
+    if (!ml) {
+        if (wl>=cap) return false;
+        for (size_t i=0;i<=wl;i++) members[i]=who[i];
+        return true;
+    }
+    if (ml+1+wl>=cap) return false;
+    members[ml]=',';
+    for (size_t i=0;i<=wl;i++) members[ml+1+i]=who[i];
+    return true;
+}
+bool db_group_remove_member(char *members,const char *who) {
+    if (!members || !who || !*who) return false;
+    char next[256]={0};size_t n=0,wl=length(who);
+    const char *p=members;
+    while (*p) {
+        const char *start=p;while (*p && *p!=',') p++;
+        size_t seg_len=p-start;
+        bool match=seg_len==wl;
+        for (size_t i=0;i<seg_len && match;i++) if (start[i]!=who[i]) match=false;
+        if (!match) {
+            if (n && n<sizeof(next)-1) next[n++]=',';
+            for (size_t i=0;i<seg_len && n<sizeof(next)-1;i++) next[n++]=start[i];
+        }
+        if (*p==',') p++;
+    }
+    next[n]=0;
+    for (size_t i=0;i<=n;i++) members[i]=next[i];
+    return true;
 }
 bool db_groups(const userdb_t *d,const db_user_t *u,uint32_t out[16],unsigned *count) {
     unsigned n=1;out[0]=u->gid;

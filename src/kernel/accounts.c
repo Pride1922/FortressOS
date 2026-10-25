@@ -26,7 +26,7 @@ static int coherent_namespace(vfs_node_t *root_namespace,const char *const bytes
     creds_t actor;creds_init_root(&actor);
     for (unsigned i=0;i<db.nusers && ok;i++) {
         const db_user_t *u=&db.users[i];const db_shadow_t *s=db_shadow_name(&db,u->name);
-        if (!s || !*s->hash || strcmp(u->shell,"/bin/shell")) {ok=false;break;}
+        if (!s || !*s->hash || (strcmp(u->shell,"/bin/shell") && strcmp(u->shell,"/bin/nologin"))) {ok=false;break;}
         char home[128]="/home/";memcpy(home+6,u->name,strlen(u->name)+1);
         if (u->uid && (u->uid<1000 || strcmp(home,u->home))) {ok=false;break;}
         int error;vfs_node_t *n=vfs_lookup_at_creds(root_namespace,u->home,&actor,&error);vfs_metadata_t m;

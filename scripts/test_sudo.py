@@ -111,7 +111,7 @@ try:
                         sudo('id','sudo: authentication failed',True)
                         sudo('-s','sudo: authentication failed',True)
                         sudo('-b id','sudo: authentication failed',True)
-                    sudo('id','uid=0 gid=0 groups=0')
+                    sudo('id','uid=0(root) gid=0(root) groups=0(root)')
                     text=sudo('cat /etc/shadow','root:!:::::::');assert ('operator::::::::' if kind=='passwordless' else 'operator:$5$') in text
                     text=sudo('/bin/sh-builtin env','HOME=/root');assert 'PATH=/bin' in text and 'USER=root' in text and '/evil' not in text
                     sudo('/bin/sh-builtin false','[PROCESS] Exit status 1')
@@ -122,7 +122,7 @@ try:
                     execute('export PATH=/evil; export HOME=/evil; /bin/secure-shell','# ')
                     text=execute('env','PATH=/bin');assert 'HOME=/evil' not in text and 'PATH=/evil' not in text
                     execute('exit','$ ')
-                execute('/bin/id','uid=1000 gid=1000')
+                execute('/bin/id','uid=1000(operator) gid=1000(operator)')
                 execute('/bin/cat /etc/shadow','cat: permission denied: /etc/shadow')
             cases.append({'firmware':mode,'smp':cpus,'kind':kind,'result':'PASS','argv':label+'-argv.json'})
             print('PASS',label,flush=True)

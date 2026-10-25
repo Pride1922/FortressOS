@@ -11,6 +11,7 @@ static terminal_attrs_t tty_attrs={.version=1,.input_flags=TERM_ECHO|TERM_ICANON
 static int attr_fail_op=-1;
 static unsigned attr_sets;
 bool db_check(void) {return generation_current;}
+bool db_busy(void) {return false;}
 bool db_load(userdb_t *out,bool shadow) {
     assert(shadow);memset(out,0,sizeof(*out));out->nusers=2;out->ngroups=2;out->nshadows=1;
     out->users[0]=(db_user_t){.uid=0,.gid=0,.name="root"};

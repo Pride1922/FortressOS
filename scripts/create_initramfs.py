@@ -8,7 +8,7 @@ def metadata(member):
  member.uid=member.gid=0;member.uname=member.gname=''
  member.mode=0o755 if member.isdir() or member.name.startswith(('bin/','sbin/')) else 0o644
  if member.name=='etc/shadow':member.mode=0o600
- if member.name in ('bin/sudo','bin/passwd','sbin/dhcpc'):member.mode=0o4755
+ if member.name in ('bin/sudo','bin/passwd','sbin/dhcpc','bin/su','sbin/shutdown','sbin/reboot','sbin/poweroff','bin/shutdown','bin/reboot','bin/poweroff'):member.mode=0o4755
  return member
 with tarfile.open(target,'w',format=tarfile.USTAR_FORMAT) as archive:
  for name in ('bin','sbin','etc','docs','usr','lib'):

@@ -5,11 +5,12 @@
 #define DB_FILE_MAX 8192
 #define DB_LINE_MAX 512
 #define DB_NAME_MAX 32
+#define DB_GECOS_MAX 64
 #define DB_PASSWORD_MAX 128
 /* Bounded live-media policy: reject hashes requiring >100000 rounds rather
  * than clamp them to a different hash or permit unbounded login work. */
 #define DB_ROUNDS_MAX 100000u
-typedef struct { char name[32],home[128],shell[128];uint32_t uid,gid; } db_user_t;
+typedef struct { char name[32],gecos[64],home[128],shell[128];uint32_t uid,gid; } db_user_t;
 typedef struct { char name[32],members[256];uint32_t gid; } db_group_t;
 typedef struct { char name[32],hash[96];bool restricted; } db_shadow_t;
 typedef struct {
@@ -26,8 +27,12 @@ bool db_validate(const userdb_t *);
 const db_user_t *db_user_name(const userdb_t *,const char *);
 const db_user_t *db_user_id(const userdb_t *,uint32_t);
 const db_group_t *db_group_id(const userdb_t *,uint32_t);
+const db_group_t *db_group_name(const userdb_t *,const char *);
 const db_shadow_t *db_shadow_name(const userdb_t *,const char *);
 bool db_groups(const userdb_t *,const db_user_t *,uint32_t out[16],unsigned *count);
+bool db_group_has_member(const db_group_t *g,const char *who);
+bool db_group_add_member(char *members,size_t cap,const char *who);
+bool db_group_remove_member(char *members,const char *who);
 bool db_hash_valid(const char *);
 bool db_verify(const char *password,const char *hash);
 /* Generate rounds=100000 SHA-256-crypt using an externally supplied fresh
