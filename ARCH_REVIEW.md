@@ -411,10 +411,10 @@ is established by what the device reports, not by vendor identity.
    - TLS / HTTPS platform engine (BearSSL 0.6 platform integration under Gate G1, anchors.v1, `/bin/wget` HTTPS) is COMPLETE.
    - Live Media Writable `/etc` Filesystem (ETCFS) with 16 MiB quota ceiling is COMPLETE.
    - Network configuration and resolver consolidation in `/etc/network/` is COMPLETE.
+   - Userland multithreading & pthreads (`process_t`, `SYS_THREAD_CREATE`, `SYS_FUTEX`, `<pthread.h>`, Issue #12) is COMPLETE.
 4. **Current Active Milestone**:
    - Native Package Manager (PKG-1): format specification, catalog indexing, SHA-256 package verification, Ring 3 CLI tooling, and atomic installation.
 5. **Downstream Roadmap**:
-   - Userland multithreading (`pthreads`).
    - MicroPython platform runtime port.
    - Broader cross-core IPC and message queues.
    - Deferred network throughput redesign (Phase 5).

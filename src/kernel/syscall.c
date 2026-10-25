@@ -781,8 +781,9 @@ static int64_t sys_open(uintptr_t user_path, int flags) {
 
     /* Check whether an fd is available before any destructive open/truncation */
     bool fd_avail = false;
+    struct file **cur_table = curr->process ? curr->process->fd_table : curr->fd_table;
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
-        if (!curr->fd_table[i]) {
+        if (!cur_table[i]) {
             fd_avail = true;
             break;
         }
@@ -878,8 +879,9 @@ static int64_t sys_pipe(uintptr_t user_pipefd, uint32_t flags) {
     tcb_t *curr = thread_current();
     if (!curr) return SYSCALL_EBADF;
     unsigned available = 0;
+    struct file **cur_pipe_table = curr->process ? curr->process->fd_table : curr->fd_table;
     for (int i = 0; i < MAX_PROCESS_FDS; i++)
-        if (!curr->fd_table[i]) available++;
+        if (!cur_pipe_table[i]) available++;
     if (available < 2) return SYSCALL_EMFILE;
 
     /* Each process has one thread and owns its fd table. Syscalls enter with
@@ -909,6 +911,10 @@ static int64_t sys_pipe(uintptr_t user_pipefd, uint32_t flags) {
     if (flags & VFS_O_CLOEXEC) {
         curr->fd_flags[rfd] = FD_FLAG_CLOEXEC;
         curr->fd_flags[wfd] = FD_FLAG_CLOEXEC;
+        if (curr->process) {
+            curr->process->fd_flags[rfd] = FD_FLAG_CLOEXEC;
+            curr->process->fd_flags[wfd] = FD_FLAG_CLOEXEC;
+        }
     }
     int result[2] = {rfd, wfd};
     memcpy((void *)user_pipefd, result, sizeof(result));
@@ -924,8 +930,9 @@ static int64_t sys_pty_pair(uintptr_t user_fds, uint32_t flags) {
     tcb_t *curr = thread_current();
     if (!curr) return SYSCALL_EBADF;
     unsigned available = 0;
+    struct file **cur_pty_table = curr->process ? curr->process->fd_table : curr->fd_table;
     for (int i = 0; i < MAX_PROCESS_FDS; i++)
-        if (!curr->fd_table[i]) available++;
+        if (!cur_pty_table[i]) available++;
     if (available < 2) return SYSCALL_EMFILE;
 
     vfs_node_t *mn = NULL, *sn = NULL;
@@ -955,6 +962,10 @@ static int64_t sys_pty_pair(uintptr_t user_fds, uint32_t flags) {
     if (flags & VFS_O_CLOEXEC) {
         curr->fd_flags[mfd] = FD_FLAG_CLOEXEC;
         curr->fd_flags[sfd] = FD_FLAG_CLOEXEC;
+        if (curr->process) {
+            curr->process->fd_flags[mfd] = FD_FLAG_CLOEXEC;
+            curr->process->fd_flags[sfd] = FD_FLAG_CLOEXEC;
+        }
     }
     int fds[2] = {mfd, sfd};
     memcpy((void *)user_fds, fds, sizeof(fds));
@@ -1000,43 +1011,49 @@ static int64_t sys_fcntl(int fd, int cmd, uint64_t arg) {
         return SYSCALL_EBADF;
     }
     tcb_t *curr = thread_current();
-    if (!curr || !curr->fd_table[fd]) {
+    if (!curr) return SYSCALL_EBADF;
+    struct file **table = curr->process ? curr->process->fd_table : curr->fd_table;
+    uint32_t *flags = curr->process ? curr->process->fd_flags : curr->fd_flags;
+    if (!table[fd]) {
         return SYSCALL_EBADF;
     }
 
     switch (cmd) {
         case F_GETFD:
-            return (int64_t)curr->fd_flags[fd];
+            return (int64_t)flags[fd];
 
         case F_SETFD:
-            if (curr->fd_table[fd]->exclusive_owner && arg!=FD_FLAG_CLOEXEC) return SYSCALL_EPERM;
+            if (table[fd]->exclusive_owner && arg!=FD_FLAG_CLOEXEC) return SYSCALL_EPERM;
             if (arg & ~(uint64_t)FD_FLAG_CLOEXEC) {
                 return SYSCALL_EINVAL;
             }
-            curr->fd_flags[fd] = (uint8_t)arg;
+            flags[fd] = (uint32_t)arg;
+            curr->fd_flags[fd] = (uint32_t)arg;
             return SYSCALL_SUCCESS;
 
         case F_GETFL:
-            return (int64_t)curr->fd_table[fd]->flags;
+            return (int64_t)table[fd]->flags;
 
         case F_SETFL:
-            if (curr->fd_table[fd]->exclusive_owner) return SYSCALL_EPERM;
-            curr->fd_table[fd]->flags = (curr->fd_table[fd]->flags & ~VFS_O_NONBLOCK) |
+            if (table[fd]->exclusive_owner) return SYSCALL_EPERM;
+            table[fd]->flags = (table[fd]->flags & ~VFS_O_NONBLOCK) |
                                         ((uint32_t)arg & VFS_O_NONBLOCK);
             return SYSCALL_SUCCESS;
 
         case F_DUPFD:
         case F_DUPFD_CLOEXEC: {
-            if (curr->fd_table[fd]->exclusive_owner) return SYSCALL_EBADF;
+            if (table[fd]->exclusive_owner) return SYSCALL_EBADF;
             int min_fd = (int)arg;
             if (min_fd < 0 || min_fd >= MAX_PROCESS_FDS) {
                 return SYSCALL_EINVAL;
             }
             for (int i = min_fd; i < MAX_PROCESS_FDS; i++) {
-                if (!curr->fd_table[i]) {
-                    curr->fd_table[i] = curr->fd_table[fd];
-                    __atomic_fetch_add(&curr->fd_table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
-                    curr->fd_flags[i] = (cmd == F_DUPFD_CLOEXEC) ? FD_FLAG_CLOEXEC : 0;
+                if (!table[i]) {
+                    table[i] = table[fd];
+                    __atomic_fetch_add(&table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
+                    flags[i] = (cmd == F_DUPFD_CLOEXEC) ? FD_FLAG_CLOEXEC : 0;
+                    curr->fd_table[i] = table[i];
+                    curr->fd_flags[i] = flags[i];
                     return (int64_t)i;
                 }
             }
@@ -1087,7 +1104,9 @@ static int64_t sys_read(int fd, uintptr_t user_buf, size_t count) {
 /* One bounded actor snapshot; G is released before any filesystem work. */
 static bool syscall_actor(creds_t *out) {
     tcb_t *curr=thread_current();
-    return curr && process_record_creds(curr->tid,out);
+    if (!curr) return false;
+    uint64_t pid = curr->process ? curr->process->pid : curr->tid;
+    return process_record_creds(pid,out);
 }
 
 static int64_t sys_stat(uintptr_t user_path, uintptr_t user_statbuf) {
@@ -1810,6 +1829,30 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
         case SYS_POLL:
             result = sys_poll(frame->rdi, frame->rsi, (int64_t)frame->rdx);
+            break;
+
+        case SYS_THREAD_CREATE:
+            result = sys_thread_create(frame->rdi, frame->rsi, frame->rdx, (uint64_t *)frame->r10);
+            break;
+
+        case SYS_THREAD_EXIT:
+            result = sys_thread_exit(frame->rdi);
+            break;
+
+        case SYS_THREAD_JOIN:
+            result = sys_thread_join(frame->rdi, (uint64_t *)frame->rsi);
+            break;
+
+        case SYS_THREAD_SELF:
+            result = (int64_t)sys_thread_self();
+            break;
+
+        case SYS_THREAD_YIELD:
+            result = sys_thread_yield();
+            break;
+
+        case SYS_FUTEX:
+            result = sys_futex((uint32_t *)frame->rdi, (int)frame->rsi, (uint32_t)frame->rdx, (const timespec_t *)frame->r10);
             break;
 
         case SYS_READDIR:

@@ -459,7 +459,15 @@ void sched_reap_dead(void) {
              * The scheduler must have already switched to the next thread's CR3 (or kernel PML4)
              * during thread_exit()/thread_yield() before the dead process could ever be reaped.
              * If active CR3 matches dead->cr3, it indicates a critical scheduler lifecycle bug. */
-            if (dead->is_user && dead->cr3 != 0) {
+            bool destroy_space = true;
+            if (dead->process) {
+                int rem = __atomic_sub_fetch(&dead->process->ref_count, 1, __ATOMIC_ACQ_REL);
+                if (rem > 0) {
+                    destroy_space = false;
+                }
+            }
+
+            if (destroy_space && dead->is_user && dead->cr3 != 0) {
                 if (vmm_get_current_pml4() == dead->cr3) {
                     serial_puts("[FATAL] sched_reap_dead: active CR3 matches dead process PML4 (lifecycle bug)!\n");
                     for (;;) { __asm__ volatile("cli; hlt"); }
@@ -472,7 +480,13 @@ void sched_reap_dead(void) {
                 kstack_free(dead->stack_slot, dead->kstack_base);
             }
             if (dead->is_user) process_record_forget(dead->tid);
-            fd_close_all(dead);
+            if (destroy_space) {
+                fd_close_all(dead);
+                if (dead->process) {
+                    kfree(dead->process);
+                    dead->process = NULL;
+                }
+            }
             kfree(dead);
             dead = next;
         }
@@ -1104,7 +1118,15 @@ void thread_exit(void) {
      * child record. Atomic predicate avoids scheduler/process lock nesting. */
     if (!__atomic_add_fetch(&kernel_exit_sequence,1,__ATOMIC_RELEASE)) __builtin_trap();
 
-    if (curr->is_user && curr->cr3 != 0) {
+    bool last_thread = true;
+    if (curr->process) {
+        int rem = __atomic_sub_fetch(&curr->process->thread_count, 1, __ATOMIC_ACQ_REL);
+        if (rem > 0) {
+            last_thread = false;
+        }
+    }
+
+    if (last_thread && curr->is_user && curr->cr3 != 0) {
         vmm_space_retire(curr->cr3);
     }
 
@@ -1871,10 +1893,33 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
         goto fail_actions;
     }
 
-    process_record_set_name(p->tid, p->name);
-    if (!process_record_bind_creds(p->tid,&p->creds)) {
+    process_t *proc = (process_t *)kmalloc(sizeof(process_t));
+    if (!proc) {
         vmm_space_sub_sched_ref(p->cr3);
-        *error=SYSCALL_EINVAL;goto fail_actions;
+        *error = SYSCALL_ENOMEM;
+        goto fail_actions;
+    }
+    memset(proc, 0, sizeof(process_t));
+    proc->pid = p->tid;
+    proc->lock = (spinlock_t)SPINLOCK_RANKED(1, "process_obj");
+    proc->ref_count = 1;
+    proc->thread_count = 1;
+    proc->creds = p->creds;
+    memcpy(proc->fd_table, p->fd_table, sizeof(p->fd_table));
+    memcpy(proc->fd_flags, p->fd_flags, sizeof(p->fd_flags));
+    memcpy(proc->cwd, p->cwd, sizeof(proc->cwd));
+    proc->cr3 = p->cr3;
+    proc->pml4_virt = p->pml4_virt;
+    proc->vmm_space = p->vmm_space;
+    p->process = proc;
+
+    process_record_set_name(p->tid, p->name);
+    if (!process_record_bind_creds(p->tid, &p->process->creds)) {
+        kfree(proc);
+        p->process = NULL;
+        vmm_space_sub_sched_ref(p->cr3);
+        *error = SYSCALL_EINVAL;
+        goto fail_actions;
     }
     vfs_boot_seal_namespace();
     process_record_attach_signals(p->tid, &p->signals);
@@ -1916,6 +1961,10 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     return p;
 
 fail_actions:
+    if (p->process) {
+        kfree(p->process);
+        p->process = NULL;
+    }
     fd_close_all(p);
     kfree(p);
     kstack_free(slot, stack_base);
@@ -2325,6 +2374,10 @@ static void destroy_staged(tcb_t *p) {
     vmm_space_sub_sched_ref(p->cr3);
     vmm_destroy_pml4(p->cr3, true);
     kstack_free(p->stack_slot, p->kstack_base);
+    if (p->process) {
+        kfree(p->process);
+        p->process = NULL;
+    }
     kfree(p);
 }
 static void cancel_staged_children(uint64_t parent) {
@@ -2430,20 +2483,26 @@ void fd_clone_table(tcb_t *parent, tcb_t *child) {
         fd_init_std(child);
         return;
     }
+    struct file **ptable = parent->process ? parent->process->fd_table : parent->fd_table;
+    uint32_t *pflags = parent->process ? parent->process->fd_flags : parent->fd_flags;
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
-        if (parent->fd_table[i] && !parent->fd_table[i]->exclusive_owner) {
-            child->fd_table[i] = parent->fd_table[i];
+        if (ptable[i] && !ptable[i]->exclusive_owner) {
+            child->fd_table[i] = ptable[i];
             __atomic_fetch_add(&child->fd_table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
-            child->fd_flags[i] = parent->fd_flags[i];
+            child->fd_flags[i] = pflags[i];
         }
     }
 }
 
 void fd_close_cloexec(tcb_t *proc) {
     spin_debug_assert_unheld();
+    struct file **table = proc->process ? proc->process->fd_table : proc->fd_table;
+    uint32_t *flags = proc->process ? proc->process->fd_flags : proc->fd_flags;
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
-        if (proc->fd_table[i] && (proc->fd_flags[i] & FD_FLAG_CLOEXEC)) {
-            vfs_close(proc->fd_table[i]);
+        if (table[i] && (flags[i] & FD_FLAG_CLOEXEC)) {
+            vfs_close(table[i]);
+            table[i] = NULL;
+            flags[i] = 0;
             proc->fd_table[i] = NULL;
             proc->fd_flags[i] = 0;
         }
@@ -2452,10 +2511,16 @@ void fd_close_cloexec(tcb_t *proc) {
 
 int fd_alloc(tcb_t *proc, struct file *file) {
     if (!proc || !file) return -1;
+    struct file **table = proc->process ? proc->process->fd_table : proc->fd_table;
+    uint32_t *flags = proc->process ? proc->process->fd_flags : proc->fd_flags;
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
-        if (proc->fd_table[i] == NULL) {
-            proc->fd_table[i] = file;
-            proc->fd_flags[i] = 0;
+        if (table[i] == NULL) {
+            table[i] = file;
+            flags[i] = 0;
+            if (proc->process) {
+                proc->fd_table[i] = file;
+                proc->fd_flags[i] = 0;
+            }
             return i;
         }
     }
@@ -2464,25 +2529,39 @@ int fd_alloc(tcb_t *proc, struct file *file) {
 
 int fd_alloc_exact(tcb_t *proc, int target_fd, struct file *file) {
     if (!proc || !file || target_fd < 0 || target_fd >= MAX_PROCESS_FDS) return -1;
-    if (proc->fd_table[target_fd]) {
-        vfs_close(proc->fd_table[target_fd]);
-        proc->fd_table[target_fd] = NULL;
+    struct file **table = proc->process ? proc->process->fd_table : proc->fd_table;
+    uint32_t *flags = proc->process ? proc->process->fd_flags : proc->fd_flags;
+    if (table[target_fd]) {
+        vfs_close(table[target_fd]);
+        table[target_fd] = NULL;
     }
-    proc->fd_table[target_fd] = file;
-    proc->fd_flags[target_fd] = 0;
+    table[target_fd] = file;
+    flags[target_fd] = 0;
+    if (proc->process) {
+        proc->fd_table[target_fd] = file;
+        proc->fd_flags[target_fd] = 0;
+    }
     return target_fd;
 }
 
 struct file *fd_get(tcb_t *proc, int fd) {
     if (!proc || fd < 0 || fd >= MAX_PROCESS_FDS) return NULL;
+    if (proc->process) return proc->process->fd_table[fd];
     return proc->fd_table[fd];
 }
 
 int fd_free(tcb_t *proc, int fd) {
-    if (!proc || fd < 0 || fd >= MAX_PROCESS_FDS || !proc->fd_table[fd]) return -1;
-    vfs_close(proc->fd_table[fd]);
-    proc->fd_table[fd] = NULL;
-    proc->fd_flags[fd] = 0;
+    if (!proc || fd < 0 || fd >= MAX_PROCESS_FDS) return -1;
+    struct file **table = proc->process ? proc->process->fd_table : proc->fd_table;
+    uint32_t *flags = proc->process ? proc->process->fd_flags : proc->fd_flags;
+    if (!table[fd]) return -1;
+    vfs_close(table[fd]);
+    table[fd] = NULL;
+    flags[fd] = 0;
+    if (proc->process) {
+        proc->fd_table[fd] = NULL;
+        proc->fd_flags[fd] = 0;
+    }
     return 0;
 }
 
@@ -2490,31 +2569,44 @@ int fd_dup2(tcb_t *proc, int oldfd, int newfd) {
     if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS || newfd < 0 || newfd >= MAX_PROCESS_FDS) {
         return SYSCALL_EBADF;
     }
-    if (!proc->fd_table[oldfd] || proc->fd_table[oldfd]->exclusive_owner) {
+    struct file **table = proc->process ? proc->process->fd_table : proc->fd_table;
+    uint32_t *flags = proc->process ? proc->process->fd_flags : proc->fd_flags;
+    if (!table[oldfd] || table[oldfd]->exclusive_owner) {
         return SYSCALL_EBADF;
     }
     if (oldfd == newfd) {
         return newfd;
     }
-    if (proc->fd_table[newfd]) {
-        vfs_close(proc->fd_table[newfd]);
-        proc->fd_table[newfd] = NULL;
+    if (table[newfd]) {
+        vfs_close(table[newfd]);
+        table[newfd] = NULL;
     }
-    proc->fd_table[newfd] = proc->fd_table[oldfd];
-    __atomic_fetch_add(&proc->fd_table[newfd]->ref_count, 1, __ATOMIC_ACQ_REL);
-    proc->fd_flags[newfd] = 0;
+    table[newfd] = table[oldfd];
+    __atomic_fetch_add(&table[newfd]->ref_count, 1, __ATOMIC_ACQ_REL);
+    flags[newfd] = 0;
+    if (proc->process) {
+        proc->fd_table[newfd] = table[newfd];
+        proc->fd_flags[newfd] = 0;
+    }
     return newfd;
 }
 
 int fd_dup(tcb_t *proc, int oldfd) {
-    if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS || !proc->fd_table[oldfd] || proc->fd_table[oldfd]->exclusive_owner) {
+    if (!proc || oldfd < 0 || oldfd >= MAX_PROCESS_FDS) return SYSCALL_EBADF;
+    struct file **table = proc->process ? proc->process->fd_table : proc->fd_table;
+    uint32_t *flags = proc->process ? proc->process->fd_flags : proc->fd_flags;
+    if (!table[oldfd] || table[oldfd]->exclusive_owner) {
         return SYSCALL_EBADF;
     }
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
-        if (!proc->fd_table[i]) {
-            proc->fd_table[i] = proc->fd_table[oldfd];
-            __atomic_fetch_add(&proc->fd_table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
-            proc->fd_flags[i] = 0;
+        if (!table[i]) {
+            table[i] = table[oldfd];
+            __atomic_fetch_add(&table[i]->ref_count, 1, __ATOMIC_ACQ_REL);
+            flags[i] = 0;
+            if (proc->process) {
+                proc->fd_table[i] = table[i];
+                proc->fd_flags[i] = 0;
+            }
             return i;
         }
     }
@@ -2524,11 +2616,18 @@ int fd_dup(tcb_t *proc, int oldfd) {
 void fd_close_all(tcb_t *proc) {
     if (!proc) return;
     accounts_process_exit(proc->tid);
+    if (proc->process && proc->process->thread_count > 1) {
+        return; /* Secondary thread exit does not close shared process fds */
+    }
+    struct file **table = proc->process ? proc->process->fd_table : proc->fd_table;
+    uint32_t *flags = proc->process ? proc->process->fd_flags : proc->fd_flags;
     for (int i = 0; i < MAX_PROCESS_FDS; i++) {
-        if (proc->fd_table[i]) {
-            vfs_close(proc->fd_table[i]);
-            proc->fd_table[i] = NULL;
+        if (table[i]) {
+            vfs_close(table[i]);
+            table[i] = NULL;
         }
+        flags[i] = 0;
+        proc->fd_table[i] = NULL;
         proc->fd_flags[i] = 0;
     }
 }
@@ -2539,6 +2638,11 @@ void process_exit(uint64_t exit_code) {
     __asm__ volatile("cli" ::: "memory");
     tcb_t *curr = thread_current();
     if (curr) {
+        if (curr->process) {
+            curr->process->has_exited = true;
+            curr->process->exit_code = exit_code;
+            __atomic_store_n(&curr->process->thread_count, 1, __ATOMIC_RELEASE);
+        }
         /* Close all open descriptors and release references upon process exit */
         fd_close_all(curr);
 
@@ -3095,4 +3199,349 @@ int64_t sys_sigreturn(interrupt_frame_t *frame, int *return_disposition) {
     *return_disposition = 1; /* RETURN_SIGRETURN */
 
     return 0; /* result ignored by the dispatcher for RETURN_SIGRETURN */
+}
+
+/* =============================================================================
+ * Userland Threads & Futex Implementation (Issue #12)
+ * ============================================================================= */
+
+#define MAX_THREAD_JOIN_RECORDS 64
+typedef struct {
+    uint64_t tid;
+    uint64_t exit_val;
+    bool exited;
+    bool joined;
+} thread_join_record_t;
+
+static thread_join_record_t g_thread_join_table[MAX_THREAD_JOIN_RECORDS];
+static spinlock_t g_thread_join_lock = SPINLOCK_RANKED(1, "thread_join");
+
+#define MAX_FUTEX_WAITERS 64
+typedef struct {
+    uintptr_t uaddr;
+    uint64_t tid;
+    uint32_t expected;
+    bool woken;
+    bool active;
+} futex_waiter_t;
+
+static futex_waiter_t g_futex_waiters[MAX_FUTEX_WAITERS];
+static spinlock_t g_futex_lock = SPINLOCK_RANKED(1, "futex");
+
+static bool futex_ready_predicate(void *arg) {
+    futex_waiter_t *w = (futex_waiter_t *)arg;
+    if (!w) return true;
+    return __atomic_load_n(&w->woken, __ATOMIC_ACQUIRE) || !__atomic_load_n(&w->active, __ATOMIC_ACQUIRE);
+}
+
+static bool thread_join_predicate(void *arg) {
+    uint64_t target_tid = (uint64_t)(uintptr_t)arg;
+    for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
+        if (__atomic_load_n(&g_thread_join_table[i].tid, __ATOMIC_ACQUIRE) == target_tid) {
+            return __atomic_load_n(&g_thread_join_table[i].exited, __ATOMIC_ACQUIRE);
+        }
+    }
+    return true;
+}
+
+int64_t sys_thread_create(uintptr_t entry, uintptr_t user_stack, uintptr_t arg, uint64_t *out_tid) {
+    tcb_t *curr = thread_current();
+    if (!curr || !curr->is_user || !entry || !user_stack) return SYSCALL_EINVAL;
+
+    uint64_t *pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(pml4, entry, 1, false)) return SYSCALL_EFAULT;
+    if (!vmm_validate_user_range(pml4, user_stack - 16, 16, true)) return SYSCALL_EFAULT;
+    if (out_tid && !vmm_validate_user_range(pml4, (uintptr_t)out_tid, sizeof(uint64_t), true)) {
+        return SYSCALL_EFAULT;
+    }
+
+    process_t *proc = curr->process;
+    if (!proc) {
+        proc = (process_t *)kmalloc(sizeof(process_t));
+        if (!proc) return SYSCALL_ENOMEM;
+        memset(proc, 0, sizeof(process_t));
+        proc->pid = curr->tid;
+        proc->lock = (spinlock_t)SPINLOCK_RANKED(1, "process_obj");
+        proc->ref_count = 1;
+        proc->thread_count = 1;
+        proc->creds = curr->creds;
+        memcpy(proc->fd_table, curr->fd_table, sizeof(curr->fd_table));
+        memcpy(proc->fd_flags, curr->fd_flags, sizeof(curr->fd_flags));
+        memcpy(proc->cwd, curr->cwd, sizeof(proc->cwd));
+        proc->cr3 = curr->cr3;
+        proc->pml4_virt = curr->pml4_virt;
+        proc->vmm_space = curr->vmm_space;
+        curr->process = proc;
+        process_record_bind_creds(curr->tid, &proc->creds);
+    }
+
+    int cur_count = __atomic_load_n(&proc->thread_count, __ATOMIC_ACQUIRE);
+    while (1) {
+        if (cur_count >= 16) {
+            return SYSCALL_EAGAIN;
+        }
+        if (__atomic_compare_exchange_n(&proc->thread_count, &cur_count, cur_count + 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            break;
+        }
+    }
+    __atomic_add_fetch(&proc->ref_count, 1, __ATOMIC_ACQ_REL);
+
+    uintptr_t guard_virt = 0, stack_base = 0;
+    size_t stack_size = 0;
+    int slot = kstack_alloc_tracked(&guard_virt, &stack_base, &stack_size, NULL);
+    if (slot < 0) {
+        __atomic_sub_fetch(&proc->thread_count, 1, __ATOMIC_ACQ_REL);
+        __atomic_sub_fetch(&proc->ref_count, 1, __ATOMIC_ACQ_REL);
+        return SYSCALL_ENOMEM;
+    }
+
+    tcb_t *t = (tcb_t *)kmalloc(sizeof(tcb_t));
+    if (!t) {
+        kstack_free(slot, stack_base);
+        __atomic_sub_fetch(&proc->thread_count, 1, __ATOMIC_ACQ_REL);
+        __atomic_sub_fetch(&proc->ref_count, 1, __ATOMIC_ACQ_REL);
+        return SYSCALL_ENOMEM;
+    }
+    memset(t, 0, sizeof(tcb_t));
+
+    uint64_t tid = __atomic_fetch_add(&g_global_next_tid, 1, __ATOMIC_RELAXED);
+    t->tid = tid;
+    t->parent_pid = curr->parent_pid;
+    t->pgid = curr->pgid;
+    t->sid = curr->sid;
+    t->process = proc;
+    t->creds = proc->creds;
+    t->state = THREAD_READY;
+    t->stack_slot = slot;
+    t->kstack_guard = guard_virt;
+    t->kstack_base = stack_base;
+    t->kstack_size = stack_size;
+    t->ticks_remaining = DEFAULT_QUANTUM_TICKS;
+    t->total_ticks = 0;
+    t->is_idle = false;
+    t->is_user = true;
+    t->cr3 = proc->cr3;
+    t->pml4_virt = proc->pml4_virt;
+    t->vmm_space = proc->vmm_space;
+    t->current_cpu = cpu_current()->id;
+    t->cpu_affinity = -1;
+    t->cpus_allowed = CPU_MASK_ALL;
+    memcpy(t->cwd, proc->cwd, sizeof(t->cwd));
+    memcpy(t->name, curr->name, sizeof(t->name));
+
+    vmm_space_add_sched_ref(t->cr3);
+
+    uint64_t jl_irq = spin_lock_irqsave(&g_thread_join_lock);
+    for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
+        if (!g_thread_join_table[i].tid || g_thread_join_table[i].joined) {
+            g_thread_join_table[i].tid = tid;
+            g_thread_join_table[i].exit_val = 0;
+            g_thread_join_table[i].exited = false;
+            g_thread_join_table[i].joined = false;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_thread_join_lock, jl_irq);
+
+    uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);
+    stack_top = (uint8_t *)((uintptr_t)stack_top & ~0xFULL);
+    stack_top -= sizeof(uint64_t) * 8;
+    uint64_t *frame = (uint64_t *)stack_top;
+
+    frame[0] = 0;                                 /* r15 -> rsi = 0 */
+    frame[1] = (uint64_t)arg;                     /* r14 -> rdi = arg */
+    frame[2] = (uint64_t)(user_stack & ~0xFULL);  /* r13 -> rsp = user_stack */
+    frame[3] = (uint64_t)entry;                   /* r12 -> rip = entry */
+    frame[4] = 0;                                 /* rbp -> rdx = 0 */
+    frame[5] = 0;                                 /* rbx */
+    frame[6] = 0x202;                             /* rflags: IF=1 */
+    frame[7] = (uint64_t)user_process_trampoline; /* rip */
+
+    t->rsp = (uint64_t)stack_top;
+
+    size_t target_cpu = t->current_cpu;
+    uint64_t sq_flags = spin_lock_irqsave(&scheduler_cpus[target_cpu].sched_lock);
+    runqueue_push_cpu_locked(target_cpu, t);
+    spin_unlock_irqrestore(&scheduler_cpus[target_cpu].sched_lock, sq_flags);
+
+    if (target_cpu != cpu_current()->id) {
+        smp_send_work_hint(target_cpu);
+    } else {
+        for (size_t c = 0; c < g_total_sched_cpus; c++) {
+            if (c != target_cpu) smp_send_work_hint(c);
+        }
+    }
+
+    if (out_tid) {
+        *(uint64_t *)out_tid = tid;
+    }
+    return (int64_t)tid;
+}
+
+int64_t sys_thread_exit(uint64_t exit_val) {
+    tcb_t *curr = thread_current();
+    if (!curr || !curr->is_user) return SYSCALL_EINVAL;
+
+    uint64_t jl_irq = spin_lock_irqsave(&g_thread_join_lock);
+    for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
+        if (g_thread_join_table[i].tid == curr->tid) {
+            g_thread_join_table[i].exit_val = exit_val;
+            __atomic_store_n(&g_thread_join_table[i].exited, true, __ATOMIC_RELEASE);
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_thread_join_lock, jl_irq);
+
+    sched_wake_all((const void *)curr->tid);
+
+    process_t *proc = curr->process;
+    if (proc) {
+        int cnt = __atomic_load_n(&proc->thread_count, __ATOMIC_ACQUIRE);
+        if (cnt <= 1) {
+            process_exit(exit_val);
+        }
+    }
+    thread_exit();
+    return 0;
+}
+
+int64_t sys_thread_join(uint64_t target_tid, uint64_t *out_val) {
+    tcb_t *curr = thread_current();
+    if (!curr || !curr->is_user || target_tid == 0) return SYSCALL_EINVAL;
+    if (target_tid == curr->tid) return SYSCALL_EDEADLK;
+
+    if (out_val) {
+        uint64_t *pml4 = vmm_get_active_pml4_virt();
+        if (!vmm_validate_user_range(pml4, (uintptr_t)out_val, sizeof(uint64_t), true)) {
+            return SYSCALL_EFAULT;
+        }
+    }
+
+    while (!thread_join_predicate((void *)(uintptr_t)target_tid)) {
+        if (process_signal_pending()) return SYSCALL_EINTR;
+        sched_wait_until((const void *)target_tid, thread_join_predicate, (void *)(uintptr_t)target_tid);
+    }
+
+    uint64_t jl_irq = spin_lock_irqsave(&g_thread_join_lock);
+    for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
+        if (g_thread_join_table[i].tid == target_tid && g_thread_join_table[i].exited) {
+            uint64_t val = g_thread_join_table[i].exit_val;
+            g_thread_join_table[i].joined = true;
+            g_thread_join_table[i].tid = 0;
+            spin_unlock_irqrestore(&g_thread_join_lock, jl_irq);
+            if (out_val) {
+                *(uint64_t *)out_val = val;
+            }
+            return 0;
+        }
+    }
+    spin_unlock_irqrestore(&g_thread_join_lock, jl_irq);
+    return SYSCALL_ESRCH;
+}
+
+uint64_t sys_thread_self(void) {
+    tcb_t *curr = thread_current();
+    return curr ? curr->tid : 0;
+}
+
+int64_t sys_thread_yield(void) {
+    thread_yield();
+    return 0;
+}
+
+int64_t sys_futex(uint32_t *uaddr, int op, uint32_t val, const timespec_t *timeout) {
+    tcb_t *curr = thread_current();
+    if (!curr || !curr->is_user || !uaddr) return SYSCALL_EINVAL;
+    if ((uintptr_t)uaddr % 4 != 0) return SYSCALL_EINVAL;
+
+    uint64_t *pml4 = vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(pml4, (uintptr_t)uaddr, sizeof(uint32_t), op == FUTEX_WAKE)) {
+        return SYSCALL_EFAULT;
+    }
+
+    if (op == FUTEX_WAKE) {
+        uint32_t to_wake = val ? val : 1;
+        uint32_t count = 0;
+        uint64_t fl_irq = spin_lock_irqsave(&g_futex_lock);
+        for (int i = 0; i < MAX_FUTEX_WAITERS && count < to_wake; i++) {
+            if (g_futex_waiters[i].active && g_futex_waiters[i].uaddr == (uintptr_t)uaddr) {
+                __atomic_store_n(&g_futex_waiters[i].woken, true, __ATOMIC_RELEASE);
+                __atomic_store_n(&g_futex_waiters[i].active, false, __ATOMIC_RELEASE);
+                count++;
+            }
+        }
+        spin_unlock_irqrestore(&g_futex_lock, fl_irq);
+        if (count > 0) {
+            sched_wake_all((const void *)uaddr);
+        }
+        return (int64_t)count;
+    }
+
+    if (op == FUTEX_WAIT) {
+        uint64_t deadline = 0;
+        bool has_timeout = false;
+        if (timeout) {
+            if (!vmm_validate_user_range(pml4, (uintptr_t)timeout, sizeof(timespec_t), false)) {
+                return SYSCALL_EFAULT;
+            }
+            timespec_t ts;
+            memcpy(&ts, timeout, sizeof(timespec_t));
+            if (ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000LL || ts.tv_sec < 0) {
+                return SYSCALL_EINVAL;
+            }
+            uint64_t hz = apic_timer_get_frequency();
+            uint64_t ticks = (uint64_t)ts.tv_sec * hz + ((uint64_t)ts.tv_nsec * hz) / 1000000000ULL;
+            deadline = apic_timer_get_bsp_ticks() + ticks;
+            has_timeout = true;
+        }
+
+        uint64_t fl_irq = spin_lock_irqsave(&g_futex_lock);
+        uint32_t cur_val = *uaddr;
+        if (cur_val != val) {
+            spin_unlock_irqrestore(&g_futex_lock, fl_irq);
+            return SYSCALL_EAGAIN;
+        }
+
+        int slot = -1;
+        for (int i = 0; i < MAX_FUTEX_WAITERS; i++) {
+            if (!g_futex_waiters[i].active) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot < 0) {
+            spin_unlock_irqrestore(&g_futex_lock, fl_irq);
+            return SYSCALL_ENOMEM;
+        }
+
+        g_futex_waiters[slot].uaddr = (uintptr_t)uaddr;
+        g_futex_waiters[slot].tid = curr->tid;
+        g_futex_waiters[slot].expected = val;
+        g_futex_waiters[slot].woken = false;
+        g_futex_waiters[slot].active = true;
+        spin_unlock_irqrestore(&g_futex_lock, fl_irq);
+
+        while (!futex_ready_predicate(&g_futex_waiters[slot])) {
+            if (has_timeout && apic_timer_get_bsp_ticks() >= deadline) {
+                fl_irq = spin_lock_irqsave(&g_futex_lock);
+                g_futex_waiters[slot].active = false;
+                spin_unlock_irqrestore(&g_futex_lock, fl_irq);
+                return SYSCALL_ETIMEDOUT;
+            }
+            if (process_signal_pending()) {
+                fl_irq = spin_lock_irqsave(&g_futex_lock);
+                g_futex_waiters[slot].active = false;
+                spin_unlock_irqrestore(&g_futex_lock, fl_irq);
+                return SYSCALL_EINTR;
+            }
+            sched_wait_until((const void *)uaddr, futex_ready_predicate, &g_futex_waiters[slot]);
+        }
+
+        fl_irq = spin_lock_irqsave(&g_futex_lock);
+        g_futex_waiters[slot].active = false;
+        spin_unlock_irqrestore(&g_futex_lock, fl_irq);
+        return 0;
+    }
+
+    return SYSCALL_EINVAL;
 }

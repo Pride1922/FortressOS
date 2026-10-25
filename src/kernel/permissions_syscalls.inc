@@ -5,7 +5,9 @@
 static int64_t credential_commit(const creds_t *old,const creds_t *next,int error) {
     if (error) return error==CREDS_EPERM ? SYSCALL_EPERM : SYSCALL_EINVAL;
     tcb_t *self=thread_current();
-    return self && process_record_publish_creds(self->tid,old,next) ? 0 : SYSCALL_EAGAIN;
+    if (!self) return SYSCALL_ESRCH;
+    uint64_t pid = self->process ? self->process->pid : self->tid;
+    return process_record_publish_creds(pid,old,next) ? 0 : SYSCALL_EAGAIN;
 }
 static int64_t sys_setres(bool gid,uint64_t real,uint64_t effective,uint64_t saved,uint64_t flags) {
     if (real>UINT32_MAX || effective>UINT32_MAX || saved>UINT32_MAX || (flags & ~7ull)) return SYSCALL_EINVAL;
@@ -39,7 +41,8 @@ static int64_t sys_umask(uint64_t mask) {
     if (mask==UMASK_QUERY) return old.umask;
     if (mask>UINT32_MAX) return SYSCALL_EINVAL;
     if (creds_umask(&old,(uint32_t)mask,&next)) return SYSCALL_EINVAL;
-    if (!process_record_publish_creds(self->tid,&old,&next)) return SYSCALL_EAGAIN;
+    uint64_t pid = self->process ? self->process->pid : self->tid;
+    if (!process_record_publish_creds(pid,&old,&next)) return SYSCALL_EAGAIN;
     return old.umask;
 }
 static int64_t sys_getres(bool groups,uintptr_t real,uintptr_t effective,uintptr_t saved) {

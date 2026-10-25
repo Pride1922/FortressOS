@@ -46,11 +46,34 @@ typedef enum {
     THREAD_TERMINATED
 } thread_state_t;
 
+#define MAX_PROCESS_FDS   32
+#define FD_FLAG_CLOEXEC   1
+
+struct process;
+typedef struct process process_t;
+
+struct process {
+    uint64_t       pid;             /* Thread group leader / main process ID */
+    spinlock_t     lock;            /* Process metadata lock */
+    uint32_t       ref_count;       /* Active thread references + process handle */
+    uint32_t       thread_count;    /* Number of alive threads */
+    creds_t        creds;           /* Canonical process-shared credentials bound to registry */
+    struct file   *fd_table[MAX_PROCESS_FDS];
+    uint32_t       fd_flags[MAX_PROCESS_FDS];
+    char           cwd[256];
+    uintptr_t      cr3;
+    uint64_t      *pml4_virt;
+    struct vmm_space *vmm_space;
+    uint64_t       exit_code;
+    bool           has_exited;
+};
+
 typedef struct tcb {
     uint64_t       rsp;              /* Saved stack pointer (MUST be first field at offset 0) */
     uint64_t       tid;
     uint64_t       parent_pid, pgid, sid;
     signal_state_t signals;
+    process_t     *process;         /* Shared process object (NULL for kernel threads) */
     creds_t creds; /* Private until binding; then process_table value APIs only. */
     unsigned exit_signal;
     char           name[32];
@@ -80,9 +103,6 @@ typedef struct tcb {
     bool           is_user;          /* True if user-space process */
     uint64_t       exit_code;        /* Exit code captured upon termination */
     bool           has_exited;       /* True if process has exited */
-
-#define MAX_PROCESS_FDS   32
-#define FD_FLAG_CLOEXEC   1
 
     /* Per-Process File Descriptor Table (Milestone S6) */
     struct file   *fd_table[MAX_PROCESS_FDS];
@@ -160,6 +180,12 @@ void process_signal_user_return(interrupt_frame_t *frame);
 /* SYS_SIGRETURN: validates and restores context from v1 signal frame.
  * Sets *return_disposition = 1 (RETURN_SIGRETURN) on success. */
 int64_t sys_sigreturn(interrupt_frame_t *frame, int *return_disposition);
+int64_t sys_thread_create(uintptr_t entry, uintptr_t user_stack, uintptr_t arg, uint64_t *out_tid);
+int64_t sys_thread_exit(uint64_t exit_val);
+int64_t sys_thread_join(uint64_t tid, uint64_t *out_val);
+uint64_t sys_thread_self(void);
+int64_t sys_thread_yield(void);
+int64_t sys_futex(uint32_t *uaddr, int op, uint32_t val, const timespec_t *timeout);
 void   thread_exit(void);
 typedef struct {
     uint64_t slot_wait_tsc;

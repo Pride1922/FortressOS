@@ -94,6 +94,15 @@
 #define SYS_FSYNC         86 /* (int fd) -> 0/-errno; journaled ext4 flush */
 #define SYS_WIFI          87 /* (uint64_t cmd, void *arg, size_t size); wifi_abi.h */
 #define SYS_POLL          88 /* (struct pollfd *fds, uint64_t nfds, int64_t timeout_ms) -> count/-errno */
+#define SYS_THREAD_CREATE 89 /* (uintptr_t entry, uintptr_t user_stack, uintptr_t arg, uint64_t *out_tid) -> tid/-errno */
+#define SYS_THREAD_EXIT   90 /* (uint64_t exit_val) -> terminates calling thread */
+#define SYS_THREAD_JOIN   91 /* (uint64_t tid, uint64_t *out_val) -> 0/-errno */
+#define SYS_THREAD_SELF   92 /* () -> tid */
+#define SYS_THREAD_YIELD  93 /* () -> 0 */
+#define SYS_FUTEX         94 /* (uint32_t *uaddr, int op, uint32_t val, const timespec_t *timeout) -> 0/-errno */
+
+#define FUTEX_WAIT 0
+#define FUTEX_WAKE 1
 #define MAX_GETRANDOM_LEN 256u
 
 /* I/O Multiplexing (SYS_POLL) */
@@ -467,6 +476,7 @@ _Static_assert(__builtin_offsetof(block_info_t, part_index) == 188, "block_info_
 #define SYSCALL_EISCONN -31
 #define SYSCALL_EACCES        (-32)
 #define SYSCALL_ELOOP         (-33)
+#define SYSCALL_EDEADLK       (-34)
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384
