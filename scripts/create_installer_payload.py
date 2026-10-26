@@ -61,6 +61,7 @@ def main():
         (tree/'etc/watchtower').mkdir(parents=True, exist_ok=True)
         default_services = {
             'boot-log.service': 'Exec=/bin/boot-snapshot\nOrder=01\nType=simple\nRestart=no\n',
+            'wifi.service': 'Exec=/bin/wifi auto\nOrder=08\nEnabled=yes\nType=simple\nRestart=no\nTimeoutStop=10\n',
             'dhcpc.service': 'Exec=/sbin/dhcpc -f\nOrder=10\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=5\n',
             'ntpd.service': 'Exec=/sbin/ntpd -f pool.ntp.org\nOrder=15\nEnabled=yes\nRestart=on-failure\nTimeoutStop=2\n',
             'sshd.service': 'Exec=/sbin/sshd -D\nOrder=20\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=10\n',

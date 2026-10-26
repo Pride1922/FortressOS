@@ -20,6 +20,7 @@ static long sys_call(long nr, uintptr_t a, uintptr_t b, uintptr_t c,
 #endif
 
 static char s_out[1024];
+static wifi_scan_result_t s_scan_res;
 
 static bool write_str(int fd, const char *str);
 
@@ -186,8 +187,9 @@ static int do_scan(void) {
     ensure_firmware_loaded();
 
     /* 1. Asynchronously kick hardware multi-channel scan */
-    wifi_scan_result_t trigger_res = { .count = 0, .max_entries = 0 };
-    (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &trigger_res, sizeof(trigger_res));
+    s_scan_res.count = 0;
+    s_scan_res.max_entries = 0;
+    (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &s_scan_res, sizeof(s_scan_res));
 
     /* 2. Show animated progress bar while hardware dwells across channels (1.2s) */
     const char *bars[] = {
@@ -205,17 +207,16 @@ static int do_scan(void) {
     }
     write_str(1, "\r                     \r"); /* Clear progress bar */
 
-    wifi_scan_result_t res;
-    res.count = 0;
-    res.max_entries = WIFI_MAX_SCAN_ENTRIES;
+    s_scan_res.count = 0;
+    s_scan_res.max_entries = WIFI_MAX_SCAN_ENTRIES;
 
-    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &res, sizeof(res));
+    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &s_scan_res, sizeof(s_scan_res));
     if (rc != 0) {
         write_str(2, "wifi: scan failed\n");
         return 1;
     }
 
-    if (res.count == 0) {
+    if (s_scan_res.count == 0) {
         write_str(1, "No wireless networks found in range.\n");
         return 0;
     }
@@ -223,8 +224,8 @@ static int do_scan(void) {
     write_str(1, "BSSID              CHAN  RSSI   SEC       SSID\n");
     write_str(1, "-----------------  ----  -----  --------  --------------------------------\n");
 
-    for (uint32_t i = 0; i < res.count; i++) {
-        const wifi_scan_entry_t *e = &res.entries[i];
+    for (uint32_t i = 0; i < s_scan_res.count; i++) {
+        const wifi_scan_entry_t *e = &s_scan_res.entries[i];
         size_t pos = 0;
 
         /* BSSID */
@@ -1003,39 +1004,45 @@ static int do_auto(void) {
         return 0; /* No saved networks configured */
     }
 
-    /* Perform scan to see which saved networks are in range */
-    wifi_scan_result_t res;
-    res.count = 0;
-    res.max_entries = WIFI_MAX_SCAN_ENTRIES;
+    /* 1. Asynchronously kick hardware multi-channel scan */
+    s_scan_res.count = 0;
+    s_scan_res.max_entries = 0;
+    (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &s_scan_res, sizeof(s_scan_res));
 
-    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &res, sizeof(res));
-    if (rc != 0 || res.count == 0) {
-        /* Probe sent; sleep briefly and re-query */
-        timespec_t ts = { .tv_sec = 0, .tv_nsec = 500000000 }; /* 500ms */
-        WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
-        rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &res, sizeof(res));
+    /* 2. Dwell while hardware sweeps across channels (1.2s) */
+    timespec_t ts = { .tv_sec = 1, .tv_nsec = 200000000 }; /* 1.2s */
+    WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
+
+    /* 3. Query scan results from kernel cache */
+    s_scan_res.count = 0;
+    s_scan_res.max_entries = WIFI_MAX_SCAN_ENTRIES;
+    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &s_scan_res, sizeof(s_scan_res));
+
+    if (rc != 0 || s_scan_res.count == 0) {
+        /* Extra dwell in case cold hardware was slow to populate */
+        timespec_t ts_retry = { .tv_sec = 0, .tv_nsec = 600000000 }; /* 600ms */
+        WIFI_SYSCALL(SYS_NANOSLEEP, &ts_retry, 0, 0);
+        rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &s_scan_res, sizeof(s_scan_res));
     }
 
-    if (rc != 0 || res.count == 0) {
-        write_str(1, "[wifi] Auto-connect: no networks detected in range.\n");
-        return 0;
-    }
-
-    /* Find visible saved network with highest RSSI */
+    /* 4. Find visible saved network with highest RSSI */
     int best_saved_idx = -1;
     int8_t best_rssi = -128;
 
-    for (int s = 0; s < count; s++) {
-        for (uint32_t v = 0; v < res.count; v++) {
-            if (streq(s_saved_nets[s].ssid, res.entries[v].ssid)) {
-                if (res.entries[v].rssi > best_rssi) {
-                    best_rssi = res.entries[v].rssi;
-                    best_saved_idx = s;
+    if (rc == 0 && s_scan_res.count > 0) {
+        for (int s = 0; s < count; s++) {
+            for (uint32_t v = 0; v < s_scan_res.count; v++) {
+                if (streq(s_saved_nets[s].ssid, s_scan_res.entries[v].ssid)) {
+                    if (s_scan_res.entries[v].rssi > best_rssi) {
+                        best_rssi = s_scan_res.entries[v].rssi;
+                        best_saved_idx = s;
+                    }
                 }
             }
         }
     }
 
+    /* 5. Connect to best saved network, or fallback to saved networks in order */
     if (best_saved_idx >= 0) {
         write_str(1, "[wifi] Auto-connecting to saved network \"");
         write_str(1, s_saved_nets[best_saved_idx].ssid);
@@ -1052,8 +1059,20 @@ static int do_auto(void) {
                           s_saved_nets[best_saved_idx].gateway,
                           s_saved_nets[best_saved_idx].dns);
     } else {
-        write_str(1, "[wifi] Auto-connect: none of the saved networks are in range.\n");
-        return 0;
+        /* Fallback: try saved networks in order with directed connection (hidden APs / quiet beacons) */
+        for (int s = 0; s < count; s++) {
+            write_str(1, "[wifi] Trying saved network \"");
+            write_str(1, s_saved_nets[s].ssid);
+            write_str(1, "\"...\n");
+            int conn_rc = do_connect(s_saved_nets[s].ssid,
+                                     s_saved_nets[s].psk,
+                                     s_saved_nets[s].address,
+                                     s_saved_nets[s].gateway,
+                                     s_saved_nets[s].dns);
+            if (conn_rc == 0) return 0;
+        }
+        write_str(1, "[wifi] Auto-connect: could not connect to any saved network.\n");
+        return 1;
     }
 }
 
