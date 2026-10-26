@@ -308,3 +308,40 @@ fn monitor_mouse_bounded_damage_and_coalesced_deltas() {
     c.motion(&mut s, -2000, -2000);
     assert_eq!((c.x, c.y), (0, 0));
 }
+
+#[test]
+fn taskbar_clock_and_keyboard_cycle_focus() {
+    let mut s = Surface::new(640, 480).unwrap();
+    let mut wm = window::WindowManager::demo().unwrap();
+    s.fill(window::DESKTOP);
+    wm.render(&mut s);
+    flush(&mut s);
+
+    // Initial state: Window 2 is focused, clock is inactive (-1)
+    assert!(wm.windows.iter().find(|w| w.id == 2).unwrap().is_focused);
+    assert!(!wm.windows.iter().find(|w| w.id == 1).unwrap().is_focused);
+    assert_eq!(wm.clock_sec, -1);
+
+    // Update clock to 1761508800 (20:00:00 UTC)
+    wm.update_clock(&mut s, 1761508800);
+    assert_eq!(wm.clock_sec, 1761508800);
+    let clk_rect = window::WindowManager::clock_rect(s.width, s.height);
+    assert_eq!(s.damage_rect(0), Some(clk_rect));
+    assert_eq!(s.damage_rect(1), None);
+    wm.render(&mut s);
+    flush(&mut s);
+
+    // Calling again with the same second must produce zero damage
+    wm.update_clock(&mut s, 1761508800);
+    assert_eq!(s.damage_rect(0), None);
+
+    // Cycle focus: switches focused window to Window 1
+    wm.cycle_focus(&mut s);
+    assert!(wm.windows.iter().find(|w| w.id == 1).unwrap().is_focused);
+    assert!(!wm.windows.iter().find(|w| w.id == 2).unwrap().is_focused);
+
+    // Cycle focus again: switches back to Window 2
+    wm.cycle_focus(&mut s);
+    assert!(wm.windows.iter().find(|w| w.id == 2).unwrap().is_focused);
+    assert!(!wm.windows.iter().find(|w| w.id == 1).unwrap().is_focused);
+}

@@ -195,6 +195,7 @@ pub struct WindowManager {
     pub windows: Vec<Window>,
     buttons: u8,
     hover: Option<(u32, Hit)>,
+    pub clock_sec: i64,
 }
 
 impl WindowManager {
@@ -237,6 +238,7 @@ impl WindowManager {
             windows,
             buttons: 0,
             hover: None,
+            clock_sec: -1,
         })
     }
 
@@ -254,6 +256,31 @@ impl WindowManager {
             w: 160,
             h: 24,
         }
+    }
+
+    pub fn clock_rect(width: usize, height: usize) -> Rect {
+        Rect {
+            x: width.saturating_sub(180),
+            y: height.saturating_sub(26),
+            w: 88,
+            h: 22,
+        }
+    }
+
+    pub fn update_clock(&mut self, s: &mut Surface, sec: i64) {
+        if sec == self.clock_sec {
+            return;
+        }
+        self.clock_sec = sec;
+        s.damage(Self::clock_rect(s.width, s.height));
+    }
+
+    pub fn cycle_focus(&mut self, s: &mut Surface) {
+        if self.windows.len() <= 1 {
+            return;
+        }
+        let first_id = self.windows[0].id;
+        self.raise(first_id, s);
     }
 
     fn dock_damage(s: &mut Surface) {
@@ -452,6 +479,43 @@ impl WindowManager {
                                         &w.title,
                                         x - task.x - 8,
                                         y - task.y - 4,
+                                        TEXT,
+                                        INACTIVE,
+                                    )
+                                } else {
+                                    INACTIVE
+                                };
+                        }
+                    }
+                }
+            }
+            // Digital Clock
+            if self.clock_sec >= 0 {
+                let clock_r = Self::clock_rect(s.width, s.height);
+                if let Some(clip) = clock_r.intersection(r) {
+                    let day_sec = (self.clock_sec % 86400 + 86400) % 86400;
+                    let h = (day_sec / 3600) as u32;
+                    let m = ((day_sec % 3600) / 60) as u32;
+                    let sec = (day_sec % 60) as u32;
+                    let time_str = [
+                        b'0' + (h / 10) as u8,
+                        b'0' + (h % 10) as u8,
+                        b':',
+                        b'0' + (m / 10) as u8,
+                        b'0' + (m % 10) as u8,
+                        b':',
+                        b'0' + (sec / 10) as u8,
+                        b'0' + (sec % 10) as u8,
+                    ];
+                    let label = core::str::from_utf8(&time_str).unwrap_or("00:00:00");
+                    for y in clip.y..clip.y + clip.h {
+                        for x in clip.x..clip.x + clip.w {
+                            s.pixels[y * s.width + x] =
+                                if x >= clock_r.x + 12 && (3..19).contains(&(y - clock_r.y)) {
+                                    label_pixel(
+                                        label,
+                                        x - clock_r.x - 12,
+                                        y - clock_r.y - 3,
                                         TEXT,
                                         INACTIVE,
                                     )
