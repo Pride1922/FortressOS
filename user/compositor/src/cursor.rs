@@ -94,13 +94,13 @@ impl Cursor {
         self.visible = true;
     }
     /// Restore save-under before scene mutation; caller renders then calls show.
-    pub fn advance(&mut self, s: &mut Surface, dx: i8, dy: i8) {
+    pub fn advance(&mut self, s: &mut Surface, dx: i32, dy: i32) {
         self.hide(s);
         self.x = (self.x as i64 + dx as i64).clamp(0, s.width as i64 - 1) as usize;
         self.y = (self.y as i64 + dy as i64).clamp(0, s.height as i64 - 1) as usize;
     }
     #[cfg(test)]
-    pub fn motion(&mut self, s: &mut Surface, dx: i8, dy: i8) {
+    pub fn motion(&mut self, s: &mut Surface, dx: i32, dy: i32) {
         self.advance(s, dx, dy);
         self.show(s);
     }

@@ -5,6 +5,7 @@ pub const SYS_WRITE: usize = 1;
 pub const SYS_OPEN: usize = 2;
 pub const SYS_CLOSE: usize = 3;
 pub const SYS_READ: usize = 4;
+pub const SYS_NANOSLEEP: usize = 75;
 pub const SYS_CLOCK_GETTIME: usize = 74;
 pub const SYS_POLL: usize = 88;
 pub const SYS_FBINFO: usize = 96;
@@ -160,6 +161,14 @@ pub fn poll(fds: &mut [PollFd], timeout_ms: i64) -> isize {
 
 pub fn clock_gettime(clk_id: u32, ts: &mut Timespec) -> isize {
     unsafe { syscall2(SYS_CLOCK_GETTIME, clk_id as usize, ts as *mut _ as usize) }
+}
+
+pub fn nanosleep(req: &Timespec, rem: Option<&mut Timespec>) -> isize {
+    let rem_ptr = match rem {
+        Some(r) => r as *mut _ as usize,
+        None => 0,
+    };
+    unsafe { syscall2(SYS_NANOSLEEP, req as *const _ as usize, rem_ptr) }
 }
 
 pub fn get_fb_info(req_vaddr: u64) -> Result<FbInfoV1, isize> {

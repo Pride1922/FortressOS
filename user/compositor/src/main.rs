@@ -116,40 +116,75 @@ fn run() -> i32 {
         events: sys::POLLIN,
         revents: 0,
     }];
+    let mut pending_packet: Option<[u8; 4]> = None;
+    let mut frame_count: u32 = 0;
     let status = loop {
-        let ready = sys::poll(&mut fds, -1);
-        if ready == sys::EINTR {
-            continue;
-        } // EINTR
-        if ready < 0 || fds[0].revents & (sys::POLLERR | 0x10 | 0x20) != 0 {
-            break 1;
-        }
-        if fds[0].revents & sys::POLLIN == 0 {
-            continue;
-        }
-        let mut packet = [0u8; 4];
-        let n = sys::read(fd as i32, &mut packet);
-        if n == sys::EINTR || n == 0 {
-            continue;
-        }
-        if n != 4 {
-            break 1;
-        }
+        let packet = if let Some(p) = pending_packet.take() {
+            p
+        } else {
+            let ready = sys::poll(&mut fds, -1);
+            if ready == sys::EINTR {
+                continue;
+            }
+            if ready < 0 || fds[0].revents & (sys::POLLERR | 0x10 | 0x20) != 0 {
+                break 1;
+            }
+            if fds[0].revents & sys::POLLIN == 0 {
+                continue;
+            }
+            let mut pkt = [0u8; 4];
+            let n = sys::read(fd as i32, &mut pkt);
+            if n == sys::EINTR || n == 0 {
+                continue;
+            }
+            if n != 4 {
+                break 1;
+            }
+            pkt
+        };
+
         if packet[0] & 2 != 0 {
             break 0;
         }
-        cursor.advance(&mut scene, packet[1] as i8, packet[2] as i8);
-        windows.mouse(cursor.x, cursor.y, packet[0], &mut scene);
-        windows.monitor(
-            &mut scene,
-            fb.pitch as usize,
-            allocator::usage(),
-            (cursor.x, cursor.y),
-        );
+
+        let buttons = packet[0];
+        let mut dx_total: i32 = packet[1] as i8 as i32;
+        let mut dy_total: i32 = packet[2] as i8 as i32;
+
+        // Drain pending motion packets from kernel FIFO to coalesce rapid movement
+        let mut extra = [0u8; 4];
+        while sys::read(fd as i32, &mut extra) == 4 {
+            if extra[0] & 2 != 0 {
+                pending_packet = Some(extra);
+                break;
+            }
+            if extra[0] != buttons {
+                pending_packet = Some(extra);
+                break;
+            }
+            dx_total += extra[1] as i8 as i32;
+            dy_total += extra[2] as i8 as i32;
+        }
+
+        cursor.advance(&mut scene, dx_total, dy_total);
+        windows.mouse(cursor.x, cursor.y, buttons, &mut scene);
+        if frame_count % 8 == 0 {
+            windows.monitor_mouse(&mut scene, (cursor.x, cursor.y));
+        }
         windows.render(&mut scene);
         cursor.show(&mut scene);
         if !unsafe { scene.present(&fb) } {
             break 1;
+        }
+        frame_count = frame_count.wrapping_add(1);
+
+        // Frame pacing / micro-sleep: space out blits to prevent tearing and display controller bus stuttering
+        if pending_packet.is_none() {
+            let ts = sys::Timespec {
+                tv_sec: 0,
+                tv_nsec: 1_000_000,
+            };
+            sys::nanosleep(&ts, None);
         }
     };
     cursor.hide(&mut scene);

@@ -278,3 +278,33 @@ fn window_damage_repair_matches_full_composition_with_occlusion_and_clipping() {
         .is_none()
     );
 }
+
+#[test]
+fn monitor_mouse_bounded_damage_and_coalesced_deltas() {
+    let mut s = Surface::new(640, 480).unwrap();
+    let mut wm = window::WindowManager::demo().unwrap();
+    s.fill(window::DESKTOP);
+    wm.render(&mut s);
+    flush(&mut s);
+
+    // Initial full monitor damage is 320x200 = 64,000 pixels
+    wm.monitor(&mut s, 2560, (1024, 4096), (100, 100));
+    assert_eq!(s.damage_rect(0), Some(Rect { x: 80, y: 120, w: 320, h: 200 }));
+    flush(&mut s);
+
+    // Optimized monitor_mouse damage is bounded to the text sub-rectangle (<= 220x16 = 3,520 pixels)
+    wm.monitor_mouse(&mut s, (150, 250));
+    let damaged = s.damage_rect(0).expect("damage rect must exist");
+    assert_eq!(damaged, Rect { x: 93, y: 229, w: 220, h: 16 });
+    assert!(damaged.w * damaged.h <= 3520);
+    assert_eq!(s.damage_rect(1), None);
+    flush(&mut s);
+
+    // Verify coalesced large motion deltas (> 127) clamp cleanly
+    let mut c = cursor::Cursor::new(100, 100).unwrap();
+    c.show(&mut s);
+    c.motion(&mut s, 1000, 1000);
+    assert_eq!((c.x, c.y), (639, 479));
+    c.motion(&mut s, -2000, -2000);
+    assert_eq!((c.x, c.y), (0, 0));
+}

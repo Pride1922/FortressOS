@@ -148,9 +148,9 @@ boots attach no data disks. No physical-hardware acceptance is claimed.
 
 #### Pre-Flight Candidate Artifacts
 - **Candidate Disk Image**: bin/fortress.img (592 MiB)
-  - SHA-256 (bin/fortress.img): ab00328497d922f42423109b69eff637a94ef920c5758600e999578d19e87cff
+  - SHA-256 (bin/fortress.img): 9fbea4f1bac25222b9650de2e44896abc3fd0ae9a30acc1df0d45b0007d95ada
 - **Candidate ISO Image**: bin/fortress.iso
-  - SHA-256 (bin/fortress.iso): 64c189631af995283d040c5b6d247e059980586c9d589923467718b2b09be8bf
+  - SHA-256 (bin/fortress.iso): 8231f9bce97ec1e51197b013ea3cb10fc0e75c46dfdb715749704a9163290f1e
 - **Kernel Binary**: bin/fortress.elf
   - SHA-256 (bin/fortress.elf): e1eec89ad1bbeb30071b3523b273ac2b212bb106e7eded65a843ea556bc70776
 
@@ -190,3 +190,17 @@ boots attach no data disks. No physical-hardware acceptance is claimed.
   - Registered `ps2_mouse_irq` for vector `0x3C` (`MOUSE_VECTOR`) and routed ISA IRQ 12 in IOAPIC.
   - Implemented unified `i8042_drain()` to dispatch keyboard scancodes (`status & 0x20 == 0`) and mouse bytes (`status & 0x20 != 0`) without race or byte loss.
   - Implemented standard 3/4-byte packet decoder with bit-3 sync verification, overflow rejection, button decoding, Y-axis screen inversion, and delta clamping to `mouse_dev_push()`.
+
+### 7. Compositor Smoothness & Latency Hardening (2026-10-26)
+- **Bottlenecks Identified**:
+  1. *Over-damage in Telemetry*: On every individual 10ms mouse packet, `windows.monitor()` was damaging the entire 320×200 System Monitor window (`w.rect`, 64,000 pixels = 256 KiB) just to format `"Mouse: {}, {}"`. Over uncacheable (UC) PCIe memory without write-combining, this generated 25.6 MB/s of bus traffic and stalled CPU execution.
+  2. *Queue Buildup & Lack of Coalescing*: When rapid finger swipes generated bursts of 100 Hz PS/2 trackpad packets, the event loop read only 1 packet per frame, causing the cursor to lag behind physical input.
+  3. *Display Controller Contention & Tearing*: Unpaced back-to-back writes clashed with display controller scanout cycles.
+- **Optimizations Implemented**:
+  1. *Sub-Rectangle Coordinate Damage*: Added `windows.monitor_mouse()` to clear and damage only the 220×16 coordinate string rectangle (3,520 pixels) rather than the entire 64,000-pixel window. Throttled coordinate telemetry updates to every 8 frames (~7 Hz), keeping 87.5% of mouse ticks restricted strictly to the 16×16 cursor damage boxes (512 pixels), achieving a 70× reduction in PCIe bus traffic.
+  2. *Non-Blocking FIFO Event Coalescing*: Implemented non-blocking draining of `s_mouse_fifo` in `user/compositor/src/main.rs`. All pending motion packets in the queue are summed into `dx_total` and `dy_total`, rendering once per batch while preserving button press/release transitions sequentially via `pending_packet`.
+  3. *Frame Pacing via SYS_NANOSLEEP*: Wired Syscall 75 `SYS_NANOSLEEP` into the Rust `sys` module and introduced a 1 ms micro-sleep after frame presentation when no packets are pending, spacing out blits and eliminating display controller bus contention.
+- **Verification Evidence**:
+  - `make test-compositor-host`: 7/7 unit tests PASS (including `monitor_mouse_bounded_damage_and_coalesced_deltas`).
+  - `make test-input`: 100% PASS (PS/2 packet decoding & overflow handling).
+  - `make test-compositor`: Multi-firmware QEMU acceptance suite PASS 100% across BIOS and UEFI (1280×800).

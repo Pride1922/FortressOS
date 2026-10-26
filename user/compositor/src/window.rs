@@ -379,6 +379,38 @@ impl WindowManager {
         }
     }
 
+    pub fn monitor_mouse(&mut self, s: &mut Surface, mouse: (usize, usize)) {
+        let Some(w) = self.windows.iter_mut().find(|w| w.id == 1) else {
+            return;
+        };
+        if w.is_minimized {
+            return;
+        }
+        let width = w.rect.w.saturating_sub(2);
+        let height = w.rect.h.saturating_sub(26);
+        let text_y = 84;
+        let text_h = 16;
+        let text_w = 220.min(width.saturating_sub(12));
+        if text_y + text_h <= height {
+            for row in text_y..text_y + text_h {
+                for col in 12..12 + text_w {
+                    w.content[row * width + col] = CLIENT;
+                }
+            }
+        }
+        let mut line = Line::new();
+        let _ = write!(line, "Mouse: {}, {}", mouse.0, mouse.1);
+        content_text(w, 12, text_y, line.as_str());
+
+        let damage_rect = Rect {
+            x: w.rect.x.saturating_add(1).saturating_add(12),
+            y: w.rect.y.saturating_add(25).saturating_add(text_y),
+            w: text_w,
+            h: text_h,
+        };
+        s.damage(damage_rect);
+    }
+
     pub fn render(&self, s: &mut Surface) {
         let mut i = 0;
         while let Some(r) = s.damage_rect(i) {
