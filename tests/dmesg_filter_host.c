@@ -561,6 +561,67 @@ static void test_level_error_handling(void) {
     print_msg("PASS: level error handling (invalid names, out of range 0-7, exit code 2)\n");
 }
 
+/* 11. Default debug suppression, -v/--all, -l all, and -T/--timestamp formatting */
+static void test_debug_suppression_and_timestamps(void) {
+    /* Test 1: Default dmesg on s_mock_dmesg_levels excludes level 7 (debug) */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args1[] = {"dmesg"};
+    int rc = exec_dmesg(1, args1);
+    assert(rc == 0);
+    assert(strstr(s_out_buf, "test log level 7 (debug)") == NULL);
+    assert(strstr(s_out_buf, "test log level 6 (info)") != NULL);
+    assert(strstr(s_out_buf, "test log level 0 (emerg)") != NULL);
+    assert(strstr(s_out_buf, "e1000: Link down error") != NULL);
+    assert(strstr(s_out_buf, "e1000: Interface up info") != NULL);
+
+    /* Test 2: dmesg -v / --all includes level 7 (debug) */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args2[] = {"dmesg", "-v"};
+    rc = exec_dmesg(2, args2);
+    assert(rc == 0);
+    assert(strstr(s_out_buf, "test log level 7 (debug)") != NULL);
+
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args2b[] = {"dmesg", "--all"};
+    rc = exec_dmesg(2, args2b);
+    assert(rc == 0);
+    assert(strstr(s_out_buf, "test log level 7 (debug)") != NULL);
+
+    /* Test 3: dmesg -l all includes level 7 (debug) */
+    mock_reset();
+    s_current_dmesg = s_mock_dmesg_levels;
+    const char *args3[] = {"dmesg", "-l", "all"};
+    rc = exec_dmesg(3, args3);
+    assert(rc == 0);
+    assert(strstr(s_out_buf, "test log level 7 (debug)") != NULL);
+
+    /* Test 4: dmesg -T / --timestamp formatting */
+    static const char *s_mock_ticks =
+        "<6,150>[NET] Link carrier detected\n"
+        "<7,200>[TEST] Debug message\n";
+    mock_reset();
+    s_current_dmesg = s_mock_ticks;
+    const char *args4[] = {"dmesg", "-T"};
+    rc = exec_dmesg(2, args4);
+    assert(rc == 0);
+    /* 150 ticks at 100 Hz = 1.500000 sec */
+    assert(strcmp(s_out_buf, "[    1.500000] [NET] Link carrier detected\n") == 0);
+
+    /* Test 5: dmesg -T -v formats all with timestamps */
+    mock_reset();
+    s_current_dmesg = s_mock_ticks;
+    const char *args5[] = {"dmesg", "-T", "-v"};
+    rc = exec_dmesg(3, args5);
+    assert(rc == 0);
+    assert(strstr(s_out_buf, "[    1.500000] [NET] Link carrier detected\n") != NULL);
+    assert(strstr(s_out_buf, "[    2.000000] [TEST] Debug message\n") != NULL);
+
+    print_msg("PASS: debug suppression, -v/--all, -l all, and -T timestamp formatting\n");
+}
+
 int main(void) {
     test_filter_parsing();
     test_case_insensitive_and_exact();
@@ -572,6 +633,7 @@ int main(void) {
     test_error_handling();
     test_level_filtering();
     test_level_error_handling();
+    test_debug_suppression_and_timestamps();
     print_msg("ALL DMESG FILTER HOST TESTS PASSED!\n");
     return 0;
 }

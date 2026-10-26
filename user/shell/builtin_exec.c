@@ -889,6 +889,10 @@ static int parse_level_token(const char *tok, size_t len, uint8_t *out_level) {
         *out_level = 7;
         return 0;
     }
+    if (iequal(tok, len, "all")) {
+        *out_level = 255;
+        return 0;
+    }
     return -1;
 }
 
@@ -927,7 +931,11 @@ static int parse_dmesg_levels(const char *arg, uint8_t *mask) {
             write_err("'\n");
             return 2;
         }
-        *mask |= (uint8_t)(1 << lvl);
+        if (lvl == 255) {
+            *mask = 0xFF;
+        } else {
+            *mask |= (uint8_t)(1 << lvl);
+        }
         had_token = true;
 
         if (comma_after && !*p) {
@@ -940,6 +948,36 @@ static int parse_dmesg_levels(const char *arg, uint8_t *mask) {
         return 2;
     }
     return 0;
+}
+
+static size_t format_dmesg_timestamp(char *buf, size_t cap, uint64_t ticks) {
+    if (cap < 20) return 0;
+    uint64_t sec = ticks / 100;
+    uint64_t usec = (ticks % 100) * 10000;
+    buf[0] = '[';
+    char s_digits[16];
+    int slen = 0;
+    uint64_t s_val = sec;
+    do {
+        s_digits[slen++] = (char)('0' + (s_val % 10));
+        s_val /= 10;
+    } while (s_val > 0);
+    int pad = 5 - slen;
+    if (pad < 0) pad = 0;
+    int pos = 1;
+    for (int p = 0; p < pad; p++) buf[pos++] = ' ';
+    for (int p = slen - 1; p >= 0; p--) buf[pos++] = s_digits[p];
+    buf[pos++] = '.';
+    char u_digits[8];
+    for (int u = 5; u >= 0; u--) {
+        u_digits[u] = (char)('0' + (usec % 10));
+        usec /= 10;
+    }
+    for (int u = 0; u < 6; u++) buf[pos++] = u_digits[u];
+    buf[pos++] = ']';
+    buf[pos++] = ' ';
+    buf[pos] = '\0';
+    return (size_t)pos;
 }
 
 static bool dmesg_line_matches(const char *line, size_t line_len, const char *const *filters, size_t num_filters) {
@@ -957,15 +995,16 @@ int exec_dmesg(int argc, const char *const *argv) {
     const char *dest_path = NULL;
     bool append = false;
     bool raw_mode = false;
+    bool show_timestamp = false;
     const char *filters[MAX_DMESG_FILTERS];
     size_t num_filters = 0;
-    uint8_t level_mask = 0;
+    uint8_t level_mask = 0x7F; /* Default: levels 0..6 (emerg through info) */
     bool level_filter_active = false;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
         if (equal(arg, "-h") || equal(arg, "--help")) {
-            write_str("usage: dmesg [-f FAC] [-l LEVELS] [-a] [-r] [-n N | tail [N]] [path]\n"
+            write_str("usage: dmesg [-f FAC] [-l LEVELS] [-a] [-r] [-T] [-v] [-n N | tail [N]] [path]\n"
                       "       dmesg [path]\n\n"
                       "Print or save kernel diagnostic ring buffer messages.\n"
                       "options:\n"
@@ -974,9 +1013,12 @@ int exec_dmesg(int argc, const char *const *argv) {
                       "                   supported: NET, EXT4, USB, PMM, VMM, JBD2, BOOT, SMP,\n"
                       "                              PCI, ACPI, NVME, HEAP, TIME, SIGNAL, SHELL\n"
                       "  -l LEVELS, --level=LEVELS\n"
-                      "                   filter by comma-separated severity levels (names or 0-7)\n"
+                      "                   filter by comma-separated severity levels (names or 0-7, all)\n"
                       "                   supported: emerg (0), alert (1), crit (2), err (3),\n"
-                      "                              warn (4), notice (5), info (6), debug (7)\n"
+                      "                              warn (4), notice (5), info (6), debug (7), all\n"
+                      "  -v, --all        show all messages including internal debug and tests\n"
+                      "  -T, --time, --timestamp\n"
+                      "                   prefix output lines with elapsed kernel timestamps\n"
                       "  -r, --raw        do not strip kernel syslog level prefixes (<N>)\n"
                       "  -a, --append     append log output to file instead of overwriting\n"
                       "  -n N, tail [N]   print only the last N lines (e.g. dmesg -n 13)\n"
@@ -986,32 +1028,38 @@ int exec_dmesg(int argc, const char *const *argv) {
             append = true;
         } else if (equal(arg, "-r") || equal(arg, "--raw")) {
             raw_mode = true;
+            if (!level_filter_active) level_mask = 0xFF;
+        } else if (equal(arg, "-v") || equal(arg, "--all")) {
+            level_mask = 0xFF;
+            level_filter_active = true;
+        } else if (equal(arg, "-T") || equal(arg, "--time") || equal(arg, "--timestamp")) {
+            show_timestamp = true;
         } else if (equal(arg, "-l") || equal(arg, "--level")) {
             if (i + 1 >= argc || !argv[i + 1][0]) {
                 write_err("dmesg: option requires a level argument\n");
                 return 2;
             }
+            if (!level_filter_active) { level_mask = 0; level_filter_active = true; }
             int rc = parse_dmesg_levels(argv[++i], &level_mask);
             if (rc != 0) return rc;
-            level_filter_active = true;
         } else if (starts_with(arg, "--level=")) {
             const char *levels = arg + 8;
             if (!levels[0]) {
                 write_err("dmesg: option requires a level argument\n");
                 return 2;
             }
+            if (!level_filter_active) { level_mask = 0; level_filter_active = true; }
             int rc = parse_dmesg_levels(levels, &level_mask);
             if (rc != 0) return rc;
-            level_filter_active = true;
         } else if (arg[0] == '-' && arg[1] == 'l' && arg[2] != '\0') {
             const char *levels = (arg[2] == '=') ? arg + 3 : arg + 2;
             if (!levels[0]) {
                 write_err("dmesg: option requires a level argument\n");
                 return 2;
             }
+            if (!level_filter_active) { level_mask = 0; level_filter_active = true; }
             int rc = parse_dmesg_levels(levels, &level_mask);
             if (rc != 0) return rc;
-            level_filter_active = true;
         } else if (equal(arg, "-f") || equal(arg, "--facility")) {
             if (i + 1 >= argc || !argv[i + 1][0]) {
                 write_err("dmesg: option requires a facility argument\n");
@@ -1106,16 +1154,38 @@ int exec_dmesg(int argc, const char *const *argv) {
         const char *text = line;
         size_t text_len = line_len;
 
-        if (line_len >= 3 && line[0] == '<' && line[1] >= '0' && line[1] <= '7' && line[2] == '>') {
+        if (line_len >= 3 && line[0] == '<' && line[1] >= '0' && line[1] <= '7') {
             line_level = (uint8_t)(line[1] - '0');
-            if (!raw_mode) {
-                text = line + 3;
-                text_len = line_len - 3;
+            size_t hdr_len = 2;
+            if (hdr_len < line_len && line[hdr_len] == ',') {
+                hdr_len++;
+                while (hdr_len < line_len && line[hdr_len] >= '0' && line[hdr_len] <= '9') {
+                    hdr_len++;
+                }
+            }
+            if (hdr_len < line_len && line[hdr_len] == '>') {
+                hdr_len++;
+                if (!raw_mode && !show_timestamp) {
+                    text = line + hdr_len;
+                    text_len = line_len - hdr_len;
+                }
             }
         }
 
-        bool match_fac = (num_filters == 0) || dmesg_line_matches(text, text_len, filters, num_filters);
-        bool match_lvl = (!level_filter_active) || ((level_mask & (1 << line_level)) != 0);
+        uint8_t active_mask = level_filter_active ? level_mask : (raw_mode ? 0xFF : 0x7F);
+        const char *check_text = text;
+        size_t check_len = text_len;
+        if (show_timestamp && text_len > 0 && text[0] == '<') {
+            size_t g_idx = 1;
+            while (g_idx < text_len && text[g_idx] != '>') g_idx++;
+            if (g_idx < text_len && text[g_idx] == '>') {
+                check_text = text + g_idx + 1;
+                check_len = text_len - (g_idx + 1);
+            }
+        }
+
+        bool match_fac = (num_filters == 0) || dmesg_line_matches(check_text, check_len, filters, num_filters);
+        bool match_lvl = ((active_mask & (1 << line_level)) != 0);
 
         if (match_fac && match_lvl) {
             if (write_pos != (size_t)(text - s_dmesg_buf)) {
@@ -1147,43 +1217,109 @@ int exec_dmesg(int argc, const char *const *argv) {
         }
     }
 
-    size_t out_len = len - start;
-    const char *out_ptr = s_dmesg_buf + start;
+    if (!show_timestamp) {
+        size_t out_len = len - start;
+        const char *out_ptr = s_dmesg_buf + start;
 
+        if (dest_path) {
+            long flags = VFS_O_WRONLY | VFS_O_CREAT | (append ? VFS_O_APPEND : VFS_O_TRUNC);
+            long fd = call(SYS_OPEN, (uintptr_t)dest_path, flags, 0);
+            if (fd < 0) {
+                file_error_err(fd);
+                return 1;
+            }
+            size_t off = 0;
+            bool err = false;
+            while (off < out_len) {
+                size_t chunk = out_len - off;
+                if (chunk > WRITE_CHUNK) chunk = WRITE_CHUNK;
+                long w = call(SYS_WRITE, fd, (uintptr_t)(out_ptr + off), chunk);
+                if (w <= 0) { err = true; break; }
+                off += (size_t)w;
+            }
+            (void)call(SYS_CLOSE, fd, 0, 0);
+            if (err) {
+                write_err("dmesg: write failed, file may be incomplete\n");
+                return 1;
+            }
+            puts("Saved ");
+            put_dec(out_len);
+            puts(append ? " bytes (appended) to " : " bytes to ");
+            puts(dest_path);
+            puts("\n");
+            return 0;
+        }
+
+        write_bytes_fd(1, out_ptr, out_len);
+        return 0;
+    }
+
+    /* Formatted timestamp output (-T, --time, --timestamp) */
+    long fd = -1;
     if (dest_path) {
         long flags = VFS_O_WRONLY | VFS_O_CREAT | (append ? VFS_O_APPEND : VFS_O_TRUNC);
-        long fd = call(SYS_OPEN, (uintptr_t)dest_path, flags, 0);
+        fd = call(SYS_OPEN, (uintptr_t)dest_path, flags, 0);
         if (fd < 0) {
             file_error_err(fd);
             return 1;
         }
-        size_t off = 0;
-        bool err = false;
-        while (off < out_len) {
-            size_t chunk = out_len - off;
-            if (chunk > WRITE_CHUNK) chunk = WRITE_CHUNK;
-            long w = call(SYS_WRITE, fd, (uintptr_t)(out_ptr + off), chunk);
-            if (w <= 0) { err = true; break; }
-            off += (size_t)w;
+    }
+
+    size_t total_written = 0;
+    size_t cur = start;
+    while (cur < len) {
+        size_t line_end = cur;
+        while (line_end < len && s_dmesg_buf[line_end] != '\n') {
+            line_end++;
         }
+        if (line_end < len && s_dmesg_buf[line_end] == '\n') {
+            line_end++;
+        }
+        size_t line_len = line_end - cur;
+        const char *line = s_dmesg_buf + cur;
+
+        uint64_t ticks = 0;
+        const char *body = line;
+        size_t body_len = line_len;
+
+        if (line_len >= 3 && line[0] == '<' && line[1] >= '0' && line[1] <= '7') {
+            size_t hdr = 2;
+            if (hdr < line_len && line[hdr] == ',') {
+                hdr++;
+                while (hdr < line_len && line[hdr] >= '0' && line[hdr] <= '9') {
+                    ticks = ticks * 10 + (uint64_t)(line[hdr] - '0');
+                    hdr++;
+                }
+            }
+            if (hdr < line_len && line[hdr] == '>') {
+                hdr++;
+                body = line + hdr;
+                body_len = line_len - hdr;
+            }
+        }
+
+        char ts[32];
+        size_t tslen = format_dmesg_timestamp(ts, sizeof(ts), ticks);
+
+        if (fd >= 0) {
+            if (tslen > 0) call(SYS_WRITE, fd, (uintptr_t)ts, tslen);
+            if (body_len > 0) call(SYS_WRITE, fd, (uintptr_t)body, body_len);
+            total_written += tslen + body_len;
+        } else {
+            if (tslen > 0) write_bytes_fd(1, ts, tslen);
+            if (body_len > 0) write_bytes_fd(1, body, body_len);
+        }
+
+        cur = line_end;
+    }
+
+    if (fd >= 0) {
         (void)call(SYS_CLOSE, fd, 0, 0);
-        if (err) {
-            write_err("dmesg: write failed, file may be incomplete\n");
-            return 1;
-        }
         puts("Saved ");
-        put_dec(out_len);
+        put_dec(total_written);
         puts(append ? " bytes (appended) to " : " bytes to ");
         puts(dest_path);
         puts("\n");
-        return 0;
-    }
-
-    long r = write_bytes_fd(1, out_ptr, out_len);
-    if (r < 0) return io_err(r);
-    if (out_len > 0 && out_ptr[out_len - 1] != '\n') {
-        long rnl = write_bytes_fd(1, "\n", 1);
-        if (rnl < 0) return io_err(rnl);
     }
     return 0;
 }

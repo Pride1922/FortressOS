@@ -510,11 +510,15 @@ exit 0
 ---
 
 ### `dmesg`
-**Syntax:** `dmesg [-f <facility> | --facility=<facility>] [-a] [-n <lines>] [tail [<lines>]] [<lines>] [path]`  
+**Syntax:** `dmesg [-f <facility>] [-l <levels>] [-v | --all] [-T | --timestamp] [-a] [-r] [-n <lines>] [tail [<lines>]] [<lines>] [path]`  
 **Child-Safe in Pipelines:** Yes  
-**Description:** Prints or saves kernel diagnostic ring buffer messages. Supports inspecting the most recent log entries directly, filtering by subsystem facility tag, or redirecting through pipelines.
-* `dmesg` without arguments prints the complete kernel log to the terminal (or pipeline).
-* `dmesg -f <FACILITY>` or `dmesg --facility=<FACILITY>` filters output to lines whose facility tag matches (e.g. `[NET]`, `[EXT4]`, `[USB]`). Filtering is case-insensitive (e.g. `-f net` matches `[NET]`) and exact against the tag name (matches `[NET]`, not `[NETWORK]`). Lines must start with `[` followed by the facility name and `]` (after optional leading whitespace).
+**Description:** Prints or saves kernel diagnostic ring buffer messages. Supports inspecting the most recent log entries directly, filtering by subsystem facility tag or syslog severity level, prepending elapsed kernel timestamps, or redirecting through pipelines.
+* `dmesg` without arguments prints operational kernel logs (severity levels `emerg` through `info`). Verbose boot self-tests and test passes are assigned severity `debug` (level 7) and cleanly suppressed by default to keep diagnostics relevant and readable.
+* `dmesg -v` or `dmesg --all` or `dmesg -l all` or `dmesg -l debug` displays all messages, including internal unit tests, memory audits, and debug traces.
+* `dmesg -l <LEVELS>` or `dmesg --level=<LEVELS>` filters output to lines matching specific RFC 5424 syslog severity levels (`emerg` [0], `alert` [1], `crit` [2], `err` [3], `warn` [4], `notice` [5], `info` [6], `debug` [7], `all`). Multiple levels can be comma-separated (e.g. `dmesg -l err,crit`).
+* `dmesg -T` or `dmesg --time` or `dmesg --timestamp` prefixes each line with elapsed kernel execution timestamps (`[  sec.usec ]`).
+* `dmesg -r` or `dmesg --raw` preserves the raw `<level,ticks>` prefixes stored in the kernel ring buffer.
+* `dmesg -f <FACILITY>` or `dmesg --facility=<FACILITY>` filters output to lines whose facility tag matches (e.g. `[NET]`, `[EXT4]`, `[USB]`, `[PCI]`, `[NVME]`, `[SMP]`). Filtering is case-insensitive (e.g. `-f net` matches `[NET]`) and exact against the tag name (matches `[NET]`, not `[NETWORK]`). Lines must start with `[` followed by the facility name and `]` (after optional leading whitespace).
 * Multiple `-f` flags combine with OR logic (e.g. `dmesg -f NET -f USB` prints both network and USB messages). Up to 8 facility filters can be specified.
 * `dmesg -n <N>` or `dmesg tail <N>` or `dmesg <N>` prints only the last `<N>` lines of the (optionally filtered) kernel log.
 * `dmesg tail` defaults to the last 10 lines of the kernel log.

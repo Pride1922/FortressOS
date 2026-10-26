@@ -1,6 +1,9 @@
 #include "dmesg.h"
 #include "serial.h"
 #include "console.h"
+#include "string.h"
+
+uint64_t apic_timer_get_bsp_ticks(void);
 
 static char   g_buf[DMESG_SIZE];
 static size_t g_head;
@@ -13,13 +16,61 @@ static inline void raw_append(char c) {
     if (g_total < DMESG_SIZE) g_total++;
 }
 
+static uint8_t classify_log_level(const char *s, size_t rem) {
+    if (!s || rem == 0) return KLOG_INFO;
+
+    size_t off = 0;
+    while (off < rem && (s[off] == ' ' || s[off] == '\t')) off++;
+    const char *p = s + off;
+    size_t len = rem - off;
+
+    if (len >= 6 && memcmp(p, "[FAIL]", 6) == 0) return KLOG_ERR;
+    if (len >= 7 && memcmp(p, "[PANIC]", 7) == 0) return KLOG_CRIT;
+    if (len >= 7 && memcmp(p, "[FATAL]", 7) == 0) return KLOG_CRIT;
+
+    if (len >= 6 && memcmp(p, "[WARN]", 6) == 0) return KLOG_WARNING;
+
+    if (len >= 6 && memcmp(p, "[TEST]", 6) == 0) return KLOG_DEBUG;
+    if (len >= 6 && memcmp(p, "[TEST ", 6) == 0) return KLOG_DEBUG;
+    if (len >= 6 && memcmp(p, "[PASS]", 6) == 0) return KLOG_DEBUG;
+    if (len >= 10 && memcmp(p, "[Worker A]", 10) == 0) return KLOG_DEBUG;
+    if (len >= 10 && memcmp(p, "[Worker B]", 10) == 0) return KLOG_DEBUG;
+    if (len >= 7 && memcmp(p, "Phase 7", 7) == 0) return KLOG_DEBUG;
+    if (len >= 7 && memcmp(p, "Phase 8", 7) == 0) return KLOG_DEBUG;
+    if (len >= 7 && memcmp(p, "Phase 9", 7) == 0) return KLOG_DEBUG;
+    if (len >= 9 && memcmp(p, "SMP Piece", 9) == 0) return KLOG_DEBUG;
+    if (len >= 5 && memcmp(p, "=====", 5) == 0) return KLOG_DEBUG;
+    if (len >= 10 && memcmp(p, "Allocated ", 10) == 0) return KLOG_DEBUG;
+    if (len >= 13 && memcmp(p, "Re-allocated ", 13) == 0) return KLOG_DEBUG;
+
+    if (off > 0 && len > 0 && p[0] == '[') return KLOG_DEBUG;
+
+    return KLOG_INFO;
+}
+
+static void append_level_header(uint8_t level) {
+    raw_append('<');
+    raw_append((char)('0' + level));
+    uint64_t ticks = apic_timer_get_bsp_ticks();
+    if (ticks > 0) {
+        raw_append(',');
+        char num[24];
+        int nlen = 0;
+        uint64_t t = ticks;
+        do {
+            num[nlen++] = (char)('0' + (t % 10));
+            t /= 10;
+        } while (t > 0);
+        for (int k = nlen - 1; k >= 0; k--) raw_append(num[k]);
+    }
+    raw_append('>');
+}
+
 void dmesg_append_entry(uint8_t level, const char *s, size_t n) {
     if (!s || n == 0) return;
     if (level > 7) level = KLOG_INFO;
     if (g_at_line_start) {
-        raw_append('<');
-        raw_append((char)('0' + level));
-        raw_append('>');
+        append_level_header(level);
         g_at_line_start = false;
     }
     for (size_t i = 0; i < n; i++) {
@@ -28,9 +79,7 @@ void dmesg_append_entry(uint8_t level, const char *s, size_t n) {
         if (c == '\n') {
             g_at_line_start = true;
             if (i + 1 < n) {
-                raw_append('<');
-                raw_append((char)('0' + level));
-                raw_append('>');
+                append_level_header(level);
                 g_at_line_start = false;
             }
         }
@@ -39,9 +88,7 @@ void dmesg_append_entry(uint8_t level, const char *s, size_t n) {
 
 void dmesg_append(char c) {
     if (g_at_line_start) {
-        raw_append('<');
-        raw_append((char)('0' + KLOG_INFO));
-        raw_append('>');
+        append_level_header(KLOG_INFO);
         g_at_line_start = false;
     }
     raw_append(c);
@@ -59,10 +106,10 @@ void dmesg_append_str(const char *s, size_t n) {
             if (i + 2 < n && s[i] == '<' && s[i + 1] >= '0' && s[i + 1] <= '7' && s[i + 2] == '>') {
                 lvl = (uint8_t)(s[i + 1] - '0');
                 i += 3;
+            } else {
+                lvl = classify_log_level(s + i, n - i);
             }
-            raw_append('<');
-            raw_append((char)('0' + lvl));
-            raw_append('>');
+            append_level_header(lvl);
             g_at_line_start = false;
             if (i >= n) break;
         }

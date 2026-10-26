@@ -256,15 +256,17 @@ static void worker_a(void *arg) {
     (void)arg;
     for (int i = 1; i <= 5; i++) {
         g_ping_pong_counter++;
-        serial_puts("       [Worker A] Round ");
-        serial_print_dec(i);
-        serial_puts(" (Counter: ");
-        serial_print_dec(g_ping_pong_counter);
-        serial_puts(") -> Yielding to Worker B\n");
+        if (verbose_boot) {
+            serial_puts("       [Worker A] Round ");
+            serial_print_dec(i);
+            serial_puts(" (Counter: ");
+            serial_print_dec(g_ping_pong_counter);
+            serial_puts(") -> Yielding to Worker B\n");
+        }
         thread_yield();
     }
     g_worker_a_done = true;
-    serial_puts("       [Worker A] Completed 5 rounds -> Calling thread_exit()\n");
+    if (verbose_boot) serial_puts("       [Worker A] Completed 5 rounds -> Calling thread_exit()\n");
     thread_exit();
 }
 
@@ -272,15 +274,17 @@ static void worker_b(void *arg) {
     (void)arg;
     for (int i = 1; i <= 5; i++) {
         g_ping_pong_counter++;
-        serial_puts("       [Worker B] Round ");
-        serial_print_dec(i);
-        serial_puts(" (Counter: ");
-        serial_print_dec(g_ping_pong_counter);
-        serial_puts(") -> Yielding to Worker A\n");
+        if (verbose_boot) {
+            serial_puts("       [Worker B] Round ");
+            serial_print_dec(i);
+            serial_puts(" (Counter: ");
+            serial_print_dec(g_ping_pong_counter);
+            serial_puts(") -> Yielding to Worker A\n");
+        }
         thread_yield();
     }
     g_worker_b_done = true;
-    serial_puts("       [Worker B] Completed 5 rounds -> Calling thread_exit()\n");
+    if (verbose_boot) serial_puts("       [Worker B] Completed 5 rounds -> Calling thread_exit()\n");
     thread_exit();
 }
 
@@ -4960,7 +4964,7 @@ void kmain(void) {
     serial_puts("[ OK ] CPU returned successfully from breakpoint trap!\n\n");
 
     /* 6. Freestanding Memory & String Runtime Self-Test */
-    serial_puts("[TEST] Validating freestanding memory & string primitives...\n");
+    if (verbose_boot) serial_puts("[TEST] Validating freestanding memory & string primitives...\n");
     char test_buf[32];
     memset(test_buf, 'A', sizeof(test_buf));
     test_buf[31] = '\0';
@@ -4983,7 +4987,7 @@ void kmain(void) {
         serial_puts("       [FAIL] memmove overlap validation error\n");
         hcf();
     }
-    serial_puts("       [PASS] memset, memcpy, memmove, memcmp, strlen verified\n\n");
+    if (verbose_boot) serial_puts("       [PASS] memset, memcpy, memmove, memcmp, strlen verified\n\n");
 
     /* 7. Higher Half Direct Map (HHDM) */
     if (hhdm_request.response == NULL) {
@@ -5009,15 +5013,17 @@ void kmain(void) {
             if (entry->type == LIMINE_MEMMAP_USABLE) {
                 total_usable += entry->length;
             }
-            serial_puts("       [");
-            serial_print_hex(entry->base);
-            serial_puts(" - ");
-            serial_print_hex(entry->base + entry->length);
-            serial_puts("] Type: ");
-            serial_puts(memmap_type_to_str(entry->type));
-            serial_puts(" (");
-            serial_print_dec(entry->length / 1024);
-            serial_puts(" KiB)\n");
+            if (verbose_boot) {
+                serial_puts("       [");
+                serial_print_hex(entry->base);
+                serial_puts(" - ");
+                serial_print_hex(entry->base + entry->length);
+                serial_puts("] Type: ");
+                serial_puts(memmap_type_to_str(entry->type));
+                serial_puts(" (");
+                serial_print_dec(entry->length / 1024);
+                serial_puts(" KiB)\n");
+            }
         }
 
         serial_puts("[ OK ] Total Usable Physical Memory: ");
@@ -5043,23 +5049,25 @@ void kmain(void) {
     serial_puts(" GiB capacity verified)\n\n");
     /* pmm_high_memory_probe(); */
     /* 9. PMM Self-Test */
-    serial_puts("[TEST] Executing Physical Memory Manager self-test...\n");
+    if (verbose_boot) serial_puts("[TEST] Executing Physical Memory Manager self-test...\n");
 
     /* Test 1: Single 4 KiB page allocations */
     uintptr_t page1 = pmm_alloc_page();
     uintptr_t page2 = pmm_alloc_page();
     uintptr_t page3 = pmm_alloc_page();
-    serial_puts("       Allocated single pages: ");
-    serial_print_hex(page1);
-    serial_puts(", ");
-    serial_print_hex(page2);
-    serial_puts(", ");
-    serial_print_hex(page3);
-    serial_puts("\n");
+    if (verbose_boot) {
+        serial_puts("       Allocated single pages: ");
+        serial_print_hex(page1);
+        serial_puts(", ");
+        serial_print_hex(page2);
+        serial_puts(", ");
+        serial_print_hex(page3);
+        serial_puts("\n");
+    }
 
     if (page1 != 0 && page2 != 0 && page3 != 0 &&
         page1 != page2 && page2 != page3 && (page1 % PAGE_SIZE == 0)) {
-        serial_puts("       [PASS] Distinct 4 KiB-aligned page frames allocated\n");
+        if (verbose_boot) serial_puts("       [PASS] Distinct 4 KiB-aligned page frames allocated\n");
     } else {
         serial_puts("       [FAIL] Single page allocation error\n");
         hcf();
@@ -5067,12 +5075,14 @@ void kmain(void) {
 
     /* Test 2: Contiguous multi-page allocation */
     uintptr_t block4 = pmm_alloc_pages(4);
-    serial_puts("       Allocated 4 contiguous pages (16 KiB): ");
-    serial_print_hex(block4);
-    serial_puts("\n");
+    if (verbose_boot) {
+        serial_puts("       Allocated 4 contiguous pages (16 KiB): ");
+        serial_print_hex(block4);
+        serial_puts("\n");
+    }
 
     if (block4 != 0 && (block4 % PAGE_SIZE == 0)) {
-        serial_puts("       [PASS] Contiguous frame block allocated\n");
+        if (verbose_boot) serial_puts("       [PASS] Contiguous frame block allocated\n");
     } else {
         serial_puts("       [FAIL] Contiguous page allocation error\n");
         hcf();
@@ -5087,7 +5097,7 @@ void kmain(void) {
     size_t free_after = pmm_get_free_pages();
 
     if (free_after == free_before + 7) {
-        serial_puts("       [PASS] Frame release verified (reclaimed 7 pages)\n");
+        if (verbose_boot) serial_puts("       [PASS] Frame release verified (reclaimed 7 pages)\n");
     } else {
         serial_puts("       [FAIL] Page free accounting mismatch\n");
         hcf();
@@ -5095,9 +5105,11 @@ void kmain(void) {
 
     /* Test 4: Re-allocation of previously freed frame */
     uintptr_t reallocated = pmm_alloc_page();
-    serial_puts("       Re-allocated page: ");
-    serial_print_hex(reallocated);
-    serial_puts("\n");
+    if (verbose_boot) {
+        serial_puts("       Re-allocated page: ");
+        serial_print_hex(reallocated);
+        serial_puts("\n");
+    }
     pmm_free_page(reallocated);
 
     serial_puts("[ OK ] Physical Memory Manager self-tests passed successfully!\n\n");
@@ -5130,12 +5142,12 @@ void kmain(void) {
     uint64_t *kernel_pml4 = vmm_get_kernel_pml4_virt();
 
     /* Step 4: Verify Exception Handling under New CR3 via Breakpoint Trap (int $3) */
-    serial_puts("[TEST] Verifying exception handling under new CR3 (int $3)...\n");
+    if (verbose_boot) serial_puts("[TEST] Verifying exception handling under new CR3 (int $3)...\n");
     __asm__ volatile("int $3");
     serial_puts("[ OK ] Breakpoint exception recovered cleanly under new page tables!\n\n");
 
     /* Step 5: Test Map -> Write/Read -> Unmap -> Expected Page Fault */
-    serial_puts("[TEST] Validating VMM dynamic mapping & unmapping lifecycle...\n");
+    if (verbose_boot) serial_puts("[TEST] Validating VMM dynamic mapping & unmapping lifecycle...\n");
     uintptr_t test_phys = pmm_alloc_page();
     uintptr_t test_virt = 0xFFFFFFFF90000000ULL;
 
@@ -5167,7 +5179,7 @@ void kmain(void) {
         serial_puts("       [FAIL] Noncanonical address validation failed\n");
         hcf();
     }
-    serial_puts("       [PASS] Noncanonical aliases rejected by all VMM operations\n");
+    if (verbose_boot) serial_puts("       [PASS] Noncanonical aliases rejected by all VMM operations\n");
 
     /* Write pattern and read back */
     volatile uint64_t *test_ptr = (volatile uint64_t *)test_virt;
@@ -5176,7 +5188,7 @@ void kmain(void) {
         serial_puts("       [FAIL] Readback mismatch on mapped virtual page!\n");
         hcf();
     }
-    serial_puts("       [PASS] Mapped page read/write verified (0xDEADBEEFCAFEBABE)\n");
+    if (verbose_boot) serial_puts("       [PASS] Mapped page read/write verified (0xDEADBEEFCAFEBABE)\n");
 
     /* Unmap page (Ownership Rule: unmapping does NOT free the physical frame) */
     int unmap_status = vmm_unmap_page(kernel_pml4, test_virt);
@@ -5188,7 +5200,7 @@ void kmain(void) {
         serial_puts("       [FAIL] Page still reported mapped after vmm_unmap_page!\n");
         hcf();
     }
-    serial_puts("       [PASS] Page unmapped successfully (PTE cleared & TLB invalidated)\n");
+    if (verbose_boot) serial_puts("       [PASS] Page unmapped successfully (PTE cleared & TLB invalidated)\n");
 
     /* Caller explicitly frees physical frame */
     pmm_free_page(test_phys);
