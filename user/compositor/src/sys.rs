@@ -5,8 +5,11 @@ pub const SYS_WRITE: usize = 1;
 pub const SYS_OPEN: usize = 2;
 pub const SYS_CLOSE: usize = 3;
 pub const SYS_READ: usize = 4;
+pub const SYS_SPAWN_EXT: usize = 20;
+pub const SYS_TERMATTR: usize = 34;
 pub const SYS_NANOSLEEP: usize = 75;
 pub const SYS_CLOCK_GETTIME: usize = 74;
+pub const SYS_PTY_PAIR: usize = 80;
 pub const SYS_POLL: usize = 88;
 pub const SYS_FBINFO: usize = 96;
 pub const SYS_FB_ACQUIRE: usize = 97;
@@ -14,6 +17,9 @@ pub const SYS_FB_RELEASE: usize = 98;
 pub const SYS_MMAP: usize = 99;
 pub const EINTR: isize = -22;
 pub const EBUSY: isize = -36;
+
+pub const VFS_O_NONBLOCK: u32 = 0x800;
+pub const TERM_SET_WINSIZE: usize = 3;
 
 pub const POLLIN: i16 = 0x0001;
 pub const POLLOUT: i16 = 0x0004;
@@ -45,6 +51,43 @@ pub struct FbInfoV1 {
     pub reserved: u32,
     pub fb_user_vaddr: u64,
     pub fb_size: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct SpawnFdAction {
+    pub action_type: u32,
+    pub dst_fd: i32,
+    pub src_fd: i32,
+    pub flags: u32,
+    pub mode: u32,
+    pub reserved: u32,
+    pub path: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct SpawnOpts {
+    pub size: u32,
+    pub version: u32,
+    pub flags: u32,
+    pub reserved0: u32,
+    pub argv: u64,
+    pub envp: u64,
+    pub cwd: u64,
+    pub fd_actions: u64,
+    pub action_count: u32,
+    pub reserved1: u32,
+    pub reserved2: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct WinSize {
+    pub ws_row: u16,
+    pub ws_col: u16,
+    pub ws_xpixel: u16,
+    pub ws_ypixel: u16,
 }
 
 #[inline(always)]
@@ -108,6 +151,26 @@ pub unsafe fn syscall3(nr: usize, arg1: usize, arg2: usize, arg3: usize) -> isiz
             in("rdi") arg1,
             in("rsi") arg2,
             in("rdx") arg3,
+            out("rcx") _,
+            out("r11") _,
+            lateout("rax") ret,
+            options(nostack)
+        );
+    }
+    ret
+}
+
+#[inline(always)]
+pub unsafe fn syscall4(nr: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize) -> isize {
+    let ret: isize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") nr,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
             out("rcx") _,
             out("r11") _,
             lateout("rax") ret,
@@ -185,4 +248,37 @@ pub fn fb_release() -> isize {
 }
 pub fn mmap(bytes: usize) -> isize {
     unsafe { syscall1(SYS_MMAP, bytes) }
+}
+
+pub fn pty_pair(fds: &mut [i32; 2], flags: u32) -> isize {
+    unsafe { syscall2(SYS_PTY_PAIR, fds.as_mut_ptr() as usize, flags as usize) }
+}
+
+pub fn set_winsize(fd: i32, ws: &WinSize) -> isize {
+    unsafe {
+        syscall4(
+            SYS_TERMATTR,
+            fd as usize,
+            TERM_SET_WINSIZE,
+            ws as *const _ as usize,
+            core::mem::size_of::<WinSize>(),
+        )
+    }
+}
+
+pub fn spawn_ext(path: &str, opts: &SpawnOpts) -> isize {
+    let mut null_terminated = [0u8; 128];
+    if path.len() >= null_terminated.len() {
+        return -1;
+    }
+    null_terminated[..path.len()].copy_from_slice(path.as_bytes());
+    null_terminated[path.len()] = 0;
+    unsafe {
+        syscall3(
+            SYS_SPAWN_EXT,
+            null_terminated.as_ptr() as usize,
+            opts as *const _ as usize,
+            opts.size as usize,
+        )
+    }
 }

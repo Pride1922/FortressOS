@@ -8,6 +8,8 @@ mod surface;
 #[path = "../user/compositor/src/sys.rs"]
 #[allow(dead_code)]
 mod sys;
+#[path = "../user/compositor/src/terminal.rs"]
+mod terminal;
 #[path = "../user/compositor/src/window.rs"]
 mod window;
 use surface::{Rect, Surface};
@@ -344,4 +346,43 @@ fn taskbar_clock_and_keyboard_cycle_focus() {
     wm.cycle_focus(&mut s);
     assert!(wm.windows.iter().find(|w| w.id == 2).unwrap().is_focused);
     assert!(!wm.windows.iter().find(|w| w.id == 1).unwrap().is_focused);
+}
+
+#[test]
+fn terminal_grid_and_scrolling() {
+    let mut term = terminal::Terminal::new(3, -1, 100);
+    assert_eq!((term.cursor_col, term.cursor_row), (0, 0));
+
+    // Write simple string
+    term.write_bytes(b"hello world\n");
+    assert_eq!(term.cursor_col, 0);
+    assert_eq!(term.cursor_row, 1);
+    assert_eq!(&term.grid[0][..11], b"hello world");
+
+    // Backspace handling
+    term.write_bytes(b"abc\x08");
+    assert_eq!(term.cursor_col, 2);
+    assert_eq!(term.grid[1][2], b' ');
+
+    // Fill all rows to exercise scrolling
+    for _ in 0..terminal::TERM_ROWS + 5 {
+        term.write_bytes(b"line\n");
+    }
+    assert_eq!(term.cursor_row, terminal::TERM_ROWS - 1);
+
+    // Verify rendering into Window content buffer
+    let mut win = window::Window::new(
+        3,
+        "Terminal",
+        Rect {
+            x: 0,
+            y: 0,
+            w: 500,
+            h: 260,
+        },
+    )
+    .unwrap();
+    term.render(&mut win);
+    // Non-trivial glyphs must be rendered into content
+    assert!(win.content.iter().any(|&c| c == terminal::TERM_FG));
 }

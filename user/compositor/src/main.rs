@@ -11,10 +11,12 @@ mod sys;
 mod cursor;
 mod font;
 mod surface;
+mod terminal;
 mod window;
 use cursor::Cursor;
 use surface::Surface;
-use window::WindowManager;
+use terminal::Terminal;
+use window::{Window, WindowManager};
 
 // 16-byte stack aligned entry point satisfying System V ABI & FortressOS loader
 core::arch::global_asm!(
@@ -56,6 +58,85 @@ pub extern "C" fn rust_main() -> i32 {
         return 1;
     }
     status
+}
+
+fn spawn_terminal() -> Option<(Window, Terminal)> {
+    let mut pty_fds = [-1i32; 2];
+    if sys::pty_pair(&mut pty_fds, sys::VFS_O_NONBLOCK) != 0 {
+        return None;
+    }
+    let master_fd = pty_fds[0];
+    let slave_fd = pty_fds[1];
+
+    let ws = sys::WinSize {
+        ws_row: terminal::TERM_ROWS as u16,
+        ws_col: terminal::TERM_COLS as u16,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    sys::set_winsize(master_fd, &ws);
+
+    let actions = [
+        sys::SpawnFdAction {
+            action_type: 2, // DUP2
+            dst_fd: 0,
+            src_fd: slave_fd,
+            ..Default::default()
+        },
+        sys::SpawnFdAction {
+            action_type: 2, // DUP2
+            dst_fd: 1,
+            src_fd: slave_fd,
+            ..Default::default()
+        },
+        sys::SpawnFdAction {
+            action_type: 2, // DUP2
+            dst_fd: 2,
+            src_fd: slave_fd,
+            ..Default::default()
+        },
+    ];
+
+    let sh_path = b"/bin/sh\0";
+    let argv: [*const u8; 2] = [sh_path.as_ptr(), core::ptr::null()];
+    let opts = sys::SpawnOpts {
+        size: core::mem::size_of::<sys::SpawnOpts>() as u32,
+        version: 1,
+        flags: 0,
+        reserved0: 0,
+        argv: argv.as_ptr() as u64,
+        envp: 0,
+        cwd: 0,
+        fd_actions: actions.as_ptr() as u64,
+        action_count: 3,
+        reserved1: 0,
+        reserved2: 0,
+    };
+
+    let pid = sys::spawn_ext("/bin/sh", &opts);
+    sys::close(slave_fd);
+
+    if pid <= 0 {
+        sys::close(master_fd);
+        return None;
+    }
+
+    let mut win = Window::new(
+        3,
+        "Terminal - /bin/sh",
+        surface::Rect {
+            x: 140,
+            y: 160,
+            w: 500,
+            h: 260,
+        },
+    )?;
+    win.content.fill(terminal::TERM_BG);
+
+    let term = Terminal::new(3, master_fd, pid as i64);
+    term.render(&mut win);
+
+    Some((win, term))
 }
 
 fn run() -> i32 {
@@ -115,6 +196,7 @@ fn run() -> i32 {
         sys::close(fd as i32);
         return 1;
     }
+    let mut term: Option<Terminal> = None;
     let mut fds = [
         sys::PollFd {
             fd: fd as i32,
@@ -123,6 +205,11 @@ fn run() -> i32 {
         },
         sys::PollFd {
             fd: 0,
+            events: sys::POLLIN,
+            revents: 0,
+        },
+        sys::PollFd {
+            fd: -1,
             events: sys::POLLIN,
             revents: 0,
         },
@@ -137,12 +224,30 @@ fn run() -> i32 {
             packet = p;
             had_mouse = true;
         } else {
+            fds[2].fd = term.as_ref().map(|t| t.master_fd).unwrap_or(-1);
             let ready = sys::poll(&mut fds, -1);
             if ready == sys::EINTR {
                 continue;
             }
-            if ready < 0 || fds[0].revents & (sys::POLLERR | 0x10 | 0x20) != 0 {
+            if ready < 0 || (fds[0].revents | fds[1].revents) & (sys::POLLERR | 0x10 | 0x20) != 0 {
                 break 1;
+            }
+
+            // Output from /bin/sh over PTY master
+            if fds[2].revents & sys::POLLIN != 0 {
+                if let Some(ref mut t) = term {
+                    let mut term_buf = [0u8; 128];
+                    let n = sys::read(t.master_fd, &mut term_buf);
+                    if n > 0 {
+                        t.write_bytes(&term_buf[..n as usize]);
+                        if let Some(w) = windows.windows.iter_mut().find(|w| w.id == t.window_id) {
+                            t.render(w);
+                            if !w.is_minimized {
+                                scene.damage(w.rect);
+                            }
+                        }
+                    }
+                }
             }
 
             // Keyboard input from stdin (/dev/tty)
@@ -150,11 +255,30 @@ fn run() -> i32 {
                 let mut kbuf = [0u8; 16];
                 let kn = sys::read(0, &mut kbuf);
                 if kn > 0 {
+                    let is_term_focused = windows
+                        .windows
+                        .last()
+                        .map(|w| w.id == 3 && w.is_focused)
+                        .unwrap_or(false);
                     for &b in &kbuf[..kn as usize] {
-                        if b == b'q' || b == b'Q' || b == 27 || b == 3 {
-                            break 'event_loop 0;
-                        } else if b == b'\t' {
-                            windows.cycle_focus(&mut scene);
+                        if is_term_focused && term.is_some() {
+                            if let Some(ref t) = term {
+                                sys::write(t.master_fd, &[b]);
+                            }
+                        } else {
+                            if b == b'q' || b == b'Q' || b == 27 || b == 3 {
+                                break 'event_loop 0;
+                            } else if b == b'\t' {
+                                windows.cycle_focus(&mut scene);
+                            } else if b == b't' || b == b'T' {
+                                if term.is_none() {
+                                    if let Some((win, t)) = spawn_terminal() {
+                                        windows.windows.push(win);
+                                        windows.raise(3, &mut scene);
+                                        term = Some(t);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -201,6 +325,14 @@ fn run() -> i32 {
             }
         }
 
+        // Cleanup terminal if Window 3 was closed via [X] button
+        if let Some(ref t) = term {
+            if !windows.windows.iter().any(|w| w.id == t.window_id) {
+                sys::close(t.master_fd);
+                term = None;
+            }
+        }
+
         if frame_count % 8 == 0 {
             if sys::clock_gettime(0, &mut ts) == 0 {
                 windows.update_clock(&mut scene, ts.tv_sec);
@@ -223,6 +355,9 @@ fn run() -> i32 {
             sys::nanosleep(&p_ts, None);
         }
     };
+    if let Some(t) = term {
+        sys::close(t.master_fd);
+    }
     cursor.hide(&mut scene);
     unsafe {
         scene.present(&fb);
