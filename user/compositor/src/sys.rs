@@ -6,6 +6,7 @@ pub const SYS_OPEN: usize = 2;
 pub const SYS_CLOSE: usize = 3;
 pub const SYS_READ: usize = 4;
 pub const SYS_SPAWN_EXT: usize = 20;
+pub const SYS_GROUP_RELEASE: usize = 35;
 pub const SYS_TERMATTR: usize = 34;
 pub const SYS_NANOSLEEP: usize = 75;
 pub const SYS_CLOCK_GETTIME: usize = 74;
@@ -20,6 +21,13 @@ pub const EBUSY: isize = -36;
 
 pub const VFS_O_NONBLOCK: u32 = 0x800;
 pub const TERM_SET_WINSIZE: usize = 3;
+pub const PTY_SET_SESSION: usize = 5;
+
+pub const GROUP_RELEASE: usize = 0;
+pub const GROUP_CANCEL: usize = 1;
+
+pub const SPAWN_STAGED: u32 = 2;
+pub const SPAWN_SETSID: u32 = 4;
 
 pub const POLLIN: i16 = 0x0001;
 pub const POLLOUT: i16 = 0x0004;
@@ -281,4 +289,20 @@ pub fn spawn_ext(path: &str, opts: &SpawnOpts) -> isize {
             opts.size as usize,
         )
     }
+}
+
+pub fn pty_set_session(master_fd: i32, pid: u64) -> isize {
+    unsafe {
+        syscall4(
+            SYS_TERMATTR,
+            master_fd as usize,
+            PTY_SET_SESSION,
+            &pid as *const _ as usize,
+            core::mem::size_of::<u64>(),
+        )
+    }
+}
+
+pub fn group_release(pgid: i64, action: usize) -> isize {
+    unsafe { syscall2(SYS_GROUP_RELEASE, pgid as usize, action) }
 }

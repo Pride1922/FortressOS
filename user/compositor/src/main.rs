@@ -101,8 +101,8 @@ fn spawn_terminal() -> Option<(Window, Terminal)> {
     let argv: [*const u8; 2] = [sh_path.as_ptr(), core::ptr::null()];
     let opts = sys::SpawnOpts {
         size: core::mem::size_of::<sys::SpawnOpts>() as u32,
-        version: 1,
-        flags: 0,
+        version: 2,
+        flags: sys::SPAWN_SETSID | sys::SPAWN_STAGED,
         reserved0: 0,
         argv: argv.as_ptr() as u64,
         envp: 0,
@@ -114,12 +114,24 @@ fn spawn_terminal() -> Option<(Window, Terminal)> {
     };
 
     let pid = sys::spawn_ext("/bin/sh", &opts);
-    sys::close(slave_fd);
-
     if pid <= 0 {
         sys::close(master_fd);
+        sys::close(slave_fd);
         return None;
     }
+
+    // Zero-race controlling terminal session leader binding
+    let bind_err = sys::pty_set_session(master_fd, pid as u64);
+    if bind_err != 0 {
+        sys::group_release(pid as i64, sys::GROUP_CANCEL as usize);
+        sys::close(master_fd);
+        sys::close(slave_fd);
+        return None;
+    }
+
+    // Release staged child to execute
+    sys::group_release(pid as i64, sys::GROUP_RELEASE as usize);
+    sys::close(slave_fd);
 
     let mut win = Window::new(
         3,
@@ -266,8 +278,16 @@ fn run() -> i32 {
                                 sys::write(t.master_fd, &[b]);
                             }
                         } else {
-                            if b == b'q' || b == b'Q' || b == 27 || b == 3 {
+                            if b == b'q' || b == b'Q' || b == 3 {
                                 break 'event_loop 0;
+                            } else if b == 27 {
+                                if windows.start_open {
+                                    windows.start_open = false;
+                                    scene.damage(WindowManager::start_btn_rect(scene.height));
+                                    scene.damage(WindowManager::start_menu_rect(scene.height));
+                                } else {
+                                    break 'event_loop 0;
+                                }
                             } else if b == b'\t' {
                                 windows.cycle_focus(&mut scene);
                             } else if b == b't' || b == b'T' {
@@ -277,7 +297,13 @@ fn run() -> i32 {
                                         windows.raise(3, &mut scene);
                                         term = Some(t);
                                     }
+                                } else {
+                                    windows.unminimize_and_raise(3, &mut scene);
                                 }
+                            } else if b == b'm' || b == b'M' {
+                                windows.unminimize_and_raise(1, &mut scene);
+                            } else if b == b'p' || b == b'P' {
+                                windows.unminimize_and_raise(2, &mut scene);
                             }
                         }
                     }
@@ -319,7 +345,22 @@ fn run() -> i32 {
             }
 
             cursor.advance(&mut scene, dx_total, dy_total);
-            windows.mouse(cursor.x, cursor.y, buttons, &mut scene);
+            let action = windows.mouse(cursor.x, cursor.y, buttons, &mut scene);
+            match action {
+                window::Action::Exit => break 0,
+                window::Action::SpawnTerminal => {
+                    if term.is_none() {
+                        if let Some((win, t)) = spawn_terminal() {
+                            windows.windows.push(win);
+                            windows.raise(3, &mut scene);
+                            term = Some(t);
+                        }
+                    } else {
+                        windows.unminimize_and_raise(3, &mut scene);
+                    }
+                }
+                window::Action::None => {}
+            }
             if frame_count % 8 == 0 {
                 windows.monitor_mouse(&mut scene, (cursor.x, cursor.y));
             }

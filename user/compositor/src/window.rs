@@ -191,11 +191,20 @@ impl Write for Line {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    None,
+    SpawnTerminal,
+    Exit,
+}
+
 pub struct WindowManager {
     pub windows: Vec<Window>,
     buttons: u8,
     hover: Option<(u32, Hit)>,
     pub clock_sec: i64,
+    pub start_open: bool,
+    pub menu_hover: Option<usize>,
 }
 
 impl WindowManager {
@@ -239,6 +248,8 @@ impl WindowManager {
             buttons: 0,
             hover: None,
             clock_sec: -1,
+            start_open: false,
+            menu_hover: None,
         })
     }
 
@@ -249,13 +260,39 @@ impl WindowManager {
             .find_map(|w| w.hit(x, y).map(|hit| (w.id, hit)))
     }
 
-    fn task_rect(id: u32, height: usize) -> Rect {
+    pub fn start_btn_rect(height: usize) -> Rect {
         Rect {
-            x: 8 + (id as usize).saturating_sub(1).saturating_mul(168),
+            x: 8,
             y: height.saturating_sub(28),
-            w: 160,
+            w: 76,
             h: 24,
         }
+    }
+
+    pub fn start_menu_rect(height: usize) -> Rect {
+        Rect {
+            x: 8,
+            y: height.saturating_sub(28 + 116),
+            w: 156,
+            h: 116,
+        }
+    }
+
+    fn task_rect(id: u32, height: usize) -> Rect {
+        Rect {
+            x: if id == 1 { 88 } else { 8 + (id as usize).saturating_sub(1).saturating_mul(168) },
+            y: height.saturating_sub(28),
+            w: if id == 1 { 80 } else { 160 },
+            h: 24,
+        }
+    }
+
+    pub fn unminimize_and_raise(&mut self, id: u32, s: &mut Surface) {
+        if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
+            w.is_minimized = false;
+        }
+        Self::dock_damage(s);
+        self.raise(id, s);
     }
 
     pub fn clock_rect(width: usize, height: usize) -> Rect {
@@ -312,7 +349,8 @@ impl WindowManager {
         }
     }
 
-    pub fn mouse(&mut self, x: usize, y: usize, buttons: u8, s: &mut Surface) {
+    pub fn mouse(&mut self, x: usize, y: usize, buttons: u8, s: &mut Surface) -> Action {
+        let mut ret_action = Action::None;
         // Capture survives leaving the titlebar/window. Apply final release motion.
         if self.buttons & 1 != 0 {
             for w in &mut self.windows {
@@ -332,6 +370,38 @@ impl WindowManager {
                 w.is_dragging = false;
             }
         } else if self.buttons & 1 == 0 {
+            let start_btn = Self::start_btn_rect(s.height);
+            let start_menu = Self::start_menu_rect(s.height);
+
+            if start_btn.contains(x, y) {
+                self.start_open = !self.start_open;
+                s.damage(start_btn);
+                s.damage(start_menu);
+                self.buttons = buttons;
+                return Action::None;
+            }
+
+            if self.start_open {
+                if start_menu.contains(x, y) {
+                    let py = y - start_menu.y;
+                    if py >= 24 {
+                        let item_idx = (py - 24) / 22;
+                        match item_idx {
+                            0 => ret_action = Action::SpawnTerminal,
+                            1 => self.unminimize_and_raise(1, s),
+                            2 => self.unminimize_and_raise(2, s),
+                            3 => ret_action = Action::Exit,
+                            _ => {}
+                        }
+                    }
+                }
+                self.start_open = false;
+                s.damage(start_btn);
+                s.damage(start_menu);
+                self.buttons = buttons;
+                return ret_action;
+            }
+
             let task = self
                 .windows
                 .iter()
@@ -366,6 +436,25 @@ impl WindowManager {
             }
         }
         self.buttons = buttons;
+
+        if self.start_open {
+            let start_menu = Self::start_menu_rect(s.height);
+            let new_menu_hover = if start_menu.contains(x, y) && y >= start_menu.y + 24 {
+                let idx = (y - start_menu.y - 24) / 22;
+                if idx < 4 {
+                    Some(idx)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if new_menu_hover != self.menu_hover {
+                self.menu_hover = new_menu_hover;
+                s.damage(start_menu);
+            }
+        }
+
         let hover = self.hit_test(x, y);
         if hover != self.hover {
             for w in &self.windows {
@@ -375,6 +464,7 @@ impl WindowManager {
             }
             self.hover = hover;
         }
+        ret_action
     }
 
     pub fn monitor(
@@ -522,6 +612,64 @@ impl WindowManager {
                                 } else {
                                     INACTIVE
                                 };
+                        }
+                    }
+                }
+            }
+            // Start Button
+            let start_btn = Self::start_btn_rect(s.height);
+            if let Some(clip) = start_btn.intersection(r) {
+                let bg = if self.start_open { ACTIVE } else { INACTIVE };
+                for y in clip.y..clip.y + clip.h {
+                    for x in clip.x..clip.x + clip.w {
+                        let px = x - start_btn.x;
+                        let py = y - start_btn.y;
+                        let is_border = px == 0 || px == start_btn.w - 1 || py == 0 || py == start_btn.h - 1;
+                        s.pixels[y * s.width + x] = if is_border {
+                            BORDER
+                        } else if px >= 8 && (4..20).contains(&py) {
+                            label_pixel("[F] Start", px - 8, py - 4, TEXT, bg)
+                        } else {
+                            bg
+                        };
+                    }
+                }
+            }
+            // Start Menu Popup
+            if self.start_open {
+                let start_menu = Self::start_menu_rect(s.height);
+                if let Some(clip) = start_menu.intersection(r) {
+                    for y in clip.y..clip.y + clip.h {
+                        for x in clip.x..clip.x + clip.w {
+                            let px = x - start_menu.x;
+                            let py = y - start_menu.y;
+                            let is_border = px == 0 || px == start_menu.w - 1 || py == 0 || py == start_menu.h - 1;
+                            s.pixels[y * s.width + x] = if is_border {
+                                BORDER
+                            } else if py < 24 {
+                                if px >= 8 && (4..20).contains(&py) {
+                                    label_pixel(" FortressOS", px - 8, py - 4, 0xff58a6ff, 0xff0d1117)
+                                } else {
+                                    0xff0d1117
+                                }
+                            } else {
+                                let item_idx = (py - 24) / 22;
+                                let item_y = (py - 24) % 22;
+                                let (text, is_hover) = match item_idx {
+                                    0 => (" [T] Terminal", self.menu_hover == Some(0)),
+                                    1 => (" [M] Sys Monitor", self.menu_hover == Some(1)),
+                                    2 => (" [P] Palette", self.menu_hover == Some(2)),
+                                    3 => (" [Q] Exit", self.menu_hover == Some(3)),
+                                    _ => ("", false),
+                                };
+                                let item_bg = if is_hover { 0xff1f6feb } else { 0xff161b22 };
+                                let item_fg = if is_hover { 0xffffffff } else { TEXT };
+                                if !text.is_empty() && px >= 8 && (3..19).contains(&item_y) {
+                                    label_pixel(text, px - 8, item_y - 3, item_fg, item_bg)
+                                } else {
+                                    item_bg
+                                }
+                            };
                         }
                     }
                 }

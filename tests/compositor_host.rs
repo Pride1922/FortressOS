@@ -13,6 +13,7 @@ mod terminal;
 #[path = "../user/compositor/src/window.rs"]
 mod window;
 use surface::{Rect, Surface};
+use window::WindowManager;
 
 #[test]
 fn cursor_restores_text_and_clips_every_edge() {
@@ -362,7 +363,19 @@ fn terminal_grid_and_scrolling() {
     // Backspace handling
     term.write_bytes(b"abc\x08");
     assert_eq!(term.cursor_col, 2);
+
+    // ANSI sequence: \033[K (clear from cursor to end of line)
+    term.write_bytes(b"\x1b[K");
     assert_eq!(term.grid[1][2], b' ');
+
+    // ANSI sequence: \033[5C (cursor forward by 5)
+    term.write_bytes(b"\x1b[5C");
+    assert_eq!(term.cursor_col, 7);
+
+    // ANSI sequence: \033[2J (clear screen) and \033[H (home)
+    term.write_bytes(b"\x1b[2J\x1b[H");
+    assert_eq!((term.cursor_col, term.cursor_row), (0, 0));
+    assert_eq!(term.grid[0][0], b' ');
 
     // Fill all rows to exercise scrolling
     for _ in 0..terminal::TERM_ROWS + 5 {
@@ -385,4 +398,36 @@ fn terminal_grid_and_scrolling() {
     term.render(&mut win);
     // Non-trivial glyphs must be rendered into content
     assert!(win.content.iter().any(|&c| c == terminal::TERM_FG));
+}
+
+#[test]
+fn start_menu_toggle_and_actions() {
+    let mut wm = WindowManager::demo().unwrap();
+    let mut s = Surface::new(640, 480).unwrap();
+    assert!(!wm.start_open);
+
+    // Click Start button (x = 20, y = 460)
+    let action = wm.mouse(20, 460, 1, &mut s);
+    assert_eq!(action, window::Action::None);
+    assert!(wm.start_open);
+    wm.mouse(20, 460, 0, &mut s);
+
+    // Hover over item 0 (Terminal) inside start menu (menu y = 480 - 28 - 116 = 336; py = 24..46 => y = 360..382)
+    wm.mouse(50, 370, 0, &mut s);
+    assert_eq!(wm.menu_hover, Some(0));
+
+    // Click item 0 (Terminal)
+    let action = wm.mouse(50, 370, 1, &mut s);
+    assert_eq!(action, window::Action::SpawnTerminal);
+    assert!(!wm.start_open); // Menu automatically closes on selection
+    wm.mouse(50, 370, 0, &mut s);
+
+    // Reopen start menu and click item 3 (Exit) (y = 336 + 24 + 3*22 + 10 = 436)
+    let _ = wm.mouse(20, 460, 1, &mut s);
+    wm.mouse(20, 460, 0, &mut s);
+    assert!(wm.start_open);
+
+    let action = wm.mouse(50, 436, 1, &mut s);
+    assert_eq!(action, window::Action::Exit);
+    assert!(!wm.start_open);
 }
