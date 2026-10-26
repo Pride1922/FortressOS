@@ -219,3 +219,28 @@ boots attach no data disks. No physical-hardware acceptance is claimed.
   - Host unit tests: `make test-compositor-host` 9/9 PASS.
   - Multi-firmware QEMU suite: `make test-compositor` 100% PASS on BIOS & UEFI (1280×800).
   - Physical Dell Latitude 5590 Laptop Acceptance: Confirmed running live on physical Intel UHD Graphics 620 GOP scanout (1920×1080 at pitch 7680 bytes) with active built-in trackpad tracking, live taskbar clock, System Monitor, Palette Canvas, and an interactive `/bin/sh` shell session inside the graphical terminal window executing shell commands (e.g. `clear`).
+
+### 9. PTY Session Leader Handoff, VT100 ANSI Execution & Start Menu (2026-10-26)
+- **Zero-Race PTY Controlling Session Binding**:
+  - Configured `SpawnOpts` flags to `SPAWN_SETSID | SPAWN_STAGED` (version 2) when launching `/bin/sh`.
+  - Added `sys::pty_set_session(master_fd, pid)` (`SYS_TERMATTR` opcode 5 `PTY_SET_SESSION`) to bind `/bin/sh` as the controlling session leader of the pseudo-terminal pair.
+  - Released staged process group via `sys::group_release(pid, GROUP_RELEASE)`.
+  - Eliminates `fortress: terminal handoff failed` error, allowing foreground command execution (`clear`, `ls`, `top`, etc.) over `SYS_TCSETPGRP`.
+- **Full VT100/ANSI Escape Sequence Engine** ([`user/compositor/src/terminal.rs`](file:///c:/Sources/FortressOS/user/compositor/src/terminal.rs)):
+  - Parses multi-parameter CSI sequences:
+    - `\033[2J` / `\033[3J`: Erase in Display (clears screen grid and resets cursor to top-left, making `clear` work).
+    - `\033[K`: Erase in Line (clears from cursor to end of line, ensuring deleted characters are wiped out during backspace).
+    - `\033[<row>;<col>H` & `\033[H`: Cursor home and 1-based coordinate positioning.
+    - `\033[<n>C` / `\033[<n>D` / `\033[<n>A` / `\033[<n>B`: Cursor forward, backward, up, and down navigation.
+    - `\033[?25h` / `\033[?25l`: Dynamic cursor show/hide visibility toggling.
+- **Taskbar Start Menu**:
+  - Implemented clickable `[F] Start` button on the bottom taskbar (`x: 8..84, y: height - 28..height - 4`).
+  - Added popup Start Menu above the taskbar with hover highlights:
+    - `[T] Terminal` (spawns / unminimizes / raises the terminal window)
+    - `[M] Sys Monitor` (unminimizes and focuses System Monitor)
+    - `[P] Palette` (unminimizes and focuses Palette Canvas)
+    - `[Q] Exit` (cleanly exits the compositor to text console)
+  - Clicking outside the menu or pressing `ESC` automatically dismisses the menu with clean dirty-rect repair.
+- **Verification Evidence**:
+  - `make test-compositor-host`: **10/10 PASS** (including `start_menu_toggle_and_actions` and full VT100 ANSI tests).
+  - `make test-compositor`: **100% PASS** on BIOS & UEFI under QEMU.
