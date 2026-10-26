@@ -11,10 +11,12 @@
 #include "process_table.h"
 #include "vfs.h"
 #include "spinlock.h"
+#include "mouse_dev.h"
 
 extern void poll_wake_notify(void);
 
 #define KBD_VECTOR 0x31
+#define MOUSE_VECTOR 0x3C
 #define UART_VECTOR 0x34
 #define KBC_DATA 0x60
 #define KBC_STATUS 0x64
@@ -417,22 +419,86 @@ static bool keyboard_command(uint8_t byte) {
     }
     return false;
 }
-static void keyboard_irq(interrupt_frame_t *frame) {
-    (void)frame;
-    for (unsigned n = 0; n < 32; n++) {
+static uint8_t s_ps2_mouse_buf[4];
+static uint8_t s_ps2_mouse_idx = 0;
+static bool    s_ps2_mouse_has_wheel = false;
+
+static void ps2_mouse_handle_byte(uint8_t byte) {
+    if (s_ps2_mouse_idx == 0) {
+        /* Bit 3 of byte 0 in a PS/2 mouse packet is always 1 */
+        if (!(byte & 0x08)) {
+            return;
+        }
+    }
+
+    s_ps2_mouse_buf[s_ps2_mouse_idx++] = byte;
+    uint8_t packet_size = s_ps2_mouse_has_wheel ? 4 : 3;
+
+    if (s_ps2_mouse_idx >= packet_size) {
+        s_ps2_mouse_idx = 0;
+        uint8_t flags = s_ps2_mouse_buf[0];
+
+        /* Discard on overflow (bits 6 or 7) */
+        if (flags & 0xc0) {
+            return;
+        }
+
+        uint8_t buttons = flags & 0x07;
+
+        int16_t raw_dx = (int16_t)s_ps2_mouse_buf[1];
+        if (flags & 0x10) raw_dx |= 0xff00;
+
+        int16_t raw_dy = (int16_t)s_ps2_mouse_buf[2];
+        if (flags & 0x20) raw_dy |= 0xff00;
+
+        int8_t dz = 0;
+        if (s_ps2_mouse_has_wheel) {
+            dz = (int8_t)s_ps2_mouse_buf[3];
+        }
+
+        /* Invert Y: PS/2 UP is positive raw_dy, screen DOWN is positive dy */
+        int16_t screen_dy = -raw_dy;
+        int16_t screen_dx = raw_dx;
+
+        if (screen_dx > 127) screen_dx = 127;
+        else if (screen_dx < -128) screen_dx = -128;
+        if (screen_dy > 127) screen_dy = 127;
+        else if (screen_dy < -128) screen_dy = -128;
+
+        mouse_dev_push(buttons, (int8_t)screen_dx, (int8_t)screen_dy, dz);
+    }
+}
+
+static void i8042_drain(void) {
+    for (unsigned n = 0; n < 64; n++) {
         uint8_t status = inb(KBC_STATUS);
         if (status == 0xff || !(status & 1)) break;
         uint8_t byte = inb(KBC_DATA);
-        if (!(status & 0xe0)) {
+        if (status & 0xc0) {
+            __atomic_fetch_add(&g_input.dropped, 1, __ATOMIC_RELAXED);
+            pending_wake = true;
+            continue;
+        }
+        if (status & 0x20) {
+            ps2_mouse_handle_byte(byte);
+        } else {
             char bytes[4];
             size_t count = keyboard_decode_bytes(&g_keyboard, byte, bytes);
-            ingress(bytes,count);
-        } else if (status & 0xc0) {
-            __atomic_fetch_add(&g_input.dropped, 1, __ATOMIC_RELAXED); pending_wake = true;
+            ingress(bytes, count);
         }
     }
-    /* Dispatcher owns EOI. No allocations, logging or switching in this ISR. */
 }
+
+static void keyboard_irq(interrupt_frame_t *frame) {
+    (void)frame;
+    i8042_drain();
+}
+
+static void ps2_mouse_irq(interrupt_frame_t *frame) {
+    (void)frame;
+    i8042_drain();
+}
+
 void input_inject_scancodes(const uint8_t *scancodes, size_t count) {
 #ifndef INPUT_HOST_TEST
     if (!scancodes || !count) return;
@@ -457,22 +523,141 @@ void input_inject_bytes(const char *bytes, size_t count) {
 #endif
 }
 
-static bool keyboard_init(const acpi_madt_info_t *madt, uint8_t apic_id) {
-    uint8_t config, set;
+static bool kbc_read_aux(uint8_t *value) {
+    for (unsigned i = 0; i < KBC_LIMIT * 5; i++) {
+        uint8_t status = inb(KBC_STATUS);
+        if (status == 0xff) return false;
+        if (status & 1) {
+            uint8_t byte = inb(KBC_DATA);
+            if ((status & 0x20) && !(status & 0xc0)) {
+                *value = byte;
+                return true;
+            }
+        }
+        __asm__ volatile("pause");
+    }
+    return false;
+}
+
+static bool mouse_write_byte(uint8_t byte) {
+    if (!kbc_write(KBC_STATUS, 0xd4)) return false;
+    return kbc_write(KBC_DATA, byte);
+}
+
+static bool mouse_cmd(uint8_t cmd) {
+    for (unsigned retry = 0; retry < 3; retry++) {
+        uint8_t reply = 0;
+        if (!mouse_write_byte(cmd) || !kbc_read_aux(&reply)) return false;
+        if (reply == 0xfa) return true;
+        if (reply != 0xfe) return false;
+    }
+    return false;
+}
+
+static bool mouse_cmd_arg(uint8_t cmd, uint8_t arg) {
+    return mouse_cmd(cmd) && mouse_cmd(arg);
+}
+
+static bool mouse_init(const acpi_madt_info_t *madt, uint8_t apic_id) {
+    for (unsigned i = 0; i < 32 && (inb(KBC_STATUS) & 1); i++) (void)inb(KBC_DATA);
+
+    /* Set defaults (sample rate 100, resolution 4, 1:1 scaling) */
+    if (!mouse_cmd(0xf6)) {
+        return false;
+    }
+
+    /* Try Intellimouse 4-byte wheel probe: 200 -> 100 -> 80 */
+    if (mouse_cmd_arg(0xf3, 200) && mouse_cmd_arg(0xf3, 100) && mouse_cmd_arg(0xf3, 80)) {
+        if (mouse_write_byte(0xf2)) {
+            uint8_t ack = 0, id = 0;
+            if (kbc_read_aux(&ack) && ack == 0xfa && kbc_read_aux(&id)) {
+                if (id == 3 || id == 4) {
+                    s_ps2_mouse_has_wheel = true;
+                }
+            }
+        }
+    }
+
+    /* Set resolution: 8 counts/mm for smooth responsive movement */
+    (void)mouse_cmd_arg(0xe8, 0x03);
+
+    /* Set sample rate: 100 Hz */
+    (void)mouse_cmd_arg(0xf3, 100);
+
+    /* Enable packet streaming */
+    if (!mouse_cmd(0xf4)) {
+        return false;
+    }
+
+    /* Register IDT handler */
+    idt_register_hardware_handler(MOUSE_VECTOR, ps2_mouse_irq);
+
+    /* Route ISA IRQ 12 in IOAPIC */
+    if (!ioapic_route_isa(madt, 12, MOUSE_VECTOR, apic_id)) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool i8042_init(const acpi_madt_info_t *madt, uint8_t apic_id, bool *out_mouse_ready) {
+    *out_mouse_ready = false;
+    uint8_t config = 0, set = 0;
+
+    /* Disable both ports and flush controller buffers */
     if (!kbc_write(KBC_STATUS, 0xad) || !kbc_write(KBC_STATUS, 0xa7)) return false;
     for (unsigned i = 0; i < 32 && (inb(KBC_STATUS) & 1); i++) (void)inb(KBC_DATA);
+
+    /* Read controller configuration */
     if (!kbc_write(KBC_STATUS, 0x20) || !kbc_read(&config)) return false;
-    config = (config & ~0x53u) | 0x20; /* No translation/IRQs, first port enabled. */
-    if (!kbc_write(KBC_STATUS, 0x60) || !kbc_write(KBC_DATA, config) ||
-        !kbc_write(KBC_STATUS, 0xae)) return false;
-    /* Explicitly select and query set 2, then ask 8042 to translate to set 1.
-     * Avoid controller reset: laptop EC may manage more than the keyboard. */
-    if (!keyboard_command(0xf5) || !keyboard_command(0xf0) || !keyboard_command(2) ||
-        !keyboard_command(0xf0) || !keyboard_command(0) || !kbc_read(&set) || set != 2)
-        return false;
-    idt_register_hardware_handler(KBD_VECTOR, keyboard_irq);
-    if (!ioapic_route_isa(madt, 1, KBD_VECTOR, apic_id) || !keyboard_command(0xf4)) return false;
-    return kbc_write(KBC_STATUS, 0x60) && kbc_write(KBC_DATA, config | 0x41);
+
+    /* Temporarily disable IRQs and port 2 clock while configuring devices */
+    config = (config & ~0x53u) | 0x20;
+    if (!kbc_write(KBC_STATUS, 0x60) || !kbc_write(KBC_DATA, config)) return false;
+
+    /* Enable keyboard port */
+    if (!kbc_write(KBC_STATUS, 0xae)) return false;
+
+    /* Configure keyboard: Set 2 -> Set 1 translation, enable scanning */
+    bool keyboard = false;
+    if (keyboard_command(0xf5) && keyboard_command(0xf0) && keyboard_command(2) &&
+        keyboard_command(0xf0) && keyboard_command(0) && kbc_read(&set) && set == 2) {
+        idt_register_hardware_handler(KBD_VECTOR, keyboard_irq);
+        if (ioapic_route_isa(madt, 1, KBD_VECTOR, apic_id) && keyboard_command(0xf4)) {
+            keyboard = true;
+        }
+    }
+
+    /* Enable and configure mouse port (AUX) */
+    bool mouse = false;
+    if (kbc_write(KBC_STATUS, 0xa8)) {
+        config &= ~0x20; /* Enable port 2 clock */
+        if (kbc_write(KBC_STATUS, 0x60) && kbc_write(KBC_DATA, config)) {
+            mouse = mouse_init(madt, apic_id);
+        }
+        if (!mouse) {
+            (void)kbc_write(KBC_STATUS, 0xa7); /* Disable port 2 if mouse absent */
+            config |= 0x20;
+        }
+    }
+    *out_mouse_ready = mouse;
+
+    /* Commit final controller config:
+     * - Bit 0: Enable IRQ 1 (if keyboard ready)
+     * - Bit 1: Enable IRQ 12 (if mouse ready)
+     * - Bit 4: Enable keyboard clock (0)
+     * - Bit 5: Enable mouse clock (0 if mouse ready, 1 if absent)
+     * - Bit 6: Enable translation (1) */
+    uint8_t final_config = (config & ~0x03u) | 0x40u;
+    if (keyboard) final_config |= 0x01;
+    if (mouse) {
+        final_config |= 0x02;
+        final_config &= ~0x20;
+    }
+    (void)kbc_write(KBC_STATUS, 0x60);
+    (void)kbc_write(KBC_DATA, final_config);
+
+    return keyboard;
 }
 
 static void serial_irq(interrupt_frame_t *frame) {
@@ -500,7 +685,8 @@ bool input_init(const acpi_madt_info_t *madt) {
     }
     uint64_t flags = spin_lock_irqsave(&g_terminal_lock);
     uint8_t apic_id = lapic_read(APIC_REG_ID) >> 24;
-    bool keyboard = keyboard_init(madt, apic_id);
+    bool mouse = false;
+    bool keyboard = i8042_init(madt, apic_id, &mouse);
     if (!keyboard) (void)kbc_write(KBC_STATUS, 0xad);
     bool uart = false;
     if (serial_is_available()) {
@@ -515,6 +701,8 @@ bool input_init(const acpi_madt_info_t *madt) {
     terminal_unlock(flags);
     serial_puts(keyboard ? "[INPUT] PS/2 set 2 -> set 1, IRQ1 ready (US layout)\n" :
                           "[WARN] PS/2 keyboard unavailable\n");
+    serial_puts(mouse ? "[INPUT] PS/2 mouse / trackpad, IRQ12 ready\n" :
+                        "[INPUT] PS/2 mouse / trackpad unavailable\n");
     serial_puts(uart ? "[INPUT] COM1 RX IRQ4 ready\n" : "[INPUT] COM1 RX unavailable\n");
     return g_input_ready;
 }

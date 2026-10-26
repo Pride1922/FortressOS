@@ -148,11 +148,11 @@ boots attach no data disks. No physical-hardware acceptance is claimed.
 
 #### Pre-Flight Candidate Artifacts
 - **Candidate Disk Image**: bin/fortress.img (592 MiB)
-  - SHA-256 (bin/fortress.img): 5f4aeb1b85faa4f72630e1fd4b3b63aadb7ceb879eda0bd72e62fd6657d334ba
+  - SHA-256 (bin/fortress.img): ab00328497d922f42423109b69eff637a94ef920c5758600e999578d19e87cff
 - **Candidate ISO Image**: bin/fortress.iso
-  - SHA-256 (bin/fortress.iso): a428c16e65909c65ba37453f4ecea4a00c3bf873f957daab18134003da5c8859
+  - SHA-256 (bin/fortress.iso): 64c189631af995283d040c5b6d247e059980586c9d589923467718b2b09be8bf
 - **Kernel Binary**: bin/fortress.elf
-  - SHA-256 (bin/fortress.elf): ab35d77bf45ea18165ac43b39580157ac6caf5a0ec74fed36109df287f091ea4
+  - SHA-256 (bin/fortress.elf): e1eec89ad1bbeb30071b3523b273ac2b212bb106e7eded65a843ea556bc70776
 
 #### Bare-Metal Acceptance Procedure (Dell Latitude 5590)
 1. **Cold Boot & Target Resolution**:
@@ -180,3 +180,13 @@ boots attach no data disks. No physical-hardware acceptance is claimed.
 7. **Cycle Endurance**:
    - Execute 5 consecutive launch-and-exit cycles of /bin/compositor.
    - Verify zero frame leaks in /bin/meminfo and consistent physical frame allocation.
+
+### 6. Laptop Trackpad (PS/2 Auxiliary Port) Integration (2026-10-26)
+- **Root Cause**: On physical laptop hardware (such as the Dell Latitude 5590), the built-in trackpad connects to the i8042 controller's second (AUX) port. Previously, `keyboard_init` in `src/drivers/input.c` explicitly disabled the auxiliary device port (`0xa7`), disabled the port 2 clock, disabled IRQ 12, routed only IRQ 1, and discarded all AUX bytes (`status & 0x20`). Consequently, `/dev/input/mouse` received zero events from the built-in trackpad.
+- **Implementation**:
+  - Implemented full i8042 dual-port initialization (`i8042_init`) in `src/drivers/input.c`.
+  - Enabled port 2 (`0xa8`), enabled port 2 clock and IRQ 12 in the controller configuration byte.
+  - Initialized trackpad streaming: default configuration (`0xf6`), resolution setting (8 counts/mm via `0xe8, 0x03`), 100 Hz sample rate (`0xf3, 100`), and data streaming enable (`0xf4`).
+  - Registered `ps2_mouse_irq` for vector `0x3C` (`MOUSE_VECTOR`) and routed ISA IRQ 12 in IOAPIC.
+  - Implemented unified `i8042_drain()` to dispatch keyboard scancodes (`status & 0x20 == 0`) and mouse bytes (`status & 0x20 != 0`) without race or byte loss.
+  - Implemented standard 3/4-byte packet decoder with bit-3 sync verification, overflow rejection, button decoding, Y-axis screen inversion, and delta clamping to `mouse_dev_push()`.
