@@ -14,6 +14,7 @@
 #define PTE_DIRTY     (1ULL << 6)
 #define PTE_HUGE      (1ULL << 7)
 #define PTE_GLOBAL    (1ULL << 8)
+#define PTE_DEVICE    (1ULL << 9) /* Software: borrowed MMIO, never PMM-owned */
 #define PTE_NX        (1ULL << 63)
 
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
@@ -70,7 +71,8 @@ typedef struct vmm_space {
  *    - Restricted to standard 4 KiB user page mappings (PTE_HUGE is unsupported in user space).
  * 3. Data Frame Ownership (free_user_frames):
  *    - When free_user_frames == true: Every mapped lower-half data frame must be exclusively
- *      owned by this address space and mapped exactly once. Teardown frees each frame to PMM.
+ *      owned by this address space and mapped exactly once, except PTE_DEVICE leaves
+ *      which borrow MMIO. Teardown frees only owned RAM frames to PMM.
  *    - When free_user_frames == false: Callers retain responsibility for data frames.
  *      Teardown reclaims only intermediate tables (PT, PD, PDPT) and the root PML4 frame.
  *    - PTE_USER describes access permissions, not memory ownership.
@@ -92,6 +94,13 @@ uintptr_t vmm_create_pml4(void);
 uintptr_t vmm_create_user_pml4(void);
 int       vmm_destroy_pml4(uintptr_t pml4_phys, bool free_user_frames);
 int       vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_addr, uint64_t flags);
+/* Transactional user spans, <=32 MiB. Device frames are borrowed. Anonymous
+ * frames are zeroed RW/NX RAM. Collisions change no leaves. On failure only new
+ * leaves are rolled back; empty private page tables remain until teardown.
+ * Device unmap validates the entire expected physical span before revocation. */
+int vmm_map_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes);
+int vmm_unmap_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes);
+int vmm_map_anonymous_range(uint64_t *root, uintptr_t va, size_t bytes);
 /* Install 1..16 absent 4 KiB leaves within one 2 MiB PT region. Frames must
  * be aligned, distinct and caller-owned; flags cannot include HUGE/GLOBAL.
  * Reject/OOM changes no leaves. Reserve missing tables outside g_vmm_lock;

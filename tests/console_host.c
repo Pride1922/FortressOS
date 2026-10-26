@@ -117,6 +117,18 @@ int main(void) {
     console_set_quiet(false);
     assert(!console_is_quiet());
 
+    start(128,160);
+    console_graphics_mode(true);
+    for (size_t i=0;i<pitch*height;i++) frame[i]=sentinel;
+    console_putc('A'); console_puts("graphics suppressed\n");
+    console_terminal_write("\033[2J\033[?25h",10);
+    for (unsigned i=0;i<60;i++) console_puts("scroll hidden\n");
+    console_clear();
+    console_terminal_write("restored",8);
+    for (size_t i=0;i<pitch*height;i++) assert(frame[i]==sentinel);
+    console_graphics_mode(false);
+    check_cell(0,0,'r',g_console.fg_color,g_console.bg_color);
+    check_bounds();
     free(frame);
     puts("PASS console: cached scrolling, fewer redraws, colours, wrap, controls, pitch and bounds");
 }

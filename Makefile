@@ -2647,6 +2647,25 @@ test-compositor-host:
 	@PATH="$$HOME/.cargo/bin:$$PATH" rustc --edition=2024 --test tests/compositor_host.rs -o $(BUILD_DIR)/compositor-host
 	@$(BUILD_DIR)/compositor-host
 
+.PHONY: test-fb-host test-compositor-qemu
+$(BUILD_DIR)/kernel/fb.o $(BUILD_DIR)/mm/vmm.o: CFLAGS += -fstack-usage -Wframe-larger-than=1024
+test-compositor-qemu: test-compositor
+test-fb-host: test-vmm-host
+	@$(CC) -D_GNU_SOURCE -DTEST_FB_HOST -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -no-pie -pthread -iquote tests/host -iquote src/include -iquote src/kernel -iquote src/mm -iquote src/drivers -iquote src/arch/x86_64 tests/fb_host.c src/kernel/fb.c -o $(BUILD_DIR)/fb-host
+	@$(BUILD_DIR)/fb-host
+	@python3 scripts/test_console.py
+
+$(BUILD_DIR)/fb-probe.elf: tests/fb_probe.c user/pthread.h user/tools/common.h src/include/syscall_abi.h $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Iuser -Iuser/tools -c tests/fb_probe.c -o $(BUILD_DIR)/fb-probe.o
+	@$(AS) -f elf64 -DTOOL_ENTRY=fb_probe_main user/tools/start.asm -o $(BUILD_DIR)/fb-probe-start.o
+	@$(LD) -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/fb-probe-start.o $(BUILD_DIR)/fb-probe.o $(BUILD_DIR)/tool-common.o -o $@
+
+.PHONY: test-fb-ownership test-fb-teardown
+test-fb-ownership: $(BOOTABLE_ISO) $(BUILD_DIR)/fb-probe.elf
+	@python3 scripts/test_fb_lifecycle.py --ownership
+test-fb-teardown: $(BOOTABLE_ISO) $(BUILD_DIR)/fb-probe.elf
+	@python3 scripts/test_fb_lifecycle.py --teardown
+
 .PHONY: test-abi-version-host
 test-abi-version-host: tests/abi_versioning_host.c
 	@mkdir -p $(BUILD_DIR)

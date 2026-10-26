@@ -4,7 +4,7 @@
  * Comprehensive host unit test suite for FortressOS User ABI Versioning (Issue #7).
  * Validates:
  * 1. Struct sizes, alignments, and member offsets (Static & Runtime assertions).
- * 2. Full syscall table audit (Syscalls 0..94, SYSCALL_MAX=94, SYSCALL_NEXT_AVAIL=95).
+ * 2. Full syscall table audit (Syscalls 0..99, SYSCALL_MAX=99, SYSCALL_NEXT_AVAIL=100).
  * 3. Pattern A (Explicit Header: size + version) rejection & backward compatibility.
  * 4. Pattern B (Explicit Sized Buffer Queries) rejection & headroom behavior.
  * 5. Pattern C (Fixed-Size Structs with Zero-Reserved Padding) emission contracts.
@@ -383,7 +383,7 @@ static void test_abi_struct_layouts(void) {
 }
 
 static void test_syscall_table_audit(void) {
-    /* Audit complete range 0..94 */
+    /* Audit complete range 0..99 */
     assert(SYS_EXIT == 0);
     assert(SYS_WRITE == 1);
     assert(SYS_OPEN == 2);
@@ -480,11 +480,16 @@ static void test_syscall_table_audit(void) {
     assert(SYS_FUTEX == 94);
     assert(SYS_PKGCTL == 95);
 
-    /* Assert High-Water Mark and Next Available Syscall Slot */
-    _Static_assert(SYSCALL_MAX == 95, "SYSCALL_MAX must be 95");
-    _Static_assert(SYSCALL_NEXT_AVAIL == 96, "SYSCALL_NEXT_AVAIL must be 96");
+    assert(SYS_FBINFO == 96);
+    assert(SYS_FB_ACQUIRE == 97);
+    assert(SYS_FB_RELEASE == 98);
+    assert(SYS_MMAP == 99);
 
-    puts("PASS test_syscall_table_audit: 96/96 syscall entries audited and contiguous allocation slot 96 confirmed");
+    /* Assert High-Water Mark and Next Available Syscall Slot */
+    _Static_assert(SYSCALL_MAX == 99, "SYSCALL_MAX must be 99");
+    _Static_assert(SYSCALL_NEXT_AVAIL == 100, "SYSCALL_NEXT_AVAIL must be 100");
+
+    puts("PASS test_syscall_table_audit: 100/100 syscall entries audited and contiguous allocation slot 100 confirmed");
 }
 
 static void test_pattern_a_stat_ext(void) {

@@ -37,6 +37,7 @@ void vmm_host_unlock(spinlock_t *lock) {
 /* --- Host Shims & Mocking --- */
 uintptr_t g_host_mock_cr3 = 0x1000;
 
+void fb_space_destroyed(uintptr_t cr3) { (void)cr3; }
 void serial_puts(const char *s) { (void)s; }
 void serial_print_hex(uint64_t v) { (void)v; }
 void serial_print_dec(uint64_t v) { (void)v; }
@@ -1075,6 +1076,60 @@ static void test_process_launch_rollback(void) {
     puts("[PASS] Process launch allocation-failure rollback host verification");
 }
 
+static void test_device_and_anonymous_transactions(void) {
+    puts("[TEST] Device ownership / collision / rollback / anonymous RAM");
+    g_host_mock_cr3=0x1000;
+    size_t baseline=g_mock_allocated_count, heap=g_mock_heap_alloc_count;
+    for (int budget=0;budget<=4;budget++) {
+        uintptr_t cr3=vmm_create_user_pml4();
+        vmm_space_t *space=vmm_space_lookup(cr3);
+        g_pmm_alloc_budget=budget;
+        int result=vmm_map_device_range(space->pml4_virt,0x1ff000,0x100000000ULL,3*4096);
+        g_pmm_alloc_budget=-1;
+        assert(result==(budget<4 ? VMM_ERR_NOMEM : VMM_OK));
+        for (unsigned i=0;i<3;i++) assert(vmm_is_mapped(space->pml4_virt,0x1ff000+i*4096)==(result==VMM_OK));
+        if (result==VMM_OK) {
+            assert(!vmm_validate_user_range(space->pml4_virt,0x1ff000,4,true));
+            assert(vmm_unmap_device_range(space->pml4_virt,0x1ff000,0x200000000ULL,3*4096)==VMM_ERR_INVALID_ADDR);
+            assert(vmm_is_mapped(space->pml4_virt,0x1ff000));
+        }
+        // PMM mock asserts if teardown ever tries to free borrowed 4GiB MMIO.
+        assert(vmm_destroy_pml4(cr3,true)==VMM_OK);
+        assert(g_mock_allocated_count==baseline && g_mock_heap_alloc_count==heap);
+    }
+    uintptr_t cr3=vmm_create_user_pml4();
+    vmm_space_t *space=vmm_space_lookup(cr3);
+    uintptr_t ram=pmm_alloc_page();
+    assert(vmm_map_page(space->pml4_virt,0x700000,ram,PTE_USER|PTE_WRITABLE)==VMM_OK);
+    g_pmm_alloc_budget=0;
+    assert(vmm_map_anonymous_range(space->pml4_virt,0x700000,4096)==VMM_ERR_ALREADY_MAPPED);
+    g_pmm_alloc_budget=-1;
+    assert(vmm_map_device_range(space->pml4_virt,0x6ff000,0x100000000ULL,8192)==VMM_ERR_ALREADY_MAPPED);
+    assert(!vmm_is_mapped(space->pml4_virt,0x6ff000));
+    assert(vmm_get_physical_address(space->pml4_virt,0x700000)==ram);
+    assert(vmm_map_device_range(space->pml4_virt,0xc0000000,0x100000000ULL,8192)==VMM_OK);
+    assert(vmm_unmap_device_range(space->pml4_virt,0xc0000000,0x100000000ULL,8192)==VMM_OK);
+    assert(!vmm_is_mapped(space->pml4_virt,0xc0000000));
+    assert(vmm_destroy_pml4(cr3,true)==VMM_OK);
+    for (int budget=0;budget<=7;budget++) {
+        cr3=vmm_create_user_pml4(); space=vmm_space_lookup(cr3);
+        g_pmm_alloc_budget=budget;
+        int result=vmm_map_anonymous_range(space->pml4_virt,0x1ff000,3*4096);
+        g_pmm_alloc_budget=-1;
+        assert(result==(budget<7 ? VMM_ERR_NOMEM : VMM_OK));
+        if (result==VMM_OK) {
+            assert(vmm_validate_user_range(space->pml4_virt,0x1ff000,3*4096,true));
+            for (unsigned page=0;page<3;page++) {
+                uintptr_t pa=vmm_get_physical_address(space->pml4_virt,0x1ff000+page*4096);
+                for (unsigned b=0;b<4096;b++) assert(g_mock_ram[pa+b]==0);
+            }
+        } else for (unsigned page=0;page<3;page++) assert(!vmm_is_mapped(space->pml4_virt,0x1ff000+page*4096));
+        assert(vmm_destroy_pml4(cr3,true)==VMM_OK);
+        assert(g_mock_allocated_count==baseline && g_mock_heap_alloc_count==heap);
+    }
+    puts("[PASS] Borrowed VRAM never freed, collisions preserved, all OOM cuts reclaimed");
+}
+
 int main(void) {
     printf("========================================================\n");
     printf("SMP Piece 6D Step 4: Complete Address Space Lifetime\n");
@@ -1100,6 +1155,7 @@ int main(void) {
     test_burst_memory_accounting();
     test_concurrent_cohort_and_fragmented_pmm();
     test_process_launch_rollback();
+    test_device_and_anonymous_transactions();
 
     printf("\n[ OK ] All SMP Piece 6D Step 4 host tests passed successfully!\n");
     return 0;

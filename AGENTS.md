@@ -11,6 +11,7 @@ Before editing, read [§4 invariants](#4-coding-standards-and-invariants), the s
 | Locking, scheduling, blocking | L1–L4, S3; [spinlock.h](src/include/spinlock.h), [thread.h](src/kernel/thread.h) |
 | Syscalls or user pointers | S1–S4; [syscall.h](src/kernel/syscall.h), [vmm.h](src/mm/vmm.h); §7.1 |
 | Interrupts or input | I1–I3; [idt.h](src/arch/x86_64/idt.h), [ioapic.h](src/drivers/ioapic.h); §7.2 |
+| Graphics / framebuffer | [hardening plan](docs/plans/GRAPHICS_FOUNDATION_HARDENING_PLAN.md), [fb.h](src/kernel/fb.h), [console.h](src/drivers/console.h), [vmm.h](src/mm/vmm.h); PTE_DEVICE frames are borrowed MMIO, excluded from PMM freeing and syscall copy buffers |
 | Storage or VFS | M1–M4; [block.h](src/drivers/block.h), [vfs.h](src/fs/vfs.h), [ext2.h](src/fs/ext2.h); §7.3–7.4 |
 | Tests or user programs | [Makefile](Makefile), §3 and §7.5–7.6 |
 | Hardware assumptions or workarounds | [§8 evidence](#8-hardware-facts-and-verification-boundaries), then the driver |

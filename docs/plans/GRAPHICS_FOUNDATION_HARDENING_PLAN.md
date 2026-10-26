@@ -1,6 +1,8 @@
 # Graphics Foundation Hardening
 
-Status: approved scope, implementation begins after the experimental demo checkpoint.
+Status: core ownership/mapping/allocation batch implemented, 2026-10-26;
+verification and remaining process-termination limits are recorded in
+[the hardening evidence](../roadmap/graphics-foundation-hardening.md).
 The Phase 3–4 compositor demonstrates rendering and interaction; it is not a
 stable display ownership API. No further UI features are included in this plan.
 
@@ -15,6 +17,14 @@ stable display ownership API. No further UI features are included in this plan.
 3. Replace the static heap with bounded anonymous process memory, restore the
    ELF image ceiling to 4 MiB, and validate allocation failure/reclamation.
    Final hardening commit: `fix(kernel): harden framebuffer ownership, enforce display locks, and clean up compositor allocation`.
+
+Checkpoint completed as `03262b3`. Implementation uses an address-space lifetime
+identity (CR3 held until its final VMM teardown), not a recyclable thread PID.
+SYS_MMAP deliberately provides one fixed process-private arena at 0x4000000000,
+up to 32 MiB; additional requests return EBUSY. The committed PTE span is its
+bookkeeping and concurrent publication is serialized by the VMM lock. This is
+not POSIX mmap and has no munmap/growth API. Display acquisition requires
+effective UID 0, following the existing dmesg policy. EBUSY is FortressOS -36.
 
 ## ABI and mapping invariants
 

@@ -14,6 +14,10 @@ typedef struct { unsigned rank; uint8_t kind; const char *name; uint64_t acquire
 uint64_t vmm_host_lock(spinlock_t *lock);
 void vmm_host_unlock(spinlock_t *lock);
 static inline uint64_t spin_lock_irqsave(spinlock_t *lock) { return vmm_host_lock(lock); }
+#elif defined(TEST_FB_HOST)
+uint64_t fb_host_lock(spinlock_t *lock);
+void fb_host_unlock(spinlock_t *lock);
+static inline uint64_t spin_lock_irqsave(spinlock_t *lock) { return fb_host_lock(lock); }
 #else
 static inline uint64_t spin_lock_irqsave(spinlock_t *lock) { (void)lock; return 0; }
 #endif
@@ -23,6 +27,8 @@ static inline void spin_unlock_irqrestore(spinlock_t *lock, uint64_t f) {
     (void)f;
 #ifdef TEST_VMM_HOST
     vmm_host_unlock(lock);
+#elif defined(TEST_FB_HOST)
+    fb_host_unlock(lock);
 #else
     (void)lock;
 #endif

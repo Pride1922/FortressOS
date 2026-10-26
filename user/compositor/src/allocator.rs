@@ -1,12 +1,8 @@
 use spin::Mutex;
 use talc::{ErrOnOom, Span, Talc, Talck};
 
-// Leave room for code/data below the loader's 20 MiB ELF image cap.
-// Larger GOP modes fail allocation cleanly; no kernel ownership changes.
+// Process-owned anonymous RAM; ELF image remains below the 4 MiB ceiling.
 const HEAP_SIZE: usize = 16 * 1024 * 1024;
-
-#[unsafe(link_section = ".bss")]
-static mut HEAP_ARENA: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
 #[global_allocator]
 static ALLOCATOR: Talck<Mutex<()>, ErrOnOom> = Talc::new(ErrOnOom).lock();
@@ -15,12 +11,15 @@ pub fn usage() -> (usize, usize) {
     (ALLOCATOR.lock().get_counters().allocated_bytes, HEAP_SIZE)
 }
 
-pub fn init_heap() {
+pub fn init_heap() -> bool {
+    let arena = crate::sys::mmap(HEAP_SIZE);
+    if arena < 0 {
+        return false;
+    }
     unsafe {
-        let span = Span::from_array(&raw mut HEAP_ARENA);
         ALLOCATOR
             .lock()
-            .claim(span)
-            .expect("Fatal: unable to claim compositor heap arena");
+            .claim(Span::from_base_size(arena as *mut u8, HEAP_SIZE))
+            .is_ok()
     }
 }

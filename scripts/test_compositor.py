@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class Guest:
-    def __init__(self, firmware='bios', smp=1, tmp=None):
+    def __init__(self, firmware='bios', smp=1, tmp=None, iso=None):
         self.data = bytearray()
         self.tmp = tmp
         self.qmp = None
@@ -25,7 +25,7 @@ class Guest:
             'qemu-system-x86_64', '-M', 'q35', '-m', '1024M', '-smp', str(smp),
             '-accel', 'tcg', '-cpu', 'max,+rdrand,+rdseed', '-display', 'none',
             '-monitor', 'none', '-serial', 'stdio', '-no-reboot', '-boot', 'd',
-            '-cdrom', str(ROOT / 'bin/fortress.iso'),
+            '-cdrom', str(iso or ROOT / 'bin/fortress.iso'),
             '-device', 'qemu-xhci,id=xhci',
             '-device', 'usb-mouse,bus=xhci.0',
             '-qmp', f'unix:{tmp / "qmp.sock"},server=on,wait=off'
@@ -89,6 +89,7 @@ class Guest:
 
     def close(self):
         if self.qmp:
+            self.qmp.stream.close()
             self.qmp.sock.close()
         if self.proc.poll() is None:
             self.proc.terminate()

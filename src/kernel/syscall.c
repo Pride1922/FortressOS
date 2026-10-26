@@ -1,5 +1,6 @@
 #include "poll.h"
 #include "boot_info.h"
+#include "fb.h"
 #include "pkg_service.h"
 #include "syscall.h"
 #include "permissions.h"
@@ -1697,53 +1698,23 @@ static int64_t sys_lockstat(uintptr_t user_buf, uint64_t cap) {
 }
 
 static int64_t sys_fbinfo(uintptr_t user_info_ptr, uintptr_t req_vaddr) {
-    const boot_info_t *boot_info = boot_info_get();
-    if (!boot_info || !boot_info->has_framebuffer || !boot_info->fb_address) {
-        return SYSCALL_ENODEV;
-    }
-    if (boot_info->fb_bpp != 32 || boot_info->fb_width == 0 || boot_info->fb_height == 0) {
-        return SYSCALL_EIO;
-    }
-
-    uint64_t *active_pml4 = vmm_get_active_pml4_virt();
-    if (!vmm_validate_user_range(active_pml4, user_info_ptr, sizeof(fb_info_v1_t), true)) {
-        return SYSCALL_EFAULT;
-    }
-
-    uintptr_t fb_virt = boot_info->fb_address;
-    uintptr_t fb_phys = fb_virt - boot_info->hhdm_offset;
-    size_t fb_size = (boot_info->fb_pitch * boot_info->fb_height + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-
-    uintptr_t map_vaddr = req_vaddr ? req_vaddr : 0x6000000000ULL;
-    if ((map_vaddr % PAGE_SIZE) != 0 || map_vaddr < 0x1000000ULL ||
-        map_vaddr + fb_size >= 0x800000000000ULL || map_vaddr + fb_size < map_vaddr) {
-        return SYSCALL_EINVAL;
-    }
-
-    for (size_t offset = 0; offset < fb_size; offset += PAGE_SIZE) {
-        uintptr_t va = map_vaddr + offset;
-        uintptr_t pa = fb_phys + offset;
-        if (!vmm_is_mapped(active_pml4, va)) {
-            int err = vmm_map_page(active_pml4, va, pa, PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_NX | PTE_PCD);
-            if (err != VMM_OK) {
-                return SYSCALL_ENOMEM;
-            }
-        }
-    }
-
+    tcb_t *curr=thread_current();
+    if (!curr || !curr->is_user) return SYSCALL_EPERM;
+    uint64_t *root=vmm_get_active_pml4_virt();
+    if (!vmm_validate_user_range(root,user_info_ptr,sizeof(fb_info_v1_t),true)) return SYSCALL_EFAULT;
     fb_info_v1_t info;
-    memset(&info, 0, sizeof(info));
-    info.version = 1;
-    info.width = (uint32_t)boot_info->fb_width;
-    info.height = (uint32_t)boot_info->fb_height;
-    info.pitch = (uint32_t)boot_info->fb_pitch;
-    info.bpp = (uint32_t)boot_info->fb_bpp;
-    info.reserved = 0;
-    info.fb_user_vaddr = map_vaddr;
-    info.fb_size = fb_size;
+    int64_t result=fb_map(curr->cr3,root,req_vaddr,&info);
+    if (!result) memcpy((void *)user_info_ptr,&info,sizeof(info));
+    return result;
+}
 
-    memcpy((void *)user_info_ptr, &info, sizeof(info));
-    return SYSCALL_SUCCESS;
+static int64_t sys_mmap(uint64_t bytes) {
+    if (!bytes || bytes>32*1024*1024ULL) return SYSCALL_EINVAL;
+    bytes=(bytes+PAGE_SIZE-1)&~(PAGE_SIZE-1);
+    const uintptr_t base=0x4000000000ULL;
+    int error=vmm_map_anonymous_range(vmm_get_active_pml4_virt(),base,bytes);
+    return error==VMM_OK ? (int64_t)base : error==VMM_ERR_ALREADY_MAPPED ? SYSCALL_EBUSY :
+        error==VMM_ERR_NOMEM ? SYSCALL_ENOMEM : SYSCALL_EINVAL;
 }
 
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
@@ -2334,6 +2305,18 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             result=pkg_service_control(frame->rdi,frame->rsi,frame->rdx);
             break;
 
+        case SYS_FB_ACQUIRE: {
+            creds_t actor;
+            result=(!curr || !curr->is_user || !syscall_actor(&actor) || actor.euid!=0)
+                ? SYSCALL_EPERM : fb_acquire(curr->cr3);
+            break;
+        }
+        case SYS_FB_RELEASE:
+            result=curr && curr->is_user ? fb_release(curr->cr3) : SYSCALL_EPERM;
+            break;
+        case SYS_MMAP:
+            result=curr && curr->is_user ? sys_mmap(frame->rdi) : SYSCALL_EPERM;
+            break;
         case SYS_FBINFO:
             result = sys_fbinfo(frame->rdi, frame->rsi);
             break;

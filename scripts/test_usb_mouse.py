@@ -7,7 +7,7 @@ Verifies:
 2. Direct root-port mouse attachment under BIOS.
 3. Downstream hub/dock topology mouse attachment under UEFI.
 4. Live QMP mouse movement (rel-x, rel-y) and button click events reaching the kernel.
-5. Concurrent USB keyboard interactive shell login & command execution.
+5. Actual compositor cursor motion and USB keyboard shell recovery.
 """
 import sys
 import time
@@ -136,6 +136,34 @@ def run_mouse_test(firmware="bios", use_hub=False):
             print(f"  [PASS] USB mouse and keyboard detected and configured ({topo_name})")
             print(f"  [PASS] Shell prompt reached via live USB keyboard login input!")
 
+            # Switch from the default AZERTY layout, then run the actual mouse
+            # consumer. Packet UART traces are intentionally disabled by default.
+            qmp_type_string(qmp, "lqyout us\n")
+            time.sleep(0.3)
+            qmp_type_string(qmp, "sudo /bin/compositor\n")
+            deadline = time.monotonic()+25
+            while time.monotonic()<deadline:
+                text=log_path.read_text(errors="replace")
+                if "[COMPOSITOR] [OK] Window server ready; polling" in text: break
+                time.sleep(0.1)
+            assert "[COMPOSITOR] [OK] Window server ready; polling" in text, text[-2000:]
+            screen=Path(tmp)/"mouse.ppm"
+            def screenshot():
+                qmp.execute('screendump',{'filename':str(screen)})
+                with screen.open('rb') as f:
+                    assert f.readline().strip()==b'P6'
+                    w,h=map(int,f.readline().split())
+                    assert f.readline().strip()==b'255'
+                    return w,h,f.read()
+            def pixel(rgb,w,x,y):
+                return rgb[(y*w+x)*3:(y*w+x)*3+3]
+            deadline=time.monotonic()+10
+            while time.monotonic()<deadline:
+                w,h,rgb=screenshot()
+                if pixel(rgb,w,w//2,h//2)==bytes.fromhex('101010'): break
+                time.sleep(0.05)
+            assert pixel(rgb,w,w//2,h//2)==bytes.fromhex('101010')
+
             # Inject Mouse events via QMP: Move mouse and click left button
             time.sleep(0.5)
             print("  --> Injecting mouse motion (dx=15, dy=-10) and left button press...")
@@ -145,11 +173,22 @@ def run_mouse_test(firmware="bios", use_hub=False):
             qmp_send_mouse(qmp, dx=0, dy=0, btn="left", down=False)
             time.sleep(0.5)
 
-            # Check that mouse reports were received and decoded
-            text = log_path.read_text(errors="replace")
-            assert "[USB MOUSE] Report popped:" in text, "Mouse report not popped by worker"
-            assert "[USB MOUSE] Event:" in text, "Mouse event sink not invoked"
-            print("  [PASS] USB mouse reports received, decoded, and logged by kernel!")
+            deadline=time.monotonic()+10
+            while time.monotonic()<deadline:
+                w,h,rgb=screenshot()
+                if pixel(rgb,w,w//2+15,h//2-10)==bytes.fromhex('101010'): break
+                time.sleep(0.05)
+            assert pixel(rgb,w,w//2+15,h//2-10)==bytes.fromhex('101010'), "Mouse did not reach compositor"
+            assert pixel(rgb,w,w//2,h//2)==bytes.fromhex('141923'), "Cursor left a trail"
+            qmp_send_mouse(qmp,btn="right",down=True)
+            qmp_send_mouse(qmp,btn="right",down=False)
+            deadline=time.monotonic()+10
+            while time.monotonic()<deadline:
+                text=log_path.read_text(errors="replace")
+                if "[COMPOSITOR] Event loop stopped" in text: break
+                time.sleep(0.05)
+            assert "[COMPOSITOR] Event loop stopped" in text
+            print("  [PASS] Real compositor cursor motion, restoration and exit verified")
 
             # Test keyboard responsiveness after mouse events: "help\n"
             time.sleep(0.5)

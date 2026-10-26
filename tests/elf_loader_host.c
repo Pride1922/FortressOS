@@ -88,15 +88,14 @@ int main(void) {
     assert(elf_load_executable(image,16384,&output)==ELF_ERR_PERM && allocated==0);
     p[1].p_flags&=~PF_X;
     assert(elf_load_executable(image,16383,&output)==ELF_ERR_BOUNDS && allocated==0);
-    /* A 16 MiB compositor arena passes image admission, but the aggregate
-     * page limit still rejects before attempting any address-space allocation.
-     * Fail the first allocation to exercise validation without a huge mock. */
+    /* Dynamic heaps must not relax the 4 MiB ELF image ceiling. Reject an
+     * oversized static arena before attempting address-space allocation. */
     p[1].p_vaddr=0x2000000;
     p[1].p_memsz=16*1024*1024;
     alloc_budget=0;
     size_t attempts_before=space_attempts;
     assert(elf_load_executable(image,16384,&output)==ELF_ERR_NOMEM);
-    assert(space_attempts==attempts_before+1 && allocated==0);
+    assert(space_attempts==attempts_before && allocated==0);
     p[1].p_memsz=(uint64_t)MAX_ELF_PAGES*4096;
     attempts_before=space_attempts;
     assert(elf_load_executable(image,16384,&output)==ELF_ERR_NOMEM);

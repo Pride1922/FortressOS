@@ -8,6 +8,7 @@
 #include "percpu.h"
 #include "thread.h"
 #include "heap.h"
+#include "fb.h"
 
 extern uint8_t __kernel_start[];
 extern uint8_t __text_start[];
@@ -449,7 +450,7 @@ static int vmm_teardown_pml4_tables_unlocked(uintptr_t pml4_phys, bool free_user
 
                 for (size_t l = 0; l < 512; l++) {
                     if (pt_virt[l] & PTE_PRESENT) {
-                        if (free_user_frames) {
+                        if (free_user_frames && !(pt_virt[l] & PTE_DEVICE)) {
                             /* Exclusive ownership contract: free singly-owned user data frame */
                             pmm_free_page(pt_virt[l] & PTE_ADDR_MASK);
                         }
@@ -474,6 +475,10 @@ static int vmm_teardown_pml4_tables_unlocked(uintptr_t pml4_phys, bool free_user
         __atomic_sub_fetch(&g_vmm_allocated_table_frames, 1, __ATOMIC_RELAXED);
         pml4_virt[i] = 0;
     }
+
+    /* No live CPU/op/scheduler refs remain; all device leaves are gone.
+     * Complete owner recovery before root identity can be reused. No VMM lock. */
+    fb_space_destroyed(pml4_phys);
 
     /* Free root Level 4 PML4 frame */
     pmm_free_page(pml4_phys);
@@ -993,6 +998,117 @@ static uint64_t walk_leaf(uint64_t *table, uintptr_t va, uint64_t required) {
     return 0;
 }
 
+/* Pinned, checked user range transactions. No heap allocation or IPI waits
+ * while holding the VMM lock. All table spares are prepared before locking. */
+static bool user_span(uintptr_t va, size_t bytes) {
+    return bytes && bytes <= 32*1024*1024 && !(bytes % PAGE_SIZE)
+        && va >= PAGE_SIZE && !(va % PAGE_SIZE)
+        && va < 0x800000000000ULL && bytes < 0x800000000000ULL-va;
+}
+
+/* Called only with g_vmm_lock held. Repeat after preparing physical frames:
+ * another mapper may have populated the span while the lock was released. */
+static int user_span_empty(uint64_t *root, uintptr_t va, size_t pages) {
+    for (size_t i=0;i<pages;i++) {
+        int missing=missing_tables(root,va+i*PAGE_SIZE);
+        if (missing<0) return missing;
+        if (!missing && walk_leaf(root,va+i*PAGE_SIZE,PTE_PRESENT))
+            return VMM_ERR_ALREADY_MAPPED;
+    }
+    return VMM_OK;
+}
+
+static int map_user_span(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes, bool device) {
+    if (!root || !user_span(va,bytes) || (device &&
+        (!pa || pa % PAGE_SIZE || pa > PTE_ADDR_MASK || bytes-1 > (PTE_ADDR_MASK|4095)-pa)))
+        return VMM_ERR_INVALID_ADDR;
+    int res = vmm_space_get_op(root);
+    if (res != VMM_OK) return res;
+    size_t pages = bytes/PAGE_SIZE, allocated = 0, mapped = 0;
+    /* Existing collisions must fail before allocating data/table frames, even
+     * under memory pressure. The second check below closes the allocation race. */
+    uint64_t irq=spin_lock_irqsave(&g_vmm_lock);
+    res=user_span_empty(root,va,pages);
+    spin_unlock_irqrestore(&g_vmm_lock,irq);
+    if (res!=VMM_OK) { vmm_space_put_op(root); return res; }
+    uintptr_t *frames = NULL;
+    if (!device) {
+        frames = kmalloc(pages*sizeof(*frames));
+        if (!frames) { vmm_space_put_op(root); return VMM_ERR_NOMEM; }
+        for (; allocated < pages; allocated++) {
+            frames[allocated] = pmm_alloc_page();
+            if (!frames[allocated]) break;
+            memset(phys_to_virt(frames[allocated]),0,PAGE_SIZE);
+        }
+        if (allocated != pages) { res = VMM_ERR_NOMEM; goto cleanup; }
+    }
+    /* Worst-case suffix across PT/PD/PDPT boundaries, bounded to 21 frames.
+     * Competing mappers can only reduce the number needed at installation. */
+    uintptr_t spares[21]; unsigned count=0;
+    uintptr_t last=va+bytes-1;
+    unsigned needed=3+(unsigned)((last>>21)-(va>>21))
+        +(unsigned)((last>>30)-(va>>30))+(unsigned)((last>>39)-(va>>39));
+    for (unsigned i=0;i<needed;i++) {
+        uintptr_t spare=pmm_alloc_page();
+        if (!spare) break;
+        memset(phys_to_virt(spare),0,PAGE_SIZE); spares[count++]=spare;
+    }
+    irq = spin_lock_irqsave(&g_vmm_lock);
+    /* Retirement can have happened while preparing anonymous frames. */
+    res = vmm_space_get_op_locked(root);
+    if (res != VMM_OK) { spin_unlock_irqrestore(&g_vmm_lock,irq); goto spare_cleanup; }
+    vmm_space_put_op_locked(root);
+    res=user_span_empty(root,va,pages);
+    if (res == VMM_OK) for (;mapped<pages;mapped++) {
+        int missing=missing_tables(root,va+mapped*PAGE_SIZE);
+        if (missing<0) res=missing;
+        else if ((unsigned)missing>count) res=VMM_ERR_NOMEM;
+        else res = vmm_map_page_unlocked(root,va+mapped*PAGE_SIZE,
+            device ? pa+mapped*PAGE_SIZE : frames[mapped],
+            PTE_PRESENT|PTE_USER|PTE_WRITABLE|PTE_NX|(device ? PTE_DEVICE|PTE_PCD : 0),spares,&count);
+        if (res != VMM_OK) break;
+    }
+    if (res != VMM_OK) for (size_t i=0;i<mapped;i++)
+        vmm_unmap_page_unlocked(root,va+i*PAGE_SIZE);
+    bool invalidate = needs_invalidation(root,va);
+    spin_unlock_irqrestore(&g_vmm_lock,irq);
+    /* Rollback frames cannot return to PMM until all stale translations die. */
+    if (mapped && invalidate) smp_tlb_shootdown(0,virt_to_phys(root));
+spare_cleanup:
+    while (count) pmm_free_page(spares[--count]);
+cleanup:
+    if (frames) {
+        if (res != VMM_OK) for (size_t i=0;i<allocated;i++) pmm_free_page(frames[i]);
+        kfree(frames);
+    }
+    vmm_space_put_op(root);
+    return res;
+}
+
+int vmm_map_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
+    return map_user_span(root,va,pa,bytes,true);
+}
+int vmm_map_anonymous_range(uint64_t *root, uintptr_t va, size_t bytes) {
+    return map_user_span(root,va,0,bytes,false);
+}
+int vmm_unmap_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
+    if (!root || !user_span(va,bytes) || !pa || pa % PAGE_SIZE
+        || pa > PTE_ADDR_MASK || bytes-1 > (PTE_ADDR_MASK|4095)-pa) return VMM_ERR_INVALID_ADDR;
+    uint64_t irq=spin_lock_irqsave(&g_vmm_lock);
+    int res=vmm_space_get_op_locked(root);
+    if (res != VMM_OK) { spin_unlock_irqrestore(&g_vmm_lock,irq); return res; }
+    for (size_t i=0;i<bytes/PAGE_SIZE;i++) {
+        uint64_t leaf=walk_leaf(root,va+i*PAGE_SIZE,PTE_PRESENT);
+        if (!(leaf&PTE_DEVICE) || (leaf&PTE_ADDR_MASK) != pa+i*PAGE_SIZE) { res=VMM_ERR_INVALID_ADDR; break; }
+    }
+    if (res == VMM_OK) for (size_t i=0;i<bytes/PAGE_SIZE;i++) vmm_unmap_page_unlocked(root,va+i*PAGE_SIZE);
+    bool invalidate=needs_invalidation(root,va);
+    spin_unlock_irqrestore(&g_vmm_lock,irq);
+    if (res == VMM_OK && invalidate) smp_tlb_shootdown(0,virt_to_phys(root));
+    vmm_space_put_op(root);
+    return res;
+}
+
 bool vmm_is_mapped(uint64_t *pml4_virt, uintptr_t virt_addr) {
     if (vmm_space_get_op(pml4_virt) != VMM_OK) return false;
     bool res = (walk_leaf(pml4_virt, virt_addr, PTE_PRESENT) & PTE_PRESENT) != 0;
@@ -1103,7 +1219,10 @@ static bool vmm_validate_user_range_unlocked(uint64_t *pml4_virt, uintptr_t virt
 
     for (uintptr_t page = start_page; ; page += PAGE_SIZE) {
         uint64_t required = PTE_PRESENT | PTE_USER | (write_req ? PTE_WRITABLE : 0);
-        if (!walk_leaf(pml4_virt, page, required)) return false;
+        uint64_t leaf = walk_leaf(pml4_virt, page, required);
+        /* Device pointers are not syscall copy buffers: concurrent display
+         * revocation must never fault a kernel copy into borrowed MMIO. */
+        if (!leaf || (leaf & PTE_DEVICE)) return false;
 
         if (page == end_page) break;
     }

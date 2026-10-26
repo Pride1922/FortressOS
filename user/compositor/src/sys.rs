@@ -8,6 +8,11 @@ pub const SYS_READ: usize = 4;
 pub const SYS_CLOCK_GETTIME: usize = 74;
 pub const SYS_POLL: usize = 88;
 pub const SYS_FBINFO: usize = 96;
+pub const SYS_FB_ACQUIRE: usize = 97;
+pub const SYS_FB_RELEASE: usize = 98;
+pub const SYS_MMAP: usize = 99;
+pub const EINTR: isize = -22;
+pub const EBUSY: isize = -36;
 
 pub const POLLIN: i16 = 0x0001;
 pub const POLLOUT: i16 = 0x0004;
@@ -161,4 +166,14 @@ pub fn get_fb_info(req_vaddr: u64) -> Result<FbInfoV1, isize> {
     let mut info = FbInfoV1::default();
     let res = unsafe { syscall2(SYS_FBINFO, &mut info as *mut _ as usize, req_vaddr as usize) };
     if res == 0 { Ok(info) } else { Err(res) }
+}
+
+pub fn fb_acquire() -> isize {
+    unsafe { syscall0(SYS_FB_ACQUIRE) }
+}
+pub fn fb_release() -> isize {
+    unsafe { syscall0(SYS_FB_RELEASE) }
+}
+pub fn mmap(bytes: usize) -> isize {
+    unsafe { syscall1(SYS_MMAP, bytes) }
 }

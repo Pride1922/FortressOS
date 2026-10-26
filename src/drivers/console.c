@@ -41,6 +41,7 @@ static bool private_sequence, cursor_visible, s_mouse_reporting;
 static void terminal_cursor(bool show);
 
 static bool g_console_quiet = false;
+static bool g_graphics_owned; /* protected by g_console_lock */
 
 uint64_t console_generation(void) { return __atomic_load_n(&display_generation, __ATOMIC_RELAXED); }
 void console_inc_generation(void) { __atomic_add_fetch(&display_generation, 1, __ATOMIC_RELAXED); }
@@ -66,6 +67,7 @@ static void draw_char_unlocked(uint64_t col, uint64_t row, char c, uint32_t fg, 
         return;
     }
     *cell = (console_cell_t){.fg = fg, .bg = bg, .character = c};
+    if (g_graphics_owned) return;
 #ifdef CONSOLE_TEST
     test_glyph_draws++;
 #endif
@@ -209,7 +211,7 @@ void console_init(const boot_info_t *boot_info) {
     reset_cells_unlocked();
 
     /* Fill background */
-    for (uint64_t y = 0; y < g_console.height; y++) {
+    for (uint64_t y = 0; !g_graphics_owned && y < g_console.height; y++) {
         volatile uint32_t *line = g_console.fb + y * g_console.pitch32;
         for (uint64_t x = 0; x < g_console.width; x++) {
             line[x] = g_console.bg_color;
@@ -230,7 +232,7 @@ void console_clear(void) {
 
     uint64_t rflags = spin_lock_irqsave(&g_console_lock);
 
-    for (uint64_t y = 0; y < g_console.height; y++) {
+    for (uint64_t y = 0; !g_graphics_owned && y < g_console.height; y++) {
         volatile uint32_t *line = g_console.fb + y * g_console.pitch32;
         for (uint64_t x = 0; x < g_console.width; x++) {
             line[x] = g_console.bg_color;
@@ -275,7 +277,7 @@ static void terminal_cursor(bool show) {
     console_cell_t cell = cells[row][col];
     cells[row][col].character = (char)~cell.character;
     draw_char_unlocked(col, row, cell.character, cell.fg, cell.bg);
-    if (show) {
+    if (show && !g_graphics_owned) {
         for (uint64_t y = FONT_HEIGHT - 2; y < FONT_HEIGHT; y++) {
             volatile uint32_t *p = g_console.fb + (row * FONT_HEIGHT + y) * g_console.pitch32 + col * FONT_WIDTH;
             for (uint64_t x = 0; x < FONT_WIDTH; x++) p[x] = cell.fg;
@@ -385,4 +387,22 @@ void console_get_cursor(uint64_t *out_col, uint64_t *out_row) {
 
 bool console_is_mouse_reporting(void) {
     return s_mouse_reporting;
+}
+
+void console_graphics_mode(bool owned) {
+    uint64_t flags = spin_lock_irqsave(&g_console_lock);
+    g_graphics_owned = owned;
+    if (!owned && g_console.initialized) {
+        for (uint64_t y=0;y<g_console.height;y++)
+            for (uint64_t x=0;x<g_console.width;x++)
+                g_console.fb[y*g_console.pitch32+x]=g_console.bg_color;
+        for (uint64_t y=0;y<g_console.rows;y++) for (uint64_t x=0;x<g_console.cols;x++) {
+            console_cell_t cell=cells[y][x];
+            cells[y][x].character=(char)~cell.character;
+            draw_char_unlocked(x,y,cell.character,cell.fg,cell.bg);
+        }
+        if (cursor_visible) terminal_cursor(true);
+        __atomic_add_fetch(&display_generation,1,__ATOMIC_RELAXED);
+    }
+    spin_unlock_irqrestore(&g_console_lock,flags);
 }

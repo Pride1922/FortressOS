@@ -111,10 +111,13 @@
 #define SYS_FUTEX         94 /* (uint32_t *uaddr, int op, uint32_t val, const timespec_t *timeout) -> 0/-errno */
 #define SYS_PKGCTL        95 /* (pkg_request_v1 *, pkg_result_v1 *, size=64); pkg_abi.h */
 #define SYS_FBINFO        96 /* (fb_info_v1_t *out, uint64_t req_vaddr) -> 0/-errno */
+#define SYS_FB_ACQUIRE    97 /* () -> 0/-errno; exclusive address-space display lease */
+#define SYS_FB_RELEASE    98 /* () -> 0/-errno; revoke VRAM, restore cached console */
+#define SYS_MMAP          99 /* (size) -> address/-errno; one RW/NX anonymous arena <=32MiB */
 
 /* Syscall Allocation High-Water Mark and Next Available Slot */
-#define SYSCALL_MAX        96
-#define SYSCALL_NEXT_AVAIL 97
+#define SYSCALL_MAX        99
+#define SYSCALL_NEXT_AVAIL 100
 
 /* Framebuffer Information (SYS_FBINFO, Syscall 96) */
 typedef struct fb_info_v1 {
@@ -540,6 +543,7 @@ _Static_assert(__builtin_offsetof(block_info_t, part_index) == 188, "block_info_
 #define SYSCALL_ELOOP         (-33)
 #define SYSCALL_EDEADLK       (-34)
 #define SYSCALL_ENODEV        (-35)
+#define SYSCALL_EBUSY         (-36)
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

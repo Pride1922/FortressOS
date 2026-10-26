@@ -96,7 +96,7 @@ typedef struct {
 
 /* Architectural Limits & Reserved Virtual Regions */
 #define MAX_ELF_PHNUM          16
-#define MAX_ELF_PAGES          5120  /* Max 20 MiB ELF image; compositor RAM backbuffer */
+#define MAX_ELF_PAGES          1024  /* Max 4 MiB ELF image; large user heaps use SYS_MMAP */
 #define USER_SPACE_LIMIT       0x0000800000000000ULL /* Lower 128 TiB canonical */
 
 /* User Stack Layout (16 KiB total stack: 4 mapped pages, 1 unmapped guard page) */

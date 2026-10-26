@@ -23,5 +23,8 @@ bool console_is_initialized(void);
 void console_set_quiet(bool quiet);
 bool console_is_quiet(void);
 bool console_is_mouse_reporting(void);
+/* Serializes with every framebuffer writer. Text cache continues to advance
+ * while graphics owns VRAM; leaving graphics repaints it without VRAM reads. */
+void console_graphics_mode(bool owned);
 
 #endif /* FORTRESS_CONSOLE_H */

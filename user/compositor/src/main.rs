@@ -34,7 +34,31 @@ core::arch::global_asm!(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> i32 {
-    allocator::init_heap();
+    let acquired = sys::fb_acquire();
+    if acquired != 0 {
+        sys::write(
+            2,
+            if acquired == sys::EBUSY {
+                b"[compositor] Display is owned by another process\n"
+            } else {
+                b"[compositor] Display acquisition failed\n"
+            },
+        );
+        return 1;
+    }
+    if !allocator::init_heap() {
+        sys::write(2, b"[COMPOSITOR] [FAIL] Anonymous heap allocation\n");
+        sys::fb_release();
+        return 1;
+    }
+    let status = run();
+    if sys::fb_release() != 0 {
+        return 1;
+    }
+    status
+}
+
+fn run() -> i32 {
     sys::write(1, b"[COMPOSITOR] Phase 4 starting (right click to exit)\n");
     let fb = match sys::get_fb_info(0) {
         Ok(fb) => fb,
@@ -94,7 +118,7 @@ pub extern "C" fn rust_main() -> i32 {
     }];
     let status = loop {
         let ready = sys::poll(&mut fds, -1);
-        if ready == -4 {
+        if ready == sys::EINTR {
             continue;
         } // EINTR
         if ready < 0 || fds[0].revents & (sys::POLLERR | 0x10 | 0x20) != 0 {
@@ -105,7 +129,7 @@ pub extern "C" fn rust_main() -> i32 {
         }
         let mut packet = [0u8; 4];
         let n = sys::read(fd as i32, &mut packet);
-        if n == -4 || n == 0 {
+        if n == sys::EINTR || n == 0 {
             continue;
         }
         if n != 4 {
