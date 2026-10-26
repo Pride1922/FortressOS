@@ -728,7 +728,7 @@ int wlan_ccmp_encrypt_frame(const uint8_t tk[16],
     if (!tk || !plain_frame || plain_len < 24 || !out_frame || !out_len) return -1;
     const uint8_t *hdr = plain_frame;
     uint16_t fc = hdr[0] | ((uint16_t)hdr[1] << 8);
-    bool is_qos = ((fc >> 4) & 0xF) == 0x08;
+    bool is_qos = ((fc >> 4) & 0x08) != 0;
     size_t hdr_len = is_qos ? 26 : 24;
     if (plain_len < hdr_len) return -1;
     if (*out_len < plain_len + 16) return -1;
@@ -750,7 +750,7 @@ int wlan_ccmp_encrypt_frame(const uint8_t tk[16],
     ccmp_hdr[7] = (uint8_t)((pn >> 40) & 0xFF);
 
     uint8_t aad[32];
-    uint16_t fc_mask = 0x0070u | 0x0800u | 0x1000u | 0x2000u | (is_qos ? 0x8000u : 0u);
+    uint16_t fc_mask = 0x0070u | 0x0800u | 0x1000u | 0x2000u | 0x8000u;
     uint16_t masked_fc = (fc & ~fc_mask) | 0x4000u;
     aad[0] = (uint8_t)(masked_fc & 0xFF);
     aad[1] = (uint8_t)((masked_fc >> 8) & 0xFF);
@@ -785,7 +785,7 @@ int wlan_ccmp_decrypt_frame(const uint8_t tk[16],
     uint16_t fc = hdr[0] | ((uint16_t)hdr[1] << 8);
     if (!(fc & 0x4000)) return -1;
 
-    bool is_qos = ((fc >> 4) & 0xF) == 0x08;
+    bool is_qos = ((fc >> 4) & 0x08) != 0;
     size_t hdr_len = is_qos ? 26 : 24;
     if (cipher_len < hdr_len + 16) return -1;
 
@@ -801,10 +801,10 @@ int wlan_ccmp_decrypt_frame(const uint8_t tk[16],
                   ((uint64_t)ccmp_hdr[6] << 32) |
                   ((uint64_t)ccmp_hdr[7] << 40);
 
-    if (pn <= *rx_pn) return -2;
+    if (*rx_pn != 0 && pn <= *rx_pn) return -2;
 
     uint8_t aad[32];
-    uint16_t fc_mask = 0x0070u | 0x0800u | 0x1000u | 0x2000u | (is_qos ? 0x8000u : 0u);
+    uint16_t fc_mask = 0x0070u | 0x0800u | 0x1000u | 0x2000u | 0x8000u;
     uint16_t masked_fc = (fc & ~fc_mask) | 0x4000u;
     aad[0] = (uint8_t)(masked_fc & 0xFF);
     aad[1] = (uint8_t)((masked_fc >> 8) & 0xFF);
@@ -825,7 +825,7 @@ int wlan_ccmp_decrypt_frame(const uint8_t tk[16],
     int rc = wlan_ccmp_decrypt(tk, pn, aad, aad_len, cipher, payload_len, mic, out_payload);
     if (rc != 0) return rc;
 
-    *rx_pn = pn;
+    *rx_pn = (pn == 0) ? 1 : pn;
     memcpy(out_frame, cipher_frame, hdr_len);
     out_frame[1] &= ~0x40; /* Clear PROTECTED bit */
     *out_len = hdr_len + payload_len;

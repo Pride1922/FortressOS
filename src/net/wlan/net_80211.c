@@ -222,7 +222,7 @@ int net_80211_decapsulate(const uint8_t wlan_frame[], size_t wlan_len,
     if (type != IEEE80211_TYPE_DATA) return -1;
 
     size_t hdr_len = sizeof(ieee80211_hdr_t);
-    if (subtype == IEEE80211_SUBTYPE_QOS_DATA) {
+    if (subtype == IEEE80211_SUBTYPE_QOS_DATA || (subtype & 0x08) != 0) {
         hdr_len = sizeof(ieee80211_qos_hdr_t);
     }
     if (wlan_len < hdr_len + sizeof(llc_snap_hdr_t)) return -1;

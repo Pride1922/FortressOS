@@ -3,6 +3,14 @@
 #include "iwlwifi.h"
 #include <string.h>
 
+#ifndef IWLWIFI_HOST_TEST
+#include "serial.h"
+#else
+static inline void serial_puts(const char *s) { (void)s; }
+static inline void serial_print_dec(uint64_t v) { (void)v; }
+static inline void serial_print_hex(uint64_t v) { (void)v; }
+#endif
+
 #define WLAN_RX_RING_SIZE 16
 
 typedef struct {
@@ -499,7 +507,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
 
     /* 3. Data Frame Handling */
     if (type == IEEE80211_TYPE_DATA) {
-        size_t hdr_len = (subtype == IEEE80211_SUBTYPE_QOS_DATA) ? 26 : 24;
+        size_t hdr_len = (subtype == IEEE80211_SUBTYPE_QOS_DATA || (subtype & 0x08) != 0) ? 26 : 24;
         if (len < hdr_len) {
             spin_unlock_irqrestore(&s_wlan_lock, irq);
             return -1;
@@ -586,7 +594,17 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
             int dec_rc = wlan_ccmp_decrypt_frame(dec_key, frame, len,
                                                  s_rx_unenc_frame, &unenc_len,
                                                  pn_tracker);
+            if (dec_rc != 0 && !is_group) {
+                serial_puts("[WLAN RX] unicast CCMP decrypt failed: rc=");
+                serial_print_dec((uint64_t)(int64_t)dec_rc);
+                serial_puts("\n");
+            }
             if (dec_rc == 0 && unenc_len > 0) {
+                if (!is_group) {
+                    serial_puts("[WLAN RX] unicast CCMP decrypt OK len=");
+                    serial_print_dec(unenc_len);
+                    serial_puts("\n");
+                }
                 if (s_rx_count < WLAN_RX_RING_SIZE) {
                     wlan_rx_slot_t *slot = &s_rx_slots[s_rx_head];
                     int eth_len = net_80211_decapsulate(s_rx_unenc_frame, unenc_len,

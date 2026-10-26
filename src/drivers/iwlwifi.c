@@ -1174,7 +1174,7 @@ static bool iwl_send_mac_context_cmd(uint32_t action, bool is_assoc, uint16_t as
     mac_cmd.cck_rates    = (s_iwl_dev.current_channel <= 14) ? 0x0Fu : 0;
     mac_cmd.ofdm_rates   = (s_iwl_dev.current_channel <= 14) ? 0x15u : 0xFFu;
     mac_cmd.short_slot   = (1u << 4); /* IWM_MAC_FLG_SHORT_SLOT (0x10) */
-    mac_cmd.filter_flags = IWL_MAC_FILTER_ACCEPT_GRP | (is_assoc ? 0u : IWL_MAC_FILTER_IN_BEACON);
+    mac_cmd.filter_flags = IWL_MAC_FILTER_ACCEPT_GRP | IWL_MAC_FILTER_IN_CONTROL_AND_MGMT | (is_assoc ? 0u : IWL_MAC_FILTER_IN_BEACON);
     mac_cmd.qos_flags    = (1u << 0); /* IWM_MAC_QOS_FLG_UPDATE_EDCA */
 
     /* EDCA AC parameters indexed by TX FIFO: 0=BK, 1=BE, 2=VI, 3=VO */
@@ -1888,10 +1888,10 @@ int iwlwifi_set_associated(uint16_t assoc_id, uint16_t beacon_interval) {
     /* 2. Modify MAC Context 0 with is_assoc = 1 and assoc_id */
     (void)iwl_send_mac_context_cmd(IWL_FW_CTXT_ACTION_MODIFY, true, s_assoc_aid);
 
-    /* 3. Enable full Smart FIFO, Multicast reception, MAC power, Time Quota, and LQ rates */
+    /* 3. Enable full Smart FIFO, Multicast reception, Continuous Awake (CAM), Time Quota, and LQ rates */
     (void)iwl_send_sf_config(IWL_SF_FULL_ON);
     (void)iwl_send_mcast_filter_cmd();
-    (void)iwl_send_mac_power_cmd(true);
+    (void)iwl_send_mac_power_cmd(false);
     (void)iwl_send_time_quota_cmd(true);
     (void)iwl_send_lq_cmd(s_iwl_dev.current_channel);
 
