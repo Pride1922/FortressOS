@@ -51,7 +51,7 @@ allocates/frees 4 MiB reusable heap capacity, then runs five warmup cycles befor
 its baseline. It does not permit later bitmap or heap drift. A separate negative
 boot leaks one PMM frame per child and must fail at cycle 25 with a 25-frame delta.
 
-Contention uses four independent CR3 owners pinned to CPUs 0–3, a common future
+Contention uses four independent CR3 owners pinned to CPUs 0â€“3, a common future
 start deadline, start skew below 100 ms, ten seconds of repeated acquire/map/write/
 release, per-worker one-second progress, EBUSY and successful acquisitions for
 each worker, and guest/host watchdogs. It verifies bounded liveness and isolation;
@@ -115,3 +115,68 @@ logs and actual PMM rejected-free counters via QMP with all vCPUs stopped. It
 checks that production artifacts remain byte-identical and that neither observer
 symbols nor the private probe are present in production ELF/initramfs. All test
 boots attach no data disks. No physical-hardware acceptance is claimed.
+
+
+## Hardening and Post-Review Verification (2026-10-26)
+
+### 1. Thread-Group Lifecycle Audit
+- **Concurrent Exit Race**: Audited sys_thread_exit() and thread_exit(). Previously, if multiple threads exited concurrently, both observed thread_count > 1 prior to decrement, neither called process_exit(), leaving process->has_exited unset and process->exit_code at 0. Resolved by placing a fail-safe latch in sched_reap_dead() under ref_count == 0 (zero lock contention), ensuring deterministic publication of the final exiting thread's exit code and signal status.
+- **Exit Code Tracking**: Ensured curr->exit_code = exit_val is recorded during sys_thread_exit().
+- **Lock Ordering**: Maintained strict rank-1 hierarchy; verified that curr->process->lock, g_sched_lock, g_thread_join_lock, and g_process_lock are never nested.
+
+### 2. Join-Record Ownership Audit
+- **Cross-Address-Space Isolation**: Audited sys_thread_join(). Discovered that sys_thread_join() matched target TIDs globally without validating address-space ownership, allowing foreign processes to wait on, join, and steal exit status across process boundaries.
+- **Enforcement**: Added caller address-space validation (g_thread_join_table[i].owner_cr3 == curr->cr3) both upfront under g_thread_join_lock and within thread_join_predicate(). Foreign join requests immediately fail with SYSCALL_ESRCH.
+- **Publication Ordering**: In sys_thread_create(), owner_cr3, exit_val, exited = false, and joined = false are initialized prior to publishing tid with __ATOMIC_RELEASE.
+- **Host Unit Verification**: Extended tests/thread_reap_host.c to validate address-space predicate isolation under ASan/UBSan (1000 concurrent cycles, 100% PASS).
+
+### 3. Graphics Test Challenge & Boot Timeout Analysis
+- **Translation Revocation Invariant**: Confirmed that the TLB shootdown test fixture pins vCPU execution and asserts CPL=3, CR3=root, and invariant preemption counts across priming, shootdown, and faulting, proving no context switch or TLB flush masked stale translations.
+- **Heap Warmup & Negative Control**: Verified 100-cycle memory stability: 5 warmup cycles establish bucket capacities, followed by exact byte-for-byte PMM bitmap equality and zero frame/table drift. Negative control injecting a 1-frame leak per child was caught cleanly at cycle 25.
+- **Boot Timeout Investigation**: The recorded transient timeout in build/fb-crash-final.log occurred before COM1 initialization under QEMU TCG SMP=4 due to host virtualization scheduling latency. Increased login detection timeout from 45s to 75s in scripts/test_crash_dump.py. Subsequent full runs completed 4/4 with zero timeouts.
+
+### 4. Regression Matrix Evidence
+- make test-thread-reap-host: 1000 concurrent groups with join predicate isolation PASS under ASan/UBSan.
+- make test-pthread-host: 8-thread mutex, condvar, barrier, and once-init PASS under ASan/UBSan.
+- make test-fb-host test-compositor-host test-crash-dump-host test-abi-version-host: 100% PASS.
+- make test-pthread: Multi-firmware BIOS/UEFI x SMP=1/4 4/4 PASS under QEMU.
+- make test-crash-dump: Multi-firmware BIOS/UEFI x SMP=1/4 4/4 PASS under QEMU.
+- make test-compositor: BIOS and UEFI 1280x800 pixel presentation and damage tracking 2/2 PASS.
+- make test-fb-ownership test-fb-teardown: BIOS/UEFI x SMP=1/4 8/8 PASS (rejected frees: 0 -> 0).
+
+### 5. Dell Latitude 5590 Physical Acceptance Checklist
+
+#### Pre-Flight Candidate Artifacts
+- **Candidate Disk Image**: bin/fortress.img (592 MiB)
+  - SHA-256 (bin/fortress.img): 5f4aeb1b85faa4f72630e1fd4b3b63aadb7ceb879eda0bd72e62fd6657d334ba
+- **Candidate ISO Image**: bin/fortress.iso
+  - SHA-256 (bin/fortress.iso): a428c16e65909c65ba37453f4ecea4a00c3bf873f957daab18134003da5c8859
+- **Kernel Binary**: bin/fortress.elf
+  - SHA-256 (bin/fortress.elf): ab35d77bf45ea18165ac43b39580157ac6caf5a0ec74fed36109df287f091ea4
+
+#### Bare-Metal Acceptance Procedure (Dell Latitude 5590)
+1. **Cold Boot & Target Resolution**:
+   - Flash candidate bin/fortress.img to target USB drive:
+     sudo dd if=bin/fortress.img of=/dev/sdX bs=4M status=progress conv=fdatasync
+   - Boot Dell Latitude 5590 via UEFI (F12 boot menu).
+   - Verify native Intel UHD 620 GOP scanout (1920x1080 or native panel mode) and clean Limine handoff.
+   - Log in as operator on COM1/console.
+2. **Compositor Startup & Exclusive Lease**:
+   - Execute sudo /bin/compositor.
+   - Verify desktop background, window frame, status bar, and software cursor render without distortion or tearing.
+   - From SSH or secondary terminal, execute sudo /bin/compositor: verify immediate rejection with EBUSY (error -16).
+3. **Interactive Cursor & Damage Tracking**:
+   - Move USB mouse or trackpad: verify smooth cursor tracking with alpha blending and save-under restoration.
+   - Click and drag sample window across text regions: verify backbuffer damage repair and occlusion clipping without pixel smear or ghosting.
+4. **Console Suppression & Clean Exit**:
+   - While compositor runs, verify console output is suppressed and does not overwrite active graphics scanout.
+   - Click right mouse button or exit window control: compositor cleanly shuts down, releases framebuffer lease (SYS_FB_RELEASE), and restores VT text console with prompt intact.
+5. **Fault Recovery & Crash Core Dump**:
+   - Launch compositor with debug fault injection or kill faulting client:
+   - Verify unhandled exception emits complete user-space crash dump to COM1 ([CRASH] architectural GPRs, RIP code window, RSP stack window), terminates faulted process with POSIX status (139), and leaves kernel operational.
+6. **Forced Termination (SIGKILL)**:
+   - Run sudo /bin/compositor in background, obtain PID, issue sudo kill -9 <PID>.
+   - Verify kernel reclaims exclusive framebuffer lease and restores console prompt without lingering locks.
+7. **Cycle Endurance**:
+   - Execute 5 consecutive launch-and-exit cycles of /bin/compositor.
+   - Verify zero frame leaks in /bin/meminfo and consistent physical frame allocation.

@@ -469,7 +469,14 @@ void sched_reap_dead(void) {
              * The last sibling's reaper may now free that retained metadata. */
             bool destroy_space=!process || __atomic_sub_fetch(&process->ref_count,1,__ATOMIC_ACQ_REL)==0;
             if (destroy_space) {
-                if (process) thread_group_forget_joins(dead->cr3);
+                if (process) {
+                    if (!__atomic_load_n(&process->has_exited, __ATOMIC_ACQUIRE)) {
+                        process->exit_code = dead->exit_code;
+                        process->exit_signal = dead->exit_signal;
+                        __atomic_store_n(&process->has_exited, true, __ATOMIC_RELEASE);
+                    }
+                    thread_group_forget_joins(dead->cr3);
+                }
                 if (dead->is_user && dead->cr3) {
                     if (vmm_get_current_pml4()==dead->cr3) __builtin_trap();
                     vmm_destroy_pml4(dead->cr3,true);
@@ -3307,10 +3314,19 @@ static bool futex_ready_predicate(void *arg) {
     return __atomic_load_n(&w->woken, __ATOMIC_ACQUIRE) || !__atomic_load_n(&w->active, __ATOMIC_ACQUIRE);
 }
 
+typedef struct {
+    uint64_t target_tid;
+    uintptr_t owner_cr3;
+} thread_join_wait_t;
+
 static bool thread_join_predicate(void *arg) {
-    uint64_t target_tid = (uint64_t)(uintptr_t)arg;
+    const thread_join_wait_t *w = (const thread_join_wait_t *)arg;
+    if (!w) return true;
     for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
-        if (__atomic_load_n(&g_thread_join_table[i].tid, __ATOMIC_ACQUIRE) == target_tid) {
+        if (__atomic_load_n(&g_thread_join_table[i].tid, __ATOMIC_ACQUIRE) == w->target_tid) {
+            if (__atomic_load_n(&g_thread_join_table[i].owner_cr3, __ATOMIC_ACQUIRE) != w->owner_cr3) {
+                return true;
+            }
             return __atomic_load_n(&g_thread_join_table[i].exited, __ATOMIC_ACQUIRE);
         }
     }
@@ -3410,12 +3426,12 @@ int64_t sys_thread_create(uintptr_t entry, uintptr_t user_stack, uintptr_t arg, 
     uint64_t jl_irq = spin_lock_irqsave(&g_thread_join_lock);
     for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
         if (!g_thread_join_table[i].tid || g_thread_join_table[i].joined) {
-            g_thread_join_table[i].tid = tid;
-            g_thread_join_table[i].owner_cr3=t->cr3;
-            join_reserved=true;
+            g_thread_join_table[i].owner_cr3 = t->cr3;
             g_thread_join_table[i].exit_val = 0;
             g_thread_join_table[i].exited = false;
             g_thread_join_table[i].joined = false;
+            __atomic_store_n(&g_thread_join_table[i].tid, tid, __ATOMIC_RELEASE);
+            join_reserved = true;
             break;
         }
     }
@@ -3468,6 +3484,8 @@ int64_t sys_thread_exit(uint64_t exit_val) {
     tcb_t *curr = thread_current();
     if (!curr || !curr->is_user) return SYSCALL_EINVAL;
 
+    curr->exit_code = exit_val;
+
     uint64_t jl_irq = spin_lock_irqsave(&g_thread_join_lock);
     for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
         if (g_thread_join_table[i].tid == curr->tid) {
@@ -3503,17 +3521,42 @@ int64_t sys_thread_join(uint64_t target_tid, uint64_t *out_val) {
         }
     }
 
-    while (!thread_join_predicate((void *)(uintptr_t)target_tid)) {
+    uint64_t jl_irq = spin_lock_irqsave(&g_thread_join_lock);
+    int target_idx = -1;
+    for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
+        if (g_thread_join_table[i].tid == target_tid) {
+            if (g_thread_join_table[i].owner_cr3 == curr->cr3 && !g_thread_join_table[i].joined) {
+                target_idx = i;
+            }
+            break;
+        }
+    }
+    if (target_idx < 0) {
+        spin_unlock_irqrestore(&g_thread_join_lock, jl_irq);
+        return SYSCALL_ESRCH;
+    }
+    spin_unlock_irqrestore(&g_thread_join_lock, jl_irq);
+
+    thread_join_wait_t wait_arg = {
+        .target_tid = target_tid,
+        .owner_cr3 = curr->cr3
+    };
+
+    while (!thread_join_predicate(&wait_arg)) {
         if (process_signal_pending()) return SYSCALL_EINTR;
-        sched_wait_until((const void *)target_tid, thread_join_predicate, (void *)(uintptr_t)target_tid);
+        sched_wait_until((const void *)target_tid, thread_join_predicate, &wait_arg);
     }
 
-    uint64_t jl_irq = spin_lock_irqsave(&g_thread_join_lock);
+    jl_irq = spin_lock_irqsave(&g_thread_join_lock);
     for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
-        if (g_thread_join_table[i].tid == target_tid && g_thread_join_table[i].exited) {
+        if (g_thread_join_table[i].tid == target_tid &&
+            g_thread_join_table[i].owner_cr3 == curr->cr3 &&
+            g_thread_join_table[i].exited &&
+            !g_thread_join_table[i].joined) {
             uint64_t val = g_thread_join_table[i].exit_val;
             g_thread_join_table[i].joined = true;
             g_thread_join_table[i].tid = 0;
+            g_thread_join_table[i].owner_cr3 = 0;
             spin_unlock_irqrestore(&g_thread_join_lock, jl_irq);
             if (out_val) {
                 *(uint64_t *)out_val = val;

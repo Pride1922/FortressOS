@@ -91,7 +91,7 @@ def run_test(firmware, smp):
         guest = Guest(firmware, smp, tmp)
         try:
             print("  Waiting for login prompt...")
-            guest.wait(lambda s: s.endswith('FortressOS login: '), timeout=45)
+            guest.wait(lambda s: s.endswith('FortressOS login: '), timeout=75)
             print("  Logging in as operator...")
             guest.send('operator')
             print("  Waiting for shell prompt...")

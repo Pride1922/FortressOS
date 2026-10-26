@@ -85,6 +85,17 @@ int main(void) {
         *p=(process_t){.leader=t[0],.ref_count=4,.pid=t[0]->tid,.exit_code=139,.exit_signal=11,.final_ticks=12,.final_utime=13,.final_stime=14};
         for(unsigned i=0;i<4;i++)g_thread_join_table[i]=(thread_join_record_t){.tid=t[i]->tid,.owner_cr3=root,.exited=true};
         g_thread_join_table[4]=(thread_join_record_t){.tid=999999,.owner_cr3=root+0x10000000,.exited=true};
+        /* Verify address-space isolation in join predicates: */
+        thread_join_wait_t w_match = { .target_tid = t[1]->tid, .owner_cr3 = root };
+        thread_join_wait_t w_foreign = { .target_tid = t[1]->tid, .owner_cr3 = root + 0x1000 };
+        thread_join_wait_t w_missing = { .target_tid = 888888, .owner_cr3 = root };
+        assert(thread_join_predicate(&w_match) == true);
+        assert(thread_join_predicate(&w_foreign) == true);
+        assert(thread_join_predicate(&w_missing) == true);
+        g_thread_join_table[1].exited = false;
+        assert(thread_join_predicate(&w_match) == false);
+        assert(thread_join_predicate(&w_foreign) == true);
+        g_thread_join_table[1].exited = true;
         /* Alternate leader-first, leader-last, and simultaneous reaping. */
         unsigned first=cycle%3==0?0:3;
         if(cycle%3!=2) {

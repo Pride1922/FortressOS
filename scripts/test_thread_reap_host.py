@@ -11,7 +11,8 @@ def function(signature):
     return source[begin:end]
 out=ROOT/'build/thread-reap-host';out.mkdir(parents=True,exist_ok=True)
 join=source[source.index('#define MAX_THREAD_JOIN_RECORDS'):source.index('#define MAX_FUTEX_WAITERS')]
-(out/'reap-functions.inc').write_text(join+'\n'+function('void sched_reap_dead(void)'))
+pred=source[source.index('typedef struct {\n    uint64_t target_tid;'):source.index('int64_t sys_thread_create')]
+(out/'reap-functions.inc').write_text(join+'\n'+pred+'\n'+function('void sched_reap_dead(void)'))
 subprocess.run(['gcc','-std=c11','-Wall','-Wextra','-Werror','-O1','-g','-pthread',
     '-fsanitize=address,undefined','-no-pie','-I'+str(out),str(ROOT/'tests/thread_reap_host.c'),
     '-o',str(out/'test')],check=True)
