@@ -56,7 +56,7 @@ typedef struct process process_t;
 struct process {
     uint64_t       pid;             /* Thread group leader / main process ID */
     spinlock_t     lock;            /* Process metadata lock */
-    uint32_t       ref_count;       /* Active thread references + process handle */
+    uint32_t       ref_count;       /* Live, unpublished and unreaped thread references */
     uint32_t       thread_count;    /* Number of alive threads */
     creds_t        creds;           /* Canonical process-shared credentials bound to registry */
     struct file   *fd_table[MAX_PROCESS_FDS];
@@ -65,8 +65,11 @@ struct process {
     uintptr_t      cr3;
     uint64_t      *pml4_virt;
     struct vmm_space *vmm_space;
+    struct tcb    *leader;          /* Retained metadata until final process reap */
     uint64_t       exit_code;
-    bool           has_exited;
+    unsigned       exit_signal;
+    uint64_t       final_ticks, final_utime, final_stime, final_preempts;
+    bool           has_exited;      /* Atomic group-exit request, status under lock */
 };
 
 typedef struct tcb {
@@ -284,6 +287,7 @@ void   process_exit(uint64_t exit_code);
 bool   process_wait(uint64_t pid, uint64_t *out_exit_code);
 bool   process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_preempt_count, uint64_t *out_total_ticks);
 bool   process_is_alive(uint64_t pid);
+bool   thread_is_alive(uint64_t tid);
 /* BSP kernel supervisor only, unlocked thread context. Blocks until the PID
  * is no longer live; preserves exit records for process_wait. */
 void   process_wait_quiescent(uint64_t pid);

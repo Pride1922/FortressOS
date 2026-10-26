@@ -25,8 +25,11 @@ with tempfile.TemporaryDirectory(prefix="fortress-s8-process-") as name:
     with tarfile.open(REPO / "bin/initramfs.tar") as src, \
             tarfile.open(archive, "w", format=tarfile.USTAR_FORMAT) as dst:
         for member in src.getmembers():
-            if member.name.lstrip("./") != "bin/shell":
+            if member.name.lstrip("./") not in ("bin/shell", "bin/login"):
                 dst.addfile(member, src.extractfile(member) if member.isfile() else None)
+        # The normal kernel starts /bin/login; replace that entry only inside
+        # this disposable fixture, preserving production login policy.
+        dst.add(REPO / f"build/s8_{variant}_user.elf", arcname="bin/login")
         dst.add(REPO / f"build/s8_{variant}_user.elf", arcname="bin/shell")
     for path in (root / "boot/initramfs.tar", root / "initramfs.tar"):
         shutil.copyfile(archive, path)

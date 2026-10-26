@@ -29,14 +29,15 @@ def rejected_frees(guest, kernel):
         guest.qmp.execute('cont')
 
 
-def make_iso(tmp):
+def make_iso(tmp, source=ROOT, probes=None):
     root = tmp / 'iso'
-    shutil.copytree(ROOT / 'build/iso_root', root)
+    shutil.copytree(source / 'build/iso_root', root)
     archive = tmp / 'initramfs.tar'
-    with tarfile.open(ROOT / 'bin/initramfs.tar') as src, tarfile.open(archive, 'w', format=tarfile.USTAR_FORMAT) as dst:
+    with tarfile.open(source / 'bin/initramfs.tar') as src, tarfile.open(archive, 'w', format=tarfile.USTAR_FORMAT) as dst:
         for member in src.getmembers():
             dst.addfile(member, src.extractfile(member) if member.isfile() else None)
-        dst.add(ROOT / 'build/fb-probe.elf', arcname='bin/fb-probe')
+        for name, path in (probes or {'fb-probe': source / 'build/fb-probe.elf'}).items():
+            dst.add(path, arcname=f'bin/{name}')
     for target in [root / 'boot/initramfs.tar', root / 'initramfs.tar']:
         shutil.copyfile(archive, target)
     iso = tmp / 'fb.iso'
@@ -45,7 +46,7 @@ def make_iso(tmp):
                     '--efi-boot', 'boot/limine/limine-uefi-cd.bin', '-efi-boot-part',
                     '--efi-boot-image', '--protective-msdos-label', str(root), '-o', str(iso)],
                    check=True, timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run([str(ROOT / 'limine/limine'), 'bios-install', str(iso)],
+    subprocess.run([str(source / 'limine/limine'), 'bios-install', str(iso)],
                    check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return iso
 
@@ -76,6 +77,8 @@ def run(tmp, iso, firmware, smp, ownership):
             baseline = re.search(r'FB_BASE free=(\d+) tables=(\d+) deferred=(\d+)', result)
             final = re.search(r'FB_FINAL free=(\d+) tables=(\d+) deferred=(\d+)', result)
             assert baseline and final, result[-3000:]
+            checkpoints = re.findall(r'FB_CHECKPOINT free=(\d+) tables=(\d+) deferred=(\d+)', result)
+            assert checkpoints == [baseline.groups()]*4, ('intermediate memory drift', checkpoints)
             assert baseline.groups() == final.groups(), ('memory accounting drift', baseline.groups(), final.groups())
         assert expected in result
         rejected_after = rejected_frees(guest, kernel)

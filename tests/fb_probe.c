@@ -202,7 +202,10 @@ int fb_probe_main(int argc,char **argv) {
     say("FB_SMP_RACE_PASS\n");
     for (unsigned i=0;i<3;i++) CHECK(waited(spawn("normal",NULL),0),"warmup");
     pause_ms(100); mem_line("FB_BASE free=");
-    for (unsigned i=0;i<20;i++) CHECK(waited(spawn("normal",NULL),0),"repeat owner exit");
+    for (unsigned i=0;i<100;i++) {
+        CHECK(waited(spawn("normal",NULL),0),"repeat owner exit");
+        if ((i+1)%25==0) { pause_ms(100); mem_line("FB_CHECKPOINT free="); }
+    }
     CHECK(acquire_eventually(),"final reacquire"); call(SYS_FB_RELEASE,0,0,0);
     pause_ms(100); mem_line("FB_FINAL free=");
     say("FB_LIFECYCLE_PASS\n"); return 0;

@@ -55,6 +55,7 @@ static const char child_wait_channel;
 static uint64_t child_wake_seen;
 static uint64_t kernel_exit_sequence, kernel_exit_wake_seen;
 static void cancel_staged_children(uint64_t parent);
+static void thread_group_forget_joins(uintptr_t cr3);
 
 static spawn_fault_type_t g_spawn_fault_type = SPAWN_FAULT_NONE;
 static size_t g_spawn_fault_trigger = 0;
@@ -457,39 +458,49 @@ void sched_reap_dead(void) {
                 for (;;) { __asm__ volatile("cli; hlt"); }
             }
 
-            /* Invariant 3: The active CR3 must never be the dead process's PML4.
-             * The scheduler must have already switched to the next thread's CR3 (or kernel PML4)
-             * during thread_exit()/thread_yield() before the dead process could ever be reaped.
-             * If active CR3 matches dead->cr3, it indicates a critical scheduler lifecycle bug. */
-            bool destroy_space = true;
-            if (dead->process) {
-                int rem = __atomic_sub_fetch(&dead->process->ref_count, 1, __ATOMIC_ACQ_REL);
-                if (rem > 0) {
-                    destroy_space = false;
-                }
+            process_t *process=dead->process;
+            tcb_t *leader=process ? process->leader : NULL;
+            bool keep_leader=leader==dead;
+            if (dead->stack_slot>=0) {
+                kstack_free(dead->stack_slot,dead->kstack_base);
+                dead->stack_slot=-1;
             }
-
-            if (destroy_space && dead->is_user && dead->cr3 != 0) {
-                if (vmm_get_current_pml4() == dead->cr3) {
-                    serial_puts("[FATAL] sched_reap_dead: active CR3 matches dead process PML4 (lifecycle bug)!\n");
-                    for (;;) { __asm__ volatile("cli; hlt"); }
-                }
-                vmm_destroy_pml4(dead->cr3, true);
-                dead->cr3 = 0;
-                dead->pml4_virt = NULL;
-            }
-            if (dead->stack_slot >= 0) {
-                kstack_free(dead->stack_slot, dead->kstack_base);
-            }
-            if (dead->is_user) process_record_forget(dead->tid);
+            /* All accesses to a retained leader's TCB precede ref release.
+             * The last sibling's reaper may now free that retained metadata. */
+            bool destroy_space=!process || __atomic_sub_fetch(&process->ref_count,1,__ATOMIC_ACQ_REL)==0;
             if (destroy_space) {
-                fd_close_all(dead);
-                if (dead->process) {
-                    kfree(dead->process);
-                    dead->process = NULL;
+                if (process) thread_group_forget_joins(dead->cr3);
+                if (dead->is_user && dead->cr3) {
+                    if (vmm_get_current_pml4()==dead->cr3) __builtin_trap();
+                    vmm_destroy_pml4(dead->cr3,true);
                 }
-            }
-            kfree(dead);
+                fd_close_all(dead);
+                if (process) {
+                    cancel_staged_children(process->pid);
+                    /* Only the final reaper publishes process death. A leader's
+                     * SYS_THREAD_EXIT must leave the process record/credentials
+                     * valid while sibling threads still use the shared VM. */
+                    bool recorded=process_record_exit_accounted_times(process->pid,process->exit_code,
+                        process->exit_signal,process->final_ticks,process->final_utime,process->final_stime);
+                    if (!recorded) {
+                        uint64_t irq=spin_lock_irqsave(&g_sched_lock);
+                        unsigned slot=0;
+                        while (slot<MAX_EXIT_RECORDS && g_exit_records[slot].valid) slot++;
+                        if (slot==MAX_EXIT_RECORDS) slot=g_exit_records_head++%MAX_EXIT_RECORDS;
+                        g_exit_records[slot].pid=process->pid;
+                        g_exit_records[slot].exit_code=process->exit_code;
+                        g_exit_records[slot].total_ticks=process->final_ticks;
+                        g_exit_records[slot].preempt_count=process->final_preempts;
+                        g_exit_records[slot].valid=true;
+                        spin_unlock_irqrestore(&g_sched_lock,irq);
+                    }
+                    process_record_forget(process->pid);
+                    sched_wake_all(&child_wait_channel);
+                    if (leader && leader!=dead) kfree(leader);
+                    kfree(process);
+                } else if (dead->is_user) process_record_forget(dead->tid);
+                kfree(dead);
+            } else if (!keep_leader) kfree(dead);
             dead = next;
         }
     }
@@ -1016,45 +1027,33 @@ void sched_wake_all(const void *channel) {
     }
 }
 
+static bool group_exit_pending(const tcb_t *t) {
+    process_t *p=t ? t->process : NULL;
+    return p && (__atomic_load_n(&p->has_exited,__ATOMIC_ACQUIRE)
+        || (p->leader && (__atomic_load_n(&p->leader->signals.pending_mask,__ATOMIC_ACQUIRE)&SIGNAL_BIT(SIGKILL))));
+}
+
 void thread_wake_for_signal(uint64_t pid) {
     if (!pid) return;
-
-    /* Fast path: self-signal. If the target is the currently executing thread,
-     * it cannot be in THREAD_BLOCKED on any CPU. It will process the pending
-     * signal on its own return to userspace (via syscall / interrupt return).
-     * Avoid scanning all CPUs and acquiring their scheduler locks. */
-    tcb_t *curr = thread_current();
-    if (curr && curr->tid == pid) {
-        return;
-    }
-
-    for (size_t c = 0; c < g_total_sched_cpus; c++) {
-        uint64_t flags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
-        tcb_t **link = &scheduler_cpus[c].blocked_threads;
-        bool woke = false;
+    tcb_t *self=thread_current();
+    if (self && self->tid==pid && (!self->process || __atomic_load_n(&self->process->thread_count,__ATOMIC_ACQUIRE)<=1)) return;
+    for (size_t c=0;c<g_total_sched_cpus;c++) {
+        uint64_t flags=spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
+        tcb_t **link=&scheduler_cpus[c].blocked_threads;
+        bool woke=false;
         while (*link) {
-            tcb_t *t = *link;
-            if (t->tid == pid) {
-                if (t->state == THREAD_BLOCKED && signal_state_ready(&t->signals)) {
-                    *link = t->next;
-                    t->wait_channel = NULL;
-                    t->state = THREAD_READY;
-                    if (t->wait_trace.enabled)
-                        wait_trace_wake(&t->wait_trace, spawn_profile_clock(&t->spawn_profile));
-                    runqueue_push_cpu_locked(c, t);
-                    woke = true;
-                }
-                break;
-            }
-            link = &t->next;
+            tcb_t *t=*link;
+            bool target=t->tid==pid || (t->process && t->process->pid==pid);
+            if (target && (group_exit_pending(t) || (t->state==THREAD_BLOCKED && signal_state_ready(&t->signals)))) {
+                *link=t->next; t->wait_channel=NULL; t->state=THREAD_READY;
+                if (t->wait_trace.enabled) wait_trace_wake(&t->wait_trace,spawn_profile_clock(&t->spawn_profile));
+                runqueue_push_cpu_locked(c,t); woke=true;
+            } else link=&t->next;
         }
-        bool target_running_on_c = (cpu_locals[c].current_thread &&
-                                    cpu_locals[c].current_thread->tid == pid);
-        spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, flags);
-        if ((woke || target_running_on_c) && c != cpu_current()->id) {
-            smp_send_resched(c);
-        }
-        if (woke) break;
+        tcb_t *running=cpu_locals[c].current_thread;
+        bool target_running=running && (running->tid==pid || (running->process && running->process->pid==pid));
+        spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock,flags);
+        if ((woke || target_running) && c!=cpu_current()->id) smp_send_resched(c);
     }
 }
 
@@ -1113,6 +1112,19 @@ bool thread_get_cpu_times(uint64_t pid, uint64_t *utime, uint64_t *stime) {
 void thread_exit(void) {
     pkg_owner_exit(thread_current());
     handoff_abandon(&thread_current()->handoff);
+    tcb_t *exiting=thread_current();
+    if (exiting->process) {
+        time_account_user_to_kernel(exiting);
+        uint64_t now=apic_poll_clock_read();
+        if (now>exiting->last_tsc) exiting->stime_tsc+=now-exiting->last_tsc;
+        exiting->last_tsc=now;
+        uint64_t irq=spin_lock_irqsave(&exiting->process->lock);
+        exiting->process->final_ticks+=exiting->total_ticks;
+        exiting->process->final_preempts+=exiting->preempt_count;
+        exiting->process->final_utime+=exiting->utime_tsc;
+        exiting->process->final_stime+=exiting->stime_tsc;
+        spin_unlock_irqrestore(&exiting->process->lock,irq);
+    }
     uint64_t rflags = spin_lock_irqsave(&g_sched_lock);
     (void)rflags;
     tcb_t *curr = g_current_thread;
@@ -1907,6 +1919,7 @@ static tcb_t *process_spawn_internal(size_t target_cpu, int affinity,
     proc->lock = (spinlock_t)SPINLOCK_RANKED(1, "process_obj");
     proc->ref_count = 1;
     proc->thread_count = 1;
+    proc->leader = p;
     proc->creds = p->creds;
     memcpy(proc->fd_table, p->fd_table, sizeof(p->fd_table));
     memcpy(proc->fd_flags, p->fd_flags, sizeof(p->fd_flags));
@@ -2619,7 +2632,7 @@ int fd_dup(tcb_t *proc, int oldfd) {
 
 void fd_close_all(tcb_t *proc) {
     if (!proc) return;
-    accounts_process_exit(proc->tid);
+    accounts_process_exit(proc->process ? proc->process->pid : proc->tid);
     if (proc->process && proc->process->thread_count > 1) {
         return; /* Secondary thread exit does not close shared process fds */
     }
@@ -2644,9 +2657,17 @@ void process_exit(uint64_t exit_code) {
     tcb_t *curr = thread_current();
     if (curr) {
         if (curr->process) {
-            curr->process->has_exited = true;
-            curr->process->exit_code = exit_code;
-            __atomic_store_n(&curr->process->thread_count, 1, __ATOMIC_RELEASE);
+            process_t *process=curr->process;
+            uint64_t irq=spin_lock_irqsave(&process->lock);
+            if (!__atomic_load_n(&process->has_exited,__ATOMIC_ACQUIRE)) {
+                process->exit_code=exit_code;
+                process->exit_signal=curr->exit_signal;
+                __atomic_store_n(&process->has_exited,true,__ATOMIC_RELEASE);
+            }
+            spin_unlock_irqrestore(&process->lock,irq);
+            thread_wake_for_signal(process->pid);
+            thread_exit();
+            __builtin_unreachable();
         }
         /* Close all open descriptors and release references upon process exit */
         fd_close_all(curr);
@@ -2694,24 +2715,24 @@ void process_exit(uint64_t exit_code) {
     thread_exit();
 }
 
-bool process_is_alive(uint64_t pid) {
+static bool identity_is_alive(uint64_t pid, bool process_group) {
     size_t limit = g_total_sched_cpus ? g_total_sched_cpus : 1;
     for (size_t c = 0; c < limit; c++) {
         uint64_t rflags = spin_lock_irqsave(&scheduler_cpus[c].sched_lock);
         if (cpu_locals[c].current_thread &&
-            cpu_locals[c].current_thread->tid == pid &&
+            (cpu_locals[c].current_thread->tid == pid || (process_group && cpu_locals[c].current_thread->process && cpu_locals[c].current_thread->process->pid==pid)) &&
             cpu_locals[c].current_thread->state != THREAD_TERMINATED) {
             spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
             return true;
         }
         for (tcb_t *t = scheduler_cpus[c].runqueue_head; t; t = t->next) {
-            if (t->tid == pid && t->state != THREAD_TERMINATED) {
+            if ((t->tid == pid || (process_group && t->process && t->process->pid==pid)) && t->state != THREAD_TERMINATED) {
                 spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
                 return true;
             }
         }
         for (tcb_t *t = scheduler_cpus[c].blocked_threads; t; t = t->next) {
-            if (t->tid == pid) {
+            if (t->tid == pid || (process_group && t->process && t->process->pid==pid)) {
                 spin_unlock_irqrestore(&scheduler_cpus[c].sched_lock, rflags);
                 return true;
             }
@@ -2720,6 +2741,9 @@ bool process_is_alive(uint64_t pid) {
     }
     return false;
 }
+
+bool process_is_alive(uint64_t pid) { return identity_is_alive(pid,true); }
+bool thread_is_alive(uint64_t tid) { return identity_is_alive(tid,false); }
 
 static bool kernel_exit_changed(void *arg) {
     return __atomic_load_n(&kernel_exit_sequence,__ATOMIC_ACQUIRE)!=*(uint64_t *)arg;
@@ -2764,20 +2788,20 @@ bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_
             }
 
             /* 2. Check alive status on this CPU (including threads in exit transition) */
-            if (cpu_locals[c].current_thread && cpu_locals[c].current_thread->tid == pid) {
+            if (cpu_locals[c].current_thread && (cpu_locals[c].current_thread->tid == pid || (cpu_locals[c].current_thread->process && cpu_locals[c].current_thread->process->pid == pid))) {
                 alive = true;
-            } else if (scheduler_cpus[c].zombie_thread && scheduler_cpus[c].zombie_thread->tid == pid) {
+            } else if (scheduler_cpus[c].zombie_thread && (scheduler_cpus[c].zombie_thread->tid == pid || (scheduler_cpus[c].zombie_thread->process && scheduler_cpus[c].zombie_thread->process->pid == pid))) {
                 alive = true;
             } else {
                 for (tcb_t *t = scheduler_cpus[c].runqueue_head; t; t = t->next) {
-                    if (t->tid == pid) {
+                    if (t->tid == pid || (t->process && t->process->pid == pid)) {
                         alive = true;
                         break;
                     }
                 }
                 if (!alive) {
                     for (tcb_t *t = scheduler_cpus[c].blocked_threads; t; t = t->next) {
-                        if (t->tid == pid) {
+                        if (t->tid == pid || (t->process && t->process->pid == pid)) {
                             alive = true;
                             break;
                         }
@@ -2785,7 +2809,7 @@ bool process_wait_extended(uint64_t pid, uint64_t *out_exit_code, uint64_t *out_
                 }
                 if (!alive) {
                     for (tcb_t *t = scheduler_cpus[c].dead_threads; t; t = t->next) {
-                        if (t->tid == pid) {
+                        if (t->tid == pid || (t->process && t->process->pid == pid)) {
                             alive = true;
                             break;
                         }
@@ -2867,6 +2891,7 @@ bool process_signal_interrupt(void) {
     tcb_t *t=thread_current();
     if (!t || !t->is_user) return false;
     spin_debug_assert_unheld();
+    if (group_exit_pending(t)) return true;
 
     /* Fast-path: if no deliverable signal is pending, skip lock acquisition entirely. */
     uint64_t pend = __atomic_load_n(&t->signals.pending_mask, __ATOMIC_ACQUIRE);
@@ -2893,7 +2918,7 @@ bool process_signal_interrupt(void) {
 
 bool process_signal_pending(void) {
     tcb_t *t=thread_current();
-    return t && t->is_user && signal_state_ready(&t->signals);
+    return t && t->is_user && (group_exit_pending(t) || signal_state_ready(&t->signals));
 }
 
 /* RFLAGS sanitization constants — must match syscall.c's USER_RFLAGS_ALLOWED_MASK. */
@@ -3050,6 +3075,12 @@ void process_signal_user_return(interrupt_frame_t *frame) {
     if (!t || !t->is_user) return;
 
     spin_debug_assert_unheld();
+    if (group_exit_pending(t)) {
+        if (!__atomic_load_n(&t->process->has_exited,__ATOMIC_ACQUIRE)) t->exit_signal=SIGKILL;
+        process_exit(__atomic_load_n(&t->process->has_exited,__ATOMIC_ACQUIRE) ? t->process->exit_code : 128+SIGKILL);
+        __builtin_unreachable();
+    }
+
 
 retry:
     if (!process_signal_interrupt()) return;
@@ -3237,12 +3268,26 @@ int64_t sys_sigreturn(interrupt_frame_t *frame, int *return_disposition) {
 typedef struct {
     uint64_t tid;
     uint64_t exit_val;
+    uintptr_t owner_cr3;
     bool exited;
     bool joined;
 } thread_join_record_t;
 
 static thread_join_record_t g_thread_join_table[MAX_THREAD_JOIN_RECORDS];
 static spinlock_t g_thread_join_lock = SPINLOCK_RANKED(1, "thread_join");
+
+/* Unjoined completion records belong to the address space, not the kernel.
+ * Called only by its final reaper, with no scheduler/process locks held. */
+static void thread_group_forget_joins(uintptr_t cr3) {
+    uint64_t flags=spin_lock_irqsave(&g_thread_join_lock);
+    for (unsigned i=0;i<MAX_THREAD_JOIN_RECORDS;i++) {
+        if (g_thread_join_table[i].owner_cr3==cr3) {
+            memset(&g_thread_join_table[i],0,sizeof(g_thread_join_table[i]));
+        }
+    }
+    spin_unlock_irqrestore(&g_thread_join_lock,flags);
+}
+
 
 #define MAX_FUTEX_WAITERS 64
 typedef struct {
@@ -3292,6 +3337,7 @@ int64_t sys_thread_create(uintptr_t entry, uintptr_t user_stack, uintptr_t arg, 
         proc->lock = (spinlock_t)SPINLOCK_RANKED(1, "process_obj");
         proc->ref_count = 1;
         proc->thread_count = 1;
+        proc->leader = curr;
         proc->creds = curr->creds;
         memcpy(proc->fd_table, curr->fd_table, sizeof(curr->fd_table));
         memcpy(proc->fd_flags, curr->fd_flags, sizeof(curr->fd_flags));
@@ -3303,16 +3349,19 @@ int64_t sys_thread_create(uintptr_t entry, uintptr_t user_stack, uintptr_t arg, 
         process_record_bind_creds(curr->tid, &proc->creds);
     }
 
-    int cur_count = __atomic_load_n(&proc->thread_count, __ATOMIC_ACQUIRE);
-    while (1) {
-        if (cur_count >= 16) {
-            return SYSCALL_EAGAIN;
-        }
-        if (__atomic_compare_exchange_n(&proc->thread_count, &cur_count, cur_count + 1, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-            break;
-        }
+    uint64_t process_irq=spin_lock_irqsave(&proc->lock);
+    unsigned count=__atomic_load_n(&proc->thread_count,__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&proc->has_exited,__ATOMIC_ACQUIRE) || count==0) {
+        spin_unlock_irqrestore(&proc->lock,process_irq);
+        return SYSCALL_ESRCH;
     }
-    __atomic_add_fetch(&proc->ref_count, 1, __ATOMIC_ACQ_REL);
+    if (count>=16) {
+        spin_unlock_irqrestore(&proc->lock,process_irq);
+        return SYSCALL_EAGAIN;
+    }
+    __atomic_add_fetch(&proc->thread_count,1,__ATOMIC_ACQ_REL);
+    __atomic_add_fetch(&proc->ref_count,1,__ATOMIC_ACQ_REL);
+    spin_unlock_irqrestore(&proc->lock,process_irq);
 
     uintptr_t guard_virt = 0, stack_base = 0;
     size_t stack_size = 0;
@@ -3357,12 +3406,13 @@ int64_t sys_thread_create(uintptr_t entry, uintptr_t user_stack, uintptr_t arg, 
     memcpy(t->cwd, proc->cwd, sizeof(t->cwd));
     memcpy(t->name, curr->name, sizeof(t->name));
 
-    vmm_space_add_sched_ref(t->cr3);
-
+    bool join_reserved=false;
     uint64_t jl_irq = spin_lock_irqsave(&g_thread_join_lock);
     for (int i = 0; i < MAX_THREAD_JOIN_RECORDS; i++) {
         if (!g_thread_join_table[i].tid || g_thread_join_table[i].joined) {
             g_thread_join_table[i].tid = tid;
+            g_thread_join_table[i].owner_cr3=t->cr3;
+            join_reserved=true;
             g_thread_join_table[i].exit_val = 0;
             g_thread_join_table[i].exited = false;
             g_thread_join_table[i].joined = false;
@@ -3370,6 +3420,14 @@ int64_t sys_thread_create(uintptr_t entry, uintptr_t user_stack, uintptr_t arg, 
         }
     }
     spin_unlock_irqrestore(&g_thread_join_lock, jl_irq);
+    if (!join_reserved) {
+        kstack_free(slot,stack_base);
+        kfree(t);
+        __atomic_sub_fetch(&proc->thread_count,1,__ATOMIC_ACQ_REL);
+        __atomic_sub_fetch(&proc->ref_count,1,__ATOMIC_ACQ_REL);
+        return SYSCALL_EAGAIN;
+    }
+    vmm_space_add_sched_ref(t->cr3);
 
     uint8_t *stack_top = (uint8_t *)(stack_base + stack_size);
     stack_top = (uint8_t *)((uintptr_t)stack_top & ~0xFULL);

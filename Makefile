@@ -2660,6 +2660,15 @@ $(BUILD_DIR)/fb-probe.elf: tests/fb_probe.c user/pthread.h user/tools/common.h s
 	@$(AS) -f elf64 -DTOOL_ENTRY=fb_probe_main user/tools/start.asm -o $(BUILD_DIR)/fb-probe-start.o
 	@$(LD) -nostdlib -static -z noexecstack -T user/shell.ld $(BUILD_DIR)/fb-probe-start.o $(BUILD_DIR)/fb-probe.o $(BUILD_DIR)/tool-common.o -o $@
 
+# Private snapshot build: no observer ABI or probe in production media.
+.PHONY: test-thread-reap-host test-fb-campaign test-fb-campaign-negative
+test-thread-reap-host:
+	@python3 scripts/test_thread_reap_host.py
+test-fb-campaign:
+	@python3 scripts/test_fb_campaign.py
+test-fb-campaign-negative:
+	@python3 scripts/test_fb_campaign.py --modes negative
+
 .PHONY: test-fb-ownership test-fb-teardown
 test-fb-ownership: $(BOOTABLE_ISO) $(BUILD_DIR)/fb-probe.elf
 	@python3 scripts/test_fb_lifecycle.py --ownership

@@ -1,7 +1,7 @@
 # Graphics Foundation Hardening
 
 Status: core ownership/mapping/allocation batch implemented, 2026-10-26;
-verification and remaining process-termination limits are recorded in
+verification is recorded in
 [the hardening evidence](../roadmap/graphics-foundation-hardening.md).
 The Phase 3â€“4 compositor demonstrates rendering and interaction; it is not a
 stable display ownership API. No further UI features are included in this plan.
@@ -103,3 +103,34 @@ effective UID 0, following the existing dmesg policy. EBUSY is FortressOS -36.
 - Capture exact commands/results and qualifications in roadmap evidence. Keep
   QEMU media disposable/ISO-only; no physical acceptance or vblank tear-free
   claim. No tests may change boot/IRQ/storage isolation contracts incidentally.
+
+## Cross-core lifecycle verification follow-up
+
+The lease belongs to the entire address space. There is no per-thread framebuffer
+usage count. A leader's SYS_THREAD_EXIT leaves siblings and the lease alive;
+SYS_EXIT, fatal faults and SIGKILL request process-wide termination. The final
+reaper publishes canonical PID exit status after every thread has relinquished
+its reference. Explicit release revokes the mapping for all siblings before a
+replacement owner can acquire it.
+
+- `make test-thread-reap-host`: actual final-reaper functions under ASan/UBSan,
+  1,000 concurrent groups, retained leader metadata and unjoined-record cleanup.
+- `make test-fb-campaign`: isolated BIOS/UEFI SMP=4 snapshot kernels. Verify a
+  Ring 3 AP with a primed VRAM translation at the real shootdown interrupt,
+  post-release #PF/SIGSEGV, and unchanged replacement VRAM. Separately exercise
+  leader-thread exit, final surviving thread exit, SYS_EXIT and leaderless SIGKILL.
+- Verify 100 measured acquire/map/anonymous-allocation/exit cycles, with two
+  unjoined AP threads per child. After explicit reusable-heap warmup and five
+  full-cycle warmups, checkpoints at 25/50/75/100 require identical PMM bitmaps,
+  free/table/deferred counts, live heap use and committed heap capacity. Observe
+  actual physical-root reclamation and final-reaper completion before sampling.
+- `make test-fb-campaign-negative`: separate boots deliberately leak one PMM page
+  per cycle. The checkpoint at 25 must reject allocation-set drift. The private
+  leak control and observer syscall never enter production sources/media.
+- Four independent processes, verified on distinct CPUs 0–3, start against one
+  common monotonic deadline. Each repeatedly acquires/maps/releases for at least
+  ten seconds; verify EBUSY and successful acquisition for every worker, progress
+  reports, bounded start skew and watchdogs. This is contention evidence, not a
+  proof covering every interleaving or physical-machine behavior.
+- Keep the existing `test-fb-teardown` matrix, raised from 20 to 100 cycles, plus
+  compositor, pthread, crash-dump and process/signal/stop regression acceptance.

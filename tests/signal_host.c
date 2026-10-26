@@ -25,7 +25,14 @@ int main(void) {
     process_record_attach_signals(1,&parent);
     assert(!process_record_begin(2,0,false,0,0));
     process_record_attach_signals(2,&foreign);
-    assert(process_signal_send(1,2,0)==SYSCALL_EPERM);
+    /* Trusted kernel delivery may cross sessions. User delivery must pass
+     * the credential-aware API and reject unrelated unprivileged actors. */
+    creds_t self_creds={.uid=1000,.euid=1000,.suid=1000};
+    creds_t foreign_creds={.uid=2000,.euid=2000,.suid=2000};
+    assert(process_record_bind_creds(1,&self_creds));
+    assert(process_record_bind_creds(2,&foreign_creds));
+    assert(process_signal_send_creds(1,2,0)==SYSCALL_EPERM);
+    assert(process_signal_send(1,2,0)==0);
     assert(process_signal_send(1,999,0)==SYSCALL_ESRCH);
     assert(process_signal_send(1,-1,0)==SYSCALL_EINVAL);
     assert(process_signal_send(1,INT64_MIN,0)==SYSCALL_EINVAL);

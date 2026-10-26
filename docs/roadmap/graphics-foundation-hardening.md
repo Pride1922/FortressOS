@@ -134,3 +134,11 @@ Unrelated networking/Wi-Fi edits appeared in the shared working tree during the
 campaign. They are left untouched and excluded from the graphics commit; these
 results describe the frozen kernels actually booted, not an independent acceptance
 claim for those concurrent changes.
+
+## Cross-core follow-up (2026-10-26)
+
+The process-wide termination qualification above is superseded by the bounded
+sibling/final-reaper implementation and verification in
+[the cross-core lifecycle audit](graphics-cross-core-lifecycle.md). The original
+results above remain the evidence for the original checkpoint; they did not
+prove these newly accepted cases.
