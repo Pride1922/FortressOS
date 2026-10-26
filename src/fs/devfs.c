@@ -3,6 +3,7 @@
 #include "ext2.h"
 #include "ext4.h"
 #include "string.h"
+#include "mouse_dev.h"
 
 static vfs_node_t directory,console_node,partitions[GPT_MAX_PARTITIONS];
 static bool initialized,partitions_added;
@@ -37,6 +38,7 @@ void devfs_init(vfs_node_t *root,vfs_node_t *tty,vfs_node_t *null_node) {
     console_node=*tty;console_node.mode=VFS_S_IFCHR|0620;
     memcpy(console_node.name,"console",8);memcpy(console_node.path,"/dev/console",13);
     directory.children=tty;tty->next=null_node;null_node->next=&console_node;console_node.next=NULL;
+    mouse_dev_init(&directory);
 }
 void devfs_add_usb_partitions(void) {
     if (!initialized || partitions_added) return;

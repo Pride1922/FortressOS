@@ -3,6 +3,12 @@
 #include "serial.h"
 #include "root_boot.h"
 
+static const boot_info_t *s_boot_info_global = NULL;
+
+const boot_info_t *boot_info_get(void) {
+    return s_boot_info_global;
+}
+
 void boot_info_init(boot_info_t *out_info,
                     struct limine_memmap_response *memmap_resp,
                     struct limine_hhdm_response *hhdm_resp,
@@ -13,6 +19,7 @@ void boot_info_init(boot_info_t *out_info,
                     struct limine_kernel_file_response *kernel_file_resp) {
     if (!out_info) return;
     memset(out_info, 0, sizeof(boot_info_t));
+    s_boot_info_global = out_info;
 
     /* ACPI RSDP Physical Address (Limine Base Revision 3) */
     if (rsdp_resp && rsdp_resp->address) {

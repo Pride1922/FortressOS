@@ -109,11 +109,25 @@
 #define SYS_THREAD_SELF   92 /* () -> tid */
 #define SYS_THREAD_YIELD  93 /* () -> 0 */
 #define SYS_FUTEX         94 /* (uint32_t *uaddr, int op, uint32_t val, const timespec_t *timeout) -> 0/-errno */
+#define SYS_PKGCTL        95 /* (pkg_request_v1 *, pkg_result_v1 *, size=64); pkg_abi.h */
+#define SYS_FBINFO        96 /* (fb_info_v1_t *out, uint64_t req_vaddr) -> 0/-errno */
 
 /* Syscall Allocation High-Water Mark and Next Available Slot */
-#define SYS_PKGCTL         95 /* (pkg_request_v1 *, pkg_result_v1 *, size=64); pkg_abi.h */
-#define SYSCALL_MAX        95
-#define SYSCALL_NEXT_AVAIL 96
+#define SYSCALL_MAX        96
+#define SYSCALL_NEXT_AVAIL 97
+
+/* Framebuffer Information (SYS_FBINFO, Syscall 96) */
+typedef struct fb_info_v1 {
+    uint32_t version;         /* 1 */
+    uint32_t width;           /* Horizontal resolution in pixels */
+    uint32_t height;          /* Vertical resolution in pixels */
+    uint32_t pitch;           /* Bytes per scanline */
+    uint32_t bpp;             /* Bits per pixel (strictly 32) */
+    uint32_t reserved;        /* Alignment pad / reserved */
+    uint64_t fb_user_vaddr;   /* Userspace virtual address where VRAM was mapped */
+    uint64_t fb_size;         /* Total mapped VRAM size in bytes */
+} fb_info_v1_t;
+_Static_assert(sizeof(fb_info_v1_t) == 40, "fb_info_v1_t size");
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
@@ -525,6 +539,7 @@ _Static_assert(__builtin_offsetof(block_info_t, part_index) == 188, "block_info_
 #define SYSCALL_EACCES        (-32)
 #define SYSCALL_ELOOP         (-33)
 #define SYSCALL_EDEADLK       (-34)
+#define SYSCALL_ENODEV        (-35)
 
 /* Constraints */
 #define MAX_SYSCALL_WRITE_LEN  16384

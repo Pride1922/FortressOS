@@ -56,4 +56,6 @@ void boot_info_init(boot_info_t *out_info,
                     struct limine_module_response *module_resp,
                     struct limine_kernel_file_response *kernel_file_resp);
 
+const boot_info_t *boot_info_get(void);
+
 #endif /* FORTRESS_BOOT_INFO_H */

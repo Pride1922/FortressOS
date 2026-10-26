@@ -10,6 +10,7 @@
 #include "apic.h"
 #include "time.h"
 #include "console.h"
+#include "mouse_dev.h"
 #endif
 
 #define XHCI_TRB_TYPE_NORMAL          1u
@@ -521,21 +522,25 @@ static size_t format_sgr_mouse(char *buf, size_t cap, uint32_t btn, uint32_t col
 
 static void hid_mouse_event_sink(const hid_mouse_event_t *ev, void *ctx) {
     (void)ctx;
-    serial_puts("[USB MOUSE] Event: btn=");
-    serial_print_hex(ev->buttons);
-    serial_puts(" dx=");
-    serial_print_hex((uint8_t)ev->dx);
-    serial_puts(" dy=");
-    serial_print_hex((uint8_t)ev->dy);
-    serial_puts(" dz=");
-    serial_print_hex((uint8_t)ev->dz);
-    serial_puts(" pos=(");
-    serial_print_hex((uint32_t)ev->x);
-    serial_puts(",");
-    serial_print_hex((uint32_t)ev->y);
-    serial_puts(")\n");
+    /* Per-packet traces must not paint/scroll a userspace-owned framebuffer.
+     * Keep these diagnostics on COM1; normal device lifecycle logs use dmesg. */
+    serial_raw_puts("[USB MOUSE] Event: btn=");
+    serial_raw_print_hex(ev->buttons);
+    serial_raw_puts(" dx=");
+    serial_raw_print_hex((uint8_t)ev->dx);
+    serial_raw_puts(" dy=");
+    serial_raw_print_hex((uint8_t)ev->dy);
+    serial_raw_puts(" dz=");
+    serial_raw_print_hex((uint8_t)ev->dz);
+    serial_raw_puts(" pos=(");
+    serial_raw_print_hex((uint32_t)ev->x);
+    serial_raw_puts(",");
+    serial_raw_print_hex((uint32_t)ev->y);
+    serial_raw_puts(")\n");
 
 #ifndef USB_HID_HOST_TEST
+    mouse_dev_push(ev->buttons, ev->dx, ev->dy, ev->dz);
+
     if (console_is_mouse_reporting()) {
         uint64_t cols = 80, rows = 25;
         console_get_dimensions(&cols, &rows);
@@ -622,13 +627,13 @@ void usb_hid_poll(const xhci_rings_io_t *io, xhci_dma_buffers_t *ring_dma) {
     uint8_t m_slot = 0;
     uint8_t m_dci = 0;
     while (xhci_hid_mouse_fifo_pop(mouse_report, &m_len, &m_slot, &m_dci)) {
-        serial_puts("[USB MOUSE] Report popped: btn=");
-        serial_print_hex(mouse_report[0]);
-        serial_puts(" dx=");
-        serial_print_hex((uint8_t)mouse_report[1]);
-        serial_puts(" dy=");
-        serial_print_hex((uint8_t)mouse_report[2]);
-        serial_puts("\n");
+        serial_raw_puts("[USB MOUSE] Report popped: btn=");
+        serial_raw_print_hex(mouse_report[0]);
+        serial_raw_puts(" dx=");
+        serial_raw_print_hex((uint8_t)mouse_report[1]);
+        serial_raw_puts(" dy=");
+        serial_raw_print_hex((uint8_t)mouse_report[2]);
+        serial_raw_puts("\n");
 
         usb_hid_mouse_t *mouse = NULL;
         for (int i = 0; i < USB_HID_MAX_MICE; i++) {

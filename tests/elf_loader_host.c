@@ -10,6 +10,7 @@ __asm__(".pushsection .rodata\n.global sigrestorer_start,sigrestorer_end\nsigres
 static void *frames[32];
 static size_t allocated, mapped;
 static int alloc_budget, map_budget;
+static size_t space_attempts;
 static struct { uintptr_t va, phys; uint64_t flags; } leaves[32];
 uintptr_t pmm_alloc_page(void) {
     if (alloc_budget-- == 0) return 0;
@@ -25,7 +26,7 @@ void pmm_free_page(uintptr_t phys) {
     }
     assert(0);
 }
-uintptr_t vmm_create_user_pml4(void) { return pmm_alloc_page(); }
+uintptr_t vmm_create_user_pml4(void) { space_attempts++; return pmm_alloc_page(); }
 void *vmm_phys_to_virt(uintptr_t phys) { return (void *)phys; }
 int vmm_map_page(uint64_t *root, uintptr_t va, uintptr_t phys, uint64_t flags) {
     assert(root && mapped < 32);
@@ -87,6 +88,19 @@ int main(void) {
     assert(elf_load_executable(image,16384,&output)==ELF_ERR_PERM && allocated==0);
     p[1].p_flags&=~PF_X;
     assert(elf_load_executable(image,16383,&output)==ELF_ERR_BOUNDS && allocated==0);
+    /* A 16 MiB compositor arena passes image admission, but the aggregate
+     * page limit still rejects before attempting any address-space allocation.
+     * Fail the first allocation to exercise validation without a huge mock. */
+    p[1].p_vaddr=0x2000000;
+    p[1].p_memsz=16*1024*1024;
+    alloc_budget=0;
+    size_t attempts_before=space_attempts;
+    assert(elf_load_executable(image,16384,&output)==ELF_ERR_NOMEM);
+    assert(space_attempts==attempts_before+1 && allocated==0);
+    p[1].p_memsz=(uint64_t)MAX_ELF_PAGES*4096;
+    attempts_before=space_attempts;
+    assert(elf_load_executable(image,16384,&output)==ELF_ERR_NOMEM);
+    assert(space_attempts==attempts_before && allocated==0);
     free(image);
     puts("Actual ELF loader: exact poisoned-frame bytes/permissions, BSS, restorer, stack, allocation/map rollback PASS");
 }
