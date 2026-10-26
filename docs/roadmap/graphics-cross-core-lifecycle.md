@@ -204,3 +204,18 @@ boots attach no data disks. No physical-hardware acceptance is claimed.
   - `make test-compositor-host`: 7/7 unit tests PASS (including `monitor_mouse_bounded_damage_and_coalesced_deltas`).
   - `make test-input`: 100% PASS (PS/2 packet decoding & overflow handling).
   - `make test-compositor`: Multi-firmware QEMU acceptance suite PASS 100% across BIOS and UEFI (1280×800).
+
+### 8. Graphical Terminal Window, Taskbar Clock & Dell Latitude 5590 Acceptance (2026-10-26)
+- **Built-in Graphical Terminal Emulator**:
+  - Implemented `user/compositor/src/terminal.rs` featuring a 60×14 character grid, ANSI CSI escape code filtering, newline scrolling, backspace/DEL, and direct glyph rasterization into `Window::content`.
+  - Added `sys::pty_pair` (`SYS_PTY_PAIR` Syscall 80) and `sys::spawn_ext` (`SYS_SPAWN_EXT` Syscall 20) with non-blocking PTY slave redirection (dup2 to stdin, stdout, stderr).
+  - Multiplexed the PTY master fd directly within the compositor's event loop via `sys::poll` on `fds[2]`.
+  - Keystrokes typed while Window 3 ("Terminal - /bin/sh") is focused are forwarded directly to the PTY master; output from `/bin/sh` is rendered to the window with dirty-rect damage tracking.
+- **Taskbar Real-Time Digital Clock**:
+  - Implemented `update_clock()` querying `SYS_CLOCK_GETTIME` (Syscall 74, `CLOCK_REALTIME`). Formats `HH:MM:SS` in a dedicated box on the bottom taskbar with bounded damage updates strictly on 1-second boundaries.
+- **Keyboard Multiplexing**:
+  - Multiplexed `stdin` (`/dev/tty`) via `sys::poll`. Pressing `Tab` cycles and raises window focus; pressing `t` / `T` dynamically opens the terminal window; `q` / `Q` / `ESC` triggers a clean shutdown.
+- **Verification & Bare-Metal Hardware Acceptance**:
+  - Host unit tests: `make test-compositor-host` 9/9 PASS.
+  - Multi-firmware QEMU suite: `make test-compositor` 100% PASS on BIOS & UEFI (1280×800).
+  - Physical Dell Latitude 5590 Laptop Acceptance: Confirmed running live on physical Intel UHD Graphics 620 GOP scanout (1920×1080 at pitch 7680 bytes) with active built-in trackpad tracking, live taskbar clock, System Monitor, Palette Canvas, and an interactive `/bin/sh` shell session inside the graphical terminal window executing shell commands (e.g. `clear`).
