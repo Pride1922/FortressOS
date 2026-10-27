@@ -1732,7 +1732,9 @@ hostile_recovery_done:
     syscall_clear_recovery();
     serial_puts("       [PASS] Hostile return state intercepted on kernel stack without sysretq\n");
 
-    /* 4. Concurrent Repeated Fast Syscalls Under 100 Hz Preemption */
+    /* 4. Concurrent Repeated Fast Syscalls Under 100 Hz Preemption.
+     * Modes 5/6 stay runnable for at least eight CPU ticks each rather than
+     * assuming a fixed instruction count spans multiple hardware timeslices. */
     serial_puts("[TEST 4] Spawning Two Concurrent Fast Syscall Processes (Modes 5 & 6)...\n");
     serial_puts("------- PREEMPTED REPEATED FAST SYSCALLS OUTPUT START -------\n");
 
@@ -1772,14 +1774,19 @@ hostile_recovery_done:
         serial_puts(", P2=");
         serial_print_dec(code_f2);
         serial_puts("\n");
+        serial_puts("              Worker exit 17 means clock/progress query failure or 10s timeout.\n");
         hcf();
     }
 
-    if (pcount_f1 == 0 || pcount_f2 == 0) {
+    if (pcount_f1 == 0 || pcount_f2 == 0 || ticks_f1 < 8 || ticks_f2 < 8) {
         serial_puts("       [FAIL] Insufficient timer preemptions recorded during fast syscalls! P1=");
         serial_print_dec(pcount_f1);
         serial_puts(", P2=");
         serial_print_dec(pcount_f2);
+        serial_puts("; CPU ticks P1=");
+        serial_print_dec(ticks_f1);
+        serial_puts(", P2=");
+        serial_print_dec(ticks_f2);
         serial_puts("\n");
         hcf();
     }
@@ -1796,11 +1803,15 @@ hostile_recovery_done:
     serial_print_dec(pid_fast1);
     serial_puts(") completed 60 fast syscalls (Preemptions=");
     serial_print_dec(pcount_f1);
+    serial_puts(", CPU ticks=");
+    serial_print_dec(ticks_f1);
     serial_puts(", Exit=91)\n");
     serial_puts("              - Worker 2 (PID=");
     serial_print_dec(pid_fast2);
     serial_puts(") completed 60 fast syscalls (Preemptions=");
     serial_print_dec(pcount_f2);
+    serial_puts(", CPU ticks=");
+    serial_print_dec(ticks_f2);
     serial_puts(", Exit=92)\n");
     serial_puts("              - Direct preemption evidence: ");
     serial_print_dec(d_runnable);

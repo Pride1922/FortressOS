@@ -402,6 +402,10 @@ test-shell: $(BOOTABLE_ISO) $(NVME_GPT_IMG)
 test-console:
 	@python3 scripts/test_console.py
 
+.PHONY: test-fast-syscall-boot
+test-fast-syscall-boot: $(BOOTABLE_ISO)
+	python3 scripts/test_fast_syscall_boot.py
+
 test-boot-diagnostics: $(BOOTABLE_ISO)
 	@python3 scripts/test_boot_diagnostics.py
 

@@ -33,6 +33,9 @@ g_magic_val: dq 0xCAFEBABE12345678
 
 section .bss
 g_bss_val: resq 1
+; Private to each embedded test process. proc_info_t is 64 bytes, cpu_ticks at 40.
+g_fast_info: resb 64
+g_fast_clock: resq 2
 vfs_buf1: resb 1024
 vfs_buf2: resb 1024
 
@@ -241,6 +244,8 @@ _start:
     ; Repeatedly issues 'syscall' interspersed with compute loops
     ; -------------------------------------------------------------
 .mode_fast_worker_1:
+    call .fast_clock
+    mov r14, rax                  ; monotonic seconds: bounded failure deadline
     mov r12, 60                    ; 60 repeated syscall cycles
 .loop_fast_worker_1:
     ; 1. CPU-bound compute loop
@@ -249,6 +254,9 @@ _start:
     inc qword [g_bss_val]
     dec rcx
     jnz .compute_fast_1
+
+    test r12, r12
+    jz .progress_fast_1
 
     ; 2. Test user stack preservation across fast syscall
     push qword 0x5511
@@ -264,7 +272,12 @@ _start:
     jne .fail_fast_write
 
     dec r12
+.progress_fast_1:
+    call .fast_progress
+    test r12, r12
     jnz .loop_fast_worker_1
+    cmp rax, 8                    ; four 20 ms quanta, independent of CPU speed
+    jb .loop_fast_worker_1
 
     ; Clean exit via fast 'syscall' with exit code 91
     mov rax, 0                     ; SYS_EXIT
@@ -277,6 +290,8 @@ _start:
     ; Repeatedly issues 'syscall' interspersed with compute loops
     ; -------------------------------------------------------------
 .mode_fast_worker_2:
+    call .fast_clock
+    mov r14, rax
     mov r12, 60                    ; 60 repeated syscall cycles
 .loop_fast_worker_2:
     ; 1. CPU-bound compute loop
@@ -285,6 +300,9 @@ _start:
     inc qword [g_bss_val]
     dec rcx
     jnz .compute_fast_2
+
+    test r12, r12
+    jz .progress_fast_2
 
     ; 2. Test user stack preservation across fast syscall
     push qword 0x5522
@@ -300,13 +318,50 @@ _start:
     jne .fail_fast_write
 
     dec r12
+.progress_fast_2:
+    call .fast_progress
+    test r12, r12
     jnz .loop_fast_worker_2
+    cmp rax, 8
+    jb .loop_fast_worker_2
 
     ; Clean exit via fast 'syscall' with exit code 92
     mov rax, 0                     ; SYS_EXIT
     mov rdi, 92                    ; exit code 92
     syscall
     hlt
+
+; Do not sleep/yield here: both workers must remain runnable so timer-driven
+; switches are exercised. After the 60 checked writes, continue CPU work and
+; fast query syscalls until each worker has actually received eight CPU ticks.
+; A monotonic timeout fails closed instead of passing a broken timer/scheduler.
+.fast_progress:
+    call .fast_clock
+    sub rax, r14
+    cmp rax, 10
+    jae .fail_fast_progress
+    mov eax, 36                   ; SYS_PROCINFO(PROC_INFO_SELF, &info)
+    mov rdi, -1
+    lea rsi, [g_fast_info]
+    syscall
+    cmp rax, 1
+    jne .fail_fast_progress
+    mov rax, [g_fast_info + 40]    ; proc_info_t.cpu_ticks
+    ret
+
+.fast_clock:
+    mov eax, 74                   ; SYS_CLOCK_GETTIME(CLOCK_MONOTONIC, &ts)
+    mov edi, 1
+    lea rsi, [g_fast_clock]
+    syscall
+    test rax, rax
+    jnz .fail_fast_progress
+    mov rax, [g_fast_clock]        ; timespec_t.tv_sec
+    ret
+
+.fail_fast_progress:
+    mov rdi, 17                   ; clock/query failure or preemption timeout
+    jmp .do_exit
 
 .fail_fast_write:
     mov rdi, 10
