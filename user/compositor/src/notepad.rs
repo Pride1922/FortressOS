@@ -247,31 +247,28 @@ impl Notepad {
             return false;
         }
 
-        if cy >= 24 {
-            let target_line = (cy - 24) / 16;
-            let target_col = cx.saturating_sub(48) / 8;
+        let target_line = (cy.saturating_sub(24)) / 16;
+        let target_col = cx.saturating_sub(48) / 8;
 
-            let mut cur_line = 0;
-            let mut cur_col = 0;
-            let mut target_idx = self.text.len();
+        let mut cur_line = 0;
+        let mut cur_col = 0;
+        let mut target_idx = self.text.len();
 
-            for (idx, &b) in self.text.iter().enumerate() {
-                if cur_line == target_line {
-                    if cur_col >= target_col || b == b'\n' {
-                        target_idx = idx;
-                        break;
-                    }
-                    cur_col += 1;
-                } else if b == b'\n' {
-                    cur_line += 1;
-                    cur_col = 0;
+        for (idx, &b) in self.text.iter().enumerate() {
+            if cur_line == target_line {
+                if cur_col >= target_col || b == b'\n' {
+                    target_idx = idx;
+                    break;
                 }
+                cur_col += 1;
+            } else if b == b'\n' {
+                cur_line += 1;
+                cur_col = 0;
             }
-
-            self.cursor = target_idx.min(self.text.len());
-            return true;
         }
-        false
+
+        self.cursor = target_idx.min(self.text.len());
+        true
     }
 
     #[allow(dead_code)]

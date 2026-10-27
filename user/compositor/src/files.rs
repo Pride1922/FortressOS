@@ -192,17 +192,18 @@ impl FileManager {
         if cy >= 26 {
             let clicked = self.scroll + (cy - 26) / 20;
             if clicked < self.entries.len() {
-                if self.selected == clicked {
-                    // Double click / Enter action
+                self.selected = clicked;
+                if self.entries[clicked].is_dir {
+                    // Clicking a directory opens it immediately!
+                    self.enter_selected();
+                    return Some(FileAction::Refresh);
+                } else {
+                    // Clicking a file opens it in Notepad!
                     if let Some(path) = self.enter_selected() {
                         return Some(FileAction::OpenPath(path));
                     } else {
                         return Some(FileAction::Refresh);
                     }
-                } else {
-                    // First click selects
-                    self.selected = clicked;
-                    return Some(FileAction::Refresh);
                 }
             }
         }

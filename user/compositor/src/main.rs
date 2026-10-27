@@ -14,6 +14,7 @@ mod font;
 mod notepad;
 mod surface;
 mod terminal;
+mod wallpaper;
 mod window;
 use cursor::Cursor;
 use files::FileManager;
@@ -40,7 +41,25 @@ core::arch::global_asm!(
 );
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rust_main() -> i32 {
+pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
+    let mut is_test = false;
+    if argc > 1 && !argv.is_null() {
+        for i in 1..argc {
+            let arg_ptr = unsafe { *argv.add(i) };
+            if !arg_ptr.is_null() {
+                let mut len = 0;
+                while unsafe { *arg_ptr.add(len) } != 0 {
+                    len += 1;
+                }
+                let arg = unsafe { core::slice::from_raw_parts(arg_ptr, len) };
+                if arg == b"--test" {
+                    is_test = true;
+                    break;
+                }
+            }
+        }
+    }
+
     let acquired = sys::fb_acquire();
     if acquired != 0 {
         sys::write(
@@ -58,7 +77,7 @@ pub extern "C" fn rust_main() -> i32 {
         sys::fb_release();
         return 1;
     }
-    let status = run();
+    let status = run(is_test);
     if sys::fb_release() != 0 {
         return 1;
     }
@@ -175,7 +194,7 @@ fn draw_label_pixel(label: &str, x: usize, y: usize, fg: u32, bg: u32) -> u32 {
     }
 }
 
-fn run() -> i32 {
+fn run(is_test: bool) -> i32 {
     sys::write(1, b"[COMPOSITOR] Phase 4 starting (right click to exit)\n");
     let fb = match sys::get_fb_info(0) {
         Ok(fb) if fb.version == 1 && fb.bpp == 32 => fb,
@@ -209,6 +228,12 @@ fn run() -> i32 {
     // Console writes share VRAM: finish the startup diagnostic before painting.
     sys::write(1, b"[COMPOSITOR] [OK] Window server ready; polling\n");
 
+    let wallpaper = if is_test {
+        None
+    } else {
+        wallpaper::Wallpaper::load("/usr/share/wallpapers/hello-world.bin")
+    };
+
     let mut windows = match WindowManager::demo() {
         Some(wm) => wm,
         None => {
@@ -235,7 +260,7 @@ fn run() -> i32 {
         allocator::usage(),
         (cursor.x, cursor.y),
     );
-    windows.render(&mut scene);
+    windows.render_with_wallpaper(&mut scene, wallpaper.as_ref());
     cursor.show(&mut scene);
     if !unsafe { scene.present(&fb) } {
         sys::close(fd as i32);
@@ -303,7 +328,7 @@ fn run() -> i32 {
                 let mut kbuf = [0u8; 16];
                 let kn = sys::read(0, &mut kbuf);
                 if kn > 0 {
-                    let top_window_id = windows.windows.last().filter(|w| w.is_focused).map(|w| w.id);
+                    let top_window_id = windows.focused_window_id();
                     for &b in &kbuf[..kn as usize] {
                         if is_locked {
                             is_locked = false;
@@ -626,7 +651,7 @@ fn run() -> i32 {
             }
         }
 
-        windows.render(&mut scene);
+        windows.render_with_wallpaper(&mut scene, wallpaper.as_ref());
 
         if is_locked {
             // Draw macOS Lock Screen overlay

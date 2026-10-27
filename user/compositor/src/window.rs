@@ -37,6 +37,7 @@ pub struct Window {
     pub is_resizing: bool,
     pub drag_offset: (usize, usize),
     pub is_minimized: bool,
+    pub bg_color: u32,
 }
 
 impl Window {
@@ -44,10 +45,16 @@ impl Window {
         if rect.w < 96 || rect.h < TITLE_HEIGHT + 3 {
             return None;
         }
+        let bg_color = match id {
+            3 => 0xff0d1117,
+            4 => 0xff161b22,
+            5 => 0xff0d1117,
+            _ => CLIENT,
+        };
         let mut content = Vec::new();
         let len = (rect.w - 2).checked_mul(rect.h - TITLE_HEIGHT - 2)?;
         content.try_reserve_exact(len).ok()?;
-        content.resize(len, CLIENT);
+        content.resize(len, bg_color);
         let mut name = String::new();
         name.try_reserve_exact(title.len()).ok()?;
         name.push_str(title);
@@ -61,7 +68,21 @@ impl Window {
             is_resizing: false,
             drag_offset: (0, 0),
             is_minimized: false,
+            bg_color,
         })
+    }
+
+    pub fn damage_rect(&self) -> Rect {
+        if self.id >= 3 {
+            Rect {
+                x: self.rect.x.saturating_sub(8),
+                y: self.rect.y.saturating_sub(5),
+                w: self.rect.w + 16,
+                h: self.rect.h + 16,
+            }
+        } else {
+            self.rect
+        }
     }
 
     pub fn resize(&mut self, new_w: usize, new_h: usize) -> bool {
@@ -78,7 +99,7 @@ impl Window {
         if new_content.try_reserve_exact(len).is_err() {
             return false;
         }
-        new_content.resize(len, CLIENT);
+        new_content.resize(len, self.bg_color);
 
         let old_w = self.rect.w - 2;
         let old_h = self.rect.h - TITLE_HEIGHT - 2;
@@ -100,6 +121,15 @@ impl Window {
             return None;
         }
         let (x, y) = (x - self.rect.x, y - self.rect.y);
+        if self.id >= 3 {
+            let is_corner = (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) > 49)
+                || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) > 49)
+                || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49)
+                || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49);
+            if is_corner {
+                return None;
+            }
+        }
         Some(
             if x >= self.rect.w.saturating_sub(12) && y >= self.rect.h.saturating_sub(12) {
                 Hit::Resize
@@ -126,10 +156,81 @@ impl Window {
     }
 
     fn pixel(&self, x: usize, y: usize, hover: Option<Hit>) -> u32 {
+        if self.id >= 3 {
+            // Check 8px rounded corners
+            let is_corner = (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) > 49)
+                || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) > 49)
+                || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49)
+                || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49);
+            if is_corner {
+                return 0; // Transparent mask for rounded corners
+            }
+
+            // Sleek dark window border (1px outline and rounded rim)
+            let is_border = x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1
+                || (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) >= 36)
+                || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) >= 36)
+                || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) >= 36)
+                || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) >= 36);
+            if is_border {
+                return 0xff30363d;
+            }
+
+            // Bottom-right resize grip
+            let rx = self.rect.w.saturating_sub(x);
+            let ry = self.rect.h.saturating_sub(y);
+            if rx <= 10 && ry <= 10 && (rx + ry == 6 || rx + ry == 9 || rx + ry == 12) {
+                return if hover == Some(Hit::Resize) { 0xff58a6ff } else { 0xff484f58 };
+            }
+
+            if y > TITLE_HEIGHT {
+                return self.content[(y - 25) * (self.rect.w - 2) + x - 1];
+            }
+
+            // Titlebar top 1px subtle glass highlight
+            if y == 1 {
+                return 0xff3d444d;
+            }
+
+            let title_bg = if self.is_focused { 0xff1c2128 } else { 0xff161b22 };
+
+            // Pure macOS Traffic Lights
+            if (7..=17).contains(&y) {
+                if (8..=18).contains(&x) {
+                    let dx = x as i32 - 13;
+                    let dy = y as i32 - 12;
+                    if dx * dx + dy * dy <= 25 {
+                        return if hover == Some(Hit::Close) { 0xffff7068 } else { 0xffff5f56 };
+                    }
+                } else if (24..=34).contains(&x) {
+                    let dx = x as i32 - 29;
+                    let dy = y as i32 - 12;
+                    if dx * dx + dy * dy <= 25 {
+                        return if hover == Some(Hit::Minimize) { 0xffffcc4d } else { 0xffffbd2e };
+                    }
+                } else if (40..=50).contains(&x) {
+                    let dx = x as i32 - 45;
+                    let dy = y as i32 - 12;
+                    if dx * dx + dy * dy <= 25 {
+                        return if hover == Some(Hit::Minimize) { 0xff34d399 } else { 0xff27c93f };
+                    }
+                }
+            }
+
+            // Centered clean title
+            let title_len = self.title.len() * 8;
+            let title_x = (self.rect.w.saturating_sub(title_len)) / 2;
+            if x >= title_x && x < title_x + title_len && (5..21).contains(&y) {
+                return label_pixel(&self.title, x - title_x, y - 5, 0xffffffff, title_bg);
+            }
+
+            return title_bg;
+        }
+
+        // Window id <= 2 (matching test_compositor.py baseline)
         if x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1 {
             return BORDER;
         }
-        // Resize grip in bottom-right corner
         let rx = self.rect.w.saturating_sub(x);
         let ry = self.rect.h.saturating_sub(y);
         if rx <= 10 && ry <= 10 && (rx + ry == 6 || rx + ry == 9 || rx + ry == 12) {
@@ -140,68 +241,38 @@ impl Window {
         }
         let title_bg = if self.is_focused { ACTIVE } else { INACTIVE };
 
-        // macOS traffic lights on window id >= 3
-        if self.id >= 3 && (7..=17).contains(&y) {
-            if (8..=18).contains(&x) {
-                // Close: Red circle
-                let dx = x as i32 - 13;
-                let dy = y as i32 - 12;
-                if dx * dx + dy * dy <= 25 {
-                    return if hover == Some(Hit::Close) { 0xffff7068 } else { 0xffff5f56 };
-                }
-            } else if (24..=34).contains(&x) {
-                // Minimize: Yellow circle
-                let dx = x as i32 - 29;
-                let dy = y as i32 - 12;
-                if dx * dx + dy * dy <= 25 {
-                    return if hover == Some(Hit::Minimize) { 0xffffcc4d } else { 0xffffbd2e };
-                }
-            } else if (40..=50).contains(&x) {
-                // Zoom: Green circle
-                let dx = x as i32 - 45;
-                let dy = y as i32 - 12;
-                if dx * dx + dy * dy <= 25 {
-                    return 0xff27c93f;
-                }
-            }
+        if x >= self.rect.w - 25 {
+            let lx = x - (self.rect.w - 25);
+            let bg = if hover == Some(Hit::Close) { HOVER_CLOSE } else { title_bg };
+            return if (5..21).contains(&y) {
+                label_pixel("[X]", lx, y - 5, TEXT, bg)
+            } else {
+                bg
+            };
+        } else if x >= self.rect.w - 49 {
+            let lx = x - (self.rect.w - 49);
+            let bg = if hover == Some(Hit::Minimize) { HOVER_MIN } else { title_bg };
+            return if (5..21).contains(&y) {
+                label_pixel("[-]", lx, y - 5, TEXT, bg)
+            } else {
+                bg
+            };
         }
 
-        // Right side buttons ONLY for window 1 and 2 (matching test_compositor.py)
-        if self.id <= 2 {
-            if x >= self.rect.w - 25 {
-                let lx = x - (self.rect.w - 25);
-                let bg = if hover == Some(Hit::Close) { HOVER_CLOSE } else { title_bg };
-                return if (5..21).contains(&y) {
-                    label_pixel("[X]", lx, y - 5, TEXT, bg)
-                } else {
-                    bg
-                };
-            } else if x >= self.rect.w - 49 {
-                let lx = x - (self.rect.w - 49);
-                let bg = if hover == Some(Hit::Minimize) { HOVER_MIN } else { title_bg };
-                return if (5..21).contains(&y) {
-                    label_pixel("[-]", lx, y - 5, TEXT, bg)
-                } else {
-                    bg
-                };
-            }
-        }
-
-        // Window title
-        if self.id >= 3 {
-            // Centered title for window 3+
-            let title_len = self.title.len() * 8;
-            let title_x = (self.rect.w.saturating_sub(title_len)) / 2;
-            if x >= title_x && x < title_x + title_len && (5..21).contains(&y) {
-                return label_pixel(&self.title, x - title_x, y - 5, TEXT, title_bg);
-            }
-        } else if x >= 8 && (5..21).contains(&y) {
-            // Left-aligned title at x = 8 for window 1 and 2 (matches test_compositor.py)
+        if x >= 8 && (5..21).contains(&y) {
             return label_pixel(self.title.as_str(), x - 8, y - 5, TEXT, title_bg);
         }
 
         title_bg
     }
+}
+
+#[inline]
+pub fn blend_darken(color: u32, factor: u32) -> u32 {
+    let r = (((color >> 16) & 0xff) * (256 - factor)) >> 8;
+    let g = (((color >> 8) & 0xff) * (256 - factor)) >> 8;
+    let b = ((color & 0xff) * (256 - factor)) >> 8;
+    0xff000000 | (r << 16) | (g << 8) | b
 }
 
 fn label_pixel(label: &str, x: usize, y: usize, fg: u32, bg: u32) -> u32 {
@@ -582,8 +653,19 @@ impl WindowManager {
         self.raise(first_id, s);
     }
 
+    #[allow(dead_code)]
+    pub fn focused_window_id(&self) -> Option<u32> {
+        self.windows.iter().rev().find(|w| w.is_focused && !w.is_minimized).map(|w| w.id)
+    }
+
     fn dock_damage(s: &mut Surface) {
-        s.damage(Self::dock_rect(s.width, s.height));
+        let d = Self::dock_rect(s.width, s.height);
+        s.damage(Rect {
+            x: d.x.saturating_sub(4),
+            y: d.y,
+            w: d.w + 8,
+            h: d.h + 8,
+        });
         s.damage(Rect {
             x: 0,
             y: s.height.saturating_sub(32),
@@ -597,7 +679,7 @@ impl WindowManager {
         for (i, w) in self.windows.iter_mut().enumerate() {
             let focused = Some(i) == top;
             if w.is_focused != focused {
-                s.damage(w.rect);
+                s.damage(w.damage_rect());
             }
             w.is_focused = focused;
         }
@@ -606,7 +688,7 @@ impl WindowManager {
     pub fn raise(&mut self, id: u32, s: &mut Surface) {
         if let Some(i) = self.windows.iter().position(|w| w.id == id) {
             let w = self.windows.remove(i);
-            s.damage(w.rect);
+            s.damage(w.damage_rect());
             self.windows.push(w); // retained capacity: no allocation
             self.focus_top(s);
         }
@@ -618,12 +700,12 @@ impl WindowManager {
         if self.buttons & 1 != 0 {
             for w in &mut self.windows {
                 if w.is_dragging {
-                    let old = w.rect;
+                    let old = w.damage_rect();
                     w.rect.x = x.saturating_sub(w.drag_offset.0).min(s.width - 1);
                     w.rect.y = y.saturating_sub(w.drag_offset.1).min(s.height - 1);
-                    if old != w.rect {
+                    if old != w.damage_rect() {
                         s.damage(old);
-                        s.damage(w.rect);
+                        s.damage(w.damage_rect());
                     }
                 } else if w.is_resizing {
                     let min_w = 160;
@@ -633,10 +715,10 @@ impl WindowManager {
                     let target_w = x.saturating_sub(w.rect.x).max(min_w).min(max_w);
                     let target_h = y.saturating_sub(w.rect.y).max(min_h).min(max_h);
                     if target_w != w.rect.w || target_h != w.rect.h {
-                        let old = w.rect;
+                        let old = w.damage_rect();
                         if w.resize(target_w, target_h) {
                             s.damage(old);
-                            s.damage(w.rect);
+                            s.damage(w.damage_rect());
                             ret_action = Action::WindowResized(w.id);
                         }
                     }
@@ -721,13 +803,13 @@ impl WindowManager {
                 match hit {
                     Hit::Close => {
                         let w = self.windows.pop().unwrap();
-                        s.damage(w.rect);
+                        s.damage(w.damage_rect());
                         Self::dock_damage(s);
                         self.focus_top(s);
                     }
                     Hit::Minimize => {
                         w.is_minimized = true;
-                        s.damage(w.rect);
+                        s.damage(w.damage_rect());
                         Self::dock_damage(s);
                         self.focus_top(s);
                     }
@@ -771,7 +853,7 @@ impl WindowManager {
         if hover != self.hover {
             for w in &self.windows {
                 if self.hover.is_some_and(|h| h.0 == w.id) || hover.is_some_and(|h| h.0 == w.id) {
-                    s.damage(w.rect);
+                    s.damage(w.damage_rect());
                 }
             }
             self.hover = hover;
@@ -840,13 +922,20 @@ impl WindowManager {
         s.damage(damage_rect);
     }
 
+    #[allow(dead_code)]
     pub fn render(&self, s: &mut Surface) {
+        self.render_with_wallpaper(s, None);
+    }
+
+    pub fn render_with_wallpaper(&self, s: &mut Surface, wallpaper: Option<&crate::wallpaper::Wallpaper>) {
         let mut i = 0;
         while let Some(r) = s.damage_rect(i) {
             // Repair desktop first, then composite every intersecting window.
             for y in r.y..r.y + r.h {
                 for x in r.x..r.x + r.w {
-                    s.pixels[y * s.width + x] = if (32..48).contains(&y) && x >= 32 {
+                    s.pixels[y * s.width + x] = if let Some(wp) = wallpaper {
+                        wp.pixel(x, y, s.width, s.height)
+                    } else if (32..48).contains(&y) && x >= 32 {
                         label_pixel("FortressOS Rust Compositor", x - 32, y - 32, TEXT, DESKTOP)
                     } else {
                         DESKTOP
@@ -901,6 +990,32 @@ impl WindowManager {
                 }
             }
 
+            // Drop shadows for modern windows (id >= 3)
+            for w in &self.windows {
+                if w.is_minimized || w.id < 3 {
+                    continue;
+                }
+                let shadow_r = Rect {
+                    x: w.rect.x.saturating_sub(8),
+                    y: w.rect.y.saturating_sub(5),
+                    w: w.rect.w + 16,
+                    h: w.rect.h + 16,
+                };
+                if let Some(clip) = shadow_r.intersection(r) {
+                    for y in clip.y..clip.y + clip.h {
+                        for x in clip.x..clip.x + clip.w {
+                            let dx = if x < w.rect.x { w.rect.x - x } else if x >= w.rect.x + w.rect.w { x - (w.rect.x + w.rect.w - 1) } else { 0 };
+                            let dy = if y < w.rect.y + 3 { (w.rect.y + 3) - y } else if y >= w.rect.y + w.rect.h + 3 { y - (w.rect.y + w.rect.h + 2) } else { 0 };
+                            let d = dx.max(dy);
+                            if d > 0 && d <= 8 {
+                                let factor = ((9 - d) * 14) as u32;
+                                s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                            }
+                        }
+                    }
+                }
+            }
+
             for w in &self.windows {
                 if w.is_minimized {
                     continue;
@@ -909,15 +1024,33 @@ impl WindowManager {
                     let hover = self.hover.filter(|h| h.0 == w.id).map(|h| h.1);
                     for y in clip.y..clip.y + clip.h {
                         for x in clip.x..clip.x + clip.w {
-                            s.pixels[y * s.width + x] = w.pixel(x - w.rect.x, y - w.rect.y, hover);
+                            let p = w.pixel(x - w.rect.x, y - w.rect.y, hover);
+                            if p != 0 {
+                                s.pixels[y * s.width + x] = p;
+                            }
                         }
                     }
                 }
             }
 
-
             // Floating macOS Translucent Bottom Dock
             let dock_r = Self::dock_rect(s.width, s.height);
+            let dock_shadow_r = Rect {
+                x: dock_r.x.saturating_sub(4),
+                y: dock_r.y + dock_r.h,
+                w: dock_r.w + 8,
+                h: 6,
+            };
+            if let Some(clip) = dock_shadow_r.intersection(r) {
+                for y in clip.y..clip.y + clip.h {
+                    for x in clip.x..clip.x + clip.w {
+                        let dy = y - (dock_r.y + dock_r.h) + 1;
+                        let factor = ((7 - dy) * 16) as u32;
+                        s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                    }
+                }
+            }
+
             if let Some(clip) = dock_r.intersection(r) {
                 let has_win5 = self.windows.iter().any(|w| w.id == 5);
                 let has_win3 = self.windows.iter().any(|w| w.id == 3);

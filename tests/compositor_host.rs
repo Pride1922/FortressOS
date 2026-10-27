@@ -14,6 +14,9 @@ mod surface;
 mod sys;
 #[path = "../user/compositor/src/terminal.rs"]
 mod terminal;
+#[path = "../user/compositor/src/wallpaper.rs"]
+#[allow(dead_code)]
+mod wallpaper;
 #[path = "../user/compositor/src/window.rs"]
 mod window;
 use surface::{Rect, Surface};

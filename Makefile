@@ -1536,6 +1536,10 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@rm -rf $(BUILD_DIR)/initramfs/lib/firmware
 	@mkdir -p $(BUILD_DIR)/initramfs/lib/firmware
 	@python3 scripts/strip_firmware.py assets/firmware/iwlwifi-8265-36.ucode $(BUILD_DIR)/initramfs/lib/firmware/iwlwifi-8265-36.ucode.gz
+	@if [ -f "assets/wallpapers/hello-world.png" ]; then \
+		mkdir -p $(BUILD_DIR)/initramfs/usr/share/wallpapers; \
+		python3 scripts/build_wallpaper.py assets/wallpapers/hello-world.png $(BUILD_DIR)/initramfs/usr/share/wallpapers/hello-world.bin; \
+	fi
 	@echo "  [TAR] Generating USTAR archive $@"
 	@python3 scripts/create_initramfs.py $(BUILD_DIR)/initramfs $(INITRAMFS_TAR)
 

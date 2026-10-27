@@ -128,7 +128,7 @@ def run_test(firmware):
             guest.send('operator')
             guest.wait(lambda s: s.endswith('$ '), timeout=15)
             # Mouse devices are root-owned 0660; preserve the device policy.
-            guest.send('sudo /bin/compositor')
+            guest.send('sudo /bin/compositor --test')
             guest.wait(lambda s: '[OK] Window server ready; polling' in s, timeout=20)
             w, h, baseline = wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,80,120) == bytes.fromhex('607089') and pixel(rgb,iw,93,157) == bytes.fromhex('202b3b') and pixel(rgb,iw,iw//2,ih//2) == bytes.fromhex('101010'))
             guest.qmp.execute('screendump', {'filename': str(ROOT / 'build' / f'compositor-windows-{firmware}.ppm')})
