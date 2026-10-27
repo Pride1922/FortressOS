@@ -31,6 +31,9 @@ pub struct Terminal {
     ansi_params: [usize; 4],
     ansi_param_count: usize,
     ansi_private: bool,
+    dirty_min_row: usize,
+    dirty_max_row: usize,
+    full_dirty: bool,
 }
 
 impl Terminal {
@@ -53,6 +56,9 @@ impl Terminal {
             ansi_params: [0; 4],
             ansi_param_count: 0,
             ansi_private: false,
+            dirty_min_row: 0,
+            dirty_max_row: 14,
+            full_dirty: true,
         }
     }
 
@@ -65,9 +71,16 @@ impl Terminal {
         if self.cursor_row >= self.rows {
             self.cursor_row = self.rows.saturating_sub(1);
         }
+        self.full_dirty = true;
+    }
+
+    fn mark_dirty(&mut self, row: usize) {
+        self.dirty_min_row = self.dirty_min_row.min(row);
+        self.dirty_max_row = self.dirty_max_row.max(row);
     }
 
     pub fn write_byte(&mut self, b: u8) {
+        let old_row = self.cursor_row;
         // ANSI escape sequence state machine
         match self.ansi_state {
             1 => {
@@ -107,6 +120,8 @@ impl Terminal {
                 if (0x40..=0x7e).contains(&b) {
                     self.execute_csi(b);
                     self.ansi_state = 0;
+                    self.mark_dirty(old_row);
+                    self.mark_dirty(self.cursor_row);
                     return;
                 }
                 return;
@@ -155,6 +170,8 @@ impl Terminal {
             }
             _ => {}
         }
+        self.mark_dirty(old_row);
+        self.mark_dirty(self.cursor_row);
     }
 
     fn execute_csi(&mut self, cmd: u8) {
@@ -165,6 +182,7 @@ impl Terminal {
         match cmd {
             b'J' => {
                 // Erase in Display (clear screen)
+                self.full_dirty = true;
                 if p0 == 2 || p0 == 3 {
                     for r in 0..max_rows {
                         self.grid[r] = [b' '; TERM_MAX_COLS];
@@ -191,6 +209,7 @@ impl Terminal {
             }
             b'K' => {
                 // Erase in Line
+                self.mark_dirty(self.cursor_row);
                 if p0 == 0 {
                     // Erase from cursor to end of line
                     for c in self.cursor_col..max_cols {
@@ -223,16 +242,19 @@ impl Terminal {
                     self.cursor_row = r;
                     self.cursor_col = c;
                 }
+                self.mark_dirty(self.cursor_row);
             }
             b'A' => {
                 // Cursor up
                 let n = p0.max(1);
                 self.cursor_row = self.cursor_row.saturating_sub(n);
+                self.mark_dirty(self.cursor_row);
             }
             b'B' => {
                 // Cursor down
                 let n = p0.max(1);
                 self.cursor_row = (self.cursor_row + n).min(max_rows.saturating_sub(1));
+                self.mark_dirty(self.cursor_row);
             }
             b'C' => {
                 // Cursor forward
@@ -251,11 +273,13 @@ impl Terminal {
             b'h' => {
                 if self.ansi_private && p0 == 25 {
                     self.cursor_visible = true;
+                    self.mark_dirty(self.cursor_row);
                 }
             }
             b'l' => {
                 if self.ansi_private && p0 == 25 {
                     self.cursor_visible = false;
+                    self.mark_dirty(self.cursor_row);
                 }
             }
             _ => {}
@@ -265,11 +289,13 @@ impl Terminal {
     fn scroll_down(&mut self) {
         if self.cursor_row + 1 < self.rows {
             self.cursor_row += 1;
+            self.mark_dirty(self.cursor_row);
         } else {
             for r in 0..self.rows.saturating_sub(1) {
                 self.grid[r] = self.grid[r + 1];
             }
             self.grid[self.rows.saturating_sub(1)] = [b' '; TERM_MAX_COLS];
+            self.full_dirty = true;
         }
     }
 
@@ -279,15 +305,34 @@ impl Terminal {
         }
     }
 
-    pub fn render(&self, w: &mut Window) {
+    pub fn render_dirty(&mut self, w: &mut Window) -> crate::surface::Rect {
         let width = w.rect.w.saturating_sub(2);
         let height = w.rect.h.saturating_sub(26);
-        // Fill entire window content area with terminal background
-        w.content.fill(TERM_BG);
-        for row in 0..self.rows {
+
+        if self.full_dirty || self.dirty_min_row > self.dirty_max_row {
+            self.full_dirty = false;
+            self.dirty_min_row = 0;
+            self.dirty_max_row = self.rows.saturating_sub(1);
+            w.content.fill(TERM_BG);
+        }
+
+        let start_row = self.dirty_min_row.min(self.rows.saturating_sub(1));
+        let end_row = self.dirty_max_row.min(self.rows.saturating_sub(1));
+
+        // Reset dirty trackers for next cycle
+        self.dirty_min_row = usize::MAX;
+        self.dirty_max_row = 0;
+
+        for row in start_row..=end_row {
             let py = 8 + row * 16;
             if py + 16 > height {
                 break;
+            }
+            for r in 0..16 {
+                let off = (py + r) * width;
+                if off + width <= w.content.len() {
+                    w.content[off..off + width].fill(TERM_BG);
+                }
             }
             for col in 0..self.cols {
                 let px = 10 + col * 8;
@@ -317,5 +362,19 @@ impl Terminal {
                 }
             }
         }
+
+        let dirty_y = 25 + 8 + start_row * 16;
+        let dirty_h = ((end_row - start_row + 1) * 16).min(w.rect.h.saturating_sub(dirty_y));
+        crate::surface::Rect {
+            x: w.rect.x + 1,
+            y: w.rect.y + dirty_y,
+            w: w.rect.w.saturating_sub(2),
+            h: dirty_h.max(16),
+        }
+    }
+
+    pub fn render(&mut self, w: &mut Window) {
+        self.full_dirty = true;
+        let _ = self.render_dirty(w);
     }
 }

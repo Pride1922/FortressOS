@@ -314,14 +314,24 @@ fn run(is_test: bool) -> i32 {
             // Output from /bin/sh over PTY master
             if fds[2].revents & sys::POLLIN != 0 {
                 if let Some(ref mut t) = term {
-                    let mut term_buf = [0u8; 128];
-                    let n = sys::read(t.master_fd, &mut term_buf);
-                    if n > 0 {
+                    let mut term_buf = [0u8; 1024];
+                    let mut total_read = 0;
+                    loop {
+                        let n = sys::read(t.master_fd, &mut term_buf);
+                        if n <= 0 {
+                            break;
+                        }
                         t.write_bytes(&term_buf[..n as usize]);
+                        total_read += n;
+                        if total_read >= 4096 {
+                            break;
+                        }
+                    }
+                    if total_read > 0 {
                         if let Some(w) = windows.windows.iter_mut().find(|w| w.id == t.window_id) {
-                            t.render(w);
+                            let dirty = t.render_dirty(w);
                             if !w.is_minimized {
-                                scene.damage(w.rect);
+                                scene.damage(dirty);
                             }
                         }
                     }
