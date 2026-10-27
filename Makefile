@@ -403,6 +403,20 @@ test-console:
 	@python3 scripts/test_console.py
 
 .PHONY: test-fast-syscall-boot
+test-ahci-host:
+	@mkdir -p build
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -Isrc/include -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 -Isrc/fs tests/ahci_host.c user/tools/digest.c -o build/ahci-host
+	./build/ahci-host
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -Isrc/include -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 -Isrc/fs tests/storage_host.c -o build/storage-host
+	./build/storage-host
+	$(CC) -std=c11 -O1 -g -Wall -Wextra -Werror -pthread -ffunction-sections -fdata-sections -Wl,--gc-sections -fsanitize=address,undefined -no-pie -Isrc/include -Isrc/drivers -Isrc/mm -Isrc/kernel -Isrc/arch/x86_64 -Isrc/fs tests/pci_config_host.c -o build/pci-config-host
+	./build/pci-config-host
+
+.PHONY: test-ahci-host
+test-sata: $(BOOTABLE_ISO) build/tool-install-multi.elf test-ahci-host
+	python3 scripts/test_sata.py
+
+.PHONY: test-sata
 test-fast-syscall-boot: $(BOOTABLE_ISO)
 	python3 scripts/test_fast_syscall_boot.py
 

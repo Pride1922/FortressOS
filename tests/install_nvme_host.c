@@ -15,7 +15,7 @@ int install_runtime_deploy(const boot_info_t *boot,const install_backend_t *back
     const install_identity_v1_t *id,const install_deploy_v1_t *request,install_status_v1_t *status) {
     (void)boot;(void)backend;(void)id;(void)request;(void)status;return -VFS_EOPNOTSUPP;
 }
-#include "nvme.h"
+#include "storage.h"
 #include "ext4.h"
 #include "../user/tools/digest.h"
 static install_backend_t registered;
@@ -32,25 +32,25 @@ void install_identity_digest(install_identity_v1_t *id) {
 }
 size_t block_get_dev_count(void) {return mounted;}
 bool ext4_storage_owned(void) {assert(!deploying);return prepared;}
-bool nvme_is_fatal(void) {return fatal;}
-bool nvme_is_dma_quarantined(void) {return quarantined;}
-bool nvme_installer_identity(install_identity_v1_t *id) {if (bad_inventory) return false;*id=hardware;return true;}
-bool nvme_read_sector(uint64_t lba,void *bytes) {
+bool storage_is_fatal(void) {return fatal;}
+bool storage_is_dma_quarantined(void) {return quarantined;}
+bool storage_installer_identity(install_identity_v1_t *id) {if (bad_inventory) return false;*id=hardware;return true;}
+bool storage_read_sector(uint64_t lba,void *bytes) {
     reads++;if (io_failure) return false;
     const uint8_t *source=lba==0 ? mbr : lba==1 ? header : backup;
     assert(lba==0 || lba==1 || lba==hardware.sector_count-1);
     memcpy(bytes,source,512);return true;
 }
-bool nvme_read_sectors(uint64_t lba,uint32_t count,void *bytes) {(void)lba;reads++;if (io_failure) return false;memset(bytes,0,count*512);return true;}
-bool nvme_write_sectors(uint64_t lba,uint32_t count,const void *bytes) {(void)lba;(void)count;(void)bytes;writes++;return !io_failure;}
-bool nvme_flush(void) {flushes++;return !io_failure;}
+bool storage_read_sectors(uint64_t lba,uint32_t count,void *bytes) {(void)lba;reads++;if (io_failure) return false;memset(bytes,0,count*512);return true;}
+bool storage_write_sectors(uint64_t lba,uint32_t count,const void *bytes) {(void)lba;(void)count;(void)bytes;writes++;return !io_failure;}
+bool storage_flush(void) {flushes++;return !io_failure;}
 #ifdef INSTALLER_MULTI
 static install_identity_v1_t inventory_ids[2];
 static bool inventory_ok=true;
 static unsigned inventory_index;
-size_t nvme_inventory_boot(void) {return inventory_ok ? 2 : 0;}
-bool nvme_inventory_valid(void) {return inventory_ok;}
-bool nvme_inventory_select(unsigned index) {
+size_t storage_inventory_boot(void) {return inventory_ok ? 2 : 0;}
+bool storage_inventory_valid(void) {return inventory_ok;}
+bool storage_inventory_select(unsigned index) {
     if (!inventory_ok || index>=2) return false;
     inventory_index=index;hardware=inventory_ids[index];return true;
 }

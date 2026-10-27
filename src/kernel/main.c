@@ -30,6 +30,7 @@
 #include "tarfs.h"
 #include "pci.h"
 #include "nvme.h"
+#include "storage.h"
 #include "xhci.h"
 #include "block.h"
 #include "crc32.h"
@@ -6611,6 +6612,7 @@ pf_boot_guard_done:
     boot_status("Mounting persistent storage (/mnt)...");
     if (ext4_physical_requested() || qemu_fw_cfg_has_key("opt/fortress/ext4_journal_usb_test")) test_ext4_journal_usb_mount(&boot_info);
     else if (!g_installed_boot && !g_installer_boot) usb_mount_production_storage(&boot_info);
+    if (!g_installed_boot && !g_installer_boot) storage_probe_live_sata();
     devfs_add_usb_partitions();
     if (qemu_fw_cfg_has_key("opt/fortress/memory_storage_test") ||
         qemu_fw_cfg_has_key("opt/fortress/memory_storage_churn")) {
@@ -6685,7 +6687,7 @@ pf_boot_guard_done:
         extern void install_log_boot_usb(const boot_info_t *);
         install_log_boot_usb(&boot_info);
         install_control_boot(NULL,true);
-        console_puts(install_nvme_multi_boot(&boot_info) ? "NVMe disk selection installer ready\n" : "Installer inventory unavailable\n");
+        console_puts(install_nvme_multi_boot(&boot_info) ? "NVMe/SATA disk selection installer ready\n" : "Installer inventory unavailable\n");
     }
 #endif
     bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);

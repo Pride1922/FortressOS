@@ -1,7 +1,7 @@
 #include "install_nvme.h"
 #include "install_control.h"
 #include "root_boot.h"
-#include "nvme.h"
+#include "storage.h"
 #include "block.h"
 #include "ext4.h"
 #include "vfs.h"
@@ -34,9 +34,9 @@ static bool zero_sector(const uint8_t *bytes) {
 }
 static int identity(void *context,install_identity_v1_t *out) {
     (void)context;
-    if (failed || block_get_dev_count() || (!deploying && ext4_storage_owned()) || nvme_is_fatal() || nvme_is_dma_quarantined()) return -VFS_EIO;
+    if (failed || block_get_dev_count() || (!deploying && ext4_storage_owned()) || storage_is_fatal() || storage_is_dma_quarantined()) return -VFS_EIO;
     install_identity_v1_t id;
-    if (!nvme_installer_identity(&id)) {failed=true;return -VFS_EIO;}
+    if (!storage_installer_identity(&id)) {failed=true;return -VFS_EIO;}
 #ifdef INSTALLER_PHYSICAL
     if (physical_bound) {
         install_identity_v1_t inspected=id;inspected.flags=0;
@@ -52,13 +52,13 @@ static int identity(void *context,install_identity_v1_t *out) {
 #ifndef INSTALLER_MULTI
     if (!optical && !started) {
         uint8_t sector[512];
-        if (!nvme_read_sector(1,sector)) {failed=true;return -VFS_EIO;}
+        if (!storage_read_sector(1,sector)) {failed=true;return -VFS_EIO;}
         if (zero_sector(sector)) {
             /* Admit only an unformatted boundary tuple. A damaged primary on
              * the source still has a nonzero protective MBR or backup header.
              * This is read-only admission, never a GPT repair heuristic. */
-            if (id.sector_count<2 || !nvme_read_sector(0,sector) || !zero_sector(sector) ||
-                !nvme_read_sector(id.sector_count-1,sector) || !zero_sector(sector)) {
+            if (id.sector_count<2 || !storage_read_sector(0,sector) || !zero_sector(sector) ||
+                !storage_read_sector(id.sector_count-1,sector) || !zero_sector(sector)) {
                 failed=true;return -VFS_EIO;
             }
         } else {
@@ -72,8 +72,8 @@ static int identity(void *context,install_identity_v1_t *out) {
 #else
     if (!optical && !started) {
         uint8_t primary[512],backup[512],mbr[512];
-        if (id.sector_count<2 || !nvme_read_sector(1,primary) ||
-            !nvme_read_sector(id.sector_count-1,backup) || !nvme_read_sector(0,mbr)) {
+        if (id.sector_count<2 || !storage_read_sector(1,primary) ||
+            !storage_read_sector(id.sector_count-1,backup) || !storage_read_sector(0,mbr)) {
             failed=true;return -VFS_EIO;
         }
         /* Source exclusion precedes CRC admission. Even a damaged source
@@ -138,19 +138,19 @@ static void progress_update(void) {
 }
 static int read_run(void *context,uint64_t lba,uint32_t count,void *bytes) {
     (void)context;
-    if (failed || !nvme_read_sectors(lba,count,bytes)) {failed=true;return -VFS_EIO;}
+    if (failed || !storage_read_sectors(lba,count,bytes)) {failed=true;return -VFS_EIO;}
     if (deploying && progress_stage==6) {progress_read+=(uint64_t)count*512;progress_update();}
     return 0;
 }
 static int write_run(void *context,uint64_t lba,uint32_t count,const void *bytes) {
     (void)context;
-    if (failed || !nvme_write_sectors(lba,count,bytes)) {failed=true;return -VFS_EIO;}
+    if (failed || !storage_write_sectors(lba,count,bytes)) {failed=true;return -VFS_EIO;}
     if (deploying && progress_stage==4) {progress_written+=(uint64_t)count*512;progress_update();}
     return 0;
 }
 static int flush(void *context) {
     (void)context;
-    if (failed || !nvme_flush()) {failed=true;return -VFS_EIO;}
+    if (failed || !storage_flush()) {failed=true;return -VFS_EIO;}
     return 0;
 }
 static int deploy(void *context,const install_deploy_v1_t *request,install_status_v1_t *status) {
@@ -204,7 +204,7 @@ static uint64_t le64(const uint8_t *p) {return (uint64_t)le32(p)|((uint64_t)le32
 static void summarize_disk(uint64_t sectors,uint8_t out[32]) {
     uint8_t sector[512],entries[512];unsigned count=0,kinds=0,scheme=0;bool unreadable=false;
     memset(out,0,32);out[0]=INSTALL_SUMMARY_VALID;
-    if (!nvme_read_sector(1,sector)) {failed=true;out[3]=INSTALL_SUMMARY_UNREADABLE;return;}
+    if (!storage_read_sector(1,sector)) {failed=true;out[3]=INSTALL_SUMMARY_UNREADABLE;return;}
     if (!memcmp(sector,"EFI PART",8)) {
         scheme=INSTALL_SUMMARY_GPT;
         uint64_t at=le64(sector+72);uint32_t total=le32(sector+80),size=le32(sector+84);
@@ -212,7 +212,7 @@ static void summarize_disk(uint64_t sectors,uint8_t out[32]) {
         else {
             if (total>32) total=32;
             for (unsigned s=0;s<(total+3)/4 && !unreadable;s++) {
-                if (!nvme_read_sector(at+s,entries)) {failed=true;unreadable=true;break;}
+                if (!storage_read_sector(at+s,entries)) {failed=true;unreadable=true;break;}
                 for (unsigned e=0;e<4 && s*4+e<total;e++) {
                     const uint8_t *g=entries+e*128;
                     bool unused=true;
@@ -227,7 +227,7 @@ static void summarize_disk(uint64_t sectors,uint8_t out[32]) {
                 }
             }
         }
-    } else if (!nvme_read_sector(0,sector)) {failed=true;unreadable=true;
+    } else if (!storage_read_sector(0,sector)) {failed=true;unreadable=true;
     } else if (sector[510]==0x55 && sector[511]==0xAA) {
         scheme=INSTALL_SUMMARY_MBR;
         for (unsigned i=0;i<4;i++) {
@@ -244,11 +244,11 @@ static void summarize_disk(uint64_t sectors,uint8_t out[32]) {
 }
 static int multi_enumerate(void *context,unsigned index,install_identity_v1_t *out) {
     (void)context;
-    if (failed || !nvme_inventory_valid()) {failed=true;return -VFS_EIO;}
+    if (failed || !storage_inventory_valid()) {failed=true;return -VFS_EIO;}
     if (index>=multi_count) return 0;
-    if (!nvme_inventory_select(index)) {failed=true;return -VFS_EIO;}
+    if (!storage_inventory_select(index)) {failed=true;return -VFS_EIO;}
     install_identity_v1_t now;
-    if (!nvme_installer_identity(&now) || memcmp(&now,&multi_raw[index],sizeof(now))) {
+    if (!storage_installer_identity(&now) || memcmp(&now,&multi_raw[index],sizeof(now))) {
         failed=true;return -VFS_EIO;
     }
     *out=multi_ids[index];memcpy(out->reserved2,multi_summary[index],32);return 1;
@@ -261,7 +261,7 @@ static int multi_select(void *context,unsigned index) {
     multi_selected=index;baseline=multi_ids[index];return 0;
 }
 static int multi_identity(void *context,install_identity_v1_t *out) {
-    if (!nvme_inventory_select(multi_selected)) {failed=true;return -VFS_EIO;}
+    if (!storage_inventory_select(multi_selected)) {failed=true;return -VFS_EIO;}
     return identity(context,out);
 }
 bool install_nvme_multi_boot(const boot_info_t *info) {
@@ -270,10 +270,10 @@ bool install_nvme_multi_boot(const boot_info_t *info) {
     root_boot_config_t c=root_boot_parse(info->cmdline,sizeof(info->cmdline),info->cmdline_truncated);
     if (!c.valid || !c.explicit_mode || c.mode!=ROOT_BOOT_INSTALLER) return false;
     optical=info->installer_source_optical;memcpy(source_guid,info->installer_source_disk_guid,16);
-    multi_count=nvme_inventory_boot();
+    multi_count=storage_inventory_boot();
     if (!multi_count || multi_count>8) return false;
     for (unsigned i=0;i<multi_count;i++) {
-        if (!nvme_inventory_select(i) || !nvme_installer_identity(&multi_raw[i]) || identity(NULL,&multi_ids[i])) return false;
+        if (!storage_inventory_select(i) || !storage_installer_identity(&multi_raw[i]) || identity(NULL,&multi_ids[i])) return false;
         summarize_disk(multi_ids[i].sector_count,multi_summary[i]);
         if (failed) return false;
     }
@@ -288,8 +288,8 @@ bool install_nvme_multi_boot(const boot_info_t *info) {
 #ifdef TEST_INSTALLER_INSPECT
 static int inspect_identity(void *context,install_identity_v1_t *out) {
     (void)context;
-    if (block_get_dev_count() || ext4_storage_owned() || nvme_is_fatal() ||
-        nvme_is_dma_quarantined() || !nvme_installer_identity(out)) return -VFS_EIO;
+    if (block_get_dev_count() || ext4_storage_owned() || storage_is_fatal() ||
+        storage_is_dma_quarantined() || !storage_installer_identity(out)) return -VFS_EIO;
     out->flags=0; /* Inspection is deliberately ineligible for a raw lease. */
     install_identity_digest(out);return 0;
 }

@@ -19,6 +19,9 @@ static uint8_t sector[4096];
 tcb_t *thread_current(void) {return current;}
 void spin_debug_assert_unheld(void) {}
 void accounts_process_exit(uint64_t pid) {(void)pid;}
+/* Extracted fd_close_cloexec also releases package exec ownership. Package
+ * authority is outside this descriptor/installer harness. */
+void pkg_owner_exec(struct tcb *proc) {(void)proc;}
 void *kcalloc(size_t n,size_t s) {if (oom) return NULL;void *p=calloc(n,s);if (p) allocations++;return p;}
 void kfree(void *p) {if (p) {assert(allocations);allocations--;free(p);}}
 uint64_t *vmm_get_active_pml4_virt(void) {static uint64_t table[512];return table;}

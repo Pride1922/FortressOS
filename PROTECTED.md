@@ -94,8 +94,8 @@ Acquire in increasing rank order; release LIFO; never hold a spinlock across
 | Rank | Lock |
 | --- | --- |
 | 1 | per-CPU scheduler locks **or** `ext2_lock` **or** `g_process_lock` (global process/child metadata) **or** network locks (`g_net_dev_lock`, `g_socket_table_lock`, `g_tcp_endpoints_lock`, `g_net_stack_lock`, the ping mailbox lock, the socket-manager mailbox lock, `handoff`, `udp_handoff_values`; all ordinary lock kind). Process/ext2 cannot nest with any rank-1 lock in either order; only scheduler pairs in increasing address order via `sched_lock_pair` are exempt. Network Rank-1 locks follow the same rule: they never nest with each other or with any other Rank-1 lock. |
-| 2 | heap |
-| 3 | VMM |
+| 2 | heap or AHCI I/O (`ahci_io`; allocations occur outside the I/O lock) |
+| 3 | VMM or legacy PCI port tuples (`pci_config_ports`; leaf, never held for ECAM/VMM work) |
 | 4 | PMM |
 | 5 | console |
 

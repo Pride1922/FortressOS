@@ -31,7 +31,7 @@ def overlay(work,replace):
     replace('src/kernel/main.c','opt/fortress/pkg_boot_read_error','opt/fortress/pkg_exec_cut')
     replace('src/kernel/main.c','    bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);','    extern bool mx_ready(void);\n    bool installed_ready=mx_requested?mx_ready():!g_installed_boot || installed_root_boot(&boot_info);\n    if(mx_requested&&!installed_ready){serial_puts("PKGEXEC HALTED no-fallback\\n");hcf();}')
     replace('src/kernel/main.c','    const char *initial_program="/bin/login";','    const char *initial_program=mx_requested?"/bin/pkg-boot":"/bin/login";')
-    replace('src/kernel/installed_root.c','bool installed_root_quiesce(void) {return !published || ext4_quiesce_installed_root(nvme_quiesce)==0;}','bool installed_root_quiesce(void) {extern bool mx_ready(void);return (!published&&!mx_ready()) || ext4_quiesce_installed_root(nvme_quiesce)==0;}')
+    replace('src/kernel/installed_root.c','bool installed_root_quiesce(void) {return !published || ext4_quiesce_installed_root(storage_quiesce)==0;}','bool installed_root_quiesce(void) {extern bool mx_ready(void);return (!published&&!mx_ready()) || ext4_quiesce_installed_root(storage_quiesce)==0;}')
     replace('src/kernel/accounts.c','#include "accounts.h"','#include "accounts.h"\nbool mx_ready(void);')
     replace('src/kernel/accounts.c','    if (size!=sizeof(account_request_t)','    if(mx_ready()&&(op==ACCOUNT_BEGIN||op==ACCOUNT_UPDATE||op==ACCOUNT_FINISH))return SYSCALL_EROFS;\n    if (size!=sizeof(account_request_t)')
     replace('src/kernel/syscall.c','int64_t gk_test(uint64_t);','int64_t gk_test(uint64_t);\nint64_t mx_transport(uintptr_t,uintptr_t,uint64_t);')

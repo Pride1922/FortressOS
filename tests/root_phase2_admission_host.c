@@ -35,6 +35,7 @@ static size_t io_writes;
 void serial_print_dec(uint64_t n) {(void)n;}
 void serial_print_hex(uint64_t n) {(void)n;}
 void console_puts(const char *s) {(void)s;}
+void mouse_dev_init(vfs_node_t *directory) {(void)directory;}
 void block_init(void) {devices=0;}
 bool block_register_dev(block_dev_t *d) {if (devices==16) return false;registry[devices++]=d;return true;}
 bool block_unregister_dev(block_dev_t *d) {
@@ -51,6 +52,19 @@ bool nvme_has_unique_namespace(void) {return unique;}
 bool nvme_root_geometry_supported(void) {return true;}
 uint32_t nvme_get_sector_size(void) {return 512;}
 bool nvme_quiesce(void) {return true;}
+/* Pinned storage inventory adapter. The old "multiple" negative fixture
+ * models an incoherent inventory; actual multi-disk discovery is a guest gate. */
+size_t storage_inventory_boot(void) {return inventory_complete && controllers==1 ? 1 : 0;}
+bool storage_inventory_select(unsigned i) {return i==0 && inventory_complete && controllers==1;}
+bool storage_read_sector(uint64_t l,void *p) {return image_read(&disk,l,p);}
+bool storage_has_unique_namespace(void) {return nvme_has_unique_namespace();}
+bool storage_root_geometry_supported(void) {return true;}
+uint32_t storage_get_sector_size(void) {return 512;}
+uint64_t storage_get_sector_count(void) {return disk.sector_count;}
+bool storage_init(void) {return true;}
+bool storage_register_selected(void) {return block_register_nvme();}
+block_dev_t *storage_selected_disk(void) {return &disk;}
+bool storage_quiesce(void) {return nvme_quiesce();}
 bool pci_inventory_complete(void) {return inventory_complete;}
 size_t pci_find_all_devices(uint8_t c,uint8_t s,uint8_t p,pci_device_t *out,size_t cap) {
     (void)c;(void)s;(void)p;(void)out;assert(cap==2);return controllers;

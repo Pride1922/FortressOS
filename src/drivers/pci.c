@@ -1,4 +1,5 @@
 #include "pci.h"
+#include "spinlock.h"
 #include "acpi.h"
 #include "vmm.h"
 #include "serial.h"
@@ -20,6 +21,10 @@ static pci_mcfg_record_t g_mcfg_records[MAX_PCI_SEGMENTS];
 static size_t g_mcfg_record_count = 0;
 static bool g_mcfg_available = false;
 static bool g_inventory_complete = true;
+/* CF8 selects a shared CFC window. Keep each address/data tuple indivisible
+ * across CPUs, including AP filesystem I/O through AHCI. Leaf rank 3 follows
+ * the rank-2 AHCI/xHCI locks; no VMM work occurs under this lock. */
+static spinlock_t config_port_lock = SPINLOCK_RANKED(3, "pci_config_ports");
 
 /* Ensure MMIO page is mapped uncached and execute-disabled in VMM */
 static bool pci_ensure_mapped(uintptr_t phys_addr, size_t length) {
@@ -61,8 +66,11 @@ static uint32_t pci_legacy_read32(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t
                        ((uint32_t)(dev & 0x1F) << 11) |
                        ((uint32_t)(fn & 0x07) << 8) |
                        ((uint32_t)(offset & 0xFC));
+    uint64_t irq=spin_lock_irqsave(&config_port_lock);
     outl(PCI_CONFIG_ADDRESS_PORT, address);
-    return inl(PCI_CONFIG_DATA_PORT);
+    uint32_t value=inl(PCI_CONFIG_DATA_PORT);
+    spin_unlock_irqrestore(&config_port_lock,irq);
+    return value;
 }
 
 static void pci_legacy_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t offset, uint32_t val) {
@@ -71,8 +79,10 @@ static void pci_legacy_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t of
                        ((uint32_t)(dev & 0x1F) << 11) |
                        ((uint32_t)(fn & 0x07) << 8) |
                        ((uint32_t)(offset & 0xFC));
+    uint64_t irq=spin_lock_irqsave(&config_port_lock);
     outl(PCI_CONFIG_ADDRESS_PORT, address);
     outl(PCI_CONFIG_DATA_PORT, val);
+    spin_unlock_irqrestore(&config_port_lock,irq);
 }
 
 /* Find matching MCFG record for a given segment and bus */
@@ -171,8 +181,10 @@ void pci_write_config16(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn, uint
         uint32_t address = 0x80000000U | ((uint32_t)bus << 16)
                          | ((uint32_t)(dev & 31) << 11) | ((uint32_t)(fn & 7) << 8)
                          | (offset & 0xfc);
+        uint64_t irq=spin_lock_irqsave(&config_port_lock);
         outl(PCI_CONFIG_ADDRESS_PORT, address);
         outw((uint16_t)(PCI_CONFIG_DATA_PORT + (offset & 2)), val);
+        spin_unlock_irqrestore(&config_port_lock,irq);
     }
 }
 

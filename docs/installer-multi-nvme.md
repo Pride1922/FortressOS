@@ -1,5 +1,11 @@
 # NVMe disk-selection installer
 
+2026-10-27 extension: the normal installer now lists supported NVMe **and
+SATA/AHCI** disks. See [SATA scope and acceptance evidence](roadmap/sata-ahci.md).
+The NVMe-only descriptions below record the earlier profile; the existing
+selection/source-exclusion/confirmation contracts also apply to SATA. The
+separate fixed-fingerprint physical inspector/installer stays NVMe-only.
+
 This separate installer profile implements the requested disk list. It shows a
 numbered model-and-capacity line for each detected supported NVMe controller;
 serial numbers, PCI addresses, namespace numbers and identity digests stay out

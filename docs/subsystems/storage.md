@@ -6,6 +6,13 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-27: [SATA/AHCI implementation and evidence](../roadmap/sata-ahci.md)
+adds ATA LBA48 I/O, combined NVMe/SATA installer selection and PARTUUID root
+discovery, with read-only SATA inventory during live boots. Host ASan/UBSan and
+BIOS/UEFI SATA-only/mixed acceptance pass; physical testing is pending. The
+controller must expose AHCI; RAID/RST and IDE are not implemented. Existing
+512-byte installed-root geometry and storage authority gates remain in force.
+
 2026-10-19: [Installed-system/package readiness review](../roadmap/ext4-package-readiness-audit.md)
 identifies timestamp encoding defects, atomic replacement and durability API
 work, recovery headroom, scaling/latency measurements and documentation gaps.

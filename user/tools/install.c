@@ -234,8 +234,8 @@ static void disk_label(const install_identity_v1_t *id) {
     fixed_text(id->model,40);say(" - ");
     uint64_t bytes=id->sector_count*id->sector_size;
     uint64_t gb=bytes/1000000000u;
-    if (gb) {number(gb);say(" GB NVMe");}
-    else {number(bytes/(1024*1024));say(" MiB NVMe");}
+    if (gb) {number(gb);say(" GB disk");}
+    else {number(bytes/(1024*1024));say(" MiB disk");}
 }
 /* The call result uses syscall errors; status.error retains raw VFS errors.
  * Keep the namespaces separate, and never guess a failed physical component. */
@@ -250,7 +250,7 @@ static void failure_reason(long call,unsigned stage) {
     case SYSCALL_EACCES: case SYSCALL_EPERM: case SYSCALL_EROFS:
         say("The installer cannot safely use this disk or configuration. Choose another supported disk, or report the details below.\n");return;
     case SYSCALL_EOPNOTSUPP:
-        say("This disk or installer configuration is not supported. Use a supported NVMe disk and the latest installer image.\n");return;
+        say("This disk or installer configuration is not supported. Use a supported NVMe or SATA/AHCI disk and the latest installer image.\n");return;
     case SYSCALL_EINVAL:
         say("The installer files or installation settings could not be validated. Recreate the USB using the latest installer image.\n");return;
     case SYSCALL_EIO: case SYSCALL_ETIMEDOUT:
@@ -307,7 +307,7 @@ int install_main(int argc,char **argv) {
 #elif defined(INSTALLER_PHYSICAL)
     say("FortressOS installer — identified spare NVMe only\n");
 #elif defined(INSTALLER_MULTI)
-    say("FortressOS installer — choose an NVMe disk\n");
+    say("FortressOS installer — choose an NVMe or SATA disk\n");
 #else
     say("FortressOS text installer — disposable workbench\n");
 #endif
@@ -330,7 +330,7 @@ int install_main(int argc,char **argv) {
 #ifdef INSTALLER_PHYSICAL
         failure_screen(1,"The identified spare NVMe is not available. Use live rescue or power off.",SYSCALL_EOPNOTSUPP,1,0,false);goto done;
 #else
-        failure_screen(1,"No supported NVMe disk is available. Use live rescue or power off.",SYSCALL_EOPNOTSUPP,1,0,false);goto done;
+        failure_screen(1,"No supported NVMe or SATA/AHCI disk is available. Use live rescue or power off.",SYSCALL_EOPNOTSUPP,1,0,false);goto done;
 #endif
     }
 layout_step:;

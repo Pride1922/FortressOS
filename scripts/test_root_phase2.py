@@ -240,7 +240,7 @@ def extract_root(disk,out):
         while remaining:
             b=src.read(min(1024*1024,remaining));assert b;dst.write(b);remaining-=len(b)
 
-def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None,accel='tcg',username='operator',extra_first=False):
+def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None,accel='tcg',username='operator',extra_first=False,transport='nvme'):
     assert accel in ('tcg','kvm')
     label=f'{mode}-{cpus}-{boot}';argv=['qemu-system-x86_64','-M','q35','-m','2G','-accel',accel,'-smp',str(cpus),'-display','none','-monitor','none','-no-reboot','-net','none','-serial','stdio']
     if accel=='kvm':argv+=['-cpu','host']
@@ -251,7 +251,9 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
         # OVMF repairs an invalid backup GPT before booting the kernel when the
         # backend is writable. Keep this degraded-policy fixture immutable.
         protect=',readonly=on' if mode=='uefi' and boot=='degraded' else ''
-        argv+=['-drive',f'file={disk},if=none,id=target,format=raw'+protect,'-device','nvme,drive=target,serial=ROOTPHASE2,bootindex=1'+(',addr=0x3' if extra_first else '')]
+        assert transport in ('nvme','sata')
+        device='nvme,drive=target,serial=ROOTPHASE2,bootindex=1'+(',addr=0x3' if extra_first else '') if transport=='nvme' else 'ide-hd,bus=ide.0,drive=target,serial=ROOTPHASE2,bootindex=1'
+        argv+=['-drive',f'file={disk},if=none,id=target,format=raw'+protect,'-device',device]
     if boot=='login-publication':argv+=['-fw_cfg','name=opt/fortress/root_login_fail,string=1']
     if boot in ('flush','replay'):argv+=['-fw_cfg',f'name=opt/fortress/root_{boot}_fail,string=1']
     if extra is not None:
@@ -277,13 +279,13 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
             # Live boot retains its deliberate legacy user-fault isolation test.
             fatal=('[FATAL]','KERNEL PANIC') if live_iso else ('[FATAL]','KERNEL PANIC','[PROCESS FAULT]')
             assert not any(s in clean(transcript) for s in fatal),clean(transcript[-6000:])
-            if predicate(clean(transcript[start:])):return
+            if predicate(clean(transcript[start:])):return clean(transcript[start:])
             assert proc.poll() is None,clean(transcript[-6000:])
         raise TimeoutError(clean(transcript[-6000:]))
     def send(s):proc.stdin.write((s+'\n').encode());proc.stdin.flush()
-    prompt=lambda t:re.search(r'(?:^|\n)(?:[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\n]*|)[#$] $',t)
+    prompt=lambda t:re.search(r'(?:^|\n)(?:[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\n]*|)[#$] $',t.rstrip('\n'))
     def command(cmd,expected):
-        start=len(transcript);send(cmd);wait(lambda t:expected in t and prompt(t),start)
+        start=len(transcript);send(cmd);return wait(lambda t:expected in t and prompt(t),start)
     completed=False
     try:
         if denied:
@@ -294,7 +296,7 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
             wait(lambda t:'Recovery passphrase: ' in t);assert 'FortressOS login: ' not in clean(transcript)
             start=len(transcript);send(wrong_secret);wait(lambda t:'Recovery denied' in t and 'Recovery passphrase: ' in t,start)
             start=len(transcript);send(secret);wait(lambda t:'Recovery authenticated' in t and prompt(t),start)
-            command('id','uid=0 gid=0');completed=True
+            identity=command('id','uid=0');assert 'gid=0' in identity;completed=True
         else:
             wait(lambda t:'FortressOS login: ' in t)
             if not live_iso:assert '[ROOT] Installed root admitted by PARTUUID' in clean(transcript)
@@ -303,7 +305,9 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
             send(username)
             if not live_iso:wait(lambda t:t.endswith('Password: '));send(operator)
             wait(prompt)
-            command('pwd','/run/user/1000' if live_iso else '/home/'+username);command('id','uid=1000 gid=1000');command('cat /etc/shadow','permission denied')
+            command('pwd','/run/user/1000' if live_iso else '/home/'+username)
+            identity=command('id','uid=1000');assert 'gid=1000' in identity
+            command('cat /etc/shadow','permission denied')
             if SESSION_HOOK and not live_iso:
                 operator=SESSION_HOOK(boot,operator,send,wait,command,prompt,transcript)
             if not live_iso:
@@ -313,7 +317,7 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
                 command('sha256sum phase2.txt',hashlib.sha256(f'phase2-boot-{boot}\n'.encode()).hexdigest())
             start=len(transcript);send('sudo id')
             if not live_iso:wait(lambda t:t.endswith('sudo password: '),start);send(operator)
-            wait(lambda t:'uid=0 gid=0' in t and prompt(t),start)
+            wait(lambda t:'uid=0' in t and 'gid=0' in t and prompt(t),start)
             if not live_iso and boot==0:
                 for exit_status in (7,125):
                     start=len(transcript);send(f'exit {exit_status}');wait(lambda t:'FortressOS login: ' in t,start)

@@ -42,8 +42,8 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
     live_guid=uuid.uuid4() if combined else None
     if multi:
         kernel_bytes = kernel.read_bytes()
-        assert b"NVMe disk selection installer ready" in kernel_bytes or b"Installer disposable backend ready" in kernel_bytes
-        assert b"opt/fortress/installer_disposable" not in kernel_bytes or b"NVMe disk selection installer ready" in kernel_bytes
+        assert b"NVMe/SATA disk selection installer ready" in kernel_bytes or b"Installer disposable backend ready" in kernel_bytes
+        assert b"opt/fortress/installer_disposable" not in kernel_bytes or b"NVMe/SATA disk selection installer ready" in kernel_bytes
     interface_only=preview or inspect
     if bound_digest:
         assert not interface_only and len(bound_digest)==64
@@ -83,7 +83,7 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
     manifest = {'result': 'FAIL', 'scope': 'actual NVMe identity-only inspection; installation disabled' if inspect else 'interface preview; synthetic target; installation disabled' if preview else 'separate media packaging; runtime installation not accepted',
                 'sources': hashes, 'normal_artifacts': normal, 'commands': []}
     if bound_digest:manifest['bound_inspector_digest']=bound_digest
-    if multi:manifest['profile']='explicit user-selected NVMe; no fixed drive binding'
+    if multi:manifest['profile']='explicit user-selected NVMe/SATA; no fixed drive binding'
     def run(argv):
         command = list(map(str, argv))
         manifest['commands'].append(command)

@@ -25,8 +25,8 @@ def overlay(work,replace):
     replace('src/kernel/main.c','    bool installed_ready=!g_installed_boot || installed_root_boot(&boot_info);',
             '    extern bool jh_finish_boot(void);extern void jh_boot_fault(bool);\n    if(pkg_running_test)jh_boot_fault(qemu_fw_cfg_has_key("opt/fortress/pkg_account_flush_loss"));\n    bool installed_ready=pkg_running_test?jh_finish_boot():!g_installed_boot || installed_root_boot(&boot_info);\n    if(pkg_running_test && !installed_ready){serial_puts("PKGROOT HALTED no-live-fallback\\n");hcf();}')
     # Quiesce the actual published root during the normal shutdown path.
-    replace('src/kernel/installed_root.c','bool installed_root_quiesce(void) {return !published || ext4_quiesce_installed_root(nvme_quiesce)==0;}',
-            'bool installed_root_quiesce(void) {extern bool jh_is_running(void);return (!published && !jh_is_running()) || ext4_quiesce_installed_root(nvme_quiesce)==0;}')
+    replace('src/kernel/installed_root.c','bool installed_root_quiesce(void) {return !published || ext4_quiesce_installed_root(storage_quiesce)==0;}',
+            'bool installed_root_quiesce(void) {extern bool jh_is_running(void);return (!published && !jh_is_running()) || ext4_quiesce_installed_root(storage_quiesce)==0;}')
     (work/'tests/pkg_boot_ring3.c').write_text((work/'tests/pkg_running_root_ring3.c').read_text())
     result['running_root']='actual root publication, global SYS_ACCOUNTCTL, installed login, clean freeze and controller quiesce'
     return result

@@ -43,6 +43,9 @@ _Static_assert(sizeof(install_log_event_v1_t)==32,"installer log event v1");
 typedef struct {
     uint32_t size,version;
     uint64_t generation,sector_count;
+    /* nsid is the NVMe namespace ID, or AHCI physical port + 1. BDF + this
+     * identifier + ATA serial/model/WWN pin SATA identity without using reserved
+     * ABI bytes or relaxing any existing lease/source-exclusion checks. */
     uint32_t sector_size,nsid;
     uint16_t segment;
     uint8_t bus,device,function,flags;

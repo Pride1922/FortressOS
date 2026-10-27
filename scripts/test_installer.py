@@ -49,17 +49,19 @@ def usb_log_immutable(disk):
     return h.hexdigest()
 
 
-def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=None,source='iso',seed=None,operator=OPERATOR,recovery=RECOVERY,media_stem='fortress-installer',serial='INSTALLPHASE4',disposable_gate=True,username="operator",ui_capture=False,multi_selection=0,source_clone=False,cancel_only=False,confirmation_cancel=False,password_guidance=False,usb_logging=False,hostname="fortress"):
+def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=None,source='iso',seed=None,operator=OPERATOR,recovery=RECOVERY,media_stem='fortress-installer',serial='INSTALLPHASE4',disposable_gate=True,username="operator",ui_capture=False,multi_selection=0,source_clone=False,cancel_only=False,confirmation_cancel=False,password_guidance=False,usb_logging=False,hostname="fortress",transport='nvme'):
     disk=out/'target.img'
     with disk.open('xb') as stream:stream.truncate(capacity*1024**2)
     if seed:shutil.copyfile(seed,disk)
     assert media_stem in ('fortress-installer','fortress-installer-bound','fortress-installer-multi') and re.fullmatch(r'[A-Za-z0-9-]{1,20}',serial)
     iso=media/(media_stem+'.iso');assert iso.resolve().is_relative_to((ROOT/'build/root-phase4').resolve())
     assert all(stat.S_ISREG(p.stat().st_mode) and not p.is_symlink() for p in (disk,iso))
+    assert transport in ('nvme','sata')
+    device=('nvme,drive=target,serial=' if transport=='nvme' else 'ide-hd,bus=ide.0,drive=target,serial=')+serial
     argv=['qemu-system-x86_64','-M','q35','-m','2G','-accel',ACCEL,'-cpu','host' if ACCEL=='kvm' else 'max','-smp','1',
           '-display','none','-monitor','none','-no-reboot','-net','none','-serial','stdio',
           '-drive',f'file={disk},if=none,id=target,format=raw',
-          '-device','nvme,drive=target,serial='+serial]
+          '-device',device]
     if disposable_gate:argv+=['-fw_cfg','name=opt/fortress/installer_disposable,string=1']
     if source=='iso':argv+=['-boot','d','-cdrom',str(iso)]
     else:
@@ -86,7 +88,7 @@ def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=No
                    '-device','usb-storage,bus=logxhci.0,drive=logsource']
         else:log_disk=raw
     if multi_selection:
-        assert multi_selection in (1,2) and reject is None and source=='usb' and not disposable_gate
+        assert multi_selection in (1,2) and reject is None and source in ('usb','iso') and not disposable_gate
         excluded=out/'excluded.img'
         if source_clone:shutil.copyfile(media/(media_stem+'.img'),excluded)
         else:
@@ -94,7 +96,7 @@ def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=No
                 stream.truncate(512*1024**2);stream.seek(1024*512);stream.write(b'UNSELECTED-KEEP')
         assert stat.S_ISREG(excluded.stat().st_mode) and not excluded.is_symlink()
         # Stable PCI slots make disk 2 genuinely the second enumerated controller.
-        argv[argv.index('-device')+1]+=',addr='+('0x3' if multi_selection==2 else '0x2')
+        if transport=='nvme':argv[argv.index('-device')+1]+=',addr='+('0x3' if multi_selection==2 else '0x2')
         argv+=['-drive',f'file={excluded},if=none,id=excluded,format=raw','-device',
                'nvme,drive=excluded,serial=UNSELECTED,addr='+('0x2' if multi_selection==2 else '0x3')]
     if reject=='no-gate':

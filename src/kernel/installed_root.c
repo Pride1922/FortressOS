@@ -1,6 +1,6 @@
 #include "installed_root.h"
 #include "ext4.h"
-#include "nvme.h"
+#include "storage.h"
 #include "pci.h"
 #include "serial.h"
 #include "console.h"
@@ -17,18 +17,17 @@ static bool published;
 static const char *reason="root admission";
 static userdb_t database;
 static char file_bytes[DB_FILE_MAX+1];
-#ifdef INSTALLER_MULTI
 static bool inventory_read(block_dev_t *disk,uint64_t lba,void *bytes) {
-    (void)disk;return nvme_read_sector(lba,bytes);
+    (void)disk;return storage_read_sector(lba,bytes);
 }
 /* Scan read-only, reject duplicate identifiers across drives, then pin the
  * matching controller before publishing any writable block/filesystem state. */
 static bool select_root_controller(const gpt_guid_t *uuid) {
-    size_t count=nvme_inventory_boot();unsigned matches=0,chosen=0;bool coherent=false;
+    size_t count=storage_inventory_boot();unsigned matches=0,chosen=0;bool coherent=false;
     if (!count) return false;
     for (unsigned i=0;i<count;i++) {
-        if (!nvme_inventory_select(i) || !nvme_has_unique_namespace() || !nvme_root_geometry_supported()) return false;
-        block_dev_t disk={.sector_size=nvme_get_sector_size(),.sector_count=nvme_get_sector_count(),.read_sector=inventory_read};
+        if (!storage_inventory_select(i) || !storage_has_unique_namespace() || !storage_root_geometry_supported()) return false;
+        block_dev_t disk={.sector_size=storage_get_sector_size(),.sector_count=storage_get_sector_count(),.read_sector=inventory_read};
         memcpy(disk.name,"root-probe",11);gpt_policy_result_t policy;
         bool parsed=gpt_parse_ex(&disk,&policy);
         if (parsed) for (size_t j=0;j<gpt_get_partition_count();j++) {
@@ -39,9 +38,8 @@ static bool select_root_controller(const gpt_guid_t *uuid) {
         }
         gpt_reset();
     }
-    return matches==1 && coherent && nvme_inventory_select(chosen);
+    return matches==1 && coherent && storage_inventory_select(chosen);
 }
-#endif
 #ifdef TEST_ROOT_PHASE2
 static bool fail_flush,fail_replay_write;
 void installed_root_test_faults(bool f,bool w) {fail_flush=f;fail_replay_write=w;}
@@ -161,19 +159,12 @@ bool installed_root_boot(const boot_info_t *info) {
     reason="invalid or incomplete boot readiness";
     if (!info->installed_modules_valid || !root_readiness_validate((void *)info->readiness_vaddr,info->readiness_size,&recovery,
         (void *)info->kernel_file_vaddr,info->kernel_file_size,(void *)info->initramfs_vaddr,info->initramfs_size)) return false;
-    reason="ambiguous NVMe inventory";
-#ifdef INSTALLER_MULTI
+    reason="ambiguous storage inventory";
     if (!select_root_controller(&c.partuuid)) return false;
-#else
-    pci_device_t controllers[2];
-    if (!pci_inventory_complete() ||
-        pci_find_all_devices(PCI_CLASS_STORAGE,PCI_SUBCLASS_STORAGE_NVME,PCI_PROGIF_STORAGE_NVME,controllers,2)!=1 ||
-        !pci_inventory_complete()) return false;
-#endif
-    reason="unsupported NVMe namespace/geometry";
-    if (!nvme_init() || !nvme_has_unique_namespace() || !nvme_root_geometry_supported() || nvme_get_sector_size()!=512) return false;
-    block_init();if (!block_register_nvme()) return false;
-    block_dev_t *disk=block_get_dev_by_name("nvme0n1");gpt_policy_result_t policy;
+    reason="unsupported storage device/geometry";
+    if (!storage_init() || !storage_has_unique_namespace() || !storage_root_geometry_supported() || storage_get_sector_size()!=512) return false;
+    block_init();if (!storage_register_selected()) return false;
+    block_dev_t *disk=storage_selected_disk();gpt_policy_result_t policy;
     reason="invalid, degraded or conflicting GPT";
     if (!gpt_parse_ex(disk,&policy) || policy!=GPT_POLICY_PRIMARY_CONSISTENT) return false;
     block_dev_t *selected=NULL;unsigned matches=0;
@@ -199,7 +190,7 @@ bool installed_root_boot(const boot_info_t *info) {
     if (fail_flush) selected->flush=rejected_flush;
     if (fail_replay_write) {selected->write_sector=rejected_write;selected->write_sectors=NULL;}
 #endif
-    reason="NVMe flush preflight failed";if (!block_flush(selected)) return false;
+    reason="Storage flush preflight failed";if (!block_flush(selected)) return false;
     reason="filesystem admission/replay failed";ext4_mount_t *mount=NULL;const char *stage="root preparation";
     if (ext4_prepare_root_diagnose(selected,true,&mount,&stage)) {
         const char *after[]={"journal-replay","reopened-state","map-allocation","journal-activation","orphan-recovery","final-barrier","root-inode"};
@@ -220,7 +211,7 @@ bool installed_root_boot(const boot_info_t *info) {
     serial_puts("[ROOT] Installed root admitted by PARTUUID; volatile namespaces attached\n");return true;
 }
 void installed_root_login_failed(void) {accounts_disable();reason="installed login failed; installed authentication disabled";}
-bool installed_root_quiesce(void) {return !published || ext4_quiesce_installed_root(nvme_quiesce)==0;}
+bool installed_root_quiesce(void) {return !published || ext4_quiesce_installed_root(storage_quiesce)==0;}
 const char *installed_root_recovery_hash(void) {return recovery_valid ? recovery.hash : NULL;}
 void installed_root_recovery_notice(void) {
     console_puts("FortressOS recovery: ");console_puts(reason);console_puts("\n");
