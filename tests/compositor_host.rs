@@ -410,51 +410,51 @@ fn start_menu_toggle_and_actions() {
     let mut s = Surface::new(640, 480).unwrap();
     assert!(!wm.start_open);
 
-    // Click Start button (x = 20, y = 460)
-    let action = wm.mouse(20, 460, 1, &mut s);
+    // Click Top-Left Fortress Menu button (x = 20, y = 12)
+    let action = wm.mouse(20, 12, 1, &mut s);
     assert_eq!(action, window::Action::None);
     assert!(wm.start_open);
-    wm.mouse(20, 460, 0, &mut s);
+    wm.mouse(20, 12, 0, &mut s);
 
-    // Hover over item 0 (Terminal) inside start menu (menu y = 480 - 28 - 156 = 296; py = 24..46 => y = 320..342)
-    wm.mouse(50, 330, 0, &mut s);
+    // Hover over item 0 (Terminal) inside menu (menu y = 24; item 0 y = 24 + 24 = 48..70)
+    wm.mouse(50, 58, 0, &mut s);
     assert_eq!(wm.menu_hover, Some(0));
 
     // Click item 0 (Terminal)
-    let action = wm.mouse(50, 330, 1, &mut s);
+    let action = wm.mouse(50, 58, 1, &mut s);
     assert_eq!(action, window::Action::SpawnTerminal);
     assert!(!wm.start_open); // Menu automatically closes on selection
-    wm.mouse(50, 330, 0, &mut s);
+    wm.mouse(50, 58, 0, &mut s);
 
-    // Reopen start menu and click item 1 (Notepad) (y = 296 + 24 + 1*22 + 10 = 352)
-    let _ = wm.mouse(20, 460, 1, &mut s);
-    wm.mouse(20, 460, 0, &mut s);
+    // Reopen menu and click item 1 (Notepad) (y = 24 + 24 + 1*22 + 10 = 80)
+    let _ = wm.mouse(20, 12, 1, &mut s);
+    wm.mouse(20, 12, 0, &mut s);
     assert!(wm.start_open);
 
-    let action = wm.mouse(50, 352, 1, &mut s);
+    let action = wm.mouse(50, 80, 1, &mut s);
     assert_eq!(action, window::Action::SpawnNotepad);
     assert!(!wm.start_open);
-    wm.mouse(50, 352, 0, &mut s);
+    wm.mouse(50, 80, 0, &mut s);
 
-    // Reopen start menu and click item 2 (Files) (y = 296 + 24 + 2*22 + 10 = 374)
-    let _ = wm.mouse(20, 460, 1, &mut s);
-    wm.mouse(20, 460, 0, &mut s);
+    // Reopen menu and click item 2 (Files) (y = 24 + 24 + 2*22 + 10 = 102)
+    let _ = wm.mouse(20, 12, 1, &mut s);
+    wm.mouse(20, 12, 0, &mut s);
     assert!(wm.start_open);
 
-    let action = wm.mouse(50, 374, 1, &mut s);
+    let action = wm.mouse(50, 102, 1, &mut s);
     assert_eq!(action, window::Action::SpawnFileManager);
     assert!(!wm.start_open);
-    wm.mouse(50, 374, 0, &mut s);
+    wm.mouse(50, 102, 0, &mut s);
 
-    // Reopen start menu and click item 5 (Exit) (y = 296 + 24 + 5*22 + 10 = 440)
-    let _ = wm.mouse(20, 460, 1, &mut s);
-    wm.mouse(20, 460, 0, &mut s);
+    // Reopen menu and click item 5 (Exit) (y = 24 + 24 + 5*22 + 10 = 168)
+    let _ = wm.mouse(20, 12, 1, &mut s);
+    wm.mouse(20, 12, 0, &mut s);
     assert!(wm.start_open);
 
-    let action = wm.mouse(50, 440, 1, &mut s);
+    let action = wm.mouse(50, 168, 1, &mut s);
     assert_eq!(action, window::Action::Exit);
     assert!(!wm.start_open);
-    wm.mouse(50, 440, 0, &mut s);
+    wm.mouse(50, 168, 0, &mut s);
 }
 
 #[test]
@@ -629,33 +629,33 @@ fn dock_mouse_actions() {
     let mut wm = WindowManager::demo().unwrap();
 
     let dock_r = window::WindowManager::dock_rect(1280, 800);
-    assert_eq!(dock_r.y, 800 - 44);
-    assert_eq!(dock_r.h, 36);
+    assert_eq!(dock_r.y, 800 - 60);
+    assert_eq!(dock_r.h, 52);
 
-    let click_y = dock_r.y + 10;
+    let click_y = dock_r.y + 20;
 
     // Item 0: Files
-    let act0 = wm.mouse(dock_r.x + 0 * 48 + 10, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 0 * 48 + 10, click_y, 0, &mut s);
+    let act0 = wm.mouse(dock_r.x + 0 * 56 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 0 * 56 + 20, click_y, 0, &mut s);
     assert_eq!(act0, window::Action::SpawnFileManager);
 
     // Item 1: Term
-    let act1 = wm.mouse(dock_r.x + 1 * 48 + 10, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 1 * 48 + 10, click_y, 0, &mut s);
+    let act1 = wm.mouse(dock_r.x + 1 * 56 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 1 * 56 + 20, click_y, 0, &mut s);
     assert_eq!(act1, window::Action::SpawnTerminal);
 
     // Item 2: Notes
-    let act2 = wm.mouse(dock_r.x + 2 * 48 + 10, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 2 * 48 + 10, click_y, 0, &mut s);
+    let act2 = wm.mouse(dock_r.x + 2 * 56 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 2 * 56 + 20, click_y, 0, &mut s);
     assert_eq!(act2, window::Action::SpawnNotepad);
 
     // Item 5: Lock
-    let act5 = wm.mouse(dock_r.x + 5 * 48 + 10, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 5 * 48 + 10, click_y, 0, &mut s);
+    let act5 = wm.mouse(dock_r.x + 5 * 56 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 5 * 56 + 20, click_y, 0, &mut s);
     assert_eq!(act5, window::Action::LockScreen);
 
     // Item 6: Exit
-    let act6 = wm.mouse(dock_r.x + 6 * 48 + 10, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 6 * 48 + 10, click_y, 0, &mut s);
+    let act6 = wm.mouse(dock_r.x + 6 * 56 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 6 * 56 + 20, click_y, 0, &mut s);
     assert_eq!(act6, window::Action::Exit);
 }

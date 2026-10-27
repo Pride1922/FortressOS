@@ -106,9 +106,9 @@ impl Window {
             } else if x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1 {
                 Hit::Border
             } else if y <= TITLE_HEIGHT {
-                if x >= self.rect.w - 25 {
+                if self.id <= 2 && x >= self.rect.w - 25 {
                     Hit::Close
-                } else if x >= self.rect.w - 49 {
+                } else if self.id <= 2 && x >= self.rect.w - 49 {
                     Hit::Minimize
                 } else if self.id >= 3 && x >= 8 && x <= 20 {
                     Hit::Close
@@ -166,23 +166,25 @@ impl Window {
             }
         }
 
-        // Right side buttons (matching test_compositor.py)
-        if x >= self.rect.w - 25 {
-            let lx = x - (self.rect.w - 25);
-            let bg = if hover == Some(Hit::Close) { HOVER_CLOSE } else { title_bg };
-            return if (5..21).contains(&y) {
-                label_pixel("[X]", lx, y - 5, TEXT, bg)
-            } else {
-                bg
-            };
-        } else if x >= self.rect.w - 49 {
-            let lx = x - (self.rect.w - 49);
-            let bg = if hover == Some(Hit::Minimize) { HOVER_MIN } else { title_bg };
-            return if (5..21).contains(&y) {
-                label_pixel("[-]", lx, y - 5, TEXT, bg)
-            } else {
-                bg
-            };
+        // Right side buttons ONLY for window 1 and 2 (matching test_compositor.py)
+        if self.id <= 2 {
+            if x >= self.rect.w - 25 {
+                let lx = x - (self.rect.w - 25);
+                let bg = if hover == Some(Hit::Close) { HOVER_CLOSE } else { title_bg };
+                return if (5..21).contains(&y) {
+                    label_pixel("[X]", lx, y - 5, TEXT, bg)
+                } else {
+                    bg
+                };
+            } else if x >= self.rect.w - 49 {
+                let lx = x - (self.rect.w - 49);
+                let bg = if hover == Some(Hit::Minimize) { HOVER_MIN } else { title_bg };
+                return if (5..21).contains(&y) {
+                    label_pixel("[-]", lx, y - 5, TEXT, bg)
+                } else {
+                    bg
+                };
+            }
         }
 
         // Window title
@@ -215,6 +217,144 @@ fn label_pixel(label: &str, x: usize, y: usize, fg: u32, bg: u32) -> u32 {
         fg
     } else {
         bg
+    }
+}
+
+fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
+    let is_corner = (ix < 5 && iy < 5 && (4 - ix as i32).pow(2) + (4 - iy as i32).pow(2) > 25)
+        || (ix >= 23 && iy < 5 && (ix as i32 - 23).pow(2) + (4 - iy as i32).pow(2) > 25)
+        || (ix < 5 && iy >= 23 && (4 - ix as i32).pow(2) + (iy as i32 - 23).pow(2) > 25)
+        || (ix >= 23 && iy >= 23 && (ix as i32 - 23).pow(2) + (iy as i32 - 23).pow(2) > 25);
+    if is_corner {
+        return dock_bg;
+    }
+
+    match item {
+        0 => {
+            // Files (Finder): Blue tile with Folder silhouette
+            if iy == 0 {
+                return 0xff60a5fa;
+            }
+            if (6..=8).contains(&iy) && (6..=12).contains(&ix) {
+                return 0xffffffff;
+            }
+            if (8..=19).contains(&iy) && (6..=21).contains(&ix) {
+                return 0xffffffff;
+            }
+            if (12..=21).contains(&iy) && (5..=22).contains(&ix) {
+                return if iy == 12 { 0xff93c5fd } else { 0xff60a5fa };
+            }
+            0xff2563eb
+        }
+        1 => {
+            // Term: Dark graphite tile with prompt and cursor
+            if iy == 0 {
+                return 0xff3b4252;
+            }
+            if (3..=5).contains(&iy) {
+                if (5..=6).contains(&ix) { return 0xffff5f56; }
+                if (8..=9).contains(&ix) { return 0xffffbd2e; }
+                if (11..=12).contains(&ix) { return 0xff27c93f; }
+                return 0xff2e3440;
+            }
+            // Prompt >
+            if (ix == 7 && (iy == 10 || iy == 14)) || (ix == 8 && (iy == 11 || iy == 13)) || (ix == 9 && iy == 12) {
+                return 0xff4ade80;
+            }
+            // Cursor _
+            if (12..=17).contains(&ix) && (iy == 14 || iy == 15) {
+                return 0xffffffff;
+            }
+            0xff1e222a
+        }
+        2 => {
+            // Notes: Amber tile with paper sheet and ruled lines
+            if iy == 0 {
+                return 0xfffbbf24;
+            }
+            if (6..=21).contains(&ix) && (5..=22).contains(&iy) {
+                if ix >= 17 && iy <= 8 && ix + iy >= 25 {
+                    return 0xfffcd34d;
+                }
+                if (iy == 10 || iy == 13 || iy == 16) && (9..=18).contains(&ix) {
+                    return 0xffb45309;
+                }
+                if ix == 8 && (7..=21).contains(&iy) {
+                    return 0xfff87171;
+                }
+                return 0xfffffbeb;
+            }
+            0xfff59e0b
+        }
+        3 => {
+            // Sysmon: Obsidian tile with glowing cyan ECG pulse wave
+            if iy == 0 {
+                return 0xff334155;
+            }
+            let is_pulse = (ix >= 4 && ix <= 8 && iy == 15)
+                || (ix == 9 && (12..=15).contains(&iy))
+                || (ix == 10 && (9..=13).contains(&iy))
+                || (ix == 11 && (9..=18).contains(&iy))
+                || (ix == 12 && (16..=21).contains(&iy))
+                || (ix == 13 && (14..=18).contains(&iy))
+                || (ix >= 14 && ix <= 23 && iy == 15);
+            if is_pulse {
+                return 0xff38bdf8;
+            }
+            if (ix == 10 && iy == 8) || (ix == 12 && iy == 22) {
+                return 0xffa5f3fc;
+            }
+            0xff0f172a
+        }
+        4 => {
+            // Colors: Studio Slate with 4 colored quadrants
+            if (6..=12).contains(&ix) && (6..=12).contains(&iy) {
+                return 0xffef4444;
+            }
+            if (15..=21).contains(&ix) && (6..=12).contains(&iy) {
+                return 0xfff59e0b;
+            }
+            if (6..=12).contains(&ix) && (15..=21).contains(&iy) {
+                return 0xff10b981;
+            }
+            if (15..=21).contains(&ix) && (15..=21).contains(&iy) {
+                return 0xff3b82f6;
+            }
+            0xff1e1e24
+        }
+        5 => {
+            // Lock: Silver shackle with golden brass body
+            if (10..=17).contains(&ix) && (5..=12).contains(&iy) {
+                if (12..=15).contains(&ix) && iy >= 8 {
+                    return 0xff374151;
+                }
+                return 0xffe5e7eb;
+            }
+            if (8..=19).contains(&ix) && (12..=22).contains(&iy) {
+                if (ix == 13 || ix == 14) && (15..=17).contains(&iy) {
+                    return 0xff1f2937;
+                }
+                return 0xfff59e0b;
+            }
+            0xff374151
+        }
+        6 => {
+            // Exit: Crimson tile with white power symbol
+            if iy == 0 {
+                return 0xfff87171;
+            }
+            if (ix == 13 || ix == 14) && (6..=13).contains(&iy) {
+                return 0xffffffff;
+            }
+            let dx = ix as i32 - 14;
+            let dy = iy as i32 - 15;
+            let d2 = dx * dx + dy * dy;
+            if (20..=44).contains(&d2) && !(dx.abs() <= 2 && dy < 0) {
+                return 0xffffffff;
+            }
+            0xffdc2626
+        }
+        _ => dock_bg,
     }
 }
 
@@ -370,10 +510,10 @@ impl WindowManager {
     }
 
     pub fn dock_rect(width: usize, height: usize) -> Rect {
-        let dock_w = 340;
-        let dock_h = 36;
+        let dock_w = 7 * 56;
+        let dock_h = 52;
         let dock_x = width.saturating_sub(dock_w) / 2;
-        let dock_y = height.saturating_sub(44);
+        let dock_y = height.saturating_sub(60);
         Rect {
             x: dock_x,
             y: dock_y,
@@ -382,19 +522,19 @@ impl WindowManager {
         }
     }
 
-    pub fn start_btn_rect(height: usize) -> Rect {
+    pub fn start_btn_rect(_height: usize) -> Rect {
         Rect {
             x: 8,
-            y: height.saturating_sub(28),
-            w: 76,
+            y: 0,
+            w: 120,
             h: 24,
         }
     }
 
-    pub fn start_menu_rect(height: usize) -> Rect {
+    pub fn start_menu_rect(_height: usize) -> Rect {
         Rect {
             x: 8,
-            y: height.saturating_sub(28 + 156),
+            y: 24,
             w: 176,
             h: 156,
         }
@@ -417,12 +557,12 @@ impl WindowManager {
         self.raise(id, s);
     }
 
-    pub fn clock_rect(width: usize, height: usize) -> Rect {
+    pub fn clock_rect(width: usize, _height: usize) -> Rect {
         Rect {
-            x: width.saturating_sub(180),
-            y: height.saturating_sub(26),
-            w: 88,
-            h: 22,
+            x: width.saturating_sub(120),
+            y: 0,
+            w: 110,
+            h: 24,
         }
     }
 
@@ -528,7 +668,7 @@ impl WindowManager {
 
             // Floating macOS Dock interaction
             if dock_r.contains(x, y) {
-                let item_idx = (x - dock_r.x) / 48;
+                let item_idx = (x - dock_r.x) / 56;
                 match item_idx {
                     0 => ret_action = Action::SpawnFileManager,
                     1 => ret_action = Action::SpawnTerminal,
@@ -719,26 +859,38 @@ impl WindowManager {
             if let Some(clip) = top_bar.intersection(r) {
                 for y in clip.y..clip.y + clip.h {
                     for x in clip.x..clip.x + clip.w {
-                        let bg = if y == 23 { 0xff2d333b } else { 0xff1c2128 };
+                        let bg = if y == 23 { 0xff30363d } else { 0xff161b22 };
                         s.pixels[y * s.width + x] = if (4..20).contains(&y) {
-                            if x >= 8 && x < 24 {
-                                label_pixel("[#]", x - 8, y - 4, 0xffffffff, bg)
-                            } else if x >= 32 && x < 80 {
-                                label_pixel("Finder", x - 32, y - 4, 0xffffffff, bg)
-                            } else if x >= 96 && x < 128 {
-                                label_pixel("File", x - 96, y - 4, TEXT, bg)
-                            } else if x >= 136 && x < 168 {
-                                label_pixel("Edit", x - 136, y - 4, TEXT, bg)
-                            } else if x >= 176 && x < 208 {
-                                label_pixel("View", x - 176, y - 4, TEXT, bg)
-                            } else if x >= 216 && x < 264 {
-                                label_pixel("Window", x - 216, y - 4, TEXT, bg)
-                            } else if x >= 272 && x < 304 {
-                                label_pixel("Help", x - 272, y - 4, TEXT, bg)
-                            } else if x >= s.width.saturating_sub(180) && x < s.width.saturating_sub(132) {
-                                label_pixel("[WLAN]", x - (s.width.saturating_sub(180)), y - 4, 0xff3fb950, bg)
-                            } else if x >= s.width.saturating_sub(124) && x < s.width.saturating_sub(76) {
-                                label_pixel("[100%]", x - (s.width.saturating_sub(124)), y - 4, 0xff58a6ff, bg)
+                            if x >= 12 && x < 28 {
+                                label_pixel("[#]", x - 12, y - 4, 0xff58a6ff, bg)
+                            } else if x >= 32 && x < 120 {
+                                label_pixel("FortressOS", x - 32, y - 4, 0xffffffff, bg)
+                            } else if x >= s.width.saturating_sub(230) && x < s.width.saturating_sub(182) {
+                                label_pixel("[WLAN]", x - (s.width.saturating_sub(230)), y - 4, 0xff3fb950, bg)
+                            } else if x >= s.width.saturating_sub(174) && x < s.width.saturating_sub(126) {
+                                label_pixel("[100%]", x - (s.width.saturating_sub(174)), y - 4, 0xff58a6ff, bg)
+                            } else if x >= s.width.saturating_sub(118) && x < s.width.saturating_sub(14) && self.clock_sec >= 0 {
+                                let clk_start = s.width.saturating_sub(106);
+                                if x >= clk_start && x < clk_start + 64 {
+                                    let day_sec = (self.clock_sec % 86400 + 86400) % 86400;
+                                    let h = (day_sec / 3600) as u32;
+                                    let m = ((day_sec % 3600) / 60) as u32;
+                                    let sec = (day_sec % 60) as u32;
+                                    let time_str = [
+                                        b'0' + (h / 10) as u8,
+                                        b'0' + (h % 10) as u8,
+                                        b':',
+                                        b'0' + (m / 10) as u8,
+                                        b'0' + (m % 10) as u8,
+                                        b':',
+                                        b'0' + (sec / 10) as u8,
+                                        b'0' + (sec % 10) as u8,
+                                    ];
+                                    let time_label = core::str::from_utf8(&time_str).unwrap_or("00:00:00");
+                                    label_pixel(time_label, x - clk_start, y - 4, 0xffffffff, bg)
+                                } else {
+                                    bg
+                                }
                             } else {
                                 bg
                             }
@@ -776,31 +928,41 @@ impl WindowManager {
                     for x in clip.x..clip.x + clip.w {
                         let px = x - dock_r.x;
                         let py = y - dock_r.y;
-                        let is_border = px == 0 || px == dock_r.w - 1 || py == 0 || py == dock_r.h - 1;
-                        if is_border {
-                            s.pixels[y * s.width + x] = 0xff484f58;
-                        } else {
-                            let item_idx = px / 48;
-                            let in_item_x = px % 48;
-                            let (label, color, is_running) = match item_idx {
-                                0 => ("Files", 0xff58a6ff, has_win5),
-                                1 => ("Term", 0xffe6edf3, has_win3),
-                                2 => ("Notes", 0xffe5c07b, has_win4),
-                                3 => ("Sysmon", 0xff98c379, has_win1),
-                                4 => ("Colors", 0xffc678dd, has_win2),
-                                5 => ("Lock", 0xffd19a66, false),
-                                6 => ("Exit", 0xffe06c75, false),
-                                _ => ("", 0, false),
+
+                        // Rounded pill ends for dock container (r = 16)
+                        let is_dock_corner = (px < 16 && py < 16 && (15 - px as i32).pow(2) + (15 - py as i32).pow(2) > 225)
+                            || (px >= dock_r.w - 16 && py < 16 && (px as i32 - (dock_r.w as i32 - 16)).pow(2) + (15 - py as i32).pow(2) > 225)
+                            || (px < 16 && py >= dock_r.h - 16 && (15 - px as i32).pow(2) + (py as i32 - (dock_r.h as i32 - 16)).pow(2) > 225)
+                            || (px >= dock_r.w - 16 && py >= dock_r.h - 16 && (px as i32 - (dock_r.w as i32 - 16)).pow(2) + (py as i32 - (dock_r.h as i32 - 16)).pow(2) > 225);
+                        if is_dock_corner {
+                            continue;
+                        }
+
+                        let dock_bg = if py == 0 { 0x60ffffff } else if py == dock_r.h - 1 { 0xff0d1117 } else { 0xd0161b22 };
+                        let item_idx = px / 56;
+                        let in_item_x = px % 56;
+
+                        if item_idx < 7 {
+                            let is_running = match item_idx {
+                                0 => has_win5,
+                                1 => has_win3,
+                                2 => has_win4,
+                                3 => has_win1,
+                                4 => has_win2,
+                                _ => false,
                             };
-                            let item_bg = 0xff161b22;
-                            let is_dot = is_running && py >= 30 && py <= 32 && in_item_x >= 20 && in_item_x <= 23;
-                            if is_dot {
-                                s.pixels[y * s.width + x] = 0xff58a6ff;
-                            } else if (8..24).contains(&py) && in_item_x >= 4 {
-                                s.pixels[y * s.width + x] = label_pixel(label, in_item_x - 4, py - 8, color, item_bg);
+
+                            // Graphical icon tile: 28x28 at in_item_x = 14..42, py = 8..36
+                            if in_item_x >= 14 && in_item_x < 42 && (8..36).contains(&py) {
+                                s.pixels[y * s.width + x] = render_dock_icon(item_idx, in_item_x - 14, py - 8, dock_bg);
+                            } else if is_running && in_item_x >= 26 && in_item_x <= 28 && py >= 42 && py <= 44 {
+                                // Glowing active app dot
+                                s.pixels[y * s.width + x] = 0xff38bdf8;
                             } else {
-                                s.pixels[y * s.width + x] = item_bg;
+                                s.pixels[y * s.width + x] = dock_bg;
                             }
+                        } else {
+                            s.pixels[y * s.width + x] = dock_bg;
                         }
                     }
                 }
@@ -831,63 +993,8 @@ impl WindowManager {
                     }
                 }
             }
-            // Digital Clock
-            if self.clock_sec >= 0 {
-                let clock_r = Self::clock_rect(s.width, s.height);
-                if let Some(clip) = clock_r.intersection(r) {
-                    let day_sec = (self.clock_sec % 86400 + 86400) % 86400;
-                    let h = (day_sec / 3600) as u32;
-                    let m = ((day_sec % 3600) / 60) as u32;
-                    let sec = (day_sec % 60) as u32;
-                    let time_str = [
-                        b'0' + (h / 10) as u8,
-                        b'0' + (h % 10) as u8,
-                        b':',
-                        b'0' + (m / 10) as u8,
-                        b'0' + (m % 10) as u8,
-                        b':',
-                        b'0' + (sec / 10) as u8,
-                        b'0' + (sec % 10) as u8,
-                    ];
-                    let label = core::str::from_utf8(&time_str).unwrap_or("00:00:00");
-                    for y in clip.y..clip.y + clip.h {
-                        for x in clip.x..clip.x + clip.w {
-                            s.pixels[y * s.width + x] =
-                                if x >= clock_r.x + 12 && (3..19).contains(&(y - clock_r.y)) {
-                                    label_pixel(
-                                        label,
-                                        x - clock_r.x - 12,
-                                        y - clock_r.y - 3,
-                                        TEXT,
-                                        INACTIVE,
-                                    )
-                                } else {
-                                    INACTIVE
-                                };
-                        }
-                    }
-                }
-            }
-            // Start Button
-            let start_btn = Self::start_btn_rect(s.height);
-            if let Some(clip) = start_btn.intersection(r) {
-                let bg = if self.start_open { ACTIVE } else { INACTIVE };
-                for y in clip.y..clip.y + clip.h {
-                    for x in clip.x..clip.x + clip.w {
-                        let px = x - start_btn.x;
-                        let py = y - start_btn.y;
-                        let is_border = px == 0 || px == start_btn.w - 1 || py == 0 || py == start_btn.h - 1;
-                        s.pixels[y * s.width + x] = if is_border {
-                            BORDER
-                        } else if px >= 8 && (4..20).contains(&py) {
-                            label_pixel("[F] Start", px - 8, py - 4, TEXT, bg)
-                        } else {
-                            bg
-                        };
-                    }
-                }
-            }
-            // Start Menu Popup
+
+            // System Menu Popup (macOS Apple menu style)
             if self.start_open {
                 let start_menu = Self::start_menu_rect(s.height);
                 if let Some(clip) = start_menu.intersection(r) {
@@ -897,7 +1004,7 @@ impl WindowManager {
                             let py = y - start_menu.y;
                             let is_border = px == 0 || px == start_menu.w - 1 || py == 0 || py == start_menu.h - 1;
                             s.pixels[y * s.width + x] = if is_border {
-                                BORDER
+                                0xff30363d
                             } else if py < 24 {
                                 if px >= 8 && (4..20).contains(&py) {
                                     label_pixel(" FortressOS", px - 8, py - 4, 0xff58a6ff, 0xff0d1117)

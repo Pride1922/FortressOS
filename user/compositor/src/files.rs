@@ -12,7 +12,7 @@ pub const FILES_FG: u32 = 0xffe6edf3;
 pub const FILES_HEADER: u32 = 0xff0d1117;
 pub const FILES_DIR: u32 = 0xff58a6ff;
 pub const FILES_EXE: u32 = 0xff3fb950;
-pub const FILES_SEL: u32 = 0xff2a3a5e;
+pub const FILES_SEL: u32 = 0xff1f6feb;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileAction {
@@ -220,7 +220,7 @@ impl FileManager {
         // Header toolbar (22px)
         for y in 0..22.min(height) {
             for x in 0..width {
-                w.content[y * width + x] = FILES_HEADER;
+                w.content[y * width + x] = if y == 21 { 0xff30363d } else { FILES_HEADER };
             }
         }
         draw_text(w, 8, 3, "[^ Up]", 0xff58a6ff, FILES_HEADER);
