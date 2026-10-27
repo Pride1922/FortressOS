@@ -484,6 +484,70 @@ fn window_resizing_and_clamping() {
 }
 
 #[test]
+fn traffic_lights_close_minimize_maximize_and_restore() {
+    let mut wm = WindowManager::demo().unwrap();
+    let mut s = Surface::new(1280, 800).unwrap();
+    // Add modern window (id 3) at (100, 100, 500, 300)
+    let win3 = window::Window::new(
+        3,
+        "Terminal",
+        Rect {
+            x: 100,
+            y: 100,
+            w: 500,
+            h: 300,
+        },
+    )
+    .unwrap();
+    wm.windows.push(win3);
+
+    // Hit test Red button (x = 100 + 13 = 113, y = 100 + 12 = 112)
+    assert_eq!(wm.hit_test(113, 112), Some((3, window::Hit::Close)));
+
+    // Hit test Orange/Yellow button (x = 100 + 29 = 129, y = 100 + 12 = 112)
+    assert_eq!(wm.hit_test(129, 112), Some((3, window::Hit::Minimize)));
+
+    // Hit test Green button (x = 100 + 45 = 145, y = 100 + 12 = 112)
+    assert_eq!(wm.hit_test(145, 112), Some((3, window::Hit::Maximize)));
+
+    // Click Green button: Maximizes window 3!
+    let act = wm.mouse(145, 112, 1, &mut s);
+    let _ = wm.mouse(145, 112, 0, &mut s);
+    assert_eq!(act, window::Action::WindowResized(3));
+    let (max_x, max_y) = {
+        let w3 = wm.windows.iter().find(|w| w.id == 3).unwrap();
+        assert_eq!(w3.rect.x, 8);
+        assert_eq!(w3.rect.y, 28);
+        assert_eq!(w3.rect.w, 1280 - 16);
+        assert_eq!(w3.rect.h, 800 - 104);
+        assert!(w3.saved_rect.is_some());
+        (w3.rect.x, w3.rect.y)
+    };
+
+    // Click Green button again: Restores window 3 back to (100, 100, 500, 300)!
+    let act2 = wm.mouse(max_x + 45, max_y + 12, 1, &mut s);
+    let _ = wm.mouse(max_x + 45, max_y + 12, 0, &mut s);
+    assert_eq!(act2, window::Action::WindowResized(3));
+    let w3_restored = wm.windows.iter().find(|w| w.id == 3).unwrap();
+    assert_eq!(w3_restored.rect, Rect { x: 100, y: 100, w: 500, h: 300 });
+    assert!(w3_restored.saved_rect.is_none());
+
+    // Click Orange/Yellow button: Minimizes window 3!
+    let _ = wm.mouse(129, 112, 1, &mut s);
+    let _ = wm.mouse(129, 112, 0, &mut s);
+    assert!(wm.windows.iter().find(|w| w.id == 3).unwrap().is_minimized);
+
+    // Unminimize window 3
+    wm.unminimize_and_raise(3, &mut s);
+    assert!(!wm.windows.iter().find(|w| w.id == 3).unwrap().is_minimized);
+
+    // Click Red button: Closes window 3!
+    let _ = wm.mouse(113, 112, 1, &mut s);
+    let _ = wm.mouse(113, 112, 0, &mut s);
+    assert!(!wm.windows.iter().any(|w| w.id == 3));
+}
+
+#[test]
 fn notepad_editing_and_rendering() {
     let mut np = notepad::Notepad::new(4, "/tmp/test.txt");
     np.text.clear();

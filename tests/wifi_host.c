@@ -41,6 +41,12 @@ static uint8_t s_mock_ap_bssid[6] = { 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC };
 static uint8_t s_mock_last_tx[2048];
 static size_t  s_mock_last_tx_len = 0;
 static uint32_t s_mock_tx_count = 0;
+static pbuf_t s_mock_rx[64];
+static uint8_t s_mock_rx_data[64][256];
+static unsigned s_mock_rx_head, s_mock_rx_count;
+static pbuf_t *mock_poll_raw(void) {
+    return s_mock_rx_head < s_mock_rx_count ? &s_mock_rx[s_mock_rx_head++] : NULL;
+}
 
 static int mock_get_mac(uint8_t mac[6]) {
     memcpy(mac, s_mock_sta_mac, 6);
@@ -65,7 +71,7 @@ static const wlan_hw_ops_t s_mock_hw_ops = {
     .get_mac = mock_get_mac,
     .set_channel = mock_set_channel,
     .send_raw_80211 = mock_send_raw,
-    .poll_raw_80211 = NULL,
+    .poll_raw_80211 = mock_poll_raw,
     .recycle_raw_80211 = NULL,
 };
 
@@ -169,6 +175,11 @@ static void complete_mock_handshake(const uint8_t *pmk, const uint8_t ap_bssid[6
 
 int main(void) {
     printf("[WIFI HOST TEST] Starting Wireless (802.11 / WPA2-PSK / iwlwifi) Verification...\n");
+    /* Intel MAC_CONTEXT_CMD ABI: software CCMP needs both decrypt-disable
+     * bits even after association. This verifies command policy, not radio. */
+    assert(iwlwifi_mac_filter_flags(false) == 0x5eu);
+    assert(iwlwifi_mac_filter_flags(true) == 0x1eu);
+    printf("  [PASS] Intel RX filter preserves encrypted frames for software CCMP\n");
 
     /* 1. Test Manager Initialization */
     wlan_mgr_init(&s_mock_hw_ops);
@@ -468,6 +479,31 @@ int main(void) {
     printf("  [PASS] Bad MIC cannot poison PN; non-QoS shares priority-zero history\n");
     assert(s_diag_replay == 4 && s_diag_arp_rx == 4 && s_diag_crypto == 4);
     printf("  [PASS] Radio diagnostics remain bounded under repeated receive drops\n");
+
+    /* A burst larger than the manager queue must remain in the mock radio
+     * until the protocol consumer has room, rather than being discarded. */
+    for (unsigned i = 0; i < 64; i++) {
+        size_t n = sizeof(s_mock_rx_data[i]);
+        assert(wlan_ccmp_encrypt_frame(tk, 2000 + i, inbound_wlan_plain,
+                    (size_t)encap_len - 2, s_mock_rx_data[i], &n) == 0);
+        pbuf_init(&s_mock_rx[i]);
+        s_mock_rx[i].payload = s_mock_rx_data[i];
+        s_mock_rx[i].length = (uint16_t)n;
+    }
+    s_mock_rx_head = 0;
+    s_mock_rx_count = 64;
+    unsigned delivered = 0;
+    for (unsigned turn = 0; turn < 4; turn++) {
+        assert(wlan_service_link(dev, 0, 0));
+        assert(s_mock_rx_head == (turn + 1) * 16);
+        while ((rx_p = wlan_poll_rx(dev)) != NULL) {
+            assert(memcmp(rx_p->payload, inbound_eth, sizeof(inbound_eth)) == 0);
+            delivered++;
+            wlan_recycle_rx(dev, rx_p);
+        }
+    }
+    assert(delivered == 64);
+    printf("  [PASS] Radio burst backpressure delivers all 64 packets over four turns\n");
 
     /* 11. Test Intel iwlwifi Firmware Loader on official microcode blob */
     FILE *fw_f = fopen("assets/firmware/iwlwifi-8265-36.ucode", "rb");

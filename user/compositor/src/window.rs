@@ -22,6 +22,7 @@ pub enum Hit {
     Title,
     Close,
     Minimize,
+    Maximize,
     Border,
     Resize,
 }
@@ -38,6 +39,7 @@ pub struct Window {
     pub drag_offset: (usize, usize),
     pub is_minimized: bool,
     pub bg_color: u32,
+    pub saved_rect: Option<Rect>,
 }
 
 impl Window {
@@ -69,6 +71,7 @@ impl Window {
             drag_offset: (0, 0),
             is_minimized: false,
             bg_color,
+            saved_rect: None,
         })
     }
 
@@ -138,7 +141,7 @@ impl Window {
                 } else if self.id >= 3 && x >= 24 && x <= 36 {
                     Hit::Minimize
                 } else if self.id >= 3 && x >= 40 && x <= 52 {
-                    Hit::Minimize // Zoom / Maximize
+                    Hit::Maximize
                 } else {
                     Hit::Title
                 }
@@ -205,7 +208,7 @@ impl Window {
                     let dx = x as i32 - 45;
                     let dy = y as i32 - 12;
                     if dx * dx + dy * dy <= 25 {
-                        return if hover == Some(Hit::Minimize) { 0xff34d399 } else { 0xff27c93f };
+                        return if hover == Some(Hit::Maximize) { 0xff34d399 } else { 0xff27c93f };
                     }
                 }
             }
@@ -861,6 +864,28 @@ impl WindowManager {
                         s.damage(w.damage_rect());
                         Self::dock_damage(s);
                         self.focus_top(s);
+                    }
+                    Hit::Maximize => {
+                        let old = w.damage_rect();
+                        if let Some(prev) = w.saved_rect.take() {
+                            if w.resize(prev.w, prev.h) {
+                                w.rect = prev;
+                                s.damage(old.union(w.damage_rect()));
+                                ret_action = Action::WindowResized(w.id);
+                            }
+                        } else {
+                            let work_x = 8;
+                            let work_y = 28;
+                            let work_w = s.width.saturating_sub(16);
+                            let work_h = s.height.saturating_sub(104);
+                            w.saved_rect = Some(w.rect);
+                            if w.resize(work_w, work_h) {
+                                w.rect.x = work_x;
+                                w.rect.y = work_y;
+                                s.damage(old.union(w.damage_rect()));
+                                ret_action = Action::WindowResized(w.id);
+                            }
+                        }
                     }
                     Hit::Title => {
                         w.is_dragging = true;

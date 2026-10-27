@@ -1174,7 +1174,7 @@ static bool iwl_send_mac_context_cmd(uint32_t action, bool is_assoc, uint16_t as
     mac_cmd.cck_rates    = (s_iwl_dev.current_channel <= 14) ? 0x0Fu : 0;
     mac_cmd.ofdm_rates   = (s_iwl_dev.current_channel <= 14) ? 0x15u : 0xFFu;
     mac_cmd.short_slot   = (1u << 4); /* IWM_MAC_FLG_SHORT_SLOT (0x10) */
-    mac_cmd.filter_flags = IWL_MAC_FILTER_ACCEPT_GRP | IWL_MAC_FILTER_IN_CONTROL_AND_MGMT | (is_assoc ? 0u : IWL_MAC_FILTER_IN_BEACON);
+    mac_cmd.filter_flags = iwlwifi_mac_filter_flags(is_assoc);
     mac_cmd.qos_flags    = (1u << 0); /* IWM_MAC_QOS_FLG_UPDATE_EDCA */
 
     /* EDCA AC parameters indexed by TX FIFO: 0=BK, 1=BE, 2=VI, 3=VO */
