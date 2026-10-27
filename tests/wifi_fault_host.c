@@ -23,10 +23,6 @@
 #include "iwlwifi.h"
 #include "iwl_health.h"
 
-void serial_puts(const char *s) {
-    assert(strncmp(s, "[WLAN] ", 7) == 0);
-}
-
 uint64_t spin_lock_irqsave(spinlock_t *l) {
     assert(!pthread_mutex_lock(&l->mutex));
     return 0;

@@ -69,10 +69,7 @@ typedef struct {
 
     /* Packet Number counters for CCMP */
     uint64_t tx_pn;
-    /* CCMP replay state is per key and traffic priority. Non-QoS data uses
-     * priority zero, matching the CCMP nonce. Wiped with the session keys. */
-    uint64_t rx_pn[16];
-    uint64_t gtk_rx_pn[16];
+    uint64_t rx_pn;
 } wpa2_sm_t;
 
 /* Initialize WPA2 Station State Machine */

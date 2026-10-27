@@ -459,19 +459,8 @@ _Static_assert(sizeof(iwl_phy_context_cmd_t) == 36, "iwl_phy_context_cmd_t must 
 #define IWL_MAC_FILTER_IN_PROMISC       (1u << 0)
 #define IWL_MAC_FILTER_IN_CONTROL_AND_MGMT (1u << 1)
 #define IWL_MAC_FILTER_ACCEPT_GRP       (1u << 2)
-#define IWL_MAC_FILTER_DIS_DECRYPT      (1u << 3)
-#define IWL_MAC_FILTER_DIS_GRP_DECRYPT  (1u << 4)
 #define IWL_MAC_FILTER_IN_BEACON        (1u << 6)
 #define IWL_MAC_FILTER_IN_PROBE_REQUEST (1u << 12)
-
-/* CCMP keys and replay checks belong to wlan_mgr, not the firmware key table.
- * Intel MAC_CONTEXT_CMD filter bits (fw/api/mac.h): preserve encrypted data
- * for software authentication. Do not enable promiscuous reception or FCS. */
-static inline uint32_t iwlwifi_mac_filter_flags(bool associated) {
-    return IWL_MAC_FILTER_ACCEPT_GRP | IWL_MAC_FILTER_IN_CONTROL_AND_MGMT |
-           IWL_MAC_FILTER_DIS_DECRYPT | IWL_MAC_FILTER_DIS_GRP_DECRYPT |
-           (associated ? 0u : IWL_MAC_FILTER_IN_BEACON);
-}
 
 typedef struct {
     uint16_t cw_min;

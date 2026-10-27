@@ -2,12 +2,6 @@
 
 ## 1. Overview & Architectural Scope
 
-2026-10-27: corrected CCMP receive replay tracking to use independent counters
-per key and QoS priority (non-QoS shares priority zero). Actual-manager regression
-and host sanitizer suites pass. Dell 5590 retest still reports gateway ARP
-timeouts; bounded `[WLAN]` diagnostics added for the next physical investigation.
-See [evidence and limits](../roadmap/wifi-arp-priority.md).
-
 The FortressOS Wireless Subsystem provides a native, freestanding IEEE 802.11 MAC management frame engine, WPA2-PSK (AES-128-CCMP) 4-Way Handshake state machine, and hardware driver integration for Intel Dual Band Wireless-AC 8265 (Dell Latitude 5590) and Intel Wi-Fi 6E AX211 (Dell Latitude 5530).
 
 The subsystem is fully integrated into the polymorphic `net_dev_t` device layer as interface `wlan0`. Network packet flows, service loops, and socket handoffs seamlessly coexist with wired Gigabit Ethernet (`e1000`/`e1000e`) and USB Gigabit Ethernet (`rtl8153`).
