@@ -47,7 +47,6 @@ void wpa2_sm_init(wpa2_sm_t *sm,
     sm->port_authorized = false;
     sm->handshake_step = 0;
     sm->tx_pn = 0;
-    sm->rx_pn = 0;
 }
 
 bool wpa2_sm_is_authorized(const wpa2_sm_t *sm) {

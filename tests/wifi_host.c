@@ -16,6 +16,14 @@
 #include "wlan_mgr.h"
 #include "iwlwifi.h"
 
+static unsigned s_diag_replay, s_diag_arp_rx, s_diag_crypto;
+void serial_puts(const char *s) {
+    assert(strncmp(s, "[WLAN] ", 7) == 0);
+    if (strstr(s, "replay rejected")) s_diag_replay++;
+    if (strstr(s, "ARP RX queued")) s_diag_arp_rx++;
+    if (strstr(s, "authentication/format rejected")) s_diag_crypto++;
+}
+
 /* Mock spinlock implementation for host testing */
 uint64_t spin_lock_irqsave(spinlock_t *l) {
     assert(!pthread_mutex_lock(&l->mutex));
@@ -406,6 +414,61 @@ int main(void) {
     assert(wlan_poll_rx(dev) == NULL);
     printf("  [PASS] Monotonic 48-bit Packet Number (PN) replay attack rejected\n");
 
+    /* AP traffic priorities have independent CCMP replay windows. A high PN
+     * on one TID must not suppress a valid ARP frame on another. Mock radio,
+     * real manager + frame crypto; this does not exercise Intel hardware. */
+    in_hdr->frame_control &= ~IEEE80211_FCTL_TODS;
+    for (unsigned tid = 0; tid < 16; tid++) {
+        in_hdr->qos_ctrl = (uint16_t)tid;
+        in_c_len = sizeof(inbound_wlan_cipher);
+        assert(wlan_ccmp_encrypt_frame(tk, 1000 - tid, inbound_wlan_plain,
+                    (size_t)encap_len, inbound_wlan_cipher, &in_c_len) == 0);
+        assert(wlan_mgr_rx_raw_80211(inbound_wlan_cipher, in_c_len, -45) == 0);
+        rx_p = wlan_poll_rx(dev);
+        assert(rx_p != NULL);
+        assert(rx_p->length == sizeof(inbound_eth));
+        assert(memcmp(rx_p->payload, inbound_eth, sizeof(inbound_eth)) == 0);
+        wlan_recycle_rx(dev, rx_p);
+        assert(wlan_mgr_rx_raw_80211(inbound_wlan_cipher, in_c_len, -45) == 0);
+        assert(wlan_poll_rx(dev) == NULL);
+
+        /* A forged high PN must not advance this priority's replay state. */
+        in_c_len = sizeof(inbound_wlan_cipher);
+        assert(wlan_ccmp_encrypt_frame(tk, 2000, inbound_wlan_plain,
+                    (size_t)encap_len, inbound_wlan_cipher, &in_c_len) == 0);
+        inbound_wlan_cipher[in_c_len - 1] ^= 1;
+        assert(wlan_mgr_rx_raw_80211(inbound_wlan_cipher, in_c_len, -45) == 0);
+        assert(wlan_poll_rx(dev) == NULL);
+        assert(wlan_ccmp_encrypt_frame(tk, 1001, inbound_wlan_plain,
+                    (size_t)encap_len, inbound_wlan_cipher, &in_c_len) == 0);
+        assert(wlan_mgr_rx_raw_80211(inbound_wlan_cipher, in_c_len, -45) == 0);
+        rx_p = wlan_poll_rx(dev);
+        assert(rx_p != NULL);
+        wlan_recycle_rx(dev, rx_p);
+    }
+    printf("  [PASS] Independent CCMP replay windows for all 16 traffic priorities\n");
+
+    /* Non-QoS data uses priority zero, including its replay history. */
+    in_hdr->frame_control &= ~(IEEE80211_SUBTYPE_QOS_DATA << 4);
+    memmove(inbound_wlan_plain + 24, inbound_wlan_plain + 26,
+            (size_t)encap_len - 26);
+    for (uint64_t pn = 1001; pn <= 1002; pn++) {
+        in_c_len = sizeof(inbound_wlan_cipher);
+        assert(wlan_ccmp_encrypt_frame(tk, pn, inbound_wlan_plain,
+                    (size_t)encap_len - 2, inbound_wlan_cipher, &in_c_len) == 0);
+        assert(wlan_mgr_rx_raw_80211(inbound_wlan_cipher, in_c_len, -45) == 0);
+        rx_p = wlan_poll_rx(dev);
+        if (pn == 1001) assert(rx_p == NULL);
+        else {
+            assert(rx_p != NULL);
+            assert(memcmp(rx_p->payload, inbound_eth, sizeof(inbound_eth)) == 0);
+            wlan_recycle_rx(dev, rx_p);
+        }
+    }
+    printf("  [PASS] Bad MIC cannot poison PN; non-QoS shares priority-zero history\n");
+    assert(s_diag_replay == 4 && s_diag_arp_rx == 4 && s_diag_crypto == 4);
+    printf("  [PASS] Radio diagnostics remain bounded under repeated receive drops\n");
+
     /* 11. Test Intel iwlwifi Firmware Loader on official microcode blob */
     FILE *fw_f = fopen("assets/firmware/iwlwifi-8265-36.ucode", "rb");
     assert(fw_f != NULL);
@@ -578,6 +641,6 @@ int main(void) {
     assert(st.channel == 11);
     printf("  [PASS] Multi-BSSID best RSSI selection & autonomous background roaming verified\n");
 
-    printf("\n>>> ALL WIRELESS (802.11 / WPA2-PSK / IWLWIFI) HOST TESTS PASSED (16/16) <<<\n");
+    printf("\n>>> ALL WIRELESS (802.11 / WPA2-PSK / IWLWIFI) HOST TESTS PASSED <<<\n");
     return 0;
 }

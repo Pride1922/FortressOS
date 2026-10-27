@@ -7,6 +7,49 @@ import struct
 import zlib
 from pathlib import Path
 
+def unfilter_png(decomp: bytes, w: int, h: int, bpp: int = 3) -> bytearray:
+    stride = 1 + w * bpp
+    unfiltered = bytearray(w * h * bpp)
+
+    for y in range(h):
+        filter_type = decomp[y * stride]
+        scanline_in = decomp[y * stride + 1 : (y + 1) * stride]
+        curr_row_offset = y * w * bpp
+        prev_row_offset = (y - 1) * w * bpp if y > 0 else None
+
+        for i in range(w * bpp):
+            raw = scanline_in[i]
+            a = unfiltered[curr_row_offset + i - bpp] if i >= bpp else 0
+            b = unfiltered[prev_row_offset + i] if prev_row_offset is not None else 0
+            c = unfiltered[prev_row_offset + i - bpp] if (prev_row_offset is not None and i >= bpp) else 0
+
+            if filter_type == 0:
+                val = raw
+            elif filter_type == 1:
+                val = (raw + a) & 0xff
+            elif filter_type == 2:
+                val = (raw + b) & 0xff
+            elif filter_type == 3:
+                val = (raw + ((a + b) >> 1)) & 0xff
+            elif filter_type == 4:
+                p = a + b - c
+                pa = abs(p - a)
+                pb = abs(p - b)
+                pc = abs(p - c)
+                if pa <= pb and pa <= pc:
+                    pr = a
+                elif pb <= pc:
+                    pr = b
+                else:
+                    pr = c
+                val = (raw + pr) & 0xff
+            else:
+                raise ValueError(f"Unknown PNG filter type: {filter_type}")
+
+            unfiltered[curr_row_offset + i] = val
+
+    return unfiltered
+
 def convert_wallpaper(png_path: Path, out_path: Path):
     with open(png_path, 'rb') as f:
         sig = f.read(8)
@@ -28,14 +71,15 @@ def convert_wallpaper(png_path: Path, out_path: Path):
                 break
 
     decomp = zlib.decompress(idat)
-    stride = 1 + w * 3
+    bpp = 3
+    pixels = unfilter_png(decomp, w, h, bpp)
 
     # Scan for non-black bounding box
     min_x, max_x, min_y, max_y = w, 0, h, 0
     for y in range(h):
-        off = y * stride + 1
         for x in range(w):
-            r, g, b = decomp[off + x*3], decomp[off + x*3 + 1], decomp[off + x*3 + 2]
+            off = (y * w + x) * bpp
+            r, g, b = pixels[off], pixels[off + 1], pixels[off + 2]
             if r > 10 or g > 10 or b > 10:
                 min_x = min(min_x, x)
                 max_x = max(max_x, x)
@@ -57,9 +101,9 @@ def convert_wallpaper(png_path: Path, out_path: Path):
 
         # Write cropped pixels (ARGB little-endian u32: B, G, R, A)
         for y in range(min_y, max_y + 1):
-            off = y * stride + 1
             for x in range(min_x, max_x + 1):
-                r, g, b = decomp[off + x*3], decomp[off + x*3 + 1], decomp[off + x*3 + 2]
+                off = (y * w + x) * bpp
+                r, g, b = pixels[off], pixels[off + 1], pixels[off + 2]
                 val = 0xff000000 | (r << 16) | (g << 8) | b
                 out.write(struct.pack('<I', val))
 

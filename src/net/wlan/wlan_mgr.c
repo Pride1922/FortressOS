@@ -1,6 +1,7 @@
 #include "wlan_mgr.h"
 #include "spinlock.h"
 #include "iwlwifi.h"
+#include "serial.h"
 #include <string.h>
 
 
@@ -40,7 +41,6 @@ static uint8_t              s_current_channel = 1;
 static int8_t               s_current_rssi = -60;
 static uint16_t             s_target_beacon_int = 100;
 static uint16_t             s_seq_num = 0;
-static uint64_t             s_gtk_rx_pn = 0;
 
 static wlan_state_t         s_wlan_state = WLAN_STATE_IDLE;
 static wlan_bss_table_t     s_bss_table;
@@ -49,6 +49,18 @@ static wpa2_sm_t            s_wpa2_sm;
 /* Statistics */
 static uint64_t             s_stats_rx_packets = 0;
 static uint64_t             s_stats_tx_packets = 0;
+
+/* Bounded, payload-free diagnostics for physical radio acceptance. Protected
+ * by s_wlan_lock; each category emits at most four lines per connection. */
+enum { WD_ARP_TX, WD_ARP_TX_FAIL, WD_ARP_RX, WD_PAIRWISE_RX, WD_GROUP_RX,
+       WD_REPLAY, WD_CRYPTO, WD_DECAP, WD_RX_FULL, WD_COUNT };
+static uint8_t s_diag_count[WD_COUNT];
+static void wlan_diag(unsigned kind, const char *line) {
+    if (s_diag_count[kind] < 4) {
+        s_diag_count[kind]++;
+        serial_puts(line);
+    }
+}
 
 /* Rx Ring for Decapsulated 802.3 Frames */
 static wlan_rx_slot_t       s_rx_slots[WLAN_RX_RING_SIZE];
@@ -88,6 +100,7 @@ void wlan_mgr_init(const wlan_hw_ops_t *ops) {
     memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
     s_stats_rx_packets = 0;
     s_stats_tx_packets = 0;
+    memset(s_diag_count, 0, sizeof(s_diag_count));
 
     /* Initialize Rx slots */
     memset(s_rx_slots, 0, sizeof(s_rx_slots));
@@ -234,7 +247,7 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
 
     /* Unconditionally wipe any stale WPA2 session authorization */
     memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
-    s_gtk_rx_pn = 0;
+    memset(s_diag_count, 0, sizeof(s_diag_count));
 
     memset(s_target_ssid, 0, sizeof(s_target_ssid));
     memcpy(s_target_ssid, ssid, ssid_len);
@@ -374,7 +387,6 @@ int wlan_mgr_disconnect(void) {
         s_wlan_net_dev.flags &= ~NET_RUNNING;
         memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
         memset(s_target_pmk, 0, sizeof(s_target_pmk));
-        s_gtk_rx_pn = 0;
         s_has_cached_pmk = false;
         s_has_pending_pmk = false;
     }
@@ -463,7 +475,6 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 if (status == 0) {
                     /* Assoc Success -> Transition to 4-WAY HANDSHAKE */
                     s_wlan_state = WLAN_STATE_4WAY_HANDSHAKE;
-                    s_gtk_rx_pn  = 0;
                     wpa2_sm_init(&s_wpa2_sm, s_local_mac, s_target_bssid, s_target_pmk);
                     uint16_t bi = s_target_beacon_int;
                     spin_unlock_irqrestore(&s_wlan_lock, irq);
@@ -486,7 +497,6 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 s_wlan_net_dev.flags &= ~NET_RUNNING;
                 memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
                 memset(s_target_pmk, 0, sizeof(s_target_pmk));
-                s_gtk_rx_pn = 0;
                 spin_unlock_irqrestore(&s_wlan_lock, irq);
                 if (s_hw_ops && s_hw_ops->deauth) {
                     s_hw_ops->deauth();
@@ -545,7 +555,6 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     s_wlan_net_dev.flags &= ~NET_RUNNING;
                     memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
                     memset(s_target_pmk, 0, sizeof(s_target_pmk));
-                    s_gtk_rx_pn = 0;
                     s_has_cached_pmk = false;
                     s_has_pending_pmk = false;
                     spin_unlock_irqrestore(&s_wlan_lock, irq);
@@ -581,18 +590,28 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
 
             bool is_group = (hdr->addr1[0] & 0x01u) != 0;
             const uint8_t *dec_key = is_group ? s_wpa2_sm.gtk : s_wpa2_sm.tk;
-            uint64_t *pn_tracker   = is_group ? &s_gtk_rx_pn : &s_wpa2_sm.rx_pn;
+            /* hdr_len was validated above before reading QoS Control. The
+             * authenticated QoS TID selects its own replay domain; non-QoS
+             * data shares priority zero. Keep pairwise/group keys separate. */
+            unsigned tid = hdr_len == 26 ? frame[24] & 0x0fu : 0;
+            uint64_t *pn_tracker = is_group ? &s_wpa2_sm.gtk_rx_pn[tid]
+                                           : &s_wpa2_sm.rx_pn[tid];
 
             /* Decrypt CCMP */
             int dec_rc = wlan_ccmp_decrypt_frame(dec_key, frame, len,
                                                  s_rx_unenc_frame, &unenc_len,
                                                  pn_tracker);
             if (dec_rc == 0 && unenc_len > 0) {
+                wlan_diag(is_group ? WD_GROUP_RX : WD_PAIRWISE_RX,
+                          is_group ? "[WLAN] RX group CCMP authenticated\n"
+                                   : "[WLAN] RX pairwise CCMP authenticated\n");
                 if (s_rx_count < WLAN_RX_RING_SIZE) {
                     wlan_rx_slot_t *slot = &s_rx_slots[s_rx_head];
                     int eth_len = net_80211_decapsulate(s_rx_unenc_frame, unenc_len,
                                                         slot->data, sizeof(slot->data));
                     if (eth_len > 0) {
+                        if (slot->data[12] == 0x08 && slot->data[13] == 0x06)
+                            wlan_diag(WD_ARP_RX, "[WLAN] ARP RX queued to network stack\n");
                         slot->pbuf.payload = slot->data;
                         slot->pbuf.length = (uint16_t)eth_len;
                         slot->pbuf.total_len = (uint16_t)eth_len;
@@ -600,8 +619,16 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                         s_rx_head = (s_rx_head + 1) % WLAN_RX_RING_SIZE;
                         s_rx_count++;
                         s_stats_rx_packets++;
+                    } else {
+                        wlan_diag(WD_DECAP, "[WLAN] RX authenticated but LLC decapsulation rejected\n");
                     }
+                } else {
+                    wlan_diag(WD_RX_FULL, "[WLAN] RX authenticated but receive queue full\n");
                 }
+            } else {
+                wlan_diag(dec_rc == -2 ? WD_REPLAY : WD_CRYPTO,
+                          dec_rc == -2 ? "[WLAN] RX CCMP replay rejected\n"
+                                       : "[WLAN] RX CCMP authentication/format rejected\n");
             }
         }
     }
@@ -645,6 +672,12 @@ int wlan_send_packet(net_dev_t *dev, const void *buf, size_t len) {
         tx_res = s_hw_ops->send_raw_80211(s_tx_wlan_cipher, cipher_len);
         if (tx_res == 0) s_stats_tx_packets++;
     }
+
+    const uint8_t *eth = buf;
+    if (eth[12] == 0x08 && eth[13] == 0x06)
+        wlan_diag(tx_res == 0 ? WD_ARP_TX : WD_ARP_TX_FAIL,
+                  tx_res == 0 ? "[WLAN] ARP TX submitted (radio ACK not confirmed)\n"
+                              : "[WLAN] ARP TX rejected by driver\n");
 
     spin_unlock_irqrestore(&s_wlan_lock, irq);
     return tx_res;
@@ -780,7 +813,6 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
         s_wlan_state = WLAN_STATE_AUTHENTICATING;
         s_wlan_net_dev.flags &= ~NET_RUNNING;
         memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
-        s_gtk_rx_pn = 0;
         s_conn_start_time = now;
         s_conn_last_retry_time = now;
         s_conn_retry_count = 0;

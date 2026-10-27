@@ -104,8 +104,8 @@ fn spawn_terminal() -> Option<(Window, Terminal)> {
     )?;
     win.content.fill(terminal::TERM_BG);
 
-    let cols = ((win.rect.w.saturating_sub(18)) / 8).clamp(20, terminal::TERM_MAX_COLS);
-    let rows = ((win.rect.h.saturating_sub(30)) / 16).clamp(5, terminal::TERM_MAX_ROWS);
+    let cols = ((win.rect.w.saturating_sub(22)) / 8).clamp(20, terminal::TERM_MAX_COLS);
+    let rows = ((win.rect.h.saturating_sub(38)) / 16).clamp(5, terminal::TERM_MAX_ROWS);
     let ws = sys::WinSize {
         ws_row: rows as u16,
         ws_col: cols as u16,
@@ -235,7 +235,12 @@ fn run(is_test: bool) -> i32 {
     };
 
     let mut windows = match WindowManager::demo() {
-        Some(wm) => wm,
+        Some(mut wm) => {
+            if !is_test {
+                wm.windows.clear();
+            }
+            wm
+        }
         None => {
             sys::close(fd as i32);
             return 1;
@@ -590,8 +595,8 @@ fn run(is_test: bool) -> i32 {
                     if id == 3 {
                         if let Some(ref mut t) = term {
                             if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 3) {
-                                let cols = ((w.rect.w.saturating_sub(18)) / 8).clamp(20, terminal::TERM_MAX_COLS);
-                                let rows = ((w.rect.h.saturating_sub(30)) / 16).clamp(5, terminal::TERM_MAX_ROWS);
+                                let cols = ((w.rect.w.saturating_sub(22)) / 8).clamp(20, terminal::TERM_MAX_COLS);
+                                let rows = ((w.rect.h.saturating_sub(38)) / 16).clamp(5, terminal::TERM_MAX_ROWS);
                                 t.set_dimensions(cols, rows);
                                 let ws = sys::WinSize {
                                     ws_row: rows as u16,

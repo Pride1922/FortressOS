@@ -33,6 +33,19 @@ impl Rect {
     pub fn contains(self, x: usize, y: usize) -> bool {
         x >= self.x && y >= self.y && x - self.x < self.w && y - self.y < self.h
     }
+
+    pub fn union(self, other: Self) -> Self {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        let right = (self.x.saturating_add(self.w)).max(other.x.saturating_add(other.w));
+        let bottom = (self.y.saturating_add(self.h)).max(other.y.saturating_add(other.h));
+        Self {
+            x,
+            y,
+            w: right.saturating_sub(x),
+            h: bottom.saturating_sub(y),
+        }
+    }
 }
 
 pub struct Surface {

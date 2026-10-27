@@ -95,22 +95,15 @@ impl Window {
             Some(l) => l,
             None => return false,
         };
-        let mut new_content = Vec::new();
-        if new_content.try_reserve_exact(len).is_err() {
-            return false;
+        if self.content.capacity() < len {
+            let reserve_target = len + len / 4;
+            if self.content.try_reserve(reserve_target.saturating_sub(self.content.len())).is_err() {
+                if self.content.try_reserve_exact(len.saturating_sub(self.content.len())).is_err() {
+                    return false;
+                }
+            }
         }
-        new_content.resize(len, self.bg_color);
-
-        let old_w = self.rect.w - 2;
-        let old_h = self.rect.h - TITLE_HEIGHT - 2;
-        let copy_w = old_w.min(new_content_w);
-        let copy_h = old_h.min(new_content_h);
-        for y in 0..copy_h {
-            let src_row = &self.content[y * old_w..y * old_w + copy_w];
-            let dst_row = &mut new_content[y * new_content_w..y * new_content_w + copy_w];
-            dst_row.copy_from_slice(src_row);
-        }
-        self.content = new_content;
+        self.content.resize(len, self.bg_color);
         self.rect.w = new_w;
         self.rect.h = new_h;
         true
@@ -581,10 +574,10 @@ impl WindowManager {
     }
 
     pub fn dock_rect(width: usize, height: usize) -> Rect {
-        let dock_w = 7 * 56;
-        let dock_h = 52;
+        let dock_w = 7 * 64;
+        let dock_h = 58;
         let dock_x = width.saturating_sub(dock_w) / 2;
-        let dock_y = height.saturating_sub(60);
+        let dock_y = height.saturating_sub(66);
         Rect {
             x: dock_x,
             y: dock_y,
@@ -618,6 +611,64 @@ impl WindowManager {
             w: if id == 1 { 80 } else { 160 },
             h: 24,
         }
+    }
+
+    pub fn ensure_window_1(&mut self, s: &mut Surface) {
+        if !self.windows.iter().any(|w| w.id == 1) {
+            if let Some(w) = Window::new(
+                1,
+                "System Monitor",
+                Rect {
+                    x: 80,
+                    y: 120,
+                    w: 320,
+                    h: 200,
+                },
+            ) {
+                self.windows.push(w);
+                s.damage(Rect {
+                    x: 80,
+                    y: 120,
+                    w: 320,
+                    h: 200,
+                });
+            }
+        }
+        self.unminimize_and_raise(1, s);
+    }
+
+    pub fn ensure_window_2(&mut self, s: &mut Surface) {
+        if !self.windows.iter().any(|w| w.id == 2) {
+            if let Some(mut palette) = Window::new(
+                2,
+                "Palette Canvas",
+                Rect {
+                    x: 260,
+                    y: 220,
+                    w: 280,
+                    h: 180,
+                },
+            ) {
+                let colors = [
+                    0xffe06c75, 0xffe5c07b, 0xff98c379, 0xff56b6c2, 0xff61afef, 0xffc678dd,
+                ];
+                for y in 0..palette.rect.h - 26 {
+                    for x in 0..palette.rect.w - 2 {
+                        if (16..136).contains(&y) && (16..256).contains(&x) {
+                            palette.content[y * (palette.rect.w - 2) + x] = colors[(x - 16) / 40];
+                        }
+                    }
+                }
+                self.windows.push(palette);
+                s.damage(Rect {
+                    x: 260,
+                    y: 220,
+                    w: 280,
+                    h: 180,
+                });
+            }
+        }
+        self.unminimize_and_raise(2, s);
     }
 
     pub fn unminimize_and_raise(&mut self, id: u32, s: &mut Surface) {
@@ -704,8 +755,7 @@ impl WindowManager {
                     w.rect.x = x.saturating_sub(w.drag_offset.0).min(s.width - 1);
                     w.rect.y = y.saturating_sub(w.drag_offset.1).min(s.height - 1);
                     if old != w.damage_rect() {
-                        s.damage(old);
-                        s.damage(w.damage_rect());
+                        s.damage(old.union(w.damage_rect()));
                     }
                 } else if w.is_resizing {
                     let min_w = 160;
@@ -717,8 +767,7 @@ impl WindowManager {
                     if target_w != w.rect.w || target_h != w.rect.h {
                         let old = w.damage_rect();
                         if w.resize(target_w, target_h) {
-                            s.damage(old);
-                            s.damage(w.damage_rect());
+                            s.damage(old.union(w.damage_rect()));
                             ret_action = Action::WindowResized(w.id);
                         }
                     }
@@ -750,13 +799,13 @@ impl WindowManager {
 
             // Floating macOS Dock interaction
             if dock_r.contains(x, y) {
-                let item_idx = (x - dock_r.x) / 56;
+                let item_idx = (x - dock_r.x) / 64;
                 match item_idx {
                     0 => ret_action = Action::SpawnFileManager,
                     1 => ret_action = Action::SpawnTerminal,
                     2 => ret_action = Action::SpawnNotepad,
-                    3 => self.unminimize_and_raise(1, s),
-                    4 => self.unminimize_and_raise(2, s),
+                    3 => self.ensure_window_1(s),
+                    4 => self.ensure_window_2(s),
                     5 => ret_action = Action::LockScreen,
                     6 => ret_action = Action::Exit,
                     _ => {}
@@ -783,8 +832,8 @@ impl WindowManager {
                             0 => ret_action = Action::SpawnTerminal,
                             1 => ret_action = Action::SpawnNotepad,
                             2 => ret_action = Action::SpawnFileManager,
-                            3 => self.unminimize_and_raise(1, s),
-                            4 => self.unminimize_and_raise(2, s),
+                            3 => self.ensure_window_1(s),
+                            4 => self.ensure_window_2(s),
                             5 => ret_action = Action::Exit,
                             _ => {}
                         }
@@ -1003,13 +1052,36 @@ impl WindowManager {
                 };
                 if let Some(clip) = shadow_r.intersection(r) {
                     for y in clip.y..clip.y + clip.h {
-                        for x in clip.x..clip.x + clip.w {
-                            let dx = if x < w.rect.x { w.rect.x - x } else if x >= w.rect.x + w.rect.w { x - (w.rect.x + w.rect.w - 1) } else { 0 };
-                            let dy = if y < w.rect.y + 3 { (w.rect.y + 3) - y } else if y >= w.rect.y + w.rect.h + 3 { y - (w.rect.y + w.rect.h + 2) } else { 0 };
-                            let d = dx.max(dy);
-                            if d > 0 && d <= 8 {
-                                let factor = ((9 - d) * 14) as u32;
-                                s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                        let in_vert_body = y >= w.rect.y + 3 && y < w.rect.y + w.rect.h + 3;
+                        if in_vert_body {
+                            // Left shadow fringe
+                            let left_end = (w.rect.x).min(clip.x + clip.w);
+                            for x in clip.x..left_end {
+                                let d = w.rect.x - x;
+                                if d <= 8 {
+                                    let factor = ((9 - d) * 14) as u32;
+                                    s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                                }
+                            }
+                            // Right shadow fringe
+                            let right_start = (w.rect.x + w.rect.w).max(clip.x);
+                            for x in right_start..clip.x + clip.w {
+                                let d = x - (w.rect.x + w.rect.w - 1);
+                                if d <= 8 {
+                                    let factor = ((9 - d) * 14) as u32;
+                                    s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                                }
+                            }
+                        } else {
+                            // Top or bottom shadow row
+                            let dy = if y < w.rect.y + 3 { (w.rect.y + 3) - y } else { y - (w.rect.y + w.rect.h + 2) };
+                            for x in clip.x..clip.x + clip.w {
+                                let dx = if x < w.rect.x { w.rect.x - x } else if x >= w.rect.x + w.rect.w { x - (w.rect.x + w.rect.w - 1) } else { 0 };
+                                let d = dx.max(dy);
+                                if d > 0 && d <= 8 {
+                                    let factor = ((9 - d) * 14) as u32;
+                                    s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                                }
                             }
                         }
                     }
@@ -1039,13 +1111,13 @@ impl WindowManager {
                 x: dock_r.x.saturating_sub(4),
                 y: dock_r.y + dock_r.h,
                 w: dock_r.w + 8,
-                h: 6,
+                h: 8,
             };
             if let Some(clip) = dock_shadow_r.intersection(r) {
                 for y in clip.y..clip.y + clip.h {
                     for x in clip.x..clip.x + clip.w {
                         let dy = y - (dock_r.y + dock_r.h) + 1;
-                        let factor = ((7 - dy) * 16) as u32;
+                        let factor = ((9 - dy) * 14) as u32;
                         s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
                     }
                 }
@@ -1062,18 +1134,18 @@ impl WindowManager {
                         let px = x - dock_r.x;
                         let py = y - dock_r.y;
 
-                        // Rounded pill ends for dock container (r = 16)
-                        let is_dock_corner = (px < 16 && py < 16 && (15 - px as i32).pow(2) + (15 - py as i32).pow(2) > 225)
-                            || (px >= dock_r.w - 16 && py < 16 && (px as i32 - (dock_r.w as i32 - 16)).pow(2) + (15 - py as i32).pow(2) > 225)
-                            || (px < 16 && py >= dock_r.h - 16 && (15 - px as i32).pow(2) + (py as i32 - (dock_r.h as i32 - 16)).pow(2) > 225)
-                            || (px >= dock_r.w - 16 && py >= dock_r.h - 16 && (px as i32 - (dock_r.w as i32 - 16)).pow(2) + (py as i32 - (dock_r.h as i32 - 16)).pow(2) > 225);
+                        // Rounded pill ends for dock container (r = 18)
+                        let is_dock_corner = (px < 18 && py < 18 && (17 - px as i32).pow(2) + (17 - py as i32).pow(2) > 289)
+                            || (px >= dock_r.w - 18 && py < 18 && (px as i32 - (dock_r.w as i32 - 18)).pow(2) + (17 - py as i32).pow(2) > 289)
+                            || (px < 18 && py >= dock_r.h - 18 && (17 - px as i32).pow(2) + (py as i32 - (dock_r.h as i32 - 18)).pow(2) > 289)
+                            || (px >= dock_r.w - 18 && py >= dock_r.h - 18 && (px as i32 - (dock_r.w as i32 - 18)).pow(2) + (py as i32 - (dock_r.h as i32 - 18)).pow(2) > 289);
                         if is_dock_corner {
                             continue;
                         }
 
                         let dock_bg = if py == 0 { 0x60ffffff } else if py == dock_r.h - 1 { 0xff0d1117 } else { 0xd0161b22 };
-                        let item_idx = px / 56;
-                        let in_item_x = px % 56;
+                        let item_idx = px / 64;
+                        let in_item_x = px % 64;
 
                         if item_idx < 7 {
                             let is_running = match item_idx {
@@ -1085,10 +1157,10 @@ impl WindowManager {
                                 _ => false,
                             };
 
-                            // Graphical icon tile: 28x28 at in_item_x = 14..42, py = 8..36
-                            if in_item_x >= 14 && in_item_x < 42 && (8..36).contains(&py) {
-                                s.pixels[y * s.width + x] = render_dock_icon(item_idx, in_item_x - 14, py - 8, dock_bg);
-                            } else if is_running && in_item_x >= 26 && in_item_x <= 28 && py >= 42 && py <= 44 {
+                            // Graphical icon tile: 28x28 centered in 64x58 item: in_item_x = 18..46, py = 12..40
+                            if in_item_x >= 18 && in_item_x < 46 && (12..40).contains(&py) {
+                                s.pixels[y * s.width + x] = render_dock_icon(item_idx, in_item_x - 18, py - 12, dock_bg);
+                            } else if is_running && in_item_x >= 30 && in_item_x <= 33 && py >= 48 && py <= 51 {
                                 // Glowing active app dot
                                 s.pixels[y * s.width + x] = 0xff38bdf8;
                             } else {

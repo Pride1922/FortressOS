@@ -285,12 +285,12 @@ impl Terminal {
         // Fill entire window content area with terminal background
         w.content.fill(TERM_BG);
         for row in 0..self.rows {
-            let py = 5 + row * 16;
+            let py = 8 + row * 16;
             if py + 16 > height {
                 break;
             }
             for col in 0..self.cols {
-                let px = 9 + col * 8;
+                let px = 10 + col * 8;
                 if px + 8 > width {
                     break;
                 }

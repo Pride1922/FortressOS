@@ -27,7 +27,12 @@ static void test_full_4way_handshake(void) {
     assert(wlan_pbkdf2_sha1(passphrase, ssid, 12, 4096, pmk, WLAN_PMK_LEN) == 0);
 
     wpa2_sm_t sta_sm;
+    memset(&sta_sm, 0xff, sizeof(sta_sm));
     wpa2_sm_init(&sta_sm, sta_mac, ap_bssid, pmk);
+    for (unsigned tid = 0; tid < 16; tid++) {
+        assert(sta_sm.rx_pn[tid] == 0);
+        assert(sta_sm.gtk_rx_pn[tid] == 0);
+    }
     assert(!wpa2_sm_is_authorized(&sta_sm));
 
     /* 2. Mock AP constructs Message 1 */

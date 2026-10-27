@@ -632,33 +632,33 @@ fn dock_mouse_actions() {
     let mut wm = WindowManager::demo().unwrap();
 
     let dock_r = window::WindowManager::dock_rect(1280, 800);
-    assert_eq!(dock_r.y, 800 - 60);
-    assert_eq!(dock_r.h, 52);
+    assert_eq!(dock_r.y, 800 - 66);
+    assert_eq!(dock_r.h, 58);
 
     let click_y = dock_r.y + 20;
 
     // Item 0: Files
-    let act0 = wm.mouse(dock_r.x + 0 * 56 + 20, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 0 * 56 + 20, click_y, 0, &mut s);
+    let act0 = wm.mouse(dock_r.x + 0 * 64 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 0 * 64 + 20, click_y, 0, &mut s);
     assert_eq!(act0, window::Action::SpawnFileManager);
 
     // Item 1: Term
-    let act1 = wm.mouse(dock_r.x + 1 * 56 + 20, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 1 * 56 + 20, click_y, 0, &mut s);
+    let act1 = wm.mouse(dock_r.x + 1 * 64 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 1 * 64 + 20, click_y, 0, &mut s);
     assert_eq!(act1, window::Action::SpawnTerminal);
 
     // Item 2: Notes
-    let act2 = wm.mouse(dock_r.x + 2 * 56 + 20, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 2 * 56 + 20, click_y, 0, &mut s);
+    let act2 = wm.mouse(dock_r.x + 2 * 64 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 2 * 64 + 20, click_y, 0, &mut s);
     assert_eq!(act2, window::Action::SpawnNotepad);
 
     // Item 5: Lock
-    let act5 = wm.mouse(dock_r.x + 5 * 56 + 20, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 5 * 56 + 20, click_y, 0, &mut s);
+    let act5 = wm.mouse(dock_r.x + 5 * 64 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 5 * 64 + 20, click_y, 0, &mut s);
     assert_eq!(act5, window::Action::LockScreen);
 
     // Item 6: Exit
-    let act6 = wm.mouse(dock_r.x + 6 * 56 + 20, click_y, 1, &mut s);
-    let _ = wm.mouse(dock_r.x + 6 * 56 + 20, click_y, 0, &mut s);
+    let act6 = wm.mouse(dock_r.x + 6 * 64 + 20, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 6 * 64 + 20, click_y, 0, &mut s);
     assert_eq!(act6, window::Action::Exit);
 }
