@@ -9,11 +9,15 @@ mod panic;
 mod sys;
 
 mod cursor;
+mod files;
 mod font;
+mod notepad;
 mod surface;
 mod terminal;
 mod window;
 use cursor::Cursor;
+use files::FileManager;
+use notepad::Notepad;
 use surface::Surface;
 use terminal::Terminal;
 use window::{Window, WindowManager};
@@ -209,6 +213,8 @@ fn run() -> i32 {
         return 1;
     }
     let mut term: Option<Terminal> = None;
+    let mut notepad: Option<Notepad> = None;
+    let mut files: Option<FileManager> = None;
     let mut fds = [
         sys::PollFd {
             fd: fd as i32,
@@ -267,15 +273,65 @@ fn run() -> i32 {
                 let mut kbuf = [0u8; 16];
                 let kn = sys::read(0, &mut kbuf);
                 if kn > 0 {
-                    let is_term_focused = windows
-                        .windows
-                        .last()
-                        .map(|w| w.id == 3 && w.is_focused)
-                        .unwrap_or(false);
+                    let top_window_id = windows.windows.last().filter(|w| w.is_focused).map(|w| w.id);
                     for &b in &kbuf[..kn as usize] {
-                        if is_term_focused && term.is_some() {
+                        if top_window_id == Some(3) && term.is_some() {
                             if let Some(ref t) = term {
                                 sys::write(t.master_fd, &[b]);
+                            }
+                        } else if top_window_id == Some(4) && notepad.is_some() {
+                            if let Some(ref mut np) = notepad {
+                                if b == 19 || b == 18 { // Ctrl+S / Ctrl+R
+                                    np.save();
+                                } else if b == 0x08 || b == 127 {
+                                    np.delete_back();
+                                } else if b == b'\r' || b == b'\n' {
+                                    np.insert_char(b'\n');
+                                } else if (32..=126).contains(&b) {
+                                    np.insert_char(b);
+                                }
+                                if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
+                                    np.render(w);
+                                    scene.damage(w.rect);
+                                }
+                            }
+                        } else if top_window_id == Some(5) && files.is_some() {
+                            if let Some(ref mut fm) = files {
+                                if b == b'\r' || b == b'\n' {
+                                    if let Some(file_path) = fm.enter_selected() {
+                                        // Open selected file in Notepad
+                                        if notepad.is_none() {
+                                            if let Some(mut win) = Window::new(4, "Notepad", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
+                                                let np = Notepad::new(4, &file_path);
+                                                np.render(&mut win);
+                                                windows.windows.push(win);
+                                                windows.raise(4, &mut scene);
+                                                notepad = Some(np);
+                                            }
+                                        } else {
+                                            if let Some(ref mut np) = notepad {
+                                                *np = Notepad::new(4, &file_path);
+                                                if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
+                                                    np.render(w);
+                                                    scene.damage(w.rect);
+                                                }
+                                            }
+                                            windows.unminimize_and_raise(4, &mut scene);
+                                        }
+                                    }
+                                } else if b == b'u' || b == b'U' || b == 0x08 {
+                                    fm.navigate_up();
+                                } else if b == b'j' || b == b'J' || b == b's' || b == b'S' {
+                                    if fm.selected + 1 < fm.entries.len() {
+                                        fm.selected += 1;
+                                    }
+                                } else if b == b'k' || b == b'K' || b == b'w' || b == b'W' {
+                                    fm.selected = fm.selected.saturating_sub(1);
+                                }
+                                if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
+                                    fm.render(w);
+                                    scene.damage(w.rect);
+                                }
                             }
                         } else {
                             if b == b'q' || b == b'Q' || b == 3 {
@@ -299,6 +355,30 @@ fn run() -> i32 {
                                     }
                                 } else {
                                     windows.unminimize_and_raise(3, &mut scene);
+                                }
+                            } else if b == b'e' || b == b'E' {
+                                if notepad.is_none() {
+                                    if let Some(mut win) = Window::new(4, "Notepad - /tmp/notes.txt", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
+                                        let np = Notepad::new(4, "/tmp/notes.txt");
+                                        np.render(&mut win);
+                                        windows.windows.push(win);
+                                        windows.raise(4, &mut scene);
+                                        notepad = Some(np);
+                                    }
+                                } else {
+                                    windows.unminimize_and_raise(4, &mut scene);
+                                }
+                            } else if b == b'f' || b == b'F' {
+                                if files.is_none() {
+                                    if let Some(mut win) = Window::new(5, "Files - /", surface::Rect { x: 220, y: 180, w: 460, h: 300 }) {
+                                        let fm = FileManager::new(5, "/");
+                                        fm.render(&mut win);
+                                        windows.windows.push(win);
+                                        windows.raise(5, &mut scene);
+                                        files = Some(fm);
+                                    }
+                                } else {
+                                    windows.unminimize_and_raise(5, &mut scene);
                                 }
                             } else if b == b'm' || b == b'M' {
                                 windows.unminimize_and_raise(1, &mut scene);
@@ -359,6 +439,65 @@ fn run() -> i32 {
                         windows.unminimize_and_raise(3, &mut scene);
                     }
                 }
+                window::Action::SpawnNotepad => {
+                    if notepad.is_none() {
+                        if let Some(mut win) = Window::new(4, "Notepad - /tmp/notes.txt", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
+                            let np = Notepad::new(4, "/tmp/notes.txt");
+                            np.render(&mut win);
+                            windows.windows.push(win);
+                            windows.raise(4, &mut scene);
+                            notepad = Some(np);
+                        }
+                    } else {
+                        windows.unminimize_and_raise(4, &mut scene);
+                    }
+                }
+                window::Action::SpawnFileManager => {
+                    if files.is_none() {
+                        if let Some(mut win) = Window::new(5, "Files - /", surface::Rect { x: 220, y: 180, w: 460, h: 300 }) {
+                            let fm = FileManager::new(5, "/");
+                            fm.render(&mut win);
+                            windows.windows.push(win);
+                            windows.raise(5, &mut scene);
+                            files = Some(fm);
+                        }
+                    } else {
+                        windows.unminimize_and_raise(5, &mut scene);
+                    }
+                }
+                window::Action::WindowResized(id) => {
+                    if id == 3 {
+                        if let Some(ref t) = term {
+                            if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 3) {
+                                let cols = ((w.rect.w.saturating_sub(18)) / 8).clamp(20, 120);
+                                let rows = ((w.rect.h.saturating_sub(30)) / 16).clamp(5, 40);
+                                let ws = sys::WinSize {
+                                    ws_row: rows as u16,
+                                    ws_col: cols as u16,
+                                    ws_xpixel: (cols * 8) as u16,
+                                    ws_ypixel: (rows * 16) as u16,
+                                };
+                                sys::set_winsize(t.master_fd, &ws);
+                                t.render(w);
+                                scene.damage(w.rect);
+                            }
+                        }
+                    } else if id == 4 {
+                        if let Some(ref np) = notepad {
+                            if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
+                                np.render(w);
+                                scene.damage(w.rect);
+                            }
+                        }
+                    } else if id == 5 {
+                        if let Some(ref fm) = files {
+                            if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
+                                fm.render(w);
+                                scene.damage(w.rect);
+                            }
+                        }
+                    }
+                }
                 window::Action::None => {}
             }
             if frame_count % 8 == 0 {
@@ -366,11 +505,21 @@ fn run() -> i32 {
             }
         }
 
-        // Cleanup terminal if Window 3 was closed via [X] button
+        // Cleanup windows closed via [X] button
         if let Some(ref t) = term {
             if !windows.windows.iter().any(|w| w.id == t.window_id) {
                 sys::close(t.master_fd);
                 term = None;
+            }
+        }
+        if let Some(ref np) = notepad {
+            if !windows.windows.iter().any(|w| w.id == np.window_id) {
+                notepad = None;
+            }
+        }
+        if let Some(ref fm) = files {
+            if !windows.windows.iter().any(|w| w.id == fm.window_id) {
+                files = None;
             }
         }
 

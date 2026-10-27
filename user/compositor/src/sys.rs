@@ -5,12 +5,15 @@ pub const SYS_WRITE: usize = 1;
 pub const SYS_OPEN: usize = 2;
 pub const SYS_CLOSE: usize = 3;
 pub const SYS_READ: usize = 4;
+pub const SYS_STAT: usize = 5;
 pub const SYS_SPAWN_EXT: usize = 20;
 pub const SYS_GROUP_RELEASE: usize = 35;
 pub const SYS_TERMATTR: usize = 34;
-pub const SYS_NANOSLEEP: usize = 75;
+pub const SYS_STAT_EXT: usize = 57;
 pub const SYS_CLOCK_GETTIME: usize = 74;
+pub const SYS_NANOSLEEP: usize = 75;
 pub const SYS_PTY_PAIR: usize = 80;
+pub const SYS_LIST_DIR: usize = 82;
 pub const SYS_POLL: usize = 88;
 pub const SYS_FBINFO: usize = 96;
 pub const SYS_FB_ACQUIRE: usize = 97;
@@ -19,6 +22,11 @@ pub const SYS_MMAP: usize = 99;
 pub const EINTR: isize = -22;
 pub const EBUSY: isize = -36;
 
+pub const VFS_O_RDONLY: u32 = 0x0001;
+pub const VFS_O_WRONLY: u32 = 0x0002;
+pub const VFS_O_RDWR: u32 = 0x0003;
+pub const VFS_O_CREAT: u32 = 0x0040;
+pub const VFS_O_TRUNC: u32 = 0x0200;
 pub const VFS_O_NONBLOCK: u32 = 0x800;
 pub const TERM_SET_WINSIZE: usize = 3;
 pub const PTY_SET_SESSION: usize = 5;
@@ -305,4 +313,55 @@ pub fn pty_set_session(master_fd: i32, pid: u64) -> isize {
 
 pub fn group_release(pgid: i64, action: usize) -> isize {
     unsafe { syscall2(SYS_GROUP_RELEASE, pgid as usize, action) }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct StatExtV1 {
+    pub size: u32,
+    pub version: u32,
+    pub file_size: u64,
+    pub file_type: u32,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub mnt_flags: u32,
+    pub reserved: u32,
+}
+
+pub fn list_dir(path: &str, names: &mut [[u8; 64]], max_entries: usize) -> isize {
+    let mut null_path = [0u8; 256];
+    if path.len() >= null_path.len() {
+        return -1;
+    }
+    null_path[..path.len()].copy_from_slice(path.as_bytes());
+    null_path[path.len()] = 0;
+    unsafe {
+        syscall3(
+            SYS_LIST_DIR,
+            null_path.as_ptr() as usize,
+            names.as_mut_ptr() as usize,
+            max_entries,
+        )
+    }
+}
+
+pub fn stat_ext(path: &str, st: &mut StatExtV1) -> isize {
+    let mut null_path = [0u8; 256];
+    if path.len() >= null_path.len() {
+        return -1;
+    }
+    null_path[..path.len()].copy_from_slice(path.as_bytes());
+    null_path[path.len()] = 0;
+    st.size = core::mem::size_of::<StatExtV1>() as u32;
+    st.version = 1;
+    unsafe {
+        syscall4(
+            SYS_STAT_EXT,
+            null_path.as_ptr() as usize,
+            st as *mut _ as usize,
+            core::mem::size_of::<StatExtV1>(),
+            1,
+        )
+    }
 }

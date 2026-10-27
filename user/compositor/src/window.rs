@@ -23,6 +23,7 @@ pub enum Hit {
     Close,
     Minimize,
     Border,
+    Resize,
 }
 
 pub struct Window {
@@ -33,6 +34,7 @@ pub struct Window {
     pub content: Vec<u32>,
     pub is_focused: bool,
     pub is_dragging: bool,
+    pub is_resizing: bool,
     pub drag_offset: (usize, usize),
     pub is_minimized: bool,
 }
@@ -56,9 +58,41 @@ impl Window {
             content,
             is_focused: false,
             is_dragging: false,
+            is_resizing: false,
             drag_offset: (0, 0),
             is_minimized: false,
         })
+    }
+
+    pub fn resize(&mut self, new_w: usize, new_h: usize) -> bool {
+        if new_w < 120 || new_h < TITLE_HEIGHT + 20 {
+            return false;
+        }
+        let new_content_w = new_w - 2;
+        let new_content_h = new_h - TITLE_HEIGHT - 2;
+        let len = match new_content_w.checked_mul(new_content_h) {
+            Some(l) => l,
+            None => return false,
+        };
+        let mut new_content = Vec::new();
+        if new_content.try_reserve_exact(len).is_err() {
+            return false;
+        }
+        new_content.resize(len, CLIENT);
+
+        let old_w = self.rect.w - 2;
+        let old_h = self.rect.h - TITLE_HEIGHT - 2;
+        let copy_w = old_w.min(new_content_w);
+        let copy_h = old_h.min(new_content_h);
+        for y in 0..copy_h {
+            let src_row = &self.content[y * old_w..y * old_w + copy_w];
+            let dst_row = &mut new_content[y * new_content_w..y * new_content_w + copy_w];
+            dst_row.copy_from_slice(src_row);
+        }
+        self.content = new_content;
+        self.rect.w = new_w;
+        self.rect.h = new_h;
+        true
     }
 
     pub fn hit(&self, x: usize, y: usize) -> Option<Hit> {
@@ -67,7 +101,9 @@ impl Window {
         }
         let (x, y) = (x - self.rect.x, y - self.rect.y);
         Some(
-            if x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1 {
+            if x >= self.rect.w.saturating_sub(12) && y >= self.rect.h.saturating_sub(12) {
+                Hit::Resize
+            } else if x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1 {
                 Hit::Border
             } else if y <= TITLE_HEIGHT {
                 if x >= self.rect.w - 25 {
@@ -86,6 +122,12 @@ impl Window {
     fn pixel(&self, x: usize, y: usize, hover: Option<Hit>) -> u32 {
         if x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1 {
             return BORDER;
+        }
+        // Resize grip in bottom-right corner
+        let rx = self.rect.w.saturating_sub(x);
+        let ry = self.rect.h.saturating_sub(y);
+        if rx <= 10 && ry <= 10 && (rx + ry == 6 || rx + ry == 9 || rx + ry == 12) {
+            return if hover == Some(Hit::Resize) { HOVER_MIN } else { BORDER };
         }
         if y > TITLE_HEIGHT {
             return self.content[(y - 25) * (self.rect.w - 2) + x - 1];
@@ -195,6 +237,9 @@ impl Write for Line {
 pub enum Action {
     None,
     SpawnTerminal,
+    SpawnNotepad,
+    SpawnFileManager,
+    WindowResized(u32),
     Exit,
 }
 
@@ -272,9 +317,9 @@ impl WindowManager {
     pub fn start_menu_rect(height: usize) -> Rect {
         Rect {
             x: 8,
-            y: height.saturating_sub(28 + 116),
-            w: 156,
-            h: 116,
+            y: height.saturating_sub(28 + 156),
+            w: 176,
+            h: 156,
         }
     }
 
@@ -362,12 +407,28 @@ impl WindowManager {
                         s.damage(old);
                         s.damage(w.rect);
                     }
+                } else if w.is_resizing {
+                    let min_w = 160;
+                    let min_h = 100;
+                    let max_w = s.width.saturating_sub(w.rect.x);
+                    let max_h = s.height.saturating_sub(w.rect.y).saturating_sub(28);
+                    let target_w = x.saturating_sub(w.rect.x).max(min_w).min(max_w);
+                    let target_h = y.saturating_sub(w.rect.y).max(min_h).min(max_h);
+                    if target_w != w.rect.w || target_h != w.rect.h {
+                        let old = w.rect;
+                        if w.resize(target_w, target_h) {
+                            s.damage(old);
+                            s.damage(w.rect);
+                            ret_action = Action::WindowResized(w.id);
+                        }
+                    }
                 }
             }
         }
         if buttons & 1 == 0 {
             for w in &mut self.windows {
                 w.is_dragging = false;
+                w.is_resizing = false;
             }
         } else if self.buttons & 1 == 0 {
             let start_btn = Self::start_btn_rect(s.height);
@@ -388,9 +449,11 @@ impl WindowManager {
                         let item_idx = (py - 24) / 22;
                         match item_idx {
                             0 => ret_action = Action::SpawnTerminal,
-                            1 => self.unminimize_and_raise(1, s),
-                            2 => self.unminimize_and_raise(2, s),
-                            3 => ret_action = Action::Exit,
+                            1 => ret_action = Action::SpawnNotepad,
+                            2 => ret_action = Action::SpawnFileManager,
+                            3 => self.unminimize_and_raise(1, s),
+                            4 => self.unminimize_and_raise(2, s),
+                            5 => ret_action = Action::Exit,
                             _ => {}
                         }
                     }
@@ -431,6 +494,9 @@ impl WindowManager {
                         w.is_dragging = true;
                         w.drag_offset = (x - w.rect.x, y - w.rect.y);
                     }
+                    Hit::Resize => {
+                        w.is_resizing = true;
+                    }
                     _ => (),
                 }
             }
@@ -441,7 +507,7 @@ impl WindowManager {
             let start_menu = Self::start_menu_rect(s.height);
             let new_menu_hover = if start_menu.contains(x, y) && y >= start_menu.y + 24 {
                 let idx = (y - start_menu.y - 24) / 22;
-                if idx < 4 {
+                if idx < 6 {
                     Some(idx)
                 } else {
                     None
@@ -657,9 +723,11 @@ impl WindowManager {
                                 let item_y = (py - 24) % 22;
                                 let (text, is_hover) = match item_idx {
                                     0 => (" [T] Terminal", self.menu_hover == Some(0)),
-                                    1 => (" [M] Sys Monitor", self.menu_hover == Some(1)),
-                                    2 => (" [P] Palette", self.menu_hover == Some(2)),
-                                    3 => (" [Q] Exit", self.menu_hover == Some(3)),
+                                    1 => (" [E] Notepad", self.menu_hover == Some(1)),
+                                    2 => (" [F] Files", self.menu_hover == Some(2)),
+                                    3 => (" [M] Sys Monitor", self.menu_hover == Some(3)),
+                                    4 => (" [P] Palette", self.menu_hover == Some(4)),
+                                    5 => (" [Q] Exit", self.menu_hover == Some(5)),
                                     _ => ("", false),
                                 };
                                 let item_bg = if is_hover { 0xff1f6feb } else { 0xff161b22 };

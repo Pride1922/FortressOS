@@ -1,8 +1,12 @@
 extern crate alloc;
 #[path = "../user/compositor/src/cursor.rs"]
 mod cursor;
+#[path = "../user/compositor/src/files.rs"]
+mod files;
 #[path = "../user/compositor/src/font.rs"]
 mod font;
+#[path = "../user/compositor/src/notepad.rs"]
+mod notepad;
 #[path = "../user/compositor/src/surface.rs"]
 mod surface;
 #[path = "../user/compositor/src/sys.rs"]
@@ -412,22 +416,98 @@ fn start_menu_toggle_and_actions() {
     assert!(wm.start_open);
     wm.mouse(20, 460, 0, &mut s);
 
-    // Hover over item 0 (Terminal) inside start menu (menu y = 480 - 28 - 116 = 336; py = 24..46 => y = 360..382)
-    wm.mouse(50, 370, 0, &mut s);
+    // Hover over item 0 (Terminal) inside start menu (menu y = 480 - 28 - 156 = 296; py = 24..46 => y = 320..342)
+    wm.mouse(50, 330, 0, &mut s);
     assert_eq!(wm.menu_hover, Some(0));
 
     // Click item 0 (Terminal)
-    let action = wm.mouse(50, 370, 1, &mut s);
+    let action = wm.mouse(50, 330, 1, &mut s);
     assert_eq!(action, window::Action::SpawnTerminal);
     assert!(!wm.start_open); // Menu automatically closes on selection
-    wm.mouse(50, 370, 0, &mut s);
+    wm.mouse(50, 330, 0, &mut s);
 
-    // Reopen start menu and click item 3 (Exit) (y = 336 + 24 + 3*22 + 10 = 436)
+    // Reopen start menu and click item 1 (Notepad) (y = 296 + 24 + 1*22 + 10 = 352)
     let _ = wm.mouse(20, 460, 1, &mut s);
     wm.mouse(20, 460, 0, &mut s);
     assert!(wm.start_open);
 
-    let action = wm.mouse(50, 436, 1, &mut s);
+    let action = wm.mouse(50, 352, 1, &mut s);
+    assert_eq!(action, window::Action::SpawnNotepad);
+    assert!(!wm.start_open);
+    wm.mouse(50, 352, 0, &mut s);
+
+    // Reopen start menu and click item 2 (Files) (y = 296 + 24 + 2*22 + 10 = 374)
+    let _ = wm.mouse(20, 460, 1, &mut s);
+    wm.mouse(20, 460, 0, &mut s);
+    assert!(wm.start_open);
+
+    let action = wm.mouse(50, 374, 1, &mut s);
+    assert_eq!(action, window::Action::SpawnFileManager);
+    assert!(!wm.start_open);
+    wm.mouse(50, 374, 0, &mut s);
+
+    // Reopen start menu and click item 5 (Exit) (y = 296 + 24 + 5*22 + 10 = 440)
+    let _ = wm.mouse(20, 460, 1, &mut s);
+    wm.mouse(20, 460, 0, &mut s);
+    assert!(wm.start_open);
+
+    let action = wm.mouse(50, 440, 1, &mut s);
     assert_eq!(action, window::Action::Exit);
     assert!(!wm.start_open);
+    wm.mouse(50, 440, 0, &mut s);
+}
+
+#[test]
+fn window_resizing_and_clamping() {
+    let mut wm = WindowManager::demo().unwrap();
+    let mut s = Surface::new(640, 480).unwrap();
+    // Window 2 is at x = 260, y = 220, w = 280, h = 180.
+    // Bottom-right corner is at x = 260 + 280 - 1 = 539, y = 220 + 180 - 1 = 399.
+    assert_eq!(wm.hit_test(538, 398), Some((2, window::Hit::Resize)));
+
+    // Click on resize handle
+    let _ = wm.mouse(538, 398, 1, &mut s);
+    assert!(wm.windows.iter().find(|w| w.id == 2).unwrap().is_resizing);
+
+    // Drag to resize window 2 larger: x = 580, y = 430
+    let act = wm.mouse(580, 430, 1, &mut s);
+    assert_eq!(act, window::Action::WindowResized(2));
+    let w2 = wm.windows.iter().find(|w| w.id == 2).unwrap();
+    assert_eq!((w2.rect.w, w2.rect.h), (320, 210));
+
+    // Release mouse
+    let _ = wm.mouse(580, 430, 0, &mut s);
+    assert!(!wm.windows.iter().find(|w| w.id == 2).unwrap().is_resizing);
+}
+
+#[test]
+fn notepad_editing_and_rendering() {
+    let mut np = notepad::Notepad::new(4, "/tmp/test.txt");
+    np.text.clear();
+    np.insert_char(b'H');
+    np.insert_char(b'i');
+    np.insert_char(b'!');
+    assert_eq!(&np.text, b"Hi!");
+    assert_eq!(np.cursor, 3);
+    assert!(np.modified);
+
+    np.delete_back();
+    assert_eq!(&np.text, b"Hi");
+    assert_eq!(np.cursor, 2);
+
+    let mut win = window::Window::new(4, "Notepad", Rect { x: 0, y: 0, w: 400, h: 250 }).unwrap();
+    np.render(&mut win);
+    // Verified that glyphs are rendered into content
+    assert!(win.content.iter().any(|&c| c == notepad::NOTEPAD_FG));
+}
+
+#[test]
+fn files_navigation_and_rendering() {
+    let fm = files::FileManager::new(5, "/");
+    assert_eq!(fm.current_path, "/");
+
+    let mut win = window::Window::new(5, "Files", Rect { x: 0, y: 0, w: 400, h: 250 }).unwrap();
+    fm.render(&mut win);
+    // Verified header and toolbar rendered
+    assert!(win.content.iter().any(|&c| c == files::FILES_DIR || c == files::FILES_FG));
 }
