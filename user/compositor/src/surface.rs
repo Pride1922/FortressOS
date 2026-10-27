@@ -94,6 +94,7 @@ impl Surface {
         self.count += 1;
     }
 
+    #[allow(dead_code)]
     pub fn fill(&mut self, color: u32) {
         self.pixels.fill(color);
         self.damage(Rect {

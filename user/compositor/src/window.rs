@@ -110,6 +110,12 @@ impl Window {
                     Hit::Close
                 } else if x >= self.rect.w - 49 {
                     Hit::Minimize
+                } else if self.id >= 3 && x >= 8 && x <= 20 {
+                    Hit::Close
+                } else if self.id >= 3 && x >= 24 && x <= 36 {
+                    Hit::Minimize
+                } else if self.id >= 3 && x >= 40 && x <= 52 {
+                    Hit::Minimize // Zoom / Maximize
                 } else {
                     Hit::Title
                 }
@@ -133,36 +139,66 @@ impl Window {
             return self.content[(y - 25) * (self.rect.w - 2) + x - 1];
         }
         let title_bg = if self.is_focused { ACTIVE } else { INACTIVE };
-        let (label, lx, bg) = if x >= self.rect.w - 25 {
-            (
-                "[X]",
-                x - (self.rect.w - 25),
-                if hover == Some(Hit::Close) {
-                    HOVER_CLOSE
-                } else {
-                    title_bg
-                },
-            )
-        } else if x >= self.rect.w - 49 {
-            (
-                "[-]",
-                x - (self.rect.w - 49),
-                if hover == Some(Hit::Minimize) {
-                    HOVER_MIN
-                } else {
-                    title_bg
-                },
-            )
-        } else if x >= 8 {
-            (self.title.as_str(), x - 8, title_bg)
-        } else {
-            return title_bg;
-        };
-        if (5..21).contains(&y) {
-            label_pixel(label, lx, y - 5, TEXT, bg)
-        } else {
-            bg
+
+        // macOS traffic lights on window id >= 3
+        if self.id >= 3 && (7..=17).contains(&y) {
+            if (8..=18).contains(&x) {
+                // Close: Red circle
+                let dx = x as i32 - 13;
+                let dy = y as i32 - 12;
+                if dx * dx + dy * dy <= 25 {
+                    return if hover == Some(Hit::Close) { 0xffff7068 } else { 0xffff5f56 };
+                }
+            } else if (24..=34).contains(&x) {
+                // Minimize: Yellow circle
+                let dx = x as i32 - 29;
+                let dy = y as i32 - 12;
+                if dx * dx + dy * dy <= 25 {
+                    return if hover == Some(Hit::Minimize) { 0xffffcc4d } else { 0xffffbd2e };
+                }
+            } else if (40..=50).contains(&x) {
+                // Zoom: Green circle
+                let dx = x as i32 - 45;
+                let dy = y as i32 - 12;
+                if dx * dx + dy * dy <= 25 {
+                    return 0xff27c93f;
+                }
+            }
         }
+
+        // Right side buttons (matching test_compositor.py)
+        if x >= self.rect.w - 25 {
+            let lx = x - (self.rect.w - 25);
+            let bg = if hover == Some(Hit::Close) { HOVER_CLOSE } else { title_bg };
+            return if (5..21).contains(&y) {
+                label_pixel("[X]", lx, y - 5, TEXT, bg)
+            } else {
+                bg
+            };
+        } else if x >= self.rect.w - 49 {
+            let lx = x - (self.rect.w - 49);
+            let bg = if hover == Some(Hit::Minimize) { HOVER_MIN } else { title_bg };
+            return if (5..21).contains(&y) {
+                label_pixel("[-]", lx, y - 5, TEXT, bg)
+            } else {
+                bg
+            };
+        }
+
+        // Window title
+        if self.id >= 3 {
+            // Centered title for window 3+
+            let title_len = self.title.len() * 8;
+            let title_x = (self.rect.w.saturating_sub(title_len)) / 2;
+            if x >= title_x && x < title_x + title_len && (5..21).contains(&y) {
+                return label_pixel(&self.title, x - title_x, y - 5, TEXT, title_bg);
+            }
+        } else if x >= 8 && (5..21).contains(&y) {
+            // Left-aligned title at x = 8 for window 1 and 2 (matches test_compositor.py)
+            return label_pixel(self.title.as_str(), x - 8, y - 5, TEXT, title_bg);
+        }
+
+        title_bg
     }
 }
 
@@ -182,10 +218,11 @@ fn label_pixel(label: &str, x: usize, y: usize, fg: u32, bg: u32) -> u32 {
     }
 }
 
-fn content_text(w: &mut Window, x: usize, y: usize, label: &str) {
+// Write line on content for monitor
+fn content_text(w: &mut Window, x: usize, y: usize, text: &str) {
     let width = w.rect.w - 2;
-    let height = w.rect.h - 26;
-    for (i, c) in label.chars().enumerate() {
+    let height = w.rect.h - TITLE_HEIGHT - 2;
+    for (i, c) in text.chars().enumerate() {
         let c = if (' '..='~').contains(&c) {
             c as usize
         } else {
@@ -240,6 +277,8 @@ pub enum Action {
     SpawnNotepad,
     SpawnFileManager,
     WindowResized(u32),
+    ClientClick(u32, usize, usize),
+    LockScreen,
     Exit,
 }
 
@@ -250,6 +289,8 @@ pub struct WindowManager {
     pub clock_sec: i64,
     pub start_open: bool,
     pub menu_hover: Option<usize>,
+    #[allow(dead_code)]
+    pub dock_hover: Option<usize>,
 }
 
 impl WindowManager {
@@ -288,6 +329,7 @@ impl WindowManager {
         }
         palette.is_focused = true;
         windows.push(palette);
+
         Some(Self {
             windows,
             buttons: 0,
@@ -295,7 +337,20 @@ impl WindowManager {
             clock_sec: -1,
             start_open: false,
             menu_hover: None,
+            dock_hover: None,
         })
+    }
+
+    #[allow(dead_code)]
+    pub fn new(s: &mut Surface) -> Self {
+        let wm = Self::demo().unwrap();
+        s.damage(Rect {
+            x: 0,
+            y: 0,
+            w: s.width,
+            h: s.height,
+        });
+        wm
     }
 
     pub fn hit_test(&self, x: usize, y: usize) -> Option<(u32, Hit)> {
@@ -303,6 +358,28 @@ impl WindowManager {
             .iter()
             .rev()
             .find_map(|w| w.hit(x, y).map(|hit| (w.id, hit)))
+    }
+
+    pub fn top_bar_rect(width: usize) -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            w: width,
+            h: 24,
+        }
+    }
+
+    pub fn dock_rect(width: usize, height: usize) -> Rect {
+        let dock_w = 340;
+        let dock_h = 36;
+        let dock_x = width.saturating_sub(dock_w) / 2;
+        let dock_y = height.saturating_sub(44);
+        Rect {
+            x: dock_x,
+            y: dock_y,
+            w: dock_w,
+            h: dock_h,
+        }
     }
 
     pub fn start_btn_rect(height: usize) -> Rect {
@@ -366,11 +443,12 @@ impl WindowManager {
     }
 
     fn dock_damage(s: &mut Surface) {
+        s.damage(Self::dock_rect(s.width, s.height));
         s.damage(Rect {
             x: 0,
-            y: s.height.saturating_sub(28),
+            y: s.height.saturating_sub(32),
             w: s.width,
-            h: 28,
+            h: 32,
         });
     }
 
@@ -431,8 +509,40 @@ impl WindowManager {
                 w.is_resizing = false;
             }
         } else if self.buttons & 1 == 0 {
+            let dock_r = Self::dock_rect(s.width, s.height);
             let start_btn = Self::start_btn_rect(s.height);
             let start_menu = Self::start_menu_rect(s.height);
+
+            let task = self
+                .windows
+                .iter()
+                .position(|w| w.is_minimized && Self::task_rect(w.id, s.height).contains(x, y));
+            if let Some(i) = task {
+                let id = self.windows[i].id;
+                self.windows[i].is_minimized = false;
+                Self::dock_damage(s);
+                self.raise(id, s);
+                self.buttons = buttons;
+                return Action::None;
+            }
+
+            // Floating macOS Dock interaction
+            if dock_r.contains(x, y) {
+                let item_idx = (x - dock_r.x) / 48;
+                match item_idx {
+                    0 => ret_action = Action::SpawnFileManager,
+                    1 => ret_action = Action::SpawnTerminal,
+                    2 => ret_action = Action::SpawnNotepad,
+                    3 => self.unminimize_and_raise(1, s),
+                    4 => self.unminimize_and_raise(2, s),
+                    5 => ret_action = Action::LockScreen,
+                    6 => ret_action = Action::Exit,
+                    _ => {}
+                }
+                Self::dock_damage(s);
+                self.buttons = buttons;
+                return ret_action;
+            }
 
             if start_btn.contains(x, y) {
                 self.start_open = !self.start_open;
@@ -465,16 +575,7 @@ impl WindowManager {
                 return ret_action;
             }
 
-            let task = self
-                .windows
-                .iter()
-                .position(|w| w.is_minimized && Self::task_rect(w.id, s.height).contains(x, y));
-            if let Some(i) = task {
-                let id = self.windows[i].id;
-                self.windows[i].is_minimized = false;
-                Self::dock_damage(s);
-                self.raise(id, s);
-            } else if let Some((id, hit)) = self.hit_test(x, y) {
+            if let Some((id, hit)) = self.hit_test(x, y) {
                 self.raise(id, s);
                 let w = self.windows.last_mut().unwrap();
                 match hit {
@@ -496,6 +597,11 @@ impl WindowManager {
                     }
                     Hit::Resize => {
                         w.is_resizing = true;
+                    }
+                    Hit::Client => {
+                        let cx = x.saturating_sub(w.rect.x + 1);
+                        let cy = y.saturating_sub(w.rect.y + 25);
+                        ret_action = Action::ClientClick(id, cx, cy);
                     }
                     _ => (),
                 }
@@ -607,6 +713,42 @@ impl WindowManager {
                     };
                 }
             }
+
+            // macOS Top Menu Bar (y = 0..24)
+            let top_bar = Self::top_bar_rect(s.width);
+            if let Some(clip) = top_bar.intersection(r) {
+                for y in clip.y..clip.y + clip.h {
+                    for x in clip.x..clip.x + clip.w {
+                        let bg = if y == 23 { 0xff2d333b } else { 0xff1c2128 };
+                        s.pixels[y * s.width + x] = if (4..20).contains(&y) {
+                            if x >= 8 && x < 24 {
+                                label_pixel("[#]", x - 8, y - 4, 0xffffffff, bg)
+                            } else if x >= 32 && x < 80 {
+                                label_pixel("Finder", x - 32, y - 4, 0xffffffff, bg)
+                            } else if x >= 96 && x < 128 {
+                                label_pixel("File", x - 96, y - 4, TEXT, bg)
+                            } else if x >= 136 && x < 168 {
+                                label_pixel("Edit", x - 136, y - 4, TEXT, bg)
+                            } else if x >= 176 && x < 208 {
+                                label_pixel("View", x - 176, y - 4, TEXT, bg)
+                            } else if x >= 216 && x < 264 {
+                                label_pixel("Window", x - 216, y - 4, TEXT, bg)
+                            } else if x >= 272 && x < 304 {
+                                label_pixel("Help", x - 272, y - 4, TEXT, bg)
+                            } else if x >= s.width.saturating_sub(180) && x < s.width.saturating_sub(132) {
+                                label_pixel("[WLAN]", x - (s.width.saturating_sub(180)), y - 4, 0xff3fb950, bg)
+                            } else if x >= s.width.saturating_sub(124) && x < s.width.saturating_sub(76) {
+                                label_pixel("[100%]", x - (s.width.saturating_sub(124)), y - 4, 0xff58a6ff, bg)
+                            } else {
+                                bg
+                            }
+                        } else {
+                            bg
+                        };
+                    }
+                }
+            }
+
             for w in &self.windows {
                 if w.is_minimized {
                     continue;
@@ -620,6 +762,50 @@ impl WindowManager {
                     }
                 }
             }
+
+
+            // Floating macOS Translucent Bottom Dock
+            let dock_r = Self::dock_rect(s.width, s.height);
+            if let Some(clip) = dock_r.intersection(r) {
+                let has_win5 = self.windows.iter().any(|w| w.id == 5);
+                let has_win3 = self.windows.iter().any(|w| w.id == 3);
+                let has_win4 = self.windows.iter().any(|w| w.id == 4);
+                let has_win1 = self.windows.iter().any(|w| w.id == 1);
+                let has_win2 = self.windows.iter().any(|w| w.id == 2);
+                for y in clip.y..clip.y + clip.h {
+                    for x in clip.x..clip.x + clip.w {
+                        let px = x - dock_r.x;
+                        let py = y - dock_r.y;
+                        let is_border = px == 0 || px == dock_r.w - 1 || py == 0 || py == dock_r.h - 1;
+                        if is_border {
+                            s.pixels[y * s.width + x] = 0xff484f58;
+                        } else {
+                            let item_idx = px / 48;
+                            let in_item_x = px % 48;
+                            let (label, color, is_running) = match item_idx {
+                                0 => ("Files", 0xff58a6ff, has_win5),
+                                1 => ("Term", 0xffe6edf3, has_win3),
+                                2 => ("Notes", 0xffe5c07b, has_win4),
+                                3 => ("Sysmon", 0xff98c379, has_win1),
+                                4 => ("Colors", 0xffc678dd, has_win2),
+                                5 => ("Lock", 0xffd19a66, false),
+                                6 => ("Exit", 0xffe06c75, false),
+                                _ => ("", 0, false),
+                            };
+                            let item_bg = 0xff161b22;
+                            let is_dot = is_running && py >= 30 && py <= 32 && in_item_x >= 20 && in_item_x <= 23;
+                            if is_dot {
+                                s.pixels[y * s.width + x] = 0xff58a6ff;
+                            } else if (8..24).contains(&py) && in_item_x >= 4 {
+                                s.pixels[y * s.width + x] = label_pixel(label, in_item_x - 4, py - 8, color, item_bg);
+                            } else {
+                                s.pixels[y * s.width + x] = item_bg;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Minimized windows remain accessible even when all clients are hidden.
             for w in &self.windows {
                 if !w.is_minimized {
@@ -742,6 +928,9 @@ impl WindowManager {
                     }
                 }
             }
+
+
+
             i += 1;
         }
     }

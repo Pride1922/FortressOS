@@ -511,3 +511,151 @@ fn files_navigation_and_rendering() {
     // Verified header and toolbar rendered
     assert!(win.content.iter().any(|&c| c == files::FILES_DIR || c == files::FILES_FG));
 }
+
+#[test]
+fn notepad_mouse_and_arrow_keys() {
+    let mut np = notepad::Notepad::new(4, "/tmp/editor.txt");
+    np.text.clear();
+    np.cursor = 0;
+
+    // Type text: "Hi\nWorld"
+    assert!(np.handle_key(b'H'));
+    assert!(np.handle_key(b'i'));
+    assert!(np.handle_key(b'\n'));
+    assert!(np.handle_key(b'W'));
+    assert!(np.handle_key(b'o'));
+    assert!(np.handle_key(b'r'));
+    assert!(np.handle_key(b'l'));
+    assert!(np.handle_key(b'd'));
+    assert_eq!(&np.text, b"Hi\nWorld");
+    assert_eq!(np.cursor, 8); // at end of "World"
+
+    // ANSI Left arrow: \x1b [ D
+    assert!(!np.handle_key(0x1b));
+    assert!(!np.handle_key(b'['));
+    assert!(np.handle_key(b'D'));
+    assert_eq!(np.cursor, 7); // before 'd'
+
+    // ANSI Home: \x1b [ H
+    assert!(!np.handle_key(0x1b));
+    assert!(!np.handle_key(b'['));
+    assert!(np.handle_key(b'H'));
+    assert_eq!(np.cursor, 3); // start of second line "World"
+
+    // ANSI Up arrow: \x1b [ A
+    assert!(!np.handle_key(0x1b));
+    assert!(!np.handle_key(b'['));
+    assert!(np.handle_key(b'A'));
+    assert_eq!(np.cursor, 0); // start of first line "Hi"
+
+    // ANSI End: \x1b [ F
+    assert!(!np.handle_key(0x1b));
+    assert!(!np.handle_key(b'['));
+    assert!(np.handle_key(b'F'));
+    assert_eq!(np.cursor, 2); // end of first line "Hi"
+
+    // ANSI Down arrow: \x1b [ B
+    assert!(!np.handle_key(0x1b));
+    assert!(!np.handle_key(b'['));
+    assert!(np.handle_key(b'B'));
+    assert_eq!(np.cursor, 5); // col 2 on second line "Wo"
+
+    // ANSI Delete: \x1b [ 3 ~
+    assert!(!np.handle_key(0x1b));
+    assert!(!np.handle_key(b'['));
+    assert!(!np.handle_key(b'3'));
+    assert!(np.handle_key(b'~'));
+    assert_eq!(&np.text, b"Hi\nWold"); // 'r' deleted forward
+
+    // Mouse click on text area: line 0, col 1
+    // cx = 48 (gutter) + 1 * 8 = 56, cy = 24 (toolbar) + 4 = 28
+    assert!(np.handle_click(56, 28));
+    assert_eq!(np.cursor, 1);
+
+    // Mouse click on toolbar [S] Save: cx = 20, cy = 8
+    assert!(np.handle_click(20, 8));
+}
+
+#[test]
+fn files_mouse_click_and_navigation() {
+    let mut fm = files::FileManager::new(5, "/");
+    assert_eq!(fm.current_path, "/");
+
+    // Click [/bin] button on toolbar: cx = 110, cy = 8
+    let act1 = fm.handle_click(110, 8);
+    assert_eq!(act1, Some(files::FileAction::Refresh));
+    assert_eq!(fm.current_path, "/bin");
+
+    // Click [^ Up] button on toolbar: cx = 12, cy = 8
+    let act2 = fm.handle_click(12, 8);
+    assert_eq!(act2, Some(files::FileAction::Refresh));
+    assert_eq!(fm.current_path, "/");
+
+    // Click [/etc] button on toolbar: cx = 170, cy = 8
+    let act3 = fm.handle_click(170, 8);
+    assert_eq!(act3, Some(files::FileAction::Refresh));
+    assert_eq!(fm.current_path, "/etc");
+
+    // Click first item row: cy = 30 (offset from top bar)
+    let _ = fm.handle_click(50, 30);
+    assert_eq!(fm.selected, 0);
+}
+
+#[test]
+fn terminal_dynamic_dimensions() {
+    let mut t = terminal::Terminal::new(1, -1, -1);
+    assert_eq!(t.cols, terminal::TERM_COLS);
+    assert_eq!(t.rows, terminal::TERM_ROWS);
+
+    // Resize to 100x30
+    t.set_dimensions(100, 30);
+    assert_eq!(t.cols, 100);
+    assert_eq!(t.rows, 30);
+
+    // Clamp upper bounds to 160x60
+    t.set_dimensions(200, 80);
+    assert_eq!(t.cols, terminal::TERM_MAX_COLS);
+    assert_eq!(t.rows, terminal::TERM_MAX_ROWS);
+
+    // Clamp lower bounds to 20x5
+    t.set_dimensions(10, 2);
+    assert_eq!(t.cols, 20);
+    assert_eq!(t.rows, 5);
+}
+
+#[test]
+fn dock_mouse_actions() {
+    let mut s = Surface::new(1280, 800).unwrap();
+    let mut wm = WindowManager::demo().unwrap();
+
+    let dock_r = window::WindowManager::dock_rect(1280, 800);
+    assert_eq!(dock_r.y, 800 - 44);
+    assert_eq!(dock_r.h, 36);
+
+    let click_y = dock_r.y + 10;
+
+    // Item 0: Files
+    let act0 = wm.mouse(dock_r.x + 0 * 48 + 10, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 0 * 48 + 10, click_y, 0, &mut s);
+    assert_eq!(act0, window::Action::SpawnFileManager);
+
+    // Item 1: Term
+    let act1 = wm.mouse(dock_r.x + 1 * 48 + 10, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 1 * 48 + 10, click_y, 0, &mut s);
+    assert_eq!(act1, window::Action::SpawnTerminal);
+
+    // Item 2: Notes
+    let act2 = wm.mouse(dock_r.x + 2 * 48 + 10, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 2 * 48 + 10, click_y, 0, &mut s);
+    assert_eq!(act2, window::Action::SpawnNotepad);
+
+    // Item 5: Lock
+    let act5 = wm.mouse(dock_r.x + 5 * 48 + 10, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 5 * 48 + 10, click_y, 0, &mut s);
+    assert_eq!(act5, window::Action::LockScreen);
+
+    // Item 6: Exit
+    let act6 = wm.mouse(dock_r.x + 6 * 48 + 10, click_y, 1, &mut s);
+    let _ = wm.mouse(dock_r.x + 6 * 48 + 10, click_y, 0, &mut s);
+    assert_eq!(act6, window::Action::Exit);
+}

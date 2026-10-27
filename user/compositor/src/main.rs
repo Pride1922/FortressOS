@@ -17,6 +17,7 @@ mod terminal;
 mod window;
 use cursor::Cursor;
 use files::FileManager;
+use font::GLYPHS;
 use notepad::Notepad;
 use surface::Surface;
 use terminal::Terminal;
@@ -72,11 +73,25 @@ fn spawn_terminal() -> Option<(Window, Terminal)> {
     let master_fd = pty_fds[0];
     let slave_fd = pty_fds[1];
 
+    let mut win = Window::new(
+        3,
+        "Terminal - /bin/sh",
+        surface::Rect {
+            x: 140,
+            y: 160,
+            w: 520,
+            h: 280,
+        },
+    )?;
+    win.content.fill(terminal::TERM_BG);
+
+    let cols = ((win.rect.w.saturating_sub(18)) / 8).clamp(20, terminal::TERM_MAX_COLS);
+    let rows = ((win.rect.h.saturating_sub(30)) / 16).clamp(5, terminal::TERM_MAX_ROWS);
     let ws = sys::WinSize {
-        ws_row: terminal::TERM_ROWS as u16,
-        ws_col: terminal::TERM_COLS as u16,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
+        ws_row: rows as u16,
+        ws_col: cols as u16,
+        ws_xpixel: (cols * 8) as u16,
+        ws_ypixel: (rows * 16) as u16,
     };
     sys::set_winsize(master_fd, &ws);
 
@@ -137,52 +152,49 @@ fn spawn_terminal() -> Option<(Window, Terminal)> {
     sys::group_release(pid as i64, sys::GROUP_RELEASE as usize);
     sys::close(slave_fd);
 
-    let mut win = Window::new(
-        3,
-        "Terminal - /bin/sh",
-        surface::Rect {
-            x: 140,
-            y: 160,
-            w: 500,
-            h: 260,
-        },
-    )?;
-    win.content.fill(terminal::TERM_BG);
-
-    let term = Terminal::new(3, master_fd, pid as i64);
+    let mut term = Terminal::new(3, master_fd, pid as i64);
+    term.set_dimensions(cols, rows);
     term.render(&mut win);
 
     Some((win, term))
 }
 
+fn draw_label_pixel(label: &str, x: usize, y: usize, fg: u32, bg: u32) -> u32 {
+    let Some(c) = label.chars().nth(x / 8) else {
+        return bg;
+    };
+    let c = if (' '..='~').contains(&c) {
+        c as usize
+    } else {
+        b'?' as usize
+    };
+    if GLYPHS[c - 32][y] & (128 >> (x % 8)) != 0 {
+        fg
+    } else {
+        bg
+    }
+}
+
 fn run() -> i32 {
     sys::write(1, b"[COMPOSITOR] Phase 4 starting (right click to exit)\n");
     let fb = match sys::get_fb_info(0) {
-        Ok(fb) => fb,
-        Err(_) => {
-            sys::write(2, b"[COMPOSITOR] [FAIL] SYS_FBINFO\n");
+        Ok(fb) if fb.version == 1 && fb.bpp == 32 => fb,
+        _ => {
+            sys::write(2, b"[compositor] Unsupported framebuffer format\n");
             return 1;
         }
     };
     let mut scene = match Surface::new(fb.width as usize, fb.height as usize) {
         Some(s) => s,
         None => {
-            sys::write(2, b"[COMPOSITOR] [FAIL] Backbuffer exceeds bounded heap\n");
-            return 1;
-        }
-    };
-    scene.fill(window::DESKTOP);
-    let mut windows = match WindowManager::demo() {
-        Some(w) => w,
-        None => {
-            sys::write(2, b"[COMPOSITOR] [FAIL] Window allocation\n");
+            sys::write(2, b"[compositor] Surface allocation failed\n");
             return 1;
         }
     };
     let mut cursor = match Cursor::new(scene.width / 2, scene.height / 2) {
         Some(c) => c,
         None => {
-            sys::write(2, b"[COMPOSITOR] [FAIL] Cursor allocation\n");
+            sys::write(2, b"[compositor] Cursor allocation failed\n");
             return 1;
         }
     };
@@ -196,7 +208,24 @@ fn run() -> i32 {
     }
     // Console writes share VRAM: finish the startup diagnostic before painting.
     sys::write(1, b"[COMPOSITOR] [OK] Window server ready; polling\n");
-    let mut ts = sys::Timespec::default();
+
+    let mut windows = match WindowManager::demo() {
+        Some(wm) => wm,
+        None => {
+            sys::close(fd as i32);
+            return 1;
+        }
+    };
+    scene.damage(surface::Rect {
+        x: 0,
+        y: 0,
+        w: scene.width,
+        h: scene.height,
+    });
+    let mut ts = sys::Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     if sys::clock_gettime(0, &mut ts) == 0 {
         windows.update_clock(&mut scene, ts.tv_sec);
     }
@@ -215,6 +244,7 @@ fn run() -> i32 {
     let mut term: Option<Terminal> = None;
     let mut notepad: Option<Notepad> = None;
     let mut files: Option<FileManager> = None;
+    let mut is_locked: bool = false;
     let mut fds = [
         sys::PollFd {
             fd: fd as i32,
@@ -275,24 +305,20 @@ fn run() -> i32 {
                 if kn > 0 {
                     let top_window_id = windows.windows.last().filter(|w| w.is_focused).map(|w| w.id);
                     for &b in &kbuf[..kn as usize] {
-                        if top_window_id == Some(3) && term.is_some() {
+                        if is_locked {
+                            is_locked = false;
+                            scene.damage(surface::Rect { x: 0, y: 0, w: scene.width, h: scene.height });
+                        } else if top_window_id == Some(3) && term.is_some() {
                             if let Some(ref t) = term {
                                 sys::write(t.master_fd, &[b]);
                             }
                         } else if top_window_id == Some(4) && notepad.is_some() {
                             if let Some(ref mut np) = notepad {
-                                if b == 19 || b == 18 { // Ctrl+S / Ctrl+R
-                                    np.save();
-                                } else if b == 0x08 || b == 127 {
-                                    np.delete_back();
-                                } else if b == b'\r' || b == b'\n' {
-                                    np.insert_char(b'\n');
-                                } else if (32..=126).contains(&b) {
-                                    np.insert_char(b);
-                                }
-                                if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
-                                    np.render(w);
-                                    scene.damage(w.rect);
+                                if np.handle_key(b) {
+                                    if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
+                                        np.render(w);
+                                        scene.damage(w.rect);
+                                    }
                                 }
                             }
                         } else if top_window_id == Some(5) && files.is_some() {
@@ -301,7 +327,7 @@ fn run() -> i32 {
                                     if let Some(file_path) = fm.enter_selected() {
                                         // Open selected file in Notepad
                                         if notepad.is_none() {
-                                            if let Some(mut win) = Window::new(4, "Notepad", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
+                                            if let Some(mut win) = Window::new(4, "Notes", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
                                                 let np = Notepad::new(4, &file_path);
                                                 np.render(&mut win);
                                                 windows.windows.push(win);
@@ -318,19 +344,32 @@ fn run() -> i32 {
                                             }
                                             windows.unminimize_and_raise(4, &mut scene);
                                         }
+                                    } else {
+                                        if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
+                                            fm.render(w);
+                                            scene.damage(w.rect);
+                                        }
                                     }
                                 } else if b == b'u' || b == b'U' || b == 0x08 {
                                     fm.navigate_up();
+                                    if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
+                                        fm.render(w);
+                                        scene.damage(w.rect);
+                                    }
                                 } else if b == b'j' || b == b'J' || b == b's' || b == b'S' {
                                     if fm.selected + 1 < fm.entries.len() {
                                         fm.selected += 1;
+                                        if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
+                                            fm.render(w);
+                                            scene.damage(w.rect);
+                                        }
                                     }
                                 } else if b == b'k' || b == b'K' || b == b'w' || b == b'W' {
                                     fm.selected = fm.selected.saturating_sub(1);
-                                }
-                                if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
-                                    fm.render(w);
-                                    scene.damage(w.rect);
+                                    if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
+                                        fm.render(w);
+                                        scene.damage(w.rect);
+                                    }
                                 }
                             }
                         } else {
@@ -358,7 +397,7 @@ fn run() -> i32 {
                                 }
                             } else if b == b'e' || b == b'E' {
                                 if notepad.is_none() {
-                                    if let Some(mut win) = Window::new(4, "Notepad - /tmp/notes.txt", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
+                                    if let Some(mut win) = Window::new(4, "Notes - /tmp/notes.txt", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
                                         let np = Notepad::new(4, "/tmp/notes.txt");
                                         np.render(&mut win);
                                         windows.windows.push(win);
@@ -428,6 +467,63 @@ fn run() -> i32 {
             let action = windows.mouse(cursor.x, cursor.y, buttons, &mut scene);
             match action {
                 window::Action::Exit => break 0,
+                window::Action::LockScreen => {
+                    is_locked = !is_locked;
+                    scene.damage(surface::Rect { x: 0, y: 0, w: scene.width, h: scene.height });
+                }
+                window::Action::ClientClick(id, cx, cy) => {
+                    if is_locked {
+                        is_locked = false;
+                        scene.damage(surface::Rect { x: 0, y: 0, w: scene.width, h: scene.height });
+                    } else if id == 4 {
+                        if let Some(ref mut np) = notepad {
+                            if np.handle_click(cx, cy) {
+                                if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
+                                    np.render(w);
+                                    scene.damage(w.rect);
+                                }
+                            }
+                        }
+                    } else if id == 5 {
+                        if let Some(ref mut fm) = files {
+                            if let Some(file_action) = fm.handle_click(cx, cy) {
+                                match file_action {
+                                    files::FileAction::OpenPath(path) => {
+                                        if notepad.is_none() {
+                                            if let Some(mut win) = Window::new(4, "Notes", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
+                                                let np = Notepad::new(4, &path);
+                                                np.render(&mut win);
+                                                windows.windows.push(win);
+                                                windows.raise(4, &mut scene);
+                                                notepad = Some(np);
+                                            }
+                                        } else {
+                                            if let Some(ref mut np) = notepad {
+                                                *np = Notepad::new(4, &path);
+                                                if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
+                                                    np.render(w);
+                                                    scene.damage(w.rect);
+                                                }
+                                            }
+                                            windows.unminimize_and_raise(4, &mut scene);
+                                        }
+                                    }
+                                    files::FileAction::Refresh => {
+                                        if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
+                                            fm.render(w);
+                                            scene.damage(w.rect);
+                                        }
+                                    }
+                                }
+                            } else {
+                                if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
+                                    fm.render(w);
+                                    scene.damage(w.rect);
+                                }
+                            }
+                        }
+                    }
+                }
                 window::Action::SpawnTerminal => {
                     if term.is_none() {
                         if let Some((win, t)) = spawn_terminal() {
@@ -441,7 +537,7 @@ fn run() -> i32 {
                 }
                 window::Action::SpawnNotepad => {
                     if notepad.is_none() {
-                        if let Some(mut win) = Window::new(4, "Notepad - /tmp/notes.txt", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
+                        if let Some(mut win) = Window::new(4, "Notes - /tmp/notes.txt", surface::Rect { x: 180, y: 140, w: 480, h: 280 }) {
                             let np = Notepad::new(4, "/tmp/notes.txt");
                             np.render(&mut win);
                             windows.windows.push(win);
@@ -467,10 +563,11 @@ fn run() -> i32 {
                 }
                 window::Action::WindowResized(id) => {
                     if id == 3 {
-                        if let Some(ref t) = term {
+                        if let Some(ref mut t) = term {
                             if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 3) {
-                                let cols = ((w.rect.w.saturating_sub(18)) / 8).clamp(20, 120);
-                                let rows = ((w.rect.h.saturating_sub(30)) / 16).clamp(5, 40);
+                                let cols = ((w.rect.w.saturating_sub(18)) / 8).clamp(20, terminal::TERM_MAX_COLS);
+                                let rows = ((w.rect.h.saturating_sub(30)) / 16).clamp(5, terminal::TERM_MAX_ROWS);
+                                t.set_dimensions(cols, rows);
                                 let ws = sys::WinSize {
                                     ws_row: rows as u16,
                                     ws_col: cols as u16,
@@ -530,6 +627,39 @@ fn run() -> i32 {
         }
 
         windows.render(&mut scene);
+
+        if is_locked {
+            // Draw macOS Lock Screen overlay
+            let card_w = 320;
+            let card_h = 180;
+            let card_x = scene.width.saturating_sub(card_w) / 2;
+            let card_y = scene.height.saturating_sub(card_h) / 2;
+
+            for y in 0..scene.height {
+                for x in 0..scene.width {
+                    if x >= card_x && x < card_x + card_w && y >= card_y && y < card_y + card_h {
+                        let cx = x - card_x;
+                        let cy = y - card_y;
+                        let is_card_border = cx == 0 || cx == card_w - 1 || cy == 0 || cy == card_h - 1;
+                        scene.pixels[y * scene.width + x] = if is_card_border {
+                            0xff484f58
+                        } else if cy >= 20 && cy < 36 && cx >= 70 {
+                            draw_label_pixel("Fortress Administrator", cx - 70, cy - 20, 0xffffffff, 0xff161b22)
+                        } else if cy >= 60 && cy < 76 && cx >= 60 {
+                            draw_label_pixel("Password: [ ******** ]", cx - 60, cy - 60, 0xff58a6ff, 0xff161b22)
+                        } else if cy >= 120 && cy < 136 && cx >= 32 {
+                            draw_label_pixel("Click or Press Enter to Unlock", cx - 32, cy - 120, 0xff8b949e, 0xff161b22)
+                        } else {
+                            0xff161b22
+                        };
+                    } else {
+                        // Frosted dark acrylic scrim
+                        scene.pixels[y * scene.width + x] = 0xff0d1117;
+                    }
+                }
+            }
+        }
+
         cursor.show(&mut scene);
         if !unsafe { scene.present(&fb) } {
             break 1;

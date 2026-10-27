@@ -14,6 +14,12 @@ pub const FILES_DIR: u32 = 0xff58a6ff;
 pub const FILES_EXE: u32 = 0xff3fb950;
 pub const FILES_SEL: u32 = 0xff2a3a5e;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileAction {
+    OpenPath(String),
+    Refresh,
+}
+
 #[derive(Clone, Debug)]
 pub struct FileEntry {
     pub name: String,
@@ -101,18 +107,13 @@ impl FileManager {
                         name: entry_name,
                         is_dir,
                         is_exe,
-                        size: st.file_size,
+                        size: st.size as u64,
                     });
                 }
             }
         }
-
-        if self.selected >= self.entries.len() {
-            self.selected = self.entries.len().saturating_sub(1);
-        }
     }
 
-    #[allow(dead_code)]
     pub fn enter_selected(&mut self) -> Option<String> {
         if self.selected >= self.entries.len() {
             return None;
@@ -146,7 +147,6 @@ impl FileManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn navigate_up(&mut self) {
         if self.current_path == "/" {
             return;
@@ -162,12 +162,51 @@ impl FileManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_path(&mut self, path: &str) {
         self.current_path.clear();
         self.current_path.push_str(path);
         self.selected = 0;
         self.refresh();
+    }
+
+    /// Handles mouse clicks in client coordinates. Returns FileAction if action triggered.
+    pub fn handle_click(&mut self, cx: usize, cy: usize) -> Option<FileAction> {
+        if cy <= 22 {
+            // Header buttons
+            if cx >= 8 && cx <= 56 {
+                self.navigate_up();
+                return Some(FileAction::Refresh);
+            } else if cx >= 64 && cx <= 88 {
+                self.set_path("/");
+                return Some(FileAction::Refresh);
+            } else if cx >= 96 && cx <= 144 {
+                self.set_path("/bin");
+                return Some(FileAction::Refresh);
+            } else if cx >= 152 && cx <= 200 {
+                self.set_path("/etc");
+                return Some(FileAction::Refresh);
+            }
+            return None;
+        }
+
+        if cy >= 26 {
+            let clicked = self.scroll + (cy - 26) / 20;
+            if clicked < self.entries.len() {
+                if self.selected == clicked {
+                    // Double click / Enter action
+                    if let Some(path) = self.enter_selected() {
+                        return Some(FileAction::OpenPath(path));
+                    } else {
+                        return Some(FileAction::Refresh);
+                    }
+                } else {
+                    // First click selects
+                    self.selected = clicked;
+                    return Some(FileAction::Refresh);
+                }
+            }
+        }
+        None
     }
 
     pub fn render(&self, w: &mut Window) {
@@ -201,7 +240,7 @@ impl FileManager {
             let row_bg = if is_sel { FILES_SEL } else { FILES_BG };
 
             // Fill row background
-            for y in cur_y..(cur_y + 20).min(height - 20) {
+            for y in cur_y..(cur_y + 20).min(height.saturating_sub(20)) {
                 for x in 0..width {
                     w.content[y * width + x] = row_bg;
                 }
@@ -230,17 +269,36 @@ impl FileManager {
             cur_y += 20;
         }
 
-        // Footer status bar
+        // Footer status bar (bottom 18px)
         let footer_y = height.saturating_sub(18);
         for y in footer_y..height {
             for x in 0..width {
                 w.content[y * width + x] = FILES_HEADER;
             }
         }
-        let total_str = format_dec(self.entries.len());
-        draw_text(w, 8, footer_y + 1, "Items:", 0xff8b949e, FILES_HEADER);
-        draw_text(w, 60, footer_y + 1, &total_str, FILES_FG, FILES_HEADER);
-        draw_text(w, 120, footer_y + 1, "FortressOS Files v1.0", 0xff8b949e, FILES_HEADER);
+        let total_items = self.entries.len();
+        let mut status_msg = String::new();
+        let _ = status_msg.try_reserve_exact(32);
+        let _ = status_msg.push_str("Items: ");
+        let mut n_buf = [0u8; 8];
+        let mut n = total_items;
+        let mut n_len = 0;
+        if n == 0 {
+            n_buf[0] = b'0';
+            n_len = 1;
+        } else {
+            while n > 0 && n_len < 8 {
+                n_buf[n_len] = b'0' + (n % 10) as u8;
+                n /= 10;
+                n_len += 1;
+            }
+            n_buf[..n_len].reverse();
+        }
+        if let Ok(s) = core::str::from_utf8(&n_buf[..n_len]) {
+            status_msg.push_str(s);
+        }
+        draw_text(w, 8, footer_y + 1, &status_msg, 0xff8b949e, FILES_HEADER);
+        draw_text(w, width.saturating_sub(180), footer_y + 1, "Click to Select / Open", 0xff8b949e, FILES_HEADER);
     }
 }
 
@@ -248,34 +306,39 @@ fn format_bytes(bytes: u64) -> String {
     let mut s = String::new();
     let _ = s.try_reserve_exact(16);
     if bytes < 1024 {
-        s.push_str(&format_dec(bytes as usize));
+        let mut n = bytes;
+        let mut buf = [0u8; 8];
+        let mut len = 0;
+        if n == 0 {
+            buf[0] = b'0';
+            len = 1;
+        } else {
+            while n > 0 && len < 8 {
+                buf[len] = b'0' + (n % 10) as u8;
+                n /= 10;
+                len += 1;
+            }
+            buf[..len].reverse();
+        }
+        if let Ok(num_str) = core::str::from_utf8(&buf[..len]) {
+            s.push_str(num_str);
+        }
         s.push_str(" B");
-    } else if bytes < 1024 * 1024 {
-        s.push_str(&format_dec((bytes / 1024) as usize));
-        s.push_str(" KiB");
     } else {
-        s.push_str(&format_dec((bytes / (1024 * 1024)) as usize));
-        s.push_str(" MiB");
-    }
-    s
-}
-
-fn format_dec(val: usize) -> String {
-    let mut s = String::new();
-    let mut v = val;
-    let mut buf = [0u8; 16];
-    let mut len = 0;
-    if v == 0 {
-        s.push('0');
-        return s;
-    }
-    while v > 0 {
-        buf[len] = b'0' + (v % 10) as u8;
-        v /= 10;
-        len += 1;
-    }
-    for i in (0..len).rev() {
-        s.push(buf[i] as char);
+        let kb = bytes / 1024;
+        let mut n = kb;
+        let mut buf = [0u8; 8];
+        let mut len = 0;
+        while n > 0 && len < 8 {
+            buf[len] = b'0' + (n % 10) as u8;
+            n /= 10;
+            len += 1;
+        }
+        buf[..len].reverse();
+        if let Ok(num_str) = core::str::from_utf8(&buf[..len]) {
+            s.push_str(num_str);
+        }
+        s.push_str(" KB");
     }
     s
 }

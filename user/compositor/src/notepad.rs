@@ -23,6 +23,8 @@ pub struct Notepad {
     pub scroll_line: usize,
     pub modified: bool,
     pub status: Option<&'static str>,
+    pub cursor_visible: bool,
+    ansi_state: u8,
 }
 
 impl Notepad {
@@ -53,7 +55,7 @@ impl Notepad {
         }
 
         if !loaded || text.is_empty() {
-            let default_text = b"# FortressOS Notepad\n# Edit configuration files & notes\n# Press 'Ctrl+S' to Save\n\nWelcome to FortressOS Desktop!\n";
+            let default_text = b"# FortressOS Notes\n# Edit system files & personal notes\n\nWelcome to FortressOS Desktop!\n";
             text.extend_from_slice(default_text);
         }
 
@@ -65,6 +67,8 @@ impl Notepad {
             scroll_line: 0,
             modified: false,
             status: None,
+            cursor_visible: true,
+            ansi_state: 0,
         }
     }
 
@@ -87,6 +91,187 @@ impl Notepad {
             self.modified = true;
             self.status = None;
         }
+    }
+
+    pub fn delete_forward(&mut self) {
+        if self.cursor < self.text.len() {
+            self.text.remove(self.cursor);
+            self.modified = true;
+            self.status = None;
+        }
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.text.len());
+    }
+
+    pub fn move_cursor_home(&mut self) {
+        while self.cursor > 0 && self.text[self.cursor - 1] != b'\n' {
+            self.cursor -= 1;
+        }
+    }
+
+    pub fn move_cursor_end(&mut self) {
+        while self.cursor < self.text.len() && self.text[self.cursor] != b'\n' {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn move_cursor_up(&mut self) {
+        // Find current col
+        let mut col = 0;
+        let mut idx = self.cursor;
+        while idx > 0 && self.text[idx - 1] != b'\n' {
+            idx -= 1;
+            col += 1;
+        }
+        if idx == 0 {
+            // Already on first line
+            self.cursor = 0;
+            return;
+        }
+        // idx - 1 is the newline of the previous line
+        let prev_line_end = idx - 1;
+        let mut prev_line_start = prev_line_end;
+        while prev_line_start > 0 && self.text[prev_line_start - 1] != b'\n' {
+            prev_line_start -= 1;
+        }
+        let prev_line_len = prev_line_end - prev_line_start;
+        self.cursor = prev_line_start + col.min(prev_line_len);
+    }
+
+    pub fn move_cursor_down(&mut self) {
+        // Find current col
+        let mut col = 0;
+        let mut idx = self.cursor;
+        while idx > 0 && self.text[idx - 1] != b'\n' {
+            idx -= 1;
+            col += 1;
+        }
+        // Find start of next line
+        let mut next_start = self.cursor;
+        while next_start < self.text.len() && self.text[next_start] != b'\n' {
+            next_start += 1;
+        }
+        if next_start >= self.text.len() {
+            // Already on last line
+            self.cursor = self.text.len();
+            return;
+        }
+        next_start += 1; // skip '\n'
+        let mut next_end = next_start;
+        while next_end < self.text.len() && self.text[next_end] != b'\n' {
+            next_end += 1;
+        }
+        let next_len = next_end - next_start;
+        self.cursor = next_start + col.min(next_len);
+    }
+
+    pub fn handle_key(&mut self, b: u8) -> bool {
+        self.cursor_visible = true;
+        match self.ansi_state {
+            1 => {
+                if b == b'[' {
+                    self.ansi_state = 2;
+                } else {
+                    self.ansi_state = 0;
+                }
+                return false;
+            }
+            2 => {
+                self.ansi_state = 0;
+                match b {
+                    b'A' => { self.move_cursor_up(); return true; }
+                    b'B' => { self.move_cursor_down(); return true; }
+                    b'C' => { self.move_cursor_right(); return true; }
+                    b'D' => { self.move_cursor_left(); return true; }
+                    b'H' => { self.move_cursor_home(); return true; }
+                    b'F' => { self.move_cursor_end(); return true; }
+                    b'3' => { self.ansi_state = 3; return false; }
+                    _ => return false,
+                }
+            }
+            3 => {
+                self.ansi_state = 0;
+                if b == b'~' {
+                    self.delete_forward();
+                    return true;
+                }
+                return false;
+            }
+            _ => {
+                if b == 0x1b {
+                    self.ansi_state = 1;
+                    return false;
+                }
+            }
+        }
+
+        if b == 19 || b == 18 { // Ctrl+S / Ctrl+R
+            self.save();
+            true
+        } else if b == 0x08 || b == 127 { // Backspace
+            self.delete_back();
+            true
+        } else if b == b'\r' || b == b'\n' { // Enter
+            self.insert_char(b'\n');
+            true
+        } else if b == b'\t' { // Tab
+            self.insert_char(b' ');
+            self.insert_char(b' ');
+            self.insert_char(b' ');
+            self.insert_char(b' ');
+            true
+        } else if (32..=126).contains(&b) { // Printable ASCII
+            self.insert_char(b);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Handles mouse clicks in client coordinates. Returns true if re-render is needed.
+    pub fn handle_click(&mut self, cx: usize, cy: usize) -> bool {
+        self.cursor_visible = true;
+        if cy <= 20 {
+            // Clicked header toolbar
+            if cx >= 8 && cx <= 76 {
+                // Clicked [S] Save
+                self.save();
+                return true;
+            }
+            return false;
+        }
+
+        if cy >= 24 {
+            let target_line = (cy - 24) / 16;
+            let target_col = cx.saturating_sub(48) / 8;
+
+            let mut cur_line = 0;
+            let mut cur_col = 0;
+            let mut target_idx = self.text.len();
+
+            for (idx, &b) in self.text.iter().enumerate() {
+                if cur_line == target_line {
+                    if cur_col >= target_col || b == b'\n' {
+                        target_idx = idx;
+                        break;
+                    }
+                    cur_col += 1;
+                } else if b == b'\n' {
+                    cur_line += 1;
+                    cur_col = 0;
+                }
+            }
+
+            self.cursor = target_idx.min(self.text.len());
+            return true;
+        }
+        false
     }
 
     #[allow(dead_code)]
@@ -173,13 +358,15 @@ impl Notepad {
             cursor_px = (48 + col_idx * 8, cur_y);
         }
 
-        // Draw cursor line
-        let (cx, cy) = cursor_px;
-        if cx + 8 <= width && cy + 16 <= height {
-            for r in 13..16 {
-                for c in 0..8 {
-                    if cy + r < height && cx + c < width {
-                        w.content[(cy + r) * width + cx + c] = NOTEPAD_CURSOR;
+        // Draw crisp 2px vertical bar cursor
+        if self.cursor_visible {
+            let (cx, cy) = cursor_px;
+            if cx + 2 <= width && cy + 16 <= height {
+                for r in 1..15 {
+                    for c in 0..2 {
+                        if cy + r < height && cx + c < width {
+                            w.content[(cy + r) * width + cx + c] = NOTEPAD_CURSOR;
+                        }
                     }
                 }
             }
@@ -193,7 +380,7 @@ impl Notepad {
             }
         }
         draw_text(w, 8, footer_y + 1, "UTF-8", 0xff8b949e, NOTEPAD_HEADER);
-        draw_text(w, 80, footer_y + 1, "FortressOS Notepad v1.0", 0xff8b949e, NOTEPAD_HEADER);
+        draw_text(w, 80, footer_y + 1, "FortressOS Notes", 0xff8b949e, NOTEPAD_HEADER);
     }
 }
 
