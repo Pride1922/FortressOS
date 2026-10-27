@@ -153,30 +153,46 @@ impl Window {
 
     fn pixel(&self, x: usize, y: usize, hover: Option<Hit>) -> u32 {
         if self.id >= 3 {
-            // Check 8px rounded corners
-            let is_corner = (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) > 49)
-                || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) > 49)
-                || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49)
-                || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49);
-            if is_corner {
-                return 0; // Transparent mask for rounded corners
+            let is_maximized = self.saved_rect.is_some();
+
+            // Interior client area fast path (covers 99% of window pixels)
+            if y > TITLE_HEIGHT && (is_maximized || y < self.rect.h.saturating_sub(8)) {
+                if x == 0 || x == self.rect.w - 1 || (is_maximized && y == self.rect.h - 1) {
+                    return 0xff30363d;
+                }
+                return self.content[(y - 25) * (self.rect.w - 2) + x - 1];
             }
 
-            // Sleek dark window border (1px outline and rounded rim)
-            let is_border = x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1
-                || (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) >= 36)
-                || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) >= 36)
-                || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) >= 36)
-                || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) >= 36);
-            if is_border {
-                return 0xff30363d;
-            }
+            if !is_maximized {
+                // Check 8px rounded corners
+                let is_corner = (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) > 49)
+                    || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) > 49)
+                    || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49)
+                    || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49);
+                if is_corner {
+                    return 0; // Transparent mask for rounded corners
+                }
 
-            // Bottom-right resize grip
-            let rx = self.rect.w.saturating_sub(x);
-            let ry = self.rect.h.saturating_sub(y);
-            if rx <= 10 && ry <= 10 && (rx + ry == 6 || rx + ry == 9 || rx + ry == 12) {
-                return if hover == Some(Hit::Resize) { 0xff58a6ff } else { 0xff484f58 };
+                // Sleek dark window border (1px outline and rounded rim)
+                let is_border = x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1
+                    || (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) >= 36)
+                    || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) >= 36)
+                    || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) >= 36)
+                    || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) >= 36);
+                if is_border {
+                    return 0xff30363d;
+                }
+
+                // Bottom-right resize grip
+                let rx = self.rect.w.saturating_sub(x);
+                let ry = self.rect.h.saturating_sub(y);
+                if rx <= 10 && ry <= 10 && (rx + ry == 6 || rx + ry == 9 || rx + ry == 12) {
+                    return if hover == Some(Hit::Resize) { 0xff58a6ff } else { 0xff484f58 };
+                }
+            } else {
+                if x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1 {
+                    return 0xff30363d;
+                }
             }
 
             if y > TITLE_HEIGHT {
@@ -927,7 +943,17 @@ impl WindowManager {
         if hover != self.hover {
             for w in &self.windows {
                 if self.hover.is_some_and(|h| h.0 == w.id) || hover.is_some_and(|h| h.0 == w.id) {
-                    s.damage(w.damage_rect());
+                    if w.saved_rect.is_some() {
+                        // Maximized window: only damage titlebar, never the whole screen
+                        s.damage(Rect {
+                            x: w.rect.x,
+                            y: w.rect.y,
+                            w: w.rect.w,
+                            h: TITLE_HEIGHT + 2,
+                        });
+                    } else {
+                        s.damage(w.damage_rect());
+                    }
                 }
             }
             self.hover = hover;
@@ -1004,9 +1030,18 @@ impl WindowManager {
     pub fn render_with_wallpaper(&self, s: &mut Surface, wallpaper: Option<&crate::wallpaper::Wallpaper>) {
         let mut i = 0;
         while let Some(r) = s.damage_rect(i) {
-            // Repair desktop first, then composite every intersecting window.
+            let top_maximized = self.windows.last().and_then(|w| {
+                (!w.is_minimized && w.saved_rect.is_some()).then_some(w.rect)
+            });
+
+            // Repair desktop first, skipping regions occluded by an opaque maximized window
             for y in r.y..r.y + r.h {
                 for x in r.x..r.x + r.w {
+                    if let Some(max_r) = top_maximized {
+                        if max_r.contains(x, y) {
+                            continue;
+                        }
+                    }
                     s.pixels[y * s.width + x] = if let Some(wp) = wallpaper {
                         wp.pixel(x, y, s.width, s.height)
                     } else if (32..48).contains(&y) && x >= 32 {
@@ -1064,9 +1099,9 @@ impl WindowManager {
                 }
             }
 
-            // Drop shadows for modern windows (id >= 3)
+            // Drop shadows for modern windows (id >= 3), skip if maximized
             for w in &self.windows {
-                if w.is_minimized || w.id < 3 {
+                if w.is_minimized || w.id < 3 || w.saved_rect.is_some() {
                     continue;
                 }
                 let shadow_r = Rect {
@@ -1120,8 +1155,26 @@ impl WindowManager {
                 if let Some(clip) = w.rect.intersection(r) {
                     let hover = self.hover.filter(|h| h.0 == w.id).map(|h| h.1);
                     for y in clip.y..clip.y + clip.h {
+                        let wy = y - w.rect.y;
+                        if wy > TITLE_HEIGHT && wy < w.rect.h - 1 {
+                            let clip_start_x = clip.x.max(w.rect.x + 1);
+                            let clip_end_x = (clip.x + clip.w).min(w.rect.x + w.rect.w - 1);
+                            if clip_start_x < clip_end_x && (w.saved_rect.is_some() || wy < w.rect.h.saturating_sub(8)) {
+                                if clip.x <= w.rect.x {
+                                    s.pixels[y * s.width + w.rect.x] = 0xff30363d;
+                                }
+                                let src_off = (wy - 25) * (w.rect.w - 2) + (clip_start_x - (w.rect.x + 1));
+                                let copy_len = clip_end_x - clip_start_x;
+                                let dst_off = y * s.width + clip_start_x;
+                                s.pixels[dst_off..dst_off + copy_len].copy_from_slice(&w.content[src_off..src_off + copy_len]);
+                                if clip.x + clip.w >= w.rect.x + w.rect.w {
+                                    s.pixels[y * s.width + w.rect.x + w.rect.w - 1] = 0xff30363d;
+                                }
+                                continue;
+                            }
+                        }
                         for x in clip.x..clip.x + clip.w {
-                            let p = w.pixel(x - w.rect.x, y - w.rect.y, hover);
+                            let p = w.pixel(x - w.rect.x, wy, hover);
                             if p != 0 {
                                 s.pixels[y * s.width + x] = p;
                             }

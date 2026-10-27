@@ -295,24 +295,24 @@ impl Terminal {
                     break;
                 }
                 let ch = self.grid[row][col];
+                let is_cursor = self.cursor_visible && row == self.cursor_row && col == self.cursor_col;
+                if ch == b' ' && !is_cursor {
+                    continue;
+                }
                 let c_idx = if (' '..='~').contains(&(ch as char)) {
                     ch as usize - 32
                 } else {
                     0
                 };
                 let glyph = &GLYPHS[c_idx];
-                let is_cursor = self.cursor_visible && row == self.cursor_row && col == self.cursor_col;
                 for r in 0..16 {
                     for c in 0..8 {
                         let bit = (glyph[r] & (128 >> c)) != 0;
-                        let color = if is_cursor && r >= 13 {
-                            TERM_CURSOR
+                        if is_cursor && r >= 13 {
+                            w.content[(py + r) * width + px + c] = TERM_CURSOR;
                         } else if bit {
-                            TERM_FG
-                        } else {
-                            TERM_BG
-                        };
-                        w.content[(py + r) * width + px + c] = color;
+                            w.content[(py + r) * width + px + c] = TERM_FG;
+                        }
                     }
                 }
             }
