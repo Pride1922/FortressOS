@@ -802,7 +802,7 @@ impl WindowManager {
         Rect {
             x: 8,
             y: 24 * theme::scale(height),
-            w: 200 * theme::scale(height),
+            w: 220 * theme::scale(height),
             h: 157 * theme::scale(height),
         }
     }
@@ -1437,8 +1437,20 @@ impl WindowManager {
                             theme::PANEL
                         };
                         let logical_width = s.width / scale;
-                        let p = if (3..21).contains(&ly) && (12..128).contains(&lx) {
-                            theme::text_pixel("FortressOS", lx - 12, ly - 3, theme::TEXT, bg)
+                        let is_start_btn = lx >= 6 && lx < 120 && ly < 23;
+                        let start_bg = if self.start_open && is_start_btn {
+                            0xff2d333b
+                        } else {
+                            bg
+                        };
+                        let in_win_logo = ((6..=10).contains(&ly) || (12..=16).contains(&ly))
+                            && ((10..=13).contains(&lx) || (15..=18).contains(&lx));
+                        let p = if in_win_logo {
+                            0xff00a4ef
+                        } else if (3..21).contains(&ly) && (23..120).contains(&lx) {
+                            theme::text_pixel("FortressOS", lx - 23, ly - 3, theme::TEXT, start_bg)
+                        } else if is_start_btn {
+                            start_bg
                         } else if (3..21).contains(&ly)
                             && (logical_width.saturating_sub(196)
                                 ..logical_width.saturating_sub(120))
@@ -1736,50 +1748,161 @@ impl WindowManager {
                 }
             }
 
-            // System Menu Popup (macOS Apple menu style)
+            // Windows-Style Start Menu Popup
             if self.start_open {
                 let start_menu = Self::start_menu_rect(s.height);
                 if let Some(clip) = start_menu.intersection(r) {
+                    let bw = start_menu.w / scale;
+                    let bh = start_menu.h / scale;
                     for y in clip.y..clip.y + clip.h {
                         for x in clip.x..clip.x + clip.w {
-                            let px = x - start_menu.x;
-                            let py = (y - start_menu.y) / theme::scale(s.height);
+                            let px = (x - start_menu.x) / scale;
+                            let py = (y - start_menu.y) / scale;
                             let is_border = px == 0
-                                || px == start_menu.w / scale - 1
+                                || px == bw - 1
                                 || py == 0
-                                || py == start_menu.h / scale - 1;
+                                || py == bh - 1;
                             s.pixels[y * s.width + x] = if is_border {
                                 0xff30363d
                             } else if py < 24 {
-                                if px >= 8 && (4..20).contains(&py) {
-                                    theme::text_pixel(
-                                        " FortressOS",
-                                        px - 8,
-                                        py - 4,
-                                        0xff58a6ff,
-                                        0xff0d1117,
-                                    )
+                                if py == 23 {
+                                    0xff30363d
                                 } else {
-                                    0xff0d1117
+                                    let in_logo = ((6..=10).contains(&py) || (12..=16).contains(&py))
+                                        && ((10..=13).contains(&px) || (15..=18).contains(&px));
+                                    if in_logo {
+                                        0xff00a4ef
+                                    } else if px >= 24 && px < 110 && (4..20).contains(&py) {
+                                        theme::text_pixel("FortressOS", px - 24, py - 4, 0xffe6edf3, 0xff161b22)
+                                    } else if px >= bw.saturating_sub(44) && px < bw.saturating_sub(8) && (4..20).contains(&py) {
+                                        theme::text_pixel("v0.2", px - bw.saturating_sub(44), py - 4, 0xff8b949e, 0xff161b22)
+                                    } else {
+                                        0xff161b22
+                                    }
                                 }
                             } else {
                                 let item_idx = (py - 24) / 22;
                                 let item_y = (py - 24) % 22;
-                                let (text, is_hover) = match item_idx {
-                                    0 => (" [T] Terminal", self.menu_hover == Some(0)),
-                                    1 => (" [E] Notepad", self.menu_hover == Some(1)),
-                                    2 => (" [F] Files", self.menu_hover == Some(2)),
-                                    3 => (" System Information", self.menu_hover == Some(3)),
-                                    4 => (" Settings", self.menu_hover == Some(4)),
-                                    5 => (" Exit to Console", self.menu_hover == Some(5)),
-                                    _ => ("", false),
-                                };
-                                let item_bg = if is_hover { 0xff1f6feb } else { 0xff161b22 };
-                                let item_fg = if is_hover { 0xffffffff } else { TEXT };
-                                if !text.is_empty() && px >= 8 && (3..19).contains(&item_y) {
-                                    theme::text_pixel(text, px - 8, item_y - 3, item_fg, item_bg)
+                                let is_hover = self.menu_hover == Some(item_idx);
+                                let item_bg = if is_hover && px >= 4 && px < bw - 4 {
+                                    0xff28313d
                                 } else {
-                                    item_bg
+                                    0xff1c2128
+                                };
+
+                                // Application Icon (14x14 at px in 10..24, item_y in 4..18)
+                                let icon_pixel = if px >= 10 && px < 24 && (4..18).contains(&item_y) {
+                                    let ix = px - 10;
+                                    let iy = item_y - 4;
+                                    match item_idx {
+                                        0 => {
+                                            // Terminal: tile with '>_' prompt
+                                            if (iy == 4 && ix == 4) || (iy == 5 && ix == 5) || (iy == 6 && ix == 6)
+                                                || (iy == 7 && ix == 5) || (iy == 8 && ix == 4)
+                                                || (iy == 9 && (7..=10).contains(&ix))
+                                            {
+                                                Some(0xff56d364)
+                                            } else if ix == 1 || ix == 12 || iy == 1 || iy == 12 {
+                                                Some(0xff30363d)
+                                            } else if ix > 1 && ix < 12 && iy > 1 && iy < 12 {
+                                                Some(0xff0d1117)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        1 => {
+                                            // Notepad: document sheet with lines
+                                            if (3..=10).contains(&ix) && (2..=11).contains(&iy) {
+                                                if (iy == 4 || iy == 6 || iy == 8) && (5..=8).contains(&ix) {
+                                                    Some(0xff1f6feb)
+                                                } else {
+                                                    Some(0xffffffff)
+                                                }
+                                            } else if (2..=11).contains(&ix) && (1..=12).contains(&iy) {
+                                                Some(0xff1f6feb)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        2 => {
+                                            // Files: golden folder
+                                            if (2..=5).contains(&ix) && (2..=3).contains(&iy) {
+                                                Some(0xffd29922)
+                                            } else if (1..=12).contains(&ix) && (4..=11).contains(&iy) {
+                                                Some(if iy >= 6 { 0xfff0b232 } else { 0xffe3b341 })
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        3 => {
+                                            // System Information: CPU / chip
+                                            if (5..=8).contains(&ix) && (5..=8).contains(&iy) {
+                                                Some(0xffd2a8ff)
+                                            } else if (3..=10).contains(&ix) && (3..=10).contains(&iy) {
+                                                Some(0xff8957e5)
+                                            } else if ((iy == 1 || iy == 12) && (ix == 4 || ix == 6 || ix == 9))
+                                                || ((ix == 1 || ix == 12) && (iy == 4 || iy == 6 || iy == 9))
+                                            {
+                                                Some(0xffa371f7)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        4 => {
+                                            // Settings: Gear icon
+                                            let dx = (ix as i32 - 7).abs();
+                                            let dy = (iy as i32 - 7).abs();
+                                            if dx <= 1 && dy <= 1 {
+                                                Some(item_bg)
+                                            } else if (dx <= 4 && dy <= 4 && (dx >= 2 || dy >= 2))
+                                                || ((dx == 5 && dy <= 1) || (dy == 5 && dx <= 1))
+                                            {
+                                                Some(0xff60a5fa)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        5 => {
+                                            // Exit: Power glyph
+                                            let dist_sq = (ix as i32 - 7).pow(2) + (iy as i32 - 7).pow(2);
+                                            if dist_sq >= 8 && dist_sq <= 22 && !(ix == 7 && iy <= 7) {
+                                                Some(0xffff6b6b)
+                                            } else if ix == 7 && (2..=6).contains(&iy) {
+                                                Some(0xffff6b6b)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                if let Some(p) = icon_pixel {
+                                    p
+                                } else {
+                                    let (label, is_danger) = match item_idx {
+                                        0 => ("Terminal", false),
+                                        1 => ("Notepad", false),
+                                        2 => ("Files", false),
+                                        3 => ("System Information", false),
+                                        4 => ("Settings", false),
+                                        5 => ("Exit to Console", true),
+                                        _ => ("", false),
+                                    };
+                                    let fg = if is_hover {
+                                        0xffffffff
+                                    } else if is_danger {
+                                        0xffff7b72
+                                    } else {
+                                        0xffe6edf3
+                                    };
+                                    if !label.is_empty() && px >= 28 && px < bw - 8 && (3..19).contains(&item_y) {
+                                        theme::text_pixel(label, px - 28, item_y - 3, fg, item_bg)
+                                    } else {
+                                        item_bg
+                                    }
                                 }
                             };
                         }
