@@ -300,13 +300,13 @@ def run_test(firmware):
             guest.qmp.execute('screendump', {'filename': str(ROOT / 'build' / f'compositor-polish-{firmware}.ppm')})
             # Maximize, keep the cursor inside the client through idle telemetry
             # refreshes, then restore. Timer repaints must preserve save-under.
-            move_to(125, 132); button(True); button(False)
+            move_to(80 + 520 - 54, 132); button(True); button(False)
             move_to(700, 400)
             wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 8, 28) == bytes.fromhex('30363d'))
             time.sleep(2.1)
             _, _, maximized = guest.screenshot()
             assert pixel(maximized, w, 700, 400) == outline, 'idle refresh erased cursor'
-            move_to(53, 40); button(True); button(False)
+            move_to(w - 62, 40); button(True); button(False)
             move_to(700, 400)
             # The outer corner is transparent in restored rounded windows.
             wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 88, 120) == bytes.fromhex('30363d'))
@@ -380,10 +380,10 @@ def run_hidpi_test(firmware):
             move(1300,700)
             wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,88,120) == bytes.fromhex('30363d'))
             for _ in range(3):
-                move(125,132); click(); move(1300,700)
-                wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,8,28) == bytes.fromhex('30363d'))
-                move(53,40); click(); move(1300,700)
-                wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,88,120) == bytes.fromhex('30363d'))
+                move(80 + 520 - 54, 132); click(); move(1300, 700)
+                wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 8, 28) == bytes.fromhex('30363d'))
+                move(w - 62, 40); click(); move(1300, 700)
+                wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 88, 120) == bytes.fromhex('30363d'))
             guest.qmp.execute('screendump',{'filename':str(ROOT/'build'/f'compositor-hidpi-{firmware}.ppm')})
             move(30,12); click(); move(50,168); click()
             guest.wait(lambda s: '[COMPOSITOR] Event loop stopped' in s, timeout=10)

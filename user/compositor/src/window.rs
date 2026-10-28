@@ -159,12 +159,12 @@ impl Window {
                     Hit::Close
                 } else if self.id <= 2 && x >= self.rect.w - 49 {
                     Hit::Minimize
-                } else if self.id >= 3 && x >= 8 && x <= 20 {
+                } else if self.id >= 3 && x >= self.rect.w.saturating_sub(36) {
                     Hit::Close
-                } else if self.id >= 3 && x >= 24 && x <= 36 {
-                    Hit::Minimize
-                } else if self.id >= 3 && x >= 40 && x <= 52 {
+                } else if self.id >= 3 && x >= self.rect.w.saturating_sub(72) {
                     Hit::Maximize
+                } else if self.id >= 3 && x >= self.rect.w.saturating_sub(108) {
+                    Hit::Minimize
                 } else {
                     Hit::Title
                 }
@@ -180,9 +180,9 @@ impl Window {
         let (x, y, w, h) = match hit {
             Hit::Close if self.id <= 2 => (self.rect.w - 25, 1, 24, TITLE_HEIGHT),
             Hit::Minimize if self.id <= 2 => (self.rect.w - 49, 1, 24, TITLE_HEIGHT),
-            Hit::Close => (8, 7, 11, 11),
-            Hit::Minimize => (24, 7, 11, 11),
-            Hit::Maximize => (40, 7, 11, 11),
+            Hit::Close => (self.rect.w.saturating_sub(36), 1, 35, TITLE_HEIGHT),
+            Hit::Maximize => (self.rect.w.saturating_sub(72), 1, 36, TITLE_HEIGHT),
+            Hit::Minimize => (self.rect.w.saturating_sub(108), 1, 36, TITLE_HEIGHT),
             Hit::Resize => (self.rect.w - 12, self.rect.h - 12, 12, 12),
             _ => return None,
         };
@@ -271,60 +271,108 @@ impl Window {
                 return self.content[(y - 25) * (self.rect.w - 2) + x - 1];
             }
 
-            // Titlebar top 1px subtle glass highlight
-            if y == 1 {
-                return 0xff3d444d;
-            }
-
             let title_bg = if self.is_focused {
                 0xff1c2128
             } else {
                 0xff161b22
             };
 
-            // Pure macOS Traffic Lights
-            if (7..=17).contains(&y) {
-                if (8..=18).contains(&x) {
-                    let dx = x as i32 - 13;
-                    let dy = y as i32 - 12;
-                    if dx * dx + dy * dy <= 25 {
-                        return if hover == Some(Hit::Close) {
-                            0xffff7068
+            // Windows-style top-right window controls (Close, Maximize/Restore, Minimize)
+            if x >= self.rect.w.saturating_sub(108) {
+                let is_hover = |btn: Hit| hover == Some(btn);
+                let fg = |btn: Hit| {
+                    if is_hover(btn) {
+                        0xffffffff
+                    } else if self.is_focused {
+                        0xffc9d1d9
+                    } else {
+                        0xff8b949e
+                    }
+                };
+
+                // Close button (x in [w - 36, w - 1))
+                if x >= self.rect.w.saturating_sub(36) {
+                    let bg = if is_hover(Hit::Close) {
+                        0xffe81123 // Windows red hover
+                    } else if y == 1 {
+                        0xff3d444d // top highlight when not hovered
+                    } else {
+                        title_bg
+                    };
+                    let bx = x - self.rect.w.saturating_sub(36); // 0..=34 (center is 17)
+                    let dx = (bx as i32 - 17).abs();
+                    let dy = (y as i32 - 12).abs();
+                    // 10x10 crisp diagonal cross 'X'
+                    if dx == dy && dx <= 4 {
+                        return if is_hover(Hit::Close) {
+                            0xffffffff
                         } else {
-                            0xffff5f56
+                            fg(Hit::Close)
                         };
                     }
-                } else if (24..=34).contains(&x) {
-                    let dx = x as i32 - 29;
-                    let dy = y as i32 - 12;
-                    if dx * dx + dy * dy <= 25 {
-                        return if hover == Some(Hit::Minimize) {
-                            0xffffcc4d
-                        } else {
-                            0xffffbd2e
-                        };
-                    }
-                } else if (40..=50).contains(&x) {
-                    let dx = x as i32 - 45;
-                    let dy = y as i32 - 12;
-                    if dx * dx + dy * dy <= 25 {
-                        return if hover == Some(Hit::Maximize) {
-                            0xff34d399
-                        } else {
-                            0xff27c93f
-                        };
-                    }
+                    return bg;
                 }
+
+                // Maximize / Restore button (x in [w - 72, w - 36))
+                if x >= self.rect.w.saturating_sub(72) {
+                    let bg = if is_hover(Hit::Maximize) {
+                        0xff2d333b // Windows dark hover
+                    } else if y == 1 {
+                        0xff3d444d
+                    } else {
+                        title_bg
+                    };
+                    let bx = x - self.rect.w.saturating_sub(72); // 0..=35 (center is 18)
+                    let icon_fg = fg(Hit::Maximize);
+
+                    if is_maximized {
+                        // Windows "Restore" overlapping squares icon
+                        let in_back = (bx >= 15 && bx <= 23 && y == 7)
+                            || (bx == 23 && y >= 7 && y <= 14)
+                            || (bx >= 20 && bx <= 23 && y == 14)
+                            || (bx == 15 && y >= 7 && y <= 10);
+                        let in_front = (bx >= 13 && bx <= 20 && (y == 10 || y == 17))
+                            || (y >= 10 && y <= 17 && (bx == 13 || bx == 20));
+                        if in_back || in_front {
+                            return icon_fg;
+                        }
+                    } else {
+                        // Windows "Maximize" single square icon (10x10 outline: 13..=22, 7..=16)
+                        let in_square = (bx >= 13 && bx <= 22 && (y == 7 || y == 16))
+                            || (y >= 7 && y <= 16 && (bx == 13 || bx == 22));
+                        if in_square {
+                            return icon_fg;
+                        }
+                    }
+                    return bg;
+                }
+
+                // Minimize button (x in [w - 108, w - 72))
+                let bg = if is_hover(Hit::Minimize) {
+                    0xff2d333b // Windows dark hover
+                } else if y == 1 {
+                    0xff3d444d
+                } else {
+                    title_bg
+                };
+                let bx = x - self.rect.w.saturating_sub(108); // 0..=35 (center is 18)
+                // 10px horizontal bar '—' at y = 12
+                if y == 12 && bx >= 13 && bx <= 22 {
+                    return fg(Hit::Minimize);
+                }
+                return bg;
             }
 
-            // Centered clean title
+            // Titlebar top 1px subtle glass highlight for non-button title area
+            if y == 1 {
+                return 0xff3d444d;
+            }
+
+            // Left-aligned clean title with Windows styling
             let title_len = theme::text_width(&self.title);
-            let title_x = (self.rect.w.saturating_sub(title_len)) / 2;
-            if x >= title_x.max(60)
-                && x < (title_x + title_len).min(self.rect.w - 8)
-                && (3..21).contains(&y)
-            {
-                return theme::text_pixel(&self.title, x - title_x, y - 3, theme::TEXT, title_bg);
+            let title_max_x = self.rect.w.saturating_sub(116);
+            if x >= 12 && x < (12 + title_len).min(title_max_x) && (3..21).contains(&y) {
+                return theme::text_pixel(&self.title, x - 12, y - 3, theme::TEXT, title_bg);
             }
 
             return title_bg;

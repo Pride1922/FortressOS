@@ -182,8 +182,8 @@ fn desktop_windows_snap_restore_and_scroll_with_clipped_widgets() {
     assert_eq!(snapped.x, 8);
     assert!(snapped.w < 1280 / 2);
     assert!(wm.windows[0].saved_rect.is_some());
-    wm.mouse(snapped.x + 45, snapped.y + 12, 1, &mut s);
-    wm.mouse(snapped.x + 45, snapped.y + 12, 0, &mut s);
+    wm.mouse(snapped.x + snapped.w - 54, snapped.y + 12, 1, &mut s);
+    wm.mouse(snapped.x + snapped.w - 54, snapped.y + 12, 0, &mut s);
     assert_eq!(wm.windows[0].rect.w, start.w);
     host.render(7, &mut wm, &mut s);
     let expected = wm.windows[0].content.clone();
@@ -267,14 +267,21 @@ fn title_controls_repaint_only_their_hover_pixels() {
             wm.windows.push(w);
             wm.render(&mut scene);
             flush(&mut scene);
-            for (x, y) in [(110, 112), (129, 112), (145, 112), (200, 112), (200, 300)] {
+            let right = rect.x + rect.w;
+            for (x, y) in [
+                (right - 90, 112),
+                (right - 54, 112),
+                (right - 18, 112),
+                (rect.x + 200, 112),
+                (rect.x + 200, 300),
+            ] {
                 wm.mouse(x, y, 0, &mut scene);
                 let area: usize = (0..16)
                     .filter_map(|i| scene.damage_rect(i))
                     .map(|r| r.w * r.h)
                     .sum();
                 assert!(
-                    area <= 242,
+                    area <= 1800,
                     "hover {id}, maximized={maximized}: {area} pixels"
                 );
                 wm.render(&mut scene);
@@ -453,12 +460,13 @@ fn polished_desktop_scaled_hover_repair_and_system_information() {
         assert_eq!(wm.windows.len(), 1);
         assert_eq!(wm.windows[0].id, 6);
         let restore = wm.windows[0].rect;
-        wm.mouse(restore.x + 45, restore.y + 12, 1, &mut s);
-        wm.mouse(restore.x + 45, restore.y + 12, 0, &mut s);
+        wm.mouse(restore.x + restore.w - 54, restore.y + 12, 1, &mut s);
+        wm.mouse(restore.x + restore.w - 54, restore.y + 12, 0, &mut s);
         assert!(wm.windows[0].rect.y >= 24 * scale);
         assert!(wm.windows[0].rect.y + wm.windows[0].rect.h < dock.y);
-        wm.mouse(8 * scale + 45, 28 * scale + 12, 1, &mut s);
-        wm.mouse(8 * scale + 45, 28 * scale + 12, 0, &mut s);
+        let max_w = width.saturating_sub(16 * scale);
+        wm.mouse(8 * scale + max_w - 54, 28 * scale + 12, 1, &mut s);
+        wm.mouse(8 * scale + max_w - 54, 28 * scale + 12, 0, &mut s);
         assert_eq!(wm.windows[0].rect, restore);
         // Missing telemetry and a zero tick frequency must render safely.
         wm.system_panel(&mut s, Some(sys::SystemInfo::default()));
@@ -999,7 +1007,7 @@ fn window_resizing_and_clamping() {
 }
 
 #[test]
-fn traffic_lights_close_minimize_maximize_and_restore() {
+fn window_controls_close_minimize_maximize_and_restore() {
     let mut wm = WindowManager::demo().unwrap();
     let mut s = Surface::new(1280, 800).unwrap();
     // Add modern window (id 3) at (100, 100, 500, 300)
@@ -1016,32 +1024,32 @@ fn traffic_lights_close_minimize_maximize_and_restore() {
     .unwrap();
     wm.windows.push(win3);
 
-    // Hit test Red button (x = 100 + 13 = 113, y = 100 + 12 = 112)
-    assert_eq!(wm.hit_test(113, 112), Some((3, window::Hit::Close)));
+    // Hit test Close button (x = 100 + 500 - 18 = 582, y = 100 + 12 = 112)
+    assert_eq!(wm.hit_test(582, 112), Some((3, window::Hit::Close)));
 
-    // Hit test Orange/Yellow button (x = 100 + 29 = 129, y = 100 + 12 = 112)
-    assert_eq!(wm.hit_test(129, 112), Some((3, window::Hit::Minimize)));
+    // Hit test Maximize button (x = 100 + 500 - 54 = 546, y = 100 + 12 = 112)
+    assert_eq!(wm.hit_test(546, 112), Some((3, window::Hit::Maximize)));
 
-    // Hit test Green button (x = 100 + 45 = 145, y = 100 + 12 = 112)
-    assert_eq!(wm.hit_test(145, 112), Some((3, window::Hit::Maximize)));
+    // Hit test Minimize button (x = 100 + 500 - 90 = 510, y = 100 + 12 = 112)
+    assert_eq!(wm.hit_test(510, 112), Some((3, window::Hit::Minimize)));
 
-    // Click Green button: Maximizes window 3!
-    let act = wm.mouse(145, 112, 1, &mut s);
-    let _ = wm.mouse(145, 112, 0, &mut s);
+    // Click Maximize button: Maximizes window 3!
+    let act = wm.mouse(546, 112, 1, &mut s);
+    let _ = wm.mouse(546, 112, 0, &mut s);
     assert_eq!(act, window::Action::WindowResized(3));
-    let (max_x, max_y) = {
+    let (max_x, max_y, max_w) = {
         let w3 = wm.windows.iter().find(|w| w.id == 3).unwrap();
         assert_eq!(w3.rect.x, 8);
         assert_eq!(w3.rect.y, 28);
         assert_eq!(w3.rect.w, 1280 - 16);
         assert_eq!(w3.rect.h, 800 - 104);
         assert!(w3.saved_rect.is_some());
-        (w3.rect.x, w3.rect.y)
+        (w3.rect.x, w3.rect.y, w3.rect.w)
     };
 
-    // Click Green button again: Restores window 3 back to (100, 100, 500, 300)!
-    let act2 = wm.mouse(max_x + 45, max_y + 12, 1, &mut s);
-    let _ = wm.mouse(max_x + 45, max_y + 12, 0, &mut s);
+    // Click Maximize button again: Restores window 3 back to (100, 100, 500, 300)!
+    let act2 = wm.mouse(max_x + max_w - 54, max_y + 12, 1, &mut s);
+    let _ = wm.mouse(max_x + max_w - 54, max_y + 12, 0, &mut s);
     assert_eq!(act2, window::Action::WindowResized(3));
     let w3_restored = wm.windows.iter().find(|w| w.id == 3).unwrap();
     assert_eq!(
@@ -1055,18 +1063,18 @@ fn traffic_lights_close_minimize_maximize_and_restore() {
     );
     assert!(w3_restored.saved_rect.is_none());
 
-    // Click Orange/Yellow button: Minimizes window 3!
-    let _ = wm.mouse(129, 112, 1, &mut s);
-    let _ = wm.mouse(129, 112, 0, &mut s);
+    // Click Minimize button: Minimizes window 3!
+    let _ = wm.mouse(510, 112, 1, &mut s);
+    let _ = wm.mouse(510, 112, 0, &mut s);
     assert!(wm.windows.iter().find(|w| w.id == 3).unwrap().is_minimized);
 
     // Unminimize window 3
     wm.unminimize_and_raise(3, &mut s);
     assert!(!wm.windows.iter().find(|w| w.id == 3).unwrap().is_minimized);
 
-    // Click Red button: Closes window 3!
-    let _ = wm.mouse(113, 112, 1, &mut s);
-    let _ = wm.mouse(113, 112, 0, &mut s);
+    // Click Close button: Closes window 3!
+    let _ = wm.mouse(582, 112, 1, &mut s);
+    let _ = wm.mouse(582, 112, 0, &mut s);
     assert!(!wm.windows.iter().any(|w| w.id == 3));
 }
 
