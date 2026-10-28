@@ -1,4 +1,7 @@
 //! Single-process window server. Stack order is back to front; no client IPC yet.
+#[path = "theme.rs"]
+pub mod theme;
+
 use crate::{
     font::GLYPHS,
     surface::{Rect, Surface},
@@ -40,9 +43,11 @@ pub struct Window {
     pub is_minimized: bool,
     pub bg_color: u32,
     pub saved_rect: Option<Rect>,
+    panel_ready: bool,
 }
 
 impl Window {
+    #[inline(never)]
     pub fn new(id: u32, title: &str, rect: Rect) -> Option<Self> {
         if rect.w < 96 || rect.h < TITLE_HEIGHT + 3 {
             return None;
@@ -72,6 +77,7 @@ impl Window {
             is_minimized: false,
             bg_color,
             saved_rect: None,
+            panel_ready: false,
         })
     }
 
@@ -100,8 +106,16 @@ impl Window {
         };
         if self.content.capacity() < len {
             let reserve_target = len + len / 4;
-            if self.content.try_reserve(reserve_target.saturating_sub(self.content.len())).is_err() {
-                if self.content.try_reserve_exact(len.saturating_sub(self.content.len())).is_err() {
+            if self
+                .content
+                .try_reserve(reserve_target.saturating_sub(self.content.len()))
+                .is_err()
+            {
+                if self
+                    .content
+                    .try_reserve_exact(len.saturating_sub(self.content.len()))
+                    .is_err()
+                {
                     return false;
                 }
             }
@@ -109,6 +123,7 @@ impl Window {
         self.content.resize(len, self.bg_color);
         self.rect.w = new_w;
         self.rect.h = new_h;
+        self.panel_ready = false;
         true
     }
 
@@ -119,9 +134,17 @@ impl Window {
         let (x, y) = (x - self.rect.x, y - self.rect.y);
         if self.id >= 3 {
             let is_corner = (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) > 49)
-                || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) > 49)
-                || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49)
-                || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49);
+                || (x >= self.rect.w - 8
+                    && y < 8
+                    && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) > 49)
+                || (x < 8
+                    && y >= self.rect.h - 8
+                    && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49)
+                || (x >= self.rect.w - 8
+                    && y >= self.rect.h - 8
+                    && (x as i32 - (self.rect.w as i32 - 8)).pow(2)
+                        + (y as i32 - (self.rect.h as i32 - 8)).pow(2)
+                        > 49);
             if is_corner {
                 return None;
             }
@@ -151,6 +174,21 @@ impl Window {
         )
     }
 
+    /// Only these pixels depend on hover. Moving between client/title/background
+    /// must not repaint an entire client or a full-width titlebar.
+    fn hover_damage(&self, hit: Hit) -> Option<Rect> {
+        let (x, y, w, h) = match hit {
+            Hit::Close if self.id <= 2 => (self.rect.w - 25, 1, 24, TITLE_HEIGHT),
+            Hit::Minimize if self.id <= 2 => (self.rect.w - 49, 1, 24, TITLE_HEIGHT),
+            Hit::Close => (8, 7, 11, 11),
+            Hit::Minimize => (24, 7, 11, 11),
+            Hit::Maximize => (40, 7, 11, 11),
+            Hit::Resize => (self.rect.w - 12, self.rect.h - 12, 12, 12),
+            _ => return None,
+        };
+        Some(Rect { x: self.rect.x + x, y: self.rect.y + y, w, h })
+    }
+
     fn pixel(&self, x: usize, y: usize, hover: Option<Hit>) -> u32 {
         if self.id >= 3 {
             let is_maximized = self.saved_rect.is_some();
@@ -165,20 +203,45 @@ impl Window {
 
             if !is_maximized {
                 // Check 8px rounded corners
-                let is_corner = (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) > 49)
-                    || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) > 49)
-                    || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49)
-                    || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) > 49);
+                let is_corner = (x < 8
+                    && y < 8
+                    && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) > 49)
+                    || (x >= self.rect.w - 8
+                        && y < 8
+                        && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2)
+                            > 49)
+                    || (x < 8
+                        && y >= self.rect.h - 8
+                        && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2)
+                            > 49)
+                    || (x >= self.rect.w - 8
+                        && y >= self.rect.h - 8
+                        && (x as i32 - (self.rect.w as i32 - 8)).pow(2)
+                            + (y as i32 - (self.rect.h as i32 - 8)).pow(2)
+                            > 49);
                 if is_corner {
                     return 0; // Transparent mask for rounded corners
                 }
 
                 // Sleek dark window border (1px outline and rounded rim)
-                let is_border = x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1
+                let is_border = x == 0
+                    || y == 0
+                    || x == self.rect.w - 1
+                    || y == self.rect.h - 1
                     || (x < 8 && y < 8 && (7 - x as i32).pow(2) + (7 - y as i32).pow(2) >= 36)
-                    || (x >= self.rect.w - 8 && y < 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2) >= 36)
-                    || (x < 8 && y >= self.rect.h - 8 && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) >= 36)
-                    || (x >= self.rect.w - 8 && y >= self.rect.h - 8 && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2) >= 36);
+                    || (x >= self.rect.w - 8
+                        && y < 8
+                        && (x as i32 - (self.rect.w as i32 - 8)).pow(2) + (7 - y as i32).pow(2)
+                            >= 36)
+                    || (x < 8
+                        && y >= self.rect.h - 8
+                        && (7 - x as i32).pow(2) + (y as i32 - (self.rect.h as i32 - 8)).pow(2)
+                            >= 36)
+                    || (x >= self.rect.w - 8
+                        && y >= self.rect.h - 8
+                        && (x as i32 - (self.rect.w as i32 - 8)).pow(2)
+                            + (y as i32 - (self.rect.h as i32 - 8)).pow(2)
+                            >= 36);
                 if is_border {
                     return 0xff30363d;
                 }
@@ -187,7 +250,11 @@ impl Window {
                 let rx = self.rect.w.saturating_sub(x);
                 let ry = self.rect.h.saturating_sub(y);
                 if rx <= 10 && ry <= 10 && (rx + ry == 6 || rx + ry == 9 || rx + ry == 12) {
-                    return if hover == Some(Hit::Resize) { 0xff58a6ff } else { 0xff484f58 };
+                    return if hover == Some(Hit::Resize) {
+                        0xff58a6ff
+                    } else {
+                        0xff484f58
+                    };
                 }
             } else {
                 if x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1 {
@@ -204,7 +271,11 @@ impl Window {
                 return 0xff3d444d;
             }
 
-            let title_bg = if self.is_focused { 0xff1c2128 } else { 0xff161b22 };
+            let title_bg = if self.is_focused {
+                0xff1c2128
+            } else {
+                0xff161b22
+            };
 
             // Pure macOS Traffic Lights
             if (7..=17).contains(&y) {
@@ -212,28 +283,43 @@ impl Window {
                     let dx = x as i32 - 13;
                     let dy = y as i32 - 12;
                     if dx * dx + dy * dy <= 25 {
-                        return if hover == Some(Hit::Close) { 0xffff7068 } else { 0xffff5f56 };
+                        return if hover == Some(Hit::Close) {
+                            0xffff7068
+                        } else {
+                            0xffff5f56
+                        };
                     }
                 } else if (24..=34).contains(&x) {
                     let dx = x as i32 - 29;
                     let dy = y as i32 - 12;
                     if dx * dx + dy * dy <= 25 {
-                        return if hover == Some(Hit::Minimize) { 0xffffcc4d } else { 0xffffbd2e };
+                        return if hover == Some(Hit::Minimize) {
+                            0xffffcc4d
+                        } else {
+                            0xffffbd2e
+                        };
                     }
                 } else if (40..=50).contains(&x) {
                     let dx = x as i32 - 45;
                     let dy = y as i32 - 12;
                     if dx * dx + dy * dy <= 25 {
-                        return if hover == Some(Hit::Maximize) { 0xff34d399 } else { 0xff27c93f };
+                        return if hover == Some(Hit::Maximize) {
+                            0xff34d399
+                        } else {
+                            0xff27c93f
+                        };
                     }
                 }
             }
 
             // Centered clean title
-            let title_len = self.title.len() * 8;
+            let title_len = theme::text_width(&self.title);
             let title_x = (self.rect.w.saturating_sub(title_len)) / 2;
-            if x >= title_x && x < title_x + title_len && (5..21).contains(&y) {
-                return label_pixel(&self.title, x - title_x, y - 5, 0xffffffff, title_bg);
+            if x >= title_x.max(60)
+                && x < (title_x + title_len).min(self.rect.w - 8)
+                && (3..21).contains(&y)
+            {
+                return theme::text_pixel(&self.title, x - title_x, y - 3, theme::TEXT, title_bg);
             }
 
             return title_bg;
@@ -246,7 +332,11 @@ impl Window {
         let rx = self.rect.w.saturating_sub(x);
         let ry = self.rect.h.saturating_sub(y);
         if rx <= 10 && ry <= 10 && (rx + ry == 6 || rx + ry == 9 || rx + ry == 12) {
-            return if hover == Some(Hit::Resize) { HOVER_MIN } else { BORDER };
+            return if hover == Some(Hit::Resize) {
+                HOVER_MIN
+            } else {
+                BORDER
+            };
         }
         if y > TITLE_HEIGHT {
             return self.content[(y - 25) * (self.rect.w - 2) + x - 1];
@@ -255,7 +345,11 @@ impl Window {
 
         if x >= self.rect.w - 25 {
             let lx = x - (self.rect.w - 25);
-            let bg = if hover == Some(Hit::Close) { HOVER_CLOSE } else { title_bg };
+            let bg = if hover == Some(Hit::Close) {
+                HOVER_CLOSE
+            } else {
+                title_bg
+            };
             return if (5..21).contains(&y) {
                 label_pixel("[X]", lx, y - 5, TEXT, bg)
             } else {
@@ -263,7 +357,11 @@ impl Window {
             };
         } else if x >= self.rect.w - 49 {
             let lx = x - (self.rect.w - 49);
-            let bg = if hover == Some(Hit::Minimize) { HOVER_MIN } else { title_bg };
+            let bg = if hover == Some(Hit::Minimize) {
+                HOVER_MIN
+            } else {
+                title_bg
+            };
             return if (5..21).contains(&y) {
                 label_pixel("[-]", lx, y - 5, TEXT, bg)
             } else {
@@ -285,6 +383,55 @@ pub fn blend_darken(color: u32, factor: u32) -> u32 {
     let g = (((color >> 8) & 0xff) * (256 - factor)) >> 8;
     let b = ((color & 0xff) * (256 - factor)) >> 8;
     0xff000000 | (r << 16) | (g << 8) | b
+}
+
+fn panel_text(
+    w: &mut Window,
+    s: &mut Surface,
+    x: usize,
+    y: usize,
+    field_width: usize,
+    text: &str,
+    color: u32,
+    scale: usize,
+) {
+    let width = w.rect.w - 2;
+    let height = w.rect.h - TITLE_HEIGHT - 2;
+    let left = x * scale;
+    let top = y * scale;
+    let text_end = left + theme::text_width(text) * scale;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (width, height, 0, 0);
+    for py in top..(top + 18 * scale).min(height) {
+        for px in left..(left + field_width * scale).min(width) {
+            let pixel = if px < text_end {
+                theme::text_pixel(
+                    text,
+                    (px - left) / scale,
+                    (py - top) / scale,
+                    color,
+                    theme::PANEL,
+                )
+            } else {
+                theme::PANEL
+            };
+            let old = &mut w.content[py * width + px];
+            if *old != pixel {
+                *old = pixel;
+                min_x = min_x.min(px);
+                min_y = min_y.min(py);
+                max_x = max_x.max(px + 1);
+                max_y = max_y.max(py + 1);
+            }
+        }
+    }
+    if min_x < max_x && w.panel_ready {
+        s.damage(Rect {
+            x: w.rect.x + 1 + min_x,
+            y: w.rect.y + 25 + min_y,
+            w: max_x - min_x,
+            h: max_y - min_y,
+        });
+    }
 }
 
 fn label_pixel(label: &str, x: usize, y: usize, fg: u32, bg: u32) -> u32 {
@@ -335,13 +482,22 @@ fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
                 return 0xff3b4252;
             }
             if (3..=5).contains(&iy) {
-                if (5..=6).contains(&ix) { return 0xffff5f56; }
-                if (8..=9).contains(&ix) { return 0xffffbd2e; }
-                if (11..=12).contains(&ix) { return 0xff27c93f; }
+                if (5..=6).contains(&ix) {
+                    return 0xffff5f56;
+                }
+                if (8..=9).contains(&ix) {
+                    return 0xffffbd2e;
+                }
+                if (11..=12).contains(&ix) {
+                    return 0xff27c93f;
+                }
                 return 0xff2e3440;
             }
             // Prompt >
-            if (ix == 7 && (iy == 10 || iy == 14)) || (ix == 8 && (iy == 11 || iy == 13)) || (ix == 9 && iy == 12) {
+            if (ix == 7 && (iy == 10 || iy == 14))
+                || (ix == 8 && (iy == 11 || iy == 13))
+                || (ix == 9 && iy == 12)
+            {
                 return 0xff4ade80;
             }
             // Cursor _
@@ -388,54 +544,6 @@ fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
                 return 0xffa5f3fc;
             }
             0xff0f172a
-        }
-        4 => {
-            // Colors: Studio Slate with 4 colored quadrants
-            if (6..=12).contains(&ix) && (6..=12).contains(&iy) {
-                return 0xffef4444;
-            }
-            if (15..=21).contains(&ix) && (6..=12).contains(&iy) {
-                return 0xfff59e0b;
-            }
-            if (6..=12).contains(&ix) && (15..=21).contains(&iy) {
-                return 0xff10b981;
-            }
-            if (15..=21).contains(&ix) && (15..=21).contains(&iy) {
-                return 0xff3b82f6;
-            }
-            0xff1e1e24
-        }
-        5 => {
-            // Lock: Silver shackle with golden brass body
-            if (10..=17).contains(&ix) && (5..=12).contains(&iy) {
-                if (12..=15).contains(&ix) && iy >= 8 {
-                    return 0xff374151;
-                }
-                return 0xffe5e7eb;
-            }
-            if (8..=19).contains(&ix) && (12..=22).contains(&iy) {
-                if (ix == 13 || ix == 14) && (15..=17).contains(&iy) {
-                    return 0xff1f2937;
-                }
-                return 0xfff59e0b;
-            }
-            0xff374151
-        }
-        6 => {
-            // Exit: Crimson tile with white power symbol
-            if iy == 0 {
-                return 0xfff87171;
-            }
-            if (ix == 13 || ix == 14) && (6..=13).contains(&iy) {
-                return 0xffffffff;
-            }
-            let dx = ix as i32 - 14;
-            let dy = iy as i32 - 15;
-            let d2 = dx * dx + dy * dy;
-            if (20..=44).contains(&d2) && !(dx.abs() <= 2 && dy < 0) {
-                return 0xffffffff;
-            }
-            0xffdc2626
         }
         _ => dock_bg,
     }
@@ -501,12 +609,12 @@ pub enum Action {
     SpawnFileManager,
     WindowResized(u32),
     ClientClick(u32, usize, usize),
-    LockScreen,
     Exit,
 }
 
 pub struct WindowManager {
     pub windows: Vec<Window>,
+    pub demo_mode: bool,
     buttons: u8,
     hover: Option<(u32, Hit)>,
     pub clock_sec: i64,
@@ -517,6 +625,7 @@ pub struct WindowManager {
 }
 
 impl WindowManager {
+    #[inline(never)]
     pub fn demo() -> Option<Self> {
         let mut windows = Vec::new();
         windows.try_reserve_exact(2).ok()?;
@@ -555,6 +664,7 @@ impl WindowManager {
 
         Some(Self {
             windows,
+            demo_mode: true,
             buttons: 0,
             hover: None,
             clock_sec: -1,
@@ -562,6 +672,19 @@ impl WindowManager {
             menu_hover: None,
             dock_hover: None,
         })
+    }
+
+    pub fn desktop() -> Self {
+        Self {
+            windows: Vec::new(),
+            demo_mode: false,
+            buttons: 0,
+            hover: None,
+            clock_sec: -1,
+            start_open: false,
+            menu_hover: None,
+            dock_hover: None,
+        }
     }
 
     #[allow(dead_code)]
@@ -583,20 +706,21 @@ impl WindowManager {
             .find_map(|w| w.hit(x, y).map(|hit| (w.id, hit)))
     }
 
-    pub fn top_bar_rect(width: usize) -> Rect {
+    pub fn top_bar_rect(width: usize, height: usize) -> Rect {
         Rect {
             x: 0,
             y: 0,
             w: width,
-            h: 24,
+            h: 24 * theme::scale(height),
         }
     }
 
     pub fn dock_rect(width: usize, height: usize) -> Rect {
-        let dock_w = 7 * 64;
-        let dock_h = 58;
+        let scale = theme::scale(height);
+        let dock_w = 4 * 64 * scale;
+        let dock_h = 58 * scale;
         let dock_x = width.saturating_sub(dock_w) / 2;
-        let dock_y = height.saturating_sub(66);
+        let dock_y = height.saturating_sub(66 * scale);
         Rect {
             x: dock_x,
             y: dock_y,
@@ -605,89 +729,70 @@ impl WindowManager {
         }
     }
 
-    pub fn start_btn_rect(_height: usize) -> Rect {
+    pub fn start_btn_rect(height: usize) -> Rect {
         Rect {
             x: 8,
             y: 0,
-            w: 120,
-            h: 24,
+            w: 120 * theme::scale(height),
+            h: 24 * theme::scale(height),
         }
     }
 
-    pub fn start_menu_rect(_height: usize) -> Rect {
+    pub fn start_menu_rect(height: usize) -> Rect {
         Rect {
             x: 8,
-            y: 24,
-            w: 176,
-            h: 156,
+            y: 24 * theme::scale(height),
+            w: 200 * theme::scale(height),
+            h: 135 * theme::scale(height),
         }
     }
 
     fn task_rect(id: u32, height: usize) -> Rect {
         Rect {
-            x: if id == 1 { 88 } else { 8 + (id as usize).saturating_sub(1).saturating_mul(168) },
+            x: if id == 1 {
+                88
+            } else {
+                8 + (id as usize).saturating_sub(1).saturating_mul(168)
+            },
             y: height.saturating_sub(28),
             w: if id == 1 { 80 } else { 160 },
             h: 24,
         }
     }
 
+    #[inline(never)]
     pub fn ensure_window_1(&mut self, s: &mut Surface) {
-        if !self.windows.iter().any(|w| w.id == 1) {
+        let id = if self.demo_mode { 1 } else { 6 };
+        let scale = theme::scale(s.height);
+        if !self.windows.iter().any(|w| w.id == id) {
             if let Some(w) = Window::new(
-                1,
-                "System Monitor",
+                id,
+                "System Information",
                 Rect {
                     x: 80,
                     y: 120,
-                    w: 320,
-                    h: 200,
+                    w: if self.demo_mode {
+                        320
+                    } else {
+                        (520 * scale).min(s.width.saturating_sub(96))
+                    },
+                    h: if self.demo_mode {
+                        200
+                    } else {
+                        (350 * scale).min(s.height.saturating_sub(160))
+                    },
                 },
             ) {
                 self.windows.push(w);
                 s.damage(Rect {
                     x: 80,
                     y: 120,
-                    w: 320,
-                    h: 200,
+                    w: (520 * scale).min(s.width.saturating_sub(96)),
+                    h: (350 * scale).min(s.height.saturating_sub(160)),
                 });
             }
         }
-        self.unminimize_and_raise(1, s);
-    }
-
-    pub fn ensure_window_2(&mut self, s: &mut Surface) {
-        if !self.windows.iter().any(|w| w.id == 2) {
-            if let Some(mut palette) = Window::new(
-                2,
-                "Palette Canvas",
-                Rect {
-                    x: 260,
-                    y: 220,
-                    w: 280,
-                    h: 180,
-                },
-            ) {
-                let colors = [
-                    0xffe06c75, 0xffe5c07b, 0xff98c379, 0xff56b6c2, 0xff61afef, 0xffc678dd,
-                ];
-                for y in 0..palette.rect.h - 26 {
-                    for x in 0..palette.rect.w - 2 {
-                        if (16..136).contains(&y) && (16..256).contains(&x) {
-                            palette.content[y * (palette.rect.w - 2) + x] = colors[(x - 16) / 40];
-                        }
-                    }
-                }
-                self.windows.push(palette);
-                s.damage(Rect {
-                    x: 260,
-                    y: 220,
-                    w: 280,
-                    h: 180,
-                });
-            }
-        }
-        self.unminimize_and_raise(2, s);
+        self.unminimize_and_raise(id, s);
     }
 
     pub fn unminimize_and_raise(&mut self, id: u32, s: &mut Surface) {
@@ -698,12 +803,12 @@ impl WindowManager {
         self.raise(id, s);
     }
 
-    pub fn clock_rect(width: usize, _height: usize) -> Rect {
+    pub fn clock_rect(width: usize, height: usize) -> Rect {
         Rect {
-            x: width.saturating_sub(120),
+            x: width.saturating_sub(120 * theme::scale(height)),
             y: 0,
-            w: 110,
-            h: 24,
+            w: 120 * theme::scale(height),
+            h: 24 * theme::scale(height),
         }
     }
 
@@ -711,8 +816,11 @@ impl WindowManager {
         if sec == self.clock_sec {
             return;
         }
+        let previous = self.clock_sec;
         self.clock_sec = sec;
-        s.damage(Self::clock_rect(s.width, s.height));
+        if previous < 0 || previous.div_euclid(60) != sec.div_euclid(60) {
+            s.damage(Self::clock_rect(s.width, s.height));
+        }
     }
 
     pub fn cycle_focus(&mut self, s: &mut Surface) {
@@ -725,11 +833,27 @@ impl WindowManager {
 
     #[allow(dead_code)]
     pub fn focused_window_id(&self) -> Option<u32> {
-        self.windows.iter().rev().find(|w| w.is_focused && !w.is_minimized).map(|w| w.id)
+        self.windows
+            .iter()
+            .rev()
+            .find(|w| w.is_focused && !w.is_minimized)
+            .map(|w| w.id)
+    }
+
+    fn tooltip_rect(width: usize, height: usize) -> Rect {
+        let d = Self::dock_rect(width, height);
+        let h = 30 * theme::scale(height);
+        Rect {
+            x: d.x.saturating_sub(100 * theme::scale(height)),
+            y: d.y.saturating_sub(h),
+            w: d.w + 200 * theme::scale(height),
+            h,
+        }
     }
 
     fn dock_damage(s: &mut Surface) {
         let d = Self::dock_rect(s.width, s.height);
+        s.damage(Self::tooltip_rect(s.width, s.height));
         s.damage(Rect {
             x: d.x.saturating_sub(4),
             y: d.y,
@@ -745,6 +869,7 @@ impl WindowManager {
     }
 
     fn focus_top(&mut self, s: &mut Surface) {
+        Self::dock_damage(s);
         let top = self.windows.iter().rposition(|w| !w.is_minimized);
         for (i, w) in self.windows.iter_mut().enumerate() {
             let focused = Some(i) == top;
@@ -818,15 +943,12 @@ impl WindowManager {
 
             // Floating macOS Dock interaction
             if dock_r.contains(x, y) {
-                let item_idx = (x - dock_r.x) / 64;
+                let item_idx = (x - dock_r.x) / (64 * theme::scale(s.height));
                 match item_idx {
                     0 => ret_action = Action::SpawnFileManager,
                     1 => ret_action = Action::SpawnTerminal,
                     2 => ret_action = Action::SpawnNotepad,
                     3 => self.ensure_window_1(s),
-                    4 => self.ensure_window_2(s),
-                    5 => ret_action = Action::LockScreen,
-                    6 => ret_action = Action::Exit,
                     _ => {}
                 }
                 Self::dock_damage(s);
@@ -844,7 +966,7 @@ impl WindowManager {
 
             if self.start_open {
                 if start_menu.contains(x, y) {
-                    let py = y - start_menu.y;
+                    let py = (y - start_menu.y) / theme::scale(s.height);
                     if py >= 24 {
                         let item_idx = (py - 24) / 22;
                         match item_idx {
@@ -852,8 +974,7 @@ impl WindowManager {
                             1 => ret_action = Action::SpawnNotepad,
                             2 => ret_action = Action::SpawnFileManager,
                             3 => self.ensure_window_1(s),
-                            4 => self.ensure_window_2(s),
-                            5 => ret_action = Action::Exit,
+                            4 => ret_action = Action::Exit,
                             _ => {}
                         }
                     }
@@ -890,12 +1011,14 @@ impl WindowManager {
                                 ret_action = Action::WindowResized(w.id);
                             }
                         } else {
-                            let work_x = 8;
-                            let work_y = 28;
-                            let work_w = s.width.saturating_sub(16);
-                            let work_h = s.height.saturating_sub(104);
-                            w.saved_rect = Some(w.rect);
+                            let scale = theme::scale(s.height);
+                            let work_x = 8 * scale;
+                            let work_y = 28 * scale;
+                            let work_w = s.width.saturating_sub(16 * scale);
+                            let work_h = s.height.saturating_sub(104 * scale);
+                            let restore = w.rect;
                             if w.resize(work_w, work_h) {
+                                w.saved_rect = Some(restore);
                                 w.rect.x = work_x;
                                 w.rect.y = work_y;
                                 s.damage(old.union(w.damage_rect()));
@@ -923,37 +1046,36 @@ impl WindowManager {
 
         if self.start_open {
             let start_menu = Self::start_menu_rect(s.height);
-            let new_menu_hover = if start_menu.contains(x, y) && y >= start_menu.y + 24 {
-                let idx = (y - start_menu.y - 24) / 22;
-                if idx < 6 {
-                    Some(idx)
+            let new_menu_hover =
+                if start_menu.contains(x, y) && y >= start_menu.y + 24 * theme::scale(s.height) {
+                    let idx = ((y - start_menu.y) / theme::scale(s.height) - 24) / 22;
+                    if idx < 5 { Some(idx) } else { None }
                 } else {
                     None
-                }
-            } else {
-                None
-            };
+                };
             if new_menu_hover != self.menu_hover {
                 self.menu_hover = new_menu_hover;
                 s.damage(start_menu);
             }
         }
 
+        let dock = Self::dock_rect(s.width, s.height);
+        let new_dock_hover = if dock.contains(x, y) {
+            Some((x - dock.x) / (64 * theme::scale(s.height)))
+        } else {
+            None
+        };
+        if new_dock_hover != self.dock_hover {
+            s.damage(Self::tooltip_rect(s.width, s.height));
+            Self::dock_damage(s);
+            self.dock_hover = new_dock_hover;
+        }
         let hover = self.hit_test(x, y);
         if hover != self.hover {
-            for w in &self.windows {
-                if self.hover.is_some_and(|h| h.0 == w.id) || hover.is_some_and(|h| h.0 == w.id) {
-                    if w.saved_rect.is_some() {
-                        // Maximized window: only damage titlebar, never the whole screen
-                        s.damage(Rect {
-                            x: w.rect.x,
-                            y: w.rect.y,
-                            w: w.rect.w,
-                            h: TITLE_HEIGHT + 2,
-                        });
-                    } else {
-                        s.damage(w.damage_rect());
-                    }
+            for (id, hit) in self.hover.into_iter().chain(hover) {
+                if let Some(r) = self.windows.iter().find(|w| w.id == id)
+                    .and_then(|w| w.hover_damage(hit)) {
+                    s.damage(r);
                 }
             }
             self.hover = hover;
@@ -961,6 +1083,7 @@ impl WindowManager {
         ret_action
     }
 
+    #[inline(never)]
     pub fn monitor(
         &mut self,
         s: &mut Surface,
@@ -988,6 +1111,111 @@ impl WindowManager {
         if !w.is_minimized {
             s.damage(w.rect);
         }
+    }
+
+    /// System metrics are supplied by the caller; rendering stays host-testable.
+    #[inline(never)]
+    pub fn system_panel(&mut self, s: &mut Surface, info: Option<crate::sys::SystemInfo>) {
+        let Some(w) = self.windows.iter_mut().find(|w| w.id == 6) else {
+            return;
+        };
+        if w.is_minimized {
+            return;
+        }
+        let scale = theme::scale(s.height);
+        let initialize = !w.panel_ready;
+        let field_width = (w.rect.w - 2) / scale;
+        let mut line = Line::new();
+        if initialize {
+            w.content.fill(theme::PANEL);
+            panel_text(
+                w,
+                s,
+                24,
+                18,
+                field_width.saturating_sub(24),
+                "FortressOS",
+                theme::TEXT,
+                scale,
+            );
+            panel_text(
+                w,
+                s,
+                24,
+                42,
+                field_width.saturating_sub(24),
+                "System Information",
+                theme::MUTED,
+                scale,
+            );
+            let _ = write!(line, "Display  {} x {}", s.width, s.height);
+            panel_text(
+                w,
+                s,
+                24,
+                270,
+                field_width.saturating_sub(24),
+                line.as_str(),
+                theme::MUTED,
+                scale,
+            );
+        }
+        if let Some(info) = info {
+            let rows = [
+                ("Logical CPUs", info.cpu_count as u64, ""),
+                ("Managed RAM", info.total_ram_bytes / (1024 * 1024), " MiB"),
+                ("Available RAM", info.free_ram_bytes / (1024 * 1024), " MiB"),
+                ("Processes", info.task_count as u64, ""),
+                ("Threads", info.thread_count as u64, ""),
+                (
+                    "Uptime",
+                    info.uptime_ticks.checked_div(info.tick_hz).unwrap_or(0),
+                    " seconds",
+                ),
+            ];
+            for (i, (name, value, suffix)) in rows.iter().enumerate() {
+                panel_text(w, s, 24, 84 + i * 28, 190, name, theme::MUTED, scale);
+                line.len = 0;
+                let _ = write!(line, "{}{}", value, suffix);
+                panel_text(
+                    w,
+                    s,
+                    230,
+                    84 + i * 28,
+                    field_width.saturating_sub(230),
+                    line.as_str(),
+                    theme::TEXT,
+                    scale,
+                );
+            }
+        } else {
+            for i in 0..6 {
+                panel_text(
+                    w,
+                    s,
+                    24,
+                    84 + i * 28,
+                    190,
+                    if i == 0 { "Unavailable" } else { "" },
+                    theme::MUTED,
+                    scale,
+                );
+                panel_text(
+                    w,
+                    s,
+                    230,
+                    84 + i * 28,
+                    field_width.saturating_sub(230),
+                    "",
+                    theme::TEXT,
+                    scale,
+                );
+            }
+        }
+        if initialize {
+            s.damage(w.rect);
+        }
+        w.panel_ready = true;
     }
 
     pub fn monitor_mouse(&mut self, s: &mut Surface, mouse: (usize, usize)) {
@@ -1027,12 +1255,17 @@ impl WindowManager {
         self.render_with_wallpaper(s, None);
     }
 
-    pub fn render_with_wallpaper(&self, s: &mut Surface, wallpaper: Option<&crate::wallpaper::Wallpaper>) {
+    pub fn render_with_wallpaper(
+        &self,
+        s: &mut Surface,
+        wallpaper: Option<&crate::wallpaper::Wallpaper>,
+    ) {
         let mut i = 0;
         while let Some(r) = s.damage_rect(i) {
-            let top_maximized = self.windows.last().and_then(|w| {
-                (!w.is_minimized && w.saved_rect.is_some()).then_some(w.rect)
-            });
+            let top_maximized = self
+                .windows
+                .last()
+                .and_then(|w| (!w.is_minimized && w.saved_rect.is_some()).then_some(w.rect));
 
             // Repair desktop first, skipping regions occluded by an opaque maximized window
             for y in r.y..r.y + r.h {
@@ -1044,6 +1277,8 @@ impl WindowManager {
                     }
                     s.pixels[y * s.width + x] = if let Some(wp) = wallpaper {
                         wp.pixel(x, y, s.width, s.height)
+                    } else if !self.demo_mode {
+                        theme::desktop_pixel(x, y, s.width, s.height)
                     } else if (32..48).contains(&y) && x >= 32 {
                         label_pixel("FortressOS Rust Compositor", x - 32, y - 32, TEXT, DESKTOP)
                     } else {
@@ -1052,54 +1287,51 @@ impl WindowManager {
                 }
             }
 
-            // macOS Top Menu Bar (y = 0..24)
-            let top_bar = Self::top_bar_rect(s.width);
+            let scale = theme::scale(s.height);
+            let top_bar = Self::top_bar_rect(s.width, s.height);
             if let Some(clip) = top_bar.intersection(r) {
                 for y in clip.y..clip.y + clip.h {
                     for x in clip.x..clip.x + clip.w {
-                        let bg = if y == 23 { 0xff30363d } else { 0xff161b22 };
-                        s.pixels[y * s.width + x] = if (4..20).contains(&y) {
-                            if x >= 12 && x < 28 {
-                                label_pixel("[#]", x - 12, y - 4, 0xff58a6ff, bg)
-                            } else if x >= 32 && x < 120 {
-                                label_pixel("FortressOS", x - 32, y - 4, 0xffffffff, bg)
-                            } else if x >= s.width.saturating_sub(230) && x < s.width.saturating_sub(182) {
-                                label_pixel("[WLAN]", x - (s.width.saturating_sub(230)), y - 4, 0xff3fb950, bg)
-                            } else if x >= s.width.saturating_sub(174) && x < s.width.saturating_sub(126) {
-                                label_pixel("[100%]", x - (s.width.saturating_sub(174)), y - 4, 0xff58a6ff, bg)
-                            } else if x >= s.width.saturating_sub(118) && x < s.width.saturating_sub(14) && self.clock_sec >= 0 {
-                                let clk_start = s.width.saturating_sub(106);
-                                if x >= clk_start && x < clk_start + 64 {
-                                    let day_sec = (self.clock_sec % 86400 + 86400) % 86400;
-                                    let h = (day_sec / 3600) as u32;
-                                    let m = ((day_sec % 3600) / 60) as u32;
-                                    let sec = (day_sec % 60) as u32;
-                                    let time_str = [
-                                        b'0' + (h / 10) as u8,
-                                        b'0' + (h % 10) as u8,
-                                        b':',
-                                        b'0' + (m / 10) as u8,
-                                        b'0' + (m % 10) as u8,
-                                        b':',
-                                        b'0' + (sec / 10) as u8,
-                                        b'0' + (sec % 10) as u8,
-                                    ];
-                                    let time_label = core::str::from_utf8(&time_str).unwrap_or("00:00:00");
-                                    label_pixel(time_label, x - clk_start, y - 4, 0xffffffff, bg)
-                                } else {
-                                    bg
-                                }
-                            } else {
-                                bg
-                            }
+                        let lx = x / scale;
+                        let ly = y / scale;
+                        let bg = if ly == 23 {
+                            theme::BORDER
+                        } else {
+                            theme::PANEL
+                        };
+                        let logical_width = s.width / scale;
+                        let p = if (3..21).contains(&ly) && (12..128).contains(&lx) {
+                            theme::text_pixel("FortressOS", lx - 12, ly - 3, theme::TEXT, bg)
+                        } else if (3..21).contains(&ly)
+                            && lx >= logical_width.saturating_sub(64)
+                            && self.clock_sec >= 0
+                        {
+                            let seconds = self.clock_sec.rem_euclid(86400) as u32;
+                            let hour = seconds / 3600;
+                            let minute = seconds / 60 % 60;
+                            let bytes = [
+                                b'0' + (hour / 10) as u8,
+                                b'0' + (hour % 10) as u8,
+                                b':',
+                                b'0' + (minute / 10) as u8,
+                                b'0' + (minute % 10) as u8,
+                            ];
+                            let text = core::str::from_utf8(&bytes).unwrap_or("");
+                            theme::text_pixel(
+                                text,
+                                lx - logical_width.saturating_sub(64),
+                                ly - 3,
+                                theme::TEXT,
+                                bg,
+                            )
                         } else {
                             bg
                         };
+                        s.pixels[y * s.width + x] = p;
                     }
                 }
             }
 
-            // Drop shadows for modern windows (id >= 3), skip if maximized
             for w in &self.windows {
                 if w.is_minimized || w.id < 3 || w.saved_rect.is_some() {
                     continue;
@@ -1120,7 +1352,8 @@ impl WindowManager {
                                 let d = w.rect.x - x;
                                 if d <= 8 {
                                     let factor = ((9 - d) * 14) as u32;
-                                    s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                                    s.pixels[y * s.width + x] =
+                                        blend_darken(s.pixels[y * s.width + x], factor);
                                 }
                             }
                             // Right shadow fringe
@@ -1129,18 +1362,30 @@ impl WindowManager {
                                 let d = x - (w.rect.x + w.rect.w - 1);
                                 if d <= 8 {
                                     let factor = ((9 - d) * 14) as u32;
-                                    s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                                    s.pixels[y * s.width + x] =
+                                        blend_darken(s.pixels[y * s.width + x], factor);
                                 }
                             }
                         } else {
                             // Top or bottom shadow row
-                            let dy = if y < w.rect.y + 3 { (w.rect.y + 3) - y } else { y - (w.rect.y + w.rect.h + 2) };
+                            let dy = if y < w.rect.y + 3 {
+                                (w.rect.y + 3) - y
+                            } else {
+                                y - (w.rect.y + w.rect.h + 2)
+                            };
                             for x in clip.x..clip.x + clip.w {
-                                let dx = if x < w.rect.x { w.rect.x - x } else if x >= w.rect.x + w.rect.w { x - (w.rect.x + w.rect.w - 1) } else { 0 };
+                                let dx = if x < w.rect.x {
+                                    w.rect.x - x
+                                } else if x >= w.rect.x + w.rect.w {
+                                    x - (w.rect.x + w.rect.w - 1)
+                                } else {
+                                    0
+                                };
                                 let d = dx.max(dy);
                                 if d > 0 && d <= 8 {
                                     let factor = ((9 - d) * 14) as u32;
-                                    s.pixels[y * s.width + x] = blend_darken(s.pixels[y * s.width + x], factor);
+                                    s.pixels[y * s.width + x] =
+                                        blend_darken(s.pixels[y * s.width + x], factor);
                                 }
                             }
                         }
@@ -1159,14 +1404,18 @@ impl WindowManager {
                         if wy > TITLE_HEIGHT && wy < w.rect.h - 1 {
                             let clip_start_x = clip.x.max(w.rect.x + 1);
                             let clip_end_x = (clip.x + clip.w).min(w.rect.x + w.rect.w - 1);
-                            if clip_start_x < clip_end_x && (w.saved_rect.is_some() || wy < w.rect.h.saturating_sub(8)) {
+                            if clip_start_x < clip_end_x
+                                && (w.saved_rect.is_some() || wy < w.rect.h.saturating_sub(8))
+                            {
                                 if clip.x <= w.rect.x {
                                     s.pixels[y * s.width + w.rect.x] = 0xff30363d;
                                 }
-                                let src_off = (wy - 25) * (w.rect.w - 2) + (clip_start_x - (w.rect.x + 1));
+                                let src_off =
+                                    (wy - 25) * (w.rect.w - 2) + (clip_start_x - (w.rect.x + 1));
                                 let copy_len = clip_end_x - clip_start_x;
                                 let dst_off = y * s.width + clip_start_x;
-                                s.pixels[dst_off..dst_off + copy_len].copy_from_slice(&w.content[src_off..src_off + copy_len]);
+                                s.pixels[dst_off..dst_off + copy_len]
+                                    .copy_from_slice(&w.content[src_off..src_off + copy_len]);
                                 if clip.x + clip.w >= w.rect.x + w.rect.w {
                                     s.pixels[y * s.width + w.rect.x + w.rect.w - 1] = 0xff30363d;
                                 }
@@ -1205,47 +1454,92 @@ impl WindowManager {
                 let has_win5 = self.windows.iter().any(|w| w.id == 5);
                 let has_win3 = self.windows.iter().any(|w| w.id == 3);
                 let has_win4 = self.windows.iter().any(|w| w.id == 4);
-                let has_win1 = self.windows.iter().any(|w| w.id == 1);
-                let has_win2 = self.windows.iter().any(|w| w.id == 2);
+                let has_win1 = self.windows.iter().any(|w| w.id == 1 || w.id == 6);
                 for y in clip.y..clip.y + clip.h {
                     for x in clip.x..clip.x + clip.w {
-                        let px = x - dock_r.x;
-                        let py = y - dock_r.y;
+                        let px = (x - dock_r.x) / scale;
+                        let py = (y - dock_r.y) / scale;
 
-                        // Rounded pill ends for dock container (r = 18)
-                        let is_dock_corner = (px < 18 && py < 18 && (17 - px as i32).pow(2) + (17 - py as i32).pow(2) > 289)
-                            || (px >= dock_r.w - 18 && py < 18 && (px as i32 - (dock_r.w as i32 - 18)).pow(2) + (17 - py as i32).pow(2) > 289)
-                            || (px < 18 && py >= dock_r.h - 18 && (17 - px as i32).pow(2) + (py as i32 - (dock_r.h as i32 - 18)).pow(2) > 289)
-                            || (px >= dock_r.w - 18 && py >= dock_r.h - 18 && (px as i32 - (dock_r.w as i32 - 18)).pow(2) + (py as i32 - (dock_r.h as i32 - 18)).pow(2) > 289);
-                        if is_dock_corner {
+                        let coverage = theme::rounded_coverage(x - dock_r.x, y - dock_r.y,
+                            dock_r.w, dock_r.h, 18 * scale);
+                        if coverage < 16 {
+                            let under = s.pixels[y * s.width + x];
+                            s.pixels[y * s.width + x] = theme::blend_coverage(theme::PANEL, under, coverage);
                             continue;
                         }
-
-                        let dock_bg = if py == 0 { 0x60ffffff } else if py == dock_r.h - 1 { 0xff0d1117 } else { 0xd0161b22 };
+                        let dock_bg = theme::PANEL;
                         let item_idx = px / 64;
                         let in_item_x = px % 64;
 
-                        if item_idx < 7 {
+                        if item_idx < 4 {
                             let is_running = match item_idx {
                                 0 => has_win5,
                                 1 => has_win3,
                                 2 => has_win4,
                                 3 => has_win1,
-                                4 => has_win2,
                                 _ => false,
                             };
 
+                            let app_id = [5, 3, 4, if self.demo_mode { 1 } else { 6 }][item_idx];
+                            let focused = self.focused_window_id() == Some(app_id);
+                            if self.dock_hover == Some(item_idx)
+                                && (6..52).contains(&py)
+                                && (8..56).contains(&in_item_x)
+                            {
+                                s.pixels[y * s.width + x] = theme::SURFACE;
+                            }
                             // Graphical icon tile: 28x28 centered in 64x58 item: in_item_x = 18..46, py = 12..40
                             if in_item_x >= 18 && in_item_x < 46 && (12..40).contains(&py) {
-                                s.pixels[y * s.width + x] = render_dock_icon(item_idx, in_item_x - 18, py - 12, dock_bg);
-                            } else if is_running && in_item_x >= 30 && in_item_x <= 33 && py >= 48 && py <= 51 {
+                                s.pixels[y * s.width + x] =
+                                    render_dock_icon(item_idx, in_item_x - 18, py - 12, dock_bg);
+                            } else if is_running
+                                && in_item_x >= 30
+                                && in_item_x <= 33
+                                && py >= 48
+                                && py <= 51
+                            {
                                 // Glowing active app dot
-                                s.pixels[y * s.width + x] = 0xff38bdf8;
+                                s.pixels[y * s.width + x] =
+                                    if focused { theme::ACCENT } else { theme::MUTED };
                             } else {
-                                s.pixels[y * s.width + x] = dock_bg;
+                                if self.dock_hover != Some(item_idx)
+                                    || !(6..52).contains(&py)
+                                    || !(8..56).contains(&in_item_x)
+                                {
+                                    s.pixels[y * s.width + x] = dock_bg;
+                                }
                             }
                         } else {
                             s.pixels[y * s.width + x] = dock_bg;
+                        }
+                    }
+                }
+            }
+
+            if let Some(item) = self.dock_hover.filter(|i| *i < 4) {
+                let label = ["Files", "Terminal", "Notes", "System Information"][item];
+                let area = Self::tooltip_rect(s.width, s.height);
+                let label_w = (theme::text_width(label) + 20) * scale;
+                let center = dock_r.x + (item * 64 + 32) * scale;
+                let left = center
+                    .saturating_sub(label_w / 2)
+                    .min(s.width.saturating_sub(label_w));
+                let tip = Rect {
+                    x: left,
+                    y: area.y + 2 * scale,
+                    w: label_w,
+                    h: 24 * scale,
+                };
+                if let Some(clip) = tip.intersection(r) {
+                    for y in clip.y..clip.y + clip.h {
+                        for x in clip.x..clip.x + clip.w {
+                            let lx = (x - tip.x) / scale;
+                            let ly = (y - tip.y) / scale;
+                            s.pixels[y * s.width + x] = if lx >= 10 && ly >= 3 {
+                                theme::text_pixel(label, lx - 10, ly - 3, theme::TEXT, theme::PANEL)
+                            } else {
+                                theme::PANEL
+                            };
                         }
                     }
                 }
@@ -1284,13 +1578,22 @@ impl WindowManager {
                     for y in clip.y..clip.y + clip.h {
                         for x in clip.x..clip.x + clip.w {
                             let px = x - start_menu.x;
-                            let py = y - start_menu.y;
-                            let is_border = px == 0 || px == start_menu.w - 1 || py == 0 || py == start_menu.h - 1;
+                            let py = (y - start_menu.y) / theme::scale(s.height);
+                            let is_border = px == 0
+                                || px == start_menu.w / scale - 1
+                                || py == 0
+                                || py == start_menu.h / scale - 1;
                             s.pixels[y * s.width + x] = if is_border {
                                 0xff30363d
                             } else if py < 24 {
                                 if px >= 8 && (4..20).contains(&py) {
-                                    label_pixel(" FortressOS", px - 8, py - 4, 0xff58a6ff, 0xff0d1117)
+                                    theme::text_pixel(
+                                        " FortressOS",
+                                        px - 8,
+                                        py - 4,
+                                        0xff58a6ff,
+                                        0xff0d1117,
+                                    )
                                 } else {
                                     0xff0d1117
                                 }
@@ -1301,15 +1604,14 @@ impl WindowManager {
                                     0 => (" [T] Terminal", self.menu_hover == Some(0)),
                                     1 => (" [E] Notepad", self.menu_hover == Some(1)),
                                     2 => (" [F] Files", self.menu_hover == Some(2)),
-                                    3 => (" [M] Sys Monitor", self.menu_hover == Some(3)),
-                                    4 => (" [P] Palette", self.menu_hover == Some(4)),
-                                    5 => (" [Q] Exit", self.menu_hover == Some(5)),
+                                    3 => (" System Information", self.menu_hover == Some(3)),
+                                    4 => (" Exit to Console", self.menu_hover == Some(4)),
                                     _ => ("", false),
                                 };
                                 let item_bg = if is_hover { 0xff1f6feb } else { 0xff161b22 };
                                 let item_fg = if is_hover { 0xffffffff } else { TEXT };
                                 if !text.is_empty() && px >= 8 && (3..19).contains(&item_y) {
-                                    label_pixel(text, px - 8, item_y - 3, item_fg, item_bg)
+                                    theme::text_pixel(text, px - 8, item_y - 3, item_fg, item_bg)
                                 } else {
                                     item_bg
                                 }
@@ -1318,8 +1620,6 @@ impl WindowManager {
                     }
                 }
             }
-
-
 
             i += 1;
         }

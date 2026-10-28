@@ -1432,18 +1432,20 @@ $(BUILD_DIR)/nano_start.o: $(USER_DIR)/tools/start.asm
 $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
-$(USER_COMPOSITOR_ELF): $(USER_DIR)/compositor/src/*.rs $(USER_DIR)/compositor/Cargo.toml $(USER_DIR)/compositor/Cargo.lock $(USER_DIR)/compositor/.cargo/config.toml $(USER_DIR)/compositor/compositor.ld
+$(USER_COMPOSITOR_ELF): $(USER_DIR)/compositor/assets/*.bin $(USER_DIR)/compositor/src/*.rs $(USER_DIR)/compositor/Cargo.toml $(USER_DIR)/compositor/Cargo.lock $(USER_DIR)/compositor/.cargo/config.toml $(USER_DIR)/compositor/compositor.ld
 	@echo "  [CARGO] user/compositor"
 	@cd $(USER_DIR)/compositor && PATH="$$HOME/.cargo/bin:$$PATH" cargo build --release
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/compositor $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF)
+$(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt
 $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_PTHREAD_TEST_ELF) $(USER_CRASH_TEST_ELF) $(USER_TELNET_ELF) $(USER_SSH_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_PKG_ELF) $(BUILD_DIR)/initramfs/bin/pkg
 	@cp -f $(USER_COMPOSITOR_ELF) $(BUILD_DIR)/initramfs/bin/compositor
+	@mkdir -p $(BUILD_DIR)/initramfs/usr/share/licenses/compositor
+	@cp -f $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt $(BUILD_DIR)/initramfs/usr/share/licenses/compositor/DejaVu-LICENSE.txt
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/sh
 	@$(foreach tool,$(USER_LOGIN_TOOLS),cp -f $(BUILD_DIR)/tool-$(tool).elf $(BUILD_DIR)/initramfs/bin/$(tool);)

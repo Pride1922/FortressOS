@@ -7,6 +7,7 @@ import re
 import selectors
 import shutil
 import subprocess
+import struct
 import tempfile
 import time
 from pathlib import Path
@@ -258,6 +259,75 @@ def run_test(firmware):
                 {'type': 'btn', 'data': {'down': True, 'button': 'right'}}]})
             guest.wait(lambda s: '[COMPOSITOR] Event loop stopped' in s, timeout=10)
             guest.wait(lambda s: s.endswith('$ '), timeout=10)
+            # Exercise the normal desktop too: it has no demo windows or lock.
+            guest.qmp.execute('input-send-event', {'events': [
+                {'type': 'btn', 'data': {'down': False, 'button': 'right'}}]})
+            start = len(guest.data)
+            guest.send('sudo /bin/compositor')
+            guest.wait(lambda s: '[OK] Window server ready; polling' in s, start, timeout=20)
+            panel = bytes.fromhex('161d29')
+            _, _, desktop = wait_image(guest, lambda iw, ih, rgb:
+                pixel(rgb, iw, 200, 10) == panel and pixel(rgb, iw, 80, 120) != border)
+            # Verify the original wallpaper is loaded, and later survives a
+            # maximize/restore repair. Pick an ink pixel away from the cursor.
+            wallpaper = (ROOT / 'build/initramfs/usr/share/wallpapers/hello-world.bin').read_bytes()
+            magic, ow, oh, background, cw, ch = struct.unpack('<4sIIIII', wallpaper[:24])
+            assert magic == b'FWP1'
+            ink = next(i for i in range(cw * ch - 1, -1, -1)
+                       if int.from_bytes(wallpaper[24+i*4:28+i*4], 'little') != background)
+            ink_color = int.from_bytes(wallpaper[24+ink*4:28+ink*4], 'little')
+            ink_rgb = bytes([(ink_color >> 16) & 255, (ink_color >> 8) & 255, ink_color & 255])
+            ink_x, ink_y = (w-cw)//2 + ink % cw, (h-ch)//2 + ink // cw
+            wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, ink_x, ink_y) == ink_rgb)
+            # The former WLAN/battery labels are gone; no fabricated state.
+            for xx in range(w - 230, w - 126):
+                assert pixel(desktop, w, xx, 10) == panel
+            pos[:] = [w // 2, h // 2]
+            dock_x, dock_y = (w - 256) // 2, h - 66
+            move_to(dock_x + 3 * 64 + 32, dock_y + 20)
+            button(True); button(False)
+            move_to(700, 400)
+            _, _, system = wait_image(guest, lambda iw, ih, rgb:
+                pixel(rgb, iw, 90, 190) == panel)
+            # Independent alpha-atlas oracle: SYS_SYSINFO reports one CPU in
+            # this SMP=1 guest. Check the full proportional glyph and margins.
+            atlas = (ROOT / 'user/compositor/assets/ui-alpha.bin').read_bytes()
+            advance = (ROOT / 'user/compositor/assets/ui-advances.bin').read_bytes()[ord('1') - 32]
+            foreground = bytes.fromhex('e7edf6')
+            for gy in range(18):
+                for gx in range(advance):
+                    a = atlas[(ord('1') - 32) * 16 * 18 + gy * 16 + gx]
+                    expected = bytes((f * a + b * (255 - a) + 127) // 255
+                                     for f, b in zip(foreground, panel))
+                    assert pixel(system, w, 80 + 1 + 230 + gx, 120 + 25 + 84 + gy) == expected, ('system CPU telemetry', gx, gy)
+            guest.qmp.execute('screendump', {'filename': str(ROOT / 'build' / f'compositor-polish-{firmware}.ppm')})
+            # Maximize, keep the cursor inside the client through idle telemetry
+            # refreshes, then restore. Timer repaints must preserve save-under.
+            move_to(125, 132); button(True); button(False)
+            move_to(700, 400)
+            wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 8, 28) == bytes.fromhex('30363d'))
+            time.sleep(2.1)
+            _, _, maximized = guest.screenshot()
+            assert pixel(maximized, w, 700, 400) == outline, 'idle refresh erased cursor'
+            move_to(53, 40); button(True); button(False)
+            move_to(700, 400)
+            # The outer corner is transparent in restored rounded windows.
+            wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 88, 120) == bytes.fromhex('30363d'))
+            wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, ink_x, ink_y) == ink_rgb)
+            # A right click must not terminate the normal desktop.
+            start = len(guest.data)
+            guest.qmp.execute('input-send-event', {'events': [
+                {'type': 'btn', 'data': {'down': True, 'button': 'right'}}]})
+            time.sleep(0.2)
+            guest.pump()
+            assert 'Event loop stopped' not in guest.text(start)
+            guest.qmp.execute('input-send-event', {'events': [
+                {'type': 'btn', 'data': {'down': False, 'button': 'right'}}]})
+            # Exit explicitly through the system menu.
+            move_to(30, 12); button(True); button(False)
+            move_to(50, 146); button(True); button(False)
+            guest.wait(lambda s: '[COMPOSITOR] Event loop stopped' in s, start, timeout=10)
+            guest.wait(lambda s: s.endswith('$ '), timeout=10)
             assert '[FORTRESS RUST PANIC]' not in guest.text()
             print(f'[PASS] {firmware.upper()} ({w}x{h})')
         finally:
@@ -269,12 +339,71 @@ def run_test(firmware):
                 guest.close()
 
 
+def run_hidpi_test(firmware):
+    """Real bounded compositor heap, unlike host tests' system allocator."""
+    print(f'[TEST] {firmware.upper()}: 1920x1080 System Information maximize/restore')
+    with tempfile.TemporaryDirectory(prefix='fortress-compositor-hidpi-') as directory:
+        tmp = Path(directory)
+        conf = tmp / 'limine.conf'
+        conf.write_text('timeout: 0\n/FortressOS\n    protocol: limine\n'
+                        '    resolution: 1920x1080x32\n'
+                        '    kernel_path: boot():/boot/fortress.elf\n'
+                        '    module_path: boot():/boot/initramfs.tar\n'
+                        '    kernel_cmdline: net=dhcp\n')
+        iso = tmp / 'hidpi.iso'
+        subprocess.run(['xorriso', '-indev', str(ROOT / 'bin/fortress.iso'),
+                        '-outdev', str(iso), '-boot_image', 'any', 'replay',
+                        '-map', str(conf), '/boot/limine/limine.conf',
+                        '-map', str(conf), '/boot/limine.conf'], check=True, capture_output=True)
+        subprocess.run([str(ROOT / 'limine/limine'), 'bios-install', str(iso)],
+                       check=True, capture_output=True)
+        guest = Guest(firmware=firmware, smp=1, tmp=tmp, iso=iso)
+        try:
+            guest.wait(lambda s: s.endswith('FortressOS login: '), timeout=60)
+            guest.qmp = QMP(tmp / 'qmp.sock')
+            guest.send('operator')
+            guest.wait(lambda s: s.endswith('$ '), timeout=15)
+            guest.send('sudo /bin/compositor')
+            guest.wait(lambda s: '[OK] Window server ready; polling' in s, timeout=20)
+            w,h,_ = wait_image(guest, lambda iw,ih,rgb: (iw,ih) == (1920,1080)
+                              and pixel(rgb,iw,300,10) == bytes.fromhex('161d29'))
+            pos = [w//2,h//2]
+            def move(x,y):
+                while pos != [x,y]:
+                    dx=max(-100,min(100,x-pos[0])); dy=max(-100,min(100,y-pos[1]))
+                    guest.motion(dx,dy); pos[0]+=dx; pos[1]+=dy
+                    time.sleep(.04)
+                wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,x,y) == bytes.fromhex('101010'))
+            def click():
+                for down in [True,False]:
+                    guest.qmp.execute('input-send-event', {'events':[
+                        {'type':'btn','data':{'down':down,'button':'left'}}]})
+                    time.sleep(.1)
+            move((w-256)//2 + 3*64+32,h-66+20); click()
+            move(1300,700)
+            wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,88,120) == bytes.fromhex('30363d'))
+            for _ in range(3):
+                move(125,132); click(); move(1300,700)
+                wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,8,28) == bytes.fromhex('30363d'))
+                move(53,40); click(); move(1300,700)
+                wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,88,120) == bytes.fromhex('30363d'))
+            guest.qmp.execute('screendump',{'filename':str(ROOT/'build'/f'compositor-hidpi-{firmware}.ppm')})
+            move(30,12); click(); move(50,146); click()
+            guest.wait(lambda s: '[COMPOSITOR] Event loop stopped' in s, timeout=10)
+            assert '[FORTRESS RUST PANIC]' not in guest.text()
+            print(f'[PASS] {firmware.upper()} 1920x1080 repeated maximize/restore')
+        finally:
+            (ROOT/'build'/f'compositor-hidpi-{firmware}.log').write_text(guest.text())
+            guest.close()
+
+
 def main():
     print('========================================================')
     print(' FortressOS Rust Compositor Multi-Firmware Verification ')
     print('========================================================')
     for fw in ['bios', 'uefi']:
         run_test(fw)
+        run_hidpi_test(fw)
     print('\n[SUCCESS] Rust Compositor Phase 4 verification 100% PASS across BIOS and UEFI!')
 
 

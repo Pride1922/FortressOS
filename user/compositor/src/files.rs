@@ -38,6 +38,7 @@ pub struct FileManager {
 }
 
 impl FileManager {
+    #[inline(never)]
     pub fn new(window_id: u32, initial_path: &str) -> Self {
         let mut path = String::new();
         let _ = path.try_reserve_exact(initial_path.len().max(32));
@@ -70,7 +71,10 @@ impl FileManager {
             });
         }
 
-        let mut raw_names = [[0u8; 64]; 16];
+        // Keep the 1 KiB directory batch off the bounded user stack.
+        let mut raw_names = Vec::new();
+        if raw_names.try_reserve_exact(16).is_err() { return; }
+        raw_names.resize(16, [0u8; 64]);
         let count = sys::list_dir(&self.current_path, &mut raw_names, 16);
         if count > 0 {
             for i in 0..(count as usize).min(16) {

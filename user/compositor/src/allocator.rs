@@ -2,7 +2,9 @@ use spin::Mutex;
 use talc::{ErrOnOom, Span, Talc, Talck};
 
 // Process-owned anonymous RAM; ELF image remains below the 4 MiB ceiling.
-const HEAP_SIZE: usize = 16 * 1024 * 1024;
+// 1080p scene + maximized clients and reallocations exceed the old 16 MiB
+// arena. Stay within the existing SYS_MMAP process-private 32 MiB cap.
+const HEAP_SIZE: usize = 32 * 1024 * 1024;
 
 #[global_allocator]
 static ALLOCATOR: Talck<Mutex<()>, ErrOnOom> = Talc::new(ErrOnOom).lock();

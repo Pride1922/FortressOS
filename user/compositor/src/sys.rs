@@ -19,6 +19,36 @@ pub const SYS_FBINFO: usize = 96;
 pub const SYS_FB_ACQUIRE: usize = 97;
 pub const SYS_FB_RELEASE: usize = 98;
 pub const SYS_MMAP: usize = 99;
+pub const SYS_SYSINFO: usize = 37;
+
+/// Fixed 72-byte public sysinfo_t, src/include/syscall_abi.h.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SystemInfo {
+    pub total_ram_bytes: u64,
+    pub free_ram_bytes: u64,
+    pub uptime_ticks: u64,
+    pub tick_hz: u64,
+    pub cpu_count: u32,
+    pub task_count: u32,
+    pub tsc_hz: u64,
+    pub kernel_heap_used: u64,
+    pub kernel_heap_total: u64,
+    pub thread_count: u32,
+    pub reserved: u32,
+}
+const _: () = assert!(core::mem::size_of::<SystemInfo>() == 72);
+const _: () = assert!(core::mem::offset_of!(SystemInfo, cpu_count) == 32);
+const _: () = assert!(core::mem::offset_of!(SystemInfo, thread_count) == 64);
+
+pub fn system_info() -> Option<SystemInfo> {
+    let mut info = SystemInfo::default();
+    if unsafe { syscall1(SYS_SYSINFO, &mut info as *mut _ as usize) } == 0 {
+        Some(info)
+    } else {
+        None
+    }
+}
 pub const EINTR: isize = -22;
 pub const EBUSY: isize = -36;
 

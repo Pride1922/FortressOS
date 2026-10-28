@@ -28,6 +28,7 @@ pub struct Notepad {
 }
 
 impl Notepad {
+    #[inline(never)]
     pub fn new(window_id: u32, path: &str) -> Self {
         let mut path_str = String::new();
         let _ = path_str.try_reserve_exact(path.len());

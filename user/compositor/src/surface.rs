@@ -88,6 +88,35 @@ impl Surface {
         if r.x >= right || r.y >= bottom {
             return;
         }
+        let clipped = Rect {
+            x: r.x,
+            y: r.y,
+            w: right - r.x,
+            h: bottom - r.y,
+        };
+        // Focus, resize, client refresh and cursor repair can enqueue the same
+        // area in one event. Present each contained region only once.
+        let mut i = 0;
+        while i < self.count {
+            let old = self.damage[i];
+            if old.x <= clipped.x
+                && old.y <= clipped.y
+                && old.x + old.w >= right
+                && old.y + old.h >= bottom
+            {
+                return;
+            }
+            if clipped.x <= old.x
+                && clipped.y <= old.y
+                && right >= old.x + old.w
+                && bottom >= old.y + old.h
+            {
+                self.damage.copy_within(i + 1..self.count, i);
+                self.count -= 1;
+            } else {
+                i += 1;
+            }
+        }
         if self.count == self.damage.len() {
             self.count = 1;
             self.damage[0] = Rect {
@@ -98,12 +127,7 @@ impl Surface {
             };
             return;
         }
-        self.damage[self.count] = Rect {
-            x: r.x,
-            y: r.y,
-            w: right - r.x,
-            h: bottom - r.y,
-        };
+        self.damage[self.count] = clipped;
         self.count += 1;
     }
 

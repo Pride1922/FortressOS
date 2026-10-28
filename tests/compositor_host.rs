@@ -1,4 +1,253 @@
 extern crate alloc;
+
+#[test]
+fn native_1080p_chrome_and_smooth_dock_edges() {
+    use window::theme;
+    assert_eq!(theme::scale(1080), 1);
+    assert_eq!(theme::scale(2160), 2);
+    let mut partial = 0;
+    for y in 0..18 {
+        for x in 0..18 {
+            let c = theme::rounded_coverage(x,y,256,58,18);
+            assert_eq!(c, theme::rounded_coverage(255-x,y,256,58,18));
+            assert_eq!(c, theme::rounded_coverage(x,57-y,256,58,18));
+            assert!(c <= 16);
+            if c > 0 && c < 16 {
+                partial += 1;
+                let blended = theme::blend_coverage(0xffffffff,0xff000000,c);
+                assert!(blended != 0xffffffff && blended != 0xff000000);
+            }
+        }
+    }
+    assert!(partial > 10, "dock outline must contain antialiased edge pixels");
+}
+
+#[test]
+fn title_controls_repaint_only_their_hover_pixels() {
+    for id in [3, 6] {
+        for maximized in [false, true] {
+            let mut scene = surface::Surface::new(1920, 1080).unwrap();
+            scene.fill(window::DESKTOP);
+            let mut wm = window::WindowManager::desktop();
+            let rect = surface::Rect { x: 100, y: 100,
+                w: if maximized { 1700 } else { 520 }, h: 700 };
+            let mut w = window::Window::new(id, "Hover regression", rect).unwrap();
+            if maximized { w.saved_rect = Some(rect); }
+            wm.windows.push(w);
+            wm.render(&mut scene);
+            flush(&mut scene);
+            for (x,y) in [(110,112), (129,112), (145,112), (200,112), (200,300)] {
+                wm.mouse(x,y,0,&mut scene);
+                let area: usize = (0..16).filter_map(|i| scene.damage_rect(i)).map(|r|r.w*r.h).sum();
+                assert!(area <= 242, "hover {id}, maximized={maximized}: {area} pixels");
+                wm.render(&mut scene);
+                let mut full = surface::Surface::new(1920,1080).unwrap();
+                full.fill(window::DESKTOP);
+                wm.render(&mut full);
+                assert!(scene.pixels == full.pixels, "hover repair differs from full render");
+                flush(&mut scene);
+            }
+        }
+    }
+}
+
+#[test]
+fn maximized_system_panel_updates_only_changed_fields() {
+    let mut scene = surface::Surface::new(1920, 1080).unwrap();
+    let mut wm = window::WindowManager::desktop();
+    wm.ensure_window_1(&mut scene);
+    wm.mouse(125, 132, 1, &mut scene);
+    wm.mouse(125, 132, 0, &mut scene);
+    let mut info = sys::SystemInfo {
+        cpu_count: 8,
+        total_ram_bytes: 32 << 30,
+        free_ram_bytes: 30 << 30,
+        task_count: 9,
+        thread_count: 20,
+        uptime_ticks: 9900,
+        tick_hz: 100,
+        ..Default::default()
+    };
+    wm.system_panel(&mut scene, Some(info));
+    wm.render(&mut scene);
+    flush(&mut scene);
+    wm.system_panel(&mut scene, Some(info));
+    assert!(
+        scene.damage_rect(0).is_none(),
+        "unchanged sample repaints fullscreen"
+    );
+    // Crossing 99 -> 100 seconds changes the string length. The reverse
+    // transition also has to erase old trailing digits.
+    for seconds in [100, 9] {
+        info.uptime_ticks = seconds * 100;
+        wm.system_panel(&mut scene, Some(info));
+        let regions: Vec<_> = (0..16).filter_map(|i| scene.damage_rect(i)).collect();
+        assert_eq!(regions.len(), 1);
+        assert!(
+            regions[0].w * regions[0].h < 6_000,
+            "one counter change must not repaint the maximized client"
+        );
+        wm.render(&mut scene);
+        let mut fresh = window::WindowManager::desktop();
+        fresh
+            .windows
+            .push(window::Window::new(6, "System Information", wm.windows[0].rect).unwrap());
+        fresh.windows[0].saved_rect = wm.windows[0].saved_rect;
+        let mut full = surface::Surface::new(1920, 1080).unwrap();
+        fresh.system_panel(&mut full, Some(info));
+        assert_eq!(wm.windows[0].content, fresh.windows[0].content);
+        flush(&mut scene);
+    }
+    wm.system_panel(&mut scene, None);
+    flush(&mut scene);
+    wm.system_panel(&mut scene, None);
+    assert!(scene.damage_rect(0).is_none());
+}
+
+#[test]
+fn nested_damage_is_presented_once_without_overflow() {
+    let mut s = surface::Surface::new(1920, 1080).unwrap();
+    let full = surface::Rect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1080,
+    };
+    s.damage(full);
+    for _ in 0..32 {
+        s.damage(surface::Rect {
+            x: 100,
+            y: 100,
+            w: 16,
+            h: 16,
+        });
+    }
+    assert_eq!(s.damage_rect(0), Some(full));
+    assert!(s.damage_rect(1).is_none());
+    flush(&mut s);
+    s.damage(surface::Rect {
+        x: 100,
+        y: 100,
+        w: 16,
+        h: 16,
+    });
+    s.damage(full);
+    assert_eq!(s.damage_rect(0), Some(full));
+    assert!(s.damage_rect(1).is_none());
+}
+
+#[test]
+fn pointer_motion_over_maximized_client_has_constant_damage() {
+    let mut scene = surface::Surface::new(1920, 1080).unwrap();
+    scene.fill(window::DESKTOP);
+    let mut wm = window::WindowManager::desktop();
+    wm.ensure_window_1(&mut scene);
+    wm.mouse(125, 132, 1, &mut scene);
+    wm.mouse(125, 132, 0, &mut scene);
+    wm.system_panel(&mut scene, Some(sys::SystemInfo::default()));
+    let mut cursor = cursor::Cursor::new(700, 400).unwrap();
+    wm.mouse(700, 400, 0, &mut scene);
+    wm.render(&mut scene);
+    cursor.show(&mut scene);
+    flush(&mut scene);
+    for _ in 0..64 {
+        cursor.advance(&mut scene, 5, 2);
+        wm.mouse(cursor.x, cursor.y, 0, &mut scene);
+        wm.render(&mut scene);
+        cursor.show(&mut scene);
+        let area: usize = (0..16)
+            .filter_map(|i| scene.damage_rect(i))
+            .map(|r| r.w * r.h)
+            .sum();
+        assert!(area <= 512, "pointer-only frame damaged {area} pixels");
+        flush(&mut scene);
+    }
+}
+
+#[test]
+fn polished_desktop_scaled_hover_repair_and_system_information() {
+    for (width, height) in [(1280, 800), (1920, 1080)] {
+        let mut s = surface::Surface::new(width, height).unwrap();
+        s.fill(window::DESKTOP);
+        let mut wm = window::WindowManager::desktop();
+        assert!(wm.windows.is_empty());
+        wm.update_clock(&mut s, 12 * 3600 + 34 * 60);
+        wm.render(&mut s);
+        flush(&mut s);
+        let dock = window::WindowManager::dock_rect(width, height);
+        let scale = window::theme::scale(height);
+        assert_eq!(dock.w, 4 * 64 * scale);
+        for (x, y, down) in [
+            (dock.x + 3 * 64 * scale + 20, dock.y + 20, 0),
+            (dock.x + 3 * 64 * scale + 20, dock.y + 20, 1),
+            (dock.x + 3 * 64 * scale + 20, dock.y + 20, 0),
+            (20, 12, 0),
+        ] {
+            wm.mouse(x, y, down, &mut s);
+            if wm.windows.iter().any(|w| w.id == 6) {
+                wm.system_panel(
+                    &mut s,
+                    Some(sys::SystemInfo {
+                        total_ram_bytes: 2 * 1024 * 1024 * 1024,
+                        free_ram_bytes: 1536 * 1024 * 1024,
+                        cpu_count: 4,
+                        task_count: 12,
+                        thread_count: 18,
+                        uptime_ticks: 123400,
+                        tick_hz: 100,
+                        ..Default::default()
+                    }),
+                );
+            }
+            wm.render(&mut s);
+            let mut full = surface::Surface::new(width, height).unwrap();
+            full.fill(window::DESKTOP);
+            wm.render(&mut full);
+            let mismatch = s.pixels.iter().zip(&full.pixels).position(|(a, b)| a != b);
+            assert!(
+                mismatch.is_none(),
+                "scaled hover repair mismatch {width}x{height}: {mismatch:?}"
+            );
+            flush(&mut s);
+        }
+        assert_eq!(wm.windows.len(), 1);
+        assert_eq!(wm.windows[0].id, 6);
+        let restore = wm.windows[0].rect;
+        wm.mouse(restore.x + 45, restore.y + 12, 1, &mut s);
+        wm.mouse(restore.x + 45, restore.y + 12, 0, &mut s);
+        assert!(wm.windows[0].rect.y >= 24 * scale);
+        assert!(wm.windows[0].rect.y + wm.windows[0].rect.h < dock.y);
+        wm.mouse(8 * scale + 45, 28 * scale + 12, 1, &mut s);
+        wm.mouse(8 * scale + 45, 28 * scale + 12, 0, &mut s);
+        assert_eq!(wm.windows[0].rect, restore);
+        // Missing telemetry and a zero tick frequency must render safely.
+        wm.system_panel(&mut s, Some(sys::SystemInfo::default()));
+        wm.system_panel(&mut s, None);
+        wm.render(&mut s);
+        flush(&mut s);
+        wm.update_clock(&mut s, 12 * 3600 + 34 * 60 + 1);
+        assert!(
+            s.damage_rect(0).is_none(),
+            "minute clock must not repaint each second"
+        );
+    }
+}
+
+#[test]
+fn ui_font_is_proportional_antialiased_and_bounded() {
+    use window::theme;
+    assert!(theme::text_width("WWW") > theme::text_width("iii"));
+    assert_eq!(theme::text_width("\u{2603}"), theme::text_width("?"));
+    let mut antialias = false;
+    for y in 0..18 {
+        for x in 0..theme::text_width("FortressOS") {
+            let p = theme::text_pixel("FortressOS", x, y, 0xffffffff, 0xff000000);
+            antialias |= p != 0xffffffff && p != 0xff000000;
+        }
+    }
+    assert!(antialias);
+    assert_eq!(theme::text_pixel("x", usize::MAX, 99, 0xffffffff, 42), 42);
+}
 #[path = "../user/compositor/src/cursor.rs"]
 mod cursor;
 #[path = "../user/compositor/src/files.rs"]
@@ -103,10 +352,12 @@ fn damage_pitch_padding_and_invalid_metadata() {
     s.pixels.fill(99);
     assert!(unsafe { s.present(&fb) }); // no damage means no writes
     assert_eq!(vram[11], 42);
-    for _ in 0..33 {
+    // Distinct rectangles still exercise overflow; duplicate cursor damage
+    // is deliberately deduplicated and must not trigger a full-screen copy.
+    for i in 0..17 {
         s.damage(Rect {
-            x: 0,
-            y: 0,
+            x: i % 7,
+            y: i / 7,
             w: 1,
             h: 1,
         });
@@ -231,7 +482,15 @@ fn window_damage_repair_matches_full_composition_with_occlusion_and_clipping() {
         let mut full = Surface::new(s.width, s.height).unwrap();
         full.fill(window::DESKTOP);
         wm.render(&mut full);
-        assert_eq!(s.pixels, full.pixels, "partial repair differs at {x},{y}");
+        if let Some(i) = s.pixels.iter().zip(&full.pixels).position(|(a, b)| a != b) {
+            panic!(
+                "partial repair differs after {x},{y} at {},{}: {:08x} != {:08x}",
+                i % s.width,
+                i / s.width,
+                s.pixels[i],
+                full.pixels[i]
+            );
+        }
         for (i, (&old, &new)) in before.iter().zip(&s.pixels).enumerate() {
             if old != new {
                 assert!(
@@ -299,13 +558,29 @@ fn monitor_mouse_bounded_damage_and_coalesced_deltas() {
 
     // Initial full monitor damage is 320x200 = 64,000 pixels
     wm.monitor(&mut s, 2560, (1024, 4096), (100, 100));
-    assert_eq!(s.damage_rect(0), Some(Rect { x: 80, y: 120, w: 320, h: 200 }));
+    assert_eq!(
+        s.damage_rect(0),
+        Some(Rect {
+            x: 80,
+            y: 120,
+            w: 320,
+            h: 200
+        })
+    );
     flush(&mut s);
 
     // Optimized monitor_mouse damage is bounded to the text sub-rectangle (<= 220x16 = 3,520 pixels)
     wm.monitor_mouse(&mut s, (150, 250));
     let damaged = s.damage_rect(0).expect("damage rect must exist");
-    assert_eq!(damaged, Rect { x: 93, y: 229, w: 220, h: 16 });
+    assert_eq!(
+        damaged,
+        Rect {
+            x: 93,
+            y: 229,
+            w: 220,
+            h: 16
+        }
+    );
     assert!(damaged.w * damaged.h <= 3520);
     assert_eq!(s.damage_rect(1), None);
     flush(&mut s);
@@ -449,15 +724,15 @@ fn start_menu_toggle_and_actions() {
     assert!(!wm.start_open);
     wm.mouse(50, 102, 0, &mut s);
 
-    // Reopen menu and click item 5 (Exit) (y = 24 + 24 + 5*22 + 10 = 168)
+    // Reopen menu and click item 4 (Exit); Palette is not a desktop app.
     let _ = wm.mouse(20, 12, 1, &mut s);
     wm.mouse(20, 12, 0, &mut s);
     assert!(wm.start_open);
 
-    let action = wm.mouse(50, 168, 1, &mut s);
+    let action = wm.mouse(50, 146, 1, &mut s);
     assert_eq!(action, window::Action::Exit);
     assert!(!wm.start_open);
-    wm.mouse(50, 168, 0, &mut s);
+    wm.mouse(50, 146, 0, &mut s);
 }
 
 #[test]
@@ -529,7 +804,15 @@ fn traffic_lights_close_minimize_maximize_and_restore() {
     let _ = wm.mouse(max_x + 45, max_y + 12, 0, &mut s);
     assert_eq!(act2, window::Action::WindowResized(3));
     let w3_restored = wm.windows.iter().find(|w| w.id == 3).unwrap();
-    assert_eq!(w3_restored.rect, Rect { x: 100, y: 100, w: 500, h: 300 });
+    assert_eq!(
+        w3_restored.rect,
+        Rect {
+            x: 100,
+            y: 100,
+            w: 500,
+            h: 300
+        }
+    );
     assert!(w3_restored.saved_rect.is_none());
 
     // Click Orange/Yellow button: Minimizes window 3!
@@ -562,7 +845,17 @@ fn notepad_editing_and_rendering() {
     assert_eq!(&np.text, b"Hi");
     assert_eq!(np.cursor, 2);
 
-    let mut win = window::Window::new(4, "Notepad", Rect { x: 0, y: 0, w: 400, h: 250 }).unwrap();
+    let mut win = window::Window::new(
+        4,
+        "Notepad",
+        Rect {
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 250,
+        },
+    )
+    .unwrap();
     np.render(&mut win);
     // Verified that glyphs are rendered into content
     assert!(win.content.iter().any(|&c| c == notepad::NOTEPAD_FG));
@@ -573,10 +866,24 @@ fn files_navigation_and_rendering() {
     let fm = files::FileManager::new(5, "/");
     assert_eq!(fm.current_path, "/");
 
-    let mut win = window::Window::new(5, "Files", Rect { x: 0, y: 0, w: 400, h: 250 }).unwrap();
+    let mut win = window::Window::new(
+        5,
+        "Files",
+        Rect {
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 250,
+        },
+    )
+    .unwrap();
     fm.render(&mut win);
     // Verified header and toolbar rendered
-    assert!(win.content.iter().any(|&c| c == files::FILES_DIR || c == files::FILES_FG));
+    assert!(
+        win.content
+            .iter()
+            .any(|&c| c == files::FILES_DIR || c == files::FILES_FG)
+    );
 }
 
 #[test]
@@ -716,13 +1023,13 @@ fn dock_mouse_actions() {
     let _ = wm.mouse(dock_r.x + 2 * 64 + 20, click_y, 0, &mut s);
     assert_eq!(act2, window::Action::SpawnNotepad);
 
-    // Item 5: Lock
+    // Removed demo-only dock entries cannot activate lock or exit.
     let act5 = wm.mouse(dock_r.x + 5 * 64 + 20, click_y, 1, &mut s);
     let _ = wm.mouse(dock_r.x + 5 * 64 + 20, click_y, 0, &mut s);
-    assert_eq!(act5, window::Action::LockScreen);
+    assert_eq!(act5, window::Action::None);
 
     // Item 6: Exit
     let act6 = wm.mouse(dock_r.x + 6 * 64 + 20, click_y, 1, &mut s);
     let _ = wm.mouse(dock_r.x + 6 * 64 + 20, click_y, 0, &mut s);
-    assert_eq!(act6, window::Action::Exit);
+    assert_eq!(act6, window::Action::None);
 }
