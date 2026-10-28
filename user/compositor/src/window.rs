@@ -514,89 +514,100 @@ fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
 
     match item {
         0 => {
-            // Files (Finder): Blue tile with Folder silhouette
+            // Windows 11 File Explorer: Golden folder with cyan document peeking out
             if iy == 0 {
-                return 0xff60a5fa;
+                return 0xffd29922;
             }
-            if (6..=8).contains(&iy) && (6..=12).contains(&ix) {
-                return 0xffffffff;
+            // Tab at top-left
+            if (3..=5).contains(&iy) && (3..=9).contains(&ix) {
+                return 0xffd29922;
             }
-            if (8..=19).contains(&iy) && (6..=21).contains(&ix) {
-                return 0xffffffff;
+            // Document inside
+            if (6..=11).contains(&iy) && (6..=21).contains(&ix) {
+                return 0xff38bdf8;
             }
-            if (12..=21).contains(&iy) && (5..=22).contains(&ix) {
-                return if iy == 12 { 0xff93c5fd } else { 0xff60a5fa };
+            // Back folder
+            if (5..=11).contains(&iy) && (3..=24).contains(&ix) {
+                return 0xffe3b341;
             }
-            0xff2563eb
+            // Front folder flap with depth
+            if iy == 12 && (2..=25).contains(&ix) {
+                return 0xfffcd34d; // top highlight of front flap
+            }
+            if (13..=23).contains(&iy) && (2..=25).contains(&ix) {
+                return 0xfff59e0b;
+            }
+            0xffd29922
         }
         1 => {
-            // Term: Dark graphite tile with prompt and cursor
+            // Windows 11 Windows Terminal: Sleek dark graphite tile with green prompt
             if iy == 0 {
-                return 0xff3b4252;
+                return 0xff30363d;
             }
-            if (3..=5).contains(&iy) {
-                if (5..=6).contains(&ix) {
-                    return 0xffff5f56;
+            // Top tab strip
+            if (2..=5).contains(&iy) && (2..=25).contains(&ix) {
+                if (4..=14).contains(&ix) {
+                    return 0xff21262d;
                 }
-                if (8..=9).contains(&ix) {
-                    return 0xffffbd2e;
-                }
-                if (11..=12).contains(&ix) {
-                    return 0xff27c93f;
-                }
-                return 0xff2e3440;
+                return 0xff161b22;
             }
-            // Prompt >
-            if (ix == 7 && (iy == 10 || iy == 14))
-                || (ix == 8 && (iy == 11 || iy == 13))
-                || (ix == 9 && iy == 12)
+            // Prompt > in bright console green
+            if (ix == 6 && (iy == 10 || iy == 14))
+                || (ix == 7 && (iy == 11 || iy == 13))
+                || (ix == 8 && iy == 12)
             {
                 return 0xff4ade80;
             }
-            // Cursor _
-            if (12..=17).contains(&ix) && (iy == 14 || iy == 15) {
-                return 0xffffffff;
+            // Cursor _ in cyan
+            if (11..=16).contains(&ix) && (iy == 14 || iy == 15) {
+                return 0xff58a6ff;
             }
-            0xff1e222a
+            0xff0d1117
         }
         2 => {
-            // Notes: Amber tile with paper sheet and ruled lines
+            // Windows 11 Notepad: Fluent blue rounded tile with white ruled document
             if iy == 0 {
-                return 0xfffbbf24;
+                return 0xff1f6feb;
             }
-            if (6..=21).contains(&ix) && (5..=22).contains(&iy) {
-                if ix >= 17 && iy <= 8 && ix + iy >= 25 {
-                    return 0xfffcd34d;
+            // White document sheet
+            if (5..=22).contains(&iy) && (5..=22).contains(&ix) {
+                // Top-right dog-ear fold
+                if ix >= 18 && iy <= 9 && ix + iy >= 27 {
+                    return 0xff93c5fd;
                 }
-                if (iy == 10 || iy == 13 || iy == 16) && (9..=18).contains(&ix) {
-                    return 0xffb45309;
+                // Ruled blue lines
+                if (iy == 9 || iy == 12 || iy == 15 || iy == 18) && (8..=18).contains(&ix) {
+                    return 0xff1f6feb;
                 }
-                if ix == 8 && (7..=21).contains(&iy) {
-                    return 0xfff87171;
-                }
-                return 0xfffffbeb;
+                return 0xffffffff;
             }
-            0xfff59e0b
+            0xff0969da
         }
         3 => {
-            // Sysmon: Obsidian tile with glowing cyan ECG pulse wave
+            // Windows 11 Sysmon / Task Manager: Obsidian tile with glowing cyan pulse
             if iy == 0 {
-                return 0xff334155;
+                return 0xff30363d;
             }
-            let is_pulse = (ix >= 4 && ix <= 8 && iy == 15)
-                || (ix == 9 && (12..=15).contains(&iy))
-                || (ix == 10 && (9..=13).contains(&iy))
-                || (ix == 11 && (9..=18).contains(&iy))
-                || (ix == 12 && (16..=21).contains(&iy))
-                || (ix == 13 && (14..=18).contains(&iy))
-                || (ix >= 14 && ix <= 23 && iy == 15);
+            // Grid lines
+            let is_grid = iy == 8 || iy == 16 || ix == 8 || ix == 16;
+            let is_pulse = (ix >= 3 && ix <= 7 && iy == 14)
+                || (ix == 8 && (11..=14).contains(&iy))
+                || (ix == 9 && (8..=12).contains(&iy))
+                || (ix == 10 && (8..=18).contains(&iy))
+                || (ix == 11 && (15..=21).contains(&iy))
+                || (ix == 12 && (13..=18).contains(&iy))
+                || (ix >= 13 && ix <= 24 && iy == 14);
             if is_pulse {
-                return 0xff38bdf8;
+                return if (ix == 9 && iy == 8) || (ix == 11 && iy == 21) {
+                    0xffa5f3fc // peak highlight
+                } else {
+                    0xff38bdf8
+                };
             }
-            if (ix == 10 && iy == 8) || (ix == 12 && iy == 22) {
-                return 0xffa5f3fc;
+            if is_grid {
+                return 0xff1e293b;
             }
-            0xff0f172a
+            0xff0d1117
         }
         _ => dock_bg,
     }
@@ -1663,21 +1674,34 @@ impl WindowManager {
                                 && (6..52).contains(&py)
                                 && (8..56).contains(&in_item_x)
                             {
-                                s.pixels[y * s.width + x] = theme::SURFACE;
+                                let is_corner = (in_item_x < 12 && py < 10)
+                                    || (in_item_x > 52 && py < 10)
+                                    || (in_item_x < 12 && py > 48)
+                                    || (in_item_x > 52 && py > 48);
+                                if !is_corner {
+                                    s.pixels[y * s.width + x] = theme::SURFACE;
+                                }
                             }
                             // Graphical icon tile: 28x28 centered in 64x58 item: in_item_x = 18..46, py = 12..40
                             if in_item_x >= 18 && in_item_x < 46 && (12..40).contains(&py) {
                                 s.pixels[y * s.width + x] =
                                     render_dock_icon(item_idx, in_item_x - 18, py - 12, dock_bg);
-                            } else if is_running
-                                && in_item_x >= 30
-                                && in_item_x <= 33
-                                && py >= 48
-                                && py <= 51
-                            {
-                                // Glowing active app dot
-                                s.pixels[y * s.width + x] =
-                                    if focused { theme::ACCENT } else { theme::MUTED };
+                            } else if is_running && (49..=51).contains(&py) {
+                                // Windows 11 Running App Accent Pill (16px active, 8px background)
+                                let in_pill = if focused {
+                                    (24..=39).contains(&in_item_x)
+                                } else {
+                                    (28..=35).contains(&in_item_x)
+                                };
+                                if in_pill {
+                                    s.pixels[y * s.width + x] =
+                                        if focused { theme::ACCENT } else { theme::MUTED };
+                                } else if self.dock_hover != Some(item_idx)
+                                    || !(6..52).contains(&py)
+                                    || !(8..56).contains(&in_item_x)
+                                {
+                                    s.pixels[y * s.width + x] = dock_bg;
+                                }
                             } else {
                                 if self.dock_hover != Some(item_idx)
                                     || !(6..52).contains(&py)
@@ -1694,7 +1718,7 @@ impl WindowManager {
             }
 
             if let Some(item) = self.dock_hover.filter(|i| *i < 4) {
-                let label = ["Files", "Terminal", "Notes", "System Information"][item];
+                let label = ["Files", "Terminal", "Notepad", "System Information"][item];
                 let area = Self::tooltip_rect(s.width, s.height);
                 let label_w = (theme::text_width(label) + 20) * scale;
                 let center = dock_r.x + (item * 64 + 32) * scale;
@@ -1712,10 +1736,13 @@ impl WindowManager {
                         for x in clip.x..clip.x + clip.w {
                             let lx = (x - tip.x) / scale;
                             let ly = (y - tip.y) / scale;
-                            s.pixels[y * s.width + x] = if lx >= 10 && ly >= 3 {
-                                theme::text_pixel(label, lx - 10, ly - 3, theme::TEXT, theme::PANEL)
+                            let is_tip_border = lx == 0 || lx == label_w / scale - 1 || ly == 0 || ly == 23;
+                            s.pixels[y * s.width + x] = if is_tip_border {
+                                0xff30363d
+                            } else if lx >= 10 && (4..20).contains(&ly) {
+                                theme::text_pixel(label, lx - 10, ly - 4, 0xffffffff, 0xff1c2128)
                             } else {
-                                theme::PANEL
+                                0xff1c2128
                             };
                         }
                     }
