@@ -1,10 +1,10 @@
 //! Shared desktop styling. Integer-only, allocation-free raster operations.
-pub const PANEL: u32 = 0xff161d29;
-pub const SURFACE: u32 = 0xff1d2736;
-pub const BORDER: u32 = 0xff354358;
-pub const TEXT: u32 = 0xffe7edf6;
-pub const MUTED: u32 = 0xffa1aec2;
-pub const ACCENT: u32 = 0xff69b7ff;
+pub const PANEL: u32 = 0xff1e1e1e;
+pub const SURFACE: u32 = 0xff2d2d2d;
+pub const BORDER: u32 = 0xff3e3e3e;
+pub const TEXT: u32 = 0xffe0e0e0;
+pub const MUTED: u32 = 0xff989898;
+pub const ACCENT: u32 = 0xff007aff;
 const ALPHA: &[u8; 95 * 16 * 18] = include_bytes!("../assets/ui-alpha.bin");
 const ADVANCES: &[u8; 95] = include_bytes!("../assets/ui-advances.bin");
 static SCALE_OVERRIDE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
@@ -107,8 +107,8 @@ pub fn desktop_pixel(x: usize, y: usize, width: usize, height: usize) -> u32 {
     let ny = (y * 1024 / height.max(1)) as i32;
     let distance = (nx - 760).abs() + (ny - 640).abs();
     let glow = (900 - distance).max(0) as u32;
-    let r = 12 + glow * 9 / 900;
-    let g = 18 + glow * 24 / 900;
-    let b = 30 + glow * 47 / 900;
+    let r = 24 + glow * 8 / 900;
+    let g = 26 + glow * 8 / 900;
+    let b = 28 + glow * 10 / 900;
     0xff000000 | r << 16 | g << 8 | b
 }

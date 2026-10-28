@@ -1,18 +1,17 @@
 //! Graphical File Manager ("Files") for FortressOS Desktop.
 
 use crate::{
-    font::GLYPHS,
     sys,
     window::Window,
 };
 use alloc::{string::String, vec::Vec};
 
-pub const FILES_BG: u32 = 0xff161b22;
-pub const FILES_FG: u32 = 0xffe6edf3;
-pub const FILES_HEADER: u32 = 0xff0d1117;
-pub const FILES_DIR: u32 = 0xff58a6ff;
-pub const FILES_EXE: u32 = 0xff3fb950;
-pub const FILES_SEL: u32 = 0xff1f6feb;
+pub const FILES_BG: u32 = 0xff252525;
+pub const FILES_FG: u32 = 0xffe0e0e0;
+pub const FILES_HEADER: u32 = 0xff1e1e1e;
+pub const FILES_DIR: u32 = 0xff007aff;
+pub const FILES_EXE: u32 = 0xff34c759;
+pub const FILES_SEL: u32 = 0xff007aff;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileAction {
@@ -225,10 +224,10 @@ impl FileManager {
         // Header toolbar (22px)
         for y in 0..22.min(height) {
             for x in 0..width {
-                w.content[y * width + x] = if y == 21 { 0xff30363d } else { FILES_HEADER };
+                w.content[y * width + x] = if y == 21 { 0xff3e3e3e } else { FILES_HEADER };
             }
         }
-        draw_text(w, 8, 3, "[^ Up]", 0xff58a6ff, FILES_HEADER);
+        draw_text(w, 8, 3, "[^ Up]", FILES_DIR, FILES_HEADER);
         draw_text(w, 64, 3, "[/]", 0xff8b949e, FILES_HEADER);
         draw_text(w, 96, 3, "[/bin]", 0xff8b949e, FILES_HEADER);
         draw_text(w, 152, 3, "[/etc]", 0xff8b949e, FILES_HEADER);
@@ -348,32 +347,17 @@ fn format_bytes(bytes: u64) -> String {
     s
 }
 
-fn draw_char(w: &mut Window, px: usize, py: usize, ch: u8, fg: u32, bg: u32) {
+fn draw_text(w: &mut Window, px: usize, py: usize, text: &str, fg: u32, bg: u32) {
+    use crate::window::theme;
     let width = w.rect.w.saturating_sub(2);
     let height = w.rect.h.saturating_sub(26);
-    if px + 8 > width || py + 16 > height {
-        return;
-    }
-    let c_idx = if (' '..='~').contains(&(ch as char)) {
-        ch as usize - 32
-    } else {
-        0
-    };
-    let glyph = &GLYPHS[c_idx];
-    for r in 0..16 {
-        for c in 0..8 {
-            let bit = (glyph[r] & (128 >> c)) != 0;
-            w.content[(py + r) * width + px + c] = if bit { fg } else { bg };
+    let text_w = theme::text_width(text);
+    let max_w = text_w.min(width.saturating_sub(px));
+    let max_h = 18.min(height.saturating_sub(py));
+    for y in 0..max_h {
+        for x in 0..max_w {
+            let color = theme::text_pixel(text, x, y, fg, bg);
+            w.content[(py + y) * width + px + x] = color;
         }
-    }
-}
-
-fn draw_text(w: &mut Window, mut px: usize, py: usize, text: &str, fg: u32, bg: u32) {
-    for c in text.chars() {
-        if px + 8 > w.rect.w.saturating_sub(2) {
-            break;
-        }
-        draw_char(w, px, py, c as u8, fg, bg);
-        px += 8;
     }
 }

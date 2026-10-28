@@ -10,9 +10,9 @@ from test_compositor import ROOT, Guest, QMP, pixel, wait_image
 
 ALPHA = (ROOT / "user/compositor/assets/ui-alpha.bin").read_bytes()
 ADVANCE = (ROOT / "user/compositor/assets/ui-advances.bin").read_bytes()
-PANEL = bytes.fromhex("161d29")
-TEXT = bytes.fromhex("e7edf6")
-MUTED = bytes.fromhex("a1aec2")
+PANEL = bytes.fromhex("1e1e1e")
+TEXT = bytes.fromhex("e0e0e0")
+MUTED = bytes.fromhex("989898")
 
 
 def width(text):

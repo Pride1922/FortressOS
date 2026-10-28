@@ -973,13 +973,13 @@ impl AppHost {
     }
     fn draw_sidebar(&self, index: usize, c: &mut Canvas) {
         let h = c.height();
-        c.fill_rect(Rect { x: 180, y: 0, w: 1, h }, 0xff253040);
+        c.fill_rect(Rect { x: 180, y: 0, w: 1, h }, theme::BORDER);
 
-        c.badge(Rect { x: 16, y: 12, w: 28, h: 28 }, "O", 0xffffffff, 0xff1f3d5c, 0xff3b82f6);
-        c.label_h(52, 10, 120, 18, "Operator", theme::TEXT, 0xff111620);
-        c.label_h(52, 28, 120, 18, "Administrator", theme::MUTED, 0xff111620);
+        c.badge(Rect { x: 16, y: 12, w: 28, h: 28 }, "O", 0xffffffff, 0xff283548, theme::ACCENT);
+        c.label_h(52, 10, 120, 18, "Operator", theme::TEXT, 0xff202020);
+        c.label_h(52, 28, 120, 18, "Administrator", theme::MUTED, 0xff202020);
 
-        c.fill_rect(Rect { x: 12, y: 48, w: 156, h: 1 }, 0xff1e2634);
+        c.fill_rect(Rect { x: 12, y: 48, w: 156, h: 1 }, theme::BORDER);
 
         let nav_items = [
             "Personalization",
@@ -1019,7 +1019,7 @@ impl AppHost {
                         focus == i,
                     );
                 }
-                c.fill_rect(Rect { x: 196, y: 130, w: 468, h: 1 }, 0xff253040);
+                c.fill_rect(Rect { x: 196, y: 130, w: 468, h: 1 }, theme::BORDER);
 
                 c.label_h(196, 138, 450, 18, "Desktop Background", theme::TEXT, theme::PANEL);
                 c.label_h(196, 156, 450, 18, "Choose wallpaper image or solid minimalist background", theme::MUTED, theme::PANEL);
@@ -1037,7 +1037,7 @@ impl AppHost {
                     !self.draft.wallpaper,
                     focus == 4,
                 );
-                c.fill_rect(Rect { x: 196, y: 214, w: 468, h: 1 }, 0xff253040);
+                c.fill_rect(Rect { x: 196, y: 214, w: 468, h: 1 }, theme::BORDER);
 
                 c.label_h(196, 222, 450, 18, "Taskbar Clock", theme::TEXT, theme::PANEL);
                 c.label_h(196, 240, 450, 18, "Choose between 24-hour and 12-hour clock format", theme::MUTED, theme::PANEL);
@@ -1053,7 +1053,7 @@ impl AppHost {
                     !self.draft.clock_24h,
                     focus == 6,
                 );
-                c.fill_rect(Rect { x: 196, y: 298, w: 468, h: 1 }, 0xff253040);
+                c.fill_rect(Rect { x: 196, y: 298, w: 468, h: 1 }, theme::BORDER);
 
                 c.button_accent(APPEARANCE[7].rect, "Apply & Save", focus == 7);
                 c.button(APPEARANCE[8].rect, "Use Defaults", false, focus == 8);
@@ -1077,7 +1077,7 @@ impl AppHost {
                 }
                 c.label_h(200, 56, 450, 22, text.as_str(), 0xffffffff, theme::PANEL);
                 c.label_h(200, 80, 450, 18, "Hardware RTC clock synchronized", theme::MUTED, theme::PANEL);
-                c.fill_rect(Rect { x: 196, y: 104, w: 468, h: 1 }, 0xff253040);
+                c.fill_rect(Rect { x: 196, y: 104, w: 468, h: 1 }, theme::BORDER);
 
                 c.label_h(196, 112, 450, 18, "System Timezone", theme::TEXT, theme::PANEL);
                 c.label_h(196, 130, 450, 18, "Enter an installed IANA Region/City name", theme::MUTED, theme::PANEL);
@@ -1087,7 +1087,7 @@ impl AppHost {
                 for (i, label) in ["UTC", "Brussels", "New York", "Tokyo"].iter().enumerate() {
                     c.button(CLOCK[i + 2].rect, label, false, focus == i + 2);
                 }
-                c.fill_rect(Rect { x: 196, y: 238, w: 468, h: 1 }, 0xff253040);
+                c.fill_rect(Rect { x: 196, y: 238, w: 468, h: 1 }, theme::BORDER);
 
                 c.label_h(196, 246, 450, 18, "Taskbar Clock Format", theme::TEXT, theme::PANEL);
                 c.label_h(196, 264, 450, 18, "Toggle between 12-hour and 24-hour display format", theme::MUTED, theme::PANEL);
@@ -1101,7 +1101,7 @@ impl AppHost {
                     true,
                     focus == 6,
                 );
-                c.fill_rect(Rect { x: 196, y: 322, w: 468, h: 1 }, 0xff253040);
+                c.fill_rect(Rect { x: 196, y: 322, w: 468, h: 1 }, theme::BORDER);
 
                 c.label_h(196, 330, 450, 22, self.messages[kind].as_str(), theme::MUTED, theme::PANEL);
             }
@@ -1114,8 +1114,8 @@ impl AppHost {
         c.label_h(196, 32, 450, 18, "Ethernet, wireless Wi-Fi, and network status", theme::MUTED, theme::PANEL);
 
         // Hero Ethernet Card container (x: 196, y: 52, w: 468, h: 80)
-        c.card(Rect { x: 196, y: 52, w: 468, h: 80 }, 0xff182230, 0xff253040);
-        c.badge(Rect { x: 206, y: 62, w: 32, h: 32 }, "ETH", 0xff69b7ff, 0xff1f3d5c, 0xff3b82f6);
+        c.card(Rect { x: 196, y: 52, w: 468, h: 80 }, 0xff282828, theme::BORDER);
+        c.badge(Rect { x: 206, y: 62, w: 32, h: 32 }, "ETH", theme::ACCENT, 0xff263344, theme::ACCENT);
 
         if let Some(n) = self.network {
             let (status_text, status_color) = match n.link {
@@ -1125,19 +1125,19 @@ impl AppHost {
                 4 => ("Link Failed", 0xfff87171),
                 _ => ("Uninitialized", theme::MUTED),
             };
-            c.label_h(246, 58, 200, 18, "Ethernet (LAN)", 0xffffffff, 0xff182230);
-            c.label_h(246, 76, 200, 18, status_text, status_color, 0xff182230);
+            c.label_h(246, 58, 200, 18, "Ethernet (LAN)", 0xffffffff, 0xff282828);
+            c.label_h(246, 76, 200, 18, status_text, status_color, 0xff282828);
             let _ = write!(text, "IPv4: {}   Gateway: {}", ipv4(n.ip).as_str(), ipv4(n.gateway).as_str());
-            c.label_h(206, 102, 448, 18, text.as_str(), theme::MUTED, 0xff182230);
+            c.label_h(206, 102, 448, 18, text.as_str(), theme::MUTED, 0xff282828);
             text.clear();
         } else {
-            c.label_h(246, 58, 200, 18, "Ethernet", 0xffffffff, 0xff182230);
-            c.label_h(246, 76, 200, 18, "Hardware unavailable", theme::MUTED, 0xff182230);
+            c.label_h(246, 58, 200, 18, "Ethernet", 0xffffffff, 0xff282828);
+            c.label_h(246, 76, 200, 18, "Hardware unavailable", theme::MUTED, 0xff282828);
         }
 
         // Wi-Fi Card container (x: 196, y: 138, w: 468, h: 42)
-        c.card(Rect { x: 196, y: 138, w: 468, h: 42 }, 0xff182230, 0xff253040);
-        c.badge(Rect { x: 204, y: 143, w: 32, h: 32 }, "WLAN", 0xff69b7ff, 0xff1f3d5c, 0xff3b82f6);
+        c.card(Rect { x: 196, y: 138, w: 468, h: 42 }, 0xff282828, theme::BORDER);
+        c.badge(Rect { x: 204, y: 143, w: 32, h: 32 }, "WLAN", theme::ACCENT, 0xff263344, theme::ACCENT);
 
         text.clear();
         if let Some(w) = self.wireless {
@@ -1158,8 +1158,8 @@ impl AppHost {
         } else {
             let _ = write!(text, "Wi-Fi: No adapter available");
         }
-        c.label_h(244, 142, 220, 18, text.as_str(), theme::TEXT, 0xff182230);
-        c.label_h(244, 160, 220, 18, "WPA2-PSK 802.11 wireless network", theme::MUTED, 0xff182230);
+        c.label_h(244, 142, 220, 18, text.as_str(), theme::TEXT, 0xff282828);
+        c.label_h(244, 160, 220, 18, "WPA2-PSK 802.11 wireless network", theme::MUTED, 0xff282828);
 
         let enabled = self.wireless.is_some();
         let busy = self.connecting_until.is_some() || self.wifi_prepare_pid.is_some();
@@ -1236,11 +1236,11 @@ impl AppHost {
         }
 
         // Join Network Card container (x: 196, y: 326, w: 468, h: 108)
-        c.card(Rect { x: 196, y: 326, w: 468, h: 108 }, 0xff182230, 0xff253040);
-        c.label_h(206, 332, 200, 18, "Network SSID", theme::TEXT, 0xff182230);
+        c.card(Rect { x: 196, y: 326, w: 468, h: 108 }, 0xff282828, theme::BORDER);
+        c.label_h(206, 332, 200, 18, "Network SSID", theme::TEXT, 0xff282828);
         c.entry(NETWORK[4].rect, self.ssid.as_str(), focus == 4 && enabled);
 
-        c.label_h(206, 384, 200, 18, "Security Key", theme::TEXT, 0xff182230);
+        c.label_h(206, 384, 200, 18, "Security Key", theme::TEXT, 0xff282828);
         let stars = [b'*'; 64];
         let masked = core::str::from_utf8(&stars[..self.password.len()]).unwrap_or("");
         c.entry(
@@ -1264,12 +1264,12 @@ impl AppHost {
             if busy { "Connecting..." } else { "Connect" },
             focus == 6,
         );
-        c.label_h(476, 384, 170, 18, "WPA2-PSK key", theme::MUTED, 0xff182230);
+        c.label_h(476, 384, 170, 18, "WPA2-PSK key", theme::MUTED, 0xff282828);
 
         // Status notification card
         let message = self.messages[1].as_str();
-        c.card(Rect { x: 196, y: 440, w: 468, h: 26 }, 0xff141a24, 0xff253040);
-        c.label_h(204, 444, 452, 18, message, if self.connecting_until.is_some() { 0xff69b7ff } else { theme::MUTED }, 0xff141a24);
+        c.card(Rect { x: 196, y: 440, w: 468, h: 26 }, 0xff242424, theme::BORDER);
+        c.label_h(204, 444, 452, 18, message, if self.connecting_until.is_some() { theme::ACCENT } else { theme::MUTED }, 0xff242424);
     }
 }
 impl Drop for AppHost {

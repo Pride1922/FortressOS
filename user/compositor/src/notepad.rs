@@ -7,11 +7,11 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 
-pub const NOTEPAD_BG: u32 = 0xff161b22;
-pub const NOTEPAD_FG: u32 = 0xffe6edf3;
-pub const NOTEPAD_HEADER: u32 = 0xff0d1117;
-pub const NOTEPAD_LINENUM: u32 = 0xff484f58;
-pub const NOTEPAD_CURSOR: u32 = 0xff58a6ff;
+pub const NOTEPAD_BG: u32 = 0xff252525;
+pub const NOTEPAD_FG: u32 = 0xffe0e0e0;
+pub const NOTEPAD_HEADER: u32 = 0xff1e1e1e;
+pub const NOTEPAD_LINENUM: u32 = 0xff666666;
+pub const NOTEPAD_CURSOR: u32 = 0xff007aff;
 
 pub struct Notepad {
     #[allow(dead_code)]
@@ -421,12 +421,17 @@ fn draw_char(w: &mut Window, px: usize, py: usize, ch: u8, fg: u32, bg: u32) {
     }
 }
 
-fn draw_text(w: &mut Window, mut px: usize, py: usize, text: &str, fg: u32, bg: u32) {
-    for c in text.chars() {
-        if px + 8 > w.rect.w.saturating_sub(2) {
-            break;
+fn draw_text(w: &mut Window, px: usize, py: usize, text: &str, fg: u32, bg: u32) {
+    use crate::window::theme;
+    let width = w.rect.w.saturating_sub(2);
+    let height = w.rect.h.saturating_sub(26);
+    let text_w = theme::text_width(text);
+    let max_w = text_w.min(width.saturating_sub(px));
+    let max_h = 18.min(height.saturating_sub(py));
+    for y in 0..max_h {
+        for x in 0..max_w {
+            let color = theme::text_pixel(text, x, y, fg, bg);
+            w.content[(py + y) * width + px + x] = color;
         }
-        draw_char(w, px, py, c as u8, fg, bg);
-        px += 8;
     }
 }

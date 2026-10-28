@@ -200,8 +200,14 @@ impl Window {
 
             // Interior client area fast path (covers 99% of window pixels)
             if y > TITLE_HEIGHT && (is_maximized || y < self.rect.h.saturating_sub(8)) {
-                if x == 0 || x == self.rect.w - 1 || (is_maximized && y == self.rect.h - 1) {
-                    return 0xff30363d;
+                if x == 0 {
+                    return 0xff484848; // 1px left highlight bevel
+                }
+                if x == self.rect.w - 1 {
+                    return 0xff181818; // 1px right dark shadow bevel
+                }
+                if is_maximized && y == self.rect.h - 1 {
+                    return 0xff141414; // 1px bottom dark shadow bevel
                 }
                 return self.content[(y - 25) * (self.rect.w - 2) + x - 1];
             }
@@ -228,7 +234,7 @@ impl Window {
                     return 0; // Transparent mask for rounded corners
                 }
 
-                // Sleek dark window border (1px outline and rounded rim)
+                // Sleek macOS dark window border with 3D 1-pixel bevel highlight and shadow
                 let is_border = x == 0
                     || y == 0
                     || x == self.rect.w - 1
@@ -248,7 +254,19 @@ impl Window {
                             + (y as i32 - (self.rect.h as i32 - 8)).pow(2)
                             >= 36);
                 if is_border {
-                    return 0xff30363d;
+                    if y == 0 {
+                        return 0xff555555; // 1px top highlight bevel
+                    } else if x == 0 {
+                        return 0xff484848; // 1px left highlight bevel
+                    } else if y == self.rect.h - 1 {
+                        return 0xff141414; // 1px bottom dark shadow bevel
+                    } else if x == self.rect.w - 1 {
+                        return 0xff181818; // 1px right dark shadow bevel
+                    } else if y < 8 {
+                        return 0xff505050; // top rounded arc highlight
+                    } else {
+                        return 0xff161616; // bottom rounded arc shadow
+                    }
                 }
 
                 // Bottom-right resize grip
@@ -256,14 +274,20 @@ impl Window {
                 let ry = self.rect.h.saturating_sub(y);
                 if rx <= 10 && ry <= 10 && (rx + ry == 6 || rx + ry == 9 || rx + ry == 12) {
                     return if hover == Some(Hit::Resize) {
-                        0xff58a6ff
+                        theme::ACCENT
                     } else {
-                        0xff484f58
+                        0xff484848
                     };
                 }
             } else {
-                if x == 0 || y == 0 || x == self.rect.w - 1 || y == self.rect.h - 1 {
-                    return 0xff30363d;
+                if y == 0 {
+                    return 0xff555555;
+                } else if x == 0 {
+                    return 0xff484848;
+                } else if y == self.rect.h - 1 {
+                    return 0xff141414;
+                } else if x == self.rect.w - 1 {
+                    return 0xff181818;
                 }
             }
 
@@ -272,30 +296,30 @@ impl Window {
             }
 
             let title_bg = if self.is_focused {
-                0xff1c2128
+                0xff2d2d2d // macOS dark mode window surface
             } else {
-                0xff161b22
+                0xff242424 // inactive window surface
             };
 
-            // Windows-style top-right window controls (Close, Maximize/Restore, Minimize)
+            // Modern top-right window controls (Close, Maximize/Restore, Minimize)
             if x >= self.rect.w.saturating_sub(108) {
                 let is_hover = |btn: Hit| hover == Some(btn);
                 let fg = |btn: Hit| {
                     if is_hover(btn) {
                         0xffffffff
                     } else if self.is_focused {
-                        0xffc9d1d9
+                        theme::TEXT
                     } else {
-                        0xff8b949e
+                        theme::MUTED
                     }
                 };
 
                 // Close button (x in [w - 36, w - 1))
                 if x >= self.rect.w.saturating_sub(36) {
                     let bg = if is_hover(Hit::Close) {
-                        0xffe81123 // Windows red hover
+                        0xffe81123 // red hover
                     } else if y == 1 {
-                        0xff3d444d // top highlight when not hovered
+                        0xff404040 // top highlight when not hovered
                     } else {
                         title_bg
                     };
@@ -316,9 +340,9 @@ impl Window {
                 // Maximize / Restore button (x in [w - 72, w - 36))
                 if x >= self.rect.w.saturating_sub(72) {
                     let bg = if is_hover(Hit::Maximize) {
-                        0xff2d333b // Windows dark hover
+                        0xff3a3a3a // macOS dark hover
                     } else if y == 1 {
-                        0xff3d444d
+                        0xff404040
                     } else {
                         title_bg
                     };
@@ -326,7 +350,7 @@ impl Window {
                     let icon_fg = fg(Hit::Maximize);
 
                     if is_maximized {
-                        // Windows "Restore" overlapping squares icon
+                        // "Restore" overlapping squares icon
                         let in_back = (bx >= 15 && bx <= 23 && y == 7)
                             || (bx == 23 && y >= 7 && y <= 14)
                             || (bx >= 20 && bx <= 23 && y == 14)
@@ -337,7 +361,7 @@ impl Window {
                             return icon_fg;
                         }
                     } else {
-                        // Windows "Maximize" single square icon (10x10 outline: 13..=22, 7..=16)
+                        // "Maximize" single square icon (10x10 outline: 13..=22, 7..=16)
                         let in_square = (bx >= 13 && bx <= 22 && (y == 7 || y == 16))
                             || (y >= 7 && y <= 16 && (bx == 13 || bx == 22));
                         if in_square {
@@ -349,9 +373,9 @@ impl Window {
 
                 // Minimize button (x in [w - 108, w - 72))
                 let bg = if is_hover(Hit::Minimize) {
-                    0xff2d333b // Windows dark hover
+                    0xff3a3a3a // macOS dark hover
                 } else if y == 1 {
-                    0xff3d444d
+                    0xff404040
                 } else {
                     title_bg
                 };
@@ -365,7 +389,7 @@ impl Window {
 
             // Titlebar top 1px subtle glass highlight for non-button title area
             if y == 1 {
-                return 0xff3d444d;
+                return 0xff404040;
             }
 
             // Left-aligned clean title with Windows styling
@@ -1715,7 +1739,8 @@ impl WindowManager {
                                 && (w.saved_rect.is_some() || wy < w.rect.h.saturating_sub(8))
                             {
                                 if clip.x <= w.rect.x {
-                                    s.pixels[y * s.width + w.rect.x] = 0xff30363d;
+                                    s.pixels[y * s.width + w.rect.x] =
+                                        if w.id >= 3 { 0xff484848 } else { 0xff30363d };
                                 }
                                 let src_off =
                                     (wy - 25) * (w.rect.w - 2) + (clip_start_x - (w.rect.x + 1));
@@ -1724,7 +1749,8 @@ impl WindowManager {
                                 s.pixels[dst_off..dst_off + copy_len]
                                     .copy_from_slice(&w.content[src_off..src_off + copy_len]);
                                 if clip.x + clip.w >= w.rect.x + w.rect.w {
-                                    s.pixels[y * s.width + w.rect.x + w.rect.w - 1] = 0xff30363d;
+                                    s.pixels[y * s.width + w.rect.x + w.rect.w - 1] =
+                                        if w.id >= 3 { 0xff181818 } else { 0xff30363d };
                                 }
                                 continue;
                             }
@@ -1863,11 +1889,11 @@ impl WindowManager {
                             let ly = (y - tip.y) / scale;
                             let is_tip_border = lx == 0 || lx == label_w / scale - 1 || ly == 0 || ly == 23;
                             s.pixels[y * s.width + x] = if is_tip_border {
-                                0xff30363d
+                                theme::BORDER
                             } else if lx >= 10 && (4..20).contains(&ly) {
-                                theme::text_pixel(label, lx - 10, ly - 4, 0xffffffff, 0xff1c2128)
+                                theme::text_pixel(label, lx - 10, ly - 4, 0xffffffff, 0xff282828)
                             } else {
-                                0xff1c2128
+                                0xff282828
                             };
                         }
                     }
@@ -1915,10 +1941,10 @@ impl WindowManager {
                                 || py == 0
                                 || py == bh - 1;
                             s.pixels[y * s.width + x] = if is_border {
-                                0xff30363d
+                                theme::BORDER
                             } else if py < 24 {
                                 if py == 23 {
-                                    0xff30363d
+                                    theme::BORDER
                                 } else {
                                     let in_tower = (9..=17).contains(&px)
                                         && (6..=17).contains(&py)
@@ -1926,11 +1952,11 @@ impl WindowManager {
                                     if in_tower {
                                         0xff38bdf8
                                     } else if px >= 24 && px < 110 && (4..20).contains(&py) {
-                                        theme::text_pixel("FortressOS", px - 24, py - 4, 0xffe6edf3, 0xff161b22)
+                                        theme::text_pixel("FortressOS", px - 24, py - 4, theme::TEXT, 0xff202020)
                                     } else if px >= bw.saturating_sub(44) && px < bw.saturating_sub(8) && (4..20).contains(&py) {
-                                        theme::text_pixel("v0.2", px - bw.saturating_sub(44), py - 4, 0xff8b949e, 0xff161b22)
+                                        theme::text_pixel("v0.2", px - bw.saturating_sub(44), py - 4, theme::MUTED, 0xff202020)
                                     } else {
-                                        0xff161b22
+                                        0xff202020
                                     }
                                 }
                             } else {
@@ -1938,9 +1964,9 @@ impl WindowManager {
                                 let item_y = (py - 24) % 22;
                                 let is_hover = self.menu_hover == Some(item_idx);
                                 let item_bg = if is_hover && px >= 4 && px < bw - 4 {
-                                    0xff28313d
+                                    0xff3a3a3a
                                 } else {
-                                    0xff1c2128
+                                    0xff282828
                                 };
 
                                 // Application Icon (14x14 at px in 10..24, item_y in 4..18)
@@ -2049,7 +2075,7 @@ impl WindowManager {
                                     } else if is_danger {
                                         0xffff7b72
                                     } else {
-                                        0xffe6edf3
+                                        theme::TEXT
                                     };
                                     if !label.is_empty() && px >= 28 && px < bw - 8 && (3..19).contains(&item_y) {
                                         theme::text_pixel(label, px - 28, item_y - 3, fg, item_bg)
@@ -2075,20 +2101,20 @@ impl WindowManager {
                             let py = (y - menu_rect.y) / scale;
                             let is_border = px == 0 || px == bw - 1 || py == 0 || py == bh - 1;
                             s.pixels[y * s.width + x] = if is_border {
-                                0xff30363d
+                                theme::BORDER
                             } else if py == 45 || py == 68 {
                                 if px >= 8 && px < bw - 8 {
-                                    0xff28313d
+                                    theme::BORDER
                                 } else {
-                                    0xff1c2128
+                                    0xff282828
                                 }
                             } else {
                                 let item = Self::context_item_at(px, py);
                                 let is_hover = item.is_some() && item == self.context_hover;
                                 let item_bg = if is_hover && px >= 4 && px < bw - 4 {
-                                    0xff28313d
+                                    0xff3a3a3a
                                 } else {
-                                    0xff1c2128
+                                    0xff282828
                                 };
 
                                 let (item_idx, item_y) = match item {
@@ -2192,7 +2218,7 @@ impl WindowManager {
                                         4 => "Personalize",
                                         _ => "",
                                     };
-                                    let fg = if is_hover { 0xffffffff } else { 0xffe6edf3 };
+                                    let fg = if is_hover { 0xffffffff } else { theme::TEXT };
                                     if !label.is_empty() && px >= 28 && px < bw - 6 && (2..18).contains(&item_y) {
                                         theme::text_pixel(label, px - 28, item_y - 2, fg, item_bg)
                                     } else {

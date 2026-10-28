@@ -265,7 +265,7 @@ def run_test(firmware):
             start = len(guest.data)
             guest.send('sudo /bin/compositor')
             guest.wait(lambda s: '[OK] Window server ready; polling' in s, start, timeout=20)
-            panel = bytes.fromhex('161d29')
+            panel = bytes.fromhex('1e1e1e')
             _, _, desktop = wait_image(guest, lambda iw, ih, rgb:
                 pixel(rgb, iw, 200, 10) == panel and pixel(rgb, iw, 80, 120) != border)
             # Verify the original wallpaper is loaded, and later survives a
@@ -290,7 +290,7 @@ def run_test(firmware):
             # this SMP=1 guest. Check the full proportional glyph and margins.
             atlas = (ROOT / 'user/compositor/assets/ui-alpha.bin').read_bytes()
             advance = (ROOT / 'user/compositor/assets/ui-advances.bin').read_bytes()[ord('1') - 32]
-            foreground = bytes.fromhex('e7edf6')
+            foreground = bytes.fromhex('e0e0e0')
             for gy in range(18):
                 for gx in range(advance):
                     a = atlas[(ord('1') - 32) * 16 * 18 + gy * 16 + gx]
@@ -302,14 +302,14 @@ def run_test(firmware):
             # refreshes, then restore. Timer repaints must preserve save-under.
             move_to(80 + 520 - 54, 132); button(True); button(False)
             move_to(700, 400)
-            wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 8, 28) == bytes.fromhex('30363d'))
+            wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 8, 28) == bytes.fromhex('555555'))
             time.sleep(2.1)
             _, _, maximized = guest.screenshot()
             assert pixel(maximized, w, 700, 400) == outline, 'idle refresh erased cursor'
             move_to(w - 62, 40); button(True); button(False)
             move_to(700, 400)
             # The outer corner is transparent in restored rounded windows.
-            wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 88, 120) == bytes.fromhex('30363d'))
+            wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 88, 120) == bytes.fromhex('555555'))
             wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, ink_x, ink_y) == ink_rgb)
             # A right click must not terminate the normal desktop.
             start = len(guest.data)
@@ -363,7 +363,7 @@ def run_hidpi_test(firmware):
             guest.send('sudo /bin/compositor')
             guest.wait(lambda s: '[OK] Window server ready; polling' in s, timeout=20)
             w,h,_ = wait_image(guest, lambda iw,ih,rgb: (iw,ih) == (1920,1080)
-                              and pixel(rgb,iw,300,10) == bytes.fromhex('161d29'))
+                              and pixel(rgb,iw,300,10) == bytes.fromhex('1e1e1e'))
             pos = [w//2,h//2]
             def move(x,y):
                 while pos != [x,y]:
@@ -378,12 +378,12 @@ def run_hidpi_test(firmware):
                     time.sleep(.1)
             move((w-256)//2 + 3*64+32,h-66+20); click()
             move(1300,700)
-            wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,88,120) == bytes.fromhex('30363d'))
+            wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,88,120) == bytes.fromhex('555555'))
             for _ in range(3):
                 move(80 + 520 - 54, 132); click(); move(1300, 700)
-                wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 8, 28) == bytes.fromhex('30363d'))
+                wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 8, 28) == bytes.fromhex('555555'))
                 move(w - 62, 40); click(); move(1300, 700)
-                wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 88, 120) == bytes.fromhex('30363d'))
+                wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, 88, 120) == bytes.fromhex('555555'))
             guest.qmp.execute('screendump',{'filename':str(ROOT/'build'/f'compositor-hidpi-{firmware}.ppm')})
             move(30,12); click(); move(50,168); click()
             guest.wait(lambda s: '[COMPOSITOR] Event loop stopped' in s, timeout=10)

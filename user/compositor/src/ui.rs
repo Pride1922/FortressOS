@@ -188,11 +188,11 @@ impl<'a> Canvas<'a> {
         }
     }
     pub fn button_accent(&mut self, r: Rect, text: &str, focused: bool) {
-        self.box_text(r, text, 0xffffffff, 0xff2563eb, true, focused);
+        self.box_text(r, text, 0xffffffff, theme::ACCENT, true, focused);
     }
     pub fn sidebar_nav(&mut self, r: Rect, text: &str, selected: bool, focused: bool) {
-        let bg = if selected { 0xff1e324a } else { 0xff111620 };
-        let fg = if selected { 0xffffffff } else { 0xff9fb0c7 };
+        let bg = if selected { 0xff363636 } else { 0xff202020 };
+        let fg = if selected { 0xffffffff } else { theme::MUTED };
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -440,7 +440,7 @@ impl<'a> Canvas<'a> {
         }
     }
     pub fn entry(&mut self, r: Rect, text: &str, focused: bool) {
-        self.box_text(r, text, theme::TEXT, 0xff101722, true, focused);
+        self.box_text(r, text, theme::TEXT, 0xff1e1e1e, true, focused);
     }
     fn box_text(
         &mut self,
