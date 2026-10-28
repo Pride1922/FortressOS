@@ -73,7 +73,9 @@ bounded copied storage; status is a pure snapshot. After actual-code host and
 BIOS/UEFI × SMP=1/4/8 BSP/AP verification, the temporary SYS_SYSINFO CPU-count
 restriction is removed. Controls require an available adapter on every CPU
 count. QEMU mock-radio ownership tests do not establish Intel radio acceptance;
-Dell scan/connect/status/disconnect and handover retesting remain pending.
+Dell scan/connect, wrong-password retry, disconnect and Ethernet/Wi-Fi handover
+retesting was user-confirmed complete on 2026-10-28. This is manual user-supplied
+radio evidence, separate from the QEMU ownership tests and PKG acceptance.
 See the [owner audit](../roadmap/wifi-cpu0-owner.md).
 
 Date & Time uses the shared C timezone/TZif engine and system zone database,
@@ -93,7 +95,8 @@ operation runs in the renderer.
 ## Package boundary
 
 The updatable package identity is `fortress-desktop`; its command is **desktop**
-(`/bin/desktop` after an admitted package activation). Keep the base-owned
+(`/usr/bin/desktop` with the existing executor's package namespace after an
+admitted activation). Keep the base-owned
 `/bin/compositor` as a recovery fallback: PKG-1 must not overwrite base-owned
 commands. Font assets are embedded in the ELF. Existing platform wallpaper and
 timezone data are optional/runtime base resources with explicit unavailable
@@ -110,7 +113,7 @@ signing, enrollment, catalog approval or root admission.
 Production PKG enrollment/key delivery is still separate from the test backend.
 This change does not enable it or inject test keys. Once an approved catalog
 and enrolled root support the package, stop the desktop to the console, install
-the approved package using PKG, then launch `/bin/desktop`; subsequent app API 1
+the approved package using PKG, then launch `/usr/bin/desktop`; subsequent app API 1
 changes can ship in the same versioned ELF. Uninstall retains the base recovery
 compositor. A future external app protocol needs explicit surface ownership,
 credential/input isolation and version negotiation; this built-in API does not

@@ -216,7 +216,7 @@ all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 live: all
 include src/lib/crypto/crypto.mk
 include user/pkg/pkg.mk
-$(BUILD_DIR)/kernel/pkg_service.o $(BUILD_DIR)/kernel/pkg_owner.o $(BUILD_DIR)/kernel/pkg_backend.o $(BUILD_DIR)/fs/pkg_plan.o: CFLAGS += -Os -fstack-usage -Wframe-larger-than=1024
+$(BUILD_DIR)/kernel/pkg_service.o $(BUILD_DIR)/kernel/pkg_owner.o $(BUILD_DIR)/kernel/pkg_backend.o $(BUILD_DIR)/fs/pkg_plan.o $(BUILD_DIR)/fs/pkg_enrollment.o $(BUILD_DIR)/fs/pkg_trust_floor.o: CFLAGS += -Os -fstack-usage -Wframe-larger-than=1024
 include src/lib/tls/tls.mk
 
 # C_SRCS/OBJS above automatically include src/fs/pipe.c.
@@ -1120,6 +1120,10 @@ test-awk: $(BOOTABLE_ISO) test-awk-host
 .PHONY: test-pkg-plan-host
 test-pkg-plan-host: scripts/test_pkg_plan.py tests/pkg_plan_candidate.c tests/pkg_plan_candidate.h tests/pkg_plan_host.c
 	@python3 scripts/test_pkg_plan.py
+
+.PHONY: test-pkg-repository-host
+test-pkg-repository-host: scripts/test_pkg_repository.py scripts/pkg_repository.py
+	@python3 scripts/test_pkg_repository.py
 
 test-pkg-format-host:
 	@mkdir -p $(BUILD_DIR)/pkg-format

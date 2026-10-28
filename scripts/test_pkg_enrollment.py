@@ -195,7 +195,7 @@ def main():
     source = out/'source'; source.mkdir()
     paths = [p for folder in ('src/include', 'src/lib/crypto', 'user/tools')
              for p in pathlib.Path(folder).rglob('*') if p.is_file() and p.suffix in ('.h', '.c')]
-    paths += [pathlib.Path(p) for p in ('tests/pkg_enrollment_candidate.h',
+    paths += [pathlib.Path(p) for p in ('src/fs/pkg_engine_config.h', 'src/fs/pkg_enrollment.h', 'src/fs/pkg_enrollment.c', 'tests/pkg_enrollment_candidate.h',
               'tests/pkg_enrollment_candidate.c', 'tests/pkg_enrollment_host.c',
               'scripts/test_pkg_enrollment.py')]
     guards = paths+[pathlib.Path(p) for p in ('AGENTS.md', 'README.md', 'assets/ssl/ca-certificates.sha256')]
