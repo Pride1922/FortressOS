@@ -252,6 +252,193 @@ impl<'a> Canvas<'a> {
             focused && enabled,
         );
     }
+    pub fn wallpaper_card(
+        &mut self,
+        r: Rect,
+        title: &str,
+        is_wallpaper: bool,
+        selected: bool,
+        focused: bool,
+    ) {
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(width) = r.w.checked_mul(self.scale) else { return; };
+        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let bg = if selected { 0xff1c2e44 } else { 0xff161e2a };
+        let border = if selected {
+            0xff3b82f6
+        } else if focused {
+            0xff69b7ff
+        } else {
+            0xff2a3648
+        };
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let is_border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
+                let p = if is_border {
+                    border
+                } else if lx >= 6 && lx < 28 && ly >= 4 && ly < 24 {
+                    let sx = lx - 6;
+                    let sy = ly - 4;
+                    let is_swatch_border = sx == 0 || sy == 0 || sx == 21 || sy == 19;
+                    if is_swatch_border {
+                        if selected { 0xff3b82f6 } else { 0xff3a485c }
+                    } else if is_wallpaper {
+                        if sy < 10 {
+                            if (sx == 4 && sy == 3) || (sx == 16 && sy == 5) {
+                                0xffffffff
+                            } else {
+                                0xff0f1b2b
+                            }
+                        } else if sy == 10 {
+                            0xff38bdf8
+                        } else {
+                            0xff09111c
+                        }
+                    } else {
+                        0xff080a0e
+                    }
+                } else if selected && lx >= 20 && lx <= 25 && ly >= 6 && ly <= 11 {
+                    0xff3b82f6
+                } else if lx >= 34 && lx < r.w.saturating_sub(6) && ly >= 5 && ly < 23 {
+                    let fg = if selected { 0xffffffff } else { theme::TEXT };
+                    theme::text_pixel(title, lx - 34, ly - 5, fg, bg)
+                } else {
+                    bg
+                };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, p);
+                }
+            }
+        }
+    }
+    pub fn wifi_row(
+        &mut self,
+        r: Rect,
+        ssid: &str,
+        rssi: i8,
+        security: u8,
+        connected: bool,
+        selected: bool,
+        focused: bool,
+        enabled: bool,
+    ) {
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(width) = r.w.checked_mul(self.scale) else { return; };
+        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let bg = if !enabled {
+            theme::PANEL
+        } else if selected {
+            0xff1e385b
+        } else if focused {
+            0xff232e3e
+        } else {
+            0xff182230
+        };
+        let border = if !enabled {
+            0xff222a36
+        } else if selected {
+            0xff3b82f6
+        } else if focused {
+            0xff69b7ff
+        } else {
+            0xff2a3648
+        };
+        let fg = if !enabled {
+            theme::MUTED
+        } else if selected {
+            0xffffffff
+        } else {
+            theme::TEXT
+        };
+        let sig_bars = match rssi {
+            -55..=127 => 4,
+            -67..=-56 => 3,
+            -75..=-68 => 2,
+            _ => 1,
+        };
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let is_border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
+                let p = if is_border {
+                    border
+                } else if lx >= 10 && lx < 22 && ly >= 6 && ly < 18 {
+                    let bar_idx = (lx - 10) / 3;
+                    let bar_x = (lx - 10) % 3;
+                    let bar_h = (bar_idx + 1) * 3;
+                    let bar_y_start = 18 - bar_h;
+                    if bar_x < 2 && ly >= bar_y_start && ly < 18 {
+                        if enabled && bar_idx < sig_bars {
+                            0xff69b7ff
+                        } else {
+                            0xff334155
+                        }
+                    } else {
+                        bg
+                    }
+                } else if security != 0 && lx >= 26 && lx < 34 && ly >= 6 && ly < 18 {
+                    let sx = lx - 26;
+                    let sy = ly - 6;
+                    let is_shackle = (sx == 2 || sx == 5) && (sy >= 2 && sy <= 5)
+                        || (sx >= 3 && sx <= 4 && sy == 1);
+                    let is_body = sx >= 1 && sx <= 6 && sy >= 5 && sy <= 10;
+                    let is_keyhole = sx == 3 && sy >= 7 && sy <= 8;
+                    if is_keyhole {
+                        bg
+                    } else if is_shackle || is_body {
+                        if enabled { 0xff9fb0c7 } else { theme::MUTED }
+                    } else {
+                        bg
+                    }
+                } else if lx >= 38 && lx < 240 && ly >= 3 && ly < 21 {
+                    theme::text_pixel(ssid, lx - 38, ly - 3, fg, bg)
+                } else if connected && lx >= 244 && lx < 330 && ly >= 3 && ly < 21 {
+                    if lx >= 246 && lx <= 250 && ly >= 9 && ly <= 13 {
+                        0xff4ade80
+                    } else if lx >= 256 {
+                        theme::text_pixel("Connected", lx - 256, ly - 3, 0xff4ade80, bg)
+                    } else {
+                        bg
+                    }
+                } else if enabled && lx >= 340 && lx < 400 && ly >= 3 && ly < 21 {
+                    let sig_name = match sig_bars {
+                        4 => "Excellent",
+                        3 => "Good",
+                        2 => "Fair",
+                        _ => "Weak",
+                    };
+                    theme::text_pixel(sig_name, lx - 340, ly - 3, theme::MUTED, bg)
+                } else if enabled && lx >= 410 && lx < 450 && ly >= 3 && ly < 21 {
+                    let sec_name = if security == 0 { "Open" } else { "WPA2" };
+                    theme::text_pixel(sec_name, lx - 410, ly - 3, theme::MUTED, bg)
+                } else {
+                    bg
+                };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, p);
+                }
+            }
+        }
+    }
     pub fn entry(&mut self, r: Rect, text: &str, focused: bool) {
         self.box_text(r, text, theme::TEXT, 0xff101722, true, focused);
     }

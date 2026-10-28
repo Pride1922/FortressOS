@@ -112,6 +112,23 @@ fn built_in_apps_share_focus_widgets_and_incremental_damage() {
         .map(|r| r.w * r.h)
         .sum();
     assert!(area < 30_000, "selection repainted entire window: {area}");
+    // Interactive wallpaper & clock switching in real-time
+    host.pointer(7, 360, 190, &mut wm, &mut s); // Plain Black
+    assert!(!host.draft.wallpaper);
+    assert!(host.changed);
+    host.changed = false;
+    host.pointer(7, 220, 190, &mut wm, &mut s); // Hello World
+    assert!(host.draft.wallpaper);
+    assert!(host.changed);
+    host.changed = false;
+    host.pointer(7, 330, 275, &mut wm, &mut s); // 12-Hour
+    assert!(!host.draft.clock_24h);
+    assert!(host.changed);
+    host.changed = false;
+    host.pointer(7, 220, 275, &mut wm, &mut s); // 24-Hour
+    assert!(host.draft.clock_24h);
+    assert!(host.changed);
+    host.changed = false;
     host.pointer(7, 50, 110, &mut wm, &mut s); // Shared Network navigation.
     assert_eq!(wm.focused_window_id(), Some(7));
     assert_eq!(host.apps[0].kind, 1);
