@@ -113,20 +113,21 @@ fn built_in_apps_share_focus_widgets_and_incremental_damage() {
         .sum();
     assert!(area < 30_000, "selection repainted entire window: {area}");
     host.pointer(7, 50, 110, &mut wm, &mut s); // Shared Network navigation.
-    assert_eq!(wm.focused_window_id(), Some(8));
+    assert_eq!(wm.focused_window_id(), Some(7));
+    assert_eq!(host.apps[0].kind, 1);
     // Explicit UP/device fixture; no kernel/hardware call is made by typing.
     host.wireless = Some(sys::WirelessInfo {
         mac: [2, 0, 0, 0, 0, 1],
         ..Default::default()
     });
-    host.pointer(8, 250, 360, &mut wm, &mut s);
+    host.pointer(7, 250, 360, &mut wm, &mut s);
     for b in b"example" {
-        host.key(8, *b, &mut wm, &mut s);
+        host.key(7, *b, &mut wm, &mut s);
     }
     assert_eq!(host.ssid.as_str(), "example");
-    host.key(8, 27, &mut wm, &mut s);
-    assert!(!wm.windows.iter().any(|w| w.id == 8));
-    host.open(8, &mut wm, &mut s);
+    host.key(7, 27, &mut wm, &mut s);
+    assert!(!wm.windows.iter().any(|w| w.id == 7));
+    host.open(7, &mut wm, &mut s);
     flush(&mut s);
     host.render(8, &mut wm, &mut s);
     assert!(
@@ -212,7 +213,7 @@ fn wifi_controls_require_an_adapter_on_every_cpu_count() {
     let mut s = surface::Surface::new(1280, 800).unwrap();
     let mut wm = window::WindowManager::desktop();
     let mut host = desktop::AppHost::new(preferences::Preferences::default());
-    host.open(8, &mut wm, &mut s);
+    host.open(7, &mut wm, &mut s);
     host.pointer(8, 500, 155, &mut wm, &mut s); // Missing adapter returns before syscall.
     assert!(host.status.as_str().contains("No Wi-Fi adapter"));
     host.pointer(8, 590, 155, &mut wm, &mut s); // No adapter.

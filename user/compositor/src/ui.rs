@@ -190,7 +190,7 @@ impl<'a> Canvas<'a> {
     pub fn button_accent(&mut self, r: Rect, text: &str, focused: bool) {
         self.box_text(r, text, 0xffffffff, 0xff2563eb, true, focused);
     }
-    pub fn sidebar_nav(&mut self, r: Rect, icon: &str, text: &str, selected: bool, focused: bool) {
+    pub fn sidebar_nav(&mut self, r: Rect, text: &str, selected: bool, focused: bool) {
         let bg = if selected { 0xff1e324a } else { 0xff111620 };
         let fg = if selected { 0xffffffff } else { 0xff9fb0c7 };
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
@@ -205,8 +205,7 @@ impl<'a> Canvas<'a> {
             .saturating_sub(top)
             .min(height);
         let text_y = r.h.saturating_sub(18) / 2;
-        let icon_x = 10;
-        let text_x = 28;
+        let text_x = 16;
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
@@ -216,8 +215,6 @@ impl<'a> Canvas<'a> {
                     theme::ACCENT
                 } else if focused && (x == 0 || y == 0 || x + 1 == width || y + 1 == height) {
                     theme::ACCENT
-                } else if lx >= icon_x && lx < icon_x + 14 && ly >= text_y && ly < text_y + 18 {
-                    theme::text_pixel(icon, lx - icon_x, ly - text_y, if selected { theme::ACCENT } else { fg }, bg)
                 } else if lx >= text_x && lx < r.w && ly >= text_y && ly < text_y + 18 {
                     theme::text_pixel(text, lx - text_x, ly - text_y, fg, bg)
                 } else {

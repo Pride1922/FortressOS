@@ -161,7 +161,7 @@ pub fn parse_scan(bytes: &[u8]) -> Option<Vec<AccessPoint>> {
 pub struct AppHost {
     pub preferences: Preferences,
     pub draft: Preferences,
-    apps: [Builtin; 3],
+    pub apps: [Builtin; 3],
     pub status: Text<112>,
     messages: [Text<112>; 3],
     message_page: usize,
@@ -301,6 +301,26 @@ impl AppHost {
         let Some(index) = ui::APPS.iter().position(|a| a.id == id) else {
             return;
         };
+        // If any built-in settings window (7, 8, or 9) is already open,
+        // reuse the open window and switch its page in-place!
+        if let Some(open_id) = [7, 8, 9].iter().copied().find(|&oid| wm.windows.iter().any(|w| w.id == oid)) {
+            let open_idx = ui::APPS.iter().position(|a| a.id == open_id).unwrap_or(0);
+            self.apps[open_idx].kind = index;
+            self.apps[open_idx].focus = 0;
+            self.apps[open_idx].scroll = 0;
+            self.apps[open_idx].size = (0, 0);
+            self.message_page = index;
+            wm.unminimize_and_raise(open_id, s);
+            #[cfg(not(test))]
+            if index == 1 {
+                self.wireless = sys::wireless_info();
+                if self.scan_after.is_none() && self.connecting_until.is_none() {
+                    self.scan();
+                }
+            }
+            self.render(open_id, wm, s);
+            return;
+        }
         let descriptor = self.apps[index].descriptor();
         self.message_page = index;
         if !wm.windows.iter().any(|w| w.id == id) {
@@ -423,16 +443,34 @@ impl AppHost {
         }
     }
     fn command(&mut self, index: usize, command: u16, wm: &mut WindowManager, s: &mut Surface) {
+        let kind = self.apps[index].kind;
+        let id = ui::APPS[index].id;
         if (100..103).contains(&command) {
-            self.open(ui::APPS[command as usize - 100].id, wm, s);
+            let target = (command - 100) as usize;
+            if self.apps[index].kind != target {
+                self.apps[index].kind = target;
+                self.apps[index].focus = 0;
+                self.apps[index].scroll = 0;
+                self.apps[index].size = (0, 0);
+                if target == 1 {
+                    #[cfg(not(test))]
+                    {
+                        self.wireless = sys::wireless_info();
+                        if self.scan_after.is_none() && self.connecting_until.is_none() {
+                            self.scan();
+                        }
+                    }
+                }
+                self.render(id, wm, s);
+            }
             return;
         }
-        self.message_page = index;
-        if index == 1 && self.wifi_prepare_pid.is_some() { return; }
-        if index == 1 && self.connecting_until.is_some() && command != 2 {
+        self.message_page = kind;
+        if kind == 1 && self.wifi_prepare_pid.is_some() { return; }
+        if kind == 1 && self.connecting_until.is_some() && command != 2 {
             return;
         }
-        if index == 1 && matches!(command, 1 | 2 | 7) && self.wireless.is_none() {
+        if kind == 1 && matches!(command, 1 | 2 | 7) && self.wireless.is_none() {
             self.password.clear();
             self.message("No Wi-Fi adapter is available.");
             return;
@@ -440,10 +478,10 @@ impl AppHost {
         if command & 0x100 != 0 {
             let byte = command as u8;
             let focus = self.apps[index].controls()[self.apps[index].focus].id;
-            if index == 1 && self.wireless.is_none() {
+            if kind == 1 && self.wireless.is_none() {
                 return;
             }
-            match (index, focus) {
+            match (kind, focus) {
                 (1, 5) => {
                     if self.ssid.edit(byte) {
                         self.selected = usize::MAX;
@@ -461,7 +499,7 @@ impl AppHost {
             }
             return;
         }
-        match index {
+        match kind {
             0 => match command {
                 1..=3 => self.draft.scale = (command - 1) as u8,
                 4 => self.draft.wallpaper = true,
@@ -914,15 +952,14 @@ impl AppHost {
         c.fill_rect(Rect { x: 12, y: 48, w: 156, h: 1 }, 0xff1e2634);
 
         let nav_items = [
-            ("P", "Personalization"),
-            ("N", "Network & Wi-Fi"),
-            ("T", "Date & Time"),
+            "Personalization",
+            "Network & Internet",
+            "Time & Language",
         ];
         for (i, control) in NAV.iter().enumerate() {
             c.sidebar_nav(
                 control.rect,
-                nav_items[i].0,
-                nav_items[i].1,
+                nav_items[i],
                 i == index,
                 false,
             );
@@ -933,10 +970,11 @@ impl AppHost {
         }
     }
     fn draw(&self, index: usize, c: &mut Canvas) {
-        self.draw_sidebar(index, c);
+        let kind = self.apps[index].kind;
+        self.draw_sidebar(kind, c);
         let focus = self.apps[index].focus;
         let mut text = Text::<112>::default();
-        match index {
+        match kind {
             0 => {
                 c.label_h(196, 12, 450, 20, "Personalization", theme::TEXT, theme::PANEL);
                 c.label_h(196, 32, 450, 18, "Display scaling, wallpaper artwork, and clock format", theme::MUTED, theme::PANEL);
@@ -988,7 +1026,7 @@ impl AppHost {
                 c.button_accent(APPEARANCE[7].rect, "Apply & Save", focus == 7);
                 c.button(APPEARANCE[8].rect, "Use Defaults", false, focus == 8);
 
-                c.label_h(196, 350, 450, 18, self.messages[index].as_str(), theme::MUTED, theme::PANEL);
+                c.label_h(196, 350, 450, 18, self.messages[kind].as_str(), theme::MUTED, theme::PANEL);
                 c.label_h(196, 370, 450, 18, "Preferences persist on installed roots across reboots.", theme::MUTED, theme::PANEL);
             }
             1 => self.draw_network(c, focus),
@@ -1033,7 +1071,7 @@ impl AppHost {
                 );
                 c.fill_rect(Rect { x: 196, y: 322, w: 468, h: 1 }, 0xff253040);
 
-                c.label_h(196, 330, 450, 22, self.messages[index].as_str(), theme::MUTED, theme::PANEL);
+                c.label_h(196, 330, 450, 22, self.messages[kind].as_str(), theme::MUTED, theme::PANEL);
             }
         }
     }
