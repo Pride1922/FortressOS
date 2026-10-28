@@ -243,7 +243,16 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     bool found_bssid = false;
     if (bssid && (bssid[0] | bssid[1] | bssid[2] | bssid[3] | bssid[4] | bssid[5])) {
         memcpy(s_target_bssid, bssid, 6);
-        const wlan_bss_entry_t *entry = wlan_bss_table_find(&s_bss_table, ssid);
+        /* A GUI-selected BSSID may no longer be the strongest AP for this
+         * SSID. Its PHY channel/timing must come from that exact AP, not the
+         * current strongest same-name entry (the unpinned CLI policy). */
+        const wlan_bss_entry_t *entry = NULL;
+        for (uint32_t i=0;i<s_bss_table.count;++i) {
+            const wlan_bss_entry_t *candidate=&s_bss_table.entries[i];
+            if (!memcmp(candidate->bssid,bssid,6) && !strcmp(candidate->ssid,ssid)) {
+                entry=candidate; break;
+            }
+        }
         if (entry) {
             s_current_channel = entry->channel;
             s_current_rssi = entry->rssi;
@@ -344,20 +353,19 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     }
     spin_unlock_irqrestore(&s_wlan_lock, irq);
 
-    /* Synchronous real-time RX pump (restored from 34ffbea): the firmware only stays
-     * on-channel for the session-protection Time Event window, so Auth/Assoc/EAPOL M1-M3
-     * must be serviced immediately. Bounded; exits as soon as the link settles. Retries
-     * and the overall timeout continue autonomously in wlan_service_link. */
-    for (uint32_t step = 0; step < 600000u; step++) {
-        wlan_drain_hw_rx();
-        irq = spin_lock_irqsave(&s_wlan_lock);
-        wlan_state_t st = s_wlan_state;
-        spin_unlock_irqrestore(&s_wlan_lock, irq);
-        if (st == WLAN_STATE_CONNECTED || st == WLAN_STATE_FAILED || st == WLAN_STATE_IDLE) {
-            break;
-        }
-    }
+    /* The Intel session-protection window needs prompt RX. The registered
+     * owner stays runnable during connection setup and services <=64 RX per
+     * turn, yielding between turns. Never monopolize it with a synchronous
+     * 600000-iteration pump. Dell on-channel timing requires physical retest. */
     return 0;
+}
+
+bool wlan_mgr_work_pending(void) {
+    uint64_t irq=spin_lock_irqsave(&s_wlan_lock);
+    bool pending=s_wlan_state==WLAN_STATE_AUTHENTICATING ||
+        s_wlan_state==WLAN_STATE_ASSOCIATING || s_wlan_state==WLAN_STATE_4WAY_HANDSHAKE;
+    spin_unlock_irqrestore(&s_wlan_lock,irq);
+    return pending;
 }
 
 int wlan_mgr_disconnect(void) {
@@ -388,15 +396,7 @@ int wlan_mgr_disconnect(void) {
 
 int wlan_mgr_status(wifi_status_t *out_status) {
     if (!out_status) return -1;
-    wlan_ensure_hardware();
-    wlan_drain_hw_rx();
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
-
-    if (s_wlan_state == WLAN_STATE_SCANNING) {
-        if (s_hw_ops && s_hw_ops->is_scan_complete && s_hw_ops->is_scan_complete()) {
-            s_wlan_state = WLAN_STATE_IDLE;
-        }
-    }
 
     memset(out_status, 0, sizeof(*out_status));
     out_status->state = (uint32_t)s_wlan_state;
@@ -675,6 +675,9 @@ void wlan_recycle_rx(net_dev_t *dev, pbuf_t *packet) {
 }
 
 bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
+    /* Status is a pure snapshot. Scan completion belongs to the owner turn,
+     * with no WLAN lock across the driver hook. */
+    bool scan_complete=s_hw_ops && s_hw_ops->is_scan_complete && s_hw_ops->is_scan_complete();
     /* 1. Poll raw packets from hardware driver with bounded budget (up to 64 packets per tick) */
     if (s_hw_ops && s_hw_ops->poll_raw_80211) {
         pbuf_t *p;
@@ -690,6 +693,7 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
 
     /* 2. Asynchronous state machine progression, retries & timeouts */
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
+    if (s_wlan_state==WLAN_STATE_SCANNING && scan_complete) s_wlan_state=WLAN_STATE_IDLE;
     wlan_state_t st = s_wlan_state;
     bool needs_deauth = false;
     bool trigger_roam = false;

@@ -7,22 +7,45 @@ pub const MUTED: u32 = 0xffa1aec2;
 pub const ACCENT: u32 = 0xff69b7ff;
 const ALPHA: &[u8; 95 * 16 * 18] = include_bytes!("../assets/ui-alpha.bin");
 const ADVANCES: &[u8; 95] = include_bytes!("../assets/ui-advances.bin");
+static SCALE_OVERRIDE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+pub fn set_scale(mode: u8) {
+    SCALE_OVERRIDE.store(
+        if mode <= 2 { mode } else { 0 },
+        core::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 // 1080p uses native raster sizes. Only UHD needs the larger chrome preset.
 pub fn scale(height: usize) -> usize {
+    match SCALE_OVERRIDE.load(core::sync::atomic::Ordering::Relaxed) {
+        1 => return 1,
+        2 => return 2,
+        _ => (),
+    }
     if height >= 2160 { 2 } else { 1 }
 }
 
 /// 4x4 subpixel coverage, evaluated in physical pixels rather than enlarged
 /// logical pixels. Only the rounded corner squares need supersampling.
 pub fn rounded_coverage(x: usize, y: usize, width: usize, height: usize, radius: usize) -> u32 {
-    if x >= width || y >= height { return 0; }
+    if x >= width || y >= height {
+        return 0;
+    }
     let radius = radius.min(width / 2).min(height / 2);
     if (x >= radius && x < width - radius) || (y >= radius && y < height - radius) {
         return 16;
     }
-    let cx = if x < radius { radius * 8 } else { (width - radius) * 8 } as i64;
-    let cy = if y < radius { radius * 8 } else { (height - radius) * 8 } as i64;
+    let cx = if x < radius {
+        radius * 8
+    } else {
+        (width - radius) * 8
+    } as i64;
+    let cy = if y < radius {
+        radius * 8
+    } else {
+        (height - radius) * 8
+    } as i64;
     let r2 = (radius * 8) as i64 * (radius * 8) as i64;
     let mut coverage = 0;
     for sy in [1, 3, 5, 7] {

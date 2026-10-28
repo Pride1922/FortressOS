@@ -186,7 +186,12 @@ impl Window {
             Hit::Resize => (self.rect.w - 12, self.rect.h - 12, 12, 12),
             _ => return None,
         };
-        Some(Rect { x: self.rect.x + x, y: self.rect.y + y, w, h })
+        Some(Rect {
+            x: self.rect.x + x,
+            y: self.rect.y + y,
+            w,
+            h,
+        })
     }
 
     fn pixel(&self, x: usize, y: usize, hover: Option<Hit>) -> u32 {
@@ -607,6 +612,7 @@ pub enum Action {
     SpawnTerminal,
     SpawnNotepad,
     SpawnFileManager,
+    OpenDesktopApp(u32),
     WindowResized(u32),
     ClientClick(u32, usize, usize),
     Exit,
@@ -618,6 +624,8 @@ pub struct WindowManager {
     buttons: u8,
     hover: Option<(u32, Hit)>,
     pub clock_sec: i64,
+    pub clock_24h: bool,
+    network_state: u8,
     pub start_open: bool,
     pub menu_hover: Option<usize>,
     #[allow(dead_code)]
@@ -668,6 +676,8 @@ impl WindowManager {
             buttons: 0,
             hover: None,
             clock_sec: -1,
+            clock_24h: true,
+            network_state: 0,
             start_open: false,
             menu_hover: None,
             dock_hover: None,
@@ -681,6 +691,8 @@ impl WindowManager {
             buttons: 0,
             hover: None,
             clock_sec: -1,
+            clock_24h: true,
+            network_state: 0,
             start_open: false,
             menu_hover: None,
             dock_hover: None,
@@ -743,7 +755,7 @@ impl WindowManager {
             x: 8,
             y: 24 * theme::scale(height),
             w: 200 * theme::scale(height),
-            h: 135 * theme::scale(height),
+            h: 157 * theme::scale(height),
         }
     }
 
@@ -801,6 +813,38 @@ impl WindowManager {
         }
         Self::dock_damage(s);
         self.raise(id, s);
+    }
+
+    pub fn close_window(&mut self, id: u32, s: &mut Surface) {
+        if let Some(index) = self.windows.iter().position(|w| w.id == id) {
+            let w = self.windows.remove(index);
+            s.damage(w.damage_rect());
+            Self::dock_damage(s);
+            self.focus_top(s);
+        }
+    }
+
+    pub fn set_network_state(&mut self, s: &mut Surface, state: u8) {
+        if self.network_state != state {
+            self.network_state = state;
+            s.damage(Self::network_rect(s.width, s.height));
+        }
+    }
+
+    pub fn network_rect(width: usize, height: usize) -> Rect {
+        let scale = theme::scale(height);
+        Rect {
+            x: width.saturating_sub(196 * scale),
+            y: 0,
+            w: 76 * scale,
+            h: 24 * scale,
+        }
+    }
+
+    pub fn invalidate_panels(&mut self) {
+        for window in &mut self.windows {
+            window.panel_ready = false;
+        }
     }
 
     pub fn clock_rect(width: usize, height: usize) -> Rect {
@@ -920,6 +964,37 @@ impl WindowManager {
         }
         if buttons & 1 == 0 {
             for w in &mut self.windows {
+                if w.is_dragging && self.buttons & 1 != 0 && w.id >= 3 {
+                    let scale = theme::scale(s.height);
+                    let snap = if y <= 24 * scale {
+                        Some((8 * scale, 28 * scale, s.width.saturating_sub(16 * scale)))
+                    } else if x <= 4 {
+                        Some((
+                            8 * scale,
+                            28 * scale,
+                            (s.width / 2).saturating_sub(12 * scale),
+                        ))
+                    } else if x >= s.width.saturating_sub(5) {
+                        Some((
+                            s.width / 2 + 4 * scale,
+                            28 * scale,
+                            (s.width / 2).saturating_sub(12 * scale),
+                        ))
+                    } else {
+                        None
+                    };
+                    if let Some((left, top, width)) = snap {
+                        let old = w.damage_rect();
+                        let restore = w.rect;
+                        if w.resize(width, s.height.saturating_sub(104 * scale)) {
+                            w.rect.x = left;
+                            w.rect.y = top;
+                            w.saved_rect = Some(restore);
+                            s.damage(old.union(w.damage_rect()));
+                            ret_action = Action::WindowResized(w.id);
+                        }
+                    }
+                }
                 w.is_dragging = false;
                 w.is_resizing = false;
             }
@@ -927,6 +1002,15 @@ impl WindowManager {
             let dock_r = Self::dock_rect(s.width, s.height);
             let start_btn = Self::start_btn_rect(s.height);
             let start_menu = Self::start_menu_rect(s.height);
+
+            if Self::clock_rect(s.width, s.height).contains(x, y) {
+                self.buttons = buttons;
+                return Action::OpenDesktopApp(9);
+            }
+            if Self::network_rect(s.width, s.height).contains(x, y) {
+                self.buttons = buttons;
+                return Action::OpenDesktopApp(8);
+            }
 
             let task = self
                 .windows
@@ -974,7 +1058,8 @@ impl WindowManager {
                             1 => ret_action = Action::SpawnNotepad,
                             2 => ret_action = Action::SpawnFileManager,
                             3 => self.ensure_window_1(s),
-                            4 => ret_action = Action::Exit,
+                            4 => ret_action = Action::OpenDesktopApp(7),
+                            5 => ret_action = Action::Exit,
                             _ => {}
                         }
                     }
@@ -1049,7 +1134,7 @@ impl WindowManager {
             let new_menu_hover =
                 if start_menu.contains(x, y) && y >= start_menu.y + 24 * theme::scale(s.height) {
                     let idx = ((y - start_menu.y) / theme::scale(s.height) - 24) / 22;
-                    if idx < 5 { Some(idx) } else { None }
+                    if idx < 6 { Some(idx) } else { None }
                 } else {
                     None
                 };
@@ -1073,8 +1158,12 @@ impl WindowManager {
         let hover = self.hit_test(x, y);
         if hover != self.hover {
             for (id, hit) in self.hover.into_iter().chain(hover) {
-                if let Some(r) = self.windows.iter().find(|w| w.id == id)
-                    .and_then(|w| w.hover_damage(hit)) {
+                if let Some(r) = self
+                    .windows
+                    .iter()
+                    .find(|w| w.id == id)
+                    .and_then(|w| w.hover_damage(hit))
+                {
                     s.damage(r);
                 }
             }
@@ -1303,23 +1392,45 @@ impl WindowManager {
                         let p = if (3..21).contains(&ly) && (12..128).contains(&lx) {
                             theme::text_pixel("FortressOS", lx - 12, ly - 3, theme::TEXT, bg)
                         } else if (3..21).contains(&ly)
-                            && lx >= logical_width.saturating_sub(64)
-                            && self.clock_sec >= 0
+                            && (logical_width.saturating_sub(196)
+                                ..logical_width.saturating_sub(120))
+                                .contains(&lx)
                         {
-                            let seconds = self.clock_sec.rem_euclid(86400) as u32;
-                            let hour = seconds / 3600;
-                            let minute = seconds / 60 % 60;
-                            let bytes = [
-                                b'0' + (hour / 10) as u8,
-                                b'0' + (hour % 10) as u8,
-                                b':',
-                                b'0' + (minute / 10) as u8,
-                                b'0' + (minute % 10) as u8,
-                            ];
-                            let text = core::str::from_utf8(&bytes).unwrap_or("");
                             theme::text_pixel(
-                                text,
-                                lx - logical_width.saturating_sub(64),
+                                match self.network_state {
+                                    2 => "Online",
+                                    1 => "Offline",
+                                    _ => "Network",
+                                },
+                                lx - logical_width.saturating_sub(196),
+                                ly - 3,
+                                theme::MUTED,
+                                bg,
+                            )
+                        } else if (3..21).contains(&ly) && lx >= logical_width.saturating_sub(100) {
+                            let mut bytes = *b"--:--   ";
+                            if self.clock_sec >= 0 {
+                                let seconds = self.clock_sec.rem_euclid(86400) as u32;
+                                let hour = seconds / 3600;
+                                let minute = seconds / 60 % 60;
+                                let display = if self.clock_24h {
+                                    hour
+                                } else {
+                                    let h = hour % 12;
+                                    if h == 0 { 12 } else { h }
+                                };
+                                bytes[0] = b'0' + (display / 10) as u8;
+                                bytes[1] = b'0' + (display % 10) as u8;
+                                bytes[3] = b'0' + (minute / 10) as u8;
+                                bytes[4] = b'0' + (minute % 10) as u8;
+                                if !self.clock_24h {
+                                    bytes[6] = if hour < 12 { b'A' } else { b'P' };
+                                    bytes[7] = b'M';
+                                }
+                            }
+                            theme::text_pixel(
+                                core::str::from_utf8(&bytes).unwrap_or(""),
+                                lx - logical_width.saturating_sub(100),
                                 ly - 3,
                                 theme::TEXT,
                                 bg,
@@ -1460,11 +1571,17 @@ impl WindowManager {
                         let px = (x - dock_r.x) / scale;
                         let py = (y - dock_r.y) / scale;
 
-                        let coverage = theme::rounded_coverage(x - dock_r.x, y - dock_r.y,
-                            dock_r.w, dock_r.h, 18 * scale);
+                        let coverage = theme::rounded_coverage(
+                            x - dock_r.x,
+                            y - dock_r.y,
+                            dock_r.w,
+                            dock_r.h,
+                            18 * scale,
+                        );
                         if coverage < 16 {
                             let under = s.pixels[y * s.width + x];
-                            s.pixels[y * s.width + x] = theme::blend_coverage(theme::PANEL, under, coverage);
+                            s.pixels[y * s.width + x] =
+                                theme::blend_coverage(theme::PANEL, under, coverage);
                             continue;
                         }
                         let dock_bg = theme::PANEL;
@@ -1605,7 +1722,8 @@ impl WindowManager {
                                     1 => (" [E] Notepad", self.menu_hover == Some(1)),
                                     2 => (" [F] Files", self.menu_hover == Some(2)),
                                     3 => (" System Information", self.menu_hover == Some(3)),
-                                    4 => (" Exit to Console", self.menu_hover == Some(4)),
+                                    4 => (" Settings", self.menu_hover == Some(4)),
+                                    5 => (" Exit to Console", self.menu_hover == Some(5)),
                                     _ => ("", false),
                                 };
                                 let item_bg = if is_hover { 0xff1f6feb } else { 0xff161b22 };

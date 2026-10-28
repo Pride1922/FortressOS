@@ -258,16 +258,28 @@ static void listener_link_loss_test(net_config_t *cfg) {
     assert(!allocations); peer_active=false; listener_fixture=true;
     net_socket_init(&dev,cfg); net_ipv4_init(&dev,cfg); net_socket_enable();
     int listener=listenfd(); disconnect_listener_wait=true;
+    unsigned slot=net_socket_index(process.fd_table[listener]);
+    net_tcp_wait_t before, failed;
+    assert(net_tcp_snapshot(slot,&before));
     assert(acceptfd(listener,NULL,NULL)==SYSCALL_EIO && !disconnect_listener_wait);
+    assert(net_tcp_ready(&before) && net_tcp_poll(slot,0)==POLLERR);
+    assert(net_tcp_accept_peek(slot,&(net_tcp_child_t){0},&(net_sockaddr_in_t){0})==SYSCALL_EIO);
+    assert(net_tcp_snapshot(slot,&failed) && failed.generation==before.generation);
+    net_tcp_tick(now,false);
+    assert(!net_tcp_ready(&failed)); /* Error is latched once, not republished each tick. */
     assert(stream()==SYSCALL_EIO); /* No new socket while disconnected. */
     online=true; net_socket_worker_tick(now,true); net_tcp_tick(now,true);
+    assert(net_tcp_poll(slot,0)==POLLERR);
     assert(acceptfd(listener,NULL,NULL)==SYSCALL_EIO); /* Old endpoint stays failed. */
+    memset(synacks,0,sizeof(synacks));
+    incoming(3,TCP_SYN,0,NULL,0); net_tcp_tick(now,true);
+    assert(!synacks[3].flags); /* Replug cannot admit a new child on the old listener. */
     closefd(listener); net_tcp_tick(now,true);
     listener=listenfd(); memset(synacks,0,sizeof(synacks)); passive_open(0,true);
     int child=(int)acceptfd(listener,NULL,NULL); assert(child>=0);
     closefd(listener); closefd(child); net_tcp_tick(now,true); listener_fixture=false;
     assert(!allocations);
-    puts("[PASS] blocked ACCEPT link loss returns EIO; old listener stays failed after replug; fresh listener binds and accepts");
+    puts("[PASS] blocked ACCEPT link loss publishes persistent EIO/POLLERR once; old listener rejects replug SYNs; fresh listener reuses port and accepts");
 }
 static void listener_tests(net_config_t *cfg) {
     assert(!allocations); peer_active=false; listener_fixture=true;

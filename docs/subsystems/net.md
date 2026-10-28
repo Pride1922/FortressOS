@@ -4,6 +4,21 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-10-28 TCP listener carrier-loss fix: the CPU-0 endpoint sweep now latches
+EIO on listeners as well as established connections. An old listener remains
+failed after replug; close it and create a fresh listener. Retained ACCEPT pins,
+rollback and port reuse remain safe. Actual-code ASan/UBSan/TSan and BIOS/UEFI
+SMP=1/4 BSP/AP unplug/replug tests pass. [Cause, evidence and physical boundary](../roadmap/tcp-listener-link-loss.md).
+
+2026-10-28 SYS_WIFI CPU-0 ownership (issue #76): scan, status, connect,
+disconnect and firmware loading use bounded copied requests through the same
+registered worker as NETCTL and sockets. Status invokes no hardware. The
+temporary desktop UP restriction is removed after actual-code sanitizer and
+BIOS/UEFI × SMP=1/4/8 Ring 3 BSP/AP verification with an explicit mock radio.
+Intel radio/DMA and the approved bounded RX-turn timing change require Dell
+acceptance. [Audit, cancellation rules and evidence](../roadmap/wifi-cpu0-owner.md).
+
+
 2026-10-25 Telnet Client (`/bin/telnet`, Issue #41):
 Minimal line-mode Telnet client for TCP verification with RFC 854 option negotiation, NVT ASCII formatting, interactive escape prompt `^]`, and non-blocking I/O multiplexing via `SYS_POLL` (Syscall 88) is COMPLETE and verified.
 - **Protocol & RFC 854 Engine:** Deterministic state machine parsing `IAC` (`0xFF`) command sequences; handles option negotiation requests (`DO`/`DONT`/`WILL`/`WONT`) refusing unsupported subnegotiations and acknowledging SGA (`TELOPT_SGA`); swallows `IAC SB ... IAC SE` subnegotiation payloads; escapes literal `0xFF` bytes (`IAC IAC`).

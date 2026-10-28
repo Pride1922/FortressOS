@@ -17,4 +17,5 @@ This directory holds the per-subsystem architecture annexes, status logs, hardwa
 | **SSH** | Phases 0–7 complete; privilege-separated `/sbin/sshd`, strict config schema, boot readiness gate, global 2-session cap, PTY duplex bridge, and 5s bounded teardown | [`ssh.md`](ssh.md) |
 | **Tools & Compression** | Bounded DEFLATE/gzip (RFC 1951 / RFC 1952), `/bin/gzip` and `/bin/gunzip`, 32 KiB sliding window, zip-bomb mitigation (100MB cap), zero dynamic allocation in decompression | [`tools.md`](tools.md) |
 | **Time & Timezones** | UTC/monotonic separation, IANA/DST and fixed-offset display, DHCP discovery, opt-in SNTP and verification boundaries | [`time.md`](time.md) |
+| **Desktop & Apps** | Built-in app API v1, shared widgets, Settings, network status/Wi-Fi boundary, Date & Time, atomic preferences and PKG-1 artifact recipe | [`desktop.md`](desktop.md) |
 | **Wireless & Wi-Fi** | IEEE 802.11 MAC engine, WPA2-PSK 4-way handshake, Intel AC 8265/AX 211 iwlwifi driver, async non-blocking connect, multi-BSSID best-signal selection, autonomous roaming, PMK caching, DTIM power management, hardened 0600 storage, and `/bin/wifi` CLI | [`wifi.md`](wifi.md) |

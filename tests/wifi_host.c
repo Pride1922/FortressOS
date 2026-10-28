@@ -33,6 +33,12 @@ static uint8_t s_mock_ap_bssid[6] = { 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC };
 static uint8_t s_mock_last_tx[2048];
 static size_t  s_mock_last_tx_len = 0;
 static uint32_t s_mock_tx_count = 0;
+static uint8_t s_mock_auth_channel, s_mock_auth_bssid[6];
+static uint16_t s_mock_auth_interval;
+static int mock_prepare_auth(uint8_t channel,const uint8_t bssid[6],uint16_t interval) {
+    s_mock_auth_channel=channel; memcpy(s_mock_auth_bssid,bssid,6);
+    s_mock_auth_interval=interval; return 0;
+}
 
 static int mock_get_mac(uint8_t mac[6]) {
     memcpy(mac, s_mock_sta_mac, 6);
@@ -56,6 +62,7 @@ static const wlan_hw_ops_t s_mock_hw_ops = {
     .name = "mock_wlan",
     .get_mac = mock_get_mac,
     .set_channel = mock_set_channel,
+    .prepare_auth = mock_prepare_auth,
     .send_raw_80211 = mock_send_raw,
     .poll_raw_80211 = NULL,
     .recycle_raw_80211 = NULL,
@@ -546,6 +553,16 @@ int main(void) {
     assert(wlan_mgr_status(&st) == 0);
     assert(memcmp(st.bssid, bssid_best, 6) == 0);
     assert(st.channel == 11);
+
+    /* GUI selection pins a BSSID from the last scan. A newer beacon may have
+     * made a different AP of the same SSID stronger, on another channel.
+     * Never combine the selected AP's address with the strongest AP's channel. */
+    assert(wlan_mgr_disconnect()==0);
+    assert(wlan_mgr_connect("FortressSecure","SuperSecretKey2026",bssid_alt)==0);
+    assert(wlan_mgr_status(&st)==0);
+    assert(!memcmp(st.bssid,bssid_alt,6) && st.channel==1 && st.rssi==-75);
+    assert(!memcmp(s_mock_auth_bssid,bssid_alt,6) && s_mock_auth_channel==1 && s_mock_auth_interval==100);
+    printf("  [PASS] Selected BSSID keeps its own channel/RSSI/timing despite stronger same-SSID AP\n");
 
     /* Now test Autonomous Roaming: connect directly to s_mock_ap_bssid and complete handshake */
     assert(wlan_mgr_disconnect() == 0);

@@ -9,11 +9,14 @@ mod panic;
 mod sys;
 
 mod cursor;
+mod desktop;
 mod files;
 mod font;
 mod notepad;
+mod preferences;
 mod surface;
 mod terminal;
+mod ui;
 mod wallpaper;
 mod window;
 use cursor::Cursor;
@@ -51,6 +54,18 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
                     len += 1;
                 }
                 let arg = unsafe { core::slice::from_raw_parts(arg_ptr, len) };
+                if arg == b"--version" {
+                    use core::fmt::Write;
+                    let mut version = preferences::Text::<128>::default();
+                    let _ = writeln!(
+                        version,
+                        "FortressOS Desktop {} (app API {})",
+                        desktop::VERSION,
+                        ui::APP_API_VERSION
+                    );
+                    sys::write(1, version.as_bytes());
+                    return 0;
+                }
                 if arg == b"--test" {
                     is_test = true;
                     break;
@@ -76,7 +91,15 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
         sys::fb_release();
         return 1;
     }
-    let status = run(is_test);
+    let Some(mut desktop) = desktop::AppHost::load(is_test) else {
+        sys::write(
+            2,
+            b"[compositor] Cannot allocate desktop application host\n",
+        );
+        sys::fb_release();
+        return 1;
+    };
+    let status = run(is_test, &mut desktop);
     if sys::fb_release() != 0 {
         return 1;
     }
@@ -179,7 +202,7 @@ fn spawn_terminal() -> Option<(Window, Terminal)> {
 }
 
 #[inline(never)]
-fn run(is_test: bool) -> i32 {
+fn run(is_test: bool, desktop: &mut desktop::AppHost) -> i32 {
     sys::write(1, b"[COMPOSITOR] Desktop starting (system menu to exit)\n");
     let fb = match sys::get_fb_info(0) {
         Ok(fb) if fb.version == 1 && fb.bpp == 32 => fb,
@@ -213,7 +236,7 @@ fn run(is_test: bool) -> i32 {
     // Console writes share VRAM: finish the startup diagnostic before painting.
     sys::write(1, b"[COMPOSITOR] [OK] Window server ready; polling\n");
 
-    let wallpaper = if is_test {
+    let mut wallpaper = if is_test || !desktop.preferences.wallpaper {
         None
     } else {
         wallpaper::Wallpaper::load("/usr/share/wallpapers/hello-world.bin")
@@ -248,6 +271,9 @@ fn run(is_test: bool) -> i32 {
         allocator::usage(),
         (cursor.x, cursor.y),
     );
+    if !is_test {
+        desktop.refresh(ts.tv_sec, &mut windows, &mut scene);
+    }
     windows.render_with_wallpaper(&mut scene, wallpaper.as_ref());
     cursor.show(&mut scene);
     if !unsafe { scene.present(&fb) } {
@@ -261,7 +287,8 @@ fn run(is_test: bool) -> i32 {
         fd as i32,
         &fb,
         is_test,
-        wallpaper.as_ref(),
+        &mut wallpaper,
+        desktop,
     )
 }
 
@@ -273,7 +300,8 @@ fn event_loop(
     fd: i32,
     fb: &sys::FbInfoV1,
     is_test: bool,
-    wallpaper: Option<&wallpaper::Wallpaper>,
+    wallpaper: &mut Option<wallpaper::Wallpaper>,
+    desktop: &mut desktop::AppHost,
 ) -> i32 {
     let mut ts = sys::Timespec::default();
     let mut term: Option<Terminal> = None;
@@ -332,6 +360,28 @@ fn event_loop(
                 let kn = sys::read(0, &mut kbuf);
                 if kn > 0 {
                     for &b in &kbuf[..kn as usize] {
+                        if !is_test {
+                            if let Some(id) =
+                                windows.focused_window_id().filter(|id| ui::registered(*id))
+                            {
+                                desktop.key(id, b, windows, scene);
+                                continue;
+                            }
+                            if windows.focused_window_id().is_none()
+                                || windows.focused_window_id() == Some(6)
+                            {
+                                let app = match b {
+                                    b's' | b'S' => Some(7),
+                                    b'n' | b'N' => Some(8),
+                                    b'c' | b'C' => Some(9),
+                                    _ => None,
+                                };
+                                if let Some(id) = app {
+                                    desktop.open(id, windows, scene);
+                                    continue;
+                                }
+                            }
+                        }
                         if handle_key(
                             b,
                             scene,
@@ -365,6 +415,7 @@ fn event_loop(
             let buttons = packet[0];
             let mut dx_total: i32 = packet[1] as i8 as i32;
             let mut dy_total: i32 = packet[2] as i8 as i32;
+            let mut wheel_total: i32 = packet[3] as i8 as i32;
 
             // Drain pending motion packets from kernel FIFO to coalesce rapid movement
             let mut extra = [0u8; 4];
@@ -384,19 +435,46 @@ fn event_loop(
                 }
                 dx_total += extra[1] as i8 as i32;
                 dy_total += extra[2] as i8 as i32;
+                wheel_total += extra[3] as i8 as i32;
             }
 
             cursor.advance(scene, dx_total, dy_total);
+            if !is_test && wheel_total != 0 {
+                if let Some((id, _)) = windows.hit_test(cursor.x, cursor.y) {
+                    desktop.scroll(id, -wheel_total, windows, scene);
+                }
+            }
             let action = windows.mouse(cursor.x, cursor.y, buttons, scene);
-            if handle_action(
-                action,
-                scene,
-                windows,
-                &mut term,
-                &mut notepad,
-                &mut files,
-                &mut last_info_sec,
-            ) {
+            let handled = if !is_test {
+                match action {
+                    window::Action::OpenDesktopApp(id) => {
+                        desktop.open(id, windows, scene);
+                        true
+                    }
+                    window::Action::ClientClick(id, x, y) if ui::registered(id) => {
+                        desktop.pointer(id, x, y, windows, scene);
+                        true
+                    }
+                    window::Action::WindowResized(id) if ui::registered(id) => {
+                        desktop.render(id, windows, scene);
+                        true
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            if !handled
+                && handle_action(
+                    action,
+                    scene,
+                    windows,
+                    &mut term,
+                    &mut notepad,
+                    &mut files,
+                    &mut last_info_sec,
+                )
+            {
                 break 0;
             }
             if frame_count % 8 == 0 {
@@ -424,8 +502,52 @@ fn event_loop(
 
         if !is_test || frame_count % 8 == 0 {
             if sys::clock_gettime(0, &mut ts) == 0 {
-                windows.update_clock(scene, ts.tv_sec);
+                if is_test {
+                    windows.update_clock(scene, ts.tv_sec);
+                }
             }
+        }
+        if !is_test {
+            if desktop.changed {
+                desktop.changed = false;
+                if desktop.wallpaper_changed {
+                    desktop.wallpaper_changed = false;
+                    *wallpaper = if desktop.preferences.wallpaper {
+                        wallpaper::Wallpaper::load("/usr/share/wallpapers/hello-world.bin")
+                    } else {
+                        None
+                    };
+                    scene.damage(surface::Rect {
+                        x: 0,
+                        y: 0,
+                        w: scene.width,
+                        h: scene.height,
+                    });
+                }
+                if desktop.layout_changed {
+                    desktop.layout_changed = false;
+                    desktop.reflow(windows, scene);
+                    last_info_sec = -1;
+                    for id in [3, 4, 5] {
+                        handle_action(
+                            window::Action::WindowResized(id),
+                            scene,
+                            windows,
+                            &mut term,
+                            &mut notepad,
+                            &mut files,
+                            &mut last_info_sec,
+                        );
+                    }
+                }
+                windows.clock_24h = desktop.preferences.clock_24h;
+                for descriptor in ui::APPS {
+                    desktop.render(descriptor.id, windows, scene);
+                }
+                scene.damage(WindowManager::clock_rect(scene.width, scene.height));
+            }
+            desktop.paint_invalid(windows, scene);
+            desktop.refresh(ts.tv_sec, windows, scene);
         }
 
         if !is_test
@@ -440,7 +562,7 @@ fn event_loop(
             last_info_sec = ts.tv_sec;
         }
 
-        windows.render_with_wallpaper(scene, wallpaper);
+        windows.render_with_wallpaper(scene, wallpaper.as_ref());
 
         cursor.show(scene);
         if !unsafe { scene.present(fb) } {
@@ -634,6 +756,7 @@ fn handle_action(
     last_info_sec: &mut i64,
 ) -> bool {
     match action {
+        window::Action::OpenDesktopApp(_) => {}
         window::Action::Exit => return true,
         window::Action::ClientClick(id, cx, cy) => {
             if id == 4 {

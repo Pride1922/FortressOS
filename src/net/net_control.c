@@ -6,6 +6,9 @@
 #include "apic.h"
 #include "syscall_abi.h"
 #include "string.h"
+#if !defined(TEST_SMP_MEMORY) || defined(WIFI_OWNER_HOST)
+#include "net_wifi_owner.h"
+#endif
 #ifndef TEST_SMP_MEMORY
 #include "percpu.h"
 #endif
@@ -87,6 +90,11 @@ int64_t net_control_call(unsigned kind, net_control_value_t *value) {
 }
 
 static void step(handoff_token_t t,handoff_request_t r) {
+#if !defined(TEST_SMP_MEMORY) || defined(WIFI_OWNER_HOST)
+    if (r.kind>=NET_OWNER_WIFI && r.kind<=NET_OWNER_WIFI_LAST) {
+        net_wifi_step(t,r); return;
+    }
+#endif
     if (r.kind>=NET_OWNER_UDP_CREATE && r.kind<=NET_OWNER_TCP_ACCEPT) {
         net_udp_step(t,r); return;
     }
@@ -136,6 +144,9 @@ void net_control_service(void) {
     /* Acknowledgement cannot reclaim pending protocol state. Typed steps do. */
     handoff_acknowledge();
     net_udp_maintenance();
+#if !defined(TEST_SMP_MEMORY) || defined(WIFI_OWNER_HOST)
+    net_wifi_maintenance();
+#endif
     for (unsigned i=0;i<8;++i) {
         handoff_token_t t; handoff_request_t r;
         if (!handoff_claim(&t,&r)) break;

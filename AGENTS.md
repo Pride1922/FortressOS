@@ -12,6 +12,7 @@ Before editing, read [§4 invariants](#4-coding-standards-and-invariants), the s
 | Syscalls or user pointers | S1–S4; [syscall.h](src/kernel/syscall.h), [vmm.h](src/mm/vmm.h); §7.1 |
 | Interrupts or input | I1–I3; [idt.h](src/arch/x86_64/idt.h), [ioapic.h](src/drivers/ioapic.h); §7.2 |
 | Graphics / framebuffer | [hardening plan](docs/plans/GRAPHICS_FOUNDATION_HARDENING_PLAN.md), [fb.h](src/kernel/fb.h), [console.h](src/drivers/console.h), [vmm.h](src/mm/vmm.h); PTE_DEVICE frames are borrowed MMIO, excluded from PMM freeing and syscall copy buffers |
+| Desktop apps / compositor settings | [desktop app API and package boundary](docs/subsystems/desktop.md), [ui.rs](user/compositor/src/ui.rs), [preferences.rs](user/compositor/src/preferences.rs); built-in app API v1, bounded widgets and atomic preferences; preserve root display authorization and PKG admission. SYS_WIFI uses retained copied requests through the registered CPU-0 owner on BSP/AP; status is a pure snapshot. See [issue #76 ownership evidence and Dell limits](docs/roadmap/wifi-cpu0-owner.md). |
 | Storage or VFS | M1–M4; [block.h](src/drivers/block.h), [vfs.h](src/fs/vfs.h), [ext2.h](src/fs/ext2.h); §7.3–7.4 |
 | SATA / AHCI | [scope and evidence](docs/roadmap/sata-ahci.md), [ahci.h](src/drivers/ahci.h), [storage.h](src/drivers/storage.h); `ahci_io` rank 2 → `pci_config_ports` rank 3 (legacy port tuples only); retain quarantined DMA; live inventory is read-only |
 | Tests or user programs | [Makefile](Makefile), §3 and §7.5–7.6 |

@@ -1,4 +1,225 @@
 extern crate alloc;
+#[path = "../user/compositor/src/desktop.rs"]
+#[allow(dead_code)]
+mod desktop;
+#[path = "../user/compositor/src/preferences.rs"]
+mod preferences;
+#[path = "../user/compositor/src/ui.rs"]
+mod ui;
+
+#[test]
+fn desktop_preferences_strict_roundtrip_and_bounded_edits() {
+    assert_eq!(ui::APP_API_VERSION, 1);
+    assert_eq!(
+        (sys::VFS_O_RDONLY, sys::VFS_O_WRONLY, sys::VFS_O_RDWR),
+        (0, 1, 2)
+    );
+    use preferences::{Preferences, Text};
+    for scale in 0..3 {
+        for wallpaper in [false, true] {
+            for clock_24h in [false, true] {
+                let prefs = Preferences {
+                    scale,
+                    wallpaper,
+                    clock_24h,
+                };
+                let mut text = Text::<512>::default();
+                prefs.encode(&mut text).unwrap();
+                assert_eq!(Preferences::parse(text.as_bytes()), Some(prefs));
+            }
+        }
+    }
+    for bad in [
+        "version=2\nscale=auto\nwallpaper=plain\nclock=24h\n",
+        "version=1\nscale=9\nwallpaper=plain\nclock=24h\n",
+        "version=1\nscale=auto\nwallpaper=plain\nclock=24h\nscale=native\n",
+        "version=1\nscale=auto\nwallpaper=plain\nclock=24h\nextra=yes\n",
+        "version=1\0",
+    ] {
+        assert!(Preferences::parse(bad.as_bytes()).is_none());
+    }
+    assert!(Preferences::parse(&[b'x'; 513]).is_none());
+    let mut text = Text::<4>::default();
+    for b in b"secret" {
+        text.edit(*b);
+    }
+    assert_eq!(text.as_str(), "secr");
+    text.edit(8);
+    assert_eq!(text.as_str(), "sec");
+    text.clear();
+    assert!(text.as_bytes().is_empty());
+}
+
+#[test]
+fn widget_viewport_clips_extreme_rectangles_before_rasterizing() {
+    let mut w = window::Window::new(
+        7,
+        "Clip",
+        surface::Rect {
+            x: 10,
+            y: 10,
+            w: 100,
+            h: 80,
+        },
+    )
+    .unwrap();
+    let mut c = ui::Canvas::new(&mut w, 0, true);
+    c.button(
+        surface::Rect {
+            x: 0,
+            y: 0,
+            w: usize::MAX,
+            h: usize::MAX,
+        },
+        "bounded",
+        false,
+        false,
+    );
+    c.button(
+        surface::Rect {
+            x: usize::MAX,
+            y: usize::MAX,
+            w: 20,
+            h: 20,
+        },
+        "offscreen",
+        false,
+        false,
+    );
+    let r = c.finish().unwrap();
+    assert!(r.x >= 11 && r.y >= 35 && r.x + r.w <= 109 && r.y + r.h <= 89);
+}
+
+#[test]
+fn built_in_apps_share_focus_widgets_and_incremental_damage() {
+    use ui::DesktopApp;
+    let mut host = desktop::AppHost::new(preferences::Preferences::default());
+    let mut wm = window::WindowManager::desktop();
+    let mut s = surface::Surface::new(1280, 800).unwrap();
+    host.open(7, &mut wm, &mut s);
+    assert_eq!(wm.focused_window_id(), Some(7));
+    assert_eq!(ui::APPS[0].name, "Settings");
+    assert!(ui::registered(7));
+    assert!(!ui::registered(77));
+    flush(&mut s);
+    host.render(7, &mut wm, &mut s);
+    assert!(s.damage_rect(0).is_none(), "idle widgets must not repaint");
+    host.pointer(7, 150, 125, &mut wm, &mut s);
+    assert_eq!(host.draft.scale, 1);
+    assert_eq!(host.preferences.scale, 0);
+    let area: usize = (0..16)
+        .filter_map(|i| s.damage_rect(i))
+        .map(|r| r.w * r.h)
+        .sum();
+    assert!(area < 30_000, "selection repainted entire window: {area}");
+    host.pointer(7, 200, 60, &mut wm, &mut s); // Shared Network navigation.
+    assert_eq!(wm.focused_window_id(), Some(8));
+    // Explicit UP/device fixture; no kernel/hardware call is made by typing.
+    host.wireless = Some(sys::WirelessInfo {
+        mac: [2, 0, 0, 0, 0, 1],
+        ..Default::default()
+    });
+    host.pointer(8, 40, 430, &mut wm, &mut s);
+    for b in b"example" {
+        host.key(8, *b, &mut wm, &mut s);
+    }
+    assert_eq!(host.ssid.as_str(), "example");
+    host.key(8, 27, &mut wm, &mut s);
+    assert!(!wm.windows.iter().any(|w| w.id == 8));
+    host.open(8, &mut wm, &mut s);
+    flush(&mut s);
+    host.render(8, &mut wm, &mut s);
+    assert!(
+        s.damage_rect(0).is_none(),
+        "reopened window must initialize once"
+    );
+    // The app trait routes keyboard focus independently of global shortcuts.
+    let mut app = desktop::Builtin::test_instance(0);
+    assert_eq!(app.descriptor().id, 7);
+    assert_eq!(app.key(b'\t'), Some(0));
+    assert_eq!(app.key(b'\r'), Some(2));
+}
+
+#[test]
+fn scan_decoder_rejects_malformed_responses_and_preserves_identity() {
+    let mut scan = vec![0u8; 776];
+    scan[0..4].copy_from_slice(&1u32.to_le_bytes());
+    scan[8..14].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
+    scan[15] = (-42i8) as u8;
+    scan[16] = 4;
+    scan[17] = 1;
+    scan[20..24].copy_from_slice(b"test");
+    let points = desktop::parse_scan(&scan).unwrap();
+    assert_eq!(points[0].ssid.as_str(), "test");
+    assert_eq!(points[0].rssi, -42);
+    assert_eq!(points[0].bssid, [1, 2, 3, 4, 5, 6]);
+    scan[16] = 33;
+    assert!(desktop::parse_scan(&scan).is_none());
+    scan[16] = 4;
+    scan[0..4].copy_from_slice(&17u32.to_le_bytes());
+    assert!(desktop::parse_scan(&scan).is_none());
+    assert_eq!(
+        desktop::ipv4(u32::from_ne_bytes([192, 168, 1, 1])).as_str(),
+        "192.168.1.1"
+    );
+}
+
+#[test]
+fn desktop_windows_snap_restore_and_scroll_with_clipped_widgets() {
+    let mut s = surface::Surface::new(1280, 800).unwrap();
+    let mut wm = window::WindowManager::desktop();
+    let mut host = desktop::AppHost::new(preferences::Preferences::default());
+    host.open(7, &mut wm, &mut s);
+    let start = wm.windows[0].rect;
+    wm.mouse(start.x + 180, start.y + 12, 1, &mut s);
+    wm.mouse(0, 300, 1, &mut s);
+    assert_eq!(
+        wm.mouse(0, 300, 0, &mut s),
+        window::Action::WindowResized(7)
+    );
+    let snapped = wm.windows[0].rect;
+    assert_eq!(snapped.x, 8);
+    assert!(snapped.w < 1280 / 2);
+    assert!(wm.windows[0].saved_rect.is_some());
+    wm.mouse(snapped.x + 45, snapped.y + 12, 1, &mut s);
+    wm.mouse(snapped.x + 45, snapped.y + 12, 0, &mut s);
+    assert_eq!(wm.windows[0].rect.w, start.w);
+    host.render(7, &mut wm, &mut s);
+    let expected = wm.windows[0].content.clone();
+    wm.windows[0].resize(300, 180);
+    host.render(7, &mut wm, &mut s);
+    flush(&mut s);
+    host.scroll(7, 2, &mut wm, &mut s);
+    assert!(s.damage_rect(0).is_some());
+    for r in (0..16).filter_map(|i| s.damage_rect(i)) {
+        assert!(r.x + r.w <= s.width && r.y + r.h <= s.height);
+    }
+    host.render(7, &mut wm, &mut s);
+    flush(&mut s);
+    host.render(7, &mut wm, &mut s);
+    assert!(s.damage_rect(0).is_none());
+    wm.windows[0].resize(start.w, start.h);
+    host.render(7, &mut wm, &mut s);
+    assert!(
+        wm.windows[0].content == expected,
+        "growing the viewport must reveal the full unscrolled page"
+    );
+    wm.invalidate_panels();
+}
+
+#[test]
+fn wifi_controls_require_an_adapter_on_every_cpu_count() {
+    let mut s = surface::Surface::new(1280, 800).unwrap();
+    let mut wm = window::WindowManager::desktop();
+    let mut host = desktop::AppHost::new(preferences::Preferences::default());
+    host.open(8, &mut wm, &mut s);
+    host.pointer(8, 40, 222, &mut wm, &mut s); // Missing adapter returns before syscall.
+    assert!(host.status.as_str().contains("No Wi-Fi adapter"));
+    host.pointer(8, 170, 222, &mut wm, &mut s); // No adapter.
+    assert!(host.status.as_str().contains("No Wi-Fi adapter"));
+    host.pointer(8, 80, 478, &mut wm, &mut s); // No adapter.
+    assert!(host.status.as_str().contains("No Wi-Fi adapter"));
+}
 
 #[test]
 fn native_1080p_chrome_and_smooth_dock_edges() {
@@ -8,18 +229,21 @@ fn native_1080p_chrome_and_smooth_dock_edges() {
     let mut partial = 0;
     for y in 0..18 {
         for x in 0..18 {
-            let c = theme::rounded_coverage(x,y,256,58,18);
-            assert_eq!(c, theme::rounded_coverage(255-x,y,256,58,18));
-            assert_eq!(c, theme::rounded_coverage(x,57-y,256,58,18));
+            let c = theme::rounded_coverage(x, y, 256, 58, 18);
+            assert_eq!(c, theme::rounded_coverage(255 - x, y, 256, 58, 18));
+            assert_eq!(c, theme::rounded_coverage(x, 57 - y, 256, 58, 18));
             assert!(c <= 16);
             if c > 0 && c < 16 {
                 partial += 1;
-                let blended = theme::blend_coverage(0xffffffff,0xff000000,c);
+                let blended = theme::blend_coverage(0xffffffff, 0xff000000, c);
                 assert!(blended != 0xffffffff && blended != 0xff000000);
             }
         }
     }
-    assert!(partial > 10, "dock outline must contain antialiased edge pixels");
+    assert!(
+        partial > 10,
+        "dock outline must contain antialiased edge pixels"
+    );
 }
 
 #[test]
@@ -29,22 +253,37 @@ fn title_controls_repaint_only_their_hover_pixels() {
             let mut scene = surface::Surface::new(1920, 1080).unwrap();
             scene.fill(window::DESKTOP);
             let mut wm = window::WindowManager::desktop();
-            let rect = surface::Rect { x: 100, y: 100,
-                w: if maximized { 1700 } else { 520 }, h: 700 };
+            let rect = surface::Rect {
+                x: 100,
+                y: 100,
+                w: if maximized { 1700 } else { 520 },
+                h: 700,
+            };
             let mut w = window::Window::new(id, "Hover regression", rect).unwrap();
-            if maximized { w.saved_rect = Some(rect); }
+            if maximized {
+                w.saved_rect = Some(rect);
+            }
             wm.windows.push(w);
             wm.render(&mut scene);
             flush(&mut scene);
-            for (x,y) in [(110,112), (129,112), (145,112), (200,112), (200,300)] {
-                wm.mouse(x,y,0,&mut scene);
-                let area: usize = (0..16).filter_map(|i| scene.damage_rect(i)).map(|r|r.w*r.h).sum();
-                assert!(area <= 242, "hover {id}, maximized={maximized}: {area} pixels");
+            for (x, y) in [(110, 112), (129, 112), (145, 112), (200, 112), (200, 300)] {
+                wm.mouse(x, y, 0, &mut scene);
+                let area: usize = (0..16)
+                    .filter_map(|i| scene.damage_rect(i))
+                    .map(|r| r.w * r.h)
+                    .sum();
+                assert!(
+                    area <= 242,
+                    "hover {id}, maximized={maximized}: {area} pixels"
+                );
                 wm.render(&mut scene);
-                let mut full = surface::Surface::new(1920,1080).unwrap();
+                let mut full = surface::Surface::new(1920, 1080).unwrap();
                 full.fill(window::DESKTOP);
                 wm.render(&mut full);
-                assert!(scene.pixels == full.pixels, "hover repair differs from full render");
+                assert!(
+                    scene.pixels == full.pixels,
+                    "hover repair differs from full render"
+                );
                 flush(&mut scene);
             }
         }
@@ -724,15 +963,15 @@ fn start_menu_toggle_and_actions() {
     assert!(!wm.start_open);
     wm.mouse(50, 102, 0, &mut s);
 
-    // Reopen menu and click item 4 (Exit); Palette is not a desktop app.
+    // Reopen menu and click item 5 (Exit); Palette is not a desktop app.
     let _ = wm.mouse(20, 12, 1, &mut s);
     wm.mouse(20, 12, 0, &mut s);
     assert!(wm.start_open);
 
-    let action = wm.mouse(50, 146, 1, &mut s);
+    let action = wm.mouse(50, 168, 1, &mut s);
     assert_eq!(action, window::Action::Exit);
     assert!(!wm.start_open);
-    wm.mouse(50, 146, 0, &mut s);
+    wm.mouse(50, 168, 0, &mut s);
 }
 
 #[test]

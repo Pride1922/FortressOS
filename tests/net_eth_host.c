@@ -112,7 +112,8 @@ static void make_arp(const uint8_t *dest, bool reply, uint32_t target) {
 int main(void) {
     net_config_t cfg;
     dev=(net_dev_t){.mac_addr={0x52,0x54,0,0x12,0x34,0x56},.flags=NET_UP|NET_RUNNING,
-        .send_packet=send_packet,.poll_rx=poll_rx,.recycle_rx=recycle};
+        .send_packet=send_packet,.poll_rx=poll_rx,.recycle_rx=recycle,
+        .network_online=e1000_network_online,.service_link=e1000_service_link};
     net_parse_config(NULL,0,&cfg);
     assert(cfg.local_ip==htonl(0x0a00020f) && cfg.gateway==htonl(0x0a000202) && cfg.prefix==24);
     const char *valid="xnet=bad\tnet=192.168.1.150/24,192.168.1.1 net_test=arp";
@@ -158,7 +159,12 @@ int main(void) {
     make_arp(broadcast,false,cfg.local_ip); fail_send=true; input(); assert(sends==3);
     assert(arp_resolve(&dev,htonl(0x0a000211),mac)==-1); fail_send=false;
     packet.length=1515; input(); packet.payload=NULL; packet.length=60; input();
-    absent=true; net_start(NULL,0); net_timer_tick(); assert(!wakes); absent=false;
+    absent=true; net_start(NULL,0); net_timer_tick();
+    netctl_ifget_t absent_status;
+    assert(wakes && net_get_ifconfig(&absent_status)==SYSCALL_EIO);
+    /* A device-less control owner is intentional; failed worker creation and
+     * the raw ring fixture still must not publish a polling worker. */
+    wakes=0; absent=false;
     fail_create=true; net_start(NULL,0); net_timer_tick(); assert(!wakes); fail_create=false;
     net_start("net_test=rings",14); net_timer_tick(); assert(!wakes);
     net_start(NULL,0);

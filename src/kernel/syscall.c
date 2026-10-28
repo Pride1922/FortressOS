@@ -8,6 +8,7 @@ static bool syscall_actor(creds_t *out);
 #include "../net/net.h"
 #include "../net/net_ping.h"
 #include "../net/net_control.h"
+#include "../net/net_wifi_owner.h"
 #include "../net/net_socket_syscall.h"
 #include "../net/net_socket.h"
 #include "../net/net_tcp_syscall.h"
@@ -1235,52 +1236,6 @@ static int64_t sys_net_ifset(uintptr_t user_config, uint64_t size) {
     return net_control_call(NETCTL_IFSET,&value);
 }
 
-static int64_t sys_wifi(uint64_t cmd, uintptr_t arg, size_t size) {
-    uint64_t *pml4 = vmm_get_active_pml4_virt();
-    if (cmd == SYS_WIFI_CMD_SCAN) {
-        if (size != sizeof(wifi_scan_result_t)) return SYSCALL_EINVAL;
-        if (!vmm_validate_user_range(pml4, arg, size, true)) return SYSCALL_EFAULT;
-        wifi_scan_result_t res;
-        memcpy(&res, (const void *)arg, sizeof(res));
-        if (res.max_entries > WIFI_MAX_SCAN_ENTRIES) res.max_entries = WIFI_MAX_SCAN_ENTRIES;
-        int rc = wlan_mgr_scan(&res);
-        if (rc != 0) return SYSCALL_EIO;
-        memcpy((void *)arg, &res, sizeof(res));
-        return 0;
-    }
-    if (cmd == SYS_WIFI_CMD_CONNECT) {
-        if (size != sizeof(wifi_connect_req_t)) return SYSCALL_EINVAL;
-        if (!vmm_validate_user_range(pml4, arg, size, false)) return SYSCALL_EFAULT;
-        wifi_connect_req_t req;
-        memcpy(&req, (const void *)arg, sizeof(req));
-        req.ssid[sizeof(req.ssid) - 1] = '\0';
-        req.passphrase[sizeof(req.passphrase) - 1] = '\0';
-        int rc = wlan_mgr_connect(req.ssid, req.passphrase, req.bssid);
-        if (rc < 0 && rc != -2) return SYSCALL_EIO;
-        return 0;
-    }
-    if (cmd == SYS_WIFI_CMD_DISCONNECT) {
-        int rc = wlan_mgr_disconnect();
-        return rc == 0 ? 0 : SYSCALL_EIO;
-    }
-    if (cmd == SYS_WIFI_CMD_STATUS) {
-        if (size != sizeof(wifi_status_t)) return SYSCALL_EINVAL;
-        if (!vmm_validate_user_range(pml4, arg, size, true)) return SYSCALL_EFAULT;
-        wifi_status_t st;
-        int rc = wlan_mgr_status(&st);
-        if (rc != 0) return SYSCALL_EIO;
-        memcpy((void *)arg, &st, sizeof(st));
-        return 0;
-    }
-    if (cmd == SYS_WIFI_CMD_LOAD_FW) {
-        if (size == 0 || size > 4 * 1024 * 1024) return SYSCALL_EINVAL;
-        if (!vmm_validate_user_range(pml4, arg, size, false)) return SYSCALL_EFAULT;
-        bool ok = iwlwifi_load_firmware((const void *)arg, size);
-        return ok ? 0 : SYSCALL_EIO;
-    }
-    return SYSCALL_EINVAL;
-}
-
 static int64_t sys_readdir(int fd, uintptr_t user_dirent) {
     if (fd < 0 || fd >= 32) {
         return SYSCALL_EBADF;
@@ -1848,7 +1803,7 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             result=sys_stage_test_sync(frame->rdi);
             break;
         case SYS_WIFI:
-            result = sys_wifi(frame->rdi, frame->rsi, frame->rdx);
+            result = net_wifi_syscall(frame->rdi, frame->rsi, frame->rdx);
             break;
         case SYS_POLL:
             result = sys_poll(frame->rdi, frame->rsi, (int64_t)frame->rdx);

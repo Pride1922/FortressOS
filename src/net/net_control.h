@@ -2,7 +2,8 @@
 #define FORTRESS_NET_CONTROL_H
 #include "netctl_abi.h"
 #include "handoff.h"
-/* Fixed control/probe values; service also dispatches retained UDP operations.
+/* Fixed control/probe values; service also dispatches retained UDP/TCP and
+ * copied Wi-Fi operations (net_wifi_owner.h).
  * Value storage belongs to the generic token until release.
  * No user address, caller stack, TCB, descriptor or callback crosses ownership. */
 typedef union {

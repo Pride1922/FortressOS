@@ -359,6 +359,9 @@ void net_worker_main(void *arg) {
             s_probe_pending=false;
         }
         net_control_service();
+#ifndef TEST_SMP_MEMORY
+        work=work || wlan_mgr_work_pending();
+#endif
         work=work || handoff_owner_ready(NULL) || net_udp_owner_work();
         /* Explicit test-only observation; own immortal worker TCB, no new
          * introspection ABI or scheduler operation. Idle means no RX packets
@@ -445,9 +448,12 @@ void net_start(const char *cmdline, size_t len) {
     if (!dev) dev=e1000_get_net_device();
     if (!dev) dev=wlan_get_net_device();
 #else
-    net_dev_t *dev=NULL;
+    net_dev_t *dev=e1000_get_net_device(); /* Host fixture supplies a copied device adapter. */
 #endif
-    if (!dev || s_config.test_rings) return; /* Raw selftest remains sole RX owner. */
+    if (s_config.test_rings) return; /* Raw selftest remains sole RX owner. */
+    /* Keep the control owner available without a NIC: status snapshots and
+     * copied firmware uploads must not require a caller-side hardware path.
+     * The stack already supports a NULL device and reports offline/EIO. */
     net_init(dev,&s_config);
     if (!thread_create_on_cpu(0,"net_worker",net_worker_main,NULL)) {
         serial_puts("[NET 3] Worker creation failed\n");

@@ -27,11 +27,15 @@ typedef struct wlan_hw_ops {
 void wlan_mgr_init(const wlan_hw_ops_t *ops);
 net_dev_t *wlan_get_net_device(void);
 
-/* Management & Syscall Handlers (SYS_WIFI) */
+/* Management: registered CPU-0 owner only (boot init precedes registration).
+ * SYS_WIFI callers publish copied requests through net_wifi_owner. Status is
+ * a lock-protected snapshot: no lazy initialization, RX drain or driver calls. */
 int wlan_mgr_scan(wifi_scan_result_t *out_result);
 int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bssid[6]);
 int wlan_mgr_disconnect(void);
 int wlan_mgr_status(wifi_status_t *out_status);
+/* Owner thread only, unlocked context; prompt bounded RX turns during setup. */
+bool wlan_mgr_work_pending(void);
 
 /* Core Rx Packet Pipeline (Processes raw 802.11 frame from radio) */
 int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi);

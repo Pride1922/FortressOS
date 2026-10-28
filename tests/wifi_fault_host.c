@@ -193,14 +193,20 @@ static void test_manager(void) {
     assert(dev);
     assert(wlan_mgr_rx_raw_80211(beacon, bl, -45) == 0);
 
-    /* Responsive AP: Auth+Assoc are serviced synchronously inside connect (RX pump) */
+    /* Responsive AP: connect returns before RX; status cannot advance it.
+     * The owner's next bounded service turn must progress Auth+Assoc. */
     s_ap_mode = AP_RESPONSIVE;
     s_prepare_rc = 0;
     assert(wlan_mgr_connect("FaultNet", "SuperSecretKey2026", s_ap_bssid) == 0);
     assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_AUTHENTICATING);
+    assert(wlan_mgr_work_pending());
+    wlan_service_link(dev, 1, 1000);
+    assert(wlan_mgr_status(&st) == 0);
     assert(st.state == WIFI_STATUS_HANDSHAKE);
     assert(wlan_mgr_disconnect() == 0);
-    printf("  [PASS] RX pump advances Auth/Assoc synchronously within wlan_mgr_connect\n");
+    assert(!wlan_mgr_work_pending());
+    printf("  [PASS] Nonblocking connect, pure status, bounded owner RX advances Auth/Assoc\n");
 
     /* Frame loss: silent AP -> retransmit then fail closed with hardware teardown */
     s_ap_mode = AP_SILENT;

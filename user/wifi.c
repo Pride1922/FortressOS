@@ -53,7 +53,9 @@ static bool ensure_firmware_loaded(void) {
 
     wifi_status_t st;
     if (WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_STATUS, &st, sizeof(st)) == 0) {
-        if (st.link_online || st.state != WIFI_STATUS_IDLE) {
+        /* FAILED/SCANNING do not prove firmware readiness. LOAD_FW is already
+         * idempotent for a live runtime image; retry preparation after failure. */
+        if (st.link_online && st.state == WIFI_STATUS_CONNECTED) {
             s_fw_loaded = true;
             return true;
         }

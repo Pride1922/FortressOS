@@ -622,7 +622,18 @@ test-usb-persistence: $(BOOTABLE_IMG)
 
 .PHONY: test-hub-host test-hub-host-tsan test-usb-hid test-usb-hub test-usb-mouse test-rtl8153-host test-wlan-crypto-host test-wlan-mac-host test-wlan-wpa2-host test-wifi-host test-wifi-fault-host test-wifi-stack
 WIFI_STACK_BUDGET ?= 1024
-WIFI_STACK_SRCS := src/net/wlan/wlan_mgr.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_crypto.c src/drivers/iwlwifi.c src/drivers/iwl_health.c
+WIFI_STACK_SRCS := src/net/net_wifi_owner.c src/net/wlan/wlan_mgr.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_crypto.c src/drivers/iwlwifi.c src/drivers/iwl_health.c
+
+.PHONY: test-wifi-owner-host test-wifi-owner
+test-wifi-owner-host:
+	@python3 scripts/test_wifi_owner_host.py
+.PHONY: test-wifi-prepare-host
+test-wifi-prepare-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include tests/wifi_prepare_host.c -o $(BUILD_DIR)/wifi-prepare-host
+	@$(BUILD_DIR)/wifi-prepare-host
+test-wifi-owner: test-wifi-owner-host
+	@python3 scripts/test_wifi_owner.py
 test-wifi-stack:
 	@python3 scripts/check_wifi_stack.py $(WIFI_STACK_BUDGET) $(CC) $(BUILD_DIR)/stackgate $(CFLAGS) -- $(WIFI_STACK_SRCS)
 test-wifi-fault-host:
@@ -1432,18 +1443,19 @@ $(BUILD_DIR)/nano_start.o: $(USER_DIR)/tools/start.asm
 $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
-$(USER_COMPOSITOR_ELF): $(USER_DIR)/compositor/assets/*.bin $(USER_DIR)/compositor/src/*.rs $(USER_DIR)/compositor/Cargo.toml $(USER_DIR)/compositor/Cargo.lock $(USER_DIR)/compositor/.cargo/config.toml $(USER_DIR)/compositor/compositor.ld
+$(USER_COMPOSITOR_ELF): $(USER_DIR)/compositor/assets/*.bin $(USER_DIR)/compositor/src/*.rs $(USER_DIR)/compositor/build.rs $(USER_DIR)/compositor/timezone_bridge.c $(USER_DIR)/timezone.c $(USER_DIR)/timezone.h $(USER_DIR)/tools/timezone_io.c $(USER_DIR)/tools/common.h src/include/syscall_abi.h src/include/netctl_abi.h src/include/wifi_abi.h src/fs/vfs.h $(USER_DIR)/compositor/Cargo.toml $(USER_DIR)/compositor/Cargo.lock $(USER_DIR)/compositor/.cargo/config.toml $(USER_DIR)/compositor/compositor.ld
 	@echo "  [CARGO] user/compositor"
 	@cd $(USER_DIR)/compositor && PATH="$$HOME/.cargo/bin:$$PATH" cargo build --release
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/compositor $@
 
 # Build USTAR Initramfs archive
-$(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt
+$(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt assets/desktop.conf
 $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_PTHREAD_TEST_ELF) $(USER_CRASH_TEST_ELF) $(USER_TELNET_ELF) $(USER_SSH_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_PKG_ELF) $(BUILD_DIR)/initramfs/bin/pkg
 	@cp -f $(USER_COMPOSITOR_ELF) $(BUILD_DIR)/initramfs/bin/compositor
+	@cp -f assets/desktop.conf $(BUILD_DIR)/initramfs/etc/desktop.conf
 	@mkdir -p $(BUILD_DIR)/initramfs/usr/share/licenses/compositor
 	@cp -f $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt $(BUILD_DIR)/initramfs/usr/share/licenses/compositor/DejaVu-LICENSE.txt
 	@cp -f $(USER_SHELL_ELF) $(BUILD_DIR)/initramfs/bin/shell
@@ -1837,6 +1849,9 @@ test-network-smp-phase2b-host:
 test-network-smp-phase2b: test-network-smp-phase2b-host
 	@python3 scripts/test_network_smp_phase2b.py
 .PHONY: test-net-tcp-socket-host
+.PHONY: test-net-listener-link
+test-net-listener-link: test-network-smp-phase2d-host
+	@python3 scripts/test_net_listener_link.py
 .PHONY: test-net-tcp-client
 .PHONY: test-supervisor-wait
 test-supervisor-wait: $(BOOTABLE_ISO)
@@ -2670,6 +2685,17 @@ test-compositor-host:
 	@mkdir -p $(BUILD_DIR)
 	@PATH="$$HOME/.cargo/bin:$$PATH" rustc --edition=2024 --test tests/compositor_host.rs -o $(BUILD_DIR)/compositor-host
 	@$(BUILD_DIR)/compositor-host
+
+.PHONY: desktop-package test-desktop-package
+desktop-package: $(USER_COMPOSITOR_ELF)
+	@test -n "$(PLATFORM_ID)" -a -n "$(DESKTOP_BUILD)" -a -n "$(BASE_MIN)" -a -n "$(BASE_MAX)" || (echo 'Provide approved PLATFORM_ID, DESKTOP_BUILD, BASE_MIN and BASE_MAX'; exit 1)
+	@python3 scripts/build_desktop_package.py --platform-id "$(PLATFORM_ID)" --build "$(DESKTOP_BUILD)" --base-min "$(BASE_MIN)" --base-max "$(BASE_MAX)" --out $(BUILD_DIR)/packages/fortress-desktop.fpk
+test-desktop-package: $(USER_COMPOSITOR_ELF)
+	@python3 scripts/test_desktop_package.py
+
+.PHONY: test-desktop-apps
+test-desktop-apps: test-compositor-host test-desktop-package $(BOOTABLE_ISO)
+	@python3 scripts/test_desktop_apps.py
 
 .PHONY: test-fb-host test-compositor-qemu
 $(BUILD_DIR)/kernel/fb.o $(BUILD_DIR)/mm/vmm.o: CFLAGS += -fstack-usage -Wframe-larger-than=1024

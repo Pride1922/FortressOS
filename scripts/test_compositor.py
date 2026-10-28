@@ -279,9 +279,6 @@ def run_test(firmware):
             ink_rgb = bytes([(ink_color >> 16) & 255, (ink_color >> 8) & 255, ink_color & 255])
             ink_x, ink_y = (w-cw)//2 + ink % cw, (h-ch)//2 + ink // cw
             wait_image(guest, lambda iw, ih, rgb: pixel(rgb, iw, ink_x, ink_y) == ink_rgb)
-            # The former WLAN/battery labels are gone; no fabricated state.
-            for xx in range(w - 230, w - 126):
-                assert pixel(desktop, w, xx, 10) == panel
             pos[:] = [w // 2, h // 2]
             dock_x, dock_y = (w - 256) // 2, h - 66
             move_to(dock_x + 3 * 64 + 32, dock_y + 20)
@@ -325,7 +322,7 @@ def run_test(firmware):
                 {'type': 'btn', 'data': {'down': False, 'button': 'right'}}]})
             # Exit explicitly through the system menu.
             move_to(30, 12); button(True); button(False)
-            move_to(50, 146); button(True); button(False)
+            move_to(50, 168); button(True); button(False)
             guest.wait(lambda s: '[COMPOSITOR] Event loop stopped' in s, start, timeout=10)
             guest.wait(lambda s: s.endswith('$ '), timeout=10)
             assert '[FORTRESS RUST PANIC]' not in guest.text()
@@ -388,7 +385,7 @@ def run_hidpi_test(firmware):
                 move(53,40); click(); move(1300,700)
                 wait_image(guest,lambda iw,ih,rgb: pixel(rgb,iw,88,120) == bytes.fromhex('30363d'))
             guest.qmp.execute('screendump',{'filename':str(ROOT/'build'/f'compositor-hidpi-{firmware}.ppm')})
-            move(30,12); click(); move(50,146); click()
+            move(30,12); click(); move(50,168); click()
             guest.wait(lambda s: '[COMPOSITOR] Event loop stopped' in s, timeout=10)
             assert '[FORTRESS RUST PANIC]' not in guest.text()
             print(f'[PASS] {firmware.upper()} 1920x1080 repeated maximize/restore')

@@ -31,12 +31,12 @@ def main():
         result['artifact_directory']=str(out)
         symbols=subprocess.check_output(['nm',str(elf)],text=True)
         strings=subprocess.check_output(['strings',str(elf)],text=True)
-        for private in ('fixture_accept','net_tcp_fixture','net_socket_fixture','net-cpu-probe','NET SMP2D','NET SMP2C','NET SMP0 ENTRY','phase3_','SMP3 ENTRY','SMP3 OWNER'):
+        for private in ('listener_link_fixture','link-probe','wifi_fixture','wifi-owner-probe','fixture_accept','net_tcp_fixture','net_socket_fixture','net-cpu-probe','NET SMP2D','NET SMP2C','NET SMP0 ENTRY','phase3_','SMP3 ENTRY','SMP3 OWNER'):
             assert private not in symbols and private not in strings,private
         with tarfile.open(archive) as tar:
-            assert not any('net-cpu-probe' in m.name for m in tar)
+            assert not any('net-cpu-probe' in m.name or 'wifi-owner-probe' in m.name or 'link-probe' in m.name for m in tar)
         ledger={}
-        for name in ('net_udp_owner','net_control','handoff'):
+        for name in ('net_udp_owner','net_control','net_wifi_owner','handoff'):
             sections=subprocess.check_output(['size','-A',str(workspace/f'build/{"kernel" if name=="handoff" else "net"}/{name}.o')],text=True)
             # Every writable static section, including compiler-split .data.*.
             ledger[name]=sum(int(row.split()[1]) for row in sections.splitlines() if row.startswith(('.bss','.data')))

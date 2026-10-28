@@ -4,6 +4,14 @@ Status (2026-10-02): COMPLETE; host and dedicated QEMU gates pass.
 Dell 5590 physical acceptance confirmed across all six test cases (see below).
 NET-2 remains 7/7 complete; this closes the driver link-recovery lifecycle milestone.
 
+2026-10-28 follow-up: the TCP endpoint sweep excluded listeners from permanent
+offline errors, allowing old-listener ACCEPT to wait again after replug. That
+kernel regression is fixed without changing driver/ring behavior. Actual-code
+ASan/UBSan/TSan and BIOS/UEFI × SMP=1/4 Ring 3 BSP/AP carrier-loss tests pass,
+including old-listener EIO/POLLERR, retained-child rollback and fresh port reuse.
+See [the listener error-latching audit](tcp-listener-link-loss.md). This does
+not add new physical PHY/DMA acceptance evidence.
+
 ## Implemented lifecycle
 
 | State | Driver-owned DMA | Next action |

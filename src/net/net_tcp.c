@@ -670,7 +670,10 @@ void net_tcp_tick(uint64_t ticks, bool online) {
                 } else if (pending->state==TCP_ESTABLISHED || pending->state==TCP_CLOSE_WAIT) ready|=1U<<j;
             }
             tcp_conn_tick(c,clock_ms);
-            if (!online && !e->listening && !e->error) e->error=SYSCALL_EIO;
+            /* A listener owns a live endpoint too: latch carrier loss so
+             * ACCEPT/POLL and reserved-child commit still fail after replug.
+             * Keep its queue/generation until normal retained close cleanup. */
+            if (!online && !e->error) e->error=SYSCALL_EIO;
             uint64_t rx_token=(c->rx_count&0xffffU)^(c->rx_count>>16);
             uint64_t observed=rx_token | ((uint64_t)c->tx_count<<16) |
                 ((uint64_t)c->state<<32) | ((uint64_t)(uint8_t)(-c->error)<<40) |

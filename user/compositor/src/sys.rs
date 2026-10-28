@@ -20,6 +20,262 @@ pub const SYS_FB_ACQUIRE: usize = 97;
 pub const SYS_FB_RELEASE: usize = 98;
 pub const SYS_MMAP: usize = 99;
 pub const SYS_SYSINFO: usize = 37;
+pub const SYS_NETCTL: usize = 42;
+pub const SYS_WIFI: usize = 87;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct NetworkInfo {
+    pub version: u32,
+    pub reserved: u32,
+    pub mac: [u8; 6],
+    pub reserved2: u16,
+    pub ip: u32,
+    pub netmask: u32,
+    pub gateway: u32,
+    pub mtu: u32,
+    pub link: u32,
+    pub reserved3: u32,
+    pub rx: u64,
+    pub tx: u64,
+    pub reserved4: [u32; 2],
+}
+const _: () = assert!(core::mem::size_of::<NetworkInfo>() == 64);
+pub fn network_info() -> Option<NetworkInfo> {
+    let mut result = NetworkInfo {
+        version: 1,
+        ..Default::default()
+    };
+    (unsafe { syscall3(SYS_NETCTL, 2, &mut result as *mut _ as usize, 64) } == 0).then_some(result)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WirelessInfo {
+    pub state: u32,
+    pub rssi: i8,
+    pub channel: u8,
+    pub bssid: [u8; 6],
+    pub ssid: [u8; 33],
+    pub mac: [u8; 6],
+    pub online: u16,
+    pub reserved: u32,
+}
+impl Default for WirelessInfo {
+    fn default() -> Self {
+        Self {
+            state: 0,
+            rssi: 0,
+            channel: 0,
+            bssid: [0; 6],
+            ssid: [0; 33],
+            mac: [0; 6],
+            online: 0,
+            reserved: 0,
+        }
+    }
+}
+const _: () = assert!(core::mem::size_of::<WirelessInfo>() == 60);
+pub fn wireless_info() -> Option<WirelessInfo> {
+    let mut result = WirelessInfo::default();
+    (unsafe { syscall3(SYS_WIFI, 4, &mut result as *mut _ as usize, 60) } == 0
+        && result.mac.iter().any(|b| *b != 0))
+    .then_some(result)
+}
+pub fn wireless_connect(ssid: &str, password: &[u8], bssid: [u8; 6]) -> isize {
+    if ssid.is_empty()
+        || ssid.len() > 32
+        || password.len() > 64
+        || ssid.as_bytes().contains(&0)
+        || password.contains(&0)
+    {
+        return -1;
+    }
+    let mut request = [0u8; 110];
+    request[..ssid.len()].copy_from_slice(ssid.as_bytes());
+    request[33..33 + password.len()].copy_from_slice(password);
+    request[98..104].copy_from_slice(&bssid);
+    let result = unsafe { syscall3(SYS_WIFI, 2, request.as_ptr() as usize, request.len()) };
+    for b in &mut request {
+        unsafe {
+            core::ptr::write_volatile(b, 0);
+        }
+    }
+    result
+}
+
+/// Use the CLI's bounded firmware decoder/bootstrap without credentials or
+/// profiles in argv. The caller polls this child instead of blocking painting.
+#[cfg(not(test))]
+pub fn wireless_prepare() -> isize {
+    let argv = [c"/bin/wifi".as_ptr(), c"init".as_ptr(), core::ptr::null()];
+    let actions = [0, 1, 2].map(|fd| SpawnFdAction {
+        action_type: 1, // OPEN
+        dst_fd: fd,
+        flags: VFS_O_RDWR,
+        path: c"/dev/null".as_ptr() as u64,
+        ..Default::default()
+    });
+    let opts = SpawnOpts {
+        size: core::mem::size_of::<SpawnOpts>() as u32,
+        version: 2,
+        argv: argv.as_ptr() as u64,
+        fd_actions: actions.as_ptr() as u64,
+        action_count: 3,
+        ..Default::default()
+    };
+    spawn_ext("/bin/wifi", &opts)
+}
+#[cfg(test)]
+pub fn wireless_prepare() -> isize { -1 }
+
+pub fn child_status(pid: isize) -> Option<Result<(), isize>> {
+    let mut status = 0u64;
+    let rc = unsafe { syscall3(33, pid as usize, &mut status as *mut _ as usize, 1) };
+    if rc == 0 || rc == -4 { None }
+    else if rc < 0 { Some(Err(rc)) }
+    else if status == 0 { Some(Ok(())) }
+    else { Some(Err(-5)) }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Calendar {
+    pub year: i32,
+    pub month: i32,
+    pub day: i32,
+    pub hour: i32,
+    pub minute: i32,
+    pub second: i32,
+    pub weekday: i32,
+}
+#[cfg(not(test))]
+unsafe extern "C" {
+    fn desktop_clock(seconds: i64, local: *mut i64, calendar: *mut Calendar) -> bool;
+    fn desktop_clock_invalidate();
+    fn desktop_zone_valid(name: *const u8, seconds: i64) -> bool;
+}
+pub fn local_clock(seconds: i64) -> Option<(i64, Calendar)> {
+    #[cfg(not(test))]
+    {
+        let mut local = 0;
+        let mut calendar = Calendar::default();
+        return unsafe { desktop_clock(seconds, &mut local, &mut calendar) }
+            .then_some((local, calendar));
+    }
+    #[cfg(test)]
+    {
+        let _ = seconds;
+        None
+    }
+}
+pub fn invalidate_clock() {
+    #[cfg(not(test))]
+    unsafe {
+        desktop_clock_invalidate();
+    }
+}
+pub fn zone_valid(name: &str, seconds: i64) -> bool {
+    if name.is_empty() || name.len() > 95 || name.as_bytes().contains(&0) {
+        return false;
+    }
+    let mut buffer = [0u8; 96];
+    buffer[..name.len()].copy_from_slice(name.as_bytes());
+    #[cfg(not(test))]
+    {
+        return unsafe { desktop_zone_valid(buffer.as_ptr(), seconds) };
+    }
+    #[cfg(test)]
+    {
+        let _ = (buffer, seconds);
+        false
+    }
+}
+
+pub fn read_file(path: &str, buffer: &mut [u8]) -> Result<usize, isize> {
+    let fd = open(path, (VFS_O_RDONLY | 0x80000) as i32);
+    if fd < 0 {
+        return Err(fd);
+    }
+    let mut used = 0;
+    let result = loop {
+        if used == buffer.len() {
+            break Err(-12);
+        }
+        let n = read(fd as i32, &mut buffer[used..]);
+        if n < 0 {
+            break Err(n);
+        }
+        if n == 0 {
+            break Ok(used);
+        }
+        if n as usize > buffer.len() - used {
+            break Err(-9);
+        }
+        used += n as usize;
+    };
+    close(fd as i32);
+    result
+}
+
+fn path_call(nr: usize, first: &str, second: Option<&str>, mode: usize) -> isize {
+    if first.len() >= 128 || first.as_bytes().contains(&0) {
+        return -1;
+    }
+    let mut a = [0u8; 128];
+    a[..first.len()].copy_from_slice(first.as_bytes());
+    let mut b = [0u8; 128];
+    if let Some(other) = second {
+        if other.len() >= 128 || other.as_bytes().contains(&0) {
+            return -1;
+        }
+        b[..other.len()].copy_from_slice(other.as_bytes());
+        unsafe { syscall3(nr, a.as_ptr() as usize, b.as_ptr() as usize, mode) }
+    } else {
+        unsafe { syscall3(nr, a.as_ptr() as usize, mode, 0) }
+    }
+}
+
+/// Temp names are exclusive; failure never truncates the previous setting.
+pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8]) -> Result<(), isize> {
+    let fd = path_call(
+        SYS_OPEN,
+        temporary,
+        None,
+        (VFS_O_WRONLY | VFS_O_CREAT | 0x80 | 0x80000) as usize,
+    );
+    // SYS_OPEN uses path/flags; creation permissions follow the VFS policy.
+    if fd < 0 {
+        return Err(fd);
+    }
+    let mut at = 0;
+    while at < bytes.len() {
+        let n = write(fd as i32, &bytes[at..]);
+        if n <= 0 || n as usize > bytes.len() - at {
+            close(fd as i32);
+            path_call(12, temporary, None, 0);
+            return Err(if n < 0 { n } else { -9 });
+        }
+        at += n as usize;
+    }
+    let sync = unsafe { syscall1(86, fd as usize) };
+    let closed = close(fd as i32);
+    // Volatile live /etc has no device durability operation; ext4 does.
+    if (sync < 0 && sync != -14) || closed < 0 {
+        path_call(12, temporary, None, 0);
+        return Err(if closed < 0 { closed } else { sync });
+    }
+    let mut renamed = path_call(84, temporary, Some(path), 0);
+    if renamed == -5 {
+        renamed = path_call(13, temporary, Some(path), 0);
+    }
+    if renamed < 0 {
+        path_call(12, temporary, None, 0);
+        Err(renamed)
+    } else {
+        Ok(())
+    }
+}
 
 /// Fixed 72-byte public sysinfo_t, src/include/syscall_abi.h.
 #[repr(C)]
@@ -52,9 +308,10 @@ pub fn system_info() -> Option<SystemInfo> {
 pub const EINTR: isize = -22;
 pub const EBUSY: isize = -36;
 
-pub const VFS_O_RDONLY: u32 = 0x0001;
-pub const VFS_O_WRONLY: u32 = 0x0002;
-pub const VFS_O_RDWR: u32 = 0x0003;
+// Exact access-mode values from src/fs/vfs.h (not bit flags).
+pub const VFS_O_RDONLY: u32 = 0;
+pub const VFS_O_WRONLY: u32 = 1;
+pub const VFS_O_RDWR: u32 = 2;
 pub const VFS_O_CREAT: u32 = 0x0040;
 pub const VFS_O_TRUNC: u32 = 0x0200;
 pub const VFS_O_NONBLOCK: u32 = 0x800;
@@ -270,6 +527,10 @@ pub fn poll(fds: &mut [PollFd], timeout_ms: i64) -> isize {
 
 pub fn clock_gettime(clk_id: u32, ts: &mut Timespec) -> isize {
     unsafe { syscall2(SYS_CLOCK_GETTIME, clk_id as usize, ts as *mut _ as usize) }
+}
+pub fn monotonic_seconds() -> Option<i64> {
+    let mut time = Timespec::default();
+    (clock_gettime(1, &mut time) == 0).then_some(time.tv_sec)
 }
 
 pub fn nanosleep(req: &Timespec, rem: Option<&mut Timespec>) -> isize {
