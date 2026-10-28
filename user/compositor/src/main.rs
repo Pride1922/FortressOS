@@ -596,6 +596,10 @@ fn handle_key(
     files: &mut Option<FileManager>,
     is_test: bool,
 ) -> bool {
+    if b == 27 && windows.context_menu.is_some() {
+        windows.close_context_menu(scene);
+        return false;
+    }
     let top_window_id = windows.focused_window_id();
     if top_window_id == Some(3) && term.is_some() {
         if let Some(t) = term.as_ref() {

@@ -689,6 +689,8 @@ pub struct WindowManager {
     pub menu_hover: Option<usize>,
     #[allow(dead_code)]
     pub dock_hover: Option<usize>,
+    pub context_menu: Option<(usize, usize)>,
+    pub context_hover: Option<usize>,
 }
 
 impl WindowManager {
@@ -740,6 +742,8 @@ impl WindowManager {
             start_open: false,
             menu_hover: None,
             dock_hover: None,
+            context_menu: None,
+            context_hover: None,
         })
     }
 
@@ -755,6 +759,8 @@ impl WindowManager {
             start_open: false,
             menu_hover: None,
             dock_hover: None,
+            context_menu: None,
+            context_hover: None,
         }
     }
 
@@ -815,6 +821,43 @@ impl WindowManager {
             y: 24 * theme::scale(height),
             w: 220 * theme::scale(height),
             h: 157 * theme::scale(height),
+        }
+    }
+
+    pub fn context_menu_rect(x: usize, y: usize, height: usize) -> Rect {
+        let scale = theme::scale(height);
+        Rect {
+            x,
+            y,
+            w: 170 * scale,
+            h: 114 * scale,
+        }
+    }
+
+    pub fn context_item_at(px: usize, py: usize) -> Option<usize> {
+        if px >= 4 && px < 166 {
+            if (4..24).contains(&py) {
+                Some(0)
+            } else if (24..44).contains(&py) {
+                Some(1)
+            } else if (47..67).contains(&py) {
+                Some(2)
+            } else if (70..90).contains(&py) {
+                Some(3)
+            } else if (90..110).contains(&py) {
+                Some(4)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn close_context_menu(&mut self, s: &mut Surface) {
+        if let Some((mx, my)) = self.context_menu.take() {
+            self.context_hover = None;
+            s.damage(Self::context_menu_rect(mx, my, s.height));
         }
     }
 
@@ -1021,6 +1064,33 @@ impl WindowManager {
                 }
             }
         }
+        // Right-click handling: open context menu on empty desktop space
+        if (buttons & 2 != 0) && (self.buttons & 2 == 0) {
+            if self.start_open {
+                self.start_open = false;
+                s.damage(Self::start_btn_rect(s.height));
+                s.damage(Self::start_menu_rect(s.height));
+            }
+            self.close_context_menu(s);
+
+            let scale = theme::scale(s.height);
+            let on_dock = Self::dock_rect(s.width, s.height).contains(x, y);
+            let on_topbar = y < 24 * scale;
+            let on_window = self.hit_test(x, y).is_some();
+
+            if !on_dock && !on_topbar && !on_window {
+                let menu_w = 170 * scale;
+                let menu_h = 114 * scale;
+                let mx = x.min(s.width.saturating_sub(menu_w + 4));
+                let my = y.min(s.height.saturating_sub(menu_h + 30 * scale));
+                self.context_menu = Some((mx, my));
+                self.context_hover = None;
+                s.damage(Rect { x: mx, y: my, w: menu_w, h: menu_h });
+                self.buttons = buttons;
+                return Action::None;
+            }
+        }
+
         if buttons & 1 == 0 {
             for w in &mut self.windows {
                 if w.is_dragging && self.buttons & 1 != 0 && w.id >= 3 {
@@ -1058,6 +1128,28 @@ impl WindowManager {
                 w.is_resizing = false;
             }
         } else if self.buttons & 1 == 0 {
+            // Dismiss or interact with context menu
+            if let Some((mx, my)) = self.context_menu.take() {
+                let scale = theme::scale(s.height);
+                let menu_r = Self::context_menu_rect(mx, my, s.height);
+                s.damage(menu_r);
+                if menu_r.contains(x, y) {
+                    let px = (x - mx) / scale;
+                    let py = (y - my) / scale;
+                    if let Some(idx) = Self::context_item_at(px, py) {
+                        self.buttons = buttons;
+                        return match idx {
+                            0 => Action::SpawnNotepad,
+                            1 => Action::SpawnFileManager,
+                            2 => Action::SpawnTerminal,
+                            3 => Action::OpenDesktopApp(7),
+                            4 => Action::OpenDesktopApp(7),
+                            _ => Action::None,
+                        };
+                    }
+                }
+            }
+
             let dock_r = Self::dock_rect(s.width, s.height);
             let start_btn = Self::start_btn_rect(s.height);
             let start_menu = Self::start_menu_rect(s.height);
@@ -1200,6 +1292,22 @@ impl WindowManager {
             if new_menu_hover != self.menu_hover {
                 self.menu_hover = new_menu_hover;
                 s.damage(start_menu);
+            }
+        }
+
+        if let Some((mx, my)) = self.context_menu {
+            let scale = theme::scale(s.height);
+            let menu_r = Self::context_menu_rect(mx, my, s.height);
+            let new_ctx_hover = if menu_r.contains(x, y) {
+                let px = (x - mx) / scale;
+                let py = (y - my) / scale;
+                Self::context_item_at(px, py)
+            } else {
+                None
+            };
+            if new_ctx_hover != self.context_hover {
+                self.context_hover = new_ctx_hover;
+                s.damage(menu_r);
             }
         }
 
@@ -1930,6 +2038,150 @@ impl WindowManager {
                                     } else {
                                         item_bg
                                     }
+                                }
+                            };
+                        }
+                    }
+                }
+            }
+
+            // Windows Acrylic Desktop Context Menu
+            if let Some((mx, my)) = self.context_menu {
+                let menu_rect = Self::context_menu_rect(mx, my, s.height);
+                if let Some(clip) = menu_rect.intersection(r) {
+                    let bw = menu_rect.w / scale;
+                    let bh = menu_rect.h / scale;
+                    for y in clip.y..clip.y + clip.h {
+                        for x in clip.x..clip.x + clip.w {
+                            let px = (x - menu_rect.x) / scale;
+                            let py = (y - menu_rect.y) / scale;
+                            let is_border = px == 0 || px == bw - 1 || py == 0 || py == bh - 1;
+                            s.pixels[y * s.width + x] = if is_border {
+                                0xff30363d
+                            } else if py == 45 || py == 68 {
+                                if px >= 8 && px < bw - 8 {
+                                    0xff28313d
+                                } else {
+                                    0xff1c2128
+                                }
+                            } else {
+                                let item = Self::context_item_at(px, py);
+                                let is_hover = item.is_some() && item == self.context_hover;
+                                let item_bg = if is_hover && px >= 4 && px < bw - 4 {
+                                    0xff28313d
+                                } else {
+                                    0xff1c2128
+                                };
+
+                                let (item_idx, item_y) = match item {
+                                    Some(0) => (0, py - 4),
+                                    Some(1) => (1, py - 24),
+                                    Some(2) => (2, py - 47),
+                                    Some(3) => (3, py - 70),
+                                    Some(4) => (4, py - 90),
+                                    _ => (99, 0),
+                                };
+
+                                let icon_pixel = if item_idx <= 4 && px >= 8 && px < 22 && (3..17).contains(&item_y) {
+                                    let ix = px - 8;
+                                    let iy = item_y - 3;
+                                    match item_idx {
+                                        0 => {
+                                            if (2..=10).contains(&ix) && (1..=12).contains(&iy) {
+                                                if ix >= 8 && iy <= 3 {
+                                                    Some(0xff8b949e)
+                                                } else if (iy == 5 || iy == 7 || iy == 9) && (4..=7).contains(&ix) {
+                                                    Some(0xff38bdf8)
+                                                } else {
+                                                    Some(0xffffffff)
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        1 => {
+                                            if (2..=5).contains(&ix) && (2..=3).contains(&iy) {
+                                                Some(0xffd29922)
+                                            } else if (1..=12).contains(&ix) && (4..=11).contains(&iy) {
+                                                Some(if iy >= 6 { 0xfff0b232 } else { 0xffe3b341 })
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        2 => {
+                                            if (iy == 4 && ix == 4) || (iy == 5 && ix == 5) || (iy == 6 && ix == 6)
+                                                || (iy == 7 && ix == 5) || (iy == 8 && ix == 4)
+                                                || (iy == 9 && (7..=10).contains(&ix))
+                                            {
+                                                Some(0xff56d364)
+                                            } else if ix == 1 || ix == 12 || iy == 1 || iy == 12 {
+                                                Some(0xff30363d)
+                                            } else if ix > 1 && ix < 12 && iy > 1 && iy < 12 {
+                                                Some(0xff0d1117)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        3 => {
+                                            if (ix == 1 || ix == 12) && (2..=9).contains(&iy)
+                                                || (iy == 2 || iy == 9) && (1..=12).contains(&ix)
+                                            {
+                                                Some(0xff38bdf8)
+                                            } else if ix >= 2 && ix <= 11 && iy >= 3 && iy <= 8 {
+                                                Some(0xff0f172a)
+                                            } else if (ix == 6 || ix == 7) && (10..=11).contains(&iy)
+                                                || iy == 12 && (4..=9).contains(&ix)
+                                            {
+                                                Some(0xff94a3b8)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        4 => {
+                                            let dx = (ix as i32 - 7).abs();
+                                            let dy = (iy as i32 - 7).abs();
+                                            let dist_sq = dx * dx + dy * dy;
+                                            if dist_sq <= 25 {
+                                                if ix == 4 && iy == 4 {
+                                                    Some(0xff38bdf8)
+                                                } else if ix == 8 && iy == 4 {
+                                                    Some(0xfff43f5e)
+                                                } else if ix == 9 && iy == 7 {
+                                                    Some(0xffeab308)
+                                                } else if ix == 5 && iy == 8 {
+                                                    Some(item_bg)
+                                                } else {
+                                                    Some(0xff8b5cf6)
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                if let Some(p) = icon_pixel {
+                                    p
+                                } else if item_idx <= 4 {
+                                    let label = match item_idx {
+                                        0 => "New File",
+                                        1 => "New Folder",
+                                        2 => "Open in Terminal",
+                                        3 => "Display Settings",
+                                        4 => "Personalize",
+                                        _ => "",
+                                    };
+                                    let fg = if is_hover { 0xffffffff } else { 0xffe6edf3 };
+                                    if !label.is_empty() && px >= 28 && px < bw - 6 && (2..18).contains(&item_y) {
+                                        theme::text_pixel(label, px - 28, item_y - 2, fg, item_bg)
+                                    } else {
+                                        item_bg
+                                    }
+                                } else {
+                                    item_bg
                                 }
                             };
                         }

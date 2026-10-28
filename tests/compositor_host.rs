@@ -1001,6 +1001,83 @@ fn start_menu_toggle_and_actions() {
 }
 
 #[test]
+fn desktop_right_click_context_menu_actions_and_dismissal() {
+    let mut wm = WindowManager::demo().unwrap();
+    let mut s = Surface::new(640, 480).unwrap();
+    assert!(wm.context_menu.is_none());
+
+    // Right-click on window 1 (x = 100, y = 150) must NOT open desktop context menu
+    let act = wm.mouse(100, 150, 2, &mut s);
+    assert_eq!(act, window::Action::None);
+    assert!(wm.context_menu.is_none());
+    wm.mouse(100, 150, 0, &mut s);
+
+    // Right-click on empty desktop (x = 580, y = 100) opens context menu
+    let act = wm.mouse(580, 100, 2, &mut s);
+    assert_eq!(act, window::Action::None);
+    assert!(wm.context_menu.is_some());
+    let (mx, my) = wm.context_menu.unwrap();
+    assert_eq!(mx, 466); // 580 clamped to 640 - 174 = 466
+    assert_eq!(my, 100);
+    wm.mouse(580, 100, 0, &mut s);
+
+    // Hover item 2 ("Open in Terminal": py in 47..67, so y = 100 + 55 = 155)
+    wm.mouse(mx + 50, my + 55, 0, &mut s);
+    assert_eq!(wm.context_hover, Some(2));
+
+    // Left-click item 0 ("New File": y = 100 + 14 = 114)
+    let act0 = wm.mouse(mx + 50, my + 14, 1, &mut s);
+    assert_eq!(act0, window::Action::SpawnNotepad);
+    assert!(wm.context_menu.is_none()); // Menu closed on selection
+    wm.mouse(mx + 50, my + 14, 0, &mut s);
+
+    // Reopen and click item 1 ("New Folder": y = 100 + 34 = 134)
+    let _ = wm.mouse(580, 100, 2, &mut s);
+    wm.mouse(580, 100, 0, &mut s);
+    assert!(wm.context_menu.is_some());
+    let act1 = wm.mouse(mx + 50, my + 34, 1, &mut s);
+    assert_eq!(act1, window::Action::SpawnFileManager);
+    assert!(wm.context_menu.is_none());
+    wm.mouse(mx + 50, my + 34, 0, &mut s);
+
+    // Reopen and click item 2 ("Open in Terminal": y = 100 + 55 = 155)
+    let _ = wm.mouse(580, 100, 2, &mut s);
+    wm.mouse(580, 100, 0, &mut s);
+    assert!(wm.context_menu.is_some());
+    let act2 = wm.mouse(mx + 50, my + 55, 1, &mut s);
+    assert_eq!(act2, window::Action::SpawnTerminal);
+    assert!(wm.context_menu.is_none());
+    wm.mouse(mx + 50, my + 55, 0, &mut s);
+
+    // Reopen and click item 3 ("Display Settings": y = 100 + 80 = 180)
+    let _ = wm.mouse(580, 100, 2, &mut s);
+    wm.mouse(580, 100, 0, &mut s);
+    assert!(wm.context_menu.is_some());
+    let act3 = wm.mouse(mx + 50, my + 80, 1, &mut s);
+    assert_eq!(act3, window::Action::OpenDesktopApp(7));
+    assert!(wm.context_menu.is_none());
+    wm.mouse(mx + 50, my + 80, 0, &mut s);
+
+    // Reopen and click item 4 ("Personalize": y = 100 + 100 = 200)
+    let _ = wm.mouse(580, 100, 2, &mut s);
+    wm.mouse(580, 100, 0, &mut s);
+    assert!(wm.context_menu.is_some());
+    let act4 = wm.mouse(mx + 50, my + 100, 1, &mut s);
+    assert_eq!(act4, window::Action::OpenDesktopApp(7));
+    assert!(wm.context_menu.is_none());
+    wm.mouse(mx + 50, my + 100, 0, &mut s);
+
+    // Reopen and click outside (e.g. at (10, 100)) dismisses menu
+    let _ = wm.mouse(580, 100, 2, &mut s);
+    wm.mouse(580, 100, 0, &mut s);
+    assert!(wm.context_menu.is_some());
+    let act_outside = wm.mouse(10, 100, 1, &mut s);
+    assert_eq!(act_outside, window::Action::None);
+    assert!(wm.context_menu.is_none());
+    wm.mouse(10, 100, 0, &mut s);
+}
+
+#[test]
 fn window_resizing_and_clamping() {
     let mut wm = WindowManager::demo().unwrap();
     let mut s = Surface::new(640, 480).unwrap();
