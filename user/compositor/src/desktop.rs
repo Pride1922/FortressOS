@@ -34,43 +34,43 @@ const fn control(id: u16, x: usize, y: usize, w: usize, h: usize) -> Control {
     }
 }
 const NAV: [Control; 3] = [
-    control(100, 24, 48, 140, 28),
-    control(101, 176, 48, 140, 28),
-    control(102, 328, 48, 140, 28),
+    control(100, 10, 56, 160, 34),
+    control(101, 10, 94, 160, 34),
+    control(102, 10, 132, 160, 34),
 ];
 const APPEARANCE: [Control; 9] = [
-    control(1, 24, 116, 100, 30),
-    control(2, 136, 116, 100, 30),
-    control(3, 248, 116, 100, 30),
-    control(4, 24, 188, 190, 30),
-    control(5, 226, 188, 150, 30),
-    control(6, 24, 260, 130, 30),
-    control(7, 166, 260, 130, 30),
-    control(8, 24, 324, 140, 32),
-    control(9, 176, 324, 140, 32),
+    control(1, 196, 96, 96, 28),
+    control(2, 300, 96, 96, 28),
+    control(3, 404, 96, 96, 28),
+    control(4, 196, 178, 140, 28),
+    control(5, 344, 178, 140, 28),
+    control(6, 196, 262, 110, 28),
+    control(7, 314, 262, 110, 28),
+    control(8, 196, 306, 130, 32),
+    control(9, 334, 306, 130, 32),
 ];
 const NETWORK: [Control; 12] = [
-    control(1, 24, 212, 100, 30),
-    control(2, 136, 212, 120, 30),
-    control(3, 268, 212, 90, 30),
-    control(4, 370, 212, 90, 30),
-    control(5, 24, 420, 250, 30),
-    control(6, 286, 420, 224, 30),
-    control(7, 24, 464, 220, 32),
-    control(8, 520, 420, 64, 30),
-    control(20, 24, 252, 560, 32),
-    control(21, 24, 288, 560, 32),
-    control(22, 24, 324, 560, 32),
-    control(23, 24, 360, 560, 32),
+    control(1, 470, 146, 84, 28),
+    control(2, 562, 146, 92, 28),
+    control(3, 490, 186, 74, 26),
+    control(4, 572, 186, 82, 26),
+    control(5, 196, 350, 210, 28),
+    control(6, 196, 402, 210, 28),
+    control(7, 476, 402, 90, 28),
+    control(8, 414, 402, 54, 28),
+    control(20, 196, 216, 458, 24),
+    control(21, 196, 242, 458, 24),
+    control(22, 196, 268, 458, 24),
+    control(23, 196, 294, 458, 24),
 ];
 const CLOCK: [Control; 7] = [
-    control(1, 24, 150, 350, 30),
-    control(2, 386, 150, 140, 30),
-    control(3, 24, 200, 100, 30),
-    control(4, 136, 200, 140, 30),
-    control(5, 288, 200, 140, 30),
-    control(6, 440, 200, 100, 30),
-    control(7, 24, 286, 220, 32),
+    control(1, 196, 152, 270, 28),
+    control(2, 474, 152, 140, 28),
+    control(3, 196, 206, 70, 26),
+    control(4, 274, 206, 96, 26),
+    control(5, 378, 206, 96, 26),
+    control(6, 482, 206, 70, 26),
+    control(7, 196, 286, 180, 28),
 ];
 impl Builtin {
     #[cfg(test)]
@@ -903,75 +903,99 @@ impl AppHost {
             h: s.height,
         });
     }
-    fn draw(&self, index: usize, c: &mut Canvas) {
-        c.label(24, 12, 500, ui::APPS[index].name, theme::TEXT);
+    fn draw_sidebar(&self, index: usize, c: &mut Canvas) {
+        let h = c.height();
+        c.fill_rect(Rect { x: 180, y: 0, w: 1, h }, 0xff253040);
+
+        c.badge(Rect { x: 16, y: 12, w: 28, h: 28 }, "O", 0xffffffff, 0xff1f3d5c, 0xff3b82f6);
+        c.label_h(52, 10, 120, 18, "Operator", theme::TEXT, 0xff111620);
+        c.label_h(52, 28, 120, 18, "Administrator", theme::MUTED, 0xff111620);
+
+        c.fill_rect(Rect { x: 12, y: 48, w: 156, h: 1 }, 0xff1e2634);
+
+        let nav_items = [
+            ("P", "Personalization"),
+            ("N", "Network & Wi-Fi"),
+            ("T", "Date & Time"),
+        ];
         for (i, control) in NAV.iter().enumerate() {
-            c.button(
+            c.sidebar_nav(
                 control.rect,
-                ["Appearance", "Network", "Date & time"][i],
+                nav_items[i].0,
+                nav_items[i].1,
                 i == index,
                 false,
             );
         }
+
+        if h >= 400 {
+            c.label_h(14, h.saturating_sub(26), 150, 18, "FortressOS v0.2.0", 0xff5a6b82, 0xff111620);
+        }
+    }
+    fn draw(&self, index: usize, c: &mut Canvas) {
+        self.draw_sidebar(index, c);
         let focus = self.apps[index].focus;
         let mut text = Text::<112>::default();
         match index {
             0 => {
-                c.label(24, 88, 500, "Interface scale", theme::MUTED);
+                c.label_h(196, 12, 450, 20, "Personalization", theme::TEXT, theme::PANEL);
+                c.label_h(196, 32, 450, 18, "Display scaling, wallpaper artwork, and clock format", theme::MUTED, theme::PANEL);
+
+                c.label_h(196, 56, 450, 18, "Interface Scale", theme::TEXT, theme::PANEL);
+                c.label_h(196, 74, 450, 18, "Scale windows and desktop elements for screen density", theme::MUTED, theme::PANEL);
                 for i in 0..3 {
                     c.button(
                         APPEARANCE[i].rect,
-                        ["Automatic", "Native", "Large (2x)"][i],
+                        ["Automatic", "Native (1x)", "Large (2x)"][i],
                         self.draft.scale as usize == i,
                         focus == i,
                     );
                 }
-                c.label(24, 160, 500, "Wallpaper", theme::MUTED);
+                c.fill_rect(Rect { x: 196, y: 130, w: 468, h: 1 }, 0xff253040);
+
+                c.label_h(196, 138, 450, 18, "Desktop Background", theme::TEXT, theme::PANEL);
+                c.label_h(196, 156, 450, 18, "Choose wallpaper image or solid minimalist background", theme::MUTED, theme::PANEL);
                 c.button(
                     APPEARANCE[3].rect,
-                    "Original hello world",
+                    "Hello World",
                     self.draft.wallpaper,
                     focus == 3,
                 );
                 c.button(
                     APPEARANCE[4].rect,
-                    "Plain",
+                    "Plain Black",
                     !self.draft.wallpaper,
                     focus == 4,
                 );
-                c.label(24, 232, 500, "Clock format", theme::MUTED);
+                c.fill_rect(Rect { x: 196, y: 214, w: 468, h: 1 }, 0xff253040);
+
+                c.label_h(196, 222, 450, 18, "Taskbar Clock", theme::TEXT, theme::PANEL);
+                c.label_h(196, 240, 450, 18, "Choose between 24-hour and 12-hour clock format", theme::MUTED, theme::PANEL);
                 c.button(
                     APPEARANCE[5].rect,
-                    "24-hour",
+                    "24-Hour",
                     self.draft.clock_24h,
                     focus == 5,
                 );
                 c.button(
                     APPEARANCE[6].rect,
-                    "12-hour",
+                    "12-Hour",
                     !self.draft.clock_24h,
                     focus == 6,
                 );
-                c.button(APPEARANCE[7].rect, "Apply & save", false, focus == 7);
-                c.button(APPEARANCE[8].rect, "Use defaults", false, focus == 8);
-                c.label(
-                    24,
-                    372,
-                    c.width().saturating_sub(48),
-                    self.messages[index].as_str(),
-                    theme::MUTED,
-                );
-                let _ = write!(text, "FortressOS Desktop {}", VERSION);
-                c.label(
-                    24,
-                    396,
-                    c.width().saturating_sub(48),
-                    text.as_str(),
-                    theme::MUTED,
-                );
+                c.fill_rect(Rect { x: 196, y: 298, w: 468, h: 1 }, 0xff253040);
+
+                c.button_accent(APPEARANCE[7].rect, "Apply & Save", focus == 7);
+                c.button(APPEARANCE[8].rect, "Use Defaults", false, focus == 8);
+
+                c.label_h(196, 350, 450, 18, self.messages[index].as_str(), theme::MUTED, theme::PANEL);
+                c.label_h(196, 370, 450, 18, "Preferences persist on installed roots across reboots.", theme::MUTED, theme::PANEL);
             }
             1 => self.draw_network(c, focus),
             _ => {
+                c.label_h(196, 12, 450, 20, "Time & Language", theme::TEXT, theme::PANEL);
+                c.label_h(196, 32, 450, 18, "System clock, time synchronization, and regional timezone", theme::MUTED, theme::PANEL);
+
                 if let Some(t) = self.calendar {
                     let _ = write!(
                         text,
@@ -981,136 +1005,90 @@ impl AppHost {
                 } else {
                     let _ = write!(text, "Clock unavailable: check timezone configuration");
                 }
-                c.label(
-                    24,
-                    94,
-                    c.width().saturating_sub(48),
-                    text.as_str(),
-                    theme::TEXT,
-                );
-                c.label(
-                    24,
-                    122,
-                    500,
-                    "System timezone (IANA Region/City)",
-                    theme::MUTED,
-                );
+                c.label_h(200, 56, 450, 22, text.as_str(), 0xffffffff, theme::PANEL);
+                c.label_h(200, 80, 450, 18, "Hardware RTC clock synchronized", theme::MUTED, theme::PANEL);
+                c.fill_rect(Rect { x: 196, y: 104, w: 468, h: 1 }, 0xff253040);
+
+                c.label_h(196, 112, 450, 18, "System Timezone", theme::TEXT, theme::PANEL);
+                c.label_h(196, 130, 450, 18, "Enter an installed IANA Region/City name", theme::MUTED, theme::PANEL);
                 c.entry(CLOCK[0].rect, self.zone.as_str(), focus == 0);
-                c.button(CLOCK[1].rect, "Save timezone", false, focus == 1);
+                c.button_accent(CLOCK[1].rect, "Save Timezone", focus == 1);
+                c.label_h(196, 186, 450, 18, "Quick Presets", theme::MUTED, theme::PANEL);
                 for (i, label) in ["UTC", "Brussels", "New York", "Tokyo"].iter().enumerate() {
                     c.button(CLOCK[i + 2].rect, label, false, focus == i + 2);
                 }
-                c.label(
-                    24,
-                    246,
-                    c.width().saturating_sub(48),
-                    "Uses the system timezone database, including daylight-saving rules.",
-                    theme::MUTED,
-                );
+                c.fill_rect(Rect { x: 196, y: 238, w: 468, h: 1 }, 0xff253040);
+
+                c.label_h(196, 246, 450, 18, "Taskbar Clock Format", theme::TEXT, theme::PANEL);
+                c.label_h(196, 264, 450, 18, "Toggle between 12-hour and 24-hour display format", theme::MUTED, theme::PANEL);
                 c.button(
                     CLOCK[6].rect,
                     if self.preferences.clock_24h {
-                        "Switch to 12-hour"
+                        "Switch to 12-Hour"
                     } else {
-                        "Switch to 24-hour"
+                        "Switch to 24-Hour"
                     },
                     false,
                     focus == 6,
                 );
-                c.label(
-                    24,
-                    356,
-                    c.width().saturating_sub(48),
-                    self.messages[index].as_str(),
-                    theme::MUTED,
-                );
+                c.fill_rect(Rect { x: 196, y: 322, w: 468, h: 1 }, 0xff253040);
+
+                c.label_h(196, 330, 450, 22, self.messages[index].as_str(), theme::MUTED, theme::PANEL);
             }
         }
     }
     fn draw_network(&self, c: &mut Canvas, focus: usize) {
         let mut text = Text::<112>::default();
+
+        c.label_h(196, 12, 450, 20, "Network & Internet", theme::TEXT, theme::PANEL);
+        c.label_h(196, 32, 450, 18, "Ethernet, wireless Wi-Fi, and network status", theme::MUTED, theme::PANEL);
+
+        // Ethernet badge
+        c.badge(Rect { x: 200, y: 56, w: 34, h: 34 }, "ETH", 0xff69b7ff, 0xff1f3d5c, 0xff3b82f6);
+
         if let Some(n) = self.network {
-            let _ = write!(
-                text,
-                "Default interface: {}   MTU {}",
-                match n.link {
-                    2 => "online",
-                    1 => "waiting",
-                    3 => "down",
-                    4 => "failed",
-                    _ => "uninitialized",
-                },
-                n.mtu
-            );
-            c.label(
-                24,
-                88,
-                c.width().saturating_sub(48),
-                text.as_str(),
-                theme::TEXT,
-            );
+            let (status_text, status_color) = match n.link {
+                2 => ("Connected  (Online)", 0xff4ade80),
+                1 => ("Waiting for cable...", 0xfffacc15),
+                3 => ("Link Down", 0xfff87171),
+                4 => ("Link Failed", 0xfff87171),
+                _ => ("Uninitialized", theme::MUTED),
+            };
+            c.label_h(244, 56, 400, 18, "Ethernet", theme::TEXT, theme::PANEL);
+            c.label_h(244, 74, 400, 18, status_text, status_color, theme::PANEL);
+            let _ = write!(text, "IPv4 {}   Gateway {}", ipv4(n.ip).as_str(), ipv4(n.gateway).as_str());
+            c.label_h(200, 96, 450, 18, text.as_str(), theme::MUTED, theme::PANEL);
             text.clear();
-            let _ = write!(
-                text,
-                "IPv4 {}   Gateway {}",
-                ipv4(n.ip).as_str(),
-                ipv4(n.gateway).as_str()
-            );
-            c.label(
-                24,
-                112,
-                c.width().saturating_sub(48),
-                text.as_str(),
-                theme::MUTED,
-            );
-            text.clear();
-            let _ = write!(text, "RX {} packets    TX {} packets", n.rx, n.tx);
-            c.label(
-                24,
-                136,
-                c.width().saturating_sub(48),
-                text.as_str(),
-                theme::MUTED,
-            );
+            let _ = write!(text, "RX {} pkts    TX {} pkts    MTU {}", n.rx, n.tx, n.mtu);
+            c.label_h(200, 114, 450, 18, text.as_str(), theme::MUTED, theme::PANEL);
         } else {
-            c.label(
-                24,
-                88,
-                c.width().saturating_sub(48),
-                "Network information unavailable",
-                theme::MUTED,
-            );
-            c.label(24, 112, c.width().saturating_sub(48), "", theme::MUTED);
-            c.label(24, 136, c.width().saturating_sub(48), "", theme::MUTED);
+            c.label_h(244, 56, 400, 18, "Ethernet", theme::TEXT, theme::PANEL);
+            c.label_h(244, 74, 400, 18, "Hardware unavailable", theme::MUTED, theme::PANEL);
         }
+        c.fill_rect(Rect { x: 196, y: 136, w: 468, h: 1 }, 0xff253040);
+
         text.clear();
         if let Some(w) = self.wireless {
-            let name =
-                core::str::from_utf8(&w.ssid[..w.ssid.iter().position(|b| *b == 0).unwrap_or(33)])
-                    .unwrap_or("?");
+            let name = core::str::from_utf8(&w.ssid[..w.ssid.iter().position(|b| *b == 0).unwrap_or(33)]).unwrap_or("?");
             let _ = write!(
                 text,
-                "Wi-Fi: {}  {}",
+                "Wi-Fi: {} {}",
                 match w.state {
-                    1 => "scanning",
-                    2..=4 => "connecting...",
-                    5 if w.online != 0 => "connected",
-                    5 => "finishing connection...",
-                    6 => "could not connect",
-                    _ => "not connected",
+                    1 => "Scanning...",
+                    2..=4 => "Connecting...",
+                    5 if w.online != 0 => "Connected to",
+                    5 => "Authenticating...",
+                    6 => "Failed to connect",
+                    _ => "Disconnected",
                 },
-                name
+                if w.state == 5 { name } else { "" }
             );
         } else {
-            let _ = write!(text, "{}", "Wi-Fi unavailable on this hardware or driver");
+            let _ = write!(text, "Wi-Fi: No adapter available");
         }
-        c.label(
-            24,
-            176,
-            c.width().saturating_sub(48),
-            text.as_str(),
-            theme::TEXT,
-        );
+        c.label_h(196, 142, 250, 18, text.as_str(), theme::TEXT, theme::PANEL);
+        c.label_h(196, 160, 250, 18, "WPA2-PSK 802.11 wireless network", theme::MUTED, theme::PANEL);
+
         let enabled = self.wireless.is_some();
         let busy = self.connecting_until.is_some() || self.wifi_prepare_pid.is_some();
         c.button_enabled(
@@ -1134,44 +1112,32 @@ impl AppHost {
             enabled && self.wifi_prepare_pid.is_none()
                 && (busy || self.wireless.is_some_and(|w| w.state >= 2 && w.state <= 5)),
         );
-        c.button_enabled(NETWORK[2].rect, "Back", false, focus == 2, self.page > 0);
-        c.button_enabled(
-            NETWORK[3].rect,
-            "More",
-            false,
-            focus == 3,
-            (self.page + 1) * 4 < self.points.len(),
-        );
+        c.fill_rect(Rect { x: 196, y: 180, w: 468, h: 1 }, 0xff253040);
+
+        c.label_h(196, 188, 160, 22, "Available Networks", theme::TEXT, theme::PANEL);
         text.clear();
         let _ = write!(
             text,
             "{}-{} of {}",
-            if self.points.is_empty() {
-                0
-            } else {
-                self.page * 4 + 1
-            },
+            if self.points.is_empty() { 0 } else { self.page * 4 + 1 },
             ((self.page + 1) * 4).min(self.points.len()),
             self.points.len()
         );
-        c.label(472, 216, 150, text.as_str(), theme::MUTED);
+        c.label_h(370, 188, 100, 22, text.as_str(), theme::MUTED, theme::PANEL);
+        c.button_enabled(NETWORK[2].rect, "< Back", false, focus == 2, self.page > 0);
+        c.button_enabled(NETWORK[3].rect, "More >", false, focus == 3, (self.page + 1) * 4 < self.points.len());
+
         for row in 0..4 {
             let index = self.page * 4 + row;
             text.clear();
             if let Some(point) = self.points.get(index) {
-                let connected = self
-                    .wireless
-                    .is_some_and(|w| w.online != 0 && w.bssid == point.bssid);
+                let connected = self.wireless.is_some_and(|w| w.online != 0 && w.bssid == point.bssid);
                 let _ = write!(
                     text,
                     "{}    {}    {}{}",
                     point.ssid.as_str(),
                     signal_label(point.rssi),
-                    if point.security == 0 {
-                        "Open"
-                    } else {
-                        "Secured"
-                    },
+                    if point.security == 0 { "Open" } else { "Secured" },
                     if connected { "    Connected" } else { "" }
                 );
             } else if row == 0 {
@@ -1183,7 +1149,7 @@ impl AppHost {
                     } else if self.scan_after.is_some() {
                         "Looking for nearby networks..."
                     } else {
-                        "No networks found. Click Refresh to look again."
+                        "No networks found. Click Refresh to scan."
                     }
                 );
             }
@@ -1195,8 +1161,10 @@ impl AppHost {
                 enabled && !busy && index < self.points.len(),
             );
         }
-        c.label(24, 394, 250, "Network name", theme::MUTED);
-        c.label(286, 394, 330, "Password", theme::MUTED);
+        c.fill_rect(Rect { x: 196, y: 324, w: 468, h: 1 }, 0xff253040);
+
+        c.label_h(196, 330, 200, 18, "Network SSID", theme::MUTED, theme::PANEL);
+        c.label_h(196, 382, 200, 18, "Security Key", theme::MUTED, theme::PANEL);
         c.entry(NETWORK[4].rect, self.ssid.as_str(), focus == 4 && enabled);
         let stars = [b'*'; 64];
         let masked = core::str::from_utf8(&stars[..self.password.len()]).unwrap_or("");
@@ -1216,44 +1184,16 @@ impl AppHost {
             focus == 7,
             enabled && !busy,
         );
-        c.button_enabled(
+        c.button_accent(
             NETWORK[6].rect,
-            if busy {
-                "Connecting..."
-            } else {
-                "Join network"
-            },
-            false,
+            if busy { "Connecting..." } else { "Connect" },
             focus == 6,
-            enabled
-                && !busy
-                && self.scan_after.is_none()
-                && !self
-                    .points
-                    .get(self.selected)
-                    .is_some_and(|p| p.security == 0),
         );
-        c.label(260, 469, 366, "Password is not saved.", theme::MUTED);
+        c.label_h(414, 382, 200, 18, "Held in memory only", theme::MUTED, theme::PANEL);
+        c.fill_rect(Rect { x: 196, y: 436, w: 468, h: 1 }, 0xff253040);
+
         let message = self.messages[1].as_str();
-        let split = message
-            .char_indices()
-            .filter(|(i, ch)| *i <= 68 && *ch == ' ')
-            .map(|(i, _)| i)
-            .last()
-            .unwrap_or(message.len());
-        let (first, rest) = if message.len() > 68 {
-            message.split_at(split)
-        } else {
-            (message, "")
-        };
-        c.label(24, 502, c.width().saturating_sub(48), first, theme::MUTED);
-        c.label(
-            24,
-            524,
-            c.width().saturating_sub(48),
-            rest.trim_start(),
-            theme::MUTED,
-        );
+        c.label_h(196, 442, 460, 22, message, theme::MUTED, theme::PANEL);
     }
 }
 impl Drop for AppHost {
@@ -1326,14 +1266,14 @@ mod wifi_ux_tests {
         let mut wm = WindowManager::desktop();
         let mut s = Surface::new(1280, 800).unwrap();
         h.open(8, &mut wm, &mut s);
-        h.pointer(8, 40, 264, &mut wm, &mut s);
+        h.pointer(8, 250, 225, &mut wm, &mut s);
         assert_eq!(h.ssid.as_str(), "Home");
         assert_eq!(h.apps[1].focus, 5);
         for b in b"secret123" {
             h.key(8, *b, &mut wm, &mut s);
         }
         assert_eq!(h.password.as_str(), "secret123");
-        h.pointer(8, 540, 430, &mut wm, &mut s);
+        h.pointer(8, 430, 415, &mut wm, &mut s);
         assert!(h.show_password);
         if let Ok(path) = std::env::var("COMPOSITOR_WIFI_PREVIEW") {
             let w = wm.windows.iter().find(|w| w.id == 8).unwrap();
@@ -1344,14 +1284,14 @@ mod wifi_ux_tests {
             }
             std::fs::write(path, image).unwrap();
         }
-        h.pointer(8, 40, 300, &mut wm, &mut s);
+        h.pointer(8, 250, 250, &mut wm, &mut s);
         assert_eq!(h.ssid.as_str(), "Cafe");
         assert_eq!(h.password.len(), 0);
         assert!(!h.show_password);
         h.connect(); // Open networks return before any system call.
         assert!(h.status.as_str().contains("not supported"));
-        h.pointer(8, 390, 222, &mut wm, &mut s);
-        h.pointer(8, 40, 264, &mut wm, &mut s);
+        h.pointer(8, 600, 195, &mut wm, &mut s);
+        h.pointer(8, 250, 225, &mut wm, &mut s);
         assert_eq!(h.ssid.as_str(), "Other");
         h.key(8, b'\n', &mut wm, &mut s); // Empty password returns before syscall.
         assert!(h.status.as_str().contains("8 to 64"));

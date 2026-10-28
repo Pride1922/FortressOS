@@ -26,6 +26,16 @@ impl<'a> Canvas<'a> {
         };
         if reset {
             result.window.content.fill(theme::PANEL);
+            if registered(result.window.id) {
+                let width = result.window.rect.w - 2;
+                let sidebar_w = (180 * scale).min(width);
+                let height = result.window.rect.h - 26;
+                for y in 0..height {
+                    for x in 0..sidebar_w {
+                        result.window.content[y * width + x] = 0xff111620;
+                    }
+                }
+            }
             result.dirty = Some(Rect {
                 x: 0,
                 y: 0,
@@ -35,8 +45,12 @@ impl<'a> Canvas<'a> {
         }
         result
     }
+    #[allow(dead_code)]
     pub fn width(&self) -> usize {
         (self.window.rect.w - 2) / self.scale
+    }
+    pub fn height(&self) -> usize {
+        (self.window.rect.h - 26) / self.scale
     }
     fn pixel(&mut self, x: usize, y: usize, color: u32) {
         let width = self.window.rect.w - 2;
@@ -51,6 +65,7 @@ impl<'a> Canvas<'a> {
         let r = Rect { x, y, w: 1, h: 1 };
         self.dirty = Some(self.dirty.map(|d| d.union(r)).unwrap_or(r));
     }
+    #[allow(dead_code)]
     pub fn label(&mut self, x: usize, y: usize, width: usize, text: &str, color: u32) {
         self.box_text(
             Rect {
@@ -65,6 +80,154 @@ impl<'a> Canvas<'a> {
             false,
             false,
         );
+    }
+    #[allow(dead_code)]
+    pub fn label_bg(&mut self, x: usize, y: usize, width: usize, text: &str, color: u32, bg: u32) {
+        self.box_text(
+            Rect {
+                x,
+                y,
+                w: width,
+                h: 22,
+            },
+            text,
+            color,
+            bg,
+            false,
+            false,
+        );
+    }
+    pub fn label_h(&mut self, x: usize, y: usize, width: usize, height: usize, text: &str, color: u32, bg: u32) {
+        self.box_text(
+            Rect {
+                x,
+                y,
+                w: width,
+                h: height,
+            },
+            text,
+            color,
+            bg,
+            false,
+            false,
+        );
+    }
+    pub fn badge(&mut self, r: Rect, text: &str, fg: u32, bg: u32, border_color: u32) {
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(width) = r.w.checked_mul(self.scale) else { return; };
+        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let text_y = r.h.saturating_sub(18) / 2;
+        let inset = r.w.saturating_sub(text.len() * 8) / 2;
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let is_border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
+                let p = if is_border {
+                    border_color
+                } else if lx >= inset && lx < inset + text.len() * 8 && ly >= text_y && ly < text_y + 18 {
+                    theme::text_pixel(text, lx - inset, ly - text_y, fg, bg)
+                } else {
+                    bg
+                };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, p);
+                }
+            }
+        }
+    }
+    pub fn fill_rect(&mut self, r: Rect, color: u32) {
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(width) = r.w.checked_mul(self.scale) else { return; };
+        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, color);
+                }
+            }
+        }
+    }
+    #[allow(dead_code)]
+    pub fn card(&mut self, r: Rect, bg: u32, border: u32) {
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(width) = r.w.checked_mul(self.scale) else { return; };
+        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let is_border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
+                let color = if is_border { border } else { bg };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, color);
+                }
+            }
+        }
+    }
+    pub fn button_accent(&mut self, r: Rect, text: &str, focused: bool) {
+        self.box_text(r, text, 0xffffffff, 0xff2563eb, true, focused);
+    }
+    pub fn sidebar_nav(&mut self, r: Rect, icon: &str, text: &str, selected: bool, focused: bool) {
+        let bg = if selected { 0xff1e324a } else { 0xff111620 };
+        let fg = if selected { 0xffffffff } else { 0xff9fb0c7 };
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(width) = r.w.checked_mul(self.scale) else { return; };
+        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let text_y = r.h.saturating_sub(18) / 2;
+        let icon_x = 10;
+        let text_x = 28;
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let is_indicator = selected && lx >= 2 && lx <= 4 && ly >= 6 && ly + 6 <= r.h;
+                let p = if is_indicator {
+                    theme::ACCENT
+                } else if focused && (x == 0 || y == 0 || x + 1 == width || y + 1 == height) {
+                    theme::ACCENT
+                } else if lx >= icon_x && lx < icon_x + 14 && ly >= text_y && ly < text_y + 18 {
+                    theme::text_pixel(icon, lx - icon_x, ly - text_y, if selected { theme::ACCENT } else { fg }, bg)
+                } else if lx >= text_x && lx < r.w && ly >= text_y && ly < text_y + 18 {
+                    theme::text_pixel(text, lx - text_x, ly - text_y, fg, bg)
+                } else {
+                    bg
+                };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, p);
+                }
+            }
+        }
     }
     pub fn button(&mut self, r: Rect, text: &str, selected: bool, focused: bool) {
         self.button_enabled(r, text, selected, focused, true);
@@ -168,20 +331,20 @@ pub const APPS: [AppDescriptor; 3] = [
     AppDescriptor {
         id: 7,
         name: "Settings",
-        width: 620,
-        height: 450,
+        width: 680,
+        height: 520,
     },
     AppDescriptor {
         id: 8,
         name: "Network & Wi-Fi",
         width: 680,
-        height: 580,
+        height: 540,
     },
     AppDescriptor {
         id: 9,
         name: "Date & Time",
-        width: 620,
-        height: 450,
+        width: 680,
+        height: 520,
     },
 ];
 pub fn registered(id: u32) -> bool {

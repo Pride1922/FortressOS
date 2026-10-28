@@ -104,7 +104,7 @@ fn built_in_apps_share_focus_widgets_and_incremental_damage() {
     flush(&mut s);
     host.render(7, &mut wm, &mut s);
     assert!(s.damage_rect(0).is_none(), "idle widgets must not repaint");
-    host.pointer(7, 150, 125, &mut wm, &mut s);
+    host.pointer(7, 320, 105, &mut wm, &mut s);
     assert_eq!(host.draft.scale, 1);
     assert_eq!(host.preferences.scale, 0);
     let area: usize = (0..16)
@@ -112,14 +112,14 @@ fn built_in_apps_share_focus_widgets_and_incremental_damage() {
         .map(|r| r.w * r.h)
         .sum();
     assert!(area < 30_000, "selection repainted entire window: {area}");
-    host.pointer(7, 200, 60, &mut wm, &mut s); // Shared Network navigation.
+    host.pointer(7, 50, 110, &mut wm, &mut s); // Shared Network navigation.
     assert_eq!(wm.focused_window_id(), Some(8));
     // Explicit UP/device fixture; no kernel/hardware call is made by typing.
     host.wireless = Some(sys::WirelessInfo {
         mac: [2, 0, 0, 0, 0, 1],
         ..Default::default()
     });
-    host.pointer(8, 40, 430, &mut wm, &mut s);
+    host.pointer(8, 250, 360, &mut wm, &mut s);
     for b in b"example" {
         host.key(8, *b, &mut wm, &mut s);
     }
@@ -213,11 +213,11 @@ fn wifi_controls_require_an_adapter_on_every_cpu_count() {
     let mut wm = window::WindowManager::desktop();
     let mut host = desktop::AppHost::new(preferences::Preferences::default());
     host.open(8, &mut wm, &mut s);
-    host.pointer(8, 40, 222, &mut wm, &mut s); // Missing adapter returns before syscall.
+    host.pointer(8, 500, 155, &mut wm, &mut s); // Missing adapter returns before syscall.
     assert!(host.status.as_str().contains("No Wi-Fi adapter"));
-    host.pointer(8, 170, 222, &mut wm, &mut s); // No adapter.
+    host.pointer(8, 590, 155, &mut wm, &mut s); // No adapter.
     assert!(host.status.as_str().contains("No Wi-Fi adapter"));
-    host.pointer(8, 80, 478, &mut wm, &mut s); // No adapter.
+    host.pointer(8, 500, 415, &mut wm, &mut s); // No adapter.
     assert!(host.status.as_str().contains("No Wi-Fi adapter"));
 }
 
