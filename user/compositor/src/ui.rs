@@ -190,9 +190,20 @@ impl<'a> Canvas<'a> {
     pub fn button_accent(&mut self, r: Rect, text: &str, focused: bool) {
         self.box_text(r, text, 0xffffffff, 0xff2563eb, true, focused);
     }
+    #[allow(dead_code)]
     pub fn sidebar_nav(&mut self, r: Rect, text: &str, selected: bool, focused: bool) {
-        let bg = if selected { 0xff1e324a } else { 0xff111620 };
-        let fg = if selected { 0xffffffff } else { 0xff9fb0c7 };
+        self.sidebar_nav_item(r, 0, text, selected, focused);
+    }
+    pub fn sidebar_nav_item(
+        &mut self,
+        r: Rect,
+        icon_id: usize,
+        text: &str,
+        selected: bool,
+        focused: bool,
+    ) {
+        let bg = if selected { 0xff1e2634 } else { 0xff111620 };
+        let fg = if selected { 0xffffffff } else { 0xff94a3b8 };
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -205,16 +216,25 @@ impl<'a> Canvas<'a> {
             .saturating_sub(top)
             .min(height);
         let text_y = r.h.saturating_sub(18) / 2;
-        let text_x = 16;
+        let text_x = 32;
+        let icon_x = 10;
+        let icon_y = r.h.saturating_sub(12) / 2;
+
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
                 let ly = y / self.scale;
-                let is_indicator = selected && lx >= 2 && lx <= 4 && ly >= 6 && ly + 6 <= r.h;
+                let is_indicator = selected && lx <= 2 && ly >= 6 && ly + 6 <= r.h;
+                let in_icon = (icon_x..icon_x + 12).contains(&lx)
+                    && (icon_y..icon_y + 12).contains(&ly)
+                    && category_icon_pixel(icon_id, lx - icon_x, ly - icon_y);
+
                 let p = if is_indicator {
-                    theme::ACCENT
+                    0xff38bdf8
+                } else if in_icon {
+                    if selected { 0xff38bdf8 } else { 0xff94a3b8 }
                 } else if focused && (x == 0 || y == 0 || x + 1 == width || y + 1 == height) {
-                    theme::ACCENT
+                    0xff38bdf8
                 } else if lx >= text_x && lx < r.w && ly >= text_y && ly < text_y + 18 {
                     theme::text_pixel(text, lx - text_x, ly - text_y, fg, bg)
                 } else {
@@ -224,6 +244,166 @@ impl<'a> Canvas<'a> {
                     self.pixel(left + x, top + y - scroll, p);
                 }
             }
+        }
+    }
+    pub fn toggle_switch(&mut self, r: Rect, on: bool) {
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(width) = r.w.checked_mul(self.scale) else { return; };
+        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let bg = if on { 0xff0078d4 } else { 0xff20242c };
+        let border = if on { 0xff0078d4 } else { 0xff52525b };
+        let knob_color = if on { 0xffffffff } else { 0xffa1a1aa };
+        let rad = (r.h / 2) as i32;
+        let knob_cx = if on { (r.w as i32) - rad } else { rad };
+        let knob_cy = rad;
+        let knob_rad = rad - 2;
+
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = (x / self.scale) as i32;
+                let ly = (y / self.scale) as i32;
+                let in_pill = if lx < rad {
+                    (lx - rad).pow(2) + (ly - rad).pow(2) <= rad.pow(2)
+                } else if lx >= (r.w as i32) - rad {
+                    (lx - ((r.w as i32) - rad)).pow(2) + (ly - rad).pow(2) <= rad.pow(2)
+                } else {
+                    ly >= 0 && ly < r.h as i32
+                };
+                if !in_pill {
+                    continue;
+                }
+                let in_knob = (lx - knob_cx).pow(2) + (ly - knob_cy).pow(2) <= knob_rad.pow(2);
+                let p = if in_knob {
+                    knob_color
+                } else {
+                    let is_border = if !on {
+                        if lx < rad {
+                            let d = (lx - rad).pow(2) + (ly - rad).pow(2);
+                            d >= (rad - 1).pow(2)
+                        } else if lx >= (r.w as i32) - rad {
+                            let d = (lx - ((r.w as i32) - rad)).pow(2) + (ly - rad).pow(2);
+                            d >= (rad - 1).pow(2)
+                        } else {
+                            ly == 0 || ly == (r.h as i32) - 1
+                        }
+                    } else {
+                        false
+                    };
+                    if is_border { border } else { bg }
+                };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, p);
+                }
+            }
+        }
+    }
+    pub fn chevron(&mut self, ox: usize, oy: usize, color: u32) {
+        let pattern = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 2), (5, 1), (6, 0)];
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        for &(dy, dx) in &pattern {
+            for sy in 0..self.scale {
+                for sx in 0..self.scale {
+                    let px = (ox + dx) * self.scale + sx;
+                    let py = (oy + dy) * self.scale + sy;
+                    if py >= scroll && py < scroll + self.window.rect.h - 26 {
+                        self.pixel(px, py - scroll, color);
+                    }
+                }
+            }
+        }
+    }
+    pub fn search_bar(&mut self, r: Rect, placeholder: &str) {
+        self.box_text(r, placeholder, 0xff8b949e, 0xff161b22, true, false);
+    }
+    pub fn monitor_hero_icon(&mut self, ox: usize, oy: usize, color: u32) {
+        let Some(left) = ox.checked_mul(self.scale) else { return; };
+        let Some(top) = oy.checked_mul(self.scale) else { return; };
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+
+        for iy in 0..26 * self.scale {
+            for ix in 0..32 * self.scale {
+                let mx = ix / self.scale;
+                let my = iy / self.scale;
+                let is_monitor = if my == 0 || my == 18 {
+                    mx >= 2 && mx <= 29
+                } else if my < 18 {
+                    (mx == 0 || mx == 31) && my >= 2 && my <= 16
+                } else if (19..=22).contains(&my) {
+                    mx == 15 || mx == 16
+                } else if my == 23 || my == 24 {
+                    mx >= 10 && mx <= 21
+                } else {
+                    false
+                };
+                if is_monitor {
+                    let py = top + iy;
+                    if py >= scroll && py < scroll + self.window.rect.h - 26 {
+                        self.pixel(left + ix, py - scroll, color);
+                    }
+                }
+            }
+        }
+    }
+    pub fn settings_card(
+        &mut self,
+        r: Rect,
+        icon_id: usize,
+        title: &str,
+        subtitle: &str,
+        status: Option<&str>,
+        toggle: Option<bool>,
+        has_chevron: bool,
+        focused: bool,
+    ) {
+        let bg = 0xff182230;
+        let border = if focused { 0xff38bdf8 } else { 0xff253040 };
+        self.card(r, bg, border);
+
+        let icon_x = r.x + 12;
+        let icon_y = r.y + (r.h.saturating_sub(12)) / 2;
+        let Some(left) = icon_x.checked_mul(self.scale) else { return; };
+        let Some(top) = icon_y.checked_mul(self.scale) else { return; };
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        for iy in 0..12 * self.scale {
+            for ix in 0..12 * self.scale {
+                if category_icon_pixel(icon_id, ix / self.scale, iy / self.scale) {
+                    let py = top + iy;
+                    if py >= scroll && py < scroll + self.window.rect.h - 26 {
+                        self.pixel(left + ix, py - scroll, 0xff38bdf8);
+                    }
+                }
+            }
+        }
+
+        if subtitle.is_empty() {
+            self.label_h(r.x + 34, r.y + (r.h.saturating_sub(18)) / 2, r.w.saturating_sub(140), 18, title, 0xffffffff, bg);
+        } else {
+            self.label_h(r.x + 34, r.y + 3, r.w.saturating_sub(140), 18, title, 0xffffffff, bg);
+            self.label_h(r.x + 34, r.y + 19, r.w.saturating_sub(140), 16, subtitle, theme::MUTED, bg);
+        }
+
+        let mut right_cursor = r.x + r.w - 14;
+        if has_chevron {
+            right_cursor = right_cursor.saturating_sub(10);
+            self.chevron(right_cursor, r.y + (r.h.saturating_sub(7)) / 2, 0xff94a3b8);
+        }
+        if let Some(on) = toggle {
+            right_cursor = right_cursor.saturating_sub(38);
+            self.toggle_switch(Rect { x: right_cursor, y: r.y + (r.h.saturating_sub(16)) / 2, w: 32, h: 16 }, on);
+        }
+        if let Some(stat) = status {
+            let stat_w = stat.len() * 8;
+            right_cursor = right_cursor.saturating_sub(stat_w + 8);
+            let stat_color = if stat == "Ligado" || stat == "Connected" { 0xff4ade80 } else { theme::MUTED };
+            self.label_h(right_cursor, r.y + (r.h.saturating_sub(18)) / 2, stat_w, 18, stat, stat_color, bg);
         }
     }
     pub fn button(&mut self, r: Rect, text: &str, selected: bool, focused: bool) {
@@ -502,6 +682,153 @@ impl<'a> Canvas<'a> {
     }
 }
 
+pub fn category_icon_pixel(icon_id: usize, ix: usize, iy: usize) -> bool {
+    if ix >= 12 || iy >= 12 {
+        return false;
+    }
+    match icon_id {
+        // 0: House / Home
+        0 => match iy {
+            0 => (5..=6).contains(&ix),
+            1 => (4..=7).contains(&ix),
+            2 => (3..=8).contains(&ix),
+            3 => (2..=9).contains(&ix),
+            4 => (1..=10).contains(&ix),
+            5 => true,
+            6..=10 => ix == 1 || ix == 10 || (iy == 6 && (4..=7).contains(&ix)),
+            11 => (1..=10).contains(&ix),
+            _ => false,
+        },
+        // 1: Laptop / Screen (Sistema)
+        1 => match iy {
+            1 | 7 => (1..=10).contains(&ix),
+            2..=6 => ix == 1 || ix == 10,
+            8 => ix == 5 || ix == 6,
+            9..=10 => true,
+            _ => false,
+        },
+        // 2: Wi-Fi (Rede e Internet)
+        2 => match iy {
+            1 => (2..=9).contains(&ix),
+            2 => (1..=2).contains(&ix) || (9..=10).contains(&ix),
+            3 => ix == 0 || ix == 11,
+            4 => (4..=7).contains(&ix),
+            5 => (3..=4).contains(&ix) || (7..=8).contains(&ix),
+            7..=8 => (5..=6).contains(&ix),
+            _ => false,
+        },
+        // 3: Personalizacao (Palette)
+        3 => {
+            let dx = ix as i32 - 5;
+            let dy = iy as i32 - 5;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq > 25 {
+                false
+            } else if (ix == 7 || ix == 8) && (iy == 6 || iy == 7) {
+                false
+            } else if (ix == 3 && iy == 4) || (ix == 5 && iy == 3) || (ix == 7 && iy == 4) {
+                false
+            } else {
+                dist_sq >= 14 || (ix == 3 && iy == 5) || (ix == 5 && iy == 4)
+            }
+        }
+        // 4: Hora e Idioma (Clock)
+        4 => {
+            let dx = ix as i32 - 5;
+            let dy = iy as i32 - 5;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq > 25 || dist_sq < 14 {
+                if ix == 5 && (2..=5).contains(&iy) {
+                    true
+                } else if iy == 5 && (5..=8).contains(&ix) {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        }
+        // 5: Contas / User (Person)
+        5 => match iy {
+            1 | 4 => (4..=7).contains(&ix),
+            2..=3 => ix == 3 || ix == 8,
+            6 => (3..=8).contains(&ix),
+            7..=10 => ix == 1 || ix == 10 || (iy == 10 && (1..=10).contains(&ix)),
+            _ => false,
+        },
+        // 6: Privacidade / Shield
+        6 => match iy {
+            1 => (1..=10).contains(&ix),
+            2..=6 => ix == 1 || ix == 10,
+            7 => ix == 2 || ix == 9,
+            8 => ix == 3 || ix == 8,
+            9 => ix == 4 || ix == 7,
+            10 => ix == 5 || ix == 6,
+            _ => false,
+        },
+        // 7: Windows Update (Refresh loop)
+        7 => match iy {
+            1 | 10 => (3..=8).contains(&ix),
+            2..=3 => ix == 2 || ix == 9 || (iy == 1 && ix >= 7),
+            8..=9 => ix == 2 || ix == 9 || (iy == 10 && ix <= 4),
+            _ => false,
+        },
+        // 8: Ethernet Port (Ethernet Card)
+        8 => match iy {
+            0..=1 => (4..=7).contains(&ix),
+            2 | 9 => (1..=10).contains(&ix),
+            3..=8 => ix == 1 || ix == 10 || (iy == 5 && (3..=8).contains(&ix) && ix % 2 == 1),
+            _ => false,
+        },
+        // 9: VPN / Lock
+        9 => match iy {
+            1 => (4..=7).contains(&ix),
+            2..=4 => ix == 3 || ix == 8,
+            5 | 10 => (2..=9).contains(&ix),
+            6..=9 => ix == 2 || ix == 9 || (iy == 7 && (5..=6).contains(&ix)),
+            _ => false,
+        },
+        // 10: Hotspot movel (Radio Antenna)
+        10 => match iy {
+            0 => ix == 1 || ix == 10,
+            1 => ix == 2 || ix == 9,
+            2..=3 => (4..=7).contains(&ix),
+            4..=10 => ix == 5 || ix == 6,
+            11 => (3..=8).contains(&ix),
+            _ => false,
+        },
+        // 11: Modo de aviao (Airplane)
+        11 => match iy {
+            0..=1 => ix == 5 || ix == 6,
+            2..=4 => (4..=7).contains(&ix),
+            5 => true,
+            6 => (2..=9).contains(&ix),
+            7..=9 => ix == 5 || ix == 6,
+            10 => (3..=8).contains(&ix),
+            11 => ix == 5 || ix == 6,
+            _ => false,
+        },
+        // 12: Proxy / Server
+        12 => match iy {
+            1 | 4 | 6 | 9 => (1..=10).contains(&ix),
+            2..=3 => ix == 1 || ix == 10 || (ix == 8 && iy == 2),
+            7..=8 => ix == 1 || ix == 10 || (ix == 8 && iy == 7),
+            _ => false,
+        },
+        // 13: Definicoes avancadas (Sliders)
+        13 => match iy {
+            1..=10 => {
+                ix == 3 || ix == 8
+                    || ((2..=4).contains(&ix) && (3..=5).contains(&iy))
+                    || ((7..=9).contains(&ix) && (6..=8).contains(&iy))
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Data-driven registration: stable IDs are part of the built-in app interface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppDescriptor {
@@ -522,7 +849,7 @@ pub const APPS: [AppDescriptor; 3] = [
         id: 8,
         name: "Network & Wi-Fi",
         width: 680,
-        height: 540,
+        height: 720,
     },
     AppDescriptor {
         id: 9,

@@ -503,6 +503,22 @@ fn label_pixel(label: &str, x: usize, y: usize, fg: u32, bg: u32) -> u32 {
     }
 }
 
+fn fortress_tower_pixel(tx: usize, ty: usize) -> bool {
+    if tx > 8 || ty > 11 {
+        return false;
+    }
+    match ty {
+        0..=1 => tx <= 1 || (3..=5).contains(&tx) || tx >= 7,
+        2..=3 => true,
+        4..=5 => (1..=7).contains(&tx),
+        6..=7 => (1..=7).contains(&tx) && tx != 4,
+        8 => (1..=7).contains(&tx) && !(3..=5).contains(&tx),
+        9..=10 => (1..=7).contains(&tx) && !(2..=6).contains(&tx),
+        11 => true,
+        _ => false,
+    }
+}
+
 fn render_dock_icon(item: usize, ix: usize, iy: usize, dock_bg: u32) -> u32 {
     let is_corner = (ix < 5 && iy < 5 && (4 - ix as i32).pow(2) + (4 - iy as i32).pow(2) > 25)
         || (ix >= 23 && iy < 5 && (ix as i32 - 23).pow(2) + (4 - iy as i32).pow(2) > 25)
@@ -1562,10 +1578,11 @@ impl WindowManager {
                         } else {
                             bg
                         };
-                        let in_win_logo = ((6..=10).contains(&ly) || (12..=16).contains(&ly))
-                            && ((10..=13).contains(&lx) || (15..=18).contains(&lx));
-                        let p = if in_win_logo {
-                            0xff00a4ef
+                        let in_tower = (9..=17).contains(&lx)
+                            && (6..=17).contains(&ly)
+                            && fortress_tower_pixel(lx - 9, ly - 6);
+                        let p = if in_tower {
+                            0xff38bdf8
                         } else if (3..21).contains(&ly) && (23..120).contains(&lx) {
                             theme::text_pixel("FortressOS", lx - 23, ly - 3, theme::TEXT, start_bg)
                         } else if is_start_btn {
@@ -1903,10 +1920,11 @@ impl WindowManager {
                                 if py == 23 {
                                     0xff30363d
                                 } else {
-                                    let in_logo = ((6..=10).contains(&py) || (12..=16).contains(&py))
-                                        && ((10..=13).contains(&px) || (15..=18).contains(&px));
-                                    if in_logo {
-                                        0xff00a4ef
+                                    let in_tower = (9..=17).contains(&px)
+                                        && (6..=17).contains(&py)
+                                        && fortress_tower_pixel(px - 9, py - 6);
+                                    if in_tower {
+                                        0xff38bdf8
                                     } else if px >= 24 && px < 110 && (4..20).contains(&py) {
                                         theme::text_pixel("FortressOS", px - 24, py - 4, 0xffe6edf3, 0xff161b22)
                                     } else if px >= bw.saturating_sub(44) && px < bw.saturating_sub(8) && (4..20).contains(&py) {
