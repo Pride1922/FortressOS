@@ -617,8 +617,9 @@ fn damage_pitch_padding_and_invalid_metadata() {
     s.pixels.fill(99);
     assert!(unsafe { s.present(&fb) }); // no damage means no writes
     assert_eq!(vram[11], 42);
-    // Distinct rectangles still exercise overflow; duplicate cursor damage
-    // is deliberately deduplicated and must not trigger a full-screen copy.
+    // 17 distinct rectangles overflow the 16-entry list. Overflow merges
+    // into the cheapest neighbour instead of presenting the whole screen:
+    // every damaged pixel still reaches VRAM, row 3 was never damaged.
     for i in 0..17 {
         s.damage(Rect {
             x: i % 7,
@@ -631,7 +632,10 @@ fn damage_pitch_padding_and_invalid_metadata() {
     assert!(!unsafe { s.present(&fb) });
     fb.fb_size = 144;
     assert!(unsafe { s.present(&fb) });
-    assert_eq!(vram[3 * 9 + 6], 99);
+    for i in 0..17 {
+        assert_eq!(vram[(i / 7) * 9 + i % 7], 99, "damaged pixel {i}");
+    }
+    assert_eq!(vram[3 * 9 + 6], 0xdeadbeef);
     assert_eq!(vram[3 * 9 + 7], 0xdeadbeef);
 }
 
@@ -1374,4 +1378,151 @@ fn dock_mouse_actions() {
     let act6 = wm.mouse(dock_r.x + 6 * 64 + 20, click_y, 1, &mut s);
     let _ = wm.mouse(dock_r.x + 6 * 64 + 20, click_y, 0, &mut s);
     assert_eq!(act6, window::Action::None);
+}
+
+#[test]
+fn rect_subtract_covers_difference_exactly() {
+    use surface::Rect;
+    let a = Rect {
+        x: 10,
+        y: 20,
+        w: 100,
+        h: 50,
+    };
+    for b in [
+        Rect {
+            x: 18,
+            y: 22,
+            w: 100,
+            h: 50,
+        },
+        Rect {
+            x: 0,
+            y: 0,
+            w: 30,
+            h: 30,
+        },
+        Rect {
+            x: 40,
+            y: 30,
+            w: 10,
+            h: 10,
+        },
+        Rect {
+            x: 500,
+            y: 500,
+            w: 10,
+            h: 10,
+        },
+        a,
+    ] {
+        let parts = a.subtract(b);
+        for y in 0..120 {
+            for x in 0..160 {
+                let want = a.contains(x, y) && !b.contains(x, y);
+                let hits = parts.iter().flatten().filter(|p| p.contains(x, y)).count();
+                assert_eq!(hits, want as usize, "({x},{y}) a-{b:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn damage_overflow_merges_instead_of_full_screen() {
+    let mut s = surface::Surface::new(1920, 1080).unwrap();
+    for i in 0..40 {
+        s.damage(surface::Rect {
+            x: (i % 10) * 150,
+            y: (i / 10) * 200,
+            w: 20,
+            h: 20,
+        });
+    }
+    let rects: Vec<_> = (0..16).filter_map(|i| s.damage_rect(i)).collect();
+    let area: usize = rects.iter().map(|r| r.w * r.h).sum();
+    assert!(area < 1920 * 1080 / 2, "overflow repainted {area} px");
+    for i in 0..40 {
+        let (x, y) = ((i % 10) * 150 + 5, (i / 10) * 200 + 5);
+        assert!(
+            rects.iter().any(|r| r.contains(x, y)),
+            "lost damage at ({x},{y})"
+        );
+    }
+}
+
+/// Incremental frames (split drag damage + occlusion culling) must leave
+/// exactly the pixels a full repaint of the final state produces.
+#[test]
+fn incremental_drag_repair_matches_full_repaint() {
+    use surface::Rect;
+    use window::{Window, WindowManager};
+    let (w, h) = (1280, 800);
+    let full = Rect { x: 0, y: 0, w, h };
+    let mut wm = WindowManager::desktop();
+    let mut s = Surface::new(w, h).unwrap();
+    for (id, x, y, ww, hh) in [
+        (4, 100, 120, 500, 320),
+        (5, 300, 200, 520, 360),
+        (10, 700, 150, 400, 300),
+        (11, 650, 420, 300, 200),
+    ] {
+        let mut win = Window::new(id, "Window", Rect { x, y, w: ww, h: hh }).unwrap();
+        for (i, p) in win.content.iter_mut().enumerate() {
+            *p = 0xff000000 | (i as u32).wrapping_mul(2654435761) >> 8;
+        }
+        wm.windows.push(win);
+    }
+    s.damage(full);
+    wm.render(&mut s);
+    flush(&mut s);
+    let reference = |wm: &WindowManager| {
+        let mut r = Surface::new(w, h).unwrap();
+        r.damage(full);
+        wm.render(&mut r);
+        r.pixels
+    };
+
+    // Drag the bottom window (raised on press) over the others, diagonally,
+    // in big jumps, partly off-screen and back.
+    let (mut px, mut py) = (140usize, 130usize);
+    wm.mouse(px, py, 0, &mut s);
+    wm.mouse(px, py, 1, &mut s);
+    wm.render(&mut s);
+    flush(&mut s);
+    for (dx, dy) in [(8i32, 2i32); 40]
+        .into_iter()
+        .chain([(-3, 7); 30])
+        .chain([(97, -41); 6])
+        .chain([(-180, 90); 4])
+        .chain([(25, 25); 20])
+    {
+        px = (px as i32 + dx).clamp(0, w as i32 - 1) as usize;
+        py = (py as i32 + dy).clamp(30, h as i32 - 1) as usize;
+        wm.mouse(px, py, 1, &mut s);
+        wm.render(&mut s);
+        flush(&mut s);
+    }
+    wm.mouse(px, py, 0, &mut s);
+    wm.render(&mut s);
+    flush(&mut s);
+    assert!(s.pixels == reference(&wm), "drag left stale pixels");
+
+    // Move a window that sits *under* the others: exposed desktop and the
+    // lower window must repair correctly around the occluding cores.
+    for step in 0..25 {
+        let old = wm.windows[0].damage_rect();
+        wm.windows[0].rect.x = 60 + step * 13;
+        wm.windows[0].rect.y = 90 + step * 7;
+        let new = wm.windows[0].damage_rect();
+        s.damage(new);
+        for e in old.subtract(new).into_iter().flatten() {
+            s.damage(e);
+        }
+        wm.render(&mut s);
+        flush(&mut s);
+    }
+    assert!(
+        s.pixels == reference(&wm),
+        "occluded move left stale pixels"
+    );
 }

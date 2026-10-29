@@ -19,6 +19,88 @@ pub const HOVER_MIN: u32 = 0xff486080;
 const TEXT: u32 = 0xffe0e8ff;
 const TITLE_HEIGHT: usize = 24;
 
+/// Opaque windows stacked above whatever is being repaired, clipped to one
+/// damage rect. Repair skips pixels a later pass overwrites unconditionally,
+/// so the result is pixel-identical to plain painter's order.
+struct Occluders {
+    rects: [Rect; 16],
+    n: usize,
+}
+
+impl Occluders {
+    /// Rows the window pass always writes, at full width (bevels included):
+    /// below the title bar and above the rounded bottom edge. Title rows and
+    /// the bottom 8 rows can be transparent (corner mask) and stay excluded.
+    fn core(w: &Window) -> Option<Rect> {
+        if w.is_minimized {
+            return None;
+        }
+        let h = w.rect.h.checked_sub(TITLE_HEIGHT + 1 + 8)?;
+        (h > 0).then_some(Rect {
+            x: w.rect.x,
+            y: w.rect.y + TITLE_HEIGHT + 1,
+            w: w.rect.w,
+            h,
+        })
+    }
+
+    /// Cores of `windows` intersecting `r`. Past 16 the rest are ignored,
+    /// which only means painting pixels that get overwritten anyway.
+    fn collect(windows: &[Window], r: Rect) -> Self {
+        let mut o = Self {
+            rects: [Rect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            }; 16],
+            n: 0,
+        };
+        for w in windows {
+            if o.n == o.rects.len() {
+                break;
+            }
+            if let Some(c) = Self::core(w).and_then(|c| c.intersection(r)) {
+                o.rects[o.n] = c;
+                o.n += 1;
+            }
+        }
+        o
+    }
+
+    /// Calls `f(start, end)` for each uncovered span of row `y` in `x0..x1`.
+    fn spans(&self, y: usize, x0: usize, x1: usize, mut f: impl FnMut(usize, usize)) {
+        let mut cover = [(0usize, 0usize); 16];
+        let mut n = 0;
+        for c in &self.rects[..self.n] {
+            if y >= c.y && y < c.y + c.h {
+                // Insertion sort by start: n <= 16.
+                let item = (c.x, c.x + c.w);
+                let mut i = n;
+                while i > 0 && cover[i - 1].0 > item.0 {
+                    cover[i] = cover[i - 1];
+                    i -= 1;
+                }
+                cover[i] = item;
+                n += 1;
+            }
+        }
+        let mut x = x0;
+        for &(a, b) in &cover[..n] {
+            if a > x {
+                f(x, a.min(x1));
+            }
+            x = x.max(b);
+            if x >= x1 {
+                return;
+            }
+        }
+        if x < x1 {
+            f(x, x1);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
     Client,
@@ -1084,8 +1166,14 @@ impl WindowManager {
                     let old = w.damage_rect();
                     w.rect.x = x.saturating_sub(w.drag_offset.0).min(s.width - 1);
                     w.rect.y = y.saturating_sub(w.drag_offset.1).min(s.height - 1);
-                    if old != w.damage_rect() {
-                        s.damage(old.union(w.damage_rect()));
+                    let new = w.damage_rect();
+                    if old != new {
+                        // The new footprint plus only the strips the move
+                        // uncovered, instead of the bounding box of both.
+                        s.damage(new);
+                        for exposed in old.subtract(new).into_iter().flatten() {
+                            s.damage(exposed);
+                        }
                     }
                 } else if w.is_resizing {
                     let min_w = 160;
@@ -1558,29 +1646,22 @@ impl WindowManager {
     ) {
         let mut i = 0;
         while let Some(r) = s.damage_rect(i) {
-            let top_maximized = self
-                .windows
-                .last()
-                .and_then(|w| (!w.is_minimized && w.saved_rect.is_some()).then_some(w.rect));
-
-            // Repair desktop first, skipping regions occluded by an opaque maximized window
+            // Repair the desktop only where no opaque window core will cover it.
+            let occluded = Occluders::collect(&self.windows, r);
             for y in r.y..r.y + r.h {
-                for x in r.x..r.x + r.w {
-                    if let Some(max_r) = top_maximized {
-                        if max_r.contains(x, y) {
-                            continue;
-                        }
+                occluded.spans(y, r.x, r.x + r.w, |a, b| {
+                    for x in a..b {
+                        s.pixels[y * s.width + x] = if let Some(wp) = wallpaper {
+                            wp.pixel(x, y, s.width, s.height)
+                        } else if !self.demo_mode {
+                            theme::desktop_pixel(x, y, s.width, s.height)
+                        } else if (32..48).contains(&y) && x >= 32 {
+                            label_pixel("FortressOS Rust Compositor", x - 32, y - 32, TEXT, DESKTOP)
+                        } else {
+                            DESKTOP
+                        };
                     }
-                    s.pixels[y * s.width + x] = if let Some(wp) = wallpaper {
-                        wp.pixel(x, y, s.width, s.height)
-                    } else if !self.demo_mode {
-                        theme::desktop_pixel(x, y, s.width, s.height)
-                    } else if (32..48).contains(&y) && x >= 32 {
-                        label_pixel("FortressOS Rust Compositor", x - 32, y - 32, TEXT, DESKTOP)
-                    } else {
-                        DESKTOP
-                    };
-                }
+                });
             }
 
             let scale = theme::scale(s.height);
@@ -1724,43 +1805,45 @@ impl WindowManager {
                 }
             }
 
-            for w in &self.windows {
+            for (index, w) in self.windows.iter().enumerate() {
                 if w.is_minimized {
                     continue;
                 }
                 if let Some(clip) = w.rect.intersection(r) {
                     let hover = self.hover.filter(|h| h.0 == w.id).map(|h| h.1);
+                    // Windows stacked above this one overwrite their cores.
+                    let above = Occluders::collect(&self.windows[index + 1..], clip);
                     for y in clip.y..clip.y + clip.h {
                         let wy = y - w.rect.y;
-                        if wy > TITLE_HEIGHT && wy < w.rect.h - 1 {
-                            let clip_start_x = clip.x.max(w.rect.x + 1);
-                            let clip_end_x = (clip.x + clip.w).min(w.rect.x + w.rect.w - 1);
-                            if clip_start_x < clip_end_x
-                                && (w.saved_rect.is_some() || wy < w.rect.h.saturating_sub(8))
-                            {
-                                if clip.x <= w.rect.x {
+                        let client_row = wy > TITLE_HEIGHT
+                            && wy < w.rect.h - 1
+                            && (w.saved_rect.is_some() || wy < w.rect.h.saturating_sub(8));
+                        above.spans(y, clip.x, clip.x + clip.w, |a, b| {
+                            let start = a.max(w.rect.x + 1);
+                            let end = b.min(w.rect.x + w.rect.w - 1);
+                            if client_row && start < end {
+                                if a <= w.rect.x {
                                     s.pixels[y * s.width + w.rect.x] =
                                         if w.id >= 3 { 0xff484848 } else { 0xff30363d };
                                 }
-                                let src_off =
-                                    (wy - 25) * (w.rect.w - 2) + (clip_start_x - (w.rect.x + 1));
-                                let copy_len = clip_end_x - clip_start_x;
-                                let dst_off = y * s.width + clip_start_x;
-                                s.pixels[dst_off..dst_off + copy_len]
-                                    .copy_from_slice(&w.content[src_off..src_off + copy_len]);
-                                if clip.x + clip.w >= w.rect.x + w.rect.w {
+                                let src_off = (wy - 25) * (w.rect.w - 2) + (start - (w.rect.x + 1));
+                                let len = end - start;
+                                let dst_off = y * s.width + start;
+                                s.pixels[dst_off..dst_off + len]
+                                    .copy_from_slice(&w.content[src_off..src_off + len]);
+                                if b >= w.rect.x + w.rect.w {
                                     s.pixels[y * s.width + w.rect.x + w.rect.w - 1] =
                                         if w.id >= 3 { 0xff181818 } else { 0xff30363d };
                                 }
-                                continue;
+                                return;
                             }
-                        }
-                        for x in clip.x..clip.x + clip.w {
-                            let p = w.pixel(x - w.rect.x, wy, hover);
-                            if p != 0 {
-                                s.pixels[y * s.width + x] = p;
+                            for x in a..b {
+                                let p = w.pixel(x - w.rect.x, wy, hover);
+                                if p != 0 {
+                                    s.pixels[y * s.width + x] = p;
+                                }
                             }
-                        }
+                        });
                     }
                 }
             }

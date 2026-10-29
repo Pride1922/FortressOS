@@ -34,6 +34,46 @@ impl Rect {
         x >= self.x && y >= self.y && x - self.x < self.w && y - self.y < self.h
     }
 
+    /// `self` minus `other` as up to four disjoint bands: full-width top and
+    /// bottom, then left and right within the overlapping rows.
+    pub fn subtract(self, other: Self) -> [Option<Self>; 4] {
+        let Some(i) = self.intersection(other) else {
+            return [Some(self), None, None, None];
+        };
+        let (bottom, i_bottom) = (self.y + self.h, i.y + i.h);
+        let (right, i_right) = (self.x + self.w, i.x + i.w);
+        [
+            (i.y > self.y).then(|| Self {
+                x: self.x,
+                y: self.y,
+                w: self.w,
+                h: i.y - self.y,
+            }),
+            (i_bottom < bottom).then(|| Self {
+                x: self.x,
+                y: i_bottom,
+                w: self.w,
+                h: bottom - i_bottom,
+            }),
+            (i.x > self.x).then(|| Self {
+                x: self.x,
+                y: i.y,
+                w: i.x - self.x,
+                h: i.h,
+            }),
+            (i_right < right).then(|| Self {
+                x: i_right,
+                y: i.y,
+                w: right - i_right,
+                h: i.h,
+            }),
+        ]
+    }
+
+    fn area(self) -> usize {
+        self.w * self.h
+    }
+
     pub fn union(self, other: Self) -> Self {
         let x = self.x.min(other.x);
         let y = self.y.min(other.y);
@@ -126,13 +166,22 @@ impl Surface {
             }
         }
         if self.count == self.damage.len() {
-            self.count = 1;
-            self.damage[0] = Rect {
-                x: 0,
-                y: 0,
-                w: self.width,
-                h: self.height,
-            };
+            // Full: fold the new rect into the entry whose bounding box grows
+            // least, instead of repainting and presenting the whole screen.
+            // Re-adding the union prunes any entries it now contains.
+            let mut best = 0;
+            let mut best_growth = usize::MAX;
+            for (i, old) in self.damage.iter().enumerate() {
+                let growth = old.union(clipped).area() - old.area();
+                if growth < best_growth {
+                    best = i;
+                    best_growth = growth;
+                }
+            }
+            let merged = self.damage[best].union(clipped);
+            self.damage.copy_within(best + 1..self.count, best);
+            self.count -= 1;
+            self.damage(merged);
             return;
         }
         self.damage[self.count] = clipped;
