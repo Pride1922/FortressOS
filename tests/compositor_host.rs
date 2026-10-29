@@ -1476,6 +1476,7 @@ fn incremental_drag_repair_matches_full_repaint() {
     wm.render(&mut s);
     flush(&mut s);
     let reference = |wm: &WindowManager| {
+        wm.clear_render_caches();
         let mut r = Surface::new(w, h).unwrap();
         r.damage(full);
         wm.render(&mut r);
@@ -1525,4 +1526,105 @@ fn incremental_drag_repair_matches_full_repaint() {
         s.pixels == reference(&wm),
         "occluded move left stale pixels"
     );
+}
+#[test]
+fn background_rows_match_per_pixel_reference() {
+    for (sw, sh, cw, ch) in [
+        (1920, 1080, 800, 600),
+        (1280, 800, 1280, 800),
+        (640, 480, 800, 600),
+        (1024, 768, 2000, 100),
+    ] {
+        let pixels: Vec<u32> = (0..cw * ch)
+            .map(|i| 0xff000000 | (i as u32).wrapping_mul(2654435761) >> 8)
+            .collect();
+        let wp = wallpaper::Wallpaper {
+            orig_w: cw as u32,
+            orig_h: ch as u32,
+            bg_color: 0xff123456,
+            crop_w: cw as u32,
+            crop_h: ch as u32,
+            pixels,
+        };
+        for y in [0, 1, sh / 3, sh / 2, sh - 1] {
+            for (x0, len) in [(0, sw), (7, 1), (sw / 4, sw / 2), (sw - 3, 3)] {
+                let mut row = vec![0u32; len];
+                wp.fill_row(x0, y, sw, sh, &mut row);
+                for (i, &p) in row.iter().enumerate() {
+                    assert_eq!(
+                        p,
+                        wp.pixel(x0 + i, y, sw, sh),
+                        "wallpaper {sw}x{sh} ({},{y})",
+                        x0 + i
+                    );
+                }
+                window::theme::desktop_row(x0, y, sw, sh, &mut row);
+                for (i, &p) in row.iter().enumerate() {
+                    assert_eq!(
+                        p,
+                        window::theme::desktop_pixel(x0 + i, y, sw, sh),
+                        "desktop ({},{y})",
+                        x0 + i
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Cached title bars must follow focus, hover, maximize and title changes.
+#[test]
+fn cached_title_bars_follow_state_changes() {
+    use surface::Rect;
+    use window::{Window, WindowManager};
+    let (w, h) = (1280, 800);
+    let full = Rect { x: 0, y: 0, w, h };
+    let mut wm = WindowManager::desktop();
+    for (id, x) in [(4, 100), (5, 600)] {
+        wm.windows.push(
+            Window::new(
+                id,
+                "Cache test",
+                Rect {
+                    x,
+                    y: 150,
+                    w: 480,
+                    h: 300,
+                },
+            )
+            .unwrap(),
+        );
+    }
+    let mut s = Surface::new(w, h).unwrap();
+    s.damage(full);
+    wm.render(&mut s);
+    flush(&mut s);
+    let check = |wm: &WindowManager, s: &Surface, what: &str| {
+        wm.clear_render_caches();
+        let mut r = Surface::new(w, h).unwrap();
+        r.damage(full);
+        wm.render(&mut r);
+        assert!(s.pixels == r.pixels, "stale title bar after {what}");
+    };
+    // Hover each title button, click the lower window (focus swap), then
+    // maximize and restore it through its title bar.
+    for (x, y, b, what) in [
+        (1060, 162, 0, "close hover"),
+        (1000, 162, 0, "maximize hover"),
+        (960, 162, 0, "minimize hover"),
+        (300, 300, 0, "leave"),
+        (300, 165, 1, "focus press"),
+        (300, 165, 0, "focus release"),
+    ] {
+        wm.mouse(x, y, b, &mut s);
+        wm.render(&mut s);
+        flush(&mut s);
+        check(&wm, &s, what);
+    }
+    wm.windows.last_mut().unwrap().title = "Renamed window".into();
+    let d = wm.windows.last().unwrap().damage_rect();
+    s.damage(d);
+    wm.render(&mut s);
+    flush(&mut s);
+    check(&wm, &s, "rename");
 }

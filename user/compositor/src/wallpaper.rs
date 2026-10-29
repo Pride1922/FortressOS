@@ -77,6 +77,29 @@ impl Wallpaper {
         })
     }
 
+    /// Row form of `pixel()` for `out.len()` pixels starting at (x0, y): one
+    /// slice copy for the image part, a fill for the background around it.
+    pub fn fill_row(&self, x0: usize, y: usize, screen_w: usize, screen_h: usize, out: &mut [u32]) {
+        let (cw, ch) = (self.crop_w as usize, self.crop_h as usize);
+        let (sx, sy) = if screen_w >= cw && screen_h >= ch {
+            ((screen_w - cw) / 2, (screen_h - ch) / 2)
+        } else {
+            (0, 0)
+        };
+        let x1 = x0 + out.len();
+        let (a, b) = (x0.max(sx), x1.min(sx + cw));
+        if y < sy || y >= sy + ch || a >= b {
+            out.fill(self.bg_color);
+            return;
+        }
+        out[..a - x0].fill(self.bg_color);
+        let src = (y - sy) * cw + (a - sx);
+        out[a - x0..b - x0].copy_from_slice(&self.pixels[src..src + (b - a)]);
+        out[b - x0..].fill(self.bg_color);
+    }
+
+    /// Per-pixel reference for `fill_row()`, kept for the host tests.
+    #[allow(dead_code)]
     #[inline]
     pub fn pixel(&self, x: usize, y: usize, screen_w: usize, screen_h: usize) -> u32 {
         let cw = self.crop_w as usize;

@@ -126,6 +126,31 @@ pub struct Window {
     pub bg_color: u32,
     pub saved_rect: Option<Rect>,
     panel_ready: bool,
+    /// Rendered title bar rows (0..=TITLE_HEIGHT, full width, 0 = transparent).
+    title_cache: core::cell::RefCell<TitleCache>,
+}
+
+/// Everything the title bar rows depend on. Content never reaches them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TitleKey {
+    w: usize,
+    h: usize,
+    focused: bool,
+    maximized: bool,
+    hover: Option<Hit>,
+    title_hash: u64,
+}
+
+#[derive(Default)]
+struct TitleCache {
+    key: Option<TitleKey>,
+    pixels: Vec<u32>,
+}
+
+fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf29ce484222325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100000001b3)
+    })
 }
 
 impl Window {
@@ -160,7 +185,39 @@ impl Window {
             bg_color,
             saved_rect: None,
             panel_ready: false,
+            title_cache: core::cell::RefCell::new(TitleCache::default()),
         })
+    }
+
+    /// Runs `f` with the title bar rows, re-rendering them through `pixel()`
+    /// only when focus, hover, size, maximize state or title changed. A drag
+    /// changes none of these, so it never re-rasterizes the title text.
+    /// None if the cache cannot be allocated (callers fall back to `pixel()`).
+    fn with_title_rows<R>(&self, hover: Option<Hit>, f: impl FnOnce(&[u32]) -> R) -> Option<R> {
+        let key = TitleKey {
+            w: self.rect.w,
+            h: self.rect.h,
+            focused: self.is_focused,
+            maximized: self.saved_rect.is_some(),
+            hover,
+            title_hash: fnv1a(&self.title),
+        };
+        let mut cache = self.title_cache.try_borrow_mut().ok()?;
+        if cache.key != Some(key) {
+            let len = self.rect.w.checked_mul(TITLE_HEIGHT + 1)?;
+            cache.key = None;
+            cache.pixels.clear();
+            cache.pixels.try_reserve_exact(len).ok()?;
+            for y in 0..=TITLE_HEIGHT.min(self.rect.h - 1) {
+                for x in 0..self.rect.w {
+                    let p = self.pixel(x, y, hover);
+                    cache.pixels.push(p);
+                }
+            }
+            cache.pixels.resize(len, 0);
+            cache.key = Some(key);
+        }
+        Some(f(&cache.pixels))
     }
 
     pub fn damage_rect(&self) -> Rect {
@@ -896,6 +953,17 @@ impl WindowManager {
             h: s.height,
         });
         wm
+    }
+
+    /// Drops every cached title bar so the next repair re-rasterizes them
+    /// (theme or scale changes; host tests use it for a cache-free reference).
+    #[allow(dead_code)]
+    pub fn clear_render_caches(&self) {
+        for w in &self.windows {
+            if let Ok(mut cache) = w.title_cache.try_borrow_mut() {
+                cache.key = None;
+            }
+        }
     }
 
     pub fn hit_test(&self, x: usize, y: usize) -> Option<(u32, Hit)> {
@@ -1648,18 +1716,29 @@ impl WindowManager {
         while let Some(r) = s.damage_rect(i) {
             // Repair the desktop only where no opaque window core will cover it.
             let occluded = Occluders::collect(&self.windows, r);
+            let (sw, sh) = (s.width, s.height);
             for y in r.y..r.y + r.h {
                 occluded.spans(y, r.x, r.x + r.w, |a, b| {
-                    for x in a..b {
-                        s.pixels[y * s.width + x] = if let Some(wp) = wallpaper {
-                            wp.pixel(x, y, s.width, s.height)
-                        } else if !self.demo_mode {
-                            theme::desktop_pixel(x, y, s.width, s.height)
-                        } else if (32..48).contains(&y) && x >= 32 {
-                            label_pixel("FortressOS Rust Compositor", x - 32, y - 32, TEXT, DESKTOP)
-                        } else {
-                            DESKTOP
-                        };
+                    let row = &mut s.pixels[y * sw + a..y * sw + b];
+                    if let Some(wp) = wallpaper {
+                        wp.fill_row(a, y, sw, sh, row);
+                    } else if !self.demo_mode {
+                        theme::desktop_row(a, y, sw, sh, row);
+                    } else {
+                        for (i, p) in row.iter_mut().enumerate() {
+                            let x = a + i;
+                            *p = if (32..48).contains(&y) && x >= 32 {
+                                label_pixel(
+                                    "FortressOS Rust Compositor",
+                                    x - 32,
+                                    y - 32,
+                                    TEXT,
+                                    DESKTOP,
+                                )
+                            } else {
+                                DESKTOP
+                            };
+                        }
                     }
                 });
             }
@@ -1837,10 +1916,34 @@ impl WindowManager {
                                 }
                                 return;
                             }
-                            for x in a..b {
-                                let p = w.pixel(x - w.rect.x, wy, hover);
+                            let sw = s.width;
+                            let dst = &mut s.pixels[y * sw + a..y * sw + b];
+                            if wy <= TITLE_HEIGHT {
+                                let cached = w.with_title_rows(hover, |rows| {
+                                    let row = &rows[wy * w.rect.w..(wy + 1) * w.rect.w];
+                                    let src = &row[a - w.rect.x..b - w.rect.x];
+                                    for (d, &p) in dst.iter_mut().zip(src) {
+                                        if p != 0 {
+                                            *d = p;
+                                        }
+                                    }
+                                });
+                                if cached.is_some() {
+                                    return;
+                                }
+                            }
+                            // Bottom rows: away from the rounded corners, the
+                            // bevels and the resize grip, pixel() is content.
+                            let content_row = wy > TITLE_HEIGHT && wy < w.rect.h - 1;
+                            for (i, d) in dst.iter_mut().enumerate() {
+                                let lx = a + i - w.rect.x;
+                                let p = if content_row && lx >= 10 && lx + 11 < w.rect.w {
+                                    w.content[(wy - 25) * (w.rect.w - 2) + lx - 1]
+                                } else {
+                                    w.pixel(lx, wy, hover)
+                                };
                                 if p != 0 {
-                                    s.pixels[y * s.width + x] = p;
+                                    *d = p;
                                 }
                             }
                         });
