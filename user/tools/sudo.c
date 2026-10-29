@@ -79,6 +79,33 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
         if (!ok) {db_wipe(&database,sizeof(database));return tool_error("sudo","authentication failed",0);}
     }
     if (!db_check()) {db_wipe(&database,sizeof(database));return tool_error("sudo","accounts changed; retry command",0);}
+    /* Record the invoking identity (SUDO_UID/GID/USER, and FortressOS's
+     * SUDO_GROUPS supplementary list) before switching, so a program that
+     * needs root only for setup (the compositor) can drop back to it. */
+    char sudo_uid[24]="SUDO_UID=",sudo_gid[24]="SUDO_GID=",sudo_user[48]="SUDO_USER=";
+    char sudo_groups[16*11+16]="SUDO_GROUPS=";
+    {
+        uint32_t invoking[16];unsigned ninvoking=0;
+        if (!db_groups(&database,u,invoking,&ninvoking) || ninvoking>16)
+            return tool_error("sudo","cannot read invoking user's groups",0);
+        size_t at=tool_length(sudo_uid);
+        at+=tool_format_u64(sudo_uid+at,u->uid);sudo_uid[at]=0;
+        at=tool_length(sudo_gid);
+        at+=tool_format_u64(sudo_gid+at,u->gid);sudo_gid[at]=0;
+        at=tool_length(sudo_groups);
+        for (unsigned i=0;i<ninvoking;i++) {
+            if (i) sudo_groups[at++]=',';
+            at+=tool_format_u64(sudo_groups+at,invoking[i]);
+        }
+        sudo_groups[at]=0;
+        at=tool_length(sudo_user);
+        for (size_t i=0;i<sizeof(u->name) && u->name[i] && at+1<sizeof(sudo_user);i++) {
+            char c=u->name[i];
+            if (c<33 || c>126) return tool_error("sudo","invalid user name",0);
+            sudo_user[at++]=c;
+        }
+        sudo_user[at]=0;
+    }
     uint32_t groups[16];unsigned count;
     if (!db_groups(&database,root,groups,&count) ||
         permission_call4(SYS_SETRESGID,0,0,0,0)<0 ||
@@ -107,7 +134,8 @@ int sudo_main(int argc,char **argv,const char *const *envp) {
         for (size_t j=5;j<len;j++) if (p[j]<32 || p[j]>126) safe=false;
         if (safe) for (size_t j=0;j<=len;j++) term[j]=p[j];
     }
-    const char *environment[]={"PATH=/bin:/sbin","HOME=/root","USER=root","LOGNAME=root","SHELL=/bin/shell",term,NULL};
+    const char *environment[]={"PATH=/bin:/sbin","HOME=/root","USER=root","LOGNAME=root","SHELL=/bin/shell",term,
+        sudo_uid,sudo_gid,sudo_user,sudo_groups,NULL};
     spawn_opts_t opts={.size=sizeof(opts),.version=1,.argv=(uintptr_t)(argv+1),.envp=(uintptr_t)environment};
     spawn_fd_action_t input={.type=SPAWN_FD_ACTION_OPEN,.dst_fd=0,
         .flags=VFS_O_RDONLY,.path=(uintptr_t)"/dev/null"};

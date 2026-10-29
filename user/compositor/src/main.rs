@@ -7,6 +7,7 @@ mod allocator;
 mod bench;
 mod panic;
 mod perf;
+mod privilege;
 #[allow(dead_code)]
 mod sys;
 
@@ -36,7 +37,7 @@ core::arch::global_asm!(
     _start:
         and rsp, -16
         xor rbp, rbp
-        call rust_main
+        call rust_main /* rdi=argc, rsi=argv, rdx=envp from the loader */
         mov rdi, rax
         xor eax, eax
         syscall
@@ -45,7 +46,7 @@ core::arch::global_asm!(
 );
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
+pub extern "C" fn rust_main(argc: usize, argv: *const *const u8, envp: *const *const u8) -> i32 {
     let mut is_test = false;
     let mut perf_hud = false;
     let mut bench_drag = false;
@@ -80,11 +81,28 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
                 }
                 if arg == b"--test" {
                     is_test = true;
-                    break;
+                    continue;
                 }
+                if arg == b"--settings-broker" && argc == 2 {
+                    return privilege::broker_main();
+                }
+                // Unknown options must not silently start the desktop.
+                sys::write(
+                    2,
+                    b"usage: compositor [--perf] [--bench-drag] [--test] | --version\n",
+                );
+                return 2;
             }
         }
     }
+
+    let launch = match privilege::launch_from_env(envp) {
+        Ok(launch) => launch,
+        Err(why) => {
+            privilege::report(2, "[FAIL]", why, None);
+            return 1;
+        }
+    };
 
     let acquired = sys::fb_acquire();
     if acquired != 0 {
@@ -112,7 +130,13 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
         return 1;
     };
     let mut perf = perf::FrameStats::new(perf_hud && !is_test);
-    let status = run(is_test, bench_drag && !is_test, &mut desktop, &mut perf);
+    let status = run(
+        is_test,
+        bench_drag && !is_test,
+        &mut desktop,
+        &mut perf,
+        &launch,
+    );
     if sys::fb_release() != 0 {
         return 1;
     }
@@ -228,6 +252,7 @@ fn run(
     bench_drag: bool,
     desktop: &mut desktop::AppHost,
     perf: &mut perf::FrameStats,
+    launch: &privilege::Launch,
 ) -> i32 {
     sys::write(1, b"[COMPOSITOR] Desktop starting (system menu to exit)\n");
     let fb = match sys::get_fb_info(0) {
@@ -251,13 +276,46 @@ fn run(
             return 1;
         }
     };
-    let mut fd = sys::open("/dev/input/mouse", 0);
+    // Close-on-exec: the terminal shell must not inherit the mouse.
+    let mut fd = sys::open("/dev/input/mouse", sys::VFS_O_CLOEXEC);
     if fd < 0 {
-        fd = sys::open("/dev/mouse0", 0);
+        fd = sys::open("/dev/mouse0", sys::VFS_O_CLOEXEC);
     }
     if fd < 0 {
         sys::write(2, b"[COMPOSITOR] [FAIL] Mouse open (root required)\n");
         return 1;
+    }
+    // Last root-only step done: hand system settings to the root helper and
+    // become the invoking user for everything else, or stop here.
+    match launch {
+        privilege::Launch::Drop(id) => {
+            match privilege::spawn_broker() {
+                Ok(pid) => privilege::report(1, "[OK]", "Settings helper started", Some(pid)),
+                Err(e) => privilege::report(
+                    2,
+                    "[WARN]",
+                    "No settings helper; system settings cannot be saved",
+                    Some(e),
+                ),
+            }
+            if let Err(why) = privilege::drop_to(id) {
+                privilege::report(2, "[FAIL] Privilege drop:", why, None);
+                sys::close(fd as i32);
+                return 1;
+            }
+            privilege::report(
+                1,
+                "[OK]",
+                "Dropped root; desktop runs as uid",
+                Some(id.uid as isize),
+            );
+        }
+        privilege::Launch::StayRoot => privilege::report(
+            1,
+            "[WARN]",
+            "Started by root without sudo: desktop apps run as root",
+            None,
+        ),
     }
     // Console writes share VRAM: finish the startup diagnostic before painting.
     sys::write(1, b"[COMPOSITOR] [OK] Window server ready; polling\n");
@@ -383,10 +441,15 @@ fn event_loop(
                 break 1;
             }
 
-            // Output from /bin/sh over PTY master
-            if fds[2].revents & sys::POLLIN != 0 {
+            // Output from /bin/sh over PTY master. Once the shell is gone the
+            // master stays readable (EOF/hangup) forever: close the terminal
+            // instead of spinning on it. The [X] cleanup below closes the fd.
+            if fds[2].revents & (sys::POLLIN | 0x10 | 0x08) != 0 {
                 if let Some(ref mut t) = term {
-                    drain_terminal(t, windows, scene);
+                    let hung_up = fds[2].revents & (0x10 | 0x08) != 0;
+                    if !drain_terminal(t, windows, scene) || hung_up {
+                        windows.close_window(t.window_id, scene);
+                    }
                 }
             }
 
@@ -394,6 +457,12 @@ fn event_loop(
             if fds[1].revents & sys::POLLIN != 0 {
                 let mut kbuf = [0u8; 16];
                 let kn = sys::read(0, &mut kbuf);
+                if kn == 0 {
+                    // EOF (e.g. `sudo -b` gives /dev/null): stop polling
+                    // stdin, or poll reports it readable forever and the
+                    // loop spins at full speed.
+                    fds[1].fd = -1;
+                }
                 if kn > 0 {
                     for &b in &kbuf[..kn as usize] {
                         if !is_test {
@@ -969,12 +1038,16 @@ fn handle_action(
 }
 
 #[inline(never)]
-fn drain_terminal(t: &mut Terminal, windows: &mut WindowManager, scene: &mut Surface) {
+/// False when the shell side is gone (EOF on the first read after poll
+/// reported the master readable).
+fn drain_terminal(t: &mut Terminal, windows: &mut WindowManager, scene: &mut Surface) -> bool {
     let mut term_buf = [0u8; 256];
     let mut total_read = 0;
+    let mut alive = true;
     loop {
         let n = sys::read(t.master_fd, &mut term_buf);
         if n <= 0 {
+            alive = !(n == 0 && total_read == 0);
             break;
         }
         t.write_bytes(&term_buf[..n as usize]);
@@ -991,4 +1064,5 @@ fn drain_terminal(t: &mut Terminal, windows: &mut WindowManager, scene: &mut Sur
             }
         }
     }
+    alive
 }

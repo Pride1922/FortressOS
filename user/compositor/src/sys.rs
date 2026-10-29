@@ -22,6 +22,14 @@ pub const SYS_MMAP: usize = 99;
 pub const SYS_SYSINFO: usize = 37;
 pub const SYS_NETCTL: usize = 42;
 pub const SYS_WIFI: usize = 87;
+pub const SYS_PIPE: usize = 24;
+pub const SYS_GETRESUID: usize = 62;
+pub const SYS_GETRESGID: usize = 63;
+pub const SYS_SETRESUID: usize = 66;
+pub const SYS_SETRESGID: usize = 67;
+pub const SYS_SETGROUPS: usize = 68;
+pub const SYS_CAPGET: usize = 70;
+pub const VFS_O_CLOEXEC: i32 = 0x80000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -127,15 +135,22 @@ pub fn wireless_prepare() -> isize {
     spawn_ext("/bin/wifi", &opts)
 }
 #[cfg(test)]
-pub fn wireless_prepare() -> isize { -1 }
+pub fn wireless_prepare() -> isize {
+    -1
+}
 
 pub fn child_status(pid: isize) -> Option<Result<(), isize>> {
     let mut status = 0u64;
     let rc = unsafe { syscall3(33, pid as usize, &mut status as *mut _ as usize, 1) };
-    if rc == 0 || rc == -4 { None }
-    else if rc < 0 { Some(Err(rc)) }
-    else if status == 0 { Some(Ok(())) }
-    else { Some(Err(-5)) }
+    if rc == 0 || rc == -4 {
+        None
+    } else if rc < 0 {
+        Some(Err(rc))
+    } else if status == 0 {
+        Some(Ok(()))
+    } else {
+        Some(Err(-5))
+    }
 }
 
 #[repr(C)]
@@ -277,6 +292,128 @@ pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8]) -> Result<(), isi
     }
 }
 
+/// System files the unprivileged desktop may change, only through the root
+/// settings helper (`compositor --settings-broker`) once privileges dropped.
+pub const SETTING_PREFERENCES: u8 = 1;
+pub const SETTING_TIMEZONE: u8 = 2;
+/// Largest request payload; preferences::MAX_BYTES and timezone names fit.
+pub const SETTING_MAX: usize = 512;
+
+/// (target, exclusive temporary) for each setting.
+pub fn setting_paths(kind: u8) -> Option<(&'static str, &'static str)> {
+    match kind {
+        SETTING_PREFERENCES => Some((crate::preferences::PATH, "/etc/.desktop.conf.new")),
+        SETTING_TIMEZONE => Some(("/etc/timezone", "/etc/.desktop-timezone.new")),
+        _ => None,
+    }
+}
+
+/// Request pipe (write end) and reply pipe (read end) to the settings
+/// helper; -1 while the compositor still runs with its launch identity.
+static BROKER_FDS: [core::sync::atomic::AtomicI32; 2] = [
+    core::sync::atomic::AtomicI32::new(-1),
+    core::sync::atomic::AtomicI32::new(-1),
+];
+
+pub fn set_settings_broker(request: i32, reply: i32) {
+    use core::sync::atomic::Ordering::Release;
+    BROKER_FDS[0].store(request, Release);
+    BROKER_FDS[1].store(reply, Release);
+}
+
+/// Writes one system setting: directly while still privileged (or when no
+/// helper exists), otherwise as one request to the helper, which validates
+/// and writes it. Errors are negative errno values as before.
+pub fn write_setting(kind: u8, bytes: &[u8]) -> Result<(), isize> {
+    use core::sync::atomic::Ordering::Acquire;
+    let (request, reply) = (BROKER_FDS[0].load(Acquire), BROKER_FDS[1].load(Acquire));
+    if request < 0 || reply < 0 {
+        let (path, temporary) = setting_paths(kind).ok_or(EINVAL)?;
+        return atomic_write(path, temporary, bytes);
+    }
+    if bytes.len() > SETTING_MAX {
+        return Err(EINVAL);
+    }
+    let mut message = [0u8; 3 + SETTING_MAX];
+    message[0] = kind;
+    message[1..3].copy_from_slice(&(bytes.len() as u16).to_le_bytes());
+    message[3..3 + bytes.len()].copy_from_slice(bytes);
+    if !write_all(request, &message[..3 + bytes.len()]) {
+        return Err(EPIPE); // helper gone
+    }
+    let mut status = [0u8; 8];
+    if !read_exact(reply, &mut status) {
+        return Err(EPIPE);
+    }
+    match i64::from_le_bytes(status) {
+        0 => Ok(()),
+        error => Err(error as isize),
+    }
+}
+
+pub fn write_all(fd: i32, mut bytes: &[u8]) -> bool {
+    while !bytes.is_empty() {
+        let n = write(fd, bytes);
+        if n == EINTR {
+            continue;
+        }
+        if n <= 0 || n as usize > bytes.len() {
+            return false;
+        }
+        bytes = &bytes[n as usize..];
+    }
+    true
+}
+
+/// False on EOF or error before `buffer` is full.
+pub fn read_exact(fd: i32, buffer: &mut [u8]) -> bool {
+    let mut at = 0;
+    while at < buffer.len() {
+        let n = read(fd, &mut buffer[at..]);
+        if n == EINTR {
+            continue;
+        }
+        if n <= 0 || n as usize > buffer.len() - at {
+            return false;
+        }
+        at += n as usize;
+    }
+    true
+}
+
+pub fn pipe(fds: &mut [i32; 2], flags: i32) -> isize {
+    unsafe { syscall2(SYS_PIPE, fds.as_mut_ptr() as usize, flags as usize) }
+}
+
+/// (real, effective, saved) user or group ids.
+pub fn getres(group: bool) -> Option<(u32, u32, u32)> {
+    let (mut r, mut e, mut s) = (u32::MAX, u32::MAX, u32::MAX);
+    let nr = if group { SYS_GETRESGID } else { SYS_GETRESUID };
+    let rc = unsafe {
+        syscall3(
+            nr,
+            &mut r as *mut u32 as usize,
+            &mut e as *mut u32 as usize,
+            &mut s as *mut u32 as usize,
+        )
+    };
+    (rc == 0).then_some((r, e, s))
+}
+
+/// Sets real, effective and saved ids to `id` (no keep flags).
+pub fn setres(group: bool, id: u32) -> isize {
+    let nr = if group { SYS_SETRESGID } else { SYS_SETRESUID };
+    unsafe { syscall4(nr, id as usize, id as usize, id as usize, 0) }
+}
+
+pub fn setgroups(groups: &[u32]) -> isize {
+    unsafe { syscall2(SYS_SETGROUPS, groups.len(), groups.as_ptr() as usize) }
+}
+
+pub fn capget() -> isize {
+    unsafe { syscall0(SYS_CAPGET) }
+}
+
 /// Fixed 72-byte public sysinfo_t, src/include/syscall_abi.h.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -306,6 +443,9 @@ pub fn system_info() -> Option<SystemInfo> {
     }
 }
 pub const EINTR: isize = -22;
+pub const EINVAL: isize = -1;
+pub const EPIPE: isize = -20;
+pub const EPERM: isize = -24;
 pub const EBUSY: isize = -36;
 
 // Exact access-mode values from src/fs/vfs.h (not bit flags).

@@ -582,11 +582,7 @@ impl AppHost {
             self.message("Invalid preferences.");
             return;
         }
-        match sys::atomic_write(
-            crate::preferences::PATH,
-            "/etc/.desktop.conf.new",
-            text.as_bytes(),
-        ) {
+        match sys::write_setting(sys::SETTING_PREFERENCES, text.as_bytes()) {
             Ok(()) => {
                 self.layout_changed |= self.preferences.scale != self.draft.scale;
                 self.wallpaper_changed |= self.preferences.wallpaper != self.draft.wallpaper;
@@ -613,11 +609,7 @@ impl AppHost {
         }
         let mut text = Text::<128>::default();
         let _ = writeln!(text, "{}", self.zone.as_str());
-        match sys::atomic_write(
-            "/etc/timezone",
-            "/etc/.desktop-timezone.new",
-            text.as_bytes(),
-        ) {
+        match sys::write_setting(sys::SETTING_TIMEZONE, text.as_bytes()) {
             Ok(()) => {
                 sys::invalidate_clock();
                 self.last_tick = -1;

@@ -1628,3 +1628,66 @@ fn cached_title_bars_follow_state_changes() {
     flush(&mut s);
     check(&wm, &s, "rename");
 }
+
+#[path = "../user/compositor/src/privilege.rs"]
+#[allow(dead_code)]
+mod privilege;
+
+fn launch(vars: &[&str]) -> Result<privilege::Launch, &'static str> {
+    let owned: Vec<std::ffi::CString> = vars
+        .iter()
+        .map(|v| std::ffi::CString::new(*v).unwrap())
+        .collect();
+    let mut ptrs: Vec<*const u8> = owned.iter().map(|c| c.as_ptr() as *const u8).collect();
+    ptrs.push(std::ptr::null());
+    privilege::launch_from_env(ptrs.as_ptr())
+}
+
+#[test]
+fn sudo_identity_is_parsed_strictly() {
+    use privilege::Launch;
+    // No sudo variables, or invoked by root: stay root (with a warning).
+    assert_eq!(launch(&["PATH=/bin", "USER=root"]), Ok(Launch::StayRoot));
+    assert_eq!(launch(&["SUDO_UID=0", "SUDO_GID=0"]), Ok(Launch::StayRoot));
+    assert_eq!(
+        privilege::launch_from_env(std::ptr::null()),
+        Ok(Launch::StayRoot)
+    );
+    // The normal sudo case.
+    match launch(&[
+        "HOME=/root",
+        "SUDO_UID=1000",
+        "SUDO_GID=1000",
+        "SUDO_USER=operator",
+        "SUDO_GROUPS=1000,10,44,104",
+    ]) {
+        Ok(Launch::Drop(id)) => {
+            assert_eq!((id.uid, id.gid), (1000, 1000));
+            assert_eq!(&id.groups[..id.ngroups], &[1000, 10, 44, 104]);
+        }
+        other => panic!("{other:?}"),
+    }
+    match launch(&["SUDO_UID=1000", "SUDO_GID=1000"]) {
+        Ok(Launch::Drop(id)) => assert_eq!(id.ngroups, 0),
+        other => panic!("{other:?}"),
+    }
+    // Anything malformed or incomplete is refused, never guessed.
+    for bad in [
+        &["SUDO_UID=1000"][..],
+        &["SUDO_UID=", "SUDO_GID=1000"],
+        &["SUDO_UID=10x0", "SUDO_GID=1000"],
+        &["SUDO_UID=-1", "SUDO_GID=1000"],
+        &["SUDO_UID=4294967296", "SUDO_GID=1000"],
+        &["SUDO_UID=1000", "SUDO_GID=abc"],
+        &["SUDO_UID=1000", "SUDO_GID=0"],
+        &["SUDO_UID=1000", "SUDO_GID=1000", "SUDO_GROUPS=10,0"],
+        &["SUDO_UID=1000", "SUDO_GID=1000", "SUDO_GROUPS=10,,44"],
+        &[
+            "SUDO_UID=1000",
+            "SUDO_GID=1000",
+            "SUDO_GROUPS=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17",
+        ],
+    ] {
+        assert!(launch(bad).is_err(), "accepted {bad:?}");
+    }
+}
