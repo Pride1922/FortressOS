@@ -60,6 +60,14 @@ impl Surface {
     pub fn damage_rect(&self, index: usize) -> Option<Rect> {
         (index < self.count).then(|| self.damage[index])
     }
+    /// Pixels the next present() will copy (overlapping rects count twice,
+    /// exactly as present() copies them).
+    pub fn damage_pixels(&self) -> u64 {
+        self.damage[..self.count]
+            .iter()
+            .map(|r| (r.w * r.h) as u64)
+            .sum()
+    }
     pub fn new(width: usize, height: usize) -> Option<Self> {
         if width == 0 || height == 0 {
             return None;

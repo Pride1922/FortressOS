@@ -4,7 +4,9 @@
 extern crate alloc;
 
 mod allocator;
+mod bench;
 mod panic;
+mod perf;
 #[allow(dead_code)]
 mod sys;
 
@@ -45,6 +47,8 @@ core::arch::global_asm!(
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
     let mut is_test = false;
+    let mut perf_hud = false;
+    let mut bench_drag = false;
     if argc > 1 && !argv.is_null() {
         for i in 1..argc {
             let arg_ptr = unsafe { *argv.add(i) };
@@ -65,6 +69,14 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
                     );
                     sys::write(1, version.as_bytes());
                     return 0;
+                }
+                if arg == b"--perf" {
+                    perf_hud = true;
+                    continue;
+                }
+                if arg == b"--bench-drag" {
+                    bench_drag = true;
+                    continue;
                 }
                 if arg == b"--test" {
                     is_test = true;
@@ -99,9 +111,18 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8) -> i32 {
         sys::fb_release();
         return 1;
     };
-    let status = run(is_test, &mut desktop);
+    let mut perf = perf::FrameStats::new(perf_hud && !is_test);
+    let status = run(is_test, bench_drag && !is_test, &mut desktop, &mut perf);
     if sys::fb_release() != 0 {
         return 1;
+    }
+    // Text console is visible again: leave the whole-session numbers on screen.
+    if !is_test && perf.session.frames > 0 {
+        use core::fmt::Write;
+        let mut line = preferences::Text::<192>::from_str("[COMPOSITOR] [PERF] session: ");
+        perf.session.format(&mut line);
+        let _ = line.write_str("\n");
+        sys::write(1, line.as_bytes());
     }
     status
 }
@@ -202,7 +223,12 @@ fn spawn_terminal() -> Option<(Window, Terminal)> {
 }
 
 #[inline(never)]
-fn run(is_test: bool, desktop: &mut desktop::AppHost) -> i32 {
+fn run(
+    is_test: bool,
+    bench_drag: bool,
+    desktop: &mut desktop::AppHost,
+    perf: &mut perf::FrameStats,
+) -> i32 {
     sys::write(1, b"[COMPOSITOR] Desktop starting (system menu to exit)\n");
     let fb = match sys::get_fb_info(0) {
         Ok(fb) if fb.version == 1 && fb.bpp == 32 => fb,
@@ -280,6 +306,11 @@ fn run(is_test: bool, desktop: &mut desktop::AppHost) -> i32 {
         sys::close(fd as i32);
         return 1;
     }
+    if bench_drag {
+        let status = bench::drag(&mut scene, &mut windows, &fb, wallpaper.as_ref(), perf);
+        sys::close(fd as i32);
+        return status;
+    }
     event_loop(
         &mut scene,
         &mut cursor,
@@ -289,6 +320,7 @@ fn run(is_test: bool, desktop: &mut desktop::AppHost) -> i32 {
         is_test,
         &mut wallpaper,
         desktop,
+        perf,
     )
 }
 
@@ -302,6 +334,7 @@ fn event_loop(
     is_test: bool,
     wallpaper: &mut Option<wallpaper::Wallpaper>,
     desktop: &mut desktop::AppHost,
+    perf: &mut perf::FrameStats,
 ) -> i32 {
     let mut ts = sys::Timespec::default();
     let mut term: Option<Terminal> = None;
@@ -331,6 +364,8 @@ fn event_loop(
         // Timer and keyboard updates can mutate the scene without a mouse
         // packet. Always restore save-under before any scene changes.
         cursor.hide(scene);
+        // Pending-packet frames start here; poll frames restart after waking.
+        let mut t_wake = perf::now_ns();
         let mut had_mouse = false;
         let mut packet = [0u8; 4];
 
@@ -340,6 +375,7 @@ fn event_loop(
         } else {
             fds[2].fd = term.as_ref().map(|t| t.master_fd).unwrap_or(-1);
             let ready = sys::poll(&mut fds, if is_test { -1 } else { 1000 });
+            t_wake = perf::now_ns();
             if ready == sys::EINTR {
                 continue;
             }
@@ -564,10 +600,20 @@ fn event_loop(
 
         windows.render_with_wallpaper(scene, wallpaper.as_ref());
 
+        perf.draw_hud(scene);
         cursor.show(scene);
+        let px = scene.damage_pixels();
+        let t_ready = perf::now_ns();
         if !unsafe { scene.present(fb) } {
             break 1;
         }
+        let t_done = perf::now_ns();
+        perf.record(
+            t_ready.saturating_sub(t_wake),
+            t_done.saturating_sub(t_ready),
+            px,
+            t_done,
+        );
         frame_count = frame_count.wrapping_add(1);
 
         // SYS_POLL already blocks when there is no work. Sleeping after a
