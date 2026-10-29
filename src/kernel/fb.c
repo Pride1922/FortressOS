@@ -60,7 +60,7 @@ int64_t fb_map(uintptr_t cr3, uint64_t *root, uintptr_t requested, fb_info_v1_t 
     }
     state=FB_BUSY;
     spin_unlock_irqrestore(&fb_lock,irq);
-    int error=vmm_map_device_range(root,va,pa,info.fb_size);
+    int error=vmm_map_framebuffer_range(root,va,pa,info.fb_size);
     irq=spin_lock_irqsave(&fb_lock);
     if (error==VMM_OK) {
         mapped_va=va; mapped_pa=pa; mapped_root=root; mapped_bytes=info.fb_size;

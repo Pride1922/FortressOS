@@ -1018,7 +1018,9 @@ static int user_span_empty(uint64_t *root, uintptr_t va, size_t pages) {
     return VMM_OK;
 }
 
-static int map_user_span(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes, bool device) {
+/* cache: PTE_PCD/PTE_PWT bits for device leaves (ignored for anonymous). */
+static int map_user_span(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes, bool device,
+                         uint64_t cache) {
     if (!root || !user_span(va,bytes) || (device &&
         (!pa || pa % PAGE_SIZE || pa > PTE_ADDR_MASK || bytes-1 > (PTE_ADDR_MASK|4095)-pa)))
         return VMM_ERR_INVALID_ADDR;
@@ -1065,7 +1067,7 @@ static int map_user_span(uint64_t *root, uintptr_t va, uintptr_t pa, size_t byte
         else if ((unsigned)missing>count) res=VMM_ERR_NOMEM;
         else res = vmm_map_page_unlocked(root,va+mapped*PAGE_SIZE,
             device ? pa+mapped*PAGE_SIZE : frames[mapped],
-            PTE_PRESENT|PTE_USER|PTE_WRITABLE|PTE_NX|(device ? PTE_DEVICE|PTE_PCD : 0),spares,&count);
+            PTE_PRESENT|PTE_USER|PTE_WRITABLE|PTE_NX|(device ? PTE_DEVICE|cache : 0),spares,&count);
         if (res != VMM_OK) break;
     }
     if (res != VMM_OK) for (size_t i=0;i<mapped;i++)
@@ -1086,10 +1088,16 @@ cleanup:
 }
 
 int vmm_map_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
-    return map_user_span(root,va,pa,bytes,true);
+    return map_user_span(root,va,pa,bytes,true,PTE_PCD);
+}
+uint64_t vmm_framebuffer_cache_bits(void) {
+    return g_pat_wc ? PTE_PWT : PTE_PCD;
+}
+int vmm_map_framebuffer_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
+    return map_user_span(root,va,pa,bytes,true,vmm_framebuffer_cache_bits());
 }
 int vmm_map_anonymous_range(uint64_t *root, uintptr_t va, size_t bytes) {
-    return map_user_span(root,va,0,bytes,false);
+    return map_user_span(root,va,0,bytes,false,0);
 }
 int vmm_unmap_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
     if (!root || !user_span(va,bytes) || !pa || pa % PAGE_SIZE
@@ -1390,7 +1398,8 @@ void vmm_init(boot_info_t *boot_info) {
     }
     serial_puts("[VMM] Guard pages below boot stack, IST1, and IST2 unmapped (hardware overflow trap armed)\n");
 
-    /* 4. Map Linear Framebuffer explicitly with Cache-Disable (PTE_PCD) */
+    /* 4. Map Linear Framebuffer write-combining (PTE_PWT = PA1 = WC once
+     *    cpu_install() programmed the PAT), else Cache-Disable (PTE_PCD). */
     if (boot_info->has_framebuffer) {
         uintptr_t fb_virt = boot_info->fb_address;
         uintptr_t fb_phys = fb_virt - hhdm_offset;
@@ -1400,10 +1409,13 @@ void vmm_init(boot_info_t *boot_info) {
             uintptr_t virt = fb_virt + p;
             uintptr_t phys = fb_phys + p;
             if (!vmm_is_mapped(pml4, virt)) {
-                vmm_must_map(pml4, virt, phys, PTE_PRESENT | PTE_WRITABLE | PTE_NX | PTE_PCD, "Framebuffer MMIO");
+                vmm_must_map(pml4, virt, phys,
+                             PTE_PRESENT | PTE_WRITABLE | PTE_NX | vmm_framebuffer_cache_bits(),
+                             "Framebuffer MMIO");
             }
         }
-        serial_puts("[VMM] Framebuffer video memory mapped (RW, NX, Cache-Disable)\n");
+        serial_puts(g_pat_wc ? "[VMM] Framebuffer video memory mapped (RW, NX, Write-Combining)\n"
+                             : "[VMM] Framebuffer video memory mapped (RW, NX, Cache-Disable)\n");
     }
 
     /* 5. Inspect required mappings before loading CR3 (Verification Checkpoint) */

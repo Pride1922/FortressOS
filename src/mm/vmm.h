@@ -99,6 +99,11 @@ int       vmm_map_page(uint64_t *pml4_virt, uintptr_t virt_addr, uintptr_t phys_
  * leaves are rolled back; empty private page tables remain until teardown.
  * Device unmap validates the entire expected physical span before revocation. */
 int vmm_map_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes);
+/* Like vmm_map_device_range, but write-combining when the PAT allows it.
+ * Only for the linear framebuffer: WC reorders and merges stores. */
+int vmm_map_framebuffer_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes);
+/* Cache bits for framebuffer leaves: PTE_PWT (PA1 = WC) or PTE_PCD (UC-). */
+uint64_t vmm_framebuffer_cache_bits(void);
 int vmm_unmap_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes);
 int vmm_map_anonymous_range(uint64_t *root, uintptr_t va, size_t bytes);
 /* Install 1..16 absent 4 KiB leaves within one 2 MiB PT region. Frames must

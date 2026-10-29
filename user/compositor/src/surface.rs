@@ -190,6 +190,8 @@ impl Surface {
     /// Caller supplies the exclusively owned SYS_FBINFO mapping, valid until exit.
     /// REP MOVSD uses integer state, avoids VRAM reads, and acts as a compiler
     /// memory barrier. SSE2 must wait for kernel SIMD context preservation.
+    /// The mapping is write-combining when the kernel's PAT allows it, so the
+    /// final SFENCE drains the WC buffers before the frame counts as presented.
     pub unsafe fn present(&mut self, fb: &FbInfoV1) -> bool {
         let pitch = fb.pitch as usize;
         if fb.version != 1
@@ -220,6 +222,9 @@ impl Surface {
                         inout("rcx") r.w => _, options(nostack));
                 }
             }
+        }
+        unsafe {
+            core::arch::asm!("sfence", options(nostack, preserves_flags));
         }
         self.count = 0;
         true
