@@ -1,5 +1,9 @@
 # Gate 2A: private test enrollment bundle and selector
 
+Historical fixture design. Superseded for the product by the 2026-10-30
+[ordinary repository package scope](PKG_PRODUCTION_DESKTOP.md); this mechanism
+must not be a prerequisite for fetching or installing packages.
+
 2026-10-24. Follows [private kernel acceptance](PKG2_GATE1_KERNEL_ACCEPTANCE.md).
 This is the next bounded **host artifact** milestone of the
 [production integration plan](PKG2_PRODUCTION_INTEGRATION.md), not completion of

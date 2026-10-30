@@ -39,7 +39,8 @@ static int run_open_actor(vfs_node_t *n,unsigned mask,bool truncate,const creds_
     uint64_t irq=spin_lock_irqsave(&run_lock);
     int r=run_access_locked(n,mask,actor);
     if (!r && truncate) {
-        if (n->type!=VFS_FILE) r=-VFS_EINVAL;
+        if(run_entry(n)->boot_bytes)r=-VFS_EROFS;
+        else if (n->type!=VFS_FILE) r=-VFS_EINVAL;
         else {
             vfs_metadata_t value=run_value_locked(n);
             uint16_t mode=permission_content_mode(&value,actor);
@@ -64,6 +65,7 @@ static int64_t run_write_actor(vfs_node_t *n,uint64_t *offset,bool append,
     uint64_t irq=spin_lock_irqsave(&run_lock);
     /* Existing descriptor rights survive chmod and unlink. */
     if (!run_entry(n)->used) { spin_unlock_irqrestore(&run_lock,irq);return -VFS_ENOENT; }
+    if (run_entry(n)->boot_bytes) { spin_unlock_irqrestore(&run_lock,irq);return -VFS_EROFS; }
     if (!len) { spin_unlock_irqrestore(&run_lock,irq);return 0; }
     uint64_t off=append ? n->size : *offset;
     if (off>=RUNFS_BYTES) { spin_unlock_irqrestore(&run_lock,irq);return -VFS_ENOSPC; }
@@ -84,6 +86,7 @@ static int run_unlink_actor(vfs_node_t *dir,const char *name,bool require_direct
         if (!*link) r=-VFS_ENOENT;
         else {
             vfs_node_t *victim=*link;
+            if(run_entry(victim)->boot_bytes){r=-VFS_EROFS;goto done;}
             if (require_directory && victim->type!=VFS_DIRECTORY) {r=-VFS_ENOTDIR;goto done;}
             vfs_metadata_t d=run_value_locked(dir),v=run_value_locked(victim);
             r=permission_delete_value(&d,&v,actor);
@@ -135,6 +138,7 @@ static int run_rename_actor(vfs_node_t *old,const char *name,vfs_node_t *dest,
     if (!r) r=run_access_locked(dest,VFS_MAY_WRITE|VFS_MAY_EXEC,actor);
     vfs_node_t *source=run_find_locked(old,name),*victim=run_find_locked(dest,next);
     if (!r && !source) r=-VFS_ENOENT;
+    if(!r&&(run_entry(source)->boot_bytes||(victim&&run_entry(victim)->boot_bytes)))r=-VFS_EROFS;
     if (!r && require_directory && source->type!=VFS_DIRECTORY) r=-VFS_ENOTDIR;
     if (!r) {
         vfs_metadata_t d=run_value_locked(old),v=run_value_locked(source);
@@ -195,6 +199,15 @@ static int run_exec_snapshot(vfs_node_t *n,const creds_t *actor,vfs_metadata_t *
     int r=run_access_locked(n,VFS_MAY_EXEC,actor);
     void *copy=NULL;
     if (!r && (n->type!=VFS_FILE || !n->size)) r=-VFS_EINVAL;
+    if(!r&&run_entry(n)->boot_bytes){
+        const uint8_t *source=run_entry(n)->boot_bytes;vfs_metadata_t meta=run_value_locked(n);
+        spin_unlock_irqrestore(&run_lock,irq);
+        if(meta.size>VFS_MAX_EXEC_SIZE)return -VFS_EFBIG;
+        copy=kmalloc_large(meta.size);if(!copy)return -VFS_ENOMEM;
+        /* Reserved immutable backing and a permanently published node permit
+         * this potentially large copy outside run_lock/IRQ exclusion. */
+        memcpy(copy,source,meta.size);*out=meta;*bytes=copy;return 0;
+    }
     if (!r) {
         copy=kmalloc(n->size);
         if (!copy) r=-VFS_ENOMEM;

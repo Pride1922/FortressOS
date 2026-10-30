@@ -6,7 +6,9 @@
 /*
  * RUNFS Capacity and Ephemeral State Policy:
  * RUNFS enforces a hard, fixed capacity ceiling of RUNFS_BYTES = 4096u (4 KiB)
- * per vnode, and RUNFS_NODES = 64u total nodes across the entire filesystem.
+ * per ordinary mutable vnode, and RUNFS_NODES = 64u total nodes across the
+ * entire filesystem. Boot-only readonly tool aliases borrow reserved module
+ * bytes without extending the mutable-file quota; they consume node credits.
  *
  * This memory-backed filesystem provides ephemeral storage for early boot and
  * live read-only media (/run, /run/user, /run/watchtower).
@@ -25,7 +27,8 @@
  */
 #define RUNFS_NODES 64u
 #define RUNFS_BYTES 4096u
-typedef struct { vfs_node_t node; uint32_t refs; bool used,removed,legacy; uint8_t data[RUNFS_BYTES]; } run_node_t;
+typedef struct { vfs_node_t node; uint32_t refs; bool used,removed,legacy;
+    const uint8_t *boot_bytes;uint8_t data[RUNFS_BYTES]; } run_node_t;
 static run_node_t run_pool[RUNFS_NODES];
 static spinlock_t run_lock=SPINLOCK_RANKED(1,"runfs");
 static run_node_t *run_entry(vfs_node_t *node) { return (run_node_t *)node; }
@@ -65,24 +68,27 @@ static vfs_node_t *run_lookup(vfs_node_t *d,const char *n) { return run_lookup_c
 static vfs_node_t *run_lookup_ref(vfs_node_t *d,const char *n,int *e) { return run_lookup_common(d,n,e,true); }
 static int run_metadata(vfs_node_t *node,vfs_metadata_t *out) {
     uint64_t irq=spin_lock_irqsave(&run_lock);
-    *out=(vfs_metadata_t){.size=node->size,.type=node->type,.mode=node->mode,.uid=node->uid,.gid=node->gid};
+    *out=(vfs_metadata_t){.size=node->size,.type=node->type,.mode=node->mode,.uid=node->uid,.gid=node->gid,.mnt_flags=node->mnt_flags};
     spin_unlock_irqrestore(&run_lock,irq);return 0;
 }
 static int64_t run_read_file(vfs_node_t *node,uint64_t off,void *buf,size_t len) {
     uint64_t irq=spin_lock_irqsave(&run_lock);
     if (off>=node->size) len=0;else if (len>node->size-off) len=node->size-off;
-    if (len) memcpy(buf,run_entry(node)->data+off,len);
+    if (len>RUNFS_BYTES) len=RUNFS_BYTES;
+    if (len) memcpy(buf,(run_entry(node)->boot_bytes ? run_entry(node)->boot_bytes : run_entry(node)->data)+off,len);
     spin_unlock_irqrestore(&run_lock,irq);return len;
 }
 static int64_t run_read_offset(vfs_node_t *node,uint64_t *off,void *buf,size_t len) {
     uint64_t irq=spin_lock_irqsave(&run_lock);
     if (*off>=node->size) len=0;else if (len>node->size-*off) len=node->size-*off;
-    if (len) memcpy(buf,run_entry(node)->data+*off,len);
+    if (len>RUNFS_BYTES) len=RUNFS_BYTES;
+    if (len) memcpy(buf,(run_entry(node)->boot_bytes ? run_entry(node)->boot_bytes : run_entry(node)->data)+*off,len);
     *off+=len;
     spin_unlock_irqrestore(&run_lock,irq);return len;
 }
 static int64_t run_write_file(vfs_node_t *node,uint64_t *offset,bool append,const void *buf,size_t len) {
     uint64_t irq=spin_lock_irqsave(&run_lock);uint64_t off=append ? node->size : *offset;
+    if(run_entry(node)->boot_bytes){spin_unlock_irqrestore(&run_lock,irq);return -VFS_EROFS;}
     if (off>=RUNFS_BYTES) { spin_unlock_irqrestore(&run_lock,irq);return -VFS_ENOSPC; }
     if (len>RUNFS_BYTES-off) len=RUNFS_BYTES-off;
     memcpy(run_entry(node)->data+off,buf,len);*offset=off+len;
@@ -92,6 +98,7 @@ static int64_t run_write_file(vfs_node_t *node,uint64_t *offset,bool append,cons
 static int run_truncate_file(vfs_node_t *node,uint64_t size) {
     if (size>RUNFS_BYTES) return -VFS_EFBIG;
     uint64_t irq=spin_lock_irqsave(&run_lock);
+    if(run_entry(node)->boot_bytes){spin_unlock_irqrestore(&run_lock,irq);return -VFS_EROFS;}
     uint64_t start=size<node->size ? size : node->size;
     uint64_t end=size>node->size ? size : node->size;
     memset(run_entry(node)->data+start,0,end-start);node->size=size;
@@ -112,7 +119,8 @@ static int run_unlink_node(vfs_node_t *dir,const char *name) {
     int r=-VFS_ENOENT;
     if (*link) {
         vfs_node_t *n=*link;
-        if (n->children) r=-VFS_ENOTEMPTY;
+        if (run_entry(n)->boot_bytes) r=-VFS_EROFS;
+        else if (n->children) r=-VFS_ENOTEMPTY;
         else { *link=n->next;n->next=NULL;run_entry(n)->removed=true;run_collect(run_entry(n));r=0; }
     }
     spin_unlock_irqrestore(&run_lock,irq);return r;
@@ -196,4 +204,27 @@ void runfs_init(vfs_node_t *root) {
     run_pool[0].node.children=&run_pool[2].node;
     run_pool[1].node.next=root->children;root->children=&run_pool[1].node;
     run_pool[0].node.next=root->children;root->children=&run_pool[0].node;
+}
+int runfs_publish_boot_tool(const char *name,const void *bytes,size_t length) {
+    if(!name||!bytes||!length||length>VFS_MAX_EXEC_SIZE||
+       length>UINTPTR_MAX-(uintptr_t)bytes||!vfs_boot_root_available())return -VFS_EINVAL;
+    size_t n=0;while(n<32&&name[n])n++;
+    if(!n||n==32)return -VFS_EINVAL;
+    for(size_t i=0;i<n;i++){
+        char c=name[i];if((c>='a'&&c<='z')||(c>='0'&&c<='9'))continue;
+        if(c!='-'||!i||i+1==n||name[i-1]=='-')return -VFS_EINVAL;
+    }
+    uint64_t irq=spin_lock_irqsave(&run_lock);vfs_node_t *dir=&run_pool[0].node;
+    int r=-VFS_EINVAL;
+    if(!run_pool[0].used||run_pool[0].removed)goto done;
+    if(run_find_locked(dir,name)){r=-VFS_EEXIST;goto done;}
+    r=-VFS_ENOSPC;
+    for(unsigned i=4;i<RUNFS_NODES;i++)if(!run_pool[i].used){
+        vfs_create_attrs_t attrs={.mode=0755};run_setup(run_pool+i,dir,name,VFS_FILE,&attrs);
+        run_pool[i].legacy=true;run_pool[i].boot_bytes=bytes;
+        vfs_node_t *node=&run_pool[i].node;node->size=length;node->mnt_flags=VFS_MNT_RDONLY|VFS_MNT_NOSUID;
+        node->next=dir->children;dir->children=node;r=0;break;
+    }
+done:
+    spin_unlock_irqrestore(&run_lock,irq);return r;
 }

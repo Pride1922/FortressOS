@@ -8,6 +8,7 @@
 #include "../src/fs/gpt.h"
 static size_t live;
 void *kmalloc(size_t n) { void *p=malloc(n);if(p)live++;return p; }
+void *kmalloc_large(size_t n) {return kmalloc(n);}
 void *kcalloc(size_t n,size_t z) { void *p=calloc(n,z);if(p)live++;return p; }
 void kfree(void *p) { if(p){assert(live);live--;free(p);} }
 void serial_puts(const char *s) { (void)s; }
@@ -15,6 +16,9 @@ void serial_print_dec(uint64_t n) { (void)n; }
 void serial_print_hex(uint64_t n) { (void)n; }
 void serial_putc(char c) { (void)c; }
 void serial_raw_putc(char c) { (void)c; }
+/* Mouse input is not exercised by filesystem permission host models. */
+struct vfs_node;
+void mouse_dev_init(struct vfs_node *directory){(void)directory;}
 void console_terminal_write(const char *s,size_t n) { (void)s;(void)n; }
 void console_inc_generation(void) {}
 bool console_is_quiet(void) {return false;}

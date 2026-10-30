@@ -1,5 +1,5 @@
-/* Bounded enrolled-root EXT4/VFS/JBD2 executor, included after filesystem
- * definitions. Ordinary roots have no caller and compilation is off by default. */
+/* Legacy bounded EXT4/VFS/JBD2 transaction engine, retained for reuse.
+ * Included after filesystem definitions; dormant in ordinary builds. */
 #include "pkg_executor.h"
 #include "crypto.h"
 #include "../../user/tools/gzip.h"
@@ -19,6 +19,12 @@ typedef struct {
     char mount[32];
 } px_context;
 static px_context *px;
+/* Bounded FPK payloads can exceed the heap's single expansion batch. Use its
+ * existing multi-batch allocator, retaining zeroed-state semantics. */
+static void *px_allocate(size_t bytes){
+    if(!bytes||bytes>32u*1024*1024)return NULL;
+    void *out=kmalloc_large(bytes);if(out)memset(out,0,bytes);return out;
+}
 static bool px_released(ext4_engine_t *,uint32_t,bool);
 static void px_copy(char *out,const char *in){memcpy(out,in,strlen(in)+1);}
 static bool px_actor(void){uintptr_t actor=px?__atomic_load_n(&px->actor,__ATOMIC_ACQUIRE):0;return actor&&px->policy.current_actor&&px->policy.current_actor()==actor;}
@@ -222,8 +228,8 @@ static int px_prepare(const px_policy *policy,const uint8_t *artifact,size_t art
     if(!admitted)return -VFS_EROFS;
     if(px||!policy||!policy->authorized||!policy->current_actor||!artifact||!catalog||!fpk_identity_valid(name,name_n)||
        artifact_n>FPK_HEADER_SIZE+FPK_MANIFEST_MAX+FPK_COMPRESSED_MAX||catalog_n>FPK_CATALOG_MAX||!policy->minimum_sequence||px_zero(policy->record_key,32)||policy->resources.base_count>256||!policy->resources.base_count)return -VFS_EINVAL;
-    px=kcalloc(1,sizeof *px);if(!px)return -VFS_ENOMEM;px->policy=*policy;
-    px->artifact=kcalloc(1,artifact_n);px->catalog=kcalloc(1,catalog_n);px->nodes=kcalloc(128,1024);
+    px=px_allocate(sizeof *px);if(!px)return -VFS_ENOMEM;px->policy=*policy;
+    px->artifact=px_allocate(artifact_n);px->catalog=px_allocate(catalog_n);px->nodes=px_allocate(128*1024);
     if(!px->artifact||!px->catalog||!px->nodes){px_destroy();return -VFS_ENOMEM;}
     memcpy(px->artifact,artifact,artifact_n);memcpy(px->catalog,catalog,catalog_n);px->artifact_n=artifact_n;px->catalog_n=catalog_n;
     for(size_t i=0;i<policy->resources.base_count;i++){
@@ -239,7 +245,7 @@ static int px_prepare(const px_policy *policy,const uint8_t *artifact,size_t art
     px->payload_n=px->verify.verify.envelope.expanded_bytes;
     uint64_t memory=sizeof *px+artifact_n+catalog_n+128*1024+px->payload_n;
     if(memory>32u*1024*1024||memory>policy->resources.memory_bytes){px_destroy();return -VFS_ENOMEM;}
-    px->payload=kcalloc(1,px->payload_n);
+    px->payload=px_allocate(px->payload_n);
     if(!px->payload){px_destroy();return -VFS_ENOMEM;}
     px->reader_at=128+px->verify.verify.envelope.manifest_bytes;
     if(gzip_decode_callbacks(px_decode_read,px_decode_write,px)||px->decode_at!=px->payload_n||px->reader_at!=px->artifact_n){px_destroy();return PX_REJECT(-VFS_EACCES);}

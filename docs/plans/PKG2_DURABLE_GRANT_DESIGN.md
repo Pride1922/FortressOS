@@ -1,5 +1,9 @@
 # PKG-2 durable grant and mount admission — candidate
 
+Historical test design. Superseded for the product by the 2026-10-30
+[ordinary repository package scope](PKG_PRODUCTION_DESKTOP.md); device enrollment
+and package-specific boot modes are not implementation requirements.
+
 2026-10-21. Design only: no disk ABI is frozen and no production caller,
 provisioning path, allocator change or boot integration is implemented here.
 Installation and production trust provisioning remain disabled. This refines

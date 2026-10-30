@@ -4,6 +4,12 @@
 /* SYS_PKGCTL: exact v1 request/result sizes, values only. No keys, paths,
  * devices, source pointers or caller-supplied admission decisions. */
 enum { PKG_STATUS=1,PKG_ACQUIRE,PKG_RECOVER,PKG_RELEASE,PKG_INSTALL,PKG_REMOVE };
+enum { PKG_INSTALL_SOURCE=7 };
+/* Additive v2 ingestion. v1 remains exactly 64 bytes. Descriptors identify only
+ * source regular files to snapshot, never a policy, plan, device or verified flag.
+ * Limits match the existing catalog/FPK parsers. Result remains v1. */
+#define PKG_SOURCE_CATALOG_MAX (256u*1024u)
+#define PKG_SOURCE_ARTIFACT_MAX (128u+16384u+8u*1024u*1024u)
 enum { PKG_PHASE_IDLE,PKG_PHASE_RESERVED,PKG_PHASE_PENDING,PKG_PHASE_RETIRING };
 typedef struct {
     uint32_t size,version,operation,reserved;
@@ -11,6 +17,15 @@ typedef struct {
     uint8_t package[32];
     uint64_t reserved64;
 } pkg_request_v1;
+typedef struct {
+    pkg_request_v1 request;
+    uint64_t catalog_fd,catalog_bytes,artifact_fd,artifact_bytes;
+} pkg_request_v2;
+_Static_assert(sizeof(pkg_request_v2)==96,"pkg request v2 size");
+_Static_assert(offsetof(pkg_request_v2,catalog_fd)==64,"pkg catalog descriptor");
+_Static_assert(offsetof(pkg_request_v2,catalog_bytes)==72,"pkg catalog bytes");
+_Static_assert(offsetof(pkg_request_v2,artifact_fd)==80,"pkg artifact descriptor");
+_Static_assert(offsetof(pkg_request_v2,artifact_bytes)==88,"pkg artifact bytes");
 typedef struct {
     uint32_t size,version,phase,reserved;
     uint64_t session,sequence,account_sequence,credential_generation;

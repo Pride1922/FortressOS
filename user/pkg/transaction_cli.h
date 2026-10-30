@@ -5,7 +5,8 @@
  * Backend/context/policy and argv remain valid for the complete call. Status
  * must be read-only. Recover revalidates authority and owns its durable result;
  * output failure must never cause a retry, rollback or a second recovery call.
- * No implementation of this backend is linked into the default /bin/pkg. */
+ * The normal frontend implements these callbacks through SYS_PKGCTL; no
+ * filesystem mutation backend or admission policy is linked into /bin/pkg. */
 enum { PKG_TX_IDLE, PKG_TX_RESERVED, PKG_TX_PENDING, PKG_TX_RETIRING };
 typedef struct {
     unsigned phase;

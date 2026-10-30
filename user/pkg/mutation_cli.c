@@ -10,7 +10,12 @@ int pkg_mutation_cli(int argc,char **argv,const fpk_catalog_policy *policy,
         if(n==256)return tool_error("pkg","argument too long",NULL);
     }
     if(argc==2&&tool_equal(argv[1],"--help")&&backend&&backend->mutate){
-        static const char help[]="pkg status\npkg recover\npkg install PACKAGE\npkg remove PACKAGE\npkg inspect ARTIFACT BYTES SHA256\npkg verify CATALOG PACKAGE ARTIFACT\nMutation requires an admitted enrolled root.\n";
+        static const char help[]="pkg status\npkg recover\npkg install PACKAGE\npkg remove PACKAGE\n"
+#ifdef FORTRESS_PKG_FETCH
+            "pkg fetch PACKAGE NEW-ABSOLUTE-DIRECTORY\n"
+            "pkg install PACKAGE ABSOLUTE-STAGING-DIRECTORY\n"
+#endif
+            "pkg inspect ARTIFACT BYTES SHA256\npkg verify CATALOG PACKAGE ARTIFACT\n";
         return tool_write("pkg",help,sizeof help-1);
     }
     bool install=argc>1&&tool_equal(argv[1],"install");

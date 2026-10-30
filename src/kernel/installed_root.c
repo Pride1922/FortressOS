@@ -8,6 +8,7 @@
 #include "heap.h"
 #include "elf.h"
 #include "accounts.h"
+#include "pkg_boot_cli.h"
 #include "vmm.h"
 #include "../../user/tools/userdb.h"
 
@@ -159,6 +160,9 @@ bool installed_root_boot(const boot_info_t *info) {
     reason="invalid or incomplete boot readiness";
     if (!info->installed_modules_valid || !root_readiness_validate((void *)info->readiness_vaddr,info->readiness_size,&recovery,
         (void *)info->kernel_file_vaddr,info->kernel_file_size,(void *)info->initramfs_vaddr,info->initramfs_size)) return false;
+    /* Keep a current package CLI available on installations predating /bin/pkg. */
+    int tool=pkg_boot_cli_publish(info);
+    if(tool&&tool!=-VFS_ENOENT)serial_puts("[PKG] Bootstrap CLI unavailable; installed tools unchanged\n");
     reason="ambiguous storage inventory";
     if (!select_root_controller(&c.partuuid)) return false;
     reason="unsupported storage device/geometry";

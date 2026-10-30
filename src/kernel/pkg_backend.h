@@ -2,7 +2,7 @@
 #define FORTRESS_PKG_BACKEND_H
 #include "pkg_owner.h"
 #include "../../user/pkg/transaction_cli.h"
-/* Private copied-kernel contract, no assigned syscall number. Input/output
+/* Kernel owner transport used by SYS_PKGCTL. Input/output
  * are kernel-owned copies. The transport validates exact writable output and
  * input ranges before calling; copyout never repeats this call. No pointers in
  * wire values. Owner comes from the current TCB's trusted birth binding. */
@@ -18,7 +18,7 @@ typedef struct {
 } pb_result;
 _Static_assert(sizeof(pb_request)==32,"private package request");
 _Static_assert(sizeof(pb_result)==80,"private package result");
-/* Fixture admission is a kernel-supplied authentication decision, never a user
+/* Root admission is a kernel-supplied authentication decision, never a user
  * flag. Backend and context live until all operation refs drain. Default build
  * has no caller. False admission performs no storage callbacks. The embedding
  * supplies immutable mount operations on every call; sessions retain only the

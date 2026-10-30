@@ -1,9 +1,9 @@
-# Normal /bin/pkg. Runtime mutation requires a kernel-admitted enrolled root.
-PKG_UNITS := format manifest verify catalog cli transaction_cli mutation_cli system_cli
+# Normal /bin/pkg: repository configuration and package operations.
+PKG_UNITS := format manifest verify catalog cli transaction_cli mutation_cli system_cli repository fetch
 PKG_BUILD := $(BUILD_DIR)/pkg
 PKG_OBJS := $(addprefix $(PKG_BUILD)/,$(addsuffix .o,$(PKG_UNITS)))
 USER_PKG_ELF := $(PKG_BUILD)/pkg.elf
-PKG_FLAGS := $(CFLAGS) -Os -fno-pie -fno-builtin -ffunction-sections -fdata-sections -fstack-usage -Wframe-larger-than=1024
+PKG_FLAGS := $(CFLAGS) -Os -fno-pie -fno-builtin -ffunction-sections -fdata-sections -fstack-usage -Wframe-larger-than=1024 -DFORTRESS_PKG_FETCH=1
 
 $(PKG_BUILD)/%.o: user/pkg/%.c
 	@mkdir -p $(PKG_BUILD)

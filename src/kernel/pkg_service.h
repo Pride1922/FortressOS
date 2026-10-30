@@ -9,6 +9,12 @@ typedef struct {
     pkg_transaction_backend transactions;
     bool (*admitted)(void);
     int (*mutate)(void *,bool,const uint8_t [32],pkg_transaction_status *);
+    /* Optional additive source-ingestion operation. Bytes are immutable kernel
+     * snapshots valid only through this call. Backend MUST verify against its
+     * admitted policy/current floors and persist recovery inputs before intent.
+     * Never retain these pointers or accept userspace verification as authority. */
+    int (*install_source)(void *,const uint8_t [32],const uint8_t *,size_t,
+                          const uint8_t *,size_t,pkg_transaction_status *);
 } pkg_kernel_backend;
 bool pkg_service_bind(const pkg_kernel_backend *);
 int64_t pkg_service_control(uintptr_t,uintptr_t,uint64_t);

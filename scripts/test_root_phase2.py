@@ -102,7 +102,7 @@ def main():
             admission=out/'admission-host'
             run(['gcc','-std=c11','-O1','-g','-fsanitize=address,undefined','-Wall','-Wextra','-Werror','-no-pie','-pthread','-ffunction-sections','-fdata-sections','-Wl,--gc-sections',
                 '-Itests/ext4_host','-Itests/host','-Isrc/include','-Isrc/lib','-Isrc/fs','-Isrc/drivers','-Isrc/mm','-Isrc/kernel','-Isrc/arch/x86_64',
-                'tests/root_phase2_admission_host.c','tests/ext4_fault_disk.c','src/kernel/installed_root.c','src/kernel/root_boot.c','src/kernel/accounts.c','src/lib/account_redo.c','user/tools/userdb.c','user/tools/digest.c','-o',str(admission)])
+                'tests/root_phase2_admission_host.c','tests/ext4_fault_disk.c','src/kernel/installed_root.c','src/kernel/pkg_boot_cli.c','src/kernel/root_boot.c','src/kernel/accounts.c','src/lib/account_redo.c','user/tools/userdb.c','user/tools/digest.c','-o',str(admission)])
             for kind in ('multiple','inventory','namespaces','truncated','flush','replay','success','freeze-taint'):
                 disk=out/('admission-'+kind+'.img');run(['cp','--sparse=always',str(template),str(disk)])
                 if kind=='replay':
@@ -240,9 +240,12 @@ def extract_root(disk,out):
         while remaining:
             b=src.read(min(1024*1024,remaining));assert b;dst.write(b);remaining-=len(b)
 
-def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None,accel='tcg',username='operator',extra_first=False,transport='nvme'):
+def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=None,denied=False,wrong_secret='incorrect-recovery-secret',live_iso=None,accel='tcg',username='operator',extra_first=False,transport='nvme',network=False):
     assert accel in ('tcg','kvm')
     label=f'{mode}-{cpus}-{boot}';argv=['qemu-system-x86_64','-M','q35','-m','2G','-accel',accel,'-smp',str(cpus),'-display','none','-monitor','none','-no-reboot','-net','none','-serial','stdio']
+    if network:
+        position=argv.index('-net');del argv[position:position+2]
+        argv+=['-netdev','user,id=pkgnet','-device','e1000e,netdev=pkgnet']
     if accel=='kvm':argv+=['-cpu','host']
     elif PHASE==3:argv+=['-cpu','max'] # advertise bounded RDSEED/RDRAND salt source
     if live_iso:
@@ -263,7 +266,7 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
         variables=out/(label+'-vars.fd');shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd',variables)
         argv+=['-drive','if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd','-drive',f'if=pflash,format=raw,unit=1,file={variables}']
     if not live_iso:assert disk.is_file() and disk.resolve().parent==out.resolve()
-    assert argv.count('-device')==(0 if live_iso else 1)+(1 if extra else 0)
+    assert argv.count('-device')==(0 if live_iso else 1)+(1 if extra else 0)+(1 if network else 0)
     assert argv.count('-drive')==(2 if mode=='uefi' else 0)+(0 if live_iso else 1)+(1 if extra else 0)
     (out/(label+'-argv.json')).write_text(json.dumps(argv,indent=2));transcript=bytearray();err=(out/(label+'-stderr.log')).open('wb')
     proc=subprocess.Popen(argv,cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err);sel=selectors.DefaultSelector();sel.register(proc.stdout,selectors.EVENT_READ)
@@ -286,6 +289,17 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
     prompt=lambda t:re.search(r'(?:^|\n)(?:[A-Za-z0-9_-]+@[A-Za-z0-9-]+:[^\n]*|)[#$] $',t.rstrip('\n'))
     def command(cmd,expected):
         start=len(transcript);send(cmd);return wait(lambda t:expected in t and prompt(t),start)
+    def sudo_probe(cmd,expected,power=False):
+        # accounts.c deliberately returns EAGAIN on CHECK contention; sudo.c
+        # emits this exact refusal BEFORE credential transition or child spawn.
+        # Retry only that pre-exec refusal, never an unconfirmed child outcome.
+        for attempt in range(3):
+            start=len(transcript);send('sudo '+cmd)
+            if not live_iso:wait(lambda t:t.endswith('sudo password: '),start);send(operator)
+            text=wait(lambda t:(expected in t and (power or prompt(t))) or ('sudo: accounts changed; retry command' in t and prompt(t)),start)
+            if expected in text:return text
+            manifest.setdefault('authorization_retries',[]).append({'firmware':mode,'smp':cpus,'boot':boot,'command':cmd,'attempt':attempt+1,'stage':'declined before child spawn'})
+        raise AssertionError('bounded pre-exec account CHECK retries exhausted')
     completed=False
     try:
         if denied:
@@ -315,9 +329,7 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
                 command(f'echo phase2-boot-{boot} > phase2.txt','');command('sync','')
                 command('echo SYNC_STATUS=$?','SYNC_STATUS=0')
                 command('sha256sum phase2.txt',hashlib.sha256(f'phase2-boot-{boot}\n'.encode()).hexdigest())
-            start=len(transcript);send('sudo id')
-            if not live_iso:wait(lambda t:t.endswith('sudo password: '),start);send(operator)
-            wait(lambda t:'uid=0' in t and 'gid=0' in t and prompt(t),start)
+            privileged=sudo_probe('id','uid=0');assert 'gid=0' in privileged
             if not live_iso and boot==0:
                 for exit_status in (7,125):
                     start=len(transcript);send(f'exit {exit_status}');wait(lambda t:'FortressOS login: ' in t,start)
@@ -329,9 +341,7 @@ def guest(out,disk,mode,cpus,boot,operator,secret,manifest,recovery=False,extra=
                 # retains dirty+RECOVER; next boot must admit journal recovery.
                 proc.kill();assert proc.wait(timeout=10)!=0;completed=True
             else:
-                start=len(transcript);send('sudo shutdown')
-                if not live_iso:wait(lambda t:t.endswith('sudo password: '),start);send(operator)
-                wait(lambda t:'[POWER] Shutdown initiated' in t,start);assert proc.wait(timeout=30)==0;completed=True
+                sudo_probe('shutdown','[POWER] Shutdown initiated',True);assert proc.wait(timeout=30)==0;completed=True
         assert all(s.encode() not in transcript for s in (secret,operator,wrong_secret)),'plaintext secret echoed'
         result={'firmware':mode,'smp':cpus,'boot':boot,'recovery':recovery,'live':bool(live_iso),'credential_denied':denied,'result':'PASS','argv':label+'-argv.json'}
     finally:

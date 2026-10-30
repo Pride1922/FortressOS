@@ -1,10 +1,11 @@
 # Ubuntu repository publication
 
 The host publisher is `scripts/pkg_repository.py`. It produces the existing
-PKG-1 signed binary catalog and immutable content-addressed FPK objects. The
-target client, production enrollment and repeated upgrades are **not yet
-implemented or accepted** by this checkpoint. These instructions prepare a
-repository; they do not enable updating an installed Dell.
+PKG-1 signed catalog and immutable content-addressed FPK objects. The download
+client verifies these with ordinary root-owned repository public keys. Device
+enrollment, separate key USBs and laptop identities are not part of this workflow.
+Installation and repeated upgrade integration are still in progress; these
+instructions do not claim a completed Dell update.
 
 ## Public layout
 
@@ -99,8 +100,54 @@ the server's normal certificate procedure if required by deployment policy.
 Do not place signing seeds, authority configuration, source checkout or release
 working files in `/srv/fortress-repository`.
 
-No server details or server access are needed for the local implementation and
-disposable acceptance tests. The eventual client configuration and deployment
-procedure must be documented once implemented. Software local floors do not
-prevent rollback of the entire root plus its independent boot policy; retain the
-approved signed boot checkpoint separately, as agreed in the contract proposal.
+## OS repository configuration
+
+The current download command is:
+
+```text
+pkg fetch fortress-desktop /root/NEW-download-directory
+```
+
+Both configuration files must be root-owned regular files without group/other
+write permission. `/etc/pkg/repository.conf` is exactly:
+
+```text
+version=1
+url=https://fortress.ameyerocha.com
+```
+
+Use no trailing URL slash. `/etc/pkg/trust.conf` contains these ordered,
+LF-terminated fields, replacing the uppercase placeholders:
+
+```text
+version=1
+repository=REPOSITORY-UUID
+root_version=1
+platform=64-LOWERCASE-HEX-PLATFORM-ID
+base_version=1
+public_key=64-LOWERCASE-HEX-ED25519-PUBLIC-KEY
+```
+
+Use the same canonical lowercase repository UUID and root version as the
+publisher. Platform/base values describe OS/package compatibility. Repeat the
+`public_key=` line for each trusted catalog signing key, up to eight distinct
+keys. At least one signature is required; every signature present must be valid
+and from a configured key. This is publisher trust, not device enrollment. No
+private key belongs on the laptop or public HTTP server. Initial public keys
+must come from the publisher through a trusted transfer, not an unverified
+download from the repository itself.
+
+The client creates a new private staging directory, invokes the existing wget
+without a shell, verifies the signed catalog before downloading its selected
+object, then checks complete FPK integrity, ELF and platform/base compatibility.
+Catalogs must be currently valid, so the OS clock must be correct. Failed or
+rejected downloads stay in staging and never trigger installation.
+
+Existing wget HTTPS verification, downgrade refusal, deadlines and 10 MiB
+response bound remain. The client caps catalogs at 256 KiB and enforces the
+existing FPK size limits. HTTP also works for signed-content/local testing.
+
+This command retains `catalog.v1` and `artifact.fpk`; it does not install files
+or persist installed-version/rollback floors. The next implementation step is
+the ordinary installation backend. The existing Dell/USB binaries have not been
+replaced by this source cleanup.

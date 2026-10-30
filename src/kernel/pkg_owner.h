@@ -1,7 +1,8 @@
 #ifndef FORTRESS_PKG_OWNER_H
 #define FORTRESS_PKG_OWNER_H
 #include "types.h"
-/* Private trusted-call-site keys, not user handles or production process refs. */
+/* Kernel-internal generation keys, not user handles. Trusted lifecycle calls
+ * bind them to registered process identities and retain operation references. */
 typedef struct { uint64_t generation;uint32_t slot; } pw_key;
 bool pw_register(uint64_t pid,pw_key *out);
 bool pw_authorized(pw_key owner);

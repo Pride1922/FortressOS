@@ -215,8 +215,11 @@ test-root-phase2:
 all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 live: all
 include src/lib/crypto/crypto.mk
+# Recompile dormant objects when normal engine selection/link rules change.
+$(BUILD_DIR)/fs/ext4.o $(BUILD_DIR)/fs/pkg_plan.o: Makefile
+$(BUILD_DIR)/fs/ext4.o: CFLAGS += -fstack-usage
 include user/pkg/pkg.mk
-$(BUILD_DIR)/kernel/pkg_service.o $(BUILD_DIR)/kernel/pkg_owner.o $(BUILD_DIR)/kernel/pkg_backend.o $(BUILD_DIR)/fs/pkg_plan.o $(BUILD_DIR)/fs/pkg_enrollment.o $(BUILD_DIR)/fs/pkg_trust_floor.o: CFLAGS += -Os -fstack-usage -Wframe-larger-than=1024
+$(BUILD_DIR)/kernel/pkg_service.o $(BUILD_DIR)/kernel/pkg_owner.o $(BUILD_DIR)/kernel/pkg_backend.o: CFLAGS += -Os -fstack-usage -Wframe-larger-than=1024
 include src/lib/tls/tls.mk
 
 # C_SRCS/OBJS above automatically include src/fs/pipe.c.
@@ -1154,6 +1157,14 @@ test-pkg-plan-host: scripts/test_pkg_plan.py tests/pkg_plan_candidate.c tests/pk
 .PHONY: test-pkg-repository-host
 test-pkg-repository-host: scripts/test_pkg_repository.py scripts/pkg_repository.py
 	@python3 scripts/test_pkg_repository.py
+
+.PHONY: test-pkg-fetch-host test-pkg-boot-cli-host
+test-pkg-boot-cli-host:
+	@mkdir -p $(BUILD_DIR)/pkg-boot-cli
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -pthread -ffunction-sections -fdata-sections -Wl,--gc-sections -I. -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel tests/pkg_boot_cli_host.c src/kernel/pkg_boot_cli.c src/fs/permission_values.c src/kernel/creds.c -o $(BUILD_DIR)/pkg-boot-cli/host
+	@$(BUILD_DIR)/pkg-boot-cli/host
+test-pkg-fetch-host:
+	@python3 scripts/test_pkg_fetch.py
 
 test-pkg-format-host:
 	@mkdir -p $(BUILD_DIR)/pkg-format
