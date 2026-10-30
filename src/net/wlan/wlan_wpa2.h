@@ -67,9 +67,10 @@ typedef struct {
     uint64_t last_replay_counter;
     uint32_t handshake_step;    /* 0=Idle, 1=Got M1, 2=Sent M2, 3=Got M3, 4=Authorized */
 
-    /* Packet Number counters for CCMP */
+    /* Packet Number counters for CCMP (per-TID 0..15 replay protection) */
     uint64_t tx_pn;
-    uint64_t rx_pn;
+    uint64_t rx_pn[16];
+    uint64_t rx_bitmap[16];
 } wpa2_sm_t;
 
 /* Initialize WPA2 Station State Machine */

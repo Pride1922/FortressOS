@@ -41,6 +41,7 @@ static int8_t               s_current_rssi = -60;
 static uint16_t             s_target_beacon_int = 100;
 static uint16_t             s_seq_num = 0;
 static uint64_t             s_gtk_rx_pn = 0;
+static uint64_t             s_gtk_rx_bitmap = 0;
 
 static wlan_state_t         s_wlan_state = WLAN_STATE_IDLE;
 static wlan_bss_table_t     s_bss_table;
@@ -235,6 +236,7 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
     /* Unconditionally wipe any stale WPA2 session authorization */
     memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
     s_gtk_rx_pn = 0;
+    s_gtk_rx_bitmap = 0;
 
     memset(s_target_ssid, 0, sizeof(s_target_ssid));
     memcpy(s_target_ssid, ssid, ssid_len);
@@ -383,6 +385,7 @@ int wlan_mgr_disconnect(void) {
         memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
         memset(s_target_pmk, 0, sizeof(s_target_pmk));
         s_gtk_rx_pn = 0;
+        s_gtk_rx_bitmap = 0;
         s_has_cached_pmk = false;
         s_has_pending_pmk = false;
     }
@@ -464,6 +467,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     /* Assoc Success -> Transition to 4-WAY HANDSHAKE */
                     s_wlan_state = WLAN_STATE_4WAY_HANDSHAKE;
                     s_gtk_rx_pn  = 0;
+                    s_gtk_rx_bitmap = 0;
                     wpa2_sm_init(&s_wpa2_sm, s_local_mac, s_target_bssid, s_target_pmk);
                     uint16_t bi = s_target_beacon_int;
                     spin_unlock_irqrestore(&s_wlan_lock, irq);
@@ -487,6 +491,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
                 memset(s_target_pmk, 0, sizeof(s_target_pmk));
                 s_gtk_rx_pn = 0;
+                s_gtk_rx_bitmap = 0;
                 spin_unlock_irqrestore(&s_wlan_lock, irq);
                 if (s_hw_ops && s_hw_ops->deauth) {
                     s_hw_ops->deauth();
@@ -546,6 +551,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
                     memset(s_target_pmk, 0, sizeof(s_target_pmk));
                     s_gtk_rx_pn = 0;
+                    s_gtk_rx_bitmap = 0;
                     s_has_cached_pmk = false;
                     s_has_pending_pmk = false;
                     spin_unlock_irqrestore(&s_wlan_lock, irq);
@@ -579,14 +585,19 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
             
             size_t unenc_len = sizeof(s_rx_unenc_frame);
 
+            bool is_qos = (subtype == IEEE80211_SUBTYPE_QOS_DATA || (subtype & 0x08) != 0);
+            uint8_t tid = (is_qos && len >= 26) ? (frame[24] & 0x0Fu) : 0;
+            if (tid >= 16) tid = 0;
+
             bool is_group = (hdr->addr1[0] & 0x01u) != 0;
             const uint8_t *dec_key = is_group ? s_wpa2_sm.gtk : s_wpa2_sm.tk;
-            uint64_t *pn_tracker   = is_group ? &s_gtk_rx_pn : &s_wpa2_sm.rx_pn;
+            uint64_t *pn_tracker   = is_group ? &s_gtk_rx_pn : &s_wpa2_sm.rx_pn[tid];
+            uint64_t *bm_tracker   = is_group ? &s_gtk_rx_bitmap : &s_wpa2_sm.rx_bitmap[tid];
 
-            /* Decrypt CCMP */
+            /* Decrypt CCMP with per-TID 64-packet replay window */
             int dec_rc = wlan_ccmp_decrypt_frame(dec_key, frame, len,
                                                  s_rx_unenc_frame, &unenc_len,
-                                                 pn_tracker);
+                                                 pn_tracker, bm_tracker);
             if (dec_rc == 0 && unenc_len > 0) {
                 if (s_rx_count < WLAN_RX_RING_SIZE) {
                     wlan_rx_slot_t *slot = &s_rx_slots[s_rx_head];
@@ -785,6 +796,7 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
         s_wlan_net_dev.flags &= ~NET_RUNNING;
         memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
         s_gtk_rx_pn = 0;
+        s_gtk_rx_bitmap = 0;
         s_conn_start_time = now;
         s_conn_last_retry_time = now;
         s_conn_retry_count = 0;

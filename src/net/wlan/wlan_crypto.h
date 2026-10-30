@@ -77,6 +77,7 @@ int wlan_ccmp_encrypt_frame(const uint8_t tk[16],
 int wlan_ccmp_decrypt_frame(const uint8_t tk[16],
                             const uint8_t *cipher_frame, size_t cipher_len,
                             uint8_t *out_frame, size_t *out_len,
-                            uint64_t *rx_pn);
+                            uint64_t *rx_pn,
+                            uint64_t *rx_bitmap);
 
 #endif /* FORTRESS_WLAN_CRYPTO_H */

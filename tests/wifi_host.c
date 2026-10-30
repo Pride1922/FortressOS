@@ -367,7 +367,7 @@ int main(void) {
     uint8_t dec_buf[128];
     size_t dec_len = sizeof(dec_buf);
     uint64_t last_pn = 0;
-    int dec_rc = wlan_ccmp_decrypt_frame(tk, s_mock_last_tx, s_mock_last_tx_len, dec_buf, &dec_len, &last_pn);
+    int dec_rc = wlan_ccmp_decrypt_frame(tk, s_mock_last_tx, s_mock_last_tx_len, dec_buf, &dec_len, &last_pn, NULL);
     assert(dec_rc == 0);
     assert(last_pn == 1);
     printf("  [PASS] 802.3 to 802.11 LLC/SNAP encapsulation & AES-128-CCMP packet encryption\n");

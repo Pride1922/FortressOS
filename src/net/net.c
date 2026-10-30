@@ -159,10 +159,11 @@ static int send_arp(net_dev_t *dev, const uint8_t *dest, uint32_t ip, bool reply
 }
 void arp_input(net_dev_t *dev, const uint8_t *payload, size_t len) {
     if (dev!=s_if || !dev || arp_decode(payload,len,&s_arp)) return;
-    /* Learn replies only; request senders are not cached in Phase 3. */
-    if (s_arp.opcode==ARP_OP_REPLY) {
+    /* Learn replies and requests targeted at our local IP per RFC 826 */
+    if (s_arp.opcode==ARP_OP_REPLY || (s_arp.opcode==ARP_OP_REQUEST && s_arp.target_ip==s_config.local_ip)) {
         arp_cache_update(&s_arp_cache,s_arp.sender_ip,s_arp.sender_mac,apic_timer_get_bsp_ticks());
-    } else if (s_arp.target_ip==s_config.local_ip) {
+    }
+    if (s_arp.opcode==ARP_OP_REQUEST && s_arp.target_ip==s_config.local_ip) {
         (void)send_arp(dev,s_arp.sender_mac,s_arp.sender_ip,true);
     }
 }

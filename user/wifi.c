@@ -338,9 +338,6 @@ static void commit_current_network(char *cur_ssid, char *cur_psk,
 static int load_saved_networks(void) {
     s_saved_count = 0;
     int fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wlan.conf", 0, 0);
-    if (fd < 0) {
-        fd = (int)WIFI_SYSCALL(SYS_OPEN, (uintptr_t)"/etc/network/wifi.conf", 0, 0);
-    }
     if (fd < 0) return 0;
 
     static char buf[2048];
@@ -875,7 +872,13 @@ static int do_connect(const char *ssid, const char *passphrase,
     write_str(1, ssid);
     write_str(1, "\"...\n");
 
-    long rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_CONNECT, &req, sizeof(req));
+    long rc = -1;
+    for (int retry = 0; retry < 10; retry++) {
+        rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_CONNECT, &req, sizeof(req));
+        if (rc != -2) break;
+        timespec_t ts_probe = { .tv_sec = 0, .tv_nsec = 300000000 }; /* 300ms waiting for probe response */
+        (void)WIFI_SYSCALL(SYS_NANOSLEEP, &ts_probe, 0, 0);
+    }
     if (rc != 0) {
         write_str(2, "wifi: connection failed (authentication rejected or invalid passphrase)\n");
         return 1;
@@ -893,6 +896,11 @@ static int do_connect(const char *ssid, const char *passphrase,
                 write_str(1, "Connected to \"");
                 write_str(1, ssid);
                 write_str(1, "\" (WPA2-PSK). Link is ONLINE.\n");
+
+                /* Auto-save network profile permanently immediately upon association */
+                if (do_save(ssid, actual_psk, actual_addr, actual_gw, actual_dns) != 0) {
+                    write_str(2, "wifi: warning: connected, but failed to save profile to /etc/network/wlan.conf\n");
+                }
 
                 timespec_t ts_settle = { .tv_sec = 0, .tv_nsec = 250000000 }; /* 250ms AP bridge port settling delay */
                 (void)WIFI_SYSCALL(SYS_NANOSLEEP, &ts_settle, 0, 0);
@@ -971,10 +979,6 @@ static int do_connect(const char *ssid, const char *passphrase,
                         write_str(2, "wifi: failed to spawn /sbin/dhcpc\n");
                         return 1;
                     }
-                }
-                /* Auto-save network profile permanently so on reboot it connects automatically */
-                if (do_save(ssid, actual_psk, actual_addr, actual_gw, actual_dns) != 0) {
-                    write_str(2, "wifi: warning: connected, but failed to save profile to /etc/network/wlan.conf\n");
                 }
                 return 0;
             }

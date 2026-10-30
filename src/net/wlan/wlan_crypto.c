@@ -779,7 +779,8 @@ int wlan_ccmp_encrypt_frame(const uint8_t tk[16],
 int wlan_ccmp_decrypt_frame(const uint8_t tk[16],
                             const uint8_t *cipher_frame, size_t cipher_len,
                             uint8_t *out_frame, size_t *out_len,
-                            uint64_t *rx_pn) {
+                            uint64_t *rx_pn,
+                            uint64_t *rx_bitmap) {
     if (!tk || !cipher_frame || cipher_len < 40 || !out_frame || !out_len || !rx_pn) return -1;
     const uint8_t *hdr = cipher_frame;
     uint16_t fc = hdr[0] | ((uint16_t)hdr[1] << 8);
@@ -801,7 +802,14 @@ int wlan_ccmp_decrypt_frame(const uint8_t tk[16],
                   ((uint64_t)ccmp_hdr[6] << 32) |
                   ((uint64_t)ccmp_hdr[7] << 40);
 
-    if (*rx_pn != 0 && pn <= *rx_pn) return -2;
+    /* 64-packet sliding replay window check */
+    if (*rx_pn != 0) {
+        if (pn <= *rx_pn) {
+            uint64_t diff = *rx_pn - pn;
+            if (diff >= 64) return -2; /* Outside 64-packet window */
+            if (rx_bitmap && (*rx_bitmap & (1ULL << diff))) return -2; /* Replay packet */
+        }
+    }
 
     uint8_t aad[32];
     uint16_t fc_mask = 0x0070u | 0x0800u | 0x1000u | 0x2000u | 0x8000u;
@@ -825,7 +833,24 @@ int wlan_ccmp_decrypt_frame(const uint8_t tk[16],
     int rc = wlan_ccmp_decrypt(tk, pn, aad, aad_len, cipher, payload_len, mic, out_payload);
     if (rc != 0) return rc;
 
-    *rx_pn = (pn == 0) ? 1 : pn;
+    /* Replay window state update after authenticated decryption */
+    if (*rx_pn == 0) {
+        *rx_pn = (pn == 0) ? 1 : pn;
+        if (rx_bitmap) *rx_bitmap = 1ULL;
+    } else if (pn > *rx_pn) {
+        uint64_t diff = pn - *rx_pn;
+        if (rx_bitmap) {
+            if (diff < 64) *rx_bitmap = (*rx_bitmap << diff) | 1ULL;
+            else *rx_bitmap = 1ULL;
+        }
+        *rx_pn = pn;
+    } else {
+        uint64_t diff = *rx_pn - pn;
+        if (rx_bitmap && diff < 64) {
+            *rx_bitmap |= (1ULL << diff);
+        }
+    }
+
     memcpy(out_frame, cipher_frame, hdr_len);
     out_frame[1] &= ~0x40; /* Clear PROTECTED bit */
     *out_len = hdr_len + payload_len;
