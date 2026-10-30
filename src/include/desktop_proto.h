@@ -19,6 +19,7 @@
 #define DESKTOP_EV_CONFIGURE 101u /* a,b = content width/height, c = stride */
 #define DESKTOP_EV_KEY       102u /* a = typed byte */
 #define DESKTOP_EV_CLOSE     103u /* window closed: save and exit */
+#define DESKTOP_EV_CLICK     104u /* a,b = x,y in content pixels (left press) */
 
 typedef struct {
     uint32_t kind, a, b, c, d, len;

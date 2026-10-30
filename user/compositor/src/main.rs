@@ -17,7 +17,6 @@ mod cursor;
 mod desktop;
 mod files;
 mod font;
-mod notepad;
 mod preferences;
 mod surface;
 mod terminal;
@@ -26,7 +25,6 @@ mod wallpaper;
 mod window;
 use cursor::Cursor;
 use files::FileManager;
-use notepad::Notepad;
 use surface::Surface;
 use terminal::Terminal;
 use window::{Window, WindowManager};
@@ -413,7 +411,6 @@ fn event_loop(
 ) -> i32 {
     let mut ts = sys::Timespec::default();
     let mut term: Option<Terminal> = None;
-    let mut notepad: Option<Notepad> = None;
     let mut files: Option<FileManager> = None;
     let mut clients = clients::Clients::default();
     let mut fds = [
@@ -522,7 +519,7 @@ fn event_loop(
                                     continue;
                                 }
                                 if b == b'h' || b == b'H' {
-                                    match clients.launch(clients::app_path(), scene) {
+                                    match clients.launch(clients::app_path(), &[], scene) {
                                         Ok(pid) => {
                                             privilege::report(1, "[OK]", "App started", Some(pid))
                                         }
@@ -542,7 +539,7 @@ fn event_loop(
                             scene,
                             windows,
                             &mut term,
-                            &mut notepad,
+                            &mut clients,
                             &mut files,
                             is_test,
                         ) {
@@ -614,6 +611,10 @@ fn event_loop(
                         desktop.render(id, windows, scene);
                         true
                     }
+                    window::Action::ClientClick(id, x, y) if clients.owns(id) => {
+                        clients.click(id, x, y, windows, scene);
+                        true
+                    }
                     window::Action::WindowResized(id) if clients.owns(id) => {
                         clients.resized(id, windows, scene);
                         true
@@ -629,7 +630,7 @@ fn event_loop(
                     scene,
                     windows,
                     &mut term,
-                    &mut notepad,
+                    &mut clients,
                     &mut files,
                     &mut last_info_sec,
                 )
@@ -647,11 +648,6 @@ fn event_loop(
             if !windows.windows.iter().any(|w| w.id == t.window_id) {
                 sys::close(t.master_fd);
                 term = None;
-            }
-        }
-        if let Some(ref np) = notepad {
-            if !windows.windows.iter().any(|w| w.id == np.window_id) {
-                notepad = None;
             }
         }
         if let Some(ref fm) = files {
@@ -694,7 +690,7 @@ fn event_loop(
                             scene,
                             windows,
                             &mut term,
-                            &mut notepad,
+                            &mut clients,
                             &mut files,
                             &mut last_info_sec,
                         );
@@ -757,13 +753,34 @@ fn event_loop(
     status
 }
 
+/// Opens `path` (default /tmp/notes.txt) in a new /bin/notepad process.
+fn open_notepad(clients: &mut clients::Clients, path: Option<&str>, scene: &Surface) {
+    let mut buf = [0u8; 128];
+    let arg = path.and_then(|p| {
+        let ok = p.starts_with('/') && p.len() < buf.len() && !p.as_bytes().contains(&0);
+        ok.then(|| {
+            buf[..p.len()].copy_from_slice(p.as_bytes());
+            core::ffi::CStr::from_bytes_until_nul(&buf).ok()
+        })
+        .flatten()
+    });
+    let args: &[&core::ffi::CStr] = match arg.as_ref() {
+        Some(a) => core::slice::from_ref(a),
+        None => &[],
+    };
+    match clients.launch(c"/bin/notepad", args, scene) {
+        Ok(pid) => privilege::report(1, "[OK]", "Notepad started", Some(pid)),
+        Err(e) => privilege::report(2, "[WARN]", "Notepad launch failed", Some(e)),
+    }
+}
+
 #[inline(never)]
 fn handle_key(
     b: u8,
     scene: &mut Surface,
     windows: &mut WindowManager,
     term: &mut Option<Terminal>,
-    notepad: &mut Option<Notepad>,
+    clients: &mut clients::Clients,
     files: &mut Option<FileManager>,
     is_test: bool,
 ) -> bool {
@@ -776,47 +793,12 @@ fn handle_key(
         if let Some(t) = term.as_ref() {
             sys::write(t.master_fd, &[b]);
         }
-    } else if top_window_id == Some(4) && notepad.is_some() {
-        if let Some(np) = notepad.as_mut() {
-            if np.handle_key(b) {
-                if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
-                    np.render(w);
-                    scene.damage(w.rect);
-                }
-            }
-        }
     } else if top_window_id == Some(5) && files.is_some() {
         if let Some(fm) = files.as_mut() {
             if b == b'\r' || b == b'\n' {
                 if let Some(file_path) = fm.enter_selected() {
                     // Open selected file in Notepad
-                    if notepad.is_none() {
-                        if let Some(mut win) = Window::new(
-                            4,
-                            "Notes",
-                            surface::Rect {
-                                x: 180,
-                                y: 140,
-                                w: 480,
-                                h: 280,
-                            },
-                        ) {
-                            let np = Notepad::new(4, &file_path);
-                            np.render(&mut win);
-                            windows.windows.push(win);
-                            windows.raise(4, scene);
-                            *notepad = Some(np);
-                        }
-                    } else {
-                        if let Some(np) = notepad.as_mut() {
-                            *np = Notepad::new(4, &file_path);
-                            if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
-                                np.render(w);
-                                scene.damage(w.rect);
-                            }
-                        }
-                        windows.unminimize_and_raise(4, scene);
-                    }
+                    open_notepad(clients, Some(&file_path), scene);
                 } else {
                     if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
                         fm.render(w);
@@ -869,26 +851,7 @@ fn handle_key(
                 windows.unminimize_and_raise(3, scene);
             }
         } else if b == b'e' || b == b'E' {
-            if notepad.is_none() {
-                if let Some(mut win) = Window::new(
-                    4,
-                    "Notes - /tmp/notes.txt",
-                    surface::Rect {
-                        x: 180,
-                        y: 140,
-                        w: 480,
-                        h: 280,
-                    },
-                ) {
-                    let np = Notepad::new(4, "/tmp/notes.txt");
-                    np.render(&mut win);
-                    windows.windows.push(win);
-                    windows.raise(4, scene);
-                    *notepad = Some(np);
-                }
-            } else {
-                windows.unminimize_and_raise(4, scene);
-            }
+            open_notepad(clients, None, scene);
         } else if b == b'f' || b == b'F' {
             if files.is_none() {
                 if let Some(mut win) = Window::new(
@@ -926,7 +889,7 @@ fn handle_action(
     scene: &mut Surface,
     windows: &mut WindowManager,
     term: &mut Option<Terminal>,
-    notepad: &mut Option<Notepad>,
+    clients: &mut clients::Clients,
     files: &mut Option<FileManager>,
     last_info_sec: &mut i64,
 ) -> bool {
@@ -934,49 +897,12 @@ fn handle_action(
         window::Action::OpenDesktopApp(_) => {}
         window::Action::Exit => return true,
         window::Action::ClientClick(id, cx, cy) => {
-            if id == 4 {
-                if let Some(np) = notepad.as_mut() {
-                    if np.handle_click(cx, cy) {
-                        if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
-                            np.render(w);
-                            scene.damage(w.rect);
-                        }
-                    }
-                }
-            } else if id == 5 {
+            if id == 5 {
                 if let Some(fm) = files.as_mut() {
                     if let Some(file_action) = fm.handle_click(cx, cy) {
                         match file_action {
                             files::FileAction::OpenPath(path) => {
-                                if notepad.is_none() {
-                                    if let Some(mut win) = Window::new(
-                                        4,
-                                        "Notes",
-                                        surface::Rect {
-                                            x: 180,
-                                            y: 140,
-                                            w: 480,
-                                            h: 280,
-                                        },
-                                    ) {
-                                        let np = Notepad::new(4, &path);
-                                        np.render(&mut win);
-                                        windows.windows.push(win);
-                                        windows.raise(4, scene);
-                                        *notepad = Some(np);
-                                    }
-                                } else {
-                                    if let Some(np) = notepad.as_mut() {
-                                        *np = Notepad::new(4, &path);
-                                        if let Some(w) =
-                                            windows.windows.iter_mut().find(|w| w.id == 4)
-                                        {
-                                            np.render(w);
-                                            scene.damage(w.rect);
-                                        }
-                                    }
-                                    windows.unminimize_and_raise(4, scene);
-                                }
+                                open_notepad(clients, Some(&path), scene);
                             }
                             files::FileAction::Refresh => {
                                 if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 5) {
@@ -1006,26 +932,7 @@ fn handle_action(
             }
         }
         window::Action::SpawnNotepad => {
-            if notepad.is_none() {
-                if let Some(mut win) = Window::new(
-                    4,
-                    "Notes - /tmp/notes.txt",
-                    surface::Rect {
-                        x: 180,
-                        y: 140,
-                        w: 480,
-                        h: 280,
-                    },
-                ) {
-                    let np = Notepad::new(4, "/tmp/notes.txt");
-                    np.render(&mut win);
-                    windows.windows.push(win);
-                    windows.raise(4, scene);
-                    *notepad = Some(np);
-                }
-            } else {
-                windows.unminimize_and_raise(4, scene);
-            }
+            open_notepad(clients, None, scene);
         }
         window::Action::SpawnFileManager => {
             if files.is_none() {
@@ -1069,13 +976,6 @@ fn handle_action(
                         };
                         sys::set_winsize(t.master_fd, &ws);
                         t.render(w);
-                        scene.damage(w.rect);
-                    }
-                }
-            } else if id == 4 {
-                if let Some(np) = notepad.as_ref() {
-                    if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 4) {
-                        np.render(w);
                         scene.damage(w.rect);
                     }
                 }

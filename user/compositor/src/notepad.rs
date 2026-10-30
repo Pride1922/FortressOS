@@ -1,10 +1,7 @@
-//! Graphical Text Editor ("Notepad") for FortressOS Desktop.
+//! Graphical Text Editor ("Notepad") for FortressOS Desktop. Runs as its
+//! own unprivileged process (src/bin/notepad.rs) and draws into a Canvas.
 
-use crate::{
-    font::GLYPHS,
-    sys,
-    window::Window,
-};
+use crate::{canvas::Canvas, sys};
 use alloc::{string::String, vec::Vec};
 
 pub const NOTEPAD_BG: u32 = 0xff252525;
@@ -14,8 +11,6 @@ pub const NOTEPAD_LINENUM: u32 = 0xff666666;
 pub const NOTEPAD_CURSOR: u32 = 0xff007aff;
 
 pub struct Notepad {
-    #[allow(dead_code)]
-    pub window_id: u32,
     pub path: String,
     pub text: Vec<u8>,
     pub cursor: usize,
@@ -29,7 +24,7 @@ pub struct Notepad {
 
 impl Notepad {
     #[inline(never)]
-    pub fn new(window_id: u32, path: &str) -> Self {
+    pub fn new(path: &str) -> Self {
         let mut path_str = String::new();
         let _ = path_str.try_reserve_exact(path.len());
         path_str.push_str(path);
@@ -61,7 +56,6 @@ impl Notepad {
         }
 
         Self {
-            window_id,
             path: path_str,
             text,
             cursor: 0,
@@ -186,13 +180,34 @@ impl Notepad {
             2 => {
                 self.ansi_state = 0;
                 match b {
-                    b'A' => { self.move_cursor_up(); return true; }
-                    b'B' => { self.move_cursor_down(); return true; }
-                    b'C' => { self.move_cursor_right(); return true; }
-                    b'D' => { self.move_cursor_left(); return true; }
-                    b'H' => { self.move_cursor_home(); return true; }
-                    b'F' => { self.move_cursor_end(); return true; }
-                    b'3' => { self.ansi_state = 3; return false; }
+                    b'A' => {
+                        self.move_cursor_up();
+                        return true;
+                    }
+                    b'B' => {
+                        self.move_cursor_down();
+                        return true;
+                    }
+                    b'C' => {
+                        self.move_cursor_right();
+                        return true;
+                    }
+                    b'D' => {
+                        self.move_cursor_left();
+                        return true;
+                    }
+                    b'H' => {
+                        self.move_cursor_home();
+                        return true;
+                    }
+                    b'F' => {
+                        self.move_cursor_end();
+                        return true;
+                    }
+                    b'3' => {
+                        self.ansi_state = 3;
+                        return false;
+                    }
                     _ => return false,
                 }
             }
@@ -212,22 +227,27 @@ impl Notepad {
             }
         }
 
-        if b == 19 || b == 18 { // Ctrl+S / Ctrl+R
+        if b == 19 || b == 18 {
+            // Ctrl+S / Ctrl+R
             self.save();
             true
-        } else if b == 0x08 || b == 127 { // Backspace
+        } else if b == 0x08 || b == 127 {
+            // Backspace
             self.delete_back();
             true
-        } else if b == b'\r' || b == b'\n' { // Enter
+        } else if b == b'\r' || b == b'\n' {
+            // Enter
             self.insert_char(b'\n');
             true
-        } else if b == b'\t' { // Tab
+        } else if b == b'\t' {
+            // Tab
             self.insert_char(b' ');
             self.insert_char(b' ');
             self.insert_char(b' ');
             self.insert_char(b' ');
             true
-        } else if (32..=126).contains(&b) { // Printable ASCII
+        } else if (32..=126).contains(&b) {
+            // Printable ASCII
             self.insert_char(b);
             true
         } else {
@@ -293,27 +313,28 @@ impl Notepad {
         }
     }
 
-    pub fn render(&self, w: &mut Window) {
-        let width = w.rect.w.saturating_sub(2);
-        let height = w.rect.h.saturating_sub(26);
+    pub fn render(&self, c: &mut Canvas) {
+        let (width, height) = (c.width, c.height);
         if width < 30 || height < 30 {
             return;
         }
-        w.content.fill(NOTEPAD_BG);
+        c.fill(NOTEPAD_BG);
 
         // Header toolbar (20px)
-        for y in 0..20.min(height) {
-            for x in 0..width {
-                w.content[y * width + x] = NOTEPAD_HEADER;
-            }
-        }
-        draw_text(w, 8, 2, "[S] Save", 0xff58a6ff, NOTEPAD_HEADER);
-        draw_text(w, 88, 2, "Path:", 0xff8b949e, NOTEPAD_HEADER);
-        draw_text(w, 136, 2, &self.path, NOTEPAD_FG, NOTEPAD_HEADER);
+        c.fill_rect(0, 0, width, 20, NOTEPAD_HEADER);
+        c.text(8, 2, "[S] Save", 0xff58a6ff, NOTEPAD_HEADER);
+        c.text(88, 2, "Path:", 0xff8b949e, NOTEPAD_HEADER);
+        c.text(136, 2, &self.path, NOTEPAD_FG, NOTEPAD_HEADER);
         if self.modified {
-            draw_text(w, width.saturating_sub(90), 2, "[Modified]", 0xffe5c07b, NOTEPAD_HEADER);
+            c.text(
+                width.saturating_sub(90),
+                2,
+                "[Modified]",
+                0xffe5c07b,
+                NOTEPAD_HEADER,
+            );
         } else if let Some(st) = self.status {
-            draw_text(w, width.saturating_sub(120), 2, st, 0xff3fb950, NOTEPAD_HEADER);
+            c.text(width.saturating_sub(120), 2, st, 0xff3fb950, NOTEPAD_HEADER);
         }
 
         // Text display area (from y = 24 to height - 20)
@@ -324,13 +345,9 @@ impl Notepad {
         let mut line_idx = 0;
         let mut col_idx = 0;
         let mut cursor_px = (48usize, 24usize);
-
-        // Render line numbers and characters
         let mut cur_y = 24;
         let mut row_count = 0;
-
-        // Print first line number
-        draw_line_num(w, 8, cur_y, line_idx + 1);
+        draw_line_num(c, 8, cur_y, line_idx + 1);
 
         for (idx, &b) in self.text.iter().enumerate() {
             if idx == self.cursor {
@@ -344,10 +361,10 @@ impl Notepad {
                 if row_count >= max_rows {
                     break;
                 }
-                draw_line_num(w, 8, cur_y, line_idx + 1);
+                draw_line_num(c, 8, cur_y, line_idx + 1);
             } else if (32..=126).contains(&b) {
                 if col_idx < max_cols && row_count < max_rows {
-                    draw_char(w, 48 + col_idx * 8, cur_y, b, NOTEPAD_FG, NOTEPAD_BG);
+                    c.glyph(48 + col_idx * 8, cur_y, b, NOTEPAD_FG, NOTEPAD_BG);
                 }
                 col_idx += 1;
             }
@@ -356,33 +373,29 @@ impl Notepad {
             cursor_px = (48 + col_idx * 8, cur_y);
         }
 
-        // Draw crisp 2px vertical bar cursor
+        // Crisp 2px vertical bar cursor
         if self.cursor_visible {
             let (cx, cy) = cursor_px;
             if cx + 2 <= width && cy + 16 <= height {
-                for r in 1..15 {
-                    for c in 0..2 {
-                        if cy + r < height && cx + c < width {
-                            w.content[(cy + r) * width + cx + c] = NOTEPAD_CURSOR;
-                        }
-                    }
-                }
+                c.fill_rect(cx, cy + 1, 2, 14, NOTEPAD_CURSOR);
             }
         }
 
         // Footer status bar (bottom 18px)
         let footer_y = height.saturating_sub(18);
-        for y in footer_y..height {
-            for x in 0..width {
-                w.content[y * width + x] = NOTEPAD_HEADER;
-            }
-        }
-        draw_text(w, 8, footer_y + 1, "UTF-8", 0xff8b949e, NOTEPAD_HEADER);
-        draw_text(w, 80, footer_y + 1, "FortressOS Notes", 0xff8b949e, NOTEPAD_HEADER);
+        c.fill_rect(0, footer_y, width, height - footer_y, NOTEPAD_HEADER);
+        c.text(8, footer_y + 1, "UTF-8", 0xff8b949e, NOTEPAD_HEADER);
+        c.text(
+            80,
+            footer_y + 1,
+            "FortressOS Notes",
+            0xff8b949e,
+            NOTEPAD_HEADER,
+        );
     }
 }
 
-fn draw_line_num(w: &mut Window, x: usize, y: usize, num: usize) {
+fn draw_line_num(c: &mut Canvas, x: usize, y: usize, num: usize) {
     let mut buf = [b' '; 4];
     let n = num % 1000;
     if n >= 100 {
@@ -397,41 +410,6 @@ fn draw_line_num(w: &mut Window, x: usize, y: usize, num: usize) {
     }
     buf[3] = b'|';
     for (i, &b) in buf.iter().enumerate() {
-        draw_char(w, x + i * 8, y, b, NOTEPAD_LINENUM, NOTEPAD_BG);
-    }
-}
-
-fn draw_char(w: &mut Window, px: usize, py: usize, ch: u8, fg: u32, bg: u32) {
-    let width = w.rect.w.saturating_sub(2);
-    let height = w.rect.h.saturating_sub(26);
-    if px + 8 > width || py + 16 > height {
-        return;
-    }
-    let c_idx = if (' '..='~').contains(&(ch as char)) {
-        ch as usize - 32
-    } else {
-        0
-    };
-    let glyph = &GLYPHS[c_idx];
-    for r in 0..16 {
-        for c in 0..8 {
-            let bit = (glyph[r] & (128 >> c)) != 0;
-            w.content[(py + r) * width + px + c] = if bit { fg } else { bg };
-        }
-    }
-}
-
-fn draw_text(w: &mut Window, px: usize, py: usize, text: &str, fg: u32, bg: u32) {
-    use crate::window::theme;
-    let width = w.rect.w.saturating_sub(2);
-    let height = w.rect.h.saturating_sub(26);
-    let text_w = theme::text_width(text);
-    let max_w = text_w.min(width.saturating_sub(px));
-    let max_h = 18.min(height.saturating_sub(py));
-    for y in 0..max_h {
-        for x in 0..max_w {
-            let color = theme::text_pixel(text, x, y, fg, bg);
-            w.content[(py + y) * width + px + x] = color;
-        }
+        c.glyph(x + i * 8, y, b, NOTEPAD_LINENUM, NOTEPAD_BG);
     }
 }

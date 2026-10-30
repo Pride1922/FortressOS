@@ -1477,10 +1477,11 @@ $(BUILD_DIR)/nano_start.o: $(USER_DIR)/tools/start.asm
 $(USER_NANO_ELF): $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/nano_start.o $(BUILD_DIR)/nano.o -o $@
 
-$(USER_COMPOSITOR_ELF): $(USER_DIR)/compositor/assets/*.bin $(USER_DIR)/compositor/src/*.rs $(USER_DIR)/compositor/build.rs $(USER_DIR)/compositor/timezone_bridge.c $(USER_DIR)/timezone.c $(USER_DIR)/timezone.h $(USER_DIR)/tools/timezone_io.c $(USER_DIR)/tools/common.h src/include/syscall_abi.h src/include/netctl_abi.h src/include/wifi_abi.h src/fs/vfs.h $(USER_DIR)/compositor/Cargo.toml $(USER_DIR)/compositor/Cargo.lock $(USER_DIR)/compositor/.cargo/config.toml $(USER_DIR)/compositor/compositor.ld
+$(USER_COMPOSITOR_ELF): $(USER_DIR)/compositor/assets/*.bin $(USER_DIR)/compositor/src/*.rs $(USER_DIR)/compositor/src/bin/*.rs src/include/desktop_proto.h $(USER_DIR)/compositor/build.rs $(USER_DIR)/compositor/timezone_bridge.c $(USER_DIR)/timezone.c $(USER_DIR)/timezone.h $(USER_DIR)/tools/timezone_io.c $(USER_DIR)/tools/common.h src/include/syscall_abi.h src/include/netctl_abi.h src/include/wifi_abi.h src/fs/vfs.h $(USER_DIR)/compositor/Cargo.toml $(USER_DIR)/compositor/Cargo.lock $(USER_DIR)/compositor/.cargo/config.toml $(USER_DIR)/compositor/compositor.ld
 	@echo "  [CARGO] user/compositor"
 	@cd $(USER_DIR)/compositor && PATH="$$HOME/.cargo/bin:$$PATH" cargo build --release
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/compositor $@
+	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/notepad $(BUILD_DIR)/notepad.elf
 
 # Build USTAR Initramfs archive
 $(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt assets/desktop.conf
@@ -1489,6 +1490,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_PKG_ELF) $(BUILD_DIR)/initramfs/bin/pkg
 	@cp -f $(USER_COMPOSITOR_ELF) $(BUILD_DIR)/initramfs/bin/compositor
+	@cp -f $(BUILD_DIR)/notepad.elf $(BUILD_DIR)/initramfs/bin/notepad
 	@cp -f assets/desktop.conf $(BUILD_DIR)/initramfs/etc/desktop.conf
 	@mkdir -p $(BUILD_DIR)/initramfs/usr/share/licenses/compositor
 	@cp -f $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt $(BUILD_DIR)/initramfs/usr/share/licenses/compositor/DejaVu-LICENSE.txt

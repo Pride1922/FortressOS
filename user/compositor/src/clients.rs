@@ -101,8 +101,17 @@ impl Clients {
             .any(|c| c.window_id == window_id)
     }
 
-    /// Starts `path` (an absolute path) as an app. Returns its pid.
-    pub fn launch(&mut self, path: &core::ffi::CStr, scene: &Surface) -> Result<isize, isize> {
+    /// Starts `path` (an absolute path) as an app with up to 3 arguments.
+    /// Returns its pid.
+    pub fn launch(
+        &mut self,
+        path: &core::ffi::CStr,
+        args: &[&core::ffi::CStr],
+        scene: &Surface,
+    ) -> Result<isize, isize> {
+        if args.len() > 3 {
+            return Err(sys::EINVAL);
+        }
         let slot = self
             .slots
             .iter()
@@ -126,7 +135,7 @@ impl Clients {
             && sys::pipe(&mut req, sys::VFS_O_CLOEXEC) == 0
             && sys::pipe(&mut ev, sys::VFS_O_CLOEXEC) == 0;
         let pid = if piped {
-            spawn(path, req[1], ev[0], shm)
+            spawn(path, args, req[1], ev[0], shm)
         } else {
             sys::EINVAL
         };
@@ -355,6 +364,24 @@ impl Clients {
         true
     }
 
+    /// A left-button press in an app window's content area.
+    pub fn click(
+        &mut self,
+        window_id: u32,
+        x: usize,
+        y: usize,
+        windows: &mut WindowManager,
+        scene: &mut Surface,
+    ) -> bool {
+        let Some(slot) = self.slot_of(window_id) else {
+            return false;
+        };
+        if !self.send(slot, &Msg::new(proto::EV_CLICK, x as u32, y as u32, 0, 0)) {
+            self.drop_client(slot, windows, scene);
+        }
+        true
+    }
+
     /// After a resize or maximize: the app redraws at the new size.
     pub fn resized(
         &mut self,
@@ -455,7 +482,13 @@ impl Clients {
     }
 }
 
-fn spawn(path: &core::ffi::CStr, requests: i32, events: i32, pixels: i32) -> isize {
+fn spawn(
+    path: &core::ffi::CStr,
+    args: &[&core::ffi::CStr],
+    requests: i32,
+    events: i32,
+    pixels: i32,
+) -> isize {
     let null = c"/dev/null".as_ptr() as u64;
     let open = |fd| sys::SpawnFdAction {
         action_type: 1,
@@ -502,7 +535,11 @@ fn spawn(path: &core::ffi::CStr, requests: i32, events: i32, pixels: i32) -> isi
         close(STAGE + 1),
         close(STAGE + 2),
     ];
-    let argv = [path.as_ptr(), core::ptr::null()];
+    let mut argv = [core::ptr::null(); 5];
+    argv[0] = path.as_ptr();
+    for (slot, arg) in argv[1..].iter_mut().zip(args) {
+        *slot = arg.as_ptr();
+    }
     let opts = sys::SpawnOpts {
         size: core::mem::size_of::<sys::SpawnOpts>() as u32,
         version: 2,

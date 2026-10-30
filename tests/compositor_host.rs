@@ -519,8 +519,12 @@ mod cursor;
 mod files;
 #[path = "../user/compositor/src/font.rs"]
 mod font;
+#[path = "../user/compositor/src/canvas.rs"]
+mod canvas;
 #[path = "../user/compositor/src/notepad.rs"]
 mod notepad;
+#[path = "../user/compositor/src/theme.rs"]
+mod theme;
 #[path = "../user/compositor/src/surface.rs"]
 mod surface;
 #[path = "../user/compositor/src/sys.rs"]
@@ -1178,7 +1182,7 @@ fn window_controls_close_minimize_maximize_and_restore() {
 
 #[test]
 fn notepad_editing_and_rendering() {
-    let mut np = notepad::Notepad::new(4, "/tmp/test.txt");
+    let mut np = notepad::Notepad::new("/tmp/test.txt");
     np.text.clear();
     np.insert_char(b'H');
     np.insert_char(b'i');
@@ -1191,20 +1195,20 @@ fn notepad_editing_and_rendering() {
     assert_eq!(&np.text, b"Hi");
     assert_eq!(np.cursor, 2);
 
-    let mut win = window::Window::new(
-        4,
-        "Notepad",
-        Rect {
-            x: 0,
-            y: 0,
-            w: 400,
-            h: 250,
-        },
-    )
-    .unwrap();
-    np.render(&mut win);
-    // Verified that glyphs are rendered into content
-    assert!(win.content.iter().any(|&c| c == notepad::NOTEPAD_FG));
+    // Same geometry as a 400x250 window's content, in a wider-stride buffer
+    // (app buffers use the screen width as stride).
+    let mut pixels = vec![0u32; 640 * 224];
+    let mut c = canvas::Canvas::new(&mut pixels, 398, 224, 640).unwrap();
+    np.render(&mut c);
+    assert!(pixels.iter().any(|&p| p == notepad::NOTEPAD_FG));
+    // Nothing is drawn beyond the canvas width inside the stride.
+    for row in 0..224 {
+        assert!(
+            pixels[row * 640 + 398..row * 640 + 640]
+                .iter()
+                .all(|&p| p == 0)
+        );
+    }
 }
 
 #[test]
@@ -1234,7 +1238,7 @@ fn files_navigation_and_rendering() {
 
 #[test]
 fn notepad_mouse_and_arrow_keys() {
-    let mut np = notepad::Notepad::new(4, "/tmp/editor.txt");
+    let mut np = notepad::Notepad::new("/tmp/editor.txt");
     np.text.clear();
     np.cursor = 0;
 
@@ -1733,4 +1737,27 @@ fn damage_from_apps_is_clipped_without_overflow() {
     assert_eq!(d(u32::MAX, u32::MAX, u32::MAX, u32::MAX), None);
     assert_eq!(d(5, 5, 0, 10), None);
     assert_eq!(d(5, 5, 10, 0), None);
+}
+
+#[test]
+fn canvas_rejects_undersized_buffers_and_clips() {
+    let mut small = vec![0u32; 99];
+    assert!(canvas::Canvas::new(&mut small, 10, 10, 10).is_none());
+    let mut wide = vec![0u32; 100];
+    assert!(canvas::Canvas::new(&mut wide, 11, 10, 10).is_none());
+    let mut pixels = vec![0u32; 16 * 8];
+    let mut c = canvas::Canvas::new(&mut pixels, 12, 8, 16).unwrap();
+    c.fill_rect(8, 4, usize::MAX, usize::MAX, 7);
+    c.glyph(10, 0, b'A', 1, 2); // does not fit: ignored
+    c.text(11, 7, "clipped", 1, 2);
+    for y in 0..8 {
+        for x in 0..16 {
+            let inside_rect = x >= 8 && x < 12 && y >= 4;
+            if x >= 12 {
+                assert_eq!(pixels[y * 16 + x], 0, "drew past width at {x},{y}");
+            } else if inside_rect && !(x == 11 && y == 7) {
+                assert_eq!(pixels[y * 16 + x], 7);
+            }
+        }
+    }
 }

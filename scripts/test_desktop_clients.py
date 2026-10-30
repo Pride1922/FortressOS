@@ -6,6 +6,7 @@ relaunched and closed with [X]; no process remains.
 hostile: /bin/hostile-window (via --app=) tries absurd sizes and a bad
 title, ignores close, floods 20000 requests and exits early; the desktop
 must stay intact and responsive and no hostile process may survive.
+notepad: /bin/notepad edits and saves a file as the session user.
 """
 import sys, time, tempfile
 from pathlib import Path
@@ -38,7 +39,9 @@ def run_well_behaved():
             g.send('sudo /bin/compositor')
             g.wait(lambda s: 'Window server ready' in s, start, timeout=40)
             wait_image(g,lambda iw,ih,rgb:pixel(rgb,iw,iw//2,ih//2)==bytes.fromhex('101010'))
+            time.sleep(2)  # first frame complete before it becomes the baseline
             before=shot(g,'a0')
+            assert before.getpixel((1000,600))==before.getpixel((300,200)), 'baseline not fully painted'
             key(g,b'h'); time.sleep(2)
             im=shot(g,'a1')
             check(px(im,500,355)==BOX and px(before,500,355)!=BOX, 'app window drawn: box at initial spot')
@@ -134,10 +137,75 @@ def run_hostile():
             g.close()
 
 
+def run_notepad():
+    """/bin/notepad as its own process: launched with 'e', a click places
+    the cursor, typed text is saved with Ctrl+S as the session user (not
+    root), [X] closes it and no process remains."""
+    def shot(g, name):
+        g.qmp.execute('screendump', {'filename': f'/tmp/{name}.ppm'}); time.sleep(.4)
+        return Image.open(f'/tmp/{name}.ppm').convert('RGB')
+    results = []
+    def check(ok, what): results.append(ok); print(('ok   ' if ok else 'FAIL ') + what, flush=True)
+    with tempfile.TemporaryDirectory() as t:
+        tmp=Path(t); g=Guest(firmware='bios',smp=1,tmp=tmp)
+        try:
+            g.wait(lambda s: s.endswith('FortressOS login: '), timeout=120)
+            g.qmp=QMP(tmp/'qmp.sock')
+            g.send('operator'); g.wait(lambda s: s.endswith('$ '), timeout=30)
+            g.command('rm -f /tmp/notes.txt')
+            start=len(g.data)
+            g.send('sudo /bin/compositor')
+            g.wait(lambda s: 'Window server ready' in s, start, timeout=40)
+            wait_image(g,lambda iw,ih,rgb:pixel(rgb,iw,iw//2,ih//2)==bytes.fromhex('101010'))
+            time.sleep(2); desk=shot(g,'n0')
+            key(g,b'e',3)
+            im=shot(g,'n1')
+            # notepad window 480x280 centred: x 400..880, y 260..540; header row at content y<20
+            try:
+                g.wait(lambda s:'Notepad started' in s, start, timeout=10); launched=True
+            except AssertionError:
+                launched=False
+            check(launched, 'compositor launched /bin/notepad')
+            check(im.getpixel((650,292))==(0x1e,0x1e,0x1e), 'notepad header drawn by the app')
+            # click at the start of text line 0 (content x 48, y 24+8) and type
+            pos=[640,400]
+            def click(x,y):
+                while pos!=[x,y]:
+                    dx=max(-100,min(100,x-pos[0]));dy=max(-100,min(100,y-pos[1])); g.motion(dx,dy); pos[0]+=dx; pos[1]+=dy; time.sleep(.04)
+                time.sleep(.3)
+                for down in [True,False]:
+                    g.qmp.execute('input-send-event',{'events':[{'type':'btn','data':{'down':down,'button':'left'}}]}); time.sleep(.15)
+            click(401+48+2, 285+24+8); time.sleep(1)
+            for ch in b'XY': key(g,bytes([ch]),0.25)
+            time.sleep(1); im=shot(g,'n2')
+            key(g,b'\x13',2)   # Ctrl+S
+            im=shot(g,'n3')
+            # close the window with [X]
+            click(400+480-18, 260+12); click(1100,650); time.sleep(4)
+            im=shot(g,'n4')
+            check(im.getpixel((600,400))==desk.getpixel((600,400)), 'notepad window closed via [X]')
+            key(g,b'q')
+            g.wait(lambda s:'Event loop stopped' in s,start,timeout=30)
+            g.wait(lambda s:s.endswith('$ '),start,timeout=20)
+            time.sleep(1)
+            content=g.command('cat /tmp/notes.txt')
+            print('--- /tmp/notes.txt:'); print(content)
+            check(content.split('\n',1)[1].lstrip().startswith('XY#') or 'XY# FortressOS' in content, 'click placed the cursor and typed text was saved')
+            ls=g.command('ls -l /tmp/notes.txt')
+            print(ls)
+            check('operator' in ls and ' root ' not in ls, 'file written as the user, not root')
+            check('notepad' not in g.command('ps'), 'no notepad process left')
+            return all(results)
+        finally:
+            g.close()
+
+
 if __name__ == '__main__':
     print('[TEST] desktop clients: well-behaved app', flush=True)
     ok = run_well_behaved()
     print('[TEST] desktop clients: hostile app', flush=True)
     ok = run_hostile() and ok
+    print('[TEST] desktop clients: notepad', flush=True)
+    ok = run_notepad() and ok
     print('[PASS] desktop clients' if ok else '[FAIL] desktop clients')
     sys.exit(0 if ok else 1)

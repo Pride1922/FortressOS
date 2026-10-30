@@ -3,6 +3,8 @@
 # Build outputs and intermediate objects
 build/
 bin/
+# Rust binaries of the desktop crate are sources, not build output.
+!user/compositor/src/bin/
 *.o
 *.d
 *.elf

@@ -25,6 +25,7 @@ pub const REQ_TITLE: u32 = 3; // text = title
 pub const EV_CONFIGURE: u32 = 101; // a,b = content width/height, c = stride (pixels)
 pub const EV_KEY: u32 = 102; // a = byte as typed (UTF-8 bytes arrive one by one)
 pub const EV_CLOSE: u32 = 103; // window closed: save state and exit
+pub const EV_CLICK: u32 = 104; // a,b = x,y in content pixels (left button press)
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

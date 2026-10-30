@@ -442,6 +442,19 @@ pub fn shm_unmap(va: usize) -> isize {
     unsafe { syscall1(SYS_SHM_UNMAP, va) }
 }
 
+pub const SYS_FSTAT: usize = 78;
+
+/// Size of an open file (e.g. a shared-memory buffer), or None.
+pub fn fstat_size(fd: i32) -> Option<u64> {
+    let mut st = StatExtV1 {
+        size: core::mem::size_of::<StatExtV1>() as u32,
+        version: 1,
+        ..Default::default()
+    };
+    let rc = unsafe { syscall2(SYS_FSTAT, fd as usize, &mut st as *mut StatExtV1 as usize) };
+    (rc == 0).then_some(st.file_size)
+}
+
 pub fn capget() -> isize {
     unsafe { syscall0(SYS_CAPGET) }
 }
