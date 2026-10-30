@@ -265,17 +265,35 @@ static int multi_identity(void *context,install_identity_v1_t *out) {
     return identity(context,out);
 }
 bool install_nvme_multi_boot(const boot_info_t *info) {
-    if (started || failed || !info || !info->installer_payload_valid ||
-        !info->installer_source_valid || block_get_dev_count() || ext4_storage_owned() || install_control_owned()) return false;
+    if (started || failed || !info) {
+        serial_puts("[INSTALL] Startup rejected: invalid or already-used installer state\n");return false;
+    }
+    if (!info->installer_source_valid) {
+        serial_puts("[INSTALL] Startup rejected: USB/optical boot-source provenance unavailable\n");return false;
+    }
+    if (!info->installer_payload_valid) {
+        serial_puts("[INSTALL] Startup rejected: installer payload module set invalid\n");return false;
+    }
+    if (block_get_dev_count() || ext4_storage_owned() || install_control_owned()) {
+        serial_puts("[INSTALL] Startup rejected: storage is already published or owned\n");return false;
+    }
     root_boot_config_t c=root_boot_parse(info->cmdline,sizeof(info->cmdline),info->cmdline_truncated);
-    if (!c.valid || !c.explicit_mode || c.mode!=ROOT_BOOT_INSTALLER) return false;
+    if (!c.valid || !c.explicit_mode || c.mode!=ROOT_BOOT_INSTALLER) {
+        serial_puts("[INSTALL] Startup rejected: installer boot configuration invalid\n");return false;
+    }
     optical=info->installer_source_optical;memcpy(source_guid,info->installer_source_disk_guid,16);
     multi_count=storage_inventory_boot();
-    if (!multi_count || multi_count>8) return false;
+    if (!multi_count || multi_count>8) {
+        serial_puts("[INSTALL] Startup rejected: disk inventory unavailable or empty\n");return false;
+    }
     for (unsigned i=0;i<multi_count;i++) {
-        if (!storage_inventory_select(i) || !storage_installer_identity(&multi_raw[i]) || identity(NULL,&multi_ids[i])) return false;
+        if (!storage_inventory_select(i) || !storage_installer_identity(&multi_raw[i]) || identity(NULL,&multi_ids[i])) {
+            serial_puts("[INSTALL] Startup rejected: disk selection or identity/read validation failed\n");return false;
+        }
         summarize_disk(multi_ids[i].sector_count,multi_summary[i]);
-        if (failed) return false;
+        if (failed) {
+            serial_puts("[INSTALL] Startup rejected: disk summary read failed\n");return false;
+        }
     }
     unsigned default_sel=0;
     for (unsigned i=0;i<multi_count;i++) if (multi_ids[i].flags==INSTALL_ID_ELIGIBLE) {default_sel=i;break;}

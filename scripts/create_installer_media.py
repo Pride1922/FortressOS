@@ -24,6 +24,24 @@ ROLES = ('esp.img', 'root.img', 'bios.img', 'mbr.bin', 'payload.v1')
 SIZES = (64 * 1024**2, 256 * 1024**2, 1024**2, 440, 256)
 
 
+def elf_load_image(path):
+    """Compare runtime ELF content when removing private debug sections."""
+    data = Path(path).read_bytes()
+    header = struct.unpack_from('<16sHHIQQQIHHHHHH', data)
+    assert header[0][:6] == b'\x7fELF\x02\x01' and header[2] == 62
+    assert header[9] == 56 and header[10] > 0
+    segments = []
+    for i in range(header[10]):
+        kind, flags, offset, va, pa, size, memory, alignment = struct.unpack_from(
+            '<IIQQQQQQ', data, header[5] + i * 56)
+        if kind == 1:
+            assert size <= memory and offset + size <= len(data)
+            segments.append((flags, va, pa, size, memory, alignment,
+                             hashlib.sha256(data[offset:offset+size]).hexdigest()))
+    assert segments
+    return header[4], segments
+
+
 def digest(path):
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -93,14 +111,23 @@ def build(templates, kernel, bootstrap, installer, preview=False, inspect=False,
         tree = out/'iso'; (tree/'boot/limine').mkdir(parents=True); (tree/'EFI/BOOT').mkdir(parents=True)
         (tree/'payload').mkdir()
         shutil.copyfile(kernel, tree/'boot/fortress.elf')
+        # Debug sections can push the installer-only bootstrap over the
+        # kernel/archive 8 MiB admission limit. Strip only this private copy;
+        # preserve the original build and verify every loadable byte/entry.
+        runtime_installer = out/'installer-runtime.elf'
+        run(['objcopy', '--strip-debug', installer, runtime_installer])
+        assert elf_load_image(installer) == elf_load_image(runtime_installer)
         # Private bootstrap staging; never inject the installer into live media.
         with tarfile.open(bootstrap) as source,tarfile.open(tree/'boot/initramfs.tar','w',format=tarfile.USTAR_FORMAT) as archive:
             for member in source:
                 assert member.name.rstrip('/')!='bin/install'
                 archive.addfile(member,source.extractfile(member) if member.isfile() else None)
-            info=tarfile.TarInfo('bin/install');info.mode=0o755;info.uid=info.gid=0;info.size=installer.stat().st_size
-            with installer.open('rb') as stream:archive.addfile(info,stream)
-        assert (tree/'boot/initramfs.tar').stat().st_size<=16*1024**2
+            info=tarfile.TarInfo('bin/install');info.mode=0o755;info.uid=info.gid=0;info.size=runtime_installer.stat().st_size
+            with runtime_installer.open('rb') as stream:archive.addfile(info,stream)
+        # Leave room for the recovery record added by personalization. The
+        # installed bootstrap slot and boot validator both remain at 8 MiB.
+        assert (tree/'boot/initramfs.tar').stat().st_size<=8*1024**2-2560, \
+            'installer bootstrap exceeds the 8 MiB runtime limit; image not published'
         for path in ([] if interface_only else paths):
             shutil.copyfile(path, tree/'payload'/path.name)
         for name in ('limine-bios.sys', 'limine-bios-cd.bin', 'limine-uefi-cd.bin'):

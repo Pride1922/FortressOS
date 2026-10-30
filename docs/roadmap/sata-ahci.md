@@ -166,9 +166,48 @@ the USB producer retains its GPT/FAT/payload-hash/EXT4 audits.
 
 ## Hardware follow-up
 
-The Latitude 5510 boot self-test fix is committed as `a24a964`. Its physical
-retest and SATA physical acceptance both remain pending. When hardware is
-available, capture controller mode/PCI ID and ATA identification, check read-only
-inventory, then use an explicitly selected disposable disk for installation,
-reboot, persistence and clean-shutdown checks. No physical compatibility,
-performance or fault-recovery acceptance is claimed.
+### 2026-10-30: offline AHCI PHY on an NVMe-only 5590
+
+The user identifies the 5590 as NVMe-only and the separate 5510 as the SATA
+test machine. The 5590 live log shows AHCI port 0 rejected with SSTS=0x4,
+CMD=0x6, SIG=0xffffffff and TFD=0x7f. This is not a detected SATA disk or an
+NVMe failure. AHCI 1.3.1 PxSSTS.DET=4 denotes an offline PHY. The prior probe
+waited for this state to change without initializing the link, then rejected
+the entire AHCI inventory. Combined installer discovery consequently withheld
+the NVMe list too. The photographed live log establishes the AHCI rejection;
+the installer path is reproduced in host tests, not physically confirmed yet.
+
+Boot classification now attempts one bounded COMRESET with a private receive-only
+FIS buffer and command execution disabled for an initially offline PHY. A disk
+that establishes a link is identified normally. After the bounded wait, a port
+still without a link or signature (DET=0/4, no outstanding CI/SACT) is omitted
+only after FRE/FR quiescence. DET=1, reserved states, stale signatures, command
+ownership uncertainty and failed quiescence still reject discovery. No blanket
+AHCI-error suppression, failed-I/O retries or raw-write gate changes.
+
+New actual-driver host cases reproduce the 5590 state, offline-to-empty with
+a second ATA port, offline-to-live ATA wake, device-present/no-link rejection,
+and outstanding-command rejection. The first regression fails before the fix
+and passes afterward. Existing DMA/quarantine, dispatcher and installer control
+tests also pass. SATA physical detection on the 5510 remains unverified.
+
+Rebuilt combined USB image: `build/root-phase4/media-usppe9rr`, published as
+`bin/fortress.img` after GPT/FAT/payload/EXT4 verification. Installer control
+host evidence: `build/root-phase4/leases-2ujgu7to`; CLI diagnostics:
+`build/root-phase4/cli-k6_dwp7p`. Production AHCI stack compilation with
+`-fstack-usage -Wframe-larger-than=1024 -Werror` passes; classifier 160 B,
+port initializer 368 B, inventory 544 B (`build/ahci-offline-stack.su`).
+Subsequent virtual acceptance exposed a separate oversized installer bootstrap;
+see [packaging diagnosis and correction](installer-discovery-diagnostics.md).
+Use the final combined image `media-1kxiurbw`/`bin/fortress.img`, not the earlier
+`media-usppe9rr`. The final UEFI SATA installation/root/shutdown/Linux audit
+rerun `sata-sokxx057` passes at SMP=1/4 after that packaging correction.
+
+Reference: [Intel AHCI 1.3.1 specification, PxSSTS and PxSCTL](https://www.intel.com.tw/content/dam/www/public/us/en/documents/technical-specifications/serial-ata-ahci-spec-rev1-3-1.pdf).
+
+On 2026-10-30 the user confirms the corrected installer's disk-selection check
+passes on both the NVMe-only Latitude 5590 and the SATA Latitude 5510. Physical
+installer startup and SATA detection are accepted for those machines. Completed
+physical installation, reboot persistence, performance and fault recovery have
+not been reported. The earlier 5510 boot self-test fix is committed as `a24a964`;
+the new report is scoped to the installer checks requested above.

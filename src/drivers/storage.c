@@ -15,13 +15,22 @@ size_t storage_inventory_boot(void) {
     inventory_started=true;
     pci_device_t controllers[9];
     size_t n=pci_find_all_devices(PCI_CLASS_STORAGE,PCI_SUBCLASS_STORAGE_NVME,PCI_PROGIF_STORAGE_NVME,controllers,9);
-    if (!pci_inventory_complete() || n>8) return 0;
+    if (!pci_inventory_complete() || n>8) {
+        serial_puts("[STORAGE] Discovery rejected: incomplete PCI inventory or too many NVMe controllers\n");return 0;
+    }
     if (n) {
         nvme_count=(unsigned)nvme_inventory_boot();
-        if (nvme_count!=n) return 0;
+        if (nvme_count!=n) {
+            serial_puts("[STORAGE] Discovery rejected: NVMe inventory failed\n");return 0;
+        }
     }
     sata_count=(unsigned)ahci_inventory_boot();
-    if (!ahci_inventory_valid() || nvme_count+sata_count>8) return 0;
+    if (!ahci_inventory_valid()) {
+        serial_puts("[STORAGE] Discovery rejected: AHCI inventory failed; combined disk list withheld\n");return 0;
+    }
+    if (nvme_count+sata_count>8) {
+        serial_puts("[STORAGE] Discovery rejected: more than eight combined disks\n");return 0;
+    }
     inventory_good=true;
     return storage_inventory_valid() ? nvme_count+sata_count : 0;
 }

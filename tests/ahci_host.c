@@ -21,6 +21,7 @@ static bool resetting;
 static uint32_t reset_signature;
 static unsigned resets;
 static bool timeout_command,error_command,partial,stuck_stop,bios_stuck,replaced;
+static uint32_t reset_link_status;
 static unsigned controllers=1;
 static bool complete=true;
 static unsigned offset(uintptr_t address) {assert(address>=MMIO_BASE && address<MMIO_BASE+0x4000);return (unsigned)(address-MMIO_BASE);}
@@ -85,6 +86,7 @@ void ahci_test_write(uintptr_t address,uint32_t value) {
             } else if (resetting && !(value&15)) {
                 resetting=false;resets++;
                 registers[(base+SIG)/4]=reset_signature;registers[(base+TFD)/4]=0x50;
+                if (reset_link_status!=UINT32_MAX) registers[(base+SSTS)/4]=reset_link_status;
             }
         }
         if (reg==IS || reg==SERR) {registers[at/4]&=~value;return;}
@@ -132,6 +134,7 @@ static void reset(void) {
     allocation_limit=32;high_dma=false;
     clock_hz=1000000;clock_step=1000;delayed_reads=wake_reads=0;
     resetting=false;resets=0;reset_signature=0x101;
+    reset_link_status=UINT32_MAX;
     timeout_command=error_command=partial=stuck_stop=bios_stuck=replaced=false;controllers=1;complete=true;
     registers[CAP/4]=(1u<<31)|5;registers[PI/4]=3;
     registers[(0x100+CMD)/4]=CMD_ST|CMD_FRE|2;
@@ -201,6 +204,27 @@ int main(void) {
     assert(!ahci_inventory_boot() && allocated==2 && freed==2 && !issued && !ports[0].live);
     reset();registers[CAP/4]&=~(1u<<31);
     assert(ahci_inventory_boot()==1 && !registers[(0x100+CLBU)/4] && !registers[(0x100+FBU)/4]);
-    puts("PASS actual AHCI driver: geometry, DMA framing, bounds, reads/writes/flush, identity, errors, timeout, quarantine, handoff, inventory, quiesce");
+    /* NVMe-only laptops can expose implemented AHCI ports with an offline
+     * PHY (DET=4). Recreate the photographed 5590 status, not an ATA disk. */
+    reset();registers[PI/4]=1;registers[(0x100+CMD)/4]=6;
+    registers[(0x100+SSTS)/4]=4;registers[(0x100+SIG)/4]=UINT32_MAX;
+    registers[(0x100+TFD)/4]=0x7f;reset_link_status=4;reset_signature=UINT32_MAX;
+    assert(ahci_inventory_boot()==0 && ahci_inventory_valid() && !issued && resets==1);
+    assert(allocated==1 && !freed && !(registers[(0x100+CMD)/4]&(CMD_ST|CMD_FRE|CMD_CR|CMD_FR)));
+    /* An offline port must not prevent a real ATA disk on another port. */
+    reset();registers[(0x100+SSTS)/4]=4;registers[(0x100+SIG)/4]=UINT32_MAX;
+    registers[(0x180+SIG)/4]=0x101;reset_link_status=0;reset_signature=UINT32_MAX;
+    assert(ahci_inventory_boot()==1 && ahci_inventory_valid() && issued==1 && resets==1);
+    assert(ahci_identity(0,&id) && id.nsid==2);
+    /* Do not simply skip DET=4: an attached SATA disk may need link reset. */
+    reset();registers[PI/4]=1;registers[(0x100+SSTS)/4]=4;
+    registers[(0x100+SIG)/4]=UINT32_MAX;reset_link_status=0x103;
+    assert(ahci_inventory_boot()==1 && ahci_inventory_valid() && issued==1 && resets==1);
+    reset();registers[PI/4]=1;registers[(0x100+SSTS)/4]=4;
+    registers[(0x100+SIG)/4]=UINT32_MAX;reset_link_status=1;
+    assert(!ahci_inventory_boot() && !ahci_inventory_valid() && !issued);
+    reset();registers[(0x100+SSTS)/4]=4;registers[(0x100+CI)/4]=1;
+    assert(!ahci_inventory_boot() && !ahci_inventory_valid() && !allocated && !issued);
+    puts("PASS actual AHCI driver: geometry, DMA framing, bounds, reads/writes/flush, identity, errors, timeout, quarantine, handoff, offline PHY classification, inventory, quiesce");
     return 0;
 }

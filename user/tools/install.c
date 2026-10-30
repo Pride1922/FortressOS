@@ -7,6 +7,39 @@
 
 static install_identity_v1_t identity;
 static install_identity_v1_t disks[8];
+static char startup_log[DMESG_SIZE];
+
+/* The installer has no shell. Surface the last relevant boot messages on a
+ * startup failure, without changing disk admission or granting raw access. */
+static void startup_diagnostics(void) {
+    long count=tool_syscall(SYS_DMESG,(uintptr_t)startup_log,sizeof(startup_log),0);
+    if (count<=0 || (size_t)count>sizeof(startup_log)) return;
+    size_t starts[6],lengths[6],found=0;
+    const char *tags[]={"[AHCI]","NVMe","[STORAGE]","[INSTALL]"};
+    for (size_t at=0;at<(size_t)count;) {
+        size_t start=at;
+        while (at<(size_t)count && startup_log[at]!='\n') at++;
+        size_t len=at-start;
+        if (at<(size_t)count) at++;
+        bool match=false;
+        for (unsigned tag=0;tag<4 && !match;tag++) {
+            size_t n=tool_length(tags[tag]);
+            for (size_t j=0;j+n<=len;j++) {
+                size_t k=0;while (k<n && startup_log[start+j+k]==tags[tag][k]) k++;
+                if (k==n) {match=true;break;}
+            }
+        }
+        if (match) {starts[found%6]=start;lengths[found%6]=len;found++;}
+    }
+    if (!found) return;
+    (void)tool_write("install","\nStorage startup diagnostics:\n",30);
+    size_t first=found>6 ? found-6 : 0;
+    for (size_t i=first;i<found;i++) {
+        size_t len=lengths[i%6];if (len>160) len=160;
+        (void)tool_write("install",startup_log+starts[i%6],len);
+        (void)tool_write("install","\n",1);
+    }
+}
 static install_deploy_v1_t request;
 static install_deploy_v4_t named_request;
 #ifndef INSTALLER_PREVIEW
@@ -250,7 +283,9 @@ static void failure_reason(long call,unsigned stage) {
     case SYSCALL_EACCES: case SYSCALL_EPERM: case SYSCALL_EROFS:
         say("The installer cannot safely use this disk or configuration. Choose another supported disk, or report the details below.\n");return;
     case SYSCALL_EOPNOTSUPP:
-        say("This disk or installer configuration is not supported. Use a supported NVMe or SATA/AHCI disk and the latest installer image.\n");return;
+        if (stage==1) say("Installer startup did not complete. See the storage startup diagnostics below.\n");
+        else say("This disk or installer configuration is not supported. Use a supported NVMe or SATA/AHCI disk and the latest installer image.\n");
+        return;
     case SYSCALL_EINVAL:
         say("The installer files or installation settings could not be validated. Recreate the USB using the latest installer image.\n");return;
     case SYSCALL_EIO: case SYSCALL_ETIMEDOUT:
@@ -293,6 +328,7 @@ static void failure_screen(unsigned step,const char *action,long call,unsigned s
     say("\nDetails: stage ");number(stage);say(", error ");char code[32];tool_format_i64(code,error);say(code);
     say(", call ");tool_format_i64(code,call);say(code);
     say("\n");log_notice(0);
+    if (stage==1 && !may_have_written) startup_diagnostics();
     say("\nPress Enter to return to the installer.\n");
     for (;;) {unsigned char key=0;if (tool_syscall(SYS_INPUT_READ,(uintptr_t)&key,1,(uintptr_t)-1)!=1 || key=='\n' || key=='\r') break;}
 }

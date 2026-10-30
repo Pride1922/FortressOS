@@ -237,8 +237,9 @@ static bool flush_disk(block_dev_t *d) {
  * Firmware need not have enumerated a live link. No ATA/ATAPI command is issued;
  * COMRESET, if necessary, requests its signature, never retries failed I/O. */
 static bool classify_link(port_t *p,uint32_t *signature) {
+    bool offline=(rd(p->regs+SSTS)&0xf0f)==4;
     *signature=rd(p->regs+SIG);
-    if (*signature && *signature!=UINT32_MAX) return true;
+    if (!offline && *signature && *signature!=UINT32_MAX) return true;
     uint64_t hz=apic_poll_clock_hz();
     if (!hz || hz>UINT64_MAX/30000 || (rd(p->regs+CI)|rd(p->regs+SACT))) return false;
     hba_t *h=p->hba;
@@ -255,7 +256,7 @@ static bool classify_link(port_t *p,uint32_t *signature) {
     wr(p->regs+CMD,rd(p->regs+CMD)|CMD_FRE);
     *signature=rd(p->regs+SIG);
     bool ok=true;
-    if (!*signature || *signature==UINT32_MAX) {
+    if (offline || !*signature || *signature==UINT32_MAX) {
         uint32_t control=rd(p->regs+SCTL)&~15u;
         wr(p->regs+SCTL,control|1u);(void)rd(p->regs+SCTL);
         deadline_t pulse=deadline_begin();
@@ -266,8 +267,22 @@ static bool classify_link(port_t *p,uint32_t *signature) {
     deadline_t deadline=deadline_begin();
     while (ok) {
         *signature=rd(p->regs+SIG);
-        if ((rd(p->regs+SSTS)&0xf0f)==0x103 && *signature && *signature!=UINT32_MAX) break;
-        if (expired(&deadline,3000)) {ok=false;break;}
+        uint32_t status=rd(p->regs+SSTS)&0xf0f;
+        if (status==0x103 && *signature && *signature!=UINT32_MAX) break;
+        if (expired(&deadline,3000)) {
+            /* AHCI 1.3.1 PxSSTS.DET=4 is PHY offline, not device presence.
+             * Try bounded link initialization first so a firmware-disabled
+             * SATA disk can wake. An initially offline port still without a
+             * link/signature is empty for this boot, after FRE is stopped.
+             * DET=1, reserved states, stale signatures and uncertain command
+             * ownership remain errors; never hide an identified failing disk. */
+            bool empty=offline && (status==0 || status==4) &&
+                (!*signature || *signature==UINT32_MAX) &&
+                !(rd(p->regs+CI)|rd(p->regs+SACT));
+            if (empty) *signature=0;
+            else ok=false;
+            break;
+        }
         __asm__ volatile("pause" ::: "memory");
     }
     wr(p->regs+CMD,rd(p->regs+CMD)&~CMD_FRE);
@@ -292,12 +307,17 @@ static bool init_port(hba_t *h, unsigned port) {
     for (;;) {
         uint32_t status=rd(probe.regs+SSTS);det=status&15;
         if ((status&0xf0f)==0x103) break;
+        if ((status&0xf0f)==4) break; /* classify/reinitialize an offline PHY */
         if (!det && (!(h->cap & (1u<<27)) || (original & 2))) return true; /* empty port */
         if (expired(&deadline,3000)) return det==0;
         __asm__ volatile("pause" ::: "memory");
     }
     uint32_t signature;
     if (!classify_link(&probe,&signature)) return false;
+    if (!signature) {
+        serial_puts("[AHCI] Offline port has no link after initialization; no ATA commands issued\n");
+        return true;
+    }
     if (signature!=0x101) return true; /* ATAPI/SEM/PMP: unsupported, no commands */
     if (port_count==AHCI_MAX_DISKS) return false;
     port_t *p=&ports[port_count++]; *p=probe;

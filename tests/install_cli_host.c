@@ -11,6 +11,7 @@ int ssh_hostkey_generate(char *p,size_t cap,size_t *n,ssh_hostkey_workspace *w) 
     (void)p;(void)cap;(void)n;db_wipe(w,sizeof(*w));return SYSCALL_EIO;
 }
 static const char *input;
+static const char *diagnostic_source;
 static jmp_buf rebooted;
 static bool keyboard_pending,finish_pending;
 static char output[16384];
@@ -36,6 +37,12 @@ int tool_write(const char *name,const void *bytes,size_t n) {
     memcpy(output+output_size,bytes,n);output_size+=n;output[output_size]=0;return 0;
 }
 long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c) {
+    if (nr==SYS_DMESG) {
+        size_t n=diagnostic_source ? strlen(diagnostic_source) : 0;
+        if (n>b) n=b;
+        if (n) memcpy((void *)a,diagnostic_source,n);
+        return (long)n;
+    }
     (void)c;
     if (nr==SYS_TERMCTL) {
         if (a==TERM_ISATTY) return 1;
@@ -101,7 +108,7 @@ static void run(const char *bytes,bool success,bool destructive) {
     assert(restores==1 && (current.input_flags&TERM_ISIG) && output_mode==TERM_MIRROR);
     assert(strstr(output,"FortressOS installer - Step 1 of 5"));
     if (deployments) {assert(strstr(output,"FortressOS installer - Step 5 of 5\nInstalling FortressOS"));assert(strstr(output,"FortressOS installer - Step 5 of 5\nInstallation result"));}
-    assert(strstr(output,"384 MiB NVMe"));assert(!strstr(output,"SECRET-SERIAL") && !strstr(output,"Serial:"));
+    assert(strstr(output,"384 MiB disk"));assert(!strstr(output,"SECRET-SERIAL") && !strstr(output,"Serial:"));
     if (deployments) {
         const char *host=strstr(output,"Computer name [");
         const char *user=strstr(output,"Choose username: ");
@@ -156,7 +163,7 @@ int main(void) {
     run("1\nfabio\neight888\neight888\nindependent-recovery\nindependent-recovery\nYES\nNO\n",false,false);
     disk_count=2;expected_index=1;
     run("0\n3\n2\nfabio\neight888\neight888\nindependent-recovery\nindependent-recovery\nYES\n1\n\nYES\n2\n",true,true);
-    assert(strstr(output,"1. First NVMe - 384 MiB NVMe") && strstr(output,"2. Second NVMe - 384 MiB NVMe") && strstr(output,"Disk 2: Second NVMe"));
+    assert(strstr(output,"1. First NVMe - 384 MiB disk") && strstr(output,"2. Second NVMe - 384 MiB disk") && strstr(output,"Disk 2: Second NVMe"));
     run("2\nfabio\neight888\neight888\nindependent-recovery\nindependent-recovery\nNO\nSHOW\n\nSHOW\n\nYES\n2\n",true,true);
     assert(reveals==2 && strstr(output,"Type YES when it is stored"));
     run("2\nfabio\neight888\neight888\nindependent-recovery\nindependent-recovery\nSHOW\n\033",false,false);
@@ -215,5 +222,16 @@ int main(void) {
     output_size=0;failure_reason(SYSCALL_EIO,6);assert(strstr(output,"could not be verified"));
     output_size=0;failure_reason(SYSCALL_EAGAIN,1);assert(strstr(output,"identity may have changed"));
     output_size=0;failure_reason(-999,99);assert(strstr(output,"report the details"));
-    puts("PASS actual installer CLI: visible choices/masked secrets, 8-character password, chosen username, retained-step retries, cancellation before writes, wiped request, terminal restoration and lease cleanup");
+    output_size=0;output_mode=TERM_MIRROR;
+    diagnostic_source="<6>[WLAN] private network detail\n<6>[AHCI] Port initialization rejected: 0 SSTS=0\n<6>[STORAGE] Discovery rejected: AHCI inventory failed\n<6>[INSTALL] Startup rejected: disk inventory unavailable\n";
+    startup_diagnostics();
+    assert(strstr(output,"[AHCI] Port initialization rejected"));
+    assert(strstr(output,"[STORAGE] Discovery rejected"));
+    assert(strstr(output,"[INSTALL] Startup rejected"));
+    assert(!strstr(output,"private network detail"));
+    diagnostic_source="[INSTALL] first\n[INSTALL] second\n[INSTALL] third\n[INSTALL] fourth\n[INSTALL] fifth\n[INSTALL] sixth\n[INSTALL] seventh";
+    output_size=0;startup_diagnostics();
+    assert(!strstr(output,"[INSTALL] first") && strstr(output,"[INSTALL] seventh"));
+    diagnostic_source=NULL;output_size=0;startup_diagnostics();assert(!output_size);
+    puts("PASS actual installer CLI: visible choices/masked secrets, bounded shell-free startup diagnostics, retained-step retries, cancellation before writes, wiped request, terminal restoration and lease cleanup");
 }
