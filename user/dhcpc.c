@@ -1233,6 +1233,9 @@ static int dhcpc_daemon_main(void) {
 
         if (g_renew_requested) {
             g_renew_requested = 0;
+            for (size_t i = 0; i < sizeof(ifget); i++) ((uint8_t *)&ifget)[i] = 0;
+            ifget.struct_version = 1;
+            sys_call(SYS_NETCTL, NETCTL_IFGET, (uintptr_t)&ifget, sizeof(ifget), 0, 0, 0);
             if (read_file("/run/dhcpc.lease", lease_buf, sizeof(lease_buf)) > 0) {
                 if (extract_val_ip(lease_buf, "IP", &current_offer.yiaddr) &&
                     extract_val_ip(lease_buf, "SERVER", &current_offer.server_ip)) {
@@ -1362,11 +1365,15 @@ static int dhcpc_daemon_main(void) {
                                   s_bound_mac[4] == ifget.mac[4] &&
                                   s_bound_mac[5] == ifget.mac[5]);
                 if (!mac_match) {
-                    flush_interface();
-                    delete_file("/run/dhcpc.lease");
-                    delete_file("/run/wifi-static.configured");
-                    state = STATE_INIT;
-                    break;
+                    if (ifget.local_ipv4 != 0) {
+                        for (int m = 0; m < 6; m++) s_bound_mac[m] = ifget.mac[m];
+                    } else {
+                        flush_interface();
+                        delete_file("/run/dhcpc.lease");
+                        delete_file("/run/wifi-static.configured");
+                        state = STATE_INIT;
+                        break;
+                    }
                 }
 
                 uint64_t now = get_monotonic_sec();
@@ -1395,10 +1402,15 @@ static int dhcpc_daemon_main(void) {
                                       s_bound_mac[4] == ifget.mac[4] &&
                                       s_bound_mac[5] == ifget.mac[5]);
                     if (!mac_match) {
-                        flush_interface();
-                        delete_file("/run/dhcpc.lease");
-                        delete_file("/run/wifi-static.configured");
-                        state = STATE_INIT;
+                        if (ifget.local_ipv4 != 0) {
+                            for (int m = 0; m < 6; m++) s_bound_mac[m] = ifget.mac[m];
+                            state = STATE_BOUND;
+                        } else {
+                            flush_interface();
+                            delete_file("/run/dhcpc.lease");
+                            delete_file("/run/wifi-static.configured");
+                            state = STATE_INIT;
+                        }
                     } else if (current_offer.yiaddr && current_offer.server_ip) {
                         state = STATE_INIT_REBOOT;
                     } else {

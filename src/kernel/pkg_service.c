@@ -11,7 +11,7 @@
 #include "serial.h"
 
 static void srv_log(const char *msg) {
-    serial_puts(msg);
+    (void)msg;
 }
 static const pkg_kernel_backend *binding;
 static unsigned source_busy;

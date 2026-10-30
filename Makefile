@@ -1587,7 +1587,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@printf "Enabled yes\nPort 22\nListenAddress 0.0.0.0\nPermitRootLogin no\nPasswordAuthentication yes\nPubkeyAuthentication yes\nMaxSessions 2\nMaxAuthTries 5\nLoginGraceTime 60\n" > $(BUILD_DIR)/initramfs/etc/ssh/sshd_config
 	@mkdir -p $(BUILD_DIR)/initramfs/etc/watchtower
 	@printf "Exec=/bin/boot-snapshot\nOrder=01\nType=simple\nRestart=no\n" > $(BUILD_DIR)/initramfs/etc/watchtower/boot-log.service
-	@printf "Exec=/bin/wifi auto\nOrder=08\nEnabled=yes\nType=simple\nRestart=no\nTimeoutStop=10\n" > $(BUILD_DIR)/initramfs/etc/watchtower/wifi.service
+	@printf "Exec=/bin/wifi auto\nOrder=08\nEnabled=yes\nType=simple\nRestart=on-failure\nRestartLimit=5\nRestartDelay=3\nTimeoutStop=10\n" > $(BUILD_DIR)/initramfs/etc/watchtower/wifi.service
 	@printf "Exec=/sbin/dhcpc -f\nOrder=10\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=5\n" > $(BUILD_DIR)/initramfs/etc/watchtower/dhcpc.service
 	@printf "Exec=/sbin/sshd -D\nOrder=20\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=10\n" > $(BUILD_DIR)/initramfs/etc/watchtower/sshd.service
 	@printf "Exec=/sbin/crond -f\nOrder=30\nType=simple\nRestart=on-failure\nTimeoutStop=2\n" > $(BUILD_DIR)/initramfs/etc/watchtower/crond.service

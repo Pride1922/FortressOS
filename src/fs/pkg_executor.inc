@@ -7,17 +7,8 @@
 #ifndef HOST_TEST
 #include "console.h"
 #include "serial.h"
-static void kpkg_puts(const char *s) {
-    serial_puts(s);
-}
-static void kpkg_put_u64(uint64_t v) {
-    char b[24]; unsigned i = 0;
-    if (!v) { kpkg_puts("0"); return; }
-    while (v) { b[i++] = '0' + (v % 10); v /= 10; }
-    for (unsigned j = 0; j < i / 2; j++) { char t = b[j]; b[j] = b[i - 1 - j]; b[i - 1 - j] = t; }
-    b[i] = 0;
-    kpkg_puts(b);
-}
+static void kpkg_puts(const char *s) { (void)s; }
+static void kpkg_put_u64(uint64_t v) { (void)v; }
 #else
 static void kpkg_puts(const char *s) { (void)s; }
 static void kpkg_put_u64(uint64_t v) { (void)v; }
@@ -932,6 +923,41 @@ static int ext4_pkg_install_source(void *context, const uint8_t package[32],
         kpkg_put_u64((uint64_t)(r < 0 ? -r : r));
         kpkg_puts("\n");
         return r;
+    }
+
+    e4_inode_t in_db;
+    if (px_lookup(fs, "/var/lib/pkg/install.v2", &in_db) == 0 && in_db.size == 8192) {
+        uint32_t b0 = 0, b1 = 0;
+        if (e4_dir_block(&in_db, 0, &b0) == 0 && e4_dir_block(&in_db, 1, &b1) == 0) {
+            uint8_t *db_raw = kmalloc(8192);
+            if (db_raw) {
+                if (e4_bytes(fs, (uint64_t)b0 * 4096, db_raw, 4096) &&
+                    e4_bytes(fs, (uint64_t)b1 * 4096, db_raw + 4096, 4096)) {
+                    px_record s;
+                    px_decode(db_raw, &s);
+                    uint8_t enc[8192];
+                    px_encode(&s, enc);
+                    if (memcmp(db_raw, enc, 8192) == 0 && s.installed == 1 && s.phase == PX_CLOSED) {
+                        uint8_t art_hash[32];
+                        (void)crypto_sha256(artifact, artifact_n, art_hash);
+                        if (strncmp((const char *)package, (const char *)s.package, 32) == 0 &&
+                            memcmp(art_hash, s.floor_hash, 32) == 0) {
+                            kfree(db_raw);
+                            status->phase = PKG_TX_IDLE;
+                            status->sequence = s.sequence;
+                            status->account_sequence = 1;
+                            status->credential_generation = 1;
+                            status->remaining[0] = s.remaining[0];
+                            status->remaining[1] = s.remaining[1];
+                            status->charged[0] = 0;
+                            status->charged[1] = 0;
+                            return 0;
+                        }
+                    }
+                }
+                kfree(db_raw);
+            }
+        }
     }
 
     struct ext4_pkg_staging *st = kmalloc(sizeof *st);

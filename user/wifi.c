@@ -522,6 +522,7 @@ static bool save_all_networks(void) {
     (void)WIFI_SYSCALL(SYS_FCHMOD, fd, 0600, 0);
     long wr = WIFI_SYSCALL(SYS_WRITE, fd, content, pos);
     WIFI_SYSCALL(SYS_CLOSE, fd, 0, 0);
+    (void)WIFI_SYSCALL(SYS_SYNC, 0, 0, 0);
     return wr > 0;
 }
 
@@ -1011,8 +1012,8 @@ static int do_auto(void) {
     s_scan_res.max_entries = 0;
     (void)WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &s_scan_res, sizeof(s_scan_res));
 
-    /* 2. Dwell while hardware sweeps across channels (1.2s) */
-    timespec_t ts = { .tv_sec = 1, .tv_nsec = 200000000 }; /* 1.2s */
+    /* 2. Dwell while hardware sweeps across channels (1.5s) */
+    timespec_t ts = { .tv_sec = 1, .tv_nsec = 500000000 }; /* 1.5s */
     WIFI_SYSCALL(SYS_NANOSLEEP, &ts, 0, 0);
 
     /* 3. Query scan results from kernel cache */
@@ -1022,7 +1023,7 @@ static int do_auto(void) {
 
     if (rc != 0 || s_scan_res.count == 0) {
         /* Extra dwell in case cold hardware was slow to populate */
-        timespec_t ts_retry = { .tv_sec = 0, .tv_nsec = 600000000 }; /* 600ms */
+        timespec_t ts_retry = { .tv_sec = 1, .tv_nsec = 0 }; /* 1.0s */
         WIFI_SYSCALL(SYS_NANOSLEEP, &ts_retry, 0, 0);
         rc = WIFI_SYSCALL(SYS_WIFI, WIFI_CMD_SCAN, &s_scan_res, sizeof(s_scan_res));
     }
