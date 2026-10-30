@@ -34,10 +34,68 @@ publication tree. The tool never generates a key. Selecting production keys,
 thresholds, platform identity and trust provisioning requires a separate explicit
 operational action; no such action has been performed here.
 
-Build the unsigned desktop using the existing `build_desktop_package.py` with
-the approved platform ID, compatible base range and strictly increasing build.
-Keep `/bin/compositor` in the base and exclude mutable settings from the payload.
-Catalog publication example (replace every placeholder with release policy):
+## Build and inspect a standalone tool
+
+Run these commands from the FortressOS checkout on Ubuntu 24.04 (Python 3.11+
+with `python3-cryptography`, GCC/binutils and NASM installed). This example builds
+an actual freestanding stream filter, `rot13`, rather than a synthetic ELF.
+Release 1.0 rotates ASCII letters from stdin to stdout; release 1.1 adds `--help`.
+Both support `--version`. The example is separate from normal initramfs contents.
+
+```bash
+sh examples/pkg/rot13/build.sh
+# Set these to approved release compatibility values, not device identities.
+export PLATFORM_ID=APPROVED_64_HEX_PLATFORM_ID
+export BASE_MIN=1 BASE_MAX=1
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+root = Path.cwd()
+for release in (1, 2):
+    source = root / f"examples/pkg/rot13/v{release}.json"
+    spec = json.loads(source.read_text())
+    spec.update(platform_id=os.environ["PLATFORM_ID"],
+                base_min=int(os.environ["BASE_MIN"]), base_max=int(os.environ["BASE_MAX"]))
+    spec["executable"] = str(root / f"build/pkg-rot13/rot13-v{release}.elf")
+    spec["files"][0]["source"] = str(root / "examples/pkg/rot13/README.txt")
+    (root / f"build/pkg-rot13/release-{release}.json").write_text(json.dumps(spec))
+PY
+python3 scripts/pkg_build.py build build/pkg-rot13/release-1.json --out build/pkg-rot13/release-1.fpk
+python3 scripts/pkg_build.py inspect build/pkg-rot13/release-1.fpk
+python3 scripts/pkg_build.py build build/pkg-rot13/release-2.json --out build/pkg-rot13/release-2.fpk
+python3 scripts/pkg_build.py inspect build/pkg-rot13/release-2.fpk
+```
+
+The checked-in `v1.json`/`v2.json` use an explicitly illustrative `42` repeated
+platform ID and base range 1..1 for host verification. Use the approved values for
+a real release. Build counters must increase for every changed artifact, including
+metadata changes; the retained publisher refuses rollback and equal-build changes.
+An identical artifact/build can be republished in a newer catalog.
+
+The JSON schema has required `name`, `command`, `version`, `build`, `platform_id`,
+`base_min`, `base_max`, `executable`, plus optional `description` and `files`.
+Each file is exactly `{"source": "relative/local/file", "path": "doc/name"}`.
+Local paths resolve relative to the JSON, regardless of the working directory.
+Absolute source paths also work. Unknown/duplicate fields are rejected.
+FPK v1 permits one static ELF64 x86_64 executable at `bin/<command>` (0755,
+maximum 4 MiB), and at most 15 nonempty data/documentation files under `doc/`
+(0644). It does not support arbitrary install paths or multiple executables.
+Links (including hard links), special files and set-ID source files are rejected.
+Payloads use deterministic gzip/USTAR, bounded manifest/archive sizes and hashes.
+Build and inspect compile a temporary host adapter around the existing C validators
+for complete manifest, payload and ELF validation. Inspection prints identity,
+version, build, file count and artifact SHA-256; it does not establish catalog trust.
+Output creation refuses an existing file. Keep each release's JSON and artifacts.
+
+The existing `build_desktop_package.py` CLI and Python `build()` API remain wrappers
+around the same encoder, with the original desktop file set and metadata.
+
+## Sign and retain the existing offer
+
+Use the retained local publication tree as the source of truth. If it lives on
+another machine, securely copy its current catalog and objects to the signing
+host before publishing. Replace the placeholders below with approved release
+policy and existing external seeds; these commands never create keys.
 
 ```bash
 issued=$(date -u +%s)
@@ -49,16 +107,26 @@ python3 scripts/pkg_repository.py \
   --issued "$issued" --expires "$expires" \
   --key /protected/catalog-signer-a.seed \
   --key /protected/catalog-signer-b.seed \
-  --artifact /release/fortress-desktop.fpk \
+  --retain-existing \
+  --artifact build/pkg-rot13/release-1.fpk \
   --output /release/public
 ```
 
-Include every currently offered package with another `--artifact`. Names are
-unique and sorted canonically. Revisions are nonzero uint64 values; an existing
-publication rejects lower revisions and different bytes at the same revision.
-Identical publication is idempotent. Changing repository/root identity in place
-is refused: online root/key rotation is not implemented. Ensure the signatures
-meet the independently selected threshold and include no unauthorized signer.
+For release 1.1 repeat with a higher catalog revision, a fresh validity interval
+and `--artifact build/pkg-rot13/release-2.fpk`. Keep `--retain-existing`: it verifies
+the previous catalog signatures against the supplied signing keys, verifies the
+retained objects' hashes/identities, replaces the named package, and keeps all
+other offers. All prior signers must still be supplied; key rotation is outside
+this workflow. Expiry does not prevent a publisher from refreshing its own old
+offer. A concurrent change to the catalog causes refusal under the writer lock;
+retry against the latest publication. Do not run concurrent deployment pipelines.
+
+Without `--retain-existing`, the original explicit full-catalog mode remains:
+include every offered package with another `--artifact`, or omitted offers will
+be dropped. Names are unique and sorted canonically. Revisions are nonzero uint64
+values; publication refuses lower revisions or differing bytes at the same
+revision. Identical publication is idempotent. Repository/root identity changes
+in place are refused. Ensure signatures meet the target's configured policy.
 
 Objects are flushed before atomic catalog activation. On the HTTP host, copy
 new objects first, then copy the catalog to a temporary file on that same
@@ -72,6 +140,25 @@ confirming no publisher is running, inspect these files against the retained
 release inputs before explicit cleanup/retry. The tool refuses differing existing
 objects rather than overwriting evidence. This is fail-closed publication, not
 automatic cleanup of an uncertain prior run.
+
+For the existing Ubuntu document root, deploy only after local publication
+finishes successfully (on that host, with the required filesystem permissions):
+
+```bash
+sudo mkdir -p /srv/fortress-repository/objects/sha256
+sudo rsync -a /release/public/objects/sha256/ /srv/fortress-repository/objects/sha256/
+sudo sync -f /srv/fortress-repository
+sudo install -m 0644 /release/public/catalog.v1 /srv/fortress-repository/.catalog.v1.deploy
+sudo sync -f /srv/fortress-repository
+sudo mv -T /srv/fortress-repository/.catalog.v1.deploy /srv/fortress-repository/catalog.v1
+sudo sync -f /srv/fortress-repository
+```
+
+Do not use `rsync --delete`. Keep keys outside both `/release/public` and the
+HTTP root. These are deployment instructions, not evidence of server changes.
+Stage 1 produces validated runnable ELF packages; installation, launch on
+FortressOS, and Dell acceptance belong to Stage 2. After that stage, the filter
+can be exercised with `echo Hello | rot13` (expected `Uryyb`).
 
 ## HTTP host
 

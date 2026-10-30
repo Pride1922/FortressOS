@@ -4,57 +4,26 @@ This is artifact production, never enrollment, catalog signing or authorization.
 Platform identity/base range/build sequence must come from release policy.
 """
 import argparse
-import gzip
 import hashlib
 import json
 from pathlib import Path
-import struct
-import tarfile
 import tomllib
+from pkg_build import encode, regular, verify
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def span(text):
-    data = text.encode("ascii")
-    return struct.pack("<H", len(data)) + data
-
-
 def build(elf, platform, sequence, base_min, base_max, version):
-    if len(platform) != 32 or not any(platform):
-        raise ValueError("platform identity must be a nonzero 32-byte value")
-    if not (0 < sequence < 2**64 and 0 <= base_min <= base_max < 2**64):
-        raise ValueError("invalid build sequence/base range")
-    if not version or len(version) > 32 or any(ord(c) < 32 or ord(c) > 126 for c in version):
-        raise ValueError("invalid version")
-    executable = Path(elf).read_bytes()
-    if not 0 < len(executable) <= 4 * 1024 * 1024 or executable[:7] != b"\x7fELF\x02\x01\x01":
-        raise ValueError("expected a <=4 MiB freestanding x86_64 ELF")
-    members = sorted([
-        ("bin/desktop", 1, 0o755, executable),
-        ("doc/DejaVu-LICENSE.txt", 2, 0o644, (ROOT / "user/compositor/assets/DejaVu-LICENSE.txt").read_bytes()),
-        ("doc/desktop.conf.example", 2, 0o644, (ROOT / "assets/desktop.conf").read_bytes()),
-        ("doc/desktop.md", 2, 0o644, (ROOT / "docs/subsystems/desktop.md").read_bytes()),
-    ])
-    manifest = struct.pack("<4sHHQQQ32s", b"FMN1", 1, len(members), sequence, base_min, base_max, platform)
-    manifest += span("fortress-desktop") + span("desktop") + span(version)
-    manifest += span("FortressOS desktop and built-in settings apps; app API v1")
-    archive = bytearray()
-    for name, role, mode, data in members:
-        manifest += struct.pack("<BBHQ32s", role, 0, mode, len(data), hashlib.sha256(data).digest()) + span(name)
-        info = tarfile.TarInfo(name)
-        info.size, info.mode, info.uid, info.gid, info.mtime = len(data), mode, 0, 0, 0
-        info.uname = info.gname = ""
-        archive += info.tobuf(format=tarfile.USTAR_FORMAT) + data
-        archive += b"\0" * (-len(data) % 512)
-    archive += b"\0" * 1024  # Exactly two terminators; no tarfile record padding.
-    payload = gzip.compress(bytes(archive), mtime=0)
-    if len(manifest) > 16384 or len(archive) > 16 * 1024 * 1024 or len(payload) > 8 * 1024 * 1024:
-        raise ValueError("PKG-1 size ceiling exceeded")
-    header = struct.pack("<8sIIIIIIQQ32s32s16s", b"FORTFPK\0", 1, 128, 0, len(manifest), 0, 0,
-                         len(payload), len(archive), hashlib.sha256(manifest).digest(),
-                         hashlib.sha256(payload).digest(), bytes(16))
-    return header + manifest + payload
+    members = [
+        ("bin/desktop", 1, 0o755, regular(elf, 4 * 1024 * 1024)),
+        ("doc/DejaVu-LICENSE.txt", 2, 0o644, regular(ROOT / "user/compositor/assets/DejaVu-LICENSE.txt", 16*1024*1024)),
+        ("doc/desktop.conf.example", 2, 0o644, regular(ROOT / "assets/desktop.conf", 16*1024*1024)),
+        ("doc/desktop.md", 2, 0o644, regular(ROOT / "docs/subsystems/desktop.md", 16*1024*1024)),
+    ]
+    artifact = encode("fortress-desktop", "desktop", version, platform, sequence, base_min, base_max,
+                      members, "FortressOS desktop and built-in settings apps; app API v1")
+    verify(artifact)
+    return artifact
 
 
 def main():

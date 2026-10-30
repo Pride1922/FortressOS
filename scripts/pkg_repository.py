@@ -118,6 +118,61 @@ def catalog(repository, root_version, revision, issued, expires, artifacts, keys
     return body + b"".join(identity + signature for identity, signature in signatures), objects
 
 
+def retained_artifacts(output, replacements, keys, repository, root_version):
+    """Authenticate the prior offer and retain every other content-addressed object.
+
+    publish() rechecks the prior bytes under its writer lock to reject races.
+    """
+    current = Path(output) / "catalog.v1"
+    if not current.exists() and not current.is_symlink():
+        return replacements, None
+    old = regular(current, 256 * 1024)
+    if len(old) < 72:
+        raise ValueError("short previous catalog")
+    magic, identity, root, revision, issued, expires, count, signers, reserved = struct.unpack_from("<16s16sQQQQHHI", old)
+    body_size = 72 + count * 81
+    if (magic != b"FORT-PKG-CAT-v1\0" or identity != repository or root != root_version or
+            reserved or not revision or not MIN_TIME <= issued < expires <= MAX_TIME or
+            not 1 <= count <= 256 or not 1 <= signers <= 8 or len(old) != body_size + signers * 96):
+        raise ValueError("invalid previous catalog")
+    trusted = {sha(public(key)): key.public_key() for key in keys}
+    previous_signer = None
+    for offset in range(body_size, len(old), 96):
+        signer = old[offset:offset+32]
+        if signer not in trusted or (previous_signer is not None and signer <= previous_signer):
+            raise ValueError("untrusted/duplicate previous signer")
+        trusted[signer].verify(old[offset+32:offset+96], old[:body_size])
+        previous_signer = signer
+    updates = {}
+    for data in replacements:
+        name, build = artifact_identity(data)
+        if name in updates:
+            raise ValueError("duplicate replacement package")
+        updates[name] = (build, data)
+    retained, previous_name = [], None
+    for offset in range(72, body_size, 81):
+        entry = old[offset:offset+81]
+        length = entry[0]
+        name = entry[1:1+length]
+        build, size = struct.unpack_from("<QQ", entry, 33)
+        digest = entry[49:81]
+        if (not 1 <= length <= 32 or not NAME.fullmatch(name) or any(entry[1+length:33]) or
+                not build or not 128 <= size <= MAX_ARTIFACT or
+                (previous_name is not None and name <= previous_name)):
+            raise ValueError("invalid previous entry")
+        previous_name = name
+        if name in updates:
+            new_build, data = updates[name]
+            if new_build < build or (new_build == build and sha(data) != digest):
+                raise ValueError("package rollback or equal-build substitution")
+        else:
+            data = regular(Path(output) / "objects/sha256" / (digest.hex() + ".fpk"), MAX_ARTIFACT)
+            if len(data) != size or sha(data) != digest or artifact_identity(data) != (name, build):
+                raise ValueError("retained object integrity failure")
+            retained.append(data)
+    return replacements + retained, old
+
+
 def immutable(path, data):
     """Content-addressed objects cannot be replaced with different bytes."""
     try:
@@ -142,7 +197,7 @@ def directory_barrier(path):
         os.close(fd)
 
 
-def publish(output, wire, objects):
+def publish(output, wire, objects, expected_catalog=False):
     """Publish objects first; atomic catalog rename is the visibility point."""
     output = Path(output)
     if os.name != "posix":
@@ -159,6 +214,10 @@ def publish(output, wire, objects):
     try:
         revision = struct.unpack_from("<Q", wire, 40)[0]
         current = output / "catalog.v1"
+        if expected_catalog is not False:
+            observed = regular(current, 256 * 1024) if current.exists() or current.is_symlink() else None
+            if observed != expected_catalog:
+                raise ValueError("catalog changed during preparation; retry")
         if current.exists() or current.is_symlink():
             old = regular(current, 256 * 1024)
             if len(old) < 72 or old[:16] != b"FORT-PKG-CAT-v1\0" or old[16:40] != wire[16:40]:
@@ -188,12 +247,18 @@ def main():
     parser.add_argument("--key", action="append", required=True, type=Path)
     parser.add_argument("--artifact", action="append", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--retain-existing", action="store_true",
+                        help="authenticate and retain other currently offered packages")
     args = parser.parse_args()
     keys = signing_keys(args.key, args.output)
+    artifacts = [regular(path, MAX_ARTIFACT) for path in args.artifact]
+    expected = False
+    if args.retain_existing:
+        artifacts, expected = retained_artifacts(args.output, artifacts, keys, args.repository.bytes, args.root_version)
     wire, objects = catalog(args.repository.bytes, args.root_version, args.revision,
                             args.issued, args.expires,
-                            [regular(path, MAX_ARTIFACT) for path in args.artifact], keys)
-    publish(args.output, wire, objects)
+                            artifacts, keys)
+    publish(args.output, wire, objects, expected)
     print(json.dumps({"catalog_sha256": sha(wire).hex(), "revision": args.revision,
                       "objects": sorted(objects), "signers": [sha(public(k)).hex() for k in keys]}))
 

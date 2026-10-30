@@ -1,0 +1,16 @@
+{
+  "name": "rot13",
+  "command": "rot13",
+  "version": "1.0",
+  "build": 1,
+  "platform_id": "4242424242424242424242424242424242424242424242424242424242424242",
+  "base_min": 1,
+  "base_max": 1,
+  "executable": "../../../build/pkg-rot13/rot13-v1.elf",
+  "files": [
+    {
+      "source": "README.txt",
+      "path": "doc/README.txt"
+    }
+  ]
+}
