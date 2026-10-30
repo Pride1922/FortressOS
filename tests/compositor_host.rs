@@ -1691,3 +1691,46 @@ fn sudo_identity_is_parsed_strictly() {
         assert!(launch(bad).is_err(), "accepted {bad:?}");
     }
 }
+
+#[path = "../user/compositor/src/proto.rs"]
+mod proto;
+
+#[test]
+fn protocol_messages_round_trip_and_reject_bad_titles() {
+    let mut m = proto::Msg::new(proto::REQ_DAMAGE, 1, 2, 3, 4);
+    m.len = 5;
+    m.text[..5].copy_from_slice(b"Hello");
+    let bytes = m.to_bytes();
+    assert_eq!(bytes.len(), 64);
+    assert_eq!(&bytes[..4], &proto::REQ_DAMAGE.to_le_bytes());
+    assert_eq!(proto::Msg::from_bytes(&bytes), m);
+    assert_eq!(m.title(), Some("Hello"));
+    for (len, text) in [
+        (0, &b""[..]),
+        (41, &b"x"[..]),
+        (u32::MAX, &b"x"[..]),
+        (3, &b"a\x01b"[..]),
+        (2, &b"\xc3\xa9"[..]),
+    ] {
+        let mut bad = proto::Msg::default();
+        bad.len = len;
+        bad.text[..text.len()].copy_from_slice(text);
+        assert_eq!(bad.title(), None, "accepted len={len} {text:?}");
+    }
+}
+
+#[test]
+fn damage_from_apps_is_clipped_without_overflow() {
+    let d =
+        |x, y, w, h| proto::clip_damage(&proto::Msg::new(proto::REQ_DAMAGE, x, y, w, h), 400, 300);
+    assert_eq!(d(0, 0, 400, 300), Some((0, 0, 400, 300)));
+    assert_eq!(d(10, 20, 30, 40), Some((10, 20, 30, 40)));
+    assert_eq!(d(390, 290, 100, 100), Some((390, 290, 10, 10)));
+    assert_eq!(d(0, 0, u32::MAX, u32::MAX), Some((0, 0, 400, 300)));
+    assert_eq!(d(399, 299, u32::MAX, u32::MAX), Some((399, 299, 1, 1)));
+    assert_eq!(d(400, 0, 10, 10), None);
+    assert_eq!(d(0, 300, 10, 10), None);
+    assert_eq!(d(u32::MAX, u32::MAX, u32::MAX, u32::MAX), None);
+    assert_eq!(d(5, 5, 0, 10), None);
+    assert_eq!(d(5, 5, 10, 0), None);
+}

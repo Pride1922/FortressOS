@@ -410,6 +410,38 @@ pub fn setgroups(groups: &[u32]) -> isize {
     unsafe { syscall2(SYS_SETGROUPS, groups.len(), groups.as_ptr() as usize) }
 }
 
+pub const SYS_KILL: usize = 27;
+pub const SYS_SIGACTION: usize = 28;
+pub const SYS_SHM_CREATE: usize = 100;
+pub const SYS_SHM_MAP: usize = 101;
+pub const SYS_SHM_UNMAP: usize = 102;
+pub const SHM_MAP_READONLY: u32 = 1;
+pub const SIGKILL: usize = 9;
+pub const SIGPIPE: usize = 13;
+
+/// Ignore SIGPIPE: a pipe write to a dead peer (app or settings helper)
+/// must return EPIPE, not kill the compositor.
+pub fn ignore_sigpipe() -> isize {
+    let action: [u64; 4] = [1, 0, 0, 0]; // SIG_IGN, mask, flags, reserved
+    unsafe { syscall3(SYS_SIGACTION, SIGPIPE, action.as_ptr() as usize, 0) }
+}
+
+pub fn kill(pid: isize, signal: usize) -> isize {
+    unsafe { syscall2(SYS_KILL, pid as usize, signal) }
+}
+
+pub fn shm_create(bytes: usize, flags: i32) -> isize {
+    unsafe { syscall2(SYS_SHM_CREATE, bytes, flags as usize) }
+}
+
+pub fn shm_map(fd: i32, va: usize, flags: u32) -> isize {
+    unsafe { syscall3(SYS_SHM_MAP, fd as usize, va, flags as usize) }
+}
+
+pub fn shm_unmap(va: usize) -> isize {
+    unsafe { syscall1(SYS_SHM_UNMAP, va) }
+}
+
 pub fn capget() -> isize {
     unsafe { syscall0(SYS_CAPGET) }
 }

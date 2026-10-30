@@ -6,7 +6,9 @@ extern crate alloc;
 mod allocator;
 mod bench;
 mod panic;
+mod clients;
 mod perf;
+mod proto;
 mod privilege;
 #[allow(dead_code)]
 mod sys;
@@ -83,19 +85,34 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8, envp: *const *c
                     is_test = true;
                     continue;
                 }
+                if let Some(path) = arg.strip_prefix(b"--app=") {
+                    // What the `h` shortcut launches (an absolute path). Apps
+                    // run as the session user, who may run any binary anyway.
+                    if path.first() != Some(&b'/') || !clients::set_app_path(path) {
+                        sys::write(
+                            2,
+                            b"compositor: --app needs an absolute path under 128 bytes\n",
+                        );
+                        return 2;
+                    }
+                    continue;
+                }
                 if arg == b"--settings-broker" && argc == 2 {
                     return privilege::broker_main();
                 }
                 // Unknown options must not silently start the desktop.
                 sys::write(
                     2,
-                    b"usage: compositor [--perf] [--bench-drag] [--test] | --version\n",
+                    b"usage: compositor [--perf] [--bench-drag] [--test] [--app=PATH] | --version\n",
                 );
                 return 2;
             }
         }
     }
 
+    // Writes to a dead app or settings helper must fail with EPIPE instead
+    // of killing the whole desktop.
+    sys::ignore_sigpipe();
     let launch = match privilege::launch_from_env(envp) {
         Ok(launch) => launch,
         Err(why) => {
@@ -398,6 +415,7 @@ fn event_loop(
     let mut term: Option<Terminal> = None;
     let mut notepad: Option<Notepad> = None;
     let mut files: Option<FileManager> = None;
+    let mut clients = clients::Clients::default();
     let mut fds = [
         sys::PollFd {
             fd: fd as i32,
@@ -414,7 +432,13 @@ fn event_loop(
             events: sys::POLLIN,
             revents: 0,
         },
+        // Request pipes of out-of-process apps (clients.rs).
+        sys::PollFd::default(),
+        sys::PollFd::default(),
+        sys::PollFd::default(),
+        sys::PollFd::default(),
     ];
+    const _: () = assert!(clients::MAX_CLIENTS == 4);
     let mut pending_packet: Option<[u8; 4]> = None;
     let mut frame_count: u32 = 0;
     let mut last_info_sec = -1;
@@ -432,6 +456,9 @@ fn event_loop(
             had_mouse = true;
         } else {
             fds[2].fd = term.as_ref().map(|t| t.master_fd).unwrap_or(-1);
+            let mut app_fds = [sys::PollFd::default(); clients::MAX_CLIENTS];
+            clients.poll_set(&mut app_fds);
+            fds[3..].copy_from_slice(&app_fds);
             let ready = sys::poll(&mut fds, if is_test { -1 } else { 1000 });
             t_wake = perf::now_ns();
             if ready == sys::EINTR {
@@ -453,6 +480,10 @@ fn event_loop(
                 }
             }
 
+            for slot in 0..clients::MAX_CLIENTS {
+                clients.ready(slot, fds[3 + slot].revents, windows, scene);
+            }
+
             // Keyboard input from stdin (/dev/tty)
             if fds[1].revents & sys::POLLIN != 0 {
                 let mut kbuf = [0u8; 16];
@@ -465,6 +496,11 @@ fn event_loop(
                 }
                 if kn > 0 {
                     for &b in &kbuf[..kn as usize] {
+                        if let Some(id) = windows.focused_window_id() {
+                            if clients.key(id, b, windows, scene) {
+                                continue;
+                            }
+                        }
                         if !is_test {
                             if let Some(id) =
                                 windows.focused_window_id().filter(|id| ui::registered(*id))
@@ -483,6 +519,20 @@ fn event_loop(
                                 };
                                 if let Some(id) = app {
                                     desktop.open(id, windows, scene);
+                                    continue;
+                                }
+                                if b == b'h' || b == b'H' {
+                                    match clients.launch(clients::app_path(), scene) {
+                                        Ok(pid) => {
+                                            privilege::report(1, "[OK]", "App started", Some(pid))
+                                        }
+                                        Err(e) => privilege::report(
+                                            2,
+                                            "[WARN]",
+                                            "App launch failed",
+                                            Some(e),
+                                        ),
+                                    }
                                     continue;
                                 }
                             }
@@ -564,6 +614,10 @@ fn event_loop(
                         desktop.render(id, windows, scene);
                         true
                     }
+                    window::Action::WindowResized(id) if clients.owns(id) => {
+                        clients.resized(id, windows, scene);
+                        true
+                    }
                     _ => false,
                 }
             } else {
@@ -588,6 +642,7 @@ fn event_loop(
         }
 
         // Cleanup windows closed via [X] button
+        clients.maintain(windows, scene);
         if let Some(ref t) = term {
             if !windows.windows.iter().any(|w| w.id == t.window_id) {
                 sys::close(t.master_fd);
@@ -689,6 +744,7 @@ fn event_loop(
         // presentation adds timer-granularity latency to the next mouse packet
         // and cannot synchronize scanout without a vblank API.
     };
+    clients.shutdown(windows, scene);
     if let Some(t) = term {
         sys::close(t.master_fd);
     }
