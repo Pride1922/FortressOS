@@ -24,7 +24,7 @@ static bool block_unmap;
 static pthread_barrier_t unmap_entered, unmap_continue;
 void console_graphics_mode(bool owned) { assert(!held); graphics=owned; if (!owned) restorations++; }
 void serial_raw_puts(const char *s) { assert(!held); assert(strstr(s,"Display owner exited")); }
-int vmm_map_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
+int vmm_map_framebuffer_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
     assert(!held && root && va%4096==0 && pa==0x10000000 && bytes==1280*800*4);
     maps++; return map_error;
 }

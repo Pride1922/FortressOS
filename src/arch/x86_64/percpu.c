@@ -3,7 +3,6 @@
 #include "serial.h"
 cpu_local_t cpu_locals[MAX_DETECTED_CPUS];
 volatile bool g_cpu_installed[MAX_DETECTED_CPUS];
-bool g_pat_wc;
 
 /* Limine's documented PAT layout (PA0 WB, PA1 WT, PA2 UC-, PA3 UC, PA4 WP,
  * PA5 WC) with PA1 changed from WT to WC and PA6/PA7 pinned to UC-/UC.

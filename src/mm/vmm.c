@@ -1090,6 +1090,8 @@ cleanup:
 int vmm_map_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
     return map_user_span(root,va,pa,bytes,true,PTE_PCD);
 }
+/* Owned here so vmm.c links on its own (host tests); cpu_install() sets it. */
+bool g_pat_wc;
 uint64_t vmm_framebuffer_cache_bits(void) {
     return g_pat_wc ? PTE_PWT : PTE_PCD;
 }

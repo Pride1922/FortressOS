@@ -38,8 +38,9 @@ _Static_assert(__builtin_offsetof(cpu_local_t, irq_depth) == 48, "GS IRQ depth A
 _Static_assert(__builtin_offsetof(cpu_local_t, rsp0) == 16, "GS RSP0 ABI");
 extern cpu_local_t cpu_locals[MAX_DETECTED_CPUS];
 extern volatile bool g_cpu_installed[MAX_DETECTED_CPUS];
-/* Set by the BSP in cpu_install() before vmm_init(): PTE_PWT alone selects
- * write-combining (PAT entry 1). False on a CPU without PAT. */
+/* Defined in vmm.c (framebuffer cache policy); set by the BSP in
+ * cpu_install() before vmm_init(): PTE_PWT alone selects write-combining
+ * (PAT entry 1). False on a CPU without PAT. */
 extern bool g_pat_wc;
 static inline cpu_local_t *cpu_current(void) {
     if (!g_cpu_installed[0]) {
