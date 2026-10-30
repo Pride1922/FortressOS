@@ -57,6 +57,7 @@ static uint8_t  s_fixed_lit_len[288];
 static uint8_t  s_fixed_dist_code[32];
 static bool     s_fixed_ready = false;
 
+#ifndef FORTRESS_KERNEL_BUILD
 /* Compressor State */
 static uint8_t  s_comp_buf[COMP_WINDOW_SIZE];
 static uint16_t s_comp_head[COMP_HASH_SIZE];
@@ -65,6 +66,7 @@ static uint8_t  s_comp_out_buf[GZIP_IO_BUF_SIZE];
 static size_t   s_comp_out_pos;
 static uint64_t s_comp_bit_buf;
 static unsigned s_comp_bits_in_buf;
+#endif
 
 /* Shared RFC 1951 Base Tables */
 static const uint16_t s_length_base[29] = {
@@ -627,6 +629,7 @@ int gzip_decode_callbacks(gzip_read_fn read, gzip_write_fn write, void *context)
     return result;
 }
 
+#ifndef FORTRESS_KERNEL_BUILD
 static void comp_bit_init(void) {
     s_comp_out_pos = 0;
     s_comp_bit_buf = 0;
@@ -1100,4 +1103,5 @@ int gzip_main_internal(int argc, char **argv, bool default_decompress) {
 int gzip_main(int argc, char **argv) {
     return gzip_main_internal(argc, argv, false);
 }
+#endif
 #endif

@@ -12,6 +12,8 @@ int pkg_mutation_cli(int argc,char **argv,const fpk_catalog_policy *policy,
     if(argc==2&&tool_equal(argv[1],"--help")&&backend&&backend->mutate){
         static const char help[]="pkg status\npkg recover\npkg install PACKAGE\npkg remove PACKAGE\n"
 #ifdef FORTRESS_PKG_FETCH
+            "pkg update\n"
+            "pkg get PACKAGE\n"
             "pkg fetch PACKAGE NEW-ABSOLUTE-DIRECTORY\n"
             "pkg install PACKAGE ABSOLUTE-STAGING-DIRECTORY\n"
 #endif

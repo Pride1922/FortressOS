@@ -212,6 +212,7 @@ bool installed_root_boot(const boot_info_t *info) {
     reason="root publication failed";
     if (ext4_publish_root(mount)) {accounts_abandon();(void)ext4_freeze_and_sync(mount);(void)ext4_discard_prepared_root(mount);return false;}
     published=true;
+    ext4_pkg_bind();
     serial_puts("[ROOT] Installed root admitted by PARTUUID; volatile namespaces attached\n");return true;
 }
 void installed_root_login_failed(void) {accounts_disable();reason="installed login failed; installed authentication disabled";}

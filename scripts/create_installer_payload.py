@@ -50,8 +50,10 @@ def main():
                     target.parent.mkdir(parents=True,exist_ok=True)
                     with target.open('xb') as f:shutil.copyfileobj(archive.extractfile(member),f)
                 metadata[name]=(member.mode,member.uid,member.gid)
-        for name in ('bin','etc','dev','run','tmp','mnt','home','var','var/log','root','home/operator'):
+        for name in ('bin','etc','dev','run','tmp','mnt','home','var','var/log','root','home/operator','usr','usr/bin','usr/share','usr/share/pkg'):
             (tree/name).mkdir(parents=True,exist_ok=True)
+            if name not in metadata:
+                metadata[name] = (0o755, 0, 0)
         (tree/'etc/passwd').write_text('root:x:0:0::/root:/bin/shell\noperator:x:1000:1000::/home/operator:/bin/shell\n')
         (tree/'etc/group').write_text('root:x:0:\noperator:x:1000:\nwheel:x:10:operator\n')
         (tree/'etc/shadow').write_text('root:!:::::::\noperator:!:::::::\n')
@@ -59,6 +61,14 @@ def main():
             (tree/'etc/crontab').write_text('# /etc/crontab - FortressOS crond configuration\n# <interval_minutes> <absolute_command_path> [args...]\n60 /sbin/logrotate --skip-if-locked /etc/logrotate.conf\n')
         metadata['etc/crontab'] = (0o644, 0, 0)
         (tree/'etc/watchtower').mkdir(parents=True, exist_ok=True)
+        (tree/'etc/pkg').mkdir(parents=True, exist_ok=True)
+        if not (tree/'etc/pkg/repository.conf').is_file():
+            (tree/'etc/pkg/repository.conf').write_text('version=1\nurl=https://fortress.ameyerocha.com\n')
+        if not (tree/'etc/pkg/trust.conf').is_file():
+            (tree/'etc/pkg/trust.conf').write_text('version=1\nrepository=00010203-0405-0607-0809-0a0b0c0d0e0f\nroot_version=1\nplatform=4242424242424242424242424242424242424242424242424242424242424242\nbase_version=1\npublic_key=03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\n')
+        metadata['etc/pkg'] = (0o755, 0, 0)
+        metadata['etc/pkg/repository.conf'] = (0o644, 0, 0)
+        metadata['etc/pkg/trust.conf'] = (0o644, 0, 0)
         default_services = {
             'boot-log.service': 'Exec=/bin/boot-snapshot\nOrder=01\nType=simple\nRestart=no\n',
             'wifi.service': 'Exec=/bin/wifi auto\nOrder=08\nEnabled=yes\nType=simple\nRestart=no\nTimeoutStop=10\n',

@@ -47,6 +47,30 @@ static bool staging(const char *directory){
     memcpy(catalog_path,directory,n);memcpy(catalog_path+n,"/catalog.v1",12);
     memcpy(artifact_path,directory,n);memcpy(artifact_path+n,"/artifact.fpk",14);return true;
 }
+static const char *pkg_cache_dir(char out[128]){
+    (void)tool_syscall(SYS_MKDIR,(uintptr_t)"/var",0755,0);
+    (void)tool_syscall(SYS_MKDIR,(uintptr_t)"/var/cache",0755,0);
+    (void)tool_syscall(SYS_MKDIR,(uintptr_t)"/var/cache/pkg",0755,0);
+    long fd=tool_syscall(SYS_OPEN,(uintptr_t)"/var/cache/pkg/.probe",VFS_O_WRONLY|VFS_O_CREAT|VFS_O_TRUNC,0644);
+    if(fd>=0){
+        tool_syscall(SYS_CLOSE,fd,0,0);
+        tool_syscall(SYS_UNLINK,(uintptr_t)"/var/cache/pkg/.probe",0,0);
+        memcpy(out,"/var/cache/pkg",15);return out;
+    }
+    (void)tool_syscall(SYS_MKDIR,(uintptr_t)"/tmp",0777,0);
+    (void)tool_syscall(SYS_MKDIR,(uintptr_t)"/tmp/pkg-cache",0700,0);
+    memcpy(out,"/tmp/pkg-cache",15);return out;
+}
+static int load_trust_and_repo(timespec_t *now){
+    size_t n=0;
+    if(read_file("/etc/pkg/repository.conf",config_wire,sizeof config_wire,true,&n)||pkg_repository_decode(config_wire,n,&repository))
+        return tool_error("pkg","invalid or missing repository configuration",NULL);
+    if(tool_syscall(SYS_CLOCK_GETTIME,CLOCK_REALTIME,(uintptr_t)now,0)||now->tv_sec<0||now->tv_nsec<0||now->tv_nsec>=1000000000LL)
+        return tool_error("pkg","valid UTC clock required",NULL);
+    if(read_file("/etc/pkg/trust.conf",trust_wire,sizeof trust_wire,true,&n)||pkg_repository_trust_decode(trust_wire,n,(uint64_t)now->tv_sec,&trust))
+        return tool_error("pkg","invalid or missing repository public-key configuration",NULL);
+    return 0;
+}
 int pkg_fetch_main(int argc,char **argv){
     tool_output_failed=false;
     size_t name_length=0;if(argc==4&&argv&&argv[2])while(name_length<33&&argv[2][name_length])name_length++;
@@ -74,4 +98,100 @@ int pkg_fetch_main(int argc,char **argv){
         return tool_error("pkg","artifact integrity/platform/base rejected; staging retained",NULL);
     static const char done[]="download verified; catalog and package retained in staging\n";
     return tool_write("pkg",done,sizeof done-1);
+}
+
+int pkg_update_main(int argc,char **argv){
+    (void)argc;(void)argv;
+    tool_output_failed=false;
+    timespec_t now={0};
+    int r=load_trust_and_repo(&now);if(r)return r;
+    char cdir[128];pkg_cache_dir(cdir);
+    char cat_tmp[192],cat_dst[192];
+    size_t clen=strlen(cdir);
+    memcpy(cat_tmp,cdir,clen);memcpy(cat_tmp+clen,"/catalog.v1.tmp",16);
+    memcpy(cat_dst,cdir,clen);memcpy(cat_dst+clen,"/catalog.v1",12);
+
+    if(pkg_repository_url(&repository,NULL,request_url)||download(request_url,cat_tmp))
+        return tool_error("pkg","catalog download failed",NULL);
+
+    size_t n=0;
+    if(read_file(cat_tmp,catalog_wire,sizeof catalog_wire,false,&n))
+        return tool_error("pkg","cannot read downloaded catalog",NULL);
+
+    fpk_catalog catalog;
+    if(fpk_catalog_verify(catalog_wire,n,&trust.catalog,&catalog))
+        return tool_error("pkg","catalog signature rejected",NULL);
+
+    long renamed=tool_syscall(SYS_RENAME_REPLACE,(uintptr_t)cat_tmp,(uintptr_t)cat_dst,0);
+    if(renamed<0){
+        (void)tool_syscall(SYS_UNLINK,(uintptr_t)cat_dst,0,0);
+        if(tool_syscall(SYS_RENAME,(uintptr_t)cat_tmp,(uintptr_t)cat_dst,0)<0)
+            return tool_error("pkg","cannot update catalog in cache",NULL);
+    }
+    static const char msg[]="catalog updated\n";
+    return tool_write("pkg",msg,sizeof msg-1);
+}
+
+int pkg_get_main(int argc,char **argv){
+    tool_output_failed=false;
+    if(argc<3||!argv[2])return tool_error("pkg","usage: pkg get PACKAGE",NULL);
+    size_t name_len=strlen(argv[2]);
+    if(!fpk_identity_valid((const uint8_t *)argv[2],name_len))
+        return tool_error("pkg","invalid package name",NULL);
+
+    timespec_t now={0};
+    int r=load_trust_and_repo(&now);if(r)return r;
+
+    char cdir[128];pkg_cache_dir(cdir);
+    char cat_path[192];size_t clen=strlen(cdir);
+    memcpy(cat_path,cdir,clen);memcpy(cat_path+clen,"/catalog.v1",12);
+
+    size_t n=0;
+    if(read_file(cat_path,catalog_wire,sizeof catalog_wire,false,&n)){
+        if(pkg_update_main(1,argv))return tool_error("pkg","cannot find or update catalog",NULL);
+        if(read_file(cat_path,catalog_wire,sizeof catalog_wire,false,&n))
+            return tool_error("pkg","cannot read catalog from cache",NULL);
+    }
+
+    fpk_catalog catalog;fpk_catalog_target target;
+    if(fpk_catalog_verify(catalog_wire,n,&trust.catalog,&catalog)||
+       fpk_catalog_find(&catalog,(const uint8_t *)argv[2],name_len,&target))
+        return tool_error("pkg","package not found in catalog or catalog signature invalid",argv[2]);
+
+    char art_tmp[192],art_dst[192];
+    memcpy(art_tmp,cdir,clen);art_tmp[clen]='/';
+    memcpy(art_tmp+clen+1,argv[2],name_len);
+    memcpy(art_tmp+clen+1+name_len,".fpk.tmp",9);
+
+    memcpy(art_dst,cdir,clen);art_dst[clen]='/';
+    memcpy(art_dst+clen+1,argv[2],name_len);
+    memcpy(art_dst+clen+1+name_len,".fpk",5);
+
+    if(pkg_repository_url(&repository,target.sha256,request_url)||download(request_url,art_tmp))
+        return tool_error("pkg","artifact download failed",NULL);
+
+    uint64_t size=0;
+    artifact_fd=opened(art_tmp,FPK_HEADER_SIZE+FPK_MANIFEST_MAX+FPK_COMPRESSED_MAX,false,&size);
+    if(artifact_fd<0)return tool_error("pkg","invalid downloaded artifact",NULL);
+    r=(size!=target.length)?-1:
+        fpk_verify_authorized(&verifier,catalog_wire,n,&trust.catalog,
+                              (const uint8_t *)argv[2],name_len,read_artifact,NULL);
+    (void)tool_syscall(SYS_CLOSE,artifact_fd,0,0);
+    artifact_fd=-1;
+
+    if(r||memcmp(verifier.manifest.platform_id,trust.platform,32)||
+       verifier.manifest.base_min>trust.base_version||verifier.manifest.base_max<trust.base_version){
+        (void)tool_syscall(SYS_UNLINK,(uintptr_t)art_tmp,0,0);
+        return tool_error("pkg","artifact integrity/platform/base rejected",NULL);
+    }
+
+    long renamed=tool_syscall(SYS_RENAME_REPLACE,(uintptr_t)art_tmp,(uintptr_t)art_dst,0);
+    if(renamed<0){
+        (void)tool_syscall(SYS_UNLINK,(uintptr_t)art_dst,0,0);
+        if(tool_syscall(SYS_RENAME,(uintptr_t)art_tmp,(uintptr_t)art_dst,0)<0)
+            return tool_error("pkg","cannot store artifact in cache",NULL);
+    }
+
+    static const char msg[]="download verified\n";
+    return tool_write("pkg",msg,sizeof msg-1);
 }

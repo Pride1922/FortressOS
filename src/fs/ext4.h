@@ -172,4 +172,6 @@ int ext4_journal_analyze(block_dev_t *partition,jbd2_plan_t **out,
 /* Passive, read-only query of mounted ext4 metrics (zero I/O, zero allocation). */
 bool ext4_get_mount_info(const void *vfs_node, mount_info_t *out);
 
+void ext4_pkg_bind(void);
+
 #endif

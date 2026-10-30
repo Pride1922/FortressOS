@@ -7,6 +7,12 @@
 #include "spinlock.h"
 #include "vfs.h"
 #include "heap.h"
+#include "console.h"
+#include "serial.h"
+
+static void srv_log(const char *msg) {
+    serial_puts(msg);
+}
 static const pkg_kernel_backend *binding;
 static unsigned source_busy;
 /* The opened object stays pinned; a private file position avoids changing the
@@ -90,6 +96,7 @@ int64_t pkg_service_control(uintptr_t input,uintptr_t output,uint64_t bytes) {
         if(!pw_enter(t->pkg_owner,q.session,&operation))return SYSCALL_EACCES;
         pkg_transaction_status s={0};
         if(ingest) {
+            srv_log("[PKG-SRV] starting ingest\n");
             /* One bounded memory credit, acquired only by an authorized retained
              * session. No spinlock across allocation, verification or storage. */
             unsigned expected=0;
@@ -102,11 +109,18 @@ int64_t pkg_service_control(uintptr_t input,uintptr_t output,uint64_t bytes) {
                 if(!cat_held||!art_held)r=-VFS_EBADF;
                 else if(!copy)r=-VFS_ENOMEM;
                 else {
+                    srv_log("[PKG-SRV] copying sources...\n");
                     r=source_copy(catalog,copy,source.catalog_bytes);
                     if(!r)r=source_copy(artifact,copy+source.catalog_bytes,source.artifact_bytes);
                     if(!r&&!pw_recovery_step(t->pkg_owner))r=-VFS_EACCES;
+                    srv_log("[PKG-SRV] invoking b->install_source...\n");
                     if(!r)r=b->install_source(b->transactions.context,q.package,copy,source.catalog_bytes,
                                             copy+source.catalog_bytes,source.artifact_bytes,&s);
+                    if(r) {
+                        srv_log("[PKG-SRV] install_source failed!\n");
+                    } else {
+                        srv_log("[PKG-SRV] install_source succeeded!\n");
+                    }
                     kfree(copy);
                 }
                 if(cat_held)vfs_close(catalog);

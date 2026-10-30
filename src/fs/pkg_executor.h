@@ -27,5 +27,6 @@ typedef struct {
     struct {uint32_t inode,generation;uint64_t size;} files[PX_SLOTS];
     struct {uint32_t inode,generation;} directories[PX_DIRS];
     uint8_t deleted[8];
+    uint8_t package[32],command[32],platform[32];
 } px_record;
 #endif

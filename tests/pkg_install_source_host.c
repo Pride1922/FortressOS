@@ -15,6 +15,9 @@ bool tool_equal(const char *a,const char *b){return !strcmp(a,b);}
 int tool_error(const char *a,const char *b,const char *c){(void)a;(void)b;(void)c;return 1;}
 int tool_write(const char *t,const void *p,size_t n){(void)t;(void)p;(void)n;return 0;}
 int pkg_fetch_main(int n,char **v){(void)n;(void)v;assert(0);return 1;}
+int pkg_update_main(int n,char **v){(void)n;(void)v;assert(0);return 1;}
+int pkg_get_main(int n,char **v){(void)n;(void)v;assert(0);return 1;}
+int pkg_cache_dir(char *b,size_t cap,const char *o){(void)b;(void)cap;(void)o;return -1;}
 int pkg_mutation_cli(int n,char **v,const fpk_catalog_policy *p,const pkg_mutation_backend *b){
     (void)n;(void)v;(void)p;(void)b;return 2;
 }

@@ -15,4 +15,6 @@ typedef struct {fpk_catalog_policy catalog;uint8_t platform[32];uint64_t base_ve
 int pkg_repository_trust_decode(const uint8_t *,size_t,uint64_t,pkg_repository_trust *);
 /* Creates a NEW caller-selected staging directory; never installs files. */
 int pkg_fetch_main(int,char **);
+int pkg_update_main(int,char **);
+int pkg_get_main(int,char **);
 #endif
