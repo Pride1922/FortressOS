@@ -102,6 +102,13 @@ int vmm_map_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t byte
 /* Like vmm_map_device_range, but write-combining when the PAT allows it.
  * Only for the linear framebuffer: WC reorders and merges stores. */
 int vmm_map_framebuffer_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes);
+/* Shared memory: maps `pages` borrowed frames (owned by the caller, never
+ * freed by this address space) at va as PTE_DEVICE write-back leaves,
+ * read-only unless writable. Unmap checks every leaf is exactly frames[i]
+ * and completes the TLB shootdown before returning. */
+int vmm_map_frames(uint64_t *root, uintptr_t va, const uintptr_t *frames, size_t pages,
+                   bool writable);
+int vmm_unmap_frames(uint64_t *root, uintptr_t va, const uintptr_t *frames, size_t pages);
 /* Cache bits for framebuffer leaves: PTE_PWT (PA1 = WC) or PTE_PCD (UC-). */
 uint64_t vmm_framebuffer_cache_bits(void);
 int vmm_unmap_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes);

@@ -9,6 +9,7 @@
 #include "thread.h"
 #include "heap.h"
 #include "fb.h"
+#include "shm.h"
 
 extern uint8_t __kernel_start[];
 extern uint8_t __text_start[];
@@ -479,6 +480,7 @@ static int vmm_teardown_pml4_tables_unlocked(uintptr_t pml4_phys, bool free_user
     /* No live CPU/op/scheduler refs remain; all device leaves are gone.
      * Complete owner recovery before root identity can be reused. No VMM lock. */
     fb_space_destroyed(pml4_phys);
+    shm_space_destroyed(pml4_phys);
 
     /* Free root Level 4 PML4 frame */
     pmm_free_page(pml4_phys);
@@ -1018,12 +1020,18 @@ static int user_span_empty(uint64_t *root, uintptr_t va, size_t pages) {
     return VMM_OK;
 }
 
-/* cache: PTE_PCD/PTE_PWT bits for device leaves (ignored for anonymous). */
+/* cache: PTE_PCD/PTE_PWT bits for device leaves (ignored for anonymous).
+ * given: borrowed frames for a device mapping (shared memory) instead of the
+ * contiguous range at pa; the caller keeps owning them. writable=false maps
+ * the leaves read-only. */
 static int map_user_span(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes, bool device,
-                         uint64_t cache) {
-    if (!root || !user_span(va,bytes) || (device &&
+                         uint64_t cache, const uintptr_t *given, bool writable) {
+    if (!root || !user_span(va,bytes) || (given && !device) || (device && !given &&
         (!pa || pa % PAGE_SIZE || pa > PTE_ADDR_MASK || bytes-1 > (PTE_ADDR_MASK|4095)-pa)))
         return VMM_ERR_INVALID_ADDR;
+    if (given) for (size_t i=0;i<bytes/PAGE_SIZE;i++)
+        if (!given[i] || given[i] % PAGE_SIZE || given[i] > PTE_ADDR_MASK)
+            return VMM_ERR_INVALID_ADDR;
     int res = vmm_space_get_op(root);
     if (res != VMM_OK) return res;
     size_t pages = bytes/PAGE_SIZE, allocated = 0, mapped = 0;
@@ -1066,8 +1074,9 @@ static int map_user_span(uint64_t *root, uintptr_t va, uintptr_t pa, size_t byte
         if (missing<0) res=missing;
         else if ((unsigned)missing>count) res=VMM_ERR_NOMEM;
         else res = vmm_map_page_unlocked(root,va+mapped*PAGE_SIZE,
-            device ? pa+mapped*PAGE_SIZE : frames[mapped],
-            PTE_PRESENT|PTE_USER|PTE_WRITABLE|PTE_NX|(device ? PTE_DEVICE|cache : 0),spares,&count);
+            given ? given[mapped] : device ? pa+mapped*PAGE_SIZE : frames[mapped],
+            PTE_PRESENT|PTE_USER|(writable ? PTE_WRITABLE : 0)|PTE_NX|
+            (device ? PTE_DEVICE|cache : 0),spares,&count);
         if (res != VMM_OK) break;
     }
     if (res != VMM_OK) for (size_t i=0;i<mapped;i++)
@@ -1088,7 +1097,31 @@ cleanup:
 }
 
 int vmm_map_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
-    return map_user_span(root,va,pa,bytes,true,PTE_PCD);
+    return map_user_span(root,va,pa,bytes,true,PTE_PCD,NULL,true);
+}
+int vmm_map_frames(uint64_t *root, uintptr_t va, const uintptr_t *frames, size_t pages,
+                   bool writable) {
+    if (!frames || !pages || pages > (32*1024*1024)/PAGE_SIZE) return VMM_ERR_INVALID_ADDR;
+    return map_user_span(root,va,0,pages*PAGE_SIZE,true,0,frames,writable);
+}
+int vmm_unmap_frames(uint64_t *root, uintptr_t va, const uintptr_t *frames, size_t pages) {
+    if (!root || !frames || !pages || !user_span(va,pages*PAGE_SIZE)) return VMM_ERR_INVALID_ADDR;
+    uint64_t irq=spin_lock_irqsave(&g_vmm_lock);
+    int res=vmm_space_get_op_locked(root);
+    if (res != VMM_OK) { spin_unlock_irqrestore(&g_vmm_lock,irq); return res; }
+    /* All or nothing: every leaf must be exactly this object's borrowed frame. */
+    for (size_t i=0;i<pages;i++) {
+        uint64_t leaf=walk_leaf(root,va+i*PAGE_SIZE,PTE_PRESENT);
+        if (!(leaf&PTE_DEVICE) || (leaf&PTE_ADDR_MASK) != frames[i]) { res=VMM_ERR_INVALID_ADDR; break; }
+    }
+    if (res == VMM_OK) for (size_t i=0;i<pages;i++) vmm_unmap_page_unlocked(root,va+i*PAGE_SIZE);
+    bool invalidate=needs_invalidation(root,va);
+    spin_unlock_irqrestore(&g_vmm_lock,irq);
+    /* The caller may free the frames once this returns: no CPU can still
+     * hold a translation to them. */
+    if (res == VMM_OK && invalidate) smp_tlb_shootdown(0,virt_to_phys(root));
+    vmm_space_put_op(root);
+    return res;
 }
 /* Owned here so vmm.c links on its own (host tests); cpu_install() sets it. */
 bool g_pat_wc;
@@ -1096,10 +1129,10 @@ uint64_t vmm_framebuffer_cache_bits(void) {
     return g_pat_wc ? PTE_PWT : PTE_PCD;
 }
 int vmm_map_framebuffer_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
-    return map_user_span(root,va,pa,bytes,true,vmm_framebuffer_cache_bits());
+    return map_user_span(root,va,pa,bytes,true,vmm_framebuffer_cache_bits(),NULL,true);
 }
 int vmm_map_anonymous_range(uint64_t *root, uintptr_t va, size_t bytes) {
-    return map_user_span(root,va,0,bytes,false,0);
+    return map_user_span(root,va,0,bytes,false,0,NULL,true);
 }
 int vmm_unmap_device_range(uint64_t *root, uintptr_t va, uintptr_t pa, size_t bytes) {
     if (!root || !user_span(va,bytes) || !pa || pa % PAGE_SIZE

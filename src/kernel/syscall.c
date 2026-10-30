@@ -1,6 +1,7 @@
 #include "poll.h"
 #include "boot_info.h"
 #include "fb.h"
+#include "shm.h"
 #include "pkg_service.h"
 #include "syscall.h"
 #include "permissions.h"
@@ -2271,6 +2272,17 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
         case SYS_MMAP:
             result=curr && curr->is_user ? sys_mmap(frame->rdi) : SYSCALL_EPERM;
+            break;
+        case SYS_SHM_CREATE:
+            result=frame->rsi > UINT32_MAX ? SYSCALL_EINVAL : shm_create(frame->rdi,(uint32_t)frame->rsi);
+            break;
+        case SYS_SHM_MAP:
+            if (frame->rdi >= MAX_PROCESS_FDS) result=SYSCALL_EBADF;
+            else if (frame->rdx > UINT32_MAX) result=SYSCALL_EINVAL;
+            else result=shm_map((int)frame->rdi,frame->rsi,(uint32_t)frame->rdx);
+            break;
+        case SYS_SHM_UNMAP:
+            result=shm_unmap(frame->rdi);
             break;
         case SYS_FBINFO:
             result = sys_fbinfo(frame->rdi, frame->rsi);

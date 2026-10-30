@@ -723,6 +723,7 @@ USER_DHCPC_ELF := $(BUILD_DIR)/dhcpc.elf
 USER_WATCHTOWER_ELF := $(BUILD_DIR)/watchtower.elf
 USER_HTTPD_ELF := $(BUILD_DIR)/httpd.elf
 USER_PTHREAD_TEST_ELF := $(BUILD_DIR)/pthread-test.elf
+USER_SHM_TEST_ELF := $(BUILD_DIR)/shm-test.elf
 USER_CRASH_TEST_ELF := $(BUILD_DIR)/crash-test.elf
 USER_TELNET_ELF := $(BUILD_DIR)/telnet.elf
 USER_SSH_ELF := $(BUILD_DIR)/ssh.elf
@@ -792,6 +793,15 @@ $(BUILD_DIR)/pthread_test.o: user/pthread_test.c user/pthread.h user/tools/commo
 $(USER_PTHREAD_TEST_ELF): $(BUILD_DIR)/pthread_test.o $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
 	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=pthread_test_main user/tools/start.asm -o $(BUILD_DIR)/pthread_test_start.o
 	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/pthread_test_start.o $(BUILD_DIR)/pthread_test.o $(BUILD_DIR)/tool-common.o -o $@
+	@strip --strip-debug $@
+
+$(BUILD_DIR)/shm_test.o: user/shm_test.c user/tools/common.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -I. -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -c $< -o $@
+
+$(USER_SHM_TEST_ELF): $(BUILD_DIR)/shm_test.o $(BUILD_DIR)/tool-common.o user/tools/start.asm user/shell.ld
+	@$(AS) $(ASFLAGS) -DTOOL_ENTRY=shm_test_main user/tools/start.asm -o $(BUILD_DIR)/shm_test_start.o
+	@$(LD) -nostdlib -static -z max-page-size=0x1000 -T user/shell.ld $(BUILD_DIR)/shm_test_start.o $(BUILD_DIR)/shm_test.o $(BUILD_DIR)/tool-common.o -o $@
 	@strip --strip-debug $@
 
 $(BUILD_DIR)/crash_test.o: user/crash_test.c user/tools/common.h src/include/syscall_abi.h src/include/signal_abi.h
@@ -1454,7 +1464,7 @@ $(USER_COMPOSITOR_ELF): $(USER_DIR)/compositor/assets/*.bin $(USER_DIR)/composit
 
 # Build USTAR Initramfs archive
 $(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt assets/desktop.conf
-$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_PTHREAD_TEST_ELF) $(USER_CRASH_TEST_ELF) $(USER_TELNET_ELF) $(USER_SSH_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
+$(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(USER_SHELL_ELF) $(USER_SH_BUILTIN_ELF) $(USER_PS_ELF) $(USER_SYSINFO_ELF) $(USER_DMESG_ELF) $(USER_BOOT_SNAPSHOT_ELF) $(USER_IFCONFIG_ELF) $(USER_IFUP_ELF) $(USER_WIFI_ELF) $(USER_TOP_ELF) $(USER_NANO_ELF) $(USER_PING_ELF) $(USER_PING_PROBE_ELF) $(USER_UDP_ELFS) $(USER_TCP_ELF) $(USER_TCP_SERVER_ELF) $(USER_NC_ELF) $(USER_NSLOOKUP_ELF) $(USER_DNSPROBE_ELF) $(USER_TCPDEADLINE_ELF) $(USER_WGET_ELF) $(USER_DOWNLOAD_ELF) $(STREAM_TOOL_ELFS) $(USER_DISK_ELF) $(CHECKSUM_ELFS) $(USER_TRACEROUTE_ELF) $(USER_TAR_ELF) $(USER_DHCP_PROBE_ELF) $(USER_DHCPC_ELF) $(USER_WATCHTOWER_ELF) $(USER_HTTPD_ELF) $(USER_PTHREAD_TEST_ELF) $(USER_SHM_TEST_ELF) $(USER_CRASH_TEST_ELF) $(USER_TELNET_ELF) $(USER_SSH_ELF) $(USER_SERVICE_ELF) $(USER_CROND_ELF) $(USER_LOGROTATE_ELF) $(BUILD_DIR)/ssh-keygen.elf $(BUILD_DIR)/sshd.elf $(BUILD_DIR)/ntpd.elf assets/tzdata2026c.tar.gz scripts/build_zoneinfo.py scripts/build_trust_anchors.py COMMANDS.md Makefile scripts/create_initramfs.py
 	@mkdir -p $(BUILD_DIR)/initramfs/bin $(BUILD_DIR)/initramfs/sbin $(BUILD_DIR)/initramfs/etc $(BUILD_DIR)/initramfs/docs $(BIN_DIR)
 	@cp -f $(USER_INIT_ELF) $(BUILD_DIR)/initramfs/bin/init
 	@cp -f $(USER_PKG_ELF) $(BUILD_DIR)/initramfs/bin/pkg
@@ -1499,6 +1509,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_WGET_ELF) $(BUILD_DIR)/initramfs/bin/wget
 	@cp -f $(USER_HTTPD_ELF) $(BUILD_DIR)/initramfs/bin/httpd
 	@cp -f $(USER_PTHREAD_TEST_ELF) $(BUILD_DIR)/initramfs/bin/pthread-test
+	@cp -f $(USER_SHM_TEST_ELF) $(BUILD_DIR)/initramfs/bin/shm-test
 	@cp -f $(USER_CRASH_TEST_ELF) $(BUILD_DIR)/initramfs/bin/crash-test
 	@cp -f $(USER_TELNET_ELF) $(BUILD_DIR)/initramfs/bin/telnet
 	@cp -f $(USER_SSH_ELF) $(BUILD_DIR)/initramfs/bin/ssh

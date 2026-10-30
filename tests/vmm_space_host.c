@@ -38,6 +38,7 @@ void vmm_host_unlock(spinlock_t *lock) {
 uintptr_t g_host_mock_cr3 = 0x1000;
 
 void fb_space_destroyed(uintptr_t cr3) { (void)cr3; }
+void shm_space_destroyed(uintptr_t cr3) { (void)cr3; }
 void serial_puts(const char *s) { (void)s; }
 void serial_print_hex(uint64_t v) { (void)v; }
 void serial_print_dec(uint64_t v) { (void)v; }
@@ -1130,6 +1131,80 @@ static void test_device_and_anonymous_transactions(void) {
     puts("[PASS] Borrowed VRAM never freed, collisions preserved, all OOM cuts reclaimed");
 }
 
+/* Leaf of va in a host page table (hhdm-mapped mock RAM). */
+static uint64_t host_leaf(uint64_t *pml4, uintptr_t va) {
+    uint64_t e = pml4[(va >> 39) & 511];
+    if (!(e & PTE_PRESENT)) return 0;
+    e = ((uint64_t *)vmm_phys_to_virt(e & PTE_ADDR_MASK))[(va >> 30) & 511];
+    if (!(e & PTE_PRESENT)) return 0;
+    e = ((uint64_t *)vmm_phys_to_virt(e & PTE_ADDR_MASK))[(va >> 21) & 511];
+    if (!(e & PTE_PRESENT)) return 0;
+    return ((uint64_t *)vmm_phys_to_virt(e & PTE_ADDR_MASK))[(va >> 12) & 511];
+}
+
+static void test_shared_frame_mappings(void) {
+    puts("[TEST] Shared-memory frames: borrowed leaves, read-only, exact unmap, teardown");
+    g_host_mock_cr3 = 0x1000;
+    size_t baseline = g_mock_allocated_count, heap = g_mock_heap_alloc_count;
+    uintptr_t frames[3], wrong[3];
+    for (unsigned i = 0; i < 3; i++) { frames[i] = pmm_alloc_page(); assert(frames[i]); }
+    for (unsigned i = 0; i < 3; i++) wrong[i] = frames[2 - i];
+
+    /* Invalid frame lists fail before allocating anything. */
+    uintptr_t bad[3] = {frames[0], 0, frames[2]};
+    uintptr_t cr3 = vmm_create_user_pml4();
+    vmm_space_t *space = vmm_space_lookup(cr3);
+    size_t before = g_mock_allocated_count;
+    assert(vmm_map_frames(space->pml4_virt, 0x1ff000, bad, 3, true) == VMM_ERR_INVALID_ADDR);
+    bad[1] = frames[1] + 8;
+    assert(vmm_map_frames(space->pml4_virt, 0x1ff000, bad, 3, true) == VMM_ERR_INVALID_ADDR);
+    assert(vmm_map_frames(space->pml4_virt, 0x1ff000, frames, 0, true) == VMM_ERR_INVALID_ADDR);
+    assert(g_mock_allocated_count == before);
+    assert(vmm_destroy_pml4(cr3, true) == VMM_OK);
+
+    /* Page-table OOM at every cut rolls back; 3 pages over a 2 MiB
+     * boundary need PDPT + PD + 2 PTs. The given frames are never freed. */
+    for (int budget = 0; budget <= 4; budget++) {
+        cr3 = vmm_create_user_pml4(); space = vmm_space_lookup(cr3);
+        g_pmm_alloc_budget = budget;
+        int result = vmm_map_frames(space->pml4_virt, 0x1ff000, frames, 3, true);
+        g_pmm_alloc_budget = -1;
+        assert(result == (budget < 4 ? VMM_ERR_NOMEM : VMM_OK));
+        for (unsigned i = 0; i < 3; i++)
+            assert(vmm_is_mapped(space->pml4_virt, 0x1ff000 + i * 4096) == (result == VMM_OK));
+        if (result == VMM_OK) {
+            for (unsigned i = 0; i < 3; i++) {
+                uint64_t leaf = host_leaf(space->pml4_virt, 0x1ff000 + i * 4096);
+                assert((leaf & PTE_ADDR_MASK) == frames[i]);
+                assert((leaf & (PTE_DEVICE | PTE_USER | PTE_WRITABLE | PTE_NX)) ==
+                       (PTE_DEVICE | PTE_USER | PTE_WRITABLE | PTE_NX));
+                assert(!(leaf & (PTE_PCD | PTE_PWT))); /* ordinary write-back RAM */
+            }
+            /* Never a syscall copy buffer. */
+            assert(!vmm_validate_user_range(space->pml4_virt, 0x1ff000, 4, false));
+            /* Collisions with an existing mapping are rejected untouched. */
+            assert(vmm_map_frames(space->pml4_virt, 0x200000, frames, 3, true) == VMM_ERR_ALREADY_MAPPED);
+            /* Read-only alias of the same frames elsewhere. */
+            assert(vmm_map_frames(space->pml4_virt, 0x800000, frames, 3, false) == VMM_OK);
+            uint64_t ro = host_leaf(space->pml4_virt, 0x800000);
+            assert((ro & PTE_ADDR_MASK) == frames[0] && (ro & PTE_DEVICE) && !(ro & PTE_WRITABLE));
+            /* Unmap is all-or-nothing on the exact frame list. */
+            assert(vmm_unmap_frames(space->pml4_virt, 0x800000, wrong, 3) == VMM_ERR_INVALID_ADDR);
+            for (unsigned i = 0; i < 3; i++) assert(vmm_is_mapped(space->pml4_virt, 0x800000 + i * 4096));
+            assert(vmm_unmap_frames(space->pml4_virt, 0x800000, frames, 3) == VMM_OK);
+            for (unsigned i = 0; i < 3; i++) assert(!vmm_is_mapped(space->pml4_virt, 0x800000 + i * 4096));
+            assert(vmm_unmap_frames(space->pml4_virt, 0x800000, frames, 3) == VMM_ERR_INVALID_ADDR);
+        }
+        /* Teardown with a live mapping: tables return, borrowed frames stay
+         * (the mock PMM asserts on a double free later if they were freed). */
+        assert(vmm_destroy_pml4(cr3, true) == VMM_OK);
+        for (unsigned i = 0; i < 3; i++) assert(g_mock_page_allocated[frames[i] / MOCK_PAGE_SIZE]);
+    }
+    for (unsigned i = 0; i < 3; i++) pmm_free_page(frames[i]);
+    assert(g_mock_allocated_count == baseline && g_mock_heap_alloc_count == heap);
+    puts("[PASS] Shared frames: borrowed and never freed by a space, RO enforced in leaves, exact unmap, OOM rollback");
+}
+
 int main(void) {
     printf("========================================================\n");
     printf("SMP Piece 6D Step 4: Complete Address Space Lifetime\n");
@@ -1156,6 +1231,7 @@ int main(void) {
     test_concurrent_cohort_and_fragmented_pmm();
     test_process_launch_rollback();
     test_device_and_anonymous_transactions();
+    test_shared_frame_mappings();
 
     printf("\n[ OK ] All SMP Piece 6D Step 4 host tests passed successfully!\n");
     return 0;

@@ -114,10 +114,17 @@
 #define SYS_FB_ACQUIRE    97 /* () -> 0/-errno; exclusive address-space display lease */
 #define SYS_FB_RELEASE    98 /* () -> 0/-errno; revoke VRAM, restore cached console */
 #define SYS_MMAP          99 /* (size) -> address/-errno; one RW/NX anonymous arena <=32MiB */
+/* Anonymous shared memory (src/kernel/shm.h). The object is an fd: share it by
+ * inheritance or spawn DUP2. Mappings are NX, never syscall copy buffers, and
+ * keep the pages alive after the fd is closed; exit drops them. */
+#define SYS_SHM_CREATE   100 /* (bytes <=32MiB, flags: VFS_O_CLOEXEC) -> fd/-errno; zeroed */
+#define SYS_SHM_MAP      101 /* (fd, page-aligned va >=16MiB, flags: SHM_MAP_*) -> va/-errno */
+#define SYS_SHM_UNMAP    102 /* (va of a SYS_SHM_MAP mapping) -> 0/-errno */
+#define SHM_MAP_READONLY 1u
 
 /* Syscall Allocation High-Water Mark and Next Available Slot */
-#define SYSCALL_MAX        99
-#define SYSCALL_NEXT_AVAIL 100
+#define SYSCALL_MAX        102
+#define SYSCALL_NEXT_AVAIL 103
 
 /* Framebuffer Information (SYS_FBINFO, Syscall 96) */
 typedef struct fb_info_v1 {
