@@ -1,0 +1,28 @@
+{
+  "date": "2026-10-31",
+  "source_commit": "3a83347d9b02b5b21985781032b87bd9f6b66738",
+  "build_command": "wsl -d Ubuntu-24.04 -- make -j4",
+  "build_result": "PASS",
+  "media_audit": "PASS",
+  "compositor_host_tests": "47/47 PASS",
+  "pkg_in_initramfs": "byte-identical to build/pkg/pkg.elf",
+  "physical_installation": "not performed; user-operated Dell reinstall pending",
+  "artifacts": {
+    "bin/fortress.img": {
+      "bytes": 620756992,
+      "sha256": "e6d379ebc8a853ed9cc18f5ac6d2675c947994ca806d18636d629e3c394ae155"
+    },
+    "bin/fortress.iso": {
+      "bytes": 29249536,
+      "sha256": "41b40e668abb20a3edc844361cdaac73af43e31b8e686062736b9df2b13fec92"
+    },
+    "bin/fortress.elf": {
+      "bytes": 3394256,
+      "sha256": "b6f7cac7afd62bbe5c18e35718679014c939901a0ffbc497924073e741432841"
+    },
+    "bin/initramfs.tar": {
+      "bytes": 8273920,
+      "sha256": "770e0be99f6b9bf32ab9baa667be890cd0ea420ee07bce2b33885014968dd36b"
+    }
+  }
+}
