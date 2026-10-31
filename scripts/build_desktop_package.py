@@ -23,6 +23,8 @@ APPS = {
                 "FortressOS desktop text editor; app API v1"),
     "files": ("fortress-files", "build/files.elf",
               "FortressOS desktop file manager; app API v1"),
+    "terminal": ("fortress-terminal", "build/terminal.elf",
+                 "FortressOS desktop terminal; app API v1"),
 }
 
 

@@ -442,6 +442,37 @@ pub fn shm_unmap(va: usize) -> isize {
     unsafe { syscall1(SYS_SHM_UNMAP, va) }
 }
 
+/// terminal_attrs_t (src/include/terminal.h): shared TTY input settings.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct TermAttrs {
+    pub version: u32,
+    pub input_flags: u32,
+    pub vintr: u8,
+    pub vsusp: u8,
+    pub reserved: [u8; 6],
+    pub signal_dropped: u64,
+    pub signal_coalesced: u64,
+}
+const _: () = assert!(core::mem::size_of::<TermAttrs>() == 32);
+pub const TERM_GET: usize = 0;
+pub const TERM_SET: usize = 1;
+pub const TERM_ISIG: u32 = 1;
+pub const TERM_ECHO: u32 = 2;
+pub const TERM_ICANON: u32 = 4;
+
+pub fn termattr(fd: i32, op: usize, attrs: &mut TermAttrs) -> isize {
+    unsafe {
+        syscall4(
+            SYS_TERMATTR,
+            fd as usize,
+            op,
+            attrs as *mut TermAttrs as usize,
+            core::mem::size_of::<TermAttrs>(),
+        )
+    }
+}
+
 pub const SYS_FSTAT: usize = 78;
 
 /// Size of an open file (e.g. a shared-memory buffer), or None.

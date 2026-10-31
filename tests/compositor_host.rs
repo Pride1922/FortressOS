@@ -906,7 +906,7 @@ fn taskbar_clock_and_keyboard_cycle_focus() {
 
 #[test]
 fn terminal_grid_and_scrolling() {
-    let mut term = terminal::Terminal::new(3, -1, 100);
+    let mut term = terminal::Terminal::new();
     assert_eq!((term.cursor_col, term.cursor_row), (0, 0));
 
     // Write simple string
@@ -938,21 +938,18 @@ fn terminal_grid_and_scrolling() {
     }
     assert_eq!(term.cursor_row, terminal::TERM_ROWS - 1);
 
-    // Verify rendering into Window content buffer
-    let mut win = window::Window::new(
-        3,
-        "Terminal",
-        Rect {
-            x: 0,
-            y: 0,
-            w: 500,
-            h: 260,
-        },
-    )
-    .unwrap();
-    term.render(&mut win);
-    // Non-trivial glyphs must be rendered into content
-    assert!(win.content.iter().any(|&c| c == terminal::TERM_FG));
+    // Render into a 500x260 window's content, in a wider-stride buffer.
+    let mut pixels = vec![0u32; 700 * 234];
+    let mut c = canvas::Canvas::new(&mut pixels, 498, 234, 700).unwrap();
+    term.render(&mut c);
+    assert!(pixels.iter().any(|&p| p == terminal::TERM_FG));
+    for row in 0..234 {
+        assert!(
+            pixels[row * 700 + 498..row * 700 + 700]
+                .iter()
+                .all(|&p| p == 0)
+        );
+    }
 }
 
 #[test]
@@ -1324,7 +1321,7 @@ fn files_mouse_click_and_navigation() {
 
 #[test]
 fn terminal_dynamic_dimensions() {
-    let mut t = terminal::Terminal::new(1, -1, -1);
+    let mut t = terminal::Terminal::new();
     assert_eq!(t.cols, terminal::TERM_COLS);
     assert_eq!(t.rows, terminal::TERM_ROWS);
 
@@ -1838,6 +1835,57 @@ fn files_render_hostile_names_inside_the_canvas() {
             fm.selected = selected;
             fm.ensure_visible(files::FileManager::rows_for(h));
             fm.render(&mut c);
+        }
+        for row in 0..h {
+            assert!(
+                pixels[row * stride + w..row * stride + stride]
+                    .iter()
+                    .all(|&p| p == 0)
+            );
+        }
+    }
+}
+
+/// The shell's output is untrusted: arbitrary bytes (including every
+/// escape-sequence prefix) must never panic the emulator or draw outside
+/// its canvas, at any size it can be configured to.
+#[test]
+fn terminal_survives_arbitrary_output() {
+    let mut seed = 0x9e3779b97f4a7c15u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for (w, h) in [(498, 234), (60, 40), (1918, 1054)] {
+        let stride = w + 21;
+        let mut pixels = vec![0u32; stride * h];
+        let mut term = terminal::Terminal::new();
+        let (cols, rows) = terminal::Terminal::grid_for(w, h);
+        term.set_dimensions(cols, rows);
+        for round in 0..200 {
+            let mut chunk = [0u8; 512];
+            for b in chunk.iter_mut() {
+                let r = next();
+                // Bias toward ESC, '[', digits, ';' and controls.
+                *b = match r % 8 {
+                    0 => 0x1b,
+                    1 => b'[',
+                    2 => b'0' + (r >> 8) as u8 % 10,
+                    3 => b';',
+                    4 => (r >> 8) as u8 % 32,
+                    _ => (r >> 8) as u8,
+                };
+            }
+            term.write_bytes(&chunk);
+            let mut c = canvas::Canvas::new(&mut pixels, w, h, stride).unwrap();
+            if round % 3 == 0 {
+                term.render(&mut c);
+            } else if let Some((y, dh)) = term.render_dirty(&mut c) {
+                assert!(y + dh <= h);
+            }
+            assert!(term.cursor_row < term.rows && term.cursor_col <= term.cols);
         }
         for row in 0..h {
             assert!(

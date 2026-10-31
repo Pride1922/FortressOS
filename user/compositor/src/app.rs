@@ -27,6 +27,15 @@ pub enum Event {
     Close,
 }
 
+/// Result of App::wait: a desktop event, or the extra descriptor is ready.
+pub enum Wait {
+    Event(Event),
+    /// `extra` is readable (or at EOF: the next read returns 0).
+    Ready,
+    /// `extra` hung up or failed.
+    Hangup,
+}
+
 pub struct App {
     pixels: *mut u32,
     capacity: usize, // pixels in the buffer
@@ -88,6 +97,42 @@ impl App {
                 proto::EV_CLICK => return Event::Click(m.a as usize, m.b as usize),
                 proto::EV_CLOSE => return Event::Close,
                 _ => {} // newer compositor: ignore unknown events
+            }
+        }
+    }
+
+    /// Waits for a desktop event or for `extra` (e.g. a PTY master) to have
+    /// input. Desktop events win when both are pending, so a close request
+    /// is never starved by a busy `extra`.
+    pub fn wait(&mut self, extra: i32) -> Wait {
+        loop {
+            let mut fds = [
+                sys::PollFd {
+                    fd: FD_EVENTS,
+                    events: sys::POLLIN,
+                    revents: 0,
+                },
+                sys::PollFd {
+                    fd: extra,
+                    events: sys::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let n = sys::poll(&mut fds, -1);
+            if n == sys::EINTR {
+                continue;
+            }
+            if n < 0 {
+                return Wait::Event(Event::Close);
+            }
+            if fds[0].revents != 0 {
+                return Wait::Event(self.next_event());
+            }
+            if fds[1].revents & sys::POLLIN != 0 {
+                return Wait::Ready;
+            }
+            if fds[1].revents != 0 {
+                return Wait::Hangup;
             }
         }
     }

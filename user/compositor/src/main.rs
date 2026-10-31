@@ -18,14 +18,12 @@ mod desktop;
 mod font;
 mod preferences;
 mod surface;
-mod terminal;
 mod ui;
 mod wallpaper;
 mod window;
 use cursor::Cursor;
 use surface::Surface;
-use terminal::Terminal;
-use window::{Window, WindowManager};
+use window::WindowManager;
 
 // 16-byte stack aligned entry point satisfying System V ABI & FortressOS loader
 core::arch::global_asm!(
@@ -143,6 +141,15 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8, envp: *const *c
         return 1;
     };
     let mut perf = perf::FrameStats::new(perf_hud && !is_test);
+    // Keys must reach the desktop as bytes: with ISIG on, Ctrl+C or Ctrl+Z
+    // on the console signalled the whole desktop (killing or stopping it)
+    // instead of reaching the focused app. ICANON/ECHO off as well.
+    let mut saved_tty = sys::TermAttrs::default();
+    let raw_tty = sys::termattr(0, sys::TERM_GET, &mut saved_tty) == 0 && {
+        let mut raw = saved_tty;
+        raw.input_flags &= !(sys::TERM_ISIG | sys::TERM_ICANON | sys::TERM_ECHO);
+        sys::termattr(0, sys::TERM_SET, &mut raw) == 0
+    };
     let status = run(
         is_test,
         bench_drag && !is_test,
@@ -150,6 +157,9 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8, envp: *const *c
         &mut perf,
         &launch,
     );
+    if raw_tty {
+        sys::termattr(0, sys::TERM_SET, &mut saved_tty);
+    }
     if sys::fb_release() != 0 {
         return 1;
     }
@@ -162,101 +172,6 @@ pub extern "C" fn rust_main(argc: usize, argv: *const *const u8, envp: *const *c
         sys::write(1, line.as_bytes());
     }
     status
-}
-
-#[inline(never)]
-fn spawn_terminal() -> Option<(Window, Terminal)> {
-    let mut pty_fds = [-1i32; 2];
-    if sys::pty_pair(&mut pty_fds, sys::VFS_O_NONBLOCK) != 0 {
-        return None;
-    }
-    let master_fd = pty_fds[0];
-    let slave_fd = pty_fds[1];
-
-    let mut win = Window::new(
-        3,
-        "Terminal - /bin/sh",
-        surface::Rect {
-            x: 140,
-            y: 160,
-            w: 520,
-            h: 280,
-        },
-    )?;
-    win.content.fill(terminal::TERM_BG);
-
-    let cols = ((win.rect.w.saturating_sub(22)) / 8).clamp(20, terminal::TERM_MAX_COLS);
-    let rows = ((win.rect.h.saturating_sub(38)) / 16).clamp(5, terminal::TERM_MAX_ROWS);
-    let ws = sys::WinSize {
-        ws_row: rows as u16,
-        ws_col: cols as u16,
-        ws_xpixel: (cols * 8) as u16,
-        ws_ypixel: (rows * 16) as u16,
-    };
-    sys::set_winsize(master_fd, &ws);
-
-    let actions = [
-        sys::SpawnFdAction {
-            action_type: 2, // DUP2
-            dst_fd: 0,
-            src_fd: slave_fd,
-            ..Default::default()
-        },
-        sys::SpawnFdAction {
-            action_type: 2, // DUP2
-            dst_fd: 1,
-            src_fd: slave_fd,
-            ..Default::default()
-        },
-        sys::SpawnFdAction {
-            action_type: 2, // DUP2
-            dst_fd: 2,
-            src_fd: slave_fd,
-            ..Default::default()
-        },
-    ];
-
-    let sh_path = b"/bin/sh\0";
-    let argv: [*const u8; 2] = [sh_path.as_ptr(), core::ptr::null()];
-    let opts = sys::SpawnOpts {
-        size: core::mem::size_of::<sys::SpawnOpts>() as u32,
-        version: 2,
-        flags: sys::SPAWN_SETSID | sys::SPAWN_STAGED,
-        reserved0: 0,
-        argv: argv.as_ptr() as u64,
-        envp: 0,
-        cwd: 0,
-        fd_actions: actions.as_ptr() as u64,
-        action_count: 3,
-        reserved1: 0,
-        reserved2: 0,
-    };
-
-    let pid = sys::spawn_ext("/bin/sh", &opts);
-    if pid <= 0 {
-        sys::close(master_fd);
-        sys::close(slave_fd);
-        return None;
-    }
-
-    // Zero-race controlling terminal session leader binding
-    let bind_err = sys::pty_set_session(master_fd, pid as u64);
-    if bind_err != 0 {
-        sys::group_release(pid as i64, sys::GROUP_CANCEL as usize);
-        sys::close(master_fd);
-        sys::close(slave_fd);
-        return None;
-    }
-
-    // Release staged child to execute
-    sys::group_release(pid as i64, sys::GROUP_RELEASE as usize);
-    sys::close(slave_fd);
-
-    let mut term = Terminal::new(3, master_fd, pid as i64);
-    term.set_dimensions(cols, rows);
-    term.render(&mut win);
-
-    Some((win, term))
 }
 
 #[inline(never)]
@@ -408,7 +323,6 @@ fn event_loop(
     perf: &mut perf::FrameStats,
 ) -> i32 {
     let mut ts = sys::Timespec::default();
-    let mut term: Option<Terminal> = None;
     let mut clients = clients::Clients::default();
     let mut fds = [
         sys::PollFd {
@@ -449,7 +363,6 @@ fn event_loop(
             packet = p;
             had_mouse = true;
         } else {
-            fds[2].fd = term.as_ref().map(|t| t.master_fd).unwrap_or(-1);
             let mut app_fds = [sys::PollFd::default(); clients::MAX_CLIENTS];
             clients.poll_set(&mut app_fds);
             fds[3..].copy_from_slice(&app_fds);
@@ -460,18 +373,6 @@ fn event_loop(
             }
             if ready < 0 || (fds[0].revents | fds[1].revents) & (sys::POLLERR | 0x10 | 0x20) != 0 {
                 break 1;
-            }
-
-            // Output from /bin/sh over PTY master. Once the shell is gone the
-            // master stays readable (EOF/hangup) forever: close the terminal
-            // instead of spinning on it. The [X] cleanup below closes the fd.
-            if fds[2].revents & (sys::POLLIN | 0x10 | 0x08) != 0 {
-                if let Some(ref mut t) = term {
-                    let hung_up = fds[2].revents & (0x10 | 0x08) != 0;
-                    if !drain_terminal(t, windows, scene) || hung_up {
-                        windows.close_window(t.window_id, scene);
-                    }
-                }
             }
 
             for slot in 0..clients::MAX_CLIENTS {
@@ -531,7 +432,7 @@ fn event_loop(
                                 }
                             }
                         }
-                        if handle_key(b, scene, windows, &mut term, &mut clients, is_test) {
+                        if handle_key(b, scene, windows, &mut clients, is_test) {
                             break 'event_loop 0;
                         }
                     }
@@ -613,16 +514,7 @@ fn event_loop(
             } else {
                 false
             };
-            if !handled
-                && handle_action(
-                    action,
-                    scene,
-                    windows,
-                    &mut term,
-                    &mut clients,
-                    &mut last_info_sec,
-                )
-            {
+            if !handled && handle_action(action, scene, &mut clients, &mut last_info_sec) {
                 break 0;
             }
             if frame_count % 8 == 0 {
@@ -632,12 +524,6 @@ fn event_loop(
 
         // Cleanup windows closed via [X] button
         clients.maintain(windows, scene);
-        if let Some(ref t) = term {
-            if !windows.windows.iter().any(|w| w.id == t.window_id) {
-                sys::close(t.master_fd);
-                term = None;
-            }
-        }
 
         if !is_test || frame_count % 8 == 0 {
             if sys::clock_gettime(0, &mut ts) == 0 {
@@ -671,8 +557,6 @@ fn event_loop(
                         handle_action(
                             window::Action::WindowResized(id),
                             scene,
-                            windows,
-                            &mut term,
                             &mut clients,
                             &mut last_info_sec,
                         );
@@ -723,9 +607,6 @@ fn event_loop(
         // and cannot synchronize scanout without a vblank API.
     };
     clients.shutdown(windows, scene);
-    if let Some(t) = term {
-        sys::close(t.master_fd);
-    }
     cursor.hide(scene);
     unsafe {
         scene.present(fb);
@@ -733,6 +614,15 @@ fn event_loop(
     sys::close(fd as i32);
     sys::write(1, b"[COMPOSITOR] Event loop stopped\n");
     status
+}
+
+/// Starts a terminal (/usr/bin/terminal when packaged, else /bin/terminal).
+fn open_terminal(clients: &mut clients::Clients, scene: &Surface) {
+    let app = clients::installed(c"/usr/bin/terminal", c"/bin/terminal");
+    match clients.launch(app, &[], scene) {
+        Ok(pid) => privilege::report(1, "[OK]", "Terminal started", Some(pid)),
+        Err(e) => privilege::report(2, "[WARN]", "Terminal launch failed", Some(e)),
+    }
 }
 
 /// Starts the file manager (/usr/bin/files when packaged, else /bin/files).
@@ -771,7 +661,6 @@ fn handle_key(
     b: u8,
     scene: &mut Surface,
     windows: &mut WindowManager,
-    term: &mut Option<Terminal>,
     clients: &mut clients::Clients,
     is_test: bool,
 ) -> bool {
@@ -779,12 +668,7 @@ fn handle_key(
         windows.close_context_menu(scene);
         return false;
     }
-    let top_window_id = windows.focused_window_id();
-    if top_window_id == Some(3) && term.is_some() {
-        if let Some(t) = term.as_ref() {
-            sys::write(t.master_fd, &[b]);
-        }
-    } else {
+    {
         if b == b'q' || b == b'Q' || b == 3 {
             return true;
         } else if b == 27 {
@@ -798,15 +682,7 @@ fn handle_key(
         } else if b == b'\t' {
             windows.cycle_focus(scene);
         } else if b == b't' || b == b'T' {
-            if term.is_none() {
-                if let Some((win, t)) = spawn_terminal() {
-                    windows.windows.push(win);
-                    windows.raise(3, scene);
-                    *term = Some(t);
-                }
-            } else {
-                windows.unminimize_and_raise(3, scene);
-            }
+            open_terminal(clients, scene);
         } else if b == b'e' || b == b'E' {
             open_notepad(clients, None, scene);
         } else if b == b'f' || b == b'F' {
@@ -825,8 +701,6 @@ fn handle_key(
 fn handle_action(
     action: window::Action,
     scene: &mut Surface,
-    windows: &mut WindowManager,
-    term: &mut Option<Terminal>,
     clients: &mut clients::Clients,
     last_info_sec: &mut i64,
 ) -> bool {
@@ -835,15 +709,7 @@ fn handle_action(
         window::Action::Exit => return true,
         window::Action::ClientClick(..) => {}
         window::Action::SpawnTerminal => {
-            if term.is_none() {
-                if let Some((win, t)) = spawn_terminal() {
-                    windows.windows.push(win);
-                    windows.raise(3, scene);
-                    *term = Some(t);
-                }
-            } else {
-                windows.unminimize_and_raise(3, scene);
-            }
+            open_terminal(clients, scene);
         }
         window::Action::SpawnNotepad => {
             open_notepad(clients, None, scene);
@@ -855,58 +721,8 @@ fn handle_action(
             if id == 6 {
                 *last_info_sec = -1;
             }
-            if id == 3 {
-                if let Some(t) = term.as_mut() {
-                    if let Some(w) = windows.windows.iter_mut().find(|w| w.id == 3) {
-                        let cols =
-                            ((w.rect.w.saturating_sub(22)) / 8).clamp(20, terminal::TERM_MAX_COLS);
-                        let rows =
-                            ((w.rect.h.saturating_sub(38)) / 16).clamp(5, terminal::TERM_MAX_ROWS);
-                        t.set_dimensions(cols, rows);
-                        let ws = sys::WinSize {
-                            ws_row: rows as u16,
-                            ws_col: cols as u16,
-                            ws_xpixel: (cols * 8) as u16,
-                            ws_ypixel: (rows * 16) as u16,
-                        };
-                        sys::set_winsize(t.master_fd, &ws);
-                        t.render(w);
-                        scene.damage(w.rect);
-                    }
-                }
-            }
         }
         window::Action::None => {}
     }
     false
-}
-
-#[inline(never)]
-/// False when the shell side is gone (EOF on the first read after poll
-/// reported the master readable).
-fn drain_terminal(t: &mut Terminal, windows: &mut WindowManager, scene: &mut Surface) -> bool {
-    let mut term_buf = [0u8; 256];
-    let mut total_read = 0;
-    let mut alive = true;
-    loop {
-        let n = sys::read(t.master_fd, &mut term_buf);
-        if n <= 0 {
-            alive = !(n == 0 && total_read == 0);
-            break;
-        }
-        t.write_bytes(&term_buf[..n as usize]);
-        total_read += n;
-        if total_read >= 4096 {
-            break;
-        }
-    }
-    if total_read > 0 {
-        if let Some(w) = windows.windows.iter_mut().find(|w| w.id == t.window_id) {
-            let dirty = t.render_dirty(w);
-            if !w.is_minimized {
-                scene.damage(dirty);
-            }
-        }
-    }
-    alive
 }

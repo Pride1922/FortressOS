@@ -1,10 +1,9 @@
-//! Embedded Graphical Terminal Window connected to /bin/sh over a PTY.
+//! Terminal emulator: parses the shell's output (untrusted bytes) into a
+//! character grid and draws it into a Canvas. Runs inside /bin/terminal
+//! (src/bin/terminal.rs), which owns the PTY and the shell.
 
+use crate::canvas::Canvas;
 use alloc::vec::Vec;
-use crate::{
-    font::GLYPHS,
-    window::Window,
-};
 
 #[allow(dead_code)]
 pub const TERM_COLS: usize = 60;
@@ -18,9 +17,6 @@ pub const TERM_CURSOR: u32 = 0xff58a6ff;
 
 #[allow(dead_code)]
 pub struct Terminal {
-    pub window_id: u32,
-    pub master_fd: i32,
-    pub child_pid: i64,
     pub cols: usize,
     pub rows: usize,
     pub cursor_col: usize,
@@ -37,15 +33,12 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn new(window_id: u32, master_fd: i32, child_pid: i64) -> Self {
+    pub fn new() -> Self {
         let mut grid = Vec::new();
         let _ = grid.try_reserve_exact(TERM_MAX_ROWS);
         grid.resize(TERM_MAX_ROWS, [b' '; TERM_MAX_COLS]);
 
         Self {
-            window_id,
-            master_fd,
-            child_pid,
             cols: 60,
             rows: 14,
             cursor_col: 0,
@@ -305,21 +298,26 @@ impl Terminal {
         }
     }
 
-    pub fn render_dirty(&mut self, w: &mut Window) -> crate::surface::Rect {
-        let width = w.rect.w.saturating_sub(2);
-        let height = w.rect.h.saturating_sub(26);
+    /// Grid geometry for a content area: 10 px left margin, 8 px top.
+    pub fn grid_for(width: usize, height: usize) -> (usize, usize) {
+        (
+            (width.saturating_sub(20) / 8).clamp(20, TERM_MAX_COLS),
+            (height.saturating_sub(12) / 16).clamp(5, TERM_MAX_ROWS),
+        )
+    }
 
+    /// Redraws changed rows; returns the content rows touched as (y, h).
+    pub fn render_dirty(&mut self, c: &mut Canvas) -> Option<(usize, usize)> {
+        let (width, height) = (c.width, c.height);
         if self.full_dirty || self.dirty_min_row > self.dirty_max_row {
             self.full_dirty = false;
             self.dirty_min_row = 0;
             self.dirty_max_row = self.rows.saturating_sub(1);
-            w.content.fill(TERM_BG);
+            c.fill(TERM_BG);
         }
 
         let start_row = self.dirty_min_row.min(self.rows.saturating_sub(1));
         let end_row = self.dirty_max_row.min(self.rows.saturating_sub(1));
-
-        // Reset dirty trackers for next cycle
         self.dirty_min_row = usize::MAX;
         self.dirty_max_row = 0;
 
@@ -328,53 +326,29 @@ impl Terminal {
             if py + 16 > height {
                 break;
             }
-            for r in 0..16 {
-                let off = (py + r) * width;
-                if off + width <= w.content.len() {
-                    w.content[off..off + width].fill(TERM_BG);
-                }
-            }
+            c.fill_rect(0, py, width, 16, TERM_BG);
             for col in 0..self.cols {
                 let px = 10 + col * 8;
                 if px + 8 > width {
                     break;
                 }
                 let ch = self.grid[row][col];
-                let is_cursor = self.cursor_visible && row == self.cursor_row && col == self.cursor_col;
-                if ch == b' ' && !is_cursor {
-                    continue;
+                let is_cursor =
+                    self.cursor_visible && row == self.cursor_row && col == self.cursor_col;
+                if ch != b' ' {
+                    c.glyph(px, py, ch, TERM_FG, TERM_BG);
                 }
-                let c_idx = if (' '..='~').contains(&(ch as char)) {
-                    ch as usize - 32
-                } else {
-                    0
-                };
-                let glyph = &GLYPHS[c_idx];
-                for r in 0..16 {
-                    for c in 0..8 {
-                        let bit = (glyph[r] & (128 >> c)) != 0;
-                        if is_cursor && r >= 13 {
-                            w.content[(py + r) * width + px + c] = TERM_CURSOR;
-                        } else if bit {
-                            w.content[(py + r) * width + px + c] = TERM_FG;
-                        }
-                    }
+                if is_cursor {
+                    c.fill_rect(px, py + 13, 8, 3, TERM_CURSOR);
                 }
             }
         }
-
-        let dirty_y = 25 + 8 + start_row * 16;
-        let dirty_h = ((end_row - start_row + 1) * 16).min(w.rect.h.saturating_sub(dirty_y));
-        crate::surface::Rect {
-            x: w.rect.x + 1,
-            y: w.rect.y + dirty_y,
-            w: w.rect.w.saturating_sub(2),
-            h: dirty_h.max(16),
-        }
+        let y = 8 + start_row * 16;
+        (y < height).then(|| (y, ((end_row - start_row + 1) * 16).min(height - y)))
     }
 
-    pub fn render(&mut self, w: &mut Window) {
+    pub fn render(&mut self, c: &mut Canvas) {
         self.full_dirty = true;
-        let _ = self.render_dirty(w);
+        let _ = self.render_dirty(c);
     }
 }

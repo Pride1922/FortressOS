@@ -278,6 +278,73 @@ def run_files():
             g.close()
 
 
+def run_terminal():
+    """/bin/terminal as its own process: 't' launches it, the shell runs as
+    the session user, Ctrl+C interrupts a command, binary output does not
+    break it, 'exit' closes the window, and closing the window with [X]
+    hangs up the shell and its running command."""
+    def shot(g, name):
+        g.qmp.execute('screendump', {'filename': f'/tmp/{name}.ppm'}); time.sleep(.4)
+        return Image.open(f'/tmp/{name}.ppm').convert('RGB')
+    results = []
+    def check(ok, what): results.append(ok); print(('ok   ' if ok else 'FAIL ') + what, flush=True)
+    def typed(g, text, delay=0.15):
+        for ch in text.encode():
+            key(g, bytes([ch]), delay)
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t); g = Guest(firmware='bios', smp=1, tmp=tmp)
+        try:
+            g.wait(lambda s: s.endswith('FortressOS login: '), timeout=120)
+            g.qmp = QMP(tmp / 'qmp.sock')
+            g.send('operator'); g.wait(lambda s: s.endswith('$ '), timeout=30)
+            g.command('rm -f /tmp/term-id.txt /tmp/term-int.txt /tmp/term-alive.txt')
+            start = len(g.data)
+            g.send('sudo /bin/compositor')
+            g.wait(lambda s: 'Window server ready' in s, start, timeout=40)
+            wait_image(g, lambda iw, ih, rgb: pixel(rgb, iw, iw // 2, ih // 2) == bytes.fromhex('101010'))
+            time.sleep(2); desk = shot(g, 't0')
+            pos = [640, 400]
+            def click(x, y):
+                while pos != [x, y]:
+                    dx = max(-100, min(100, x - pos[0])); dy = max(-100, min(100, y - pos[1]))
+                    g.motion(dx, dy); pos[0] += dx; pos[1] += dy; time.sleep(.04)
+                time.sleep(.3)
+                for down in [True, False]:
+                    g.qmp.execute('input-send-event', {'events': [{'type': 'btn', 'data': {'down': down, 'button': 'left'}}]}); time.sleep(.15)
+            pts = [(300, 200), (600, 380), (1000, 600)]
+            key(g, b't', 4); g.pump()
+            check('Terminal started' in g.text(start), 'compositor launched /bin/terminal')
+            # 520x280 centred -> x 380, y 260; content origin (381, 285).
+            im = shot(g, 't1')
+            check(im.getpixel((390, 520)) == (0x0d, 0x11, 0x17), 'terminal window drawn by the app')
+            typed(g, 'id > /tmp/term-id.txt\r'); time.sleep(2)
+            typed(g, 'sleep 30\r'); time.sleep(2)
+            key(g, b'\x03', 2)
+            typed(g, 'echo int-ok > /tmp/term-int.txt\r'); time.sleep(2)
+            typed(g, 'cat /bin/shm-test\r'); time.sleep(6)
+            typed(g, 'echo alive > /tmp/term-alive.txt\r'); time.sleep(2)
+            typed(g, 'exit\r'); time.sleep(4)
+            check(all(shot(g, 't2').getpixel(p) == desk.getpixel(p) for p in pts), "'exit' closed the terminal window")
+            # Second terminal: close it with [X] while a command runs.
+            key(g, b't', 4)
+            typed(g, 'sleep 100\r'); time.sleep(2)
+            click(380 + 520 - 18, 260 + 12); click(1100, 650); time.sleep(4)
+            check(all(shot(g, 't3').getpixel(p) == desk.getpixel(p) for p in pts), '[X] closed the second terminal')
+            key(g, b'q')
+            g.wait(lambda s: 'Event loop stopped' in s, start, timeout=30)
+            g.wait(lambda s: s.endswith('$ '), start, timeout=20)
+            time.sleep(1)
+            ident = g.command('cat /tmp/term-id.txt')
+            check('uid=1000(operator)' in ident, 'shell in the terminal runs as operator')
+            check('int-ok' in g.command('cat /tmp/term-int.txt'), 'Ctrl+C interrupted sleep 30 (next command ran at once)')
+            check('alive' in g.command('cat /tmp/term-alive.txt'), 'terminal kept working after binary output')
+            ps = g.command('ps')
+            check('terminal' not in ps and 'sleep' not in ps, 'no terminal, shell job or sleep left after [X] (hangup)')
+            return all(results)
+        finally:
+            g.close()
+
+
 if __name__ == '__main__':
     print('[TEST] desktop clients: well-behaved app', flush=True)
     ok = run_well_behaved()
@@ -287,5 +354,7 @@ if __name__ == '__main__':
     ok = run_notepad() and ok
     print('[TEST] desktop clients: files', flush=True)
     ok = run_files() and ok
+    print('[TEST] desktop clients: terminal', flush=True)
+    ok = run_terminal() and ok
     print('[PASS] desktop clients' if ok else '[FAIL] desktop clients')
     sys.exit(0 if ok else 1)
