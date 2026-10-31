@@ -68,29 +68,41 @@ void pkg_owner_reap(tcb_t *t) {
 }
 int64_t pkg_service_control(uintptr_t input,uintptr_t output,uint64_t bytes) {
     spin_debug_assert_unheld();
-    if(bytes!=sizeof(pkg_request_v1)&&bytes!=sizeof(pkg_request_v2))return SYSCALL_EINVAL;
+    if(bytes!=sizeof(pkg_request_v1)&&bytes!=sizeof(pkg_request_v2)&&bytes!=sizeof(pkg_request_v3))return SYSCALL_EINVAL;
     tcb_t *t=thread_current();uint64_t *pml4=vmm_get_active_pml4_virt();
     if(!t||!t->is_user||!vmm_validate_user_range(pml4,input,bytes,false)||
        !vmm_validate_user_range(pml4,output,sizeof(pkg_result_v1),true))return SYSCALL_EFAULT;
-    pkg_request_v2 source={0};memcpy(&source,(void *)input,bytes);
+    pkg_request_v3 upgrade={0};memcpy(&upgrade,(void *)input,bytes);
+    pkg_request_v2 source=upgrade.source;
     pkg_request_v1 q=source.request;
-    bool ingest=bytes==sizeof source;
+    bool upgrading=bytes==sizeof upgrade;
+    bool ingest=bytes==sizeof source||upgrading;
     bool mutation=ingest||q.operation==PKG_INSTALL||q.operation==PKG_REMOVE;
-    if(q.size!=bytes||q.version!=(ingest?2u:1u)||q.reserved||q.reserved64||
-       (ingest?q.operation!=PKG_INSTALL_SOURCE:(q.operation<PKG_STATUS||q.operation>PKG_REMOVE))||
+    if(q.size!=bytes||q.version!=(upgrading?3u:ingest?2u:1u)||q.reserved||q.reserved64||
+       (ingest?q.operation!=(upgrading?PKG_UPGRADE_SOURCE:PKG_INSTALL_SOURCE):(q.operation<PKG_STATUS||q.operation>PKG_REMOVE))||
        ((q.operation==PKG_STATUS||q.operation==PKG_ACQUIRE)?q.session!=0:q.session==0)||
        (mutation?!name_valid(q.package):!zero(q.package,sizeof q.package)))return SYSCALL_EINVAL;
     if(ingest&&(!source.catalog_bytes||source.catalog_bytes>PKG_SOURCE_CATALOG_MAX||
        source.artifact_bytes<128||source.artifact_bytes>PKG_SOURCE_ARTIFACT_MAX))return SYSCALL_EINVAL;
     if(ingest&&(source.catalog_fd>=MAX_PROCESS_FDS||source.artifact_fd>=MAX_PROCESS_FDS))return SYSCALL_EBADF;
+    if(upgrading&&upgrade.previous_fd>=MAX_PROCESS_FDS)return SYSCALL_EBADF;
+    if(upgrading&&(upgrade.previous_bytes<128||upgrade.previous_bytes>PKG_SOURCE_ARTIFACT_MAX))return SYSCALL_EINVAL;
     const pkg_kernel_backend *b=__atomic_load_n(&binding,__ATOMIC_ACQUIRE);
     if(!b||!b->admitted())return SYSCALL_EOPNOTSUPP;
-    if(ingest&&!b->install_source)return SYSCALL_EOPNOTSUPP;
+    if(ingest&&!(upgrading?b->upgrade_source!=NULL:b->install_source!=NULL))return SYSCALL_EOPNOTSUPP;
     if(!t->pkg_owner.generation&&!pw_register(t->tid,&t->pkg_owner))return SYSCALL_EAGAIN;
     pb_result captured={0};int r;
     if(!mutation) {
         pb_request request={.size=sizeof request,.version=1,.operation=q.operation,.session=q.session};
-        r=pb_control(&request,t->pkg_owner,true,&b->transactions,&captured);
+        /* Backend snapshots share the source workspace lifetime. Exclude them
+         * from preparation/destruction as well as durable mutation; a status
+         * request returns busy instead of observing transient context pointers. */
+        unsigned expected=0;
+        if(!__atomic_compare_exchange_n(&source_busy,&expected,1,false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))r=-VFS_EAGAIN;
+        else {
+            r=pb_control(&request,t->pkg_owner,true,&b->transactions,&captured);
+            __atomic_store_n(&source_busy,0,__ATOMIC_RELEASE);
+        }
     } else {
         pw_key operation;
         if(!pw_enter(t->pkg_owner,q.session,&operation))return SYSCALL_EACCES;
@@ -104,17 +116,23 @@ int64_t pkg_service_control(uintptr_t input,uintptr_t output,uint64_t bytes) {
             else {
                 file_t *catalog=fd_get(t,(int)source.catalog_fd),*artifact=fd_get(t,(int)source.artifact_fd);
                 bool cat_held=vfs_file_get(catalog),art_held=vfs_file_get(artifact);
-                size_t total=source.catalog_bytes+source.artifact_bytes;
-                uint8_t *copy=cat_held&&art_held?kmalloc_large(total):NULL;
-                if(!cat_held||!art_held)r=-VFS_EBADF;
+                file_t *previous=upgrading?fd_get(t,(int)upgrade.previous_fd):NULL;
+                bool previous_held=upgrading&&vfs_file_get(previous);
+                size_t total=source.catalog_bytes+source.artifact_bytes+(upgrading?upgrade.previous_bytes:0);
+                uint8_t *copy=cat_held&&art_held&&(!upgrading||previous_held)?kmalloc_large(total):NULL;
+                if(!cat_held||!art_held||(upgrading&&!previous_held))r=-VFS_EBADF;
                 else if(!copy)r=-VFS_ENOMEM;
                 else {
                     srv_log("[PKG-SRV] copying sources...\n");
                     r=source_copy(catalog,copy,source.catalog_bytes);
                     if(!r)r=source_copy(artifact,copy+source.catalog_bytes,source.artifact_bytes);
+                    if(!r&&upgrading)r=source_copy(previous,copy+source.catalog_bytes+source.artifact_bytes,upgrade.previous_bytes);
                     if(!r&&!pw_recovery_step(t->pkg_owner))r=-VFS_EACCES;
                     srv_log("[PKG-SRV] invoking b->install_source...\n");
-                    if(!r)r=b->install_source(b->transactions.context,q.package,copy,source.catalog_bytes,
+                    if(!r&&upgrading)r=b->upgrade_source(b->transactions.context,q.package,copy,source.catalog_bytes,
+                        copy+source.catalog_bytes,source.artifact_bytes,copy+source.catalog_bytes+source.artifact_bytes,
+                        upgrade.previous_bytes,&s);
+                    else if(!r)r=b->install_source(b->transactions.context,q.package,copy,source.catalog_bytes,
                                             copy+source.catalog_bytes,source.artifact_bytes,&s);
                     if(r) {
                         srv_log("[PKG-SRV] install_source failed!\n");
@@ -123,6 +141,7 @@ int64_t pkg_service_control(uintptr_t input,uintptr_t output,uint64_t bytes) {
                     }
                     kfree(copy);
                 }
+                if(previous_held)vfs_close(previous);
                 if(cat_held)vfs_close(catalog);
                 if(art_held)vfs_close(artifact);
                 __atomic_store_n(&source_busy,0,__ATOMIC_RELEASE);

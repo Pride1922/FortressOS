@@ -47,7 +47,7 @@ int main(int argc,char **argv) { return rot13_main(argc,argv); }
             expected = bytes(c+13 if 65<=c<=77 or 97<=c<=109 else c-13 if 78<=c<=90 or 110<=c<=122 else c for c in raw)
             result = subprocess.run([str(runner)], input=raw, capture_output=True, check=True)
             assert result.stdout == expected
-            assert subprocess.check_output([str(runner), "--version"]) == f"rot13 1.{release-1}\n".encode()
+            assert subprocess.check_output([str(runner), "--version"]) == ("rot13 1.0\n" if release == 1 else "rot13 2.0\n").encode()
             help = subprocess.run([str(runner), "--help"], capture_output=True)
             assert help.returncode == (1 if release == 1 else 0)
             if release == 2:

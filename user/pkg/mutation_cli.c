@@ -14,6 +14,7 @@ int pkg_mutation_cli(int argc,char **argv,const fpk_catalog_policy *policy,
 #ifdef FORTRESS_PKG_FETCH
             "pkg update\n"
             "pkg get PACKAGE\n"
+            "pkg upgrade PACKAGE\n"
             "pkg fetch PACKAGE NEW-ABSOLUTE-DIRECTORY\n"
             "pkg install PACKAGE ABSOLUTE-STAGING-DIRECTORY\n"
 #endif

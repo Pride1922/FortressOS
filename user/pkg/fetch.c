@@ -1,4 +1,5 @@
 #include "repository.h"
+#include "pkg_abi.h"
 #include "../tools/common.h"
 #include "string.h"
 static pkg_repository repository;
@@ -194,4 +195,26 @@ int pkg_get_main(int argc,char **argv){
 
     static const char msg[]="download verified\n";
     return tool_write("pkg",msg,sizeof msg-1);
+}
+
+/* The installed record supplies only a download hint. SYS_PKGCTL independently
+ * binds this source's hash to the retained current inventory. */
+int pkg_previous_source(const char *name,uint64_t *bytes) {
+    static uint8_t record[8192];size_t n=0;
+    if(read_file("/var/lib/pkg/install.v2",record,sizeof record,true,&n)||n!=sizeof record||
+       memcmp(record,"FORT-PKG-EXEC1",14)||record[64]||record[68]!=1||
+       strlen(name)>32||memcmp(record+320,name,strlen(name))||
+       (strlen(name)<32&&record[320+strlen(name)]))return -1;
+    timespec_t now={0};if(load_trust_and_repo(&now))return -1;
+    char cdir[128];pkg_cache_dir(cdir);size_t cn=strlen(cdir);
+    char path[192],temporary[192];memcpy(path,cdir,cn);memcpy(path+cn,"/previous.fpk",14);
+    memcpy(temporary,cdir,cn);memcpy(temporary+cn,"/previous.fpk.tmp",18);
+    if(pkg_repository_url(&repository,record+112,request_url)||download(request_url,temporary))return -1;
+    long moved=tool_syscall(SYS_RENAME_REPLACE,(uintptr_t)temporary,(uintptr_t)path,0);
+    if(moved<0) {
+        /* Only a missing destination permits the no-replace first publication.
+         * An uncertain replacement I/O result is never unlinked/retried. */
+        if(moved!=SYSCALL_ENOENT||tool_syscall(SYS_RENAME,(uintptr_t)temporary,(uintptr_t)path,0)<0)return -1;
+    }
+    return opened(path,PKG_SOURCE_ARTIFACT_MAX,false,bytes);
 }

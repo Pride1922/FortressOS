@@ -217,22 +217,24 @@ static int e4_semantic_commit(ext4_engine_t *e){
 }
 static bool px_add(char out[192],const char *p,size_t n){size_t at=strlen(out);if(n>=192-at)return false;memcpy(out+at,p,n);out[at+n]=0;return true;}
 static bool px_decimal(char out[192],uint64_t n){char b[20];unsigned used=0;do{b[used++]=(char)('0'+n%10);n/=10;}while(n);while(used)if(!px_add(out,b+--used,1))return false;return true;}
-static int px_paths(void){
-    char root[192]="/usr/share/pkg/";if(!px_add(root,(char *)px->shape.package,px->shape.package_length))return -VFS_EFBIG;
-    unsigned docs=0;for(unsigned i=0;i<px->shape.file_count;i++)docs+=px->shape.files[i].role==2;
-    if(docs){px_copy(px->directories[px->directory_count++],root);if(!px_add(root,"/",1)||!px_decimal(root,px->shape.build))return -VFS_EFBIG;px_copy(px->directories[px->directory_count++],root);}
-    for(unsigned i=0;i<px->shape.file_count;i++){
-        pi_file *f=px->shape.files+i;char path[192]={0};
-        if(f->role==1){px_copy(path,"/usr/bin/");if(!px_add(path,(char *)px->shape.command,px->shape.command_length))return -VFS_EFBIG;}
+static int px_paths_for(px_context *c){
+    char root[192]="/usr/share/pkg/";if(!px_add(root,(char *)c->shape.package,c->shape.package_length))return -VFS_EFBIG;
+    unsigned docs=0;for(unsigned i=0;i<c->shape.file_count;i++)docs+=c->shape.files[i].role==2;
+    if(docs){px_copy(c->directories[c->directory_count++],root);if(!px_add(root,"/",1)||!px_decimal(root,c->shape.build))return -VFS_EFBIG;px_copy(c->directories[c->directory_count++],root);}
+    for(unsigned i=0;i<c->shape.file_count;i++){
+        pi_file *f=c->shape.files+i;char path[192]={0};
+        if(f->role==1){px_copy(path,"/usr/bin/");if(!px_add(path,(char *)c->shape.command,c->shape.command_length))return -VFS_EFBIG;}
         else{
             px_copy(path,root);if(!px_add(path,"/",1)||!px_add(path,(char *)f->path,f->path_length))return -VFS_EFBIG;
             size_t prefix=strlen(root)+1;for(size_t at=prefix;path[at];at++)if(path[at]=='/'){
-                char saved=path[at];path[at]=0;bool found=false;for(unsigned j=0;j<px->directory_count;j++)if(!strcmp(path,px->directories[j]))found=true;
-                if(!found){if(px->directory_count==PX_DIRS)return -VFS_EFBIG;px_copy(px->directories[px->directory_count++],path);}path[at]=saved;
+                char saved=path[at];path[at]=0;bool found=false;for(unsigned j=0;j<c->directory_count;j++)if(!strcmp(path,c->directories[j]))found=true;
+                if(!found){if(c->directory_count==PX_DIRS)return -VFS_EFBIG;px_copy(c->directories[c->directory_count++],path);}path[at]=saved;
             }
-        }px_copy(px->files[i],path);
-    }return px->directory_count==px->shape.parent_count?0:-VFS_EINVAL;
+        }px_copy(c->files[i],path);
+    }return 0;
 }
+static int px_paths(void){int r=px_paths_for(px);return r?r:px->directory_count==px->shape.parent_count?0:-VFS_EINVAL;}
+
 typedef struct {const uint8_t *p;size_t n,at;} px_input;
 static long px_source_read(void *arg,void *out,size_t n){px_input *s=arg;if(n>s->n-s->at)n=s->n-s->at;memcpy(out,s->p+s->at,n);s->at+=n;return (long)n;}
 static long px_decode_read(void *arg,void *out,size_t n){px_context *c=arg;if(n>c->artifact_n-c->reader_at)n=c->artifact_n-c->reader_at;memcpy(out,c->artifact+c->reader_at,n);c->reader_at+=n;return (long)n;}
@@ -334,6 +336,15 @@ static int px_directory_members(e4_inode_t *dir,unsigned role){
         for(unsigned i=0;i<px->shape.file_count;i++)if(px->state.published&(1u<<i)){
             const char *name=px_child_name(px->directories[role],px->files[i]);
             if(name&&!strcmp(name,entry.name)&&found==px->state.files[i].inode&&entry.type==VFS_FILE)known=true;
+        }
+        /* Retained/staged immutable build directories are outside the active
+         * inventory. Never delete them as part of current-package cleanup. */
+        if(!known&&role==0&&entry.type==VFS_DIRECTORY) {
+            bool numeric=entry.name[0]!=0;
+            for(unsigned k=0;entry.name[k];k++)if(entry.name[k]<'0'||entry.name[k]>'9')numeric=false;
+            e4_inode_t retained;
+            if(numeric&&!e4_inode(dir->fs,found,&retained)&&retained.mode==VFS_S_IFDIR&&
+               !retained.uid&&!retained.gid&&(retained.full_mode&07777)==0755)known=true;
         }
         if(!known)return PX_REJECT(-VFS_EACCES);
     }return PX_REJECT(-VFS_EACCES);
@@ -1013,6 +1024,8 @@ static int ext4_pkg_install_source(void *context, const uint8_t package[32],
     return r;
 }
 
+#include "pkg_upgrade.inc"
+
 static pkg_kernel_backend ext4_pkg_backend = {
     .transactions = {
         .context = NULL,
@@ -1022,6 +1035,7 @@ static pkg_kernel_backend ext4_pkg_backend = {
     .admitted = ext4_pkg_admitted,
     .mutate = ext4_pkg_mutate,
     .install_source = ext4_pkg_install_source,
+    .upgrade_source = ext4_pkg_upgrade_source,
 };
 
 void ext4_pkg_bind(void) {

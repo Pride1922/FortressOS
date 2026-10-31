@@ -9,7 +9,7 @@ int rot13_main(int argc, char **argv) {
 #if RELEASE == 1
         return tool_write("rot13", "rot13 1.0\n", 10) ? 1 : 0;
 #else
-        return tool_write("rot13", "rot13 1.1\n", 10) ? 1 : 0;
+        return tool_write("rot13", "rot13 2.0\n", 10) ? 1 : 0;
 #endif
     }
 #if RELEASE >= 2

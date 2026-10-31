@@ -17,6 +17,7 @@ int tool_write(const char *t,const void *p,size_t n){(void)t;(void)p;(void)n;ret
 int pkg_fetch_main(int n,char **v){(void)n;(void)v;assert(0);return 1;}
 int pkg_update_main(int n,char **v){(void)n;(void)v;assert(0);return 1;}
 int pkg_get_main(int n,char **v){(void)n;(void)v;assert(0);return 1;}
+int pkg_previous_source(const char *n,uint64_t *b){(void)n;(void)b;assert(0);return -1;}
 int pkg_cache_dir(char *b,size_t cap,const char *o){(void)b;(void)cap;(void)o;return -1;}
 int pkg_mutation_cli(int n,char **v,const fpk_catalog_policy *p,const pkg_mutation_backend *b){
     (void)n;(void)v;(void)p;(void)b;return 2;

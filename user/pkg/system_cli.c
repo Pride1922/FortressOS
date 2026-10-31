@@ -99,15 +99,18 @@ static void display_version(int fd,const char *name,char version[33]) {
     memcpy(version,manifest.version.bytes,manifest.version.length);
     version[manifest.version.length]=0;
 }
-static int install_done(cli_owner *owner,const pkg_transaction_status *state,const char *name,const char *version) {
+static int install_done(cli_owner *owner,const pkg_transaction_status *state,const char *name,const char *version,bool upgrading) {
     if(state->sequence==owner->sequence) {
-        cli_msg("package is already installed ");cli_msg(name);
-        if(version[0]){cli_msg(" v ");cli_msg(version);}
-        cli_msg("\n");return 0;
+        char message[128];const char *prefix=upgrading?"package is up to date ":"package is already installed ";
+        size_t n=strlen(prefix),names=strlen(name),versions=strlen(version);
+        memcpy(message,prefix,n);memcpy(message+n,name,names);n+=names;
+        if(versions){memcpy(message+n," v ",3);n+=3;memcpy(message+n,version,versions);n+=versions;}
+        message[n++]='\n';return tool_write("pkg",message,n);
     }
-    static const char done[]="installation complete\n";
-    return tool_write("pkg",done,sizeof done-1);
+    const char *done=upgrading?"upgrade complete\n":"installation complete\n";
+    return tool_write("pkg",done,strlen(done));
 }
+
 static int install_error(long error) {
     switch(error) {
     case SYSCALL_EIO: cli_msg("pkg: storage I/O failure; installation is not confirmed\n");break;
@@ -154,9 +157,9 @@ static int install_source(cli_owner *owner,int argc,char **argv) {
         return tool_error("pkg","failed to close staging descriptors",NULL);
     if(snapshot(&r,owner->session,&state)||state.phase!=PKG_TX_IDLE)
         return tool_error("pkg","installation not confirmed; inspect status before retrying",NULL);
-    return install_done(owner,&state,argv[2],version);
+    return install_done(owner,&state,argv[2],version,false);
 }
-static int install_cached(cli_owner *owner,const char *name) {
+static int install_cached(cli_owner *owner,const char *name,bool upgrading) {
     size_t n=0;while(n<33&&name[n])n++;
     if(!fpk_identity_valid((const uint8_t *)name,n))return tool_error("pkg","invalid package name",NULL);
     cli_msg("pkg: checking installation backend...\n");
@@ -188,17 +191,29 @@ static int install_cached(cli_owner *owner,const char *name) {
         .catalog_fd=(uint64_t)catalog,.catalog_bytes=cn,
         .artifact_fd=(uint64_t)artifact,.artifact_bytes=an};
     for(size_t i=0;i<n;i++)q.request.package[i]=name[i];
+    uint64_t previous_bytes=0;int previous=-1;
+    if(upgrading) {
+        cli_msg("pkg: retrieving previous package for ownership verification...\n");
+        previous=pkg_previous_source(name,&previous_bytes);
+        if(previous<0) {
+            (void)tool_syscall(SYS_CLOSE,catalog,0,0);(void)tool_syscall(SYS_CLOSE,artifact,0,0);
+            return tool_error("pkg","cannot retrieve the installed package; current installation preserved",NULL);
+        }
+    }
+    pkg_request_v3 upgrade={.source=q,.previous_fd=(uint64_t)previous,.previous_bytes=previous_bytes};
+    if(upgrading){upgrade.source.request.size=sizeof upgrade;upgrade.source.request.version=3;upgrade.source.request.operation=PKG_UPGRADE_SOURCE;}
     pkg_result_v1 r={0};pkg_transaction_status state;
-    cli_msg("pkg: verifying and installing package...\n");
-    long error=tool_syscall(SYS_PKGCTL,(uintptr_t)&q,(uintptr_t)&r,sizeof q);
+    cli_msg(upgrading?"pkg: verifying and upgrading package...\n":"pkg: verifying and installing package...\n");
+    long error=tool_syscall(SYS_PKGCTL,upgrading?(uintptr_t)&upgrade:(uintptr_t)&q,(uintptr_t)&r,upgrading?sizeof upgrade:sizeof q);
+    long close_previous=previous>=0?tool_syscall(SYS_CLOSE,previous,0,0):0;
     long close_catalog=tool_syscall(SYS_CLOSE,catalog,0,0),close_artifact=tool_syscall(SYS_CLOSE,artifact,0,0);
     if(error==SYSCALL_EOPNOTSUPP)return tool_error("pkg","source installation is unavailable in this kernel",NULL);
     if(error)return install_error(error);
-    if(close_catalog||close_artifact)
+    if(close_catalog||close_artifact||close_previous)
         return tool_error("pkg","failed to close staging descriptors",NULL);
     if(snapshot(&r,owner->session,&state)||state.phase!=PKG_TX_IDLE)
         return tool_error("pkg","installation not confirmed; inspect status before retrying",NULL);
-    return install_done(owner,&state,name,version);
+    return install_done(owner,&state,name,version,upgrading);
 }
 #endif
 int pkg_system_main(int argc,char **argv) {
@@ -214,7 +229,8 @@ int pkg_system_main(int argc,char **argv) {
     int result;
 #ifdef FORTRESS_PKG_FETCH
     if(argc==4&&argv&&argv[1]&&tool_equal(argv[1],"install"))result=install_source(&owner,argc,argv);
-    else if(argc==3&&argv&&argv[1]&&tool_equal(argv[1],"install"))result=install_cached(&owner,argv[2]);
+    else if(argc==3&&argv&&argv[1]&&tool_equal(argv[1],"install"))result=install_cached(&owner,argv[2],false);
+    else if(argc==3&&argv&&argv[1]&&tool_equal(argv[1],"upgrade"))result=install_cached(&owner,argv[2],true);
     else
 #endif
     result=pkg_mutation_cli(argc,argv,NULL,&backend);

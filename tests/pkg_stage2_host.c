@@ -23,7 +23,7 @@ static size_t g_rot13_len;
 /* Virtual files in host mock filesystem */
 typedef struct {
     char path[128];
-    uint8_t data[4096];
+    uint8_t data[8192];
     size_t size;
     size_t offset;
     bool open;
@@ -72,6 +72,7 @@ static char last_spawn_cmd[128];
 static char last_spawn_arg_url[256];
 static char last_spawn_arg_dst[128];
 static bool fail_spawn;
+static bool fail_previous_rename;
 static bool fail_download_verify;
 static bool simulate_identical_install;
 static bool simulate_upgrade_install;
@@ -106,6 +107,7 @@ long tool_syscall(long call, uintptr_t a, uintptr_t b, uintptr_t c) {
     }
     if (call == SYS_UNLINK) {
         const char *p = (const char *)a;
+        assert(!fail_previous_rename||!strstr(p,"previous.fpk"));
         for (unsigned i = 0; i < mock_file_count; i++) {
             if (!strcmp(mock_files[i].path, p)) {
                 mock_files[i] = mock_files[--mock_file_count];
@@ -117,6 +119,7 @@ long tool_syscall(long call, uintptr_t a, uintptr_t b, uintptr_t c) {
     if (call == SYS_RENAME_REPLACE || call == SYS_RENAME) {
         const char *src = (const char *)a;
         const char *dst = (const char *)b;
+        if(fail_previous_rename&&strstr(dst,"previous.fpk"))return SYSCALL_EIO;
         mock_file_t *sf = find_file(src);
         if (!sf) return -VFS_ENOENT;
         mock_file_t *df = find_file(dst);
@@ -251,10 +254,14 @@ long tool_syscall(long call, uintptr_t a, uintptr_t b, uintptr_t c) {
             };
             return 0;
         }
-        if (q->operation == PKG_INSTALL_SOURCE) {
+        if (q->operation == PKG_INSTALL_SOURCE || q->operation == PKG_UPGRADE_SOURCE) {
             const pkg_request_v2 *s = (const pkg_request_v2 *)a;
             (void)s;
-            assert(q->version == 2 && q->session == g_active_session);
+            assert(q->version == (q->operation==PKG_UPGRADE_SOURCE?3u:2u) && q->session == g_active_session);
+            if(q->operation==PKG_UPGRADE_SOURCE) {
+                const pkg_request_v3 *upgrade=(const void *)a;
+                assert(c==sizeof *upgrade&&upgrade->previous_bytes==g_rot13_len);
+            }
             g_install_source_calls++;
 
             if(injected_install_error)return injected_install_error;
@@ -285,6 +292,7 @@ static void init_mock_fs(void) {
     spawn_count = 0;
     g_install_source_calls = 0;
     fail_spawn = false;
+    fail_previous_rename=false;
     fail_download_verify = false;
     simulate_identical_install = false;
     simulate_upgrade_install = false;
@@ -531,6 +539,25 @@ int main(int argc, char **argv) {
         assert(strstr(captured_output,"sudo pkg status"));
     }
     puts("PASS: I/O, no-space, memory and busy errors return with descriptors/session released");
-    puts("\nALL STAGE 2 HOST TESTS PASSED (15/15)");
+    for(unsigned scenario=0;scenario<5;scenario++) {
+        init_mock_fs();
+        mock_file_t *cat=create_file("/var/cache/pkg/catalog.v1",0644,0);
+        memcpy(cat->data,g_catalog_v1,g_catalog_len);cat->size=g_catalog_len;
+        mock_file_t *art=create_file("/var/cache/pkg/rot13.fpk",0644,0);
+        memcpy(art->data,g_rot13_fpk,g_rot13_len);art->size=g_rot13_len;
+        mock_file_t *record=create_file("/var/lib/pkg/install.v2",0600,0);
+        memcpy(record->data,"FORT-PKG-EXEC1",14);record->data[68]=1;record->data[112]=1;
+        memcpy(record->data+320,"rot13",5);record->size=8192;
+        simulate_identical_install=scenario==1;
+        injected_install_error=scenario==2?SYSCALL_EACCES:0;fail_spawn=scenario==3;fail_previous_rename=scenario==4;
+        char *cmd[]={"pkg","upgrade","rot13",NULL};
+        int rc=pkg_system_main(3,cmd);
+        assert((scenario<2?rc==0:rc!=0)&&!open_fds&&!g_active_session);
+        if(scenario==0)assert(strstr(captured_output,"upgrade complete"));
+        if(scenario==1)assert(strstr(captured_output,"package is up to date rot13 v 1.0"));
+        assert(g_install_source_calls==(scenario>=3?0u:1u));
+    }
+    puts("PASS upgrade frontend: v3 request, previous-source fetch, no-op, verification/download failure cleanup");
+    puts("\nALL STAGE 2 HOST TESTS PASSED (20/20)");
     return 0;
 }

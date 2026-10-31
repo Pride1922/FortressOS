@@ -8,3 +8,5 @@ static bool px_cache_room(ext4_mount_t *);
 static bool px_orphan_room(ext4_engine_t *);
 static bool px_orphan_pause(ext4_engine_t *);
 static int e4_semantic_commit(ext4_engine_t *);
+
+static int pu_replace_plan(ext4_engine_t *,uint32_t,uint32_t);

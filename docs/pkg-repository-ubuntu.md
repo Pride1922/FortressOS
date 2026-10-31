@@ -39,7 +39,7 @@ operational action; no such action has been performed here.
 Run these commands from the FortressOS checkout on Ubuntu 24.04 (Python 3.11+
 with `python3-cryptography`, GCC/binutils and NASM installed). This example builds
 an actual freestanding stream filter, `rot13`, rather than a synthetic ELF.
-Release 1.0 rotates ASCII letters from stdin to stdout; release 1.1 adds `--help`.
+Release 1.0 rotates ASCII letters from stdin to stdout; release 2.0 adds `--help`.
 Both support `--version`. The example is separate from normal initramfs contents.
 
 ```bash
@@ -112,7 +112,7 @@ python3 scripts/pkg_repository.py \
   --output /release/public
 ```
 
-For release 1.1 repeat with a higher catalog revision, a fresh validity interval
+For release 2.0 repeat with a higher catalog revision, a fresh validity interval
 and `--artifact build/pkg-rot13/release-2.fpk`. Keep `--retain-existing`: it verifies
 the previous catalog signatures against the supplied signing keys, verifies the
 retained objects' hashes/identities, replaces the named package, and keeps all
@@ -238,3 +238,36 @@ This command retains `catalog.v1` and `artifact.fpk`; it does not install files
 or persist installed-version/rollback floors. The next implementation step is
 the ordinary installation backend. The existing Dell/USB binaries have not been
 replaced by this source cleanup.
+
+## rot13 2.0 update candidate
+
+The second example is version 2.0, numeric build 2. It reports `rot13 2.0`
+and adds `--help`; the filter still maps `hello` to `uryyb`. Its documentation
+is a separate source file so building 1.0 does not silently change its artifact.
+Use the approved platform/base values when creating release-2.json as above.
+Publish release-2.fpk with a higher catalog revision and `--retain-existing`.
+
+The Stage 3 source adds verified `pkg upgrade` support; refresh both the kernel
+and `/bin/pkg` before testing it on the Dell. The old Stage 2 image cannot gain
+upgrade support just by downloading rot13 2.0. Preserve the installed root and
+data; do not format or delete its package database.
+
+After booting the matching new kernel and CLI:
+
+```sh
+pkg update
+pkg get rot13
+sudo pkg upgrade rot13
+/usr/bin/rot13 --version
+echo hello | /usr/bin/rot13
+sudo pkg upgrade rot13
+```
+
+Expect `upgrade complete`, then `rot13 2.0` and `uryyb`; a repeat reports
+`package is up to date rot13 v 2.0`. Reboot and check the version/filter again.
+`pkg install` still rejects replacing a different installed build. Keep old
+repository objects available: the privileged upgrade downloads the prior object
+by its installed SHA-256, and the kernel revalidates ownership independently.
+See [bounded upgrade contracts and verification](plans/PKG3_BOUNDED_UPGRADE.md).
+The repository's current deterministic demo signing key is not suitable for a
+production trust deployment.

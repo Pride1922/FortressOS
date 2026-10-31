@@ -39,7 +39,7 @@ void kfree(void *p){if(p){assert(allocations);allocations--;free(p);}}
 tcb_t *thread_current(void){return current;}
 uint64_t *vmm_get_active_pml4_virt(void){return NULL;}
 bool vmm_validate_user_range(uint64_t *p,uintptr_t address,size_t length,bool writing){
-    assert(!p);range_checks++;assert(writing?length==80:(length==64||length==96));
+    assert(!p);range_checks++;assert(writing?length==80:(length==64||length==96||length==112));
     return address&&!(writing?reject_write:reject_read);
 }
 int64_t syscall_from_vfs_error(int64_t r){
@@ -78,7 +78,15 @@ static int source_install(void *ctx,const uint8_t name[32],const uint8_t *catalo
     source_catalog[0]^=1;source_artifact[0]^=1;
     assert(catalog[0]!=source_catalog[0]&&artifact[0]!=source_artifact[0]);
     source_catalog[0]^=1;source_artifact[0]^=1;
+    pkg_request_v1 query={.size=64,.version=1,.operation=PKG_STATUS};pkg_result_v1 status_result;
+    assert(pkg_service_control((uintptr_t)&query,(uintptr_t)&status_result,64)==SYSCALL_EAGAIN);
     source_calls++;snapshot(out);return fail_mutation?-VFS_EIO:0;
+}
+static int source_upgrade(void *ctx,const uint8_t name[32],const uint8_t *catalog,size_t cn,
+    const uint8_t *artifact,size_t an,const uint8_t *previous,size_t pn,pkg_transaction_status *out) {
+    assert(pn==sizeof source_artifact&&previous!=source_artifact&&previous!=artifact);
+    assert(!memcmp(previous,source_artifact,pn));
+    return source_install(ctx,name,catalog,cn,artifact,an,out);
 }
 static void birth(unsigned i){
     tasks[i].tid=100+i;tasks[i].is_user=true;creds_init_root(&credentials[i]);
@@ -96,7 +104,7 @@ int main(void){
     assert(call(&q,&result)==SYSCALL_EOPNOTSUPP&&!tasks[0].pkg_owner.generation&&!reads&&!writes);
     assert(!memcmp(&old,&result,sizeof result));
     static const pkg_kernel_backend b={.transactions={&reads,status,recover},.admitted=ready,
-        .mutate=mutate,.install_source=source_install};
+        .mutate=mutate,.install_source=source_install,.upgrade_source=source_upgrade};
     assert(!pkg_service_bind(&b));admitted=true;assert(pkg_service_bind(&b));assert(!pkg_service_bind(&b));
     q.reserved=1;assert(call(&q,&result)==SYSCALL_EINVAL&&!reads);q.reserved=0;
     q.package[0]='x';assert(call(&q,&result)==SYSCALL_EINVAL);q.package[0]=0;
@@ -147,6 +155,15 @@ int main(void){
     assert(!memcmp(&old,&result,sizeof result));fail_mutation=false;bad_snapshot=true;
     assert(pkg_service_control((uintptr_t)&v2,(uintptr_t)&result,96)==SYSCALL_EIO&&source_calls==3&&!allocations);
     bad_snapshot=false;
+    pkg_request_v3 v3={.source=v2,.previous_fd=11,.previous_bytes=sizeof source_artifact};
+    v3.source.request.size=sizeof v3;v3.source.request.version=3;v3.source.request.operation=PKG_UPGRADE_SOURCE;
+    assert(!pkg_service_control((uintptr_t)&v3,(uintptr_t)&result,sizeof v3)&&source_calls==4&&!allocations);
+    v3.previous_fd=MAX_PROCESS_FDS;assert(pkg_service_control((uintptr_t)&v3,(uintptr_t)&result,sizeof v3)==SYSCALL_EBADF);
+    v3.previous_fd=9;assert(pkg_service_control((uintptr_t)&v3,(uintptr_t)&result,sizeof v3)==SYSCALL_EBADF&&!allocations);
+    v3.previous_fd=11;v3.previous_bytes=127;assert(pkg_service_control((uintptr_t)&v3,(uintptr_t)&result,sizeof v3)==SYSCALL_EINVAL);
+    v3.previous_bytes=sizeof source_artifact;v3.source.request.reserved=1;
+    assert(pkg_service_control((uintptr_t)&v3,(uintptr_t)&result,sizeof v3)==SYSCALL_EINVAL);v3.source.request.reserved=0;
+    fail_mutation=true;assert(pkg_service_control((uintptr_t)&v3,(uintptr_t)&result,sizeof v3)==SYSCALL_EIO&&source_calls==5&&!allocations);fail_mutation=false;
     for(unsigned i=0;i<2;i++)assert(source_files[i].ref_count==1&&source_files[i].offset==57);
     pkg_owner_exec(current);assert(call(&q,&result)==SYSCALL_EACCES&&writes==3);
     q=(pkg_request_v1){.size=64,.version=1,.operation=PKG_ACQUIRE};assert(!call(&q,&result)&&result.session!=session);

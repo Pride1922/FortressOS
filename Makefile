@@ -216,7 +216,7 @@ all: $(BOOTABLE_ISO) $(BOOTABLE_IMG)
 live: all
 include src/lib/crypto/crypto.mk
 # Recompile dormant objects when normal engine selection/link rules change.
-$(BUILD_DIR)/fs/ext4.o: src/fs/pkg_executor.inc Makefile
+$(BUILD_DIR)/fs/ext4.o: src/fs/pkg_executor.inc src/fs/pkg_upgrade.inc Makefile
 $(BUILD_DIR)/fs/pkg_plan.o: Makefile
 $(BUILD_DIR)/fs/ext4.o: CFLAGS += -fstack-usage -Wno-frame-larger-than
 $(BUILD_DIR)/fs/pkg_crypto.o: CFLAGS += -Isrc/lib/crypto/upstream/src -Iuser/pkg -Iuser/tools
@@ -1169,6 +1169,10 @@ test-pkg-fetch-host:
 	@python3 scripts/test_pkg_fetch.py
 test-pkg-stage2-host:
 	@python3 scripts/test_pkg_stage2.py
+
+.PHONY: test-pkg-upgrade-host
+test-pkg-upgrade-host:
+	@python3 scripts/test_pkg_upgrade.py
 
 .PHONY: test-pkg-ordinary-install-host
 test-pkg-ordinary-install-host:

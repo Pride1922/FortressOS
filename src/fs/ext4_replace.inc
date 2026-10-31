@@ -50,6 +50,9 @@ static int e4_replace_activate(ext4_engine_t *e,uint32_t old_parent,const char *
     r=e4_replace_stamp(e,victim,false,now);if(r)goto done;
     r=e4_replace_stamp(e,old_parent,true,now);if(r)goto done;
     if(new_parent!=old_parent) {r=e4_replace_stamp(e,new_parent,true,now);if(r)goto done;}
+#if FORTRESS_PKG_ENGINE
+    r=pu_replace_plan(e,source,victim);if(r)goto done;
+#endif
     r=e4_plan_end(e);if(r)goto done;
     e4_seal(e);if(e->error) {r=e->error;goto done;}
     /* No frees/data images: credits and writer allocations precede the first

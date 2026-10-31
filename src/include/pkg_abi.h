@@ -4,7 +4,7 @@
 /* SYS_PKGCTL: exact v1 request/result sizes, values only. No keys, paths,
  * devices, source pointers or caller-supplied admission decisions. */
 enum { PKG_STATUS=1,PKG_ACQUIRE,PKG_RECOVER,PKG_RELEASE,PKG_INSTALL,PKG_REMOVE };
-enum { PKG_INSTALL_SOURCE=7 };
+enum { PKG_INSTALL_SOURCE=7, PKG_UPGRADE_SOURCE=8 };
 /* Additive v2 ingestion. v1 remains exactly 64 bytes. Descriptors identify only
  * source regular files to snapshot, never a policy, plan, device or verified flag.
  * Limits match the existing catalog/FPK parsers. Result remains v1. */
@@ -21,6 +21,14 @@ typedef struct {
     pkg_request_v1 request;
     uint64_t catalog_fd,catalog_bytes,artifact_fd,artifact_bytes;
 } pkg_request_v2;
+/* v3 upgrade carries the previous artifact as an untrusted retained source.
+ * Its SHA-256 must match the installed inventory; it needs no live old catalog. */
+typedef struct {
+    pkg_request_v2 source;
+    uint64_t previous_fd,previous_bytes;
+} pkg_request_v3;
+_Static_assert(sizeof(pkg_request_v3)==112,"pkg upgrade request size");
+_Static_assert(offsetof(pkg_request_v3,previous_fd)==96,"pkg previous descriptor");
 _Static_assert(sizeof(pkg_request_v2)==96,"pkg request v2 size");
 _Static_assert(offsetof(pkg_request_v2,catalog_fd)==64,"pkg catalog descriptor");
 _Static_assert(offsetof(pkg_request_v2,catalog_bytes)==72,"pkg catalog bytes");

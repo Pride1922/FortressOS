@@ -17,4 +17,5 @@ int pkg_repository_trust_decode(const uint8_t *,size_t,uint64_t,pkg_repository_t
 int pkg_fetch_main(int,char **);
 int pkg_update_main(int,char **);
 int pkg_get_main(int,char **);
+int pkg_previous_source(const char *,uint64_t *);
 #endif

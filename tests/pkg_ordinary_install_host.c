@@ -12,6 +12,7 @@ long tool_syscall(long n,uintptr_t a,uintptr_t b,uintptr_t c) {
     (void)n;(void)a;(void)b;(void)c;assert(0);return -1;
 }
 
+#ifndef PKG_ORDINARY_INCLUDED
 int main(int argc,char **argv) {
     assert(argc==5);
     size_t n,an,cn,tn;
@@ -55,4 +56,4 @@ int main(int argc,char **argv) {
     puts("PASS ordinary callback: first install, verified no-op, bad signature/artifact refusal, I/O error return");
     return 0;
 }
-
+#endif
