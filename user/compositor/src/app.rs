@@ -118,6 +118,37 @@ impl App {
         self.send(&m)
     }
 
+    /// Asks the desktop to open `path` (absolute, printable ASCII, at most
+    /// proto::OPEN_PATH_MAX bytes) in its editor. The desktop chooses the
+    /// program; repeated requests within a second are ignored.
+    pub fn open_in_editor(&self, path: &str) -> bool {
+        let bytes = path.as_bytes();
+        if !path.starts_with('/')
+            || bytes.len() > proto::OPEN_PATH_MAX
+            || !bytes.iter().all(|&c| (0x20..0x7f).contains(&c))
+        {
+            return false;
+        }
+        if !self.send(&Msg::new(
+            proto::REQ_OPEN_BEGIN,
+            bytes.len() as u32,
+            0,
+            0,
+            0,
+        )) {
+            return false;
+        }
+        for chunk in bytes.chunks(proto::TEXT_MAX) {
+            let mut m = Msg::new(proto::REQ_OPEN_APPEND, 0, 0, 0, 0);
+            m.text[..chunk.len()].copy_from_slice(chunk);
+            m.len = chunk.len() as u32;
+            if !self.send(&m) {
+                return false;
+            }
+        }
+        self.send(&Msg::new(proto::REQ_OPEN_COMMIT, 0, 0, 0, 0))
+    }
+
     fn send(&self, m: &Msg) -> bool {
         sys::write_all(FD_REQUESTS, &m.to_bytes())
     }

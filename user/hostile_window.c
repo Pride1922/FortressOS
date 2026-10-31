@@ -4,6 +4,10 @@
  *   1 creates a window, then ignores EV_CLOSE forever (must be SIGKILLed)
  *   2 floods 20000 full-window damage requests, then waits
  *   3 exits at once without creating a window
+ *   4 asks to open a relative path          (must be dropped)
+ *   5 declares a 128-byte path              (must be dropped)
+ *   6 commits an incomplete path            (must be dropped)
+ *   7 commits 50 valid opens in a burst     (rate limit: one editor)
  * Installed as /bin/hostile-window; tests copy it over /bin/hello-window. */
 #include "user/tools/common.h"
 #include "src/include/syscall_abi.h"
@@ -46,6 +50,34 @@ int hostile_window_main(void) {
     case 2:
         send(DESKTOP_REQ_CREATE, 400, 300, 0, 0, "Hostile: flood");
         for (int i = 0; i < 20000; i++) send(DESKTOP_REQ_DAMAGE, 0, 0, 400, 300, 0);
+        sleep_forever();
+        break;
+    case 4:
+        send(DESKTOP_REQ_CREATE, 300, 200, 0, 0, "Hostile: relative open");
+        send(DESKTOP_REQ_OPEN_BEGIN, 5, 0, 0, 0, 0);
+        send(DESKTOP_REQ_OPEN_APPEND, 0, 0, 0, 0, "tmp/x");
+        send(DESKTOP_REQ_OPEN_COMMIT, 0, 0, 0, 0, 0);
+        sleep_forever();
+        break;
+    case 5:
+        send(DESKTOP_REQ_CREATE, 300, 200, 0, 0, "Hostile: long open");
+        send(DESKTOP_REQ_OPEN_BEGIN, 128, 0, 0, 0, 0);
+        sleep_forever();
+        break;
+    case 6:
+        send(DESKTOP_REQ_CREATE, 300, 200, 0, 0, "Hostile: short open");
+        send(DESKTOP_REQ_OPEN_BEGIN, 10, 0, 0, 0, 0);
+        send(DESKTOP_REQ_OPEN_APPEND, 0, 0, 0, 0, "/tmp");
+        send(DESKTOP_REQ_OPEN_COMMIT, 0, 0, 0, 0, 0);
+        sleep_forever();
+        break;
+    case 7:
+        send(DESKTOP_REQ_CREATE, 300, 200, 0, 0, "Hostile: open flood");
+        for (int i = 0; i < 50; i++) {
+            send(DESKTOP_REQ_OPEN_BEGIN, 14, 0, 0, 0, 0);
+            send(DESKTOP_REQ_OPEN_APPEND, 0, 0, 0, 0, "/tmp/flood.txt");
+            send(DESKTOP_REQ_OPEN_COMMIT, 0, 0, 0, 0, 0);
+        }
         sleep_forever();
         break;
     default:

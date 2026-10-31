@@ -124,13 +124,27 @@ def run_hostile():
             # 3: exits without a window
             key(g,b'h'); time.sleep(3)
             check(restored('h6',pts), 'app exiting before CREATE leaves no window')
+            # 4-6: malformed open-in-editor requests drop the app, open nothing.
+            for mode, what in [(4, 'a relative path'), (5, 'an oversized length'), (6, 'an incomplete path')]:
+                key(g, b'h'); time.sleep(3)
+                check(restored(f'h{mode + 3}', pts), f'open request with {what}: app dropped, desktop intact')
+            g.pump()
+            check('Editor opened for app' not in g.text(start), 'no editor started for malformed requests')
+            # 7: 50 valid opens in a burst start exactly one editor.
+            key(g, b'h'); time.sleep(6); g.pump()
+            n = g.text(start).count('Editor opened for app')
+            check(n == 1, f'50 valid open requests in a burst started {n} editor(s) (expect 1)')
+            # Close the editor (cascaded second app) and the hostile window.
+            click(432 + 480 - 18, 292 + 12); click(1100, 650); time.sleep(3)
+            click(490 + 300 - 18, 300 + 12); click(1100, 650); time.sleep(4)
+            check(restored('h11', pts), 'editor and hostile window closed')
             alive='Event loop stopped' not in g.text(start)
-            check(alive, 'compositor survived all four attacks')
+            check(alive, 'compositor survived all eight attacks')
             key(g,b'q')
             g.wait(lambda s:'Event loop stopped' in s,start,timeout=30)
             g.wait(lambda s:s.endswith('$ '),start,timeout=20)
             time.sleep(1); ps=g.command('ps')
-            check('hostile-window' not in ps, 'every hostile process is gone (incl. the close-ignoring one)')
+            check('hostile-window' not in ps and 'notepad' not in ps, 'every hostile process is gone (incl. the close-ignoring one)')
             print('\n'.join(l for l in g.text(start).split('\n') if 'COMPOSITOR' in l and 'PERF' not in l))
             return all(results)
         finally:
@@ -200,6 +214,70 @@ def run_notepad():
             g.close()
 
 
+def run_files():
+    """/bin/files as its own process: 'f' launches it, the [/etc] button
+    navigates, Enter on a file makes the desktop open it in the editor, 'u'
+    goes back up, [X] closes both and no process remains."""
+    def shot(g, name):
+        g.qmp.execute('screendump', {'filename': f'/tmp/{name}.ppm'}); time.sleep(.4)
+        return Image.open(f'/tmp/{name}.ppm').convert('RGB')
+    results = []
+    def check(ok, what): results.append(ok); print(('ok   ' if ok else 'FAIL ') + what, flush=True)
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t); g = Guest(firmware='bios', smp=1, tmp=tmp)
+        try:
+            g.wait(lambda s: s.endswith('FortressOS login: '), timeout=120)
+            g.qmp = QMP(tmp / 'qmp.sock')
+            g.send('operator'); g.wait(lambda s: s.endswith('$ '), timeout=30)
+            start = len(g.data)
+            g.send('sudo /bin/compositor')
+            g.wait(lambda s: 'Window server ready' in s, start, timeout=40)
+            wait_image(g, lambda iw, ih, rgb: pixel(rgb, iw, iw // 2, ih // 2) == bytes.fromhex('101010'))
+            time.sleep(2); desk = shot(g, 'f0')
+            pos = [640, 400]
+            def click(x, y):
+                while pos != [x, y]:
+                    dx = max(-100, min(100, x - pos[0])); dy = max(-100, min(100, y - pos[1]))
+                    g.motion(dx, dy); pos[0] += dx; pos[1] += dy; time.sleep(.04)
+                time.sleep(.3)
+                for down in [True, False]:
+                    g.qmp.execute('input-send-event', {'events': [{'type': 'btn', 'data': {'down': down, 'button': 'left'}}]}); time.sleep(.15)
+            key(g, b'f', 3); g.pump()
+            check('Files started' in g.text(start), 'compositor launched /bin/files')
+            root = shot(g, 'f1')
+            # Files: 460x300 centred -> x 410, y 250; content origin (411, 275).
+            check(root.getpixel((600, 262)) != desk.getpixel((600, 262)), 'Files window shown')
+            click(411 + 170, 275 + 10); click(1100, 650); time.sleep(2)
+            etc = shot(g, 'f2')
+            region = [(x, y) for x in range(430, 860, 40) for y in range(305, 520, 20)]
+            check(any(etc.getpixel(p) != root.getpixel(p) for p in region), '[/etc] button changed the listing')
+            opened = False
+            for k in range(1, 8):
+                for _ in range(k): key(g, b'j', 0.3)
+                key(g, b'\r', 2); g.pump()
+                if 'Editor opened for app' in g.text(start):
+                    opened = True; break
+                key(g, b'u', 1)  # it was a directory: back to /etc
+            check(opened, 'Enter on a file in /etc opened it in the editor')
+            time.sleep(2); im = shot(g, 'f3')
+            check(im.getpixel((682, 324)) == (0x1e, 0x1e, 0x1e), 'editor window drawn (cascaded)')
+            click(432 + 480 - 18, 292 + 12); click(1100, 650); time.sleep(3)
+            key(g, b'u', 1.5)
+            up = shot(g, 'f4')
+            check(all(up.getpixel(p) == root.getpixel(p) for p in region), "'u' returned to the / listing")
+            click(410 + 460 - 18, 250 + 12); click(1100, 650); time.sleep(4)
+            fin = shot(g, 'f5')
+            check(all(fin.getpixel(p) == desk.getpixel(p) for p in [(300, 200), (600, 380), (1000, 600)]), 'both windows closed')
+            key(g, b'q')
+            g.wait(lambda s: 'Event loop stopped' in s, start, timeout=30)
+            g.wait(lambda s: s.endswith('$ '), start, timeout=20)
+            time.sleep(1); ps = g.command('ps')
+            check('files' not in ps and 'notepad' not in ps, 'no files or notepad process left')
+            return all(results)
+        finally:
+            g.close()
+
+
 if __name__ == '__main__':
     print('[TEST] desktop clients: well-behaved app', flush=True)
     ok = run_well_behaved()
@@ -207,5 +285,7 @@ if __name__ == '__main__':
     ok = run_hostile() and ok
     print('[TEST] desktop clients: notepad', flush=True)
     ok = run_notepad() and ok
+    print('[TEST] desktop clients: files', flush=True)
+    ok = run_files() and ok
     print('[PASS] desktop clients' if ok else '[FAIL] desktop clients')
     sys.exit(0 if ok else 1)

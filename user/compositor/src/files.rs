@@ -1,9 +1,8 @@
-//! Graphical File Manager ("Files") for FortressOS Desktop.
+//! Graphical File Manager ("Files") for FortressOS Desktop. Runs as its
+//! own unprivileged process (src/bin/files.rs) and draws into a Canvas;
+//! file names come from disk and are untrusted.
 
-use crate::{
-    sys,
-    window::Window,
-};
+use crate::{canvas::Canvas, sys};
 use alloc::{string::String, vec::Vec};
 
 pub const FILES_BG: u32 = 0xff252525;
@@ -28,8 +27,6 @@ pub struct FileEntry {
 }
 
 pub struct FileManager {
-    #[allow(dead_code)]
-    pub window_id: u32,
     pub current_path: String,
     pub entries: Vec<FileEntry>,
     pub selected: usize,
@@ -38,13 +35,12 @@ pub struct FileManager {
 
 impl FileManager {
     #[inline(never)]
-    pub fn new(window_id: u32, initial_path: &str) -> Self {
+    pub fn new(initial_path: &str) -> Self {
         let mut path = String::new();
         let _ = path.try_reserve_exact(initial_path.len().max(32));
         path.push_str(initial_path);
 
         let mut mgr = Self {
-            window_id,
             current_path: path,
             entries: Vec::new(),
             selected: 0,
@@ -72,7 +68,9 @@ impl FileManager {
 
         // Keep the 1 KiB directory batch off the bounded user stack.
         let mut raw_names = Vec::new();
-        if raw_names.try_reserve_exact(16).is_err() { return; }
+        if raw_names.try_reserve_exact(16).is_err() {
+            return;
+        }
         raw_names.resize(16, [0u8; 64]);
         let count = sys::list_dir(&self.current_path, &mut raw_names, 16);
         if count > 0 {
@@ -82,7 +80,10 @@ impl FileManager {
                 while len < 64 && raw[len] != 0 {
                     len += 1;
                 }
-                if len == 0 || (len == 1 && raw[0] == b'.') || (len == 2 && raw[0] == b'.' && raw[1] == b'.') {
+                if len == 0
+                    || (len == 1 && raw[0] == b'.')
+                    || (len == 2 && raw[0] == b'.' && raw[1] == b'.')
+                {
                     continue;
                 }
                 if let Ok(name_str) = core::str::from_utf8(&raw[..len]) {
@@ -100,7 +101,8 @@ impl FileManager {
                     } else {
                         false
                     };
-                    let is_exe = !is_dir && (self.current_path == "/bin" || self.current_path == "/sbin");
+                    let is_exe =
+                        !is_dir && (self.current_path == "/bin" || self.current_path == "/sbin");
 
                     let mut entry_name = String::new();
                     let _ = entry_name.try_reserve_exact(len);
@@ -165,6 +167,21 @@ impl FileManager {
         }
     }
 
+    /// Scrolls so the selection is within `rows` visible rows.
+    pub fn ensure_visible(&mut self, rows: usize) {
+        let rows = rows.max(1);
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + rows {
+            self.scroll = self.selected + 1 - rows;
+        }
+    }
+
+    /// Visible list rows for a content height (matches render()).
+    pub fn rows_for(height: usize) -> usize {
+        height.saturating_sub(46) / 20
+    }
+
     pub fn set_path(&mut self, path: &str) {
         self.current_path.clear();
         self.current_path.push_str(path);
@@ -213,42 +230,41 @@ impl FileManager {
         None
     }
 
-    pub fn render(&self, w: &mut Window) {
-        let width = w.rect.w.saturating_sub(2);
-        let height = w.rect.h.saturating_sub(26);
+    pub fn render(&self, c: &mut Canvas) {
+        let (width, height) = (c.width, c.height);
         if width < 30 || height < 30 {
             return;
         }
-        w.content.fill(FILES_BG);
+        c.fill(FILES_BG);
 
         // Header toolbar (22px)
-        for y in 0..22.min(height) {
-            for x in 0..width {
-                w.content[y * width + x] = if y == 21 { 0xff3e3e3e } else { FILES_HEADER };
-            }
-        }
-        draw_text(w, 8, 3, "[^ Up]", FILES_DIR, FILES_HEADER);
-        draw_text(w, 64, 3, "[/]", 0xff8b949e, FILES_HEADER);
-        draw_text(w, 96, 3, "[/bin]", 0xff8b949e, FILES_HEADER);
-        draw_text(w, 152, 3, "[/etc]", 0xff8b949e, FILES_HEADER);
-        draw_text(w, 208, 3, "Path:", 0xff8b949e, FILES_HEADER);
-        draw_text(w, 256, 3, &self.current_path, FILES_FG, FILES_HEADER);
+        c.fill_rect(0, 0, width, 21, FILES_HEADER);
+        c.fill_rect(0, 21, width, 1, 0xff3e3e3e);
+        c.text(8, 3, "[^ Up]", FILES_DIR, FILES_HEADER);
+        c.text(64, 3, "[/]", 0xff8b949e, FILES_HEADER);
+        c.text(96, 3, "[/bin]", 0xff8b949e, FILES_HEADER);
+        c.text(152, 3, "[/etc]", 0xff8b949e, FILES_HEADER);
+        c.text(208, 3, "Path:", 0xff8b949e, FILES_HEADER);
+        c.text(256, 3, &self.current_path, FILES_FG, FILES_HEADER);
 
         // File list (y = 26 to height - 20)
         let max_items = (height.saturating_sub(46)) / 20;
         let mut cur_y = 26;
 
-        for (idx, entry) in self.entries.iter().skip(self.scroll).take(max_items).enumerate() {
+        for (idx, entry) in self
+            .entries
+            .iter()
+            .skip(self.scroll)
+            .take(max_items)
+            .enumerate()
+        {
             let actual_idx = self.scroll + idx;
             let is_sel = actual_idx == self.selected;
             let row_bg = if is_sel { FILES_SEL } else { FILES_BG };
 
             // Fill row background
-            for y in cur_y..(cur_y + 20).min(height.saturating_sub(20)) {
-                for x in 0..width {
-                    w.content[y * width + x] = row_bg;
-                }
-            }
+            let row_end = (cur_y + 20).min(height.saturating_sub(20));
+            c.fill_rect(0, cur_y, width, row_end.saturating_sub(cur_y), row_bg);
 
             // Draw icon tag
             let (tag, tag_fg) = if entry.is_dir {
@@ -258,16 +274,22 @@ impl FileManager {
             } else {
                 ("[FILE]", 0xff8b949e)
             };
-            draw_text(w, 8, cur_y + 2, tag, tag_fg, row_bg);
+            c.text(8, cur_y + 2, tag, tag_fg, row_bg);
 
             // Draw name
             let name_fg = if is_sel { 0xffffffff } else { FILES_FG };
-            draw_text(w, 64, cur_y + 2, &entry.name, name_fg, row_bg);
+            c.text(64, cur_y + 2, &entry.name, name_fg, row_bg);
 
             // Draw size for files
             if !entry.is_dir && width >= 320 {
                 let size_str = format_bytes(entry.size);
-                draw_text(w, width.saturating_sub(90), cur_y + 2, &size_str, 0xff8b949e, row_bg);
+                c.text(
+                    width.saturating_sub(90),
+                    cur_y + 2,
+                    &size_str,
+                    0xff8b949e,
+                    row_bg,
+                );
             }
 
             cur_y += 20;
@@ -275,11 +297,7 @@ impl FileManager {
 
         // Footer status bar (bottom 18px)
         let footer_y = height.saturating_sub(18);
-        for y in footer_y..height {
-            for x in 0..width {
-                w.content[y * width + x] = FILES_HEADER;
-            }
-        }
+        c.fill_rect(0, footer_y, width, height - footer_y, FILES_HEADER);
         let total_items = self.entries.len();
         let mut status_msg = String::new();
         let _ = status_msg.try_reserve_exact(32);
@@ -301,8 +319,14 @@ impl FileManager {
         if let Ok(s) = core::str::from_utf8(&n_buf[..n_len]) {
             status_msg.push_str(s);
         }
-        draw_text(w, 8, footer_y + 1, &status_msg, 0xff8b949e, FILES_HEADER);
-        draw_text(w, width.saturating_sub(180), footer_y + 1, "Click to Select / Open", 0xff8b949e, FILES_HEADER);
+        c.text(8, footer_y + 1, &status_msg, 0xff8b949e, FILES_HEADER);
+        c.text(
+            width.saturating_sub(180),
+            footer_y + 1,
+            "Click to Select / Open",
+            0xff8b949e,
+            FILES_HEADER,
+        );
     }
 }
 
@@ -345,19 +369,4 @@ fn format_bytes(bytes: u64) -> String {
         s.push_str(" KB");
     }
     s
-}
-
-fn draw_text(w: &mut Window, px: usize, py: usize, text: &str, fg: u32, bg: u32) {
-    use crate::window::theme;
-    let width = w.rect.w.saturating_sub(2);
-    let height = w.rect.h.saturating_sub(26);
-    let text_w = theme::text_width(text);
-    let max_w = text_w.min(width.saturating_sub(px));
-    let max_h = 18.min(height.saturating_sub(py));
-    for y in 0..max_h {
-        for x in 0..max_w {
-            let color = theme::text_pixel(text, x, y, fg, bg);
-            w.content[(py + y) * width + px + x] = color;
-        }
-    }
 }

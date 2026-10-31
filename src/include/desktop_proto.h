@@ -16,6 +16,9 @@
 #define DESKTOP_REQ_CREATE    1u  /* a,b = outer width/height, text = title */
 #define DESKTOP_REQ_DAMAGE    2u  /* a,b,c,d = x,y,w,h in content pixels */
 #define DESKTOP_REQ_TITLE     3u  /* text = title (printable ASCII) */
+#define DESKTOP_REQ_OPEN_BEGIN  4u /* a = path length 1..127: open in the editor */
+#define DESKTOP_REQ_OPEN_APPEND 5u /* text = next 1..40 path bytes (printable) */
+#define DESKTOP_REQ_OPEN_COMMIT 6u /* absolute path complete; at most 1/s */
 #define DESKTOP_EV_CONFIGURE 101u /* a,b = content width/height, c = stride */
 #define DESKTOP_EV_KEY       102u /* a = typed byte */
 #define DESKTOP_EV_CLOSE     103u /* window closed: save and exit */

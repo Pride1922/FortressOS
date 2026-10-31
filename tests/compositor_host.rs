@@ -1213,27 +1213,24 @@ fn notepad_editing_and_rendering() {
 
 #[test]
 fn files_navigation_and_rendering() {
-    let fm = files::FileManager::new(5, "/");
+    let fm = files::FileManager::new("/");
     assert_eq!(fm.current_path, "/");
 
-    let mut win = window::Window::new(
-        5,
-        "Files",
-        Rect {
-            x: 0,
-            y: 0,
-            w: 400,
-            h: 250,
-        },
-    )
-    .unwrap();
-    fm.render(&mut win);
-    // Verified header and toolbar rendered
+    let mut pixels = vec![0u32; 640 * 224];
+    let mut c = canvas::Canvas::new(&mut pixels, 398, 224, 640).unwrap();
+    fm.render(&mut c);
     assert!(
-        win.content
+        pixels
             .iter()
             .any(|&c| c == files::FILES_DIR || c == files::FILES_FG)
     );
+    for row in 0..224 {
+        assert!(
+            pixels[row * 640 + 398..row * 640 + 640]
+                .iter()
+                .all(|&p| p == 0)
+        );
+    }
 }
 
 #[test]
@@ -1302,7 +1299,7 @@ fn notepad_mouse_and_arrow_keys() {
 
 #[test]
 fn files_mouse_click_and_navigation() {
-    let mut fm = files::FileManager::new(5, "/");
+    let mut fm = files::FileManager::new("/");
     assert_eq!(fm.current_path, "/");
 
     // Click [/bin] button on toolbar: cx = 110, cy = 8
@@ -1758,6 +1755,96 @@ fn canvas_rejects_undersized_buffers_and_clips() {
             } else if inside_rect && !(x == 11 && y == 7) {
                 assert_eq!(pixels[y * 16 + x], 7);
             }
+        }
+    }
+}
+
+fn open_msg(kind: u32, a: u32, text: &[u8]) -> proto::Msg {
+    let mut m = proto::Msg::new(kind, a, 0, 0, 0);
+    m.text[..text.len()].copy_from_slice(text);
+    m.len = text.len() as u32;
+    m
+}
+
+#[test]
+fn open_requests_assemble_only_well_formed_absolute_paths() {
+    use proto::{OpenRequest, REQ_OPEN_APPEND as A, REQ_OPEN_BEGIN as B};
+    // A 100-byte path in three chunks.
+    let path: Vec<u8> = std::iter::once(b'/')
+        .chain(std::iter::repeat(b'x').take(99))
+        .collect();
+    let mut r = OpenRequest::default();
+    assert!(r.begin(&open_msg(B, 100, b"")));
+    for chunk in path.chunks(40) {
+        assert!(r.append(&open_msg(A, 0, chunk)));
+    }
+    assert_eq!(r.commit().unwrap().to_bytes(), &path[..]);
+    // Reusable after a commit.
+    assert!(r.begin(&open_msg(B, 4, b"")));
+    assert!(r.append(&open_msg(A, 0, b"/tmp")));
+    assert_eq!(r.commit().unwrap().to_bytes(), b"/tmp");
+
+    let mut r = OpenRequest::default();
+    assert!(!r.begin(&open_msg(B, 0, b"")), "empty");
+    assert!(!r.begin(&open_msg(B, 128, b"")), "too long");
+    assert!(!r.begin(&open_msg(B, u32::MAX, b"")), "huge");
+    assert!(!r.append(&open_msg(A, 0, b"/x")), "append without begin");
+    assert!(r.commit().is_none(), "commit without begin");
+    assert!(r.begin(&open_msg(B, 5, b"")));
+    assert!(!r.begin(&open_msg(B, 5, b"")), "nested begin");
+    assert!(
+        !r.append(&open_msg(A, 0, b"/tmp/x")),
+        "overflow past declared length"
+    );
+    assert!(r.append(&open_msg(A, 0, b"/tm")));
+    assert!(r.commit().is_none(), "incomplete");
+    for bad in [&b"tmp/x"[..], b"/a\x01b", b"/a\xffb"] {
+        let mut r = OpenRequest::default();
+        assert!(r.begin(&open_msg(B, bad.len() as u32, b"")));
+        let ok = r.append(&open_msg(A, 0, bad)) && r.commit().is_some();
+        assert!(!ok, "accepted {bad:?}");
+    }
+    let mut r = OpenRequest::default();
+    assert!(r.begin(&open_msg(B, 3, b"")));
+    let mut over = open_msg(A, 0, b"/ab");
+    over.len = 41;
+    assert!(!r.append(&over), "chunk length beyond the text field");
+}
+
+#[test]
+fn files_render_hostile_names_inside_the_canvas() {
+    let mut fm = files::FileManager::new("/nonexistent-for-test");
+    fm.entries.clear();
+    let names = [
+        String::from("a\u{1}b\u{7f}c\r\n\t"),
+        "x".repeat(63),
+        String::from("ünïcødé ✓ 名前"),
+        String::new(),
+        "y".repeat(400),
+    ];
+    for (i, name) in names.iter().enumerate() {
+        fm.entries.push(files::FileEntry {
+            name: name.clone(),
+            is_dir: i % 2 == 0,
+            is_exe: i == 1,
+            size: u64::MAX >> i,
+        });
+    }
+    for (w, h) in [(398, 224), (60, 60), (1918, 1054)] {
+        let stride = w + 37;
+        let mut pixels = vec![0u32; stride * h];
+        let mut c = canvas::Canvas::new(&mut pixels, w, h, stride).unwrap();
+        for selected in 0..names.len() {
+            fm.selected = selected;
+            fm.ensure_visible(files::FileManager::rows_for(h));
+            fm.render(&mut c);
+        }
+        for row in 0..h {
+            assert!(
+                pixels[row * stride + w..row * stride + stride]
+                    .iter()
+                    .all(|&p| p == 0)
+            );
         }
     }
 }

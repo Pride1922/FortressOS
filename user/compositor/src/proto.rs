@@ -20,6 +20,11 @@ pub const TEXT_MAX: usize = 40;
 pub const REQ_CREATE: u32 = 1; // a,b = outer window width/height, text = title
 pub const REQ_DAMAGE: u32 = 2; // a,b,c,d = x,y,w,h in content pixels
 pub const REQ_TITLE: u32 = 3; // text = title
+// Open a file in the desktop's editor. The compositor, not the app, decides
+// which program that is (an allowlist of one). Paths exceed one message, so:
+pub const REQ_OPEN_BEGIN: u32 = 4; // a = total path length (1..=OPEN_PATH_MAX)
+pub const REQ_OPEN_APPEND: u32 = 5; // text = next 1..=40 bytes of the path
+pub const REQ_OPEN_COMMIT: u32 = 6; // path complete: open it
 
 // Compositor -> app.
 pub const EV_CONFIGURE: u32 = 101; // a,b = content width/height, c = stride (pixels)
@@ -121,4 +126,67 @@ pub fn clip_damage(
     let w = (m.c as usize).min(content_w - x);
     let h = (m.d as usize).min(content_h - y);
     (w > 0 && h > 0).then_some((x, y, w, h))
+}
+
+pub const OPEN_PATH_MAX: usize = 127;
+
+/// Assembles one REQ_OPEN_* sequence. Every misuse (nested BEGIN, APPEND or
+/// COMMIT without BEGIN, overflow, non-printable bytes, an incomplete or
+/// relative path) is a protocol violation: the caller drops the app.
+pub struct OpenRequest {
+    buf: [u8; OPEN_PATH_MAX + 1],
+    expected: usize,
+    have: usize,
+    active: bool,
+}
+
+impl Default for OpenRequest {
+    fn default() -> Self {
+        Self {
+            buf: [0; OPEN_PATH_MAX + 1],
+            expected: 0,
+            have: 0,
+            active: false,
+        }
+    }
+}
+
+impl OpenRequest {
+    pub fn begin(&mut self, m: &Msg) -> bool {
+        let len = m.a as usize;
+        if self.active || len == 0 || len > OPEN_PATH_MAX {
+            return false;
+        }
+        *self = Self {
+            expected: len,
+            active: true,
+            ..Default::default()
+        };
+        true
+    }
+
+    pub fn append(&mut self, m: &Msg) -> bool {
+        let len = m.len as usize;
+        if !self.active || len == 0 || len > TEXT_MAX || len > self.expected - self.have {
+            return false;
+        }
+        let chunk = &m.text[..len];
+        if !chunk.iter().all(|&c| (0x20..0x7f).contains(&c)) {
+            return false;
+        }
+        self.buf[self.have..self.have + len].copy_from_slice(chunk);
+        self.have += len;
+        true
+    }
+
+    /// The finished path (NUL-terminated in the buffer), or None.
+    pub fn commit(&mut self) -> Option<&core::ffi::CStr> {
+        let complete = self.active && self.have == self.expected && self.buf[0] == b'/';
+        self.active = false;
+        if !complete {
+            return None;
+        }
+        self.buf[self.have] = 0;
+        core::ffi::CStr::from_bytes_until_nul(&self.buf).ok()
+    }
 }

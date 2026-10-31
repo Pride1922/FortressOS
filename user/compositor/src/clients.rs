@@ -63,6 +63,8 @@ struct Client {
     created: bool,
     rx: [u8; MSG_SIZE],
     rx_len: usize,
+    open: proto::OpenRequest,
+    last_open_ns: Option<u64>,
 }
 
 /// A process whose window is gone, waiting to exit (or to be killed).
@@ -77,6 +79,8 @@ pub struct Clients {
     slots: [Option<Client>; MAX_CLIENTS],
     exiting: [Option<Exiting>; 8],
     next_window_id: u32,
+    /// A validated REQ_OPEN_COMMIT path, launched after the request batch.
+    pending_open: Option<[u8; proto::OPEN_PATH_MAX + 1]>,
 }
 
 impl Default for Clients {
@@ -85,6 +89,7 @@ impl Default for Clients {
             slots: Default::default(),
             exiting: [None; 8],
             next_window_id: FIRST_WINDOW_ID,
+            pending_open: None,
         }
     }
 }
@@ -167,6 +172,8 @@ impl Clients {
             created: false,
             rx: [0; MSG_SIZE],
             rx_len: 0,
+            open: proto::OpenRequest::default(),
+            last_open_ns: None,
         });
         Ok(pid)
     }
@@ -218,6 +225,19 @@ impl Clients {
         }
         if !alive {
             self.drop_client(slot, windows, scene);
+        }
+        if let Some(path) = self.pending_open.take() {
+            if let Ok(arg) = core::ffi::CStr::from_bytes_until_nul(&path) {
+                let editor = installed(c"/usr/bin/notepad", c"/bin/notepad");
+                match self.launch(editor, &[arg], scene) {
+                    Ok(pid) => {
+                        crate::privilege::report(1, "[OK]", "Editor opened for app", Some(pid))
+                    }
+                    Err(e) => {
+                        crate::privilege::report(2, "[WARN]", "Editor launch failed", Some(e))
+                    }
+                }
+            }
         }
     }
 
@@ -287,6 +307,31 @@ impl Clients {
                         h,
                     });
                 }
+                true
+            }
+            proto::REQ_OPEN_BEGIN if client.created => client.open.begin(msg),
+            proto::REQ_OPEN_APPEND if client.created => client.open.append(msg),
+            proto::REQ_OPEN_COMMIT if client.created => {
+                let mut path = [0u8; proto::OPEN_PATH_MAX + 1];
+                match client.open.commit() {
+                    Some(p) => {
+                        let bytes = p.to_bytes_with_nul();
+                        path[..bytes.len()].copy_from_slice(bytes);
+                    }
+                    None => return false,
+                }
+                // At most one launch per app per second (nanosecond clock, so
+                // a burst cannot straddle a second boundary); extra requests
+                // are ignored, and the app limit bounds the total anyway.
+                let t = crate::perf::now_ns();
+                if client
+                    .last_open_ns
+                    .is_some_and(|last| t.saturating_sub(last) < 1_000_000_000)
+                {
+                    return true;
+                }
+                client.last_open_ns = Some(t);
+                self.pending_open = Some(path);
                 true
             }
             proto::REQ_TITLE if client.created => {
@@ -480,6 +525,19 @@ impl Clients {
         }
         self.exiting = [None; 8];
     }
+}
+
+/// A desktop app's binary: the package-installed copy in /usr/bin when one
+/// exists (PKG-1 installs executables there), otherwise the image's /bin.
+pub fn installed(
+    packaged: &'static core::ffi::CStr,
+    image: &'static core::ffi::CStr,
+) -> &'static core::ffi::CStr {
+    let mut st = sys::StatExtV1::default();
+    let regular = packaged
+        .to_str()
+        .is_ok_and(|p| sys::stat_ext(p, &mut st) == 0 && st.file_type == 1);
+    if regular { packaged } else { image }
 }
 
 fn spawn(

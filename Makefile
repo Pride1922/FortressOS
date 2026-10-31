@@ -1501,6 +1501,7 @@ $(USER_COMPOSITOR_ELF): $(USER_DIR)/compositor/assets/*.bin $(USER_DIR)/composit
 	@cd $(USER_DIR)/compositor && PATH="$$HOME/.cargo/bin:$$PATH" cargo build --release
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/compositor $@
 	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/notepad $(BUILD_DIR)/notepad.elf
+	@cp -f $(USER_DIR)/compositor/target/x86_64-unknown-none/release/files $(BUILD_DIR)/files.elf
 
 # Build USTAR Initramfs archive
 $(INITRAMFS_TAR): $(USER_PKG_ELF) $(USER_COMPOSITOR_ELF) $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt assets/desktop.conf
@@ -1510,6 +1511,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_PKG_ELF) $(BUILD_DIR)/initramfs/bin/pkg
 	@cp -f $(USER_COMPOSITOR_ELF) $(BUILD_DIR)/initramfs/bin/compositor
 	@cp -f $(BUILD_DIR)/notepad.elf $(BUILD_DIR)/initramfs/bin/notepad
+	@cp -f $(BUILD_DIR)/files.elf $(BUILD_DIR)/initramfs/bin/files
 	@cp -f assets/desktop.conf $(BUILD_DIR)/initramfs/etc/desktop.conf
 	@mkdir -p $(BUILD_DIR)/initramfs/usr/share/licenses/compositor
 	@cp -f $(USER_DIR)/compositor/assets/DejaVu-LICENSE.txt $(BUILD_DIR)/initramfs/usr/share/licenses/compositor/DejaVu-LICENSE.txt
