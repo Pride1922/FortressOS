@@ -77,14 +77,21 @@ static bool simulate_identical_install;
 static bool simulate_upgrade_install;
 static bool simulate_base_collision;
 static bool simulate_tampered_artifact;
+static long injected_install_error;
 
 static uint64_t g_session_counter = 100;
 static uint64_t g_active_session = 0;
 static unsigned g_install_source_calls = 0;
+static char captured_output[32768];
+static size_t captured_bytes;
 
 long tool_syscall(long call, uintptr_t a, uintptr_t b, uintptr_t c) {
     if (call == SYS_WRITE) {
         if (a == 1 || a == 2) {
+            if(c<sizeof captured_output-captured_bytes) {
+                memcpy(captured_output+captured_bytes,(const void *)b,c);
+                captured_bytes+=c;captured_output[captured_bytes]=0;
+            }
             return (long)fwrite((const void *)b, 1, (size_t)c, a == 1 ? stdout : stderr);
         }
         return -VFS_EBADF;
@@ -250,6 +257,7 @@ long tool_syscall(long call, uintptr_t a, uintptr_t b, uintptr_t c) {
             assert(q->version == 2 && q->session == g_active_session);
             g_install_source_calls++;
 
+            if(injected_install_error)return injected_install_error;
             if (simulate_tampered_artifact) return SYSCALL_EACCES;
             if (simulate_base_collision) return SYSCALL_EACCES;
             if (simulate_upgrade_install) return SYSCALL_EACCES;
@@ -271,6 +279,7 @@ long tool_syscall(long call, uintptr_t a, uintptr_t b, uintptr_t c) {
 }
 
 static void init_mock_fs(void) {
+    captured_bytes=0;captured_output[0]=0;
     mock_file_count = 0;
     open_fds = 0;
     spawn_count = 0;
@@ -281,6 +290,7 @@ static void init_mock_fs(void) {
     simulate_upgrade_install = false;
     simulate_base_collision = false;
     simulate_tampered_artifact = false;
+    injected_install_error=0;
 
     /* Populate /etc/pkg/repository.conf */
     mock_file_t *rf = create_file("/etc/pkg/repository.conf", 0644, 0);
@@ -482,7 +492,8 @@ int main(int argc, char **argv) {
         assert(rc == 0);
         assert(g_install_source_calls == 1);
         assert(open_fds == 0);
-        puts("PASS: identical installed build/hash is a no-op");
+        assert(strstr(captured_output,"package is already installed rot13 v 1.0\n"));
+        puts("PASS: identical installed build/hash is a no-op with package/version message");
     }
 
     /* 11. Test different version requires upgrade workflow (rejected in install) */
@@ -504,6 +515,22 @@ int main(int argc, char **argv) {
         puts("PASS: different version installation rejected (upgrade required)");
     }
 
-    puts("\nALL STAGE 2 HOST TESTS PASSED (11/11)");
+    /* Failed kernel calls must report the reason and release both sources/session. */
+    const long errors[]={SYSCALL_EIO,SYSCALL_ENOSPC,SYSCALL_ENOMEM,SYSCALL_EAGAIN};
+    const char *messages[]={"storage I/O failure","insufficient disk space","insufficient memory","backend is busy"};
+    for(unsigned i=0;i<sizeof errors/sizeof *errors;i++) {
+        init_mock_fs();
+        mock_file_t *cat=create_file("/var/cache/pkg/catalog.v1",0644,0);
+        memcpy(cat->data,g_catalog_v1,g_catalog_len);cat->size=g_catalog_len;
+        mock_file_t *art=create_file("/var/cache/pkg/rot13.fpk",0644,0);
+        memcpy(art->data,g_rot13_fpk,g_rot13_len);art->size=g_rot13_len;
+        injected_install_error=errors[i];
+        char *cmd[]={"pkg","install","rot13",NULL};
+        assert(pkg_system_main(3,cmd)!=0&&!open_fds&&!g_active_session);
+        assert(strstr(captured_output,messages[i]));
+        assert(strstr(captured_output,"sudo pkg status"));
+    }
+    puts("PASS: I/O, no-space, memory and busy errors return with descriptors/session released");
+    puts("\nALL STAGE 2 HOST TESTS PASSED (15/15)");
     return 0;
 }

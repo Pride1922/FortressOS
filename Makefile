@@ -1170,6 +1170,10 @@ test-pkg-fetch-host:
 test-pkg-stage2-host:
 	@python3 scripts/test_pkg_stage2.py
 
+.PHONY: test-pkg-ordinary-install-host
+test-pkg-ordinary-install-host:
+	@python3 scripts/test_pkg_ordinary_install.py
+
 test-pkg-format-host:
 	@mkdir -p $(BUILD_DIR)/pkg-format
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -fsanitize=address,undefined -fno-omit-frame-pointer -I. tests/pkg_format_host.c user/pkg/format.c -o $(BUILD_DIR)/pkg-format/host

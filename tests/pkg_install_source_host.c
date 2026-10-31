@@ -26,6 +26,8 @@ static void result(pkg_result_v1 *r,uint64_t session){
         .account_sequence=2,.credential_generation=3};
 }
 long tool_syscall(long nr,uintptr_t a,uintptr_t b,uintptr_t c){
+    if(nr==SYS_WRITE){assert(a==1||a==2);return (long)c;}
+    if(nr==SYS_READ){assert(a==11);size_t n=c<sizeof artifact?c:sizeof artifact;memcpy((void *)b,artifact,n);return (long)n;}
     if(nr==SYS_PKGCTL){
         const pkg_request_v1 *q=(const void *)a;pkg_result_v1 *r=(void *)b;
         if(q->operation==PKG_ACQUIRE){

@@ -7,7 +7,7 @@
 #ifdef FORTRESS_PKG_FETCH
 #include "repository.h"
 #endif
-typedef struct {uint64_t session;} cli_owner;
+typedef struct {uint64_t session,sequence;} cli_owner;
 static int control(unsigned operation,uint64_t session,pkg_result_v1 *out) {
     pkg_request_v1 q={.size=sizeof q,.version=1,.operation=operation,.session=session};
     return (int)tool_syscall(SYS_PKGCTL,(uintptr_t)&q,(uintptr_t)out,sizeof q);
@@ -30,7 +30,8 @@ static int acquire(cli_owner *owner) {
     if(control(PKG_ACQUIRE,0,&r))return -1;
     /* Retain a returned handle for cleanup even if its snapshot is rejected. */
     owner->session=r.session;
-    return !r.session?-1:snapshot(&r,r.session,&status);
+    if(!r.session||snapshot(&r,r.session,&status))return -1;
+    owner->sequence=status.sequence;return 0;
 }
 static int status(void *context,pkg_transaction_status *out) {
     (void)context;pkg_result_v1 r={0};
@@ -75,11 +76,61 @@ static void cli_msg(const char *s) {
     size_t l=0;while(s[l])l++;
     (void)tool_syscall(SYS_WRITE,1,(uintptr_t)s,l);
 }
+/* Display metadata only. Kernel verification and the returned sequence decide
+ * success/no-op. Reading the caller fd does not change kernel snapshot offsets. */
+static int display_read(int fd,uint8_t *out,size_t bytes) {
+    size_t at=0;
+    while(at<bytes) {
+        long n=tool_syscall(SYS_READ,fd,(uintptr_t)(out+at),bytes-at);
+        if(n<=0||(uint64_t)n>bytes-at)return -1;
+        at+=(size_t)n;
+    }
+    return 0;
+}
+static void display_version(int fd,const char *name,char version[33]) {
+    static uint8_t header[FPK_HEADER_SIZE],wire[FPK_MANIFEST_MAX];
+    static fpk_manifest manifest;
+    fpk_envelope envelope;
+    version[0]=0;
+    if(display_read(fd,header,sizeof header)||fpk_parse_envelope(header,sizeof header,&envelope)||
+       display_read(fd,wire,envelope.manifest_bytes)||
+       fpk_parse_manifest(wire,envelope.manifest_bytes,&manifest)||
+       manifest.package.length!=strlen(name)||memcmp(manifest.package.bytes,name,manifest.package.length))return;
+    memcpy(version,manifest.version.bytes,manifest.version.length);
+    version[manifest.version.length]=0;
+}
+static int install_done(cli_owner *owner,const pkg_transaction_status *state,const char *name,const char *version) {
+    if(state->sequence==owner->sequence) {
+        cli_msg("package is already installed ");cli_msg(name);
+        if(version[0]){cli_msg(" v ");cli_msg(version);}
+        cli_msg("\n");return 0;
+    }
+    static const char done[]="installation complete\n";
+    return tool_write("pkg",done,sizeof done-1);
+}
+static int install_error(long error) {
+    switch(error) {
+    case SYSCALL_EIO: cli_msg("pkg: storage I/O failure; installation is not confirmed\n");break;
+    case SYSCALL_ENOSPC: cli_msg("pkg: insufficient disk space\n");break;
+    case SYSCALL_EACCES: cli_msg("pkg: package verification or authorization rejected\n");break;
+    case SYSCALL_ENOMEM: cli_msg("pkg: insufficient memory\n");break;
+    case SYSCALL_EAGAIN: cli_msg("pkg: package backend is busy; installation is not confirmed\n");break;
+    default:break;
+    }
+    char message[80]="pkg: installation failed (kernel error ";
+    size_t n=strlen(message);
+    n+=tool_format_u64(message+n,(uint64_t)(error<0?-error:error));
+    message[n++]=')';message[n++]='\n';message[n]=0;
+    cli_msg(message);
+    cli_msg("pkg: run 'sudo pkg status' before retrying\n");
+    return 1;
+}
 static int install_source(cli_owner *owner,int argc,char **argv) {
     size_t n=0;
     if(argc!=4||!argv[2]||!argv[3])return tool_error("pkg","usage: pkg install PACKAGE ABSOLUTE-STAGING-DIRECTORY",NULL);
     while(n<33&&argv[2][n])n++;
     if(!fpk_identity_valid((const uint8_t *)argv[2],n))return tool_error("pkg","invalid package name",NULL);
+    cli_msg("pkg: checking installation backend...\n");
     if(acquire(owner))return tool_error("pkg","installation backend unavailable or session denied",NULL);
     uint64_t cn=0,an=0;
     int catalog=source_open(argv[3],"catalog.v1",PKG_SOURCE_CATALOG_MAX,&cn);
@@ -88,32 +139,27 @@ static int install_source(cli_owner *owner,int argc,char **argv) {
         if(catalog>=0)(void)tool_syscall(SYS_CLOSE,catalog,0,0);
         return tool_error("pkg","cannot open bounded catalog/artifact from staging",NULL);
     }
+    char version[33];display_version(artifact,argv[2],version);
     pkg_request_v2 q={.request={.size=sizeof q,.version=2,.operation=PKG_INSTALL_SOURCE,.session=owner->session},
         .catalog_fd=(uint64_t)catalog,.catalog_bytes=cn,
         .artifact_fd=(uint64_t)artifact,.artifact_bytes=an};
     for(size_t i=0;i<n;i++)q.request.package[i]=argv[2][i];
     pkg_result_v1 r={0};pkg_transaction_status state;
+    cli_msg("pkg: verifying and installing package...\n");
     long error=tool_syscall(SYS_PKGCTL,(uintptr_t)&q,(uintptr_t)&r,sizeof q);
     long close_catalog=tool_syscall(SYS_CLOSE,catalog,0,0),close_artifact=tool_syscall(SYS_CLOSE,artifact,0,0);
     if(error==SYSCALL_EOPNOTSUPP)return tool_error("pkg","source installation is unavailable in this kernel",NULL);
-    if(error){
-        char errbuf[64]="kernel error code: ";
-        size_t el=strlen(errbuf);
-        el+=tool_format_u64(errbuf+el,(uint64_t)(error<0?-error:error));
-        errbuf[el++]='\n';errbuf[el]=0;
-        cli_msg(errbuf);
-        return tool_error("pkg","installation request rejected by kernel",NULL);
-    }
+    if(error)return install_error(error);
     if(close_catalog||close_artifact)
         return tool_error("pkg","failed to close staging descriptors",NULL);
     if(snapshot(&r,owner->session,&state)||state.phase!=PKG_TX_IDLE)
         return tool_error("pkg","installation not confirmed; inspect status before retrying",NULL);
-    static const char done[]="installation complete\n";
-    return tool_write("pkg",done,sizeof done-1);
+    return install_done(owner,&state,argv[2],version);
 }
 static int install_cached(cli_owner *owner,const char *name) {
     size_t n=0;while(n<33&&name[n])n++;
     if(!fpk_identity_valid((const uint8_t *)name,n))return tool_error("pkg","invalid package name",NULL);
+    cli_msg("pkg: checking installation backend...\n");
     if(acquire(owner))return tool_error("pkg","installation backend unavailable or session denied",NULL);
 
     static const char *candidates[]={"/var/cache/pkg","/tmp/pkg-cache"};
@@ -137,23 +183,22 @@ static int install_cached(cli_owner *owner,const char *name) {
         return tool_error("pkg","package not found in cache; run 'pkg get' first",name);
     }
 
+    char version[33];display_version(artifact,name,version);
     pkg_request_v2 q={.request={.size=sizeof q,.version=2,.operation=PKG_INSTALL_SOURCE,.session=owner->session},
         .catalog_fd=(uint64_t)catalog,.catalog_bytes=cn,
         .artifact_fd=(uint64_t)artifact,.artifact_bytes=an};
     for(size_t i=0;i<n;i++)q.request.package[i]=name[i];
     pkg_result_v1 r={0};pkg_transaction_status state;
+    cli_msg("pkg: verifying and installing package...\n");
     long error=tool_syscall(SYS_PKGCTL,(uintptr_t)&q,(uintptr_t)&r,sizeof q);
     long close_catalog=tool_syscall(SYS_CLOSE,catalog,0,0),close_artifact=tool_syscall(SYS_CLOSE,artifact,0,0);
     if(error==SYSCALL_EOPNOTSUPP)return tool_error("pkg","source installation is unavailable in this kernel",NULL);
-    if(error){
-        return tool_error("pkg","installation request rejected by kernel",NULL);
-    }
+    if(error)return install_error(error);
     if(close_catalog||close_artifact)
         return tool_error("pkg","failed to close staging descriptors",NULL);
     if(snapshot(&r,owner->session,&state)||state.phase!=PKG_TX_IDLE)
         return tool_error("pkg","installation not confirmed; inspect status before retrying",NULL);
-    static const char done[]="installation complete\n";
-    return tool_write("pkg",done,sizeof done-1);
+    return install_done(owner,&state,name,version);
 }
 #endif
 int pkg_system_main(int argc,char **argv) {

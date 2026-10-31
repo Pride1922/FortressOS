@@ -77,7 +77,8 @@ static void px_encode(const px_record *s,uint8_t out[8192]){
     if(s->installed||s->phase){
         memcpy(out+320,s->package[0]?s->package:px->shape.package,32);
         memcpy(out+352,s->command[0]?s->command:px->shape.command,32);
-        memcpy(out+384,s->platform[0]?s->platform:px->shape.platform,32);
+        /* Platform hashes may start with zero; that byte is not a presence flag. */
+        memcpy(out+384,px_zero(s->platform,32)?px->shape.platform:s->platform,32);
     }
     memcpy(out+416,px->policy.filesystem,16);memcpy(out+432,px->policy.layout,32);
     for(unsigned i=0;i<17;i++){uint8_t *r=out+512+16*i;px_put(r,4,s->files[i].inode);px_put(r+4,4,s->files[i].generation);px_put(r+8,8,s->files[i].size);}
@@ -925,41 +926,9 @@ static int ext4_pkg_install_source(void *context, const uint8_t package[32],
         return r;
     }
 
-    e4_inode_t in_db;
-    if (px_lookup(fs, "/var/lib/pkg/install.v2", &in_db) == 0 && in_db.size == 8192) {
-        uint32_t b0 = 0, b1 = 0;
-        if (e4_dir_block(&in_db, 0, &b0) == 0 && e4_dir_block(&in_db, 1, &b1) == 0) {
-            uint8_t *db_raw = kmalloc(8192);
-            if (db_raw) {
-                if (e4_bytes(fs, (uint64_t)b0 * 4096, db_raw, 4096) &&
-                    e4_bytes(fs, (uint64_t)b1 * 4096, db_raw + 4096, 4096)) {
-                    px_record s;
-                    px_decode(db_raw, &s);
-                    uint8_t enc[8192];
-                    px_encode(&s, enc);
-                    if (memcmp(db_raw, enc, 8192) == 0 && s.installed == 1 && s.phase == PX_CLOSED) {
-                        uint8_t art_hash[32];
-                        (void)crypto_sha256(artifact, artifact_n, art_hash);
-                        if (strncmp((const char *)package, (const char *)s.package, 32) == 0 &&
-                            memcmp(art_hash, s.floor_hash, 32) == 0) {
-                            kfree(db_raw);
-                            status->phase = PKG_TX_IDLE;
-                            status->sequence = s.sequence;
-                            status->account_sequence = 1;
-                            status->credential_generation = 1;
-                            status->remaining[0] = s.remaining[0];
-                            status->remaining[1] = s.remaining[1];
-                            status->charged[0] = 0;
-                            status->charged[1] = 0;
-                            return 0;
-                        }
-                    }
-                }
-                kfree(db_raw);
-            }
-        }
-    }
-
+    /* px_encode requires the initialized transaction context. Reinstallation
+     * must also pass catalog/artifact verification and installed-file checks;
+     * px_prepare/px_begin already implement the verified PI_NOOP path. */
     struct ext4_pkg_staging *st = kmalloc(sizeof *st);
     if (!st) {
         kpkg_puts("[EXT4-PKG] kmalloc staging failed\n");

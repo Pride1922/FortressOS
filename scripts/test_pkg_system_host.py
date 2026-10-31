@@ -21,7 +21,7 @@ def main():
             'src/kernel/pkg_backend.c','src/kernel/process_table.c','src/kernel/creds.c','-o',str(out/'host')],'compile')
         run([str(out/'host')],'runtime')
         run(flags+['-DFORTRESS_PKG_FETCH=1','tests/pkg_install_source_host.c',
-            'user/pkg/system_cli.c','user/pkg/format.c','-o',str(out/'frontend')],'frontend-compile')
+            'user/pkg/system_cli.c','user/pkg/format.c','user/pkg/manifest.c','-o',str(out/'frontend')],'frontend-compile')
         run([str(out/'frontend')],'frontend-runtime')
         freestanding=['gcc','-std=c11','-Os','-Wall','-Wextra','-Werror','-ffreestanding',
             '-fno-builtin','-fno-pie','-fno-stack-protector','-mno-red-zone','-mno-sse','-mno-mmx',
