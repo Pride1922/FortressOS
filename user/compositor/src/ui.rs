@@ -125,7 +125,8 @@ impl<'a> Canvas<'a> {
             .saturating_sub(top)
             .min(height);
         let text_y = r.h.saturating_sub(18) / 2;
-        let inset = r.w.saturating_sub(text.len() * 8) / 2;
+        let tw = theme::text_width(text);
+        let inset = r.w.saturating_sub(tw) / 2;
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
@@ -133,7 +134,7 @@ impl<'a> Canvas<'a> {
                 let is_border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
                 let p = if is_border {
                     border_color
-                } else if lx >= inset && lx < inset + text.len() * 8 && ly >= text_y && ly < text_y + 18 {
+                } else if lx >= inset && lx < inset + tw && lx + 1 < r.w && ly >= text_y && ly < text_y + 18 {
                     theme::text_pixel(text, lx - inset, ly - text_y, fg, bg)
                 } else {
                     bg
@@ -188,7 +189,7 @@ impl<'a> Canvas<'a> {
         }
     }
     pub fn button_accent(&mut self, r: Rect, text: &str, focused: bool) {
-        self.box_text(r, text, 0xffffffff, theme::ACCENT, true, focused);
+        self.box_text_centered(r, text, 0xffffffff, theme::ACCENT, true, focused);
     }
     pub fn sidebar_nav(&mut self, r: Rect, text: &str, selected: bool, focused: bool) {
         let bg = if selected { 0xff363636 } else { 0xff202020 };
@@ -205,7 +206,7 @@ impl<'a> Canvas<'a> {
             .saturating_sub(top)
             .min(height);
         let text_y = r.h.saturating_sub(18) / 2;
-        let text_x = 16;
+        let text_x = 12;
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
@@ -215,7 +216,7 @@ impl<'a> Canvas<'a> {
                     theme::ACCENT
                 } else if focused && (x == 0 || y == 0 || x + 1 == width || y + 1 == height) {
                     theme::ACCENT
-                } else if lx >= text_x && lx < r.w && ly >= text_y && ly < text_y + 18 {
+                } else if lx >= text_x && lx + 2 < r.w && ly >= text_y && ly < text_y + 18 {
                     theme::text_pixel(text, lx - text_x, ly - text_y, fg, bg)
                 } else {
                     bg
@@ -237,7 +238,7 @@ impl<'a> Canvas<'a> {
         focused: bool,
         enabled: bool,
     ) {
-        self.box_text(
+        self.box_text_centered(
             r,
             text,
             if enabled { theme::TEXT } else { theme::MUTED },
@@ -409,32 +410,32 @@ impl<'a> Canvas<'a> {
                     } else {
                         bg
                     }
-                } else if lx >= 38 && lx < 240 && ly >= 3 && ly < 21 {
+                } else if lx >= 38 && lx < 272 && ly >= 3 && ly < 21 {
                     theme::text_pixel(ssid, lx - 38, ly - 3, fg, bg)
-                } else if connected && lx >= 244 && lx < 330 && ly >= 3 && ly < 21 {
-                    if lx >= 246 && lx <= 250 && ly >= 9 && ly <= 13 {
+                } else if connected && lx >= 276 && lx < 384 && ly >= 3 && ly < 21 {
+                    if lx >= 278 && lx <= 282 && ly >= 9 && ly <= 13 {
                         0xff4ade80
-                    } else if lx >= 256 {
-                        theme::text_pixel("Connected", lx - 256, ly - 3, 0xff4ade80, bg)
+                    } else if lx >= 288 {
+                        theme::text_pixel("Connected", lx - 288, ly - 3, 0xff4ade80, bg)
                     } else {
                         bg
                     }
-                } else if enabled && lx >= 340 && lx < 400 && ly >= 3 && ly < 21 {
+                } else if enabled && lx >= 390 && lx < 470 && ly >= 3 && ly < 21 {
                     let sig_name = match sig_bars {
                         4 => "Excellent",
                         3 => "Good",
                         2 => "Fair",
                         _ => "Weak",
                     };
-                    theme::text_pixel(sig_name, lx - 340, ly - 3, theme::MUTED, bg)
-                } else if enabled && lx >= 410 && lx < 458 && ly >= 3 && ly < 21 {
+                    theme::text_pixel(sig_name, lx - 390, ly - 3, theme::MUTED, bg)
+                } else if enabled && lx >= 474 && lx < r.w.saturating_sub(6) && ly >= 3 && ly < 21 {
                     let sec_name = match security {
                         0 => "Open",
                         2 => "WPA3",
                         3 => "WPA2/3",
                         _ => "WPA2",
                     };
-                    theme::text_pixel(sec_name, lx - 410, ly - 3, theme::MUTED, bg)
+                    theme::text_pixel(sec_name, lx - 474, ly - 3, theme::MUTED, bg)
                 } else {
                     bg
                 };
@@ -446,6 +447,63 @@ impl<'a> Canvas<'a> {
     }
     pub fn entry(&mut self, r: Rect, text: &str, focused: bool) {
         self.box_text(r, text, theme::TEXT, 0xff1e1e1e, true, focused);
+    }
+    fn box_text_centered(
+        &mut self,
+        r: Rect,
+        text: &str,
+        color: u32,
+        background: u32,
+        border: bool,
+        focused: bool,
+    ) {
+        let Some(left) = r.x.checked_mul(self.scale) else {
+            return;
+        };
+        let Some(top) = r.y.checked_mul(self.scale) else {
+            return;
+        };
+        let Some(width) = r.w.checked_mul(self.scale) else {
+            return;
+        };
+        let Some(height) = r.h.checked_mul(self.scale) else {
+            return;
+        };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let text_y = r.h.saturating_sub(18) / 2;
+        let tw = theme::text_width(text);
+        let inset = if tw == 0 {
+            8
+        } else {
+            r.w.saturating_sub(tw) / 2
+        }
+        .max(4);
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let p = if border && (x == 0 || y == 0 || x + 1 == width || y + 1 == height) {
+                    if focused {
+                        theme::ACCENT
+                    } else {
+                        theme::BORDER
+                    }
+                } else if lx >= inset && lx + 3 < r.w && ly >= text_y && ly < text_y + 18 {
+                    theme::text_pixel(text, lx - inset, ly - text_y, color, background)
+                } else {
+                    background
+                };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, p);
+                }
+            }
+        }
     }
     fn box_text(
         &mut self,
@@ -476,7 +534,8 @@ impl<'a> Canvas<'a> {
             .saturating_sub(top)
             .min(height);
         let text_y = r.h.saturating_sub(18) / 2;
-        let inset = if border { 9 } else { 0 };
+        let inset = if border { 8 } else { 0 };
+        let right_pad = if border { 4 } else { 0 };
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
@@ -487,7 +546,7 @@ impl<'a> Canvas<'a> {
                     } else {
                         theme::BORDER
                     }
-                } else if lx >= inset && lx + inset < r.w && ly >= text_y && ly < text_y + 18 {
+                } else if lx >= inset && lx + right_pad < r.w && ly >= text_y && ly < text_y + 18 {
                     theme::text_pixel(text, lx - inset, ly - text_y, color, background)
                 } else {
                     background
@@ -520,20 +579,20 @@ pub const APPS: [AppDescriptor; 3] = [
     AppDescriptor {
         id: 7,
         name: "Settings",
-        width: 680,
-        height: 520,
+        width: 760,
+        height: 540,
     },
     AppDescriptor {
         id: 8,
         name: "Network & Wi-Fi",
-        width: 680,
+        width: 760,
         height: 540,
     },
     AppDescriptor {
         id: 9,
         name: "Date & Time",
-        width: 680,
-        height: 520,
+        width: 760,
+        height: 540,
     },
 ];
 pub fn registered(id: u32) -> bool {

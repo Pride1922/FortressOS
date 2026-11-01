@@ -1642,7 +1642,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 		mkdir -p $(BUILD_DIR)/initramfs/usr/share/wallpapers; \
 		python3 scripts/build_wallpaper.py assets/wallpapers/hello-world.png $(BUILD_DIR)/initramfs/usr/share/wallpapers/hello-world.bin; \
 	fi
-	@objcopy --strip-debug $(BUILD_DIR)/initramfs/bin/* $(BUILD_DIR)/initramfs/sbin/* 2>/dev/null || true
+	@strip --strip-unneeded $(BUILD_DIR)/initramfs/bin/* $(BUILD_DIR)/initramfs/sbin/* 2>/dev/null || true
 	@echo "  [TAR] Generating USTAR archive $@"
 	@python3 scripts/create_initramfs.py $(BUILD_DIR)/initramfs $(INITRAMFS_TAR)
 
