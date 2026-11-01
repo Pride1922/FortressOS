@@ -117,9 +117,8 @@ private-work scan; the final implementation uses a separate root-only directory
 and preserves that scan. Failed exploratory copies remain in local evidence.
 
 User-reported Dell evidence covers Stage 2 install, repeat install, execution by
-`/usr/bin/rot13`, and catalog/download of published 2.0. Default login PATH still
-omits `/usr/bin`, so these acceptance commands use its absolute path. Dell upgrade
-and post-upgrade reboot acceptance are pending the new kernel/CLI refresh.
+`/usr/bin/rot13`, and catalog/download of published 2.0. The original acceptance commands used the absolute `/usr/bin/rot13` path.
+The later physical upgrade/reboot confirmations are recorded below.
 
 Final transport evidence: `.codex-remote-attachments/pkg-system-host-20261031-090344-129138/manifest.json`
 records runtime/source preservation PASS. The final media build uses
@@ -168,7 +167,7 @@ The default uses TCG and covers BIOS/UEFI × SMP=1/4. Every boot attaches exactl
 one disposable regular-file NVMe disk, with no additional data disk or physical
 device. The test HTTP server stops at completion; restart it using the retained
 README to test another copy manually. This closes the fresh-image QEMU gap;
-Dell upgrade/reboot acceptance remains separate.
+Dell upgrade/reboot acceptance is recorded separately below.
 
 ## Flashable installer with the 1.0 baseline
 
@@ -212,3 +211,10 @@ CLI diagnostic did not retain the original error code. The subsequent
 [session-acquisition investigation](../roadmap/pkg-session-acquire.md) records
 the missing filesystem exclusion, corrected diagnostics, before/final evidence
 and the boundary between the accepted old image and the new local kernel build.
+
+The user subsequently confirmed rot13 1.0 → 2.0 upgrade and reboot persistence
+PASS after installing the two-slot baseline and applying the offline kernel
+update, including the corrected package-session implementation. Physical manual
+previous/recovery kernel selection remains a separate unconfirmed check.
+
+Next milestone: [multiple installed packages](PKG_MULTIPLE_INSTALLED.md).

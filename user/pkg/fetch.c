@@ -2,12 +2,15 @@
 #include "pkg_abi.h"
 #include "../tools/common.h"
 #include "string.h"
+#include "crypto.h"
 static pkg_repository repository;
 static pkg_repository_trust trust;
 static fpk_verify_context verifier;
 static uint8_t trust_wire[1024],catalog_wire[FPK_CATALOG_MAX],config_wire[512];
 static char request_url[PKG_REPO_URL_MAX],catalog_path[192],artifact_path[192];
 static int artifact_fd;
+static size_t selected_catalog_n;
+static char selected_cache[128],snapshot_directory[160];
 static int opened(const char *path,uint64_t maximum,bool configuration,uint64_t *length){
     long fd=tool_syscall(SYS_OPEN,(uintptr_t)path,VFS_O_RDONLY|VFS_O_NOFOLLOW,0);if(fd<0)return -1;
     stat_ext_v1_t st={0};
@@ -125,7 +128,7 @@ int pkg_update_main(int argc,char **argv){
 
     long renamed=tool_syscall(SYS_RENAME_REPLACE,(uintptr_t)cat_tmp,(uintptr_t)cat_dst,0);
     if(renamed<0){
-        (void)tool_syscall(SYS_UNLINK,(uintptr_t)cat_dst,0,0);
+        if(renamed!=SYSCALL_ENOENT)return tool_error("pkg","catalog replacement failed; no retry",NULL);
         if(tool_syscall(SYS_RENAME,(uintptr_t)cat_tmp,(uintptr_t)cat_dst,0)<0)
             return tool_error("pkg","cannot update catalog in cache",NULL);
     }
@@ -188,7 +191,7 @@ int pkg_get_main(int argc,char **argv){
 
     long renamed=tool_syscall(SYS_RENAME_REPLACE,(uintptr_t)art_tmp,(uintptr_t)art_dst,0);
     if(renamed<0){
-        (void)tool_syscall(SYS_UNLINK,(uintptr_t)art_dst,0,0);
+        if(renamed!=SYSCALL_ENOENT)return tool_error("pkg","artifact replacement failed; no retry",NULL);
         if(tool_syscall(SYS_RENAME,(uintptr_t)art_tmp,(uintptr_t)art_dst,0)<0)
             return tool_error("pkg","cannot store artifact in cache",NULL);
     }
@@ -197,19 +200,94 @@ int pkg_get_main(int argc,char **argv){
     return tool_write("pkg",msg,sizeof msg-1);
 }
 
+static uint64_t installed_u64(const uint8_t *p){uint64_t v=0;for(unsigned i=0;i<8;i++)v|=(uint64_t)p[i]<<(8*i);return v;}
+int pkg_installed_read(pkg_installed out[PKG_INSTALLED_MAX],unsigned *count) {
+    static uint8_t raw[8192];*count=0;
+    for(unsigned slot=0;slot<PKG_INSTALLED_MAX;slot++) {
+        char path[64]="/var/lib/pkg/install.v2";
+        if(slot){memcpy(path,"/var/lib/pkg/install-00.v2",26);path[21]='0'+slot/10;path[22]='0'+slot%10;}
+        long fd=tool_syscall(SYS_OPEN,(uintptr_t)path,VFS_O_RDONLY|VFS_O_NOFOLLOW,0);
+        if(fd==SYSCALL_ENOENT)continue;
+        if(fd<0)return -1;
+        if(tool_syscall(SYS_CLOSE,fd,0,0))return -1;
+        size_t n=0;uint8_t digest[32];
+        if(read_file(path,raw,sizeof raw,true,&n)||n!=sizeof raw||crypto_sha256(raw,8160,digest)||
+           memcmp(digest,raw+8160,32)||memcmp(raw,"FORT-PKG-EXEC1",14)||raw[64]||raw[65]||raw[66]||raw[67]||raw[68]>1)return -1;
+        if(!raw[68])continue;
+        pkg_installed *v=out+*count;memset(v,0,sizeof *v);v->slot=slot;
+        memcpy(v->name,raw+320,32);memcpy(v->command,raw+352,32);
+        if(!fpk_identity_valid((uint8_t *)v->name,strlen(v->name))||!fpk_identity_valid((uint8_t *)v->command,strlen(v->command)))return -1;
+        for(unsigned i=0;i<*count;i++)if(!strcmp(v->name,out[i].name)||!strcmp(v->command,out[i].command))return -1;
+        v->sequence=installed_u64(raw+24);v->build=installed_u64(raw+40);memcpy(v->artifact,raw+112,32);
+        if(!v->build||crypto_sha256(raw,sizeof raw,v->identity))return -1;
+        (*count)++;
+    }
+    /* Lexical package order is independent of installation history. */
+    for(unsigned i=1;i<*count;i++)for(unsigned j=i;j&&strcmp(out[j-1].name,out[j].name)>0;j--){pkg_installed tmp=out[j];out[j]=out[j-1];out[j-1]=tmp;}
+    return 0;
+}
+int pkg_catalog_refresh(void) {
+    snapshot_directory[0]=0;
+    int r=pkg_update_main(0,NULL);if(r)return r;
+    pkg_cache_dir(selected_cache);char path[192];size_t n=strlen(selected_cache);
+    memcpy(path,selected_cache,n);memcpy(path+n,"/catalog.v1",12);
+    if(read_file(path,catalog_wire,sizeof catalog_wire,false,&selected_catalog_n))return -1;
+    fpk_catalog catalog;
+    return fpk_catalog_verify(catalog_wire,selected_catalog_n,&trust.catalog,&catalog);
+}
+int pkg_catalog_target(const char *name,uint64_t *build,uint8_t hash[32]) {
+    fpk_catalog catalog;fpk_catalog_target target;
+    if(!selected_catalog_n||fpk_catalog_verify(catalog_wire,selected_catalog_n,&trust.catalog,&catalog)||
+       fpk_catalog_find(&catalog,(const uint8_t *)name,strlen(name),&target))return -1;
+    *build=target.build;memcpy(hash,target.sha256,32);return 0;
+}
+const char *pkg_selected_directory(void){return snapshot_directory[0]?snapshot_directory:NULL;}
+int pkg_download_selected(const char *name) {
+    fpk_catalog catalog;fpk_catalog_target target;
+    if(!selected_catalog_n||fpk_catalog_verify(catalog_wire,selected_catalog_n,&trust.catalog,&catalog)||
+       fpk_catalog_find(&catalog,(const uint8_t *)name,strlen(name),&target))return tool_error("pkg","package unavailable",name);
+    if(!snapshot_directory[0]) {
+        size_t n=strlen(selected_cache);memcpy(snapshot_directory,selected_cache,n);memcpy(snapshot_directory+n,"/run-",5);
+        uint64_t nonce=0;if(tool_syscall(SYS_GETRANDOM,(uintptr_t)&nonce,sizeof nonce,0)!=(long)sizeof nonce)return 1;
+        n+=5;n+=tool_format_u64(snapshot_directory+n,nonce);snapshot_directory[n]=0;
+        if(tool_syscall(SYS_MKDIR,(uintptr_t)snapshot_directory,0700,0)){snapshot_directory[0]=0;return tool_error("pkg","cannot create private download directory",NULL);}
+        char path[192];memcpy(path,snapshot_directory,n);memcpy(path+n,"/catalog.v1",12);
+        long fd=tool_syscall(SYS_OPEN,(uintptr_t)path,VFS_O_WRONLY|VFS_O_CREAT|VFS_O_EXCL,0600);
+        if(fd<0)return 1;
+        size_t at=0;int r=0;
+        while(at<selected_catalog_n){size_t take=selected_catalog_n-at;if(take>4096)take=4096;long got=tool_syscall(SYS_WRITE,fd,(uintptr_t)(catalog_wire+at),take);if(got<=0||(size_t)got>take){r=1;break;}at+=(size_t)got;}
+        if(tool_syscall(SYS_CLOSE,fd,0,0))r=1;
+        if(r)return tool_error("pkg","cannot retain catalog snapshot",NULL);
+    }
+    char path[192];size_t n=strlen(snapshot_directory),nn=strlen(name);
+    memcpy(path,snapshot_directory,n);path[n++]='/';memcpy(path+n,name,nn);memcpy(path+n+nn,".fpk",5);
+    if(pkg_repository_url(&repository,target.sha256,request_url)||download(request_url,path))return tool_error("pkg","artifact download failed",name);
+    uint64_t bytes=0;artifact_fd=opened(path,PKG_SOURCE_ARTIFACT_MAX,false,&bytes);
+    if(artifact_fd<0)return tool_error("pkg","cannot open downloaded artifact",name);
+    int r=bytes!=target.length?-1:fpk_verify_authorized(&verifier,catalog_wire,selected_catalog_n,&trust.catalog,
+        (const uint8_t *)name,nn,read_artifact,NULL);
+    if(tool_syscall(SYS_CLOSE,artifact_fd,0,0))r=-1;
+    artifact_fd=-1;
+    if(r||memcmp(verifier.manifest.platform_id,trust.platform,32)||verifier.manifest.base_min>trust.base_version||verifier.manifest.base_max<trust.base_version)
+        return tool_error("pkg","artifact integrity/platform/base rejected",name);
+    return 0;
+}
+
 /* The installed record supplies only a download hint. SYS_PKGCTL independently
  * binds this source's hash to the retained current inventory. */
 int pkg_previous_source(const char *name,uint64_t *bytes) {
-    static uint8_t record[8192];size_t n=0;
-    if(read_file("/var/lib/pkg/install.v2",record,sizeof record,true,&n)||n!=sizeof record||
-       memcmp(record,"FORT-PKG-EXEC1",14)||record[64]||record[68]!=1||
-       strlen(name)>32||memcmp(record+320,name,strlen(name))||
-       (strlen(name)<32&&record[320+strlen(name)]))return -1;
+    static pkg_installed records[PKG_INSTALLED_MAX];unsigned count=0;
+    if(pkg_installed_read(records,&count))return -1;
+    const pkg_installed *installed=NULL;
+    for(unsigned i=0;i<count;i++)if(!strcmp(name,records[i].name))installed=records+i;
+    if(!installed)return -1;
     timespec_t now={0};if(load_trust_and_repo(&now))return -1;
-    char cdir[128];pkg_cache_dir(cdir);size_t cn=strlen(cdir);
+    char cdir[160];
+    if(snapshot_directory[0])memcpy(cdir,snapshot_directory,strlen(snapshot_directory)+1);else pkg_cache_dir(cdir);
+    size_t cn=strlen(cdir);
     char path[192],temporary[192];memcpy(path,cdir,cn);memcpy(path+cn,"/previous.fpk",14);
     memcpy(temporary,cdir,cn);memcpy(temporary+cn,"/previous.fpk.tmp",18);
-    if(pkg_repository_url(&repository,record+112,request_url)||download(request_url,temporary))return -1;
+    if(pkg_repository_url(&repository,installed->artifact,request_url)||download(request_url,temporary))return -1;
     long moved=tool_syscall(SYS_RENAME_REPLACE,(uintptr_t)temporary,(uintptr_t)path,0);
     if(moved<0) {
         /* Only a missing destination permits the no-replace first publication.

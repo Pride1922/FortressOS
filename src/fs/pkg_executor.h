@@ -2,6 +2,7 @@
 #define FORTRESS_PKG_EXECUTOR_H
 #include "pkg_plan.h"
 #define PX_RECORD 8192u
+#define PX_PACKAGES 16u
 #define PX_DIRS 64u
 #define PX_SLOTS 17u
 enum {PX_CLOSED,PX_BUILD,PX_COMMIT,PX_RETIRE,PX_DELETE,PX_ABORT};
@@ -10,6 +11,7 @@ enum {PX_CLOSED,PX_BUILD,PX_COMMIT,PX_RETIRE,PX_DELETE,PX_ABORT};
  * minimum record identity. Source/catalog backing is copied before mutations. */
 typedef struct {uint32_t inode,generation;uint64_t physical;} px_anchor;
 typedef struct {
+    unsigned slot; /* 0 retains the legacy authoritative record. */
     fpk_catalog_policy catalog;
     pi_resources resources;
     px_anchor anchors[8]; /* record, work, bin, docs, root, pkg, usr, usr/share */

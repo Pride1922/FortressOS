@@ -38,6 +38,7 @@ static void *px_allocate(size_t bytes){
     void *out=kmalloc_large(bytes);if(out)memset(out,0,bytes);return out;
 }
 static void px_view(bool previous);
+static int px_reconcile_cleanup(void);
 static bool px_released(ext4_engine_t *,uint32_t,bool);
 static void px_copy(char *out,const char *in){memcpy(out,in,strlen(in)+1);}
 static bool px_actor(void){uintptr_t actor=px?__atomic_load_n(&px->actor,__ATOMIC_ACQUIRE):0;return actor&&px->policy.current_actor&&px->policy.current_actor()==actor;}
@@ -67,7 +68,7 @@ static void px_put(uint8_t *p,unsigned n,uint64_t v){for(unsigned i=0;i<n;i++)p[
 static bool px_zero(const void *p,size_t n){const uint8_t *b=p;for(size_t i=0;i<n;i++)if(b[i])return false;return true;}
 static unsigned px_mask(void){return (1u<<px->shape.file_count)-1u;}
 static bool px_dir_gone(unsigned i){return (px->state.deleted[i/8]>>(i%8))&1;}
-static void px_encode(const px_record *s,uint8_t out[8192]){
+static void px_encode_for(const px_context *c,const px_record *s,uint8_t out[8192]){
     memset(out,0,8192);memcpy(out,"FORT-PKG-EXEC1",14);px_put(out+16,4,8192);px_put(out+20,2,1);
     px_put(out+24,8,s->sequence);px_put(out+32,8,s->generation);px_put(out+40,8,s->floor);px_put(out+48,8,s->root);px_put(out+56,8,s->catalog);
     const uint32_t fields[]={s->phase,s->installed,s->operation,s->made,s->published,s->trash,s->gone};for(unsigned i=0;i<7;i++)px_put(out+64+4*i,4,fields[i]);
@@ -75,16 +76,17 @@ static void px_encode(const px_record *s,uint8_t out[8192]){
     for(unsigned i=0;i<2;i++){px_put(out+208+8*i,8,s->total[i]);px_put(out+224+8*i,8,s->remaining[i]);px_put(out+240+8*i,8,s->charged[i]);}
     memcpy(out+256,s->catalog_hash,32);memcpy(out+288,s->root_hash,32);
     if(s->installed||s->phase){
-        memcpy(out+320,s->package[0]?s->package:px->shape.package,32);
-        memcpy(out+352,s->command[0]?s->command:px->shape.command,32);
+        memcpy(out+320,s->package[0]?s->package:c->shape.package,32);
+        memcpy(out+352,s->command[0]?s->command:c->shape.command,32);
         /* Platform hashes may start with zero; that byte is not a presence flag. */
-        memcpy(out+384,px_zero(s->platform,32)?px->shape.platform:s->platform,32);
+        memcpy(out+384,px_zero(s->platform,32)?c->shape.platform:s->platform,32);
     }
-    memcpy(out+416,px->policy.filesystem,16);memcpy(out+432,px->policy.layout,32);
+    memcpy(out+416,c->policy.filesystem,16);memcpy(out+432,c->policy.layout,32);
     for(unsigned i=0;i<17;i++){uint8_t *r=out+512+16*i;px_put(r,4,s->files[i].inode);px_put(r+4,4,s->files[i].generation);px_put(r+8,8,s->files[i].size);}
     memcpy(out+896,s->deleted,8);for(unsigned i=0;i<64;i++){px_put(out+1024+8*i,4,s->directories[i].inode);px_put(out+1028+8*i,4,s->directories[i].generation);}
     (void)crypto_sha256(out,8160,out+8160);
 }
+static void px_encode(const px_record *s,uint8_t out[8192]){px_encode_for(px,s,out);}
 static void px_decode(const uint8_t *in,px_record *s){
     memset(s,0,sizeof *s);s->sequence=px_get(in+24,8);s->generation=px_get(in+32,8);s->floor=px_get(in+40,8);s->root=px_get(in+48,8);s->catalog=px_get(in+56,8);
     s->phase=px_get(in+64,4);s->installed=px_get(in+68,4);s->operation=px_get(in+72,4);s->made=px_get(in+76,4);s->published=px_get(in+80,4);s->trash=px_get(in+84,4);s->gone=px_get(in+88,4);
@@ -113,19 +115,30 @@ static uint64_t px_free(ext4_engine_t *e,bool inode,bool planned){
         n+=e4_u16(raw+(inode?14:12));
     }return n;
 }
-static int px_record_read(ext4_mount_t *fs){
-    e4_inode_t in;int r=px_lookup(fs,"/var/lib/pkg/install.v2",&in);if(r)return r;
+/* Fixed names bound both discovery and capacity; no directory-supplied paths. */
+static void px_record_path(unsigned slot,char out[192]) {
+    if(!slot){px_copy(out,"/var/lib/pkg/install.v2");return;}
+    px_copy(out,"/var/lib/pkg/install-00.v2");out[21]='0'+slot/10;out[22]='0'+slot%10;
+}
+static void px_work_path(unsigned slot,char out[192]) {
+    if(!slot){px_copy(out,"/var/lib/pkg/work-v2");return;}
+    px_copy(out,"/var/lib/pkg/work-00");out[18]='0'+slot/10;out[19]='0'+slot%10;
+}
+static int px_record_read_into(ext4_mount_t *fs,px_context *c){
+    char path[192];px_record_path(c->policy.slot,path);
+    e4_inode_t in;int r=px_lookup(fs,path,&in);if(r)return r;
     if(in.mode!=VFS_S_IFREG||(in.full_mode&07777)!=0600||in.uid||in.gid||in.size!=8192)return PX_REJECT(-VFS_EACCES);
     uint32_t b0=0,b1=0;
     r=e4_dir_block(&in,0,&b0);if(r)return r;
     r=e4_dir_block(&in,1,&b1);if(r)return r;
-    px->record_inode=in.ino;px->record_blocks[0]=b0;px->record_blocks[1]=b1;
-    if(!e4_bytes(fs,(uint64_t)b0*4096,px->raw,4096))return -VFS_EIO;
-    if(!e4_bytes(fs,(uint64_t)b1*4096,px->raw+4096,4096))return -VFS_EIO;
-    px_decode(px->raw,&px->state);px_encode(&px->state,px->encoded);
-    if(memcmp(px->raw,px->encoded,8192)||!px->state.sequence||px->state.sequence==UINT64_MAX||!px->state.generation||px->state.generation==UINT64_MAX||px->state.phase>PX_ABORT||px->state.installed>1)return PX_REJECT(-VFS_EACCES);
+    c->record_inode=in.ino;c->record_blocks[0]=b0;c->record_blocks[1]=b1;
+    if(!e4_bytes(fs,(uint64_t)b0*4096,c->raw,4096))return -VFS_EIO;
+    if(!e4_bytes(fs,(uint64_t)b1*4096,c->raw+4096,4096))return -VFS_EIO;
+    px_decode(c->raw,&c->state);px_encode_for(c,&c->state,c->encoded);
+    if(memcmp(c->raw,c->encoded,8192)||!c->state.sequence||c->state.sequence==UINT64_MAX||!c->state.generation||c->state.generation==UINT64_MAX||c->state.phase>PX_ABORT||c->state.installed>1)return PX_REJECT(-VFS_EACCES);
     return 0;
 }
+static int px_record_read(ext4_mount_t *fs){return px_record_read_into(fs,px);}
 static int px_owned_cost(ext4_engine_t *e,bool planned,uint64_t out[2]){
     out[0]=out[1]=0;uint8_t raw[256];
     for(unsigned i=0;i<17;i++)if((px->state.made&(1u<<i))&&!(px->state.gone&(1u<<i))){
@@ -259,7 +272,8 @@ static int px_prepare(ext4_mount_t *fs,const px_policy *policy,const uint8_t *ar
     int r=px_record_read(fs);
     spin_unlock_irqrestore(&e4_lock,flags);
     if(r){px_destroy();return r;}
-    if(px->state.installed){
+    bool resuming=px->state.phase!=PX_CLOSED;
+    if(px->state.installed||resuming){
         px_input input={px->artifact,px->artifact_n,0};
         if(fpk_verify_authorized(&px->verify.verify,px->catalog,px->catalog_n,&policy->catalog,name,name_n,px_source_read,&input)){
             px_destroy();return PX_REJECT(-VFS_EACCES);
@@ -276,11 +290,25 @@ static int px_prepare(ext4_mount_t *fs,const px_policy *policy,const uint8_t *ar
             t->path_length=f->path.length;memcpy(t->path,f->path.bytes,f->path.length);memcpy(t->hash,f->sha256,32);
         }
     }
+    if(resuming) {
+        const fpk_manifest *m=&px->verify.verify.manifest;uint8_t hash[32];
+        (void)crypto_sha256(artifact,artifact_n,hash);
+        if(memcmp(hash,px->state.floor_hash,32)||m->build!=px->state.floor||
+           memcmp(px->shape.package,px->state.package,32)||memcmp(px->shape.command,px->state.command,32)||
+           memcmp(m->platform_id,policy->resources.platform,32)||m->base_min>policy->resources.base||m->base_max<policy->resources.base||
+           px->state.operation!=PI_INSTALL||px->state.phase==PX_ABORT){px_destroy();return -VFS_EACCES;}
+        px->shape.build=m->build;px->shape.root=px->state.root;px->shape.catalog=px->state.catalog;
+        memcpy(px->shape.platform,m->platform_id,32);
+        px->plan.operation=PI_INSTALL;
+        for(unsigned d=0;d<2;d++)px->plan.total[d]=px->state.total[d];
+        memcpy(px->shape.artifact,hash,32);memcpy(px->shape.catalog_hash,px->state.catalog_hash,32);
+    } else {
     px_view(false);
     pi_resources *res=&px->policy.resources;res->block_size=4096;res->free[0]=res->capacity[0];res->free[1]=res->capacity[1];res->remaining[0]=res->remaining[1]=0;
     px_input input={px->artifact,px->artifact_n,0};
     if(pi_prepare(PI_INSTALL,px->catalog,px->catalog_n,&policy->catalog,name,name_n,px_source_read,&input,&px->inventory,px->observed,res,&px->verify,&px->shape)){
         px_destroy();return PX_REJECT(-VFS_EACCES);
+    }
     }
     px->payload_n=px->verify.verify.envelope.expanded_bytes;
     uint64_t memory=sizeof *px+artifact_n+catalog_n+128*1024+px->payload_n;
@@ -292,9 +320,14 @@ static int px_prepare(ext4_mount_t *fs,const px_policy *policy,const uint8_t *ar
     size_t at=0;for(unsigned i=0;i<px->shape.file_count;i++){px->offsets[i]=at+512;at+=512+(size_t)((px->shape.files[i].size+511)/512)*512;}
     if(at+1024!=px->payload_n){px_destroy();return PX_REJECT(-VFS_EACCES);}
     uint8_t root[288];memcpy(root,policy->catalog.repository,16);memcpy(root+16,policy->catalog.keys,256);px_put(root+272,4,policy->catalog.key_count);px_put(root+276,4,policy->catalog.threshold);px_put(root+280,8,policy->catalog.root_version);
-    (void)crypto_sha256(root,sizeof root,px->root_hash);r=px_paths();if(r)px_destroy();return r;
+    (void)crypto_sha256(root,sizeof root,px->root_hash);
+    if(resuming){memcpy(px->root_hash,px->state.root_hash,32);r=px_paths_for(px);px->shape.parent_count=px->directory_count;}
+    else r=px_paths();
+    if(!r&&resuming)r=px_reconcile_cleanup();
+    if(r)px_destroy();
+    return r;
 }
-static void px_stage_path(unsigned i,char out[192]){px_copy(out,"/var/lib/pkg/work-v2/m00");size_t n=strlen(out);out[n-2]='0'+i/10;out[n-1]='0'+i%10;}
+static void px_stage_path(unsigned i,char out[192]){px_work_path(px->policy.slot,out);px_add(out,"/m00",4);size_t n=strlen(out);out[n-2]='0'+i/10;out[n-1]='0'+i%10;}
 static unsigned px_member(unsigned i){if(i!=16)return i;for(unsigned j=0;j<px->shape.file_count;j++)if(px->shape.files[j].role==1)return j;return 0;}
 static uint64_t px_member_size(unsigned i){return px->shape.files[px_member(i)].size;}
 static bool px_released(ext4_engine_t *e,uint32_t ino,bool planned){
@@ -352,12 +385,12 @@ static int px_directory_members(e4_inode_t *dir,unsigned role){
         if(!known)return PX_REJECT(-VFS_EACCES);
     }return PX_REJECT(-VFS_EACCES);
 }
-static int px_validate(ext4_mount_t *fs){
+static int px_validate_values(ext4_mount_t *fs,bool reload){
     if(fs->bs!=4096||fs->blocks!=px->policy.resources.capacity[0]||fs->inodes!=px->policy.resources.capacity[1]){
         kpkg_puts("[EXT4-PKG] validate: capacity mismatch\n");
         return PX_REJECT(-VFS_EACCES);
     }
-    int r=px_record_read(fs);
+    int r=reload?px_record_read(fs):0;
     if(r){
         kpkg_puts("[EXT4-PKG] validate: record_read failed: ");
         kpkg_put_u64(r < 0 ? -r : r);
@@ -393,7 +426,8 @@ static int px_validate(ext4_mount_t *fs){
         return PX_REJECT(-VFS_EACCES);
     }
     for(unsigned i=1;i<8;i++){
-        e4_inode_t in;r=px_lookup(fs,anchors[i],&in);
+        char anchor[192];const char *path=anchors[i];if(i==1){px_work_path(px->policy.slot,anchor);path=anchor;}
+        e4_inode_t in;r=px_lookup(fs,path,&in);
         if(r){
             kpkg_puts("[EXT4-PKG] validate: lookup anchor failed: ");
             kpkg_puts(anchors[i]);
@@ -436,7 +470,8 @@ static int px_validate(ext4_mount_t *fs){
         fs->orphan_access=inode;r=px_contents(fs,i,&in);fs->orphan_access=0;if(r)return r;
         if((published||s->phase==PX_COMMIT||s->phase==PX_RETIRE)&&!(s->trash&(1u<<i))&&in.size!=px_member_size(i))return PX_REJECT(-VFS_EACCES);
     }
-    e4_inode_t work;r=px_lookup(fs,"/var/lib/pkg/work-v2",&work);if(r)return r;
+    char work_path[192];px_work_path(px->policy.slot,work_path);
+    e4_inode_t work;r=px_lookup(fs,work_path,&work);if(r)return r;
     for(unsigned i=0;i<20;i++){
         uint32_t found=0;vfs_dirent_t entry;r=e4_scan(&work,NULL,i,&entry,&found);if(r<0)return r;if(!found)break;
         if(!strcmp(entry.name,".")||!strcmp(entry.name,".."))continue;
@@ -454,9 +489,15 @@ static int px_validate(ext4_mount_t *fs){
         else{e4_inode_t named;r=px_lookup(fs,px->directories[i],&named);if(!r&&named.ino!=ino)r=-VFS_EACCES;if(!r)r=px_directory_members(&in,i);}
         if(r)return r;
     }
-    if(s->phase&&s->operation==PI_INSTALL){uint64_t owned[2];r=px_owned_cost(fs->engine,false,owned);if(r)return r;if(owned[0]!=s->charged[0]||owned[1]!=s->charged[1])return PX_REJECT(-VFS_EACCES);}
+    if(s->phase&&s->operation==PI_INSTALL){uint64_t owned[2];r=px_owned_cost(fs->engine,false,owned);if(r)return r;if(owned[0]!=s->charged[0]||owned[1]!=s->charged[1]){
+#ifdef PX_COST_DIAGNOSTIC
+        PX_COST_DIAGNOSTIC(s,owned);
+#endif
+        return PX_REJECT(-VFS_EACCES);}
+}
     return 0;
 }
+static int px_validate(ext4_mount_t *fs){return px_validate_values(fs,true);}
 static int px_record_transaction(void){
     uint64_t flags=spin_lock_irqsave(&e4_lock);ext4_engine_t *e=px->fs->engine;int r=e4_namespace_begin(e);
     if(!r)r=e4_namespace_end(e,0);
@@ -531,6 +572,37 @@ static int px_remove_directory(unsigned role){
     vfs_node_put(parent);return px_unscope(r);
 }
 static int px_meta(void){int r=px_scope(PX_META,0);if(r)return r;r=px_record_transaction();return px_unscope(r);}
+/* Mount replay completes generic orphan reclamation before the package owner
+ * exists. Reconcile only already-authorized trash, after validating all remaining
+ * bytes/identities. Refund the exact decrease; never authorize fresh allocation
+ * or relax an ownership check. Publish the repaired ledger in one transaction. */
+static int px_reconcile_cleanup(void) {
+    uint64_t flags=spin_lock_irqsave(&e4_lock);int r=px_record_read(px->fs);
+    bool changed=false;
+    if(!r) {
+        px->backup=px->state;
+        for(unsigned i=0;!r&&i<17;i++)if((px->state.trash&(1u<<i))&&!(px->state.gone&(1u<<i))) {
+            uint8_t raw[256];r=px_inode_bytes(px->fs->engine,px->state.files[i].inode,raw,false);if(r)break;
+            if(e4_u32(raw+100)!=px->state.files[i].generation){r=-VFS_EACCES;break;}
+            if(!e4_u16(raw)) {
+                if(!px_released(px->fs->engine,px->state.files[i].inode,false)){r=-VFS_EACCES;break;}
+                px->state.gone|=1u<<i;changed=true;
+            }
+        }
+        uint64_t owned[2];if(!r)r=px_owned_cost(px->fs->engine,false,owned);
+        for(unsigned d=0;!r&&d<2;d++) {
+            if(owned[d]>px->state.charged[d]){r=-VFS_EACCES;break;}
+            uint64_t refund=px->state.charged[d]-owned[d];
+            if(refund>UINT64_MAX-px->state.remaining[d]){r=-VFS_EACCES;break;}
+            px->state.remaining[d]+=refund;px->state.charged[d]=owned[d];changed|=refund!=0;
+        }
+        if(!r)r=px_validate_values(px->fs,false);
+        if(!r&&changed)px->pending=px->state;
+        px->state=px->backup;
+    }
+    spin_unlock_irqrestore(&e4_lock,flags);
+    return r?r:changed?px_meta():0;
+}
 static int px_full_check(void){uint64_t flags=spin_lock_irqsave(&e4_lock);int r=px_validate(px->fs);spin_unlock_irqrestore(&e4_lock,flags);return r;}
 static void px_view(bool previous){
     pi_inventory *v=&px->inventory;memset(v,0,sizeof *v);memset(px->observed,0,sizeof px->observed);
@@ -706,20 +778,20 @@ static int px_control(unsigned operation){
         kpkg_puts("[EXT4-PKG] px_control: unauthorized\n");
         r=-VFS_EACCES;
     }
-    if(!r&&!px->state.phase&&px->fs->engine->orphan_count){
+    if(!r&&!px->state.phase&&px->fs->engine->orphan_count&&(operation!=PI_INSTALL||!px->state.installed)){
         kpkg_puts("[EXT4-PKG] px_control: orphan cleanup\n");
         r=px_run(false);
     }
     if(!r){
         if(operation==PI_INSTALL||operation==PI_REMOVE){
             kpkg_puts("[EXT4-PKG] px_control: calling px_begin...\n");
-            r=px_begin(operation);
+            r=px->state.phase?px_run(operation==PI_INSTALL):px_begin(operation);
             if(r){
                 kpkg_puts("[EXT4-PKG] px_control: px_begin returned: ");
                 kpkg_put_u64(r < 0 ? -r : r);
                 kpkg_puts("\n");
             }
-            if(!r && px->plan.operation != PI_NOOP) r = px_run(operation==PI_INSTALL);
+            if(!r && px->state.phase && px->plan.operation != PI_NOOP) r = px_run(operation==PI_INSTALL);
         }
         else if(operation==0){if(px->state.phase)r=px_rederive(px->state.operation,true);if(!r)r=px_run(false);}
         else {
@@ -774,14 +846,15 @@ static int px_ensure_dir(ext4_mount_t *fs, const char *path, uint32_t mode) {
     return 0;
 }
 
-static int px_ensure_database(ext4_mount_t *fs) {
+static int px_ensure_database_slot(ext4_mount_t *fs,unsigned slot) {
+    char record_path[192],work_path[192];px_record_path(slot,record_path);px_work_path(slot,work_path);
     kpkg_puts("[EXT4-PKG] px_ensure_database start\n");
     int r;
     kpkg_puts("[EXT4-PKG] ensuring anchor directories...\n");
     if ((r = px_ensure_dir(fs, "/var", 0755))) { kpkg_puts("[EXT4-PKG] failed to ensure /var\n"); return r; }
     if ((r = px_ensure_dir(fs, "/var/lib", 0755))) { kpkg_puts("[EXT4-PKG] failed to ensure /var/lib\n"); return r; }
     if ((r = px_ensure_dir(fs, "/var/lib/pkg", 0700))) { kpkg_puts("[EXT4-PKG] failed to ensure /var/lib/pkg\n"); return r; }
-    if ((r = px_ensure_dir(fs, "/var/lib/pkg/work-v2", 0700))) { kpkg_puts("[EXT4-PKG] failed to ensure /var/lib/pkg/work-v2\n"); return r; }
+    if ((r = px_ensure_dir(fs, work_path, 0700))) { kpkg_puts("[EXT4-PKG] failed to ensure /var/lib/pkg/work-v2\n"); return r; }
     if ((r = px_ensure_dir(fs, "/var/cache", 0755))) { kpkg_puts("[EXT4-PKG] failed to ensure /var/cache\n"); return r; }
     if ((r = px_ensure_dir(fs, "/var/cache/pkg", 0755))) { kpkg_puts("[EXT4-PKG] failed to ensure /var/cache/pkg\n"); return r; }
     if ((r = px_ensure_dir(fs, "/usr", 0755))) { kpkg_puts("[EXT4-PKG] failed to ensure /usr\n"); return r; }
@@ -791,7 +864,7 @@ static int px_ensure_database(ext4_mount_t *fs) {
 
     e4_inode_t in;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
-    r=px_lookup(fs, "/var/lib/pkg/install.v2", &in);
+    r=px_lookup(fs, record_path, &in);
     spin_unlock_irqrestore(&e4_lock,flags);
     if (!r) {
         kpkg_puts("[EXT4-PKG] install.v2 already exists\n");
@@ -804,7 +877,9 @@ static int px_ensure_database(ext4_mount_t *fs) {
     vfs_node_t *pkg_dir = vfs_lookup_at_creds(root, "/var/lib/pkg", &actor, &error);
     if (!pkg_dir) { kpkg_puts("[EXT4-PKG] cannot lookup /var/lib/pkg\n"); return error ? error : -VFS_ENOENT; }
     vfs_create_attrs_t attrs = {.mode = 0600, .uid = 0, .gid = 0};
-    vfs_node_t *file = pkg_dir->create_attrs_ref ? pkg_dir->create_attrs_ref(pkg_dir, "install.v2", VFS_FILE, &attrs, &error) : NULL;
+    char temporary[192];px_copy(temporary,record_path);px_add(temporary,".new",4);
+    vfs_node_t *file=vfs_lookup_at_creds(root,temporary,&actor,&error);
+    if(!file&&error==-VFS_ENOENT)file=pkg_dir->create_attrs_ref ? pkg_dir->create_attrs_ref(pkg_dir,temporary+13,VFS_FILE,&attrs,&error):NULL;
     vfs_node_put(pkg_dir);
     if (!file) { kpkg_puts("[EXT4-PKG] cannot create install.v2 file\n"); return error ? error : -VFS_EIO; }
 
@@ -829,6 +904,16 @@ static int px_ensure_database(ext4_mount_t *fs) {
     memcpy(raw + 416, uuid, 16);
     (void)crypto_sha256(raw, 8160, raw + 8160);
 
+    vfs_metadata_t metadata;
+    r=vfs_metadata(file,&metadata);
+    if(!r&&(metadata.type!=VFS_FILE||metadata.uid||metadata.gid||(metadata.mode&07777)!=0600||metadata.size>8192))r=-VFS_EACCES;
+    /* Only an exact prefix of a fresh record can be resumed. Never truncate a
+     * foreign or uncertain object. The final rename is the authority switch. */
+    uint8_t *prefix=kmalloc(8192);
+    if(!prefix){kfree(raw);vfs_node_put(file);return -VFS_ENOMEM;}
+    if(!r&&metadata.size&&( !file->read||file->read(file,0,prefix,metadata.size)!=(int64_t)metadata.size||memcmp(prefix,raw,metadata.size)))r=-VFS_EACCES;
+    kfree(prefix);
+    if(r){kfree(raw);vfs_node_put(file);return r;}
     uint64_t off = 0;
     int64_t written = file->write ? file->write(file, &off, false, raw, 8192) : -VFS_EOPNOTSUPP;
     kfree(raw);
@@ -837,8 +922,83 @@ static int px_ensure_database(ext4_mount_t *fs) {
         kpkg_puts("[EXT4-PKG] write install.v2 header failed\n");
         return -VFS_EIO;
     }
-    kpkg_puts("[EXT4-PKG] install.v2 created and written\n");
-    return 0;
+    pkg_dir=vfs_lookup_at_creds(root,"/var/lib/pkg",&actor,&error);
+    if(!pkg_dir)return error?error:-VFS_ENOENT;
+    r=pkg_dir->rename?pkg_dir->rename(pkg_dir,temporary+13,pkg_dir,record_path+13):-VFS_EOPNOTSUPP;
+    vfs_node_put(pkg_dir);return r;
+}
+
+/* Kept for legacy embedding fixtures. */
+static int __attribute__((unused)) px_ensure_database(ext4_mount_t *fs) {return px_ensure_database_slot(fs,0);}
+
+/* Snapshot every slot under filesystem exclusion. The single service writer
+ * credit remains the only mutation admission. Legacy slot zero is never copied,
+ * renamed or superseded: upgrading old roots cannot forget their command. */
+typedef struct {px_record records[PX_PACKAGES];bool present[PX_PACKAGES];} px_inventory;
+static int px_inventory_read(ext4_mount_t *fs,px_inventory *out) {
+    px_context *c=px_allocate(sizeof *c);if(!c)return -VFS_ENOMEM;
+    memset(out,0,sizeof *out);c->fs=fs;
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    int r=e4_bytes(fs,1128,c->policy.filesystem,16)?0:-VFS_EIO;
+    for(unsigned i=0;!r&&i<PX_PACKAGES;i++) {
+        c->policy.slot=i;r=px_record_read_into(fs,c);
+        if(r==-VFS_ENOENT){r=0;continue;}
+        if(r)break;
+        px_record *v=&c->state;
+        if(v->installed||v->phase) {
+            size_t pn=0,cn=0;while(pn<32&&v->package[pn])pn++;while(cn<32&&v->command[cn])cn++;
+            if(!fpk_identity_valid(v->package,pn)||!fpk_identity_valid(v->command,cn)||
+               !px_zero(v->package+pn,32-pn)||!px_zero(v->command+cn,32-cn)||!v->floor){r=-VFS_EACCES;break;}
+            for(unsigned j=0;j<i;j++)if(out->present[j]&&(out->records[j].installed||out->records[j].phase)&&
+                (!memcmp(v->package,out->records[j].package,32)||!memcmp(v->command,out->records[j].command,32)))r=-VFS_EACCES;
+        }
+        if(!v->phase) {
+            if(v->operation||v->start_sequence||v->start_generation||v->trash||v->gone||
+               !px_zero(v->start_hash,32)||!px_zero(v->plan_hash,32)||!px_zero(v->total,sizeof v->total)||
+               !px_zero(v->remaining,sizeof v->remaining)||!px_zero(v->charged,sizeof v->charged)||
+               v->made!=v->published||(v->made&~65535u)||(v->made&(v->made+1))||
+               (v->installed?!v->made:v->made!=0)){r=-VFS_EACCES;break;}
+            unsigned executables=0;
+            for(unsigned j=0;!r&&j<17;j++) {
+                if(!(v->made&(1u<<j))){if(v->files[j].inode||v->files[j].generation||v->files[j].size)r=-VFS_EACCES;continue;}
+                e4_inode_t member;r=e4_inode(fs,v->files[j].inode,&member);if(r)break;
+                if(member.generation!=v->files[j].generation||member.size!=v->files[j].size||member.mode!=VFS_S_IFREG||member.uid||member.gid){r=-VFS_EACCES;break;}
+                if((member.full_mode&07777)==0755) {
+                    char command_path[192]="/usr/bin/";size_t n=0;while(n<32&&v->command[n])n++;
+                    px_add(command_path,(const char *)v->command,n);e4_inode_t command_inode;r=px_lookup(fs,command_path,&command_inode);
+                    if(!r&&command_inode.ino!=member.ino)r=-VFS_EACCES;
+                    executables++;
+                } else if((member.full_mode&07777)!=0644)r=-VFS_EACCES;
+            }
+            if(!r&&v->installed&&executables!=1)r=-VFS_EACCES;
+            if(r)break;
+        }
+        out->present[i]=true;out->records[i]=*v;
+    }
+    spin_unlock_irqrestore(&e4_lock,flags);kfree(c);return r;
+}
+static int px_select(ext4_mount_t *fs,const uint8_t package[32],const uint8_t *catalog,size_t catalog_n,
+                     const pkg_repository_trust *trust,const fpk_span *command,unsigned *slot) {
+    px_inventory *all=px_allocate(sizeof *all);if(!all)return -VFS_ENOMEM;
+    int r=px_inventory_read(fs,all);unsigned free_slot=PX_PACKAGES,selected=PX_PACKAGES;
+    fpk_catalog verified;uint8_t root[288],root_hash[32];
+    if(!r&&fpk_catalog_verify(catalog,catalog_n,&trust->catalog,&verified))r=-VFS_EACCES;
+    memcpy(root,trust->catalog.repository,16);memcpy(root+16,trust->catalog.keys,256);
+    px_put(root+272,4,trust->catalog.key_count);px_put(root+276,4,trust->catalog.threshold);px_put(root+280,8,trust->catalog.root_version);
+    (void)crypto_sha256(root,sizeof root,root_hash);
+    for(unsigned i=0;!r&&i<PX_PACKAGES;i++) {
+        px_record *v=all->records+i;
+        if(!all->present[i]){if(free_slot==PX_PACKAGES)free_slot=i;continue;}
+        if(!v->installed&&!v->phase&&!v->floor&&free_slot==PX_PACKAGES)free_slot=i;
+        if(v->phase&&memcmp(v->package,package,32)){r=-VFS_EAGAIN;break;}
+        if(v->catalog>verified.revision||(v->catalog==verified.revision&&memcmp(v->catalog_hash,verified.sha256,32))||
+           v->root>trust->catalog.root_version||(v->root==trust->catalog.root_version&&memcmp(v->root_hash,root_hash,32))){r=-VFS_EACCES;break;}
+        if(!memcmp(v->package,package,32))selected=i;
+        else if(command&&command->length<=32&&!memcmp(v->command,command->bytes,command->length)&&
+                (command->length==32||!v->command[command->length]))r=-VFS_EACCES;
+    }
+    if(!r){*slot=selected<PX_PACKAGES?selected:free_slot;if(*slot==PX_PACKAGES)r=-VFS_ENOSPC;}
+    kfree(all);return r;
 }
 
 static int px_read_vfs_file(vfs_node_t *root, const char *path, uint8_t *out, size_t max_bytes, size_t *out_len) {
@@ -865,6 +1025,20 @@ static const char *px_base_names[] = {
     "logrotate", "boot-snapshot", "reboot", "poweroff", "halt", "installer"
 };
 
+/* The fixed protected-name policy is supplemented by the admitted root's
+ * actual base commands, so an application cannot shadow a newly added tool. */
+static int px_base_command(ext4_mount_t *fs,fpk_span command) {
+    static const char *prefixes[]={"/bin/","/sbin/","/usr/sbin/"};
+    uint64_t flags=spin_lock_irqsave(&e4_lock);int r=0;
+    for(unsigned i=0;!r&&i<3;i++) {
+        char path[64];size_t n=strlen(prefixes[i]);memcpy(path,prefixes[i],n);
+        memcpy(path+n,command.bytes,command.length);path[n+command.length]=0;
+        e4_inode_t in;int found=px_lookup(fs,path,&in);
+        if(!found)r=-VFS_EACCES;else if(found!=-VFS_ENOENT)r=found;
+    }
+    spin_unlock_irqrestore(&e4_lock,flags);return r;
+}
+
 static bool ext4_pkg_admitted(void) {
     return e4_active && e4_active->engine && !e4_active->engine->tainted && !e4_active->quiesced;
 }
@@ -884,38 +1058,15 @@ static int ext4_pkg_status(void *context, pkg_transaction_status *out) {
         out->charged[1] = px->state.charged[1];
         return 0;
     }
-    /* The service credit excludes other package calls, not ordinary filesystem
-     * activity. Lookup, mappings, scratch/cache and record bytes share e4_lock
-     * with every VFS reader/writer. Allocate first; decode the private snapshot
-     * after releasing exclusion. Keep the large decoded record off the stack. */
-    struct {uint8_t raw[8192];px_record state;} *snapshot=kmalloc(sizeof *snapshot);
-    if (!snapshot) return -VFS_ENOMEM;
-    e4_inode_t in;uint32_t b0=0,b1=0;
-    uint64_t flags=spin_lock_irqsave(&e4_lock);
-    int r=px_lookup(fs,"/var/lib/pkg/install.v2",&in);
-    if (!r) r=e4_dir_block(&in,0,&b0);
-    if (!r) r=e4_dir_block(&in,1,&b1);
-    if (!r && (!e4_bytes(fs,(uint64_t)b0*4096,snapshot->raw,4096) ||
-               !e4_bytes(fs,(uint64_t)b1*4096,snapshot->raw+4096,4096))) r=-VFS_EIO;
-    spin_unlock_irqrestore(&e4_lock,flags);
-    if (r == -VFS_ENOENT) {
-        *out=(pkg_transaction_status){.phase=PKG_TX_IDLE,.sequence=1,
-            .account_sequence=1,.credential_generation=1};
-        kfree(snapshot);
-        return 0;
+    px_inventory *all=px_allocate(sizeof *all);if(!all)return -VFS_ENOMEM;
+    int r=px_inventory_read(fs,all);
+    *out=(pkg_transaction_status){.phase=PKG_TX_IDLE,.sequence=1,.account_sequence=1,.credential_generation=1};
+    for(unsigned i=0;!r&&i<PX_PACKAGES;i++)if(all->present[i]) {
+        px_record *v=all->records+i;
+        if(v->sequence>out->sequence)out->sequence=v->sequence;
+        if(v->phase){out->phase=PKG_TX_PENDING;for(unsigned j=0;j<2;j++){out->remaining[j]=v->remaining[j];out->charged[j]=v->charged[j];}}
     }
-    if (r) {kfree(snapshot);return r;}
-    px_record *s=&snapshot->state;px_decode(snapshot->raw,s);
-    out->phase = s->phase == PX_CLOSED ? PKG_TX_IDLE : (s->phase == PX_BUILD ? PKG_TX_RESERVED : (s->phase == PX_COMMIT ? PKG_TX_PENDING : PKG_TX_RETIRING));
-    out->sequence = s->sequence ? s->sequence : 1;
-    out->account_sequence = 1;
-    out->credential_generation = 1;
-    out->remaining[0] = s->remaining[0];
-    out->remaining[1] = s->remaining[1];
-    out->charged[0] = s->charged[0];
-    out->charged[1] = s->charged[1];
-    kfree(snapshot);
-    return 0;
+    kfree(all);return r;
 }
 
 static int ext4_pkg_recover(void *context, pkg_transaction_status *out) {
@@ -930,6 +1081,7 @@ static int ext4_pkg_mutate(void *context, bool remove, const uint8_t package[32]
 }
 
 struct ext4_pkg_staging {
+    fpk_verify_context verify;
     uint8_t trust_wire[1024];
     pkg_repository_trust trust;
     fpk_span spans[sizeof(px_base_names)/sizeof(px_base_names[0])];
@@ -943,13 +1095,7 @@ static int ext4_pkg_install_source(void *context, const uint8_t package[32],
     kpkg_puts("[EXT4-PKG] install_source start\n");
     ext4_mount_t *fs = context ? context : e4_active;
     if (!fs || !fs->engine || !package || !catalog || !artifact || !status) return -VFS_EINVAL;
-    int r = px_ensure_database(fs);
-    if (r) {
-        kpkg_puts("[EXT4-PKG] px_ensure_database failed with error: ");
-        kpkg_put_u64((uint64_t)(r < 0 ? -r : r));
-        kpkg_puts("\n");
-        return r;
-    }
+    int r;
 
     /* px_encode requires the initialized transaction context. Reinstallation
      * must also pass catalog/artifact verification and installed-file checks;
@@ -1011,6 +1157,17 @@ static int ext4_pkg_install_source(void *context, const uint8_t package[32],
     size_t name_n = 0;
     while (name_n < 32 && package[name_n]) name_n++;
 
+    px_input source={artifact,artifact_n,0};
+    if(fpk_verify_authorized(&st->verify,catalog,catalog_n,&st->trust.catalog,package,name_n,px_source_read,&source)||
+       memcmp(st->verify.manifest.platform_id,st->trust.platform,32)||st->verify.manifest.base_min>st->trust.base_version||
+       st->verify.manifest.base_max<st->trust.base_version){kfree(st);return -VFS_EACCES;}
+    for(size_t i=0;i<st->policy.resources.base_count;i++)if(st->spans[i].length==st->verify.manifest.command.length&&
+        !memcmp(st->spans[i].bytes,st->verify.manifest.command.bytes,st->spans[i].length)){kfree(st);return -VFS_EACCES;}
+    r=px_base_command(fs,st->verify.manifest.command);
+    if(r){kfree(st);return r;}
+    r=px_select(fs,package,catalog,catalog_n,&st->trust,&st->verify.manifest.command,&st->policy.slot);
+    if(!r)r=px_ensure_database_slot(fs,st->policy.slot);
+    if(r){kfree(st);return r;}
     kpkg_puts("[EXT4-PKG] px_prepare...\n");
     r = px_prepare(fs, &st->policy, artifact, artifact_n, catalog, catalog_n, package, name_n, true);
     if (r) {

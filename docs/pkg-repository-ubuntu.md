@@ -255,8 +255,6 @@ data; do not format or delete its package database.
 After booting the matching new kernel and CLI:
 
 ```sh
-pkg update
-pkg get rot13
 sudo pkg upgrade rot13
 /usr/bin/rot13 --version
 echo hello | /usr/bin/rot13

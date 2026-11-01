@@ -20,8 +20,17 @@ the top-bar network entry or **N**. Date & Time opens from the clock or **C**.
 Each has shared page navigation, Tab focus and Enter activation; Escape closes
 the page. Wheel or Ctrl+U/Ctrl+D scrolls app content. Drag titlebars to the left,
 right or top edge and release to snap; the green control restores the window.
-Alt+Tab is not claimed: the current tty input stream does not expose modifier
-key state. Files, Notes and Terminal retain their existing interfaces.
+The compositor reads 8-byte `key_event_t` packets directly from
+`/dev/input/keyboard` (`/dev/kbd0`), receiving Linux keycodes, active modifier
+bitmasks (`MOD_SHIFT`, `MOD_CTRL`, `MOD_ALT`, `MOD_SUPER`, `MOD_CAPS`,
+`MOD_NUMLOCK`), press/release/repeat state, and translated ASCII while muting
+background console TTY `ingress()`. Global `Alt+Tab` cycles windows, `Super`
+toggles the launcher menu, and `Ctrl+Alt+Esc` acts as the reserved Secure
+Attention Key (SAK), immediately unfocusing/releasing capture on any active
+client window and raising the System Monitor without forwarding the key event
+to clients. External SHM client processes (`/bin/desktop-terminal` and
+`/bin/desktop-files`) communicate over the desktop IPC protocol (`EV_KEY`,
+`EV_MOUSE`, `EV_OPEN_FILE`, `MSG_DAMAGE`).
 
 ## Preferences and services
 

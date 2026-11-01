@@ -18,4 +18,11 @@ int pkg_fetch_main(int,char **);
 int pkg_update_main(int,char **);
 int pkg_get_main(int,char **);
 int pkg_previous_source(const char *,uint64_t *);
+#define PKG_INSTALLED_MAX 16u
+typedef struct {char name[33],command[33];unsigned slot;uint64_t build,sequence;uint8_t artifact[32],identity[32];} pkg_installed;
+int pkg_installed_read(pkg_installed [PKG_INSTALLED_MAX],unsigned *);
+int pkg_catalog_refresh(void);
+int pkg_catalog_target(const char *,uint64_t *,uint8_t [32]);
+int pkg_download_selected(const char *);
+const char *pkg_selected_directory(void);
 #endif

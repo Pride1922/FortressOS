@@ -18,7 +18,7 @@ and are not proof that every current revision has passed every test — check
 
 ## Phase files
 
-Rust compositor: [Phase 3 backbuffer/font/cursor](compositor-phase3.md) and [Phase 4 window server](compositor-phase4.md).
+Rust compositor & desktop: [Phase 3 backbuffer/font/cursor](compositor-phase3.md), [Phase 4 window server](compositor-phase4.md), and [desktop subsystem guide](../subsystems/desktop.md) (isolated `/bin/desktop-terminal` and `/bin/desktop-files` clients, direct `/dev/input/keyboard` `key_event_t` event path, extended `EV_KEY`, `Alt+Tab` / `Super`, and `Ctrl+Alt+Esc` SAK).
 
 Graphics foundation: [ownership, mapping and dynamic-heap hardening](graphics-foundation-hardening.md).
 
@@ -30,9 +30,9 @@ Persistent root / NVMe installer: [Phase 0 contracts](persistent-root-phase0.md)
 
 ext4 Hardening: [Atomic replace (EH-2)](ext4-atomic-replace.md), [Durability & health (EH-3)](ext4-durability-health.md), [Package-scale verification (EH-4)](ext4-package-scale.md), and [Directory rename / relocation (EH-6)](ext4-directory-rename.md).
 
-Service supervision, logging & packaging: [Watchtower lifecycle](watchtower-lifecycle.md), [Watchtower credentials](watchtower-credentials.md), and [Package manager (PKG-1)](pkg1.md).
+Service supervision, logging & packaging: [Watchtower lifecycle](watchtower-lifecycle.md), [Watchtower credentials](watchtower-credentials.md), [Package manager (PKG-1)](pkg1.md), [PKG system integration](pkg-system-integration.md), and [PKG session acquire & status](pkg-session-acquire.md).
 
-Wireless & networking: [Wi-Fi architectural transformation](wifi-transformation.md), [Runtime network configuration (NET-3)](net-config.md), and [Link recovery](net-link-recovery.md).
+Wireless & networking: [Wi-Fi architectural transformation](wifi-transformation.md), [Wi-Fi CPU-0 owner](wifi-cpu0-owner.md), [GUI Wi-Fi connect](gui-wifi-connect.md), [Runtime network configuration (NET-3)](net-config.md), and [Link recovery](net-link-recovery.md).
 
 Latest SMP environment evidence: [Dell benchmark results and decision](smpbench-dell-results.md).
 Next measurement build: [spawn and pipe writer startup diagnostics](smpbench-spawn-profile.md).
@@ -119,6 +119,9 @@ Targeted experiment: [kernel-stack batch mapping and matched Dell images](kstack
 | [ext4-atomic-replace.md](ext4-atomic-replace.md) | Phase EH-2 Atomic File Replacement: SYS_RENAME_REPLACE (syscall 84), non-disruptive update of live binaries and config files. |
 | [watchtower-lifecycle.md](watchtower-lifecycle.md) | Watchtower service supervisor (Phases 0–5): /sbin/watchtower, /bin/service CLI, non-blocking pipe capture, dynamic discovery, clean shutdown. |
 | [pkg1.md](pkg1.md) | Native Package Manager (PKG-1): declarative package format, catalog indexing, read-only verification, and CLI tooling. |
+| [pkg-system-integration.md](pkg-system-integration.md) | Normal-build package integration, `SYS_PKGCTL` (syscall 95), owner/backend/service modules, and `/bin/pkg` CLI acceptance. |
+| [pkg-session-acquire.md](pkg-session-acquire.md) | Package acquisition/status exclusion regression, VFS/ext4 host read-lock oracle, and BIOS/UEFI SMP=4 concurrent probe verification. |
+| [offline-kernel-update.md](offline-kernel-update.md) | Predecessor-bound two-slot offline kernel & package update from USB media (`/bin/kernel-update`), rollback, and recovery boot acceptance. |
 | [subsystems.md](subsystems.md) | Cross-cutting notes not tied to one phase: NMI delivery, boot console, interactive shell/input, general Dell acceptance |
 
 ## Checkpoint sequence (for orientation only — not authoritative status)
@@ -128,7 +131,7 @@ Boot / memory / threads        Complete
 ext2 / ext4 (9.1–9.6)          Complete (Dell physical acceptance)
 Program execution / ABI        Complete
 USB storage (9G)               Complete
-USB topology (9G.5)            In progress (c/d/e open)
+USB HID & multi-tier Hubs      Complete (9G.5b, WD19S topology)
 32 GiB RAM (9H)                Complete
 SMP (Pieces 1–6)               Complete (race fixed, 10/10 verified)
 Shell (S0–S9)                  Complete (Dell verified)
@@ -139,15 +142,18 @@ VFS node lifetime              Complete
 Permissions (Phases 0–5)       Complete (Dell physical acceptance)
 Installer (Phases 0–4)         Complete (disposable acceptance)
 Network SMP (Phases 0–4)       Complete (Dell physical acceptance)
-SSH (Phases 0–8)               Complete (BIOS/UEFI QEMU & MobaXterm laptop)
-Tools & Compression            Complete (gzip/gunzip)
+SSH (Phases 0–8 + /bin/ssh)    Complete (BIOS/UEFI QEMU & MobaXterm laptop)
+Tools & Compression            Complete (gzip/gunzip, base64)
 ext4 Hardening (EH-1–EH-6)     Complete (atomic rename, 32-blk staging, dir rename)
 Watchtower (Phases 0–5)        Complete (supervisor, CLI, discovery, shutdown)
 Logging Foundation (Phases 0–4) Complete (Three Pillars: boot, supervisor, timeline)
 TLS / HTTPS (Phases 0–5)       Complete (BearSSL 0.6, trust store, /bin/wget)
 Writable /etc (ETCFS)          Complete (16 MiB quota, COW TarFS)
 Network & Resolver Consolidation Complete (/etc/network/network.conf & resolv.conf)
-Package Manager (PKG-1)        In progress (declarative format, catalog, CLI)
+Wireless (802.11 / WPA2-PSK)   Complete (AC 8265 & AX 211, 5GHz, PMF/CCMP/TKIP, DHCP)
+Userland Threads (pthreads)    Complete (Syscalls 89–94, mutex/cond/barrier/once)
+Package Manager (PKG-1/PKG-3)  Complete (SYS_PKGCTL, atomic upgrades, offline kernel update)
+Desktop & Direct Input         Complete (/bin/compositor, SHM apps, /dev/input/keyboard, SAK)
 ```
 
 E4-A: [Dell 5590 physical acceptance](ext4-phase5-acceptance.md), all seven Phase-5 items PASS, 2026-10-03.

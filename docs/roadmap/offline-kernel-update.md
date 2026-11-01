@@ -3,8 +3,9 @@
 The completed acceptance result is **PASS** for BIOS and UEFI. The user also
 confirmed physical laptop kernel-update acceptance PASS on 2026-11-01: baseline
 installation, offline update, reboot into `kernel-update-candidate-2`, retained
-rot13 1.0 and preserved home-file/account checks. Package upgrade after the kernel
-update and manual previous/recovery boot checks remain physically unconfirmed.
+rot13 1.0 and preserved home-file/account checks. The user subsequently confirmed
+rot13 1.0 → 2.0 upgrade and reboot persistence on that updated laptop PASS.
+Manual previous/recovery boot checks remain physically unconfirmed.
 The full QEMU receipt is
 `build/kernel-update/media-snul1hju/acceptance.json`; the public image receipt is
 `bin/fortress-kernel-update.manifest.json`.

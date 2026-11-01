@@ -221,13 +221,9 @@ def boot_test(out, disk, firmware, cpus, label, accel, mode):
         guest.root()
         if mode == 'install':
             guest.command('echo PRESERVE_PACKAGE_UPGRADE > /home/operator/pkg-note')
-            guest.command('/bin/pkg update')
-            guest.command('/bin/pkg get rot13')
             assert 'installation complete' in guest.command('/bin/pkg install rot13')
             assert '\nrot13 1.0\n' in guest.command('/usr/bin/rot13 --version')
         elif mode == 'upgrade':
-            guest.command('/bin/pkg update')
-            guest.command('/bin/pkg get rot13')
             assert 'upgrade complete' in guest.command('/bin/pkg upgrade rot13')
             assert '\nrot13 2.0\n' in guest.command('/usr/bin/rot13 --version')
             assert 'package is up to date rot13 v 2.0' in guest.command('/bin/pkg upgrade rot13')
@@ -293,7 +289,7 @@ def main():
             f'Baseline: {baseline.name}, rot13 1.0 installed through the real pkg CLI.\n'
             f'Serve repository/: python3 -m http.server {args.port} --bind 127.0.0.1 --directory {public}\n'
             'Attach a COPY of the baseline as NVMe to QEMU with user networking and e1000.\n'
-            'Then: pkg update; pkg get rot13; sudo pkg upgrade rot13\n'
+            'Then: sudo pkg upgrade rot13\n'
             'Verify: /usr/bin/rot13 --version; echo hello | /usr/bin/rot13\n'
             'Repository contains signed 2.0 and retains the 1.0 object. Test public trust only.\n')
         for firmware in args.firmware:

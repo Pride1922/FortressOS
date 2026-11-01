@@ -6,6 +6,7 @@
 #include "user/pkg/mutation_cli.h"
 #include "user/tools/common.h"
 #include "pkg_abi.h"
+#include "user/pkg/repository.h"
 bool tool_output_failed;
 static unsigned acquired,released,installed,opened,closed;
 static bool denied,oversize,bad_close,bad_result,fail_install,bad_release;
@@ -18,6 +19,11 @@ int pkg_fetch_main(int n,char **v){(void)n;(void)v;assert(0);return 1;}
 int pkg_update_main(int n,char **v){(void)n;(void)v;assert(0);return 1;}
 int pkg_get_main(int n,char **v){(void)n;(void)v;assert(0);return 1;}
 int pkg_previous_source(const char *n,uint64_t *b){(void)n;(void)b;assert(0);return -1;}
+int pkg_installed_read(pkg_installed out[PKG_INSTALLED_MAX],unsigned *n){(void)out;(void)n;assert(0);return -1;}
+int pkg_catalog_refresh(void){assert(0);return -1;}
+int pkg_catalog_target(const char *n,uint64_t *b,uint8_t h[32]){(void)n;(void)b;(void)h;assert(0);return -1;}
+int pkg_download_selected(const char *n){(void)n;assert(0);return -1;}
+const char *pkg_selected_directory(void){return NULL;}
 int pkg_cache_dir(char *b,size_t cap,const char *o){(void)b;(void)cap;(void)o;return -1;}
 int pkg_mutation_cli(int n,char **v,const fpk_catalog_policy *p,const pkg_mutation_backend *b){
     (void)n;(void)v;(void)p;(void)b;return 2;

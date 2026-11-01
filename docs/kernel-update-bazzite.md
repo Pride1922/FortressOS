@@ -3,7 +3,8 @@
 These matching images passed BIOS and UEFI QEMU kernel/package/recovery acceptance.
 The user confirmed the laptop baseline installation and kernel update PASS on
 2026-11-01, including reboot and preserved account/home-file/rot13 1.0 checks.
-The physical package-upgrade and previous/recovery boot checks remain pending.
+The user also confirmed rot13 1.0 → 2.0 upgrade and reboot persistence after
+the kernel update PASS. Physical previous/recovery boot checks remain pending.
 Use them in order:
 
 | Purpose | Image |

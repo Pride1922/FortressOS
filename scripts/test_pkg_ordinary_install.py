@@ -3,7 +3,7 @@ import pathlib, subprocess, tempfile, shutil, contextlib
 from pkg_install_fixture import fixture
 from pkg_enroll_records import keys, PUB
 ROOT=pathlib.Path(__file__).resolve().parents[1]
-def main(upgrade=False):
+def main(upgrade=False,multiple=False):
     evidence=ROOT/'.codex-remote-attachments';evidence.mkdir(exist_ok=True)
     with contextlib.nullcontext(tempfile.mkdtemp(prefix='pkg-ordinary-',dir=evidence)) as td:
         print('Evidence directory:',td,flush=True)
@@ -32,6 +32,36 @@ def main(upgrade=False):
         units=['tests/pkg_ordinary_install_host.c','tests/ext4_fault_disk.c','src/fs/permission_values.c','src/kernel/creds.c','src/lib/account_redo.c','src/fs/pkg_plan.c','user/pkg/catalog.c','user/pkg/verify.c','user/pkg/format.c','user/pkg/manifest.c','user/pkg/repository.c','user/tools/gzip.c','user/tools/digest.c','src/lib/crypto/hash.c','src/lib/crypto/curve.c']
         binary=out/'ordinary';run(flags+units+objects+['-o',str(binary)])
         run([str(binary),str(image),str(out/'fixture/artifact'),str(out/'fixture/catalog'),str(out/'trust')])
+        if multiple:
+            import pkg_build as app
+            import pkg_repository as repo
+            import hashlib
+            subprocess.run(['sh','examples/pkg/rot13/build.sh'],cwd=ROOT,check=True)
+            base=(ROOT/'build/pkg-rot13/rot13-v1.elf').read_bytes()
+            artifacts=[];hashes=[]
+            for name,build in [('toolone',1),('tooltwo',1),('toolone',2),('toolone',3),('tooltwo',2)]:
+                executable=base+f'{name} build {build}\n'.encode();hashes.append(hashlib.sha256(executable).digest())
+                artifacts.append(app.encode(name,name,str(build),bytes(range(32)),build,2,2,
+                    [(f'bin/{name}',1,0o755,executable)]))
+            for i,a in enumerate(artifacts):(out/f'multi-art{i}').write_bytes(a)
+            for i,pair in enumerate([(0,1),(2,1),(3,1),(3,4)]):
+                wire,_=repo.catalog(bytes([4])*16,3,8+i,1792929500,1793029600,[artifacts[j] for j in pair],signers)
+                (out/f'multi-cat{i}').write_bytes(wire)
+            (out/'multi-hashes').write_bytes(b''.join(hashes))
+            extra=[]
+            for i in range(15):
+                name=f'c{i:02}';a=app.encode(name,name,'1',bytes(range(32)),1,2,2,[(f'bin/{name}',1,0o755,base)])
+                extra.append(a);(out/f'capacity-art{i}').write_bytes(a)
+            for name,command in [('thief','toolone'),('foreign','foreign')]:
+                a=app.encode(name,command,'1',bytes(range(32)),1,2,2,[(f'bin/{command}',1,0o755,base)])
+                extra.append(a);(out/name).write_bytes(a)
+            wire,_=repo.catalog(bytes([4])*16,3,12,1792929500,1793029600,[artifacts[3],artifacts[4],*extra],signers)
+            (out/'capacity-cat').write_bytes(wire)
+            units[0]='tests/pkg_multiple_host.c';binary=out/'multiple'
+            run(flags+units+objects+['-o',str(binary)])
+            run([str(binary),str(image),str(out/'trust'),*[str(out/f'multi-art{i}') for i in range(5)],
+                 *[str(out/f'multi-cat{i}') for i in range(4)],str(out/'multiple.img'),str(out/'multi-hashes'),str(out)],timeout=1800)
+            run(['e2fsck','-fn',str(out/'multiple.img'),str(out/'multi-hashes'),str(out)],timeout=1800)
         if upgrade:
             import pkg_build as app
             import pkg_repository as repo

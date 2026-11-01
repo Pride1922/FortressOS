@@ -2852,3 +2852,19 @@ test-pkg-build:
 test-kernel-update:
 	@test -n "$(KERNEL_UPDATE_MANIFEST)" || (echo 'Set KERNEL_UPDATE_MANIFEST to the built USB media manifest'; exit 1)
 	@python3 scripts/test_kernel_update.py --manifest "$(KERNEL_UPDATE_MANIFEST)"
+
+.PHONY: test-pkg-multiple-host
+test-pkg-multiple-host:
+	python3 scripts/test_pkg_multiple.py
+
+.PHONY: test-pkg-batch-cli-host test-pkg-multiple-qemu
+test-pkg-batch-cli-host:
+	python3 scripts/test_pkg_batch_cli.py
+# BIOS/UEFI SMP=4; one disposable regular-file NVMe per boot, KVM required.
+test-pkg-multiple-qemu: $(KERNEL_ELF) $(INITRAMFS_TAR) limine-setup
+	python3 scripts/test_pkg_multiple_qemu.py
+
+.PHONY: test-pkg-multiple-update-qemu
+test-pkg-multiple-update-qemu:
+	@test -n "$(PKG_MULTIPLE_UPDATE_MANIFEST)" || (echo 'Set PKG_MULTIPLE_UPDATE_MANIFEST to the matching update manifest'; exit 1)
+	python3 scripts/test_pkg_multiple_update.py --manifest "$(PKG_MULTIPLE_UPDATE_MANIFEST)"

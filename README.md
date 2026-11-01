@@ -55,10 +55,19 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Cross-Core Networking:** Application calls from any CPU route through the CPU-0 protocol owner. Phases 0–4 are complete through bounded Dell physical acceptance; throughput redesign remains deferred. See [network SMP evidence](docs/roadmap/network-smp-phase4.md).
 
 ### 📶 Wireless & Wi-Fi Subsystem (802.11 / WPA2-PSK / iwlwifi)
-- **802.11 MAC Engine & Bridging:** Full IEEE 802.11 management frame parsing/generation, LLC/SNAP encapsulation/decapsulation bridging to standard Ethernet 802.3, and BSS scan table.
-- **WPA2-PSK 4-Way Handshake:** Hardware-accelerated and software fallback PBKDF2-HMAC-SHA1 (4096 rounds), IEEE 802.11i PRF-512 PTK derivation, NIST AES Key Wrap (RFC 3394), AES-128-CCMP frame encryption/decryption, and monotonic 48-bit Packet Number (PN) replay attack protection.
+- **802.11 MAC Engine & Bridging:** Full IEEE 802.11 management frame parsing/generation, LLC/SNAP encapsulation/decapsulation bridging to standard Ethernet 802.3, and BSS scan table across 2.4 GHz and full 5 GHz channels.
+- **WPA2-PSK 4-Way Handshake:** Hardware-accelerated and software fallback PBKDF2-HMAC-SHA1 (4096 rounds), IEEE 802.11i PRF-512 PTK derivation, NIST AES Key Wrap (RFC 3394), AES-128-CCMP frame encryption/decryption, dynamic group cipher (CCMP/TKIP) and PMF/MFPC capability mirroring across Assoc Req and EAPOL M2, and monotonic 48-bit Packet Number (PN) replay attack protection.
 - **Intel iwlwifi Driver:** Native PCI driver supporting Intel Dual Band Wireless-AC 8265 (Dell Latitude 5590) and Intel Wi-Fi 6E AX211 (Dell Latitude 5530), official Intel microcode loading (`iwlwifi-8265-36.ucode.gz`), and DTIM power management (10ms idle sleep windows).
-- **Architectural Transformation:** Non-blocking asynchronous connection state machine (zero kernel spinning), autonomous background frame retransmission & 6s fail-closed timeout, fast-path PMK caching (sub-millisecond reconnect), multi-BSSID best-signal selection, autonomous roaming ($\ge +15\text{ dBm}$ delta threshold), hardened root credential storage (`/etc/network/wlan.conf` mode 0600), and `/bin/wifi` CLI with animated scan progress bar. See the [Wireless guide](docs/subsystems/wifi.md).
+- **Architectural Transformation:** Non-blocking asynchronous connection state machine (zero kernel spinning), autonomous background frame retransmission & 6s fail-closed timeout, fast-path PMK caching (sub-millisecond reconnect), multi-BSSID best-signal selection, autonomous roaming ($\ge +15\text{ dBm}$ delta threshold), unicast Wi-Fi DHCP, hardened root credential storage (`/etc/network/wlan.conf` mode 0600) with GUI auto-persistence, and `/bin/wifi` CLI with animated scan progress bar. See the [Wireless guide](docs/subsystems/wifi.md).
+
+### 🖥️ Graphical Desktop & Compositor
+- **Window Server (`/bin/compositor`):** Freestanding Rust compositor with shared-memory client surfaces (`SYS_SHM_CREATE`/`MAP`/`UNMAP`), bounded dirty-rectangle damage composition, window snapping, and runtime display scaling (1080p native / 2x UHD) persisted in `/etc/desktop.conf`.
+- **Isolated Client Apps & IPC:** External client processes (`/bin/desktop-terminal` VT/ANSI terminal emulator and `/bin/desktop-files` file manager) alongside built-in desktop apps (Notepad, Calculator, Paint, Settings, System Monitor) with cross-app open-in-editor IPC (`EV_OPEN_FILE`).
+- **Direct Kernel Keyboard Input & SAK:** Dedicated `/dev/input/keyboard` (`/dev/kbd0`) character device delivering 8-byte `key_event_t` packets (Linux keycode, modifier bitmask, press/release/repeat state, and translated ASCII) from PS/2 and USB HID drivers with console TTY muting while grabbed. Supports extended `EV_KEY` protocol delivery, global `Alt+Tab` window switching, `Super` launcher toggle, and `Ctrl+Alt+Esc` Secure Attention Key (SAK) interception. See the [Desktop guide](docs/subsystems/desktop.md).
+
+### 📦 Package Management & Offline Kernel Updates
+- **Native Package Manager (`/bin/pkg` & `SYS_PKGCTL`):** Declarative PKG-1 archive verification, Ed25519 signature & SHA-256 content validation, catalog resolution, verified reinstall idempotence, status inspection, and atomic application upgrades (`PKG-3`).
+- **Offline Kernel Updates (`/bin/kernel-update`):** Predecessor-bound two-slot (`slot A` / `slot B`) kernel update workflow preserving the installed bootstrap and root filesystem from disposable USB update media with byte-exact root preservation, rollback protection, and authenticated recovery boot entries.
 
 ### 🔒 TLS / HTTPS Engine
 - **BearSSL Platform Integration:** BearSSL 0.6 client profile under Gate G1 static budget: zero heap allocation, client state $\le 40$ KiB, stack frames $\le 1024$ bytes (with authorized 2400B RSA exception).
@@ -80,15 +89,16 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Security Tools:** `/bin/login`, `/bin/sudo`, setuid execution, and fine-grained POSIX-style process capabilities (`CAP_NET_BIND`, `CAP_SYS_ADMIN`, etc.).
 - **Deterministic Cryptography:** SHA-256 boot-secret ISN generation with hardware entropy harvesting.
 
-### 💻 Userland & Shell
+### 💻 Userland, Threading & Shell
+- **Userland Threads (`pthreads`):** Shared-address-space multithreading (`SYS_THREAD_CREATE`, `SYS_THREAD_EXIT`, `SYS_THREAD_JOIN`, `SYS_THREAD_SELF`, `SYS_THREAD_YIELD`, `SYS_FUTEX`, syscalls 89–94) and freestanding `<pthread.h>` mutexes, condition variables, barriers, and once-initialization.
 - **Scripting:** Explicit `sh file` / `sh -c`, positional arguments, conditions, while/until/for loops, bounded source/return and `test`/`[`. Host sanitizers and disk-free BIOS/UEFI checks pass; bounded Dell console/SSH scripting smoke acceptance is user-confirmed. See [scripting evidence](docs/roadmap/shell-scripting.md).
 - **Interactive Shell:** Modular Ring 3 command shell supporting job control (`&`, `jobs`, `fg`, `kill`), pipelines (`|`), input/output redirection (`>`, `<`), and background redraw.
 - **Visual Editor:** Ring 3 visual text editor (`/bin/nano` v2.1) with Pike VM regex search, syntax highlighting, and buffer editing.
-- **System Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`, `/sbin/dhcpc`, `/bin/dhcp-probe`), and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `sed`, `awk`, `wc`, `xxd`).
-- **Time & Compression:** Native clock/date/sleep/time tools, DHCP v2 background renewal, and interoperable gzip/gunzip utilities.
+- **System & Network Utilities:** Introspection tools (`/bin/ps`, `/bin/top`, `/bin/sysinfo`, `/bin/free`, `/bin/disk`), networking tools (`/bin/ping`, `/bin/traceroute`, `/bin/nc`, `/bin/wget`, `/bin/ssh`, `/bin/telnet`, `/bin/httpd`, `/sbin/dhcpc`, `/bin/dhcp-probe`), `SYS_POLL` readiness multiplexing, and stream processing tools (`grep`, `sort`, `uniq`, `diff`, `patch`, `sed`, `awk`, `wc`, `xxd`, `base64`).
+- **Time & Compression:** Native clock/date/sleep/time tools, IANA TZif timezone engine, DHCP v2 background renewal, and interoperable gzip/gunzip utilities.
 
-### 💿 Persistent Root & NVMe Installer
-- **Text-Mode Installer:** Complete installer (`/bin/install`) providing automated GPT disk partitioning, ext4 root deployment, and configuration.
+### 💿 Persistent Root & NVMe/SATA Installer
+- **Text-Mode Installer:** Complete installer (`/bin/install`) providing automated GPT disk partitioning, ext4 root deployment, and configuration across NVMe and SATA/AHCI targets.
 - **Persistent Root:** Bootable persistent root partition, user account creation, machine hostname configuration, authenticated recovery, and clean shutdown.
 - **Hardware Acceptance:** Fully tested, confirmed, and physically accepted on bare-metal Dell Latitude hardware.
 
@@ -102,34 +112,30 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 | **Multi-Core (SMP)** | **COMPLETE** | 8 logical cores, work-stealing scheduler, TLB shootdown. Dell 5590 verified. |
 | **Memory Management** | **COMPLETE** | 32 GiB PMM, VMM 4-level paging, deferred CR3/PML4 reaping. |
 | **ext4 Filesystem & Hardening**| **COMPLETE** | Journaled ext4 with JBD2 crash recovery; Hardening EH-1 through EH-6 (atomic `SYS_RENAME_REPLACE`, 32-block staging batches, directory relocation). Dell physical acceptance confirmed. |
-| **NVMe & USB Storage** | **COMPLETE** | NVMe 1.4 driver + xHCI BOT/SCSI USB storage. |
+| **NVMe, SATA/AHCI & USB Storage** | **COMPLETE** | NVMe 1.4 driver, SATA/AHCI controller engine, and xHCI BOT/SCSI USB storage + multi-tier hubs. |
 | **Writable `/etc` (ETCFS)** | **COMPLETE** | Live-media in-memory writable configuration tree with 16 MiB quota ceiling and COW TarFS backing. |
 | **Permissions & Security** | **COMPLETE** | Unix DAC, UID/GID, sudo, setuid, and capability policies. Dell verified. |
-| **Userland & Shell** | **COMPLETE** | Ring 3 shell, job control, pipelines, scripting, `/bin/nano`, `/bin/free`, stream tools. |
-| **Persistent Root & Installer** | **COMPLETE** | Phases 0–4 complete. Dell spare-drive install & persistent boot verified on bare metal. |
+| **Userland, `pthreads` & Shell** | **COMPLETE** | Ring 3 shell, job control, pipelines, scripting, `pthreads` (syscalls 89–94), crash dumps, `/bin/nano`, `/bin/free`, stream tools. |
+| **Persistent Root & Installer** | **COMPLETE** | Phases 0–4 complete + offline two-slot kernel updates (`/bin/kernel-update`). Dell spare-drive install & persistent boot verified on bare metal. |
 | **Network SMP (CPU-0 Handoff)**| **COMPLETE through Phase 4** | Cross-core control, UDP/DNS, TCP streams/listeners, and ordinary unpinned children. Bounded Dell physical acceptance; Phase 5 throughput redesign deferred. Consolidated `/etc/network/network.conf` and `/etc/network/resolv.conf`. |
-| **Wireless & Wi-Fi (802.11 / WPA2-PSK / iwlwifi)** | **COMPLETE (Phases 0–4 + Transformation)** | IEEE 802.11 MAC engine, LLC/SNAP bridging, WPA2-PSK 4-way handshake, AES-128-CCMP, Intel AC 8265 & AX 211 driver, async non-blocking connect, multi-BSSID best-signal selection, autonomous roaming, PMK caching, DTIM power management, and `/etc/network/wlan.conf` mode 0600 root credential store. 16/16 host tests PASS. |
-| **SSH** | **COMPLETE through Phase 8** | Privilege-separated monitor/worker, PTY duplex bridge, OpenSSH client pubkey & password auth, BIOS/UEFI QEMU 100% PASS; MobaXterm laptop confirmed. |
+| **Wireless & Wi-Fi (802.11 / WPA2-PSK / iwlwifi)** | **COMPLETE (Phases 0–4 + Transformation)** | IEEE 802.11 MAC engine, LLC/SNAP bridging, WPA2-PSK 4-way handshake, dynamic group cipher & PMF/MFPC negotiation, full 5 GHz scan channels, unicast Wi-Fi DHCP, AES-128-CCMP, Intel AC 8265 & AX 211 driver, async non-blocking connect, multi-BSSID best-signal selection, autonomous roaming, PMK caching, DTIM power management, and `/etc/network/wlan.conf` mode 0600 root credential store. |
+| **SSH Server & Client** | **COMPLETE through Phase 8 + `/bin/ssh`** | Privilege-separated `/sbin/sshd` monitor/worker, PTY duplex bridge, standalone `/bin/ssh` client, OpenSSH pubkey & password auth, BIOS/UEFI QEMU 100% PASS; MobaXterm laptop confirmed. |
 | **Watchtower Service Supervisor** | **COMPLETE (Phases 0–5)** | `/sbin/watchtower` supervisor, `/bin/service` CLI, dynamic discovery via `SYS_LIST_DIR`, pipe capture, and clean shutdown. |
 | **System Logging (Three Pillars)** | **COMPLETE (Phases 0–4)** | Boot snapshot (`/bin/boot-snapshot`), supervisor pipe capture with async gzip, `/bin/logger`, `/var/log/messages`, scheduled `/sbin/logrotate` via crond. |
 | **TLS / HTTPS Engine** | **COMPLETE (Phases 0–5)** | BearSSL 0.6 client profile under Gate G1 static budget, 120 compiled NSS root anchors, `/bin/wget` HTTPS download with authenticated `close_notify`. |
-| **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, RFC 2131 background lease renewal daemon, RFC 1951/1952 gzip/gunzip. |
-| **Package Management (PKG-1)** | **IN PROGRESS** | Declarative package format, catalog parsing, SHA-256 validation, and Ring 3 CLI tooling. |
+| **Time, DHCP v2 & Compression** | **COMPLETE** | Clock/date/sleep/time, IANA TZif timezones, RFC 2131 background lease renewal daemon, RFC 1951/1952 gzip/gunzip, RFC 4648 base64. |
+| **Package Management (`PKG-1` / `PKG-3`)** | **COMPLETE** | `SYS_PKGCTL` (syscall 95), `/bin/pkg` CLI, Ed25519/SHA-256 verification, atomic application upgrades, reinstall idempotence, and predecessor-bound offline kernel updates. |
+| **Graphical Desktop & Compositor** | **COMPLETE** | `/bin/compositor` (`fortress-desktop`), SHM client surfaces, isolated `/bin/desktop-terminal` and `/bin/desktop-files` processes, direct `/dev/input/keyboard` (`key_event_t`) input with PS/2 + USB HID modifier/press/release tracking, extended `EV_KEY`, `Alt+Tab`, `Super`, and `Ctrl+Alt+Esc` SAK. |
 
-### Recently Finished (2026-10-24)
-- **Wireless Subsystem Architectural Transformation:** Non-blocking asynchronous Wi-Fi connection state machine with autonomous background progression, 6s fail-closed timeout, multi-BSSID best-signal auto-selection, autonomous background roaming ($\ge +15\text{ dBm}$ delta threshold), fast-path PMK caching (sub-millisecond instant reconnect), DTIM power management, hardened `/etc/network/wlan.conf` mode 0600 storage, zero-touch DHCP autoconfiguration, and animated scan progress bar.
-- **Network Resolver Consolidation:** Relocated persistent resolver configuration to `/etc/network/resolv.conf` alongside `/etc/network/network.conf`, with transparent fallback to `/etc/resolv.conf`.
-- **Live Media Writable `/etc` Filesystem (ETCFS):** In-memory mutable configuration tree with 16 MiB quota ceiling, COW TarFS backing, atomic replacement, and strict credential immutability.
-- **TLS / HTTPS Engine (Phases 0–5):** Complete BearSSL 0.6 platform integration under Gate G1 static memory bounds, 120 compiled root trust anchors in `/etc/ssl/certs/anchors.v1`, 16 deterministic adversarial gates, BadSSL live test suite, and `/bin/wget` HTTPS extension.
-- **System Logging Foundation (Phases 0–4):** Three Pillars architecture spanning `/bin/boot-snapshot` forensic pre-rotation, Watchtower supervisor non-blocking pipe capture with async gzip, and `/bin/logger` with crond scheduled `/sbin/logrotate`.
-- **ext4 Filesystem Hardening (EH-1 through EH-6):** Atomic replacement (`SYS_RENAME_REPLACE` 84), 32-block staging writes (`SYS_STAGE_WRITE` 85), interactive SSH latency SLA gate, and directory relocation/rename (EH-6).
-
-### Current Checkpoint: Native Package Manager (PKG-1)
-
-Current development is focused on the native package manager (`/bin/pkg`), implementing declarative package archive packaging, SHA-256 content verification, dependency catalog resolution, and safe atomic installation.
+### Recently Finished (2026-11-01)
+- **Direct Keyboard Input, Extended `EV_KEY` & Secure Attention Key (SAK):** Kernel `/dev/input/keyboard` (`/dev/kbd0`) device with 8-byte `key_event_t` packets (keycode, modifiers, press/release/repeat state, ASCII) fed by PS/2 and USB HID drivers, console TTY muting while grabbed, extended 64-byte `EV_KEY` desktop protocol, `Alt+Tab` / `Super` compositor shortcuts, and `Ctrl+Alt+Esc` SAK interception.
+- **Isolated Desktop Client Processes & Polish:** Standalone `/bin/desktop-terminal` and `/bin/desktop-files` client processes with open-in-editor IPC (`EV_OPEN_FILE`), VT/ANSI binary-output redraw resilience, and 1280x800 Settings integration.
+- **Wi-Fi WPA2-PSK Interoperability & 5 GHz Expansion:** Dynamic group cipher (CCMP/TKIP) and PMF/MFPC capability mirroring in both Association Request and EAPOL Message 2, full 5 GHz channel scan table, unicast Wi-Fi DHCP, and GUI profile auto-persistence.
+- **Atomic Package Upgrades (`PKG-3`) & Offline Kernel Updates:** Verified atomic application upgrades (`rot13` 1.0 → 2.0), reinstall idempotence, status/session-acquire locking, and predecessor-bound two-slot offline kernel updates (`/bin/kernel-update`).
+- **Userland Threads (`pthreads`), Crash Dumps & Network Tools:** Shared-address-space threads (`SYS_THREAD_CREATE`..`SYS_FUTEX`), bounded Ring 3 crash core dumps, `/bin/ssh` client, `/bin/telnet`, `/bin/httpd`, and `SYS_POLL` readiness multiplexing.
 
 ### Downstream Roadmap
-- Userland multithreading (`pthreads`)
+- Extended `SYS_LIST_DIR_EXT` directory continuation ABI for >63-byte filenames and arbitrary-sized directories in `desktop-files`
 - MicroPython platform runtime
 - Broader cross-core IPC and message queues
 - Deferred network throughput redesign (Phase 5)
@@ -223,23 +229,25 @@ The default image contains a FAT32 EFI system partition (Limine, kernel, initram
 ```text
 src/
 ├── arch/x86_64/     CPU bring-up, GDT/IDT, APIC, IPI, context switching, syscall entry
-├── kernel/          Scheduler, processes, ELF loader, handoff queue, lock discipline
-├── mm/              Physical memory (PMM), virtual paging (VMM), kernel heap
-├── net/             TCP/IP stack: Ethernet, ARP, IPv4, ICMP, UDP, TCP, DNS resolver
-├── drivers/         PCI, NVMe, xHCI, USB BOT/SCSI, e1000/e1000e/I219-LM, console, power
-├── fs/              VFS, tar initramfs, GPT parser, ext2, journaled ext4 (JBD2)
-└── include/         Shared kernel and userland ABI headers (syscalls, termctl, block info)
+├── kernel/          Scheduler, processes, threads/futex, ELF loader, poll, handoff queue
+├── mm/              Physical memory (PMM), virtual paging (VMM), SHM, kernel heap
+├── net/             TCP/IP stack (ETH/ARP/IPv4/ICMP/UDP/TCP/DNS) and 802.11/WPA2-PSK Wi-Fi
+├── drivers/         PCI, NVMe, AHCI, xHCI, USB BOT/HID/Hub, e1000/I219, RTL8153, iwlwifi, kbd/mouse
+├── fs/              VFS, tar initramfs, ETCFS, GPT, ext2, journaled ext4 (JBD2), PKG backend
+└── include/         Shared kernel and userland ABI headers (syscalls, desktop_proto, input_event)
 
 user/
-├── shell/           Interactive shell engine (line editing, job control, history, UI)
+├── compositor/      Rust desktop window server (/bin/compositor) and client apps (terminal, files)
+├── pkg/             Native package manager (/bin/pkg) and catalog/signature verification tooling
+├── shell/           Interactive shell engine (line editing, job control, scripting, history)
 ├── nano/            Ring 3 visual text editor (nano v2.1, Pike VM regex, nanorc)
-├── sshd/            Native SSH transport, authentication, channels and daemon
-├── tools/           Core utilities: disk, stream tools (grep, sed, awk, sort, uniq, wc), useradd, tar
-└── *.c              Freestanding binaries: init, ping, udptest, nc, tcpserve, wget, top, ps
+├── sshd/            Native SSHv2 server (/sbin/sshd) and standalone client (/bin/ssh)
+├── tools/           Core utilities: disk, stream tools (grep, sed, awk, sort, uniq, wc), kernel-update
+└── *.c              Freestanding binaries: init, ping, traceroute, nc, wget, httpd, telnet, top, ps
 
 docs/
 ├── plans/           Architecture specifications and staged implementation roadmaps
-├── subsystems/      Subsystem references (smp.md, net.md, storage.md, shell.md, usb.md)
+├── subsystems/      Subsystem references (smp.md, net.md, wifi.md, desktop.md, storage.md, shell.md, usb.md)
 └── roadmap/         Historical verification ledgers, checkpoints, and hardware evidence
 ```
 

@@ -7,6 +7,7 @@ static int refusal(unsigned line,int code) { fprintf(stderr,"refusal line=%u err
 #define main retained_mount_main
 #include "ext4_mount_host.c"
 #undef main
+void kbd_dev_init(vfs_node_t *dev_dir) { (void)dev_dir; }
 void mouse_dev_init(vfs_node_t *dev_dir) { (void)dev_dir; }
 long tool_syscall(long n,uintptr_t a,uintptr_t b,uintptr_t c) {
     (void)n;(void)a;(void)b;(void)c;assert(0);return -1;

@@ -156,6 +156,8 @@ static int ext4_pkg_upgrade_source(void *context,const uint8_t package[32],
     now.tv_sec=1792929600;
 #endif
     if(pkg_repository_trust_decode(st->trust_wire,trust_n,(uint64_t)now.tv_sec,&st->trust)){r=-VFS_EACCES;goto done;}
+    r=px_select(fs,package,catalog,catalog_n,&st->trust,NULL,&old->policy.slot);if(r)goto done;
+    next->policy.slot=old->policy.slot;
     old->policy.resources.capacity[0]=fs->blocks;old->policy.resources.capacity[1]=fs->inodes;
     uint64_t flags=spin_lock_irqsave(&e4_lock);
     if(!e4_bytes(fs,1128,old->policy.filesystem,16))r=-VFS_EIO;
@@ -173,6 +175,7 @@ static int ext4_pkg_upgrade_source(void *context,const uint8_t package[32],
     input=(px_input){next->artifact,artifact_n,0};size_t name_n=0;while(name_n<32&&package[name_n])name_n++;
     if(fpk_verify_authorized(&next->verify.verify,catalog,catalog_n,&st->trust.catalog,package,name_n,px_source_read,&input)){r=-VFS_EACCES;goto done;}
     const fpk_manifest *m=&next->verify.verify.manifest;
+    r=px_base_command(fs,m->command);if(r)goto done;
     uint8_t hash[32];(void)crypto_sha256(artifact,artifact_n,hash);
     size_t command_n=0;while(command_n<32&&old->state.command[command_n])command_n++;
     if(m->build<old->state.floor||(m->build==old->state.floor&&memcmp(hash,old->state.floor_hash,32))||
@@ -218,7 +221,8 @@ static int ext4_pkg_upgrade_source(void *context,const uint8_t package[32],
     flags=spin_lock_irqsave(&e4_lock);e4_inode_t staging;r=px_lookup(fs,"/var/lib/pkg/upgrade-v3",&staging);
     if(!r&&(staging.mode!=VFS_S_IFDIR||staging.uid||staging.gid||(staging.full_mode&07777)!=0700))r=-VFS_EACCES;
     spin_unlock_irqrestore(&e4_lock,flags);if(r)goto done;
-    px_copy(next->files[executable],"/var/lib/pkg/upgrade-v3/upgrade-");
+    px_copy(next->files[executable],"/var/lib/pkg/upgrade-v3/");
+    if(!px_add(next->files[executable],(const char *)package,name_n)||!px_add(next->files[executable],"-",1)){r=-VFS_EFBIG;goto done;}
     if(!px_decimal(next->files[executable],m->build)){r=-VFS_EFBIG;goto done;}
     for(unsigned i=0;i<m->file_count;i++){r=pu_stage(u,i);if(r)goto done;}
     u->source=u->record.files[executable].inode;

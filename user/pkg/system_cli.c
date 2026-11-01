@@ -4,6 +4,7 @@
 #include "mutation_cli.h"
 #include "../tools/common.h"
 #include "string.h"
+#include "terminal.h"
 #ifdef FORTRESS_PKG_FETCH
 #include "repository.h"
 #endif
@@ -174,17 +175,16 @@ static int install_source(cli_owner *owner,int argc,char **argv) {
         return tool_error("pkg","installation not confirmed; inspect status before retrying",NULL);
     return install_done(owner,&state,argv[2],version,false);
 }
+static const pkg_installed *confirmed_record;
 static int install_cached(cli_owner *owner,const char *name,bool upgrading) {
     size_t n=0;while(n<33&&name[n])n++;
     if(!fpk_identity_valid((const uint8_t *)name,n))return tool_error("pkg","invalid package name",NULL);
-    cli_msg("pkg: checking installation backend...\n");
-    int acquisition=acquire(owner);if(acquisition)return acquire_error(acquisition);
-
-    static const char *candidates[]={"/var/cache/pkg","/tmp/pkg-cache"};
+    const char *candidates[]={pkg_selected_directory(),"/var/cache/pkg","/tmp/pkg-cache"};
     int catalog=-1,artifact=-1;
     uint64_t cn=0,an=0;
 
-    for(unsigned c=0;c<2;c++){
+    for(unsigned c=0;c<3;c++){
+        if(!candidates[c])continue;
         char art_leaf[64];
         if(n+5>=sizeof art_leaf)return tool_error("pkg","package name too long",NULL);
         memcpy(art_leaf,name,n);memcpy(art_leaf+n,".fpk",5);
@@ -198,7 +198,7 @@ static int install_cached(cli_owner *owner,const char *name,bool upgrading) {
     }
     if(catalog<0||artifact<0){
         if(catalog>=0)(void)tool_syscall(SYS_CLOSE,catalog,0,0);
-        return tool_error("pkg","package not found in cache; run 'pkg get' first",name);
+        return tool_error("pkg","cannot open fetched package",name);
     }
 
     char version[33];display_version(artifact,name,version);
@@ -215,6 +215,27 @@ static int install_cached(cli_owner *owner,const char *name,bool upgrading) {
             return tool_error("pkg","cannot retrieve the installed package; current installation preserved",NULL);
         }
     }
+    int acquisition=acquire(owner);
+    if(acquisition){
+        if(previous>=0)(void)tool_syscall(SYS_CLOSE,previous,0,0);
+        (void)tool_syscall(SYS_CLOSE,catalog,0,0);(void)tool_syscall(SYS_CLOSE,artifact,0,0);
+        return acquire_error(acquisition);
+    }
+    if(confirmed_record) {
+        static pkg_installed current[PKG_INSTALLED_MAX];unsigned count=0;bool same=false;
+        if(!pkg_installed_read(current,&count))for(unsigned i=0;i<count;i++)
+            if(!strcmp(current[i].name,name)&&!memcmp(current[i].identity,confirmed_record->identity,32))same=true;
+        if(!same){
+            if(previous>=0)(void)tool_syscall(SYS_CLOSE,previous,0,0);
+            (void)tool_syscall(SYS_CLOSE,catalog,0,0);(void)tool_syscall(SYS_CLOSE,artifact,0,0);
+            return tool_error("pkg","confirmed installed record changed; retry",name);
+        }
+    }
+    static pkg_installed installed_now[PKG_INSTALLED_MAX];unsigned installed_count=0;
+    owner->sequence=0;
+    if(!pkg_installed_read(installed_now,&installed_count))for(unsigned i=0;i<installed_count;i++)
+        if(!strcmp(name,installed_now[i].name))owner->sequence=installed_now[i].sequence;
+    q.request.session=owner->session;
     pkg_request_v3 upgrade={.source=q,.previous_fd=(uint64_t)previous,.previous_bytes=previous_bytes};
     if(upgrading){upgrade.source.request.size=sizeof upgrade;upgrade.source.request.version=3;upgrade.source.request.operation=PKG_UPGRADE_SOURCE;}
     pkg_result_v1 r={0};pkg_transaction_status state;
@@ -230,6 +251,79 @@ static int install_cached(cli_owner *owner,const char *name,bool upgrading) {
         return tool_error("pkg","installation not confirmed; inspect status before retrying",NULL);
     return install_done(owner,&state,name,version,upgrading);
 }
+static int release_owner(cli_owner *owner) {
+    if(!owner->session)return 0;
+    pkg_result_v1 r={0};
+    if(control(PKG_RELEASE,owner->session,&r)||r.size!=sizeof r||r.version!=1||r.reserved||r.session)
+        return tool_error("pkg","session release not confirmed",NULL);
+    owner->session=0;return 0;
+}
+static int automatic_one(cli_owner *owner,const char *name,bool upgrade) {
+    size_t nn=strlen(name);if(!fpk_identity_valid((const uint8_t *)name,nn))return tool_error("pkg","invalid package name",NULL);
+    if(pkg_catalog_refresh())return 1;
+    static pkg_installed records[PKG_INSTALLED_MAX];unsigned count=0;
+    if(!pkg_installed_read(records,&count)) {
+        const pkg_installed *installed=NULL;
+        for(unsigned i=0;i<count;i++)if(!strcmp(name,records[i].name))installed=records+i;
+        if(upgrade&&!installed)return tool_error("pkg","package is not installed",name);
+        uint64_t build;uint8_t hash[32];
+        if(pkg_catalog_target(name,&build,hash))return tool_error("pkg","package unavailable",name);
+        if(!upgrade&&installed&&(build!=installed->build||memcmp(hash,installed->artifact,32)))
+            return tool_error("pkg","package already installed; use pkg upgrade",name);
+    }
+    if(pkg_download_selected(name))return 1;
+    return install_cached(owner,name,upgrade);
+}
+static void build_message(const char *name,uint64_t old,uint64_t next) {
+    char number[24];cli_msg(name);cli_msg(": build ");size_t n=tool_format_u64(number,old);number[n]=0;cli_msg(number);
+    cli_msg(" -> ");n=tool_format_u64(number,next);number[n]=0;cli_msg(number);cli_msg("\n");
+}
+static int installed_list(const char *name) {
+    static pkg_installed all[PKG_INSTALLED_MAX];unsigned count=0;
+    if(pkg_installed_read(all,&count))return tool_error("pkg","installed inventory invalid or inaccessible",NULL);
+    bool found=false;
+    for(unsigned i=0;i<count;i++)if(!name||!strcmp(name,all[i].name)) {
+        build_message(all[i].name,all[i].build,all[i].build);found=true;
+    }
+    if(name&&!found)return tool_error("pkg","package is not installed",name);
+    return 0;
+}
+static int upgrade_all(cli_owner *owner,bool yes) {
+    static pkg_installed all[PKG_INSTALLED_MAX],current[PKG_INSTALLED_MAX];
+    static bool eligible[PKG_INSTALLED_MAX];unsigned count=0,total=0;
+    if(pkg_installed_read(all,&count))return tool_error("pkg","installed inventory invalid or inaccessible",NULL);
+    if(pkg_catalog_refresh())return 1;
+    memset(eligible,0,sizeof eligible);
+    for(unsigned i=0;i<count;i++) {
+        uint64_t build;uint8_t hash[32];
+        if(pkg_catalog_target(all[i].name,&build,hash)){cli_msg(all[i].name);cli_msg(": unavailable; left installed\n");continue;}
+        if(build<all[i].build||(build==all[i].build&&memcmp(hash,all[i].artifact,32)))
+            return tool_error("pkg","catalog rollback or equal-build substitution",all[i].name);
+        if(build>all[i].build){eligible[i]=true;total++;build_message(all[i].name,all[i].build,build);}
+    }
+    if(!total){cli_msg("Installed packages are current.\n");return 0;}
+    char number[24];size_t n=tool_format_u64(number,total);number[n]=0;cli_msg(number);cli_msg(" package(s) to upgrade.\n");
+    if(!yes) {
+        if(tool_syscall(SYS_TERMCTL,TERM_ISATTY,0,0)!=1)return tool_error("pkg","noninteractive upgrade requires -y",NULL);
+        cli_msg("Proceed? [y/N] ");char answer[16];long got=tool_syscall(SYS_READ,0,(uintptr_t)answer,sizeof answer);
+        if(!((got==2&&answer[0]=='y'&&answer[1]=='\n')||(got==4&&!memcmp(answer,"yes\n",4)))){cli_msg("Upgrade cancelled.\n");return 1;}
+    }
+    for(unsigned i=0;i<count;i++)if(eligible[i]) {
+        int r=pkg_download_selected(all[i].name);
+        unsigned now=0;bool unchanged=false;
+        if(!r&&!pkg_installed_read(current,&now))for(unsigned j=0;j<now;j++)
+            if(!strcmp(current[j].name,all[i].name)&&!memcmp(current[j].identity,all[i].identity,32))unchanged=true;
+        if(!r&&!unchanged)r=tool_error("pkg","installed record changed; retry",all[i].name);
+        confirmed_record=all+i;
+        if(!r)r=install_cached(owner,all[i].name,true);
+        confirmed_record=NULL;
+        int released=release_owner(owner);if(released)r=released;
+        cli_msg(all[i].name);cli_msg(r?": failed\n":": completed\n");
+        if(r){for(unsigned j=i+1;j<count;j++)if(eligible[j]){cli_msg(all[j].name);cli_msg(": unattempted\n");}return 1;}
+    }
+    return 0;
+}
+
 #endif
 int pkg_system_main(int argc,char **argv) {
 #ifdef FORTRESS_PKG_FETCH
@@ -244,8 +338,11 @@ int pkg_system_main(int argc,char **argv) {
     int result;
 #ifdef FORTRESS_PKG_FETCH
     if(argc==4&&argv&&argv[1]&&tool_equal(argv[1],"install"))result=install_source(&owner,argc,argv);
-    else if(argc==3&&argv&&argv[1]&&tool_equal(argv[1],"install"))result=install_cached(&owner,argv[2],false);
-    else if(argc==3&&argv&&argv[1]&&tool_equal(argv[1],"upgrade"))result=install_cached(&owner,argv[2],true);
+    else if(argc==3&&argv&&argv[1]&&tool_equal(argv[1],"install"))result=automatic_one(&owner,argv[2],false);
+    else if(argc==3&&argv&&argv[1]&&tool_equal(argv[1],"upgrade"))result=tool_equal(argv[2],"-y")?upgrade_all(&owner,true):automatic_one(&owner,argv[2],true);
+    else if(argc==2&&argv&&tool_equal(argv[1],"upgrade"))result=upgrade_all(&owner,false);
+    else if(argc==2&&argv&&tool_equal(argv[1],"installed"))result=installed_list(NULL);
+    else if(argc==3&&argv&&tool_equal(argv[1],"info"))result=installed_list(argv[2]);
     else
 #endif
     result=pkg_mutation_cli(argc,argv,NULL,&backend);

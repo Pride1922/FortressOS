@@ -4,15 +4,21 @@ Proposed implementation plan, 2026-10-30. Starting checkpoint: `main`, `9df5b53`
 This replaces the enrollment approach. This planning change touches no runtime
 code or boot media.
 
+2026-11-01 checkpoint: the user confirmed rot13 upgrade/reboot after the offline
+kernel update PASS on the laptop. The next implementation milestone is
+[multiple installed application packages](PKG_MULTIPLE_INSTALLED.md), before
+desktop package acceptance. The stages below retain the original delivery plan.
+
 ## Intended workflow
 
 The publisher packages an application, signs the catalog and adds it to the
 existing Ubuntu repository. The installed OS supports:
 
 ```text
-pkg get TOOL
 sudo pkg install TOOL
 TOOL
+sudo pkg upgrade TOOL
+sudo pkg upgrade -y
 ```
 
 After publishing a newer version, upgrade it without reinstalling the OS.
@@ -31,7 +37,7 @@ verification stays mandatory. Local records need not resist offline disk editing
 | Package format/verifier | Reuse FPK, gzip/USTAR, file hashes, ELF and signed catalog verification. |
 | App builder | Generalize `scripts/build_desktop_package.py` into an app packaging tool. Keep the existing desktop entry point as a wrapper. |
 | Publisher | Reuse `scripts/pkg_repository.py`, `catalog.v1` and `objects/sha256/<hash>.fpk`. No repository format redesign. |
-| Download | Existing `pkg fetch PACKAGE DIRECTORY` verifies downloads. Add name-based `get`, cache handling and catalog refresh. |
+| Download | Reuse verified downloads/cache; install and upgrade automatically refresh the catalog and obtain their artifacts. No separate `update` or `get` prerequisite. |
 | Trust | Existing `/etc/pkg/repository.conf` and `/etc/pkg/trust.conf`; software/repository identity only, no per-device setup. |
 | Installation | Reuse SYS_PKGCTL 95 and bounded descriptor ingestion. Connect an ordinary installed-root backend to the retained planner/transaction engine. |
 | Upgrade | The current planner rejects a different installed build/artifact. Implement an explicit old-to-new transaction. |
@@ -43,10 +49,10 @@ Existing repository: `https://fortress.ameyerocha.com`, Ubuntu document root
 
 | Proposed command | Behaviour |
 | --- | --- |
-| `pkg update` | Download/verify and refresh the cached catalog; install nothing. |
-| `pkg get TOOL` | Resolve, download, verify and cache the current package. Print its version/build. |
-| `sudo pkg install TOOL` | Install the cached package; fetch it first if absent. Reverify in the privileged path. Identical installed build/hash is a no-op; a different installed version requires upgrade. |
-| `sudo pkg upgrade TOOL` | Fetch/install a newer build. Same version reports up to date. Reject older builds and equal-build substitution. |
+| `sudo pkg install TOOL` | Refresh/verify the catalog, download/verify and install the package. Reverify in the privileged path. Identical installed build/hash is a no-op; a different installed version requires upgrade. |
+| `sudo pkg upgrade TOOL` | Refresh/verify the catalog and fetch/install a newer build of the installed package. Same build/hash reports up to date. Reject older builds and equal-build substitution. |
+| `sudo pkg upgrade` | Refresh the catalog, show available upgrades for installed packages and ask for confirmation before proceeding sequentially. |
+| `sudo pkg upgrade -y` | Upgrade all eligible installed packages without prompting. Skip current packages; retain every verification and authorization check. |
 | `pkg list` / `pkg info TOOL` | Show installed version, available version and pending transaction state distinctly. |
 | `sudo pkg remove TOOL` | Remove only package-owned files, preserving settings and user data. |
 | `sudo pkg recover` | Complete or undo an interrupted transaction and report the result. |
@@ -54,6 +60,13 @@ Existing repository: `https://fortress.ameyerocha.com`, Ubuntu document root
 Keep explicit-directory `pkg fetch` for diagnostics. Downloads may run without
 root where their cache is writable; mutation uses existing root/CAP_SYS_ADMIN
 authorization. No install scripts, post-install hooks or arbitrary command execution.
+
+`pkg update` and `pkg get` are removed from the normal workflow/help. Automatic
+fetching and batch upgrade are implemented in the multiple-package milestone;
+see its [implementation checkpoint](../roadmap/pkg-multiple-installed.md).
+Physical acceptance of that milestone remains pending. Each package activates atomically; stop at
+the first failure and report completed, failed and unattempted packages without
+undoing successful upgrades. See the [detailed CLI and acceptance contract](PKG_MULTIPLE_INSTALLED.md).
 
 ## Stage 1 — Package and publish a real app
 
@@ -98,7 +111,7 @@ cannot gain a new backend by copying an app: identify and prepare any required
 one-time kernel/boot-file refresh explicitly, without asking for an OS reinstallation
 or format. Physical actions remain user-operated and separately authorized.
 
-Acceptance on Dell: get TOOL, install TOOL, run it, inspect its installed version,
+Acceptance on Dell: install TOOL directly, run it, inspect its installed version,
 reboot and run it again. Show invalid-signature rejection without installed-file
 changes. This is the first product POC; no new QEMU campaign is a prerequisite.
 

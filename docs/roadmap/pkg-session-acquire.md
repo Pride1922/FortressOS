@@ -84,8 +84,10 @@ that attempt returned EIO, EAGAIN, or a different acquisition error. The earlier
 package-upgrade acceptance applies to the previous shipped image. The corrected
 kernel/CLI are also included in the later two-slot baseline installed on the
 laptop; the user confirmed its baseline and offline kernel-update/reboot checks.
-Package acquisition/upgrade on that new physical baseline remains unconfirmed. The existing flashable installer
-receipt is preserved and does not acquire a claim for the corrected kernel.
+The user subsequently confirmed package acquisition/rot13 upgrade and reboot
+persistence on that updated laptop PASS. This is user-reported physical acceptance;
+no new terminal trace or original acquisition-error code was supplied. The existing
+flashable installer receipt is preserved separately from this later laptop result.
 
 Reproduce with `make test-pkg-status-host` and `make test-pkg-status-qemu` inside
 the Linux build environment. The latter requires KVM and OVMF. Private probes
