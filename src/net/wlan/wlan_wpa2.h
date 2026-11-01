@@ -64,6 +64,7 @@ typedef struct {
     uint8_t  gtk[WLAN_TK_LEN];  /* Group Temporal Key */
     uint8_t  gtk_idx;
     uint8_t  group_cipher;      /* Negotiated Group Cipher: 0x02 (TKIP) or 0x04 (CCMP) */
+    uint16_t rsn_caps;          /* Negotiated RSN capabilities (mirrored in M2 Key Data) */
 
     uint64_t last_replay_counter;
     uint32_t handshake_step;    /* 0=Idle, 1=Got M1, 2=Sent M2, 3=Got M3, 4=Authorized */
@@ -82,6 +83,9 @@ void wpa2_sm_init(wpa2_sm_t *sm,
 
 /* Set negotiated group cipher suite (0x02 for TKIP, 0x04 for CCMP) */
 void wpa2_sm_set_group_cipher(wpa2_sm_t *sm, uint8_t group_cipher);
+
+/* Set negotiated group cipher suite and RSN capabilities (mirrored in Message 2) */
+void wpa2_sm_set_rsn(wpa2_sm_t *sm, uint8_t group_cipher, uint16_t rsn_caps);
 
 /* Process incoming EAPOL frame (Message 1 or Message 3) */
 int wpa2_sm_rx_eapol(wpa2_sm_t *sm,

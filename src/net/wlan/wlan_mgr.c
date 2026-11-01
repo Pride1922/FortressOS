@@ -496,7 +496,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     s_gtk_rx_pn  = 0;
                     s_gtk_rx_bitmap = 0;
                     wpa2_sm_init(&s_wpa2_sm, s_local_mac, s_target_bssid, s_target_pmk);
-                    wpa2_sm_set_group_cipher(&s_wpa2_sm, s_target_group_cipher);
+                    wpa2_sm_set_rsn(&s_wpa2_sm, s_target_group_cipher, s_target_rsn_caps);
                     uint16_t bi = s_target_beacon_int;
                     spin_unlock_irqrestore(&s_wlan_lock, irq);
                     if (s_hw_ops && s_hw_ops->set_associated) {

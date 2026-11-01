@@ -109,8 +109,8 @@ Upon entering `WLAN_STATE_CONNECTED`, the Intel iwlwifi driver configures the fi
 - Transitions back to continuous awake (`flags = 0`) during deauthentication or directed active scanning.
 
 ### Dynamic Group Cipher Negotiation & RSN IE Consistency
-`net_80211_parse_beacon_or_probe()` extracts the AP's advertised Group Data Cipher Suite (`00-0F-AC:2` TKIP, `00-0F-AC:4` CCMP).
-`net_80211_build_assoc_req_ext()` and `wlan_wpa2_rx_eapol()` (Message 2) dynamically reflect the AP's group cipher in both the Association Request and EAPOL Message 2 RSN IEs. Both RSN IEs are byte-for-byte identical, strictly eliminating AP deauthentication Reason Code 17 (`WLAN_REASON_IE_IN_4WAY_DIFFERS`). RSN Capabilities are pinned to `0x0000` (disabling 802.11w PMF/MFPC), avoiding Protected Management Frame negotiation mismatches on modern hotspots (Pixel Pro).
+`net_80211_parse_beacon_or_probe()` extracts the AP's advertised Group Data Cipher Suite (`00-0F-AC:2` TKIP, `00-0F-AC:4` CCMP) and RSN capabilities.
+`net_80211_build_assoc_req_ext()` and `wpa2_sm_rx_eapol()` (Message 2) dynamically mirror both the AP's group cipher and Management Frame Protection Capable (MFPC, bit 7 / `0x0080`) bit across both the Association Request and EAPOL Message 2 RSN IEs. Both RSN IEs match byte-for-byte, strictly eliminating both AP Association Rejection Status Code 53 (`0x35`, Robust Management Policy Violation required by Android WPA2/WPA3-Personal transition mode) and AP Deauthentication Reason Code 17 (`0x0011` / `WLAN_REASON_IE_IN_4WAY_DIFFERS`).
 
 ### Wi-Fi DHCP Unicast Delivery
 When acquiring an IP lease over `wlan0`, `/sbin/dhcpc` clears `DHCP_FLAGS_BROADCAST` to request unicast delivery per RFC 2131. Unicast DHCPOFFER and DHCPACK frames are encrypted under the station's Pairwise Temporal Key (AES-128-CCMP), preventing packet drop on APs using TKIP group ciphers. The IPv4 network stack (`src/net/net_ipv4.c`) permits inbound UDP port 68 datagrams destined to the newly offered IP before local interface IP configuration.

@@ -182,6 +182,56 @@ static void test_adversarial_gates(void) {
     printf("[TEST 2] PASS: Replay counters and tampered MICs fail-closed.\n");
 }
 
+static void test_rsn_ie_mirroring(void) {
+    printf("[TEST 3] Testing dynamic Group Cipher and PMF (MFPC) RSN IE mirroring in Message 2...\n");
+
+    uint8_t sta_mac[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+    uint8_t ap_bssid[6] = {0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB};
+    uint8_t pmk[WLAN_PMK_LEN];
+    memset(pmk, 0x42, sizeof(pmk));
+
+    /* Case A: Halloween network (TKIP group cipher 0x02, no PMF 0x0000) */
+    wpa2_sm_t sm_tkip;
+    wpa2_sm_init(&sm_tkip, sta_mac, ap_bssid, pmk);
+    wpa2_sm_set_rsn(&sm_tkip, 0x02, 0x0000);
+
+    uint8_t msg1[sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t)];
+    memset(msg1, 0, sizeof(msg1));
+    eapol_hdr_t *h1 = (eapol_hdr_t *)msg1;
+    h1->version = 1; h1->type = EAPOL_TYPE_KEY;
+    h1->length = t_htons((uint16_t)sizeof(eapol_key_desc_t));
+    eapol_key_desc_t *kd1 = (eapol_key_desc_t *)(msg1 + sizeof(eapol_hdr_t));
+    kd1->desc_type = EAPOL_KEY_DESC_WPA2;
+    kd1->key_info = t_htons(EAPOL_KEY_INFO_HMAC_SHA1 | EAPOL_KEY_INFO_KEY_TYPE | EAPOL_KEY_INFO_KEY_ACK);
+    kd1->replay_counter = t_hton64(1);
+    memset(kd1->key_nonce, 0x11, 32);
+
+    uint8_t msg2_tkip[256];
+    int len_tkip = wpa2_sm_rx_eapol(&sm_tkip, msg1, sizeof(msg1), msg2_tkip, sizeof(msg2_tkip));
+    assert(len_tkip > 0);
+
+    const uint8_t *ie_tkip = msg2_tkip + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t);
+    assert(ie_tkip[0] == 0x30 && ie_tkip[1] == 0x14); /* RSN IE */
+    assert(ie_tkip[7] == 0x02);                       /* Group cipher = TKIP (0x02) */
+    assert(ie_tkip[20] == 0x00 && ie_tkip[21] == 0x00);/* RSN caps = 0x0000 */
+
+    /* Case B: Pixel Hotspot (CCMP group cipher 0x04, PMF MFPC 0x0080) */
+    wpa2_sm_t sm_pmf;
+    wpa2_sm_init(&sm_pmf, sta_mac, ap_bssid, pmk);
+    wpa2_sm_set_rsn(&sm_pmf, 0x04, 0x0080);
+
+    uint8_t msg2_pmf[256];
+    int len_pmf = wpa2_sm_rx_eapol(&sm_pmf, msg1, sizeof(msg1), msg2_pmf, sizeof(msg2_pmf));
+    assert(len_pmf > 0);
+
+    const uint8_t *ie_pmf = msg2_pmf + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t);
+    assert(ie_pmf[0] == 0x30 && ie_pmf[1] == 0x14);   /* RSN IE */
+    assert(ie_pmf[7] == 0x04);                         /* Group cipher = CCMP (0x04) */
+    assert(ie_pmf[20] == 0x80 && ie_pmf[21] == 0x00); /* RSN caps = 0x0080 (MFPC = 1) */
+
+    printf("[TEST 3] PASS: Message 2 accurately mirrors Group Cipher and PMF (MFPC) capabilities.\n");
+}
+
 int main(void) {
     printf("================================================================\n");
     printf("  FortressOS WPA2-PSK 4-Way Handshake (WIFI-2) Test Suite       \n");
@@ -189,6 +239,7 @@ int main(void) {
 
     test_full_4way_handshake();
     test_adversarial_gates();
+    test_rsn_ie_mirroring();
 
     printf("================================================================\n");
     printf("  ALL WPA2-PSK 4-WAY HANDSHAKE TESTS PASSED (100%%)             \n");

@@ -48,6 +48,7 @@ void wpa2_sm_init(wpa2_sm_t *sm,
     sm->handshake_step = 0;
     sm->tx_pn = 0;
     sm->group_cipher = 0x04;
+    sm->rsn_caps = 0x0000;
     for (int i = 0; i < 16; i++) {
         sm->rx_pn[i] = 0;
         sm->rx_bitmap[i] = 0;
@@ -57,6 +58,12 @@ void wpa2_sm_init(wpa2_sm_t *sm,
 void wpa2_sm_set_group_cipher(wpa2_sm_t *sm, uint8_t group_cipher) {
     if (!sm) return;
     sm->group_cipher = (group_cipher == 0x02 || group_cipher == 0x04) ? group_cipher : 0x04;
+}
+
+void wpa2_sm_set_rsn(wpa2_sm_t *sm, uint8_t group_cipher, uint16_t rsn_caps) {
+    if (!sm) return;
+    sm->group_cipher = (group_cipher == 0x02 || group_cipher == 0x04) ? group_cipher : 0x04;
+    sm->rsn_caps = (rsn_caps & 0x0080);
 }
 
 bool wpa2_sm_is_authorized(const wpa2_sm_t *sm) {
@@ -139,6 +146,8 @@ int wpa2_sm_rx_eapol(wpa2_sm_t *sm,
         uint8_t sta_rsn_ie[sizeof(s_sta_rsn_ie)];
         memcpy(sta_rsn_ie, s_sta_rsn_ie, sizeof(sta_rsn_ie));
         sta_rsn_ie[7] = (sm->group_cipher == 0x02 || sm->group_cipher == 0x04) ? sm->group_cipher : 0x04;
+        sta_rsn_ie[20] = (uint8_t)(sm->rsn_caps & 0xFF);
+        sta_rsn_ie[21] = (uint8_t)((sm->rsn_caps >> 8) & 0xFF);
         memcpy(out_resp + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t), sta_rsn_ie, rsn_len);
 
         /* Compute HMAC-SHA1 MIC over entire EAPOL frame (with key_mic zeroed) */
@@ -196,20 +205,21 @@ int wpa2_sm_rx_eapol(wpa2_sm_t *sm,
                     if (wlan_aes_unwrap(sm->kek, key_data, key_data_len, plain_data) == 0) {
                         /* Search for GTK KDE (OUI 00-0F-AC, DataType 1) */
                         size_t off = 0;
-                        while (off + 6 <= (size_t)(key_data_len - 8)) {
-                            if (plain_data[off + 0] == 0xDD && /* Vendor Specific */
+                        while (off + 2 <= (size_t)(key_data_len - 8)) {
+                            uint8_t kde_len = plain_data[off + 1];
+                            if (kde_len == 0 || off + 2 + kde_len > (size_t)(key_data_len - 8)) break;
+                            if (plain_data[off + 0] == 0xDD && kde_len >= 6 && /* Vendor Specific */
                                 plain_data[off + 2] == 0x00 &&
                                 plain_data[off + 3] == 0x0F &&
                                 plain_data[off + 4] == 0xAC &&
                                 plain_data[off + 5] == 0x01) { /* GTK KDE */
-                                uint8_t kde_len = plain_data[off + 1];
                                 if (kde_len >= 6 + 16) {
                                     sm->gtk_idx = plain_data[off + 6] & 0x03;
                                     memcpy(sm->gtk, &plain_data[off + 8], 16);
                                 }
                                 break;
                             }
-                            off += 2 + plain_data[off + 1];
+                            off += 2 + kde_len;
                         }
                     }
                 }
