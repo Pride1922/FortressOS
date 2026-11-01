@@ -108,9 +108,12 @@ Upon entering `WLAN_STATE_CONNECTED`, the Intel iwlwifi driver configures the fi
 - `rx_data_timeout = 10000` / `tx_data_timeout = 10000`: 10 ms idle wake windows.
 - Transitions back to continuous awake (`flags = 0`) during deauthentication or directed active scanning.
 
-### Dynamic Group Cipher & PMF Association Compatibility
-`net_80211_parse_beacon_or_probe()` extracts the AP's advertised Group Data Cipher Suite (`00-0F-AC:2` TKIP, `00-0F-AC:4` CCMP) and RSN Capabilities (Protected Management Frames `MFPC` bit 7).
-`net_80211_build_assoc_req_ext()` dynamically reflects the AP's group cipher and echoes PMF capability in the Association Request RSN IE, eliminating association rejections (802.11 Status 19 / Status 52) on WPA/WPA2 mixed-mode routers (e.g. TP-Link 4G LTE routers).
+### Dynamic Group Cipher Negotiation & RSN IE Consistency
+`net_80211_parse_beacon_or_probe()` extracts the AP's advertised Group Data Cipher Suite (`00-0F-AC:2` TKIP, `00-0F-AC:4` CCMP).
+`net_80211_build_assoc_req_ext()` and `wlan_wpa2_rx_eapol()` (Message 2) dynamically reflect the AP's group cipher in both the Association Request and EAPOL Message 2 RSN IEs. Both RSN IEs are byte-for-byte identical, strictly eliminating AP deauthentication Reason Code 17 (`WLAN_REASON_IE_IN_4WAY_DIFFERS`). RSN Capabilities are pinned to `0x0000` (disabling 802.11w PMF/MFPC), avoiding Protected Management Frame negotiation mismatches on modern hotspots (Pixel Pro).
+
+### Wi-Fi DHCP Unicast Delivery
+When acquiring an IP lease over `wlan0`, `/sbin/dhcpc` clears `DHCP_FLAGS_BROADCAST` to request unicast delivery per RFC 2131. Unicast DHCPOFFER and DHCPACK frames are encrypted under the station's Pairwise Temporal Key (AES-128-CCMP), preventing packet drop on APs using TKIP group ciphers. The IPv4 network stack (`src/net/net_ipv4.c`) permits inbound UDP port 68 datagrams destined to the newly offered IP before local interface IP configuration.
 `wlan_mgr.c` emits real-time serial diagnostic telemetry for 802.11 Auth Response status, Assoc Response status, Deauth/Disassoc reason codes, and EAPOL M1–M4 handshake transitions.
 
 ### Full-Spectrum 5 GHz Channel Scanning

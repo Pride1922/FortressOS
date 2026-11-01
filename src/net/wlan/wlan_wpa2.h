@@ -63,6 +63,7 @@ typedef struct {
     uint8_t  tk[WLAN_TK_LEN];   /* bytes 32..47 */
     uint8_t  gtk[WLAN_TK_LEN];  /* Group Temporal Key */
     uint8_t  gtk_idx;
+    uint8_t  group_cipher;      /* Negotiated Group Cipher: 0x02 (TKIP) or 0x04 (CCMP) */
 
     uint64_t last_replay_counter;
     uint32_t handshake_step;    /* 0=Idle, 1=Got M1, 2=Sent M2, 3=Got M3, 4=Authorized */
@@ -78,6 +79,9 @@ void wpa2_sm_init(wpa2_sm_t *sm,
                   const uint8_t sta_mac[6],
                   const uint8_t bssid[6],
                   const uint8_t pmk[WLAN_PMK_LEN]);
+
+/* Set negotiated group cipher suite (0x02 for TKIP, 0x04 for CCMP) */
+void wpa2_sm_set_group_cipher(wpa2_sm_t *sm, uint8_t group_cipher);
 
 /* Process incoming EAPOL frame (Message 1 or Message 3) */
 int wpa2_sm_rx_eapol(wpa2_sm_t *sm,

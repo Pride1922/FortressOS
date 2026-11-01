@@ -47,10 +47,16 @@ void wpa2_sm_init(wpa2_sm_t *sm,
     sm->port_authorized = false;
     sm->handshake_step = 0;
     sm->tx_pn = 0;
+    sm->group_cipher = 0x04;
     for (int i = 0; i < 16; i++) {
         sm->rx_pn[i] = 0;
         sm->rx_bitmap[i] = 0;
     }
+}
+
+void wpa2_sm_set_group_cipher(wpa2_sm_t *sm, uint8_t group_cipher) {
+    if (!sm) return;
+    sm->group_cipher = (group_cipher == 0x02 || group_cipher == 0x04) ? group_cipher : 0x04;
 }
 
 bool wpa2_sm_is_authorized(const wpa2_sm_t *sm) {
@@ -129,8 +135,11 @@ int wpa2_sm_rx_eapol(wpa2_sm_t *sm,
         memcpy(resp_kd->key_nonce, sm->snonce, 32);
         resp_kd->key_data_len = wlan_htons((uint16_t)rsn_len);
 
-        /* Append Station RSN IE into Key Data */
-        memcpy(out_resp + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t), s_sta_rsn_ie, rsn_len);
+        /* Append Station RSN IE into Key Data (must match Assoc Req byte-for-byte) */
+        uint8_t sta_rsn_ie[sizeof(s_sta_rsn_ie)];
+        memcpy(sta_rsn_ie, s_sta_rsn_ie, sizeof(sta_rsn_ie));
+        sta_rsn_ie[7] = (sm->group_cipher == 0x02 || sm->group_cipher == 0x04) ? sm->group_cipher : 0x04;
+        memcpy(out_resp + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t), sta_rsn_ie, rsn_len);
 
         /* Compute HMAC-SHA1 MIC over entire EAPOL frame (with key_mic zeroed) */
         uint8_t full_mic[WLAN_SHA1_DIGEST_SIZE];

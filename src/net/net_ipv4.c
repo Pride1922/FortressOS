@@ -194,7 +194,14 @@ bool net_ipv4_udp_take(unsigned slot, uint64_t token, int64_t *result) {
 }
 void net_ipv4_input(const uint8_t *packet, size_t len) {
     if (!s_dev || ipv4_decode(packet,len,&s_ip,NULL,NULL) || ipv4_get_ihl_bytes(&s_ip)!=20 ||
-        !s_ip.ttl || (s_ip.dst_ip!=0xffffffffu && s_ip.dst_ip!=s_cfg.local_ip) || !net_ipv4_unicast(s_ip.src_ip)) return;
+        !s_ip.ttl || !net_ipv4_unicast(s_ip.src_ip)) return;
+    bool dst_match = (s_ip.dst_ip == 0xffffffffu || s_ip.dst_ip == s_cfg.local_ip);
+    if (!dst_match && !s_cfg.local_ip && s_ip.protocol == 17 && ntohs(s_ip.total_len) >= 28) {
+        /* Allow incoming DHCP client packets (UDP port 68) before local IP is configured */
+        uint16_t dport = (uint16_t)((packet[22] << 8) | packet[23]);
+        if (dport == 68) dst_match = true;
+    }
+    if (!dst_match) return;
     size_t n=ntohs(s_ip.total_len)-20;
     const uint8_t *data; size_t data_len;
     if (s_ip.protocol==6) { net_tcp_input(s_ip.src_ip,packet+20,n); return; }

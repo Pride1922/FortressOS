@@ -132,10 +132,10 @@ size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
     *ie++ = 0x01; *ie++ = 0x00;
     /* AKM Suite: 00-0F-AC:2 (PSK) */
     *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC; *ie++ = 0x02;
-    /* RSN Capabilities: mirror AP's PMF MFPC bit (bit 7, 0x0080) if AP supports it */
-    uint16_t client_caps = (rsn_caps & 0x0080);
-    *ie++ = (uint8_t)(client_caps & 0xFF);
-    *ie++ = (uint8_t)((client_caps >> 8) & 0xFF);
+    /* RSN Capabilities: 0x0000 (No PMF/MFPC - FortressOS does not implement 802.11w) */
+    (void)rsn_caps;
+    *ie++ = 0x00;
+    *ie++ = 0x00;
 
     /* 5. WMM / QoS Information Element (9 bytes) */
     *ie++ = IEEE80211_IE_VENDOR;

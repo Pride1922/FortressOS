@@ -611,6 +611,11 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
         sys_call(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
         return -3;
     }
+    bool is_wlan = (get_ifname(mac)[0] == 'w');
+    if (is_wlan) {
+        /* On Wi-Fi, prefer unicast delivery per RFC 2131 to bypass AP group cipher / broadcast drops */
+        ((dhcp_packet_hdr_t *)tx_buf)->flags = 0;
+    }
 
     ret = sys_call(SYS_SENDTO, (uintptr_t)fd, (uintptr_t)tx_buf, tx_len, 0,
                    (uintptr_t)&bcast_addr, sizeof(bcast_addr));
@@ -665,6 +670,9 @@ static int dhcp_do_handshake(const uint8_t mac[6], uint64_t timeout_sec, bool dr
                             offer.yiaddr, offer.server_ip, &tx_len) != 0) {
         sys_call(SYS_CLOSE, (uintptr_t)fd, 0, 0, 0, 0, 0);
         return -6;
+    }
+    if (is_wlan) {
+        ((dhcp_packet_hdr_t *)tx_buf)->flags = 0;
     }
 
     ret = sys_call(SYS_SENDTO, (uintptr_t)fd, (uintptr_t)tx_buf, tx_len, 0,
