@@ -392,18 +392,18 @@ impl Clients {
         self.send(slot, &msg)
     }
 
-    /// Routes a key to the app owning `window_id`. False if not an app window.
+    /// Routes a structured key event to the app owning `window_id`. False if not an app window.
     pub fn key(
         &mut self,
         window_id: u32,
-        byte: u8,
+        event: proto::KeyEvent,
         windows: &mut WindowManager,
         scene: &mut Surface,
     ) -> bool {
         let Some(slot) = self.slot_of(window_id) else {
             return false;
         };
-        if !self.send(slot, &Msg::new(proto::EV_KEY, byte as u32, 0, 0, 0)) {
+        if !self.send(slot, &event.to_msg()) {
             self.drop_client(slot, windows, scene);
         }
         true

@@ -84,6 +84,7 @@ int hello_window_main(void) {
             draw();
             break;
         case DESKTOP_EV_KEY:
+            if (!m.a || (m.b && m.d == DESKTOP_KEY_RELEASE)) break;
             keys++;
             if (m.a == 'q') return 0;
             if (m.a == 'h' && box_x >= 20) box_x -= 20;

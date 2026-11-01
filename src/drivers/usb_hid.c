@@ -464,6 +464,9 @@ bool usb_hid_configure_mouse(const xhci_rings_io_t *io,
     return true;
 }
 
+/* Report diffs become set 1 make/break scancodes that share the PS/2 decoder:
+ * input_inject_scancodes publishes key events to /dev/input/keyboard (press
+ * and release, with modifiers) and feeds the console only when ungrabbed. */
 static void hid_scancode_sink(uint8_t scancode, bool extended, void *ctx) {
     (void)ctx;
     serial_puts("[USB HID] Scancode=");

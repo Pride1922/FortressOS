@@ -42,6 +42,9 @@ pub struct App {
     pub width: usize,
     pub height: usize,
     pub stride: usize,
+    pending_keys: [u8; 4],
+    pending_pos: u8,
+    pending_len: u8,
 }
 
 impl App {
@@ -59,6 +62,9 @@ impl App {
             width: 0,
             height: 0,
             stride: 0,
+            pending_keys: [0; 4],
+            pending_pos: 0,
+            pending_len: 0,
         };
         let mut create = Msg::new(proto::REQ_CREATE, outer_w, outer_h, 0, 0);
         set_text(&mut create, title);
@@ -74,29 +80,56 @@ impl App {
         }
     }
 
+    fn read_one_event(&mut self) -> Option<Event> {
+        if self.pending_pos < self.pending_len {
+            let b = self.pending_keys[self.pending_pos as usize];
+            self.pending_pos += 1;
+            return Some(Event::Key(b));
+        }
+        let mut bytes = [0u8; MSG_SIZE];
+        if !sys::read_exact(FD_EVENTS, &mut bytes) {
+            return Some(Event::Close);
+        }
+        let m = Msg::from_bytes(&bytes);
+        match m.kind {
+            proto::EV_CONFIGURE => {
+                let (w, h, stride) = (m.a as usize, m.b as usize, m.c as usize);
+                // Never trust a size beyond the buffer we really mapped.
+                let fits = stride.checked_mul(h).is_some_and(|n| n <= self.capacity);
+                if w == 0 || h == 0 || w > stride || !fits {
+                    return Some(Event::Close);
+                }
+                (self.width, self.height, self.stride) = (w, h, stride);
+                Some(Event::Configure)
+            }
+            proto::EV_KEY => {
+                let ev = proto::KeyEvent::from_msg(&m)?;
+                if !ev.is_press_or_repeat() {
+                    return None;
+                }
+                if ev.ascii != 0 {
+                    return Some(Event::Key(ev.ascii));
+                }
+                let seq = ev.vt100_sequence();
+                if let Some((&first, rest)) = seq.split_first() {
+                    self.pending_keys[..rest.len()].copy_from_slice(rest);
+                    self.pending_pos = 0;
+                    self.pending_len = rest.len() as u8;
+                    return Some(Event::Key(first));
+                }
+                None
+            }
+            proto::EV_CLICK => Some(Event::Click(m.a as usize, m.b as usize)),
+            proto::EV_CLOSE => Some(Event::Close),
+            _ => None, // newer compositor: ignore unknown events
+        }
+    }
+
     /// Blocks for the next event.
     pub fn next_event(&mut self) -> Event {
         loop {
-            let mut bytes = [0u8; MSG_SIZE];
-            if !sys::read_exact(FD_EVENTS, &mut bytes) {
-                return Event::Close;
-            }
-            let m = Msg::from_bytes(&bytes);
-            match m.kind {
-                proto::EV_CONFIGURE => {
-                    let (w, h, stride) = (m.a as usize, m.b as usize, m.c as usize);
-                    // Never trust a size beyond the buffer we really mapped.
-                    let fits = stride.checked_mul(h).is_some_and(|n| n <= self.capacity);
-                    if w == 0 || h == 0 || w > stride || !fits {
-                        return Event::Close;
-                    }
-                    (self.width, self.height, self.stride) = (w, h, stride);
-                    return Event::Configure;
-                }
-                proto::EV_KEY => return Event::Key(m.a as u8),
-                proto::EV_CLICK => return Event::Click(m.a as usize, m.b as usize),
-                proto::EV_CLOSE => return Event::Close,
-                _ => {} // newer compositor: ignore unknown events
+            if let Some(ev) = self.read_one_event() {
+                return ev;
             }
         }
     }
@@ -106,6 +139,11 @@ impl App {
     /// is never starved by a busy `extra`.
     pub fn wait(&mut self, extra: i32) -> Wait {
         loop {
+            if self.pending_pos < self.pending_len {
+                let b = self.pending_keys[self.pending_pos as usize];
+                self.pending_pos += 1;
+                return Wait::Event(Event::Key(b));
+            }
             let mut fds = [
                 sys::PollFd {
                     fd: FD_EVENTS,
@@ -126,7 +164,9 @@ impl App {
                 return Wait::Event(Event::Close);
             }
             if fds[0].revents != 0 {
-                return Wait::Event(self.next_event());
+                if let Some(ev) = self.read_one_event() {
+                    return Wait::Event(ev);
+                }
             }
             if fds[1].revents & sys::POLLIN != 0 {
                 return Wait::Ready;

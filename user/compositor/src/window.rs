@@ -1167,6 +1167,73 @@ impl WindowManager {
         self.raise(first_id, s);
     }
 
+    /// Releases any active pointer capture, closes open desktop menus, and
+    /// clears keyboard focus from all windows (SAK step 1).
+    pub fn emergency_unfocus(&mut self, s: &mut Surface) {
+        self.buttons = 0;
+        if self.context_menu.is_some() {
+            self.close_context_menu(s);
+        }
+        if self.start_open {
+            self.start_open = false;
+            self.menu_hover = None;
+            s.damage(Self::start_btn_rect(s.height));
+            s.damage(Self::start_menu_rect(s.height));
+        }
+        for w in &mut self.windows {
+            if w.is_dragging || w.is_resizing || w.is_focused {
+                s.damage(w.damage_rect());
+            }
+            w.is_dragging = false;
+            w.is_resizing = false;
+            w.is_focused = false;
+        }
+        Self::dock_damage(s);
+    }
+
+    pub fn toggle_start_menu(&mut self, s: &mut Surface) {
+        self.start_open = !self.start_open;
+        self.menu_hover = None;
+        s.damage(Self::start_btn_rect(s.height));
+        s.damage(Self::start_menu_rect(s.height));
+    }
+
+    /// Intercepts compositor-reserved key combinations before any client window
+    /// sees them: SAK (`Ctrl + Alt + Esc`), `Alt + Tab` window switching, and
+    /// the `Super` key Start Menu toggle. Returns true if consumed.
+    pub fn intercept_key(&mut self, ev: crate::proto::KeyEvent, s: &mut Surface) -> bool {
+        if (ev.modifiers & (crate::proto::MOD_CTRL | crate::proto::MOD_ALT))
+            == (crate::proto::MOD_CTRL | crate::proto::MOD_ALT)
+            && ev.keycode == crate::proto::KEY_ESC
+        {
+            if ev.state == crate::proto::KEY_STATE_PRESS {
+                self.emergency_unfocus(s);
+                self.ensure_window_1(s);
+            }
+            return true;
+        }
+        if (ev.modifiers & crate::proto::MOD_ALT) != 0
+            && (ev.modifiers & crate::proto::MOD_CTRL) == 0
+            && ev.keycode == crate::proto::KEY_TAB
+        {
+            if ev.is_press_or_repeat() {
+                self.cycle_focus(s);
+            }
+            return true;
+        }
+        if ev.keycode == crate::proto::KEY_LEFTMETA || ev.keycode == crate::proto::KEY_RIGHTMETA {
+            if ev.state == crate::proto::KEY_STATE_PRESS
+                && (ev.modifiers
+                    & (crate::proto::MOD_CTRL | crate::proto::MOD_ALT | crate::proto::MOD_SHIFT))
+                    == 0
+            {
+                self.toggle_start_menu(s);
+            }
+            return true;
+        }
+        false
+    }
+
     #[allow(dead_code)]
     pub fn focused_window_id(&self) -> Option<u32> {
         self.windows

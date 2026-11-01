@@ -12,6 +12,7 @@
 #include "vfs.h"
 #include "spinlock.h"
 #include "mouse_dev.h"
+#include "kbd_dev.h"
 
 extern void poll_wake_notify(void);
 
@@ -469,6 +470,19 @@ static void ps2_mouse_handle_byte(uint8_t byte) {
     }
 }
 
+/* Single keyboard ingress for PS/2 and USB HID (which injects translated set 1
+ * scancodes). Publishes a structured event to /dev/input/keyboard for every
+ * make/break, and feeds the console terminal only while no process holds
+ * the key-event device open. kbd_dev_push and ingress take their own rank-1
+ * locks one after the other, never nested. */
+static void keyboard_scancode(uint8_t code) {
+    char bytes[4];
+    key_event_t ev;
+    size_t count = keyboard_decode_event(&g_keyboard, code, bytes, &ev);
+    if (ev.keycode) kbd_dev_push(&ev);
+    if (count && !kbd_dev_grabbed()) ingress(bytes, count);
+}
+
 static void i8042_drain(void) {
     for (unsigned n = 0; n < 64; n++) {
         uint8_t status = inb(KBC_STATUS);
@@ -482,9 +496,7 @@ static void i8042_drain(void) {
         if (status & 0x20) {
             ps2_mouse_handle_byte(byte);
         } else {
-            char bytes[4];
-            size_t count = keyboard_decode_bytes(&g_keyboard, byte, bytes);
-            ingress(bytes, count);
+            keyboard_scancode(byte);
         }
     }
 }
@@ -502,13 +514,7 @@ static void ps2_mouse_irq(interrupt_frame_t *frame) {
 void input_inject_scancodes(const uint8_t *scancodes, size_t count) {
 #ifndef INPUT_HOST_TEST
     if (!scancodes || !count) return;
-    for (size_t i = 0; i < count; i++) {
-        char bytes[4];
-        size_t n = keyboard_decode_bytes(&g_keyboard, scancodes[i], bytes);
-        if (n > 0) {
-            ingress(bytes, n);
-        }
-    }
+    for (size_t i = 0; i < count; i++) keyboard_scancode(scancodes[i]);
 #else
     (void)scancodes; (void)count;
 #endif

@@ -2120,3 +2120,316 @@ fn files_long_filenames_handling() {
         }
     }
 }
+
+/// Tests structured key press, repeat, and release event encoding, wire layout,
+/// and delivery through EV_KEY protocol messages.
+#[test]
+fn key_press_and_release_event_delivery() {
+    use proto::{
+        EV_KEY, KEY_A, KEY_DELETE, KEY_LEFT, KEY_STATE_PRESS, KEY_STATE_RELEASE,
+        KEY_STATE_REPEAT, KEY_UP, KeyEvent, MOD_NUMLOCK,
+    };
+
+    let press = KeyEvent::new(KEY_A, MOD_NUMLOCK, KEY_STATE_PRESS, b'a');
+    let raw = press.to_bytes();
+    assert_eq!(raw.len(), 8);
+    assert_eq!(KeyEvent::from_bytes(&raw), press);
+
+    let msg_press = press.to_msg();
+    assert_eq!(msg_press.kind, EV_KEY);
+    assert_eq!(msg_press.a, b'a' as u32);
+    assert_eq!(msg_press.b, KEY_A as u32);
+    assert_eq!(msg_press.c, MOD_NUMLOCK as u32);
+    assert_eq!(msg_press.d, KEY_STATE_PRESS as u32);
+
+    let wire = msg_press.to_bytes();
+    let decoded_msg = proto::Msg::from_bytes(&wire);
+    assert_eq!(KeyEvent::from_msg(&decoded_msg), Some(press));
+    assert!(press.is_press_or_repeat());
+
+    // Typematic repeat event preserves keycode, modifiers, and ascii
+    let repeat = KeyEvent::new(KEY_A, MOD_NUMLOCK, KEY_STATE_REPEAT, b'a');
+    let msg_repeat = repeat.to_msg();
+    assert_eq!(msg_repeat.d, KEY_STATE_REPEAT as u32);
+    assert_eq!(
+        KeyEvent::from_msg(&proto::Msg::from_bytes(&msg_repeat.to_bytes())),
+        Some(repeat)
+    );
+    assert!(repeat.is_press_or_repeat());
+
+    // Key release event carries state=0 and ascii=0 while preserving keycode and modifiers
+    let release = KeyEvent::new(KEY_A, MOD_NUMLOCK, KEY_STATE_RELEASE, 0);
+    let msg_release = release.to_msg();
+    assert_eq!(msg_release.kind, EV_KEY);
+    assert_eq!(msg_release.a, 0);
+    assert_eq!(msg_release.b, KEY_A as u32);
+    assert_eq!(msg_release.c, MOD_NUMLOCK as u32);
+    assert_eq!(msg_release.d, KEY_STATE_RELEASE as u32);
+    assert_eq!(
+        KeyEvent::from_msg(&proto::Msg::from_bytes(&msg_release.to_bytes())),
+        Some(release)
+    );
+    assert!(!release.is_press_or_repeat());
+
+    // Navigation keys synthesize VT100 sequences on press/repeat and empty on release
+    let up_press = KeyEvent::new(KEY_UP, 0, KEY_STATE_PRESS, 0);
+    let up_release = KeyEvent::new(KEY_UP, 0, KEY_STATE_RELEASE, 0);
+    let left_repeat = KeyEvent::new(KEY_LEFT, 0, KEY_STATE_REPEAT, 0);
+    let del_press = KeyEvent::new(KEY_DELETE, 0, KEY_STATE_PRESS, 0);
+    assert_eq!(up_press.vt100_sequence(), b"\x1b[A");
+    assert_eq!(up_release.vt100_sequence(), b"");
+    assert_eq!(left_repeat.vt100_sequence(), b"\x1b[D");
+    assert_eq!(del_press.vt100_sequence(), b"\x1b[3~");
+}
+
+/// Tests modifier bitmask tracking (Shift, Ctrl, Alt, Super, CapsLock, NumLock, AltGr)
+/// across modifier press, chorded key press, and modifier release events.
+#[test]
+fn key_modifier_bitmask_tracking() {
+    use proto::{
+        KEY_A, KEY_C, KEY_LEFTALT, KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTSHIFT, KEY_RIGHTALT,
+        KEY_STATE_PRESS, KEY_STATE_RELEASE, KeyEvent, MOD_ALT, MOD_ALTGR, MOD_CAPS, MOD_CTRL,
+        MOD_NUMLOCK, MOD_SHIFT, MOD_SUPER,
+    };
+
+    assert_eq!(MOD_SHIFT, 1);
+    assert_eq!(MOD_CTRL, 2);
+    assert_eq!(MOD_ALT, 4);
+    assert_eq!(MOD_SUPER, 8);
+    assert_eq!(MOD_CAPS, 16);
+    assert_eq!(MOD_NUMLOCK, 32);
+    assert_eq!(MOD_ALTGR, 64);
+
+    let sequence = [
+        // 1. Press Left Shift: MOD_SHIFT set, ascii = 0
+        KeyEvent::new(KEY_LEFTSHIFT, MOD_SHIFT, KEY_STATE_PRESS, 0),
+        // 2. Press 'A' while Shift held: MOD_SHIFT set, ascii = b'A'
+        KeyEvent::new(KEY_A, MOD_SHIFT, KEY_STATE_PRESS, b'A'),
+        // 3. Release 'A' while Shift still held: MOD_SHIFT still set, ascii = 0
+        KeyEvent::new(KEY_A, MOD_SHIFT, KEY_STATE_RELEASE, 0),
+        // 4. Press Left Ctrl while Shift held: MOD_SHIFT | MOD_CTRL
+        KeyEvent::new(KEY_LEFTCTRL, MOD_SHIFT | MOD_CTRL, KEY_STATE_PRESS, 0),
+        // 5. Press Left Alt: MOD_SHIFT | MOD_CTRL | MOD_ALT
+        KeyEvent::new(
+            KEY_LEFTALT,
+            MOD_SHIFT | MOD_CTRL | MOD_ALT,
+            KEY_STATE_PRESS,
+            0,
+        ),
+        // 6. Press Right Alt (AltGr) + Super + Caps + NumLock
+        KeyEvent::new(
+            KEY_RIGHTALT,
+            MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_ALTGR | MOD_SUPER | MOD_CAPS | MOD_NUMLOCK,
+            KEY_STATE_PRESS,
+            0,
+        ),
+        // 7. Release Left Shift: MOD_SHIFT cleared, others remain
+        KeyEvent::new(
+            KEY_LEFTSHIFT,
+            MOD_CTRL | MOD_ALT,
+            KEY_STATE_RELEASE,
+            0,
+        ),
+        // 8. Release Left Alt: only MOD_CTRL remains
+        KeyEvent::new(KEY_LEFTALT, MOD_CTRL, KEY_STATE_RELEASE, 0),
+        // 9. Press 'c' under Ctrl: ascii = 3 (ETX), MOD_CTRL set
+        KeyEvent::new(KEY_C, MOD_CTRL, KEY_STATE_PRESS, 3),
+        // 10. Release Left Ctrl: modifiers = 0
+        KeyEvent::new(KEY_LEFTCTRL, 0, KEY_STATE_RELEASE, 0),
+        // 11. Press and release Super
+        KeyEvent::new(KEY_LEFTMETA, MOD_SUPER, KEY_STATE_PRESS, 0),
+        KeyEvent::new(KEY_LEFTMETA, 0, KEY_STATE_RELEASE, 0),
+    ];
+
+    for ev in sequence {
+        let msg = proto::Msg::from_bytes(&ev.to_msg().to_bytes());
+        assert_eq!(msg.c as u16, ev.modifiers);
+        let roundtrip = KeyEvent::from_msg(&msg).unwrap();
+        assert_eq!(roundtrip, ev);
+    }
+}
+
+/// Tests SAK (Ctrl + Alt + Esc) interception and global compositor shortcuts
+/// (Alt + Tab, Super), verifying that SAK never reaches client windows, releases
+/// active capture/focus on the client window, and raises the task manager.
+#[test]
+fn sak_interception_and_global_shortcuts_prevent_client_delivery() {
+    use proto::{
+        KEY_A, KEY_ESC, KEY_LEFTMETA, KEY_STATE_PRESS, KEY_STATE_RELEASE, KEY_TAB, KeyEvent,
+        MOD_ALT, MOD_CTRL, MOD_SUPER,
+    };
+    use surface::{Rect, Surface};
+    use window::{Window, WindowManager};
+
+    let mut s = Surface::new(1280, 800).unwrap();
+    let mut wm = WindowManager::desktop();
+
+    // Add two client windows (ids 100 and 101), with 101 focused and actively dragging
+    let w1 = Window::new(
+        100,
+        "Background Client",
+        Rect {
+            x: 100,
+            y: 100,
+            w: 300,
+            h: 200,
+        },
+    )
+    .unwrap();
+    let mut w2 = Window::new(
+        101,
+        "Focused Rogue Client",
+        Rect {
+            x: 200,
+            y: 150,
+            w: 320,
+            h: 220,
+        },
+    )
+    .unwrap();
+    w2.is_focused = true;
+    w2.is_dragging = true;
+    wm.windows.push(w1);
+    wm.windows.push(w2);
+    wm.start_open = true;
+    wm.context_menu = Some((300, 300));
+
+    let mut delivered_to_client: Vec<(u32, KeyEvent)> = Vec::new();
+    fn route_event(
+        ev: KeyEvent,
+        wm: &mut WindowManager,
+        s: &mut Surface,
+        delivered: &mut Vec<(u32, KeyEvent)>,
+    ) {
+        if wm.intercept_key(ev, s) {
+            return;
+        }
+        if let Some(id) = wm.focused_window_id() {
+            if id >= 100 {
+                delivered.push((id, ev));
+            }
+        }
+    }
+
+    // Ordinary key press and release go to focused client 101
+    let key_a_down = KeyEvent::new(KEY_A, 0, KEY_STATE_PRESS, b'a');
+    let key_a_up = KeyEvent::new(KEY_A, 0, KEY_STATE_RELEASE, 0);
+    route_event(key_a_down, &mut wm, &mut s, &mut delivered_to_client);
+    route_event(key_a_up, &mut wm, &mut s, &mut delivered_to_client);
+    assert_eq!(
+        delivered_to_client,
+        vec![(101, key_a_down), (101, key_a_up)]
+    );
+
+    // Plain Esc or Ctrl+Esc (without Alt) is NOT SAK and reaches focused client 101
+    let plain_esc = KeyEvent::new(KEY_ESC, 0, KEY_STATE_PRESS, 27);
+    let ctrl_esc = KeyEvent::new(KEY_ESC, MOD_CTRL, KEY_STATE_PRESS, 27);
+    assert!(!plain_esc.is_sak());
+    assert!(!ctrl_esc.is_sak());
+    route_event(plain_esc, &mut wm, &mut s, &mut delivered_to_client);
+    route_event(ctrl_esc, &mut wm, &mut s, &mut delivered_to_client);
+    assert_eq!(delivered_to_client.len(), 4);
+
+    // Alt + Tab is intercepted by compositor: cycles focus to window 100, not sent to clients
+    let alt_tab = KeyEvent::new(KEY_TAB, MOD_ALT, KEY_STATE_PRESS, b'\t');
+    route_event(alt_tab, &mut wm, &mut s, &mut delivered_to_client);
+    assert_eq!(delivered_to_client.len(), 4);
+    assert_eq!(wm.focused_window_id(), Some(100));
+
+    // Alt + Tab again cycles focus back to client 101
+    route_event(alt_tab, &mut wm, &mut s, &mut delivered_to_client);
+    assert_eq!(wm.focused_window_id(), Some(101));
+
+    // Super key toggles Start menu at compositor level and is never sent to clients
+    assert!(wm.start_open);
+    let super_press = KeyEvent::new(KEY_LEFTMETA, MOD_SUPER, KEY_STATE_PRESS, 0);
+    let super_release = KeyEvent::new(KEY_LEFTMETA, 0, KEY_STATE_RELEASE, 0);
+    route_event(super_press, &mut wm, &mut s, &mut delivered_to_client);
+    route_event(super_release, &mut wm, &mut s, &mut delivered_to_client);
+    assert!(!wm.start_open);
+    assert_eq!(delivered_to_client.len(), 4);
+
+    // Re-open start menu with Super press
+    route_event(super_press, &mut wm, &mut s, &mut delivered_to_client);
+    assert!(wm.start_open);
+
+    // Re-engage dragging on client 101 and trigger SAK (Ctrl + Alt + Esc)
+    wm.windows.iter_mut().find(|w| w.id == 101).unwrap().is_dragging = true;
+    let sak_press = KeyEvent::new(KEY_ESC, MOD_CTRL | MOD_ALT, KEY_STATE_PRESS, 27);
+    let sak_release = KeyEvent::new(KEY_ESC, MOD_CTRL | MOD_ALT, KEY_STATE_RELEASE, 0);
+    assert!(sak_press.is_sak());
+    route_event(sak_press, &mut wm, &mut s, &mut delivered_to_client);
+    route_event(sak_release, &mut wm, &mut s, &mut delivered_to_client);
+
+    // SAK was never delivered to client 101
+    assert_eq!(delivered_to_client.len(), 4);
+
+    // Client 101 lost focus and drag capture; menus closed; Task Manager (id=6) raised and focused
+    let w101 = wm.windows.iter().find(|w| w.id == 101).unwrap();
+    assert!(!w101.is_focused);
+    assert!(!w101.is_dragging);
+    assert!(!wm.start_open);
+    assert!(wm.context_menu.is_none());
+    assert_eq!(wm.focused_window_id(), Some(6));
+
+    // Subsequent keys no longer go to client 101
+    route_event(key_a_down, &mut wm, &mut s, &mut delivered_to_client);
+    assert_eq!(delivered_to_client.len(), 4);
+
+    // Direct emergency_unfocus clears all focus so focused_window_id() is None
+    wm.emergency_unfocus(&mut s);
+    assert_eq!(wm.focused_window_id(), None);
+}
+
+/// Tests backward compatibility: existing apps that only inspect `m.a as u8`
+/// continue receiving typed characters unchanged.
+#[test]
+fn ev_key_backward_compatibility_for_byte_consumers() {
+    use proto::{
+        EV_KEY, KEY_BACKSPACE, KEY_ENTER, KEY_H, KEY_LEFTSHIFT, KEY_STATE_PRESS,
+        KEY_STATE_RELEASE, KeyEvent, MOD_SHIFT, Msg,
+    };
+
+    let mut np = notepad::Notepad::new("/tmp/compat.txt");
+    np.text.clear();
+    np.cursor = 0;
+
+    // Stream of extended key events including modifier press, character presses, and key releases
+    let events = [
+        KeyEvent::new(KEY_LEFTSHIFT, MOD_SHIFT, KEY_STATE_PRESS, 0),
+        KeyEvent::new(KEY_H, MOD_SHIFT, KEY_STATE_PRESS, b'H'),
+        KeyEvent::new(KEY_H, MOD_SHIFT, KEY_STATE_RELEASE, 0),
+        KeyEvent::new(KEY_LEFTSHIFT, 0, KEY_STATE_RELEASE, 0),
+        KeyEvent::new(23, 0, KEY_STATE_PRESS, b'i'),
+        KeyEvent::new(23, 0, KEY_STATE_RELEASE, 0),
+        KeyEvent::new(KEY_ENTER, 0, KEY_STATE_PRESS, b'\n'),
+        KeyEvent::new(KEY_ENTER, 0, KEY_STATE_RELEASE, 0),
+        KeyEvent::new(KEY_BACKSPACE, 0, KEY_STATE_PRESS, 0x08),
+        KeyEvent::new(KEY_BACKSPACE, 0, KEY_STATE_RELEASE, 0),
+    ];
+
+    for ev in events {
+        let m = Msg::from_bytes(&ev.to_msg().to_bytes());
+        assert_eq!(m.kind, EV_KEY);
+        // Legacy byte consumer inspects `m.a as u8` (non-zero on printable/control presses)
+        let byte = m.a as u8;
+        if byte != 0 {
+            np.handle_key(byte);
+        }
+    }
+    assert_eq!(np.text, b"Hi");
+
+    // Legacy Msg::new(EV_KEY, byte, 0, 0, 0) with b=0, c=0, d=0 still decodes as a press
+    let legacy_msg = Msg::new(EV_KEY, b'Z' as u32, 0, 0, 0);
+    let decoded = KeyEvent::from_msg(&legacy_msg).unwrap();
+    assert_eq!(decoded.ascii, b'Z');
+    assert_eq!(decoded.state, KEY_STATE_PRESS);
+    assert!(decoded.is_press_or_repeat());
+
+    // KeyEvent::from_ascii maps ASCII bytes to press events with matching ascii field
+    let from_ascii = KeyEvent::from_ascii(b'Q');
+    assert_eq!(from_ascii.ascii, b'Q');
+    assert_eq!(from_ascii.keycode, proto::KEY_Q);
+    assert_eq!(from_ascii.modifiers, MOD_SHIFT);
+    assert_eq!(from_ascii.state, KEY_STATE_PRESS);
+}

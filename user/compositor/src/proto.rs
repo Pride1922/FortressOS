@@ -12,9 +12,11 @@
 //! into the buffer at (0,0) with the configured stride and sends DAMAGE for
 //! what changed. The compositor copies only damaged pixels, clipped to the
 //! window, and never writes into the buffer (it maps it read-only).
+#![allow(dead_code)]
 
 pub const MSG_SIZE: usize = 64;
 pub const TEXT_MAX: usize = 40;
+pub const KEY_EVENT_SIZE: usize = 8;
 
 // App -> compositor.
 pub const REQ_CREATE: u32 = 1; // a,b = outer window width/height, text = title
@@ -28,9 +30,244 @@ pub const REQ_OPEN_COMMIT: u32 = 6; // path complete: open it
 
 // Compositor -> app.
 pub const EV_CONFIGURE: u32 = 101; // a,b = content width/height, c = stride (pixels)
-pub const EV_KEY: u32 = 102; // a = byte as typed (UTF-8 bytes arrive one by one)
+// a = ascii byte (0 when non-printable or release; preserved for legacy apps),
+// b = Linux keycode, c = modifier bitmask (MOD_*),
+// d = state (0 = release, 1 = press, 2 = repeat).
+pub const EV_KEY: u32 = 102;
 pub const EV_CLOSE: u32 = 103; // window closed: save state and exit
 pub const EV_CLICK: u32 = 104; // a,b = x,y in content pixels (left button press)
+
+// Key event state values (mirrors src/include/input_event.h).
+pub const KEY_STATE_RELEASE: u8 = 0;
+pub const KEY_STATE_PRESS: u8 = 1;
+pub const KEY_STATE_REPEAT: u8 = 2;
+
+// Modifier bitmask values (mirrors src/include/input_event.h).
+pub const MOD_SHIFT: u16 = 1 << 0;
+pub const MOD_CTRL: u16 = 1 << 1;
+pub const MOD_ALT: u16 = 1 << 2;
+pub const MOD_SUPER: u16 = 1 << 3;
+pub const MOD_CAPS: u16 = 1 << 4;
+pub const MOD_NUMLOCK: u16 = 1 << 5;
+pub const MOD_ALTGR: u16 = 1 << 6;
+
+// Linux input-event-codes keycode constants.
+pub const KEY_ESC: u16 = 1;
+pub const KEY_1: u16 = 2;
+pub const KEY_BACKSPACE: u16 = 14;
+pub const KEY_TAB: u16 = 15;
+pub const KEY_Q: u16 = 16;
+pub const KEY_E: u16 = 18;
+pub const KEY_R: u16 = 19;
+pub const KEY_T: u16 = 20;
+pub const KEY_U: u16 = 22;
+pub const KEY_P: u16 = 25;
+pub const KEY_ENTER: u16 = 28;
+pub const KEY_LEFTCTRL: u16 = 29;
+pub const KEY_A: u16 = 30;
+pub const KEY_S: u16 = 31;
+pub const KEY_D: u16 = 32;
+pub const KEY_F: u16 = 33;
+pub const KEY_H: u16 = 35;
+pub const KEY_J: u16 = 36;
+pub const KEY_K: u16 = 37;
+pub const KEY_L: u16 = 38;
+pub const KEY_LEFTSHIFT: u16 = 42;
+pub const KEY_C: u16 = 46;
+pub const KEY_N: u16 = 49;
+pub const KEY_M: u16 = 50;
+pub const KEY_RIGHTSHIFT: u16 = 54;
+pub const KEY_LEFTALT: u16 = 56;
+pub const KEY_SPACE: u16 = 57;
+pub const KEY_CAPSLOCK: u16 = 58;
+pub const KEY_F1: u16 = 59;
+pub const KEY_F10: u16 = 68;
+pub const KEY_NUMLOCK: u16 = 69;
+pub const KEY_F11: u16 = 87;
+pub const KEY_F12: u16 = 88;
+pub const KEY_KPENTER: u16 = 96;
+pub const KEY_RIGHTCTRL: u16 = 97;
+pub const KEY_KPSLASH: u16 = 98;
+pub const KEY_SYSRQ: u16 = 99;
+pub const KEY_RIGHTALT: u16 = 100;
+pub const KEY_HOME: u16 = 102;
+pub const KEY_UP: u16 = 103;
+pub const KEY_PAGEUP: u16 = 104;
+pub const KEY_LEFT: u16 = 105;
+pub const KEY_RIGHT: u16 = 106;
+pub const KEY_END: u16 = 107;
+pub const KEY_DOWN: u16 = 108;
+pub const KEY_PAGEDOWN: u16 = 109;
+pub const KEY_INSERT: u16 = 110;
+pub const KEY_DELETE: u16 = 111;
+pub const KEY_PAUSE: u16 = 119;
+pub const KEY_LEFTMETA: u16 = 125;
+pub const KEY_RIGHTMETA: u16 = 126;
+pub const KEY_COMPOSE: u16 = 127;
+
+/// 8-byte structured keyboard event read from `/dev/input/keyboard` (`/dev/kbd0`),
+/// mirroring `key_event_t` in `src/include/input_event.h`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub keycode: u16,
+    pub modifiers: u16,
+    pub state: u8,
+    pub ascii: u8,
+    pub reserved: u16,
+}
+const _: () = assert!(core::mem::size_of::<KeyEvent>() == KEY_EVENT_SIZE);
+
+impl KeyEvent {
+    pub const fn new(keycode: u16, modifiers: u16, state: u8, ascii: u8) -> Self {
+        Self {
+            keycode,
+            modifiers,
+            state,
+            ascii,
+            reserved: 0,
+        }
+    }
+
+    pub fn from_bytes(bytes: &[u8; KEY_EVENT_SIZE]) -> Self {
+        Self {
+            keycode: u16::from_le_bytes([bytes[0], bytes[1]]),
+            modifiers: u16::from_le_bytes([bytes[2], bytes[3]]),
+            state: bytes[4],
+            ascii: bytes[5],
+            reserved: u16::from_le_bytes([bytes[6], bytes[7]]),
+        }
+    }
+
+    pub fn to_bytes(&self) -> [u8; KEY_EVENT_SIZE] {
+        let kc = self.keycode.to_le_bytes();
+        let md = self.modifiers.to_le_bytes();
+        let rs = self.reserved.to_le_bytes();
+        [
+            kc[0], kc[1], md[0], md[1], self.state, self.ascii, rs[0], rs[1],
+        ]
+    }
+
+    /// Synthesizes a press event from a raw ASCII byte (legacy stdin fallback).
+    pub const fn from_ascii(ascii: u8) -> Self {
+        let (keycode, modifiers) = match ascii {
+            27 => (KEY_ESC, 0),
+            b'\t' => (KEY_TAB, 0),
+            b'\r' | b'\n' => (KEY_ENTER, 0),
+            0x08 | 127 => (KEY_BACKSPACE, 0),
+            b' ' => (KEY_SPACE, 0),
+            3 => (KEY_C, MOD_CTRL),
+            18 => (KEY_R, MOD_CTRL),
+            19 => (KEY_S, MOD_CTRL),
+            b'a' => (KEY_A, 0),
+            b'A' => (KEY_A, MOD_SHIFT),
+            b'c' => (KEY_C, 0),
+            b'C' => (KEY_C, MOD_SHIFT),
+            b'd' => (KEY_D, 0),
+            b'D' => (KEY_D, MOD_SHIFT),
+            b'e' => (KEY_E, 0),
+            b'E' => (KEY_E, MOD_SHIFT),
+            b'f' => (KEY_F, 0),
+            b'F' => (KEY_F, MOD_SHIFT),
+            b'h' => (KEY_H, 0),
+            b'H' => (KEY_H, MOD_SHIFT),
+            b'j' => (KEY_J, 0),
+            b'J' => (KEY_J, MOD_SHIFT),
+            b'k' => (KEY_K, 0),
+            b'K' => (KEY_K, MOD_SHIFT),
+            b'l' => (KEY_L, 0),
+            b'L' => (KEY_L, MOD_SHIFT),
+            b'm' => (KEY_M, 0),
+            b'M' => (KEY_M, MOD_SHIFT),
+            b'n' => (KEY_N, 0),
+            b'N' => (KEY_N, MOD_SHIFT),
+            b'p' => (KEY_P, 0),
+            b'P' => (KEY_P, MOD_SHIFT),
+            b'q' => (KEY_Q, 0),
+            b'Q' => (KEY_Q, MOD_SHIFT),
+            b'r' => (KEY_R, 0),
+            b'R' => (KEY_R, MOD_SHIFT),
+            b's' => (KEY_S, 0),
+            b'S' => (KEY_S, MOD_SHIFT),
+            b't' => (KEY_T, 0),
+            b'T' => (KEY_T, MOD_SHIFT),
+            b'u' => (KEY_U, 0),
+            b'U' => (KEY_U, MOD_SHIFT),
+            b'A'..=b'Z' => (0, MOD_SHIFT),
+            _ => (0, 0),
+        };
+        Self {
+            keycode,
+            modifiers,
+            state: KEY_STATE_PRESS,
+            ascii,
+            reserved: 0,
+        }
+    }
+
+    /// Encodes this key event as an `EV_KEY` protocol message (`a=ascii, b=keycode, c=modifiers, d=state`).
+    pub fn to_msg(&self) -> Msg {
+        Msg::new(
+            EV_KEY,
+            self.ascii as u32,
+            self.keycode as u32,
+            self.modifiers as u32,
+            self.state as u32,
+        )
+    }
+
+    /// Decodes an `EV_KEY` protocol message into a `KeyEvent`.
+    /// Legacy messages with `b == 0 && d == 0 && a != 0` are treated as key presses.
+    pub fn from_msg(m: &Msg) -> Option<Self> {
+        if m.kind != EV_KEY {
+            return None;
+        }
+        let state = if m.b == 0 && m.d == 0 && m.a != 0 {
+            KEY_STATE_PRESS
+        } else {
+            m.d as u8
+        };
+        Some(Self {
+            keycode: m.b as u16,
+            modifiers: m.c as u16,
+            state,
+            ascii: m.a as u8,
+            reserved: 0,
+        })
+    }
+
+    /// True if this event is a key press or typematic repeat.
+    pub const fn is_press_or_repeat(&self) -> bool {
+        self.state == KEY_STATE_PRESS || self.state == KEY_STATE_REPEAT
+    }
+
+    /// True if this event is the Secure Attention Key (`Ctrl + Alt + Esc` press).
+    pub const fn is_sak(&self) -> bool {
+        self.state == KEY_STATE_PRESS
+            && self.keycode == KEY_ESC
+            && (self.modifiers & (MOD_CTRL | MOD_ALT)) == (MOD_CTRL | MOD_ALT)
+    }
+
+    /// Synthesizes VT100/ANSI bytes for navigation keys that have `ascii == 0`.
+    pub const fn vt100_sequence(&self) -> &'static [u8] {
+        if !self.is_press_or_repeat() {
+            return &[];
+        }
+        match self.keycode {
+            KEY_UP => b"\x1b[A",
+            KEY_DOWN => b"\x1b[B",
+            KEY_RIGHT => b"\x1b[C",
+            KEY_LEFT => b"\x1b[D",
+            KEY_HOME => b"\x1b[H",
+            KEY_END => b"\x1b[F",
+            KEY_INSERT => b"\x1b[2~",
+            KEY_DELETE => b"\x1b[3~",
+            KEY_PAGEUP => b"\x1b[5~",
+            KEY_PAGEDOWN => b"\x1b[6~",
+            _ => &[],
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -177,3 +177,80 @@ size_t keyboard_decode_bytes(keyboard_decoder_t *s, uint8_t code, char out[4]) {
     }
     out[0]=27; out[1]='['; out[2]=final; return 3;
 }
+
+uint16_t keyboard_modifiers(const keyboard_decoder_t *s) {
+    uint16_t m = 0;
+    if (s->left_shift || s->right_shift) m |= KEY_MOD_SHIFT;
+    if (s->left_ctrl || s->right_ctrl) m |= KEY_MOD_CTRL;
+    if (s->left_alt || s->altgr) m |= KEY_MOD_ALT;
+    if (s->left_super || s->right_super) m |= KEY_MOD_SUPER;
+    if (s->caps) m |= KEY_MOD_CAPS;
+    if (!s->num_lock_disabled) m |= KEY_MOD_NUMLOCK;
+    if (s->altgr) m |= KEY_MOD_ALTGR;
+    return m;
+}
+
+/* E0-prefixed set 1 make code -> Linux keycode; 0 = no event (including the
+ * fake shifts E0 2A / E0 36 that surround Print Screen and the arrows). */
+static uint16_t extended_keycode(uint8_t code) {
+    switch (code) {
+        case 0x1c: return KEY_KPENTER;
+        case 0x1d: return KEY_RIGHTCTRL;
+        case 0x35: return KEY_KPSLASH;
+        case 0x37: return KEY_SYSRQ;
+        case 0x38: return KEY_RIGHTALT;
+        case 0x47: return KEY_HOME;
+        case 0x48: return KEY_UP;
+        case 0x49: return KEY_PAGEUP;
+        case 0x4b: return KEY_LEFT;
+        case 0x4d: return KEY_RIGHT;
+        case 0x4f: return KEY_END;
+        case 0x50: return KEY_DOWN;
+        case 0x51: return KEY_PAGEDOWN;
+        case 0x52: return KEY_INSERT;
+        case 0x53: return KEY_DELETE;
+        case 0x5b: return KEY_LEFTMETA;
+        case 0x5c: return KEY_RIGHTMETA;
+        case 0x5d: return KEY_COMPOSE;
+        default: return 0;
+    }
+}
+
+size_t keyboard_decode_event(keyboard_decoder_t *s, uint8_t code, char out[4], key_event_t *ev) {
+    *ev = (key_event_t){0};
+    bool ext = s->extended;
+    unsigned pause = s->pause_remaining;
+    size_t n = keyboard_decode_bytes(s, code, out);
+    if (pause) {
+        if (pause == 1) {
+            ev->keycode = KEY_PAUSE;
+            ev->state = KEY_STATE_RELEASE;
+            ev->modifiers = keyboard_modifiers(s);
+        }
+        return n;
+    }
+    if (code == 0xe1) {
+        ev->keycode = KEY_PAUSE;
+        ev->state = KEY_STATE_PRESS;
+        ev->modifiers = keyboard_modifiers(s);
+        return n;
+    }
+    if (code == 0xe0) return n;
+    bool released = (code & 0x80) != 0;
+    uint8_t sc = code & 0x7f;
+    /* Linux keycodes 1..88 equal the non-extended set 1 make codes. */
+    uint16_t key = ext ? extended_keycode(sc) : (sc >= 1 && sc <= 88 ? sc : 0);
+    if (!key) return n;
+    if (key == KEY_LEFTALT) s->left_alt = !released;
+    else if (key == KEY_LEFTMETA) s->left_super = !released;
+    else if (key == KEY_RIGHTMETA) s->right_super = !released;
+    uint8_t bit = (uint8_t)(1u << (key & 7));
+    bool was_down = (s->down[key >> 3] & bit) != 0;
+    if (released) s->down[key >> 3] &= (uint8_t)~bit;
+    else s->down[key >> 3] |= bit;
+    ev->keycode = key;
+    ev->state = released ? KEY_STATE_RELEASE : (was_down ? KEY_STATE_REPEAT : KEY_STATE_PRESS);
+    ev->modifiers = keyboard_modifiers(s);
+    ev->ascii = (!released && n == 1) ? (uint8_t)out[0] : 0;
+    return n;
+}

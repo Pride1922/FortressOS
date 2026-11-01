@@ -204,7 +204,7 @@ fn run(
             return 1;
         }
     };
-    // Close-on-exec: the terminal shell must not inherit the mouse.
+    // Close-on-exec: the terminal shell must not inherit the mouse or keyboard.
     let mut fd = sys::open("/dev/input/mouse", sys::VFS_O_CLOEXEC);
     if fd < 0 {
         fd = sys::open("/dev/mouse0", sys::VFS_O_CLOEXEC);
@@ -213,6 +213,16 @@ fn run(
         sys::write(2, b"[COMPOSITOR] [FAIL] Mouse open (root required)\n");
         return 1;
     }
+    let mut kbd_fd = sys::open("/dev/input/keyboard", sys::VFS_O_CLOEXEC);
+    if kbd_fd < 0 {
+        kbd_fd = sys::open("/dev/kbd0", sys::VFS_O_CLOEXEC);
+    }
+    let close_inputs = |m_fd: isize, k_fd: isize| {
+        sys::close(m_fd as i32);
+        if k_fd >= 0 {
+            sys::close(k_fd as i32);
+        }
+    };
     // Last root-only step done: hand system settings to the root helper and
     // become the invoking user for everything else, or stop here.
     match launch {
@@ -228,7 +238,7 @@ fn run(
             }
             if let Err(why) = privilege::drop_to(id) {
                 privilege::report(2, "[FAIL] Privilege drop:", why, None);
-                sys::close(fd as i32);
+                close_inputs(fd, kbd_fd);
                 return 1;
             }
             privilege::report(
@@ -257,7 +267,7 @@ fn run(
         match WindowManager::demo() {
             Some(wm) => wm,
             None => {
-                sys::close(fd as i32);
+                close_inputs(fd, kbd_fd);
                 return 1;
             }
         }
@@ -289,12 +299,12 @@ fn run(
     windows.render_with_wallpaper(&mut scene, wallpaper.as_ref());
     cursor.show(&mut scene);
     if !unsafe { scene.present(&fb) } {
-        sys::close(fd as i32);
+        close_inputs(fd, kbd_fd);
         return 1;
     }
     if bench_drag {
         let status = bench::drag(&mut scene, &mut windows, &fb, wallpaper.as_ref(), perf);
-        sys::close(fd as i32);
+        close_inputs(fd, kbd_fd);
         return status;
     }
     event_loop(
@@ -302,6 +312,7 @@ fn run(
         &mut cursor,
         &mut windows,
         fd as i32,
+        kbd_fd as i32,
         &fb,
         is_test,
         &mut wallpaper,
@@ -316,6 +327,7 @@ fn event_loop(
     cursor: &mut Cursor,
     windows: &mut WindowManager,
     fd: i32,
+    kbd_fd: i32,
     fb: &sys::FbInfoV1,
     is_test: bool,
     wallpaper: &mut Option<wallpaper::Wallpaper>,
@@ -331,12 +343,12 @@ fn event_loop(
             revents: 0,
         },
         sys::PollFd {
-            fd: 0,
+            fd: if kbd_fd >= 0 { kbd_fd } else { 0 },
             events: sys::POLLIN,
             revents: 0,
         },
         sys::PollFd {
-            fd: -1,
+            fd: if kbd_fd >= 0 { 0 } else { -1 },
             events: sys::POLLIN,
             revents: 0,
         },
@@ -374,65 +386,76 @@ fn event_loop(
             if ready < 0 || (fds[0].revents | fds[1].revents) & (sys::POLLERR | 0x10 | 0x20) != 0 {
                 break 1;
             }
+            if fds[2].revents & (sys::POLLERR | 0x10 | 0x20) != 0 {
+                fds[2].fd = -1;
+            }
 
             for slot in 0..clients::MAX_CLIENTS {
                 clients.ready(slot, fds[3 + slot].revents, windows, scene);
             }
 
-            // Keyboard input from stdin (/dev/tty)
+            // Direct structured keyboard events from /dev/input/keyboard (or fallback stdin on fds[1]).
             if fds[1].revents & sys::POLLIN != 0 {
-                let mut kbuf = [0u8; 16];
-                let kn = sys::read(0, &mut kbuf);
-                if kn == 0 {
-                    // EOF (e.g. `sudo -b` gives /dev/null): stop polling
-                    // stdin, or poll reports it readable forever and the
-                    // loop spins at full speed.
-                    fds[1].fd = -1;
+                if kbd_fd >= 0 {
+                    let mut kbuf = [0u8; proto::KEY_EVENT_SIZE * 16];
+                    let kn = sys::read(kbd_fd, &mut kbuf);
+                    if kn > 0 {
+                        let valid = (kn as usize) & !(proto::KEY_EVENT_SIZE - 1);
+                        for chunk in kbuf[..valid].chunks_exact(proto::KEY_EVENT_SIZE) {
+                            let raw: &[u8; proto::KEY_EVENT_SIZE] = chunk.try_into().unwrap();
+                            let ev = proto::KeyEvent::from_bytes(raw);
+                            if dispatch_key_event(
+                                ev,
+                                scene,
+                                windows,
+                                desktop,
+                                &mut clients,
+                                is_test,
+                            ) {
+                                break 'event_loop 0;
+                            }
+                        }
+                    }
+                } else {
+                    let mut kbuf = [0u8; 16];
+                    let kn = sys::read(0, &mut kbuf);
+                    if kn == 0 {
+                        fds[1].fd = -1;
+                    } else if kn > 0 {
+                        for &b in &kbuf[..kn as usize] {
+                            let ev = proto::KeyEvent::from_ascii(b);
+                            if dispatch_key_event(
+                                ev,
+                                scene,
+                                windows,
+                                desktop,
+                                &mut clients,
+                                is_test,
+                            ) {
+                                break 'event_loop 0;
+                            }
+                        }
+                    }
                 }
-                if kn > 0 {
+            }
+
+            // Legacy serial/stdin fallback when /dev/input/keyboard is open on fds[1].
+            if fds[2].fd >= 0 && fds[2].revents & sys::POLLIN != 0 {
+                let mut kbuf = [0u8; 16];
+                let kn = sys::read(fds[2].fd, &mut kbuf);
+                if kn == 0 {
+                    fds[2].fd = -1;
+                } else if kn > 0 {
                     for &b in &kbuf[..kn as usize] {
-                        if let Some(id) = windows.focused_window_id() {
-                            if clients.key(id, b, windows, scene) {
-                                continue;
-                            }
-                        }
-                        if !is_test {
-                            if let Some(id) =
-                                windows.focused_window_id().filter(|id| ui::registered(*id))
-                            {
-                                desktop.key(id, b, windows, scene);
-                                continue;
-                            }
-                            if windows.focused_window_id().is_none()
-                                || windows.focused_window_id() == Some(6)
-                            {
-                                let app = match b {
-                                    b's' | b'S' => Some(7),
-                                    b'n' | b'N' => Some(8),
-                                    b'c' | b'C' => Some(9),
-                                    _ => None,
-                                };
-                                if let Some(id) = app {
-                                    desktop.open(id, windows, scene);
-                                    continue;
-                                }
-                                if b == b'h' || b == b'H' {
-                                    match clients.launch(clients::app_path(), &[], scene) {
-                                        Ok(pid) => {
-                                            privilege::report(1, "[OK]", "App started", Some(pid))
-                                        }
-                                        Err(e) => privilege::report(
-                                            2,
-                                            "[WARN]",
-                                            "App launch failed",
-                                            Some(e),
-                                        ),
-                                    }
-                                    continue;
-                                }
-                            }
-                        }
-                        if handle_key(b, scene, windows, &mut clients, is_test) {
+                        let ev = proto::KeyEvent::from_ascii(b);
+                        if dispatch_key_event(
+                            ev,
+                            scene,
+                            windows,
+                            desktop,
+                            &mut clients,
+                            is_test,
+                        ) {
                             break 'event_loop 0;
                         }
                     }
@@ -612,8 +635,64 @@ fn event_loop(
         scene.present(fb);
     }
     sys::close(fd as i32);
+    if kbd_fd >= 0 {
+        sys::close(kbd_fd);
+    }
     sys::write(1, b"[COMPOSITOR] Event loop stopped\n");
     status
+}
+
+/// Dispatches one structured key event: SAK (`Ctrl + Alt + Esc`) and global
+/// window-manager shortcuts (`Alt + Tab`, `Super`) are intercepted before any
+/// client window receives the event; otherwise the focused client receives the
+/// extended `EV_KEY` message, and desktop shortcuts handle press/repeat bytes.
+#[inline(never)]
+fn dispatch_key_event(
+    ev: proto::KeyEvent,
+    scene: &mut Surface,
+    windows: &mut WindowManager,
+    desktop: &mut desktop::AppHost,
+    clients: &mut clients::Clients,
+    is_test: bool,
+) -> bool {
+    if windows.intercept_key(ev, scene) {
+        return false;
+    }
+    if let Some(id) = windows.focused_window_id() {
+        if clients.key(id, ev, windows, scene) {
+            return false;
+        }
+    }
+    if !ev.is_press_or_repeat() || ev.ascii == 0 {
+        return false;
+    }
+    let b = ev.ascii;
+    if !is_test {
+        if let Some(id) = windows.focused_window_id().filter(|id| ui::registered(*id)) {
+            desktop.key(id, b, windows, scene);
+            return false;
+        }
+        if windows.focused_window_id().is_none() || windows.focused_window_id() == Some(6) {
+            let app = match b {
+                b's' | b'S' => Some(7),
+                b'n' | b'N' => Some(8),
+                b'c' | b'C' => Some(9),
+                _ => None,
+            };
+            if let Some(id) = app {
+                desktop.open(id, windows, scene);
+                return false;
+            }
+            if b == b'h' || b == b'H' {
+                match clients.launch(clients::app_path(), &[], scene) {
+                    Ok(pid) => privilege::report(1, "[OK]", "App started", Some(pid)),
+                    Err(e) => privilege::report(2, "[WARN]", "App launch failed", Some(e)),
+                }
+                return false;
+            }
+        }
+    }
+    handle_key(b, scene, windows, clients, is_test)
 }
 
 /// Starts a terminal (/usr/bin/terminal when packaged, else /bin/terminal).
