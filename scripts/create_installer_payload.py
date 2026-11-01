@@ -128,7 +128,12 @@ def main():
         run(['mcopy','-i',esp,readiness,'::boot/readiness.v1'])
         data=bytearray(esp.read_bytes());fi=struct.unpack_from('<H',data,48)[0]*512;backup=struct.unpack_from('<H',data,50)[0]*512
         data[backup+fi:backup+fi+512]=data[fi:fi+512];esp.write_bytes(data)
-        binary=out/'fat-validator';run(['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-no-pie',
+        binary=out/'fat-validator'
+        san = ['-fsanitize=address,undefined'] if subprocess.run(
+            ['gcc','-x','c','-','-fsanitize=address,undefined','-o','/dev/null'],
+            input=b'int main(void){return 0;}\n', capture_output=True
+        ).returncode == 0 else []
+        run(['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror',*san,'-no-pie',
              '-Isrc/include','src/lib/install_fat.c','tests/install_fat_validate_host.c','user/tools/digest.c','-o',binary])
         run([binary,esp]);run(['fsck.fat','-n',esp])
         capsules=[]

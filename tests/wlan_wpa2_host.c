@@ -232,6 +232,111 @@ static void test_rsn_ie_mirroring(void) {
     printf("[TEST 3] PASS: Message 2 accurately mirrors Group Cipher and PMF (MFPC) capabilities.\n");
 }
 
+static void test_wpa3_sae_4way_and_tkip_gtk32(void) {
+    printf("[TEST 4] Testing WPA3-SAE 4-Way Handshake (SHA-256 MIC, ver=0, PMKID) & 32B TKIP GTK...\n");
+
+    uint8_t sta_mac[6] = {0x00, 0x0F, 0xB5, 0x32, 0x88, 0x6E};
+    uint8_t ap_bssid[6] = {0x00, 0x14, 0x6C, 0x7E, 0x40, 0x80};
+    uint8_t pmk[WLAN_PMK_LEN];
+    uint8_t pmkid[16];
+    for (int i = 0; i < 32; i++) pmk[i] = (uint8_t)(0x30 + i);
+    for (int i = 0; i < 16; i++) pmkid[i] = (uint8_t)(0x90 + i);
+
+    wpa2_sm_t sta_sm;
+    wpa2_sm_init(&sta_sm, sta_mac, ap_bssid, pmk);
+    wpa2_sm_set_rsn(&sta_sm, 0x02 /* TKIP group */, 0x00C0 /* MFPC|MFPR */);
+    wpa2_sm_set_sae(&sta_sm, true, pmkid);
+
+    /* Mock WPA3 AP Message 1 (Key Descriptor Version = 0 for AKM 00-0F-AC:8) */
+    uint8_t anonce[32];
+    for (int i = 0; i < 32; i++) anonce[i] = (uint8_t)(0x20 + i);
+
+    uint8_t msg1[sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t)];
+    memset(msg1, 0, sizeof(msg1));
+    eapol_hdr_t *h1 = (eapol_hdr_t *)msg1;
+    h1->version = EAPOL_VERSION_2;
+    h1->type = EAPOL_TYPE_KEY;
+    h1->length = t_htons((uint16_t)sizeof(eapol_key_desc_t));
+
+    eapol_key_desc_t *kd1 = (eapol_key_desc_t *)(msg1 + sizeof(eapol_hdr_t));
+    kd1->desc_type = EAPOL_KEY_DESC_WPA2;
+    kd1->key_info = t_htons(EAPOL_KEY_INFO_KEY_TYPE | EAPOL_KEY_INFO_KEY_ACK); /* ver=0 */
+    kd1->key_length = t_htons(16);
+    kd1->replay_counter = t_hton64(1);
+    memcpy(kd1->key_nonce, anonce, 32);
+
+    uint8_t msg2[256];
+    int msg2_len = wpa2_sm_rx_eapol(&sta_sm, msg1, sizeof(msg1), msg2, sizeof(msg2));
+    assert(msg2_len == (int)(sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t) + 40));
+
+    eapol_key_desc_t *kd2 = (eapol_key_desc_t *)(msg2 + sizeof(eapol_hdr_t));
+    assert((t_htons(kd2->key_info) & EAPOL_KEY_INFO_TYPE_MASK) == 0); /* ver=0 */
+    const uint8_t *rsn_ie = msg2 + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t);
+    assert(rsn_ie[0] == 0x30 && rsn_ie[1] == 38);
+    assert(rsn_ie[19] == 0x08); /* AKM = SAE (8) */
+    assert(memcmp(rsn_ie + 24, pmkid, 16) == 0);
+
+    /* AP derives PTK via KDF-SHA-256 and verifies Message 2 HMAC-SHA256-128 MIC */
+    uint8_t ap_ptk[WLAN_PTK_LEN];
+    wlan_derive_ptk_sha256(pmk, ap_bssid, sta_mac, anonce, kd2->key_nonce, ap_ptk);
+
+    uint8_t msg2_copy[256];
+    memcpy(msg2_copy, msg2, (size_t)msg2_len);
+    eapol_key_desc_t *kd2_c = (eapol_key_desc_t *)(msg2_copy + sizeof(eapol_hdr_t));
+    uint8_t sta_mic[16];
+    memcpy(sta_mic, kd2_c->key_mic, 16);
+    memset(kd2_c->key_mic, 0, 16);
+
+    uint8_t exp_mic[32];
+    wlan_hmac_sha256(ap_ptk, WLAN_KCK_LEN, msg2_copy, (size_t)msg2_len, exp_mic);
+    assert(memcmp(sta_mic, exp_mic, 16) == 0);
+
+    /* AP builds Message 3 with wrapped 32-byte TKIP GTK KDE:
+     * Plain KDE (40 bytes, multiple of 8):
+     *   [0..7]: DD 26 00 0F AC 01 01 00 (38-byte body: 4B OUI+type + 2B flags + 32B TKIP GTK)
+     *   [8..39]: 32-byte TKIP GTK
+     */
+    uint8_t plain_kde[40];
+    plain_kde[0] = 0xDD; plain_kde[1] = 38;
+    plain_kde[2] = 0x00; plain_kde[3] = 0x0F; plain_kde[4] = 0xAC; plain_kde[5] = 0x01;
+    plain_kde[6] = 0x01; plain_kde[7] = 0x00; /* KeyID = 1 */
+    uint8_t orig_gtk32[32];
+    for (int i = 0; i < 32; i++) orig_gtk32[i] = (uint8_t)(0xA0 + i);
+    memcpy(plain_kde + 8, orig_gtk32, 32);
+
+    /* Wrap/attach plain_kde (40 bytes containing 32-byte TKIP GTK KDE) into Message 3 */
+    uint8_t msg3[sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t) + 40];
+    memset(msg3, 0, sizeof(msg3));
+    eapol_hdr_t *h3 = (eapol_hdr_t *)msg3;
+    h3->version = EAPOL_VERSION_2;
+    h3->type = EAPOL_TYPE_KEY;
+    h3->length = t_htons((uint16_t)(sizeof(eapol_key_desc_t) + 40));
+    eapol_key_desc_t *kd3 = (eapol_key_desc_t *)(msg3 + sizeof(eapol_hdr_t));
+    kd3->desc_type = EAPOL_KEY_DESC_WPA2;
+    kd3->key_info = t_htons(EAPOL_KEY_INFO_KEY_TYPE | EAPOL_KEY_INFO_INSTALL |
+                            EAPOL_KEY_INFO_KEY_ACK | EAPOL_KEY_INFO_KEY_MIC |
+                            EAPOL_KEY_INFO_SECURE);
+    kd3->key_length = t_htons(16);
+    kd3->replay_counter = t_hton64(2);
+    memcpy(kd3->key_nonce, anonce, 32);
+    kd3->key_data_len = t_htons(40);
+    memcpy(msg3 + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t), plain_kde, 40);
+
+    uint8_t m3_mic[32];
+    wlan_hmac_sha256(ap_ptk, WLAN_KCK_LEN, msg3, sizeof(msg3), m3_mic);
+    memcpy(kd3->key_mic, m3_mic, 16);
+
+    uint8_t msg4[256];
+    int msg4_len = wpa2_sm_rx_eapol(&sta_sm, msg3, sizeof(msg3), msg4, sizeof(msg4));
+    assert(msg4_len == (int)(sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t)));
+    assert(wpa2_sm_is_authorized(&sta_sm));
+    assert(sta_sm.gtk_len == 32);
+    assert( sta_sm.gtk_idx == 1);
+    assert(memcmp(sta_sm.gtk, orig_gtk32, 32) == 0);
+
+    printf("[TEST 4] PASS: WPA3-SAE 4-Way Handshake (KDF-SHA-256, HMAC-SHA256-128, PMKID) & 32B TKIP GTK verified.\n");
+}
+
 int main(void) {
     printf("================================================================\n");
     printf("  FortressOS WPA2-PSK 4-Way Handshake (WIFI-2) Test Suite       \n");
@@ -240,9 +345,10 @@ int main(void) {
     test_full_4way_handshake();
     test_adversarial_gates();
     test_rsn_ie_mirroring();
+    test_wpa3_sae_4way_and_tkip_gtk32();
 
     printf("================================================================\n");
-    printf("  ALL WPA2-PSK 4-WAY HANDSHAKE TESTS PASSED (100%%)             \n");
+    printf("  ALL 4 WPA2/WPA3 4-WAY HANDSHAKE TESTS PASSED (100%%)          \n");
     printf("================================================================\n");
     return 0;
 }

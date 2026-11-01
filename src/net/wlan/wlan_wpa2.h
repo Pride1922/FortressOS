@@ -10,10 +10,13 @@
 #define EAPOL_TYPE_KEY              3u
 
 #define EAPOL_KEY_DESC_WPA2         2u
+#define WLAN_GTK_MAX_LEN            32u
 
 /* Key Information Bit Flags */
 #define EAPOL_KEY_INFO_TYPE_MASK    0x0007u
+#define EAPOL_KEY_INFO_TYPE_AKM     0x0000u /* IEEE 802.11-2020 AKM-defined (WPA3-SAE) */
 #define EAPOL_KEY_INFO_HMAC_SHA1    0x0002u /* WPA2 (HMAC-SHA1-128 + AES-128) */
+#define EAPOL_KEY_INFO_AES_128_CMAC 0x0003u /* 802.11w / SHA-256 AKM */
 #define EAPOL_KEY_INFO_KEY_TYPE     0x0008u /* 1 = Pairwise, 0 = Group */
 #define EAPOL_KEY_INFO_INSTALL      0x0040u /* Install PTK into hardware/engine */
 #define EAPOL_KEY_INFO_KEY_ACK      0x0080u /* Set by AP to request ACK */
@@ -61,10 +64,13 @@ typedef struct {
     uint8_t  kck[WLAN_KCK_LEN]; /* bytes 0..15 */
     uint8_t  kek[WLAN_KEK_LEN]; /* bytes 16..31 */
     uint8_t  tk[WLAN_TK_LEN];   /* bytes 32..47 */
-    uint8_t  gtk[WLAN_TK_LEN];  /* Group Temporal Key */
+    uint8_t  gtk[WLAN_GTK_MAX_LEN]; /* Group Temporal Key (16B CCMP or 32B TKIP) */
+    uint8_t  gtk_len;
     uint8_t  gtk_idx;
     uint8_t  group_cipher;      /* Negotiated Group Cipher: 0x02 (TKIP) or 0x04 (CCMP) */
     uint16_t rsn_caps;          /* Negotiated RSN capabilities (mirrored in M2 Key Data) */
+    bool     use_sae;           /* True when AKM is WPA3-SAE (00-0F-AC:8) */
+    uint8_t  pmkid[WLAN_PMKID_LEN];
 
     uint64_t last_replay_counter;
     uint32_t handshake_step;    /* 0=Idle, 1=Got M1, 2=Sent M2, 3=Got M3, 4=Authorized */
@@ -86,6 +92,9 @@ void wpa2_sm_set_group_cipher(wpa2_sm_t *sm, uint8_t group_cipher);
 
 /* Set negotiated group cipher suite and RSN capabilities (mirrored in Message 2) */
 void wpa2_sm_set_rsn(wpa2_sm_t *sm, uint8_t group_cipher, uint16_t rsn_caps);
+
+/* Enable WPA3-SAE AKM mode (KDF-SHA-256 + HMAC-SHA-256-128 MIC + PMKID in M2 RSN IE) */
+void wpa2_sm_set_sae(wpa2_sm_t *sm, bool use_sae, const uint8_t pmkid[WLAN_PMKID_LEN]);
 
 /* Process incoming EAPOL frame (Message 1 or Message 3) */
 int wpa2_sm_rx_eapol(wpa2_sm_t *sm,

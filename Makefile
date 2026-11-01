@@ -627,7 +627,8 @@ test-usb-persistence: $(BOOTABLE_IMG)
 
 .PHONY: test-hub-host test-hub-host-tsan test-usb-hid test-usb-hub test-usb-mouse test-rtl8153-host test-wlan-crypto-host test-wlan-mac-host test-wlan-wpa2-host test-wifi-host test-wifi-fault-host test-wifi-stack
 WIFI_STACK_BUDGET ?= 1024
-WIFI_STACK_SRCS := src/net/net_wifi_owner.c src/net/wlan/wlan_mgr.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_crypto.c src/drivers/iwlwifi.c src/drivers/iwl_health.c
+WIFI_STACK_SRCS := src/net/net_wifi_owner.c src/net/wlan/wlan_mgr.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_crypto.c src/drivers/iwlwifi.c src/drivers/iwl_health.c src/drivers/rtw88.c
+WIFI_HOST_SAN ?= $(shell printf 'int main(void){return 0;}\n' | $(CC) -x c - -fsanitize=address,undefined -o /dev/null 2>/dev/null && echo "-fsanitize=address,undefined")
 
 .PHONY: test-wifi-owner-host test-wifi-owner
 test-wifi-owner-host:
@@ -635,7 +636,7 @@ test-wifi-owner-host:
 .PHONY: test-wifi-prepare-host
 test-wifi-prepare-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include tests/wifi_prepare_host.c -o $(BUILD_DIR)/wifi-prepare-host
+	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -Isrc/include tests/wifi_prepare_host.c -o $(BUILD_DIR)/wifi-prepare-host
 	@$(BUILD_DIR)/wifi-prepare-host
 test-wifi-owner: test-wifi-owner-host
 	@python3 scripts/test_wifi_owner.py
@@ -643,25 +644,25 @@ test-wifi-stack:
 	@python3 scripts/check_wifi_stack.py $(WIFI_STACK_BUDGET) $(CC) $(BUILD_DIR)/stackgate $(CFLAGS) -- $(WIFI_STACK_SRCS)
 test-wifi-fault-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_fault_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwl_health.c -o $(BUILD_DIR)/wifi_fault_host
+	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_fault_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwl_health.c -o $(BUILD_DIR)/wifi_fault_host
 	@$(BUILD_DIR)/wifi_fault_host
 test-wifi-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwlwifi.c src/drivers/iwl_health.c -o $(BUILD_DIR)/wifi_host
+	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwlwifi.c src/drivers/iwl_health.c src/drivers/rtw88.c -o $(BUILD_DIR)/wifi_host
 	@$(BUILD_DIR)/wifi_host
 test-wlan-wpa2-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/net/wlan tests/wlan_wpa2_host.c src/net/wlan/wlan_crypto.c src/net/wlan/wlan_wpa2.c -o $(BUILD_DIR)/wlan_wpa2_host
+	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/net/wlan tests/wlan_wpa2_host.c src/net/wlan/wlan_crypto.c src/net/wlan/wlan_wpa2.c -o $(BUILD_DIR)/wlan_wpa2_host
 	@$(BUILD_DIR)/wlan_wpa2_host
 
 test-wlan-mac-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/net/wlan tests/wlan_mac_host.c src/net/wlan/net_80211.c -o $(BUILD_DIR)/wlan_mac_host
+	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/net/wlan tests/wlan_mac_host.c src/net/wlan/net_80211.c -o $(BUILD_DIR)/wlan_mac_host
 	@$(BUILD_DIR)/wlan_mac_host
 
 test-wlan-crypto-host:
 	@mkdir -p $(BUILD_DIR)
-	@$(CC) -std=c11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/net/wlan tests/wlan_crypto_host.c src/net/wlan/wlan_crypto.c -o $(BUILD_DIR)/wlan_crypto_host
+	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/net/wlan tests/wlan_crypto_host.c src/net/wlan/wlan_crypto.c -o $(BUILD_DIR)/wlan_crypto_host
 	@$(BUILD_DIR)/wlan_crypto_host
 
 test-rtl8153-host:
@@ -1641,6 +1642,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 		mkdir -p $(BUILD_DIR)/initramfs/usr/share/wallpapers; \
 		python3 scripts/build_wallpaper.py assets/wallpapers/hello-world.png $(BUILD_DIR)/initramfs/usr/share/wallpapers/hello-world.bin; \
 	fi
+	@objcopy --strip-debug $(BUILD_DIR)/initramfs/bin/* $(BUILD_DIR)/initramfs/sbin/* 2>/dev/null || true
 	@echo "  [TAR] Generating USTAR archive $@"
 	@python3 scripts/create_initramfs.py $(BUILD_DIR)/initramfs $(INITRAMFS_TAR)
 

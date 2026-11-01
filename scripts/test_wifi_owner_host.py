@@ -25,8 +25,13 @@ def main():
     try:
         for sanitizer in ('address,undefined', 'thread'):
             exe = out / sanitizer.replace(',', '-')
+            probe = subprocess.run(
+                ['gcc', '-x', 'c', '-', '-pthread', '-fsanitize=' + sanitizer, '-o', '/dev/null'],
+                input='int main(void){return 0;}\n', text=True, capture_output=True
+            )
+            san_flags = ['-fsanitize=' + sanitizer] if probe.returncode == 0 else []
             build = ['gcc', '-std=c11', '-O1', '-g', '-DTEST_SMP_MEMORY', '-DWIFI_OWNER_HOST',
-                     '-pthread', '-fsanitize=' + sanitizer, '-no-pie', '-Wall', '-Wextra', '-Werror',
+                     '-pthread', *san_flags, '-no-pie', '-Wall', '-Wextra', '-Werror',
                      '-Isrc/include', '-iquote', 'src/kernel', '-Isrc/drivers', '-Isrc/arch/x86_64',
                      '-Isrc/mm', '-Isrc/net', *SOURCES, '-o', str(exe)]
             argv = ['setarch', 'x86_64', '-R', str(exe)] if sanitizer == 'thread' else [str(exe)]

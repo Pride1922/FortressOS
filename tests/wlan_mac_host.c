@@ -245,6 +245,152 @@ static void test_bss_table(void) {
     printf("[TEST 4] PASS: BSS scan table operations and multi-BSSID best-RSSI verified.\n");
 }
 
+/* ============================================================================
+ * 5. Open Assoc, HT/VHT Assoc, SAE Auth, and ADDBA Response Builders
+ * ============================================================================ */
+
+static void test_advanced_frame_builders(void) {
+    printf("[TEST 5] Testing Open Assoc, HT/VHT Assoc, SAE Auth, and ADDBA Resp builders...\n");
+
+    uint8_t sta_mac[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+    uint8_t ap_bssid[6] = {0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB};
+    uint8_t buf[512];
+
+    /* 5a. Open Network Assoc Request: must NOT contain RSN IE and Privacy bit must be 0 */
+    size_t len = net_80211_build_assoc_req_open(buf, sizeof(buf), sta_mac, ap_bssid, "AirportFreeWiFi");
+    assert(len > sizeof(ieee80211_hdr_t) + 4);
+    uint16_t cap = (uint16_t)(buf[sizeof(ieee80211_hdr_t)] | (buf[sizeof(ieee80211_hdr_t) + 1] << 8));
+    assert((cap & 0x0010u) == 0); /* Privacy bit clear */
+
+    bool found_rsn = false, found_ht = false;
+    size_t off = sizeof(ieee80211_hdr_t) + 4;
+    while (off + 2 <= len) {
+        if (buf[off] == IEEE80211_IE_RSN) found_rsn = true;
+        off += 2 + buf[off + 1];
+    }
+    assert(!found_rsn);
+
+    /* 5b. Full WPA3-SAE + HT + VHT Assoc Request */
+    uint8_t pmkid[16];
+    for (int i = 0; i < 16; i++) pmkid[i] = (uint8_t)(0xA0 + i);
+    len = net_80211_build_assoc_req_full(buf, sizeof(buf), sta_mac, ap_bssid, "WPA3_5GHz",
+                                         false, true, 0x04, 0x00C0, pmkid, true, true);
+    assert(len > 0);
+    found_rsn = false; found_ht = false;
+    bool found_vht = false;
+    off = sizeof(ieee80211_hdr_t) + 4;
+    while (off + 2 <= len) {
+        if (buf[off] == IEEE80211_IE_RSN) {
+            found_rsn = true;
+            assert(buf[off + 1] == 38); /* 20B base + 2B PMKID count + 16B PMKID */
+            assert(buf[off + 19] == 0x08); /* AKM = SAE (8) */
+            assert(memcmp(&buf[off + 24], pmkid, 16) == 0);
+        }
+        if (buf[off] == IEEE80211_IE_HT_CAP && buf[off + 1] == 26) found_ht = true;
+        if (buf[off] == IEEE80211_IE_VHT_CAP && buf[off + 1] == 12) found_vht = true;
+        off += 2 + buf[off + 1];
+    }
+    assert(found_rsn && found_ht && found_vht);
+
+    /* 5c. SAE Auth Frame Builder (Alg=3) */
+    uint8_t sae_body[66];
+    memset(sae_body, 0x5A, sizeof(sae_body));
+    len = net_80211_build_sae_auth(buf, sizeof(buf), sta_mac, ap_bssid, 1, 0, sae_body, sizeof(sae_body));
+    assert(len == sizeof(ieee80211_hdr_t) + 6 + sizeof(sae_body));
+    assert(buf[sizeof(ieee80211_hdr_t) + 0] == 3); /* IEEE80211_AUTH_ALG_SAE */
+    assert(buf[sizeof(ieee80211_hdr_t) + 2] == 1); /* Seq 1 (Commit) */
+
+    /* 5d. ADDBA Response Action Frame Builder */
+    len = net_80211_build_addba_resp(buf, sizeof(buf), sta_mac, ap_bssid, 7, 0, 64);
+    assert(len == sizeof(ieee80211_hdr_t) + 9);
+    ieee80211_hdr_t *hdr = (ieee80211_hdr_t *)buf;
+    assert((hdr->frame_control & 0x00FF) == 0xD0); /* MGMT Action */
+    assert(buf[sizeof(ieee80211_hdr_t) + 0] == IEEE80211_CATEGORY_BACK);
+    assert(buf[sizeof(ieee80211_hdr_t) + 1] == IEEE80211_ACTION_ADDBA_RESP);
+    assert(buf[sizeof(ieee80211_hdr_t) + 2] == 7); /* Dialog token */
+
+    printf("[TEST 5] PASS: Open Assoc, HT/VHT Assoc, SAE Auth, and ADDBA Response verified.\n");
+}
+
+/* ============================================================================
+ * 6. HT/VHT & WPA3-SAE Beacon Parsing
+ * ============================================================================ */
+
+static void test_ht_vht_sae_beacon_parser(void) {
+    printf("[TEST 6] Testing HT (802.11n), VHT (802.11ac), and WPA3-SAE beacon parsing...\n");
+
+    uint8_t frame[512];
+    memset(frame, 0, sizeof(frame));
+    ieee80211_hdr_t *hdr = (ieee80211_hdr_t *)frame;
+    hdr->frame_control = (IEEE80211_TYPE_MGMT << 2) | (IEEE80211_SUBTYPE_BEACON << 4);
+    memset(hdr->addr1, 0xFF, 6);
+    uint8_t ap_mac[6] = {0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33};
+    memcpy(hdr->addr2, ap_mac, 6);
+    memcpy(hdr->addr3, ap_mac, 6);
+
+    uint8_t *body = frame + sizeof(ieee80211_hdr_t);
+    body[8] = 100; body[9] = 0;
+    body[10] = 0x11; body[11] = 0x00;
+
+    uint8_t *ie = body + 12;
+    /* SSID */
+    *ie++ = IEEE80211_IE_SSID; *ie++ = 7;
+    memcpy(ie, "WPA3_AC", 7); ie += 7;
+    /* Channel 36 */
+    *ie++ = IEEE80211_IE_DS_PARAM; *ie++ = 1; *ie++ = 36;
+    /* RSN IE with WPA3-SAE (AKM = 00-0F-AC:8) */
+    uint8_t rsn_sae[20] = {
+        0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04,
+        0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04,
+        0x01, 0x00, 0x00, 0x0F, 0xAC, 0x08, /* SAE */
+        0xC0, 0x00 /* MFPC | MFPR */
+    };
+    *ie++ = IEEE80211_IE_RSN; *ie++ = 20;
+    memcpy(ie, rsn_sae, 20); ie += 20;
+
+    /* HT Capabilities (IE 45, 26 bytes) */
+    *ie++ = IEEE80211_IE_HT_CAP; *ie++ = 26;
+    memset(ie, 0, 26);
+    ie[0] = 0x6F; ie[1] = 0x01; /* HT Cap Info = 0x016F */
+    ie[2] = 0x17;               /* A-MPDU param */
+    ie[3] = 0xFF; ie[4] = 0xFF; /* 2x2 MIMO MCS 0..15 */
+    ie += 26;
+
+    /* HT Operation (IE 61, 22 bytes) */
+    *ie++ = IEEE80211_IE_HT_OP; *ie++ = 22;
+    memset(ie, 0, 22);
+    ie[0] = 36;
+    ie[1] = 0x05; /* STA channel width 40 MHz */
+    ie += 22;
+
+    /* VHT Capabilities (IE 191, 12 bytes) */
+    *ie++ = IEEE80211_IE_VHT_CAP; *ie++ = 12;
+    memset(ie, 0, 12);
+    ie[0] = 0x32; ie[1] = 0x00; ie[2] = 0x80; ie[3] = 0x03;
+    ie[4] = 0xFA; ie[5] = 0xFF;
+    ie += 12;
+
+    /* VHT Operation (IE 192, 5 bytes) */
+    *ie++ = IEEE80211_IE_VHT_OP; *ie++ = 5;
+    ie[0] = 1;  /* 80 MHz channel width */
+    ie[1] = 42; /* Center freq segment 1 */
+    ie[2] = 0; ie[3] = 0; ie[4] = 0;
+    ie += 5;
+
+    wlan_bss_entry_t bss;
+    assert(net_80211_parse_beacon_or_probe(frame, (size_t)(ie - frame), -48, &bss));
+    assert(bss.has_wpa3_sae == true);
+    assert(bss.has_wpa2_psk == false);
+    assert(bss.has_ht == true);
+    assert(bss.ht_cap_info == 0x016F);
+    assert(bss.ht_chan_width == 1);
+    assert(bss.has_vht == true);
+    assert(bss.vht_chan_width == 1);
+    assert(bss.vht_center_freq1 == 42);
+
+    printf("[TEST 6] PASS: HT/VHT and WPA3-SAE beacon IEs parsed accurately.\n");
+}
+
 int main(void) {
     printf("================================================================\n");
     printf("  FortressOS 802.11 MAC Frame & State Machine (WIFI-1) Tests     \n");
@@ -254,9 +400,11 @@ int main(void) {
     test_bridging_roundtrip();
     test_beacon_parser();
     test_bss_table();
+    test_advanced_frame_builders();
+    test_ht_vht_sae_beacon_parser();
 
     printf("================================================================\n");
-    printf("  ALL 4 WLAN MAC TESTS PASSED (100%%)                            \n");
+    printf("  ALL 6 WLAN MAC TESTS PASSED (100%%)                            \n");
     printf("================================================================\n");
     return 0;
 }

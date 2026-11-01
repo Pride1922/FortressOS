@@ -23,6 +23,17 @@
 #define IEEE80211_SUBTYPE_DISASSOC  0x0A
 #define IEEE80211_SUBTYPE_AUTH      0x0B
 #define IEEE80211_SUBTYPE_DEAUTH    0x0C
+#define IEEE80211_SUBTYPE_ACTION    0x0D
+
+/* 802.11 Authentication Algorithms */
+#define IEEE80211_AUTH_ALG_OPEN     0u
+#define IEEE80211_AUTH_ALG_SAE      3u
+
+/* 802.11 Action Frame Categories & Block Ack Actions */
+#define IEEE80211_CATEGORY_BACK     3u
+#define IEEE80211_ACTION_ADDBA_REQ  0u
+#define IEEE80211_ACTION_ADDBA_RESP 1u
+#define IEEE80211_ACTION_DELBA      2u
 
 /* 802.11 Data Subtypes */
 #define IEEE80211_SUBTYPE_DATA      0x00
@@ -42,8 +53,12 @@
 #define IEEE80211_IE_SSID           0
 #define IEEE80211_IE_RATES          1
 #define IEEE80211_IE_DS_PARAM       3
+#define IEEE80211_IE_HT_CAP         45
 #define IEEE80211_IE_RSN            48
 #define IEEE80211_IE_EXT_RATES      50
+#define IEEE80211_IE_HT_OP          61
+#define IEEE80211_IE_VHT_CAP        191
+#define IEEE80211_IE_VHT_OP         192
 #define IEEE80211_IE_VENDOR         221
 
 /* 802.11 Standard MAC Header (24 bytes) */
@@ -86,8 +101,19 @@ typedef struct {
     uint16_t beacon_interval;
     uint16_t capabilities;
     bool     has_wpa2_psk;
+    bool     has_wpa3_sae;
     uint8_t  group_cipher;   /* e.g. 2 for TKIP, 4 for CCMP */
     uint16_t rsn_caps;       /* RSN capabilities from beacon IE */
+    bool     has_ht;
+    uint16_t ht_cap_info;
+    uint8_t  ht_ampdu_param;
+    uint8_t  ht_rx_mcs[4];
+    uint8_t  ht_chan_width;  /* 0 = 20 MHz, 1 = 40 MHz */
+    bool     has_vht;
+    uint32_t vht_cap_info;
+    uint16_t vht_rx_mcs_map;
+    uint8_t  vht_chan_width; /* 0 = 20/40 MHz, 1 = 80 MHz */
+    uint8_t  vht_center_freq1;
     uint32_t last_seen_ticks;
 } wlan_bss_entry_t;
 
@@ -116,10 +142,22 @@ size_t net_80211_build_auth_req(uint8_t *buf, size_t max_len,
                                 const uint8_t src_mac[6],
                                 const uint8_t bssid[6]);
 
+size_t net_80211_build_sae_auth(uint8_t *buf, size_t max_len,
+                                const uint8_t src_mac[6],
+                                const uint8_t bssid[6],
+                                uint16_t seq_num,
+                                uint16_t status_code,
+                                const uint8_t *sae_body, size_t sae_len);
+
 size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
                                  const uint8_t src_mac[6],
                                  const uint8_t bssid[6],
                                  const char *ssid);
+
+size_t net_80211_build_assoc_req_open(uint8_t *buf, size_t max_len,
+                                      const uint8_t src_mac[6],
+                                      const uint8_t bssid[6],
+                                      const char *ssid);
 
 size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
                                      const uint8_t src_mac[6],
@@ -127,6 +165,25 @@ size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
                                      const char *ssid,
                                      uint8_t group_cipher,
                                      uint16_t rsn_caps);
+
+size_t net_80211_build_assoc_req_full(uint8_t *buf, size_t max_len,
+                                      const uint8_t src_mac[6],
+                                      const uint8_t bssid[6],
+                                      const char *ssid,
+                                      bool is_open,
+                                      bool use_sae,
+                                      uint8_t group_cipher,
+                                      uint16_t rsn_caps,
+                                      const uint8_t *pmkid,
+                                      bool include_ht,
+                                      bool include_vht);
+
+size_t net_80211_build_addba_resp(uint8_t *buf, size_t max_len,
+                                  const uint8_t src_mac[6],
+                                  const uint8_t bssid[6],
+                                  uint8_t dialog_token,
+                                  uint8_t tid,
+                                  uint16_t buf_size);
 
 size_t net_80211_build_deauth(uint8_t *buf, size_t max_len,
                              const uint8_t src_mac[6],

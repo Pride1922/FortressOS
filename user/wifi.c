@@ -243,7 +243,11 @@ static int do_scan(void) {
         append_pad(s_out, &pos, 32);
 
         /* Security */
-        append_str(s_out, &pos, e->security == WIFI_SEC_WPA2_PSK ? "WPA2-PSK" : "OPEN");
+        const char *sec_str = "OPEN";
+        if (e->security == WIFI_SEC_WPA3_SAE) sec_str = "WPA3-SAE";
+        else if (e->security == WIFI_SEC_WPA2_WPA3) sec_str = "WPA2/3";
+        else if (e->security == WIFI_SEC_WPA2_PSK) sec_str = "WPA2-PSK";
+        append_str(s_out, &pos, sec_str);
         append_pad(s_out, &pos, 42);
 
         /* SSID */
@@ -314,7 +318,7 @@ static int         s_saved_count = 0;
 
 static void commit_current_network(char *cur_ssid, char *cur_psk,
                                    char *cur_addr, char *cur_gw, char *cur_dns) {
-    if (!cur_ssid[0] || !cur_psk[0] || s_saved_count >= MAX_SAVED_NETWORKS) return;
+    if (!cur_ssid[0] || s_saved_count >= MAX_SAVED_NETWORKS) return;
     saved_net_t *n = &s_saved_nets[s_saved_count++];
     for (size_t i = 0; i < sizeof(n->ssid); i++) n->ssid[i] = 0;
     for (size_t i = 0; i < sizeof(n->psk); i++) n->psk[i] = 0;
@@ -558,14 +562,15 @@ static int do_list(void) {
 
 static int do_save(const char *ssid, const char *passphrase,
                    const char *address, const char *gateway, const char *dns) {
-    if (!ssid || !passphrase) {
-        write_str(2, "Usage: wifi save <SSID> <passphrase> [--static <IP/prefix> [gateway] [dns]]\n");
+    if (!ssid) {
+        write_str(2, "Usage: wifi save <SSID> [passphrase] [--static <IP/prefix> [gateway] [dns]]\n");
         return 1;
     }
+    if (!passphrase) passphrase = "";
     size_t slen = mystrlen(ssid);
     size_t plen = mystrlen(passphrase);
-    if (slen == 0 || slen > WIFI_SSID_MAX_LEN || plen < 8 || plen > WIFI_PASSPHRASE_MAX_LEN) {
-        write_str(2, "wifi save: invalid SSID or passphrase length (8-63 chars)\n");
+    if (slen == 0 || slen > WIFI_SSID_MAX_LEN || (plen > 0 && plen < 8) || plen > WIFI_PASSPHRASE_MAX_LEN) {
+        write_str(2, "wifi save: invalid SSID or passphrase length (empty for open, or 8-63 chars)\n");
         return 1;
     }
 
@@ -843,8 +848,7 @@ static int do_connect(const char *ssid, const char *passphrase,
     }
 
     if (!actual_psk) {
-        write_str(2, "wifi connect: network not saved and no passphrase provided\n");
-        return 1;
+        actual_psk = "";
     }
 
     if (!actual_addr && saved_idx >= 0 && s_saved_nets[saved_idx].address[0]) {
@@ -895,7 +899,7 @@ static int do_connect(const char *ssid, const char *passphrase,
             if (st.link_online && st.state == WIFI_STATUS_CONNECTED) {
                 write_str(1, "Connected to \"");
                 write_str(1, ssid);
-                write_str(1, "\" (WPA2-PSK). Link is ONLINE.\n");
+                write_str(1, actual_psk[0] ? "\" (WPA2/WPA3). Link is ONLINE.\n" : "\" (OPEN). Link is ONLINE.\n");
 
                 /* Auto-save network profile permanently immediately upon association */
                 if (do_save(ssid, actual_psk, actual_addr, actual_gw, actual_dns) != 0) {
@@ -1125,16 +1129,20 @@ int wifi_main(int argc, char **argv) {
     } else if (streq(argv[1], "auto")) {
         return do_auto();
     } else if (streq(argv[1], "save")) {
-        if (argc < 4) {
-            write_str(2, "Usage: wifi save <SSID> <passphrase> [--static <IP/prefix> [gateway] [dns]]\n");
+        if (argc < 3) {
+            write_str(2, "Usage: wifi save <SSID> [passphrase] [--static <IP/prefix> [gateway] [dns]]\n");
             return 1;
         }
         const char *ssid = argv[2];
-        const char *psk = argv[3];
+        const char *psk = "";
+        int arg_idx = 3;
+        if (arg_idx < argc && !streq(argv[arg_idx], "--static")) {
+            psk = argv[arg_idx++];
+        }
         const char *addr = NULL;
         const char *gw = NULL;
         const char *dns = NULL;
-        for (int i = 4; i < argc; i++) {
+        for (int i = arg_idx; i < argc; i++) {
             if (streq(argv[i], "--static") && i + 1 < argc) {
                 addr = argv[++i];
                 if (i + 1 < argc && argv[i + 1][0] != '-') gw = argv[++i];

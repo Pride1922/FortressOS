@@ -15,6 +15,7 @@
 #include "wlan_wpa2.h"
 #include "wlan_mgr.h"
 #include "iwlwifi.h"
+#include "rtw88.h"
 
 /* Mock spinlock implementation for host testing */
 uint64_t spin_lock_irqsave(spinlock_t *l) {
@@ -595,6 +596,315 @@ int main(void) {
     assert(st.channel == 11);
     printf("  [PASS] Multi-BSSID best RSSI selection & autonomous background roaming verified\n");
 
-    printf("\n>>> ALL WIRELESS (802.11 / WPA2-PSK / IWLWIFI) HOST TESTS PASSED (16/16) <<<\n");
+    /* 17. Test Open / Public Wi-Fi Network Support (Zero Passphrase) */
+    assert(wlan_mgr_disconnect() == 0);
+    uint8_t open_bssid[6] = { 0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E };
+    uint8_t open_beacon[256];
+    {
+        ieee80211_hdr_t *oh = (ieee80211_hdr_t *)open_beacon;
+        memset(oh, 0, sizeof(*oh));
+        oh->frame_control = IEEE80211_TYPE_MGMT | (IEEE80211_SUBTYPE_BEACON << 4);
+        memset(oh->addr1, 0xFF, 6);
+        memcpy(oh->addr2, open_bssid, 6);
+        memcpy(oh->addr3, open_bssid, 6);
+        uint8_t *p = open_beacon + sizeof(ieee80211_hdr_t);
+        memset(p, 0, 8); p += 8;
+        *p++ = 0x64; *p++ = 0x00;
+        *p++ = 0x01; *p++ = 0x04; /* ESS only, Privacy = 0 */
+        const char *open_ssid = "AirportFreeWiFi";
+        size_t oslen = strlen(open_ssid);
+        *p++ = IEEE80211_IE_SSID; *p++ = (uint8_t)oslen;
+        memcpy(p, open_ssid, oslen); p += oslen;
+        *p++ = IEEE80211_IE_DS_PARAM; *p++ = 1; *p++ = 6;
+        /* HT Cap IE (45) + VHT Cap IE (191) to test HT/VHT negotiation too */
+        *p++ = IEEE80211_IE_HT_CAP; *p++ = 26;
+        memset(p, 0, 26); p[0] = 0x6F; p[1] = 0x01; p[3] = 0xFF; p[4] = 0xFF; p += 26;
+        *p++ = IEEE80211_IE_VHT_CAP; *p++ = 12;
+        memset(p, 0, 12); p += 12;
+        assert(wlan_mgr_rx_raw_80211(open_beacon, (size_t)(p - open_beacon), -42) == 0);
+    }
+
+    /* Connect with empty passphrase */
+    assert(wlan_mgr_connect("AirportFreeWiFi", "", open_bssid) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_AUTHENTICATING);
+
+    /* Simulate Auth Response from open_bssid */
+    uint8_t open_auth_resp[sizeof(ieee80211_hdr_t) + 6];
+    memset(open_auth_resp, 0, sizeof(open_auth_resp));
+    ((ieee80211_hdr_t *)open_auth_resp)->frame_control = (IEEE80211_TYPE_MGMT << 2) | (IEEE80211_SUBTYPE_AUTH << 4);
+    memcpy(((ieee80211_hdr_t *)open_auth_resp)->addr1, s_mock_sta_mac, 6);
+    memcpy(((ieee80211_hdr_t *)open_auth_resp)->addr2, open_bssid, 6);
+    memcpy(((ieee80211_hdr_t *)open_auth_resp)->addr3, open_bssid, 6);
+    open_auth_resp[sizeof(ieee80211_hdr_t) + 2] = 0x02; /* Seq 2 */
+    assert(wlan_mgr_rx_raw_80211(open_auth_resp, sizeof(open_auth_resp), -42) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_ASSOCIATING);
+
+    /* Verify transmitted Association Request omits RSN IE and includes HT/VHT IEs */
+    {
+        bool has_rsn = false, has_ht = false, has_vht = false;
+        size_t off = sizeof(ieee80211_hdr_t) + 4;
+        while (off + 2 <= s_mock_last_tx_len) {
+            if (s_mock_last_tx[off] == IEEE80211_IE_RSN) has_rsn = true;
+            if (s_mock_last_tx[off] == IEEE80211_IE_HT_CAP) has_ht = true;
+            if (s_mock_last_tx[off] == IEEE80211_IE_VHT_CAP) has_vht = true;
+            off += 2 + s_mock_last_tx[off + 1];
+        }
+        assert(!has_rsn);
+        assert(has_ht && has_vht);
+    }
+
+    /* Simulate Assoc Response SUCCESS: must skip 4-way handshake and transition directly to CONNECTED */
+    uint8_t open_assoc_resp[sizeof(ieee80211_hdr_t) + 6];
+    memset(open_assoc_resp, 0, sizeof(open_assoc_resp));
+    ((ieee80211_hdr_t *)open_assoc_resp)->frame_control = (IEEE80211_TYPE_MGMT << 2) | (IEEE80211_SUBTYPE_ASSOC_RESP << 4);
+    memcpy(((ieee80211_hdr_t *)open_assoc_resp)->addr1, s_mock_sta_mac, 6);
+    memcpy(((ieee80211_hdr_t *)open_assoc_resp)->addr2, open_bssid, 6);
+    memcpy(((ieee80211_hdr_t *)open_assoc_resp)->addr3, open_bssid, 6);
+    open_assoc_resp[sizeof(ieee80211_hdr_t) + 4] = 0x01; open_assoc_resp[sizeof(ieee80211_hdr_t) + 5] = 0xC0;
+    assert(wlan_mgr_rx_raw_80211(open_assoc_resp, sizeof(open_assoc_resp), -42) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_CONNECTED);
+    assert(wlan_network_online(dev) == true);
+
+    /* Verify outbound packet on Open network is unencrypted (Protected bit == 0) */
+    assert(wlan_send_packet(dev, eth_tx_pkt, sizeof(eth_tx_pkt)) == 0);
+    assert((s_mock_last_tx[1] & 0x40u) == 0);
+
+    /* Verify inbound unencrypted QoS Data frame on Open network is accepted and decapsulated */
+    uint8_t peer_mac[6] = { 0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE };
+    uint8_t open_rx_wlan[256];
+    int open_rx_len = net_80211_encapsulate(inbound_eth, sizeof(inbound_eth), open_bssid, s_mock_ap_bssid, 77, open_rx_wlan, sizeof(open_rx_wlan));
+    assert(open_rx_len > 0);
+    ieee80211_qos_hdr_t *orx_h = (ieee80211_qos_hdr_t *)open_rx_wlan;
+    orx_h->frame_control = (IEEE80211_TYPE_DATA << 2) | (IEEE80211_SUBTYPE_QOS_DATA << 4) | IEEE80211_FCTL_FROMDS;
+    memcpy(orx_h->addr1, s_mock_sta_mac, 6);
+    memcpy(orx_h->addr2, open_bssid, 6);
+    memcpy(orx_h->addr3, s_mock_ap_bssid, 6);
+    assert(wlan_mgr_rx_raw_80211(open_rx_wlan, (size_t)open_rx_len, -42) == 0);
+    rx_p = wlan_poll_rx(dev);
+    assert(rx_p != NULL);
+    assert(rx_p->length == sizeof(inbound_eth));
+    assert(memcmp(rx_p->payload, inbound_eth, sizeof(inbound_eth)) == 0);
+    wlan_recycle_rx(dev, rx_p);
+    printf("  [PASS] Open / Public Wi-Fi connection (no RSN IE, skips 4-way handshake, unencrypted TX/RX)\n");
+
+    /* 18. Test 802.11n/ac A-MPDU ADDBA Request -> ADDBA Response Action Frame */
+    {
+        uint8_t addba_req[sizeof(ieee80211_hdr_t) + 9];
+        memset(addba_req, 0, sizeof(addba_req));
+        ieee80211_hdr_t *ah = (ieee80211_hdr_t *)addba_req;
+        ah->frame_control = (IEEE80211_TYPE_MGMT << 2) | (IEEE80211_SUBTYPE_ACTION << 4);
+        memcpy(ah->addr1, s_mock_sta_mac, 6);
+        memcpy(ah->addr2, open_bssid, 6);
+        memcpy(ah->addr3, open_bssid, 6);
+        uint8_t *ab = addba_req + sizeof(ieee80211_hdr_t);
+        ab[0] = IEEE80211_CATEGORY_BACK;
+        ab[1] = IEEE80211_ACTION_ADDBA_REQ;
+        ab[2] = 0x42; /* Dialog token */
+        ab[3] = 0x02; ab[4] = 0x10; /* TID=0, buf_size=64 */
+        uint32_t tx_pre = s_mock_tx_count;
+        assert(wlan_mgr_rx_raw_80211(addba_req, sizeof(addba_req), -42) == 0);
+        assert(s_mock_tx_count == tx_pre + 1);
+        assert(s_mock_last_tx[sizeof(ieee80211_hdr_t) + 0] == IEEE80211_CATEGORY_BACK);
+        assert(s_mock_last_tx[sizeof(ieee80211_hdr_t) + 1] == IEEE80211_ACTION_ADDBA_RESP);
+        assert(s_mock_last_tx[sizeof(ieee80211_hdr_t) + 2] == 0x42);
+    }
+    printf("  [PASS] 802.11n/ac HT/VHT capability negotiation & A-MPDU ADDBA Response verified\n");
+
+    /* 19. Test Mixed-Mode AP TKIP Group Broadcast Frame Decryption */
+    assert(wlan_mgr_disconnect() == 0);
+    uint8_t tkip_ap_bssid[6] = { 0x00, 0x22, 0x44, 0x66, 0x88, 0xAA };
+    {
+        uint8_t tkip_beacon[256];
+        size_t tb_len = build_mock_beacon(tkip_beacon, tkip_ap_bssid, "MixedModeRouter", 6);
+        /* Patch RSN IE Group Cipher from 0x04 (CCMP) to 0x02 (TKIP) */
+        size_t off = sizeof(ieee80211_hdr_t) + 12;
+        while (off + 2 <= tb_len) {
+            if (tkip_beacon[off] == IEEE80211_IE_RSN) {
+                tkip_beacon[off + 7] = 0x02; /* Group Cipher = TKIP */
+                break;
+            }
+            off += 2 + tkip_beacon[off + 1];
+        }
+        assert(wlan_mgr_rx_raw_80211(tkip_beacon, tb_len, -45) == 0);
+    }
+    assert(wlan_mgr_connect("MixedModeRouter", "SuperSecretKey2026", tkip_ap_bssid) == 0);
+    uint8_t tkip_pmk[32];
+    assert(wlan_pbkdf2_sha1("SuperSecretKey2026", (const uint8_t *)"MixedModeRouter", 15, 4096, tkip_pmk, 32) == 0);
+
+    /* Auth + Assoc */
+    memcpy(((ieee80211_hdr_t *)auth_resp)->addr2, tkip_ap_bssid, 6);
+    memcpy(((ieee80211_hdr_t *)auth_resp)->addr3, tkip_ap_bssid, 6);
+    memcpy(((ieee80211_hdr_t *)assoc_resp)->addr2, tkip_ap_bssid, 6);
+    memcpy(((ieee80211_hdr_t *)assoc_resp)->addr3, tkip_ap_bssid, 6);
+    assert(wlan_mgr_rx_raw_80211(auth_resp, sizeof(auth_resp), -45) == 0);
+    assert(wlan_mgr_rx_raw_80211(assoc_resp, sizeof(assoc_resp), -45) == 0);
+
+    /* Complete handshake with 32-byte TKIP GTK in M3 */
+    uint8_t tkip_gtk[32];
+    for (int i = 0; i < 32; i++) tkip_gtk[i] = (uint8_t)(0x70 + i);
+    {
+        uint8_t m1[256];
+        memset(m1, 0, sizeof(m1));
+        ieee80211_qos_hdr_t *wh = (ieee80211_qos_hdr_t *)m1;
+        wh->frame_control = (IEEE80211_TYPE_DATA << 2) | (IEEE80211_SUBTYPE_QOS_DATA << 4) | IEEE80211_FCTL_FROMDS;
+        memcpy(wh->addr1, s_mock_sta_mac, 6);
+        memcpy(wh->addr2, tkip_ap_bssid, 6);
+        memcpy(wh->addr3, tkip_ap_bssid, 6);
+        llc_snap_hdr_t *sn = (llc_snap_hdr_t *)(m1 + sizeof(ieee80211_qos_hdr_t));
+        sn->dsap = 0xAA; sn->ssap = 0xAA; sn->control = 0x03;
+        sn->ethertype = __builtin_bswap16(EAPOL_ETHER_TYPE);
+        eapol_hdr_t *eh = (eapol_hdr_t *)(sn + 1);
+        eh->version = 2; eh->type = EAPOL_TYPE_KEY;
+        eh->length = __builtin_bswap16(sizeof(eapol_key_desc_t));
+        eapol_key_desc_t *kd = (eapol_key_desc_t *)(eh + 1);
+        kd->desc_type = EAPOL_KEY_DESC_WPA2;
+        kd->key_info = __builtin_bswap16(EAPOL_KEY_INFO_HMAC_SHA1 | EAPOL_KEY_INFO_KEY_TYPE | EAPOL_KEY_INFO_KEY_ACK);
+        kd->key_length = __builtin_bswap16(16);
+        kd->replay_counter = __builtin_bswap64(1);
+        memset(kd->key_nonce, 0x33, 32);
+        size_t m1_l = sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t) + sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t);
+        assert(wlan_mgr_rx_raw_80211(m1, m1_l, -45) == 0);
+
+        const eapol_key_desc_t *m2_d = (const eapol_key_desc_t *)(s_mock_last_tx + sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t) + sizeof(eapol_hdr_t));
+        uint8_t t_ptk[64];
+        wlan_derive_ptk(tkip_pmk, tkip_ap_bssid, s_mock_sta_mac, kd->key_nonce, m2_d->key_nonce, t_ptk);
+
+        uint8_t m3[512];
+        memset(m3, 0, sizeof(m3));
+        memcpy(m3, m1, m1_l);
+        eapol_hdr_t *eh3 = (eapol_hdr_t *)(m3 + sizeof(ieee80211_qos_hdr_t) + sizeof(llc_snap_hdr_t));
+        eh3->length = __builtin_bswap16(sizeof(eapol_key_desc_t) + 40);
+        eapol_key_desc_t *kd3 = (eapol_key_desc_t *)(eh3 + 1);
+        kd3->key_info = __builtin_bswap16(EAPOL_KEY_INFO_HMAC_SHA1 | EAPOL_KEY_INFO_KEY_TYPE |
+                                          EAPOL_KEY_INFO_INSTALL | EAPOL_KEY_INFO_KEY_ACK |
+                                          EAPOL_KEY_INFO_KEY_MIC | EAPOL_KEY_INFO_SECURE);
+        kd3->replay_counter = __builtin_bswap64(2);
+        kd3->key_data_len = __builtin_bswap16(40);
+        uint8_t *kde = (uint8_t *)(kd3 + 1);
+        kde[0] = 0xDD; kde[1] = 38;
+        kde[2] = 0x00; kde[3] = 0x0F; kde[4] = 0xAC; kde[5] = 0x01;
+        kde[6] = 0x01; kde[7] = 0x00;
+        memcpy(kde + 8, tkip_gtk, 32);
+        uint8_t mic3[20];
+        wlan_hmac_sha1(t_ptk, 16, eh3, sizeof(eapol_hdr_t) + sizeof(eapol_key_desc_t) + 40, mic3);
+        memcpy(kd3->key_mic, mic3, 16);
+        assert(wlan_mgr_rx_raw_80211(m3, m1_l + 40, -45) == 0);
+        assert(wlan_network_online(dev) == true);
+    }
+
+    /* Inject a TKIP-encrypted broadcast ARP frame from the AP */
+    {
+        uint8_t bcast_eth[42];
+        memset(bcast_eth, 0xFF, 6); /* Broadcast DA */
+        memcpy(bcast_eth + 6, peer_mac, 6);
+        bcast_eth[12] = 0x08; bcast_eth[13] = 0x06; /* ARP */
+        for (int i = 14; i < 42; i++) bcast_eth[i] = (uint8_t)i;
+
+        uint8_t bcast_wlan_plain[128];
+        int bp_len = net_80211_encapsulate(bcast_eth, sizeof(bcast_eth), tkip_ap_bssid, peer_mac, 88, bcast_wlan_plain, sizeof(bcast_wlan_plain));
+        assert(bp_len > 0);
+        ieee80211_qos_hdr_t *bh = (ieee80211_qos_hdr_t *)bcast_wlan_plain;
+        bh->frame_control = (IEEE80211_TYPE_DATA << 2) | (IEEE80211_SUBTYPE_QOS_DATA << 4) | IEEE80211_FCTL_FROMDS;
+        memset(bh->addr1, 0xFF, 6); /* Broadcast Receiver */
+        memcpy(bh->addr2, tkip_ap_bssid, 6);
+        memcpy(bh->addr3, peer_mac, 6);
+
+        uint8_t bcast_tkip_cipher[256];
+        size_t btc_len = sizeof(bcast_tkip_cipher);
+        assert(wlan_tkip_encrypt_frame(tkip_gtk, 1, 1, bcast_wlan_plain, (size_t)bp_len, bcast_tkip_cipher, &btc_len) == 0);
+
+        assert(wlan_mgr_rx_raw_80211(bcast_tkip_cipher, btc_len, -45) == 0);
+        rx_p = wlan_poll_rx(dev);
+        assert(rx_p != NULL);
+        assert(rx_p->length == sizeof(bcast_eth));
+        assert(memcmp(rx_p->payload, bcast_eth, sizeof(bcast_eth)) == 0);
+        wlan_recycle_rx(dev, rx_p);
+    }
+    printf("  [PASS] Mixed-mode TKIP group broadcast ARP frame decryption verified\n");
+
+    /* 20. Test WPA3-Personal (SAE / Dragonfly Handshake) Full Connection Flow */
+    assert(wlan_mgr_disconnect() == 0);
+    uint8_t sae_bssid[6] = { 0x00, 0x33, 0x55, 0x77, 0x99, 0xBB };
+    {
+        uint8_t sae_beacon[256];
+        size_t sb_len = build_mock_beacon(sae_beacon, sae_bssid, "FortressWPA3", 36);
+        /* Patch RSN IE AKM to 0x08 (SAE) and RSN caps to 0x00C0 (MFPC|MFPR) */
+        size_t off = sizeof(ieee80211_hdr_t) + 12;
+        while (off + 2 <= sb_len) {
+            if (sae_beacon[off] == IEEE80211_IE_RSN) {
+                sae_beacon[off + 19] = 0x08; /* AKM = SAE */
+                sae_beacon[off + 20] = 0xC0; /* MFPC | MFPR */
+                break;
+            }
+            off += 2 + sae_beacon[off + 1];
+        }
+        assert(wlan_mgr_rx_raw_80211(sae_beacon, sb_len, -38) == 0);
+    }
+
+    assert(wlan_mgr_connect("FortressWPA3", "DragonflySecret2026!", sae_bssid) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_AUTHENTICATING);
+
+    /* Verify Station transmitted SAE Commit (Auth Alg = 3, Seq = 1, 66-byte payload) */
+    assert(s_mock_last_tx_len == sizeof(ieee80211_hdr_t) + 6 + WLAN_SAE_COMMIT_LEN);
+    assert(s_mock_last_tx[sizeof(ieee80211_hdr_t) + 0] == 3); /* IEEE80211_AUTH_ALG_SAE */
+    assert(s_mock_last_tx[sizeof(ieee80211_hdr_t) + 2] == 1); /* Seq 1 */
+
+    uint8_t sta_sae_commit[WLAN_SAE_COMMIT_LEN];
+    memcpy(sta_sae_commit, s_mock_last_tx + sizeof(ieee80211_hdr_t) + 6, WLAN_SAE_COMMIT_LEN);
+
+    /* Mock AP runs SAE P-256 Commit + Confirm */
+    wlan_sae_ctx_t ap_sae;
+    assert(wlan_sae_derive_pwe(&ap_sae, sae_bssid, s_mock_sta_mac, "DragonflySecret2026!") == 0);
+    uint8_t ap_sae_commit[WLAN_SAE_COMMIT_LEN];
+    assert(wlan_sae_build_commit(&ap_sae, ap_sae_commit) == 0);
+    assert(wlan_sae_process_commit(&ap_sae, sta_sae_commit, sizeof(sta_sae_commit)) == 0);
+
+    uint8_t ap_commit_frame[256];
+    size_t ap_cf_len = net_80211_build_sae_auth(ap_commit_frame, sizeof(ap_commit_frame),
+                                                sae_bssid, s_mock_sta_mac, 1, 0,
+                                                ap_sae_commit, sizeof(ap_sae_commit));
+    /* Fix addr1 = sta_mac, addr2 = sae_bssid, addr3 = sae_bssid */
+    memcpy(((ieee80211_hdr_t *)ap_commit_frame)->addr1, s_mock_sta_mac, 6);
+    memcpy(((ieee80211_hdr_t *)ap_commit_frame)->addr2, sae_bssid, 6);
+    memcpy(((ieee80211_hdr_t *)ap_commit_frame)->addr3, sae_bssid, 6);
+
+    assert(wlan_mgr_rx_raw_80211(ap_commit_frame, ap_cf_len, -38) == 0);
+
+    /* Verify Station transmitted SAE Confirm (Auth Alg = 3, Seq = 2, 34-byte payload) */
+    assert(s_mock_last_tx_len == sizeof(ieee80211_hdr_t) + 6 + WLAN_SAE_CONFIRM_LEN);
+    assert(s_mock_last_tx[sizeof(ieee80211_hdr_t) + 0] == 3);
+    assert(s_mock_last_tx[sizeof(ieee80211_hdr_t) + 2] == 2); /* Seq 2 */
+    assert(wlan_sae_verify_confirm(&ap_sae, s_mock_last_tx + sizeof(ieee80211_hdr_t) + 6, WLAN_SAE_CONFIRM_LEN) == 0);
+
+    /* AP sends SAE Confirm (Seq = 2) -> Station transitions to ASSOCIATING */
+    uint8_t ap_sae_confirm[WLAN_SAE_CONFIRM_LEN];
+    assert(wlan_sae_build_confirm(&ap_sae, ap_sae_confirm) == 0);
+    uint8_t ap_confirm_frame[256];
+    size_t ap_cnf_len = net_80211_build_sae_auth(ap_confirm_frame, sizeof(ap_confirm_frame),
+                                                 sae_bssid, s_mock_sta_mac, 2, 0,
+                                                 ap_sae_confirm, sizeof(ap_sae_confirm));
+    memcpy(((ieee80211_hdr_t *)ap_confirm_frame)->addr1, s_mock_sta_mac, 6);
+    memcpy(((ieee80211_hdr_t *)ap_confirm_frame)->addr2, sae_bssid, 6);
+    memcpy(((ieee80211_hdr_t *)ap_confirm_frame)->addr3, sae_bssid, 6);
+
+    assert(wlan_mgr_rx_raw_80211(ap_confirm_frame, ap_cnf_len, -38) == 0);
+    assert(wlan_mgr_status(&st) == 0);
+    assert(st.state == WIFI_STATUS_ASSOCIATING);
+    printf("  [PASS] WPA3-Personal SAE Commit-Confirm handshake & transition to ASSOCIATING verified\n");
+
+    /* 21. Test Multi-Vendor Driver Architecture (rtw88 PCIe ID table & wlan_register_driver) */
+    assert(rtw88_is_supported_device(RTW_PCI_VENDOR_ID, RTW_DEV_ID_8821CE));
+    assert(rtw88_is_supported_device(RTW_PCI_VENDOR_ID, RTW_DEV_ID_8822CE));
+    assert(rtw88_is_supported_device(RTW_PCI_VENDOR_ID, RTW_DEV_ID_8852AE));
+    assert(rtw88_is_supported_device(ATH_PCI_VENDOR_ID, ATH_DEV_ID_QCA6174));
+    assert(!rtw88_is_supported_device(0x1234, 0x5678));
+    assert(wlan_register_driver(rtw88_get_mac_ops()) == 0);
+    printf("  [PASS] Multi-vendor wlan_mac_ops_t registration & Realtek/Qualcomm PCIe table verified\n");
+
+    printf("\n>>> ALL WIRELESS (802.11 / WPA2 / WPA3 / HT-VHT / IWLWIFI / RTW88) HOST TESTS PASSED (21/21) <<<\n");
     return 0;
 }

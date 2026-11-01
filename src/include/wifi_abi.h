@@ -36,6 +36,8 @@
 /* Security Type */
 #define WIFI_SEC_OPEN              0u
 #define WIFI_SEC_WPA2_PSK          1u
+#define WIFI_SEC_WPA3_SAE          2u
+#define WIFI_SEC_WPA2_WPA3         3u
 
 /* Scan entry returned to userland (48 bytes) */
 typedef struct {

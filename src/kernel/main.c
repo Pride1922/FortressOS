@@ -45,6 +45,7 @@
 #include "logo.h"
 #include "e1000.h"
 #include "iwlwifi.h"
+#include "rtw88.h"
 #include "../net/net.h"
 
 extern uint8_t __text_start[];
@@ -6607,7 +6608,11 @@ pf_boot_guard_done:
     net_boot_probe();
     if (iwlwifi_probe()) {
         iwlwifi_map_mmio();
+        iwlwifi_init_hw();
         serial_puts("[IWL] Intel wireless adapter detected & MMIO mapped\n");
+    }
+    if (rtw88_probe()) {
+        serial_puts("[RTW88] PCIe wireless adapter detected\n");
     }
     e1000_raw_selftest(boot_info.cmdline);
     net_start(boot_info.cmdline, sizeof(boot_info.cmdline));

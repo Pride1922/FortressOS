@@ -22,6 +22,8 @@ typedef struct {
 
 /* Global WLAN state */
 static const wlan_hw_ops_t *s_hw_ops = NULL;
+static const wlan_mac_ops_t *s_registered_drivers[WLAN_MAX_DRIVERS];
+static uint32_t             s_registered_driver_count = 0;
 static net_dev_t            s_wlan_net_dev;
 static spinlock_t           s_wlan_lock = SPINLOCK_RANKED(1, "wlan_mgr");
 
@@ -31,6 +33,11 @@ static char                 s_target_ssid[IEEE80211_SSID_MAX_LEN + 1];
 static uint8_t              s_target_pmk[WLAN_PMK_LEN];
 static uint8_t              s_target_group_cipher = 0x04;
 static uint16_t             s_target_rsn_caps = 0;
+static bool                 s_target_is_open = false;
+static bool                 s_target_use_sae = false;
+static bool                 s_target_has_ht = false;
+static bool                 s_target_has_vht = false;
+static uint8_t              s_target_chan_width = 0;
 static char                 s_cached_ssid[IEEE80211_SSID_MAX_LEN + 1];
 static char                 s_cached_pass[65];
 static uint8_t              s_cached_pmk[WLAN_PMK_LEN];
@@ -56,6 +63,7 @@ static uint64_t             s_gtk_rx_bitmap = 0;
 static wlan_state_t         s_wlan_state = WLAN_STATE_IDLE;
 static wlan_bss_table_t     s_bss_table;
 static wpa2_sm_t            s_wpa2_sm;
+static wlan_sae_ctx_t       s_sae_ctx;
 
 /* Statistics */
 static uint64_t             s_stats_rx_packets = 0;
@@ -73,6 +81,42 @@ static uint8_t              s_tx_wlan_cipher[1650];
 static uint8_t              s_rx_unenc_frame[1600];
 static uint8_t              s_tx_eapol_eth[512 + 14];
 static uint8_t              s_tx_eapol_wlan[1024];
+static uint8_t              s_resp_eapol[512];
+static uint8_t              s_mgmt_tx_buf[256];
+
+int wlan_register_driver(const wlan_mac_ops_t *ops) {
+    if (!ops || !ops->name) return -1;
+    uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
+    for (uint32_t i = 0; i < s_registered_driver_count; i++) {
+        if (s_registered_drivers[i] == ops ||
+            (s_registered_drivers[i]->name && strcmp(s_registered_drivers[i]->name, ops->name) == 0)) {
+            s_registered_drivers[i] = ops;
+            spin_unlock_irqrestore(&s_wlan_lock, irq);
+            return 0;
+        }
+    }
+    if (s_registered_driver_count >= WLAN_MAX_DRIVERS) {
+        spin_unlock_irqrestore(&s_wlan_lock, irq);
+        return -1;
+    }
+    s_registered_drivers[s_registered_driver_count++] = ops;
+    spin_unlock_irqrestore(&s_wlan_lock, irq);
+    return 0;
+}
+
+int wlan_mgr_load_firmware(const void *fw_data, size_t fw_len) {
+    if (!fw_data || fw_len == 0) return -1;
+    if (s_hw_ops && s_hw_ops->load_firmware) {
+        return s_hw_ops->load_firmware(fw_data, fw_len) ? 0 : -1;
+    }
+    for (uint32_t i = 0; i < s_registered_driver_count; i++) {
+        const wlan_mac_ops_t *drv = s_registered_drivers[i];
+        if (drv && drv->load_firmware && (!drv->is_detected || drv->is_detected())) {
+            return drv->load_firmware(fw_data, fw_len) ? 0 : -1;
+        }
+    }
+    return -2; /* Fallback to default driver loader if no explicit load_firmware hook */
+}
 
 void wlan_mgr_init(const wlan_hw_ops_t *ops) {
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
@@ -84,6 +128,11 @@ void wlan_mgr_init(const wlan_hw_ops_t *ops) {
     memset(s_target_bssid, 0, 6);
     memset(s_target_ssid, 0, sizeof(s_target_ssid));
     memset(s_target_pmk, 0, sizeof(s_target_pmk));
+    s_target_is_open = false;
+    s_target_use_sae = false;
+    s_target_has_ht = false;
+    s_target_has_vht = false;
+    s_target_chan_width = 0;
     memset(s_cached_ssid, 0, sizeof(s_cached_ssid));
     memset(s_cached_pass, 0, sizeof(s_cached_pass));
     memset(s_cached_pmk, 0, sizeof(s_cached_pmk));
@@ -97,6 +146,7 @@ void wlan_mgr_init(const wlan_hw_ops_t *ops) {
     s_wlan_state = WLAN_STATE_IDLE;
     wlan_bss_table_init(&s_bss_table);
     memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+    memset(&s_sae_ctx, 0, sizeof(s_sae_ctx));
     s_stats_rx_packets = 0;
     s_stats_tx_packets = 0;
 
@@ -129,6 +179,17 @@ void wlan_mgr_init(const wlan_hw_ops_t *ops) {
 }
 
 static void wlan_ensure_hardware(void) {
+    if (!s_hw_ops) {
+        for (uint32_t i = 0; i < s_registered_driver_count; i++) {
+            const wlan_mac_ops_t *drv = s_registered_drivers[i];
+            if (drv && drv->is_detected && drv->is_detected()) {
+                if (!drv->init_hw || drv->init_hw()) {
+                    if (!s_hw_ops) wlan_mgr_init(drv);
+                    break;
+                }
+            }
+        }
+    }
     if (!s_hw_ops && iwlwifi_is_detected()) {
         iwlwifi_init_hw();
     }
@@ -212,7 +273,15 @@ int wlan_mgr_scan(wifi_scan_result_t *out_result) {
         dst->channel = src->channel;
         dst->rssi = src->rssi;
         dst->ssid_len = src->ssid_len;
-        dst->security = src->has_wpa2_psk ? WIFI_SEC_WPA2_PSK : WIFI_SEC_OPEN;
+        if (src->has_wpa3_sae && src->has_wpa2_psk) {
+            dst->security = WIFI_SEC_WPA2_WPA3;
+        } else if (src->has_wpa3_sae) {
+            dst->security = WIFI_SEC_WPA3_SAE;
+        } else if (src->has_wpa2_psk) {
+            dst->security = WIFI_SEC_WPA2_PSK;
+        } else {
+            dst->security = WIFI_SEC_OPEN;
+        }
         memcpy(dst->ssid, src->ssid, sizeof(dst->ssid) - 1);
     }
     out_result->count = count;
@@ -221,12 +290,39 @@ int wlan_mgr_scan(wifi_scan_result_t *out_result) {
     return 0;
 }
 
+static void wlan_select_bss_params(const wlan_bss_entry_t *entry, size_t pass_len) {
+    if (!entry) return;
+    s_current_channel = entry->channel;
+    s_current_rssi = entry->rssi;
+    s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
+    s_target_group_cipher = entry->group_cipher ? entry->group_cipher : 0x04;
+    s_target_rsn_caps = entry->rsn_caps;
+    s_target_has_ht = entry->has_ht;
+    s_target_has_vht = entry->has_vht;
+    s_target_chan_width = entry->has_vht ? entry->vht_chan_width : entry->ht_chan_width;
+
+    if ((!entry->has_wpa2_psk && !entry->has_wpa3_sae) || pass_len == 0) {
+        s_target_is_open = true;
+        s_target_use_sae = false;
+    } else if (entry->has_wpa2_psk) {
+        s_target_is_open = false;
+        s_target_use_sae = false;
+    } else if (entry->has_wpa3_sae) {
+        s_target_is_open = false;
+        s_target_use_sae = true;
+    } else {
+        s_target_is_open = false;
+        s_target_use_sae = false;
+    }
+}
+
 int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bssid[6]) {
-    if (!ssid || !passphrase) return -1;
+    if (!ssid) return -1;
+    const char *pass = passphrase ? passphrase : "";
     size_t ssid_len = strlen(ssid);
-    size_t pass_len = strlen(passphrase);
+    size_t pass_len = strlen(pass);
     if (ssid_len == 0 || ssid_len > IEEE80211_SSID_MAX_LEN) return -1;
-    if (pass_len < 8 || pass_len > 64) return -1;
+    if (pass_len > 0 && (pass_len < 8 || pass_len > 64)) return -1;
 
     wlan_ensure_hardware();
     wlan_drain_hw_rx();
@@ -243,10 +339,16 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
         }
     }
 
-    /* Unconditionally wipe any stale WPA2 session authorization */
+    /* Unconditionally wipe any stale WPA2/SAE session authorization */
     memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+    memset(&s_sae_ctx, 0, sizeof(s_sae_ctx));
     s_gtk_rx_pn = 0;
     s_gtk_rx_bitmap = 0;
+    s_target_is_open = (pass_len == 0);
+    s_target_use_sae = false;
+    s_target_has_ht = false;
+    s_target_has_vht = false;
+    s_target_chan_width = 0;
 
     memset(s_target_ssid, 0, sizeof(s_target_ssid));
     memcpy(s_target_ssid, ssid, ssid_len);
@@ -266,22 +368,14 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
             }
         }
         if (entry) {
-            s_current_channel = entry->channel;
-            s_current_rssi = entry->rssi;
-            s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
-            s_target_group_cipher = entry->group_cipher ? entry->group_cipher : 0x04;
-            s_target_rsn_caps = entry->rsn_caps;
+            wlan_select_bss_params(entry, pass_len);
         }
         found_bssid = true;
     } else {
         const wlan_bss_entry_t *entry = wlan_bss_table_find(&s_bss_table, ssid);
         if (entry) {
             memcpy(s_target_bssid, entry->bssid, 6);
-            s_current_channel = entry->channel;
-            s_current_rssi = entry->rssi;
-            s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
-            s_target_group_cipher = entry->group_cipher ? entry->group_cipher : 0x04;
-            s_target_rsn_caps = entry->rsn_caps;
+            wlan_select_bss_params(entry, pass_len);
             found_bssid = true;
         }
     }
@@ -295,11 +389,7 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
         const wlan_bss_entry_t *entry = wlan_bss_table_find(&s_bss_table, ssid);
         if (entry) {
             memcpy(s_target_bssid, entry->bssid, 6);
-            s_current_channel = entry->channel;
-            s_current_rssi = entry->rssi;
-            s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
-            s_target_group_cipher = entry->group_cipher ? entry->group_cipher : 0x04;
-            s_target_rsn_caps = entry->rsn_caps;
+            wlan_select_bss_params(entry, pass_len);
             found_bssid = true;
         }
     }
@@ -315,22 +405,34 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
         return -2; /* Not found in scan cache, probe sent */
     }
 
-    /* Fast-path PMK cache lookup: avoid 4096 rounds of PBKDF2 if reconnecting to same SSID & PSK */
-    if (s_has_cached_pmk &&
-        strcmp(s_cached_ssid, ssid) == 0 &&
-        strcmp(s_cached_pass, passphrase) == 0) {
-        memcpy(s_target_pmk, s_cached_pmk, WLAN_PMK_LEN);
+    if (s_target_is_open) {
+        memset(s_target_pmk, 0, sizeof(s_target_pmk));
+        s_has_pending_pmk = false;
+    } else if (s_target_use_sae) {
+        if (wlan_sae_derive_pwe(&s_sae_ctx, s_local_mac, s_target_bssid, pass) != 0) {
+            s_wlan_state = WLAN_STATE_FAILED;
+            spin_unlock_irqrestore(&s_wlan_lock, irq);
+            return -1;
+        }
         s_has_pending_pmk = false;
     } else {
-        wlan_pbkdf2_sha1(passphrase, (const uint8_t *)ssid, ssid_len, 4096, s_target_pmk, WLAN_PMK_LEN);
-        memcpy(s_pending_pmk, s_target_pmk, WLAN_PMK_LEN);
-        size_t sl = ssid_len < IEEE80211_SSID_MAX_LEN ? ssid_len : IEEE80211_SSID_MAX_LEN;
-        memcpy(s_pending_ssid, ssid, sl);
-        s_pending_ssid[sl] = '\0';
-        size_t pl = pass_len < 64 ? pass_len : 64;
-        memcpy(s_pending_pass, passphrase, pl);
-        s_pending_pass[pl] = '\0';
-        s_has_pending_pmk = true;
+        /* Fast-path PMK cache lookup: avoid 4096 rounds of PBKDF2 if reconnecting to same SSID & PSK */
+        if (s_has_cached_pmk &&
+            strcmp(s_cached_ssid, ssid) == 0 &&
+            strcmp(s_cached_pass, pass) == 0) {
+            memcpy(s_target_pmk, s_cached_pmk, WLAN_PMK_LEN);
+            s_has_pending_pmk = false;
+        } else {
+            wlan_pbkdf2_sha1(pass, (const uint8_t *)ssid, ssid_len, 4096, s_target_pmk, WLAN_PMK_LEN);
+            memcpy(s_pending_pmk, s_target_pmk, WLAN_PMK_LEN);
+            size_t sl = ssid_len < IEEE80211_SSID_MAX_LEN ? ssid_len : IEEE80211_SSID_MAX_LEN;
+            memcpy(s_pending_ssid, ssid, sl);
+            s_pending_ssid[sl] = '\0';
+            size_t pl = pass_len < 64 ? pass_len : 64;
+            memcpy(s_pending_pass, pass, pl);
+            s_pending_pass[pl] = '\0';
+            s_has_pending_pmk = true;
+        }
     }
 
     uint8_t target_chan = s_current_channel;
@@ -360,13 +462,23 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
         }
     }
 
-    /* Build and send Open System Authentication Request (Seq 1) */
+    /* Build and send Authentication Request (Open System Seq 1 or WPA3-SAE Commit Seq 1) */
     irq = spin_lock_irqsave(&s_wlan_lock);
     if (s_hw_ops && s_hw_ops->send_raw_80211) {
-        uint8_t auth_buf[64];
-        size_t auth_len = net_80211_build_auth_req(auth_buf, sizeof(auth_buf), s_local_mac, s_target_bssid);
+        size_t auth_len = 0;
+        if (s_target_use_sae) {
+            uint8_t commit_body[WLAN_SAE_COMMIT_LEN];
+            if (wlan_sae_build_commit(&s_sae_ctx, commit_body) == 0) {
+                auth_len = net_80211_build_sae_auth(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf),
+                                                    s_local_mac, s_target_bssid,
+                                                    1, 0, commit_body, sizeof(commit_body));
+            }
+        } else {
+            auth_len = net_80211_build_auth_req(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf),
+                                                s_local_mac, s_target_bssid);
+        }
         if (auth_len > 0) {
-            s_hw_ops->send_raw_80211(auth_buf, auth_len);
+            s_hw_ops->send_raw_80211(s_mgmt_tx_buf, auth_len);
         }
     }
     spin_unlock_irqrestore(&s_wlan_lock, irq);
@@ -399,7 +511,10 @@ int wlan_mgr_disconnect(void) {
         s_wlan_state = WLAN_STATE_IDLE;
         s_wlan_net_dev.flags &= ~NET_RUNNING;
         memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+        memset(&s_sae_ctx, 0, sizeof(s_sae_ctx));
         memset(s_target_pmk, 0, sizeof(s_target_pmk));
+        s_target_is_open = false;
+        s_target_use_sae = false;
         s_gtk_rx_pn = 0;
         s_gtk_rx_bitmap = 0;
         s_has_cached_pmk = false;
@@ -424,10 +539,40 @@ int wlan_mgr_status(wifi_status_t *out_status) {
     memcpy(out_status->bssid, s_target_bssid, 6);
     memcpy(out_status->ssid, s_target_ssid, sizeof(out_status->ssid) - 1);
     memcpy(out_status->mac, s_local_mac, 6);
-    out_status->link_online = (s_wlan_state == WLAN_STATE_CONNECTED && wpa2_sm_is_authorized(&s_wpa2_sm)) ? 1 : 0;
+    out_status->link_online = (s_wlan_state == WLAN_STATE_CONNECTED &&
+                               (s_target_is_open || wpa2_sm_is_authorized(&s_wpa2_sm))) ? 1 : 0;
 
     spin_unlock_irqrestore(&s_wlan_lock, irq);
     return 0;
+}
+
+static size_t wlan_build_current_assoc_req(uint8_t *buf, size_t max_len) {
+    const uint8_t *pmkid = (s_target_use_sae && s_sae_ctx.peer_committed) ? s_sae_ctx.pmkid : NULL;
+    bool allow_ht_vht = !(s_hw_ops && s_hw_ops->name && strcmp(s_hw_ops->name, "iwlwifi") == 0);
+    return net_80211_build_assoc_req_full(buf, max_len,
+                                          s_local_mac, s_target_bssid, s_target_ssid,
+                                          s_target_is_open, s_target_use_sae,
+                                          s_target_group_cipher, s_target_rsn_caps,
+                                          pmkid,
+                                          allow_ht_vht && s_target_has_ht,
+                                          allow_ht_vht && s_target_has_vht);
+}
+
+static void wlan_enqueue_decapsulated_rx(const uint8_t *wlan_frame, size_t wlan_len) {
+    if (s_rx_count < WLAN_RX_RING_SIZE) {
+        wlan_rx_slot_t *slot = &s_rx_slots[s_rx_head];
+        int eth_len = net_80211_decapsulate(wlan_frame, wlan_len,
+                                            slot->data, sizeof(slot->data));
+        if (eth_len > 0) {
+            slot->pbuf.payload = slot->data;
+            slot->pbuf.length = (uint16_t)eth_len;
+            slot->pbuf.total_len = (uint16_t)eth_len;
+            slot->in_use = true;
+            s_rx_head = (s_rx_head + 1) % WLAN_RX_RING_SIZE;
+            s_rx_count++;
+            s_stats_rx_packets++;
+        }
+    }
 }
 
 int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
@@ -456,21 +601,55 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
     /* 2. Management Frame Handling */
     if (type == IEEE80211_TYPE_MGMT) {
         if (subtype == IEEE80211_SUBTYPE_AUTH) {
-            /* Auth Response */
+            /* Auth Response (Open System or WPA3-SAE Commit/Confirm) */
             if (s_wlan_state == WLAN_STATE_AUTHENTICATING &&
                 memcmp(hdr->addr2, s_target_bssid, 6) == 0 &&
                 len >= 24 + 6) {
-                uint16_t status = frame[28] | ((uint16_t)frame[29] << 8);
-                if (status == 0) {
+                uint16_t auth_alg = frame[24] | ((uint16_t)frame[25] << 8);
+                uint16_t auth_seq = frame[26] | ((uint16_t)frame[27] << 8);
+                uint16_t status   = frame[28] | ((uint16_t)frame[29] << 8);
+
+                if (s_target_use_sae && auth_alg == IEEE80211_AUTH_ALG_SAE) {
+                    if (status != 0) {
+                        s_wlan_state = WLAN_STATE_FAILED;
+                        s_wlan_net_dev.flags &= ~NET_RUNNING;
+                    } else if (auth_seq == 1) {
+                        /* AP SAE Commit -> derive KCK/PMK/PMKID and send SAE Confirm (Seq 2) */
+                        if (wlan_sae_process_commit(&s_sae_ctx, frame + 30, len - 30) == 0) {
+                            memcpy(s_target_pmk, s_sae_ctx.pmk, WLAN_PMK_LEN);
+                            uint8_t confirm_body[WLAN_SAE_CONFIRM_LEN];
+                            if (wlan_sae_build_confirm(&s_sae_ctx, confirm_body) == 0 &&
+                                s_hw_ops && s_hw_ops->send_raw_80211) {
+                                size_t clen = net_80211_build_sae_auth(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf),
+                                                                       s_local_mac, s_target_bssid,
+                                                                       2, 0, confirm_body, sizeof(confirm_body));
+                                if (clen > 0) s_hw_ops->send_raw_80211(s_mgmt_tx_buf, clen);
+                            }
+                        } else {
+                            s_wlan_state = WLAN_STATE_FAILED;
+                            s_wlan_net_dev.flags &= ~NET_RUNNING;
+                        }
+                    } else if (auth_seq == 2) {
+                        /* AP SAE Confirm -> verify confirm token and transition to ASSOCIATING */
+                        if (wlan_sae_verify_confirm(&s_sae_ctx, frame + 30, len - 30) == 0) {
+                            serial_puts("[WLAN] WPA3-SAE Confirm verified, sending Assoc Req\n");
+                            s_wlan_state = WLAN_STATE_ASSOCIATING;
+                            if (s_hw_ops && s_hw_ops->send_raw_80211) {
+                                size_t assoc_len = wlan_build_current_assoc_req(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf));
+                                if (assoc_len > 0) s_hw_ops->send_raw_80211(s_mgmt_tx_buf, assoc_len);
+                            }
+                        } else {
+                            s_wlan_state = WLAN_STATE_FAILED;
+                            s_wlan_net_dev.flags &= ~NET_RUNNING;
+                        }
+                    }
+                } else if (status == 0) {
                     serial_puts("[WLAN] Auth response SUCCESS from AP\n");
                     /* Auth Success -> Transition to ASSOCIATING and send Assoc Req */
                     s_wlan_state = WLAN_STATE_ASSOCIATING;
                     if (s_hw_ops && s_hw_ops->send_raw_80211) {
-                        uint8_t assoc_buf[256];
-                        size_t assoc_len = net_80211_build_assoc_req_ext(assoc_buf, sizeof(assoc_buf),
-                                                                    s_local_mac, s_target_bssid, s_target_ssid,
-                                                                    s_target_group_cipher, s_target_rsn_caps);
-                        if (assoc_len > 0) s_hw_ops->send_raw_80211(assoc_buf, assoc_len);
+                        size_t assoc_len = wlan_build_current_assoc_req(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf));
+                        if (assoc_len > 0) s_hw_ops->send_raw_80211(s_mgmt_tx_buf, assoc_len);
                     }
                 } else {
                     serial_puts("[WLAN] Auth REJECTED by AP, status=0x");
@@ -491,14 +670,32 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     serial_puts("[WLAN] Assoc response SUCCESS from AP, AID=");
                     serial_print_dec(aid);
                     serial_puts("\n");
-                    /* Assoc Success -> Transition to 4-WAY HANDSHAKE */
-                    s_wlan_state = WLAN_STATE_4WAY_HANDSHAKE;
                     s_gtk_rx_pn  = 0;
                     s_gtk_rx_bitmap = 0;
                     wpa2_sm_init(&s_wpa2_sm, s_local_mac, s_target_bssid, s_target_pmk);
                     wpa2_sm_set_rsn(&s_wpa2_sm, s_target_group_cipher, s_target_rsn_caps);
+                    if (s_target_use_sae) {
+                        wpa2_sm_set_sae(&s_wpa2_sm, true, s_sae_ctx.pmkid);
+                    }
+                    if (s_target_is_open) {
+                        /* Open / Public network: skip 4-way handshake and authorize port immediately */
+                        serial_puts("[WLAN] Open network associated, Port AUTHORIZED (Connected)\n");
+                        s_wpa2_sm.port_authorized = true;
+                        s_wpa2_sm.handshake_step = 4;
+                        s_wlan_state = WLAN_STATE_CONNECTED;
+                        s_wlan_net_dev.flags |= NET_RUNNING;
+                    } else {
+                        /* Secured network: transition to 4-WAY HANDSHAKE */
+                        s_wlan_state = WLAN_STATE_4WAY_HANDSHAKE;
+                    }
                     uint16_t bi = s_target_beacon_int;
+                    bool ht_en = s_target_has_ht;
+                    bool vht_en = s_target_has_vht;
+                    uint8_t cw = s_target_chan_width;
                     spin_unlock_irqrestore(&s_wlan_lock, irq);
+                    if (s_hw_ops && s_hw_ops->configure_ht_vht && (ht_en || vht_en)) {
+                        s_hw_ops->configure_ht_vht(ht_en, vht_en, cw, 2);
+                    }
                     if (s_hw_ops && s_hw_ops->set_associated) {
                         s_hw_ops->set_associated(aid, bi);
                     }
@@ -509,6 +706,30 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     serial_puts("\n");
                     s_wlan_state = WLAN_STATE_FAILED;
                     s_wlan_net_dev.flags &= ~NET_RUNNING;
+                }
+            }
+        } else if (subtype == IEEE80211_SUBTYPE_ACTION) {
+            /* 802.11n/ac Block Ack Action Frame (Category 3 = BACK, Action 0 = ADDBA Req) */
+            if (memcmp(hdr->addr2, s_target_bssid, 6) == 0 && len >= 24 + 9) {
+                uint8_t category = frame[24];
+                uint8_t action   = frame[25];
+                if (category == IEEE80211_CATEGORY_BACK && action == IEEE80211_ACTION_ADDBA_REQ) {
+                    uint8_t dialog_token = frame[26];
+                    uint16_t ba_param = (uint16_t)(frame[27] | ((uint16_t)frame[28] << 8));
+                    uint8_t tid = (uint8_t)((ba_param >> 2) & 0x0Fu);
+                    uint16_t ssn_seq = (uint16_t)(frame[31] | ((uint16_t)frame[32] << 8));
+                    uint16_t ssn = (uint16_t)(ssn_seq >> 4);
+                    if (s_hw_ops && s_hw_ops->send_raw_80211) {
+                        size_t rlen = net_80211_build_addba_resp(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf),
+                                                                 s_local_mac, s_target_bssid,
+                                                                 dialog_token, tid, 64);
+                        if (rlen > 0) s_hw_ops->send_raw_80211(s_mgmt_tx_buf, rlen);
+                    }
+                    spin_unlock_irqrestore(&s_wlan_lock, irq);
+                    if (s_hw_ops && s_hw_ops->add_ba_session) {
+                        s_hw_ops->add_ba_session(tid, ssn, 64);
+                    }
+                    return 0;
                 }
             }
         } else if (subtype == IEEE80211_SUBTYPE_DEAUTH || subtype == IEEE80211_SUBTYPE_DISASSOC) {
@@ -527,6 +748,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 }
                 s_wlan_net_dev.flags &= ~NET_RUNNING;
                 memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
+                memset(&s_sae_ctx, 0, sizeof(s_sae_ctx));
                 memset(s_target_pmk, 0, sizeof(s_target_pmk));
                 s_gtk_rx_pn = 0;
                 s_gtk_rx_bitmap = 0;
@@ -565,9 +787,8 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     return 0;
                 }
                 
-                uint8_t resp_eapol[512];
                 int resp_len = wpa2_sm_rx_eapol(&s_wpa2_sm, payload + 8, payload_len - 8,
-                                                resp_eapol, sizeof(resp_eapol));
+                                                s_resp_eapol, sizeof(s_resp_eapol));
                 if (resp_len > 0) {
                     if (s_wpa2_sm.handshake_step == 2) {
                         serial_puts("[WLAN] EAPOL M1 received, sent M2\n");
@@ -579,7 +800,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                     memcpy(s_tx_eapol_eth + 6, s_local_mac, 6);
                     s_tx_eapol_eth[12] = (EAPOL_ETHER_TYPE >> 8) & 0xFF;
                     s_tx_eapol_eth[13] = EAPOL_ETHER_TYPE & 0xFF;
-                    memcpy(s_tx_eapol_eth + 14, resp_eapol, (size_t)resp_len);
+                    memcpy(s_tx_eapol_eth + 14, s_resp_eapol, (size_t)resp_len);
 
                     int tx_len = net_80211_encapsulate(s_tx_eapol_eth, 14 + (size_t)resp_len,
                                                       s_target_bssid, s_local_mac,
@@ -623,8 +844,20 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
             }
         }
 
-        /* 4. Encrypted Data Frame (AES-128-CCMP) */
+        /* 4A. Unencrypted Data Frame on Open Network */
+        if (!(hdr->frame_control & IEEE80211_FCTL_PROTECTED) &&
+            s_target_is_open &&
+            s_wlan_state == WLAN_STATE_CONNECTED &&
+            wpa2_sm_is_authorized(&s_wpa2_sm) &&
+            memcmp(hdr->addr2, s_target_bssid, 6) == 0) {
+            wlan_enqueue_decapsulated_rx(frame, len);
+            spin_unlock_irqrestore(&s_wlan_lock, irq);
+            return 0;
+        }
+
+        /* 4B. Encrypted Data Frame (AES-128-CCMP or TKIP Group) */
         if ((hdr->frame_control & IEEE80211_FCTL_PROTECTED) &&
+            !s_target_is_open &&
             wpa2_sm_is_authorized(&s_wpa2_sm) &&
             memcmp(hdr->addr2, s_target_bssid, 6) == 0) {
             
@@ -639,25 +872,20 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
             uint64_t *pn_tracker   = is_group ? &s_gtk_rx_pn : &s_wpa2_sm.rx_pn[tid];
             uint64_t *bm_tracker   = is_group ? &s_gtk_rx_bitmap : &s_wpa2_sm.rx_bitmap[tid];
 
-            /* Decrypt CCMP with per-TID 64-packet replay window */
-            int dec_rc = wlan_ccmp_decrypt_frame(dec_key, frame, len,
+            int dec_rc;
+            if (is_group && s_target_group_cipher == 0x02) {
+                /* Mixed-Mode AP Group Cipher = TKIP (Broadcast ARP / Multicast / DHCP Offer) */
+                dec_rc = wlan_tkip_decrypt_frame(s_wpa2_sm.gtk, frame, len,
                                                  s_rx_unenc_frame, &unenc_len,
                                                  pn_tracker, bm_tracker);
+            } else {
+                /* Decrypt CCMP with per-TID 64-packet replay window */
+                dec_rc = wlan_ccmp_decrypt_frame(dec_key, frame, len,
+                                                 s_rx_unenc_frame, &unenc_len,
+                                                 pn_tracker, bm_tracker);
+            }
             if (dec_rc == 0 && unenc_len > 0) {
-                if (s_rx_count < WLAN_RX_RING_SIZE) {
-                    wlan_rx_slot_t *slot = &s_rx_slots[s_rx_head];
-                    int eth_len = net_80211_decapsulate(s_rx_unenc_frame, unenc_len,
-                                                        slot->data, sizeof(slot->data));
-                    if (eth_len > 0) {
-                        slot->pbuf.payload = slot->data;
-                        slot->pbuf.length = (uint16_t)eth_len;
-                        slot->pbuf.total_len = (uint16_t)eth_len;
-                        slot->in_use = true;
-                        s_rx_head = (s_rx_head + 1) % WLAN_RX_RING_SIZE;
-                        s_rx_count++;
-                        s_stats_rx_packets++;
-                    }
-                }
+                wlan_enqueue_decapsulated_rx(s_rx_unenc_frame, unenc_len);
             }
         }
     }
@@ -685,20 +913,27 @@ int wlan_send_packet(net_dev_t *dev, const void *buf, size_t len) {
         return -1;
     }
 
-    /* 2. Encrypt with AES-128-CCMP */
-    size_t cipher_len = sizeof(s_tx_wlan_cipher);
-    int enc_rc = wlan_ccmp_encrypt_frame(s_wpa2_sm.tk, ++s_wpa2_sm.tx_pn,
-                                         s_tx_wlan_plain, (size_t)wlan_plain_len,
-                                         s_tx_wlan_cipher, &cipher_len);
-    if (enc_rc != 0) {
-        spin_unlock_irqrestore(&s_wlan_lock, irq);
-        return -1;
+    const uint8_t *tx_frame = s_tx_wlan_plain;
+    size_t tx_frame_len = (size_t)wlan_plain_len;
+
+    if (!s_target_is_open) {
+        /* 2. Encrypt with AES-128-CCMP */
+        size_t cipher_len = sizeof(s_tx_wlan_cipher);
+        int enc_rc = wlan_ccmp_encrypt_frame(s_wpa2_sm.tk, ++s_wpa2_sm.tx_pn,
+                                             s_tx_wlan_plain, (size_t)wlan_plain_len,
+                                             s_tx_wlan_cipher, &cipher_len);
+        if (enc_rc != 0) {
+            spin_unlock_irqrestore(&s_wlan_lock, irq);
+            return -1;
+        }
+        tx_frame = s_tx_wlan_cipher;
+        tx_frame_len = cipher_len;
     }
 
     /* 3. Transmit via hardware driver */
     int tx_res = -1;
     if (s_hw_ops && s_hw_ops->send_raw_80211) {
-        tx_res = s_hw_ops->send_raw_80211(s_tx_wlan_cipher, cipher_len);
+        tx_res = s_hw_ops->send_raw_80211(tx_frame, tx_frame_len);
         if (tx_res == 0) s_stats_tx_packets++;
     }
 
@@ -796,18 +1031,33 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
             needs_deauth = true;
         } else if (retry_due) {
             if (st == WLAN_STATE_AUTHENTICATING && s_hw_ops && s_hw_ops->send_raw_80211) {
-                uint8_t auth_buf[64];
-                size_t auth_len = net_80211_build_auth_req(auth_buf, sizeof(auth_buf), s_local_mac, s_target_bssid);
-                if (auth_len > 0) s_hw_ops->send_raw_80211(auth_buf, auth_len);
+                size_t auth_len = 0;
+                if (s_target_use_sae) {
+                    if (!s_sae_ctx.peer_committed) {
+                        uint8_t commit_body[WLAN_SAE_COMMIT_LEN];
+                        if (wlan_sae_build_commit(&s_sae_ctx, commit_body) == 0) {
+                            auth_len = net_80211_build_sae_auth(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf),
+                                                                s_local_mac, s_target_bssid, 1, 0,
+                                                                commit_body, sizeof(commit_body));
+                        }
+                    } else {
+                        uint8_t confirm_body[WLAN_SAE_CONFIRM_LEN];
+                        if (wlan_sae_build_confirm(&s_sae_ctx, confirm_body) == 0) {
+                            auth_len = net_80211_build_sae_auth(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf),
+                                                                s_local_mac, s_target_bssid, 2, 0,
+                                                                confirm_body, sizeof(confirm_body));
+                        }
+                    }
+                } else {
+                    auth_len = net_80211_build_auth_req(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf), s_local_mac, s_target_bssid);
+                }
+                if (auth_len > 0) s_hw_ops->send_raw_80211(s_mgmt_tx_buf, auth_len);
             } else if (st == WLAN_STATE_ASSOCIATING && s_hw_ops && s_hw_ops->send_raw_80211) {
-                uint8_t assoc_buf[256];
-                size_t assoc_len = net_80211_build_assoc_req_ext(assoc_buf, sizeof(assoc_buf),
-                                                            s_local_mac, s_target_bssid, s_target_ssid,
-                                                            s_target_group_cipher, s_target_rsn_caps);
-                if (assoc_len > 0) s_hw_ops->send_raw_80211(assoc_buf, assoc_len);
+                size_t assoc_len = wlan_build_current_assoc_req(s_mgmt_tx_buf, sizeof(s_mgmt_tx_buf));
+                if (assoc_len > 0) s_hw_ops->send_raw_80211(s_mgmt_tx_buf, assoc_len);
             }
         }
-    } else if (st == WLAN_STATE_CONNECTED && wpa2_sm_is_authorized(&s_wpa2_sm)) {
+    } else if (st == WLAN_STATE_CONNECTED && (s_target_is_open || wpa2_sm_is_authorized(&s_wpa2_sm))) {
         /* Autonomous Roaming Monitor: if current link RSSI is weak (< -75 dBm),
          * check if an alternative BSSID for this SSID has significantly better signal (>= +15 dBm) */
         if (s_current_rssi < -75 && s_target_ssid[0] != '\0') {
@@ -872,7 +1122,8 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
 bool wlan_network_online(net_dev_t *dev) {
     (void)dev;
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
-    bool online = (s_wlan_state == WLAN_STATE_CONNECTED) && wpa2_sm_is_authorized(&s_wpa2_sm);
+    bool online = (s_wlan_state == WLAN_STATE_CONNECTED) &&
+                  (s_target_is_open || wpa2_sm_is_authorized(&s_wpa2_sm));
     spin_unlock_irqrestore(&s_wlan_lock, irq);
     return online;
 }
@@ -881,7 +1132,8 @@ uint32_t wlan_link_state_abi(const net_dev_t *dev) {
     (void)dev;
     uint64_t irq = spin_lock_irqsave(&s_wlan_lock);
     uint32_t abi_state = NET_IF_LINK_DOWN;
-    if (s_wlan_state == WLAN_STATE_CONNECTED && wpa2_sm_is_authorized(&s_wpa2_sm)) {
+    if (s_wlan_state == WLAN_STATE_CONNECTED &&
+        (s_target_is_open || wpa2_sm_is_authorized(&s_wpa2_sm))) {
         abi_state = NET_IF_LINK_ONLINE;
     } else if (s_wlan_state != WLAN_STATE_IDLE && s_wlan_state != WLAN_STATE_FAILED) {
         abi_state = NET_IF_LINK_WAITING;

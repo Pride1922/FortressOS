@@ -246,6 +246,169 @@ static void test_ccmp_roundtrip_and_tampering(void) {
     printf("[TEST 6] PASS: AES-128-CCMP roundtrip and adversarial tamper rejection verified.\n");
 }
 
+/* ============================================================================
+ * 7. IEEE 802.11i TKIP Group Frame Decryption (Phase 1/2 + RC4 + Michael MIC)
+ * ============================================================================ */
+
+static void test_tkip_group_decryption(void) {
+    printf("[TEST 7] Testing TKIP group encryption, decryption, Michael MIC, and replay window...\n");
+
+    uint8_t gtk[32];
+    for (int i = 0; i < 32; i++) gtk[i] = (uint8_t)(0x30 + i * 3);
+
+    uint8_t bcast_da[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t ap_bssid[6] = {0x00, 0x14, 0x6C, 0x7E, 0x40, 0x80};
+    uint8_t orig_sa[6]  = {0x00, 0x22, 0x33, 0x44, 0x55, 0x66};
+
+    uint8_t plain_frame[128];
+    memset(plain_frame, 0, sizeof(plain_frame));
+    /* QoS Data FromDS=1 (26-byte header) */
+    plain_frame[0] = 0x88; /* QoS Data */
+    plain_frame[1] = 0x02; /* FromDS */
+    memcpy(plain_frame + 4, bcast_da, 6);
+    memcpy(plain_frame + 10, ap_bssid, 6);
+    memcpy(plain_frame + 16, orig_sa, 6);
+    plain_frame[24] = 0x00; plain_frame[25] = 0x00;
+
+    /* LLC/SNAP + ARP Broadcast Payload (36 bytes) */
+    const uint8_t snap_arp[36] = {
+        0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x08, 0x06,
+        0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01,
+        0x00, 0x22, 0x33, 0x44, 0x55, 0x66, 192, 168, 1, 1,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 192, 168, 1, 42
+    };
+    memcpy(plain_frame + 26, snap_arp, sizeof(snap_arp));
+    size_t plain_len = 26 + sizeof(snap_arp);
+
+    uint8_t tkip_frame[256];
+    size_t tkip_len = sizeof(tkip_frame);
+    uint64_t tsc = 10;
+    assert(wlan_tkip_encrypt_frame(gtk, tsc, 1, plain_frame, plain_len, tkip_frame, &tkip_len) == 0);
+    assert(tkip_len == plain_len + 20); /* +8B ExtIV +8B Michael MIC +4B ICV */
+
+    uint8_t dec_frame[256];
+    size_t dec_len = sizeof(dec_frame);
+    uint64_t last_tsc = 0;
+    uint64_t bitmap = 0;
+    assert(wlan_tkip_decrypt_frame(gtk, tkip_frame, tkip_len, dec_frame, &dec_len, &last_tsc, &bitmap) == 0);
+    assert(dec_len == plain_len);
+    assert(memcmp(dec_frame + 26, snap_arp, sizeof(snap_arp)) == 0);
+    assert(last_tsc == 10);
+
+    /* Replay rejection: same TSC=10 must be rejected */
+    dec_len = sizeof(dec_frame);
+    assert(wlan_tkip_decrypt_frame(gtk, tkip_frame, tkip_len, dec_frame, &dec_len, &last_tsc, &bitmap) == -2);
+
+    /* Tampered Michael MIC / Ciphertext rejection */
+    uint8_t tkip_tampered[256];
+    size_t tkip_t_len = sizeof(tkip_tampered);
+    assert(wlan_tkip_encrypt_frame(gtk, 11, 1, plain_frame, plain_len, tkip_tampered, &tkip_t_len) == 0);
+    tkip_tampered[26 + 8 + 10] ^= 0x01; /* Flip bit in encrypted payload */
+    dec_len = sizeof(dec_frame);
+    assert(wlan_tkip_decrypt_frame(gtk, tkip_tampered, tkip_t_len, dec_frame, &dec_len, &last_tsc, &bitmap) == -1);
+
+    printf("[TEST 7] PASS: TKIP group encryption/decryption, Michael MIC, ICV, and replay window verified.\n");
+}
+
+/* ============================================================================
+ * 8. SHA-256, HMAC-SHA-256, and IEEE 802.11 KDF-SHA-256
+ * ============================================================================ */
+
+static void test_sha256_and_kdf256(void) {
+    printf("[TEST 8] Testing SHA-256, HMAC-SHA-256, and IEEE 802.11 KDF-SHA-256...\n");
+
+    /* FIPS 180-2 SHA-256("abc") */
+    uint8_t d256[32];
+    wlan_sha256("abc", 3, d256);
+    const uint8_t exp_abc[32] = {
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+        0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+        0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
+    };
+    assert(memcmp(d256, exp_abc, 32) == 0);
+
+    /* RFC 4231 HMAC-SHA-256 Test Case 2: Key = "Jefe", Data = "what do ya want for nothing?" */
+    uint8_t hmac256[32];
+    wlan_hmac_sha256("Jefe", 4, "what do ya want for nothing?", 28, hmac256);
+    const uint8_t exp_hmac[32] = {
+        0x5b, 0xdc, 0xc1, 0x46, 0xbf, 0x60, 0x75, 0x4e,
+        0x6a, 0x04, 0x24, 0x26, 0x08, 0x95, 0x75, 0xc7,
+        0x5a, 0x00, 0x3f, 0x08, 0x9d, 0x27, 0x39, 0x83,
+        0x9d, 0xec, 0x58, 0xb9, 0x64, 0xec, 0x38, 0x43
+    };
+    assert(memcmp(hmac256, exp_hmac, 32) == 0);
+
+    /* KDF-SHA-256 PTK derivation symmetry */
+    uint8_t pmk[32];
+    memset(pmk, 0xA5, 32);
+    uint8_t mac1[6] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55};
+    uint8_t mac2[6] = {0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB};
+    uint8_t n1[32], n2[32], ptk_a[64], ptk_b[64];
+    memset(n1, 0x11, 32);
+    memset(n2, 0x22, 32);
+    wlan_derive_ptk_sha256(pmk, mac1, mac2, n1, n2, ptk_a);
+    wlan_derive_ptk_sha256(pmk, mac2, mac1, n2, n1, ptk_b);
+    assert(memcmp(ptk_a, ptk_b, 64) == 0);
+
+    printf("[TEST 8] PASS: SHA-256, HMAC-SHA-256, and KDF-SHA-256 PTK derivation verified.\n");
+}
+
+/* ============================================================================
+ * 9. WPA3-Personal SAE (RFC 7664 / NIST P-256 Group 19 Dragonfly Handshake)
+ * ============================================================================ */
+
+static void test_wpa3_sae_p256(void) {
+    printf("[TEST 9] Testing WPA3-Personal SAE (NIST P-256 Group 19) Commit-Confirm exchange...\n");
+
+    uint8_t sta_mac[6] = {0x00, 0x24, 0xFD, 0x82, 0x65, 0x01};
+    uint8_t ap_mac[6]  = {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC};
+    const char *pass   = "DragonflyWPA3Secret!";
+
+    wlan_sae_ctx_t sta_ctx, ap_ctx;
+    assert(wlan_sae_derive_pwe(&sta_ctx, sta_mac, ap_mac, pass) == 0);
+    assert(wlan_sae_derive_pwe(&ap_ctx, ap_mac, sta_mac, pass) == 0);
+
+    /* Both peers must derive the exact same PWE point (x, y) */
+    assert(memcmp(sta_ctx.pwe_x, ap_ctx.pwe_x, 32) == 0);
+    assert(memcmp(sta_ctx.pwe_y, ap_ctx.pwe_y, 32) == 0);
+
+    uint8_t sta_commit[WLAN_SAE_COMMIT_LEN];
+    uint8_t ap_commit[WLAN_SAE_COMMIT_LEN];
+    assert(wlan_sae_build_commit(&sta_ctx, sta_commit) == 0);
+    assert(wlan_sae_build_commit(&ap_ctx, ap_commit) == 0);
+
+    /* Reflection attack gate: feeding own commit back must be rejected */
+    assert(wlan_sae_process_commit(&sta_ctx, sta_commit, sizeof(sta_commit)) == -1);
+
+    /* Mutual commit processing */
+    assert(wlan_sae_process_commit(&sta_ctx, ap_commit, sizeof(ap_commit)) == 0);
+    assert(wlan_sae_process_commit(&ap_ctx, sta_commit, sizeof(sta_commit)) == 0);
+
+    /* Both peers must derive identical KCK, PMK, and PMKID */
+    assert(memcmp(sta_ctx.kck, ap_ctx.kck, 32) == 0);
+    assert(memcmp(sta_ctx.pmk, ap_ctx.pmk, 32) == 0);
+    assert(memcmp(sta_ctx.pmkid, ap_ctx.pmkid, 16) == 0);
+
+    /* Mutual confirm build and verification */
+    uint8_t sta_confirm[WLAN_SAE_CONFIRM_LEN];
+    uint8_t ap_confirm[WLAN_SAE_CONFIRM_LEN];
+    assert(wlan_sae_build_confirm(&sta_ctx, sta_confirm) == 0);
+    assert(wlan_sae_build_confirm(&ap_ctx, ap_confirm) == 0);
+
+    assert(wlan_sae_verify_confirm(&sta_ctx, ap_confirm, sizeof(ap_confirm)) == 0);
+    assert(wlan_sae_verify_confirm(&ap_ctx, sta_confirm, sizeof(sta_confirm)) == 0);
+    assert(sta_ctx.confirmed && ap_ctx.confirmed);
+
+    /* Tampered confirm must fail verification */
+    uint8_t bad_confirm[WLAN_SAE_CONFIRM_LEN];
+    memcpy(bad_confirm, ap_confirm, sizeof(bad_confirm));
+    bad_confirm[10] ^= 0x01;
+    assert(wlan_sae_verify_confirm(&sta_ctx, bad_confirm, sizeof(bad_confirm)) == -1);
+
+    printf("[TEST 9] PASS: WPA3-SAE NIST P-256 PWE, Commit-Confirm, PMK/PMKID, and anti-reflection verified.\n");
+}
+
 int main(void) {
     printf("================================================================\n");
     printf("  FortressOS Wireless Cryptographic Engine (WIFI-0) Test Suite  \n");
@@ -257,9 +420,12 @@ int main(void) {
     test_ptk_derivation();
     test_aes_key_unwrap();
     test_ccmp_roundtrip_and_tampering();
+    test_tkip_group_decryption();
+    test_sha256_and_kdf256();
+    test_wpa3_sae_p256();
 
     printf("================================================================\n");
-    printf("  ALL 6 WLAN CRYPTO SUITES PASSED (100%%)                        \n");
+    printf("  ALL 9 WLAN CRYPTO SUITES PASSED (100%%)                        \n");
     printf("================================================================\n");
     return 0;
 }

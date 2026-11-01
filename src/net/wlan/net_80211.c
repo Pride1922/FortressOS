@@ -68,17 +68,62 @@ size_t net_80211_build_auth_req(uint8_t *buf, size_t max_len,
     return total_len;
 }
 
-size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
-                                     const uint8_t src_mac[6],
-                                     const uint8_t bssid[6],
-                                     const char *ssid,
-                                     uint8_t group_cipher,
-                                     uint16_t rsn_caps) {
+size_t net_80211_build_sae_auth(uint8_t *buf, size_t max_len,
+                                const uint8_t src_mac[6],
+                                const uint8_t bssid[6],
+                                uint16_t seq_num,
+                                uint16_t status_code,
+                                const uint8_t *sae_body, size_t sae_len) {
+    size_t total_len = sizeof(ieee80211_hdr_t) + 6 + sae_len;
+    if (!buf || !src_mac || !bssid || max_len < total_len) return 0;
+    if (sae_len > 0 && !sae_body) return 0;
+
+    ieee80211_hdr_t *hdr = (ieee80211_hdr_t *)buf;
+    memset(hdr, 0, sizeof(ieee80211_hdr_t));
+    hdr->frame_control = (IEEE80211_TYPE_MGMT << 2) | (IEEE80211_SUBTYPE_AUTH << 4);
+    memcpy(hdr->addr1, bssid, 6);
+    memcpy(hdr->addr2, src_mac, 6);
+    memcpy(hdr->addr3, bssid, 6);
+
+    uint8_t *body = buf + sizeof(ieee80211_hdr_t);
+    /* Auth Algorithm = SAE (3) */
+    body[0] = (uint8_t)(IEEE80211_AUTH_ALG_SAE & 0xFFu);
+    body[1] = (uint8_t)(IEEE80211_AUTH_ALG_SAE >> 8);
+    /* Auth Sequence = 1 (Commit) or 2 (Confirm) */
+    body[2] = (uint8_t)(seq_num & 0xFFu);
+    body[3] = (uint8_t)(seq_num >> 8);
+    /* Status Code */
+    body[4] = (uint8_t)(status_code & 0xFFu);
+    body[5] = (uint8_t)(status_code >> 8);
+    if (sae_len > 0) {
+        memcpy(body + 6, sae_body, sae_len);
+    }
+    return total_len;
+}
+
+size_t net_80211_build_assoc_req_full(uint8_t *buf, size_t max_len,
+                                      const uint8_t src_mac[6],
+                                      const uint8_t bssid[6],
+                                      const char *ssid,
+                                      bool is_open,
+                                      bool use_sae,
+                                      uint8_t group_cipher,
+                                      uint16_t rsn_caps,
+                                      const uint8_t *pmkid,
+                                      bool include_ht,
+                                      bool include_vht) {
     size_t ssid_len = ssid ? strlen(ssid) : 0;
     if (ssid_len > IEEE80211_SSID_MAX_LEN) ssid_len = IEEE80211_SSID_MAX_LEN;
 
-    /* Fixed body (4) + SSID IE (2 + ssid_len) + Rates IE (10) + Ext Rates IE (6) + RSN IE (22) + WMM IE (9) */
-    size_t total_len = sizeof(ieee80211_hdr_t) + 4 + (2 + ssid_len) + 10 + 6 + 22 + 9;
+    size_t rsn_ie_total = 0;
+    if (!is_open) {
+        rsn_ie_total = 22 + ((use_sae && pmkid) ? 18 : 0);
+    }
+    size_t ht_ie_total = include_ht ? 28 : 0;
+    size_t vht_ie_total = include_vht ? 14 : 0;
+
+    size_t total_len = sizeof(ieee80211_hdr_t) + 4 + (2 + ssid_len) + 10 + 6 +
+                       rsn_ie_total + ht_ie_total + vht_ie_total + 9;
     if (!buf || max_len < total_len) return 0;
 
     ieee80211_hdr_t *hdr = (ieee80211_hdr_t *)buf;
@@ -91,8 +136,10 @@ size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
 
     uint8_t *body = buf + sizeof(ieee80211_hdr_t);
 
-    /* Capabilities: ESS (0x0001) | Privacy (0x0010) | Short Preamble (0x0020) | Short Slot (0x0400) = 0x0431 */
-    body[0] = 0x31; body[1] = 0x04;
+    /* Capabilities: ESS (0x0001) | Short Preamble (0x0020) | Short Slot (0x0400) [+ Privacy (0x0010) if secured] */
+    uint16_t caps = is_open ? 0x0421u : 0x0431u;
+    body[0] = (uint8_t)(caps & 0xFFu);
+    body[1] = (uint8_t)(caps >> 8);
     /* Listen Interval: 10 */
     body[2] = 0x0A; body[3] = 0x00;
 
@@ -117,27 +164,69 @@ size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
     *ie++ = 4;
     *ie++ = 0xB0; *ie++ = 0x48; *ie++ = 0x60; *ie++ = 0x6C;
 
-    /* 4. WPA2 RSN Information Element (22 bytes) */
-    *ie++ = IEEE80211_IE_RSN;
-    *ie++ = 20; /* Length of RSN IE */
-    *ie++ = 0x01; *ie++ = 0x00; /* Version 1 */
-    /* Group Cipher: 00-0F-AC:<group_cipher> (e.g. 0x02 for TKIP, 0x04 for CCMP) */
-    *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC;
-    *ie++ = (group_cipher == 0x02 || group_cipher == 0x04) ? group_cipher : 0x04;
-    /* Pairwise Cipher Count = 1 */
-    *ie++ = 0x01; *ie++ = 0x00;
-    /* Pairwise Cipher: 00-0F-AC:4 (AES-CCMP) */
-    *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC; *ie++ = 0x04;
-    /* AKM Suite Count = 1 */
-    *ie++ = 0x01; *ie++ = 0x00;
-    /* AKM Suite: 00-0F-AC:2 (PSK) */
-    *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC; *ie++ = 0x02;
-    /* RSN Capabilities: mirror AP's PMF MFPC bit (bit 7, 0x0080) if AP supports it */
-    uint16_t client_caps = (rsn_caps & 0x0080);
-    *ie++ = (uint8_t)(client_caps & 0xFF);
-    *ie++ = (uint8_t)((client_caps >> 8) & 0xFF);
+    /* 4. RSN Information Element (omitted for open networks) */
+    if (!is_open) {
+        bool has_pmkid = (use_sae && pmkid != NULL);
+        *ie++ = IEEE80211_IE_RSN;
+        *ie++ = has_pmkid ? 38 : 20;
+        *ie++ = 0x01; *ie++ = 0x00; /* Version 1 */
+        /* Group Cipher: 00-0F-AC:<group_cipher> (0x02 for TKIP, 0x04 for CCMP) */
+        *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC;
+        *ie++ = (group_cipher == 0x02 || group_cipher == 0x04) ? group_cipher : 0x04;
+        /* Pairwise Cipher Count = 1 */
+        *ie++ = 0x01; *ie++ = 0x00;
+        /* Pairwise Cipher: 00-0F-AC:4 (AES-CCMP) */
+        *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC; *ie++ = 0x04;
+        /* AKM Suite Count = 1 */
+        *ie++ = 0x01; *ie++ = 0x00;
+        /* AKM Suite: 00-0F-AC:8 (SAE) or 00-0F-AC:2 (PSK) */
+        *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC;
+        *ie++ = use_sae ? 0x08 : 0x02;
+        /* RSN Capabilities: WPA3 requires MFPC (bit 7, 0x0080) | MFPR (bit 6, 0x0040) */
+        uint16_t client_caps = use_sae ? ((rsn_caps & 0x00C0u) | 0x00C0u) : (rsn_caps & 0x0080u);
+        *ie++ = (uint8_t)(client_caps & 0xFFu);
+        *ie++ = (uint8_t)((client_caps >> 8) & 0xFFu);
+        if (has_pmkid) {
+            /* PMKID Count = 1 + 16-byte PMKID */
+            *ie++ = 0x01; *ie++ = 0x00;
+            memcpy(ie, pmkid, 16);
+            ie += 16;
+        }
+    }
 
-    /* 5. WMM / QoS Information Element (9 bytes) */
+    /* 5. Optional 802.11n HT Capabilities IE (ID 45, Length 26) */
+    if (include_ht) {
+        *ie++ = IEEE80211_IE_HT_CAP;
+        *ie++ = 26;
+        /* HT Capability Info: LDPC (0x0001) | 40MHz (0x0002) | SMPS Disabled (0x000C) |
+         * SGI20 (0x0020) | SGI40 (0x0040) | TX STBC (0x0080) | RX STBC 1SS (0x0100) = 0x01EF */
+        *ie++ = 0xEF; *ie++ = 0x01;
+        /* A-MPDU Parameters: Max RX A-MPDU 64KB (3) | Min MPDU Start Spacing 4us (5 << 2) = 0x17 */
+        *ie++ = 0x17;
+        /* Supported MCS Set (16 bytes): RX MCS 0..15 (2x2 MIMO) */
+        *ie++ = 0xFF; *ie++ = 0xFF;
+        memset(ie, 0, 14);
+        ie += 14;
+        /* HT Extended Capabilities (2B) + Transmit Beamforming (4B) + ASEL (1B) */
+        memset(ie, 0, 7);
+        ie += 7;
+    }
+
+    /* 6. Optional 802.11ac VHT Capabilities IE (ID 191, Length 12) */
+    if (include_vht) {
+        *ie++ = IEEE80211_IE_VHT_CAP;
+        *ie++ = 12;
+        /* VHT Capabilities Info: Max MPDU 11454 (2) | RX LDPC (1<<4) | SGI80 (1<<5) |
+         * TX STBC (1<<7) | RX STBC 1SS (1<<8) | Max A-MPDU 2^(13+7)-1 (7<<23) = 0x038001B2 */
+        *ie++ = 0xB2; *ie++ = 0x01; *ie++ = 0x80; *ie++ = 0x03;
+        /* Supported VHT-MCS and NSS Set (8 bytes): 2x2 MCS 0..9 (0xFFFA) for RX and TX */
+        *ie++ = 0xFA; *ie++ = 0xFF;
+        *ie++ = 0x00; *ie++ = 0x00;
+        *ie++ = 0xFA; *ie++ = 0xFF;
+        *ie++ = 0x00; *ie++ = 0x00;
+    }
+
+    /* 7. WMM / QoS Information Element (9 bytes) */
     *ie++ = IEEE80211_IE_VENDOR;
     *ie++ = 7;
     *ie++ = 0x00; *ie++ = 0x50; *ie++ = 0xF2; /* Microsoft OUI */
@@ -149,11 +238,61 @@ size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
     return (size_t)(ie - buf);
 }
 
+size_t net_80211_build_assoc_req_open(uint8_t *buf, size_t max_len,
+                                      const uint8_t src_mac[6],
+                                      const uint8_t bssid[6],
+                                      const char *ssid) {
+    return net_80211_build_assoc_req_full(buf, max_len, src_mac, bssid, ssid,
+                                          true, false, 0, 0, NULL, false, false);
+}
+
+size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
+                                     const uint8_t src_mac[6],
+                                     const uint8_t bssid[6],
+                                     const char *ssid,
+                                     uint8_t group_cipher,
+                                     uint16_t rsn_caps) {
+    return net_80211_build_assoc_req_full(buf, max_len, src_mac, bssid, ssid,
+                                          false, false, group_cipher, rsn_caps, NULL, false, false);
+}
+
 size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
                                  const uint8_t src_mac[6],
                                  const uint8_t bssid[6],
                                  const char *ssid) {
     return net_80211_build_assoc_req_ext(buf, max_len, src_mac, bssid, ssid, 0x04, 0);
+}
+
+size_t net_80211_build_addba_resp(uint8_t *buf, size_t max_len,
+                                  const uint8_t src_mac[6],
+                                  const uint8_t bssid[6],
+                                  uint8_t dialog_token,
+                                  uint8_t tid,
+                                  uint16_t buf_size) {
+    size_t total_len = sizeof(ieee80211_hdr_t) + 9;
+    if (!buf || !src_mac || !bssid || max_len < total_len) return 0;
+
+    ieee80211_hdr_t *hdr = (ieee80211_hdr_t *)buf;
+    memset(hdr, 0, sizeof(ieee80211_hdr_t));
+    hdr->frame_control = (IEEE80211_TYPE_MGMT << 2) | (IEEE80211_SUBTYPE_ACTION << 4);
+    memcpy(hdr->addr1, bssid, 6);
+    memcpy(hdr->addr2, src_mac, 6);
+    memcpy(hdr->addr3, bssid, 6);
+
+    uint8_t *body = buf + sizeof(ieee80211_hdr_t);
+    body[0] = IEEE80211_CATEGORY_BACK;     /* Category 3 = Block Ack */
+    body[1] = IEEE80211_ACTION_ADDBA_RESP; /* Action 1 = ADDBA Response */
+    body[2] = dialog_token;
+    body[3] = 0x00; body[4] = 0x00;        /* Status Code = 0 (SUCCESS) */
+
+    /* Block Ack Parameter Set: A-MSDU=0 (bit 0), Policy=1 Immediate (bit 1), TID (bits 2..5), BufSize (bits 6..15) */
+    uint16_t bsize = (buf_size > 0 && buf_size <= 64) ? buf_size : 64;
+    uint16_t ba_param = (uint16_t)((1u << 1) | (((uint16_t)(tid & 0x0Fu)) << 2) | (bsize << 6));
+    body[5] = (uint8_t)(ba_param & 0xFFu);
+    body[6] = (uint8_t)(ba_param >> 8);
+    body[7] = 0x00; body[8] = 0x00;        /* Block Ack Timeout = 0 (disabled) */
+
+    return total_len;
 }
 
 size_t net_80211_build_deauth(uint8_t *buf, size_t max_len,
@@ -314,26 +453,66 @@ bool net_80211_parse_beacon_or_probe(const uint8_t *frame, size_t len,
             out_bss->ssid_len = clen;
         } else if (ie_id == IEEE80211_IE_DS_PARAM && ie_len >= 1) {
             out_bss->channel = data[0];
-        } else if (ie_id == 61 /* HT Operation IE */ && ie_len >= 1 && out_bss->channel == 0) {
-            out_bss->channel = data[0];
+        } else if (ie_id == IEEE80211_IE_HT_CAP && ie_len >= 26) {
+            out_bss->has_ht = true;
+            out_bss->ht_cap_info = (uint16_t)(data[0] | ((uint16_t)data[1] << 8));
+            out_bss->ht_ampdu_param = data[2];
+            memcpy(out_bss->ht_rx_mcs, data + 3, 4);
+            if (out_bss->ht_cap_info & 0x0002u) {
+                out_bss->ht_chan_width = 1; /* 40 MHz supported */
+            }
+        } else if (ie_id == IEEE80211_IE_HT_OP && ie_len >= 2) {
+            if (out_bss->channel == 0) {
+                out_bss->channel = data[0];
+            }
+            if (data[1] & 0x04u) {
+                out_bss->ht_chan_width = 1;
+            }
+        } else if (ie_id == IEEE80211_IE_VHT_CAP && ie_len >= 12) {
+            out_bss->has_vht = true;
+            out_bss->vht_cap_info = (uint32_t)data[0] |
+                                    ((uint32_t)data[1] << 8) |
+                                    ((uint32_t)data[2] << 16) |
+                                    ((uint32_t)data[3] << 24);
+            out_bss->vht_rx_mcs_map = (uint16_t)(data[4] | ((uint16_t)data[5] << 8));
+        } else if (ie_id == IEEE80211_IE_VHT_OP && ie_len >= 3) {
+            out_bss->vht_chan_width = data[0];
+            out_bss->vht_center_freq1 = data[1];
         } else if (ie_id == IEEE80211_IE_RSN && ie_len >= 14) {
-            /* Check if AES-CCMP (00-0F-AC:4) and PSK (00-0F-AC:2) are supported */
-            out_bss->has_wpa2_psk = true;
             if (ie_len >= 6 && data[2] == 0x00 && data[3] == 0x0F && data[4] == 0xAC) {
                 out_bss->group_cipher = data[5];
             } else {
                 out_bss->group_cipher = 0x04;
             }
+            bool parsed_akm = false;
             if (ie_len >= 8) {
                 uint16_t pairwise_count = (uint16_t)(data[6] | (data[7] << 8));
                 size_t off_in_ie = 8 + 4 * (size_t)pairwise_count;
                 if (off_in_ie + 2 <= ie_len) {
                     uint16_t akm_count = (uint16_t)(data[off_in_ie] | (data[off_in_ie + 1] << 8));
-                    off_in_ie += 2 + 4 * (size_t)akm_count;
+                    off_in_ie += 2;
+                    for (uint16_t a = 0; a < akm_count && off_in_ie + 4 <= ie_len; a++) {
+                        if (data[off_in_ie + 0] == 0x00 &&
+                            data[off_in_ie + 1] == 0x0F &&
+                            data[off_in_ie + 2] == 0xAC) {
+                            uint8_t akm_type = data[off_in_ie + 3];
+                            if (akm_type == 2 || akm_type == 6) {
+                                out_bss->has_wpa2_psk = true;
+                                parsed_akm = true;
+                            } else if (akm_type == 8) {
+                                out_bss->has_wpa3_sae = true;
+                                parsed_akm = true;
+                            }
+                        }
+                        off_in_ie += 4;
+                    }
                     if (off_in_ie + 2 <= ie_len) {
                         out_bss->rsn_caps = (uint16_t)(data[off_in_ie] | (data[off_in_ie + 1] << 8));
                     }
                 }
+            }
+            if (!parsed_akm) {
+                out_bss->has_wpa2_psk = true;
             }
         }
 

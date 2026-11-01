@@ -23,6 +23,15 @@ static uint8_t s_rx_ring_mem[IWL_RX_RING_SIZE * sizeof(iwl_rx_desc_t)] __attribu
 static pbuf_t  s_rx_pbufs[IWL_RX_RING_SIZE];
 static uint8_t s_rx_buffers[IWL_RX_RING_SIZE][2048] __attribute__((aligned(64)));
 
+/* 802.11n (HT) & 802.11ac (VHT) throughput scaling state */
+static bool    s_ht_enabled  = false;
+static bool    s_vht_enabled = false;
+static uint8_t s_chan_width  = 0; /* 0=20MHz, 1=40MHz, 2=80MHz */
+static bool    s_short_gi    = false;
+static bool    s_ldpc        = false;
+static uint8_t s_ba_tid_mask = 0;
+static uint16_t s_ba_win_size = 64;
+
 #ifndef IWLWIFI_HOST_TEST
 #define IWL_HW_RX_BUFS          32
 #define IWL_CMD_SLOTS           16
@@ -1120,7 +1129,7 @@ static bool iwl_send_phy_context_cmd(uint32_t id, uint32_t action, uint8_t chann
     cmd.apply_time   = 0;
     cmd.ci.band      = (channel <= 14) ? IWL_PHY_BAND_24 : IWL_PHY_BAND_5;
     cmd.ci.channel   = channel;
-    cmd.ci.width     = 0; /* 20 MHz */
+    cmd.ci.width     = 0; /* 20 MHz primary channel */
     cmd.ci.ctrl_pos  = 0;
     cmd.txchain_info = s_valid_tx_ant;
     cmd.rxchain_info = ((uint32_t)s_valid_rx_ant << 1) | (1u << 10) | (1u << 12);
@@ -1238,12 +1247,13 @@ static bool iwl_send_add_sta_cmd(bool update, uint16_t assoc_id) {
     if (!update) {
         memcpy(cmd.addr, s_assoc_bssid, 6);
     } else {
-        cmd.modify_mask = (1u << 7) | (1u << 1); /* IWM_STA_MODIFY_QUEUES | IWM_STA_MODIFY_TID_DISABLE_TX */
+        cmd.modify_mask = IWL_STA_MODIFY_QUEUES | IWL_STA_MODIFY_TID_DISABLE_TX;
     }
     cmd.assoc_id          = assoc_id;
     cmd.tfd_queue_msk     = (1u << 5) | (1u << 6) | (1u << 7) | (1u << 8);
     cmd.tid_disable_tx    = 0xFFFFu;
     cmd.station_flags_msk = (3u << 6) | (3u << 8); /* FAT_EN_MSK | MIMO_EN_MSK */
+    cmd.station_flags     = 0;
     if (!iwl_send_cmd_pdu(IWL_HCMD_ADD_STA, &cmd, sizeof(cmd), true)) {
         serial_puts("[IWL] ADD_STA HCMD rejected or timeout\n");
         return false;
@@ -1268,17 +1278,18 @@ static bool iwl_send_lq_cmd(uint8_t channel) {
     lq.agg_disable_start_th  = 3;
     lq.agg_frame_cnt_limit   = 0x3Fu;
 
-    uint32_t ant_msk = ((uint32_t)lq.single_stream_ant_msk) << 14;
+    uint32_t ant_1x1 = ((uint32_t)lq.single_stream_ant_msk) << 14;
     static const uint8_t ofdm_plcp[8] = { 3, 1, 11, 9, 7, 5, 15, 13 }; /* 54,48,36,24,18,12,9,6 Mbps */
+
     for (int i = 0; i < 16; i++) {
         if (i < 8) {
-            lq.rs_table[i] = ant_msk | ofdm_plcp[i];
+            lq.rs_table[i] = ant_1x1 | ofdm_plcp[i];
         } else if (channel <= 14) {
             static const uint8_t cck_plcp[4] = { 110, 55, 20, 10 }; /* 11, 5.5, 2, 1 Mbps */
             uint8_t plcp = (i - 8 < 4) ? cck_plcp[i - 8] : 10u;
-            lq.rs_table[i] = ant_msk | (1u << 9) /* CCK */ | plcp;
+            lq.rs_table[i] = ant_1x1 | IWL_RATE_MCS_CCK_MSK | plcp;
         } else {
-            lq.rs_table[i] = ant_msk | 13u; /* 6 Mbps OFDM */
+            lq.rs_table[i] = ant_1x1 | 13u; /* 6 Mbps OFDM */
         }
     }
     return iwl_send_cmd_pdu(IWL_HCMD_LQ, &lq, sizeof(lq), true);
@@ -1544,14 +1555,20 @@ bool iwlwifi_is_supported_device(uint16_t vendor, uint16_t device) {
 
 bool iwlwifi_is_scan_complete(void);
 
-static const wlan_hw_ops_t s_iwlwifi_hw_ops = {
+static const wlan_mac_ops_t s_iwlwifi_hw_ops = {
     .name = "iwlwifi",
+    .caps = WLAN_HW_CAP_2GHZ | WLAN_HW_CAP_5GHZ | WLAN_HW_CAP_HT | WLAN_HW_CAP_VHT | WLAN_HW_CAP_SAE | WLAN_HW_CAP_TKIP_GROUP,
+    .is_detected = iwlwifi_is_detected,
+    .init_hw = iwlwifi_init_hw,
+    .load_firmware = iwlwifi_load_firmware,
     .get_mac = iwlwifi_get_mac,
     .set_channel = iwlwifi_set_channel,
     .start_scan = iwlwifi_start_scan,
     .prepare_auth = iwlwifi_prepare_auth,
     .set_associated = iwlwifi_set_associated,
     .deauth = iwlwifi_deauth,
+    .configure_ht_vht = iwlwifi_configure_ht_vht,
+    .add_ba_session = iwlwifi_add_ba_session,
     .send_raw_80211 = iwlwifi_send_raw,
     .poll_raw_80211 = iwlwifi_poll_raw,
     .recycle_raw_80211 = iwlwifi_recycle_raw,
@@ -1559,6 +1576,7 @@ static const wlan_hw_ops_t s_iwlwifi_hw_ops = {
 };
 
 bool iwlwifi_probe(void) {
+    wlan_register_driver(&s_iwlwifi_hw_ops);
 #ifndef IWLWIFI_HOST_TEST
     /* Static: a MAX_PCI_DEVICES array cost ~5.6 KiB of kernel stack. Probe runs once, serialized, at boot. */
     static pci_device_t pci_devs[MAX_PCI_DEVICES];
@@ -2094,6 +2112,7 @@ bool iwlwifi_init_hw(void) {
     s_iwl_dev.initialized = true;
 
     /* Register with Wi-Fi manager without holding any locks */
+    (void)wlan_register_driver(&s_iwlwifi_hw_ops);
     wlan_mgr_init(&s_iwlwifi_hw_ops);
     return true;
 }
@@ -2277,6 +2296,46 @@ int iwlwifi_get_mac(uint8_t mac[6]) {
     uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
     memcpy(mac, s_iwl_dev.mac_addr, 6);
     spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
+    return 0;
+}
+
+int iwlwifi_configure_ht_vht(bool ht_en, bool vht_en, uint8_t chan_width, uint8_t rx_nss) {
+    (void)rx_nss;
+    uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
+    s_ht_enabled  = ht_en;
+    s_vht_enabled = vht_en;
+    s_chan_width  = (chan_width <= 2) ? chan_width : 0;
+    s_short_gi    = ht_en || vht_en;
+    s_ldpc        = ht_en || vht_en;
+    spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
+    return 0;
+}
+
+int iwlwifi_add_ba_session(uint8_t tid, uint16_t ssn, uint16_t buf_size) {
+    if (tid >= 8) return -1;
+    uint16_t win = (buf_size > 0 && buf_size <= 64) ? buf_size : 64;
+    uint64_t irq = spin_lock_irqsave(&s_iwl_dev.lock);
+    s_ba_tid_mask |= (uint8_t)(1u << tid);
+    s_ba_win_size  = win;
+    spin_unlock_irqrestore(&s_iwl_dev.lock, irq);
+
+#ifndef IWLWIFI_HOST_TEST
+    if (s_iwl_dev.initialized && s_iwl_dev.firmware_alive && s_iwl_dev.mvm_initialized && s_sta_active) {
+        iwl_add_sta_cmd_t cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.add_modify           = 1u;
+        cmd.sta_id               = IWL_STATION_ID;
+        cmd.station_type         = IWL_STA_LINK;
+        cmd.mac_id_n_color       = IWL_FW_CMD_ID_AND_COLOR(0, 0);
+        cmd.modify_mask          = IWL_STA_MODIFY_ADD_BA_TID;
+        cmd.add_immediate_ba_tid = tid;
+        cmd.add_immediate_ba_ssn = ssn;
+        cmd.rx_ba_window         = win;
+        (void)iwl_send_cmd_pdu(IWL_HCMD_ADD_STA, &cmd, sizeof(cmd), true);
+    }
+#else
+    (void)ssn;
+#endif
     return 0;
 }
 

@@ -369,9 +369,9 @@ impl<'a> Canvas<'a> {
             theme::TEXT
         };
         let sig_bars = match rssi {
-            -55..=127 => 4,
-            -67..=-56 => 3,
-            -75..=-68 => 2,
+            -50..=127 => 4,
+            -65..=-51 => 3,
+            -75..=-66 => 2,
             _ => 1,
         };
         for y in first_y..last_y {
@@ -427,8 +427,13 @@ impl<'a> Canvas<'a> {
                         _ => "Weak",
                     };
                     theme::text_pixel(sig_name, lx - 340, ly - 3, theme::MUTED, bg)
-                } else if enabled && lx >= 410 && lx < 450 && ly >= 3 && ly < 21 {
-                    let sec_name = if security == 0 { "Open" } else { "WPA2" };
+                } else if enabled && lx >= 410 && lx < 458 && ly >= 3 && ly < 21 {
+                    let sec_name = match security {
+                        0 => "Open",
+                        2 => "WPA3",
+                        3 => "WPA2/3",
+                        _ => "WPA2",
+                    };
                     theme::text_pixel(sec_name, lx - 410, ly - 3, theme::MUTED, bg)
                 } else {
                     bg

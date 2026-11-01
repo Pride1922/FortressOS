@@ -112,10 +112,19 @@ pub fn wireless_connect(ssid: &str, password: &[u8], bssid: [u8; 6]) -> isize {
     result
 }
 
+pub fn wireless_scan_results(bytes: &mut [u8]) -> isize {
+    if bytes.len() < 776 {
+        return EINVAL;
+    }
+    bytes[..8].fill(0);
+    bytes[4..8].copy_from_slice(&16u32.to_le_bytes());
+    unsafe { syscall3(SYS_WIFI, 1, bytes.as_mut_ptr() as usize, 776) }
+}
+
 pub fn wireless_save_network(ssid: &str, password: &[u8]) -> Result<(), isize> {
     if ssid.is_empty()
         || ssid.len() > 32
-        || password.len() < 8
+        || (!password.is_empty() && password.len() < 8)
         || password.len() > 64
         || ssid.as_bytes().iter().any(|&b| b == b'"' || b == b'\n' || b == b'\r' || b == 0)
         || password.iter().any(|&b| b == b'"' || b == b'\n' || b == b'\r' || b == 0)

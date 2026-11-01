@@ -8,7 +8,17 @@
 #include "netctl_abi.h"
 #include "net.h"
 
-/* Low-level hardware operations implemented by NIC driver (iwlwifi, USB dongle, etc.) */
+/* Hardware Capability Flags */
+#define WLAN_HW_CAP_2GHZ        (1u << 0)
+#define WLAN_HW_CAP_5GHZ        (1u << 1)
+#define WLAN_HW_CAP_HT          (1u << 2) /* 802.11n HT20/HT40 */
+#define WLAN_HW_CAP_VHT         (1u << 3) /* 802.11ac VHT80 */
+#define WLAN_HW_CAP_SAE         (1u << 4) /* WPA3-Personal SAE */
+#define WLAN_HW_CAP_TKIP_GROUP  (1u << 5) /* TKIP Group Cipher */
+
+#define WLAN_MAX_DRIVERS        4u
+
+/* Low-level MAC/PHY operations implemented by NIC driver (iwlwifi, rtw88, ath10k, etc.) */
 typedef struct wlan_hw_ops {
     const char *name;
     int    (*get_mac)(uint8_t mac[6]);
@@ -21,7 +31,20 @@ typedef struct wlan_hw_ops {
     pbuf_t *(*poll_raw_80211)(void);
     void   (*recycle_raw_80211)(pbuf_t *packet);
     bool   (*is_scan_complete)(void);
+    /* Extended multi-vendor & HT/VHT hooks (optional; NULL-checked) */
+    uint32_t caps;
+    bool   (*is_detected)(void);
+    bool   (*init_hw)(void);
+    bool   (*load_firmware)(const void *fw_data, size_t fw_len);
+    int    (*configure_ht_vht)(bool ht_en, bool vht_en, uint8_t chan_width, uint8_t rx_nss);
+    int    (*add_ba_session)(uint8_t tid, uint16_t ssn, uint16_t buf_size);
 } wlan_hw_ops_t;
+
+typedef wlan_hw_ops_t wlan_mac_ops_t;
+
+/* Multi-Vendor Driver Registration & Firmware Dispatch */
+int wlan_register_driver(const wlan_mac_ops_t *ops);
+int wlan_mgr_load_firmware(const void *fw_data, size_t fw_len);
 
 /* Wi-Fi Manager Interface */
 void wlan_mgr_init(const wlan_hw_ops_t *ops);

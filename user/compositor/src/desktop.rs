@@ -141,10 +141,12 @@ pub fn parse_scan(bytes: &[u8]) -> Option<Vec<AccessPoint>> {
     for i in 0..count {
         let e = &bytes[8 + i * 48..8 + (i + 1) * 48];
         let len = e[8] as usize;
-        if len > 32 || e[9] > 1 || e[10] != 0 || e[11] != 0 {
+        if len > 32 || e[9] > 3 || e[10] != 0 || e[11] != 0 {
             return None;
         }
-        let text = core::str::from_utf8(&e[12..12 + len]).ok()?;
+        let Ok(text) = core::str::from_utf8(&e[12..12 + len]) else {
+            continue;
+        };
         if text.bytes().any(|b| !(32..=126).contains(&b)) {
             continue;
         }
@@ -369,7 +371,7 @@ impl AppHost {
             self.apps[index].pointer(x / scale, y / scale + self.apps[index].scroll)
         {
             self.command(index, command, wm, s);
-            if index == 1 && (20..=23).contains(&command) {
+            if self.apps[index].kind == 1 && (20..=23).contains(&command) {
                 self.reveal_focus(index, wm, s);
             }
         }
@@ -380,7 +382,7 @@ impl AppHost {
             return;
         };
         if byte == 27 {
-            if index == 1 {
+            if self.apps[index].kind == 1 {
                 self.password.clear();
                 self.show_password = false;
             }
@@ -669,9 +671,7 @@ impl AppHost {
             return;
         }
         bytes.resize(776, 0);
-        bytes[4..8].copy_from_slice(&16u32.to_le_bytes());
-        let result =
-            unsafe { sys::syscall3(sys::SYS_WIFI, 1, bytes.as_mut_ptr() as usize, bytes.len()) };
+        let result = sys::wireless_scan_results(&mut bytes);
         if result < 0 {
             self.error("Scan results unavailable", result);
             return;
@@ -723,12 +723,17 @@ impl AppHost {
         self.selected = index;
         self.password.clear();
         self.show_password = false;
-        self.apps[1].focus = 5;
-        self.message(if point.security == 0 {
-            "Open networks are not supported by the current connection service."
+        let next_focus = if point.security == 0 { 6 } else { 5 };
+        for app in &mut self.apps {
+            if app.kind == 1 {
+                app.focus = next_focus;
+            }
+        }
+        if point.security == 0 {
+            self.message("Open network selected. Press Enter or click Connect to join.");
         } else {
-            "Enter the Wi-Fi password, then press Enter to join."
-        });
+            self.message("Enter the Wi-Fi password, then press Enter to join.");
+        }
     }
     fn connection_feedback(&mut self, now: i64) {
         let Some(deadline) = self.connecting_until else {
@@ -764,20 +769,34 @@ impl AppHost {
             self.message("Choose a network or enter its name first.");
             return;
         }
-        if self
+        let is_open = self
             .points
             .get(self.selected)
+            .filter(|p| p.ssid == self.ssid)
             .is_some_and(|p| p.security == 0)
-        {
-            self.message("Open networks are not supported by the current connection service.");
-            return;
-        }
-        if self.password.len() < 8 {
+            || (self.selected == usize::MAX
+                && self.password.len() == 0
+                && self
+                    .points
+                    .iter()
+                    .any(|p| p.ssid == self.ssid && p.security == 0));
+        if !is_open && self.password.len() < 8 {
             self.message("Enter a Wi-Fi password of 8 to 64 characters.");
-            self.apps[1].focus = 5;
+            for app in &mut self.apps {
+                if app.kind == 1 {
+                    app.focus = 5;
+                }
+            }
             return;
         }
-        if !self.wifi_prepared { self.scan(); return; }
+        if is_open {
+            self.password.clear();
+        }
+        if !self.wifi_prepared {
+            self.message("Connecting to open or secured network after Wi-Fi preparation...");
+            self.scan();
+            return;
+        }
         let bssid = self
             .points
             .get(self.selected)
@@ -804,8 +823,18 @@ impl AppHost {
         }
         self.wifi_prepared
     }
+    fn wifi_window_open(&self, wm: &WindowManager, unminimized_only: bool) -> bool {
+        wm.windows.iter().any(|w| {
+            (!unminimized_only || !w.is_minimized)
+                && (w.id == 8
+                    || ui::APPS
+                        .iter()
+                        .position(|a| a.id == w.id)
+                        .is_some_and(|idx| self.apps[idx].kind == 1))
+        })
+    }
     pub fn refresh(&mut self, utc: i64, wm: &mut WindowManager, s: &mut Surface) {
-        if !wm.windows.iter().any(|w| w.id == 8) {
+        if !self.wifi_window_open(wm, false) {
             self.password.clear();
             self.show_password = false;
             self.scan_after = None;
@@ -816,7 +845,8 @@ impl AppHost {
         self.last_tick = utc;
         if let Some(pid) = self.wifi_prepare_pid {
             if let Some(result) = sys::child_status(pid) {
-                if self.finish_wifi_preparation(result) && wm.windows.iter().any(|w| w.id == 8) {
+                if self.finish_wifi_preparation(result) && self.wifi_window_open(wm, false) {
+                    self.wireless = sys::wireless_info();
                     self.scan();
                 }
             }
@@ -830,7 +860,7 @@ impl AppHost {
             self.calendar = None;
         }
         self.network = sys::network_info();
-        if wm.windows.iter().any(|w| w.id == 8 && !w.is_minimized) {
+        if self.wifi_window_open(wm, true) {
             self.wireless = sys::wireless_info();
             if let Some(now) = sys::monotonic_seconds() {
                 self.connection_feedback(now);
@@ -1228,36 +1258,84 @@ impl AppHost {
             }
         }
 
-        // Join Network Card container (x: 196, y: 326, w: 468, h: 108)
-        c.card(Rect { x: 196, y: 326, w: 468, h: 108 }, 0xff282828, theme::BORDER);
-        c.label_h(206, 332, 200, 18, "Network SSID", theme::TEXT, 0xff282828);
+        // Join Network / Password Prompt Modal Card container (x: 196, y: 326, w: 468, h: 108)
+        let selected_open = self
+            .points
+            .get(self.selected)
+            .filter(|p| p.ssid == self.ssid)
+            .is_some_and(|p| p.security == 0);
+        let modal_border = if self.selected != usize::MAX {
+            theme::ACCENT
+        } else {
+            theme::BORDER
+        };
+        c.card(Rect { x: 196, y: 326, w: 468, h: 108 }, 0xff282828, modal_border);
+        c.label_h(
+            206,
+            332,
+            240,
+            18,
+            if self.selected != usize::MAX {
+                "Selected Network (Click to Connect)"
+            } else {
+                "Network SSID"
+            },
+            theme::TEXT,
+            0xff282828,
+        );
         c.entry(NETWORK[4].rect, self.ssid.as_str(), focus == 4 && enabled);
 
-        c.label_h(206, 384, 200, 18, "Security Key", theme::TEXT, 0xff282828);
+        c.label_h(
+            206,
+            384,
+            240,
+            18,
+            if selected_open {
+                "Open Network (No Password)"
+            } else {
+                "Security Key (Password Prompt)"
+            },
+            theme::TEXT,
+            0xff282828,
+        );
         let stars = [b'*'; 64];
         let masked = core::str::from_utf8(&stars[..self.password.len()]).unwrap_or("");
         c.entry(
             NETWORK[5].rect,
-            if self.show_password {
+            if selected_open {
+                "None (Open Hotspot)"
+            } else if self.show_password {
                 self.password.as_str()
             } else {
                 masked
             },
-            focus == 5 && enabled,
+            focus == 5 && enabled && !selected_open,
         );
         c.button_enabled(
             NETWORK[7].rect,
             if self.show_password { "Hide" } else { "Show" },
             self.show_password,
             focus == 7,
-            enabled && !busy,
+            enabled && !busy && !selected_open,
         );
         c.button_accent(
             NETWORK[6].rect,
             if busy { "Connecting..." } else { "Connect" },
             focus == 6,
         );
-        c.label_h(476, 384, 170, 18, "WPA2-PSK key", theme::MUTED, 0xff282828);
+        c.label_h(
+            476,
+            384,
+            180,
+            18,
+            if selected_open {
+                "Open 802.11 link"
+            } else {
+                "WPA2 / WPA3 key"
+            },
+            theme::MUTED,
+            0xff282828,
+        );
 
         // Status notification card
         let message = self.messages[1].as_str();
@@ -1296,9 +1374,9 @@ fn load_preferences() -> (Preferences, bool) {
 #[allow(dead_code)]
 pub fn signal_label(rssi: i8) -> &'static str {
     match rssi {
-        -55..=127 => "Excellent",
-        -67..=-56 => "Good",
-        -75..=-68 => "Fair",
+        -50..=127 => "Excellent",
+        -65..=-51 => "Good",
+        -75..=-66 => "Fair",
         _ => "Weak",
     }
 }
@@ -1358,12 +1436,12 @@ mod wifi_ux_tests {
         assert_eq!(h.ssid.as_str(), "Cafe");
         assert_eq!(h.password.len(), 0);
         assert!(!h.show_password);
-        h.connect(); // Open networks return before any system call.
-        assert!(h.status.as_str().contains("not supported"));
+        assert_eq!(h.apps[1].focus, 6);
+        assert!(h.status.as_str().contains("Open network selected"));
         h.pointer(8, 600, 195, &mut wm, &mut s);
         h.pointer(8, 250, 225, &mut wm, &mut s);
         assert_eq!(h.ssid.as_str(), "Other");
-        h.key(8, b'\n', &mut wm, &mut s); // Empty password returns before syscall.
+        h.key(8, b'\n', &mut wm, &mut s); // Empty password on secured network returns before syscall.
         assert!(h.status.as_str().contains("8 to 64"));
         assert!(
             wm.windows

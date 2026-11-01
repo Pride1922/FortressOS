@@ -397,6 +397,41 @@ _Static_assert(sizeof(iwl_scd_txq_cfg_cmd_t) == 12, "iwl_scd_txq_cfg_cmd_t must 
 #define IWL_STA_LINK                    0
 #define IWL_STA_AUX_ACTIVITY            4
 
+/* Station Flags & Modify Mask (HT/VHT/A-MPDU) */
+#define IWL_STA_FLG_FAT_EN_20MHZ        (1u << 6)
+#define IWL_STA_FLG_FAT_EN_40MHZ        (2u << 6)
+#define IWL_STA_FLG_FAT_EN_80MHZ        (3u << 6)
+#define IWL_STA_FLG_FAT_EN_MSK          (3u << 6)
+#define IWL_STA_FLG_MIMO_EN_SISO        (1u << 8)
+#define IWL_STA_FLG_MIMO_EN_MIMO2       (2u << 8)
+#define IWL_STA_FLG_MIMO_EN_MSK         (3u << 8)
+#define IWL_STA_FLG_MAX_AGG_SIZE_SHIFT  19
+#define IWL_STA_FLG_MAX_AGG_SIZE_64K    (3u << 19)
+#define IWL_STA_FLG_MAX_AGG_SIZE_MSK    (7u << 19)
+#define IWL_STA_FLG_AGG_MPDU_DENS_SHIFT 23
+#define IWL_STA_FLG_AGG_MPDU_DENS_4US   (5u << 23)
+#define IWL_STA_FLG_AGG_MPDU_DENS_MSK   (7u << 23)
+
+#define IWL_STA_MODIFY_TID_DISABLE_TX   (1u << 1)
+#define IWL_STA_MODIFY_ADD_BA_TID       (1u << 3)
+#define IWL_STA_MODIFY_REMOVE_BA_TID    (1u << 4)
+#define IWL_STA_MODIFY_QUEUES           (1u << 7)
+
+/* Rate-n-Flags (HT/VHT MCS) */
+#define IWL_RATE_MCS_HT_MSK             (1u << 8)
+#define IWL_RATE_MCS_CCK_MSK            (1u << 9)
+#define IWL_RATE_MCS_VHT_MSK            (1u << 26)
+#define IWL_RATE_MCS_CHAN_WIDTH_20      (0u << 11)
+#define IWL_RATE_MCS_CHAN_WIDTH_40      (1u << 11)
+#define IWL_RATE_MCS_CHAN_WIDTH_80      (2u << 11)
+#define IWL_RATE_MCS_SGI_MSK            (1u << 13)
+#define IWL_RATE_MCS_ANT_A_MSK          (1u << 14)
+#define IWL_RATE_MCS_ANT_B_MSK          (1u << 15)
+#define IWL_RATE_MCS_ANT_AB_MSK         (3u << 14)
+#define IWL_RATE_MCS_LDPC_MSK           (1u << 27)
+#define IWL_RATE_VHT_MCS_NSS_POS        4
+#define IWL_RATE_HT_MCS_INDEX(r)        ((uint32_t)(r) & 0x3Fu)
+
 typedef struct {
     uint8_t  add_modify;
     uint8_t  awake_acs;
@@ -810,6 +845,8 @@ pbuf_t *iwlwifi_poll_raw(void);
 void iwlwifi_recycle_raw(pbuf_t *p);
 int  iwlwifi_set_channel(uint8_t channel);
 int  iwlwifi_get_mac(uint8_t mac[6]);
+int  iwlwifi_configure_ht_vht(bool ht_en, bool vht_en, uint8_t chan_width, uint8_t rx_nss);
+int  iwlwifi_add_ba_session(uint8_t tid, uint16_t ssn, uint16_t buf_size);
 bool iwlwifi_is_detected(void);
 void iwlwifi_get_health(iwl_health_t *out);
 

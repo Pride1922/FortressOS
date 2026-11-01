@@ -172,7 +172,10 @@ void net_wifi_step(handoff_token_t t,handoff_request_t r) {
             wipe(&v->value.connect,sizeof(v->value.connect));
             break;
         case SYS_WIFI_CMD_DISCONNECT: rc=wlan_mgr_disconnect(); break;
-        case SYS_WIFI_CMD_LOAD_FW: rc=iwlwifi_load_firmware(v->firmware,v->firmware_size) ? 0 : -1; break;
+        case SYS_WIFI_CMD_LOAD_FW:
+            rc=wlan_mgr_load_firmware(v->firmware,v->firmware_size);
+            if (rc==-2) rc=iwlwifi_load_firmware(v->firmware,v->firmware_size) ? 0 : -1;
+            break;
         }
         result=rc ? SYSCALL_EIO : 0;
     }
