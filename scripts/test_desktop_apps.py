@@ -66,8 +66,8 @@ def run(firmware, smp):
                     guest.qmp.execute("input-send-event",{"events":[{"type":"btn","data":{"down":down,"button":"left"}}]})
                     time.sleep(.08)
 
-            def label(text,x=89,y=87,color=TEXT):
-                return wait_image(guest,lambda iw,ih,rgb:text_matches(rgb,iw,text,x,y,color))
+            def label(text,x=261,y=85,color=TEXT,background=PANEL):
+                return wait_image(guest,lambda iw,ih,rgb:text_matches(rgb,iw,text,x,y,color,background))
 
             def exit_desktop(scale=1):
                 start=len(guest.data)
@@ -75,23 +75,25 @@ def run(firmware, smp):
                 guest.wait(lambda s:"[COMPOSITOR] Event loop stopped" in s,start,timeout=20)
                 guest.wait(lambda s:s.endswith("$ "),start,timeout=20)
 
+            # Start menu opens Settings (Personalization tab by default).
             click(30,12);click(50,146)
-            label("Settings")
-            # Native scale, plain wallpaper, 12-hour clock, then atomic save.
-            click(215,203);click(360,276);click(280,348);click(135,413)
+            label("Personalization",261,85)
+
+            # Time & Language: select Brussels preset and save timezone via root helper.
+            click(162,220);label("Time & Language",261,85)
+            click(386,290);click(608,238);move(900,600)
+            label("System timezone saved;",261,405,MUTED)
+
+            # Personalization: native scale, plain black wallpaper, 12-hour clock, Apply & Save.
+            click(162,146);label("Personalization",261,85)
+            click(413,183);click(479,265);click(434,349);click(325,393)
             move(900,600)
-            label("Preferences saved.",89,447,MUTED)
+            label("Preferences saved.",261,423,MUTED)
             guest.qmp.execute("screendump",{"filename":str(ROOT/"build"/f"desktop-settings-{firmware}-{smp}.ppm")})
 
-            # Date & Time uses actual timezone validation and shared engine.
-            click(w-60,12);label("Date & Time")
-            click(270,288);click(515,238);move(900,600)
-            label("System timezone saved;",89,431,MUTED)
-            # Shared navigation opens Network. It is a real app, not a launch-only tile.
-            click(300,135);label("Network & Wi-Fi")
-            label("Default interface:",89,163,TEXT)
-            expected = "Wi-Fi unavailable on this hardware or driver"
-            label(expected,89,251,TEXT)
+            # Network & Internet sidebar tab check.
+            click(162,183);label("Network & Internet",261,85)
+            label("Ethernet (LAN)",311,131,TEXT,bytes.fromhex("282828"))
             guest.qmp.execute("screendump",{"filename":str(ROOT/"build"/f"desktop-network-{firmware}-{smp}.ppm")})
             exit_desktop()
             preferences=guest.command("cat /etc/desktop.conf")
@@ -103,13 +105,13 @@ def run(firmware, smp):
             _,_,screen=guest.screenshot()
             suffix_x=w-100+width("00:00 ")
             assert text_matches(screen,w,"AM",suffix_x,3) or text_matches(screen,w,"PM",suffix_x,3)
-            click(30,12);click(50,146);label("Settings")
+            click(30,12);click(50,146);label("Personalization",261,85)
             # Compare a selected Native button's interior with its known selected fill.
             _,_,screen=guest.screenshot()
-            assert pixel(screen,w,65+136+3,73+116+3)==bytes.fromhex("244b6e")
+            assert pixel(screen,w,375,179)==bytes.fromhex("244b6e")
             # Original wallpaper can be restored through the same saved preference.
-            click(145,276);click(135,413);move(900,600)
-            label("Preferences saved.",89,447,MUTED)
+            click(331,265);click(325,393);move(900,600)
+            label("Preferences saved.",261,423,MUTED)
             guest.qmp.execute("screendump",{"filename":str(ROOT/"build"/f"desktop-original-{firmware}-{smp}.ppm")})
             exit_desktop()
             assert "wallpaper=hello-world" in guest.command("cat /etc/desktop.conf")
@@ -117,8 +119,8 @@ def run(firmware, smp):
                 # Exercise the real runtime override and viewport, then recover
                 # native size through the GUI rather than editing a fixture file.
                 w,h,new_pos=launch();pos[:]=new_pos
-                click(30,12);click(50,146);label("Settings")
-                click(365,203);click(135,413);move(900,650)
+                click(30,12);click(50,146);label("Personalization",261,85)
+                click(517,183);click(325,393);move(900,650)
                 wait_image(guest,lambda iw,ih,rgb:pixel(rgb,iw,200,30)==PANEL)
                 exit_desktop(2)
                 assert "scale=large" in guest.command("cat /etc/desktop.conf")

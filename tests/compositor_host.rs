@@ -1896,3 +1896,227 @@ fn terminal_survives_arbitrary_output() {
         }
     }
 }
+
+/// Regression test: binary output without a trailing newline (e.g. cat of an ELF)
+/// followed by the shell's line redraw sequences must not drop or hide echoed
+/// characters or corrupt the active row.
+#[test]
+fn terminal_regression_binary_output_and_shell_redraw() {
+    for (w, h) in [(520, 280), (498, 234)] {
+        let stride = w + 16;
+        let mut pixels = vec![0u32; stride * h];
+        let mut c = canvas::Canvas::new(&mut pixels, w, h, stride).unwrap();
+
+        let mut term = terminal::Terminal::new();
+        let (cols, rows) = terminal::Terminal::grid_for(w, h);
+        term.set_dimensions(cols, rows);
+        term.render(&mut c);
+
+        // When clean, render_dirty must return None without clearing or redrawing.
+        assert_eq!(term.render_dirty(&mut c), None);
+
+        // 1. Feed binary output that ends without a newline and has arbitrary bytes
+        // including ESC, control characters and printable text (simulating `cat /bin/shm-test`).
+        if let Ok(elf) = std::fs::read("build/shm-test.elf") {
+            term.write_bytes(&elf);
+        } else {
+            // Standalone synthetic binary output without newline
+            let mut fake_elf = vec![0x7fu8, b'E', b'L', b'F'];
+            fake_elf.extend_from_slice(&[0x1b, 0x06, 0x00, 0x1b, 0xfd, 0xff, 0xff, b'A']);
+            fake_elf.extend_from_slice(b".shstrtab.text.rodata.bss@A!@\0\r\t(p");
+            term.write_bytes(&fake_elf);
+        }
+        let _ = term.render_dirty(&mut c);
+
+        // 2. Shell line-discipline draws the prompt and clears the line tail
+        let prompt = b"operator@fortress:/ $ ";
+        let plen = prompt.len();
+        let mut s = Vec::new();
+        s.extend_from_slice(b"\r\x1b[?25l");
+        s.extend_from_slice(prompt);
+        s.extend_from_slice(b"\x1b[K\r\x1b[");
+        s.extend_from_slice(format!("{}C\x1b[?25h", plen).as_bytes());
+        term.write_bytes(&s);
+        let _ = term.render_dirty(&mut c);
+
+        // 3. User types `echo alive > /tmp/x`: each keystroke invokes the shell's paint()
+        let command = b"echo alive > /tmp/x";
+        for i in 1..=command.len() {
+            let text = &command[..i];
+            let mut redraw = Vec::new();
+            redraw.extend_from_slice(b"\r\x1b[?25l");
+            redraw.extend_from_slice(prompt);
+            redraw.extend_from_slice(text);
+            redraw.extend_from_slice(b"\x1b[K\r\x1b[");
+            redraw.extend_from_slice(format!("{}C\x1b[?25h", plen + text.len()).as_bytes());
+            term.write_bytes(&redraw);
+
+            let dirty = term.render_dirty(&mut c);
+            assert!(dirty.is_some(), "keystroke {} must produce dirty damage", i);
+
+            // Active row grid must contain both the full prompt and typed command
+            let row_bytes = &term.grid[term.cursor_row][..cols];
+            let expected_prefix = [&prompt[..], text].concat();
+            assert!(
+                row_bytes.starts_with(&expected_prefix),
+                "keystroke {}: row does not start with expected text! Expected {:?}, got {:?}",
+                i,
+                String::from_utf8_lossy(&expected_prefix),
+                String::from_utf8_lossy(row_bytes)
+            );
+        }
+
+        // Full typed command must be intact in the grid
+        let final_row = &term.grid[term.cursor_row][..cols];
+        let full_expected = [&prompt[..], &command[..]].concat();
+        assert!(final_row.starts_with(&full_expected));
+    }
+}
+
+/// Tests FileManager with large directories (>16 entries) covering scrolling,
+/// keyboard selection, item click resolution, and bounds-checked canvas rendering.
+#[test]
+fn files_large_directory_scrolling_and_selection() {
+    let mut fm = files::FileManager::new("/test-large-dir");
+    fm.entries.clear();
+
+    // Populate with 80 entries (well beyond the legacy 16-slot limit)
+    for i in 0..80 {
+        fm.entries.push(files::FileEntry {
+            name: format!("document_{:03}.txt", i),
+            is_dir: i % 5 == 0,
+            is_exe: false,
+            size: (i as u64 + 1) * 1024,
+        });
+    }
+
+    assert_eq!(fm.entries.len(), 80);
+    assert_eq!(fm.selected, 0);
+    assert_eq!(fm.scroll, 0);
+
+    let h = 300;
+    let visible_rows = files::FileManager::rows_for(h);
+    assert!(visible_rows > 0);
+
+    // Scroll down to entry 50
+    for i in 1..=50 {
+        fm.selected = i;
+        fm.ensure_visible(visible_rows);
+    }
+    assert_eq!(fm.selected, 50);
+    assert!(fm.scroll > 0);
+    assert!(fm.selected >= fm.scroll && fm.selected < fm.scroll + visible_rows);
+
+    // Click on item at row 3 within visible viewport: cy = 26 + 3 * 20
+    let click_res = fm.handle_click(100, 26 + 3 * 20);
+    let expected_idx = fm.scroll + 3;
+    assert_eq!(fm.selected, expected_idx);
+    if fm.entries[expected_idx].is_dir {
+        assert_eq!(click_res, Some(files::FileAction::Refresh));
+    } else {
+        assert_eq!(
+            click_res,
+            Some(files::FileAction::OpenPath(format!(
+                "/test-large-dir/document_{:03}.txt",
+                expected_idx
+            )))
+        );
+    }
+
+    // Render large directory into canvas with pitch padding
+    let w = 400;
+    let stride = w + 27;
+    let mut pixels = vec![0u32; stride * h];
+    let mut c = canvas::Canvas::new(&mut pixels, w, h, stride).unwrap();
+    fm.render(&mut c);
+
+    for row in 0..h {
+        assert!(
+            pixels[row * stride + w..row * stride + stride]
+                .iter()
+                .all(|&p| p == 0),
+            "drawing leaked into pitch padding on row {}",
+            row
+        );
+    }
+}
+
+/// Tests FileManager handling of long file names (up to and beyond 63/64 bytes)
+/// ensuring full path integrity on enter_selected and safe glyph clipping.
+#[test]
+fn files_long_filenames_handling() {
+    let mut fm = files::FileManager::new("/test-long-names");
+    fm.entries.clear();
+
+    let name_63 = "a".repeat(63);
+    let name_64 = "b".repeat(64);
+    let name_128 = "c".repeat(128);
+    let name_255 = "d".repeat(255);
+
+    fm.entries.push(files::FileEntry {
+        name: name_63.clone(),
+        is_dir: false,
+        is_exe: false,
+        size: 100,
+    });
+    fm.entries.push(files::FileEntry {
+        name: name_64.clone(),
+        is_dir: false,
+        is_exe: false,
+        size: 200,
+    });
+    fm.entries.push(files::FileEntry {
+        name: name_128.clone(),
+        is_dir: true,
+        is_exe: false,
+        size: 0,
+    });
+    fm.entries.push(files::FileEntry {
+        name: name_255.clone(),
+        is_dir: false,
+        is_exe: false,
+        size: 400,
+    });
+
+    // 63-byte file open path
+    fm.selected = 0;
+    assert_eq!(
+        fm.enter_selected(),
+        Some(format!("/test-long-names/{}", name_63))
+    );
+
+    // 64-byte file open path
+    fm.selected = 1;
+    assert_eq!(
+        fm.enter_selected(),
+        Some(format!("/test-long-names/{}", name_64))
+    );
+
+    // 255-byte file open path
+    fm.selected = 3;
+    assert_eq!(
+        fm.enter_selected(),
+        Some(format!("/test-long-names/{}", name_255))
+    );
+
+    // 128-byte directory enter (modifies current_path and clears entries via refresh)
+    fm.selected = 2;
+    assert_eq!(fm.enter_selected(), None);
+    assert_eq!(fm.current_path, format!("/test-long-names/{}", name_128));
+
+    // Render with varying widths ensuring clipping
+    for (w, h) in [(180, 200), (450, 300)] {
+        let stride = w + 19;
+        let mut pixels = vec![0u32; stride * h];
+        let mut c = canvas::Canvas::new(&mut pixels, w, h, stride).unwrap();
+        fm.render(&mut c);
+
+        for row in 0..h {
+            assert!(
+                pixels[row * stride + w..row * stride + stride]
+                    .iter()
+                    .all(|&p| p == 0)
+            );
+        }
+    }
+}

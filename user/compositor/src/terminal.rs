@@ -82,12 +82,18 @@ impl Terminal {
                     self.ansi_params = [0; 4];
                     self.ansi_param_count = 0;
                     self.ansi_private = false;
+                } else if b == 0x1b {
+                    self.ansi_state = 1;
                 } else {
                     self.ansi_state = 0;
                 }
                 return;
             }
             2 => {
+                if b == 0x1b {
+                    self.ansi_state = 1;
+                    return;
+                }
                 if b == b'?' {
                     self.ansi_private = true;
                     return;
@@ -105,7 +111,9 @@ impl Terminal {
                     return;
                 }
                 if b == b';' {
-                    if self.ansi_param_count < 4 {
+                    if self.ansi_param_count == 0 {
+                        self.ansi_param_count = 2;
+                    } else if self.ansi_param_count < 4 {
                         self.ansi_param_count += 1;
                     }
                     return;
@@ -309,11 +317,13 @@ impl Terminal {
     /// Redraws changed rows; returns the content rows touched as (y, h).
     pub fn render_dirty(&mut self, c: &mut Canvas) -> Option<(usize, usize)> {
         let (width, height) = (c.width, c.height);
-        if self.full_dirty || self.dirty_min_row > self.dirty_max_row {
+        if self.full_dirty {
             self.full_dirty = false;
             self.dirty_min_row = 0;
             self.dirty_max_row = self.rows.saturating_sub(1);
             c.fill(TERM_BG);
+        } else if self.dirty_min_row > self.dirty_max_row {
+            return None;
         }
 
         let start_row = self.dirty_min_row.min(self.rows.saturating_sub(1));
