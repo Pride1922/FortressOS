@@ -48,11 +48,11 @@ def main():
             args.templates=Path(run(['python3','scripts/create_installer_payload.py','--kernel',args.artifacts/'fortress.elf','--bootstrap',args.artifacts/'initramfs.tar']).strip().splitlines()[-1])
         manifest['templates']=str(args.templates)
         binary=out/'host'
-        run(['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-no-pie','-pthread',
+        run(['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-no-pie','-pthread','-DFORTRESS_PKG_ENGINE=0',
             '-ffunction-sections','-fdata-sections','-Wl,--gc-sections','-Itests/ext4_host','-Itests/host','-Isrc/include','-Isrc/lib',
             '-Isrc/fs','-Isrc/drivers','-Isrc/mm','-Isrc/kernel','-Isrc/arch/x86_64','tests/install_runtime_host.c',
             'tests/ext4_fault_disk.c','src/kernel/install_runtime.c','src/kernel/install_log.c','src/kernel/root_boot.c','src/fs/gpt.c',
-            'src/lib/crc32.c','src/lib/account_redo.c','src/lib/install_payload.c','src/lib/install_expand.c','src/lib/install_archive.c','src/lib/install_fat.c',
+            'src/lib/kernel_update.c','src/lib/crc32.c','src/lib/account_redo.c','src/lib/install_payload.c','src/lib/install_expand.c','src/lib/install_archive.c','src/lib/install_fat.c',
             'user/tools/userdb.c','user/tools/digest.c','-o',binary])
         # Native WSL I/O; retain output even when assertions/audits fail.
         with tempfile.TemporaryDirectory(prefix='fortress-install-runtime-') as tmp:

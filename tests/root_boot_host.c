@@ -46,6 +46,9 @@ int main(void) {
     struct limine_module_response mr={.module_count=2,.modules=modules};boot_info_t info;
     boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);
     assert(info.installed_modules_valid && info.initramfs_vaddr==(uint64_t)bootstrap.address);
+    readiness.path="/boot/ready-b.v1";boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(info.installed_modules_valid);
+    readiness.path="/boot/arbitrary.v1";boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installed_modules_valid);
+    readiness.path="/boot/readiness.v1";
     modules[0]=&bootstrap;boot_info_init(&info,NULL,NULL,NULL,NULL,NULL,&mr,&kr);assert(!info.installed_modules_valid);
     memcpy(cmd,"boot_mode=installer",20);kernel.media_type=bootstrap.media_type=LIMINE_MEDIA_TYPE_OPTICAL;
     mr.module_count=1;modules[0]=&bootstrap;

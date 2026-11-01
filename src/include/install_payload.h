@@ -49,6 +49,9 @@ typedef struct {
      * Slot is relative to ESP, sector-aligned, exact 512-byte file. Adapter must
      * validate its FAT chain, entry, both FATs and slot location before admission. */
     uint64_t readiness_lba;
+    /* Optional A/B bank readiness, published only after root provisioning and
+     * complete payload verification. Zero preserves legacy single-slot order. */
+    uint64_t secondary_readiness_lba;
     /* Zero preserves legacy fixed-root fixtures. Otherwise partition sectors;
      * filesystem expansion is owned by the exclusive provisioning callback. */
     uint64_t root_sectors;

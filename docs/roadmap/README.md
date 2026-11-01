@@ -24,6 +24,8 @@ Graphics foundation: [ownership, mapping and dynamic-heap hardening](graphics-fo
 
 Network SMP integration: [Phase 2B UDP/DNS](network-smp-phase2b.md), [Phase 2C client/stream](network-smp-phase2c.md), [Phase 2D listener/lifecycle](network-smp-phase2d.md), [Phase 3 unpinned rollout](network-smp-phase3.md), and [Phase 4 Dell physical acceptance](network-smp-phase4.md).
 
+Offline kernel update USB prototype: [two-slot boot and package update acceptance](offline-kernel-update.md). Kernel-only; physical laptop acceptance remains separate.
+
 Persistent root / NVMe installer: [Phase 0 contracts](persistent-root-phase0.md), [Phase 1 namespace](persistent-root-phase1.md), [Phase 2 installed boot](persistent-root-phase2.md), [Phase 3 durable accounts](persistent-root-phase3.md), and [Phase 4 runtime deployment](persistent-root-phase4.md).
 
 ext4 Hardening: [Atomic replace (EH-2)](ext4-atomic-replace.md), [Durability & health (EH-3)](ext4-durability-health.md), [Package-scale verification (EH-4)](ext4-package-scale.md), and [Directory rename / relocation (EH-6)](ext4-directory-rename.md).

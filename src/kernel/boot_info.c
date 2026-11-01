@@ -128,7 +128,7 @@ void boot_info_init(boot_info_t *out_info,
                 out_info->has_initramfs=true;out_info->initramfs_vaddr=(uint64_t)m->address;
                 out_info->initramfs_size=m->size;
                 out_info->initramfs_paddr=hhdm_resp ? (uint64_t)m->address-hhdm_resp->offset : 0;
-            } else if (!strcmp(base,"readiness.v1") && !strcmp(m->cmdline,"role=readiness") &&
+            } else if ((!strcmp(base,"readiness.v1") || !strcmp(base,"ready-b.v1")) && !strcmp(m->cmdline,"role=readiness") &&
                 m->size==512 && !out_info->readiness_vaddr) {
                 out_info->readiness_vaddr=(uint64_t)m->address;out_info->readiness_size=m->size;
             } else good=false;

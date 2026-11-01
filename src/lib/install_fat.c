@@ -14,7 +14,7 @@ static bool cluster_valid(const install_fat_work_t *w,uint32_t c) {return c>=2 &
 static uint32_t cluster_offset(const install_fat_work_t *w,uint32_t c) {return w->data+(c-2)*w->cluster_bytes;}
 static uint32_t next(const uint8_t *b,const install_fat_work_t *w,uint32_t c) {return u32(b+w->fat+c*4)&0xfffffff;}
 static bool claim(install_fat_work_t *w,uint32_t c) {
-    if (!cluster_valid(w,c) || (w->owned[c/8]&(1u<<(c%8)))) return false;
+    if (!cluster_valid(w,c) || cluster_offset(w,c)>w->backing_bytes-w->cluster_bytes || (w->owned[c/8]&(1u<<(c%8)))) return false;
     w->owned[c/8]|=(uint8_t)(1u<<(c%8));return true;
 }
 static bool file_chain(const uint8_t *b,install_fat_work_t *w,uint32_t c,uint32_t size) {
@@ -115,9 +115,11 @@ static bool directory(const uint8_t *b,install_fat_work_t *w,uint32_t c,const ch
                 if (size || !directory(b,w,first,path,depth+1,depth ? self : 0)) return false;
             } else {
                 if (!file_chain(b,w,first,size)) return false;
+                if (!strcmp(path,"boot/kernel-b.elf")) {w->bank_first=first;w->bank_size=size;}
+                if (!strcmp(path,"boot/ready-b.v1")) {w->ready_b_first=first;w->ready_b_size=size;}
                 if (!strcmp(path,"boot/fortress.elf")) {w->kernel_first=first;w->kernel_size=size;}
                 for (unsigned i=0;i<INSTALL_FAT_SLOTS;i++) if (!strcmp(path,paths[i])) {
-                    if ((w->found&(1u<<i)) || size!=sizes[i] || (e[11]&7)) return false;
+                    if ((w->found&(1u<<i)) || (!w->installed && size!=sizes[i]) || !size || size>sizes[i] || (e[11]&7)) return false;
                     w->found|=1u<<i;w->entry[i]=base+off;w->first[i]=first;w->capacity[i]=size;
                 }
             }
@@ -129,15 +131,16 @@ static bool directory(const uint8_t *b,install_fat_work_t *w,uint32_t c,const ch
     }
     return false;
 }
-int install_fat_validate(const void *bytes,size_t n,install_fat_work_t *w) {
-    if (!bytes || !w || n!=INSTALL_FAT_BYTES || !disjoint(bytes,n,w,sizeof(*w))) return -1;
-    memset(w,0,sizeof(*w));const uint8_t *b=bytes;
+static int validate(const void *bytes,size_t n,install_fat_work_t *w,bool installed) {
+    if (!bytes || !w || (installed ? (n<1024*1024 || n>INSTALL_FAT_BYTES) : n!=INSTALL_FAT_BYTES) || !disjoint(bytes,n,w,sizeof(*w))) return -1;
+    memset(w,0,sizeof(*w));w->installed=installed;w->backing_bytes=n;const uint8_t *b=bytes;
     uint32_t spc=b[13],reserved=u16(b+14),fat=u32(b+36),total=u32(b+32);
     if (u16(b+11)!=512 || !spc || (spc&(spc-1)) || spc>128 || reserved<8 || b[16]!=2 ||
-        u16(b+17) || u16(b+19) || u16(b+22) || u16(b+40) || u16(b+42) || total!=n/512 ||
+        u16(b+17) || u16(b+19) || u16(b+22) || u16(b+40) || u16(b+42) || total!=INSTALL_FAT_BYTES/512 ||
         !fat || fat>(total-reserved)/2 || b[510]!=0x55 || b[511]!=0xaa) return -1;
+    if ((uint64_t)(reserved+2*fat)*512>n) return -1;
     w->fat=reserved*512;w->fat_sectors=fat;w->data=(reserved+2*fat)*512;
-    w->cluster_bytes=spc*512;w->clusters=(uint32_t)(n-w->data)/w->cluster_bytes;
+    w->cluster_bytes=spc*512;w->clusters=(uint32_t)(INSTALL_FAT_BYTES-w->data)/w->cluster_bytes;
     w->root=u32(b+44);w->fsinfo=u16(b+48)*512;w->backup=u16(b+50)*512;
     if (w->clusters<65525 || w->clusters+2>INSTALL_FAT_BITMAP_BYTES*8 ||
         w->clusters+2>fat*128 || !cluster_valid(w,w->root) || w->fsinfo<512 ||
@@ -157,6 +160,16 @@ int install_fat_validate(const void *bytes,size_t n,install_fat_work_t *w) {
      * Personalization always replaces both hints with exact freshly counted values. */
     return 0;
 }
+int install_fat_validate(const void *b,size_t n,install_fat_work_t *w) {return validate(b,n,w,false);}
+int install_fat_inspect(const void *b,size_t n,install_fat_work_t *w) {return validate(b,n,w,true);}
+int install_fat_banked(const install_fat_work_t *w) {
+    if (!w->bank_size && !w->ready_b_size) return 0;
+    return w->kernel_size==8u*1024*1024 && w->bank_size==w->kernel_size && w->ready_b_size==512 ? 1 : -1;
+}
+int install_fat_bank_readiness_lba(const install_fat_work_t *w,uint64_t *lba) {
+    if (!w || !lba || install_fat_banked(w)!=1 || w->cluster_bytes!=512 || !cluster_valid(w,w->ready_b_first)) return -1;
+    *lba=cluster_offset(w,w->ready_b_first)/512;return 0;
+}
 int install_fat_kernel_matches(const void *bytes,size_t n,const void *kernel,size_t kn,install_fat_work_t *w) {
     if (!kernel || !kn || kn>32u*1024*1024 || install_fat_validate(bytes,n,w) || w->kernel_size!=kn) return -1;
     const uint8_t *b=bytes,*k=kernel;uint32_t c=w->kernel_first;size_t at=0;
@@ -165,6 +178,15 @@ int install_fat_kernel_matches(const void *bytes,size_t n,const void *kernel,siz
         size_t take=kn-at;if (take>w->cluster_bytes) take=w->cluster_bytes;
         if (memcmp(b+cluster_offset(w,c),k+at,take)) return -1;
         at+=take;c=next(b,w,c);
+    }
+    if (install_fat_banked(w)<0) return -1;
+    if (install_fat_banked(w)==1) {
+        c=w->bank_first;at=0;
+        while (at<kn) {
+            size_t take=kn-at;if (take>w->cluster_bytes) take=w->cluster_bytes;
+            if (memcmp(b+cluster_offset(w,c),k+at,take)) return -1;
+            at+=take;c=next(b,w,c);
+        }
     }
     return 0;
 }

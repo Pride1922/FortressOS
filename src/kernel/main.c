@@ -1,4 +1,5 @@
 #include "install_control.h"
+#include "kernel_release.h"
 #include "input.h"
 #include "types.h"
 #include "limine.h"
@@ -4911,6 +4912,7 @@ void kmain(void) {
 
     /* 1. Initialize COM1 Serial Port (0x3F8) */
     int serial_status = serial_init();
+    serial_puts("[KERNEL RELEASE] " FORTRESS_KERNEL_RELEASE "\n");
 
     /* Check early bootloader command line for verbose flag */
     if (kernel_file_request.response && kernel_file_request.response->kernel_file &&

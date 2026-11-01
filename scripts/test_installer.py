@@ -137,7 +137,13 @@ def install(out,media,firmware,capacity,manifest,exercise_inputs=False,reject=No
                 if host_prompt>=hostname_seen and ']: ' in text()[host_prompt:]:
                     hostname_seen=len(text());send(hostname)
                 assert not any(s in text() for s in ('KERNEL PANIC','[PROCESS FAULT]','[FATAL]')),text()[-6000:]
-                if reject is None:assert 'No admitted ' not in text() and 'Installation failed.' not in text(),text()[-6000:]
+                if reject is None:
+                    assert 'No admitted ' not in text(),text()[-6000:]
+                    if 'Installation failed.' in text():
+                        # Drain the existing diagnostic line before terminating
+                        # QEMU; the screen title can arrive in an earlier read.
+                        assert not re.search(r'Details: stage [^\n]+\n',text()),text()[-6000:]
+                        continue
                 assert 'Payload validation failed' not in text() and (reject=='timeout' or 'Installation failed at stage' not in text()),text()[-6000:]
                 if any(m in text()[start:] for m in (marker if isinstance(marker,tuple) else (marker,))):return
                 assert proc.poll() is None,text()[-6000:]

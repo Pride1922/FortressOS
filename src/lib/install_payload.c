@@ -50,7 +50,8 @@ static bool uuid(const uint8_t *p) {
 static int plan_valid(const install_target_t *t,const install_plan_t *p) {
     if (!t || !p || t->sector_size!=512 || t->sectors<INSTALL_MIN_SECTORS ||
         t->sectors>UINT64_MAX/512 || !t->admit || !t->read || !t->write || !t->flush || !t->provision ||
-        p->readiness_lba>=INSTALL_ESP_BYTES/512 || !uuid(p->disk_guid) || zero(p->readiness,512)) return BAD;
+        p->readiness_lba>=INSTALL_ESP_BYTES/512 || p->secondary_readiness_lba>=INSTALL_ESP_BYTES/512 ||
+        (p->secondary_readiness_lba && p->secondary_readiness_lba==p->readiness_lba) || !uuid(p->disk_guid) || zero(p->readiness,512)) return BAD;
     if (p->root_sectors && (p->root_sectors<INSTALL_ROOT_BYTES/512 || p->root_sectors>t->sectors-33-INSTALL_ROOT_LBA)) return BAD;
     const uint8_t *ids[4]={p->disk_guid,p->partition_guid[0],p->partition_guid[1],p->partition_guid[2]};
     for (unsigned i=0;i<4;i++) {
@@ -95,6 +96,10 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
         uint8_t slot[512];
         r=exact(source->read(source->context,INSTALL_ESP,plan->readiness_lba*512,slot,sizeof(slot)));
         if (!r && !zero(slot,sizeof(slot))) r=BAD;
+        if (!r && plan->secondary_readiness_lba) {
+            r=exact(source->read(source->context,INSTALL_ESP,plan->secondary_readiness_lba*512,slot,sizeof(slot)));
+            if (!r && !zero(slot,sizeof(slot))) r=BAD;
+        }
     }
     if (r || dry_run) {result->error=r;return r;}
     /* Caller keeps its source immutable for the whole operation. The engine also
@@ -131,6 +136,9 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
         for (uint64_t off=0;off<lengths[role];off+=INSTALL_CHUNK_BYTES) {
             r=exact(source->read(source->context,(install_role_t)role,off,data,INSTALL_CHUNK_BYTES));if (r) goto done;
             if (!digest_update(&d,data,INSTALL_CHUNK_BYTES)) {r=BAD;goto done;}
+            if (role==INSTALL_ESP && plan->secondary_readiness_lba && off<=plan->secondary_readiness_lba*512 &&
+                plan->secondary_readiness_lba*512-off<INSTALL_CHUNK_BYTES &&
+                !zero(data+plan->secondary_readiness_lba*512-off,512)) {r=BAD;goto done;}
             if (role==INSTALL_ESP && off<=plan->readiness_lba*512 && plan->readiness_lba*512-off<INSTALL_CHUNK_BYTES &&
                 !zero(data+plan->readiness_lba*512-off,512)) {r=BAD;goto done;}
             r=checked_write(target,starts[role]+off/512,8,data,verify);if (r) goto done;
@@ -176,10 +184,13 @@ int install_payload_deploy(const void *bytes,size_t n,const install_source_t *so
         memset(data,0,INSTALL_CHUNK_BYTES);
     }
     r=exact(target->flush(target->context));if (r) goto done;
-    r=checked_write(target,INSTALL_ESP_LBA+plan->readiness_lba,1,plan->readiness,verify);if (r) goto done;
-    r=exact(target->flush(target->context));if (r) goto done;
-    r=exact(target->read(target->context,INSTALL_ESP_LBA+plan->readiness_lba,1,verify));if (r) goto done;
-    if (memcmp(plan->readiness,verify,512)) {r=IO;goto done;}
+    const uint64_t readiness[2]={plan->secondary_readiness_lba,plan->readiness_lba};
+    for (unsigned i=plan->secondary_readiness_lba ? 0 : 1;i<2;i++) {
+        r=checked_write(target,INSTALL_ESP_LBA+readiness[i],1,plan->readiness,verify);if (r) goto done;
+        r=exact(target->flush(target->context));if (r) goto done;
+        r=exact(target->read(target->context,INSTALL_ESP_LBA+readiness[i],1,verify));if (r) goto done;
+        if (memcmp(plan->readiness,verify,512)) {r=IO;goto done;}
+    }
     result->stage=INSTALL_STAGE_COMPLETE;if (target->progress) target->progress(target->context,INSTALL_STAGE_COMPLETE);result->complete=true;
 done:
     result->error=r;return r;

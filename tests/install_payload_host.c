@@ -13,6 +13,7 @@
 /* Labelled file-device adapter: accepted sectors persist immediately. Flush is
  * fsync, faults return before dispatch unless 'after' is selected. No NVMe,
  * volatile-cache, IRQ, sector-tear or filesystem provisioning claim. */
+static bool two_slots;
 static const uint64_t sizes[]={INSTALL_ESP_BYTES,INSTALL_ROOT_BYTES,INSTALL_BIOS_BYTES,440};
 typedef struct {
     int fd;
@@ -28,7 +29,7 @@ static void hash(const void *p,size_t n,uint8_t out[32]) {
 }
 static void pattern(install_role_t role,uint64_t off,void *bytes,size_t n) {
     uint8_t *p=bytes;
-    for (size_t i=0;i<n;i++) p[i]=(role==INSTALL_ESP && off+i>=4096 && off+i<4608) ? 0 : (uint8_t)(role+off+i);
+    for (size_t i=0;i<n;i++) p[i]=(role==INSTALL_ESP && off+i>=4096 && off+i<(two_slots ? 5120u : 4608u)) ? 0 : (uint8_t)(role+off+i);
 }
 static int source_read(void *ctx,install_role_t role,uint64_t off,void *bytes,size_t n) {
     fixture_t *f=ctx;f->source_reads++;
@@ -62,6 +63,7 @@ static int provision(void *ctx) {
     fixture_t *f=ctx;f->provisions++;
     uint8_t slot[512];assert(!read_disk(ctx,INSTALL_ESP_LBA+8,1,slot));
     for (unsigned i=0;i<512;i++) assert(!slot[i]);
+    if (two_slots) {assert(!read_disk(ctx,INSTALL_ESP_LBA+9,1,slot));for (unsigned i=0;i<512;i++) assert(!slot[i]);}
     return f->fail_provision ? -28 : 0;
 }
 static void manifest(uint8_t m[256]) {
@@ -132,6 +134,20 @@ int main(int argc,char **argv) {
     assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-5 && !result.complete && f.writes==80);cases++;
     reset(&f,sectors);f.corrupt_read=1;
     assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-5 && result.stage==INSTALL_STAGE_LAYOUT && !result.complete);cases++;
+    two_slots=true;manifest(m);p.secondary_readiness_lba=9;
+    reset(&f,sectors);assert(!install_payload_deploy(m,256,&src,&t,&p,false,work,&result));
+    assert(result.complete && f.flushes==5 && f.provisions==1);
+    uint64_t final_writes=f.writes;uint8_t slot[512];
+    for (unsigned which=0;which<2;which++) {
+        reset(&f,sectors);f.fail_write=final_writes-1+which;
+        assert(install_payload_deploy(m,256,&src,&t,&p,false,work,&result)==-5 && !result.complete);
+        assert(f.writes==final_writes-1+which && f.provisions==1);
+        assert(!read_disk(&f,INSTALL_ESP_LBA+8,1,slot));for (unsigned i=0;i<512;i++) assert(!slot[i]);
+        assert(!read_disk(&f,INSTALL_ESP_LBA+9,1,slot));
+        if (which) assert(!memcmp(slot,p.readiness,512));else for (unsigned i=0;i<512;i++) assert(!slot[i]);
+        cases++;
+    }
+    two_slots=false;p.secondary_readiness_lba=0;manifest(m);
     /* Leave the successful actual-engine output for an independent Python oracle. */
     reset(&f,sectors);assert(!install_payload_deploy(m,256,&src,&t,&p,false,work,&result));
     assert(result.complete && result.stage==INSTALL_STAGE_COMPLETE && result.copied_bytes==INSTALL_ESP_BYTES+(uint64_t)INSTALL_ROOT_BYTES+INSTALL_BIOS_BYTES);

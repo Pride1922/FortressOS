@@ -22,6 +22,7 @@ FS_UUID='813ea876-9933-4e1c-ae62-2f6c0f90a441'
 
 def main():
     parser=argparse.ArgumentParser()
+    parser.add_argument('--banked-kernel',action='store_true',help='Enroll two identical fixed 8 MiB kernel banks')
     parser.add_argument('--kernel',type=Path,default=ROOT/'bin/fortress.elf')
     parser.add_argument('--bootstrap',type=Path,default=ROOT/'bin/initramfs.tar')
     args=parser.parse_args()
@@ -111,6 +112,19 @@ def main():
         esp=out/'esp.img';fixture.create_esp_partition(esp,None,ROOT/'limine',args.kernel,bootstrap,config,None)
         run(['mren','-i',esp,'::boot/initramfs.tar','bootstrap.tar'])
         run(['mdel','-i',esp,'::initramfs.tar'])
+        if args.banked_kernel:
+            assert args.kernel.stat().st_size==8*1024*1024
+            # Repack once on the host so all allocations fit in the updater's
+            # bounded 32 MiB prefix. The runtime never allocates or edits FATs.
+            run(['mformat','-i',esp,'-F','-v','FORTRESS_ESP','::'])
+            for name in ('boot','boot/limine','efi','efi/boot'):run(['mmd','-i',esp,'::/'+name])
+            for source,names in ((args.kernel,('boot/fortress.elf','boot/kernel-b.elf')),
+                                 (bootstrap,('boot/bootstrap.tar',)),
+                                 (ROOT/'limine/BOOTX64.EFI',('efi/boot/bootx64.efi',)),
+                                 (ROOT/'limine/limine-bios.sys',('limine-bios.sys','boot/limine-bios.sys','boot/limine/limine-bios.sys')),
+                                 (config,('limine.conf','boot/limine.conf','boot/limine/limine.conf','efi/boot/limine.conf')),
+                                 (readiness,('boot/ready-b.v1',))):
+                for name in names:run(['mcopy','-i',esp,source,'::/'+name])
         run(['mcopy','-i',esp,readiness,'::boot/readiness.v1'])
         data=bytearray(esp.read_bytes());fi=struct.unpack_from('<H',data,48)[0]*512;backup=struct.unpack_from('<H',data,50)[0]*512
         data[backup+fi:backup+fi+512]=data[fi:fi+512];esp.write_bytes(data)

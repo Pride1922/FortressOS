@@ -79,6 +79,8 @@ static bool simulate_upgrade_install;
 static bool simulate_base_collision;
 static bool simulate_tampered_artifact;
 static long injected_install_error;
+static long injected_acquire_error;
+static unsigned acquire_calls;
 
 static uint64_t g_session_counter = 100;
 static uint64_t g_active_session = 0;
@@ -228,6 +230,8 @@ long tool_syscall(long call, uintptr_t a, uintptr_t b, uintptr_t c) {
         pkg_result_v1 *r = (pkg_result_v1 *)b;
         if (q->operation == PKG_ACQUIRE) {
             assert(q->version == 1);
+            acquire_calls++;
+            if(injected_acquire_error)return injected_acquire_error;
             g_active_session = ++g_session_counter;
             *r = (pkg_result_v1){
                 .size = sizeof *r,
@@ -299,6 +303,7 @@ static void init_mock_fs(void) {
     simulate_base_collision = false;
     simulate_tampered_artifact = false;
     injected_install_error=0;
+    injected_acquire_error=0;acquire_calls=0;
 
     /* Populate /etc/pkg/repository.conf */
     mock_file_t *rf = create_file("/etc/pkg/repository.conf", 0644, 0);
@@ -558,6 +563,20 @@ int main(int argc, char **argv) {
         assert(g_install_source_calls==(scenario>=3?0u:1u));
     }
     puts("PASS upgrade frontend: v3 request, previous-source fetch, no-op, verification/download failure cleanup");
-    puts("\nALL STAGE 2 HOST TESTS PASSED (20/20)");
+    const long acquire_errors[]={SYSCALL_EAGAIN,SYSCALL_EACCES,SYSCALL_EOPNOTSUPP,SYSCALL_EIO,SYSCALL_ENOMEM};
+    const char *acquire_messages[]={"backend is busy","session denied","backend unavailable in this kernel",
+        "could not read a valid package state","insufficient memory reading package state"};
+    for(unsigned form=0;form<3;form++)for(unsigned i=0;i<sizeof acquire_errors/sizeof *acquire_errors;i++) {
+        init_mock_fs();injected_acquire_error=acquire_errors[i];
+        char *cached[]={"pkg",form==1?"upgrade":"install","rot13",NULL};
+        char *explicit_source[]={"pkg","install","rot13","/staging",NULL};
+        assert(pkg_system_main(form==2?4:3,form==2?explicit_source:cached)!=0);
+        assert(acquire_calls==1&&!g_active_session&&!open_fds&&!spawn_count&&!g_install_source_calls);
+        assert(strstr(captured_output,acquire_messages[i]));
+        char code[32];snprintf(code,sizeof code,"kernel error %ld",acquire_errors[i]);
+        assert(strstr(captured_output,code));
+    }
+    puts("PASS acquisition diagnostics: busy, denial, unavailable, I/O and OOM; no automatic retry or mutation");
+    puts("\nALL STAGE 2 HOST TESTS PASSED (21/21)");
     return 0;
 }

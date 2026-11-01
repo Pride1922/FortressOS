@@ -105,8 +105,9 @@ separate user-operated test after the required kernel/CLI refresh.
   v3 copied sources, concurrent status-busy behavior, error cleanup and stack gate.
 - New compiled frames: upgrade 768 B, upgrade stage helper 672 B, service 608 B,
   previous-source frontend 576 B. No new frame exceeds 1024 B.
-- `make -j4`: normal kernel/CLI/media build. No QEMU campaign added, following
-  the existing Dell-first POC plan. Test code and keys remain outside normal media.
+- `make -j4`: normal kernel/CLI/media build. The initial delivery followed the
+  Dell-first POC plan; the subsequent QEMU campaign is recorded below. Test code
+  and keys remain outside normal media.
 
 Earlier exploratory low-space testing modified an in-memory descriptor counter
 and produced EIO rather than a valid full-filesystem condition; that fixture was
@@ -124,3 +125,90 @@ Final transport evidence: `.codex-remote-attachments/pkg-system-host-20261031-09
 records runtime/source preservation PASS. The final media build uses
 `build/root-phase4/media-u0u6vg5p`; the normal ISO/raw image contain the matching
 kernel and upgrade-capable CLI. Build outputs are local artifacts, not git inputs.
+
+## Fresh-image QEMU upgrade acceptance (2026-10-31)
+
+`scripts/test_pkg_upgrade_qemu.py` now creates a normal installed-root disk,
+downloads and installs the real `rot13` 1.0 through `/bin/pkg`, shuts down, and
+retains that bootable baseline. A private signed HTTP repository then offers 2.0
+while retaining the 1.0 object. Every upgrade starts from a separate baseline
+copy, verifies 1.0 after boot, runs `pkg update`, `pkg get rot13`, and privileged
+`pkg upgrade rot13`, checks version 2.0, filter output, new `--help` and a verified
+up-to-date repeat. A second boot verifies 2.0 as the ordinary operator.
+
+BIOS/UEFI × SMP=1/4 PASS under QEMU/KVM: four upgrade/reboot pairs, plus the
+initial 1.0 installation boot. Every shutdown passes Linux `e2fsck -fn`,
+byte-exact executable and CLI comparison, installed-record checksum/build checks,
+and preservation of account files, repository configuration and a user note.
+The original 1.0 image hash remains unchanged. No kernel or production userland
+behavior was modified for this test.
+
+The Makefile entry point also passes under TCG (BIOS, SMP=1):
+`make test-pkg-upgrade-qemu PKG_UPGRADE_QEMU_ARGS="--firmware bios --cpus 1 --port 18081"`.
+Evidence: `build/pkg-upgrade-qemu/gate-7cr0ueqc/manifest.json`, including a fresh
+1.0 installation, upgrade/no-op and reboot with the same Linux oracles.
+
+Evidence: `build/pkg-upgrade-qemu/gate-h8sijlvq/manifest.json`. The retained
+`fortress-rot13-1.0.img` is a 384 MiB installed QEMU test disk, not installer
+media. It uses explicitly disposable credentials (`operator` / `qemu-pkg-test`)
+and a test repository public key; the ephemeral signing key is never written to
+disk. The directory includes the public 2.0 repository, both signed catalogs,
+QEMU argv, serial/action/HTTP logs, filesystem oracles and `README.txt`.
+
+Reproduce on a Linux build host with Python cryptography, QEMU, OVMF, e2fsprogs,
+mtools and the normal build toolchain:
+
+```sh
+make test-pkg-upgrade-qemu
+# Optional acceleration when /dev/kvm is available:
+make test-pkg-upgrade-qemu PKG_UPGRADE_QEMU_ARGS="--accel kvm"
+```
+
+The default uses TCG and covers BIOS/UEFI × SMP=1/4. Every boot attaches exactly
+one disposable regular-file NVMe disk, with no additional data disk or physical
+device. The test HTTP server stops at completion; restart it using the retained
+README to test another copy manually. This closes the fresh-image QEMU gap;
+Dell upgrade/reboot acceptance remains separate.
+
+## Flashable installer with the 1.0 baseline
+
+`scripts/create_rot13_installer.py` builds
+`bin/fortress-rot13-1.0-installer.img`, a real USB installer with the existing
+published 1.0 package preinstalled in the root template. Normal account creation,
+repository configuration, filesystem expansion and kernel behavior remain.
+The package backend, EXT4 and JBD2 seed the image through a private host adapter
+under ASan/UBSan; no copied inventory or manual executable placement substitutes
+for installation. The producer authenticates the seed with the already-public
+demo repository identity and retains the original trust policy.
+
+The initial candidate consumed the template's deliberately free descriptor-growth
+padding, which the unchanged installer correctly refused to expand. Failed image
+and runtime evidence remain as `bin/fortress-rot13-1.0-installer.failed-padding.*`
+and `build/rot13-installer/accept-hip_oa3u/`. The corrected host source copy skips
+those padding blocks during seed allocation, in addition to setting its test
+clock. Shipped allocation code is untouched. Actual unchanged expansion on a
+seed copy and Linux `e2fsck` now precede media packaging.
+
+The candidate's receipt is `bin/fortress-rot13-1.0-installer.manifest.json`;
+runtime acceptance is required before its result becomes `PASS`.
+`make test-rot13-installer` exercises copies of the shipped USB image through
+normal BIOS/UEFI installation, account personalization, boot with 1.0, upgrade
+from the real HTTPS repository at SMP=4, verified no-op and reboot. It uses only
+regular-file USB/NVMe devices without a private installer write bypass. The
+receipt links the runtime evidence and image SHA-256. See
+[Bazzite flashing and upgrade instructions](../rot13-upgrade-bazzite.md).
+
+Final candidate SHA-256:
+`17a45575fdf65c8c46fe1c612955bd61693555b8ddf246484652839563f5046f`.
+`make test-rot13-installer` PASS for BIOS and UEFI, including real USB-to-NVMe
+installation, exact preinstalled 1.0 ELF, live repository upgrade/no-op, SMP=4
+reboot and Linux filesystem/record/account oracles. Runtime evidence:
+`build/rot13-installer/accept-m6vbo3it/manifest.json`. Physical installation and
+upgrade remain user-operated; no physical device was written during this work.
+
+2026-11-01: the user confirmed physical 1.0 → 2.0 upgrade and reboot persistence
+PASS. The first acquisition attempt failed and the second succeeded; its generic
+CLI diagnostic did not retain the original error code. The subsequent
+[session-acquisition investigation](../roadmap/pkg-session-acquire.md) records
+the missing filesystem exclusion, corrected diagnostics, before/final evidence
+and the boundary between the accepted old image and the new local kernel build.

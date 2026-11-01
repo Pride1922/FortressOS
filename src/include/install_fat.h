@@ -16,6 +16,9 @@ typedef struct {
     unsigned found;
     unsigned names;
     uint32_t kernel_first,kernel_size;
+    uint32_t bank_first,bank_size,ready_b_first,ready_b_size;
+    size_t backing_bytes;
+    bool installed;
     uint8_t name_hashes[8192][16];
 } install_fat_work_t;
 typedef struct {
@@ -25,6 +28,14 @@ typedef struct {
 /* Slots: /boot/bootstrap.tar 8MiB, /boot/readiness.v1 512 bytes;
  * four /limine.conf copies at root, boot, boot/limine and EFI/BOOT: 4KiB.
  * On rejection the template is untouched. Workspace must be disjoint. */
+/* Read-only installed-volume inspection. The backing may be a prefix >=1 MiB;
+ * every allocated data cluster must fit in that prefix. Slot sizes are actual
+ * installed lengths rather than reserved template capacities. */
+int install_fat_inspect(const void *,size_t,install_fat_work_t *);
+/* Optional A/B template enrollment; both kernel files are identical 8 MiB ELF
+ * banks. Zero means ordinary legacy template; one means validated A/B template. */
+int install_fat_banked(const install_fat_work_t *);
+int install_fat_bank_readiness_lba(const install_fat_work_t *,uint64_t *);
 int install_fat_validate(const void *,size_t,install_fat_work_t *);
 /* Reserved-slot template validation plus exact /boot/fortress.elf bytes. */
 int install_fat_kernel_matches(const void *,size_t,const void *,size_t,install_fat_work_t *);

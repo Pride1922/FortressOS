@@ -16,6 +16,8 @@
 #include "../src/kernel/accounts.c"
 #include "install_runtime.h"
 #include "install_payload.h"
+/* This storage transport fixture has no input-device emulation. */
+void mouse_dev_init(vfs_node_t *dev_dir) { (void)dev_dir; }
 /* Bulk growth itself is covered by the actual heap sanitizer gate. This
  * transport harness retains the same malloc/OOM/live-allocation adapter. */
 uint64_t *vmm_get_active_pml4_virt(void) {return (void *)1;}

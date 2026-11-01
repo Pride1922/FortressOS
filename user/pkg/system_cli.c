@@ -27,10 +27,11 @@ static int snapshot(const pkg_result_v1 *r,uint64_t session,pkg_transaction_stat
 static int acquire(cli_owner *owner) {
     if(owner->session)return 0;
     pkg_result_v1 r={0};pkg_transaction_status status;
-    if(control(PKG_ACQUIRE,0,&r))return -1;
+    int error=control(PKG_ACQUIRE,0,&r);
+    if(error)return error;
     /* Retain a returned handle for cleanup even if its snapshot is rejected. */
     owner->session=r.session;
-    if(!r.session||snapshot(&r,r.session,&status))return -1;
+    if(!r.session||snapshot(&r,r.session,&status))return SYSCALL_EIO;
     owner->sequence=status.sequence;return 0;
 }
 static int status(void *context,pkg_transaction_status *out) {
@@ -75,6 +76,20 @@ static int source_open(const char *directory,const char *leaf,size_t maximum,uin
 static void cli_msg(const char *s) {
     size_t l=0;while(s[l])l++;
     (void)tool_syscall(SYS_WRITE,1,(uintptr_t)s,l);
+}
+static int acquire_error(int error) {
+    switch(error) {
+    case SYSCALL_EAGAIN:cli_msg("pkg: package backend is busy; no package operation started\n");break;
+    case SYSCALL_EACCES:case SYSCALL_EPERM:cli_msg("pkg: package session denied\n");break;
+    case SYSCALL_EOPNOTSUPP:cli_msg("pkg: installation backend unavailable in this kernel\n");break;
+    case SYSCALL_EIO:cli_msg("pkg: could not read a valid package state\n");break;
+    case SYSCALL_ENOMEM:cli_msg("pkg: insufficient memory reading package state\n");break;
+    default:cli_msg("pkg: cannot acquire package session\n");break;
+    }
+    char message[96]="pkg: session acquisition failed (kernel error ";
+    size_t n=strlen(message);n+=tool_format_i64(message+n,error);
+    message[n++]=')';message[n++]='\n';message[n]=0;cli_msg(message);
+    return 1;
 }
 /* Display metadata only. Kernel verification and the returned sequence decide
  * success/no-op. Reading the caller fd does not change kernel snapshot offsets. */
@@ -134,7 +149,7 @@ static int install_source(cli_owner *owner,int argc,char **argv) {
     while(n<33&&argv[2][n])n++;
     if(!fpk_identity_valid((const uint8_t *)argv[2],n))return tool_error("pkg","invalid package name",NULL);
     cli_msg("pkg: checking installation backend...\n");
-    if(acquire(owner))return tool_error("pkg","installation backend unavailable or session denied",NULL);
+    int acquisition=acquire(owner);if(acquisition)return acquire_error(acquisition);
     uint64_t cn=0,an=0;
     int catalog=source_open(argv[3],"catalog.v1",PKG_SOURCE_CATALOG_MAX,&cn);
     int artifact=catalog<0?-1:source_open(argv[3],"artifact.fpk",PKG_SOURCE_ARTIFACT_MAX,&an);
@@ -163,7 +178,7 @@ static int install_cached(cli_owner *owner,const char *name,bool upgrading) {
     size_t n=0;while(n<33&&name[n])n++;
     if(!fpk_identity_valid((const uint8_t *)name,n))return tool_error("pkg","invalid package name",NULL);
     cli_msg("pkg: checking installation backend...\n");
-    if(acquire(owner))return tool_error("pkg","installation backend unavailable or session denied",NULL);
+    int acquisition=acquire(owner);if(acquisition)return acquire_error(acquisition);
 
     static const char *candidates[]={"/var/cache/pkg","/tmp/pkg-cache"};
     int catalog=-1,artifact=-1;

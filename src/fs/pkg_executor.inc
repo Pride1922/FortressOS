@@ -255,7 +255,10 @@ static int px_prepare(ext4_mount_t *fs,const px_policy *policy,const uint8_t *ar
         fpk_span s=policy->resources.base_names[i];if(!fpk_identity_valid(s.bytes,s.length)){px_destroy();return -VFS_EINVAL;}
         memcpy(px->name_bytes[i],s.bytes,s.length);px->names[i]=(fpk_span){px->name_bytes[i],s.length};
     }px->policy.resources.base_names=px->names;
-    int r=px_record_read(fs);if(r){px_destroy();return r;}
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    int r=px_record_read(fs);
+    spin_unlock_irqrestore(&e4_lock,flags);
+    if(r){px_destroy();return r;}
     if(px->state.installed){
         px_input input={px->artifact,px->artifact_n,0};
         if(fpk_verify_authorized(&px->verify.verify,px->catalog,px->catalog_n,&policy->catalog,name,name_n,px_source_read,&input)){
@@ -787,10 +790,14 @@ static int px_ensure_database(ext4_mount_t *fs) {
     if ((r = px_ensure_dir(fs, "/usr/share/pkg", 0755))) { kpkg_puts("[EXT4-PKG] failed to ensure /usr/share/pkg\n"); return r; }
 
     e4_inode_t in;
-    if (px_lookup(fs, "/var/lib/pkg/install.v2", &in) == 0) {
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    r=px_lookup(fs, "/var/lib/pkg/install.v2", &in);
+    spin_unlock_irqrestore(&e4_lock,flags);
+    if (!r) {
         kpkg_puts("[EXT4-PKG] install.v2 already exists\n");
         return 0;
     }
+    if (r!=-VFS_ENOENT) return r;
     kpkg_puts("[EXT4-PKG] creating install.v2 file...\n");
     creds_t actor; creds_init_root(&actor); int error = 0;
     vfs_node_t *root = &fs->cached[0]->node;
@@ -815,7 +822,10 @@ static int px_ensure_database(ext4_mount_t *fs) {
     px_put(raw + 24, 8, 1);
     px_put(raw + 32, 8, 1);
     uint8_t uuid[16] = {0};
-    e4_bytes(fs, 1128, uuid, 16);
+    flags=spin_lock_irqsave(&e4_lock);
+    bool uuid_read=e4_bytes(fs, 1128, uuid, 16);
+    spin_unlock_irqrestore(&e4_lock,flags);
+    if (!uuid_read) {kfree(raw);vfs_node_put(file);return -VFS_EIO;}
     memcpy(raw + 416, uuid, 16);
     (void)crypto_sha256(raw, 8160, raw + 8160);
 
@@ -860,8 +870,9 @@ static bool ext4_pkg_admitted(void) {
 }
 
 static int ext4_pkg_status(void *context, pkg_transaction_status *out) {
+    spin_debug_assert_unheld();
     ext4_mount_t *fs = context ? context : e4_active;
-    if (!fs) return -VFS_EINVAL;
+    if (!fs || !out) return -VFS_EINVAL;
     if (px) {
         out->phase = px->state.phase ? PKG_TX_PENDING : PKG_TX_IDLE;
         out->sequence = px->state.sequence ? px->state.sequence : 1;
@@ -873,34 +884,37 @@ static int ext4_pkg_status(void *context, pkg_transaction_status *out) {
         out->charged[1] = px->state.charged[1];
         return 0;
     }
-    e4_inode_t in;
-    int r = px_lookup(fs, "/var/lib/pkg/install.v2", &in);
+    /* The service credit excludes other package calls, not ordinary filesystem
+     * activity. Lookup, mappings, scratch/cache and record bytes share e4_lock
+     * with every VFS reader/writer. Allocate first; decode the private snapshot
+     * after releasing exclusion. Keep the large decoded record off the stack. */
+    struct {uint8_t raw[8192];px_record state;} *snapshot=kmalloc(sizeof *snapshot);
+    if (!snapshot) return -VFS_ENOMEM;
+    e4_inode_t in;uint32_t b0=0,b1=0;
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    int r=px_lookup(fs,"/var/lib/pkg/install.v2",&in);
+    if (!r) r=e4_dir_block(&in,0,&b0);
+    if (!r) r=e4_dir_block(&in,1,&b1);
+    if (!r && (!e4_bytes(fs,(uint64_t)b0*4096,snapshot->raw,4096) ||
+               !e4_bytes(fs,(uint64_t)b1*4096,snapshot->raw+4096,4096))) r=-VFS_EIO;
+    spin_unlock_irqrestore(&e4_lock,flags);
     if (r == -VFS_ENOENT) {
-        out->phase = PKG_TX_IDLE;
-        out->sequence = 1;
-        out->account_sequence = 1;
-        out->credential_generation = 1;
+        *out=(pkg_transaction_status){.phase=PKG_TX_IDLE,.sequence=1,
+            .account_sequence=1,.credential_generation=1};
+        kfree(snapshot);
         return 0;
     }
-    if (r) return r;
-    uint32_t b0 = 0, b1 = 0;
-    r = e4_dir_block(&in, 0, &b0); if (r) return r;
-    r = e4_dir_block(&in, 1, &b1); if (r) return r;
-    uint8_t *raw = kmalloc(8192);
-    if (!raw) return -VFS_ENOMEM;
-    if (!e4_bytes(fs, (uint64_t)b0 * 4096, raw, 4096)) { kfree(raw); return -VFS_EIO; }
-    if (!e4_bytes(fs, (uint64_t)b1 * 4096, raw + 4096, 4096)) { kfree(raw); return -VFS_EIO; }
-    px_record s;
-    px_decode(raw, &s);
-    kfree(raw);
-    out->phase = s.phase == PX_CLOSED ? PKG_TX_IDLE : (s.phase == PX_BUILD ? PKG_TX_RESERVED : (s.phase == PX_COMMIT ? PKG_TX_PENDING : PKG_TX_RETIRING));
-    out->sequence = s.sequence ? s.sequence : 1;
+    if (r) {kfree(snapshot);return r;}
+    px_record *s=&snapshot->state;px_decode(snapshot->raw,s);
+    out->phase = s->phase == PX_CLOSED ? PKG_TX_IDLE : (s->phase == PX_BUILD ? PKG_TX_RESERVED : (s->phase == PX_COMMIT ? PKG_TX_PENDING : PKG_TX_RETIRING));
+    out->sequence = s->sequence ? s->sequence : 1;
     out->account_sequence = 1;
     out->credential_generation = 1;
-    out->remaining[0] = s.remaining[0];
-    out->remaining[1] = s.remaining[1];
-    out->charged[0] = s.charged[0];
-    out->charged[1] = s.charged[1];
+    out->remaining[0] = s->remaining[0];
+    out->remaining[1] = s->remaining[1];
+    out->charged[0] = s->charged[0];
+    out->charged[1] = s->charged[1];
+    kfree(snapshot);
     return 0;
 }
 
@@ -977,8 +991,6 @@ static int ext4_pkg_install_source(void *context, const uint8_t package[32],
     st->policy.catalog = st->trust.catalog;
     st->policy.resources.capacity[0] = fs->blocks;
     st->policy.resources.capacity[1] = fs->inodes;
-    st->policy.resources.free[0] = px_free(fs->engine, false, false);
-    st->policy.resources.free[1] = px_free(fs->engine, true, false);
     st->policy.resources.block_size = fs->bs;
     st->policy.resources.memory_bytes = 32u * 1024 * 1024;
     st->policy.resources.journal_images = 64;
@@ -987,7 +999,12 @@ static int ext4_pkg_install_source(void *context, const uint8_t package[32],
     memcpy(st->policy.resources.platform, st->trust.platform, 32);
     st->policy.resources.base_names = st->spans;
     st->policy.resources.base_count = sizeof(st->spans)/sizeof(st->spans[0]);
-    e4_bytes(fs, 1128, st->policy.filesystem, 16);
+    uint64_t flags=spin_lock_irqsave(&e4_lock);
+    st->policy.resources.free[0]=px_free(fs->engine,false,false);
+    st->policy.resources.free[1]=px_free(fs->engine,true,false);
+    bool uuid_read=e4_bytes(fs,1128,st->policy.filesystem,16);
+    spin_unlock_irqrestore(&e4_lock,flags);
+    if (!uuid_read) {kfree(st);return -VFS_EIO;}
     st->policy.current_actor = px_default_actor;
     st->policy.authorized = px_default_authorized;
 

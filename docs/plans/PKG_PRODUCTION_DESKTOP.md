@@ -150,6 +150,11 @@ upgrade/reboot and successful base compositor recovery if the package is unavail
 
 ## Stage 5 — Base OS updates
 
+The first [offline kernel-only USB prototype](../roadmap/offline-kernel-update.md)
+uses a new two-slot baseline and preserves the installed root. It is a bounded
+precursor; repository-authenticated base packages, bootstrap/base-userland changes
+and automatic failed-boot recovery remain outside that prototype.
+
 Use the same repository and publisher trust for a later `fortress-base` update type.
 Specify its manifest, kernel/bootstrap/base compatibility and boot-file publication
 together. Ordinary app packages cannot write kernel, bootloader, ESP, account files

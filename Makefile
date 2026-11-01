@@ -1174,6 +1174,25 @@ test-pkg-stage2-host:
 test-pkg-upgrade-host:
 	@python3 scripts/test_pkg_upgrade.py
 
+.PHONY: test-pkg-status-host test-pkg-status-qemu
+test-pkg-status-host: scripts/test_pkg_status_host.py tests/pkg_status_host.c src/fs/pkg_executor.inc
+	@python3 scripts/test_pkg_status_host.py
+
+# Normal kernel; private probe; BIOS/UEFI SMP=4, one regular-file NVMe only.
+test-pkg-status-qemu: $(KERNEL_ELF) $(INITRAMFS_TAR) limine-setup
+	@python3 scripts/test_pkg_status_qemu.py
+
+# BIOS/UEFI x SMP=1/4; one private regular-file NVMe, no fixture data disk.
+.PHONY: test-pkg-upgrade-qemu
+test-pkg-upgrade-qemu: $(KERNEL_ELF) $(INITRAMFS_TAR) limine-setup
+	@python3 scripts/test_pkg_upgrade_qemu.py $(PKG_UPGRADE_QEMU_ARGS)
+
+# Build the candidate first with scripts/create_rot13_installer.py. Tests only
+# use copies of its USB image and fresh regular-file NVMe targets, BIOS/UEFI.
+.PHONY: test-rot13-installer
+test-rot13-installer: $(BIN_DIR)/fortress-rot13-1.0-installer.img scripts/test_rot13_installer.py scripts/test_installer.py scripts/test_pkg_upgrade_qemu.py
+	@python3 scripts/test_rot13_installer.py
+
 .PHONY: test-pkg-ordinary-install-host
 test-pkg-ordinary-install-host:
 	@python3 scripts/test_pkg_ordinary_install.py
@@ -2825,3 +2844,9 @@ test-pkg-exec-boot: scripts/test_pkg_exec_boot.py scripts/pkg_exec_overlay.py sc
 .PHONY: test-pkg-build
 test-pkg-build:
 	@python3 scripts/test_pkg_build.py
+
+# Explicit media receipt required; all attached devices are disposable files.
+.PHONY: test-kernel-update
+test-kernel-update:
+	@test -n "$(KERNEL_UPDATE_MANIFEST)" || (echo 'Set KERNEL_UPDATE_MANIFEST to the built USB media manifest'; exit 1)
+	@python3 scripts/test_kernel_update.py --manifest "$(KERNEL_UPDATE_MANIFEST)"
