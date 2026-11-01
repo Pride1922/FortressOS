@@ -784,6 +784,7 @@ impl AppHost {
             .filter(|p| p.ssid == self.ssid)
             .map(|p| p.bssid)
             .unwrap_or([0; 6]);
+        let _ = sys::wireless_save_network(self.ssid.as_str(), self.password.as_bytes());
         let result = sys::wireless_connect(self.ssid.as_str(), self.password.as_bytes(), bssid);
         self.password.clear();
         self.show_password = false;

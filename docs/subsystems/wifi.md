@@ -108,8 +108,24 @@ Upon entering `WLAN_STATE_CONNECTED`, the Intel iwlwifi driver configures the fi
 - `rx_data_timeout = 10000` / `tx_data_timeout = 10000`: 10 ms idle wake windows.
 - Transitions back to continuous awake (`flags = 0`) during deauthentication or directed active scanning.
 
-### Hardened Credential & Profile Storage
+### Dynamic Group Cipher & PMF Association Compatibility
+`net_80211_parse_beacon_or_probe()` extracts the AP's advertised Group Data Cipher Suite (`00-0F-AC:2` TKIP, `00-0F-AC:4` CCMP) and RSN Capabilities (Protected Management Frames `MFPC` bit 7).
+`net_80211_build_assoc_req_ext()` dynamically reflects the AP's group cipher and echoes PMF capability in the Association Request RSN IE, eliminating association rejections (802.11 Status 19 / Status 52) on WPA/WPA2 mixed-mode routers (e.g. TP-Link 4G LTE routers).
+`wlan_mgr.c` emits real-time serial diagnostic telemetry for 802.11 Auth Response status, Assoc Response status, Deauth/Disassoc reason codes, and EAPOL M1–M4 handshake transitions.
+
+### Full-Spectrum 5 GHz Channel Scanning
+`s_scan_channels` in `iwlwifi.c` covers 37 standard 802.11 channels:
+- **2.4 GHz**: Channels 1–13
+- **5 GHz UNII-1**: Channels 36, 40, 44, 48
+- **5 GHz UNII-2 (DFS)**: Channels 52, 56, 60, 64
+- **5 GHz UNII-2 Extended (DFS)**: Channels 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140
+- **5 GHz UNII-3**: Channels 149, 153, 157, 161, 165
+This ensures complete discovery of mobile hotspots (e.g. Google Pixel 9 Pro defaulting to UNII-3/DFS) and dual-band access points.
+
+### Hardened Credential & Profile Storage (with Desktop GUI Auto-Persistence)
 `/etc/network/wlan.conf` stores saved wireless networks in either INI block format or inline `network=SSID:PSK[:ADDR[:GW[:DNS]]]` format. Saved files are created with strict mode `0600` (read/write only by root) via `SYS_OPEN` and `SYS_FCHMOD`, preventing unprivileged users from reading stored network passphrases.
+
+The desktop compositor (`desktop.rs` & `sys.rs`) registers `SETTING_WLAN = 3` through the root settings broker and invokes `wireless_save_network()` upon initiating Wi-Fi connections. Network profiles configured in the GUI are automatically persisted and deduplicated to `/etc/network/wlan.conf`, allowing Watchtower's `wifi.service` (`/bin/wifi auto`) to establish network connectivity automatically on boot.
 
 Each saved network profile supports independent IP configuration:
 - **Default (DHCP)**: If no static address is specified, the system defaults to DHCP via `/sbin/dhcpc`.

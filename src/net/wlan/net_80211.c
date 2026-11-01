@@ -68,10 +68,12 @@ size_t net_80211_build_auth_req(uint8_t *buf, size_t max_len,
     return total_len;
 }
 
-size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
-                                 const uint8_t src_mac[6],
-                                 const uint8_t bssid[6],
-                                 const char *ssid) {
+size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
+                                     const uint8_t src_mac[6],
+                                     const uint8_t bssid[6],
+                                     const char *ssid,
+                                     uint8_t group_cipher,
+                                     uint16_t rsn_caps) {
     size_t ssid_len = ssid ? strlen(ssid) : 0;
     if (ssid_len > IEEE80211_SSID_MAX_LEN) ssid_len = IEEE80211_SSID_MAX_LEN;
 
@@ -119,8 +121,9 @@ size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
     *ie++ = IEEE80211_IE_RSN;
     *ie++ = 20; /* Length of RSN IE */
     *ie++ = 0x01; *ie++ = 0x00; /* Version 1 */
-    /* Group Cipher: 00-0F-AC:4 (AES-CCMP) */
-    *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC; *ie++ = 0x04;
+    /* Group Cipher: 00-0F-AC:<group_cipher> (e.g. 0x02 for TKIP, 0x04 for CCMP) */
+    *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC;
+    *ie++ = (group_cipher == 0x02 || group_cipher == 0x04) ? group_cipher : 0x04;
     /* Pairwise Cipher Count = 1 */
     *ie++ = 0x01; *ie++ = 0x00;
     /* Pairwise Cipher: 00-0F-AC:4 (AES-CCMP) */
@@ -129,8 +132,10 @@ size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
     *ie++ = 0x01; *ie++ = 0x00;
     /* AKM Suite: 00-0F-AC:2 (PSK) */
     *ie++ = 0x00; *ie++ = 0x0F; *ie++ = 0xAC; *ie++ = 0x02;
-    /* RSN Capabilities */
-    *ie++ = 0x00; *ie++ = 0x00;
+    /* RSN Capabilities: mirror AP's PMF MFPC bit (bit 7, 0x0080) if AP supports it */
+    uint16_t client_caps = (rsn_caps & 0x0080);
+    *ie++ = (uint8_t)(client_caps & 0xFF);
+    *ie++ = (uint8_t)((client_caps >> 8) & 0xFF);
 
     /* 5. WMM / QoS Information Element (9 bytes) */
     *ie++ = IEEE80211_IE_VENDOR;
@@ -142,6 +147,13 @@ size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
     *ie++ = 0x00; /* QoS Info */
 
     return (size_t)(ie - buf);
+}
+
+size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
+                                 const uint8_t src_mac[6],
+                                 const uint8_t bssid[6],
+                                 const char *ssid) {
+    return net_80211_build_assoc_req_ext(buf, max_len, src_mac, bssid, ssid, 0x04, 0);
 }
 
 size_t net_80211_build_deauth(uint8_t *buf, size_t max_len,
@@ -307,6 +319,22 @@ bool net_80211_parse_beacon_or_probe(const uint8_t *frame, size_t len,
         } else if (ie_id == IEEE80211_IE_RSN && ie_len >= 14) {
             /* Check if AES-CCMP (00-0F-AC:4) and PSK (00-0F-AC:2) are supported */
             out_bss->has_wpa2_psk = true;
+            if (ie_len >= 6 && data[2] == 0x00 && data[3] == 0x0F && data[4] == 0xAC) {
+                out_bss->group_cipher = data[5];
+            } else {
+                out_bss->group_cipher = 0x04;
+            }
+            if (ie_len >= 8) {
+                uint16_t pairwise_count = (uint16_t)(data[6] | (data[7] << 8));
+                size_t off_in_ie = 8 + 4 * (size_t)pairwise_count;
+                if (off_in_ie + 2 <= ie_len) {
+                    uint16_t akm_count = (uint16_t)(data[off_in_ie] | (data[off_in_ie + 1] << 8));
+                    off_in_ie += 2 + 4 * (size_t)akm_count;
+                    if (off_in_ie + 2 <= ie_len) {
+                        out_bss->rsn_caps = (uint16_t)(data[off_in_ie] | (data[off_in_ie + 1] << 8));
+                    }
+                }
+            }
         }
 
         off += 2 + ie_len;

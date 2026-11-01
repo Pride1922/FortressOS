@@ -112,6 +112,108 @@ pub fn wireless_connect(ssid: &str, password: &[u8], bssid: [u8; 6]) -> isize {
     result
 }
 
+pub fn wireless_save_network(ssid: &str, password: &[u8]) -> Result<(), isize> {
+    if ssid.is_empty()
+        || ssid.len() > 32
+        || password.len() < 8
+        || password.len() > 64
+        || ssid.as_bytes().iter().any(|&b| b == b'"' || b == b'\n' || b == b'\r' || b == 0)
+        || password.iter().any(|&b| b == b'"' || b == b'\n' || b == b'\r' || b == 0)
+    {
+        return Err(EINVAL);
+    }
+
+    let mut existing = [0u8; 1536];
+    let count = read_file("/etc/network/wlan.conf", &mut existing).unwrap_or(0);
+
+    let mut out = [0u8; 2048];
+    let mut out_len = 0;
+
+    let header = b"# /etc/network/wlan.conf - FortressOS Wireless Configuration\n\n";
+    if count == 0 {
+        out[..header.len()].copy_from_slice(header);
+        out_len = header.len();
+    } else {
+        let src = &existing[..count];
+        let mut i = 0;
+        let mut in_target_block = false;
+        let target_needle = ssid.as_bytes();
+
+        while i < src.len() {
+            let mut line_end = i;
+            while line_end < src.len() && src[line_end] != b'\n' {
+                line_end += 1;
+            }
+            let next_line = if line_end < src.len() { line_end + 1 } else { line_end };
+            let line = &src[i..line_end];
+
+            let trimmed = {
+                let mut start = 0;
+                while start < line.len() && (line[start] == b' ' || line[start] == b'\t' || line[start] == b'\r') {
+                    start += 1;
+                }
+                &line[start..]
+            };
+
+            if trimmed.starts_with(b"[network]") {
+                in_target_block = false;
+            } else if trimmed.starts_with(b"ssid=") {
+                let mut val = &trimmed[5..];
+                if val.starts_with(b"\"") {
+                    val = &val[1..];
+                    if let Some(pos) = val.iter().position(|&b| b == b'"') {
+                        val = &val[..pos];
+                    }
+                }
+                if val == target_needle {
+                    in_target_block = true;
+                }
+            } else if trimmed.starts_with(b"network=") {
+                let rest = &trimmed[8..];
+                if let Some(pos) = rest.iter().position(|&b| b == b':') {
+                    if &rest[..pos] == target_needle {
+                        i = next_line;
+                        continue;
+                    }
+                }
+            }
+
+            if !in_target_block {
+                if out_len + (next_line - i) < out.len() {
+                    out[out_len..out_len + (next_line - i)].copy_from_slice(&src[i..next_line]);
+                    out_len += next_line - i;
+                }
+            }
+
+            i = next_line;
+        }
+    }
+
+    if out_len > 0 && out[out_len - 1] != b'\n' && out_len < out.len() {
+        out[out_len] = b'\n';
+        out_len += 1;
+    }
+
+    let prefix = b"[network]\nssid=\"";
+    if out_len + prefix.len() + ssid.len() + 8 + password.len() + 3 >= out.len() {
+        return Err(-12);
+    }
+    out[out_len..out_len + prefix.len()].copy_from_slice(prefix);
+    out_len += prefix.len();
+    out[out_len..out_len + ssid.len()].copy_from_slice(ssid.as_bytes());
+    out_len += ssid.len();
+    let mid = b"\"\npsk=\"";
+    out[out_len..out_len + mid.len()].copy_from_slice(mid);
+    out_len += mid.len();
+    out[out_len..out_len + password.len()].copy_from_slice(password);
+    out_len += password.len();
+    let suffix = b"\"\n\n";
+    out[out_len..out_len + suffix.len()].copy_from_slice(suffix);
+    out_len += suffix.len();
+
+    write_setting(SETTING_WLAN, &out[..out_len])
+}
+
 /// Use the CLI's bounded firmware decoder/bootstrap without credentials or
 /// profiles in argv. The caller polls this child instead of blocking painting.
 #[cfg(not(test))]
@@ -263,6 +365,7 @@ pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8]) -> Result<(), isi
     if fd < 0 {
         return Err(fd);
     }
+    let _ = unsafe { syscall2(60 /* SYS_FCHMOD */, fd as usize, 0o600) };
     let mut at = 0;
     while at < bytes.len() {
         let n = write(fd as i32, &bytes[at..]);
@@ -296,14 +399,16 @@ pub fn atomic_write(path: &str, temporary: &str, bytes: &[u8]) -> Result<(), isi
 /// settings helper (`compositor --settings-broker`) once privileges dropped.
 pub const SETTING_PREFERENCES: u8 = 1;
 pub const SETTING_TIMEZONE: u8 = 2;
-/// Largest request payload; preferences::MAX_BYTES and timezone names fit.
-pub const SETTING_MAX: usize = 512;
+pub const SETTING_WLAN: u8 = 3;
+/// Largest request payload; preferences::MAX_BYTES, timezone names, and wlan config fit.
+pub const SETTING_MAX: usize = 2048;
 
 /// (target, exclusive temporary) for each setting.
 pub fn setting_paths(kind: u8) -> Option<(&'static str, &'static str)> {
     match kind {
         SETTING_PREFERENCES => Some((crate::preferences::PATH, "/etc/.desktop.conf.new")),
         SETTING_TIMEZONE => Some(("/etc/timezone", "/etc/.desktop-timezone.new")),
+        SETTING_WLAN => Some(("/etc/network/wlan.conf", "/etc/network/.wlan.conf.new")),
         _ => None,
     }
 }

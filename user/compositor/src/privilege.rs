@@ -211,6 +211,12 @@ fn handle(kind: u8, payload: &[u8]) -> isize {
                 _ => sys::EINVAL,
             }
         }
+        sys::SETTING_WLAN => {
+            if payload.is_empty() || payload.len() > sys::SETTING_MAX || payload.contains(&0) {
+                return sys::EINVAL;
+            }
+            write(kind, payload)
+        }
         _ => sys::EINVAL,
     }
 }

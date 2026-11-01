@@ -3,6 +3,14 @@
 #include "iwlwifi.h"
 #include <string.h>
 
+#if !defined(IWLWIFI_HOST_TEST) && !defined(WIFI_OWNER_HOST) && !defined(HOST_TEST)
+#include "serial.h"
+#else
+#define serial_puts(s) ((void)(s))
+#define serial_print_hex(v) ((void)(v))
+#define serial_print_dec(v) ((void)(v))
+#endif
+
 
 #define WLAN_RX_RING_SIZE 16
 
@@ -21,6 +29,8 @@ static uint8_t              s_local_mac[6];
 static uint8_t              s_target_bssid[6];
 static char                 s_target_ssid[IEEE80211_SSID_MAX_LEN + 1];
 static uint8_t              s_target_pmk[WLAN_PMK_LEN];
+static uint8_t              s_target_group_cipher = 0x04;
+static uint16_t             s_target_rsn_caps = 0;
 static char                 s_cached_ssid[IEEE80211_SSID_MAX_LEN + 1];
 static char                 s_cached_pass[65];
 static uint8_t              s_cached_pmk[WLAN_PMK_LEN];
@@ -259,6 +269,8 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
             s_current_channel = entry->channel;
             s_current_rssi = entry->rssi;
             s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
+            s_target_group_cipher = entry->group_cipher ? entry->group_cipher : 0x04;
+            s_target_rsn_caps = entry->rsn_caps;
         }
         found_bssid = true;
     } else {
@@ -268,6 +280,8 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
             s_current_channel = entry->channel;
             s_current_rssi = entry->rssi;
             s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
+            s_target_group_cipher = entry->group_cipher ? entry->group_cipher : 0x04;
+            s_target_rsn_caps = entry->rsn_caps;
             found_bssid = true;
         }
     }
@@ -284,6 +298,8 @@ int wlan_mgr_connect(const char *ssid, const char *passphrase, const uint8_t bss
             s_current_channel = entry->channel;
             s_current_rssi = entry->rssi;
             s_target_beacon_int = (entry->beacon_interval >= 20) ? entry->beacon_interval : 100;
+            s_target_group_cipher = entry->group_cipher ? entry->group_cipher : 0x04;
+            s_target_rsn_caps = entry->rsn_caps;
             found_bssid = true;
         }
     }
@@ -446,14 +462,22 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 len >= 24 + 6) {
                 uint16_t status = frame[28] | ((uint16_t)frame[29] << 8);
                 if (status == 0) {
+                    serial_puts("[WLAN] Auth response SUCCESS from AP\n");
                     /* Auth Success -> Transition to ASSOCIATING and send Assoc Req */
                     s_wlan_state = WLAN_STATE_ASSOCIATING;
                     if (s_hw_ops && s_hw_ops->send_raw_80211) {
                         uint8_t assoc_buf[256];
-                        size_t assoc_len = net_80211_build_assoc_req(assoc_buf, sizeof(assoc_buf),
-                                                                    s_local_mac, s_target_bssid, s_target_ssid);
+                        size_t assoc_len = net_80211_build_assoc_req_ext(assoc_buf, sizeof(assoc_buf),
+                                                                    s_local_mac, s_target_bssid, s_target_ssid,
+                                                                    s_target_group_cipher, s_target_rsn_caps);
                         if (assoc_len > 0) s_hw_ops->send_raw_80211(assoc_buf, assoc_len);
                     }
+                } else {
+                    serial_puts("[WLAN] Auth REJECTED by AP, status=0x");
+                    serial_print_hex(status);
+                    serial_puts("\n");
+                    s_wlan_state = WLAN_STATE_FAILED;
+                    s_wlan_net_dev.flags &= ~NET_RUNNING;
                 }
             }
         } else if (subtype == IEEE80211_SUBTYPE_ASSOC_RESP) {
@@ -464,6 +488,9 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 uint16_t status = frame[26] | ((uint16_t)frame[27] << 8);
                 uint16_t aid    = (uint16_t)((frame[28] | ((uint16_t)frame[29] << 8)) & 0x3FFFu);
                 if (status == 0) {
+                    serial_puts("[WLAN] Assoc response SUCCESS from AP, AID=");
+                    serial_print_dec(aid);
+                    serial_puts("\n");
                     /* Assoc Success -> Transition to 4-WAY HANDSHAKE */
                     s_wlan_state = WLAN_STATE_4WAY_HANDSHAKE;
                     s_gtk_rx_pn  = 0;
@@ -475,10 +502,20 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                         s_hw_ops->set_associated(aid, bi);
                     }
                     return 0;
+                } else {
+                    serial_puts("[WLAN] Assoc REJECTED by AP, status=0x");
+                    serial_print_hex(status);
+                    serial_puts("\n");
+                    s_wlan_state = WLAN_STATE_FAILED;
+                    s_wlan_net_dev.flags &= ~NET_RUNNING;
                 }
             }
         } else if (subtype == IEEE80211_SUBTYPE_DEAUTH || subtype == IEEE80211_SUBTYPE_DISASSOC) {
             if (memcmp(hdr->addr2, s_target_bssid, 6) == 0) {
+                uint16_t reason = len >= 26 ? (frame[24] | ((uint16_t)frame[25] << 8)) : 0;
+                serial_puts("[WLAN] AP Deauth/Disassoc, reason=0x");
+                serial_print_hex(reason);
+                serial_puts("\n");
                 bool was_connecting = (s_wlan_state == WLAN_STATE_AUTHENTICATING ||
                                        s_wlan_state == WLAN_STATE_ASSOCIATING ||
                                        s_wlan_state == WLAN_STATE_4WAY_HANDSHAKE);
@@ -531,6 +568,11 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 int resp_len = wpa2_sm_rx_eapol(&s_wpa2_sm, payload + 8, payload_len - 8,
                                                 resp_eapol, sizeof(resp_eapol));
                 if (resp_len > 0) {
+                    if (s_wpa2_sm.handshake_step == 2) {
+                        serial_puts("[WLAN] EAPOL M1 received, sent M2\n");
+                    } else if (s_wpa2_sm.handshake_step == 4) {
+                        serial_puts("[WLAN] EAPOL M3 received, sent M4\n");
+                    }
                     /* Encapsulate response EAPOL frame into 802.11 QoS Data frame and transmit */
                     memcpy(s_tx_eapol_eth, s_target_bssid, 6);
                     memcpy(s_tx_eapol_eth + 6, s_local_mac, 6);
@@ -545,6 +587,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                         s_hw_ops->send_raw_80211(s_tx_eapol_wlan, (size_t)tx_len);
                     }
                 } else if (resp_len < 0 && s_wpa2_sm.handshake_step >= 2) {
+                    serial_puts("[WLAN] EAPOL MIC verification FAILED (wrong passphrase or corrupt frame)\n");
                     /* EAPOL rejection (e.g. Message 3 MIC failure) -> fail authentication cleanly */
                     s_wlan_state = WLAN_STATE_FAILED;
                     s_wlan_net_dev.flags &= ~NET_RUNNING;
@@ -562,6 +605,7 @@ int wlan_mgr_rx_raw_80211(const uint8_t *frame, size_t len, int8_t rssi) {
                 }
 
                 if (wpa2_sm_is_authorized(&s_wpa2_sm)) {
+                    serial_puts("[WLAN] 4-Way Handshake COMPLETE, Port AUTHORIZED (Connected)\n");
                     s_wlan_state = WLAN_STATE_CONNECTED;
                     s_wlan_net_dev.flags |= NET_RUNNING;
                     if (s_has_pending_pmk) {
@@ -742,6 +786,7 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
         }
 
         if (timeout) {
+            serial_puts("[WLAN] Connection timed out (6.0s), failing closed\n");
             s_wlan_state = WLAN_STATE_FAILED;
             s_wlan_net_dev.flags &= ~NET_RUNNING;
             memset(&s_wpa2_sm, 0, sizeof(s_wpa2_sm));
@@ -755,8 +800,9 @@ bool wlan_service_link(net_dev_t *dev, uint64_t now, uint64_t tick_hz) {
                 if (auth_len > 0) s_hw_ops->send_raw_80211(auth_buf, auth_len);
             } else if (st == WLAN_STATE_ASSOCIATING && s_hw_ops && s_hw_ops->send_raw_80211) {
                 uint8_t assoc_buf[256];
-                size_t assoc_len = net_80211_build_assoc_req(assoc_buf, sizeof(assoc_buf),
-                                                            s_local_mac, s_target_bssid, s_target_ssid);
+                size_t assoc_len = net_80211_build_assoc_req_ext(assoc_buf, sizeof(assoc_buf),
+                                                            s_local_mac, s_target_bssid, s_target_ssid,
+                                                            s_target_group_cipher, s_target_rsn_caps);
                 if (assoc_len > 0) s_hw_ops->send_raw_80211(assoc_buf, assoc_len);
             }
         }

@@ -107,10 +107,18 @@ static iwl_rx_phy_info_t  s_last_phy_info;
 static int8_t             s_last_rx_rssi = -60;
 static uint8_t            s_last_rx_chan = 1;
 
-/* Scan channels: 2.4 GHz (1..13) + 5 GHz UNII-1 (36..48) */
+/* Scan channels: 2.4 GHz (1..13) + 5 GHz (36..64, 100..140, 149..165) */
 static const uint8_t s_scan_channels[] = {
+    /* 2.4 GHz (1..13) */
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
-    36, 40, 44, 48
+    /* 5 GHz UNII-1 (36..48) */
+    36, 40, 44, 48,
+    /* 5 GHz UNII-2 / DFS (52..64) */
+    52, 56, 60, 64,
+    /* 5 GHz UNII-2 Extended / DFS (100..140) */
+    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140,
+    /* 5 GHz UNII-3 (149..165) */
+    149, 153, 157, 161, 165
 };
 #endif
 

@@ -86,6 +86,8 @@ typedef struct {
     uint16_t beacon_interval;
     uint16_t capabilities;
     bool     has_wpa2_psk;
+    uint8_t  group_cipher;   /* e.g. 2 for TKIP, 4 for CCMP */
+    uint16_t rsn_caps;       /* RSN capabilities from beacon IE */
     uint32_t last_seen_ticks;
 } wlan_bss_entry_t;
 
@@ -118,6 +120,13 @@ size_t net_80211_build_assoc_req(uint8_t *buf, size_t max_len,
                                  const uint8_t src_mac[6],
                                  const uint8_t bssid[6],
                                  const char *ssid);
+
+size_t net_80211_build_assoc_req_ext(uint8_t *buf, size_t max_len,
+                                     const uint8_t src_mac[6],
+                                     const uint8_t bssid[6],
+                                     const char *ssid,
+                                     uint8_t group_cipher,
+                                     uint16_t rsn_caps);
 
 size_t net_80211_build_deauth(uint8_t *buf, size_t max_len,
                              const uint8_t src_mac[6],
