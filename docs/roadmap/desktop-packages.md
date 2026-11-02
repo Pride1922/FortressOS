@@ -24,5 +24,10 @@ These checks do not establish guest GUI launch, production publication or physic
 acceptance. Firmware/physical acceptance remains pending.
 
 Final installer: `bin/fortress-base-installer.img` (528 MiB), SHA-256
-`db550b3813bc3b98e2927eb9b2cb6dff49247e7eb2b5a44cefe76a0ca9d05d70`. Exact factory bundle: `bin/fortress-desktop-packages-b0ddcd21a3fd8d79`.
+`68e591626926a60acfd5b5147f787816341dccd87691d60045ca6e54da421c54`. Exact factory bundle: `bin/fortress-desktop-packages-20347a2b4e656c39`.
 The image producer completed package, filesystem and media audits; no boot test.
+
+Production cutover: catalog revision 3 is now published with a newly generated
+private server-side key. Public HTTPS verification confirms that all four offered
+app artifacts exactly match the production-trusting installer. The old public
+key rejects this catalog. Dell install/upgrade acceptance remains pending.

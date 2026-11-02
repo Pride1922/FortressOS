@@ -9,35 +9,47 @@ enrollment, separate key USBs and laptop identities are not part of this workflo
 Installation and repeated upgrade integration are still in progress; these
 instructions do not claim a completed Dell update.
 
-The [production signing remediation plan](plans/PRODUCTION_SIGNING_KEY_REMEDIATION.md)
-records the required key creation, backup, trust migration and publication work.
-This remains unfinished; current demo trust is not production-ready.
+The [direct reflash cutover record](plans/PRODUCTION_SIGNING_KEY_REMEDIATION.md)
+describes the production key correction and the refreshed installer.
 
-## Deployed server record (verified 2026-11-02)
+## Deployed server record (2026-11-02)
 
-Access the Cloudflare SSH endpoint `fabio@ssh-edge2.ameyerocha.com` (host
-`edge2`), then the internal repository host `fabio@192.168.0.247` (hostname
-`Repository-Fortress`). The HTTP document root is `/srv/fortress-repository`.
-Do not copy the laptop SSH private key onto the jump host; forward the connection
-using the local SSH client instead.
+Cloudflare entry: `fabio@ssh-edge2.ameyerocha.com` (`edge2`). Internal repository:
+`fabio@192.168.0.247` (`Repository-Fortress`). Public document root:
+`/srv/fortress-repository`; URL `https://fortress.ameyerocha.com`.
+Keep the laptop SSH private key on the laptop; proxy the connection through edge2.
 
-The existing catalog signing seed is on **Repository-Fortress** at
-`/home/fabio/.local/share/fortress-signing/repo-demo.seed` (0600; directory 0700).
-`/etc/fortress-keys` was absent on both hosts when checked. The previous deployment
-script, `/home/fabio/.cache/fortress-publish/rot13-2.0/publish-rot13-2.0.py`,
-explicitly created this deterministic demonstration seed and used it to publish
-catalog revision 2. This is the confirmed deployed key, not a newly chosen key.
+**Production signing seed:** `/etc/pkg/signing.seed`, root-owned 0600, directory
+`/etc/pkg` 0700. Public key file: `/etc/pkg/trust.pub` (raw 32-byte public key).
+Public key: `40bce69ef4889755601c4a2fab4e71c1d061ef8325cf722beddb41d09ac9cc5d`.
+The public release input is `assets/pkg/trust.conf`. There is no private key in Git.
+No backup is required by this cutover; losing an unbacked-up seed requires another
+trust replacement.
 
-Its public key is
-`03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8`.
-Repository UUID: `00010203-0405-0607-0809-0a0b0c0d0e0f`; root version 1;
-last observed catalog revision 2, offering rot13 build 2. Both rot13 object versions
-remain on the server. Re-read the live catalog before choosing a new revision.
+Repository UUID remains `00010203-0405-0607-0809-0a0b0c0d0e0f`, root version 1;
+platform and base compatibility remain unchanged. This is a direct reflash trust
+replacement, not an update authorized by the old demo key. Demo-trusting clients
+are expected to reject the replacement catalog.
 
-The seed is publicly known demonstration material; production trust migration
-remains outstanding. No key rotation or repository publication was performed by
-this inspection. Private key contents must never enter this document or the
-installer. The laptop SSH login key is separate from the catalog signing key.
+The previous seed was `/home/fabio/.local/share/fortress-signing/repo-demo.seed`.
+The historical `~/.cache/fortress-publish/rot13-2.0/publish-rot13-2.0.py` explicitly
+created that demo seed and published revision 2. Do not use that script for future
+production publication. `/etc/fortress-keys` was never the deployed location.
+
+Production staging: `~/.cache/fortress-publish/production-rekey-20261102`.
+**Active production catalog:** revision 3, SHA-256
+`1755fb435bbe3479cccc223af9a14e13d483de30448a8fb59c3440e3e6a96add`.
+It offers rot13 build 2 and the four factory desktop packages at build 1.
+Both rot13 objects remain available. The previous catalog is retained at
+`~/.cache/fortress-publish/production-rekey-20261102/catalog-before-production-key.v1`.
+
+Public HTTPS verification checked the new signature, rejected the old public key,
+verified every offered object hash/identity, matched all four exact installer
+factory artifacts and fetched the retained rot13 build-1 object. Evidence:
+`build/production-repository-verification.json`. The rekey helper's host checks
+also cover stale-catalog refusal and invalid-signature rejection without writes
+(`build/production-rekey-host.log`). These are publication checks, not Dell
+installation or upgrade acceptance.
 
 ## Public layout
 
@@ -62,9 +74,7 @@ Use an offline or otherwise separately protected Ubuntu signing host with
 Python 3 and `python3-cryptography`. The HTTP server receives only public output.
 Existing approved raw Ed25519 seeds must be external 32-byte regular files,
 mode 0600 or stricter, with one hard link, outside both the source checkout and
-publication tree. The tool never generates a key. Selecting production keys,
-thresholds, platform identity and trust provisioning requires a separate explicit
-operational action; no such action has been performed here.
+publication tree. The tool never generates a key. The deployed production signing location and public trust are recorded above.
 
 ## Build and inspect a standalone tool
 
@@ -299,5 +309,5 @@ Expect `upgrade complete`, then `rot13 2.0` and `uryyb`; a repeat reports
 repository objects available: the privileged upgrade downloads the prior object
 by its installed SHA-256, and the kernel revalidates ownership independently.
 See [bounded upgrade contracts and verification](plans/PKG3_BOUNDED_UPGRADE.md).
-The repository's current deterministic demo signing key is not suitable for a
-production trust deployment.
+The former deterministic demo signing key is retired from release trust; use
+the production signing path recorded above.

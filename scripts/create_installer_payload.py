@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 import uuid
 import test_root_phase0 as fixture
+from release_trust import release_trust
 
 ROOT=Path(__file__).resolve().parents[1]
 FS_UUID='813ea876-9933-4e1c-ae62-2f6c0f90a441'
@@ -67,7 +68,9 @@ def main():
         if not (tree/'etc/pkg/repository.conf').is_file():
             (tree/'etc/pkg/repository.conf').write_text('version=1\nurl=https://fortress.ameyerocha.com\n')
         if not (tree/'etc/pkg/trust.conf').is_file():
-            (tree/'etc/pkg/trust.conf').write_text('version=1\nrepository=00010203-0405-0607-0809-0a0b0c0d0e0f\nroot_version=1\nplatform=4242424242424242424242424242424242424242424242424242424242424242\nbase_version=1\npublic_key=03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8\n')
+            (tree/'etc/pkg/trust.conf').write_bytes(release_trust())
+        if args.base_system and (tree/'etc/pkg/trust.conf').read_bytes() != release_trust():
+            raise ValueError('base installer bootstrap does not match production release trust')
         metadata['etc/pkg'] = (0o755, 0, 0)
         metadata['etc/pkg/repository.conf'] = (0o644, 0, 0)
         metadata['etc/pkg/trust.conf'] = (0o644, 0, 0)

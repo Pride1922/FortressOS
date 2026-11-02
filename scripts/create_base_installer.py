@@ -14,6 +14,7 @@ import tempfile
 from build_base_package import bootstrap, BANK
 from seed_desktop_packages import build_packages, seed
 from publish_desktop_bundle import publish_bundle
+from release_trust import release_trust
 from create_installer_media import ROOT, build, digest, elf_load_image
 
 
@@ -26,6 +27,9 @@ def create(output, sequence=1, abi=1, platform=bytes.fromhex('42'*32), app_seque
     subprocess.run(['objcopy','--strip-debug',str(ROOT/'bin/fortress.elf'),str(kernel)],check=True)
     assert elf_load_image(kernel)==elf_load_image(ROOT/'bin/fortress.elf')
     data=kernel.read_bytes();assert len(data)<=BANK;kernel.write_bytes(data.ljust(BANK,b'\0'))
+    with tarfile.open(ROOT/'bin/initramfs.tar') as source:
+        if source.extractfile('etc/pkg/trust.conf').read() != release_trust():
+            raise ValueError('rebuild initramfs with the production release trust first')
     archive=out/'bootstrap.tar'
     marked=bootstrap((ROOT/'bin/initramfs.tar').read_bytes(),sequence,abi,platform)
     archive.write_bytes(marked)
@@ -42,7 +46,7 @@ def create(output, sequence=1, abi=1, platform=bytes.fromhex('42'*32), app_seque
     source_paths=subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','-z'],cwd=ROOT).split(b'\0')
     source_hashes={str(Path(p.decode())):digest(ROOT/p.decode()) for p in source_paths if p and (ROOT/p.decode()).is_file()}
     report={'result':'BUILD_PASS_RUNTIME_PENDING','scope':'complete A/B base repository-update baseline; no physical writes or QEMU campaign',
-        'image':str(output),'bytes':output.stat().st_size,'sha256':digest(output),'build':sequence,'abi':abi,
+        'release_trust':release_trust().decode('ascii'),'image':str(output),'bytes':output.stat().st_size,'sha256':digest(output),'build':sequence,'abi':abi,
         'factory_packages':bundle,'package_directory':str(package_directory),'platform':platform.hex(),'kernel_sha256':digest(kernel),'bootstrap_sha256':digest(archive),
         'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
         'source_hashes':source_hashes,

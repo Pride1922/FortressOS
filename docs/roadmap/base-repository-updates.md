@@ -71,7 +71,7 @@ performed, in accordance with the user's retained validation scope.
 ## Image
 
 `bin/fortress-base-installer.img`, 553648128 bytes (528 MiB).
-SHA-256: `db550b3813bc3b98e2927eb9b2cb6dff49247e7eb2b5a44cefe76a0ca9d05d70`.
+SHA-256: `68e591626926a60acfd5b5147f787816341dccd87691d60045ca6e54da421c54`.
 Build receipt: `bin/fortress-base-installer.manifest.json`.
 It records the exact kernel/bootstrap hashes and the uncommitted source state.
 The media producer completed GPT/FAT/payload/hash checks. This is a built candidate,

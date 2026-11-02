@@ -1,99 +1,64 @@
-# Production signing key remediation
+# Production signing key — direct reflash cutover
 
-Status: **planned, not implemented**. Recorded 2026-11-02.
-The current repository and installer trust a publicly known deterministic demo
-key. They must not be described as production-ready. Committing this plan does
-not create keys, rotate trust, publish a catalog or modify an installed system.
+This replaces the earlier migration plan. The user chose a fresh Dell install;
+there is no in-place trust migration or mandatory encrypted-backup work.
 
-## Confirmed deployment
+## Implemented
 
-- Cloudflare SSH entry: `fabio@ssh-edge2.ameyerocha.com`, hostname `edge2`.
-- Internal Ubuntu repository: `fabio@192.168.0.247`, hostname `Repository-Fortress`.
-- Public URL: `https://fortress.ameyerocha.com`.
-- Document root: `/srv/fortress-repository`.
-- Existing signing seed: `/home/fabio/.local/share/fortress-signing/repo-demo.seed`.
-- Prior deployment script: `/home/fabio/.cache/fortress-publish/rot13-2.0/publish-rot13-2.0.py`.
-  That script explicitly created the deterministic demo seed and published revision 2.
-- Repository UUID `00010203-0405-0607-0809-0a0b0c0d0e0f`, root version 1,
-  last observed catalog revision 2, rot13 build 2. Re-read live state before changes.
-- `/etc/fortress-keys` was absent on both hosts. It is the proposed new protected
-  location, not the location of an existing production key.
+1. A random Ed25519 seed was generated on `Repository-Fortress` (`192.168.0.247`)
+   at `/etc/pkg/signing.seed`, root-owned mode 0600. `/etc/pkg` is mode 0700.
+   Only the public key was copied to the laptop. The private seed never entered
+   the source tree, installer, web root or chat.
+2. Public release trust is now shared at `assets/pkg/trust.conf`. `Makefile` and
+   the installer producer use `scripts/release_trust.py`; it rejects the known
+   demo key. The base installer refuses a stale bootstrap with different trust.
+3. The complete installer was rebuilt with production public trust and four
+   factory packages: desktop, files, notepad and terminal. The public key is
+   `40bce69ef4889755601c4a2fab4e71c1d061ef8325cf722beddb41d09ac9cc5d`.
+4. Repository signing uses `/etc/pkg/signing.seed`. The one-time preparation
+   helper verifies the pinned old catalog and retained objects, signs with the
+   new key and writes a separate staging tree. Activation verifies the new
+   signature, saves the old catalog, publishes objects first and atomically
+   replaces the live catalog. Existing rot13 objects are retained.
+5. The user flashes the refreshed image and installs on the Dell, then uses
+   `sudo pkg upgrade`. Old demo-trusting installations will reject the new
+   catalog; that is expected, and this path replaces them by reinstalling.
 
-## Required implementation, in order
+## Commands and files
 
-1. **Preserve the deployment before changing it.** Record the current catalog,
-   public trust, object hashes and permissions. Back up public catalog/objects and
-   retain both rot13 versions. Never erase or recreate installed package inventories,
-   reset counters, format a disk or overwrite application settings to rotate trust.
-2. **Create one real key on the repository server.** Use the operating system's
-   cryptographic random source through the Ed25519 implementation to generate a new
-   32-byte private seed, exclusively created at
-   `/etc/fortress-keys/catalog-ed25519.seed`, directory 0700 and file 0600. Choose
-   the signing owner explicitly (root or a dedicated signer), with no web-server
-   read access. Refuse an existing destination, symlinks and unsafe ownership.
-   Adapt invocation to that ownership instead of loosening permissions. No demo
-   fallback, hardcoded seed, private-key stdout, chat output or Git copy.
-3. **Back up the private key before activation.** Produce an encrypted backup to
-   a separately controlled destination and verify restoration by deriving the
-   public key in an isolated temporary location. Keep the backup secret outside
-   the web root, source checkout and installer. Record only its location and
-   public fingerprint in the operational runbook. Do not declare this complete
-   until the backup destination and restore check are recorded.
-4. **Make release trust an explicit build input.** Replace the hardcoded demo trust
-   in `Makefile` and `scripts/create_installer_payload.py` with a shared validated
-   public release-trust input. Thread it through the complete installer and base
-   artifact builders. Release builds must fail if this input is missing or contains
-   the known demo key; demo trust must require an explicit test-only selection.
-   The private seed never enters build inputs or media. Preserve platform identity
-   and base ABI unless a separately reviewed compatibility change requires otherwise.
-5. **Specify the trust transition against actual backend rules.** Retain the
-   repository UUID and propose root version 2 with only the new public key. Audit
-   inventory/catalog floors and source verification first: confirm how existing
-   rot13 and factory records behave across root-version changes. Implement any
-   necessary explicit administrative migration; do not assume editing trust.conf
-   alone handles persisted state. Never lower catalog/build floors. A catalog
-   signed by the compromised demo key cannot securely authorize this transition.
-6. **Prepare production publication separately.** Build a staging tree retaining
-   every currently offered package and old content-addressed object. Verify their
-   hashes against the recorded old deployment. Sign the replacement catalog on
-   the server with the new key and the next valid revision (at least 3 if live
-   revision is still 2). The existing `--retain-existing` path verifies old signatures
-   with supplied keys, so implement/review an explicit migration path rather than
-   silently bypassing verification or including the demo key in future client trust.
-   Verify the staged catalog using only the intended new public key.
-7. **Prepare the corrected installer before activation.** Rebuild the complete
-   installer with the new public trust and four exact factory application packages.
-   Audit both root payload and bootstrap for the correct public key, absence of
-   demo trust/private material, and correct package hashes. Mark the current
-   demo-trusting image superseded; retain a single final image after replacement
-   succeeds. No physical flashing is performed by this plan.
-8. **Migrate existing installations through a trusted local administrative path.**
-   Back up their trust files, inspect backend compatibility and atomically install
-   the new public trust under root authorization. Preserve rot13, documents,
-   configuration, package records and monotonic floors. If backend changes are
-   required, deliver and verify that migration before activation. No reinstallation
-   is assumed or required merely to replace a public key. Physical operations
-   remain user-operated. State the precise recovery procedure before cutover.
-9. **Activate and verify.** Publish immutable objects first and atomically switch
-   the catalog only when the new installer and existing-client transition are
-   ready. Coordinate the switch because old-trust clients will reject the new
-   catalog. Verify public HTTPS bytes and Ed25519 signatures independently, all
-   retained packages, and the exact desktop factory artifacts. Prove new-key
-   acceptance and old-key-only rejection without writes on rejection. Acceptance
-   includes an actual application upgrade, settings/rot13 preservation, reboot and
-   a complete base update/confirmation/recovery sequence. Host checks alone must
-   not be reported as firmware or physical acceptance.
-10. **Retire demo authority and document the final state.** Remove the demo key
-    from all production trust inputs and prevent the historical deployment script
-    from recreating it in future production runs. Keep any demo fixture explicitly
-    isolated. Record key owner/path, public fingerprint, backup/restore procedure,
-    catalog revision, image hash and publication commands in the repository runbook.
-    Record failures and recovery steps without secret contents.
+On the repository server, privileged key creation is repeatable without replacing
+an existing valid key:
 
-## Completion criteria
+```sh
+sudo python3 scripts/create_repository_signing_key.py
+```
 
-A private, backed-up production key exists only in controlled signing/backup
-locations; builds require its public trust; no production client trusts the demo
-key; publication and installed-client migration preserve existing packages and
-floors; actual acceptance evidence and the operational runbook match deployment.
-Until then, the key problem remains open.
+The signing seed is raw 32-byte Ed25519 material for `pkg_repository.py --key`.
+The public file `/etc/pkg/trust.pub` is raw 32 bytes; release trust represents it
+as lowercase hex. Public fingerprints and image receipts can be committed;
+private seed contents cannot.
+
+For later publications, use the existing publisher under sudo with
+`--key /etc/pkg/signing.seed --retain-existing`, the next catalog revision and
+real artifacts with increasing build numbers. The old-key transition helpers
+are needed only once. Do not rerun the historical demo deployment script.
+
+No mandatory key backup was made. Losing this seed without a backup requires
+another public-trust replacement. Backups remain optional at the user's choice.
+
+## Delivery status
+
+- Production key and public release trust: complete.
+- Complete installer rebuild and filesystem/media audits: complete.
+- Signed catalog preparation/public activation: complete; revision 3. Public HTTPS
+  signature and object checks passed. See [repository operations](../pkg-repository-ubuntu.md).
+- Dell flashing, actual package upgrade and reboot acceptance: user-operated,
+  pending. No physical device was written by this implementation.
+
+The key correction does not establish base-update firmware or physical acceptance;
+those existing acceptance limits remain in the subsystem records.
+
+The delivered image captures the source snapshot in its manifest. Other desktop
+work continued during the signing session; later edits are not part of that image
+or its immutable build-1 package bundle. Changed artifacts must use a higher app
+build number and a new catalog revision, never replace the published build-1 hashes.

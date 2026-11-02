@@ -3,7 +3,7 @@
 [Implementation evidence and acceptance limits](roadmap/base-repository-updates.md).
 
 The complete A/B installer is `bin/fortress-base-installer.img` (528 MiB).
-SHA-256: `db550b3813bc3b98e2927eb9b2cb6dff49247e7eb2b5a44cefe76a0ca9d05d70`. The earlier
+SHA-256: `68e591626926a60acfd5b5147f787816341dccd87691d60045ca6e54da421c54`. The earlier
 `fortress-ready-2026-11-02-installer.img` is superseded: it does not provision
 complete base-update slots. Use the complete A/B baseline for the intended last
 reflash. Installation erases the selected target; flashing/installing remain
@@ -30,8 +30,9 @@ is available with `sudo pkg confirm-base`. Another base update cannot overwrite
 the previous set before the selected new boot is confirmed.
 
 A repository must actually offer a signed newer base release for this to download
-an update. Building an unsigned artifact does not publish it. No production key
-creation, signing or server publication is part of this implementation task.
+an update. Building an unsigned artifact does not publish it. Production signing is now configured; see the
+[server deployment record](pkg-repository-ubuntu.md). The current catalog offers
+applications; a newer base release must be built and published when available.
 
 ## Publisher workflow
 
