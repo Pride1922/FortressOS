@@ -2496,6 +2496,22 @@ fn clipboard_history_notepad_files_and_settings_integration() {
     host.open(9, &mut wm, &mut s); // Time & Language (focus=0 -> id=1 zone input)
     assert!(clipboard::set("Europe/Paris"));
     host.zone.clear();
-    host.key(9, 22, &mut wm, &mut s); // Ctrl+V pastes into zone
+    host.key(9, 22, &mut wm, &mut s); // Ctrl+V pastes into zone via Text::edit
     assert_eq!(host.zone.as_str(), "Europe/Paris");
+
+    // 5. Widget-level Text::edit and Text::edit_secret clipboard routing
+    let mut input = preferences::Text::<32>::from_str("Fortress-5G");
+    assert!(!input.edit(3)); // Ctrl+C copies without mutating
+    assert_eq!(clipboard::get().as_deref(), Some("Fortress-5G"));
+    assert!(input.edit(24)); // Ctrl+X cuts and clears field
+    assert_eq!(input.as_str(), "");
+
+    let mut secret = preferences::Text::<64>::default();
+    assert!(secret.edit_secret(22)); // Ctrl+V pastes into masked secret input
+    assert_eq!(secret.as_str(), "Fortress-5G");
+    assert!(clipboard::set("public-clip"));
+    assert!(!secret.edit_secret(3)); // Ctrl+C blocked on secret input
+    assert!(!secret.edit_secret(24)); // Ctrl+X blocked on secret input
+    assert_eq!(clipboard::get().as_deref(), Some("public-clip"));
+    assert_eq!(secret.as_str(), "Fortress-5G");
 }

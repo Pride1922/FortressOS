@@ -10,8 +10,9 @@
 
 #[path = "../panic.rs"]
 mod panic;
-#[path = "../preferences.rs"]
-mod preferences;
+mod preferences {
+    pub const PATH: &str = "/etc/desktop.conf";
+}
 #[path = "../sys.rs"]
 mod sys;
 
