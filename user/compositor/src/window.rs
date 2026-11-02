@@ -599,6 +599,52 @@ pub fn blend_darken(color: u32, factor: u32) -> u32 {
     0xff000000 | (r << 16) | (g << 8) | b
 }
 
+fn panel_box(
+    w: &mut Window,
+    x: usize,
+    y: usize,
+    bw: usize,
+    bh: usize,
+    radius: usize,
+    outer_bg: u32,
+    fill: u32,
+    border: u32,
+    scale: usize,
+) {
+    let width = w.rect.w - 2;
+    let height = w.rect.h - TITLE_HEIGHT - 2;
+    let left = x * scale;
+    let top = y * scale;
+    let pw = (bw * scale).min(width.saturating_sub(left));
+    let ph = (bh * scale).min(height.saturating_sub(top));
+    for py in 0..ph {
+        for px in 0..pw {
+            let lx = px / scale;
+            let ly = py / scale;
+            let outer_cov = theme::rounded_coverage(lx, ly, bw, bh, radius);
+            let pixel = if outer_cov == 0 {
+                outer_bg
+            } else {
+                let inner_cov = if lx >= 1 && lx + 1 < bw && ly >= 1 && ly + 1 < bh {
+                    theme::rounded_coverage(
+                        lx - 1,
+                        ly - 1,
+                        bw.saturating_sub(2),
+                        bh.saturating_sub(2),
+                        radius.saturating_sub(1),
+                    )
+                } else {
+                    0
+                };
+                let edge_col = if ly == 0 { 0xff4c566a } else { border };
+                let inner = theme::blend_coverage(fill, edge_col, inner_cov);
+                theme::blend_coverage(inner, outer_bg, outer_cov)
+            };
+            w.content[(top + py) * width + left + px] = pixel;
+        }
+    }
+}
+
 fn panel_text(
     w: &mut Window,
     s: &mut Surface,
@@ -607,6 +653,8 @@ fn panel_text(
     field_width: usize,
     text: &str,
     color: u32,
+    bg: u32,
+    bold: bool,
     scale: usize,
 ) {
     let width = w.rect.w - 2;
@@ -618,15 +666,25 @@ fn panel_text(
     for py in top..(top + 18 * scale).min(height) {
         for px in left..(left + field_width * scale).min(width) {
             let pixel = if px < text_end {
-                theme::text_pixel(
-                    text,
-                    (px - left) / scale,
-                    (py - top) / scale,
-                    color,
-                    theme::PANEL,
-                )
+                if bold {
+                    theme::text_pixel_bold(
+                        text,
+                        (px - left) / scale,
+                        (py - top) / scale,
+                        color,
+                        bg,
+                    )
+                } else {
+                    theme::text_pixel(
+                        text,
+                        (px - left) / scale,
+                        (py - top) / scale,
+                        color,
+                        bg,
+                    )
+                }
             } else {
-                theme::PANEL
+                bg
             };
             let old = &mut w.content[py * width + px];
             if *old != pixel {
@@ -1641,42 +1699,106 @@ impl WindowManager {
         }
         let scale = theme::scale(s.height);
         let initialize = !w.panel_ready;
-        let field_width = (w.rect.w - 2) / scale;
+        let logical_w = (w.rect.w - 2) / scale;
+        let x_off = if logical_w > 560 {
+            (logical_w - 518) / 2
+        } else {
+            0
+        };
+        let card_w = 486.min(logical_w.saturating_sub(32));
+        let hdr_bg = 0xff262932;
+        let tbl_bg = 0xff22252e;
+        let disp_bg = 0xff1c222d;
         let mut line = Line::new();
         if initialize {
             w.content.fill(theme::PANEL);
+            // Hero Header Card
+            panel_box(w, x_off + 16, 12, card_w, 56, 8, theme::PANEL, hdr_bg, 0xff363e4d, scale);
+            // System badge icon
+            panel_box(w, x_off + 28, 22, 36, 36, 8, hdr_bg, 0xff1e385b, theme::ACCENT, scale);
             panel_text(
                 w,
                 s,
-                24,
-                18,
-                field_width.saturating_sub(24),
+                x_off + 41,
+                31,
+                16,
+                "F",
+                0xffffffff,
+                0xff1e385b,
+                true,
+                scale,
+            );
+            panel_text(
+                w,
+                s,
+                x_off + 76,
+                20,
+                220,
                 "FortressOS",
-                theme::TEXT,
+                0xffffffff,
+                hdr_bg,
+                true,
                 scale,
             );
             panel_text(
                 w,
                 s,
-                24,
-                42,
-                field_width.saturating_sub(24),
-                "System Information",
-                theme::MUTED,
+                x_off + 76,
+                39,
+                260,
+                "System Information & Telemetry",
+                theme::SUBTEXT,
+                hdr_bg,
+                false,
                 scale,
             );
+            if card_w >= 420 {
+                panel_box(
+                    w,
+                    x_off + 16 + card_w - 94,
+                    29,
+                    80,
+                    22,
+                    6,
+                    hdr_bg,
+                    0xff133223,
+                    0xff22c55e,
+                    scale,
+                );
+                panel_text(
+                    w,
+                    s,
+                    x_off + 16 + card_w - 80,
+                    31,
+                    56,
+                    "Online",
+                    0xff4ade80,
+                    0xff133223,
+                    false,
+                    scale,
+                );
+            }
+
+            // Telemetry Table Card
+            panel_box(w, x_off + 16, 76, card_w, 178, 8, theme::PANEL, tbl_bg, 0xff363e4d, scale);
+
+            // Display Resolution Footer Card
+            panel_box(w, x_off + 16, 262, card_w, 34, 8, theme::PANEL, disp_bg, 0xff2e3848, scale);
             let _ = write!(line, "Display  {} x {}", s.width, s.height);
             panel_text(
                 w,
                 s,
-                24,
+                x_off + 32,
                 270,
-                field_width.saturating_sub(24),
+                card_w.saturating_sub(32),
                 line.as_str(),
-                theme::MUTED,
+                0xff9fb0c7,
+                disp_bg,
+                false,
                 scale,
             );
         }
+        let val_w = card_w.saturating_sub(226).min(180);
         if let Some(info) = info {
             let rows = [
                 ("Logical CPUs", info.cpu_count as u64, ""),
@@ -1691,17 +1813,35 @@ impl WindowManager {
                 ),
             ];
             for (i, (name, value, suffix)) in rows.iter().enumerate() {
-                panel_text(w, s, 24, 84 + i * 28, 190, name, theme::MUTED, scale);
-                line.len = 0;
-                let _ = write!(line, "{}{}", value, suffix);
                 panel_text(
                     w,
                     s,
-                    230,
+                    x_off + 32,
                     84 + i * 28,
-                    field_width.saturating_sub(230),
+                    184,
+                    name,
+                    theme::SUBTEXT,
+                    tbl_bg,
+                    false,
+                    scale,
+                );
+                line.len = 0;
+                let _ = write!(line, "{}{}", value, suffix);
+                let val_col = match i {
+                    2 => 0xff4ade80,
+                    5 => 0xff38bdf8,
+                    _ => 0xffffffff,
+                };
+                panel_text(
+                    w,
+                    s,
+                    x_off + 230,
+                    84 + i * 28,
+                    val_w,
                     line.as_str(),
-                    theme::TEXT,
+                    val_col,
+                    tbl_bg,
+                    true,
                     scale,
                 );
             }
@@ -1710,21 +1850,25 @@ impl WindowManager {
                 panel_text(
                     w,
                     s,
-                    24,
+                    x_off + 32,
                     84 + i * 28,
-                    190,
+                    184,
                     if i == 0 { "Unavailable" } else { "" },
-                    theme::MUTED,
+                    theme::SUBTEXT,
+                    tbl_bg,
+                    false,
                     scale,
                 );
                 panel_text(
                     w,
                     s,
-                    230,
+                    x_off + 230,
                     84 + i * 28,
-                    field_width.saturating_sub(230),
+                    val_w,
                     "",
                     theme::TEXT,
+                    tbl_bg,
+                    true,
                     scale,
                 );
             }

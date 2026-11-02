@@ -235,17 +235,55 @@ impl FileManager {
         if width < 30 || height < 30 {
             return;
         }
-        c.fill(FILES_BG);
+        c.fill(0xff181b21);
 
-        // Header toolbar (22px)
-        c.fill_rect(0, 0, width, 21, FILES_HEADER);
-        c.fill_rect(0, 21, width, 1, 0xff3e3e3e);
-        c.text(8, 3, "[^ Up]", FILES_DIR, FILES_HEADER);
-        c.text(64, 3, "[/]", 0xff8b949e, FILES_HEADER);
-        c.text(96, 3, "[/bin]", 0xff8b949e, FILES_HEADER);
-        c.text(152, 3, "[/etc]", 0xff8b949e, FILES_HEADER);
-        c.text(208, 3, "Path:", 0xff8b949e, FILES_HEADER);
-        c.text(256, 3, &self.current_path, FILES_FG, FILES_HEADER);
+        // Header toolbar (24px)
+        let hdr_bg = 0xff12151b;
+        c.fill_rect(0, 0, width, 23, hdr_bg);
+        c.fill_rect(0, 23, width, 1, 0xff28303e);
+
+        c.pill_button(8, 2, 48, 19, "^ Up", FILES_DIR, 0xff1b2432, 0xff2e3d52, hdr_bg);
+        let is_root = self.current_path == "/";
+        c.pill_button(
+            64,
+            2,
+            24,
+            19,
+            "/",
+            if is_root { 0xffffffff } else { 0xff9fb0c7 },
+            if is_root { 0xff1e385b } else { 0xff1a1f29 },
+            if is_root { 0xff3b82f6 } else { 0xff2a3342 },
+            hdr_bg,
+        );
+        let is_bin = self.current_path == "/bin";
+        c.pill_button(
+            96,
+            2,
+            48,
+            19,
+            "/bin",
+            if is_bin { 0xffffffff } else { 0xff9fb0c7 },
+            if is_bin { 0xff1e385b } else { 0xff1a1f29 },
+            if is_bin { 0xff3b82f6 } else { 0xff2a3342 },
+            hdr_bg,
+        );
+        let is_etc = self.current_path == "/etc";
+        c.pill_button(
+            152,
+            2,
+            48,
+            19,
+            "/etc",
+            if is_etc { 0xffffffff } else { 0xff9fb0c7 },
+            if is_etc { 0xff1e385b } else { 0xff1a1f29 },
+            if is_etc { 0xff3b82f6 } else { 0xff2a3342 },
+            hdr_bg,
+        );
+        if width > 220 {
+            let path_w = width.saturating_sub(214);
+            c.rounded_box(206, 2, path_w, 19, 5, hdr_bg, 0xff0d1015, 0xff252e3d);
+            c.text(214, 3, &self.current_path, FILES_FG, 0xff0d1015);
+        }
 
         // File list (y = 26 to height - 20)
         let max_items = (height.saturating_sub(46)) / 20;
@@ -260,36 +298,60 @@ impl FileManager {
         {
             let actual_idx = self.scroll + idx;
             let is_sel = actual_idx == self.selected;
-            let row_bg = if is_sel { FILES_SEL } else { FILES_BG };
+            let stripe_bg = if idx % 2 == 0 { 0xff1c2028 } else { 0xff181b21 };
+            let row_h = (cur_y + 20).min(height.saturating_sub(20)).saturating_sub(cur_y);
+            c.fill_rect(0, cur_y, width, row_h, stripe_bg);
 
-            // Fill row background
-            let row_end = (cur_y + 20).min(height.saturating_sub(20));
-            c.fill_rect(0, cur_y, width, row_end.saturating_sub(cur_y), row_bg);
-
-            // Draw icon tag
-            let (tag, tag_fg) = if entry.is_dir {
-                ("[DIR]", FILES_DIR)
-            } else if entry.is_exe {
-                ("[BIN]", FILES_EXE)
+            let row_bg = if is_sel {
+                let sel_bg = 0xff1e385b;
+                if width > 12 && row_h >= 6 {
+                    c.rounded_box(4, cur_y, width.saturating_sub(8), row_h, 5, stripe_bg, sel_bg, 0xff3b82f6);
+                    c.fill_rect(6, cur_y + 4, 2, row_h.saturating_sub(8), 0xff38bdf8);
+                }
+                sel_bg
             } else {
-                ("[FILE]", 0xff8b949e)
+                stripe_bg
             };
-            c.text(8, cur_y + 2, tag, tag_fg, row_bg);
+
+            let icon_kind = if entry.is_dir {
+                0
+            } else if entry.is_exe {
+                1
+            } else {
+                2
+            };
+            c.file_icon(12, cur_y + 3, icon_kind, row_bg);
 
             // Draw name
-            let name_fg = if is_sel { 0xffffffff } else { FILES_FG };
-            c.text(64, cur_y + 2, &entry.name, name_fg, row_bg);
+            let name_fg = if is_sel {
+                0xffffffff
+            } else if entry.is_dir {
+                0xffeef2f6
+            } else if entry.is_exe {
+                FILES_EXE
+            } else {
+                FILES_FG
+            };
+            if entry.is_dir || is_sel {
+                c.text_bold(36, cur_y + 1, &entry.name, name_fg, row_bg);
+            } else {
+                c.text(36, cur_y + 1, &entry.name, name_fg, row_bg);
+            }
 
-            // Draw size for files
-            if !entry.is_dir && width >= 320 {
-                let size_str = format_bytes(entry.size);
-                c.text(
-                    width.saturating_sub(90),
-                    cur_y + 2,
-                    &size_str,
-                    0xff8b949e,
-                    row_bg,
-                );
+            // Draw type & size for entries on wide windows
+            if width >= 320 {
+                if entry.is_dir {
+                    c.text(width.saturating_sub(84), cur_y + 1, "Folder", FILES_DIR, row_bg);
+                } else {
+                    let size_str = format_bytes(entry.size);
+                    c.text(
+                        width.saturating_sub(84),
+                        cur_y + 1,
+                        &size_str,
+                        0xff7e8796,
+                        row_bg,
+                    );
+                }
             }
 
             cur_y += 20;
@@ -297,7 +359,11 @@ impl FileManager {
 
         // Footer status bar (bottom 18px)
         let footer_y = height.saturating_sub(18);
-        c.fill_rect(0, footer_y, width, height - footer_y, FILES_HEADER);
+        if footer_y > 0 {
+            c.fill_rect(0, footer_y - 1, width, 1, 0xff28303e);
+        }
+        let ftr_bg = 0xff12151b;
+        c.fill_rect(0, footer_y, width, height - footer_y, ftr_bg);
         let total_items = self.entries.len();
         let mut status_msg = String::new();
         let _ = status_msg.try_reserve_exact(32);
@@ -319,14 +385,16 @@ impl FileManager {
         if let Ok(s) = core::str::from_utf8(&n_buf[..n_len]) {
             status_msg.push_str(s);
         }
-        c.text(8, footer_y + 1, &status_msg, 0xff8b949e, FILES_HEADER);
-        c.text(
-            width.saturating_sub(180),
-            footer_y + 1,
-            "Click to Select / Open",
-            0xff8b949e,
-            FILES_HEADER,
-        );
+        c.text(10, footer_y + 1, &status_msg, 0xff7e8796, ftr_bg);
+        if width >= 260 {
+            c.text(
+                width.saturating_sub(184),
+                footer_y + 1,
+                "Click to Select / Open",
+                0xff7e8796,
+                ftr_bg,
+            );
+        }
     }
 }
 

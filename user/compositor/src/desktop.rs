@@ -367,8 +367,17 @@ impl AppHost {
             return;
         };
         let scale = theme::scale(s.height);
+        let logical_w = wm
+            .windows
+            .iter()
+            .find(|w| w.id == id || [7, 8, 9].contains(&w.id))
+            .map(|w| (w.rect.w - 2) / scale)
+            .unwrap_or(0);
+        let x_off = ui::content_offset(logical_w);
+        let lx = x / scale;
+        let adj_x = if lx > 180 { lx.saturating_sub(x_off) } else { lx };
         if let Some(command) =
-            self.apps[index].pointer(x / scale, y / scale + self.apps[index].scroll)
+            self.apps[index].pointer(adj_x, y / scale + self.apps[index].scroll)
         {
             self.command(index, command, wm, s);
             if self.apps[index].kind == 1 && (20..=23).contains(&command) {
@@ -1364,9 +1373,10 @@ impl AppHost {
         let modal_border = if sheet_active {
             theme::ACCENT
         } else {
-            theme::BORDER
+            0xff323846
         };
-        let header_bg = if sheet_active { 0xff222b38 } else { 0xff282828 };
+        let header_bg = if sheet_active { 0xff1e293b } else { 0xff282828 };
+        let header_fg = if sheet_active { 0xffffffff } else { theme::SUBTEXT };
         c.sheet_card(Rect { x: 196, y: 326, w: 540, h: 110 }, 0xff282828, modal_border, sheet_active);
         c.label_bold(
             208,
@@ -1376,9 +1386,9 @@ impl AppHost {
             if self.selected != usize::MAX {
                 "Join Selected Network"
             } else {
-                "Network SSID"
+                "Manual / Selected Network"
             },
-            0xffffffff,
+            header_fg,
             header_bg,
         );
         c.entry(NETWORK[4].rect, self.ssid.as_str(), focus == 4 && enabled);
@@ -1569,6 +1579,101 @@ mod wifi_ux_tests {
                 }
                 h.command(1, 101, &mut wm, &mut s);
                 h.apps[1].focus = 5;
+
+                // Also export System Information (id 6) preview
+                let mut sys_wm = WindowManager::desktop();
+                let mut sys_s = Surface::new(1280, 800).unwrap();
+                let mut sys_w = Window::new(6, "System Information", Rect { x: 80, y: 60, w: 520, h: 340 }).unwrap();
+                sys_w.is_focused = true;
+                sys_wm.windows.push(sys_w);
+                sys_wm.system_panel(
+                    &mut sys_s,
+                    Some(sys::SystemInfo {
+                        cpu_count: 8,
+                        total_ram_bytes: 16384 * 1024 * 1024,
+                        free_ram_bytes: 14210 * 1024 * 1024,
+                        task_count: 14,
+                        thread_count: 28,
+                        uptime_ticks: 412800,
+                        tick_hz: 100,
+                        ..Default::default()
+                    }),
+                );
+                sys_s.fill(crate::window::DESKTOP);
+                sys_s.damage(Rect { x: 0, y: 0, w: 1280, h: 800 });
+                sys_wm.render(&mut sys_s);
+                let sw = &sys_wm.windows[0];
+                let mut sys_img = alloc::format!("P6\n{} {}\n255\n", sw.rect.w, sw.rect.h).into_bytes();
+                for y in sw.rect.y..sw.rect.y + sw.rect.h {
+                    for x in sw.rect.x..sw.rect.x + sw.rect.w {
+                        let pixel = sys_s.pixels[y * sys_s.width + x];
+                        sys_img.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8]);
+                    }
+                }
+                std::fs::write(alloc::format!("{}_sysinfo.ppm", stem), sys_img).unwrap();
+
+                // Export Files (id 4) & Notes (id 5) previews
+                let mut app_wm = WindowManager::desktop();
+                let mut app_s = Surface::new(1280, 800).unwrap();
+                let mut fw = Window::new(4, "Files", Rect { x: 40, y: 40, w: 520, h: 320 }).unwrap();
+                {
+                    let mut fm = crate::files::FileManager::new("/etc");
+                    fm.entries.clear();
+                    for (name, is_dir, is_exe, size) in [
+                        ("network", true, false, 0),
+                        ("ssl", true, false, 0),
+                        ("watchtower", true, false, 0),
+                        ("desktop-init", false, true, 1840),
+                        ("desktop.conf", false, false, 128),
+                        ("hostname", false, false, 11),
+                        ("passwd", false, false, 412),
+                        ("timezone", false, false, 16),
+                    ] {
+                        fm.entries.push(crate::files::FileEntry {
+                            name: alloc::string::String::from(name),
+                            is_dir,
+                            is_exe,
+                            size,
+                        });
+                    }
+                    fm.selected = 4;
+                    let cw = fw.rect.w - 2;
+                    let ch = fw.rect.h - 26;
+                    let mut c = crate::canvas::Canvas::new(&mut fw.content, cw, ch, cw).unwrap();
+                    fm.render(&mut c);
+                }
+                let mut nw = Window::new(5, "Notes - /etc/desktop.conf", Rect { x: 600, y: 40, w: 520, h: 320 }).unwrap();
+                {
+                    let mut np = crate::notepad::Notepad::new("/etc/desktop.conf");
+                    np.text.clear();
+                    np.text.extend_from_slice(
+                        b"# FortressOS Desktop Configuration\nversion=1\nscale=auto\nwallpaper=hello\nclock=24h\n",
+                    );
+                    np.cursor = 45;
+                    np.modified = true;
+                    let cw = nw.rect.w - 2;
+                    let ch = nw.rect.h - 26;
+                    let mut c = crate::canvas::Canvas::new(&mut nw.content, cw, ch, cw).unwrap();
+                    np.render(&mut c);
+                }
+                nw.is_focused = true;
+                fw.is_focused = true;
+                app_wm.windows.push(fw);
+                app_wm.windows.push(nw);
+                app_s.fill(crate::window::DESKTOP);
+                app_s.damage(Rect { x: 0, y: 0, w: 1280, h: 800 });
+                app_wm.render(&mut app_s);
+                for (wid, suffix) in [(4u32, "_files.ppm"), (5u32, "_notes.ppm")] {
+                    let aw = app_wm.windows.iter().find(|w| w.id == wid).unwrap();
+                    let mut aimg = alloc::format!("P6\n{} {}\n255\n", aw.rect.w, aw.rect.h).into_bytes();
+                    for y in aw.rect.y..aw.rect.y + aw.rect.h {
+                        for x in aw.rect.x..aw.rect.x + aw.rect.w {
+                            let pixel = app_s.pixels[y * app_s.width + x];
+                            aimg.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8]);
+                        }
+                    }
+                    std::fs::write(alloc::format!("{}{}", stem, suffix), aimg).unwrap();
+                }
             }
         }
         h.pointer(8, 250, 250, &mut wm, &mut s);

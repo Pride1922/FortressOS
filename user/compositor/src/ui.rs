@@ -5,11 +5,20 @@ use crate::{
     window::{Window, theme},
 };
 
+pub const fn content_offset(logical_w: usize) -> usize {
+    if logical_w > 800 {
+        logical_w.saturating_sub(180).saturating_sub(572) / 2
+    } else {
+        0
+    }
+}
+
 pub struct Canvas<'a> {
     window: &'a mut Window,
     scale: usize,
     dirty: Option<Rect>,
     scroll_y: usize,
+    x_offset: usize,
 }
 impl<'a> Canvas<'a> {
     #[allow(dead_code)] // Convenience constructor for new apps and host tests.
@@ -18,11 +27,18 @@ impl<'a> Canvas<'a> {
     }
     pub fn scrolled(window: &'a mut Window, scale: usize, reset: bool, scroll_y: usize) -> Self {
         let scale = scale.clamp(1, 2);
+        let logical_w = (window.rect.w - 2) / scale;
+        let x_offset = if registered(window.id) {
+            content_offset(logical_w)
+        } else {
+            0
+        };
         let mut result = Self {
             window,
             scale,
             dirty: None,
             scroll_y,
+            x_offset,
         };
         if reset {
             result.window.content.fill(theme::PANEL);
@@ -112,13 +128,24 @@ impl<'a> Canvas<'a> {
             false,
         );
     }
+    #[inline]
+    fn adj(&self, r: Rect) -> Rect {
+        if r.x > 180 {
+            Rect {
+                x: r.x.saturating_add(self.x_offset),
+                ..r
+            }
+        } else {
+            r
+        }
+    }
     pub fn label_bold(&mut self, x: usize, y: usize, width: usize, height: usize, text: &str, color: u32, bg: u32) {
-        let r = Rect {
+        let r = self.adj(Rect {
             x,
             y,
             w: width,
             h: height,
-        };
+        });
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(w) = r.w.checked_mul(self.scale) else { return; };
@@ -193,6 +220,7 @@ impl<'a> Canvas<'a> {
         self.badge_on(r, text, fg, bg, border_color, theme::PANEL);
     }
     pub fn icon_badge(&mut self, r: Rect, kind: u8, fg: u32, bg: u32, border_color: u32, outer_bg: u32) {
+        let r = self.adj(r);
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -274,6 +302,7 @@ impl<'a> Canvas<'a> {
         border_color: u32,
         outer_bg: u32,
     ) {
+        let r = self.adj(r);
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -321,6 +350,7 @@ impl<'a> Canvas<'a> {
         }
     }
     pub fn fill_rect(&mut self, r: Rect, color: u32) {
+        let r = self.adj(r);
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -342,6 +372,7 @@ impl<'a> Canvas<'a> {
     }
     #[allow(dead_code)]
     pub fn card(&mut self, r: Rect, bg: u32, border: u32) {
+        let r = self.adj(r);
         let shadow_h = 3usize;
         let total_h = r.h + shadow_h;
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
@@ -402,11 +433,12 @@ impl<'a> Canvas<'a> {
         }
     }
     pub fn sheet_card(&mut self, r: Rect, bg: u32, border: u32, active: bool) {
-        let pad = 3usize;
+        let r = self.adj(r);
+        let pad = 4usize;
         let rx = r.x.saturating_sub(pad);
-        let ry = r.y.saturating_sub(1);
+        let ry = r.y.saturating_sub(2);
         let rw = r.w + pad * 2;
-        let rh = r.h + pad + 2;
+        let rh = r.h + pad + 3;
         let Some(left) = rx.checked_mul(self.scale) else { return; };
         let Some(top) = ry.checked_mul(self.scale) else { return; };
         let Some(width) = rw.checked_mul(self.scale) else { return; };
@@ -424,14 +456,20 @@ impl<'a> Canvas<'a> {
             for x in 0..draw_width {
                 let lx = x / self.scale;
                 let ly = y / self.scale;
-                let shadow_cov = theme::rounded_coverage(lx, ly, rw, rh, radius + 2);
-                let halo_col = if active { 0xff004499 } else { 0xff080a0f };
-                let halo_alpha = if active { shadow_cov * 5 / 16 } else { shadow_cov * 6 / 16 };
+                let shadow_cov = theme::rounded_coverage(lx, ly, rw, rh, radius + 3);
+                let halo_col = if active { 0xff0055cc } else { 0xff080a0f };
+                let halo_alpha = if active { shadow_cov * 6 / 16 } else { shadow_cov * 6 / 16 };
                 let outer_bg = theme::blend_coverage(halo_col, theme::PANEL, halo_alpha);
-                let color = if lx >= pad && lx < pad + r.w && ly >= 1 && ly < 1 + r.h {
+                let color = if lx >= pad && lx < pad + r.w && ly >= 2 && ly < 2 + r.h {
                     let cx = lx - pad;
-                    let cy = ly - 1;
-                    let row_bg = if cy < 24 && active { 0xff222b38 } else { bg };
+                    let cy = ly - 2;
+                    let row_bg = if cy < 24 && active {
+                        0xff1e293b
+                    } else if cy == 24 && active {
+                        0xff2b3b52
+                    } else {
+                        bg
+                    };
                     Self::rounded_frame_pixel(
                         cx,
                         cy,
@@ -586,6 +624,7 @@ impl<'a> Canvas<'a> {
         selected: bool,
         focused: bool,
     ) {
+        let r = self.adj(r);
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -666,6 +705,7 @@ impl<'a> Canvas<'a> {
         focused: bool,
         enabled: bool,
     ) {
+        let r = self.adj(r);
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -824,6 +864,7 @@ impl<'a> Canvas<'a> {
         self.entry_on(r, text, focused, 0xff282828);
     }
     pub fn entry_on(&mut self, r: Rect, text: &str, focused: bool, outer_bg: u32) {
+        let r = self.adj(r);
         let glow = 2usize;
         let gx = r.x.saturating_sub(glow);
         let gy = r.y.saturating_sub(glow);
@@ -912,6 +953,7 @@ impl<'a> Canvas<'a> {
         border: bool,
         focused: bool,
     ) {
+        let r = self.adj(r);
         let Some(left) = r.x.checked_mul(self.scale) else {
             return;
         };
@@ -997,6 +1039,7 @@ impl<'a> Canvas<'a> {
         border: bool,
         focused: bool,
     ) {
+        let r = self.adj(r);
         let Some(left) = r.x.checked_mul(self.scale) else {
             return;
         };

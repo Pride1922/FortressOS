@@ -318,23 +318,60 @@ impl Notepad {
         if width < 30 || height < 30 {
             return;
         }
-        c.fill(NOTEPAD_BG);
+        let ed_bg = 0xff181b22;
+        let gutter_bg = 0xff12151b;
+        let hdr_bg = 0xff12151b;
+        c.fill(ed_bg);
 
-        // Header toolbar (20px)
-        c.fill_rect(0, 0, width, 20, NOTEPAD_HEADER);
-        c.text(8, 2, "[S] Save", 0xff58a6ff, NOTEPAD_HEADER);
-        c.text(88, 2, "Path:", 0xff8b949e, NOTEPAD_HEADER);
-        c.text(136, 2, &self.path, NOTEPAD_FG, NOTEPAD_HEADER);
-        if self.modified {
-            c.text(
-                width.saturating_sub(90),
+        // Dedicated line-number gutter background
+        let footer_y = height.saturating_sub(18);
+        if footer_y > 23 {
+            c.fill_rect(0, 23, 42.min(width), footer_y - 23, gutter_bg);
+            if width > 42 {
+                c.fill_rect(42, 23, 1, footer_y - 23, 0xff242b38);
+            }
+        }
+
+        // Header toolbar (22px)
+        c.fill_rect(0, 0, width, 22, hdr_bg);
+        c.fill_rect(0, 22, width, 1, 0xff28303e);
+        c.pill_button(8, 2, 68, 18, "Save", 0xffffffff, 0xff1e385b, 0xff3b82f6, hdr_bg);
+        if width > 190 {
+            let path_w = width.saturating_sub(184);
+            c.rounded_box(82, 2, path_w, 18, 5, hdr_bg, 0xff0d1015, 0xff252e3d);
+            c.text(90, 2, &self.path, NOTEPAD_FG, 0xff0d1015);
+        }
+        if self.modified && width >= 170 {
+            c.pill_button(
+                width.saturating_sub(88),
                 2,
-                "[Modified]",
-                0xffe5c07b,
-                NOTEPAD_HEADER,
+                80,
+                18,
+                "Modified",
+                0xfffacc15,
+                0xff332b14,
+                0xffeab308,
+                hdr_bg,
             );
         } else if let Some(st) = self.status {
-            c.text(width.saturating_sub(120), 2, st, 0xff3fb950, NOTEPAD_HEADER);
+            if width >= 200 {
+                c.text(width.saturating_sub(136), 2, st, 0xff4ade80, hdr_bg);
+            }
+        }
+
+        // Determine active cursor (line, col) first so we can highlight the active row
+        let mut active_line = 0usize;
+        let mut active_col = 0usize;
+        for (idx, &b) in self.text.iter().enumerate() {
+            if idx == self.cursor {
+                break;
+            }
+            if b == b'\n' {
+                active_line += 1;
+                active_col = 0;
+            } else {
+                active_col += 1;
+            }
         }
 
         // Text display area (from y = 24 to height - 20)
@@ -347,7 +384,22 @@ impl Notepad {
         let mut cursor_px = (48usize, 24usize);
         let mut cur_y = 24;
         let mut row_count = 0;
-        draw_line_num(c, 8, cur_y, line_idx + 1);
+
+        let draw_row_chrome = |c: &mut Canvas, row_y: usize, l_idx: usize| {
+            let is_active = l_idx == active_line;
+            let g_bg = if is_active { 0xff19202c } else { gutter_bg };
+            let r_bg = if is_active { 0xff1f2634 } else { ed_bg };
+            if is_active && row_y + 16 <= footer_y {
+                c.fill_rect(0, row_y, 42.min(width), 16, g_bg);
+                if width > 43 {
+                    c.fill_rect(43, row_y, width - 43, 16, r_bg);
+                }
+            }
+            draw_line_num(c, 8, row_y, l_idx + 1, is_active, g_bg);
+            r_bg
+        };
+
+        let mut cur_row_bg = draw_row_chrome(c, cur_y, line_idx);
 
         for (idx, &b) in self.text.iter().enumerate() {
             if idx == self.cursor {
@@ -361,10 +413,10 @@ impl Notepad {
                 if row_count >= max_rows {
                     break;
                 }
-                draw_line_num(c, 8, cur_y, line_idx + 1);
+                cur_row_bg = draw_row_chrome(c, cur_y, line_idx);
             } else if (32..=126).contains(&b) {
                 if col_idx < max_cols && row_count < max_rows {
-                    c.glyph(48 + col_idx * 8, cur_y, b, NOTEPAD_FG, NOTEPAD_BG);
+                    c.glyph(48 + col_idx * 8, cur_y, b, NOTEPAD_FG, cur_row_bg);
                 }
                 col_idx += 1;
             }
@@ -382,21 +434,32 @@ impl Notepad {
         }
 
         // Footer status bar (bottom 18px)
-        let footer_y = height.saturating_sub(18);
-        c.fill_rect(0, footer_y, width, height - footer_y, NOTEPAD_HEADER);
-        c.text(8, footer_y + 1, "UTF-8", 0xff8b949e, NOTEPAD_HEADER);
-        c.text(
-            80,
-            footer_y + 1,
-            "FortressOS Notes",
-            0xff8b949e,
-            NOTEPAD_HEADER,
+        if footer_y > 0 {
+            c.fill_rect(0, footer_y - 1, width, 1, 0xff28303e);
+        }
+        c.fill_rect(0, footer_y, width, height - footer_y, hdr_bg);
+        let mut pos_label = alloc::string::String::new();
+        let _ = pos_label.try_reserve_exact(24);
+        let _ = core::fmt::Write::write_fmt(
+            &mut pos_label,
+            format_args!("Ln {}, Col {}", active_line + 1, active_col + 1),
         );
+        c.text(10, footer_y + 1, &pos_label, 0xff9fb0c7, hdr_bg);
+        if width >= 260 {
+            c.text(width.saturating_sub(188), footer_y + 1, "UTF-8", 0xff7e8796, hdr_bg);
+            c.text(
+                width.saturating_sub(124),
+                footer_y + 1,
+                "Fortress Notes",
+                0xff7e8796,
+                hdr_bg,
+            );
+        }
     }
 }
 
-fn draw_line_num(c: &mut Canvas, x: usize, y: usize, num: usize) {
-    let mut buf = [b' '; 4];
+fn draw_line_num(c: &mut Canvas, x: usize, y: usize, num: usize, active: bool, bg: u32) {
+    let mut buf = [b' '; 3];
     let n = num % 1000;
     if n >= 100 {
         buf[0] = b'0' + (n / 100) as u8;
@@ -408,8 +471,8 @@ fn draw_line_num(c: &mut Canvas, x: usize, y: usize, num: usize) {
     } else {
         buf[2] = b'0' + n as u8;
     }
-    buf[3] = b'|';
+    let fg = if active { 0xff9fb0c7 } else { 0xff525c6e };
     for (i, &b) in buf.iter().enumerate() {
-        c.glyph(x + i * 8, y, b, NOTEPAD_LINENUM, NOTEPAD_BG);
+        c.glyph(x + i * 8, y, b, fg, bg);
     }
 }
