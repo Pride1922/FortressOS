@@ -15,6 +15,7 @@
 #include "heap.h"
 #include "pic.h"
 #include "acpi.h"
+#include "acpi_battery.h"
 #include "ioapic.h"
 #include "apic.h"
 #include "rtc.h"
@@ -5844,6 +5845,7 @@ pf_boot_guard_done:
     }
     serial_puts("       [PASS] ACPI RSDP and Root SDT verified\n");
     power_init();
+    acpi_battery_init();
 
     acpi_parser_selftest();
 

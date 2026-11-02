@@ -191,6 +191,9 @@ pub struct AppHost {
     pub clock_sync_in_progress: bool,
     pub clock_sync_until: Option<i64>,
     pub clock_synced: bool,
+    pub battery: Option<sys::BatteryStatus>,
+    pub show_power_menu: bool,
+    pub power_profile: u8,
 }
 pub fn normalize_timezone(raw: &str) -> &'static str {
     let s = raw.trim();
@@ -370,6 +373,9 @@ impl AppHost {
             clock_sync_in_progress: false,
             clock_sync_until: None,
             clock_synced: false,
+            battery: None,
+            show_power_menu: false,
+            power_profile: 0,
         }
     }
     #[inline(never)]
@@ -1022,6 +1028,24 @@ impl AppHost {
             return;
         }
         self.last_tick = utc;
+
+        // Poll battery status once per second and damage bounded rect on change
+        let new_battery = sys::battery_get().ok();
+        if new_battery != self.battery {
+            let old_pct = self.battery.map(|b| b.capacity_percent);
+            let new_pct = new_battery.map(|b| b.capacity_percent);
+            let old_state = self.battery.map(|b| b.state);
+            let new_state = new_battery.map(|b| b.state);
+            self.battery = new_battery;
+            wm.battery_status = new_battery;
+            if old_pct != new_pct || old_state != new_state {
+                s.damage(WindowManager::battery_rect(s.width, s.height));
+                if wm.show_power_menu {
+                    s.damage(WindowManager::power_menu_rect(s.width, s.height));
+                }
+            }
+        }
+        self.show_power_menu = wm.show_power_menu;
         if self.clock_sync_in_progress {
             let status = sys::clock_sync_status();
             let now = sys::monotonic_seconds().unwrap_or(0);

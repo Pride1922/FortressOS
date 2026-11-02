@@ -1,5 +1,6 @@
 #include "poll.h"
 #include "boot_info.h"
+#include "acpi_battery.h"
 #include "fb.h"
 #include "shm.h"
 #include "pkg_service.h"
@@ -1673,6 +1674,19 @@ static int64_t sys_mmap(uint64_t bytes) {
         error==VMM_ERR_NOMEM ? SYSCALL_ENOMEM : SYSCALL_EINVAL;
 }
 
+static int64_t sys_battery_get(uintptr_t user_out) {
+    if (!user_out) return SYSCALL_EFAULT;
+    if ((user_out & 0x3) != 0) return SYSCALL_EFAULT;
+    if (!vmm_validate_user_range(vmm_get_active_pml4_virt(), user_out, sizeof(battery_status_t), true)) {
+        return SYSCALL_EFAULT;
+    }
+    battery_status_t status;
+    int res = acpi_battery_get(&status);
+    if (res < 0) return res;
+    memcpy((void *)user_out, &status, sizeof(battery_status_t));
+    return 0;
+}
+
 int64_t syscall_dispatch(interrupt_frame_t *frame) {
     if (!frame) return SYSCALL_EINVAL;
 
@@ -2283,6 +2297,9 @@ int64_t syscall_dispatch(interrupt_frame_t *frame) {
             break;
         case SYS_SHM_UNMAP:
             result=shm_unmap(frame->rdi);
+            break;
+        case SYS_BATTERY_GET:
+            result = sys_battery_get(frame->rdi);
             break;
         case SYS_FBINFO:
             result = sys_fbinfo(frame->rdi, frame->rsi);

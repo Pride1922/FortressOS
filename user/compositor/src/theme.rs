@@ -7,6 +7,10 @@ pub const MUTED: u32 = 0xff989898;
 #[allow(dead_code)]
 pub const SUBTEXT: u32 = 0xff7e8796;
 pub const ACCENT: u32 = 0xff007aff;
+pub const ACCENT_BLUE: u32 = 0xff007aff;
+pub const AMBER: u32 = 0xfff59e0b;
+pub const RED: u32 = 0xffef4444;
+pub const YELLOW: u32 = 0xffeab308;
 const ALPHA: &[u8; 95 * 16 * 18] = include_bytes!("../assets/ui-alpha.bin");
 const ADVANCES: &[u8; 95] = include_bytes!("../assets/ui-advances.bin");
 static SCALE_OVERRIDE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);

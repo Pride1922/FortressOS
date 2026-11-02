@@ -791,6 +791,7 @@ fn volume_tray_pixel(x: usize, y: usize) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn battery_tray_pixel(x: usize, y: usize) -> (bool, bool) {
     let is_terminal = (13..=14).contains(&x) && (2..=5).contains(&y);
     let is_border = ((x == 0 || x == 12) && y <= 7) || ((y == 0 || y == 7) && x <= 12);
@@ -992,21 +993,20 @@ impl Panel {
                     } else {
                         tray_bg
                     }
-                } else if (9..18).contains(&ly) && (tray_x + 38..tray_x + 49).contains(&lx) {
-                    if volume_tray_pixel(lx - (tray_x + 38), ly - 9) {
+                } else if wm.battery_status.is_some() && (9..19).contains(&ly) && (tray_x + 28..tray_x + 50).contains(&lx) {
+                    if let Some(col) = crate::ui::render_battery_pixel(lx - (tray_x + 28), ly - 9, wm.battery_status.as_ref().unwrap(), tray_bg) {
+                        col
+                    } else {
+                        tray_bg
+                    }
+                } else if (9..18).contains(&ly) && (tray_x + 54..tray_x + 65).contains(&lx) {
+                    if volume_tray_pixel(lx - (tray_x + 54), ly - 9) {
                         0xffcbd5e1
                     } else {
                         tray_bg
                     }
-                } else if (10..18).contains(&ly) && (tray_x + 62..tray_x + 77).contains(&lx) {
-                    let (is_bat, is_green) = battery_tray_pixel(lx - (tray_x + 62), ly - 10);
-                    if is_bat {
-                        if is_green { 0xff22c55e } else { 0xffcbd5e1 }
-                    } else {
-                        tray_bg
-                    }
-                } else if (9..18).contains(&ly) && (tray_x + 90..tray_x + 99).contains(&lx) {
-                    if power_tray_pixel(lx - (tray_x + 90), ly - 9) {
+                } else if (9..18).contains(&ly) && (tray_x + 72..tray_x + 81).contains(&lx) {
+                    if power_tray_pixel(lx - (tray_x + 72), ly - 9) {
                         0xffe2e8f0
                     } else {
                         tray_bg
@@ -1263,6 +1263,9 @@ pub struct WindowManager {
     pub context_hover: Option<usize>,
     pub switcher_open: bool,
     pub switcher_selected: u32,
+    pub battery_status: Option<crate::sys::BatteryStatus>,
+    pub show_power_menu: bool,
+    pub power_profile: u8,
 }
 
 impl WindowManager {
@@ -1318,6 +1321,9 @@ impl WindowManager {
             context_hover: None,
             switcher_open: false,
             switcher_selected: 0,
+            battery_status: None,
+            show_power_menu: false,
+            power_profile: 0,
         })
     }
 
@@ -1337,6 +1343,9 @@ impl WindowManager {
             context_hover: None,
             switcher_open: false,
             switcher_selected: 0,
+            battery_status: None,
+            show_power_menu: false,
+            power_profile: 0,
         }
     }
 
@@ -1530,6 +1539,32 @@ impl WindowManager {
             y: 0,
             w: tray_w + 6 * scale,
             h: 28 * scale,
+        }
+    }
+
+    pub fn battery_rect(width: usize, height: usize) -> Rect {
+        let scale = theme::scale(height);
+        let tray_w = 114;
+        let tray_x = (width / scale).saturating_sub(tray_w + 8);
+        Rect {
+            x: (tray_x + 27) * scale,
+            y: 7 * scale,
+            w: 24 * scale,
+            h: 14 * scale,
+        }
+    }
+
+    pub fn power_menu_rect(width: usize, height: usize) -> Rect {
+        let scale = theme::scale(height);
+        let tray_w = 114;
+        let tray_x = (width / scale).saturating_sub(tray_w + 8);
+        let pw = 180;
+        let px = (tray_x + 5).min((width / scale).saturating_sub(pw + 8));
+        Rect {
+            x: px * scale,
+            y: 30 * scale,
+            w: pw * scale,
+            h: 120 * scale,
         }
     }
 
@@ -1961,6 +1996,38 @@ impl WindowManager {
             let dock_r = Self::dock_rect(s.width, s.height);
             let start_btn = Self::start_btn_rect(s.height);
             let start_menu = Self::start_menu_rect(s.height);
+
+            if self.battery_status.is_some() && Self::battery_rect(s.width, s.height).contains(x, y) {
+                self.show_power_menu = !self.show_power_menu;
+                s.damage(Self::battery_rect(s.width, s.height));
+                s.damage(Self::power_menu_rect(s.width, s.height));
+                self.buttons = buttons;
+                return Action::None;
+            }
+
+            if self.show_power_menu {
+                let menu_r = Self::power_menu_rect(s.width, s.height);
+                if menu_r.contains(x, y) {
+                    let scale = theme::scale(s.height);
+                    let lx = (x - menu_r.x) / scale;
+                    let ly = (y - menu_r.y) / scale;
+                    let bw = menu_r.w / scale;
+                    let btn_w = (bw.saturating_sub(36)) / 2;
+                    if (74..102).contains(&ly) {
+                        if lx >= 16 && lx < 16 + btn_w {
+                            self.power_profile = 0;
+                        } else if lx >= 18 + btn_w && lx < 18 + 2 * btn_w {
+                            self.power_profile = 1;
+                        }
+                        s.damage(menu_r);
+                    }
+                    self.buttons = buttons;
+                    return Action::None;
+                } else {
+                    self.show_power_menu = false;
+                    s.damage(menu_r);
+                }
+            }
 
             if Self::clock_rect(s.width, s.height).contains(x, y) {
                 self.buttons = buttons;
@@ -3268,6 +3335,133 @@ impl WindowManager {
                             };
 
                             s.pixels[y * s.width + x] = theme::blend_coverage(pixel, under, cov);
+                        }
+                    }
+                }
+            }
+
+            // Floating Glassmorphic Power Menu Card
+            if self.show_power_menu && self.battery_status.is_some() {
+                let bat = self.battery_status.as_ref().unwrap();
+                let menu_rect = Self::power_menu_rect(s.width, s.height);
+                if let Some(clip) = menu_rect.intersection(r) {
+                    let bw = menu_rect.w / scale;
+                    let bh = menu_rect.h / scale;
+
+                    // Format percentage string, e.g. "85%"
+                    let mut pct_buf = [0u8; 8];
+                    let cap = bat.capacity_percent.min(100);
+                    let pct_len = if cap >= 100 {
+                        pct_buf[0] = b'1'; pct_buf[1] = b'0'; pct_buf[2] = b'0'; pct_buf[3] = b'%';
+                        4
+                    } else if cap >= 10 {
+                        pct_buf[0] = b'0' + (cap / 10) as u8;
+                        pct_buf[1] = b'0' + (cap % 10) as u8;
+                        pct_buf[2] = b'%';
+                        3
+                    } else {
+                        pct_buf[0] = b'0' + cap as u8;
+                        pct_buf[1] = b'%';
+                        2
+                    };
+                    let pct_str = core::str::from_utf8(&pct_buf[..pct_len]).unwrap_or("0%");
+
+                    // Format subtext: "2h 15m remaining" / "Fully Charged" / "Charging"
+                    let mut sub_buf = [0u8; 32];
+                    let sub_str = if bat.state == crate::sys::BATTERY_STATE_CHARGING {
+                        "Charging"
+                    } else if bat.state == crate::sys::BATTERY_STATE_FULL {
+                        "Fully Charged"
+                    } else if bat.time_remaining_mins > 0 {
+                        let h = bat.time_remaining_mins / 60;
+                        let m = bat.time_remaining_mins % 60;
+                        let mut idx = 0;
+                        if h >= 10 { sub_buf[idx] = b'0' + (h / 10) as u8; idx += 1; }
+                        sub_buf[idx] = b'0' + (h % 10) as u8; idx += 1;
+                        sub_buf[idx] = b'h'; idx += 1;
+                        sub_buf[idx] = b' '; idx += 1;
+                        if m >= 10 { sub_buf[idx] = b'0' + (m / 10) as u8; idx += 1; }
+                        sub_buf[idx] = b'0' + (m % 10) as u8; idx += 1;
+                        sub_buf[idx] = b'm'; idx += 1;
+                        for &b in b" remaining" { sub_buf[idx] = b; idx += 1; }
+                        core::str::from_utf8(&sub_buf[..idx]).unwrap_or("Discharging")
+                    } else {
+                        "Discharging"
+                    };
+
+                    for y in clip.y..clip.y + clip.h {
+                        for x in clip.x..clip.x + clip.w {
+                            let px = (x - menu_rect.x) / scale;
+                            let py = (y - menu_rect.y) / scale;
+
+                            let is_border = px == 0 || px == bw - 1 || py == 0 || py == bh - 1;
+                            s.pixels[y * s.width + x] = if is_border {
+                                theme::BORDER
+                            } else if (10..28).contains(&py) && px >= 16 && px < bw - 16 {
+                                // Large text: "85%"
+                                theme::text_pixel_bold(pct_str, px - 16, py - 10, 0xffffffff, 0xff1c2128)
+                            } else if (32..48).contains(&py) && px >= 16 && px < bw - 16 {
+                                // Subtext: "2h 15m remaining" / "Charging"
+                                theme::text_pixel(sub_str, px - 16, py - 32, theme::MUTED, 0xff1c2128)
+                            } else if (52..62).contains(&py) && px >= 16 && px < bw - 16 {
+                                // Visual progress bar
+                                let bar_w = bw.saturating_sub(32);
+                                let rel_x = px - 16;
+                                let rel_y = py - 52;
+                                let bar_border = rel_x == 0 || rel_x == bar_w - 1 || rel_y == 0 || rel_y == 9;
+                                if bar_border {
+                                    0xff334155
+                                } else {
+                                    let fill_w = ((cap as usize) * (bar_w - 2)) / 100;
+                                    if rel_x - 1 < fill_w {
+                                        if cap < 10 {
+                                            theme::RED
+                                        } else if cap < 20 {
+                                            theme::AMBER
+                                        } else {
+                                            theme::ACCENT_BLUE
+                                        }
+                                    } else {
+                                        0xff222a36
+                                    }
+                                }
+                            } else if (74..102).contains(&py) && px >= 16 && px < bw - 16 {
+                                // Segmented toggle: Performance vs Battery Saver
+                                let btn_w = (bw.saturating_sub(36)) / 2;
+                                let rel_y = py - 74;
+                                let is_left = px >= 16 && px < 16 + btn_w;
+                                let is_right = px >= 18 + btn_w && px < 18 + 2 * btn_w;
+
+                                if is_left {
+                                    let active = self.power_profile == 0;
+                                    let btn_bg = if active { theme::ACCENT } else { 0xff252c38 };
+                                    let btn_fg = if active { 0xffffffff } else { theme::MUTED };
+                                    let border_btn = px == 16 || px == 15 + btn_w || rel_y == 0 || rel_y == 27;
+                                    if border_btn {
+                                        0xff3a4556
+                                    } else if (5..23).contains(&rel_y) && px >= 20 && px < 14 + btn_w {
+                                        theme::text_pixel("Performance", px - 20, rel_y - 5, btn_fg, btn_bg)
+                                    } else {
+                                        btn_bg
+                                    }
+                                } else if is_right {
+                                    let active = self.power_profile == 1;
+                                    let btn_bg = if active { theme::ACCENT } else { 0xff252c38 };
+                                    let btn_fg = if active { 0xffffffff } else { theme::MUTED };
+                                    let border_btn = px == 18 + btn_w || px == 17 + 2 * btn_w || rel_y == 0 || rel_y == 27;
+                                    if border_btn {
+                                        0xff3a4556
+                                    } else if (5..23).contains(&rel_y) && px >= 24 + btn_w && px < 16 + 2 * btn_w {
+                                        theme::text_pixel("Battery Saver", px - (24 + btn_w), rel_y - 5, btn_fg, btn_bg)
+                                    } else {
+                                        btn_bg
+                                    }
+                                } else {
+                                    0xff1c2128
+                                }
+                            } else {
+                                0xff1c2128
+                            };
                         }
                     }
                 }

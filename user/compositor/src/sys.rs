@@ -22,6 +22,7 @@ pub const SYS_MMAP: usize = 99;
 pub const SYS_SYSINFO: usize = 37;
 pub const SYS_NETCTL: usize = 42;
 pub const SYS_WIFI: usize = 87;
+pub const SYS_BATTERY_GET: usize = 103;
 pub const SYS_PIPE: usize = 24;
 pub const SYS_GETRESUID: usize = 62;
 pub const SYS_GETRESGID: usize = 63;
@@ -89,6 +90,78 @@ pub fn wireless_info() -> Option<WirelessInfo> {
     (unsafe { syscall3(SYS_WIFI, 4, &mut result as *mut _ as usize, 60) } == 0
         && result.mac.iter().any(|b| *b != 0))
     .then_some(result)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct BatteryStatus {
+    pub capacity_percent: u32,
+    pub state: u32,
+    pub time_remaining_mins: u32,
+    pub voltage_mv: u32,
+}
+const _: () = assert!(core::mem::size_of::<BatteryStatus>() == 16);
+
+pub const BATTERY_STATE_UNKNOWN: u32 = 0;
+pub const BATTERY_STATE_DISCHARGING: u32 = 1;
+pub const BATTERY_STATE_CHARGING: u32 = 2;
+pub const BATTERY_STATE_FULL: u32 = 3;
+
+#[cfg(not(test))]
+pub fn battery_get() -> Result<BatteryStatus, isize> {
+    let mut status = BatteryStatus::default();
+    let rc = unsafe { syscall1(SYS_BATTERY_GET, &mut status as *mut _ as usize) };
+    if rc == 0 {
+        Ok(status)
+    } else {
+        Err(rc)
+    }
+}
+
+#[cfg(test)]
+static TEST_BATTERY_PERCENT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+#[cfg(test)]
+static TEST_BATTERY_STATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(test)]
+static TEST_BATTERY_TIME: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(test)]
+static TEST_BATTERY_VOLT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+#[cfg(test)]
+pub fn set_mock_battery(mock: Option<Result<BatteryStatus, isize>>) {
+    match mock {
+        Some(Ok(st)) => {
+            TEST_BATTERY_PERCENT.store(st.capacity_percent, core::sync::atomic::Ordering::Relaxed);
+            TEST_BATTERY_STATE.store(st.state, core::sync::atomic::Ordering::Relaxed);
+            TEST_BATTERY_TIME.store(st.time_remaining_mins, core::sync::atomic::Ordering::Relaxed);
+            TEST_BATTERY_VOLT.store(st.voltage_mv, core::sync::atomic::Ordering::Relaxed);
+        }
+        Some(Err(e)) => {
+            TEST_BATTERY_PERCENT.store(u32::MAX - 1, core::sync::atomic::Ordering::Relaxed);
+            TEST_BATTERY_STATE.store(e.unsigned_abs() as u32, core::sync::atomic::Ordering::Relaxed);
+        }
+        None => {
+            TEST_BATTERY_PERCENT.store(u32::MAX, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn battery_get() -> Result<BatteryStatus, isize> {
+    let p = TEST_BATTERY_PERCENT.load(core::sync::atomic::Ordering::Relaxed);
+    if p == u32::MAX {
+        return Err(-35); /* ENODEV by default in host test */
+    }
+    if p == u32::MAX - 1 {
+        let err = TEST_BATTERY_STATE.load(core::sync::atomic::Ordering::Relaxed) as isize;
+        return Err(-err);
+    }
+    Ok(BatteryStatus {
+        capacity_percent: p,
+        state: TEST_BATTERY_STATE.load(core::sync::atomic::Ordering::Relaxed),
+        time_remaining_mins: TEST_BATTERY_TIME.load(core::sync::atomic::Ordering::Relaxed),
+        voltage_mv: TEST_BATTERY_VOLT.load(core::sync::atomic::Ordering::Relaxed),
+    })
 }
 pub fn wireless_connect(ssid: &str, password: &[u8], bssid: [u8; 6]) -> isize {
     if ssid.is_empty()

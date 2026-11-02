@@ -720,6 +720,7 @@ USER_SHELL_ELF := $(BUILD_DIR)/shell.elf
 USER_SH_BUILTIN_ELF := $(BUILD_DIR)/sh-builtin.elf
 USER_PS_ELF := $(BUILD_DIR)/ps.elf
 USER_SYSINFO_ELF := $(BUILD_DIR)/sysinfo.elf
+USER_BATTERY_ELF := $(BUILD_DIR)/battery.elf
 USER_DMESG_ELF := $(BUILD_DIR)/dmesg.elf
 USER_IFCONFIG_ELF := $(BUILD_DIR)/ifconfig.elf
 USER_IFUP_ELF := $(BUILD_DIR)/ifup.elf
@@ -1465,6 +1466,13 @@ $(BUILD_DIR)/sysinfo_start.o: $(USER_DIR)/tools/start.asm
 $(USER_SYSINFO_ELF): $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o $(USER_DIR)/shell.ld
 	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/sysinfo_start.o $(BUILD_DIR)/sysinfo.o -o $@
 
+$(BUILD_DIR)/battery.o: user/battery.c src/include/types.h src/include/syscall_abi.h
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Iuser -c $< -o $@
+
+$(USER_BATTERY_ELF): $(BUILD_DIR)/battery.o $(USER_DIR)/shell.ld
+	@$(LD) -m elf_x86_64 -nostdlib -static -z noexecstack -T $(USER_DIR)/shell.ld $(BUILD_DIR)/battery.o -o $@
+
 $(BUILD_DIR)/dmesg.o: user/dmesg.c $(SHELL_HEADERS) src/include/types.h
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) $(CFLAGS) -Os -fno-pie -fno-asynchronous-unwind-tables -fstack-usage -Iuser -c $< -o $@
@@ -1565,6 +1573,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@cp -f $(USER_DUAL_STREAM_ELF) $(BUILD_DIR)/initramfs/bin/dual_stream
 	@cp -f $(USER_PS_ELF) $(BUILD_DIR)/initramfs/bin/ps
 	@cp -f $(USER_SYSINFO_ELF) $(BUILD_DIR)/initramfs/bin/sysinfo
+	@cp -f $(USER_BATTERY_ELF) $(BUILD_DIR)/initramfs/bin/battery
 	@cp -f $(USER_DMESG_ELF) $(BUILD_DIR)/initramfs/bin/dmesg
 	@cp -f $(USER_BOOT_SNAPSHOT_ELF) $(BUILD_DIR)/initramfs/bin/boot-snapshot
 	@cp -f $(USER_IFCONFIG_ELF) $(BUILD_DIR)/initramfs/sbin/ifconfig
@@ -2781,6 +2790,12 @@ test-crash-dump-host: tests/crash_dump_host.c
 
 test-crash-dump: $(BOOTABLE_ISO)
 	@python3 scripts/test_crash_dump.py
+
+.PHONY: test-battery-host
+test-battery-host: tests/battery_host.c src/drivers/acpi_battery.c
+	@mkdir -p $(BUILD_DIR)
+	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -DHOST_TEST -I. -Isrc/include -Isrc/drivers tests/battery_host.c src/drivers/acpi_battery.c -o $(BUILD_DIR)/test-battery-host
+	@$(BUILD_DIR)/test-battery-host
 
 .PHONY: test-compositor
 test-compositor: $(BOOTABLE_ISO)

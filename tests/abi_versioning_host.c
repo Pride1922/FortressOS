@@ -484,12 +484,16 @@ static void test_syscall_table_audit(void) {
     assert(SYS_FB_ACQUIRE == 97);
     assert(SYS_FB_RELEASE == 98);
     assert(SYS_MMAP == 99);
+    assert(SYS_SHM_CREATE == 100);
+    assert(SYS_SHM_MAP == 101);
+    assert(SYS_SHM_UNMAP == 102);
+    assert(SYS_BATTERY_GET == 103);
 
     /* Assert High-Water Mark and Next Available Syscall Slot */
-    _Static_assert(SYSCALL_MAX == 99, "SYSCALL_MAX must be 99");
-    _Static_assert(SYSCALL_NEXT_AVAIL == 100, "SYSCALL_NEXT_AVAIL must be 100");
+    _Static_assert(SYSCALL_MAX == 103, "SYSCALL_MAX must be 103");
+    _Static_assert(SYSCALL_NEXT_AVAIL == 104, "SYSCALL_NEXT_AVAIL must be 104");
 
-    puts("PASS test_syscall_table_audit: 100/100 syscall entries audited and contiguous allocation slot 100 confirmed");
+    puts("PASS test_syscall_table_audit: 104/104 syscall entries audited and contiguous allocation slot 104 confirmed");
 }
 
 static void test_pattern_a_stat_ext(void) {

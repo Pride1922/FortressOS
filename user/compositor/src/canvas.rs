@@ -206,4 +206,19 @@ impl<'a> Canvas<'a> {
             }
         }
     }
+
+    pub fn battery_icon(&mut self, x: usize, y: usize, status: &crate::sys::BatteryStatus) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let draw_w = 22.min(self.width.saturating_sub(x));
+        let draw_h = 10.min(self.height.saturating_sub(y));
+        for dy in 0..draw_h {
+            for dx in 0..draw_w {
+                if let Some(col) = crate::ui::render_battery_pixel(dx, dy, status, theme::PANEL) {
+                    self.pixels[(y + dy) * self.stride + x + dx] = col;
+                }
+            }
+        }
+    }
 }

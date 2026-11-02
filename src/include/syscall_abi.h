@@ -120,11 +120,12 @@
 #define SYS_SHM_CREATE   100 /* (bytes <=32MiB, flags: VFS_O_CLOEXEC) -> fd/-errno; zeroed */
 #define SYS_SHM_MAP      101 /* (fd, page-aligned va >=16MiB, flags: SHM_MAP_*) -> va/-errno */
 #define SYS_SHM_UNMAP    102 /* (va of a SYS_SHM_MAP mapping) -> 0/-errno */
+#define SYS_BATTERY_GET  103 /* (battery_status_t *out) -> 0/-errno */
 #define SHM_MAP_READONLY 1u
 
 /* Syscall Allocation High-Water Mark and Next Available Slot */
-#define SYSCALL_MAX        102
-#define SYSCALL_NEXT_AVAIL 103
+#define SYSCALL_MAX        103
+#define SYSCALL_NEXT_AVAIL 104
 
 /* Framebuffer Information (SYS_FBINFO, Syscall 96) */
 typedef struct fb_info_v1 {
@@ -138,6 +139,20 @@ typedef struct fb_info_v1 {
     uint64_t fb_size;         /* Total mapped VRAM size in bytes */
 } fb_info_v1_t;
 _Static_assert(sizeof(fb_info_v1_t) == 40, "fb_info_v1_t size");
+
+/* Battery Status (SYS_BATTERY_GET, Syscall 103) */
+typedef struct {
+    uint32_t capacity_percent;  /* 0..100 */
+    uint32_t state;             /* 0 = Unknown, 1 = Discharging, 2 = Charging, 3 = Full */
+    uint32_t time_remaining_mins; /* 0 if unknown/calculating */
+    uint32_t voltage_mv;        /* Optional, if available */
+} battery_status_t;
+_Static_assert(sizeof(battery_status_t) == 16, "battery_status_t size");
+
+#define BATTERY_STATE_UNKNOWN      0
+#define BATTERY_STATE_DISCHARGING  1
+#define BATTERY_STATE_CHARGING     2
+#define BATTERY_STATE_FULL         3
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1

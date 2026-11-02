@@ -2854,6 +2854,125 @@ fn desktop_restart_action_and_launcher_marker() {
     assert_eq!(action,window::Action::Restart);
 }
 
+#[test]
+fn battery_icon_and_power_menu_lifecycle() {
+    let bat_normal = sys::BatteryStatus {
+        capacity_percent: 85,
+        state: sys::BATTERY_STATE_CHARGING,
+        time_remaining_mins: 0,
+        voltage_mv: 11400,
+    };
+    let bat_low = sys::BatteryStatus {
+        capacity_percent: 15,
+        state: sys::BATTERY_STATE_DISCHARGING,
+        time_remaining_mins: 45,
+        voltage_mv: 10800,
+    };
+    let bat_crit = sys::BatteryStatus {
+        capacity_percent: 5,
+        state: sys::BATTERY_STATE_DISCHARGING,
+        time_remaining_mins: 15,
+        voltage_mv: 10200,
+    };
+    let bat_none = sys::BatteryStatus {
+        capacity_percent: 0,
+        state: sys::BATTERY_STATE_UNKNOWN,
+        time_remaining_mins: 0,
+        voltage_mv: 0,
+    };
+
+    // 1. Direct pixel rendering verification
+    assert_eq!(ui::render_battery_pixel(20, 4, &bat_normal, 0), Some(0xffcbd5e1));
+    assert_eq!(ui::render_battery_pixel(0, 0, &bat_normal, 0x123456), Some(0x123456));
+    assert_eq!(ui::render_battery_pixel(0, 5, &bat_normal, 0), Some(0xffcbd5e1));
+    assert_eq!(ui::render_battery_pixel(3, 3, &bat_normal, 0), Some(theme::ACCENT_BLUE));
+    assert_eq!(ui::render_battery_pixel(10, 4, &bat_normal, 0), Some(theme::YELLOW));
+    assert_eq!(ui::render_battery_pixel(3, 3, &bat_low, 0), Some(theme::AMBER));
+    assert_eq!(ui::render_battery_pixel(2, 3, &bat_crit, 0), Some(theme::RED));
+    assert_eq!(ui::render_battery_pixel(4, 2, &bat_none, 0), Some(theme::RED));
+
+    // 2. Canvas::battery_icon rendering verification
+    let mut pixels = [0u32; 100 * 50];
+    let mut c = canvas::Canvas::new(&mut pixels, 100, 50, 100).unwrap();
+    c.battery_icon(10, 10, &bat_normal);
+    assert_eq!(pixels[(10 + 4) * 100 + (10 + 20)], 0xffcbd5e1); // Nub
+    assert_eq!(pixels[(10 + 3) * 100 + (10 + 3)], theme::ACCENT_BLUE); // Fill
+    assert_eq!(pixels[(10 + 4) * 100 + (10 + 10)], theme::YELLOW); // Lightning bolt
+
+    let mut pixels_low = [0u32; 100 * 50];
+    let mut c_low = canvas::Canvas::new(&mut pixels_low, 100, 50, 100).unwrap();
+    c_low.battery_icon(10, 10, &bat_low);
+    assert_eq!(pixels_low[(10 + 3) * 100 + (10 + 3)], theme::AMBER); // Amber fill
+
+    let mut pixels_crit = [0u32; 100 * 50];
+    let mut c_crit = canvas::Canvas::new(&mut pixels_crit, 100, 50, 100).unwrap();
+    c_crit.battery_icon(10, 10, &bat_crit);
+    assert_eq!(pixels_crit[(10 + 3) * 100 + (10 + 2)], theme::RED); // Red fill
+
+    let mut pixels_none = [0u32; 100 * 50];
+    let mut c_none = canvas::Canvas::new(&mut pixels_none, 100, 50, 100).unwrap();
+    c_none.battery_icon(10, 10, &bat_none);
+    assert_eq!(pixels_none[(10 + 2) * 100 + (10 + 4)], theme::RED); // Red X
+
+    // Also test ui::Canvas::battery_icon
+    let mut w = window::Window::new(
+        7,
+        "BatteryWin",
+        surface::Rect { x: 0, y: 0, w: 100, h: 80 },
+    ).unwrap();
+    let mut ui_c = ui::Canvas::new(&mut w, 0, true);
+    ui_c.battery_icon(5, 5, &bat_normal);
+    let _ = ui_c.finish();
+
+    // 3. WindowManager TopBar & Power Menu interaction
+    let mut scene = surface::Surface::new(1280, 800).unwrap();
+    let mut wm = window::WindowManager::new(&mut scene);
+    wm.battery_status = Some(bat_normal);
+    let bat_rect = window::WindowManager::battery_rect(scene.width, scene.height);
+
+    // Clicking battery_rect opens power menu
+    assert!(!wm.show_power_menu);
+    let action = wm.mouse(bat_rect.x + 5, bat_rect.y + 5, 1, &mut scene);
+    assert_eq!(action, window::Action::None);
+    wm.mouse(bat_rect.x + 5, bat_rect.y + 5, 0, &mut scene);
+    assert!(wm.show_power_menu);
+
+    // Toggle power profile
+    let pwr_rect = window::WindowManager::power_menu_rect(scene.width, scene.height);
+    let saver_x = pwr_rect.x + 100;
+    let saver_y = pwr_rect.y + 80;
+    wm.mouse(saver_x, saver_y, 1, &mut scene);
+    wm.mouse(saver_x, saver_y, 0, &mut scene);
+    assert_eq!(wm.power_profile, 1);
+
+    let perf_x = pwr_rect.x + 20;
+    let perf_y = pwr_rect.y + 80;
+    wm.mouse(perf_x, perf_y, 1, &mut scene);
+    wm.mouse(perf_x, perf_y, 0, &mut scene);
+    assert_eq!(wm.power_profile, 0);
+
+    // Clicking outside power menu closes it
+    wm.mouse(10, 10, 1, &mut scene);
+    wm.mouse(10, 10, 0, &mut scene);
+    assert!(!wm.show_power_menu);
+
+    // 4. Desktop AppHost refresh polling
+    sys::set_mock_battery(Some(Ok(bat_normal)));
+    let mut host = desktop::AppHost::new(preferences::Preferences::default());
+    host.refresh(100, &mut wm, &mut scene);
+    assert_eq!(wm.battery_status, Some(bat_normal));
+
+    sys::set_mock_battery(Some(Ok(bat_low)));
+    host.refresh(101, &mut wm, &mut scene);
+    assert_eq!(wm.battery_status, Some(bat_low));
+
+    sys::set_mock_battery(Some(Err(-35))); // -ENODEV
+    host.refresh(102, &mut wm, &mut scene);
+    assert_eq!(wm.battery_status, None);
+
+    sys::set_mock_battery(None);
+}
+
 #[path = "../user/compositor/src/clients.rs"]
 #[allow(dead_code)]
 mod clients;

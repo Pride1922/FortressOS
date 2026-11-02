@@ -1130,6 +1130,22 @@ impl<'a> Canvas<'a> {
             }
         }
     }
+    pub fn battery_icon(&mut self, x: usize, y: usize, status: &crate::sys::BatteryStatus) {
+        let r = self.adj(Rect { x, y, w: 22, h: 10 });
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let draw_width = (22 * self.scale).min((self.window.rect.w - 2).saturating_sub(left));
+        let draw_height = (10 * self.scale).min((self.window.rect.h - 26).saturating_sub(top));
+        for dy in 0..draw_height {
+            for dx in 0..draw_width {
+                let lx = dx / self.scale;
+                let ly = dy / self.scale;
+                if let Some(col) = render_battery_pixel(lx, ly, status, theme::PANEL) {
+                    self.pixel(left + dx, top + dy, col);
+                }
+            }
+        }
+    }
     pub fn finish(self) -> Option<Rect> {
         self.dirty.map(|r| Rect {
             x: self.window.rect.x + 1 + r.x,
@@ -1176,4 +1192,101 @@ pub trait DesktopApp {
     fn descriptor(&self) -> AppDescriptor;
     fn pointer(&mut self, x: usize, y: usize) -> Option<u16>;
     fn key(&mut self, byte: u8) -> Option<u16>;
+}
+
+/// Renders a single pixel for the 22x10 battery icon:
+/// - 20x10 rounded body outline
+/// - 2x4 nub on the right side
+/// - Fill level inside based on capacity_percent:
+///   theme::ACCENT_BLUE for normal, theme::AMBER for <20%, theme::RED for <10%
+/// - Yellow lightning bolt if state == Charging
+/// - Red 'X' if no battery detected (-ENODEV)
+pub fn render_battery_pixel(dx: usize, dy: usize, status: &crate::sys::BatteryStatus, bg: u32) -> Option<u32> {
+    if dx >= 22 || dy >= 10 {
+        return None;
+    }
+
+    // 2x4 Nub on the right side: dx 20..22, dy 3..7
+    if dx >= 20 {
+        if (3..7).contains(&dy) {
+            return Some(0xffcbd5e1);
+        } else {
+            return Some(bg);
+        }
+    }
+
+    // Battery Body: dx 0..20, dy 0..10
+    // Rounded corners: omit (0,0), (0,9), (19,0), (19,9)
+    let is_corner = (dx == 0 && dy == 0) || (dx == 0 && dy == 9) || (dx == 19 && dy == 0) || (dx == 19 && dy == 9);
+    if is_corner {
+        return Some(bg);
+    }
+
+    // Outline border
+    let is_border = dx == 0 || dx == 19 || dy == 0 || dy == 9;
+    if is_border {
+        return Some(0xffcbd5e1);
+    }
+
+    // Interior: dx 1..19, dy 1..9
+    let is_inner_border = dx == 1 || dx == 18 || dy == 1 || dy == 8;
+    let interior_bg = 0xff1e2430;
+
+    // Check for no battery (e.g. unknown with 0 capacity) -> draw Red 'X'
+    let is_no_battery = status.state == crate::sys::BATTERY_STATE_UNKNOWN && status.capacity_percent == 0;
+    if is_no_battery {
+        if is_inner_border {
+            return Some(interior_bg);
+        }
+        // Red 'X' inside dx 4..16, dy 2..8
+        if (4..16).contains(&dx) && (2..8).contains(&dy) {
+            let rx = dx - 4; // 0..11
+            let ry = dy - 2; // 0..5
+            let on_x = (ry * 11 / 5 == rx) || ((5 - ry) * 11 / 5 == rx)
+                || ((ry * 11 + 5) / 5 == rx) || (((5 - ry) * 11 + 5) / 5 == rx);
+            if on_x {
+                return Some(theme::RED);
+            }
+        }
+        return Some(interior_bg);
+    }
+
+    // Check for yellow lightning bolt if Charging
+    if status.state == crate::sys::BATTERY_STATE_CHARGING && (7..14).contains(&dx) && (2..8).contains(&dy) {
+        let lx = dx - 7; // 0..6
+        let ly = dy - 2; // 0..5
+        let is_bolt = match ly {
+            0 => lx == 3 || lx == 4,
+            1 => lx == 2 || lx == 3,
+            2 => (0..=5).contains(&lx),
+            3 => lx == 1 || lx == 2,
+            4 => lx == 2 || lx == 3,
+            5 => lx == 2,
+            _ => false,
+        };
+        if is_bolt {
+            return Some(theme::YELLOW);
+        }
+    }
+
+    // Fill level: inside width is 16 pixels (dx 2..18)
+    let fill_color = if status.capacity_percent < 10 {
+        theme::RED
+    } else if status.capacity_percent < 20 {
+        theme::AMBER
+    } else {
+        theme::ACCENT_BLUE
+    };
+
+    let cap = status.capacity_percent.min(100) as usize;
+    let fill_w = if cap > 0 { ((cap * 16) / 100).max(1) } else { 0 };
+    if (2..18).contains(&dx) && (2..8).contains(&dy) {
+        if dx - 2 < fill_w {
+            Some(fill_color)
+        } else {
+            Some(interior_bg)
+        }
+    } else {
+        Some(interior_bg)
+    }
 }
