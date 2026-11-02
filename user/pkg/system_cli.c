@@ -258,7 +258,66 @@ static int release_owner(cli_owner *owner) {
         return tool_error("pkg","session release not confirmed",NULL);
     owner->session=0;return 0;
 }
+static int base_query(unsigned op,uint64_t session,pkg_base_result_v1 *out){
+    pkg_request_v1 q={.size=sizeof q,.version=1,.operation=op,.session=session};
+    int r=(int)tool_syscall(SYS_PKGCTL,(uintptr_t)&q,(uintptr_t)out,sizeof q);
+    if(r)return r;
+    return out->size!=sizeof *out||out->version!=1||out->reserved||out->reserved64||
+        (out->flags&~31u)||!out->running_build||!out->abi?SYSCALL_EIO:0;
+}
+static int base_notice(const pkg_base_result_v1 *state){
+    if(state->flags&PKG_BASE_FENCED)return tool_error("pkg","base update fenced after an uncertain result; reboot into a complete boot set",NULL);
+    if(state->flags&PKG_BASE_REBOOT)cli_msg("fortress-base: update prepared; reboot required. Previous base remains in the boot menu.\n");
+    else if(state->flags&PKG_BASE_UNCONFIRMED)cli_msg("fortress-base: running new base; boot confirmation required (sudo pkg confirm-base).\n");
+    else cli_msg("fortress-base: current base confirmed.\n");
+    if(state->flags&PKG_BASE_RECOVERY)cli_msg("fortress-base: interrupted preparation/selection; inspect base-status and use recover-base before retrying.\n");
+    if(state->flags&PKG_BASE_RETRY)cli_msg("fortress-base: interrupted preparation; retry the same verified release or a newer build.\n");
+    return 0;
+}
+static int base_action(cli_owner *owner,unsigned op){
+    pkg_base_result_v1 state={0};int r=base_query(PKG_BASE_STATUS,0,&state);
+    if(r==SYSCALL_EOPNOTSUPP&&op==PKG_BASE_CONFIRM)return 0;
+    if(r)return tool_error("pkg","complete base-update layout unavailable",NULL);
+    if(op==PKG_BASE_STATUS)return base_notice(&state);
+    if(op==PKG_BASE_CONFIRM&&!state.flags)return 0;
+    if(op==PKG_BASE_CONFIRM&&(state.flags&(PKG_BASE_REBOOT|PKG_BASE_RECOVERY))){base_notice(&state);return 1;}
+    r=acquire(owner);if(r)return acquire_error(r);
+    if(base_query(op,owner->session,&state))return tool_error("pkg","base confirmation/recovery failed; inspect base-status; no automatic retry",NULL);
+    return base_notice(&state);
+}
+static int base_cached(cli_owner *owner){
+    const char *directory=pkg_selected_directory();if(!directory)return 1;
+    uint64_t cn=0,an=0;int c=source_open(directory,"catalog.v1",PKG_SOURCE_CATALOG_MAX,&cn);
+    int a=c<0?-1:source_open(directory,"fortress-base.fpk",PKG_SOURCE_ARTIFACT_MAX,&an);
+    if(c<0||a<0){if(c>=0)(void)tool_syscall(SYS_CLOSE,c,0,0);return tool_error("pkg","cannot open fetched base release",NULL);}
+    int r=acquire(owner);
+    if(!r){
+        pkg_request_v2 q={.request={.size=sizeof q,.version=2,.operation=PKG_BASE_STAGE,.session=owner->session},
+            .catalog_fd=(uint64_t)c,.catalog_bytes=cn,.artifact_fd=(uint64_t)a,.artifact_bytes=an};
+        pkg_base_result_v1 state={0};
+        r=(int)tool_syscall(SYS_PKGCTL,(uintptr_t)&q,(uintptr_t)&state,sizeof q);
+        if(!r)r=base_notice(&state);
+        else {cli_msg("pkg: base preparation rejected or failed; inspect pkg base-status. No automatic retry.\n");}
+    }
+    long cc=tool_syscall(SYS_CLOSE,c,0,0),ca=tool_syscall(SYS_CLOSE,a,0,0);
+    return r||cc||ca?1:0;
+}
+static bool base_known_hash(const uint8_t hash[32]){for(unsigned i=0;i<32;i++)if(hash[i])return true;return false;}
+static int base_one(cli_owner *owner,bool upgrade){
+    if(!upgrade)return tool_error("pkg","fortress-base is installed by the baseline image; use pkg upgrade fortress-base",NULL);
+    pkg_base_result_v1 state={0};
+    if(base_query(PKG_BASE_STATUS,0,&state))return tool_error("pkg","complete base-update layout unavailable",NULL);
+    if(state.flags&(PKG_BASE_FENCED|PKG_BASE_REBOOT|PKG_BASE_UNCONFIRMED|PKG_BASE_RECOVERY)){base_notice(&state);return 1;}
+    if(pkg_catalog_refresh())return 1;
+    uint64_t build;uint8_t hash[32];
+    if(pkg_catalog_target("fortress-base",&build,hash))return tool_error("pkg","base release unavailable in repository",NULL);
+    if(build<state.floor_build||(build==state.floor_build&&memcmp(hash,state.artifact,32)&&base_known_hash(state.artifact)))return tool_error("pkg","base rollback/substitution rejected",NULL);
+    if(build==state.running_build){base_notice(&state);return 0;}
+    if(pkg_download_selected("fortress-base"))return 1;
+    return base_cached(owner);
+}
 static int automatic_one(cli_owner *owner,const char *name,bool upgrade) {
+    if(!strcmp(name,"fortress-base"))return base_one(owner,upgrade);
     size_t nn=strlen(name);if(!fpk_identity_valid((const uint8_t *)name,nn))return tool_error("pkg","invalid package name",NULL);
     if(pkg_catalog_refresh())return 1;
     static pkg_installed records[PKG_INSTALLED_MAX];unsigned count=0;
@@ -293,6 +352,18 @@ static int upgrade_all(cli_owner *owner,bool yes) {
     static bool eligible[PKG_INSTALLED_MAX];unsigned count=0,total=0;
     if(pkg_installed_read(all,&count))return tool_error("pkg","installed inventory invalid or inaccessible",NULL);
     if(pkg_catalog_refresh())return 1;
+    pkg_base_result_v1 base={0};bool base_eligible=false;
+    int base_error=base_query(PKG_BASE_STATUS,0,&base);
+    if(base_error && base_error!=SYSCALL_EOPNOTSUPP)return tool_error("pkg","cannot inspect base update state",NULL);
+    if(!base_error){
+        uint64_t build;uint8_t hash[32];
+        if(base.flags&(PKG_BASE_FENCED|PKG_BASE_RECOVERY)){base_notice(&base);return 1;}
+        if(!pkg_catalog_target("fortress-base",&build,hash)){
+            if(build<base.floor_build || (build==base.floor_build && base_known_hash(base.artifact) && memcmp(hash,base.artifact,32)))return tool_error("pkg","base rollback/substitution rejected",NULL);
+            if(build>base.running_build && !(base.flags&(PKG_BASE_REBOOT|PKG_BASE_UNCONFIRMED))){base_eligible=true;total++;build_message("fortress-base",base.running_build,build);}
+        }
+        if(base.flags&(PKG_BASE_REBOOT|PKG_BASE_UNCONFIRMED))base_notice(&base);
+    }
     memset(eligible,0,sizeof eligible);
     for(unsigned i=0;i<count;i++) {
         uint64_t build;uint8_t hash[32];
@@ -319,7 +390,13 @@ static int upgrade_all(cli_owner *owner,bool yes) {
         confirmed_record=NULL;
         int released=release_owner(owner);if(released)r=released;
         cli_msg(all[i].name);cli_msg(r?": failed\n":": completed\n");
-        if(r){for(unsigned j=i+1;j<count;j++)if(eligible[j]){cli_msg(all[j].name);cli_msg(": unattempted\n");}return 1;}
+        if(r){for(unsigned j=i+1;j<count;j++)if(eligible[j]){cli_msg(all[j].name);cli_msg(": unattempted\n");}if(base_eligible)cli_msg("fortress-base: unattempted\n");return 1;}
+    }
+    if(base_eligible){
+        int r=pkg_download_selected("fortress-base");
+        if(!r)r=base_cached(owner);
+        int released=release_owner(owner);if(released)r=released;
+        if(r)return 1;
     }
     return 0;
 }
@@ -337,7 +414,10 @@ int pkg_system_main(int argc,char **argv) {
     pkg_mutation_backend backend={.transactions={&owner,status,recover},.mutate=mutate};
     int result;
 #ifdef FORTRESS_PKG_FETCH
-    if(argc==4&&argv&&argv[1]&&tool_equal(argv[1],"install"))result=install_source(&owner,argc,argv);
+    if(argc==2&&argv&&tool_equal(argv[1],"base-status"))result=base_action(&owner,PKG_BASE_STATUS);
+    else if(argc==2&&argv&&tool_equal(argv[1],"confirm-base"))result=base_action(&owner,PKG_BASE_CONFIRM);
+    else if(argc==2&&argv&&tool_equal(argv[1],"recover-base"))result=base_action(&owner,PKG_BASE_RECOVER);
+    else if(argc==4&&argv&&argv[1]&&tool_equal(argv[1],"install"))result=install_source(&owner,argc,argv);
     else if(argc==3&&argv&&argv[1]&&tool_equal(argv[1],"install"))result=automatic_one(&owner,argv[2],false);
     else if(argc==3&&argv&&argv[1]&&tool_equal(argv[1],"upgrade"))result=tool_equal(argv[2],"-y")?upgrade_all(&owner,true):automatic_one(&owner,argv[2],true);
     else if(argc==2&&argv&&tool_equal(argv[1],"upgrade"))result=upgrade_all(&owner,false);

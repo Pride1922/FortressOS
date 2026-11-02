@@ -22,6 +22,9 @@ root_boot_config_t root_boot_parse(const char *cmd,size_t capacity,bool truncate
             else if (n==18 && !memcmp(token+10,"recovery",8)) out.mode=ROOT_BOOT_RECOVERY;
             else if (n==19 && !memcmp(token+10,"installer",9)) out.mode=ROOT_BOOT_INSTALLER;
             else out.valid=false;
+        } else if (n>=12 && !memcmp(token,"base_layout=",12)) {
+            if(out.base_layout || n!=13 || token[12]!='1')out.valid=false;
+            out.base_layout=true;
         } else if (n>=5 && !memcmp(token,"root=",5)) {
             if (out.has_root) out.valid=false;
             out.has_root=true;

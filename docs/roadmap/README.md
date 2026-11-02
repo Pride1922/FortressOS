@@ -1,5 +1,7 @@
 # FortressOS Roadmap — Index
 
+
+- [Repository base updates](base-repository-updates.md): complete A/B base implementation, focused host acceptance and replacement installer; firmware/physical pending.
 This directory replaces the old monolithic `ROADMAP.md`. Each file below
 covers one phase's implementation notes and verification evidence. Point an
 agent at the specific phase file relevant to its task, not this whole
@@ -185,3 +187,5 @@ E4-A: [Dell 5590 physical acceptance](ext4-phase5-acceptance.md), all seven Phas
 [Pipe handoff profiling](pipe-handoff-profile.md): opt-in transfer sizes, wait attempts, buffer transitions and logical CPU masks; matched A/B images and automated capture validated in QEMU, Dell attribution pending.
 
 [Pipe writer batching test](pipe-batch-test.md): one-boot 1 KiB versus 4 KiB writer batches with equal payload and explicit saved batch labels.
+
+Desktop factory packages: [implementation and host evidence](desktop-packages.md).

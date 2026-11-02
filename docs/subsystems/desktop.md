@@ -2,7 +2,8 @@
 
 The recovery/live binary is `/bin/compositor`; `--version` works without
 acquiring the display. Run with existing root display authorization. The app
-interface is **built-in app API 1**, not an external process/window IPC ABI.
+interface includes **built-in app API 1** and isolated external clients using
+`src/include/desktop_proto.h` for SHM surfaces and input events.
 
 ## Adding a built-in app
 
@@ -95,35 +96,46 @@ change. Current calendar conversion and DST rules are supplied by that engine.
 This page changes timezone and display format; it does not set the RTC or
 replace ntpd. External timezone edits are noticed at the next minute boundary.
 
-Service calls are currently serialized in the desktop event thread; asynchronous
-I/O adapters and isolated external application processes are later work. Scan
+Service calls are currently serialized in the desktop event thread; Terminal,
+Files and Notepad run as isolated external application processes. Scan
 collection uses a monotonic deadline so wall-clock/timezone corrections cannot
 leave a GUI scan pending indefinitely. No heavy package verification or update
 operation runs in the renderer.
 
 ## Package boundary
 
-The updatable package identity is `fortress-desktop`; its command is **desktop**
-(`/usr/bin/desktop` with the existing executor's package namespace after an
-admitted activation). Keep the base-owned
-`/bin/compositor` as a recovery fallback: PKG-1 must not overwrite base-owned
-commands. Font assets are embedded in the ELF. Existing platform wallpaper and
-timezone data are optional/runtime base resources with explicit unavailable
-behavior. User preferences and `/etc/timezone` are never package payload members.
+The installed image provisions four independent ordinary packages:
 
-Build an **unsigned candidate** with `scripts/build_desktop_package.py`, passing
-the approved platform identity, base version range and monotonic build number.
-It produces the existing PKG-1 envelope/manifest/gzip-USTAR format, an integrity
-checksum and a metadata sidecar. The executable is `bin/desktop`; examples and
-license live under `doc/`, matching the existing payload policy. No install
-scripts or mutable configuration files are included. Artifact integrity is not
-signing, enrollment, catalog approval or root admission.
+| Package | Command |
+| --- | --- |
+| `fortress-desktop` | `/usr/bin/desktop` |
+| `fortress-files` | `/usr/bin/files` |
+| `fortress-notepad` | `/usr/bin/notepad` |
+| `fortress-terminal` | `/usr/bin/terminal` |
 
-Production PKG enrollment/key delivery is still separate from the test backend.
-This change does not enable it or inject test keys. Once an approved catalog
-and enrolled root support the package, stop the desktop to the console, install
-the approved package using PKG, then launch `/usr/bin/desktop`; subsequent app API 1
-changes can ship in the same versioned ELF. Uninstall retains the base recovery
-compositor. A future external app protocol needs explicit surface ownership,
-credential/input isolation and version negotiation; this built-in API does not
-promise that boundary or runtime library ABI stability.
+Notes launches Notepad with `/tmp/notes.txt`; it has no separate executable or
+package. That default file is temporary. Save documents to persistent user storage.
+
+The base retains `/bin/compositor` as the recovery UI and privileged settings
+broker. Wi-Fi drivers, firmware, networking and SSH server remain in
+`fortress-base`. Installed base bootstraps exclude `/bin/files`, `/bin/notepad`
+and `/bin/terminal`, leaving those command names to ordinary packages. Live media
+retains bundled clients; the launcher prefers installed `/usr/bin` commands and
+uses `/bin` fallbacks on live media. Root display authorization remains required.
+
+Factory provisioning uses the trusted installer image to create closed ordinary
+package records and retain exact original FPK sources. It does not invent catalog
+signatures or enroll test keys. Subsequent upgrades require the signed repository
+catalog and the backend's predecessor-source hash checks. The retained sources
+live under `/var/lib/pkg/sources/<8 hash characters>/<remaining hash>.fpk`.
+
+Stop the desktop to the console before updating its packages. Launch the installed
+UI with `sudo desktop`; use `/bin/compositor` for recovery. App packages contain
+one executable and documentation, with no install scripts or mutable settings.
+`/etc/desktop.conf`, `/etc/timezone`, credentials and user documents remain outside
+the payload. Ordinary package removal is not implemented.
+
+See [desktop package workflow](../desktop-packages.md) and
+[host acceptance evidence](../roadmap/desktop-packages.md). External clients use
+the existing protocol; package compatibility must respect its version and the
+base ABI. Built-in API 1 alone does not promise an external runtime library ABI.

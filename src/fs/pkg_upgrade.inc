@@ -174,6 +174,14 @@ static int ext4_pkg_upgrade_source(void *context,const uint8_t package[32],
     if(fpk_verify(&old->verify.verify,px_source_read,&input,previous_n,old->state.floor_hash)){r=-VFS_EACCES;goto done;}
     input=(px_input){next->artifact,artifact_n,0};size_t name_n=0;while(name_n<32&&package[name_n])name_n++;
     if(fpk_verify_authorized(&next->verify.verify,catalog,catalog_n,&st->trust.catalog,package,name_n,px_source_read,&input)){r=-VFS_EACCES;goto done;}
+#ifndef HOST_TEST
+    uint64_t base_abi;uint8_t base_platform[32];
+    if(base_system_version(&base_abi,base_platform)){
+        if(memcmp(base_platform,st->trust.platform,32)){r=-VFS_EACCES;goto done;}
+        st->trust.base_version=base_abi;
+    }
+#endif
+    if(!memcmp(package,"fortress-base",13)&&!package[13]){r=-VFS_EACCES;goto done;}
     const fpk_manifest *m=&next->verify.verify.manifest;
     r=px_base_command(fs,m->command);if(r)goto done;
     uint8_t hash[32];(void)crypto_sha256(artifact,artifact_n,hash);

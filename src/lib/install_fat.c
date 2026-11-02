@@ -115,6 +115,11 @@ static bool directory(const uint8_t *b,install_fat_work_t *w,uint32_t c,const ch
                 if (size || !directory(b,w,first,path,depth+1,depth ? self : 0)) return false;
             } else {
                 if (!file_chain(b,w,first,size)) return false;
+                if (!strcmp(path,"boot/bootstrap-b.tar")) {w->bootstrap_b_first=first;w->bootstrap_b_size=size;w->bootstrap_b_entry=base+off;}
+                if (!strcmp(path,"boot/floor-a.v1")) {w->floor_first[0]=first;w->floor_size[0]=size;}
+                if (!strcmp(path,"boot/floor-b.v1")) {w->floor_first[1]=first;w->floor_size[1]=size;}
+                if (!strcmp(path,"boot/base-a.v1")) {w->base_first[0]=first;w->base_size[0]=size;}
+                if (!strcmp(path,"boot/base-b.v1")) {w->base_first[1]=first;w->base_size[1]=size;}
                 if (!strcmp(path,"boot/kernel-b.elf")) {w->bank_first=first;w->bank_size=size;}
                 if (!strcmp(path,"boot/ready-b.v1")) {w->ready_b_first=first;w->ready_b_size=size;}
                 if (!strcmp(path,"boot/fortress.elf")) {w->kernel_first=first;w->kernel_size=size;}
@@ -162,6 +167,11 @@ static int validate(const void *bytes,size_t n,install_fat_work_t *w,bool instal
 }
 int install_fat_validate(const void *b,size_t n,install_fat_work_t *w) {return validate(b,n,w,false);}
 int install_fat_inspect(const void *b,size_t n,install_fat_work_t *w) {return validate(b,n,w,true);}
+int install_fat_complete(const install_fat_work_t *w) {
+    if (!w->bootstrap_b_size && !w->base_size[0] && !w->base_size[1] && !w->floor_size[0] && !w->floor_size[1]) return 0;
+    return install_fat_banked(w)==1 && w->capacity[0]==8u*1024*1024 &&
+        w->bootstrap_b_size==w->capacity[0] && w->base_size[0]==512 && w->base_size[1]==512 && w->floor_size[0]==512 && w->floor_size[1]==512 ? 1 : -1;
+}
 int install_fat_banked(const install_fat_work_t *w) {
     if (!w->bank_size && !w->ready_b_size) return 0;
     return w->kernel_size==8u*1024*1024 && w->bank_size==w->kernel_size && w->ready_b_size==512 ? 1 : -1;
@@ -223,7 +233,16 @@ int install_fat_personalize(void *bytes,size_t n,const install_fat_patch_t *patc
         !disjoint(w,sizeof(*w),patch->bootstrap,patch->bootstrap_size) || !disjoint(w,sizeof(*w),patch->config,patch->config_size)) return -1;
     if (install_fat_validate(bytes,n,w)) return -1;
     uint8_t *b=bytes;*lba=cluster_offset(w,w->first[1])/512;
+    int complete=install_fat_complete(w);if (complete<0) return -1;
+    if (complete && patch->bootstrap_size!=sizes[0]) return -1;
     replace(b,w,0,patch->bootstrap,patch->bootstrap_size);
+    if (complete) {
+        uint32_t c=w->bootstrap_b_first;size_t at=0;
+        while (at<patch->bootstrap_size) {
+            memcpy(b+cluster_offset(w,c),(const uint8_t *)patch->bootstrap+at,w->cluster_bytes);
+            at+=w->cluster_bytes;c=next(b,w,c);
+        }
+    }
     uint8_t readiness[512]={0};replace(b,w,1,readiness,sizeof(readiness));
     for (unsigned i=2;i<INSTALL_FAT_SLOTS;i++) replace(b,w,i,patch->config,patch->config_size);
     for (unsigned i=0;i<2;i++) {

@@ -113,3 +113,19 @@ int install_archive_personalize(const void *input,size_t n,const void *record,si
 failed:
     memset(output,0,capacity);return error;
 }
+
+#include "base_release.h"
+int install_archive_base_release(const void *input,size_t n,uint64_t *build,uint64_t *abi,uint8_t platform[32]){
+    if(!input||n<1024||n>INSTALL_ARCHIVE_MAX||n%512)return -22;
+    const uint8_t *p=input;unsigned found=0,count=0;size_t at=0;
+    while(n-at>=512){
+        const uint8_t *h=p+at;if(allzero(h,512))return n-at>=1024&&allzero(h,n-at)&&found==1?0:-22;
+        uint64_t bytes;char path[256];
+        if(++count>510||!header_valid(h,&bytes)||!name(h,path)||bytes>n-at-512)return -22;
+        if(!strcmp(path,"base/release.v1")){
+            if(h[156]=='5'||base_release_parse(h+512,(size_t)bytes,build,abi,platform))return -22;
+            found++;
+        }
+        size_t padded=((size_t)bytes+511)&~(size_t)511;if(padded>n-at-512)return -22;at+=512+padded;
+    }return -22;
+}

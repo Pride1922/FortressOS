@@ -68,6 +68,10 @@ def signing_keys(paths, output):
 
 def artifact_identity(data):
     """Check envelope/manifest identity; target must still run the full verifier."""
+    if data[:8] == b"FORTBAS1":
+        from build_base_package import validate
+        validate(data)
+        return b"fortress-base", struct.unpack_from("<Q",data,16)[0]
     if not 128 <= len(data) <= MAX_ARTIFACT:
         raise ValueError("artifact length outside PKG-1 bounds")
     fields = struct.unpack_from("<8sIIIIIIQQ32s32s16s", data)

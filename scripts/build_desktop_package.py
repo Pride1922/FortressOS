@@ -77,7 +77,7 @@ def main():
         "package": package, "command": args.app, "version": version,
         "app_api": 1, "build": args.build, "platform_id": args.platform_id,
         "base_min": args.base_min, "base_max": args.base_max, "sha256": checksum,
-        "bytes": len(artifact), "authorization": "UNSIGNED; requires approved catalog and enrolled root",
+        "bytes": len(artifact), "authorization": "UNSIGNED; factory image or signed repository catalog supplies authority",
     }, indent=2) + "\n")
     print(f"UNSIGNED {args.app} {version} candidate: {args.out} ({len(artifact)} bytes)")
 

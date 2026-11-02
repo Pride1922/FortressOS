@@ -1,4 +1,5 @@
 #include "kernel_update.h"
+#include "base_update.h"
 #include "install_runtime.h"
 #include "install_log.h"
 #include "install_payload.h"
@@ -220,10 +221,12 @@ static int personalize(runtime_t *w,const install_deploy_v1_t *req) {
         w->recovery,w->recovery_size,w->archive,INSTALL_ARCHIVE_MAX,&w->archive_size);
     if (r) return r;
     if (install_fat_validate(w->esp,INSTALL_ESP_BYTES,&w->fat)) return -VFS_EINVAL;
-    int banked=install_fat_banked(&w->fat);if (banked<0) return -VFS_EINVAL;
+    int banked=install_fat_banked(&w->fat),complete=install_fat_complete(&w->fat);if (banked<0 || complete<0) return -VFS_EINVAL;
+    if(complete)w->archive_size=BASE_BANK_BYTES;
     n=0;
     const char *modes[]={"installed","recovery"};
-    if (banked) {n=kernel_update_menu(w->config,sizeof(w->config),b->partuuid,0);if (!n) return -VFS_EINVAL;}
+    if (complete) {n=base_update_menu(w->config,sizeof(w->config),b->partuuid,0);if(!n)return -VFS_EINVAL;}
+    if (banked && !complete) {n=kernel_update_menu(w->config,sizeof(w->config),b->partuuid,0);if (!n) return -VFS_EINVAL;}
     if (!banked && !add(w->config,sizeof(w->config),&n,"timeout: 5\n")) return -VFS_EINVAL;
     for (unsigned i=0;!banked && i<2;i++) {
         if (!add(w->config,sizeof(w->config),&n,i ? "/FortressOS authenticated recovery\n" : "/FortressOS installed\n") ||
@@ -245,6 +248,13 @@ static int personalize(runtime_t *w,const install_deploy_v1_t *req) {
     if (!add(ready,512,&n,"checksum=") || !add(ready,512,&n,text) || !add(ready,512,&n,"\n") ||
         !root_readiness_validate(ready,512,b,(void *)w->boot->kernel_file_vaddr,w->boot->kernel_file_size,w->archive,w->archive_size)) return -VFS_EINVAL;
     if (banked && install_fat_bank_readiness_lba(&w->fat,&w->plan.secondary_readiness_lba)) return -VFS_EINVAL;
+    if(complete){
+        uint64_t build,abi;uint8_t platform[32];
+        if(install_archive_base_release((void *)w->boot->initramfs_vaddr,w->boot->initramfs_size,&build,&abi,platform))return -VFS_EINVAL;
+        base_update_work *seed=kmalloc(sizeof *seed);if(!seed)return -VFS_ENOMEM;
+        int seeded=base_update_seed(w->esp,INSTALL_ESP_BYTES,seed,build,abi,platform,w->plan.readiness);kfree(seed);
+        if(seeded)return -VFS_EINVAL;
+    }
     hash(w->esp,INSTALL_ESP_BYTES,w->manifest+48);hash(w->manifest,224,w->manifest+224);return 0;
 }
 int install_runtime_deploy(const boot_info_t *boot,const install_backend_t *backend,

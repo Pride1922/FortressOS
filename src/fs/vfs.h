@@ -170,6 +170,8 @@ void        vfs_init(void);
 /* Boot supervisor only, before any user publication. Root and bootstrap backing
  * are pinned for boot lifetime. Publication is one-way; seal forbids late pivots. */
 int vfs_boot_publish_root(vfs_node_t *root);
+/* BSP boot only: layout-1 authenticated immutable base routes, before sealing. */
+int vfs_boot_enable_base(void);
 void vfs_boot_seal_namespace(void);
 bool vfs_boot_root_available(void);
 int vfs_boot_begin_root_preparation(void);

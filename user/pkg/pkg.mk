@@ -1,5 +1,5 @@
 # Normal /bin/pkg: repository configuration and package operations.
-PKG_UNITS := format manifest verify catalog cli transaction_cli mutation_cli system_cli repository fetch
+PKG_UNITS := base format manifest verify catalog cli transaction_cli mutation_cli system_cli repository fetch
 PKG_BUILD := $(BUILD_DIR)/pkg
 PKG_OBJS := $(addprefix $(PKG_BUILD)/,$(addsuffix .o,$(PKG_UNITS)))
 USER_PKG_ELF := $(PKG_BUILD)/pkg.elf

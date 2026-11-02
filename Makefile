@@ -221,6 +221,7 @@ $(BUILD_DIR)/fs/pkg_plan.o: Makefile
 $(BUILD_DIR)/fs/ext4.o: CFLAGS += -fstack-usage -Wno-frame-larger-than
 $(BUILD_DIR)/fs/pkg_crypto.o: CFLAGS += -Isrc/lib/crypto/upstream/src -Iuser/pkg -Iuser/tools
 include user/pkg/pkg.mk
+$(BUILD_DIR)/kernel/base_system.o $(BUILD_DIR)/lib/kernel_update.o $(BUILD_DIR)/fs/pkg_base.o: CFLAGS += -Os -fstack-usage -Wframe-larger-than=1024
 $(BUILD_DIR)/kernel/pkg_service.o $(BUILD_DIR)/kernel/pkg_owner.o $(BUILD_DIR)/kernel/pkg_backend.o: CFLAGS += -Os -fstack-usage -Wframe-larger-than=1024
 include src/lib/tls/tls.mk
 
@@ -1620,6 +1621,7 @@ $(INITRAMFS_TAR): $(USER_INIT_ELF) $(USER_HELLO_ELF) $(USER_DUAL_STREAM_ELF) $(U
 	@mkdir -p $(BUILD_DIR)/initramfs/etc/ssh
 	@printf "Enabled yes\nPort 22\nListenAddress 0.0.0.0\nPermitRootLogin no\nPasswordAuthentication yes\nPubkeyAuthentication yes\nMaxSessions 2\nMaxAuthTries 5\nLoginGraceTime 60\n" > $(BUILD_DIR)/initramfs/etc/ssh/sshd_config
 	@mkdir -p $(BUILD_DIR)/initramfs/etc/watchtower
+	@printf "Exec=/bin/pkg confirm-base\nOrder=99\nEnabled=yes\nType=simple\nRestart=on-failure\nRestartLimit=3\nRestartDelay=3\nTimeoutStop=10\n" > $(BUILD_DIR)/initramfs/etc/watchtower/base-confirm.service
 	@printf "Exec=/bin/boot-snapshot\nOrder=01\nType=simple\nRestart=no\n" > $(BUILD_DIR)/initramfs/etc/watchtower/boot-log.service
 	@printf "Exec=/bin/wifi auto\nOrder=08\nEnabled=yes\nType=simple\nRestart=on-failure\nRestartLimit=5\nRestartDelay=3\nTimeoutStop=10\n" > $(BUILD_DIR)/initramfs/etc/watchtower/wifi.service
 	@printf "Exec=/sbin/dhcpc -f\nOrder=10\nEnabled=yes\nRestart=on-failure\nRestartLimit=3\nRestartDelay=5\nTimeoutStop=5\n" > $(BUILD_DIR)/initramfs/etc/watchtower/dhcpc.service
@@ -2872,3 +2874,27 @@ test-pkg-multiple-qemu: $(KERNEL_ELF) $(INITRAMFS_TAR) limine-setup
 test-pkg-multiple-update-qemu:
 	@test -n "$(PKG_MULTIPLE_UPDATE_MANIFEST)" || (echo 'Set PKG_MULTIPLE_UPDATE_MANIFEST to the matching update manifest'; exit 1)
 	python3 scripts/test_pkg_multiple_update.py --manifest "$(PKG_MULTIPLE_UPDATE_MANIFEST)"
+
+.PHONY: base-installer test-base-update-host
+base-installer: bin/fortress.elf bin/initramfs.tar build/tool-install-multi.elf limine-setup
+	@python3 scripts/create_base_installer.py
+
+test-base-update-host:
+	@python3 scripts/test_base_update.py
+
+.PHONY: test-base-namespace-host
+test-base-namespace-host:
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -pthread -I. -Itests/ext4_host -Itests/host -Isrc/include -Isrc/fs -Isrc/drivers -Isrc/mm -Isrc/kernel tests/base_namespace_host.c src/fs/permission_values.c src/kernel/creds.c -o build/base-namespace-host
+	@build/base-namespace-host
+
+.PHONY: desktop-packages test-desktop-factory-host
+desktop-packages: $(USER_COMPOSITOR_ELF)
+	@python3 -c 'import sys; sys.path.insert(0,"scripts"); from seed_desktop_packages import build_packages; build_packages("build/desktop-packages")'
+
+test-desktop-factory-host: bin/fortress.elf bin/initramfs.tar
+	@python3 scripts/test_desktop_packages.py
+
+.PHONY: test-pkg-previous-cache-host
+test-pkg-previous-cache-host: $(CRYPTO_LIB)
+	@gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -no-pie -DTOOL_HOST_TEST -ffunction-sections -fdata-sections -Wl,--gc-sections -I. -Isrc/include -Isrc/fs -Isrc/kernel -Iuser/tools -Isrc/lib/crypto/upstream/src tests/pkg_previous_cache_host.c user/pkg/fetch.c user/pkg/repository.c user/pkg/format.c user/tools/common.c $(CRYPTO_LIB) -o build/pkg-previous-cache-host
+	@build/pkg-previous-cache-host

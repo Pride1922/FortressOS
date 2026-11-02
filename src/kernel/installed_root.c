@@ -1,4 +1,5 @@
 #include "installed_root.h"
+#include "base_system.h"
 #include "ext4.h"
 #include "storage.h"
 #include "pci.h"
@@ -14,7 +15,7 @@
 
 static root_recovery_t recovery;
 static bool recovery_valid;
-static bool published;
+static bool published,complete_base;
 static const char *reason="root admission";
 static userdb_t database;
 static char file_bytes[DB_FILE_MAX+1];
@@ -74,7 +75,7 @@ static bool read_at(vfs_node_t *root,const char *path,void *bytes,size_t capacit
 }
 static bool executable(vfs_node_t *root,const char *path,bool setid) {
     creds_t actor;creds_init_root(&actor);int error;bool ok=false;
-    vfs_node_t *node=vfs_lookup_at_creds(root,path,&actor,&error);void *bytes=NULL;vfs_metadata_t m;
+    vfs_node_t *node=complete_base?vfs_bootstrap_lookup_creds(path,&actor,&error):vfs_lookup_at_creds(root,path,&actor,&error);void *bytes=NULL;vfs_metadata_t m;
     if (node) {
         /* Detached validation owns the node, and the image callback performs the
          * complete authoritative copy under filesystem exclusion. */
@@ -194,6 +195,12 @@ bool installed_root_boot(const boot_info_t *info) {
     if (fail_flush) selected->flush=rejected_flush;
     if (fail_replay_write) {selected->write_sector=rejected_write;selected->write_sectors=NULL;}
 #endif
+    if(c.base_layout){
+        reason="complete base boot-set admission failed";
+        if(!base_system_boot(info))return false;
+        complete_base=true;
+        if(vfs_boot_enable_base())return false;
+    }
     reason="Storage flush preflight failed";if (!block_flush(selected)) return false;
     reason="filesystem admission/replay failed";ext4_mount_t *mount=NULL;const char *stage="root preparation";
     if (ext4_prepare_root_diagnose(selected,true,&mount,&stage)) {
@@ -212,6 +219,7 @@ bool installed_root_boot(const boot_info_t *info) {
     reason="root publication failed";
     if (ext4_publish_root(mount)) {accounts_abandon();(void)ext4_freeze_and_sync(mount);(void)ext4_discard_prepared_root(mount);return false;}
     published=true;
+    if(complete_base)base_system_published();
     ext4_pkg_bind();
     serial_puts("[ROOT] Installed root admitted by PARTUUID; volatile namespaces attached\n");return true;
 }

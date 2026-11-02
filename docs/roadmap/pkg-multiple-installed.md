@@ -13,7 +13,7 @@ Remove remains unsupported by the ordinary backend (`EOPNOTSUPP`).
 Slot zero is `/var/lib/pkg/install.v2`. Slots 1–15 are
 `/var/lib/pkg/install-01.v2` through `install-15.v2`. Slot discovery, validation
 and capacity are bounded. Records bind their slot to a validated package identity.
-Install staging is `work-v2` for slot zero and `work-01` through `work-15` for the
+Install staging is `work-v2` for slot zero and `work-01` through `work-15` for thekey
 remaining slots. Upgrade executable staging includes package identity and build.
 
 The legacy transition is an extension in place: the singleton becomes slot zero

@@ -1,4 +1,5 @@
 #include "repository.h"
+#include "base.h"
 #include "pkg_abi.h"
 #include "../tools/common.h"
 #include "string.h"
@@ -73,6 +74,11 @@ static int load_trust_and_repo(timespec_t *now){
         return tool_error("pkg","valid UTC clock required",NULL);
     if(read_file("/etc/pkg/trust.conf",trust_wire,sizeof trust_wire,true,&n)||pkg_repository_trust_decode(trust_wire,n,(uint64_t)now->tv_sec,&trust))
         return tool_error("pkg","invalid or missing repository public-key configuration",NULL);
+    uint8_t marker[BASE_RELEASE_BYTES];size_t mn=0;uint64_t build,abi;uint8_t platform[32];
+    if(!read_file("/base/release.v1",marker,sizeof marker,true,&mn)){
+        if(base_release_parse(marker,mn,&build,&abi,platform)||memcmp(platform,trust.platform,32))return -1;
+        trust.base_version=abi;
+    }
     return 0;
 }
 int pkg_fetch_main(int argc,char **argv){
@@ -264,11 +270,21 @@ int pkg_download_selected(const char *name) {
     if(pkg_repository_url(&repository,target.sha256,request_url)||download(request_url,path))return tool_error("pkg","artifact download failed",name);
     uint64_t bytes=0;artifact_fd=opened(path,PKG_SOURCE_ARTIFACT_MAX,false,&bytes);
     if(artifact_fd<0)return tool_error("pkg","cannot open downloaded artifact",name);
-    int r=bytes!=target.length?-1:fpk_verify_authorized(&verifier,catalog_wire,selected_catalog_n,&trust.catalog,
+    bool base=!strcmp(name,"fortress-base");int r=-1;
+    if(base){
+        long address=tool_syscall(SYS_MMAP,bytes,0,0);
+        if(address>=0){
+            uint8_t *buffer=(void *)address;size_t at=0;
+            while(at<bytes){size_t take=bytes-at;if(take>4096)take=4096;long got=read_artifact(NULL,buffer+at,take);if(got<=0||(uint64_t)got>take)break;at+=(size_t)got;}
+            base_artifact value;
+            if(at==bytes&&!base_artifact_verify(buffer,bytes,catalog_wire,selected_catalog_n,&trust.catalog,&value)&&
+               !memcmp(value.platform,trust.platform,32)&&value.abi==trust.base_version)r=0;
+        }
+    }else r=bytes!=target.length?-1:fpk_verify_authorized(&verifier,catalog_wire,selected_catalog_n,&trust.catalog,
         (const uint8_t *)name,nn,read_artifact,NULL);
     if(tool_syscall(SYS_CLOSE,artifact_fd,0,0))r=-1;
     artifact_fd=-1;
-    if(r||memcmp(verifier.manifest.platform_id,trust.platform,32)||verifier.manifest.base_min>trust.base_version||verifier.manifest.base_max<trust.base_version)
+    if(r||(!base&&(memcmp(verifier.manifest.platform_id,trust.platform,32)||verifier.manifest.base_min>trust.base_version||verifier.manifest.base_max<trust.base_version)))
         return tool_error("pkg","artifact integrity/platform/base rejected",name);
     return 0;
 }
@@ -281,6 +297,13 @@ int pkg_previous_source(const char *name,uint64_t *bytes) {
     const pkg_installed *installed=NULL;
     for(unsigned i=0;i<count;i++)if(!strcmp(name,records[i].name))installed=records+i;
     if(!installed)return -1;
+    /* Factory artifacts are an untrusted local source, not an authorization.
+     * The privileged upgrade path checks the complete hash against inventory. */
+    char local[128]="/var/lib/pkg/sources/";static const char hex[]="0123456789abcdef";
+    size_t at=strlen(local);
+    for(unsigned i=0;i<32;i++){if(i==4)local[at++]='/';local[at++]=hex[installed->artifact[i]>>4];local[at++]=hex[installed->artifact[i]&15];}
+    memcpy(local+at,".fpk",5);
+    int retained=opened(local,PKG_SOURCE_ARTIFACT_MAX,true,bytes);if(retained>=0)return retained;
     timespec_t now={0};if(load_trust_and_repo(&now))return -1;
     char cdir[160];
     if(snapshot_directory[0])memcpy(cdir,snapshot_directory,strlen(snapshot_directory)+1);else pkg_cache_dir(cdir);

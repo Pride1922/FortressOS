@@ -163,6 +163,11 @@ upgrade/reboot and successful base compositor recovery if the package is unavail
 
 ## Stage 5 — Base OS updates
 
+2026-11-02: the [complete boot-set design](BASE_REPOSITORY_UPDATES.md) was approved
+and implemented. See [repository base updates](../base-repository-updates.md) for
+the new baseline, publisher/CLI workflow and remaining acceptance boundaries.
+The paragraphs below retain the original stage requirements.
+
 The first [offline kernel-only USB prototype](../roadmap/offline-kernel-update.md)
 uses a new two-slot baseline and preserves the installed root. It is a bounded
 precursor; repository-authenticated base packages, bootstrap/base-userland changes

@@ -1,4 +1,5 @@
 #include "pkg_service.h"
+#include "base_system.h"
 #include "pkg_abi.h"
 #include "thread.h"
 #include "syscall.h"
@@ -66,6 +67,35 @@ void pkg_owner_reap(tcb_t *t) {
     if(!t||!t->pkg_owner.generation)return;
     spin_debug_assert_unheld();__builtin_trap();
 }
+static int64_t base_control(tcb_t *t,const pkg_request_v2 *source,uintptr_t output,size_t bytes){
+    const pkg_request_v1 *q=&source->request;bool stage=q->operation==PKG_BASE_STAGE;
+    bool query=q->operation==PKG_BASE_STATUS;
+    if(bytes!=(stage?sizeof *source:sizeof *q)||q->size!=bytes||q->version!=(stage?2u:1u)||q->reserved||q->reserved64||
+       !zero(q->package,32)||(query?q->session!=0:!q->session))return SYSCALL_EINVAL;
+    if(!vmm_validate_user_range(vmm_get_active_pml4_virt(),output,sizeof(pkg_base_result_v1),true))return SYSCALL_EFAULT;
+    if(stage&&(!source->catalog_bytes||source->catalog_bytes>PKG_SOURCE_CATALOG_MAX||source->artifact_bytes<256||
+       source->artifact_bytes>PKG_SOURCE_ARTIFACT_MAX||source->catalog_fd>=MAX_PROCESS_FDS||source->artifact_fd>=MAX_PROCESS_FDS))return SYSCALL_EINVAL;
+    if(!t->pkg_owner.generation&&!pw_register(t->tid,&t->pkg_owner))return SYSCALL_EAGAIN;
+    pw_key operation={0};if(!query&&!pw_enter(t->pkg_owner,q->session,&operation))return SYSCALL_EACCES;
+    unsigned expected=0;int r=-VFS_EAGAIN;pkg_base_result_v1 result={0};
+    if(__atomic_compare_exchange_n(&source_busy,&expected,1,false,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)){
+        file_t *cat=stage?fd_get(t,(int)source->catalog_fd):NULL,*art=stage?fd_get(t,(int)source->artifact_fd):NULL;
+        bool ch=stage&&vfs_file_get(cat),ah=stage&&vfs_file_get(art);uint8_t *copy=NULL;
+        if(stage){
+            r=ch&&ah?0:-VFS_EBADF;
+            if(!r){copy=kmalloc_large(source->catalog_bytes+source->artifact_bytes);if(!copy)r=-VFS_ENOMEM;}
+            if(!r)r=source_copy(cat,copy,source->catalog_bytes);
+            if(!r)r=source_copy(art,copy+source->catalog_bytes,source->artifact_bytes);
+        }else r=0;
+        if(!r)r=base_system_operation(q->operation,copy,stage?source->catalog_bytes:0,
+            stage?copy+source->catalog_bytes:NULL,stage?source->artifact_bytes:0,&result);
+        kfree(copy);if(ch)vfs_close(cat);if(ah)vfs_close(art);
+        __atomic_store_n(&source_busy,0,__ATOMIC_RELEASE);
+    }
+    if(!query&&!pw_complete(operation))r=-VFS_EIO;
+    if(r)return syscall_from_vfs_error(r);
+    memcpy((void *)output,&result,sizeof result);return 0;
+}
 int64_t pkg_service_control(uintptr_t input,uintptr_t output,uint64_t bytes) {
     spin_debug_assert_unheld();
     if(bytes!=sizeof(pkg_request_v1)&&bytes!=sizeof(pkg_request_v2)&&bytes!=sizeof(pkg_request_v3))return SYSCALL_EINVAL;
@@ -75,6 +105,11 @@ int64_t pkg_service_control(uintptr_t input,uintptr_t output,uint64_t bytes) {
     pkg_request_v3 upgrade={0};memcpy(&upgrade,(void *)input,bytes);
     pkg_request_v2 source=upgrade.source;
     pkg_request_v1 q=source.request;
+    if(q.operation>=PKG_BASE_STATUS&&q.operation<=PKG_BASE_RECOVER){
+        const pkg_kernel_backend *backend=__atomic_load_n(&binding,__ATOMIC_ACQUIRE);
+        if(!backend||!backend->admitted())return SYSCALL_EOPNOTSUPP;
+        return base_control(t,&source,output,bytes);
+    }
     bool upgrading=bytes==sizeof upgrade;
     bool ingest=bytes==sizeof source||upgrading;
     bool mutation=ingest||q.operation==PKG_INSTALL||q.operation==PKG_REMOVE;

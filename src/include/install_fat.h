@@ -17,6 +17,8 @@ typedef struct {
     unsigned names;
     uint32_t kernel_first,kernel_size;
     uint32_t bank_first,bank_size,ready_b_first,ready_b_size;
+    uint32_t bootstrap_b_first,bootstrap_b_size,bootstrap_b_entry;
+    uint32_t base_first[2],base_size[2],floor_first[2],floor_size[2];
     size_t backing_bytes;
     bool installed;
     uint8_t name_hashes[8192][16];
@@ -34,6 +36,7 @@ typedef struct {
 int install_fat_inspect(const void *,size_t,install_fat_work_t *);
 /* Optional A/B template enrollment; both kernel files are identical 8 MiB ELF
  * banks. Zero means ordinary legacy template; one means validated A/B template. */
+int install_fat_complete(const install_fat_work_t *);
 int install_fat_banked(const install_fat_work_t *);
 int install_fat_bank_readiness_lba(const install_fat_work_t *,uint64_t *);
 int install_fat_validate(const void *,size_t,install_fat_work_t *);

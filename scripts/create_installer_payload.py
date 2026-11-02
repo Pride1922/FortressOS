@@ -22,6 +22,7 @@ FS_UUID='813ea876-9933-4e1c-ae62-2f6c0f90a441'
 
 def main():
     parser=argparse.ArgumentParser()
+    parser.add_argument('--base-system',action='store_true',help='Complete A/B kernel/bootstrap/release slots; kernel must be padded 8 MiB')
     parser.add_argument('--banked-kernel',action='store_true',help='Enroll two identical fixed 8 MiB kernel banks')
     parser.add_argument('--kernel',type=Path,default=ROOT/'bin/fortress.elf')
     parser.add_argument('--bootstrap',type=Path,default=ROOT/'bin/initramfs.tar')
@@ -113,7 +114,7 @@ def main():
         esp=out/'esp.img';fixture.create_esp_partition(esp,None,ROOT/'limine',args.kernel,bootstrap,config,None)
         run(['mren','-i',esp,'::boot/initramfs.tar','bootstrap.tar'])
         run(['mdel','-i',esp,'::initramfs.tar'])
-        if args.banked_kernel:
+        if args.banked_kernel or args.base_system:
             assert args.kernel.stat().st_size==8*1024*1024
             # Repack once on the host so all allocations fit in the updater's
             # bounded 32 MiB prefix. The runtime never allocates or edits FATs.
@@ -126,6 +127,9 @@ def main():
                                  (config,('limine.conf','boot/limine.conf','boot/limine/limine.conf','efi/boot/limine.conf')),
                                  (readiness,('boot/ready-b.v1',))):
                 for name in names:run(['mcopy','-i',esp,source,'::/'+name])
+        if args.base_system:
+            for source,name in ((bootstrap,'boot/bootstrap-b.tar'),(readiness,'boot/base-a.v1'),(readiness,'boot/base-b.v1'),(readiness,'boot/floor-a.v1'),(readiness,'boot/floor-b.v1')):
+                run(['mcopy','-i',esp,source,'::/'+name])
         run(['mcopy','-i',esp,readiness,'::boot/readiness.v1'])
         data=bytearray(esp.read_bytes());fi=struct.unpack_from('<H',data,48)[0]*512;backup=struct.unpack_from('<H',data,50)[0]*512
         data[backup+fi:backup+fi+512]=data[fi:fi+512];esp.write_bytes(data)

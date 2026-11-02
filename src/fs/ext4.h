@@ -173,5 +173,10 @@ int ext4_journal_analyze(block_dev_t *partition,jbd2_plan_t **out,
 bool ext4_get_mount_info(const void *vfs_node, mount_info_t *out);
 
 void ext4_pkg_bind(void);
+/* Kernel-only base owner: serialize each bounded ESP I/O with ordinary root
+ * traffic and shutdown. No userspace/raw lease admission. write range is ESP. */
+int ext4_base_io(unsigned,uint64_t,unsigned,void *);
+struct base_catalog_floor;
+int ext4_pkg_check_base_catalog(uint64_t,const uint8_t [32],uint64_t,const uint8_t [32],const uint8_t *,size_t);
 
 #endif

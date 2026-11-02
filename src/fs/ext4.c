@@ -1049,3 +1049,17 @@ bool ext4_get_mount_info(const void *vfs_node, mount_info_t *out) {
 
 #include "pkg_executor.inc"
 #endif
+
+#ifndef HOST_TEST
+#include "storage.h"
+int ext4_base_io(unsigned op,uint64_t lba,unsigned count,void *bytes){
+    spin_debug_assert_unheld();
+    if(op>2 || (op!=2 && (!bytes || !count || count>8)))return -VFS_EINVAL;
+    if(op==1 && (lba<4096 || lba>=135168 || count>135168-lba))return -VFS_EACCES;
+    uint64_t flags=spin_lock_irqsave(&e4_lock);ext4_mount_t *fs=e4_active;
+    int r=!fs||!fs->trusted_root||!fs->engine||fs->frozen||fs->quiesced||fs->engine->tainted?-VFS_EIO:0;
+    if(!r){bool ok=op==0?storage_read_sectors(lba,count,bytes):op==1?storage_write_sectors(lba,count,bytes):storage_flush();
+        if(!ok){fs->engine->tainted=true;r=-VFS_EIO;}}
+    spin_unlock_irqrestore(&e4_lock,flags);return r;
+}
+#endif

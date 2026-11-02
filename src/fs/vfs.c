@@ -16,10 +16,23 @@
 static vfs_node_t *g_vfs_root = NULL;
 static vfs_node_t *g_bootstrap_root;
 static vfs_node_t *g_boot_volatile[3];
+static bool g_base_requested;
+static struct {const char *parent,*name;vfs_node_t *node;} g_base_routes[]={
+    {"/","bin",NULL},{"/","sbin",NULL},{"/","lib",NULL},{"/","base",NULL},{"/","docs",NULL},
+    {"/usr/share","wallpapers",NULL},{"/usr/share","licenses",NULL},{"/usr/share","zoneinfo.tzdb",NULL},
+    {"/etc","ssl",NULL}
+};
 static bool g_root_published, g_namespace_sealed, g_root_preparing;
 
+int vfs_boot_enable_base(void){
+    if(!vfs_boot_root_available() && !g_root_preparing)return -VFS_EPERM;
+    g_base_requested=true;return 0;
+}
 static vfs_node_t *boot_route(vfs_node_t *dir,const char *name) {
-    if (!g_root_published || dir!=g_vfs_root) return NULL;
+    if (!g_root_published || !dir) return NULL;
+    if(g_base_requested)for(unsigned i=0;i<sizeof g_base_routes/sizeof g_base_routes[0];i++)
+        if(g_base_routes[i].node && !strcmp(dir->path,g_base_routes[i].parent) && !strcmp(name,g_base_routes[i].name))return g_base_routes[i].node;
+    if(dir!=g_vfs_root)return NULL;
     for (unsigned i=0;i<3;i++)
         if (g_boot_volatile[i] && !strcmp(name,g_boot_volatile[i]->name)) return g_boot_volatile[i];
     return NULL;
@@ -45,7 +58,25 @@ int vfs_boot_publish_root(vfs_node_t *root) {
             if (!strcmp(n->name,names[i])) mounts[i]=n;
         if (!mounts[i]) return -VFS_ENOENT;
     }
-    int r=root->get ? root->get(root) : 0;if (r) return r;
+    vfs_node_t *base_nodes[sizeof g_base_routes/sizeof g_base_routes[0]]={0};
+    vfs_node_t *base_parents[sizeof g_base_routes/sizeof g_base_routes[0]]={0};
+    int r=0;
+    if(g_base_requested){
+        creds_t actor;creds_init_root(&actor);int error;
+        for(unsigned i=0;i<sizeof g_base_routes/sizeof g_base_routes[0];i++){
+            char path[96];size_t n=strlen(g_base_routes[i].parent);memcpy(path,g_base_routes[i].parent,n);
+            if(n>1)path[n++]='/';
+            size_t k=strlen(g_base_routes[i].name);memcpy(path+n,g_base_routes[i].name,k+1);
+            base_nodes[i]=vfs_bootstrap_lookup_creds(path,&actor,&error);
+            base_parents[i]=vfs_lookup_at_creds(root,g_base_routes[i].parent,&actor,&error);
+            if(!base_nodes[i]||!base_parents[i]){r=-VFS_ENOENT;break;}
+        }
+    }
+    if(!r)r=root->get?root->get(root):0;
+    if(r){for(unsigned i=0;i<sizeof g_base_routes/sizeof g_base_routes[0];i++){vfs_node_put(base_nodes[i]);vfs_node_put(base_parents[i]);}return r;}
+    if(g_base_requested)for(unsigned i=0;i<sizeof g_base_routes/sizeof g_base_routes[0];i++){
+        g_base_routes[i].node=base_nodes[i];base_nodes[i]->parent=base_parents[i];
+    }
     g_bootstrap_root=g_vfs_root;
     for (unsigned i=0;i<3;i++) { g_boot_volatile[i]=mounts[i];mounts[i]->parent=root; }
     g_vfs_root=root;g_root_published=true;g_root_preparing=false;return 0;
@@ -157,6 +188,7 @@ void vfs_init(void) {
 
     g_bootstrap_root=g_vfs_root;g_root_published=false;g_namespace_sealed=false;g_root_preparing=false;
     memset(g_boot_volatile,0,sizeof(g_boot_volatile));
+    g_base_requested=false;for(unsigned i=0;i<sizeof g_base_routes/sizeof g_base_routes[0];i++)g_base_routes[i].node=NULL;
     runfs_init(g_vfs_root);
     devfs_init(g_vfs_root,&g_terminal_node,&g_null_node);
 
@@ -1256,7 +1288,7 @@ int vfs_stat(vfs_node_t *node, vfs_stat_t *out_stat) {
     return 0;
 }
 
-int vfs_readdir(vfs_node_t *dir_node, uint64_t index, vfs_dirent_t *out_dent) {
+static int raw_readdir(vfs_node_t *dir_node, uint64_t index, vfs_dirent_t *out_dent) {
     if (!dir_node || dir_node->type != VFS_DIRECTORY || !out_dent) {
         return -1;
     }
@@ -1278,6 +1310,26 @@ int vfs_readdir(vfs_node_t *dir_node, uint64_t index, vfs_dirent_t *out_dent) {
     out_dent->type = (uint32_t)child->type;
     out_dent->size = child->size;
     return 1; /* Entry read */
+}
+
+int vfs_readdir(vfs_node_t *dir,uint64_t index,vfs_dirent_t *out){
+    int r=raw_readdir(dir,index,out);
+    if(r>0){vfs_node_t *n=boot_route(dir,out->name);if(n){out->type=n->type;out->size=n->size;}return r;}
+    if(r<0 || !g_root_published || !g_base_requested || !dir)return r;
+    /* Existing entries keep their stable order. Append only routes absent from
+     * the backing directory; the route names cannot be renamed or removed. */
+    vfs_dirent_t item;uint64_t count=0;
+    for(;count<4096;count++){r=raw_readdir(dir,count,&item);if(r<=0)break;}
+    if(r<0 || count==4096)return -VFS_EIO;
+    uint64_t extra=index-count;
+    for(unsigned i=0;i<sizeof g_base_routes/sizeof g_base_routes[0];i++){
+        if(!g_base_routes[i].node || strcmp(dir->path,g_base_routes[i].parent))continue;
+        bool found=false;
+        for(uint64_t j=0;j<count;j++){if(raw_readdir(dir,j,&item)!=1)return -VFS_EIO;if(!strcmp(item.name,g_base_routes[i].name)){found=true;break;}}
+        if(found)continue;
+        if(extra){extra--;continue;}
+        vfs_node_t *n=g_base_routes[i].node;memcpy(out->name,n->name,strlen(n->name)+1);out->type=n->type;out->size=n->size;return 1;
+    }return 0;
 }
 
 int vfs_readdir_file(file_t *file, vfs_dirent_t *out) {

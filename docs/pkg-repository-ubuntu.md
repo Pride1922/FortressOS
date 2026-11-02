@@ -1,11 +1,43 @@
 # Ubuntu repository publication
 
+For kernel/base-system objects, see [base repository updates](base-repository-updates.md).
+
 The host publisher is `scripts/pkg_repository.py`. It produces the existing
 PKG-1 signed catalog and immutable content-addressed FPK objects. The download
 client verifies these with ordinary root-owned repository public keys. Device
 enrollment, separate key USBs and laptop identities are not part of this workflow.
 Installation and repeated upgrade integration are still in progress; these
 instructions do not claim a completed Dell update.
+
+The [production signing remediation plan](plans/PRODUCTION_SIGNING_KEY_REMEDIATION.md)
+records the required key creation, backup, trust migration and publication work.
+This remains unfinished; current demo trust is not production-ready.
+
+## Deployed server record (verified 2026-11-02)
+
+Access the Cloudflare SSH endpoint `fabio@ssh-edge2.ameyerocha.com` (host
+`edge2`), then the internal repository host `fabio@192.168.0.247` (hostname
+`Repository-Fortress`). The HTTP document root is `/srv/fortress-repository`.
+Do not copy the laptop SSH private key onto the jump host; forward the connection
+using the local SSH client instead.
+
+The existing catalog signing seed is on **Repository-Fortress** at
+`/home/fabio/.local/share/fortress-signing/repo-demo.seed` (0600; directory 0700).
+`/etc/fortress-keys` was absent on both hosts when checked. The previous deployment
+script, `/home/fabio/.cache/fortress-publish/rot13-2.0/publish-rot13-2.0.py`,
+explicitly created this deterministic demonstration seed and used it to publish
+catalog revision 2. This is the confirmed deployed key, not a newly chosen key.
+
+Its public key is
+`03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8`.
+Repository UUID: `00010203-0405-0607-0809-0a0b0c0d0e0f`; root version 1;
+last observed catalog revision 2, offering rot13 build 2. Both rot13 object versions
+remain on the server. Re-read the live catalog before choosing a new revision.
+
+The seed is publicly known demonstration material; production trust migration
+remains outstanding. No key rotation or repository publication was performed by
+this inspection. Private key contents must never enter this document or the
+installer. The laptop SSH login key is separate from the catalog signing key.
 
 ## Public layout
 

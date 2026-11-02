@@ -7,7 +7,7 @@ typedef enum { ROOT_BOOT_LIVE, ROOT_BOOT_INSTALLED, ROOT_BOOT_RECOVERY, ROOT_BOO
 typedef struct {
     root_boot_mode_t mode;
     gpt_guid_t partuuid;
-    bool has_root, valid, explicit_mode;
+    bool has_root, valid, explicit_mode,base_layout;
 } root_boot_config_t;
 /* Bounded exact-token parsing. Invalid input never authorizes device I/O.
  * Any root-related token opts out of legacy live diagnostics even on failure. */

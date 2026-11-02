@@ -65,7 +65,8 @@ FortressOS boots via Limine under UEFI or legacy BIOS, runs in QEMU, and is veri
 - **Isolated Client Apps & IPC:** External client processes (`/bin/desktop-terminal` VT/ANSI terminal emulator and `/bin/desktop-files` file manager) alongside built-in desktop apps (Notepad, Calculator, Paint, Settings, System Monitor) with cross-app open-in-editor IPC (`EV_OPEN_FILE`).
 - **Direct Kernel Keyboard Input & SAK:** Dedicated `/dev/input/keyboard` (`/dev/kbd0`) character device delivering 8-byte `key_event_t` packets (Linux keycode, modifier bitmask, press/release/repeat state, and translated ASCII) from PS/2 and USB HID drivers with console TTY muting while grabbed. Supports extended `EV_KEY` protocol delivery, global `Alt+Tab` window switching, `Super` launcher toggle, and `Ctrl+Alt+Esc` Secure Attention Key (SAK) interception. See the [Desktop guide](docs/subsystems/desktop.md).
 
-### 📦 Package Management & Offline Kernel Updates
+### 📦 Package Management & Base OS Updates
+- **Repository Base Updates:** Complete A/B kernel/bootstrap/base-userland updates through `pkg upgrade [-y]` on the new installer layout, with preserved settings/apps, boot confirmation and previous-set recovery. Focused host acceptance passes; firmware/physical acceptance remains pending. [Delivery and publisher workflow](docs/base-repository-updates.md).
 - **Native Package Manager (`/bin/pkg` & `SYS_PKGCTL`):** Declarative PKG-1 archive verification, Ed25519 signature & SHA-256 content validation, catalog resolution, verified reinstall idempotence, status inspection, and atomic application upgrades (`PKG-3`).
 - **Offline Kernel Updates (`/bin/kernel-update`):** Predecessor-bound two-slot (`slot A` / `slot B`) kernel update workflow preserving the installed bootstrap and root filesystem from disposable USB update media with byte-exact root preservation, rollback protection, and authenticated recovery boot entries.
 

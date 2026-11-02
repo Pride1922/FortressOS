@@ -9,6 +9,7 @@
  * Success returns exact length with two zero blocks. Failure returns -errno,
  * zero length and wipes the entire output capacity after disjoint valid buffer
  * admission. Invalid/overlapping buffers are untouched. No I/O/allocation. */
+int install_archive_base_release(const void *,size_t,uint64_t *,uint64_t *,uint8_t [32]);
 int install_archive_personalize(const void *,size_t,const void *,size_t,
                                void *,size_t,size_t *);
 #endif

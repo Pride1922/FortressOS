@@ -80,7 +80,7 @@ static bool extent(const uint8_t *b,const install_fat_work_t *f,uint32_t c,uint3
         if (i+1<count ? next!=c+1 : next<0xffffff8) return false;
         c=next;
     }
-    *offset=f->data+(first-2)*512;return *offset<=KUPDATE_PREFIX_BYTES && size<=KUPDATE_PREFIX_BYTES-*offset;
+    *offset=f->data+(first-2)*512;return *offset<=f->backing_bytes && size<=f->backing_bytes-*offset;
 }
 static bool identity(const uint8_t *ready,root_recovery_t *r) {
     /* root_readiness_validate below validates the complete record and identity.
@@ -99,7 +99,7 @@ int kernel_update_prepare(const kernel_update_io_t *io,void *prefix,size_t n,ker
         !disjoint(w,sizeof(*w),predecessor,65)) return -1;
     memset(w,0,sizeof(*w));if (disk(io,w) || read_runs(io,w->esp,prefix,n/512)) return -1;
     uint8_t *b=prefix;install_fat_work_t *f=&w->fat;
-    if (install_fat_inspect(b,n,f) || install_fat_banked(f)!=1 || f->capacity[1]!=512 ||
+    if (install_fat_inspect(b,n,f) || install_fat_banked(f)!=1 || install_fat_complete(f)!=0 || f->capacity[1]!=512 ||
         !extent(b,f,f->kernel_first,f->kernel_size,&w->kernel[0]) ||
         !extent(b,f,f->bank_first,f->bank_size,&w->kernel[1]) ||
         !extent(b,f,f->first[1],512,&w->readiness[0]) ||
@@ -169,3 +169,5 @@ int kernel_update_apply(const kernel_update_io_t *io,void *prefix,kernel_update_
     }
     return 0;
 }
+
+#include "base_update.inc"

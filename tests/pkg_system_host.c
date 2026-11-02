@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "pkg_service.h"
+#include "base_system.h"
 #include "process_table.h"
 #include "pkg_abi.h"
 #include "syscall.h"
@@ -17,7 +18,7 @@ static bool admitted,reject_read,reject_write,mutating,fail_mutation,bad_snapsho
 static unsigned reads,writes,range_checks;
 static bool fail_allocation;
 static unsigned allocations,source_calls;
-static uint8_t source_catalog[72],source_artifact[128];
+static uint8_t source_catalog[72],source_artifact[256];
 static vfs_node_t source_nodes[2];
 static file_t source_files[2];
 static bool short_source,growing_source;
@@ -39,7 +40,7 @@ void kfree(void *p){if(p){assert(allocations);allocations--;free(p);}}
 tcb_t *thread_current(void){return current;}
 uint64_t *vmm_get_active_pml4_virt(void){return NULL;}
 bool vmm_validate_user_range(uint64_t *p,uintptr_t address,size_t length,bool writing){
-    assert(!p);range_checks++;assert(writing?length==80:(length==64||length==96||length==112));
+    assert(!p);range_checks++;assert(writing?(length==80||length==128):(length==64||length==96||length==112));
     return address&&!(writing?reject_write:reject_read);
 }
 int64_t syscall_from_vfs_error(int64_t r){
@@ -87,6 +88,15 @@ static int source_upgrade(void *ctx,const uint8_t name[32],const uint8_t *catalo
     assert(pn==sizeof source_artifact&&previous!=source_artifact&&previous!=artifact);
     assert(!memcmp(previous,source_artifact,pn));
     return source_install(ctx,name,catalog,cn,artifact,an,out);
+}
+static unsigned base_calls;
+int base_system_operation(unsigned op,const uint8_t *catalog,size_t cn,const uint8_t *artifact,size_t an,pkg_base_result_v1 *out){
+    base_calls++;
+    if(op==PKG_BASE_STAGE){assert(cn==sizeof source_catalog&&an==sizeof source_artifact&&catalog!=source_catalog&&artifact!=source_artifact);
+        assert(!memcmp(catalog,source_catalog,cn)&&!memcmp(artifact,source_artifact,an));}
+    else assert(!catalog&&!artifact&&!cn&&!an);
+    *out=(pkg_base_result_v1){.size=sizeof *out,.version=1,.running_build=1,.selected_build=op==PKG_BASE_STAGE?2:1,.abi=1};
+    return 0;
 }
 static void birth(unsigned i){
     tasks[i].tid=100+i;tasks[i].is_user=true;creds_init_root(&credentials[i]);
@@ -165,6 +175,17 @@ int main(void){
     assert(pkg_service_control((uintptr_t)&v3,(uintptr_t)&result,sizeof v3)==SYSCALL_EINVAL);v3.source.request.reserved=0;
     fail_mutation=true;assert(pkg_service_control((uintptr_t)&v3,(uintptr_t)&result,sizeof v3)==SYSCALL_EIO&&source_calls==5&&!allocations);fail_mutation=false;
     for(unsigned i=0;i<2;i++)assert(source_files[i].ref_count==1&&source_files[i].offset==57);
+    pkg_base_result_v1 bs={0};pkg_request_v1 bq={.size=64,.version=1,.operation=PKG_BASE_STATUS};
+    assert(!pkg_service_control((uintptr_t)&bq,(uintptr_t)&bs,64)&&base_calls==1&&bs.size==128);
+    bq.operation=PKG_BASE_CONFIRM;bq.session=session;
+    current=&tasks[1];assert(pkg_service_control((uintptr_t)&bq,(uintptr_t)&bs,64)==SYSCALL_EACCES&&base_calls==1);current=&tasks[0];
+    reject_write=true;assert(pkg_service_control((uintptr_t)&bq,(uintptr_t)&bs,64)==SYSCALL_EFAULT&&base_calls==1);reject_write=false;
+    assert(!pkg_service_control((uintptr_t)&bq,(uintptr_t)&bs,64)&&base_calls==2);
+    pkg_request_v2 base_source=v2;base_source.request.operation=PKG_BASE_STAGE;memset(base_source.request.package,0,32);
+    base_source.request.package[0]='x';assert(pkg_service_control((uintptr_t)&base_source,(uintptr_t)&bs,96)==SYSCALL_EINVAL&&base_calls==2);base_source.request.package[0]=0;
+    fail_allocation=true;assert(pkg_service_control((uintptr_t)&base_source,(uintptr_t)&bs,96)==SYSCALL_ENOMEM&&base_calls==2);fail_allocation=false;
+    assert(!pkg_service_control((uintptr_t)&base_source,(uintptr_t)&bs,96)&&base_calls==3&&!allocations);
+    assert(source_files[0].offset==57&&source_files[1].offset==57&&source_files[0].ref_count==1&&source_files[1].ref_count==1);
     pkg_owner_exec(current);assert(call(&q,&result)==SYSCALL_EACCES&&writes==3);
     q=(pkg_request_v1){.size=64,.version=1,.operation=PKG_ACQUIRE};assert(!call(&q,&result)&&result.session!=session);
     q.operation=PKG_RECOVER;q.session=result.session;assert(!call(&q,&result)&&result.phase==PKG_PHASE_IDLE);

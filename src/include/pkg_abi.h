@@ -5,6 +5,19 @@
  * devices, source pointers or caller-supplied admission decisions. */
 enum { PKG_STATUS=1,PKG_ACQUIRE,PKG_RECOVER,PKG_RELEASE,PKG_INSTALL,PKG_REMOVE };
 enum { PKG_INSTALL_SOURCE=7, PKG_UPGRADE_SOURCE=8 };
+enum { PKG_BASE_STATUS=9,PKG_BASE_STAGE=10,PKG_BASE_CONFIRM=11,PKG_BASE_RECOVER=12 };
+#define PKG_BASE_REBOOT 1u
+#define PKG_BASE_UNCONFIRMED 2u
+#define PKG_BASE_RECOVERY 4u
+#define PKG_BASE_FENCED 8u
+#define PKG_BASE_RETRY 16u
+typedef struct {
+    uint32_t size,version,flags,reserved;
+    uint64_t running_build,selected_build,floor_build,abi,catalog;
+    uint8_t artifact[32],platform[32];
+    uint64_t reserved64;
+} pkg_base_result_v1;
+_Static_assert(sizeof(pkg_base_result_v1)==128,"base status ABI v1");
 /* Additive v2 ingestion. v1 remains exactly 64 bytes. Descriptors identify only
  * source regular files to snapshot, never a policy, plan, device or verified flag.
  * Limits match the existing catalog/FPK parsers. Result remains v1. */

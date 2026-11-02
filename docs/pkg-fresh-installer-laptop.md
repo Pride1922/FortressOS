@@ -1,5 +1,7 @@
 # Fresh installation with the new package CLI
 
+Current base-update baseline: [complete A/B installer and repository updates](base-repository-updates.md).
+
 **Historical build, withdrawn.** The user stopped the remaining verification and
 requested deletion of all generated disk images on 2026-11-01. No installer image
 is currently retained. A new image incorporating the latest Wi-Fi work and

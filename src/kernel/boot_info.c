@@ -123,7 +123,7 @@ void boot_info_init(boot_info_t *out_info,
             }
             while (role_len<32 && m->cmdline[role_len]) role_len++;
             if (path_len==256 || role_len==32) {good=false;continue;}
-            if (!strcmp(base,"bootstrap.tar") && !strcmp(m->cmdline,"role=bootstrap") &&
+            if ((!strcmp(base,"bootstrap.tar") || (root.base_layout && !strcmp(base,"bootstrap-b.tar"))) && !strcmp(m->cmdline,"role=bootstrap") &&
                 m->size && m->size<=8u*1024*1024 && !out_info->has_initramfs) {
                 out_info->has_initramfs=true;out_info->initramfs_vaddr=(uint64_t)m->address;
                 out_info->initramfs_size=m->size;

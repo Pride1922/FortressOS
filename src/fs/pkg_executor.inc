@@ -977,6 +977,27 @@ static int px_inventory_read(ext4_mount_t *fs,px_inventory *out) {
     }
     spin_unlock_irqrestore(&e4_lock,flags);kfree(c);return r;
 }
+#ifndef HOST_TEST
+#include "../../user/pkg/base.h"
+int ext4_pkg_check_base_catalog(uint64_t catalog,const uint8_t hash[32],uint64_t root,const uint8_t root_hash[32],const uint8_t *bootstrap,size_t bootstrap_n){
+    ext4_mount_t *fs=e4_active;if(!fs)return -VFS_EOPNOTSUPP;
+    px_inventory *all=px_allocate(sizeof *all);if(!all)return -VFS_ENOMEM;
+    int r=px_inventory_read(fs,all);
+    for(unsigned i=0;!r&&i<PX_PACKAGES;i++)if(all->present[i]){
+        px_record *v=all->records+i;
+        if(v->installed&&bootstrap){
+            size_t n=0;while(n<32&&v->command[n])n++;
+            if(base_archive_command(bootstrap,bootstrap_n,(fpk_span){v->command,n})!=0)r=-VFS_EACCES;
+        }
+        if(v->phase)r=-VFS_EAGAIN;
+        else if(v->catalog>catalog||(v->catalog==catalog&&memcmp(v->catalog_hash,hash,32))||
+                v->root>root||(v->root==root&&memcmp(v->root_hash,root_hash,32)))r=-VFS_EACCES;
+    }kfree(all);return r;
+}
+#endif
+#ifndef HOST_TEST
+#include "../kernel/base_system.h"
+#endif
 static int px_select(ext4_mount_t *fs,const uint8_t package[32],const uint8_t *catalog,size_t catalog_n,
                      const pkg_repository_trust *trust,const fpk_span *command,unsigned *slot) {
     px_inventory *all=px_allocate(sizeof *all);if(!all)return -VFS_ENOMEM;
@@ -986,6 +1007,9 @@ static int px_select(ext4_mount_t *fs,const uint8_t package[32],const uint8_t *c
     memcpy(root,trust->catalog.repository,16);memcpy(root+16,trust->catalog.keys,256);
     px_put(root+272,4,trust->catalog.key_count);px_put(root+276,4,trust->catalog.threshold);px_put(root+280,8,trust->catalog.root_version);
     (void)crypto_sha256(root,sizeof root,root_hash);
+#ifndef HOST_TEST
+    if(!r)r=base_system_catalog_check(verified.revision,verified.sha256,trust->catalog.root_version,root_hash);
+#endif
     for(unsigned i=0;!r&&i<PX_PACKAGES;i++) {
         px_record *v=all->records+i;
         if(!all->present[i]){if(free_slot==PX_PACKAGES)free_slot=i;continue;}
@@ -1028,6 +1052,18 @@ static const char *px_base_names[] = {
 /* The fixed protected-name policy is supplemented by the admitted root's
  * actual base commands, so an application cannot shadow a newly added tool. */
 static int px_base_command(ext4_mount_t *fs,fpk_span command) {
+#ifndef HOST_TEST
+    uint64_t abi;uint8_t platform[32];
+    if(base_system_version(&abi,platform)){
+        const char *paths[]={"/bin/","/sbin/","/usr/sbin/"};creds_t root;creds_init_root(&root);
+        for(unsigned i=0;i<3;i++){
+            char path[64];size_t n=strlen(paths[i]);memcpy(path,paths[i],n);memcpy(path+n,command.bytes,command.length);path[n+command.length]=0;
+            int error=0;vfs_node_t *node=vfs_lookup_creds(path,&root,&error);
+            if(node){vfs_node_put(node);return -VFS_EACCES;}
+            if(error!=-VFS_ENOENT)return error?error:-VFS_EACCES;
+        }return 0;
+    }
+#endif
     static const char *prefixes[]={"/bin/","/sbin/","/usr/sbin/"};
     uint64_t flags=spin_lock_irqsave(&e4_lock);int r=0;
     for(unsigned i=0;!r&&i<3;i++) {
@@ -1130,6 +1166,14 @@ static int ext4_pkg_install_source(void *context, const uint8_t package[32],
         return -VFS_EACCES;
     }
 
+#ifndef HOST_TEST
+    uint64_t base_abi;uint8_t base_platform[32];
+    if(base_system_version(&base_abi,base_platform)){
+        if(memcmp(base_platform,st->trust.platform,32)){kfree(st);return -VFS_EACCES;}
+        st->trust.base_version=base_abi;
+    }
+#endif
+    if(!memcmp(package,"fortress-base",13)&&!package[13]){kfree(st);return -VFS_EACCES;}
     for (size_t i = 0; i < sizeof(px_base_names)/sizeof(px_base_names[0]); i++) {
         st->spans[i] = (fpk_span){(const uint8_t *)px_base_names[i], strlen(px_base_names[i])};
     }
