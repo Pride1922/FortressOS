@@ -9,6 +9,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 | Subsystem | Status | Detail |
 | --- | --- | --- |
 | **Phase 9C.5 Power & layout** | **COMPLETE** | ACPI S5 shutdown/reset and US/AZERTY switching, verified on Dell 5590. Full detail: [`docs/roadmap/subsystems.md`](../roadmap/subsystems.md) ("Dell Latitude 5590 physical acceptance"). |
+| **ACPI Battery & Power Telemetry** | **COMPLETE** | Control Method Battery (`PNP0C0A` `_BST`, `_BIX`, `_BIF`), AC Adapter (`ACPI0003` `_PSR`), and Thermal Zone (`_TMP`) evaluation with 5-second caching; Syscall 103 `SYS_BATTERY_GET` returning 24-byte `battery_status_t`; CLI `/bin/battery`; host suite `make test-battery-host` 100% PASS. |
 
 ---
 
@@ -36,6 +37,7 @@ This annex documents the current status, hardware facts, verification evidence, 
 | Target | Scope / evidence |
 | --- | --- |
 | `make test-power` | QEMU shutdown/reboot command tests; physical ACPI S5 confirmed separately on Dell 5590 (see H7), not by this target |
+| `make test-battery-host` | Host unit test suite verifying battery percentage, discharge time clamping, state mapping, AML bytecode evaluation (_BST, _BIX, _BIF, _PSR, _TMP), EC mocking, and 5s cache |
 | `make test-boot-diagnostics` | UEFI 8 GiB, no COM1; progress to PCI discovery and framebuffer capture |
 | `make test-console` | Host ASan/UBSan: pixel output, wrapping, scrolling and bounds |
 

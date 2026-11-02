@@ -18,6 +18,8 @@ loop or add kernel syscalls for ordinary app settings.
 
 Settings opens from the system menu or **S** on the desktop. Network opens from
 the top-bar network entry or **N**. Date & Time opens from the clock or **C**.
+Power & Battery opens from the top-bar battery icon, tray power button or Settings sidebar.
+On laptops, the top bar features a dynamic battery icon with charging bolt and level coloring, opening a glassmorphic power menu with energy profile toggling (Balanced vs High Performance). On desktop PCs without a battery, the tray automatically compacts and omits the battery icon, while retaining full power profile configuration in Settings.
 Each has shared page navigation, Tab focus and Enter activation; Escape closes
 the page. Wheel or Ctrl+U/Ctrl+D scrolls app content. Drag titlebars to the left,
 right or top edge and release to snap; the green control restores the window.
