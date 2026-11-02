@@ -4,6 +4,11 @@ This annex documents the current status, hardware facts, verification evidence, 
 
 ## 1. Subsystem Status and Overview
 
+2026-11-02 central management follow-up: the current installer is checkpointed
+while physical testing proceeds. Consolidating connection policy, shared profiles
+and credential protection is planned, not implemented. See the
+[scope, security boundaries and staged acceptance gates](../plans/NETWORK_MANAGEMENT_CONSOLIDATION.md).
+
 2026-10-28 TCP listener carrier-loss fix: the CPU-0 endpoint sweep now latches
 EIO on listeners as well as established connections. An old listener remains
 failed after replug; close it and create a fresh listener. Retained ACCEPT pins,
