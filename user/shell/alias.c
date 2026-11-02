@@ -51,6 +51,17 @@ const char *alias_get(const char *name) {
     return 0;
 }
 
+size_t alias_count(void) {
+    return MAX_ALIASES;
+}
+
+const char *alias_name(size_t index) {
+    if (index < MAX_ALIASES && g_aliases[index].used) {
+        return g_aliases[index].name;
+    }
+    return 0;
+}
+
 int alias_set(const char *name, const char *value) {
     if (!name || !*name || !value) return -1;
     if (str_len(name) >= MAX_ALIAS_NAME) return -1;

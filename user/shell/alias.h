@@ -16,6 +16,8 @@ typedef struct {
 
 void alias_init(void);
 const char *alias_get(const char *name);
+size_t alias_count(void);
+const char *alias_name(size_t index);
 int alias_set(const char *name, const char *value);
 int alias_unset(const char *name);
 void alias_print_all(void);

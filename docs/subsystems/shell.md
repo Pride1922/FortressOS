@@ -166,7 +166,8 @@ FortressOS partitions system utilities into standard user executables (`/bin`) a
 ### Default Search Path and Fallback
 - **Environment Default:** The interactive shell initializes `PATH=/bin:/sbin`.
 - **Fallback Resolution:** If `PATH` is unset or empty, binary resolution falls back to `/bin:/sbin` for program execution and the `type` builtin.
-- **Tab Completion:** Interactive tab completion scans both `/bin` and `/sbin` directories without requiring full path qualification.
+- **Tab Completion:** Interactive tab completion dynamically scans all directories in `$PATH` (defaulting to `/bin`, `/sbin`, and `/usr/bin`), builtins, and active shell aliases without requiring full path qualification.
+- **Context-Aware Subcommands and Wrappers:** Completion recognizes command wrappers (`sudo`, `which`, `time`, `help`, `type`, `command`), completing command names in operand position and preserving subcommand completion for wrapped commands (e.g., `sudo service start <Tab>` completes service names). Subcommand completion covers `service` (subcommands + `/etc/watchtower/*.service` unit names), `wifi`, `pkg`, `history`, `terminal`, `prompt`, `layout`, `dmesg`, and `kill` (signals/jobs).
 - Tokens containing `/` use directory completion even in command position:
   `/sb<Tab>` becomes `/sbin/`, `/sbin/reb<Tab>` becomes `/sbin/reboot `,
   and `./to<Tab>` can complete a relative command path. Actual completion code
