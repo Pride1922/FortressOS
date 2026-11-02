@@ -4,6 +4,8 @@ pub const SURFACE: u32 = 0xff2d2d2d;
 pub const BORDER: u32 = 0xff3e3e3e;
 pub const TEXT: u32 = 0xffe0e0e0;
 pub const MUTED: u32 = 0xff989898;
+#[allow(dead_code)]
+pub const SUBTEXT: u32 = 0xff7e8796;
 pub const ACCENT: u32 = 0xff007aff;
 const ALPHA: &[u8; 95 * 16 * 18] = include_bytes!("../assets/ui-alpha.bin");
 const ADVANCES: &[u8; 95] = include_bytes!("../assets/ui-advances.bin");
@@ -89,6 +91,32 @@ pub fn text_pixel(text: &str, mut x: usize, y: usize, fg: u32, bg: u32) -> u32 {
         let advance = ADVANCES[index] as usize;
         if x < advance {
             let a = ALPHA[index * 16 * 18 + y * 16 + x] as u32;
+            let mut color = 0xff000000;
+            for shift in [0, 8, 16] {
+                let f = (fg >> shift) & 255;
+                let b = (bg >> shift) & 255;
+                color |= ((f * a + b * (255 - a) + 127) / 255) << shift;
+            }
+            return color;
+        }
+        x -= advance;
+    }
+    bg
+}
+
+#[allow(dead_code)]
+pub fn text_pixel_bold(text: &str, mut x: usize, y: usize, fg: u32, bg: u32) -> u32 {
+    if y >= 18 {
+        return bg;
+    }
+    for c in text.chars() {
+        let index = glyph(c);
+        let advance = ADVANCES[index] as usize;
+        if x < advance {
+            let base = index * 16 * 18 + y * 16;
+            let a0 = ALPHA[base + x] as u32;
+            let a_prev = if x > 0 { ALPHA[base + x - 1] as u32 } else { 0 };
+            let a = (a0 + ((255 - a0) * (a_prev * 5 / 8)) / 255).min(255);
             let mut color = 0xff000000;
             for shift in [0, 8, 16] {
                 let f = (fg >> shift) & 255;

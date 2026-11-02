@@ -34,9 +34,9 @@ const fn control(id: u16, x: usize, y: usize, w: usize, h: usize) -> Control {
     }
 }
 const NAV: [Control; 3] = [
-    control(100, 8, 56, 164, 34),
-    control(101, 8, 94, 164, 34),
-    control(102, 8, 132, 164, 34),
+    control(100, 6, 56, 168, 34),
+    control(101, 6, 94, 168, 34),
+    control(102, 6, 132, 168, 34),
 ];
 const APPEARANCE: [Control; 9] = [
     control(1, 196, 96, 96, 28),
@@ -214,11 +214,11 @@ impl AppHost {
                 },
             ],
             status: Text::from_str(
-                "Preferences persist on installed roots; live media resets on reboot.",
+                "Preferences persist on installed roots across reboots.",
             ),
             messages: [
                 Text::from_str(
-                    "Preferences persist on installed roots; live media resets on reboot.",
+                    "Preferences persist on installed roots across reboots.",
                 ),
                 Text::from_str("Wi-Fi credentials are not stored by the desktop."),
                 Text::from_str("Choose an installed timezone and save to apply it."),
@@ -996,13 +996,20 @@ impl AppHost {
     }
     fn draw_sidebar(&self, index: usize, c: &mut Canvas) {
         let h = c.height();
-        c.fill_rect(Rect { x: 180, y: 0, w: 1, h }, theme::BORDER);
+        c.fill_rect(Rect { x: 180, y: 0, w: 1, h }, 0xff263040);
 
-        c.badge(Rect { x: 16, y: 12, w: 28, h: 28 }, "O", 0xffffffff, 0xff283548, theme::ACCENT);
-        c.label_h(52, 10, 120, 18, "Operator", theme::TEXT, 0xff202020);
-        c.label_h(52, 28, 120, 18, "Administrator", theme::MUTED, 0xff202020);
+        c.badge_on(
+            Rect { x: 14, y: 11, w: 30, h: 30 },
+            "O",
+            0xffffffff,
+            0xff1e385b,
+            theme::ACCENT,
+            0xff111620,
+        );
+        c.label_bold(52, 9, 120, 18, "Operator", 0xffffffff, 0xff111620);
+        c.label_h(52, 26, 120, 18, "Administrator", theme::SUBTEXT, 0xff111620);
 
-        c.fill_rect(Rect { x: 12, y: 48, w: 156, h: 1 }, theme::BORDER);
+        c.fill_rect(Rect { x: 14, y: 48, w: 152, h: 1 }, 0xff222d3d);
 
         let nav_items = [
             "Personalization",
@@ -1019,7 +1026,8 @@ impl AppHost {
         }
 
         if h >= 400 {
-            c.label_h(14, h.saturating_sub(26), 150, 18, "FortressOS v0.2.0", 0xff5a6b82, 0xff111620);
+            c.fill_rect(Rect { x: 14, y: h.saturating_sub(36), w: 152, h: 1 }, 0xff1c2533);
+            c.label_h(14, h.saturating_sub(26), 150, 18, "FortressOS v0.2.0", 0xff64748b, 0xff111620);
         }
     }
     fn draw(&self, index: usize, c: &mut Canvas) {
@@ -1029,11 +1037,11 @@ impl AppHost {
         let mut text = Text::<112>::default();
         match kind {
             0 => {
-                c.label_h(196, 12, 520, 20, "Personalization", theme::TEXT, theme::PANEL);
-                c.label_h(196, 32, 520, 18, "Display scaling, wallpaper artwork, and clock format", theme::MUTED, theme::PANEL);
+                c.label_h(196, 12, 520, 18, "Personalization", theme::TEXT, theme::PANEL);
+                c.label_h(196, 32, 520, 18, "Display scaling, wallpaper artwork, and clock format", theme::SUBTEXT, theme::PANEL);
 
-                c.label_h(196, 56, 520, 18, "Interface Scale", theme::TEXT, theme::PANEL);
-                c.label_h(196, 74, 520, 18, "Scale windows and desktop elements for screen density", theme::MUTED, theme::PANEL);
+                c.label_bold(196, 56, 520, 18, "Interface Scale", 0xffffffff, theme::PANEL);
+                c.label_h(196, 74, 520, 18, "Scale windows and desktop elements for screen density", theme::SUBTEXT, theme::PANEL);
                 for i in 0..3 {
                     c.button(
                         APPEARANCE[i].rect,
@@ -1042,10 +1050,10 @@ impl AppHost {
                         focus == i,
                     );
                 }
-                c.fill_rect(Rect { x: 196, y: 130, w: 540, h: 1 }, theme::BORDER);
+                c.fill_rect(Rect { x: 196, y: 130, w: 540, h: 1 }, 0xff2c313c);
 
-                c.label_h(196, 138, 520, 18, "Desktop Background", theme::TEXT, theme::PANEL);
-                c.label_h(196, 156, 520, 18, "Choose wallpaper image or solid minimalist background", theme::MUTED, theme::PANEL);
+                c.label_bold(196, 138, 520, 18, "Desktop Background", 0xffffffff, theme::PANEL);
+                c.label_h(196, 156, 520, 18, "Choose wallpaper image or solid minimalist background", theme::SUBTEXT, theme::PANEL);
                 c.wallpaper_card(
                     APPEARANCE[3].rect,
                     "Hello World",
@@ -1060,35 +1068,43 @@ impl AppHost {
                     !self.draft.wallpaper,
                     focus == 4,
                 );
-                c.fill_rect(Rect { x: 196, y: 214, w: 540, h: 1 }, theme::BORDER);
+                c.fill_rect(Rect { x: 196, y: 214, w: 540, h: 1 }, 0xff2c313c);
 
-                c.label_h(196, 222, 520, 18, "Taskbar Clock", theme::TEXT, theme::PANEL);
-                c.label_h(196, 240, 520, 18, "Choose between 24-hour and 12-hour clock format", theme::MUTED, theme::PANEL);
+                c.label_bold(196, 222, 520, 18, "Taskbar Clock", 0xffffffff, theme::PANEL);
+                c.label_h(196, 240, 520, 18, "Choose between 24-hour and 12-hour clock format", theme::SUBTEXT, theme::PANEL);
                 c.button(
                     APPEARANCE[5].rect,
-                    if self.draft.clock_24h { "✓ 24-Hour" } else { "24-Hour" },
+                    "24-Hour",
                     self.draft.clock_24h,
                     focus == 5,
                 );
                 c.button(
                     APPEARANCE[6].rect,
-                    if !self.draft.clock_24h { "✓ 12-Hour" } else { "12-Hour" },
+                    "12-Hour",
                     !self.draft.clock_24h,
                     focus == 6,
                 );
-                c.fill_rect(Rect { x: 196, y: 298, w: 540, h: 1 }, theme::BORDER);
+                c.fill_rect(Rect { x: 196, y: 298, w: 540, h: 1 }, 0xff2c313c);
 
                 c.button_accent(APPEARANCE[7].rect, "Apply & Save", focus == 7);
                 c.button(APPEARANCE[8].rect, "Use Defaults", false, focus == 8);
 
-                c.label_h(196, 350, 520, 18, self.messages[kind].as_str(), theme::MUTED, theme::PANEL);
-                c.label_h(196, 370, 520, 18, "Preferences persist on installed roots across reboots.", theme::MUTED, theme::PANEL);
+                c.label_h(196, 350, 540, 18, self.messages[kind].as_str(), theme::MUTED, theme::PANEL);
             }
             1 => self.draw_network(c, focus),
             _ => {
-                c.label_h(196, 12, 520, 20, "Time & Language", theme::TEXT, theme::PANEL);
-                c.label_h(196, 32, 520, 18, "System clock, time synchronization, and regional timezone", theme::MUTED, theme::PANEL);
+                c.label_h(196, 12, 520, 18, "Time & Language", theme::TEXT, theme::PANEL);
+                c.label_h(196, 32, 520, 18, "System clock, time synchronization, and regional timezone", theme::SUBTEXT, theme::PANEL);
 
+                c.card(Rect { x: 196, y: 52, w: 540, h: 52 }, 0xff282828, theme::BORDER);
+                c.icon_badge(
+                    Rect { x: 204, y: 64, w: 32, h: 28 },
+                    2,
+                    theme::ACCENT,
+                    0xff1e2d40,
+                    theme::ACCENT,
+                    0xff282828,
+                );
                 if let Some(t) = self.calendar {
                     let _ = write!(
                         text,
@@ -1096,45 +1112,52 @@ impl AppHost {
                         t.year, t.month, t.day, t.hour, t.minute, t.second
                     );
                 } else {
-                    let _ = write!(text, "Clock unavailable: check timezone configuration");
+                    let _ = write!(text, "Clock awaiting RTC synchronization");
                 }
-                c.label_h(200, 56, 520, 22, text.as_str(), 0xffffffff, theme::PANEL);
-                c.label_h(200, 80, 520, 18, "Hardware RTC clock synchronized", theme::MUTED, theme::PANEL);
-                c.fill_rect(Rect { x: 196, y: 104, w: 540, h: 1 }, theme::BORDER);
+                c.label_bold(246, 58, 360, 18, text.as_str(), 0xffffffff, 0xff282828);
+                c.label_h(246, 78, 360, 18, "Hardware RTC clock synchronized", theme::SUBTEXT, 0xff282828);
+                c.badge_on(
+                    Rect { x: 632, y: 66, w: 92, h: 22 },
+                    "RTC Sync",
+                    0xff4ade80,
+                    0xff133223,
+                    0xff22c55e,
+                    0xff282828,
+                );
 
-                c.label_h(196, 112, 520, 18, "System Timezone", theme::TEXT, theme::PANEL);
-                c.label_h(196, 130, 520, 18, "Enter an installed IANA Region/City name", theme::MUTED, theme::PANEL);
-                c.entry(CLOCK[0].rect, self.zone.as_str(), focus == 0);
+                c.label_bold(196, 114, 520, 18, "System Timezone", 0xffffffff, theme::PANEL);
+                c.label_h(196, 132, 520, 18, "Enter an installed IANA Region/City name", theme::SUBTEXT, theme::PANEL);
+                c.entry_on(CLOCK[0].rect, self.zone.as_str(), focus == 0, theme::PANEL);
                 c.button_accent(CLOCK[1].rect, "Save Timezone", focus == 1);
-                c.label_h(196, 186, 520, 18, "Quick Presets", theme::MUTED, theme::PANEL);
+                c.label_h(196, 186, 520, 18, "Quick Presets", theme::SUBTEXT, theme::PANEL);
                 for (i, label) in ["UTC", "Brussels", "New York", "Tokyo"].iter().enumerate() {
                     c.button(CLOCK[i + 2].rect, label, false, focus == i + 2);
                 }
-                c.fill_rect(Rect { x: 196, y: 238, w: 540, h: 1 }, theme::BORDER);
+                c.fill_rect(Rect { x: 196, y: 238, w: 540, h: 1 }, 0xff2c313c);
 
-                c.label_h(196, 246, 520, 18, "Taskbar Clock Format", theme::TEXT, theme::PANEL);
-                c.label_h(196, 264, 520, 18, "Toggle between 12-hour and 24-hour display format", theme::MUTED, theme::PANEL);
+                c.label_bold(196, 246, 520, 18, "Taskbar Clock Format", 0xffffffff, theme::PANEL);
+                c.label_h(196, 264, 520, 18, "Toggle between 12-hour and 24-hour display format", theme::SUBTEXT, theme::PANEL);
                 c.button(
                     CLOCK[6].rect,
                     if self.preferences.clock_24h {
-                        "✓ 24-Hour (Click for 12h)"
+                        "24-Hour Format"
                     } else {
-                        "✓ 12-Hour (Click for 24h)"
+                        "12-Hour Format"
                     },
                     true,
                     focus == 6,
                 );
-                c.fill_rect(Rect { x: 196, y: 322, w: 540, h: 1 }, theme::BORDER);
+                c.fill_rect(Rect { x: 196, y: 322, w: 540, h: 1 }, 0xff2c313c);
 
-                c.label_h(196, 330, 520, 22, self.messages[kind].as_str(), theme::MUTED, theme::PANEL);
+                c.label(196, 330, 520, self.messages[kind].as_str(), theme::MUTED);
             }
         }
     }
     fn draw_network(&self, c: &mut Canvas, focus: usize) {
         let mut text = Text::<112>::default();
 
-        c.label_h(196, 12, 520, 20, "Network & Wi-Fi", theme::TEXT, theme::PANEL);
-        c.label_h(196, 32, 520, 18, "Wired Ethernet, wireless Wi-Fi networks, and IPv4 status", theme::MUTED, theme::PANEL);
+        c.label_h(196, 12, 520, 18, "Network & Internet", theme::TEXT, theme::PANEL);
+        c.label_h(196, 32, 520, 18, "Wired Ethernet, wireless Wi-Fi networks, and IPv4 status", theme::SUBTEXT, theme::PANEL);
 
         let wifi_online = self.wireless.is_some_and(|w| w.online != 0);
         let net_is_wifi = match (self.network, self.wireless) {
@@ -1142,41 +1165,79 @@ impl AppHost {
             _ => false,
         };
 
-        // Hero Ethernet Card container (x: 196, y: 52, w: 540, h: 80)
-        c.card(Rect { x: 196, y: 52, w: 540, h: 80 }, 0xff282828, theme::BORDER);
-        c.badge(Rect { x: 206, y: 60, w: 42, h: 28 }, "LAN", theme::ACCENT, 0xff263344, theme::ACCENT);
+        // Hero Ethernet Card container (x: 196, y: 52, w: 540, h: 76)
+        c.card(Rect { x: 196, y: 52, w: 540, h: 76 }, 0xff282828, theme::BORDER);
+        c.icon_badge(
+            Rect { x: 204, y: 58, w: 32, h: 28 },
+            0,
+            theme::ACCENT,
+            0xff1e2d40,
+            theme::ACCENT,
+            0xff282828,
+        );
 
         if let Some(n) = self.network.filter(|_| !net_is_wifi) {
-            let (status_text, status_color) = match n.link {
-                2 => ("Connected  (Online)", 0xff4ade80),
-                1 => ("Waiting for cable...", 0xfffacc15),
-                3 => ("Link Down", 0xfff87171),
-                4 => ("Link Failed", 0xfff87171),
-                _ => ("Uninitialized", theme::MUTED),
+            let (status_text, status_color, pill_label, pill_fg, pill_bg, pill_border) = match n.link {
+                2 => ("Connected  (Online)", 0xff4ade80, "Online", 0xff4ade80, 0xff133223, 0xff22c55e),
+                1 => ("Waiting for cable...", 0xfffacc15, "Waiting", 0xfffacc15, 0xff332b14, 0xffeab308),
+                3 => ("Link Down", 0xfff87171, "Offline", 0xfff87171, 0xff361818, 0xffef4444),
+                4 => ("Link Failed", 0xfff87171, "Failed", 0xfff87171, 0xff361818, 0xffef4444),
+                _ => ("Uninitialized", theme::SUBTEXT, "Idle", theme::SUBTEXT, 0xff1f2733, 0xff3a485c),
             };
-            c.label_h(256, 58, 320, 18, "Ethernet (LAN)", 0xffffffff, 0xff282828);
-            c.label_h(256, 76, 320, 18, status_text, status_color, 0xff282828);
+            c.label_h(246, 58, 320, 18, "Ethernet (LAN)", theme::TEXT, 0xff282828);
+            c.label_h(246, 76, 320, 18, status_text, status_color, 0xff282828);
+            c.badge_on(
+                Rect { x: 632, y: 58, w: 92, h: 22 },
+                pill_label,
+                pill_fg,
+                pill_bg,
+                pill_border,
+                0xff282828,
+            );
             let _ = write!(text, "IPv4: {}   Gateway: {}", ipv4(n.ip).as_str(), ipv4(n.gateway).as_str());
-            c.label_h(206, 102, 516, 18, text.as_str(), theme::MUTED, 0xff282828);
+            c.label_h(206, 102, 516, 18, text.as_str(), theme::SUBTEXT, 0xff282828);
             text.clear();
         } else if net_is_wifi {
-            c.label_h(256, 58, 320, 18, "Ethernet (LAN)", 0xffffffff, 0xff282828);
-            c.label_h(256, 76, 320, 18, "Disconnected (Cable unplugged)", theme::MUTED, 0xff282828);
+            c.label_h(246, 58, 320, 18, "Ethernet (LAN)", theme::TEXT, 0xff282828);
+            c.label_h(246, 76, 320, 18, "Disconnected (Cable unplugged)", theme::SUBTEXT, 0xff282828);
+            c.badge_on(
+                Rect { x: 632, y: 58, w: 92, h: 22 },
+                "Unplugged",
+                0xff9fb0c7,
+                0xff1f2733,
+                0xff334155,
+                0xff282828,
+            );
             if let Some(n) = self.network.filter(|n| n.ip != 0) {
                 let _ = write!(text, "Wi-Fi IPv4: {}   Gateway: {}", ipv4(n.ip).as_str(), ipv4(n.gateway).as_str());
                 c.label_h(206, 102, 516, 18, text.as_str(), 0xff4ade80, 0xff282828);
                 text.clear();
             } else {
-                c.label_h(206, 102, 516, 18, "Active traffic routed over Wi-Fi interface (wlan0)", theme::MUTED, 0xff282828);
+                c.label_h(206, 102, 516, 18, "Active traffic routed over Wi-Fi interface (wlan0)", theme::SUBTEXT, 0xff282828);
             }
         } else {
-            c.label_h(256, 58, 320, 18, "Ethernet (LAN)", 0xffffffff, 0xff282828);
-            c.label_h(256, 76, 320, 18, "Hardware unavailable", theme::MUTED, 0xff282828);
+            c.label_h(246, 58, 320, 18, "Ethernet (LAN)", theme::TEXT, 0xff282828);
+            c.label_h(246, 76, 320, 18, "Hardware unavailable", theme::SUBTEXT, 0xff282828);
+            c.badge_on(
+                Rect { x: 632, y: 58, w: 92, h: 22 },
+                "Offline",
+                theme::SUBTEXT,
+                0xff1f2733,
+                0xff334155,
+                0xff282828,
+            );
         }
 
-        // Wi-Fi Card container (x: 196, y: 138, w: 540, h: 42)
-        c.card(Rect { x: 196, y: 138, w: 540, h: 42 }, 0xff282828, theme::BORDER);
-        c.badge(Rect { x: 206, y: 145, w: 42, h: 28 }, "WIFI", theme::ACCENT, 0xff263344, theme::ACCENT);
+        // Wi-Fi Card container (x: 196, y: 136, w: 540, h: 44)
+        c.card(Rect { x: 196, y: 136, w: 540, h: 44 }, 0xff282828, theme::BORDER);
+        c.icon_badge(
+            Rect { x: 204, y: 144, w: 32, h: 28 },
+            1,
+            theme::ACCENT,
+            0xff1e2d40,
+            theme::ACCENT,
+            0xff282828,
+        );
 
         text.clear();
         let mut wifi_sub = Text::<112>::default();
@@ -1208,16 +1269,16 @@ impl AppHost {
             let _ = write!(text, "Wi-Fi: No adapter available");
             let _ = write!(wifi_sub, "Wireless hardware not detected");
         }
-        c.label_h(
-            256,
-            142,
-            224,
+        c.label_bold(
+            246,
+            141,
+            234,
             18,
             text.as_str(),
-            if wifi_online { 0xff4ade80 } else { theme::TEXT },
+            if wifi_online { 0xff4ade80 } else { 0xffffffff },
             0xff282828,
         );
-        c.label_h(256, 160, 224, 18, wifi_sub.as_str(), theme::MUTED, 0xff282828);
+        c.label_h(246, 159, 234, 18, wifi_sub.as_str(), theme::SUBTEXT, 0xff282828);
 
         let enabled = self.wireless.is_some();
         let busy = self.connecting_until.is_some() || self.wifi_prepare_pid.is_some();
@@ -1244,7 +1305,7 @@ impl AppHost {
         );
 
         // Available Networks Section
-        c.label_h(196, 188, 170, 22, "Available Networks", theme::TEXT, theme::PANEL);
+        c.label_bold(196, 189, 176, 18, "Available Networks", 0xffffffff, theme::PANEL);
         text.clear();
         let _ = write!(
             text,
@@ -1253,7 +1314,7 @@ impl AppHost {
             ((self.page + 1) * 4).min(self.points.len()),
             self.points.len()
         );
-        c.label_h(376, 188, 108, 22, text.as_str(), theme::MUTED, theme::PANEL);
+        c.label_h(376, 188, 108, 22, text.as_str(), theme::SUBTEXT, theme::PANEL);
         c.button_enabled(NETWORK[2].rect, "< Back", false, focus == 2, self.page > 0);
         c.button_enabled(NETWORK[3].rect, "More >", false, focus == 3, (self.page + 1) * 4 < self.points.len());
 
@@ -1293,57 +1354,58 @@ impl AppHost {
             }
         }
 
-        // Join Network / Password Prompt Modal Card container (x: 196, y: 326, w: 540, h: 110)
+        // Elevated Sheet Modal Card for Join Network / Password Prompt (x: 196, y: 326, w: 540, h: 110)
         let selected_open = self
             .points
             .get(self.selected)
             .filter(|p| p.ssid == self.ssid)
             .is_some_and(|p| p.security == 0);
-        let modal_border = if self.selected != usize::MAX {
+        let sheet_active = self.selected != usize::MAX || (4..=7).contains(&focus);
+        let modal_border = if sheet_active {
             theme::ACCENT
         } else {
             theme::BORDER
         };
-        c.card(Rect { x: 196, y: 326, w: 540, h: 110 }, 0xff282828, modal_border);
-        c.label_h(
-            206,
-            331,
+        let header_bg = if sheet_active { 0xff222b38 } else { 0xff282828 };
+        c.sheet_card(Rect { x: 196, y: 326, w: 540, h: 110 }, 0xff282828, modal_border, sheet_active);
+        c.label_bold(
+            208,
+            330,
             320,
             18,
             if self.selected != usize::MAX {
-                "Selected Network"
+                "Join Selected Network"
             } else {
                 "Network SSID"
             },
-            theme::TEXT,
-            0xff282828,
+            0xffffffff,
+            header_bg,
         );
         c.entry(NETWORK[4].rect, self.ssid.as_str(), focus == 4 && enabled);
-        c.label_h(
-            458,
-            355,
-            268,
-            18,
+        c.badge_on(
+            Rect { x: 458, y: 352, w: 266, h: 24 },
             if selected_open {
-                "Open 802.11 network (no password)"
+                "Open 802.11 (No Password)"
             } else {
-                "WPA2 / WPA3 Personal security"
+                "WPA2 / WPA3 Personal"
             },
-            theme::MUTED,
+            if selected_open { 0xff38bdf8 } else { 0xff9fb0c7 },
+            0xff1a2230,
+            0xff334155,
             0xff282828,
         );
 
-        c.label_h(
-            206,
+        c.label_bold(
+            208,
             383,
             320,
             18,
             if selected_open {
                 "Open Network (No Password)"
             } else {
-                "Wi-Fi Password"
+                "Security Key (Password)"
             },
-            theme::TEXT,
+            0xffffffff,
             0xff282828,
         );
         let stars = [b'*'; 64];
@@ -1374,8 +1436,8 @@ impl AppHost {
 
         // Status notification card
         let message = self.messages[1].as_str();
-        c.card(Rect { x: 196, y: 442, w: 540, h: 26 }, 0xff242424, theme::BORDER);
-        c.label_h(206, 446, 520, 18, message, if self.connecting_until.is_some() { theme::ACCENT } else { theme::MUTED }, 0xff242424);
+        c.card(Rect { x: 196, y: 444, w: 540, h: 24 }, 0xff22252c, 0xff323846);
+        c.label_h(208, 447, 516, 18, message, if self.connecting_until.is_some() { theme::ACCENT } else { theme::SUBTEXT }, 0xff22252c);
     }
 }
 impl Drop for AppHost {
@@ -1473,13 +1535,41 @@ mod wifi_ux_tests {
         h.pointer(8, 430, 415, &mut wm, &mut s);
         assert!(h.show_password);
         if let Ok(path) = std::env::var("COMPOSITOR_WIFI_PREVIEW") {
+            h.apps[1].focus = 5;
+            h.render(8, &mut wm, &mut s);
+            s.fill(crate::window::DESKTOP);
+            s.damage(Rect { x: 0, y: 0, w: s.width, h: s.height });
+            wm.render(&mut s);
             let w = wm.windows.iter().find(|w| w.id == 8).unwrap();
-            let mut image =
-                alloc::format!("P6\n{} {}\n255\n", w.rect.w - 2, w.rect.h - 26).into_bytes();
-            for pixel in &w.content {
-                image.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]);
+            let rx = w.rect.x;
+            let ry = w.rect.y;
+            let rw = w.rect.w;
+            let rh = w.rect.h;
+            let mut image = alloc::format!("P6\n{} {}\n255\n", rw, rh).into_bytes();
+            for y in ry..ry + rh {
+                for x in rx..rx + rw {
+                    let pixel = s.pixels[y * s.width + x];
+                    image.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8]);
+                }
             }
-            std::fs::write(path, image).unwrap();
+            std::fs::write(&path, image).unwrap();
+            if let Some(stem) = path.strip_suffix(".ppm") {
+                for (tab_cmd, suffix) in [(100u16, "_personalization.ppm"), (102u16, "_time.ppm")] {
+                    h.command(1, tab_cmd, &mut wm, &mut s);
+                    wm.render(&mut s);
+                    let w = wm.windows.iter().find(|w| w.id == 8).unwrap();
+                    let mut img = alloc::format!("P6\n{} {}\n255\n", w.rect.w, w.rect.h).into_bytes();
+                    for y in w.rect.y..w.rect.y + w.rect.h {
+                        for x in w.rect.x..w.rect.x + w.rect.w {
+                            let pixel = s.pixels[y * s.width + x];
+                            img.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8]);
+                        }
+                    }
+                    std::fs::write(alloc::format!("{}{}", stem, suffix), img).unwrap();
+                }
+                h.command(1, 101, &mut wm, &mut s);
+                h.apps[1].focus = 5;
+            }
         }
         h.pointer(8, 250, 250, &mut wm, &mut s);
         assert_eq!(h.ssid.as_str(), "Cafe");

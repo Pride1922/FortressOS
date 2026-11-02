@@ -440,90 +440,88 @@ impl Window {
                 0xff242424 // inactive window surface
             };
 
-            // Modern top-right window controls (Close, Maximize/Restore, Minimize)
+            // Modern top-right traffic-light window controls (Close, Maximize/Restore, Minimize)
             if x >= self.rect.w.saturating_sub(108) {
                 let is_hover = |btn: Hit| hover == Some(btn);
-                let fg = |btn: Hit| {
-                    if is_hover(btn) {
-                        0xffffffff
-                    } else if self.is_focused {
-                        theme::TEXT
+                let base_bg = if y == 1 { 0xff404040 } else { title_bg };
+                let (btn, bx, cx, active_fill, hover_fill, rim_col, glyph_col) =
+                    if x >= self.rect.w.saturating_sub(36) {
+                        (
+                            Hit::Close,
+                            x - self.rect.w.saturating_sub(36),
+                            17usize,
+                            0xffff5f57u32,
+                            0xffff7b73u32,
+                            0xffe0443eu32,
+                            0xff4a0f0cu32,
+                        )
+                    } else if x >= self.rect.w.saturating_sub(72) {
+                        (
+                            Hit::Maximize,
+                            x - self.rect.w.saturating_sub(72),
+                            18usize,
+                            0xff28c840u32,
+                            0xff44dc5cu32,
+                            0xff1ca632u32,
+                            0xff0b3d14u32,
+                        )
                     } else {
-                        theme::MUTED
-                    }
-                };
-
-                // Close button (x in [w - 36, w - 1))
-                if x >= self.rect.w.saturating_sub(36) {
-                    let bg = if is_hover(Hit::Close) {
-                        0xffe81123 // red hover
-                    } else if y == 1 {
-                        0xff404040 // top highlight when not hovered
-                    } else {
-                        title_bg
+                        (
+                            Hit::Minimize,
+                            x - self.rect.w.saturating_sub(108),
+                            18usize,
+                            0xfffebc2eu32,
+                            0xffffce54u32,
+                            0xffd69816u32,
+                            0xff4a3000u32,
+                        )
                     };
-                    let bx = x - self.rect.w.saturating_sub(36); // 0..=34 (center is 17)
-                    let dx = (bx as i32 - 17).abs();
-                    let dy = (y as i32 - 12).abs();
-                    // 10x10 crisp diagonal cross 'X'
-                    if dx == dy && dx <= 4 {
-                        return if is_hover(Hit::Close) {
-                            0xffffffff
+                let hovered = is_hover(btn);
+                let left_x = cx - 7;
+                if (left_x..left_x + 14).contains(&bx) && (5..19).contains(&y) {
+                    let lx = bx - left_x;
+                    let ly = y - 5;
+                    let outer_cov = theme::rounded_coverage(lx, ly, 14, 14, 7);
+                    if outer_cov > 0 {
+                        let inner_cov = if (1..13).contains(&lx) && (1..13).contains(&ly) {
+                            theme::rounded_coverage(lx - 1, ly - 1, 12, 12, 6)
                         } else {
-                            fg(Hit::Close)
+                            0
                         };
-                    }
-                    return bg;
-                }
-
-                // Maximize / Restore button (x in [w - 72, w - 36))
-                if x >= self.rect.w.saturating_sub(72) {
-                    let bg = if is_hover(Hit::Maximize) {
-                        0xff3a3a3a // macOS dark hover
-                    } else if y == 1 {
-                        0xff404040
-                    } else {
-                        title_bg
-                    };
-                    let bx = x - self.rect.w.saturating_sub(72); // 0..=35 (center is 18)
-                    let icon_fg = fg(Hit::Maximize);
-
-                    if is_maximized {
-                        // "Restore" overlapping squares icon
-                        let in_back = (bx >= 15 && bx <= 23 && y == 7)
-                            || (bx == 23 && y >= 7 && y <= 14)
-                            || (bx >= 20 && bx <= 23 && y == 14)
-                            || (bx == 15 && y >= 7 && y <= 10);
-                        let in_front = (bx >= 13 && bx <= 20 && (y == 10 || y == 17))
-                            || (y >= 10 && y <= 17 && (bx == 13 || bx == 20));
-                        if in_back || in_front {
-                            return icon_fg;
+                        let (fill, rim) = if hovered {
+                            (hover_fill, rim_col)
+                        } else if self.is_focused {
+                            (active_fill, rim_col)
+                        } else {
+                            (0xff424652, 0xff525866)
+                        };
+                        let dot_col = theme::blend_coverage(
+                            theme::blend_coverage(fill, rim, inner_cov),
+                            base_bg,
+                            outer_cov,
+                        );
+                        if hovered {
+                            let dx = (bx as i32 - cx as i32).abs();
+                            let dy = (y as i32 - 12).abs();
+                            let on_glyph = match btn {
+                                Hit::Close => dx == dy && dx <= 3,
+                                Hit::Minimize => dy == 0 && dx <= 3,
+                                _ => {
+                                    if is_maximized {
+                                        (dx <= 2 && dy == 2) || (dy <= 2 && dx == 2)
+                                    } else {
+                                        (dx == 0 && dy <= 3) || (dy == 0 && dx <= 3)
+                                    }
+                                }
+                            };
+                            if on_glyph {
+                                return glyph_col;
+                            }
                         }
-                    } else {
-                        // "Maximize" single square icon (10x10 outline: 13..=22, 7..=16)
-                        let in_square = (bx >= 13 && bx <= 22 && (y == 7 || y == 16))
-                            || (y >= 7 && y <= 16 && (bx == 13 || bx == 22));
-                        if in_square {
-                            return icon_fg;
-                        }
+                        return dot_col;
                     }
-                    return bg;
                 }
-
-                // Minimize button (x in [w - 108, w - 72))
-                let bg = if is_hover(Hit::Minimize) {
-                    0xff3a3a3a // macOS dark hover
-                } else if y == 1 {
-                    0xff404040
-                } else {
-                    title_bg
-                };
-                let bx = x - self.rect.w.saturating_sub(108); // 0..=35 (center is 18)
-                // 10px horizontal bar '—' at y = 12
-                if y == 12 && bx >= 13 && bx <= 22 {
-                    return fg(Hit::Minimize);
-                }
-                return bg;
+                return base_bg;
             }
 
             // Titlebar top 1px subtle glass highlight for non-button title area

@@ -112,7 +112,168 @@ impl<'a> Canvas<'a> {
             false,
         );
     }
+    pub fn label_bold(&mut self, x: usize, y: usize, width: usize, height: usize, text: &str, color: u32, bg: u32) {
+        let r = Rect {
+            x,
+            y,
+            w: width,
+            h: height,
+        };
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(w) = r.w.checked_mul(self.scale) else { return; };
+        let Some(h) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = w.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(h);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(h);
+        let text_y = r.h.saturating_sub(18) / 2;
+        for py in first_y..last_y {
+            for px in 0..draw_width {
+                let lx = px / self.scale;
+                let ly = py / self.scale;
+                let p = if ly >= text_y && ly < text_y + 18 {
+                    theme::text_pixel_bold(text, lx, ly - text_y, color, bg)
+                } else {
+                    bg
+                };
+                if top + py >= scroll {
+                    self.pixel(left + px, top + py - scroll, p);
+                }
+            }
+        }
+    }
+    #[inline]
+    fn rounded_frame_pixel(
+        lx: usize,
+        ly: usize,
+        w: usize,
+        h: usize,
+        radius: usize,
+        outer_bg: u32,
+        fill: u32,
+        border: u32,
+        top_highlight: u32,
+    ) -> u32 {
+        let outer_cov = theme::rounded_coverage(lx, ly, w, h, radius);
+        if outer_cov == 0 {
+            return outer_bg;
+        }
+        let inner_cov = if lx >= 1 && lx + 1 < w && ly >= 1 && ly + 1 < h {
+            theme::rounded_coverage(
+                lx - 1,
+                ly - 1,
+                w.saturating_sub(2),
+                h.saturating_sub(2),
+                radius.saturating_sub(1),
+            )
+        } else {
+            0
+        };
+        if outer_cov == 16 && inner_cov == 16 {
+            return if ly == 1 && top_highlight != 0 {
+                top_highlight
+            } else {
+                fill
+            };
+        }
+        let edge_color = if ly <= 1 && top_highlight != 0 {
+            top_highlight
+        } else {
+            border
+        };
+        let inner = theme::blend_coverage(fill, edge_color, inner_cov);
+        theme::blend_coverage(inner, outer_bg, outer_cov)
+    }
+    #[allow(dead_code)]
     pub fn badge(&mut self, r: Rect, text: &str, fg: u32, bg: u32, border_color: u32) {
+        self.badge_on(r, text, fg, bg, border_color, theme::PANEL);
+    }
+    pub fn icon_badge(&mut self, r: Rect, kind: u8, fg: u32, bg: u32, border_color: u32, outer_bg: u32) {
+        let Some(left) = r.x.checked_mul(self.scale) else { return; };
+        let Some(top) = r.y.checked_mul(self.scale) else { return; };
+        let Some(width) = r.w.checked_mul(self.scale) else { return; };
+        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let radius = 7.min(r.h / 2);
+        let cx = (r.w / 2) as isize;
+        let cy = (r.h / 2) as isize;
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let base = Self::rounded_frame_pixel(
+                    lx,
+                    ly,
+                    r.w,
+                    r.h,
+                    radius,
+                    outer_bg,
+                    bg,
+                    border_color,
+                    0,
+                );
+                let ix = lx as isize - cx;
+                let iy = ly as isize - cy;
+                let on_icon = match kind {
+                    0 => {
+                        // Ethernet LAN topology glyph
+                        let top_box = ix >= -3 && ix <= 2 && iy >= -8 && iy <= -4
+                            && !(ix >= -1 && ix <= 0 && iy >= -6 && iy <= -5);
+                        let bus = ix >= -7 && ix <= 6 && iy == 0;
+                        let stem_mid = (ix == -1 || ix == 0) && iy >= -3 && iy <= 0;
+                        let stem_l = (ix == -5 || ix == -4) && iy >= 1 && iy <= 3;
+                        let stem_r = (ix == 3 || ix == 4) && iy >= 1 && iy <= 3;
+                        let bot_l = ix >= -7 && ix <= -2 && iy >= 4 && iy <= 7
+                            && !(ix >= -5 && ix <= -4 && iy >= 5 && iy <= 6);
+                        let bot_r = ix >= 1 && ix <= 6 && iy >= 4 && iy <= 7
+                            && !(ix >= 3 && ix <= 4 && iy >= 5 && iy <= 6);
+                        top_box || bus || stem_mid || stem_l || stem_r || bot_l || bot_r
+                    }
+                    1 => {
+                        // Wi-Fi concentric signal waves glyph
+                        let wy = ly as isize - (cy + 5);
+                        let d2 = ix * ix + wy * wy;
+                        let in_cone = wy <= 0 && ix.abs() <= (-wy + 1);
+                        let dot = d2 <= 2;
+                        let inner_arc = in_cone && (20..=35).contains(&d2);
+                        let outer_arc = in_cone && (68..=94).contains(&d2);
+                        dot || inner_arc || outer_arc
+                    }
+                    _ => {
+                        // Clock face glyph
+                        let d2 = ix * ix + iy * iy;
+                        let ring = (40..=64).contains(&d2);
+                        let hands = (ix == 0 && (-5..=0).contains(&iy))
+                            || (iy == 0 && (0..=4).contains(&ix));
+                        ring || hands
+                    }
+                };
+                let p = if on_icon { fg } else { base };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, p);
+                }
+            }
+        }
+    }
+    pub fn badge_on(
+        &mut self,
+        r: Rect,
+        text: &str,
+        fg: u32,
+        bg: u32,
+        border_color: u32,
+        outer_bg: u32,
+    ) {
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -127,17 +288,31 @@ impl<'a> Canvas<'a> {
         let text_y = r.h.saturating_sub(18) / 2;
         let tw = theme::text_width(text);
         let inset = r.w.saturating_sub(tw) / 2;
+        let radius = 6.min(r.h / 2);
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
                 let ly = y / self.scale;
-                let is_border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
-                let p = if is_border {
-                    border_color
-                } else if lx >= inset && lx < inset + tw && lx + 1 < r.w && ly >= text_y && ly < text_y + 18 {
-                    theme::text_pixel(text, lx - inset, ly - text_y, fg, bg)
+                let base = Self::rounded_frame_pixel(
+                    lx,
+                    ly,
+                    r.w,
+                    r.h,
+                    radius,
+                    outer_bg,
+                    bg,
+                    border_color,
+                    0,
+                );
+                let p = if lx >= inset
+                    && lx < inset + tw
+                    && lx + 1 < r.w
+                    && ly >= text_y
+                    && ly < text_y + 18
+                {
+                    theme::text_pixel(text, lx - inset, ly - text_y, fg, base)
                 } else {
-                    bg
+                    base
                 };
                 if top + y >= scroll {
                     self.pixel(left + x, top + y - scroll, p);
@@ -167,10 +342,12 @@ impl<'a> Canvas<'a> {
     }
     #[allow(dead_code)]
     pub fn card(&mut self, r: Rect, bg: u32, border: u32) {
+        let shadow_h = 3usize;
+        let total_h = r.h + shadow_h;
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
-        let Some(height) = r.h.checked_mul(self.scale) else { return; };
+        let Some(height) = total_h.checked_mul(self.scale) else { return; };
         let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
         let scroll = self.scroll_y.saturating_mul(self.scale);
         let first_y = scroll.saturating_sub(top).min(height);
@@ -178,10 +355,97 @@ impl<'a> Canvas<'a> {
             .saturating_add(self.window.rect.h - 26)
             .saturating_sub(top)
             .min(height);
+        let radius = 8.min(r.h / 2);
+        let top_hi = if border == theme::BORDER { 0xff4c4c52 } else { border };
         for y in first_y..last_y {
             for x in 0..draw_width {
-                let is_border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
-                let color = if is_border { border } else { bg };
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let color = if ly < r.h {
+                    let shadow_bg = if ly >= 2 {
+                        let s_cov = theme::rounded_coverage(lx, ly - 2, r.w, r.h, radius);
+                        theme::blend_coverage(0xff0b0d12, theme::PANEL, s_cov * 6 / 16)
+                    } else {
+                        theme::PANEL
+                    };
+                    Self::rounded_frame_pixel(
+                        lx,
+                        ly,
+                        r.w,
+                        r.h,
+                        radius,
+                        shadow_bg,
+                        bg,
+                        border,
+                        top_hi,
+                    )
+                } else {
+                    let dy = ly - r.h; // 0..2
+                    let s_cov = theme::rounded_coverage(
+                        lx,
+                        r.h.saturating_sub(radius) + dy,
+                        r.w,
+                        radius + shadow_h,
+                        radius,
+                    );
+                    let alpha = match dy {
+                        0 => s_cov * 6 / 16,
+                        1 => s_cov * 4 / 16,
+                        _ => s_cov * 2 / 16,
+                    };
+                    theme::blend_coverage(0xff08090c, theme::PANEL, alpha)
+                };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, color);
+                }
+            }
+        }
+    }
+    pub fn sheet_card(&mut self, r: Rect, bg: u32, border: u32, active: bool) {
+        let pad = 3usize;
+        let rx = r.x.saturating_sub(pad);
+        let ry = r.y.saturating_sub(1);
+        let rw = r.w + pad * 2;
+        let rh = r.h + pad + 2;
+        let Some(left) = rx.checked_mul(self.scale) else { return; };
+        let Some(top) = ry.checked_mul(self.scale) else { return; };
+        let Some(width) = rw.checked_mul(self.scale) else { return; };
+        let Some(height) = rh.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let radius = 8.min(r.h / 2);
+        let top_hi = if active { 0xff38bdf8 } else { 0xff4c4c52 };
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let shadow_cov = theme::rounded_coverage(lx, ly, rw, rh, radius + 2);
+                let halo_col = if active { 0xff004499 } else { 0xff080a0f };
+                let halo_alpha = if active { shadow_cov * 5 / 16 } else { shadow_cov * 6 / 16 };
+                let outer_bg = theme::blend_coverage(halo_col, theme::PANEL, halo_alpha);
+                let color = if lx >= pad && lx < pad + r.w && ly >= 1 && ly < 1 + r.h {
+                    let cx = lx - pad;
+                    let cy = ly - 1;
+                    let row_bg = if cy < 24 && active { 0xff222b38 } else { bg };
+                    Self::rounded_frame_pixel(
+                        cx,
+                        cy,
+                        r.w,
+                        r.h,
+                        radius,
+                        outer_bg,
+                        row_bg,
+                        border,
+                        top_hi,
+                    )
+                } else {
+                    outer_bg
+                };
                 if top + y >= scroll {
                     self.pixel(left + x, top + y - scroll, color);
                 }
@@ -192,8 +456,24 @@ impl<'a> Canvas<'a> {
         self.box_text_centered(r, text, 0xffffffff, theme::ACCENT, true, focused);
     }
     pub fn sidebar_nav(&mut self, r: Rect, text: &str, selected: bool, focused: bool) {
-        let bg = if selected { 0xff363636 } else { 0xff202020 };
-        let fg = if selected { 0xffffffff } else { theme::MUTED };
+        let outer_bg = 0xff111620;
+        let bg = if selected { 0xff1e293b } else { outer_bg };
+        let border = if focused {
+            theme::ACCENT
+        } else if selected {
+            0xff334155
+        } else {
+            outer_bg
+        };
+        let fg = if selected { 0xffffffff } else { 0xff9fb0c7 };
+        let icon_col = if selected { 0xff38bdf8 } else { 0xff64748b };
+        let nav_kind = if text.starts_with("Personal") {
+            0u8
+        } else if text.starts_with("Network") {
+            1u8
+        } else {
+            2u8
+        };
         let Some(left) = r.x.checked_mul(self.scale) else { return; };
         let Some(top) = r.y.checked_mul(self.scale) else { return; };
         let Some(width) = r.w.checked_mul(self.scale) else { return; };
@@ -206,20 +486,61 @@ impl<'a> Canvas<'a> {
             .saturating_sub(top)
             .min(height);
         let text_y = r.h.saturating_sub(18) / 2;
-        let text_x = 12;
+        let text_x = 22;
+        let ic_x = 12isize;
+        let ic_y = (r.h / 2) as isize;
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
                 let ly = y / self.scale;
-                let is_indicator = selected && lx >= 2 && lx <= 4 && ly >= 6 && ly + 6 <= r.h;
+                let base = if selected || focused {
+                    Self::rounded_frame_pixel(lx, ly, r.w, r.h, 6, outer_bg, bg, border, 0)
+                } else {
+                    outer_bg
+                };
+                let is_indicator = selected && lx >= 4 && lx <= 6 && ly >= 8 && ly + 8 < r.h;
+                let ix = lx as isize - ic_x;
+                let iy = ly as isize - ic_y;
+                let on_icon = if (-6..=6).contains(&ix) && (-6..=6).contains(&iy) {
+                    match nav_kind {
+                        0 => {
+                            // Sliders icon
+                            let line1 = iy == -3 && (-5..=5).contains(&ix);
+                            let knob1 = (-4..=-2).contains(&iy) && (1..=3).contains(&ix);
+                            let line2 = iy == 2 && (-5..=5).contains(&ix);
+                            let knob2 = (1..=3).contains(&iy) && (-3..=-1).contains(&ix);
+                            line1 || knob1 || line2 || knob2
+                        }
+                        1 => {
+                            // Mini Wi-Fi waves icon
+                            let wy = iy - 4;
+                            let d2 = ix * ix + wy * wy;
+                            let cone = wy <= 0 && ix.abs() <= (-wy + 1);
+                            d2 <= 1 || (cone && ((12..=22).contains(&d2) || (42..=58).contains(&d2)))
+                        }
+                        _ => {
+                            // Mini clock icon
+                            let d2 = ix * ix + iy * iy;
+                            (20..=34).contains(&d2)
+                                || (ix == 0 && (-3..=0).contains(&iy))
+                                || (iy == 0 && (0..=3).contains(&ix))
+                        }
+                    }
+                } else {
+                    false
+                };
                 let p = if is_indicator {
                     theme::ACCENT
-                } else if focused && (x == 0 || y == 0 || x + 1 == width || y + 1 == height) {
-                    theme::ACCENT
+                } else if on_icon {
+                    icon_col
                 } else if lx >= text_x && lx + 2 < r.w && ly >= text_y && ly < text_y + 18 {
-                    theme::text_pixel(text, lx - text_x, ly - text_y, fg, bg)
+                    if selected {
+                        theme::text_pixel_bold(text, lx - text_x, ly - text_y, fg, base)
+                    } else {
+                        theme::text_pixel(text, lx - text_x, ly - text_y, fg, base)
+                    }
                 } else {
-                    bg
+                    base
                 };
                 if top + y >= scroll {
                     self.pixel(left + x, top + y - scroll, p);
@@ -241,7 +562,11 @@ impl<'a> Canvas<'a> {
         self.box_text_centered(
             r,
             text,
-            if enabled { theme::TEXT } else { theme::MUTED },
+            if enabled {
+                if selected { 0xffffffff } else { theme::TEXT }
+            } else {
+                theme::MUTED
+            },
             if enabled && selected {
                 0xff244b6e
             } else if enabled {
@@ -284,10 +609,18 @@ impl<'a> Canvas<'a> {
             for x in 0..draw_width {
                 let lx = x / self.scale;
                 let ly = y / self.scale;
-                let is_border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
-                let p = if is_border {
-                    border
-                } else if lx >= 6 && lx < 28 && ly >= 4 && ly < 24 {
+                let base = Self::rounded_frame_pixel(
+                    lx,
+                    ly,
+                    r.w,
+                    r.h,
+                    6,
+                    theme::PANEL,
+                    bg,
+                    border,
+                    0,
+                );
+                let p = if lx >= 6 && lx < 28 && ly >= 4 && ly < 24 {
                     let sx = lx - 6;
                     let sy = ly - 4;
                     let is_swatch_border = sx == 0 || sy == 0 || sx == 21 || sy == 19;
@@ -312,9 +645,9 @@ impl<'a> Canvas<'a> {
                     0xff3b82f6
                 } else if lx >= 34 && lx < r.w.saturating_sub(6) && ly >= 5 && ly < 23 {
                     let fg = if selected { 0xffffffff } else { theme::TEXT };
-                    theme::text_pixel(title, lx - 34, ly - 5, fg, bg)
+                    theme::text_pixel(title, lx - 34, ly - 5, fg, base)
                 } else {
-                    bg
+                    base
                 };
                 if top + y >= scroll {
                     self.pixel(left + x, top + y - scroll, p);
@@ -345,7 +678,7 @@ impl<'a> Canvas<'a> {
             .saturating_sub(top)
             .min(height);
         let bg = if !enabled {
-            theme::PANEL
+            0xff1b2028
         } else if selected {
             0xff1e385b
         } else if focused {
@@ -354,7 +687,7 @@ impl<'a> Canvas<'a> {
             0xff182230
         };
         let border = if !enabled {
-            0xff222a36
+            0xff262f3d
         } else if selected {
             0xff3b82f6
         } else if focused {
@@ -375,26 +708,44 @@ impl<'a> Canvas<'a> {
             -75..=-66 => 2,
             _ => 1,
         };
+        let sec_name = match security {
+            0 => "Open",
+            2 => "WPA3",
+            3 => "WPA2/3",
+            _ => "WPA2",
+        };
+        let sec_tw = theme::text_width(sec_name);
+        let sec_pill_w = sec_tw + 14;
+        let sec_pill_x = r.w.saturating_sub(sec_pill_w + 8);
+        let sec_text_x = sec_pill_x + 7;
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
                 let ly = y / self.scale;
-                let is_border = x == 0 || y == 0 || x + 1 == width || y + 1 == height;
-                let p = if is_border {
-                    border
-                } else if lx >= 10 && lx < 22 && ly >= 6 && ly < 18 {
+                let base = Self::rounded_frame_pixel(
+                    lx,
+                    ly,
+                    r.w,
+                    r.h,
+                    6,
+                    theme::PANEL,
+                    bg,
+                    border,
+                    0,
+                );
+                let p = if lx >= 10 && lx < 22 && ly >= 6 && ly < 18 {
                     let bar_idx = (lx - 10) / 3;
                     let bar_x = (lx - 10) % 3;
                     let bar_h = (bar_idx + 1) * 3;
                     let bar_y_start = 18 - bar_h;
                     if bar_x < 2 && ly >= bar_y_start && ly < 18 {
                         if enabled && bar_idx < sig_bars {
-                            0xff69b7ff
+                            0xff38bdf8
                         } else {
                             0xff334155
                         }
                     } else {
-                        bg
+                        base
                     }
                 } else if security != 0 && lx >= 26 && lx < 34 && ly >= 6 && ly < 18 {
                     let sx = lx - 26;
@@ -404,40 +755,64 @@ impl<'a> Canvas<'a> {
                     let is_body = sx >= 1 && sx <= 6 && sy >= 5 && sy <= 10;
                     let is_keyhole = sx == 3 && sy >= 7 && sy <= 8;
                     if is_keyhole {
-                        bg
+                        base
                     } else if is_shackle || is_body {
                         if enabled { 0xff9fb0c7 } else { theme::MUTED }
                     } else {
-                        bg
+                        base
                     }
-                } else if lx >= 38 && lx < 272 && ly >= 3 && ly < 21 {
-                    theme::text_pixel(ssid, lx - 38, ly - 3, fg, bg)
-                } else if connected && lx >= 276 && lx < 384 && ly >= 3 && ly < 21 {
-                    if lx >= 278 && lx <= 282 && ly >= 9 && ly <= 13 {
+                } else if lx >= 38 && lx < 250 && ly >= 3 && ly < 21 {
+                    theme::text_pixel(ssid, lx - 38, ly - 3, fg, base)
+                } else if connected && lx >= 252 && lx < 368 && ly >= 3 && ly < 21 {
+                    let pill_x = lx - 252;
+                    let pill_y = ly - 3;
+                    let pill_bg = Self::rounded_frame_pixel(
+                        pill_x,
+                        pill_y,
+                        116,
+                        18,
+                        5,
+                        base,
+                        0xff133223,
+                        0xff22c55e,
+                        0,
+                    );
+                    if pill_x >= 8 && pill_x <= 12 && pill_y >= 7 && pill_y <= 11 {
                         0xff4ade80
-                    } else if lx >= 288 {
-                        theme::text_pixel("Connected", lx - 288, ly - 3, 0xff4ade80, bg)
+                    } else if pill_x >= 18 && pill_x < 110 {
+                        theme::text_pixel("Connected", pill_x - 18, pill_y, 0xff4ade80, pill_bg)
                     } else {
-                        bg
+                        pill_bg
                     }
-                } else if enabled && lx >= 390 && lx < 470 && ly >= 3 && ly < 21 {
+                } else if enabled && lx >= 382 && lx < 458 && ly >= 3 && ly < 21 {
                     let sig_name = match sig_bars {
                         4 => "Excellent",
                         3 => "Good",
                         2 => "Fair",
                         _ => "Weak",
                     };
-                    theme::text_pixel(sig_name, lx - 390, ly - 3, theme::MUTED, bg)
-                } else if enabled && lx >= 474 && lx < r.w.saturating_sub(6) && ly >= 3 && ly < 21 {
-                    let sec_name = match security {
-                        0 => "Open",
-                        2 => "WPA3",
-                        3 => "WPA2/3",
-                        _ => "WPA2",
-                    };
-                    theme::text_pixel(sec_name, lx - 474, ly - 3, theme::MUTED, bg)
+                    theme::text_pixel(sig_name, lx - 382, ly - 3, theme::MUTED, base)
+                } else if enabled && lx >= sec_pill_x && lx < sec_pill_x + sec_pill_w && ly >= 3 && ly < 21 {
+                    let pill_x = lx - sec_pill_x;
+                    let pill_y = ly - 3;
+                    let pill_bg = Self::rounded_frame_pixel(
+                        pill_x,
+                        pill_y,
+                        sec_pill_w,
+                        18,
+                        5,
+                        base,
+                        0xff222f42,
+                        0xff33465e,
+                        0,
+                    );
+                    if lx >= sec_text_x && lx < sec_text_x + sec_tw {
+                        theme::text_pixel(sec_name, lx - sec_text_x, pill_y, 0xffb8c7dc, pill_bg)
+                    } else {
+                        pill_bg
+                    }
                 } else {
-                    bg
+                    base
                 };
                 if top + y >= scroll {
                     self.pixel(left + x, top + y - scroll, p);
@@ -446,7 +821,87 @@ impl<'a> Canvas<'a> {
         }
     }
     pub fn entry(&mut self, r: Rect, text: &str, focused: bool) {
-        self.box_text(r, text, theme::TEXT, 0xff1e1e1e, true, focused);
+        self.entry_on(r, text, focused, 0xff282828);
+    }
+    pub fn entry_on(&mut self, r: Rect, text: &str, focused: bool, outer_bg: u32) {
+        let glow = 2usize;
+        let gx = r.x.saturating_sub(glow);
+        let gy = r.y.saturating_sub(glow);
+        let gw = r.w + glow * 2;
+        let gh = r.h + glow * 2;
+        let Some(left) = gx.checked_mul(self.scale) else { return; };
+        let Some(top) = gy.checked_mul(self.scale) else { return; };
+        let Some(width) = gw.checked_mul(self.scale) else { return; };
+        let Some(height) = gh.checked_mul(self.scale) else { return; };
+        let draw_width = width.min((self.window.rect.w - 2).saturating_sub(left));
+        let scroll = self.scroll_y.saturating_mul(self.scale);
+        let first_y = scroll.saturating_sub(top).min(height);
+        let last_y = scroll
+            .saturating_add(self.window.rect.h - 26)
+            .saturating_sub(top)
+            .min(height);
+        let well_bg = 0xff12151c;
+        let radius = 6.min(r.h / 2);
+        let text_y = r.h.saturating_sub(18) / 2;
+        let inset = 10usize;
+        for y in first_y..last_y {
+            for x in 0..draw_width {
+                let lx = x / self.scale;
+                let ly = y / self.scale;
+                let glow_bg = if focused {
+                    let g_cov = theme::rounded_coverage(lx, ly, gw, gh, radius + glow);
+                    theme::blend_coverage(theme::ACCENT, outer_bg, g_cov * 5 / 16)
+                } else {
+                    outer_bg
+                };
+                let p = if lx >= glow && lx < glow + r.w && ly >= glow && ly < glow + r.h {
+                    let bx = lx - glow;
+                    let by = ly - glow;
+                    let outer_cov = theme::rounded_coverage(bx, by, r.w, r.h, radius);
+                    if outer_cov == 0 {
+                        glow_bg
+                    } else {
+                        let inner_cov = if bx >= 1 && bx + 1 < r.w && by >= 1 && by + 1 < r.h {
+                            theme::rounded_coverage(
+                                bx - 1,
+                                by - 1,
+                                r.w.saturating_sub(2),
+                                r.h.saturating_sub(2),
+                                radius.saturating_sub(1),
+                            )
+                        } else {
+                            0
+                        };
+                        let rim_col = if focused {
+                            theme::ACCENT
+                        } else if by == 0 {
+                            0xff090b0f // Dark top inner shadow (recessed cutout)
+                        } else if by + 1 == r.h {
+                            0xff364050 // Subtle bottom ambient lip
+                        } else {
+                            0xff1f2530
+                        };
+                        let interior_col = if !focused && by == 1 {
+                            0xff0c0f15 // 1px subtle top inner shadow inside the well
+                        } else {
+                            well_bg
+                        };
+                        let inner_blend = theme::blend_coverage(interior_col, rim_col, inner_cov);
+                        let base = theme::blend_coverage(inner_blend, glow_bg, outer_cov);
+                        if bx >= inset && bx + 6 < r.w && by >= text_y && by < text_y + 18 {
+                            theme::text_pixel(text, bx - inset, by - text_y, 0xffffffff, base)
+                        } else {
+                            base
+                        }
+                    }
+                } else {
+                    glow_bg
+                };
+                if top + y >= scroll {
+                    self.pixel(left + x, top + y - scroll, p);
+                }
+            }
+        }
     }
     fn box_text_centered(
         &mut self,
@@ -484,20 +939,48 @@ impl<'a> Canvas<'a> {
             r.w.saturating_sub(tw) / 2
         }
         .max(4);
+        let border_col = if focused {
+            theme::ACCENT
+        } else if background == theme::ACCENT {
+            0xff38bdf8
+        } else if background == 0xff244b6e {
+            0xff3b82f6
+        } else {
+            theme::BORDER
+        };
+        let top_hi = if background == theme::ACCENT {
+            0xff5cc8ff
+        } else if background == 0xff244b6e {
+            0xff4f94f8
+        } else if background == theme::SURFACE {
+            0xff4a4a4a
+        } else {
+            0
+        };
+        let radius = 6.min(r.h / 2);
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
                 let ly = y / self.scale;
-                let p = if border && (x == 0 || y == 0 || x + 1 == width || y + 1 == height) {
-                    if focused {
-                        theme::ACCENT
-                    } else {
-                        theme::BORDER
-                    }
-                } else if lx >= inset && lx + 3 < r.w && ly >= text_y && ly < text_y + 18 {
-                    theme::text_pixel(text, lx - inset, ly - text_y, color, background)
+                let base = if border {
+                    Self::rounded_frame_pixel(
+                        lx,
+                        ly,
+                        r.w,
+                        r.h,
+                        radius,
+                        theme::PANEL,
+                        background,
+                        border_col,
+                        top_hi,
+                    )
                 } else {
                     background
+                };
+                let p = if lx >= inset && lx + 3 < r.w && ly >= text_y && ly < text_y + 18 {
+                    theme::text_pixel(text, lx - inset, ly - text_y, color, base)
+                } else {
+                    base
                 };
                 if top + y >= scroll {
                     self.pixel(left + x, top + y - scroll, p);
@@ -536,20 +1019,35 @@ impl<'a> Canvas<'a> {
         let text_y = r.h.saturating_sub(18) / 2;
         let inset = if border { 8 } else { 0 };
         let right_pad = if border { 4 } else { 0 };
+        let border_col = if focused {
+            theme::ACCENT
+        } else {
+            0xff3a4659
+        };
+        let radius = 6.min(r.h / 2);
         for y in first_y..last_y {
             for x in 0..draw_width {
                 let lx = x / self.scale;
                 let ly = y / self.scale;
-                let p = if border && (x == 0 || y == 0 || x + 1 == width || y + 1 == height) {
-                    if focused {
-                        theme::ACCENT
-                    } else {
-                        theme::BORDER
-                    }
-                } else if lx >= inset && lx + right_pad < r.w && ly >= text_y && ly < text_y + 18 {
-                    theme::text_pixel(text, lx - inset, ly - text_y, color, background)
+                let base = if border {
+                    Self::rounded_frame_pixel(
+                        lx,
+                        ly,
+                        r.w,
+                        r.h,
+                        radius,
+                        0xff282828,
+                        background,
+                        border_col,
+                        0,
+                    )
                 } else {
                     background
+                };
+                let p = if lx >= inset && lx + right_pad < r.w && ly >= text_y && ly < text_y + 18 {
+                    theme::text_pixel(text, lx - inset, ly - text_y, color, base)
+                } else {
+                    base
                 };
                 if top + y >= scroll {
                     self.pixel(left + x, top + y - scroll, p);
