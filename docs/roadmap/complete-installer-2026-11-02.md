@@ -1,6 +1,20 @@
 # Single complete installer — 2026-11-02
 
-## Current replacement: Wi-Fi interface-flapping fix
+## Current candidate: cold-ARP receive configuration
+
+The sole published installer is `bin/fortress-base-installer.img`, 528 MiB,
+SHA-256 `0688b23e6ab8bb74d221876c213ba85f172afbc13ae9cdfb778d8a57f21a57cc`. It is built from clean isolated commit
+`85e8484`, including command-completion commit `8bc30ad`. Parallel uncommitted
+work is not included or modified. The actual Intel MAC_CONTEXT serializer now
+requests raw unicast/group reception for host software decryption.
+[Physical ARP isolation, command-byte tests and remaining limits](wifi-cold-arp.md).
+Host regressions and BIOS/UEFI × SMP=1/4 ownership guests PASS. These do not
+establish Intel physical reception; cold ARP on the Dell remains pending.
+Raw-image boot evidence: `build/wifi-cold-arp-evidence/raw-smoke/`.
+The original isolated producer receipt remains in that checkout; publication
+only relocates the identical audited image/package artifacts.
+
+## Earlier replacement: Wi-Fi interface-flapping fix
 
 The sole current image is `bin/fortress-base-installer.img`, 528 MiB, SHA-256
 `98bf2b01b2d9085e3859bd2e0afab81b61512eb9662a622c3b6a3459d3f38df6`. It replaces the earlier image described below.

@@ -70,3 +70,17 @@ FortressOS-originated ping, then after idle and a reboot. If cold ARP still
 fails, capture/observe raw group RX and authenticated-decryption outcomes before
 making another radio change. Command completion is separate work and is not
 edited by this fix.
+
+## Candidate artifact
+
+`bin/fortress-base-installer.img`, 528 MiB, SHA-256
+`0688b23e6ab8bb74d221876c213ba85f172afbc13ae9cdfb778d8a57f21a57cc`. Clean isolated build commit `85e8484` includes the
+completed command-completion change `8bc30ad`. Independent package, ext4 and
+media audits pass; BIOS/UEFI × SMP=1/4 owner guests PASS 4/4. The corrected
+firmware command is not physically validated by the mock-radio guest.
+The user’s concurrent battery/desktop work is left untouched.
+
+Final candidate gate: raw image BIOS/UEFI SMP=4 boot smoke PASS 2/2, with
+no installation target attached and unchanged image SHA-256. Two owned
+disposable image duplicates were removed; one disk image remains. Physical
+Intel cold-ARP validation of this candidate remains pending.
