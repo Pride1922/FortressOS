@@ -1,6 +1,16 @@
 # Single complete installer — 2026-11-02
 
-## Current candidate: cold-ARP receive configuration
+## Current image: ACPI power telemetry and desktop integration
+
+`bin/fortress-base-installer.img`, 528 MiB, SHA-256
+`13283ee703b3fe9dfefc099a1ac3e2a81ef5f43d63c1be0f9357203ccfe88a9e`. This image includes the ACPI battery/AC-adapter/thermal
+work, SYS_BATTERY_GET, `/bin/battery`, desktop Power settings and battery icon,
+command completion and the Wi-Fi corrections. It is built from clean isolated
+source commit `a12428a`. [Build fixes, tests and limits](acpi-desktop-release.md).
+Final raw-image BIOS/UEFI boot checks PASS 2/2; physical acceptance remains pending.
+
+
+## Earlier candidate: cold-ARP receive configuration
 
 The sole published installer is `bin/fortress-base-installer.img`, 528 MiB,
 SHA-256 `0688b23e6ab8bb74d221876c213ba85f172afbc13ae9cdfb778d8a57f21a57cc`. It is built from clean isolated commit

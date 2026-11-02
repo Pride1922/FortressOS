@@ -24,7 +24,7 @@ These checks do not establish guest GUI launch, production publication or physic
 acceptance. Firmware/physical acceptance remains pending.
 
 Final installer: `bin/fortress-base-installer.img` (528 MiB), SHA-256
-`0688b23e6ab8bb74d221876c213ba85f172afbc13ae9cdfb778d8a57f21a57cc`. Exact factory bundle: `bin/fortress-desktop-packages-4d2b5827126f6171`.
+`13283ee703b3fe9dfefc099a1ac3e2a81ef5f43d63c1be0f9357203ccfe88a9e`. Exact factory bundle: `bin/fortress-desktop-packages-fe3dcce1724051f4`.
 The image producer completed package, filesystem and media audits; no boot test.
 
 Production cutover: catalog revision 3 is now published with a newly generated
