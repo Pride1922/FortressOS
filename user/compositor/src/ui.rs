@@ -1201,4 +1201,4 @@ pub trait DesktopApp {
 }
 
 // Shared with isolated apps; keep the widget API available here.
-pub use crate::theme::render_battery_pixel;
+pub use crate::window::theme::render_battery_pixel;
