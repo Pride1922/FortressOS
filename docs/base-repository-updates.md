@@ -2,6 +2,10 @@
 
 [Implementation evidence and acceptance limits](roadmap/base-repository-updates.md).
 
+The currently published diagnostic media is the [ACPI live USB](roadmap/acpi-live-usb.md)
+`bin/fortress-live.img`. The installer described below is historical and has been
+removed locally; rebuild it before following the installer/update sequence.
+
 The complete A/B installer is `bin/fortress-base-installer.img` (528 MiB).
 SHA-256: `09ab399d209efae3938458519719c9d15754ad1ee7e92c66854ca847b01a58cf`. The earlier
 `fortress-ready-2026-11-02-installer.img` is superseded: it does not provision

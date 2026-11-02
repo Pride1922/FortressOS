@@ -1,6 +1,15 @@
 # Single complete installer — 2026-11-02
 
-## Current image: Wi-Fi receive-stage diagnostics
+## Current diagnostic media: live USB
+
+Use `bin/fortress-live.img` (130 MiB), SHA-256
+`16a06a3475f13b71558bca6f91281a2adb8a240c5cfac8a5d598c068df7913b4`.
+This boots the ordinary live login and includes the latest committed ACPI battery
+multi-table fix, desktop changes and Wi-Fi diagnostics. BIOS/UEFI live USB tests
+PASS 2/2. The installer-only file below has been retired, leaving one published
+image. [Live commands, source identity and evidence](acpi-live-usb.md).
+
+## Earlier installer: Wi-Fi receive-stage diagnostics
 
 `bin/fortress-base-installer.img`, 528 MiB, SHA-256
 `09ab399d209efae3938458519719c9d15754ad1ee7e92c66854ca847b01a58cf`.

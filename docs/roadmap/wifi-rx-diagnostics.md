@@ -73,7 +73,11 @@ Guest/production-build results and artifact identity are recorded after running
 those gates. QEMU uses a mock radio and cannot validate Intel DMA/RF reception.
 Physical diagnosis remains pending installation and the paired snapshot test.
 
-## Published diagnostic image and results
+## Original installer diagnostic image and results
+
+The installer artifact below is superseded by the [latest ACPI live USB](acpi-live-usb.md),
+which includes the same diagnostics and boots a live login. The old image was
+removed locally after the live replacement passed its boot checks.
 
 Source `d9be498`, clean isolated checkout
 `.codex-remote-attachments/wifi-rx-diag-release`; private test admission wait fix
