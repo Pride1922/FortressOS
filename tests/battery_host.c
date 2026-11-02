@@ -13,9 +13,11 @@ extern void test_add_mock_ticks(uint64_t delta);
 /* Mock EC Data Store */
 static uint8_t s_mock_ec_regs[256];
 static int s_mock_ec_read_count = 0;
+static bool s_mock_ec_fail;
 
 static int mock_ec_reader(uint8_t addr, uint8_t *val) {
     s_mock_ec_read_count++;
+    if (s_mock_ec_fail) return -1;
     *val = s_mock_ec_regs[addr];
     return 0;
 }
@@ -94,9 +96,12 @@ static void test_state_mapping(void) {
     acpi_battery_compute_status(0x00, 0, 5000, 12600, 5000, &st);
     assert(st.state == BATTERY_STATE_FULL);
 
-    /* Near full AC connected (state 0 + >= 95%) */
+    /* Near-full capacity does not prove full charge or AC presence. */
     acpi_battery_compute_status(0x00, 0, 4800, 12600, 5000, &st);
-    assert(st.state == BATTERY_STATE_FULL);
+    assert(st.state == BATTERY_STATE_UNKNOWN);
+    assert(st.ac_online == AC_POWER_UNKNOWN);
+    acpi_battery_compute_status(0x00, 0, 5000, 12600, 5000, &st);
+    assert(st.state == BATTERY_STATE_FULL && st.ac_online == AC_POWER_UNKNOWN);
 
     /* Unknown / disconnected */
     acpi_battery_compute_status(0x00, 0, 0, 0, 0, &st);
@@ -170,7 +175,7 @@ static void test_mock_ec_and_caching(void) {
     puts("[TEST 5] Mock ACPI EC & 5-Second Cache Verification...");
     acpi_battery_reset();
 
-    /* Populate Mock EC registers for Dell 5590 test values:
+    /* Populate synthetic host-only registers (not a Dell hardware map):
      * 85% Charging: Full = 5000 (0x1388), Remaining = 4250 (0x109A), Rate = 1500 (0x05DC) */
     memset(s_mock_ec_regs, 0, sizeof(s_mock_ec_regs));
     s_mock_ec_regs[0x10] = 0x02; /* State: Charging */
@@ -229,6 +234,24 @@ static void test_mock_ec_and_caching(void) {
     puts("       [PASS] Mock ACPI EC & 5-second cache validated");
 }
 
+static void test_unavailable_refresh(void) {
+    acpi_battery_reset();
+    acpi_battery_set_ec_reader(mock_ec_reader);
+    s_mock_ec_fail=false;
+    battery_status_t st;
+    assert(!acpi_battery_get(&st));
+    test_add_mock_ticks(5001);
+    s_mock_ec_fail=true;
+    memset(&st,0xa5,sizeof(st));
+    battery_status_t before=st;
+    assert(acpi_battery_get(&st)==SYSCALL_EIO);
+    assert(!memcmp(&st,&before,sizeof(st)));
+    /* Failed refresh must also invalidate the cache for immediate retry. */
+    s_mock_ec_fail=false;
+    assert(!acpi_battery_get(&st));
+    puts("       [PASS] Failed telemetry refresh never returns stale success");
+}
+
 static void test_ac_and_thermal(void) {
     puts("[TEST 6] AC Adapter (_PSR) & Thermal Zone (_TMP) Evaluation...");
 
@@ -285,6 +308,7 @@ int main(void) {
     test_state_mapping();
     test_aml_parsing();
     test_mock_ec_and_caching();
+    test_unavailable_refresh();
     test_ac_and_thermal();
     puts("=== All Battery Tests Passed (100%) ===");
     return 0;

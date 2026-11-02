@@ -24,11 +24,12 @@
 #define ACPI_EC_CMD_BD          0x83 /* Burst Disable */
 #define ACPI_EC_CMD_QR          0x84 /* Query Embedded Controller */
 
-/* ACPI Battery Public API */
+/* ACPI Battery Public API. Hardware reads currently return EOPNOTSUPP;
+ * a real AML execution backend is required. No guessed hardware samples. */
 void acpi_battery_init(void);
 int  acpi_battery_get(battery_status_t *out);
 
-/* AML Bounded Parsers and Math (exposed for host tests) */
+/* Limited offline fixture parsers/math, not a live AML execution engine. */
 bool acpi_battery_locate(const uint8_t *aml, size_t len, size_t *out_offset);
 bool acpi_battery_parse_package(const uint8_t *ptr, const uint8_t *end, uint32_t *elements, size_t max_elements, size_t *num_found);
 bool acpi_battery_evaluate_bst(const uint8_t *aml, size_t len, uint32_t *state, uint32_t *rate, uint32_t *rem_cap, uint32_t *voltage);

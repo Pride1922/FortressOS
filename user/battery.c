@@ -61,7 +61,12 @@ int battery_main(int argc, char **argv) {
     battery_status_t st;
     long rc = sys_battery_get(&st);
     if (rc < 0) {
-        print_str("No battery detected\n");
+        if (rc == SYSCALL_EOPNOTSUPP)
+            print_str("Battery telemetry unavailable: ACPI method execution is not supported\n");
+        else if (rc == SYSCALL_ENODEV)
+            print_str("No battery detected\n");
+        else
+            print_str("Battery telemetry read failed\n");
         return 1;
     }
 

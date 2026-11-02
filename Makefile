@@ -2793,10 +2793,12 @@ test-crash-dump: $(BOOTABLE_ISO)
 	@python3 scripts/test_crash_dump.py
 
 .PHONY: test-battery-host
-test-battery-host: tests/battery_host.c src/drivers/acpi_battery.c
+test-battery-host: tests/battery_host.c tests/battery_unavailable_host.c src/drivers/acpi_battery.c
 	@mkdir -p $(BUILD_DIR)
 	@gcc -std=c11 -Wall -Wextra -Werror -g -no-pie -DHOST_TEST -I. -Isrc/include -Isrc/drivers tests/battery_host.c src/drivers/acpi_battery.c -o $(BUILD_DIR)/test-battery-host
 	@$(BUILD_DIR)/test-battery-host
+	@gcc -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -I. -Isrc/include -Isrc/drivers -Isrc/kernel -Isrc/arch/x86_64 tests/battery_unavailable_host.c src/drivers/acpi_battery.c -o $(BUILD_DIR)/battery-unavailable-host
+	@$(BUILD_DIR)/battery-unavailable-host
 
 .PHONY: test-compositor
 test-compositor: $(BOOTABLE_ISO)

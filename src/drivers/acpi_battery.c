@@ -389,10 +389,8 @@ void acpi_battery_compute_status(uint32_t bst_state, uint32_t present_rate, uint
         out->state = BATTERY_STATE_CHARGING; /* 2 */
     } else if ((bst_state & 0x01) != 0) {
         out->state = BATTERY_STATE_DISCHARGING; /* 1 */
-    } else if (out->capacity_percent >= 99 || (bst_state == 0 && rem_cap > 0 && rem_cap >= full_cap)) {
-        out->state = BATTERY_STATE_FULL; /* 3 */
-    } else if (bst_state == 0 && rem_cap > 0) {
-        out->state = (out->capacity_percent >= 95) ? BATTERY_STATE_FULL : BATTERY_STATE_UNKNOWN;
+    } else if (bst_state == 0 && full_cap > 0 && rem_cap >= full_cap) {
+        out->state = BATTERY_STATE_FULL;
     } else {
         out->state = BATTERY_STATE_UNKNOWN; /* 0 */
     }
@@ -410,14 +408,8 @@ void acpi_battery_compute_status(uint32_t bst_state, uint32_t present_rate, uint
 
     out->voltage_mv = voltage;
 
-    /* AC Online & Thermal: derive default from state, then apply mock or ACPI */
-    if (out->state == BATTERY_STATE_CHARGING || out->state == BATTERY_STATE_FULL) {
-        out->ac_online = AC_POWER_ONLINE;
-    } else if (out->state == BATTERY_STATE_DISCHARGING) {
-        out->ac_online = AC_POWER_OFFLINE;
-    } else {
-        out->ac_online = AC_POWER_UNKNOWN;
-    }
+    /* Battery state alone is not an adapter-presence measurement. */
+    out->ac_online = AC_POWER_UNKNOWN;
     if (g_mock_ac_online != AC_POWER_UNKNOWN) {
         out->ac_online = g_mock_ac_online;
     }
@@ -425,139 +417,11 @@ void acpi_battery_compute_status(uint32_t bst_state, uint32_t present_rate, uint
     out->temperature_c = g_mock_temp_c;
 }
 
-#ifndef HOST_TEST
-/* Read battery status from DSDT, SSDTs, or ACPI EC on hardware */
-static bool poll_hardware_battery(battery_status_t *out) {
-    if (!out) return false;
-
-    acpi_sdt_header_t *facp = acpi_find_table("FACP");
-    const acpi_sdt_header_t *dsdt = NULL;
-    if (facp) {
-        const acpi_fadt_t *fadt = (const acpi_fadt_t *)facp;
-        uintptr_t hhdm = acpi_get_hhdm_offset();
-        uintptr_t dsdt_phys = 0;
-        if (fadt->header.length >= 148 && fadt->x_dsdt != 0) {
-            dsdt_phys = (uintptr_t)fadt->x_dsdt;
-        } else if (fadt->header.length >= 44 && fadt->dsdt != 0) {
-            dsdt_phys = (uintptr_t)fadt->dsdt;
-        }
-        if (dsdt_phys != 0 && acpi_ensure_mapped(dsdt_phys, sizeof(acpi_sdt_header_t))) {
-            const acpi_sdt_header_t *candidate = (const acpi_sdt_header_t *)(dsdt_phys + hhdm);
-            if (candidate->length >= sizeof(acpi_sdt_header_t) && candidate->length <= MAX_ACPI_TABLE_SIZE) {
-                if (acpi_ensure_mapped(dsdt_phys, candidate->length)) {
-                    dsdt = candidate;
-                }
-            }
-        }
-    }
-
-    /* Collect DSDT and all SSDT tables */
-    const acpi_sdt_header_t *tables[32];
-    size_t num_tables = 0;
-    if (dsdt && num_tables < 32) {
-        tables[num_tables++] = dsdt;
-    }
-    size_t sdt_count = acpi_get_table_count();
-    for (size_t i = 0; i < sdt_count && num_tables < 32; i++) {
-        acpi_sdt_header_t *hdr = acpi_get_table_by_index(i);
-        if (hdr && (memcmp(hdr->signature, "SSDT", 4) == 0 || memcmp(hdr->signature, "DSDT", 4) == 0)) {
-            tables[num_tables++] = hdr;
-        }
-    }
-
-    bool battery_device_found = false;
-    uint32_t bst_state = 0, rate = 0, rem_cap = 0, voltage = 0;
-    uint32_t full_cap = 0;
-    bool has_bst = false;
-    bool has_full_cap = false;
-    uint32_t ac_on = AC_POWER_UNKNOWN;
-    int32_t tc = 0;
-    bool has_temp = false;
-
-    for (size_t t = 0; t < num_tables; t++) {
-        const uint8_t *aml = (const uint8_t *)tables[t];
-        size_t len = tables[t]->length;
-
-        size_t dev_offset = 0;
-        if (!battery_device_found && acpi_battery_locate(aml, len, &dev_offset)) {
-            battery_device_found = true;
-        }
-        if (!has_bst) {
-            has_bst = acpi_battery_evaluate_bst(aml, len, &bst_state, &rate, &rem_cap, &voltage);
-        }
-        if (!has_full_cap) {
-            has_full_cap = acpi_battery_evaluate_bix(aml, len, &full_cap);
-            if (!has_full_cap) {
-                has_full_cap = acpi_battery_evaluate_bif(aml, len, &full_cap);
-            }
-        }
-        if (ac_on == AC_POWER_UNKNOWN) {
-            acpi_ac_adapter_evaluate_psr(aml, len, &ac_on);
-        }
-        if (!has_temp) {
-            has_temp = acpi_thermal_evaluate_tmp(aml, len, &tc);
-        }
-    }
-
-    /* If AML yielded valid values, compute status */
-    if (has_bst && (full_cap > 0 || rem_cap > 0)) {
-        acpi_battery_compute_status(bst_state, rate, rem_cap, voltage, full_cap, out);
-        if (ac_on != AC_POWER_UNKNOWN) {
-            out->ac_online = ac_on;
-        }
-        if (has_temp) {
-            out->temperature_c = tc;
-        }
-        return true;
-    }
-
-    /* Fallback 1: Direct EC query for standard Smart Battery registers (ports 0x62/0x66) */
-    uint8_t ec_state = 0;
-    uint8_t ec_cap_lo = 0, ec_cap_hi = 0;
-    uint8_t ec_rate_lo = 0, ec_rate_hi = 0;
-    uint8_t ec_full_lo = 0, ec_full_hi = 0;
-    uint8_t ec_volt_lo = 0, ec_volt_hi = 0;
-
-    if (acpi_ec_read(0x10, &ec_state) == 0 &&
-        acpi_ec_read(0x11, &ec_cap_lo) == 0 && acpi_ec_read(0x12, &ec_cap_hi) == 0) {
-        acpi_ec_read(0x13, &ec_rate_lo);
-        acpi_ec_read(0x14, &ec_rate_hi);
-        acpi_ec_read(0x15, &ec_full_lo);
-        acpi_ec_read(0x16, &ec_full_hi);
-        acpi_ec_read(0x17, &ec_volt_lo);
-        acpi_ec_read(0x18, &ec_volt_hi);
-
-        uint32_t c_state = ec_state;
-        uint32_t c_rem = (uint32_t)ec_cap_lo | ((uint32_t)ec_cap_hi << 8);
-        uint32_t c_rate = (uint32_t)ec_rate_lo | ((uint32_t)ec_rate_hi << 8);
-        uint32_t c_full = (uint32_t)ec_full_lo | ((uint32_t)ec_full_hi << 8);
-        uint32_t c_volt = (uint32_t)ec_volt_lo | ((uint32_t)ec_volt_hi << 8);
-
-        acpi_battery_compute_status(c_state, c_rate, c_rem, c_volt, c_full, out);
-        if (ac_on != AC_POWER_UNKNOWN) {
-            out->ac_online = ac_on;
-        }
-        if (has_temp) {
-            out->temperature_c = tc;
-        }
-        return true;
-    }
-
-    /* Fallback 2: If battery device/method was discovered in ACPI tables, mark battery present */
-    if (battery_device_found) {
-        memset(out, 0, sizeof(*out));
-        out->state = (ac_on == AC_POWER_ONLINE) ? BATTERY_STATE_FULL : BATTERY_STATE_UNKNOWN;
-        out->capacity_percent = (ac_on == AC_POWER_ONLINE) ? 100 : 80;
-        out->ac_online = ac_on;
-        if (has_temp) {
-            out->temperature_c = tc;
-        }
-        return true;
-    }
-
-    return false;
-}
-#endif
+/* Live telemetry requires namespace-aware AML execution of the selected
+ * battery/adapter/thermal devices. The fixture scanners above do not execute
+ * methods, resolve fields or select conditional branches. Do not publish their
+ * constants, invent percentages from device presence, or guess EC register
+ * meanings. No validated hardware measurement backend is implemented yet. */
 
 void acpi_battery_init(void) {
     g_battery_initialized = true;
@@ -566,16 +430,7 @@ void acpi_battery_init(void) {
     memset(&g_cached_battery, 0, sizeof(g_cached_battery));
 
 #ifndef HOST_TEST
-    battery_status_t status;
-    if (poll_hardware_battery(&status)) {
-        g_battery_present = true;
-        g_cached_battery = status;
-        g_last_update_ticks = get_current_ticks();
-        g_has_cached = true;
-        serial_puts("[BATTERY] Control Method Battery (PNP0C0A) initialized\n");
-    } else {
-        serial_puts("[BATTERY] No ACPI battery found; desktop battery icon will be hidden\n");
-    }
+    serial_puts("[BATTERY] Telemetry unavailable: AML execution backend not implemented\n");
 #else
     if (g_ec_reader) {
         g_battery_present = true;
@@ -584,7 +439,7 @@ void acpi_battery_init(void) {
 }
 
 int acpi_battery_get(battery_status_t *out) {
-    if (!out) return -14; /* SYSCALL_EFAULT */
+    if (!out) return SYSCALL_EFAULT;
 
 #ifdef HOST_TEST
     if (g_ec_reader) {
@@ -597,7 +452,11 @@ int acpi_battery_get(battery_status_t *out) {
     }
 
     if (!g_battery_present) {
-        return SYSCALL_ENODEV; /* -35 */
+#ifndef HOST_TEST
+        return SYSCALL_EOPNOTSUPP;
+#else
+        return SYSCALL_ENODEV;
+#endif
     }
 
     uint64_t now = get_current_ticks();
@@ -613,9 +472,7 @@ int acpi_battery_get(battery_status_t *out) {
     /* Cache expired or state changed: refresh from hardware/EC */
     battery_status_t refreshed;
     bool ok = false;
-#ifndef HOST_TEST
-    ok = poll_hardware_battery(&refreshed);
-#else
+#ifdef HOST_TEST
     if (g_ec_reader) {
         uint8_t ec_state = 0, cap_lo = 0, cap_hi = 0, rate_lo = 0, rate_hi = 0, full_lo = 0, full_hi = 0, volt_lo = 0, volt_hi = 0;
         if (g_ec_reader(0x10, &ec_state) == 0 &&
@@ -634,6 +491,11 @@ int acpi_battery_get(battery_status_t *out) {
     }
 #endif
 
+    if (!ok) {
+        memset(&g_cached_battery, 0, sizeof(g_cached_battery));
+        g_has_cached = false;
+        return SYSCALL_EIO;
+    }
     if (ok) {
         /* State transition check (e.g. Charging <-> Discharging) updates immediately */
         g_cached_battery = refreshed;
