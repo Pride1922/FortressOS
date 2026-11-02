@@ -1181,47 +1181,15 @@ static bool iwl_config_umac_scan(void) {
 
 static bool iwl_send_mac_context_cmd(uint32_t action, bool is_assoc, uint16_t assoc_id) {
     iwl_mac_ctx_cmd_t mac_cmd;
-    memset(&mac_cmd, 0, sizeof(mac_cmd));
-    mac_cmd.id_and_color = IWL_FW_CMD_ID_AND_COLOR(0, 0);
-    mac_cmd.action       = action;
-    mac_cmd.mac_type     = IWL_FW_MAC_TYPE_BSS_STA;
-    mac_cmd.tsf_id       = 0;
-    memcpy(mac_cmd.node_addr, s_iwl_dev.mac_addr, 6);
-    memcpy(mac_cmd.bssid_addr, s_assoc_bssid, 6);
-    mac_cmd.cck_rates    = (s_iwl_dev.current_channel <= 14) ? 0x0Fu : 0;
-    mac_cmd.ofdm_rates   = (s_iwl_dev.current_channel <= 14) ? 0x15u : 0xFFu;
-    mac_cmd.short_slot   = (1u << 4); /* IWM_MAC_FLG_SHORT_SLOT (0x10) */
-    mac_cmd.filter_flags = IWL_MAC_FILTER_ACCEPT_GRP | IWL_MAC_FILTER_IN_CONTROL_AND_MGMT | (is_assoc ? 0u : IWL_MAC_FILTER_IN_BEACON);
-    mac_cmd.qos_flags    = (1u << 0); /* IWM_MAC_QOS_FLG_UPDATE_EDCA */
-
-    /* EDCA AC parameters indexed by TX FIFO: 0=BK, 1=BE, 2=VI, 3=VO */
-    static const uint16_t cw_min[4] = { 15, 15, 7, 3 };
-    static const uint16_t cw_max[4] = { 1023, 1023, 15, 7 };
-    static const uint8_t  aifsn[4]  = { 7, 3, 2, 2 };
-    static const uint16_t txop[4]   = { 0, 0, 3008, 1504 };
-    for (int f = 0; f < 4; f++) {
-        mac_cmd.ac[f].cw_min     = cw_min[f];
-        mac_cmd.ac[f].cw_max     = cw_max[f];
-        mac_cmd.ac[f].aifsn      = aifsn[f];
-        mac_cmd.ac[f].fifos_mask = (uint8_t)(1u << f);
-        mac_cmd.ac[f].edca_txop  = txop[f];
-    }
-
-    if (is_assoc) {
-        uint32_t bi = (s_assoc_bi >= 20) ? s_assoc_bi : 100u;
-        uint32_t dtim_off = bi * 1024u;
-        mac_cmd.sta.is_assoc                 = 1u;
-        mac_cmd.sta.dtim_time                = s_last_phy_info.system_timestamp + dtim_off;
-        mac_cmd.sta.dtim_tsf                 = s_last_phy_info.timestamp + (uint64_t)dtim_off;
-        mac_cmd.sta.bi                       = bi;
-        mac_cmd.sta.bi_reciprocal            = 0xFFFFFFFFu / bi;
-        mac_cmd.sta.dtim_interval            = bi;
-        mac_cmd.sta.dtim_reciprocal          = 0xFFFFFFFFu / bi;
-        mac_cmd.sta.listen_interval          = 10u;
-        mac_cmd.sta.assoc_id                 = assoc_id;
-        mac_cmd.sta.assoc_beacon_arrive_time = s_last_phy_info.system_timestamp;
-    }
-
+    iwl_mac_context_params_t params = {
+        .action = action, .associated = is_assoc, .assoc_id = assoc_id,
+        .channel = s_iwl_dev.current_channel, .beacon_interval = s_assoc_bi,
+        .system_timestamp = s_last_phy_info.system_timestamp,
+        .tsf = s_last_phy_info.timestamp,
+    };
+    memcpy(params.local_mac, s_iwl_dev.mac_addr, sizeof(params.local_mac));
+    memcpy(params.bssid, s_assoc_bssid, sizeof(params.bssid));
+    iwlwifi_build_mac_context(&mac_cmd, &params);
     return iwl_send_cmd_pdu(IWL_HCMD_MAC_CONTEXT, &mac_cmd, sizeof(mac_cmd), true);
 }
 

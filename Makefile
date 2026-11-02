@@ -628,7 +628,7 @@ test-usb-persistence: $(BOOTABLE_IMG)
 
 .PHONY: test-hub-host test-hub-host-tsan test-usb-hid test-usb-hub test-usb-mouse test-rtl8153-host test-wlan-crypto-host test-wlan-mac-host test-wlan-wpa2-host test-wifi-host test-wifi-fault-host test-wifi-stack
 WIFI_STACK_BUDGET ?= 1024
-WIFI_STACK_SRCS := src/net/net_wifi_owner.c src/net/wlan/wlan_mgr.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_crypto.c src/drivers/iwlwifi.c src/drivers/iwl_health.c src/drivers/rtw88.c
+WIFI_STACK_SRCS := src/drivers/iwl_mac.c src/net/net_wifi_owner.c src/net/wlan/wlan_mgr.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_crypto.c src/drivers/iwlwifi.c src/drivers/iwl_health.c src/drivers/rtw88.c
 WIFI_HOST_SAN ?= $(shell printf 'int main(void){return 0;}\n' | $(CC) -x c - -fsanitize=address,undefined -o /dev/null 2>/dev/null && echo "-fsanitize=address,undefined")
 
 .PHONY: test-wifi-owner-host test-wifi-owner
@@ -648,11 +648,16 @@ test-wifi-owner: test-wifi-owner-host
 	@python3 scripts/test_wifi_owner.py
 test-wifi-stack:
 	@python3 scripts/check_wifi_stack.py $(WIFI_STACK_BUDGET) $(CC) $(BUILD_DIR)/stackgate $(CFLAGS) -- $(WIFI_STACK_SRCS)
+.PHONY: test-iwl-mac-host
+test-iwl-mac-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -Isrc/include -Isrc/drivers tests/iwl_mac_host.c src/drivers/iwl_mac.c -o $(BUILD_DIR)/iwl-mac-host
+	@$(BUILD_DIR)/iwl-mac-host
 test-wifi-fault-host:
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_fault_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwl_health.c -o $(BUILD_DIR)/wifi_fault_host
 	@$(BUILD_DIR)/wifi_fault_host
-test-wifi-host:
+test-wifi-host: test-iwl-mac-host
 	@mkdir -p $(BUILD_DIR)
 	@$(CC) -std=c11 -O1 -g $(WIFI_HOST_SAN) -Wall -Wextra -Werror -no-pie -pthread -DTEST_SMP_MEMORY -DIWLWIFI_HOST_TEST -Isrc/include -Isrc/net/wlan -Isrc/drivers -Isrc/kernel -Isrc/fs -Isrc/mm tests/wifi_host.c src/net/wlan/wlan_crypto.c src/net/wlan/net_80211.c src/net/wlan/wlan_wpa2.c src/net/wlan/wlan_mgr.c src/drivers/iwlwifi.c src/drivers/iwl_health.c src/drivers/rtw88.c -o $(BUILD_DIR)/wifi_host
 	@$(BUILD_DIR)/wifi_host

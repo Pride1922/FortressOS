@@ -494,6 +494,9 @@ _Static_assert(sizeof(iwl_phy_context_cmd_t) == 36, "iwl_phy_context_cmd_t must 
 #define IWL_MAC_FILTER_IN_PROMISC       (1u << 0)
 #define IWL_MAC_FILTER_IN_CONTROL_AND_MGMT (1u << 1)
 #define IWL_MAC_FILTER_ACCEPT_GRP       (1u << 2)
+/* Intel MAC_CONTEXT filter API: leave encryption intact for the host MAC. */
+#define IWL_MAC_FILTER_DIS_DECRYPT      (1u << 3)
+#define IWL_MAC_FILTER_DIS_GRP_DECRYPT  (1u << 4)
 #define IWL_MAC_FILTER_IN_BEACON        (1u << 6)
 #define IWL_MAC_FILTER_IN_PROBE_REQUEST (1u << 12)
 
@@ -542,6 +545,21 @@ typedef struct {
 } __attribute__((packed)) iwl_mac_ctx_cmd_t;
 
 _Static_assert(sizeof(iwl_mac_ctx_cmd_t) == 148, "iwl_mac_ctx_cmd_t must be 148 bytes");
+
+/* Owner-snapshotted inputs for the pure MAC_CONTEXT command builder.
+ * No hardware access, allocation, locks, key material or public syscall ABI. */
+typedef struct {
+    uint32_t action;
+    bool associated;
+    uint8_t channel;
+    uint16_t assoc_id, beacon_interval;
+    uint8_t local_mac[6], bssid[6];
+    uint32_t system_timestamp;
+    uint64_t tsf;
+} iwl_mac_context_params_t;
+void iwlwifi_build_mac_context(iwl_mac_ctx_cmd_t *out,
+                              const iwl_mac_context_params_t *params);
+
 
 /* Binding Context Command v1 (0x2B - 24 bytes) */
 typedef struct {

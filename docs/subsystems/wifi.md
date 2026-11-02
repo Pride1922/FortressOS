@@ -2,6 +2,12 @@
 
 ## 1. Overview & Architectural Scope
 
+2026-11-02 cold inbound ARP follow-up: supplied-neighbor testing isolates
+failing initial ARP from working unicast ICMP on the Dell. Intel MAC_CONTEXT
+now requests raw encrypted unicast/group delivery for FortressOS software
+crypto. Actual command-byte regression passes; physical confirmation remains
+pending. [Evidence, API reference and limits](../roadmap/wifi-cold-arp.md).
+
 2026-11-02 installed idle/reboot follow-up: reproduced the production selector
 evicting Wi-Fi for a disconnected Ethernet device during transient offline
 states. The selector now retains Wi-Fi until another link is actually online,
